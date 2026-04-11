@@ -79,9 +79,14 @@ test-codegen: $(TARGET)
 	./$(TARGET) examples/stuff.arche
 	@test -x examples/stuff && ./examples/stuff > /dev/null && echo "✓ Codegen test passed (executable generated and runs successfully)" || echo "✗ Codegen test failed"
 
-# Clean build artifacts
+# Clean all generated artifacts
 clean:
-	rm -f $(OBJS) $(LEXER_OBJS) $(PARSER_TEST_OBJS) $(FMT_OBJS) $(SEMANTIC_TEST_OBJS) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN)
+	find . -name "*.o" -delete
+	find . -name "*.a" -delete
+	rm -f $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN)
+	find examples/ -type f ! -name "*.c" ! -name "*.arche" ! -name "*.sh" -delete
+	find tests/ -type f ! -name "*.c" ! -name "*.h" ! -name "*.sh" ! -name "*.arche" -delete
+	rm -f *.md *.txt test_*.sh run_*.sh 2>/dev/null || true
 
 # Phony targets
 .PHONY: all run run-lexer test test-lexer test-parser test-semantic clean

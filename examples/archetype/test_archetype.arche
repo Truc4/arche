@@ -1,0 +1,27 @@
+world GameWorld()
+
+arche Player {
+  meta drag: Float,
+  col pos: Vec3,
+  col vel: Vec3,
+  col health: Float
+}
+
+arche Enemy {
+  meta aggression: Float,
+  col pos: Vec3,
+  col vel: Vec3
+}
+
+sys move(pos, vel) {
+  pos = pos + vel;
+}
+
+sys dampen(vel, drag) {
+  vel = vel * drag;
+}
+
+proc initialize() {
+  let x = 100;
+  let y = 200;
+}
