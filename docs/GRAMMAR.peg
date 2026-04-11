@@ -1,0 +1,71 @@
+# Arche — Grammar (PEG)
+
+Program ← _ (Decl _)* EOF
+
+Decl ← PoolDecl / ProcDecl
+
+# Declarations
+
+PoolDecl ← "pool" _ Identifier _ "{" _ (Field _)* "}"
+
+Field ← Identifier _ ":" _ Type _ "," _
+
+ProcDecl ← "proc" _ Identifier _ "(" _ ")" _ "{" _ (Statement _)* "}"
+
+# Statements
+
+Statement ← LetBinding / ForLoop / Assignment / ProcCall / ";"
+
+LetBinding ← "let" _ Identifier _ "=" _ Expression _ ";"
+
+Assignment ← Path _ "=" _ Expression _ ";"
+
+ForLoop ← "for" _ Identifier _ "in" _ Identifier _ "{" _ (Statement _)* "}"
+
+ProcCall ← Identifier _ "." _ Identifier _ "(" _ (Expression (_ "," _ Expression)*)? _ ")"
+
+# Expressions
+
+Expression ← BinaryOp / Allocation / Deallocation / ExprPrimary
+
+ExprPrimary ← Literal / Path / Identifier / "(" _ Expression _ ")"
+
+BinaryOp ← ExprPrimary (_ Operator _ ExprPrimary)+
+
+Allocation ← Identifier _ "." _ "alloc" _ "(" _ (FieldInit (_ "," _ FieldInit)*)? _ ")"
+
+FieldInit ← Identifier _ ":" _ Expression
+
+Deallocation ← Identifier _ "." _ "free" _ "(" _ Expression _ ")"
+
+# Paths and Access
+
+Path ← Identifier (_ "." _ Identifier)+
+
+# Types
+
+Type ← Identifier
+
+# Literals
+
+Literal ← Number / Boolean
+
+Number ← [0-9]+ ("." [0-9]+)?
+
+Boolean ← "true" / "false"
+
+# Tokens
+
+Identifier ← [a-zA-Z_] [a-zA-Z0-9_]*
+
+Operator ← "+" / "-" / "*" / "/" / "==" / "!=" / "<=" / ">=" / "<" / ">"
+
+# Whitespace and Comments
+
+_ ← (Whitespace / Comment)*
+
+Whitespace ← [ \t\r\n]+
+
+Comment ← "//" (!'\n' .)*
+
+EOF ← !.
