@@ -1,0 +1,8 @@
+archetype Entity {
+	col position [3]
+	col velocity [3]
+}
+
+proc move(entity) {
+	entity.position += [1, 0, 0]
+}

@@ -34,9 +34,13 @@ run: $(TARGET)
 run-lexer: $(LEXER_BIN)
 	./$(LEXER_BIN) examples/hello.arc
 
+# Run tests
+test: $(LEXER_BIN)
+	./tests/run_lexer_tests.sh
+
 # Clean build artifacts
 clean:
 	rm -f $(OBJS) $(LEXER_OBJS) $(TARGET) $(LEXER_BIN)
 
 # Phony targets
-.PHONY: all run run-lexer clean
+.PHONY: all run run-lexer test clean

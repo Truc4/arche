@@ -58,27 +58,30 @@ static void skip_whitespace(Lexer *lexer) {
 		case ' ':
 		case '\r':
 		case '\t':
-			advance(lexer);
-			break;
-
 		case '\n':
 			advance(lexer);
-			break;
-
-		case '/':
-			if (peek_next(lexer) == '/') {
-				while (peek(lexer) != '\n' && !is_at_end(lexer)) {
-					advance(lexer);
-				}
-			} else {
-				return;
-			}
 			break;
 
 		default:
 			return;
 		}
 	}
+}
+
+static Token lex_comment(Lexer *lexer) {
+	const char *start = lexer->cur;
+	int line = lexer->line;
+	int column = lexer->column;
+
+	advance(lexer); /* consume first '/' */
+	advance(lexer); /* consume second '/' */
+
+	while (peek(lexer) != '\n' && !is_at_end(lexer)) {
+		advance(lexer);
+	}
+
+	return make_token(lexer, TOK_COMMENT, start,
+					  (size_t)(lexer->cur - start), line, column);
 }
 
 static int is_ident_start(char c) {
@@ -175,6 +178,11 @@ Token lexer_next_token(Lexer *lexer) {
 
 	if (is_at_end(lexer)) {
 		return make_token(lexer, TOK_EOF, start, 0, line, column);
+	}
+
+	/* check for comments */
+	if (peek(lexer) == '/' && peek_next(lexer) == '/') {
+		return lex_comment(lexer);
 	}
 
 	char c = advance(lexer);
@@ -285,6 +293,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_IDENT";
 	case TOK_NUMBER:
 		return "TOK_NUMBER";
+	case TOK_COMMENT:
+		return "TOK_COMMENT";
 
 	case TOK_ARCHETYPE:
 		return "TOK_ARCHETYPE";
