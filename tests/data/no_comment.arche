@@ -1,0 +1,16 @@
+
+arche Entity {
+  meta count: Int
+  col position: Float
+  col velocity: Float
+}
+
+func add_velocities(a: Float, b: Float) -> Float {
+  a + b
+}
+
+proc init() {
+  let x = 10;
+  let y = 20;
+  let z = add_velocities(x, y);
+}

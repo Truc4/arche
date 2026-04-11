@@ -1,0 +1,9 @@
+func add(a: Float, b: Float) -> Float {
+  a + b
+}
+
+proc init() {
+  let x = 10;
+  let y = 20;
+  let z = add(x, y);
+}

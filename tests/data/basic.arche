@@ -1,0 +1,9 @@
+world Game()
+
+arche Entity {
+  col x: Float
+}
+
+proc init() {
+  let z = 42;
+}

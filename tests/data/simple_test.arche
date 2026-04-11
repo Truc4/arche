@@ -1,0 +1,10 @@
+world Game()
+
+arche Entity {
+  meta count: Int
+  col position: Float
+}
+
+proc init() {
+  let x = 10;
+}

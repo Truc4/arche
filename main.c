@@ -78,8 +78,9 @@ int main(int argc, char *argv[]) {
 
 	Program *prog = parse_program(&parser);
 
-	if (!prog) {
+	if (!prog || parser.had_error) {
 		fprintf(stderr, "Parsing failed\n");
+		if (prog) program_free(prog);
 		free(source);
 		return 1;
 	}
