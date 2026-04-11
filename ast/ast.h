@@ -64,7 +64,7 @@ struct Decl {
    ========================= */
 
 typedef enum {
-	TYPE_NAME,		   /* Int, Float, Bool, Vec3, Player, etc. */
+	TYPE_NAME,		   /* int, float, char, Vec3, Player, etc. */
 	TYPE_ARRAY,		   /* nested / jagged array */
 	TYPE_SHAPED_ARRAY, /* dense ranked array */
 } TypeKind;

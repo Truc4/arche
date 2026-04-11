@@ -9,7 +9,7 @@
 typedef struct {
 	char *name;
 	char *llvm_name;	/* allocated SSA value name */
-	int is_pointer;
+	int type;  /* 0=i32, 1=i32*, 2=i8* (string) */
 } ValueInfo;
 
 typedef struct {
@@ -27,11 +27,17 @@ struct CodegenContext {
 
 	/* SSA counter for generating unique names */
 	int value_counter;
+	int string_counter;
 
 	/* Buffered output */
 	char *output_buffer;
 	size_t buffer_size;
 	size_t buffer_pos;
+
+	/* Global constants buffer (strings, etc.) */
+	char *globals_buffer;
+	size_t globals_size;
+	size_t globals_pos;
 };
 
 /* ========== UTILITY FUNCTIONS ========== */
@@ -58,11 +64,11 @@ static void buffer_append_fmt(CodegenContext *ctx, const char *fmt, ...) {
 }
 
 static const char *llvm_type_from_arche(const char *arche_type) {
-	if (!arche_type) return "i32";
+	if (!arche_type) return "i32";  /* default to int */
 
-	if (strcmp(arche_type, "Float") == 0) return "double";
-	if (strcmp(arche_type, "Int") == 0) return "i32";
-	if (strcmp(arche_type, "Bool") == 0) return "i1";
+	if (strcmp(arche_type, "float") == 0) return "double";
+	if (strcmp(arche_type, "int") == 0) return "i32";
+	if (strcmp(arche_type, "char") == 0) return "i8";
 
 	/* For custom types (Vec3, etc.), use opaque structures for now */
 	static char buf[256];
@@ -74,6 +80,78 @@ static char *gen_value_name(CodegenContext *ctx) {
 	char *name = malloc(32);
 	snprintf(name, 32, "%%v%d", ctx->value_counter++);
 	return name;
+}
+
+/* Emit a string constant global and return its name */
+static char *emit_string_global(CodegenContext *ctx, const char *quoted_str) {
+	char global_name[64];
+	snprintf(global_name, sizeof(global_name), "@.str%d", ctx->string_counter++);
+
+	/* quoted_str is "..." with quotes. Process escape sequences and build LLVM constant */
+	char escaped[2048];
+	size_t escaped_pos = 0;
+	size_t str_len = strlen(quoted_str);
+
+	for (size_t i = 1; i < str_len - 1 && escaped_pos < sizeof(escaped) - 10; i++) {
+		char c = quoted_str[i];
+		if (c == '\\' && i + 1 < str_len - 1) {
+			i++;
+			switch (quoted_str[i]) {
+			case 'n':
+				escaped[escaped_pos++] = '\n';
+				break;
+			case 't':
+				escaped[escaped_pos++] = '\t';
+				break;
+			case 'r':
+				escaped[escaped_pos++] = '\r';
+				break;
+			case '\\':
+				escaped[escaped_pos++] = '\\';
+				break;
+			case '"':
+				escaped[escaped_pos++] = '"';
+				break;
+			default:
+				escaped[escaped_pos++] = quoted_str[i];
+				break;
+			}
+		} else {
+			escaped[escaped_pos++] = c;
+		}
+	}
+
+	/* Build LLVM global constant declaration */
+	char global_decl[4096];
+	char llvm_escaped[2048] = "";
+	size_t llvm_pos = 0;
+
+	for (size_t i = 0; i < escaped_pos && llvm_pos < sizeof(llvm_escaped) - 10; i++) {
+		unsigned char c = (unsigned char)escaped[i];
+		if (c >= 32 && c < 127 && c != '"' && c != '\\') {
+			llvm_escaped[llvm_pos++] = c;
+		} else {
+			llvm_pos += snprintf(llvm_escaped + llvm_pos, sizeof(llvm_escaped) - llvm_pos, "\\%02X", c);
+		}
+	}
+
+	snprintf(global_decl, sizeof(global_decl),
+		"%s = private unnamed_addr constant [%zu x i8] c\"%s\\00\"\n",
+		global_name, escaped_pos + 1, llvm_escaped);
+
+	/* Append to globals buffer */
+	size_t decl_len = strlen(global_decl);
+	if (ctx->globals_pos + decl_len >= ctx->globals_size) {
+		ctx->globals_size = (ctx->globals_size + decl_len) * 2;
+		ctx->globals_buffer = realloc(ctx->globals_buffer, ctx->globals_size);
+	}
+	strcpy(ctx->globals_buffer + ctx->globals_pos, global_decl);
+	ctx->globals_pos += decl_len;
+
+	/* Return allocated name */
+	char *ret = malloc(64);
+	strcpy(ret, global_name);
+	return ret;
 }
 
 static void push_value_scope(CodegenContext *ctx) {
@@ -108,7 +186,7 @@ static ValueInfo *find_value(CodegenContext *ctx, const char *name) {
 	return NULL;
 }
 
-static void add_value(CodegenContext *ctx, const char *name, const char *llvm_name, int is_pointer) {
+static void add_value(CodegenContext *ctx, const char *name, const char *llvm_name, int type) {
 	if (ctx->scope_count == 0) return;
 
 	ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
@@ -117,7 +195,7 @@ static void add_value(CodegenContext *ctx, const char *name, const char *llvm_na
 	strcpy(val->name, name);
 	val->llvm_name = malloc(strlen(llvm_name) + 1);
 	strcpy(val->llvm_name, llvm_name);
-	val->is_pointer = is_pointer;
+	val->type = type;
 
 	scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
 	scope->values[scope->value_count++] = val;
@@ -138,11 +216,22 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 	switch (expr->type) {
 	case EXPR_LITERAL: {
 		const char *lex = expr->data.literal.lexeme;
-		/* Check if literal looks like a float */
-		if (strchr(lex, '.') != NULL) {
+
+		/* Check if it's a string literal (starts with ") */
+		if (lex[0] == '"') {
+			char *global_name = emit_string_global(ctx, lex);
+			size_t str_len = strlen(lex) - 2; /* excluding quotes */
+
+			char *res_name = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr [%zu x i8], [%zu x i8]* %s, i32 0, i32 0\n",
+				res_name, str_len + 1, str_len + 1, global_name);
+			strcpy(result_buf, res_name);
+			free(global_name);
+		} else if (strchr(lex, '.') != NULL) {
+			/* Float literal */
 			strcpy(result_buf, lex);
 		} else {
-			/* Integer literal - might need conversion */
+			/* Integer literal */
 			strcpy(result_buf, lex);
 		}
 		break;
@@ -269,10 +358,26 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			func_name = expr->data.call.callee->data.name.name;
 		}
 
-		/* Evaluate arguments */
+		/* Evaluate arguments and track which are string literals or string variables */
 		char **arg_bufs = malloc(expr->data.call.arg_count * sizeof(char *));
+		int *arg_is_string = malloc(expr->data.call.arg_count * sizeof(int));
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			arg_bufs[i] = malloc(256);
+			arg_is_string[i] = 0;
+
+			/* Check if this arg is a string literal */
+			if (expr->data.call.args[i]->type == EXPR_LITERAL &&
+			    expr->data.call.args[i]->data.literal.lexeme[0] == '"') {
+				arg_is_string[i] = 1;
+			}
+			/* Check if this arg is a variable holding a string (i8* type) */
+			else if (expr->data.call.args[i]->type == EXPR_NAME) {
+				ValueInfo *var = find_value(ctx, expr->data.call.args[i]->data.name.name);
+				if (var && var->type == 2) {  /* type 2 = i8* pointer (string) */
+					arg_is_string[i] = 1;
+				}
+			}
+
 			codegen_expression(ctx, expr->data.call.args[i], arg_bufs[i]);
 		}
 
@@ -281,7 +386,11 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		/* Call function with arguments */
 		buffer_append_fmt(ctx, "  %s = call i32 @%s(", res_name, func_name ? func_name : "unknown");
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
-			buffer_append_fmt(ctx, "i32 %s", arg_bufs[i]);
+			if (arg_is_string[i]) {
+				buffer_append_fmt(ctx, "i8* %s", arg_bufs[i]);
+			} else {
+				buffer_append_fmt(ctx, "i32 %s", arg_bufs[i]);
+			}
 			if (i < expr->data.call.arg_count - 1) {
 				buffer_append(ctx, ", ");
 			}
@@ -295,6 +404,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			free(arg_bufs[i]);
 		}
 		free(arg_bufs);
+		free(arg_is_string);
 		break;
 	}
 
@@ -322,17 +432,29 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 		const char *var_name = stmt->data.let_stmt.name;
 		char value_buf[256];
 
+		/* Check if the value is a string literal */
+		int is_string = 0;
+		if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->type == EXPR_LITERAL &&
+		    stmt->data.let_stmt.value->data.literal.lexeme[0] == '"') {
+			is_string = 1;
+		}
+
 		if (stmt->data.let_stmt.value) {
 			codegen_expression(ctx, stmt->data.let_stmt.value, value_buf);
 		} else {
 			strcpy(value_buf, "0");
 		}
 
-		char *alloca_name = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = alloca i32\n", alloca_name);
-		buffer_append_fmt(ctx, "  store i32 %s, i32* %s\n", value_buf, alloca_name);
-
-		add_value(ctx, var_name, alloca_name, 1);
+		if (is_string) {
+			/* For strings, just track the i8* pointer directly (type 2) */
+			add_value(ctx, var_name, value_buf, 2);
+		} else {
+			/* For integers, allocate and store */
+			char *alloca_name = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = alloca i32\n", alloca_name);
+			buffer_append_fmt(ctx, "  store i32 %s, i32* %s\n", value_buf, alloca_name);
+			add_value(ctx, var_name, alloca_name, 1);
+		}
 		break;
 	}
 
@@ -344,7 +466,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 		if (stmt->data.assign_stmt.target->type == EXPR_NAME) {
 			const char *var_name = stmt->data.assign_stmt.target->data.name.name;
 			ValueInfo *val = find_value(ctx, var_name);
-			if (val && val->is_pointer) {
+			if (val && val->type == 1) {  /* type 1 = i32* pointer */
 				buffer_append_fmt(ctx, "  store i32 %s, i32* %s\n", value_buf, val->llvm_name);
 			} else {
 				/* For now, silently skip assignments to non-pointer values (fields, etc.) */
@@ -441,7 +563,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
 	/* Generate function definition */
 	const char *return_type = llvm_type_from_arche(
-		func->return_type ? func->return_type->data.name : "Int"
+		func->return_type ? func->return_type->data.name : "int"
 	);
 
 	buffer_append_fmt(ctx, "define %s @%s(", return_type, func->name);
@@ -524,9 +646,13 @@ CodegenContext *codegen_create(Program *prog, SemanticContext *sem_ctx) {
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
 	ctx->value_counter = 0;
+	ctx->string_counter = 0;
 	ctx->buffer_size = 8192;
 	ctx->output_buffer = malloc(ctx->buffer_size);
 	ctx->buffer_pos = 0;
+	ctx->globals_size = 4096;
+	ctx->globals_buffer = malloc(ctx->globals_size);
+	ctx->globals_pos = 0;
 	return ctx;
 }
 
@@ -550,7 +676,7 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "declare i32 @write(i32, i8*, i32)\n");
 	buffer_append(ctx, "declare void @exit(i32)\n\n");
 
-	/* Generate code for all declarations */
+	/* Generate code for all declarations (this will populate globals_buffer with string constants) */
 	int has_init_proc = 0;
 	for (int i = 0; i < ctx->prog->decl_count; i++) {
 		Decl *decl = ctx->prog->decls[i];
@@ -577,6 +703,15 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		}
 	}
 
+	/* Emit global constants (strings, etc.) */
+	if (ctx->globals_pos > 0) {
+		buffer_append(ctx, "\n; Global constants\n");
+		char temp[ctx->globals_pos + 1];
+		strcpy(temp, ctx->globals_buffer);
+		buffer_append(ctx, temp);
+		buffer_append(ctx, "\n");
+	}
+
 	/* Generate main entry point */
 	buffer_append(ctx, "\ndefine i32 @main() {\n");
 	buffer_append(ctx, "entry:\n");
@@ -598,5 +733,6 @@ void codegen_free(CodegenContext *ctx) {
 	}
 	free(ctx->scopes);
 	free(ctx->output_buffer);
+	free(ctx->globals_buffer);
 	free(ctx);
 }

@@ -438,6 +438,15 @@ static Expression *parse_primary_expr(Parser *parser) {
 		return expr;
 	}
 
+	if (check(parser, TOK_STRING)) {
+		char *lexeme = token_text(parser->current);
+		advance(parser);
+
+		Expression *expr = expression_create(EXPR_LITERAL);
+		expr->data.literal.lexeme = lexeme;
+		return expr;
+	}
+
 	if (check(parser, TOK_IDENT)) {
 		char *name = token_text(parser->current);
 		advance(parser);

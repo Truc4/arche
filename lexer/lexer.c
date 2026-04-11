@@ -162,6 +162,34 @@ static Token lex_number(Lexer *lexer) {
 					  line, column);
 }
 
+static Token lex_string(Lexer *lexer) {
+	const char *start = lexer->cur;
+	int line = lexer->line;
+	int column = lexer->column;
+
+	advance(lexer); /* consume opening '"' */
+
+	while (peek(lexer) != '"' && !is_at_end(lexer)) {
+		if (peek(lexer) == '\\') {
+			advance(lexer); /* consume backslash */
+			if (!is_at_end(lexer)) {
+				advance(lexer); /* consume escaped character */
+			}
+		} else {
+			advance(lexer);
+		}
+	}
+
+	if (is_at_end(lexer)) {
+		return error_token(lexer, "Unterminated string", line, column);
+	}
+
+	advance(lexer); /* consume closing '"' */
+
+	return make_token(lexer, TOK_STRING, start, (size_t)(lexer->cur - start),
+					  line, column);
+}
+
 void lexer_init(Lexer *lexer, const char *src) {
 	lexer->src = src;
 	lexer->cur = src;
@@ -197,6 +225,12 @@ Token lexer_next_token(Lexer *lexer) {
 		lexer->cur--;
 		lexer->column--;
 		return lex_number(lexer);
+	}
+
+	if (c == '"') {
+		lexer->cur--;
+		lexer->column--;
+		return lex_string(lexer);
 	}
 
 	switch (c) {
@@ -293,6 +327,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_IDENT";
 	case TOK_NUMBER:
 		return "TOK_NUMBER";
+	case TOK_STRING:
+		return "TOK_STRING";
 	case TOK_COMMENT:
 		return "TOK_COMMENT";
 

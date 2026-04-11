@@ -10,6 +10,7 @@ typedef enum TokenKind {
 	/* identifiers / literals */
 	TOK_IDENT,
 	TOK_NUMBER,
+	TOK_STRING,
 	TOK_COMMENT,
 
 	/* keywords */

@@ -154,7 +154,7 @@ int main(int argc, char *argv[]) {
 
 	/* Call cc to assemble and link */
 	char cc_cmd[512];
-	snprintf(cc_cmd, sizeof(cc_cmd), "cc -o %s %s", output_file, asm_file);
+	snprintf(cc_cmd, sizeof(cc_cmd), "cc -no-pie -o %s %s", output_file, asm_file);
 	printf("Linking executable...\n");
 	ret = system(cc_cmd);
 	if (ret != 0) {
