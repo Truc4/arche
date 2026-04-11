@@ -1,1 +1,3 @@
-Hello
+pool MyPool
+arche MyArchetype
+proc main() { }

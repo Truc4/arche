@@ -3,104 +3,172 @@
 
 #include <stddef.h>
 
-/* Forward declarations */
-struct Program;
-struct Decl;
-struct PoolDecl;
-struct ProcDecl;
-struct Field;
-struct Statement;
-struct Expression;
-struct Path;
+/* =========================
+   Forward declarations
+   ========================= */
+
+typedef struct Program Program;
+typedef struct Decl Decl;
+typedef struct ArchetypeDecl ArchetypeDecl;
+typedef struct ProcDecl ProcDecl;
+typedef struct FieldDecl FieldDecl;
+typedef struct TypeRef TypeRef;
+typedef struct Statement Statement;
+typedef struct Expression Expression;
+
+/* =========================
+   Source location
+   ========================= */
+
+typedef struct {
+	int line;
+	int column;
+} SourceLoc;
+
+/* =========================
+   Program / declarations
+   ========================= */
 
 typedef enum {
-	DECL_POOL,
+	DECL_ARCHETYPE,
 	DECL_PROC,
 } DeclKind;
 
-typedef struct Program {
-	struct Decl **decls;
+struct Program {
+	Decl **decls;
 	int decl_count;
-} Program;
+	SourceLoc loc;
+};
 
-typedef struct Decl {
+struct Decl {
 	DeclKind kind;
+	SourceLoc loc;
 	union {
-		struct PoolDecl *pool;
-		struct ProcDecl *proc;
-	};
-} Decl;
+		ArchetypeDecl *archetype;
+		ProcDecl *proc;
+	} data;
+};
 
-typedef struct PoolDecl {
-	char *name;
-	struct Field *fields;
-	int field_count;
-} PoolDecl;
-
-typedef struct Field {
-	char *name;
-	char *type; /* Type name as string */
-} Field;
-
-typedef struct ProcDecl {
-	char *name;
-	struct Statement **statements;
-	int statement_count;
-} ProcDecl;
-
-/* ===== STATEMENTS ===== */
+/* =========================
+   Types
+   ========================= */
 
 typedef enum {
-	STMT_LET_BINDING,
-	STMT_ASSIGNMENT,
-	STMT_FOR_LOOP,
-	STMT_PROC_CALL,
+	TYPE_NAME,		   /* Int, Float, Bool, Vec3, Player, etc. */
+	TYPE_ARRAY,		   /* nested / jagged array */
+	TYPE_SHAPED_ARRAY, /* dense ranked array */
+} TypeKind;
+
+struct TypeRef {
+	TypeKind kind;
+	SourceLoc loc;
+	union {
+		char *name;
+
+		struct {
+			TypeRef *element_type;
+		} array;
+
+		struct {
+			TypeRef *element_type;
+			int rank;
+		} shaped_array;
+	} data;
+};
+
+/* =========================
+   Archetypes
+   ========================= */
+
+typedef enum {
+	FIELD_META,	  /* one value for whole archetype */
+	FIELD_COLUMN, /* one value per element, aligned with size */
+} FieldKind;
+
+struct FieldDecl {
+	FieldKind kind;
+	char *name;
+	TypeRef *type;
+	SourceLoc loc;
+};
+
+struct ArchetypeDecl {
+	char *name;
+	FieldDecl **fields;
+	int field_count;
+	SourceLoc loc;
+};
+
+struct ProcDecl {
+	char *name;
+	Statement **statements;
+	int statement_count;
+	SourceLoc loc;
+};
+
+/* =========================
+   Statements
+   ========================= */
+
+typedef enum {
+	STMT_LET,
+	STMT_ASSIGN,
+	STMT_FOR,
+	STMT_EXPR,
+	STMT_FREE,
 } StatementType;
 
 typedef struct {
 	char *name;
-	struct Expression *value;
-} LetBinding;
+	TypeRef *type;	   /* optional, may be NULL */
+	Expression *value; /* optional, may be NULL */
+} LetStmt;
 
 typedef struct {
-	struct Path *target;
-	struct Expression *value;
-} Assignment;
+	Expression *target; /* must be assignable: name, field, or index */
+	Expression *value;
+} AssignStmt;
 
 typedef struct {
 	char *var_name;
-	char *pool_name;
-	struct Statement **statements;
-	int statement_count;
-} ForLoop;
+	Expression *iterable;
+	Statement **body;
+	int body_count;
+} ForStmt;
 
 typedef struct {
-	struct Path *target;
-	char *method_name;
-	struct Expression **args;
-	int arg_count;
-} ProcCall;
+	Expression *expr;
+} ExprStmt;
 
-typedef struct Statement {
+typedef struct {
+	Expression *value;
+} FreeStmt;
+
+struct Statement {
 	StatementType type;
+	SourceLoc loc;
 	union {
-		LetBinding let_binding;
-		Assignment assignment;
-		ForLoop for_loop;
-		ProcCall proc_call;
+		LetStmt let_stmt;
+		AssignStmt assign_stmt;
+		ForStmt for_stmt;
+		ExprStmt expr_stmt;
+		FreeStmt free_stmt;
 	} data;
-} Statement;
+};
 
-/* ===== EXPRESSIONS ===== */
+/* =========================
+   Expressions
+   ========================= */
 
 typedef enum {
 	EXPR_LITERAL,
-	EXPR_IDENTIFIER,
-	EXPR_PATH,
-	EXPR_BINARY_OP,
-	EXPR_PROC_CALL,
-	EXPR_ALLOCATION,
-	EXPR_DEALLOCATION,
+	EXPR_NAME,
+	EXPR_FIELD, /* player.pos */
+	EXPR_INDEX, /* grid[x, y], player.pos[i] */
+	EXPR_BINARY,
+	EXPR_UNARY,
+	EXPR_CALL,
+	EXPR_ALLOC,
 } ExpressionType;
 
 typedef enum {
@@ -116,82 +184,100 @@ typedef enum {
 	OP_GTE,
 } Operator;
 
+typedef enum {
+	UNARY_NEG,
+	UNARY_NOT,
+} UnaryOperator;
+
+typedef struct {
+	char *lexeme;
+} LiteralExpr;
+
+typedef struct {
+	char *name;
+} NameExpr;
+
+typedef struct {
+	Expression *base;
+	char *field_name;
+} FieldExpr;
+
+typedef struct {
+	Expression *base;
+	Expression **indices;
+	int index_count;
+} IndexExpr;
+
 typedef struct {
 	Operator op;
-	struct Expression *left;
-	struct Expression *right;
-} BinaryOp;
+	Expression *left;
+	Expression *right;
+} BinaryExpr;
 
 typedef struct {
-	struct Path *target;
-	char *method_name;
-	struct Expression **args;
+	UnaryOperator op;
+	Expression *operand;
+} UnaryExpr;
+
+typedef struct {
+	Expression *callee;
+	Expression **args;
 	int arg_count;
-} ExprProcCall;
+} CallExpr;
 
 typedef struct {
-	char *pool_name;
-	/* Field initializers */
+	char *archetype_name;
 	char **field_names;
-	struct Expression **field_values;
+	Expression **field_values;
 	int field_count;
-} Allocation;
+} AllocExpr;
 
-typedef struct {
-	char *pool_name;
-	struct Expression *handle;
-} Deallocation;
-
-typedef enum {
-	LITERAL_NUMBER,
-	LITERAL_BOOL,
-} LiteralType;
-
-typedef struct {
-	LiteralType type;
-	union {
-		double number;
-		int boolean;
-	} value;
-} Literal;
-
-typedef struct Expression {
+struct Expression {
 	ExpressionType type;
+	SourceLoc loc;
 	union {
-		Literal literal;
-		char *identifier;
-		struct Path *path;
-		BinaryOp binary_op;
-		ExprProcCall proc_call;
-		Allocation allocation;
-		Deallocation deallocation;
+		LiteralExpr literal;
+		NameExpr name;
+		FieldExpr field;
+		IndexExpr index;
+		BinaryExpr binary;
+		UnaryExpr unary;
+		CallExpr call;
+		AllocExpr alloc;
 	} data;
-} Expression;
+};
 
-/* ===== PATHS ===== */
+/* =========================
+   Constructors
+   ========================= */
 
-typedef struct Path {
-	char **components;
-	int component_count;
-} Path;
-
-/* ===== UTILITY ===== */
-
-/* Constructor functions (optional, for convenience) */
 Program *program_create(void);
-PoolDecl *pool_decl_create(char *name);
+Decl *decl_create(DeclKind kind);
+
+ArchetypeDecl *archetype_decl_create(char *name);
 ProcDecl *proc_decl_create(char *name);
-Field *field_create(char *name, char *type);
+FieldDecl *field_decl_create(FieldKind kind, char *name, TypeRef *type);
+
+TypeRef *type_name_create(char *name);
+TypeRef *type_array_create(TypeRef *element_type);
+TypeRef *type_shaped_array_create(TypeRef *element_type, int rank);
+
 Statement *statement_create(StatementType type);
 Expression *expression_create(ExpressionType type);
-Path *path_create(void);
+
+/* =========================
+   Destructors
+   ========================= */
 
 void program_free(Program *prog);
-void pool_decl_free(PoolDecl *pool);
+void decl_free(Decl *decl);
+
+void archetype_decl_free(ArchetypeDecl *archetype);
 void proc_decl_free(ProcDecl *proc);
-void field_free(Field *field);
+void field_decl_free(FieldDecl *field);
+void type_ref_free(TypeRef *type);
+
 void statement_free(Statement *stmt);
 void expression_free(Expression *expr);
-void path_free(Path *path);
 
 #endif /* AST_H */
