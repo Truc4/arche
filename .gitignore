@@ -1,0 +1,28 @@
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+
+# Executables
+arche
+lexer-bin
+
+# Debug symbols
+*.dSYM/
+*.su
+*.gch
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Dependencies and build tools
+*.d
+
+# Temporary files
+*.tmp
