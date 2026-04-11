@@ -2,33 +2,43 @@
 
 Program ← _ (Decl _)* EOF
 
-Decl ← PoolDecl / ProcDecl
+Decl ← WorldDecl / ArchetypeDecl / ProcDecl / SysDecl / FuncDecl
 
 # Declarations
 
-PoolDecl ← "pool" _ Identifier _ "{" _ (Field _)* "}"
+WorldDecl ← "world" _ Identifier _ "(" _ (Identifier (_ "," _ Identifier)*)? _ ")"
 
-Field ← Identifier _ ":" _ Type _ "," _
+ArchetypeDecl ← "arche" _ Identifier _ "in" _ Identifier _ "{" _ (ArchField _)* "}"
 
-ProcDecl ← "proc" _ Identifier _ "(" _ ")" _ "{" _ (Statement _)* "}"
+ArchField ← ("meta" / "col") _ Identifier _ ":" _ Type _ ("," _)?
+
+ProcDecl ← "proc" _ Identifier _ "(" _ (Identifier (_ "," _ Identifier)*)? _ ")" _ "{" _ (Statement _)* "}"
+
+SysDecl ← "sys" _ Identifier _ "(" _ (Identifier (_ "," _ Identifier)*)? _ ")" _ "{" _ (Statement _)* "}"
+
+FuncDecl ← "func" _ Identifier _ "(" _ (FuncParam (_ "," _ FuncParam)*)? _ ")" _ "->" _ Type _ "{" _ Expression _ "}"
+
+FuncParam ← Identifier _ ":" _ Type
 
 # Statements
 
-Statement ← LetBinding / ForLoop / Assignment / ProcCall / ";"
+Statement ← LetBinding / ForLoop / RunSystem / Assignment / ";"
 
 LetBinding ← "let" _ Identifier _ "=" _ Expression _ ";"
 
-Assignment ← Path _ "=" _ Expression _ ";"
+Assignment ← Path _ AssignOp _ Expression _ ";"
+
+AssignOp ← "+=" / "-=" / "*=" / "/=" / "="
 
 ForLoop ← "for" _ Identifier _ "in" _ Identifier _ "{" _ (Statement _)* "}"
 
-ProcCall ← Identifier _ "." _ Identifier _ "(" _ (Expression (_ "," _ Expression)*)? _ ")"
+RunSystem ← "run" _ Identifier _ "in" _ Identifier _ ";"
 
 # Expressions
 
 Expression ← BinaryOp / Allocation / Deallocation / ExprPrimary
 
-ExprPrimary ← Literal / Path / Identifier / "(" _ Expression _ ")"
+ExprPrimary ← Literal / Path / Identifier / Index / "(" _ Expression _ ")"
 
 BinaryOp ← ExprPrimary (_ Operator _ ExprPrimary)+
 
@@ -37,6 +47,8 @@ Allocation ← Identifier _ "." _ "alloc" _ "(" _ (FieldInit (_ "," _ FieldInit)
 FieldInit ← Identifier _ ":" _ Expression
 
 Deallocation ← Identifier _ "." _ "free" _ "(" _ Expression _ ")"
+
+Index ← Identifier _ "[" _ Expression (_ "," _ Expression)* _ "]"
 
 # Paths and Access
 
@@ -48,17 +60,15 @@ Type ← Identifier
 
 # Literals
 
-Literal ← Number / Boolean
+Literal ← Number
 
 Number ← [0-9]+ ("." [0-9]+)?
-
-Boolean ← "true" / "false"
 
 # Tokens
 
 Identifier ← [a-zA-Z_] [a-zA-Z0-9_]*
 
-Operator ← "+" / "-" / "*" / "/" / "==" / "!=" / "<=" / ">=" / "<" / ">"
+Operator ← "==" / "!=" / "<=" / ">=" / "<" / ">" / "+" / "-" / "*" / "/"
 
 # Whitespace and Comments
 

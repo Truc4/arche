@@ -9,6 +9,7 @@
 
 typedef struct Program Program;
 typedef struct Decl Decl;
+typedef struct WorldDecl WorldDecl;
 typedef struct ArchetypeDecl ArchetypeDecl;
 typedef struct ProcDecl ProcDecl;
 typedef struct SysDecl SysDecl;
@@ -33,6 +34,7 @@ typedef struct {
    ========================= */
 
 typedef enum {
+	DECL_WORLD,
 	DECL_ARCHETYPE,
 	DECL_PROC,
 	DECL_SYS,
@@ -49,6 +51,7 @@ struct Decl {
 	DeclKind kind;
 	SourceLoc loc;
 	union {
+		WorldDecl *world;
 		ArchetypeDecl *archetype;
 		ProcDecl *proc;
 		SysDecl *sys;
@@ -84,6 +87,17 @@ struct TypeRef {
 };
 
 /* =========================
+   Worlds
+   ========================= */
+
+struct WorldDecl {
+	char *name;
+	char **field_names;  /* optional fields for the world itself */
+	int field_count;
+	SourceLoc loc;
+};
+
+/* =========================
    Archetypes
    ========================= */
 
@@ -101,6 +115,7 @@ struct FieldDecl {
 
 struct ArchetypeDecl {
 	char *name;
+	char *world_name;  /* which world this archetype belongs to */
 	FieldDecl **fields;
 	int field_count;
 	SourceLoc loc;
@@ -145,6 +160,7 @@ typedef enum {
 	STMT_LET,
 	STMT_ASSIGN,
 	STMT_FOR,
+	STMT_RUN,
 	STMT_EXPR,
 	STMT_FREE,
 } StatementType;
@@ -168,6 +184,11 @@ typedef struct {
 } ForStmt;
 
 typedef struct {
+	char *system_name;
+	char *world_name;
+} RunStmt;
+
+typedef struct {
 	Expression *expr;
 } ExprStmt;
 
@@ -182,6 +203,7 @@ struct Statement {
 		LetStmt let_stmt;
 		AssignStmt assign_stmt;
 		ForStmt for_stmt;
+		RunStmt run_stmt;
 		ExprStmt expr_stmt;
 		FreeStmt free_stmt;
 	} data;
@@ -285,7 +307,8 @@ struct Expression {
 Program *program_create(void);
 Decl *decl_create(DeclKind kind);
 
-ArchetypeDecl *archetype_decl_create(char *name);
+WorldDecl *world_decl_create(char *name);
+ArchetypeDecl *archetype_decl_create(char *name, char *world_name);
 ProcDecl *proc_decl_create(char *name);
 SysDecl *sys_decl_create(char *name);
 FuncDecl *func_decl_create(char *name, TypeRef *return_type);
@@ -306,6 +329,7 @@ Expression *expression_create(ExpressionType type);
 void program_free(Program *prog);
 void decl_free(Decl *decl);
 
+void world_decl_free(WorldDecl *world);
 void archetype_decl_free(ArchetypeDecl *archetype);
 void proc_decl_free(ProcDecl *proc);
 void sys_decl_free(SysDecl *sys);
@@ -316,5 +340,13 @@ void type_ref_free(TypeRef *type);
 
 void statement_free(Statement *stmt);
 void expression_free(Expression *expr);
+
+/* =========================
+   Formatting / Pretty-printing
+   ========================= */
+
+#include <stdio.h>
+
+void format_program(FILE *out, Program *prog);
 
 #endif /* AST_H */

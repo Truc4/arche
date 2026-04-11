@@ -1,0 +1,22 @@
+arche Body {
+  meta gravity: Float,
+  col position: Vec3,
+  col velocity: Vec3
+}
+
+proc initialize() {
+  let x = 100;
+  let y = 200;
+}
+
+sys update(position, velocity) {
+  position = position + velocity;
+}
+
+sys dampen(velocity, drag) {
+  velocity = velocity * drag;
+}
+
+func clamp(value: Float, min: Float, max: Float) -> Float {
+  value * 1.0
+}

@@ -13,8 +13,9 @@ Arche is built on a few strong constraints:
 
 - **Array-first**: Operations apply across entire collections by default.
 - **No implicit row access**: You don’t work on individual elements unless you explicitly index.
+- **Pool-based storage**: All archetypes belong to a world (sparse array collection).
 - **Two kinds of data**:
-  - **Columns** (arrays of values)
+  - **Columns** (arrays of values, one per element)
   - **Metadata** (single values describing the whole collection)
 
 - **Minimal type system**: No booleans, no complex object system (yet).
@@ -22,13 +23,24 @@ Arche is built on a few strong constraints:
 
 This leads to a style that feels closer to **data pipelines** or **vectorized computation** than traditional imperative code.
 
-## Archetypes (`arche`)
+## Worlds
 
-An Archetype or `arche` is the primary data structure.
-It is a collection of **aligned arrays (columns)** plus **metadata**.
+A World is a collection of archetypes. All archetypes must belong to a world.
 
 ```arche
-arche Player {
+world GameWorld()
+```
+
+Worlds are sparse arrays that efficiently handle entity creation and deletion while preserving handles.
+
+## Archetypes (`arche`)
+
+An Archetype is the primary data structure. It belongs to a world and contains **aligned arrays (columns)** plus **metadata**.
+
+```arche
+world GameWorld()
+
+arche Player in GameWorld {
   meta drag: Float
   col pos: Vec3
   col vel: Vec3
@@ -37,6 +49,7 @@ arche Player {
 
 - `meta` fields: one value for the entire collection
 - `col` fields: one value per element
+- `in WorldName`: specifies which world this archetype belongs to
 
 ## Array-Oriented Operations
 
@@ -104,22 +117,26 @@ proc init {
 
 ## Systems (`sys`)
 
-Systems perform **data-driven transformations** over all matching archetypes.
+Systems perform **data-driven transformations** over all matching archetypes in a world.
 
-```
+```arche
 sys move(pos, vel) {
   pos += vel
+}
+
+proc update() {
+  run move in GameWorld;
 }
 ```
 
 ### Semantics
 
-- runs once per matching archetype
-- automatically matches any archetype containing the required fields
+- executes via `run system_name in world_name` statement
+- automatically matches any archetype in that world containing the required fields
 - binds those fields inside the system body
 - operates on whole columns (array-first)
 
-This means the system applies to any archetype with `pos` and `vel`, such as:
+This means the system applies to any archetype in the world with `pos` and `vel`, such as:
 
 - `Player`
 - `Mob`
@@ -127,10 +144,23 @@ This means the system applies to any archetype with `pos` and `vel`, such as:
 
 without needing to reference them explicitly.
 
+### Execution
+
+Systems are invoked explicitly within procedures:
+
+```arche
+proc update() {
+  run move in GameWorld;
+  run damp in GameWorld;
+}
+```
+
 ## Example
 
-```
-arche Particle {
+```arche
+world Simulation()
+
+arche Particle in Simulation {
   meta drag: Float
   col pos: Float
   col vel: Float
@@ -142,6 +172,11 @@ sys move(pos, vel) {
 
 sys damp(vel, drag) {
   vel *= drag
+}
+
+proc update() {
+  run move in Simulation;
+  run damp in Simulation;
 }
 ```
 

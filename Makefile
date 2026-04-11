@@ -2,24 +2,43 @@ CC = gcc
 CFLAGS = -Wall -Wextra -std=c99
 TARGET = arche
 LEXER_BIN = lexer-bin
+PARSER_TEST_BIN = parser-test
+FMT_BIN = arche-fmt
+SEMANTIC_TEST_BIN = semantic-test
 
 # Source files
 SRCS = lexer/lexer.c \
        ast/ast.c \
-       parser/parser.c
+       parser/parser.c \
+       semantic/semantic.c
 
 OBJS = $(SRCS:.c=.o)
 LEXER_OBJS = lexer/lexer.o lexer/lexer_main.o
+PARSER_TEST_OBJS = lexer/lexer.o ast/ast.o parser/parser.o tests/parser_tests.o
+FMT_OBJS = lexer/lexer.o ast/ast.o parser/parser.o arche_fmt.o
+SEMANTIC_TEST_OBJS = lexer/lexer.o ast/ast.o parser/parser.o semantic/semantic.o tests/semantic_tests.o
 
 # Default target
-all: $(TARGET) $(LEXER_BIN)
+all: $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN)
 
-# Build compiler executable
+# Build compiler executable (not built by default, no main yet)
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
 # Build lexer-only executable
 $(LEXER_BIN): $(LEXER_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# Build parser tests executable
+$(PARSER_TEST_BIN): $(PARSER_TEST_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# Build formatter executable
+$(FMT_BIN): $(FMT_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# Build semantic tests executable
+$(SEMANTIC_TEST_BIN): $(SEMANTIC_TEST_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
 # Compile object files
@@ -34,13 +53,24 @@ run: $(TARGET)
 run-lexer: $(LEXER_BIN)
 	./$(LEXER_BIN) examples/hello.arc
 
-# Run tests
-test: $(LEXER_BIN)
+# Run lexer tests
+test-lexer: $(LEXER_BIN)
 	./tests/run_lexer_tests.sh
+
+# Run parser tests
+test-parser: $(PARSER_TEST_BIN)
+	./$(PARSER_TEST_BIN)
+
+# Run semantic tests
+test-semantic: $(SEMANTIC_TEST_BIN)
+	./$(SEMANTIC_TEST_BIN)
+
+# Run all tests
+test: test-lexer test-parser test-semantic
 
 # Clean build artifacts
 clean:
-	rm -f $(OBJS) $(LEXER_OBJS) $(TARGET) $(LEXER_BIN)
+	rm -f $(OBJS) $(LEXER_OBJS) $(PARSER_TEST_OBJS) $(FMT_OBJS) $(SEMANTIC_TEST_OBJS) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN)
 
 # Phony targets
-.PHONY: all run run-lexer test clean
+.PHONY: all run run-lexer test test-lexer test-parser test-semantic clean
