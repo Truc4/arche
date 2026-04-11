@@ -86,7 +86,7 @@ clean:
 	rm -f $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN)
 	find examples/ -type f ! -name "*.c" ! -name "*.arche" ! -name "*.sh" -delete
 	find tests/ -type f ! -name "*.c" ! -name "*.h" ! -name "*.sh" ! -name "*.arche" -delete
-	rm -f *.md *.txt test_*.sh run_*.sh 2>/dev/null || true
+	rm -f *.txt test_*.sh run_*.sh 2>/dev/null || true
 
 # Phony targets
 .PHONY: all run run-lexer test test-lexer test-parser test-semantic clean

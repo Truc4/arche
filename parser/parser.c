@@ -518,6 +518,37 @@ static Expression *parse_primary_expr(Parser *parser) {
 			return index;
 		}
 
+		/* check for function call */
+		if (match(parser, TOK_LPAREN)) {
+			Expression *expr = expression_create(EXPR_CALL);
+			Expression *callee = expression_create(EXPR_NAME);
+			callee->data.name.name = name;
+			expr->data.call.callee = callee;
+			expr->data.call.args = NULL;
+			expr->data.call.arg_count = 0;
+
+			/* parse arguments */
+			if (!check(parser, TOK_RPAREN)) {
+				do {
+					Expression *arg = parse_expression(parser);
+					if (!arg) return NULL;
+
+					expr->data.call.args = realloc(
+						expr->data.call.args,
+						(expr->data.call.arg_count + 1) * sizeof(Expression *)
+					);
+					expr->data.call.args[expr->data.call.arg_count++] = arg;
+				} while (match(parser, TOK_COMMA));
+			}
+
+			if (!match(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')' after arguments");
+				return NULL;
+			}
+
+			return expr;
+		}
+
 		Expression *expr = expression_create(EXPR_NAME);
 		expr->data.name.name = name;
 		return expr;

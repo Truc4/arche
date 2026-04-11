@@ -269,9 +269,32 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			func_name = expr->data.call.callee->data.name.name;
 		}
 
+		/* Evaluate arguments */
+		char **arg_bufs = malloc(expr->data.call.arg_count * sizeof(char *));
+		for (int i = 0; i < expr->data.call.arg_count; i++) {
+			arg_bufs[i] = malloc(256);
+			codegen_expression(ctx, expr->data.call.args[i], arg_bufs[i]);
+		}
+
 		char *res_name = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = call i32 @%s()\n", res_name, func_name ? func_name : "unknown");
+
+		/* Call function with arguments */
+		buffer_append_fmt(ctx, "  %s = call i32 @%s(", res_name, func_name ? func_name : "unknown");
+		for (int i = 0; i < expr->data.call.arg_count; i++) {
+			buffer_append_fmt(ctx, "i32 %s", arg_bufs[i]);
+			if (i < expr->data.call.arg_count - 1) {
+				buffer_append(ctx, ", ");
+			}
+		}
+		buffer_append(ctx, ")\n");
+
 		strcpy(result_buf, res_name);
+
+		/* Cleanup */
+		for (int i = 0; i < expr->data.call.arg_count; i++) {
+			free(arg_bufs[i]);
+		}
+		free(arg_bufs);
 		break;
 	}
 
@@ -517,10 +540,15 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "; Type definitions\n");
 	buffer_append(ctx, "%struct.Vec3 = type { double, double, double }\n\n");
 
-	/* External declarations */
+	/* External C library function declarations */
 	buffer_append(ctx, "declare i8* @malloc(i32)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
-	buffer_append(ctx, "declare i32 @printf(i8*, ...)\n\n");
+	buffer_append(ctx, "declare i32 @printf(i8*, ...)\n");
+	buffer_append(ctx, "declare i32 @open(i8*, i32, ...)\n");
+	buffer_append(ctx, "declare i32 @close(i32)\n");
+	buffer_append(ctx, "declare i32 @read(i32, i8*, i32)\n");
+	buffer_append(ctx, "declare i32 @write(i32, i8*, i32)\n");
+	buffer_append(ctx, "declare void @exit(i32)\n\n");
 
 	/* Generate code for all declarations */
 	int has_init_proc = 0;

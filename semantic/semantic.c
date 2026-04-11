@@ -150,7 +150,16 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 
 	case EXPR_NAME: {
 		const char *name = expr->data.name.name;
-		if (!find_variable(ctx, name)) {
+
+		/* Check if it's a built-in I/O function */
+		int is_builtin = 0;
+		if (strcmp(name, "open") == 0 || strcmp(name, "close") == 0 ||
+		    strcmp(name, "read") == 0 || strcmp(name, "write") == 0 ||
+		    strcmp(name, "exit") == 0) {
+			is_builtin = 1;
+		}
+
+		if (!is_builtin && !find_variable(ctx, name)) {
 			/* check if it's an archetype name (for iteration) */
 			if (!find_archetype(ctx, name)) {
 				char msg[256];

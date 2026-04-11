@@ -1,0 +1,3 @@
+proc init() {
+  let result = write(1, 1234, 13);
+}
