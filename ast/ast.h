@@ -11,6 +11,9 @@ typedef struct Program Program;
 typedef struct Decl Decl;
 typedef struct ArchetypeDecl ArchetypeDecl;
 typedef struct ProcDecl ProcDecl;
+typedef struct SysDecl SysDecl;
+typedef struct FuncDecl FuncDecl;
+typedef struct Parameter Parameter;
 typedef struct FieldDecl FieldDecl;
 typedef struct TypeRef TypeRef;
 typedef struct Statement Statement;
@@ -32,6 +35,8 @@ typedef struct {
 typedef enum {
 	DECL_ARCHETYPE,
 	DECL_PROC,
+	DECL_SYS,
+	DECL_FUNC,
 } DeclKind;
 
 struct Program {
@@ -46,6 +51,8 @@ struct Decl {
 	union {
 		ArchetypeDecl *archetype;
 		ProcDecl *proc;
+		SysDecl *sys;
+		FuncDecl *func;
 	} data;
 };
 
@@ -101,6 +108,30 @@ struct ArchetypeDecl {
 
 struct ProcDecl {
 	char *name;
+	Statement **statements;
+	int statement_count;
+	SourceLoc loc;
+};
+
+struct Parameter {
+	char *name;
+	TypeRef *type;
+};
+
+struct SysDecl {
+	char *name;
+	Parameter **params;
+	int param_count;
+	Statement **statements;
+	int statement_count;
+	SourceLoc loc;
+};
+
+struct FuncDecl {
+	char *name;
+	Parameter **params;
+	int param_count;
+	TypeRef *return_type;
 	Statement **statements;
 	int statement_count;
 	SourceLoc loc;
@@ -256,6 +287,9 @@ Decl *decl_create(DeclKind kind);
 
 ArchetypeDecl *archetype_decl_create(char *name);
 ProcDecl *proc_decl_create(char *name);
+SysDecl *sys_decl_create(char *name);
+FuncDecl *func_decl_create(char *name, TypeRef *return_type);
+Parameter *parameter_create(char *name, TypeRef *type);
 FieldDecl *field_decl_create(FieldKind kind, char *name, TypeRef *type);
 
 TypeRef *type_name_create(char *name);
@@ -274,6 +308,9 @@ void decl_free(Decl *decl);
 
 void archetype_decl_free(ArchetypeDecl *archetype);
 void proc_decl_free(ProcDecl *proc);
+void sys_decl_free(SysDecl *sys);
+void func_decl_free(FuncDecl *func);
+void parameter_free(Parameter *param);
 void field_decl_free(FieldDecl *field);
 void type_ref_free(TypeRef *type);
 

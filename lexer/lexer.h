@@ -14,6 +14,8 @@ typedef enum TokenKind {
 	/* keywords */
 	TOK_ARCHETYPE,
 	TOK_PROC,
+	TOK_SYS,
+	TOK_FUNC,
 	TOK_META,
 	TOK_COL,
 	TOK_LET,
