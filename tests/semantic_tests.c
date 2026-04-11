@@ -90,7 +90,7 @@ void analysis_result_free(AnalysisResult *result) {
 
 void test_archetype_defined(void) {
 	test_start("archetype is registered in symbol table");
-	AnalysisResult result = analyze_string("arche Player in DefaultWorld { col x: Float }");
+	AnalysisResult result = analyze_string("arche Player { col x: Float }");
 	ASSERT_TRUE(result.ctx != NULL, "context is null");
 	ASSERT_TRUE(semantic_archetype_exists(result.ctx, "Player"), "Player archetype not found");
 	ASSERT_FALSE(semantic_archetype_exists(result.ctx, "Enemy"), "Enemy shouldn't exist");
@@ -100,7 +100,7 @@ void test_archetype_defined(void) {
 
 void test_archetype_field_exists(void) {
 	test_start("archetype fields are registered");
-	AnalysisResult result = analyze_string("arche Player in DefaultWorld { col pos: Float, meta health: Float }");
+	AnalysisResult result = analyze_string("arche Player { col pos: Float, meta health: Float }");
 	ASSERT_TRUE(result.ctx != NULL, "context is null");
 	ASSERT_TRUE(semantic_field_exists(result.ctx, "Player", "pos"), "pos field not found");
 	ASSERT_TRUE(semantic_field_exists(result.ctx, "Player", "health"), "health field not found");
@@ -111,7 +111,7 @@ void test_archetype_field_exists(void) {
 
 void test_archetype_field_kind(void) {
 	test_start("archetype field kind is tracked");
-	AnalysisResult result = analyze_string("arche Player in DefaultWorld { meta gravity: Float, col pos: Float }");
+	AnalysisResult result = analyze_string("arche Player { meta gravity: Float, col pos: Float }");
 	ASSERT_TRUE(result.ctx != NULL, "context is null");
 	ASSERT_EQ(semantic_field_kind(result.ctx, "Player", "gravity"), FIELD_META, "gravity should be meta");
 	ASSERT_EQ(semantic_field_kind(result.ctx, "Player", "pos"), FIELD_COLUMN, "pos should be column");
@@ -121,7 +121,7 @@ void test_archetype_field_kind(void) {
 
 void test_archetype_field_type(void) {
 	test_start("archetype field types are tracked");
-	AnalysisResult result = analyze_string("arche Player in DefaultWorld { col pos: Vec3, col health: Float }");
+	AnalysisResult result = analyze_string("arche Player { col pos: Vec3, col health: Float }");
 	ASSERT_TRUE(result.ctx != NULL, "context is null");
 	const char *pos_type = semantic_field_type_name(result.ctx, "Player", "pos");
 	const char *health_type = semantic_field_type_name(result.ctx, "Player", "health");
@@ -138,7 +138,7 @@ void test_archetype_field_type(void) {
 void test_valid_field_access_in_proc(void) {
 	test_start("valid field access in procedure");
 	AnalysisResult result = analyze_string(
-		"arche Player in DefaultWorld { col x: Float }\n"
+		"arche Player { col x: Float }\n"
 		"proc test() { for p in Player { let v = p.x; } }"
 	);
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
@@ -149,7 +149,7 @@ void test_valid_field_access_in_proc(void) {
 void test_invalid_field_access_in_proc(void) {
 	test_start("invalid field access caught");
 	AnalysisResult result = analyze_string(
-		"arche Player in DefaultWorld { col x: Float }\n"
+		"arche Player { col x: Float }\n"
 		"proc test() { for p in Player { let v = p.missing; } }"
 	);
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for missing field");
@@ -249,7 +249,7 @@ void test_for_loop_undefined_iterable(void) {
 void test_for_loop_valid_iterable(void) {
 	test_start("for loop with defined archetype");
 	AnalysisResult result = analyze_string(
-		"arche Item in DefaultWorld { col value: Float }\n"
+		"arche Item { col value: Float }\n"
 		"proc test() { for item in Item { let x = 1; } }"
 	);
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
@@ -284,8 +284,8 @@ void test_function_undefined_parameter(void) {
 void test_multiple_archetypes(void) {
 	test_start("multiple archetypes are all registered");
 	AnalysisResult result = analyze_string(
-		"arche Player in DefaultWorld { col x: Float }\n"
-		"arche Enemy in DefaultWorld { col y: Float }"
+		"arche Player { col x: Float }\n"
+		"arche Enemy { col y: Float }"
 	);
 	ASSERT_TRUE(semantic_archetype_exists(result.ctx, "Player"), "Player not found");
 	ASSERT_TRUE(semantic_archetype_exists(result.ctx, "Enemy"), "Enemy not found");
@@ -296,8 +296,8 @@ void test_multiple_archetypes(void) {
 void test_cross_archetype_field_access(void) {
 	test_start("accessing correct archetype field");
 	AnalysisResult result = analyze_string(
-		"arche Player in DefaultWorld { col x: Float }\n"
-		"arche Enemy in DefaultWorld { col y: Float }\n"
+		"arche Player { col x: Float }\n"
+		"arche Enemy { col y: Float }\n"
 		"proc test() { for p in Player { let v1 = p.x; } for e in Enemy { let v2 = e.y; } }"
 	);
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
@@ -308,8 +308,8 @@ void test_cross_archetype_field_access(void) {
 void test_cross_archetype_field_mismatch(void) {
 	test_start("accessing wrong archetype field caught");
 	AnalysisResult result = analyze_string(
-		"arche Player in DefaultWorld { col x: Float }\n"
-		"arche Enemy in DefaultWorld { col y: Float }\n"
+		"arche Player { col x: Float }\n"
+		"arche Enemy { col y: Float }\n"
 		"proc test() { for p in Player { let v = p.y; } }"
 	);
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for wrong field");

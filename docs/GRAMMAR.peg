@@ -8,7 +8,7 @@ Decl ← WorldDecl / ArchetypeDecl / ProcDecl / SysDecl / FuncDecl
 
 WorldDecl ← "world" _ Identifier _ "(" _ (Identifier (_ "," _ Identifier)*)? _ ")"
 
-ArchetypeDecl ← "arche" _ Identifier _ "in" _ Identifier _ "{" _ (ArchField _)* "}"
+ArchetypeDecl ← "arche" _ Identifier _ "{" _ (ArchField _)* "}"
 
 ArchField ← ("meta" / "col") _ Identifier _ ":" _ Type _ ("," _)?
 

@@ -7,6 +7,9 @@
 # Executables
 arche
 lexer-bin
+arche-fmt
+parser-test
+semantic-test
 
 # Debug symbols
 *.dSYM/

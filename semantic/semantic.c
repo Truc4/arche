@@ -322,14 +322,6 @@ static void analyze_world_decl(SemanticContext *ctx, WorldDecl *world) {
 static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 	if (!arch) return;
 
-	/* validate world exists */
-	if (!find_world(ctx, arch->world_name)) {
-		char msg[256];
-		snprintf(msg, sizeof(msg), "Archetype '%s' references undefined world '%s'",
-			arch->name, arch->world_name);
-		error(ctx, msg);
-	}
-
 	ArchetypeInfo *info = malloc(sizeof(ArchetypeInfo));
 	info->name = malloc(strlen(arch->name) + 1);
 	strcpy(info->name, arch->name);

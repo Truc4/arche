@@ -37,10 +37,9 @@ WorldDecl *world_decl_create(char *name) {
 	return world;
 }
 
-ArchetypeDecl *archetype_decl_create(char *name, char *world_name) {
+ArchetypeDecl *archetype_decl_create(char *name) {
 	ArchetypeDecl *arch = malloc(sizeof(ArchetypeDecl));
 	arch->name = name;
-	arch->world_name = world_name;
 	arch->fields = NULL;
 	arch->field_count = 0;
 	arch->loc.line = 1;
@@ -200,7 +199,6 @@ void world_decl_free(WorldDecl *world) {
 void archetype_decl_free(ArchetypeDecl *archetype) {
 	if (!archetype) return;
 	free(archetype->name);
-	free(archetype->world_name);
 	for (int i = 0; i < archetype->field_count; i++) {
 		field_decl_free(archetype->fields[i]);
 	}
@@ -527,7 +525,7 @@ void format_program(FILE *out, Program *prog) {
 		}
 		case DECL_ARCHETYPE: {
 			ArchetypeDecl *arch = decl->data.archetype;
-			fprintf(out, "arche %s in %s {\n", arch->name, arch->world_name);
+			fprintf(out, "arche %s {\n", arch->name);
 			for (int j = 0; j < arch->field_count; j++) {
 				FieldDecl *field = arch->fields[j];
 				fprintf(out, "  %s %s: ",

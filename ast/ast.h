@@ -115,7 +115,6 @@ struct FieldDecl {
 
 struct ArchetypeDecl {
 	char *name;
-	char *world_name;  /* which world this archetype belongs to */
 	FieldDecl **fields;
 	int field_count;
 	SourceLoc loc;
@@ -308,7 +307,7 @@ Program *program_create(void);
 Decl *decl_create(DeclKind kind);
 
 WorldDecl *world_decl_create(char *name);
-ArchetypeDecl *archetype_decl_create(char *name, char *world_name);
+ArchetypeDecl *archetype_decl_create(char *name);
 ProcDecl *proc_decl_create(char *name);
 SysDecl *sys_decl_create(char *name);
 FuncDecl *func_decl_create(char *name, TypeRef *return_type);

@@ -52,7 +52,7 @@ Program *parse_string(const char *src) {
 
 void test_archetype_empty(void) {
 	test_start("archetype empty");
-	Program *prog = parse_string("world GameWorld() arche Player in GameWorld {}");
+	Program *prog = parse_string("world GameWorld() arche Player {}");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ASSERT_EQ(prog->decl_count, 2, "expected 2 decls (world + archetype)");
 	ASSERT_EQ(prog->decls[1]->kind, DECL_ARCHETYPE, "expected DECL_ARCHETYPE");
@@ -65,7 +65,7 @@ void test_archetype_empty(void) {
 
 void test_archetype_meta_field(void) {
 	test_start("archetype with meta field");
-	Program *prog = parse_string("world W() arche Player in W {\n  meta drag: Float\n}");
+	Program *prog = parse_string("world W() arche Player {\n  meta drag: Float\n}");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ASSERT_EQ(prog->decl_count, 2, "expected 2 decls");
 	ArchetypeDecl *arch = prog->decls[1]->data.archetype;
@@ -78,7 +78,7 @@ void test_archetype_meta_field(void) {
 
 void test_archetype_col_field(void) {
 	test_start("archetype with col field");
-	Program *prog = parse_string("world W() arche Particle in W {\n  col pos: Float\n}");
+	Program *prog = parse_string("world W() arche Particle {\n  col pos: Float\n}");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ArchetypeDecl *arch = prog->decls[1]->data.archetype;
 	ASSERT_EQ(arch->field_count, 1, "expected 1 field");
@@ -90,7 +90,7 @@ void test_archetype_col_field(void) {
 void test_archetype_multiple_fields(void) {
 	test_start("archetype with multiple fields");
 	Program *prog = parse_string(
-		"world W() arche Body in W {\n"
+		"world W() arche Body {\n"
 		"  meta drag: Float,\n"
 		"  col pos: Vec3,\n"
 		"  col vel: Vec3\n"
@@ -288,7 +288,7 @@ void test_expr_binary_op(void) {
 void test_multiple_decls(void) {
 	test_start("multiple declarations");
 	Program *prog = parse_string(
-		"world W() arche Player in W { col x: Float }\n"
+		"world W() arche Player { col x: Float }\n"
 		"proc init() {}\n"
 		"sys move(pos) {}\n"
 	);

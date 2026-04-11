@@ -131,24 +131,12 @@ static Decl *parse_archetype_decl(Parser *parser) {
 	char *name = token_text(parser->current);
 	advance(parser);
 
-	if (!match(parser, TOK_IN)) {
-		error(parser, "Expected 'in' after archetype name");
-		return NULL;
-	}
-
-	if (!check(parser, TOK_IDENT)) {
-		error(parser, "Expected world name");
-		return NULL;
-	}
-	char *world_name = token_text(parser->current);
-	advance(parser);
-
 	if (!match(parser, TOK_LBRACE)) {
 		error(parser, "Expected '{'");
 		return NULL;
 	}
 
-	ArchetypeDecl *arch = archetype_decl_create(name, world_name);
+	ArchetypeDecl *arch = archetype_decl_create(name);
 
 	while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
 		FieldDecl *field = parse_arch_field(parser);
