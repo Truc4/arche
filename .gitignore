@@ -11,6 +11,12 @@ arche-fmt
 parser-test
 semantic-test
 
+# Generated binaries in examples (keep .c, .arche, .sh source files)
+examples/*/*
+!examples/*/*.c
+!examples/*/*.arche
+!examples/*/*.sh
+
 # Debug symbols
 *.dSYM/
 *.su

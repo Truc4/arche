@@ -75,9 +75,9 @@ test: test-lexer test-parser test-semantic test-codegen
 
 # Test code generation
 test-codegen: $(TARGET)
-	rm -f examples/stuff
-	./$(TARGET) examples/stuff.arche
-	@test -x examples/stuff && ./examples/stuff > /dev/null && echo "✓ Codegen test passed (executable generated and runs successfully)" || echo "✗ Codegen test failed"
+	rm -f examples/hello_world/hello_world
+	./$(TARGET) examples/hello_world/hello_world.arche
+	@test -x examples/hello_world/hello_world && ./examples/hello_world/hello_world > /tmp/test_output.txt && grep -q "Hello, World!" /tmp/test_output.txt && echo "✓ Codegen test passed (hello_world)" || echo "✗ Codegen test failed"
 
 # Clean all generated artifacts
 clean:
