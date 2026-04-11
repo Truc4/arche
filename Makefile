@@ -10,19 +10,21 @@ SEMANTIC_TEST_BIN = semantic-test
 SRCS = lexer/lexer.c \
        ast/ast.c \
        parser/parser.c \
-       semantic/semantic.c
+       semantic/semantic.c \
+       codegen/codegen.c
 
 OBJS = $(SRCS:.c=.o)
+COMPILER_OBJS = lexer/lexer.o ast/ast.o parser/parser.o semantic/semantic.o codegen/codegen.o main.o
 LEXER_OBJS = lexer/lexer.o lexer/lexer_main.o
 PARSER_TEST_OBJS = lexer/lexer.o ast/ast.o parser/parser.o tests/parser_tests.o
 FMT_OBJS = lexer/lexer.o ast/ast.o parser/parser.o arche_fmt.o
 SEMANTIC_TEST_OBJS = lexer/lexer.o ast/ast.o parser/parser.o semantic/semantic.o tests/semantic_tests.o
 
 # Default target
-all: $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN)
+all: $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN)
 
-# Build compiler executable (not built by default, no main yet)
-$(TARGET): $(OBJS)
+# Build main compiler executable
+$(TARGET): $(COMPILER_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
 # Build lexer-only executable
@@ -45,9 +47,12 @@ $(SEMANTIC_TEST_BIN): $(SEMANTIC_TEST_OBJS)
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# Run the compiler
+# Run the compiler (produces executable)
 run: $(TARGET)
-	./$(TARGET) examples/hello.arc
+	./$(TARGET) examples/stuff.arche
+	@echo
+	@echo "Running generated executable:"
+	@./examples/stuff
 
 # Run the lexer
 run-lexer: $(LEXER_BIN)
@@ -66,7 +71,13 @@ test-semantic: $(SEMANTIC_TEST_BIN)
 	./$(SEMANTIC_TEST_BIN)
 
 # Run all tests
-test: test-lexer test-parser test-semantic
+test: test-lexer test-parser test-semantic test-codegen
+
+# Test code generation
+test-codegen: $(TARGET)
+	rm -f examples/stuff
+	./$(TARGET) examples/stuff.arche
+	@test -x examples/stuff && ./examples/stuff > /dev/null && echo "✓ Codegen test passed (executable generated and runs successfully)" || echo "✗ Codegen test failed"
 
 # Clean build artifacts
 clean:
