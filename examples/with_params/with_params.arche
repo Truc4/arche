@@ -1,0 +1,8 @@
+proc hello(msg: Str, len: Int) {
+  let result = write(1, msg, len);
+}
+
+proc init() {
+  let greeting = "Hello from param!\n";
+  hello(greeting, 20);
+}

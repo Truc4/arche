@@ -122,6 +122,9 @@ struct ArchetypeDecl {
 
 struct ProcDecl {
 	char *name;
+	Parameter **params;
+	int param_count;
+	int is_extern;
 	Statement **statements;
 	int statement_count;
 	SourceLoc loc;

@@ -8,6 +8,28 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
+#ifndef ARCHE_CORE_DIR
+#  define ARCHE_CORE_DIR "core"
+#endif
+
+static char *read_file_optional(const char *path) {
+	FILE *f = fopen(path, "r");
+	if (!f) return NULL;
+	fseek(f, 0, SEEK_END);
+	long size = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	if (size == 0) {
+		fclose(f);
+		return malloc(1);  /* return empty string */
+	}
+	char *buf = malloc(size + 2);
+	size_t n = fread(buf, 1, size, f);
+	fclose(f);
+	if (n > 0) buf[n] = '\n';
+	buf[n + (n > 0 ? 1 : 0)] = '\0';
+	return buf;
+}
+
 static void usage(const char *prog) {
 	fprintf(stderr, "Usage: %s [-o executable] input.arche\n", prog);
 	fprintf(stderr, "       %s [-emit-llvm -o output.ll] input.arche\n", prog);
@@ -68,6 +90,24 @@ int main(int argc, char *argv[]) {
 	}
 	source[file_size] = '\0';
 	fclose(input);
+
+	/* Load and prepend core library */
+	char core_path[512];
+	snprintf(core_path, sizeof(core_path), "%s/core.arche", ARCHE_CORE_DIR);
+	char *core_src = read_file_optional(core_path);
+
+	char *combined_source = NULL;
+	if (core_src && strlen(core_src) > 0) {
+		/* Combine: core + user source */
+		combined_source = malloc(strlen(core_src) + strlen(source) + 1);
+		strcpy(combined_source, core_src);
+		strcat(combined_source, source);
+		free(core_src);
+		free(source);
+		source = combined_source;
+	} else if (core_src) {
+		free(core_src);  /* core.arche was empty */
+	}
 
 	/* Lexical analysis and parsing */
 	Lexer lexer;

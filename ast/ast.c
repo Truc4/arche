@@ -50,6 +50,9 @@ ArchetypeDecl *archetype_decl_create(char *name) {
 ProcDecl *proc_decl_create(char *name) {
 	ProcDecl *proc = malloc(sizeof(ProcDecl));
 	proc->name = name;
+	proc->params = NULL;
+	proc->param_count = 0;
+	proc->is_extern = 0;
 	proc->statements = NULL;
 	proc->statement_count = 0;
 	proc->loc.line = 1;
@@ -209,6 +212,10 @@ void archetype_decl_free(ArchetypeDecl *archetype) {
 void proc_decl_free(ProcDecl *proc) {
 	if (!proc) return;
 	free(proc->name);
+	for (int i = 0; i < proc->param_count; i++) {
+		parameter_free(proc->params[i]);
+	}
+	free(proc->params);
 	for (int i = 0; i < proc->statement_count; i++) {
 		statement_free(proc->statements[i]);
 	}

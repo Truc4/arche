@@ -1,0 +1,8 @@
+// Core library: system-level extern proc declarations
+// These procedures are implemented in libc and provide OS-level access
+
+extern proc write(fd: Int, buf: Str, len: Int);
+extern proc read(fd: Int, buf: Str, len: Int);
+extern proc open(path: Str, flags: Int);
+extern proc close(fd: Int);
+extern proc exit(code: Int);

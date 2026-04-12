@@ -39,6 +39,9 @@ struct SemanticContext {
 	ArchetypeInfo **archetypes;
 	int archetype_count;
 
+	char **known_funcs;
+	int known_func_count;
+
 	Scope *scopes;
 	int scope_count;
 
@@ -73,6 +76,25 @@ static FieldInfo *find_field(ArchetypeInfo *arch, const char *name) {
 		}
 	}
 	return NULL;
+}
+
+static int find_known_func(SemanticContext *ctx, const char *name) {
+	for (int i = 0; i < ctx->known_func_count; i++) {
+		if (strcmp(ctx->known_funcs[i], name) == 0) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static void register_func(SemanticContext *ctx, const char *name) {
+	if (find_known_func(ctx, name)) {
+		return;  /* already registered */
+	}
+	ctx->known_funcs = realloc(ctx->known_funcs, (ctx->known_func_count + 1) * sizeof(char *));
+	ctx->known_funcs[ctx->known_func_count] = malloc(strlen(name) + 1);
+	strcpy(ctx->known_funcs[ctx->known_func_count], name);
+	ctx->known_func_count++;
 }
 
 static VariableInfo *find_variable(SemanticContext *ctx, const char *name) {
@@ -151,21 +173,15 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 	case EXPR_NAME: {
 		const char *name = expr->data.name.name;
 
-		/* Check if it's a built-in I/O function */
-		int is_builtin = 0;
-		if (strcmp(name, "open") == 0 || strcmp(name, "close") == 0 ||
-		    strcmp(name, "read") == 0 || strcmp(name, "write") == 0 ||
-		    strcmp(name, "exit") == 0) {
-			is_builtin = 1;
-		}
+		/* Check if it's a known function, variable, or archetype */
+		int is_known_func = find_known_func(ctx, name);
+		int is_var = find_variable(ctx, name) != NULL;
+		int is_arch = find_archetype(ctx, name) != NULL;
 
-		if (!is_builtin && !find_variable(ctx, name)) {
-			/* check if it's an archetype name (for iteration) */
-			if (!find_archetype(ctx, name)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "Undefined variable or archetype '%s'", name);
-				error(ctx, msg);
-			}
+		if (!is_known_func && !is_var && !is_arch) {
+			char msg[256];
+			snprintf(msg, sizeof(msg), "Undefined symbol '%s'", name);
+			error(ctx, msg);
 		}
 		break;
 	}
@@ -256,8 +272,25 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 	switch (stmt->type) {
 	case STMT_LET: {
 		analyze_expression(ctx, stmt->data.let_stmt.value);
+
+		/* Check if value is an alloc expression */
+		const char *archetype_name = NULL;
+		if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->type == EXPR_ALLOC) {
+			archetype_name = stmt->data.let_stmt.value->data.alloc.archetype_name;
+			if (!find_archetype(ctx, archetype_name)) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "Archetype '%s' not defined", archetype_name);
+				error(ctx, msg);
+				archetype_name = NULL;
+			}
+		}
+
 		/* create local variable */
-		add_variable(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type);
+		if (archetype_name) {
+			add_variable_with_archetype(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type, archetype_name);
+		} else {
+			add_variable(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type);
+		}
 		break;
 	}
 
@@ -354,7 +387,34 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	if (!proc) return;
 
+	/* Register proc name as a known function */
+	register_func(ctx, proc->name);
+
+	/* For extern procs, no body to analyze */
+	if (proc->is_extern) {
+		return;
+	}
+
 	push_scope(ctx);
+
+	/* Add parameters as variables in proc scope */
+	for (int i = 0; i < proc->param_count; i++) {
+		const char *param_name = proc->params[i]->name;
+		TypeRef *param_type = proc->params[i]->type;
+
+		/* Check if param type is an archetype */
+		const char *type_name = param_type ? param_type->data.name : NULL;
+		const char *arch_name = NULL;
+		if (type_name && find_archetype(ctx, type_name)) {
+			arch_name = type_name;
+		}
+
+		if (arch_name) {
+			add_variable_with_archetype(ctx, param_name, param_type, arch_name);
+		} else {
+			add_variable(ctx, param_name, param_type);
+		}
+	}
 
 	for (int i = 0; i < proc->statement_count; i++) {
 		analyze_statement(ctx, proc->statements[i]);
@@ -427,6 +487,8 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->world_count = 0;
 	ctx->archetypes = NULL;
 	ctx->archetype_count = 0;
+	ctx->known_funcs = NULL;
+	ctx->known_func_count = 0;
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
 	ctx->error_count = 0;
@@ -480,6 +542,12 @@ void semantic_context_free(SemanticContext *ctx) {
 		free(arch);
 	}
 	free(ctx->archetypes);
+
+	/* free known functions */
+	for (int i = 0; i < ctx->known_func_count; i++) {
+		free(ctx->known_funcs[i]);
+	}
+	free(ctx->known_funcs);
 
 	/* free scopes and variables (but not TypeRef) */
 	for (int i = 0; i < ctx->scope_count; i++) {

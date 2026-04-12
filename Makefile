@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c99
+CFLAGS = -Wall -Wextra -std=c99 -DARCHE_CORE_DIR=\"$(abspath core)\"
 TARGET = arche
 LEXER_BIN = lexer-bin
 PARSER_TEST_BIN = parser-test

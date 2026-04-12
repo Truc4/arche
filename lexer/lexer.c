@@ -123,6 +123,9 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 4 && strncmp(start, "free", 4) == 0) {
 		return TOK_FREE;
 	}
+	if (length == 6 && strncmp(start, "extern", 6) == 0) {
+		return TOK_EXTERN;
+	}
 	return TOK_IDENT;
 }
 
@@ -352,6 +355,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_IN";
 	case TOK_FREE:
 		return "TOK_FREE";
+	case TOK_EXTERN:
+		return "TOK_EXTERN";
 
 	case TOK_LPAREN:
 		return "TOK_LPAREN";

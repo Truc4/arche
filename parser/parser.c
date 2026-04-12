@@ -9,6 +9,11 @@ static void advance(Parser *parser) {
 	parser->previous = parser->current;
 	parser->current = lexer_next_token(parser->lexer);
 
+	/* Skip comment tokens */
+	while (parser->current.kind == TOK_COMMENT) {
+		parser->current = lexer_next_token(parser->lexer);
+	}
+
 	if (parser->current.kind == TOK_ERROR) {
 		parser->had_error = 1;
 	}
@@ -162,6 +167,12 @@ static Decl *parse_archetype_decl(Parser *parser) {
 /* ========== PROCEDURE PARSING ========== */
 
 static Decl *parse_proc_decl(Parser *parser) {
+	int is_extern = 0;
+
+	if (match(parser, TOK_EXTERN)) {
+		is_extern = 1;
+	}
+
 	if (!match(parser, TOK_PROC)) {
 		error(parser, "Expected 'proc'");
 		return NULL;
@@ -179,17 +190,53 @@ static Decl *parse_proc_decl(Parser *parser) {
 		return NULL;
 	}
 
+	ProcDecl *proc = proc_decl_create(name);
+	proc->is_extern = is_extern;
+
+	/* Parse parameters */
+	if (!check(parser, TOK_RPAREN)) {
+		do {
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected parameter name");
+				return NULL;
+			}
+			char *param_name = token_text(parser->current);
+			advance(parser);
+
+			if (!match(parser, TOK_COLON)) {
+				error(parser, "Expected ':' after parameter name");
+				return NULL;
+			}
+
+			TypeRef *param_type = parse_type(parser);
+			if (!param_type) return NULL;
+
+			Parameter *param = parameter_create(param_name, param_type);
+			proc->params = realloc(proc->params, (proc->param_count + 1) * sizeof(Parameter *));
+			proc->params[proc->param_count++] = param;
+		} while (match(parser, TOK_COMMA));
+	}
+
 	if (!match(parser, TOK_RPAREN)) {
-		error(parser, "Expected ')' (procedures don't take parameters yet)");
+		error(parser, "Expected ')' after parameters");
 		return NULL;
 	}
 
+	/* For extern procs, no body needed */
+	if (is_extern) {
+		if (!match(parser, TOK_SEMI)) {
+			error(parser, "Expected ';' after extern proc declaration");
+		}
+		Decl *decl = decl_create(DECL_PROC);
+		decl->data.proc = proc;
+		return decl;
+	}
+
+	/* Regular proc: require body */
 	if (!match(parser, TOK_LBRACE)) {
 		error(parser, "Expected '{'");
 		return NULL;
 	}
-
-	ProcDecl *proc = proc_decl_create(name);
 
 	while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
 		Statement *stmt = parse_statement(parser);
@@ -414,6 +461,7 @@ static Decl *parse_decl(Parser *parser) {
 	switch (parser->current.kind) {
 	case TOK_ARCHETYPE:
 		return parse_archetype_decl(parser);
+	case TOK_EXTERN:
 	case TOK_PROC:
 		return parse_proc_decl(parser);
 	case TOK_SYS:
@@ -450,6 +498,40 @@ static Expression *parse_primary_expr(Parser *parser) {
 	if (check(parser, TOK_IDENT)) {
 		char *name = token_text(parser->current);
 		advance(parser);
+
+		/* check for alloc expression */
+		if (strcmp(name, "alloc") == 0) {
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected archetype name after 'alloc'");
+				free(name);
+				return NULL;
+			}
+			char *arch_name = token_text(parser->current);
+			advance(parser);
+
+			Expression *alloc_expr = expression_create(EXPR_ALLOC);
+			alloc_expr->data.alloc.archetype_name = arch_name;
+			alloc_expr->data.alloc.field_names = NULL;
+			alloc_expr->data.alloc.field_values = NULL;
+			alloc_expr->data.alloc.field_count = 0;
+
+			if (match(parser, TOK_LPAREN)) {
+				Expression *count = parse_expression(parser);
+				if (count) {
+					alloc_expr->data.alloc.field_names = malloc(sizeof(char *));
+					alloc_expr->data.alloc.field_values = malloc(sizeof(Expression *));
+					alloc_expr->data.alloc.field_names[0] = NULL;
+					alloc_expr->data.alloc.field_values[0] = count;
+					alloc_expr->data.alloc.field_count = 1;
+				}
+				if (!match(parser, TOK_RPAREN)) {
+					error(parser, "Expected ')' after alloc count");
+				}
+			}
+
+			free(name);
+			return alloc_expr;
+		}
 
 		/* check for field access or indexing */
 		if (match(parser, TOK_DOT)) {
