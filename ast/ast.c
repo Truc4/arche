@@ -159,7 +159,8 @@ Expression *expression_create(ExpressionType type) {
    ========================= */
 
 void program_free(Program *prog) {
-	if (!prog) return;
+	if (!prog)
+		return;
 	for (int i = 0; i < prog->decl_count; i++) {
 		decl_free(prog->decls[i]);
 	}
@@ -168,7 +169,8 @@ void program_free(Program *prog) {
 }
 
 void decl_free(Decl *decl) {
-	if (!decl) return;
+	if (!decl)
+		return;
 	switch (decl->kind) {
 	case DECL_WORLD:
 		world_decl_free(decl->data.world);
@@ -190,7 +192,8 @@ void decl_free(Decl *decl) {
 }
 
 void world_decl_free(WorldDecl *world) {
-	if (!world) return;
+	if (!world)
+		return;
 	free(world->name);
 	for (int i = 0; i < world->field_count; i++) {
 		free(world->field_names[i]);
@@ -200,7 +203,8 @@ void world_decl_free(WorldDecl *world) {
 }
 
 void archetype_decl_free(ArchetypeDecl *archetype) {
-	if (!archetype) return;
+	if (!archetype)
+		return;
 	free(archetype->name);
 	for (int i = 0; i < archetype->field_count; i++) {
 		field_decl_free(archetype->fields[i]);
@@ -210,7 +214,8 @@ void archetype_decl_free(ArchetypeDecl *archetype) {
 }
 
 void proc_decl_free(ProcDecl *proc) {
-	if (!proc) return;
+	if (!proc)
+		return;
 	free(proc->name);
 	for (int i = 0; i < proc->param_count; i++) {
 		parameter_free(proc->params[i]);
@@ -224,7 +229,8 @@ void proc_decl_free(ProcDecl *proc) {
 }
 
 void sys_decl_free(SysDecl *sys) {
-	if (!sys) return;
+	if (!sys)
+		return;
 	free(sys->name);
 	for (int i = 0; i < sys->param_count; i++) {
 		parameter_free(sys->params[i]);
@@ -238,7 +244,8 @@ void sys_decl_free(SysDecl *sys) {
 }
 
 void func_decl_free(FuncDecl *func) {
-	if (!func) return;
+	if (!func)
+		return;
 	free(func->name);
 	type_ref_free(func->return_type);
 	for (int i = 0; i < func->param_count; i++) {
@@ -253,21 +260,24 @@ void func_decl_free(FuncDecl *func) {
 }
 
 void parameter_free(Parameter *param) {
-	if (!param) return;
+	if (!param)
+		return;
 	free(param->name);
 	type_ref_free(param->type);
 	free(param);
 }
 
 void field_decl_free(FieldDecl *field) {
-	if (!field) return;
+	if (!field)
+		return;
 	free(field->name);
 	type_ref_free(field->type);
 	free(field);
 }
 
 void type_ref_free(TypeRef *type) {
-	if (!type) return;
+	if (!type)
+		return;
 	switch (type->kind) {
 	case TYPE_NAME:
 		free(type->data.name);
@@ -283,7 +293,8 @@ void type_ref_free(TypeRef *type) {
 }
 
 void statement_free(Statement *stmt) {
-	if (!stmt) return;
+	if (!stmt)
+		return;
 	switch (stmt->type) {
 	case STMT_LET:
 		free(stmt->data.let_stmt.name);
@@ -317,7 +328,8 @@ void statement_free(Statement *stmt) {
 }
 
 void expression_free(Expression *expr) {
-	if (!expr) return;
+	if (!expr)
+		return;
 	switch (expr->type) {
 	case EXPR_LITERAL:
 		free((char *)expr->data.literal.lexeme);
@@ -370,7 +382,8 @@ void expression_free(Expression *expr) {
 #include <stdio.h>
 
 static void format_type(FILE *out, TypeRef *type) {
-	if (!type) return;
+	if (!type)
+		return;
 	switch (type->kind) {
 	case TYPE_NAME:
 		fprintf(out, "%s", type->data.name);
@@ -391,7 +404,8 @@ static void format_type(FILE *out, TypeRef *type) {
 static void format_expression(FILE *out, Expression *expr);
 
 static void format_expression(FILE *out, Expression *expr) {
-	if (!expr) return;
+	if (!expr)
+		return;
 
 	switch (expr->type) {
 	case EXPR_LITERAL:
@@ -409,7 +423,8 @@ static void format_expression(FILE *out, Expression *expr) {
 		format_expression(out, expr->data.index.base);
 		fprintf(out, "[");
 		for (int i = 0; i < expr->data.index.index_count; i++) {
-			if (i > 0) fprintf(out, ", ");
+			if (i > 0)
+				fprintf(out, ", ");
 			format_expression(out, expr->data.index.indices[i]);
 		}
 		fprintf(out, "]");
@@ -418,16 +433,36 @@ static void format_expression(FILE *out, Expression *expr) {
 	case EXPR_BINARY: {
 		const char *op_str = "?";
 		switch (expr->data.binary.op) {
-		case OP_ADD: op_str = "+"; break;
-		case OP_SUB: op_str = "-"; break;
-		case OP_MUL: op_str = "*"; break;
-		case OP_DIV: op_str = "/"; break;
-		case OP_EQ: op_str = "=="; break;
-		case OP_NEQ: op_str = "!="; break;
-		case OP_LT: op_str = "<"; break;
-		case OP_GT: op_str = ">"; break;
-		case OP_LTE: op_str = "<="; break;
-		case OP_GTE: op_str = ">="; break;
+		case OP_ADD:
+			op_str = "+";
+			break;
+		case OP_SUB:
+			op_str = "-";
+			break;
+		case OP_MUL:
+			op_str = "*";
+			break;
+		case OP_DIV:
+			op_str = "/";
+			break;
+		case OP_EQ:
+			op_str = "==";
+			break;
+		case OP_NEQ:
+			op_str = "!=";
+			break;
+		case OP_LT:
+			op_str = "<";
+			break;
+		case OP_GT:
+			op_str = ">";
+			break;
+		case OP_LTE:
+			op_str = "<=";
+			break;
+		case OP_GTE:
+			op_str = ">=";
+			break;
 		}
 		format_expression(out, expr->data.binary.left);
 		fprintf(out, " %s ", op_str);
@@ -444,7 +479,8 @@ static void format_expression(FILE *out, Expression *expr) {
 		format_expression(out, expr->data.call.callee);
 		fprintf(out, "(");
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
-			if (i > 0) fprintf(out, ", ");
+			if (i > 0)
+				fprintf(out, ", ");
 			format_expression(out, expr->data.call.args[i]);
 		}
 		fprintf(out, ")");
@@ -453,7 +489,8 @@ static void format_expression(FILE *out, Expression *expr) {
 	case EXPR_ALLOC: {
 		fprintf(out, "%s.alloc(", expr->data.alloc.archetype_name);
 		for (int i = 0; i < expr->data.alloc.field_count; i++) {
-			if (i > 0) fprintf(out, ", ");
+			if (i > 0)
+				fprintf(out, ", ");
 			fprintf(out, "%s: ", expr->data.alloc.field_names[i]);
 			format_expression(out, expr->data.alloc.field_values[i]);
 		}
@@ -466,7 +503,8 @@ static void format_expression(FILE *out, Expression *expr) {
 static void format_statement(FILE *out, Statement *stmt, int indent);
 
 static void format_statement(FILE *out, Statement *stmt, int indent) {
-	if (!stmt) return;
+	if (!stmt)
+		return;
 
 	char indent_str[256] = "";
 	for (int i = 0; i < indent; i++) {
@@ -489,8 +527,7 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		break;
 	}
 	case STMT_FOR: {
-		fprintf(out, "%sfor %s in %s {\n", indent_str,
-			stmt->data.for_stmt.var_name, "?");
+		fprintf(out, "%sfor %s in %s {\n", indent_str, stmt->data.for_stmt.var_name, "?");
 		for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
 			format_statement(out, stmt->data.for_stmt.body[i], indent + 1);
 		}
@@ -498,9 +535,7 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		break;
 	}
 	case STMT_RUN: {
-		fprintf(out, "%srun %s in %s;\n", indent_str,
-			stmt->data.run_stmt.system_name,
-			stmt->data.run_stmt.world_name);
+		fprintf(out, "%srun %s in %s;\n", indent_str, stmt->data.run_stmt.system_name, stmt->data.run_stmt.world_name);
 		break;
 	}
 	case STMT_EXPR: {
@@ -519,7 +554,8 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 }
 
 void format_program(FILE *out, Program *prog) {
-	if (!prog) return;
+	if (!prog)
+		return;
 
 	for (int i = 0; i < prog->decl_count; i++) {
 		Decl *decl = prog->decls[i];
@@ -535,9 +571,7 @@ void format_program(FILE *out, Program *prog) {
 			fprintf(out, "arche %s {\n", arch->name);
 			for (int j = 0; j < arch->field_count; j++) {
 				FieldDecl *field = arch->fields[j];
-				fprintf(out, "  %s %s: ",
-					field->kind == FIELD_META ? "meta" : "col",
-					field->name);
+				fprintf(out, "  %s %s: ", field->kind == FIELD_META ? "meta" : "col", field->name);
 				format_type(out, field->type);
 				if (j < arch->field_count - 1) {
 					fprintf(out, ",");
@@ -560,7 +594,8 @@ void format_program(FILE *out, Program *prog) {
 			SysDecl *sys = decl->data.sys;
 			fprintf(out, "sys %s(", sys->name);
 			for (int j = 0; j < sys->param_count; j++) {
-				if (j > 0) fprintf(out, ", ");
+				if (j > 0)
+					fprintf(out, ", ");
 				fprintf(out, "%s", sys->params[j]->name);
 			}
 			fprintf(out, ") {\n");
@@ -574,7 +609,8 @@ void format_program(FILE *out, Program *prog) {
 			FuncDecl *func = decl->data.func;
 			fprintf(out, "func %s(", func->name);
 			for (int j = 0; j < func->param_count; j++) {
-				if (j > 0) fprintf(out, ", ");
+				if (j > 0)
+					fprintf(out, ", ");
 				fprintf(out, "%s: ", func->params[j]->name);
 				format_type(out, func->params[j]->type);
 			}

@@ -64,8 +64,8 @@ struct Decl {
    ========================= */
 
 typedef enum {
-	TYPE_NAME,		   /* int, float, char, Vec3, Player, etc. */
-	TYPE_ARRAY,		   /* nested / jagged array */
+	TYPE_NAME,         /* int, float, char, Vec3, Player, etc. */
+	TYPE_ARRAY,        /* nested / jagged array */
 	TYPE_SHAPED_ARRAY, /* dense ranked array */
 } TypeKind;
 
@@ -92,7 +92,7 @@ struct TypeRef {
 
 struct WorldDecl {
 	char *name;
-	char **field_names;  /* optional fields for the world itself */
+	char **field_names; /* optional fields for the world itself */
 	int field_count;
 	SourceLoc loc;
 };
@@ -102,7 +102,7 @@ struct WorldDecl {
    ========================= */
 
 typedef enum {
-	FIELD_META,	  /* one value for whole archetype */
+	FIELD_META,   /* one value for whole archetype */
 	FIELD_COLUMN, /* one value per element, aligned with size */
 } FieldKind;
 
@@ -169,7 +169,7 @@ typedef enum {
 
 typedef struct {
 	char *name;
-	TypeRef *type;	   /* optional, may be NULL */
+	TypeRef *type;     /* optional, may be NULL */
 	Expression *value; /* optional, may be NULL */
 } LetStmt;
 

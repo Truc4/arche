@@ -1,7 +1,7 @@
 #include "semantic.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 
 /* ========== DATA STRUCTURES ========== */
 
@@ -24,7 +24,7 @@ typedef struct {
 typedef struct {
 	char *name;
 	TypeRef *type;
-	char *archetype_name;  /* for variables that refer to archetype entries */
+	char *archetype_name; /* for variables that refer to archetype entries */
 } VariableInfo;
 
 typedef struct {
@@ -69,7 +69,8 @@ static ArchetypeInfo *find_archetype(SemanticContext *ctx, const char *name) {
 }
 
 static FieldInfo *find_field(ArchetypeInfo *arch, const char *name) {
-	if (!arch) return NULL;
+	if (!arch)
+		return NULL;
 	for (int i = 0; i < arch->field_count; i++) {
 		if (strcmp(arch->fields[i]->name, name) == 0) {
 			return arch->fields[i];
@@ -89,7 +90,7 @@ static int find_known_func(SemanticContext *ctx, const char *name) {
 
 static void register_func(SemanticContext *ctx, const char *name) {
 	if (find_known_func(ctx, name)) {
-		return;  /* already registered */
+		return; /* already registered */
 	}
 	ctx->known_funcs = realloc(ctx->known_funcs, (ctx->known_func_count + 1) * sizeof(char *));
 	ctx->known_funcs[ctx->known_func_count] = malloc(strlen(name) + 1);
@@ -134,14 +135,17 @@ static void pop_scope(SemanticContext *ctx) {
 	}
 }
 
-static void add_variable_with_archetype(SemanticContext *ctx, const char *name, TypeRef *type, const char *archetype_name);
+static void add_variable_with_archetype(SemanticContext *ctx, const char *name, TypeRef *type,
+                                        const char *archetype_name);
 
 static void add_variable(SemanticContext *ctx, const char *name, TypeRef *type) {
 	add_variable_with_archetype(ctx, name, type, NULL);
 }
 
-static void add_variable_with_archetype(SemanticContext *ctx, const char *name, TypeRef *type, const char *archetype_name) {
-	if (ctx->scope_count == 0) return;
+static void add_variable_with_archetype(SemanticContext *ctx, const char *name, TypeRef *type,
+                                        const char *archetype_name) {
+	if (ctx->scope_count == 0)
+		return;
 
 	Scope *scope = &ctx->scopes[ctx->scope_count - 1];
 	VariableInfo *var = malloc(sizeof(VariableInfo));
@@ -149,7 +153,8 @@ static void add_variable_with_archetype(SemanticContext *ctx, const char *name, 
 	strcpy(var->name, name);
 	var->type = type;
 	var->archetype_name = archetype_name ? malloc(strlen(archetype_name) + 1) : NULL;
-	if (var->archetype_name) strcpy(var->archetype_name, archetype_name);
+	if (var->archetype_name)
+		strcpy(var->archetype_name, archetype_name);
 
 	scope->vars = realloc(scope->vars, (scope->var_count + 1) * sizeof(VariableInfo *));
 	scope->vars[scope->var_count++] = var;
@@ -163,7 +168,8 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt);
 /* ========== EXPRESSION ANALYSIS ========== */
 
 static void analyze_expression(SemanticContext *ctx, Expression *expr) {
-	if (!expr) return;
+	if (!expr)
+		return;
 
 	switch (expr->type) {
 	case EXPR_LITERAL:
@@ -217,8 +223,7 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 			if (arch) {
 				if (!find_field(arch, field_name)) {
 					char msg[256];
-					snprintf(msg, sizeof(msg), "Archetype '%s' has no field '%s'",
-						arch->name, field_name);
+					snprintf(msg, sizeof(msg), "Archetype '%s' has no field '%s'", arch->name, field_name);
 					error(ctx, msg);
 				}
 			}
@@ -253,8 +258,7 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		/* check archetype exists */
 		if (!find_archetype(ctx, expr->data.alloc.archetype_name)) {
 			char msg[256];
-			snprintf(msg, sizeof(msg), "Undefined archetype '%s'",
-				expr->data.alloc.archetype_name);
+			snprintf(msg, sizeof(msg), "Undefined archetype '%s'", expr->data.alloc.archetype_name);
 			error(ctx, msg);
 		}
 		for (int i = 0; i < expr->data.alloc.field_count; i++) {
@@ -267,7 +271,8 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 /* ========== STATEMENT ANALYSIS ========== */
 
 static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
-	if (!stmt) return;
+	if (!stmt)
+		return;
 
 	switch (stmt->type) {
 	case STMT_LET: {
@@ -351,7 +356,8 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 /* ========== DECLARATION ANALYSIS ========== */
 
 static void analyze_world_decl(SemanticContext *ctx, WorldDecl *world) {
-	if (!world) return;
+	if (!world)
+		return;
 
 	WorldInfo *info = malloc(sizeof(WorldInfo));
 	info->name = malloc(strlen(world->name) + 1);
@@ -362,7 +368,8 @@ static void analyze_world_decl(SemanticContext *ctx, WorldDecl *world) {
 }
 
 static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
-	if (!arch) return;
+	if (!arch)
+		return;
 
 	ArchetypeInfo *info = malloc(sizeof(ArchetypeInfo));
 	info->name = malloc(strlen(arch->name) + 1);
@@ -385,7 +392,8 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 }
 
 static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
-	if (!proc) return;
+	if (!proc)
+		return;
 
 	/* Register proc name as a known function */
 	register_func(ctx, proc->name);
@@ -424,7 +432,8 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 }
 
 static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
-	if (!sys) return;
+	if (!sys)
+		return;
 
 	push_scope(ctx);
 
@@ -441,7 +450,8 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 }
 
 static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
-	if (!func) return;
+	if (!func)
+		return;
 
 	push_scope(ctx);
 
@@ -458,7 +468,8 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 }
 
 static void analyze_decl(SemanticContext *ctx, Decl *decl) {
-	if (!decl) return;
+	if (!decl)
+		return;
 
 	switch (decl->kind) {
 	case DECL_WORLD:
@@ -493,7 +504,8 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->scope_count = 0;
 	ctx->error_count = 0;
 
-	if (!prog) return ctx;
+	if (!prog)
+		return ctx;
 
 	/* first pass: collect all worlds */
 	for (int i = 0; i < prog->decl_count; i++) {
@@ -520,7 +532,8 @@ SemanticContext *semantic_analyze(Program *prog) {
 }
 
 void semantic_context_free(SemanticContext *ctx) {
-	if (!ctx) return;
+	if (!ctx)
+		return;
 
 	/* free worlds */
 	for (int i = 0; i < ctx->world_count; i++) {
@@ -587,7 +600,9 @@ FieldKind semantic_field_kind(SemanticContext *ctx, const char *archetype_name, 
 const char *semantic_field_type_name(SemanticContext *ctx, const char *archetype_name, const char *field_name) {
 	ArchetypeInfo *arch = find_archetype(ctx, archetype_name);
 	FieldInfo *field = find_field(arch, field_name);
-	if (!field || !field->type) return NULL;
-	if (field->type->kind != TYPE_NAME) return NULL;
+	if (!field || !field->type)
+		return NULL;
+	if (field->type->kind != TYPE_NAME)
+		return NULL;
 	return field->type->data.name;
 }
