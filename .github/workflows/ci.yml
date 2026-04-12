@@ -17,7 +17,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-format build-essential
+          sudo apt-get install -y clang-format build-essential llvm
 
       - name: Build project
         run: make clean && make
