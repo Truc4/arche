@@ -1,10 +1,10 @@
+#include "../ast/ast.h"
+#include "../lexer/lexer.h"
+#include "../parser/parser.h"
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
-#include "../lexer/lexer.h"
-#include "../ast/ast.h"
-#include "../parser/parser.h"
 
 /* Test harness */
 int test_count = 0;
@@ -27,16 +27,16 @@ void test_fail_msg(const char *reason) {
 	printf("✗ (%s)\n", reason);
 }
 
-#define ASSERT_NOT_NULL(ptr, msg) \
-	if (!(ptr)) { \
-		test_fail_msg(msg); \
-		return; \
+#define ASSERT_NOT_NULL(ptr, msg)                                                                                      \
+	if (!(ptr)) {                                                                                                      \
+		test_fail_msg(msg);                                                                                            \
+		return;                                                                                                        \
 	}
 
-#define ASSERT_EQ(a, b, msg) \
-	if ((a) != (b)) { \
-		test_fail_msg(msg); \
-		return; \
+#define ASSERT_EQ(a, b, msg)                                                                                           \
+	if ((a) != (b)) {                                                                                                  \
+		test_fail_msg(msg);                                                                                            \
+		return;                                                                                                        \
 	}
 
 /* Helper to parse a string */
@@ -89,13 +89,11 @@ void test_archetype_col_field(void) {
 
 void test_archetype_multiple_fields(void) {
 	test_start("archetype with multiple fields");
-	Program *prog = parse_string(
-		"world W() arche Body {\n"
-		"  meta drag: Float,\n"
-		"  col pos: Vec3,\n"
-		"  col vel: Vec3\n"
-		"}"
-	);
+	Program *prog = parse_string("world W() arche Body {\n"
+	                             "  meta drag: Float,\n"
+	                             "  col pos: Vec3,\n"
+	                             "  col vel: Vec3\n"
+	                             "}");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ArchetypeDecl *arch = prog->decls[1]->data.archetype;
 	ASSERT_EQ(arch->field_count, 3, "expected 3 fields");
@@ -123,11 +121,9 @@ void test_proc_no_params_empty(void) {
 
 void test_proc_with_let_statement(void) {
 	test_start("proc with let statement");
-	Program *prog = parse_string(
-		"proc test() {\n"
-		"  let x = 42;\n"
-		"}"
-	);
+	Program *prog = parse_string("proc test() {\n"
+	                             "  let x = 42;\n"
+	                             "}");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
 	ASSERT_EQ(proc->statement_count, 1, "expected 1 statement");
@@ -138,11 +134,9 @@ void test_proc_with_let_statement(void) {
 
 void test_proc_with_assignment(void) {
 	test_start("proc with assignment statement");
-	Program *prog = parse_string(
-		"proc test() {\n"
-		"  x = 42;\n"
-		"}"
-	);
+	Program *prog = parse_string("proc test() {\n"
+	                             "  x = 42;\n"
+	                             "}");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
 	ASSERT_EQ(proc->statement_count, 1, "expected 1 statement");
@@ -153,13 +147,11 @@ void test_proc_with_assignment(void) {
 
 void test_proc_with_for_loop(void) {
 	test_start("proc with for loop");
-	Program *prog = parse_string(
-		"proc iterate() {\n"
-		"  for item in Collection {\n"
-		"    let x = 1;\n"
-		"  }\n"
-		"}"
-	);
+	Program *prog = parse_string("proc iterate() {\n"
+	                             "  for item in Collection {\n"
+	                             "    let x = 1;\n"
+	                             "  }\n"
+	                             "}");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
 	ASSERT_EQ(proc->statement_count, 1, "expected 1 statement");
@@ -200,11 +192,9 @@ void test_sys_with_params(void) {
 
 void test_sys_with_body(void) {
 	test_start("sys with body statement");
-	Program *prog = parse_string(
-		"sys move(pos, vel) {\n"
-		"  pos = pos + vel;\n"
-		"}"
-	);
+	Program *prog = parse_string("sys move(pos, vel) {\n"
+	                             "  pos = pos + vel;\n"
+	                             "}");
 	ASSERT_NOT_NULL(prog, "program is null");
 	SysDecl *sys = prog->decls[0]->data.sys;
 	ASSERT_EQ(sys->statement_count, 1, "expected 1 statement");
@@ -287,11 +277,9 @@ void test_expr_binary_op(void) {
 
 void test_multiple_decls(void) {
 	test_start("multiple declarations");
-	Program *prog = parse_string(
-		"world W() arche Player { col x: Float }\n"
-		"proc init() {}\n"
-		"sys move(pos) {}\n"
-	);
+	Program *prog = parse_string("world W() arche Player { col x: Float }\n"
+	                             "proc init() {}\n"
+	                             "sys move(pos) {}\n");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ASSERT_EQ(prog->decl_count, 4, "expected 4 decls");
 	ASSERT_EQ(prog->decls[0]->kind, DECL_WORLD, "decl 0 should be world");

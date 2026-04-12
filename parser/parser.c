@@ -1,7 +1,7 @@
 #include "parser.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 
 /* ========== UTILITY FUNCTIONS ========== */
 
@@ -24,7 +24,8 @@ static int check(Parser *parser, TokenKind kind) {
 }
 
 static int match(Parser *parser, TokenKind kind) {
-	if (!check(parser, kind)) return 0;
+	if (!check(parser, kind))
+		return 0;
 	advance(parser);
 	return 1;
 }
@@ -37,19 +38,20 @@ static char *token_text(Token tok) {
 }
 
 static void error(Parser *parser, const char *msg) {
-	if (parser->panic_mode) return;
+	if (parser->panic_mode)
+		return;
 	parser->panic_mode = 1;
 	parser->had_error = 1;
 
-	fprintf(stderr, "[Line %d, Col %d] Error: %s\n",
-		parser->current.line, parser->current.column, msg);
+	fprintf(stderr, "[Line %d, Col %d] Error: %s\n", parser->current.line, parser->current.column, msg);
 }
 
 static void synchronize(Parser *parser) {
 	parser->panic_mode = 0;
 
 	while (parser->current.kind != TOK_EOF) {
-		if (parser->previous.kind == TOK_SEMI) return;
+		if (parser->previous.kind == TOK_SEMI)
+			return;
 
 		switch (parser->current.kind) {
 		case TOK_ARCHETYPE:
@@ -115,7 +117,8 @@ static FieldDecl *parse_arch_field(Parser *parser) {
 	}
 
 	TypeRef *type = parse_type(parser);
-	if (!type) return NULL;
+	if (!type)
+		return NULL;
 
 	/* trailing comma is optional */
 	match(parser, TOK_COMMA);
@@ -209,7 +212,8 @@ static Decl *parse_proc_decl(Parser *parser) {
 			}
 
 			TypeRef *param_type = parse_type(parser);
-			if (!param_type) return NULL;
+			if (!param_type)
+				return NULL;
 
 			Parameter *param = parameter_create(param_name, param_type);
 			proc->params = realloc(proc->params, (proc->param_count + 1) * sizeof(Parameter *));
@@ -366,7 +370,8 @@ static Decl *parse_func_decl(Parser *parser) {
 			}
 
 			TypeRef *param_type = parse_type(parser);
-			if (!param_type) return NULL;
+			if (!param_type)
+				return NULL;
 
 			Parameter *param = parameter_create(param_name, param_type);
 			func->params = realloc(func->params, (func->param_count + 1) * sizeof(Parameter *));
@@ -390,7 +395,8 @@ static Decl *parse_func_decl(Parser *parser) {
 	}
 
 	TypeRef *return_type = parse_type(parser);
-	if (!return_type) return NULL;
+	if (!return_type)
+		return NULL;
 	func->return_type = return_type;
 
 	if (!match(parser, TOK_LBRACE)) {
@@ -560,12 +566,11 @@ static Expression *parse_primary_expr(Parser *parser) {
 
 				do {
 					Expression *idx_expr = parse_expression(parser);
-					if (!idx_expr) return NULL;
+					if (!idx_expr)
+						return NULL;
 
-					index->data.index.indices = realloc(
-						index->data.index.indices,
-						(index->data.index.index_count + 1) * sizeof(Expression *)
-					);
+					index->data.index.indices =
+					    realloc(index->data.index.indices, (index->data.index.index_count + 1) * sizeof(Expression *));
 					index->data.index.indices[index->data.index.index_count++] = idx_expr;
 				} while (match(parser, TOK_COMMA));
 
@@ -592,12 +597,11 @@ static Expression *parse_primary_expr(Parser *parser) {
 
 			do {
 				Expression *idx_expr = parse_expression(parser);
-				if (!idx_expr) return NULL;
+				if (!idx_expr)
+					return NULL;
 
-				index->data.index.indices = realloc(
-					index->data.index.indices,
-					(index->data.index.index_count + 1) * sizeof(Expression *)
-				);
+				index->data.index.indices =
+				    realloc(index->data.index.indices, (index->data.index.index_count + 1) * sizeof(Expression *));
 				index->data.index.indices[index->data.index.index_count++] = idx_expr;
 			} while (match(parser, TOK_COMMA));
 
@@ -622,12 +626,11 @@ static Expression *parse_primary_expr(Parser *parser) {
 			if (!check(parser, TOK_RPAREN)) {
 				do {
 					Expression *arg = parse_expression(parser);
-					if (!arg) return NULL;
+					if (!arg)
+						return NULL;
 
-					expr->data.call.args = realloc(
-						expr->data.call.args,
-						(expr->data.call.arg_count + 1) * sizeof(Expression *)
-					);
+					expr->data.call.args =
+					    realloc(expr->data.call.args, (expr->data.call.arg_count + 1) * sizeof(Expression *));
 					expr->data.call.args[expr->data.call.arg_count++] = arg;
 				} while (match(parser, TOK_COMMA));
 			}
@@ -659,33 +662,55 @@ static Expression *parse_primary_expr(Parser *parser) {
 
 static Expression *parse_binary_expr(Parser *parser) {
 	Expression *left = parse_primary_expr(parser);
-	if (!left) return NULL;
+	if (!left)
+		return NULL;
 
-	while (check(parser, TOK_PLUS) || check(parser, TOK_MINUS) ||
-	       check(parser, TOK_STAR) || check(parser, TOK_SLASH) ||
-	       check(parser, TOK_EQ_EQ) || check(parser, TOK_BANG_EQ) ||
-	       check(parser, TOK_LT) || check(parser, TOK_GT) ||
+	while (check(parser, TOK_PLUS) || check(parser, TOK_MINUS) || check(parser, TOK_STAR) || check(parser, TOK_SLASH) ||
+	       check(parser, TOK_EQ_EQ) || check(parser, TOK_BANG_EQ) || check(parser, TOK_LT) || check(parser, TOK_GT) ||
 	       check(parser, TOK_LT_EQ) || check(parser, TOK_GT_EQ)) {
 
 		TokenKind op_kind = parser->current.kind;
 		advance(parser);
 
 		Expression *right = parse_primary_expr(parser);
-		if (!right) return NULL;
+		if (!right)
+			return NULL;
 
 		Operator op;
 		switch (op_kind) {
-		case TOK_PLUS:    op = OP_ADD; break;
-		case TOK_MINUS:   op = OP_SUB; break;
-		case TOK_STAR:    op = OP_MUL; break;
-		case TOK_SLASH:   op = OP_DIV; break;
-		case TOK_EQ_EQ:   op = OP_EQ; break;
-		case TOK_BANG_EQ: op = OP_NEQ; break;
-		case TOK_LT:      op = OP_LT; break;
-		case TOK_GT:      op = OP_GT; break;
-		case TOK_LT_EQ:   op = OP_LTE; break;
-		case TOK_GT_EQ:   op = OP_GTE; break;
-		default:          op = OP_ADD; break;
+		case TOK_PLUS:
+			op = OP_ADD;
+			break;
+		case TOK_MINUS:
+			op = OP_SUB;
+			break;
+		case TOK_STAR:
+			op = OP_MUL;
+			break;
+		case TOK_SLASH:
+			op = OP_DIV;
+			break;
+		case TOK_EQ_EQ:
+			op = OP_EQ;
+			break;
+		case TOK_BANG_EQ:
+			op = OP_NEQ;
+			break;
+		case TOK_LT:
+			op = OP_LT;
+			break;
+		case TOK_GT:
+			op = OP_GT;
+			break;
+		case TOK_LT_EQ:
+			op = OP_LTE;
+			break;
+		case TOK_GT_EQ:
+			op = OP_GTE;
+			break;
+		default:
+			op = OP_ADD;
+			break;
 		}
 
 		Expression *binary = expression_create(EXPR_BINARY);
@@ -762,7 +787,8 @@ static Statement *parse_statement(Parser *parser) {
 		}
 
 		Expression *value = parse_expression(parser);
-		if (!value) return NULL;
+		if (!value)
+			return NULL;
 
 		if (!match(parser, TOK_SEMI)) {
 			error(parser, "Expected ';' after expression");
@@ -818,10 +844,8 @@ static Statement *parse_statement(Parser *parser) {
 				continue;
 			}
 
-			stmt->data.for_stmt.body = realloc(
-				stmt->data.for_stmt.body,
-				(stmt->data.for_stmt.body_count + 1) * sizeof(Statement *)
-			);
+			stmt->data.for_stmt.body =
+			    realloc(stmt->data.for_stmt.body, (stmt->data.for_stmt.body_count + 1) * sizeof(Statement *));
 			stmt->data.for_stmt.body[stmt->data.for_stmt.body_count++] = body_stmt;
 		}
 
@@ -834,17 +858,18 @@ static Statement *parse_statement(Parser *parser) {
 
 	/* try to parse as assignment */
 	Expression *target = parse_expression(parser);
-	if (!target) return NULL;
+	if (!target)
+		return NULL;
 
 	/* check for assignment operators */
-	if (check(parser, TOK_EQ) || check(parser, TOK_PLUS_EQ) ||
-	    check(parser, TOK_MINUS_EQ) || check(parser, TOK_STAR_EQ) ||
-	    check(parser, TOK_SLASH_EQ)) {
+	if (check(parser, TOK_EQ) || check(parser, TOK_PLUS_EQ) || check(parser, TOK_MINUS_EQ) ||
+	    check(parser, TOK_STAR_EQ) || check(parser, TOK_SLASH_EQ)) {
 
 		advance(parser); /* consume assignment operator */
 
 		Expression *value = parse_expression(parser);
-		if (!value) return NULL;
+		if (!value)
+			return NULL;
 
 		if (!match(parser, TOK_SEMI)) {
 			error(parser, "Expected ';' after assignment");

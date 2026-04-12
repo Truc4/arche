@@ -27,19 +27,19 @@ typedef enum TokenKind {
 	TOK_EXTERN,
 
 	/* punctuation */
-	TOK_LPAREN,	  /* ( */
-	TOK_RPAREN,	  /* ) */
-	TOK_LBRACE,	  /* { */
-	TOK_RBRACE,	  /* } */
+	TOK_LPAREN,   /* ( */
+	TOK_RPAREN,   /* ) */
+	TOK_LBRACE,   /* { */
+	TOK_RBRACE,   /* } */
 	TOK_LBRACKET, /* [ */
 	TOK_RBRACKET, /* ] */
-	TOK_COMMA,	  /* , */
-	TOK_DOT,	  /* . */
-	TOK_COLON,	  /* : */
-	TOK_SEMI,	  /* ; */
+	TOK_COMMA,    /* , */
+	TOK_DOT,      /* . */
+	TOK_COLON,    /* : */
+	TOK_SEMI,     /* ; */
 
 	/* assignment */
-	TOK_EQ,		  /* = */
+	TOK_EQ,       /* = */
 	TOK_PLUS_EQ,  /* += */
 	TOK_MINUS_EQ, /* -= */
 	TOK_STAR_EQ,  /* *= */
@@ -52,12 +52,12 @@ typedef enum TokenKind {
 	TOK_SLASH, /* / */
 
 	/* comparisons */
-	TOK_EQ_EQ,	 /* == */
+	TOK_EQ_EQ,   /* == */
 	TOK_BANG_EQ, /* != */
-	TOK_LT,		 /* < */
-	TOK_GT,		 /* > */
-	TOK_LT_EQ,	 /* <= */
-	TOK_GT_EQ,	 /* >= */
+	TOK_LT,      /* < */
+	TOK_GT,      /* > */
+	TOK_LT_EQ,   /* <= */
+	TOK_GT_EQ,   /* >= */
 
 	/* unary */
 	TOK_BANG /* ! */

@@ -1,16 +1,16 @@
 #include "codegen.h"
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
-#include <stdarg.h>
 
 /* ========== DATA STRUCTURES ========== */
 
 typedef struct {
 	char *name;
-	char *llvm_name;	/* allocated SSA value name */
-	int type;  /* 0=i32, 1=i32*, 2=i8* (string), 3=arch* */
-	char *arch_name;  /* for type==3, nullable otherwise */
+	char *llvm_name; /* allocated SSA value name */
+	int type;        /* 0=i32, 1=i32*, 2=i8* (string), 3=arch* */
+	char *arch_name; /* for type==3, nullable otherwise */
 } ValueInfo;
 
 typedef struct {
@@ -65,14 +65,20 @@ static void buffer_append_fmt(CodegenContext *ctx, const char *fmt, ...) {
 }
 
 static const char *llvm_type_from_arche(const char *arche_type) {
-	if (!arche_type) return "i32";  /* default to int */
+	if (!arche_type)
+		return "i32"; /* default to int */
 
 	/* Lowercase and capitalized variants */
-	if (strcmp(arche_type, "float") == 0 || strcmp(arche_type, "Float") == 0) return "double";
-	if (strcmp(arche_type, "int") == 0 || strcmp(arche_type, "Int") == 0) return "i32";
-	if (strcmp(arche_type, "char") == 0 || strcmp(arche_type, "Char") == 0) return "i8";
-	if (strcmp(arche_type, "str") == 0 || strcmp(arche_type, "Str") == 0) return "i8";  /* i8* for pointers */
-	if (strcmp(arche_type, "void") == 0 || strcmp(arche_type, "Void") == 0) return "void";
+	if (strcmp(arche_type, "float") == 0 || strcmp(arche_type, "Float") == 0)
+		return "double";
+	if (strcmp(arche_type, "int") == 0 || strcmp(arche_type, "Int") == 0)
+		return "i32";
+	if (strcmp(arche_type, "char") == 0 || strcmp(arche_type, "Char") == 0)
+		return "i8";
+	if (strcmp(arche_type, "str") == 0 || strcmp(arche_type, "Str") == 0)
+		return "i8"; /* i8* for pointers */
+	if (strcmp(arche_type, "void") == 0 || strcmp(arche_type, "Void") == 0)
+		return "void";
 
 	/* For custom types (Vec3, archetypes, etc.), use opaque structures */
 	static char buf[256];
@@ -139,9 +145,8 @@ static char *emit_string_global(CodegenContext *ctx, const char *quoted_str) {
 		}
 	}
 
-	snprintf(global_decl, sizeof(global_decl),
-		"%s = private unnamed_addr constant [%zu x i8] c\"%s\\00\"\n",
-		global_name, escaped_pos + 1, llvm_escaped);
+	snprintf(global_decl, sizeof(global_decl), "%s = private unnamed_addr constant [%zu x i8] c\"%s\\00\"\n",
+	         global_name, escaped_pos + 1, llvm_escaped);
 
 	/* Append to globals buffer */
 	size_t decl_len = strlen(global_decl);
@@ -192,7 +197,8 @@ static ValueInfo *find_value(CodegenContext *ctx, const char *name) {
 }
 
 static void add_value(CodegenContext *ctx, const char *name, const char *llvm_name, int type) {
-	if (ctx->scope_count == 0) return;
+	if (ctx->scope_count == 0)
+		return;
 
 	ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
 	ValueInfo *val = malloc(sizeof(ValueInfo));
@@ -208,7 +214,8 @@ static void add_value(CodegenContext *ctx, const char *name, const char *llvm_na
 }
 
 static void add_arch_value(CodegenContext *ctx, const char *name, const char *llvm_name, const char *arch_name) {
-	if (ctx->scope_count == 0) return;
+	if (ctx->scope_count == 0)
+		return;
 
 	ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
 	ValueInfo *val = malloc(sizeof(ValueInfo));
@@ -216,7 +223,7 @@ static void add_arch_value(CodegenContext *ctx, const char *name, const char *ll
 	strcpy(val->name, name);
 	val->llvm_name = malloc(strlen(llvm_name) + 1);
 	strcpy(val->llvm_name, llvm_name);
-	val->type = 3;  /* arch pointer */
+	val->type = 3; /* arch pointer */
 	val->arch_name = malloc(strlen(arch_name) + 1);
 	strcpy(val->arch_name, arch_name);
 
@@ -257,8 +264,8 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			size_t str_len = strlen(lex) - 2; /* excluding quotes */
 
 			char *res_name = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = getelementptr [%zu x i8], [%zu x i8]* %s, i32 0, i32 0\n",
-				res_name, str_len + 1, str_len + 1, global_name);
+			buffer_append_fmt(ctx, "  %s = getelementptr [%zu x i8], [%zu x i8]* %s, i32 0, i32 0\n", res_name,
+			                  str_len + 1, str_len + 1, global_name);
 			strcpy(result_buf, res_name);
 			free(global_name);
 		} else if (strchr(lex, '.') != NULL) {
@@ -314,17 +321,39 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		}
 
 		switch (expr->data.binary.op) {
-		case OP_ADD: op = is_float ? "fadd" : "add"; break;
-		case OP_SUB: op = is_float ? "fsub" : "sub"; break;
-		case OP_MUL: op = is_float ? "fmul" : "mul"; break;
-		case OP_DIV: op = is_float ? "fdiv" : "sdiv"; break;
-		case OP_EQ: op = "eq"; break;
-		case OP_NEQ: op = "ne"; break;
-		case OP_LT: op = is_float ? "olt" : "slt"; break;
-		case OP_GT: op = is_float ? "ogt" : "sgt"; break;
-		case OP_LTE: op = is_float ? "ole" : "sle"; break;
-		case OP_GTE: op = is_float ? "oge" : "sge"; break;
-		default: op = "add"; break;
+		case OP_ADD:
+			op = is_float ? "fadd" : "add";
+			break;
+		case OP_SUB:
+			op = is_float ? "fsub" : "sub";
+			break;
+		case OP_MUL:
+			op = is_float ? "fmul" : "mul";
+			break;
+		case OP_DIV:
+			op = is_float ? "fdiv" : "sdiv";
+			break;
+		case OP_EQ:
+			op = "eq";
+			break;
+		case OP_NEQ:
+			op = "ne";
+			break;
+		case OP_LT:
+			op = is_float ? "olt" : "slt";
+			break;
+		case OP_GT:
+			op = is_float ? "ogt" : "sgt";
+			break;
+		case OP_LTE:
+			op = is_float ? "ole" : "sle";
+			break;
+		case OP_GTE:
+			op = is_float ? "oge" : "sge";
+			break;
+		default:
+			op = "add";
+			break;
 		}
 
 		char *res_name = gen_value_name(ctx);
@@ -396,20 +425,18 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					char *gep = gen_value_name(ctx);
 
 					/* GEP to field */
-					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-						gep, base_val->arch_name, base_val->arch_name, base_buf, field_idx);
+					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gep,
+					                  base_val->arch_name, base_val->arch_name, base_buf, field_idx);
 
 					if (fdecl->kind == FIELD_META) {
 						/* Load the value */
 						char *loaded = gen_value_name(ctx);
-						buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n",
-							loaded, llvm_type, llvm_type, gep);
+						buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", loaded, llvm_type, llvm_type, gep);
 						strcpy(result_buf, loaded);
 					} else {
 						/* Col field: load the pointer */
 						char *ptr_val = gen_value_name(ctx);
-						buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n",
-							ptr_val, llvm_type, llvm_type, gep);
+						buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", ptr_val, llvm_type, llvm_type, gep);
 						strcpy(result_buf, ptr_val);
 					}
 					break;
@@ -459,7 +486,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			/* Check if this arg is a variable holding a string (i8* type) */
 			else if (expr->data.call.args[i]->type == EXPR_NAME) {
 				ValueInfo *var = find_value(ctx, expr->data.call.args[i]->data.name.name);
-				if (var && var->type == 2) {  /* type 2 = i8* pointer (string) */
+				if (var && var->type == 2) { /* type 2 = i8* pointer (string) */
 					arg_is_string[i] = 1;
 				}
 			}
@@ -505,7 +532,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		}
 
 		/* Estimate struct size (safe default) */
-		int struct_size = 16;  /* enough for 2 i32 + 1 i8* */
+		int struct_size = 16; /* enough for 2 i32 + 1 i8* */
 
 		/* malloc struct */
 		char *raw_ptr = gen_value_name(ctx);
@@ -513,8 +540,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 		/* bitcast to struct pointer */
 		char *struct_ptr = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = bitcast i8* %s to %%struct.%s*\n",
-			struct_ptr, raw_ptr, arch_name);
+		buffer_append_fmt(ctx, "  %s = bitcast i8* %s to %%struct.%s*\n", struct_ptr, raw_ptr, arch_name);
 
 		/* TODO: malloc and initialize column arrays */
 		/* For now, just return the struct pointer */
@@ -528,7 +554,8 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 /* ========== STATEMENT CODEGEN ========== */
 
 static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
-	if (!stmt) return;
+	if (!stmt)
+		return;
 
 	switch (stmt->type) {
 	case STMT_LET: {
@@ -580,7 +607,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 		if (stmt->data.assign_stmt.target->type == EXPR_NAME) {
 			const char *var_name = stmt->data.assign_stmt.target->data.name.name;
 			ValueInfo *val = find_value(ctx, var_name);
-			if (val && val->type == 1) {  /* type 1 = i32* pointer */
+			if (val && val->type == 1) { /* type 1 = i32* pointer */
 				buffer_append_fmt(ctx, "  store i32 %s, i32* %s\n", value_buf, val->llvm_name);
 			} else {
 				/* For now, silently skip assignments to non-pointer values (fields, etc.) */
@@ -683,9 +710,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 
 static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
 	/* Generate function definition */
-	const char *return_type = llvm_type_from_arche(
-		func->return_type ? func->return_type->data.name : "int"
-	);
+	const char *return_type = llvm_type_from_arche(func->return_type ? func->return_type->data.name : "int");
 
 	buffer_append_fmt(ctx, "define %s @%s(", return_type, func->name);
 
@@ -843,7 +868,8 @@ CodegenContext *codegen_create(Program *prog, SemanticContext *sem_ctx) {
 void codegen_generate(CodegenContext *ctx, FILE *output) {
 	/* Preamble: declare external functions */
 	buffer_append(ctx, "; Target datalayout and triple would go here\n");
-	buffer_append(ctx, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n");
+	buffer_append(ctx,
+	              "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n");
 	buffer_append(ctx, "target triple = \"x86_64-unknown-linux-gnu\"\n\n");
 
 	/* Declare custom types as opaque structures */
@@ -905,7 +931,8 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 }
 
 void codegen_free(CodegenContext *ctx) {
-	if (!ctx) return;
+	if (!ctx)
+		return;
 
 	while (ctx->scope_count > 0) {
 		pop_value_scope(ctx);

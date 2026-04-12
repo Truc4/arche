@@ -3,9 +3,13 @@
 
 #include "lexer.h"
 
-static int is_at_end(Lexer *lexer) { return *lexer->cur == '\0'; }
+static int is_at_end(Lexer *lexer) {
+	return *lexer->cur == '\0';
+}
 
-static char peek(Lexer *lexer) { return *lexer->cur; }
+static char peek(Lexer *lexer) {
+	return *lexer->cur;
+}
 
 static char peek_next(Lexer *lexer) {
 	if (is_at_end(lexer) || lexer->cur[1] == '\0') {
@@ -28,8 +32,7 @@ static char advance(Lexer *lexer) {
 	return c;
 }
 
-static Token make_token(Lexer *lexer, TokenKind kind, const char *start,
-						size_t length, int line, int column) {
+static Token make_token(Lexer *lexer, TokenKind kind, const char *start, size_t length, int line, int column) {
 	Token tok;
 	tok.kind = kind;
 	tok.start = start;
@@ -39,8 +42,7 @@ static Token make_token(Lexer *lexer, TokenKind kind, const char *start,
 	return tok;
 }
 
-static Token error_token(Lexer *lexer, const char *message, int line,
-						 int column) {
+static Token error_token(Lexer *lexer, const char *message, int line, int column) {
 	Token tok;
 	tok.kind = TOK_ERROR;
 	tok.start = message;
@@ -80,8 +82,7 @@ static Token lex_comment(Lexer *lexer) {
 		advance(lexer);
 	}
 
-	return make_token(lexer, TOK_COMMENT, start,
-					  (size_t)(lexer->cur - start), line, column);
+	return make_token(lexer, TOK_COMMENT, start, (size_t)(lexer->cur - start), line, column);
 }
 
 static int is_ident_start(char c) {
@@ -161,8 +162,7 @@ static Token lex_number(Lexer *lexer) {
 		}
 	}
 
-	return make_token(lexer, TOK_NUMBER, start, (size_t)(lexer->cur - start),
-					  line, column);
+	return make_token(lexer, TOK_NUMBER, start, (size_t)(lexer->cur - start), line, column);
 }
 
 static Token lex_string(Lexer *lexer) {
@@ -189,8 +189,7 @@ static Token lex_string(Lexer *lexer) {
 
 	advance(lexer); /* consume closing '"' */
 
-	return make_token(lexer, TOK_STRING, start, (size_t)(lexer->cur - start),
-					  line, column);
+	return make_token(lexer, TOK_STRING, start, (size_t)(lexer->cur - start), line, column);
 }
 
 void lexer_init(Lexer *lexer, const char *src) {

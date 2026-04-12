@@ -1,9 +1,9 @@
+#include "ast/ast.h"
+#include "lexer/lexer.h"
+#include "parser/parser.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "lexer/lexer.h"
-#include "parser/parser.h"
-#include "ast/ast.h"
 
 int main(int argc, char *argv[]) {
 	if (argc < 2) {

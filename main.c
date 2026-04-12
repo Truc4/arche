@@ -1,31 +1,33 @@
+#include "codegen/codegen.h"
 #include "lexer/lexer.h"
 #include "parser/parser.h"
 #include "semantic/semantic.h"
-#include "codegen/codegen.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 #ifndef ARCHE_CORE_DIR
-#  define ARCHE_CORE_DIR "core"
+#define ARCHE_CORE_DIR "core"
 #endif
 
 static char *read_file_optional(const char *path) {
 	FILE *f = fopen(path, "r");
-	if (!f) return NULL;
+	if (!f)
+		return NULL;
 	fseek(f, 0, SEEK_END);
 	long size = ftell(f);
 	fseek(f, 0, SEEK_SET);
 	if (size == 0) {
 		fclose(f);
-		return malloc(1);  /* return empty string */
+		return malloc(1); /* return empty string */
 	}
 	char *buf = malloc(size + 2);
 	size_t n = fread(buf, 1, size, f);
 	fclose(f);
-	if (n > 0) buf[n] = '\n';
+	if (n > 0)
+		buf[n] = '\n';
 	buf[n + (n > 0 ? 1 : 0)] = '\0';
 	return buf;
 }
@@ -106,7 +108,7 @@ int main(int argc, char *argv[]) {
 		free(source);
 		source = combined_source;
 	} else if (core_src) {
-		free(core_src);  /* core.arche was empty */
+		free(core_src); /* core.arche was empty */
 	}
 
 	/* Lexical analysis and parsing */
@@ -120,7 +122,8 @@ int main(int argc, char *argv[]) {
 
 	if (!prog || parser.had_error) {
 		fprintf(stderr, "Parsing failed\n");
-		if (prog) program_free(prog);
+		if (prog)
+			program_free(prog);
 		free(source);
 		return 1;
 	}
