@@ -3,14 +3,35 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* ========== PARSER STRUCT DEFINITION ========== */
+
+struct Parser {
+	Lexer *lexer;
+	Token current;
+	Token previous;
+	int had_error;
+	int panic_mode;
+	ParseError *errors;
+	size_t error_count;
+	size_t error_cap;
+	Token *comments;
+	size_t comment_count;
+	size_t comment_cap;
+};
+
 /* ========== UTILITY FUNCTIONS ========== */
 
 static void advance(Parser *parser) {
 	parser->previous = parser->current;
 	parser->current = lexer_next_token(parser->lexer);
 
-	/* Skip comment tokens */
+	/* Capture comment tokens instead of skipping */
 	while (parser->current.kind == TOK_COMMENT) {
+		if (parser->comment_count >= parser->comment_cap) {
+			parser->comment_cap = (parser->comment_cap == 0) ? 16 : parser->comment_cap * 2;
+			parser->comments = realloc(parser->comments, parser->comment_cap * sizeof(Token));
+		}
+		parser->comments[parser->comment_count++] = parser->current;
 		parser->current = lexer_next_token(parser->lexer);
 	}
 
@@ -43,7 +64,20 @@ static void error(Parser *parser, const char *msg) {
 	parser->panic_mode = 1;
 	parser->had_error = 1;
 
-	fprintf(stderr, "[Line %d, Col %d] Error: %s\n", parser->current.line, parser->current.column, msg);
+	/* Append error to errors array */
+	if (parser->error_count >= parser->error_cap) {
+		parser->error_cap = (parser->error_cap == 0) ? 16 : parser->error_cap * 2;
+		parser->errors = realloc(parser->errors, parser->error_cap * sizeof(ParseError));
+	}
+
+	/* Format and allocate error message */
+	char buf[512];
+	snprintf(buf, sizeof(buf), "%s", msg);
+	parser->errors[parser->error_count].message = malloc(strlen(buf) + 1);
+	strcpy(parser->errors[parser->error_count].message, buf);
+	parser->errors[parser->error_count].line = parser->current.line;
+	parser->errors[parser->error_count].column = parser->current.column;
+	parser->error_count++;
 }
 
 static void synchronize(Parser *parser) {
@@ -87,7 +121,10 @@ static TypeRef *parse_type(Parser *parser) {
 	char *name = token_text(parser->current);
 	advance(parser);
 
-	return type_name_create(name);
+	TypeRef *type = type_name_create(name);
+	type->loc.line = parser->previous.line;
+	type->loc.column = parser->previous.column;
+	return type;
 }
 
 /* ========== ARCHETYPE PARSING ========== */
@@ -123,7 +160,10 @@ static FieldDecl *parse_arch_field(Parser *parser) {
 	/* trailing comma is optional */
 	match(parser, TOK_COMMA);
 
-	return field_decl_create(kind, name, type);
+	FieldDecl *field = field_decl_create(kind, name, type);
+	field->loc.line = parser->previous.line;
+	field->loc.column = parser->previous.column;
+	return field;
 }
 
 static Decl *parse_archetype_decl(Parser *parser) {
@@ -145,6 +185,8 @@ static Decl *parse_archetype_decl(Parser *parser) {
 	}
 
 	ArchetypeDecl *arch = archetype_decl_create(name);
+	arch->loc.line = parser->previous.line;
+	arch->loc.column = parser->previous.column;
 
 	while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
 		FieldDecl *field = parse_arch_field(parser);
@@ -195,6 +237,8 @@ static Decl *parse_proc_decl(Parser *parser) {
 
 	ProcDecl *proc = proc_decl_create(name);
 	proc->is_extern = is_extern;
+	proc->loc.line = parser->previous.line;
+	proc->loc.column = parser->previous.column;
 
 	/* Parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
@@ -205,6 +249,8 @@ static Decl *parse_proc_decl(Parser *parser) {
 			}
 			char *param_name = token_text(parser->current);
 			advance(parser);
+			int param_line = parser->previous.line;
+			int param_column = parser->previous.column;
 
 			if (!match(parser, TOK_COLON)) {
 				error(parser, "Expected ':' after parameter name");
@@ -216,6 +262,8 @@ static Decl *parse_proc_decl(Parser *parser) {
 				return NULL;
 
 			Parameter *param = parameter_create(param_name, param_type);
+			param->loc.line = param_line;
+			param->loc.column = param_column;
 			proc->params = realloc(proc->params, (proc->param_count + 1) * sizeof(Parameter *));
 			proc->params[proc->param_count++] = param;
 		} while (match(parser, TOK_COMMA));
@@ -283,6 +331,8 @@ static Decl *parse_sys_decl(Parser *parser) {
 	}
 
 	SysDecl *sys = sys_decl_create(name);
+	sys->loc.line = parser->previous.line;
+	sys->loc.column = parser->previous.column;
 
 	/* parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
@@ -294,8 +344,12 @@ static Decl *parse_sys_decl(Parser *parser) {
 
 			char *param_name = token_text(parser->current);
 			advance(parser);
+			int param_line = parser->previous.line;
+			int param_column = parser->previous.column;
 
 			Parameter *param = parameter_create(param_name, NULL);
+			param->loc.line = param_line;
+			param->loc.column = param_column;
 			sys->params = realloc(sys->params, (sys->param_count + 1) * sizeof(Parameter *));
 			sys->params[sys->param_count++] = param;
 		} while (match(parser, TOK_COMMA));
@@ -352,6 +406,8 @@ static Decl *parse_func_decl(Parser *parser) {
 	}
 
 	FuncDecl *func = func_decl_create(name, NULL);
+	func->loc.line = parser->previous.line;
+	func->loc.column = parser->previous.column;
 
 	/* parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
@@ -363,6 +419,8 @@ static Decl *parse_func_decl(Parser *parser) {
 
 			char *param_name = token_text(parser->current);
 			advance(parser);
+			int param_line = parser->previous.line;
+			int param_column = parser->previous.column;
 
 			if (!match(parser, TOK_COLON)) {
 				error(parser, "Expected ':' after parameter name");
@@ -374,6 +432,8 @@ static Decl *parse_func_decl(Parser *parser) {
 				return NULL;
 
 			Parameter *param = parameter_create(param_name, param_type);
+			param->loc.line = param_line;
+			param->loc.column = param_column;
 			func->params = realloc(func->params, (func->param_count + 1) * sizeof(Parameter *));
 			func->params[func->param_count++] = param;
 		} while (match(parser, TOK_COMMA));
@@ -384,13 +444,8 @@ static Decl *parse_func_decl(Parser *parser) {
 		return NULL;
 	}
 
-	if (!match(parser, TOK_MINUS)) {
-		error(parser, "Expected '-' in '->'");
-		return NULL;
-	}
-
-	if (!match(parser, TOK_GT)) {
-		error(parser, "Expected '>' in '->'");
+	if (!match(parser, TOK_ARROW)) {
+		error(parser, "Expected '->'");
 		return NULL;
 	}
 
@@ -448,6 +503,8 @@ static Decl *parse_world_decl(Parser *parser) {
 	}
 
 	WorldDecl *world = world_decl_create(name);
+	world->loc.line = parser->previous.line;
+	world->loc.column = parser->previous.column;
 	Decl *decl = decl_create(DECL_WORLD);
 	decl->data.world = world;
 	return decl;
@@ -488,6 +545,8 @@ static Expression *parse_primary_expr(Parser *parser) {
 		advance(parser);
 
 		Expression *expr = expression_create(EXPR_LITERAL);
+		expr->loc.line = parser->previous.line;
+		expr->loc.column = parser->previous.column;
 		expr->data.literal.lexeme = lexeme;
 		return expr;
 	}
@@ -497,6 +556,8 @@ static Expression *parse_primary_expr(Parser *parser) {
 		advance(parser);
 
 		Expression *expr = expression_create(EXPR_LITERAL);
+		expr->loc.line = parser->previous.line;
+		expr->loc.column = parser->previous.column;
 		expr->data.literal.lexeme = lexeme;
 		return expr;
 	}
@@ -504,6 +565,8 @@ static Expression *parse_primary_expr(Parser *parser) {
 	if (check(parser, TOK_IDENT)) {
 		char *name = token_text(parser->current);
 		advance(parser);
+		int name_line = parser->previous.line;
+		int name_column = parser->previous.column;
 
 		/* check for alloc expression */
 		if (strcmp(name, "alloc") == 0) {
@@ -514,8 +577,12 @@ static Expression *parse_primary_expr(Parser *parser) {
 			}
 			char *arch_name = token_text(parser->current);
 			advance(parser);
+			int alloc_line = parser->previous.line;
+			int alloc_column = parser->previous.column;
 
 			Expression *alloc_expr = expression_create(EXPR_ALLOC);
+			alloc_expr->loc.line = alloc_line;
+			alloc_expr->loc.column = alloc_column;
 			alloc_expr->data.alloc.archetype_name = arch_name;
 			alloc_expr->data.alloc.field_names = NULL;
 			alloc_expr->data.alloc.field_values = NULL;
@@ -551,15 +618,21 @@ static Expression *parse_primary_expr(Parser *parser) {
 			advance(parser);
 
 			Expression *base = expression_create(EXPR_NAME);
+			base->loc.line = name_line;
+			base->loc.column = name_column;
 			base->data.name.name = name;
 
 			Expression *field = expression_create(EXPR_FIELD);
+			field->loc.line = base->loc.line;
+			field->loc.column = base->loc.column;
 			field->data.field.base = base;
 			field->data.field.field_name = field_name;
 
 			/* check for indexing on the field */
 			if (match(parser, TOK_LBRACKET)) {
 				Expression *index = expression_create(EXPR_INDEX);
+				index->loc.line = field->loc.line;
+				index->loc.column = field->loc.column;
 				index->data.index.base = field;
 				index->data.index.indices = NULL;
 				index->data.index.index_count = 0;
@@ -590,7 +663,11 @@ static Expression *parse_primary_expr(Parser *parser) {
 			Expression *index = expression_create(EXPR_INDEX);
 
 			Expression *base = expression_create(EXPR_NAME);
+			base->loc.line = name_line;
+			base->loc.column = name_column;
 			base->data.name.name = name;
+			index->loc.line = base->loc.line;
+			index->loc.column = base->loc.column;
 			index->data.index.base = base;
 			index->data.index.indices = NULL;
 			index->data.index.index_count = 0;
@@ -617,7 +694,11 @@ static Expression *parse_primary_expr(Parser *parser) {
 		if (match(parser, TOK_LPAREN)) {
 			Expression *expr = expression_create(EXPR_CALL);
 			Expression *callee = expression_create(EXPR_NAME);
+			callee->loc.line = name_line;
+			callee->loc.column = name_column;
 			callee->data.name.name = name;
+			expr->loc.line = callee->loc.line;
+			expr->loc.column = callee->loc.column;
 			expr->data.call.callee = callee;
 			expr->data.call.args = NULL;
 			expr->data.call.arg_count = 0;
@@ -644,6 +725,8 @@ static Expression *parse_primary_expr(Parser *parser) {
 		}
 
 		Expression *expr = expression_create(EXPR_NAME);
+		expr->loc.line = name_line;
+		expr->loc.column = name_column;
 		expr->data.name.name = name;
 		return expr;
 	}
@@ -714,6 +797,8 @@ static Expression *parse_binary_expr(Parser *parser) {
 		}
 
 		Expression *binary = expression_create(EXPR_BINARY);
+		binary->loc.line = left->loc.line;
+		binary->loc.column = left->loc.column;
 		binary->data.binary.op = op;
 		binary->data.binary.left = left;
 		binary->data.binary.right = right;
@@ -766,6 +851,8 @@ static Statement *parse_statement(Parser *parser) {
 			}
 
 			Statement *stmt = statement_create(STMT_RUN);
+			stmt->loc.line = parser->previous.line;
+			stmt->loc.column = parser->previous.column;
 			stmt->data.run_stmt.system_name = system_name;
 			stmt->data.run_stmt.world_name = world_name;
 			return stmt;
@@ -773,6 +860,9 @@ static Statement *parse_statement(Parser *parser) {
 	}
 
 	if (match(parser, TOK_LET)) {
+		int let_line = parser->previous.line;
+		int let_column = parser->previous.column;
+
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected variable name after 'let'");
 			return NULL;
@@ -795,6 +885,8 @@ static Statement *parse_statement(Parser *parser) {
 		}
 
 		Statement *stmt = statement_create(STMT_LET);
+		stmt->loc.line = let_line;
+		stmt->loc.column = let_column;
 		stmt->data.let_stmt.name = name;
 		stmt->data.let_stmt.type = NULL;
 		stmt->data.let_stmt.value = value;
@@ -802,6 +894,9 @@ static Statement *parse_statement(Parser *parser) {
 	}
 
 	if (match(parser, TOK_FOR)) {
+		int for_line = parser->previous.line;
+		int for_column = parser->previous.column;
+
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected variable name after 'for'");
 			return NULL;
@@ -824,6 +919,8 @@ static Statement *parse_statement(Parser *parser) {
 		advance(parser);
 
 		Expression *iterable = expression_create(EXPR_NAME);
+		iterable->loc.line = parser->previous.line;
+		iterable->loc.column = parser->previous.column;
 		iterable->data.name.name = iterable_name;
 
 		if (!match(parser, TOK_LBRACE)) {
@@ -832,6 +929,8 @@ static Statement *parse_statement(Parser *parser) {
 		}
 
 		Statement *stmt = statement_create(STMT_FOR);
+		stmt->loc.line = for_line;
+		stmt->loc.column = for_column;
 		stmt->data.for_stmt.var_name = var_name;
 		stmt->data.for_stmt.iterable = iterable;
 		stmt->data.for_stmt.body = NULL;
@@ -876,6 +975,8 @@ static Statement *parse_statement(Parser *parser) {
 		}
 
 		Statement *stmt = statement_create(STMT_ASSIGN);
+		stmt->loc.line = target->loc.line;
+		stmt->loc.column = target->loc.column;
 		stmt->data.assign_stmt.target = target;
 		stmt->data.assign_stmt.value = value;
 		return stmt;
@@ -887,23 +988,31 @@ static Statement *parse_statement(Parser *parser) {
 	}
 
 	Statement *stmt = statement_create(STMT_EXPR);
+	stmt->loc.line = target->loc.line;
+	stmt->loc.column = target->loc.column;
 	stmt->data.expr_stmt.expr = target;
 	return stmt;
 }
 
 /* ========== MAIN PARSER ========== */
 
-void parser_init(Parser *parser, Lexer *lexer) {
+static void parser_init(Parser *parser, Lexer *lexer) {
 	parser->lexer = lexer;
 	parser->had_error = 0;
 	parser->panic_mode = 0;
+	parser->errors = NULL;
+	parser->error_count = 0;
+	parser->error_cap = 0;
+	parser->comments = NULL;
+	parser->comment_count = 0;
+	parser->comment_cap = 0;
 	advance(parser);
 }
 
-Program *parse_program(Parser *parser) {
+ParseResult parse_program(Parser *parser) {
 	Program *prog = program_create();
 
-	while (!check(parser, TOK_EOF) && !parser->had_error) {
+	while (!check(parser, TOK_EOF)) {
 		Decl *decl = parse_decl(parser);
 		if (!decl) {
 			synchronize(parser);
@@ -914,5 +1023,55 @@ Program *parse_program(Parser *parser) {
 		prog->decls[prog->decl_count++] = decl;
 	}
 
-	return prog;
+	ParseResult result;
+	result.ast = prog;
+	result.errors = parser->errors;
+	result.error_count = parser->error_count;
+	result.comments = parser->comments;
+	result.comment_count = parser->comment_count;
+	parser->errors = NULL;
+	parser->error_count = 0;
+	parser->comments = NULL;
+	parser->comment_count = 0;
+	return result;
+}
+
+Parser *parser_create(Lexer *lexer) {
+	Parser *parser = calloc(1, sizeof(Parser));
+	parser_init(parser, lexer);
+	return parser;
+}
+
+void parser_free(Parser *parser) {
+	if (parser) {
+		for (size_t i = 0; i < parser->error_count; i++) {
+			free(parser->errors[i].message);
+		}
+		free(parser->errors);
+		free(parser->comments);
+		free(parser);
+	}
+}
+
+ParseResult parse_source(const char *src) {
+	Lexer lexer;
+	lexer_init(&lexer, src);
+	Parser *parser = parser_create(&lexer);
+	ParseResult result = parse_program(parser);
+	parser_free(parser);
+	return result;
+}
+
+void parse_result_free(ParseResult *result) {
+	if (result) {
+		for (size_t i = 0; i < result->error_count; i++) {
+			free(result->errors[i].message);
+		}
+		free(result->errors);
+		free(result->comments);
+		result->errors = NULL;
+		result->error_count = 0;
+		result->comments = NULL;
+		result->comment_count = 0;
+	}
 }

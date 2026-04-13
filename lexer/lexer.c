@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "lexer.h"
@@ -265,6 +266,10 @@ Token lexer_next_token(Lexer *lexer) {
 		return make_token(lexer, TOK_PLUS, start, 1, line, column);
 
 	case '-':
+		if (peek(lexer) == '>') {
+			advance(lexer);
+			return make_token(lexer, TOK_ARROW, start, 2, line, column);
+		}
 		if (peek(lexer) == '=') {
 			advance(lexer);
 			return make_token(lexer, TOK_MINUS_EQ, start, 2, line, column);
@@ -411,10 +416,47 @@ const char *token_kind_name(TokenKind kind) {
 	case TOK_GT_EQ:
 		return "TOK_GT_EQ";
 
+	case TOK_ARROW:
+		return "TOK_ARROW";
+
 	case TOK_BANG:
 		return "TOK_BANG";
 
 	default:
 		return "TOK_UNKNOWN";
+	}
+}
+
+TokenBuffer lexer_tokenize(const char *src) {
+	Lexer lexer;
+	lexer_init(&lexer, src);
+
+	Token *tokens = NULL;
+	size_t count = 0;
+	size_t capacity = 0;
+
+	for (;;) {
+		Token tok = lexer_next_token(&lexer);
+
+		/* grow array if needed */
+		if (count >= capacity) {
+			capacity = (capacity == 0) ? 32 : capacity * 2;
+			tokens = realloc(tokens, capacity * sizeof(Token));
+		}
+
+		tokens[count++] = tok;
+
+		if (tok.kind == TOK_EOF)
+			break;
+	}
+
+	return (TokenBuffer){tokens, count};
+}
+
+void token_buffer_free(TokenBuffer *buf) {
+	if (buf) {
+		free(buf->tokens);
+		buf->tokens = NULL;
+		buf->count = 0;
 	}
 }

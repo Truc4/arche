@@ -112,21 +112,22 @@ int main(int argc, char *argv[]) {
 	}
 
 	/* Lexical analysis and parsing */
-	Lexer lexer;
-	lexer_init(&lexer, source);
+	ParseResult parse_result = parse_source(source);
 
-	Parser parser;
-	parser_init(&parser, &lexer);
-
-	Program *prog = parse_program(&parser);
-
-	if (!prog || parser.had_error) {
-		fprintf(stderr, "Parsing failed\n");
-		if (prog)
-			program_free(prog);
+	if (parse_result.error_count > 0) {
+		for (size_t i = 0; i < parse_result.error_count; i++) {
+			fprintf(stderr, "[Line %d, Col %d] Error: %s\n", parse_result.errors[i].line, parse_result.errors[i].column,
+			        parse_result.errors[i].message);
+		}
+		Program *prog = parse_result.ast;
+		parse_result_free(&parse_result);
+		program_free(prog);
 		free(source);
 		return 1;
 	}
+
+	Program *prog = parse_result.ast;
+	parse_result_free(&parse_result);
 
 	/* Semantic analysis */
 	SemanticContext *sem_ctx = semantic_analyze(prog);

@@ -29,20 +29,22 @@ int main(int argc, char *argv[]) {
 	fclose(file);
 
 	/* lex and parse */
-	Lexer lexer;
-	lexer_init(&lexer, src);
+	ParseResult parse_result = parse_source(src);
 
-	Parser parser;
-	parser_init(&parser, &lexer);
-
-	Program *prog = parse_program(&parser);
-
-	if (parser.had_error) {
-		fprintf(stderr, "Parse error\n");
+	if (parse_result.error_count > 0) {
+		for (size_t i = 0; i < parse_result.error_count; i++) {
+			fprintf(stderr, "[Line %d, Col %d] Error: %s\n", parse_result.errors[i].line, parse_result.errors[i].column,
+			        parse_result.errors[i].message);
+		}
+		Program *prog = parse_result.ast;
+		parse_result_free(&parse_result);
 		program_free(prog);
 		free(src);
 		return 1;
 	}
+
+	Program *prog = parse_result.ast;
+	parse_result_free(&parse_result);
 
 	/* format and print */
 	format_program(stdout, prog);
