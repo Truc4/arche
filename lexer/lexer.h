@@ -59,6 +59,9 @@ typedef enum TokenKind {
 	TOK_LT_EQ,   /* <= */
 	TOK_GT_EQ,   /* >= */
 
+	/* arrow */
+	TOK_ARROW, /* -> */
+
 	/* unary */
 	TOK_BANG /* ! */
 } TokenKind;
@@ -81,5 +84,17 @@ typedef struct Lexer {
 void lexer_init(Lexer *lexer, const char *src);
 Token lexer_next_token(Lexer *lexer);
 const char *token_kind_name(TokenKind kind);
+
+/* Full-buffer tokenization: lex entire source into an array.
+ * Returns a TokenBuffer with all tokens (including TOK_COMMENT).
+ * Terminates with TOK_EOF as the last entry.
+ * Caller must free buf.tokens with token_buffer_free(). */
+typedef struct {
+	Token *tokens;
+	size_t count;
+} TokenBuffer;
+
+TokenBuffer lexer_tokenize(const char *src);
+void token_buffer_free(TokenBuffer *buf);
 
 #endif

@@ -41,11 +41,10 @@ void test_fail_msg(const char *reason) {
 
 /* Helper to parse a string */
 Program *parse_string(const char *src) {
-	Lexer lexer;
-	lexer_init(&lexer, src);
-	Parser parser;
-	parser_init(&parser, &lexer);
-	return parse_program(&parser);
+	ParseResult result = parse_source(src);
+	Program *prog = result.ast;
+	parse_result_free(&result);
+	return prog;
 }
 
 /* ========== ARCHETYPE TESTS ========== */

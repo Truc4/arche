@@ -133,6 +133,7 @@ struct ProcDecl {
 struct Parameter {
 	char *name;
 	TypeRef *type;
+	SourceLoc loc;
 };
 
 struct SysDecl {

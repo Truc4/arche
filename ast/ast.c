@@ -89,6 +89,8 @@ Parameter *parameter_create(char *name, TypeRef *type) {
 	Parameter *param = malloc(sizeof(Parameter));
 	param->name = name;
 	param->type = type;
+	param->loc.line = 1;
+	param->loc.column = 1;
 	return param;
 }
 

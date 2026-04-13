@@ -3,17 +3,31 @@
 
 #include "../ast/ast.h"
 #include "../lexer/lexer.h"
+#include <stddef.h>
 
+/* A single parse error */
 typedef struct {
-	Lexer *lexer;
-	Token current;
-	Token previous;
-	int had_error;
-	int panic_mode;
-} Parser;
+	char *message;
+	int line;
+	int column;
+} ParseError;
 
-void parser_init(Parser *parser, Lexer *lexer);
+/* Result of parsing */
+typedef struct {
+	Program *ast;
+	ParseError *errors;
+	size_t error_count;
+	Token *comments;
+	size_t comment_count;
+} ParseResult;
 
-Program *parse_program(Parser *parser);
+/* Opaque parser state */
+typedef struct Parser Parser;
+
+Parser *parser_create(Lexer *lexer);
+void parser_free(Parser *parser);
+ParseResult parse_program(Parser *parser);
+ParseResult parse_source(const char *src);
+void parse_result_free(ParseResult *result);
 
 #endif /* PARSER_H */

@@ -5,6 +5,8 @@ LEXER_BIN = lexer-bin
 PARSER_TEST_BIN = parser-test
 FMT_BIN = arche-fmt
 SEMANTIC_TEST_BIN = semantic-test
+LIBARCH = libarch.a
+LIBARCH_OBJS = lexer/lexer.o ast/ast.o parser/parser.o
 
 # Source files
 SRCS = lexer/lexer.c \
@@ -21,7 +23,7 @@ FMT_OBJS = lexer/lexer.o ast/ast.o parser/parser.o arche_fmt.o
 SEMANTIC_TEST_OBJS = lexer/lexer.o ast/ast.o parser/parser.o semantic/semantic.o tests/semantic_tests.o
 
 # Default target
-all: $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN)
+all: $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN) $(LIBARCH)
 
 # Build main compiler executable
 $(TARGET): $(COMPILER_OBJS)
@@ -42,6 +44,10 @@ $(FMT_BIN): $(FMT_OBJS)
 # Build semantic tests executable
 $(SEMANTIC_TEST_BIN): $(SEMANTIC_TEST_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
+
+# Build syntax/parsing library
+$(LIBARCH): $(LIBARCH_OBJS)
+	$(AR) rcs $@ $^
 
 # Compile object files
 %.o: %.c
@@ -89,4 +95,4 @@ clean:
 	rm -f *.txt test_*.sh run_*.sh 2>/dev/null || true
 
 # Phony targets
-.PHONY: all run run-lexer test test-lexer test-parser test-semantic clean
+.PHONY: all run run-lexer test test-lexer test-parser test-semantic test-codegen clean

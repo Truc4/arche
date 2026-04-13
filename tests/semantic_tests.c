@@ -65,15 +65,15 @@ AnalysisResult analyze_string(const char *src) {
 		full_src[sizeof(full_src) - 1] = '\0';
 	}
 
-	Lexer lexer;
-	lexer_init(&lexer, full_src);
-	Parser parser;
-	parser_init(&parser, &lexer);
-	Program *prog = parse_program(&parser);
+	ParseResult parse_result = parse_source(full_src);
+	Program *prog = parse_result.ast;
 
-	if (parser.had_error) {
+	if (parse_result.error_count > 0) {
+		parse_result_free(&parse_result);
 		return result;
 	}
+
+	parse_result_free(&parse_result);
 
 	result.prog = prog;
 	result.ctx = semantic_analyze(prog);
