@@ -234,7 +234,7 @@ int main() {
 	       (double)(time1 - time4) / time1 * 100);
 
 	// Output JSON results
-	FILE *out = fopen("results/fixed_length_results.json", "w");
+	FILE *out = fopen("benchmarks/string_ops/results/fixed_length_results.json", "w");
 	fprintf(out, "{\n");
 	fprintf(out, "  \"benchmark\": \"fixed_length\",\n");
 	fprintf(out, "  \"num_strings\": %d,\n", NUM_STRINGS);
@@ -249,7 +249,7 @@ int main() {
 	fprintf(out, "}\n");
 	fclose(out);
 
-	printf("\nResults saved to results/fixed_length_results.json\n");
+	printf("\nResults saved to design_analysis/string_ops/results/fixed_length_results.json\n");
 
 	free_string_array(original, NUM_STRINGS);
 

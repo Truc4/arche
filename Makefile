@@ -90,10 +90,32 @@ clean:
 	find . -name "*.o" -delete
 	find . -name "*.a" -delete
 	rm -f $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN)
+	rm -f bench-physics bench-strings bench-lifecycle bench-mixed
 	find examples/ -type f ! -name "*.c" ! -name "*.arche" ! -name "*.sh" -delete
 	find tests/ -type f ! -name "*.c" ! -name "*.h" ! -name "*.sh" ! -name "*.arche" -delete
-	find benchmarks/ -type f ! -name "*.c" ! -name "*.h" ! -name "*.sh" ! -name "*.arche" -delete
+	find design_analysis/ -type f ! -name "*.c" ! -name "*.h" ! -name "*.sh" ! -name "*.arche" -delete
 	rm -f *.txt test_*.sh run_*.sh 2>/dev/null || true
 
+# Design analysis benchmarks (data-driven design decisions, not language perf)
+bench-physics: design_analysis/array_ops/physics_update.c
+	@mkdir -p design_analysis/array_ops/results
+	$(CC) -Wall -Wextra -std=c99 -O3 -march=native -o bench-physics design_analysis/array_ops/physics_update.c -lm
+	./bench-physics
+
+bench-strings: design_analysis/string_ops/fixed_length.c
+	@mkdir -p design_analysis/string_ops/results
+	$(CC) -Wall -Wextra -std=c99 -O3 -o bench-strings design_analysis/string_ops/fixed_length.c
+	./bench-strings
+
+bench-lifecycle: design_analysis/array_ops/lifecycle_operations.c
+	@mkdir -p design_analysis/array_ops/results
+	$(CC) -Wall -Wextra -std=c99 -O3 -march=native -o bench-lifecycle design_analysis/array_ops/lifecycle_operations.c -lm
+	./bench-lifecycle
+
+bench-mixed: design_analysis/array_ops/mixed_workload.c
+	@mkdir -p design_analysis/array_ops/results
+	$(CC) -Wall -Wextra -std=c99 -O3 -march=native -o bench-mixed design_analysis/array_ops/mixed_workload.c -lm
+	./bench-mixed
+
 # Phony targets
-.PHONY: all run run-lexer test test-lexer test-parser test-semantic test-codegen clean
+.PHONY: all run run-lexer test test-lexer test-parser test-semantic test-codegen clean bench-physics bench-strings bench-lifecycle bench-mixed
