@@ -573,7 +573,7 @@ void format_program(FILE *out, Program *prog) {
 			fprintf(out, "arche %s {\n", arch->name);
 			for (int j = 0; j < arch->field_count; j++) {
 				FieldDecl *field = arch->fields[j];
-				fprintf(out, "  %s %s: ", field->kind == FIELD_META ? "meta" : "col", field->name);
+				fprintf(out, "  %s: ", field->name);
 				format_type(out, field->type);
 				if (j < arch->field_count - 1) {
 					fprintf(out, ",");

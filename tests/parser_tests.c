@@ -276,7 +276,7 @@ void test_expr_binary_op(void) {
 
 void test_multiple_decls(void) {
 	test_start("multiple declarations");
-	Program *prog = parse_string("world W() arche Player { col x: Float }\n"
+	Program *prog = parse_string("world W() arche Player { x: Float }\n"
 	                             "proc init() {}\n"
 	                             "sys move(pos) {}\n");
 	ASSERT_NOT_NULL(prog, "program is null");
