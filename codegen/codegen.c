@@ -530,6 +530,74 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			func_name = expr->data.call.callee->data.name.name;
 		}
 
+		/* Special handling for insert builtin */
+		if (func_name && strcmp(func_name, "insert") == 0 && expr->data.call.arg_count > 0) {
+			/* args[0] is archetype variable, args[1..] are field values */
+			char arch_buf[256];
+			codegen_expression(ctx, expr->data.call.args[0], arch_buf);
+
+			/* Get arch_name from ValueInfo of args[0] */
+			const char *arch_name = NULL;
+			ArchetypeDecl *arch = NULL;
+			if (expr->data.call.args[0]->type == EXPR_NAME) {
+				ValueInfo *arch_var = find_value(ctx, expr->data.call.args[0]->data.name.name);
+				if (arch_var && arch_var->arch_name) {
+					arch_name = arch_var->arch_name;
+					arch = find_archetype_decl(ctx, arch_name);
+				}
+			}
+
+			if (arch_name && arch) {
+				/* Emit call to typed insert helper */
+				buffer_append_fmt(ctx, "  call void @arche_insert_%s(%%struct.%s* %s", arch_name, arch_name, arch_buf);
+
+				/* Evaluate and emit field values with types */
+				int field_idx = 0;
+				for (int i = 1; i < expr->data.call.arg_count; i++) {
+					/* Find corresponding FIELD_COLUMN field */
+					while (field_idx < arch->field_count && arch->fields[field_idx]->kind != FIELD_COLUMN) {
+						field_idx++;
+					}
+					if (field_idx < arch->field_count) {
+						char field_buf[256];
+						codegen_expression(ctx, expr->data.call.args[i], field_buf);
+						const char *field_type = llvm_type_from_arche(arch->fields[field_idx]->type->data.name);
+						buffer_append_fmt(ctx, ", %s %s", field_type, field_buf);
+						field_idx++;
+					}
+				}
+				buffer_append(ctx, ")\n");
+				strcpy(result_buf, "0");
+			}
+			break;
+		}
+
+		/* Special handling for delete builtin */
+		if (func_name && strcmp(func_name, "delete") == 0 && expr->data.call.arg_count >= 2) {
+			/* args[0] is archetype variable, args[1] is index */
+			char arch_buf[256];
+			codegen_expression(ctx, expr->data.call.args[0], arch_buf);
+
+			char idx_buf[256];
+			codegen_expression(ctx, expr->data.call.args[1], idx_buf);
+
+			/* Get arch_name from ValueInfo of args[0] */
+			const char *arch_name = NULL;
+			if (expr->data.call.args[0]->type == EXPR_NAME) {
+				ValueInfo *arch_var = find_value(ctx, expr->data.call.args[0]->data.name.name);
+				if (arch_var && arch_var->arch_name) {
+					arch_name = arch_var->arch_name;
+				}
+			}
+
+			if (arch_name) {
+				buffer_append_fmt(ctx, "  call void @arche_delete_%s(%%struct.%s* %s, i64 %s)\n", arch_name, arch_name,
+				                  arch_buf, idx_buf);
+				strcpy(result_buf, "0");
+			}
+			break;
+		}
+
 		/* Evaluate arguments and track which are string literals or string variables */
 		char **arg_bufs = malloc(expr->data.call.arg_count * sizeof(char *));
 		int *arg_is_string = malloc(expr->data.call.arg_count * sizeof(int));
@@ -590,8 +658,13 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			codegen_expression(ctx, expr->data.alloc.field_values[0], count_buf);
 		}
 
-		/* Estimate struct size (safe default: fields + count + capacity) */
-		int struct_size = 16; /* enough for pointers + 2 i64s */
+		/* Find archetype to calculate correct struct size */
+		ArchetypeDecl *arch_for_size = find_archetype_decl(ctx, arch_name);
+		int struct_size = 32; /* default: 2 pointers (16) + count + capacity (16) */
+		if (arch_for_size) {
+			/* Each column field is 8 bytes (pointer), count and capacity are 2*8 */
+			struct_size = (arch_for_size->field_count) * 8 + 16;
+		}
 
 		/* malloc struct */
 		char *raw_ptr = gen_value_name(ctx);
@@ -623,10 +696,15 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				if (arch->fields[i]->kind == FIELD_COLUMN) {
 					const char *elem_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
 
-					/* Calculate allocation size: count * element_size */
+					/* Calculate allocation size: max(count, 1) * element_size to avoid malloc(0) */
+					char *zero_cmp = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = icmp eq i64 %s, 0\n", zero_cmp, count_buf);
+					char *alloc_count = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = select i1 %s, i64 1, i64 %s  ;; at least 1\n", alloc_count, zero_cmp,
+					                  count_buf);
 					char *malloc_size = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = mul i64 %s, %lld  ;; count * sizeof(%s)\n", malloc_size, count_buf,
-					                  (elem_type[0] == 'd') ? 8LL : 4LL, /* rough estimate */
+					buffer_append_fmt(ctx, "  %s = mul i64 %s, %lld  ;; alloc_count * sizeof(%s)\n", malloc_size,
+					                  alloc_count, (elem_type[0] == 'd') ? 8LL : 4LL, /* rough estimate */
 					                  elem_type);
 
 					/* malloc the array */
@@ -1072,6 +1150,107 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	buffer_append(ctx, "  i64\n");
 
 	buffer_append(ctx, "}\n\n");
+
+	/* Emit insert helper function */
+	buffer_append_fmt(ctx, "define void @arche_insert_%s(%%struct.%s* %%arch", arch->name, arch->name);
+	for (int i = 0; i < arch->field_count; i++) {
+		if (arch->fields[i]->kind == FIELD_COLUMN) {
+			const char *base_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
+			buffer_append_fmt(ctx, ", %s %%f%d", base_type, i);
+		}
+	}
+	buffer_append(ctx, ") {\n");
+	buffer_append(ctx, "entry:\n");
+
+	/* Load count and capacity */
+	int count_idx = arch->field_count;
+	int cap_idx = arch->field_count + 1;
+	buffer_append_fmt(ctx, "  %%count_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
+	                  arch->name, arch->name, count_idx);
+	buffer_append(ctx, "  %count = load i64, i64* %count_ptr\n");
+	buffer_append_fmt(ctx, "  %%cap_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", arch->name,
+	                  arch->name, cap_idx);
+	buffer_append(ctx, "  %cap = load i64, i64* %cap_ptr\n");
+	buffer_append(ctx, "  %needs_grow = icmp sge i64 %count, %cap\n");
+	buffer_append(ctx, "  br i1 %needs_grow, label %grow, label %write_fields\n\n");
+
+	/* Grow block */
+	buffer_append(ctx, "grow:\n");
+	buffer_append(ctx, "  %cap_zero = icmp eq i64 %cap, 0\n");
+	buffer_append(ctx, "  %doubled = mul i64 %cap, 2\n");
+	buffer_append(ctx, "  %new_cap = select i1 %cap_zero, i64 4, i64 %doubled\n");
+
+	/* Realloc each column field */
+	int col_idx = 0;
+	for (int i = 0; i < arch->field_count; i++) {
+		if (arch->fields[i]->kind == FIELD_COLUMN) {
+			const char *base_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
+			int elem_size = strcmp(base_type, "double") == 0 ? 8 : 4;
+			buffer_append_fmt(ctx, "  %%col_pp%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
+			                  col_idx, arch->name, arch->name, i);
+			buffer_append_fmt(ctx, "  %%col_p%d = load %s*, %s** %%col_pp%d\n", col_idx, base_type, base_type, col_idx);
+			buffer_append_fmt(ctx, "  %%col_i8_%d = bitcast %s* %%col_p%d to i8*\n", col_idx, base_type, col_idx);
+			buffer_append_fmt(ctx, "  %%bytes%d = mul i64 %%new_cap, %d\n", col_idx, elem_size);
+			buffer_append_fmt(ctx, "  %%new_i8_%d = call i8* @realloc(i8* %%col_i8_%d, i64 %%bytes%d)\n", col_idx,
+			                  col_idx, col_idx);
+			buffer_append_fmt(ctx, "  %%new_p%d = bitcast i8* %%new_i8_%d to %s*\n", col_idx, col_idx, base_type);
+			buffer_append_fmt(ctx, "  store %s* %%new_p%d, %s** %%col_pp%d\n", base_type, col_idx, base_type, col_idx);
+			col_idx++;
+		}
+	}
+	buffer_append(ctx, "  store i64 %new_cap, i64* %cap_ptr\n");
+	buffer_append(ctx, "  br label %write_fields\n\n");
+
+	/* Write fields block */
+	buffer_append(ctx, "write_fields:\n");
+	col_idx = 0;
+	for (int i = 0; i < arch->field_count; i++) {
+		if (arch->fields[i]->kind == FIELD_COLUMN) {
+			const char *base_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
+			buffer_append_fmt(ctx, "  %%col_pp2_%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
+			                  col_idx, arch->name, arch->name, i);
+			buffer_append_fmt(ctx, "  %%col_p2_%d = load %s*, %s** %%col_pp2_%d\n", col_idx, base_type, base_type,
+			                  col_idx);
+			buffer_append_fmt(ctx, "  %%slot%d = getelementptr %s, %s* %%col_p2_%d, i64 %%count\n", col_idx, base_type,
+			                  base_type, col_idx);
+			buffer_append_fmt(ctx, "  store %s %%f%d, %s* %%slot%d\n", base_type, i, base_type, col_idx);
+			col_idx++;
+		}
+	}
+	buffer_append(ctx, "  %new_count = add i64 %count, 1\n");
+	buffer_append(ctx, "  store i64 %new_count, i64* %count_ptr\n");
+	buffer_append(ctx, "  ret void\n");
+	buffer_append(ctx, "}\n\n");
+
+	/* Emit delete helper function */
+	buffer_append_fmt(ctx, "define void @arche_delete_%s(%%struct.%s* %%arch, i64 %%idx) {\n", arch->name, arch->name);
+	buffer_append(ctx, "entry:\n");
+	buffer_append_fmt(ctx, "  %%count_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
+	                  arch->name, arch->name, count_idx);
+	buffer_append(ctx, "  %count = load i64, i64* %count_ptr\n");
+	buffer_append(ctx, "  %last = sub i64 %count, 1\n");
+	col_idx = 0;
+	for (int i = 0; i < arch->field_count; i++) {
+		if (arch->fields[i]->kind == FIELD_COLUMN) {
+			const char *base_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
+			buffer_append_fmt(ctx, "  %%col_pp_%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
+			                  col_idx, arch->name, arch->name, i);
+			buffer_append_fmt(ctx, "  %%col_p_%d = load %s*, %s** %%col_pp_%d\n", col_idx, base_type, base_type,
+			                  col_idx);
+			buffer_append_fmt(ctx, "  %%last_slot_%d = getelementptr %s, %s* %%col_p_%d, i64 %%last\n", col_idx,
+			                  base_type, base_type, col_idx);
+			buffer_append_fmt(ctx, "  %%last_val_%d = load %s, %s* %%last_slot_%d\n", col_idx, base_type, base_type,
+			                  col_idx);
+			buffer_append_fmt(ctx, "  %%idx_slot_%d = getelementptr %s, %s* %%col_p_%d, i64 %%idx\n", col_idx,
+			                  base_type, base_type, col_idx);
+			buffer_append_fmt(ctx, "  store %s %%last_val_%d, %s* %%idx_slot_%d\n", base_type, col_idx, base_type,
+			                  col_idx);
+			col_idx++;
+		}
+	}
+	buffer_append(ctx, "  store i64 %last, i64* %count_ptr\n");
+	buffer_append(ctx, "  ret void\n");
+	buffer_append(ctx, "}\n\n");
 }
 
 static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
@@ -1326,6 +1505,7 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	/* External C library function declarations */
 	buffer_append(ctx, "declare i8* @malloc(i32)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
+	buffer_append(ctx, "declare i8* @realloc(i8*, i64)\n");
 	buffer_append(ctx, "declare i32 @printf(i8*, ...)\n\n");
 
 	/* Generate code for all declarations (this will populate globals_buffer with string constants) */
@@ -1364,14 +1544,24 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		buffer_append(ctx, "\n");
 	}
 
-	/* Generate main entry point */
-	buffer_append(ctx, "\ndefine i32 @main() {\n");
-	buffer_append(ctx, "entry:\n");
-	if (has_init_proc) {
-		buffer_append(ctx, "  call void @init()\n");
+	/* Generate main entry point (unless a proc named 'main' was defined) */
+	int has_main_proc = 0;
+	for (int i = 0; i < ctx->prog->decl_count; i++) {
+		if (ctx->prog->decls[i]->kind == DECL_PROC && strcmp(ctx->prog->decls[i]->data.proc->name, "main") == 0) {
+			has_main_proc = 1;
+			break;
+		}
 	}
-	buffer_append(ctx, "  ret i32 0\n");
-	buffer_append(ctx, "}\n");
+
+	if (!has_main_proc) {
+		buffer_append(ctx, "\ndefine i32 @main() {\n");
+		buffer_append(ctx, "entry:\n");
+		if (has_init_proc) {
+			buffer_append(ctx, "  call void @init()\n");
+		}
+		buffer_append(ctx, "  ret i32 0\n");
+		buffer_append(ctx, "}\n");
+	}
 
 	/* Emit AVX2 function attributes */
 	buffer_append(ctx, "\nattributes #0 = { \"target-features\"=\"+avx2,+avx\" }\n");

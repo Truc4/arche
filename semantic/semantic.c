@@ -646,6 +646,10 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->error_count = 0;
 	ctx->current_sys_archetype = NULL;
 
+	/* Register lifecycle builtins */
+	register_func(ctx, "insert");
+	register_func(ctx, "delete");
+
 	if (!prog)
 		return ctx;
 
