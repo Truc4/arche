@@ -130,16 +130,8 @@ static TypeRef *parse_type(Parser *parser) {
 /* ========== ARCHETYPE PARSING ========== */
 
 static FieldDecl *parse_arch_field(Parser *parser) {
-	FieldKind kind;
-
-	if (match(parser, TOK_META)) {
-		kind = FIELD_META;
-	} else if (match(parser, TOK_COL)) {
-		kind = FIELD_COLUMN;
-	} else {
-		error(parser, "Expected 'meta' or 'col'");
-		return NULL;
-	}
+	/* All fields are columns (no metadata) */
+	FieldKind kind = FIELD_COLUMN;
 
 	if (!check(parser, TOK_IDENT)) {
 		error(parser, "Expected field name");

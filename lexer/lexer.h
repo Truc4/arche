@@ -18,8 +18,6 @@ typedef enum TokenKind {
 	TOK_PROC,
 	TOK_SYS,
 	TOK_FUNC,
-	TOK_META,
-	TOK_COL,
 	TOK_LET,
 	TOK_FOR,
 	TOK_IN,

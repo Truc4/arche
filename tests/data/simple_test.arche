@@ -1,8 +1,8 @@
 world Game()
 
 arche Entity {
-  meta count: Int
-  col position: Float
+  count: Int
+  position: Float
 }
 
 proc init() {

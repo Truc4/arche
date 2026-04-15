@@ -64,12 +64,12 @@ void test_archetype_empty(void) {
 
 void test_archetype_meta_field(void) {
 	test_start("archetype with meta field");
-	Program *prog = parse_string("world W() arche Player {\n  meta drag: Float\n}");
+	Program *prog = parse_string("world W() arche Player {\n  drag: Float\n}");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ASSERT_EQ(prog->decl_count, 2, "expected 2 decls");
 	ArchetypeDecl *arch = prog->decls[1]->data.archetype;
 	ASSERT_EQ(arch->field_count, 1, "expected 1 field");
-	ASSERT_EQ(arch->fields[0]->kind, FIELD_META, "expected FIELD_META");
+	ASSERT_EQ(arch->fields[0]->kind, FIELD_COLUMN, "expected FIELD_COLUMN");
 	ASSERT_EQ(strcmp(arch->fields[0]->name, "drag"), 0, "wrong field name");
 	program_free(prog);
 	test_pass_msg();
@@ -77,7 +77,7 @@ void test_archetype_meta_field(void) {
 
 void test_archetype_col_field(void) {
 	test_start("archetype with col field");
-	Program *prog = parse_string("world W() arche Particle {\n  col pos: Float\n}");
+	Program *prog = parse_string("world W() arche Particle {\n  pos: Float\n}");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ArchetypeDecl *arch = prog->decls[1]->data.archetype;
 	ASSERT_EQ(arch->field_count, 1, "expected 1 field");
@@ -89,14 +89,14 @@ void test_archetype_col_field(void) {
 void test_archetype_multiple_fields(void) {
 	test_start("archetype with multiple fields");
 	Program *prog = parse_string("world W() arche Body {\n"
-	                             "  meta drag: Float,\n"
-	                             "  col pos: Vec3,\n"
-	                             "  col vel: Vec3\n"
+	                             "  drag: Float,\n"
+	                             "  pos: Vec3,\n"
+	                             "  vel: Vec3\n"
 	                             "}");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ArchetypeDecl *arch = prog->decls[1]->data.archetype;
 	ASSERT_EQ(arch->field_count, 3, "expected 3 fields");
-	ASSERT_EQ(arch->fields[0]->kind, FIELD_META, "field 0 should be meta");
+	ASSERT_EQ(arch->fields[0]->kind, FIELD_COLUMN, "field 0 should be col");
 	ASSERT_EQ(arch->fields[1]->kind, FIELD_COLUMN, "field 1 should be col");
 	ASSERT_EQ(arch->fields[2]->kind, FIELD_COLUMN, "field 2 should be col");
 	program_free(prog);

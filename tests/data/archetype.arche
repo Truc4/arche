@@ -1,6 +1,6 @@
 archetype Entity {
-	col position [3]
-	col velocity [3]
+  position [3]
+  velocity [3]
 }
 
 proc move(entity) {

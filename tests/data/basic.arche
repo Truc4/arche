@@ -1,7 +1,7 @@
 world Game()
 
 arche Entity {
-  col x: Float
+  x: Float
 }
 
 proc init() {

@@ -1,7 +1,7 @@
 arche Body {
-  meta gravity: Float,
-  col position: Vec3,
-  col velocity: Vec3
+  gravity: Float,
+  position: Vec3,
+  velocity: Vec3
 }
 
 proc initialize() {
