@@ -107,12 +107,6 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 4 && strncmp(start, "func", 4) == 0) {
 		return TOK_FUNC;
 	}
-	if (length == 4 && strncmp(start, "meta", 4) == 0) {
-		return TOK_META;
-	}
-	if (length == 3 && strncmp(start, "col", 3) == 0) {
-		return TOK_COL;
-	}
 	if (length == 3 && strncmp(start, "let", 3) == 0) {
 		return TOK_LET;
 	}
@@ -347,10 +341,6 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_SYS";
 	case TOK_FUNC:
 		return "TOK_FUNC";
-	case TOK_META:
-		return "TOK_META";
-	case TOK_COL:
-		return "TOK_COL";
 	case TOK_LET:
 		return "TOK_LET";
 	case TOK_FOR:

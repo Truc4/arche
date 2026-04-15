@@ -1,8 +1,8 @@
 
 arche Entity {
-  meta count: Int
-  col position: Float
-  col velocity: Float
+  count: Int
+  position: Float
+  velocity: Float
 }
 
 func add_velocities(a: Float, b: Float) -> Float {

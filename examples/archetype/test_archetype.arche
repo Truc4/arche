@@ -1,16 +1,16 @@
 world GameWorld()
 
 arche Player {
-  meta drag: Float,
-  col pos: Vec3,
-  col vel: Vec3,
-  col health: Float
+  drag: Float,
+  pos: Vec3,
+  vel: Vec3,
+  health: Float
 }
 
 arche Enemy {
-  meta aggression: Float,
-  col pos: Vec3,
-  col vel: Vec3
+  aggression: Float,
+  pos: Vec3,
+  vel: Vec3
 }
 
 sys move(pos, vel) {
