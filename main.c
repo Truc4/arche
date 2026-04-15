@@ -188,6 +188,10 @@ int main(int argc, char *argv[]) {
 	int ret = system(llc_cmd);
 	if (ret != 0) {
 		fprintf(stderr, "Failed to compile LLVM IR to assembly\n");
+		/* Copy IR for debugging */
+		char debug_copy[256];
+		snprintf(debug_copy, sizeof(debug_copy), "cp %s /tmp/debug.ll", ir_file);
+		system(debug_copy);
 		unlink(ir_file);
 		codegen_free(codegen_ctx);
 		semantic_context_free(sem_ctx);

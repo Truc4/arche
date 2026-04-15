@@ -956,6 +956,8 @@ static Statement *parse_statement(Parser *parser) {
 	if (check(parser, TOK_EQ) || check(parser, TOK_PLUS_EQ) || check(parser, TOK_MINUS_EQ) ||
 	    check(parser, TOK_STAR_EQ) || check(parser, TOK_SLASH_EQ)) {
 
+		/* capture the operator before consuming it */
+		TokenKind op_token = parser->current.kind;
 		advance(parser); /* consume assignment operator */
 
 		Expression *value = parse_expression(parser);
@@ -966,11 +968,23 @@ static Statement *parse_statement(Parser *parser) {
 			error(parser, "Expected ';' after assignment");
 		}
 
+		/* map token to Operator enum */
+		Operator op = OP_NONE;
+		if (op_token == TOK_PLUS_EQ)
+			op = OP_ADD;
+		else if (op_token == TOK_MINUS_EQ)
+			op = OP_SUB;
+		else if (op_token == TOK_STAR_EQ)
+			op = OP_MUL;
+		else if (op_token == TOK_SLASH_EQ)
+			op = OP_DIV;
+
 		Statement *stmt = statement_create(STMT_ASSIGN);
 		stmt->loc.line = target->loc.line;
 		stmt->loc.column = target->loc.column;
 		stmt->data.assign_stmt.target = target;
 		stmt->data.assign_stmt.value = value;
+		stmt->data.assign_stmt.op = op;
 		return stmt;
 	}
 

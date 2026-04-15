@@ -46,6 +46,9 @@ struct SemanticContext {
 	int scope_count;
 
 	int error_count;
+
+	/* Track which archetype we're analyzing a sys for (NULL if not in sys) */
+	const char *current_sys_archetype;
 };
 
 /* ========== UTILITY FUNCTIONS ========== */
@@ -164,6 +167,103 @@ static void add_variable_with_archetype(SemanticContext *ctx, const char *name, 
 
 static void analyze_expression(SemanticContext *ctx, Expression *expr);
 static void analyze_statement(SemanticContext *ctx, Statement *stmt);
+static const char *resolve_expression_type(SemanticContext *ctx, Expression *expr);
+
+/* ========== TYPE RESOLUTION ========== */
+
+static const char *resolve_expression_type(SemanticContext *ctx, Expression *expr) {
+	if (!expr)
+		return NULL;
+
+	switch (expr->type) {
+	case EXPR_LITERAL: {
+		/* Infer type from lexeme format */
+		const char *lex = expr->data.literal.lexeme;
+		if (strchr(lex, '.') || strchr(lex, 'e') || strchr(lex, 'E')) {
+			return "float"; /* Will be converted to double by codegen */
+		}
+		return "int";
+	}
+
+	case EXPR_NAME: {
+		const char *name = expr->data.name.name;
+		VariableInfo *var = find_variable(ctx, name);
+		if (var && var->type) {
+			return var->type->data.name;
+		}
+		/* Check if it's an archetype being referenced */
+		ArchetypeInfo *arch = find_archetype(ctx, name);
+		if (arch) {
+			return name; /* Type is the archetype name */
+		}
+		return NULL;
+	}
+
+	case EXPR_FIELD: {
+		/* Field access type is the field's type */
+		if (expr->data.field.base->type == EXPR_NAME) {
+			const char *base_name = expr->data.field.base->data.name.name;
+			const char *field_name = expr->data.field.field_name;
+
+			ArchetypeInfo *arch = find_archetype(ctx, base_name);
+			if (!arch) {
+				VariableInfo *var = find_variable(ctx, base_name);
+				if (var && var->archetype_name) {
+					arch = find_archetype(ctx, var->archetype_name);
+				}
+			}
+
+			if (arch) {
+				FieldInfo *field = find_field(arch, field_name);
+				if (field && field->type) {
+					return field->type->data.name;
+				}
+			}
+		}
+		return NULL;
+	}
+
+	case EXPR_INDEX: {
+		/* Index expression has same type as base element */
+		return resolve_expression_type(ctx, expr->data.index.base);
+	}
+
+	case EXPR_BINARY: {
+		/* Infer from operands - for now, promote to float if either side is float */
+		const char *left_type = resolve_expression_type(ctx, expr->data.binary.left);
+		const char *right_type = resolve_expression_type(ctx, expr->data.binary.right);
+
+		/* Promote to double if either operand is double */
+		if (left_type && strcmp(left_type, "double") == 0)
+			return "double";
+		if (right_type && strcmp(right_type, "double") == 0)
+			return "double";
+		/* Fall back to float if either is float */
+		if (left_type && strcmp(left_type, "float") == 0)
+			return "float";
+		if (right_type && strcmp(right_type, "float") == 0)
+			return "float";
+		return left_type ? left_type : right_type;
+	}
+
+	case EXPR_UNARY: {
+		return resolve_expression_type(ctx, expr->data.unary.operand);
+	}
+
+	case EXPR_CALL: {
+		/* Return type of the function - for now unknown */
+		return NULL;
+	}
+
+	case EXPR_ALLOC: {
+		/* Type is the archetype being allocated */
+		return expr->data.alloc.archetype_name;
+	}
+
+	default:
+		return NULL;
+	}
+}
 
 /* ========== EXPRESSION ANALYSIS ========== */
 
@@ -266,6 +366,9 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		}
 		break;
 	}
+
+	/* Resolve and store the type of this expression */
+	expr->resolved_type = (char *)resolve_expression_type(ctx, expr);
 }
 
 /* ========== STATEMENT ANALYSIS ========== */
@@ -314,10 +417,18 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		/* determine what archetype the loop iterates over */
 		const char *archetype_name = NULL;
 		if (stmt->data.for_stmt.iterable->type == EXPR_NAME) {
-			archetype_name = stmt->data.for_stmt.iterable->data.name.name;
-			if (!find_archetype(ctx, archetype_name)) {
+			const char *iterable_name = stmt->data.for_stmt.iterable->data.name.name;
+
+			/* check if this is a direct archetype reference */
+			if (find_archetype(ctx, iterable_name)) {
+				archetype_name = iterable_name;
+			}
+			/* check if we're in a sys and this is a parameter name (matches current sys archetype) */
+			else if (ctx->current_sys_archetype && find_variable(ctx, iterable_name)) {
+				archetype_name = ctx->current_sys_archetype;
+			} else {
 				char msg[256];
-				snprintf(msg, sizeof(msg), "For loop iterates over undefined archetype '%s'", archetype_name);
+				snprintf(msg, sizeof(msg), "For loop iterates over undefined archetype '%s'", iterable_name);
 				error(ctx, msg);
 				archetype_name = NULL;
 			}
@@ -437,15 +548,45 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 
 	push_scope(ctx);
 
-	/* add parameters as variables */
-	for (int i = 0; i < sys->param_count; i++) {
-		add_variable(ctx, sys->params[i]->name, sys->params[i]->type);
+	/* infer which archetype this sys operates on by matching parameter names to fields */
+	const char *sys_archetype = NULL;
+	ArchetypeInfo *arch_info = NULL;
+	for (int a = 0; a < ctx->archetype_count; a++) {
+		int matches = 0;
+		for (int p = 0; p < sys->param_count; p++) {
+			if (find_field(ctx->archetypes[a], sys->params[p]->name)) {
+				matches++;
+			}
+		}
+		/* if all parameters match fields in this archetype, this is our archetype */
+		if (matches == sys->param_count && sys->param_count > 0) {
+			sys_archetype = ctx->archetypes[a]->name;
+			arch_info = ctx->archetypes[a];
+			break;
+		}
 	}
+
+	/* add parameters as variables, using field types from archetype if available */
+	for (int i = 0; i < sys->param_count; i++) {
+		TypeRef *param_type = sys->params[i]->type;
+		/* If no explicit type and we found the archetype, use the field's type */
+		if (!param_type && arch_info) {
+			FieldInfo *field = find_field(arch_info, sys->params[i]->name);
+			if (field) {
+				param_type = field->type;
+			}
+		}
+		add_variable(ctx, sys->params[i]->name, param_type);
+	}
+
+	const char *old_sys_archetype = ctx->current_sys_archetype;
+	ctx->current_sys_archetype = sys_archetype;
 
 	for (int i = 0; i < sys->statement_count; i++) {
 		analyze_statement(ctx, sys->statements[i]);
 	}
 
+	ctx->current_sys_archetype = old_sys_archetype;
 	pop_scope(ctx);
 }
 
@@ -503,6 +644,7 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
 	ctx->error_count = 0;
+	ctx->current_sys_archetype = NULL;
 
 	if (!prog)
 		return ctx;

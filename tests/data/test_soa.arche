@@ -1,0 +1,11 @@
+arche Entity {
+  pos: Float,
+  vel: Float
+}
+
+sys update(pos, vel) {
+  for i in ? {
+    pos[i] = pos[i] + vel[i];
+  }
+}
+

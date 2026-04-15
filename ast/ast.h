@@ -168,6 +168,20 @@ typedef enum {
 	STMT_FREE,
 } StatementType;
 
+typedef enum {
+	OP_NONE,
+	OP_ADD,
+	OP_SUB,
+	OP_MUL,
+	OP_DIV,
+	OP_EQ,
+	OP_NEQ,
+	OP_LT,
+	OP_GT,
+	OP_LTE,
+	OP_GTE,
+} Operator;
+
 typedef struct {
 	char *name;
 	TypeRef *type;     /* optional, may be NULL */
@@ -177,6 +191,7 @@ typedef struct {
 typedef struct {
 	Expression *target; /* must be assignable: name, field, or index */
 	Expression *value;
+	Operator op; /* OP_NONE for plain =, OP_ADD for +=, etc. */
 } AssignStmt;
 
 typedef struct {
@@ -226,19 +241,6 @@ typedef enum {
 	EXPR_CALL,
 	EXPR_ALLOC,
 } ExpressionType;
-
-typedef enum {
-	OP_ADD,
-	OP_SUB,
-	OP_MUL,
-	OP_DIV,
-	OP_EQ,
-	OP_NEQ,
-	OP_LT,
-	OP_GT,
-	OP_LTE,
-	OP_GTE,
-} Operator;
 
 typedef enum {
 	UNARY_NEG,
@@ -301,6 +303,7 @@ struct Expression {
 		CallExpr call;
 		AllocExpr alloc;
 	} data;
+	char *resolved_type; /* Semantic analysis populates: "int", "double", "Vec3", etc. NULL if not yet analyzed */
 };
 
 /* =========================
