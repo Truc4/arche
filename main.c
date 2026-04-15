@@ -190,7 +190,8 @@ int main(int argc, char *argv[]) {
 		fprintf(stderr, "Failed to compile LLVM IR to assembly\n");
 		/* Copy IR for debugging */
 		char debug_copy[256];
-		snprintf(debug_copy, sizeof(debug_copy), "cp %s /tmp/debug.ll", ir_file);
+		snprintf(debug_copy, sizeof(debug_copy), "cp %s tests/tmp/ir_debug.ll 2>/dev/null || cp %s /tmp/debug.ll",
+		         ir_file, ir_file);
 		system(debug_copy);
 		unlink(ir_file);
 		codegen_free(codegen_ctx);
@@ -218,7 +219,10 @@ int main(int argc, char *argv[]) {
 
 	printf("Successfully generated executable: %s\n", output_file);
 
-	/* Cleanup temporary files */
+	/* Cleanup temporary files (save IR for inspection during development) */
+	char save_ir[256];
+	snprintf(save_ir, sizeof(save_ir), "cp %s tests/tmp/ir_last.ll 2>/dev/null", ir_file);
+	system(save_ir);
 	unlink(ir_file);
 	unlink(asm_file);
 
