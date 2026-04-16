@@ -5,7 +5,8 @@ arche Particle {
 
 arche Body {
   pos: float,
-  vel: float
+  vel: float,
+  mass: float
 }
 
 sys move(pos, vel) {

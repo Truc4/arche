@@ -12,10 +12,16 @@ typedef struct {
 } FieldInfo;
 
 typedef struct {
-	char *name;
+	char *signature; /* deterministic key: "field:type:kind;" per field in order */
 	FieldInfo **fields;
 	int field_count;
+	int is_allocated; /* 1 once any alias for this shape has been alloc'd */
 } ArchetypeInfo;
+
+typedef struct {
+	char *name;
+	ArchetypeInfo *archetype;
+} AliasEntry;
 
 typedef struct {
 	char *name;
@@ -29,8 +35,11 @@ typedef struct {
 } Scope;
 
 struct SemanticContext {
-	ArchetypeInfo **archetypes;
+	ArchetypeInfo **archetypes; /* one per unique shape */
 	int archetype_count;
+
+	AliasEntry **aliases; /* one per arche declaration */
+	int alias_count;
 
 	char **known_funcs;
 	int known_func_count;
@@ -46,13 +55,55 @@ struct SemanticContext {
 
 /* ========== UTILITY FUNCTIONS ========== */
 
-static ArchetypeInfo *find_archetype(SemanticContext *ctx, const char *name) {
-	for (int i = 0; i < ctx->archetype_count; i++) {
-		if (strcmp(ctx->archetypes[i]->name, name) == 0) {
-			return ctx->archetypes[i];
+static char *compute_shape_signature(FieldDecl **fields, int field_count) {
+	size_t sig_size = 256;
+	char *sig = malloc(sig_size);
+	sig[0] = '\0';
+	for (int i = 0; i < field_count; i++) {
+		FieldDecl *f = fields[i];
+		const char *type_name = "unknown";
+		if (f->type) {
+			if (f->type->kind == TYPE_NAME)
+				type_name = f->type->data.name;
+			else if (f->type->kind == TYPE_ARRAY)
+				type_name = "array";
+			else if (f->type->kind == TYPE_SHAPED_ARRAY)
+				type_name = "shaped_array";
 		}
+		const char *kind_str = (f->kind == FIELD_META) ? "meta" : "col";
+		char part[128];
+		snprintf(part, sizeof(part), "%s:%s:%s;", f->name, type_name, kind_str);
+		if (strlen(sig) + strlen(part) >= sig_size - 1) {
+			sig_size = (strlen(sig) + strlen(part) + 1) * 2;
+			sig = realloc(sig, sig_size);
+		}
+		strcat(sig, part);
+	}
+	return sig;
+}
+
+static ArchetypeInfo *find_archetype_by_signature(SemanticContext *ctx, const char *sig) {
+	for (int i = 0; i < ctx->archetype_count; i++) {
+		if (strcmp(ctx->archetypes[i]->signature, sig) == 0)
+			return ctx->archetypes[i];
 	}
 	return NULL;
+}
+
+static ArchetypeInfo *find_archetype(SemanticContext *ctx, const char *name) {
+	for (int i = 0; i < ctx->alias_count; i++) {
+		if (strcmp(ctx->aliases[i]->name, name) == 0)
+			return ctx->aliases[i]->archetype;
+	}
+	return NULL;
+}
+
+static const char *archetype_any_alias(SemanticContext *ctx, ArchetypeInfo *arch) {
+	for (int i = 0; i < ctx->alias_count; i++) {
+		if (ctx->aliases[i]->archetype == arch)
+			return ctx->aliases[i]->name;
+	}
+	return "<unnamed>";
 }
 
 static FieldInfo *find_field(ArchetypeInfo *arch, const char *name) {
@@ -322,7 +373,8 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 			if (arch) {
 				if (!find_field(arch, field_name)) {
 					char msg[256];
-					snprintf(msg, sizeof(msg), "Archetype '%s' has no field '%s'", arch->name, field_name);
+					snprintf(msg, sizeof(msg), "Archetype '%s' has no field '%s'", archetype_any_alias(ctx, arch),
+					         field_name);
 					error(ctx, msg);
 				}
 			}
@@ -353,17 +405,25 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		}
 		break;
 
-	case EXPR_ALLOC:
-		/* check archetype exists */
-		if (!find_archetype(ctx, expr->data.alloc.archetype_name)) {
+	case EXPR_ALLOC: {
+		ArchetypeInfo *alloc_shape = find_archetype(ctx, expr->data.alloc.archetype_name);
+		if (!alloc_shape) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "Undefined archetype '%s'", expr->data.alloc.archetype_name);
 			error(ctx, msg);
+		} else if (alloc_shape->is_allocated) {
+			char msg[256];
+			snprintf(msg, sizeof(msg), "Shape already allocated (alias '%s' shares shape with an earlier alloc)",
+			         expr->data.alloc.archetype_name);
+			error(ctx, msg);
+		} else {
+			alloc_shape->is_allocated = 1;
 		}
 		for (int i = 0; i < expr->data.alloc.field_count; i++) {
 			analyze_expression(ctx, expr->data.alloc.field_values[i]);
 		}
 		break;
+	}
 	}
 
 	/* Resolve and store the type of this expression */
@@ -464,24 +524,38 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 	if (!arch)
 		return;
 
-	ArchetypeInfo *info = malloc(sizeof(ArchetypeInfo));
-	info->name = malloc(strlen(arch->name) + 1);
-	strcpy(info->name, arch->name);
-	info->fields = malloc(arch->field_count * sizeof(FieldInfo *));
-	info->field_count = arch->field_count;
+	char *sig = compute_shape_signature(arch->fields, arch->field_count);
+	ArchetypeInfo *shape = find_archetype_by_signature(ctx, sig);
 
-	for (int i = 0; i < arch->field_count; i++) {
-		FieldDecl *field = arch->fields[i];
-		FieldInfo *field_info = malloc(sizeof(FieldInfo));
-		field_info->name = malloc(strlen(field->name) + 1);
-		strcpy(field_info->name, field->name);
-		field_info->type = field->type;
-		field_info->kind = field->kind;
-		info->fields[i] = field_info;
+	if (!shape) {
+		/* New unique shape — create it */
+		shape = malloc(sizeof(ArchetypeInfo));
+		shape->signature = sig;
+		shape->is_allocated = 0;
+		shape->fields = malloc(arch->field_count * sizeof(FieldInfo *));
+		shape->field_count = arch->field_count;
+		for (int i = 0; i < arch->field_count; i++) {
+			FieldDecl *field = arch->fields[i];
+			FieldInfo *fi = malloc(sizeof(FieldInfo));
+			fi->name = malloc(strlen(field->name) + 1);
+			strcpy(fi->name, field->name);
+			fi->type = field->type;
+			fi->kind = field->kind;
+			shape->fields[i] = fi;
+		}
+		ctx->archetypes = realloc(ctx->archetypes, (ctx->archetype_count + 1) * sizeof(ArchetypeInfo *));
+		ctx->archetypes[ctx->archetype_count++] = shape;
+	} else {
+		free(sig); /* duplicate signature; existing shape already owns one */
 	}
 
-	ctx->archetypes = realloc(ctx->archetypes, (ctx->archetype_count + 1) * sizeof(ArchetypeInfo *));
-	ctx->archetypes[ctx->archetype_count++] = info;
+	/* Register alias */
+	AliasEntry *entry = malloc(sizeof(AliasEntry));
+	entry->name = malloc(strlen(arch->name) + 1);
+	strcpy(entry->name, arch->name);
+	entry->archetype = shape;
+	ctx->aliases = realloc(ctx->aliases, (ctx->alias_count + 1) * sizeof(AliasEntry *));
+	ctx->aliases[ctx->alias_count++] = entry;
 }
 
 static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
@@ -542,7 +616,7 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 		}
 		/* if all parameters match fields in this archetype, this is our archetype */
 		if (matches == sys->param_count && sys->param_count > 0) {
-			sys_archetype = ctx->archetypes[a]->name;
+			sys_archetype = archetype_any_alias(ctx, ctx->archetypes[a]);
 			arch_info = ctx->archetypes[a];
 			break;
 		}
@@ -616,6 +690,8 @@ SemanticContext *semantic_analyze(Program *prog) {
 	SemanticContext *ctx = malloc(sizeof(SemanticContext));
 	ctx->archetypes = NULL;
 	ctx->archetype_count = 0;
+	ctx->aliases = NULL;
+	ctx->alias_count = 0;
 	ctx->known_funcs = NULL;
 	ctx->known_func_count = 0;
 	ctx->scopes = NULL;
@@ -652,10 +728,10 @@ void semantic_context_free(SemanticContext *ctx) {
 	if (!ctx)
 		return;
 
-	/* free archetypes (but not the TypeRef, which is owned by AST) */
+	/* free shapes (one per unique column structure) */
 	for (int i = 0; i < ctx->archetype_count; i++) {
 		ArchetypeInfo *arch = ctx->archetypes[i];
-		free(arch->name);
+		free(arch->signature);
 		for (int j = 0; j < arch->field_count; j++) {
 			free(arch->fields[j]->name);
 			/* don't free arch->fields[j]->type - owned by AST */
@@ -665,6 +741,13 @@ void semantic_context_free(SemanticContext *ctx) {
 		free(arch);
 	}
 	free(ctx->archetypes);
+
+	/* free alias entries */
+	for (int i = 0; i < ctx->alias_count; i++) {
+		free(ctx->aliases[i]->name);
+		free(ctx->aliases[i]);
+	}
+	free(ctx->aliases);
 
 	/* free known functions */
 	for (int i = 0; i < ctx->known_func_count; i++) {
