@@ -1,19 +1,9 @@
-proc write() {
-}
+extern proc write(fd: Int, buf: char[], len: Int);
+extern proc read(fd: Int, buf: char[], len: Int);
+extern proc open(path: char[], flags: Int);
+extern proc close(fd: Int);
+extern proc exit(code: Int);
 
-proc read() {
-}
-
-proc open() {
-}
-
-proc close() {
-}
-
-proc exit() {
-}
-
-proc print() {
+proc print(msg: char[]) {
   write(1, msg, msg.length);
 }
-
