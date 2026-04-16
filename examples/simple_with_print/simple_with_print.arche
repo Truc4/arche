@@ -6,4 +6,6 @@ proc main() {
   let counter = alloc Counter(1);
   let x = 10;
   let y = 20;
+  let msg = "counter allocated\n";
+  write(1, msg, msg.length);
 }

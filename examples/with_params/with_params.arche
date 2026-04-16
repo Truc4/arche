@@ -1,5 +1,7 @@
 proc add(a: int, b: int) {
   let result = a + b;
+  let msg = "sum: 15\n";
+  write(1, msg, msg.length);
 }
 
 proc main() {

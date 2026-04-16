@@ -10,4 +10,6 @@ arche Matrix {
 proc main() {
   let messages = alloc Message(100);
   let matrices = alloc Matrix(50);
+  let msg = "allocations done\n";
+  write(1, msg, msg.length);
 }

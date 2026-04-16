@@ -23,4 +23,6 @@ proc main() {
   let bodies = alloc Body(50);
   run move in Simulation;
   run dampen in Simulation;
+  let msg = "systems executed\n";
+  write(1, msg, msg.length);
 }

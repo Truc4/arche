@@ -1,0 +1,15 @@
+arche Body {
+  position: float,
+  velocity: float
+}
+
+sys move(position, velocity) {
+  position = position + velocity;
+}
+
+proc main() {
+  let b = alloc Body(500);
+  run move;
+  let msg = "system executed\n";
+  write(1, msg, msg.length);
+}

@@ -25,4 +25,6 @@ proc main() {
   let bodies = alloc Body(100);
   run move in Simulation;
   run dampen in Simulation;
+  let msg = "simulation completed\n";
+  write(1, msg, msg.length);
 }

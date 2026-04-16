@@ -35,3 +35,4 @@ examples/*/*
 
 # Temporary files
 *.tmp
+tests/tmp/

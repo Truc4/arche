@@ -15,29 +15,36 @@ Arche is built on a few strong constraints:
 
 - **Array-first**: Operations apply across entire collections by default.
 - **No implicit row access**: You don’t work on individual elements unless you explicitly index.
-- **Two kinds of data**:
-  - **Columns** (arrays of values, one per element)
-  - **Metadata** (single values describing the whole collection)
-- **Minimal type system**: No booleans, no objects.
+- **Columns, not fields**: All archetype data is columnar (arrays). Single values are metadata stored in the archetype itself.
+- **Tuple columns**: Multi-component fields like position vectors are stored as separate side-by-side arrays (`pos_x`, `pos_y`) but accessed with clean syntax (`pos.x[i]`, `pos.y[i]`).
+- **Fixed-size collections**: Archetypes allocate once with a fixed count. No dynamic resizing.
+- **Minimal type system**: Primitives only: `int`, `float`, `char`. No booleans, no objects.
 - **Explicit structure over flexibility**
 
 This leads to a style that feels closer to **data pipelines** or **vectorized computation** than traditional imperative code.
 
 ## Worlds
 
-A World is a collection of archetypes. Define a world first:
+A World is a collection of archetypes. Worlds act as scopes for systems:
 
 ```arche
-world GameWorld()
+world Simulation()
 ```
 
-Worlds are sparse arrays that efficiently handle entity creation and deletion while preserving handles.
+Multiple worlds allow parallel data-driven computations. Systems operate on all matching archetypes within a world.
 
 ## Archetypes (`arche`)
 
-An Archetype is a type definition for structured data. It contains **aligned arrays (columns)** of field values.
+An Archetype defines the structure of a columnar data collection. All fields become arrays (columns), except scalar metadata stored in the struct itself.
 
-Define an archetype (a reusable template):
+**Primitives:** `int`, `float`, `char`
+
+**Field types:**
+- Single primitive: `mass: float` → scalar metadata in archetype struct
+- Tuple columns: `pos: (x: float, y: float)` → two separate arrays `pos_x[]` and `pos_y[]`
+- Multi-dimensional arrays: `text: char[256]` → N×256 array per entity
+
+Example:
 
 ```arche
 arche Particle {
@@ -47,7 +54,7 @@ arche Particle {
 }
 ```
 
-Allocate a fixed-size collection once:
+**Allocate once, fixed size:**
 
 ```arche
 let particles = alloc Particle(1000);
@@ -76,33 +83,29 @@ sys move(pos, vel) {
 
 Same effect: iterate all elements element-wise.
 
-## No Implicit Row Access
-
-You **cannot** do this:
-
-```arche
-player[i]  // ❌ not allowed
-```
-
-Instead, you must be explicit:
-
-```arche
-particles.position[i]
-particles.velocity[i]
-```
-
-This keeps the language focused on whole-array transformations.
-
 ## Indexing
 
-Indexing works only on columns. For tuple columns, access by label:
+Individual element access requires explicit column reference:
 
+**Scalar columns:**
 ```arche
-particles.pos.x[i]
-particles.pos.y[i]
-particles.vel.vx[i]
-particles.vel.vy[i]
+particles.mass[i]
 ```
+
+**Tuple columns (labeled access):**
+```arche
+particles.pos.x[i]   // x component of position at index i
+particles.pos.y[i]   // y component of position at index i
+particles.vel.vx[i]  // x component of velocity at index i
+```
+
+**Multi-dimensional arrays:**
+```arche
+messages.text[i, j]  // 2D indexing
+matrices.data[i, x, y]  // 3D indexing
+```
+
+This keeps the language focused on whole-array transformations. Most operations work on entire columns, not individual elements.
 
 ## Numeric Model
 
