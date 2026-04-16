@@ -10,6 +10,7 @@ lexer-bin
 arche-fmt
 parser-test
 semantic-test
+codegen-test
 
 # Generated binaries in examples (keep .c, .arche, .sh source files)
 examples/*/*
@@ -35,3 +36,4 @@ examples/*/*
 
 # Temporary files
 *.tmp
+tests/tmp/

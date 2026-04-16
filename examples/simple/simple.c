@@ -1,16 +1,13 @@
-#include <stdio.h>
-#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 /* C equivalent for simple.arche */
 
 int main() {
-	printf("=== C Equivalent: Simple Game ===\n");
-
 	int x = 10;
 	int y = 20;
-
-	printf("x = %d, y = %d\n", x, y);
-	printf("Initialization complete\n");
-
+	int result = x + y;
+	const char msg[] = "result: 30\n";
+	write(1, msg, strlen(msg));
 	return 0;
 }

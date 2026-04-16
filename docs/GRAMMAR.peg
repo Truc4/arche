@@ -2,15 +2,13 @@
 
 Program ← _ (Decl _)* EOF
 
-Decl ← WorldDecl / ArchetypeDecl / ProcDecl / SysDecl / FuncDecl
+Decl ← ArchetypeDecl / ProcDecl / SysDecl / FuncDecl
 
 # Declarations
 
-WorldDecl ← "world" _ Identifier _ "(" _ (Identifier (_ "," _ Identifier)*)? _ ")"
-
 ArchetypeDecl ← "arche" _ Identifier _ "{" _ (ArchField _)* "}"
 
-ArchField ← ("meta" / "col") _ Identifier _ ":" _ Type _ ("," _)?
+ArchField ← Identifier _ ":" _ Type _ ("," _)?
 
 ProcDecl ← "proc" _ Identifier _ "(" _ (Identifier (_ "," _ Identifier)*)? _ ")" _ "{" _ (Statement _)* "}"
 
@@ -32,7 +30,7 @@ AssignOp ← "+=" / "-=" / "*=" / "/=" / "="
 
 ForLoop ← "for" _ Identifier _ "in" _ Identifier _ "{" _ (Statement _)* "}"
 
-RunSystem ← "run" _ Identifier _ "in" _ Identifier _ ";"
+RunSystem ← "run" _ Identifier _ ";"
 
 # Expressions
 
@@ -42,11 +40,9 @@ ExprPrimary ← Literal / Path / Identifier / Index / "(" _ Expression _ ")"
 
 BinaryOp ← ExprPrimary (_ Operator _ ExprPrimary)+
 
-Allocation ← Identifier _ "." _ "alloc" _ "(" _ (FieldInit (_ "," _ FieldInit)*)? _ ")"
+Allocation ← "alloc" _ Identifier _ "(" _ Expression _ ")"
 
-FieldInit ← Identifier _ ":" _ Expression
-
-Deallocation ← Identifier _ "." _ "free" _ "(" _ Expression _ ")"
+Deallocation ← "free" _ Identifier
 
 Index ← Identifier _ "[" _ Expression (_ "," _ Expression)* _ "]"
 

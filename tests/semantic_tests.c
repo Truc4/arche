@@ -56,16 +56,7 @@ typedef struct {
 AnalysisResult analyze_string(const char *src) {
 	AnalysisResult result = {NULL, NULL};
 
-	/* prepend world declaration if not already present */
-	char full_src[4096];
-	if (strstr(src, "world ") == NULL) {
-		snprintf(full_src, sizeof(full_src), "world DefaultWorld() %s", src);
-	} else {
-		strncpy(full_src, src, sizeof(full_src) - 1);
-		full_src[sizeof(full_src) - 1] = '\0';
-	}
-
-	ParseResult parse_result = parse_source(full_src);
+	ParseResult parse_result = parse_source(src);
 	Program *prog = parse_result.ast;
 
 	if (parse_result.error_count > 0) {

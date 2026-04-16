@@ -1,6 +1,7 @@
-world Game()
-
-proc init() {
+proc main() {
   let x = 10;
   let y = 20;
+  let result = x + y;
+  let msg = "result: 30\n";
+  write(1, msg, msg.length);
 }

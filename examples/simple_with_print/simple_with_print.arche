@@ -1,12 +1,11 @@
-world Game()
-
-arche Entity {
-  x: Float
+arche Counter {
+  value: int
 }
 
-proc init() {
+proc main() {
+  let counter = alloc Counter(1);
   let x = 10;
   let y = 20;
-  print(x);
-  print(y);
+  let msg = "counter allocated\n";
+  write(1, msg, msg.length);
 }

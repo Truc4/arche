@@ -1,9 +1,0 @@
-world Game()
-
-arche Entity {
-  x: Float
-}
-
-proc init() {
-  let z = 42;
-}

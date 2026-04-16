@@ -86,6 +86,26 @@ static Token lex_comment(Lexer *lexer) {
 	return make_token(lexer, TOK_COMMENT, start, (size_t)(lexer->cur - start), line, column);
 }
 
+static Token lex_block_comment(Lexer *lexer) {
+	const char *start = lexer->cur;
+	int line = lexer->line;
+	int column = lexer->column;
+
+	advance(lexer); /* consume '/' */
+	advance(lexer); /* consume '*' */
+
+	while (!is_at_end(lexer)) {
+		if (peek(lexer) == '*' && peek_next(lexer) == '/') {
+			advance(lexer); /* consume '*' */
+			advance(lexer); /* consume '/' */
+			break;
+		}
+		advance(lexer);
+	}
+
+	return make_token(lexer, TOK_COMMENT, start, (size_t)(lexer->cur - start), line, column);
+}
+
 static int is_ident_start(char c) {
 	return isalpha((unsigned char)c) || c == '_';
 }
@@ -206,6 +226,9 @@ Token lexer_next_token(Lexer *lexer) {
 	}
 
 	/* check for comments */
+	if (peek(lexer) == '/' && peek_next(lexer) == '*') {
+		return lex_block_comment(lexer);
+	}
 	if (peek(lexer) == '/' && peek_next(lexer) == '/') {
 		return lex_comment(lexer);
 	}

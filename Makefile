@@ -5,6 +5,7 @@ LEXER_BIN = lexer-bin
 PARSER_TEST_BIN = parser-test
 FMT_BIN = arche-fmt
 SEMANTIC_TEST_BIN = semantic-test
+CODEGEN_TEST_BIN = codegen-test
 LIBARCH = libarch.a
 LIBARCH_OBJS = lexer/lexer.o ast/ast.o parser/parser.o
 
@@ -21,9 +22,10 @@ LEXER_OBJS = lexer/lexer.o lexer/lexer_main.o
 PARSER_TEST_OBJS = lexer/lexer.o ast/ast.o parser/parser.o tests/parser_tests.o
 FMT_OBJS = lexer/lexer.o ast/ast.o parser/parser.o arche_fmt.o
 SEMANTIC_TEST_OBJS = lexer/lexer.o ast/ast.o parser/parser.o semantic/semantic.o tests/semantic_tests.o
+CODEGEN_TEST_OBJS = lexer/lexer.o ast/ast.o parser/parser.o semantic/semantic.o codegen/codegen.o tests/codegen_tests.o
 
 # Default target
-all: $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN) $(LIBARCH)
+all: $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LIBARCH)
 
 # Build main compiler executable
 $(TARGET): $(COMPILER_OBJS)
@@ -43,6 +45,10 @@ $(FMT_BIN): $(FMT_OBJS)
 
 # Build semantic tests executable
 $(SEMANTIC_TEST_BIN): $(SEMANTIC_TEST_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# Build codegen tests executable
+$(CODEGEN_TEST_BIN): $(CODEGEN_TEST_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
 # Build syntax/parsing library
@@ -76,8 +82,12 @@ test-parser: $(PARSER_TEST_BIN)
 test-semantic: $(SEMANTIC_TEST_BIN)
 	./$(SEMANTIC_TEST_BIN)
 
+# Run codegen unit tests
+test-codegen-unit: $(CODEGEN_TEST_BIN)
+	./$(CODEGEN_TEST_BIN)
+
 # Run all tests
-test: test-lexer test-parser test-semantic test-codegen
+test: test-lexer test-parser test-semantic test-codegen-unit test-codegen
 
 # Test code generation
 test-codegen: $(TARGET)
@@ -89,7 +99,7 @@ test-codegen: $(TARGET)
 clean:
 	find . -name "*.o" -delete
 	find . -name "*.a" -delete
-	rm -f $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN)
+	rm -f $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN)
 	rm -f bench-physics bench-strings bench-lifecycle bench-mixed
 	find examples/ -type f ! -name "*.c" ! -name "*.arche" ! -name "*.sh" -delete
 	find tests/ -type f ! -name "*.c" ! -name "*.h" ! -name "*.sh" ! -name "*.arche" -delete
@@ -118,4 +128,4 @@ bench-mixed: design_analysis/array_ops/mixed_workload.c
 	./bench-mixed
 
 # Phony targets
-.PHONY: all run run-lexer test test-lexer test-parser test-semantic test-codegen clean bench-physics bench-strings bench-lifecycle bench-mixed
+.PHONY: all run run-lexer test test-lexer test-parser test-semantic test-codegen test-codegen-unit clean bench-physics bench-strings bench-lifecycle bench-mixed

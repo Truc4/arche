@@ -2,7 +2,7 @@
 
 **Arche** is a small, experimental programming language built around a single idea:
 
-> Programs should operate on _collections of structured data_ as a whole — not one element at a time.
+> Programs should operate on _collections of structured data_ as a whole, not one element at a time.
 
 It is intentionally **minimal**, **opinionated**, and **not designed for production use**.
 This project exists primarily for exploration.
@@ -15,90 +15,119 @@ Arche is built on a few strong constraints:
 
 - **Array-first**: Operations apply across entire collections by default.
 - **No implicit row access**: You don’t work on individual elements unless you explicitly index.
-- **Two kinds of data**:
-  - **Columns** (arrays of values, one per element)
-  - **Metadata** (single values describing the whole collection)
-- **Minimal type system**: No booleans, no objects.
+- **Columns only**: All archetype data is columnar (arrays). No metadata. Columns are primitives or tuple columns.
+- **Horizontal only**: No nested complex types, no pointers. Data layout is flat and explicit.
+- **Tuple columns**: Multi-component fields like position vectors are stored as separate side-by-side arrays (`pos_x`, `pos_y`) but accessed with clean syntax (`pos.x[i]`, `pos.y[i]`).
+- **Fixed-size collections**: Archetypes allocate once with a fixed count. No dynamic resizing.
+- **Minimal type system**: Primitives only: `int`, `float`, `char`. No booleans, no objects. This is a design principle, not a limitation.
 - **Explicit structure over flexibility**
 
 This leads to a style that feels closer to **data pipelines** or **vectorized computation** than traditional imperative code.
 
-## Worlds
+## Worlds (Planned, Not Yet Implemented)
 
-A World is a collection of archetypes. Define a world first:
+A **World** is a planned feature that will act as a collection of archetypes and a scope for systems. The syntax would be:
 
 ```arche
-world GameWorld()
+world Simulation()
 ```
 
-Worlds are sparse arrays that efficiently handle entity creation and deletion while preserving handles.
+Multiple worlds will allow parallel data-driven computations, with systems operating on all matching archetypes within a specific world. **This feature is not yet implemented.** Currently, systems operate on all matching archetypes in the scope.
 
 ## Archetypes (`arche`)
 
-An Archetype is a type definition for structured data. It contains **aligned arrays (columns)** plus **metadata**.
+An Archetype declaration allocates space for a _shape_ (a unique column structure). The name is just an _alias_ for that shape.
 
-Define an archetype (a reusable template):
+A **shape** is defined by its columns and types. If two archetype declarations have identical columns and types, they refer to the same shape and share the same allocation.
+
+**Primitives:** `int`, `float`, `char`
+
+**Column types:**
+- Single primitive: `mass: float` → column of floats
+- Tuple columns: `pos: (x: float, y: float)` → two separate arrays `pos_x[]` and `pos_y[]`
+- Multi-dimensional arrays: `text: char[256]` → N×256 array per entity
+
+Example:
 
 ```arche
-arche Player {
-  meta drag: Float,
-  col pos: Vec3,
-  col vel: Vec3
+arche Particle {
+  pos: (x: float, y: float),
+  vel: (vx: float, vy: float),
+  mass: float
 }
 ```
 
-- `meta` fields: one value for the entire collection
-- `col` fields: one value per element
-- Archetypes are instanced into worlds when you need actual data
+This allocates space for a shape with those columns. The name `Particle` is an alias. If you declare another archetype with the same columns:
+
+```arche
+arche Enemy {
+  pos: (x: float, y: float),
+  vel: (vx: float, vy: float),
+  mass: float
+}
+```
+
+Both `Particle` and `Enemy` alias the same underlying shape. They share the allocation. You can allocate using either alias:
+
+```arche
+let particles = alloc Particle(1000);
+let enemies = alloc Enemy(1000);  // ERROR: shape already allocated
+```
+
+**Allocate once, fixed size:**
+
+Each shape allocates exactly once. Attempting to allocate the same shape again (with any alias) is an error.
+
+All 1000 slots are live immediately. No dynamic resizing.
 
 ## Array-Oriented Operations
 
-Operations on columns apply across the entire collection:
+Operations on archetype columns apply across the entire collection without explicit loops:
 
 ```arche
-players.pos = players.pos + players.vel;
-players.vel = players.vel * players.drag;
+let particles = alloc Particle(1000);
+particles.pos = particles.pos + particles.vel;
 ```
 
-Or using compound assignment:
+This iterates all 1000 elements, updating each position by its velocity.
+
+Inside a system function, the archetype parameter names are available directly:
 
 ```arche
-players.pos += players.vel;
+sys move(pos, vel) {
+  pos = pos + vel;
+}
 ```
 
-These are equivalent to looping over every element — but expressed as a single operation.
-
-## No Implicit Row Access
-
-You **cannot** do this:
-
-```arche
-player[i]  // ❌ not allowed
-```
-
-Instead, you must be explicit:
-
-```arche
-players.pos[i]
-players.vel[i]
-```
-
-This keeps the language focused on whole-array transformations.
+Same effect: iterate all elements element-wise.
 
 ## Indexing
 
-Indexing works only on columns or arrays:
+Individual element access requires explicit column reference:
 
+**Scalar columns:**
 ```arche
-players.pos[i]
-grid[x, y, z]
+particles.mass[i]
 ```
 
-Multidimensional indexing uses comma-separated indices.
+**Tuple columns (labeled access):**
+```arche
+particles.pos.x[i]   // x component of position at index i
+particles.pos.y[i]   // y component of position at index i
+particles.vel.vx[i]  // x component of velocity at index i
+```
+
+**Multi-dimensional arrays:**
+```arche
+messages.text[i, j]  // 2D indexing
+matrices.data[i, x, y]  // 3D indexing
+```
+
+This keeps the language focused on whole-array transformations. Most operations work on entire columns, not individual elements.
 
 ## Numeric Model
 
-- Only numeric primitives (no `Bool` type)
+- Only numeric primitives: `int`, `float`, `char` (no `bool` type)
 - Comparisons produce numeric values (`0` or `1`)
 - Conditions treat `0` as false, non-zero as true
 
@@ -110,39 +139,40 @@ x = a < b   // x is 0 or 1
 
 Procedures perform **explicit operations**.
 
-```
-proc init {
-  players = alloc Player(100)
+```arche
+proc main() {
+  let particles = alloc Particle(1000);
+  particles.pos = particles.pos + particles.vel;
 }
 ```
 
 - run once
-- operate on explicitly referenced data
+- operate on explicitly referenced data (via handles)
+- array ops apply to the whole collection
 - used for setup, orchestration, or control flow
-- not data-driven
 
 ## Systems (`sys`)
 
-Systems perform **data-driven transformations** over all matching archetypes in a world.
+Systems perform **data-driven transformations** over all matching archetypes.
 
 ```arche
 sys move(pos, vel) {
-  pos += vel
+  pos = pos + vel;
 }
 
 proc update() {
-  run move in GameWorld;
+  run move;
 }
 ```
 
 ### Semantics
 
-- executes via `run system_name in world_name` statement
-- automatically matches any archetype in that world containing the required fields
+- executes via `run system_name` statement
+- automatically matches any archetype in scope containing the required fields
 - binds those fields inside the system body
 - operates on whole columns (array-first)
 
-This means the system applies to any archetype in the world with `pos` and `vel`, such as:
+This means the system applies to any archetype with `pos` and `vel`, such as:
 
 - `Player`
 - `Mob`
@@ -155,20 +185,19 @@ without needing to reference them explicitly.
 Systems are invoked explicitly within procedures:
 
 ```arche
-proc update() {
-  run move in GameWorld;
-  run damp in GameWorld;
+proc main() {
+  run move;
+  run dampen;
 }
 ```
 
 ## Example
 
 ```arche
-// Define an archetype (reusable template)
+// Define archetypes
 arche Particle {
-  meta drag: Float,
-  col pos: Float,
-  col vel: Float
+  pos: (x: float, y: float),
+  vel: (vx: float, vy: float)
 }
 
 // Define systems that operate on matching archetypes
@@ -176,28 +205,24 @@ sys move(pos, vel) {
   pos = pos + vel;
 }
 
-sys damp(vel, drag) {
-  vel = vel * drag;
+sys dampen(vel) {
+  vel = vel * 0.99;
 }
 
-// Create a world
-world Simulation()
-
-// Instance the archetype into the world (not yet implemented)
-// let particles = alloc Particle(1000) in Simulation;
-
-proc update() {
-  run move in Simulation;
-  run damp in Simulation;
+// Allocate and run systems
+proc main() {
+  let particles = alloc Particle(10000);
+  run move;
+  run dampen;
 }
 ```
 
 ## Functions (`func`)
 
-Functions are **pure computations** and do **not** mutate arche data.
+Functions are **pure computations** and do **not** mutate archetype data.
 
-```
-func drag_factor(x: Float) -> Float {
+```arche
+func drag_factor(x: float) -> float {
   x * 0.98
 }
 ```
@@ -244,6 +269,17 @@ It deliberately avoids:
 - complex type systems
 - hidden behavior
 
+## Design Vision
+
+Arche explores building a **high-level language with explicit horizontal data layout and no pointers**.
+
+Instead of complex type systems, language users make conscious decisions about data organization:
+- **Strings**: No string type. Users implement fixed-size `char[]` arrays, packed arrays with length metadata, or handles to archetypes holding string data.
+- **Collections**: Multi-column designs (`pos_x`, `pos_y`) sit side-by-side, enabling cache-friendly iteration.
+- **References**: No pointers. Data is organized as columns within archetypes, not as complex nested structures.
+
+The `design_analysis/` directory contains exploration and documentation of data layout patterns the language should support, helping guide how users think about organizing their data.
+
 ## Why This Exists
 
 Arche is an experiment in:
@@ -258,7 +294,7 @@ Arche is an experiment in:
 
 ## Status
 
-🚧 **Alpha — Core infrastructure working**
+🚧 **Alpha: Core infrastructure working**
 
 ### What's Working
 
@@ -273,6 +309,5 @@ Arche is an experiment in:
 - No function calls yet
 - For loops not fully implemented
 - No memory management beyond static allocation
-- Type system is minimal (primitives only)
 - No error recovery in parser
 - Limited standard library (only `write` syscall)
