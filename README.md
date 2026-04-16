@@ -18,7 +18,7 @@ Arche is built on a few strong constraints:
 - **Columns only**: All archetype data is columnar (arrays). No metadata. Columns are primitives or tuple columns.
 - **Horizontal only**: No nested complex types, no pointers. Data layout is flat and explicit.
 - **Tuple columns**: Multi-component fields like position vectors are stored as separate side-by-side arrays (`pos_x`, `pos_y`) but accessed with clean syntax (`pos.x[i]`, `pos.y[i]`).
-- **Fixed-size collections**: Archetypes allocate once with a fixed count. No dynamic resizing.
+- **Pooled allocation**: `alloc Archetype(N)` pre-allocates capacity for N entries but creates **zero live rows**. Use `add`/`insert` to create entries. Deleted slots are tracked in a free-list and reused by subsequent inserts.
 - **Minimal type system**: Primitives only: `int`, `float`, `char`. No booleans, no objects. This is a design principle, not a limitation.
 - **Explicit structure over flexibility**
 

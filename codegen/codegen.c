@@ -896,10 +896,10 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 		/* Find archetype to calculate correct struct size */
 		ArchetypeDecl *arch_for_size = find_archetype_decl(ctx, arch_name);
-		int struct_size = 32; /* default: 2 pointers (16) + count + capacity (16) */
+		int struct_size = 48; /* default: 2 pointers (16) + count + capacity + free_list + free_count (32) */
 		if (arch_for_size) {
-			/* Each column field is 8 bytes (pointer), count and capacity are 2*8 */
-			struct_size = (arch_for_size->field_count) * 8 + 16;
+			/* Each column field is 8 bytes (pointer), count, capacity, free_list*, free_count are 4*8 */
+			struct_size = (arch_for_size->field_count) * 8 + 32;
 		}
 
 		/* malloc struct */
@@ -926,6 +926,26 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cap_gep,
 			                  arch_name, arch_name, struct_ptr, cap_field_idx);
 			buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", count_buf, cap_gep);
+
+			/* Initialize free_count=0 */
+			char *fc_gep = gen_value_name(ctx);
+			int fc_field_idx = arch->field_count + 3; /* free_count is after free_list */
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", fc_gep,
+			                  arch_name, arch_name, struct_ptr, fc_field_idx);
+			buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", fc_gep);
+
+			/* Malloc and initialize free_list */
+			char *fl_bytes = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = mul i64 %s, 8\n", fl_bytes, count_buf);
+			char *fl_raw = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = call i8* @malloc(i64 %s)\n", fl_raw, fl_bytes);
+			char *fl_ptr = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = bitcast i8* %s to i64*\n", fl_ptr, fl_raw);
+			char *fl_gep = gen_value_name(ctx);
+			int fl_field_idx = arch->field_count + 2; /* free_list is after capacity */
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", fl_gep,
+			                  arch_name, arch_name, struct_ptr, fl_field_idx);
+			buffer_append_fmt(ctx, "  store i64* %s, i64** %s\n", fl_ptr, fl_gep);
 
 			/* Malloc and store column arrays */
 			for (int i = 0; i < arch->field_count; i++) {
@@ -1732,6 +1752,10 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 
 	/* Add count and capacity fields for tracking live/allocated entries */
 	buffer_append(ctx, "  i64,\n");
+	buffer_append(ctx, "  i64,\n");
+
+	/* Add free_list and free_count for pooling */
+	buffer_append(ctx, "  i64*,\n");
 	buffer_append(ctx, "  i64\n");
 
 	buffer_append(ctx, "}\n\n");
@@ -1747,9 +1771,37 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	buffer_append(ctx, ") {\n");
 	buffer_append(ctx, "entry:\n");
 
-	/* Load count and capacity */
+	/* Setup allocas for slot and increment flag */
+	buffer_append(ctx, "  %slot_var = alloca i64\n");
+	buffer_append(ctx, "  %do_incr = alloca i1\n");
+
+	/* Load free_count, count, capacity, free_list */
 	int count_idx = arch->field_count;
 	int cap_idx = arch->field_count + 1;
+	int fl_idx = arch->field_count + 2;
+	int fc_idx = arch->field_count + 3;
+
+	buffer_append_fmt(ctx, "  %%fc_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", arch->name,
+	                  arch->name, fc_idx);
+	buffer_append(ctx, "  %free_count = load i64, i64* %fc_ptr\n");
+	buffer_append(ctx, "  %has_free = icmp sgt i64 %free_count, 1\n");
+	buffer_append(ctx, "  br i1 %has_free, label %pop_free, label %check_grow\n\n");
+
+	/* Pop from free_list */
+	buffer_append(ctx, "pop_free:\n");
+	buffer_append_fmt(ctx, "  %%fl_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", arch->name,
+	                  arch->name, fl_idx);
+	buffer_append(ctx, "  %free_list = load i64*, i64** %fl_ptr\n");
+	buffer_append(ctx, "  %new_fc = sub i64 %free_count, 1\n");
+	buffer_append(ctx, "  %slot_ptr = getelementptr i64, i64* %free_list, i64 %new_fc\n");
+	buffer_append(ctx, "  %slot = load i64, i64* %slot_ptr\n");
+	buffer_append(ctx, "  store i64 %new_fc, i64* %fc_ptr\n");
+	buffer_append(ctx, "  store i64 %slot, i64* %slot_var\n");
+	buffer_append(ctx, "  store i1 0, i1* %do_incr\n");
+	buffer_append(ctx, "  br label %write_fields\n\n");
+
+	/* Check if count needs grow */
+	buffer_append(ctx, "check_grow:\n");
 	buffer_append_fmt(ctx, "  %%count_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
 	                  arch->name, arch->name, count_idx);
 	buffer_append(ctx, "  %count = load i64, i64* %count_ptr\n");
@@ -1757,7 +1809,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	                  arch->name, cap_idx);
 	buffer_append(ctx, "  %cap = load i64, i64* %cap_ptr\n");
 	buffer_append(ctx, "  %needs_grow = icmp sge i64 %count, %cap\n");
-	buffer_append(ctx, "  br i1 %needs_grow, label %grow, label %write_fields\n\n");
+	buffer_append(ctx, "  br i1 %needs_grow, label %grow, label %use_count\n\n");
 
 	/* Grow block */
 	buffer_append(ctx, "grow:\n");
@@ -1783,11 +1835,29 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 			col_idx++;
 		}
 	}
+
+	/* Realloc free_list */
+	buffer_append(ctx, "  %fl_bytes = mul i64 %new_cap, 8\n");
+	buffer_append_fmt(ctx, "  %%fl_ptr_grow = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
+	                  arch->name, arch->name, fl_idx);
+	buffer_append(ctx, "  %free_list_grow = load i64*, i64** %fl_ptr_grow\n");
+	buffer_append(ctx, "  %fl_i8 = bitcast i64* %free_list_grow to i8*\n");
+	buffer_append(ctx, "  %new_fl_i8 = call i8* @realloc(i8* %fl_i8, i64 %fl_bytes)\n");
+	buffer_append(ctx, "  %new_fl = bitcast i8* %new_fl_i8 to i64*\n");
+	buffer_append(ctx, "  store i64* %new_fl, i64** %fl_ptr_grow\n");
+
 	buffer_append(ctx, "  store i64 %new_cap, i64* %cap_ptr\n");
+	buffer_append(ctx, "  br label %use_count\n\n");
+
+	/* Use count as slot */
+	buffer_append(ctx, "use_count:\n");
+	buffer_append(ctx, "  store i64 %count, i64* %slot_var\n");
+	buffer_append(ctx, "  store i1 1, i1* %do_incr\n");
 	buffer_append(ctx, "  br label %write_fields\n\n");
 
 	/* Write fields block */
 	buffer_append(ctx, "write_fields:\n");
+	buffer_append(ctx, "  %final_slot = load i64, i64* %slot_var\n");
 	col_idx = 0;
 	for (int i = 0; i < arch->field_count; i++) {
 		if (arch->fields[i]->kind == FIELD_COLUMN) {
@@ -1796,44 +1866,49 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 			                  col_idx, arch->name, arch->name, i);
 			buffer_append_fmt(ctx, "  %%col_p2_%d = load %s*, %s** %%col_pp2_%d\n", col_idx, base_type, base_type,
 			                  col_idx);
-			buffer_append_fmt(ctx, "  %%slot%d = getelementptr %s, %s* %%col_p2_%d, i64 %%count\n", col_idx, base_type,
-			                  base_type, col_idx);
+			buffer_append_fmt(ctx, "  %%slot%d = getelementptr %s, %s* %%col_p2_%d, i64 %%final_slot\n", col_idx,
+			                  base_type, base_type, col_idx);
 			buffer_append_fmt(ctx, "  store %s %%f%d, %s* %%slot%d\n", base_type, i, base_type, col_idx);
 			col_idx++;
 		}
 	}
-	buffer_append(ctx, "  %new_count = add i64 %count, 1\n");
-	buffer_append(ctx, "  store i64 %new_count, i64* %count_ptr\n");
+
+	/* Conditionally increment count */
+	buffer_append(ctx, "  %should_incr = load i1, i1* %do_incr\n");
+	buffer_append(ctx, "  br i1 %should_incr, label %do_incr_count, label %done\n\n");
+
+	buffer_append(ctx, "do_incr_count:\n");
+	buffer_append_fmt(ctx, "  %%count_ptr2 = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
+	                  arch->name, arch->name, count_idx);
+	buffer_append(ctx, "  %curr_count = load i64, i64* %count_ptr2\n");
+	buffer_append(ctx, "  %new_count = add i64 %curr_count, 1\n");
+	buffer_append(ctx, "  store i64 %new_count, i64* %count_ptr2\n");
+	buffer_append(ctx, "  br label %done\n\n");
+
+	buffer_append(ctx, "done:\n");
 	buffer_append(ctx, "  ret void\n");
 	buffer_append(ctx, "}\n\n");
 
 	/* Emit delete helper function */
 	buffer_append_fmt(ctx, "define void @arche_delete_%s(%%struct.%s* %%arch, i64 %%idx) {\n", arch->name, arch->name);
 	buffer_append(ctx, "entry:\n");
-	buffer_append_fmt(ctx, "  %%count_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
-	                  arch->name, arch->name, count_idx);
-	buffer_append(ctx, "  %count = load i64, i64* %count_ptr\n");
-	buffer_append(ctx, "  %last = sub i64 %count, 1\n");
-	col_idx = 0;
-	for (int i = 0; i < arch->field_count; i++) {
-		if (arch->fields[i]->kind == FIELD_COLUMN) {
-			const char *base_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
-			buffer_append_fmt(ctx, "  %%col_pp_%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
-			                  col_idx, arch->name, arch->name, i);
-			buffer_append_fmt(ctx, "  %%col_p_%d = load %s*, %s** %%col_pp_%d\n", col_idx, base_type, base_type,
-			                  col_idx);
-			buffer_append_fmt(ctx, "  %%last_slot_%d = getelementptr %s, %s* %%col_p_%d, i64 %%last\n", col_idx,
-			                  base_type, base_type, col_idx);
-			buffer_append_fmt(ctx, "  %%last_val_%d = load %s, %s* %%last_slot_%d\n", col_idx, base_type, base_type,
-			                  col_idx);
-			buffer_append_fmt(ctx, "  %%idx_slot_%d = getelementptr %s, %s* %%col_p_%d, i64 %%idx\n", col_idx,
-			                  base_type, base_type, col_idx);
-			buffer_append_fmt(ctx, "  store %s %%last_val_%d, %s* %%idx_slot_%d\n", base_type, col_idx, base_type,
-			                  col_idx);
-			col_idx++;
-		}
-	}
-	buffer_append(ctx, "  store i64 %last, i64* %count_ptr\n");
+
+	/* Load free_list and free_count */
+	buffer_append_fmt(ctx, "  %%fl_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", arch->name,
+	                  arch->name, fl_idx);
+	buffer_append(ctx, "  %free_list = load i64*, i64** %fl_ptr\n");
+	buffer_append_fmt(ctx, "  %%fc_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", arch->name,
+	                  arch->name, fc_idx);
+	buffer_append(ctx, "  %free_count = load i64, i64* %fc_ptr\n");
+
+	/* Push idx to free_list[free_count] */
+	buffer_append(ctx, "  %slot_ptr = getelementptr i64, i64* %free_list, i64 %free_count\n");
+	buffer_append(ctx, "  store i64 %idx, i64* %slot_ptr\n");
+
+	/* Increment free_count */
+	buffer_append(ctx, "  %new_fc = add i64 %free_count, 1\n");
+	buffer_append(ctx, "  store i64 %new_fc, i64* %fc_ptr\n");
+
 	buffer_append(ctx, "  ret void\n");
 	buffer_append(ctx, "}\n\n");
 }
