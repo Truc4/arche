@@ -179,6 +179,15 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	case EXPR_LITERAL: {
 		/* Infer type from lexeme format */
 		const char *lex = expr->data.literal.lexeme;
+
+		/* String literal: char array */
+		if (lex[0] == '"') {
+			/* Type is char array - store length in a way semantic can track */
+			/* For now, return a marker that codegen can recognize */
+			return "char_array";
+		}
+
+		/* Numeric literal */
 		if (strchr(lex, '.') || strchr(lex, 'e') || strchr(lex, 'E')) {
 			return "float"; /* Will be converted to double by codegen */
 		}
@@ -200,6 +209,12 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	}
 
 	case EXPR_FIELD: {
+		/* Handle .length property on arrays */
+		if (strcmp(expr->data.field.field_name, "length") == 0) {
+			/* .length is always int type */
+			return "int";
+		}
+
 		/* Field access type is the field's type */
 		if (expr->data.field.base->type == EXPR_NAME) {
 			const char *base_name = expr->data.field.base->data.name.name;
@@ -446,11 +461,13 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 	}
 
 	case STMT_RUN:
-		/* check world exists */
-		if (!find_world(ctx, stmt->data.run_stmt.world_name)) {
-			char msg[256];
-			snprintf(msg, sizeof(msg), "Undefined world '%s'", stmt->data.run_stmt.world_name);
-			error(ctx, msg);
+		/* check world exists (empty name means default world, which always exists) */
+		if (stmt->data.run_stmt.world_name && stmt->data.run_stmt.world_name[0] != '\0') {
+			if (!find_world(ctx, stmt->data.run_stmt.world_name)) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "Undefined world '%s'", stmt->data.run_stmt.world_name);
+				error(ctx, msg);
+			}
 		}
 		break;
 
@@ -646,7 +663,8 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->error_count = 0;
 	ctx->current_sys_archetype = NULL;
 
-	/* Register lifecycle builtins */
+	/* Register builtins */
+	register_func(ctx, "write");
 	register_func(ctx, "insert");
 	register_func(ctx, "delete");
 

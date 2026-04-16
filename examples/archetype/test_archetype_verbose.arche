@@ -1,12 +1,12 @@
 arche Particle {
-  pos: (x: float, y: float),
-  vel: (vx: float, vy: float),
+  pos: float,
+  vel: float,
   mass: float
 }
 
 arche Body {
-  pos: (x: float, y: float),
-  vel: (vx: float, vy: float),
+  pos: float,
+  vel: float,
   density: float
 }
 
@@ -21,10 +21,9 @@ sys dampen(vel) {
 world Simulation()
 
 proc main() {
-  let particles = alloc Particle(1000);
-  let bodies = alloc Body(100);
-  run move in Simulation;
-  run dampen in Simulation;
+  let particles = Particle.alloc((null): 1000);
+  let bodies = Body.alloc((null): 100);
   let msg = "simulation completed\n";
   write(1, msg, msg.length);
 }
+

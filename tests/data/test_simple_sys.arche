@@ -1,0 +1,15 @@
+arche Body {
+  pos: float
+}
+
+sys dummy(pos) {
+  pos = pos;
+}
+
+proc main() {
+  let b = Body.alloc((null): 100);
+  run dummy in ;
+  let msg = "ok\n";
+  write(1, msg, msg.length);
+}
+

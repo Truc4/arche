@@ -826,17 +826,18 @@ static Statement *parse_statement(Parser *parser) {
 			char *system_name = token_text(parser->current);
 			advance(parser);
 
-			if (!match(parser, TOK_IN)) {
-				error(parser, "Expected 'in'");
-				return NULL;
+			/* World name is optional - allocate empty string for default world */
+			char *world_name = malloc(1);
+			world_name[0] = '\0';
+			if (match(parser, TOK_IN)) {
+				free(world_name); /* free the empty string we just allocated */
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "Expected world name after 'in'");
+					return NULL;
+				}
+				world_name = token_text(parser->current);
+				advance(parser);
 			}
-
-			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected world name");
-				return NULL;
-			}
-			char *world_name = token_text(parser->current);
-			advance(parser);
 
 			if (!match(parser, TOK_SEMI)) {
 				error(parser, "Expected ';'");

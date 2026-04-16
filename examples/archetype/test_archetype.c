@@ -82,6 +82,7 @@ int main() {
 	Particle *particles = particle_alloc(100);
 	Body *bodies = body_alloc(50);
 
+	/* Systems execute on default world (implicitly matching archetypes) */
 	move(particles, bodies);
 	dampen(particles, bodies);
 
