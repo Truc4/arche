@@ -1,4 +1,3 @@
-proc init() {
+proc main() {
   let msg = "Hello, World!\n";
-  let result = write(1, msg, 14);
 }

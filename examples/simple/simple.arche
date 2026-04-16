@@ -1,6 +1,4 @@
-world Game()
-
-proc init() {
+proc main() {
   let x = 10;
   let y = 20;
 }

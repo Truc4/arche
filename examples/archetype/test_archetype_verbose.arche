@@ -1,27 +1,28 @@
-world GameWorld()
-
-arche Player {
-  drag: Float,
-  pos: Vec3,
-  vel: Vec3,
-  health: Float
+arche Particle {
+  pos: (x: float, y: float),
+  vel: (vx: float, vy: float),
+  mass: float
 }
 
-arche Enemy {
-  aggression: Float,
-  pos: Vec3,
-  vel: Vec3
+arche Body {
+  pos: (x: float, y: float),
+  vel: (vx: float, vy: float),
+  density: float
 }
 
 sys move(pos, vel) {
   pos = pos + vel;
 }
 
-sys dampen(vel, drag) {
-  vel = vel * drag;
+sys dampen(vel) {
+  vel = vel * 0.99;
 }
 
-proc initialize() {
-  let x = 100;
-  let y = 200;
+world Simulation()
+
+proc main() {
+  let particles = alloc Particle(1000);
+  let bodies = alloc Body(100);
+  run move in Simulation;
+  run dampen in Simulation;
 }

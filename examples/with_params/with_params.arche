@@ -1,8 +1,7 @@
-proc hello(msg: Str, len: Int) {
-  let result = write(1, msg, len);
+proc add(a: int, b: int) {
+  let result = a + b;
 }
 
-proc init() {
-  let greeting = "Hello from param!\n";
-  hello(greeting, 20);
+proc main() {
+  add(5, 10);
 }

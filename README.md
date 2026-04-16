@@ -35,38 +35,46 @@ Worlds are sparse arrays that efficiently handle entity creation and deletion wh
 
 ## Archetypes (`arche`)
 
-An Archetype is a type definition for structured data. It contains **aligned arrays (columns)** plus **metadata**.
+An Archetype is a type definition for structured data. It contains **aligned arrays (columns)** of field values.
 
 Define an archetype (a reusable template):
 
 ```arche
-arche Player {
-  meta drag: Float,
-  col pos: Vec3,
-  col vel: Vec3
+arche Particle {
+  pos: (x: float, y: float),
+  vel: (vx: float, vy: float),
+  mass: float
 }
 ```
 
-- `meta` fields: one value for the entire collection
-- `col` fields: one value per element
-- Archetypes are instanced into worlds when you need actual data
+Allocate a fixed-size collection once:
+
+```arche
+let particles = alloc Particle(1000);
+```
+
+All 1000 slots are live immediately. No dynamic resizing.
 
 ## Array-Oriented Operations
 
-Operations on columns apply across the entire collection:
+Operations on archetype columns apply across the entire collection without explicit loops:
 
 ```arche
-players.pos = players.pos + players.vel;
-players.vel = players.vel * players.drag;
+let particles = alloc Particle(1000);
+particles.pos = particles.pos + particles.vel;
 ```
 
-Or using compound assignment:
+This iterates all 1000 elements, updating each position by its velocity.
+
+Inside a system function, the archetype parameter names are available directly:
 
 ```arche
-players.pos += players.vel;
+sys move(pos, vel) {
+  pos = pos + vel;
+}
 ```
 
-These are equivalent to looping over every element — but expressed as a single operation.
+Same effect: iterate all elements element-wise.
 
 ## No Implicit Row Access
 
@@ -79,26 +87,26 @@ player[i]  // ❌ not allowed
 Instead, you must be explicit:
 
 ```arche
-players.pos[i]
-players.vel[i]
+particles.position[i]
+particles.velocity[i]
 ```
 
 This keeps the language focused on whole-array transformations.
 
 ## Indexing
 
-Indexing works only on columns or arrays:
+Indexing works only on columns. For tuple columns, access by label:
 
 ```arche
-players.pos[i]
-grid[x, y, z]
+particles.pos.x[i]
+particles.pos.y[i]
+particles.vel.vx[i]
+particles.vel.vy[i]
 ```
-
-Multidimensional indexing uses comma-separated indices.
 
 ## Numeric Model
 
-- Only numeric primitives (no `Bool` type)
+- Only numeric primitives: `int`, `float`, `char` (no `bool` type)
 - Comparisons produce numeric values (`0` or `1`)
 - Conditions treat `0` as false, non-zero as true
 
@@ -110,16 +118,17 @@ x = a < b   // x is 0 or 1
 
 Procedures perform **explicit operations**.
 
-```
-proc init {
-  players = alloc Player(100)
+```arche
+proc main() {
+  let particles = alloc Particle(1000);
+  particles.pos = particles.pos + particles.vel;
 }
 ```
 
 - run once
-- operate on explicitly referenced data
+- operate on explicitly referenced data (via handles)
+- array ops apply to the whole collection
 - used for setup, orchestration, or control flow
-- not data-driven
 
 ## Systems (`sys`)
 
@@ -127,7 +136,7 @@ Systems perform **data-driven transformations** over all matching archetypes in 
 
 ```arche
 sys move(pos, vel) {
-  pos += vel
+  pos = pos + vel;
 }
 
 proc update() {
@@ -137,7 +146,8 @@ proc update() {
 
 ### Semantics
 
-- executes via `run system_name in world_name` statement
+- executes via `run system_name` statement (operates on default world)
+- or `run system_name in world_name` for explicit world selection
 - automatically matches any archetype in that world containing the required fields
 - binds those fields inside the system body
 - operates on whole columns (array-first)
@@ -155,20 +165,19 @@ without needing to reference them explicitly.
 Systems are invoked explicitly within procedures:
 
 ```arche
-proc update() {
-  run move in GameWorld;
-  run damp in GameWorld;
+proc main() {
+  run move in Simulation;
+  run dampen in Simulation;
 }
 ```
 
 ## Example
 
 ```arche
-// Define an archetype (reusable template)
+// Define archetypes
 arche Particle {
-  meta drag: Float,
-  col pos: Float,
-  col vel: Float
+  pos: (x: float, y: float),
+  vel: (vx: float, vy: float)
 }
 
 // Define systems that operate on matching archetypes
@@ -176,28 +185,27 @@ sys move(pos, vel) {
   pos = pos + vel;
 }
 
-sys damp(vel, drag) {
-  vel = vel * drag;
+sys dampen(vel) {
+  vel = vel * 0.99;
 }
 
 // Create a world
 world Simulation()
 
-// Instance the archetype into the world (not yet implemented)
-// let particles = alloc Particle(1000) in Simulation;
-
-proc update() {
+// Allocate and run systems
+proc main() {
+  let particles = alloc Particle(10000);
   run move in Simulation;
-  run damp in Simulation;
+  run dampen in Simulation;
 }
 ```
 
 ## Functions (`func`)
 
-Functions are **pure computations** and do **not** mutate arche data.
+Functions are **pure computations** and do **not** mutate archetype data.
 
-```
-func drag_factor(x: Float) -> Float {
+```arche
+func drag_factor(x: float) -> float {
   x * 0.98
 }
 ```
