@@ -888,97 +888,106 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		/* allocation expression: alloc ArchetypeName(count) */
 		const char *arch_name = expr->data.alloc.archetype_name;
 
-		/* Get count from first field_value */
+		/* Get capacity from first field_value */
 		char count_buf[256] = "256";
 		if (expr->data.alloc.field_count > 0) {
 			codegen_expression(ctx, expr->data.alloc.field_values[0], count_buf);
 		}
 
-		/* Find archetype to calculate correct struct size */
-		ArchetypeDecl *arch_for_size = find_archetype_decl(ctx, arch_name);
-		int struct_size = 48; /* default: 2 pointers (16) + count + capacity + free_list + free_count (32) */
-		if (arch_for_size) {
-			/* Each column field is 8 bytes (pointer), count, capacity, free_list*, free_count are 4*8 */
-			struct_size = (arch_for_size->field_count) * 8 + 32;
+		/* Find archetype declaration */
+		ArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+		if (!arch) {
+			strcpy(result_buf, "0");
+			break;
 		}
 
-		/* malloc struct */
-		char *raw_ptr = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = call i8* @malloc(i32 %d)\n", raw_ptr, struct_size);
+		/* Struct layout: [pointers...][count][capacity][free_list*][free_count] */
+		/* Calculate struct header size: (field_count pointers) * 8 + metadata (4*8) = (field_count+4)*8 */
+		int struct_sz_bytes = (arch->field_count + 4) * 8;
 
-		/* bitcast to struct pointer */
+		/* Calculate byte size per element across all columns */
+		int bytes_per_row = 0;
+		for (int i = 0; i < arch->field_count; i++) {
+			if (arch->fields[i]->kind == FIELD_COLUMN) {
+				const char *elem_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
+				bytes_per_row += (elem_type[0] == 'd') ? 8 : 4;
+			}
+		}
+		/* Add 8 bytes per row for free_list entry (i64) */
+		int total_bytes_per_row = bytes_per_row + 8;
+
+		/* Total size = struct_header + (count * bytes_per_row) + (count * 8 for free_list) */
+		/* = struct_sz_bytes + count * total_bytes_per_row */
+		char *total_bytes = gen_value_name(ctx);
+		char *data_bytes = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", data_bytes, count_buf, total_bytes_per_row);
+		buffer_append_fmt(ctx, "  %s = add i64 %d, %s\n", total_bytes, struct_sz_bytes, data_bytes);
+
+		/* Single malloc */
+		char *raw_ptr = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = call i8* @malloc(i64 %s)\n", raw_ptr, total_bytes);
+
+		/* Bitcast to struct pointer */
 		char *struct_ptr = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = bitcast i8* %s to %%struct.%s*\n", struct_ptr, raw_ptr, arch_name);
 
-		/* Find archetype declaration to iterate fields */
-		ArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
-		if (arch) {
-			/* Store length=0 (nothing live at alloc time) */
-			char *count_gep = gen_value_name(ctx);
-			int count_field_idx = arch->field_count; /* count is after all fields */
-			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", count_gep,
-			                  arch_name, arch_name, struct_ptr, count_field_idx);
-			buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", count_gep);
+		/* Initialize metadata fields */
+		char *count_gep = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", count_gep,
+		                  arch_name, arch_name, struct_ptr, arch->field_count);
+		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", count_gep);
 
-			/* Store max_length=N (capacity) */
-			char *cap_gep = gen_value_name(ctx);
-			int cap_field_idx = arch->field_count + 1; /* capacity is after count */
-			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cap_gep,
-			                  arch_name, arch_name, struct_ptr, cap_field_idx);
-			buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", count_buf, cap_gep);
+		char *cap_gep = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cap_gep, arch_name,
+		                  arch_name, struct_ptr, arch->field_count + 1);
+		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", count_buf, cap_gep);
 
-			/* Initialize free_count=0 */
-			char *fc_gep = gen_value_name(ctx);
-			int fc_field_idx = arch->field_count + 3; /* free_count is after free_list */
-			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", fc_gep,
-			                  arch_name, arch_name, struct_ptr, fc_field_idx);
-			buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", fc_gep);
+		char *fc_gep = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", fc_gep, arch_name,
+		                  arch_name, struct_ptr, arch->field_count + 3);
+		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", fc_gep);
 
-			/* Malloc and initialize free_list */
-			char *fl_bytes = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = mul i64 %s, 8\n", fl_bytes, count_buf);
-			char *fl_raw = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = call i8* @malloc(i64 %s)\n", fl_raw, fl_bytes);
-			char *fl_ptr = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = bitcast i8* %s to i64*\n", fl_ptr, fl_raw);
-			char *fl_gep = gen_value_name(ctx);
-			int fl_field_idx = arch->field_count + 2; /* free_list is after capacity */
-			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", fl_gep,
-			                  arch_name, arch_name, struct_ptr, fl_field_idx);
-			buffer_append_fmt(ctx, "  store i64* %s, i64** %s\n", fl_ptr, fl_gep);
+		/* Set column pointers and free_list pointer to offsets in the allocated block */
+		int col_offset = 0;
+		for (int i = 0; i < arch->field_count; i++) {
+			if (arch->fields[i]->kind == FIELD_COLUMN) {
+				const char *elem_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
 
-			/* Malloc and store column arrays */
-			for (int i = 0; i < arch->field_count; i++) {
-				if (arch->fields[i]->kind == FIELD_COLUMN) {
-					const char *elem_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
+				char *col_gep = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", col_gep,
+				                  arch_name, arch_name, struct_ptr, i);
 
-					/* Calculate allocation size: max(count, 1) * element_size to avoid malloc(0) */
-					char *zero_cmp = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = icmp eq i64 %s, 0\n", zero_cmp, count_buf);
-					char *alloc_count = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = select i1 %s, i64 1, i64 %s  ;; at least 1\n", alloc_count, zero_cmp,
-					                  count_buf);
-					char *malloc_size = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = mul i64 %s, %lld  ;; alloc_count * sizeof(%s)\n", malloc_size,
-					                  alloc_count, (elem_type[0] == 'd') ? 8LL : 4LL, /* rough estimate */
-					                  elem_type);
+				char *col_data = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %d\n", col_data, raw_ptr,
+				                  struct_sz_bytes + col_offset);
 
-					/* malloc the array */
-					char *array_raw = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = call i8* @malloc(i64 %s)\n", array_raw, malloc_size);
+				char *col_ptr = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = bitcast i8* %s to %s*\n", col_ptr, col_data, elem_type);
 
-					/* bitcast to element type pointer */
-					char *array_ptr = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = bitcast i8* %s to %s*\n", array_ptr, array_raw, elem_type);
+				buffer_append_fmt(ctx, "  store %s* %s, %s** %s\n", elem_type, col_ptr, elem_type, col_gep);
 
-					/* store pointer in struct field */
-					char *field_gep = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-					                  field_gep, arch_name, arch_name, struct_ptr, i);
-					buffer_append_fmt(ctx, "  store %s* %s, %s** %s\n", elem_type, array_ptr, elem_type, field_gep);
-				}
+				int elem_size = (elem_type[0] == 'd') ? 8 : 4;
+				col_offset += elem_size;
 			}
 		}
+
+		/* Set free_list pointer: it comes after all column rows */
+		char *fl_gep = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", fl_gep, arch_name,
+		                  arch_name, struct_ptr, arch->field_count + 2);
+
+		/* free_list offset = struct_header + (all columns data) */
+		char *fl_offset = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", fl_offset, count_buf, bytes_per_row);
+		char *fl_data = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %s\n", fl_data, raw_ptr, fl_offset);
+		char *fl_add_header = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %d\n", fl_add_header, fl_data, struct_sz_bytes);
+
+		char *fl_ptr = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = bitcast i8* %s to i64*\n", fl_ptr, fl_add_header);
+
+		buffer_append_fmt(ctx, "  store i64* %s, i64** %s\n", fl_ptr, fl_gep);
 
 		strcpy(result_buf, struct_ptr);
 		break;

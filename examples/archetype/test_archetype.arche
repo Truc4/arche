@@ -20,6 +20,13 @@ sys dampen(vel) {
 proc main() {
   let particles = alloc Particle(100);
   let bodies = alloc Body(50);
+  insert(particles, 1.0, 0.1);
+  insert(particles, 2.0, 0.2);
+  insert(particles, 3.0, 0.3);
+  insert(bodies, 5.0, 0.5, 10.0);
+  insert(bodies, 6.0, 0.6, 20.0);
+  run move in (null);
+  run dampen in (null);
   let msg = "systems executed\n";
   write(1, msg, msg.length);
 }

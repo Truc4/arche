@@ -5,6 +5,14 @@ arche Particle {
 
 proc main() {
   let p = alloc Particle(1000);
+  insert(p, 1.0, 0.1);
+  insert(p, 2.0, 0.2);
+  insert(p, 3.0, 0.3);
+  insert(p, 4.0, 0.4);
+  insert(p, 5.0, 0.5);
+  insert(p, 6.0, 0.6);
+  insert(p, 7.0, 0.7);
+  insert(p, 8.0, 0.8);
   p.pos = p.pos + p.vel;
   let msg = "array ops done\n";
   print(msg);

@@ -9,6 +9,18 @@ sys move(position, velocity) {
 
 proc main() {
   let b = alloc Body(500);
+  insert(b, 1.0, 0.1);
+  insert(b, 2.0, 0.2);
+  insert(b, 3.0, 0.3);
+  insert(b, 4.0, 0.4);
+  insert(b, 5.0, 0.5);
+  insert(b, 6.0, 0.6);
+  insert(b, 7.0, 0.7);
+  insert(b, 8.0, 0.8);
+  insert(b, 9.0, 0.9);
+  insert(b, 10.0, 1.0);
+  insert(b, 11.0, 1.1);
+  insert(b, 12.0, 1.2);
   run move in (null);
   let msg = "system executed\n";
   print(msg);
