@@ -35,7 +35,9 @@ Multiple worlds will allow parallel data-driven computations, with systems opera
 
 ## Archetypes (`arche`)
 
-An Archetype defines the structure of a columnar data collection. All fields become arrays (columns), except scalar metadata stored in the struct itself.
+An Archetype declaration allocates space for a _shape_ — a unique column structure. The name is just an _alias_ for that shape.
+
+A **shape** is defined by its columns and types. If two archetype declarations have identical columns and types, they refer to the same shape and share the same allocation.
 
 **Primitives:** `int`, `float`, `char`
 
@@ -54,11 +56,26 @@ arche Particle {
 }
 ```
 
-**Allocate once, fixed size:**
+This allocates space for a shape with those columns. The name `Particle` is an alias. If you declare another archetype with the same columns:
+
+```arche
+arche Enemy {
+  pos: (x: float, y: float),
+  vel: (vx: float, vy: float),
+  mass: float
+}
+```
+
+Both `Particle` and `Enemy` alias the same underlying shape. They share the allocation. You can allocate using either alias:
 
 ```arche
 let particles = alloc Particle(1000);
+let enemies = alloc Enemy(1000);  // ERROR: shape already allocated
 ```
+
+**Allocate once, fixed size:**
+
+Each shape allocates exactly once. Attempting to allocate the same shape again (with any alias) is an error.
 
 All 1000 slots are live immediately. No dynamic resizing.
 
