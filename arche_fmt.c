@@ -12,6 +12,14 @@ int main(int argc, char *argv[]) {
 	}
 
 	const char *filename = argv[1];
+
+	/* Check file extension */
+	size_t len = strlen(filename);
+	if (len < 6 || strcmp(filename + len - 6, ".arche") != 0) {
+		fprintf(stderr, "Error: only .arche files supported, got '%s'\n", filename);
+		return 1;
+	}
+
 	FILE *file = fopen(filename, "r");
 	if (!file) {
 		fprintf(stderr, "Error: could not open file '%s'\n", filename);
