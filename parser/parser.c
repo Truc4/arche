@@ -124,6 +124,19 @@ static TypeRef *parse_type(Parser *parser) {
 	TypeRef *type = type_name_create(name);
 	type->loc.line = parser->previous.line;
 	type->loc.column = parser->previous.column;
+
+	if (check(parser, TOK_LBRACKET)) {
+		advance(parser); /* consume [ */
+		if (!check(parser, TOK_RBRACKET)) {
+			error(parser, "Expected ']' after '['");
+			return type;
+		}
+		advance(parser); /* consume ] */
+		TypeRef *arr = type_array_create(type);
+		arr->loc = type->loc;
+		return arr;
+	}
+
 	return type;
 }
 

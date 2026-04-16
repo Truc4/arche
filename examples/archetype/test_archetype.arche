@@ -21,6 +21,6 @@ proc main() {
   let particles = alloc Particle(100);
   let bodies = alloc Body(50);
   let msg = "systems executed\n";
-  write(1, msg, msg.length);
+  print(msg);
 }
 

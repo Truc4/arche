@@ -244,9 +244,9 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	}
 
 	case EXPR_FIELD: {
-		/* Handle .length property on arrays */
-		if (strcmp(expr->data.field.field_name, "length") == 0) {
-			/* .length is always int type */
+		/* Handle metadata properties on arrays and archetypes */
+		if (strcmp(expr->data.field.field_name, "length") == 0 ||
+		    strcmp(expr->data.field.field_name, "max_length") == 0) {
 			return "int";
 		}
 
@@ -578,7 +578,7 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 		TypeRef *param_type = proc->params[i]->type;
 
 		/* Check if param type is an archetype */
-		const char *type_name = param_type ? param_type->data.name : NULL;
+		const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : NULL;
 		const char *arch_name = NULL;
 		if (type_name && find_archetype(ctx, type_name)) {
 			arch_name = type_name;
