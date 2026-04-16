@@ -11,6 +11,6 @@ proc main() {
   let p = Particle.alloc((null): 1000);
   p.pos = p.pos + p.vel;
   let msg = "test passed\n";
-  write(1, msg, msg.length);
+  print(msg);
 }
 

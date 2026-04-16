@@ -9,7 +9,8 @@ sys move(position, velocity) {
 
 proc main() {
   let b = alloc Body(500);
-  run move;
+  run move in (null);
   let msg = "system executed\n";
-  write(1, msg, msg.length);
+  print(msg);
 }
+

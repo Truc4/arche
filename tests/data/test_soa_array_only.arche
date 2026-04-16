@@ -7,6 +7,6 @@ proc main() {
   let p = alloc Particle(1000);
   p.pos = p.pos + p.vel;
   let msg = "array ops done\n";
-  write(1, msg, msg.length);
+  print(msg);
 }
 

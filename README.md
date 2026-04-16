@@ -2,7 +2,7 @@
 
 **Arche** is a small, experimental programming language built around a single idea:
 
-> Programs should operate on _collections of structured data_ as a whole — not one element at a time.
+> Programs should operate on _collections of structured data_ as a whole, not one element at a time.
 
 It is intentionally **minimal**, **opinionated**, and **not designed for production use**.
 This project exists primarily for exploration.
@@ -15,10 +15,11 @@ Arche is built on a few strong constraints:
 
 - **Array-first**: Operations apply across entire collections by default.
 - **No implicit row access**: You don’t work on individual elements unless you explicitly index.
-- **Columns, not fields**: All archetype data is columnar (arrays). Single values are metadata stored in the archetype itself.
+- **Columns only**: All archetype data is columnar (arrays). No metadata. Columns are primitives or tuple columns.
+- **Horizontal only**: No nested complex types, no pointers. Data layout is flat and explicit.
 - **Tuple columns**: Multi-component fields like position vectors are stored as separate side-by-side arrays (`pos_x`, `pos_y`) but accessed with clean syntax (`pos.x[i]`, `pos.y[i]`).
 - **Fixed-size collections**: Archetypes allocate once with a fixed count. No dynamic resizing.
-- **Minimal type system**: Primitives only: `int`, `float`, `char`. No booleans, no objects.
+- **Minimal type system**: Primitives only: `int`, `float`, `char`. No booleans, no objects. This is a design principle, not a limitation.
 - **Explicit structure over flexibility**
 
 This leads to a style that feels closer to **data pipelines** or **vectorized computation** than traditional imperative code.
@@ -35,14 +36,14 @@ Multiple worlds will allow parallel data-driven computations, with systems opera
 
 ## Archetypes (`arche`)
 
-An Archetype declaration allocates space for a _shape_ — a unique column structure. The name is just an _alias_ for that shape.
+An Archetype declaration allocates space for a _shape_ (a unique column structure). The name is just an _alias_ for that shape.
 
 A **shape** is defined by its columns and types. If two archetype declarations have identical columns and types, they refer to the same shape and share the same allocation.
 
 **Primitives:** `int`, `float`, `char`
 
-**Field types:**
-- Single primitive: `mass: float` → scalar metadata in archetype struct
+**Column types:**
+- Single primitive: `mass: float` → column of floats
 - Tuple columns: `pos: (x: float, y: float)` → two separate arrays `pos_x[]` and `pos_y[]`
 - Multi-dimensional arrays: `text: char[256]` → N×256 array per entity
 
@@ -268,6 +269,17 @@ It deliberately avoids:
 - complex type systems
 - hidden behavior
 
+## Design Vision
+
+Arche explores building a **high-level language with explicit horizontal data layout and no pointers**.
+
+Instead of complex type systems, language users make conscious decisions about data organization:
+- **Strings**: No string type. Users implement fixed-size `char[]` arrays, packed arrays with length metadata, or handles to archetypes holding string data.
+- **Collections**: Multi-column designs (`pos_x`, `pos_y`) sit side-by-side, enabling cache-friendly iteration.
+- **References**: No pointers. Data is organized as columns within archetypes, not as complex nested structures.
+
+The `design_analysis/` directory contains exploration and documentation of data layout patterns the language should support, helping guide how users think about organizing their data.
+
 ## Why This Exists
 
 Arche is an experiment in:
@@ -282,7 +294,7 @@ Arche is an experiment in:
 
 ## Status
 
-🚧 **Alpha — Core infrastructure working**
+🚧 **Alpha: Core infrastructure working**
 
 ### What's Working
 
@@ -297,6 +309,5 @@ Arche is an experiment in:
 - No function calls yet
 - For loops not fully implemented
 - No memory management beyond static allocation
-- Type system is minimal (primitives only)
 - No error recovery in parser
 - Limited standard library (only `write` syscall)

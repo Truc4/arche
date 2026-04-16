@@ -51,23 +51,23 @@ Program *parse_string(const char *src) {
 
 void test_archetype_empty(void) {
 	test_start("archetype empty");
-	Program *prog = parse_string("world GameWorld() arche Player {}");
+	Program *prog = parse_string("arche Player {}");
 	ASSERT_NOT_NULL(prog, "program is null");
-	ASSERT_EQ(prog->decl_count, 2, "expected 2 decls (world + archetype)");
-	ASSERT_EQ(prog->decls[1]->kind, DECL_ARCHETYPE, "expected DECL_ARCHETYPE");
-	ASSERT_NOT_NULL(prog->decls[1]->data.archetype, "archetype is null");
-	ASSERT_EQ(strcmp(prog->decls[1]->data.archetype->name, "Player"), 0, "wrong name");
-	ASSERT_EQ(prog->decls[1]->data.archetype->field_count, 0, "expected 0 fields");
+	ASSERT_EQ(prog->decl_count, 1, "expected 1 decl");
+	ASSERT_EQ(prog->decls[0]->kind, DECL_ARCHETYPE, "expected DECL_ARCHETYPE");
+	ASSERT_NOT_NULL(prog->decls[0]->data.archetype, "archetype is null");
+	ASSERT_EQ(strcmp(prog->decls[0]->data.archetype->name, "Player"), 0, "wrong name");
+	ASSERT_EQ(prog->decls[0]->data.archetype->field_count, 0, "expected 0 fields");
 	program_free(prog);
 	test_pass_msg();
 }
 
 void test_archetype_meta_field(void) {
 	test_start("archetype with meta field");
-	Program *prog = parse_string("world W() arche Player {\n  drag: Float\n}");
+	Program *prog = parse_string("arche Player {\n  drag: Float\n}");
 	ASSERT_NOT_NULL(prog, "program is null");
-	ASSERT_EQ(prog->decl_count, 2, "expected 2 decls");
-	ArchetypeDecl *arch = prog->decls[1]->data.archetype;
+	ASSERT_EQ(prog->decl_count, 1, "expected 1 decl");
+	ArchetypeDecl *arch = prog->decls[0]->data.archetype;
 	ASSERT_EQ(arch->field_count, 1, "expected 1 field");
 	ASSERT_EQ(arch->fields[0]->kind, FIELD_COLUMN, "expected FIELD_COLUMN");
 	ASSERT_EQ(strcmp(arch->fields[0]->name, "drag"), 0, "wrong field name");
@@ -77,9 +77,9 @@ void test_archetype_meta_field(void) {
 
 void test_archetype_col_field(void) {
 	test_start("archetype with col field");
-	Program *prog = parse_string("world W() arche Particle {\n  pos: Float\n}");
+	Program *prog = parse_string("arche Particle {\n  pos: Float\n}");
 	ASSERT_NOT_NULL(prog, "program is null");
-	ArchetypeDecl *arch = prog->decls[1]->data.archetype;
+	ArchetypeDecl *arch = prog->decls[0]->data.archetype;
 	ASSERT_EQ(arch->field_count, 1, "expected 1 field");
 	ASSERT_EQ(arch->fields[0]->kind, FIELD_COLUMN, "expected FIELD_COLUMN");
 	program_free(prog);
@@ -88,13 +88,13 @@ void test_archetype_col_field(void) {
 
 void test_archetype_multiple_fields(void) {
 	test_start("archetype with multiple fields");
-	Program *prog = parse_string("world W() arche Body {\n"
+	Program *prog = parse_string("arche Body {\n"
 	                             "  drag: Float,\n"
 	                             "  pos: Vec3,\n"
 	                             "  vel: Vec3\n"
 	                             "}");
 	ASSERT_NOT_NULL(prog, "program is null");
-	ArchetypeDecl *arch = prog->decls[1]->data.archetype;
+	ArchetypeDecl *arch = prog->decls[0]->data.archetype;
 	ASSERT_EQ(arch->field_count, 3, "expected 3 fields");
 	ASSERT_EQ(arch->fields[0]->kind, FIELD_COLUMN, "field 0 should be col");
 	ASSERT_EQ(arch->fields[1]->kind, FIELD_COLUMN, "field 1 should be col");
@@ -276,15 +276,14 @@ void test_expr_binary_op(void) {
 
 void test_multiple_decls(void) {
 	test_start("multiple declarations");
-	Program *prog = parse_string("world W() arche Player { x: Float }\n"
+	Program *prog = parse_string("arche Player { x: Float }\n"
 	                             "proc init() {}\n"
 	                             "sys move(pos) {}\n");
 	ASSERT_NOT_NULL(prog, "program is null");
-	ASSERT_EQ(prog->decl_count, 4, "expected 4 decls");
-	ASSERT_EQ(prog->decls[0]->kind, DECL_WORLD, "decl 0 should be world");
-	ASSERT_EQ(prog->decls[1]->kind, DECL_ARCHETYPE, "decl 1 should be archetype");
-	ASSERT_EQ(prog->decls[2]->kind, DECL_PROC, "decl 2 should be proc");
-	ASSERT_EQ(prog->decls[3]->kind, DECL_SYS, "decl 3 should be sys");
+	ASSERT_EQ(prog->decl_count, 3, "expected 3 decls");
+	ASSERT_EQ(prog->decls[0]->kind, DECL_ARCHETYPE, "decl 0 should be archetype");
+	ASSERT_EQ(prog->decls[1]->kind, DECL_PROC, "decl 1 should be proc");
+	ASSERT_EQ(prog->decls[2]->kind, DECL_SYS, "decl 2 should be sys");
 	program_free(prog);
 	test_pass_msg();
 }
