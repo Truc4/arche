@@ -1608,12 +1608,6 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 
 /* ========== DECLARATION CODEGEN ========== */
 
-static void codegen_world_decl(CodegenContext *ctx, WorldDecl *world) {
-	/* Worlds are implicit in LLVM - no explicit code needed */
-	(void)ctx;
-	(void)world;
-}
-
 static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	/* Generate struct definition for archetype */
 	buffer_append_fmt(ctx, "%%struct.%s = type {\n", arch->name);
@@ -1805,8 +1799,9 @@ static void codegen_proc_decl(CodegenContext *ctx, ProcDecl *proc) {
 		return;
 	}
 
-	/* Generate procedure as a function returning void */
-	buffer_append_fmt(ctx, "define void @%s(", proc->name);
+	/* Generate procedure - main returns i32, others return void */
+	int is_main = (strcmp(proc->name, "main") == 0);
+	buffer_append_fmt(ctx, "define %s @%s(", is_main ? "i32" : "void", proc->name);
 
 	/* Emit parameter types and names */
 	for (int i = 0; i < proc->param_count; i++) {
@@ -1856,7 +1851,11 @@ static void codegen_proc_decl(CodegenContext *ctx, ProcDecl *proc) {
 
 	pop_value_scope(ctx);
 
-	buffer_append(ctx, "  ret void\n");
+	if (is_main) {
+		buffer_append(ctx, "  ret i32 0\n");
+	} else {
+		buffer_append(ctx, "  ret void\n");
+	}
 	buffer_append(ctx, "}\n\n");
 }
 
@@ -2002,9 +2001,6 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		Decl *decl = ctx->prog->decls[i];
 
 		switch (decl->kind) {
-		case DECL_WORLD:
-			codegen_world_decl(ctx, decl->data.world);
-			break;
 		case DECL_ARCHETYPE:
 			codegen_archetype_decl(ctx, decl->data.archetype);
 			break;

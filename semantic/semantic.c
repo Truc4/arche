@@ -19,10 +19,6 @@ typedef struct {
 
 typedef struct {
 	char *name;
-} WorldInfo;
-
-typedef struct {
-	char *name;
 	TypeRef *type;
 	char *archetype_name; /* for variables that refer to archetype entries */
 } VariableInfo;
@@ -33,9 +29,6 @@ typedef struct {
 } Scope;
 
 struct SemanticContext {
-	WorldInfo **worlds;
-	int world_count;
-
 	ArchetypeInfo **archetypes;
 	int archetype_count;
 
@@ -52,15 +45,6 @@ struct SemanticContext {
 };
 
 /* ========== UTILITY FUNCTIONS ========== */
-
-static WorldInfo *find_world(SemanticContext *ctx, const char *name) {
-	for (int i = 0; i < ctx->world_count; i++) {
-		if (strcmp(ctx->worlds[i]->name, name) == 0) {
-			return ctx->worlds[i];
-		}
-	}
-	return NULL;
-}
 
 static ArchetypeInfo *find_archetype(SemanticContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->archetype_count; i++) {
@@ -461,14 +445,7 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 	}
 
 	case STMT_RUN:
-		/* check world exists (empty name means default world, which always exists) */
-		if (stmt->data.run_stmt.world_name && stmt->data.run_stmt.world_name[0] != '\0') {
-			if (!find_world(ctx, stmt->data.run_stmt.world_name)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "Undefined world '%s'", stmt->data.run_stmt.world_name);
-				error(ctx, msg);
-			}
-		}
+		/* no world validation needed - worlds are planned but not yet implemented */
 		break;
 
 	case STMT_EXPR:
@@ -482,18 +459,6 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 }
 
 /* ========== DECLARATION ANALYSIS ========== */
-
-static void analyze_world_decl(SemanticContext *ctx, WorldDecl *world) {
-	if (!world)
-		return;
-
-	WorldInfo *info = malloc(sizeof(WorldInfo));
-	info->name = malloc(strlen(world->name) + 1);
-	strcpy(info->name, world->name);
-
-	ctx->worlds = realloc(ctx->worlds, (ctx->world_count + 1) * sizeof(WorldInfo *));
-	ctx->worlds[ctx->world_count++] = info;
-}
 
 static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 	if (!arch)
@@ -630,9 +595,6 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 		return;
 
 	switch (decl->kind) {
-	case DECL_WORLD:
-		analyze_world_decl(ctx, decl->data.world);
-		break;
 	case DECL_ARCHETYPE:
 		analyze_archetype_decl(ctx, decl->data.archetype);
 		break;
@@ -652,8 +614,6 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 
 SemanticContext *semantic_analyze(Program *prog) {
 	SemanticContext *ctx = malloc(sizeof(SemanticContext));
-	ctx->worlds = NULL;
-	ctx->world_count = 0;
 	ctx->archetypes = NULL;
 	ctx->archetype_count = 0;
 	ctx->known_funcs = NULL;
@@ -671,23 +631,16 @@ SemanticContext *semantic_analyze(Program *prog) {
 	if (!prog)
 		return ctx;
 
-	/* first pass: collect all worlds */
-	for (int i = 0; i < prog->decl_count; i++) {
-		if (prog->decls[i]->kind == DECL_WORLD) {
-			analyze_decl(ctx, prog->decls[i]);
-		}
-	}
-
-	/* second pass: collect all archetypes */
+	/* first pass: collect all archetypes */
 	for (int i = 0; i < prog->decl_count; i++) {
 		if (prog->decls[i]->kind == DECL_ARCHETYPE) {
 			analyze_decl(ctx, prog->decls[i]);
 		}
 	}
 
-	/* third pass: analyze other declarations */
+	/* second pass: analyze other declarations */
 	for (int i = 0; i < prog->decl_count; i++) {
-		if (prog->decls[i]->kind != DECL_WORLD && prog->decls[i]->kind != DECL_ARCHETYPE) {
+		if (prog->decls[i]->kind != DECL_ARCHETYPE) {
 			analyze_decl(ctx, prog->decls[i]);
 		}
 	}
@@ -698,13 +651,6 @@ SemanticContext *semantic_analyze(Program *prog) {
 void semantic_context_free(SemanticContext *ctx) {
 	if (!ctx)
 		return;
-
-	/* free worlds */
-	for (int i = 0; i < ctx->world_count; i++) {
-		free(ctx->worlds[i]->name);
-		free(ctx->worlds[i]);
-	}
-	free(ctx->worlds);
 
 	/* free archetypes (but not the TypeRef, which is owned by AST) */
 	for (int i = 0; i < ctx->archetype_count; i++) {

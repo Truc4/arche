@@ -2,11 +2,9 @@
 
 Program ← _ (Decl _)* EOF
 
-Decl ← WorldDecl / ArchetypeDecl / ProcDecl / SysDecl / FuncDecl
+Decl ← ArchetypeDecl / ProcDecl / SysDecl / FuncDecl
 
 # Declarations
-
-WorldDecl ← "world" _ Identifier _ "(" _ (Identifier (_ "," _ Identifier)*)? _ ")"
 
 ArchetypeDecl ← "arche" _ Identifier _ "{" _ (ArchField _)* "}"
 
@@ -32,7 +30,7 @@ AssignOp ← "+=" / "-=" / "*=" / "/=" / "="
 
 ForLoop ← "for" _ Identifier _ "in" _ Identifier _ "{" _ (Statement _)* "}"
 
-RunSystem ← "run" _ Identifier _ ("in" _ Identifier)? _ ";"
+RunSystem ← "run" _ Identifier _ ";"
 
 # Expressions
 

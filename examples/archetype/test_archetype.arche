@@ -17,8 +17,8 @@ sys dampen(vel) {
 }
 
 proc main() {
-  let particles = Particle.alloc((null): 100);
-  let bodies = Body.alloc((null): 50);
+  let particles = alloc Particle(100);
+  let bodies = alloc Body(50);
   let msg = "systems executed\n";
   write(1, msg, msg.length);
 }

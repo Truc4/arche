@@ -489,14 +489,23 @@ static void format_expression(FILE *out, Expression *expr) {
 		break;
 	}
 	case EXPR_ALLOC: {
-		fprintf(out, "%s.alloc(", expr->data.alloc.archetype_name);
-		for (int i = 0; i < expr->data.alloc.field_count; i++) {
-			if (i > 0)
-				fprintf(out, ", ");
-			fprintf(out, "%s: ", expr->data.alloc.field_names[i]);
-			format_expression(out, expr->data.alloc.field_values[i]);
+		/* Check if this is a simple allocation (field_names[0] == NULL) or field assignment */
+		if (expr->data.alloc.field_count == 1 && expr->data.alloc.field_names[0] == NULL) {
+			/* Simple allocation: alloc Particle(count) */
+			fprintf(out, "alloc %s(", expr->data.alloc.archetype_name);
+			format_expression(out, expr->data.alloc.field_values[0]);
+			fprintf(out, ")");
+		} else {
+			/* Field assignment: Particle.alloc(field1: val1, field2: val2, ...) */
+			fprintf(out, "%s.alloc(", expr->data.alloc.archetype_name);
+			for (int i = 0; i < expr->data.alloc.field_count; i++) {
+				if (i > 0)
+					fprintf(out, ", ");
+				fprintf(out, "%s: ", expr->data.alloc.field_names[i]);
+				format_expression(out, expr->data.alloc.field_values[i]);
+			}
+			fprintf(out, ")");
 		}
-		fprintf(out, ")");
 		break;
 	}
 	}

@@ -473,45 +473,7 @@ static Decl *parse_func_decl(Parser *parser) {
 
 /* ========== WORLD PARSING ========== */
 
-static Decl *parse_world_decl(Parser *parser) {
-	/* 'world' is the current token, consume it */
-	advance(parser); /* consume 'world' */
-
-	if (!check(parser, TOK_IDENT)) {
-		error(parser, "Expected world name");
-		return NULL;
-	}
-	char *name = token_text(parser->current);
-	advance(parser);
-
-	if (!match(parser, TOK_LPAREN)) {
-		error(parser, "Expected '('");
-		return NULL;
-	}
-
-	if (!match(parser, TOK_RPAREN)) {
-		error(parser, "Expected ')' (world fields not yet supported)");
-		return NULL;
-	}
-
-	WorldDecl *world = world_decl_create(name);
-	world->loc.line = parser->previous.line;
-	world->loc.column = parser->previous.column;
-	Decl *decl = decl_create(DECL_WORLD);
-	decl->data.world = world;
-	return decl;
-}
-
 static Decl *parse_decl(Parser *parser) {
-	/* check for world keyword first */
-	if (check(parser, TOK_IDENT)) {
-		/* peek ahead to see if this is 'world' */
-		const char *text = parser->current.start;
-		size_t len = parser->current.length;
-		if (len == 5 && strncmp(text, "world", 5) == 0) {
-			return parse_world_decl(parser);
-		}
-	}
 
 	switch (parser->current.kind) {
 	case TOK_ARCHETYPE:
@@ -826,19 +788,6 @@ static Statement *parse_statement(Parser *parser) {
 			char *system_name = token_text(parser->current);
 			advance(parser);
 
-			/* World name is optional - allocate empty string for default world */
-			char *world_name = malloc(1);
-			world_name[0] = '\0';
-			if (match(parser, TOK_IN)) {
-				free(world_name); /* free the empty string we just allocated */
-				if (!check(parser, TOK_IDENT)) {
-					error(parser, "Expected world name after 'in'");
-					return NULL;
-				}
-				world_name = token_text(parser->current);
-				advance(parser);
-			}
-
 			if (!match(parser, TOK_SEMI)) {
 				error(parser, "Expected ';'");
 			}
@@ -847,7 +796,7 @@ static Statement *parse_statement(Parser *parser) {
 			stmt->loc.line = parser->previous.line;
 			stmt->loc.column = parser->previous.column;
 			stmt->data.run_stmt.system_name = system_name;
-			stmt->data.run_stmt.world_name = world_name;
+			stmt->data.run_stmt.world_name = NULL;
 			return stmt;
 		}
 	}

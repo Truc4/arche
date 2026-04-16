@@ -495,9 +495,54 @@ if (match(parser, TOK_IN)) {
 
 ---
 
-## Out of Scope (Phase 3+)
+## Phase 3 — World Removal (✅ COMPLETE - Apr 16, 2026)
 
-- System calls without explicit world (`run sys;` → infer from scope)
+Removed world-related parsing, semantic analysis, and code generation. Worlds are now documented as a planned feature, not yet implemented.
+
+### Changes Made
+
+**Parser (parser/parser.c):**
+- Removed `parse_world_decl()` function
+- Modified RunSystem rule to remove `in World` syntax — now just `run system;`
+- Set world_name to NULL in run statement parsing
+
+**Semantic (semantic/semantic.c):**
+- Removed `WorldInfo` structure and related fields from `SemanticContext`
+- Removed `find_world()` function
+- Removed `analyze_world_decl()` function
+- Removed DECL_WORLD case from `analyze_decl()`
+- Simplified semantic_analyze() — removed world collection pass
+- Removed world cleanup from `semantic_context_free()`
+- Removed world validation from STMT_RUN analysis
+
+**Codegen (codegen/codegen.c):**
+- Removed `codegen_world_decl()` function
+- Removed DECL_WORLD case from declaration dispatch
+
+**Documentation (README.md, docs/GRAMMAR.peg):**
+- Updated GRAMMAR.peg — removed WorldDecl rule, simplified RunSystem
+- Updated README.md — marked Worlds as "Planned, Not Yet Implemented"
+- Removed world examples from README
+- Updated all system execution examples to use `run system;` instead of `run system in World;`
+
+**Tests:**
+- Updated `examples/archetype/test_archetype_verbose.arche` — removed `world Simulation()` declaration
+- Updated `tests/semantic_tests.c` — removed automatic world prepending in analyze_string()
+- All test files checked — no world declarations remain
+
+### Verification
+
+All tests passing after removal:
+- ✓ 6/6 codegen tests
+- ✓ 20/20 semantic tests
+- ✓ Parser tests
+- ✓ No compilation warnings related to undefined functions
+
+---
+
+## Out of Scope (Phase 4+)
+
+- Multiple worlds for parallel computations (planned but not implemented)
 - insert/delete redesign for fixed-size model
 - Dynamic resizing
 - Full SIMD vectorization

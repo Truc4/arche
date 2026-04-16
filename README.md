@@ -23,15 +23,15 @@ Arche is built on a few strong constraints:
 
 This leads to a style that feels closer to **data pipelines** or **vectorized computation** than traditional imperative code.
 
-## Worlds
+## Worlds (Planned, Not Yet Implemented)
 
-A World is a collection of archetypes. Worlds act as scopes for systems:
+A **World** is a planned feature that will act as a collection of archetypes and a scope for systems. The syntax would be:
 
 ```arche
 world Simulation()
 ```
 
-Multiple worlds allow parallel data-driven computations. Systems operate on all matching archetypes within a world.
+Multiple worlds will allow parallel data-driven computations, with systems operating on all matching archetypes within a specific world. **This feature is not yet implemented.** Currently, systems operate on all matching archetypes in the scope.
 
 ## Archetypes (`arche`)
 
@@ -135,7 +135,7 @@ proc main() {
 
 ## Systems (`sys`)
 
-Systems perform **data-driven transformations** over all matching archetypes in a world.
+Systems perform **data-driven transformations** over all matching archetypes.
 
 ```arche
 sys move(pos, vel) {
@@ -143,19 +143,18 @@ sys move(pos, vel) {
 }
 
 proc update() {
-  run move in GameWorld;
+  run move;
 }
 ```
 
 ### Semantics
 
-- executes via `run system_name` statement (operates on default world)
-- or `run system_name in world_name` for explicit world selection
-- automatically matches any archetype in that world containing the required fields
+- executes via `run system_name` statement
+- automatically matches any archetype in scope containing the required fields
 - binds those fields inside the system body
 - operates on whole columns (array-first)
 
-This means the system applies to any archetype in the world with `pos` and `vel`, such as:
+This means the system applies to any archetype with `pos` and `vel`, such as:
 
 - `Player`
 - `Mob`
@@ -169,8 +168,8 @@ Systems are invoked explicitly within procedures:
 
 ```arche
 proc main() {
-  run move in Simulation;
-  run dampen in Simulation;
+  run move;
+  run dampen;
 }
 ```
 
@@ -192,14 +191,11 @@ sys dampen(vel) {
   vel = vel * 0.99;
 }
 
-// Create a world
-world Simulation()
-
 // Allocate and run systems
 proc main() {
   let particles = alloc Particle(10000);
-  run move in Simulation;
-  run dampen in Simulation;
+  run move;
+  run dampen;
 }
 ```
 

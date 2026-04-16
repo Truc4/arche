@@ -18,11 +18,9 @@ sys dampen(vel) {
   vel = vel * 0.99;
 }
 
-world Simulation()
-
 proc main() {
-  let particles = Particle.alloc((null): 1000);
-  let bodies = Body.alloc((null): 100);
+  let particles = alloc Particle(1000);
+  let bodies = alloc Body(100);
   let msg = "simulation completed\n";
   write(1, msg, msg.length);
 }
