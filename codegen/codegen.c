@@ -779,6 +779,29 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			break;
 		}
 
+		/* Special handling for dealloc builtin */
+		if (func_name && strcmp(func_name, "dealloc") == 0 && expr->data.call.arg_count >= 1) {
+			/* args[0] is archetype variable to deallocate */
+			char arch_buf[256];
+			codegen_expression(ctx, expr->data.call.args[0], arch_buf);
+
+			/* Get arch_name from ValueInfo of args[0] */
+			const char *arch_name = NULL;
+			if (expr->data.call.args[0]->type == EXPR_NAME) {
+				ValueInfo *arch_var = find_value(ctx, expr->data.call.args[0]->data.name.name);
+				if (arch_var && arch_var->arch_name) {
+					arch_name = arch_var->arch_name;
+				}
+			}
+
+			if (arch_name) {
+				buffer_append_fmt(ctx, "  call void @arche_dealloc_%s(%%struct.%s* %s)\n", arch_name, arch_name,
+				                  arch_buf);
+				strcpy(result_buf, "0");
+			}
+			break;
+		}
+
 		/* Evaluate arguments and track their ValueInfo types */
 		char **arg_bufs = malloc(expr->data.call.arg_count * sizeof(char *));
 		int *arg_is_string = malloc(expr->data.call.arg_count * sizeof(int));
@@ -1918,6 +1941,15 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	buffer_append(ctx, "  %new_fc = add i64 %free_count, 1\n");
 	buffer_append(ctx, "  store i64 %new_fc, i64* %fc_ptr\n");
 
+	buffer_append(ctx, "  ret void\n");
+	buffer_append(ctx, "}\n\n");
+
+	/* Emit dealloc helper function */
+	buffer_append_fmt(ctx, "define void @arche_dealloc_%s(%%struct.%s* %%arch) {\n", arch->name, arch->name);
+	buffer_append(ctx, "entry:\n");
+	buffer_append(ctx, "  %arch_i8 = bitcast %struct.");
+	buffer_append_fmt(ctx, "%s* %%arch to i8*\n", arch->name);
+	buffer_append(ctx, "  call void @free(i8* %arch_i8)\n");
 	buffer_append(ctx, "  ret void\n");
 	buffer_append(ctx, "}\n\n");
 }

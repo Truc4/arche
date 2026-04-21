@@ -703,6 +703,7 @@ SemanticContext *semantic_analyze(Program *prog) {
 	register_func(ctx, "write");
 	register_func(ctx, "insert");
 	register_func(ctx, "delete");
+	register_func(ctx, "dealloc");
 
 	if (!prog)
 		return ctx;

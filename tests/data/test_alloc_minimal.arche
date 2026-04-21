@@ -1,0 +1,11 @@
+arche Particle {
+  pos: float
+}
+
+proc main() {
+  let p = alloc Particle(10);
+  insert(p, 1.0);
+  let msg = "alloc test ok\n";
+  print(msg);
+}
+

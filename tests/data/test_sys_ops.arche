@@ -21,7 +21,7 @@ proc main() {
   insert(b, 10.0, 1.0);
   insert(b, 11.0, 1.1);
   insert(b, 12.0, 1.2);
-  run move in (null);
+  run move;
   let msg = "system executed\n";
   print(msg);
 }

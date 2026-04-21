@@ -11,7 +11,7 @@ proc main() {
   insert(b, 1.0);
   insert(b, 2.0);
   insert(b, 3.0);
-  run dummy in (null);
+  run dummy;
   let msg = "ok\n";
   print(msg);
 }

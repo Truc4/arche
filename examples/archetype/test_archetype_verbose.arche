@@ -26,8 +26,8 @@ proc main() {
   insert(particles, 3.0, 0.3, 15.0);
   insert(bodies, 5.0, 0.5, 1.0);
   insert(bodies, 6.0, 0.6, 2.0);
-  run move in (null);
-  run dampen in (null);
+  run move;
+  run dampen;
   let msg = "simulation completed\n";
   write(1, msg, msg.length);
 }

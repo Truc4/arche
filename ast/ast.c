@@ -546,7 +546,12 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		break;
 	}
 	case STMT_RUN: {
-		fprintf(out, "%srun %s in %s;\n", indent_str, stmt->data.run_stmt.system_name, stmt->data.run_stmt.world_name);
+		if (stmt->data.run_stmt.world_name) {
+			fprintf(out, "%srun %s in %s;\n", indent_str, stmt->data.run_stmt.system_name,
+			        stmt->data.run_stmt.world_name);
+		} else {
+			fprintf(out, "%srun %s;\n", indent_str, stmt->data.run_stmt.system_name);
+		}
 		break;
 	}
 	case STMT_EXPR: {
