@@ -29,6 +29,6 @@ proc main() {
   run move;
   run dampen;
   let msg = "simulation completed\n";
-  write(1, msg, msg.length);
+  print(msg);
 }
 

@@ -1,4 +1,5 @@
 proc main() {
   let msg = "Hello, World!\n";
-  write(1, msg, msg.length);
+  print(msg);
 }
+
