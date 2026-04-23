@@ -116,11 +116,11 @@ let particles = alloc Particle(1000);
 let enemies = alloc Enemy(1000);  // ERROR: shape already allocated
 ```
 
-**Static allocation—once and only once:**
+**Static allocation:**
 
 Each shape allocates exactly once via an explicit `alloc` call. Attempting to allocate the same shape again (with any alias) is a compile error.
 
-The allocation is **fixed size** and **cannot be resized**. All capacity is allocated upfront. This is by design—dynamic memory is not a feature of this language.
+The allocation is **fixed size** and **reallocation is discourages**. All capacity is allocated upfront. This is by design, dynamic memory is not a feature of this language.
 
 ## Array-Oriented Operations
 
