@@ -1,13 +1,14 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c99 -DARCHE_CORE_DIR=\"$(abspath core)\"
-TARGET = arche
-LEXER_BIN = lexer-bin
-PARSER_TEST_BIN = parser-test
-FMT_BIN = arche-fmt
-SEMANTIC_TEST_BIN = semantic-test
-CODEGEN_TEST_BIN = codegen-test
-LIBARCH = libarch.a
-LIBARCH_OBJS = lexer/lexer.o ast/ast.o parser/parser.o
+BUILD_DIR = build
+TARGET = $(BUILD_DIR)/arche
+LEXER_BIN = $(BUILD_DIR)/lexer-bin
+PARSER_TEST_BIN = $(BUILD_DIR)/parser-test
+FMT_BIN = $(BUILD_DIR)/arche-fmt
+SEMANTIC_TEST_BIN = $(BUILD_DIR)/semantic-test
+CODEGEN_TEST_BIN = $(BUILD_DIR)/codegen-test
+LIBARCH = $(BUILD_DIR)/libarch.a
+LIBARCH_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/parser/parser.o
 
 # Source files
 SRCS = lexer/lexer.c \
@@ -17,15 +18,18 @@ SRCS = lexer/lexer.c \
        codegen/codegen.c
 
 OBJS = $(SRCS:.c=.o)
-COMPILER_OBJS = lexer/lexer.o ast/ast.o parser/parser.o semantic/semantic.o codegen/codegen.o main.o
-LEXER_OBJS = lexer/lexer.o lexer/lexer_main.o
-PARSER_TEST_OBJS = lexer/lexer.o ast/ast.o parser/parser.o tests/parser_tests.o
-FMT_OBJS = lexer/lexer.o ast/ast.o parser/parser.o arche_fmt.o
-SEMANTIC_TEST_OBJS = lexer/lexer.o ast/ast.o parser/parser.o semantic/semantic.o tests/semantic_tests.o
-CODEGEN_TEST_OBJS = lexer/lexer.o ast/ast.o parser/parser.o semantic/semantic.o codegen/codegen.o tests/codegen_tests.o
+COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/main.o
+LEXER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/lexer/lexer_main.o
+PARSER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/tests/parser_tests.o
+FMT_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_fmt.o
+SEMANTIC_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/tests/semantic_tests.o
+CODEGEN_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/tests/codegen_tests.o
 
 # Default target
-all: $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LIBARCH)
+all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LIBARCH)
+
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/ast $(BUILD_DIR)/parser $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/tests
 
 # Build main compiler executable
 $(TARGET): $(COMPILER_OBJS)
@@ -56,7 +60,8 @@ $(LIBARCH): $(LIBARCH_OBJS)
 	$(AR) rcs $@ $^
 
 # Compile object files
-%.o: %.c
+$(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
+	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # Run the compiler (produces executable)
@@ -72,7 +77,7 @@ run-lexer: $(LEXER_BIN)
 
 # Run lexer tests
 test-lexer: $(LEXER_BIN)
-	./tests/run_lexer_tests.sh
+	LEXER_BIN=$(LEXER_BIN) ./tests/run_lexer_tests.sh
 
 # Run parser tests
 test-parser: $(PARSER_TEST_BIN)
@@ -92,7 +97,7 @@ test-arche: $(TARGET)
 	@PASS=0; FAIL=0; \
 	for test_file in tests/arche/*.arche; do \
 		test_name=$$(basename "$$test_file" .arche); \
-		test_out="tests/arche/$$test_name"; \
+		test_out="$(BUILD_DIR)/test_$$test_name"; \
 		printf "Testing %-40s " "$$test_name..."; \
 		\
 		if ./$(TARGET) -o "$$test_out" "$$test_file" > /dev/null 2>&1; then \
@@ -134,20 +139,14 @@ test: test-lexer test-parser test-semantic test-codegen-unit test-arche test-exa
 
 # Test code generation
 test-codegen: $(TARGET)
-	rm -f examples/hello_world/hello_world
-	./$(TARGET) examples/hello_world/hello_world.arche
-	@test -x examples/hello_world/hello_world && ./examples/hello_world/hello_world > /tmp/test_output.txt && grep -q "Hello, World!" /tmp/test_output.txt && echo "✓ Codegen test passed (hello_world)" || echo "✗ Codegen test failed"
+	./$(TARGET) -o $(BUILD_DIR)/hello_world examples/hello_world/hello_world.arche
+	@test -x $(BUILD_DIR)/hello_world && ./$(BUILD_DIR)/hello_world > /tmp/test_output.txt && grep -q "Hello, World!" /tmp/test_output.txt && echo "✓ Codegen test passed (hello_world)" || echo "✗ Codegen test failed"
 
 # Clean all generated artifacts
 clean:
-	find . -name "*.o" -delete
-	find . -name "*.a" -delete
-	rm -f $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN)
-	rm -f bench-physics bench-strings bench-lifecycle bench-mixed
+	rm -rf $(BUILD_DIR)
 	find examples/ -type f ! -name "*.c" ! -name "*.arche" ! -name "*.sh" -delete
-	find tests/ -type f ! -name "*.c" ! -name "*.h" ! -name "*.sh" ! -name "*.arche" -delete
 	find design_analysis/ -type f ! -name "*.c" ! -name "*.h" ! -name "*.sh" ! -name "*.arche" -delete
-	rm -f *.txt test_*.sh run_*.sh test_fmt_debug test_lex_debug test_parse_debug 2>/dev/null || true
 
 # Design analysis benchmarks (data-driven design decisions, not language perf)
 bench-physics: design_analysis/array_ops/physics_update.c
@@ -181,5 +180,7 @@ format: $(FMT_BIN)
 		fi; \
 	done
 
+.PHONY: build
+
 # Phony targets
-.PHONY: all run run-lexer test test-lexer test-parser test-semantic test-codegen test-codegen-unit clean bench-physics bench-strings bench-lifecycle bench-mixed format
+.PHONY: all run run-lexer test test-lexer test-parser test-semantic test-codegen test-codegen-unit test-arche test-examples clean bench-physics bench-strings bench-lifecycle bench-mixed format

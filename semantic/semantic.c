@@ -606,21 +606,91 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 		shape = malloc(sizeof(ArchetypeInfo));
 		shape->signature = sig;
 		shape->is_allocated = 0;
-		shape->fields = malloc(arch->field_count * sizeof(FieldInfo *));
-		shape->field_count = arch->field_count;
+
+		/* Count total fields after expanding tuples */
+		int expanded_field_count = 0;
+		for (int i = 0; i < arch->field_count; i++) {
+			if (arch->fields[i]->type->kind == TYPE_TUPLE) {
+				expanded_field_count += arch->fields[i]->type->data.tuple.field_count;
+			} else {
+				expanded_field_count++;
+			}
+		}
+
+		shape->fields = malloc(expanded_field_count * sizeof(FieldInfo *));
+		shape->field_count = expanded_field_count;
+
+		/* Populate fields, expanding tuples into virtual fields */
+		int field_idx = 0;
 		for (int i = 0; i < arch->field_count; i++) {
 			FieldDecl *field = arch->fields[i];
-			FieldInfo *fi = malloc(sizeof(FieldInfo));
-			fi->name = malloc(strlen(field->name) + 1);
-			strcpy(fi->name, field->name);
-			fi->type = field->type;
-			fi->kind = field->kind;
-			shape->fields[i] = fi;
+			if (field->type->kind == TYPE_TUPLE) {
+				/* Expand tuple into component fields */
+				for (int j = 0; j < field->type->data.tuple.field_count; j++) {
+					FieldInfo *fi = malloc(sizeof(FieldInfo));
+					char expanded_name[512];
+					snprintf(expanded_name, sizeof(expanded_name), "%s_%s", field->name,
+					         field->type->data.tuple.field_names[j]);
+					fi->name = malloc(strlen(expanded_name) + 1);
+					strcpy(fi->name, expanded_name);
+					fi->type = field->type->data.tuple.field_types[j];
+					fi->kind = field->kind;
+					shape->fields[field_idx++] = fi;
+				}
+			} else {
+				FieldInfo *fi = malloc(sizeof(FieldInfo));
+				fi->name = malloc(strlen(field->name) + 1);
+				strcpy(fi->name, field->name);
+				fi->type = field->type;
+				fi->kind = field->kind;
+				shape->fields[field_idx++] = fi;
+			}
 		}
+
 		ctx->archetypes = realloc(ctx->archetypes, (ctx->archetype_count + 1) * sizeof(ArchetypeInfo *));
 		ctx->archetypes[ctx->archetype_count++] = shape;
 	} else {
 		free(sig); /* duplicate signature; existing shape already owns one */
+	}
+
+	/* Also expand tuples in the AST's field list so codegen sees expanded fields */
+	int expanded_count = 0;
+	for (int i = 0; i < arch->field_count; i++) {
+		if (arch->fields[i]->type->kind == TYPE_TUPLE) {
+			expanded_count += arch->fields[i]->type->data.tuple.field_count;
+		} else {
+			expanded_count++;
+		}
+	}
+
+	if (expanded_count != arch->field_count) {
+		/* Need to expand — reallocate arch->fields */
+		FieldDecl **new_fields = malloc(expanded_count * sizeof(FieldDecl *));
+		int field_idx = 0;
+		for (int i = 0; i < arch->field_count; i++) {
+			FieldDecl *field = arch->fields[i];
+			if (field->type->kind == TYPE_TUPLE) {
+				/* Create expanded field declarations */
+				for (int j = 0; j < field->type->data.tuple.field_count; j++) {
+					FieldDecl *expanded_field = malloc(sizeof(FieldDecl));
+					char expanded_name[512];
+					snprintf(expanded_name, sizeof(expanded_name), "%s_%s", field->name,
+					         field->type->data.tuple.field_names[j]);
+					expanded_field->name = malloc(strlen(expanded_name) + 1);
+					strcpy(expanded_field->name, expanded_name);
+					expanded_field->type = field->type->data.tuple.field_types[j];
+					expanded_field->kind = field->kind;
+					new_fields[field_idx++] = expanded_field;
+				}
+				free(field->name);
+				free(field);
+			} else {
+				new_fields[field_idx++] = field;
+			}
+		}
+		free(arch->fields);
+		arch->fields = new_fields;
+		arch->field_count = expanded_count;
 	}
 
 	/* Register alias */

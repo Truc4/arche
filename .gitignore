@@ -1,27 +1,5 @@
-# Build artifacts
-*.o
-*.a
-*.so
-*.dylib
-
-# Executables
-arche
-lexer-bin
-arche-fmt
-parser-test
-semantic-test
-codegen-test
-
-# Generated binaries in examples (keep .c, .arche, .sh source files)
-examples/*/*
-!examples/*/*.c
-!examples/*/*.arche
-!examples/*/*.sh
-
-# Debug symbols
-*.dSYM/
-*.su
-*.gch
+# Build directory - all artifacts go here
+build/
 
 # IDE and editor files
 .vscode/
@@ -30,22 +8,3 @@ examples/*/*
 *.swo
 *~
 .DS_Store
-
-# Dependencies and build tools
-*.d
-
-# Temporary files
-*.tmp
-tests/tmp/
-
-# Test directories (language and test infrastructure are tracked)
-!tests/arche/
-!tests/arche/*.arche
-# Ignore compiled test executables (files without extension)
-tests/arche/test_tuple_array_ops
-tests/arche/test_tuple_compound_ops
-tests/arche/test_tuple_compound_assign
-tests/arche/test_tuple_whole_ops
-!tests/arche/*.c
-!tests/c/
-!tests/c/*.sh
