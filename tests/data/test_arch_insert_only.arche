@@ -1,0 +1,11 @@
+arche Particle {
+  pos: float,
+  vel: float
+}
+
+proc main() {
+  let p = alloc Particle(10);
+  insert(p, 1.0, 0.1);
+  print({105, 110, 115, 101, 114, 116, 101, 100, 10});
+}
+

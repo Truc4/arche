@@ -1,0 +1,16 @@
+arche Particle {
+  pos: float,
+  vel: float
+}
+
+sys move(pos, vel) {
+  pos = pos + vel;
+}
+
+proc main() {
+  let p = alloc Particle(10);
+  insert(p, 1.0, 0.1);
+  run move;
+  print({114, 97, 110, 32, 115, 121, 115, 116, 101, 109, 10});
+}
+

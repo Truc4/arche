@@ -20,6 +20,12 @@ typedef struct {
 	int value_count;
 } ValueScope;
 
+typedef struct {
+	char sys_name[256];
+	char arch_name[256];
+	char versioned_name[512];
+} SysVersion;
+
 struct CodegenContext {
 	Program *prog;
 	SemanticContext *sem_ctx;
@@ -48,7 +54,39 @@ struct CodegenContext {
 
 	/* Implicit loop context */
 	char implicit_loop_index[64]; /* SSA reg name for current implicit loop ("" = not in loop) */
+
+	/* System function version mapping: (sys_name, arch_name) -> versioned_name */
+	SysVersion *sys_versions;
+	int sys_version_count;
+	int sys_version_capacity;
 };
+
+/* ========== SYSTEM VERSION MAPPING ========== */
+
+static void codegen_register_sys_version(CodegenContext *ctx, const char *sys_name, const char *arch_name) {
+	if (ctx->sys_version_count >= ctx->sys_version_capacity) {
+		ctx->sys_version_capacity = (ctx->sys_version_capacity == 0) ? 16 : ctx->sys_version_capacity * 2;
+		ctx->sys_versions = realloc(ctx->sys_versions, ctx->sys_version_capacity * sizeof(ctx->sys_versions[0]));
+	}
+
+	SysVersion *entry = &ctx->sys_versions[ctx->sys_version_count];
+	strncpy(entry->sys_name, sys_name, sizeof(entry->sys_name) - 1);
+	entry->sys_name[sizeof(entry->sys_name) - 1] = '\0';
+	strncpy(entry->arch_name, arch_name, sizeof(entry->arch_name) - 1);
+	entry->arch_name[sizeof(entry->arch_name) - 1] = '\0';
+	snprintf(entry->versioned_name, sizeof(entry->versioned_name), "%s_%s", sys_name, arch_name);
+	ctx->sys_version_count++;
+}
+
+static const char *codegen_get_sys_version(CodegenContext *ctx, const char *sys_name, const char *arch_name) {
+	for (int i = 0; i < ctx->sys_version_count; i++) {
+		if (strcmp(ctx->sys_versions[i].sys_name, sys_name) == 0 &&
+		    strcmp(ctx->sys_versions[i].arch_name, arch_name) == 0) {
+			return ctx->sys_versions[i].versioned_name;
+		}
+	}
+	return NULL;
+}
 
 /* ========== UTILITY FUNCTIONS ========== */
 
@@ -394,7 +432,13 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					                  align);
 				}
 				strcpy(result_buf, elem);
+			} else if (val->type == 1) {
+				/* Type-1: regular allocated value (i32, float, etc) - load from pointer */
+				char *loaded = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", loaded, val->llvm_name);
+				strcpy(result_buf, loaded);
 			} else {
+				/* Type-2 (string), 3 (arch), 5 (array): return pointer directly */
 				strcpy(result_buf, val->llvm_name);
 			}
 		} else {
@@ -1851,8 +1895,14 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			}
 
 			found_any = 1;
-			/* Call system with this archetype instance */
-			buffer_append_fmt(ctx, "  call void @%s(%%struct.%s* %s)\n", system_name, var->arch_name, var->llvm_name);
+			/* Call versioned system function for this archetype */
+			const char *versioned = codegen_get_sys_version(ctx, system_name, var->arch_name);
+			if (versioned) {
+				buffer_append_fmt(ctx, "  call void @%s(%%struct.%s* %s)\n", versioned, var->arch_name, var->llvm_name);
+			} else {
+				buffer_append_fmt(ctx, "  ; ERROR: no version of system '%s' for archetype '%s'\n", system_name,
+				                  var->arch_name);
+			}
 		}
 
 		if (!found_any) {
@@ -2197,86 +2247,65 @@ static void codegen_proc_decl(CodegenContext *ctx, ProcDecl *proc) {
 	buffer_append(ctx, "}\n\n");
 }
 
-static void codegen_sys_decl(CodegenContext *ctx, SysDecl *sys) {
-	/* Generate system function that takes an archetype instance */
-	/* Infer archetype from parameters - look for any archetype field names */
-	const char *arch_name = NULL;
-	if (sys->param_count > 0 && sys->params[0] && sys->params[0]->name) {
-		/* Try to find an archetype that has this field */
-		for (int d = 0; d < ctx->prog->decl_count; d++) {
-			Decl *decl = ctx->prog->decls[d];
-			if (decl->kind == DECL_ARCHETYPE) {
-				ArchetypeDecl *arch = decl->data.archetype;
-				for (int f = 0; f < arch->field_count; f++) {
-					if (strcmp(arch->fields[f]->name, sys->params[0]->name) == 0) {
-						arch_name = arch->name;
-						break;
-					}
-				}
-				if (arch_name)
-					break;
-			}
-		}
-	}
+static void codegen_sys_version(CodegenContext *ctx, SysDecl *sys, const char *arch_name) {
+	/* Generate a single versioned system function for a specific archetype */
+	char versioned_name[512];
+	snprintf(versioned_name, sizeof(versioned_name), "%s_%s", sys->name, arch_name);
 
-	/* Generate function with archetype parameter */
-	if (arch_name) {
-		buffer_append_fmt(ctx, "define void @%s(%%struct.%s* %%archetype) #0 {\n", sys->name, arch_name);
-	} else {
-		buffer_append_fmt(ctx, "define void @%s() {\n", sys->name);
-	}
+	/* Register this version in the mapping */
+	codegen_register_sys_version(ctx, sys->name, arch_name);
+
+	/* Generate function signature */
+	buffer_append_fmt(ctx, "define void @%s(%%struct.%s* %%archetype) #0 {\n", versioned_name, arch_name);
 	buffer_append(ctx, "entry:\n");
 
 	push_value_scope(ctx);
 
-	/* If we have an archetype, bind field parameters to their column pointers */
-	if (arch_name) {
-		ArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
-		if (arch) {
-			for (int p = 0; p < sys->param_count; p++) {
-				const char *param_name = sys->params[p]->name;
+	/* Bind field parameters to their column pointers */
+	ArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+	if (arch) {
+		for (int p = 0; p < sys->param_count; p++) {
+			const char *param_name = sys->params[p]->name;
 
-				/* Find this field in the archetype */
-				for (int f = 0; f < arch->field_count; f++) {
-					if (strcmp(arch->fields[f]->name, param_name) == 0) {
-						const char *elem_type = llvm_type_from_arche(arch->fields[f]->type->data.name);
+			/* Find this field in the archetype */
+			for (int f = 0; f < arch->field_count; f++) {
+				if (strcmp(arch->fields[f]->name, param_name) == 0) {
+					const char *elem_type = llvm_type_from_arche(arch->fields[f]->type->data.name);
 
-						if (arch->fields[f]->kind == FIELD_COLUMN) {
-							/* Load the column pointer from the struct */
-							char *field_gep = gen_value_name(ctx);
-							buffer_append_fmt(
-							    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %%archetype, i32 0, i32 %d\n",
-							    field_gep, arch_name, arch_name, f);
+					if (arch->fields[f]->kind == FIELD_COLUMN) {
+						/* Load the column pointer from the struct */
+						char *field_gep = gen_value_name(ctx);
+						buffer_append_fmt(ctx,
+						                  "  %s = getelementptr %%struct.%s, %%struct.%s* %%archetype, i32 0, i32 %d\n",
+						                  field_gep, arch_name, arch_name, f);
 
-							char *field_ptr = gen_value_name(ctx);
-							buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", field_ptr, elem_type, elem_type,
-							                  field_gep);
+						char *field_ptr = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", field_ptr, elem_type, elem_type,
+						                  field_gep);
 
-							/* Add to scope as a column pointer (type 4) */
-							add_value(ctx, param_name, field_ptr, 4); /* type 4 = column pointer */
-							/* Also track the archetype and element type for vectorization detection */
-							ValueInfo *col_val = find_value(ctx, param_name);
-							if (col_val) {
-								col_val->arch_name = malloc(strlen(arch_name) + 1);
-								strcpy(col_val->arch_name, arch_name);
-								col_val->field_type = arch->fields[f]->type->data.name;
-							}
-						} else {
-							/* Meta field: load the scalar value */
-							char *field_gep = gen_value_name(ctx);
-							buffer_append_fmt(
-							    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %%archetype, i32 0, i32 %d\n",
-							    field_gep, arch_name, arch_name, f);
-
-							char *field_val = gen_value_name(ctx);
-							buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", field_val, elem_type, elem_type,
-							                  field_gep);
-
-							/* Add to scope */
-							add_value(ctx, param_name, field_val, 0); /* type 0 = scalar */
+						/* Add to scope as a column pointer (type 4) */
+						add_value(ctx, param_name, field_ptr, 4); /* type 4 = column pointer */
+						/* Also track the archetype and element type for vectorization detection */
+						ValueInfo *col_val = find_value(ctx, param_name);
+						if (col_val) {
+							col_val->arch_name = malloc(strlen(arch_name) + 1);
+							strcpy(col_val->arch_name, arch_name);
+							col_val->field_type = arch->fields[f]->type->data.name;
 						}
-						break;
+					} else {
+						/* Meta field: load the scalar value */
+						char *field_gep = gen_value_name(ctx);
+						buffer_append_fmt(ctx,
+						                  "  %s = getelementptr %%struct.%s, %%struct.%s* %%archetype, i32 0, i32 %d\n",
+						                  field_gep, arch_name, arch_name, f);
+
+						char *field_val = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", field_val, elem_type, elem_type, field_gep);
+
+						/* Add to scope */
+						add_value(ctx, param_name, field_val, 0); /* type 0 = scalar */
 					}
+					break;
 				}
 			}
 		}
@@ -2292,6 +2321,48 @@ static void codegen_sys_decl(CodegenContext *ctx, SysDecl *sys) {
 
 	buffer_append(ctx, "  ret void\n");
 	buffer_append(ctx, "}\n\n");
+}
+
+static void codegen_sys_decl(CodegenContext *ctx, SysDecl *sys) {
+	/* Generate system function versions for ALL matching archetypes */
+	/* Collect all archetypes that have the required fields */
+	const char *matching_archs[256];
+	int matching_count = 0;
+
+	if (sys->param_count > 0 && sys->params[0] && sys->params[0]->name) {
+		/* Find all archetypes that have this field */
+		for (int d = 0; d < ctx->prog->decl_count; d++) {
+			Decl *decl = ctx->prog->decls[d];
+			if (decl->kind == DECL_ARCHETYPE) {
+				ArchetypeDecl *arch = decl->data.archetype;
+
+				/* Check if archetype has ALL required fields */
+				int has_all_fields = 1;
+				for (int p = 0; p < sys->param_count; p++) {
+					int found_field = 0;
+					for (int f = 0; f < arch->field_count; f++) {
+						if (strcmp(arch->fields[f]->name, sys->params[p]->name) == 0) {
+							found_field = 1;
+							break;
+						}
+					}
+					if (!found_field) {
+						has_all_fields = 0;
+						break;
+					}
+				}
+
+				if (has_all_fields && matching_count < 256) {
+					matching_archs[matching_count++] = arch->name;
+				}
+			}
+		}
+	}
+
+	/* Generate a function version for each matching archetype */
+	for (int i = 0; i < matching_count; i++) {
+		codegen_sys_version(ctx, sys, matching_archs[i]);
+	}
 }
 
 /* ========== PUBLIC API ========== */
@@ -2313,6 +2384,9 @@ CodegenContext *codegen_create(Program *prog, SemanticContext *sem_ctx) {
 	ctx->vector_lanes = 0;
 	ctx->in_sys = 0;
 	ctx->implicit_loop_index[0] = '\0'; /* Initialize to empty (not in loop) */
+	ctx->sys_versions = NULL;
+	ctx->sys_version_count = 0;
+	ctx->sys_version_capacity = 0;
 	return ctx;
 }
 
@@ -2403,5 +2477,6 @@ void codegen_free(CodegenContext *ctx) {
 	free(ctx->scopes);
 	free(ctx->output_buffer);
 	free(ctx->globals_buffer);
+	free(ctx->sys_versions);
 	free(ctx);
 }

@@ -389,24 +389,35 @@ void expression_free(Expression *expr) {
 
 #include <stdio.h>
 
+/* Recursion depth guard for type formatting */
+#define MAX_FORMAT_DEPTH 100
+static int format_type_depth = 0;
+
 static void format_type(FILE *out, TypeRef *type) {
 	if (!type)
 		return;
+
+	/* Prevent infinite recursion on malformed types */
+	if (format_type_depth >= MAX_FORMAT_DEPTH) {
+		fprintf(out, "...");
+		return;
+	}
+
+	format_type_depth++;
 	switch (type->kind) {
 	case TYPE_NAME:
 		fprintf(out, "%s", type->data.name);
 		break;
 	case TYPE_ARRAY:
-		fprintf(out, "[");
 		format_type(out, type->data.array.element_type);
-		fprintf(out, "]");
+		fprintf(out, "[]");
 		break;
 	case TYPE_SHAPED_ARRAY:
-		fprintf(out, "[");
 		format_type(out, type->data.shaped_array.element_type);
-		fprintf(out, "]%d", type->data.shaped_array.rank);
+		fprintf(out, "[%d]", type->data.shaped_array.rank);
 		break;
 	}
+	format_type_depth--;
 }
 
 static void format_expression(FILE *out, Expression *expr);
@@ -512,6 +523,16 @@ static void format_expression(FILE *out, Expression *expr) {
 			}
 			fprintf(out, ")");
 		}
+		break;
+	}
+	case EXPR_ARRAY_LITERAL: {
+		fprintf(out, "{");
+		for (int i = 0; i < expr->data.array_literal.element_count; i++) {
+			if (i > 0)
+				fprintf(out, ", ");
+			format_expression(out, expr->data.array_literal.elements[i]);
+		}
+		fprintf(out, "}");
 		break;
 	}
 	}

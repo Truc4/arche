@@ -129,6 +129,13 @@ static TypeRef *parse_type(Parser *parser) {
 		advance(parser); /* consume [ */
 		if (!check(parser, TOK_RBRACKET)) {
 			error(parser, "Expected ']' after '['");
+			/* Skip to closing bracket to recover */
+			while (!check(parser, TOK_RBRACKET) && !check(parser, TOK_EOF)) {
+				advance(parser);
+			}
+			if (check(parser, TOK_RBRACKET)) {
+				advance(parser); /* consume ] */
+			}
 			return type;
 		}
 		advance(parser); /* consume ] */
