@@ -1566,10 +1566,25 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				ArchetypeDecl *arch = find_archetype_decl(ctx, inst->arch_name);
 				if (arch) {
 					const char *fname = stmt->data.assign_stmt.target->data.field.field_name;
+					/* Check if fname is a direct field or tuple base */
+					int found = 0;
 					for (int i = 0; i < arch->field_count; i++) {
 						if (strcmp(arch->fields[i]->name, fname) == 0 && arch->fields[i]->kind == FIELD_COLUMN) {
 							is_whole_column = 1;
+							found = 1;
 							break;
+						}
+					}
+					/* Check if fname is a tuple base (e.g., "pos" when fields are "pos_x", "pos_y") */
+					if (!found) {
+						size_t prefix_len = strlen(fname);
+						for (int i = 0; i < arch->field_count; i++) {
+							const char *aname = arch->fields[i]->name;
+							if (strncmp(aname, fname, prefix_len) == 0 && aname[prefix_len] == '_' &&
+							    arch->fields[i]->kind == FIELD_COLUMN) {
+								is_whole_column = 1;
+								break;
+							}
 						}
 					}
 				}
@@ -1738,9 +1753,75 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 									char *count = gen_value_name(ctx);
 									buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, count_gep);
 
+									/* Check if RHS is tuple binary op - if so, expand component names */
+									Expression *rhs_expr = stmt->data.assign_stmt.value;
 									const char *scalar_type = llvm_type_from_arche(comp->type->data.name);
-									emit_whole_column_loop(ctx, col_ptr, count, scalar_type, comp->type->data.name,
-									                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op);
+
+									if (rhs_expr->type == EXPR_BINARY &&
+									    rhs_expr->data.binary.left->type == EXPR_FIELD &&
+									    rhs_expr->data.binary.right->type == EXPR_FIELD) {
+										const char *suffix = strchr(comp->name, '_') + 1;
+										const char *left_base = rhs_expr->data.binary.left->data.field.field_name;
+										const char *right_base = rhs_expr->data.binary.right->data.field.field_name;
+
+										/* Create modified RHS with component names */
+										char left_comp[256], right_comp[256];
+										snprintf(left_comp, sizeof(left_comp), "%s_%s", left_base, suffix);
+										snprintf(right_comp, sizeof(right_comp), "%s_%s", right_base, suffix);
+
+										/* Create temporary binary expression with component field names */
+										Expression temp_rhs = *rhs_expr;
+										Expression temp_left = *rhs_expr->data.binary.left;
+										Expression temp_right = *rhs_expr->data.binary.right;
+										temp_left.data.field.field_name = left_comp;
+										temp_right.data.field.field_name = right_comp;
+										temp_rhs.data.binary.left = &temp_left;
+										temp_rhs.data.binary.right = &temp_right;
+										/* Preserve resolved type for operation */
+										temp_rhs.resolved_type = comp->type->data.name;
+
+										emit_whole_column_loop(ctx, col_ptr, count, scalar_type, comp->type->data.name,
+										                       &temp_rhs, stmt->data.assign_stmt.op);
+									} else if (rhs_expr->type == EXPR_FIELD) {
+										/* Check if RHS is tuple field reference - match components by position */
+										const char *rhs_base = rhs_expr->data.field.field_name;
+
+										/* Find which component position this is (t) and find RHS component at same
+										 * position */
+										FieldDecl **rhs_tuple_components = NULL;
+										int rhs_tuple_count = 0;
+										size_t rhs_prefix_len = strlen(rhs_base);
+
+										for (int i = 0; i < arch->field_count; i++) {
+											const char *aname = arch->fields[i]->name;
+											if (strncmp(aname, rhs_base, rhs_prefix_len) == 0 &&
+											    aname[rhs_prefix_len] == '_') {
+												rhs_tuple_components = realloc(
+												    rhs_tuple_components, (rhs_tuple_count + 1) * sizeof(FieldDecl *));
+												rhs_tuple_components[rhs_tuple_count++] = arch->fields[i];
+											}
+										}
+
+										if (t < rhs_tuple_count) {
+											/* Use RHS component at same position */
+											const char *rhs_comp_name = rhs_tuple_components[t]->name;
+
+											/* Create temporary field expression with component field name */
+											Expression temp_rhs = *rhs_expr;
+											temp_rhs.data.field.field_name = rhs_comp_name;
+											/* Preserve resolved type */
+											temp_rhs.resolved_type = comp->type->data.name;
+
+											emit_whole_column_loop(ctx, col_ptr, count, scalar_type,
+											                       comp->type->data.name, &temp_rhs,
+											                       stmt->data.assign_stmt.op);
+										}
+										if (rhs_tuple_components)
+											free(rhs_tuple_components);
+									} else {
+										emit_whole_column_loop(ctx, col_ptr, count, scalar_type, comp->type->data.name,
+										                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op);
+									}
 								}
 							}
 							if (tuple_components)
