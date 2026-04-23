@@ -94,7 +94,7 @@ test-codegen-unit: $(CODEGEN_TEST_BIN)
 # Test all .arche files compile and run
 test-arche: $(TARGET)
 	@echo "Testing .arche file compilation..."
-	@PASS=0; FAIL=0; \
+	@PASS=0; FAIL=0; ERROR=0; \
 	for test_file in tests/arche/*.arche; do \
 		test_name=$$(basename "$$test_file" .arche); \
 		test_out="$(BUILD_DIR)/test_$$test_name"; \
@@ -106,25 +106,17 @@ test-arche: $(TARGET)
 				PASS=$$((PASS + 1)); \
 			else \
 				exit_code=$$?; \
-				case "$$test_name" in \
-					test_bounds|test_bounds_loop|test_compound_assign) \
-						echo "✓ PASS (expected failure)"; \
-						PASS=$$((PASS + 1)); \
-						;; \
-					*) \
-						echo "✗ FAIL (runtime error: $$exit_code)"; \
-						FAIL=$$((FAIL + 1)); \
-						;; \
-				esac; \
+				echo "✗ FAIL (runtime error: $$exit_code)"; \
+				FAIL=$$((FAIL + 1)); \
 			fi; \
 		else \
-			echo "✗ FAIL (compile error)"; \
-			FAIL=$$((FAIL + 1)); \
+			echo "⚠ ERROR (compile error)"; \
+			ERROR=$$((ERROR + 1)); \
 		fi; \
 	done; \
 	echo ""; \
-	echo "Results: $$PASS passed, $$FAIL failed"; \
-	[ $$FAIL -eq 0 ]
+	echo "Results: $$PASS passed, $$FAIL failed, $$ERROR errors"; \
+	[ $$FAIL -eq 0 ] && [ $$ERROR -eq 0 ]
 
 # Test example files against C reference implementations
 test-examples: $(TARGET)

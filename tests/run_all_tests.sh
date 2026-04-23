@@ -89,23 +89,25 @@ echo
 
 # Test arche files
 echo -e "${BLUE}=== Arche File Tests ===${NC}"
-if make test-arche > /tmp/arche_out.txt 2>&1; then
-    ARCHE_PASS=$(grep -c "✓ PASS" /tmp/arche_out.txt 2>/dev/null || true)
-    ARCHE_PASS=${ARCHE_PASS:-0}
-    ARCHE_FAIL=$(grep -c "✗ FAIL" /tmp/arche_out.txt 2>/dev/null || true)
-    ARCHE_FAIL=${ARCHE_FAIL:-0}
-    if [ $ARCHE_FAIL -gt 0 ]; then
-        echo -e "${RED}✗ FAILURES:${NC}"
-        grep "✗ FAIL" /tmp/arche_out.txt
-    fi
-    echo -e "${GREEN}✓ Passed: $ARCHE_PASS${NC}, ${RED}Failed: $ARCHE_FAIL${NC}"
-    PASS=$((PASS + ARCHE_PASS))
-    ERROR=$((ERROR + ARCHE_SKIP))
-    FAIL=$((FAIL + ARCHE_FAIL))
-else
-    echo -e "${YELLOW}⚠ ERROR${NC} running tests"
-    ERROR=$((ERROR + 1))
+make test-arche > /tmp/arche_out.txt 2>&1 || true
+ARCHE_PASS=$(grep -c "✓ PASS" /tmp/arche_out.txt 2>/dev/null || true)
+ARCHE_PASS=${ARCHE_PASS:-0}
+ARCHE_FAIL=$(grep -c "✗ FAIL" /tmp/arche_out.txt 2>/dev/null || true)
+ARCHE_FAIL=${ARCHE_FAIL:-0}
+ARCHE_ERROR=$(grep -c "⚠ ERROR" /tmp/arche_out.txt 2>/dev/null || true)
+ARCHE_ERROR=${ARCHE_ERROR:-0}
+if [ $ARCHE_FAIL -gt 0 ]; then
+    echo -e "${RED}✗ FAILURES:${NC}"
+    grep "✗ FAIL" /tmp/arche_out.txt
 fi
+if [ $ARCHE_ERROR -gt 0 ]; then
+    echo -e "${YELLOW}⚠ ERRORS:${NC}"
+    grep "⚠ ERROR" /tmp/arche_out.txt
+fi
+echo -e "${GREEN}✓ Passed: $ARCHE_PASS${NC}, ${RED}Failed: $ARCHE_FAIL${NC}, ${YELLOW}Error: $ARCHE_ERROR${NC}"
+PASS=$((PASS + ARCHE_PASS))
+FAIL=$((FAIL + ARCHE_FAIL))
+ERROR=$((ERROR + ARCHE_ERROR))
 echo
 
 # Test examples
