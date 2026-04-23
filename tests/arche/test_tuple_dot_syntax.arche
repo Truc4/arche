@@ -6,10 +6,10 @@ arche Particle {
 }
 
 proc main() {
-  let p = alloc Particle(1);
-  insert(p, 1.0, 2.0, 0.5, 0.1);
-  p.pos.x = p.pos.x + p.vel.x;
-  p.pos.y = p.pos.y + p.vel.y;
+  alloc Particle(1);
+  insert(Particle, 1.0, 2.0, 0.5, 0.1);
+  Particle.pos.x = Particle.pos.x + Particle.vel.x;
+  Particle.pos.y = Particle.pos.y + Particle.vel.y;
   let msg = "dot syntax works\n";
   print(msg);
 }

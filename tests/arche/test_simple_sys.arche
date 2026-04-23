@@ -7,10 +7,10 @@ sys dummy(pos) {
 }
 
 proc main() {
-  let b = alloc Body(100);
-  insert(b, 1.0);
-  insert(b, 2.0);
-  insert(b, 3.0);
+  alloc Body(100);
+  insert(Body, 1.0);
+  insert(Body, 2.0);
+  insert(Body, 3.0);
   run dummy;
   let msg = "ok\n";
   print(msg);

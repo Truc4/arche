@@ -4,7 +4,7 @@ arche Particle {
 }
 
 proc main() {
-  let p = alloc Particle(10);
+  alloc Particle(10);
   print("allocated\n");
 }
 

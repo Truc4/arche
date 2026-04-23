@@ -4,22 +4,22 @@ arche Particle {
 }
 
 proc main() {
-  let p = alloc Particle(3);
-  insert(p, 0.0, 1.0, 0.5, 0.1);
-  insert(p, 2.0, 3.0, 0.2, 0.3);
-  insert(p, 4.0, 5.0, 0.1, 0.2);
-  p.pos = p.pos + p.vel;
-  print(p.pos.x[0]);
+  alloc Particle(3);
+  insert(Particle, 0.0, 1.0, 0.5, 0.1);
+  insert(Particle, 2.0, 3.0, 0.2, 0.3);
+  insert(Particle, 4.0, 5.0, 0.1, 0.2);
+  Particle.pos = Particle.pos + Particle.vel;
+  print(Particle.pos.x[0]);
   print(" ");
-  print(p.pos.y[0]);
+  print(Particle.pos.y[0]);
   print(" ");
-  print(p.pos.x[1]);
+  print(Particle.pos.x[1]);
   print(" ");
-  print(p.pos.y[1]);
+  print(Particle.pos.y[1]);
   print(" ");
-  print(p.pos.x[2]);
+  print(Particle.pos.x[2]);
   print(" ");
-  print(p.pos.y[2]);
+  print(Particle.pos.y[2]);
   print("\n");
 }
 

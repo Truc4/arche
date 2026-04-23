@@ -8,12 +8,12 @@ sys move(pos, vel) {
 }
 
 proc main() {
-  let particles = alloc Particle(10);
-  insert(particles, 1.0, 0.1);
-  insert(particles, 2.0, 0.2);
-  insert(particles, 3.0, 0.3);
+  alloc Particle(10);
+  insert(Particle, 1.0, 0.1);
+  insert(Particle, 2.0, 0.2);
+  insert(Particle, 3.0, 0.3);
   run move;
-  dealloc(particles);
+  dealloc(Particle);
   let msg = "dealloc test passed\n";
   print(msg);
 }

@@ -4,16 +4,16 @@ arche Entity {
 }
 
 proc main() {
-  let ent = alloc Entity(100);
-  insert(ent, 1.0, 2.0);
-  insert(ent, 3.0, 4.0);
-  insert(ent, 5.0, 6.0);
-  insert(ent, 7.0, 8.0);
-  insert(ent, 9.0, 10.0);
-  ent.x = ent.x + 1.0;
-  ent.y = ent.y * 2.0;
-  delete(ent, 1);
-  insert(ent, 11.0, 12.0);
+  alloc Entity(100);
+  insert(Entity, 1.0, 2.0);
+  insert(Entity, 3.0, 4.0);
+  insert(Entity, 5.0, 6.0);
+  insert(Entity, 7.0, 8.0);
+  insert(Entity, 9.0, 10.0);
+  Entity.x = Entity.x + 1.0;
+  Entity.y = Entity.y * 2.0;
+  delete(Entity, 1);
+  insert(Entity, 11.0, 12.0);
   let msg = "pooling test passed\n";
   print(msg);
 }

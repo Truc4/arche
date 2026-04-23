@@ -14,9 +14,9 @@ sys gravity(pos, mass) {
 }
 
 proc main() {
-  let particles = alloc Particle(5);
+  alloc Particle(5);
   let bodies = alloc Body(5);
-  insert(particles, 1.0, 0.1);
+  insert(Particle, 1.0, 0.1);
   insert(bodies, 2.0, 0.2, 10.0);
   run gravity;
   print("partial field match works\n");

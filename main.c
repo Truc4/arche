@@ -62,10 +62,17 @@ int main(int argc, char *argv[]) {
 	}
 
 	if (!output_file) {
-		/* Default output: replace .arche with executable name */
-		int len = strlen(input_file);
-		output_file = malloc(len + 10);
-		strcpy((char *)output_file, input_file);
+		/* Default output: build/basename without extension */
+		const char *base = strrchr(input_file, '/');
+		if (!base)
+			base = input_file;
+		else
+			base++;
+
+		int len = strlen(base) + 20;
+		output_file = malloc(len);
+		strcpy((char *)output_file, "build/");
+		strcat((char *)output_file, base);
 		char *dot = strrchr((char *)output_file, '.');
 		if (dot) {
 			strcpy(dot, "");

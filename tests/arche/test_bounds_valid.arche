@@ -3,10 +3,10 @@ arche Particle {
 }
 
 proc main() {
-  let particles = alloc Particle(5);
-  insert(particles, 1);
-  insert(particles, 2);
-  let a = particles.id[0];
-  let b = particles.id[1];
+  alloc Particle(5);
+  insert(Particle, 1);
+  insert(Particle, 2);
+  let a = Particle.id[0];
+  let b = Particle.id[1];
 }
 

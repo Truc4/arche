@@ -556,8 +556,20 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 			if (find_archetype(ctx, iterable_name)) {
 				archetype_name = iterable_name;
 			}
+			/* check if this is a variable that holds an archetype instance */
+			else if (find_variable(ctx, iterable_name)) {
+				VariableInfo *var = find_variable(ctx, iterable_name);
+				if (var && var->archetype_name) {
+					archetype_name = var->archetype_name;
+				} else {
+					char msg[256];
+					snprintf(msg, sizeof(msg), "Variable '%s' does not refer to an archetype instance", iterable_name);
+					error(ctx, msg);
+					archetype_name = NULL;
+				}
+			}
 			/* check if we're in a sys and this is a parameter name (matches current sys archetype) */
-			else if (ctx->current_sys_archetype && find_variable(ctx, iterable_name)) {
+			else if (ctx->current_sys_archetype) {
 				archetype_name = ctx->current_sys_archetype;
 			} else {
 				char msg[256];

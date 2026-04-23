@@ -450,6 +450,18 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				/* Type-2 (string), 3 (arch), 5 (array): return pointer directly */
 				strcpy(result_buf, val->llvm_name);
 			}
+		} else if (find_archetype_decl(ctx, name)) {
+			/* Archetype name - load from global allocated pointer */
+			ArchetypeDecl *arch = find_archetype_decl(ctx, name);
+			if (arch) {
+				/* Load the allocated archetype pointer from global */
+				char *loaded = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", loaded, name, name,
+				                  name);
+				strcpy(result_buf, loaded);
+			} else {
+				strcpy(result_buf, "0");
+			}
 		} else {
 			/* undefined variable, use 0 */
 			strcpy(result_buf, "0");
@@ -589,10 +601,15 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 		const char *field_name = expr->data.field.field_name;
 
-		/* Check if base is an arch pointer (type 3) */
+		/* Check if base is an arch pointer (type 3) or archetype name */
 		ValueInfo *base_val = NULL;
+		const char *arch_name_direct = NULL;
 		if (expr->data.field.base->type == EXPR_NAME) {
-			base_val = find_value(ctx, expr->data.field.base->data.name.name);
+			const char *name = expr->data.field.base->data.name.name;
+			base_val = find_value(ctx, name);
+			if (!base_val && find_archetype_decl(ctx, name)) {
+				arch_name_direct = name;
+			}
 		}
 
 		/* Handle .length property */
@@ -665,6 +682,67 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					/* GEP to field */
 					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gep,
 					                  base_val->arch_name, base_val->arch_name, base_buf, field_idx);
+
+					if (fdecl->kind == FIELD_META) {
+						/* Load the value */
+						char *loaded = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", loaded, llvm_type, llvm_type, gep);
+						strcpy(result_buf, loaded);
+					} else {
+						/* Col field: load the pointer */
+						char *ptr_val = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", ptr_val, llvm_type, llvm_type, gep);
+
+						/* If inside implicit loop, auto-index by loop variable */
+						if (ctx->implicit_loop_index[0]) {
+							const char *load_type = elem_llvm_type(ctx, fdecl->type->data.name);
+							char *idx_gep = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", idx_gep, llvm_type,
+							                  llvm_type, ptr_val, ctx->implicit_loop_index);
+							char *elem = gen_value_name(ctx);
+							int align = ctx->vector_lanes > 0 ? 8 : 4;
+
+							if (ctx->vector_lanes > 0) {
+								/* Vector load: bitcast pointer to vector type, then load */
+								char *vec_ptr = gen_value_name(ctx);
+								buffer_append_fmt(ctx, "  %s = bitcast %s* %s to %s*\n", vec_ptr, llvm_type, idx_gep,
+								                  load_type);
+								buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", elem, load_type, load_type,
+								                  vec_ptr, align);
+							} else {
+								/* Scalar load */
+								buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", elem, load_type, llvm_type,
+								                  idx_gep, align);
+							}
+							strcpy(result_buf, elem);
+						} else {
+							strcpy(result_buf, ptr_val);
+						}
+					}
+					break;
+				}
+			}
+		} else if (arch_name_direct) {
+			/* Direct archetype name reference */
+			ArchetypeDecl *arch = find_archetype_decl(ctx, arch_name_direct);
+			if (arch) {
+				int field_idx = -1;
+				FieldDecl *fdecl = NULL;
+				for (int i = 0; i < arch->field_count; i++) {
+					if (strcmp(arch->fields[i]->name, field_name) == 0) {
+						field_idx = i;
+						fdecl = arch->fields[i];
+						break;
+					}
+				}
+
+				if (field_idx >= 0 && fdecl) {
+					const char *llvm_type = llvm_type_from_arche(fdecl->type->data.name);
+					char *gep = gen_value_name(ctx);
+
+					/* GEP to field */
+					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gep,
+					                  arch_name_direct, arch_name_direct, base_buf, field_idx);
 
 					if (fdecl->kind == FIELD_META) {
 						/* Load the value */
@@ -779,13 +857,18 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			char arch_buf[256];
 			codegen_expression(ctx, expr->data.call.args[0], arch_buf);
 
-			/* Get arch_name from ValueInfo of args[0] */
+			/* Get arch_name from ValueInfo or archetype name of args[0] */
 			const char *arch_name = NULL;
 			ArchetypeDecl *arch = NULL;
 			if (expr->data.call.args[0]->type == EXPR_NAME) {
-				ValueInfo *arch_var = find_value(ctx, expr->data.call.args[0]->data.name.name);
+				const char *name = expr->data.call.args[0]->data.name.name;
+				ValueInfo *arch_var = find_value(ctx, name);
 				if (arch_var && arch_var->arch_name) {
 					arch_name = arch_var->arch_name;
+					arch = find_archetype_decl(ctx, arch_name);
+				} else if (find_archetype_decl(ctx, name)) {
+					/* Direct archetype name */
+					arch_name = name;
 					arch = find_archetype_decl(ctx, arch_name);
 				}
 			}
@@ -824,12 +907,16 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			char idx_buf[256];
 			codegen_expression(ctx, expr->data.call.args[1], idx_buf);
 
-			/* Get arch_name from ValueInfo of args[0] */
+			/* Get arch_name from ValueInfo or archetype name of args[0] */
 			const char *arch_name = NULL;
 			if (expr->data.call.args[0]->type == EXPR_NAME) {
-				ValueInfo *arch_var = find_value(ctx, expr->data.call.args[0]->data.name.name);
+				const char *name = expr->data.call.args[0]->data.name.name;
+				ValueInfo *arch_var = find_value(ctx, name);
 				if (arch_var && arch_var->arch_name) {
 					arch_name = arch_var->arch_name;
+				} else if (find_archetype_decl(ctx, name)) {
+					/* Direct archetype name */
+					arch_name = name;
 				}
 			}
 
@@ -847,12 +934,16 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			char arch_buf[256];
 			codegen_expression(ctx, expr->data.call.args[0], arch_buf);
 
-			/* Get arch_name from ValueInfo of args[0] */
+			/* Get arch_name from ValueInfo or archetype name of args[0] */
 			const char *arch_name = NULL;
 			if (expr->data.call.args[0]->type == EXPR_NAME) {
-				ValueInfo *arch_var = find_value(ctx, expr->data.call.args[0]->data.name.name);
+				const char *name = expr->data.call.args[0]->data.name.name;
+				ValueInfo *arch_var = find_value(ctx, name);
 				if (arch_var && arch_var->arch_name) {
 					arch_name = arch_var->arch_name;
+				} else if (find_archetype_decl(ctx, name)) {
+					/* Direct archetype name */
+					arch_name = name;
 				}
 			}
 
@@ -1565,8 +1656,13 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 		    stmt->data.assign_stmt.target->data.field.base->type == EXPR_NAME) {
 			const char *inst_name = stmt->data.assign_stmt.target->data.field.base->data.name.name;
 			ValueInfo *inst = find_value(ctx, inst_name);
-			if (inst && inst->type == 3 && inst->arch_name) {
-				ArchetypeDecl *arch = find_archetype_decl(ctx, inst->arch_name);
+			const char *arch_name_direct = NULL;
+			if (!inst && find_archetype_decl(ctx, inst_name)) {
+				arch_name_direct = inst_name;
+			}
+			if ((inst && inst->type == 3 && inst->arch_name) || arch_name_direct) {
+				const char *arch_check_name = inst ? inst->arch_name : arch_name_direct;
+				ArchetypeDecl *arch = find_archetype_decl(ctx, arch_check_name);
 				if (arch) {
 					const char *fname = stmt->data.assign_stmt.target->data.field.field_name;
 					/* Check if fname is a direct field or tuple base */
@@ -1672,9 +1768,15 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			if (stmt->data.assign_stmt.target->data.field.base->type == EXPR_NAME) {
 				const char *inst_name = stmt->data.assign_stmt.target->data.field.base->data.name.name;
 				ValueInfo *inst = find_value(ctx, inst_name);
+				const char *arch_name_direct = NULL;
+				if (!inst && find_archetype_decl(ctx, inst_name)) {
+					arch_name_direct = inst_name;
+				}
 
-				if (inst && inst->type == 3 && inst->arch_name) {
-					ArchetypeDecl *arch = find_archetype_decl(ctx, inst->arch_name);
+				if ((inst && inst->type == 3 && inst->arch_name) || arch_name_direct) {
+					const char *arch_check_name = inst ? inst->arch_name : arch_name_direct;
+					char loaded_global[256] = {0};
+					ArchetypeDecl *arch = find_archetype_decl(ctx, arch_check_name);
 					const char *fname = stmt->data.assign_stmt.target->data.field.field_name;
 
 					if (arch) {
@@ -1693,8 +1795,19 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 							/* Load column pointer and count from struct */
 							const char *llvm_type = llvm_type_from_arche(fdecl->type->data.name);
 							char *field_gep = gen_value_name(ctx);
+							const char *struct_ptr_val;
+							if (arch_name_direct) {
+								/* Load from global */
+								char *loaded = gen_value_name(ctx);
+								buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n",
+								                  loaded, arch_check_name, arch_check_name, arch_check_name);
+								strcpy(loaded_global, loaded);
+								struct_ptr_val = loaded_global;
+							} else {
+								struct_ptr_val = inst->llvm_name;
+							}
 							buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-							                  field_gep, inst->arch_name, inst->arch_name, inst->llvm_name, field_idx);
+							                  field_gep, arch_check_name, arch_check_name, struct_ptr_val, field_idx);
 
 							char *col_ptr = gen_value_name(ctx);
 							buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", col_ptr, llvm_type, llvm_type,
@@ -1704,7 +1817,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 							char *count_gep = gen_value_name(ctx);
 							int count_idx = arch->field_count;
 							buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-							                  count_gep, inst->arch_name, inst->arch_name, inst->llvm_name, count_idx);
+							                  count_gep, arch_check_name, arch_check_name, struct_ptr_val, count_idx);
 							char *count = gen_value_name(ctx);
 							buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, count_gep);
 
@@ -1740,9 +1853,24 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 								if (comp_idx >= 0 && comp->kind == FIELD_COLUMN) {
 									const char *llvm_type = llvm_type_from_arche(comp->type->data.name);
 									char *field_gep = gen_value_name(ctx);
+									const char *struct_ptr_val;
+									char loaded_global_comp[256];
+									if (arch_name_direct && !loaded_global[0]) {
+										/* Load from global */
+										char *loaded = gen_value_name(ctx);
+										buffer_append_fmt(ctx,
+										                  "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n",
+										                  loaded, arch_check_name, arch_check_name, arch_check_name);
+										strcpy(loaded_global_comp, loaded);
+										struct_ptr_val = loaded_global_comp;
+									} else if (arch_name_direct) {
+										struct_ptr_val = loaded_global;
+									} else {
+										struct_ptr_val = inst->llvm_name;
+									}
 									buffer_append_fmt(
 									    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-									    field_gep, inst->arch_name, inst->arch_name, inst->llvm_name, comp_idx);
+									    field_gep, arch_check_name, arch_check_name, struct_ptr_val, comp_idx);
 
 									char *col_ptr = gen_value_name(ctx);
 									buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", col_ptr, llvm_type, llvm_type,
@@ -1752,7 +1880,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 									int count_idx = arch->field_count;
 									buffer_append_fmt(
 									    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-									    count_gep, inst->arch_name, inst->arch_name, inst->llvm_name, count_idx);
+									    count_gep, arch_check_name, arch_check_name, struct_ptr_val, count_idx);
 									char *count = gen_value_name(ctx);
 									buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, count_gep);
 
@@ -2059,10 +2187,11 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", counter);
 
 				char *loop_label = gen_value_name(ctx);
+				char *body_label = gen_value_name(ctx);
 				char *exit_label = gen_value_name(ctx);
 
 				buffer_append_fmt(ctx, "  br label %s\n", loop_label);
-				buffer_append_fmt(ctx, "%s:\n", loop_label + 1); /* Skip the '%' prefix for label def */
+				buffer_append_fmt(ctx, "%s:\n", loop_label + 1);
 
 				/* Load counter and compare */
 				char *cond_val = gen_value_name(ctx);
@@ -2071,6 +2200,10 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				char *cmp_result = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", cmp_result, cond_val, count_bound);
 
+				/* Branch to body only if condition is true */
+				buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cmp_result, body_label, exit_label);
+
+				buffer_append_fmt(ctx, "%s:\n", body_label + 1);
 				push_value_scope(ctx);
 				add_value(ctx, var_name, cond_val, 0);
 				find_value(ctx, var_name)->bit_width = 64;
@@ -2084,9 +2217,9 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", next_val, cond_val);
 				buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", next_val, counter);
 
-				/* Branch based on actual condition */
-				buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cmp_result, loop_label, exit_label);
-				buffer_append_fmt(ctx, "%s:\n", exit_label + 1); /* Skip the '%' prefix for label def */
+				/* Loop back */
+				buffer_append_fmt(ctx, "  br label %s\n", loop_label);
+				buffer_append_fmt(ctx, "%s:\n", exit_label + 1);
 
 				pop_value_scope(ctx);
 			}
@@ -2183,8 +2316,21 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 	}
 
 	case STMT_EXPR: {
-		char expr_buf[256];
-		codegen_expression(ctx, stmt->data.expr_stmt.expr, expr_buf);
+		/* Handle archetype allocation as statement: alloc Particle(5); */
+		if (stmt->data.expr_stmt.expr->type == EXPR_ALLOC) {
+			const char *arch_name = stmt->data.expr_stmt.expr->data.alloc.archetype_name;
+			char expr_buf[256];
+			codegen_expression(ctx, stmt->data.expr_stmt.expr, expr_buf);
+
+			/* Store allocated pointer in global variable for this archetype */
+			char arch_var[256];
+			snprintf(arch_var, sizeof(arch_var), "%%archetype_%s", arch_name);
+			buffer_append_fmt(ctx, "  store %%struct.%s* %s, %%struct.%s** @archetype_%s\n", arch_name, expr_buf,
+			                  arch_name, arch_name);
+		} else {
+			char expr_buf[256];
+			codegen_expression(ctx, stmt->data.expr_stmt.expr, expr_buf);
+		}
 		break;
 	}
 
@@ -2683,6 +2829,15 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(
 	    ctx,
 	    "@.arche_oob = private unnamed_addr constant [28 x i8] c\"arche: index out of bounds\\0A\\00\", align 1\n\n");
+
+	/* Global variables for allocated archetypes */
+	for (int i = 0; i < ctx->prog->decl_count; i++) {
+		if (ctx->prog->decls[i]->kind == DECL_ARCHETYPE) {
+			ArchetypeDecl *arch = ctx->prog->decls[i]->data.archetype;
+			buffer_append_fmt(ctx, "@archetype_%s = global %%struct.%s* null\n", arch->name, arch->name);
+		}
+	}
+	buffer_append(ctx, "\n");
 
 	/* Generate code for all declarations (this will populate globals_buffer with string constants) */
 	int has_init_proc = 0;
