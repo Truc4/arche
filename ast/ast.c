@@ -669,7 +669,13 @@ void format_program(FILE *out, Program *prog) {
 		}
 		case DECL_PROC: {
 			ProcDecl *proc = decl->data.proc;
-			fprintf(out, "proc %s() {\n", proc->name);
+			fprintf(out, "proc %s(", proc->name);
+			for (int j = 0; j < proc->param_count; j++) {
+				if (j > 0)
+					fprintf(out, ", ");
+				fprintf(out, "%s: %s", proc->params[j]->name, proc->params[j]->type->data.name);
+			}
+			fprintf(out, ") {\n");
 			for (int j = 0; j < proc->statement_count; j++) {
 				format_statement(out, proc->statements[j], 1);
 			}

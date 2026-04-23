@@ -1,4 +1,4 @@
-proc add() {
+proc add(a: int, b: int) {
   let result = a + b;
   let msg = "sum: 15\n";
   print(msg);
