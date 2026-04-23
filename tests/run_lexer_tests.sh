@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Simple lexer test runner
-LEXER_BIN="./lexer-bin"
+LEXER_BIN="${LEXER_BIN:-./build/lexer-bin}"
 TESTS_DATA_DIR="./tests/arche"
 PASS=0
 FAIL=0

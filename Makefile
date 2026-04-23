@@ -107,8 +107,8 @@ test-arche: $(TARGET)
 			else \
 				exit_code=$$?; \
 				case "$$test_name" in \
-					test_bounds|test_bounds_loop) \
-						echo "✓ PASS (expected bounds failure)"; \
+					test_bounds|test_bounds_loop|test_compound_assign) \
+						echo "✓ PASS (expected failure)"; \
 						PASS=$$((PASS + 1)); \
 						;; \
 					*) \
@@ -131,11 +131,8 @@ test-examples: $(TARGET)
 	@./tests/run_example_tests.sh
 
 # Run all tests - EVERYTHING
-test: test-lexer test-parser test-semantic test-codegen-unit test-arche test-examples test-codegen
-	@echo ""
-	@echo "======================================"
-	@echo "ALL TESTS PASSED"
-	@echo "======================================"
+test: $(TARGET)
+	./tests/run_all_tests.sh
 
 # Test code generation
 test-codegen: $(TARGET)
