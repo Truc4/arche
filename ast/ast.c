@@ -526,13 +526,56 @@ static void format_expression(FILE *out, Expression *expr) {
 		break;
 	}
 	case EXPR_ARRAY_LITERAL: {
-		fprintf(out, "{");
+		/* Check if this is an ASCII string (array of 8-255 values) */
+		int is_string = 1;
 		for (int i = 0; i < expr->data.array_literal.element_count; i++) {
-			if (i > 0)
-				fprintf(out, ", ");
-			format_expression(out, expr->data.array_literal.elements[i]);
+			Expression *elem = expr->data.array_literal.elements[i];
+			if (elem->type != EXPR_LITERAL) {
+				is_string = 0;
+				break;
+			}
+			/* Check if lexeme is a valid ASCII value (0-255, typically printable or whitespace) */
+			const char *lexeme = elem->data.literal.lexeme;
+			int val = atoi(lexeme);
+			if (val < 0 || val > 255) {
+				is_string = 0;
+				break;
+			}
 		}
-		fprintf(out, "}");
+
+		if (is_string && expr->data.array_literal.element_count > 0) {
+			/* Output as string literal */
+			fprintf(out, "\"");
+			for (int i = 0; i < expr->data.array_literal.element_count; i++) {
+				int val = atoi(expr->data.array_literal.elements[i]->data.literal.lexeme);
+				if (val == 10) {
+					fprintf(out, "\\n");
+				} else if (val == 13) {
+					fprintf(out, "\\r");
+				} else if (val == 9) {
+					fprintf(out, "\\t");
+				} else if (val == 34) {
+					fprintf(out, "\\\"");
+				} else if (val == 92) {
+					fprintf(out, "\\\\");
+				} else if (val >= 32 && val < 127) {
+					fprintf(out, "%c", (char)val);
+				} else {
+					/* Non-printable character, output as octal */
+					fprintf(out, "\\%03o", val);
+				}
+			}
+			fprintf(out, "\"");
+		} else {
+			/* Output as regular array literal */
+			fprintf(out, "{");
+			for (int i = 0; i < expr->data.array_literal.element_count; i++) {
+				if (i > 0)
+					fprintf(out, ", ");
+				format_expression(out, expr->data.array_literal.elements[i]);
+			}
+			fprintf(out, "}");
+		}
 		break;
 	}
 	}
