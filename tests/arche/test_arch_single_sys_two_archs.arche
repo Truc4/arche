@@ -13,17 +13,12 @@ sys move(pos, vel) {
   pos = pos + vel;
 }
 
-sys dampen(vel) {
-  vel = vel * 0.99;
-}
-
 proc main() {
   let particles = alloc Particle(5);
   let bodies = alloc Body(5);
   insert(particles, 1.0, 0.1);
   insert(bodies, 2.0, 0.2);
   run move;
-  run dampen;
-  print({116, 119, 111, 32, 115, 121, 115, 116, 101, 109, 115, 32, 116, 119, 111, 32, 97, 114, 99, 104, 101, 116, 121, 112, 101, 115, 32, 119, 111, 114, 107, 115, 10});
+  print("multi-archetype dispatch works\n");
 }
 

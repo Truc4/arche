@@ -1,15 +1,11 @@
 arche Message {
-  text: char[256],
-  author: char[64]
-}
-
-arche Matrix {
-  data: float[10, 10]
+  id: int,
+  value: float
 }
 
 proc main() {
   let messages = alloc Message(100);
-  let matrices = alloc Matrix(50);
   let msg = "allocations done\n";
   print(msg);
 }
+

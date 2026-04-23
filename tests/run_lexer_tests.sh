@@ -2,7 +2,7 @@
 
 # Simple lexer test runner
 LEXER_BIN="./lexer-bin"
-TESTS_DATA_DIR="./tests/data"
+TESTS_DATA_DIR="./tests/arche"
 PASS=0
 FAIL=0
 

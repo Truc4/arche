@@ -37,3 +37,9 @@ examples/*/*
 # Temporary files
 *.tmp
 tests/tmp/
+
+# Test directories (language and test infrastructure are tracked)
+!tests/arche/
+!tests/arche/*.arche
+!tests/c/
+!tests/c/*.sh

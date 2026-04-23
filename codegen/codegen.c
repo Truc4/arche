@@ -13,6 +13,7 @@ typedef struct {
 	char *arch_name;        /* for type==3 or 4, nullable otherwise */
 	int string_len;         /* for type==2 (string), the compile-time length (-1 if unknown) */
 	const char *field_type; /* for type==4 (column ptr), the Arche type name (e.g. "float") */
+	int bit_width;          /* 32 (default) or 64 for SSA values */
 } ValueInfo;
 
 typedef struct {
@@ -268,6 +269,7 @@ static void add_value(CodegenContext *ctx, const char *name, const char *llvm_na
 	val->arch_name = NULL;
 	val->string_len = -1;
 	val->field_type = NULL;
+	val->bit_width = 32;
 
 	scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
 	scope->values[scope->value_count++] = val;
@@ -287,6 +289,7 @@ static void add_array_value(CodegenContext *ctx, const char *name, const char *l
 	val->arch_name = NULL;
 	val->string_len = -1;
 	val->field_type = NULL;
+	val->bit_width = 32;
 
 	scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
 	scope->values[scope->value_count++] = val;
@@ -307,6 +310,7 @@ static void add_arch_value(CodegenContext *ctx, const char *name, const char *ll
 	strcpy(val->arch_name, arch_name);
 	val->string_len = -1;
 	val->field_type = NULL;
+	val->bit_width = 32;
 
 	scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
 	scope->values[scope->value_count++] = val;
@@ -372,6 +376,11 @@ static int archetype_matches_system(ArchetypeDecl *arch, SysDecl *sys) {
 /* Forward declarations */
 static void codegen_expression(CodegenContext *ctx, Expression *expr, char *result_buf);
 static void codegen_statement(CodegenContext *ctx, Statement *stmt);
+static int resolve_index_arch(CodegenContext *ctx, Expression *base_expr, Expression *idx_expr,
+                              const char **out_arch_name, const char **out_arch_ptr, int *out_count_idx,
+                              int *out_idx_is_i64);
+static void emit_bounds_check(CodegenContext *ctx, const char *arch_name, const char *arch_ptr, int count_field_idx,
+                              const char *idx_buf, int idx_is_i64);
 
 /* ========== EXPRESSION CODEGEN ========== */
 
@@ -726,6 +735,15 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 		/* In vector mode, load uses vector type; GEP uses scalar pointer */
 		const char *load_type = arche_type ? elem_llvm_type(ctx, arche_type) : scalar_type;
+
+		/* Bounds check for archetype column accesses */
+		const char *bc_arch_name = NULL, *bc_arch_ptr = NULL;
+		int bc_count_idx = -1, bc_idx_is_i64 = 0;
+		if (expr->data.index.index_count > 0 &&
+		    resolve_index_arch(ctx, expr->data.index.base, expr->data.index.indices[0], &bc_arch_name, &bc_arch_ptr,
+		                       &bc_count_idx, &bc_idx_is_i64)) {
+			emit_bounds_check(ctx, bc_arch_name, bc_arch_ptr, bc_count_idx, idx_buf, bc_idx_is_i64);
+		}
 
 		char *res_name = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", res_name, scalar_type, scalar_type,
@@ -1164,6 +1182,94 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 	}
 	}
 }
+
+/* ========== BOUNDS CHECK HELPERS ========== */
+
+static int resolve_index_arch(CodegenContext *ctx, Expression *base_expr, Expression *idx_expr,
+                              const char **out_arch_name, const char **out_arch_ptr, int *out_count_idx,
+                              int *out_idx_is_i64) {
+	*out_arch_name = NULL;
+	*out_arch_ptr = NULL;
+	*out_count_idx = -1;
+	*out_idx_is_i64 = 0;
+
+	/* Case 1: base is EXPR_FIELD with archetype backing (e.g., particles.mass[i]) */
+	if (base_expr->type == EXPR_FIELD && base_expr->data.field.base->type == EXPR_NAME) {
+		const char *var_name = base_expr->data.field.base->data.name.name;
+		ValueInfo *vi = find_value(ctx, var_name);
+		if (vi && vi->type == 3 && vi->arch_name) {
+			ArchetypeDecl *arch = find_archetype_decl(ctx, vi->arch_name);
+			if (arch) {
+				*out_arch_name = vi->arch_name;
+				*out_arch_ptr = vi->llvm_name;
+				*out_count_idx = arch->field_count;
+			}
+		}
+	}
+	/* Case 2: base is EXPR_NAME with type 4 (column param in sys) */
+	else if (base_expr->type == EXPR_NAME) {
+		ValueInfo *vi = find_value(ctx, base_expr->data.name.name);
+		if (vi && vi->type == 4 && vi->arch_name) {
+			ArchetypeDecl *arch = find_archetype_decl(ctx, vi->arch_name);
+			if (arch) {
+				*out_arch_name = vi->arch_name;
+				*out_arch_ptr = "%archetype";
+				*out_count_idx = arch->field_count;
+			}
+		}
+	}
+
+	/* Determine if index is i64 */
+	if (idx_expr->type == EXPR_NAME) {
+		ValueInfo *idx_vi = find_value(ctx, idx_expr->data.name.name);
+		if (idx_vi && idx_vi->bit_width == 64) {
+			*out_idx_is_i64 = 1;
+		}
+	}
+
+	return (*out_arch_name != NULL && *out_arch_ptr != NULL && *out_count_idx >= 0);
+}
+
+static void emit_bounds_check(CodegenContext *ctx, const char *arch_name, const char *arch_ptr, int count_field_idx,
+                              const char *idx_buf, int idx_is_i64) {
+	/* Load count from archetype struct */
+	char *count_gep = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", count_gep, arch_name,
+	                  arch_name, arch_ptr, count_field_idx);
+	char *count = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, count_gep);
+
+	/* Extend index to i64 if needed */
+	const char *idx64 = idx_buf;
+	if (!idx_is_i64) {
+		char *idx64_val = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx64_val, idx_buf);
+		idx64 = idx64_val;
+	}
+
+	/* Compare index < count */
+	char *cmp = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp ult i64 %s, %s\n", cmp, idx64, count);
+
+	/* Generate branch labels */
+	int chk_id = ctx->value_counter++;
+	char ok_lbl[64], fail_lbl[64];
+	snprintf(ok_lbl, sizeof(ok_lbl), "bounds_ok_%d", chk_id);
+	snprintf(fail_lbl, sizeof(fail_lbl), "bounds_fail_%d", chk_id);
+
+	buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n\n", cmp, ok_lbl, fail_lbl);
+
+	/* Emit error block */
+	buffer_append_fmt(ctx, "%s:\n", fail_lbl);
+	buffer_append(
+	    ctx, "  call i32 (i8*, ...) @printf(i8* getelementptr ([28 x i8], [28 x i8]* @.arche_oob, i32 0, i32 0))\n");
+	buffer_append(ctx, "  call void @abort()\n");
+	buffer_append(ctx, "  unreachable\n\n");
+
+	/* Emit ok block label (execution continues here) */
+	buffer_append_fmt(ctx, "%s:\n", ok_lbl);
+}
+
 /* ========== WHOLE-COLUMN LOOP HELPER ========== */
 
 static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* SSA reg: scalar* column data */
@@ -1619,6 +1725,15 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			/* In vector mode, load/store use vector type; GEP uses scalar pointer */
 			const char *load_type = arche_type ? elem_llvm_type(ctx, arche_type) : scalar_type;
 
+			/* Bounds check for archetype column accesses */
+			const char *bc_arch_name = NULL, *bc_arch_ptr = NULL;
+			int bc_count_idx = -1, bc_idx_is_i64 = 0;
+			if (stmt->data.assign_stmt.target->data.index.index_count > 0 &&
+			    resolve_index_arch(ctx, base_expr, stmt->data.assign_stmt.target->data.index.indices[0], &bc_arch_name,
+			                       &bc_arch_ptr, &bc_count_idx, &bc_idx_is_i64)) {
+				emit_bounds_check(ctx, bc_arch_name, bc_arch_ptr, bc_count_idx, idx_buf, bc_idx_is_i64);
+			}
+
 			/* Compute target address (always uses scalar pointer) */
 			char *target_addr = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", target_addr, scalar_type, scalar_type,
@@ -1729,6 +1844,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 
 				push_value_scope(ctx);
 				add_value(ctx, var_name, vi, 0);
+				find_value(ctx, var_name)->bit_width = 64;
 				ctx->vector_lanes = 4;
 
 				for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
@@ -1766,6 +1882,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 
 				push_value_scope(ctx);
 				add_value(ctx, var_name, si, 0);
+				find_value(ctx, var_name)->bit_width = 64;
 				ctx->vector_lanes = 0;
 
 				for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
@@ -1805,6 +1922,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 
 				push_value_scope(ctx);
 				add_value(ctx, var_name, cond_val, 0);
+				find_value(ctx, var_name)->bit_width = 64;
 
 				for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
 					codegen_statement(ctx, stmt->data.for_stmt.body[i]);
@@ -1841,6 +1959,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 
 			push_value_scope(ctx);
 			add_value(ctx, var_name, cond, 0);
+			find_value(ctx, var_name)->bit_width = 64;
 
 			for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
 				codegen_statement(ctx, stmt->data.for_stmt.body[i]);
@@ -2406,7 +2525,13 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "declare i8* @malloc(i32)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
 	buffer_append(ctx, "declare i8* @realloc(i8*, i64)\n");
-	buffer_append(ctx, "declare i32 @printf(i8*, ...)\n\n");
+	buffer_append(ctx, "declare i32 @printf(i8*, ...)\n");
+	buffer_append(ctx, "declare void @abort()\n\n");
+
+	/* Global error message for bounds check failures */
+	buffer_append(
+	    ctx,
+	    "@.arche_oob = private unnamed_addr constant [28 x i8] c\"arche: index out of bounds\\0A\\00\", align 1\n\n");
 
 	/* Generate code for all declarations (this will populate globals_buffer with string constants) */
 	int has_init_proc = 0;

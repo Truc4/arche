@@ -1,6 +1,6 @@
 #!/bin/bash
 ARCHE="/home/curt/Code/arche/arche"
-TESTS_DIR="/home/curt/Code/arche/tests/data"
+TESTS_DIR="/home/curt/Code/arche/tests/arche"
 
 tests=(
   "test_arch_single_sys_single_arch.arche"
