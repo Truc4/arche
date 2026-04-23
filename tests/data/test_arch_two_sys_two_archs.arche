@@ -24,6 +24,6 @@ proc main() {
   insert(bodies, 2.0, 0.2);
   run move;
   run dampen;
-  print({116, 119, 111, 32, 115, 121, 115, 116, 101, 109, 115, 32, 116, 119, 111, 32, 97, 114, 99, 104, 101, 116, 121, 112, 101, 115, 32, 119, 111, 114, 107, 115, 10});
+  print("two systems two archetypes works\n");
 }
 

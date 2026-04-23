@@ -27,7 +27,7 @@ proc main() {
   insert(bodies, 6.0, 0.6, 20.0);
   run move;
   run dampen;
-  let msg = {115, 121, 115, 116, 101, 109, 115, 32, 101, 120, 101, 99, 117, 116, 101, 100, 10};
+  let msg = "systems executed\n";
   print(msg);
 }
 

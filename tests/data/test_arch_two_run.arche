@@ -19,6 +19,6 @@ proc main() {
   insert(particles, 1.0, 0.1);
   insert(bodies, 5.0, 0.5, 10.0);
   run move;
-  print({114, 97, 110, 32, 115, 121, 115, 116, 101, 109, 10});
+  print("ran system\n");
 }
 
