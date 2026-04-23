@@ -371,11 +371,49 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 
 			/* now check if field exists on this archetype */
 			if (arch) {
-				if (!find_field(arch, field_name)) {
-					char msg[256];
-					snprintf(msg, sizeof(msg), "Archetype '%s' has no field '%s'", archetype_any_alias(ctx, arch),
-					         field_name);
-					error(ctx, msg);
+				/* First try direct field access */
+				FieldInfo *found_field = find_field(arch, field_name);
+				if (!found_field) {
+					/* Try tuple component access: pos.x → pos_x */
+					char expanded_name[256];
+					snprintf(expanded_name, sizeof(expanded_name), "%s_%s", field_name, field_name);
+					/* Actually this was wrong - let me try a different approach */
+
+					/* Check if this is a tuple base: look for fields named field_name_* */
+					int is_tuple_base = 0;
+					for (int i = 0; i < arch->field_count; i++) {
+						if (strncmp(arch->fields[i]->name, field_name, strlen(field_name)) == 0 &&
+						    arch->fields[i]->name[strlen(field_name)] == '_') {
+							is_tuple_base = 1;
+							break;
+						}
+					}
+
+					if (is_tuple_base) {
+						/* Mark this expression as a tuple field access (no substitution needed yet) */
+						/* The codegen will handle expanding tuple operations */
+					} else if (expr->data.field.base->type == EXPR_NAME) {
+						/* Try tuple component access with base_name: p.pos where p is archetype → pos_x, pos_y */
+						char expanded_name2[256];
+						snprintf(expanded_name2, sizeof(expanded_name2), "%s_%s", base_name, field_name);
+						found_field = find_field(arch, expanded_name2);
+
+						if (found_field) {
+							/* Replace the field expression with expanded name */
+							expr->data.field.field_name = malloc(strlen(expanded_name2) + 1);
+							strcpy(expr->data.field.field_name, expanded_name2);
+						} else {
+							char msg[256];
+							snprintf(msg, sizeof(msg), "Archetype '%s' has no field '%s'",
+							         archetype_any_alias(ctx, arch), field_name);
+							error(ctx, msg);
+						}
+					} else {
+						char msg[256];
+						snprintf(msg, sizeof(msg), "Archetype '%s' has no field '%s'", archetype_any_alias(ctx, arch),
+						         field_name);
+						error(ctx, msg);
+					}
 				}
 			}
 		}

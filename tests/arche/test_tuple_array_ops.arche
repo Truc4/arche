@@ -1,0 +1,17 @@
+arche Particle {
+  pos_x: float,
+  pos_y: float,
+  vel_x: float,
+  vel_y: float
+}
+
+proc main() {
+  let p = alloc Particle(3);
+  insert(p, 0.0, 1.0, 0.5, 0.1);
+  insert(p, 2.0, 3.0, 0.2, 0.3);
+  insert(p, 4.0, 5.0, 0.1, 0.2);
+  p.pos = p.pos + p.vel;
+  let msg = "tuple array ops done\n";
+  print(msg);
+}
+

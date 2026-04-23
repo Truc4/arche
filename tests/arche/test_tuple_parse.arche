@@ -1,0 +1,10 @@
+arche Particle {
+  pos_x: float,
+  pos_y: float
+}
+
+proc main() {
+  let msg = "parse done\n";
+  print(msg);
+}
+

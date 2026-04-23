@@ -94,6 +94,7 @@ static void synchronize(Parser *parser) {
 		case TOK_FUNC:
 		case TOK_LET:
 		case TOK_FOR:
+			advance(parser);
 			return;
 		default:
 			break;
@@ -149,12 +150,13 @@ static TypeRef *parse_type(Parser *parser) {
 
 /* ========== ARCHETYPE PARSING ========== */
 
-static FieldDecl *parse_arch_field(Parser *parser) {
+static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 	/* All fields are columns (no metadata) */
 	FieldKind kind = FIELD_COLUMN;
 
 	if (!check(parser, TOK_IDENT)) {
 		error(parser, "Expected field name");
+		*out_count = 0;
 		return NULL;
 	}
 	char *name = token_text(parser->current);
@@ -162,12 +164,70 @@ static FieldDecl *parse_arch_field(Parser *parser) {
 
 	if (!match(parser, TOK_COLON)) {
 		error(parser, "Expected ':'");
+		*out_count = 0;
 		return NULL;
 	}
 
+	/* Check for tuple syntax: (x: float, y: float) */
+	if (check(parser, TOK_LPAREN)) {
+		advance(parser); /* consume ( */
+		FieldDecl **fields = NULL;
+		int field_count = 0;
+
+		while (!check(parser, TOK_RPAREN) && !check(parser, TOK_EOF)) {
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected field name in tuple");
+				*out_count = 0;
+				return NULL;
+			}
+			char *field_name = token_text(parser->current);
+			advance(parser);
+
+			if (!match(parser, TOK_COLON)) {
+				error(parser, "Expected ':' after tuple field name");
+				*out_count = 0;
+				return NULL;
+			}
+
+			TypeRef *field_type = parse_type(parser);
+			if (!field_type) {
+				*out_count = 0;
+				return NULL;
+			}
+
+			/* Create expanded field name: pos_x, pos_y, etc. */
+			char expanded_name[256];
+			snprintf(expanded_name, sizeof(expanded_name), "%s_%s", name, field_name);
+
+			char *expanded_name_copy = malloc(strlen(expanded_name) + 1);
+			strcpy(expanded_name_copy, expanded_name);
+			FieldDecl *field = field_decl_create(kind, expanded_name_copy, field_type);
+			fields = realloc(fields, (field_count + 1) * sizeof(FieldDecl *));
+			fields[field_count++] = field;
+
+			if (!match(parser, TOK_COMMA))
+				break;
+		}
+
+		if (!match(parser, TOK_RPAREN)) {
+			error(parser, "Expected ')' to close tuple type");
+			*out_count = 0;
+			return NULL;
+		}
+
+		/* trailing comma is optional */
+		match(parser, TOK_COMMA);
+
+		*out_count = field_count;
+		return fields;
+	}
+
+	/* Regular (non-tuple) field */
 	TypeRef *type = parse_type(parser);
-	if (!type)
+	if (!type) {
+		*out_count = 0;
 		return NULL;
+	}
 
 	/* trailing comma is optional */
 	match(parser, TOK_COMMA);
@@ -175,7 +235,11 @@ static FieldDecl *parse_arch_field(Parser *parser) {
 	FieldDecl *field = field_decl_create(kind, name, type);
 	field->loc.line = parser->previous.line;
 	field->loc.column = parser->previous.column;
-	return field;
+
+	FieldDecl **result = malloc(sizeof(FieldDecl *));
+	result[0] = field;
+	*out_count = 1;
+	return result;
 }
 
 static Decl *parse_archetype_decl(Parser *parser) {
@@ -201,15 +265,19 @@ static Decl *parse_archetype_decl(Parser *parser) {
 	arch->loc.column = parser->previous.column;
 
 	while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-		FieldDecl *field = parse_arch_field(parser);
-		if (!field) {
+		int field_count = 0;
+		FieldDecl **fields = parse_arch_field_expanded(parser, &field_count);
+		if (!fields || field_count == 0) {
 			synchronize(parser);
 			continue;
 		}
 
-		/* grow the fields array */
-		arch->fields = realloc(arch->fields, (arch->field_count + 1) * sizeof(FieldDecl *));
-		arch->fields[arch->field_count++] = field;
+		/* grow the fields array and add all expanded fields */
+		for (int i = 0; i < field_count; i++) {
+			arch->fields = realloc(arch->fields, (arch->field_count + 1) * sizeof(FieldDecl *));
+			arch->fields[arch->field_count++] = fields[i];
+		}
+		free(fields);
 	}
 
 	if (!match(parser, TOK_RBRACE)) {
