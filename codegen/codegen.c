@@ -960,16 +960,32 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					call_arg_types[i] = "i32";
 				}
 			} else {
-				/* Default to i32 */
-				strcpy(call_arg_vals[i], arg_bufs[i]);
-				call_arg_types[i] = "i32";
+				/* Check if arg is float/double */
+				if (expr->data.call.args[i]->resolved_type &&
+				    (strcmp(expr->data.call.args[i]->resolved_type, "float") == 0 ||
+				     strcmp(expr->data.call.args[i]->resolved_type, "Float") == 0 ||
+				     strcmp(expr->data.call.args[i]->resolved_type, "double") == 0)) {
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = "double";
+				} else {
+					/* Default to i32 */
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = "i32";
+				}
 			}
 		}
 
 		char *res_name = gen_value_name(ctx);
 
+		/* Special handling for print function with double arguments */
+		const char *actual_func_name = func_name ? func_name : "unknown";
+		if (func_name && strcmp(func_name, "print") == 0 && expr->data.call.arg_count == 1 && call_arg_types[0] &&
+		    strcmp(call_arg_types[0], "double") == 0) {
+			actual_func_name = "print_double";
+		}
+
 		/* Emit the call with prepared arguments */
-		buffer_append_fmt(ctx, "  %s = call i32 @%s(", res_name, func_name ? func_name : "unknown");
+		buffer_append_fmt(ctx, "  %s = call i32 @%s(", res_name, actual_func_name);
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
 			if (i < expr->data.call.arg_count - 1) {
@@ -1678,6 +1694,57 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 							const char *scalar_type = llvm_type_from_arche(fdecl->type->data.name);
 							emit_whole_column_loop(ctx, col_ptr, count, scalar_type, fdecl->type->data.name,
 							                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op);
+						} else {
+							/* Tuple field: emit loop for each component */
+							FieldDecl **tuple_components = NULL;
+							int tuple_count = 0;
+							size_t prefix_len = strlen(fname);
+
+							for (int i = 0; i < arch->field_count; i++) {
+								const char *aname = arch->fields[i]->name;
+								if (strncmp(aname, fname, prefix_len) == 0 && aname[prefix_len] == '_') {
+									tuple_components =
+									    realloc(tuple_components, (tuple_count + 1) * sizeof(FieldDecl *));
+									tuple_components[tuple_count++] = arch->fields[i];
+								}
+							}
+
+							for (int t = 0; t < tuple_count; t++) {
+								FieldDecl *comp = tuple_components[t];
+								int comp_idx = -1;
+								for (int i = 0; i < arch->field_count; i++) {
+									if (strcmp(arch->fields[i]->name, comp->name) == 0) {
+										comp_idx = i;
+										break;
+									}
+								}
+
+								if (comp_idx >= 0 && comp->kind == FIELD_COLUMN) {
+									const char *llvm_type = llvm_type_from_arche(comp->type->data.name);
+									char *field_gep = gen_value_name(ctx);
+									buffer_append_fmt(
+									    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+									    field_gep, inst->arch_name, inst->arch_name, inst->llvm_name, comp_idx);
+
+									char *col_ptr = gen_value_name(ctx);
+									buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", col_ptr, llvm_type, llvm_type,
+									                  field_gep);
+
+									char *count_gep = gen_value_name(ctx);
+									int count_idx = arch->field_count;
+									buffer_append_fmt(
+									    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+									    count_gep, inst->arch_name, inst->arch_name, inst->llvm_name, count_idx);
+									char *count = gen_value_name(ctx);
+									buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, count_gep);
+
+									const char *scalar_type = llvm_type_from_arche(comp->type->data.name);
+									emit_whole_column_loop(ctx, col_ptr, count, scalar_type, comp->type->data.name,
+									                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op);
+								}
+							}
+							if (tuple_components)
+								free(tuple_components);
 						}
 					}
 				}
@@ -2584,6 +2651,17 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		buffer_append(ctx, "  ret i32 0\n");
 		buffer_append(ctx, "}\n");
 	}
+
+	/* Print for double values */
+	buffer_append(ctx, "\ndefine i32 @print_double(double %val) {\n");
+	buffer_append(ctx, "entry:\n");
+	buffer_append(ctx, "  %fmt = getelementptr [3 x i8], [3 x i8]* @.print_fmt_double, i32 0, i32 0\n");
+	buffer_append(ctx, "  %res = call i32 (i8*, ...) @printf(i8* %fmt, double %val)\n");
+	buffer_append(ctx, "  ret i32 %res\n");
+	buffer_append(ctx, "}\n");
+
+	/* Global format string for double printing */
+	buffer_append(ctx, "\n@.print_fmt_double = private unnamed_addr constant [3 x i8] c\"%g\\00\", align 1\n");
 
 	/* Emit AVX2 function attributes */
 	buffer_append(ctx, "\nattributes #0 = { \"target-features\"=\"+avx2,+avx\" }\n");

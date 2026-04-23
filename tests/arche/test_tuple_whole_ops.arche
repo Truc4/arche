@@ -1,8 +1,8 @@
 arche Particle {
   pos_x: float,
   pos_y: float,
-  vel_a: float,
-  vel_b: float
+  vel_x: float,
+  vel_y: float
 }
 
 proc main() {
@@ -10,7 +10,13 @@ proc main() {
   insert(p, 1.0, 2.0, 0.5, 0.1);
   insert(p, 3.0, 4.0, 0.2, 0.3);
   p.pos = p.pos + p.vel;
-  let msg = "whole tuple ops done\n";
-  print(msg);
+  print(p.pos.x[0]);
+  print(" ");
+  print(p.pos.y[0]);
+  print(" ");
+  print(p.pos.x[1]);
+  print(" ");
+  print(p.pos.y[1]);
+  print("\n");
 }
 

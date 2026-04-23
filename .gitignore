@@ -41,5 +41,11 @@ tests/tmp/
 # Test directories (language and test infrastructure are tracked)
 !tests/arche/
 !tests/arche/*.arche
+# Ignore compiled test executables (files without extension)
+tests/arche/test_tuple_array_ops
+tests/arche/test_tuple_compound_ops
+tests/arche/test_tuple_compound_assign
+tests/arche/test_tuple_whole_ops
+!tests/arche/*.c
 !tests/c/
 !tests/c/*.sh
