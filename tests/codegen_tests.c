@@ -8,6 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef ARCHE_CORE_DIR
+#define ARCHE_CORE_DIR "core"
+#endif
+
 /* Test harness */
 int test_count = 0;
 int test_pass = 0;
@@ -58,7 +62,35 @@ static char *read_file(const char *path) {
 
 /* Helper: compile source to LLVM IR, check for errors */
 static int compile_source(const char *source, char *ir_buf, int ir_len) {
-	ParseResult parse_result = parse_source(source);
+	/* Load core library */
+	char core_path[512];
+	snprintf(core_path, sizeof(core_path), "%s/core.arche", ARCHE_CORE_DIR);
+
+	FILE *core_file = fopen(core_path, "r");
+	char *core_src = NULL;
+	if (core_file) {
+		fseek(core_file, 0, SEEK_END);
+		long core_size = ftell(core_file);
+		fseek(core_file, 0, SEEK_SET);
+		core_src = malloc(core_size + 1);
+		fread(core_src, 1, core_size, core_file);
+		core_src[core_size] = '\0';
+		fclose(core_file);
+	}
+
+	/* Combine core + source */
+	size_t combined_len = (core_src ? strlen(core_src) : 0) + strlen(source) + 2;
+	char *combined_src = malloc(combined_len);
+	if (core_src) {
+		snprintf(combined_src, combined_len, "%s\n%s", core_src, source);
+		free(core_src);
+	} else {
+		snprintf(combined_src, combined_len, "%s", source);
+	}
+
+	ParseResult parse_result = parse_source(combined_src);
+	free(combined_src);
+
 	if (parse_result.error_count > 0) {
 		snprintf(ir_buf, ir_len, "Parse errors: %zu", parse_result.error_count);
 		parse_result_free(&parse_result);
