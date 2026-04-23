@@ -979,9 +979,12 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 		/* Special handling for print function with double arguments */
 		const char *actual_func_name = func_name ? func_name : "unknown";
-		if (func_name && strcmp(func_name, "print") == 0 && expr->data.call.arg_count == 1 && call_arg_types[0] &&
-		    strcmp(call_arg_types[0], "double") == 0) {
-			actual_func_name = "print_double";
+		if (func_name && strcmp(func_name, "print") == 0 && expr->data.call.arg_count == 1 && call_arg_types[0]) {
+			if (strcmp(call_arg_types[0], "double") == 0) {
+				actual_func_name = "print_double";
+			} else if (strcmp(call_arg_types[0], "i32") == 0) {
+				actual_func_name = "print_int";
+			}
 		}
 
 		/* Emit the call with prepared arguments */
@@ -2741,8 +2744,16 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "  ret i32 %res\n");
 	buffer_append(ctx, "}\n");
 
-	/* Global format string for double printing */
+	buffer_append(ctx, "\ndefine i32 @print_int(i32 %val) {\n");
+	buffer_append(ctx, "entry:\n");
+	buffer_append(ctx, "  %fmt = getelementptr [3 x i8], [3 x i8]* @.print_fmt_int, i32 0, i32 0\n");
+	buffer_append(ctx, "  %res = call i32 (i8*, ...) @printf(i8* %fmt, i32 %val)\n");
+	buffer_append(ctx, "  ret i32 %res\n");
+	buffer_append(ctx, "}\n");
+
+	/* Global format strings for printing */
 	buffer_append(ctx, "\n@.print_fmt_double = private unnamed_addr constant [3 x i8] c\"%g\\00\", align 1\n");
+	buffer_append(ctx, "@.print_fmt_int = private unnamed_addr constant [3 x i8] c\"%d\\00\", align 1\n");
 
 	/* Emit AVX2 function attributes */
 	buffer_append(ctx, "\nattributes #0 = { \"target-features\"=\"+avx2,+avx\" }\n");
