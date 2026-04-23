@@ -1,10 +1,7 @@
 arche Particle {
-  pos_x: float,
-  pos_y: float,
-  vel_dx: float,
-  vel_dy: float,
-  acc_i: float,
-  acc_j: float
+  pos: (x: float, y: float),
+  vel: (dx: float, dy: float),
+  acc: (i: float, j: float),
 }
 
 proc main() {

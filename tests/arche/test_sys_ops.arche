@@ -1,6 +1,6 @@
 arche Body {
   position: float,
-  velocity: float
+  velocity: float,
 }
 
 sys move(position, velocity) {

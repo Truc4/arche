@@ -1,12 +1,12 @@
 arche Particle {
   pos: float,
-  vel: float
+  vel: float,
 }
 
 arche Body {
   pos: float,
   vel: float,
-  mass: float
+  mass: float,
 }
 
 sys move(pos, vel) {

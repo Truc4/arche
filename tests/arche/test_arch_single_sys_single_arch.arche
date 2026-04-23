@@ -1,6 +1,6 @@
 arche Particle {
   pos: float,
-  vel: float
+  vel: float,
 }
 
 sys move(pos, vel) {

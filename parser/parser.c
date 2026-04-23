@@ -160,10 +160,13 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 		return NULL;
 	}
 	char *name = token_text(parser->current);
+	char *name_copy = malloc(strlen(name) + 1);
+	strcpy(name_copy, name);
 	advance(parser);
 
 	if (!match(parser, TOK_COLON)) {
 		error(parser, "Expected ':'");
+		free(name_copy);
 		*out_count = 0;
 		return NULL;
 	}
@@ -177,6 +180,7 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 		while (!check(parser, TOK_RPAREN) && !check(parser, TOK_EOF)) {
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected field name in tuple");
+				free(name_copy);
 				*out_count = 0;
 				return NULL;
 			}
@@ -185,23 +189,29 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 
 			if (!match(parser, TOK_COLON)) {
 				error(parser, "Expected ':' after tuple field name");
+				free(name_copy);
 				*out_count = 0;
 				return NULL;
 			}
 
 			TypeRef *field_type = parse_type(parser);
 			if (!field_type) {
+				free(name_copy);
 				*out_count = 0;
 				return NULL;
 			}
 
 			/* Create expanded field name: pos_x, pos_y, etc. */
 			char expanded_name[256];
-			snprintf(expanded_name, sizeof(expanded_name), "%s_%s", name, field_name);
+			snprintf(expanded_name, sizeof(expanded_name), "%s_%s", name_copy, field_name);
 
 			char *expanded_name_copy = malloc(strlen(expanded_name) + 1);
 			strcpy(expanded_name_copy, expanded_name);
 			FieldDecl *field = field_decl_create(kind, expanded_name_copy, field_type);
+			/* Each field gets its own copy of tuple_base */
+			char *tuple_base_copy = malloc(strlen(name_copy) + 1);
+			strcpy(tuple_base_copy, name_copy);
+			field->tuple_base = tuple_base_copy;
 			fields = realloc(fields, (field_count + 1) * sizeof(FieldDecl *));
 			fields[field_count++] = field;
 
@@ -225,6 +235,7 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 	/* Regular (non-tuple) field */
 	TypeRef *type = parse_type(parser);
 	if (!type) {
+		free(name_copy);
 		*out_count = 0;
 		return NULL;
 	}
@@ -232,7 +243,7 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 	/* trailing comma is optional */
 	match(parser, TOK_COMMA);
 
-	FieldDecl *field = field_decl_create(kind, name, type);
+	FieldDecl *field = field_decl_create(kind, name_copy, type);
 	field->loc.line = parser->previous.line;
 	field->loc.column = parser->previous.column;
 

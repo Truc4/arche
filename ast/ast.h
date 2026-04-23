@@ -111,6 +111,7 @@ struct FieldDecl {
 	char *name;
 	TypeRef *type;
 	SourceLoc loc;
+	char *tuple_base; /* Base name if part of tuple (e.g., "pos" for "pos_x"), NULL otherwise */
 };
 
 struct ArchetypeDecl {

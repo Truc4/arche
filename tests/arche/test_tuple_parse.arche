@@ -1,6 +1,6 @@
 arche Particle {
   pos_x: float,
-  pos_y: float
+  pos_y: float,
 }
 
 proc main() {

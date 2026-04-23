@@ -101,6 +101,7 @@ FieldDecl *field_decl_create(FieldKind kind, char *name, TypeRef *type) {
 	field->type = type;
 	field->loc.line = 1;
 	field->loc.column = 1;
+	field->tuple_base = NULL;
 	return field;
 }
 
@@ -273,6 +274,7 @@ void field_decl_free(FieldDecl *field) {
 	if (!field)
 		return;
 	free(field->name);
+	free(field->tuple_base);
 	type_ref_free(field->type);
 	free(field);
 }
@@ -657,15 +659,45 @@ void format_program(FILE *out, Program *prog) {
 		case DECL_ARCHETYPE: {
 			ArchetypeDecl *arch = decl->data.archetype;
 			fprintf(out, "arche %s {\n", arch->name);
+			int *field_output = calloc(arch->field_count, sizeof(int));
+
 			for (int j = 0; j < arch->field_count; j++) {
+				if (field_output[j])
+					continue; /* Already output */
+
 				FieldDecl *field = arch->fields[j];
-				fprintf(out, "  %s: ", field->name);
-				format_type(out, field->type);
-				if (j < arch->field_count - 1) {
-					fprintf(out, ",");
+
+				if (field->tuple_base) {
+					/* This field is part of a tuple, output the whole tuple */
+					fprintf(out, "  %s: (", field->tuple_base);
+
+					int first = 1;
+					for (int k = 0; k < arch->field_count; k++) {
+						if (arch->fields[k]->tuple_base &&
+						    strcmp(arch->fields[k]->tuple_base, field->tuple_base) == 0) {
+							if (!first)
+								fprintf(out, ", ");
+							const char *field_name = arch->fields[k]->name;
+							char *underscore = strchr(field_name, '_');
+							const char *suffix = underscore ? underscore + 1 : field_name;
+							fprintf(out, "%s: ", suffix);
+							format_type(out, arch->fields[k]->type);
+							first = 0;
+							field_output[k] = 1;
+						}
+					}
+
+					fprintf(out, "),\n");
+				} else {
+					/* Regular non-tuple field */
+					fprintf(out, "  %s: ", field->name);
+					format_type(out, field->type);
+					fprintf(out, ",\n");
+					field_output[j] = 1;
 				}
-				fprintf(out, "\n");
 			}
+
+			free(field_output);
 			fprintf(out, "}\n\n");
 			break;
 		}

@@ -1,5 +1,5 @@
 arche Body {
-  pos: float
+  pos: float,
 }
 
 sys dummy(pos) {
