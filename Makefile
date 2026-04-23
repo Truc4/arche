@@ -104,7 +104,7 @@ clean:
 	find examples/ -type f ! -name "*.c" ! -name "*.arche" ! -name "*.sh" -delete
 	find tests/ -type f ! -name "*.c" ! -name "*.h" ! -name "*.sh" ! -name "*.arche" -delete
 	find design_analysis/ -type f ! -name "*.c" ! -name "*.h" ! -name "*.sh" ! -name "*.arche" -delete
-	rm -f *.txt test_*.sh run_*.sh 2>/dev/null || true
+	rm -f *.txt test_*.sh run_*.sh test_fmt_debug test_lex_debug test_parse_debug 2>/dev/null || true
 
 # Design analysis benchmarks (data-driven design decisions, not language perf)
 bench-physics: design_analysis/array_ops/physics_update.c
@@ -127,5 +127,16 @@ bench-mixed: design_analysis/array_ops/mixed_workload.c
 	$(CC) -Wall -Wextra -std=c99 -O3 -march=native -o bench-mixed design_analysis/array_ops/mixed_workload.c -lm
 	./bench-mixed
 
+# Format all Arche source files
+format: $(FMT_BIN)
+	for f in $$(find . -name "*.arche" -type f); do \
+		if ./$(FMT_BIN) "$$f" > /tmp/fmt_tmp 2>/dev/null; then \
+			mv /tmp/fmt_tmp "$$f"; \
+			echo "✓ $$f"; \
+		else \
+			echo "✗ $$f (parse error)"; \
+		fi; \
+	done
+
 # Phony targets
-.PHONY: all run run-lexer test test-lexer test-parser test-semantic test-codegen test-codegen-unit clean bench-physics bench-strings bench-lifecycle bench-mixed
+.PHONY: all run run-lexer test test-lexer test-parser test-semantic test-codegen test-codegen-unit clean bench-physics bench-strings bench-lifecycle bench-mixed format

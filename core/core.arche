@@ -3,7 +3,7 @@ extern proc read(fd: Int, buf: char[], len: Int);
 extern proc open(path: char[], flags: Int);
 extern proc close(fd: Int);
 extern proc exit(code: Int);
-
 proc print(msg: char[]) {
   write(1, msg, msg.length);
 }
+

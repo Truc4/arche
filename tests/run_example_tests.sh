@@ -83,9 +83,9 @@ run_test "multidim_example" "$TEST_DIR/archetype/multidim_example.arche" "$TEST_
 echo ""
 echo "=== Test Data Tests ==="
 
-run_test "test_array_ops" "tests/data/test_array_ops.arche" "tests/data/test_array_ops.c"
-run_test "test_sys_ops" "tests/data/test_sys_ops.arche" "tests/data/test_sys_ops.c"
-run_test "test_soa" "tests/data/test_soa.arche" "tests/data/test_soa.c"
+run_test "test_array_ops" "tests/arche/test_array_ops.arche" "tests/c/test_array_ops.c"
+run_test "test_sys_ops" "tests/arche/test_sys_ops.arche" "tests/c/test_sys_ops.c"
+run_test "test_soa" "tests/arche/test_soa.arche" "tests/c/test_soa.c"
 
 echo ""
 echo "=== Summary ==="

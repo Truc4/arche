@@ -608,7 +608,9 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		break;
 	}
 	case STMT_FOR: {
-		fprintf(out, "%sfor %s in %s {\n", indent_str, stmt->data.for_stmt.var_name, "?");
+		fprintf(out, "%sfor %s in ", indent_str, stmt->data.for_stmt.var_name);
+		format_expression(out, stmt->data.for_stmt.iterable);
+		fprintf(out, " {\n");
 		for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
 			format_statement(out, stmt->data.for_stmt.body[i], indent + 1);
 		}
@@ -669,17 +671,24 @@ void format_program(FILE *out, Program *prog) {
 		}
 		case DECL_PROC: {
 			ProcDecl *proc = decl->data.proc;
+			if (proc->is_extern)
+				fprintf(out, "extern ");
 			fprintf(out, "proc %s(", proc->name);
 			for (int j = 0; j < proc->param_count; j++) {
 				if (j > 0)
 					fprintf(out, ", ");
-				fprintf(out, "%s: %s", proc->params[j]->name, proc->params[j]->type->data.name);
+				fprintf(out, "%s: ", proc->params[j]->name);
+				format_type(out, proc->params[j]->type);
 			}
-			fprintf(out, ") {\n");
-			for (int j = 0; j < proc->statement_count; j++) {
-				format_statement(out, proc->statements[j], 1);
+			if (proc->is_extern) {
+				fprintf(out, ");\n");
+			} else {
+				fprintf(out, ") {\n");
+				for (int j = 0; j < proc->statement_count; j++) {
+					format_statement(out, proc->statements[j], 1);
+				}
+				fprintf(out, "}\n\n");
 			}
-			fprintf(out, "}\n\n");
 			break;
 		}
 		case DECL_SYS: {
