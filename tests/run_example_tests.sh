@@ -2,7 +2,7 @@
 
 # Test harness: compare Arche programs with C reference implementations
 
-ARCHE_BIN="./arche"
+ARCHE_BIN="./build/arche"
 CC="gcc"
 TEST_DIR="examples"
 TMP_DIR="tests/tmp"

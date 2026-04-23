@@ -1,6 +1,9 @@
 # Build directory - all artifacts go here
 build/
 
+# Test artifacts
+tests/tmp/
+
 # IDE and editor files
 .vscode/
 .idea/
