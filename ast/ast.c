@@ -373,6 +373,12 @@ void expression_free(Expression *expr) {
 		free(expr->data.alloc.field_names);
 		free(expr->data.alloc.field_values);
 		break;
+	case EXPR_ARRAY_LITERAL:
+		for (int i = 0; i < expr->data.array_literal.element_count; i++) {
+			expression_free(expr->data.array_literal.elements[i]);
+		}
+		free(expr->data.array_literal.elements);
+		break;
 	}
 	free(expr);
 }

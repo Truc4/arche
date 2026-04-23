@@ -805,16 +805,22 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		/* Evaluate arguments and track their ValueInfo types */
 		char **arg_bufs = malloc(expr->data.call.arg_count * sizeof(char *));
 		int *arg_is_string = malloc(expr->data.call.arg_count * sizeof(int));
+		int *arg_is_array_literal = malloc(expr->data.call.arg_count * sizeof(int));
 		ValueInfo **arg_values = malloc(expr->data.call.arg_count * sizeof(ValueInfo *));
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			arg_bufs[i] = malloc(256);
 			arg_is_string[i] = 0;
+			arg_is_array_literal[i] = 0;
 			arg_values[i] = NULL;
 
 			/* Check if this arg is a string literal */
 			if (expr->data.call.args[i]->type == EXPR_LITERAL &&
 			    expr->data.call.args[i]->data.literal.lexeme[0] == '"') {
 				arg_is_string[i] = 1;
+			}
+			/* Check if this arg is an array literal */
+			else if (expr->data.call.args[i]->type == EXPR_ARRAY_LITERAL) {
+				arg_is_array_literal[i] = 1;
 			}
 			/* Check if this arg is a variable holding a string (type 2) or arche_array (type 5) */
 			else if (expr->data.call.args[i]->type == EXPR_NAME) {
@@ -870,9 +876,27 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					call_arg_types[i] = "i32";
 				}
 			} else if (arg_is_string[i]) {
-				/* String literal */
-				strcpy(call_arg_vals[i], arg_bufs[i]);
-				call_arg_types[i] = "i8*";
+				/* String literal passed to non-array param */
+				if (callee_wants_arr) {
+					/* Already wrapped in struct, pass struct ptr */
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = "%struct.arche_array*";
+				} else {
+					/* Pass bare pointer */
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = "i8*";
+				}
+			} else if (arg_is_array_literal[i]) {
+				/* Array literal */
+				if (callee_wants_arr) {
+					/* Pass struct pointer directly */
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = "%struct.arche_array*";
+				} else {
+					/* Pass bare value */
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = "i32";
+				}
 			} else {
 				/* Default to i32 */
 				strcpy(call_arg_vals[i], arg_bufs[i]);
@@ -901,9 +925,88 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		}
 		free(arg_bufs);
 		free(arg_is_string);
+		free(arg_is_array_literal);
 		free(arg_values);
 		free(call_arg_vals);
 		free(call_arg_types);
+		break;
+	}
+
+	case EXPR_ARRAY_LITERAL: {
+		/* Array literal: {elem1, elem2, ...} */
+		/* Generate global constant array and wrap in arche_array struct */
+		Expression **elems = expr->data.array_literal.elements;
+		int elem_count = expr->data.array_literal.element_count;
+
+		if (elem_count == 0) {
+			strcpy(result_buf, "0");
+			break;
+		}
+
+		/* Create global constant array */
+		char global_name[64];
+		snprintf(global_name, sizeof(global_name), "@.arr%d", ctx->string_counter++);
+
+		/* Build array constant declaration and add to globals */
+		char global_decl[4096];
+		char *decl_pos = global_decl;
+		size_t decl_space = sizeof(global_decl);
+
+		decl_pos += snprintf(decl_pos, decl_space, "%s = private constant [%d x i8] [", global_name, elem_count);
+		decl_space = sizeof(global_decl) - (decl_pos - global_decl);
+
+		for (int i = 0; i < elem_count; i++) {
+			char elem_buf[256];
+			codegen_expression(ctx, elems[i], elem_buf);
+			decl_pos += snprintf(decl_pos, decl_space, "i8 %s", elem_buf);
+			decl_space = sizeof(global_decl) - (decl_pos - global_decl);
+			if (i < elem_count - 1) {
+				decl_pos += snprintf(decl_pos, decl_space, ", ");
+				decl_space = sizeof(global_decl) - (decl_pos - global_decl);
+			}
+		}
+		snprintf(decl_pos, decl_space, "]\n");
+
+		/* Append to globals buffer */
+		size_t decl_len = strlen(global_decl);
+		if (ctx->globals_pos + decl_len >= ctx->globals_size) {
+			ctx->globals_size = (ctx->globals_size + decl_len) * 2;
+			ctx->globals_buffer = realloc(ctx->globals_buffer, ctx->globals_size);
+		}
+		strcpy(ctx->globals_buffer + ctx->globals_pos, global_decl);
+		ctx->globals_pos += decl_len;
+
+		/* Create struct on stack and return pointer */
+		char *arr_alloca = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
+
+		/* Get pointer to global array */
+		char *arr_ptr = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i32 0, i32 0\n", arr_ptr, elem_count,
+		                  elem_count, global_name);
+
+		/* Data pointer is already i8* */
+		char *data_ptr = arr_ptr;
+
+		/* Store data pointer in field 0 */
+		char *ptr_gep = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+		                  ptr_gep, arr_alloca);
+		buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", data_ptr, ptr_gep);
+
+		/* Store length in field 1 */
+		char *len_gep = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
+		                  len_gep, arr_alloca);
+		buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", elem_count, len_gep);
+
+		/* Store capacity in field 2 */
+		char *cap_gep = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
+		                  cap_gep, arr_alloca);
+		buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", elem_count, cap_gep);
+
+		strcpy(result_buf, arr_alloca);
 		break;
 	}
 
@@ -1202,11 +1305,16 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 		const char *var_name = stmt->data.let_stmt.name;
 		char value_buf[256];
 
-		/* Check if the value is a string literal */
+		/* Check if the value is a string literal (old style) or array literal (new style from string expansion) */
 		int is_string = 0;
-		if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->type == EXPR_LITERAL &&
-		    stmt->data.let_stmt.value->data.literal.lexeme[0] == '"') {
-			is_string = 1;
+		if (stmt->data.let_stmt.value) {
+			if (stmt->data.let_stmt.value->type == EXPR_LITERAL &&
+			    stmt->data.let_stmt.value->data.literal.lexeme[0] == '"') {
+				is_string = 1;
+			} else if (stmt->data.let_stmt.value->type == EXPR_ARRAY_LITERAL) {
+				/* Array literal from string expansion */
+				is_string = 1;
+			}
 		}
 
 		/* Check if value is an alloc expression */
@@ -1227,42 +1335,48 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			/* Track as arch pointer (type 3) */
 			add_arch_value(ctx, var_name, value_buf, alloc_arch_name);
 		} else if (is_string) {
-			/* For strings, calculate length and create arche_array struct */
-			const char *lex = stmt->data.let_stmt.value->data.literal.lexeme;
-			int len = 0;
-			int i = 1; /* skip opening quote */
-			while (lex[i] && lex[i] != '"') {
-				if (lex[i] == '\\' && lex[i + 1]) {
-					i += 2; /* skip escape sequence */
-				} else {
-					i++;
+			/* For strings, handle based on whether it's already a struct or needs wrapping */
+			if (stmt->data.let_stmt.value->type == EXPR_ARRAY_LITERAL) {
+				/* Array literal: value_buf is already a struct pointer, just use it */
+				add_array_value(ctx, var_name, value_buf);
+			} else {
+				/* Old-style string literal: create arche_array struct wrapper */
+				int len = 0;
+				const char *lex = stmt->data.let_stmt.value->data.literal.lexeme;
+				int i = 1; /* skip opening quote */
+				while (lex[i] && lex[i] != '"') {
+					if (lex[i] == '\\' && lex[i + 1]) {
+						i += 2; /* skip escape sequence */
+					} else {
+						i++;
+					}
+					len++;
 				}
-				len++;
+
+				/* alloca arche_array struct and populate {data_ptr, length, max_length} */
+				char *arr_alloca = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
+
+				char *ptr_gep = gen_value_name(ctx);
+				buffer_append_fmt(ctx,
+				                  "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+				                  ptr_gep, arr_alloca);
+				buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", value_buf, ptr_gep);
+
+				char *len_gep = gen_value_name(ctx);
+				buffer_append_fmt(ctx,
+				                  "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
+				                  len_gep, arr_alloca);
+				buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", len, len_gep);
+
+				char *cap_gep = gen_value_name(ctx);
+				buffer_append_fmt(ctx,
+				                  "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
+				                  cap_gep, arr_alloca);
+				buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", len, cap_gep);
+
+				add_array_value(ctx, var_name, arr_alloca);
 			}
-
-			/* alloca arche_array struct and populate {data_ptr, length, max_length} */
-			char *arr_alloca = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
-
-			char *ptr_gep = gen_value_name(ctx);
-			buffer_append_fmt(ctx,
-			                  "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
-			                  ptr_gep, arr_alloca);
-			buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", value_buf, ptr_gep);
-
-			char *len_gep = gen_value_name(ctx);
-			buffer_append_fmt(ctx,
-			                  "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
-			                  len_gep, arr_alloca);
-			buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", len, len_gep);
-
-			char *cap_gep = gen_value_name(ctx);
-			buffer_append_fmt(ctx,
-			                  "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
-			                  cap_gep, arr_alloca);
-			buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", len, cap_gep);
-
-			add_array_value(ctx, var_name, arr_alloca);
 		} else {
 			/* For integers, allocate and store */
 			char *alloca_name = gen_value_name(ctx);

@@ -529,6 +529,39 @@ static Expression *parse_primary_expr(Parser *parser) {
 		return expr;
 	}
 
+	if (check(parser, TOK_LBRACE)) {
+		advance(parser);
+		int arr_line = parser->previous.line;
+		int arr_column = parser->previous.column;
+
+		Expression *arr_expr = expression_create(EXPR_ARRAY_LITERAL);
+		arr_expr->loc.line = arr_line;
+		arr_expr->loc.column = arr_column;
+		arr_expr->data.array_literal.elements = NULL;
+		arr_expr->data.array_literal.element_count = 0;
+
+		if (!check(parser, TOK_RBRACE)) {
+			do {
+				Expression *elem = parse_expression(parser);
+				if (!elem) {
+					return NULL;
+				}
+
+				arr_expr->data.array_literal.elements =
+				    realloc(arr_expr->data.array_literal.elements,
+				            (arr_expr->data.array_literal.element_count + 1) * sizeof(Expression *));
+				arr_expr->data.array_literal.elements[arr_expr->data.array_literal.element_count++] = elem;
+			} while (match(parser, TOK_COMMA));
+		}
+
+		if (!match(parser, TOK_RBRACE)) {
+			error(parser, "Expected '}' after array literal");
+			return NULL;
+		}
+
+		return arr_expr;
+	}
+
 	if (check(parser, TOK_IDENT)) {
 		char *name = token_text(parser->current);
 		advance(parser);
@@ -1028,6 +1061,7 @@ ParseResult parse_source(const char *src) {
 	Parser *parser = parser_create(&lexer);
 	ParseResult result = parse_program(parser);
 	parser_free(parser);
+	lexer_free(&lexer);
 	return result;
 }
 
