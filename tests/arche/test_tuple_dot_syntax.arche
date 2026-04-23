@@ -1,0 +1,16 @@
+arche Particle {
+  pos_x: float,
+  pos_y: float,
+  vel_x: float,
+  vel_y: float
+}
+
+proc main() {
+  let p = alloc Particle(1);
+  insert(p, 1.0, 2.0, 0.5, 0.1);
+  p.pos.x = p.pos.x + p.vel.x;
+  p.pos.y = p.pos.y + p.vel.y;
+  let msg = "dot syntax works\n";
+  print(msg);
+}
+

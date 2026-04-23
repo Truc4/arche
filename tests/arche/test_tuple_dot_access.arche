@@ -1,0 +1,12 @@
+arche Particle {
+  pos_x: float,
+  pos_y: float
+}
+
+proc main() {
+  let p = alloc Particle(1);
+  insert(p, 1.0, 2.0);
+  let msg = "dot access test\n";
+  print(msg);
+}
+

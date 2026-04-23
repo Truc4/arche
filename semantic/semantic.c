@@ -346,6 +346,42 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		/* expr.field - need to know what expr resolves to */
 		analyze_expression(ctx, expr->data.field.base);
 
+		/* Handle nested field access: archetype.tuple_field.component → archetype.tuple_field_component */
+		if (expr->data.field.base->type == EXPR_FIELD) {
+			Expression *inner_field = expr->data.field.base;
+			const char *component_name = expr->data.field.field_name;
+			const char *tuple_base_name = inner_field->data.field.field_name;
+
+			if (inner_field->data.field.base->type == EXPR_NAME) {
+				const char *arch_var_name = inner_field->data.field.base->data.name.name;
+
+				/* Find the archetype */
+				ArchetypeInfo *arch = find_archetype(ctx, arch_var_name);
+				VariableInfo *var = NULL;
+				if (!arch) {
+					var = find_variable(ctx, arch_var_name);
+					if (var && var->archetype_name) {
+						arch = find_archetype(ctx, var->archetype_name);
+					}
+				}
+
+				if (arch) {
+					/* Check if tuple_base exists and has component */
+					char expanded_name[256];
+					snprintf(expanded_name, sizeof(expanded_name), "%s_%s", tuple_base_name, component_name);
+
+					if (find_field(arch, expanded_name)) {
+						/* Replace nested field access with direct access to expanded name */
+						expr->data.field.base = inner_field->data.field.base;
+						expr->data.field.field_name = malloc(strlen(expanded_name) + 1);
+						strcpy(expr->data.field.field_name, expanded_name);
+						/* Don't analyze the old nested structure further */
+						break;
+					}
+				}
+			}
+		}
+
 		/* if base is a simple name, check if it's an archetype or a variable referring to one */
 		if (expr->data.field.base->type == EXPR_NAME) {
 			const char *base_name = expr->data.field.base->data.name.name;

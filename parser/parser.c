@@ -689,13 +689,14 @@ static Expression *parse_primary_expr(Parser *parser) {
 				return NULL;
 			}
 
-			char *field_name = token_text(parser->current);
-			advance(parser);
-
 			Expression *base = expression_create(EXPR_NAME);
 			base->loc.line = name_line;
 			base->loc.column = name_column;
 			base->data.name.name = name;
+
+			/* Process first field (DOT already consumed) */
+			char *field_name = token_text(parser->current);
+			advance(parser);
 
 			Expression *field = expression_create(EXPR_FIELD);
 			field->loc.line = base->loc.line;
@@ -703,12 +704,33 @@ static Expression *parse_primary_expr(Parser *parser) {
 			field->data.field.base = base;
 			field->data.field.field_name = field_name;
 
-			/* check for indexing on the field */
+			base = field;
+
+			/* Handle chained field access: p.pos.x.y */
+			while (match(parser, TOK_DOT)) {
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "Expected field name after '.'");
+					return NULL;
+				}
+
+				field_name = token_text(parser->current);
+				advance(parser);
+
+				field = expression_create(EXPR_FIELD);
+				field->loc.line = base->loc.line;
+				field->loc.column = base->loc.column;
+				field->data.field.base = base;
+				field->data.field.field_name = field_name;
+
+				base = field;
+			}
+
+			/* check for indexing on the final field */
 			if (match(parser, TOK_LBRACKET)) {
 				Expression *index = expression_create(EXPR_INDEX);
-				index->loc.line = field->loc.line;
-				index->loc.column = field->loc.column;
-				index->data.index.base = field;
+				index->loc.line = base->loc.line;
+				index->loc.column = base->loc.column;
+				index->data.index.base = base;
 				index->data.index.indices = NULL;
 				index->data.index.index_count = 0;
 
@@ -730,7 +752,7 @@ static Expression *parse_primary_expr(Parser *parser) {
 				return index;
 			}
 
-			return field;
+			return base;
 		}
 
 		/* check for indexing */
