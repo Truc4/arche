@@ -41,11 +41,11 @@ run_test() {
 		return
 	fi
 
-	# Compile Arche (once .length is implemented)
+	# Compile Arche
 	local arche_out="$TMP_DIR/${name}_arche"
 	local arche_actual="$TMP_DIR/${name}_arche.txt"
-	if ! $ARCHE_BIN "$arche_file" > "$TMP_DIR/${name}_arche.ll" 2>/dev/null; then
-		echo -e "${RED}SKIP${NC} (Arche compile error - .length not yet implemented)"
+	if ! $ARCHE_BIN -o "$arche_out" "$arche_file" > "$TMP_DIR/${name}_arche.ll" 2>/dev/null; then
+		echo -e "${RED}SKIP${NC} (Arche compile error)"
 		return
 	fi
 

@@ -373,6 +373,12 @@ void expression_free(Expression *expr) {
 		free(expr->data.alloc.field_names);
 		free(expr->data.alloc.field_values);
 		break;
+	case EXPR_ARRAY_LITERAL:
+		for (int i = 0; i < expr->data.array_literal.element_count; i++) {
+			expression_free(expr->data.array_literal.elements[i]);
+		}
+		free(expr->data.array_literal.elements);
+		break;
 	}
 	free(expr);
 }
@@ -383,24 +389,35 @@ void expression_free(Expression *expr) {
 
 #include <stdio.h>
 
+/* Recursion depth guard for type formatting */
+#define MAX_FORMAT_DEPTH 100
+static int format_type_depth = 0;
+
 static void format_type(FILE *out, TypeRef *type) {
 	if (!type)
 		return;
+
+	/* Prevent infinite recursion on malformed types */
+	if (format_type_depth >= MAX_FORMAT_DEPTH) {
+		fprintf(out, "...");
+		return;
+	}
+
+	format_type_depth++;
 	switch (type->kind) {
 	case TYPE_NAME:
 		fprintf(out, "%s", type->data.name);
 		break;
 	case TYPE_ARRAY:
-		fprintf(out, "[");
 		format_type(out, type->data.array.element_type);
-		fprintf(out, "]");
+		fprintf(out, "[]");
 		break;
 	case TYPE_SHAPED_ARRAY:
-		fprintf(out, "[");
 		format_type(out, type->data.shaped_array.element_type);
-		fprintf(out, "]%d", type->data.shaped_array.rank);
+		fprintf(out, "[%d]", type->data.shaped_array.rank);
 		break;
 	}
+	format_type_depth--;
 }
 
 static void format_expression(FILE *out, Expression *expr);
@@ -508,6 +525,59 @@ static void format_expression(FILE *out, Expression *expr) {
 		}
 		break;
 	}
+	case EXPR_ARRAY_LITERAL: {
+		/* Check if this is an ASCII string (array of 8-255 values) */
+		int is_string = 1;
+		for (int i = 0; i < expr->data.array_literal.element_count; i++) {
+			Expression *elem = expr->data.array_literal.elements[i];
+			if (elem->type != EXPR_LITERAL) {
+				is_string = 0;
+				break;
+			}
+			/* Check if lexeme is a valid ASCII value (0-255, typically printable or whitespace) */
+			const char *lexeme = elem->data.literal.lexeme;
+			int val = atoi(lexeme);
+			if (val < 0 || val > 255) {
+				is_string = 0;
+				break;
+			}
+		}
+
+		if (is_string && expr->data.array_literal.element_count > 0) {
+			/* Output as string literal */
+			fprintf(out, "\"");
+			for (int i = 0; i < expr->data.array_literal.element_count; i++) {
+				int val = atoi(expr->data.array_literal.elements[i]->data.literal.lexeme);
+				if (val == 10) {
+					fprintf(out, "\\n");
+				} else if (val == 13) {
+					fprintf(out, "\\r");
+				} else if (val == 9) {
+					fprintf(out, "\\t");
+				} else if (val == 34) {
+					fprintf(out, "\\\"");
+				} else if (val == 92) {
+					fprintf(out, "\\\\");
+				} else if (val >= 32 && val < 127) {
+					fprintf(out, "%c", (char)val);
+				} else {
+					/* Non-printable character, output as octal */
+					fprintf(out, "\\%03o", val);
+				}
+			}
+			fprintf(out, "\"");
+		} else {
+			/* Output as regular array literal */
+			fprintf(out, "{");
+			for (int i = 0; i < expr->data.array_literal.element_count; i++) {
+				if (i > 0)
+					fprintf(out, ", ");
+				format_expression(out, expr->data.array_literal.elements[i]);
+			}
+			fprintf(out, "}");
+		}
+		break;
+	}
 	}
 }
 
@@ -546,7 +616,12 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		break;
 	}
 	case STMT_RUN: {
-		fprintf(out, "%srun %s in %s;\n", indent_str, stmt->data.run_stmt.system_name, stmt->data.run_stmt.world_name);
+		if (stmt->data.run_stmt.world_name) {
+			fprintf(out, "%srun %s in %s;\n", indent_str, stmt->data.run_stmt.system_name,
+			        stmt->data.run_stmt.world_name);
+		} else {
+			fprintf(out, "%srun %s;\n", indent_str, stmt->data.run_stmt.system_name);
+		}
 		break;
 	}
 	case STMT_EXPR: {
@@ -594,7 +669,13 @@ void format_program(FILE *out, Program *prog) {
 		}
 		case DECL_PROC: {
 			ProcDecl *proc = decl->data.proc;
-			fprintf(out, "proc %s() {\n", proc->name);
+			fprintf(out, "proc %s(", proc->name);
+			for (int j = 0; j < proc->param_count; j++) {
+				if (j > 0)
+					fprintf(out, ", ");
+				fprintf(out, "%s: %s", proc->params[j]->name, proc->params[j]->type->data.name);
+			}
+			fprintf(out, ") {\n");
 			for (int j = 0; j < proc->statement_count; j++) {
 				format_statement(out, proc->statements[j], 1);
 			}

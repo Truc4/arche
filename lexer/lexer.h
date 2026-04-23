@@ -77,9 +77,16 @@ typedef struct Lexer {
 	const char *cur;
 	int line;
 	int column;
+	Token *pending_tokens;
+	int pending_count;
+	int pending_pos;
+	char *string_buf;
+	size_t string_buf_size;
+	size_t string_buf_pos;
 } Lexer;
 
 void lexer_init(Lexer *lexer, const char *src);
+void lexer_free(Lexer *lexer);
 Token lexer_next_token(Lexer *lexer);
 const char *token_kind_name(TokenKind kind);
 

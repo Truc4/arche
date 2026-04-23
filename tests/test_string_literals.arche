@@ -1,0 +1,6 @@
+proc main() {
+  print();
+  let msg = ;
+  print(msg);
+}
+

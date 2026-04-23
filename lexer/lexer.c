@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -187,13 +188,39 @@ static Token lex_string(Lexer *lexer) {
 
 	advance(lexer); /* consume opening '"' */
 
+	/* Build character array for the string */
+	char chars[2048];
+	int char_count = 0;
+
 	while (peek(lexer) != '"' && !is_at_end(lexer)) {
 		if (peek(lexer) == '\\') {
 			advance(lexer); /* consume backslash */
 			if (!is_at_end(lexer)) {
-				advance(lexer); /* consume escaped character */
+				char escaped = peek(lexer);
+				switch (escaped) {
+				case 'n':
+					chars[char_count++] = '\n';
+					break;
+				case 't':
+					chars[char_count++] = '\t';
+					break;
+				case 'r':
+					chars[char_count++] = '\r';
+					break;
+				case '\\':
+					chars[char_count++] = '\\';
+					break;
+				case '"':
+					chars[char_count++] = '"';
+					break;
+				default:
+					chars[char_count++] = escaped;
+					break;
+				}
+				advance(lexer);
 			}
 		} else {
+			chars[char_count++] = peek(lexer);
 			advance(lexer);
 		}
 	}
@@ -204,7 +231,60 @@ static Token lex_string(Lexer *lexer) {
 
 	advance(lexer); /* consume closing '"' */
 
-	return make_token(lexer, TOK_STRING, start, (size_t)(lexer->cur - start), line, column);
+	/* Generate array literal tokens: {ascii1, ascii2, ...} */
+	int token_count = 1 + char_count * 2; /* LBRACE + (NUM + COMMA)*n + RBRACE - 1 comma */
+	if (char_count > 0) {
+		token_count--; /* no trailing comma */
+	}
+	token_count++; /* RBRACE */
+
+	Token *tokens = malloc(token_count * sizeof(Token));
+	int tok_idx = 0;
+
+	/* LBRACE */
+	tokens[tok_idx++] = make_token(lexer, TOK_LBRACE, "{", 1, line, column);
+
+	/* Each character as ASCII number */
+	for (int i = 0; i < char_count; i++) {
+		char ascii_buf[16];
+		snprintf(ascii_buf, sizeof(ascii_buf), "%d", (unsigned char)chars[i]);
+		size_t ascii_len = strlen(ascii_buf);
+
+		/* Ensure string buffer has space */
+		if (lexer->string_buf_pos + ascii_len + 1 >= lexer->string_buf_size) {
+			lexer->string_buf_size *= 2;
+			lexer->string_buf = realloc(lexer->string_buf, lexer->string_buf_size);
+		}
+
+		/* Copy ASCII string to buffer */
+		const char *num_start = lexer->string_buf + lexer->string_buf_pos;
+		strcpy((char *)num_start, ascii_buf);
+		lexer->string_buf_pos += ascii_len + 1;
+
+		/* Number token */
+		tokens[tok_idx].kind = TOK_NUMBER;
+		tokens[tok_idx].start = num_start;
+		tokens[tok_idx].length = ascii_len;
+		tokens[tok_idx].line = line;
+		tokens[tok_idx].column = column;
+		tok_idx++;
+
+		/* Comma (except after last element) */
+		if (i < char_count - 1) {
+			tokens[tok_idx++] = make_token(lexer, TOK_COMMA, ",", 1, line, column);
+		}
+	}
+
+	/* RBRACE */
+	tokens[tok_idx++] = make_token(lexer, TOK_RBRACE, "}", 1, line, column);
+
+	/* Store in lexer pending queue, skip first token which we're returning */
+	lexer->pending_tokens = tokens;
+	lexer->pending_count = token_count;
+	lexer->pending_pos = 1; /* Start at index 1 since we're returning index 0 */
+
+	/* Return first token (LBRACE) */
+	return tokens[0];
 }
 
 void lexer_init(Lexer *lexer, const char *src) {
@@ -212,9 +292,37 @@ void lexer_init(Lexer *lexer, const char *src) {
 	lexer->cur = src;
 	lexer->line = 1;
 	lexer->column = 1;
+	lexer->pending_tokens = NULL;
+	lexer->pending_count = 0;
+	lexer->pending_pos = 0;
+	lexer->string_buf_size = 4096;
+	lexer->string_buf = malloc(lexer->string_buf_size);
+	lexer->string_buf_pos = 0;
+}
+
+void lexer_free(Lexer *lexer) {
+	if (lexer) {
+		free(lexer->pending_tokens);
+		free(lexer->string_buf);
+		lexer->pending_tokens = NULL;
+		lexer->string_buf = NULL;
+	}
 }
 
 Token lexer_next_token(Lexer *lexer) {
+	/* Check if we have pending tokens from string expansion */
+	if (lexer->pending_tokens && lexer->pending_pos < lexer->pending_count) {
+		Token tok = lexer->pending_tokens[lexer->pending_pos++];
+		/* Clean up pending tokens array once we've returned them all */
+		if (lexer->pending_pos >= lexer->pending_count) {
+			free(lexer->pending_tokens);
+			lexer->pending_tokens = NULL;
+			lexer->pending_count = 0;
+			lexer->pending_pos = 0;
+		}
+		return tok;
+	}
+
 	skip_whitespace(lexer);
 
 	const char *start = lexer->cur;
