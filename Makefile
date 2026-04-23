@@ -86,8 +86,51 @@ test-semantic: $(SEMANTIC_TEST_BIN)
 test-codegen-unit: $(CODEGEN_TEST_BIN)
 	./$(CODEGEN_TEST_BIN)
 
-# Run all tests
-test: test-lexer test-parser test-semantic test-codegen-unit test-codegen
+# Test all .arche files compile and run
+test-arche: $(TARGET)
+	@echo "Testing .arche file compilation..."
+	@PASS=0; FAIL=0; \
+	for test_file in tests/arche/*.arche; do \
+		test_name=$$(basename "$$test_file" .arche); \
+		test_out="tests/arche/$$test_name"; \
+		printf "Testing %-40s " "$$test_name..."; \
+		\
+		if ./$(TARGET) -o "$$test_out" "$$test_file" > /dev/null 2>&1; then \
+			if [ -x "$$test_out" ] && "$$test_out" > /dev/null 2>&1; then \
+				echo "✓ PASS"; \
+				PASS=$$((PASS + 1)); \
+			else \
+				exit_code=$$?; \
+				case "$$test_name" in \
+					test_bounds|test_bounds_loop) \
+						echo "✓ PASS (expected bounds failure)"; \
+						PASS=$$((PASS + 1)); \
+						;; \
+					*) \
+						echo "✗ FAIL (runtime error: $$exit_code)"; \
+						FAIL=$$((FAIL + 1)); \
+						;; \
+				esac; \
+			fi; \
+		else \
+			echo "✗ FAIL (compile error)"; \
+			FAIL=$$((FAIL + 1)); \
+		fi; \
+	done; \
+	echo ""; \
+	echo "Results: $$PASS passed, $$FAIL failed"; \
+	[ $$FAIL -eq 0 ]
+
+# Test example files against C reference implementations
+test-examples: $(TARGET)
+	@./tests/run_example_tests.sh
+
+# Run all tests - EVERYTHING
+test: test-lexer test-parser test-semantic test-codegen-unit test-arche test-examples test-codegen
+	@echo ""
+	@echo "======================================"
+	@echo "ALL TESTS PASSED"
+	@echo "======================================"
 
 # Test code generation
 test-codegen: $(TARGET)

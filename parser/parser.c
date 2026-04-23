@@ -174,8 +174,9 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 	/* Check for tuple syntax: (x: float, y: float) */
 	if (check(parser, TOK_LPAREN)) {
 		advance(parser); /* consume ( */
-		FieldDecl **fields = NULL;
-		int field_count = 0;
+		char **tuple_field_names = NULL;
+		TypeRef **tuple_field_types = NULL;
+		int tuple_field_count = 0;
 
 		while (!check(parser, TOK_RPAREN) && !check(parser, TOK_EOF)) {
 			if (!check(parser, TOK_IDENT)) {
@@ -185,11 +186,14 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 				return NULL;
 			}
 			char *field_name = token_text(parser->current);
+			char *field_name_copy = malloc(strlen(field_name) + 1);
+			strcpy(field_name_copy, field_name);
 			advance(parser);
 
 			if (!match(parser, TOK_COLON)) {
 				error(parser, "Expected ':' after tuple field name");
 				free(name_copy);
+				free(field_name_copy);
 				*out_count = 0;
 				return NULL;
 			}
@@ -197,23 +201,17 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 			TypeRef *field_type = parse_type(parser);
 			if (!field_type) {
 				free(name_copy);
+				free(field_name_copy);
 				*out_count = 0;
 				return NULL;
 			}
 
-			/* Create expanded field name: pos_x, pos_y, etc. */
-			char expanded_name[256];
-			snprintf(expanded_name, sizeof(expanded_name), "%s_%s", name_copy, field_name);
-
-			char *expanded_name_copy = malloc(strlen(expanded_name) + 1);
-			strcpy(expanded_name_copy, expanded_name);
-			FieldDecl *field = field_decl_create(kind, expanded_name_copy, field_type);
-			/* Each field gets its own copy of tuple_base */
-			char *tuple_base_copy = malloc(strlen(name_copy) + 1);
-			strcpy(tuple_base_copy, name_copy);
-			field->tuple_base = tuple_base_copy;
-			fields = realloc(fields, (field_count + 1) * sizeof(FieldDecl *));
-			fields[field_count++] = field;
+			/* Collect tuple field info */
+			tuple_field_names = realloc(tuple_field_names, (tuple_field_count + 1) * sizeof(char *));
+			tuple_field_types = realloc(tuple_field_types, (tuple_field_count + 1) * sizeof(TypeRef *));
+			tuple_field_names[tuple_field_count] = field_name_copy;
+			tuple_field_types[tuple_field_count] = field_type;
+			tuple_field_count++;
 
 			if (!match(parser, TOK_COMMA))
 				break;
@@ -221,15 +219,32 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' to close tuple type");
+			free(name_copy);
 			*out_count = 0;
 			return NULL;
 		}
 
+		/* Create TYPE_TUPLE */
+		TypeRef *tuple_type = malloc(sizeof(TypeRef));
+		tuple_type->kind = TYPE_TUPLE;
+		tuple_type->loc.line = parser->previous.line;
+		tuple_type->loc.column = parser->previous.column;
+		tuple_type->data.tuple.field_names = tuple_field_names;
+		tuple_type->data.tuple.field_types = tuple_field_types;
+		tuple_type->data.tuple.field_count = tuple_field_count;
+
+		/* Create single field with tuple type */
+		FieldDecl *field = field_decl_create(kind, name_copy, tuple_type);
+		field->loc.line = parser->previous.line;
+		field->loc.column = parser->previous.column;
+
 		/* trailing comma is optional */
 		match(parser, TOK_COMMA);
 
-		*out_count = field_count;
-		return fields;
+		FieldDecl **result = malloc(sizeof(FieldDecl *));
+		result[0] = field;
+		*out_count = 1;
+		return result;
 	}
 
 	/* Regular (non-tuple) field */

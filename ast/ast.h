@@ -67,6 +67,7 @@ typedef enum {
 	TYPE_NAME,         /* int, float, char, Vec3, Player, etc. */
 	TYPE_ARRAY,        /* nested / jagged array */
 	TYPE_SHAPED_ARRAY, /* dense ranked array */
+	TYPE_TUPLE,        /* tuple: (x: float, y: float) */
 } TypeKind;
 
 struct TypeRef {
@@ -83,6 +84,12 @@ struct TypeRef {
 			TypeRef *element_type;
 			int rank;
 		} shaped_array;
+
+		struct {
+			char **field_names;
+			TypeRef **field_types;
+			int field_count;
+		} tuple;
 	} data;
 };
 
@@ -111,7 +118,6 @@ struct FieldDecl {
 	char *name;
 	TypeRef *type;
 	SourceLoc loc;
-	char *tuple_base; /* Base name if part of tuple (e.g., "pos" for "pos_x"), NULL otherwise */
 };
 
 struct ArchetypeDecl {
