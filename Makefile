@@ -100,18 +100,20 @@ test-arche: $(TARGET)
 		test_out="$(BUILD_DIR)/test_$$test_name"; \
 		printf "Testing %-40s " "$$test_name..."; \
 		\
-		if ./$(TARGET) -o "$$test_out" "$$test_file" > /dev/null 2>&1; then \
-			if [ -x "$$test_out" ] && "$$test_out" > /dev/null 2>&1; then \
+		if ./$(TARGET) -o "$$test_out" "$$test_file" > /tmp/test_err_$$test_name 2>&1; then \
+			if [ -x "$$test_out" ] && "$$test_out" > /tmp/test_run_$$test_name 2>&1; then \
 				echo "✓ PASS"; \
 				PASS=$$((PASS + 1)); \
 			else \
 				exit_code=$$?; \
 				echo "✗ FAIL (runtime error: $$exit_code)"; \
 				FAIL=$$((FAIL + 1)); \
+				tail -5 /tmp/test_run_$$test_name | sed 's/^/    /'; \
 			fi; \
 		else \
 			echo "⚠ ERROR (compile error)"; \
 			ERROR=$$((ERROR + 1)); \
+			tail -5 /tmp/test_err_$$test_name | sed 's/^/    /'; \
 		fi; \
 	done; \
 	echo ""; \

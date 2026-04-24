@@ -4,7 +4,10 @@ arche Particle {
 }
 
 proc main() {
-  let msg = "parse done\n";
-  print(msg);
+  alloc Particle(1);
+  insert(Particle, 1.0, 2.0);
+  let x = Particle.pos_x[0];
+  let xi = x * 10.0;
+  assert(xi == 10, "tuple_parse: x != 1.0\n");
 }
 

@@ -13,7 +13,9 @@ NC='\033[0m'          # No Color
 
 # Test lexer
 echo -e "${BLUE}=== Lexer Tests ===${NC}"
-if LEXER_BIN=build/lexer-bin ./tests/run_lexer_tests.sh > /tmp/lexer_out.txt 2>&1; then
+if [ ! -f build/lexer-bin ]; then
+    echo -e "${YELLOW}⚠ SKIP${NC} (build/lexer-bin not found)"
+elif LEXER_BIN=build/lexer-bin ./tests/run_lexer_tests.sh > /tmp/lexer_out.txt 2>&1; then
     LEXER_PASS=$(grep -c "✓" /tmp/lexer_out.txt 2>/dev/null || true)
     LEXER_PASS=${LEXER_PASS:-0}
     LEXER_FAIL=$(grep -c "✗" /tmp/lexer_out.txt 2>/dev/null || true)
@@ -26,13 +28,16 @@ if LEXER_BIN=build/lexer-bin ./tests/run_lexer_tests.sh > /tmp/lexer_out.txt 2>&
     FAIL=$((FAIL + LEXER_FAIL))
 else
     echo -e "${YELLOW}⚠ ERROR${NC} running tests"
+    tail -3 /tmp/lexer_out.txt | sed 's/^/  /'
     ERROR=$((ERROR + 1))
 fi
 echo
 
 # Test parser
 echo -e "${BLUE}=== Parser Tests ===${NC}"
-if ./build/parser-test > /tmp/parser_out.txt 2>&1; then
+if [ ! -f ./build/parser-test ]; then
+    echo -e "${YELLOW}⚠ SKIP${NC} (build/parser-test not found)"
+elif ./build/parser-test > /tmp/parser_out.txt 2>&1; then
     PARSER_PASS=$(grep "Results:" /tmp/parser_out.txt 2>/dev/null | grep -oP '\d+(?=/)')
     PARSER_PASS=${PARSER_PASS:-0}
     PARSER_FAIL=$(grep "Results:" /tmp/parser_out.txt 2>/dev/null | tail -1 | grep -oP '\d+(?= failed)' || echo 0)
@@ -45,13 +50,16 @@ if ./build/parser-test > /tmp/parser_out.txt 2>&1; then
     FAIL=$((FAIL + PARSER_FAIL))
 else
     echo -e "${YELLOW}⚠ ERROR${NC} running tests"
+    tail -3 /tmp/parser_out.txt | sed 's/^/  /'
     ERROR=$((ERROR + 1))
 fi
 echo
 
 # Test semantic
 echo -e "${BLUE}=== Semantic Tests ===${NC}"
-if ./build/semantic-test > /tmp/semantic_out.txt 2>&1; then
+if [ ! -f ./build/semantic-test ]; then
+    echo -e "${YELLOW}⚠ SKIP${NC} (build/semantic-test not found)"
+elif ./build/semantic-test > /tmp/semantic_out.txt 2>&1; then
     SEMANTIC_PASS=$(grep "Results:" /tmp/semantic_out.txt 2>/dev/null | grep -oP '\d+(?=/)')
     SEMANTIC_PASS=${SEMANTIC_PASS:-0}
     SEMANTIC_FAIL=$(grep "Results:" /tmp/semantic_out.txt 2>/dev/null | tail -1 | grep -oP '\d+(?= failed)' || echo 0)
@@ -64,13 +72,16 @@ if ./build/semantic-test > /tmp/semantic_out.txt 2>&1; then
     FAIL=$((FAIL + SEMANTIC_FAIL))
 else
     echo -e "${YELLOW}⚠ ERROR${NC} running tests"
+    tail -3 /tmp/semantic_out.txt | sed 's/^/  /'
     ERROR=$((ERROR + 1))
 fi
 echo
 
 # Test codegen unit
 echo -e "${BLUE}=== Codegen Unit Tests ===${NC}"
-if ./build/codegen-test > /tmp/codegen_out.txt 2>&1; then
+if [ ! -f ./build/codegen-test ]; then
+    echo -e "${YELLOW}⚠ SKIP${NC} (build/codegen-test not found)"
+elif ./build/codegen-test > /tmp/codegen_out.txt 2>&1; then
     CODEGEN_PASS=$(grep "Results:" /tmp/codegen_out.txt 2>/dev/null | grep -oP '\d+(?=/)')
     CODEGEN_PASS=${CODEGEN_PASS:-0}
     CODEGEN_FAIL=$(grep "Results:" /tmp/codegen_out.txt 2>/dev/null | tail -1 | grep -oP '\d+(?= failed)' || echo 0)
@@ -83,6 +94,7 @@ if ./build/codegen-test > /tmp/codegen_out.txt 2>&1; then
     FAIL=$((FAIL + CODEGEN_FAIL))
 else
     echo -e "${YELLOW}⚠ ERROR${NC} running tests"
+    tail -3 /tmp/codegen_out.txt | sed 's/^/  /'
     ERROR=$((ERROR + 1))
 fi
 echo

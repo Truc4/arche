@@ -8,9 +8,7 @@ proc main() {
   insert(Particle, 2);
   let a = Particle.id[0];
   let b = Particle.id[1];
-  print(a);
-  print("\n");
-  print(b);
-  print("\n");
+  assert(a == 1, "bounds check failed: a != 1\n");
+  assert(b == 2, "bounds check failed: b != 2\n");
 }
 

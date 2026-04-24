@@ -10,7 +10,7 @@ proc main() {
   alloc Particle(10);
   insert(Particle, 1.0);
   run dummy;
-  let msg = "sys test ok\n";
-  print(msg);
+  print(Particle.pos[0]);
+  print("\n");
 }
 

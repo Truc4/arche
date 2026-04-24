@@ -15,10 +15,15 @@ sys move(pos, vel) {
 
 proc main() {
   alloc Particle(5);
-  let bodies = alloc Body(5);
+  alloc Body(5);
   insert(Particle, 1.0, 0.1);
-  insert(bodies, 2.0, 0.2);
+  insert(Body, 2.0, 0.2, 10.0);
   run move;
-  print("multi-archetype dispatch works\n");
+  let pp = Particle.pos[0];
+  let bp = Body.pos[0];
+  let ppi = pp * 10.0;
+  let bpi = bp * 10.0;
+  assert(ppi == 11, "single_sys_two_archs: Particle.pos != 1.1\n");
+  assert(bpi == 22, "single_sys_two_archs: Body.pos != 2.2\n");
 }
 

@@ -11,6 +11,8 @@ proc main() {
   alloc Particle(10);
   insert(Particle, 1.0, 0.1);
   run move;
-  print("ran system\n");
+  let p = Particle.pos[0];
+  let pi = p * 10.0;
+  assert(pi == 11, "arch_run_only: move failed\n");
 }
 

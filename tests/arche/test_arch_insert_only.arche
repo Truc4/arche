@@ -6,6 +6,8 @@ arche Particle {
 proc main() {
   alloc Particle(10);
   insert(Particle, 1.0, 0.1);
-  print("inserted\n");
+  let p = Particle.pos[0];
+  let pi = p * 10.0;
+  assert(pi == 10, "insert_only: pos != 1.0\n");
 }
 

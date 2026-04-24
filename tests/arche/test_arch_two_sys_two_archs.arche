@@ -19,11 +19,16 @@ sys dampen(vel) {
 
 proc main() {
   alloc Particle(5);
-  let bodies = alloc Body(5);
+  alloc Body(5);
   insert(Particle, 1.0, 0.1);
-  insert(bodies, 2.0, 0.2);
+  insert(Body, 2.0, 0.2, 10.0);
   run move;
   run dampen;
-  print("two systems two archetypes works\n");
+  let pp = Particle.pos[0];
+  let bp = Body.vel[0];
+  let ppi = pp * 10.0;
+  let bpi = bp * 100.0;
+  assert(ppi == 11, "two_sys_two_archs: Particle.pos != 1.1\n");
+  assert(bpi == 19, "two_sys_two_archs: Body.vel != 0.198\n");
 }
 

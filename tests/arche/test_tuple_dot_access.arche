@@ -6,7 +6,11 @@ arche Particle {
 proc main() {
   alloc Particle(1);
   insert(Particle, 1.0, 2.0);
-  let msg = "dot access test\n";
-  print(msg);
+  let x = Particle.pos_x[0];
+  let y = Particle.pos_y[0];
+  let xi = x * 10.0;
+  let yi = y * 10.0;
+  assert(xi == 10, "tuple_dot_access: x != 1.0\n");
+  assert(yi == 20, "tuple_dot_access: y != 2.0\n");
 }
 

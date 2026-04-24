@@ -6,4 +6,10 @@ extern proc exit(code: Int);
 proc print(msg: char[]) {
   write(1, msg, msg.length);
 }
+proc assert(condition: Int, message: char[]) {
+  if (condition == 0) {
+    print(message);
+    exit(1);
+  }
+}
 

@@ -13,8 +13,12 @@ proc main() {
   insert(Particle, 2.0, 0.2);
   insert(Particle, 3.0, 0.3);
   run move;
+  let p0 = Particle.pos[0];
+  let p1 = Particle.pos[1];
+  let p0i = p0 * 10.0;
+  let p1i = p1 * 10.0;
+  assert(p0i == 11, "dealloc: pos[0] != 1.1\n");
+  assert(p1i == 22, "dealloc: pos[1] != 2.2\n");
   dealloc(Particle);
-  let msg = "dealloc test passed\n";
-  print(msg);
 }
 

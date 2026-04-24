@@ -12,7 +12,11 @@ proc main() {
   insert(Particle, 4.0, 5.0, 0.1, 0.2);
   Particle.pos_x = Particle.pos_x + Particle.vel_x;
   Particle.pos_y = Particle.pos_y + Particle.vel_y;
-  let msg = "tuple component ops done\n";
-  print(msg);
+  let x0 = Particle.pos_x[0];
+  let y2 = Particle.pos_y[2];
+  let x0i = x0 * 10.0;
+  let y2i = y2 * 10.0;
+  assert(x0i == 5, "tuple_component_ops: pos_x[0] != 0.5\n");
+  assert(y2i == 51, "tuple_component_ops: pos_y[2] != 5.1\n");
 }
 

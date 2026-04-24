@@ -15,11 +15,15 @@ sys move(pos, vel) {
 
 proc main() {
   alloc Particle(100);
-  let bodies = alloc Body(50);
+  alloc Body(50);
   insert(Particle, 1.0, 0.1);
-  insert(bodies, 5.0, 0.5, 10.0);
+  insert(Body, 5.0, 0.5, 10.0);
   run move;
-  let msg = "two archs ok\n";
-  print(msg);
+  let pp = Particle.pos[0];
+  let bp = Body.pos[0];
+  let ppi = pp * 10.0;
+  let bpi = bp * 10.0;
+  assert(ppi == 11, "two_archs: Particle.pos != 1.1\n");
+  assert(bpi == 55, "two_archs: Body.pos != 5.5\n");
 }
 

@@ -14,7 +14,11 @@ proc main() {
   Entity.y = Entity.y * 2.0;
   delete(Entity, 1);
   insert(Entity, 11.0, 12.0);
-  let msg = "pooling test passed\n";
-  print(msg);
+  let x0 = Entity.x[0];
+  let y4 = Entity.y[4];
+  let x0i = x0 * 10.0;
+  let y4i = y4 * 10.0;
+  assert(x0i == 20, "pooling: x[0] != 2.0\n");
+  assert(y4i == 200, "pooling: y[4] != 20.0\n");
 }
 

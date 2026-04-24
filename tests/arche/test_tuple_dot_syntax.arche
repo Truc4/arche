@@ -10,7 +10,11 @@ proc main() {
   insert(Particle, 1.0, 2.0, 0.5, 0.1);
   Particle.pos.x = Particle.pos.x + Particle.vel.x;
   Particle.pos.y = Particle.pos.y + Particle.vel.y;
-  let msg = "dot syntax works\n";
-  print(msg);
+  let x = Particle.pos.x[0];
+  let y = Particle.pos.y[0];
+  let xi = x * 10.0;
+  let yi = y * 10.0;
+  assert(xi == 15, "tuple_dot_syntax: x != 1.5\n");
+  assert(yi == 21, "tuple_dot_syntax: y != 2.1\n");
 }
 

@@ -11,7 +11,14 @@ arche Body {
 
 proc main() {
   alloc Particle(100);
-  let bodies = alloc Body(50);
-  print("allocated both\n");
+  alloc Body(50);
+  insert(Particle, 1.0, 0.1);
+  insert(Body, 2.0, 0.2, 10.0);
+  let pp = Particle.pos[0];
+  let bm = Body.mass[0];
+  let ppi = pp * 10.0;
+  let bmi = bm * 1.0;
+  assert(ppi == 10, "two_types: Particle.pos != 1.0\n");
+  assert(bmi == 10, "two_types: Body.mass != 10.0\n");
 }
 
