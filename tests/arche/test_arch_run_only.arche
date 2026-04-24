@@ -13,6 +13,6 @@ proc main() {
   run move;
   let p = Particle.pos[0];
   let pi = p * 10.0;
-  assert(pi == 11, "arch_run_only: move failed\n");
+  assert(pi == 11, "move failed\n");
 }
 

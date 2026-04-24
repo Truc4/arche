@@ -14,7 +14,7 @@ proc main() {
   let y = Particle.pos.y[0];
   let xi = x * 10.0;
   let yi = y * 10.0;
-  assert(xi == 15, "tuple_dot_syntax: x != 1.5\n");
-  assert(yi == 21, "tuple_dot_syntax: y != 2.1\n");
+  assert(xi == 15, "x != 1.5\n");
+  assert(yi == 21, "y != 2.1\n");
 }
 

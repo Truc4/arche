@@ -16,7 +16,7 @@ proc main() {
   let p1 = Body.pos[1];
   let p0i = p0 * 10.0;
   let p1i = p1 * 10.0;
-  assert(p0i == 10, "simple_sys: pos[0] != 1.0\n");
-  assert(p1i == 20, "simple_sys: pos[1] != 2.0\n");
+  assert(p0i == 10, "pos[0] != 1.0\n");
+  assert(p1i == 20, "pos[1] != 2.0\n");
 }
 

@@ -8,7 +8,7 @@ proc main() {
   insert(Particle, 2);
   let a = Particle.id[0];
   let b = Particle.id[1];
-  assert(a == 1, "bounds_valid: a != 1\n");
-  assert(b == 2, "bounds_valid: b != 2\n");
+  assert(a == 1, "a != 1\n");
+  assert(b == 2, "b != 2\n");
 }
 

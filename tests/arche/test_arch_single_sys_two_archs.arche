@@ -23,7 +23,7 @@ proc main() {
   let bp = Body.pos[0];
   let ppi = pp * 10.0;
   let bpi = bp * 10.0;
-  assert(ppi == 11, "single_sys_two_archs: Particle.pos != 1.1\n");
-  assert(bpi == 22, "single_sys_two_archs: Body.pos != 2.2\n");
+  assert(ppi == 11, "Particle.pos != 1.1\n");
+  assert(bpi == 22, "Body.pos != 2.2\n");
 }
 

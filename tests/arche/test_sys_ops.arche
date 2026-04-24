@@ -26,7 +26,7 @@ proc main() {
   let p11 = Body.position[11];
   let p0i = p0 * 10.0;
   let p11i = p11 * 10.0;
-  assert(p0i == 11, "sys_ops: position[0] != 1.1\n");
-  assert(p11i == 130, "sys_ops: position[11] != 13.0\n");
+  assert(p0i == 11, "position[0] != 1.1\n");
+  assert(p11i == 130, "position[11] != 13.0\n");
 }
 

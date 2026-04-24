@@ -18,7 +18,7 @@ proc main() {
   let bm = Body.mass[0];
   let ppi = pp * 10.0;
   let bmi = bm * 1.0;
-  assert(ppi == 10, "two_types: Particle.pos != 1.0\n");
-  assert(bmi == 10, "two_types: Body.mass != 10.0\n");
+  assert(ppi == 10, "Particle.pos != 1.0\n");
+  assert(bmi == 10, "Body.mass != 10.0\n");
 }
 

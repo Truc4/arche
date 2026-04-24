@@ -18,7 +18,7 @@ proc main() {
   let p7 = Particle.pos[7];
   let p0i = p0 * 10.0;
   let p7i = p7 * 10.0;
-  assert(p0i == 11, "soa_array_only: pos[0] != 1.1\n");
-  assert(p7i == 80, "soa_array_only: pos[7] != 8.0\n");
+  assert(p0i == 11, "pos[0] != 1.1\n");
+  assert(p7i == 80, "pos[7] != 8.0\n");
 }
 

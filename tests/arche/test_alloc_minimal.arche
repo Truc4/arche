@@ -7,6 +7,6 @@ proc main() {
   insert(Particle, 1.0);
   let v = Particle.pos[0];
   let vi = v * 10.0;
-  assert(vi == 10, "alloc_minimal: value not 1.0\n");
+  assert(vi == 10, "value not 1.0\n");
 }
 

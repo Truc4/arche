@@ -8,6 +8,6 @@ proc main() {
   insert(Particle, 1.0, 0.1);
   let p = Particle.pos[0];
   let pi = p * 10.0;
-  assert(pi == 10, "insert_only: pos != 1.0\n");
+  assert(pi == 10, "pos != 1.0\n");
 }
 

@@ -110,7 +110,7 @@ ARCHE_ERROR=$(grep -c "⚠ ERROR" /tmp/arche_out.txt 2>/dev/null || true)
 ARCHE_ERROR=${ARCHE_ERROR:-0}
 if [ $ARCHE_FAIL -gt 0 ]; then
     echo -e "${RED}✗ FAILURES:${NC}"
-    grep "✗ FAIL" /tmp/arche_out.txt
+    grep -A 1 "✗ FAIL" /tmp/arche_out.txt | head -20
 fi
 if [ $ARCHE_ERROR -gt 0 ]; then
     echo -e "${YELLOW}⚠ ERRORS:${NC}"

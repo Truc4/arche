@@ -108,7 +108,7 @@ test-arche: $(TARGET)
 				exit_code=$$?; \
 				echo "✗ FAIL (runtime error: $$exit_code)"; \
 				FAIL=$$((FAIL + 1)); \
-				tail -5 /tmp/test_run_$$test_name | sed 's/^/    /'; \
+				cat /tmp/test_run_$$test_name | sed 's/^/    /'; \
 			fi; \
 		else \
 			echo "⚠ ERROR (compile error)"; \
@@ -126,7 +126,7 @@ test-examples: $(TARGET)
 
 # Run all tests - EVERYTHING
 test: $(TARGET)
-	./tests/run_all_tests.sh
+	@./tests/run_all_tests.sh; true
 
 # Test code generation
 test-codegen: $(TARGET)

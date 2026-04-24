@@ -23,7 +23,7 @@ proc main() {
   let bp = Body.pos[0];
   let ppi = pp * 10.0;
   let bpi = bp * 10.0;
-  assert(ppi == 10, "partial_field_match: Particle.pos != 1.0\n");
-  assert(bpi == 120, "partial_field_match: Body.pos != 12.0\n");
+  assert(ppi == 10, "Particle.pos != 1.0\n");
+  assert(bpi == 120, "Body.pos != 12.0\n");
 }
 

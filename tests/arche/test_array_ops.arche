@@ -15,7 +15,7 @@ proc main() {
   let p1 = Particle.pos[1];
   let p0i = p0 * 10.0;
   let p1i = p1 * 10.0;
-  assert(p0i == 11, "array_ops: pos[0] != 1.1\n");
-  assert(p1i == 22, "array_ops: pos[1] != 2.2\n");
+  assert(p0i == 11, "pos[0] != 1.1\n");
+  assert(p1i == 22, "pos[1] != 2.2\n");
 }
 

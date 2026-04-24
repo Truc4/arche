@@ -31,7 +31,7 @@ proc main() {
   let bp = Body.vel[0];
   let ppi = pp * 10.0;
   let bpi = bp * 100.0;
-  assert(ppi == 11, "insert_then_run_both: Particle.pos != 1.1\n");
-  assert(bpi == 49, "insert_then_run_both: Body.vel != 0.49\n");
+  assert(ppi == 11, "Particle.pos != 1.1\n");
+  assert(bpi == 49, "Body.vel != 0.49\n");
 }
 
