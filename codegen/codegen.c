@@ -2471,7 +2471,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	                  arch->name, fc_idx);
 	buffer_append(ctx, "  %free_count = load i64, i64* %fc_ptr\n");
 	buffer_append(ctx, "  %has_free = icmp sgt i64 %free_count, 1\n");
-	buffer_append(ctx, "  br i1 %has_free, label %pop_free, label %check_grow\n\n");
+	buffer_append(ctx, "  br i1 %has_free, label %pop_free, label %check_capacity\n\n");
 
 	/* Pop from free_list */
 	buffer_append(ctx, "pop_free:\n");
@@ -2486,54 +2486,21 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	buffer_append(ctx, "  store i1 0, i1* %do_incr\n");
 	buffer_append(ctx, "  br label %write_fields\n\n");
 
-	/* Check if count needs grow */
-	buffer_append(ctx, "check_grow:\n");
+	/* Check if count is at capacity (fixed budget, no growth) */
+	buffer_append(ctx, "check_capacity:\n");
 	buffer_append_fmt(ctx, "  %%count_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
 	                  arch->name, arch->name, count_idx);
 	buffer_append(ctx, "  %count = load i64, i64* %count_ptr\n");
 	buffer_append_fmt(ctx, "  %%cap_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", arch->name,
 	                  arch->name, cap_idx);
 	buffer_append(ctx, "  %cap = load i64, i64* %cap_ptr\n");
-	buffer_append(ctx, "  %needs_grow = icmp sge i64 %count, %cap\n");
-	buffer_append(ctx, "  br i1 %needs_grow, label %grow, label %use_count\n\n");
+	buffer_append(ctx, "  %at_capacity = icmp sge i64 %count, %cap\n");
+	buffer_append(ctx, "  br i1 %at_capacity, label %overflow, label %use_count\n\n");
 
-	/* Grow block */
-	buffer_append(ctx, "grow:\n");
-	buffer_append(ctx, "  %cap_zero = icmp eq i64 %cap, 0\n");
-	buffer_append(ctx, "  %doubled = mul i64 %cap, 2\n");
-	buffer_append(ctx, "  %new_cap = select i1 %cap_zero, i64 4, i64 %doubled\n");
-
-	/* Realloc each column field */
-	int col_idx = 0;
-	for (int i = 0; i < arch->field_count; i++) {
-		if (arch->fields[i]->kind == FIELD_COLUMN) {
-			const char *base_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
-			int elem_size = strcmp(base_type, "double") == 0 ? 8 : 4;
-			buffer_append_fmt(ctx, "  %%col_pp%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
-			                  col_idx, arch->name, arch->name, i);
-			buffer_append_fmt(ctx, "  %%col_p%d = load %s*, %s** %%col_pp%d\n", col_idx, base_type, base_type, col_idx);
-			buffer_append_fmt(ctx, "  %%col_i8_%d = bitcast %s* %%col_p%d to i8*\n", col_idx, base_type, col_idx);
-			buffer_append_fmt(ctx, "  %%bytes%d = mul i64 %%new_cap, %d\n", col_idx, elem_size);
-			buffer_append_fmt(ctx, "  %%new_i8_%d = call i8* @realloc(i8* %%col_i8_%d, i64 %%bytes%d)\n", col_idx,
-			                  col_idx, col_idx);
-			buffer_append_fmt(ctx, "  %%new_p%d = bitcast i8* %%new_i8_%d to %s*\n", col_idx, col_idx, base_type);
-			buffer_append_fmt(ctx, "  store %s* %%new_p%d, %s** %%col_pp%d\n", base_type, col_idx, base_type, col_idx);
-			col_idx++;
-		}
-	}
-
-	/* Realloc free_list */
-	buffer_append(ctx, "  %fl_bytes = mul i64 %new_cap, 8\n");
-	buffer_append_fmt(ctx, "  %%fl_ptr_grow = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
-	                  arch->name, arch->name, fl_idx);
-	buffer_append(ctx, "  %free_list_grow = load i64*, i64** %fl_ptr_grow\n");
-	buffer_append(ctx, "  %fl_i8 = bitcast i64* %free_list_grow to i8*\n");
-	buffer_append(ctx, "  %new_fl_i8 = call i8* @realloc(i8* %fl_i8, i64 %fl_bytes)\n");
-	buffer_append(ctx, "  %new_fl = bitcast i8* %new_fl_i8 to i64*\n");
-	buffer_append(ctx, "  store i64* %new_fl, i64** %fl_ptr_grow\n");
-
-	buffer_append(ctx, "  store i64 %new_cap, i64* %cap_ptr\n");
-	buffer_append(ctx, "  br label %use_count\n\n");
+	/* Overflow: abort (fixed budget exceeded) */
+	buffer_append(ctx, "overflow:\n");
+	buffer_append(ctx, "  call void @abort()\n");
+	buffer_append(ctx, "  unreachable\n\n");
 
 	/* Use count as slot */
 	buffer_append(ctx, "use_count:\n");
@@ -2544,7 +2511,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	/* Write fields block */
 	buffer_append(ctx, "write_fields:\n");
 	buffer_append(ctx, "  %final_slot = load i64, i64* %slot_var\n");
-	col_idx = 0;
+	int col_idx = 0;
 	for (int i = 0; i < arch->field_count; i++) {
 		if (arch->fields[i]->kind == FIELD_COLUMN) {
 			const char *base_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
@@ -2895,7 +2862,6 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	/* External C library function declarations */
 	buffer_append(ctx, "declare i8* @malloc(i32)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
-	buffer_append(ctx, "declare i8* @realloc(i8*, i64)\n");
 	buffer_append(ctx, "declare i32 @printf(i8*, ...)\n");
 	buffer_append(ctx, "declare void @abort()\n\n");
 
