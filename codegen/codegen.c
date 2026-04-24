@@ -444,7 +444,12 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			} else if (val->type == 1) {
 				/* Type-1: regular allocated value (i32, float, etc) - load from pointer */
 				char *loaded = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", loaded, val->llvm_name);
+				const char *llvm_type =
+				    val->field_type
+				        ? (strcmp(val->field_type, "double") == 0 || strcmp(val->field_type, "float") == 0 ? "double"
+				                                                                                           : "i32")
+				        : "i32";
+				buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", loaded, llvm_type, llvm_type, val->llvm_name);
 				strcpy(result_buf, loaded);
 			} else {
 				/* Type-2 (string), 3 (arch), 5 (array): return pointer directly */
@@ -497,23 +502,6 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			if (strchr(left_buf, '.') != NULL || strchr(right_buf, '.') != NULL) {
 				is_float = 1;
 			}
-
-			/* If one operand is a parameter (%argN) and the other is a literal integer, treat as double */
-			if ((strstr(left_buf, "%arg") && right_buf[0] >= '0' && right_buf[0] <= '9' && !strchr(right_buf, '.')) ||
-			    (strstr(right_buf, "%arg") && left_buf[0] >= '0' && left_buf[0] <= '9' && !strchr(left_buf, '.'))) {
-				is_float = 1;
-				/* Convert literals to float representation */
-				if (right_buf[0] >= '0' && right_buf[0] <= '9' && !strchr(right_buf, '.')) {
-					char temp[256];
-					snprintf(temp, sizeof(temp), "%s.0", right_buf);
-					strcpy(right_buf, temp);
-				}
-				if (left_buf[0] >= '0' && left_buf[0] <= '9' && !strchr(left_buf, '.')) {
-					char temp[256];
-					snprintf(temp, sizeof(temp), "%s.0", left_buf);
-					strcpy(left_buf, temp);
-				}
-			}
 		}
 
 		switch (expr->data.binary.op) {
@@ -530,10 +518,10 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			op = is_float ? "fdiv" : "sdiv";
 			break;
 		case OP_EQ:
-			op = "eq";
+			op = is_float ? "oeq" : "eq";
 			break;
 		case OP_NEQ:
-			op = "ne";
+			op = is_float ? "one" : "ne";
 			break;
 		case OP_LT:
 			op = is_float ? "olt" : "slt";
@@ -560,17 +548,40 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			type = is_float ? "double" : "i32";
 		}
 
+		/* For float operations, convert integer literals to doubles */
+		const char *left_val = left_buf;
+		const char *right_val = right_buf;
+		char *left_conv = NULL;
+		char *right_conv = NULL;
+
+		if (is_float) {
+			/* Check if left operand is an integer literal that needs conversion */
+			if (strchr(left_buf, '.') == NULL && strchr(left_buf, 'v') == NULL && strchr(left_buf, '%') == NULL) {
+				/* Integer literal, convert to double */
+				left_conv = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = sitofp i32 %s to double\n", left_conv, left_buf);
+				left_val = left_conv;
+			}
+			/* Check if right operand is an integer literal that needs conversion */
+			if (strchr(right_buf, '.') == NULL && strchr(right_buf, 'v') == NULL && strchr(right_buf, '%') == NULL) {
+				/* Integer literal, convert to double */
+				right_conv = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = sitofp i32 %s to double\n", right_conv, right_buf);
+				right_val = right_conv;
+			}
+		}
+
 		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE) {
 			/* comparison returns i1 */
 			const char *cmp_type = is_float ? "double" : "i32";
 			if (is_float) {
-				buffer_append_fmt(ctx, "  %s = fcmp %s %s %s, %s\n", res_name, op, cmp_type, left_buf, right_buf);
+				buffer_append_fmt(ctx, "  %s = fcmp %s %s %s, %s\n", res_name, op, cmp_type, left_val, right_val);
 			} else {
-				buffer_append_fmt(ctx, "  %s = icmp %s %s %s, %s\n", res_name, op, cmp_type, left_buf, right_buf);
+				buffer_append_fmt(ctx, "  %s = icmp %s %s %s, %s\n", res_name, op, cmp_type, left_val, right_val);
 			}
 		} else {
 			/* arithmetic */
-			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", res_name, op, type, left_buf, right_buf);
+			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", res_name, op, type, left_val, right_val);
 		}
 
 		strcpy(result_buf, res_name);
@@ -1076,6 +1087,17 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			} else if (strcmp(call_arg_types[0], "i32") == 0) {
 				actual_func_name = "print_int";
 			}
+		}
+
+		/* Special handling for assert function: convert i1 to i32 if needed */
+		if (func_name && strcmp(func_name, "assert") == 0 && expr->data.call.arg_count > 0 &&
+		    expr->data.call.args[0]->type == EXPR_BINARY) {
+			/* The first argument is a comparison, which returns i1 */
+			/* We need to zero-extend it to i32 for the assert function */
+			char *zext = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = zext i1 %s to i32\n", zext, call_arg_vals[0]);
+			strcpy(call_arg_vals[0], zext);
+			call_arg_types[0] = "i32";
 		}
 
 		/* Emit the call with prepared arguments */
@@ -1638,11 +1660,44 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				add_array_value(ctx, var_name, arr_alloca);
 			}
 		} else {
-			/* For integers, allocate and store */
+			/* For scalars (int/float), allocate and store based on type */
+			const char *alloc_type = "i32";
+			const char *store_type = "i32";
+			const char *resolved_type = NULL;
+
+			/* Check the resolved type of the value expression */
+			if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->resolved_type) {
+				resolved_type = stmt->data.let_stmt.value->resolved_type;
+				if (strcmp(resolved_type, "double") == 0 || strcmp(resolved_type, "float") == 0) {
+					alloc_type = "double";
+					store_type = "double";
+				}
+			}
+
 			char *alloca_name = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = alloca i32\n", alloca_name);
-			buffer_append_fmt(ctx, "  store i32 %s, i32* %s\n", value_buf, alloca_name);
-			add_value(ctx, var_name, alloca_name, 1);
+			buffer_append_fmt(ctx, "  %s = alloca %s\n", alloca_name, alloc_type);
+			buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", store_type, value_buf, store_type, alloca_name);
+
+			ValueInfo *vi = malloc(sizeof(ValueInfo));
+			vi->name = malloc(strlen(var_name) + 1);
+			strcpy(vi->name, var_name);
+			vi->llvm_name = malloc(strlen(alloca_name) + 1);
+			strcpy(vi->llvm_name, alloca_name);
+			vi->type = 1;
+			vi->arch_name = NULL;
+			vi->string_len = -1;
+			vi->field_type = resolved_type ? resolved_type : "int";
+			vi->bit_width = 32;
+
+			if (ctx->scope_count > 0) {
+				ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+				scope->values[scope->value_count++] = vi;
+			} else {
+				free(vi->name);
+				free(vi->llvm_name);
+				free(vi);
+			}
 		}
 		break;
 	}
@@ -2255,6 +2310,25 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 
 			pop_value_scope(ctx);
 		}
+		break;
+	}
+
+	case STMT_IF: {
+		char cond_buf[256];
+		codegen_expression(ctx, stmt->data.if_stmt.cond, cond_buf);
+
+		char *then_label = gen_value_name(ctx);
+		char *exit_label = gen_value_name(ctx);
+
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cond_buf, then_label, exit_label);
+		buffer_append_fmt(ctx, "%s:\n", then_label + 1);
+
+		for (int i = 0; i < stmt->data.if_stmt.then_count; i++) {
+			codegen_statement(ctx, stmt->data.if_stmt.then_body[i]);
+		}
+
+		buffer_append_fmt(ctx, "  br label %s\n", exit_label);
+		buffer_append_fmt(ctx, "%s:\n", exit_label + 1);
 		break;
 	}
 

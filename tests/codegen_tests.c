@@ -88,7 +88,11 @@ static int compile_source(const char *source, char *ir_buf, int ir_len) {
 		snprintf(combined_src, combined_len, "%s", source);
 	}
 
+	fprintf(stderr, "DEBUG: starting parse\n");
+	fflush(stderr);
 	ParseResult parse_result = parse_source(combined_src);
+	fprintf(stderr, "DEBUG: parse complete\n");
+	fflush(stderr);
 	free(combined_src);
 
 	if (parse_result.error_count > 0) {
@@ -100,7 +104,11 @@ static int compile_source(const char *source, char *ir_buf, int ir_len) {
 	Program *prog = parse_result.ast;
 	parse_result_free(&parse_result);
 
+	fprintf(stderr, "DEBUG: starting semantic\n");
+	fflush(stderr);
 	SemanticContext *sem_ctx = semantic_analyze(prog);
+	fprintf(stderr, "DEBUG: semantic complete\n");
+	fflush(stderr);
 	if (semantic_has_errors(sem_ctx)) {
 		snprintf(ir_buf, ir_len, "Semantic errors");
 		semantic_context_free(sem_ctx);
@@ -108,7 +116,11 @@ static int compile_source(const char *source, char *ir_buf, int ir_len) {
 		return 0;
 	}
 
+	fprintf(stderr, "DEBUG: starting codegen_create\n");
+	fflush(stderr);
 	CodegenContext *codegen_ctx = codegen_create(prog, sem_ctx);
+	fprintf(stderr, "DEBUG: codegen_create complete\n");
+	fflush(stderr);
 	FILE *ir_output = fopen("/tmp/test_codegen.ll", "w");
 	if (!ir_output) {
 		snprintf(ir_buf, ir_len, "Could not open temp file");
@@ -118,7 +130,11 @@ static int compile_source(const char *source, char *ir_buf, int ir_len) {
 		return 0;
 	}
 
+	fprintf(stderr, "DEBUG: starting codegen_generate\n");
+	fflush(stderr);
 	codegen_generate(codegen_ctx, ir_output);
+	fprintf(stderr, "DEBUG: codegen_generate complete\n");
+	fflush(stderr);
 	fclose(ir_output);
 
 	codegen_free(codegen_ctx);

@@ -26,7 +26,8 @@ typedef struct {
 typedef struct {
 	char *name;
 	TypeRef *type;
-	char *archetype_name; /* for variables that refer to archetype entries */
+	char *archetype_name;      /* for variables that refer to archetype entries */
+	const char *inferred_type; /* for variables without explicit type, stores inferred type name */
 } VariableInfo;
 
 typedef struct {
@@ -193,6 +194,7 @@ static void add_variable_with_archetype(SemanticContext *ctx, const char *name, 
 	var->archetype_name = archetype_name ? malloc(strlen(archetype_name) + 1) : NULL;
 	if (var->archetype_name)
 		strcpy(var->archetype_name, archetype_name);
+	var->inferred_type = NULL;
 
 	scope->vars = realloc(scope->vars, (scope->var_count + 1) * sizeof(VariableInfo *));
 	scope->vars[scope->var_count++] = var;
@@ -232,8 +234,14 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	case EXPR_NAME: {
 		const char *name = expr->data.name.name;
 		VariableInfo *var = find_variable(ctx, name);
-		if (var && var->type) {
-			return var->type->data.name;
+		if (var) {
+			if (var->type) {
+				return var->type->data.name;
+			}
+			/* Fallback to inferred type */
+			if (var->inferred_type) {
+				return var->inferred_type;
+			}
 		}
 		/* Check if it's an archetype being referenced */
 		ArchetypeInfo *arch = find_archetype(ctx, name);
@@ -279,6 +287,11 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	}
 
 	case EXPR_BINARY: {
+		/* Comparison operators always return int (boolean result) */
+		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE) {
+			return "int";
+		}
+
 		/* Infer from operands - for now, promote to float if either side is float */
 		const char *left_type = resolve_expression_type(ctx, expr->data.binary.left);
 		const char *right_type = resolve_expression_type(ctx, expr->data.binary.right);
@@ -527,10 +540,23 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		}
 
 		/* create local variable */
+		VariableInfo *var = NULL;
 		if (archetype_name) {
 			add_variable_with_archetype(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type, archetype_name);
 		} else {
 			add_variable(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type);
+		}
+
+		/* If no explicit type, infer from value expression */
+		if (!stmt->data.let_stmt.type && stmt->data.let_stmt.value && ctx->scope_count > 0) {
+			Scope *scope = &ctx->scopes[ctx->scope_count - 1];
+			if (scope->var_count > 0) {
+				var = scope->vars[scope->var_count - 1];
+				const char *inferred = resolve_expression_type(ctx, stmt->data.let_stmt.value);
+				if (inferred) {
+					var->inferred_type = inferred;
+				}
+			}
 		}
 		break;
 	}
@@ -584,6 +610,21 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 
 		for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
 			analyze_statement(ctx, stmt->data.for_stmt.body[i]);
+		}
+
+		pop_scope(ctx);
+		break;
+	}
+
+	case STMT_IF: {
+		/* analyze condition */
+		analyze_expression(ctx, stmt->data.if_stmt.cond);
+
+		/* push new scope for if body */
+		push_scope(ctx);
+
+		for (int i = 0; i < stmt->data.if_stmt.then_count; i++) {
+			analyze_statement(ctx, stmt->data.if_stmt.then_body[i]);
 		}
 
 		pop_scope(ctx);

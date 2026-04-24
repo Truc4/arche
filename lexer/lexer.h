@@ -20,6 +20,7 @@ typedef enum TokenKind {
 	TOK_FUNC,
 	TOK_LET,
 	TOK_FOR,
+	TOK_IF,
 	TOK_IN,
 	TOK_FREE,
 	TOK_EXTERN,

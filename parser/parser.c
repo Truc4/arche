@@ -17,6 +17,7 @@ struct Parser {
 	Token *comments;
 	size_t comment_count;
 	size_t comment_cap;
+	int recursion_depth;
 };
 
 /* ========== UTILITY FUNCTIONS ========== */
@@ -26,7 +27,14 @@ static void advance(Parser *parser) {
 	parser->current = lexer_next_token(parser->lexer);
 
 	/* Capture comment tokens instead of skipping */
+	int comment_loop_count = 0;
+	const int MAX_COMMENT_LOOP = 1000;
 	while (parser->current.kind == TOK_COMMENT) {
+		if (++comment_loop_count > MAX_COMMENT_LOOP) {
+			parser->had_error = 1;
+			parser->current.kind = TOK_EOF;
+			break;
+		}
 		if (parser->comment_count >= parser->comment_cap) {
 			parser->comment_cap = (parser->comment_cap == 0) ? 16 : parser->comment_cap * 2;
 			parser->comments = realloc(parser->comments, parser->comment_cap * sizeof(Token));
@@ -82,8 +90,15 @@ static void error(Parser *parser, const char *msg) {
 
 static void synchronize(Parser *parser) {
 	parser->panic_mode = 0;
+	int sync_loop_count = 0;
+	const int MAX_SYNC_LOOP = 1000;
 
 	while (parser->current.kind != TOK_EOF) {
+		if (++sync_loop_count > MAX_SYNC_LOOP) {
+			parser->had_error = 1;
+			parser->current.kind = TOK_EOF;
+			return;
+		}
 		if (parser->previous.kind == TOK_SEMI)
 			return;
 
@@ -94,7 +109,6 @@ static void synchronize(Parser *parser) {
 		case TOK_FUNC:
 		case TOK_LET:
 		case TOK_FOR:
-			advance(parser);
 			return;
 		default:
 			break;
@@ -1004,6 +1018,57 @@ static Statement *parse_statement(Parser *parser) {
 		return stmt;
 	}
 
+	if (match(parser, TOK_IF)) {
+		int if_line = parser->previous.line;
+		int if_column = parser->previous.column;
+
+		if (!match(parser, TOK_LPAREN)) {
+			error(parser, "Expected '(' after 'if'");
+			return NULL;
+		}
+
+		Expression *cond = parse_expression(parser);
+		if (!cond)
+			return NULL;
+
+		if (!match(parser, TOK_RPAREN)) {
+			error(parser, "Expected ')' after if condition");
+			return NULL;
+		}
+
+		if (!match(parser, TOK_LBRACE)) {
+			error(parser, "Expected '{' for if body");
+			return NULL;
+		}
+
+		Statement *stmt = statement_create(STMT_IF);
+		stmt->loc.line = if_line;
+		stmt->loc.column = if_column;
+		stmt->data.if_stmt.cond = cond;
+		stmt->data.if_stmt.then_body = NULL;
+		stmt->data.if_stmt.then_count = 0;
+		stmt->data.if_stmt.else_body = NULL;
+		stmt->data.if_stmt.else_count = 0;
+
+		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+			Statement *body_stmt = parse_statement(parser);
+			if (!body_stmt) {
+				synchronize(parser);
+				continue;
+			}
+
+			stmt->data.if_stmt.then_body =
+			    realloc(stmt->data.if_stmt.then_body, (stmt->data.if_stmt.then_count + 1) * sizeof(Statement *));
+			stmt->data.if_stmt.then_body[stmt->data.if_stmt.then_count++] = body_stmt;
+		}
+
+		if (!match(parser, TOK_RBRACE)) {
+			error(parser, "Expected '}' after if body");
+		}
+
+		return stmt;
+	}
+
 	if (match(parser, TOK_FOR)) {
 		int for_line = parser->previous.line;
 		int for_column = parser->previous.column;
@@ -1131,13 +1196,20 @@ static void parser_init(Parser *parser, Lexer *lexer) {
 	parser->comments = NULL;
 	parser->comment_count = 0;
 	parser->comment_cap = 0;
+	parser->recursion_depth = 0;
 	advance(parser);
 }
 
 ParseResult parse_program(Parser *parser) {
 	Program *prog = program_create();
+	int decl_loop_count = 0;
+	const int MAX_DECL_LOOP = 10000;
 
 	while (!check(parser, TOK_EOF)) {
+		if (++decl_loop_count > MAX_DECL_LOOP) {
+			parser->had_error = 1;
+			break;
+		}
 		Decl *decl = parse_decl(parser);
 		if (!decl) {
 			synchronize(parser);

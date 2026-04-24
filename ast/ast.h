@@ -170,6 +170,7 @@ typedef enum {
 	STMT_LET,
 	STMT_ASSIGN,
 	STMT_FOR,
+	STMT_IF,
 	STMT_RUN,
 	STMT_EXPR,
 	STMT_FREE,
@@ -209,6 +210,14 @@ typedef struct {
 } ForStmt;
 
 typedef struct {
+	Expression *cond;
+	Statement **then_body;
+	int then_count;
+	Statement **else_body;
+	int else_count;
+} IfStmt;
+
+typedef struct {
 	char *system_name;
 	char *world_name;
 } RunStmt;
@@ -228,6 +237,7 @@ struct Statement {
 		LetStmt let_stmt;
 		AssignStmt assign_stmt;
 		ForStmt for_stmt;
+		IfStmt if_stmt;
 		RunStmt run_stmt;
 		ExprStmt expr_stmt;
 		FreeStmt free_stmt;
