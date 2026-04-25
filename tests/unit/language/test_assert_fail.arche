@@ -1,0 +1,7 @@
+// RUN: %arche -o %t %s && %t; test $? -eq 1
+
+proc main() {
+  printf("before\n");
+  assert(0, "assertion failed\n");
+  printf("after\n");
+}

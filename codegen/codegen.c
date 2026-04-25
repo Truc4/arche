@@ -586,7 +586,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 		strcpy(result_buf, res_name);
 		if (expr->data.binary.left->type == EXPR_NAME) {
-			add_value(ctx, expr->data.binary.left->data.name.name, res_name, 0);
+			add_value(ctx, expr->data.binary.left->data.name.name, result_buf, 0);
 		}
 		break;
 	}
@@ -1112,7 +1112,21 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		/* Emit the call with prepared arguments */
 		/* Check if this is a variadic function like sprintf or printf */
 		int is_variadic = func_name && (strcmp(func_name, "sprintf") == 0 || strcmp(func_name, "printf") == 0);
-		if (is_variadic) {
+		int is_exit = func_name && strcmp(func_name, "exit") == 0;
+
+		if (is_exit) {
+			/* exit() is a void function that never returns */
+			buffer_append_fmt(ctx, "  call void @%s(", actual_func_name);
+			for (int i = 0; i < expr->data.call.arg_count; i++) {
+				buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
+				if (i < expr->data.call.arg_count - 1) {
+					buffer_append(ctx, ", ");
+				}
+			}
+			buffer_append(ctx, ")\n");
+			buffer_append(ctx, "  unreachable\n");
+			strcpy(result_buf, "0");
+		} else if (is_variadic) {
 			/* For variadic C functions, array struct args must be unwrapped to i8* */
 			for (int i = 0; i < expr->data.call.arg_count; i++) {
 				if (call_arg_types[i] && strcmp(call_arg_types[i], "%struct.arche_array*") == 0) {
@@ -1140,6 +1154,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				}
 			}
 			buffer_append(ctx, ")\n");
+			strcpy(result_buf, res_name);
 		} else {
 			/* Normal non-variadic call */
 			buffer_append_fmt(ctx, "  %s = call i32 @%s(", res_name, actual_func_name);
@@ -1150,6 +1165,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				}
 			}
 			buffer_append(ctx, ")\n");
+			strcpy(result_buf, res_name);
 		}
 
 		strcpy(result_buf, res_name);
@@ -2720,7 +2736,9 @@ static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
 static void codegen_proc_decl(CodegenContext *ctx, ProcDecl *proc) {
 	/* For extern procs, emit declare stub */
 	if (proc->is_extern) {
-		buffer_append_fmt(ctx, "declare i32 @%s(", proc->name);
+		/* exit() returns void; other functions return i32 */
+		int is_void_func = strcmp(proc->name, "exit") == 0;
+		buffer_append_fmt(ctx, "declare %s @%s(", is_void_func ? "void" : "i32", proc->name);
 		for (int i = 0; i < proc->param_count; i++) {
 			TypeRef *param_type = proc->params[i]->type;
 			const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : "Int";
