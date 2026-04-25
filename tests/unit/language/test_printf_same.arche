@@ -1,0 +1,6 @@
+// RUN: %arche -o %t %s && %t
+
+proc main() {
+  printf("Value: %d\n", 42);
+  printf("Value: %d\n", 42);
+}

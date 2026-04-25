@@ -1005,7 +1005,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		/* Prepare arguments: emit conversions before the call, collect register names */
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			call_arg_vals[i] = malloc(256);
-			call_arg_types[i] = NULL;
+			call_arg_types[i] = "i32"; /* Default type */
 
 			/* Determine what callee param expects */
 			int callee_wants_arr = 0;
