@@ -1,0 +1,42 @@
+// RUN: %arche -o %t %s && %t | grep "p0i"
+// BUG: System operations don't modify fields (see COMPILER_BUG_SYSTEM_OPERATIONS.md)
+
+arche Body {
+  position: float,
+  velocity: float,
+}
+
+
+sys move(position, velocity) {
+  position = position + velocity;
+}
+
+
+proc main() {
+  alloc Body(500);
+  insert(Body, 1.0, 0.1);
+  insert(Body, 2.0, 0.2);
+  insert(Body, 3.0, 0.3);
+  insert(Body, 4.0, 0.4);
+  insert(Body, 5.0, 0.5);
+  insert(Body, 6.0, 0.6);
+  insert(Body, 7.0, 0.7);
+  insert(Body, 8.0, 0.8);
+  insert(Body, 9.0, 0.9);
+  insert(Body, 10.0, 1.0);
+  insert(Body, 11.0, 1.1);
+  insert(Body, 12.0, 1.2);
+  run move;
+  let p0 = Body.position[0];
+  let p11 = Body.position[11];
+  let p0i = p0 * 10.0;
+  let p11i = p11 * 10.0;
+  print("p0i=");
+  print_float(p0i);
+  print(" p11i=");
+  print_float(p11i);
+  print("\n");
+  assert(p0i == 11, "position[0] != 1.1\n");
+  assert(p11i == 130, "position[11] != 13.0\n");
+}
+

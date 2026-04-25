@@ -1,0 +1,8 @@
+// RUN: %arche -o %t %s && %t | grep "Integer: 42"
+
+proc main() {
+  let x = 42;
+  printf("Integer: %d\n", x);
+  printf("Literal: %d\n", 123);
+}
+

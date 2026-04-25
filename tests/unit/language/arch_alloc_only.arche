@@ -1,0 +1,16 @@
+// RUN: %arche -o %t %s && %t
+
+arche Particle {
+  pos: float,
+  vel: float,
+}
+
+
+proc main() {
+  alloc Particle(10);
+  insert(Particle, 5.5, 0.1);
+  let p = Particle.pos[0];
+  let pi = p * 10.0;
+  assert(pi == 55, "pos != 5.5\n");
+}
+

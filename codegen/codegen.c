@@ -116,14 +116,13 @@ static const char *llvm_type_from_arche(const char *arche_type) {
 	if (!arche_type)
 		return "i32"; /* default to int */
 
-	/* Lowercase and capitalized variants */
-	if (strcmp(arche_type, "float") == 0 || strcmp(arche_type, "Float") == 0)
+	if (strcmp(arche_type, "float") == 0)
 		return "double";
-	if (strcmp(arche_type, "int") == 0 || strcmp(arche_type, "Int") == 0)
+	if (strcmp(arche_type, "int") == 0)
 		return "i32";
-	if (strcmp(arche_type, "char") == 0 || strcmp(arche_type, "Char") == 0)
+	if (strcmp(arche_type, "char") == 0)
 		return "i8";
-	if (strcmp(arche_type, "void") == 0 || strcmp(arche_type, "Void") == 0)
+	if (strcmp(arche_type, "void") == 0)
 		return "void";
 
 	/* For custom types (Vec3, archetypes, etc.), use opaque structures */
@@ -482,19 +481,16 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		const char *op;
 		int is_float = 0;
 
-		/* Use semantic resolved type if available (check for both source and LLVM type names) */
+		/* Use semantic resolved type if available */
 		if (expr->resolved_type &&
-		    (strcmp(expr->resolved_type, "float") == 0 || strcmp(expr->resolved_type, "Float") == 0 ||
-		     strcmp(expr->resolved_type, "double") == 0)) {
+		    (strcmp(expr->resolved_type, "float") == 0 || strcmp(expr->resolved_type, "double") == 0)) {
 			is_float = 1;
 		} else if (expr->data.binary.left->resolved_type &&
 		           (strcmp(expr->data.binary.left->resolved_type, "float") == 0 ||
-		            strcmp(expr->data.binary.left->resolved_type, "Float") == 0 ||
 		            strcmp(expr->data.binary.left->resolved_type, "double") == 0)) {
 			is_float = 1;
 		} else if (expr->data.binary.right->resolved_type &&
 		           (strcmp(expr->data.binary.right->resolved_type, "float") == 0 ||
-		            strcmp(expr->data.binary.right->resolved_type, "Float") == 0 ||
 		            strcmp(expr->data.binary.right->resolved_type, "double") == 0)) {
 			is_float = 1;
 		} else {
@@ -586,7 +582,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 		strcpy(result_buf, res_name);
 		if (expr->data.binary.left->type == EXPR_NAME) {
-			add_value(ctx, expr->data.binary.left->data.name.name, res_name, 0);
+			add_value(ctx, expr->data.binary.left->data.name.name, result_buf, 0);
 		}
 		break;
 	}
@@ -1005,7 +1001,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		/* Prepare arguments: emit conversions before the call, collect register names */
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			call_arg_vals[i] = malloc(256);
-			call_arg_types[i] = NULL;
+			call_arg_types[i] = "i32"; /* Default type */
 
 			/* Determine what callee param expects */
 			int callee_wants_arr = 0;
@@ -1074,7 +1070,6 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				/* Check if arg is float/double */
 				if (expr->data.call.args[i]->resolved_type &&
 				    (strcmp(expr->data.call.args[i]->resolved_type, "float") == 0 ||
-				     strcmp(expr->data.call.args[i]->resolved_type, "Float") == 0 ||
 				     strcmp(expr->data.call.args[i]->resolved_type, "double") == 0)) {
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = "double";
@@ -1112,7 +1107,21 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		/* Emit the call with prepared arguments */
 		/* Check if this is a variadic function like sprintf or printf */
 		int is_variadic = func_name && (strcmp(func_name, "sprintf") == 0 || strcmp(func_name, "printf") == 0);
-		if (is_variadic) {
+		int is_exit = func_name && strcmp(func_name, "exit") == 0;
+
+		if (is_exit) {
+			/* exit() is a void function that never returns */
+			buffer_append_fmt(ctx, "  call void @%s(", actual_func_name);
+			for (int i = 0; i < expr->data.call.arg_count; i++) {
+				buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
+				if (i < expr->data.call.arg_count - 1) {
+					buffer_append(ctx, ", ");
+				}
+			}
+			buffer_append(ctx, ")\n");
+			buffer_append(ctx, "  unreachable\n");
+			strcpy(result_buf, "0");
+		} else if (is_variadic) {
 			/* For variadic C functions, array struct args must be unwrapped to i8* */
 			for (int i = 0; i < expr->data.call.arg_count; i++) {
 				if (call_arg_types[i] && strcmp(call_arg_types[i], "%struct.arche_array*") == 0) {
@@ -1140,6 +1149,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				}
 			}
 			buffer_append(ctx, ")\n");
+			strcpy(result_buf, res_name);
 		} else {
 			/* Normal non-variadic call */
 			buffer_append_fmt(ctx, "  %s = call i32 @%s(", res_name, actual_func_name);
@@ -1150,6 +1160,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				}
 			}
 			buffer_append(ctx, ")\n");
+			strcpy(result_buf, res_name);
 		}
 
 		strcpy(result_buf, res_name);
@@ -1188,7 +1199,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		char *decl_pos = global_decl;
 		size_t decl_space = sizeof(global_decl);
 
-		decl_pos += snprintf(decl_pos, decl_space, "%s = private constant [%d x i8] [", global_name, elem_count);
+		decl_pos += snprintf(decl_pos, decl_space, "%s = private constant [%d x i8] [", global_name, elem_count + 1);
 		decl_space = sizeof(global_decl) - (decl_pos - global_decl);
 
 		for (int i = 0; i < elem_count; i++) {
@@ -1201,7 +1212,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				decl_space = sizeof(global_decl) - (decl_pos - global_decl);
 			}
 		}
-		snprintf(decl_pos, decl_space, "]\n");
+		snprintf(decl_pos, decl_space, ", i8 0]\n");
 
 		/* Append to globals buffer */
 		size_t decl_len = strlen(global_decl);
@@ -1218,8 +1229,8 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 		/* Get pointer to global array */
 		char *arr_ptr = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i32 0, i32 0\n", arr_ptr, elem_count,
-		                  elem_count, global_name);
+		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i32 0, i32 0\n", arr_ptr, elem_count + 1,
+		                  elem_count + 1, global_name);
 
 		/* Data pointer is already i8* */
 		char *data_ptr = arr_ptr;
@@ -2720,10 +2731,12 @@ static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
 static void codegen_proc_decl(CodegenContext *ctx, ProcDecl *proc) {
 	/* For extern procs, emit declare stub */
 	if (proc->is_extern) {
-		buffer_append_fmt(ctx, "declare i32 @%s(", proc->name);
+		/* exit() returns void; other functions return i32 */
+		int is_void_func = strcmp(proc->name, "exit") == 0;
+		buffer_append_fmt(ctx, "declare %s @%s(", is_void_func ? "void" : "i32", proc->name);
 		for (int i = 0; i < proc->param_count; i++) {
 			TypeRef *param_type = proc->params[i]->type;
-			const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : "Int";
+			const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : "int";
 			const char *base_type = llvm_type_from_arche(type_name);
 
 			/* Check if type is char[] (i8*) or an archetype (struct*) */
@@ -2754,7 +2767,7 @@ static void codegen_proc_decl(CodegenContext *ctx, ProcDecl *proc) {
 	/* Emit parameter types and names */
 	for (int i = 0; i < proc->param_count; i++) {
 		TypeRef *param_type = proc->params[i]->type;
-		const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : "Int";
+		const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : "int";
 		const char *base_type = llvm_type_from_arche(type_name);
 
 		/* Check if type is char[] (struct*) or an archetype (struct*) */
@@ -2781,7 +2794,7 @@ static void codegen_proc_decl(CodegenContext *ctx, ProcDecl *proc) {
 		char param_llvm[32];
 		snprintf(param_llvm, sizeof(param_llvm), "%%arg%d", i);
 		TypeRef *param_type = proc->params[i]->type;
-		const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : "Int";
+		const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : "int";
 
 		/* If param type is an archetype, track it as arch pointer (type 3) */
 		if (find_archetype_decl(ctx, type_name)) {

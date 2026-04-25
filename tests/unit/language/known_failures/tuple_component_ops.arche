@@ -1,0 +1,25 @@
+// RUN: %arche -o %t %s && %t | grep "pos"
+
+arche Particle {
+  pos_x: float,
+  pos_y: float,
+  vel_x: float,
+  vel_y: float,
+}
+
+
+proc main() {
+  alloc Particle(3);
+  insert(Particle, 0.0, 1.0, 0.5, 0.1);
+  insert(Particle, 2.0, 3.0, 0.2, 0.3);
+  insert(Particle, 4.0, 5.0, 0.1, 0.2);
+  Particle.pos_x = Particle.pos_x + Particle.vel_x;
+  Particle.pos_y = Particle.pos_y + Particle.vel_y;
+  let x0 = Particle.pos_x[0];
+  let y2 = Particle.pos_y[2];
+  let x0i = x0 * 10.0;
+  let y2i = y2 * 10.0;
+  assert(x0i == 5, "pos_x[0] != 0.5\n");
+  assert(y2i == 51, "pos_y[2] != 5.1\n");
+}
+

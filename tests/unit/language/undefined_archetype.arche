@@ -1,0 +1,6 @@
+// RUN: not %arche -o %t %s 2>&1 | grep -q "Undefined archetype"
+
+proc main() {
+  alloc UndefinedArch(10);
+}
+

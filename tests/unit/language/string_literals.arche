@@ -1,0 +1,6 @@
+// RUN: %arche -o %t %s && %t | grep test
+
+proc main() {
+  print("test\n");
+}
+

@@ -375,8 +375,9 @@ void expression_free(Expression *expr);
    Formatting / Pretty-printing
    ========================= */
 
+#include "../lexer/lexer.h"
 #include <stdio.h>
 
-void format_program(FILE *out, Program *prog);
+void format_program(FILE *out, Program *prog, Token *comments, size_t comment_count, const char *src);
 
 #endif /* AST_H */
