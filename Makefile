@@ -2,6 +2,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -std=c99 -DARCHE_CORE_DIR=\"$(abspath core)\"
 BUILD_DIR = build
 TARGET = $(BUILD_DIR)/arche
+VPATH = tests
 LEXER_BIN = $(BUILD_DIR)/lexer-bin
 PARSER_TEST_BIN = $(BUILD_DIR)/parser-test
 FMT_BIN = $(BUILD_DIR)/arche-fmt
@@ -20,16 +21,16 @@ SRCS = lexer/lexer.c \
 OBJS = $(SRCS:.c=.o)
 COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/main.o
 LEXER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/lexer/lexer_main.o
-PARSER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/tests/parser_tests.o
+PARSER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/unit/compiler/parser_tests.o
 FMT_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_fmt.o
-SEMANTIC_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/tests/semantic_tests.o
-CODEGEN_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/tests/codegen_tests.o
+SEMANTIC_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/unit/compiler/semantic_tests.o
+CODEGEN_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/unit/compiler/codegen_tests.o
 
 # Default target
 all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LIBARCH)
 
 $(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/ast $(BUILD_DIR)/parser $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/tests
+	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/ast $(BUILD_DIR)/parser $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/unit/compiler
 
 # Build main compiler executable
 $(TARGET): $(COMPILER_OBJS)
@@ -91,40 +92,9 @@ test-semantic: $(SEMANTIC_TEST_BIN)
 test-codegen-unit: $(CODEGEN_TEST_BIN)
 	./$(CODEGEN_TEST_BIN)
 
-# Test all .arche files compile and run
-test-arche: $(TARGET)
-	@echo "Testing .arche file compilation..."
-	@PASS=0; FAIL=0; ERROR=0; \
-	for test_file in tests/arche/*.arche; do \
-		test_name=$$(basename "$$test_file" .arche); \
-		test_out="$(BUILD_DIR)/test_$$test_name"; \
-		printf "Testing %-40s " "$$test_name..."; \
-		\
-		if ./$(TARGET) -o "$$test_out" "$$test_file" > /tmp/test_err_$$test_name 2>&1; then \
-			if [ -x "$$test_out" ] && "$$test_out" > /tmp/test_run_$$test_name 2>&1; then \
-				PASS=$$((PASS + 1)); \
-			else \
-				exit_code=$$?; \
-				echo "✗ FAIL (runtime error: $$exit_code): $$test_name"; \
-				FAIL=$$((FAIL + 1)); \
-				cat /tmp/test_run_$$test_name | sed 's/^/    /'; \
-			fi; \
-		else \
-			echo "⚠ ERROR (compile error): $$test_name"; \
-			ERROR=$$((ERROR + 1)); \
-			tail -5 /tmp/test_err_$$test_name | sed 's/^/    /'; \
-		fi; \
-	done; \
-	echo "Results: $$PASS passed, $$FAIL failed, $$ERROR errors"; \
-	[ $$ERROR -eq 0 ]
-
-# Test example files against C reference implementations
-test-examples: $(TARGET)
-	@./tests/run_example_tests.sh
-
-# Run all tests - EVERYTHING
-test: $(TARGET)
-	@./tests/run_all_tests.sh; true
+# Run all tests with LIT
+test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN)
+	lit -v tests/
 
 # Test code generation
 test-codegen: $(TARGET)
@@ -172,4 +142,4 @@ format: $(FMT_BIN)
 .PHONY: build
 
 # Phony targets
-.PHONY: all run run-lexer test test-lexer test-parser test-semantic test-codegen test-codegen-unit test-arche test-examples clean bench-physics bench-strings bench-lifecycle bench-mixed format
+.PHONY: all run run-lexer test test-lexer test-parser test-semantic test-codegen test-codegen-unit test-lit clean bench-physics bench-strings bench-lifecycle bench-mixed format
