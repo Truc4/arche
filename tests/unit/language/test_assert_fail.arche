@@ -5,3 +5,4 @@ proc main() {
   assert(0, "assertion failed\n");
   printf("after\n");
 }
+

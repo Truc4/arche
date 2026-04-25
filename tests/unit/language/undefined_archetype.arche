@@ -3,3 +3,4 @@
 proc main() {
   alloc UndefinedArch(10);
 }
+
