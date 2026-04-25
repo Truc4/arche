@@ -1330,9 +1330,16 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", col_gep,
 				                  arch_name, arch_name, struct_ptr, i);
 
+				char *col_offset_llvm = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", col_offset_llvm, count_buf, col_offset);
+
+				char *col_data_base = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %d\n", col_data_base, raw_ptr,
+				                  struct_sz_bytes);
+
 				char *col_data = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %d\n", col_data, raw_ptr,
-				                  struct_sz_bytes + col_offset);
+				buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %s\n", col_data, col_data_base,
+				                  col_offset_llvm);
 
 				char *col_ptr = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = bitcast i8* %s to %s*\n", col_ptr, col_data, elem_type);
