@@ -4,3 +4,4 @@ proc main() {
   printf("A\n");
   printf("B\n");
 }
+

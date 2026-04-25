@@ -208,6 +208,22 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 
 /* ========== TYPE RESOLUTION ========== */
 
+static const char *normalize_type_name(const char *type_name) {
+	if (!type_name)
+		return type_name;
+	if (strcmp(type_name, "Int") == 0)
+		return "int";
+	if (strcmp(type_name, "Float") == 0)
+		return "float";
+	if (strcmp(type_name, "Str") == 0)
+		return "str";
+	if (strcmp(type_name, "Char") == 0)
+		return "char";
+	if (strcmp(type_name, "Void") == 0)
+		return "void";
+	return type_name;
+}
+
 static const char *resolve_expression_type(SemanticContext *ctx, Expression *expr) {
 	if (!expr)
 		return NULL;
@@ -236,11 +252,11 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		VariableInfo *var = find_variable(ctx, name);
 		if (var) {
 			if (var->type) {
-				return var->type->data.name;
+				return normalize_type_name(var->type->data.name);
 			}
 			/* Fallback to inferred type */
 			if (var->inferred_type) {
-				return var->inferred_type;
+				return normalize_type_name(var->inferred_type);
 			}
 		}
 		/* Check if it's an archetype being referenced */
@@ -274,7 +290,7 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 			if (arch) {
 				FieldInfo *field = find_field(arch, field_name);
 				if (field && field->type) {
-					return field->type->data.name;
+					return normalize_type_name(field->type->data.name);
 				}
 			}
 		}

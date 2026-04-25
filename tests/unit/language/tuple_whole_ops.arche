@@ -5,6 +5,7 @@ arche Particle {
   vel: (x: float, y: float),
 }
 
+
 proc main() {
   alloc Particle(2);
   insert(Particle, 1.0, 2.0, 0.5, 0.1);
@@ -19,3 +20,4 @@ proc main() {
   print(Particle.pos.y[1]);
   print("\n");
 }
+

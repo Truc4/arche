@@ -5,3 +5,4 @@ proc main() {
   assert(1, "should not see this\n");
   printf("done\n");
 }
+

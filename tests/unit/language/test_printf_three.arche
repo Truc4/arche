@@ -5,3 +5,4 @@ proc main() {
   printf("Second: %d\n", 2);
   printf("Third: %d\n", 3);
 }
+

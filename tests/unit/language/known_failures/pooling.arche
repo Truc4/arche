@@ -5,6 +5,7 @@ arche Entity {
   y: float,
 }
 
+
 proc main() {
   alloc Entity(100);
   insert(Entity, 1.0, 2.0);
@@ -24,3 +25,4 @@ proc main() {
   assert(x0i == 20, "x[0] != 2.0\n");
   assert(y4i == 200, "y[4] != 20.0\n");
 }
+

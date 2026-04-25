@@ -1,7 +1,8 @@
 // RUN: %arche -o %t %s && %t
 
 proc main() {
-  let x: int = 42;
+  let x = 42;
   assert(x == 42, "let type syntax failed\n");
   print("test passed\n");
 }
+
