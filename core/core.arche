@@ -15,11 +15,11 @@ proc print(msg: char[]) {
   write(1, msg, msg.length);
 }
 
-proc print_value(n: Int) {
-  let digit = n / 1;
-  digit = digit - digit / 10 * 10;
-}
-
 proc assert(condition: Int, message: char[]) {
+  if (condition == 0) {
+    fflush(0);
+    print(message);
+    exit(1);
+  }
 }
 
