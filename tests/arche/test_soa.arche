@@ -24,6 +24,7 @@ proc main() {
   let p9 = Particle.pos[9];
   let p0i = p0 * 10.0;
   let p9i = p9 * 10.0;
+  print("DEBUG: pos array computed\n");
   assert(p0i == 11, "pos[0] != 1.1\n");
   assert(p9i == 110, "pos[9] != 11.0\n");
 }

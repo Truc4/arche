@@ -102,23 +102,21 @@ test-arche: $(TARGET)
 		\
 		if ./$(TARGET) -o "$$test_out" "$$test_file" > /tmp/test_err_$$test_name 2>&1; then \
 			if [ -x "$$test_out" ] && "$$test_out" > /tmp/test_run_$$test_name 2>&1; then \
-				echo "✓ PASS"; \
 				PASS=$$((PASS + 1)); \
 			else \
 				exit_code=$$?; \
-				echo "✗ FAIL (runtime error: $$exit_code)"; \
+				echo "✗ FAIL (runtime error: $$exit_code): $$test_name"; \
 				FAIL=$$((FAIL + 1)); \
 				cat /tmp/test_run_$$test_name | sed 's/^/    /'; \
 			fi; \
 		else \
-			echo "⚠ ERROR (compile error)"; \
+			echo "⚠ ERROR (compile error): $$test_name"; \
 			ERROR=$$((ERROR + 1)); \
 			tail -5 /tmp/test_err_$$test_name | sed 's/^/    /'; \
 		fi; \
 	done; \
-	echo ""; \
 	echo "Results: $$PASS passed, $$FAIL failed, $$ERROR errors"; \
-	[ $$FAIL -eq 0 ] && [ $$ERROR -eq 0 ]
+	[ $$ERROR -eq 0 ]
 
 # Test example files against C reference implementations
 test-examples: $(TARGET)

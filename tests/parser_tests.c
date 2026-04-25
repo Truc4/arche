@@ -272,6 +272,112 @@ void test_expr_binary_op(void) {
 	test_pass_msg();
 }
 
+/* ========== LET TYPE ANNOTATION TESTS ========== */
+
+void test_let_type_annotation_with_value(void) {
+	test_start("let with type annotation and value");
+	Program *prog = parse_string("proc test() { let x: int = 5; }");
+	ASSERT_NOT_NULL(prog, "program is null");
+	ProcDecl *proc = prog->decls[0]->data.proc;
+	ASSERT_EQ(proc->statement_count, 1, "expected 1 statement");
+	Statement *stmt = proc->statements[0];
+	ASSERT_EQ(stmt->type, STMT_LET, "expected STMT_LET");
+	ASSERT_NOT_NULL(stmt->data.let_stmt.type, "type annotation should not be null");
+	ASSERT_EQ(stmt->data.let_stmt.type->kind, TYPE_NAME, "expected TYPE_NAME");
+	ASSERT_NOT_NULL(stmt->data.let_stmt.value, "value should not be null");
+	program_free(prog);
+	test_pass_msg();
+}
+
+void test_let_type_annotation_no_value(void) {
+	test_start("let with type annotation, no value");
+	Program *prog = parse_string("proc test() { let x: int; }");
+	ASSERT_NOT_NULL(prog, "program is null");
+	ProcDecl *proc = prog->decls[0]->data.proc;
+	ASSERT_EQ(proc->statement_count, 1, "expected 1 statement");
+	Statement *stmt = proc->statements[0];
+	ASSERT_EQ(stmt->type, STMT_LET, "expected STMT_LET");
+	ASSERT_NOT_NULL(stmt->data.let_stmt.type, "type annotation should not be null");
+	ASSERT_EQ(stmt->data.let_stmt.type->kind, TYPE_NAME, "expected TYPE_NAME");
+	ASSERT_EQ(stmt->data.let_stmt.value, NULL, "value should be null");
+	program_free(prog);
+	test_pass_msg();
+}
+
+void test_let_array_type_annotation(void) {
+	test_start("let with array type annotation");
+	Program *prog = parse_string("proc test() { let buf: char[]; }");
+	ASSERT_NOT_NULL(prog, "program is null");
+	ProcDecl *proc = prog->decls[0]->data.proc;
+	ASSERT_EQ(proc->statement_count, 1, "expected 1 statement");
+	Statement *stmt = proc->statements[0];
+	ASSERT_EQ(stmt->type, STMT_LET, "expected STMT_LET");
+	ASSERT_NOT_NULL(stmt->data.let_stmt.type, "type annotation should not be null");
+	ASSERT_EQ(stmt->data.let_stmt.type->kind, TYPE_ARRAY, "expected TYPE_ARRAY");
+	ASSERT_EQ(stmt->data.let_stmt.value, NULL, "value should be null");
+	program_free(prog);
+	test_pass_msg();
+}
+
+void test_let_float_type_annotation(void) {
+	test_start("let with float type annotation");
+	Program *prog = parse_string("proc test() { let f: float = 1.5; }");
+	ASSERT_NOT_NULL(prog, "program is null");
+	ProcDecl *proc = prog->decls[0]->data.proc;
+	ASSERT_EQ(proc->statement_count, 1, "expected 1 statement");
+	Statement *stmt = proc->statements[0];
+	ASSERT_EQ(stmt->type, STMT_LET, "expected STMT_LET");
+	ASSERT_NOT_NULL(stmt->data.let_stmt.type, "type annotation should not be null");
+	ASSERT_NOT_NULL(stmt->data.let_stmt.value, "value should not be null");
+	program_free(prog);
+	test_pass_msg();
+}
+
+/* ========== PRINTF VARIADIC TESTS ========== */
+
+void test_printf_with_float(void) {
+	test_start("printf with float argument");
+	Program *prog = parse_string("proc test() { printf(\"Value: %f\\n\", 3.14); }");
+	ASSERT_NOT_NULL(prog, "program is null");
+	ProcDecl *proc = prog->decls[0]->data.proc;
+	ASSERT_EQ(proc->statement_count, 1, "expected 1 statement");
+	Statement *stmt = proc->statements[0];
+	ASSERT_EQ(stmt->type, STMT_EXPR, "expected STMT_EXPR");
+	ASSERT_NOT_NULL(stmt->data.expr_stmt.expr, "expression should not be null");
+	ASSERT_EQ(stmt->data.expr_stmt.expr->type, EXPR_CALL, "expected EXPR_CALL");
+	ASSERT_EQ(stmt->data.expr_stmt.expr->data.call.arg_count, 2, "expected 2 arguments");
+	program_free(prog);
+	test_pass_msg();
+}
+
+void test_printf_with_variable_float(void) {
+	test_start("printf with variable float argument");
+	Program *prog = parse_string("proc test() { let f: float = 1.5; printf(\"Float: %f\\n\", f); }");
+	ASSERT_NOT_NULL(prog, "program is null");
+	ProcDecl *proc = prog->decls[0]->data.proc;
+	ASSERT_EQ(proc->statement_count, 2, "expected 2 statements");
+	Statement *stmt = proc->statements[1];
+	ASSERT_EQ(stmt->type, STMT_EXPR, "expected STMT_EXPR");
+	ASSERT_EQ(stmt->data.expr_stmt.expr->type, EXPR_CALL, "expected EXPR_CALL");
+	ASSERT_EQ(stmt->data.expr_stmt.expr->data.call.arg_count, 2, "expected 2 arguments");
+	program_free(prog);
+	test_pass_msg();
+}
+
+void test_sprintf_with_float(void) {
+	test_start("sprintf with float argument");
+	Program *prog = parse_string("proc test() { sprintf(\"buf\", \"Value: %f\\n\", 3.14); }");
+	ASSERT_NOT_NULL(prog, "program is null");
+	ProcDecl *proc = prog->decls[0]->data.proc;
+	ASSERT_EQ(proc->statement_count, 1, "expected 1 statement");
+	Statement *stmt = proc->statements[0];
+	ASSERT_EQ(stmt->type, STMT_EXPR, "expected STMT_EXPR");
+	ASSERT_EQ(stmt->data.expr_stmt.expr->type, EXPR_CALL, "expected EXPR_CALL");
+	ASSERT_EQ(stmt->data.expr_stmt.expr->data.call.arg_count, 3, "expected 3 arguments");
+	program_free(prog);
+	test_pass_msg();
+}
+
 /* ========== MULTIPLE DECLARATIONS ========== */
 
 void test_multiple_decls(void) {
@@ -343,6 +449,19 @@ int main(void) {
 	test_expr_field_access();
 	test_expr_index();
 	test_expr_binary_op();
+
+	/* Let type annotation tests */
+	printf("\nLet type annotation tests:\n");
+	test_let_type_annotation_with_value();
+	test_let_type_annotation_no_value();
+	test_let_array_type_annotation();
+	test_let_float_type_annotation();
+
+	/* Printf variadic tests */
+	printf("\nPrintf variadic tests:\n");
+	test_printf_with_float();
+	test_printf_with_variable_float();
+	test_sprintf_with_float();
 
 	/* Multiple declarations */
 	printf("\nMultiple declarations tests:\n");

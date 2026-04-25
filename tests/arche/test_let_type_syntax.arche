@@ -1,0 +1,15 @@
+proc main() {
+  let x: int = 42;
+  assert(x == 42, "let with int type failed\n");
+
+  let y: float = 3.14;
+  assert(y > 3.0, "let with float type failed\n");
+
+  let z: int = 10 + 20;
+  assert(z == 30, "let with expression failed\n");
+
+  let a: int = x + 8;
+  assert(a == 50, "let with int addition failed\n");
+
+  print("all let type syntax tests passed\n");
+}

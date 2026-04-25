@@ -110,7 +110,7 @@ ARCHE_ERROR=$(grep -c "⚠ ERROR" /tmp/arche_out.txt 2>/dev/null || true)
 ARCHE_ERROR=${ARCHE_ERROR:-0}
 if [ $ARCHE_FAIL -gt 0 ]; then
     echo -e "${RED}✗ FAILURES:${NC}"
-    grep -A 1 "✗ FAIL" /tmp/arche_out.txt | head -20
+    grep -A 5 "✗ FAIL" /tmp/arche_out.txt | head -50
 fi
 if [ $ARCHE_ERROR -gt 0 ]; then
     echo -e "${YELLOW}⚠ ERRORS:${NC}"
@@ -131,7 +131,7 @@ if ./tests/run_example_tests.sh > /tmp/examples_out.txt 2>&1; then
     EXAMPLES_FAIL=${EXAMPLES_FAIL:-0}
     if [ $EXAMPLES_FAIL -gt 0 ]; then
         echo -e "${RED}✗ FAILURES:${NC}"
-        sed 's/\x1b\[[0-9;]*m//g' /tmp/examples_out.txt 2>/dev/null | grep "FAIL"
+        sed 's/\x1b\[[0-9;]*m//g' /tmp/examples_out.txt 2>/dev/null | grep -A 3 "FAIL"
     fi
     echo -e "${GREEN}✓ Passed: $EXAMPLES_PASS${NC}, ${RED}Failed: $EXAMPLES_FAIL${NC}"
     PASS=$((PASS + EXAMPLES_PASS))

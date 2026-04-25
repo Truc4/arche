@@ -1,0 +1,6 @@
+proc main() {
+  let x = 42;
+  printf("Integer: %d\n", x);
+  printf("Literal: %d\n", 123);
+}
+

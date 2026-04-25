@@ -3,11 +3,43 @@ extern proc read(fd: Int, buf: char[], len: Int);
 extern proc open(path: char[], flags: Int);
 extern proc close(fd: Int);
 extern proc exit(code: Int);
+extern proc sprintf(buf: char[], fmt: char[]);
+extern proc printf(fmt: char[]);
+extern proc fflush(stream: Int);
+proc print_float(f: Float) {
+  printf("%g", f);
+  fflush(0);
+}
 proc print(msg: char[]) {
   write(1, msg, msg.length);
 }
+
+proc print_value(n: Int) {
+  if (n < 0) {
+    print("-");
+    n = 0 - n;
+  }
+  if (n >= 10) {
+    print_value(n / 10);
+  }
+  let digit: int = n / 1;
+  digit = digit - (digit / 10) * 10;
+  if (digit == 0) { print("0"); }
+  if (digit == 1) { print("1"); }
+  if (digit == 2) { print("2"); }
+  if (digit == 3) { print("3"); }
+  if (digit == 4) { print("4"); }
+  if (digit == 5) { print("5"); }
+  if (digit == 6) { print("6"); }
+  if (digit == 7) { print("7"); }
+  if (digit == 8) { print("8"); }
+  if (digit == 9) { print("9"); }
+}
+
+
 proc assert(condition: Int, message: char[]) {
   if (condition == 0) {
+    fflush(0);
     print(message);
     exit(1);
   }

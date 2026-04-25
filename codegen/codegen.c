@@ -1040,9 +1040,18 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					call_arg_types[i] = "i32";
 				}
 			} else if (arg_is_string[i]) {
-				/* String literal passed to non-array param */
-				if (callee_wants_arr) {
-					/* Already wrapped in struct, pass struct ptr */
+				if (callee_is_extern && callee_wants_arr) {
+					/* Extract i8* data ptr from struct for C ABI */
+					char *dp_gep = gen_value_name(ctx);
+					buffer_append_fmt(
+					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+					    dp_gep, arg_bufs[i]);
+					char *dp = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", dp, dp_gep);
+					strcpy(call_arg_vals[i], dp);
+					call_arg_types[i] = "i8*";
+				} else if (callee_wants_arr) {
+					/* Pass struct ptr for internal Arche calls */
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = "%struct.arche_array*";
 				} else {
@@ -1101,14 +1110,47 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		}
 
 		/* Emit the call with prepared arguments */
-		buffer_append_fmt(ctx, "  %s = call i32 @%s(", res_name, actual_func_name);
-		for (int i = 0; i < expr->data.call.arg_count; i++) {
-			buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
-			if (i < expr->data.call.arg_count - 1) {
-				buffer_append(ctx, ", ");
+		/* Check if this is a variadic function like sprintf or printf */
+		int is_variadic = func_name && (strcmp(func_name, "sprintf") == 0 || strcmp(func_name, "printf") == 0);
+		if (is_variadic) {
+			/* For variadic C functions, array struct args must be unwrapped to i8* */
+			for (int i = 0; i < expr->data.call.arg_count; i++) {
+				if (call_arg_types[i] && strcmp(call_arg_types[i], "%struct.arche_array*") == 0) {
+					char *dp_gep = gen_value_name(ctx);
+					buffer_append_fmt(
+					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+					    dp_gep, call_arg_vals[i]);
+					char *dp = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", dp, dp_gep);
+					strcpy(call_arg_vals[i], dp);
+					call_arg_types[i] = "i8*";
+				}
 			}
+			/* Emit variadic signature based on function */
+			if (strcmp(func_name, "sprintf") == 0) {
+				buffer_append_fmt(ctx, "  %s = call i32 (i8*, i8*, ...)", res_name);
+			} else {
+				buffer_append_fmt(ctx, "  %s = call i32 (i8*, ...)", res_name);
+			}
+			buffer_append_fmt(ctx, " @%s(", actual_func_name);
+			for (int i = 0; i < expr->data.call.arg_count; i++) {
+				buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
+				if (i < expr->data.call.arg_count - 1) {
+					buffer_append(ctx, ", ");
+				}
+			}
+			buffer_append(ctx, ")\n");
+		} else {
+			/* Normal non-variadic call */
+			buffer_append_fmt(ctx, "  %s = call i32 @%s(", res_name, actual_func_name);
+			for (int i = 0; i < expr->data.call.arg_count; i++) {
+				buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
+				if (i < expr->data.call.arg_count - 1) {
+					buffer_append(ctx, ", ");
+				}
+			}
+			buffer_append(ctx, ")\n");
 		}
-		buffer_append(ctx, ")\n");
 
 		strcpy(result_buf, res_name);
 
@@ -2697,6 +2739,10 @@ static void codegen_proc_decl(CodegenContext *ctx, ProcDecl *proc) {
 				buffer_append(ctx, ", ");
 			}
 		}
+		/* Add variadic marker for known variadic functions */
+		if (strcmp(proc->name, "sprintf") == 0 || strcmp(proc->name, "printf") == 0) {
+			buffer_append(ctx, ", ...");
+		}
 		buffer_append(ctx, ")\n");
 		return;
 	}
@@ -2921,7 +2967,6 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	/* External C library function declarations */
 	buffer_append(ctx, "declare i8* @malloc(i32)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
-	buffer_append(ctx, "declare i32 @printf(i8*, ...)\n");
 	buffer_append(ctx, "declare void @abort()\n\n");
 
 	/* Global error message for bounds check failures */
