@@ -136,6 +136,14 @@ int main(int argc, char *argv[]) {
 	Program *prog = parse_result.ast;
 	parse_result_free(&parse_result);
 
+	if (!prog || prog->decl_count == 0) {
+		fprintf(stderr, "Error: Empty program\n");
+		if (prog)
+			program_free(prog);
+		free(source);
+		return 1;
+	}
+
 	/* Semantic analysis */
 	SemanticContext *sem_ctx = semantic_analyze(prog);
 
