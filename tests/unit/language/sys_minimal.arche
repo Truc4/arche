@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t
+// RUN: %arche -o %t %s && %t | grep 1
 
 arche Particle {
   pos: float,
