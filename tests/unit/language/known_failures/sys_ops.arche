@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t
+// RUN: %arche -o %t %s && %t | grep "p0i"
 // BUG: System operations don't modify fields (see COMPILER_BUG_SYSTEM_OPERATIONS.md)
 
 arche Body {
