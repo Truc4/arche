@@ -996,24 +996,32 @@ static Statement *parse_statement(Parser *parser) {
 		char *name = token_text(parser->current);
 		advance(parser);
 
-		if (!match(parser, TOK_EQ)) {
-			error(parser, "Expected '=' after variable name");
+		TypeRef *type = NULL;
+		if (match(parser, TOK_COLON)) {
+			type = parse_type(parser);
+			if (!type)
+				return NULL;
+		}
+
+		Expression *value = NULL;
+		if (match(parser, TOK_EQ)) {
+			value = parse_expression(parser);
+			if (!value)
+				return NULL;
+		} else if (!type) {
+			error(parser, "Expected '=' or type annotation after variable name");
 			return NULL;
 		}
 
-		Expression *value = parse_expression(parser);
-		if (!value)
-			return NULL;
-
 		if (!match(parser, TOK_SEMI)) {
-			error(parser, "Expected ';' after expression");
+			error(parser, "Expected ';' after let statement");
 		}
 
 		Statement *stmt = statement_create(STMT_LET);
 		stmt->loc.line = let_line;
 		stmt->loc.column = let_column;
 		stmt->data.let_stmt.name = name;
-		stmt->data.let_stmt.type = NULL;
+		stmt->data.let_stmt.type = type;
 		stmt->data.let_stmt.value = value;
 		return stmt;
 	}

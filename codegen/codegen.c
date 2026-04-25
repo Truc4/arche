@@ -1587,6 +1587,65 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 		const char *var_name = stmt->data.let_stmt.name;
 		char value_buf[256];
 
+		/* Handle type-annotated declaration without initialization */
+		if (stmt->data.let_stmt.type && !stmt->data.let_stmt.value) {
+			TypeRef *type = stmt->data.let_stmt.type;
+
+			/* Check for array type */
+			if (type->kind == TYPE_ARRAY) {
+				char *arr_alloca = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
+
+				char *ptr_gep = gen_value_name(ctx);
+				buffer_append_fmt(ctx,
+				                  "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+				                  ptr_gep, arr_alloca);
+				buffer_append_fmt(ctx, "  store i8* null, i8** %s\n", ptr_gep);
+
+				char *len_gep = gen_value_name(ctx);
+				buffer_append_fmt(ctx,
+				                  "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
+				                  len_gep, arr_alloca);
+				buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", len_gep);
+
+				char *cap_gep = gen_value_name(ctx);
+				buffer_append_fmt(ctx,
+				                  "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
+				                  cap_gep, arr_alloca);
+				buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", cap_gep);
+
+				add_array_value(ctx, var_name, arr_alloca);
+			} else {
+				/* Scalar type: allocate and zero-initialize */
+				const char *alloc_type = "i32";
+				if (type->data.name && strcmp(type->data.name, "float") == 0) {
+					alloc_type = "double";
+				}
+
+				char *alloca_name = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = alloca %s\n", alloca_name, alloc_type);
+				buffer_append_fmt(ctx, "  store %s 0, %s* %s\n", alloc_type, alloc_type, alloca_name);
+
+				ValueInfo *vi = malloc(sizeof(ValueInfo));
+				vi->name = malloc(strlen(var_name) + 1);
+				strcpy(vi->name, var_name);
+				vi->llvm_name = malloc(strlen(alloca_name) + 1);
+				strcpy(vi->llvm_name, alloca_name);
+				vi->type = 1;
+				vi->arch_name = NULL;
+				vi->string_len = -1;
+				vi->field_type = type->data.name ? type->data.name : "int";
+				vi->bit_width = strcmp(alloc_type, "double") == 0 ? 64 : 32;
+
+				if (ctx->scope_count > 0) {
+					ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+					scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+					scope->values[scope->value_count++] = vi;
+				}
+			}
+			break;
+		}
+
 		/* Check if the value is a string literal (old style) or array literal (new style from string expansion) */
 		int is_string = 0;
 		if (stmt->data.let_stmt.value) {

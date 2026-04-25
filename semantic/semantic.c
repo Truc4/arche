@@ -547,14 +547,20 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 			add_variable(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type);
 		}
 
-		/* If no explicit type, infer from value expression */
-		if (!stmt->data.let_stmt.type && stmt->data.let_stmt.value && ctx->scope_count > 0) {
+		/* Handle type annotations and type inference */
+		if (ctx->scope_count > 0) {
 			Scope *scope = &ctx->scopes[ctx->scope_count - 1];
 			if (scope->var_count > 0) {
 				var = scope->vars[scope->var_count - 1];
-				const char *inferred = resolve_expression_type(ctx, stmt->data.let_stmt.value);
-				if (inferred) {
-					var->inferred_type = inferred;
+				if (stmt->data.let_stmt.type) {
+					/* Type annotation: convert TypeRef to string type name */
+					var->inferred_type = stmt->data.let_stmt.type->data.name;
+				} else if (stmt->data.let_stmt.value) {
+					/* No annotation: infer from value expression */
+					const char *inferred = resolve_expression_type(ctx, stmt->data.let_stmt.value);
+					if (inferred) {
+						var->inferred_type = inferred;
+					}
 				}
 			}
 		}
