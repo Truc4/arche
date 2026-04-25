@@ -1,0 +1,25 @@
+// RUN: %arche -o %t %s && %t
+
+arche Particle {
+  pos: float,
+  vel: float,
+}
+
+arche Body {
+  pos: float,
+  vel: float,
+  mass: float,
+}
+
+proc main() {
+  alloc Particle(100);
+  alloc Body(50);
+  insert(Particle, 1.0, 0.1);
+  insert(Body, 2.0, 0.2, 10.0);
+  let pp = Particle.pos[0];
+  let bm = Body.mass[0];
+  let ppi = pp * 10.0;
+  let bmi = bm * 1.0;
+  assert(ppi == 10, "Particle.pos != 1.0\n");
+  assert(bmi == 10, "Body.mass != 10.0\n");
+}

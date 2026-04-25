@@ -1,0 +1,17 @@
+// RUN: %arche -o %t %s && %t
+
+arche Particle {
+  pos: float,
+}
+
+sys dummy(pos) {
+  pos = pos;
+}
+
+proc main() {
+  alloc Particle(10);
+  insert(Particle, 1.0);
+  run dummy;
+  print(Particle.pos[0]);
+  print("\n");
+}
