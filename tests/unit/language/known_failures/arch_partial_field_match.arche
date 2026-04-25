@@ -6,15 +6,18 @@ arche Particle {
   vel: float,
 }
 
+
 arche Body {
   pos: float,
   vel: float,
   mass: float,
 }
 
+
 sys gravity(pos, mass) {
   pos = pos + mass;
 }
+
 
 proc main() {
   alloc Particle(5);
@@ -29,3 +32,4 @@ proc main() {
   assert(ppi == 10, "Particle.pos != 1.0\n");
   assert(bpi == 120, "Body.pos != 12.0\n");
 }
+

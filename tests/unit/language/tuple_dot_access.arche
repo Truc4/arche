@@ -5,6 +5,7 @@ arche Particle {
   pos_y: float,
 }
 
+
 proc main() {
   alloc Particle(1);
   insert(Particle, 1.0, 2.0);
@@ -15,3 +16,4 @@ proc main() {
   assert(xi == 10, "x != 1.0\n");
   assert(yi == 20, "y != 2.0\n");
 }
+

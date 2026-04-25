@@ -5,6 +5,7 @@ arche Particle {
   vel: float,
 }
 
+
 proc main() {
   alloc Particle(10);
   insert(Particle, 5.5, 0.1);
@@ -12,3 +13,4 @@ proc main() {
   let pi = p * 10.0;
   assert(pi == 55, "pos != 5.5\n");
 }
+

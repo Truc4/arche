@@ -4,6 +4,7 @@ arche Particle {
   id: int,
 }
 
+
 proc main() {
   alloc Particle(5);
   insert(Particle, 1);
@@ -13,3 +14,4 @@ proc main() {
   assert(a == 1, "a != 1\n");
   assert(b == 2, "b != 2\n");
 }
+

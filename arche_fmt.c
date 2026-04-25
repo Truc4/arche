@@ -52,14 +52,20 @@ int main(int argc, char *argv[]) {
 	}
 
 	Program *prog = parse_result.ast;
-	parse_result_free(&parse_result);
+	Token *comments = parse_result.comments;
+	size_t comment_count = parse_result.comment_count;
 
-	/* format and print */
-	format_program(stdout, prog);
+	/* format and print with comment preservation */
+	format_program(stdout, prog, comments, comment_count, src);
 
 	/* cleanup */
 	program_free(prog);
+	free(comments);
 	free(src);
+	for (size_t i = 0; i < parse_result.error_count; i++) {
+		free(parse_result.errors[i].message);
+	}
+	free(parse_result.errors);
 
 	return 0;
 }

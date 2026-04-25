@@ -659,12 +659,78 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 	}
 }
 
-void format_program(FILE *out, Program *prog) {
+/* Context for tracking comment output during formatting */
+typedef struct {
+	Token *comments;
+	size_t comment_count;
+	size_t comment_idx;
+	int last_line;
+	const char *src;
+} FmtCtx;
+
+/* Get the actual start line of a declaration (from inner payload, not the broken decl->loc) */
+static int decl_start_line(Decl *decl) {
+	if (!decl)
+		return 1;
+	switch (decl->kind) {
+	case DECL_WORLD:
+		return decl->data.world->loc.line;
+	case DECL_ARCHETYPE:
+		return decl->data.archetype->loc.line;
+	case DECL_PROC:
+		return decl->data.proc->loc.line;
+	case DECL_SYS:
+		return decl->data.sys->loc.line;
+	case DECL_FUNC:
+		return decl->data.func->loc.line;
+	}
+	return 1;
+}
+
+/* Emit any comments that appear before the given line, plus blank lines if needed */
+static void flush_before_line(FILE *out, FmtCtx *ctx, int line) {
+	if (!ctx || !ctx->comments)
+		return;
+
+	/* Emit any comments with line < current line */
+	while (ctx->comment_idx < ctx->comment_count && ctx->comments[ctx->comment_idx].line < line) {
+		Token *comment = &ctx->comments[ctx->comment_idx];
+		/* Output the comment verbatim from the token */
+		fprintf(out, "%.*s\n", (int)comment->length, comment->start);
+		ctx->last_line = comment->line;
+		ctx->comment_idx++;
+	}
+
+	/* Emit blank lines for gaps (normalize to 1 blank line) */
+	if (line > ctx->last_line + 1) {
+		fprintf(out, "\n");
+	}
+	ctx->last_line = line - 1;
+}
+
+void format_program(FILE *out, Program *prog, Token *comments, size_t comment_count, const char *src) {
 	if (!prog)
 		return;
 
+	FmtCtx ctx = {.comments = comments, .comment_count = comment_count, .comment_idx = 0, .last_line = 0, .src = src};
+
+	/* Emit any leading comments before first declaration */
+	if (prog->decl_count > 0) {
+		int first_line = decl_start_line(prog->decls[0]);
+		flush_before_line(out, &ctx, first_line);
+	} else {
+		/* No declarations, emit all comments */
+		for (size_t i = 0; i < comment_count; i++) {
+			fprintf(out, "%.*s\n", (int)comments[i].length, comments[i].start);
+		}
+		return;
+	}
+
 	for (int i = 0; i < prog->decl_count; i++) {
 		Decl *decl = prog->decls[i];
+
+		/* Emit comments before this declaration */
+		flush_before_line(out, &ctx, decl_start_line(decl));
 
 		switch (decl->kind) {
 		case DECL_WORLD: {

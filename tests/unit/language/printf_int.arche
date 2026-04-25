@@ -5,3 +5,4 @@ proc main() {
   printf("Integer: %d\n", x);
   printf("Literal: %d\n", 123);
 }
+
