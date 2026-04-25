@@ -139,9 +139,10 @@ int main(int argc, char *argv[]) {
 	/* Semantic analysis */
 	SemanticContext *sem_ctx = semantic_analyze(prog);
 
-	if (semantic_has_errors(sem_ctx)) {
+	if (!sem_ctx || semantic_has_errors(sem_ctx)) {
 		fprintf(stderr, "Semantic analysis failed\n");
-		semantic_context_free(sem_ctx);
+		if (sem_ctx)
+			semantic_context_free(sem_ctx);
 		program_free(prog);
 		free(source);
 		return 1;
