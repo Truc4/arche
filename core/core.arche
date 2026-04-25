@@ -6,6 +6,7 @@ extern proc exit(code: Int);
 extern proc sprintf(buf: char[], fmt: char[]);
 extern proc printf(fmt: char[]);
 extern proc fflush(stream: Int);
+
 proc print_float(f: Float) {
   printf("%g", f);
   fflush(0);

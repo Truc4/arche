@@ -1204,7 +1204,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		char *decl_pos = global_decl;
 		size_t decl_space = sizeof(global_decl);
 
-		decl_pos += snprintf(decl_pos, decl_space, "%s = private constant [%d x i8] [", global_name, elem_count);
+		decl_pos += snprintf(decl_pos, decl_space, "%s = private constant [%d x i8] [", global_name, elem_count + 1);
 		decl_space = sizeof(global_decl) - (decl_pos - global_decl);
 
 		for (int i = 0; i < elem_count; i++) {
@@ -1217,7 +1217,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				decl_space = sizeof(global_decl) - (decl_pos - global_decl);
 			}
 		}
-		snprintf(decl_pos, decl_space, "]\n");
+		snprintf(decl_pos, decl_space, ", i8 0]\n");
 
 		/* Append to globals buffer */
 		size_t decl_len = strlen(global_decl);
@@ -1234,8 +1234,8 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 		/* Get pointer to global array */
 		char *arr_ptr = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i32 0, i32 0\n", arr_ptr, elem_count,
-		                  elem_count, global_name);
+		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i32 0, i32 0\n", arr_ptr, elem_count + 1,
+		                  elem_count + 1, global_name);
 
 		/* Data pointer is already i8* */
 		char *data_ptr = arr_ptr;

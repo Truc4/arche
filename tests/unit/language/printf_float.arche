@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t
+// RUN: %arche -o %t %s && %t | grep "Float: 3.14"
 
 proc main() {
   let f = 3.14;
