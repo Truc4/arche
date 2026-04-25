@@ -94,7 +94,7 @@ test-codegen-unit: $(CODEGEN_TEST_BIN)
 
 # Run all tests with LIT
 test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN)
-	lit -v tests/ || true
+	lit -v tests/
 
 # Test code generation
 test-codegen: $(TARGET)
