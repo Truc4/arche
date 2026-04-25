@@ -153,6 +153,7 @@ static VariableInfo *find_variable(SemanticContext *ctx, const char *name) {
 static void error(SemanticContext *ctx, const char *msg) {
 	ctx->error_count++;
 	fprintf(stderr, "Semantic error: %s\n", msg);
+	fflush(stderr);
 }
 
 static void push_scope(SemanticContext *ctx) {

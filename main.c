@@ -141,6 +141,7 @@ int main(int argc, char *argv[]) {
 
 	if (!sem_ctx || semantic_has_errors(sem_ctx)) {
 		fprintf(stderr, "Semantic analysis failed\n");
+		fflush(stderr);
 		if (sem_ctx)
 			semantic_context_free(sem_ctx);
 		program_free(prog);
