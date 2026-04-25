@@ -1,6 +1,9 @@
 # Build directory - all artifacts go here
 build/
 
+# Local tools (act, etc)
+bin/
+
 # Test artifacts
 tests/tmp/
 
