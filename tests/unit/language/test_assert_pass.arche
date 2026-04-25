@@ -1,0 +1,8 @@
+// RUN: %arche -o %t %s && %t | grep done
+
+proc main() {
+  printf("test\n");
+  assert(1, "should not see this\n");
+  printf("done\n");
+}
+

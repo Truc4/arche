@@ -1,5 +1,5 @@
 arche Counter {
-  value: int
+  value: int,
 }
 
 proc main() {

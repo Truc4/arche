@@ -17,6 +17,7 @@ struct Parser {
 	Token *comments;
 	size_t comment_count;
 	size_t comment_cap;
+	int recursion_depth;
 };
 
 /* ========== UTILITY FUNCTIONS ========== */
@@ -26,7 +27,14 @@ static void advance(Parser *parser) {
 	parser->current = lexer_next_token(parser->lexer);
 
 	/* Capture comment tokens instead of skipping */
+	int comment_loop_count = 0;
+	const int MAX_COMMENT_LOOP = 1000;
 	while (parser->current.kind == TOK_COMMENT) {
+		if (++comment_loop_count > MAX_COMMENT_LOOP) {
+			parser->had_error = 1;
+			parser->current.kind = TOK_EOF;
+			break;
+		}
 		if (parser->comment_count >= parser->comment_cap) {
 			parser->comment_cap = (parser->comment_cap == 0) ? 16 : parser->comment_cap * 2;
 			parser->comments = realloc(parser->comments, parser->comment_cap * sizeof(Token));
@@ -82,8 +90,15 @@ static void error(Parser *parser, const char *msg) {
 
 static void synchronize(Parser *parser) {
 	parser->panic_mode = 0;
+	int sync_loop_count = 0;
+	const int MAX_SYNC_LOOP = 1000;
 
 	while (parser->current.kind != TOK_EOF) {
+		if (++sync_loop_count > MAX_SYNC_LOOP) {
+			parser->had_error = 1;
+			parser->current.kind = TOK_EOF;
+			return;
+		}
 		if (parser->previous.kind == TOK_SEMI)
 			return;
 
@@ -149,33 +164,122 @@ static TypeRef *parse_type(Parser *parser) {
 
 /* ========== ARCHETYPE PARSING ========== */
 
-static FieldDecl *parse_arch_field(Parser *parser) {
+static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 	/* All fields are columns (no metadata) */
 	FieldKind kind = FIELD_COLUMN;
 
 	if (!check(parser, TOK_IDENT)) {
 		error(parser, "Expected field name");
+		*out_count = 0;
 		return NULL;
 	}
 	char *name = token_text(parser->current);
+	char *name_copy = malloc(strlen(name) + 1);
+	strcpy(name_copy, name);
 	advance(parser);
 
 	if (!match(parser, TOK_COLON)) {
 		error(parser, "Expected ':'");
+		free(name_copy);
+		*out_count = 0;
 		return NULL;
 	}
 
+	/* Check for tuple syntax: (x: float, y: float) */
+	if (check(parser, TOK_LPAREN)) {
+		advance(parser); /* consume ( */
+		char **tuple_field_names = NULL;
+		TypeRef **tuple_field_types = NULL;
+		int tuple_field_count = 0;
+
+		while (!check(parser, TOK_RPAREN) && !check(parser, TOK_EOF)) {
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected field name in tuple");
+				free(name_copy);
+				*out_count = 0;
+				return NULL;
+			}
+			char *field_name = token_text(parser->current);
+			char *field_name_copy = malloc(strlen(field_name) + 1);
+			strcpy(field_name_copy, field_name);
+			advance(parser);
+
+			if (!match(parser, TOK_COLON)) {
+				error(parser, "Expected ':' after tuple field name");
+				free(name_copy);
+				free(field_name_copy);
+				*out_count = 0;
+				return NULL;
+			}
+
+			TypeRef *field_type = parse_type(parser);
+			if (!field_type) {
+				free(name_copy);
+				free(field_name_copy);
+				*out_count = 0;
+				return NULL;
+			}
+
+			/* Collect tuple field info */
+			tuple_field_names = realloc(tuple_field_names, (tuple_field_count + 1) * sizeof(char *));
+			tuple_field_types = realloc(tuple_field_types, (tuple_field_count + 1) * sizeof(TypeRef *));
+			tuple_field_names[tuple_field_count] = field_name_copy;
+			tuple_field_types[tuple_field_count] = field_type;
+			tuple_field_count++;
+
+			if (!match(parser, TOK_COMMA))
+				break;
+		}
+
+		if (!match(parser, TOK_RPAREN)) {
+			error(parser, "Expected ')' to close tuple type");
+			free(name_copy);
+			*out_count = 0;
+			return NULL;
+		}
+
+		/* Create TYPE_TUPLE */
+		TypeRef *tuple_type = malloc(sizeof(TypeRef));
+		tuple_type->kind = TYPE_TUPLE;
+		tuple_type->loc.line = parser->previous.line;
+		tuple_type->loc.column = parser->previous.column;
+		tuple_type->data.tuple.field_names = tuple_field_names;
+		tuple_type->data.tuple.field_types = tuple_field_types;
+		tuple_type->data.tuple.field_count = tuple_field_count;
+
+		/* Create single field with tuple type */
+		FieldDecl *field = field_decl_create(kind, name_copy, tuple_type);
+		field->loc.line = parser->previous.line;
+		field->loc.column = parser->previous.column;
+
+		/* trailing comma is optional */
+		match(parser, TOK_COMMA);
+
+		FieldDecl **result = malloc(sizeof(FieldDecl *));
+		result[0] = field;
+		*out_count = 1;
+		return result;
+	}
+
+	/* Regular (non-tuple) field */
 	TypeRef *type = parse_type(parser);
-	if (!type)
+	if (!type) {
+		free(name_copy);
+		*out_count = 0;
 		return NULL;
+	}
 
 	/* trailing comma is optional */
 	match(parser, TOK_COMMA);
 
-	FieldDecl *field = field_decl_create(kind, name, type);
+	FieldDecl *field = field_decl_create(kind, name_copy, type);
 	field->loc.line = parser->previous.line;
 	field->loc.column = parser->previous.column;
-	return field;
+
+	FieldDecl **result = malloc(sizeof(FieldDecl *));
+	result[0] = field;
+	*out_count = 1;
+	return result;
 }
 
 static Decl *parse_archetype_decl(Parser *parser) {
@@ -201,15 +305,19 @@ static Decl *parse_archetype_decl(Parser *parser) {
 	arch->loc.column = parser->previous.column;
 
 	while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-		FieldDecl *field = parse_arch_field(parser);
-		if (!field) {
+		int field_count = 0;
+		FieldDecl **fields = parse_arch_field_expanded(parser, &field_count);
+		if (!fields || field_count == 0) {
 			synchronize(parser);
 			continue;
 		}
 
-		/* grow the fields array */
-		arch->fields = realloc(arch->fields, (arch->field_count + 1) * sizeof(FieldDecl *));
-		arch->fields[arch->field_count++] = field;
+		/* grow the fields array and add all expanded fields */
+		for (int i = 0; i < field_count; i++) {
+			arch->fields = realloc(arch->fields, (arch->field_count + 1) * sizeof(FieldDecl *));
+			arch->fields[arch->field_count++] = fields[i];
+		}
+		free(fields);
 	}
 
 	if (!match(parser, TOK_RBRACE)) {
@@ -621,13 +729,14 @@ static Expression *parse_primary_expr(Parser *parser) {
 				return NULL;
 			}
 
-			char *field_name = token_text(parser->current);
-			advance(parser);
-
 			Expression *base = expression_create(EXPR_NAME);
 			base->loc.line = name_line;
 			base->loc.column = name_column;
 			base->data.name.name = name;
+
+			/* Process first field (DOT already consumed) */
+			char *field_name = token_text(parser->current);
+			advance(parser);
 
 			Expression *field = expression_create(EXPR_FIELD);
 			field->loc.line = base->loc.line;
@@ -635,12 +744,33 @@ static Expression *parse_primary_expr(Parser *parser) {
 			field->data.field.base = base;
 			field->data.field.field_name = field_name;
 
-			/* check for indexing on the field */
+			base = field;
+
+			/* Handle chained field access: p.pos.x.y */
+			while (match(parser, TOK_DOT)) {
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "Expected field name after '.'");
+					return NULL;
+				}
+
+				field_name = token_text(parser->current);
+				advance(parser);
+
+				field = expression_create(EXPR_FIELD);
+				field->loc.line = base->loc.line;
+				field->loc.column = base->loc.column;
+				field->data.field.base = base;
+				field->data.field.field_name = field_name;
+
+				base = field;
+			}
+
+			/* check for indexing on the final field */
 			if (match(parser, TOK_LBRACKET)) {
 				Expression *index = expression_create(EXPR_INDEX);
-				index->loc.line = field->loc.line;
-				index->loc.column = field->loc.column;
-				index->data.index.base = field;
+				index->loc.line = base->loc.line;
+				index->loc.column = base->loc.column;
+				index->data.index.base = base;
 				index->data.index.indices = NULL;
 				index->data.index.index_count = 0;
 
@@ -662,7 +792,7 @@ static Expression *parse_primary_expr(Parser *parser) {
 				return index;
 			}
 
-			return field;
+			return base;
 		}
 
 		/* check for indexing */
@@ -866,25 +996,84 @@ static Statement *parse_statement(Parser *parser) {
 		char *name = token_text(parser->current);
 		advance(parser);
 
-		if (!match(parser, TOK_EQ)) {
-			error(parser, "Expected '=' after variable name");
+		TypeRef *type = NULL;
+		if (match(parser, TOK_COLON)) {
+			type = parse_type(parser);
+			if (!type)
+				return NULL;
+		}
+
+		Expression *value = NULL;
+		if (match(parser, TOK_EQ)) {
+			value = parse_expression(parser);
+			if (!value)
+				return NULL;
+		} else if (!type) {
+			error(parser, "Expected '=' or type annotation after variable name");
 			return NULL;
 		}
 
-		Expression *value = parse_expression(parser);
-		if (!value)
-			return NULL;
-
 		if (!match(parser, TOK_SEMI)) {
-			error(parser, "Expected ';' after expression");
+			error(parser, "Expected ';' after let statement");
 		}
 
 		Statement *stmt = statement_create(STMT_LET);
 		stmt->loc.line = let_line;
 		stmt->loc.column = let_column;
 		stmt->data.let_stmt.name = name;
-		stmt->data.let_stmt.type = NULL;
+		stmt->data.let_stmt.type = type;
 		stmt->data.let_stmt.value = value;
+		return stmt;
+	}
+
+	if (match(parser, TOK_IF)) {
+		int if_line = parser->previous.line;
+		int if_column = parser->previous.column;
+
+		if (!match(parser, TOK_LPAREN)) {
+			error(parser, "Expected '(' after 'if'");
+			return NULL;
+		}
+
+		Expression *cond = parse_expression(parser);
+		if (!cond)
+			return NULL;
+
+		if (!match(parser, TOK_RPAREN)) {
+			error(parser, "Expected ')' after if condition");
+			return NULL;
+		}
+
+		if (!match(parser, TOK_LBRACE)) {
+			error(parser, "Expected '{' for if body");
+			return NULL;
+		}
+
+		Statement *stmt = statement_create(STMT_IF);
+		stmt->loc.line = if_line;
+		stmt->loc.column = if_column;
+		stmt->data.if_stmt.cond = cond;
+		stmt->data.if_stmt.then_body = NULL;
+		stmt->data.if_stmt.then_count = 0;
+		stmt->data.if_stmt.else_body = NULL;
+		stmt->data.if_stmt.else_count = 0;
+
+		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+			Statement *body_stmt = parse_statement(parser);
+			if (!body_stmt) {
+				synchronize(parser);
+				continue;
+			}
+
+			stmt->data.if_stmt.then_body =
+			    realloc(stmt->data.if_stmt.then_body, (stmt->data.if_stmt.then_count + 1) * sizeof(Statement *));
+			stmt->data.if_stmt.then_body[stmt->data.if_stmt.then_count++] = body_stmt;
+		}
+
+		if (!match(parser, TOK_RBRACE)) {
+			error(parser, "Expected '}' after if body");
+		}
+
 		return stmt;
 	}
 
@@ -1015,13 +1204,20 @@ static void parser_init(Parser *parser, Lexer *lexer) {
 	parser->comments = NULL;
 	parser->comment_count = 0;
 	parser->comment_cap = 0;
+	parser->recursion_depth = 0;
 	advance(parser);
 }
 
 ParseResult parse_program(Parser *parser) {
 	Program *prog = program_create();
+	int decl_loop_count = 0;
+	const int MAX_DECL_LOOP = 10000;
 
 	while (!check(parser, TOK_EOF)) {
+		if (++decl_loop_count > MAX_DECL_LOOP) {
+			parser->had_error = 1;
+			break;
+		}
 		Decl *decl = parse_decl(parser);
 		if (!decl) {
 			synchronize(parser);

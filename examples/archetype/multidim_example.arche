@@ -1,6 +1,6 @@
 arche Message {
   id: int,
-  value: float
+  value: float,
 }
 
 proc main() {

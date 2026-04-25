@@ -1,0 +1,35 @@
+// RUN: %arche -o %t %s && %t | grep "Body"
+// BUG: System operations don't modify fields (see COMPILER_BUG_SYSTEM_OPERATIONS.md)
+
+arche Particle {
+  pos: float,
+  vel: float,
+}
+
+
+arche Body {
+  pos: float,
+  vel: float,
+  mass: float,
+}
+
+
+sys gravity(pos, mass) {
+  pos = pos + mass;
+}
+
+
+proc main() {
+  alloc Particle(5);
+  alloc Body(5);
+  insert(Particle, 1.0, 0.1);
+  insert(Body, 2.0, 0.2, 10.0);
+  run gravity;
+  let pp = Particle.pos[0];
+  let bp = Body.pos[0];
+  let ppi = pp * 10.0;
+  let bpi = bp * 10.0;
+  assert(ppi == 10, "Particle.pos != 1.0\n");
+  assert(bpi == 120, "Body.pos != 12.0\n");
+}
+

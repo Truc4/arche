@@ -62,10 +62,17 @@ int main(int argc, char *argv[]) {
 	}
 
 	if (!output_file) {
-		/* Default output: replace .arche with executable name */
-		int len = strlen(input_file);
-		output_file = malloc(len + 10);
-		strcpy((char *)output_file, input_file);
+		/* Default output: build/basename without extension */
+		const char *base = strrchr(input_file, '/');
+		if (!base)
+			base = input_file;
+		else
+			base++;
+
+		int len = strlen(base) + 20;
+		output_file = malloc(len);
+		strcpy((char *)output_file, "build/");
+		strcat((char *)output_file, base);
 		char *dot = strrchr((char *)output_file, '.');
 		if (dot) {
 			strcpy(dot, "");
@@ -129,12 +136,22 @@ int main(int argc, char *argv[]) {
 	Program *prog = parse_result.ast;
 	parse_result_free(&parse_result);
 
+	if (!prog || prog->decl_count == 0) {
+		fprintf(stderr, "Error: Empty program\n");
+		if (prog)
+			program_free(prog);
+		free(source);
+		return 1;
+	}
+
 	/* Semantic analysis */
 	SemanticContext *sem_ctx = semantic_analyze(prog);
 
-	if (semantic_has_errors(sem_ctx)) {
+	if (!sem_ctx || semantic_has_errors(sem_ctx)) {
 		fprintf(stderr, "Semantic analysis failed\n");
-		semantic_context_free(sem_ctx);
+		fflush(stderr);
+		if (sem_ctx)
+			semantic_context_free(sem_ctx);
 		program_free(prog);
 		free(source);
 		return 1;

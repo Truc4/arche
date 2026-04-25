@@ -1,0 +1,6 @@
+// RUN: %arche -o %t %s && %t | grep 123
+
+proc main() {
+  printf("Value: %d\n", 123);
+}
+

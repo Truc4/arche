@@ -67,6 +67,7 @@ typedef enum {
 	TYPE_NAME,         /* int, float, char, Vec3, Player, etc. */
 	TYPE_ARRAY,        /* nested / jagged array */
 	TYPE_SHAPED_ARRAY, /* dense ranked array */
+	TYPE_TUPLE,        /* tuple: (x: float, y: float) */
 } TypeKind;
 
 struct TypeRef {
@@ -83,6 +84,12 @@ struct TypeRef {
 			TypeRef *element_type;
 			int rank;
 		} shaped_array;
+
+		struct {
+			char **field_names;
+			TypeRef **field_types;
+			int field_count;
+		} tuple;
 	} data;
 };
 
@@ -163,6 +170,7 @@ typedef enum {
 	STMT_LET,
 	STMT_ASSIGN,
 	STMT_FOR,
+	STMT_IF,
 	STMT_RUN,
 	STMT_EXPR,
 	STMT_FREE,
@@ -202,6 +210,14 @@ typedef struct {
 } ForStmt;
 
 typedef struct {
+	Expression *cond;
+	Statement **then_body;
+	int then_count;
+	Statement **else_body;
+	int else_count;
+} IfStmt;
+
+typedef struct {
 	char *system_name;
 	char *world_name;
 } RunStmt;
@@ -221,6 +237,7 @@ struct Statement {
 		LetStmt let_stmt;
 		AssignStmt assign_stmt;
 		ForStmt for_stmt;
+		IfStmt if_stmt;
 		RunStmt run_stmt;
 		ExprStmt expr_stmt;
 		FreeStmt free_stmt;
@@ -358,8 +375,9 @@ void expression_free(Expression *expr);
    Formatting / Pretty-printing
    ========================= */
 
+#include "../lexer/lexer.h"
 #include <stdio.h>
 
-void format_program(FILE *out, Program *prog);
+void format_program(FILE *out, Program *prog, Token *comments, size_t comment_count, const char *src);
 
 #endif /* AST_H */

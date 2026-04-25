@@ -134,6 +134,9 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 3 && strncmp(start, "for", 3) == 0) {
 		return TOK_FOR;
 	}
+	if (length == 2 && strncmp(start, "if", 2) == 0) {
+		return TOK_IF;
+	}
 	if (length == 2 && strncmp(start, "in", 2) == 0) {
 		return TOK_IN;
 	}
@@ -476,6 +479,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_LET";
 	case TOK_FOR:
 		return "TOK_FOR";
+	case TOK_IF:
+		return "TOK_IF";
 	case TOK_IN:
 		return "TOK_IN";
 	case TOK_FREE:

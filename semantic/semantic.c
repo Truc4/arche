@@ -26,7 +26,8 @@ typedef struct {
 typedef struct {
 	char *name;
 	TypeRef *type;
-	char *archetype_name; /* for variables that refer to archetype entries */
+	char *archetype_name;      /* for variables that refer to archetype entries */
+	const char *inferred_type; /* for variables without explicit type, stores inferred type name */
 } VariableInfo;
 
 typedef struct {
@@ -152,6 +153,7 @@ static VariableInfo *find_variable(SemanticContext *ctx, const char *name) {
 static void error(SemanticContext *ctx, const char *msg) {
 	ctx->error_count++;
 	fprintf(stderr, "Semantic error: %s\n", msg);
+	fflush(stderr);
 }
 
 static void push_scope(SemanticContext *ctx) {
@@ -193,6 +195,7 @@ static void add_variable_with_archetype(SemanticContext *ctx, const char *name, 
 	var->archetype_name = archetype_name ? malloc(strlen(archetype_name) + 1) : NULL;
 	if (var->archetype_name)
 		strcpy(var->archetype_name, archetype_name);
+	var->inferred_type = NULL;
 
 	scope->vars = realloc(scope->vars, (scope->var_count + 1) * sizeof(VariableInfo *));
 	scope->vars[scope->var_count++] = var;
@@ -205,6 +208,22 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt);
 static const char *resolve_expression_type(SemanticContext *ctx, Expression *expr);
 
 /* ========== TYPE RESOLUTION ========== */
+
+static const char *normalize_type_name(const char *type_name) {
+	if (!type_name)
+		return type_name;
+	if (strcmp(type_name, "Int") == 0)
+		return "int";
+	if (strcmp(type_name, "Float") == 0)
+		return "float";
+	if (strcmp(type_name, "Str") == 0)
+		return "str";
+	if (strcmp(type_name, "Char") == 0)
+		return "char";
+	if (strcmp(type_name, "Void") == 0)
+		return "void";
+	return type_name;
+}
 
 static const char *resolve_expression_type(SemanticContext *ctx, Expression *expr) {
 	if (!expr)
@@ -232,8 +251,14 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	case EXPR_NAME: {
 		const char *name = expr->data.name.name;
 		VariableInfo *var = find_variable(ctx, name);
-		if (var && var->type) {
-			return var->type->data.name;
+		if (var) {
+			if (var->type) {
+				return normalize_type_name(var->type->data.name);
+			}
+			/* Fallback to inferred type */
+			if (var->inferred_type) {
+				return normalize_type_name(var->inferred_type);
+			}
 		}
 		/* Check if it's an archetype being referenced */
 		ArchetypeInfo *arch = find_archetype(ctx, name);
@@ -266,7 +291,7 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 			if (arch) {
 				FieldInfo *field = find_field(arch, field_name);
 				if (field && field->type) {
-					return field->type->data.name;
+					return normalize_type_name(field->type->data.name);
 				}
 			}
 		}
@@ -279,6 +304,11 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	}
 
 	case EXPR_BINARY: {
+		/* Comparison operators always return int (boolean result) */
+		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE) {
+			return "int";
+		}
+
 		/* Infer from operands - for now, promote to float if either side is float */
 		const char *left_type = resolve_expression_type(ctx, expr->data.binary.left);
 		const char *right_type = resolve_expression_type(ctx, expr->data.binary.right);
@@ -346,6 +376,42 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		/* expr.field - need to know what expr resolves to */
 		analyze_expression(ctx, expr->data.field.base);
 
+		/* Handle nested field access: archetype.tuple_field.component → archetype.tuple_field_component */
+		if (expr->data.field.base->type == EXPR_FIELD) {
+			Expression *inner_field = expr->data.field.base;
+			const char *component_name = expr->data.field.field_name;
+			const char *tuple_base_name = inner_field->data.field.field_name;
+
+			if (inner_field->data.field.base->type == EXPR_NAME) {
+				const char *arch_var_name = inner_field->data.field.base->data.name.name;
+
+				/* Find the archetype */
+				ArchetypeInfo *arch = find_archetype(ctx, arch_var_name);
+				VariableInfo *var = NULL;
+				if (!arch) {
+					var = find_variable(ctx, arch_var_name);
+					if (var && var->archetype_name) {
+						arch = find_archetype(ctx, var->archetype_name);
+					}
+				}
+
+				if (arch) {
+					/* Check if tuple_base exists and has component */
+					char expanded_name[256];
+					snprintf(expanded_name, sizeof(expanded_name), "%s_%s", tuple_base_name, component_name);
+
+					if (find_field(arch, expanded_name)) {
+						/* Replace nested field access with direct access to expanded name */
+						expr->data.field.base = inner_field->data.field.base;
+						expr->data.field.field_name = malloc(strlen(expanded_name) + 1);
+						strcpy(expr->data.field.field_name, expanded_name);
+						/* Don't analyze the old nested structure further */
+						break;
+					}
+				}
+			}
+		}
+
 		/* if base is a simple name, check if it's an archetype or a variable referring to one */
 		if (expr->data.field.base->type == EXPR_NAME) {
 			const char *base_name = expr->data.field.base->data.name.name;
@@ -371,11 +437,49 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 
 			/* now check if field exists on this archetype */
 			if (arch) {
-				if (!find_field(arch, field_name)) {
-					char msg[256];
-					snprintf(msg, sizeof(msg), "Archetype '%s' has no field '%s'", archetype_any_alias(ctx, arch),
-					         field_name);
-					error(ctx, msg);
+				/* First try direct field access */
+				FieldInfo *found_field = find_field(arch, field_name);
+				if (!found_field) {
+					/* Try tuple component access: pos.x → pos_x */
+					char expanded_name[256];
+					snprintf(expanded_name, sizeof(expanded_name), "%s_%s", field_name, field_name);
+					/* Actually this was wrong - let me try a different approach */
+
+					/* Check if this is a tuple base: look for fields named field_name_* */
+					int is_tuple_base = 0;
+					for (int i = 0; i < arch->field_count; i++) {
+						if (strncmp(arch->fields[i]->name, field_name, strlen(field_name)) == 0 &&
+						    arch->fields[i]->name[strlen(field_name)] == '_') {
+							is_tuple_base = 1;
+							break;
+						}
+					}
+
+					if (is_tuple_base) {
+						/* Mark this expression as a tuple field access (no substitution needed yet) */
+						/* The codegen will handle expanding tuple operations */
+					} else if (expr->data.field.base->type == EXPR_NAME) {
+						/* Try tuple component access with base_name: p.pos where p is archetype → pos_x, pos_y */
+						char expanded_name2[256];
+						snprintf(expanded_name2, sizeof(expanded_name2), "%s_%s", base_name, field_name);
+						found_field = find_field(arch, expanded_name2);
+
+						if (found_field) {
+							/* Replace the field expression with expanded name */
+							expr->data.field.field_name = malloc(strlen(expanded_name2) + 1);
+							strcpy(expr->data.field.field_name, expanded_name2);
+						} else {
+							char msg[256];
+							snprintf(msg, sizeof(msg), "Archetype '%s' has no field '%s'",
+							         archetype_any_alias(ctx, arch), field_name);
+							error(ctx, msg);
+						}
+					} else {
+						char msg[256];
+						snprintf(msg, sizeof(msg), "Archetype '%s' has no field '%s'", archetype_any_alias(ctx, arch),
+						         field_name);
+						error(ctx, msg);
+					}
 				}
 			}
 		}
@@ -453,10 +557,29 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		}
 
 		/* create local variable */
+		VariableInfo *var = NULL;
 		if (archetype_name) {
 			add_variable_with_archetype(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type, archetype_name);
 		} else {
 			add_variable(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type);
+		}
+
+		/* Handle type annotations and type inference */
+		if (ctx->scope_count > 0) {
+			Scope *scope = &ctx->scopes[ctx->scope_count - 1];
+			if (scope->var_count > 0) {
+				var = scope->vars[scope->var_count - 1];
+				if (stmt->data.let_stmt.type) {
+					/* Type annotation: convert TypeRef to string type name */
+					var->inferred_type = stmt->data.let_stmt.type->data.name;
+				} else if (stmt->data.let_stmt.value) {
+					/* No annotation: infer from value expression */
+					const char *inferred = resolve_expression_type(ctx, stmt->data.let_stmt.value);
+					if (inferred) {
+						var->inferred_type = inferred;
+					}
+				}
+			}
 		}
 		break;
 	}
@@ -482,8 +605,20 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 			if (find_archetype(ctx, iterable_name)) {
 				archetype_name = iterable_name;
 			}
+			/* check if this is a variable that holds an archetype instance */
+			else if (find_variable(ctx, iterable_name)) {
+				VariableInfo *var = find_variable(ctx, iterable_name);
+				if (var && var->archetype_name) {
+					archetype_name = var->archetype_name;
+				} else {
+					char msg[256];
+					snprintf(msg, sizeof(msg), "Variable '%s' does not refer to an archetype instance", iterable_name);
+					error(ctx, msg);
+					archetype_name = NULL;
+				}
+			}
 			/* check if we're in a sys and this is a parameter name (matches current sys archetype) */
-			else if (ctx->current_sys_archetype && find_variable(ctx, iterable_name)) {
+			else if (ctx->current_sys_archetype) {
 				archetype_name = ctx->current_sys_archetype;
 			} else {
 				char msg[256];
@@ -498,6 +633,21 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 
 		for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
 			analyze_statement(ctx, stmt->data.for_stmt.body[i]);
+		}
+
+		pop_scope(ctx);
+		break;
+	}
+
+	case STMT_IF: {
+		/* analyze condition */
+		analyze_expression(ctx, stmt->data.if_stmt.cond);
+
+		/* push new scope for if body */
+		push_scope(ctx);
+
+		for (int i = 0; i < stmt->data.if_stmt.then_count; i++) {
+			analyze_statement(ctx, stmt->data.if_stmt.then_body[i]);
 		}
 
 		pop_scope(ctx);
@@ -532,21 +682,91 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 		shape = malloc(sizeof(ArchetypeInfo));
 		shape->signature = sig;
 		shape->is_allocated = 0;
-		shape->fields = malloc(arch->field_count * sizeof(FieldInfo *));
-		shape->field_count = arch->field_count;
+
+		/* Count total fields after expanding tuples */
+		int expanded_field_count = 0;
+		for (int i = 0; i < arch->field_count; i++) {
+			if (arch->fields[i]->type->kind == TYPE_TUPLE) {
+				expanded_field_count += arch->fields[i]->type->data.tuple.field_count;
+			} else {
+				expanded_field_count++;
+			}
+		}
+
+		shape->fields = malloc(expanded_field_count * sizeof(FieldInfo *));
+		shape->field_count = expanded_field_count;
+
+		/* Populate fields, expanding tuples into virtual fields */
+		int field_idx = 0;
 		for (int i = 0; i < arch->field_count; i++) {
 			FieldDecl *field = arch->fields[i];
-			FieldInfo *fi = malloc(sizeof(FieldInfo));
-			fi->name = malloc(strlen(field->name) + 1);
-			strcpy(fi->name, field->name);
-			fi->type = field->type;
-			fi->kind = field->kind;
-			shape->fields[i] = fi;
+			if (field->type->kind == TYPE_TUPLE) {
+				/* Expand tuple into component fields */
+				for (int j = 0; j < field->type->data.tuple.field_count; j++) {
+					FieldInfo *fi = malloc(sizeof(FieldInfo));
+					char expanded_name[512];
+					snprintf(expanded_name, sizeof(expanded_name), "%s_%s", field->name,
+					         field->type->data.tuple.field_names[j]);
+					fi->name = malloc(strlen(expanded_name) + 1);
+					strcpy(fi->name, expanded_name);
+					fi->type = field->type->data.tuple.field_types[j];
+					fi->kind = field->kind;
+					shape->fields[field_idx++] = fi;
+				}
+			} else {
+				FieldInfo *fi = malloc(sizeof(FieldInfo));
+				fi->name = malloc(strlen(field->name) + 1);
+				strcpy(fi->name, field->name);
+				fi->type = field->type;
+				fi->kind = field->kind;
+				shape->fields[field_idx++] = fi;
+			}
 		}
+
 		ctx->archetypes = realloc(ctx->archetypes, (ctx->archetype_count + 1) * sizeof(ArchetypeInfo *));
 		ctx->archetypes[ctx->archetype_count++] = shape;
 	} else {
 		free(sig); /* duplicate signature; existing shape already owns one */
+	}
+
+	/* Also expand tuples in the AST's field list so codegen sees expanded fields */
+	int expanded_count = 0;
+	for (int i = 0; i < arch->field_count; i++) {
+		if (arch->fields[i]->type->kind == TYPE_TUPLE) {
+			expanded_count += arch->fields[i]->type->data.tuple.field_count;
+		} else {
+			expanded_count++;
+		}
+	}
+
+	if (expanded_count != arch->field_count) {
+		/* Need to expand — reallocate arch->fields */
+		FieldDecl **new_fields = malloc(expanded_count * sizeof(FieldDecl *));
+		int field_idx = 0;
+		for (int i = 0; i < arch->field_count; i++) {
+			FieldDecl *field = arch->fields[i];
+			if (field->type->kind == TYPE_TUPLE) {
+				/* Create expanded field declarations */
+				for (int j = 0; j < field->type->data.tuple.field_count; j++) {
+					FieldDecl *expanded_field = malloc(sizeof(FieldDecl));
+					char expanded_name[512];
+					snprintf(expanded_name, sizeof(expanded_name), "%s_%s", field->name,
+					         field->type->data.tuple.field_names[j]);
+					expanded_field->name = malloc(strlen(expanded_name) + 1);
+					strcpy(expanded_field->name, expanded_name);
+					expanded_field->type = field->type->data.tuple.field_types[j];
+					expanded_field->kind = field->kind;
+					new_fields[field_idx++] = expanded_field;
+				}
+				free(field->name);
+				free(field);
+			} else {
+				new_fields[field_idx++] = field;
+			}
+		}
+		free(arch->fields);
+		arch->fields = new_fields;
+		arch->field_count = expanded_count;
 	}
 
 	/* Register alias */

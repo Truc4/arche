@@ -1,0 +1,6 @@
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -q "Undefined symbol" %t.out
+
+proc main() {
+  let x = undefined_var;
+}
+

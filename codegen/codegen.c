@@ -116,14 +116,13 @@ static const char *llvm_type_from_arche(const char *arche_type) {
 	if (!arche_type)
 		return "i32"; /* default to int */
 
-	/* Lowercase and capitalized variants */
-	if (strcmp(arche_type, "float") == 0 || strcmp(arche_type, "Float") == 0)
+	if (strcmp(arche_type, "float") == 0)
 		return "double";
-	if (strcmp(arche_type, "int") == 0 || strcmp(arche_type, "Int") == 0)
+	if (strcmp(arche_type, "int") == 0)
 		return "i32";
-	if (strcmp(arche_type, "char") == 0 || strcmp(arche_type, "Char") == 0)
+	if (strcmp(arche_type, "char") == 0)
 		return "i8";
-	if (strcmp(arche_type, "void") == 0 || strcmp(arche_type, "Void") == 0)
+	if (strcmp(arche_type, "void") == 0)
 		return "void";
 
 	/* For custom types (Vec3, archetypes, etc.), use opaque structures */
@@ -444,11 +443,28 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			} else if (val->type == 1) {
 				/* Type-1: regular allocated value (i32, float, etc) - load from pointer */
 				char *loaded = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", loaded, val->llvm_name);
+				const char *llvm_type =
+				    val->field_type
+				        ? (strcmp(val->field_type, "double") == 0 || strcmp(val->field_type, "float") == 0 ? "double"
+				                                                                                           : "i32")
+				        : "i32";
+				buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", loaded, llvm_type, llvm_type, val->llvm_name);
 				strcpy(result_buf, loaded);
 			} else {
 				/* Type-2 (string), 3 (arch), 5 (array): return pointer directly */
 				strcpy(result_buf, val->llvm_name);
+			}
+		} else if (find_archetype_decl(ctx, name)) {
+			/* Archetype name - load from global allocated pointer */
+			ArchetypeDecl *arch = find_archetype_decl(ctx, name);
+			if (arch) {
+				/* Load the allocated archetype pointer from global */
+				char *loaded = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", loaded, name, name,
+				                  name);
+				strcpy(result_buf, loaded);
+			} else {
+				strcpy(result_buf, "0");
 			}
 		} else {
 			/* undefined variable, use 0 */
@@ -465,42 +481,22 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		const char *op;
 		int is_float = 0;
 
-		/* Use semantic resolved type if available (check for both source and LLVM type names) */
+		/* Use semantic resolved type if available */
 		if (expr->resolved_type &&
-		    (strcmp(expr->resolved_type, "float") == 0 || strcmp(expr->resolved_type, "Float") == 0 ||
-		     strcmp(expr->resolved_type, "double") == 0)) {
+		    (strcmp(expr->resolved_type, "float") == 0 || strcmp(expr->resolved_type, "double") == 0)) {
 			is_float = 1;
 		} else if (expr->data.binary.left->resolved_type &&
 		           (strcmp(expr->data.binary.left->resolved_type, "float") == 0 ||
-		            strcmp(expr->data.binary.left->resolved_type, "Float") == 0 ||
 		            strcmp(expr->data.binary.left->resolved_type, "double") == 0)) {
 			is_float = 1;
 		} else if (expr->data.binary.right->resolved_type &&
 		           (strcmp(expr->data.binary.right->resolved_type, "float") == 0 ||
-		            strcmp(expr->data.binary.right->resolved_type, "Float") == 0 ||
 		            strcmp(expr->data.binary.right->resolved_type, "double") == 0)) {
 			is_float = 1;
 		} else {
 			/* Fallback: Try to infer float type from operands */
 			if (strchr(left_buf, '.') != NULL || strchr(right_buf, '.') != NULL) {
 				is_float = 1;
-			}
-
-			/* If one operand is a parameter (%argN) and the other is a literal integer, treat as double */
-			if ((strstr(left_buf, "%arg") && right_buf[0] >= '0' && right_buf[0] <= '9' && !strchr(right_buf, '.')) ||
-			    (strstr(right_buf, "%arg") && left_buf[0] >= '0' && left_buf[0] <= '9' && !strchr(left_buf, '.'))) {
-				is_float = 1;
-				/* Convert literals to float representation */
-				if (right_buf[0] >= '0' && right_buf[0] <= '9' && !strchr(right_buf, '.')) {
-					char temp[256];
-					snprintf(temp, sizeof(temp), "%s.0", right_buf);
-					strcpy(right_buf, temp);
-				}
-				if (left_buf[0] >= '0' && left_buf[0] <= '9' && !strchr(left_buf, '.')) {
-					char temp[256];
-					snprintf(temp, sizeof(temp), "%s.0", left_buf);
-					strcpy(left_buf, temp);
-				}
 			}
 		}
 
@@ -518,10 +514,10 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			op = is_float ? "fdiv" : "sdiv";
 			break;
 		case OP_EQ:
-			op = "eq";
+			op = is_float ? "oeq" : "eq";
 			break;
 		case OP_NEQ:
-			op = "ne";
+			op = is_float ? "one" : "ne";
 			break;
 		case OP_LT:
 			op = is_float ? "olt" : "slt";
@@ -548,22 +544,45 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			type = is_float ? "double" : "i32";
 		}
 
+		/* For float operations, convert integer literals to doubles */
+		const char *left_val = left_buf;
+		const char *right_val = right_buf;
+		char *left_conv = NULL;
+		char *right_conv = NULL;
+
+		if (is_float) {
+			/* Check if left operand is an integer literal that needs conversion */
+			if (strchr(left_buf, '.') == NULL && strchr(left_buf, 'v') == NULL && strchr(left_buf, '%') == NULL) {
+				/* Integer literal, convert to double */
+				left_conv = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = sitofp i32 %s to double\n", left_conv, left_buf);
+				left_val = left_conv;
+			}
+			/* Check if right operand is an integer literal that needs conversion */
+			if (strchr(right_buf, '.') == NULL && strchr(right_buf, 'v') == NULL && strchr(right_buf, '%') == NULL) {
+				/* Integer literal, convert to double */
+				right_conv = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = sitofp i32 %s to double\n", right_conv, right_buf);
+				right_val = right_conv;
+			}
+		}
+
 		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE) {
 			/* comparison returns i1 */
 			const char *cmp_type = is_float ? "double" : "i32";
 			if (is_float) {
-				buffer_append_fmt(ctx, "  %s = fcmp %s %s %s, %s\n", res_name, op, cmp_type, left_buf, right_buf);
+				buffer_append_fmt(ctx, "  %s = fcmp %s %s %s, %s\n", res_name, op, cmp_type, left_val, right_val);
 			} else {
-				buffer_append_fmt(ctx, "  %s = icmp %s %s %s, %s\n", res_name, op, cmp_type, left_buf, right_buf);
+				buffer_append_fmt(ctx, "  %s = icmp %s %s %s, %s\n", res_name, op, cmp_type, left_val, right_val);
 			}
 		} else {
 			/* arithmetic */
-			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", res_name, op, type, left_buf, right_buf);
+			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", res_name, op, type, left_val, right_val);
 		}
 
 		strcpy(result_buf, res_name);
 		if (expr->data.binary.left->type == EXPR_NAME) {
-			add_value(ctx, expr->data.binary.left->data.name.name, res_name, 0);
+			add_value(ctx, expr->data.binary.left->data.name.name, result_buf, 0);
 		}
 		break;
 	}
@@ -589,10 +608,15 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 		const char *field_name = expr->data.field.field_name;
 
-		/* Check if base is an arch pointer (type 3) */
+		/* Check if base is an arch pointer (type 3) or archetype name */
 		ValueInfo *base_val = NULL;
+		const char *arch_name_direct = NULL;
 		if (expr->data.field.base->type == EXPR_NAME) {
-			base_val = find_value(ctx, expr->data.field.base->data.name.name);
+			const char *name = expr->data.field.base->data.name.name;
+			base_val = find_value(ctx, name);
+			if (!base_val && find_archetype_decl(ctx, name)) {
+				arch_name_direct = name;
+			}
 		}
 
 		/* Handle .length property */
@@ -665,6 +689,67 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					/* GEP to field */
 					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gep,
 					                  base_val->arch_name, base_val->arch_name, base_buf, field_idx);
+
+					if (fdecl->kind == FIELD_META) {
+						/* Load the value */
+						char *loaded = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", loaded, llvm_type, llvm_type, gep);
+						strcpy(result_buf, loaded);
+					} else {
+						/* Col field: load the pointer */
+						char *ptr_val = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", ptr_val, llvm_type, llvm_type, gep);
+
+						/* If inside implicit loop, auto-index by loop variable */
+						if (ctx->implicit_loop_index[0]) {
+							const char *load_type = elem_llvm_type(ctx, fdecl->type->data.name);
+							char *idx_gep = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", idx_gep, llvm_type,
+							                  llvm_type, ptr_val, ctx->implicit_loop_index);
+							char *elem = gen_value_name(ctx);
+							int align = ctx->vector_lanes > 0 ? 8 : 4;
+
+							if (ctx->vector_lanes > 0) {
+								/* Vector load: bitcast pointer to vector type, then load */
+								char *vec_ptr = gen_value_name(ctx);
+								buffer_append_fmt(ctx, "  %s = bitcast %s* %s to %s*\n", vec_ptr, llvm_type, idx_gep,
+								                  load_type);
+								buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", elem, load_type, load_type,
+								                  vec_ptr, align);
+							} else {
+								/* Scalar load */
+								buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", elem, load_type, llvm_type,
+								                  idx_gep, align);
+							}
+							strcpy(result_buf, elem);
+						} else {
+							strcpy(result_buf, ptr_val);
+						}
+					}
+					break;
+				}
+			}
+		} else if (arch_name_direct) {
+			/* Direct archetype name reference */
+			ArchetypeDecl *arch = find_archetype_decl(ctx, arch_name_direct);
+			if (arch) {
+				int field_idx = -1;
+				FieldDecl *fdecl = NULL;
+				for (int i = 0; i < arch->field_count; i++) {
+					if (strcmp(arch->fields[i]->name, field_name) == 0) {
+						field_idx = i;
+						fdecl = arch->fields[i];
+						break;
+					}
+				}
+
+				if (field_idx >= 0 && fdecl) {
+					const char *llvm_type = llvm_type_from_arche(fdecl->type->data.name);
+					char *gep = gen_value_name(ctx);
+
+					/* GEP to field */
+					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gep,
+					                  arch_name_direct, arch_name_direct, base_buf, field_idx);
 
 					if (fdecl->kind == FIELD_META) {
 						/* Load the value */
@@ -779,13 +864,18 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			char arch_buf[256];
 			codegen_expression(ctx, expr->data.call.args[0], arch_buf);
 
-			/* Get arch_name from ValueInfo of args[0] */
+			/* Get arch_name from ValueInfo or archetype name of args[0] */
 			const char *arch_name = NULL;
 			ArchetypeDecl *arch = NULL;
 			if (expr->data.call.args[0]->type == EXPR_NAME) {
-				ValueInfo *arch_var = find_value(ctx, expr->data.call.args[0]->data.name.name);
+				const char *name = expr->data.call.args[0]->data.name.name;
+				ValueInfo *arch_var = find_value(ctx, name);
 				if (arch_var && arch_var->arch_name) {
 					arch_name = arch_var->arch_name;
+					arch = find_archetype_decl(ctx, arch_name);
+				} else if (find_archetype_decl(ctx, name)) {
+					/* Direct archetype name */
+					arch_name = name;
 					arch = find_archetype_decl(ctx, arch_name);
 				}
 			}
@@ -824,12 +914,16 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			char idx_buf[256];
 			codegen_expression(ctx, expr->data.call.args[1], idx_buf);
 
-			/* Get arch_name from ValueInfo of args[0] */
+			/* Get arch_name from ValueInfo or archetype name of args[0] */
 			const char *arch_name = NULL;
 			if (expr->data.call.args[0]->type == EXPR_NAME) {
-				ValueInfo *arch_var = find_value(ctx, expr->data.call.args[0]->data.name.name);
+				const char *name = expr->data.call.args[0]->data.name.name;
+				ValueInfo *arch_var = find_value(ctx, name);
 				if (arch_var && arch_var->arch_name) {
 					arch_name = arch_var->arch_name;
+				} else if (find_archetype_decl(ctx, name)) {
+					/* Direct archetype name */
+					arch_name = name;
 				}
 			}
 
@@ -847,12 +941,16 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			char arch_buf[256];
 			codegen_expression(ctx, expr->data.call.args[0], arch_buf);
 
-			/* Get arch_name from ValueInfo of args[0] */
+			/* Get arch_name from ValueInfo or archetype name of args[0] */
 			const char *arch_name = NULL;
 			if (expr->data.call.args[0]->type == EXPR_NAME) {
-				ValueInfo *arch_var = find_value(ctx, expr->data.call.args[0]->data.name.name);
+				const char *name = expr->data.call.args[0]->data.name.name;
+				ValueInfo *arch_var = find_value(ctx, name);
 				if (arch_var && arch_var->arch_name) {
 					arch_name = arch_var->arch_name;
+				} else if (find_archetype_decl(ctx, name)) {
+					/* Direct archetype name */
+					arch_name = name;
 				}
 			}
 
@@ -903,7 +1001,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		/* Prepare arguments: emit conversions before the call, collect register names */
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			call_arg_vals[i] = malloc(256);
-			call_arg_types[i] = NULL;
+			call_arg_types[i] = "i32"; /* Default type */
 
 			/* Determine what callee param expects */
 			int callee_wants_arr = 0;
@@ -938,9 +1036,18 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					call_arg_types[i] = "i32";
 				}
 			} else if (arg_is_string[i]) {
-				/* String literal passed to non-array param */
-				if (callee_wants_arr) {
-					/* Already wrapped in struct, pass struct ptr */
+				if (callee_is_extern && callee_wants_arr) {
+					/* Extract i8* data ptr from struct for C ABI */
+					char *dp_gep = gen_value_name(ctx);
+					buffer_append_fmt(
+					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+					    dp_gep, arg_bufs[i]);
+					char *dp = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", dp, dp_gep);
+					strcpy(call_arg_vals[i], dp);
+					call_arg_types[i] = "i8*";
+				} else if (callee_wants_arr) {
+					/* Pass struct ptr for internal Arche calls */
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = "%struct.arche_array*";
 				} else {
@@ -960,23 +1067,101 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					call_arg_types[i] = "i32";
 				}
 			} else {
-				/* Default to i32 */
-				strcpy(call_arg_vals[i], arg_bufs[i]);
-				call_arg_types[i] = "i32";
+				/* Check if arg is float/double */
+				if (expr->data.call.args[i]->resolved_type &&
+				    (strcmp(expr->data.call.args[i]->resolved_type, "float") == 0 ||
+				     strcmp(expr->data.call.args[i]->resolved_type, "double") == 0)) {
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = "double";
+				} else {
+					/* Default to i32 */
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = "i32";
+				}
 			}
 		}
 
 		char *res_name = gen_value_name(ctx);
 
-		/* Emit the call with prepared arguments */
-		buffer_append_fmt(ctx, "  %s = call i32 @%s(", res_name, func_name ? func_name : "unknown");
-		for (int i = 0; i < expr->data.call.arg_count; i++) {
-			buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
-			if (i < expr->data.call.arg_count - 1) {
-				buffer_append(ctx, ", ");
+		/* Special handling for print function with double arguments */
+		const char *actual_func_name = func_name ? func_name : "unknown";
+		if (func_name && strcmp(func_name, "print") == 0 && expr->data.call.arg_count == 1 && call_arg_types[0]) {
+			if (strcmp(call_arg_types[0], "double") == 0) {
+				actual_func_name = "print_double";
+			} else if (strcmp(call_arg_types[0], "i32") == 0) {
+				actual_func_name = "print_int";
 			}
 		}
-		buffer_append(ctx, ")\n");
+
+		/* Special handling for assert function: convert i1 to i32 if needed */
+		if (func_name && strcmp(func_name, "assert") == 0 && expr->data.call.arg_count > 0 &&
+		    expr->data.call.args[0]->type == EXPR_BINARY) {
+			/* The first argument is a comparison, which returns i1 */
+			/* We need to zero-extend it to i32 for the assert function */
+			char *zext = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = zext i1 %s to i32\n", zext, call_arg_vals[0]);
+			strcpy(call_arg_vals[0], zext);
+			call_arg_types[0] = "i32";
+		}
+
+		/* Emit the call with prepared arguments */
+		/* Check if this is a variadic function like sprintf or printf */
+		int is_variadic = func_name && (strcmp(func_name, "sprintf") == 0 || strcmp(func_name, "printf") == 0);
+		int is_exit = func_name && strcmp(func_name, "exit") == 0;
+
+		if (is_exit) {
+			/* exit() is a void function that never returns */
+			buffer_append_fmt(ctx, "  call void @%s(", actual_func_name);
+			for (int i = 0; i < expr->data.call.arg_count; i++) {
+				buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
+				if (i < expr->data.call.arg_count - 1) {
+					buffer_append(ctx, ", ");
+				}
+			}
+			buffer_append(ctx, ")\n");
+			buffer_append(ctx, "  unreachable\n");
+			strcpy(result_buf, "0");
+		} else if (is_variadic) {
+			/* For variadic C functions, array struct args must be unwrapped to i8* */
+			for (int i = 0; i < expr->data.call.arg_count; i++) {
+				if (call_arg_types[i] && strcmp(call_arg_types[i], "%struct.arche_array*") == 0) {
+					char *dp_gep = gen_value_name(ctx);
+					buffer_append_fmt(
+					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+					    dp_gep, call_arg_vals[i]);
+					char *dp = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", dp, dp_gep);
+					strcpy(call_arg_vals[i], dp);
+					call_arg_types[i] = "i8*";
+				}
+			}
+			/* Emit variadic signature based on function */
+			if (strcmp(func_name, "sprintf") == 0) {
+				buffer_append_fmt(ctx, "  %s = call i32 (i8*, i8*, ...)", res_name);
+			} else {
+				buffer_append_fmt(ctx, "  %s = call i32 (i8*, ...)", res_name);
+			}
+			buffer_append_fmt(ctx, " @%s(", actual_func_name);
+			for (int i = 0; i < expr->data.call.arg_count; i++) {
+				buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
+				if (i < expr->data.call.arg_count - 1) {
+					buffer_append(ctx, ", ");
+				}
+			}
+			buffer_append(ctx, ")\n");
+			strcpy(result_buf, res_name);
+		} else {
+			/* Normal non-variadic call */
+			buffer_append_fmt(ctx, "  %s = call i32 @%s(", res_name, actual_func_name);
+			for (int i = 0; i < expr->data.call.arg_count; i++) {
+				buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
+				if (i < expr->data.call.arg_count - 1) {
+					buffer_append(ctx, ", ");
+				}
+			}
+			buffer_append(ctx, ")\n");
+			strcpy(result_buf, res_name);
+		}
 
 		strcpy(result_buf, res_name);
 
@@ -1014,7 +1199,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		char *decl_pos = global_decl;
 		size_t decl_space = sizeof(global_decl);
 
-		decl_pos += snprintf(decl_pos, decl_space, "%s = private constant [%d x i8] [", global_name, elem_count);
+		decl_pos += snprintf(decl_pos, decl_space, "%s = private constant [%d x i8] [", global_name, elem_count + 1);
 		decl_space = sizeof(global_decl) - (decl_pos - global_decl);
 
 		for (int i = 0; i < elem_count; i++) {
@@ -1027,7 +1212,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				decl_space = sizeof(global_decl) - (decl_pos - global_decl);
 			}
 		}
-		snprintf(decl_pos, decl_space, "]\n");
+		snprintf(decl_pos, decl_space, ", i8 0]\n");
 
 		/* Append to globals buffer */
 		size_t decl_len = strlen(global_decl);
@@ -1044,8 +1229,8 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 		/* Get pointer to global array */
 		char *arr_ptr = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i32 0, i32 0\n", arr_ptr, elem_count,
-		                  elem_count, global_name);
+		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i32 0, i32 0\n", arr_ptr, elem_count + 1,
+		                  elem_count + 1, global_name);
 
 		/* Data pointer is already i8* */
 		char *data_ptr = arr_ptr;
@@ -1145,9 +1330,16 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", col_gep,
 				                  arch_name, arch_name, struct_ptr, i);
 
+				char *col_offset_llvm = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", col_offset_llvm, count_buf, col_offset);
+
+				char *col_data_base = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %d\n", col_data_base, raw_ptr,
+				                  struct_sz_bytes);
+
 				char *col_data = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %d\n", col_data, raw_ptr,
-				                  struct_sz_bytes + col_offset);
+				buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %s\n", col_data, col_data_base,
+				                  col_offset_llvm);
 
 				char *col_ptr = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = bitcast i8* %s to %s*\n", col_ptr, col_data, elem_type);
@@ -1455,6 +1647,65 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 		const char *var_name = stmt->data.let_stmt.name;
 		char value_buf[256];
 
+		/* Handle type-annotated declaration without initialization */
+		if (stmt->data.let_stmt.type && !stmt->data.let_stmt.value) {
+			TypeRef *type = stmt->data.let_stmt.type;
+
+			/* Check for array type */
+			if (type->kind == TYPE_ARRAY) {
+				char *arr_alloca = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
+
+				char *ptr_gep = gen_value_name(ctx);
+				buffer_append_fmt(ctx,
+				                  "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+				                  ptr_gep, arr_alloca);
+				buffer_append_fmt(ctx, "  store i8* null, i8** %s\n", ptr_gep);
+
+				char *len_gep = gen_value_name(ctx);
+				buffer_append_fmt(ctx,
+				                  "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
+				                  len_gep, arr_alloca);
+				buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", len_gep);
+
+				char *cap_gep = gen_value_name(ctx);
+				buffer_append_fmt(ctx,
+				                  "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
+				                  cap_gep, arr_alloca);
+				buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", cap_gep);
+
+				add_array_value(ctx, var_name, arr_alloca);
+			} else {
+				/* Scalar type: allocate and zero-initialize */
+				const char *alloc_type = "i32";
+				if (type->data.name && strcmp(type->data.name, "float") == 0) {
+					alloc_type = "double";
+				}
+
+				char *alloca_name = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = alloca %s\n", alloca_name, alloc_type);
+				buffer_append_fmt(ctx, "  store %s 0, %s* %s\n", alloc_type, alloc_type, alloca_name);
+
+				ValueInfo *vi = malloc(sizeof(ValueInfo));
+				vi->name = malloc(strlen(var_name) + 1);
+				strcpy(vi->name, var_name);
+				vi->llvm_name = malloc(strlen(alloca_name) + 1);
+				strcpy(vi->llvm_name, alloca_name);
+				vi->type = 1;
+				vi->arch_name = NULL;
+				vi->string_len = -1;
+				vi->field_type = type->data.name ? type->data.name : "int";
+				vi->bit_width = strcmp(alloc_type, "double") == 0 ? 64 : 32;
+
+				if (ctx->scope_count > 0) {
+					ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+					scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+					scope->values[scope->value_count++] = vi;
+				}
+			}
+			break;
+		}
+
 		/* Check if the value is a string literal (old style) or array literal (new style from string expansion) */
 		int is_string = 0;
 		if (stmt->data.let_stmt.value) {
@@ -1528,11 +1779,44 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				add_array_value(ctx, var_name, arr_alloca);
 			}
 		} else {
-			/* For integers, allocate and store */
+			/* For scalars (int/float), allocate and store based on type */
+			const char *alloc_type = "i32";
+			const char *store_type = "i32";
+			const char *resolved_type = NULL;
+
+			/* Check the resolved type of the value expression */
+			if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->resolved_type) {
+				resolved_type = stmt->data.let_stmt.value->resolved_type;
+				if (strcmp(resolved_type, "double") == 0 || strcmp(resolved_type, "float") == 0) {
+					alloc_type = "double";
+					store_type = "double";
+				}
+			}
+
 			char *alloca_name = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = alloca i32\n", alloca_name);
-			buffer_append_fmt(ctx, "  store i32 %s, i32* %s\n", value_buf, alloca_name);
-			add_value(ctx, var_name, alloca_name, 1);
+			buffer_append_fmt(ctx, "  %s = alloca %s\n", alloca_name, alloc_type);
+			buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", store_type, value_buf, store_type, alloca_name);
+
+			ValueInfo *vi = malloc(sizeof(ValueInfo));
+			vi->name = malloc(strlen(var_name) + 1);
+			strcpy(vi->name, var_name);
+			vi->llvm_name = malloc(strlen(alloca_name) + 1);
+			strcpy(vi->llvm_name, alloca_name);
+			vi->type = 1;
+			vi->arch_name = NULL;
+			vi->string_len = -1;
+			vi->field_type = resolved_type ? resolved_type : "int";
+			vi->bit_width = 32;
+
+			if (ctx->scope_count > 0) {
+				ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+				scope->values[scope->value_count++] = vi;
+			} else {
+				free(vi->name);
+				free(vi->llvm_name);
+				free(vi);
+			}
 		}
 		break;
 	}
@@ -1546,14 +1830,34 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 		    stmt->data.assign_stmt.target->data.field.base->type == EXPR_NAME) {
 			const char *inst_name = stmt->data.assign_stmt.target->data.field.base->data.name.name;
 			ValueInfo *inst = find_value(ctx, inst_name);
-			if (inst && inst->type == 3 && inst->arch_name) {
-				ArchetypeDecl *arch = find_archetype_decl(ctx, inst->arch_name);
+			const char *arch_name_direct = NULL;
+			if (!inst && find_archetype_decl(ctx, inst_name)) {
+				arch_name_direct = inst_name;
+			}
+			if ((inst && inst->type == 3 && inst->arch_name) || arch_name_direct) {
+				const char *arch_check_name = inst ? inst->arch_name : arch_name_direct;
+				ArchetypeDecl *arch = find_archetype_decl(ctx, arch_check_name);
 				if (arch) {
 					const char *fname = stmt->data.assign_stmt.target->data.field.field_name;
+					/* Check if fname is a direct field or tuple base */
+					int found = 0;
 					for (int i = 0; i < arch->field_count; i++) {
 						if (strcmp(arch->fields[i]->name, fname) == 0 && arch->fields[i]->kind == FIELD_COLUMN) {
 							is_whole_column = 1;
+							found = 1;
 							break;
+						}
+					}
+					/* Check if fname is a tuple base (e.g., "pos" when fields are "pos_x", "pos_y") */
+					if (!found) {
+						size_t prefix_len = strlen(fname);
+						for (int i = 0; i < arch->field_count; i++) {
+							const char *aname = arch->fields[i]->name;
+							if (strncmp(aname, fname, prefix_len) == 0 && aname[prefix_len] == '_' &&
+							    arch->fields[i]->kind == FIELD_COLUMN) {
+								is_whole_column = 1;
+								break;
+							}
 						}
 					}
 				}
@@ -1638,9 +1942,15 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			if (stmt->data.assign_stmt.target->data.field.base->type == EXPR_NAME) {
 				const char *inst_name = stmt->data.assign_stmt.target->data.field.base->data.name.name;
 				ValueInfo *inst = find_value(ctx, inst_name);
+				const char *arch_name_direct = NULL;
+				if (!inst && find_archetype_decl(ctx, inst_name)) {
+					arch_name_direct = inst_name;
+				}
 
-				if (inst && inst->type == 3 && inst->arch_name) {
-					ArchetypeDecl *arch = find_archetype_decl(ctx, inst->arch_name);
+				if ((inst && inst->type == 3 && inst->arch_name) || arch_name_direct) {
+					const char *arch_check_name = inst ? inst->arch_name : arch_name_direct;
+					char loaded_global[256] = {0};
+					ArchetypeDecl *arch = find_archetype_decl(ctx, arch_check_name);
 					const char *fname = stmt->data.assign_stmt.target->data.field.field_name;
 
 					if (arch) {
@@ -1659,8 +1969,19 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 							/* Load column pointer and count from struct */
 							const char *llvm_type = llvm_type_from_arche(fdecl->type->data.name);
 							char *field_gep = gen_value_name(ctx);
+							const char *struct_ptr_val;
+							if (arch_name_direct) {
+								/* Load from global */
+								char *loaded = gen_value_name(ctx);
+								buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n",
+								                  loaded, arch_check_name, arch_check_name, arch_check_name);
+								strcpy(loaded_global, loaded);
+								struct_ptr_val = loaded_global;
+							} else {
+								struct_ptr_val = inst->llvm_name;
+							}
 							buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-							                  field_gep, inst->arch_name, inst->arch_name, inst->llvm_name, field_idx);
+							                  field_gep, arch_check_name, arch_check_name, struct_ptr_val, field_idx);
 
 							char *col_ptr = gen_value_name(ctx);
 							buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", col_ptr, llvm_type, llvm_type,
@@ -1670,7 +1991,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 							char *count_gep = gen_value_name(ctx);
 							int count_idx = arch->field_count;
 							buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-							                  count_gep, inst->arch_name, inst->arch_name, inst->llvm_name, count_idx);
+							                  count_gep, arch_check_name, arch_check_name, struct_ptr_val, count_idx);
 							char *count = gen_value_name(ctx);
 							buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, count_gep);
 
@@ -1678,6 +1999,138 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 							const char *scalar_type = llvm_type_from_arche(fdecl->type->data.name);
 							emit_whole_column_loop(ctx, col_ptr, count, scalar_type, fdecl->type->data.name,
 							                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op);
+						} else {
+							/* Tuple field: emit loop for each component */
+							FieldDecl **tuple_components = NULL;
+							int tuple_count = 0;
+							size_t prefix_len = strlen(fname);
+
+							for (int i = 0; i < arch->field_count; i++) {
+								const char *aname = arch->fields[i]->name;
+								if (strncmp(aname, fname, prefix_len) == 0 && aname[prefix_len] == '_') {
+									tuple_components =
+									    realloc(tuple_components, (tuple_count + 1) * sizeof(FieldDecl *));
+									tuple_components[tuple_count++] = arch->fields[i];
+								}
+							}
+
+							for (int t = 0; t < tuple_count; t++) {
+								FieldDecl *comp = tuple_components[t];
+								int comp_idx = -1;
+								for (int i = 0; i < arch->field_count; i++) {
+									if (strcmp(arch->fields[i]->name, comp->name) == 0) {
+										comp_idx = i;
+										break;
+									}
+								}
+
+								if (comp_idx >= 0 && comp->kind == FIELD_COLUMN) {
+									const char *llvm_type = llvm_type_from_arche(comp->type->data.name);
+									char *field_gep = gen_value_name(ctx);
+									const char *struct_ptr_val;
+									char loaded_global_comp[256];
+									if (arch_name_direct && !loaded_global[0]) {
+										/* Load from global */
+										char *loaded = gen_value_name(ctx);
+										buffer_append_fmt(ctx,
+										                  "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n",
+										                  loaded, arch_check_name, arch_check_name, arch_check_name);
+										strcpy(loaded_global_comp, loaded);
+										struct_ptr_val = loaded_global_comp;
+									} else if (arch_name_direct) {
+										struct_ptr_val = loaded_global;
+									} else {
+										struct_ptr_val = inst->llvm_name;
+									}
+									buffer_append_fmt(
+									    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+									    field_gep, arch_check_name, arch_check_name, struct_ptr_val, comp_idx);
+
+									char *col_ptr = gen_value_name(ctx);
+									buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", col_ptr, llvm_type, llvm_type,
+									                  field_gep);
+
+									char *count_gep = gen_value_name(ctx);
+									int count_idx = arch->field_count;
+									buffer_append_fmt(
+									    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+									    count_gep, arch_check_name, arch_check_name, struct_ptr_val, count_idx);
+									char *count = gen_value_name(ctx);
+									buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, count_gep);
+
+									/* Check if RHS is tuple binary op - if so, expand component names */
+									Expression *rhs_expr = stmt->data.assign_stmt.value;
+									const char *scalar_type = llvm_type_from_arche(comp->type->data.name);
+
+									if (rhs_expr->type == EXPR_BINARY &&
+									    rhs_expr->data.binary.left->type == EXPR_FIELD &&
+									    rhs_expr->data.binary.right->type == EXPR_FIELD) {
+										const char *suffix = strchr(comp->name, '_') + 1;
+										const char *left_base = rhs_expr->data.binary.left->data.field.field_name;
+										const char *right_base = rhs_expr->data.binary.right->data.field.field_name;
+
+										/* Create modified RHS with component names */
+										char left_comp[256], right_comp[256];
+										snprintf(left_comp, sizeof(left_comp), "%s_%s", left_base, suffix);
+										snprintf(right_comp, sizeof(right_comp), "%s_%s", right_base, suffix);
+
+										/* Create temporary binary expression with component field names */
+										Expression temp_rhs = *rhs_expr;
+										Expression temp_left = *rhs_expr->data.binary.left;
+										Expression temp_right = *rhs_expr->data.binary.right;
+										temp_left.data.field.field_name = left_comp;
+										temp_right.data.field.field_name = right_comp;
+										temp_rhs.data.binary.left = &temp_left;
+										temp_rhs.data.binary.right = &temp_right;
+										/* Preserve resolved type for operation */
+										temp_rhs.resolved_type = comp->type->data.name;
+
+										emit_whole_column_loop(ctx, col_ptr, count, scalar_type, comp->type->data.name,
+										                       &temp_rhs, stmt->data.assign_stmt.op);
+									} else if (rhs_expr->type == EXPR_FIELD) {
+										/* Check if RHS is tuple field reference - match components by position */
+										const char *rhs_base = rhs_expr->data.field.field_name;
+
+										/* Find which component position this is (t) and find RHS component at same
+										 * position */
+										FieldDecl **rhs_tuple_components = NULL;
+										int rhs_tuple_count = 0;
+										size_t rhs_prefix_len = strlen(rhs_base);
+
+										for (int i = 0; i < arch->field_count; i++) {
+											const char *aname = arch->fields[i]->name;
+											if (strncmp(aname, rhs_base, rhs_prefix_len) == 0 &&
+											    aname[rhs_prefix_len] == '_') {
+												rhs_tuple_components = realloc(
+												    rhs_tuple_components, (rhs_tuple_count + 1) * sizeof(FieldDecl *));
+												rhs_tuple_components[rhs_tuple_count++] = arch->fields[i];
+											}
+										}
+
+										if (t < rhs_tuple_count) {
+											/* Use RHS component at same position */
+											const char *rhs_comp_name = rhs_tuple_components[t]->name;
+
+											/* Create temporary field expression with component field name */
+											Expression temp_rhs = *rhs_expr;
+											temp_rhs.data.field.field_name = rhs_comp_name;
+											/* Preserve resolved type */
+											temp_rhs.resolved_type = comp->type->data.name;
+
+											emit_whole_column_loop(ctx, col_ptr, count, scalar_type,
+											                       comp->type->data.name, &temp_rhs,
+											                       stmt->data.assign_stmt.op);
+										}
+										if (rhs_tuple_components)
+											free(rhs_tuple_components);
+									} else {
+										emit_whole_column_loop(ctx, col_ptr, count, scalar_type, comp->type->data.name,
+										                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op);
+									}
+								}
+							}
+							if (tuple_components)
+								free(tuple_components);
 						}
 					}
 				}
@@ -1908,10 +2361,11 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", counter);
 
 				char *loop_label = gen_value_name(ctx);
+				char *body_label = gen_value_name(ctx);
 				char *exit_label = gen_value_name(ctx);
 
 				buffer_append_fmt(ctx, "  br label %s\n", loop_label);
-				buffer_append_fmt(ctx, "%s:\n", loop_label + 1); /* Skip the '%' prefix for label def */
+				buffer_append_fmt(ctx, "%s:\n", loop_label + 1);
 
 				/* Load counter and compare */
 				char *cond_val = gen_value_name(ctx);
@@ -1920,6 +2374,10 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				char *cmp_result = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", cmp_result, cond_val, count_bound);
 
+				/* Branch to body only if condition is true */
+				buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cmp_result, body_label, exit_label);
+
+				buffer_append_fmt(ctx, "%s:\n", body_label + 1);
 				push_value_scope(ctx);
 				add_value(ctx, var_name, cond_val, 0);
 				find_value(ctx, var_name)->bit_width = 64;
@@ -1933,9 +2391,9 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", next_val, cond_val);
 				buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", next_val, counter);
 
-				/* Branch based on actual condition */
-				buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cmp_result, loop_label, exit_label);
-				buffer_append_fmt(ctx, "%s:\n", exit_label + 1); /* Skip the '%' prefix for label def */
+				/* Loop back */
+				buffer_append_fmt(ctx, "  br label %s\n", loop_label);
+				buffer_append_fmt(ctx, "%s:\n", exit_label + 1);
 
 				pop_value_scope(ctx);
 			}
@@ -1971,6 +2429,25 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 
 			pop_value_scope(ctx);
 		}
+		break;
+	}
+
+	case STMT_IF: {
+		char cond_buf[256];
+		codegen_expression(ctx, stmt->data.if_stmt.cond, cond_buf);
+
+		char *then_label = gen_value_name(ctx);
+		char *exit_label = gen_value_name(ctx);
+
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cond_buf, then_label, exit_label);
+		buffer_append_fmt(ctx, "%s:\n", then_label + 1);
+
+		for (int i = 0; i < stmt->data.if_stmt.then_count; i++) {
+			codegen_statement(ctx, stmt->data.if_stmt.then_body[i]);
+		}
+
+		buffer_append_fmt(ctx, "  br label %s\n", exit_label);
+		buffer_append_fmt(ctx, "%s:\n", exit_label + 1);
 		break;
 	}
 
@@ -2032,8 +2509,21 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 	}
 
 	case STMT_EXPR: {
-		char expr_buf[256];
-		codegen_expression(ctx, stmt->data.expr_stmt.expr, expr_buf);
+		/* Handle archetype allocation as statement: alloc Particle(5); */
+		if (stmt->data.expr_stmt.expr->type == EXPR_ALLOC) {
+			const char *arch_name = stmt->data.expr_stmt.expr->data.alloc.archetype_name;
+			char expr_buf[256];
+			codegen_expression(ctx, stmt->data.expr_stmt.expr, expr_buf);
+
+			/* Store allocated pointer in global variable for this archetype */
+			char arch_var[256];
+			snprintf(arch_var, sizeof(arch_var), "%%archetype_%s", arch_name);
+			buffer_append_fmt(ctx, "  store %%struct.%s* %s, %%struct.%s** @archetype_%s\n", arch_name, expr_buf,
+			                  arch_name, arch_name);
+		} else {
+			char expr_buf[256];
+			codegen_expression(ctx, stmt->data.expr_stmt.expr, expr_buf);
+		}
 		break;
 	}
 
@@ -2100,7 +2590,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	                  arch->name, fc_idx);
 	buffer_append(ctx, "  %free_count = load i64, i64* %fc_ptr\n");
 	buffer_append(ctx, "  %has_free = icmp sgt i64 %free_count, 1\n");
-	buffer_append(ctx, "  br i1 %has_free, label %pop_free, label %check_grow\n\n");
+	buffer_append(ctx, "  br i1 %has_free, label %pop_free, label %check_capacity\n\n");
 
 	/* Pop from free_list */
 	buffer_append(ctx, "pop_free:\n");
@@ -2115,54 +2605,21 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	buffer_append(ctx, "  store i1 0, i1* %do_incr\n");
 	buffer_append(ctx, "  br label %write_fields\n\n");
 
-	/* Check if count needs grow */
-	buffer_append(ctx, "check_grow:\n");
+	/* Check if count is at capacity (fixed budget, no growth) */
+	buffer_append(ctx, "check_capacity:\n");
 	buffer_append_fmt(ctx, "  %%count_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
 	                  arch->name, arch->name, count_idx);
 	buffer_append(ctx, "  %count = load i64, i64* %count_ptr\n");
 	buffer_append_fmt(ctx, "  %%cap_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", arch->name,
 	                  arch->name, cap_idx);
 	buffer_append(ctx, "  %cap = load i64, i64* %cap_ptr\n");
-	buffer_append(ctx, "  %needs_grow = icmp sge i64 %count, %cap\n");
-	buffer_append(ctx, "  br i1 %needs_grow, label %grow, label %use_count\n\n");
+	buffer_append(ctx, "  %at_capacity = icmp sge i64 %count, %cap\n");
+	buffer_append(ctx, "  br i1 %at_capacity, label %overflow, label %use_count\n\n");
 
-	/* Grow block */
-	buffer_append(ctx, "grow:\n");
-	buffer_append(ctx, "  %cap_zero = icmp eq i64 %cap, 0\n");
-	buffer_append(ctx, "  %doubled = mul i64 %cap, 2\n");
-	buffer_append(ctx, "  %new_cap = select i1 %cap_zero, i64 4, i64 %doubled\n");
-
-	/* Realloc each column field */
-	int col_idx = 0;
-	for (int i = 0; i < arch->field_count; i++) {
-		if (arch->fields[i]->kind == FIELD_COLUMN) {
-			const char *base_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
-			int elem_size = strcmp(base_type, "double") == 0 ? 8 : 4;
-			buffer_append_fmt(ctx, "  %%col_pp%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
-			                  col_idx, arch->name, arch->name, i);
-			buffer_append_fmt(ctx, "  %%col_p%d = load %s*, %s** %%col_pp%d\n", col_idx, base_type, base_type, col_idx);
-			buffer_append_fmt(ctx, "  %%col_i8_%d = bitcast %s* %%col_p%d to i8*\n", col_idx, base_type, col_idx);
-			buffer_append_fmt(ctx, "  %%bytes%d = mul i64 %%new_cap, %d\n", col_idx, elem_size);
-			buffer_append_fmt(ctx, "  %%new_i8_%d = call i8* @realloc(i8* %%col_i8_%d, i64 %%bytes%d)\n", col_idx,
-			                  col_idx, col_idx);
-			buffer_append_fmt(ctx, "  %%new_p%d = bitcast i8* %%new_i8_%d to %s*\n", col_idx, col_idx, base_type);
-			buffer_append_fmt(ctx, "  store %s* %%new_p%d, %s** %%col_pp%d\n", base_type, col_idx, base_type, col_idx);
-			col_idx++;
-		}
-	}
-
-	/* Realloc free_list */
-	buffer_append(ctx, "  %fl_bytes = mul i64 %new_cap, 8\n");
-	buffer_append_fmt(ctx, "  %%fl_ptr_grow = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
-	                  arch->name, arch->name, fl_idx);
-	buffer_append(ctx, "  %free_list_grow = load i64*, i64** %fl_ptr_grow\n");
-	buffer_append(ctx, "  %fl_i8 = bitcast i64* %free_list_grow to i8*\n");
-	buffer_append(ctx, "  %new_fl_i8 = call i8* @realloc(i8* %fl_i8, i64 %fl_bytes)\n");
-	buffer_append(ctx, "  %new_fl = bitcast i8* %new_fl_i8 to i64*\n");
-	buffer_append(ctx, "  store i64* %new_fl, i64** %fl_ptr_grow\n");
-
-	buffer_append(ctx, "  store i64 %new_cap, i64* %cap_ptr\n");
-	buffer_append(ctx, "  br label %use_count\n\n");
+	/* Overflow: abort (fixed budget exceeded) */
+	buffer_append(ctx, "overflow:\n");
+	buffer_append(ctx, "  call void @abort()\n");
+	buffer_append(ctx, "  unreachable\n\n");
 
 	/* Use count as slot */
 	buffer_append(ctx, "use_count:\n");
@@ -2173,7 +2630,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	/* Write fields block */
 	buffer_append(ctx, "write_fields:\n");
 	buffer_append(ctx, "  %final_slot = load i64, i64* %slot_var\n");
-	col_idx = 0;
+	int col_idx = 0;
 	for (int i = 0; i < arch->field_count; i++) {
 		if (arch->fields[i]->kind == FIELD_COLUMN) {
 			const char *base_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
@@ -2281,10 +2738,12 @@ static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
 static void codegen_proc_decl(CodegenContext *ctx, ProcDecl *proc) {
 	/* For extern procs, emit declare stub */
 	if (proc->is_extern) {
-		buffer_append_fmt(ctx, "declare i32 @%s(", proc->name);
+		/* exit() returns void; other functions return i32 */
+		int is_void_func = strcmp(proc->name, "exit") == 0;
+		buffer_append_fmt(ctx, "declare %s @%s(", is_void_func ? "void" : "i32", proc->name);
 		for (int i = 0; i < proc->param_count; i++) {
 			TypeRef *param_type = proc->params[i]->type;
-			const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : "Int";
+			const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : "int";
 			const char *base_type = llvm_type_from_arche(type_name);
 
 			/* Check if type is char[] (i8*) or an archetype (struct*) */
@@ -2300,6 +2759,10 @@ static void codegen_proc_decl(CodegenContext *ctx, ProcDecl *proc) {
 				buffer_append(ctx, ", ");
 			}
 		}
+		/* Add variadic marker for known variadic functions */
+		if (strcmp(proc->name, "sprintf") == 0 || strcmp(proc->name, "printf") == 0) {
+			buffer_append(ctx, ", ...");
+		}
 		buffer_append(ctx, ")\n");
 		return;
 	}
@@ -2311,7 +2774,7 @@ static void codegen_proc_decl(CodegenContext *ctx, ProcDecl *proc) {
 	/* Emit parameter types and names */
 	for (int i = 0; i < proc->param_count; i++) {
 		TypeRef *param_type = proc->params[i]->type;
-		const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : "Int";
+		const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : "int";
 		const char *base_type = llvm_type_from_arche(type_name);
 
 		/* Check if type is char[] (struct*) or an archetype (struct*) */
@@ -2338,7 +2801,7 @@ static void codegen_proc_decl(CodegenContext *ctx, ProcDecl *proc) {
 		char param_llvm[32];
 		snprintf(param_llvm, sizeof(param_llvm), "%%arg%d", i);
 		TypeRef *param_type = proc->params[i]->type;
-		const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : "Int";
+		const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : "int";
 
 		/* If param type is an archetype, track it as arch pointer (type 3) */
 		if (find_archetype_decl(ctx, type_name)) {
@@ -2524,14 +2987,21 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	/* External C library function declarations */
 	buffer_append(ctx, "declare i8* @malloc(i32)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
-	buffer_append(ctx, "declare i8* @realloc(i8*, i64)\n");
-	buffer_append(ctx, "declare i32 @printf(i8*, ...)\n");
 	buffer_append(ctx, "declare void @abort()\n\n");
 
 	/* Global error message for bounds check failures */
 	buffer_append(
 	    ctx,
 	    "@.arche_oob = private unnamed_addr constant [28 x i8] c\"arche: index out of bounds\\0A\\00\", align 1\n\n");
+
+	/* Global variables for allocated archetypes */
+	for (int i = 0; i < ctx->prog->decl_count; i++) {
+		if (ctx->prog->decls[i]->kind == DECL_ARCHETYPE) {
+			ArchetypeDecl *arch = ctx->prog->decls[i]->data.archetype;
+			buffer_append_fmt(ctx, "@archetype_%s = global %%struct.%s* null\n", arch->name, arch->name);
+		}
+	}
+	buffer_append(ctx, "\n");
 
 	/* Generate code for all declarations (this will populate globals_buffer with string constants) */
 	int has_init_proc = 0;
@@ -2584,6 +3054,25 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		buffer_append(ctx, "  ret i32 0\n");
 		buffer_append(ctx, "}\n");
 	}
+
+	/* Print for double values */
+	buffer_append(ctx, "\ndefine i32 @print_double(double %val) {\n");
+	buffer_append(ctx, "entry:\n");
+	buffer_append(ctx, "  %fmt = getelementptr [3 x i8], [3 x i8]* @.print_fmt_double, i32 0, i32 0\n");
+	buffer_append(ctx, "  %res = call i32 (i8*, ...) @printf(i8* %fmt, double %val)\n");
+	buffer_append(ctx, "  ret i32 %res\n");
+	buffer_append(ctx, "}\n");
+
+	buffer_append(ctx, "\ndefine i32 @print_int(i32 %val) {\n");
+	buffer_append(ctx, "entry:\n");
+	buffer_append(ctx, "  %fmt = getelementptr [3 x i8], [3 x i8]* @.print_fmt_int, i32 0, i32 0\n");
+	buffer_append(ctx, "  %res = call i32 (i8*, ...) @printf(i8* %fmt, i32 %val)\n");
+	buffer_append(ctx, "  ret i32 %res\n");
+	buffer_append(ctx, "}\n");
+
+	/* Global format strings for printing */
+	buffer_append(ctx, "\n@.print_fmt_double = private unnamed_addr constant [3 x i8] c\"%g\\00\", align 1\n");
+	buffer_append(ctx, "@.print_fmt_int = private unnamed_addr constant [3 x i8] c\"%d\\00\", align 1\n");
 
 	/* Emit AVX2 function attributes */
 	buffer_append(ctx, "\nattributes #0 = { \"target-features\"=\"+avx2,+avx\" }\n");

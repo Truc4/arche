@@ -1,0 +1,28 @@
+// RUN: %arche -o %t %s && %t | grep "PASS"
+
+arche Particle {
+  pos: (x: float, y: float),
+  vel: (x: float, y: float),
+}
+
+
+proc main() {
+  alloc Particle(3);
+  insert(Particle, 0.0, 1.0, 0.5, 0.1);
+  insert(Particle, 2.0, 3.0, 0.2, 0.3);
+  insert(Particle, 4.0, 5.0, 0.1, 0.2);
+  printf("Before: pos.x[0]=%g vel.x[0]=%g\n", Particle.pos.x[0], Particle.vel.x[0]);
+  printf("Before: pos.y[2]=%g vel.y[2]=%g\n", Particle.pos.y[2], Particle.vel.y[2]);
+  Particle.pos.x = Particle.pos.x + Particle.vel.x;
+  Particle.pos.y = Particle.pos.y + Particle.vel.y;
+  let x0 = Particle.pos.x[0];
+  let y2 = Particle.pos.y[2];
+  printf("After: pos.x[0]=%g pos.y[2]=%g\n", x0, y2);
+  let x0i = x0 * 10.0;
+  let y2i = y2 * 10.0;
+  printf("x0i=%g (expect 5), y2i=%g (expect 52)\n", x0i, y2i);
+  assert(x0i == 5, "FAIL: pos.x[0]\n");
+  assert(y2i == 52, "FAIL: pos.y[2]\n");
+  printf("PASS\n");
+}
+

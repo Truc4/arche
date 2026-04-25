@@ -1,0 +1,8 @@
+// RUN: %arche -o %t %s && %t | grep "Third: 3"
+
+proc main() {
+  printf("First: %d\n", 1);
+  printf("Second: %d\n", 2);
+  printf("Third: %d\n", 3);
+}
+

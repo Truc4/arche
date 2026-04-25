@@ -17,7 +17,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-format build-essential llvm
+          sudo apt-get install -y clang-format build-essential llvm python3-pip
+          pip3 install --break-system-packages --upgrade lit
 
       - name: Build project
         run: make clean && make
@@ -39,6 +40,8 @@ jobs:
 
       - name: Run all tests
         run: make test
+        env:
+          ARCHE_CORE_DIR: ${{ github.workspace }}/core
 
       - name: Check test results
         if: success()

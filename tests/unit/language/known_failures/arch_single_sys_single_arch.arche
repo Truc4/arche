@@ -1,0 +1,23 @@
+// RUN: %arche -o %t %s && %t | grep "move"
+// BUG: System operations don't modify fields (see COMPILER_BUG_SYSTEM_OPERATIONS.md)
+
+arche Particle {
+  pos: float,
+  vel: float,
+}
+
+
+sys move(pos, vel) {
+  pos = pos + vel;
+}
+
+
+proc main() {
+  alloc Particle(10);
+  insert(Particle, 1.0, 0.1);
+  run move;
+  let p = Particle.pos[0];
+  let pi = p * 10.0;
+  assert(pi == 11, "move failed\n");
+}
+

@@ -1,0 +1,10 @@
+// RUN: not %arche -o %t %s 2>&1 | grep -q "type"
+//
+// BUG: Compiler should reject explicit float→int assignment
+// Expected: Type error
+// Current: Silently converts (wrong)
+
+proc main() {
+  let x = 3.14;
+}
+
