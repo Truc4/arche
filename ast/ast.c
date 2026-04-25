@@ -323,6 +323,17 @@ void statement_free(Statement *stmt) {
 		}
 		free(stmt->data.for_stmt.body);
 		break;
+	case STMT_IF:
+		expression_free(stmt->data.if_stmt.cond);
+		for (int i = 0; i < stmt->data.if_stmt.then_count; i++) {
+			statement_free(stmt->data.if_stmt.then_body[i]);
+		}
+		free(stmt->data.if_stmt.then_body);
+		for (int i = 0; i < stmt->data.if_stmt.else_count; i++) {
+			statement_free(stmt->data.if_stmt.else_body[i]);
+		}
+		free(stmt->data.if_stmt.else_body);
+		break;
 	case STMT_RUN:
 		free(stmt->data.run_stmt.system_name);
 		free(stmt->data.run_stmt.world_name);
@@ -620,7 +631,24 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 	case STMT_ASSIGN: {
 		fprintf(out, "%s", indent_str);
 		format_expression(out, stmt->data.assign_stmt.target);
-		fprintf(out, " = ");
+		const char *op_str = "=";
+		switch (stmt->data.assign_stmt.op) {
+		case OP_ADD:
+			op_str = "+=";
+			break;
+		case OP_SUB:
+			op_str = "-=";
+			break;
+		case OP_MUL:
+			op_str = "*=";
+			break;
+		case OP_DIV:
+			op_str = "/=";
+			break;
+		default:
+			break;
+		}
+		fprintf(out, " %s ", op_str);
 		format_expression(out, stmt->data.assign_stmt.value);
 		fprintf(out, ";\n");
 		break;
@@ -631,6 +659,22 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		fprintf(out, " {\n");
 		for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
 			format_statement(out, stmt->data.for_stmt.body[i], indent + 1);
+		}
+		fprintf(out, "%s}\n", indent_str);
+		break;
+	}
+	case STMT_IF: {
+		fprintf(out, "%sif (", indent_str);
+		format_expression(out, stmt->data.if_stmt.cond);
+		fprintf(out, ") {\n");
+		for (int i = 0; i < stmt->data.if_stmt.then_count; i++) {
+			format_statement(out, stmt->data.if_stmt.then_body[i], indent + 1);
+		}
+		if (stmt->data.if_stmt.else_count > 0) {
+			fprintf(out, "%s} else {\n", indent_str);
+			for (int i = 0; i < stmt->data.if_stmt.else_count; i++) {
+				format_statement(out, stmt->data.if_stmt.else_body[i], indent + 1);
+			}
 		}
 		fprintf(out, "%s}\n", indent_str);
 		break;
