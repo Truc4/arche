@@ -30,7 +30,7 @@ This leads to a style that feels closer to **data pipelines** or **vectorized co
 
 ### Allocation Strategy
 
-- **Explicit allocation**: Archetypes are allocated explicitly via `alloc Archetype(N)` calls at any point in the program.
+- **Explicit allocation**: Allocation happens explicitly via `alloc Archetype(N)` calls at any point in the program.
 - **Fixed size**: Each allocation is _fixed size_. There is no resizing, no growing vectors, no automatic expansion. Once allocated, capacity is permanent.
 - **Deallocate implicitly**: At the end of the program, all allocations are implicitly deallocated. Explicit deallocation is **discouraged**.
 
@@ -42,10 +42,10 @@ This pattern encourages thinking about data layout early and prevents the hidden
 
 ```arche
 proc main() {
-  // Allocate all archetypes upfront with capacities you need
-  let particles = alloc Particle(10000);
-  let enemies = alloc Enemy(5000);
-  let projectiles = alloc Projectile(1000);
+  // Allocate archetype instances upfront with capacities you need
+  alloc Particle(10000);
+  alloc Enemy(5000);
+  alloc Projectile(1000);
   
   // Run your program with this fixed memory budget
   run initialize;
@@ -64,7 +64,7 @@ proc main() {
 
 ### If You Need More Space
 
-If you truly need more capacity: deallocate the old archetype, reallocate a new one with larger capacity, and copy data. But this goes against the language’s spirit and is explicitly discouraged. **Plan better upfront instead.**
+If you truly need more capacity: deallocate the old allocation, allocate a new one with larger capacity, and copy data. But this goes against the language’s spirit and is explicitly discouraged. **Plan better upfront instead.**
 
 ## Worlds (Planned, Not Yet Implemented)
 
@@ -78,9 +78,9 @@ Multiple worlds will allow parallel data-driven computations, with systems opera
 
 ## Archetypes (`arche`)
 
-An Archetype declaration allocates space for a _shape_ (a unique column structure). The name is just an _alias_ for that shape.
+An Archetype declaration defines a _shape_ (a unique column structure). The name is a handle to that shape. Declarations do **not** allocate space; only `alloc` does that.
 
-A **shape** is defined by its columns and types. If two archetype declarations have identical columns and types, they refer to the same shape and share the same allocation.
+A **shape** is defined by its columns and types. If two archetype declarations have identical columns and types, they are both handles to the same shape and will share an allocation if you allocate them.
 
 **Primitives:** `int`, `float`, `char`
 
@@ -99,7 +99,7 @@ arche Particle {
 }
 ```
 
-This allocates space for a shape with those columns. The name `Particle` is an alias. If you declare another archetype with the same columns:
+This defines a shape with those columns. The name `Particle` is an alias. If you declare another archetype with the same columns:
 
 ```arche
 arche Enemy {
@@ -109,16 +109,16 @@ arche Enemy {
 }
 ```
 
-Both `Particle` and `Enemy` alias the same underlying shape. They share the allocation. You can allocate using either alias:
+Both `Particle` and `Enemy` are handles to the same underlying shape. Allocations using either handle reference the same shape. You can allocate using either handle:
 
 ```arche
-let particles = alloc Particle(1000);
-let enemies = alloc Enemy(1000);  // ERROR: shape already allocated
+alloc Particle(1000);
+alloc Enemy(1000);  // ERROR: shape already allocated
 ```
 
 **Static allocation:**
 
-Each shape allocates exactly once via an explicit `alloc` call. Attempting to allocate the same shape again (with any alias) is a compile error.
+Each shape is allocated exactly once via an explicit `alloc Archetype(N)` call. Attempting to allocate the same shape again (with any alias) is a compile error.
 
 The allocation is **fixed size** and **reallocation is discourages**. All capacity is allocated upfront. This is by design, dynamic memory is not a feature of this language.
 
@@ -127,8 +127,8 @@ The allocation is **fixed size** and **reallocation is discourages**. All capaci
 Operations on archetype columns apply across the entire collection without explicit loops:
 
 ```arche
-let particles = alloc Particle(1000);
-particles.pos = particles.pos + particles.vel;
+alloc Particle(1000);
+Particle.pos = Particle.pos + Particle.vel;
 ```
 
 This iterates all 1000 elements, updating each position by its velocity.
@@ -183,13 +183,13 @@ Procedures perform **explicit operations**.
 
 ```arche
 proc main() {
-  let particles = alloc Particle(1000);
-  particles.pos = particles.pos + particles.vel;
+  alloc Particle(1000);
+  Particle.pos = Particle.pos + Particle.vel;
 }
 ```
 
 - run once
-- operate on explicitly referenced data (via handles)
+- operate on explicitly referenced data (archetype names are handles to allocated shapes)
 - array ops apply to the whole collection
 - used for setup, orchestration, or control flow
 
@@ -253,7 +253,7 @@ sys dampen(vel) {
 
 // Allocate and run systems
 proc main() {
-  let particles = alloc Particle(10000);
+  alloc Particle(10000);
   run move;
   run dampen;
 }
@@ -334,14 +334,14 @@ Instead of complex type systems and dynamic features, language users make consci
 Arche prioritizes **access speed and predictability** over memory footprint:
 
 - **Fast memory access**: Columnar layout keeps related data together, enabling cache-friendly sequential access and SIMD operations.
-- **Predictable memory usage**: Fixed allocations mean stable, foreseeable memory patterns—no garbage collection pauses, no dynamic resizing surprises.
+- **Predictable memory usage**: Fixed allocations mean stable, foreseeable memory patterns (no garbage collection pauses, no dynamic resizing surprises).
 - **Willing to use more memory**: Upfront allocation and column-oriented storage use more RAM than pointer-based designs, but the tradeoff is worth it for speed and predictability.
 
 This is a deliberate choice: **prefer fast, predictable memory access over minimizing memory footprint.**
 
-## For Language Developers
+## Design Analysis
 
-The `design_analysis/` directory contains exploration and documentation of data layout patterns that guide language development, implementation strategies, and future feature design.
+The `design_analysis/` directory contains exploration and documentation of data layout patterns. Data drives the language design, and patterns and constraints discovered here shape feature decisions.
 
 ## Why This Exists
 
