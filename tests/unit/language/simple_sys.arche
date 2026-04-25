@@ -1,0 +1,23 @@
+// RUN: %arche -o %t %s && %t
+
+arche Body {
+  pos: float,
+}
+
+sys dummy(pos) {
+  pos = pos;
+}
+
+proc main() {
+  alloc Body(100);
+  insert(Body, 1.0);
+  insert(Body, 2.0);
+  insert(Body, 3.0);
+  run dummy;
+  let p0 = Body.pos[0];
+  let p1 = Body.pos[1];
+  let p0i = p0 * 10.0;
+  let p1i = p1 * 10.0;
+  assert(p0i == 10, "pos[0] != 1.0\n");
+  assert(p1i == 20, "pos[1] != 2.0\n");
+}

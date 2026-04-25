@@ -1,0 +1,5 @@
+// RUN: %arche -o %t %s && %t
+
+proc main() {
+  print("test\n");
+}
