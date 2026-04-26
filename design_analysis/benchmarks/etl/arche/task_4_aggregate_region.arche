@@ -7,20 +7,23 @@ arche Transaction {
   quantity: int,
   region: char[16],
   flags: int,
-  revenue: float
+  revenue: float,
 }
+
 
 arche RegionAggregate {
   region: char[16],
-  total_revenue: float
+  total_revenue: float,
 }
+
 
 sys compute_revenue(price, quantity, revenue) {
   revenue = price * quantity;
 }
 
+
 proc main() {
   alloc Transaction(1000000);
   run compute_revenue;
-  // DESIGN GAP: No grouping/aggregation operator yet
 }
+

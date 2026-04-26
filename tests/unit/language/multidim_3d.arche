@@ -4,7 +4,9 @@ arche Tensor {
   data: float[5][5],
 }
 
+
 proc main() {
   alloc Tensor(10);
   print("allocations done\n");
 }
+

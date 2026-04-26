@@ -7,15 +7,17 @@ arche Transaction {
   quantity: int,
   region: char[16],
   flags: int,
-  valid: int
+  valid: int,
 }
 
+
 sys mark_valid(quantity, valid) {
-  valid = (quantity > 0);
+  valid = quantity > 0;
 }
+
 
 proc main() {
   alloc Transaction(1000000);
   run mark_valid;
-  // DESIGN GAP: No compaction operator yet to remove invalid rows
 }
+

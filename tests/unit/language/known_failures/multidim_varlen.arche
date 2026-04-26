@@ -5,7 +5,9 @@ arche Message {
   author: char[64],
 }
 
+
 proc main() {
   alloc Message(100);
   print("allocations done\n");
 }
+

@@ -5,12 +5,15 @@ arche Message {
   author: char[64],
 }
 
+
 arche Matrix {
   data: float[10][10],
 }
+
 
 proc main() {
   alloc Message(100);
   alloc Matrix(50);
   print("allocations done\n");
 }
+
