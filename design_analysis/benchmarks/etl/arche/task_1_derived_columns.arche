@@ -5,7 +5,7 @@ arche Transaction {
   timestamp: int,
   price: float,
   quantity: int,
-  region: char[],
+  region: char[16],
   flags: int,
   revenue: float,
 }
