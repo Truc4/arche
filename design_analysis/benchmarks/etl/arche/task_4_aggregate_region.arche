@@ -1,3 +1,4 @@
+// RUN: %arche -o %t %s && %t
 // Task 4: Aggregate revenue per region
 // Group by region, sum revenue (price * quantity)
 
@@ -23,7 +24,9 @@ sys compute_revenue(price, quantity, revenue) {
 
 
 proc main() {
-  alloc Transaction(1000000);
+  Transaction.alloc((null): 1, price: 1.0, quantity: 4);
   run compute_revenue;
+  assert(Transaction.revenue[0] == 4.0, "revenue[0] != 4.0\n");
+  printf("ok\n");
 }
 

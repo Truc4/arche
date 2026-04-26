@@ -1,3 +1,4 @@
+// RUN: %arche -o %t %s && %t
 // Task 3: Bucket timestamps into hourly buckets
 // Floor timestamps to the nearest hour (3600 seconds)
 
@@ -17,7 +18,9 @@ sys bucket_time(timestamp, hour_bucket) {
 
 
 proc main() {
-  alloc Transaction(1000000);
+  Transaction.alloc((null): 1, timestamp: 7205);
   run bucket_time;
+  assert(Transaction.hour_bucket[0] == 7200, "hour_bucket[0] != 7200\n");
+  printf("ok\n");
 }
 

@@ -1,0 +1,15 @@
+// RUN: %arche -o %t %s && %t
+
+arche Counter {
+  val: int,
+  score: float,
+}
+
+
+proc main() {
+  Counter.alloc((null): 5, val: 7, score: 2.5);
+  assert(Counter.val[0] == 7, "val[0] not 7\n");
+  assert(Counter.score[0] == 2.5, "score[0] not 2.5\n");
+  printf("ok\n");
+}
+

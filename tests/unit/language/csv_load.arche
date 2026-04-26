@@ -1,0 +1,17 @@
+// RUN: %arche -o %t %s && %t
+
+arche Transaction {
+  price: float,
+  quantity: int,
+}
+
+
+extern proc load_transaction_csv();
+
+proc main() {
+  alloc Transaction(3);
+  load_transaction_csv();
+  assert(Transaction.price[0] == 1.0, "price[0] not 1.0\n");
+  printf("csv ok\n");
+}
+

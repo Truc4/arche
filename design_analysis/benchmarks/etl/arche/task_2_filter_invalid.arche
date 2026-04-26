@@ -1,3 +1,4 @@
+// RUN: %arche -o %t %s && %t
 // Task 2: Filter invalid rows
 // Keep only rows where quantity > 0
 
@@ -17,7 +18,9 @@ sys mark_valid(quantity, valid) {
 
 
 proc main() {
-  alloc Transaction(1000000);
+  Transaction.alloc((null): 1, quantity: 5);
   run mark_valid;
+  assert(Transaction.valid[0] == 1, "valid[0] != 1\n");
+  printf("ok\n");
 }
 

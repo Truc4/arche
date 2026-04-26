@@ -750,6 +750,47 @@ static Expression *parse_primary_expr(Parser *parser) {
 				if (!match(parser, TOK_RPAREN)) {
 					error(parser, "Expected ')' after alloc count");
 				}
+
+				/* Parse optional field init block: { field: value, ... } */
+				if (match(parser, TOK_LBRACE)) {
+					if (!check(parser, TOK_RBRACE)) {
+						/* Parse field initialization pairs */
+						do {
+							if (!check(parser, TOK_IDENT)) {
+								error(parser, "Expected field name in alloc init");
+								break;
+							}
+							char *field_name = token_text(parser->current);
+							advance(parser);
+
+							if (!match(parser, TOK_COLON)) {
+								error(parser, "Expected ':' after field name in alloc init");
+								break;
+							}
+
+							Expression *field_value = parse_expression(parser);
+							if (!field_value) {
+								error(parser, "Expected expression after ':' in alloc init");
+								break;
+							}
+
+							/* Reallocate and add the new field */
+							alloc_expr->data.alloc.field_names =
+							    realloc(alloc_expr->data.alloc.field_names,
+							            (alloc_expr->data.alloc.field_count + 1) * sizeof(char *));
+							alloc_expr->data.alloc.field_values =
+							    realloc(alloc_expr->data.alloc.field_values,
+							            (alloc_expr->data.alloc.field_count + 1) * sizeof(Expression *));
+							alloc_expr->data.alloc.field_names[alloc_expr->data.alloc.field_count] = field_name;
+							alloc_expr->data.alloc.field_values[alloc_expr->data.alloc.field_count] = field_value;
+							alloc_expr->data.alloc.field_count++;
+						} while (match(parser, TOK_COMMA));
+					}
+
+					if (!match(parser, TOK_RBRACE)) {
+						error(parser, "Expected '}' after alloc init block");
+					}
+				}
 			}
 
 			free(name);

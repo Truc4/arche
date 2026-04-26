@@ -7,6 +7,15 @@ bin/
 # Test artifacts
 tests/tmp/
 .tmp
+/tmp/
+
+# Generated LLVM/ASM (temp compilation artifacts)
+*.ll
+*.s
+
+# Data folder (track fixtures, ignore large/generated)
+data/**
+!data/*.csv
 
 # IDE and editor files
 .vscode/
