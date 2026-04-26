@@ -6,6 +6,7 @@ bin/
 
 # Test artifacts
 tests/tmp/
+.tmp
 
 # IDE and editor files
 .vscode/

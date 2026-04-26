@@ -1,0 +1,16 @@
+// RUN: %arche -o %t %s && %t | grep "allocations done"
+
+arche Message {
+  text: char[256],
+  author: char[64],
+}
+
+arche Matrix {
+  data: float[10][10],
+}
+
+proc main() {
+  alloc Message(100);
+  alloc Matrix(50);
+  print("allocations done\n");
+}

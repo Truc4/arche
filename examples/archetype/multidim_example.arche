@@ -4,7 +4,7 @@ arche Message {
 }
 
 proc main() {
-  let messages = alloc Message(100);
+  alloc Message(100);
   let msg = "allocations done\n";
   print(msg);
 }

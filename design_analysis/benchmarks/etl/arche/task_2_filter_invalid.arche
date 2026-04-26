@@ -1,0 +1,21 @@
+// Task 2: Filter invalid rows
+// Keep only rows where quantity > 0
+
+arche Transaction {
+  timestamp: int,
+  price: float,
+  quantity: int,
+  region: char[16],
+  flags: int,
+  valid: int
+}
+
+sys mark_valid(quantity, valid) {
+  valid = (quantity > 0);
+}
+
+proc main() {
+  alloc Transaction(1000000);
+  run mark_valid;
+  // DESIGN GAP: No compaction operator yet to remove invalid rows
+}

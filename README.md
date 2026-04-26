@@ -46,11 +46,11 @@ proc main() {
   alloc Particle(10000);
   alloc Enemy(5000);
   alloc Projectile(1000);
-  
+
   // Run your program with this fixed memory budget
   run initialize;
   run update_loop;
-  
+
   // Everything deallocates implicitly at end
 }
 ```
@@ -85,6 +85,7 @@ A **shape** is defined by its columns and types. If two archetype declarations h
 **Primitives:** `int`, `float`, `char`
 
 **Column types:**
+
 - Single primitive: `mass: float` → column of floats
 - Tuple columns: `pos: (x: float, y: float)` → two separate arrays `pos_x[]` and `pos_y[]`
 - Multi-dimensional arrays: `text: char[256]` → N×256 array per entity
@@ -128,6 +129,7 @@ Operations on archetype columns apply across the entire collection without expli
 
 ```arche
 alloc Particle(1000);
+// ... insert particles
 Particle.pos = Particle.pos + Particle.vel;
 ```
 
@@ -148,11 +150,13 @@ Same effect: iterate all elements element-wise.
 Individual element access requires explicit column reference:
 
 **Scalar columns:**
+
 ```arche
 particles.mass[i]
 ```
 
 **Tuple columns (labeled access):**
+
 ```arche
 particles.pos.x[i]   // x component of position at index i
 particles.pos.y[i]   // y component of position at index i
@@ -160,6 +164,7 @@ particles.vel.vx[i]  // x component of velocity at index i
 ```
 
 **Multi-dimensional arrays:**
+
 ```arche
 messages.text[i, j]  // 2D indexing
 matrices.data[i, x, y]  // 3D indexing
@@ -233,6 +238,19 @@ proc main() {
 }
 ```
 
+### Conditional Behavior (Planned Constraint)
+
+Conditionals work through mathematical expressions (comparisons produce 0 or 1):
+
+```arche
+sys dampen(vel, pos) {
+  // multiply velocity by 0 if below threshold
+  vel = vel * (pos > 10);
+}
+```
+
+**Planned:** Enforce that systems use only conditionals, disallow branching statements. This keeps systems pure data transforms, vectorizable, and cache-friendly.
+
 ## Example
 
 ```arche
@@ -287,15 +305,6 @@ func drag_factor(x: float) -> float {
 - `proc`: “run this on _that data_”
 - `sys`: “run this on _any data shaped like this_”
 - `func`: “compute a value without modifying data”
-
-## Example: Conditional Behavior
-
-```arche
-proc damp {
-  // multiply velocity by 0 if below threshold
-  particles.vel = particles.vel * (particles.pos > 10);
-}
-```
 
 ## What Arche Is _Not_
 

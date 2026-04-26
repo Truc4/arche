@@ -1,0 +1,10 @@
+// RUN: %arche -o %t %s && %t | grep "allocations done"
+
+arche Tensor {
+  data: float[5][5][5],
+}
+
+proc main() {
+  alloc Tensor(10);
+  print("allocations done\n");
+}

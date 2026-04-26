@@ -3,8 +3,8 @@ arche Counter {
 }
 
 proc main() {
-  let counter = alloc Counter(1);
-  insert(counter, 0);
+  alloc Counter(1);
+  insert(Counter, 0);
   let x = 10;
   let y = 20;
   let msg = "counter allocated\n";

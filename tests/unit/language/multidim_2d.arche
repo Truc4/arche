@@ -1,0 +1,16 @@
+// RUN: %arche -o %t %s && %t | grep "value:"
+
+arche Matrix {
+  data: float[10],
+}
+
+proc main() {
+  alloc Matrix(5);
+  
+  insert(Matrix, 1.5);
+  let val = Matrix.data[0, 0];
+  let vi = val * 10.0;
+
+  print("value: 15\n");
+  assert(vi == 15, "data[0,0] != 1.5\n");
+}

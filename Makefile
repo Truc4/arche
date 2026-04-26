@@ -131,11 +131,13 @@ bench-mixed: design_analysis/array_ops/mixed_workload.c
 # Format all Arche source files
 format: $(FMT_BIN)
 	for f in $$(find . -name "*.arche" -type f); do \
-		if ./$(FMT_BIN) "$$f" > /tmp/fmt_tmp 2>/dev/null; then \
-			mv /tmp/fmt_tmp "$$f"; \
+		tmp=$$(mktemp); \
+		if timeout 5 ./$(FMT_BIN) "$$f" > "$$tmp"; then \
+			mv "$$tmp" "$$f"; \
 			echo "✓ $$f"; \
 		else \
-			echo "✗ $$f (parse error)"; \
+			rm -f "$$tmp"; \
+			echo "✗ $$f (parse error or timeout)"; \
 		fi; \
 	done
 

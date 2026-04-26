@@ -1,0 +1,23 @@
+// Task 1: Compute derived columns
+// Compute revenue = price * quantity for all rows
+
+arche Transaction {
+  timestamp: int,
+  price: float,
+  quantity: int,
+  region: char[],
+  flags: int,
+  revenue: float,
+}
+
+
+sys compute_revenue(price, quantity, revenue) {
+  revenue = price * quantity;
+}
+
+
+proc main() {
+  alloc Transaction(1000000);
+  run compute_revenue;
+}
+

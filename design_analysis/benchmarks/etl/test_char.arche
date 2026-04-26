@@ -1,0 +1,7 @@
+arche Test {
+  name: char[16]
+}
+
+proc main() {
+  alloc Test(10);
+}
