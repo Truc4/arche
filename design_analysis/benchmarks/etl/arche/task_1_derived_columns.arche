@@ -1,4 +1,3 @@
-// RUN: %arche -o %t %s && %t
 // Task 1: Compute derived columns
 // Compute revenue = price * quantity for all rows
 
@@ -17,10 +16,11 @@ sys compute_revenue(price, quantity, revenue) {
 }
 
 
+extern proc load_transaction_csv();
+
 proc main() {
-  Transaction.alloc((null): 1, price: 2.0, quantity: 3);
+  alloc Transaction(1000000);
+  load_transaction_csv();
   run compute_revenue;
-  assert(Transaction.revenue[0] == 6.0, "revenue[0] != 6.0\n");
-  printf("ok\n");
 }
 

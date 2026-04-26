@@ -6,11 +6,43 @@ arche Transaction {
 }
 
 
-extern proc load_transaction_csv();
+proc load_csv(path: char[]) {
+  let fd = open(path, 0);
+  let buf: char[256];
+  let idx = 0;
+
+  // Skip header
+  read(fd, buf, 256);
+
+  // Read and parse each CSV row
+  while (idx < 3) {
+    let n = read(fd, buf, 256);
+    if (n == 0) break;
+
+    // Parse: price,quantity
+    let comma_pos = 0;
+    let i = 0;
+    while (i < n) {
+      if (buf[i] == ',') {
+        comma_pos = i;
+        break;
+      }
+      i = i + 1;
+    }
+
+    // Convert strings to values and assign
+    Transaction.price[idx] = atof(buf);
+    Transaction.quantity[idx] = atoi(buf + comma_pos + 1);
+
+    idx = idx + 1;
+  }
+
+  close(fd);
+}
 
 proc main() {
   alloc Transaction(3);
-  load_transaction_csv();
+  load_csv("data/transactions.csv");
   assert(Transaction.price[0] == 1.0, "price[0] not 1.0\n");
   printf("csv ok\n");
 }

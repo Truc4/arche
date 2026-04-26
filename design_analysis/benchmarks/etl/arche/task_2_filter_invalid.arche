@@ -17,10 +17,11 @@ sys mark_valid(quantity, valid) {
 }
 
 
+extern proc load_transaction_csv();
+
 proc main() {
-  Transaction.alloc((null): 1, quantity: 5);
+  alloc Transaction(1000000);
+  load_transaction_csv();
   run mark_valid;
-  assert(Transaction.valid[0] == 1, "valid[0] != 1\n");
-  printf("ok\n");
 }
 

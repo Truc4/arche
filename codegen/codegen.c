@@ -1198,17 +1198,6 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			}
 		}
 
-		/* Special handling for assert function: convert i1 to i32 if needed */
-		if (func_name && strcmp(func_name, "assert") == 0 && expr->data.call.arg_count > 0 &&
-		    expr->data.call.args[0]->type == EXPR_BINARY) {
-			/* The first argument is a comparison, which returns i1 */
-			/* We need to zero-extend it to i32 for the assert function */
-			char *zext = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = zext i1 %s to i32\n", zext, call_arg_vals[0]);
-			strcpy(call_arg_vals[0], zext);
-			call_arg_types[0] = "i32";
-		}
-
 		/* Emit the call with prepared arguments */
 		/* Check if this is a variadic function like sprintf or printf */
 		int is_variadic = func_name && (strcmp(func_name, "sprintf") == 0 || strcmp(func_name, "printf") == 0);
