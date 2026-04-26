@@ -291,7 +291,11 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 			if (arch) {
 				FieldInfo *field = find_field(arch, field_name);
 				if (field && field->type) {
-					return normalize_type_name(field->type->data.name);
+					TypeRef *ft = field->type;
+					while (ft->kind == TYPE_SHAPED_ARRAY)
+						ft = ft->data.shaped_array.element_type;
+					if (ft->kind == TYPE_NAME)
+						return normalize_type_name(ft->data.name);
 				}
 			}
 		}

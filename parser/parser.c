@@ -142,21 +142,56 @@ static TypeRef *parse_type(Parser *parser) {
 
 	if (check(parser, TOK_LBRACKET)) {
 		advance(parser); /* consume [ */
-		if (!check(parser, TOK_RBRACKET)) {
-			error(parser, "Expected ']' after '['");
-			/* Skip to closing bracket to recover */
+		if (check(parser, TOK_RBRACKET)) {
+			/* float[] → TYPE_ARRAY */
+			advance(parser);
+			TypeRef *arr = type_array_create(type);
+			arr->loc = type->loc;
+			return arr;
+		}
+		if (!check(parser, TOK_NUMBER)) {
+			error(parser, "Expected ']' or integer size after '['");
 			while (!check(parser, TOK_RBRACKET) && !check(parser, TOK_EOF)) {
 				advance(parser);
 			}
 			if (check(parser, TOK_RBRACKET)) {
-				advance(parser); /* consume ] */
+				advance(parser);
 			}
 			return type;
 		}
-		advance(parser); /* consume ] */
-		TypeRef *arr = type_array_create(type);
-		arr->loc = type->loc;
-		return arr;
+		int rank = atoi(token_text(parser->current));
+		advance(parser);
+		if (!match(parser, TOK_RBRACKET)) {
+			error(parser, "Expected ']' after array size");
+			return type;
+		}
+		TypeRef *shaped = type_shaped_array_create(type, rank);
+		shaped->loc = type->loc;
+		type = shaped;
+		/* chain: float[5][5] */
+		while (check(parser, TOK_LBRACKET)) {
+			advance(parser);
+			if (!check(parser, TOK_NUMBER)) {
+				error(parser, "Expected integer size after '['");
+				while (!check(parser, TOK_RBRACKET) && !check(parser, TOK_EOF)) {
+					advance(parser);
+				}
+				if (check(parser, TOK_RBRACKET)) {
+					advance(parser);
+				}
+				return type;
+			}
+			int r = atoi(token_text(parser->current));
+			advance(parser);
+			if (!match(parser, TOK_RBRACKET)) {
+				error(parser, "Expected ']' after array size");
+				return type;
+			}
+			TypeRef *outer = type_shaped_array_create(type, r);
+			outer->loc = shaped->loc;
+			type = outer;
+		}
+		return type;
 	}
 
 	return type;

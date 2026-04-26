@@ -144,6 +144,18 @@ static const char *elem_llvm_type(CodegenContext *ctx, const char *arche_type) {
 	return scalar;
 }
 
+static const char *field_base_type_name(TypeRef *type) {
+	while (type->kind == TYPE_SHAPED_ARRAY)
+		type = type->data.shaped_array.element_type;
+	return type->data.name;
+}
+
+static int field_total_elements(TypeRef *type) {
+	if (type->kind == TYPE_SHAPED_ARRAY)
+		return type->data.shaped_array.rank * field_total_elements(type->data.shaped_array.element_type);
+	return 1;
+}
+
 static char *gen_value_name(CodegenContext *ctx) {
 	char *name = malloc(32);
 	snprintf(name, 32, "%%v%d", ctx->value_counter++);
@@ -341,6 +353,33 @@ static ProcDecl *find_proc_decl(CodegenContext *ctx, const char *name) {
 		Decl *decl = ctx->prog->decls[i];
 		if (decl->kind == DECL_PROC && strcmp(decl->data.proc->name, name) == 0)
 			return decl->data.proc;
+	}
+	return NULL;
+}
+
+static const char *get_shaped_field_info(CodegenContext *ctx, Expression *field_expr, int *out_rank) {
+	if (field_expr->type != EXPR_FIELD || field_expr->data.field.base->type != EXPR_NAME)
+		return NULL;
+	const char *vn = field_expr->data.field.base->data.name.name;
+	const char *fn = field_expr->data.field.field_name;
+	const char *arch_name = NULL;
+	ValueInfo *vi = find_value(ctx, vn);
+	if (vi && vi->arch_name) {
+		arch_name = vi->arch_name;
+	} else if (find_archetype_decl(ctx, vn)) {
+		arch_name = vn;
+	}
+	if (!arch_name)
+		return NULL;
+	ArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+	if (!arch)
+		return NULL;
+	for (int j = 0; j < arch->field_count; j++) {
+		if (strcmp(arch->fields[j]->name, fn) == 0 && arch->fields[j]->type->kind == TYPE_SHAPED_ARRAY) {
+			if (out_rank)
+				*out_rank = field_total_elements(arch->fields[j]->type);
+			return field_base_type_name(arch->fields[j]->type);
+		}
 	}
 	return NULL;
 }
@@ -683,7 +722,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				}
 
 				if (field_idx >= 0 && fdecl) {
-					const char *llvm_type = llvm_type_from_arche(fdecl->type->data.name);
+					const char *llvm_type = llvm_type_from_arche(field_base_type_name(fdecl->type));
 					char *gep = gen_value_name(ctx);
 
 					/* GEP to field */
@@ -702,7 +741,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 						/* If inside implicit loop, auto-index by loop variable */
 						if (ctx->implicit_loop_index[0]) {
-							const char *load_type = elem_llvm_type(ctx, fdecl->type->data.name);
+							const char *load_type = elem_llvm_type(ctx, field_base_type_name(fdecl->type));
 							char *idx_gep = gen_value_name(ctx);
 							buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", idx_gep, llvm_type,
 							                  llvm_type, ptr_val, ctx->implicit_loop_index);
@@ -744,7 +783,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				}
 
 				if (field_idx >= 0 && fdecl) {
-					const char *llvm_type = llvm_type_from_arche(fdecl->type->data.name);
+					const char *llvm_type = llvm_type_from_arche(field_base_type_name(fdecl->type));
 					char *gep = gen_value_name(ctx);
 
 					/* GEP to field */
@@ -763,7 +802,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 						/* If inside implicit loop, auto-index by loop variable */
 						if (ctx->implicit_loop_index[0]) {
-							const char *load_type = elem_llvm_type(ctx, fdecl->type->data.name);
+							const char *load_type = elem_llvm_type(ctx, field_base_type_name(fdecl->type));
 							char *idx_gep = gen_value_name(ctx);
 							buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", idx_gep, llvm_type,
 							                  llvm_type, ptr_val, ctx->implicit_loop_index);
@@ -801,7 +840,43 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		/* index access: array[index] or field[index] */
 		char base_buf[256], idx_buf[256];
 		codegen_expression(ctx, expr->data.index.base, base_buf);
-		if (expr->data.index.index_count > 0) {
+
+		/* Check if base is a type-6 slice pointer variable */
+		const char *type6_elem_type = NULL;
+		if (expr->data.index.base->type == EXPR_NAME) {
+			ValueInfo *vi = find_value(ctx, expr->data.index.base->data.name.name);
+			if (vi && vi->type == 6 && vi->field_type) {
+				type6_elem_type = vi->field_type;
+			}
+		}
+
+		int shaped_rank = 1;
+		const char *shaped_elem = (expr->data.index.index_count >= 1)
+		                              ? get_shaped_field_info(ctx, expr->data.index.base, &shaped_rank)
+		                              : NULL;
+
+		if (expr->data.index.index_count == 2 && shaped_elem) {
+			/* 2D: [entity, elem] → flat = entity * rank + elem */
+			char row_buf[256], elem_buf[256];
+			codegen_expression(ctx, expr->data.index.indices[0], row_buf);
+			codegen_expression(ctx, expr->data.index.indices[1], elem_buf);
+			char *scaled = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", scaled, row_buf, shaped_rank);
+			char *flat = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = add i64 %s, %s\n", flat, scaled, elem_buf);
+			strcpy(idx_buf, flat);
+		} else if (expr->data.index.index_count == 1 && shaped_elem) {
+			/* Single-index on shaped array: entity * rank → returns slice pointer, no load */
+			char row_buf[256];
+			codegen_expression(ctx, expr->data.index.indices[0], row_buf);
+			if (shaped_rank > 1) {
+				char *scaled = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", scaled, row_buf, shaped_rank);
+				strcpy(idx_buf, scaled);
+			} else {
+				strcpy(idx_buf, row_buf);
+			}
+		} else if (expr->data.index.index_count > 0) {
 			codegen_expression(ctx, expr->data.index.indices[0], idx_buf);
 		}
 
@@ -809,7 +884,13 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		const char *scalar_type = "i32"; /* default */
 		const char *arche_type = NULL;
 
-		if (expr->resolved_type) {
+		if (type6_elem_type) {
+			arche_type = type6_elem_type;
+			scalar_type = llvm_type_from_arche(type6_elem_type);
+		} else if (shaped_elem) {
+			arche_type = shaped_elem;
+			scalar_type = llvm_type_from_arche(shaped_elem);
+		} else if (expr->resolved_type) {
 			arche_type = expr->resolved_type;
 			scalar_type = llvm_type_from_arche(arche_type);
 		} else if (expr->data.index.base->resolved_type) {
@@ -824,7 +905,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		/* Bounds check for archetype column accesses */
 		const char *bc_arch_name = NULL, *bc_arch_ptr = NULL;
 		int bc_count_idx = -1, bc_idx_is_i64 = 0;
-		if (expr->data.index.index_count > 0 &&
+		if (expr->data.index.index_count > 0 && expr->data.index.index_count != 1 && !shaped_elem &&
 		    resolve_index_arch(ctx, expr->data.index.base, expr->data.index.indices[0], &bc_arch_name, &bc_arch_ptr,
 		                       &bc_count_idx, &bc_idx_is_i64)) {
 			emit_bounds_check(ctx, bc_arch_name, bc_arch_ptr, bc_count_idx, idx_buf, bc_idx_is_i64);
@@ -834,20 +915,26 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", res_name, scalar_type, scalar_type,
 		                  base_buf, idx_buf);
 
-		char *loaded = gen_value_name(ctx);
-		int align = ctx->vector_lanes > 0 ? 8 : 4;
-
-		if (ctx->vector_lanes > 0 && arche_type) {
-			/* Vector load: bitcast pointer to vector type, then load */
-			char *vec_ptr = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = bitcast %s* %s to %s*\n", vec_ptr, scalar_type, res_name, load_type);
-			buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", loaded, load_type, load_type, vec_ptr, align);
+		if (expr->data.index.index_count == 1 && shaped_elem) {
+			/* Single-index on shaped field → return pointer slice, not loaded value */
+			strcpy(result_buf, res_name);
 		} else {
-			/* Scalar load */
-			buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", loaded, load_type, scalar_type, res_name,
-			                  align);
+			char *loaded = gen_value_name(ctx);
+			int align = ctx->vector_lanes > 0 ? 8 : 4;
+
+			if (ctx->vector_lanes > 0 && arche_type) {
+				/* Vector load: bitcast pointer to vector type, then load */
+				char *vec_ptr = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = bitcast %s* %s to %s*\n", vec_ptr, scalar_type, res_name, load_type);
+				buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", loaded, load_type, load_type, vec_ptr,
+				                  align);
+			} else {
+				/* Scalar load */
+				buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", loaded, load_type, scalar_type, res_name,
+				                  align);
+			}
+			strcpy(result_buf, loaded);
 		}
-		strcpy(result_buf, loaded);
 		break;
 	}
 
@@ -894,7 +981,8 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					if (field_idx < arch->field_count) {
 						char field_buf[256];
 						codegen_expression(ctx, expr->data.call.args[i], field_buf);
-						const char *field_type = llvm_type_from_arche(arch->fields[field_idx]->type->data.name);
+						const char *field_type =
+						    llvm_type_from_arche(field_base_type_name(arch->fields[field_idx]->type));
 						buffer_append_fmt(ctx, ", %s %s", field_type, field_buf);
 						field_idx++;
 					}
@@ -1282,8 +1370,9 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		int bytes_per_row = 0;
 		for (int i = 0; i < arch->field_count; i++) {
 			if (arch->fields[i]->kind == FIELD_COLUMN) {
-				const char *elem_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
-				bytes_per_row += (elem_type[0] == 'd') ? 8 : 4;
+				const char *elem_type = llvm_type_from_arche(field_base_type_name(arch->fields[i]->type));
+				int n = field_total_elements(arch->fields[i]->type);
+				bytes_per_row += ((elem_type[0] == 'd') ? 8 : 4) * n;
 			}
 		}
 		/* Add 8 bytes per row for free_list entry (i64) */
@@ -1324,7 +1413,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		int col_offset = 0;
 		for (int i = 0; i < arch->field_count; i++) {
 			if (arch->fields[i]->kind == FIELD_COLUMN) {
-				const char *elem_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
+				const char *elem_type = llvm_type_from_arche(field_base_type_name(arch->fields[i]->type));
 
 				char *col_gep = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", col_gep,
@@ -1346,7 +1435,8 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 				buffer_append_fmt(ctx, "  store %s* %s, %s** %s\n", elem_type, col_ptr, elem_type, col_gep);
 
-				int elem_size = (elem_type[0] == 'd') ? 8 : 4;
+				int n = field_total_elements(arch->fields[i]->type);
+				int elem_size = ((elem_type[0] == 'd') ? 8 : 4) * n;
 				col_offset += elem_size;
 			}
 		}
@@ -1726,13 +1816,40 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			alloc_arch_name = stmt->data.let_stmt.value->data.alloc.archetype_name;
 		}
 
+		/* Detect: let row = arch.field[entity] where field is shaped array */
+		int is_multidim_slice = 0;
+		const char *slice_elem_type = NULL;
+		if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->type == EXPR_INDEX &&
+		    stmt->data.let_stmt.value->data.index.index_count == 1) {
+			slice_elem_type = get_shaped_field_info(ctx, stmt->data.let_stmt.value->data.index.base, NULL);
+			if (slice_elem_type)
+				is_multidim_slice = 1;
+		}
+
 		if (stmt->data.let_stmt.value) {
 			codegen_expression(ctx, stmt->data.let_stmt.value, value_buf);
 		} else {
 			strcpy(value_buf, "0");
 		}
 
-		if (is_alloc && alloc_arch_name) {
+		if (is_multidim_slice) {
+			/* value_buf is a raw pointer — store as type-6 ValueInfo */
+			ValueInfo *vi = malloc(sizeof(ValueInfo));
+			vi->name = malloc(strlen(var_name) + 1);
+			strcpy(vi->name, var_name);
+			vi->llvm_name = malloc(strlen(value_buf) + 1);
+			strcpy(vi->llvm_name, value_buf);
+			vi->type = 6; /* typed column slice pointer */
+			vi->arch_name = NULL;
+			vi->string_len = -1;
+			vi->field_type = slice_elem_type;
+			vi->bit_width = 64;
+			if (ctx->scope_count > 0) {
+				ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+				scope->values[scope->value_count++] = vi;
+			}
+		} else if (is_alloc && alloc_arch_name) {
 			/* Track as arch pointer (type 3) */
 			add_arch_value(ctx, var_name, value_buf, alloc_arch_name);
 		} else if (is_string) {
@@ -1967,7 +2084,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 
 						if (field_idx >= 0 && fdecl && fdecl->kind == FIELD_COLUMN) {
 							/* Load column pointer and count from struct */
-							const char *llvm_type = llvm_type_from_arche(fdecl->type->data.name);
+							const char *llvm_type = llvm_type_from_arche(field_base_type_name(fdecl->type));
 							char *field_gep = gen_value_name(ctx);
 							const char *struct_ptr_val;
 							if (arch_name_direct) {
@@ -1996,8 +2113,8 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 							buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, count_gep);
 
 							/* Emit whole-column loop */
-							const char *scalar_type = llvm_type_from_arche(fdecl->type->data.name);
-							emit_whole_column_loop(ctx, col_ptr, count, scalar_type, fdecl->type->data.name,
+							const char *scalar_type = llvm_type_from_arche(field_base_type_name(fdecl->type));
+							emit_whole_column_loop(ctx, col_ptr, count, scalar_type, field_base_type_name(fdecl->type),
 							                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op);
 						} else {
 							/* Tuple field: emit loop for each component */
@@ -2166,7 +2283,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 					if (arch) {
 						for (int i = 0; i < arch->field_count; i++) {
 							if (strcmp(arch->fields[i]->name, field_name) == 0) {
-								arche_type = arch->fields[i]->type->data.name;
+								arche_type = field_base_type_name(arch->fields[i]->type);
 								scalar_type = llvm_type_from_arche(arche_type);
 								break;
 							}
@@ -2543,7 +2660,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	buffer_append_fmt(ctx, "%%struct.%s = type {\n", arch->name);
 
 	for (int i = 0; i < arch->field_count; i++) {
-		const char *base_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
+		const char *base_type = llvm_type_from_arche(field_base_type_name(arch->fields[i]->type));
 
 		/* col fields are arrays → emit as pointer type */
 		if (arch->fields[i]->kind == FIELD_COLUMN) {
@@ -2569,7 +2686,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	buffer_append_fmt(ctx, "define void @arche_insert_%s(%%struct.%s* %%arch", arch->name, arch->name);
 	for (int i = 0; i < arch->field_count; i++) {
 		if (arch->fields[i]->kind == FIELD_COLUMN) {
-			const char *base_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
+			const char *base_type = llvm_type_from_arche(field_base_type_name(arch->fields[i]->type));
 			buffer_append_fmt(ctx, ", %s %%f%d", base_type, i);
 		}
 	}
@@ -2633,13 +2750,21 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	int col_idx = 0;
 	for (int i = 0; i < arch->field_count; i++) {
 		if (arch->fields[i]->kind == FIELD_COLUMN) {
-			const char *base_type = llvm_type_from_arche(arch->fields[i]->type->data.name);
+			const char *base_type = llvm_type_from_arche(field_base_type_name(arch->fields[i]->type));
 			buffer_append_fmt(ctx, "  %%col_pp2_%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
 			                  col_idx, arch->name, arch->name, i);
 			buffer_append_fmt(ctx, "  %%col_p2_%d = load %s*, %s** %%col_pp2_%d\n", col_idx, base_type, base_type,
 			                  col_idx);
-			buffer_append_fmt(ctx, "  %%slot%d = getelementptr %s, %s* %%col_p2_%d, i64 %%final_slot\n", col_idx,
-			                  base_type, base_type, col_idx);
+			int col_n = field_total_elements(arch->fields[i]->type);
+			const char *flat_slot = "%final_slot";
+			char flat_slot_buf[64];
+			if (col_n > 1) {
+				snprintf(flat_slot_buf, sizeof(flat_slot_buf), "%%flat_slot_%d", col_idx);
+				buffer_append_fmt(ctx, "  %s = mul i64 %%final_slot, %d\n", flat_slot_buf, col_n);
+				flat_slot = flat_slot_buf;
+			}
+			buffer_append_fmt(ctx, "  %%slot%d = getelementptr %s, %s* %%col_p2_%d, i64 %s\n", col_idx, base_type,
+			                  base_type, col_idx, flat_slot);
 			buffer_append_fmt(ctx, "  store %s %%f%d, %s* %%slot%d\n", base_type, i, base_type, col_idx);
 			col_idx++;
 		}
@@ -2852,7 +2977,7 @@ static void codegen_sys_version(CodegenContext *ctx, SysDecl *sys, const char *a
 			/* Find this field in the archetype */
 			for (int f = 0; f < arch->field_count; f++) {
 				if (strcmp(arch->fields[f]->name, param_name) == 0) {
-					const char *elem_type = llvm_type_from_arche(arch->fields[f]->type->data.name);
+					const char *elem_type = llvm_type_from_arche(field_base_type_name(arch->fields[f]->type));
 
 					if (arch->fields[f]->kind == FIELD_COLUMN) {
 						/* Load the column pointer from the struct */
@@ -2872,7 +2997,7 @@ static void codegen_sys_version(CodegenContext *ctx, SysDecl *sys, const char *a
 						if (col_val) {
 							col_val->arch_name = malloc(strlen(arch_name) + 1);
 							strcpy(col_val->arch_name, arch_name);
-							col_val->field_type = arch->fields[f]->type->data.name;
+							col_val->field_type = field_base_type_name(arch->fields[f]->type);
 						}
 					} else {
 						/* Meta field: load the scalar value */
