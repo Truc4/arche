@@ -680,10 +680,9 @@ static Expression *parse_primary_expr(Parser *parser) {
 	}
 
 	if (check(parser, TOK_CHAR_LIT)) {
-		char char_buf[32];
-		snprintf(char_buf, sizeof(char_buf), "%d", parser->current.int_val);
-		char *lexeme = malloc(strlen(char_buf) + 1);
-		strcpy(lexeme, char_buf);
+		char *lexeme = malloc(parser->current.length + 1);
+		strncpy(lexeme, parser->current.start, parser->current.length);
+		lexeme[parser->current.length] = '\0';
 		advance(parser);
 
 		Expression *expr = expression_create(EXPR_LITERAL);
@@ -1208,6 +1207,23 @@ static Statement *parse_statement(Parser *parser) {
 		/* Check for infinite for: for { } */
 		if (match(parser, TOK_LBRACE)) {
 			/* Infinite loop - no var_name, iterable, or condition (already set to NULL above) */
+		} else if (match(parser, TOK_LPAREN)) {
+			/* Condition-based for: for (cond) { } */
+			Expression *cond = parse_expression(parser);
+			if (!cond)
+				return NULL;
+
+			if (!match(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')' after for condition");
+				return NULL;
+			}
+
+			stmt->data.for_stmt.condition = cond;
+
+			if (!match(parser, TOK_LBRACE)) {
+				error(parser, "Expected '{'");
+				return NULL;
+			}
 		} else {
 			/* Range-based for: for var in iterable { } */
 			if (!check(parser, TOK_IDENT)) {

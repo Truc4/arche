@@ -437,8 +437,38 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 	case EXPR_LITERAL: {
 		const char *lex = expr->data.literal.lexeme;
 
-		/* Check if it's a string literal (starts with ") */
-		if (lex[0] == '"') {
+		/* Check if it's a char literal (starts with ') */
+		if (lex[0] == '\'') {
+			int char_value = 0;
+			if (lex[1] == '\\') {
+				/* Escape sequence */
+				switch (lex[2]) {
+				case 'n':
+					char_value = '\n';
+					break;
+				case 't':
+					char_value = '\t';
+					break;
+				case 'r':
+					char_value = '\r';
+					break;
+				case '\\':
+					char_value = '\\';
+					break;
+				case '\'':
+					char_value = '\'';
+					break;
+				default:
+					char_value = lex[2];
+					break;
+				}
+			} else {
+				/* Regular character */
+				char_value = lex[1];
+			}
+			snprintf(result_buf, sizeof(result_buf), "%d", char_value);
+		} else if (lex[0] == '"') {
+			/* String literal */
 			char *global_name = emit_string_global(ctx, lex);
 			size_t str_len = strlen(lex) - 2; /* excluding quotes */
 
@@ -934,13 +964,21 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		if (type7_vi && expr->data.index.index_count > 0) {
 			codegen_expression(ctx, expr->data.index.indices[0], idx_buf);
 
+			/* Convert i32 index to i64 for getelementptr */
+			char *idx_i64 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx_i64, idx_buf);
+
 			char *res_name = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i64 0, i64 %s\n", res_name,
-			                  type7_vi->string_len, type7_vi->string_len, base_buf, idx_buf);
+			                  type7_vi->string_len, type7_vi->string_len, base_buf, idx_i64);
 
 			char *loaded = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = load i8, i8* %s, align 1\n", loaded, res_name);
-			strcpy(result_buf, loaded);
+
+			/* Zero-extend i8 to i32 for compatibility with rest of system */
+			char *extended = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = zext i8 %s to i32\n", extended, loaded);
+			strcpy(result_buf, extended);
 			break;
 		}
 
@@ -953,9 +991,19 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			emit_bounds_check(ctx, bc_arch_name, bc_arch_ptr, bc_count_idx, idx_buf, bc_idx_is_i64);
 		}
 
+		/* Ensure index is i64 for getelementptr (simple heuristic: if not from shaped array ops, assume i32 and
+		 * convert) */
+		const char *final_idx = idx_buf;
+		if (expr->data.index.index_count > 0 && !shaped_elem) {
+			/* Index likely came from a variable or expression, probably i32. Convert to i64. */
+			char *idx_i64 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx_i64, idx_buf);
+			final_idx = idx_i64;
+		}
+
 		char *res_name = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", res_name, scalar_type, scalar_type,
-		                  base_buf, idx_buf);
+		                  base_buf, final_idx);
 
 		if (expr->data.index.index_count == 1 && shaped_elem) {
 			/* Single-index on shaped field → return pointer slice, not loaded value */
@@ -1144,7 +1192,20 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			}
 
 			/* Handle type conversions, emit code before call if needed */
-			if (arg_values[i] && arg_values[i]->type == 5) {
+			if (arg_values[i] && arg_values[i]->type == 7) {
+				/* Arg is char buffer [N x i8]* — cast to i8* for C functions */
+				if (callee_is_extern && callee_wants_arr) {
+					/* Cast [N x i8]* to i8* using bitcast */
+					char *bitcast = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = bitcast i8* %s to i8*\n", bitcast, arg_bufs[i]);
+					strcpy(call_arg_vals[i], bitcast);
+					call_arg_types[i] = "i8*";
+				} else {
+					/* Pass as i8* pointer */
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = "i8*";
+				}
+			} else if (arg_values[i] && arg_values[i]->type == 5) {
 				/* Arg is arche_array struct */
 				if (callee_is_extern && callee_wants_arr) {
 					/* Extract i8* data ptr from struct (field 0) — C ABI */
@@ -1270,8 +1331,24 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			buffer_append(ctx, ")\n");
 			strcpy(result_buf, res_name);
 		} else {
-			/* Normal non-variadic call */
-			buffer_append_fmt(ctx, "  %s = call i32 @%s(", res_name, actual_func_name);
+			/* Normal non-variadic call - determine return type */
+			const char *return_type = "i32"; /* default */
+
+			/* Check if we have return type info from the proc declaration */
+			if (callee_proc && callee_proc->is_extern) {
+				/* For extern procs, check if they're in core lib */
+				if (strcmp(func_name, "atof") == 0) {
+					return_type = "double";
+				} else if (strcmp(func_name, "atoi") == 0) {
+					return_type = "i32";
+				}
+				/* Add more extern functions as needed */
+			} else if (callee_proc && callee_proc->is_extern == 0 && expr->resolved_type) {
+				/* For user-defined functions, use resolved type */
+				return_type = llvm_type_from_arche(expr->resolved_type);
+			}
+
+			buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type, actual_func_name);
 			for (int i = 0; i < expr->data.call.arg_count; i++) {
 				buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
 				if (i < expr->data.call.arg_count - 1) {
@@ -2440,10 +2517,18 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 
 			if (type7_target && stmt->data.assign_stmt.target->data.index.index_count > 0) {
 				/* Type-7 char buffer assignment */
+				/* Convert i32 index to i64 for getelementptr */
+				char *idx_i64 = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx_i64, idx_buf);
+
 				char *target_addr = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i64 0, i64 %s\n", target_addr,
-				                  type7_target->string_len, type7_target->string_len, base_buf, idx_buf);
-				buffer_append_fmt(ctx, "  store i8 %s, i8* %s, align 1\n", value_buf, target_addr);
+				                  type7_target->string_len, type7_target->string_len, base_buf, idx_i64);
+
+				/* Truncate i32 value to i8 for storing */
+				char *trunc_val = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = trunc i32 %s to i8\n", trunc_val, value_buf);
+				buffer_append_fmt(ctx, "  store i8 %s, i8* %s, align 1\n", trunc_val, target_addr);
 				break;
 			}
 
@@ -2491,10 +2576,20 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				emit_bounds_check(ctx, bc_arch_name, bc_arch_ptr, bc_count_idx, idx_buf, bc_idx_is_i64);
 			}
 
+			/* Ensure index is i64 for getelementptr (simple heuristic: if not from bounds check, assume i32 and
+			 * convert) */
+			const char *final_idx = idx_buf;
+			if (stmt->data.assign_stmt.target->data.index.index_count > 0 && !bc_idx_is_i64) {
+				/* Index likely came from a variable or expression, probably i32. Convert to i64. */
+				char *idx_i64 = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx_i64, idx_buf);
+				final_idx = idx_i64;
+			}
+
 			/* Compute target address (always uses scalar pointer) */
 			char *target_addr = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", target_addr, scalar_type, scalar_type,
-			                  base_buf, idx_buf);
+			                  base_buf, final_idx);
 
 			/* Store or compound operation */
 			if (stmt->data.assign_stmt.op == OP_NONE) {

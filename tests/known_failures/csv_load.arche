@@ -61,10 +61,10 @@ proc load_csv(path: char[]) {
   close(fd);
 }
 
+
 proc main() {
   alloc Transaction(3);
   load_csv("data/transactions.csv");
   assert(Transaction.price[0] == 1.0, "price[0] not 1.0\n");
   printf("csv ok\n");
 }
-

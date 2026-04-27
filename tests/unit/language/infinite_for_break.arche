@@ -3,8 +3,9 @@
 
 proc main() {
   let i = 0;
-  for (null) in  {
+  for {
     if (i == 2) {
+      break;
     }
     printf("iteration\n");
     i = i + 1;

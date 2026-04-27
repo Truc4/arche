@@ -594,9 +594,14 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		break;
 
 	case STMT_FOR: {
-		/* Check for infinite for loop (no iterable, no var_name) */
+		/* Check for infinite or condition-based for loop */
 		if (!stmt->data.for_stmt.var_name) {
-			/* Infinite for loop - no iterable to analyze */
+			/* Infinite or condition-based for loop */
+			if (stmt->data.for_stmt.condition) {
+				/* Condition-based: analyze condition */
+				analyze_expression(ctx, stmt->data.for_stmt.condition);
+			}
+			/* Both infinite and condition-based loops: analyze body in new scope */
 			push_scope(ctx);
 			for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
 				analyze_statement(ctx, stmt->data.for_stmt.body[i]);

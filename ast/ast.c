@@ -610,6 +610,15 @@ static void format_expression(FILE *out, Expression *expr) {
 	}
 }
 
+/* Context for tracking comment output during formatting */
+typedef struct {
+	Token *comments;
+	size_t comment_count;
+	size_t comment_idx;
+	int last_line;
+	const char *src;
+} FmtCtx;
+
 static void format_statement(FILE *out, Statement *stmt, int indent);
 
 static void format_statement(FILE *out, Statement *stmt, int indent) {
@@ -623,8 +632,17 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 
 	switch (stmt->type) {
 	case STMT_LET: {
-		fprintf(out, "%slet %s = ", indent_str, stmt->data.let_stmt.name);
-		format_expression(out, stmt->data.let_stmt.value);
+		fprintf(out, "%slet %s", indent_str, stmt->data.let_stmt.name);
+		/* Output type annotation if present */
+		if (stmt->data.let_stmt.type) {
+			fprintf(out, ": ");
+			format_type(out, stmt->data.let_stmt.type);
+		}
+		/* Output value if present */
+		if (stmt->data.let_stmt.value) {
+			fprintf(out, " = ");
+			format_expression(out, stmt->data.let_stmt.value);
+		}
 		fprintf(out, ";\n");
 		break;
 	}
@@ -654,8 +672,21 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		break;
 	}
 	case STMT_FOR: {
-		fprintf(out, "%sfor %s in ", indent_str, stmt->data.for_stmt.var_name);
-		format_expression(out, stmt->data.for_stmt.iterable);
+		fprintf(out, "%sfor", indent_str);
+		if (!stmt->data.for_stmt.var_name) {
+			/* Infinite or condition-based for */
+			if (stmt->data.for_stmt.condition) {
+				/* Condition-based: for (cond) { } */
+				fprintf(out, " (");
+				format_expression(out, stmt->data.for_stmt.condition);
+				fprintf(out, ")");
+			}
+			/* Else infinite: for { } */
+		} else {
+			/* Range-based: for var_name in iterable { } */
+			fprintf(out, " %s in ", stmt->data.for_stmt.var_name);
+			format_expression(out, stmt->data.for_stmt.iterable);
+		}
 		fprintf(out, " {\n");
 		for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
 			format_statement(out, stmt->data.for_stmt.body[i], indent + 1);
@@ -700,17 +731,12 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		fprintf(out, ");\n");
 		break;
 	}
+	case STMT_BREAK: {
+		fprintf(out, "%sbreak;\n", indent_str);
+		break;
+	}
 	}
 }
-
-/* Context for tracking comment output during formatting */
-typedef struct {
-	Token *comments;
-	size_t comment_count;
-	size_t comment_idx;
-	int last_line;
-	const char *src;
-} FmtCtx;
 
 /* Get the actual start line of a declaration (from inner payload, not the broken decl->loc) */
 static int decl_start_line(Decl *decl) {
@@ -745,9 +771,15 @@ static void flush_before_line(FILE *out, FmtCtx *ctx, int line) {
 		ctx->comment_idx++;
 	}
 
-	/* Emit blank lines for gaps (normalize to 1 blank line) */
+	/* Emit blank lines for gaps (preserve up to 2 blank lines) */
 	if (line > ctx->last_line + 1) {
-		fprintf(out, "\n");
+		/* Add 1 or 2 blank lines depending on gap size */
+		int gap = line - ctx->last_line - 1;
+		if (gap >= 2) {
+			fprintf(out, "\n\n");
+		} else {
+			fprintf(out, "\n");
+		}
 	}
 	ctx->last_line = line - 1;
 }

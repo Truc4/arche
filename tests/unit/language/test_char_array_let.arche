@@ -1,10 +1,8 @@
 // RUN: %arche -o %t %s && %t
-// Minimal infinite for loop test
 
 proc main() {
-  for {
-    break;
-  }
+  let buf: char[256];
+  let c = ',';
   printf("ok\n");
 }
 
