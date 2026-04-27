@@ -1,0 +1,11 @@
+// RUN: %arche -o %t %s && %t
+// Step 2: Stack-allocated char arrays (let buf: char[N];)
+
+proc main() {
+  let buf = ;
+  buf[0] = 104;
+  buf[1] = 105;
+  buf[2] = 0;
+  printf("char array ok\n");
+}
+

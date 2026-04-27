@@ -141,7 +141,7 @@ TypeRef *type_shaped_array_create(TypeRef *element_type, int rank) {
    ========================= */
 
 Statement *statement_create(StatementType type) {
-	Statement *stmt = malloc(sizeof(Statement));
+	Statement *stmt = calloc(1, sizeof(Statement));
 	stmt->type = type;
 	stmt->loc.line = 1;
 	stmt->loc.column = 1;

@@ -594,6 +594,17 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		break;
 
 	case STMT_FOR: {
+		/* Check for infinite for loop (no iterable, no var_name) */
+		if (!stmt->data.for_stmt.var_name) {
+			/* Infinite for loop - no iterable to analyze */
+			push_scope(ctx);
+			for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
+				analyze_statement(ctx, stmt->data.for_stmt.body[i]);
+			}
+			pop_scope(ctx);
+			break;
+		}
+
 		/* check iterable exists (should be archetype) */
 		analyze_expression(ctx, stmt->data.for_stmt.iterable);
 

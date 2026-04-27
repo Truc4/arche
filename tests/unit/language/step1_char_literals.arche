@@ -1,0 +1,10 @@
+// RUN: %arche -o %t %s && %t
+// Step 1: Char literals
+
+proc main() {
+  let c = 44;
+  let nl = 10;
+  let tab = 9;
+  printf("char ok\n");
+}
+

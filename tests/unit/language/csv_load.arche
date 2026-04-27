@@ -9,20 +9,22 @@ arche Transaction {
 proc load_csv(path: char[]) {
   let fd = open(path, 0);
   let buf: char[256];
+  let price_str: char[32];
+  let qty_str: char[32];
   let idx = 0;
 
   // Skip header
   read(fd, buf, 256);
 
   // Read and parse each CSV row
-  while (idx < 3) {
+  for (idx < 3) {
     let n = read(fd, buf, 256);
     if (n == 0) break;
 
-    // Parse: price,quantity
+    // Find comma position
     let comma_pos = 0;
     let i = 0;
-    while (i < n) {
+    for (i < n) {
       if (buf[i] == ',') {
         comma_pos = i;
         break;
@@ -30,9 +32,28 @@ proc load_csv(path: char[]) {
       i = i + 1;
     }
 
-    // Convert strings to values and assign
-    Transaction.price[idx] = atof(buf);
-    Transaction.quantity[idx] = atoi(buf + comma_pos + 1);
+    // Copy price string (before comma)
+    let j = 0;
+    for (j < comma_pos) {
+      price_str[j] = buf[j];
+      j = j + 1;
+    }
+    price_str[j] = 0;
+
+    // Copy quantity string (after comma)
+    j = 0;
+    i = comma_pos + 1;
+    for (i < n) {
+      if (buf[i] == '\n') break;
+      qty_str[j] = buf[i];
+      j = j + 1;
+      i = i + 1;
+    }
+    qty_str[j] = 0;
+
+    // Convert and assign
+    Transaction.price[idx] = atof(price_str);
+    Transaction.quantity[idx] = atoi(qty_str);
 
     idx = idx + 1;
   }

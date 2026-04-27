@@ -143,6 +143,9 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 4 && strncmp(start, "free", 4) == 0) {
 		return TOK_FREE;
 	}
+	if (length == 5 && strncmp(start, "break", 5) == 0) {
+		return TOK_BREAK;
+	}
 	if (length == 6 && strncmp(start, "extern", 6) == 0) {
 		return TOK_EXTERN;
 	}
@@ -182,6 +185,58 @@ static Token lex_number(Lexer *lexer) {
 	}
 
 	return make_token(lexer, TOK_NUMBER, start, (size_t)(lexer->cur - start), line, column);
+}
+
+static Token lex_char_lit(Lexer *lexer) {
+	const char *start = lexer->cur;
+	int line = lexer->line;
+	int column = lexer->column;
+
+	advance(lexer); /* consume opening '\'' */
+
+	int char_value = 0;
+	if (peek(lexer) == '\\') {
+		advance(lexer); /* consume backslash */
+		if (!is_at_end(lexer)) {
+			char escaped = peek(lexer);
+			switch (escaped) {
+			case 'n':
+				char_value = '\n';
+				break;
+			case 't':
+				char_value = '\t';
+				break;
+			case 'r':
+				char_value = '\r';
+				break;
+			case '\\':
+				char_value = '\\';
+				break;
+			case '\'':
+				char_value = '\'';
+				break;
+			default:
+				char_value = escaped;
+				break;
+			}
+			advance(lexer);
+		}
+	} else if (peek(lexer) != '\'' && !is_at_end(lexer)) {
+		char_value = peek(lexer);
+		advance(lexer);
+	} else {
+		return error_token(lexer, "Empty character literal", line, column);
+	}
+
+	if (peek(lexer) != '\'') {
+		return error_token(lexer, "Unterminated character literal", line, column);
+	}
+
+	advance(lexer); /* consume closing '\'' */
+
+	Token token = make_token(lexer, TOK_CHAR_LIT, start, lexer->cur - start, line, column);
+	token.int_val = char_value;
+	return token;
 }
 
 static Token lex_string(Lexer *lexer) {
@@ -362,6 +417,12 @@ Token lexer_next_token(Lexer *lexer) {
 		lexer->cur--;
 		lexer->column--;
 		return lex_string(lexer);
+	}
+
+	if (c == '\'') {
+		lexer->cur--;
+		lexer->column--;
+		return lex_char_lit(lexer);
 	}
 
 	switch (c) {

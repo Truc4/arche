@@ -1,0 +1,12 @@
+// RUN: %arche -o %t %s && %t
+
+proc main() {
+  for (null) in  {
+    printf("before if\n");
+    if (1) {
+      printf("in if\n");
+    }
+  }
+  printf("ok\n");
+}
+

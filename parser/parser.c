@@ -679,6 +679,20 @@ static Expression *parse_primary_expr(Parser *parser) {
 		return expr;
 	}
 
+	if (check(parser, TOK_CHAR_LIT)) {
+		char char_buf[32];
+		snprintf(char_buf, sizeof(char_buf), "%d", parser->current.int_val);
+		char *lexeme = malloc(strlen(char_buf) + 1);
+		strcpy(lexeme, char_buf);
+		advance(parser);
+
+		Expression *expr = expression_create(EXPR_LITERAL);
+		expr->loc.line = parser->previous.line;
+		expr->loc.column = parser->previous.column;
+		expr->data.literal.lexeme = lexeme;
+		return expr;
+	}
+
 	if (check(parser, TOK_LBRACE)) {
 		advance(parser);
 		int arr_line = parser->previous.line;
@@ -956,8 +970,8 @@ static Expression *parse_primary_expr(Parser *parser) {
 	return NULL;
 }
 
-static Expression *parse_binary_expr(Parser *parser) {
-	Expression *left = parse_primary_expr(parser);
+static Expression *parse_binary_expr_with_left(Parser *parser, Expression *left) {
+	/* Continue parsing binary expression from a given left operand */
 	if (!left)
 		return NULL;
 
@@ -1022,6 +1036,11 @@ static Expression *parse_binary_expr(Parser *parser) {
 	return left;
 }
 
+static Expression *parse_binary_expr(Parser *parser) {
+	Expression *left = parse_primary_expr(parser);
+	return parse_binary_expr_with_left(parser, left);
+}
+
 static Expression *parse_expression(Parser *parser) {
 	return parse_binary_expr(parser);
 }
@@ -1031,6 +1050,20 @@ static Expression *parse_expression(Parser *parser) {
 static Statement *parse_statement(Parser *parser) {
 	if (match(parser, TOK_SEMI)) {
 		return NULL; /* empty statement */
+	}
+
+	if (match(parser, TOK_BREAK)) {
+		int break_line = parser->previous.line;
+		int break_column = parser->previous.column;
+
+		if (!match(parser, TOK_SEMI)) {
+			error(parser, "Expected ';' after break");
+		}
+
+		Statement *stmt = statement_create(STMT_BREAK);
+		stmt->loc.line = break_line;
+		stmt->loc.column = break_column;
+		return stmt;
 	}
 
 	/* check for run statement */
@@ -1120,11 +1153,6 @@ static Statement *parse_statement(Parser *parser) {
 			return NULL;
 		}
 
-		if (!match(parser, TOK_LBRACE)) {
-			error(parser, "Expected '{' for if body");
-			return NULL;
-		}
-
 		Statement *stmt = statement_create(STMT_IF);
 		stmt->loc.line = if_line;
 		stmt->loc.column = if_column;
@@ -1134,20 +1162,31 @@ static Statement *parse_statement(Parser *parser) {
 		stmt->data.if_stmt.else_body = NULL;
 		stmt->data.if_stmt.else_count = 0;
 
-		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-			Statement *body_stmt = parse_statement(parser);
-			if (!body_stmt) {
-				synchronize(parser);
-				continue;
+		if (match(parser, TOK_LBRACE)) {
+			/* Braced block: collect statements until } */
+			while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+				Statement *body_stmt = parse_statement(parser);
+				if (!body_stmt) {
+					synchronize(parser);
+					continue;
+				}
+
+				stmt->data.if_stmt.then_body =
+				    realloc(stmt->data.if_stmt.then_body, (stmt->data.if_stmt.then_count + 1) * sizeof(Statement *));
+				stmt->data.if_stmt.then_body[stmt->data.if_stmt.then_count++] = body_stmt;
 			}
 
-			stmt->data.if_stmt.then_body =
-			    realloc(stmt->data.if_stmt.then_body, (stmt->data.if_stmt.then_count + 1) * sizeof(Statement *));
-			stmt->data.if_stmt.then_body[stmt->data.if_stmt.then_count++] = body_stmt;
-		}
-
-		if (!match(parser, TOK_RBRACE)) {
-			error(parser, "Expected '}' after if body");
+			if (!match(parser, TOK_RBRACE)) {
+				error(parser, "Expected '}' after if body");
+			}
+		} else {
+			/* Braceless: parse exactly one statement */
+			Statement *body_stmt = parse_statement(parser);
+			if (body_stmt) {
+				stmt->data.if_stmt.then_body = malloc(sizeof(Statement *));
+				stmt->data.if_stmt.then_body[0] = body_stmt;
+				stmt->data.if_stmt.then_count = 1;
+			}
 		}
 
 		return stmt;
@@ -1157,44 +1196,54 @@ static Statement *parse_statement(Parser *parser) {
 		int for_line = parser->previous.line;
 		int for_column = parser->previous.column;
 
-		if (!check(parser, TOK_IDENT)) {
-			error(parser, "Expected variable name after 'for'");
-			return NULL;
-		}
-
-		char *var_name = token_text(parser->current);
-		advance(parser);
-
-		if (!match(parser, TOK_IN)) {
-			error(parser, "Expected 'in' in for loop");
-			return NULL;
-		}
-
-		if (!check(parser, TOK_IDENT)) {
-			error(parser, "Expected iterable after 'in'");
-			return NULL;
-		}
-
-		char *iterable_name = token_text(parser->current);
-		advance(parser);
-
-		Expression *iterable = expression_create(EXPR_NAME);
-		iterable->loc.line = parser->previous.line;
-		iterable->loc.column = parser->previous.column;
-		iterable->data.name.name = iterable_name;
-
-		if (!match(parser, TOK_LBRACE)) {
-			error(parser, "Expected '{'");
-			return NULL;
-		}
-
 		Statement *stmt = statement_create(STMT_FOR);
 		stmt->loc.line = for_line;
 		stmt->loc.column = for_column;
-		stmt->data.for_stmt.var_name = var_name;
-		stmt->data.for_stmt.iterable = iterable;
+		stmt->data.for_stmt.var_name = NULL;
+		stmt->data.for_stmt.iterable = NULL;
+		stmt->data.for_stmt.condition = NULL;
 		stmt->data.for_stmt.body = NULL;
 		stmt->data.for_stmt.body_count = 0;
+
+		/* Check for infinite for: for { } */
+		if (match(parser, TOK_LBRACE)) {
+			/* Infinite loop - no var_name, iterable, or condition (already set to NULL above) */
+		} else {
+			/* Range-based for: for var in iterable { } */
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected variable name after 'for'");
+				return NULL;
+			}
+
+			char *var_name = token_text(parser->current);
+			advance(parser);
+
+			if (!match(parser, TOK_IN)) {
+				error(parser, "Expected 'in' in for loop");
+				return NULL;
+			}
+
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected iterable after 'in'");
+				return NULL;
+			}
+
+			char *iterable_name = token_text(parser->current);
+			advance(parser);
+
+			Expression *iterable = expression_create(EXPR_NAME);
+			iterable->loc.line = parser->previous.line;
+			iterable->loc.column = parser->previous.column;
+			iterable->data.name.name = iterable_name;
+
+			stmt->data.for_stmt.var_name = var_name;
+			stmt->data.for_stmt.iterable = iterable;
+
+			if (!match(parser, TOK_LBRACE)) {
+				error(parser, "Expected '{'");
+				return NULL;
+			}
+		}
 
 		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
 			Statement *body_stmt = parse_statement(parser);

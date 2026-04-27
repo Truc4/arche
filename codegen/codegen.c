@@ -56,6 +56,11 @@ struct CodegenContext {
 	/* Implicit loop context */
 	char implicit_loop_index[64]; /* SSA reg name for current implicit loop ("" = not in loop) */
 
+	/* Loop exit label stack for break statements */
+	char **loop_exit_labels;
+	int loop_exit_count;
+	int loop_exit_capacity;
+
 	/* System function version mapping: (sys_name, arch_name) -> versioned_name */
 	SysVersion *sys_versions;
 	int sys_version_count;
@@ -637,9 +642,6 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		}
 
 		strcpy(result_buf, res_name);
-		if (expr->data.binary.left->type == EXPR_NAME) {
-			add_value(ctx, expr->data.binary.left->data.name.name, result_buf, 0);
-		}
 		break;
 	}
 
@@ -858,6 +860,15 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		char base_buf[256], idx_buf[256];
 		codegen_expression(ctx, expr->data.index.base, base_buf);
 
+		/* Check if base is a type-7 char buffer (let buf: char[256];) */
+		ValueInfo *type7_vi = NULL;
+		if (expr->data.index.base->type == EXPR_NAME) {
+			ValueInfo *vi = find_value(ctx, expr->data.index.base->data.name.name);
+			if (vi && vi->type == 7) {
+				type7_vi = vi;
+			}
+		}
+
 		/* Check if base is a type-6 slice pointer variable */
 		const char *type6_elem_type = NULL;
 		if (expr->data.index.base->type == EXPR_NAME) {
@@ -918,6 +929,20 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 		/* In vector mode, load uses vector type; GEP uses scalar pointer */
 		const char *load_type = arche_type ? elem_llvm_type(ctx, arche_type) : scalar_type;
+
+		/* Handle type-7 char buffer specially */
+		if (type7_vi && expr->data.index.index_count > 0) {
+			codegen_expression(ctx, expr->data.index.indices[0], idx_buf);
+
+			char *res_name = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i64 0, i64 %s\n", res_name,
+			                  type7_vi->string_len, type7_vi->string_len, base_buf, idx_buf);
+
+			char *loaded = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load i8, i8* %s, align 1\n", loaded, res_name);
+			strcpy(result_buf, loaded);
+			break;
+		}
 
 		/* Bounds check for archetype column accesses */
 		const char *bc_arch_name = NULL, *bc_arch_ptr = NULL;
@@ -1885,6 +1910,30 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", cap_gep);
 
 				add_array_value(ctx, var_name, arr_alloca);
+			} else if (type->kind == TYPE_SHAPED_ARRAY && type->data.shaped_array.element_type &&
+			           type->data.shaped_array.element_type->kind == TYPE_NAME &&
+			           strcmp(type->data.shaped_array.element_type->data.name, "char") == 0) {
+				/* Stack-allocated char array: let buf: char[256]; */
+				int rank = type->data.shaped_array.rank;
+				char *alloca_name = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = alloca [%d x i8]\n", alloca_name, rank);
+
+				ValueInfo *vi = malloc(sizeof(ValueInfo));
+				vi->name = malloc(strlen(var_name) + 1);
+				strcpy(vi->name, var_name);
+				vi->llvm_name = malloc(strlen(alloca_name) + 1);
+				strcpy(vi->llvm_name, alloca_name);
+				vi->type = 7; /* type 7 = char buffer array [N x i8]* */
+				vi->arch_name = NULL;
+				vi->string_len = rank;
+				vi->field_type = "char";
+				vi->bit_width = 8;
+
+				if (ctx->scope_count > 0) {
+					ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+					scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+					scope->values[scope->value_count++] = vi;
+				}
 			} else {
 				/* Scalar type: allocate and zero-initialize */
 				const char *alloc_type = "i32";
@@ -2380,6 +2429,24 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				codegen_expression(ctx, stmt->data.assign_stmt.target->data.index.indices[0], idx_buf);
 			}
 
+			/* Check if target is type-7 char buffer */
+			ValueInfo *type7_target = NULL;
+			if (stmt->data.assign_stmt.target->data.index.base->type == EXPR_NAME) {
+				ValueInfo *vi = find_value(ctx, stmt->data.assign_stmt.target->data.index.base->data.name.name);
+				if (vi && vi->type == 7) {
+					type7_target = vi;
+				}
+			}
+
+			if (type7_target && stmt->data.assign_stmt.target->data.index.index_count > 0) {
+				/* Type-7 char buffer assignment */
+				char *target_addr = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i64 0, i64 %s\n", target_addr,
+				                  type7_target->string_len, type7_target->string_len, base_buf, idx_buf);
+				buffer_append_fmt(ctx, "  store i8 %s, i8* %s, align 1\n", value_buf, target_addr);
+				break;
+			}
+
 			/* Determine element type (scalar for GEP, may be vectorized for load/store) */
 			const char *scalar_type = "i32"; /* default */
 			const char *arche_type = NULL;
@@ -2472,6 +2539,56 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 	}
 
 	case STMT_FOR: {
+		/* Check if this is a condition-based for (for cond { }) or infinite for (for { })
+		 * vs range-based for (for var in iterable { }) */
+		if (!stmt->data.for_stmt.var_name) {
+			/* Condition-based or infinite for loop */
+			char *loop_label = gen_value_name(ctx);
+			char *body_label = gen_value_name(ctx);
+			char *exit_label = gen_value_name(ctx);
+
+			/* Push exit label for break statements */
+			if (ctx->loop_exit_count >= ctx->loop_exit_capacity) {
+				ctx->loop_exit_capacity = (ctx->loop_exit_capacity == 0) ? 8 : ctx->loop_exit_capacity * 2;
+				ctx->loop_exit_labels = realloc(ctx->loop_exit_labels, ctx->loop_exit_capacity * sizeof(char *));
+			}
+			ctx->loop_exit_labels[ctx->loop_exit_count] = exit_label;
+			ctx->loop_exit_count++;
+
+			buffer_append_fmt(ctx, "  br label %s\n", loop_label);
+			buffer_append_fmt(ctx, "%s:\n", loop_label + 1);
+
+			if (stmt->data.for_stmt.condition) {
+				/* Condition-based: evaluate condition */
+				char cond_buf[256];
+				codegen_expression(ctx, stmt->data.for_stmt.condition, cond_buf);
+
+				/* Truncate i32 to i1 for branch */
+				char *cond_i1 = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = trunc i32 %s to i1\n", cond_i1, cond_buf);
+				buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cond_i1, body_label, exit_label);
+			} else {
+				/* Infinite loop: always branch to body */
+				buffer_append_fmt(ctx, "  br label %s\n", body_label);
+			}
+
+			buffer_append_fmt(ctx, "%s:\n", body_label + 1);
+
+			push_value_scope(ctx);
+			for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
+				codegen_statement(ctx, stmt->data.for_stmt.body[i]);
+			}
+			pop_value_scope(ctx);
+
+			buffer_append_fmt(ctx, "  br label %s\n", loop_label);
+			buffer_append_fmt(ctx, "%s:\n", exit_label + 1);
+
+			/* Pop exit label */
+			ctx->loop_exit_count--;
+			break;
+		}
+
+		/* Range-based for loop */
 		const char *var_name = stmt->data.for_stmt.var_name;
 		char iter_buf[256];
 
@@ -2533,6 +2650,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				buffer_append_fmt(ctx, "%s:\n", v_body_label + 1); /* Vector body */
 
 				push_value_scope(ctx);
+				fprintf(stderr, "DEBUG: Adding loop var %s to vector body scope\n", var_name);
 				add_value(ctx, var_name, vi, 0);
 				find_value(ctx, var_name)->bit_width = 64;
 				ctx->vector_lanes = 4;
@@ -2780,6 +2898,20 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 		char value_buf[256];
 		codegen_expression(ctx, stmt->data.free_stmt.value, value_buf);
 		buffer_append_fmt(ctx, "  call void @free(i8* %s)\n", value_buf);
+		break;
+	}
+
+	case STMT_BREAK: {
+		if (ctx->loop_exit_count > 0) {
+			char *exit_label = ctx->loop_exit_labels[ctx->loop_exit_count - 1];
+			buffer_append_fmt(ctx, "  br label %s\n", exit_label);
+			/* Emit unreachable block label so LLVM doesn't complain about empty BB */
+			char *unreachable_label = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "%s:\n", unreachable_label + 1);
+			buffer_append(ctx, "  unreachable\n");
+		} else {
+			fprintf(stderr, "Error: break statement outside of loop\n");
+		}
 		break;
 	}
 	}
@@ -3223,6 +3355,9 @@ CodegenContext *codegen_create(Program *prog, SemanticContext *sem_ctx) {
 	ctx->vector_lanes = 0;
 	ctx->in_sys = 0;
 	ctx->implicit_loop_index[0] = '\0'; /* Initialize to empty (not in loop) */
+	ctx->loop_exit_labels = NULL;
+	ctx->loop_exit_count = 0;
+	ctx->loop_exit_capacity = 0;
 	ctx->sys_versions = NULL;
 	ctx->sys_version_count = 0;
 	ctx->sys_version_capacity = 0;

@@ -171,6 +171,7 @@ typedef enum {
 	STMT_ASSIGN,
 	STMT_FOR,
 	STMT_IF,
+	STMT_BREAK,
 	STMT_RUN,
 	STMT_EXPR,
 	STMT_FREE,
@@ -203,8 +204,9 @@ typedef struct {
 } AssignStmt;
 
 typedef struct {
-	char *var_name;
-	Expression *iterable;
+	char *var_name;        /* NULL for non-range-based for loops */
+	Expression *iterable;  /* NULL for non-range-based for loops */
+	Expression *condition; /* NULL for infinite or range-based for loops */
 	Statement **body;
 	int body_count;
 } ForStmt;

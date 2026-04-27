@@ -1,0 +1,13 @@
+// RUN: %arche -o %t %s && %t
+
+proc main() {
+  let i = 0;
+  for (null) in  {
+    printf("i = %d\n", i);
+    if (i == 2) {
+    }
+    i = i + 1;
+  }
+  printf("ok\n");
+}
+

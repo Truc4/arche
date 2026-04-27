@@ -1,0 +1,13 @@
+// RUN: %arche -o %t %s && %t
+
+arche C {
+  x: int,
+}
+
+
+proc main() {
+  for p in C {
+  }
+  printf("ok\n");
+}
+
