@@ -11,12 +11,15 @@ arche Transaction {
 }
 
 
+
 sys compute_revenue(price, quantity, revenue) {
   revenue = price * quantity;
 }
 
 
+
 extern proc load_transaction_csv();
+
 
 proc main() {
   alloc Transaction(1000000);

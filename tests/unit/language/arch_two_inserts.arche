@@ -6,11 +6,13 @@ arche Particle {
 }
 
 
+
 arche Body {
   pos: float,
   vel: float,
   mass: float,
 }
+
 
 
 proc main() {

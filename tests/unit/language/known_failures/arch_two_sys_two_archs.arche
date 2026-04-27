@@ -7,6 +7,7 @@ arche Particle {
 }
 
 
+
 arche Body {
   pos: float,
   vel: float,
@@ -14,14 +15,17 @@ arche Body {
 }
 
 
+
 sys move(pos, vel) {
   pos = pos + vel;
 }
 
 
+
 sys dampen(vel) {
   vel = vel * 0.99;
 }
+
 
 
 proc main() {

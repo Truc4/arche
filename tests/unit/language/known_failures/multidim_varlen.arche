@@ -6,6 +6,7 @@ arche Message {
 }
 
 
+
 proc main() {
   alloc Message(100);
   print("allocations done\n");

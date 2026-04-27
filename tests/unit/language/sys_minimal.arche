@@ -5,9 +5,11 @@ arche Particle {
 }
 
 
+
 sys dummy(pos) {
   pos = pos;
 }
+
 
 
 proc main() {

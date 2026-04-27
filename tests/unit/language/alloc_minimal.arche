@@ -5,6 +5,7 @@ arche Particle {
 }
 
 
+
 proc main() {
   alloc Particle(10);
   insert(Particle, 1.0);

@@ -5,9 +5,11 @@ arche Body {
 }
 
 
+
 sys dummy(pos) {
   pos = pos;
 }
+
 
 
 proc main() {

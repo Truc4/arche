@@ -6,6 +6,7 @@ arche Entity {
 }
 
 
+
 proc main() {
   alloc Entity(100);
   insert(Entity, 1.0, 2.0);

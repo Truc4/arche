@@ -12,9 +12,11 @@ arche Transaction {
 }
 
 
+
 sys bucket_time(timestamp, hour_bucket) {
   hour_bucket = timestamp / 3600 * 3600;
 }
+
 
 
 proc main() {

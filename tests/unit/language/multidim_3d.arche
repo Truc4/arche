@@ -5,6 +5,7 @@ arche Tensor {
 }
 
 
+
 proc main() {
   alloc Tensor(10);
   print("allocations done\n");

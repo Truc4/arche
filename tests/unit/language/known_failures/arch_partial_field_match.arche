@@ -7,6 +7,7 @@ arche Particle {
 }
 
 
+
 arche Body {
   pos: float,
   vel: float,
@@ -14,9 +15,11 @@ arche Body {
 }
 
 
+
 sys gravity(pos, mass) {
   pos = pos + mass;
 }
+
 
 
 proc main() {

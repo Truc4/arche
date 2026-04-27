@@ -12,15 +12,18 @@ arche Transaction {
 }
 
 
+
 arche RegionAggregate {
   region: char[16],
   total_revenue: float,
 }
 
 
+
 sys compute_revenue(price, quantity, revenue) {
   revenue = price * quantity;
 }
+
 
 
 proc main() {

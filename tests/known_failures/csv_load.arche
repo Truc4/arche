@@ -6,22 +6,19 @@ arche Transaction {
 }
 
 
+
 proc load_csv(path: char[]) {
   let fd = open(path, 0);
   let buf: char[256];
   let price_str: char[32];
   let qty_str: char[32];
   let idx = 0;
-
-  // Skip header
   read(fd, buf, 256);
-
-  // Read and parse each CSV row
   for (idx < 3) {
     let n = read(fd, buf, 256);
-    if (n == 0) break;
-
-    // Find comma position
+    if (n == 0) {
+      break;
+    }
     let comma_pos = 0;
     let i = 0;
     for (i < n) {
@@ -31,35 +28,36 @@ proc load_csv(path: char[]) {
       }
       i = i + 1;
     }
-
-    // Copy price string (before comma)
     let j = 0;
     for (j < comma_pos) {
       price_str[j] = buf[j];
       j = j + 1;
     }
     price_str[j] = 0;
-
-    // Copy quantity string (after comma)
     j = 0;
     i = comma_pos + 1;
     for (i < n) {
-      if (buf[i] == '\n') break;
+      if (buf[i] == '\n') {
+        break;
+      }
       qty_str[j] = buf[i];
       j = j + 1;
       i = i + 1;
     }
     qty_str[j] = 0;
-
-    // Convert and assign
     Transaction.price[idx] = atof(price_str);
     Transaction.quantity[idx] = atoi(qty_str);
-
     idx = idx + 1;
   }
-
   close(fd);
 }
+
+// Skip header
+// Read and parse each CSV row
+// Find comma position
+// Copy price string (before comma)
+// Copy quantity string (after comma)
+// Convert and assign
 
 
 proc main() {
@@ -68,3 +66,4 @@ proc main() {
   assert(Transaction.price[0] == 1.0, "price[0] not 1.0\n");
   printf("csv ok\n");
 }
+

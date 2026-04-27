@@ -12,12 +12,15 @@ arche Transaction {
 }
 
 
+
 sys mark_valid(quantity, valid) {
   valid = quantity > 0;
 }
 
 
+
 extern proc load_transaction_csv();
+
 
 proc main() {
   alloc Transaction(1000000);
