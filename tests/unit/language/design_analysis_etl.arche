@@ -1,0 +1,69 @@
+// RUN: %arche -o %t %s && %t
+
+// Task 1: Derived columns (revenue = price * quantity)
+arche Task1 {
+  price: float,
+  quantity: int,
+  revenue: float,
+}
+
+sys task1_compute_revenue(price, quantity, revenue) {
+  revenue = price * quantity;
+}
+
+// Task 2: Filter invalid (valid flag for quantity > 0)
+arche Task2 {
+  quantity: int,
+  valid: int,
+}
+
+sys task2_filter_invalid(quantity, valid) {
+  valid = (quantity > 0);
+}
+
+// Task 3: Bucket timestamps (hour_bucket = timestamp rounded down to nearest hour)
+arche Task3 {
+  timestamp: int,
+  hour_bucket: int,
+}
+
+sys task3_bucket_timestamps(timestamp, hour_bucket) {
+  hour_bucket = (timestamp / 3600) * 3600;
+}
+
+// Task 4: Aggregate region (total revenue by region, simplified to single value per archetype)
+arche Task4 {
+  price: float,
+  quantity: int,
+  revenue: float,
+}
+
+sys task4_aggregate_revenue(price, quantity, revenue) {
+  revenue = price * quantity;
+}
+
+// Top-level allocations with init
+alloc Task1(1) { price: 2.0, quantity: 3 };
+alloc Task2(1) { quantity: 5 };
+alloc Task3(1) { timestamp: 7205 };
+alloc Task4(1) { price: 1.0, quantity: 4 };
+
+proc main() {
+  // Test 1: Derived columns
+  run task1_compute_revenue;
+  assert(Task1.revenue[0] == 6.0, "task1 revenue not 6.0\n");
+
+  // Test 2: Filter invalid
+  run task2_filter_invalid;
+  assert(Task2.valid[0] == 1, "task2 valid not 1\n");
+
+  // Test 3: Bucket timestamps
+  run task3_bucket_timestamps;
+  assert(Task3.hour_bucket[0] == 7200, "task3 hour_bucket not 7200\n");
+
+  // Test 4: Aggregate revenue
+  run task4_aggregate_revenue;
+  assert(Task4.revenue[0] == 4.0, "task4 revenue not 4.0\n");
+
+  printf("design_analysis etl ok\n");
+}

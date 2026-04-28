@@ -26,45 +26,51 @@ This leads to a style that feels closer to **data pipelines** or **vectorized co
 
 ## Memory Model: Static Allocation Only
 
-**Arche has NO dynamic memory allocation.** This is a core design principle, not a limitation.
+**Arche has NO dynamic or heap allocation.** All memory is allocated statically at program startup. This is a core design principle, not a limitation.
 
 ### Allocation Strategy
 
-- **Explicit allocation**: Allocation happens explicitly via `alloc Archetype(N)` calls at any point in the program.
-- **Fixed size**: Each allocation is _fixed size_. There is no resizing, no growing vectors, no automatic expansion. Once allocated, capacity is permanent.
-- **Deallocate implicitly**: At the end of the program, all allocations are implicitly deallocated. Explicit deallocation is **discouraged**.
+- **Explicit allocation**: `alloc Archetype(N)` declares a fixed-capacity allocation for archetype shape.
+- **Static storage**: All allocations have program lifetime. They exist from program start to end. No deallocation during execution.
+- **Fixed size**: Each allocation is immutable in size. No resizing, no growing vectors. Capacity is permanent once set.
+- **Implicit cleanup**: At program end, all allocations are implicitly freed. Explicit deallocation is **not allowed** (and unnecessary).
+- **Scope-implicit**: Scope (static vs world-scoped, when worlds exist) is determined by context where `alloc` appears.
+
+### Allocation Initialization
+
+Allocations can include field initialization to set all instances’ values at allocation time:
+
+```arche
+alloc Counter(5) { val: 7, score: 2.5 };
+```
+
+This sets all 5 instances’ `val` and `score` fields. Uninitialized fields are zero-initialized.
 
 ### Encouraged Pattern
 
-While allocations can happen anywhere, the encouraged design pattern is: **Plan your memory usage ahead of time, allocate what you need once early, use it predictably, and let it clean up automatically.**
-
-This pattern encourages thinking about data layout early and prevents the hidden costs of dynamic allocation that plague real-time systems and data-intensive applications.
+Plan memory usage ahead of time, allocate what you need upfront, use predictably:
 
 ```arche
 proc main() {
-  // Allocate archetype instances upfront with capacities you need
-  alloc Particle(10000);
+  // Allocate all archetype instances with fixed capacities upfront
+  alloc Particle(10000) { active: 0 };
   alloc Enemy(5000);
   alloc Projectile(1000);
 
-  // Run your program with this fixed memory budget
+  // Run program with fixed memory budget
   run initialize;
   run update_loop;
-
-  // Everything deallocates implicitly at end
+  // Implicit cleanup at end
 }
 ```
 
 ### Why No Dynamic Memory?
 
-- **Predictability**: Memory usage is known at program start.
-- **Performance**: No allocation/deallocation overhead during hot loops.
-- **Simplicity**: Language users reason about a fixed memory budget, not growth patterns.
-- **Cache-friendly**: Fixed column layout enables effective prefetching and vectorization.
-
-### If You Need More Space
-
-If you truly need more capacity: deallocate the old allocation, allocate a new one with larger capacity, and copy data. But this goes against the language’s spirit and is explicitly discouraged. **Plan better upfront instead.**
+- **Predictability**: Memory usage is entirely known at program start.
+- **Performance**: Zero allocation overhead; no malloc/free in hot loops.
+- **Simplicity**: Fixed memory budget enforces clear thinking about capacity.
+- **Cache-friendly**: Columnar layout with known sizes enables prefetching and SIMD.
+- **Safety**: No use-after-free, no dangling pointers, no memory fragmentation.
 
 ## Worlds (Planned, Not Yet Implemented)
 

@@ -1,0 +1,14 @@
+// RUN: %arche -o %t %s 2>&1 | grep -q "Error.*alloc.*top-level"
+// alloc inside proc should error
+
+arche Counter {
+  val: int,
+}
+
+
+
+proc main() {
+  alloc Counter(5);
+  printf("should not reach\n");
+}
+
