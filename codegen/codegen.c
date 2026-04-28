@@ -362,6 +362,15 @@ static ProcDecl *find_proc_decl(CodegenContext *ctx, const char *name) {
 	return NULL;
 }
 
+static FuncDecl *find_func_decl(CodegenContext *ctx, const char *name) {
+	for (int i = 0; i < ctx->prog->decl_count; i++) {
+		Decl *decl = ctx->prog->decls[i];
+		if (decl->kind == DECL_FUNC && strcmp(decl->data.func->name, name) == 0)
+			return decl->data.func;
+	}
+	return NULL;
+}
+
 static const char *get_shaped_field_info(CodegenContext *ctx, Expression *field_expr, int *out_rank) {
 	if (field_expr->type != EXPR_FIELD || field_expr->data.field.base->type != EXPR_NAME)
 		return NULL;
@@ -1173,6 +1182,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		}
 
 		ProcDecl *callee_proc = find_proc_decl(ctx, func_name);
+		FuncDecl *callee_func = find_func_decl(ctx, func_name);
 		char **call_arg_vals = malloc(expr->data.call.arg_count * sizeof(char *));
 		const char **call_arg_types = malloc(expr->data.call.arg_count * sizeof(const char *));
 
@@ -1183,7 +1193,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 			/* Determine what callee param expects */
 			int callee_wants_arr = 0;
-			int callee_is_extern = callee_proc && callee_proc->is_extern;
+			int callee_is_extern = (callee_proc && callee_proc->is_extern) || (callee_func && callee_func->is_extern);
 			if (callee_proc && i < callee_proc->param_count) {
 				TypeRef *pt = callee_proc->params[i]->type;
 				if (pt && pt->kind == TYPE_ARRAY) {
@@ -1334,8 +1344,10 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			/* Normal non-variadic call - determine return type */
 			const char *return_type = "i32"; /* default */
 
-			/* Check if we have return type info from the proc declaration */
-			if (callee_proc && callee_proc->is_extern) {
+			/* Check if we have return type info from the func declaration */
+			if (callee_func && callee_func->return_type) {
+				return_type = llvm_type_from_arche(callee_func->return_type->data.name);
+			} else if (callee_proc && callee_proc->is_extern) {
 				/* For extern procs, check if they're in core lib */
 				if (strcmp(func_name, "atof") == 0) {
 					return_type = "double";
@@ -3179,6 +3191,32 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 }
 
 static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
+	/* For extern funcs, emit declare stub */
+	if (func->is_extern) {
+		const char *return_type = llvm_type_from_arche(func->return_type ? func->return_type->data.name : "int");
+		buffer_append_fmt(ctx, "declare %s @%s(", return_type, func->name);
+		for (int i = 0; i < func->param_count; i++) {
+			TypeRef *param_type = func->params[i]->type;
+			const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : "int";
+			const char *base_type = llvm_type_from_arche(type_name);
+
+			/* Check if type is char[] (i8*) or an archetype (struct*) */
+			if (param_type && param_type->kind == TYPE_ARRAY) {
+				buffer_append_fmt(ctx, "i8*"); /* C ABI: T[] = raw ptr */
+			} else if (find_archetype_decl(ctx, type_name)) {
+				buffer_append_fmt(ctx, "%%struct.%s*", type_name);
+			} else {
+				buffer_append(ctx, base_type);
+			}
+
+			if (i < func->param_count - 1) {
+				buffer_append(ctx, ", ");
+			}
+		}
+		buffer_append(ctx, ")\n");
+		return;
+	}
+
 	/* Generate function definition */
 	const char *return_type = llvm_type_from_arche(func->return_type ? func->return_type->data.name : "int");
 

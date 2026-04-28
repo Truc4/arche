@@ -369,7 +369,7 @@ static Decl *parse_archetype_decl(Parser *parser) {
 static Decl *parse_proc_decl(Parser *parser) {
 	int is_extern = 0;
 
-	if (match(parser, TOK_EXTERN)) {
+	if (parser->previous.kind == TOK_EXTERN || match(parser, TOK_EXTERN)) {
 		is_extern = 1;
 	}
 
@@ -543,6 +543,8 @@ static Decl *parse_sys_decl(Parser *parser) {
 /* ========== FUNCTION PARSING ========== */
 
 static Decl *parse_func_decl(Parser *parser) {
+	int is_extern = parser->previous.kind == TOK_EXTERN;
+
 	if (!match(parser, TOK_FUNC)) {
 		error(parser, "Expected 'func'");
 		return NULL;
@@ -561,12 +563,18 @@ static Decl *parse_func_decl(Parser *parser) {
 	}
 
 	FuncDecl *func = func_decl_create(name, NULL);
+	func->is_extern = is_extern;
 	func->loc.line = parser->previous.line;
 	func->loc.column = parser->previous.column;
 
 	/* parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
+			int param_is_out = 0;
+			if (match(parser, TOK_OUT)) {
+				param_is_out = 1;
+			}
+
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected parameter name");
 				return NULL;
@@ -587,6 +595,7 @@ static Decl *parse_func_decl(Parser *parser) {
 				return NULL;
 
 			Parameter *param = parameter_create(param_name, param_type);
+			param->is_out = param_is_out;
 			param->loc.line = param_line;
 			param->loc.column = param_column;
 			func->params = realloc(func->params, (func->param_count + 1) * sizeof(Parameter *));
@@ -608,6 +617,16 @@ static Decl *parse_func_decl(Parser *parser) {
 	if (!return_type)
 		return NULL;
 	func->return_type = return_type;
+
+	/* For extern funcs, no body needed */
+	if (is_extern) {
+		if (!match(parser, TOK_SEMI)) {
+			error(parser, "Expected ';' after extern func declaration");
+		}
+		Decl *decl = decl_create(DECL_FUNC);
+		decl->data.func = func;
+		return decl;
+	}
 
 	if (!match(parser, TOK_LBRACE)) {
 		error(parser, "Expected '{'");
@@ -642,6 +661,15 @@ static Decl *parse_decl(Parser *parser) {
 	case TOK_ARCHETYPE:
 		return parse_archetype_decl(parser);
 	case TOK_EXTERN:
+		advance(parser);
+		if (check(parser, TOK_FUNC)) {
+			return parse_func_decl(parser);
+		} else if (check(parser, TOK_PROC)) {
+			return parse_proc_decl(parser);
+		} else {
+			error(parser, "Expected 'func' or 'proc' after 'extern'");
+			return NULL;
+		}
 	case TOK_PROC:
 		return parse_proc_decl(parser);
 	case TOK_SYS:

@@ -6,8 +6,10 @@ extern proc exit(code: int);
 extern proc sprintf(buf: char[], fmt: char[]);
 extern proc printf(fmt: char[]);
 extern proc fflush(stream: int);
-extern proc atof(str: char[]);
-extern proc atoi(str: char[]);
+extern func atof(str: char[]) -> float;
+
+extern func atoi(str: char[]) -> int;
+
 proc print_float(f: float) {
   printf("%g", f);
   fflush(0);

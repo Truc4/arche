@@ -1,0 +1,7 @@
+// Test just extern func declarations via core.arche
+// This test should compile and link without executing
+
+proc main() {
+  printf("extern func declarations ok\n");
+}
+
