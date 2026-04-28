@@ -865,20 +865,29 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 		}
 		case DECL_FUNC: {
 			FuncDecl *func = decl->data.func;
+			if (func->is_extern)
+				fprintf(out, "extern ");
 			fprintf(out, "func %s(", func->name);
 			for (int j = 0; j < func->param_count; j++) {
 				if (j > 0)
 					fprintf(out, ", ");
+				if (func->params[j]->is_out)
+					fprintf(out, "out ");
 				fprintf(out, "%s: ", func->params[j]->name);
 				format_type(out, func->params[j]->type);
 			}
 			fprintf(out, ") -> ");
 			format_type(out, func->return_type);
-			fprintf(out, " {\n");
-			for (int j = 0; j < func->statement_count; j++) {
-				format_statement(out, func->statements[j], 1);
+			if (func->is_extern) {
+				fprintf(out, ";\n");
+			} else {
+				fprintf(out, " {\n");
+				for (int j = 0; j < func->statement_count; j++) {
+					format_statement(out, func->statements[j], 1);
+				}
+				fprintf(out, "}\n");
 			}
-			fprintf(out, "}\n\n");
+			fprintf(out, "\n");
 			break;
 		}
 		}

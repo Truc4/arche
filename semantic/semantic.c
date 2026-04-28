@@ -52,6 +52,9 @@ struct SemanticContext {
 
 	/* Track which archetype we're analyzing a sys for (NULL if not in sys) */
 	const char *current_sys_archetype;
+
+	/* Program for looking up declarations */
+	Program *prog;
 };
 
 /* ========== UTILITY FUNCTIONS ========== */
@@ -335,7 +338,27 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	}
 
 	case EXPR_CALL: {
-		/* Return type of the function - for now unknown */
+		/* Look up function to determine return type */
+		const char *func_name = NULL;
+		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME) {
+			func_name = expr->data.call.callee->data.name.name;
+		}
+
+		if (!func_name || !ctx->prog)
+			return NULL;
+
+		/* Check if it's a func with explicit return type */
+		for (int i = 0; i < ctx->prog->decl_count; i++) {
+			Decl *decl = ctx->prog->decls[i];
+			if (decl->kind == DECL_FUNC && strcmp(decl->data.func->name, func_name) == 0) {
+				if (decl->data.func->return_type) {
+					return normalize_type_name(decl->data.func->return_type->data.name);
+				}
+				return NULL;
+			}
+		}
+
+		/* Procs don't return values */
 		return NULL;
 	}
 
@@ -890,6 +913,14 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 	if (!func)
 		return;
 
+	/* Register func name as a known function */
+	register_func(ctx, func->name);
+
+	/* For extern funcs, no body to analyze */
+	if (func->is_extern) {
+		return;
+	}
+
 	push_scope(ctx);
 
 	/* add parameters as variables */
@@ -938,6 +969,7 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->scope_count = 0;
 	ctx->error_count = 0;
 	ctx->current_sys_archetype = NULL;
+	ctx->prog = prog;
 
 	/* Register builtins */
 	register_func(ctx, "write");

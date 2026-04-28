@@ -1,0 +1,6 @@
+// RUN: %arche -o %t %s && %t
+
+proc main() {
+  stdout_write("hello\n", 6);
+}
+

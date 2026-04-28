@@ -140,6 +140,7 @@ struct ProcDecl {
 struct Parameter {
 	char *name;
 	TypeRef *type;
+	int is_out;
 	SourceLoc loc;
 };
 
@@ -157,6 +158,7 @@ struct FuncDecl {
 	Parameter **params;
 	int param_count;
 	TypeRef *return_type;
+	int is_extern;
 	Statement **statements;
 	int statement_count;
 	SourceLoc loc;
