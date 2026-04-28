@@ -13,9 +13,9 @@ proc load_csv(path: char[]) {
   let price_str: char[32];
   let qty_str: char[32];
   let idx = 0;
-  read(fd, buf, 256);
+  let buf, _ = read(fd, buf, 256);
   for (idx < 3) {
-    let n = read(fd, buf, 256);
+    let buf, n = read(fd, buf, 256);
     if (n == 0) {
       break;
     }
