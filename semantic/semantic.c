@@ -571,39 +571,57 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 	case STMT_LET: {
 		analyze_expression(ctx, stmt->data.let_stmt.value);
 
-		/* Check if value is an alloc expression */
-		const char *archetype_name = NULL;
-		if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->type == EXPR_ALLOC) {
-			archetype_name = stmt->data.let_stmt.value->data.alloc.archetype_name;
-			if (!find_archetype(ctx, archetype_name)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "Archetype '%s' not defined", archetype_name);
-				error(ctx, msg);
-				archetype_name = NULL;
+		/* Multi-value let: add all variables from names array */
+		if (stmt->data.let_stmt.name_count > 0 && stmt->data.let_stmt.names) {
+			for (int i = 0; i < stmt->data.let_stmt.name_count; i++) {
+				const char *var_name = stmt->data.let_stmt.names[i];
+				if (var_name && strcmp(var_name, "_") != 0) {
+					/* Add variable (no type annotation for multi-value let) */
+					add_variable(ctx, var_name, NULL);
+
+					/* Try to infer type from expression if it's callable with multiple returns */
+					if (stmt->data.let_stmt.value && i < 10) { /* arbitrary limit */
+						/* For now, just skip type inference for multi-value let */
+						/* This would require analyzing the function's return signature */
+					}
+				}
 			}
-		}
+		} else if (stmt->data.let_stmt.name) {
+			/* Single-value let */
+			/* Check if value is an alloc expression */
+			const char *archetype_name = NULL;
+			if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->type == EXPR_ALLOC) {
+				archetype_name = stmt->data.let_stmt.value->data.alloc.archetype_name;
+				if (!find_archetype(ctx, archetype_name)) {
+					char msg[256];
+					snprintf(msg, sizeof(msg), "Archetype '%s' not defined", archetype_name);
+					error(ctx, msg);
+					archetype_name = NULL;
+				}
+			}
 
-		/* create local variable */
-		VariableInfo *var = NULL;
-		if (archetype_name) {
-			add_variable_with_archetype(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type, archetype_name);
-		} else {
-			add_variable(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type);
-		}
+			/* create local variable */
+			VariableInfo *var = NULL;
+			if (archetype_name) {
+				add_variable_with_archetype(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type, archetype_name);
+			} else {
+				add_variable(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type);
+			}
 
-		/* Handle type annotations and type inference */
-		if (ctx->scope_count > 0) {
-			Scope *scope = &ctx->scopes[ctx->scope_count - 1];
-			if (scope->var_count > 0) {
-				var = scope->vars[scope->var_count - 1];
-				if (stmt->data.let_stmt.type) {
-					/* Type annotation: convert TypeRef to string type name */
-					var->inferred_type = stmt->data.let_stmt.type->data.name;
-				} else if (stmt->data.let_stmt.value) {
-					/* No annotation: infer from value expression */
-					const char *inferred = resolve_expression_type(ctx, stmt->data.let_stmt.value);
-					if (inferred) {
-						var->inferred_type = inferred;
+			/* Handle type annotations and type inference */
+			if (ctx->scope_count > 0) {
+				Scope *scope = &ctx->scopes[ctx->scope_count - 1];
+				if (scope->var_count > 0) {
+					var = scope->vars[scope->var_count - 1];
+					if (stmt->data.let_stmt.type) {
+						/* Type annotation: convert TypeRef to string type name */
+						var->inferred_type = stmt->data.let_stmt.type->data.name;
+					} else if (stmt->data.let_stmt.value) {
+						/* No annotation: infer from value expression */
+						const char *inferred = resolve_expression_type(ctx, stmt->data.let_stmt.value);
+						if (inferred) {
+							var->inferred_type = inferred;
+						}
 					}
 				}
 			}

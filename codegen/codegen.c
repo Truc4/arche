@@ -1977,6 +1977,170 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 		const char *var_name = stmt->data.let_stmt.name;
 		char value_buf[256];
 
+		/* Multi-value let: let a, b, c = func(...) with out params */
+		if (stmt->data.let_stmt.name_count > 0) {
+			Expression *rhs = stmt->data.let_stmt.value;
+			if (rhs && rhs->type == EXPR_CALL) {
+				char *func_name = NULL;
+				if (rhs->data.call.callee && rhs->data.call.callee->type == EXPR_NAME) {
+					func_name = rhs->data.call.callee->data.name.name;
+				}
+
+				FuncDecl *callee_func = func_name ? find_func_decl(ctx, func_name) : NULL;
+				if (callee_func && callee_func->param_count >= 0) {
+					/* Collect out param info: size from TypeRef and SSA names */
+					int *out_buf_sizes = malloc(callee_func->param_count * sizeof(int));
+					char **out_buf_names = malloc(callee_func->param_count * sizeof(char *));
+					int out_param_count = 0;
+
+					for (int i = 0; i < callee_func->param_count; i++) {
+						if (callee_func->params[i] && callee_func->params[i]->is_out) {
+							/* Extract size from param type (e.g., out buf: char[256]) */
+							TypeRef *pt = callee_func->params[i]->type;
+							int size = 256; /* default */
+
+							if (pt && pt->kind == TYPE_SHAPED_ARRAY && pt->data.shaped_array.element_type &&
+							    pt->data.shaped_array.element_type->kind == TYPE_NAME &&
+							    strcmp(pt->data.shaped_array.element_type->data.name, "char") == 0) {
+								size = pt->data.shaped_array.rank;
+							}
+
+							/* Allocate zero-initialized buffer on stack */
+							char *buf_name = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = alloca [%d x i8]\n", buf_name, size);
+							char *ptr_for_memset = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", ptr_for_memset, size,
+							                  buf_name);
+							buffer_append_fmt(ctx,
+							                  "  call void @llvm.memset.p0i8.i64(i8* %s, i8 0, i64 %d, i1 false)\n",
+							                  ptr_for_memset, size);
+
+							out_buf_names[out_param_count] = buf_name;
+							out_buf_sizes[out_param_count] = size;
+							out_param_count++;
+						}
+					}
+
+					/* Evaluate arguments */
+					char **arg_bufs = malloc(rhs->data.call.arg_count * sizeof(char *));
+					for (int i = 0; i < rhs->data.call.arg_count; i++) {
+						arg_bufs[i] = malloc(256);
+						codegen_expression(ctx, rhs->data.call.args[i], arg_bufs[i]);
+					}
+
+					/* Build call args: use out buffers for out params, regular args otherwise */
+					char **call_arg_vals = malloc(rhs->data.call.arg_count * sizeof(char *));
+					const char **call_arg_types = malloc(rhs->data.call.arg_count * sizeof(const char *));
+					int out_idx = 0;
+
+					for (int i = 0; i < rhs->data.call.arg_count; i++) {
+						call_arg_vals[i] = malloc(256);
+
+						int is_out =
+						    (i < callee_func->param_count && callee_func->params[i] && callee_func->params[i]->is_out);
+
+						if (is_out && out_idx < out_param_count) {
+							/* Bitcast [N x i8]* to i8* */
+							char *ptr_cast = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", ptr_cast,
+							                  out_buf_sizes[out_idx], out_buf_names[out_idx]);
+							strcpy(call_arg_vals[i], ptr_cast);
+							call_arg_types[i] = "i8*";
+							out_idx++;
+						} else {
+							strcpy(call_arg_vals[i], arg_bufs[i]);
+							call_arg_types[i] = "i32";
+						}
+					}
+
+					/* Emit call */
+					char *res_name = gen_value_name(ctx);
+					const char *return_type = "i32";
+					if (callee_func->return_type && callee_func->return_type->kind == TYPE_NAME &&
+					    callee_func->return_type->data.name) {
+						return_type = llvm_type_from_arche(callee_func->return_type->data.name);
+					}
+
+					buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type,
+					                  func_name ? func_name : "unknown");
+					for (int i = 0; i < rhs->data.call.arg_count; i++) {
+						buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
+						if (i < rhs->data.call.arg_count - 1)
+							buffer_append(ctx, ", ");
+					}
+					buffer_append(ctx, ")\n");
+
+					/* Assign returned values to variables */
+					out_idx = 0;
+					for (int i = 0; i < stmt->data.let_stmt.name_count && stmt->data.let_stmt.names; i++) {
+						const char *var_name = stmt->data.let_stmt.names[i];
+						if (!var_name || strcmp(var_name, "_") == 0) {
+							if (i < out_param_count)
+								out_idx++;
+							continue;
+						}
+
+						if (i < out_param_count) {
+							/* Assign out param (zero-init buffer) to variable */
+							ValueInfo *vi = malloc(sizeof(ValueInfo));
+							vi->name = malloc(strlen(var_name) + 1);
+							strcpy(vi->name, var_name);
+							vi->llvm_name = malloc(strlen(out_buf_names[out_idx]) + 1);
+							strcpy(vi->llvm_name, out_buf_names[out_idx]);
+							vi->type = 7; /* char buffer */
+							vi->arch_name = NULL;
+							vi->string_len = out_buf_sizes[out_idx];
+							vi->field_type = "char";
+							vi->bit_width = 8;
+
+							if (ctx->scope_count > 0) {
+								ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+								scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+								scope->values[scope->value_count++] = vi;
+							}
+							out_idx++;
+						} else {
+							/* Assign return value to variable */
+							char *alloca_name = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = alloca %s\n", alloca_name, return_type);
+							buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", return_type, res_name, return_type,
+							                  alloca_name);
+
+							ValueInfo *vi = malloc(sizeof(ValueInfo));
+							vi->name = malloc(strlen(var_name) + 1);
+							strcpy(vi->name, var_name);
+							vi->llvm_name = malloc(strlen(alloca_name) + 1);
+							strcpy(vi->llvm_name, alloca_name);
+							vi->type = 1;
+							vi->arch_name = NULL;
+							vi->string_len = -1;
+							vi->field_type = (return_type[0] == 'd') ? "float" : "int";
+							vi->bit_width = (return_type[0] == 'd') ? 64 : 32;
+
+							if (ctx->scope_count > 0) {
+								ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+								scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+								scope->values[scope->value_count++] = vi;
+							}
+						}
+					}
+
+					/* Cleanup */
+					free(out_buf_sizes);
+					free(out_buf_names);
+					for (int i = 0; i < rhs->data.call.arg_count; i++)
+						free(arg_bufs[i]);
+					free(arg_bufs);
+					for (int i = 0; i < rhs->data.call.arg_count; i++)
+						free(call_arg_vals[i]);
+					free(call_arg_vals);
+					free(call_arg_types);
+					break;
+				}
+			}
+			break;
+		}
+
 		/* Handle type-annotated declaration without initialization */
 		if (stmt->data.let_stmt.type && !stmt->data.let_stmt.value) {
 			TypeRef *type = stmt->data.let_stmt.type;

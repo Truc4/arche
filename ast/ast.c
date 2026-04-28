@@ -632,12 +632,26 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 
 	switch (stmt->type) {
 	case STMT_LET: {
-		fprintf(out, "%slet %s", indent_str, stmt->data.let_stmt.name);
-		/* Output type annotation if present */
-		if (stmt->data.let_stmt.type) {
-			fprintf(out, ": ");
-			format_type(out, stmt->data.let_stmt.type);
+		fprintf(out, "%slet ", indent_str);
+
+		/* Multi-value let */
+		if (stmt->data.let_stmt.name_count > 0 && stmt->data.let_stmt.names) {
+			for (int i = 0; i < stmt->data.let_stmt.name_count; i++) {
+				fprintf(out, "%s", stmt->data.let_stmt.names[i]);
+				if (i < stmt->data.let_stmt.name_count - 1) {
+					fprintf(out, ", ");
+				}
+			}
+		} else {
+			/* Single-value let */
+			fprintf(out, "%s", stmt->data.let_stmt.name);
+			/* Output type annotation if present */
+			if (stmt->data.let_stmt.type) {
+				fprintf(out, ": ");
+				format_type(out, stmt->data.let_stmt.type);
+			}
 		}
+
 		/* Output value if present */
 		if (stmt->data.let_stmt.value) {
 			fprintf(out, " = ");

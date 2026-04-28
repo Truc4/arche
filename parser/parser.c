@@ -1132,6 +1132,56 @@ static Statement *parse_statement(Parser *parser) {
 		char *name = token_text(parser->current);
 		advance(parser);
 
+		/* Check for multi-value let: let a, b, c = expr */
+		char **names = NULL;
+		int name_count = 0;
+		if (match(parser, TOK_COMMA)) {
+			/* Multi-value let */
+			names = malloc(sizeof(char *));
+			names[0] = name;
+			name_count = 1;
+
+			while (!check(parser, TOK_EQ) && !check(parser, TOK_EOF)) {
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "Expected variable name in multi-value let");
+					return NULL;
+				}
+				char *var_name = token_text(parser->current);
+				advance(parser);
+
+				names = realloc(names, (name_count + 1) * sizeof(char *));
+				names[name_count++] = var_name;
+
+				if (!match(parser, TOK_COMMA)) {
+					break;
+				}
+			}
+
+			if (!match(parser, TOK_EQ)) {
+				error(parser, "Expected '=' in multi-value let");
+				return NULL;
+			}
+
+			Expression *value = parse_expression(parser);
+			if (!value)
+				return NULL;
+
+			if (!match(parser, TOK_SEMI)) {
+				error(parser, "Expected ';' after let statement");
+			}
+
+			Statement *stmt = statement_create(STMT_LET);
+			stmt->loc.line = let_line;
+			stmt->loc.column = let_column;
+			stmt->data.let_stmt.name = NULL;
+			stmt->data.let_stmt.names = names;
+			stmt->data.let_stmt.name_count = name_count;
+			stmt->data.let_stmt.type = NULL;
+			stmt->data.let_stmt.value = value;
+			return stmt;
+		}
+
+		/* Single-value let */
 		TypeRef *type = NULL;
 		if (match(parser, TOK_COLON)) {
 			type = parse_type(parser);
@@ -1157,6 +1207,8 @@ static Statement *parse_statement(Parser *parser) {
 		stmt->loc.line = let_line;
 		stmt->loc.column = let_column;
 		stmt->data.let_stmt.name = name;
+		stmt->data.let_stmt.names = NULL;
+		stmt->data.let_stmt.name_count = 0;
 		stmt->data.let_stmt.type = type;
 		stmt->data.let_stmt.value = value;
 		return stmt;

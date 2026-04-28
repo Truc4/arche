@@ -194,8 +194,10 @@ typedef enum {
 } Operator;
 
 typedef struct {
-	char *name;
-	TypeRef *type;     /* optional, may be NULL */
+	char *name;        /* single var name (backward compat) */
+	char **names;      /* multiple var names for multi-value let */
+	int name_count;    /* 0 = use .name, >0 = use .names[] */
+	TypeRef *type;     /* optional, may be NULL — only for single-var */
 	Expression *value; /* optional, may be NULL */
 } LetStmt;
 
