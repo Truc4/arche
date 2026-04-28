@@ -12,13 +12,15 @@ extern func atof(str: char[]) -> float;
 
 extern func atoi(str: char[]) -> int;
 
+extern func strlen(str: char[]) -> int;
+
 proc print_float(f: float) {
   printf("%g", f);
   fflush(0);
 }
 
 proc print(msg: char[]) {
-  write(1, msg, msg.length);
+  write(1, msg, strlen(msg));
 }
 
 proc stdout_write(buf: char[], n: int) {

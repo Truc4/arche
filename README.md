@@ -364,6 +364,67 @@ Arche is an experiment in:
   - primitives
   - structured grouping
 
+## Out Parameters (`out`)
+
+Out parameters allow functions to fill buffers and return them as values. When a parameter is marked `out`, the language allocates a buffer and returns it as part of the function result.
+
+### Signature
+
+Out parameters have no size specified in the type. Size is determined by parameters passed at call time:
+
+```arche
+extern func read(fd: int, out buf: char[], len: int) -> int;
+extern proc write(fd: int, buf: char[], len: int);
+```
+
+### Pattern 1: Zero-initialized buffer (language allocates)
+
+Don't pass a buffer; language creates one:
+
+```arche
+let buf, bytes_read = read(fd, 256);
+```
+
+The `out buf` argument is omitted. Language allocates a fresh 256-byte buffer on the stack, passes to C, returns it.
+
+### Pattern 2: Copy-in semantics (you provide buffer)
+
+Pass a buffer for the out parameter:
+
+```arche
+let new_buf, bytes_read = read(fd, old_buf, 256);
+```
+
+The buffer `old_buf` is passed. Language copies it in, passes to C, returns modified copy. Original `old_buf` unchanged.
+
+### Copy Semantics
+
+All parameters are always copied. C functions cannot modify caller data directly. Out parameters are returned as new values.
+
+### Copy Semantics
+
+Every function parameter is **always copied** — there are no side effects on the original data. Functions are pure with respect to parameters; side effects are explicit in the code.
+
+## Multi-Value Let
+
+The `let a, b, c = function()` syntax captures multiple return values from a single function call:
+
+```arche
+let buf, n = read(fd, buf, 256);     // Capture buffer and return value
+let x, y, z = some_func();            // Capture multiple returns
+```
+
+Values are assigned **left-to-right** in signature order:
+
+- Out parameters first (in order)
+- Function return value last
+
+Use `_` to discard values:
+
+```arche
+let buf, _ = read(fd, buf, 256);     // Discard return value, keep buffer
+```
+
 ## Status
 
 🚧 **Alpha: Core infrastructure working**
@@ -371,15 +432,29 @@ Arche is an experiment in:
 ### What's Working
 
 - **Lexer**: Tokenizes source into language constructs (keywords, identifiers, operators)
-- **Parser**: Builds AST for archetypes, procedures, systems, functions, expressions
-- **Semantic Analysis**: Symbol table, scope tracking, type checking, field validation
+- **Parser**: Builds AST for archetypes, procedures, systems, functions, expressions, multi-value let
+- **Semantic Analysis**: Symbol table, scope tracking, type checking, field validation, multi-value let binding
 - **Code Generation**: Compiles to LLVM IR, assembles, and links to executables
-- **Basic Examples**: hello_world, simple arithmetic, archetype definitions
+- **Functions**: User-defined and extern functions with return values
+- **Procedures**: User-defined and extern procedures (void)
+- **Systems**: Data-driven transformations over matching archetypes
+- **For loops**: Infinite loops, condition-based loops, range iteration
+- **External Functions**: C function calls with copy semantics
+- **Out Parameters**: Buffer allocation and return as values, with copy-in semantics
+- **Multi-value Let**: Capture multiple return values from function calls
+- **Archetype Operations**: Allocation, indexing, column access, tuple columns, shaped arrays
+- **Basic I/O**: File operations via extern syscalls
+- **CSV Loading**: Real-world example with file I/O and data parsing
 
 ### Known Limitations
 
-- No function calls yet
-- For loops not fully implemented
-- No memory management beyond static allocation
 - No error recovery in parser
-- Limited standard library (only `write` syscall)
+- Limited standard library (basic syscalls only)
+
+### Design Choices (Not Limitations)
+
+- No string type — users implement fixed-size char arrays or string handling in archetypes
+- No dynamic arrays — fixed-size allocations only (enforces predictable memory planning)
+- No generic/polymorphic functions — keep types and semantics explicit
+- No pointers or references — data organized in columnar archetypes instead
+- No complex nested types — all data is columnar and flat
