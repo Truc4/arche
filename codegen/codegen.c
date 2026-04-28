@@ -1200,6 +1200,12 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					callee_wants_arr = 1;
 				}
 			}
+			if (callee_func && i < callee_func->param_count) {
+				TypeRef *pt = callee_func->params[i]->type;
+				if (pt && pt->kind == TYPE_ARRAY) {
+					callee_wants_arr = 1;
+				}
+			}
 
 			/* Handle type conversions, emit code before call if needed */
 			if (arg_values[i] && arg_values[i]->type == 7) {
