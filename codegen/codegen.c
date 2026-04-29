@@ -539,7 +539,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", loaded, llvm_type, llvm_type, val->llvm_name);
 				strcpy(result_buf, loaded);
 			} else {
-				/* Type-2 (string), 3 (arch), 5 (array): return pointer directly */
+				/* Type-2 (string), 3 (arch), 5 (array), 6 (i8* param): return pointer directly */
 				strcpy(result_buf, val->llvm_name);
 			}
 		} else if (find_archetype_decl(ctx, name)) {
@@ -1174,10 +1174,10 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			else if (expr->data.call.args[i]->type == EXPR_ARRAY_LITERAL) {
 				arg_is_array_literal[i] = 1;
 			}
-			/* Check if this arg is a variable holding a string (type 2) or arche_array (type 5) */
+			/* Check if this arg is a variable holding a string (type 2), i8* param (type 6) or arche_array (type 5) */
 			else if (expr->data.call.args[i]->type == EXPR_NAME) {
 				ValueInfo *var = find_value(ctx, expr->data.call.args[i]->data.name.name);
-				if (var && var->type == 2) {
+				if (var && (var->type == 2 || var->type == 6)) {
 					arg_is_string[i] = 1;
 				}
 				arg_values[i] = var;
@@ -1248,8 +1248,15 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					call_arg_types[i] = "i32";
 				}
 			} else if (arg_is_string[i]) {
-				if (callee_is_extern && callee_wants_arr) {
-					/* Extract i8* data ptr from struct for C ABI */
+				/* String literals are already i8*, string variables may be arche_array */
+				int is_string_literal = (arg_values[i] == NULL);
+
+				if (is_string_literal) {
+					/* String literal: already i8* from codegen_expression */
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = "i8*";
+				} else if (callee_is_extern && callee_wants_arr) {
+					/* String variable from extern callee expecting char[]: extract i8* from struct */
 					char *dp_gep = gen_value_name(ctx);
 					buffer_append_fmt(
 					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
@@ -3691,7 +3698,14 @@ static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
 	for (int i = 0; i < func->param_count; i++) {
 		char param_name[32];
 		snprintf(param_name, sizeof(param_name), "%%arg%d", i);
-		add_value(ctx, func->params[i]->name, param_name, 0);
+
+		/* For char[] params, mark as i8* (type 6) */
+		int param_type = 0;
+		if (func->params[i]->type && func->params[i]->type->kind == TYPE_ARRAY) {
+			param_type = 6; /* i8* parameter */
+		}
+
+		add_value(ctx, func->params[i]->name, param_name, param_type);
 	}
 
 	/* Generate function body */
