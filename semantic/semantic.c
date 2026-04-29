@@ -53,6 +53,9 @@ struct SemanticContext {
 	/* Track which archetype we're analyzing a sys for (NULL if not in sys) */
 	const char *current_sys_archetype;
 
+	/* Track if inside proc/sys body (for alloc enforcement) */
+	int in_body;
+
 	/* Program for looking up declarations */
 	Program *prog;
 };
@@ -537,6 +540,22 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		break;
 
 	case EXPR_ALLOC: {
+		/* INFO: alloc only allowed at top-level (DECL_ALLOC).
+		   When heap allocation is implemented, EXPR_ALLOC will become EXPR_HEAP_ALLOC. */
+		if (ctx->in_body) {
+			error(ctx, "alloc only allowed at top-level, not inside proc or sys body");
+			break;
+		}
+
+		/* alloc count must be a literal for static allocation (dynamic not yet supported) */
+		if (expr->data.alloc.field_count > 0 && expr->data.alloc.field_values[0]) {
+			Expression *count_expr = expr->data.alloc.field_values[0];
+			if (count_expr->type != EXPR_LITERAL) {
+				error(ctx, "alloc count must be a literal; dynamic counts not yet supported");
+				break;
+			}
+		}
+
 		ArchetypeInfo *alloc_shape = find_archetype(ctx, expr->data.alloc.archetype_name);
 		if (!alloc_shape) {
 			char msg[256];
@@ -839,6 +858,38 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 	ctx->aliases[ctx->alias_count++] = entry;
 }
 
+static void analyze_alloc_decl(SemanticContext *ctx, AllocDecl *alloc) {
+	if (!alloc)
+		return;
+
+	/* Validate archetype exists */
+	ArchetypeInfo *arch = find_archetype(ctx, alloc->archetype_name);
+	if (!arch) {
+		fprintf(stderr, "Error: unknown archetype '%s' in alloc\n", alloc->archetype_name);
+		ctx->error_count++;
+		return;
+	}
+
+	/* Validate count is provided and is a literal */
+	if (alloc->field_count == 0 || !alloc->field_values[0]) {
+		fprintf(stderr, "Error: alloc missing count expression\n");
+		ctx->error_count++;
+		return;
+	}
+
+	Expression *count_expr = alloc->field_values[0];
+	if (count_expr->type != EXPR_LITERAL) {
+		fprintf(stderr, "Error: alloc count must be a literal; dynamic counts not yet supported\n");
+		ctx->error_count++;
+		return;
+	}
+
+	/* Analyze field initialization expressions */
+	for (int i = 1; i < alloc->field_count; i++) {
+		analyze_expression(ctx, alloc->field_values[i]);
+	}
+}
+
 static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	if (!proc)
 		return;
@@ -872,9 +923,11 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 		}
 	}
 
+	ctx->in_body = 1;
 	for (int i = 0; i < proc->statement_count; i++) {
 		analyze_statement(ctx, proc->statements[i]);
 	}
+	ctx->in_body = 0;
 
 	pop_scope(ctx);
 }
@@ -919,9 +972,11 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 	const char *old_sys_archetype = ctx->current_sys_archetype;
 	ctx->current_sys_archetype = sys_archetype;
 
+	ctx->in_body = 1;
 	for (int i = 0; i < sys->statement_count; i++) {
 		analyze_statement(ctx, sys->statements[i]);
 	}
+	ctx->in_body = 0;
 
 	ctx->current_sys_archetype = old_sys_archetype;
 	pop_scope(ctx);
@@ -961,6 +1016,9 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 	case DECL_ARCHETYPE:
 		analyze_archetype_decl(ctx, decl->data.archetype);
 		break;
+	case DECL_ALLOC:
+		analyze_alloc_decl(ctx, decl->data.alloc);
+		break;
 	case DECL_PROC:
 		analyze_proc_decl(ctx, decl->data.proc);
 		break;
@@ -987,6 +1045,7 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->scope_count = 0;
 	ctx->error_count = 0;
 	ctx->current_sys_archetype = NULL;
+	ctx->in_body = 0;
 	ctx->prog = prog;
 
 	/* Register builtins */

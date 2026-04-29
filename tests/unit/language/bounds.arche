@@ -7,7 +7,6 @@ arche Particle {
 
 
 proc main() {
-  alloc Particle(5);
   insert(Particle, 1);
   insert(Particle, 2);
   let a = Particle.id[0];

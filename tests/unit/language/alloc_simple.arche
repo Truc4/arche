@@ -1,0 +1,13 @@
+// RUN: %arche -o %t %s && %t
+
+arche Counter {
+  val: int,
+}
+
+
+
+proc main() {
+  assert(Counter.val[0] == 7, "val[0] not 7\n");
+  printf("ok\n");
+}
+

@@ -8,7 +8,6 @@ arche Particle {
 
 
 proc main() {
-  alloc Particle(10);
   insert(Particle, 5.5, 0.1);
   let p = Particle.pos[0];
   let pi = p * 10.0;

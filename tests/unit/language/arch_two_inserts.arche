@@ -16,8 +16,6 @@ arche Body {
 
 
 proc main() {
-  alloc Particle(100);
-  alloc Body(50);
   insert(Particle, 1.0, 0.1);
   insert(Body, 5.0, 0.5, 10.0);
   let pp = Particle.pos[0];

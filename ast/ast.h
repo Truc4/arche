@@ -39,6 +39,7 @@ typedef enum {
 	DECL_PROC,
 	DECL_SYS,
 	DECL_FUNC,
+	DECL_ALLOC,
 } DeclKind;
 
 struct Program {
@@ -46,6 +47,13 @@ struct Program {
 	int decl_count;
 	SourceLoc loc;
 };
+
+typedef struct {
+	char *archetype_name;
+	char **field_names;
+	Expression **field_values;
+	int field_count;
+} AllocDecl;
 
 struct Decl {
 	DeclKind kind;
@@ -56,6 +64,7 @@ struct Decl {
 		ProcDecl *proc;
 		SysDecl *sys;
 		FuncDecl *func;
+		AllocDecl *alloc;
 	} data;
 };
 

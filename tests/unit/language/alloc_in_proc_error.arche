@@ -1,5 +1,5 @@
-// RUN: %arche -o %t %s 2>&1 | grep -q "Error.*alloc.*top-level"
-// alloc inside proc should error
+// RUN: %arche -o %t %s > %t.out 2>&1; grep -q "Error" %t.out
+// alloc inside proc should error (parse-time: alloc only allowed as declaration)
 
 arche Counter {
   val: int,

@@ -7,7 +7,6 @@ arche Matrix {
 
 
 proc main() {
-  alloc Matrix(5);
   insert(Matrix, 1.5);
   let val = Matrix.data[0, 0];
   let vi = val * 10.0;

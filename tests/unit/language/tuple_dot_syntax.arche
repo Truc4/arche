@@ -8,7 +8,6 @@ arche Particle {
 
 
 proc main() {
-  alloc Particle(1);
   insert(Particle, 1.0, 2.0, 0.5, 0.1);
   Particle.pos.x = Particle.pos.x + Particle.vel.x;
   Particle.pos.y = Particle.pos.y + Particle.vel.y;
