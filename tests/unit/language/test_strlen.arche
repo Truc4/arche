@@ -1,0 +1,7 @@
+// RUN: %arche -o %t %s && %t
+
+proc main() {
+  let len = strlen("hello");
+  printf("strlen(hello) = %d\n", len);
+}
+

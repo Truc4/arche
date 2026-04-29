@@ -1364,6 +1364,9 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					return_type = "double";
 				} else if (strcmp(func_name, "atoi") == 0) {
 					return_type = "i32";
+				} else if (strcmp(func_name, "open") == 0 || strcmp(func_name, "read") == 0 ||
+				           strcmp(func_name, "close") == 0) {
+					return_type = "i32";
 				}
 				/* Add more extern functions as needed */
 			} else if (callee_proc && callee_proc->is_extern == 0 && expr->resolved_type) {
