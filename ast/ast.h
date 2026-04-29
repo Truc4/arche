@@ -186,6 +186,7 @@ typedef enum {
 	STMT_RUN,
 	STMT_EXPR,
 	STMT_FREE,
+	STMT_RETURN,
 } StatementType;
 
 typedef enum {
@@ -245,6 +246,10 @@ typedef struct {
 	Expression *value;
 } FreeStmt;
 
+typedef struct {
+	Expression *value;
+} ReturnStmt;
+
 struct Statement {
 	StatementType type;
 	SourceLoc loc;
@@ -256,6 +261,7 @@ struct Statement {
 		RunStmt run_stmt;
 		ExprStmt expr_stmt;
 		FreeStmt free_stmt;
+		ReturnStmt return_stmt;
 	} data;
 };
 

@@ -3218,6 +3218,13 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 		}
 		break;
 	}
+
+	case STMT_RETURN: {
+		char value_buf[256];
+		codegen_expression(ctx, stmt->data.return_stmt.value, value_buf);
+		buffer_append_fmt(ctx, "  ret i32 %s\n", value_buf);
+		break;
+	}
 	}
 }
 

@@ -152,6 +152,9 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 3 && strncmp(start, "out", 3) == 0) {
 		return TOK_OUT;
 	}
+	if (length == 6 && strncmp(start, "return", 6) == 0) {
+		return TOK_RETURN;
+	}
 	return TOK_IDENT;
 }
 
@@ -555,6 +558,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_EXTERN";
 	case TOK_OUT:
 		return "TOK_OUT";
+	case TOK_RETURN:
+		return "TOK_RETURN";
 	case TOK_CHAR_LIT:
 		return "TOK_CHAR_LIT";
 

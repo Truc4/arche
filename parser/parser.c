@@ -633,11 +633,13 @@ static Decl *parse_func_decl(Parser *parser) {
 		return NULL;
 	}
 
-	/* parse return expression */
-	Expression *return_expr = parse_expression(parser);
-	if (return_expr) {
-		Statement *stmt = statement_create(STMT_EXPR);
-		stmt->data.expr_stmt.expr = return_expr;
+	while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+		Statement *stmt = parse_statement(parser);
+		if (!stmt) {
+			synchronize(parser);
+			continue;
+		}
+
 		func->statements = realloc(func->statements, (func->statement_count + 1) * sizeof(Statement *));
 		func->statements[func->statement_count++] = stmt;
 	}
@@ -1178,6 +1180,27 @@ static Statement *parse_statement(Parser *parser) {
 		Statement *stmt = statement_create(STMT_BREAK);
 		stmt->loc.line = break_line;
 		stmt->loc.column = break_column;
+		return stmt;
+	}
+
+	if (match(parser, TOK_RETURN)) {
+		int return_line = parser->previous.line;
+		int return_column = parser->previous.column;
+
+		Expression *value = parse_expression(parser);
+		if (!value) {
+			error(parser, "Expected expression after 'return'");
+			return NULL;
+		}
+
+		if (!match(parser, TOK_SEMI)) {
+			error(parser, "Expected ';' after return statement");
+		}
+
+		Statement *stmt = statement_create(STMT_RETURN);
+		stmt->loc.line = return_line;
+		stmt->loc.column = return_column;
+		stmt->data.return_stmt.value = value;
 		return stmt;
 	}
 

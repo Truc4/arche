@@ -749,6 +749,12 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		fprintf(out, "%sbreak;\n", indent_str);
 		break;
 	}
+	case STMT_RETURN: {
+		fprintf(out, "%sreturn ", indent_str);
+		format_expression(out, stmt->data.return_stmt.value);
+		fprintf(out, ";\n");
+		break;
+	}
 	}
 }
 

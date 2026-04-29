@@ -741,6 +741,10 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		analyze_expression(ctx, stmt->data.expr_stmt.expr);
 		break;
 
+	case STMT_RETURN:
+		analyze_expression(ctx, stmt->data.return_stmt.value);
+		break;
+
 	case STMT_FREE:
 		analyze_expression(ctx, stmt->data.free_stmt.value);
 		break;
