@@ -999,7 +999,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		/* Bounds check for archetype column accesses */
 		const char *bc_arch_name = NULL, *bc_arch_ptr = NULL;
 		int bc_count_idx = -1, bc_idx_is_i64 = 0;
-		if (expr->data.index.index_count > 0 && expr->data.index.index_count != 1 && !shaped_elem &&
+		if (expr->data.index.index_count > 0 && !shaped_elem &&
 		    resolve_index_arch(ctx, expr->data.index.base, expr->data.index.indices[0], &bc_arch_name, &bc_arch_ptr,
 		                       &bc_count_idx, &bc_idx_is_i64)) {
 			emit_bounds_check(ctx, bc_arch_name, bc_arch_ptr, bc_count_idx, idx_buf, bc_idx_is_i64);
@@ -1731,6 +1731,17 @@ static int resolve_index_arch(CodegenContext *ctx, Expression *base_expr, Expres
 				*out_arch_ptr = vi->llvm_name;
 				*out_count_idx = arch->field_count;
 			}
+		} else {
+			/* Try direct archetype name (for static allocations) */
+			ArchetypeDecl *arch = find_archetype_decl(ctx, var_name);
+			if (arch) {
+				static char global_buf[256];
+				*out_arch_name = var_name;
+				/* Static allocations stored in @archetype_<name> */
+				snprintf(global_buf, sizeof(global_buf), "@archetype_%s", var_name);
+				*out_arch_ptr = global_buf;
+				*out_count_idx = arch->field_count;
+			}
 		}
 	}
 	/* Case 2: base is EXPR_NAME with type 4 (column param in sys) */
@@ -1759,10 +1770,20 @@ static int resolve_index_arch(CodegenContext *ctx, Expression *base_expr, Expres
 
 static void emit_bounds_check(CodegenContext *ctx, const char *arch_name, const char *arch_ptr, int count_field_idx,
                               const char *idx_buf, int idx_is_i64) {
+	/* If arch_ptr is a global variable, load it first */
+	const char *struct_ptr = arch_ptr;
+	char *loaded_ptr = NULL;
+	if (arch_ptr[0] == '@') {
+		loaded_ptr = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** %s\n", loaded_ptr, arch_name, arch_name,
+		                  arch_ptr);
+		struct_ptr = loaded_ptr;
+	}
+
 	/* Load count from archetype struct */
 	char *count_gep = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", count_gep, arch_name,
-	                  arch_name, arch_ptr, count_field_idx);
+	                  arch_name, struct_ptr, count_field_idx);
 	char *count = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, count_gep);
 
@@ -1790,6 +1811,7 @@ static void emit_bounds_check(CodegenContext *ctx, const char *arch_name, const 
 	buffer_append_fmt(ctx, "%s:\n", fail_lbl);
 	buffer_append(
 	    ctx, "  call i32 (i8*, ...) @printf(i8* getelementptr ([28 x i8], [28 x i8]* @.arche_oob, i32 0, i32 0))\n");
+	buffer_append(ctx, "  call i32 @fflush(i32 1)\n");
 	buffer_append(ctx, "  call void @abort()\n");
 	buffer_append(ctx, "  unreachable\n\n");
 

@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qE "Error.*bounds|count.*0" %t.out
+// RUN: %arche -o %t %s > /dev/null 2>&1 && ! %t 2>&1
 // Uninitialized alloc has count=0, accessing any row should error
 
 arche Counter {
