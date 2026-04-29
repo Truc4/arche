@@ -2,6 +2,7 @@
 
 proc main() {
   let len = strlen("hello");
-  printf("strlen(hello) = %d\n", len);
+  assert(len == 5, "strlen(hello) should be 5\n");
+  printf("strlen ok\n");
 }
 
