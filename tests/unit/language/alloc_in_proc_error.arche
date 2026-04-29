@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s 2>&1 | grep -q "Error.*expression"
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -q "Error.*expression" %t.out
 // alloc inside proc should error (parse-time: alloc only allowed as declaration)
 
 arche Counter {

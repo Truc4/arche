@@ -67,7 +67,7 @@ struct CodegenContext {
 	int sys_version_capacity;
 
 	/* Top-level allocations to initialize in main() */
-	AllocDecl **top_level_allocs;
+	StaticDecl **top_level_allocs;
 	int alloc_count;
 	int alloc_capacity;
 };
@@ -3365,7 +3365,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	buffer_append(ctx, "}\n\n");
 }
 
-static void codegen_alloc_decl(CodegenContext *ctx, AllocDecl *alloc) {
+static void codegen_static_decl(CodegenContext *ctx, StaticDecl *alloc) {
 	/* Register the allocation for initialization in main() */
 	if (ctx->alloc_count >= ctx->alloc_capacity) {
 		ctx->alloc_capacity = (ctx->alloc_capacity == 0) ? 16 : ctx->alloc_capacity * 2;
@@ -3375,7 +3375,7 @@ static void codegen_alloc_decl(CodegenContext *ctx, AllocDecl *alloc) {
 }
 
 /* Generate allocation initialization code (for use in main/init) */
-static void codegen_emit_alloc_init(CodegenContext *ctx, AllocDecl *alloc) {
+static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 	const char *arch_name = alloc->archetype_name;
 
 	/* Get capacity from first field_value */
@@ -3950,8 +3950,8 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		case DECL_ARCHETYPE:
 			codegen_archetype_decl(ctx, decl->data.archetype);
 			break;
-		case DECL_ALLOC:
-			codegen_alloc_decl(ctx, decl->data.alloc);
+		case DECL_STATIC:
+			codegen_static_decl(ctx, decl->data.alloc);
 			break;
 		case DECL_FUNC:
 			codegen_func_decl(ctx, decl->data.func);

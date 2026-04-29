@@ -4,6 +4,8 @@ arche Matrix {
   data: float[10],
 }
 
+static Matrix(5);
+
 
 
 proc main() {

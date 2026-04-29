@@ -1,11 +1,12 @@
-// RUN: %arche -o %t %s 2>&1 | grep -q "Error.*bounds\|count.*0"
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qE "Error.*bounds|count.*0" %t.out
 // Uninitialized alloc has count=0, accessing any row should error
 
 arche Counter {
   val: int,
 }
 
-// capacity 5, but count 0 (no rows)
+static Counter(5);
+
 
 
 proc main() {

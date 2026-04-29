@@ -4,6 +4,8 @@ arche Particle {
   id: int,
 }
 
+static Particle(5);
+
 
 
 proc main() {

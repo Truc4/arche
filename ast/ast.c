@@ -904,6 +904,27 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			fprintf(out, "\n");
 			break;
 		}
+		case DECL_STATIC: {
+			StaticDecl *alloc = decl->data.alloc;
+			fprintf(out, "static %s(", alloc->archetype_name);
+			if (alloc->field_count > 0) {
+				format_expression(out, alloc->field_values[0]);
+			}
+			fprintf(out, ")");
+			if (alloc->field_count > 1) {
+				fprintf(out, " {\n");
+				for (int j = 1; j < alloc->field_count; j++) {
+					fprintf(out, "  %s: ", alloc->field_names[j]);
+					format_expression(out, alloc->field_values[j]);
+					if (j < alloc->field_count - 1)
+						fprintf(out, ",");
+					fprintf(out, "\n");
+				}
+				fprintf(out, "}");
+			}
+			fprintf(out, ";\n\n");
+			break;
+		}
 		}
 	}
 }

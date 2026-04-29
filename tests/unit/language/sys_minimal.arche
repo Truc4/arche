@@ -4,6 +4,8 @@ arche Particle {
   pos: float,
 }
 
+static Particle(10);
+
 
 
 sys dummy(pos) {
@@ -13,7 +15,6 @@ sys dummy(pos) {
 
 
 proc main() {
-  alloc Particle(10);
   insert(Particle, 1.0);
   run dummy;
   print(Particle.pos[0]);

@@ -6,6 +6,8 @@ arche Particle {
   acc: (i: float, j: float),
 }
 
+static Particle(5);
+
 
 
 proc main() {

@@ -39,7 +39,7 @@ typedef enum {
 	DECL_PROC,
 	DECL_SYS,
 	DECL_FUNC,
-	DECL_ALLOC,
+	DECL_STATIC,
 } DeclKind;
 
 struct Program {
@@ -53,7 +53,7 @@ typedef struct {
 	char **field_names;
 	Expression **field_values;
 	int field_count;
-} AllocDecl;
+} StaticDecl;
 
 struct Decl {
 	DeclKind kind;
@@ -64,7 +64,7 @@ struct Decl {
 		ProcDecl *proc;
 		SysDecl *sys;
 		FuncDecl *func;
-		AllocDecl *alloc;
+		StaticDecl *alloc;
 	} data;
 };
 

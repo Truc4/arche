@@ -655,8 +655,8 @@ static Decl *parse_func_decl(Parser *parser) {
 
 /* ========== WORLD PARSING ========== */
 
-static Decl *parse_alloc_decl(Parser *parser) {
-	if (check(parser, TOK_IDENT) && strcmp(token_text(parser->current), "alloc") == 0) {
+static Decl *parse_static_decl(Parser *parser) {
+	if (check(parser, TOK_IDENT) && strcmp(token_text(parser->current), "static") == 0) {
 		advance(parser);
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected archetype name after 'alloc'");
@@ -666,24 +666,24 @@ static Decl *parse_alloc_decl(Parser *parser) {
 		advance(parser);
 
 		Decl *decl = malloc(sizeof(Decl));
-		decl->kind = DECL_ALLOC;
+		decl->kind = DECL_STATIC;
 		decl->loc.line = parser->previous.line;
 		decl->loc.column = parser->previous.column;
 
-		AllocDecl *alloc_decl = malloc(sizeof(AllocDecl));
-		alloc_decl->archetype_name = arch_name;
-		alloc_decl->field_names = NULL;
-		alloc_decl->field_values = NULL;
-		alloc_decl->field_count = 0;
+		StaticDecl *static_decl = malloc(sizeof(StaticDecl));
+		static_decl->archetype_name = arch_name;
+		static_decl->field_names = NULL;
+		static_decl->field_values = NULL;
+		static_decl->field_count = 0;
 
 		if (match(parser, TOK_LPAREN)) {
 			Expression *count = parse_expression(parser);
 			if (count) {
-				alloc_decl->field_names = malloc(sizeof(char *));
-				alloc_decl->field_values = malloc(sizeof(Expression *));
-				alloc_decl->field_names[0] = NULL;
-				alloc_decl->field_values[0] = count;
-				alloc_decl->field_count = 1;
+				static_decl->field_names = malloc(sizeof(char *));
+				static_decl->field_values = malloc(sizeof(Expression *));
+				static_decl->field_names[0] = NULL;
+				static_decl->field_values[0] = count;
+				static_decl->field_count = 1;
 			}
 			if (!match(parser, TOK_RPAREN)) {
 				error(parser, "Expected ')' after alloc count");
@@ -710,13 +710,13 @@ static Decl *parse_alloc_decl(Parser *parser) {
 							break;
 						}
 
-						alloc_decl->field_names =
-						    realloc(alloc_decl->field_names, (alloc_decl->field_count + 1) * sizeof(char *));
-						alloc_decl->field_values =
-						    realloc(alloc_decl->field_values, (alloc_decl->field_count + 1) * sizeof(Expression *));
-						alloc_decl->field_names[alloc_decl->field_count] = field_name;
-						alloc_decl->field_values[alloc_decl->field_count] = field_value;
-						alloc_decl->field_count++;
+						static_decl->field_names =
+						    realloc(static_decl->field_names, (static_decl->field_count + 1) * sizeof(char *));
+						static_decl->field_values =
+						    realloc(static_decl->field_values, (static_decl->field_count + 1) * sizeof(Expression *));
+						static_decl->field_names[static_decl->field_count] = field_name;
+						static_decl->field_values[static_decl->field_count] = field_value;
+						static_decl->field_count++;
 					} while (match(parser, TOK_COMMA));
 				}
 
@@ -730,7 +730,7 @@ static Decl *parse_alloc_decl(Parser *parser) {
 			error(parser, "Expected ';' after alloc declaration");
 		}
 
-		decl->data.alloc = alloc_decl;
+		decl->data.alloc = static_decl;
 		return decl;
 	}
 	return NULL;
@@ -760,9 +760,9 @@ static Decl *parse_decl(Parser *parser) {
 	default:
 		/* INFO: Check for top-level alloc */
 		if (check(parser, TOK_IDENT)) {
-			Decl *alloc_decl = parse_alloc_decl(parser);
-			if (alloc_decl) {
-				return alloc_decl;
+			Decl *static_decl = parse_static_decl(parser);
+			if (static_decl) {
+				return static_decl;
 			}
 		}
 		error(parser, "Expected declaration");
@@ -848,9 +848,9 @@ static Expression *parse_primary_expr(Parser *parser) {
 		int name_column = parser->previous.column;
 
 		/* INFO: Expression-based alloc parsing preserved for future heap_alloc feature.
-		   Currently alloc is only allowed as a top-level declaration (DECL_ALLOC).
+		   Currently alloc is only allowed as a top-level declaration (DECL_STATIC).
 		   When heap allocation is implemented, uncomment this block and create EXPR_HEAP_ALLOC.
-		if (strcmp(name, "alloc") == 0) {
+		if (strcmp(name, "static") == 0) {
 		    if (!check(parser, TOK_IDENT)) {
 		        error(parser, "Expected archetype name after 'alloc'");
 		        free(name);

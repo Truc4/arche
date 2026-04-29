@@ -11,6 +11,13 @@ arche Empty {
   x: int,
 }
 
+static Counter(5) {
+  val: 7,
+  score: 2.5
+};
+
+static Empty(5);
+
 
 
 proc main() {

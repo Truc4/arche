@@ -4,6 +4,10 @@ arche Point {
   x: int,
 }
 
+static Point(5) {
+  x: 42
+};
+
 
 
 proc main() {

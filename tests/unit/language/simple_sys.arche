@@ -4,6 +4,8 @@ arche Body {
   pos: float,
 }
 
+static Body(5);
+
 
 
 sys dummy(pos) {

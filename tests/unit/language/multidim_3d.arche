@@ -4,6 +4,8 @@ arche Tensor {
   data: float[5][5],
 }
 
+static Tensor(5);
+
 
 
 proc main() {

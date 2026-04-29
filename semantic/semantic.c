@@ -857,7 +857,7 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 	ctx->aliases[ctx->alias_count++] = entry;
 }
 
-static void analyze_alloc_decl(SemanticContext *ctx, AllocDecl *alloc) {
+static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 	if (!alloc)
 		return;
 
@@ -1015,8 +1015,8 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 	case DECL_ARCHETYPE:
 		analyze_archetype_decl(ctx, decl->data.archetype);
 		break;
-	case DECL_ALLOC:
-		analyze_alloc_decl(ctx, decl->data.alloc);
+	case DECL_STATIC:
+		analyze_static_decl(ctx, decl->data.alloc);
 		break;
 	case DECL_PROC:
 		analyze_proc_decl(ctx, decl->data.proc);

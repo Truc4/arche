@@ -5,6 +5,8 @@ arche Particle {
   vel: float,
 }
 
+static Particle(5);
+
 
 
 proc main() {

@@ -5,6 +5,8 @@ arche Transaction {
   quantity: int,
 }
 
+static Transaction(5);
+
 
 
 proc main() {

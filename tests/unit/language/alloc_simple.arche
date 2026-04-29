@@ -4,6 +4,10 @@ arche Counter {
   val: int,
 }
 
+static Counter(5) {
+  val: 7
+};
+
 
 
 proc main() {
