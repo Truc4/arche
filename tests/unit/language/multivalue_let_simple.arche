@@ -4,8 +4,11 @@ func pair() -> int {
   return 42;
 }
 
+
+
 proc main() {
   let x, y = pair();
   assert(x == 42, "x not 42\n");
   printf("multivalue let test ok\n");
 }
+
