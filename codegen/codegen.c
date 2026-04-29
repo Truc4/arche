@@ -3665,8 +3665,16 @@ static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
 	buffer_append_fmt(ctx, "define %s @%s(", return_type, func->name);
 
 	for (int i = 0; i < func->param_count; i++) {
-		const char *param_type = llvm_type_from_arche(func->params[i]->type->data.name);
-		buffer_append_fmt(ctx, "%s %%arg%d", param_type, i);
+		TypeRef *param_type = func->params[i]->type;
+		const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : "int";
+		const char *llvm_type = llvm_type_from_arche(type_name);
+
+		/* Check if type is char[] (i8*) */
+		if (param_type && param_type->kind == TYPE_ARRAY) {
+			buffer_append_fmt(ctx, "i8* %%arg%d", i);
+		} else {
+			buffer_append_fmt(ctx, "%s %%arg%d", llvm_type, i);
+		}
 		if (i < func->param_count - 1) {
 			buffer_append(ctx, ", ");
 		}

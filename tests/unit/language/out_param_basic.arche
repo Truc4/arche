@@ -1,6 +1,8 @@
 // RUN: %arche -o %t %s && %t
 
-extern func test_fill_buf(out buf: char[32]) -> int;
+func test_fill_buf(out buf: char[32]) -> int {
+  return 5;
+}
 
 
 
