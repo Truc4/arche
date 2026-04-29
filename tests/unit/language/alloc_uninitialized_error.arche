@@ -5,9 +5,11 @@ arche Counter {
   val: int,
 }
 
-alloc Counter(5);  // capacity 5, but count 0 (no rows)
+// capacity 5, but count 0 (no rows)
+
 
 proc main() {
-  let x = Counter.val[0];  // ERROR: out of bounds (count is 0)
+  let x = Counter.val[0];
   printf("should not reach\n");
 }
+

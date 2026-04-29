@@ -27,7 +27,6 @@ sys compute_revenue(price, quantity, revenue) {
 
 
 proc main() {
-  alloc Transaction(1000000);
   run compute_revenue;
 }
 

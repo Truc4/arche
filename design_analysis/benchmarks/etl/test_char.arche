@@ -3,6 +3,5 @@ arche Test {
 }
 
 proc main() {
-  alloc Test(10);
 }
 

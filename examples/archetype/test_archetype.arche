@@ -18,6 +18,8 @@ sys dampen(vel) {
 }
 
 proc main() {
+  alloc Particle(100);
+  alloc Body(50);
   insert(Particle, 1.0, 0.1);
   insert(Particle, 2.0, 0.2);
   insert(Particle, 3.0, 0.3);

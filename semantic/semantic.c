@@ -540,8 +540,7 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		break;
 
 	case EXPR_ALLOC: {
-		/* INFO: alloc only allowed at top-level (DECL_ALLOC).
-		   When heap allocation is implemented, EXPR_ALLOC will become EXPR_HEAP_ALLOC. */
+		/* alloc only allowed at top-level, not inside proc/sys */
 		if (ctx->in_body) {
 			error(ctx, "alloc only allowed at top-level, not inside proc or sys body");
 			break;

@@ -13,6 +13,7 @@ sys dummy(pos) {
 
 
 proc main() {
+  alloc Particle(10);
   insert(Particle, 1.0);
   run dummy;
   print(Particle.pos[0]);

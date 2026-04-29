@@ -6,19 +6,19 @@ arche Counter {
   score: float,
 }
 
+
+
 arche Empty {
   x: int,
 }
 
-// Allocations at top-level with field init
-alloc Counter(5) { val: 7, score: 2.5 };
+
 
 proc main() {
-  // Test 1: verify init sets count and initializes all instances
   assert(Counter.val[0] == 7, "val[0] not 7\n");
   assert(Counter.score[0] == 2.5, "score[0] not 2.5\n");
   assert(Counter.val[4] == 7, "val[4] not 7\n");
   assert(Counter.score[4] == 2.5, "score[4] not 2.5\n");
-
   printf("static alloc init ok\n");
 }
+

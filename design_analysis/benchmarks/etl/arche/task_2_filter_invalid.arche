@@ -23,7 +23,6 @@ extern proc load_transaction_csv();
 
 
 proc main() {
-  alloc Transaction(1000000);
   load_transaction_csv();
   run mark_valid;
 }
