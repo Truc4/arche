@@ -233,7 +233,7 @@ void test_for_loop_valid_iterable(void) {
 
 void test_function_parameter_scope(void) {
 	test_start("function parameters are in scope");
-	AnalysisResult result = analyze_string("func double(x: Float) -> Float { x * 2 }");
+	AnalysisResult result = analyze_string("func double(x: Float) -> Float { return x * 2; }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -241,7 +241,7 @@ void test_function_parameter_scope(void) {
 
 void test_function_undefined_parameter(void) {
 	test_start("undefined parameter in function caught");
-	AnalysisResult result = analyze_string("func test() -> Float { undefined_param + 1 }");
+	AnalysisResult result = analyze_string("func test() -> Float { return undefined_param + 1; }");
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for undefined parameter");
 	analysis_result_free(&result);
 	test_pass_msg();
