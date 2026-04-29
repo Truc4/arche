@@ -9,6 +9,10 @@ arche Body {
   mass: float,
 }
 
+static Particle(100);
+
+static Body(50);
+
 sys move(pos, vel) {
   pos = pos + vel;
 }
@@ -18,8 +22,6 @@ sys dampen(vel) {
 }
 
 proc main() {
-  alloc Particle(100);
-  alloc Body(50);
   insert(Particle, 1.0, 0.1);
   insert(Particle, 2.0, 0.2);
   insert(Particle, 3.0, 0.3);

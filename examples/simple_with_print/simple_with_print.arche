@@ -2,8 +2,9 @@ arche Counter {
   value: int,
 }
 
+static Counter(1);
+
 proc main() {
-  alloc Counter(1);
   insert(Counter, 0);
   let x = 10;
   let y = 20;
