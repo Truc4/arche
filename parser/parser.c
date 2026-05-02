@@ -677,6 +677,7 @@ static Decl *parse_static_decl(Parser *parser) {
 		static_decl->field_names = NULL;
 		static_decl->field_values = NULL;
 		static_decl->field_count = 0;
+		static_decl->init_length = NULL;
 
 		if (match(parser, TOK_LPAREN)) {
 			Expression *capacity = parse_expression(parser);
@@ -912,6 +913,7 @@ static Expression *parse_primary_expr(Parser *parser) {
 		    alloc_expr->data.alloc.field_names = NULL;
 		    alloc_expr->data.alloc.field_values = NULL;
 		    alloc_expr->data.alloc.field_count = 0;
+		    alloc_expr->data.alloc.init_length = NULL;
 
 		    if (match(parser, TOK_LPAREN)) {
 		        Expression *count = parse_expression(parser);

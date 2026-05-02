@@ -607,9 +607,30 @@ static void format_expression(FILE *out, Expression *expr) {
 		}
 		break;
 	}
-	case EXPR_STRING:
-		fprintf(out, "\"%s\"", expr->data.string.value);
+	case EXPR_STRING: {
+		fprintf(out, "\"");
+		if (expr->data.string.value) {
+			for (int i = 0; i < expr->data.string.length; i++) {
+				unsigned char c = (unsigned char)expr->data.string.value[i];
+				if (c == '\n')
+					fprintf(out, "\\n");
+				else if (c == '\t')
+					fprintf(out, "\\t");
+				else if (c == '\r')
+					fprintf(out, "\\r");
+				else if (c == '\\')
+					fprintf(out, "\\\\");
+				else if (c == '"')
+					fprintf(out, "\\\"");
+				else if (c >= 32 && c < 127)
+					fprintf(out, "%c", c);
+				else
+					fprintf(out, "\\x%02x", c);
+			}
+		}
+		fprintf(out, "\"");
 		break;
+	}
 	}
 }
 
