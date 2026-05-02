@@ -5,6 +5,11 @@ arche Transaction {
   quantity: int,
 }
 
+static Transaction(3, 3) {
+  price: 0.0,
+  quantity: 0
+};
+
 
 
 proc load_csv(path: char[]) {
@@ -12,34 +17,48 @@ proc load_csv(path: char[]) {
   let buf: char[256];
   let price_str: char[32];
   let qty_str: char[32];
+  let buf, total_n = read(fd, buf, 256);
+  close(fd);
   let idx = 0;
-  let buf, _ = read(fd, buf, 256);
-  for (idx < 3) {
-    let buf, n = read(fd, buf, 256);
-    if (n == 0) {
+  let pos = 0;
+  let line_start = 0;
+  for (pos < total_n) {
+    if (buf[pos] == '\n') {
+      line_start = pos + 1;
+      pos = pos + 1;
       break;
     }
-    let comma_pos = 0;
-    let i = 0;
-    for (i < n) {
-      if (buf[i] == ',') {
-        comma_pos = i;
+    pos = pos + 1;
+  }
+  for (idx < 3) {
+    if (line_start >= total_n) {
+      break;
+    }
+    let line_end = line_start;
+    for (line_end < total_n) {
+      if (buf[line_end] == '\n') {
         break;
       }
-      i = i + 1;
+      line_end = line_end + 1;
+    }
+    let comma_pos = line_start;
+    for (comma_pos < line_end) {
+      if (buf[comma_pos] == ',') {
+        break;
+      }
+      comma_pos = comma_pos + 1;
     }
     let j = 0;
-    for (j < comma_pos) {
-      price_str[j] = buf[j];
+    let i = line_start;
+    for (i < comma_pos) {
+      price_str[j] = buf[i];
       j = j + 1;
+      i = i + 1;
     }
     price_str[j] = 0;
     j = 0;
     i = comma_pos + 1;
-    for (i < n) {
-      if (buf[i] == '\n') {
-        break;
-      }
+    for (i < line_end) {
       qty_str[j] = buf[i];
       j = j + 1;
       i = i + 1;
@@ -48,8 +67,8 @@ proc load_csv(path: char[]) {
     Transaction.price[idx] = atof(price_str);
     Transaction.quantity[idx] = atoi(qty_str);
     idx = idx + 1;
+    line_start = line_end + 1;
   }
-  close(fd);
 }
 
 // Skip header
