@@ -119,7 +119,8 @@ test-codegen: $(TARGET)
 clean:
 	rm -rf $(BUILD_DIR)
 	find examples/ -type f ! -name "*.c" ! -name "*.arche" ! -name "*.sh" -delete
-	find design_analysis/ -type f ! -name "*.c" ! -name "*.h" ! -name "*.sh" ! -name "*.arche" -delete
+	find design_analysis/ -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	find design_analysis/benchmarks/etl/data/ -type f -name "*.csv" -delete
 
 # Design analysis benchmarks (data-driven design decisions, not language perf)
 bench-physics: design_analysis/array_ops/physics_update.c
