@@ -7,11 +7,9 @@ proc load_transactions() {
   let qty_str: char[32];
   let buf, total_n = read(fd, buf, 65536);
   close(fd);
-
   let idx = 0;
   let pos = 0;
   let line_start = 0;
-
   for (pos < total_n) {
     if (buf[pos] == '\n') {
       line_start = pos + 1;
@@ -20,12 +18,10 @@ proc load_transactions() {
     }
     pos = pos + 1;
   }
-
   for (idx < 1000) {
     if (line_start >= total_n) {
       break;
     }
-
     let line_end = line_start;
     for (line_end < total_n) {
       if (buf[line_end] == '\n') {
@@ -33,7 +29,6 @@ proc load_transactions() {
       }
       line_end = line_end + 1;
     }
-
     let c1 = line_start;
     for (c1 < line_end) {
       if (buf[c1] == ',') {
@@ -41,7 +36,6 @@ proc load_transactions() {
       }
       c1 = c1 + 1;
     }
-
     let c2 = c1 + 1;
     for (c2 < line_end) {
       if (buf[c2] == ',') {
@@ -49,7 +43,6 @@ proc load_transactions() {
       }
       c2 = c2 + 1;
     }
-
     let c3 = c2 + 1;
     for (c3 < line_end) {
       if (buf[c3] == ',') {
@@ -57,7 +50,6 @@ proc load_transactions() {
       }
       c3 = c3 + 1;
     }
-
     let j = 0;
     let i = c1 + 1;
     for (i < c2) {
@@ -66,7 +58,6 @@ proc load_transactions() {
       i = i + 1;
     }
     price_str[j] = 0;
-
     j = 0;
     i = c2 + 1;
     for (i < c3) {
@@ -75,11 +66,10 @@ proc load_transactions() {
       i = i + 1;
     }
     qty_str[j] = 0;
-
     Transaction.price[idx] = atof(price_str);
     Transaction.quantity[idx] = atoi(qty_str);
-
     idx = idx + 1;
     line_start = line_end + 1;
   }
 }
+
