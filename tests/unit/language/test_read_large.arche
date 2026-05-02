@@ -1,0 +1,10 @@
+// RUN: %arche -o %t %s && %t
+
+proc main() {
+  let fd = open("../../../../design_analysis/benchmarks/etl/data/data.csv", 0);
+  let buf: char[10000];
+  let buf, n = read(fd, buf, 10000);
+  close(fd);
+  printf("requested 10000, got: %d\n", n);
+}
+
