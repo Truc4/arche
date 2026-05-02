@@ -13,7 +13,7 @@ static Transaction(100, 100) {
 
 
 proc main() {
-  let fd = open("../../../../design_analysis/benchmarks/etl/data/data.csv", 0);
+  let fd = open("../../../../tests/fixtures/data.csv", 0);
   let buf: char[256];
   let buf, total_n = read(fd, buf, 256);
   close(fd);

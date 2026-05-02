@@ -1,4 +1,6 @@
-// RUN: %arche -o %t %s && %t
+// RUN: %arche -o %t %s && %t | FileCheck %s
+// CHECK: Loaded 1000 rows
+// CHECK: First price: 10.0
 
 arche Transaction {
   price: float,
@@ -12,12 +14,12 @@ static Transaction(1000, 1000) {
 
 
 
-proc load_transactions() {
-  let fd = open("../../../../design_analysis/benchmarks/etl/data/data.csv", 0);
-  let buf: char[65536];
+proc main() {
+  let fd = open("../../../../tests/fixtures/data.csv", 0);
+  let buf: char[8192];
   let price_str: char[32];
   let qty_str: char[32];
-  let buf, total_n = read(fd, buf, 65536);
+  let buf, total_n = read(fd, buf, 8192);
   close(fd);
   let idx = 0;
   let pos = 0;
@@ -77,13 +79,6 @@ proc load_transactions() {
     line_start = line_end + 1;
   }
   printf("Loaded %d rows\n", idx);
-}
-
-
-
-proc main() {
-  load_transactions();
-  assert(Transaction.price[0] > 0.0, "first row price should be positive\n");
-  assert(Transaction.quantity[0] > 0, "first row quantity should be positive\n");
+  printf("First price: %f\n", Transaction.price[0]);
 }
 
