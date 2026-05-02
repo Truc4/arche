@@ -914,6 +914,15 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 		return;
 	}
 
+	/* Validate: init block requires explicit init_size parameter */
+	if (alloc->field_count > 1 && !alloc->init_length) {
+		fprintf(stderr,
+		        "Error: init block requires explicit init_size parameter: static %s(capacity, init_size) { ... }\n",
+		        alloc->archetype_name);
+		ctx->error_count++;
+		return;
+	}
+
 	/* Analyze field initialization expressions */
 	for (int i = 1; i < alloc->field_count; i++) {
 		analyze_expression(ctx, alloc->field_values[i]);
