@@ -43,6 +43,22 @@ int main(int argc, char *argv[]) {
 	const char *output_file = NULL;
 	int emit_llvm = 0;
 
+	/* Find the directory where the arche executable is located */
+	char exe_dir[512];
+	char *last_slash = strrchr(argv[0], '/');
+	if (last_slash && last_slash != argv[0]) {
+		int dir_len = last_slash - argv[0];
+		if (dir_len < (int)sizeof(exe_dir) - 1) {
+			strncpy(exe_dir, argv[0], dir_len);
+			exe_dir[dir_len] = '\0';
+		} else {
+			strcpy(exe_dir, ".");
+		}
+	} else {
+		/* No directory component, use current directory */
+		strcpy(exe_dir, ".");
+	}
+
 	/* Parse command-line arguments */
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-o") == 0) {
@@ -220,9 +236,8 @@ int main(int argc, char *argv[]) {
 
 	/* Call cc to assemble and link with runtime objects */
 	char cc_cmd[1024];
-	snprintf(cc_cmd, sizeof(cc_cmd),
-	         "cc -no-pie -o %s %s build/runtime/csv_reader.o -lc 2>/dev/null || cc -no-pie -o %s %s -lc", output_file,
-	         asm_file, output_file, asm_file);
+	snprintf(cc_cmd, sizeof(cc_cmd), "cc -no-pie -o %s %s %s/runtime/stack_check.o -lc", output_file, asm_file,
+	         exe_dir);
 	printf("Linking executable...\n");
 	ret = system(cc_cmd);
 	if (ret != 0) {
