@@ -5,7 +5,10 @@ arche Transaction {
   quantity: int,
 }
 
-static Transaction(5, 5) { price: 0.0, quantity: 0 };
+static Transaction(5, 5) {
+  price: 0.0,
+  quantity: 0
+};
 
 
 
