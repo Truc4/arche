@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c99 -DARCHE_CORE_DIR=\"$(abspath core)\"
+CFLAGS = -Wall -Wextra -std=c99 -DARCHE_CORE_DIR=\"$(abspath core)\" -DARCHE_RUNTIME_DIR=\"$(abspath build/runtime)\"
 BUILD_DIR = build
 TARGET = $(BUILD_DIR)/arche
 VPATH = tests

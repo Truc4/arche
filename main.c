@@ -12,6 +12,10 @@
 #define ARCHE_CORE_DIR "core"
 #endif
 
+#ifndef ARCHE_RUNTIME_DIR
+#define ARCHE_RUNTIME_DIR "build/runtime"
+#endif
+
 static char *read_file_optional(const char *path) {
 	FILE *f = fopen(path, "r");
 	if (!f)
@@ -42,22 +46,6 @@ int main(int argc, char *argv[]) {
 	const char *input_file = NULL;
 	const char *output_file = NULL;
 	int emit_llvm = 0;
-
-	/* Find the directory where the arche executable is located */
-	char exe_dir[512];
-	char *last_slash = strrchr(argv[0], '/');
-	if (last_slash && last_slash != argv[0]) {
-		int dir_len = last_slash - argv[0];
-		if (dir_len < (int)sizeof(exe_dir) - 1) {
-			strncpy(exe_dir, argv[0], dir_len);
-			exe_dir[dir_len] = '\0';
-		} else {
-			strcpy(exe_dir, ".");
-		}
-	} else {
-		/* No directory component, use current directory */
-		strcpy(exe_dir, ".");
-	}
 
 	/* Parse command-line arguments */
 	for (int i = 1; i < argc; i++) {
@@ -236,8 +224,8 @@ int main(int argc, char *argv[]) {
 
 	/* Call cc to assemble and link with runtime objects */
 	char cc_cmd[1024];
-	snprintf(cc_cmd, sizeof(cc_cmd), "cc -no-pie -o %s %s %s/runtime/stack_check.o -lc", output_file, asm_file,
-	         exe_dir);
+	snprintf(cc_cmd, sizeof(cc_cmd), "cc -no-pie -o %s %s " ARCHE_RUNTIME_DIR "/stack_check.o -lc", output_file,
+	         asm_file);
 	printf("Linking executable...\n");
 	ret = system(cc_cmd);
 	if (ret != 0) {
