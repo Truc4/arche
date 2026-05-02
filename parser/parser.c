@@ -679,13 +679,18 @@ static Decl *parse_static_decl(Parser *parser) {
 		static_decl->field_count = 0;
 
 		if (match(parser, TOK_LPAREN)) {
-			Expression *count = parse_expression(parser);
-			if (count) {
+			Expression *capacity = parse_expression(parser);
+			Expression *init_length = NULL;
+			if (capacity) {
 				static_decl->field_names = malloc(sizeof(char *));
 				static_decl->field_values = malloc(sizeof(Expression *));
 				static_decl->field_names[0] = NULL;
-				static_decl->field_values[0] = count;
+				static_decl->field_values[0] = capacity;
 				static_decl->field_count = 1;
+			}
+			if (match(parser, TOK_COMMA)) {
+				init_length = parse_expression(parser);
+				static_decl->init_length = init_length;
 			}
 			if (!match(parser, TOK_RPAREN)) {
 				error(parser, "Expected ')' after alloc count");

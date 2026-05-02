@@ -53,6 +53,7 @@ typedef struct {
 	char **field_names;
 	Expression **field_values;
 	int field_count;
+	Expression *init_length; /* second arg: how many rows to initialize; NULL = use capacity */
 } StaticDecl;
 
 struct Decl {
@@ -328,6 +329,7 @@ typedef struct {
 	char **field_names;
 	Expression **field_values;
 	int field_count;
+	Expression *init_length; /* second arg: how many rows to initialize; NULL = use capacity */
 } AllocExpr;
 
 typedef struct {

@@ -1,0 +1,18 @@
+// RUN: %arche -o %t %s && %t
+
+proc main() {
+  let fd = open("tests/fixtures/transactions.csv", 0);
+  let buf: char[256];
+  let buf, n1 = read(fd, buf, 256);
+  printf("first read: %d bytes
+", n1);
+  let buf, n2 = read(fd, buf, 256);
+  printf("second read: %d bytes
+", n2);
+  if (n2 > 0) {
+    printf("rebind ok
+");
+  }
+  close(fd);
+}
+

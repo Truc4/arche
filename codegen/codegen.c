@@ -267,7 +267,7 @@ static void pop_value_scope(CodegenContext *ctx) {
 static ValueInfo *find_value(CodegenContext *ctx, const char *name) {
 	for (int i = ctx->scope_count - 1; i >= 0; i--) {
 		ValueScope *scope = &ctx->scopes[i];
-		for (int j = 0; j < scope->value_count; j++) {
+		for (int j = scope->value_count - 1; j >= 0; j--) {
 			if (strcmp(scope->values[j]->name, name) == 0) {
 				return scope->values[j];
 			}
@@ -1219,17 +1219,11 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			/* Handle type conversions, emit code before call if needed */
 			if (arg_values[i] && arg_values[i]->type == 7) {
 				/* Arg is char buffer [N x i8]* — cast to i8* for C functions */
-				if (callee_is_extern && callee_wants_arr) {
-					/* Cast [N x i8]* to i8* using bitcast */
-					char *bitcast = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = bitcast i8* %s to i8*\n", bitcast, arg_bufs[i]);
-					strcpy(call_arg_vals[i], bitcast);
-					call_arg_types[i] = "i8*";
-				} else {
-					/* Pass as i8* pointer */
-					strcpy(call_arg_vals[i], arg_bufs[i]);
-					call_arg_types[i] = "i8*";
-				}
+				char *bitcast = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", bitcast, arg_values[i]->string_len,
+				                  arg_bufs[i]);
+				strcpy(call_arg_vals[i], bitcast);
+				call_arg_types[i] = "i8*";
 			} else if (arg_values[i] && arg_values[i]->type == 5) {
 				/* Arg is arche_array struct */
 				if (callee_is_extern && callee_wants_arr) {
@@ -3461,9 +3455,17 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 	const char *arch_name = alloc->archetype_name;
 
 	/* Get capacity from first field_value */
-	char count_buf[256] = "256";
+	char capacity_buf[256] = "256";
 	if (alloc->field_count > 0) {
-		codegen_expression(ctx, alloc->field_values[0], count_buf);
+		codegen_expression(ctx, alloc->field_values[0], capacity_buf);
+	}
+
+	/* Get init_length from init_length field; default to capacity */
+	char length_buf[256];
+	if (alloc->init_length) {
+		codegen_expression(ctx, alloc->init_length, length_buf);
+	} else {
+		strcpy(length_buf, capacity_buf);
 	}
 
 	/* Find archetype declaration */
@@ -3492,7 +3494,7 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 	/* = struct_sz_bytes + count * total_bytes_per_row */
 	char *total_bytes = gen_value_name(ctx);
 	char *data_bytes = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", data_bytes, count_buf, total_bytes_per_row);
+	buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", data_bytes, capacity_buf, total_bytes_per_row);
 	buffer_append_fmt(ctx, "  %s = add i64 %d, %s\n", total_bytes, struct_sz_bytes, data_bytes);
 
 	/* Single malloc */
@@ -3511,12 +3513,12 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 	char *count_gep = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", count_gep, arch_name,
 	                  arch_name, struct_ptr, arch->field_count);
-	buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", count_gep);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", length_buf, count_gep);
 
 	char *cap_gep = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cap_gep, arch_name,
 	                  arch_name, struct_ptr, arch->field_count + 1);
-	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", count_buf, cap_gep);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", capacity_buf, cap_gep);
 
 	char *fc_gep = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", fc_gep, arch_name,
@@ -3534,7 +3536,7 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 			                  arch_name, arch_name, struct_ptr, i);
 
 			char *col_offset_llvm = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", col_offset_llvm, count_buf, col_offset);
+			buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", col_offset_llvm, capacity_buf, col_offset);
 
 			char *col_data_base = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %d\n", col_data_base, raw_ptr,
@@ -3562,7 +3564,7 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 
 	/* free_list offset = struct_header + (all columns data) */
 	char *fl_offset = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", fl_offset, count_buf, bytes_per_row);
+	buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", fl_offset, capacity_buf, bytes_per_row);
 	char *fl_data = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %s\n", fl_data, raw_ptr, fl_offset);
 	char *fl_add_header = gen_value_name(ctx);
@@ -3626,7 +3628,7 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 		char *loop_counter = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", loop_counter, loop_ctr_alloca);
 		char *cond = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", cond, loop_counter, count_buf);
+		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", cond, loop_counter, length_buf);
 		buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n", cond, loop_body_label, loop_end_label);
 
 		/* Loop body */
@@ -3681,7 +3683,7 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 		char *final_count_gep = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", final_count_gep,
 		                  arch_name, arch_name, struct_ptr, arch->field_count);
-		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", count_buf, final_count_gep);
+		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", length_buf, final_count_gep);
 	}
 }
 

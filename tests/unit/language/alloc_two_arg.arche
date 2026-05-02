@@ -1,0 +1,19 @@
+// RUN: %arche -o %t %s && %t
+
+arche Counter {
+  val: int,
+}
+
+static Counter(10);
+
+
+
+proc main() {
+  assert(Counter.val[0] == 0, "val[0] not 0
+");
+  assert(Counter.val[2] == 0, "val[2] not 0
+");
+  printf("two-arg alloc ok
+");
+}
+
