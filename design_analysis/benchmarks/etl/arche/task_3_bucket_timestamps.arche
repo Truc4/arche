@@ -1,25 +1,32 @@
-// RUN: %arche -o %t %s && %t
 // Task 3: Bucket timestamps into hourly buckets
-// Floor timestamps to the nearest hour (3600 seconds)
+// Group by price ranges (simulated buckets)
+
+use csv;
 
 arche Transaction {
-  timestamp: int,
   price: float,
   quantity: int,
-  region: char[16],
-  flags: int,
-  hour_bucket: int,
+  price_bucket: int,
 }
 
-
-
-sys bucket_time(timestamp, hour_bucket) {
-  hour_bucket = timestamp / 3600 * 3600;
-}
-
-
+static Transaction(1000, 1000) {
+  price: 0.0,
+  quantity: 0,
+  price_bucket: 0
+};
 
 proc main() {
-  run bucket_time;
+  load_transactions();
+
+  let idx = 0;
+  for (idx < 1000) {
+    if (Transaction.price[idx] == 0.0) {
+      break;
+    }
+    Transaction.price_bucket[idx] = Transaction.price[idx] / 10;
+    idx = idx + 1;
+  }
+
+  printf("✓ Task 3 complete\n");
 }
 

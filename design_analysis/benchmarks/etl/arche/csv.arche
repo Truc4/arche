@@ -1,28 +1,17 @@
-// RUN: %arche -o %t %s && %t
+// CSV loader module for Transaction archetype
 
-arche Transaction {
-  price: float,
-  quantity: int,
-  revenue: float,
-}
-
-static Transaction(1000, 1000) {
-  price: 0.0,
-  quantity: 0
-};
-
-
-
-proc main() {
-  let fd = open("../../../../design_analysis/benchmarks/etl/data/data.csv", 0);
+proc load_transactions() {
+  let fd = open("../data/data.csv", 0);
   let buf: char[65536];
   let price_str: char[32];
   let qty_str: char[32];
   let buf, total_n = read(fd, buf, 65536);
   close(fd);
+
   let idx = 0;
   let pos = 0;
   let line_start = 0;
+
   for (pos < total_n) {
     if (buf[pos] == '\n') {
       line_start = pos + 1;
@@ -31,10 +20,12 @@ proc main() {
     }
     pos = pos + 1;
   }
+
   for (idx < 1000) {
     if (line_start >= total_n) {
       break;
     }
+
     let line_end = line_start;
     for (line_end < total_n) {
       if (buf[line_end] == '\n') {
@@ -42,38 +33,53 @@ proc main() {
       }
       line_end = line_end + 1;
     }
-    let comma_pos = line_start;
-    for (comma_pos < line_end) {
-      if (buf[comma_pos] == ',') {
+
+    let c1 = line_start;
+    for (c1 < line_end) {
+      if (buf[c1] == ',') {
         break;
       }
-      comma_pos = comma_pos + 1;
+      c1 = c1 + 1;
     }
+
+    let c2 = c1 + 1;
+    for (c2 < line_end) {
+      if (buf[c2] == ',') {
+        break;
+      }
+      c2 = c2 + 1;
+    }
+
+    let c3 = c2 + 1;
+    for (c3 < line_end) {
+      if (buf[c3] == ',') {
+        break;
+      }
+      c3 = c3 + 1;
+    }
+
     let j = 0;
-    let i = line_start;
-    for (i < comma_pos) {
+    let i = c1 + 1;
+    for (i < c2) {
       price_str[j] = buf[i];
       j = j + 1;
       i = i + 1;
     }
     price_str[j] = 0;
+
     j = 0;
-    i = comma_pos + 1;
-    for (i < line_end) {
+    i = c2 + 1;
+    for (i < c3) {
       qty_str[j] = buf[i];
       j = j + 1;
       i = i + 1;
     }
     qty_str[j] = 0;
+
     Transaction.price[idx] = atof(price_str);
     Transaction.quantity[idx] = atoi(qty_str);
-    Transaction.revenue[idx] = Transaction.price[idx] * Transaction.quantity[idx];
+
     idx = idx + 1;
     line_start = line_end + 1;
   }
-  printf("Task 1: Compute derived columns\n");
-  printf("Processed %d rows\n", idx);
-  printf("revenue[0] = %f\n", Transaction.revenue[0]);
-  printf("\xe2\x9c\x93 All revenues computed\n");
 }
-

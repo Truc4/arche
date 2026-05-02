@@ -8,6 +8,7 @@ bin/
 tests/tmp/
 .tmp
 /tmp/
+*.tmp
 
 # Generated LLVM/ASM (temp compilation artifacts)
 *.ll
