@@ -940,6 +940,10 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			if (alloc->field_count > 0) {
 				format_expression(out, alloc->field_values[0]);
 			}
+			if (alloc->init_length) {
+				fprintf(out, ", ");
+				format_expression(out, alloc->init_length);
+			}
 			fprintf(out, ")");
 			if (alloc->field_count > 1) {
 				fprintf(out, " {\n");
