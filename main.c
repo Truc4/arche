@@ -221,8 +221,8 @@ int main(int argc, char *argv[]) {
 	/* Call cc to assemble and link with runtime objects */
 	char cc_cmd[1024];
 	snprintf(cc_cmd, sizeof(cc_cmd),
-	         "cc -no-pie -o %s %s build/runtime/csv_reader.o 2>/dev/null || cc -no-pie -o %s %s", output_file, asm_file,
-	         output_file, asm_file);
+	         "cc -no-pie -o %s %s build/runtime/csv_reader.o -lc 2>/dev/null || cc -no-pie -o %s %s -lc", output_file,
+	         asm_file, output_file, asm_file);
 	printf("Linking executable...\n");
 	ret = system(cc_cmd);
 	if (ret != 0) {
