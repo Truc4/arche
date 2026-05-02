@@ -1,7 +1,7 @@
 // RUN: %arche -o %t %s && %t
 
 proc main() {
-  let fd = open("tests/fixtures/transactions.csv", 0);
+  let fd = open("../../../../tests/fixtures/transactions.csv", 0);
   let buf: char[256];
   let buf, n = read(fd, buf, 256);
   close(fd);

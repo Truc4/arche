@@ -80,7 +80,7 @@ proc load_csv(path: char[]) {
 
 
 proc main() {
-  load_csv("tests/fixtures/transactions.csv");
+  load_csv("../../../../tests/fixtures/transactions.csv");
   assert(Transaction.price[0] == 1.0, "price[0] not 1.0\n");
   printf("csv ok\n");
 }
