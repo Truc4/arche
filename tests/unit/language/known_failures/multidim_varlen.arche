@@ -5,7 +5,7 @@ arche Message {
   author: char[64],
 }
 
-static Message(100, 0);
+static Message(100);
 
 
 

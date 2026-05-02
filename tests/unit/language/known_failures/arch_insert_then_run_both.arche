@@ -14,9 +14,9 @@ arche Body {
   mass: float,
 }
 
-static Particle(10, 0);
+static Particle(10);
 
-static Body(10, 0);
+static Body(10);
 
 
 

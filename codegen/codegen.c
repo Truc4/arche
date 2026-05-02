@@ -3460,12 +3460,11 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 		codegen_expression(ctx, alloc->field_values[0], capacity_buf);
 	}
 
-	/* Get init_length from second parameter */
+	/* Get init_length from second parameter; default to 0 if not provided */
 	char length_buf[256];
 	if (alloc->init_length) {
 		codegen_expression(ctx, alloc->init_length, length_buf);
 	} else {
-		/* No init_size provided - use 0 (allocation without initialization) */
 		strcpy(length_buf, "0");
 	}
 

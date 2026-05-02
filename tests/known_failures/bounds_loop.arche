@@ -4,7 +4,7 @@ arche Particle {
   id: int,
 }
 
-static Particle(5, 0);
+static Particle(5);
 
 
 

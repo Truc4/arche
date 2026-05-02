@@ -11,9 +11,9 @@ arche Matrix {
   data: float[10][10],
 }
 
-static Message(100, 0);
+static Message(100);
 
-static Matrix(50, 0);
+static Matrix(50);
 
 
 

@@ -5,7 +5,7 @@ arche Counter {
   val: int,
 }
 
-static Counter(5, 0);
+static Counter(5);
 
 
 

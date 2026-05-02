@@ -5,7 +5,7 @@ arche Entity {
   y: float,
 }
 
-static Entity(100, 0);
+static Entity(100);
 
 
 

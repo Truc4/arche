@@ -5,7 +5,7 @@ arche Particle {
   vel: float,
 }
 
-static Particle(1000, 0);
+static Particle(1000);
 
 
 

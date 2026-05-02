@@ -6,7 +6,7 @@ arche Body {
   velocity: float,
 }
 
-static Body(500, 0);
+static Body(500);
 
 
 
