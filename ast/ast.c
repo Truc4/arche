@@ -607,6 +607,9 @@ static void format_expression(FILE *out, Expression *expr) {
 		}
 		break;
 	}
+	case EXPR_STRING:
+		fprintf(out, "\"%s\"", expr->data.string.value);
+		break;
 	}
 }
 

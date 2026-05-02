@@ -370,6 +370,11 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		return expr->data.alloc.archetype_name;
 	}
 
+	case EXPR_STRING: {
+		/* String literal: char array */
+		return "char_array";
+	}
+
 	default:
 		return NULL;
 	}
@@ -384,6 +389,10 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 	switch (expr->type) {
 	case EXPR_LITERAL:
 		/* literals are always valid */
+		break;
+
+	case EXPR_STRING:
+		/* string literals are always valid */
 		break;
 
 	case EXPR_NAME: {
