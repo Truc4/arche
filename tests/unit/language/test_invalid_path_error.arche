@@ -1,0 +1,9 @@
+// RUN: %arche -o %t %s && %t
+
+proc main() {
+  let fd = open("/nonexistent/path/to/file.csv", 0);
+  printf("open() returned fd=%d\n", fd);
+  assert(fd < 0, "should fail to open nonexistent file\n");
+  printf("Invalid path error test PASSED\n");
+}
+
