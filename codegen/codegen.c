@@ -1166,8 +1166,12 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			arg_values[i] = NULL;
 
 			/* Check if this arg is a string literal */
-			if (expr->data.call.args[i]->type == EXPR_LITERAL &&
-			    expr->data.call.args[i]->data.literal.lexeme[0] == '"') {
+			if (expr->data.call.args[i]->type == EXPR_STRING) {
+				arg_is_string[i] = 1;
+			}
+			/* Check if this arg is an old-style string literal (EXPR_LITERAL with quotes) */
+			else if (expr->data.call.args[i]->type == EXPR_LITERAL &&
+			         expr->data.call.args[i]->data.literal.lexeme[0] == '"') {
 				arg_is_string[i] = 1;
 			}
 			/* Check if this arg is an array literal */
@@ -1715,6 +1719,45 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		}
 
 		strcpy(result_buf, struct_ptr);
+		break;
+	}
+
+	case EXPR_STRING: {
+		/* Create global constant for string literal */
+		char global_name[64];
+		snprintf(global_name, sizeof(global_name), "@.str%d", ctx->string_counter++);
+
+		/* Build LLVM global constant declaration (similar to emit_string_global) */
+		char llvm_escaped[2048] = "";
+		size_t llvm_pos = 0;
+
+		for (int i = 0; i < expr->data.string.length && llvm_pos < sizeof(llvm_escaped) - 10; i++) {
+			unsigned char c = (unsigned char)expr->data.string.value[i];
+			if (c >= 32 && c < 127 && c != '"' && c != '\\') {
+				llvm_escaped[llvm_pos++] = c;
+			} else {
+				llvm_pos += snprintf(llvm_escaped + llvm_pos, sizeof(llvm_escaped) - llvm_pos, "\\%02X", c);
+			}
+		}
+
+		char global_decl[4096];
+		snprintf(global_decl, sizeof(global_decl), "%s = private unnamed_addr constant [%d x i8] c\"%s\\00\"\n",
+		         global_name, expr->data.string.length + 1, llvm_escaped);
+
+		/* Append to globals buffer */
+		size_t decl_len = strlen(global_decl);
+		if (ctx->globals_pos + decl_len >= ctx->globals_size) {
+			ctx->globals_size = (ctx->globals_size + decl_len) * 2;
+			ctx->globals_buffer = realloc(ctx->globals_buffer, ctx->globals_size);
+		}
+		strcpy(ctx->globals_buffer + ctx->globals_pos, global_decl);
+		ctx->globals_pos += decl_len;
+
+		/* Get pointer to first element */
+		char *res_name = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i32 0, i32 0\n", res_name,
+		                  expr->data.string.length + 1, expr->data.string.length + 1, global_name);
+		strcpy(result_buf, res_name);
 		break;
 	}
 	}

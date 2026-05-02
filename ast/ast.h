@@ -279,6 +279,7 @@ typedef enum {
 	EXPR_CALL,
 	EXPR_ALLOC,
 	EXPR_ARRAY_LITERAL,
+	EXPR_STRING,
 } ExpressionType;
 
 typedef enum {
@@ -334,6 +335,11 @@ typedef struct {
 	int element_count;
 } ArrayLiteralExpr;
 
+typedef struct {
+	char *value; /* String content without quotes */
+	int length;  /* Length excluding quotes */
+} StringExpr;
+
 struct Expression {
 	ExpressionType type;
 	SourceLoc loc;
@@ -347,6 +353,7 @@ struct Expression {
 		CallExpr call;
 		AllocExpr alloc;
 		ArrayLiteralExpr array_literal;
+		StringExpr string;
 	} data;
 	char *resolved_type; /* Semantic analysis populates: "int", "double", "Vec3", etc. NULL if not yet analyzed */
 };

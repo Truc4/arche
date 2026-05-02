@@ -787,13 +787,50 @@ static Expression *parse_primary_expr(Parser *parser) {
 	}
 
 	if (check(parser, TOK_STRING)) {
-		char *lexeme = token_text(parser->current);
+		const char *lexeme = parser->current.start;
+		size_t len = parser->current.length;
+		int str_line = parser->current.line;
+		int str_column = parser->current.column;
 		advance(parser);
 
-		Expression *expr = expression_create(EXPR_LITERAL);
-		expr->loc.line = parser->previous.line;
-		expr->loc.column = parser->previous.column;
-		expr->data.literal.lexeme = lexeme;
+		/* Extract string content (without quotes) and process escape sequences */
+		char *value = malloc(len - 1); /* -2 for quotes, +1 for null */
+		int out_pos = 0;
+
+		for (size_t i = 1; i < len - 1; i++) {
+			if (lexeme[i] == '\\' && i + 1 < len - 1) {
+				i++;
+				switch (lexeme[i]) {
+				case 'n':
+					value[out_pos++] = '\n';
+					break;
+				case 't':
+					value[out_pos++] = '\t';
+					break;
+				case 'r':
+					value[out_pos++] = '\r';
+					break;
+				case '\\':
+					value[out_pos++] = '\\';
+					break;
+				case '"':
+					value[out_pos++] = '"';
+					break;
+				default:
+					value[out_pos++] = lexeme[i];
+					break;
+				}
+			} else {
+				value[out_pos++] = lexeme[i];
+			}
+		}
+		value[out_pos] = '\0';
+
+		Expression *expr = expression_create(EXPR_STRING);
+		expr->loc.line = str_line;
+		expr->loc.column = str_column;
+		expr->data.string.value = value;
+		expr->data.string.length = out_pos;
 		return expr;
 	}
 
