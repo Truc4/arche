@@ -15,7 +15,7 @@ static Transaction(1000, 1000) {
 
 
 proc main() {
-  let fd = open("../../../../design_analysis/benchmarks/etl/data/data.csv", 0);
+  let fd = open("design_analysis/benchmarks/etl/data/data.csv", 0);
   let buf: char[65536];
   let price_str: char[32];
   let qty_str: char[32];
@@ -86,8 +86,10 @@ proc main() {
     idx = idx + 1;
     line_start = line_end + 1;
   }
+  printf("Loaded %d rows, total_n=%d\n", idx, total_n);
+  printf("price[0]=%f, qty[0]=%d, revenue[0]=%f\n", Transaction.price[0], Transaction.quantity[0], Transaction.revenue[0]);
   assert(idx > 900, "loaded less than 900 rows\n");
   assert(Transaction.revenue[0] > 0.0, "revenue should be computed\n");
-  printf("\xe2\x9c\x93 CSV load test passed\n");
+  printf("xe2x9cx93 CSV load test passed\n");
 }
 

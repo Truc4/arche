@@ -13,7 +13,7 @@ static Transaction(5, 5) {
 
 
 proc main() {
-  let fd = open("../../../../tests/fixtures/transactions.csv", 0);
+  let fd = open("tests/fixtures/transactions.csv", 0);
   let buf: char[256];
   let price_str: char[32];
   let qty_str: char[32];
