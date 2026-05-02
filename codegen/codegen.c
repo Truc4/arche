@@ -1929,9 +1929,9 @@ static void emit_bounds_check(CodegenContext *ctx, const char *arch_name, const 
 
 	/* Emit error block */
 	buffer_append_fmt(ctx, "%s:\n", fail_lbl);
-	buffer_append(
-	    ctx, "  call i32 (i8*, ...) @printf(i8* getelementptr ([28 x i8], [28 x i8]* @.arche_oob, i32 0, i32 0))\n");
-	buffer_append(ctx, "  call i32 @fflush(i32 1)\n");
+	buffer_append(ctx,
+	              "  call i32 @write(i32 2, i8* getelementptr ([28 x i8], [28 x i8]* @.arche_oob, i32 0, i32 0), i32 "
+	              "27)\n");
 	buffer_append(ctx, "  call void @abort()\n");
 	buffer_append(ctx, "  unreachable\n\n");
 
