@@ -7,9 +7,8 @@ arche Counter {
 
 static Counter(5);
 
-
-
 proc main() {
+  alloc Counter(10);
   printf("should not reach\n");
 }
 
