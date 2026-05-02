@@ -4,10 +4,11 @@ arche Particle {
   id: int,
 }
 
+static Particle(5, 0);
+
 
 
 proc main() {
-  alloc Particle(5);
   insert(Particle, 1);
   insert(Particle, 2);
   insert(Particle, 3);

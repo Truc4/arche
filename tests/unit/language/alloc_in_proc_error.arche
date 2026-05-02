@@ -5,10 +5,11 @@ arche Counter {
   val: int,
 }
 
+static Counter(5, 0);
+
 
 
 proc main() {
-  alloc Counter(5);
   printf("should not reach\n");
 }
 

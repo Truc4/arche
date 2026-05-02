@@ -11,11 +11,13 @@ arche Matrix {
   data: float[10][10],
 }
 
+static Message(100, 0);
+
+static Matrix(50, 0);
+
 
 
 proc main() {
-  alloc Message(100);
-  alloc Matrix(50);
   print("allocations done\n");
 }
 

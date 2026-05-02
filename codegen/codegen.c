@@ -3460,12 +3460,13 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 		codegen_expression(ctx, alloc->field_values[0], capacity_buf);
 	}
 
-	/* Get init_length from init_length field; default to capacity */
+	/* Get init_length from second parameter */
 	char length_buf[256];
 	if (alloc->init_length) {
 		codegen_expression(ctx, alloc->init_length, length_buf);
 	} else {
-		strcpy(length_buf, capacity_buf);
+		/* No init_size provided - use 0 (allocation without initialization) */
+		strcpy(length_buf, "0");
 	}
 
 	/* Find archetype declaration */

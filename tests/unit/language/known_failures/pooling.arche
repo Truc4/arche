@@ -5,10 +5,11 @@ arche Entity {
   y: float,
 }
 
+static Entity(100, 0);
+
 
 
 proc main() {
-  alloc Entity(100);
   insert(Entity, 1.0, 2.0);
   insert(Entity, 3.0, 4.0);
   insert(Entity, 5.0, 6.0);
