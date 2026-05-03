@@ -1209,7 +1209,16 @@ static Expression *parse_expression(Parser *parser) {
 /* ========== STATEMENT PARSING ========== */
 
 static Statement *parse_statement(Parser *parser) {
+	/* Prevent stack overflow from unbounded recursion */
+	const int MAX_RECURSION_DEPTH = 1000;
+	if (parser->recursion_depth > MAX_RECURSION_DEPTH) {
+		error(parser, "Recursion limit exceeded");
+		return NULL;
+	}
+	parser->recursion_depth++;
+
 	if (match(parser, TOK_SEMI)) {
+		parser->recursion_depth--;
 		return NULL; /* empty statement */
 	}
 

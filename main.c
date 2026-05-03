@@ -70,8 +70,10 @@ int main(int argc, char *argv[]) {
 	struct rlimit mem_limit;
 	mem_limit.rlim_cur = 512 * 1024 * 1024;
 	mem_limit.rlim_max = 512 * 1024 * 1024;
-	if (setrlimit(RLIMIT_AS, &mem_limit) != 0) {
-		perror("Warning: Could not set memory limit");
+	int limit_result = setrlimit(RLIMIT_AS, &mem_limit);
+	if (limit_result != 0) {
+		perror("Error: Could not set memory limit");
+		return 1;
 	}
 
 	if (!output_file) {
