@@ -1,0 +1,26 @@
+// RUN: %arche -o %t %s && %t
+// Multiple handles to same shape is allowed - they're just names/aliases
+arche Players {
+  x: float,
+  y: int,
+}
+
+
+
+arche Enemies {
+  x: float,
+  y: int,
+}
+
+static Players(2, 2) {
+  x: 1.0,
+  y: 10
+};
+
+// Only ONE can be allocated
+
+
+proc main() {
+  printf("multiple handles ok\n");
+}
+
