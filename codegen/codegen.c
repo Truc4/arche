@@ -3255,7 +3255,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 	}
 
 	case STMT_RUN: {
-		/* run system - dispatch to matching archetypes in scope */
+		/* run system - dispatch to all matching archetypes in world */
 		const char *system_name = stmt->data.run_stmt.system_name;
 
 		/* Find the system definition */
@@ -3265,25 +3265,16 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			break;
 		}
 
-		/* Check scope exists */
-		if (ctx->scope_count == 0) {
-			buffer_append_fmt(ctx, "  ; ERROR: no scope for system '%s'\n", system_name);
-			break;
-		}
-
-		/* Find all variables in scope that are archetype instances */
-		ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
 		int found_any = 0;
 
-		for (int vi = 0; vi < scope->value_count; vi++) {
-			ValueInfo *var = scope->values[vi];
-			/* Skip non-archetype variables */
-			if (var->type != 3 || !var->arch_name) {
+		/* Dispatch to all archetypes in the program (world state) */
+		for (int ai = 0; ai < ctx->prog->decl_count; ai++) {
+			Decl *decl = ctx->prog->decls[ai];
+			if (decl->kind != DECL_ARCHETYPE) {
 				continue;
 			}
 
-			/* Find the archetype declaration */
-			ArchetypeDecl *arch = find_archetype_decl(ctx, var->arch_name);
+			ArchetypeDecl *arch = decl->data.archetype;
 			if (!arch) {
 				continue;
 			}
@@ -3294,13 +3285,13 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			}
 
 			found_any = 1;
-			/* Call versioned system function for this archetype */
-			const char *versioned = codegen_get_sys_version(ctx, system_name, var->arch_name);
+			/* Load global archetype pointer and call versioned system function */
+			const char *versioned = codegen_get_sys_version(ctx, system_name, arch->name);
 			if (versioned) {
-				buffer_append_fmt(ctx, "  call void @%s(%%struct.%s* %s)\n", versioned, var->arch_name, var->llvm_name);
-			} else {
-				buffer_append_fmt(ctx, "  ; ERROR: no version of system '%s' for archetype '%s'\n", system_name,
-				                  var->arch_name);
+				char *arch_ptr = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", arch_ptr, arch->name,
+				                  arch->name, arch->name);
+				buffer_append_fmt(ctx, "  call void @%s(%%struct.%s* %s)\n", versioned, arch->name, arch_ptr);
 			}
 		}
 

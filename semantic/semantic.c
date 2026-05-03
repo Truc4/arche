@@ -900,6 +900,17 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 		return;
 	}
 
+	/* Check if this shape has already been allocated. Each shape (field structure)
+	   can have multiple archetype handles/names pointing to it, but only one can
+	   allocate/initialize it. Once allocated, the shape is live in the world. */
+	if (arch->is_allocated) {
+		fprintf(stderr, "Error: Shape already allocated (archetype '%s' shares shape with an earlier allocation)\n",
+		        alloc->archetype_name);
+		ctx->error_count++;
+		return;
+	}
+	arch->is_allocated = 1;
+
 	/* Validate count is provided and is a literal */
 	if (alloc->field_count == 0 || !alloc->field_values[0]) {
 		fprintf(stderr, "Error: alloc missing count expression\n");

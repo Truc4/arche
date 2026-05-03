@@ -1,0 +1,25 @@
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -q "Shape already allocated" %t.out
+
+arche Handle1 {
+  val: int,
+}
+
+
+
+arche Handle2 {
+  val: int,
+}
+
+static Handle1(1, 1) {
+  val: 5
+};
+
+static Handle2(1, 1) {
+  val: 10
+};
+
+
+
+proc main() {
+}
+
