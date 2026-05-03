@@ -1517,10 +1517,13 @@ static Statement *parse_statement(Parser *parser) {
 					return NULL;
 			}
 
-			/* Expect and consume second semicolon */
+			/* Expect and consume second semicolon or closing paren */
 			if (!match(parser, TOK_SEMI)) {
-				error(parser, "Expected ';' in three-part for loop");
-				return NULL;
+				if (!check(parser, TOK_RPAREN)) {
+					error(parser, "Expected ';' or ')' in three-part for loop");
+					return NULL;
+				}
+				/* No increment - closing paren is next, just continue */
 			}
 
 			/* Parse increment statement (can be empty) */
