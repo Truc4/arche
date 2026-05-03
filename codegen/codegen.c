@@ -70,6 +70,12 @@ struct CodegenContext {
 	StaticDecl **top_level_allocs;
 	int alloc_count;
 	int alloc_capacity;
+
+	/* Alloca hoisting: collect allocas during function body gen, emit at entry */
+	char *alloca_buffer;
+	size_t alloca_buf_size;
+	size_t alloca_buf_pos;
+	int hoisting_allocas;
 };
 
 /* ========== SYSTEM VERSION MAPPING ========== */
@@ -120,6 +126,26 @@ static void buffer_append_fmt(CodegenContext *ctx, const char *fmt, ...) {
 	va_end(args);
 
 	buffer_append(ctx, temp);
+}
+
+static void emit_alloca(CodegenContext *ctx, const char *fmt, ...) {
+	va_list args;
+	va_start(args, fmt);
+	char temp[256];
+	vsnprintf(temp, sizeof(temp), fmt, args);
+	va_end(args);
+
+	if (ctx->hoisting_allocas) {
+		size_t len = strlen(temp);
+		if (ctx->alloca_buf_pos + len >= ctx->alloca_buf_size) {
+			ctx->alloca_buf_size = (ctx->alloca_buf_size + len + 64) * 2;
+			ctx->alloca_buffer = realloc(ctx->alloca_buffer, ctx->alloca_buf_size);
+		}
+		strcpy(ctx->alloca_buffer + ctx->alloca_buf_pos, temp);
+		ctx->alloca_buf_pos += len;
+	} else {
+		buffer_append(ctx, temp);
+	}
 }
 
 static const char *llvm_type_from_arche(const char *arche_type) {
@@ -1279,7 +1305,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 					/* Create struct on stack */
 					char *arr_alloca = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
+					emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
 
 					/* Store data pointer in field 0 */
 					char *ptr_gep = gen_value_name(ctx);
@@ -1525,7 +1551,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 		/* Create struct on stack and return pointer */
 		char *arr_alloca = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
+		emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
 
 		/* Get pointer to global array */
 		char *arr_ptr = gen_value_name(ctx);
@@ -1716,7 +1742,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			ctx->value_counter++;
 
 			/* Allocate loop counter variable on stack */
-			buffer_append_fmt(ctx, "  %s = alloca i64\n", loop_ctr_alloca);
+			emit_alloca(ctx, "  %s = alloca i64\n", loop_ctr_alloca);
 			buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", loop_ctr_alloca);
 
 			/* Jump to loop condition */
@@ -1954,7 +1980,7 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 
 	/* Vector loop setup */
 	char *v_ctr_alloca = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = alloca i64\n", v_ctr_alloca);
+	emit_alloca(ctx, "  %s = alloca i64\n", v_ctr_alloca);
 	buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", v_ctr_alloca);
 
 	/* Generate label names (without % prefix) */
@@ -2042,7 +2068,7 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 	/* Scalar loop setup */
 	buffer_append_fmt(ctx, "%s:\n", scalar_setup_lbl);
 	char *s_ctr_alloca = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = alloca i64\n", s_ctr_alloca);
+	emit_alloca(ctx, "  %s = alloca i64\n", s_ctr_alloca);
 	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", count_aligned, s_ctr_alloca);
 	buffer_append_fmt(ctx, "  br label %%%s\n\n", scalar_check_lbl);
 
@@ -2154,7 +2180,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 
 							/* Allocate zero-initialized buffer on stack */
 							char *buf_name = gen_value_name(ctx);
-							buffer_append_fmt(ctx, "  %s = alloca [%d x i8]\n", buf_name, size);
+							emit_alloca(ctx, "  %s = alloca [%d x i8]\n", buf_name, size);
 							char *ptr_for_memset = gen_value_name(ctx);
 							buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", ptr_for_memset, size,
 							                  buf_name);
@@ -2249,7 +2275,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 						} else {
 							/* Assign return value to variable */
 							char *alloca_name = gen_value_name(ctx);
-							buffer_append_fmt(ctx, "  %s = alloca %s\n", alloca_name, return_type);
+							emit_alloca(ctx, "  %s = alloca %s\n", alloca_name, return_type);
 							buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", return_type, res_name, return_type,
 							                  alloca_name);
 
@@ -2295,7 +2321,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			/* Check for array type */
 			if (type->kind == TYPE_ARRAY) {
 				char *arr_alloca = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
+				emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
 
 				char *ptr_gep = gen_value_name(ctx);
 				buffer_append_fmt(ctx,
@@ -2322,7 +2348,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				/* Stack-allocated char array: let buf: char[256]; */
 				int rank = type->data.shaped_array.rank;
 				char *alloca_name = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = alloca [%d x i8]\n", alloca_name, rank);
+				emit_alloca(ctx, "  %s = alloca [%d x i8]\n", alloca_name, rank);
 
 				ValueInfo *vi = malloc(sizeof(ValueInfo));
 				vi->name = malloc(strlen(var_name) + 1);
@@ -2348,7 +2374,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				}
 
 				char *alloca_name = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = alloca %s\n", alloca_name, alloc_type);
+				emit_alloca(ctx, "  %s = alloca %s\n", alloca_name, alloc_type);
 				buffer_append_fmt(ctx, "  store %s 0, %s* %s\n", alloc_type, alloc_type, alloca_name);
 
 				ValueInfo *vi = malloc(sizeof(ValueInfo));
@@ -2475,7 +2501,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			}
 
 			char *alloca_name = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = alloca %s\n", alloca_name, alloc_type);
+			emit_alloca(ctx, "  %s = alloca %s\n", alloca_name, alloc_type);
 			buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", store_type, value_buf, store_type, alloca_name);
 
 			ValueInfo *vi = malloc(sizeof(ValueInfo));
@@ -3042,7 +3068,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 
 				/* Vector loop (step 4) */
 				char *v_counter = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = alloca i64\n", v_counter);
+				emit_alloca(ctx, "  %s = alloca i64\n", v_counter);
 				buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", v_counter);
 
 				char *v_loop_label = gen_value_name(ctx);
@@ -3085,7 +3111,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				/* Scalar tail loop (step 1) */
 				char *s_counter = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "%s:\n", scalar_loop_label + 1); /* Scalar loop header */
-				buffer_append_fmt(ctx, "  %s = alloca i64\n", s_counter);
+				emit_alloca(ctx, "  %s = alloca i64\n", s_counter);
 				buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", count_aligned, s_counter);
 
 				char *scalar_body_label = gen_value_name(ctx);
@@ -3125,7 +3151,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				/* SCALAR LOOP (original version) */
 
 				char *counter = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = alloca i64\n", counter);
+				emit_alloca(ctx, "  %s = alloca i64\n", counter);
 				buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", counter);
 
 				char *loop_label = gen_value_name(ctx);
@@ -3169,7 +3195,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			/* Fallback for non-name iterables */
 			codegen_expression(ctx, stmt->data.for_stmt.iterable, iter_buf);
 			char *counter = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = alloca i32\n", counter);
+			emit_alloca(ctx, "  %s = alloca i32\n", counter);
 			buffer_append_fmt(ctx, "  store i32 0, i32* %s\n", counter);
 
 			char *loop_label = gen_value_name(ctx);
@@ -3683,7 +3709,7 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 		ctx->value_counter++;
 
 		/* Allocate loop counter variable on stack */
-		buffer_append_fmt(ctx, "  %s = alloca i64\n", loop_ctr_alloca);
+		emit_alloca(ctx, "  %s = alloca i64\n", loop_ctr_alloca);
 		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", loop_ctr_alloca);
 
 		/* Jump to loop condition */
@@ -3753,6 +3779,47 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 	}
 }
 
+typedef struct {
+	char *saved_output_buffer;
+	size_t saved_buffer_size;
+	size_t saved_buffer_pos;
+} FunctionBodyState;
+
+static FunctionBodyState begin_function_body(CodegenContext *ctx) {
+	FunctionBodyState state = {
+	    .saved_output_buffer = ctx->output_buffer,
+	    .saved_buffer_size = ctx->buffer_size,
+	    .saved_buffer_pos = ctx->buffer_pos,
+	};
+	ctx->output_buffer = malloc(4096);
+	ctx->buffer_size = 4096;
+	ctx->buffer_pos = 0;
+	ctx->output_buffer[0] = '\0';
+
+	if (!ctx->alloca_buffer) {
+		ctx->alloca_buf_size = 1024;
+		ctx->alloca_buffer = malloc(ctx->alloca_buf_size);
+	}
+	ctx->alloca_buf_pos = 0;
+	ctx->alloca_buffer[0] = '\0';
+	ctx->hoisting_allocas = 1;
+	return state;
+}
+
+static void end_function_body(CodegenContext *ctx, FunctionBodyState state) {
+	ctx->hoisting_allocas = 0;
+	char *body_buf = ctx->output_buffer;
+
+	ctx->output_buffer = state.saved_output_buffer;
+	ctx->buffer_size = state.saved_buffer_size;
+	ctx->buffer_pos = state.saved_buffer_pos;
+
+	if (ctx->alloca_buf_pos > 0)
+		buffer_append(ctx, ctx->alloca_buffer);
+	buffer_append(ctx, body_buf);
+	free(body_buf);
+}
+
 static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
 	/* For extern funcs, emit declare stub */
 	if (func->is_extern) {
@@ -3803,6 +3870,7 @@ static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
 	buffer_append(ctx, ") {\n");
 	buffer_append(ctx, "entry:\n");
 
+	FunctionBodyState fbs_func = begin_function_body(ctx);
 	push_value_scope(ctx);
 
 	/* Add parameters to scope */
@@ -3832,6 +3900,7 @@ static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
 		ret_value = "0.0";
 	}
 	buffer_append_fmt(ctx, "  ret %s %s\n", return_type, ret_value);
+	end_function_body(ctx, fbs_func);
 	buffer_append(ctx, "}\n\n");
 }
 
@@ -3895,6 +3964,7 @@ static void codegen_proc_decl(CodegenContext *ctx, ProcDecl *proc) {
 	buffer_append(ctx, ") {\n");
 	buffer_append(ctx, "entry:\n");
 
+	FunctionBodyState fbs_proc = begin_function_body(ctx);
 	push_value_scope(ctx);
 
 	/* Register parameters in scope */
@@ -3923,6 +3993,7 @@ static void codegen_proc_decl(CodegenContext *ctx, ProcDecl *proc) {
 	pop_value_scope(ctx);
 
 	buffer_append(ctx, "  ret void\n");
+	end_function_body(ctx, fbs_proc);
 	buffer_append(ctx, "}\n\n");
 }
 
@@ -3938,6 +4009,7 @@ static void codegen_sys_version(CodegenContext *ctx, SysDecl *sys, const char *a
 	buffer_append_fmt(ctx, "define void @%s(%%struct.%s* %%archetype) #0 {\n", versioned_name, arch_name);
 	buffer_append(ctx, "entry:\n");
 
+	FunctionBodyState fbs_sys = begin_function_body(ctx);
 	push_value_scope(ctx);
 
 	/* Bind field parameters to their column pointers */
@@ -3999,6 +4071,7 @@ static void codegen_sys_version(CodegenContext *ctx, SysDecl *sys, const char *a
 	pop_value_scope(ctx);
 
 	buffer_append(ctx, "  ret void\n");
+	end_function_body(ctx, fbs_sys);
 	buffer_append(ctx, "}\n\n");
 }
 
@@ -4206,6 +4279,7 @@ void codegen_free(CodegenContext *ctx) {
 	free(ctx->scopes);
 	free(ctx->output_buffer);
 	free(ctx->globals_buffer);
+	free(ctx->alloca_buffer);
 	free(ctx->sys_versions);
 	free(ctx->loop_exit_labels);
 	free(ctx->top_level_allocs);
