@@ -92,6 +92,6 @@ proc load_transactions() {
 proc main() {
   load_transactions();
   Transaction.revenue = Transaction.price * Transaction.quantity;
-  printf("\xe2\x9c\x93 Task 1 complete\n");
+  printf("xe2x9cx93 Task 1 complete\n");
 }
 

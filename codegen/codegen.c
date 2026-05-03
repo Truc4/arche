@@ -4145,6 +4145,10 @@ CodegenContext *codegen_create(Program *prog, SemanticContext *sem_ctx) {
 	ctx->top_level_allocs = NULL;
 	ctx->alloc_count = 0;
 	ctx->alloc_capacity = 0;
+	ctx->alloca_buffer = NULL;
+	ctx->alloca_buf_size = 0;
+	ctx->alloca_buf_pos = 0;
+	ctx->hoisting_allocas = 0;
 	return ctx;
 }
 
