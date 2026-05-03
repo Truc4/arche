@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -63,6 +64,14 @@ int main(int argc, char *argv[]) {
 
 	if (!input_file) {
 		usage(argv[0]);
+	}
+
+	/* Limit memory to 512MB to prevent runaway compilation */
+	struct rlimit mem_limit;
+	mem_limit.rlim_cur = 512 * 1024 * 1024;
+	mem_limit.rlim_max = 512 * 1024 * 1024;
+	if (setrlimit(RLIMIT_AS, &mem_limit) != 0) {
+		perror("Warning: Could not set memory limit");
 	}
 
 	if (!output_file) {

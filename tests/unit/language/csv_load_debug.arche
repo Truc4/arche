@@ -21,7 +21,7 @@ proc load_data() {
   let pos = 0;
   let line_start = 0;
   for (; pos < total_n) {
-    if (buf[pos] == '\n';) {
+    if (buf[pos] == '\n') {
       line_start = pos + 1;
       pos = pos + 1;
       break;
@@ -29,33 +29,33 @@ proc load_data() {
     pos = pos + 1;
   }
   for (; idx < 10) {
-    if (line_start >= total_n;) {
+    if (line_start >= total_n) {
       break;
     }
     let line_end = line_start;
     for (; line_end < total_n) {
-      if (buf[line_end] == '\n';) {
+      if (buf[line_end] == '\n') {
         break;
       }
       line_end = line_end + 1;
     }
     let c1 = line_start;
     for (; c1 < line_end) {
-      if (buf[c1] == ',';) {
+      if (buf[c1] == ',') {
         break;
       }
       c1 = c1 + 1;
     }
     let c2 = c1 + 1;
     for (; c2 < line_end) {
-      if (buf[c2] == ',';) {
+      if (buf[c2] == ',') {
         break;
       }
       c2 = c2 + 1;
     }
     let c3 = c2 + 1;
     for (; c3 < line_end) {
-      if (buf[c3] == ',';) {
+      if (buf[c3] == ',') {
         break;
       }
       c3 = c3 + 1;

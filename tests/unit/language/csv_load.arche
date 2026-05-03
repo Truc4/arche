@@ -23,7 +23,7 @@ proc load_csv(path: char[]) {
   let pos = 0;
   let line_start = 0;
   for (; pos < total_n) {
-    if (buf[pos] == '\n';) {
+    if (buf[pos] == '\n') {
       line_start = pos + 1;
       pos = pos + 1;
       break;
@@ -31,19 +31,19 @@ proc load_csv(path: char[]) {
     pos = pos + 1;
   }
   for (; idx < 3) {
-    if (line_start >= total_n;) {
+    if (line_start >= total_n) {
       break;
     }
     let line_end = line_start;
     for (; line_end < total_n) {
-      if (buf[line_end] == '\n';) {
+      if (buf[line_end] == '\n') {
         break;
       }
       line_end = line_end + 1;
     }
     let comma_pos = line_start;
     for (; comma_pos < line_end) {
-      if (buf[comma_pos] == ',';) {
+      if (buf[comma_pos] == ',') {
         break;
       }
       comma_pos = comma_pos + 1;

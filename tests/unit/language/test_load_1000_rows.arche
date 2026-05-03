@@ -24,7 +24,7 @@ proc main() {
   let pos = 0;
   let line_start = 0;
   for (; pos < total_n) {
-    if (buf[pos] == '\n';) {
+    if (\1 == \2) {
       line_start = pos + 1;
       pos = pos + 1;
       break;
@@ -37,21 +37,21 @@ proc main() {
     }
     let line_end = line_start;
     for (; line_end < total_n) {
-      if (buf[line_end] == '\n';) {
+      if (\1 == \2) {
         break;
       }
       line_end = line_end + 1;
     }
     let c1 = line_start;
     for (; c1 < line_end) {
-      if (buf[c1] == ',';) {
+      if (\1 == \2) {
         break;
       }
       c1 = c1 + 1;
     }
     let c2 = c1 + 1;
     for (; c2 < line_end) {
-      if (buf[c2] == ',';) {
+      if (\1 == \2) {
         break;
       }
       c2 = c2 + 1;
