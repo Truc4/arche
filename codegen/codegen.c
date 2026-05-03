@@ -2059,9 +2059,10 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 		                  target_gep);
 	}
 
-	/* Loop increment */
+	/* Loop increment - use 4 for vectorized ops, 1 for scalar */
 	char *vi_new = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = add i64 %s, 4\n", vi_new, vi);
+	int increment = ctx->vector_lanes > 0 ? 4 : 1;
+	buffer_append_fmt(ctx, "  %s = add i64 %s, %d\n", vi_new, vi, increment);
 	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", vi_new, v_ctr_alloca);
 	buffer_append_fmt(ctx, "  br label %%%s\n\n", vec_loop_lbl);
 
