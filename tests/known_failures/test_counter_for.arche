@@ -2,7 +2,7 @@
 
 proc main() {
   let i = 0;
-  for (i < 3) {
+  for (;i < 3;) {
     printf("i = %d\n", i);
     i = i + 1;
   }

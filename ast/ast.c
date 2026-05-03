@@ -775,10 +775,10 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		} else if (!stmt->data.for_stmt.var_name) {
 			/* Infinite or condition-based for */
 			if (stmt->data.for_stmt.condition) {
-				/* Condition-based: for (cond) { } */
-				fprintf(out, " (");
+				/* Condition-only: for (; cond;) { } */
+				fprintf(out, " (;");
 				format_expression(out, stmt->data.for_stmt.condition);
-				fprintf(out, ")");
+				fprintf(out, ";)");
 			}
 			/* Else infinite: for { } */
 		} else {
