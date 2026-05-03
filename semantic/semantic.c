@@ -680,9 +680,9 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		break;
 
 	case STMT_FOR: {
-		/* Check for three-part or range-based for loop */
+		/* Check for parenthesized or range-based for loop */
 		if (stmt->data.for_stmt.init || stmt->data.for_stmt.increment) {
-			/* Three-part form: for (init; cond; incr) */
+			/* Parenthesized for loop: for (init; cond; incr) */
 			push_scope(ctx);
 
 			if (stmt->data.for_stmt.init) {

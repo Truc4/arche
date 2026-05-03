@@ -1445,7 +1445,7 @@ static Statement *parse_statement(Parser *parser) {
 		if (match(parser, TOK_LBRACE)) {
 			/* Infinite loop - no var_name, iterable, or condition (already set to NULL above) */
 		} else if (match(parser, TOK_LPAREN)) {
-			/* Three-part form: for (init; cond; incr) { } */
+			/* for loop: for (init; cond; incr) { } */
 			/* All three parts are optional */
 
 			Statement *init = NULL;
@@ -1506,7 +1506,7 @@ static Statement *parse_statement(Parser *parser) {
 
 			/* Expect and consume first semicolon */
 			if (!match(parser, TOK_SEMI)) {
-				error(parser, "Expected ';' in three-part for loop");
+				error(parser, "Expected ';' in for loop");
 				return NULL;
 			}
 
@@ -1517,13 +1517,10 @@ static Statement *parse_statement(Parser *parser) {
 					return NULL;
 			}
 
-			/* Expect and consume second semicolon or closing paren */
+			/* Expect and consume second semicolon (required) */
 			if (!match(parser, TOK_SEMI)) {
-				if (!check(parser, TOK_RPAREN)) {
-					error(parser, "Expected ';' or ')' in three-part for loop");
-					return NULL;
-				}
-				/* No increment - closing paren is next, just continue */
+				error(parser, "Expected ';' in for loop");
+				return NULL;
 			}
 
 			/* Parse increment statement (can be empty) */

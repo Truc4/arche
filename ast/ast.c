@@ -717,7 +717,7 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 	case STMT_FOR: {
 		fprintf(out, "%sfor", indent_str);
 		if (stmt->data.for_stmt.init || stmt->data.for_stmt.increment) {
-			/* Three-part form: for (init; cond; incr) { } */
+			/* Parenthesized for loop: for (init; cond; incr) { } */
 			fprintf(out, " (");
 			if (stmt->data.for_stmt.init) {
 				/* Format statement without leading indent/newline */

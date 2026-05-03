@@ -2979,9 +2979,9 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 	}
 
 	case STMT_FOR: {
-		/* Check if three-part form: for (init; cond; incr) */
+		/* Check for parenthesized for loop: for (init; cond; incr) */
 		if (stmt->data.for_stmt.init || stmt->data.for_stmt.increment) {
-			/* Three-part for loop */
+			/* Parenthesized for loop */
 			char *loop_label = gen_value_name(ctx);
 			char *body_label = gen_value_name(ctx);
 			char *exit_label = gen_value_name(ctx);
