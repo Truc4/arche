@@ -4,8 +4,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 
 int main(int argc, char *argv[]) {
+	/* Limit memory to 512MB to prevent runaway parsing */
+	struct rlimit mem_limit;
+	mem_limit.rlim_cur = 512 * 1024 * 1024;
+	mem_limit.rlim_max = 512 * 1024 * 1024;
+	int limit_result = setrlimit(RLIMIT_AS, &mem_limit);
+	if (limit_result != 0) {
+		perror("Error: Could not set memory limit");
+		return 1;
+	}
 	if (argc < 2) {
 		fprintf(stderr, "Usage: %s <file.arche>\n", argv[0]);
 		return 1;
