@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t
+// RUN: %arche -o %t %s && %t | grep "system_ran"
 
 arche Body {
   pos: float,
@@ -9,6 +9,7 @@ static Body(5);
 
 
 sys dummy(pos) {
+  printf("system_ran\n");
   pos = pos;
 }
 
