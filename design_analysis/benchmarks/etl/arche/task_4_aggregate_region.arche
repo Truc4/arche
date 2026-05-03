@@ -20,7 +20,7 @@ proc main() {
 
   let idx = 0;
   let total_revenue = 0.0;
-  for (idx < 1000) {
+  for (; idx < 1000;) {
     if (Transaction.price[idx] == 0.0) {
       break;
     }

@@ -680,7 +680,32 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		break;
 
 	case STMT_FOR: {
-		/* Check for infinite or condition-based for loop */
+		/* Check for three-part or range-based for loop */
+		if (stmt->data.for_stmt.init || stmt->data.for_stmt.increment) {
+			/* Three-part form: for (init; cond; incr) */
+			push_scope(ctx);
+
+			if (stmt->data.for_stmt.init) {
+				analyze_statement(ctx, stmt->data.for_stmt.init);
+			}
+
+			if (stmt->data.for_stmt.condition) {
+				analyze_expression(ctx, stmt->data.for_stmt.condition);
+			}
+
+			for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
+				analyze_statement(ctx, stmt->data.for_stmt.body[i]);
+			}
+
+			if (stmt->data.for_stmt.increment) {
+				analyze_statement(ctx, stmt->data.for_stmt.increment);
+			}
+
+			pop_scope(ctx);
+			break;
+		}
+
+		/* Check for infinite or condition-based for loop (no init/incr, no var_name) */
 		if (!stmt->data.for_stmt.var_name) {
 			/* Infinite or condition-based for loop */
 			if (stmt->data.for_stmt.condition) {

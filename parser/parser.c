@@ -1435,7 +1435,9 @@ static Statement *parse_statement(Parser *parser) {
 		stmt->loc.column = for_column;
 		stmt->data.for_stmt.var_name = NULL;
 		stmt->data.for_stmt.iterable = NULL;
+		stmt->data.for_stmt.init = NULL;
 		stmt->data.for_stmt.condition = NULL;
+		stmt->data.for_stmt.increment = NULL;
 		stmt->data.for_stmt.body = NULL;
 		stmt->data.for_stmt.body_count = 0;
 
@@ -1443,17 +1445,135 @@ static Statement *parse_statement(Parser *parser) {
 		if (match(parser, TOK_LBRACE)) {
 			/* Infinite loop - no var_name, iterable, or condition (already set to NULL above) */
 		} else if (match(parser, TOK_LPAREN)) {
-			/* Condition-based for: for (cond) { } */
-			Expression *cond = parse_expression(parser);
-			if (!cond)
-				return NULL;
+			/* Three-part form: for (init; cond; incr) { } */
+			/* All three parts are optional */
 
-			if (!match(parser, TOK_RPAREN)) {
-				error(parser, "Expected ')' after for condition");
+			Statement *init = NULL;
+			Expression *cond = NULL;
+
+			/* Parse init (can be let statement or expression, or empty) */
+			if (check(parser, TOK_LET)) {
+				/* Parse let statement without trailing semicolon requirement */
+				advance(parser); /* consume LET */
+				int let_line = parser->previous.line;
+				int let_column = parser->previous.column;
+
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "Expected variable name after 'let'");
+					return NULL;
+				}
+
+				char *name = token_text(parser->current);
+				advance(parser);
+
+				TypeRef *type = NULL;
+				if (match(parser, TOK_COLON)) {
+					type = parse_type(parser);
+					if (!type)
+						return NULL;
+				}
+
+				Expression *value = NULL;
+				if (match(parser, TOK_EQ)) {
+					value = parse_expression(parser);
+					if (!value)
+						return NULL;
+				} else if (!type) {
+					error(parser, "Expected '=' or type annotation after variable name");
+					return NULL;
+				}
+
+				Statement *init_stmt = statement_create(STMT_LET);
+				init_stmt->loc.line = let_line;
+				init_stmt->loc.column = let_column;
+				init_stmt->data.let_stmt.name = name;
+				init_stmt->data.let_stmt.names = NULL;
+				init_stmt->data.let_stmt.name_count = 0;
+				init_stmt->data.let_stmt.type = type;
+				init_stmt->data.let_stmt.value = value;
+				init = init_stmt;
+			} else if (!check(parser, TOK_SEMI)) {
+				/* Parse expression as init */
+				Expression *init_expr = parse_expression(parser);
+				if (!init_expr)
+					return NULL;
+				/* Wrap expression in statement */
+				Statement *init_stmt = statement_create(STMT_EXPR);
+				init_stmt->loc = init_expr->loc;
+				init_stmt->data.expr_stmt.expr = init_expr;
+				init = init_stmt;
+			}
+
+			/* Expect and consume first semicolon */
+			if (!match(parser, TOK_SEMI)) {
+				error(parser, "Expected ';' in three-part for loop");
 				return NULL;
 			}
 
+			/* Parse condition (can be empty) */
+			if (!check(parser, TOK_SEMI)) {
+				cond = parse_expression(parser);
+				if (!cond)
+					return NULL;
+			}
+
+			/* Expect and consume second semicolon */
+			if (!match(parser, TOK_SEMI)) {
+				error(parser, "Expected ';' in three-part for loop");
+				return NULL;
+			}
+
+			/* Parse increment statement (can be empty) */
+			Statement *incr_stmt = NULL;
+			if (!check(parser, TOK_RPAREN)) {
+				/* Parse as an assignment or expression statement */
+				Expression *target = parse_expression(parser);
+				if (!target)
+					return NULL;
+
+				if (check(parser, TOK_EQ) || check(parser, TOK_PLUS_EQ) || check(parser, TOK_MINUS_EQ) ||
+				    check(parser, TOK_STAR_EQ) || check(parser, TOK_SLASH_EQ)) {
+					/* Assignment statement */
+					Operator op = OP_NONE;
+					if (match(parser, TOK_EQ)) {
+						op = OP_NONE;
+					} else if (match(parser, TOK_PLUS_EQ)) {
+						op = OP_ADD;
+					} else if (match(parser, TOK_MINUS_EQ)) {
+						op = OP_SUB;
+					} else if (match(parser, TOK_STAR_EQ)) {
+						op = OP_MUL;
+					} else if (match(parser, TOK_SLASH_EQ)) {
+						op = OP_DIV;
+					}
+
+					Expression *value = parse_expression(parser);
+					if (!value) {
+						error(parser, "Expected value in for increment assignment");
+						return NULL;
+					}
+
+					incr_stmt = statement_create(STMT_ASSIGN);
+					incr_stmt->loc = target->loc;
+					incr_stmt->data.assign_stmt.target = target;
+					incr_stmt->data.assign_stmt.value = value;
+					incr_stmt->data.assign_stmt.op = op;
+				} else {
+					/* Expression statement */
+					incr_stmt = statement_create(STMT_EXPR);
+					incr_stmt->loc = target->loc;
+					incr_stmt->data.expr_stmt.expr = target;
+				}
+			}
+
+			stmt->data.for_stmt.init = init;
 			stmt->data.for_stmt.condition = cond;
+			stmt->data.for_stmt.increment = incr_stmt;
+
+			if (!match(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')' after for clause");
+				return NULL;
+			}
 
 			if (!match(parser, TOK_LBRACE)) {
 				error(parser, "Expected '{'");

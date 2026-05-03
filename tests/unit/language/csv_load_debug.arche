@@ -10,96 +10,87 @@ static TestData(1000, 1000) {
   quantity: 0
 };
 
+
+
 proc load_data() {
   let fd = open("design_analysis/benchmarks/etl/data/data.csv", 0);
   let buf: char[65536];
   let buf, total_n = read(fd, buf, 65536);
   close(fd);
-
   let idx = 0;
   let pos = 0;
   let line_start = 0;
-
-  for (pos < total_n) {
-    if (buf[pos] == '\n') {
+  for (; pos < total_n) {
+    if (buf[pos] == '\n';) {
       line_start = pos + 1;
       pos = pos + 1;
       break;
     }
     pos = pos + 1;
   }
-
-  for (idx < 10) {
-    if (line_start >= total_n) {
+  for (; idx < 10) {
+    if (line_start >= total_n;) {
       break;
     }
-
     let line_end = line_start;
-    for (line_end < total_n) {
-      if (buf[line_end] == '\n') {
+    for (; line_end < total_n) {
+      if (buf[line_end] == '\n';) {
         break;
       }
       line_end = line_end + 1;
     }
-
     let c1 = line_start;
-    for (c1 < line_end) {
-      if (buf[c1] == ',') {
+    for (; c1 < line_end) {
+      if (buf[c1] == ',';) {
         break;
       }
       c1 = c1 + 1;
     }
-
     let c2 = c1 + 1;
-    for (c2 < line_end) {
-      if (buf[c2] == ',') {
+    for (; c2 < line_end) {
+      if (buf[c2] == ',';) {
         break;
       }
       c2 = c2 + 1;
     }
-
     let c3 = c2 + 1;
-    for (c3 < line_end) {
-      if (buf[c3] == ',') {
+    for (; c3 < line_end) {
+      if (buf[c3] == ',';) {
         break;
       }
       c3 = c3 + 1;
     }
-
     let price_str: char[32];
     let qty_str: char[32];
-
     let j = 0;
     let i = c1 + 1;
-    for (i < c2) {
+    for (; i < c2;) {
       price_str[j] = buf[i];
       j = j + 1;
       i = i + 1;
     }
     price_str[j] = 0;
-
     j = 0;
     i = c2 + 1;
-    for (i < c3) {
+    for (; i < c3;) {
       qty_str[j] = buf[i];
       j = j + 1;
       i = i + 1;
     }
     qty_str[j] = 0;
-
     TestData.price[idx] = atof(price_str);
     TestData.quantity[idx] = atoi(qty_str);
-
     if (idx == 6) {
-      printf("row 6: price=%f, qty=%d, line_start=%d, line_end=%d, c1=%d, c2=%d, c3=%d\n",
-             TestData.price[idx], TestData.quantity[idx], line_start, line_end, c1, c2, c3);
+      printf("row 6: price=%f, qty=%d, line_start=%d, line_end=%d, c1=%d, c2=%d, c3=%d\n", TestData.price[idx], TestData.quantity[idx], line_start, line_end, c1, c2, c3);
     }
-
     idx = idx + 1;
     line_start = line_end + 1;
   }
 }
 
+
+
 proc main() {
   load_data();
 }
+

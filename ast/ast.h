@@ -221,7 +221,9 @@ typedef struct {
 typedef struct {
 	char *var_name;        /* NULL for non-range-based for loops */
 	Expression *iterable;  /* NULL for non-range-based for loops */
-	Expression *condition; /* NULL for infinite or range-based for loops */
+	Statement *init;       /* NULL unless three-part for loop */
+	Expression *condition; /* NULL for infinite loops or range-based */
+	Statement *increment;  /* NULL unless three-part for loop - can be assign or expr stmt */
 	Statement **body;
 	int body_count;
 } ForStmt;

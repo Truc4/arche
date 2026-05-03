@@ -19,7 +19,7 @@ proc main() {
   load_transactions();
 
   let idx = 0;
-  for (idx < 1000) {
+  for (; idx < 1000;) {
     if (Transaction.price[idx] == 0.0) {
       break;
     }

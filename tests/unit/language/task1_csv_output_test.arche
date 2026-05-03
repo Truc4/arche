@@ -11,8 +11,9 @@ static Task1Data(10, 10) {
   quantity: 0
 };
 
+
+
 proc main() {
-  // Load 10 sample rows
   Task1Data.price[0] = 100.0;
   Task1Data.quantity[0] = 5;
   Task1Data.price[1] = 50.0;
@@ -33,19 +34,14 @@ proc main() {
   Task1Data.quantity[8] = 2;
   Task1Data.price[9] = 120.0;
   Task1Data.quantity[9] = 7;
-
-  // Compute revenue
   Task1Data.revenue = Task1Data.price * Task1Data.quantity;
-
-  // Write to CSV file
   let fd = open("/tmp/task1_output.csv", 1);
-
   for (let i = 0; i < 10; i = i + 1) {
     let buf: char[64];
     let n = sprintf(buf, "%f\n", Task1Data.revenue[i]);
     write(fd, buf, n);
   }
-
   close(fd);
   printf("Task1 output written\n");
 }
+
