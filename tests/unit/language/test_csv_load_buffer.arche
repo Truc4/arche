@@ -13,7 +13,7 @@ static Transaction(100, 100) {
 
 
 proc main() {
-  let fd = open("../../../../tests/fixtures/data.csv", 0);
+  let fd = open("../../../../tests/fixtures/transactions.csv", 0);
   let buf: char[256];
   let buf, total_n = read(fd, buf, 256);
   close(fd);
@@ -72,6 +72,6 @@ proc main() {
   }
   printf("Loaded %d rows from 256-byte buffer\n", idx);
   assert(idx > 0, "should load at least 1 row\n");
-  assert(Transaction.price[0] == 10.0, "first price should be 10.0\n");
+  assert(Transaction.price[0] == 1.0, "first price should be 1.0\n");
 }
 
