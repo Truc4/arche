@@ -2059,9 +2059,10 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 		                  target_gep);
 	}
 
-	/* Loop increment */
+	/* Loop increment - use 4 for vectorized ops, 1 for scalar */
 	char *vi_new = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = add i64 %s, 4\n", vi_new, vi);
+	int increment = ctx->vector_lanes > 0 ? 4 : 1;
+	buffer_append_fmt(ctx, "  %s = add i64 %s, %d\n", vi_new, vi, increment);
 	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", vi_new, v_ctr_alloca);
 	buffer_append_fmt(ctx, "  br label %%%s\n\n", vec_loop_lbl);
 
@@ -2978,6 +2979,68 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 	}
 
 	case STMT_FOR: {
+		/* Check for parenthesized for loop: for (init; cond; incr) */
+		if (stmt->data.for_stmt.init || stmt->data.for_stmt.increment) {
+			/* Parenthesized for loop */
+			char *loop_label = gen_value_name(ctx);
+			char *body_label = gen_value_name(ctx);
+			char *exit_label = gen_value_name(ctx);
+
+			push_value_scope(ctx);
+
+			/* Generate init */
+			if (stmt->data.for_stmt.init) {
+				codegen_statement(ctx, stmt->data.for_stmt.init);
+			}
+
+			/* Push exit label for break statements */
+			if (ctx->loop_exit_count >= ctx->loop_exit_capacity) {
+				ctx->loop_exit_capacity = (ctx->loop_exit_capacity == 0) ? 8 : ctx->loop_exit_capacity * 2;
+				ctx->loop_exit_labels = realloc(ctx->loop_exit_labels, ctx->loop_exit_capacity * sizeof(char *));
+			}
+			ctx->loop_exit_labels[ctx->loop_exit_count] = exit_label;
+			ctx->loop_exit_count++;
+
+			/* Jump to condition check */
+			buffer_append_fmt(ctx, "  br label %s\n", loop_label);
+			buffer_append_fmt(ctx, "%s:\n", loop_label + 1);
+
+			if (stmt->data.for_stmt.condition) {
+				/* Condition-based: evaluate condition */
+				char cond_buf[256];
+				codegen_expression(ctx, stmt->data.for_stmt.condition, cond_buf);
+
+				/* Truncate i32 to i1 for branch */
+				char *cond_i1 = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = trunc i32 %s to i1\n", cond_i1, cond_buf);
+				buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cond_i1, body_label, exit_label);
+			} else {
+				/* No condition: always branch to body (infinite) */
+				buffer_append_fmt(ctx, "  br label %s\n", body_label);
+			}
+
+			buffer_append_fmt(ctx, "%s:\n", body_label + 1);
+
+			/* Generate body */
+			for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
+				codegen_statement(ctx, stmt->data.for_stmt.body[i]);
+			}
+
+			/* Generate increment */
+			if (stmt->data.for_stmt.increment) {
+				codegen_statement(ctx, stmt->data.for_stmt.increment);
+			}
+
+			/* Jump back to condition */
+			buffer_append_fmt(ctx, "  br label %s\n", loop_label);
+			buffer_append_fmt(ctx, "%s:\n", exit_label + 1);
+
+			/* Pop exit label */
+			ctx->loop_exit_count--;
+			pop_value_scope(ctx);
+			break;
+		}
+
 		/* Check if this is a condition-based for (for cond { }) or infinite for (for { })
 		 * vs range-based for (for var in iterable { }) */
 		if (!stmt->data.for_stmt.var_name) {
@@ -3255,7 +3318,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 	}
 
 	case STMT_RUN: {
-		/* run system - dispatch to matching archetypes in scope */
+		/* run system - dispatch to all matching archetypes in world */
 		const char *system_name = stmt->data.run_stmt.system_name;
 
 		/* Find the system definition */
@@ -3265,25 +3328,16 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			break;
 		}
 
-		/* Check scope exists */
-		if (ctx->scope_count == 0) {
-			buffer_append_fmt(ctx, "  ; ERROR: no scope for system '%s'\n", system_name);
-			break;
-		}
-
-		/* Find all variables in scope that are archetype instances */
-		ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
 		int found_any = 0;
 
-		for (int vi = 0; vi < scope->value_count; vi++) {
-			ValueInfo *var = scope->values[vi];
-			/* Skip non-archetype variables */
-			if (var->type != 3 || !var->arch_name) {
+		/* Dispatch to all archetypes in the program (world state) */
+		for (int ai = 0; ai < ctx->prog->decl_count; ai++) {
+			Decl *decl = ctx->prog->decls[ai];
+			if (decl->kind != DECL_ARCHETYPE) {
 				continue;
 			}
 
-			/* Find the archetype declaration */
-			ArchetypeDecl *arch = find_archetype_decl(ctx, var->arch_name);
+			ArchetypeDecl *arch = decl->data.archetype;
 			if (!arch) {
 				continue;
 			}
@@ -3294,13 +3348,13 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			}
 
 			found_any = 1;
-			/* Call versioned system function for this archetype */
-			const char *versioned = codegen_get_sys_version(ctx, system_name, var->arch_name);
+			/* Load global archetype pointer and call versioned system function */
+			const char *versioned = codegen_get_sys_version(ctx, system_name, arch->name);
 			if (versioned) {
-				buffer_append_fmt(ctx, "  call void @%s(%%struct.%s* %s)\n", versioned, var->arch_name, var->llvm_name);
-			} else {
-				buffer_append_fmt(ctx, "  ; ERROR: no version of system '%s' for archetype '%s'\n", system_name,
-				                  var->arch_name);
+				char *arch_ptr = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", arch_ptr, arch->name,
+				                  arch->name, arch->name);
+				buffer_append_fmt(ctx, "  call void @%s(%%struct.%s* %s)\n", versioned, arch->name, arch_ptr);
 			}
 		}
 

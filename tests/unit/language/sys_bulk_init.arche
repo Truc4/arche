@@ -1,0 +1,24 @@
+// RUN: %arche -o %t %s && %t | grep "system_ran"
+
+arche Task {
+  val: int,
+}
+
+static Task(1, 1) {
+  val: 5
+};
+
+
+
+sys double_val(val) {
+  printf("system_ran\n");
+  val = val * 2;
+}
+
+
+
+proc main() {
+  run double_val;
+  assert(Task.val[0] == 10, "val not 10\n");
+}
+

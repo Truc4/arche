@@ -1,0 +1,83 @@
+// RUN: %arche -o %t %s && %t
+// Task 1: Derived columns (revenue = price * quantity)
+arche Task1 {
+  price: float,
+  quantity: int,
+  revenue: float,
+}
+
+static Task1(1, 1) {
+  price: 2.0,
+  quantity: 3,
+  revenue: 0.0
+};
+
+
+
+sys task1_compute_revenue(price, quantity, revenue) {
+  printf("sys1_ran\n");
+  revenue = price * quantity;
+}
+
+// Task 2: Filter invalid (valid flag for quantity > 0)
+arche Task2 {
+  quantity: int,
+  valid: int,
+}
+
+static Task2(1, 1) {
+  quantity: 5,
+  valid: 0
+};
+
+
+
+sys task2_filter_invalid(quantity, valid) {
+  printf("sys2_ran\n");
+  valid = quantity > 0;
+}
+
+// Task 3: Bucket timestamps (hour_bucket = timestamp rounded down to nearest hour)
+arche Task3 {
+  timestamp: int,
+  hour_bucket: int,
+}
+
+static Task3(1, 1) {
+  timestamp: 7654,
+  hour_bucket: 0
+};
+
+
+
+sys task3_bucket_timestamps(timestamp, hour_bucket) {
+  printf("sys3_ran\n");
+  hour_bucket = timestamp / 3600 * 3600;
+}
+
+// Task 4: Different shape - OK to init
+arche Task4 {
+  amount: float,
+}
+
+static Task4(1, 1) {
+  amount: 100.0
+};
+
+
+
+sys task4_process(amount) {
+  printf("sys4_ran\n");
+  amount = amount * 2.0;
+}
+
+
+
+proc main() {
+  run task1_compute_revenue;
+  run task2_filter_invalid;
+  run task3_bucket_timestamps;
+  run task4_process;
+  printf("ok\n");
+}
+

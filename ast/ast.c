@@ -317,7 +317,12 @@ void statement_free(Statement *stmt) {
 		break;
 	case STMT_FOR:
 		free(stmt->data.for_stmt.var_name);
+		if (stmt->data.for_stmt.init)
+			statement_free(stmt->data.for_stmt.init);
+		expression_free(stmt->data.for_stmt.condition);
 		expression_free(stmt->data.for_stmt.iterable);
+		if (stmt->data.for_stmt.increment)
+			statement_free(stmt->data.for_stmt.increment);
 		for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
 			statement_free(stmt->data.for_stmt.body[i]);
 		}
@@ -711,13 +716,69 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 	}
 	case STMT_FOR: {
 		fprintf(out, "%sfor", indent_str);
-		if (!stmt->data.for_stmt.var_name) {
+		if (stmt->data.for_stmt.init || stmt->data.for_stmt.increment) {
+			/* Parenthesized for loop: for (init; cond; incr) { } */
+			fprintf(out, " (");
+			if (stmt->data.for_stmt.init) {
+				/* Format statement without leading indent/newline */
+				if (stmt->data.for_stmt.init->type == STMT_LET) {
+					LetStmt *let = &stmt->data.for_stmt.init->data.let_stmt;
+					fprintf(out, "let %s", let->name);
+					if (let->type) {
+						fprintf(out, ": ");
+						format_type(out, let->type);
+					}
+					if (let->value) {
+						fprintf(out, " = ");
+						format_expression(out, let->value);
+					}
+				} else if (stmt->data.for_stmt.init->type == STMT_EXPR) {
+					format_expression(out, stmt->data.for_stmt.init->data.expr_stmt.expr);
+				}
+			}
+			fprintf(out, "; ");
+			if (stmt->data.for_stmt.condition) {
+				format_expression(out, stmt->data.for_stmt.condition);
+			}
+			fprintf(out, "; ");
+			if (stmt->data.for_stmt.increment) {
+				if (stmt->data.for_stmt.increment->type == STMT_ASSIGN) {
+					AssignStmt *assign = &stmt->data.for_stmt.increment->data.assign_stmt;
+					format_expression(out, assign->target);
+					if (assign->op != OP_NONE) {
+						switch (assign->op) {
+						case OP_ADD:
+							fprintf(out, " += ");
+							break;
+						case OP_SUB:
+							fprintf(out, " -= ");
+							break;
+						case OP_MUL:
+							fprintf(out, " *= ");
+							break;
+						case OP_DIV:
+							fprintf(out, " /= ");
+							break;
+						default:
+							fprintf(out, " = ");
+							break;
+						}
+					} else {
+						fprintf(out, " = ");
+					}
+					format_expression(out, assign->value);
+				} else if (stmt->data.for_stmt.increment->type == STMT_EXPR) {
+					format_expression(out, stmt->data.for_stmt.increment->data.expr_stmt.expr);
+				}
+			}
+			fprintf(out, ")");
+		} else if (!stmt->data.for_stmt.var_name) {
 			/* Infinite or condition-based for */
 			if (stmt->data.for_stmt.condition) {
-				/* Condition-based: for (cond) { } */
-				fprintf(out, " (");
+				/* Condition-only: for (; cond;) { } */
+				fprintf(out, " (;");
 				format_expression(out, stmt->data.for_stmt.condition);
-				fprintf(out, ")");
+				fprintf(out, ";)");
 			}
 			/* Else infinite: for { } */
 		} else {

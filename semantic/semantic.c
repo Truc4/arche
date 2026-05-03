@@ -680,7 +680,32 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		break;
 
 	case STMT_FOR: {
-		/* Check for infinite or condition-based for loop */
+		/* Check for parenthesized or range-based for loop */
+		if (stmt->data.for_stmt.init || stmt->data.for_stmt.increment) {
+			/* Parenthesized for loop: for (init; cond; incr) */
+			push_scope(ctx);
+
+			if (stmt->data.for_stmt.init) {
+				analyze_statement(ctx, stmt->data.for_stmt.init);
+			}
+
+			if (stmt->data.for_stmt.condition) {
+				analyze_expression(ctx, stmt->data.for_stmt.condition);
+			}
+
+			for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
+				analyze_statement(ctx, stmt->data.for_stmt.body[i]);
+			}
+
+			if (stmt->data.for_stmt.increment) {
+				analyze_statement(ctx, stmt->data.for_stmt.increment);
+			}
+
+			pop_scope(ctx);
+			break;
+		}
+
+		/* Check for infinite or condition-based for loop (no init/incr, no var_name) */
 		if (!stmt->data.for_stmt.var_name) {
 			/* Infinite or condition-based for loop */
 			if (stmt->data.for_stmt.condition) {
@@ -899,6 +924,17 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 		ctx->error_count++;
 		return;
 	}
+
+	/* Check if this shape has already been allocated. Each shape (field structure)
+	   can have multiple archetype handles/names pointing to it, but only one can
+	   allocate/initialize it. Once allocated, the shape is live in the world. */
+	if (arch->is_allocated) {
+		fprintf(stderr, "Error: Shape already allocated (archetype '%s' shares shape with an earlier allocation)\n",
+		        alloc->archetype_name);
+		ctx->error_count++;
+		return;
+	}
+	arch->is_allocated = 1;
 
 	/* Validate count is provided and is a literal */
 	if (alloc->field_count == 0 || !alloc->field_values[0]) {

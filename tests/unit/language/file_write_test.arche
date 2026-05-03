@@ -1,0 +1,8 @@
+// RUN: %arche -o %t %s && %t && test -f /tmp/test_output.txt && grep "hello" /tmp/test_output.txt
+
+proc main() {
+  let fd = open("/tmp/test_output.txt", 1);
+  stdout_write("wrote file\n", 11);
+  close(fd);
+}
+

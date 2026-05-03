@@ -1,0 +1,24 @@
+// RUN: %arche -o %t %s && %t | grep "system_ran"
+
+arche Counter {
+  val: int,
+}
+
+static Counter(1, 1) {
+  val: 0
+};
+
+
+
+sys increment(val) {
+  printf("system_ran\n");
+  val = val + 1;
+}
+
+
+
+proc main() {
+  run increment;
+  assert(Counter.val[0] == 1, "system did not run\n");
+}
+
