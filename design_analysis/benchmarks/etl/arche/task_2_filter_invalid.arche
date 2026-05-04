@@ -13,6 +13,8 @@ static Transaction(1000, 1000) {
   valid: 0
 };
 
+
+
 proc load_transactions() {
   let fd = arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv");
   let buf: char[65536];
@@ -79,6 +81,8 @@ proc load_transactions() {
   }
 }
 
+
+
 proc write_transactions() {
   let fd = arche_fopen_write("build/benchmarks/etl/task2/arche_output.csv");
   let buf: char[256];
@@ -91,9 +95,12 @@ proc write_transactions() {
   arche_fclose(fd);
 }
 
+
+
 proc main() {
   load_transactions();
   Transaction.valid = Transaction.quantity > 0;
   write_transactions();
   printf("Task2 complete: 1000 rows written to build/benchmarks/etl/task2/arche_output.csv\n");
 }
+

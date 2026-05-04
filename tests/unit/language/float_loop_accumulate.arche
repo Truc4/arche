@@ -10,3 +10,4 @@ proc main() {
   }
   assert(total == 2.0, "float loop accumulate failed\n");
 }
+

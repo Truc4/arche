@@ -101,6 +101,8 @@ proc write_transactions() {
   arche_fclose(fd);
 }
 
+
+
 proc main() {
   load_transactions();
   Transaction.revenue = Transaction.price * Transaction.quantity;

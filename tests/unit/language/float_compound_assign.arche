@@ -5,3 +5,4 @@ proc main() {
   x += 1.0;
   assert(x == 2.5, "float compound assign failed\n");
 }
+
