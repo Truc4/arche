@@ -18,7 +18,7 @@ Arche is a **high-level language** with several strong design constraints:
 - **Columns only**: All archetype data is columnar (arrays). No metadata. Columns are primitives or tuple columns.
 - **Horizontal only**: No nested complex types, **no pointers**. Data layout is flat and explicit.
 - **Tuple columns**: Multi-component fields like position vectors are stored as separate side-by-side arrays (`pos_x`, `pos_y`) but accessed with clean syntax (`pos.x[i]`, `pos.y[i]`).
-- **Pooled allocation with free-lists**: `alloc Archetype(N)` pre-allocates capacity for N entries. Deleted slots are tracked in a free-list and reused by subsequent inserts, eliminating fragmentation.
+- **Pooled allocation with free-lists**: `static Archetype(N, N)` pre-allocates capacity for N entries. Deleted slots are tracked in a free-list and reused by subsequent inserts, eliminating fragmentation.
 - **Minimal type system**: Primitives only: `int`, `float`, `char`. No booleans, no objects. This is a design principle, not a limitation.
 - **Explicit structure over flexibility**: Users have complete control and visibility over data layout in memory.
 
@@ -41,22 +41,22 @@ This leads to a style that feels closer to **data pipelines** or **vectorized co
 Allocations can include field initialization to set all instances’ values at allocation time:
 
 ```arche
-alloc Counter(5) { val: 7, score: 2.5 };
+static Counter(5, 5) { val: 7, score: 2.5 };
 ```
 
-This sets all 5 instances’ `val` and `score` fields. Uninitialized fields are zero-initialized.
+This allocates capacity for 5 instances and initializes `val` and `score` fields. Uninitialized fields are zero-initialized.
 
 ### Encouraged Pattern
 
 Plan memory usage ahead of time, allocate what you need upfront, use predictably:
 
 ```arche
-proc main() {
-  // Allocate all archetype instances with fixed capacities upfront
-  alloc Particle(10000) { active: 0 };
-  alloc Enemy(5000);
-  alloc Projectile(1000);
+// Allocate all archetype instances with fixed capacities upfront
+static Particle(10000, 10000) { active: 0 };
+static Enemy(5000, 5000);
+static Projectile(1000, 1000);
 
+proc main() {
   // Run program with fixed memory budget
   run initialize;
   run update_loop;
@@ -127,7 +127,7 @@ alloc Enemy(1000);  // ERROR: shape already allocated
 
 Each shape is allocated exactly once via an explicit `alloc Archetype(N)` call. Attempting to allocate the same shape again (with any alias) is a compile error.
 
-The allocation is **fixed size** and **reallocation is discourages**. All capacity is allocated upfront. This is by design, dynamic memory is not a feature of this language.
+The allocation is **fixed size**. All capacity is allocated upfront. Reallocation is not possible. This is by design, dynamic memory is not a feature of this language.
 
 ## Array-Oriented Operations
 
@@ -193,8 +193,9 @@ x = a < b   // x is 0 or 1
 Procedures perform **explicit operations**.
 
 ```arche
+static Particle(1000, 1000);
+
 proc main() {
-  alloc Particle(1000);
   Particle.pos = Particle.pos + Particle.vel;
 }
 ```
@@ -244,7 +245,7 @@ proc main() {
 }
 ```
 
-### Conditional Behavior (Planned Constraint)
+### Conditional Behavior
 
 Conditionals work through mathematical expressions (comparisons produce 0 or 1):
 
@@ -255,7 +256,7 @@ sys dampen(vel, pos) {
 }
 ```
 
-**Planned:** Enforce that systems use only conditionals, disallow branching statements. This keeps systems pure data transforms, vectorizable, and cache-friendly.
+Systems support if/for statements for control flow. For maximum cache efficiency, prefer mathematical conditionals (as shown above) over branching when possible.
 
 ## Example
 
@@ -266,6 +267,9 @@ arche Particle {
   vel: (vx: float, vy: float)
 }
 
+// Allocate at top level
+static Particle(10000, 10000);
+
 // Define systems that operate on matching archetypes
 sys move(pos, vel) {
   pos = pos + vel;
@@ -275,9 +279,8 @@ sys dampen(vel) {
   vel = vel * 0.99;
 }
 
-// Allocate and run systems
+// Run systems
 proc main() {
-  alloc Particle(10000);
   run move;
   run dampen;
 }
@@ -420,11 +423,7 @@ The buffer `old_buf` is passed. Language copies it in, passes to C, returns modi
 
 ### Copy Semantics
 
-All parameters are always copied. C functions cannot modify caller data directly. Out parameters are returned as new values.
-
-### Copy Semantics
-
-Every function parameter is **always copied** — there are no side effects on the original data. Functions are pure with respect to parameters; side effects are explicit in the code.
+All parameters are always copied. C functions cannot modify caller data directly. Out parameters are returned as new values. Every function parameter is **always copied** — there are no side effects on the original data. Functions are pure with respect to parameters; side effects are explicit in the code.
 
 ## Multi-Value Let
 
@@ -464,8 +463,8 @@ let buf, _ = read(fd, buf, 256);     // Discard return value, keep buffer
 - **Out Parameters**: Buffer allocation and return as values, with copy-in semantics
 - **Multi-value Let**: Capture multiple return values from function calls
 - **Archetype Operations**: Allocation, indexing, column access, tuple columns, shaped arrays
-- **Basic I/O**: File operations via extern syscalls
-- **CSV Loading**: Real-world example with file I/O and data parsing
+- **C Stdlib Interop**: File I/O via C stdlib wrappers (fopen, fread, fwrite, fclose)
+- **Real-world ETL**: CSV loading and data processing benchmarks
 
 ### Known Limitations
 
