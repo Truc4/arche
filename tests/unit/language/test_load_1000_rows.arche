@@ -14,12 +14,12 @@ static Transaction(1000, 1000) {
 
 
 proc main() {
-  let fd = open("../../../../tests/fixtures/data.csv", 0);
+  let fd = arche_fopen_read("../../../../tests/fixtures/data.csv");
   let buf: char[50000];
   let price_str: char[32];
   let qty_str: char[32];
-  let buf, total_n = read(fd, buf, 50000);
-  close(fd);
+  let total_n = arche_fread(fd, buf, 50000);
+  arche_fclose(fd);
   let idx = 0;
   let pos = 0;
   let line_start = 0;
