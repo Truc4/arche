@@ -265,3 +265,24 @@ for (;i < txns.count;) {
 | **Learning curve** | Shallow (functional API) | Moderate (archetype syntax, column ops) |
 
 **With CSV library**: Arche expressiveness matches Python for vectorized operations (Tasks 1–3). Aggregation (Task 4) requires explicit loop boilerplate. Gain: compile-time safety, predictable latency (1.08–1.69x faster), columnar layout benefits (SIMD, cache efficiency).
+
+## Limitations of This Test
+
+- **Too small**: 1000 rows doesn't stress batch optimization or memory efficiency
+- **Unfair baseline**: Pandas times include Python startup overhead (~35ms), making interpreted overhead visible
+- **No compiled comparison**: Only comparing against interpreted code; need Polars, DuckDB, or NumPy+Cython for meaningful performance baseline
+- **Wrong metric**: Latency on tiny datasets favors compiled code; throughput on large datasets shows real optimization quality
+- **High variance**: 1000-row runs show 10x variance (max/min), masking actual performance characteristics
+
+## Future Benchmarks
+
+To properly evaluate Arche:
+
+1. **Scale**: 1M+ rows to measure batch optimization and memory efficiency at realistic scale
+2. **Compiled baselines**: Compare against Polars, DuckDB, NumPy+Cython instead of interpreted Pandas
+3. **Throughput metrics**: Measure rows/sec on large datasets, not microseconds on tiny ones
+4. **Overhead separation**: Exclude Python startup time from Pandas measurements
+5. **Real-world workflows**: Multi-step pipelines (load → filter → aggregate → join) vs single operations
+6. **Variance analysis**: Measure latency predictability (max/min ratios) on large datasets
+
+I assume these will not be as favorable to Arche, but will continue testing practical scenarios.
