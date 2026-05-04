@@ -6,7 +6,7 @@ arche Task1Data {
   revenue: float,
 }
 
-static Task1Data(10, 10) {
+static Task1Data(1000, 1000) {
   price: 0.0,
   quantity: 0
 };
@@ -35,13 +35,13 @@ proc main() {
   Task1Data.price[9] = 120.0;
   Task1Data.quantity[9] = 7;
   Task1Data.revenue = Task1Data.price * Task1Data.quantity;
-  let fd = open("/tmp/task1_output.csv", 1);
-  for (let i = 0; i < 10; i = i + 1) {
+  let fd = arche_fopen_write("/tmp/task1_output.csv");
+  for (let i = 0; i < 1000; i = i + 1) {
     let buf: char[64];
     let n = sprintf(buf, "%f\n", Task1Data.revenue[i]);
-    write(fd, buf, n);
+    arche_fwrite(fd, buf, n);
   }
-  close(fd);
+  arche_fclose(fd);
   printf("Task1 output written\n");
 }
 

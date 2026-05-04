@@ -13,12 +13,12 @@ static Transaction(3, 3) {
 
 
 proc load_csv(path: char[]) {
-  let fd = open(path, 0);
+  let fd = arche_fopen_read(path);
   let buf: char[256];
   let price_str: char[32];
   let qty_str: char[32];
-  let buf, total_n = read(fd, buf, 256);
-  close(fd);
+  let total_n = arche_fread(fd, buf, 256);
+  arche_fclose(fd);
   let idx = 0;
   let pos = 0;
   let line_start = 0;

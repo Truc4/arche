@@ -13,10 +13,10 @@ static TestData(1000, 1000) {
 
 
 proc load_data() {
-  let fd = open("design_analysis/benchmarks/etl/data/data.csv", 0);
+  let fd = arche_fopen_read("/home/curt/Code/arche/design_analysis/benchmarks/etl/data/data.csv");
   let buf: char[65536];
-  let buf, total_n = read(fd, buf, 65536);
-  close(fd);
+  let total_n = arche_fread(fd, buf, 65536);
+  arche_fclose(fd);
   let idx = 0;
   let pos = 0;
   let line_start = 0;
@@ -74,6 +74,7 @@ proc load_data() {
     TestData.quantity[idx] = atoi(qty_str);
     if (idx == 6) {
       printf("row 6: price=%f, qty=%d, line_start=%d, line_end=%d, c1=%d, c2=%d, c3=%d\n", TestData.price[idx], TestData.quantity[idx], line_start, line_end, c1, c2, c3);
+      fflush(0);
     }
     line_start = line_end + 1;
   }

@@ -14,6 +14,12 @@ extern func atoi(str: char[]) -> int;
 
 extern func strlen(str: char[]) -> int;
 
+extern func arche_fopen_write(path: char[]) -> int;
+extern proc arche_fwrite(fd: int, buf: char[], n: int);
+extern func arche_fopen_read(path: char[]) -> int;
+extern func arche_fread(fd: int, buf: char[], n: int) -> int;
+extern proc arche_fclose(fd: int);
+
 proc print_float(f: float) {
   printf("%g", f);
   fflush(0);
