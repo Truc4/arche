@@ -5,7 +5,7 @@ arche Nums {
 }
 
 static Nums(4, 4) {
-  val: 0.0
+  val: 0.0,
 };
 
 

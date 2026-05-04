@@ -10,7 +10,7 @@ arche Transaction {
 static Transaction(1000, 1000) {
   price: 0.0,
   quantity: 0,
-  valid: 0
+  valid: 0,
 };
 
 

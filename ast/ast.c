@@ -1011,9 +1011,7 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				for (int j = 1; j < alloc->field_count; j++) {
 					fprintf(out, "  %s: ", alloc->field_names[j]);
 					format_expression(out, alloc->field_values[j]);
-					if (j < alloc->field_count - 1)
-						fprintf(out, ",");
-					fprintf(out, "\n");
+					fprintf(out, ",\n");
 				}
 				fprintf(out, "}");
 			}
