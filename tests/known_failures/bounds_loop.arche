@@ -13,11 +13,11 @@ proc main() {
   insert(Particle, 2);
   insert(Particle, 3);
   for i in Particle {
-    let x = Particle.id[i];
+    let x := Particle.id[i];
   }
-  let v0 = Particle.id[0];
-  let v1 = Particle.id[1];
-  let v2 = Particle.id[2];
+  let v0 := Particle.id[0];
+  let v1 := Particle.id[1];
+  let v2 := Particle.id[2];
   assert(v0 == 1, "v0 != 1\n");
   assert(v1 == 2, "v1 != 2\n");
   assert(v2 == 3, "v2 != 3\n");

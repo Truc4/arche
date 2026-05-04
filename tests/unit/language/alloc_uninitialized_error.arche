@@ -10,7 +10,7 @@ static Counter(5);
 
 
 proc main() {
-  let x = Counter.val[0];
+  let x := Counter.val[0];
   printf("should not reach\n");
 }
 

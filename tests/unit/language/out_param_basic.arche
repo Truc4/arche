@@ -7,7 +7,7 @@ func test_fill_buf(out buf: char[32]) -> int {
 
 
 proc main() {
-  let buf, n = test_fill_buf(buf);
+  let buf, n := test_fill_buf(buf);
   assert(n > 0, "test_fill_buf returned <= 0\n");
   printf("out param test ok\n");
 }

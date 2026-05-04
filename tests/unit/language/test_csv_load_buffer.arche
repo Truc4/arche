@@ -13,14 +13,14 @@ static Transaction(100, 100) {
 
 
 proc main() {
-  let fd = open("../../../../tests/fixtures/transactions.csv", 0);
+  let fd := open("../../../../tests/fixtures/transactions.csv", 0);
   let buf: char[256];
-  let buf, total_n = read(fd, buf, 256);
+  let buf, total_n := read(fd, buf, 256);
   close(fd);
   printf("total_n=%d\n", total_n);
-  let idx = 0;
-  let pos = 0;
-  let line_start = 0;
+  let idx := 0;
+  let pos := 0;
+  let line_start := 0;
   for (;pos < total_n;) {
     if (buf[pos] == '\n') {
       line_start = pos + 1;
@@ -35,22 +35,22 @@ proc main() {
     if (line_start >= total_n) {
       break;
     }
-    let line_end = line_start;
+    let line_end := line_start;
     for (;line_end < total_n;) {
       if (buf[line_end] == '\n') {
         break;
       }
       line_end = line_end + 1;
     }
-    let comma_pos = line_start;
+    let comma_pos := line_start;
     for (;comma_pos < line_end;) {
       if (buf[comma_pos] == ',') {
         break;
       }
       comma_pos = comma_pos + 1;
     }
-    let j = 0;
-    let i = line_start;
+    let j := 0;
+    let i := line_start;
     for (;i < comma_pos;) {
       price_str[j] = buf[i];
       j = j + 1;

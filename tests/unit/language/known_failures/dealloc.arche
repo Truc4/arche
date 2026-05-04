@@ -20,10 +20,10 @@ proc main() {
   insert(Particle, 2.0, 0.2);
   insert(Particle, 3.0, 0.3);
   run move;
-  let p0 = Particle.pos[0];
-  let p1 = Particle.pos[1];
-  let p0i = p0 * 10.0;
-  let p1i = p1 * 10.0;
+  let p0 := Particle.pos[0];
+  let p1 := Particle.pos[1];
+  let p0i := p0 * 10.0;
+  let p1i := p1 * 10.0;
   print("p0i=");
   print_float(p0i);
   print(" p1i=");

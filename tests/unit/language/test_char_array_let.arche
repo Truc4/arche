@@ -2,7 +2,7 @@
 
 proc main() {
   let buf: char[256];
-  let c = ',';
+  let c := ',';
   printf("ok\n");
 }
 

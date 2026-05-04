@@ -5,6 +5,6 @@
 // Current: Silently converts (wrong)
 
 proc main() {
-  let x = 3.14;
+  let x := 3.14;
 }
 

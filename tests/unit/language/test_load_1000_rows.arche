@@ -13,15 +13,15 @@ static Transaction(1000, 1000) {
 
 
 proc main() {
-  let fd = arche_fopen_read("../../../../tests/fixtures/data.csv");
+  let fd := arche_fopen_read("../../../../tests/fixtures/data.csv");
   let buf: char[50000];
   let price_str: char[32];
   let qty_str: char[32];
-  let total_n = arche_fread(fd, buf, 50000);
+  let total_n := arche_fread(fd, buf, 50000);
   arche_fclose(fd);
-  let idx = 0;
-  let pos = 0;
-  let line_start = 0;
+  let idx := 0;
+  let pos := 0;
+  let line_start := 0;
   for (; pos < total_n; pos = pos + 1) {
     if (buf[pos] == '\n') {
       line_start = pos + 1;
@@ -32,26 +32,26 @@ proc main() {
     if (line_start >= total_n) {
       break;
     }
-    let line_end = line_start;
+    let line_end := line_start;
     for (; line_end < total_n; line_end = line_end + 1) {
       if (buf[line_end] == '\n') {
         break;
       }
     }
-    let c1 = line_start;
+    let c1 := line_start;
     for (; c1 < line_end; c1 = c1 + 1) {
       if (buf[c1] == ',') {
         break;
       }
     }
-    let c2 = c1 + 1;
+    let c2 := c1 + 1;
     for (; c2 < line_end; c2 = c2 + 1) {
       if (buf[c2] == ',') {
         break;
       }
     }
-    let j = 0;
-    let i = c1 + 1;
+    let j := 0;
+    let i := c1 + 1;
     for (; i < c2; i = i + 1) {
       price_str[j] = buf[i];
       j = j + 1;

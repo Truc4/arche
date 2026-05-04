@@ -7,7 +7,7 @@ func test_strlen(s: char[]) -> int {
 
 
 proc main() {
-  let n = test_strlen("hello");
+  let n := test_strlen("hello");
   assert(n == 5, "strlen failed\n");
   printf("ok\n");
 }

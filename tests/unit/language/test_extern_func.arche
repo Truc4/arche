@@ -5,7 +5,7 @@ proc main() {
   buf[0] = '4';
   buf[1] = '2';
   buf[2] = 0;
-  let n = atoi(buf);
+  let n := atoi(buf);
   printf("atoi: %d\n", n);
   assert(n == 42, "atoi failed\n");
 }

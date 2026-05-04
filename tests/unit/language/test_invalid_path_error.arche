@@ -1,7 +1,7 @@
 // RUN: %arche -o %t %s && %t
 
 proc main() {
-  let fd = arche_fopen_read("/nonexistent/path/to/file.csv");
+  let fd := arche_fopen_read("/nonexistent/path/to/file.csv");
   printf("open() returned fd=%d\n", fd);
   assert(fd == 0, "should fail to open nonexistent file\n");
   printf("Invalid path error test PASSED\n");
