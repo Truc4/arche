@@ -1,0 +1,8 @@
+// RUN: %arche -o %t %s && %t
+
+proc main() {
+  let msg = "hello";
+  printf("test: %s\n", msg);
+  printf("done\n");
+}
+

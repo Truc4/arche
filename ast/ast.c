@@ -141,7 +141,7 @@ TypeRef *type_shaped_array_create(TypeRef *element_type, int rank) {
    ========================= */
 
 Statement *statement_create(StatementType type) {
-	Statement *stmt = malloc(sizeof(Statement));
+	Statement *stmt = calloc(1, sizeof(Statement));
 	stmt->type = type;
 	stmt->loc.line = 1;
 	stmt->loc.column = 1;
@@ -317,7 +317,12 @@ void statement_free(Statement *stmt) {
 		break;
 	case STMT_FOR:
 		free(stmt->data.for_stmt.var_name);
+		if (stmt->data.for_stmt.init)
+			statement_free(stmt->data.for_stmt.init);
+		expression_free(stmt->data.for_stmt.condition);
 		expression_free(stmt->data.for_stmt.iterable);
+		if (stmt->data.for_stmt.increment)
+			statement_free(stmt->data.for_stmt.increment);
 		for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
 			statement_free(stmt->data.for_stmt.body[i]);
 		}
@@ -607,8 +612,41 @@ static void format_expression(FILE *out, Expression *expr) {
 		}
 		break;
 	}
+	case EXPR_STRING: {
+		fprintf(out, "\"");
+		if (expr->data.string.value) {
+			for (int i = 0; i < expr->data.string.length; i++) {
+				unsigned char c = (unsigned char)expr->data.string.value[i];
+				if (c == '\n')
+					fprintf(out, "\\n");
+				else if (c == '\t')
+					fprintf(out, "\\t");
+				else if (c == '\r')
+					fprintf(out, "\\r");
+				else if (c == '\\')
+					fprintf(out, "\\\\");
+				else if (c == '"')
+					fprintf(out, "\\\"");
+				else if (c >= 32 && c < 127)
+					fprintf(out, "%c", c);
+				else
+					fprintf(out, "\\x%02x", c);
+			}
+		}
+		fprintf(out, "\"");
+		break;
+	}
 	}
 }
+
+/* Context for tracking comment output during formatting */
+typedef struct {
+	Token *comments;
+	size_t comment_count;
+	size_t comment_idx;
+	int last_line;
+	const char *src;
+} FmtCtx;
 
 static void format_statement(FILE *out, Statement *stmt, int indent);
 
@@ -623,8 +661,31 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 
 	switch (stmt->type) {
 	case STMT_LET: {
-		fprintf(out, "%slet %s = ", indent_str, stmt->data.let_stmt.name);
-		format_expression(out, stmt->data.let_stmt.value);
+		fprintf(out, "%slet ", indent_str);
+
+		/* Multi-value let */
+		if (stmt->data.let_stmt.name_count > 0 && stmt->data.let_stmt.names) {
+			for (int i = 0; i < stmt->data.let_stmt.name_count; i++) {
+				fprintf(out, "%s", stmt->data.let_stmt.names[i]);
+				if (i < stmt->data.let_stmt.name_count - 1) {
+					fprintf(out, ", ");
+				}
+			}
+		} else {
+			/* Single-value let */
+			fprintf(out, "%s", stmt->data.let_stmt.name);
+			/* Output type annotation if present */
+			if (stmt->data.let_stmt.type) {
+				fprintf(out, ": ");
+				format_type(out, stmt->data.let_stmt.type);
+			}
+		}
+
+		/* Output value if present */
+		if (stmt->data.let_stmt.value) {
+			fprintf(out, " = ");
+			format_expression(out, stmt->data.let_stmt.value);
+		}
 		fprintf(out, ";\n");
 		break;
 	}
@@ -654,8 +715,77 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		break;
 	}
 	case STMT_FOR: {
-		fprintf(out, "%sfor %s in ", indent_str, stmt->data.for_stmt.var_name);
-		format_expression(out, stmt->data.for_stmt.iterable);
+		fprintf(out, "%sfor", indent_str);
+		if (stmt->data.for_stmt.init || stmt->data.for_stmt.increment) {
+			/* Parenthesized for loop: for (init; cond; incr) { } */
+			fprintf(out, " (");
+			if (stmt->data.for_stmt.init) {
+				/* Format statement without leading indent/newline */
+				if (stmt->data.for_stmt.init->type == STMT_LET) {
+					LetStmt *let = &stmt->data.for_stmt.init->data.let_stmt;
+					fprintf(out, "let %s", let->name);
+					if (let->type) {
+						fprintf(out, ": ");
+						format_type(out, let->type);
+					}
+					if (let->value) {
+						fprintf(out, " = ");
+						format_expression(out, let->value);
+					}
+				} else if (stmt->data.for_stmt.init->type == STMT_EXPR) {
+					format_expression(out, stmt->data.for_stmt.init->data.expr_stmt.expr);
+				}
+			}
+			fprintf(out, "; ");
+			if (stmt->data.for_stmt.condition) {
+				format_expression(out, stmt->data.for_stmt.condition);
+			}
+			fprintf(out, "; ");
+			if (stmt->data.for_stmt.increment) {
+				if (stmt->data.for_stmt.increment->type == STMT_ASSIGN) {
+					AssignStmt *assign = &stmt->data.for_stmt.increment->data.assign_stmt;
+					format_expression(out, assign->target);
+					if (assign->op != OP_NONE) {
+						switch (assign->op) {
+						case OP_ADD:
+							fprintf(out, " += ");
+							break;
+						case OP_SUB:
+							fprintf(out, " -= ");
+							break;
+						case OP_MUL:
+							fprintf(out, " *= ");
+							break;
+						case OP_DIV:
+							fprintf(out, " /= ");
+							break;
+						default:
+							fprintf(out, " = ");
+							break;
+						}
+					} else {
+						fprintf(out, " = ");
+					}
+					format_expression(out, assign->value);
+				} else if (stmt->data.for_stmt.increment->type == STMT_EXPR) {
+					format_expression(out, stmt->data.for_stmt.increment->data.expr_stmt.expr);
+				}
+			}
+			fprintf(out, ")");
+		} else if (!stmt->data.for_stmt.var_name) {
+			/* Infinite or condition-based for */
+			if (stmt->data.for_stmt.condition) {
+				/* Condition-only: for (; cond;) { } */
+				fprintf(out, " (;");
+				format_expression(out, stmt->data.for_stmt.condition);
+				fprintf(out, ";)");
+			}
+			/* Else infinite: for { } */
+		} else {
+			/* Range-based: for var_name in iterable { } */
+			fprintf(out, " %s in ", stmt->data.for_stmt.var_name);
+			format_expression(out, stmt->data.for_stmt.iterable);
+		}
 		fprintf(out, " {\n");
 		for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
 			format_statement(out, stmt->data.for_stmt.body[i], indent + 1);
@@ -700,17 +830,18 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		fprintf(out, ");\n");
 		break;
 	}
+	case STMT_BREAK: {
+		fprintf(out, "%sbreak;\n", indent_str);
+		break;
+	}
+	case STMT_RETURN: {
+		fprintf(out, "%sreturn ", indent_str);
+		format_expression(out, stmt->data.return_stmt.value);
+		fprintf(out, ";\n");
+		break;
+	}
 	}
 }
-
-/* Context for tracking comment output during formatting */
-typedef struct {
-	Token *comments;
-	size_t comment_count;
-	size_t comment_idx;
-	int last_line;
-	const char *src;
-} FmtCtx;
 
 /* Get the actual start line of a declaration (from inner payload, not the broken decl->loc) */
 static int decl_start_line(Decl *decl) {
@@ -745,9 +876,15 @@ static void flush_before_line(FILE *out, FmtCtx *ctx, int line) {
 		ctx->comment_idx++;
 	}
 
-	/* Emit blank lines for gaps (normalize to 1 blank line) */
+	/* Emit blank lines for gaps (preserve up to 2 blank lines) */
 	if (line > ctx->last_line + 1) {
-		fprintf(out, "\n");
+		/* Add 1 or 2 blank lines depending on gap size */
+		int gap = line - ctx->last_line - 1;
+		if (gap >= 2) {
+			fprintf(out, "\n\n");
+		} else {
+			fprintf(out, "\n");
+		}
 	}
 	ctx->last_line = line - 1;
 }
@@ -833,20 +970,54 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 		}
 		case DECL_FUNC: {
 			FuncDecl *func = decl->data.func;
+			if (func->is_extern)
+				fprintf(out, "extern ");
 			fprintf(out, "func %s(", func->name);
 			for (int j = 0; j < func->param_count; j++) {
 				if (j > 0)
 					fprintf(out, ", ");
+				if (func->params[j]->is_out)
+					fprintf(out, "out ");
 				fprintf(out, "%s: ", func->params[j]->name);
 				format_type(out, func->params[j]->type);
 			}
 			fprintf(out, ") -> ");
 			format_type(out, func->return_type);
-			fprintf(out, " {\n");
-			for (int j = 0; j < func->statement_count; j++) {
-				format_statement(out, func->statements[j], 1);
+			if (func->is_extern) {
+				fprintf(out, ";\n");
+			} else {
+				fprintf(out, " {\n");
+				for (int j = 0; j < func->statement_count; j++) {
+					format_statement(out, func->statements[j], 1);
+				}
+				fprintf(out, "}\n");
 			}
-			fprintf(out, "}\n\n");
+			fprintf(out, "\n");
+			break;
+		}
+		case DECL_STATIC: {
+			StaticDecl *alloc = decl->data.alloc;
+			fprintf(out, "static %s(", alloc->archetype_name);
+			if (alloc->field_count > 0) {
+				format_expression(out, alloc->field_values[0]);
+			}
+			if (alloc->init_length) {
+				fprintf(out, ", ");
+				format_expression(out, alloc->init_length);
+			}
+			fprintf(out, ")");
+			if (alloc->field_count > 1) {
+				fprintf(out, " {\n");
+				for (int j = 1; j < alloc->field_count; j++) {
+					fprintf(out, "  %s: ", alloc->field_names[j]);
+					format_expression(out, alloc->field_values[j]);
+					if (j < alloc->field_count - 1)
+						fprintf(out, ",");
+					fprintf(out, "\n");
+				}
+				fprintf(out, "}");
+			}
+			fprintf(out, ";\n\n");
 			break;
 		}
 		}

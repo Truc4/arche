@@ -11,6 +11,7 @@ typedef enum TokenKind {
 	TOK_IDENT,
 	TOK_NUMBER,
 	TOK_STRING,
+	TOK_CHAR_LIT,
 	TOK_COMMENT,
 
 	/* keywords */
@@ -23,7 +24,10 @@ typedef enum TokenKind {
 	TOK_IF,
 	TOK_IN,
 	TOK_FREE,
+	TOK_BREAK,
 	TOK_EXTERN,
+	TOK_OUT,
+	TOK_RETURN,
 
 	/* punctuation */
 	TOK_LPAREN,   /* ( */
@@ -71,6 +75,7 @@ typedef struct Token {
 	size_t length;
 	int line;
 	int column;
+	int int_val;
 } Token;
 
 typedef struct Lexer {

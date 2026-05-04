@@ -1,0 +1,20 @@
+// RUN: %arche -o %t %s && %t
+
+arche Data {
+  value: int,
+  doubled: int,
+}
+
+
+sys double_value(value, doubled) {
+  doubled = value * 2;
+}
+
+
+proc main() {
+  Data.alloc((null): 1, value: 5);
+  run double_value;
+  assert(Data.doubled[0] == 10, "doubled[0] != 10\n");
+  printf("ok\n");
+}
+

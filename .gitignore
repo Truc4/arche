@@ -6,6 +6,23 @@ bin/
 
 # Test artifacts
 tests/tmp/
+.tmp
+/tmp/
+*.tmp
+
+# Generated LLVM/ASM (temp compilation artifacts)
+*.ll
+*.s
+
+# Generated benchmark data (ignore large files)
+design_analysis/benchmarks/etl/data/*.csv
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
 
 # IDE and editor files
 .vscode/
@@ -14,3 +31,4 @@ tests/tmp/
 *.swo
 *~
 .DS_Store
+results/

@@ -1,17 +1,21 @@
-// RUN: %arche -o %t %s && %t
+// RUN: %arche -o %t %s && %t | grep "system_ran"
 
 arche Body {
   pos: float,
 }
 
+static Body(5);
+
+
 
 sys dummy(pos) {
+  printf("system_ran\n");
   pos = pos;
 }
 
 
+
 proc main() {
-  alloc Body(100);
   insert(Body, 1.0);
   insert(Body, 2.0);
   insert(Body, 3.0);

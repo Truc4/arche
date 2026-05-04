@@ -1,0 +1,102 @@
+// Task 4: Aggregate total revenue
+// Sum revenue (price * quantity) across all rows
+
+arche Transaction {
+  price: float,
+  quantity: int,
+  revenue: float,
+}
+
+static Transaction(1000, 1000) {
+  price: 0.0,
+  quantity: 0,
+  revenue: 0.0
+};
+
+
+
+proc load_transactions() {
+  let fd = arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv");
+  let buf: char[65536];
+  let price_str: char[32];
+  let qty_str: char[32];
+  let total_n = arche_fread(fd, buf, 65536);
+  arche_fclose(fd);
+  let idx = 0;
+  let pos = 0;
+  let line_start = 0;
+  for (;pos < total_n;) {
+    if (buf[pos] == '\n') {
+      line_start = pos + 1;
+      pos = pos + 1;
+      break;
+    }
+    pos = pos + 1;
+  }
+  for (;idx < 1000;) {
+    if (line_start >= total_n) {
+      break;
+    }
+    let line_end = line_start;
+    for (;line_end < total_n;) {
+      if (buf[line_end] == '\n') {
+        break;
+      }
+      line_end = line_end + 1;
+    }
+    let c1 = line_start;
+    for (;c1 < line_end;) {
+      if (buf[c1] == ',') {
+        break;
+      }
+      c1 = c1 + 1;
+    }
+    let c2 = c1 + 1;
+    for (;c2 < line_end;) {
+      if (buf[c2] == ',') {
+        break;
+      }
+      c2 = c2 + 1;
+    }
+    let j = 0;
+    let i = c1 + 1;
+    for (;i < c2;) {
+      price_str[j] = buf[i];
+      j = j + 1;
+      i = i + 1;
+    }
+    price_str[j] = 0;
+    j = 0;
+    i = c2 + 1;
+    for (;i < line_end;) {
+      qty_str[j] = buf[i];
+      j = j + 1;
+      i = i + 1;
+    }
+    qty_str[j] = 0;
+    Transaction.price[idx] = atof(price_str);
+    Transaction.quantity[idx] = atoi(qty_str);
+    idx = idx + 1;
+    line_start = line_end + 1;
+  }
+}
+
+
+
+proc main() {
+  load_transactions();
+  Transaction.revenue = Transaction.price * Transaction.quantity;
+  let total_revenue: float = 0.0;
+  let idx = 0;
+  for (;idx < 1000;) {
+    total_revenue = total_revenue + Transaction.revenue[idx];
+    idx = idx + 1;
+  }
+  let fd_out = arche_fopen_write("build/benchmarks/etl/task4/arche_output.txt");
+  let out_buf: char[256];
+  let n = sprintf(out_buf, "%.2f\n", total_revenue);
+  arche_fwrite(fd_out, out_buf, n);
+  arche_fclose(fd_out);
+  printf("total revenue = %.2f\n", total_revenue);
+}
+

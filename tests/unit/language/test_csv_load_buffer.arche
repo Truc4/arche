@@ -1,0 +1,77 @@
+// RUN: %arche -o %t %s && %t
+
+arche Transaction {
+  price: float,
+  quantity: int,
+}
+
+static Transaction(100, 100) {
+  price: 0.0,
+  quantity: 0
+};
+
+
+
+proc main() {
+  let fd = open("../../../../tests/fixtures/transactions.csv", 0);
+  let buf: char[256];
+  let buf, total_n = read(fd, buf, 256);
+  close(fd);
+  printf("total_n=%d\n", total_n);
+  let idx = 0;
+  let pos = 0;
+  let line_start = 0;
+  for (;pos < total_n;) {
+    if (buf[pos] == '\n') {
+      line_start = pos + 1;
+      pos = pos + 1;
+      break;
+    }
+    pos = pos + 1;
+  }
+  let price_str: char[32];
+  let qty_str: char[32];
+  for (;idx < 100;) {
+    if (line_start >= total_n) {
+      break;
+    }
+    let line_end = line_start;
+    for (;line_end < total_n;) {
+      if (buf[line_end] == '\n') {
+        break;
+      }
+      line_end = line_end + 1;
+    }
+    let comma_pos = line_start;
+    for (;comma_pos < line_end;) {
+      if (buf[comma_pos] == ',') {
+        break;
+      }
+      comma_pos = comma_pos + 1;
+    }
+    let j = 0;
+    let i = line_start;
+    for (;i < comma_pos;) {
+      price_str[j] = buf[i];
+      j = j + 1;
+      i = i + 1;
+    }
+    price_str[j] = 0;
+    j = 0;
+    i = comma_pos + 1;
+    for (;i < line_end;) {
+      qty_str[j] = buf[i];
+      j = j + 1;
+      i = i + 1;
+    }
+    qty_str[j] = 0;
+    Transaction.price[idx] = atof(price_str);
+    Transaction.quantity[idx] = atoi(qty_str);
+    idx = idx + 1;
+    line_start = line_end + 1;
+  }
+  printf("Loaded %d rows from 256-byte buffer\n", idx);
+  assert(idx > 0, "should load at least 1 row\n");
+  assert(Transaction.price[0] == 1.0, "first price should be 1.0\n");
+}
+

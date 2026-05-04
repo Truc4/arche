@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c99 -DARCHE_CORE_DIR=\"$(abspath core)\"
+CFLAGS = -Wall -Wextra -std=c99 -DARCHE_CORE_DIR=\"$(abspath core)\" -DARCHE_RUNTIME_DIR=\"$(abspath build/runtime)\"
 BUILD_DIR = build
 TARGET = $(BUILD_DIR)/arche
 VPATH = tests
@@ -18,6 +18,9 @@ SRCS = lexer/lexer.c \
        semantic/semantic.c \
        codegen/codegen.c
 
+RUNTIME_SRCS = runtime/stack_check.c runtime/io.c
+RUNTIME_OBJS = $(RUNTIME_SRCS:.c=.o)
+
 OBJS = $(SRCS:.c=.o)
 COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/main.o
 LEXER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/lexer/lexer_main.o
@@ -27,10 +30,10 @@ SEMANTIC_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/ast/ast.o $(BUILD_D
 CODEGEN_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/unit/compiler/codegen_tests.o
 
 # Default target
-all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LIBARCH)
+all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o
 
 $(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/ast $(BUILD_DIR)/parser $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/unit/compiler
+	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/ast $(BUILD_DIR)/parser $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/unit/compiler $(BUILD_DIR)/runtime
 
 # Build main compiler executable
 $(TARGET): $(COMPILER_OBJS)
@@ -93,8 +96,19 @@ test-codegen-unit: $(CODEGEN_TEST_BIN)
 	./$(CODEGEN_TEST_BIN)
 
 # Run all tests with LIT
-test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN)
+test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o
 	lit -v tests/
+
+# Test folder with pattern: make test-folder FOLDER=path PATTERN="*.arche"
+test-folder: $(TARGET) $(BUILD_DIR)
+	@if [ -z "$(FOLDER)" ]; then echo "Usage: make test-folder FOLDER=path [PATTERN='*.arche']"; exit 1; fi
+	@mkdir -p $(BUILD_DIR)/tests
+	@PATTERN="$${PATTERN:=*.arche}"; \
+	for f in $(FOLDER)$$PATTERN; do \
+		echo "Testing $$f..."; \
+		./$(TARGET) -o $(BUILD_DIR)/tests/test_arche "$$f" 2>&1 | tail -1; \
+		$(BUILD_DIR)/tests/test_arche 2>&1 || echo "FAILED: $$f"; \
+	done
 
 # Test code generation
 test-codegen: $(TARGET)
@@ -105,7 +119,8 @@ test-codegen: $(TARGET)
 clean:
 	rm -rf $(BUILD_DIR)
 	find examples/ -type f ! -name "*.c" ! -name "*.arche" ! -name "*.sh" -delete
-	find design_analysis/ -type f ! -name "*.c" ! -name "*.h" ! -name "*.sh" ! -name "*.arche" -delete
+	find design_analysis/ -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	find design_analysis/benchmarks/etl/data/ -type f -name "*.csv" -delete
 
 # Design analysis benchmarks (data-driven design decisions, not language perf)
 bench-physics: design_analysis/array_ops/physics_update.c
@@ -131,12 +146,18 @@ bench-mixed: design_analysis/array_ops/mixed_workload.c
 # Format all Arche source files
 format: $(FMT_BIN)
 	for f in $$(find . -name "*.arche" -type f); do \
-		if ./$(FMT_BIN) "$$f" > /tmp/fmt_tmp 2>/dev/null; then \
-			mv /tmp/fmt_tmp "$$f"; \
+		tmp=$$(mktemp); \
+		if timeout 5 ./$(FMT_BIN) "$$f" > "$$tmp"; then \
+			mv "$$tmp" "$$f"; \
 			echo "✓ $$f"; \
 		else \
-			echo "✗ $$f (parse error)"; \
+			rm -f "$$tmp"; \
+			echo "✗ $$f (parse error or timeout)"; \
 		fi; \
+	done
+	for f in $$(find . -name "*.c" -type f | grep -v "tests/known_failures"); do \
+		clang-format -i "$$f"; \
+		echo "✓ $$f"; \
 	done
 
 .PHONY: build

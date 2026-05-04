@@ -1,0 +1,13 @@
+// RUN: %arche -o %t %s && %t
+
+func recurse(depth: int) -> int {
+  recurse(depth + 1);
+  return 0;
+}
+
+
+
+proc main() {
+  recurse(0);
+}
+

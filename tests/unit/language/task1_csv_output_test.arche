@@ -1,0 +1,47 @@
+// RUN: %arche -o %t %s && %t && test -f /tmp/task1_output.csv && wc -l /tmp/task1_output.csv | grep -q "1000"
+
+arche Task1Data {
+  price: float,
+  quantity: int,
+  revenue: float,
+}
+
+static Task1Data(1000, 1000) {
+  price: 0.0,
+  quantity: 0
+};
+
+
+
+proc main() {
+  Task1Data.price[0] = 100.0;
+  Task1Data.quantity[0] = 5;
+  Task1Data.price[1] = 50.0;
+  Task1Data.quantity[1] = 2;
+  Task1Data.price[2] = 75.5;
+  Task1Data.quantity[2] = 4;
+  Task1Data.price[3] = 200.0;
+  Task1Data.quantity[3] = 3;
+  Task1Data.price[4] = 25.0;
+  Task1Data.quantity[4] = 8;
+  Task1Data.price[5] = 150.0;
+  Task1Data.quantity[5] = 6;
+  Task1Data.price[6] = 300.0;
+  Task1Data.quantity[6] = 1;
+  Task1Data.price[7] = 60.0;
+  Task1Data.quantity[7] = 10;
+  Task1Data.price[8] = 85.0;
+  Task1Data.quantity[8] = 2;
+  Task1Data.price[9] = 120.0;
+  Task1Data.quantity[9] = 7;
+  Task1Data.revenue = Task1Data.price * Task1Data.quantity;
+  let fd = arche_fopen_write("/tmp/task1_output.csv");
+  for (let i = 0; i < 1000; i = i + 1) {
+    let buf: char[64];
+    let n = sprintf(buf, "%f\n", Task1Data.revenue[i]);
+    arche_fwrite(fd, buf, n);
+  }
+  arche_fclose(fd);
+  printf("Task1 output written\n");
+}
+

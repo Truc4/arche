@@ -1,0 +1,31 @@
+// RUN: %arche -o %t %s && %t
+// Task 1: Static alloc with bulk initialization (top-level only)
+
+arche Counter {
+  val: int,
+  score: float,
+}
+
+
+
+arche Empty {
+  x: int,
+}
+
+static Counter(5, 5) {
+  val: 7,
+  score: 2.5
+};
+
+static Empty(5);
+
+
+
+proc main() {
+  assert(Counter.val[0] == 7, "val[0] not 7\n");
+  assert(Counter.score[0] == 2.5, "score[0] not 2.5\n");
+  assert(Counter.val[4] == 7, "val[4] not 7\n");
+  assert(Counter.score[4] == 2.5, "score[4] not 2.5\n");
+  printf("static alloc init ok\n");
+}
+

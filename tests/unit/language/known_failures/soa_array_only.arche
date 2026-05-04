@@ -5,9 +5,11 @@ arche Particle {
   vel: float,
 }
 
+static Particle(1000);
+
+
 
 proc main() {
-  alloc Particle(1000);
   insert(Particle, 1.0, 0.1);
   insert(Particle, 2.0, 0.2);
   insert(Particle, 3.0, 0.3);

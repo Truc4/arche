@@ -1,0 +1,14 @@
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -q "Error.*expression" %t.out
+// alloc inside proc should error (parse-time: alloc only allowed as declaration)
+
+arche Counter {
+  val: int,
+}
+
+static Counter(5);
+
+proc main() {
+  alloc Counter(10);
+  printf("should not reach\n");
+}
+

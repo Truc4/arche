@@ -1,0 +1,13 @@
+// RUN: %arche -o %t %s && %t
+
+proc main() {
+  let s: char[32];
+  s[0] = '1';
+  s[1] = '.';
+  s[2] = '5';
+  s[3] = 0;
+  let v = atof(s);
+  assert(v == 1.5, "atof failed\n");
+  printf("atof ok\n");
+}
+

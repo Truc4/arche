@@ -5,11 +5,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #ifndef ARCHE_CORE_DIR
 #define ARCHE_CORE_DIR "core"
+#endif
+
+#ifndef ARCHE_RUNTIME_DIR
+#define ARCHE_RUNTIME_DIR "build/runtime"
 #endif
 
 static char *read_file_optional(const char *path) {
@@ -59,6 +64,16 @@ int main(int argc, char *argv[]) {
 
 	if (!input_file) {
 		usage(argv[0]);
+	}
+
+	/* Limit memory to 512MB to prevent runaway compilation */
+	struct rlimit mem_limit;
+	mem_limit.rlim_cur = 512 * 1024 * 1024;
+	mem_limit.rlim_max = 512 * 1024 * 1024;
+	int limit_result = setrlimit(RLIMIT_AS, &mem_limit);
+	if (limit_result != 0) {
+		perror("Error: Could not set memory limit");
+		return 1;
 	}
 
 	if (!output_file) {
@@ -218,9 +233,11 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	/* Call cc to assemble and link */
-	char cc_cmd[512];
-	snprintf(cc_cmd, sizeof(cc_cmd), "cc -no-pie -o %s %s", output_file, asm_file);
+	/* Call cc to assemble and link with runtime objects */
+	char cc_cmd[1024];
+	snprintf(cc_cmd, sizeof(cc_cmd),
+	         "cc -no-pie -o %s %s " ARCHE_RUNTIME_DIR "/stack_check.o " ARCHE_RUNTIME_DIR "/io.o -lc", output_file,
+	         asm_file);
 	printf("Linking executable...\n");
 	ret = system(cc_cmd);
 	if (ret != 0) {

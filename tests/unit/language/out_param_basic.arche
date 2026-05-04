@@ -1,0 +1,14 @@
+// RUN: %arche -o %t %s && %t
+
+func test_fill_buf(out buf: char[32]) -> int {
+  return 5;
+}
+
+
+
+proc main() {
+  let buf, n = test_fill_buf(buf);
+  assert(n > 0, "test_fill_buf returned <= 0\n");
+  printf("out param test ok\n");
+}
+

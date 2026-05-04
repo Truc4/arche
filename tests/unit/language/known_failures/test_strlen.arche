@@ -1,0 +1,8 @@
+// RUN: %arche -o %t %s && %t
+
+proc main() {
+  let len = strlen("hello");
+  assert(len == 5, "strlen(hello) should be 5\n");
+  printf("strlen ok\n");
+}
+

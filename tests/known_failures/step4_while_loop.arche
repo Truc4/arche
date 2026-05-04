@@ -1,0 +1,10 @@
+// RUN: %arche -o %t %s && %t
+// Step 4: Condition-based for loop (like while in other languages)
+
+proc main() {
+  for (let i = 0; i < 3; i += 1) {
+    printf("loop\n");
+  }
+  printf("for loop ok\n");
+}
+

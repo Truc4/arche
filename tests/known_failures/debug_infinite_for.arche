@@ -1,0 +1,9 @@
+// RUN: %arche -o %t %s && %t
+
+proc main() {
+  for {
+    break;
+  }
+  printf("ok\n");
+}
+

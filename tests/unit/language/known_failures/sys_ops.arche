@@ -6,14 +6,17 @@ arche Body {
   velocity: float,
 }
 
+static Body(500);
+
+
 
 sys move(position, velocity) {
   position = position + velocity;
 }
 
 
+
 proc main() {
-  alloc Body(500);
   insert(Body, 1.0, 0.1);
   insert(Body, 2.0, 0.2);
   insert(Body, 3.0, 0.3);

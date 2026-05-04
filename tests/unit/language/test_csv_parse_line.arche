@@ -1,0 +1,40 @@
+// RUN: %arche -o %t %s && %t
+
+proc main() {
+  let buf: char[256];
+  buf[0] = '1';
+  buf[1] = '0';
+  buf[2] = '.';
+  buf[3] = '0';
+  buf[4] = ',';
+  buf[5] = '1';
+  buf[6] = '0';
+  buf[7] = '\n';
+  let line_start = 0;
+  let line_end = 8;
+  let comma_pos = 4;
+  let price_str: char[32];
+  let qty_str: char[32];
+  let j = 0;
+  let i = line_start;
+  for (;i < comma_pos;) {
+    price_str[j] = buf[i];
+    j = j + 1;
+    i = i + 1;
+  }
+  price_str[j] = 0;
+  j = 0;
+  i = comma_pos + 1;
+  for (;i < line_end;) {
+    qty_str[j] = buf[i];
+    j = j + 1;
+    i = i + 1;
+  }
+  qty_str[j] = 0;
+  let price = atof(price_str);
+  let qty = atoi(qty_str);
+  printf("price=%f qty=%d\n", price, qty);
+  assert(price == 10.0, "price should be 10.0\n");
+  assert(qty == 10, "qty should be 10\n");
+}
+

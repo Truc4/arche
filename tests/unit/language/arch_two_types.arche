@@ -6,16 +6,20 @@ arche Particle {
 }
 
 
+
 arche Body {
   pos: float,
   vel: float,
   mass: float,
 }
 
+static Particle(5);
+
+static Body(5);
+
+
 
 proc main() {
-  alloc Particle(100);
-  alloc Body(50);
   insert(Particle, 1.0, 0.1);
   insert(Body, 2.0, 0.2, 10.0);
   let pp = Particle.pos[0];

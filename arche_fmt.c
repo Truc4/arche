@@ -4,8 +4,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 
 int main(int argc, char *argv[]) {
+	/* Limit memory to 512MB to prevent runaway parsing */
+	struct rlimit mem_limit;
+	mem_limit.rlim_cur = 512 * 1024 * 1024;
+	mem_limit.rlim_max = 512 * 1024 * 1024;
+	int limit_result = setrlimit(RLIMIT_AS, &mem_limit);
+	if (limit_result != 0) {
+		perror("Error: Could not set memory limit");
+		return 1;
+	}
 	if (argc < 2) {
 		fprintf(stderr, "Usage: %s <file.arche>\n", argv[0]);
 		return 1;
@@ -40,9 +50,20 @@ int main(int argc, char *argv[]) {
 	ParseResult parse_result = parse_source(src);
 
 	if (parse_result.error_count > 0) {
-		for (size_t i = 0; i < parse_result.error_count; i++) {
-			fprintf(stderr, "[Line %d, Col %d] Error: %s\n", parse_result.errors[i].line, parse_result.errors[i].column,
-			        parse_result.errors[i].message);
+		fprintf(stderr, "%s:\n", filename);
+		int unique_errors = 1;
+		fprintf(stderr, "  [Line %d, Col %d] Error: %s\n", parse_result.errors[0].line, parse_result.errors[0].column,
+		        parse_result.errors[0].message);
+		for (size_t i = 1; i < parse_result.error_count && unique_errors < 5; i++) {
+			if (parse_result.errors[i].line != parse_result.errors[i - 1].line ||
+			    parse_result.errors[i].column != parse_result.errors[i - 1].column) {
+				fprintf(stderr, "  [Line %d, Col %d] Error: %s\n", parse_result.errors[i].line,
+				        parse_result.errors[i].column, parse_result.errors[i].message);
+				unique_errors++;
+			}
+		}
+		if (parse_result.error_count > unique_errors) {
+			fprintf(stderr, "  ... and %zu more errors\n", parse_result.error_count - unique_errors);
 		}
 		Program *prog = parse_result.ast;
 		parse_result_free(&parse_result);

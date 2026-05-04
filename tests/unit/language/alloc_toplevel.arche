@@ -1,0 +1,12 @@
+// RUN: %arche -o %t %s && %t
+
+arche Point {
+  x: int,
+}
+
+
+
+proc main() {
+  printf("allocated\n");
+}
+

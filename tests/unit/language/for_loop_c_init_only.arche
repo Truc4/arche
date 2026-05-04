@@ -1,0 +1,8 @@
+// RUN: %arche -o %t %s && %t
+
+proc main() {
+  for (let i = 0; i < 3; i = i + 1) {
+    printf("loop\n");
+  }
+}
+

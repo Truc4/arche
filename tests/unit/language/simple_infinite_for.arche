@@ -1,0 +1,10 @@
+// RUN: %arche -o %t %s && %t
+// Minimal infinite for loop test
+
+proc main() {
+  for {
+    break;
+  }
+  printf("ok\n");
+}
+

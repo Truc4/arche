@@ -52,6 +52,12 @@ struct SemanticContext {
 
 	/* Track which archetype we're analyzing a sys for (NULL if not in sys) */
 	const char *current_sys_archetype;
+
+	/* Track if inside proc/sys body (for alloc enforcement) */
+	int in_body;
+
+	/* Program for looking up declarations */
+	Program *prog;
 };
 
 /* ========== UTILITY FUNCTIONS ========== */
@@ -291,7 +297,11 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 			if (arch) {
 				FieldInfo *field = find_field(arch, field_name);
 				if (field && field->type) {
-					return normalize_type_name(field->type->data.name);
+					TypeRef *ft = field->type;
+					while (ft->kind == TYPE_SHAPED_ARRAY)
+						ft = ft->data.shaped_array.element_type;
+					if (ft->kind == TYPE_NAME)
+						return normalize_type_name(ft->data.name);
 				}
 			}
 		}
@@ -331,13 +341,38 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	}
 
 	case EXPR_CALL: {
-		/* Return type of the function - for now unknown */
+		/* Look up function to determine return type */
+		const char *func_name = NULL;
+		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME) {
+			func_name = expr->data.call.callee->data.name.name;
+		}
+
+		if (!func_name || !ctx->prog)
+			return NULL;
+
+		/* Check if it's a func with explicit return type */
+		for (int i = 0; i < ctx->prog->decl_count; i++) {
+			Decl *decl = ctx->prog->decls[i];
+			if (decl->kind == DECL_FUNC && strcmp(decl->data.func->name, func_name) == 0) {
+				if (decl->data.func->return_type) {
+					return normalize_type_name(decl->data.func->return_type->data.name);
+				}
+				return NULL;
+			}
+		}
+
+		/* Procs don't return values */
 		return NULL;
 	}
 
 	case EXPR_ALLOC: {
 		/* Type is the archetype being allocated */
 		return expr->data.alloc.archetype_name;
+	}
+
+	case EXPR_STRING: {
+		/* String literal: char array */
+		return "char_array";
 	}
 
 	default:
@@ -354,6 +389,10 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 	switch (expr->type) {
 	case EXPR_LITERAL:
 		/* literals are always valid */
+		break;
+
+	case EXPR_STRING:
+		/* string literals are always valid */
 		break;
 
 	case EXPR_NAME: {
@@ -510,6 +549,21 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		break;
 
 	case EXPR_ALLOC: {
+		/* alloc only allowed at top-level, not inside proc/sys */
+		if (ctx->in_body) {
+			error(ctx, "alloc only allowed at top-level, not inside proc or sys body");
+			break;
+		}
+
+		/* alloc count must be a literal for static allocation (dynamic not yet supported) */
+		if (expr->data.alloc.field_count > 0 && expr->data.alloc.field_values[0]) {
+			Expression *count_expr = expr->data.alloc.field_values[0];
+			if (count_expr->type != EXPR_LITERAL) {
+				error(ctx, "alloc count must be a literal; dynamic counts not yet supported");
+				break;
+			}
+		}
+
 		ArchetypeInfo *alloc_shape = find_archetype(ctx, expr->data.alloc.archetype_name);
 		if (!alloc_shape) {
 			char msg[256];
@@ -542,41 +596,77 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 
 	switch (stmt->type) {
 	case STMT_LET: {
-		analyze_expression(ctx, stmt->data.let_stmt.value);
+		/* For multivalue let with function calls, add out param variables BEFORE analyzing the call */
+		int is_multivalue_call = (stmt->data.let_stmt.name_count > 0 && stmt->data.let_stmt.names &&
+		                          stmt->data.let_stmt.value && stmt->data.let_stmt.value->type == EXPR_CALL);
 
-		/* Check if value is an alloc expression */
-		const char *archetype_name = NULL;
-		if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->type == EXPR_ALLOC) {
-			archetype_name = stmt->data.let_stmt.value->data.alloc.archetype_name;
-			if (!find_archetype(ctx, archetype_name)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "Archetype '%s' not defined", archetype_name);
-				error(ctx, msg);
-				archetype_name = NULL;
+		if (is_multivalue_call) {
+			/* Add all variables first so out parameters can reference them */
+			for (int i = 0; i < stmt->data.let_stmt.name_count; i++) {
+				const char *var_name = stmt->data.let_stmt.names[i];
+				if (var_name && strcmp(var_name, "_") != 0) {
+					add_variable(ctx, var_name, NULL);
+				}
 			}
-		}
-
-		/* create local variable */
-		VariableInfo *var = NULL;
-		if (archetype_name) {
-			add_variable_with_archetype(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type, archetype_name);
+			/* Now analyze the call expression after variables are defined */
+			analyze_expression(ctx, stmt->data.let_stmt.value);
 		} else {
-			add_variable(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type);
-		}
+			/* Single-value let or non-call multivalue expressions: analyze value first */
+			analyze_expression(ctx, stmt->data.let_stmt.value);
 
-		/* Handle type annotations and type inference */
-		if (ctx->scope_count > 0) {
-			Scope *scope = &ctx->scopes[ctx->scope_count - 1];
-			if (scope->var_count > 0) {
-				var = scope->vars[scope->var_count - 1];
-				if (stmt->data.let_stmt.type) {
-					/* Type annotation: convert TypeRef to string type name */
-					var->inferred_type = stmt->data.let_stmt.type->data.name;
-				} else if (stmt->data.let_stmt.value) {
-					/* No annotation: infer from value expression */
-					const char *inferred = resolve_expression_type(ctx, stmt->data.let_stmt.value);
-					if (inferred) {
-						var->inferred_type = inferred;
+			/* Multi-value let (non-call): add all variables from names array */
+			if (stmt->data.let_stmt.name_count > 0 && stmt->data.let_stmt.names) {
+				for (int i = 0; i < stmt->data.let_stmt.name_count; i++) {
+					const char *var_name = stmt->data.let_stmt.names[i];
+					if (var_name && strcmp(var_name, "_") != 0) {
+						/* Add variable (no type annotation for multi-value let) */
+						add_variable(ctx, var_name, NULL);
+
+						/* Try to infer type from expression if it's callable with multiple returns */
+						if (stmt->data.let_stmt.value && i < 10) { /* arbitrary limit */
+							/* For now, just skip type inference for multi-value let */
+							/* This would require analyzing the function's return signature */
+						}
+					}
+				}
+			} else if (stmt->data.let_stmt.name) {
+				/* Single-value let */
+				/* Check if value is an alloc expression */
+				const char *archetype_name = NULL;
+				if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->type == EXPR_ALLOC) {
+					archetype_name = stmt->data.let_stmt.value->data.alloc.archetype_name;
+					if (!find_archetype(ctx, archetype_name)) {
+						char msg[256];
+						snprintf(msg, sizeof(msg), "Archetype '%s' not defined", archetype_name);
+						error(ctx, msg);
+						archetype_name = NULL;
+					}
+				}
+
+				/* create local variable */
+				VariableInfo *var = NULL;
+				if (archetype_name) {
+					add_variable_with_archetype(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type,
+					                            archetype_name);
+				} else {
+					add_variable(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type);
+				}
+
+				/* Handle type annotations and type inference */
+				if (ctx->scope_count > 0) {
+					Scope *scope = &ctx->scopes[ctx->scope_count - 1];
+					if (scope->var_count > 0) {
+						var = scope->vars[scope->var_count - 1];
+						if (stmt->data.let_stmt.type) {
+							/* Type annotation: convert TypeRef to string type name */
+							var->inferred_type = stmt->data.let_stmt.type->data.name;
+						} else if (stmt->data.let_stmt.value) {
+							/* No annotation: infer from value expression */
+							const char *inferred = resolve_expression_type(ctx, stmt->data.let_stmt.value);
+							if (inferred) {
+								var->inferred_type = inferred;
+							}
+						}
 					}
 				}
 			}
@@ -590,6 +680,47 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		break;
 
 	case STMT_FOR: {
+		/* Check for parenthesized or range-based for loop */
+		if (stmt->data.for_stmt.init || stmt->data.for_stmt.increment) {
+			/* Parenthesized for loop: for (init; cond; incr) */
+			push_scope(ctx);
+
+			if (stmt->data.for_stmt.init) {
+				analyze_statement(ctx, stmt->data.for_stmt.init);
+			}
+
+			if (stmt->data.for_stmt.condition) {
+				analyze_expression(ctx, stmt->data.for_stmt.condition);
+			}
+
+			for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
+				analyze_statement(ctx, stmt->data.for_stmt.body[i]);
+			}
+
+			if (stmt->data.for_stmt.increment) {
+				analyze_statement(ctx, stmt->data.for_stmt.increment);
+			}
+
+			pop_scope(ctx);
+			break;
+		}
+
+		/* Check for infinite or condition-based for loop (no init/incr, no var_name) */
+		if (!stmt->data.for_stmt.var_name) {
+			/* Infinite or condition-based for loop */
+			if (stmt->data.for_stmt.condition) {
+				/* Condition-based: analyze condition */
+				analyze_expression(ctx, stmt->data.for_stmt.condition);
+			}
+			/* Both infinite and condition-based loops: analyze body in new scope */
+			push_scope(ctx);
+			for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
+				analyze_statement(ctx, stmt->data.for_stmt.body[i]);
+			}
+			pop_scope(ctx);
+			break;
+		}
+
 		/* check iterable exists (should be archetype) */
 		analyze_expression(ctx, stmt->data.for_stmt.iterable);
 
@@ -660,6 +791,10 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 
 	case STMT_EXPR:
 		analyze_expression(ctx, stmt->data.expr_stmt.expr);
+		break;
+
+	case STMT_RETURN:
+		analyze_expression(ctx, stmt->data.return_stmt.value);
 		break;
 
 	case STMT_FREE:
@@ -778,6 +913,58 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 	ctx->aliases[ctx->alias_count++] = entry;
 }
 
+static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
+	if (!alloc)
+		return;
+
+	/* Validate archetype exists */
+	ArchetypeInfo *arch = find_archetype(ctx, alloc->archetype_name);
+	if (!arch) {
+		fprintf(stderr, "Error: unknown archetype '%s' in alloc\n", alloc->archetype_name);
+		ctx->error_count++;
+		return;
+	}
+
+	/* Check if this shape has already been allocated. Each shape (field structure)
+	   can have multiple archetype handles/names pointing to it, but only one can
+	   allocate/initialize it. Once allocated, the shape is live in the world. */
+	if (arch->is_allocated) {
+		fprintf(stderr, "Error: Shape already allocated (archetype '%s' shares shape with an earlier allocation)\n",
+		        alloc->archetype_name);
+		ctx->error_count++;
+		return;
+	}
+	arch->is_allocated = 1;
+
+	/* Validate count is provided and is a literal */
+	if (alloc->field_count == 0 || !alloc->field_values[0]) {
+		fprintf(stderr, "Error: alloc missing count expression\n");
+		ctx->error_count++;
+		return;
+	}
+
+	Expression *count_expr = alloc->field_values[0];
+	if (count_expr->type != EXPR_LITERAL) {
+		fprintf(stderr, "Error: alloc count must be a literal; dynamic counts not yet supported\n");
+		ctx->error_count++;
+		return;
+	}
+
+	/* Validate: init block requires explicit init_size parameter */
+	if (alloc->field_count > 1 && !alloc->init_length) {
+		fprintf(stderr,
+		        "Error: init block requires explicit init_size parameter: static %s(capacity, init_size) { ... }\n",
+		        alloc->archetype_name);
+		ctx->error_count++;
+		return;
+	}
+
+	/* Analyze field initialization expressions */
+	for (int i = 1; i < alloc->field_count; i++) {
+		analyze_expression(ctx, alloc->field_values[i]);
+	}
+}
+
 static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	if (!proc)
 		return;
@@ -811,9 +998,11 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 		}
 	}
 
+	ctx->in_body = 1;
 	for (int i = 0; i < proc->statement_count; i++) {
 		analyze_statement(ctx, proc->statements[i]);
 	}
+	ctx->in_body = 0;
 
 	pop_scope(ctx);
 }
@@ -858,9 +1047,11 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 	const char *old_sys_archetype = ctx->current_sys_archetype;
 	ctx->current_sys_archetype = sys_archetype;
 
+	ctx->in_body = 1;
 	for (int i = 0; i < sys->statement_count; i++) {
 		analyze_statement(ctx, sys->statements[i]);
 	}
+	ctx->in_body = 0;
 
 	ctx->current_sys_archetype = old_sys_archetype;
 	pop_scope(ctx);
@@ -869,6 +1060,14 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 	if (!func)
 		return;
+
+	/* Register func name as a known function */
+	register_func(ctx, func->name);
+
+	/* For extern funcs, no body to analyze */
+	if (func->is_extern) {
+		return;
+	}
 
 	push_scope(ctx);
 
@@ -891,6 +1090,9 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 	switch (decl->kind) {
 	case DECL_ARCHETYPE:
 		analyze_archetype_decl(ctx, decl->data.archetype);
+		break;
+	case DECL_STATIC:
+		analyze_static_decl(ctx, decl->data.alloc);
 		break;
 	case DECL_PROC:
 		analyze_proc_decl(ctx, decl->data.proc);
@@ -918,6 +1120,8 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->scope_count = 0;
 	ctx->error_count = 0;
 	ctx->current_sys_archetype = NULL;
+	ctx->in_body = 0;
+	ctx->prog = prog;
 
 	/* Register builtins */
 	register_func(ctx, "write");

@@ -1,0 +1,11 @@
+// RUN: %arche -o %t %s && %t && test -f /tmp/arche_test_write.txt && grep -q "test123" /tmp/arche_test_write.txt && echo "PASS"
+
+proc main() {
+  let fd = arche_fopen_write("/tmp/arche_test_write.txt");
+  let buf: char[32];
+  let n = sprintf(buf, "test123\n");
+  arche_fwrite(fd, buf, n);
+  arche_fclose(fd);
+  printf("done\n");
+}
+

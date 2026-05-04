@@ -1,0 +1,16 @@
+// RUN: %arche -o %t %s > /dev/null 2>&1 && ! %t 2>&1
+// Uninitialized alloc has count=0, accessing any row should error
+
+arche Counter {
+  val: int,
+}
+
+static Counter(5);
+
+
+
+proc main() {
+  let x = Counter.val[0];
+  printf("should not reach\n");
+}
+

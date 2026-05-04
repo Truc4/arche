@@ -1,0 +1,10 @@
+// RUN: %arche -o %t %s && %t
+
+proc main() {
+  let fd = arche_fopen_read("../../../../tests/fixtures/data.csv");
+  let buf: char[10000];
+  let n = arche_fread(fd, buf, 10000);
+  arche_fclose(fd);
+  printf("requested 10000, got: %d\n", n);
+}
+

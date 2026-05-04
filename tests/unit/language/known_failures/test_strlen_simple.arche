@@ -1,0 +1,15 @@
+// RUN: %arche -o %t %s && %t
+
+func get_len(s: char[]) -> int {
+  return strlen(s);
+}
+
+
+
+proc main() {
+  let len = get_len("hello");
+  if (len == 5) {
+    printf("strlen ok\n");
+  }
+}
+

@@ -18,7 +18,7 @@ Arche is a **high-level language** with several strong design constraints:
 - **Columns only**: All archetype data is columnar (arrays). No metadata. Columns are primitives or tuple columns.
 - **Horizontal only**: No nested complex types, **no pointers**. Data layout is flat and explicit.
 - **Tuple columns**: Multi-component fields like position vectors are stored as separate side-by-side arrays (`pos_x`, `pos_y`) but accessed with clean syntax (`pos.x[i]`, `pos.y[i]`).
-- **Pooled allocation with free-lists**: `alloc Archetype(N)` pre-allocates capacity for N entries. Deleted slots are tracked in a free-list and reused by subsequent inserts, eliminating fragmentation.
+- **Pooled allocation with free-lists**: `static Archetype(N, N)` pre-allocates capacity for N entries. Deleted slots are tracked in a free-list and reused by subsequent inserts, eliminating fragmentation.
 - **Minimal type system**: Primitives only: `int`, `float`, `char`. No booleans, no objects. This is a design principle, not a limitation.
 - **Explicit structure over flexibility**: Users have complete control and visibility over data layout in memory.
 
@@ -26,45 +26,51 @@ This leads to a style that feels closer to **data pipelines** or **vectorized co
 
 ## Memory Model: Static Allocation Only
 
-**Arche has NO dynamic memory allocation.** This is a core design principle, not a limitation.
+**Arche has NO dynamic or heap allocation.** All memory is allocated statically at program startup. This is a core design principle, not a limitation.
 
 ### Allocation Strategy
 
-- **Explicit allocation**: Allocation happens explicitly via `alloc Archetype(N)` calls at any point in the program.
-- **Fixed size**: Each allocation is _fixed size_. There is no resizing, no growing vectors, no automatic expansion. Once allocated, capacity is permanent.
-- **Deallocate implicitly**: At the end of the program, all allocations are implicitly deallocated. Explicit deallocation is **discouraged**.
+- **Explicit allocation**: `alloc Archetype(N)` declares a fixed-capacity allocation for archetype shape.
+- **Static storage**: All allocations have program lifetime. They exist from program start to end. No deallocation during execution.
+- **Fixed size**: Each allocation is immutable in size. No resizing, no growing vectors. Capacity is permanent once set.
+- **Implicit cleanup**: At program end, all allocations are implicitly freed. Explicit deallocation is **not allowed** (and unnecessary).
+- **Scope-implicit**: Scope (static vs world-scoped, when worlds exist) is determined by context where `alloc` appears.
+
+### Allocation Initialization
+
+Allocations can include field initialization to set all instances’ values at allocation time:
+
+```arche
+static Counter(5, 5) { val: 7, score: 2.5 };
+```
+
+This allocates capacity for 5 instances and initializes `val` and `score` fields. Uninitialized fields are zero-initialized.
 
 ### Encouraged Pattern
 
-While allocations can happen anywhere, the encouraged design pattern is: **Plan your memory usage ahead of time, allocate what you need once early, use it predictably, and let it clean up automatically.**
-
-This pattern encourages thinking about data layout early and prevents the hidden costs of dynamic allocation that plague real-time systems and data-intensive applications.
+Plan memory usage ahead of time, allocate what you need upfront, use predictably:
 
 ```arche
+// Allocate all archetype instances with fixed capacities upfront
+static Particle(10000, 10000) { active: 0 };
+static Enemy(5000, 5000);
+static Projectile(1000, 1000);
+
 proc main() {
-  // Allocate archetype instances upfront with capacities you need
-  alloc Particle(10000);
-  alloc Enemy(5000);
-  alloc Projectile(1000);
-  
-  // Run your program with this fixed memory budget
+  // Run program with fixed memory budget
   run initialize;
   run update_loop;
-  
-  // Everything deallocates implicitly at end
+  // Implicit cleanup at end
 }
 ```
 
 ### Why No Dynamic Memory?
 
-- **Predictability**: Memory usage is known at program start.
-- **Performance**: No allocation/deallocation overhead during hot loops.
-- **Simplicity**: Language users reason about a fixed memory budget, not growth patterns.
-- **Cache-friendly**: Fixed column layout enables effective prefetching and vectorization.
-
-### If You Need More Space
-
-If you truly need more capacity: deallocate the old allocation, allocate a new one with larger capacity, and copy data. But this goes against the language’s spirit and is explicitly discouraged. **Plan better upfront instead.**
+- **Predictability**: Memory usage is entirely known at program start.
+- **Performance**: Zero allocation overhead; no malloc/free in hot loops.
+- **Simplicity**: Fixed memory budget enforces clear thinking about capacity.
+- **Cache-friendly**: Columnar layout with known sizes enables prefetching and SIMD.
+- **Safety**: No use-after-free, no dangling pointers, no memory fragmentation.
 
 ## Worlds (Planned, Not Yet Implemented)
 
@@ -85,6 +91,7 @@ A **shape** is defined by its columns and types. If two archetype declarations h
 **Primitives:** `int`, `float`, `char`
 
 **Column types:**
+
 - Single primitive: `mass: float` → column of floats
 - Tuple columns: `pos: (x: float, y: float)` → two separate arrays `pos_x[]` and `pos_y[]`
 - Multi-dimensional arrays: `text: char[256]` → N×256 array per entity
@@ -120,7 +127,7 @@ alloc Enemy(1000);  // ERROR: shape already allocated
 
 Each shape is allocated exactly once via an explicit `alloc Archetype(N)` call. Attempting to allocate the same shape again (with any alias) is a compile error.
 
-The allocation is **fixed size** and **reallocation is discourages**. All capacity is allocated upfront. This is by design, dynamic memory is not a feature of this language.
+The allocation is **fixed size**. All capacity is allocated upfront. Reallocation is not possible. This is by design, dynamic memory is not a feature of this language.
 
 ## Array-Oriented Operations
 
@@ -128,6 +135,7 @@ Operations on archetype columns apply across the entire collection without expli
 
 ```arche
 alloc Particle(1000);
+// ... insert particles
 Particle.pos = Particle.pos + Particle.vel;
 ```
 
@@ -148,11 +156,13 @@ Same effect: iterate all elements element-wise.
 Individual element access requires explicit column reference:
 
 **Scalar columns:**
+
 ```arche
 particles.mass[i]
 ```
 
 **Tuple columns (labeled access):**
+
 ```arche
 particles.pos.x[i]   // x component of position at index i
 particles.pos.y[i]   // y component of position at index i
@@ -160,6 +170,7 @@ particles.vel.vx[i]  // x component of velocity at index i
 ```
 
 **Multi-dimensional arrays:**
+
 ```arche
 messages.text[i, j]  // 2D indexing
 matrices.data[i, x, y]  // 3D indexing
@@ -182,8 +193,9 @@ x = a < b   // x is 0 or 1
 Procedures perform **explicit operations**.
 
 ```arche
+static Particle(1000, 1000);
+
 proc main() {
-  alloc Particle(1000);
   Particle.pos = Particle.pos + Particle.vel;
 }
 ```
@@ -233,6 +245,19 @@ proc main() {
 }
 ```
 
+### Conditional Behavior
+
+Conditionals work through mathematical expressions (comparisons produce 0 or 1):
+
+```arche
+sys dampen(vel, pos) {
+  // multiply velocity by 0 if below threshold
+  vel = vel * (pos > 10);
+}
+```
+
+Systems support if/for statements for control flow. For maximum cache efficiency, prefer mathematical conditionals (as shown above) over branching when possible.
+
 ## Example
 
 ```arche
@@ -241,6 +266,9 @@ arche Particle {
   pos: (x: float, y: float),
   vel: (vx: float, vy: float)
 }
+
+// Allocate at top level
+static Particle(10000, 10000);
 
 // Define systems that operate on matching archetypes
 sys move(pos, vel) {
@@ -251,9 +279,8 @@ sys dampen(vel) {
   vel = vel * 0.99;
 }
 
-// Allocate and run systems
+// Run systems
 proc main() {
-  alloc Particle(10000);
   run move;
   run dampen;
 }
@@ -287,15 +314,6 @@ func drag_factor(x: float) -> float {
 - `proc`: “run this on _that data_”
 - `sys`: “run this on _any data shaped like this_”
 - `func`: “compute a value without modifying data”
-
-## Example: Conditional Behavior
-
-```arche
-proc damp {
-  // multiply velocity by 0 if below threshold
-  particles.vel = particles.vel * (particles.pos > 10);
-}
-```
 
 ## What Arche Is _Not_
 
@@ -343,6 +361,21 @@ This is a deliberate choice: **prefer fast, predictable memory access over minim
 
 The `design_analysis/` directory contains exploration and documentation of data layout patterns. Data drives the language design, and patterns and constraints discovered here shape feature decisions.
 
+## Practical Example: ETL Workloads
+
+Real-world benchmarks (1000 rows) show Arche's strength in data processing. ETL tasks (read CSV → transform → write) demonstrate vectorized column operations:
+
+| Task | Operation | Arche | Pandas | Speedup |
+|------|-----------|-------|--------|---------|
+| Task1 | `revenue = price × quantity` | 0.857ms | 1.107ms | **1.29x** |
+| Task2 | `valid = quantity > 0` | 0.775ms | 1.313ms | **1.69x** |
+| Task3 | `bucket = price / 10` | 0.855ms | 1.297ms | **1.52x** |
+| Task4 | `total = Σ(price × qty)` | 1.012ms | 1.091ms | **1.08x** |
+
+Arche achieves consistent, predictable latency (low variance) while remaining competitive with interpreted data frameworks on small datasets. See `design_analysis/README.md` for full analysis.
+
+**Limitations of this test**: 1000 rows is too small to measure batch optimization, Python startup overhead inflates Pandas time, no compiled baselines for fair comparison. **Future benchmarks** will test on 1M+ rows, compare against Polars/DuckDB/NumPy+Cython, measure throughput (rows/sec) and variance, and separate Python startup time. I assume these will not be as favorable to Arche, but will continue testing practical scenarios.
+
 ## Why This Exists
 
 Arche is an experiment in:
@@ -355,6 +388,63 @@ Arche is an experiment in:
   - primitives
   - structured grouping
 
+## Out Parameters (`out`)
+
+Out parameters allow functions to fill buffers and return them as values. When a parameter is marked `out`, the language allocates a buffer and returns it as part of the function result.
+
+### Signature
+
+Out parameters have no size specified in the type. Size is determined by parameters passed at call time:
+
+```arche
+extern func read(fd: int, out buf: char[], len: int) -> int;
+extern proc write(fd: int, buf: char[], len: int);
+```
+
+### Pattern 1: Zero-initialized buffer (language allocates)
+
+Don't pass a buffer; language creates one:
+
+```arche
+let buf, bytes_read = read(fd, 256);
+```
+
+The `out buf` argument is omitted. Language allocates a fresh 256-byte buffer on the stack, passes to C, returns it.
+
+### Pattern 2: Copy-in semantics (you provide buffer)
+
+Pass a buffer for the out parameter:
+
+```arche
+let new_buf, bytes_read = read(fd, old_buf, 256);
+```
+
+The buffer `old_buf` is passed. Language copies it in, passes to C, returns modified copy. Original `old_buf` unchanged.
+
+### Copy Semantics
+
+All parameters are always copied. C functions cannot modify caller data directly. Out parameters are returned as new values. Every function parameter is **always copied** — there are no side effects on the original data. Functions are pure with respect to parameters; side effects are explicit in the code.
+
+## Multi-Value Let
+
+The `let a, b, c = function()` syntax captures multiple return values from a single function call:
+
+```arche
+let buf, n = read(fd, buf, 256);     // Capture buffer and return value
+let x, y, z = some_func();            // Capture multiple returns
+```
+
+Values are assigned **left-to-right** in signature order:
+
+- Out parameters first (in order)
+- Function return value last
+
+Use `_` to discard values:
+
+```arche
+let buf, _ = read(fd, buf, 256);     // Discard return value, keep buffer
+```
+
 ## Status
 
 🚧 **Alpha: Core infrastructure working**
@@ -362,15 +452,29 @@ Arche is an experiment in:
 ### What's Working
 
 - **Lexer**: Tokenizes source into language constructs (keywords, identifiers, operators)
-- **Parser**: Builds AST for archetypes, procedures, systems, functions, expressions
-- **Semantic Analysis**: Symbol table, scope tracking, type checking, field validation
+- **Parser**: Builds AST for archetypes, procedures, systems, functions, expressions, multi-value let
+- **Semantic Analysis**: Symbol table, scope tracking, type checking, field validation, multi-value let binding
 - **Code Generation**: Compiles to LLVM IR, assembles, and links to executables
-- **Basic Examples**: hello_world, simple arithmetic, archetype definitions
+- **Functions**: User-defined and extern functions with return values
+- **Procedures**: User-defined and extern procedures (void)
+- **Systems**: Data-driven transformations over matching archetypes
+- **For loops**: Infinite loops, condition-based loops, range iteration
+- **External Functions**: C function calls with copy semantics
+- **Out Parameters**: Buffer allocation and return as values, with copy-in semantics
+- **Multi-value Let**: Capture multiple return values from function calls
+- **Archetype Operations**: Allocation, indexing, column access, tuple columns, shaped arrays
+- **C Stdlib Interop**: File I/O via C stdlib wrappers (fopen, fread, fwrite, fclose)
+- **Real-world ETL**: CSV loading and data processing benchmarks
 
 ### Known Limitations
 
-- No function calls yet
-- For loops not fully implemented
-- No memory management beyond static allocation
 - No error recovery in parser
-- Limited standard library (only `write` syscall)
+- Limited standard library (basic syscalls only)
+
+### Design Choices (Not Limitations)
+
+- No string type — users implement fixed-size char arrays or string handling in archetypes
+- No dynamic arrays — fixed-size allocations only (enforces predictable memory planning)
+- No generic/polymorphic functions — keep types and semantics explicit
+- No pointers or references — data organized in columnar archetypes instead
+- No complex nested types — all data is columnar and flat

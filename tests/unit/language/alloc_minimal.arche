@@ -4,9 +4,11 @@ arche Particle {
   pos: float,
 }
 
+static Particle(5);
+
+
 
 proc main() {
-  alloc Particle(10);
   insert(Particle, 1.0);
   let v = Particle.pos[0];
   let vi = v * 10.0;

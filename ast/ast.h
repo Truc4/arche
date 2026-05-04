@@ -39,6 +39,7 @@ typedef enum {
 	DECL_PROC,
 	DECL_SYS,
 	DECL_FUNC,
+	DECL_STATIC,
 } DeclKind;
 
 struct Program {
@@ -46,6 +47,14 @@ struct Program {
 	int decl_count;
 	SourceLoc loc;
 };
+
+typedef struct {
+	char *archetype_name;
+	char **field_names;
+	Expression **field_values;
+	int field_count;
+	Expression *init_length; /* second arg: how many rows to initialize; NULL = use capacity */
+} StaticDecl;
 
 struct Decl {
 	DeclKind kind;
@@ -56,6 +65,7 @@ struct Decl {
 		ProcDecl *proc;
 		SysDecl *sys;
 		FuncDecl *func;
+		StaticDecl *alloc;
 	} data;
 };
 
@@ -140,6 +150,7 @@ struct ProcDecl {
 struct Parameter {
 	char *name;
 	TypeRef *type;
+	int is_out;
 	SourceLoc loc;
 };
 
@@ -157,6 +168,7 @@ struct FuncDecl {
 	Parameter **params;
 	int param_count;
 	TypeRef *return_type;
+	int is_extern;
 	Statement **statements;
 	int statement_count;
 	SourceLoc loc;
@@ -171,9 +183,11 @@ typedef enum {
 	STMT_ASSIGN,
 	STMT_FOR,
 	STMT_IF,
+	STMT_BREAK,
 	STMT_RUN,
 	STMT_EXPR,
 	STMT_FREE,
+	STMT_RETURN,
 } StatementType;
 
 typedef enum {
@@ -191,8 +205,10 @@ typedef enum {
 } Operator;
 
 typedef struct {
-	char *name;
-	TypeRef *type;     /* optional, may be NULL */
+	char *name;        /* single var name (backward compat) */
+	char **names;      /* multiple var names for multi-value let */
+	int name_count;    /* 0 = use .name, >0 = use .names[] */
+	TypeRef *type;     /* optional, may be NULL — only for single-var */
 	Expression *value; /* optional, may be NULL */
 } LetStmt;
 
@@ -203,8 +219,11 @@ typedef struct {
 } AssignStmt;
 
 typedef struct {
-	char *var_name;
-	Expression *iterable;
+	char *var_name;        /* NULL for non-range-based for loops */
+	Expression *iterable;  /* NULL for non-range-based for loops */
+	Statement *init;       /* NULL unless three-part for loop */
+	Expression *condition; /* NULL for infinite loops or range-based */
+	Statement *increment;  /* NULL unless three-part for loop - can be assign or expr stmt */
 	Statement **body;
 	int body_count;
 } ForStmt;
@@ -230,6 +249,10 @@ typedef struct {
 	Expression *value;
 } FreeStmt;
 
+typedef struct {
+	Expression *value;
+} ReturnStmt;
+
 struct Statement {
 	StatementType type;
 	SourceLoc loc;
@@ -241,6 +264,7 @@ struct Statement {
 		RunStmt run_stmt;
 		ExprStmt expr_stmt;
 		FreeStmt free_stmt;
+		ReturnStmt return_stmt;
 	} data;
 };
 
@@ -258,6 +282,7 @@ typedef enum {
 	EXPR_CALL,
 	EXPR_ALLOC,
 	EXPR_ARRAY_LITERAL,
+	EXPR_STRING,
 } ExpressionType;
 
 typedef enum {
@@ -306,12 +331,18 @@ typedef struct {
 	char **field_names;
 	Expression **field_values;
 	int field_count;
+	Expression *init_length; /* second arg: how many rows to initialize; NULL = use capacity */
 } AllocExpr;
 
 typedef struct {
 	Expression **elements;
 	int element_count;
 } ArrayLiteralExpr;
+
+typedef struct {
+	char *value; /* String content without quotes */
+	int length;  /* Length excluding quotes */
+} StringExpr;
 
 struct Expression {
 	ExpressionType type;
@@ -326,6 +357,7 @@ struct Expression {
 		CallExpr call;
 		AllocExpr alloc;
 		ArrayLiteralExpr array_literal;
+		StringExpr string;
 	} data;
 	char *resolved_type; /* Semantic analysis populates: "int", "double", "Vec3", etc. NULL if not yet analyzed */
 };

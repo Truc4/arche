@@ -1,0 +1,14 @@
+// RUN: %arche -o %t %s && %t
+
+arche Data {
+  value: int,
+  doubled: int,
+}
+
+
+proc main() {
+  Data.alloc((null): 1, value: 5);
+  assert(Data.value[0] == 5, "value[0] != 5\n");
+  printf("ok\n");
+}
+

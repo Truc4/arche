@@ -1,18 +1,46 @@
-extern proc read(fd: int, buf: char[], len: int);
+extern func open(path: char[], flags: int) -> int;
+
+extern func read(fd: int, out buf: char[], len: int) -> int;
+
 extern proc write(fd: int, buf: char[], len: int);
-extern proc open(path: char[], flags: int);
 extern proc close(fd: int);
 extern proc exit(code: int);
 extern proc sprintf(buf: char[], fmt: char[]);
 extern proc printf(fmt: char[]);
 extern proc fflush(stream: int);
+extern func atof(str: char[]) -> float;
+
+extern func atoi(str: char[]) -> int;
+
+extern func strlen(str: char[]) -> int;
+
+extern func arche_fopen_write(path: char[]) -> int;
+
+extern proc arche_fwrite(fd: int, buf: char[], n: int);
+extern func arche_fopen_read(path: char[]) -> int;
+
+extern func arche_fread(fd: int, buf: char[], n: int) -> int;
+
+extern proc arche_fclose(fd: int);
 proc print_float(f: float) {
   printf("%g", f);
   fflush(0);
 }
 
 proc print(msg: char[]) {
-  write(1, msg, msg.length);
+  write(1, msg, strlen(msg));
+}
+
+proc stdout_write(buf: char[], n: int) {
+  write(1, buf, n);
+}
+
+proc stderr_write(buf: char[], n: int) {
+  write(2, buf, n);
+}
+
+proc stdin_read(buf: char[], n: int) {
+  read(0, buf, n);
 }
 
 proc assert(condition: int, message: char[]) {
