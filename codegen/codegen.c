@@ -2592,35 +2592,40 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			const char *var_name = stmt->data.assign_stmt.target->data.name.name;
 			ValueInfo *val = find_value(ctx, var_name);
 			if (val && val->type == 1) { /* type 1 = i32* pointer */
+				int is_float = val->field_type &&
+				               (strcmp(val->field_type, "float") == 0 ||
+				                strcmp(val->field_type, "double") == 0);
+				const char *llvm_t = is_float ? "double" : "i32";
+
 				if (stmt->data.assign_stmt.op == OP_NONE) {
-					buffer_append_fmt(ctx, "  store i32 %s, i32* %s\n", value_buf, val->llvm_name);
+					buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", llvm_t, value_buf, llvm_t, val->llvm_name);
 				} else {
 					/* Compound assignment: load, compute, store */
 					char *loaded = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", loaded, val->llvm_name);
+					buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", loaded, llvm_t, llvm_t, val->llvm_name);
 
 					const char *op;
 					switch (stmt->data.assign_stmt.op) {
 					case OP_ADD:
-						op = "add";
+						op = is_float ? "fadd" : "add";
 						break;
 					case OP_SUB:
-						op = "sub";
+						op = is_float ? "fsub" : "sub";
 						break;
 					case OP_MUL:
-						op = "mul";
+						op = is_float ? "fmul" : "mul";
 						break;
 					case OP_DIV:
-						op = "sdiv";
+						op = is_float ? "fdiv" : "sdiv";
 						break;
 					default:
-						op = "add";
+						op = is_float ? "fadd" : "add";
 						break;
 					}
 
 					char *result = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = %s i32 %s, %s\n", result, op, loaded, value_buf);
-					buffer_append_fmt(ctx, "  store i32 %s, i32* %s\n", result, val->llvm_name);
+					buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", result, op, llvm_t, loaded, value_buf);
+					buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", llvm_t, result, llvm_t, val->llvm_name);
 				}
 			}
 

@@ -86,8 +86,7 @@ proc main() {
   let total_revenue: float = 0.0;
   let idx = 0;
   for (;idx < 1000;) {
-    let rev = Transaction.revenue[idx];
-    total_revenue = total_revenue + rev;
+    total_revenue = total_revenue + Transaction.revenue[idx];
     idx = idx + 1;
   }
 

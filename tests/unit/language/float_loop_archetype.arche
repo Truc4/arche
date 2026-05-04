@@ -1,0 +1,24 @@
+// RUN: %arche -o %t %s && %t
+
+arche Nums {
+  val: float,
+}
+
+static Nums(4, 4) { val: 0.0 };
+
+proc main() {
+  Nums.val[0] = 1.0;
+  Nums.val[1] = 2.0;
+  Nums.val[2] = 3.0;
+  Nums.val[3] = 4.0;
+
+  let total: float = 0.0;
+  let i = 0;
+  for (;i < 4;) {
+    let v = Nums.val[i];
+    total = total + v;
+    i = i + 1;
+  }
+
+  assert(total == 10.0, "float loop archetype failed\n");
+}
