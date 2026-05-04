@@ -6,9 +6,9 @@ static Counter(1);
 
 proc main() {
   insert(Counter, 0);
-  let x = 10;
-  let y = 20;
-  let msg = "counter allocated\n";
+  let x := 10;
+  let y := 20;
+  let msg := "counter allocated\n";
   print(msg);
 }
 

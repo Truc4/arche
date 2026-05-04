@@ -7,7 +7,7 @@ arche C {
 
 
 proc main() {
-  let i = 0;
+  let i := 0;
   for p in C {
     printf("i = %d\n", i);
     i = i + 1;

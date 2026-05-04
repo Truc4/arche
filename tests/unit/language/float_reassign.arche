@@ -1,8 +1,8 @@
 // RUN: %arche -o %t %s && %t
 
 proc main() {
-  let x = 1.5;
-  let y = 0.0;
+  let x := 1.5;
+  let y := 0.0;
   y = x;
   assert(y == 1.5, "float reassign failed\n");
 }

@@ -725,7 +725,7 @@ static Decl *parse_static_decl(Parser *parser) {
 						static_decl->field_names[static_decl->field_count] = field_name;
 						static_decl->field_values[static_decl->field_count] = field_value;
 						static_decl->field_count++;
-					} while (match(parser, TOK_COMMA));
+					} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACE));
 				}
 
 				if (!match(parser, TOK_RBRACE)) {
@@ -875,7 +875,7 @@ static Expression *parse_primary_expr(Parser *parser) {
 				    realloc(arr_expr->data.array_literal.elements,
 				            (arr_expr->data.array_literal.element_count + 1) * sizeof(Expression *));
 				arr_expr->data.array_literal.elements[arr_expr->data.array_literal.element_count++] = elem;
-			} while (match(parser, TOK_COMMA));
+			} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACE));
 		}
 
 		if (!match(parser, TOK_RBRACE)) {
@@ -1296,7 +1296,7 @@ static Statement *parse_statement(Parser *parser) {
 		char *name = token_text(parser->current);
 		advance(parser);
 
-		/* Check for multi-value let: let a, b, c = expr */
+		/* Check for multi-value let: let a, b, c := expr or let a, b = expr (old) */
 		char **names = NULL;
 		int name_count = 0;
 		if (match(parser, TOK_COMMA)) {
@@ -1305,7 +1305,7 @@ static Statement *parse_statement(Parser *parser) {
 			names[0] = name;
 			name_count = 1;
 
-			while (!check(parser, TOK_EQ) && !check(parser, TOK_EOF)) {
+			while (!check(parser, TOK_COLON) && !check(parser, TOK_EQ) && !check(parser, TOK_EOF)) {
 				if (!check(parser, TOK_IDENT)) {
 					error(parser, "Expected variable name in multi-value let");
 					return NULL;
@@ -1321,8 +1321,14 @@ static Statement *parse_statement(Parser *parser) {
 				}
 			}
 
-			if (!match(parser, TOK_EQ)) {
-				error(parser, "Expected '=' in multi-value let");
+			/* Support both new syntax (:=) and old syntax (=) */
+			if (match(parser, TOK_COLON)) {
+				if (!match(parser, TOK_EQ)) {
+					error(parser, "Expected '=' after ':' in multi-value let");
+					return NULL;
+				}
+			} else if (!match(parser, TOK_EQ)) {
+				error(parser, "Expected ':=' or '=' in multi-value let");
 				return NULL;
 			}
 
@@ -1345,21 +1351,37 @@ static Statement *parse_statement(Parser *parser) {
 			return stmt;
 		}
 
-		/* Single-value let */
+		/* Single-value let: let x := expr or let x: type = expr or let x: type or let x = expr (old) */
 		TypeRef *type = NULL;
-		if (match(parser, TOK_COLON)) {
-			type = parse_type(parser);
-			if (!type)
-				return NULL;
-		}
-
 		Expression *value = NULL;
-		if (match(parser, TOK_EQ)) {
+
+		if (match(parser, TOK_COLON)) {
+			/* New/explicit syntax: colon present */
+			if (check(parser, TOK_EQ)) {
+				/* Inferred: let x := expr */
+				advance(parser); /* consume '=' */
+				value = parse_expression(parser);
+				if (!value)
+					return NULL;
+			} else {
+				/* Explicit: let x: type [= expr] */
+				type = parse_type(parser);
+				if (!type)
+					return NULL;
+
+				if (match(parser, TOK_EQ)) {
+					value = parse_expression(parser);
+					if (!value)
+						return NULL;
+				}
+			}
+		} else if (match(parser, TOK_EQ)) {
+			/* Old syntax (backward compat): let x = expr */
 			value = parse_expression(parser);
 			if (!value)
 				return NULL;
-		} else if (!type) {
-			error(parser, "Expected '=' or type annotation after variable name");
+		} else {
+			error(parser, "Expected ':' or '=' after variable name");
 			return NULL;
 		}
 

@@ -2,7 +2,7 @@
 // Step 5: Break statement with infinite for loop
 
 proc main() {
-  let i = 0;
+  let i := 0;
   for {
     if (i == 2) {
       break;

@@ -121,7 +121,7 @@ void test_proc_no_params_empty(void) {
 void test_proc_with_let_statement(void) {
 	test_start("proc with let statement");
 	Program *prog = parse_string("proc test() {\n"
-	                             "  let x = 42;\n"
+	                             "  let x := 42;\n"
 	                             "}");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
@@ -148,7 +148,7 @@ void test_proc_with_for_loop(void) {
 	test_start("proc with for loop");
 	Program *prog = parse_string("proc iterate() {\n"
 	                             "  for item in Collection {\n"
-	                             "    let x = 1;\n"
+	                             "    let x := 1;\n"
 	                             "  }\n"
 	                             "}");
 	ASSERT_NOT_NULL(prog, "program is null");
@@ -230,7 +230,7 @@ void test_func_multiple_params(void) {
 
 void test_expr_literal(void) {
 	test_start("expression literal");
-	Program *prog = parse_string("proc test() { let x = 42; }");
+	Program *prog = parse_string("proc test() { let x := 42; }");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
 	Expression *expr = proc->statements[0]->data.let_stmt.value;
@@ -241,7 +241,7 @@ void test_expr_literal(void) {
 
 void test_expr_field_access(void) {
 	test_start("expression field access");
-	Program *prog = parse_string("proc test() { let x = player.pos; }");
+	Program *prog = parse_string("proc test() { let x := player.pos; }");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
 	Expression *expr = proc->statements[0]->data.let_stmt.value;
@@ -252,7 +252,7 @@ void test_expr_field_access(void) {
 
 void test_expr_index(void) {
 	test_start("expression indexing");
-	Program *prog = parse_string("proc test() { let x = arr[0]; }");
+	Program *prog = parse_string("proc test() { let x := arr[0]; }");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
 	Expression *expr = proc->statements[0]->data.let_stmt.value;
@@ -263,7 +263,7 @@ void test_expr_index(void) {
 
 void test_expr_binary_op(void) {
 	test_start("expression binary operation");
-	Program *prog = parse_string("proc test() { let x = a + b; }");
+	Program *prog = parse_string("proc test() { let x := a + b; }");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
 	Expression *expr = proc->statements[0]->data.let_stmt.value;

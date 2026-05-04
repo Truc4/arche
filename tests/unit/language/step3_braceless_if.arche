@@ -2,7 +2,7 @@
 // Step 3: Braceless if body (single statement)
 
 proc main() {
-  let x = 1;
+  let x := 1;
   if (x == 1) {
     printf("braceless if ok\n");
   }

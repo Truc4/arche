@@ -671,20 +671,25 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 					fprintf(out, ", ");
 				}
 			}
+			/* Multi-value always inferred (no type), so := */
+			fprintf(out, " := ");
+			format_expression(out, stmt->data.let_stmt.value);
 		} else {
 			/* Single-value let */
 			fprintf(out, "%s", stmt->data.let_stmt.name);
-			/* Output type annotation if present */
 			if (stmt->data.let_stmt.type) {
+				/* Explicit type: let x: type = value */
 				fprintf(out, ": ");
 				format_type(out, stmt->data.let_stmt.type);
+				if (stmt->data.let_stmt.value) {
+					fprintf(out, " = ");
+					format_expression(out, stmt->data.let_stmt.value);
+				}
+			} else if (stmt->data.let_stmt.value) {
+				/* Inferred type: let x := value */
+				fprintf(out, " := ");
+				format_expression(out, stmt->data.let_stmt.value);
 			}
-		}
-
-		/* Output value if present */
-		if (stmt->data.let_stmt.value) {
-			fprintf(out, " = ");
-			format_expression(out, stmt->data.let_stmt.value);
 		}
 		fprintf(out, ";\n");
 		break;
@@ -1011,9 +1016,7 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				for (int j = 1; j < alloc->field_count; j++) {
 					fprintf(out, "  %s: ", alloc->field_names[j]);
 					format_expression(out, alloc->field_values[j]);
-					if (j < alloc->field_count - 1)
-						fprintf(out, ",");
-					fprintf(out, "\n");
+					fprintf(out, ",\n");
 				}
 				fprintf(out, "}");
 			}

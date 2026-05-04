@@ -6,7 +6,7 @@ proc main() {
   s[1] = '.';
   s[2] = '5';
   s[3] = 0;
-  let v = atof(s);
+  let v := atof(s);
   assert(v == 1.5, "atof failed\n");
   printf("atof ok\n");
 }

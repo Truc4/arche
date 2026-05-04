@@ -1,9 +1,9 @@
 // RUN: %arche -o %t %s && %t
 
 proc main() {
-  let fd = arche_fopen_read("../../../../tests/fixtures/data.csv");
+  let fd := arche_fopen_read("../../../../tests/fixtures/data.csv");
   let buf: char[256];
-  let n = arche_fread(fd, buf, 256);
+  let n := arche_fread(fd, buf, 256);
   arche_fclose(fd);
   printf("read 256 returned: %d\n", n);
   assert(n == 256, "should read 256 bytes\n");

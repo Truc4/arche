@@ -1,7 +1,7 @@
 // RUN: %arche -o %t %s && %t
 
 proc main() {
-  let x = 10;
+  let x := 10;
   x += 5;
   assert(x == 15, "compound assign failed\n");
 }

@@ -1,11 +1,11 @@
 // RUN: %arche -o %t %s && %t
 
 proc main() {
-  let fd = arche_fopen_read("../../../../tests/fixtures/transactions.csv");
+  let fd := arche_fopen_read("../../../../tests/fixtures/transactions.csv");
   let buf: char[256];
-  let n1 = arche_fread(fd, buf, 256);
+  let n1 := arche_fread(fd, buf, 256);
   printf("first read: %d bytes\n", n1);
-  let n2 = arche_fread(fd, buf, 256);
+  let n2 := arche_fread(fd, buf, 256);
   printf("second read: %d bytes\n", n2);
   if (n2 > 0) {
     printf("rebind ok\n");

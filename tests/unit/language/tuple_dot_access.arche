@@ -10,10 +10,10 @@ static Particle(5);
 
 proc main() {
   insert(Particle, 1.0, 2.0);
-  let x = Particle.pos.x[0];
-  let y = Particle.pos.y[0];
-  let xi = x * 10.0;
-  let yi = y * 10.0;
+  let x := Particle.pos.x[0];
+  let y := Particle.pos.y[0];
+  let xi := x * 10.0;
+  let yi := y * 10.0;
   assert(xi == 10, "x != 1.0\n");
   assert(yi == 20, "y != 2.0\n");
 }
