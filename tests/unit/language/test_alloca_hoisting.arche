@@ -1,5 +1,4 @@
-// RUN: %arche -o %t %s && %t | FileCheck %s
-// CHECK: done 1000
+// RUN: %arche -o %t %s && %t | grep "done 1000"
 
 proc main() {
   let i = 0;

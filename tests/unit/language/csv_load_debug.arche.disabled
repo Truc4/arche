@@ -13,7 +13,7 @@ static TestData(1000, 1000) {
 
 
 proc load_data() {
-  let fd = arche_fopen_read("/home/curt/Code/arche/design_analysis/benchmarks/etl/data/data.csv");
+  let fd = arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv");
   let buf: char[65536];
   let total_n = arche_fread(fd, buf, 65536);
   arche_fclose(fd);
@@ -85,4 +85,3 @@ proc load_data() {
 proc main() {
   load_data();
 }
-

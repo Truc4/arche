@@ -1,5 +1,4 @@
-// RUN: %arche -o %t %s && %t | FileCheck %s
-// CHECK: Loaded 1000 rows
+// RUN: %arche -o %t %s && %t | grep "Loaded 1000 rows"
 
 arche Transaction {
   price: float,
