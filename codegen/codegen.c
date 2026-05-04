@@ -2593,8 +2593,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			ValueInfo *val = find_value(ctx, var_name);
 			if (val && val->type == 1) { /* type 1 = i32* pointer */
 				int is_float = val->field_type &&
-				               (strcmp(val->field_type, "float") == 0 ||
-				                strcmp(val->field_type, "double") == 0);
+				               (strcmp(val->field_type, "float") == 0 || strcmp(val->field_type, "double") == 0);
 				const char *llvm_t = is_float ? "double" : "i32";
 
 				if (stmt->data.assign_stmt.op == OP_NONE) {

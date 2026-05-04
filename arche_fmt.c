@@ -55,10 +55,10 @@ int main(int argc, char *argv[]) {
 		fprintf(stderr, "  [Line %d, Col %d] Error: %s\n", parse_result.errors[0].line, parse_result.errors[0].column,
 		        parse_result.errors[0].message);
 		for (size_t i = 1; i < parse_result.error_count && unique_errors < 5; i++) {
-			if (parse_result.errors[i].line != parse_result.errors[i-1].line ||
-			    parse_result.errors[i].column != parse_result.errors[i-1].column) {
-				fprintf(stderr, "  [Line %d, Col %d] Error: %s\n", parse_result.errors[i].line, parse_result.errors[i].column,
-				        parse_result.errors[i].message);
+			if (parse_result.errors[i].line != parse_result.errors[i - 1].line ||
+			    parse_result.errors[i].column != parse_result.errors[i - 1].column) {
+				fprintf(stderr, "  [Line %d, Col %d] Error: %s\n", parse_result.errors[i].line,
+				        parse_result.errors[i].column, parse_result.errors[i].message);
 				unique_errors++;
 			}
 		}
