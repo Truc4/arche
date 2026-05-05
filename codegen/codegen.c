@@ -1995,7 +1995,8 @@ static void emit_bounds_check(CodegenContext *ctx, const char *arch_name, const 
 
 /* Walk expression tree and pre-compute column base pointers to hoist them out of loop */
 static void hoist_column_geps(CodegenContext *ctx, Expression *expr, const char *struct_ptr_val) {
-	if (!expr) return;
+	if (!expr)
+		return;
 
 	switch (expr->type) {
 	case EXPR_FIELD: {
@@ -2022,18 +2023,20 @@ static void hoist_column_geps(CodegenContext *ctx, Expression *expr, const char 
 
 					char *col_ptr = gen_value_name(ctx);
 					if (is_static) {
-						buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n",
-										col_ptr, arch_name, arch_name, struct_ptr_val, field_idx);
+						buffer_append_fmt(ctx,
+						                  "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n",
+						                  col_ptr, arch_name, arch_name, struct_ptr_val, field_idx);
 					} else {
 						char *field_gep = gen_value_name(ctx);
 						buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-										field_gep, arch_name, arch_name, struct_ptr_val, field_idx);
+						                  field_gep, arch_name, arch_name, struct_ptr_val, field_idx);
 						buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", col_ptr, llvm_type, llvm_type, field_gep);
 					}
 				}
 			}
 		}
-		if (base) hoist_column_geps(ctx, base, struct_ptr_val);
+		if (base)
+			hoist_column_geps(ctx, base, struct_ptr_val);
 		break;
 	}
 	case EXPR_BINARY:
@@ -2053,8 +2056,8 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
                                    const char *scalar_type,                  /* "double" or "i32" */
                                    const char *arche_type,                   /* "float" or "int" */
                                    Expression *rhs,                          /* RHS expression */
-                                   int op,                                   /* OP_NONE = store, others = load+op+store */
-                                   const char *struct_ptr_val)               /* struct pointer for hoisting */
+                                   int op,                     /* OP_NONE = store, others = load+op+store */
+                                   const char *struct_ptr_val) /* struct pointer for hoisting */
 {
 	/* Hoist column base GEPs before loop to avoid recalculating them */
 	if (struct_ptr_val) {
@@ -2775,8 +2778,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 									snprintf(loaded_global, sizeof(loaded_global), "@%s", arch_check_name);
 								} else {
 									char *loaded = gen_value_name(ctx);
-									buffer_append_fmt(ctx,
-									                  "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n",
+									buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n",
 									                  loaded, arch_check_name, arch_check_name, arch_check_name);
 									strcpy(loaded_global, loaded);
 								}
@@ -2809,7 +2811,8 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 							/* Emit whole-column loop */
 							const char *scalar_type = llvm_type_from_arche(field_base_type_name(fdecl->type));
 							emit_whole_column_loop(ctx, col_ptr, count, scalar_type, field_base_type_name(fdecl->type),
-							                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op, struct_ptr_val);
+							                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op,
+							                       struct_ptr_val);
 						} else {
 							/* Tuple field: emit loop for each component */
 							FieldDecl **tuple_components = NULL;
@@ -2948,7 +2951,8 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 											free(rhs_tuple_components);
 									} else {
 										emit_whole_column_loop(ctx, col_ptr, count, scalar_type, comp->type->data.name,
-										                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op, struct_ptr_val);
+										                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op,
+										                       struct_ptr_val);
 									}
 								}
 							}
