@@ -38,20 +38,19 @@ def run_arche(iterations=10):
     return arche_data, arche_compile_time, times
 
 def run_pandas(iterations=10):
+    os.makedirs('build/benchmarks/etl/task3', exist_ok=True)
     times = []
     for i in range(iterations):
         start = time.perf_counter()
         df = pd.read_csv('design_analysis/benchmarks/etl/data/data.csv')
         df['price_bucket'] = df['price'] / 10.0
         df_output = df[['price', 'quantity', 'price_bucket']].head(1000)
+        df_output.to_csv('build/benchmarks/etl/task3/pandas_output.csv', index=False, header=False)
         elapsed = time.perf_counter() - start
         times.append(elapsed)
 
     pandas_data = [(row['price'], row['quantity'], float(row['price_bucket']))
                    for _, row in df_output.iterrows()]
-
-    os.makedirs('build/benchmarks/etl/task3', exist_ok=True)
-    df_output.to_csv('build/benchmarks/etl/task3/pandas_output.csv', index=False, header=False)
 
     return pandas_data, times
 

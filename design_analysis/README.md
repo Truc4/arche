@@ -116,18 +116,17 @@ Real-world data processing tasks to validate Arche's performance on practical wo
 - Writes output CSV with all three columns (price, quantity, revenue)
 - Uses C stdlib wrappers (fopen/fread/fwrite) for portable file I/O
 
-**Performance** (30 iterations):
-- **Arche runtime**: 0.857ms avg (min: 0.781ms, max: 1.152ms)
-- **Pandas**: 1.107ms avg (min: 0.999ms, max: 2.718ms)
-- **Speedup**: 1.29x (Arche is 1.29x faster)
-- **Compilation**: 34.8ms one-time overhead
-- **Correctness**: ✓ All 1000 rows match Pandas (within 1e-5 floating-point tolerance)
+**Performance** (30 iterations, end-to-end: read + parse + compute + write):
+- **Arche runtime**: 1.033ms avg (min: 0.737ms, max: 5.925ms)
+- **Pandas**: 2.160ms avg (min: 1.996ms, max: 4.661ms)
+- **Speedup**: 2.09x (Arche is 2.09x faster)
+- **Compilation**: 32.0ms one-time overhead
+- **Correctness**: ✓ All 1000 rows match Pandas
 
 **Analysis**:
-- Arche delivers consistent latency (47% variance) vs Pandas (172% variance)
-- More predictable for production workloads
-- Manual CSV parsing with bounded loops, no dynamic allocations
-- Vectorized operation on archetype arrays
+- CSV write dominates execution time; Arche's sprintf+fwrite beats Pandas to_csv serialization
+- 2.09x speedup on end-to-end task (read + compute + write)
+- Static allocation with implicit loop hoisting eliminates address recalculation overhead in loops
 
 **Run benchmark**:
 ```bash
@@ -144,10 +143,10 @@ python3 benchmarks/etl/compare_task1.py 100    # 100 iterations
 - Loads 1000 rows, filters based on quantity > 0
 - Outputs CSV with valid flag column
 
-**Performance** (10 iterations):
-- **Arche runtime**: 0.775ms avg
-- **Pandas**: 1.313ms avg
-- **Speedup**: 1.69x
+**Performance** (10 iterations, end-to-end: read + compute + write):
+- **Arche runtime**: 1.256ms avg
+- **Pandas**: 2.154ms avg
+- **Speedup**: 1.71x
 - **Correctness**: ✓ All 1000 rows match
 
 ### Task3: Bucket Prices into Ranges
@@ -158,10 +157,10 @@ python3 benchmarks/etl/compare_task1.py 100    # 100 iterations
 - Loads 1000 rows, computes price_bucket = floor(price / 10)
 - Outputs CSV with bucket column
 
-**Performance** (10 iterations):
-- **Arche runtime**: 0.855ms avg
-- **Pandas**: 1.297ms avg
-- **Speedup**: 1.52x
+**Performance** (10 iterations, end-to-end: read + compute + write):
+- **Arche runtime**: 1.321ms avg
+- **Pandas**: 2.396ms avg
+- **Speedup**: 1.81x
 - **Correctness**: ✓ All 1000 rows match
 
 ### Task4: Aggregate Total Revenue
@@ -174,11 +173,11 @@ python3 benchmarks/etl/compare_task1.py 100    # 100 iterations
 - Loop sum: accumulates all revenue values into float scalar
 - Writes result to file
 
-**Performance** (10 iterations):
-- **Arche runtime**: 1.012ms avg
-- **Pandas**: 1.091ms avg
-- **Speedup**: 1.08x
-- **Correctness**: ✓ Total revenue matches (2531635514.93)
+**Performance** (10 iterations, end-to-end: read + compute + write):
+- **Arche runtime**: 1.057ms avg
+- **Pandas**: 1.093ms avg
+- **Speedup**: 1.03x
+- **Correctness**: ✓ Total revenue matches (2429322123.15)
 
 ## Implementation Complexity: Python vs Arche
 

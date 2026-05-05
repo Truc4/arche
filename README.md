@@ -365,20 +365,31 @@ The `design_analysis/` directory contains exploration and documentation of data 
 
 Real-world benchmarks on CSV data show Arche's performance on data processing tasks:
 
-**ETL tasks (1000 rows)**:
+**ETL Tasks** (1000 rows, end-to-end with I/O):
 
 | Task | Operation | Arche | Pandas | Speedup |
 |------|-----------|-------|--------|---------|
-| Task1 | `revenue = price × quantity` | 0.857ms | 1.107ms | **1.29x** |
-| Task2 | `valid = quantity > 0` | 0.775ms | 1.313ms | **1.69x** |
-| Task3 | `bucket = price / 10` | 0.855ms | 1.297ms | **1.52x** |
-| Task4 | `total = Σ(price × qty)` | 1.012ms | 1.091ms | **1.08x** |
+| Task1 | `revenue = price × quantity` | 1.033ms | 2.160ms | **2.09x** |
+| Task2 | `valid = quantity > 0` | 1.256ms | 2.154ms | **1.71x** |
+| Task3 | `bucket = price / 10` | 1.321ms | 2.396ms | **1.81x** |
+| Task4 | `total = Σ(price × qty)` | 1.057ms | 1.093ms | **1.03x** |
 
-Arche achieves consistent, predictable latency (low variance) while remaining competitive with interpreted data frameworks on small datasets.
+Real-world workflow speed. CSV write dominates execution time; Arche's tight loops beat Pandas serialization overhead.
 
-**Limitations of this test**: 1000 rows is too small to measure batch optimization, Python startup overhead inflates Pandas time, no compiled baselines for fair comparison. **Future benchmarks** will test on 1M+ rows, compare against Polars/DuckDB/NumPy+Cython, measure throughput (rows/sec) and variance, and separate Python startup time. I assume these will not be as favorable to Arche, but will continue testing practical scenarios.
+**Limitations of this test**: 1000 rows is too small to measure batch optimization or memory efficiency. No compiled baselines for fair comparison (Polars, DuckDB, NumPy+Cython would be more meaningful). CSV write dominates execution; compute-only comparisons show algorithmic performance more clearly. **Future benchmarks** will test on 10M+ rows, compare against compiled data systems, measure throughput (rows/sec) not just latency, and profile cache/memory behavior.
 
 See `design_analysis/README.md` for full analysis. See `design_analysis/benchmarks/etl/` for benchmark code and scripts.
+
+## Implicit Loop Implementation
+
+Whole-column operations like `Particle.pos = Particle.pos + Particle.vel` don't have explicit loops in source code—the compiler generates them. This implicit loop codegen is critical to performance:
+
+- **Column base hoisting**: Column pointers are computed once before the loop and cached, not recalculated per iteration
+- **Vectorization-ready**: Loop structure supports vector loads/stores (currently scalar, but infrastructure ready)
+- **Bounds checking**: Count metadata is loaded once; element-wise indexing is bounds-safe by design
+- **Static allocation awareness**: Codegen treats static and dynamic allocations differently to avoid pointer indirection where possible
+
+For static allocation, hoisting eliminates redundant address calculations that LLVM's conservative alias analysis (on large structs) cannot optimize away.
 
 ## Why This Exists
 

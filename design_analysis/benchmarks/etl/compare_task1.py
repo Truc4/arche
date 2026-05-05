@@ -47,21 +47,19 @@ def run_arche(iterations=10):
     return arche_data, arche_compile_time, times
 
 def run_pandas(iterations=10):
-    """Run Pandas task1 and measure time over multiple iterations."""
+    """Run Pandas task1 and measure time over multiple iterations (including write)."""
     times = []
     for i in range(iterations):
         start = time.perf_counter()
         df = pd.read_csv('design_analysis/benchmarks/etl/data/data.csv')
         df['revenue'] = df['price'] * df['quantity']
         df_output = df[['price', 'quantity', 'revenue']].head(1000)
+        df_output.to_csv('build/benchmarks/etl/task1/pandas_output.csv', index=False, header=False)
         elapsed = time.perf_counter() - start
         times.append(elapsed)
 
     pandas_data = [(row['price'], row['quantity'], row['revenue'])
                    for _, row in df_output.iterrows()]
-
-    # Save Pandas output
-    df_output.to_csv('build/benchmarks/etl/task1/pandas_output.csv', index=False, header=False)
 
     return pandas_data, times
 

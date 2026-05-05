@@ -37,6 +37,7 @@ def run_arche(iterations=10):
     return total_revenues[-1] if total_revenues else 0, arche_compile_time, times
 
 def run_pandas(iterations=10):
+    os.makedirs('build/benchmarks/etl/task4', exist_ok=True)
     times = []
     total_revenues = []
     for i in range(iterations):
@@ -44,6 +45,8 @@ def run_pandas(iterations=10):
         df = pd.read_csv('design_analysis/benchmarks/etl/data/data.csv')
         df['revenue'] = df['price'] * df['quantity']
         total_rev = df['revenue'].head(1000).sum()
+        with open('build/benchmarks/etl/task4/pandas_output.txt', 'w') as f:
+            f.write(f"{total_rev:.2f}\n")
         elapsed = time.perf_counter() - start
         times.append(elapsed)
         total_revenues.append(total_rev)
