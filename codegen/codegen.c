@@ -374,6 +374,20 @@ static ArchetypeDecl *find_archetype_decl(CodegenContext *ctx, const char *name)
 	return NULL;
 }
 
+/* Return static capacity for arch (from static decl), or 0 if dynamically allocated */
+static int get_arch_static_capacity(CodegenContext *ctx, const char *arch_name) {
+	for (int i = 0; i < ctx->prog->decl_count; i++) {
+		if (ctx->prog->decls[i]->kind == DECL_STATIC) {
+			StaticDecl *s = ctx->prog->decls[i]->data.alloc;
+			if (strcmp(s->archetype_name, arch_name) == 0 && s->field_count > 0 &&
+			    s->field_values[0]->type == EXPR_LITERAL) {
+				return atoi(s->field_values[0]->data.literal.lexeme);
+			}
+		}
+	}
+	return 0;
+}
+
 static SysDecl *find_sys_decl(CodegenContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->prog->decl_count; i++) {
 		Decl *decl = ctx->prog->decls[i];
@@ -577,16 +591,16 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				strcpy(result_buf, val->llvm_name);
 			}
 		} else if (find_archetype_decl(ctx, name)) {
-			/* Archetype name - load from global allocated pointer */
-			ArchetypeDecl *arch = find_archetype_decl(ctx, name);
-			if (arch) {
-				/* Load the allocated archetype pointer from global */
+			/* Archetype name — static global is @X directly; dynamic is loaded from @archetype_X */
+			if (get_arch_static_capacity(ctx, name) > 0) {
+				char global_ref[256];
+				snprintf(global_ref, sizeof(global_ref), "@%s", name);
+				strcpy(result_buf, global_ref);
+			} else {
 				char *loaded = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", loaded, name, name,
 				                  name);
 				strcpy(result_buf, loaded);
-			} else {
-				strcpy(result_buf, "0");
 			}
 		} else {
 			/* undefined variable, use 0 */
@@ -820,23 +834,29 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 				if (field_idx >= 0 && fdecl) {
 					const char *llvm_type = llvm_type_from_arche(field_base_type_name(fdecl->type));
-					char *gep = gen_value_name(ctx);
-
-					/* GEP to field */
-					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gep,
-					                  base_val->arch_name, base_val->arch_name, base_buf, field_idx);
+					int is_static = get_arch_static_capacity(ctx, base_val->arch_name) > 0;
 
 					if (fdecl->kind == FIELD_META) {
-						/* Load the value */
+						char *gep = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+						                  gep, base_val->arch_name, base_val->arch_name, base_buf, field_idx);
 						char *loaded = gen_value_name(ctx);
 						buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", loaded, llvm_type, llvm_type, gep);
 						strcpy(result_buf, loaded);
 					} else {
-						/* Col field: load the pointer */
+						/* Col field */
 						char *ptr_val = gen_value_name(ctx);
-						buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", ptr_val, llvm_type, llvm_type, gep);
+						if (is_static) {
+							buffer_append_fmt(
+							    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n",
+							    ptr_val, base_val->arch_name, base_val->arch_name, base_buf, field_idx);
+						} else {
+							char *gep = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+							                  gep, base_val->arch_name, base_val->arch_name, base_buf, field_idx);
+							buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", ptr_val, llvm_type, llvm_type, gep);
+						}
 
-						/* If inside implicit loop, auto-index by loop variable */
 						if (ctx->implicit_loop_index[0]) {
 							const char *load_type = elem_llvm_type(ctx, field_base_type_name(fdecl->type));
 							char *idx_gep = gen_value_name(ctx);
@@ -846,14 +866,12 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 							int align = ctx->vector_lanes > 0 ? 8 : 4;
 
 							if (ctx->vector_lanes > 0) {
-								/* Vector load: bitcast pointer to vector type, then load */
 								char *vec_ptr = gen_value_name(ctx);
 								buffer_append_fmt(ctx, "  %s = bitcast %s* %s to %s*\n", vec_ptr, llvm_type, idx_gep,
 								                  load_type);
 								buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", elem, load_type, load_type,
 								                  vec_ptr, align);
 							} else {
-								/* Scalar load */
 								buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", elem, load_type, llvm_type,
 								                  idx_gep, align);
 							}
@@ -881,23 +899,29 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 				if (field_idx >= 0 && fdecl) {
 					const char *llvm_type = llvm_type_from_arche(field_base_type_name(fdecl->type));
-					char *gep = gen_value_name(ctx);
-
-					/* GEP to field */
-					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gep,
-					                  arch_name_direct, arch_name_direct, base_buf, field_idx);
+					int is_static = get_arch_static_capacity(ctx, arch_name_direct) > 0;
 
 					if (fdecl->kind == FIELD_META) {
-						/* Load the value */
+						char *gep = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+						                  gep, arch_name_direct, arch_name_direct, base_buf, field_idx);
 						char *loaded = gen_value_name(ctx);
 						buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", loaded, llvm_type, llvm_type, gep);
 						strcpy(result_buf, loaded);
 					} else {
-						/* Col field: load the pointer */
+						/* Col field */
 						char *ptr_val = gen_value_name(ctx);
-						buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", ptr_val, llvm_type, llvm_type, gep);
+						if (is_static) {
+							buffer_append_fmt(
+							    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n",
+							    ptr_val, arch_name_direct, arch_name_direct, base_buf, field_idx);
+						} else {
+							char *gep = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+							                  gep, arch_name_direct, arch_name_direct, base_buf, field_idx);
+							buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", ptr_val, llvm_type, llvm_type, gep);
+						}
 
-						/* If inside implicit loop, auto-index by loop variable */
 						if (ctx->implicit_loop_index[0]) {
 							const char *load_type = elem_llvm_type(ctx, field_base_type_name(fdecl->type));
 							char *idx_gep = gen_value_name(ctx);
@@ -907,14 +931,12 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 							int align = ctx->vector_lanes > 0 ? 8 : 4;
 
 							if (ctx->vector_lanes > 0) {
-								/* Vector load: bitcast pointer to vector type, then load */
 								char *vec_ptr = gen_value_name(ctx);
 								buffer_append_fmt(ctx, "  %s = bitcast %s* %s to %s*\n", vec_ptr, llvm_type, idx_gep,
 								                  load_type);
 								buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", elem, load_type, load_type,
 								                  vec_ptr, align);
 							} else {
-								/* Scalar load */
 								buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", elem, load_type, llvm_type,
 								                  idx_gep, align);
 							}
@@ -1883,8 +1905,11 @@ static int resolve_index_arch(CodegenContext *ctx, Expression *base_expr, Expres
 			if (arch) {
 				static char global_buf[256];
 				*out_arch_name = var_name;
-				/* Static allocations stored in @archetype_<name> */
-				snprintf(global_buf, sizeof(global_buf), "@archetype_%s", var_name);
+				int cap = get_arch_static_capacity(ctx, var_name);
+				if (cap > 0)
+					snprintf(global_buf, sizeof(global_buf), "@%s", var_name);
+				else
+					snprintf(global_buf, sizeof(global_buf), "@archetype_%s", var_name);
 				*out_arch_ptr = global_buf;
 				*out_count_idx = arch->field_count;
 			}
@@ -1916,10 +1941,11 @@ static int resolve_index_arch(CodegenContext *ctx, Expression *base_expr, Expres
 
 static void emit_bounds_check(CodegenContext *ctx, const char *arch_name, const char *arch_ptr, int count_field_idx,
                               const char *idx_buf, int idx_is_i64) {
-	/* If arch_ptr is a global variable, load it first */
+	/* If arch_ptr is a dynamic global (pointer-to-pointer), load the struct ptr first.
+	   Static globals (@ArchName) are already %struct.X* — no load needed. */
 	const char *struct_ptr = arch_ptr;
 	char *loaded_ptr = NULL;
-	if (arch_ptr[0] == '@') {
+	if (strncmp(arch_ptr, "@archetype_", 11) == 0) {
 		loaded_ptr = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** %s\n", loaded_ptr, arch_name, arch_name,
 		                  arch_ptr);
@@ -2683,21 +2709,33 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 							char *field_gep = gen_value_name(ctx);
 							const char *struct_ptr_val;
 							if (arch_name_direct) {
-								/* Load from global */
-								char *loaded = gen_value_name(ctx);
-								buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n",
-								                  loaded, arch_check_name, arch_check_name, arch_check_name);
-								strcpy(loaded_global, loaded);
+								/* Load from global — static use @X directly, dynamic load from @archetype_X */
+								if (get_arch_static_capacity(ctx, arch_check_name) > 0) {
+									snprintf(loaded_global, sizeof(loaded_global), "@%s", arch_check_name);
+								} else {
+									char *loaded = gen_value_name(ctx);
+									buffer_append_fmt(ctx,
+									                  "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n",
+									                  loaded, arch_check_name, arch_check_name, arch_check_name);
+									strcpy(loaded_global, loaded);
+								}
 								struct_ptr_val = loaded_global;
 							} else {
 								struct_ptr_val = inst->llvm_name;
 							}
-							buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-							                  field_gep, arch_check_name, arch_check_name, struct_ptr_val, field_idx);
-
+							int is_static = get_arch_static_capacity(ctx, arch_check_name) > 0;
 							char *col_ptr = gen_value_name(ctx);
-							buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", col_ptr, llvm_type, llvm_type,
-							                  field_gep);
+							if (is_static) {
+								buffer_append_fmt(
+								    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n",
+								    col_ptr, arch_check_name, arch_check_name, struct_ptr_val, field_idx);
+							} else {
+								buffer_append_fmt(
+								    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+								    field_gep, arch_check_name, arch_check_name, struct_ptr_val, field_idx);
+								buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", col_ptr, llvm_type, llvm_type,
+								                  field_gep);
+							}
 
 							/* Load count from archetype */
 							char *count_gep = gen_value_name(ctx);
@@ -2742,25 +2780,37 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 									const char *struct_ptr_val;
 									char loaded_global_comp[256];
 									if (arch_name_direct && !loaded_global[0]) {
-										/* Load from global */
-										char *loaded = gen_value_name(ctx);
-										buffer_append_fmt(ctx,
-										                  "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n",
-										                  loaded, arch_check_name, arch_check_name, arch_check_name);
-										strcpy(loaded_global_comp, loaded);
+										/* Load from global — static use @X directly, dynamic load from @archetype_X */
+										if (get_arch_static_capacity(ctx, arch_check_name) > 0) {
+											snprintf(loaded_global_comp, sizeof(loaded_global_comp), "@%s",
+											         arch_check_name);
+										} else {
+											char *loaded = gen_value_name(ctx);
+											buffer_append_fmt(
+											    ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", loaded,
+											    arch_check_name, arch_check_name, arch_check_name);
+											strcpy(loaded_global_comp, loaded);
+										}
 										struct_ptr_val = loaded_global_comp;
 									} else if (arch_name_direct) {
 										struct_ptr_val = loaded_global;
 									} else {
 										struct_ptr_val = inst->llvm_name;
 									}
-									buffer_append_fmt(
-									    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-									    field_gep, arch_check_name, arch_check_name, struct_ptr_val, comp_idx);
-
+									int is_static = get_arch_static_capacity(ctx, arch_check_name) > 0;
 									char *col_ptr = gen_value_name(ctx);
-									buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", col_ptr, llvm_type, llvm_type,
-									                  field_gep);
+									if (is_static) {
+										buffer_append_fmt(
+										    ctx,
+										    "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n",
+										    col_ptr, arch_check_name, arch_check_name, struct_ptr_val, comp_idx);
+									} else {
+										buffer_append_fmt(
+										    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+										    field_gep, arch_check_name, arch_check_name, struct_ptr_val, comp_idx);
+										buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", col_ptr, llvm_type,
+										                  llvm_type, field_gep);
+									}
 
 									char *count_gep = gen_value_name(ctx);
 									int count_idx = arch->field_count;
@@ -3355,9 +3405,17 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			/* Load global archetype pointer and call versioned system function */
 			const char *versioned = codegen_get_sys_version(ctx, system_name, arch->name);
 			if (versioned) {
-				char *arch_ptr = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", arch_ptr, arch->name,
-				                  arch->name, arch->name);
+				const char *arch_ptr;
+				char arch_ptr_buf[256];
+				if (get_arch_static_capacity(ctx, arch->name) > 0) {
+					snprintf(arch_ptr_buf, sizeof(arch_ptr_buf), "@%s", arch->name);
+					arch_ptr = arch_ptr_buf;
+				} else {
+					char *loaded = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", loaded,
+					                  arch->name, arch->name, arch->name);
+					arch_ptr = loaded;
+				}
 				buffer_append_fmt(ctx, "  call void @%s(%%struct.%s* %s)\n", versioned, arch->name, arch_ptr);
 			}
 		}
@@ -3424,15 +3482,19 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 /* ========== DECLARATION CODEGEN ========== */
 
 static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
+	int static_cap = get_arch_static_capacity(ctx, arch->name);
+
 	/* Generate struct definition for archetype */
 	buffer_append_fmt(ctx, "%%struct.%s = type {\n", arch->name);
 
 	for (int i = 0; i < arch->field_count; i++) {
 		const char *base_type = llvm_type_from_arche(field_base_type_name(arch->fields[i]->type));
 
-		/* col fields are arrays → emit as pointer type */
 		if (arch->fields[i]->kind == FIELD_COLUMN) {
-			buffer_append_fmt(ctx, "  %s*", base_type);
+			if (static_cap > 0)
+				buffer_append_fmt(ctx, "  [%d x %s]", static_cap, base_type);
+			else
+				buffer_append_fmt(ctx, "  %s*", base_type);
 		} else {
 			buffer_append_fmt(ctx, "  %s", base_type);
 		}
@@ -3440,13 +3502,19 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 		buffer_append(ctx, ",\n");
 	}
 
-	/* Add count and capacity fields for tracking live/allocated entries */
-	buffer_append(ctx, "  i64,\n");
+	/* count field */
 	buffer_append(ctx, "  i64,\n");
 
-	/* Add free_list and free_count for pooling */
-	buffer_append(ctx, "  i64*,\n");
-	buffer_append(ctx, "  i64\n");
+	if (static_cap > 0) {
+		/* Static: inline free_list array + free_count; no capacity field */
+		buffer_append_fmt(ctx, "  [%d x i64],\n", static_cap);
+		buffer_append(ctx, "  i64\n");
+	} else {
+		/* Dynamic: capacity + free_list pointer + free_count */
+		buffer_append(ctx, "  i64,\n");
+		buffer_append(ctx, "  i64*,\n");
+		buffer_append(ctx, "  i64\n");
+	}
 
 	buffer_append(ctx, "}\n\n");
 
@@ -3465,11 +3533,10 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	buffer_append(ctx, "  %slot_var = alloca i64\n");
 	buffer_append(ctx, "  %do_incr = alloca i1\n");
 
-	/* Load free_count, count, capacity, free_list */
 	int count_idx = arch->field_count;
-	int cap_idx = arch->field_count + 1;
-	int fl_idx = arch->field_count + 2;
-	int fc_idx = arch->field_count + 3;
+	int fl_idx = static_cap > 0 ? arch->field_count + 1 : arch->field_count + 2;
+	int fc_idx = static_cap > 0 ? arch->field_count + 2 : arch->field_count + 3;
+	int cap_idx = arch->field_count + 1; /* dynamic only */
 
 	buffer_append_fmt(ctx, "  %%fc_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", arch->name,
 	                  arch->name, fc_idx);
@@ -3479,11 +3546,18 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 
 	/* Pop from free_list */
 	buffer_append(ctx, "pop_free:\n");
-	buffer_append_fmt(ctx, "  %%fl_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", arch->name,
-	                  arch->name, fl_idx);
-	buffer_append(ctx, "  %free_list = load i64*, i64** %fl_ptr\n");
 	buffer_append(ctx, "  %new_fc = sub i64 %free_count, 1\n");
-	buffer_append(ctx, "  %slot_ptr = getelementptr i64, i64* %free_list, i64 %new_fc\n");
+	if (static_cap > 0) {
+		/* Inline array: 3-index GEP */
+		buffer_append_fmt(
+		    ctx, "  %%slot_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %%new_fc\n",
+		    arch->name, arch->name, fl_idx);
+	} else {
+		buffer_append_fmt(ctx, "  %%fl_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
+		                  arch->name, arch->name, fl_idx);
+		buffer_append(ctx, "  %free_list = load i64*, i64** %fl_ptr\n");
+		buffer_append(ctx, "  %slot_ptr = getelementptr i64, i64* %free_list, i64 %new_fc\n");
+	}
 	buffer_append(ctx, "  %slot = load i64, i64* %slot_ptr\n");
 	buffer_append(ctx, "  store i64 %new_fc, i64* %fc_ptr\n");
 	buffer_append(ctx, "  store i64 %slot, i64* %slot_var\n");
@@ -3495,10 +3569,14 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	buffer_append_fmt(ctx, "  %%count_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
 	                  arch->name, arch->name, count_idx);
 	buffer_append(ctx, "  %count = load i64, i64* %count_ptr\n");
-	buffer_append_fmt(ctx, "  %%cap_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", arch->name,
-	                  arch->name, cap_idx);
-	buffer_append(ctx, "  %cap = load i64, i64* %cap_ptr\n");
-	buffer_append(ctx, "  %at_capacity = icmp sge i64 %count, %cap\n");
+	if (static_cap > 0) {
+		buffer_append_fmt(ctx, "  %%at_capacity = icmp sge i64 %%count, %d\n", static_cap);
+	} else {
+		buffer_append_fmt(ctx, "  %%cap_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
+		                  arch->name, arch->name, cap_idx);
+		buffer_append(ctx, "  %cap = load i64, i64* %cap_ptr\n");
+		buffer_append(ctx, "  %at_capacity = icmp sge i64 %count, %cap\n");
+	}
 	buffer_append(ctx, "  br i1 %at_capacity, label %overflow, label %use_count\n\n");
 
 	/* Overflow: abort (fixed budget exceeded) */
@@ -3519,10 +3597,6 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	for (int i = 0; i < arch->field_count; i++) {
 		if (arch->fields[i]->kind == FIELD_COLUMN) {
 			const char *base_type = llvm_type_from_arche(field_base_type_name(arch->fields[i]->type));
-			buffer_append_fmt(ctx, "  %%col_pp2_%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
-			                  col_idx, arch->name, arch->name, i);
-			buffer_append_fmt(ctx, "  %%col_p2_%d = load %s*, %s** %%col_pp2_%d\n", col_idx, base_type, base_type,
-			                  col_idx);
 			int col_n = field_total_elements(arch->fields[i]->type);
 			const char *flat_slot = "%final_slot";
 			char flat_slot_buf[64];
@@ -3531,8 +3605,19 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 				buffer_append_fmt(ctx, "  %s = mul i64 %%final_slot, %d\n", flat_slot_buf, col_n);
 				flat_slot = flat_slot_buf;
 			}
-			buffer_append_fmt(ctx, "  %%slot%d = getelementptr %s, %s* %%col_p2_%d, i64 %s\n", col_idx, base_type,
-			                  base_type, col_idx, flat_slot);
+			if (static_cap > 0) {
+				buffer_append_fmt(
+				    ctx, "  %%slot%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %s\n",
+				    col_idx, arch->name, arch->name, i, flat_slot);
+			} else {
+				buffer_append_fmt(ctx,
+				                  "  %%col_pp2_%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
+				                  col_idx, arch->name, arch->name, i);
+				buffer_append_fmt(ctx, "  %%col_p2_%d = load %s*, %s** %%col_pp2_%d\n", col_idx, base_type, base_type,
+				                  col_idx);
+				buffer_append_fmt(ctx, "  %%slot%d = getelementptr %s, %s* %%col_p2_%d, i64 %s\n", col_idx, base_type,
+				                  base_type, col_idx, flat_slot);
+			}
 			buffer_append_fmt(ctx, "  store %s %%f%d, %s* %%slot%d\n", base_type, i, base_type, col_idx);
 			col_idx++;
 		}
@@ -3558,16 +3643,22 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	buffer_append_fmt(ctx, "define void @arche_delete_%s(%%struct.%s* %%arch, i64 %%idx) {\n", arch->name, arch->name);
 	buffer_append(ctx, "entry:\n");
 
-	/* Load free_list and free_count */
-	buffer_append_fmt(ctx, "  %%fl_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", arch->name,
-	                  arch->name, fl_idx);
-	buffer_append(ctx, "  %free_list = load i64*, i64** %fl_ptr\n");
+	/* Load free_count */
 	buffer_append_fmt(ctx, "  %%fc_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", arch->name,
 	                  arch->name, fc_idx);
 	buffer_append(ctx, "  %free_count = load i64, i64* %fc_ptr\n");
 
 	/* Push idx to free_list[free_count] */
-	buffer_append(ctx, "  %slot_ptr = getelementptr i64, i64* %free_list, i64 %free_count\n");
+	if (static_cap > 0) {
+		buffer_append_fmt(
+		    ctx, "  %%slot_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %%free_count\n",
+		    arch->name, arch->name, fl_idx);
+	} else {
+		buffer_append_fmt(ctx, "  %%fl_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
+		                  arch->name, arch->name, fl_idx);
+		buffer_append(ctx, "  %free_list = load i64*, i64** %fl_ptr\n");
+		buffer_append(ctx, "  %slot_ptr = getelementptr i64, i64* %free_list, i64 %free_count\n");
+	}
 	buffer_append(ctx, "  store i64 %idx, i64* %slot_ptr\n");
 
 	/* Increment free_count */
@@ -3580,11 +3671,22 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	/* Emit dealloc helper function */
 	buffer_append_fmt(ctx, "define void @arche_dealloc_%s(%%struct.%s* %%arch) {\n", arch->name, arch->name);
 	buffer_append(ctx, "entry:\n");
-	buffer_append(ctx, "  %arch_i8 = bitcast %struct.");
-	buffer_append_fmt(ctx, "%s* %%arch to i8*\n", arch->name);
-	buffer_append(ctx, "  call void @free(i8* %arch_i8)\n");
+	if (static_cap > 0) {
+		/* Static global — nothing to free */
+	} else {
+		buffer_append(ctx, "  %arch_i8 = bitcast %struct.");
+		buffer_append_fmt(ctx, "%s* %%arch to i8*\n", arch->name);
+		buffer_append(ctx, "  call void @free(i8* %arch_i8)\n");
+	}
 	buffer_append(ctx, "  ret void\n");
 	buffer_append(ctx, "}\n\n");
+
+	/* Emit global variable for this archetype (after struct type is defined) */
+	if (static_cap > 0) {
+		buffer_append_fmt(ctx, "@%s = global %%struct.%s zeroinitializer\n\n", arch->name, arch->name);
+	} else {
+		buffer_append_fmt(ctx, "@archetype_%s = global %%struct.%s* null\n\n", arch->name, arch->name);
+	}
 }
 
 static void codegen_static_decl(CodegenContext *ctx, StaticDecl *alloc) {
@@ -3611,10 +3713,8 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 	if (alloc->init_length) {
 		codegen_expression(ctx, alloc->init_length, length_buf);
 	} else if (alloc->field_count > 1) {
-		/* Init block present: default count to capacity */
 		strcpy(length_buf, capacity_buf);
 	} else {
-		/* No init block: default count to 0 */
 		strcpy(length_buf, "0");
 	}
 
@@ -3624,11 +3724,115 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 		return;
 	}
 
+	int static_cap = get_arch_static_capacity(ctx, arch_name);
+
+	if (static_cap > 0) {
+		/* Static global — no malloc. @arch_name is %struct.arch_name* in BSS.
+		   Just initialize count and (optionally) field values. */
+		int count_idx = arch->field_count;
+		int fc_idx = arch->field_count + 2; /* after count + inline free_list array */
+
+		char *count_gep = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* @%s, i32 0, i32 %d\n", count_gep,
+		                  arch_name, arch_name, arch_name, count_idx);
+		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", length_buf, count_gep);
+
+		char *fc_gep = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* @%s, i32 0, i32 %d\n", fc_gep, arch_name,
+		                  arch_name, arch_name, fc_idx);
+		buffer_append(ctx, "  store i64 1, i64* ");
+		buffer_append_fmt(ctx, "%s\n", fc_gep);
+
+		/* Field initialization loops */
+		for (int init_idx = 1; init_idx < alloc->field_count; init_idx++) {
+			const char *field_name = alloc->field_names[init_idx];
+			Expression *init_value = alloc->field_values[init_idx];
+
+			int field_idx = -1;
+			for (int i = 0; i < arch->field_count; i++) {
+				if (strcmp(arch->fields[i]->name, field_name) == 0) {
+					field_idx = i;
+					break;
+				}
+			}
+			if (field_idx == -1)
+				continue;
+
+			FieldDecl *field = arch->fields[field_idx];
+			if (field->kind != FIELD_COLUMN)
+				continue;
+
+			const char *elem_type = llvm_type_from_arche(field_base_type_name(field->type));
+
+			char loop_cond_label[64], loop_body_label[64], loop_end_label[64];
+			char *loop_ctr_alloca = gen_value_name(ctx);
+			snprintf(loop_cond_label, sizeof(loop_cond_label), "loop_cond_%d", ctx->value_counter);
+			snprintf(loop_body_label, sizeof(loop_body_label), "loop_body_%d", ctx->value_counter);
+			snprintf(loop_end_label, sizeof(loop_end_label), "loop_end_%d", ctx->value_counter);
+			ctx->value_counter++;
+
+			emit_alloca(ctx, "  %s = alloca i64\n", loop_ctr_alloca);
+			buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", loop_ctr_alloca);
+			buffer_append_fmt(ctx, "  br label %%%s\n", loop_cond_label);
+
+			buffer_append_fmt(ctx, "%s:\n", loop_cond_label);
+			char *loop_counter = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", loop_counter, loop_ctr_alloca);
+			char *cond = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", cond, loop_counter, length_buf);
+			buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n", cond, loop_body_label, loop_end_label);
+
+			buffer_append_fmt(ctx, "%s:\n", loop_body_label);
+
+			/* 3-index GEP into inline column array */
+			char *elem_ptr = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* @%s, i32 0, i32 %d, i64 %s\n",
+			                  elem_ptr, arch_name, arch_name, arch_name, field_idx, loop_counter);
+
+			char init_val_buf[256];
+			codegen_expression(ctx, init_value, init_val_buf);
+
+			const char *init_type = init_value->resolved_type ? init_value->resolved_type : "int";
+			const char *init_llvm_type = llvm_type_from_arche(init_type);
+
+			if (strcmp(init_llvm_type, elem_type) != 0) {
+				char *converted = gen_value_name(ctx);
+				if (init_llvm_type[0] == 'i' && elem_type[0] == 'd') {
+					buffer_append_fmt(ctx, "  %s = sitofp %s %s to %s\n", converted, init_llvm_type, init_val_buf,
+					                  elem_type);
+				} else if (init_llvm_type[0] == 'd' && elem_type[0] == 'i') {
+					buffer_append_fmt(ctx, "  %s = fptosi %s %s to %s\n", converted, init_llvm_type, init_val_buf,
+					                  elem_type);
+				} else {
+					converted = init_val_buf;
+				}
+				buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", elem_type, converted, elem_type, elem_ptr);
+			} else {
+				buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", elem_type, init_val_buf, elem_type, elem_ptr);
+			}
+
+			char *next_counter = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", next_counter, loop_counter);
+			buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", next_counter, loop_ctr_alloca);
+			buffer_append_fmt(ctx, "  br label %%%s\n", loop_cond_label);
+
+			buffer_append_fmt(ctx, "%s:\n", loop_end_label);
+		}
+
+		if (alloc->field_count > 1) {
+			char *final_count_gep = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* @%s, i32 0, i32 %d\n",
+			                  final_count_gep, arch_name, arch_name, arch_name, count_idx);
+			buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", length_buf, final_count_gep);
+		}
+		return;
+	}
+
+	/* Dynamic path: single malloc + layout setup */
+
 	/* Struct layout: [pointers...][count][capacity][free_list*][free_count] */
-	/* Calculate struct header size: (field_count pointers) * 8 + metadata (4*8) = (field_count+4)*8 */
 	int struct_sz_bytes = (arch->field_count + 4) * 8;
 
-	/* Calculate byte size per element across all columns */
 	int bytes_per_row = 0;
 	for (int i = 0; i < arch->field_count; i++) {
 		if (arch->fields[i]->kind == FIELD_COLUMN) {
@@ -3637,29 +3841,22 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 			bytes_per_row += ((elem_type[0] == 'd') ? 8 : 4) * n;
 		}
 	}
-	/* Add 8 bytes per row for free_list entry (i64) */
 	int total_bytes_per_row = bytes_per_row + 8;
 
-	/* Total size = struct_header + (count * bytes_per_row) + (count * 8 for free_list) */
-	/* = struct_sz_bytes + count * total_bytes_per_row */
 	char *total_bytes = gen_value_name(ctx);
 	char *data_bytes = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", data_bytes, capacity_buf, total_bytes_per_row);
 	buffer_append_fmt(ctx, "  %s = add i64 %d, %s\n", total_bytes, struct_sz_bytes, data_bytes);
 
-	/* Single malloc */
 	char *raw_ptr = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = call i8* @malloc(i64 %s)\n", raw_ptr, total_bytes);
 
-	/* Bitcast to struct pointer */
 	char *struct_ptr = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = bitcast i8* %s to %%struct.%s*\n", struct_ptr, raw_ptr, arch_name);
 
-	/* Store in global @archetype_* pointer */
 	buffer_append_fmt(ctx, "  store %%struct.%s* %s, %%struct.%s** @archetype_%s\n", arch_name, struct_ptr, arch_name,
 	                  arch_name);
 
-	/* Initialize metadata fields */
 	char *count_gep = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", count_gep, arch_name,
 	                  arch_name, struct_ptr, arch->field_count);
@@ -3675,7 +3872,6 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 	                  arch_name, struct_ptr, arch->field_count + 3);
 	buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", fc_gep);
 
-	/* Set column pointers and free_list pointer to offsets in the allocated block */
 	int col_offset = 0;
 	for (int i = 0; i < arch->field_count; i++) {
 		if (arch->fields[i]->kind == FIELD_COLUMN) {
@@ -3707,12 +3903,10 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 		}
 	}
 
-	/* Set free_list pointer: it comes after all column rows */
 	char *fl_gep = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", fl_gep, arch_name,
 	                  arch_name, struct_ptr, arch->field_count + 2);
 
-	/* free_list offset = struct_header + (all columns data) */
 	char *fl_offset = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", fl_offset, capacity_buf, bytes_per_row);
 	char *fl_data = gen_value_name(ctx);
@@ -3725,12 +3919,10 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 
 	buffer_append_fmt(ctx, "  store i64* %s, i64** %s\n", fl_ptr, fl_gep);
 
-	/* Handle field initialization: for each named field, fill with the init value */
 	for (int init_idx = 1; init_idx < alloc->field_count; init_idx++) {
 		const char *field_name = alloc->field_names[init_idx];
 		Expression *init_value = alloc->field_values[init_idx];
 
-		/* Find field in archetype */
 		int field_idx = -1;
 		for (int i = 0; i < arch->field_count; i++) {
 			if (strcmp(arch->fields[i]->name, field_name) == 0) {
@@ -3738,27 +3930,21 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 				break;
 			}
 		}
-		if (field_idx == -1) {
+		if (field_idx == -1)
 			continue;
-		}
 
 		FieldDecl *field = arch->fields[field_idx];
-		if (field->kind != FIELD_COLUMN) {
+		if (field->kind != FIELD_COLUMN)
 			continue;
-		}
 
-		/* Get field's element type */
 		const char *elem_type = llvm_type_from_arche(field_base_type_name(field->type));
-		int n = field_total_elements(field->type);
 
-		/* Load column pointer from struct */
 		char *field_col_ptr_ref = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", field_col_ptr_ref,
 		                  arch_name, arch_name, struct_ptr, field_idx);
 		char *field_col_ptr = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", field_col_ptr, elem_type, elem_type, field_col_ptr_ref);
 
-		/* Generate loop to fill field[0..count) with init value */
 		char loop_cond_label[64], loop_body_label[64], loop_end_label[64];
 		char *loop_ctr_alloca = gen_value_name(ctx);
 		snprintf(loop_cond_label, sizeof(loop_cond_label), "loop_cond_%d", ctx->value_counter);
@@ -3766,14 +3952,10 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 		snprintf(loop_end_label, sizeof(loop_end_label), "loop_end_%d", ctx->value_counter);
 		ctx->value_counter++;
 
-		/* Allocate loop counter variable on stack */
 		emit_alloca(ctx, "  %s = alloca i64\n", loop_ctr_alloca);
 		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", loop_ctr_alloca);
-
-		/* Jump to loop condition */
 		buffer_append_fmt(ctx, "  br label %%%s\n", loop_cond_label);
 
-		/* Loop condition block */
 		buffer_append_fmt(ctx, "%s:\n", loop_cond_label);
 		char *loop_counter = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", loop_counter, loop_ctr_alloca);
@@ -3781,35 +3963,26 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", cond, loop_counter, length_buf);
 		buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n", cond, loop_body_label, loop_end_label);
 
-		/* Loop body */
 		buffer_append_fmt(ctx, "%s:\n", loop_body_label);
 
-		/* Compute field pointer for this element */
 		char *elem_ptr = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", elem_ptr, elem_type, elem_type,
 		                  field_col_ptr, loop_counter);
 
-		/* Compute init value */
 		char init_val_buf[256];
 		codegen_expression(ctx, init_value, init_val_buf);
 
-		/* Convert type if needed (e.g., i32 to double) */
 		const char *init_type = init_value->resolved_type ? init_value->resolved_type : "int";
 		const char *init_llvm_type = llvm_type_from_arche(init_type);
 
 		if (strcmp(init_llvm_type, elem_type) != 0) {
 			char *converted = gen_value_name(ctx);
-			if ((init_llvm_type[0] == 'i' || init_llvm_type[0] == 'd') &&
-			    (elem_type[0] == 'i' || elem_type[0] == 'd')) {
-				if (init_llvm_type[0] == 'i' && elem_type[0] == 'd') {
-					buffer_append_fmt(ctx, "  %s = sitofp %s %s to %s\n", converted, init_llvm_type, init_val_buf,
-					                  elem_type);
-				} else if (init_llvm_type[0] == 'd' && elem_type[0] == 'i') {
-					buffer_append_fmt(ctx, "  %s = fptosi %s %s to %s\n", converted, init_llvm_type, init_val_buf,
-					                  elem_type);
-				} else {
-					converted = init_val_buf;
-				}
+			if (init_llvm_type[0] == 'i' && elem_type[0] == 'd') {
+				buffer_append_fmt(ctx, "  %s = sitofp %s %s to %s\n", converted, init_llvm_type, init_val_buf,
+				                  elem_type);
+			} else if (init_llvm_type[0] == 'd' && elem_type[0] == 'i') {
+				buffer_append_fmt(ctx, "  %s = fptosi %s %s to %s\n", converted, init_llvm_type, init_val_buf,
+				                  elem_type);
 			} else {
 				converted = init_val_buf;
 			}
@@ -3818,17 +3991,14 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, StaticDecl *alloc) {
 			buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", elem_type, init_val_buf, elem_type, elem_ptr);
 		}
 
-		/* Increment loop counter */
 		char *next_counter = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", next_counter, loop_counter);
 		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", next_counter, loop_ctr_alloca);
 		buffer_append_fmt(ctx, "  br label %%%s\n", loop_cond_label);
 
-		/* Loop end */
 		buffer_append_fmt(ctx, "%s:\n", loop_end_label);
 	}
 
-	/* If we did any field initialization, update the count field */
 	if (alloc->field_count > 1) {
 		char *final_count_gep = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", final_count_gep,
@@ -4082,15 +4252,22 @@ static void codegen_sys_version(CodegenContext *ctx, SysDecl *sys, const char *a
 					const char *elem_type = llvm_type_from_arche(field_base_type_name(arch->fields[f]->type));
 
 					if (arch->fields[f]->kind == FIELD_COLUMN) {
-						/* Load the column pointer from the struct */
-						char *field_gep = gen_value_name(ctx);
-						buffer_append_fmt(ctx,
-						                  "  %s = getelementptr %%struct.%s, %%struct.%s* %%archetype, i32 0, i32 %d\n",
-						                  field_gep, arch_name, arch_name, f);
-
+						/* Column pointer: for static use 3-index GEP to [0], for dynamic load pointer */
+						int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
 						char *field_ptr = gen_value_name(ctx);
-						buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", field_ptr, elem_type, elem_type,
-						                  field_gep);
+						if (is_static) {
+							buffer_append_fmt(
+							    ctx,
+							    "  %s = getelementptr %%struct.%s, %%struct.%s* %%archetype, i32 0, i32 %d, i64 0\n",
+							    field_ptr, arch_name, arch_name, f);
+						} else {
+							char *field_gep = gen_value_name(ctx);
+							buffer_append_fmt(
+							    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %%archetype, i32 0, i32 %d\n",
+							    field_gep, arch_name, arch_name, f);
+							buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", field_ptr, elem_type, elem_type,
+							                  field_gep);
+						}
 
 						/* Add to scope as a column pointer (type 4) */
 						add_value(ctx, param_name, field_ptr, 4); /* type 4 = column pointer */
@@ -4231,15 +4408,6 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(
 	    ctx,
 	    "@.arche_oob = private unnamed_addr constant [28 x i8] c\"arche: index out of bounds\\0A\\00\", align 1\n\n");
-
-	/* Global variables for allocated archetypes */
-	for (int i = 0; i < ctx->prog->decl_count; i++) {
-		if (ctx->prog->decls[i]->kind == DECL_ARCHETYPE) {
-			ArchetypeDecl *arch = ctx->prog->decls[i]->data.archetype;
-			buffer_append_fmt(ctx, "@archetype_%s = global %%struct.%s* null\n", arch->name, arch->name);
-		}
-	}
-	buffer_append(ctx, "\n");
 
 	/* Generate code for all declarations (this will populate globals_buffer with string constants) */
 	int has_init_proc = 0;
