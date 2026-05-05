@@ -374,7 +374,7 @@ static ArchetypeDecl *find_archetype_decl(CodegenContext *ctx, const char *name)
 	return NULL;
 }
 
-/* Return static capacity for arch (from static decl), or 0 if dynamically allocated */
+/* Return compile-time capacity for arch from static declaration, or 0 if not declared static */
 static int get_arch_static_capacity(CodegenContext *ctx, const char *arch_name) {
 	for (int i = 0; i < ctx->prog->decl_count; i++) {
 		if (ctx->prog->decls[i]->kind == DECL_STATIC) {
@@ -1993,13 +1993,74 @@ static void emit_bounds_check(CodegenContext *ctx, const char *arch_name, const 
 
 /* ========== WHOLE-COLUMN LOOP HELPER ========== */
 
+/* Walk expression tree and pre-compute column base pointers to hoist them out of loop */
+static void hoist_column_geps(CodegenContext *ctx, Expression *expr, const char *struct_ptr_val) {
+	if (!expr) return;
+
+	switch (expr->type) {
+	case EXPR_FIELD: {
+		Expression *base = expr->data.field.base;
+		if (base && base->type == EXPR_NAME) {
+			const char *arch_name = base->data.name.name;
+			const char *field_name = expr->data.field.field_name;
+
+			/* Find field index */
+			ArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+			if (arch) {
+				int field_idx = -1;
+				for (int i = 0; i < arch->field_count; i++) {
+					if (strcmp(arch->fields[i]->name, field_name) == 0) {
+						field_idx = i;
+						break;
+					}
+				}
+
+				if (field_idx >= 0 && arch->fields[field_idx]->kind == FIELD_COLUMN) {
+					/* Generate GEP for column base once (loop-invariant) */
+					const char *llvm_type = llvm_type_from_arche(field_base_type_name(arch->fields[field_idx]->type));
+					int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+
+					char *col_ptr = gen_value_name(ctx);
+					if (is_static) {
+						buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n",
+										col_ptr, arch_name, arch_name, struct_ptr_val, field_idx);
+					} else {
+						char *field_gep = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+										field_gep, arch_name, arch_name, struct_ptr_val, field_idx);
+						buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", col_ptr, llvm_type, llvm_type, field_gep);
+					}
+				}
+			}
+		}
+		if (base) hoist_column_geps(ctx, base, struct_ptr_val);
+		break;
+	}
+	case EXPR_BINARY:
+		hoist_column_geps(ctx, expr->data.binary.left, struct_ptr_val);
+		hoist_column_geps(ctx, expr->data.binary.right, struct_ptr_val);
+		break;
+	case EXPR_UNARY:
+		hoist_column_geps(ctx, expr->data.unary.operand, struct_ptr_val);
+		break;
+	default:
+		break;
+	}
+}
+
 static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* SSA reg: scalar* column data */
                                    const char *count,                        /* SSA reg: i64 element count */
                                    const char *scalar_type,                  /* "double" or "i32" */
                                    const char *arche_type,                   /* "float" or "int" */
                                    Expression *rhs,                          /* RHS expression */
-                                   int op) /* OP_NONE = store, others = load+op+store */
+                                   int op,                                   /* OP_NONE = store, others = load+op+store */
+                                   const char *struct_ptr_val)               /* struct pointer for hoisting */
 {
+	/* Hoist column base GEPs before loop to avoid recalculating them */
+	if (struct_ptr_val) {
+		hoist_column_geps(ctx, rhs, struct_ptr_val);
+	}
+
 	/* Align count down to 4-element boundary for vector loop */
 	char *count_aligned = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = and i64 %s, -4\n", count_aligned, count);
@@ -2672,7 +2733,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 					buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, count_gep);
 
 					emit_whole_column_loop(ctx, val->llvm_name, count, scalar_type, arche_type,
-					                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op);
+					                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op, "%archetype");
 				}
 			}
 		} else if (stmt->data.assign_stmt.target->type == EXPR_FIELD) {
@@ -2748,7 +2809,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 							/* Emit whole-column loop */
 							const char *scalar_type = llvm_type_from_arche(field_base_type_name(fdecl->type));
 							emit_whole_column_loop(ctx, col_ptr, count, scalar_type, field_base_type_name(fdecl->type),
-							                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op);
+							                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op, struct_ptr_val);
 						} else {
 							/* Tuple field: emit loop for each component */
 							FieldDecl **tuple_components = NULL;
@@ -2848,7 +2909,7 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 										temp_rhs.resolved_type = comp->type->data.name;
 
 										emit_whole_column_loop(ctx, col_ptr, count, scalar_type, comp->type->data.name,
-										                       &temp_rhs, stmt->data.assign_stmt.op);
+										                       &temp_rhs, stmt->data.assign_stmt.op, struct_ptr_val);
 									} else if (rhs_expr->type == EXPR_FIELD) {
 										/* Check if RHS is tuple field reference - match components by position */
 										const char *rhs_base = rhs_expr->data.field.field_name;
@@ -2881,13 +2942,13 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 
 											emit_whole_column_loop(ctx, col_ptr, count, scalar_type,
 											                       comp->type->data.name, &temp_rhs,
-											                       stmt->data.assign_stmt.op);
+											                       stmt->data.assign_stmt.op, struct_ptr_val);
 										}
 										if (rhs_tuple_components)
 											free(rhs_tuple_components);
 									} else {
 										emit_whole_column_loop(ctx, col_ptr, count, scalar_type, comp->type->data.name,
-										                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op);
+										                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op, struct_ptr_val);
 									}
 								}
 							}
