@@ -885,6 +885,10 @@ static int decl_start_line(Decl *decl) {
 		return decl->data.sys->loc.line;
 	case DECL_FUNC:
 		return decl->data.func->loc.line;
+	case DECL_CONST:
+		return decl->loc.line;
+	case DECL_STATIC:
+		return decl->loc.line;
 	}
 	return 1;
 }
@@ -1043,13 +1047,15 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				fprintf(out, "}");
 			}
 			fprintf(out, ";\n\n");
+			ctx.last_line = decl->loc.line;
 			break;
 		}
 		case DECL_CONST: {
 			ConstDecl *c = decl->data.constant;
 			fprintf(out, "%s :: ", c->name);
 			format_expression(out, c->value);
-			fprintf(out, "\n\n");
+			fprintf(out, "\n");
+			ctx.last_line = decl->loc.line;
 			break;
 		}
 		}
