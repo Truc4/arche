@@ -1,0 +1,14 @@
+// RUN: %arche -o %t %s && ! %t
+
+arche Player {
+  pos: float,
+}
+
+static Player(10);
+
+proc main() {
+  let h1 := insert(Player, 1.0);
+  delete(Player, h1);
+  let h2 := insert(Player, 2.0);
+  delete(Player, h1);
+}

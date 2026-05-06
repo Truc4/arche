@@ -904,6 +904,19 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 		arch->field_count = expanded_count;
 	}
 
+	/* Validate handle types reference valid archetypes */
+	for (int i = 0; i < arch->field_count; i++) {
+		if (arch->fields[i]->type->kind == TYPE_HANDLE) {
+			const char *target_arch = arch->fields[i]->type->data.handle.archetype_name;
+			ArchetypeInfo *target = find_archetype(ctx, target_arch);
+			if (!target) {
+				fprintf(stderr, "Error: unknown archetype '%s' in handle type for field '%s'\n",
+					target_arch, arch->fields[i]->name);
+				ctx->error_count++;
+			}
+		}
+	}
+
 	/* Register alias */
 	AliasEntry *entry = malloc(sizeof(AliasEntry));
 	entry->name = malloc(strlen(arch->name) + 1);
@@ -1028,6 +1041,18 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 			sys_archetype = archetype_any_alias(ctx, ctx->archetypes[a]);
 			arch_info = ctx->archetypes[a];
 			break;
+		}
+	}
+
+	/* Check that no parameter is a handle column */
+	if (arch_info) {
+		for (int p = 0; p < sys->param_count; p++) {
+			FieldInfo *field = find_field(arch_info, sys->params[p]->name);
+			if (field && field->type && field->type->kind == TYPE_HANDLE) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "handle column '%s' cannot be sys parameter", sys->params[p]->name);
+				error(ctx, msg);
+			}
 		}
 	}
 
