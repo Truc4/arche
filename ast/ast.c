@@ -450,6 +450,9 @@ static void format_type(FILE *out, TypeRef *type) {
 		}
 		fprintf(out, ")");
 		break;
+	case TYPE_HANDLE:
+		fprintf(out, "handle(%s)", type->data.handle.archetype_name);
+		break;
 	}
 	format_type_depth--;
 }

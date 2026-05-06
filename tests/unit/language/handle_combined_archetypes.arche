@@ -9,7 +9,10 @@ arche AliveList {
 }
 
 static Player(10);
+
 static AliveList(10);
+
+
 
 proc main() {
   let p1 := insert(Player, 1.0);
@@ -18,3 +21,4 @@ proc main() {
   insert(AliveList, p2);
   print("alive list created");
 }
+

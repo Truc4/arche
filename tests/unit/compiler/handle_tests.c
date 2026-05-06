@@ -34,7 +34,7 @@ void test_fail_msg(const char *reason) {
 		return;                                                                                                        \
 	}
 
-#define ASSERT_FALSE(cond, msg)                                                                                       \
+#define ASSERT_FALSE(cond, msg)                                                                                        \
 	if ((cond)) {                                                                                                      \
 		test_fail_msg(msg);                                                                                            \
 		return;                                                                                                        \

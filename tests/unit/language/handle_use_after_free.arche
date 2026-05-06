@@ -11,3 +11,4 @@ proc main() {
   delete(Player, h);
   delete(Player, h);
 }
+

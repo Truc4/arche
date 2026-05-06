@@ -12,3 +12,4 @@ proc main() {
   let h2 := insert(Player, 2.0);
   delete(Player, h1);
 }
+

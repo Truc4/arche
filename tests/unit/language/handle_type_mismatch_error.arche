@@ -15,3 +15,4 @@ proc main() {
   let p := insert(Player, 1.0);
   delete(Enemy, p);
 }
+

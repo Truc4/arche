@@ -1153,7 +1153,8 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 				/* Now emit the call with all arguments */
 				char *handle_tmp = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = call i64 @arche_insert_%s(%%struct.%s* %s", handle_tmp, arch_name, arch_name, arch_buf);
+				buffer_append_fmt(ctx, "  %s = call i64 @arche_insert_%s(%%struct.%s* %s", handle_tmp, arch_name,
+				                  arch_name, arch_buf);
 
 				field_idx = 0;
 				for (int i = 0; i < arg_count; i++) {
@@ -1203,7 +1204,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					if (handle_vi->handle_archetype && arch_name &&
 					    strcmp(handle_vi->handle_archetype, arch_name) != 0) {
 						fprintf(stderr, "Error: type mismatch in delete: handle for %s cannot delete %s\n",
-							handle_vi->handle_archetype, arch_name);
+						        handle_vi->handle_archetype, arch_name);
 						strcpy(result_buf, "0");
 						break;
 					}
@@ -3806,8 +3807,9 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	buffer_append(ctx, "done:\n");
 	/* Load gen_counters[final_slot] */
 	if (static_cap > 0) {
-		buffer_append_fmt(ctx, "  %%gc_elem = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %%final_slot\n",
-		                  arch->name, arch->name, gc_idx);
+		buffer_append_fmt(
+		    ctx, "  %%gc_elem = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %%final_slot\n",
+		    arch->name, arch->name, gc_idx);
 	} else {
 		buffer_append_fmt(ctx, "  %%gc_ptr_field = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
 		                  arch->name, arch->name, gc_idx);
@@ -3824,7 +3826,8 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	buffer_append(ctx, "}\n\n");
 
 	/* Emit delete helper function */
-	buffer_append_fmt(ctx, "define void @arche_delete_%s(%%struct.%s* %%arch, i64 %%handle) {\n", arch->name, arch->name);
+	buffer_append_fmt(ctx, "define void @arche_delete_%s(%%struct.%s* %%arch, i64 %%handle) {\n", arch->name,
+	                  arch->name);
 	buffer_append(ctx, "entry:\n");
 
 	/* Unpack slot and generation from handle */
@@ -3835,7 +3838,8 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 
 	/* Load gen_counters[slot] */
 	if (static_cap > 0) {
-		buffer_append_fmt(ctx, "  %%gc_elem = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %%slot\n",
+		buffer_append_fmt(ctx,
+		                  "  %%gc_elem = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %%slot\n",
 		                  arch->name, arch->name, gc_idx);
 	} else {
 		buffer_append_fmt(ctx, "  %%gc_ptr_field = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",

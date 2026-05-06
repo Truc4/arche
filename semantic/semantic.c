@@ -910,8 +910,8 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 			const char *target_arch = arch->fields[i]->type->data.handle.archetype_name;
 			ArchetypeInfo *target = find_archetype(ctx, target_arch);
 			if (!target) {
-				fprintf(stderr, "Error: unknown archetype '%s' in handle type for field '%s'\n",
-					target_arch, arch->fields[i]->name);
+				fprintf(stderr, "Error: unknown archetype '%s' in handle type for field '%s'\n", target_arch,
+				        arch->fields[i]->name);
 				ctx->error_count++;
 			}
 		}
