@@ -78,6 +78,7 @@ typedef enum {
 	TYPE_ARRAY,        /* nested / jagged array */
 	TYPE_SHAPED_ARRAY, /* dense ranked array */
 	TYPE_TUPLE,        /* tuple: (x: float, y: float) */
+	TYPE_HANDLE,       /* handle(ArchetypeName) */
 } TypeKind;
 
 struct TypeRef {
@@ -100,6 +101,10 @@ struct TypeRef {
 			TypeRef **field_types;
 			int field_count;
 		} tuple;
+
+		struct {
+			char *archetype_name;
+		} handle;
 	} data;
 };
 

@@ -136,9 +136,33 @@ static TypeRef *parse_type(Parser *parser) {
 	char *name = token_text(parser->current);
 	advance(parser);
 
-	TypeRef *type = type_name_create(name);
-	type->loc.line = parser->previous.line;
-	type->loc.column = parser->previous.column;
+	TypeRef *type = NULL;
+	SourceLoc start_loc;
+	start_loc.line = parser->previous.line;
+	start_loc.column = parser->previous.column;
+
+	/* Check for handle(ArchetypeName) */
+	if (strcmp(name, "handle") == 0 && check(parser, TOK_LPAREN)) {
+		advance(parser); /* consume ( */
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected archetype name after 'handle('");
+			return NULL;
+		}
+		char *arch_name = token_text(parser->current);
+		advance(parser);
+		if (!match(parser, TOK_RPAREN)) {
+			error(parser, "Expected ')' after archetype name in handle type");
+			return NULL;
+		}
+		type = malloc(sizeof(TypeRef));
+		type->kind = TYPE_HANDLE;
+		type->data.handle.archetype_name = arch_name;
+		type->loc = start_loc;
+		return type;
+	}
+
+	type = type_name_create(name);
+	type->loc = start_loc;
 
 	if (check(parser, TOK_LBRACKET)) {
 		advance(parser); /* consume [ */

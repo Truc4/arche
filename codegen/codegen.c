@@ -13,6 +13,7 @@ typedef struct {
 	char *arch_name;        /* for type==3 or 4, nullable otherwise */
 	int string_len;         /* for type==2 (string), the compile-time length (-1 if unknown) */
 	const char *field_type; /* for type==4 (column ptr), the Arche type name (e.g. "float") */
+	char *handle_archetype; /* if field_type=="handle", the target archetype name */
 	int bit_width;          /* 32 (default) or 64 for SSA values */
 } ValueInfo;
 
@@ -160,6 +161,8 @@ static const char *llvm_type_from_arche(const char *arche_type) {
 		return "i8";
 	if (strcmp(arche_type, "void") == 0)
 		return "void";
+	if (strcmp(arche_type, "handle") == 0)
+		return "i64";
 
 	/* For custom types (Vec3, archetypes, etc.), use opaque structures */
 	static char buf[256];
@@ -183,6 +186,8 @@ static const char *elem_llvm_type(CodegenContext *ctx, const char *arche_type) {
 static const char *field_base_type_name(TypeRef *type) {
 	while (type->kind == TYPE_SHAPED_ARRAY)
 		type = type->data.shaped_array.element_type;
+	if (type->kind == TYPE_HANDLE)
+		return "handle";
 	return type->data.name;
 }
 
@@ -577,13 +582,16 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				}
 				strcpy(result_buf, elem);
 			} else if (val->type == 1) {
-				/* Type-1: regular allocated value (i32, float, etc) - load from pointer */
+				/* Type-1: regular allocated value (i32, float, handle, etc) - load from pointer */
 				char *loaded = gen_value_name(ctx);
-				const char *llvm_type =
-				    val->field_type
-				        ? (strcmp(val->field_type, "double") == 0 || strcmp(val->field_type, "float") == 0 ? "double"
-				                                                                                           : "i32")
-				        : "i32";
+				const char *llvm_type = "i32";
+				if (val->field_type) {
+					if (strcmp(val->field_type, "double") == 0 || strcmp(val->field_type, "float") == 0) {
+						llvm_type = "double";
+					} else if (strcmp(val->field_type, "handle") == 0) {
+						llvm_type = "i64";
+					}
+				}
 				buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", loaded, llvm_type, llvm_type, val->llvm_name);
 				strcpy(result_buf, loaded);
 			} else {
@@ -1128,34 +1136,47 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			}
 
 			if (arch_name && arch) {
-				/* Emit call to typed insert helper */
-				buffer_append_fmt(ctx, "  call void @arche_insert_%s(%%struct.%s* %s", arch_name, arch_name, arch_buf);
-
-				/* Evaluate and emit field values with types */
+				/* Evaluate all field arguments first */
+				char field_bufs[32][256];
 				int field_idx = 0;
-				for (int i = 1; i < expr->data.call.arg_count; i++) {
-					/* Find corresponding FIELD_COLUMN field */
+				int arg_count = 0;
+				for (int i = 1; i < expr->data.call.arg_count && arg_count < 32; i++) {
 					while (field_idx < arch->field_count && arch->fields[field_idx]->kind != FIELD_COLUMN) {
 						field_idx++;
 					}
 					if (field_idx < arch->field_count) {
-						char field_buf[256];
-						codegen_expression(ctx, expr->data.call.args[i], field_buf);
+						codegen_expression(ctx, expr->data.call.args[i], field_bufs[arg_count]);
+						arg_count++;
+						field_idx++;
+					}
+				}
+
+				/* Now emit the call with all arguments */
+				char *handle_tmp = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = call i64 @arche_insert_%s(%%struct.%s* %s", handle_tmp, arch_name,
+				                  arch_name, arch_buf);
+
+				field_idx = 0;
+				for (int i = 0; i < arg_count; i++) {
+					while (field_idx < arch->field_count && arch->fields[field_idx]->kind != FIELD_COLUMN) {
+						field_idx++;
+					}
+					if (field_idx < arch->field_count) {
 						const char *field_type =
 						    llvm_type_from_arche(field_base_type_name(arch->fields[field_idx]->type));
-						buffer_append_fmt(ctx, ", %s %s", field_type, field_buf);
+						buffer_append_fmt(ctx, ", %s %s", field_type, field_bufs[i]);
 						field_idx++;
 					}
 				}
 				buffer_append(ctx, ")\n");
-				strcpy(result_buf, "0");
+				strcpy(result_buf, handle_tmp);
 			}
 			break;
 		}
 
 		/* Special handling for delete builtin */
 		if (func_name && strcmp(func_name, "delete") == 0 && expr->data.call.arg_count >= 2) {
-			/* args[0] is archetype variable, args[1] is index */
+			/* args[0] is archetype variable, args[1] is handle */
 			char arch_buf[256];
 			codegen_expression(ctx, expr->data.call.args[0], arch_buf);
 
@@ -1172,6 +1193,21 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				} else if (find_archetype_decl(ctx, name)) {
 					/* Direct archetype name */
 					arch_name = name;
+				}
+			}
+
+			/* Check handle type matches delete archetype */
+			if (expr->data.call.args[1]->type == EXPR_NAME) {
+				const char *handle_var = expr->data.call.args[1]->data.name.name;
+				ValueInfo *handle_vi = find_value(ctx, handle_var);
+				if (handle_vi && handle_vi->field_type && strcmp(handle_vi->field_type, "handle") == 0) {
+					if (handle_vi->handle_archetype && arch_name &&
+					    strcmp(handle_vi->handle_archetype, arch_name) != 0) {
+						fprintf(stderr, "Error: type mismatch in delete: handle for %s cannot delete %s\n",
+						        handle_vi->handle_archetype, arch_name);
+						strcpy(result_buf, "0");
+						break;
+					}
 				}
 			}
 
@@ -1622,9 +1658,9 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			break;
 		}
 
-		/* Struct layout: [pointers...][count][capacity][free_list*][free_count] */
-		/* Calculate struct header size: (field_count pointers) * 8 + metadata (4*8) = (field_count+4)*8 */
-		int struct_sz_bytes = (arch->field_count + 4) * 8;
+		/* Struct layout: [pointers...][count][capacity][free_list*][free_count][gen_counters*] */
+		/* Calculate struct header size: (field_count pointers + 5 metadata) * 8 = (field_count+5)*8 */
+		int struct_sz_bytes = (arch->field_count + 5) * 8;
 
 		/* Calculate byte size per element across all columns */
 		int bytes_per_row = 0;
@@ -1632,11 +1668,12 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			if (arch->fields[i]->kind == FIELD_COLUMN) {
 				const char *elem_type = llvm_type_from_arche(field_base_type_name(arch->fields[i]->type));
 				int n = field_total_elements(arch->fields[i]->type);
-				bytes_per_row += ((elem_type[0] == 'd') ? 8 : 4) * n;
+				int elem_sz = (elem_type[0] == 'd' || strcmp(elem_type, "i64") == 0) ? 8 : 4;
+				bytes_per_row += elem_sz * n;
 			}
 		}
-		/* Add 8 bytes per row for free_list entry (i64) */
-		int total_bytes_per_row = bytes_per_row + 8;
+		/* Add 8 bytes per row for free_list entry (i64), 4 for gen_counters (i32) */
+		int total_bytes_per_row = bytes_per_row + 12;
 
 		/* Total size = struct_header + (count * bytes_per_row) + (count * 8 for free_list) */
 		/* = struct_sz_bytes + count * total_bytes_per_row */
@@ -1645,9 +1682,9 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", data_bytes, count_buf, total_bytes_per_row);
 		buffer_append_fmt(ctx, "  %s = add i64 %d, %s\n", total_bytes, struct_sz_bytes, data_bytes);
 
-		/* Single malloc */
+		/* Single calloc (zeros memory for gen_counters) */
 		char *raw_ptr = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = call i8* @malloc(i64 %s)\n", raw_ptr, total_bytes);
+		buffer_append_fmt(ctx, "  %s = call i8* @calloc(i64 1, i64 %s)\n", raw_ptr, total_bytes);
 
 		/* Bitcast to struct pointer */
 		char *struct_ptr = gen_value_name(ctx);
@@ -1718,6 +1755,24 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		buffer_append_fmt(ctx, "  %s = bitcast i8* %s to i64*\n", fl_ptr, fl_add_header);
 
 		buffer_append_fmt(ctx, "  store i64* %s, i64** %s\n", fl_ptr, fl_gep);
+
+		/* Set gen_counters pointer: it comes after free_list */
+		char *gc_gep = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gc_gep, arch_name,
+		                  arch_name, struct_ptr, arch->field_count + 4);
+
+		/* gen_counters offset = struct_header + (all columns data) + (free_list data) */
+		char *gc_offset = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", gc_offset, count_buf, bytes_per_row + 8);
+		char *gc_data = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %s\n", gc_data, raw_ptr, gc_offset);
+		char *gc_add_header = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %d\n", gc_add_header, gc_data, struct_sz_bytes);
+
+		char *gc_ptr = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = bitcast i8* %s to i32*\n", gc_ptr, gc_add_header);
+
+		buffer_append_fmt(ctx, "  store i32* %s, i32** %s\n", gc_ptr, gc_gep);
 
 		/* Handle field initialization: for each named field, fill with the init value */
 		for (int init_idx = 1; init_idx < expr->data.alloc.field_count; init_idx++) {
@@ -2378,8 +2433,16 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 							vi->type = 1;
 							vi->arch_name = NULL;
 							vi->string_len = -1;
-							vi->field_type = (return_type[0] == 'd') ? "float" : "int";
-							vi->bit_width = (return_type[0] == 'd') ? 64 : 32;
+							if (return_type[0] == 'd') {
+								vi->field_type = "float";
+								vi->bit_width = 64;
+							} else if (strcmp(return_type, "i64") == 0) {
+								vi->field_type = "handle";
+								vi->bit_width = 64;
+							} else {
+								vi->field_type = "int";
+								vi->bit_width = 32;
+							}
 
 							if (ctx->scope_count > 0) {
 								ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
@@ -2577,17 +2640,46 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				}
 			}
 		} else {
-			/* For scalars (int/float), allocate and store based on type */
+			/* For scalars (int/float/handle), allocate and store based on type */
 			const char *alloc_type = "i32";
 			const char *store_type = "i32";
+			int bit_width = 32;
 			const char *resolved_type = NULL;
 
+			/* Check if RHS is an insert call (returns handle/i64) */
+			int is_insert_call = 0;
+			const char *insert_archetype = NULL;
+			if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->type == EXPR_CALL) {
+				const char *func_name = NULL;
+				if (stmt->data.let_stmt.value->data.call.callee &&
+				    stmt->data.let_stmt.value->data.call.callee->type == EXPR_NAME) {
+					func_name = stmt->data.let_stmt.value->data.call.callee->data.name.name;
+				}
+				if (func_name && strcmp(func_name, "insert") == 0) {
+					is_insert_call = 1;
+					alloc_type = "i64";
+					store_type = "i64";
+					bit_width = 64;
+					resolved_type = "handle";
+					/* Extract archetype from insert's first argument */
+					if (stmt->data.let_stmt.value->data.call.arg_count > 0 &&
+					    stmt->data.let_stmt.value->data.call.args[0]->type == EXPR_NAME) {
+						insert_archetype = stmt->data.let_stmt.value->data.call.args[0]->data.name.name;
+					}
+				}
+			}
+
 			/* Check the resolved type of the value expression */
-			if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->resolved_type) {
+			if (!is_insert_call && stmt->data.let_stmt.value && stmt->data.let_stmt.value->resolved_type) {
 				resolved_type = stmt->data.let_stmt.value->resolved_type;
 				if (strcmp(resolved_type, "double") == 0 || strcmp(resolved_type, "float") == 0) {
 					alloc_type = "double";
 					store_type = "double";
+					bit_width = 64;
+				} else if (strcmp(resolved_type, "handle") == 0) {
+					alloc_type = "i64";
+					store_type = "i64";
+					bit_width = 64;
 				}
 			}
 
@@ -2604,7 +2696,12 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			vi->arch_name = NULL;
 			vi->string_len = -1;
 			vi->field_type = resolved_type ? resolved_type : "int";
-			vi->bit_width = 32;
+			vi->handle_archetype = NULL;
+			if (insert_archetype) {
+				vi->handle_archetype = malloc(strlen(insert_archetype) + 1);
+				strcpy(vi->handle_archetype, insert_archetype);
+			}
+			vi->bit_width = bit_width;
 
 			if (ctx->scope_count > 0) {
 				ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
@@ -2722,6 +2819,10 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			if (val && val->type == 4) {
 				/* Column parameter: emit whole-column loop */
 				const char *arche_type = val->field_type ? val->field_type : "float";
+				/* Skip handle columns — cannot use in sys operations */
+				if (strcmp(arche_type, "handle") == 0) {
+					break;
+				}
 				const char *scalar_type = llvm_type_from_arche(arche_type);
 
 				/* Get count from archetype struct (stored in %archetype for sys) */
@@ -3571,20 +3672,22 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	buffer_append(ctx, "  i64,\n");
 
 	if (static_cap > 0) {
-		/* Static: inline free_list array + free_count; no capacity field */
+		/* Static: inline free_list array + free_count + gen_counters; no capacity field */
 		buffer_append_fmt(ctx, "  [%d x i64],\n", static_cap);
-		buffer_append(ctx, "  i64\n");
+		buffer_append_fmt(ctx, "  i64,\n");
+		buffer_append_fmt(ctx, "  [%d x i32]\n", static_cap);
 	} else {
-		/* Dynamic: capacity + free_list pointer + free_count */
+		/* Dynamic: capacity + free_list pointer + free_count + gen_counters pointer */
 		buffer_append(ctx, "  i64,\n");
 		buffer_append(ctx, "  i64*,\n");
-		buffer_append(ctx, "  i64\n");
+		buffer_append(ctx, "  i64,\n");
+		buffer_append(ctx, "  i32*\n");
 	}
 
 	buffer_append(ctx, "}\n\n");
 
 	/* Emit insert helper function */
-	buffer_append_fmt(ctx, "define void @arche_insert_%s(%%struct.%s* %%arch", arch->name, arch->name);
+	buffer_append_fmt(ctx, "define i64 @arche_insert_%s(%%struct.%s* %%arch", arch->name, arch->name);
 	for (int i = 0; i < arch->field_count; i++) {
 		if (arch->fields[i]->kind == FIELD_COLUMN) {
 			const char *base_type = llvm_type_from_arche(field_base_type_name(arch->fields[i]->type));
@@ -3601,6 +3704,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	int count_idx = arch->field_count;
 	int fl_idx = static_cap > 0 ? arch->field_count + 1 : arch->field_count + 2;
 	int fc_idx = static_cap > 0 ? arch->field_count + 2 : arch->field_count + 3;
+	int gc_idx = static_cap > 0 ? arch->field_count + 3 : arch->field_count + 4;
 	int cap_idx = arch->field_count + 1; /* dynamic only */
 
 	buffer_append_fmt(ctx, "  %%fc_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", arch->name,
@@ -3701,19 +3805,69 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 	buffer_append(ctx, "  br label %done\n\n");
 
 	buffer_append(ctx, "done:\n");
-	buffer_append(ctx, "  ret void\n");
+	/* Load gen_counters[final_slot] */
+	if (static_cap > 0) {
+		buffer_append_fmt(
+		    ctx, "  %%gc_elem = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %%final_slot\n",
+		    arch->name, arch->name, gc_idx);
+	} else {
+		buffer_append_fmt(ctx, "  %%gc_ptr_field = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
+		                  arch->name, arch->name, gc_idx);
+		buffer_append(ctx, "  %gc_arr = load i32*, i32** %gc_ptr_field\n");
+		buffer_append(ctx, "  %gc_elem = getelementptr i32, i32* %gc_arr, i64 %final_slot\n");
+	}
+	buffer_append(ctx, "  %gen_i32 = load i32, i32* %gc_elem\n");
+	buffer_append(ctx, "  %gen_i64 = zext i32 %gen_i32 to i64\n");
+	buffer_append(ctx, "  %gen_shifted = shl i64 %gen_i64, 32\n");
+	buffer_append(ctx, "  %slot_i32 = trunc i64 %final_slot to i32\n");
+	buffer_append(ctx, "  %slot_i64 = zext i32 %slot_i32 to i64\n");
+	buffer_append(ctx, "  %handle = or i64 %slot_i64, %gen_shifted\n");
+	buffer_append(ctx, "  ret i64 %handle\n");
 	buffer_append(ctx, "}\n\n");
 
 	/* Emit delete helper function */
-	buffer_append_fmt(ctx, "define void @arche_delete_%s(%%struct.%s* %%arch, i64 %%idx) {\n", arch->name, arch->name);
+	buffer_append_fmt(ctx, "define void @arche_delete_%s(%%struct.%s* %%arch, i64 %%handle) {\n", arch->name,
+	                  arch->name);
 	buffer_append(ctx, "entry:\n");
+
+	/* Unpack slot and generation from handle */
+	buffer_append(ctx, "  %slot_i32 = trunc i64 %handle to i32\n");
+	buffer_append(ctx, "  %slot = zext i32 %slot_i32 to i64\n");
+	buffer_append(ctx, "  %hgen_raw = lshr i64 %handle, 32\n");
+	buffer_append(ctx, "  %hgen = trunc i64 %hgen_raw to i32\n");
+
+	/* Load gen_counters[slot] */
+	if (static_cap > 0) {
+		buffer_append_fmt(ctx,
+		                  "  %%gc_elem = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %%slot\n",
+		                  arch->name, arch->name, gc_idx);
+	} else {
+		buffer_append_fmt(ctx, "  %%gc_ptr_field = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
+		                  arch->name, arch->name, gc_idx);
+		buffer_append(ctx, "  %gc_arr = load i32*, i32** %gc_ptr_field\n");
+		buffer_append(ctx, "  %gc_elem = getelementptr i32, i32* %gc_arr, i64 %slot\n");
+	}
+	buffer_append(ctx, "  %stored_gen = load i32, i32* %gc_elem\n");
+
+	/* Validate generation */
+	buffer_append(ctx, "  %gen_ok = icmp eq i32 %hgen, %stored_gen\n");
+	buffer_append(ctx, "  br i1 %gen_ok, label %valid, label %stale\n\n");
+
+	buffer_append(ctx, "stale:\n");
+	buffer_append(ctx, "  call void @abort()\n");
+	buffer_append(ctx, "  unreachable\n\n");
+
+	buffer_append(ctx, "valid:\n");
+	/* Increment generation */
+	buffer_append(ctx, "  %new_gen = add i32 %stored_gen, 1\n");
+	buffer_append(ctx, "  store i32 %new_gen, i32* %gc_elem\n");
 
 	/* Load free_count */
 	buffer_append_fmt(ctx, "  %%fc_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", arch->name,
 	                  arch->name, fc_idx);
 	buffer_append(ctx, "  %free_count = load i64, i64* %fc_ptr\n");
 
-	/* Push idx to free_list[free_count] */
+	/* Push slot to free_list[free_count] */
 	if (static_cap > 0) {
 		buffer_append_fmt(
 		    ctx, "  %%slot_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %%free_count\n",
@@ -3724,7 +3878,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, ArchetypeDecl *arch) {
 		buffer_append(ctx, "  %free_list = load i64*, i64** %fl_ptr\n");
 		buffer_append(ctx, "  %slot_ptr = getelementptr i64, i64* %free_list, i64 %free_count\n");
 	}
-	buffer_append(ctx, "  store i64 %idx, i64* %slot_ptr\n");
+	buffer_append(ctx, "  store i64 %slot, i64* %slot_ptr\n");
 
 	/* Increment free_count */
 	buffer_append(ctx, "  %new_fc = add i64 %free_count, 1\n");
@@ -4466,6 +4620,7 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 
 	/* External C library function declarations */
 	buffer_append(ctx, "declare i8* @malloc(i32)\n");
+	buffer_append(ctx, "declare i8* @calloc(i64, i64)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
 	buffer_append(ctx, "declare void @abort()\n\n");
 

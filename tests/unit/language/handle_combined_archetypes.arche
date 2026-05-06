@@ -1,0 +1,24 @@
+// RUN: %arche -o %t %s && %t | grep "alive"
+
+arche Player {
+  pos: float,
+}
+
+arche AliveList {
+  player_ref: handle(Player),
+}
+
+static Player(10);
+
+static AliveList(10);
+
+
+
+proc main() {
+  let p1 := insert(Player, 1.0);
+  let p2 := insert(Player, 2.0);
+  insert(AliveList, p1);
+  insert(AliveList, p2);
+  print("alive list created");
+}
+
