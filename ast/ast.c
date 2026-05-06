@@ -85,6 +85,13 @@ FuncDecl *func_decl_create(char *name, TypeRef *return_type) {
 	return func;
 }
 
+ConstDecl *const_decl_create(char *name, Expression *value) {
+	ConstDecl *constant = malloc(sizeof(ConstDecl));
+	constant->name = name;
+	constant->value = value;
+	return constant;
+}
+
 Parameter *parameter_create(char *name, TypeRef *type) {
 	Parameter *param = malloc(sizeof(Parameter));
 	param->name = name;
@@ -189,6 +196,18 @@ void decl_free(Decl *decl) {
 	case DECL_FUNC:
 		func_decl_free(decl->data.func);
 		break;
+	case DECL_STATIC:
+		/* StaticDecl has pointers that need freeing, handled elsewhere */
+		break;
+	case DECL_CONST: {
+		ConstDecl *c = decl->data.constant;
+		if (c) {
+			free(c->name);
+			expression_free(c->value);
+			free(c);
+		}
+		break;
+	}
 	}
 	free(decl);
 }
@@ -1023,6 +1042,13 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				}
 				fprintf(out, "}");
 			}
+			fprintf(out, ";\n\n");
+			break;
+		}
+		case DECL_CONST: {
+			ConstDecl *c = decl->data.constant;
+			fprintf(out, "%s :: ", c->name);
+			format_expression(out, c->value);
 			fprintf(out, ";\n\n");
 			break;
 		}

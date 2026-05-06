@@ -1,0 +1,11 @@
+// RUN: %arche -o %t %s && %t | grep "result: 42"
+
+PI :: 3.14159
+SCALE :: 2
+ANSWER :: 42
+
+proc main() {
+  let x := ANSWER;
+  print("result: ");
+  print(x);
+}

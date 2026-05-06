@@ -19,4 +19,7 @@ int semantic_field_exists(SemanticContext *ctx, const char *archetype_name, cons
 FieldKind semantic_field_kind(SemanticContext *ctx, const char *archetype_name, const char *field_name);
 const char *semantic_field_type_name(SemanticContext *ctx, const char *archetype_name, const char *field_name);
 
+/* Constant queries */
+const char *semantic_get_const_value(SemanticContext *ctx, const char *const_name);
+
 #endif /* SEMANTIC_H */
