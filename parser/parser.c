@@ -688,14 +688,17 @@ static Decl *parse_static_decl(Parser *parser) {
 		Token ident_tok = parser->current;
 		advance(parser);
 		if (check(parser, TOK_COLON)) {
-			advance(parser);  /* consume first : */
+			advance(parser); /* consume first : */
 			if (check(parser, TOK_COLON)) {
-				advance(parser);  /* consume second : */
+				advance(parser); /* consume second : */
 				Expression *val = parse_expression(parser);
 				Decl *d = decl_create(DECL_CONST);
 				d->loc.line = ident_tok.line;
 				d->loc.column = ident_tok.column;
 				d->data.constant = const_decl_create(name, val);
+				if (check(parser, TOK_SEMI)) {
+					advance(parser); /* consume optional semicolon */
+				}
 				return d;
 			}
 		}

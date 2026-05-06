@@ -1049,7 +1049,7 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			ConstDecl *c = decl->data.constant;
 			fprintf(out, "%s :: ", c->name);
 			format_expression(out, c->value);
-			fprintf(out, ";\n\n");
+			fprintf(out, "\n\n");
 			break;
 		}
 		}

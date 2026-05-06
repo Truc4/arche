@@ -1191,8 +1191,7 @@ SemanticContext *semantic_analyze(Program *prog) {
 			ctx->const_names[ctx->const_count] = c->name;
 			ctx->const_values[ctx->const_count] = c->value->data.literal.lexeme;
 			ctx->const_count++;
-dup_const:
-			;
+		dup_const:;
 		}
 	}
 

@@ -6,6 +6,8 @@ arche Player {
 
 static Player(10);
 
+
+
 proc main() {
   let h1 := insert(Player, 1.0);
   delete(Player, h1);
