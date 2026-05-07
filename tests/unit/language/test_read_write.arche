@@ -3,4 +3,3 @@
 proc main() {
   stdout_write("hello\n", 6);
 }
-

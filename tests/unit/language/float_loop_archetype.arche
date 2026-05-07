@@ -4,10 +4,10 @@ arche Nums {
   val: float,
 }
 
+
 static Nums(4, 4) {
   val: 0.0,
 };
-
 
 
 proc main() {
@@ -24,4 +24,3 @@ proc main() {
   }
   assert(total == 10.0, "float loop archetype failed\n");
 }
-

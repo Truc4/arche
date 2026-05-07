@@ -4,15 +4,14 @@ arche Body {
   pos: float,
 }
 
-static Body(5);
 
+static Body(5);
 
 
 sys dummy(pos) {
   printf("system_ran\n");
   pos = pos;
 }
-
 
 
 proc main() {
@@ -27,4 +26,3 @@ proc main() {
   assert(p0i == 10, "pos[0] != 1.0\n");
   assert(p1i == 20, "pos[1] != 2.0\n");
 }
-

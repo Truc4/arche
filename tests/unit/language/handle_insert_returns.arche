@@ -4,10 +4,11 @@ arche Player {
   pos: float,
 }
 
+
 static Player(10);
+
 
 proc main() {
   let h := insert(Player, 1.0);
   print("slot 0 handle created");
 }
-

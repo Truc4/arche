@@ -5,4 +5,3 @@ proc main() {
   x += 5;
   assert(x == 15, "compound assign failed\n");
 }
-

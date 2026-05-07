@@ -4,8 +4,8 @@ arche Matrix {
   data: float[10],
 }
 
-static Matrix(5);
 
+static Matrix(5);
 
 
 proc main() {
@@ -19,4 +19,3 @@ proc main() {
   let virow := vrow * 10.0;
   assert(virow == 15, "row[0] != 1.5\n");
 }
-

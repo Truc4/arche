@@ -4,11 +4,12 @@ arche Player {
   pos: float,
 }
 
+
 static Player(10);
+
 
 proc main() {
   let h := insert(Player, 1.0);
   delete(Player, h);
   delete(Player, h);
 }
-

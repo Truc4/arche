@@ -85,6 +85,13 @@ FuncDecl *func_decl_create(char *name, TypeRef *return_type) {
 	return func;
 }
 
+ConstDecl *const_decl_create(char *name, Expression *value) {
+	ConstDecl *constant = malloc(sizeof(ConstDecl));
+	constant->name = name;
+	constant->value = value;
+	return constant;
+}
+
 Parameter *parameter_create(char *name, TypeRef *type) {
 	Parameter *param = malloc(sizeof(Parameter));
 	param->name = name;
@@ -189,6 +196,18 @@ void decl_free(Decl *decl) {
 	case DECL_FUNC:
 		func_decl_free(decl->data.func);
 		break;
+	case DECL_STATIC:
+		/* StaticDecl has pointers that need freeing, handled elsewhere */
+		break;
+	case DECL_CONST: {
+		ConstDecl *c = decl->data.constant;
+		if (c) {
+			free(c->name);
+			expression_free(c->value);
+			free(c);
+		}
+		break;
+	}
 	}
 	free(decl);
 }
@@ -866,6 +885,10 @@ static int decl_start_line(Decl *decl) {
 		return decl->data.sys->loc.line;
 	case DECL_FUNC:
 		return decl->data.func->loc.line;
+	case DECL_CONST:
+		return decl->loc.line;
+	case DECL_STATIC:
+		return decl->loc.line;
 	}
 	return 1;
 }
@@ -924,7 +947,8 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 		switch (decl->kind) {
 		case DECL_WORLD: {
 			WorldDecl *world = decl->data.world;
-			fprintf(out, "world %s()\n\n", world->name);
+			fprintf(out, "world %s()\n", world->name);
+			ctx.last_line = decl->loc.line;
 			break;
 		}
 		case DECL_ARCHETYPE: {
@@ -936,7 +960,8 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				format_type(out, field->type);
 				fprintf(out, ",\n");
 			}
-			fprintf(out, "}\n\n");
+			fprintf(out, "}\n");
+			ctx.last_line = decl->loc.line + arch->field_count + 1;
 			break;
 		}
 		case DECL_PROC: {
@@ -957,8 +982,9 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				for (int j = 0; j < proc->statement_count; j++) {
 					format_statement(out, proc->statements[j], 1);
 				}
-				fprintf(out, "}\n\n");
+				fprintf(out, "}\n");
 			}
+			ctx.last_line = decl->loc.line;
 			break;
 		}
 		case DECL_SYS: {
@@ -973,7 +999,8 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			for (int j = 0; j < sys->statement_count; j++) {
 				format_statement(out, sys->statements[j], 1);
 			}
-			fprintf(out, "}\n\n");
+			fprintf(out, "}\n");
+			ctx.last_line = decl->loc.line;
 			break;
 		}
 		case DECL_FUNC: {
@@ -1000,7 +1027,7 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				}
 				fprintf(out, "}\n");
 			}
-			fprintf(out, "\n");
+			ctx.last_line = decl->loc.line;
 			break;
 		}
 		case DECL_STATIC: {
@@ -1023,7 +1050,16 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				}
 				fprintf(out, "}");
 			}
-			fprintf(out, ";\n\n");
+			fprintf(out, ";\n");
+			ctx.last_line = decl->loc.line;
+			break;
+		}
+		case DECL_CONST: {
+			ConstDecl *c = decl->data.constant;
+			fprintf(out, "%s :: ", c->name);
+			format_expression(out, c->value);
+			fprintf(out, "\n");
+			ctx.last_line = decl->loc.line;
 			break;
 		}
 		}

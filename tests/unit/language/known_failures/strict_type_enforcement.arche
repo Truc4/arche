@@ -7,4 +7,3 @@
 proc main() {
   let x := 3.14;
 }
-

@@ -2,11 +2,8 @@ arche Message {
   id: int,
   value: float,
 }
-
 static Message(100);
-
 proc main() {
   let msg := "allocations done\n";
   print(msg);
 }
-

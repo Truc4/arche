@@ -4,4 +4,3 @@ proc main() {
   let len := strlen("hello");
   printf("strlen returned: %d\n", len);
 }
-

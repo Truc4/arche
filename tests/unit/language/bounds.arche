@@ -4,8 +4,8 @@ arche Particle {
   id: int,
 }
 
-static Particle(5);
 
+static Particle(5);
 
 
 proc main() {
@@ -16,4 +16,3 @@ proc main() {
   assert(a == 1, "bounds check failed: a != 1\n");
   assert(b == 2, "bounds check failed: b != 2\n");
 }
-

@@ -7,4 +7,3 @@ proc main() {
     printf("open/close ok\n");
   }
 }
-

@@ -7,12 +7,12 @@ arche Transaction {
   valid: int,
 }
 
+
 static Transaction(1000, 1000) {
   price: 0.0,
   quantity: 0,
   valid: 0,
 };
-
 
 
 proc load_transactions() {
@@ -82,7 +82,6 @@ proc load_transactions() {
 }
 
 
-
 proc write_transactions() {
   let fd := arche_fopen_write("build/benchmarks/etl/task2/arche_output.csv");
   let buf: char[256];
@@ -96,11 +95,9 @@ proc write_transactions() {
 }
 
 
-
 proc main() {
   load_transactions();
   Transaction.valid = Transaction.quantity > 0;
   write_transactions();
   printf("Task2 complete: 1000 rows written to build/benchmarks/etl/task2/arche_output.csv\n");
 }
-

@@ -6,21 +6,19 @@ arche Players {
 }
 
 
-
 arche Enemies {
   x: float,
   y: int,
 }
 
+
 static Players(2, 2) {
   x: 1.0,
   y: 10,
 };
-
 // Only ONE can be allocated
 
 
 proc main() {
   printf("multiple handles ok\n");
 }
-

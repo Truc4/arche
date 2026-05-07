@@ -45,6 +45,10 @@ struct SemanticContext {
 	char **known_funcs;
 	int known_func_count;
 
+	char **const_names;        /* compile-time constant names */
+	const char **const_values; /* literal lexeme strings */
+	int const_count;
+
 	Scope *scopes;
 	int scope_count;
 
@@ -398,12 +402,13 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 	case EXPR_NAME: {
 		const char *name = expr->data.name.name;
 
-		/* Check if it's a known function, variable, or archetype */
+		/* Check if it's a known function, variable, archetype, or constant */
 		int is_known_func = find_known_func(ctx, name);
 		int is_var = find_variable(ctx, name) != NULL;
 		int is_arch = find_archetype(ctx, name) != NULL;
+		int is_const = semantic_get_const_value(ctx, name) != NULL;
 
-		if (!is_known_func && !is_var && !is_arch) {
+		if (!is_known_func && !is_var && !is_arch && !is_const) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "Undefined symbol '%s'", name);
 			error(ctx, msg);
@@ -1141,6 +1146,9 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->alias_count = 0;
 	ctx->known_funcs = NULL;
 	ctx->known_func_count = 0;
+	ctx->const_names = NULL;
+	ctx->const_values = NULL;
+	ctx->const_count = 0;
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
 	ctx->error_count = 0;
@@ -1157,6 +1165,36 @@ SemanticContext *semantic_analyze(Program *prog) {
 	if (!prog)
 		return ctx;
 
+	/* pass 0: collect all constants */
+	for (int i = 0; i < prog->decl_count; i++) {
+		if (prog->decls[i]->kind == DECL_CONST) {
+			ConstDecl *c = prog->decls[i]->data.constant;
+			/* Validate: value must be a literal */
+			if (!c->value || c->value->type != EXPR_LITERAL) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "constant '%s' must be a literal value", c->name);
+				error(ctx, msg);
+				continue;
+			}
+			/* Check for duplicates */
+			for (int j = 0; j < ctx->const_count; j++) {
+				if (strcmp(ctx->const_names[j], c->name) == 0) {
+					char msg[256];
+					snprintf(msg, sizeof(msg), "constant '%s' already defined", c->name);
+					error(ctx, msg);
+					goto dup_const;
+				}
+			}
+			/* Register */
+			ctx->const_names = realloc(ctx->const_names, (ctx->const_count + 1) * sizeof(char *));
+			ctx->const_values = realloc(ctx->const_values, (ctx->const_count + 1) * sizeof(const char *));
+			ctx->const_names[ctx->const_count] = c->name;
+			ctx->const_values[ctx->const_count] = c->value->data.literal.lexeme;
+			ctx->const_count++;
+		dup_const:;
+		}
+	}
+
 	/* first pass: collect all archetypes */
 	for (int i = 0; i < prog->decl_count; i++) {
 		if (prog->decls[i]->kind == DECL_ARCHETYPE) {
@@ -1166,7 +1204,7 @@ SemanticContext *semantic_analyze(Program *prog) {
 
 	/* second pass: analyze other declarations */
 	for (int i = 0; i < prog->decl_count; i++) {
-		if (prog->decls[i]->kind != DECL_ARCHETYPE) {
+		if (prog->decls[i]->kind != DECL_ARCHETYPE && prog->decls[i]->kind != DECL_CONST) {
 			analyze_decl(ctx, prog->decls[i]);
 		}
 	}
@@ -1177,6 +1215,10 @@ SemanticContext *semantic_analyze(Program *prog) {
 void semantic_context_free(SemanticContext *ctx) {
 	if (!ctx)
 		return;
+
+	/* free constants (names only, values are owned by AST) */
+	free(ctx->const_names);
+	free(ctx->const_values);
 
 	/* free shapes (one per unique column structure) */
 	for (int i = 0; i < ctx->archetype_count; i++) {
@@ -1248,4 +1290,15 @@ const char *semantic_field_type_name(SemanticContext *ctx, const char *archetype
 	if (field->type->kind != TYPE_NAME)
 		return NULL;
 	return field->type->data.name;
+}
+
+const char *semantic_get_const_value(SemanticContext *ctx, const char *const_name) {
+	if (!ctx || !const_name)
+		return NULL;
+	for (int i = 0; i < ctx->const_count; i++) {
+		if (strcmp(ctx->const_names[i], const_name) == 0) {
+			return ctx->const_values[i];
+		}
+	}
+	return NULL;
 }

@@ -2,25 +2,19 @@ arche Particle {
   pos: float,
   vel: float,
 }
-
 arche Body {
   pos: float,
   vel: float,
   mass: float,
 }
-
 static Particle(100);
-
 static Body(50);
-
 sys move(pos, vel) {
   pos = pos + vel;
 }
-
 sys dampen(vel) {
   vel = vel * 0.99;
 }
-
 proc main() {
   insert(Particle, 1.0, 0.1);
   insert(Particle, 2.0, 0.2);
@@ -31,4 +25,3 @@ proc main() {
   run dampen;
   print("systems executed\n");
 }
-

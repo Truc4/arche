@@ -7,4 +7,3 @@ proc main() {
   let tab := 9;
   printf("char ok\n");
 }
-

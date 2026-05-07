@@ -5,11 +5,11 @@ arche Transaction {
   quantity: int,
 }
 
+
 static Transaction(1000, 1000) {
   price: 0.0,
   quantity: 0,
 };
-
 
 
 proc main() {
@@ -70,4 +70,3 @@ proc main() {
   }
   printf("Loaded %d rows\n", idx);
 }
-

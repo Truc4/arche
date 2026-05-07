@@ -40,6 +40,7 @@ typedef enum {
 	DECL_SYS,
 	DECL_FUNC,
 	DECL_STATIC,
+	DECL_CONST,
 } DeclKind;
 
 struct Program {
@@ -56,6 +57,11 @@ typedef struct {
 	Expression *init_length; /* second arg: how many rows to initialize; NULL = use capacity */
 } StaticDecl;
 
+typedef struct {
+	char *name;
+	Expression *value; /* must be a literal */
+} ConstDecl;
+
 struct Decl {
 	DeclKind kind;
 	SourceLoc loc;
@@ -66,6 +72,7 @@ struct Decl {
 		SysDecl *sys;
 		FuncDecl *func;
 		StaticDecl *alloc;
+		ConstDecl *constant;
 	} data;
 };
 
@@ -379,6 +386,7 @@ ArchetypeDecl *archetype_decl_create(char *name);
 ProcDecl *proc_decl_create(char *name);
 SysDecl *sys_decl_create(char *name);
 FuncDecl *func_decl_create(char *name, TypeRef *return_type);
+ConstDecl *const_decl_create(char *name, Expression *value);
 Parameter *parameter_create(char *name, TypeRef *type);
 FieldDecl *field_decl_create(FieldKind kind, char *name, TypeRef *type);
 

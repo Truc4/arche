@@ -3,4 +3,3 @@
 proc main() {
   print("test\n");
 }
-

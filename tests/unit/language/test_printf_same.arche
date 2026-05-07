@@ -4,4 +4,3 @@ proc main() {
   printf("Value: %d\n", 42);
   printf("Value: %d\n", 42);
 }
-

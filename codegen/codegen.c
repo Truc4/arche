@@ -556,6 +556,15 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 	case EXPR_NAME: {
 		const char *name = expr->data.name.name;
+
+		/* Check if this is a compile-time constant */
+		const char *const_val = semantic_get_const_value(ctx->sem_ctx, name);
+		if (const_val) {
+			/* Inline the constant lexeme */
+			strcpy(result_buf, const_val);
+			return;
+		}
+
 		ValueInfo *val = find_value(ctx, name);
 		if (val) {
 			/* If inside implicit loop and this is a type-4 column param, auto-index */

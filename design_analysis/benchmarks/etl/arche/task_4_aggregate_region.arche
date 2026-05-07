@@ -7,12 +7,12 @@ arche Transaction {
   revenue: float,
 }
 
+
 static Transaction(1000, 1000) {
   price: 0.0,
   quantity: 0,
   revenue: 0.0,
 };
-
 
 
 proc load_transactions() {
@@ -82,7 +82,6 @@ proc load_transactions() {
 }
 
 
-
 proc main() {
   load_transactions();
   Transaction.revenue = Transaction.price * Transaction.quantity;
@@ -99,4 +98,3 @@ proc main() {
   arche_fclose(fd_out);
   printf("total revenue = %.2f\n", total_revenue);
 }
-

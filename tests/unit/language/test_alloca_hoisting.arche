@@ -10,4 +10,3 @@ proc main() {
   }
   printf("done %d\n", i);
 }
-

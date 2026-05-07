@@ -4,14 +4,13 @@ arche Counter {
   val: int,
 }
 
+
 static Counter(5, 5) {
   val: 7,
 };
-
 
 
 proc main() {
   assert(Counter.val[0] == 7, "val[0] not 7\n");
   printf("ok\n");
 }
-

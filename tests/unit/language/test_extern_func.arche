@@ -9,4 +9,3 @@ proc main() {
   printf("atoi: %d\n", n);
   assert(n == 42, "atoi failed\n");
 }
-

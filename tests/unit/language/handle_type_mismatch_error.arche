@@ -4,15 +4,18 @@ arche Player {
   pos: float,
 }
 
+
 arche Enemy {
   health: float,
 }
 
+
 static Player(10);
+
 static Enemy(10);
+
 
 proc main() {
   let p := insert(Player, 1.0);
   delete(Enemy, p);
 }
-

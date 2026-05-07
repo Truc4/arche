@@ -7,4 +7,3 @@ proc main() {
   arche_fclose(fd);
   printf("requested 10000, got: %d\n", n);
 }
-

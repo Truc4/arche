@@ -682,6 +682,30 @@ static Decl *parse_func_decl(Parser *parser) {
 /* ========== WORLD PARSING ========== */
 
 static Decl *parse_static_decl(Parser *parser) {
+	/* Check for const IDENT : : expr ; first */
+	if (check(parser, TOK_IDENT) && strcmp(token_text(parser->current), "static") != 0) {
+		char *name = token_text(parser->current);
+		Token ident_tok = parser->current;
+		advance(parser);
+		if (check(parser, TOK_COLON)) {
+			advance(parser); /* consume first : */
+			if (check(parser, TOK_COLON)) {
+				advance(parser); /* consume second : */
+				Expression *val = parse_expression(parser);
+				Decl *d = decl_create(DECL_CONST);
+				d->loc.line = ident_tok.line;
+				d->loc.column = ident_tok.column;
+				d->data.constant = const_decl_create(name, val);
+				if (check(parser, TOK_SEMI)) {
+					advance(parser); /* consume optional semicolon */
+				}
+				return d;
+			}
+		}
+		/* Not a const. This fallthrough path shouldn't happen; return NULL to let caller report error */
+		return NULL;
+	}
+
 	if (check(parser, TOK_IDENT) && strcmp(token_text(parser->current), "static") == 0) {
 		advance(parser);
 		if (!check(parser, TOK_IDENT)) {
@@ -790,7 +814,7 @@ static Decl *parse_decl(Parser *parser) {
 	case TOK_FUNC:
 		return parse_func_decl(parser);
 	default:
-		/* INFO: Check for top-level alloc */
+		/* INFO: Check for top-level const or alloc */
 		if (check(parser, TOK_IDENT)) {
 			Decl *static_decl = parse_static_decl(parser);
 			if (static_decl) {

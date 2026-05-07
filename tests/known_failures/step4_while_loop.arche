@@ -7,4 +7,3 @@ proc main() {
   }
   printf("for loop ok\n");
 }
-

@@ -5,4 +5,3 @@ proc main() {
   printf("test: %s\n", msg);
   printf("done\n");
 }
-

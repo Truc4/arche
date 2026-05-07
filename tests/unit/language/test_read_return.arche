@@ -5,4 +5,3 @@ proc main() {
   let n := read(0, buf, 256);
   printf("read returned: %d\n", n);
 }
-

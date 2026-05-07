@@ -4,11 +4,10 @@ arche Tensor {
   data: float[5][5],
 }
 
-static Tensor(5);
 
+static Tensor(5);
 
 
 proc main() {
   print("allocations done\n");
 }
-

@@ -6,4 +6,3 @@ proc main() {
   assert(fd == 0, "should fail to open nonexistent file\n");
   printf("Invalid path error test PASSED\n");
 }
-

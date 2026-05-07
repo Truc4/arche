@@ -5,8 +5,8 @@ arche Particle {
   vel: float,
 }
 
-static Particle(5);
 
+static Particle(5);
 
 
 proc main() {
@@ -15,4 +15,3 @@ proc main() {
   let pi := p * 10.0;
   assert(pi == 10, "pos != 1.0\n");
 }
-

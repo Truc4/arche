@@ -7,12 +7,12 @@ arche Transaction {
   price_bucket: float,
 }
 
+
 static Transaction(1000, 1000) {
   price: 0.0,
   quantity: 0,
   price_bucket: 0.0,
 };
-
 
 
 proc load_transactions() {
@@ -82,7 +82,6 @@ proc load_transactions() {
 }
 
 
-
 proc write_transactions() {
   let fd := arche_fopen_write("build/benchmarks/etl/task3/arche_output.csv");
   let buf: char[256];
@@ -96,11 +95,9 @@ proc write_transactions() {
 }
 
 
-
 proc main() {
   load_transactions();
   Transaction.price_bucket = Transaction.price / 10.0;
   write_transactions();
   printf("Task3 complete: 1000 rows bucketed\n");
 }
-

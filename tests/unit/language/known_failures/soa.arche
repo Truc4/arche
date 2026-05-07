@@ -5,14 +5,13 @@ arche Particle {
   vel: float,
 }
 
-static Particle(1000);
 
+static Particle(1000);
 
 
 sys move(pos, vel) {
   pos = pos + vel;
 }
-
 
 
 proc main() {
@@ -35,4 +34,3 @@ proc main() {
   assert(p0i == 11, "pos[0] != 1.1\n");
   assert(p9i == 110, "pos[9] != 11.0\n");
 }
-

@@ -6,4 +6,3 @@ proc main() {
   printf("read from stdin returned %d bytes\n", n);
   printf("multi-assignment with read() works\n");
 }
-

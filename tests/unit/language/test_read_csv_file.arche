@@ -8,4 +8,3 @@ proc main() {
   printf("Read %d bytes from CSV file\n", total_n);
   assert(total_n > 0, "should read CSV file\n");
 }
-
