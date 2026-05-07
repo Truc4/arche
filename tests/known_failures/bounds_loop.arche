@@ -4,8 +4,8 @@ arche Particle {
   id: int,
 }
 
-static Particle(5);
 
+static Particle(5);
 
 
 proc main() {
@@ -22,4 +22,3 @@ proc main() {
   assert(v1 == 2, "v1 != 2\n");
   assert(v2 == 3, "v2 != 3\n");
 }
-

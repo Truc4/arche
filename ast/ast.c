@@ -947,7 +947,8 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 		switch (decl->kind) {
 		case DECL_WORLD: {
 			WorldDecl *world = decl->data.world;
-			fprintf(out, "world %s()\n\n", world->name);
+			fprintf(out, "world %s()\n", world->name);
+			ctx.last_line = decl->loc.line;
 			break;
 		}
 		case DECL_ARCHETYPE: {
@@ -959,7 +960,8 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				format_type(out, field->type);
 				fprintf(out, ",\n");
 			}
-			fprintf(out, "}\n\n");
+			fprintf(out, "}\n");
+			ctx.last_line = decl->loc.line + arch->field_count + 1;
 			break;
 		}
 		case DECL_PROC: {
@@ -980,8 +982,9 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				for (int j = 0; j < proc->statement_count; j++) {
 					format_statement(out, proc->statements[j], 1);
 				}
-				fprintf(out, "}\n\n");
+				fprintf(out, "}\n");
 			}
+			ctx.last_line = decl->loc.line;
 			break;
 		}
 		case DECL_SYS: {
@@ -996,7 +999,8 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			for (int j = 0; j < sys->statement_count; j++) {
 				format_statement(out, sys->statements[j], 1);
 			}
-			fprintf(out, "}\n\n");
+			fprintf(out, "}\n");
+			ctx.last_line = decl->loc.line;
 			break;
 		}
 		case DECL_FUNC: {
@@ -1023,7 +1027,7 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				}
 				fprintf(out, "}\n");
 			}
-			fprintf(out, "\n");
+			ctx.last_line = decl->loc.line;
 			break;
 		}
 		case DECL_STATIC: {
@@ -1046,7 +1050,7 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				}
 				fprintf(out, "}");
 			}
-			fprintf(out, ";\n\n");
+			fprintf(out, ";\n");
 			ctx.last_line = decl->loc.line;
 			break;
 		}

@@ -6,23 +6,21 @@ arche Particle {
 }
 
 
-
 arche Body {
   pos: float,
   vel: float,
   mass: float,
 }
 
+
 static Particle(100);
 
 static Body(50);
 
 
-
 sys move(pos, vel) {
   pos = pos + vel;
 }
-
 
 
 proc main() {
@@ -37,4 +35,3 @@ proc main() {
   assert(ppi == 11, "Particle.pos != 1.1\n");
   assert(bpi == 55, "Body.pos != 5.5\n");
 }
-

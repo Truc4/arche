@@ -5,15 +5,14 @@ arche Player {
 }
 
 
-
 arche AliveList {
   player_ref: handle(Player),
 }
 
+
 static Player(10);
 
 static AliveList(10);
-
 
 
 proc main() {
@@ -23,4 +22,3 @@ proc main() {
   insert(AliveList, p2);
   print("alive list created");
 }
-

@@ -10,4 +10,3 @@ proc main() {
   printf("atof: %g\n", f);
   assert(f == 1.5, "atof failed\n");
 }
-

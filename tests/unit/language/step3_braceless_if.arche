@@ -7,4 +7,3 @@ proc main() {
     printf("braceless if ok\n");
   }
 }
-

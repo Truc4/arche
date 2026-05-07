@@ -3,4 +3,3 @@
 proc main() {
   let x := undefined_var;
 }
-

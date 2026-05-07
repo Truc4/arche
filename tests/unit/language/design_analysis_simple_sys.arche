@@ -4,10 +4,10 @@ arche Counter {
   val: int,
 }
 
+
 static Counter(1, 1) {
   val: 0,
 };
-
 
 
 sys increment(val) {
@@ -16,9 +16,7 @@ sys increment(val) {
 }
 
 
-
 proc main() {
   run increment;
   assert(Counter.val[0] == 1, "system did not run\n");
 }
-

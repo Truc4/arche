@@ -3,4 +3,3 @@
 proc main() {
   printf("string: [%s]\n", "hello");
 }
-

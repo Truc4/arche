@@ -11,4 +11,3 @@ proc main() {
   assert(a == 50, "let with int addition failed\n");
   print("all let type syntax tests passed\n");
 }
-

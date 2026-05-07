@@ -72,4 +72,3 @@ proc load_transactions() {
     line_start = line_end + 1;
   }
 }
-

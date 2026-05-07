@@ -4,10 +4,10 @@ arche Task {
   val: int,
 }
 
+
 static Task(1, 1) {
   val: 5,
 };
-
 
 
 sys double_val(val) {
@@ -16,9 +16,7 @@ sys double_val(val) {
 }
 
 
-
 proc main() {
   run double_val;
   assert(Task.val[0] == 10, "val not 10\n");
 }
-

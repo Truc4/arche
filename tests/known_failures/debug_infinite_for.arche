@@ -6,4 +6,3 @@ proc main() {
   }
   printf("ok\n");
 }
-

@@ -6,14 +6,13 @@ arche Body {
   velocity: float,
 }
 
-static Body(500);
 
+static Body(500);
 
 
 sys move(position, velocity) {
   position = position + velocity;
 }
-
 
 
 proc main() {
@@ -42,4 +41,3 @@ proc main() {
   assert(p0i == 11, "position[0] != 1.1\n");
   assert(p11i == 130, "position[11] != 13.0\n");
 }
-

@@ -5,8 +5,8 @@ arche Entity {
   y: float,
 }
 
-static Entity(100);
 
+static Entity(100);
 
 
 proc main() {
@@ -27,4 +27,3 @@ proc main() {
   assert(x0i == 20, "x[0] != 2.0\n");
   assert(y4i == 200, "y[4] != 20.0\n");
 }
-

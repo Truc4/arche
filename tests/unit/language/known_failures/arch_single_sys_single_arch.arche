@@ -6,14 +6,13 @@ arche Particle {
   vel: float,
 }
 
-static Particle(10);
 
+static Particle(10);
 
 
 sys move(pos, vel) {
   pos = pos + vel;
 }
-
 
 
 proc main() {
@@ -23,4 +22,3 @@ proc main() {
   let pi := p * 10.0;
   assert(pi == 11, "move failed\n");
 }
-

@@ -5,11 +5,11 @@ arche Transaction {
   quantity: int,
 }
 
+
 static Transaction(100, 100) {
   price: 0.0,
   quantity: 0,
 };
-
 
 
 proc main() {
@@ -74,4 +74,3 @@ proc main() {
   assert(idx > 0, "should load at least 1 row\n");
   assert(Transaction.price[0] == 1.0, "first price should be 1.0\n");
 }
-

@@ -3,8 +3,6 @@ proc add(a: int, b: int) {
   let msg := "sum: 15\n";
   print(msg);
 }
-
 proc main() {
   add(5, 10);
 }
-

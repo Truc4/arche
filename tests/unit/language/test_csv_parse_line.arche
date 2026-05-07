@@ -37,4 +37,3 @@ proc main() {
   assert(price == 10.0, "price should be 10.0\n");
   assert(qty == 10, "qty should be 10\n");
 }
-

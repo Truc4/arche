@@ -4,8 +4,8 @@ arche Particle {
   pos: float,
 }
 
-static Particle(5);
 
+static Particle(5);
 
 
 proc main() {
@@ -14,4 +14,3 @@ proc main() {
   let vi := v * 10.0;
   assert(vi == 10, "value not 1.0\n");
 }
-

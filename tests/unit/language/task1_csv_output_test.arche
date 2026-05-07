@@ -6,11 +6,11 @@ arche Task1Data {
   revenue: float,
 }
 
+
 static Task1Data(1000, 1000) {
   price: 0.0,
   quantity: 0,
 };
-
 
 
 proc main() {
@@ -44,4 +44,3 @@ proc main() {
   arche_fclose(fd);
   printf("Task1 output written\n");
 }
-

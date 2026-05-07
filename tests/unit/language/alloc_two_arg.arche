@@ -4,8 +4,8 @@ arche Counter {
   val: int,
 }
 
-static Counter(10, 3);
 
+static Counter(10, 3);
 
 
 proc main() {
@@ -13,4 +13,3 @@ proc main() {
   assert(Counter.val[2] == 0, "val[2] not 0\n");
   printf("two-arg alloc ok\n");
 }
-

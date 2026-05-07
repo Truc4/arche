@@ -5,11 +5,11 @@ arche Transaction {
   quantity: int,
 }
 
+
 static Transaction(3, 3) {
   price: 0.0,
   quantity: 0,
 };
-
 
 
 proc load_csv(path: char[]) {
@@ -70,7 +70,6 @@ proc load_csv(path: char[]) {
     line_start = line_end + 1;
   }
 }
-
 // Skip header
 // Read and parse each CSV row
 // Find comma position
@@ -84,4 +83,3 @@ proc main() {
   assert(Transaction.price[0] == 1.0, "price[0] not 1.0\n");
   printf("csv ok\n");
 }
-

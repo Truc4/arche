@@ -8,4 +8,3 @@ proc main() {
   printf("read 256 returned: %d\n", n);
   assert(n == 256, "should read 256 bytes\n");
 }
-

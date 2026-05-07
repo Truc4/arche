@@ -4,8 +4,8 @@ arche Player {
   pos: float,
 }
 
-static Player(10);
 
+static Player(10);
 
 
 proc main() {
@@ -14,4 +14,3 @@ proc main() {
   let h2 := insert(Player, 2.0);
   delete(Player, h1);
 }
-

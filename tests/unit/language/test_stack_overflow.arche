@@ -6,8 +6,6 @@ func recurse(depth: int) -> int {
 }
 
 
-
 proc main() {
   recurse(0);
 }
-

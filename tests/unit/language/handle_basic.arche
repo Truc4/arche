@@ -5,19 +5,17 @@ arche Player {
 }
 
 
-
 arche AliveList {
   player_ref: handle(Player),
 }
+
 
 static Player(10);
 
 static AliveList(10);
 
 
-
 proc main() {
   let p_handle := insert(Player, 1.0);
   insert(AliveList, p_handle);
 }
-

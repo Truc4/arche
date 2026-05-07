@@ -6,8 +6,8 @@ arche Particle {
   acc: (i: float, j: float),
 }
 
-static Particle(5);
 
+static Particle(5);
 
 
 proc main() {
@@ -24,4 +24,3 @@ proc main() {
   print(Particle.pos.y[1]);
   print("\n");
 }
-

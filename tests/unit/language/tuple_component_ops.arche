@@ -5,8 +5,8 @@ arche Particle {
   vel: (x: float, y: float),
 }
 
-static Particle(5);
 
+static Particle(5);
 
 
 proc main() {
@@ -27,4 +27,3 @@ proc main() {
   assert(y2i == 52, "FAIL: pos.y[2]\n");
   printf("PASS\n");
 }
-

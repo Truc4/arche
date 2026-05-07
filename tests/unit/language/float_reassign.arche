@@ -6,4 +6,3 @@ proc main() {
   y = x;
   assert(y == 1.5, "float reassign failed\n");
 }
-

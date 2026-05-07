@@ -5,7 +5,6 @@ arche C {
 }
 
 
-
 proc main() {
   let i := 0;
   for p in C {
@@ -14,4 +13,3 @@ proc main() {
   }
   printf("final i = %d\n", i);
 }
-

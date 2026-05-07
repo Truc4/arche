@@ -4,15 +4,13 @@ arche Entity {
   next: handle(Entity),
 }
 
-static Entity(10);
 
+static Entity(10);
 
 
 sys process(next) {
 }
 
 
-
 proc main() {
 }
-

@@ -5,8 +5,8 @@ arche Particle {
   vel: float,
 }
 
-static Particle(1000);
 
+static Particle(1000);
 
 
 proc main() {
@@ -26,4 +26,3 @@ proc main() {
   assert(p0i == 11, "pos[0] != 1.1\n");
   assert(p7i == 80, "pos[7] != 8.0\n");
 }
-

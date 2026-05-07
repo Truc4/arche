@@ -5,4 +5,3 @@ proc main() {
   assert(x == 42, "let type syntax failed\n");
   print("test passed\n");
 }
-

@@ -4,4 +4,3 @@ proc main() {
   let x := 123;
   printf("Value: %d\n", x);
 }
-
