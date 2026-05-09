@@ -1,12 +1,9 @@
 // RUN: %arche -o %t %s && %t | grep "rows: 1000"
-use csv;
 
-static buf: char[65536];
 
 proc main() {
   let fd := csv_open("tests/fixtures/data.csv");
   csv_skip_header(fd);
-
   let rows := 0;
   let n := csv_read_chunk(fd, buf, 65536);
   let pos := 0;
@@ -17,6 +14,5 @@ proc main() {
     pos = pos + 1;
   }
   csv_close(fd);
-
   printf("rows: %d\n", rows);
 }

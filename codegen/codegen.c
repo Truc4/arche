@@ -633,6 +633,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			}
 		} else if (codegen_find_static_array(ctx, name)) {
 			/* Static array name — return global reference @name */
+			/* Note: caller must convert this to pointer when passing to functions */
 			char global_ref[256];
 			snprintf(global_ref, sizeof(global_ref), "@%s", name);
 			strcpy(result_buf, global_ref);
@@ -1375,15 +1376,20 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			codegen_expression(ctx, expr->data.call.args[i], arg_bufs[i]);
 		}
 
-		/* Second pass: check if arguments are variables holding strings (type 2, 5, 6) */
+		/* Second pass: check if arguments are variables holding strings (type 2, 5, 6) or static arrays */
+		int *arg_is_static_array = malloc(expr->data.call.arg_count * sizeof(int));
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
+			arg_is_static_array[i] = 0;
 			if (!arg_is_string[i] && !arg_is_array_literal[i] && expr->data.call.args[i]->type == EXPR_NAME) {
-				ValueInfo *var = find_value(ctx, expr->data.call.args[i]->data.name.name);
+				const char *arg_name = expr->data.call.args[i]->data.name.name;
+				ValueInfo *var = find_value(ctx, arg_name);
 				if (var) {
 					arg_values[i] = var;
 					if (var->type == 2 || var->type == 5 || var->type == 6) {
 						arg_is_string[i] = 1;
 					}
+				} else if (codegen_find_static_array(ctx, arg_name)) {
+					arg_is_static_array[i] = 1;
 				}
 			}
 		}
@@ -1415,7 +1421,11 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			}
 
 			/* Handle type conversions, emit code before call if needed */
-			if (arg_values[i] && arg_values[i]->type == 7) {
+			if (arg_is_static_array[i]) {
+				/* Static array: use it directly (already a pointer-like value @name) */
+				strcpy(call_arg_vals[i], arg_bufs[i]);
+				call_arg_types[i] = "i8*"; /* assume char array; could be refined */
+			} else if (arg_values[i] && arg_values[i]->type == 7) {
 				/* Arg is char buffer [N x i8]* — cast to i8* for C functions */
 				char *bitcast = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", bitcast, arg_values[i]->string_len,
@@ -1658,6 +1668,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		free(arg_bufs);
 		free(arg_is_string);
 		free(arg_is_array_literal);
+		free(arg_is_static_array);
 		free(arg_values);
 		free(call_arg_vals);
 		free(call_arg_types);

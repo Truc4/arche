@@ -1,22 +1,22 @@
 /* Narrow down: is it else block or assignment in else? */
 
+#include "../../../parser/parser.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../../../parser/parser.h"
 
 /* Just else with break - should pass */
 static void test_else_break(void) {
 	const char *source = "proc main() {\n"
-	                      "  let idx := 0;\n"
-	                      "  for (;idx < 10;) {\n"
-	                      "    let line_pos := 0;\n"
-	                      "    for (;line_pos < 5;) {\n"
-	                      "      if (1 == 1) { line_pos = 1; }\n"
-	                      "      else { break; }\n"
-	                      "    }\n"
-	                      "  }\n"
-	                      "}\n";
+	                     "  let idx := 0;\n"
+	                     "  for (;idx < 10;) {\n"
+	                     "    let line_pos := 0;\n"
+	                     "    for (;line_pos < 5;) {\n"
+	                     "      if (1 == 1) { line_pos = 1; }\n"
+	                     "      else { break; }\n"
+	                     "    }\n"
+	                     "  }\n"
+	                     "}\n";
 
 	ParseResult result = parse_source(source);
 	if (result.error_count != 0) {
@@ -30,15 +30,15 @@ static void test_else_break(void) {
 /* Else with let */
 static void test_else_let(void) {
 	const char *source = "proc main() {\n"
-	                      "  let idx := 0;\n"
-	                      "  for (;idx < 10;) {\n"
-	                      "    let line_pos := 0;\n"
-	                      "    for (;line_pos < 5;) {\n"
-	                      "      if (1 == 1) { line_pos = 1; }\n"
-	                      "      else { let x := 1; }\n"
-	                      "    }\n"
-	                      "  }\n"
-	                      "}\n";
+	                     "  let idx := 0;\n"
+	                     "  for (;idx < 10;) {\n"
+	                     "    let line_pos := 0;\n"
+	                     "    for (;line_pos < 5;) {\n"
+	                     "      if (1 == 1) { line_pos = 1; }\n"
+	                     "      else { let x := 1; }\n"
+	                     "    }\n"
+	                     "  }\n"
+	                     "}\n";
 
 	ParseResult result = parse_source(source);
 	if (result.error_count != 0) {
@@ -52,20 +52,20 @@ static void test_else_let(void) {
 /* Else with simple assignment */
 static void test_else_assign(void) {
 	const char *source = "proc main() {\n"
-	                      "  let idx := 0;\n"
-	                      "  for (;idx < 10;) {\n"
-	                      "    let line_pos := 0;\n"
-	                      "    for (;line_pos < 5;) {\n"
-	                      "      if (1 == 1) { line_pos = 1; }\n"
-	                      "      else { line_pos = 2; }\n"
-	                      "    }\n"
-	                      "  }\n"
-	                      "}\n";
+	                     "  let idx := 0;\n"
+	                     "  for (;idx < 10;) {\n"
+	                     "    let line_pos := 0;\n"
+	                     "    for (;line_pos < 5;) {\n"
+	                     "      if (1 == 1) { line_pos = 1; }\n"
+	                     "      else { line_pos = 2; }\n"
+	                     "    }\n"
+	                     "  }\n"
+	                     "}\n";
 
 	ParseResult result = parse_source(source);
 	if (result.error_count != 0) {
-		printf("FAIL: else_assign - %ld errors at [Line %d, Col %d]\n",
-		       result.error_count, result.errors[0].line, result.errors[0].column);
+		printf("FAIL: else_assign - %ld errors at [Line %d, Col %d]\n", result.error_count, result.errors[0].line,
+		       result.errors[0].column);
 	} else {
 		printf("PASS: else_assign\n");
 	}

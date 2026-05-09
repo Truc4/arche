@@ -962,8 +962,8 @@ static void analyze_static_array_decl(SemanticContext *ctx, StaticArrayDecl *sa)
 	}
 
 	const char *type_name = sa->element_type->data.name;
-	if (strcmp(type_name, "int") != 0 && strcmp(type_name, "float") != 0 &&
-	    strcmp(type_name, "char") != 0 && strcmp(type_name, "double") != 0) {
+	if (strcmp(type_name, "int") != 0 && strcmp(type_name, "float") != 0 && strcmp(type_name, "char") != 0 &&
+	    strcmp(type_name, "double") != 0) {
 		fprintf(stderr, "Error: static array '%s' has unsupported element type '%s'\n", sa->name, type_name);
 		ctx->error_count++;
 		return;
@@ -977,8 +977,7 @@ static void analyze_static_array_decl(SemanticContext *ctx, StaticArrayDecl *sa)
 	}
 
 	/* Register the static array in the global scope */
-	ctx->static_array_names = realloc(ctx->static_array_names,
-			(ctx->static_array_count + 1) * sizeof(char *));
+	ctx->static_array_names = realloc(ctx->static_array_names, (ctx->static_array_count + 1) * sizeof(char *));
 	ctx->static_array_names[ctx->static_array_count] = sa->name;
 	ctx->static_array_count++;
 }

@@ -1,16 +1,16 @@
 /* Test if else clause parsing works at top level */
 
+#include "../../../parser/parser.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../../../parser/parser.h"
 
 /* If-else at top level of proc */
 static void test_toplevel_else(void) {
 	const char *source = "proc main() {\n"
-	                      "  if (1 == 1) { let x := 1; }\n"
-	                      "  else { break; }\n"
-	                      "}\n";
+	                     "  if (1 == 1) { let x := 1; }\n"
+	                     "  else { break; }\n"
+	                     "}\n";
 
 	ParseResult result = parse_source(source);
 	if (result.error_count != 0) {
@@ -24,12 +24,12 @@ static void test_toplevel_else(void) {
 /* If-else inside for */
 static void test_for_else(void) {
 	const char *source = "proc main() {\n"
-	                      "  let idx := 0;\n"
-	                      "  for (;idx < 10;) {\n"
-	                      "    if (1 == 1) { idx = 1; }\n"
-	                      "    else { break; }\n"
-	                      "  }\n"
-	                      "}\n";
+	                     "  let idx := 0;\n"
+	                     "  for (;idx < 10;) {\n"
+	                     "    if (1 == 1) { idx = 1; }\n"
+	                     "    else { break; }\n"
+	                     "  }\n"
+	                     "}\n";
 
 	ParseResult result = parse_source(source);
 	if (result.error_count != 0) {
@@ -43,11 +43,11 @@ static void test_for_else(void) {
 /* If without else inside for (should pass) */
 static void test_for_if_noelse(void) {
 	const char *source = "proc main() {\n"
-	                      "  let idx := 0;\n"
-	                      "  for (;idx < 10;) {\n"
-	                      "    if (1 == 1) { idx = 1; }\n"
-	                      "  }\n"
-	                      "}\n";
+	                     "  let idx := 0;\n"
+	                     "  for (;idx < 10;) {\n"
+	                     "    if (1 == 1) { idx = 1; }\n"
+	                     "  }\n"
+	                     "}\n";
 
 	ParseResult result = parse_source(source);
 	if (result.error_count != 0) {

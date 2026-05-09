@@ -1590,8 +1590,8 @@ static Statement *parse_statement(Parser *parser) {
 						continue;
 					}
 
-					stmt->data.if_stmt.else_body =
-					    realloc(stmt->data.if_stmt.else_body, (stmt->data.if_stmt.else_count + 1) * sizeof(Statement *));
+					stmt->data.if_stmt.else_body = realloc(stmt->data.if_stmt.else_body,
+					                                       (stmt->data.if_stmt.else_count + 1) * sizeof(Statement *));
 					stmt->data.if_stmt.else_body[stmt->data.if_stmt.else_count++] = body_stmt;
 				}
 

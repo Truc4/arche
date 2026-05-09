@@ -9,23 +9,23 @@
  * doesn't properly maintain parser state across nested contexts.
  */
 
+#include "../../../ast/ast.h"
+#include "../../../lexer/lexer.h"
+#include "../../../parser/parser.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../../../lexer/lexer.h"
-#include "../../../parser/parser.h"
-#include "../../../ast/ast.h"
 
 static void test_nested_let_in_for_loop(void) {
 	const char *source = "proc main() {\n"
-	                      "  for (;1 > 0;) {\n"
-	                      "    let x := 0;\n"
-	                      "    for (;x < 5;) {\n"
-	                      "      x = x + 1;\n"
-	                      "    }\n"
-	                      "    break;\n"
-	                      "  }\n"
-	                      "}\n";
+	                     "  for (;1 > 0;) {\n"
+	                     "    let x := 0;\n"
+	                     "    for (;x < 5;) {\n"
+	                     "      x = x + 1;\n"
+	                     "    }\n"
+	                     "    break;\n"
+	                     "  }\n"
+	                     "}\n";
 
 	ParseResult result = parse_source(source);
 
@@ -93,11 +93,11 @@ static void test_nested_let_in_for_loop(void) {
 static void test_nested_let_simple(void) {
 	/* Even simpler case: let inside a for loop (no nested loop) */
 	const char *source = "proc main() {\n"
-	                      "  for (;1 > 0;) {\n"
-	                      "    let x := 5;\n"
-	                      "    break;\n"
-	                      "  }\n"
-	                      "}\n";
+	                     "  for (;1 > 0;) {\n"
+	                     "    let x := 5;\n"
+	                     "    break;\n"
+	                     "  }\n"
+	                     "}\n";
 
 	ParseResult result = parse_source(source);
 

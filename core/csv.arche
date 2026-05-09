@@ -1,16 +1,13 @@
 func csv_open(path: char[]) -> int {
   return arche_fopen_read(path);
 }
-
 proc csv_close(fd: int) {
   arche_fclose(fd);
 }
-
 proc csv_skip_header(fd: int) {
   let line: char[256];
   arche_fread_line(fd, line, 256);
 }
-
-func csv_read_chunk(fd: int, buf: char[], size: int) -> int {
+func csv_read_chunk(fd: int, out buf: char[], size: int) -> int {
   return arche_csv_read_chunk(fd, buf, size);
 }
