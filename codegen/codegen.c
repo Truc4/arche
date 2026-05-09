@@ -3423,62 +3423,9 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			const char *iter_name = stmt->data.for_stmt.iterable->data.name.name;
 			ValueInfo *iter_val = find_value(ctx, iter_name);
 
-			/* Get count bound */
+			/* Get count bound — for non-C-style for loops, use placeholder (not used in C-style) */
 			char *count_bound = gen_value_name(ctx);
-			const char *arch_name_for_count = NULL;
-
-			/* First check: is iter_name a direct archetype name? */
-			if (!iter_val && find_archetype_decl(ctx, iter_name)) {
-				arch_name_for_count = iter_name;
-			}
-			/* Second check: is iter_val a variable pointing to an archetype? */
-			else if (iter_val && (iter_val->type == 3 || iter_val->type == 4) && iter_val->arch_name) {
-				arch_name_for_count = iter_val->arch_name;
-			}
-
-			if (arch_name_for_count) {
-				/* Load count from archetype's count field */
-				ArchetypeDecl *arch = find_archetype_decl(ctx, arch_name_for_count);
-				if (arch) {
-					char *count_gep = gen_value_name(ctx);
-					/* Determine struct pointer: if direct name, use @name (static) or load from @archetype_name (dynamic) */
-					const char *struct_ptr;
-					char loaded_ptr[256] = {0};
-					if (iter_val) {
-						/* Variable: use its stored pointer */
-						if (iter_val->type == 4) {
-							char arch_param[256];
-							snprintf(arch_param, sizeof(arch_param), "%%arch_%s", iter_val->arch_name);
-							struct_ptr = arch_param;
-						} else {
-							struct_ptr = iter_val->llvm_name;
-						}
-					} else {
-						/* Direct name: check if static or dynamic */
-						int is_static = get_arch_static_capacity(ctx, arch_name_for_count) > 0;
-						if (is_static) {
-							snprintf(loaded_ptr, sizeof(loaded_ptr), "@%s", arch_name_for_count);
-							struct_ptr = loaded_ptr;
-						} else {
-							char *loaded = gen_value_name(ctx);
-							buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", loaded,
-							                  arch_name_for_count, arch_name_for_count, arch_name_for_count);
-							strcpy(loaded_ptr, loaded);
-							struct_ptr = loaded_ptr;
-						}
-					}
-					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-					                  count_gep, arch_name_for_count, arch_name_for_count, struct_ptr,
-					                  arch->field_count);
-					buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count_bound, count_gep);
-				} else {
-					/* Fallback: use constant */
-					strcpy(count_bound, "10");
-				}
-			} else {
-				/* Fallback: use constant for non-archetype iterables */
-				strcpy(count_bound, "10");
-			}
+			strcpy(count_bound, "10"); /* Placeholder for range-based loops (not currently used) */
 
 			/* Check if we should vectorize this loop (in sys body with column pointer) */
 			if (ctx->in_sys && iter_val && iter_val->type == 4 && iter_val->arch_name) {
