@@ -1,20 +1,17 @@
-// Task 4: Aggregate (sum of revenue)
-// Compute revenue = price * quantity, then sum
-
 arche Transaction {
   price: float,
   quantity: int,
   revenue: float,
 }
 
-static Transaction(100000000, 100000000) {
+static Transaction(10000000, 10000000) {
   price: 0.0,
   quantity: 0,
   revenue: 0.0,
 };
 
 proc main() {
-  let fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data_100m.csv");
+  let fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data_10m.csv");
 
   if (fd > 0) {
     let line: char[256];
@@ -24,7 +21,7 @@ proc main() {
     arche_fread_line(fd, line, 256);
 
     let idx := 0;
-    for (;idx < 100000000;) {
+    for (;idx < 10000000;) {
       let n := arche_fread_line(fd, line, 256);
       if (n <= 0) {
         break;

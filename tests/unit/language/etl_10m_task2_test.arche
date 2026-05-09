@@ -1,16 +1,13 @@
-// Task 2: Filter invalid rows
-// Count rows where quantity > 0
-
 arche Transaction {
   quantity: int,
 }
 
-static Transaction(100000000, 100000000) {
+static Transaction(10000000, 10000000) {
   quantity: 0,
 };
 
 proc main() {
-  let fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data_100m.csv");
+  let fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data_10m.csv");
 
   if (fd > 0) {
     let line: char[256];
@@ -19,7 +16,7 @@ proc main() {
     arche_fread_line(fd, line, 256);
 
     let idx := 0;
-    for (;idx < 100000000;) {
+    for (;idx < 10000000;) {
       let n := arche_fread_line(fd, line, 256);
       if (n <= 0) {
         break;
@@ -38,9 +35,12 @@ proc main() {
       }
 
       let j := 0;
-      let i := 0;
-      for (;i < n - c2 - 1;) {
-        qty_str[j] = line[c2 + 1 + i];
+      let i := c2 + 1;
+      for (;i < n;) {
+        if (line[i] == ',') {
+          break;
+        }
+        qty_str[j] = line[i];
         j = j + 1;
         i = i + 1;
       }

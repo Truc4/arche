@@ -1,20 +1,17 @@
-// Task 3: Bucket prices and extract hours from timestamps
-// Compute price_bucket = price / 10.0 and hour_bucket from timestamp
-
 arche Transaction {
   price: float,
   hour_bucket: int,
   price_bucket: float,
 }
 
-static Transaction(100000000, 100000000) {
+static Transaction(10000000, 10000000) {
   price: 0.0,
   hour_bucket: 0,
   price_bucket: 0.0,
 };
 
 proc main() {
-  let fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data_100m.csv");
+  let fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data_10m.csv");
 
   if (fd > 0) {
     let line: char[256];
@@ -24,7 +21,7 @@ proc main() {
     arche_fread_line(fd, line, 256);
 
     let idx := 0;
-    for (;idx < 100000000;) {
+    for (;idx < 10000000;) {
       let n := arche_fread_line(fd, line, 256);
       if (n <= 0) {
         break;

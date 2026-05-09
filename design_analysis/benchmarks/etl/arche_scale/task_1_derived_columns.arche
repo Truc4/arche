@@ -7,14 +7,14 @@ arche Transaction {
   revenue: float,
 }
 
-static Transaction(100000, 100000) {
+static Transaction(100000000, 100000000) {
   price: 0.0,
   quantity: 0,
   revenue: 0.0,
 };
 
 proc main() {
-  let fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv");
+  let fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data_100m.csv");
 
   if (fd > 0) {
     let line: char[256];
@@ -24,7 +24,7 @@ proc main() {
     arche_fread_line(fd, line, 256);
 
     let idx := 0;
-    for (;idx < 100000;) {
+    for (;idx < 100000000;) {
       let n := arche_fread_line(fd, line, 256);
       if (n <= 0) {
         break;

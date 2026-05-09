@@ -1,0 +1,33 @@
+proc main() {
+  let line: char[50];
+  let qty_str: char[32];
+
+  line[0] = '2'; line[1] = '0'; line[2] = '2'; line[3] = '3'; line[4] = '-';
+  line[5] = '1'; line[6] = '2'; line[7] = '-'; line[8] = '1'; line[9] = '9';
+  line[10] = 'T'; line[11] = '0'; line[12] = '0'; line[13] = ':'; line[14] = '0';
+  line[15] = '0'; line[16] = ':'; line[17] = '0'; line[18] = '0'; line[19] = ',';
+  line[20] = '1'; line[21] = '1'; line[22] = '.'; line[23] = '4'; line[24] = ',';
+  line[25] = '4'; line[26] = ','; line[27] = 'E'; line[28] = 'M'; line[29] = 'E';
+  line[30] = 'A'; line[31] = ','; line[32] = '0'; line[33] = 0;
+
+  let n := 33;
+  let c2 := 24;
+  let c3 := 26;
+
+  let j := 0;
+  let i := 0;
+  let loop_count := c3 - c2 - 1;
+  printf("c2=%d c3=%d loop_count=%d\n", c2, c3, loop_count);
+
+  for (;i < loop_count;) {
+    printf("i=%d j=%d extracting from pos %d\n", i, j, c2 + 1 + i);
+    qty_str[j] = line[c2 + 1 + i];
+    printf("Extracted: %c\n", qty_str[j]);
+    j = j + 1;
+    i = i + 1;
+  }
+  qty_str[j] = 0;
+
+  let qty := atoi(qty_str);
+  printf("qty_str='%s' qty=%d\n", qty_str, qty);
+}

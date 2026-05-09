@@ -1,20 +1,17 @@
-// Task 4: Aggregate (sum of revenue)
-// Compute revenue = price * quantity, then sum
-
 arche Transaction {
   price: float,
   quantity: int,
   revenue: float,
 }
 
-static Transaction(100000000, 100000000) {
+static Transaction(10000000, 10000000) {
   price: 0.0,
   quantity: 0,
   revenue: 0.0,
 };
 
 proc main() {
-  let fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data_100m.csv");
+  let fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data_10m.csv");
 
   if (fd > 0) {
     let line: char[256];
@@ -24,11 +21,9 @@ proc main() {
     arche_fread_line(fd, line, 256);
 
     let idx := 0;
-    for (;idx < 100000000;) {
+    for (;idx < 10000000;) {
       let n := arche_fread_line(fd, line, 256);
-      if (n <= 0) {
-        break;
-      }
+      if (n <= 0) { break; }
 
       let line_pos := 0;
       let field_idx := 0;
@@ -54,12 +49,11 @@ proc main() {
       price_str[j] = 0;
 
       j = 0;
-      i = n - c2 - 1;
-      let k := 0;
-      for (;k < i;) {
-        qty_str[j] = line[c2 + 1 + k];
+      i = 0;
+      for (;i < n - c2 - 2;) {
+        qty_str[j] = line[c2 + 1 + i];
         j = j + 1;
-        k = k + 1;
+        i = i + 1;
       }
       qty_str[j] = 0;
 
@@ -71,17 +65,17 @@ proc main() {
 
     arche_fclose(fd);
 
+    printf("Data loaded. Starting compute...\n");
+
     Transaction.revenue = Transaction.price * Transaction.quantity;
 
-    let total_revenue := 0.0;
+    let sum := 0.0;
     let m := 0;
     for (;m < idx;) {
-      total_revenue = total_revenue + Transaction.revenue[m];
+      sum = sum + Transaction.revenue[m];
       m = m + 1;
     }
 
-    printf("task4_checksum: %g\n", total_revenue);
-  } else {
-    printf("FAIL: could not open file\n");
+    printf("task_compute: %g\n", sum);
   }
 }

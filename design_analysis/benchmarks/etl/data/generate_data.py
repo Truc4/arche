@@ -1,35 +1,40 @@
 #!/usr/bin/env python3
-"""Generate benchmark dataset: millions of rows with price, quantity, timestamp, region, flags."""
+"""Generate large ETL benchmark dataset."""
 
-import csv
+import sys
 import random
 from datetime import datetime, timedelta
-import sys
 
-def generate_dataset(num_rows, output_file):
-    regions = ["US-East", "US-West", "EU", "APAC", "LATAM"]
+def generate_data(num_rows, output_file):
+    """Generate CSV with num_rows of transaction data."""
+    print(f"Generating {num_rows:,} rows...")
 
-    start_date = datetime(2023, 1, 1)
+    base_date = datetime(2023, 12, 19, 0, 0, 0)
+    regions = ["US", "EU", "APAC", "LATAM", "EMEA"]
 
-    with open(output_file, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(["timestamp", "price", "quantity", "region", "flags"])
+    with open(output_file, 'w') as f:
+        f.write("timestamp,price,quantity,region,flags\n")
 
         for i in range(num_rows):
-            timestamp = start_date + timedelta(seconds=random.randint(0, 365*86400))
-            price = round(random.uniform(1.0, 1000.0), 2)
-            quantity = random.randint(-100, 10000)  # include some invalid (negative)
-            region = random.choice(regions)
-            flags = random.randint(0, 255)
+            if (i + 1) % 10000000 == 0:
+                print(f"  {i + 1:,} rows written...")
 
-            writer.writerow([timestamp.isoformat(), price, quantity, region, flags])
+            ts = base_date + timedelta(seconds=i % 86400)
+            price = round(5.0 + random.random() * 15.0, 1)
+            quantity = random.randint(1, 500)
+            region = regions[random.randint(0, len(regions) - 1)]
+            flags = random.randint(0, 1)
 
-            if (i + 1) % 100000 == 0:
-                print(f"Generated {i + 1} rows...", file=sys.stderr)
+            f.write(f"{ts.isoformat()},{price},{quantity},{region},{flags}\n")
 
-    print(f"Dataset written to {output_file}", file=sys.stderr)
+    print(f"Done! Created {output_file}")
 
 if __name__ == "__main__":
-    num_rows = int(sys.argv[1]) if len(sys.argv) > 1 else 1_000_000
-    output = sys.argv[2] if len(sys.argv) > 2 else "data.csv"
-    generate_dataset(num_rows, output)
+    if len(sys.argv) < 2:
+        print("Usage: python3 generate_data.py <num_rows> [output_file]")
+        sys.exit(1)
+
+    num_rows = int(sys.argv[1])
+    output_file = sys.argv[2] if len(sys.argv) > 2 else "data.csv"
+
+    generate_data(num_rows, output_file)
