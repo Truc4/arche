@@ -4,6 +4,7 @@ arche FloatOps {
   val: float,
 }
 
+
 static FloatOps(8);
 
 proc main() {

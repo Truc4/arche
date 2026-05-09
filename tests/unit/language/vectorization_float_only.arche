@@ -4,11 +4,13 @@ arche FloatOps {
   val: float,
 }
 
+
 static FloatOps(8);
 
 sys float_multiply(val) {
   val = val * 2.0;
 }
+
 
 proc main() {
   insert(FloatOps, 1.0);
