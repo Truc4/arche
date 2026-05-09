@@ -1133,7 +1133,18 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		/* Ensure index is i64 for getelementptr (simple heuristic: if not from shaped array ops, assume i32 and
 		 * convert) */
 		const char *final_idx = idx_buf;
-		if (expr->data.index.index_count > 0 && !shaped_elem) {
+		int idx_is_i64 = 0;
+
+		/* Check if index is a loop variable that's already i64 */
+		if (expr->data.index.index_count > 0 && expr->data.index.indices[0]->type == EXPR_NAME) {
+			const char *idx_name = expr->data.index.indices[0]->data.name.name;
+			ValueInfo *idx_val = find_value(ctx, idx_name);
+			if (idx_val && idx_val->bit_width == 64) {
+				idx_is_i64 = 1;
+			}
+		}
+
+		if (expr->data.index.index_count > 0 && !shaped_elem && !idx_is_i64) {
 			/* Index likely came from a variable or expression, probably i32. Convert to i64. */
 			char *idx_i64 = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx_i64, idx_buf);
@@ -3225,7 +3236,19 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 			/* Ensure index is i64 for getelementptr (simple heuristic: if not from bounds check, assume i32 and
 			 * convert) */
 			const char *final_idx = idx_buf;
-			if (stmt->data.assign_stmt.target->data.index.index_count > 0 && !bc_idx_is_i64) {
+			int idx_is_i64 = bc_idx_is_i64; /* Default: check bounds check result */
+
+			/* If index is a name (like loop var), check if it's already i64 */
+			if (stmt->data.assign_stmt.target->data.index.index_count > 0 &&
+			    stmt->data.assign_stmt.target->data.index.indices[0]->type == EXPR_NAME) {
+				const char *idx_name = stmt->data.assign_stmt.target->data.index.indices[0]->data.name.name;
+				ValueInfo *idx_val = find_value(ctx, idx_name);
+				if (idx_val && idx_val->bit_width == 64) {
+					idx_is_i64 = 1;
+				}
+			}
+
+			if (stmt->data.assign_stmt.target->data.index.index_count > 0 && !idx_is_i64) {
 				/* Index likely came from a variable or expression, probably i32. Convert to i64. */
 				char *idx_i64 = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx_i64, idx_buf);
@@ -3402,23 +3425,50 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 
 			/* Get count bound */
 			char *count_bound = gen_value_name(ctx);
-			if (iter_val && (iter_val->type == 3 || iter_val->type == 4) && iter_val->arch_name) {
+			const char *arch_name_for_count = NULL;
+
+			/* First check: is iter_name a direct archetype name? */
+			if (!iter_val && find_archetype_decl(ctx, iter_name)) {
+				arch_name_for_count = iter_name;
+			}
+			/* Second check: is iter_val a variable pointing to an archetype? */
+			else if (iter_val && (iter_val->type == 3 || iter_val->type == 4) && iter_val->arch_name) {
+				arch_name_for_count = iter_val->arch_name;
+			}
+
+			if (arch_name_for_count) {
 				/* Load count from archetype's count field */
-				ArchetypeDecl *arch = find_archetype_decl(ctx, iter_val->arch_name);
+				ArchetypeDecl *arch = find_archetype_decl(ctx, arch_name_for_count);
 				if (arch) {
 					char *count_gep = gen_value_name(ctx);
-					/* For type 4 (column pointer in sys), construct archetype param; for type 3, use
-					 * iter_val->llvm_name */
+					/* Determine struct pointer: if direct name, use @name (static) or load from @archetype_name (dynamic) */
 					const char *struct_ptr;
-					char arch_param[256];
-					if (iter_val->type == 4) {
-						snprintf(arch_param, sizeof(arch_param), "%%arch_%s", iter_val->arch_name);
-						struct_ptr = arch_param;
+					char loaded_ptr[256] = {0};
+					if (iter_val) {
+						/* Variable: use its stored pointer */
+						if (iter_val->type == 4) {
+							char arch_param[256];
+							snprintf(arch_param, sizeof(arch_param), "%%arch_%s", iter_val->arch_name);
+							struct_ptr = arch_param;
+						} else {
+							struct_ptr = iter_val->llvm_name;
+						}
 					} else {
-						struct_ptr = iter_val->llvm_name;
+						/* Direct name: check if static or dynamic */
+						int is_static = get_arch_static_capacity(ctx, arch_name_for_count) > 0;
+						if (is_static) {
+							snprintf(loaded_ptr, sizeof(loaded_ptr), "@%s", arch_name_for_count);
+							struct_ptr = loaded_ptr;
+						} else {
+							char *loaded = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", loaded,
+							                  arch_name_for_count, arch_name_for_count, arch_name_for_count);
+							strcpy(loaded_ptr, loaded);
+							struct_ptr = loaded_ptr;
+						}
 					}
 					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-					                  count_gep, iter_val->arch_name, iter_val->arch_name, struct_ptr,
+					                  count_gep, arch_name_for_count, arch_name_for_count, struct_ptr,
 					                  arch->field_count);
 					buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count_bound, count_gep);
 				} else {
