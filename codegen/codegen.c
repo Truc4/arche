@@ -1422,7 +1422,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 			/* Handle type conversions, emit code before call if needed */
 			if (arg_is_static_array[i]) {
-				/* Static array: emit getelementptr to convert to pointer */
+				/* Static array: check if needs wrapping in arche_array struct */
 				const char *arg_name = expr->data.call.args[i]->data.name.name;
 				StaticArrayDecl *sa = codegen_find_static_array(ctx, arg_name);
 				if (sa) {
@@ -1444,8 +1444,40 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					char *gep = gen_value_name(ctx);
 					buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* @%s, i64 0, i64 0\n", gep,
 					                  sa->size, elem_type, sa->size, elem_type, arg_name);
-					strcpy(call_arg_vals[i], gep);
-					call_arg_types[i] = elem_ptr_type;
+
+					/* If callee wants char[] and is not extern, wrap in arche_array struct */
+					if (callee_wants_arr && !callee_is_extern && strcmp(elem_type, "i8") == 0) {
+						/* Create struct on stack */
+						char *arr_alloca = gen_value_name(ctx);
+						emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
+
+						/* Store data pointer in field 0 */
+						char *ptr_gep = gen_value_name(ctx);
+						buffer_append_fmt(
+						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+						    ptr_gep, arr_alloca);
+						buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", gep, ptr_gep);
+
+						/* Store length in field 1 */
+						char *len_gep = gen_value_name(ctx);
+						buffer_append_fmt(
+						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
+						    len_gep, arr_alloca);
+						buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", sa->size, len_gep);
+
+						/* Store capacity in field 2 */
+						char *cap_gep = gen_value_name(ctx);
+						buffer_append_fmt(
+						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
+						    cap_gep, arr_alloca);
+						buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", sa->size, cap_gep);
+
+						strcpy(call_arg_vals[i], arr_alloca);
+						call_arg_types[i] = "%struct.arche_array*";
+					} else {
+						strcpy(call_arg_vals[i], gep);
+						call_arg_types[i] = elem_ptr_type;
+					}
 				} else {
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = "i8*";
@@ -1488,13 +1520,20 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					char *str_ptr = arg_bufs[i]; /* i8* from getelementptr */
 
 					/* Need to know string length */
-					const char *lex = expr->data.call.args[i]->data.literal.lexeme;
 					size_t str_len = 0;
-					for (int j = 1; lex[j] != '"' && lex[j] != '\0'; j++) {
-						if (lex[j] == '\\' && lex[j + 1] != '\0') {
-							j++; /* skip escape sequence (count as 1 char) */
+					Expression *arg_expr = expr->data.call.args[i];
+					if (arg_expr->type == EXPR_STRING) {
+						/* String from parser (already processed, without quotes) */
+						str_len = arg_expr->data.string.length;
+					} else if (arg_expr->type == EXPR_LITERAL && arg_expr->data.literal.lexeme[0] == '"') {
+						/* Old-style string literal with quotes */
+						const char *lex = arg_expr->data.literal.lexeme;
+						for (int j = 1; lex[j] != '"' && lex[j] != '\0'; j++) {
+							if (lex[j] == '\\' && lex[j + 1] != '\0') {
+								j++; /* skip escape sequence (count as 1 char) */
+							}
+							str_len++;
 						}
-						str_len++;
 					}
 
 					/* Create struct on stack */
@@ -2463,13 +2502,14 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				}
 
 				FuncDecl *callee_func = func_name ? find_func_decl(ctx, func_name) : NULL;
-				if (callee_func && callee_func->param_count >= 0) {
+					if (callee_func && callee_func->param_count >= 0) {
 					/* Collect out param info: size from TypeRef and SSA names */
 					int *out_buf_sizes = malloc(callee_func->param_count * sizeof(int));
 					char **out_buf_names = malloc(callee_func->param_count * sizeof(char *));
 					int out_param_count = 0;
 
 					for (int i = 0; i < callee_func->param_count; i++) {
+						// REMOVED fprintf(stderr, "[MULTI_BIND] param %d: is_out=%d\n", i, callee_func->params[i] && callee_func->params[i]->is_out ? 1 : 0);
 						if (callee_func->params[i] && callee_func->params[i]->is_out) {
 							/* Extract size from param type (e.g., out buf: char[256]) */
 							TypeRef *pt = callee_func->params[i]->type;
@@ -2933,14 +2973,55 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 
 					int is_out =
 					    (i < callee_func->param_count && callee_func->params[i] && callee_func->params[i]->is_out);
+					// REMOVED fprintf(stderr, "[MULTI_BIND] arg %d: is_out=%d, out_idx=%d, out_param_count=%d\n", i, is_out, out_idx, out_param_count);
 
 					if (is_out && out_idx < out_param_count) {
-						/* Bitcast [N x i8]* to i8* */
-						char *ptr_cast = gen_value_name(ctx);
-						buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", ptr_cast,
-						                  out_buf_sizes[out_idx], out_buf_names[out_idx]);
-						strcpy(call_arg_vals[i], ptr_cast);
-						call_arg_types[i] = "i8*";
+						/* Check if this is char[] and function is non-extern */
+						int is_char_array = 0;
+						TypeRef *pt = callee_func->params[i]->type;
+						if (pt && pt->kind == TYPE_ARRAY) {
+							is_char_array = 1;
+						}
+
+						if (is_char_array && !callee_func->is_extern) {
+							/* Non-extern char[] out param: wrap in arche_array struct */
+							char *arr_alloca = gen_value_name(ctx);
+							emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
+
+							/* Store data pointer in field 0 */
+							char *ptr_cast = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", ptr_cast,
+							                  out_buf_sizes[out_idx], out_buf_names[out_idx]);
+							char *ptr_gep = gen_value_name(ctx);
+							buffer_append_fmt(
+							    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+							    ptr_gep, arr_alloca);
+							buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", ptr_cast, ptr_gep);
+
+							/* Store length in field 1 */
+							char *len_gep = gen_value_name(ctx);
+							buffer_append_fmt(
+							    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
+							    len_gep, arr_alloca);
+							buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", out_buf_sizes[out_idx], len_gep);
+
+							/* Store capacity in field 2 */
+							char *cap_gep = gen_value_name(ctx);
+							buffer_append_fmt(
+							    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
+							    cap_gep, arr_alloca);
+							buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", out_buf_sizes[out_idx], cap_gep);
+
+							strcpy(call_arg_vals[i], arr_alloca);
+							call_arg_types[i] = "%struct.arche_array*";
+						} else {
+							/* Extern or non-char arrays: bitcast [N x i8]* to i8* */
+							char *ptr_cast = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", ptr_cast,
+							                  out_buf_sizes[out_idx], out_buf_names[out_idx]);
+							strcpy(call_arg_vals[i], ptr_cast);
+							call_arg_types[i] = "i8*";
+						}
 						out_idx++;
 					} else {
 						strcpy(call_arg_vals[i], arg_bufs[i]);
@@ -4662,10 +4743,12 @@ static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
 		const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : "int";
 		const char *llvm_type = llvm_type_from_arche(type_name);
 
-		/* Check if type is char[] (i8*) - either TYPE_ARRAY or TYPE_SHAPED_ARRAY */
+		/* Check if type is char[] (either TYPE_ARRAY or TYPE_SHAPED_ARRAY with char element) */
 		int is_char_array = 0;
+		int is_type_array_char = 0;
 		if (param_type && param_type->kind == TYPE_ARRAY) {
 			is_char_array = 1;
+			is_type_array_char = 1;
 		} else if (param_type && param_type->kind == TYPE_SHAPED_ARRAY &&
 		           param_type->data.shaped_array.element_type &&
 		           param_type->data.shaped_array.element_type->kind == TYPE_NAME &&
@@ -4674,7 +4757,12 @@ static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
 		}
 
 		if (is_char_array) {
-			buffer_append_fmt(ctx, "i8* %%arg%d", i);
+			/* For TYPE_ARRAY char[], non-extern use arche_array struct; otherwise use i8* */
+			if (is_type_array_char && !func->is_extern) {
+				buffer_append_fmt(ctx, "%%struct.arche_array* %%arg%d", i);
+			} else {
+				buffer_append_fmt(ctx, "i8* %%arg%d", i);
+			}
 		} else {
 			buffer_append_fmt(ctx, "%s %%arg%d", llvm_type, i);
 		}
@@ -4693,11 +4781,13 @@ static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
 		char param_name[32];
 		snprintf(param_name, sizeof(param_name), "%%arg%d", i);
 
-		/* For char[] params, mark as i8* (type 6) with field_type = "char" */
+		/* Check if type is char[] */
 		TypeRef *ptype = func->params[i]->type;
 		int is_char_array = 0;
+		int is_type_array_char = 0;
 		if (ptype && ptype->kind == TYPE_ARRAY) {
 			is_char_array = 1;
+			is_type_array_char = 1;
 		} else if (ptype && ptype->kind == TYPE_SHAPED_ARRAY &&
 		           ptype->data.shaped_array.element_type &&
 		           ptype->data.shaped_array.element_type->kind == TYPE_NAME &&
@@ -4706,20 +4796,44 @@ static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
 		}
 
 		if (is_char_array) {
-			/* Manually create ValueInfo for char array parameter to set field_type */
 			ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
-			ValueInfo *vi = malloc(sizeof(ValueInfo));
-			vi->name = malloc(strlen(func->params[i]->name) + 1);
-			strcpy(vi->name, func->params[i]->name);
-			vi->llvm_name = malloc(strlen(param_name) + 1);
-			strcpy(vi->llvm_name, param_name);
-			vi->type = 6; /* i8* parameter */
-			vi->arch_name = NULL;
-			vi->string_len = -1;
-			vi->field_type = "char";
-			vi->bit_width = 8;
-			scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
-			scope->values[scope->value_count++] = vi;
+			if (is_type_array_char && !func->is_extern) {
+				/* Non-extern TYPE_ARRAY char[]: extract data pointer from arche_array struct parameter */
+				char *dp_gep = gen_value_name(ctx);
+				buffer_append_fmt(
+				    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+				    dp_gep, param_name);
+				char *dp = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", dp, dp_gep);
+
+				/* Create ValueInfo for char array parameter */
+				ValueInfo *vi = malloc(sizeof(ValueInfo));
+				vi->name = malloc(strlen(func->params[i]->name) + 1);
+				strcpy(vi->name, func->params[i]->name);
+				vi->llvm_name = malloc(strlen(dp) + 1);
+				strcpy(vi->llvm_name, dp);
+				vi->type = 6; /* i8* parameter */
+				vi->arch_name = NULL;
+				vi->string_len = -1;
+				vi->field_type = "char";
+				vi->bit_width = 8;
+				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+				scope->values[scope->value_count++] = vi;
+			} else {
+				/* All other char arrays (extern or TYPE_SHAPED_ARRAY) use i8* directly */
+				ValueInfo *vi = malloc(sizeof(ValueInfo));
+				vi->name = malloc(strlen(func->params[i]->name) + 1);
+				strcpy(vi->name, func->params[i]->name);
+				vi->llvm_name = malloc(strlen(param_name) + 1);
+				strcpy(vi->llvm_name, param_name);
+				vi->type = 6; /* i8* parameter */
+				vi->arch_name = NULL;
+				vi->string_len = -1;
+				vi->field_type = "char";
+				vi->bit_width = 8;
+				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+				scope->values[scope->value_count++] = vi;
+			}
 		} else {
 			add_value(ctx, func->params[i]->name, param_name, 0);
 		}

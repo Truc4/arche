@@ -138,12 +138,13 @@ static void resolve_uses(Program *prog, const char *source_path) {
 		prog->decls = new_decls;
 		prog->decl_count = new_count;
 
+		int mod_decl_count = mod->decl_count;
 		free(mod->decls); /* free array, not contents */
 		free(mod);
 		free(found_path);
 
 		/* Skip past inserted module declarations and DECL_USE node */
-		i += mod->decl_count + 1;
+		i += mod_decl_count + 1;
 	}
 }
 
