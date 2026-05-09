@@ -28,8 +28,11 @@ static int file_exists(const char *path) {
 static char *source_dir_of(const char *path) {
 	/* Return directory part of path. If no /, return "." */
 	char *last_slash = strrchr(path, '/');
-	if (!last_slash)
-		return ".";
+	if (!last_slash) {
+		char *dir = malloc(2);
+		strcpy(dir, ".");
+		return dir;
+	}
 
 	int len = last_slash - path;
 	char *dir = malloc(len + 1);
