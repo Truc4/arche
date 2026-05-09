@@ -729,7 +729,8 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					char to_type_buf[64];
 					snprintf(from_type_buf, sizeof(from_type_buf), "<%d x i32>", ctx->vector_lanes);
 					snprintf(to_type_buf, sizeof(to_type_buf), "<%d x double>", ctx->vector_lanes);
-					buffer_append_fmt(ctx, "  %s = sitofp %s %s to %s\n", left_conv, from_type_buf, left_buf, to_type_buf);
+					buffer_append_fmt(ctx, "  %s = sitofp %s %s to %s\n", left_conv, from_type_buf, left_buf,
+					                  to_type_buf);
 				} else {
 					buffer_append_fmt(ctx, "  %s = sitofp i32 %s to double\n", left_conv, left_buf);
 				}
@@ -752,7 +753,8 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					char to_type_buf[64];
 					snprintf(from_type_buf, sizeof(from_type_buf), "<%d x i32>", ctx->vector_lanes);
 					snprintf(to_type_buf, sizeof(to_type_buf), "<%d x double>", ctx->vector_lanes);
-					buffer_append_fmt(ctx, "  %s = sitofp %s %s to %s\n", right_conv, from_type_buf, right_buf, to_type_buf);
+					buffer_append_fmt(ctx, "  %s = sitofp %s %s to %s\n", right_conv, from_type_buf, right_buf,
+					                  to_type_buf);
 				} else {
 					buffer_append_fmt(ctx, "  %s = sitofp i32 %s to double\n", right_conv, right_buf);
 				}
