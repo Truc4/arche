@@ -694,13 +694,21 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 
 	case STMT_MULTI_BIND: {
 		/* Multi-bind: (let x:, y) = expr */
-		analyze_expression(ctx, stmt->data.multi_bind.value);
-
+		/* Add new variables FIRST so they're in scope for the RHS expression */
 		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
 			BindingTarget *target = &stmt->data.multi_bind.targets[i];
 			if (target->is_new) {
 				add_variable(ctx, target->name, target->type);
-			} else {
+			}
+		}
+
+		/* Now analyze the RHS expression (out params can reference newly declared vars) */
+		analyze_expression(ctx, stmt->data.multi_bind.value);
+
+		/* Validate that existing variables are actually defined */
+		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
+			BindingTarget *target = &stmt->data.multi_bind.targets[i];
+			if (!target->is_new) {
 				VariableInfo *existing = find_variable(ctx, target->name);
 				if (!existing) {
 					char msg[256];

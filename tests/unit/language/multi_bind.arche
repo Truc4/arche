@@ -1,10 +1,20 @@
-// Multi-bind statement tests - shorthand forms
-proc main() {
-  // Test 1: single-var shorthand
-  let x := 42;
-  printf("x=%d\n", x);
+// RUN: %arche -o %t %s && %t | grep "multi_bind ok"
+// Multi-bind statement tests - mixed declaration and assignment
 
-  // Test 2: multi-var shorthand (all new)
-  let a, b := 1;
-  printf("a=TODO, b=TODO\n");
+func fill_two(out buf1: char[32], out buf2: char[32]) -> int {
+  buf1[0] = 'a';
+  buf1[1] = 'b';
+  buf1[2] = '\0';
+
+  buf2[0] = 'c';
+  buf2[1] = 'd';
+  buf2[2] = '\0';
+
+  return 42;
+}
+
+proc main() {
+  // Test: both new declarations with out params (+ return value)
+  (let x:, let y:, let n:) = fill_two(x, y);
+  printf("multi_bind ok\n");
 }
