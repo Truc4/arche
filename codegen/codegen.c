@@ -1385,7 +1385,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				ValueInfo *var = find_value(ctx, arg_name);
 				if (var) {
 					arg_values[i] = var;
-					if (var->type == 2 || var->type == 5 || var->type == 6) {
+					if (var->type == 2 || var->type == 5) {
 						arg_is_string[i] = 1;
 					}
 				} else if (codegen_find_static_array(ctx, arg_name)) {
@@ -1563,8 +1563,11 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 					call_arg_types[i] = "i32";
 				}
 			} else {
-				/* Check if arg is float/double */
-				if (expr->data.call.args[i]->resolved_type &&
+				/* Check if arg is type 6 (i8* pointer parameter from array param) */
+				if (arg_values[i] && arg_values[i]->type == 6) {
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = "i8*";
+				} else if (expr->data.call.args[i]->resolved_type &&
 				    (strcmp(expr->data.call.args[i]->resolved_type, "float") == 0 ||
 				     strcmp(expr->data.call.args[i]->resolved_type, "double") == 0)) {
 					strcpy(call_arg_vals[i], arg_bufs[i]);
