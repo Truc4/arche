@@ -139,8 +139,8 @@ static void resolve_uses(Program *prog, const char *source_path) {
 		free(mod);
 		free(found_path);
 
-		/* Skip past inserted module declarations */
-		i += mod->decl_count;
+		/* Skip past inserted module declarations and DECL_USE node */
+		i += mod->decl_count + 1;
 	}
 }
 
