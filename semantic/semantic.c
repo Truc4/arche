@@ -49,6 +49,9 @@ struct SemanticContext {
 	const char **const_values; /* literal lexeme strings */
 	int const_count;
 
+	char **static_array_names; /* static array names at module scope */
+	int static_array_count;
+
 	Scope *scopes;
 	int scope_count;
 
@@ -131,6 +134,15 @@ static FieldInfo *find_field(ArchetypeInfo *arch, const char *name) {
 static int find_known_func(SemanticContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->known_func_count; i++) {
 		if (strcmp(ctx->known_funcs[i], name) == 0) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int find_static_array(SemanticContext *ctx, const char *name) {
+	for (int i = 0; i < ctx->static_array_count; i++) {
+		if (strcmp(ctx->static_array_names[i], name) == 0) {
 			return 1;
 		}
 	}
@@ -402,13 +414,14 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 	case EXPR_NAME: {
 		const char *name = expr->data.name.name;
 
-		/* Check if it's a known function, variable, archetype, or constant */
+		/* Check if it's a known function, variable, archetype, constant, or static array */
 		int is_known_func = find_known_func(ctx, name);
 		int is_var = find_variable(ctx, name) != NULL;
 		int is_arch = find_archetype(ctx, name) != NULL;
 		int is_const = semantic_get_const_value(ctx, name) != NULL;
+		int is_static_array = find_static_array(ctx, name);
 
-		if (!is_known_func && !is_var && !is_arch && !is_const) {
+		if (!is_known_func && !is_var && !is_arch && !is_const && !is_static_array) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "Undefined symbol '%s'", name);
 			error(ctx, msg);
@@ -931,6 +944,45 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 	ctx->aliases[ctx->alias_count++] = entry;
 }
 
+static void analyze_static_array_decl(SemanticContext *ctx, StaticArrayDecl *sa) {
+	if (!sa)
+		return;
+
+	/* Validate element type is a scalar */
+	if (!sa->element_type) {
+		fprintf(stderr, "Error: static array '%s' missing element type\n", sa->name);
+		ctx->error_count++;
+		return;
+	}
+
+	if (sa->element_type->kind != TYPE_NAME) {
+		fprintf(stderr, "Error: static array '%s' element type must be scalar (int, float, char, etc.)\n", sa->name);
+		ctx->error_count++;
+		return;
+	}
+
+	const char *type_name = sa->element_type->data.name;
+	if (strcmp(type_name, "int") != 0 && strcmp(type_name, "float") != 0 &&
+	    strcmp(type_name, "char") != 0 && strcmp(type_name, "double") != 0) {
+		fprintf(stderr, "Error: static array '%s' has unsupported element type '%s'\n", sa->name, type_name);
+		ctx->error_count++;
+		return;
+	}
+
+	/* Validate size is positive */
+	if (sa->size <= 0) {
+		fprintf(stderr, "Error: static array '%s' has invalid size %d\n", sa->name, sa->size);
+		ctx->error_count++;
+		return;
+	}
+
+	/* Register the static array in the global scope */
+	ctx->static_array_names = realloc(ctx->static_array_names,
+			(ctx->static_array_count + 1) * sizeof(char *));
+	ctx->static_array_names[ctx->static_array_count] = sa->name;
+	ctx->static_array_count++;
+}
+
 static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 	if (!alloc)
 		return;
@@ -1124,6 +1176,9 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 	case DECL_STATIC:
 		analyze_static_decl(ctx, decl->data.alloc);
 		break;
+	case DECL_STATIC_ARRAY:
+		analyze_static_array_decl(ctx, decl->data.static_array);
+		break;
 	case DECL_PROC:
 		analyze_proc_decl(ctx, decl->data.proc);
 		break;
@@ -1149,6 +1204,8 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->const_names = NULL;
 	ctx->const_values = NULL;
 	ctx->const_count = 0;
+	ctx->static_array_names = NULL;
+	ctx->static_array_count = 0;
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
 	ctx->error_count = 0;
@@ -1219,6 +1276,9 @@ void semantic_context_free(SemanticContext *ctx) {
 	/* free constants (names only, values are owned by AST) */
 	free(ctx->const_names);
 	free(ctx->const_values);
+
+	/* free static array names (owned by AST) */
+	free(ctx->static_array_names);
 
 	/* free shapes (one per unique column structure) */
 	for (int i = 0; i < ctx->archetype_count; i++) {

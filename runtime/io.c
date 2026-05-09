@@ -60,3 +60,9 @@ int arche_fread_line(int fd, char *buf, int n) {
 	}
 	return len;
 }
+
+int arche_csv_read_chunk(int fd, char *buf, int max_bytes) {
+	if (fd <= 0 || fd > ARCHE_MAX_FILES || !arche_files[fd - 1])
+		return -1;
+	return (int)fread(buf, 1, max_bytes, arche_files[fd - 1]);
+}

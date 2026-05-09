@@ -709,19 +709,55 @@ static Decl *parse_static_decl(Parser *parser) {
 	if (check(parser, TOK_IDENT) && strcmp(token_text(parser->current), "static") == 0) {
 		advance(parser);
 		if (!check(parser, TOK_IDENT)) {
-			error(parser, "Expected archetype name after 'alloc'");
+			error(parser, "Expected name after 'static'");
 			return NULL;
 		}
-		char *arch_name = token_text(parser->current);
+		char *name = token_text(parser->current);
+		Token name_tok = parser->current;
 		advance(parser);
 
+		/* Check if this is a static array (static name: type[size];) or archetype (static Name(n);) */
+		if (check(parser, TOK_COLON)) {
+			/* Static array declaration */
+			advance(parser); /* consume ':' */
+			TypeRef *element_type = parse_type(parser);
+			if (!element_type) {
+				error(parser, "Expected type in static array declaration");
+				return NULL;
+			}
+
+			/* Validate that type is a shaped array */
+			if (element_type->kind != TYPE_SHAPED_ARRAY) {
+				error(parser, "Expected sized array type for static array (e.g. char[4194304])");
+				type_ref_free(element_type);
+				return NULL;
+			}
+
+			int size = element_type->data.shaped_array.rank;
+			TypeRef *elem_type = element_type->data.shaped_array.element_type;
+
+			if (!match(parser, TOK_SEMI)) {
+				error(parser, "Expected ';' after static array declaration");
+				type_ref_free(element_type);
+				return NULL;
+			}
+
+			Decl *decl = decl_create(DECL_STATIC_ARRAY);
+			decl->loc.line = name_tok.line;
+			decl->loc.column = name_tok.column;
+			decl->data.static_array = static_array_decl_create(name, elem_type, size);
+
+			return decl;
+		}
+
+		/* Otherwise, treat as static archetype allocation */
 		Decl *decl = malloc(sizeof(Decl));
 		decl->kind = DECL_STATIC;
-		decl->loc.line = parser->previous.line;
-		decl->loc.column = parser->previous.column;
+		decl->loc.line = name_tok.line;
+		decl->loc.column = name_tok.column;
 
 		StaticDecl *static_decl = malloc(sizeof(StaticDecl));
-		static_decl->archetype_name = arch_name;
+		static_decl->archetype_name = name;
 		static_decl->field_names = NULL;
 		static_decl->field_values = NULL;
 		static_decl->field_count = 0;

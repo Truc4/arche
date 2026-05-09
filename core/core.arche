@@ -14,6 +14,7 @@ extern proc arche_fwrite(fd: int, buf: char[], n: int);
 extern func arche_fopen_read(path: char[]) -> int;
 extern func arche_fread(fd: int, buf: char[], n: int) -> int;
 extern func arche_fread_line(fd: int, buf: char[], n: int) -> int;
+extern func arche_csv_read_chunk(fd: int, buf: char[], max_bytes: int) -> int;
 extern proc arche_fclose(fd: int);
 proc print_float(f: float) {
   printf("%g", f);

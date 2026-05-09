@@ -92,6 +92,14 @@ ConstDecl *const_decl_create(char *name, Expression *value) {
 	return constant;
 }
 
+StaticArrayDecl *static_array_decl_create(char *name, TypeRef *element_type, int size) {
+	StaticArrayDecl *sa = malloc(sizeof(StaticArrayDecl));
+	sa->name = name;
+	sa->element_type = element_type;
+	sa->size = size;
+	return sa;
+}
+
 Parameter *parameter_create(char *name, TypeRef *type) {
 	Parameter *param = malloc(sizeof(Parameter));
 	param->name = name;
@@ -208,6 +216,10 @@ void decl_free(Decl *decl) {
 		}
 		break;
 	}
+	case DECL_STATIC_ARRAY: {
+		static_array_decl_free(decl->data.static_array);
+		break;
+	}
 	}
 	free(decl);
 }
@@ -294,6 +306,14 @@ void field_decl_free(FieldDecl *field) {
 	free(field->name);
 	type_ref_free(field->type);
 	free(field);
+}
+
+void static_array_decl_free(StaticArrayDecl *sa) {
+	if (!sa)
+		return;
+	free(sa->name);
+	type_ref_free(sa->element_type);
+	free(sa);
 }
 
 void type_ref_free(TypeRef *type) {

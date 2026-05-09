@@ -72,6 +72,11 @@ struct CodegenContext {
 	int alloc_count;
 	int alloc_capacity;
 
+	/* Static arrays (name -> StaticArrayDecl mapping) */
+	StaticArrayDecl **static_arrays;
+	int static_array_count;
+	int static_array_capacity;
+
 	/* Alloca hoisting: collect allocas during function body gen, emit at entry */
 	char *alloca_buffer;
 	size_t alloca_buf_size;
@@ -101,6 +106,25 @@ static const char *codegen_get_sys_version(CodegenContext *ctx, const char *sys_
 		if (strcmp(ctx->sys_versions[i].sys_name, sys_name) == 0 &&
 		    strcmp(ctx->sys_versions[i].arch_name, arch_name) == 0) {
 			return ctx->sys_versions[i].versioned_name;
+		}
+	}
+	return NULL;
+}
+
+/* ========== STATIC ARRAY TRACKING ========== */
+
+static void codegen_register_static_array(CodegenContext *ctx, StaticArrayDecl *sa) {
+	if (ctx->static_array_count >= ctx->static_array_capacity) {
+		ctx->static_array_capacity = (ctx->static_array_capacity == 0) ? 16 : ctx->static_array_capacity * 2;
+		ctx->static_arrays = realloc(ctx->static_arrays, ctx->static_array_capacity * sizeof(StaticArrayDecl *));
+	}
+	ctx->static_arrays[ctx->static_array_count++] = sa;
+}
+
+static StaticArrayDecl *codegen_find_static_array(CodegenContext *ctx, const char *name) {
+	for (int i = 0; i < ctx->static_array_count; i++) {
+		if (strcmp(ctx->static_arrays[i]->name, name) == 0) {
+			return ctx->static_arrays[i];
 		}
 	}
 	return NULL;
@@ -607,6 +631,11 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 				/* Type-2 (string), 3 (arch), 5 (array), 6 (i8* param): return pointer directly */
 				strcpy(result_buf, val->llvm_name);
 			}
+		} else if (codegen_find_static_array(ctx, name)) {
+			/* Static array name — return global reference @name */
+			char global_ref[256];
+			snprintf(global_ref, sizeof(global_ref), "@%s", name);
+			strcpy(result_buf, global_ref);
 		} else if (find_archetype_decl(ctx, name)) {
 			/* Archetype name — static global is @X directly; dynamic is loaded from @archetype_X */
 			if (get_arch_static_capacity(ctx, name) > 0) {
@@ -4780,6 +4809,9 @@ CodegenContext *codegen_create(Program *prog, SemanticContext *sem_ctx) {
 	ctx->top_level_allocs = NULL;
 	ctx->alloc_count = 0;
 	ctx->alloc_capacity = 0;
+	ctx->static_arrays = NULL;
+	ctx->static_array_count = 0;
+	ctx->static_array_capacity = 0;
 	ctx->alloca_buffer = NULL;
 	ctx->alloca_buf_size = 0;
 	ctx->alloca_buf_pos = 0;
@@ -4822,6 +4854,22 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		case DECL_STATIC:
 			codegen_static_decl(ctx, decl->data.alloc);
 			break;
+		case DECL_STATIC_ARRAY: {
+			StaticArrayDecl *sa = decl->data.static_array;
+			const char *llvm_type = "i8";
+			const char *elem_name = sa->element_type->data.name;
+			if (strcmp(elem_name, "double") == 0) {
+				llvm_type = "double";
+			} else if (strcmp(elem_name, "float") == 0) {
+				llvm_type = "float";
+			} else if (strcmp(elem_name, "int") == 0) {
+				llvm_type = "i32";
+			}
+			buffer_append_fmt(ctx, "@%s = global [%d x %s] zeroinitializer\n",
+					  sa->name, sa->size, llvm_type);
+			codegen_register_static_array(ctx, sa);
+			break;
+		}
 		case DECL_FUNC:
 			codegen_func_decl(ctx, decl->data.func);
 			break;
@@ -4914,5 +4962,6 @@ void codegen_free(CodegenContext *ctx) {
 	free(ctx->sys_versions);
 	free(ctx->loop_exit_labels);
 	free(ctx->top_level_allocs);
+	free(ctx->static_arrays);
 	free(ctx);
 }
