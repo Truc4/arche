@@ -1393,6 +1393,84 @@ static Statement *parse_statement(Parser *parser) {
 		}
 	}
 
+	/* Paren-based multi-bind: (let x:, y) = expr; */
+	if (match(parser, TOK_LPAREN)) {
+
+			BindingTarget *targets = NULL;
+			int target_count = 0;
+			int max_targets = 16;
+			targets = malloc(max_targets * sizeof(BindingTarget));
+
+			/* Parse binding targets with loop guard */
+			int loop_count = 0;
+			const int MAX_TARGETS = 1000;
+			while (!check(parser, TOK_RPAREN) && !check(parser, TOK_EOF)) {
+				if (++loop_count > MAX_TARGETS) {
+					error(parser, "Too many binding targets");
+					break;
+				}
+
+				int is_new = match(parser, TOK_LET) ? 1 : 0;
+
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "Expected variable name in binding");
+					break;
+				}
+
+				char *name = token_text(parser->current);
+				advance(parser);
+
+				TypeRef *type = NULL;
+				if (is_new && match(parser, TOK_COLON)) {
+					if (!check(parser, TOK_COMMA) && !check(parser, TOK_RPAREN)) {
+						type = parse_type(parser);
+					}
+				}
+
+				if (target_count >= max_targets) {
+					max_targets *= 2;
+					targets = realloc(targets, max_targets * sizeof(BindingTarget));
+				}
+
+				targets[target_count].name = name;
+				targets[target_count].is_new = is_new;
+				targets[target_count].type = type;
+				target_count++;
+
+				if (!match(parser, TOK_COMMA)) {
+					break;
+				}
+			}
+
+			if (!match(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')' after binding targets");
+				goto cleanup;
+			}
+
+			if (!match(parser, TOK_EQ)) {
+				error(parser, "Expected '=' after binding targets");
+				goto cleanup;
+			}
+
+			Expression *value = parse_expression(parser);
+			if (!value) {
+				goto cleanup;
+			}
+
+			if (!match(parser, TOK_SEMI)) {
+				error(parser, "Expected ';' after binding statement");
+			}
+
+			Statement *stmt = statement_create(STMT_MULTI_BIND);
+			stmt->loc.line = parser->previous.line;
+			stmt->loc.column = parser->previous.column;
+			stmt->data.multi_bind.targets = targets;
+			stmt->data.multi_bind.target_count = target_count;
+			stmt->data.multi_bind.value = value;
+			parser->recursion_depth--;
+			return stmt;
+	}
+
 	if (match(parser, TOK_LET)) {
 		int let_line = parser->previous.line;
 		int let_column = parser->previous.column;

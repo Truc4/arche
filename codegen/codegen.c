@@ -2873,6 +2873,188 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 		break;
 	}
 
+	case STMT_MULTI_BIND: {
+		Expression *rhs = stmt->data.multi_bind.value;
+		if (rhs && rhs->type == EXPR_CALL) {
+			char *func_name = NULL;
+			if (rhs->data.call.callee && rhs->data.call.callee->type == EXPR_NAME) {
+				func_name = rhs->data.call.callee->data.name.name;
+			}
+
+			FuncDecl *callee_func = func_name ? find_func_decl(ctx, func_name) : NULL;
+			if (callee_func && callee_func->param_count >= 0) {
+				/* Collect out param info: size from TypeRef and SSA names */
+				int *out_buf_sizes = malloc(callee_func->param_count * sizeof(int));
+				char **out_buf_names = malloc(callee_func->param_count * sizeof(char *));
+				int out_param_count = 0;
+
+				for (int i = 0; i < callee_func->param_count; i++) {
+					if (callee_func->params[i] && callee_func->params[i]->is_out) {
+						/* Extract size from param type (e.g., out buf: char[256]) */
+						TypeRef *pt = callee_func->params[i]->type;
+						int size = 256; /* default */
+
+						if (pt && pt->kind == TYPE_SHAPED_ARRAY && pt->data.shaped_array.element_type &&
+						    pt->data.shaped_array.element_type->kind == TYPE_NAME &&
+						    strcmp(pt->data.shaped_array.element_type->data.name, "char") == 0) {
+							size = pt->data.shaped_array.rank;
+						}
+
+						/* Allocate zero-initialized buffer on stack */
+						char *buf_name = gen_value_name(ctx);
+						emit_alloca(ctx, "  %s = alloca [%d x i8]\n", buf_name, size);
+						char *ptr_for_memset = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", ptr_for_memset, size,
+						                  buf_name);
+						buffer_append_fmt(ctx,
+						                  "  call void @llvm.memset.p0i8.i64(i8* %s, i8 0, i64 %d, i1 false)\n",
+						                  ptr_for_memset, size);
+
+						out_buf_names[out_param_count] = buf_name;
+						out_buf_sizes[out_param_count] = size;
+						out_param_count++;
+					}
+				}
+
+				/* Evaluate arguments */
+				char **arg_bufs = malloc(rhs->data.call.arg_count * sizeof(char *));
+				for (int i = 0; i < rhs->data.call.arg_count; i++) {
+					arg_bufs[i] = malloc(256);
+					codegen_expression(ctx, rhs->data.call.args[i], arg_bufs[i]);
+				}
+
+				/* Build call args: use out buffers for out params, regular args otherwise */
+				char **call_arg_vals = malloc(rhs->data.call.arg_count * sizeof(char *));
+				const char **call_arg_types = malloc(rhs->data.call.arg_count * sizeof(const char *));
+				int out_idx = 0;
+
+				for (int i = 0; i < rhs->data.call.arg_count; i++) {
+					call_arg_vals[i] = malloc(256);
+
+					int is_out =
+					    (i < callee_func->param_count && callee_func->params[i] && callee_func->params[i]->is_out);
+
+					if (is_out && out_idx < out_param_count) {
+						/* Bitcast [N x i8]* to i8* */
+						char *ptr_cast = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", ptr_cast,
+						                  out_buf_sizes[out_idx], out_buf_names[out_idx]);
+						strcpy(call_arg_vals[i], ptr_cast);
+						call_arg_types[i] = "i8*";
+						out_idx++;
+					} else {
+						strcpy(call_arg_vals[i], arg_bufs[i]);
+						call_arg_types[i] = "i32";
+					}
+				}
+
+				/* Emit call */
+				char *res_name = gen_value_name(ctx);
+				const char *return_type = "i32";
+				if (callee_func->return_type && callee_func->return_type->kind == TYPE_NAME &&
+				    callee_func->return_type->data.name) {
+					return_type = llvm_type_from_arche(callee_func->return_type->data.name);
+				}
+
+				buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type,
+				                  func_name ? func_name : "unknown");
+				for (int i = 0; i < rhs->data.call.arg_count; i++) {
+					buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
+					if (i < rhs->data.call.arg_count - 1)
+						buffer_append(ctx, ", ");
+				}
+				buffer_append(ctx, ")\n");
+
+				/* Assign to targets: for each target, store the corresponding out param or return value */
+				out_idx = 0;
+				for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
+					BindingTarget *target = &stmt->data.multi_bind.targets[i];
+
+					if (target->is_new) {
+						/* New declaration: allocate and register */
+						if (i < out_param_count) {
+							/* Out parameter: register buffer directly */
+							ValueInfo *vi = malloc(sizeof(ValueInfo));
+							vi->name = malloc(strlen(target->name) + 1);
+							strcpy(vi->name, target->name);
+							vi->llvm_name = malloc(strlen(out_buf_names[i]) + 1);
+							strcpy(vi->llvm_name, out_buf_names[i]);
+							vi->type = 7; /* char buffer */
+							vi->arch_name = NULL;
+							vi->string_len = out_buf_sizes[i];
+							vi->field_type = "char";
+							vi->bit_width = 8;
+
+							if (ctx->scope_count > 0) {
+								ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+								scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+								scope->values[scope->value_count++] = vi;
+							}
+						} else {
+							/* Return value: allocate, store, and register */
+							char *alloca_name = gen_value_name(ctx);
+							emit_alloca(ctx, "  %s = alloca %s\n", alloca_name, return_type);
+							buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", return_type, res_name, return_type,
+							                  alloca_name);
+
+							ValueInfo *vi = malloc(sizeof(ValueInfo));
+							vi->name = malloc(strlen(target->name) + 1);
+							strcpy(vi->name, target->name);
+							vi->llvm_name = malloc(strlen(alloca_name) + 1);
+							strcpy(vi->llvm_name, alloca_name);
+							vi->type = 1;
+							vi->arch_name = NULL;
+							vi->string_len = -1;
+							if (return_type[0] == 'd') {
+								vi->field_type = "float";
+								vi->bit_width = 64;
+							} else if (strcmp(return_type, "i64") == 0) {
+								vi->field_type = "handle";
+								vi->bit_width = 64;
+							} else {
+								vi->field_type = "int";
+								vi->bit_width = 32;
+							}
+
+							if (ctx->scope_count > 0) {
+								ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+								scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+								scope->values[scope->value_count++] = vi;
+							}
+						}
+					} else {
+						/* Assignment to existing variable */
+						ValueInfo *existing = find_value(ctx, target->name);
+						if (existing) {
+							if (i < out_param_count) {
+								/* Out parameter: copy buffer pointer (but this shouldn't happen in practice) */
+								/* For now, just store the buffer name */
+								strcpy(existing->llvm_name, out_buf_names[i]);
+							} else {
+								/* Return value: store to existing alloca */
+								buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", return_type, res_name, return_type,
+								                  existing->llvm_name);
+							}
+						}
+					}
+				}
+
+				/* Cleanup */
+				free(out_buf_sizes);
+				free(out_buf_names);
+				for (int i = 0; i < rhs->data.call.arg_count; i++)
+					free(arg_bufs[i]);
+				free(arg_bufs);
+				for (int i = 0; i < rhs->data.call.arg_count; i++)
+					free(call_arg_vals[i]);
+				free(call_arg_vals);
+				free(call_arg_types);
+				break;
+			}
+		}
+		break;
+	}
+
 	case STMT_ASSIGN: {
 		/* Check if this is a whole-column operation (Path A or B) */
 		int is_whole_column = 0;
@@ -3231,12 +3413,15 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				codegen_expression(ctx, stmt->data.assign_stmt.target->data.index.indices[0], idx_buf);
 			}
 
-			/* Check if target is type-7 char buffer */
+			/* Check if target is type-7 char buffer or type-6 i8* parameter */
 			ValueInfo *type7_target = NULL;
+			ValueInfo *type6_target = NULL;
 			if (stmt->data.assign_stmt.target->data.index.base->type == EXPR_NAME) {
 				ValueInfo *vi = find_value(ctx, stmt->data.assign_stmt.target->data.index.base->data.name.name);
 				if (vi && vi->type == 7) {
 					type7_target = vi;
+				} else if (vi && vi->type == 6) {
+					type6_target = vi;
 				}
 			}
 
@@ -3249,6 +3434,21 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 				char *target_addr = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i64 0, i64 %s\n", target_addr,
 				                  type7_target->string_len, type7_target->string_len, base_buf, idx_i64);
+
+				/* Truncate i32 value to i8 for storing */
+				char *trunc_val = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = trunc i32 %s to i8\n", trunc_val, value_buf);
+				buffer_append_fmt(ctx, "  store i8 %s, i8* %s, align 1\n", trunc_val, target_addr);
+				break;
+			} else if (type6_target && stmt->data.assign_stmt.target->data.index.index_count > 0) {
+				/* Type-6 i8* parameter (char array parameter) assignment */
+				/* Convert i32 index to i64 for getelementptr */
+				char *idx_i64 = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx_i64, idx_buf);
+
+				char *target_addr = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %s\n", target_addr,
+				                  base_buf, idx_i64);
 
 				/* Truncate i32 value to i8 for storing */
 				char *trunc_val = gen_value_name(ctx);
@@ -4462,8 +4662,18 @@ static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
 		const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : "int";
 		const char *llvm_type = llvm_type_from_arche(type_name);
 
-		/* Check if type is char[] (i8*) */
+		/* Check if type is char[] (i8*) - either TYPE_ARRAY or TYPE_SHAPED_ARRAY */
+		int is_char_array = 0;
 		if (param_type && param_type->kind == TYPE_ARRAY) {
+			is_char_array = 1;
+		} else if (param_type && param_type->kind == TYPE_SHAPED_ARRAY &&
+		           param_type->data.shaped_array.element_type &&
+		           param_type->data.shaped_array.element_type->kind == TYPE_NAME &&
+		           strcmp(param_type->data.shaped_array.element_type->data.name, "char") == 0) {
+			is_char_array = 1;
+		}
+
+		if (is_char_array) {
 			buffer_append_fmt(ctx, "i8* %%arg%d", i);
 		} else {
 			buffer_append_fmt(ctx, "%s %%arg%d", llvm_type, i);
@@ -4483,13 +4693,36 @@ static void codegen_func_decl(CodegenContext *ctx, FuncDecl *func) {
 		char param_name[32];
 		snprintf(param_name, sizeof(param_name), "%%arg%d", i);
 
-		/* For char[] params, mark as i8* (type 6) */
-		int param_type = 0;
-		if (func->params[i]->type && func->params[i]->type->kind == TYPE_ARRAY) {
-			param_type = 6; /* i8* parameter */
+		/* For char[] params, mark as i8* (type 6) with field_type = "char" */
+		TypeRef *ptype = func->params[i]->type;
+		int is_char_array = 0;
+		if (ptype && ptype->kind == TYPE_ARRAY) {
+			is_char_array = 1;
+		} else if (ptype && ptype->kind == TYPE_SHAPED_ARRAY &&
+		           ptype->data.shaped_array.element_type &&
+		           ptype->data.shaped_array.element_type->kind == TYPE_NAME &&
+		           strcmp(ptype->data.shaped_array.element_type->data.name, "char") == 0) {
+			is_char_array = 1;
 		}
 
-		add_value(ctx, func->params[i]->name, param_name, param_type);
+		if (is_char_array) {
+			/* Manually create ValueInfo for char array parameter to set field_type */
+			ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+			ValueInfo *vi = malloc(sizeof(ValueInfo));
+			vi->name = malloc(strlen(func->params[i]->name) + 1);
+			strcpy(vi->name, func->params[i]->name);
+			vi->llvm_name = malloc(strlen(param_name) + 1);
+			strcpy(vi->llvm_name, param_name);
+			vi->type = 6; /* i8* parameter */
+			vi->arch_name = NULL;
+			vi->string_len = -1;
+			vi->field_type = "char";
+			vi->bit_width = 8;
+			scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+			scope->values[scope->value_count++] = vi;
+		} else {
+			add_value(ctx, func->params[i]->name, param_name, 0);
+		}
 	}
 
 	/* Generate function body */
