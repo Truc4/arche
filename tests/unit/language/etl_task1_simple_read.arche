@@ -1,0 +1,54 @@
+arche Transaction {
+  price: float,
+  quantity: int,
+}
+
+static Transaction(10, 10) {
+  price: 0.0,
+  quantity: 0,
+};
+
+proc main() {
+  printf("Starting\n");
+
+  let fd := arche_fopen_read("tests/unit/language/etl_test_data.csv");
+  printf("Opened file: %d\n", fd);
+
+  if (fd > 0) {
+    let line: char[256];
+    let idx := 0;
+
+    arche_fread_line(fd, line, 256);
+    printf("Skipped header\n");
+
+    for (;idx < 10;) {
+      let n := arche_fread_line(fd, line, 256);
+      printf("Read line %d: %d bytes\n", idx, n);
+
+      if (n <= 0) {
+        printf("EOF\n");
+        break;
+      }
+
+      let price := 10.5;
+      let qty := 100;
+
+      Transaction.price[idx] = price;
+      Transaction.quantity[idx] = qty;
+
+      idx = idx + 1;
+    }
+
+    printf("Loaded %d rows\n", idx);
+
+    let sum := 0.0;
+    let m := 0;
+    for (;m < idx;) {
+      sum = sum + Transaction.price[m];
+      m = m + 1;
+    }
+
+    printf("Sum: %g\n", sum);
+    arche_fclose(fd);
+  }
+}

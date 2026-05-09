@@ -1,0 +1,13 @@
+proc main() {
+  printf("Starting test\n");
+
+  let fd := arche_fopen_read("tests/unit/language/etl_test_data.csv");
+  printf("Open returned: %d\n", fd);
+
+  if (fd > 0) {
+    let line: char[256];
+    let n := arche_fread_line(fd, line, 256);
+    printf("Read %d bytes\n", n);
+    arche_fclose(fd);
+  }
+}

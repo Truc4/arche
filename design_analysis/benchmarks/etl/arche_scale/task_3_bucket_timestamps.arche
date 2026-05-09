@@ -1,106 +1,87 @@
-// Task 3: Bucket prices and hours (100M rows)
+// Task 3: Bucket prices and extract hours from timestamps
 // Compute price_bucket = price / 10.0 and hour_bucket from timestamp
 
 arche Transaction {
   price: float,
-  quantity: int,
-  price_bucket: float,
   hour_bucket: int,
+  price_bucket: float,
 }
 
-
-static Transaction(1000000, 1000000) {
+static Transaction(100000, 100000) {
   price: 0.0,
-  quantity: 0,
-  price_bucket: 0.0,
   hour_bucket: 0,
+  price_bucket: 0.0,
 };
 
-
-proc load_transactions() {
+proc main() {
   let fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv");
-  let line: char[128];
-  let price_str: char[32];
-  let qty_str: char[32];
-  let ts_str: char[32];
 
-  arche_fread_line(fd, line, 128);
+  if (fd > 0) {
+    let line: char[256];
+    let price_str: char[32];
+    let ts_str: char[32];
 
-  let idx := 0;
-  for (;idx < 1000000;) {
-    let n := arche_fread_line(fd, line, 128);
-    if (n <= 0) { break; }
+    arche_fread_line(fd, line, 256);
 
-    let line_pos := 0;
-    let field_idx := 0;
-    let c0 := 0;
-    let c1 := 0;
-    let c2 := 0;
-    let c3 := 0;
+    let idx := 0;
+    for (;idx < 100000;) {
+      let n := arche_fread_line(fd, line, 256);
+      if (n <= 0) {
+        break;
+      }
 
-    for (;line_pos < n;) {
-      if (line[line_pos] == ',') {
-        field_idx = field_idx + 1;
-        if (field_idx == 1) { c0 = line_pos; }
-        if (field_idx == 2) { c1 = line_pos; }
-        if (field_idx == 3) { c2 = line_pos; }
-        if (field_idx == 4) { c3 = line_pos; }
-        line_pos = line_pos + 1;
-      } else {
+      let line_pos := 0;
+      let field_idx := 0;
+      let c0 := 0;
+      let c1 := 0;
+
+      for (;line_pos < n;) {
+        if (line[line_pos] == ',') {
+          field_idx = field_idx + 1;
+          if (field_idx == 1) { c0 = line_pos; }
+          if (field_idx == 2) { c1 = line_pos; }
+        }
         line_pos = line_pos + 1;
       }
+
+      let i := 0;
+      for (;i < c0;) {
+        ts_str[i] = line[i];
+        i = i + 1;
+      }
+      ts_str[i] = 0;
+
+      let j := 0;
+      for (;j < c1 - c0 - 1;) {
+        price_str[j] = line[c0 + 1 + j];
+        j = j + 1;
+      }
+      price_str[j] = 0;
+
+      let price := atof(price_str);
+      let hour := (ts_str[11] - 48) * 10 + (ts_str[12] - 48);
+
+      Transaction.price[idx] = price;
+      Transaction.hour_bucket[idx] = hour;
+
+      idx = idx + 1;
     }
 
-    let i := 0;
-    for (;i < c0 - 0;) {
-      ts_str[i] = line[0 + i];
-      i = i + 1;
+    arche_fclose(fd);
+
+    Transaction.price_bucket = Transaction.price / 10.0;
+
+    let price_sum := 0.0;
+    let hour_sum := 0;
+    let m := 0;
+    for (;m < idx;) {
+      price_sum = price_sum + Transaction.price_bucket[m];
+      hour_sum = hour_sum + Transaction.hour_bucket[m];
+      m = m + 1;
     }
-    ts_str[i] = 0;
 
-    let j := 0;
-    for (;j < c1 - c0 - 1;) {
-      price_str[j] = line[c0 + 1 + j];
-      j = j + 1;
-    }
-    price_str[j] = 0;
-
-    let k := 0;
-    for (;k < c2 - c1 - 1;) {
-      qty_str[k] = line[c1 + 1 + k];
-      k = k + 1;
-    }
-    qty_str[k] = 0;
-
-    let price := atof(price_str);
-    let quantity := atoi(qty_str);
-    let hour := (ts_str[11] - 48) * 10 + (ts_str[12] - 48);
-
-    insert(Transaction, price, quantity, 0.0, hour);
-
-    idx = idx + 1;
+    printf("task3_checksum: %g\n", price_sum);
+  } else {
+    printf("FAIL: could not open file\n");
   }
-
-  arche_fclose(fd);
-}
-
-
-proc compute_buckets() {
-  Transaction.price_bucket = Transaction.price / 10.0;
-}
-
-
-proc main() {
-  load_transactions();
-  compute_buckets();
-  let price_sum := 0.0;
-  let hour_sum := 0;
-  let i := 0;
-  for (;i < Transaction_count;) {
-    price_sum = price_sum + Transaction.price_bucket[i];
-    hour_sum = hour_sum + Transaction.hour_bucket[i];
-    i = i + 1;
-  }
-  printf("task3_price_checksum: %g\n", price_sum);
-  printf("task3_hour_checksum: %d\n", hour_sum);
 }

@@ -1,0 +1,38 @@
+arche Transaction {
+  price: float,
+  quantity: int,
+  revenue: float,
+}
+
+static Transaction(10, 10) {
+  price: 0.0,
+  quantity: 0,
+  revenue: 0.0,
+};
+
+proc main() {
+  let idx := 0;
+
+  Transaction.price[0] = 10.5;
+  Transaction.quantity[0] = 100;
+  idx = idx + 1;
+
+  Transaction.price[1] = 11.2;
+  Transaction.quantity[1] = 150;
+  idx = idx + 1;
+
+  Transaction.price[2] = 9.8;
+  Transaction.quantity[2] = 75;
+  idx = idx + 1;
+
+  Transaction.revenue = Transaction.price * Transaction.quantity;
+
+  let sum := 0.0;
+  let m := 0;
+  for (;m < idx;) {
+    sum = sum + Transaction.revenue[m];
+    m = m + 1;
+  }
+
+  printf("Loaded %d rows, sum of revenue: %g\n", idx, sum);
+}
