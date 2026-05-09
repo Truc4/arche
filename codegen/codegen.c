@@ -628,8 +628,17 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 	case EXPR_BINARY: {
 		char left_buf[256], right_buf[256];
+
+		/* Disable vectorization for comparisons (they return scalar int 0/1) */
+		int save_vector_lanes = ctx->vector_lanes;
+		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE) {
+			ctx->vector_lanes = 0;
+		}
+
 		codegen_expression(ctx, expr->data.binary.left, left_buf);
 		codegen_expression(ctx, expr->data.binary.right, right_buf);
+
+		ctx->vector_lanes = save_vector_lanes;
 
 		const char *op;
 		int is_float = 0;
@@ -715,7 +724,15 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			}
 			if (left_needs_conv) {
 				left_conv = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = sitofp i32 %s to double\n", left_conv, left_buf);
+				if (ctx->vector_lanes > 0) {
+					char from_type_buf[64];
+					char to_type_buf[64];
+					snprintf(from_type_buf, sizeof(from_type_buf), "<%d x i32>", ctx->vector_lanes);
+					snprintf(to_type_buf, sizeof(to_type_buf), "<%d x double>", ctx->vector_lanes);
+					buffer_append_fmt(ctx, "  %s = sitofp %s %s to %s\n", left_conv, from_type_buf, left_buf, to_type_buf);
+				} else {
+					buffer_append_fmt(ctx, "  %s = sitofp i32 %s to double\n", left_conv, left_buf);
+				}
 				left_val = left_conv;
 			}
 
@@ -730,7 +747,15 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			}
 			if (right_needs_conv) {
 				right_conv = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = sitofp i32 %s to double\n", right_conv, right_buf);
+				if (ctx->vector_lanes > 0) {
+					char from_type_buf[64];
+					char to_type_buf[64];
+					snprintf(from_type_buf, sizeof(from_type_buf), "<%d x i32>", ctx->vector_lanes);
+					snprintf(to_type_buf, sizeof(to_type_buf), "<%d x double>", ctx->vector_lanes);
+					buffer_append_fmt(ctx, "  %s = sitofp %s %s to %s\n", right_conv, from_type_buf, right_buf, to_type_buf);
+				} else {
+					buffer_append_fmt(ctx, "  %s = sitofp i32 %s to double\n", right_conv, right_buf);
+				}
 				right_val = right_conv;
 			}
 
@@ -760,7 +785,8 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 		}
 
 		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE) {
-			/* comparison: produce i1, then zext to i32 (match C: comparisons return int 0/1) */
+			/* Comparison: always scalar (C semantics: comparisons return int 0/1) */
+			/* For vectorized operands, use scalar paths for comparisons */
 			const char *cmp_type = is_float ? "double" : "i32";
 			char *cmp_i1 = gen_value_name(ctx);
 			if (is_float) {
@@ -770,7 +796,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			}
 			buffer_append_fmt(ctx, "  %s = zext i1 %s to i32\n", res_name, cmp_i1);
 		} else {
-			/* arithmetic */
+			/* arithmetic: vectorized if ctx->vector_lanes > 0 */
 			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", res_name, op, type, left_val, right_val);
 		}
 
@@ -2187,10 +2213,14 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 	buffer_append_fmt(ctx, "%s:\n", vec_body_lbl);
 	snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", vi);
 
-	/* Vectorization disabled pending proper mixed-type handling */
-	ctx->vector_lanes = 0;
+	/* Enable vectorization for float columns with vector type conversions for mixed types */
+	if (strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0) {
+		ctx->vector_lanes = 4;
+	} else {
+		ctx->vector_lanes = 0;
+	}
 
-	/* Evaluate RHS with scalar context */
+	/* Evaluate RHS with appropriate vector context */
 	char rhs_buf[256];
 	codegen_expression(ctx, rhs, rhs_buf);
 

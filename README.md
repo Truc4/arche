@@ -369,10 +369,10 @@ Real-world benchmarks on CSV data show Arche's performance on data processing ta
 
 | Task | Operation | Arche | Pandas | Speedup |
 |------|-----------|-------|--------|---------|
-| Task1 | `revenue = price × quantity` | 1.033ms | 2.160ms | **2.09x** |
-| Task2 | `valid = quantity > 0` | 1.256ms | 2.154ms | **1.71x** |
-| Task3 | `bucket = price / 10` | 1.321ms | 2.396ms | **1.81x** |
-| Task4 | `total = Σ(price × qty)` | 1.057ms | 1.093ms | **1.03x** |
+| Task1 | `revenue = price × quantity` | 1.032ms | 2.160ms | **2.09x** |
+| Task2 | `valid = quantity > 0` | 0.774ms | 2.154ms | **2.78x** |
+| Task3 | `bucket = price / 10` | 0.868ms | 2.396ms | **2.76x** |
+| Task4 | `total = Σ(price × qty)` | 0.727ms | 1.093ms | **1.50x** |
 
 Real-world workflow speed. CSV write dominates execution time; Arche's tight loops beat Pandas serialization overhead.
 
@@ -385,7 +385,7 @@ See `design_analysis/README.md` for full analysis. See `design_analysis/benchmar
 Whole-column operations like `Particle.pos = Particle.pos + Particle.vel` don't have explicit loops in source code—the compiler generates them. This implicit loop codegen is critical to performance:
 
 - **Column base hoisting**: Column pointers are computed once before the loop and cached, not recalculated per iteration
-- **Vectorization-ready**: Loop structure supports vector loads/stores (currently scalar, but infrastructure ready)
+- **Vectorization**: Loop structure supports vector loads/stores for float/double columns
 - **Bounds checking**: Count metadata is loaded once; element-wise indexing is bounds-safe by design
 - **Static allocation awareness**: Codegen treats static and dynamic allocations differently to avoid pointer indirection where possible
 
