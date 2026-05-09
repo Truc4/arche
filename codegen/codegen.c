@@ -633,7 +633,7 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 			}
 		} else if (codegen_find_static_array(ctx, name)) {
 			/* Static array name — return global reference @name */
-			/* Note: caller must convert this to pointer when passing to functions */
+			/* Function call handling will convert to pointer when needed */
 			char global_ref[256];
 			snprintf(global_ref, sizeof(global_ref), "@%s", name);
 			strcpy(result_buf, global_ref);
@@ -1422,9 +1422,34 @@ static void codegen_expression(CodegenContext *ctx, Expression *expr, char *resu
 
 			/* Handle type conversions, emit code before call if needed */
 			if (arg_is_static_array[i]) {
-				/* Static array: use it directly (already a pointer-like value @name) */
-				strcpy(call_arg_vals[i], arg_bufs[i]);
-				call_arg_types[i] = "i8*"; /* assume char array; could be refined */
+				/* Static array: emit getelementptr to convert to pointer */
+				const char *arg_name = expr->data.call.args[i]->data.name.name;
+				StaticArrayDecl *sa = codegen_find_static_array(ctx, arg_name);
+				if (sa) {
+					const char *elem_type = "i8";
+					const char *elem_ptr_type = "i8*";
+					if (sa->element_type && sa->element_type->kind == TYPE_NAME && sa->element_type->data.name) {
+						const char *elem_name = sa->element_type->data.name;
+						if (strcmp(elem_name, "double") == 0) {
+							elem_type = "double";
+							elem_ptr_type = "double*";
+						} else if (strcmp(elem_name, "float") == 0) {
+							elem_type = "float";
+							elem_ptr_type = "float*";
+						} else if (strcmp(elem_name, "int") == 0) {
+							elem_type = "i32";
+							elem_ptr_type = "i32*";
+						}
+					}
+					char *gep = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* @%s, i64 0, i64 0\n", gep,
+					                  sa->size, elem_type, sa->size, elem_type, arg_name);
+					strcpy(call_arg_vals[i], gep);
+					call_arg_types[i] = elem_ptr_type;
+				} else {
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = "i8*";
+				}
 			} else if (arg_values[i] && arg_values[i]->type == 7) {
 				/* Arg is char buffer [N x i8]* — cast to i8* for C functions */
 				char *bitcast = gen_value_name(ctx);

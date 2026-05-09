@@ -1,5 +1,7 @@
 // RUN: %arche -o %t %s && %t | grep "PASS"
+use csv;
 
+static buf: char[65536];
 
 proc main() {
   let fd := csv_open("tests/fixtures/data.csv");
