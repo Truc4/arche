@@ -4,7 +4,7 @@ use csv;
 static buf: char[65536];
 
 proc main() {
-  let fd := csv_open("tests/fixtures/data.csv");
+  let fd := csv_open("/home/curt/Code/arche/tests/fixtures/data.csv");
   csv_skip_header(fd);
   let rows := 0;
   let buf, n := csv_read_chunk(fd, buf, 65536);
