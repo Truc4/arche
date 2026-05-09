@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 
 #define ARCHE_MAX_FILES 64
 static FILE *arche_files[ARCHE_MAX_FILES];
@@ -45,4 +46,17 @@ int arche_fread(int fd, char *buf, int n) {
 	if (fd > 0 && fd <= ARCHE_MAX_FILES && arche_files[fd - 1])
 		return fread(buf, 1, n, arche_files[fd - 1]);
 	return 0;
+}
+
+int arche_fread_line(int fd, char *buf, int n) {
+	if (fd <= 0 || fd > ARCHE_MAX_FILES || !arche_files[fd - 1])
+		return -1;
+	if (fgets(buf, n, arche_files[fd - 1]) == NULL)
+		return 0;
+	int len = strlen(buf);
+	if (len > 0 && buf[len - 1] == '\n') {
+		buf[len - 1] = '\0';
+		len--;
+	}
+	return len;
 }

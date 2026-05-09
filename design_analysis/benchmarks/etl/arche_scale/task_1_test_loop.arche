@@ -1,0 +1,49 @@
+arche Transaction {
+  price: float,
+  quantity: int,
+  revenue: float,
+}
+
+static Transaction(100, 100) {
+  price: 0.0,
+  quantity: 0,
+  revenue: 0.0,
+};
+
+proc main() {
+  let fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv");
+  let line: char[128];
+  let price_str: char[32];
+  let qty_str: char[32];
+
+  arche_fread_line(fd, line, 128);
+
+  let idx := 0;
+  for (;idx < 100;) {
+    let n := arche_fread_line(fd, line, 128);
+    if (n <= 0) { break; }
+
+    let line_pos := 0;
+    let field_idx := 0;
+    let c1 := 0;
+    let c2 := 0;
+    let c3 := 0;
+
+    for (;line_pos < n;) {
+      if (line[line_pos] == ',') {
+        field_idx = field_idx + 1;
+        if (field_idx == 1) { c1 = line_pos; }
+        if (field_idx == 2) { c2 = line_pos; }
+        if (field_idx == 3) { c3 = line_pos; }
+        line_pos = line_pos + 1;
+      } else {
+        line_pos = line_pos + 1;
+      }
+    }
+
+    idx = idx + 1;
+  }
+
+  arche_fclose(fd);
+  printf("ok\n");
+}

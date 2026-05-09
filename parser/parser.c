@@ -1264,10 +1264,10 @@ static Statement *parse_statement(Parser *parser) {
 		return NULL;
 	}
 	parser->recursion_depth++;
+	Statement *result = NULL;
 
 	if (match(parser, TOK_SEMI)) {
-		parser->recursion_depth--;
-		return NULL; /* empty statement */
+		goto cleanup; /* empty statement */
 	}
 
 	if (match(parser, TOK_BREAK)) {
@@ -1281,7 +1281,8 @@ static Statement *parse_statement(Parser *parser) {
 		Statement *stmt = statement_create(STMT_BREAK);
 		stmt->loc.line = break_line;
 		stmt->loc.column = break_column;
-		return stmt;
+		result = stmt;
+		goto cleanup;
 	}
 
 	if (match(parser, TOK_RETURN)) {
@@ -1291,7 +1292,7 @@ static Statement *parse_statement(Parser *parser) {
 		Expression *value = parse_expression(parser);
 		if (!value) {
 			error(parser, "Expected expression after 'return'");
-			return NULL;
+			goto cleanup;
 		}
 
 		if (!match(parser, TOK_SEMI)) {
@@ -1302,7 +1303,8 @@ static Statement *parse_statement(Parser *parser) {
 		stmt->loc.line = return_line;
 		stmt->loc.column = return_column;
 		stmt->data.return_stmt.value = value;
-		return stmt;
+		result = stmt;
+		goto cleanup;
 	}
 
 	/* check for run statement */
@@ -1314,6 +1316,7 @@ static Statement *parse_statement(Parser *parser) {
 
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected system name");
+				parser->recursion_depth--;
 				return NULL;
 			}
 			char *system_name = token_text(parser->current);
@@ -1328,6 +1331,7 @@ static Statement *parse_statement(Parser *parser) {
 			stmt->loc.column = parser->previous.column;
 			stmt->data.run_stmt.system_name = system_name;
 			stmt->data.run_stmt.world_name = NULL;
+			parser->recursion_depth--;
 			return stmt;
 		}
 	}
@@ -1338,7 +1342,7 @@ static Statement *parse_statement(Parser *parser) {
 
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected variable name after 'let'");
-			return NULL;
+			goto cleanup;
 		}
 
 		char *name = token_text(parser->current);
@@ -1356,6 +1360,7 @@ static Statement *parse_statement(Parser *parser) {
 			while (!check(parser, TOK_COLON) && !check(parser, TOK_EQ) && !check(parser, TOK_EOF)) {
 				if (!check(parser, TOK_IDENT)) {
 					error(parser, "Expected variable name in multi-value let");
+					parser->recursion_depth--;
 					return NULL;
 				}
 				char *var_name = token_text(parser->current);
@@ -1373,16 +1378,20 @@ static Statement *parse_statement(Parser *parser) {
 			if (match(parser, TOK_COLON)) {
 				if (!match(parser, TOK_EQ)) {
 					error(parser, "Expected '=' after ':' in multi-value let");
+					parser->recursion_depth--;
 					return NULL;
 				}
 			} else if (!match(parser, TOK_EQ)) {
 				error(parser, "Expected ':=' or '=' in multi-value let");
+				parser->recursion_depth--;
 				return NULL;
 			}
 
 			Expression *value = parse_expression(parser);
-			if (!value)
+			if (!value) {
+				parser->recursion_depth--;
 				return NULL;
+			}
 
 			if (!match(parser, TOK_SEMI)) {
 				error(parser, "Expected ';' after let statement");
@@ -1396,6 +1405,7 @@ static Statement *parse_statement(Parser *parser) {
 			stmt->data.let_stmt.name_count = name_count;
 			stmt->data.let_stmt.type = NULL;
 			stmt->data.let_stmt.value = value;
+			parser->recursion_depth--;
 			return stmt;
 		}
 
@@ -1409,28 +1419,36 @@ static Statement *parse_statement(Parser *parser) {
 				/* Inferred: let x := expr */
 				advance(parser); /* consume '=' */
 				value = parse_expression(parser);
-				if (!value)
+				if (!value) {
+					parser->recursion_depth--;
 					return NULL;
+				}
 			} else {
 				/* Explicit: let x: type [= expr] */
 				type = parse_type(parser);
-				if (!type)
+				if (!type) {
+					parser->recursion_depth--;
 					return NULL;
+				}
 
 				if (match(parser, TOK_EQ)) {
 					value = parse_expression(parser);
-					if (!value)
+					if (!value) {
+						parser->recursion_depth--;
 						return NULL;
+					}
 				}
 			}
 		} else if (match(parser, TOK_EQ)) {
 			/* Old syntax (backward compat): let x = expr */
 			value = parse_expression(parser);
-			if (!value)
+			if (!value) {
+				parser->recursion_depth--;
 				return NULL;
+			}
 		} else {
 			error(parser, "Expected ':' or '=' after variable name");
-			return NULL;
+			goto cleanup;
 		}
 
 		if (!match(parser, TOK_SEMI)) {
@@ -1445,7 +1463,8 @@ static Statement *parse_statement(Parser *parser) {
 		stmt->data.let_stmt.name_count = 0;
 		stmt->data.let_stmt.type = type;
 		stmt->data.let_stmt.value = value;
-		return stmt;
+		result = stmt;
+		goto cleanup;
 	}
 
 	if (match(parser, TOK_IF)) {
@@ -1454,16 +1473,17 @@ static Statement *parse_statement(Parser *parser) {
 
 		if (!match(parser, TOK_LPAREN)) {
 			error(parser, "Expected '(' after 'if'");
-			return NULL;
+			goto cleanup;
 		}
 
 		Expression *cond = parse_expression(parser);
-		if (!cond)
-			return NULL;
+		if (!cond) {
+			goto cleanup;
+		}
 
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' after if condition");
-			return NULL;
+			goto cleanup;
 		}
 
 		Statement *stmt = statement_create(STMT_IF);
@@ -1502,7 +1522,38 @@ static Statement *parse_statement(Parser *parser) {
 			}
 		}
 
-		return stmt;
+		/* Parse else clause if present */
+		if (match(parser, TOK_ELSE)) {
+			if (match(parser, TOK_LBRACE)) {
+				/* Braced else block: collect statements until } */
+				while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+					Statement *body_stmt = parse_statement(parser);
+					if (!body_stmt) {
+						synchronize(parser);
+						continue;
+					}
+
+					stmt->data.if_stmt.else_body =
+					    realloc(stmt->data.if_stmt.else_body, (stmt->data.if_stmt.else_count + 1) * sizeof(Statement *));
+					stmt->data.if_stmt.else_body[stmt->data.if_stmt.else_count++] = body_stmt;
+				}
+
+				if (!match(parser, TOK_RBRACE)) {
+					error(parser, "Expected '}' after else body");
+				}
+			} else {
+				/* Braceless else: parse exactly one statement */
+				Statement *body_stmt = parse_statement(parser);
+				if (body_stmt) {
+					stmt->data.if_stmt.else_body = malloc(sizeof(Statement *));
+					stmt->data.if_stmt.else_body[0] = body_stmt;
+					stmt->data.if_stmt.else_count = 1;
+				}
+			}
+		}
+
+		result = stmt;
+		goto cleanup;
 	}
 
 	if (match(parser, TOK_FOR)) {
@@ -1764,7 +1815,11 @@ static Statement *parse_statement(Parser *parser) {
 	stmt->loc.line = target->loc.line;
 	stmt->loc.column = target->loc.column;
 	stmt->data.expr_stmt.expr = target;
-	return stmt;
+	result = stmt;
+
+cleanup:
+	parser->recursion_depth--;
+	return result;
 }
 
 /* ========== MAIN PARSER ========== */
