@@ -16,18 +16,18 @@ sys move(position, velocity) {
 
 
 proc main() {
-  insert(Body, 1.0, 0.1);
-  insert(Body, 2.0, 0.2);
-  insert(Body, 3.0, 0.3);
-  insert(Body, 4.0, 0.4);
-  insert(Body, 5.0, 0.5);
-  insert(Body, 6.0, 0.6);
-  insert(Body, 7.0, 0.7);
-  insert(Body, 8.0, 0.8);
-  insert(Body, 9.0, 0.9);
   insert(Body, 10.0, 1.0);
-  insert(Body, 11.0, 1.1);
-  insert(Body, 12.0, 1.2);
+  insert(Body, 20.0, 2.0);
+  insert(Body, 30.0, 3.0);
+  insert(Body, 40.0, 4.0);
+  insert(Body, 50.0, 5.0);
+  insert(Body, 60.0, 6.0);
+  insert(Body, 70.0, 7.0);
+  insert(Body, 80.0, 8.0);
+  insert(Body, 90.0, 9.0);
+  insert(Body, 100.0, 10.0);
+  insert(Body, 110.0, 11.0);
+  insert(Body, 120.0, 12.0);
   run move;
   let p0 := Body.position[0];
   let p11 := Body.position[11];
@@ -38,6 +38,6 @@ proc main() {
   print(" p11i=");
   print_float(p11i);
   print("\n");
-  assert(p0i == 11, "position[0] != 1.1\n");
-  assert(p11i == 130, "position[11] != 13.0\n");
+  assert(p0i == 110.0, "position[0] != 11.0\n");
+  assert(p11i == 1320.0, "position[11] != 132.0\n");
 }

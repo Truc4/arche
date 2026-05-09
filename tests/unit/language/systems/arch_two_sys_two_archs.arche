@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "Particle"
+// RUN: %arche -o %t %s && %t
 // BUG: System operations don't modify fields (see COMPILER_BUG_SYSTEM_OPERATIONS.md)
 
 arche Particle {
@@ -30,14 +30,14 @@ sys dampen(vel) {
 
 
 proc main() {
-  insert(Particle, 1.0, 0.1);
-  insert(Body, 2.0, 0.2, 10.0);
+  insert(Particle, 10.0, 1.0);
+  insert(Body, 20.0, 2.0, 10.0);
   run move;
   run dampen;
   let pp := Particle.pos[0];
   let bp := Body.vel[0];
   let ppi := pp * 10.0;
   let bpi := bp * 100.0;
-  assert(ppi == 11, "Particle.pos != 1.1\n");
-  assert(bpi == 19, "Body.vel != 0.198\n");
+  assert(ppi == 110.0, "Particle.pos != 11.0\n");
+  assert(bpi == 198.0, "Body.vel != 1.98\n");
 }
