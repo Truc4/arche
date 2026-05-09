@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -16,6 +17,132 @@
 #ifndef ARCHE_RUNTIME_DIR
 #define ARCHE_RUNTIME_DIR "build/runtime"
 #endif
+
+static char *read_file_optional(const char *path);
+
+static int file_exists(const char *path) {
+	struct stat sb;
+	return stat(path, &sb) == 0;
+}
+
+static char *source_dir_of(const char *path) {
+	/* Return directory part of path. If no /, return "." */
+	char *last_slash = strrchr(path, '/');
+	if (!last_slash)
+		return ".";
+
+	int len = last_slash - path;
+	char *dir = malloc(len + 1);
+	strncpy(dir, path, len);
+	dir[len] = '\0';
+	return dir;
+}
+
+static void resolve_uses(Program *prog, const char *source_path) {
+	int i = 0;
+	while (i < prog->decl_count) {
+		if (prog->decls[i]->kind != DECL_USE) {
+			i++;
+			continue;
+		}
+
+		char *mod_name = prog->decls[i]->data.use->name;
+
+		/* Try local directory first */
+		char *source_dir = source_dir_of(source_path);
+		char path1[512];
+		snprintf(path1, sizeof(path1), "%s/%s.arche", source_dir, mod_name);
+		free(source_dir);
+
+		char path2[512];
+		snprintf(path2, sizeof(path2), "%s/%s.arche", ARCHE_CORE_DIR, mod_name);
+
+		char *found_path = NULL;
+		if (file_exists(path1)) {
+			found_path = malloc(strlen(path1) + 1);
+			strcpy(found_path, path1);
+		} else if (file_exists(path2)) {
+			found_path = malloc(strlen(path2) + 1);
+			strcpy(found_path, path2);
+		}
+
+		if (!found_path) {
+			fprintf(stderr, "Error: Module not found: %s\n", mod_name);
+			i++;
+			continue;
+		}
+
+		/* Read and parse module */
+		FILE *f = fopen(found_path, "r");
+		if (!f) {
+			fprintf(stderr, "Error: Failed to open module: %s\n", found_path);
+			free(found_path);
+			i++;
+			continue;
+		}
+
+		fseek(f, 0, SEEK_END);
+		long size = ftell(f);
+		fseek(f, 0, SEEK_SET);
+
+		char *mod_src = malloc(size + 2);
+		size_t n = fread(mod_src, 1, size, f);
+		fclose(f);
+
+		if (n > 0)
+			mod_src[n] = '\n';
+		mod_src[n + (n > 0 ? 1 : 0)] = '\0';
+
+		/* Parse module without prepending core (avoid duplicate declarations) */
+		ParseResult mod_parse = parse_source(mod_src);
+		free(mod_src);
+
+		if (mod_parse.error_count > 0) {
+			fprintf(stderr, "Error: Failed to parse module %s\n", mod_name);
+			for (size_t j = 0; j < mod_parse.error_count; j++) {
+				fprintf(stderr, "  [Line %d] %s\n", mod_parse.errors[j].line, mod_parse.errors[j].message);
+			}
+			parse_result_free(&mod_parse);
+			i++;
+			continue;
+		}
+
+		Program *mod = mod_parse.ast;
+		parse_result_free(&mod_parse);
+
+		if (!mod || mod->decl_count == 0) {
+			if (mod)
+				program_free(mod);
+			i++;
+			continue;
+		}
+
+		/* Insert module declarations at current position i (before DECL_USE) */
+		int new_count = prog->decl_count + mod->decl_count;
+		Decl **new_decls = malloc(sizeof(Decl *) * new_count);
+
+		/* Copy declarations before position i */
+		memcpy(new_decls, prog->decls, sizeof(Decl *) * i);
+
+		/* Copy module decls */
+		memcpy(new_decls + i, mod->decls, sizeof(Decl *) * mod->decl_count);
+
+		/* Copy declarations from position i onward (DECL_USE and rest) */
+		memcpy(new_decls + i + mod->decl_count, prog->decls + i,
+		       sizeof(Decl *) * (prog->decl_count - i));
+
+		free(prog->decls);
+		prog->decls = new_decls;
+		prog->decl_count = new_count;
+
+		free(mod->decls); /* free array, not contents */
+		free(mod);
+		free(found_path);
+
+		/* Skip past inserted module declarations */
+		i += mod->decl_count;
+	}
+}
 
 static char *read_file_optional(const char *path) {
 	FILE *f = fopen(path, "r");
@@ -158,6 +285,9 @@ int main(int argc, char *argv[]) {
 		free(source);
 		return 1;
 	}
+
+	/* Resolve use declarations (module loading) */
+	resolve_uses(prog, input_file);
 
 	/* Semantic analysis */
 	SemanticContext *sem_ctx = semantic_analyze(prog);

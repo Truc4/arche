@@ -849,6 +849,27 @@ static Decl *parse_decl(Parser *parser) {
 		return parse_sys_decl(parser);
 	case TOK_FUNC:
 		return parse_func_decl(parser);
+	case TOK_USE: {
+		advance(parser); /* consume 'use' */
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected module name after 'use'");
+			return NULL;
+		}
+		char *mod_name = token_text(parser->current);
+		Token use_tok = parser->current;
+		advance(parser);
+
+		if (!match(parser, TOK_SEMI)) {
+			error(parser, "Expected ';' after use declaration");
+			return NULL;
+		}
+
+		Decl *decl = decl_create(DECL_USE);
+		decl->loc.line = use_tok.line;
+		decl->loc.column = use_tok.column;
+		decl->data.use = use_decl_create(mod_name);
+		return decl;
+	}
 	default:
 		/* INFO: Check for top-level const or alloc */
 		if (check(parser, TOK_IDENT)) {

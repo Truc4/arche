@@ -29,6 +29,7 @@ typedef enum TokenKind {
 	TOK_EXTERN,
 	TOK_OUT,
 	TOK_RETURN,
+	TOK_USE,
 
 	/* punctuation */
 	TOK_LPAREN,   /* ( */

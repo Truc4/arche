@@ -20,6 +20,7 @@ typedef struct TypeRef TypeRef;
 typedef struct Statement Statement;
 typedef struct Expression Expression;
 typedef struct StaticArrayDecl StaticArrayDecl;
+typedef struct UseDecl UseDecl;
 
 /* =========================
    Source location
@@ -43,6 +44,7 @@ typedef enum {
 	DECL_STATIC,
 	DECL_CONST,
 	DECL_STATIC_ARRAY,
+	DECL_USE,
 } DeclKind;
 
 struct Program {
@@ -65,6 +67,10 @@ struct StaticArrayDecl {
 	int size;
 };
 
+struct UseDecl {
+	char *name;  /* module name, e.g. "csv" from `use csv;` */
+};
+
 typedef struct {
 	char *name;
 	Expression *value; /* must be a literal */
@@ -82,6 +88,7 @@ struct Decl {
 		StaticDecl *alloc;
 		ConstDecl *constant;
 		StaticArrayDecl *static_array;
+		UseDecl *use;
 	} data;
 };
 
@@ -397,6 +404,7 @@ SysDecl *sys_decl_create(char *name);
 FuncDecl *func_decl_create(char *name, TypeRef *return_type);
 ConstDecl *const_decl_create(char *name, Expression *value);
 StaticArrayDecl *static_array_decl_create(char *name, TypeRef *element_type, int size);
+UseDecl *use_decl_create(char *name);
 Parameter *parameter_create(char *name, TypeRef *type);
 FieldDecl *field_decl_create(FieldKind kind, char *name, TypeRef *type);
 
@@ -422,6 +430,7 @@ void func_decl_free(FuncDecl *func);
 void parameter_free(Parameter *param);
 void field_decl_free(FieldDecl *field);
 void static_array_decl_free(StaticArrayDecl *sa);
+void use_decl_free(UseDecl *use);
 void type_ref_free(TypeRef *type);
 
 void statement_free(Statement *stmt);

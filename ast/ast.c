@@ -100,6 +100,12 @@ StaticArrayDecl *static_array_decl_create(char *name, TypeRef *element_type, int
 	return sa;
 }
 
+UseDecl *use_decl_create(char *name) {
+	UseDecl *use = malloc(sizeof(UseDecl));
+	use->name = name;
+	return use;
+}
+
 Parameter *parameter_create(char *name, TypeRef *type) {
 	Parameter *param = malloc(sizeof(Parameter));
 	param->name = name;
@@ -220,6 +226,10 @@ void decl_free(Decl *decl) {
 		static_array_decl_free(decl->data.static_array);
 		break;
 	}
+	case DECL_USE: {
+		use_decl_free(decl->data.use);
+		break;
+	}
 	}
 	free(decl);
 }
@@ -314,6 +324,13 @@ void static_array_decl_free(StaticArrayDecl *sa) {
 	free(sa->name);
 	type_ref_free(sa->element_type);
 	free(sa);
+}
+
+void use_decl_free(UseDecl *use) {
+	if (!use)
+		return;
+	free(use->name);
+	free(use);
 }
 
 void type_ref_free(TypeRef *type) {

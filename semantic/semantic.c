@@ -1179,6 +1179,9 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 	case DECL_STATIC_ARRAY:
 		analyze_static_array_decl(ctx, decl->data.static_array);
 		break;
+	case DECL_USE:
+		/* Module use — resolved before semantic analysis */
+		break;
 	case DECL_PROC:
 		analyze_proc_decl(ctx, decl->data.proc);
 		break;
