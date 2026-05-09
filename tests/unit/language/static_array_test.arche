@@ -1,3 +1,5 @@
+// RUN: %arche -o %t %s && %t | grep ABC
+
 static buf: char[128];
 
 proc main() {
