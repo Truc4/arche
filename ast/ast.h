@@ -216,6 +216,7 @@ typedef enum {
 	STMT_EXPR,
 	STMT_FREE,
 	STMT_RETURN,
+	STMT_MULTI_BIND,
 } StatementType;
 
 typedef enum {
@@ -281,6 +282,18 @@ typedef struct {
 	Expression *value;
 } ReturnStmt;
 
+typedef struct {
+	char *name;
+	int is_new;      /* 1 = let (declare), 0 = assign to existing */
+	TypeRef *type;   /* optional explicit type, only valid when is_new=1 */
+} BindingTarget;
+
+typedef struct {
+	BindingTarget *targets;
+	int target_count;
+	Expression *value;
+} MultiBindStmt;
+
 struct Statement {
 	StatementType type;
 	SourceLoc loc;
@@ -293,6 +306,7 @@ struct Statement {
 		ExprStmt expr_stmt;
 		FreeStmt free_stmt;
 		ReturnStmt return_stmt;
+		MultiBindStmt multi_bind;
 	} data;
 };
 

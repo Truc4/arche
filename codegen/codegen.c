@@ -2873,6 +2873,31 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 		break;
 	}
 
+	case STMT_MULTI_BIND: {
+		/* Simple multi-bind for non-call expressions */
+		char result_buf[256];
+		codegen_expression(ctx, stmt->data.multi_bind.value, result_buf);
+
+		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
+			BindingTarget *target = &stmt->data.multi_bind.targets[i];
+
+			if (target->is_new) {
+				/* Allocate new variable */
+				char *alloca_name = gen_value_name(ctx);
+				emit_alloca(ctx, "  %s = alloca i32\n", alloca_name);
+				buffer_append_fmt(ctx, "  store i32 %s, i32* %s\n", result_buf, alloca_name);
+				add_value(ctx, target->name, alloca_name, 0);
+			} else {
+				/* Assign to existing */
+				ValueInfo *existing = find_value(ctx, target->name);
+				if (existing) {
+					buffer_append_fmt(ctx, "  store i32 %s, i32* %s\n", result_buf, existing->llvm_name);
+				}
+			}
+		}
+		break;
+	}
+
 	case STMT_ASSIGN: {
 		/* Check if this is a whole-column operation (Path A or B) */
 		int is_whole_column = 0;

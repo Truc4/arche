@@ -1,0 +1,10 @@
+// Multi-bind statement tests - shorthand forms
+proc main() {
+  // Test 1: single-var shorthand
+  let x := 42;
+  printf("x=%d\n", x);
+
+  // Test 2: multi-var shorthand (all new)
+  let a, b := 1;
+  printf("a=TODO, b=TODO\n");
+}

@@ -405,6 +405,16 @@ void statement_free(Statement *stmt) {
 	case STMT_FREE:
 		expression_free(stmt->data.free_stmt.value);
 		break;
+	case STMT_MULTI_BIND:
+		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
+			free(stmt->data.multi_bind.targets[i].name);
+			if (stmt->data.multi_bind.targets[i].type) {
+				type_ref_free(stmt->data.multi_bind.targets[i].type);
+			}
+		}
+		free(stmt->data.multi_bind.targets);
+		expression_free(stmt->data.multi_bind.value);
+		break;
 	}
 	free(stmt);
 }
