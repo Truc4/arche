@@ -1,0 +1,59 @@
+// RUN: %arche -o %t %s && %t | grep "PASS"
+
+arche FloatOps {
+  val: float,
+}
+
+static FloatOps(8);
+
+sys float_multiply(val) {
+  val = val * 2.0;
+}
+
+proc main() {
+  insert(FloatOps, 1.0);
+  insert(FloatOps, 1.0);
+  insert(FloatOps, 1.0);
+  insert(FloatOps, 1.0);
+  insert(FloatOps, 1.0);
+  insert(FloatOps, 1.0);
+  insert(FloatOps, 1.0);
+  insert(FloatOps, 1.0);
+  run float_multiply;
+  let v0 := FloatOps.val[0];
+  let v1 := FloatOps.val[1];
+  let v2 := FloatOps.val[2];
+  let v3 := FloatOps.val[3];
+  let v4 := FloatOps.val[4];
+  let v5 := FloatOps.val[5];
+  let v6 := FloatOps.val[6];
+  let v7 := FloatOps.val[7];
+  let all_correct := 1;
+  if (v0 != 2.0) {
+    all_correct = 0;
+  }
+  if (v1 != 2.0) {
+    all_correct = 0;
+  }
+  if (v2 != 2.0) {
+    all_correct = 0;
+  }
+  if (v3 != 2.0) {
+    all_correct = 0;
+  }
+  if (v4 != 2.0) {
+    all_correct = 0;
+  }
+  if (v5 != 2.0) {
+    all_correct = 0;
+  }
+  if (v6 != 2.0) {
+    all_correct = 0;
+  }
+  if (v7 != 2.0) {
+    all_correct = 0;
+  }
+  if (all_correct) {
+    printf("PASS\n");
+  }
+}

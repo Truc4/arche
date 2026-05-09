@@ -2009,8 +2009,10 @@ static int resolve_index_arch(CodegenContext *ctx, Expression *base_expr, Expres
 		if (vi && vi->type == 4 && vi->arch_name) {
 			ArchetypeDecl *arch = find_archetype_decl(ctx, vi->arch_name);
 			if (arch) {
+				static char arch_ptr_buf[256];
 				*out_arch_name = vi->arch_name;
-				*out_arch_ptr = "%archetype";
+				snprintf(arch_ptr_buf, 256, "%%arch_%s", vi->arch_name);
+				*out_arch_ptr = arch_ptr_buf;
 				*out_count_idx = arch->field_count;
 			}
 		}
@@ -2185,24 +2187,12 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 	buffer_append_fmt(ctx, "%s:\n", vec_body_lbl);
 	snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", vi);
 
-	/* Evaluate RHS with scalar mode to avoid mixed-type vector issues */
+	/* Vectorization disabled pending proper mixed-type handling */
 	ctx->vector_lanes = 0;
+
+	/* Evaluate RHS with scalar context */
 	char rhs_buf[256];
 	codegen_expression(ctx, rhs, rhs_buf);
-
-	/* Check if we should vectorize this float column */
-	int use_vector = (strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0);
-	if (use_vector) {
-		/* Splat scalar RHS result to vector for storage */
-		const char *vec_type = llvm_vector_type("double", 4);
-		char *rhs_ins = gen_value_name(ctx);
-		char *rhs_vec = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = insertelement %s undef, double %s, i32 0\n", rhs_ins, vec_type, rhs_buf);
-		buffer_append_fmt(ctx, "  %s = shufflevector %s %s, %s undef, <4 x i32> zeroinitializer\n", rhs_vec, vec_type,
-		                  rhs_ins, vec_type);
-		strcpy(rhs_buf, rhs_vec);
-		ctx->vector_lanes = 4;
-	}
 
 	/* Handle compound ops */
 	char *compute_result = malloc(256);
@@ -3580,10 +3570,9 @@ static void codegen_statement(CodegenContext *ctx, Statement *stmt) {
 		char cond_buf[256];
 		codegen_expression(ctx, stmt->data.if_stmt.cond, cond_buf);
 
-		/* Truncate i32 comparison to i1 for branch */
+		/* Ensure branch condition is i1 by truncating i32 */
 		const char *branch_cond = cond_buf;
-		if (stmt->data.if_stmt.cond->type == EXPR_BINARY && stmt->data.if_stmt.cond->data.binary.op >= OP_EQ &&
-		    stmt->data.if_stmt.cond->data.binary.op <= OP_GTE) {
+		if (cond_buf[0] == '%') {
 			char *truncated = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = trunc i32 %s to i1\n", truncated, cond_buf);
 			branch_cond = truncated;
