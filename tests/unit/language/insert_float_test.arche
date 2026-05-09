@@ -1,0 +1,14 @@
+// RUN: %arche -o %t %s && %t | grep "done"
+
+arche FloatOps {
+  val: float,
+}
+
+
+static FloatOps(8);
+
+proc main() {
+  insert(FloatOps, 1.0);
+  insert(FloatOps, 2.0);
+  print("done\n");
+}
