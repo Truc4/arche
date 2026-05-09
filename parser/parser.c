@@ -1532,14 +1532,21 @@ static Statement *parse_statement(Parser *parser) {
 				error(parser, "Expected ';' after let statement");
 			}
 
-			Statement *stmt = statement_create(STMT_LET);
+			/* Convert to STMT_MULTI_BIND with is_new=1 for all targets */
+			BindingTarget *targets = malloc(name_count * sizeof(BindingTarget));
+			for (int i = 0; i < name_count; i++) {
+				targets[i].name = names[i];
+				targets[i].is_new = 1;
+				targets[i].type = NULL;
+			}
+			free(names);
+
+			Statement *stmt = statement_create(STMT_MULTI_BIND);
 			stmt->loc.line = let_line;
 			stmt->loc.column = let_column;
-			stmt->data.let_stmt.name = NULL;
-			stmt->data.let_stmt.names = names;
-			stmt->data.let_stmt.name_count = name_count;
-			stmt->data.let_stmt.type = NULL;
-			stmt->data.let_stmt.value = value;
+			stmt->data.multi_bind.targets = targets;
+			stmt->data.multi_bind.target_count = name_count;
+			stmt->data.multi_bind.value = value;
 			parser->recursion_depth--;
 			return stmt;
 		}
