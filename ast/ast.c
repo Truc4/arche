@@ -993,21 +993,23 @@ static void flush_before_line(FILE *out, FmtCtx *ctx, int line) {
 	/* Emit any comments with line < current line */
 	while (ctx->comment_idx < ctx->comment_count && ctx->comments[ctx->comment_idx].line < line) {
 		Token *comment = &ctx->comments[ctx->comment_idx];
-		/* Output the comment verbatim from the token */
+		int comment_line = comment->line;
+
+		/* Blank lines before this comment */
+		if (comment_line > ctx->last_line + 1) {
+			int gap = comment_line - ctx->last_line - 1;
+			fprintf(out, gap >= 2 ? "\n\n" : "\n");
+		}
+
 		fprintf(out, "%.*s\n", (int)comment->length, comment->start);
-		ctx->last_line = comment->line;
+		ctx->last_line = comment_line;
 		ctx->comment_idx++;
 	}
 
-	/* Emit blank lines for gaps (preserve up to 2 blank lines) */
+	/* Emit blank lines for gaps before the declaration */
 	if (line > ctx->last_line + 1) {
-		/* Add 1 or 2 blank lines depending on gap size */
 		int gap = line - ctx->last_line - 1;
-		if (gap >= 2) {
-			fprintf(out, "\n\n");
-		} else {
-			fprintf(out, "\n");
-		}
+		fprintf(out, gap >= 2 ? "\n\n" : "\n");
 	}
 	ctx->last_line = line - 1;
 }
@@ -1166,5 +1168,21 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			break;
 		}
 		}
+	}
+
+	/* Emit any trailing comments after the last declaration */
+	while (ctx.comment_idx < comment_count) {
+		Token *comment = &comments[ctx.comment_idx];
+		int comment_line = comment->line;
+
+		/* Blank lines before this comment */
+		if (comment_line > ctx.last_line + 1) {
+			int gap = comment_line - ctx.last_line - 1;
+			fprintf(out, gap >= 2 ? "\n\n" : "\n");
+		}
+
+		fprintf(out, "%.*s\n", (int)comment->length, comment->start);
+		ctx.last_line = comment_line;
+		ctx.comment_idx++;
 	}
 }
