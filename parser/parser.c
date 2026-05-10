@@ -484,6 +484,7 @@ static Decl *parse_proc_decl(Parser *parser) {
 		error(parser, "Expected '}'");
 	}
 
+	proc->end_line = parser->previous.line;
 	Decl *decl = decl_create(DECL_PROC);
 	decl->data.proc = proc;
 	return decl;
@@ -559,6 +560,7 @@ static Decl *parse_sys_decl(Parser *parser) {
 		error(parser, "Expected '}'");
 	}
 
+	sys->end_line = parser->previous.line;
 	Decl *decl = decl_create(DECL_SYS);
 	decl->data.sys = sys;
 	return decl;
@@ -672,6 +674,7 @@ static Decl *parse_func_decl(Parser *parser) {
 		error(parser, "Expected '}'");
 	}
 
+	func->end_line = parser->previous.line;
 	Decl *decl = decl_create(DECL_FUNC);
 	decl->data.func = func;
 	return decl;
@@ -742,40 +745,32 @@ static Decl *parse_static_decl(Parser *parser) {
 				return NULL;
 			}
 
-			Decl *decl = decl_create(DECL_STATIC_ARRAY);
+			Decl *decl = decl_create(DECL_STATIC);
 			decl->loc.line = name_tok.line;
 			decl->loc.column = name_tok.column;
-			decl->data.static_array = static_array_decl_create(name, elem_type, size);
+			decl->data.static_decl = static_decl_array_create(name, elem_type, size);
 
 			return decl;
 		}
 
 		/* Otherwise, treat as static archetype allocation */
-		Decl *decl = malloc(sizeof(Decl));
-		decl->kind = DECL_STATIC;
+		Decl *decl = decl_create(DECL_STATIC);
 		decl->loc.line = name_tok.line;
 		decl->loc.column = name_tok.column;
 
-		StaticDecl *static_decl = malloc(sizeof(StaticDecl));
-		static_decl->archetype_name = name;
-		static_decl->field_names = NULL;
-		static_decl->field_values = NULL;
-		static_decl->field_count = 0;
-		static_decl->init_length = NULL;
+		StaticDecl *s = static_decl_archetype_create(name);
 
 		if (match(parser, TOK_LPAREN)) {
 			Expression *capacity = parse_expression(parser);
-			Expression *init_length = NULL;
 			if (capacity) {
-				static_decl->field_names = malloc(sizeof(char *));
-				static_decl->field_values = malloc(sizeof(Expression *));
-				static_decl->field_names[0] = NULL;
-				static_decl->field_values[0] = capacity;
-				static_decl->field_count = 1;
+				s->archetype.field_names = malloc(sizeof(char *));
+				s->archetype.field_values = malloc(sizeof(Expression *));
+				s->archetype.field_names[0] = NULL;
+				s->archetype.field_values[0] = capacity;
+				s->archetype.field_count = 1;
 			}
 			if (match(parser, TOK_COMMA)) {
-				init_length = parse_expression(parser);
-				static_decl->init_length = init_length;
+				s->archetype.init_length = parse_expression(parser);
 			}
 			if (!match(parser, TOK_RPAREN)) {
 				error(parser, "Expected ')' after alloc count");
@@ -802,13 +797,13 @@ static Decl *parse_static_decl(Parser *parser) {
 							break;
 						}
 
-						static_decl->field_names =
-						    realloc(static_decl->field_names, (static_decl->field_count + 1) * sizeof(char *));
-						static_decl->field_values =
-						    realloc(static_decl->field_values, (static_decl->field_count + 1) * sizeof(Expression *));
-						static_decl->field_names[static_decl->field_count] = field_name;
-						static_decl->field_values[static_decl->field_count] = field_value;
-						static_decl->field_count++;
+						s->archetype.field_names =
+						    realloc(s->archetype.field_names, (s->archetype.field_count + 1) * sizeof(char *));
+						s->archetype.field_values =
+						    realloc(s->archetype.field_values, (s->archetype.field_count + 1) * sizeof(Expression *));
+						s->archetype.field_names[s->archetype.field_count] = field_name;
+						s->archetype.field_values[s->archetype.field_count] = field_value;
+						s->archetype.field_count++;
 					} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACE));
 				}
 
@@ -822,7 +817,7 @@ static Decl *parse_static_decl(Parser *parser) {
 			error(parser, "Expected ';' after alloc declaration");
 		}
 
-		decl->data.alloc = static_decl;
+		decl->data.static_decl = s;
 		return decl;
 	}
 	return NULL;
@@ -1396,79 +1391,80 @@ static Statement *parse_statement(Parser *parser) {
 	/* Paren-based multi-bind: (let x:, y) = expr; */
 	if (match(parser, TOK_LPAREN)) {
 
-			BindingTarget *targets = NULL;
-			int target_count = 0;
-			int max_targets = 16;
-			targets = malloc(max_targets * sizeof(BindingTarget));
+		BindingTarget *targets = NULL;
+		int target_count = 0;
+		int max_targets = 16;
+		targets = malloc(max_targets * sizeof(BindingTarget));
 
-			/* Parse binding targets with loop guard */
-			int loop_count = 0;
-			const int MAX_TARGETS = 1000;
-			while (!check(parser, TOK_RPAREN) && !check(parser, TOK_EOF)) {
-				if (++loop_count > MAX_TARGETS) {
-					error(parser, "Too many binding targets");
-					break;
-				}
+		/* Parse binding targets with loop guard */
+		int loop_count = 0;
+		const int MAX_TARGETS = 1000;
+		while (!check(parser, TOK_RPAREN) && !check(parser, TOK_EOF)) {
+			if (++loop_count > MAX_TARGETS) {
+				error(parser, "Too many binding targets");
+				break;
+			}
 
-				int is_new = match(parser, TOK_LET) ? 1 : 0;
+			int is_new = match(parser, TOK_LET) ? 1 : 0;
 
-				if (!check(parser, TOK_IDENT)) {
-					error(parser, "Expected variable name in binding");
-					break;
-				}
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected variable name in binding");
+				break;
+			}
 
-				char *name = token_text(parser->current);
-				advance(parser);
+			char *name = token_text(parser->current);
+			advance(parser);
 
-				TypeRef *type = NULL;
-				if (is_new && match(parser, TOK_COLON)) {
-					if (!check(parser, TOK_COMMA) && !check(parser, TOK_RPAREN)) {
-						type = parse_type(parser);
-					}
-				}
-
-				if (target_count >= max_targets) {
-					max_targets *= 2;
-					targets = realloc(targets, max_targets * sizeof(BindingTarget));
-				}
-
-				targets[target_count].name = name;
-				targets[target_count].is_new = is_new;
-				targets[target_count].type = type;
-				target_count++;
-
-				if (!match(parser, TOK_COMMA)) {
-					break;
+			TypeRef *type = NULL;
+			if (is_new && match(parser, TOK_COLON)) {
+				if (!check(parser, TOK_COMMA) && !check(parser, TOK_RPAREN)) {
+					type = parse_type(parser);
 				}
 			}
 
-			if (!match(parser, TOK_RPAREN)) {
-				error(parser, "Expected ')' after binding targets");
-				goto cleanup;
+			if (target_count >= max_targets) {
+				max_targets *= 2;
+				targets = realloc(targets, max_targets * sizeof(BindingTarget));
 			}
 
-			if (!match(parser, TOK_EQ)) {
-				error(parser, "Expected '=' after binding targets");
-				goto cleanup;
-			}
+			targets[target_count].name = name;
+			targets[target_count].is_new = is_new;
+			targets[target_count].type = type;
+			target_count++;
 
-			Expression *value = parse_expression(parser);
-			if (!value) {
-				goto cleanup;
+			if (!match(parser, TOK_COMMA)) {
+				break;
 			}
+		}
 
-			if (!match(parser, TOK_SEMI)) {
-				error(parser, "Expected ';' after binding statement");
-			}
+		if (!match(parser, TOK_RPAREN)) {
+			error(parser, "Expected ')' after binding targets");
+			goto cleanup;
+		}
 
-			Statement *stmt = statement_create(STMT_MULTI_BIND);
-			stmt->loc.line = parser->previous.line;
-			stmt->loc.column = parser->previous.column;
-			stmt->data.multi_bind.targets = targets;
-			stmt->data.multi_bind.target_count = target_count;
-			stmt->data.multi_bind.value = value;
-			parser->recursion_depth--;
-			return stmt;
+		if (!match(parser, TOK_EQ)) {
+			error(parser, "Expected '=' after binding targets");
+			goto cleanup;
+		}
+
+		Expression *value = parse_expression(parser);
+		if (!value) {
+			goto cleanup;
+		}
+
+		if (!match(parser, TOK_SEMI)) {
+			error(parser, "Expected ';' after binding statement");
+		}
+
+		Statement *stmt = statement_create(STMT_MULTI_BIND);
+		stmt->loc.line = parser->previous.line;
+		stmt->loc.column = parser->previous.column;
+		stmt->data.multi_bind.targets = targets;
+		stmt->data.multi_bind.target_count = target_count;
+		stmt->data.multi_bind.value = value;
+		stmt->data.multi_bind.from_shorthand = 0;
+		parser->recursion_depth--;
+		return stmt;
 	}
 
 	if (match(parser, TOK_LET)) {
@@ -1547,6 +1543,7 @@ static Statement *parse_statement(Parser *parser) {
 			stmt->data.multi_bind.targets = targets;
 			stmt->data.multi_bind.target_count = name_count;
 			stmt->data.multi_bind.value = value;
+			stmt->data.multi_bind.from_shorthand = 1;
 			parser->recursion_depth--;
 			return stmt;
 		}

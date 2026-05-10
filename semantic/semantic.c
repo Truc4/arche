@@ -972,41 +972,42 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 	ctx->aliases[ctx->alias_count++] = entry;
 }
 
-static void analyze_static_array_decl(SemanticContext *ctx, StaticArrayDecl *sa) {
-	if (!sa)
+static void analyze_static_array_decl(SemanticContext *ctx, StaticDecl *s) {
+	if (!s)
 		return;
 
 	/* Validate element type is a scalar */
-	if (!sa->element_type) {
-		fprintf(stderr, "Error: static array '%s' missing element type\n", sa->name);
+	if (!s->array.element_type) {
+		fprintf(stderr, "Error: static array '%s' missing element type\n", s->array.name);
 		ctx->error_count++;
 		return;
 	}
 
-	if (sa->element_type->kind != TYPE_NAME) {
-		fprintf(stderr, "Error: static array '%s' element type must be scalar (int, float, char, etc.)\n", sa->name);
+	if (s->array.element_type->kind != TYPE_NAME) {
+		fprintf(stderr, "Error: static array '%s' element type must be scalar (int, float, char, etc.)\n",
+		        s->array.name);
 		ctx->error_count++;
 		return;
 	}
 
-	const char *type_name = sa->element_type->data.name;
+	const char *type_name = s->array.element_type->data.name;
 	if (strcmp(type_name, "int") != 0 && strcmp(type_name, "float") != 0 && strcmp(type_name, "char") != 0 &&
 	    strcmp(type_name, "double") != 0) {
-		fprintf(stderr, "Error: static array '%s' has unsupported element type '%s'\n", sa->name, type_name);
+		fprintf(stderr, "Error: static array '%s' has unsupported element type '%s'\n", s->array.name, type_name);
 		ctx->error_count++;
 		return;
 	}
 
 	/* Validate size is positive */
-	if (sa->size <= 0) {
-		fprintf(stderr, "Error: static array '%s' has invalid size %d\n", sa->name, sa->size);
+	if (s->array.size <= 0) {
+		fprintf(stderr, "Error: static array '%s' has invalid size %d\n", s->array.name, s->array.size);
 		ctx->error_count++;
 		return;
 	}
 
 	/* Register the static array in the global scope */
 	ctx->static_array_names = realloc(ctx->static_array_names, (ctx->static_array_count + 1) * sizeof(char *));
-	ctx->static_array_names[ctx->static_array_count] = sa->name;
+	ctx->static_array_names[ctx->static_array_count] = s->array.name;
 	ctx->static_array_count++;
 }
 
@@ -1015,9 +1016,9 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 		return;
 
 	/* Validate archetype exists */
-	ArchetypeInfo *arch = find_archetype(ctx, alloc->archetype_name);
+	ArchetypeInfo *arch = find_archetype(ctx, alloc->archetype.archetype_name);
 	if (!arch) {
-		fprintf(stderr, "Error: unknown archetype '%s' in alloc\n", alloc->archetype_name);
+		fprintf(stderr, "Error: unknown archetype '%s' in alloc\n", alloc->archetype.archetype_name);
 		ctx->error_count++;
 		return;
 	}
@@ -1027,20 +1028,20 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 	   allocate/initialize it. Once allocated, the shape is live in the world. */
 	if (arch->is_allocated) {
 		fprintf(stderr, "Error: Shape already allocated (archetype '%s' shares shape with an earlier allocation)\n",
-		        alloc->archetype_name);
+		        alloc->archetype.archetype_name);
 		ctx->error_count++;
 		return;
 	}
 	arch->is_allocated = 1;
 
 	/* Validate count is provided and is a literal */
-	if (alloc->field_count == 0 || !alloc->field_values[0]) {
+	if (alloc->archetype.field_count == 0 || !alloc->archetype.field_values[0]) {
 		fprintf(stderr, "Error: alloc missing count expression\n");
 		ctx->error_count++;
 		return;
 	}
 
-	Expression *count_expr = alloc->field_values[0];
+	Expression *count_expr = alloc->archetype.field_values[0];
 	if (count_expr->type != EXPR_LITERAL) {
 		fprintf(stderr, "Error: alloc count must be a literal; dynamic counts not yet supported\n");
 		ctx->error_count++;
@@ -1048,17 +1049,17 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 	}
 
 	/* Validate: init block requires explicit init_size parameter */
-	if (alloc->field_count > 1 && !alloc->init_length) {
+	if (alloc->archetype.field_count > 1 && !alloc->archetype.init_length) {
 		fprintf(stderr,
 		        "Error: init block requires explicit init_size parameter: static %s(capacity, init_size) { ... }\n",
-		        alloc->archetype_name);
+		        alloc->archetype.archetype_name);
 		ctx->error_count++;
 		return;
 	}
 
 	/* Analyze field initialization expressions */
-	for (int i = 1; i < alloc->field_count; i++) {
-		analyze_expression(ctx, alloc->field_values[i]);
+	for (int i = 1; i < alloc->archetype.field_count; i++) {
+		analyze_expression(ctx, alloc->archetype.field_values[i]);
 	}
 }
 
@@ -1200,12 +1201,15 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 	case DECL_ARCHETYPE:
 		analyze_archetype_decl(ctx, decl->data.archetype);
 		break;
-	case DECL_STATIC:
-		analyze_static_decl(ctx, decl->data.alloc);
+	case DECL_STATIC: {
+		StaticDecl *s = decl->data.static_decl;
+		if (s->kind == STATIC_KIND_ARCHETYPE) {
+			analyze_static_decl(ctx, s);
+		} else {
+			analyze_static_array_decl(ctx, s);
+		}
 		break;
-	case DECL_STATIC_ARRAY:
-		analyze_static_array_decl(ctx, decl->data.static_array);
-		break;
+	}
 	case DECL_USE:
 		/* Module use — resolved before semantic analysis */
 		break;

@@ -131,8 +131,7 @@ static void resolve_uses(Program *prog, const char *source_path) {
 		memcpy(new_decls + i, mod->decls, sizeof(Decl *) * mod->decl_count);
 
 		/* Copy declarations from position i onward (DECL_USE and rest) */
-		memcpy(new_decls + i + mod->decl_count, prog->decls + i,
-		       sizeof(Decl *) * (prog->decl_count - i));
+		memcpy(new_decls + i + mod->decl_count, prog->decls + i, sizeof(Decl *) * (prog->decl_count - i));
 
 		free(prog->decls);
 		prog->decls = new_decls;

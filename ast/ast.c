@@ -92,12 +92,20 @@ ConstDecl *const_decl_create(char *name, Expression *value) {
 	return constant;
 }
 
-StaticArrayDecl *static_array_decl_create(char *name, TypeRef *element_type, int size) {
-	StaticArrayDecl *sa = malloc(sizeof(StaticArrayDecl));
-	sa->name = name;
-	sa->element_type = element_type;
-	sa->size = size;
-	return sa;
+StaticDecl *static_decl_archetype_create(char *archetype_name) {
+	StaticDecl *s = calloc(1, sizeof(StaticDecl));
+	s->kind = STATIC_KIND_ARCHETYPE;
+	s->archetype.archetype_name = archetype_name;
+	return s;
+}
+
+StaticDecl *static_decl_array_create(char *name, TypeRef *element_type, int size) {
+	StaticDecl *s = malloc(sizeof(StaticDecl));
+	s->kind = STATIC_KIND_ARRAY;
+	s->array.name = name;
+	s->array.element_type = element_type;
+	s->array.size = size;
+	return s;
 }
 
 UseDecl *use_decl_create(char *name) {
@@ -211,7 +219,7 @@ void decl_free(Decl *decl) {
 		func_decl_free(decl->data.func);
 		break;
 	case DECL_STATIC:
-		/* StaticDecl has pointers that need freeing, handled elsewhere */
+		static_decl_free(decl->data.static_decl);
 		break;
 	case DECL_CONST: {
 		ConstDecl *c = decl->data.constant;
@@ -220,10 +228,6 @@ void decl_free(Decl *decl) {
 			expression_free(c->value);
 			free(c);
 		}
-		break;
-	}
-	case DECL_STATIC_ARRAY: {
-		static_array_decl_free(decl->data.static_array);
 		break;
 	}
 	case DECL_USE: {
@@ -318,12 +322,23 @@ void field_decl_free(FieldDecl *field) {
 	free(field);
 }
 
-void static_array_decl_free(StaticArrayDecl *sa) {
-	if (!sa)
+void static_decl_free(StaticDecl *s) {
+	if (!s)
 		return;
-	free(sa->name);
-	type_ref_free(sa->element_type);
-	free(sa);
+	if (s->kind == STATIC_KIND_ARCHETYPE) {
+		free(s->archetype.archetype_name);
+		for (int i = 0; i < s->archetype.field_count; i++) {
+			free(s->archetype.field_names[i]);
+			expression_free(s->archetype.field_values[i]);
+		}
+		free(s->archetype.field_names);
+		free(s->archetype.field_values);
+		expression_free(s->archetype.init_length);
+	} else {
+		free(s->array.name);
+		type_ref_free(s->array.element_type);
+	}
+	free(s);
 }
 
 void use_decl_free(UseDecl *use) {
@@ -717,15 +732,23 @@ typedef struct {
 	const char *src;
 } FmtCtx;
 
-static void format_statement(FILE *out, Statement *stmt, int indent);
+static void flush_before_line(FILE *out, FmtCtx *ctx, int line, int is_decl_boundary, const char *indent_str);
+static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx);
 
-static void format_statement(FILE *out, Statement *stmt, int indent) {
+static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx) {
 	if (!stmt)
 		return;
 
 	char indent_str[256] = "";
 	for (int i = 0; i < indent; i++) {
 		strcat(indent_str, "  ");
+	}
+
+	if (ctx && ctx->comment_idx < ctx->comment_count && ctx->comments[ctx->comment_idx].line < stmt->loc.line) {
+		flush_before_line(out, ctx, stmt->loc.line, 0, indent_str);
+	} else if (ctx) {
+		/* No comments to flush, but update last_line to current statement */
+		ctx->last_line = stmt->loc.line;
 	}
 
 	switch (stmt->type) {
@@ -862,7 +885,7 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		}
 		fprintf(out, " {\n");
 		for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
-			format_statement(out, stmt->data.for_stmt.body[i], indent + 1);
+			format_statement(out, stmt->data.for_stmt.body[i], indent + 1, ctx);
 		}
 		fprintf(out, "%s}\n", indent_str);
 		break;
@@ -872,12 +895,12 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		format_expression(out, stmt->data.if_stmt.cond);
 		fprintf(out, ") {\n");
 		for (int i = 0; i < stmt->data.if_stmt.then_count; i++) {
-			format_statement(out, stmt->data.if_stmt.then_body[i], indent + 1);
+			format_statement(out, stmt->data.if_stmt.then_body[i], indent + 1, ctx);
 		}
 		if (stmt->data.if_stmt.else_count > 0) {
 			fprintf(out, "%s} else {\n", indent_str);
 			for (int i = 0; i < stmt->data.if_stmt.else_count; i++) {
-				format_statement(out, stmt->data.if_stmt.else_body[i], indent + 1);
+				format_statement(out, stmt->data.if_stmt.else_body[i], indent + 1, ctx);
 			}
 		}
 		fprintf(out, "%s}\n", indent_str);
@@ -915,20 +938,35 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		break;
 	}
 	case STMT_MULTI_BIND: {
-		fprintf(out, "%s(", indent_str);
-		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
-			fprintf(out, "let %s", stmt->data.multi_bind.targets[i].name);
-			if (stmt->data.multi_bind.targets[i].type) {
-				fprintf(out, ": ");
-				format_type(out, stmt->data.multi_bind.targets[i].type);
-			} else {
-				fprintf(out, ":");
+		if (stmt->data.multi_bind.from_shorthand) {
+			fprintf(out, "%slet ", indent_str);
+			for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
+				fprintf(out, "%s", stmt->data.multi_bind.targets[i].name);
+				if (i < stmt->data.multi_bind.target_count - 1) {
+					fprintf(out, ", ");
+				}
 			}
-			if (i < stmt->data.multi_bind.target_count - 1) {
-				fprintf(out, ", ");
+			fprintf(out, " := ");
+		} else {
+			fprintf(out, "%s(", indent_str);
+			for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
+				if (stmt->data.multi_bind.targets[i].is_new) {
+					fprintf(out, "let %s", stmt->data.multi_bind.targets[i].name);
+					if (stmt->data.multi_bind.targets[i].type) {
+						fprintf(out, ": ");
+						format_type(out, stmt->data.multi_bind.targets[i].type);
+					} else {
+						fprintf(out, ":");
+					}
+				} else {
+					fprintf(out, "%s", stmt->data.multi_bind.targets[i].name);
+				}
+				if (i < stmt->data.multi_bind.target_count - 1) {
+					fprintf(out, ", ");
+				}
 			}
+			fprintf(out, ") = ");
 		}
-		fprintf(out, ") = ");
 		format_expression(out, stmt->data.multi_bind.value);
 		fprintf(out, ";\n");
 		break;
@@ -952,36 +990,42 @@ static int decl_start_line(Decl *decl) {
 	case DECL_FUNC:
 		return decl->data.func->loc.line;
 	case DECL_CONST:
-		return decl->loc.line;
 	case DECL_STATIC:
+	case DECL_USE:
 		return decl->loc.line;
 	}
 	return 1;
 }
 
 /* Emit any comments that appear before the given line, plus blank lines if needed */
-static void flush_before_line(FILE *out, FmtCtx *ctx, int line) {
+static void flush_before_line(FILE *out, FmtCtx *ctx, int line, int is_decl_boundary, const char *indent_str) {
 	if (!ctx || !ctx->comments)
 		return;
 
 	/* Emit any comments with line < current line */
 	while (ctx->comment_idx < ctx->comment_count && ctx->comments[ctx->comment_idx].line < line) {
 		Token *comment = &ctx->comments[ctx->comment_idx];
-		/* Output the comment verbatim from the token */
+		int comment_line = comment->line;
+
+		/* Blank lines before this comment */
+		if (comment_line > ctx->last_line + 1) {
+			int gap = comment_line - ctx->last_line - 1;
+			fprintf(out, gap >= 2 ? "\n\n" : "\n");
+		}
+
+		/* Emit comment with proper indentation */
+		if (indent_str && indent_str[0]) {
+			fprintf(out, "%s", indent_str);
+		}
 		fprintf(out, "%.*s\n", (int)comment->length, comment->start);
-		ctx->last_line = comment->line;
+		ctx->last_line = comment_line;
 		ctx->comment_idx++;
 	}
 
-	/* Emit blank lines for gaps (preserve up to 2 blank lines) */
-	if (line > ctx->last_line + 1) {
-		/* Add 1 or 2 blank lines depending on gap size */
+	/* Emit blank lines for gaps before the declaration (only at decl boundaries) */
+	if (is_decl_boundary && line > ctx->last_line + 1) {
 		int gap = line - ctx->last_line - 1;
-		if (gap >= 2) {
-			fprintf(out, "\n\n");
-		} else {
-			fprintf(out, "\n");
-		}
+		fprintf(out, gap >= 2 ? "\n\n" : "\n");
 	}
 	ctx->last_line = line - 1;
 }
@@ -995,7 +1039,7 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 	/* Emit any leading comments before first declaration */
 	if (prog->decl_count > 0) {
 		int first_line = decl_start_line(prog->decls[0]);
-		flush_before_line(out, &ctx, first_line);
+		flush_before_line(out, &ctx, first_line, 1, "");
 	} else {
 		/* No declarations, emit all comments */
 		for (size_t i = 0; i < comment_count; i++) {
@@ -1008,7 +1052,7 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 		Decl *decl = prog->decls[i];
 
 		/* Emit comments before this declaration */
-		flush_before_line(out, &ctx, decl_start_line(decl));
+		flush_before_line(out, &ctx, decl_start_line(decl), 1, "");
 
 		switch (decl->kind) {
 		case DECL_WORLD: {
@@ -1045,12 +1089,13 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				fprintf(out, ");\n");
 			} else {
 				fprintf(out, ") {\n");
+				ctx.last_line = proc->loc.line;
 				for (int j = 0; j < proc->statement_count; j++) {
-					format_statement(out, proc->statements[j], 1);
+					format_statement(out, proc->statements[j], 1, &ctx);
 				}
 				fprintf(out, "}\n");
 			}
-			ctx.last_line = decl->loc.line;
+			ctx.last_line = proc->end_line;
 			break;
 		}
 		case DECL_SYS: {
@@ -1062,11 +1107,12 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				fprintf(out, "%s", sys->params[j]->name);
 			}
 			fprintf(out, ") {\n");
+			ctx.last_line = sys->loc.line;
 			for (int j = 0; j < sys->statement_count; j++) {
-				format_statement(out, sys->statements[j], 1);
+				format_statement(out, sys->statements[j], 1, &ctx);
 			}
 			fprintf(out, "}\n");
-			ctx.last_line = decl->loc.line;
+			ctx.last_line = sys->end_line;
 			break;
 		}
 		case DECL_FUNC: {
@@ -1088,35 +1134,47 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				fprintf(out, ";\n");
 			} else {
 				fprintf(out, " {\n");
+				ctx.last_line = func->loc.line;
 				for (int j = 0; j < func->statement_count; j++) {
-					format_statement(out, func->statements[j], 1);
+					format_statement(out, func->statements[j], 1, &ctx);
 				}
 				fprintf(out, "}\n");
 			}
-			ctx.last_line = decl->loc.line;
+			ctx.last_line = func->end_line;
 			break;
 		}
 		case DECL_STATIC: {
-			StaticDecl *alloc = decl->data.alloc;
-			fprintf(out, "static %s(", alloc->archetype_name);
-			if (alloc->field_count > 0) {
-				format_expression(out, alloc->field_values[0]);
-			}
-			if (alloc->init_length) {
-				fprintf(out, ", ");
-				format_expression(out, alloc->init_length);
-			}
-			fprintf(out, ")");
-			if (alloc->field_count > 1) {
-				fprintf(out, " {\n");
-				for (int j = 1; j < alloc->field_count; j++) {
-					fprintf(out, "  %s: ", alloc->field_names[j]);
-					format_expression(out, alloc->field_values[j]);
-					fprintf(out, ",\n");
+			StaticDecl *s = decl->data.static_decl;
+			if (s->kind == STATIC_KIND_ARCHETYPE) {
+				fprintf(out, "static %s(", s->archetype.archetype_name);
+				if (s->archetype.field_count > 0) {
+					format_expression(out, s->archetype.field_values[0]);
 				}
-				fprintf(out, "}");
+				if (s->archetype.init_length) {
+					fprintf(out, ", ");
+					format_expression(out, s->archetype.init_length);
+				}
+				fprintf(out, ")");
+				if (s->archetype.field_count > 1) {
+					fprintf(out, " {\n");
+					for (int j = 1; j < s->archetype.field_count; j++) {
+						fprintf(out, "  %s: ", s->archetype.field_names[j]);
+						format_expression(out, s->archetype.field_values[j]);
+						fprintf(out, ",\n");
+					}
+					fprintf(out, "}");
+				}
+			} else {
+				fprintf(out, "static %s: ", s->array.name);
+				format_type(out, s->array.element_type);
+				fprintf(out, "[%d]", s->array.size);
 			}
 			fprintf(out, ";\n");
+			ctx.last_line = decl->loc.line;
+			break;
+		}
+		case DECL_USE: {
+			fprintf(out, "use %s;\n", decl->data.use->name);
 			ctx.last_line = decl->loc.line;
 			break;
 		}
@@ -1129,5 +1187,21 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			break;
 		}
 		}
+	}
+
+	/* Emit any trailing comments after the last declaration */
+	while (ctx.comment_idx < comment_count) {
+		Token *comment = &comments[ctx.comment_idx];
+		int comment_line = comment->line;
+
+		/* Blank lines before this comment */
+		if (comment_line > ctx.last_line + 1) {
+			int gap = comment_line - ctx.last_line - 1;
+			fprintf(out, gap >= 2 ? "\n\n" : "\n");
+		}
+
+		fprintf(out, "%.*s\n", (int)comment->length, comment->start);
+		ctx.last_line = comment_line;
+		ctx.comment_idx++;
 	}
 }
