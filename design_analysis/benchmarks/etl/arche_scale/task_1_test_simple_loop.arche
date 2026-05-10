@@ -1,0 +1,25 @@
+arche Transaction {
+  price: float,
+  quantity: int,
+  revenue: float,
+}
+static Transaction(100, 100) {
+  price: 0.0,
+  quantity: 0,
+  revenue: 0.0,
+};
+proc main() {
+  let fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv");
+  let line: char[128];
+  arche_fread_line(fd, line, 128);
+  let idx := 0;
+  for (;idx < 100;) {
+    let n := arche_fread_line(fd, line, 128);
+    if (n <= 0) {
+      break;
+    }
+    idx = idx + 1;
+  }
+  arche_fclose(fd);
+  printf("ok\n");
+}

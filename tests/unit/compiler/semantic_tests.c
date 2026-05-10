@@ -1,4 +1,4 @@
-#include "../../../ast/ast.h"
+#include "../../../cst/cst.h"
 #include "../../../lexer/lexer.h"
 #include "../../../parser/parser.h"
 #include "../../../semantic/semantic.h"

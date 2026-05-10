@@ -484,6 +484,7 @@ static Decl *parse_proc_decl(Parser *parser) {
 		error(parser, "Expected '}'");
 	}
 
+	proc->end_line = parser->previous.line;
 	Decl *decl = decl_create(DECL_PROC);
 	decl->data.proc = proc;
 	return decl;
@@ -559,6 +560,7 @@ static Decl *parse_sys_decl(Parser *parser) {
 		error(parser, "Expected '}'");
 	}
 
+	sys->end_line = parser->previous.line;
 	Decl *decl = decl_create(DECL_SYS);
 	decl->data.sys = sys;
 	return decl;
@@ -672,6 +674,7 @@ static Decl *parse_func_decl(Parser *parser) {
 		error(parser, "Expected '}'");
 	}
 
+	func->end_line = parser->previous.line;
 	Decl *decl = decl_create(DECL_FUNC);
 	decl->data.func = func;
 	return decl;
@@ -709,37 +712,65 @@ static Decl *parse_static_decl(Parser *parser) {
 	if (check(parser, TOK_IDENT) && strcmp(token_text(parser->current), "static") == 0) {
 		advance(parser);
 		if (!check(parser, TOK_IDENT)) {
-			error(parser, "Expected archetype name after 'alloc'");
+			error(parser, "Expected name after 'static'");
 			return NULL;
 		}
-		char *arch_name = token_text(parser->current);
+		char *name = token_text(parser->current);
+		Token name_tok = parser->current;
 		advance(parser);
 
-		Decl *decl = malloc(sizeof(Decl));
-		decl->kind = DECL_STATIC;
-		decl->loc.line = parser->previous.line;
-		decl->loc.column = parser->previous.column;
+		/* Check if this is a static array (static name: type[size];) or archetype (static Name(n);) */
+		if (check(parser, TOK_COLON)) {
+			/* Static array declaration */
+			advance(parser); /* consume ':' */
+			TypeRef *element_type = parse_type(parser);
+			if (!element_type) {
+				error(parser, "Expected type in static array declaration");
+				return NULL;
+			}
 
-		StaticDecl *static_decl = malloc(sizeof(StaticDecl));
-		static_decl->archetype_name = arch_name;
-		static_decl->field_names = NULL;
-		static_decl->field_values = NULL;
-		static_decl->field_count = 0;
-		static_decl->init_length = NULL;
+			/* Validate that type is a shaped array */
+			if (element_type->kind != TYPE_SHAPED_ARRAY) {
+				error(parser, "Expected sized array type for static array (e.g. char[4194304])");
+				type_ref_free(element_type);
+				return NULL;
+			}
+
+			int size = element_type->data.shaped_array.rank;
+			TypeRef *elem_type = element_type->data.shaped_array.element_type;
+
+			if (!match(parser, TOK_SEMI)) {
+				error(parser, "Expected ';' after static array declaration");
+				type_ref_free(element_type);
+				return NULL;
+			}
+
+			Decl *decl = decl_create(DECL_STATIC);
+			decl->loc.line = name_tok.line;
+			decl->loc.column = name_tok.column;
+			decl->data.static_decl = static_decl_array_create(name, elem_type, size);
+
+			return decl;
+		}
+
+		/* Otherwise, treat as static archetype allocation */
+		Decl *decl = decl_create(DECL_STATIC);
+		decl->loc.line = name_tok.line;
+		decl->loc.column = name_tok.column;
+
+		StaticDecl *s = static_decl_archetype_create(name);
 
 		if (match(parser, TOK_LPAREN)) {
 			Expression *capacity = parse_expression(parser);
-			Expression *init_length = NULL;
 			if (capacity) {
-				static_decl->field_names = malloc(sizeof(char *));
-				static_decl->field_values = malloc(sizeof(Expression *));
-				static_decl->field_names[0] = NULL;
-				static_decl->field_values[0] = capacity;
-				static_decl->field_count = 1;
+				s->archetype.field_names = malloc(sizeof(char *));
+				s->archetype.field_values = malloc(sizeof(Expression *));
+				s->archetype.field_names[0] = NULL;
+				s->archetype.field_values[0] = capacity;
+				s->archetype.field_count = 1;
 			}
 			if (match(parser, TOK_COMMA)) {
-				init_length = parse_expression(parser);
-				static_decl->init_length = init_length;
+				s->archetype.init_length = parse_expression(parser);
 			}
 			if (!match(parser, TOK_RPAREN)) {
 				error(parser, "Expected ')' after alloc count");
@@ -766,13 +797,13 @@ static Decl *parse_static_decl(Parser *parser) {
 							break;
 						}
 
-						static_decl->field_names =
-						    realloc(static_decl->field_names, (static_decl->field_count + 1) * sizeof(char *));
-						static_decl->field_values =
-						    realloc(static_decl->field_values, (static_decl->field_count + 1) * sizeof(Expression *));
-						static_decl->field_names[static_decl->field_count] = field_name;
-						static_decl->field_values[static_decl->field_count] = field_value;
-						static_decl->field_count++;
+						s->archetype.field_names =
+						    realloc(s->archetype.field_names, (s->archetype.field_count + 1) * sizeof(char *));
+						s->archetype.field_values =
+						    realloc(s->archetype.field_values, (s->archetype.field_count + 1) * sizeof(Expression *));
+						s->archetype.field_names[s->archetype.field_count] = field_name;
+						s->archetype.field_values[s->archetype.field_count] = field_value;
+						s->archetype.field_count++;
 					} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACE));
 				}
 
@@ -786,7 +817,7 @@ static Decl *parse_static_decl(Parser *parser) {
 			error(parser, "Expected ';' after alloc declaration");
 		}
 
-		decl->data.alloc = static_decl;
+		decl->data.static_decl = s;
 		return decl;
 	}
 	return NULL;
@@ -813,6 +844,27 @@ static Decl *parse_decl(Parser *parser) {
 		return parse_sys_decl(parser);
 	case TOK_FUNC:
 		return parse_func_decl(parser);
+	case TOK_USE: {
+		advance(parser); /* consume 'use' */
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected module name after 'use'");
+			return NULL;
+		}
+		char *mod_name = token_text(parser->current);
+		Token use_tok = parser->current;
+		advance(parser);
+
+		if (!match(parser, TOK_SEMI)) {
+			error(parser, "Expected ';' after use declaration");
+			return NULL;
+		}
+
+		Decl *decl = decl_create(DECL_USE);
+		decl->loc.line = use_tok.line;
+		decl->loc.column = use_tok.column;
+		decl->data.use = use_decl_create(mod_name);
+		return decl;
+	}
 	default:
 		/* INFO: Check for top-level const or alloc */
 		if (check(parser, TOK_IDENT)) {
@@ -1264,10 +1316,10 @@ static Statement *parse_statement(Parser *parser) {
 		return NULL;
 	}
 	parser->recursion_depth++;
+	Statement *result = NULL;
 
 	if (match(parser, TOK_SEMI)) {
-		parser->recursion_depth--;
-		return NULL; /* empty statement */
+		goto cleanup; /* empty statement */
 	}
 
 	if (match(parser, TOK_BREAK)) {
@@ -1281,7 +1333,8 @@ static Statement *parse_statement(Parser *parser) {
 		Statement *stmt = statement_create(STMT_BREAK);
 		stmt->loc.line = break_line;
 		stmt->loc.column = break_column;
-		return stmt;
+		result = stmt;
+		goto cleanup;
 	}
 
 	if (match(parser, TOK_RETURN)) {
@@ -1291,7 +1344,7 @@ static Statement *parse_statement(Parser *parser) {
 		Expression *value = parse_expression(parser);
 		if (!value) {
 			error(parser, "Expected expression after 'return'");
-			return NULL;
+			goto cleanup;
 		}
 
 		if (!match(parser, TOK_SEMI)) {
@@ -1302,7 +1355,8 @@ static Statement *parse_statement(Parser *parser) {
 		stmt->loc.line = return_line;
 		stmt->loc.column = return_column;
 		stmt->data.return_stmt.value = value;
-		return stmt;
+		result = stmt;
+		goto cleanup;
 	}
 
 	/* check for run statement */
@@ -1314,6 +1368,7 @@ static Statement *parse_statement(Parser *parser) {
 
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected system name");
+				parser->recursion_depth--;
 				return NULL;
 			}
 			char *system_name = token_text(parser->current);
@@ -1328,8 +1383,88 @@ static Statement *parse_statement(Parser *parser) {
 			stmt->loc.column = parser->previous.column;
 			stmt->data.run_stmt.system_name = system_name;
 			stmt->data.run_stmt.world_name = NULL;
+			parser->recursion_depth--;
 			return stmt;
 		}
+	}
+
+	/* Paren-based multi-bind: (let x:, y) = expr; */
+	if (match(parser, TOK_LPAREN)) {
+
+		BindingTarget *targets = NULL;
+		int target_count = 0;
+		int max_targets = 16;
+		targets = malloc(max_targets * sizeof(BindingTarget));
+
+		/* Parse binding targets with loop guard */
+		int loop_count = 0;
+		const int MAX_TARGETS = 1000;
+		while (!check(parser, TOK_RPAREN) && !check(parser, TOK_EOF)) {
+			if (++loop_count > MAX_TARGETS) {
+				error(parser, "Too many binding targets");
+				break;
+			}
+
+			int is_new = match(parser, TOK_LET) ? 1 : 0;
+
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected variable name in binding");
+				break;
+			}
+
+			char *name = token_text(parser->current);
+			advance(parser);
+
+			TypeRef *type = NULL;
+			if (is_new && match(parser, TOK_COLON)) {
+				if (!check(parser, TOK_COMMA) && !check(parser, TOK_RPAREN)) {
+					type = parse_type(parser);
+				}
+			}
+
+			if (target_count >= max_targets) {
+				max_targets *= 2;
+				targets = realloc(targets, max_targets * sizeof(BindingTarget));
+			}
+
+			targets[target_count].name = name;
+			targets[target_count].is_new = is_new;
+			targets[target_count].type = type;
+			target_count++;
+
+			if (!match(parser, TOK_COMMA)) {
+				break;
+			}
+		}
+
+		if (!match(parser, TOK_RPAREN)) {
+			error(parser, "Expected ')' after binding targets");
+			goto cleanup;
+		}
+
+		if (!match(parser, TOK_EQ)) {
+			error(parser, "Expected '=' after binding targets");
+			goto cleanup;
+		}
+
+		Expression *value = parse_expression(parser);
+		if (!value) {
+			goto cleanup;
+		}
+
+		if (!match(parser, TOK_SEMI)) {
+			error(parser, "Expected ';' after binding statement");
+		}
+
+		Statement *stmt = statement_create(STMT_MULTI_BIND);
+		stmt->loc.line = parser->previous.line;
+		stmt->loc.column = parser->previous.column;
+		stmt->data.multi_bind.targets = targets;
+		stmt->data.multi_bind.target_count = target_count;
+		stmt->data.multi_bind.value = value;
+		stmt->data.multi_bind.from_shorthand = 0;
+		parser->recursion_depth--;
+		return stmt;
 	}
 
 	if (match(parser, TOK_LET)) {
@@ -1338,7 +1473,7 @@ static Statement *parse_statement(Parser *parser) {
 
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected variable name after 'let'");
-			return NULL;
+			goto cleanup;
 		}
 
 		char *name = token_text(parser->current);
@@ -1356,6 +1491,7 @@ static Statement *parse_statement(Parser *parser) {
 			while (!check(parser, TOK_COLON) && !check(parser, TOK_EQ) && !check(parser, TOK_EOF)) {
 				if (!check(parser, TOK_IDENT)) {
 					error(parser, "Expected variable name in multi-value let");
+					parser->recursion_depth--;
 					return NULL;
 				}
 				char *var_name = token_text(parser->current);
@@ -1373,29 +1509,42 @@ static Statement *parse_statement(Parser *parser) {
 			if (match(parser, TOK_COLON)) {
 				if (!match(parser, TOK_EQ)) {
 					error(parser, "Expected '=' after ':' in multi-value let");
+					parser->recursion_depth--;
 					return NULL;
 				}
 			} else if (!match(parser, TOK_EQ)) {
 				error(parser, "Expected ':=' or '=' in multi-value let");
+				parser->recursion_depth--;
 				return NULL;
 			}
 
 			Expression *value = parse_expression(parser);
-			if (!value)
+			if (!value) {
+				parser->recursion_depth--;
 				return NULL;
+			}
 
 			if (!match(parser, TOK_SEMI)) {
 				error(parser, "Expected ';' after let statement");
 			}
 
-			Statement *stmt = statement_create(STMT_LET);
+			/* Convert to STMT_MULTI_BIND with is_new=1 for all targets */
+			BindingTarget *targets = malloc(name_count * sizeof(BindingTarget));
+			for (int i = 0; i < name_count; i++) {
+				targets[i].name = names[i];
+				targets[i].is_new = 1;
+				targets[i].type = NULL;
+			}
+			free(names);
+
+			Statement *stmt = statement_create(STMT_MULTI_BIND);
 			stmt->loc.line = let_line;
 			stmt->loc.column = let_column;
-			stmt->data.let_stmt.name = NULL;
-			stmt->data.let_stmt.names = names;
-			stmt->data.let_stmt.name_count = name_count;
-			stmt->data.let_stmt.type = NULL;
-			stmt->data.let_stmt.value = value;
+			stmt->data.multi_bind.targets = targets;
+			stmt->data.multi_bind.target_count = name_count;
+			stmt->data.multi_bind.value = value;
+			stmt->data.multi_bind.from_shorthand = 1;
+			parser->recursion_depth--;
 			return stmt;
 		}
 
@@ -1409,28 +1558,36 @@ static Statement *parse_statement(Parser *parser) {
 				/* Inferred: let x := expr */
 				advance(parser); /* consume '=' */
 				value = parse_expression(parser);
-				if (!value)
+				if (!value) {
+					parser->recursion_depth--;
 					return NULL;
+				}
 			} else {
 				/* Explicit: let x: type [= expr] */
 				type = parse_type(parser);
-				if (!type)
+				if (!type) {
+					parser->recursion_depth--;
 					return NULL;
+				}
 
 				if (match(parser, TOK_EQ)) {
 					value = parse_expression(parser);
-					if (!value)
+					if (!value) {
+						parser->recursion_depth--;
 						return NULL;
+					}
 				}
 			}
 		} else if (match(parser, TOK_EQ)) {
 			/* Old syntax (backward compat): let x = expr */
 			value = parse_expression(parser);
-			if (!value)
+			if (!value) {
+				parser->recursion_depth--;
 				return NULL;
+			}
 		} else {
 			error(parser, "Expected ':' or '=' after variable name");
-			return NULL;
+			goto cleanup;
 		}
 
 		if (!match(parser, TOK_SEMI)) {
@@ -1445,7 +1602,8 @@ static Statement *parse_statement(Parser *parser) {
 		stmt->data.let_stmt.name_count = 0;
 		stmt->data.let_stmt.type = type;
 		stmt->data.let_stmt.value = value;
-		return stmt;
+		result = stmt;
+		goto cleanup;
 	}
 
 	if (match(parser, TOK_IF)) {
@@ -1454,16 +1612,17 @@ static Statement *parse_statement(Parser *parser) {
 
 		if (!match(parser, TOK_LPAREN)) {
 			error(parser, "Expected '(' after 'if'");
-			return NULL;
+			goto cleanup;
 		}
 
 		Expression *cond = parse_expression(parser);
-		if (!cond)
-			return NULL;
+		if (!cond) {
+			goto cleanup;
+		}
 
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' after if condition");
-			return NULL;
+			goto cleanup;
 		}
 
 		Statement *stmt = statement_create(STMT_IF);
@@ -1502,7 +1661,38 @@ static Statement *parse_statement(Parser *parser) {
 			}
 		}
 
-		return stmt;
+		/* Parse else clause if present */
+		if (match(parser, TOK_ELSE)) {
+			if (match(parser, TOK_LBRACE)) {
+				/* Braced else block: collect statements until } */
+				while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+					Statement *body_stmt = parse_statement(parser);
+					if (!body_stmt) {
+						synchronize(parser);
+						continue;
+					}
+
+					stmt->data.if_stmt.else_body = realloc(stmt->data.if_stmt.else_body,
+					                                       (stmt->data.if_stmt.else_count + 1) * sizeof(Statement *));
+					stmt->data.if_stmt.else_body[stmt->data.if_stmt.else_count++] = body_stmt;
+				}
+
+				if (!match(parser, TOK_RBRACE)) {
+					error(parser, "Expected '}' after else body");
+				}
+			} else {
+				/* Braceless else: parse exactly one statement */
+				Statement *body_stmt = parse_statement(parser);
+				if (body_stmt) {
+					stmt->data.if_stmt.else_body = malloc(sizeof(Statement *));
+					stmt->data.if_stmt.else_body[0] = body_stmt;
+					stmt->data.if_stmt.else_count = 1;
+				}
+			}
+		}
+
+		result = stmt;
+		goto cleanup;
 	}
 
 	if (match(parser, TOK_FOR)) {
@@ -1764,7 +1954,11 @@ static Statement *parse_statement(Parser *parser) {
 	stmt->loc.line = target->loc.line;
 	stmt->loc.column = target->loc.column;
 	stmt->data.expr_stmt.expr = target;
-	return stmt;
+	result = stmt;
+
+cleanup:
+	parser->recursion_depth--;
+	return result;
 }
 
 /* ========== MAIN PARSER ========== */

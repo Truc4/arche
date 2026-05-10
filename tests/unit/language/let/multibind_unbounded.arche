@@ -1,0 +1,13 @@
+// RUN: %arche -o %t %s && %t | grep "result: 99"
+// Multi-bind with unbounded char[] out param
+
+func fill_buf(out buf: char[]) -> int {
+  let r := sprintf(buf, "hello");
+  return 99;
+}
+
+proc main() {
+  let buf: char[32];
+  (buf, let result:) = fill_buf(buf);
+  printf("result: %d\n", result);
+}

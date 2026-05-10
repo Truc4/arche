@@ -1,0 +1,13 @@
+// RUN: %arche -o %t %s && cd %repo && %t | grep "n="
+
+use csv;
+
+static buf: char[65536];
+
+proc main() {
+  let fd := csv_open("tests/fixtures/data.csv");
+  if (fd > 0) {
+    let buf, n := csv_read_chunk(fd, buf, 65536);
+    printf("n=%d\n", n);
+  }
+}

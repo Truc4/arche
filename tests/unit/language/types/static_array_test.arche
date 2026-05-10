@@ -1,0 +1,10 @@
+// RUN: %arche -o %t %s && %t | grep ABC
+
+static buf: char[128];
+
+proc main() {
+  buf[0] = 65;
+  buf[1] = 66;
+  buf[2] = 67;
+  printf("%c%c%c\n", buf[0], buf[1], buf[2]);
+}

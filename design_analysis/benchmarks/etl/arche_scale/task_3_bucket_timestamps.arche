@@ -1,0 +1,43 @@
+// Task 3: Bucket prices and extract hours from timestamps
+// Compute price_bucket = price / 10.0 and hour_bucket from timestamp
+
+use csv;
+
+arche Transaction {
+  price: float,
+  hour_bucket: int,
+  price_bucket: float,
+}
+
+
+static Transaction(100000000, 100000000) {
+  price: 0.0,
+  hour_bucket: 0,
+  price_bucket: 0.0,
+};
+
+
+proc load_transactions() {
+  let mm := csv_mmap_open("design_analysis/benchmarks/etl/data/data_100m.csv");
+  let size := csv_mmap_size(mm);
+  let pos := csv_mmap_skip_header(mm, size);
+  for (let idx = 0; idx < 100000000; idx += 1) {
+    let nl := csv_mmap_next_line(mm, pos, size);
+    let c1 := csv_mmap_find_comma(mm, pos, nl);
+    Transaction.price[idx] = csv_mmap_parse_float(mm, c1 + 1);
+    Transaction.hour_bucket[idx] = csv_mmap_parse_int(mm, pos + 11);
+    pos = nl + 1;
+  }
+  csv_mmap_close(mm);
+}
+
+
+proc main() {
+  load_transactions();
+  Transaction.price_bucket = Transaction.price / 10.0;
+  let price_sum := 0.0;
+  for (let m = 0; m < 100000000; m += 1) {
+    price_sum = price_sum + Transaction.price_bucket[m];
+  }
+  printf("task3_checksum: %g\n", price_sum);
+}

@@ -363,20 +363,20 @@ The `design_analysis/` directory contains exploration and documentation of data 
 
 ## Practical Example: ETL Workloads
 
-Real-world benchmarks on CSV data show Arche's performance on data processing tasks:
+Real-world benchmarks on CSV data show Arche's performance on data processing tasks.
 
-**ETL Tasks** (1000 rows, end-to-end with I/O):
+**ETL Tasks** (100M rows, 3.4 GB CSV, end-to-end: mmap load + compute + checksum):
 
 | Task | Operation | Arche | Pandas | Speedup |
 |------|-----------|-------|--------|---------|
-| Task1 | `revenue = price × quantity` | 1.032ms | 2.160ms | **2.09x** |
-| Task2 | `valid = quantity > 0` | 0.774ms | 2.154ms | **2.78x** |
-| Task3 | `bucket = price / 10` | 0.868ms | 2.396ms | **2.76x** |
-| Task4 | `total = Σ(price × qty)` | 0.727ms | 1.093ms | **1.50x** |
+| Task 1 | `revenue = price × quantity` | 7.1s | 28.8s | **4.1x** |
+| Task 2 | count rows where `quantity > 0` | 2.9s | 29.2s | **10.1x** |
+| Task 3 | `price_bucket = price / 10`, extract hour | 6.7s | 35.9s | **5.4x** |
+| Task 4 | `Σ(price × quantity)` | 7.2s | 31.6s | **4.4x** |
 
-Real-world workflow speed. CSV write dominates execution time; Arche's tight loops beat Pandas serialization overhead.
+Arche uses mmap + in-place parsing (no temp buffers, no per-line syscalls) with columnar static archetypes and vectorized column operations.
 
-**Limitations of this test**: 1000 rows is too small to measure batch optimization or memory efficiency. No compiled baselines for fair comparison (Polars, DuckDB, NumPy+Cython would be more meaningful). CSV write dominates execution; compute-only comparisons show algorithmic performance more clearly. **Future benchmarks** will test on 10M+ rows, compare against compiled data systems, measure throughput (rows/sec) not just latency, and profile cache/memory behavior.
+> ⚠️ **These benchmarks need more validation.** Pandas is interpreted Python — a compiled baseline (Polars, DuckDB, hand-written C) is the meaningful comparison. Numbers are single-run with hot page cache. Task 2's 10x gap is partly unfair: Arche stops at column 2 while Pandas reads all 5. See `design_analysis/README.md` for the full disclaimer.
 
 See `design_analysis/README.md` for full analysis. See `design_analysis/benchmarks/etl/` for benchmark code and scripts.
 

@@ -1,0 +1,10 @@
+// RUN: %arche -o %t %s && %t
+
+func test_strlen(s: char[]) -> int {
+  return strlen(s);
+}
+
+proc main() {
+  let n := test_strlen("hello");
+  printf("strlen returned: %d\n", n);
+}

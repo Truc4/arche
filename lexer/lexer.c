@@ -137,6 +137,9 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 2 && strncmp(start, "if", 2) == 0) {
 		return TOK_IF;
 	}
+	if (length == 4 && strncmp(start, "else", 4) == 0) {
+		return TOK_ELSE;
+	}
 	if (length == 2 && strncmp(start, "in", 2) == 0) {
 		return TOK_IN;
 	}
@@ -154,6 +157,9 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	}
 	if (length == 6 && strncmp(start, "return", 6) == 0) {
 		return TOK_RETURN;
+	}
+	if (length == 3 && strncmp(start, "use", 3) == 0) {
+		return TOK_USE;
 	}
 	return TOK_IDENT;
 }

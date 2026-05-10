@@ -22,12 +22,14 @@ typedef enum TokenKind {
 	TOK_LET,
 	TOK_FOR,
 	TOK_IF,
+	TOK_ELSE,
 	TOK_IN,
 	TOK_FREE,
 	TOK_BREAK,
 	TOK_EXTERN,
 	TOK_OUT,
 	TOK_RETURN,
+	TOK_USE,
 
 	/* punctuation */
 	TOK_LPAREN,   /* ( */
