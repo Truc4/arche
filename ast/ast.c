@@ -914,6 +914,25 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		fprintf(out, ";\n");
 		break;
 	}
+	case STMT_MULTI_BIND: {
+		fprintf(out, "%s(", indent_str);
+		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
+			fprintf(out, "let %s", stmt->data.multi_bind.targets[i].name);
+			if (stmt->data.multi_bind.targets[i].type) {
+				fprintf(out, ": ");
+				format_type(out, stmt->data.multi_bind.targets[i].type);
+			} else {
+				fprintf(out, ":");
+			}
+			if (i < stmt->data.multi_bind.target_count - 1) {
+				fprintf(out, ", ");
+			}
+		}
+		fprintf(out, ") = ");
+		format_expression(out, stmt->data.multi_bind.value);
+		fprintf(out, ";\n");
+		break;
+	}
 	}
 }
 
