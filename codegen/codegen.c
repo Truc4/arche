@@ -438,9 +438,8 @@ static int get_arch_static_capacity(CodegenContext *ctx, const char *arch_name) 
 	for (int i = 0; i < ctx->prog->decl_count; i++) {
 		if (ctx->prog->decls[i]->kind == DECL_STATIC) {
 			StaticDecl *s = ctx->prog->decls[i]->data.static_decl;
-			if (s->kind == STATIC_KIND_ARCHETYPE &&
-			    strcmp(s->archetype.archetype_name, arch_name) == 0 && s->archetype.field_count > 0 &&
-			    s->archetype.field_values[0]->type == EXPR_LITERAL) {
+			if (s->kind == STATIC_KIND_ARCHETYPE && strcmp(s->archetype.archetype_name, arch_name) == 0 &&
+			    s->archetype.field_count > 0 && s->archetype.field_values[0]->type == EXPR_LITERAL) {
 				return atoi(s->archetype.field_values[0]->data.literal.lexeme);
 			}
 		}
@@ -5202,13 +5201,13 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 					llvm_type = "i32";
 				}
 				if (is_char) {
-					buffer_append_fmt(ctx, "@%s_data = internal global [%d x i8] zeroinitializer\n",
-					                  s->array.name, s->array.size);
-					buffer_append_fmt(ctx,
-					                  "@%s = global %%struct.arche_array { i8* getelementptr inbounds ([%d x i8], [%d x "
-					                  "i8]* @%s_data, i32 0, i32 0), i64 %d, i64 %d }\n",
-					                  s->array.name, s->array.size, s->array.size, s->array.name, s->array.size,
+					buffer_append_fmt(ctx, "@%s_data = internal global [%d x i8] zeroinitializer\n", s->array.name,
 					                  s->array.size);
+					buffer_append_fmt(
+					    ctx,
+					    "@%s = global %%struct.arche_array { i8* getelementptr inbounds ([%d x i8], [%d x "
+					    "i8]* @%s_data, i32 0, i32 0), i64 %d, i64 %d }\n",
+					    s->array.name, s->array.size, s->array.size, s->array.name, s->array.size, s->array.size);
 				} else {
 					buffer_append_fmt(ctx, "@%s = global [%d x %s] zeroinitializer\n", s->array.name, s->array.size,
 					                  llvm_type);
