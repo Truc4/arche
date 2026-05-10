@@ -1,3 +1,4 @@
+// Legacy fread-based API
 func csv_open(path: char[]) -> int {
   return arche_fopen_read(path);
 }
@@ -10,4 +11,30 @@ proc csv_skip_header(fd: int) {
 }
 func csv_read_chunk(fd: int, out buf: char[], size: int) -> int {
   return arche_csv_read_chunk(fd, buf, size);
+}
+
+// mmap-based API
+func csv_mmap_open(path: char[]) -> int {
+  return arche_mmap_open(path);
+}
+func csv_mmap_size(handle: int) -> int {
+  return arche_mmap_size(handle);
+}
+proc csv_mmap_close(handle: int) {
+  arche_mmap_close(handle);
+}
+func csv_mmap_skip_header(handle: int, size: int) -> int {
+  return arche_mmap_find(handle, 0, size, '\n') + 1;
+}
+func csv_mmap_next_line(handle: int, pos: int, size: int) -> int {
+  return arche_mmap_find(handle, pos, size, '\n');
+}
+func csv_mmap_find_comma(handle: int, pos: int, end: int) -> int {
+  return arche_mmap_find(handle, pos, end, ',');
+}
+func csv_mmap_parse_float(handle: int, pos: int) -> float {
+  return arche_mmap_parse_float(handle, pos);
+}
+func csv_mmap_parse_int(handle: int, pos: int) -> int {
+  return arche_mmap_parse_int(handle, pos);
 }

@@ -1,6 +1,8 @@
 // Task 4: Aggregate (sum of revenue)
 // Compute revenue = price * quantity, then sum
 
+use csv;
+
 arche Transaction {
   price: float,
   quantity: int,
@@ -15,66 +17,35 @@ static Transaction(100000000, 100000000) {
 };
 
 
-proc main() {
-  let fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data_100m.csv");
-  if (fd > 0) {
-    let line: char[256];
-    let price_str: char[32];
-    let qty_str: char[32];
-    arche_fread_line(fd, line, 256);
-    let idx := 0;
-    for (;idx < 100000000;) {
-      let n := arche_fread_line(fd, line, 256);
-      if (n <= 0) {
-        break;
-      }
-      let line_pos := 0;
-      let field_idx := 0;
-      let c1 := 0;
-      let c2 := 0;
-      for (;line_pos < n;) {
-        if (line[line_pos] == ',') {
-          field_idx = field_idx + 1;
-          if (field_idx == 1) {
-            c1 = line_pos;
-          }
-          if (field_idx == 2) {
-            c2 = line_pos;
-          }
-        }
-        line_pos = line_pos + 1;
-      }
-      let i := 0;
-      let j := 0;
-      for (;i < c2 - c1 - 1;) {
-        price_str[j] = line[c1 + 1 + i];
-        j = j + 1;
-        i = i + 1;
-      }
-      price_str[j] = 0;
-      j = 0;
-      i = n - c2 - 1;
-      let k := 0;
-      for (;k < i;) {
-        qty_str[j] = line[c2 + 1 + k];
-        j = j + 1;
-        k = k + 1;
-      }
-      qty_str[j] = 0;
-      Transaction.price[idx] = atof(price_str);
-      Transaction.quantity[idx] = atoi(qty_str);
-      idx = idx + 1;
+proc load_transactions() {
+  let mm := csv_mmap_open("design_analysis/benchmarks/etl/data/data_100m.csv");
+  let size := csv_mmap_size(mm);
+  let pos := csv_mmap_skip_header(mm, size);
+  let idx := 0;
+  for (;idx < 100000000;) {
+    if (pos >= size) {
+      break;
     }
-    arche_fclose(fd);
-    Transaction.revenue = Transaction.price * Transaction.quantity;
-    let total_revenue := 0.0;
-    let m := 0;
-    for (;m < idx;) {
-      total_revenue = total_revenue + Transaction.revenue[m];
-      m = m + 1;
-    }
-    printf("task4_checksum: %g\n", total_revenue);
-  } else {
-    printf("FAIL: could not open file\n");
+    let nl := csv_mmap_next_line(mm, pos, size);
+    let c1 := csv_mmap_find_comma(mm, pos, nl);
+    let c2 := csv_mmap_find_comma(mm, c1 + 1, nl);
+    Transaction.price[idx] = csv_mmap_parse_float(mm, c1 + 1);
+    Transaction.quantity[idx] = csv_mmap_parse_int(mm, c2 + 1);
+    pos = nl + 1;
+    idx = idx + 1;
   }
+  csv_mmap_close(mm);
+}
+
+
+proc main() {
+  load_transactions();
+  Transaction.revenue = Transaction.price * Transaction.quantity;
+  let total_revenue := 0.0;
+  let m := 0;
+  for (;m < 100000000;) {
+    total_revenue = total_revenue + Transaction.revenue[m];
+    m = m + 1;
+  }
+  printf("task4_checksum: %g\n", total_revenue);
 }

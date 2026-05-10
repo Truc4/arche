@@ -1,6 +1,8 @@
 // Task 3: Bucket prices and extract hours from timestamps
 // Compute price_bucket = price / 10.0 and hour_bucket from timestamp
 
+use csv;
+
 arche Transaction {
   price: float,
   hour_bucket: int,
@@ -15,65 +17,34 @@ static Transaction(100000000, 100000000) {
 };
 
 
-proc main() {
-  let fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data_100m.csv");
-  if (fd > 0) {
-    let line: char[256];
-    let price_str: char[32];
-    let ts_str: char[32];
-    arche_fread_line(fd, line, 256);
-    let idx := 0;
-    for (;idx < 100000000;) {
-      let n := arche_fread_line(fd, line, 256);
-      if (n <= 0) {
-        break;
-      }
-      let line_pos := 0;
-      let field_idx := 0;
-      let c0 := 0;
-      let c1 := 0;
-      for (;line_pos < n;) {
-        if (line[line_pos] == ',') {
-          field_idx = field_idx + 1;
-          if (field_idx == 1) {
-            c0 = line_pos;
-          }
-          if (field_idx == 2) {
-            c1 = line_pos;
-          }
-        }
-        line_pos = line_pos + 1;
-      }
-      let i := 0;
-      for (;i < c0;) {
-        ts_str[i] = line[i];
-        i = i + 1;
-      }
-      ts_str[i] = 0;
-      let j := 0;
-      for (;j < c1 - c0 - 1;) {
-        price_str[j] = line[c0 + 1 + j];
-        j = j + 1;
-      }
-      price_str[j] = 0;
-      let price := atof(price_str);
-      let hour := ts_str[11] - 48 * 10 + ts_str[12] - 48;
-      Transaction.price[idx] = price;
-      Transaction.hour_bucket[idx] = hour;
-      idx = idx + 1;
+proc load_transactions() {
+  let mm := csv_mmap_open("design_analysis/benchmarks/etl/data/data_100m.csv");
+  let size := csv_mmap_size(mm);
+  let pos := csv_mmap_skip_header(mm, size);
+  let idx := 0;
+  for (;idx < 100000000;) {
+    if (pos >= size) {
+      break;
     }
-    arche_fclose(fd);
-    Transaction.price_bucket = Transaction.price / 10.0;
-    let price_sum := 0.0;
-    let hour_sum := 0;
-    let m := 0;
-    for (;m < idx;) {
-      price_sum = price_sum + Transaction.price_bucket[m];
-      hour_sum = hour_sum + Transaction.hour_bucket[m];
-      m = m + 1;
-    }
-    printf("task3_checksum: %g\n", price_sum);
-  } else {
-    printf("FAIL: could not open file\n");
+    let nl := csv_mmap_next_line(mm, pos, size);
+    let c1 := csv_mmap_find_comma(mm, pos, nl);
+    Transaction.price[idx] = csv_mmap_parse_float(mm, c1 + 1);
+    Transaction.hour_bucket[idx] = csv_mmap_parse_int(mm, pos + 11);
+    pos = nl + 1;
+    idx = idx + 1;
   }
+  csv_mmap_close(mm);
+}
+
+
+proc main() {
+  load_transactions();
+  Transaction.price_bucket = Transaction.price / 10.0;
+  let price_sum := 0.0;
+  let m := 0;
+  for (;m < 100000000;) {
+    price_sum = price_sum + Transaction.price_bucket[m];
+    m = m + 1;
+  }
+  printf("task3_checksum: %g\n", price_sum);
 }

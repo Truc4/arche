@@ -82,6 +82,9 @@ struct CodegenContext {
 	size_t alloca_buf_size;
 	size_t alloca_buf_pos;
 	int hoisting_allocas;
+
+	/* Return type of the function currently being generated */
+	const char *current_return_type;
 };
 
 /* ========== SYSTEM VERSION MAPPING ========== */
@@ -4026,7 +4029,8 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 	case AST_STMT_RETURN: {
 		char value_buf[256];
 		codegen_expression(ctx, stmt->data.return_stmt.value, value_buf);
-		buffer_append_fmt(ctx, "  ret i32 %s\n", value_buf);
+		const char *ret_type = ctx->current_return_type ? ctx->current_return_type : "i32";
+		buffer_append_fmt(ctx, "  ret %s %s\n", ret_type, value_buf);
 		break;
 	}
 	}
@@ -4683,6 +4687,7 @@ static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 
 	/* Generate function definition */
 	const char *return_type = llvm_type_from_arche(field_base_type_name(func->return_type));
+	ctx->current_return_type = return_type;
 
 	buffer_append_fmt(ctx, "define %s @%s(", return_type, func->name);
 

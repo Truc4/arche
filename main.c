@@ -354,7 +354,7 @@ int main(int argc, char *argv[]) {
 
 	/* Call llc to generate assembly */
 	char llc_cmd[512];
-	snprintf(llc_cmd, sizeof(llc_cmd), "llc -o %s %s", asm_file, ir_file);
+	snprintf(llc_cmd, sizeof(llc_cmd), "llc -code-model=large -o %s %s", asm_file, ir_file);
 	printf("Compiling to assembly...\n");
 	int ret = system(llc_cmd);
 	if (ret != 0) {
@@ -376,7 +376,7 @@ int main(int argc, char *argv[]) {
 	/* Call cc to assemble and link with runtime objects */
 	char cc_cmd[1024];
 	snprintf(cc_cmd, sizeof(cc_cmd),
-	         "cc -no-pie -o %s %s " ARCHE_RUNTIME_DIR "/stack_check.o " ARCHE_RUNTIME_DIR "/io.o -lc", output_file,
+	         "cc -no-pie -mcmodel=large -o %s %s " ARCHE_RUNTIME_DIR "/stack_check.o " ARCHE_RUNTIME_DIR "/io.o -lc", output_file,
 	         asm_file);
 	printf("Linking executable...\n");
 	ret = system(cc_cmd);
