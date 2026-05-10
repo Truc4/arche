@@ -29,10 +29,10 @@ static void fail(const char *reason) {
 	printf("✗ (%s)\n", reason);
 }
 
-#define ASSERT(cond, msg)      \
-	if (!(cond)) {             \
-		fail(msg);             \
-		return;                \
+#define ASSERT(cond, msg)                                                                                              \
+	if (!(cond)) {                                                                                                     \
+		fail(msg);                                                                                                     \
+		return;                                                                                                        \
 	}
 
 static Program *parse_and_analyze(const char *src) {
@@ -45,7 +45,8 @@ static Program *parse_and_analyze(const char *src) {
 	parse_result_free(&result);
 	SemanticContext *sem = semantic_analyze(prog);
 	if (!sem || semantic_has_errors(sem)) {
-		if (sem) semantic_context_free(sem);
+		if (sem)
+			semantic_context_free(sem);
 		program_free(prog);
 		return NULL;
 	}
@@ -53,24 +54,22 @@ static Program *parse_and_analyze(const char *src) {
 	return prog;
 }
 
-/* ========== for loop kind tests ========== */
+/* ========== for loop tests ========== */
 
 static void test_lower_range_for(void) {
-	test_start("range for → AST_FOR_RANGE");
-	Program *cst = parse_and_analyze(
-	    "arche Particle { x: float, }\n"
-	    "static Particle(100);\n"
-	    "sys Move() {\n"
-	    "  for p in Particle {\n"
-	    "  }\n"
-	    "}\n");
+	test_start("range for: var_name set, iterable set");
+	Program *cst = parse_and_analyze("arche Particle { x: float, }\n"
+	                                 "static Particle(100);\n"
+	                                 "sys Move() {\n"
+	                                 "  for p in Particle {\n"
+	                                 "  }\n"
+	                                 "}\n");
 	ASSERT(cst, "parse/semantic failed");
 
 	AstProgram *ast = lower_cst_to_ast(cst);
 	ASSERT(ast, "lower returned NULL");
 	ASSERT(ast->decl_count >= 3, "expected at least 3 decls");
 
-	/* find sys decl */
 	AstDecl *sys_decl = NULL;
 	for (int i = 0; i < ast->decl_count; i++) {
 		if (ast->decls[i]->kind == AST_DECL_SYS) {
@@ -83,9 +82,9 @@ static void test_lower_range_for(void) {
 	ASSERT(sys->stmt_count == 1, "expected 1 stmt");
 	AstStmt *for_stmt = sys->stmts[0];
 	ASSERT(for_stmt->kind == AST_STMT_FOR, "expected for stmt");
-	ASSERT(for_stmt->data.for_stmt.kind == AST_FOR_RANGE, "expected AST_FOR_RANGE");
-	ASSERT(for_stmt->data.for_stmt.range.var_name != NULL, "var_name is NULL");
-	ASSERT(strcmp(for_stmt->data.for_stmt.range.var_name, "p") == 0, "wrong var_name");
+	ASSERT(for_stmt->data.for_stmt.var_name != NULL, "var_name is NULL");
+	ASSERT(strcmp(for_stmt->data.for_stmt.var_name, "p") == 0, "wrong var_name");
+	ASSERT(for_stmt->data.for_stmt.iterable != NULL, "iterable is NULL");
 
 	ast_program_free(ast);
 	program_free(cst);
@@ -93,12 +92,11 @@ static void test_lower_range_for(void) {
 }
 
 static void test_lower_c_style_for(void) {
-	test_start("c-style for → AST_FOR_C_STYLE");
-	Program *cst = parse_and_analyze(
-	    "proc Count() {\n"
-	    "  for (let i: int = 0; i < 10; i += 1) {\n"
-	    "  }\n"
-	    "}\n");
+	test_start("c-style for: init/cond/incr set");
+	Program *cst = parse_and_analyze("proc Count() {\n"
+	                                 "  for (let i: int = 0; i < 10; i += 1) {\n"
+	                                 "  }\n"
+	                                 "}\n");
 	ASSERT(cst, "parse/semantic failed");
 
 	AstProgram *ast = lower_cst_to_ast(cst);
@@ -116,10 +114,9 @@ static void test_lower_c_style_for(void) {
 	ASSERT(proc->stmt_count == 1, "expected 1 stmt");
 	AstStmt *for_stmt = proc->stmts[0];
 	ASSERT(for_stmt->kind == AST_STMT_FOR, "expected for stmt");
-	ASSERT(for_stmt->data.for_stmt.kind == AST_FOR_C_STYLE, "expected AST_FOR_C_STYLE");
-	ASSERT(for_stmt->data.for_stmt.c_style.init != NULL, "init is NULL");
-	ASSERT(for_stmt->data.for_stmt.c_style.cond != NULL, "cond is NULL");
-	ASSERT(for_stmt->data.for_stmt.c_style.incr != NULL, "incr is NULL");
+	ASSERT(for_stmt->data.for_stmt.init != NULL, "init is NULL");
+	ASSERT(for_stmt->data.for_stmt.cond != NULL, "cond is NULL");
+	ASSERT(for_stmt->data.for_stmt.incr != NULL, "incr is NULL");
 
 	ast_program_free(ast);
 	program_free(cst);
@@ -127,14 +124,13 @@ static void test_lower_c_style_for(void) {
 }
 
 static void test_lower_while_for(void) {
-	test_start("while-style for → AST_FOR_WHILE");
-	Program *cst = parse_and_analyze(
-	    "proc Loop() {\n"
-	    "  let done: int = 0;\n"
-	    "  for (;done < 5;) {\n"
-	    "    done += 1;\n"
-	    "  }\n"
-	    "}\n");
+	test_start("while-style for: cond set, no init/incr/var");
+	Program *cst = parse_and_analyze("proc Loop() {\n"
+	                                 "  let done: int = 0;\n"
+	                                 "  for (;done < 5;) {\n"
+	                                 "    done += 1;\n"
+	                                 "  }\n"
+	                                 "}\n");
 	ASSERT(cst, "parse/semantic failed");
 
 	AstProgram *ast = lower_cst_to_ast(cst);
@@ -152,8 +148,10 @@ static void test_lower_while_for(void) {
 	ASSERT(proc->stmt_count == 2, "expected 2 stmts");
 	AstStmt *for_stmt = proc->stmts[1];
 	ASSERT(for_stmt->kind == AST_STMT_FOR, "expected for stmt");
-	ASSERT(for_stmt->data.for_stmt.kind == AST_FOR_WHILE, "expected AST_FOR_WHILE");
-	ASSERT(for_stmt->data.for_stmt.while_loop.cond != NULL, "cond is NULL");
+	ASSERT(for_stmt->data.for_stmt.cond != NULL, "cond is NULL");
+	ASSERT(for_stmt->data.for_stmt.init == NULL, "init should be NULL");
+	ASSERT(for_stmt->data.for_stmt.incr == NULL, "incr should be NULL");
+	ASSERT(for_stmt->data.for_stmt.var_name == NULL, "var_name should be NULL");
 
 	ast_program_free(ast);
 	program_free(cst);
@@ -161,13 +159,12 @@ static void test_lower_while_for(void) {
 }
 
 static void test_lower_infinite_for(void) {
-	test_start("infinite for → AST_FOR_INFINITE");
-	Program *cst = parse_and_analyze(
-	    "proc Loop() {\n"
-	    "  for {\n"
-	    "    break;\n"
-	    "  }\n"
-	    "}\n");
+	test_start("infinite for: all fields NULL");
+	Program *cst = parse_and_analyze("proc Loop() {\n"
+	                                 "  for {\n"
+	                                 "    break;\n"
+	                                 "  }\n"
+	                                 "}\n");
 	ASSERT(cst, "parse/semantic failed");
 
 	AstProgram *ast = lower_cst_to_ast(cst);
@@ -185,7 +182,9 @@ static void test_lower_infinite_for(void) {
 	ASSERT(proc->stmt_count == 1, "expected 1 stmt");
 	AstStmt *for_stmt = proc->stmts[0];
 	ASSERT(for_stmt->kind == AST_STMT_FOR, "expected for stmt");
-	ASSERT(for_stmt->data.for_stmt.kind == AST_FOR_INFINITE, "expected AST_FOR_INFINITE");
+	ASSERT(for_stmt->data.for_stmt.var_name == NULL, "var_name should be NULL");
+	ASSERT(for_stmt->data.for_stmt.cond == NULL, "cond should be NULL");
+	ASSERT(for_stmt->data.for_stmt.init == NULL, "init should be NULL");
 
 	ast_program_free(ast);
 	program_free(cst);
@@ -196,10 +195,9 @@ static void test_lower_infinite_for(void) {
 
 static void test_lower_single_let_normalized(void) {
 	test_start("single let → names[0]");
-	Program *cst = parse_and_analyze(
-	    "proc Foo() {\n"
-	    "  let x: int = 42;\n"
-	    "}\n");
+	Program *cst = parse_and_analyze("proc Foo() {\n"
+	                                 "  let x: int = 42;\n"
+	                                 "}\n");
 	ASSERT(cst, "parse/semantic failed");
 
 	AstProgram *ast = lower_cst_to_ast(cst);
@@ -230,11 +228,10 @@ static void test_lower_single_let_normalized(void) {
 
 static void test_lower_type_int(void) {
 	test_start("resolved_type int → AST_TYPE_INT");
-	Program *cst = parse_and_analyze(
-	    "proc Foo() {\n"
-	    "  let x: int = 1;\n"
-	    "  let y := x;\n"
-	    "}\n");
+	Program *cst = parse_and_analyze("proc Foo() {\n"
+	                                 "  let x: int = 1;\n"
+	                                 "  let y := x;\n"
+	                                 "}\n");
 	ASSERT(cst, "parse/semantic failed");
 
 	AstProgram *ast = lower_cst_to_ast(cst);
@@ -265,9 +262,8 @@ static void test_lower_type_int(void) {
 static void test_lower_decl_use_skipped(void) {
 	test_start("DECL_USE nodes skipped in AST");
 	/* use csv is an existing module — inject a fake one via inline proc */
-	Program *cst = parse_and_analyze(
-	    "proc Foo() {\n"
-	    "}\n");
+	Program *cst = parse_and_analyze("proc Foo() {\n"
+	                                 "}\n");
 	ASSERT(cst, "parse/semantic failed");
 
 	/* Manually inject a DECL_USE into CST to verify it's stripped */
@@ -286,12 +282,9 @@ static void test_lower_decl_use_skipped(void) {
 
 	for (int i = 0; i < ast->decl_count; i++) {
 		/* No AST_DECL_* equivalent of DECL_USE should appear */
-		int bad = (ast->decls[i]->kind != AST_DECL_WORLD &&
-		           ast->decls[i]->kind != AST_DECL_ARCHETYPE &&
-		           ast->decls[i]->kind != AST_DECL_PROC &&
-		           ast->decls[i]->kind != AST_DECL_SYS &&
-		           ast->decls[i]->kind != AST_DECL_FUNC &&
-		           ast->decls[i]->kind != AST_DECL_STATIC &&
+		int bad = (ast->decls[i]->kind != AST_DECL_WORLD && ast->decls[i]->kind != AST_DECL_ARCHETYPE &&
+		           ast->decls[i]->kind != AST_DECL_PROC && ast->decls[i]->kind != AST_DECL_SYS &&
+		           ast->decls[i]->kind != AST_DECL_FUNC && ast->decls[i]->kind != AST_DECL_STATIC &&
 		           ast->decls[i]->kind != AST_DECL_CONST);
 		if (bad) {
 			ast_program_free(ast);

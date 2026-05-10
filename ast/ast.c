@@ -150,22 +150,11 @@ void ast_stmt_free(AstStmt *stmt) {
 		ast_expr_free(stmt->data.assign_stmt.value);
 		break;
 	case AST_STMT_FOR:
-		switch (stmt->data.for_stmt.kind) {
-		case AST_FOR_RANGE:
-			free(stmt->data.for_stmt.range.var_name);
-			ast_expr_free(stmt->data.for_stmt.range.iterable);
-			break;
-		case AST_FOR_C_STYLE:
-			ast_stmt_free(stmt->data.for_stmt.c_style.init);
-			ast_expr_free(stmt->data.for_stmt.c_style.cond);
-			ast_stmt_free(stmt->data.for_stmt.c_style.incr);
-			break;
-		case AST_FOR_WHILE:
-			ast_expr_free(stmt->data.for_stmt.while_loop.cond);
-			break;
-		case AST_FOR_INFINITE:
-			break;
-		}
+		free(stmt->data.for_stmt.var_name);
+		ast_expr_free(stmt->data.for_stmt.iterable);
+		ast_stmt_free(stmt->data.for_stmt.init);
+		ast_expr_free(stmt->data.for_stmt.cond);
+		ast_stmt_free(stmt->data.for_stmt.incr);
 		for (int i = 0; i < stmt->data.for_stmt.body_count; i++)
 			ast_stmt_free(stmt->data.for_stmt.body[i]);
 		free(stmt->data.for_stmt.body);

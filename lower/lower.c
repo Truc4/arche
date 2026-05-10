@@ -222,23 +222,14 @@ static AstStmt *lower_stmt(Statement *stmt) {
 		s->kind = AST_STMT_FOR;
 		ForStmt *fs = &stmt->data.for_stmt;
 		AstForStmt *afs = &s->data.for_stmt;
-
 		if (fs->var_name) {
-			afs->kind = AST_FOR_RANGE;
-			afs->range.var_name = malloc(strlen(fs->var_name) + 1);
-			strcpy(afs->range.var_name, fs->var_name);
-			afs->range.iterable = lower_expr(fs->iterable);
-		} else if (fs->init || fs->increment) {
-			afs->kind = AST_FOR_C_STYLE;
-			afs->c_style.init = lower_stmt(fs->init);
-			afs->c_style.cond = lower_expr(fs->condition);
-			afs->c_style.incr = lower_stmt(fs->increment);
-		} else if (fs->condition) {
-			afs->kind = AST_FOR_WHILE;
-			afs->while_loop.cond = lower_expr(fs->condition);
-		} else {
-			afs->kind = AST_FOR_INFINITE;
+			afs->var_name = malloc(strlen(fs->var_name) + 1);
+			strcpy(afs->var_name, fs->var_name);
 		}
+		afs->iterable = lower_expr(fs->iterable);
+		afs->init = lower_stmt(fs->init);
+		afs->cond = lower_expr(fs->condition);
+		afs->incr = lower_stmt(fs->increment);
 		afs->body_count = fs->body_count;
 		afs->body = lower_body(fs->body, fs->body_count);
 		break;

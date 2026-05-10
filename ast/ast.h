@@ -1,8 +1,8 @@
 #ifndef AST_H
 #define AST_H
 
+#include "../cst/cst.h" /* SourceLoc, Operator, UnaryOperator */
 #include <stddef.h>
-#include "../cst/cst.h"  /* SourceLoc, Operator, UnaryOperator */
 
 /* =========================
    Type system
@@ -16,8 +16,8 @@ typedef enum {
 	AST_TYPE_VOID,
 	AST_TYPE_CHAR_ARRAY,
 	AST_TYPE_HANDLE,
-	AST_TYPE_NAMED,     /* archetype or user-defined; .name points into CST */
-	AST_TYPE_ARRAY,     /* element array */
+	AST_TYPE_NAMED, /* archetype or user-defined; .name points into CST */
+	AST_TYPE_ARRAY, /* element array */
 	AST_TYPE_SHAPED_ARRAY,
 	AST_TYPE_TUPLE,
 } AstTypeTag;
@@ -38,17 +38,6 @@ struct AstType {
 	AstTupleField *fields; /* AST_TYPE_TUPLE */
 	int field_count;       /* AST_TYPE_TUPLE */
 };
-
-/* =========================
-   For loop kinds
-   ========================= */
-
-typedef enum {
-	AST_FOR_RANGE,    /* for x in iterable */
-	AST_FOR_C_STYLE,  /* for (init; cond; incr) */
-	AST_FOR_WHILE,    /* for (; cond;) */
-	AST_FOR_INFINITE, /* for { } */
-} AstForKind;
 
 /* =========================
    Forward declarations
@@ -195,9 +184,9 @@ typedef enum {
 } AstStmtKind;
 
 typedef struct {
-	char **names;      /* always names[], min 1 entry */
+	char **names; /* always names[], min 1 entry */
 	int name_count;
-	AstType *type;     /* optional explicit type, only single-var */
+	AstType *type; /* optional explicit type, only single-var */
 	AstExpr *value;
 } AstLetStmt;
 
@@ -208,12 +197,11 @@ typedef struct {
 } AstAssignStmt;
 
 typedef struct {
-	AstForKind kind;
-	union {
-		struct { char *var_name; AstExpr *iterable; } range;
-		struct { AstStmt *init; AstExpr *cond; AstStmt *incr; } c_style;
-		struct { AstExpr *cond; } while_loop;
-	};
+	char *var_name;
+	AstExpr *iterable;
+	AstStmt *init;
+	AstExpr *cond;
+	AstStmt *incr;
 	AstStmt **body;
 	int body_count;
 } AstForStmt;
@@ -294,13 +282,35 @@ struct AstExpr {
 	SourceLoc loc;
 	AstType resolved; /* always populated by lowering */
 	union {
-		struct { char *lexeme; } literal;
-		struct { char *name; } name;
-		struct { AstExpr *base; char *field_name; } field;
-		struct { AstExpr *base; AstExpr **indices; int index_count; } index;
-		struct { Operator op; AstExpr *left; AstExpr *right; } binary;
-		struct { UnaryOperator op; AstExpr *operand; } unary;
-		struct { AstExpr *callee; AstExpr **args; int arg_count; } call;
+		struct {
+			char *lexeme;
+		} literal;
+		struct {
+			char *name;
+		} name;
+		struct {
+			AstExpr *base;
+			char *field_name;
+		} field;
+		struct {
+			AstExpr *base;
+			AstExpr **indices;
+			int index_count;
+		} index;
+		struct {
+			Operator op;
+			AstExpr *left;
+			AstExpr *right;
+		} binary;
+		struct {
+			UnaryOperator op;
+			AstExpr *operand;
+		} unary;
+		struct {
+			AstExpr *callee;
+			AstExpr **args;
+			int arg_count;
+		} call;
 		struct {
 			char *archetype_name;
 			char **field_names;
@@ -308,8 +318,14 @@ struct AstExpr {
 			int field_count;
 			AstExpr *init_length;
 		} alloc;
-		struct { AstExpr **elements; int element_count; } array_literal;
-		struct { char *value; int length; } string;
+		struct {
+			AstExpr **elements;
+			int element_count;
+		} array_literal;
+		struct {
+			char *value;
+			int length;
+		} string;
 	} data;
 };
 

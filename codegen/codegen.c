@@ -3617,21 +3617,18 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 	}
 
 	case AST_STMT_FOR: {
-		switch (stmt->data.for_stmt.kind) {
-		case AST_FOR_C_STYLE: {
-			/* Parenthesized for loop: for (init; cond; incr) */
+		if (stmt->data.for_stmt.init || stmt->data.for_stmt.incr) {
+			/* C-style for loop: for (init; cond; incr) */
 			char *loop_label = gen_value_name(ctx);
 			char *body_label = gen_value_name(ctx);
 			char *exit_label = gen_value_name(ctx);
 
 			push_value_scope(ctx);
 
-			/* Generate init */
-			if (stmt->data.for_stmt.c_style.init) {
-				codegen_statement(ctx, stmt->data.for_stmt.c_style.init);
+			if (stmt->data.for_stmt.init) {
+				codegen_statement(ctx, stmt->data.for_stmt.init);
 			}
 
-			/* Push exit label for break statements */
 			if (ctx->loop_exit_count >= ctx->loop_exit_capacity) {
 				ctx->loop_exit_capacity = (ctx->loop_exit_capacity == 0) ? 8 : ctx->loop_exit_capacity * 2;
 				ctx->loop_exit_labels = realloc(ctx->loop_exit_labels, ctx->loop_exit_capacity * sizeof(char *));
@@ -3639,13 +3636,12 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			ctx->loop_exit_labels[ctx->loop_exit_count] = exit_label;
 			ctx->loop_exit_count++;
 
-			/* Jump to condition check */
 			buffer_append_fmt(ctx, "  br label %s\n", loop_label);
 			buffer_append_fmt(ctx, "%s:\n", loop_label + 1);
 
-			if (stmt->data.for_stmt.c_style.cond) {
+			if (stmt->data.for_stmt.cond) {
 				char cond_buf[256];
-				codegen_expression(ctx, stmt->data.for_stmt.c_style.cond, cond_buf);
+				codegen_expression(ctx, stmt->data.for_stmt.cond, cond_buf);
 				char *cond_i1 = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = trunc i32 %s to i1\n", cond_i1, cond_buf);
 				buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cond_i1, body_label, exit_label);
@@ -3659,8 +3655,8 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 				codegen_statement(ctx, stmt->data.for_stmt.body[i]);
 			}
 
-			if (stmt->data.for_stmt.c_style.incr) {
-				codegen_statement(ctx, stmt->data.for_stmt.c_style.incr);
+			if (stmt->data.for_stmt.incr) {
+				codegen_statement(ctx, stmt->data.for_stmt.incr);
 			}
 
 			buffer_append_fmt(ctx, "  br label %s\n", loop_label);
@@ -3668,11 +3664,8 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 
 			ctx->loop_exit_count--;
 			pop_value_scope(ctx);
-			break;
-		}
-
-		case AST_FOR_WHILE: {
-			/* Condition-based for loop: for (; cond;) */
+		} else if (!stmt->data.for_stmt.var_name) {
+			/* Condition-based or infinite for loop */
 			char *loop_label = gen_value_name(ctx);
 			char *body_label = gen_value_name(ctx);
 			char *exit_label = gen_value_name(ctx);
@@ -3687,12 +3680,14 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			buffer_append_fmt(ctx, "  br label %s\n", loop_label);
 			buffer_append_fmt(ctx, "%s:\n", loop_label + 1);
 
-			{
+			if (stmt->data.for_stmt.cond) {
 				char cond_buf[256];
-				codegen_expression(ctx, stmt->data.for_stmt.while_loop.cond, cond_buf);
+				codegen_expression(ctx, stmt->data.for_stmt.cond, cond_buf);
 				char *cond_i1 = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = trunc i32 %s to i1\n", cond_i1, cond_buf);
 				buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cond_i1, body_label, exit_label);
+			} else {
+				buffer_append_fmt(ctx, "  br label %s\n", body_label);
 			}
 
 			buffer_append_fmt(ctx, "%s:\n", body_label + 1);
@@ -3707,47 +3702,13 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			buffer_append_fmt(ctx, "%s:\n", exit_label + 1);
 
 			ctx->loop_exit_count--;
-			break;
-		}
-
-		case AST_FOR_INFINITE: {
-			/* Infinite for loop: for { } */
-			char *loop_label = gen_value_name(ctx);
-			char *body_label = gen_value_name(ctx);
-			char *exit_label = gen_value_name(ctx);
-
-			if (ctx->loop_exit_count >= ctx->loop_exit_capacity) {
-				ctx->loop_exit_capacity = (ctx->loop_exit_capacity == 0) ? 8 : ctx->loop_exit_capacity * 2;
-				ctx->loop_exit_labels = realloc(ctx->loop_exit_labels, ctx->loop_exit_capacity * sizeof(char *));
-			}
-			ctx->loop_exit_labels[ctx->loop_exit_count] = exit_label;
-			ctx->loop_exit_count++;
-
-			buffer_append_fmt(ctx, "  br label %s\n", loop_label);
-			buffer_append_fmt(ctx, "%s:\n", loop_label + 1);
-			buffer_append_fmt(ctx, "  br label %s\n", body_label);
-			buffer_append_fmt(ctx, "%s:\n", body_label + 1);
-
-			push_value_scope(ctx);
-			for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
-				codegen_statement(ctx, stmt->data.for_stmt.body[i]);
-			}
-			pop_value_scope(ctx);
-
-			buffer_append_fmt(ctx, "  br label %s\n", loop_label);
-			buffer_append_fmt(ctx, "%s:\n", exit_label + 1);
-
-			ctx->loop_exit_count--;
-			break;
-		}
-
-		case AST_FOR_RANGE: {
+		} else {
 			/* Range-based for loop: for var in iterable { } */
-			const char *var_name = stmt->data.for_stmt.range.var_name;
+			const char *var_name = stmt->data.for_stmt.var_name;
 			char iter_buf[256];
 
-			if (stmt->data.for_stmt.range.iterable->kind == AST_EXPR_NAME) {
-				const char *iter_name = stmt->data.for_stmt.range.iterable->data.name.name;
+			if (stmt->data.for_stmt.iterable->kind == AST_EXPR_NAME) {
+				const char *iter_name = stmt->data.for_stmt.iterable->data.name.name;
 				ValueInfo *iter_val = find_value(ctx, iter_name);
 
 				/* Get count bound — for non-C-style for loops, use placeholder (not used in C-style) */
@@ -3889,7 +3850,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 				}
 			} else {
 				/* Fallback for non-name iterables */
-				codegen_expression(ctx, stmt->data.for_stmt.range.iterable, iter_buf);
+				codegen_expression(ctx, stmt->data.for_stmt.iterable, iter_buf);
 				char *counter = gen_value_name(ctx);
 				emit_alloca(ctx, "  %s = alloca i32\n", counter);
 				buffer_append_fmt(ctx, "  store i32 0, i32* %s\n", counter);
@@ -3919,9 +3880,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 
 				pop_value_scope(ctx);
 			}
-			break;
-		} /* end case AST_FOR_RANGE */
-		} /* end switch (stmt->data.for_stmt.kind) */
+		}
 		break;
 	}
 
