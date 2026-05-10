@@ -1,5 +1,6 @@
 #include "codegen/codegen.h"
 #include "lexer/lexer.h"
+#include "lower/lower.h"
 #include "parser/parser.h"
 #include "semantic/semantic.h"
 #include <stdio.h>
@@ -305,8 +306,11 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
+	/* Lower CST → AST */
+	AstProgram *ast = lower_cst_to_ast(prog);
+
 	/* Code generation */
-	CodegenContext *codegen_ctx = codegen_create(prog, sem_ctx);
+	CodegenContext *codegen_ctx = codegen_create(ast, sem_ctx);
 
 	/* Generate LLVM IR to temporary file or specified output */
 	const char *ir_file;
@@ -323,6 +327,7 @@ int main(int argc, char *argv[]) {
 		perror("Failed to open IR output file");
 		codegen_free(codegen_ctx);
 		semantic_context_free(sem_ctx);
+		ast_program_free(ast);
 		program_free(prog);
 		free(source);
 		return 1;
@@ -337,6 +342,7 @@ int main(int argc, char *argv[]) {
 	if (emit_llvm) {
 		codegen_free(codegen_ctx);
 		semantic_context_free(sem_ctx);
+		ast_program_free(ast);
 		program_free(prog);
 		free(source);
 		return 0;
@@ -361,6 +367,7 @@ int main(int argc, char *argv[]) {
 		unlink(ir_file);
 		codegen_free(codegen_ctx);
 		semantic_context_free(sem_ctx);
+		ast_program_free(ast);
 		program_free(prog);
 		free(source);
 		return 1;
@@ -379,6 +386,7 @@ int main(int argc, char *argv[]) {
 		unlink(asm_file);
 		codegen_free(codegen_ctx);
 		semantic_context_free(sem_ctx);
+		ast_program_free(ast);
 		program_free(prog);
 		free(source);
 		return 1;
@@ -393,9 +401,10 @@ int main(int argc, char *argv[]) {
 	unlink(ir_file);
 	unlink(asm_file);
 
-	/* Cleanup */
+	/* Cleanup — AST must be freed before CST (AST_TYPE_NAMED ptrs into CST) */
 	codegen_free(codegen_ctx);
 	semantic_context_free(sem_ctx);
+	ast_program_free(ast);
 	program_free(prog);
 	free(source);
 

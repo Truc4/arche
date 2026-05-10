@@ -9,7 +9,7 @@
  * doesn't properly maintain parser state across nested contexts.
  */
 
-#include "../../../ast/ast.h"
+#include "../../../cst/cst.h"
 #include "../../../lexer/lexer.h"
 #include "../../../parser/parser.h"
 #include <stdio.h>
