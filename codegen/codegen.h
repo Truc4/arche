@@ -9,7 +9,7 @@
 typedef struct CodegenContext CodegenContext;
 
 /* Create, generate, and free codegen context */
-CodegenContext *codegen_create(Program *prog, SemanticContext *sem_ctx);
+CodegenContext *codegen_create(AstProgram *ast, SemanticContext *sem_ctx);
 void codegen_generate(CodegenContext *ctx, FILE *output);
 void codegen_free(CodegenContext *ctx);
 

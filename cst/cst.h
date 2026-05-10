@@ -1,0 +1,474 @@
+#ifndef CST_H
+#define CST_H
+
+#include <stddef.h>
+
+/* =========================
+   Forward declarations
+   ========================= */
+
+typedef struct Program Program;
+typedef struct Decl Decl;
+typedef struct WorldDecl WorldDecl;
+typedef struct ArchetypeDecl ArchetypeDecl;
+typedef struct ProcDecl ProcDecl;
+typedef struct SysDecl SysDecl;
+typedef struct FuncDecl FuncDecl;
+typedef struct Parameter Parameter;
+typedef struct FieldDecl FieldDecl;
+typedef struct TypeRef TypeRef;
+typedef struct Statement Statement;
+typedef struct Expression Expression;
+typedef struct StaticArrayDecl StaticArrayDecl;
+typedef struct UseDecl UseDecl;
+
+/* =========================
+   Source location
+   ========================= */
+
+typedef struct {
+	int line;
+	int column;
+} SourceLoc;
+
+/* =========================
+   Program / declarations
+   ========================= */
+
+typedef enum {
+	DECL_WORLD,
+	DECL_ARCHETYPE,
+	DECL_PROC,
+	DECL_SYS,
+	DECL_FUNC,
+	DECL_STATIC,
+	DECL_CONST,
+	DECL_USE,
+} DeclKind;
+
+typedef enum {
+	STATIC_KIND_ARCHETYPE,
+	STATIC_KIND_ARRAY,
+} StaticKind;
+
+struct Program {
+	Decl **decls;
+	int decl_count;
+	SourceLoc loc;
+};
+
+typedef struct {
+	StaticKind kind;
+	union {
+		struct {
+			char *archetype_name;
+			char **field_names;
+			Expression **field_values;
+			int field_count;
+			Expression *init_length;
+		} archetype;
+		struct {
+			char *name;
+			TypeRef *element_type;
+			int size;
+		} array;
+	};
+} StaticDecl;
+
+struct UseDecl {
+	char *name;  /* module name, e.g. "csv" from `use csv;` */
+};
+
+typedef struct {
+	char *name;
+	Expression *value; /* must be a literal */
+} ConstDecl;
+
+struct Decl {
+	DeclKind kind;
+	SourceLoc loc;
+	union {
+		WorldDecl *world;
+		ArchetypeDecl *archetype;
+		ProcDecl *proc;
+		SysDecl *sys;
+		FuncDecl *func;
+		StaticDecl *static_decl;
+		ConstDecl *constant;
+		UseDecl *use;
+	} data;
+};
+
+/* =========================
+   Types
+   ========================= */
+
+typedef enum {
+	TYPE_NAME,         /* int, float, char, Vec3, Player, etc. */
+	TYPE_ARRAY,        /* nested / jagged array */
+	TYPE_SHAPED_ARRAY, /* dense ranked array */
+	TYPE_TUPLE,        /* tuple: (x: float, y: float) */
+	TYPE_HANDLE,       /* handle(ArchetypeName) */
+} TypeKind;
+
+struct TypeRef {
+	TypeKind kind;
+	SourceLoc loc;
+	union {
+		char *name;
+
+		struct {
+			TypeRef *element_type;
+		} array;
+
+		struct {
+			TypeRef *element_type;
+			int rank;
+		} shaped_array;
+
+		struct {
+			char **field_names;
+			TypeRef **field_types;
+			int field_count;
+		} tuple;
+
+		struct {
+			char *archetype_name;
+		} handle;
+	} data;
+};
+
+/* =========================
+   Worlds
+   ========================= */
+
+struct WorldDecl {
+	char *name;
+	char **field_names; /* optional fields for the world itself */
+	int field_count;
+	SourceLoc loc;
+};
+
+/* =========================
+   Archetypes
+   ========================= */
+
+typedef enum {
+	FIELD_META,   /* one value for whole archetype */
+	FIELD_COLUMN, /* one value per element, aligned with size */
+} FieldKind;
+
+struct FieldDecl {
+	FieldKind kind;
+	char *name;
+	TypeRef *type;
+	SourceLoc loc;
+};
+
+struct ArchetypeDecl {
+	char *name;
+	FieldDecl **fields;
+	int field_count;
+	SourceLoc loc;
+};
+
+struct ProcDecl {
+	char *name;
+	Parameter **params;
+	int param_count;
+	int is_extern;
+	Statement **statements;
+	int statement_count;
+	int end_line;
+	SourceLoc loc;
+};
+
+struct Parameter {
+	char *name;
+	TypeRef *type;
+	int is_out;
+	SourceLoc loc;
+};
+
+struct SysDecl {
+	char *name;
+	Parameter **params;
+	int param_count;
+	Statement **statements;
+	int statement_count;
+	int end_line;
+	SourceLoc loc;
+};
+
+struct FuncDecl {
+	char *name;
+	Parameter **params;
+	int param_count;
+	TypeRef *return_type;
+	int is_extern;
+	Statement **statements;
+	int statement_count;
+	int end_line;
+	SourceLoc loc;
+};
+
+/* =========================
+   Statements
+   ========================= */
+
+typedef enum {
+	STMT_LET,
+	STMT_ASSIGN,
+	STMT_FOR,
+	STMT_IF,
+	STMT_BREAK,
+	STMT_RUN,
+	STMT_EXPR,
+	STMT_FREE,
+	STMT_RETURN,
+	STMT_MULTI_BIND,
+} StatementType;
+
+typedef enum {
+	OP_NONE,
+	OP_ADD,
+	OP_SUB,
+	OP_MUL,
+	OP_DIV,
+	OP_EQ,
+	OP_NEQ,
+	OP_LT,
+	OP_GT,
+	OP_LTE,
+	OP_GTE,
+} Operator;
+
+typedef struct {
+	char *name;        /* single var name (backward compat) */
+	char **names;      /* multiple var names for multi-value let */
+	int name_count;    /* 0 = use .name, >0 = use .names[] */
+	TypeRef *type;     /* optional, may be NULL — only for single-var */
+	Expression *value; /* optional, may be NULL */
+} LetStmt;
+
+typedef struct {
+	Expression *target; /* must be assignable: name, field, or index */
+	Expression *value;
+	Operator op; /* OP_NONE for plain =, OP_ADD for +=, etc. */
+} AssignStmt;
+
+typedef struct {
+	char *var_name;        /* NULL for non-range-based for loops */
+	Expression *iterable;  /* NULL for non-range-based for loops */
+	Statement *init;       /* NULL unless three-part for loop */
+	Expression *condition; /* NULL for infinite loops or range-based */
+	Statement *increment;  /* NULL unless three-part for loop - can be assign or expr stmt */
+	Statement **body;
+	int body_count;
+} ForStmt;
+
+typedef struct {
+	Expression *cond;
+	Statement **then_body;
+	int then_count;
+	Statement **else_body;
+	int else_count;
+} IfStmt;
+
+typedef struct {
+	char *system_name;
+	char *world_name;
+} RunStmt;
+
+typedef struct {
+	Expression *expr;
+} ExprStmt;
+
+typedef struct {
+	Expression *value;
+} FreeStmt;
+
+typedef struct {
+	Expression *value;
+} ReturnStmt;
+
+typedef struct {
+	char *name;
+	int is_new;      /* 1 = let (declare), 0 = assign to existing */
+	TypeRef *type;   /* optional explicit type, only valid when is_new=1 */
+} BindingTarget;
+
+typedef struct {
+	BindingTarget *targets;
+	int target_count;
+	Expression *value;
+	int from_shorthand;
+} MultiBindStmt;
+
+struct Statement {
+	StatementType type;
+	SourceLoc loc;
+	union {
+		LetStmt let_stmt;
+		AssignStmt assign_stmt;
+		ForStmt for_stmt;
+		IfStmt if_stmt;
+		RunStmt run_stmt;
+		ExprStmt expr_stmt;
+		FreeStmt free_stmt;
+		ReturnStmt return_stmt;
+		MultiBindStmt multi_bind;
+	} data;
+};
+
+/* =========================
+   Expressions
+   ========================= */
+
+typedef enum {
+	EXPR_LITERAL,
+	EXPR_NAME,
+	EXPR_FIELD, /* player.pos */
+	EXPR_INDEX, /* grid[x, y], player.pos[i] */
+	EXPR_BINARY,
+	EXPR_UNARY,
+	EXPR_CALL,
+	EXPR_ALLOC,
+	EXPR_ARRAY_LITERAL,
+	EXPR_STRING,
+} ExpressionType;
+
+typedef enum {
+	UNARY_NEG,
+	UNARY_NOT,
+} UnaryOperator;
+
+typedef struct {
+	char *lexeme;
+} LiteralExpr;
+
+typedef struct {
+	char *name;
+} NameExpr;
+
+typedef struct {
+	Expression *base;
+	char *field_name;
+} FieldExpr;
+
+typedef struct {
+	Expression *base;
+	Expression **indices;
+	int index_count;
+} IndexExpr;
+
+typedef struct {
+	Operator op;
+	Expression *left;
+	Expression *right;
+} BinaryExpr;
+
+typedef struct {
+	UnaryOperator op;
+	Expression *operand;
+} UnaryExpr;
+
+typedef struct {
+	Expression *callee;
+	Expression **args;
+	int arg_count;
+} CallExpr;
+
+typedef struct {
+	char *archetype_name;
+	char **field_names;
+	Expression **field_values;
+	int field_count;
+	Expression *init_length; /* second arg: how many rows to initialize; NULL = use capacity */
+} AllocExpr;
+
+typedef struct {
+	Expression **elements;
+	int element_count;
+} ArrayLiteralExpr;
+
+typedef struct {
+	char *value; /* String content without quotes */
+	int length;  /* Length excluding quotes */
+} StringExpr;
+
+struct Expression {
+	ExpressionType type;
+	SourceLoc loc;
+	union {
+		LiteralExpr literal;
+		NameExpr name;
+		FieldExpr field;
+		IndexExpr index;
+		BinaryExpr binary;
+		UnaryExpr unary;
+		CallExpr call;
+		AllocExpr alloc;
+		ArrayLiteralExpr array_literal;
+		StringExpr string;
+	} data;
+	char *resolved_type; /* Semantic analysis populates: "int", "double", "Vec3", etc. NULL if not yet analyzed */
+};
+
+/* =========================
+   Constructors
+   ========================= */
+
+Program *program_create(void);
+Decl *decl_create(DeclKind kind);
+
+WorldDecl *world_decl_create(char *name);
+ArchetypeDecl *archetype_decl_create(char *name);
+ProcDecl *proc_decl_create(char *name);
+SysDecl *sys_decl_create(char *name);
+FuncDecl *func_decl_create(char *name, TypeRef *return_type);
+ConstDecl *const_decl_create(char *name, Expression *value);
+StaticDecl *static_decl_archetype_create(char *archetype_name);
+StaticDecl *static_decl_array_create(char *name, TypeRef *element_type, int size);
+UseDecl *use_decl_create(char *name);
+Parameter *parameter_create(char *name, TypeRef *type);
+FieldDecl *field_decl_create(FieldKind kind, char *name, TypeRef *type);
+
+TypeRef *type_name_create(char *name);
+TypeRef *type_array_create(TypeRef *element_type);
+TypeRef *type_shaped_array_create(TypeRef *element_type, int rank);
+
+Statement *statement_create(StatementType type);
+Expression *expression_create(ExpressionType type);
+
+/* =========================
+   Destructors
+   ========================= */
+
+void program_free(Program *prog);
+void decl_free(Decl *decl);
+
+void world_decl_free(WorldDecl *world);
+void archetype_decl_free(ArchetypeDecl *archetype);
+void proc_decl_free(ProcDecl *proc);
+void sys_decl_free(SysDecl *sys);
+void func_decl_free(FuncDecl *func);
+void parameter_free(Parameter *param);
+void field_decl_free(FieldDecl *field);
+void static_decl_free(StaticDecl *s);
+void use_decl_free(UseDecl *use);
+void type_ref_free(TypeRef *type);
+
+void statement_free(Statement *stmt);
+void expression_free(Expression *expr);
+
+/* =========================
+   Formatting / Pretty-printing
+   ========================= */
+
+#include "../lexer/lexer.h"
+#include <stdio.h>
+
+void format_program(FILE *out, Program *prog, Token *comments, size_t comment_count, const char *src);
+
+#endif /* CST_H */

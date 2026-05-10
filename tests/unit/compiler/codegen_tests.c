@@ -1,6 +1,8 @@
 #include "../../../ast/ast.h"
 #include "../../../codegen/codegen.h"
+#include "../../../cst/cst.h"
 #include "../../../lexer/lexer.h"
+#include "../../../lower/lower.h"
 #include "../../../parser/parser.h"
 #include "../../../semantic/semantic.h"
 #include <assert.h>
@@ -116,9 +118,11 @@ static int compile_source(const char *source, char *ir_buf, int ir_len) {
 		return 0;
 	}
 
+	AstProgram *ast = lower_cst_to_ast(prog);
+
 	fprintf(stderr, "DEBUG: starting codegen_create\n");
 	fflush(stderr);
-	CodegenContext *codegen_ctx = codegen_create(prog, sem_ctx);
+	CodegenContext *codegen_ctx = codegen_create(ast, sem_ctx);
 	fprintf(stderr, "DEBUG: codegen_create complete\n");
 	fflush(stderr);
 	FILE *ir_output = fopen("/tmp/test_codegen.ll", "w");
@@ -126,6 +130,7 @@ static int compile_source(const char *source, char *ir_buf, int ir_len) {
 		snprintf(ir_buf, ir_len, "Could not open temp file");
 		codegen_free(codegen_ctx);
 		semantic_context_free(sem_ctx);
+		ast_program_free(ast);
 		program_free(prog);
 		return 0;
 	}
@@ -139,6 +144,7 @@ static int compile_source(const char *source, char *ir_buf, int ir_len) {
 
 	codegen_free(codegen_ctx);
 	semantic_context_free(sem_ctx);
+	ast_program_free(ast);
 	program_free(prog);
 	return 1;
 }

@@ -1,7 +1,7 @@
 #ifndef SEMANTIC_H
 #define SEMANTIC_H
 
-#include "../ast/ast.h"
+#include "../cst/cst.h"
 
 /* Semantic analysis context */
 typedef struct SemanticContext SemanticContext;
