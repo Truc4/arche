@@ -137,7 +137,6 @@ static int find_known_func(SemanticContext *ctx, const char *name) {
 	return 0;
 }
 
-
 static void register_func(SemanticContext *ctx, const char *name) {
 	if (find_known_func(ctx, name)) {
 		return; /* already registered */

@@ -376,8 +376,8 @@ int main(int argc, char *argv[]) {
 	/* Call cc to assemble and link with runtime objects */
 	char cc_cmd[1024];
 	snprintf(cc_cmd, sizeof(cc_cmd),
-	         "cc -no-pie -mcmodel=large -o %s %s " ARCHE_RUNTIME_DIR "/stack_check.o " ARCHE_RUNTIME_DIR "/io.o -lc", output_file,
-	         asm_file);
+	         "cc -no-pie -mcmodel=large -o %s %s " ARCHE_RUNTIME_DIR "/stack_check.o " ARCHE_RUNTIME_DIR "/io.o -lc",
+	         output_file, asm_file);
 	printf("Linking executable...\n");
 	ret = system(cc_cmd);
 	if (ret != 0) {
