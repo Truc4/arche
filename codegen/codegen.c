@@ -2864,32 +2864,54 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 
 				for (int i = 0; i < callee_func->param_count; i++) {
 					if (callee_func->params[i] && callee_func->params[i]->is_out) {
-						/* Extract size from param type (e.g., out buf: char[256]) */
 						AstType *pt = callee_func->params[i]->type;
-						int size = 256; /* default */
+						int size = 256;
 						if (pt && pt->tag == AST_TYPE_SHAPED_ARRAY && pt->elem && pt->elem->tag == AST_TYPE_CHAR) {
 							size = pt->rank;
 						} else if (pt && pt->tag == AST_TYPE_ARRAY && i < rhs->data.call.arg_count) {
-							/* For unbounded char[], try to get size from argument */
-							/* Check if arg is a static array and use its size */
 							AstExpr *arg = rhs->data.call.args[i];
 							if (arg && arg->kind == AST_EXPR_NAME) {
 								AstStaticDecl *sa = codegen_find_static_array(ctx, arg->data.name.name);
-								if (sa && sa->array.element_type && sa->array.element_type->tag == AST_TYPE_CHAR) {
+								if (sa && sa->array.element_type && sa->array.element_type->tag == AST_TYPE_CHAR)
 									size = sa->array.size;
-								}
 							}
 						}
 
-						/* Allocate zero-initialized buffer on stack */
-						char *buf_name = gen_value_name(ctx);
-						emit_alloca(ctx, "  %s = alloca [%d x i8]\n", buf_name, size);
-						char *ptr_for_memset = gen_value_name(ctx);
-						buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", ptr_for_memset, size, buf_name);
-						buffer_append_fmt(ctx, "  call void @llvm.memset.p0i8.i64(i8* %s, i8 0, i64 %d, i1 false)\n",
-						                  ptr_for_memset, size);
+						/* Determine which target corresponds to this out param */
+						AstBindingTarget *tgt = (out_param_count < stmt->data.multi_bind.target_count)
+						                            ? &stmt->data.multi_bind.targets[out_param_count]
+						                            : NULL;
 
-						out_buf_names[out_param_count] = buf_name;
+						if (tgt && !tgt->is_new) {
+							/* Existing variable: use its memory directly — no alloca */
+							AstStaticDecl *sa = codegen_find_static_array(ctx, tgt->name);
+							if (sa && sa->array.element_type && sa->array.element_type->tag == AST_TYPE_CHAR) {
+								char *gname = malloc(strlen(tgt->name) + 8);
+								sprintf(gname, "@%s_data", tgt->name);
+								size = sa->array.size;
+								out_buf_names[out_param_count] = gname;
+							} else {
+								ValueInfo *vi = find_value(ctx, tgt->name);
+								char *vname = malloc(vi ? strlen(vi->llvm_name) + 1 : 4);
+								if (vi) {
+									strcpy(vname, vi->llvm_name);
+									if (vi->string_len > 0) size = vi->string_len;
+								} else {
+									strcpy(vname, "%0");
+								}
+								out_buf_names[out_param_count] = vname;
+							}
+						} else {
+							/* New variable (let): alloca a fresh buffer */
+							char *buf_name = gen_value_name(ctx);
+							emit_alloca(ctx, "  %s = alloca [%d x i8]\n", buf_name, size);
+							char *ptr_ms = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", ptr_ms, size, buf_name);
+							buffer_append_fmt(ctx,
+							                  "  call void @llvm.memset.p0i8.i64(i8* %s, i8 0, i64 %d, i1 false)\n",
+							                  ptr_ms, size);
+							out_buf_names[out_param_count] = buf_name;
+						}
 						out_buf_sizes[out_param_count] = size;
 						out_param_count++;
 					}
@@ -3045,17 +3067,15 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 							}
 						}
 					} else {
-						/* Assignment to existing variable */
-						ValueInfo *existing = find_value(ctx, target->name);
-						if (existing) {
-							if (i < out_param_count) {
-								/* Out parameter: copy buffer pointer (but this shouldn't happen in practice) */
-								/* For now, just store the buffer name */
-								strcpy(existing->llvm_name, out_buf_names[i]);
-							} else {
-								/* Return value: store to existing alloca */
-								buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", return_type, res_name, return_type,
-								                  existing->llvm_name);
+						/* Existing variable */
+						if (i < out_param_count) {
+							/* Out param: function wrote directly into existing memory — nothing to do */
+						} else {
+							/* Return value: store to existing alloca */
+							ValueInfo *existing = find_value(ctx, target->name);
+							if (existing) {
+								buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", return_type, res_name,
+								                  return_type, existing->llvm_name);
 							}
 						}
 					}

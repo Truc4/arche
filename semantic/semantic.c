@@ -49,9 +49,6 @@ struct SemanticContext {
 	const char **const_values; /* literal lexeme strings */
 	int const_count;
 
-	char **static_array_names; /* static array names at module scope */
-	int static_array_count;
-
 	Scope *scopes;
 	int scope_count;
 
@@ -140,14 +137,6 @@ static int find_known_func(SemanticContext *ctx, const char *name) {
 	return 0;
 }
 
-static int find_static_array(SemanticContext *ctx, const char *name) {
-	for (int i = 0; i < ctx->static_array_count; i++) {
-		if (strcmp(ctx->static_array_names[i], name) == 0) {
-			return 1;
-		}
-	}
-	return 0;
-}
 
 static void register_func(SemanticContext *ctx, const char *name) {
 	if (find_known_func(ctx, name)) {
@@ -414,14 +403,13 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 	case EXPR_NAME: {
 		const char *name = expr->data.name.name;
 
-		/* Check if it's a known function, variable, archetype, constant, or static array */
+		/* Check if it's a known function, variable, archetype, or constant */
 		int is_known_func = find_known_func(ctx, name);
 		int is_var = find_variable(ctx, name) != NULL;
 		int is_arch = find_archetype(ctx, name) != NULL;
 		int is_const = semantic_get_const_value(ctx, name) != NULL;
-		int is_static_array = find_static_array(ctx, name);
 
-		if (!is_known_func && !is_var && !is_arch && !is_const && !is_static_array) {
+		if (!is_known_func && !is_var && !is_arch && !is_const) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "Undefined symbol '%s'", name);
 			error(ctx, msg);
@@ -1005,10 +993,8 @@ static void analyze_static_array_decl(SemanticContext *ctx, StaticDecl *s) {
 		return;
 	}
 
-	/* Register the static array in the global scope */
-	ctx->static_array_names = realloc(ctx->static_array_names, (ctx->static_array_count + 1) * sizeof(char *));
-	ctx->static_array_names[ctx->static_array_count] = s->array.name;
-	ctx->static_array_count++;
+	/* Register as a variable in the global scope so find_variable works everywhere */
+	add_variable(ctx, s->array.name, s->array.element_type);
 }
 
 static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
@@ -1238,8 +1224,6 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->const_names = NULL;
 	ctx->const_values = NULL;
 	ctx->const_count = 0;
-	ctx->static_array_names = NULL;
-	ctx->static_array_count = 0;
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
 	ctx->error_count = 0;
@@ -1286,6 +1270,9 @@ SemanticContext *semantic_analyze(Program *prog) {
 		}
 	}
 
+	/* global scope: holds module-level variables (static arrays, etc.) */
+	push_scope(ctx);
+
 	/* first pass: collect all archetypes */
 	for (int i = 0; i < prog->decl_count; i++) {
 		if (prog->decls[i]->kind == DECL_ARCHETYPE) {
@@ -1310,9 +1297,6 @@ void semantic_context_free(SemanticContext *ctx) {
 	/* free constants (names only, values are owned by AST) */
 	free(ctx->const_names);
 	free(ctx->const_values);
-
-	/* free static array names (owned by AST) */
-	free(ctx->static_array_names);
 
 	/* free shapes (one per unique column structure) */
 	for (int i = 0; i < ctx->archetype_count; i++) {
