@@ -5,8 +5,8 @@ func fill_two(out buf1: char[32], out buf2: char[32]) -> int {
   buf1[0] = 'a';
   buf1[1] = 'b';
   // Note: '\0' escape not implemented, so use sprintf to get null-terminated string
-  let result1 = sprintf(buf1, "ab");
-  let result2 = sprintf(buf2, "cd");
+  let result1 := sprintf(buf1, "ab");
+  let result2 := sprintf(buf2, "cd");
   return 42;
 }
 

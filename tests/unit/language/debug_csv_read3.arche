@@ -7,7 +7,6 @@ static buf: char[65536];
 proc main() {
   let fd := csv_open("tests/fixtures/data.csv");
   printf("fd=%d\n", fd);
-
   if (fd > 0) {
     printf("about to call csv_read_chunk\n");
     let n := csv_read_chunk(fd, buf, 65536);

@@ -732,23 +732,23 @@ typedef struct {
 	const char *src;
 } FmtCtx;
 
-static void flush_before_line(FILE *out, FmtCtx *ctx, int line, int is_decl_boundary);
+static void flush_before_line(FILE *out, FmtCtx *ctx, int line, int is_decl_boundary, const char *indent_str);
 static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx);
 
 static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx) {
 	if (!stmt)
 		return;
 
-	if (ctx && ctx->comment_idx < ctx->comment_count && ctx->comments[ctx->comment_idx].line < stmt->loc.line) {
-		flush_before_line(out, ctx, stmt->loc.line, 0);
-	} else if (ctx) {
-		/* No comments to flush, but update last_line to current statement */
-		ctx->last_line = stmt->loc.line;
-	}
-
 	char indent_str[256] = "";
 	for (int i = 0; i < indent; i++) {
 		strcat(indent_str, "  ");
+	}
+
+	if (ctx && ctx->comment_idx < ctx->comment_count && ctx->comments[ctx->comment_idx].line < stmt->loc.line) {
+		flush_before_line(out, ctx, stmt->loc.line, 0, indent_str);
+	} else if (ctx) {
+		/* No comments to flush, but update last_line to current statement */
+		ctx->last_line = stmt->loc.line;
 	}
 
 	switch (stmt->type) {
@@ -998,7 +998,7 @@ static int decl_start_line(Decl *decl) {
 }
 
 /* Emit any comments that appear before the given line, plus blank lines if needed */
-static void flush_before_line(FILE *out, FmtCtx *ctx, int line, int is_decl_boundary) {
+static void flush_before_line(FILE *out, FmtCtx *ctx, int line, int is_decl_boundary, const char *indent_str) {
 	if (!ctx || !ctx->comments)
 		return;
 
@@ -1013,6 +1013,10 @@ static void flush_before_line(FILE *out, FmtCtx *ctx, int line, int is_decl_boun
 			fprintf(out, gap >= 2 ? "\n\n" : "\n");
 		}
 
+		/* Emit comment with proper indentation */
+		if (indent_str && indent_str[0]) {
+			fprintf(out, "%s", indent_str);
+		}
 		fprintf(out, "%.*s\n", (int)comment->length, comment->start);
 		ctx->last_line = comment_line;
 		ctx->comment_idx++;
@@ -1035,7 +1039,7 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 	/* Emit any leading comments before first declaration */
 	if (prog->decl_count > 0) {
 		int first_line = decl_start_line(prog->decls[0]);
-		flush_before_line(out, &ctx, first_line, 1);
+		flush_before_line(out, &ctx, first_line, 1, "");
 	} else {
 		/* No declarations, emit all comments */
 		for (size_t i = 0; i < comment_count; i++) {
@@ -1048,7 +1052,7 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 		Decl *decl = prog->decls[i];
 
 		/* Emit comments before this declaration */
-		flush_before_line(out, &ctx, decl_start_line(decl), 1);
+		flush_before_line(out, &ctx, decl_start_line(decl), 1, "");
 
 		switch (decl->kind) {
 		case DECL_WORLD: {
