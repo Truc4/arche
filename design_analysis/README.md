@@ -102,82 +102,78 @@ Test datasets for benchmarks:
 3. **C stdlib interop via bounded handle table**: Portable file I/O without platform-specific flags (O_CREAT)
 4. **Manual CSV parsing**: No string library overhead, explicit bounds
 
-## ETL Benchmarks
+## ETL Benchmarks (100M rows)
 
-Real-world data processing tasks to validate Arche's performance on practical workloads.
+Real-world data processing tasks at scale. All tasks read a 3.4 GB CSV file (100M rows, columns: timestamp, price, quantity, region, flags) using mmap-based I/O, load into columnar archetypes, run a compute pass, and print a checksum.
 
-### Task1: Derived Column Computation
+**Dataset**: `benchmarks/etl/data/data_100m.csv` — 100,000,000 rows, ~35 bytes/row, 3.4 GB.
 
-**Goal**: Read CSV, compute derived column, write output CSV.
+**Arche implementation**: mmap + `use csv;` module, columnar static archetypes, vectorized column ops.
 
-**Implementation**: `benchmarks/etl/arche/task_1_derived_columns.arche`
-- Loads 1000 rows from `benchmarks/etl/data/data.csv` (timestamp, price, quantity, region, flags)
-- Computes `revenue = price * quantity` for all rows
-- Writes output CSV with all three columns (price, quantity, revenue)
-- Uses C stdlib wrappers (fopen/fread/fwrite) for portable file I/O
+**Pandas implementation**: `pd.read_csv()` + vectorized DataFrame operations.
 
-**Performance** (30 iterations, end-to-end: read + parse + compute + write):
-- **Arche runtime**: 1.033ms avg (min: 0.737ms, max: 5.925ms)
-- **Pandas**: 2.160ms avg (min: 1.996ms, max: 4.661ms)
-- **Speedup**: 2.09x (Arche is 2.09x faster)
-- **Compilation**: 32.0ms one-time overhead
-- **Correctness**: ✓ All 1000 rows match Pandas
+### Results
 
-**Analysis**:
-- CSV write dominates execution time; Arche's sprintf+fwrite beats Pandas to_csv serialization
-- 2.09x speedup on end-to-end task (read + compute + write)
-- Static allocation with implicit loop hoisting eliminates address recalculation overhead in loops
+| Task | Operation | Arche | Pandas | Speedup |
+|------|-----------|-------|--------|---------|
+| Task 1 | `revenue = price × quantity` (load + compute + sum) | 7.1s | 28.8s | **4.1x** |
+| Task 2 | count rows where `quantity > 0` | 2.9s | 29.2s | **10.1x** |
+| Task 3 | `price_bucket = price / 10`, extract hour from timestamp | 6.7s | 35.9s | **5.4x** |
+| Task 4 | `Σ(price × quantity)` across all rows | 7.2s | 31.6s | **4.4x** |
 
-**Run benchmark**:
-```bash
-python3 benchmarks/etl/compare_task1.py        # 30 iterations (default)
-python3 benchmarks/etl/compare_task1.py 50     # 50 iterations
-python3 benchmarks/etl/compare_task1.py 100    # 100 iterations
+Machine: Linux x86-64, file hot in page cache.
+
+### Task Details
+
+**Task 1 — Derived columns** (`arche_scale/task_1_derived_columns.arche`):
+- Loads price (float) and quantity (int) for 100M rows via mmap
+- Computes `Transaction.revenue = Transaction.price * Transaction.quantity` (vectorized SIMD column op)
+- Sums all revenue values; prints checksum
+
+**Task 2 — Filter invalid rows** (`arche_scale/task_2_filter_invalid.arche`):
+- Loads quantity only (skips price field parsing entirely — only scans to second comma)
+- Counts rows where `quantity > 0`
+- 10x speedup partly because Pandas parses all 5 columns while Arche stops at column 2
+
+**Task 3 — Bucket timestamps** (`arche_scale/task_3_bucket_timestamps.arche`):
+- Extracts hour from timestamp via `csv_mmap_parse_int(mm, pos + 11)` — no temp buffer, no string copy
+- Computes `price_bucket = price / 10` (vectorized)
+- Pandas extra cost: timestamp column parsed as datetime strings
+
+**Task 4 — Aggregate revenue** (`arche_scale/task_4_aggregate_region.arche`):
+- Same load as Task 1, same vectorized multiply
+- Sums per-region revenue; prints total checksum
+
+### I/O Strategy
+
+Arche uses mmap via a thin `csv.arche` module:
+
+```arche
+use csv;
+
+proc load_transactions() {
+  let mm := csv_mmap_open("data_100m.csv");
+  let size := csv_mmap_size(mm);
+  let pos := csv_mmap_skip_header(mm, size);
+  let idx := 0;
+  for (;idx < 100000000;) {
+    let nl := csv_mmap_next_line(mm, pos, size);
+    let c1 := csv_mmap_find_comma(mm, pos, nl);
+    let c2 := csv_mmap_find_comma(mm, c1 + 1, nl);
+    Transaction.price[idx] = csv_mmap_parse_float(mm, c1 + 1);
+    Transaction.quantity[idx] = csv_mmap_parse_int(mm, c2 + 1);
+    pos = nl + 1;
+    idx = idx + 1;
+  }
+  csv_mmap_close(mm);
+}
 ```
 
-### Task2: Filter Invalid Rows
+No temp buffers, no per-line syscalls, no string copies. `memchr` locates delimiters; `strtod`/`strtol` parse in-place from mapped memory.
 
-**Goal**: Read CSV, mark rows as valid (valid=1) if quantity > 0.
+### Previous (1000-row) Results
 
-**Implementation**: `benchmarks/etl/arche/task_2_filter_invalid.arche`
-- Loads 1000 rows, filters based on quantity > 0
-- Outputs CSV with valid flag column
-
-**Performance** (10 iterations, end-to-end: read + compute + write):
-- **Arche runtime**: 1.256ms avg
-- **Pandas**: 2.154ms avg
-- **Speedup**: 1.71x
-- **Correctness**: ✓ All 1000 rows match
-
-### Task3: Bucket Prices into Ranges
-
-**Goal**: Read CSV, compute price buckets (price / 10).
-
-**Implementation**: `benchmarks/etl/arche/task_3_bucket_timestamps.arche`
-- Loads 1000 rows, computes price_bucket = floor(price / 10)
-- Outputs CSV with bucket column
-
-**Performance** (10 iterations, end-to-end: read + compute + write):
-- **Arche runtime**: 1.321ms avg
-- **Pandas**: 2.396ms avg
-- **Speedup**: 1.81x
-- **Correctness**: ✓ All 1000 rows match
-
-### Task4: Aggregate Total Revenue
-
-**Goal**: Read CSV, compute total revenue (sum of price × quantity).
-
-**Implementation**: `benchmarks/etl/arche/task_4_aggregate_region.arche`
-- Loads 1000 rows from CSV into Transaction archetype (price, quantity)
-- Vectorized: `Transaction.revenue = Transaction.price * Transaction.quantity`
-- Loop sum: accumulates all revenue values into float scalar
-- Writes result to file
-
-**Performance** (10 iterations, end-to-end: read + compute + write):
-- **Arche runtime**: 1.057ms avg
-- **Pandas**: 1.093ms avg
-- **Speedup**: 1.03x
-- **Correctness**: ✓ Total revenue matches (2429322123.15)
+Earlier benchmarks on 1000-row datasets showed 1.5–2.1x speedups. Those numbers are not meaningful — 1000 rows is dominated by Python interpreter startup and pandas import overhead, not actual CSV parsing or compute performance. The 100M row results above are more representative.
 
 ## Implementation Complexity: Python vs Arche
 
@@ -265,23 +261,22 @@ for (;i < txns.count;) {
 
 **With CSV library**: Arche expressiveness matches Python for vectorized operations (Tasks 1–3). Aggregation (Task 4) requires explicit loop boilerplate. Gain: compile-time safety, predictable latency (1.08–1.69x faster), columnar layout benefits (SIMD, cache efficiency).
 
-## Limitations of This Test
+## Benchmark Fairness Disclaimer
 
-- **Too small**: 1000 rows doesn't stress batch optimization or memory efficiency
-- **Unfair baseline**: Pandas times include Python startup overhead (~35ms), making interpreted overhead visible
-- **No compiled comparison**: Only comparing against interpreted code; need Polars, DuckDB, or NumPy+Cython for meaningful performance baseline
-- **Wrong metric**: Latency on tiny datasets favors compiled code; throughput on large datasets shows real optimization quality
-- **High variance**: 1000-row runs show 10x variance (max/min), masking actual performance characteristics
+These results need more validation before drawing strong conclusions:
+
+- **No compiled baseline**: Pandas is interpreted Python over C extensions. A fair comparison needs Polars, DuckDB, or a hand-written C program. Arche beating Python is expected; beating compiled data systems is the real test.
+- **Single run, hot cache**: Numbers are single-pass with the file already in the page cache. Cold-cache runs and variance across multiple runs haven't been measured.
+- **No warmup / JIT consideration**: Pandas uses NumPy (pre-compiled C), but Python startup and import are included in the wall time. This inflates the Pandas numbers slightly.
+- **Task 2 selectivity**: The 10x speedup on Task 2 is partly an apples-to-oranges comparison — Arche stops parsing at column 2 while Pandas reads all 5 columns. A fairer Pandas version would use `usecols=['quantity']`.
+- **No multi-core**: Both implementations are single-threaded. Pandas can parallelize with Dask; Arche has no parallelism yet.
+- **Synthetic data**: All fields have simple formats (short timestamps, small floats, small ints). Real-world CSV is messier.
 
 ## Future Benchmarks
 
-To properly evaluate Arche:
-
-1. **Scale**: 1M+ rows to measure batch optimization and memory efficiency at realistic scale
-2. **Compiled baselines**: Compare against Polars, DuckDB, NumPy+Cython instead of interpreted Pandas
-3. **Throughput metrics**: Measure rows/sec on large datasets, not microseconds on tiny ones
-4. **Overhead separation**: Exclude Python startup time from Pandas measurements
-5. **Real-world workflows**: Multi-step pipelines (load → filter → aggregate → join) vs single operations
-6. **Variance analysis**: Measure latency predictability (max/min ratios) on large datasets
-
-I assume these will not be as favorable to Arche, but will continue testing practical scenarios.
+1. **Compiled baselines**: Polars, DuckDB, hand-written C with the same mmap approach
+2. **Cold-cache runs**: Measure actual I/O cost, not just parse+compute
+3. **Multi-run variance**: Report min/median/max across 10+ runs
+4. **Selective column loading**: Fair Pandas comparison using `usecols`
+5. **Real-world data**: Irregular field widths, quoted strings, mixed types
+6. **Multi-step pipelines**: Load → filter → aggregate → join, not just single operations
