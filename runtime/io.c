@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -109,10 +110,14 @@ int arche_mmap_open(const char *path) {
 	return 0;
 }
 
+/* Positions are treated as uint32_t to support files up to 4GB.
+ * Arche's int wraps identically to uint32, so signed-int Arche code
+ * interoperates correctly: e.g. a 3.4 GB file returns (int)3485384676
+ * = -809582620 as signed, but C reinterprets it as unsigned 3485384676. */
 int arche_mmap_size(int handle) {
 	if (handle < 1 || handle > ARCHE_MMAP_MAX || !arche_mmaps[handle - 1].data)
 		return 0;
-	return (int)arche_mmaps[handle - 1].size;
+	return (int)(uint32_t)arche_mmaps[handle - 1].size;
 }
 
 void arche_mmap_close(int handle) {
@@ -123,33 +128,38 @@ void arche_mmap_close(int handle) {
 	arche_mmaps[handle - 1].size = 0;
 }
 
-/* Returns first position of ch in [start, end), or end if not found. */
-int arche_mmap_find(int handle, int start, int end, int ch) {
+/* Returns first position of ch in [start, end), or end if not found.
+ * start/end are treated as uint32_t to support files up to 4GB. */
+int arche_mmap_find(int handle, int start_i, int end_i, int ch) {
 	if (handle < 1 || handle > ARCHE_MMAP_MAX || !arche_mmaps[handle - 1].data)
-		return end;
-	long size = arche_mmaps[handle - 1].size;
-	if (start < 0 || start >= size || end > size || start >= end)
-		return end;
+		return end_i;
+	uint32_t start = (uint32_t)start_i;
+	uint32_t end = (uint32_t)end_i;
+	uint64_t size = (uint64_t)arche_mmaps[handle - 1].size;
+	if (start >= size || end > size || start >= end)
+		return end_i;
 	const char *base = arche_mmaps[handle - 1].data;
 	const char *found = memchr(base + start, (unsigned char)ch, end - start);
-	return found ? (int)(found - base) : end;
+	return found ? (int)(uint32_t)(found - base) : end_i;
 }
 
 /* Parse float at pos directly from mapped memory — no temp buffer. */
-double arche_mmap_parse_float(int handle, int pos) {
+double arche_mmap_parse_float(int handle, int pos_i) {
 	if (handle < 1 || handle > ARCHE_MMAP_MAX || !arche_mmaps[handle - 1].data)
 		return 0.0;
-	if (pos < 0 || pos >= arche_mmaps[handle - 1].size)
+	uint32_t pos = (uint32_t)pos_i;
+	if ((uint64_t)pos >= (uint64_t)arche_mmaps[handle - 1].size)
 		return 0.0;
 	char *end;
 	return strtod(arche_mmaps[handle - 1].data + pos, &end);
 }
 
 /* Parse int at pos directly from mapped memory — no temp buffer. */
-int arche_mmap_parse_int(int handle, int pos) {
+int arche_mmap_parse_int(int handle, int pos_i) {
 	if (handle < 1 || handle > ARCHE_MMAP_MAX || !arche_mmaps[handle - 1].data)
 		return 0;
-	if (pos < 0 || pos >= arche_mmaps[handle - 1].size)
+	uint32_t pos = (uint32_t)pos_i;
+	if ((uint64_t)pos >= (uint64_t)arche_mmaps[handle - 1].size)
 		return 0;
 	char *end;
 	return (int)strtol(arche_mmaps[handle - 1].data + pos, &end, 10);

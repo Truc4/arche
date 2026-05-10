@@ -19,9 +19,6 @@ proc load_transactions() {
   let pos := csv_mmap_skip_header(mm, size);
   let idx := 0;
   for (;idx < 100000000;) {
-    if (pos >= size) {
-      break;
-    }
     let nl := csv_mmap_next_line(mm, pos, size);
     let c1 := csv_mmap_find_comma(mm, pos, nl);
     let c2 := csv_mmap_find_comma(mm, c1 + 1, nl);

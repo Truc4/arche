@@ -20,9 +20,6 @@ proc load_transactions() {
   let pos := arche_mmap_find(mm, 0, size, '\n') + 1;
   let idx := 0;
   for (;idx < 1000;) {
-    if (pos >= size) {
-      break;
-    }
     let nl := arche_mmap_find(mm, pos, size, '\n');
     let c1 := arche_mmap_find(mm, pos, nl, ',');
     let c2 := arche_mmap_find(mm, c1 + 1, nl, ',');
