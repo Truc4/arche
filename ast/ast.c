@@ -732,11 +732,19 @@ typedef struct {
 	const char *src;
 } FmtCtx;
 
-static void format_statement(FILE *out, Statement *stmt, int indent);
+static void flush_before_line(FILE *out, FmtCtx *ctx, int line, int is_decl_boundary);
+static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx);
 
-static void format_statement(FILE *out, Statement *stmt, int indent) {
+static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx) {
 	if (!stmt)
 		return;
+
+	if (ctx && ctx->comment_idx < ctx->comment_count && ctx->comments[ctx->comment_idx].line < stmt->loc.line) {
+		flush_before_line(out, ctx, stmt->loc.line, 0);
+	} else if (ctx) {
+		/* No comments to flush, but update last_line to current statement */
+		ctx->last_line = stmt->loc.line;
+	}
 
 	char indent_str[256] = "";
 	for (int i = 0; i < indent; i++) {
@@ -877,7 +885,7 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		}
 		fprintf(out, " {\n");
 		for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
-			format_statement(out, stmt->data.for_stmt.body[i], indent + 1);
+			format_statement(out, stmt->data.for_stmt.body[i], indent + 1, ctx);
 		}
 		fprintf(out, "%s}\n", indent_str);
 		break;
@@ -887,12 +895,12 @@ static void format_statement(FILE *out, Statement *stmt, int indent) {
 		format_expression(out, stmt->data.if_stmt.cond);
 		fprintf(out, ") {\n");
 		for (int i = 0; i < stmt->data.if_stmt.then_count; i++) {
-			format_statement(out, stmt->data.if_stmt.then_body[i], indent + 1);
+			format_statement(out, stmt->data.if_stmt.then_body[i], indent + 1, ctx);
 		}
 		if (stmt->data.if_stmt.else_count > 0) {
 			fprintf(out, "%s} else {\n", indent_str);
 			for (int i = 0; i < stmt->data.if_stmt.else_count; i++) {
-				format_statement(out, stmt->data.if_stmt.else_body[i], indent + 1);
+				format_statement(out, stmt->data.if_stmt.else_body[i], indent + 1, ctx);
 			}
 		}
 		fprintf(out, "%s}\n", indent_str);
@@ -986,7 +994,7 @@ static int decl_start_line(Decl *decl) {
 }
 
 /* Emit any comments that appear before the given line, plus blank lines if needed */
-static void flush_before_line(FILE *out, FmtCtx *ctx, int line) {
+static void flush_before_line(FILE *out, FmtCtx *ctx, int line, int is_decl_boundary) {
 	if (!ctx || !ctx->comments)
 		return;
 
@@ -1006,8 +1014,8 @@ static void flush_before_line(FILE *out, FmtCtx *ctx, int line) {
 		ctx->comment_idx++;
 	}
 
-	/* Emit blank lines for gaps before the declaration */
-	if (line > ctx->last_line + 1) {
+	/* Emit blank lines for gaps before the declaration (only at decl boundaries) */
+	if (is_decl_boundary && line > ctx->last_line + 1) {
 		int gap = line - ctx->last_line - 1;
 		fprintf(out, gap >= 2 ? "\n\n" : "\n");
 	}
@@ -1023,7 +1031,7 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 	/* Emit any leading comments before first declaration */
 	if (prog->decl_count > 0) {
 		int first_line = decl_start_line(prog->decls[0]);
-		flush_before_line(out, &ctx, first_line);
+		flush_before_line(out, &ctx, first_line, 1);
 	} else {
 		/* No declarations, emit all comments */
 		for (size_t i = 0; i < comment_count; i++) {
@@ -1036,7 +1044,7 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 		Decl *decl = prog->decls[i];
 
 		/* Emit comments before this declaration */
-		flush_before_line(out, &ctx, decl_start_line(decl));
+		flush_before_line(out, &ctx, decl_start_line(decl), 1);
 
 		switch (decl->kind) {
 		case DECL_WORLD: {
@@ -1073,12 +1081,13 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				fprintf(out, ");\n");
 			} else {
 				fprintf(out, ") {\n");
+				ctx.last_line = proc->loc.line;
 				for (int j = 0; j < proc->statement_count; j++) {
-					format_statement(out, proc->statements[j], 1);
+					format_statement(out, proc->statements[j], 1, &ctx);
 				}
 				fprintf(out, "}\n");
 			}
-			ctx.last_line = decl->loc.line;
+			ctx.last_line = proc->end_line;
 			break;
 		}
 		case DECL_SYS: {
@@ -1090,11 +1099,12 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				fprintf(out, "%s", sys->params[j]->name);
 			}
 			fprintf(out, ") {\n");
+			ctx.last_line = sys->loc.line;
 			for (int j = 0; j < sys->statement_count; j++) {
-				format_statement(out, sys->statements[j], 1);
+				format_statement(out, sys->statements[j], 1, &ctx);
 			}
 			fprintf(out, "}\n");
-			ctx.last_line = decl->loc.line;
+			ctx.last_line = sys->end_line;
 			break;
 		}
 		case DECL_FUNC: {
@@ -1116,12 +1126,13 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				fprintf(out, ";\n");
 			} else {
 				fprintf(out, " {\n");
+				ctx.last_line = func->loc.line;
 				for (int j = 0; j < func->statement_count; j++) {
-					format_statement(out, func->statements[j], 1);
+					format_statement(out, func->statements[j], 1, &ctx);
 				}
 				fprintf(out, "}\n");
 			}
-			ctx.last_line = decl->loc.line;
+			ctx.last_line = func->end_line;
 			break;
 		}
 		case DECL_STATIC: {

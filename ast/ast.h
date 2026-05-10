@@ -179,6 +179,7 @@ struct ProcDecl {
 	int is_extern;
 	Statement **statements;
 	int statement_count;
+	int end_line;
 	SourceLoc loc;
 };
 
@@ -195,6 +196,7 @@ struct SysDecl {
 	int param_count;
 	Statement **statements;
 	int statement_count;
+	int end_line;
 	SourceLoc loc;
 };
 
@@ -206,6 +208,7 @@ struct FuncDecl {
 	int is_extern;
 	Statement **statements;
 	int statement_count;
+	int end_line;
 	SourceLoc loc;
 };
 

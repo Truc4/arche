@@ -484,6 +484,7 @@ static Decl *parse_proc_decl(Parser *parser) {
 		error(parser, "Expected '}'");
 	}
 
+	proc->end_line = parser->previous.line;
 	Decl *decl = decl_create(DECL_PROC);
 	decl->data.proc = proc;
 	return decl;
@@ -559,6 +560,7 @@ static Decl *parse_sys_decl(Parser *parser) {
 		error(parser, "Expected '}'");
 	}
 
+	sys->end_line = parser->previous.line;
 	Decl *decl = decl_create(DECL_SYS);
 	decl->data.sys = sys;
 	return decl;
@@ -672,6 +674,7 @@ static Decl *parse_func_decl(Parser *parser) {
 		error(parser, "Expected '}'");
 	}
 
+	func->end_line = parser->previous.line;
 	Decl *decl = decl_create(DECL_FUNC);
 	decl->data.func = func;
 	return decl;
