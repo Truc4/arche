@@ -1,10 +1,10 @@
-// RUN: %arche -o %t %s && %t | grep "rows: 1000"
+// RUN: %arche -o %t %s && cd %repo && %t | grep "rows: 1000"
 use csv;
 
 static buf: char[65536];
 
 proc main() {
-  let fd := csv_open("/home/curt/Code/arche/tests/fixtures/data.csv");
+  let fd := csv_open("tests/fixtures/data.csv");
   csv_skip_header(fd);
   let rows := 0;
   (buf, let n:) = csv_read_chunk(fd, buf, 65536);
