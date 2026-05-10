@@ -165,7 +165,7 @@ format: $(FMT_BIN)
 			echo "✗ $$f (parse error or timeout)"; \
 		fi; \
 	done
-	for f in $$(find . -name "*.c" -type f | grep -v "tests/known_failures"); do \
+	for f in $$(find . \( -name "*.c" -o -name "*.h" \) -type f | grep -v "tests/known_failures"); do \
 		clang-format -i "$$f"; \
 		echo "✓ $$f"; \
 	done

@@ -76,7 +76,7 @@ typedef struct {
 } StaticDecl;
 
 struct UseDecl {
-	char *name;  /* module name, e.g. "csv" from `use csv;` */
+	char *name; /* module name, e.g. "csv" from `use csv;` */
 };
 
 typedef struct {
@@ -294,8 +294,8 @@ typedef struct {
 
 typedef struct {
 	char *name;
-	int is_new;      /* 1 = let (declare), 0 = assign to existing */
-	TypeRef *type;   /* optional explicit type, only valid when is_new=1 */
+	int is_new;    /* 1 = let (declare), 0 = assign to existing */
+	TypeRef *type; /* optional explicit type, only valid when is_new=1 */
 } BindingTarget;
 
 typedef struct {
