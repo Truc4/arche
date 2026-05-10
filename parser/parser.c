@@ -742,40 +742,32 @@ static Decl *parse_static_decl(Parser *parser) {
 				return NULL;
 			}
 
-			Decl *decl = decl_create(DECL_STATIC_ARRAY);
+			Decl *decl = decl_create(DECL_STATIC);
 			decl->loc.line = name_tok.line;
 			decl->loc.column = name_tok.column;
-			decl->data.static_array = static_array_decl_create(name, elem_type, size);
+			decl->data.static_decl = static_decl_array_create(name, elem_type, size);
 
 			return decl;
 		}
 
 		/* Otherwise, treat as static archetype allocation */
-		Decl *decl = malloc(sizeof(Decl));
-		decl->kind = DECL_STATIC;
+		Decl *decl = decl_create(DECL_STATIC);
 		decl->loc.line = name_tok.line;
 		decl->loc.column = name_tok.column;
 
-		StaticDecl *static_decl = malloc(sizeof(StaticDecl));
-		static_decl->archetype_name = name;
-		static_decl->field_names = NULL;
-		static_decl->field_values = NULL;
-		static_decl->field_count = 0;
-		static_decl->init_length = NULL;
+		StaticDecl *s = static_decl_archetype_create(name);
 
 		if (match(parser, TOK_LPAREN)) {
 			Expression *capacity = parse_expression(parser);
-			Expression *init_length = NULL;
 			if (capacity) {
-				static_decl->field_names = malloc(sizeof(char *));
-				static_decl->field_values = malloc(sizeof(Expression *));
-				static_decl->field_names[0] = NULL;
-				static_decl->field_values[0] = capacity;
-				static_decl->field_count = 1;
+				s->archetype.field_names = malloc(sizeof(char *));
+				s->archetype.field_values = malloc(sizeof(Expression *));
+				s->archetype.field_names[0] = NULL;
+				s->archetype.field_values[0] = capacity;
+				s->archetype.field_count = 1;
 			}
 			if (match(parser, TOK_COMMA)) {
-				init_length = parse_expression(parser);
-				static_decl->init_length = init_length;
+				s->archetype.init_length = parse_expression(parser);
 			}
 			if (!match(parser, TOK_RPAREN)) {
 				error(parser, "Expected ')' after alloc count");
@@ -802,13 +794,13 @@ static Decl *parse_static_decl(Parser *parser) {
 							break;
 						}
 
-						static_decl->field_names =
-						    realloc(static_decl->field_names, (static_decl->field_count + 1) * sizeof(char *));
-						static_decl->field_values =
-						    realloc(static_decl->field_values, (static_decl->field_count + 1) * sizeof(Expression *));
-						static_decl->field_names[static_decl->field_count] = field_name;
-						static_decl->field_values[static_decl->field_count] = field_value;
-						static_decl->field_count++;
+						s->archetype.field_names =
+						    realloc(s->archetype.field_names, (s->archetype.field_count + 1) * sizeof(char *));
+						s->archetype.field_values =
+						    realloc(s->archetype.field_values, (s->archetype.field_count + 1) * sizeof(Expression *));
+						s->archetype.field_names[s->archetype.field_count] = field_name;
+						s->archetype.field_values[s->archetype.field_count] = field_value;
+						s->archetype.field_count++;
 					} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACE));
 				}
 
@@ -822,7 +814,7 @@ static Decl *parse_static_decl(Parser *parser) {
 			error(parser, "Expected ';' after alloc declaration");
 		}
 
-		decl->data.alloc = static_decl;
+		decl->data.static_decl = s;
 		return decl;
 	}
 	return NULL;

@@ -43,9 +43,13 @@ typedef enum {
 	DECL_FUNC,
 	DECL_STATIC,
 	DECL_CONST,
-	DECL_STATIC_ARRAY,
 	DECL_USE,
 } DeclKind;
+
+typedef enum {
+	STATIC_KIND_ARCHETYPE,
+	STATIC_KIND_ARRAY,
+} StaticKind;
 
 struct Program {
 	Decl **decls;
@@ -54,18 +58,22 @@ struct Program {
 };
 
 typedef struct {
-	char *archetype_name;
-	char **field_names;
-	Expression **field_values;
-	int field_count;
-	Expression *init_length; /* second arg: how many rows to initialize; NULL = use capacity */
+	StaticKind kind;
+	union {
+		struct {
+			char *archetype_name;
+			char **field_names;
+			Expression **field_values;
+			int field_count;
+			Expression *init_length;
+		} archetype;
+		struct {
+			char *name;
+			TypeRef *element_type;
+			int size;
+		} array;
+	};
 } StaticDecl;
-
-struct StaticArrayDecl {
-	char *name;
-	TypeRef *element_type;
-	int size;
-};
 
 struct UseDecl {
 	char *name;  /* module name, e.g. "csv" from `use csv;` */
@@ -85,9 +93,8 @@ struct Decl {
 		ProcDecl *proc;
 		SysDecl *sys;
 		FuncDecl *func;
-		StaticDecl *alloc;
+		StaticDecl *static_decl;
 		ConstDecl *constant;
-		StaticArrayDecl *static_array;
 		UseDecl *use;
 	} data;
 };
@@ -418,7 +425,8 @@ ProcDecl *proc_decl_create(char *name);
 SysDecl *sys_decl_create(char *name);
 FuncDecl *func_decl_create(char *name, TypeRef *return_type);
 ConstDecl *const_decl_create(char *name, Expression *value);
-StaticArrayDecl *static_array_decl_create(char *name, TypeRef *element_type, int size);
+StaticDecl *static_decl_archetype_create(char *archetype_name);
+StaticDecl *static_decl_array_create(char *name, TypeRef *element_type, int size);
 UseDecl *use_decl_create(char *name);
 Parameter *parameter_create(char *name, TypeRef *type);
 FieldDecl *field_decl_create(FieldKind kind, char *name, TypeRef *type);
@@ -444,7 +452,7 @@ void sys_decl_free(SysDecl *sys);
 void func_decl_free(FuncDecl *func);
 void parameter_free(Parameter *param);
 void field_decl_free(FieldDecl *field);
-void static_array_decl_free(StaticArrayDecl *sa);
+void static_decl_free(StaticDecl *s);
 void use_decl_free(UseDecl *use);
 void type_ref_free(TypeRef *type);
 

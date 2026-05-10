@@ -92,12 +92,20 @@ ConstDecl *const_decl_create(char *name, Expression *value) {
 	return constant;
 }
 
-StaticArrayDecl *static_array_decl_create(char *name, TypeRef *element_type, int size) {
-	StaticArrayDecl *sa = malloc(sizeof(StaticArrayDecl));
-	sa->name = name;
-	sa->element_type = element_type;
-	sa->size = size;
-	return sa;
+StaticDecl *static_decl_archetype_create(char *archetype_name) {
+	StaticDecl *s = calloc(1, sizeof(StaticDecl));
+	s->kind = STATIC_KIND_ARCHETYPE;
+	s->archetype.archetype_name = archetype_name;
+	return s;
+}
+
+StaticDecl *static_decl_array_create(char *name, TypeRef *element_type, int size) {
+	StaticDecl *s = malloc(sizeof(StaticDecl));
+	s->kind = STATIC_KIND_ARRAY;
+	s->array.name = name;
+	s->array.element_type = element_type;
+	s->array.size = size;
+	return s;
 }
 
 UseDecl *use_decl_create(char *name) {
@@ -211,7 +219,7 @@ void decl_free(Decl *decl) {
 		func_decl_free(decl->data.func);
 		break;
 	case DECL_STATIC:
-		/* StaticDecl has pointers that need freeing, handled elsewhere */
+		static_decl_free(decl->data.static_decl);
 		break;
 	case DECL_CONST: {
 		ConstDecl *c = decl->data.constant;
@@ -220,10 +228,6 @@ void decl_free(Decl *decl) {
 			expression_free(c->value);
 			free(c);
 		}
-		break;
-	}
-	case DECL_STATIC_ARRAY: {
-		static_array_decl_free(decl->data.static_array);
 		break;
 	}
 	case DECL_USE: {
@@ -318,12 +322,23 @@ void field_decl_free(FieldDecl *field) {
 	free(field);
 }
 
-void static_array_decl_free(StaticArrayDecl *sa) {
-	if (!sa)
+void static_decl_free(StaticDecl *s) {
+	if (!s)
 		return;
-	free(sa->name);
-	type_ref_free(sa->element_type);
-	free(sa);
+	if (s->kind == STATIC_KIND_ARCHETYPE) {
+		free(s->archetype.archetype_name);
+		for (int i = 0; i < s->archetype.field_count; i++) {
+			free(s->archetype.field_names[i]);
+			expression_free(s->archetype.field_values[i]);
+		}
+		free(s->archetype.field_names);
+		free(s->archetype.field_values);
+		expression_free(s->archetype.init_length);
+	} else {
+		free(s->array.name);
+		type_ref_free(s->array.element_type);
+	}
+	free(s);
 }
 
 void use_decl_free(UseDecl *use) {
@@ -963,8 +978,8 @@ static int decl_start_line(Decl *decl) {
 	case DECL_FUNC:
 		return decl->data.func->loc.line;
 	case DECL_CONST:
-		return decl->loc.line;
 	case DECL_STATIC:
+	case DECL_USE:
 		return decl->loc.line;
 	}
 	return 1;
@@ -1108,26 +1123,37 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			break;
 		}
 		case DECL_STATIC: {
-			StaticDecl *alloc = decl->data.alloc;
-			fprintf(out, "static %s(", alloc->archetype_name);
-			if (alloc->field_count > 0) {
-				format_expression(out, alloc->field_values[0]);
-			}
-			if (alloc->init_length) {
-				fprintf(out, ", ");
-				format_expression(out, alloc->init_length);
-			}
-			fprintf(out, ")");
-			if (alloc->field_count > 1) {
-				fprintf(out, " {\n");
-				for (int j = 1; j < alloc->field_count; j++) {
-					fprintf(out, "  %s: ", alloc->field_names[j]);
-					format_expression(out, alloc->field_values[j]);
-					fprintf(out, ",\n");
+			StaticDecl *s = decl->data.static_decl;
+			if (s->kind == STATIC_KIND_ARCHETYPE) {
+				fprintf(out, "static %s(", s->archetype.archetype_name);
+				if (s->archetype.field_count > 0) {
+					format_expression(out, s->archetype.field_values[0]);
 				}
-				fprintf(out, "}");
+				if (s->archetype.init_length) {
+					fprintf(out, ", ");
+					format_expression(out, s->archetype.init_length);
+				}
+				fprintf(out, ")");
+				if (s->archetype.field_count > 1) {
+					fprintf(out, " {\n");
+					for (int j = 1; j < s->archetype.field_count; j++) {
+						fprintf(out, "  %s: ", s->archetype.field_names[j]);
+						format_expression(out, s->archetype.field_values[j]);
+						fprintf(out, ",\n");
+					}
+					fprintf(out, "}");
+				}
+			} else {
+				fprintf(out, "static %s: ", s->array.name);
+				format_type(out, s->array.element_type);
+				fprintf(out, "[%d]", s->array.size);
 			}
 			fprintf(out, ";\n");
+			ctx.last_line = decl->loc.line;
+			break;
+		}
+		case DECL_USE: {
+			fprintf(out, "use %s;\n", decl->data.use->name);
 			ctx.last_line = decl->loc.line;
 			break;
 		}
