@@ -1467,6 +1467,7 @@ static Statement *parse_statement(Parser *parser) {
 			stmt->data.multi_bind.targets = targets;
 			stmt->data.multi_bind.target_count = target_count;
 			stmt->data.multi_bind.value = value;
+			stmt->data.multi_bind.from_shorthand = 0;
 			parser->recursion_depth--;
 			return stmt;
 	}
@@ -1547,6 +1548,7 @@ static Statement *parse_statement(Parser *parser) {
 			stmt->data.multi_bind.targets = targets;
 			stmt->data.multi_bind.target_count = name_count;
 			stmt->data.multi_bind.value = value;
+			stmt->data.multi_bind.from_shorthand = 1;
 			parser->recursion_depth--;
 			return stmt;
 		}

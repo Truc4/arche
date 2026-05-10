@@ -292,6 +292,7 @@ typedef struct {
 	BindingTarget *targets;
 	int target_count;
 	Expression *value;
+	int from_shorthand;
 } MultiBindStmt;
 
 struct Statement {
