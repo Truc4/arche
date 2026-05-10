@@ -13,7 +13,7 @@ static Transaction(100, 100) {
 
 
 proc main() {
-  let fd := open("../../../../tests/fixtures/transactions.csv", 0);
+  let fd := open("../../../../../tests/fixtures/transactions.csv", 0);
   let buf: char[256];
   let buf, total_n := read(fd, buf, 256);
   close(fd);

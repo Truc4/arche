@@ -378,6 +378,275 @@ void test_sprintf_with_float(void) {
 	test_pass_msg();
 }
 
+/* ========== PARSER REGRESSION TESTS ========== */
+
+static int parse_succeeds(const char *src) {
+	ParseResult result = parse_source(src);
+	int ok = (result.error_count == 0);
+	parse_result_free(&result);
+	return ok;
+}
+
+void test_else_break(void) {
+	test_start("else clause with break in nested for");
+	int ok = parse_succeeds("proc main() {\n"
+	                        "  let idx := 0;\n"
+	                        "  for (;idx < 10;) {\n"
+	                        "    let line_pos := 0;\n"
+	                        "    for (;line_pos < 5;) {\n"
+	                        "      if (1 == 1) { line_pos = 1; }\n"
+	                        "      else { break; }\n"
+	                        "    }\n"
+	                        "  }\n"
+	                        "}\n");
+	if (!ok) {
+		test_fail_msg("parse failed");
+		return;
+	}
+	test_pass_msg();
+}
+
+void test_else_let(void) {
+	test_start("else clause with let in nested for");
+	int ok = parse_succeeds("proc main() {\n"
+	                        "  let idx := 0;\n"
+	                        "  for (;idx < 10;) {\n"
+	                        "    let line_pos := 0;\n"
+	                        "    for (;line_pos < 5;) {\n"
+	                        "      if (1 == 1) { line_pos = 1; }\n"
+	                        "      else { let x := 1; }\n"
+	                        "    }\n"
+	                        "  }\n"
+	                        "}\n");
+	if (!ok) {
+		test_fail_msg("parse failed");
+		return;
+	}
+	test_pass_msg();
+}
+
+void test_else_assign(void) {
+	test_start("else clause with assignment in nested for");
+	int ok = parse_succeeds("proc main() {\n"
+	                        "  let idx := 0;\n"
+	                        "  for (;idx < 10;) {\n"
+	                        "    let line_pos := 0;\n"
+	                        "    for (;line_pos < 5;) {\n"
+	                        "      if (1 == 1) { line_pos = 1; }\n"
+	                        "      else { line_pos = 2; }\n"
+	                        "    }\n"
+	                        "  }\n"
+	                        "}\n");
+	if (!ok) {
+		test_fail_msg("parse failed");
+		return;
+	}
+	test_pass_msg();
+}
+
+void test_nested_for_no_array_index(void) {
+	test_start("nested for with else, no array indexing");
+	int ok = parse_succeeds("proc main() {\n"
+	                        "  let idx := 0;\n"
+	                        "  for (;idx < 10;) {\n"
+	                        "    let n := 5;\n"
+	                        "    let line_pos := 0;\n"
+	                        "    let field_idx := 0;\n"
+	                        "    for (;line_pos < n;) {\n"
+	                        "      if (field_idx == 1) { line_pos = line_pos + 1; }\n"
+	                        "      else { line_pos = line_pos + 1; }\n"
+	                        "    }\n"
+	                        "    idx = idx + 1;\n"
+	                        "  }\n"
+	                        "}\n");
+	if (!ok) {
+		test_fail_msg("parse failed");
+		return;
+	}
+	test_pass_msg();
+}
+
+void test_nested_for_else_assign(void) {
+	test_start("nested for with assignment in else");
+	int ok = parse_succeeds("proc main() {\n"
+	                        "  let idx := 0;\n"
+	                        "  for (;idx < 10;) {\n"
+	                        "    let n := 5;\n"
+	                        "    let line_pos := 0;\n"
+	                        "    for (;line_pos < n;) {\n"
+	                        "      if (1 == 1) { line_pos = line_pos + 1; }\n"
+	                        "      else { line_pos = line_pos + 1; }\n"
+	                        "    }\n"
+	                        "    idx = idx + 1;\n"
+	                        "  }\n"
+	                        "}\n");
+	if (!ok) {
+		test_fail_msg("parse failed");
+		return;
+	}
+	test_pass_msg();
+}
+
+void test_nested_let_simple(void) {
+	test_start("let declaration inside for loop");
+	ParseResult result = parse_source("proc main() {\n"
+	                                  "  for (;1 > 0;) {\n"
+	                                  "    let x := 5;\n"
+	                                  "    break;\n"
+	                                  "  }\n"
+	                                  "}\n");
+	if (result.error_count != 0) {
+		parse_result_free(&result);
+		test_fail_msg("parse errors");
+		return;
+	}
+	parse_result_free(&result);
+	test_pass_msg();
+}
+
+void test_nested_let_in_for_loop(void) {
+	test_start("let + nested for inside for loop");
+	ParseResult result = parse_source("proc main() {\n"
+	                                  "  for (;1 > 0;) {\n"
+	                                  "    let x := 0;\n"
+	                                  "    for (;x < 5;) {\n"
+	                                  "      x = x + 1;\n"
+	                                  "    }\n"
+	                                  "    break;\n"
+	                                  "  }\n"
+	                                  "}\n");
+	if (result.error_count != 0) {
+		parse_result_free(&result);
+		test_fail_msg("parse errors");
+		return;
+	}
+	Program *prog = result.ast;
+	ForStmt *for_loop = &prog->decls[0]->data.proc->statements[0]->data.for_stmt;
+	if (for_loop->body_count < 2 || for_loop->body[0]->type != STMT_LET || for_loop->body[1]->type != STMT_FOR) {
+		parse_result_free(&result);
+		test_fail_msg("unexpected body structure");
+		return;
+	}
+	parse_result_free(&result);
+	test_pass_msg();
+}
+
+void test_single_for_else_break(void) {
+	test_start("single for with if-else-break");
+	int ok = parse_succeeds("proc main() {\n"
+	                        "  let idx := 0;\n"
+	                        "  for (;idx < 10;) {\n"
+	                        "    if (1 == 1) { idx = 1; }\n"
+	                        "    else { break; }\n"
+	                        "  }\n"
+	                        "}\n");
+	if (!ok) {
+		test_fail_msg("parse failed");
+		return;
+	}
+	test_pass_msg();
+}
+
+void test_two_for_else_inner(void) {
+	test_start("two nested fors with if-else at inner level");
+	int ok = parse_succeeds("proc main() {\n"
+	                        "  let idx := 0;\n"
+	                        "  for (;idx < 10;) {\n"
+	                        "    let pos := 0;\n"
+	                        "    for (;pos < 5;) {\n"
+	                        "      if (1 == 1) { pos = 1; }\n"
+	                        "      else { break; }\n"
+	                        "    }\n"
+	                        "  }\n"
+	                        "}\n");
+	if (!ok) {
+		test_fail_msg("parse failed");
+		return;
+	}
+	test_pass_msg();
+}
+
+void test_printf_after_complex_nesting(void) {
+	test_start("printf after deeply nested for loops");
+	int ok = parse_succeeds("proc main() {\n"
+	                        "  let sum := 0.0;\n"
+	                        "  for (;0 < 1;) {\n"
+	                        "    let idx := 0;\n"
+	                        "    for (;idx < 5;) {\n"
+	                        "      let x := 1.0;\n"
+	                        "      sum = sum + x;\n"
+	                        "      idx = idx + 1;\n"
+	                        "    }\n"
+	                        "    break;\n"
+	                        "  }\n"
+	                        "  printf(\"sum: %g\\n\", sum);\n"
+	                        "}\n");
+	if (!ok) {
+		test_fail_msg("parse failed");
+		return;
+	}
+	test_pass_msg();
+}
+
+void test_toplevel_else(void) {
+	test_start("if-else at proc top level");
+	int ok = parse_succeeds("proc main() {\n"
+	                        "  if (1 == 1) { let x := 1; }\n"
+	                        "  else { break; }\n"
+	                        "}\n");
+	if (!ok) {
+		test_fail_msg("parse failed");
+		return;
+	}
+	test_pass_msg();
+}
+
+void test_task1_structure(void) {
+	test_start("complex ETL program structure");
+	int ok = parse_succeeds("arche Transaction {\n"
+	                        "  price: float,\n"
+	                        "  quantity: int,\n"
+	                        "  revenue: float,\n"
+	                        "}\n"
+	                        "static Transaction(1000, 1000) {\n"
+	                        "  price: 0.0,\n"
+	                        "  quantity: 0,\n"
+	                        "  revenue: 0.0,\n"
+	                        "};\n"
+	                        "proc main() {\n"
+	                        "  let fd := 1;\n"
+	                        "  let line: char[128];\n"
+	                        "  let idx := 0;\n"
+	                        "  for (;idx < 1000;) {\n"
+	                        "    let n := 10;\n"
+	                        "    if (n <= 0) { break; }\n"
+	                        "    let line_pos := 0;\n"
+	                        "    let field_idx := 0;\n"
+	                        "    for (;line_pos < n;) {\n"
+	                        "      if (line[line_pos] == ',') {\n"
+	                        "        field_idx = field_idx + 1;\n"
+	                        "        line_pos = line_pos + 1;\n"
+	                        "      } else {\n"
+	                        "        line_pos = line_pos + 1;\n"
+	                        "      }\n"
+	                        "    }\n"
+	                        "    idx = idx + 1;\n"
+	                        "  }\n"
+	                        "  let sum := 0.0;\n"
+	                        "  let m := 0;\n"
+	                        "  for (;m < 1000;) {\n"
+	                        "    sum = sum + 1.0;\n"
+	                        "    m = m + 1;\n"
+	                        "  }\n"
+	                        "  printf(\"result: %g\\n\", sum);\n"
+	                        "}\n");
+	if (!ok) {
+		test_fail_msg("parse failed");
+		return;
+	}
+	test_pass_msg();
+}
+
 /* ========== MULTIPLE DECLARATIONS ========== */
 
 void test_multiple_decls(void) {
@@ -471,6 +740,21 @@ int main(void) {
 	printf("\nAssignment operator tests:\n");
 	test_assign_op_eq();
 	test_assign_op_plus_eq();
+
+	/* Regression tests */
+	printf("\nRegression tests:\n");
+	test_else_break();
+	test_else_let();
+	test_else_assign();
+	test_nested_for_no_array_index();
+	test_nested_for_else_assign();
+	test_nested_let_simple();
+	test_nested_let_in_for_loop();
+	test_single_for_else_break();
+	test_two_for_else_inner();
+	test_printf_after_complex_nesting();
+	test_toplevel_else();
+	test_task1_structure();
 
 	/* Results */
 	printf("\n");
