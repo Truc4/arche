@@ -125,12 +125,18 @@ test-codegen: $(TARGET)
 	./$(TARGET) -o $(BUILD_DIR)/hello_world examples/hello_world/hello_world.arche
 	@test -x $(BUILD_DIR)/hello_world && ./$(BUILD_DIR)/hello_world > /tmp/test_output.txt && grep -q "Hello, World!" /tmp/test_output.txt && echo "✓ Codegen test passed (hello_world)" || echo "✗ Codegen test failed"
 
-# Clean all generated artifacts
+# Clean all generated artifacts.
+# Does NOT delete benchmark CSVs — those are expensive to regenerate (15-20 min for 100M rows).
+# Use `make clean-data` separately when you want to free disk space.
 clean:
 	rm -rf $(BUILD_DIR)
 	find examples/ -type f ! -name "*.c" ! -name "*.arche" ! -name "*.sh" -delete
 	find design_analysis/ -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+# Delete benchmark datasets. Run explicitly when you want to reclaim disk space.
+clean-data:
 	find design_analysis/benchmarks/etl/data/ -type f -name "*.csv" -delete
+	find design_analysis/benchmarks/systems/data/ -type f -name "*.csv" -delete 2>/dev/null || true
 
 # Design analysis benchmarks (data-driven design decisions, not language perf)
 bench-physics: design_analysis/array_ops/physics_update.c
@@ -173,4 +179,4 @@ format: $(FMT_BIN)
 .PHONY: build
 
 # Phony targets
-.PHONY: all run run-lexer test test-lexer test-parser test-semantic test-codegen test-codegen-unit test-lit clean bench-physics bench-strings bench-lifecycle bench-mixed format
+.PHONY: all run run-lexer test test-lexer test-parser test-semantic test-codegen test-codegen-unit test-lit clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format

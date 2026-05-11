@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
-"""Task 1 (Pandas): sum(price * quantity) over the full CSV."""
+"""Task 2 (Polars): count rows where quantity > 0."""
 
 import sys
 import time
-import pandas as pd
+import polars as pl
 
 DEFAULT_CSV = "design_analysis/benchmarks/etl/data/data_100m.csv"
 
 
 def main(csv_path):
     start = time.perf_counter()
-    df = pd.read_csv(csv_path, usecols=["price", "quantity"])
-    df["revenue"] = df["price"] * df["quantity"]
-    checksum = df["revenue"].sum()
+    result = (
+        pl.scan_csv(csv_path)
+        .filter(pl.col("quantity") > 0)
+        .select(pl.len())
+        .collect()
+    )
     elapsed = time.perf_counter() - start
-    print(f"task1_checksum: {checksum}")
-    print(f"task1_time: {elapsed}")
+    checksum = result.item()
+    print(f"task2_checksum: {checksum}")
+    print(f"task2_time: {elapsed}")
 
 
 if __name__ == "__main__":

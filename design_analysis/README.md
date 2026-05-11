@@ -263,20 +263,27 @@ for (;i < txns.count;) {
 
 ## Benchmark Fairness Disclaimer
 
-These results need more validation before drawing strong conclusions:
+These results need more validation before drawing strong conclusions. Addressed and remaining items:
 
-- **No compiled baseline**: Pandas is interpreted Python over C extensions. A fair comparison needs Polars, DuckDB, or a hand-written C program. Arche beating Python is expected; beating compiled data systems is the real test.
-- **Single run, hot cache**: Numbers are single-pass with the file already in the page cache. Cold-cache runs and variance across multiple runs haven't been measured.
-- **No warmup / JIT consideration**: Pandas uses NumPy (pre-compiled C), but Python startup and import are included in the wall time. This inflates the Pandas numbers slightly.
-- **Task 2 selectivity**: The 10x speedup on Task 2 is partly an apples-to-oranges comparison — Arche stops parsing at column 2 while Pandas reads all 5 columns. A fairer Pandas version would use `usecols=['quantity']`.
-- **No multi-core**: Both implementations are single-threaded. Pandas can parallelize with Dask; Arche has no parallelism yet.
-- **Synthetic data**: All fields have simple formats (short timestamps, small floats, small ints). Real-world CSV is messier.
+**Addressed:**
+- ✅ **Compiled baselines**: Polars, DuckDB, DataFusion, and a hand-written C baseline (mmap + manual parse + accumulate) all run via `compare_scale.py`. See `polars/`, `duckdb/`, `datafusion/`, and `c_baseline/`.
+- ✅ **Selective column loading (Task 2)**: All `pandas/task_*.py` scripts now use `usecols` to read only the fields they need. Removes the apples-to-oranges effect where pandas was parsing 5 columns vs. arche's 2.
+- ✅ **Multi-run variance**: `compare_scale.py` defaults to 10 iterations and reports min / median / max for both wall time and internal (parse+compute) time.
+- ✅ **Cold-cache mode**: `compare_scale.py --cold-cache` drops the OS page cache before each iteration (Linux only; requires NOPASSWD sudo for `/sbin/sysctl vm.drop_caches=3` — see runner module docstring).
+- ✅ **Multi-step pipelines**: Task 5 (`pipeline`) implements a filter→compute→reduce pipeline (`quantity > 0 AND price > 10`, then `sum(price*quantity)`) across all engines.
+- ✅ **Internal vs wall time**: Runner reports both. `internal` excludes Python interpreter startup and library import; `wall` includes them. Apples-to-apples comparison for compiled engines uses `internal`.
+
+**Still open:**
+- **No multi-core parity**: Polars, DuckDB, and DataFusion default to multi-threaded CSV scan and compute. Pandas and Arche are single-threaded. The "compiled engines vs pandas" gap therefore conflates SIMD/compiled wins with parallelism wins. Equalizing would require Dask/modin for pandas (separate dep) or restricting the others' thread counts.
+- **Real-world data**: A `data/generate_data_dirty.py` variant exists (quoted regions with embedded commas, occasional null `quantity`, mixed CRLF/LF line endings, irregular numeric widths). Not used by the default benchmark; generate explicitly and pass `--csv` to test parser robustness. The current 100M numbers all use the clean generator.
+- **Joins**: Task 5 covers filter→aggregate but not joins. Adding a small dimension table (e.g. region metadata) for a star-schema join would round out the pipeline coverage.
 
 ## Future Benchmarks
 
-1. **Compiled baselines**: Polars, DuckDB, hand-written C with the same mmap approach
-2. **Cold-cache runs**: Measure actual I/O cost, not just parse+compute
-3. **Multi-run variance**: Report min/median/max across 10+ runs
-4. **Selective column loading**: Fair Pandas comparison using `usecols`
-5. **Real-world data**: Irregular field widths, quoted strings, mixed types
-6. **Multi-step pipelines**: Load → filter → aggregate → join, not just single operations
+Remaining ideas (cheaper-first):
+
+1. **Multi-thread variants**: Add Dask version of pandas; run polars/duckdb/datafusion with `--threads=1` to isolate compiled-vs-pandas single-thread speedup from the parallelism dividend.
+2. **Star-schema join**: Joining region dimension data to fact-table revenue. Forces engines to actually plan a join, not just scan.
+3. **Dirty-data parity**: Verify each engine's behavior on the dirty generator (skip rows? error? coerce?) and adjust the runner to handle expected-different checksums.
+4. **Cold-vs-hot comparison table**: Run the suite both with and without `--cold-cache` and show both columns side-by-side — that's where I/O cost actually shows up vs. parse+compute.
+5. **Cross-machine reference run**: The README's headline Arche numbers (Linux x86-64) and the current WSL numbers (i5-4570 reading from `/mnt/c` 9p mount) aren't directly comparable. A single-machine native-Linux run would give the canonical headline numbers.

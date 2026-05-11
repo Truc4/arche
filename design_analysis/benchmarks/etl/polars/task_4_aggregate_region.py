@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""Task 4 (Pandas): sum(price * quantity). Matches arche_scale/task_4 checksum semantics."""
+"""Task 4 (Polars): sum(price * quantity). Matches arche_scale/task_4 checksum semantics."""
 
 import sys
 import time
-import pandas as pd
+import polars as pl
 
 DEFAULT_CSV = "design_analysis/benchmarks/etl/data/data_100m.csv"
 
 
 def main(csv_path):
     start = time.perf_counter()
-    df = pd.read_csv(csv_path, usecols=["price", "quantity"])
-    df["revenue"] = df["price"] * df["quantity"]
-    checksum = df["revenue"].sum()
+    result = (
+        pl.scan_csv(csv_path)
+        .with_columns((pl.col("price") * pl.col("quantity")).alias("revenue"))
+        .select(pl.col("revenue").sum())
+        .collect()
+    )
     elapsed = time.perf_counter() - start
+    checksum = result.item()
     print(f"task4_checksum: {checksum}")
     print(f"task4_time: {elapsed}")
 
