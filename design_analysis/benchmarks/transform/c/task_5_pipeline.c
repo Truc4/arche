@@ -1,4 +1,10 @@
-/* Task 5 (C, transform-only): filter q>0 AND p>10, sum(p*q), repeated N=216,000 times. */
+/* Task 5 (C, transform-only): filter q>0 AND p>10, sum(p*q), repeated N=216,000 times.
+ * Branchless form: mask becomes arithmetic. For uniform-random `price > 10` (~67%/33%),
+ * the branched form `if (q > 0 && p > 10) total += ...` suffers heavy mispredict cost.
+ * Multiplying by a 0/1 mask is much faster because the inner loop has zero branches
+ * and the compiler can vectorize it. This matches the form arche emits via its
+ * `revenue = price * quantity * (quantity > 0) * (price > 10.0)` column op.
+ */
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -70,9 +76,8 @@ int main(int argc, char **argv) {
 	double t0 = now_sec();
 	for (int k = 0; k < N_ITERS; k++) {
 		for (int i = 0; i < rows; i++) {
-			if (quantity[i] > 0 && price[i] > 10.0) {
-				total += price[i] * (double)quantity[i];
-			}
+			double mask = (double)((quantity[i] > 0) & (price[i] > 10.0));
+			total += mask * price[i] * (double)quantity[i];
 		}
 	}
 	double elapsed = now_sec() - t0;

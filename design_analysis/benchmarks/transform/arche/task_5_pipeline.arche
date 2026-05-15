@@ -1,6 +1,6 @@
 // Task 5 (arche, transform-only): filter q>0 AND p>10, sum(p*q), repeated N=216,000 times.
-// Uses scalar fallback for the filter due to the known codegen bug with int-mask * float-column
-// (see tests/known_failures/CODEGEN_INT_MASK_FLOAT_COL.md).
+// Uses the natural vectorized form: revenue = price * quantity * (quantity > 0) * (price > 10).
+// The int-mask * float-column codegen bug that previously forced a scalar fallback is fixed.
 
 use csv;
 
@@ -49,13 +49,9 @@ proc main() {
   let total := 0.0;
   let t0 := arche_now_sec();
   for (let iter = 0; iter < 216000; iter += 1) {
-    Transaction.revenue = Transaction.price * Transaction.quantity;
+    Transaction.revenue = Transaction.price * Transaction.quantity * (Transaction.quantity > 0) * (Transaction.price > 10.0);
     for (let m = 0; m < 10000; m += 1) {
-      if (Transaction.quantity[m] > 0) {
-        if (Transaction.price[m] > 10.0) {
-          total = total + Transaction.revenue[m];
-        }
-      }
+      total = total + Transaction.revenue[m];
     }
   }
   let t1 := arche_now_sec();

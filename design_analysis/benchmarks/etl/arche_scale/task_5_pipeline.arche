@@ -1,6 +1,6 @@
 // Task 5: Multi-step pipeline
 // Filter rows where quantity > 0 AND price > 10, compute revenue = price * quantity, sum.
-// Uses arche's mathematical-conditional style (comparisons produce 0/1, multiply to mask).
+// Uses arche's natural vectorized form: comparisons produce 0/1 masks multiplied in.
 
 use csv;
 
@@ -37,19 +37,13 @@ proc load_transactions() {
 proc main() {
   load_transactions();
 
-  // Vectorized compute: revenue = price * quantity.
-  Transaction.revenue = Transaction.price * Transaction.quantity;
+  // Vectorized compute: filter (quantity > 0) AND (price > 10), then revenue = price * quantity.
+  // The comparison masks (0/1) multiply into the float column at vector width.
+  Transaction.revenue = Transaction.price * Transaction.quantity * (Transaction.quantity > 0) * (Transaction.price > 10.0);
 
-  // Manual scalar filter loop. (The codegen vectorizer doesn't currently
-  // accept int-mask * float-column at the column level — known limitation;
-  // see Task 5 stub in README.)
   let total := 0.0;
   for (let m = 0; m < 100000000; m += 1) {
-    if (Transaction.quantity[m] > 0) {
-      if (Transaction.price[m] > 10.0) {
-        total = total + Transaction.revenue[m];
-      }
-    }
+    total = total + Transaction.revenue[m];
   }
   printf("task5_checksum: %g\n", total);
 }
