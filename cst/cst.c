@@ -57,6 +57,7 @@ ProcDecl *proc_decl_create(char *name) {
 	proc->statement_count = 0;
 	proc->loc.line = 1;
 	proc->loc.column = 1;
+	proc->allow_pure_proc = 0;
 	return proc;
 }
 

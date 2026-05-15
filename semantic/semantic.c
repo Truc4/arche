@@ -166,6 +166,42 @@ static void error(SemanticContext *ctx, const char *msg) {
 	fflush(stderr);
 }
 
+/* ========== LINT CONFIGURATION ========== */
+/* Both lints enabled by default. CLI flags can disable or promote to error. */
+static struct {
+	int proc_could_be_func_enabled;
+	int proc_could_be_func_werror;
+	int proc_no_effect_enabled;
+	int proc_no_effect_werror;
+} g_lint_config = {
+    .proc_could_be_func_enabled = 1,
+    .proc_could_be_func_werror = 0,
+    .proc_no_effect_enabled = 1,
+    .proc_no_effect_werror = 0,
+};
+
+void semantic_set_lint_proc_could_be_func(int enabled, int werror) {
+	g_lint_config.proc_could_be_func_enabled = enabled;
+	g_lint_config.proc_could_be_func_werror = werror;
+}
+
+void semantic_set_lint_proc_no_effect(int enabled, int werror) {
+	g_lint_config.proc_no_effect_enabled = enabled;
+	g_lint_config.proc_no_effect_werror = werror;
+}
+
+/* Emit a lint diagnostic. Promotes to a hard error if the corresponding
+ * --Werror=... flag is set. */
+static void lint_emit(SemanticContext *ctx, int werror, SourceLoc loc, const char *name,
+                      const char *msg) {
+	const char *kind = werror ? "error" : "warning";
+	fprintf(stderr, "Lint %s [%s] at line %d, col %d: %s\n", kind, name, loc.line, loc.column, msg);
+	fflush(stderr);
+	if (werror) {
+		ctx->error_count++;
+	}
+}
+
 static void push_scope(SemanticContext *ctx) {
 	ctx->scopes = realloc(ctx->scopes, (ctx->scope_count + 1) * sizeof(Scope));
 	ctx->scopes[ctx->scope_count].vars = NULL;
@@ -1048,6 +1084,221 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 	}
 }
 
+/* ========== PROC LINT HELPERS ========== */
+
+/* Returns 1 if a call to `name` is a potential side effect. True when the
+ * callee is (a) a proc / extern proc, (b) an extern func (anything could
+ * happen in C), or (c) a regular func with at least one `out` parameter
+ * (mutates state visible to the caller). */
+static int name_is_effectful_callee(SemanticContext *ctx, const char *name) {
+	if (!ctx || !ctx->prog || !name)
+		return 0;
+	for (int i = 0; i < ctx->prog->decl_count; i++) {
+		Decl *d = ctx->prog->decls[i];
+		if (!d)
+			continue;
+		if (d->kind == DECL_PROC && d->data.proc && d->data.proc->name &&
+		    strcmp(d->data.proc->name, name) == 0) {
+			return 1; /* any proc is effectful */
+		}
+		if (d->kind == DECL_FUNC && d->data.func && d->data.func->name &&
+		    strcmp(d->data.func->name, name) == 0) {
+			if (d->data.func->is_extern)
+				return 1; /* extern func: opaque C side effects */
+			for (int p = 0; p < d->data.func->param_count; p++) {
+				if (d->data.func->params[p] && d->data.func->params[p]->is_out)
+					return 1; /* out param means callee mutates caller's value */
+			}
+			return 0; /* pure-ish func */
+		}
+	}
+	return 0;
+}
+
+/* Returns the leftmost identifier in an lvalue-ish expression chain, or NULL.
+ * For `Transaction.price[i]` returns "Transaction"; for `x` returns "x". */
+static const char *lvalue_leftmost_name(Expression *expr) {
+	while (expr) {
+		switch (expr->type) {
+		case EXPR_NAME:
+			return expr->data.name.name;
+		case EXPR_FIELD:
+			expr = expr->data.field.base;
+			break;
+		case EXPR_INDEX:
+			expr = expr->data.index.base;
+			break;
+		default:
+			return NULL;
+		}
+	}
+	return NULL;
+}
+
+/* Returns 1 if `name` matches a parameter of `proc` whose is_out flag is set. */
+static int name_is_out_param(ProcDecl *proc, const char *name) {
+	if (!proc || !name)
+		return 0;
+	for (int i = 0; i < proc->param_count; i++) {
+		if (proc->params[i] && proc->params[i]->is_out && proc->params[i]->name &&
+		    strcmp(proc->params[i]->name, name) == 0) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/* Forward declarations for mutual recursion */
+static int expr_has_side_effects(SemanticContext *ctx, Expression *expr, ProcDecl *proc);
+static int body_has_side_effects(SemanticContext *ctx, Statement **stmts, int count, ProcDecl *proc);
+
+static int expr_has_side_effects(SemanticContext *ctx, Expression *expr, ProcDecl *proc) {
+	if (!expr)
+		return 0;
+	switch (expr->type) {
+	case EXPR_CALL:
+		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME &&
+		    name_is_effectful_callee(ctx, expr->data.call.callee->data.name.name)) {
+			return 1;
+		}
+		for (int i = 0; i < expr->data.call.arg_count; i++) {
+			if (expr_has_side_effects(ctx, expr->data.call.args[i], proc))
+				return 1;
+		}
+		return 0;
+	case EXPR_BINARY:
+		return expr_has_side_effects(ctx, expr->data.binary.left, proc) ||
+		       expr_has_side_effects(ctx, expr->data.binary.right, proc);
+	case EXPR_UNARY:
+		return expr_has_side_effects(ctx, expr->data.unary.operand, proc);
+	case EXPR_FIELD:
+		return expr_has_side_effects(ctx, expr->data.field.base, proc);
+	case EXPR_INDEX:
+		if (expr_has_side_effects(ctx, expr->data.index.base, proc))
+			return 1;
+		for (int i = 0; i < expr->data.index.index_count; i++) {
+			if (expr_has_side_effects(ctx, expr->data.index.indices[i], proc))
+				return 1;
+		}
+		return 0;
+	case EXPR_ALLOC:
+		return 1; /* allocation = side effect */
+	default:
+		return 0;
+	}
+}
+
+static int stmt_has_side_effects(SemanticContext *ctx, Statement *stmt, ProcDecl *proc) {
+	if (!stmt)
+		return 0;
+	switch (stmt->type) {
+	case STMT_LET:
+		return stmt->data.let_stmt.value ? expr_has_side_effects(ctx, stmt->data.let_stmt.value, proc) : 0;
+	case STMT_ASSIGN: {
+		const char *target_name = lvalue_leftmost_name(stmt->data.assign_stmt.target);
+		if (target_name) {
+			if (name_is_out_param(proc, target_name))
+				return 1;
+			if (find_archetype(ctx, target_name))
+				return 1; /* writing through an archetype = column write */
+		}
+		return expr_has_side_effects(ctx, stmt->data.assign_stmt.value, proc) ||
+		       expr_has_side_effects(ctx, stmt->data.assign_stmt.target, proc);
+	}
+	case STMT_FOR:
+		if (stmt->data.for_stmt.init &&
+		    stmt_has_side_effects(ctx, stmt->data.for_stmt.init, proc))
+			return 1;
+		if (stmt->data.for_stmt.condition &&
+		    expr_has_side_effects(ctx, stmt->data.for_stmt.condition, proc))
+			return 1;
+		if (stmt->data.for_stmt.increment &&
+		    stmt_has_side_effects(ctx, stmt->data.for_stmt.increment, proc))
+			return 1;
+		return body_has_side_effects(ctx, stmt->data.for_stmt.body, stmt->data.for_stmt.body_count, proc);
+	case STMT_IF:
+		if (stmt->data.if_stmt.cond && expr_has_side_effects(ctx, stmt->data.if_stmt.cond, proc))
+			return 1;
+		if (body_has_side_effects(ctx, stmt->data.if_stmt.then_body, stmt->data.if_stmt.then_count, proc))
+			return 1;
+		return body_has_side_effects(ctx, stmt->data.if_stmt.else_body, stmt->data.if_stmt.else_count, proc);
+	case STMT_BREAK:
+	case STMT_RETURN:
+		return 0;
+	case STMT_RUN:
+		return 1; /* running a system mutates archetype state */
+	case STMT_EXPR:
+		return expr_has_side_effects(ctx, stmt->data.expr_stmt.expr, proc);
+	case STMT_FREE:
+		return 1; /* deallocation */
+	case STMT_MULTI_BIND:
+		return stmt->data.multi_bind.value ? expr_has_side_effects(ctx, stmt->data.multi_bind.value, proc) : 0;
+	}
+	return 0;
+}
+
+static int body_has_side_effects(SemanticContext *ctx, Statement **stmts, int count, ProcDecl *proc) {
+	if (!stmts)
+		return 0;
+	for (int i = 0; i < count; i++) {
+		if (stmt_has_side_effects(ctx, stmts[i], proc))
+			return 1;
+	}
+	return 0;
+}
+
+/* True if the body is empty or contains only effect-free statements (lets with
+ * pure initializers, returns, breaks). Stricter signal than "no side effects". */
+static int body_is_effectively_empty(SemanticContext *ctx, ProcDecl *proc) {
+	if (proc->statement_count == 0)
+		return 1;
+	for (int i = 0; i < proc->statement_count; i++) {
+		Statement *s = proc->statements[i];
+		if (!s)
+			continue;
+		switch (s->type) {
+		case STMT_LET:
+			if (s->data.let_stmt.value && expr_has_side_effects(ctx, s->data.let_stmt.value, proc))
+				return 0;
+			break; /* let with pure init: still empty */
+		case STMT_RETURN:
+		case STMT_BREAK:
+			break; /* control flow only */
+		default:
+			return 0;
+		}
+	}
+	return 1;
+}
+
+/* Run the proc-could-be-func and proc-no-effect lints on a non-extern proc. */
+static void lint_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
+	if (!proc || proc->is_extern || proc->allow_pure_proc)
+		return;
+
+	/* proc-no-effect is the stricter case; emit only that one if it applies. */
+	if (body_is_effectively_empty(ctx, proc)) {
+		if (g_lint_config.proc_no_effect_enabled) {
+			char msg[256];
+			snprintf(msg, sizeof(msg),
+			         "proc '%s' has an empty or effect-free body; remove it or add the intended logic",
+			         proc->name ? proc->name : "<unknown>");
+			lint_emit(ctx, g_lint_config.proc_no_effect_werror, proc->loc, "proc-no-effect", msg);
+		}
+		return;
+	}
+
+	if (g_lint_config.proc_could_be_func_enabled &&
+	    !body_has_side_effects(ctx, proc->statements, proc->statement_count, proc)) {
+		char msg[320];
+		snprintf(msg, sizeof(msg),
+		         "proc '%s' has no detectable side effects; consider declaring it as 'func' "
+		         "(suppress with @allow_pure_proc)",
+		         proc->name ? proc->name : "<unknown>");
+		lint_emit(ctx, g_lint_config.proc_could_be_func_werror, proc->loc, "proc-could-be-func", msg);
+	}
+}
+
 static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	if (!proc)
 		return;
@@ -1088,6 +1339,9 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	ctx->in_body = 0;
 
 	pop_scope(ctx);
+
+	/* Run the proc-vs-func lints after typechecking the body. */
+	lint_proc_decl(ctx, proc);
 }
 
 static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {

@@ -181,6 +181,7 @@ struct ProcDecl {
 	int statement_count;
 	int end_line;
 	SourceLoc loc;
+	int allow_pure_proc; /* 1 if @allow_pure_proc was on the decl; suppresses proc-could-be-func */
 };
 
 struct Parameter {

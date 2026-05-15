@@ -42,6 +42,7 @@ typedef enum TokenKind {
 	TOK_DOT,      /* . */
 	TOK_COLON,    /* : */
 	TOK_SEMI,     /* ; */
+	TOK_AT,       /* @  (decl-site decorators like @allow_pure_proc) */
 
 	/* assignment */
 	TOK_EQ,       /* = */

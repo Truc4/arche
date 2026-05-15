@@ -381,6 +381,8 @@ Token lexer_next_token(Lexer *lexer) {
 		return make_token(lexer, TOK_COLON, start, 1, line, column);
 	case ';':
 		return make_token(lexer, TOK_SEMI, start, 1, line, column);
+	case '@':
+		return make_token(lexer, TOK_AT, start, 1, line, column);
 
 	case '+':
 		if (peek(lexer) == '=') {
@@ -512,6 +514,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_COLON";
 	case TOK_SEMI:
 		return "TOK_SEMI";
+	case TOK_AT:
+		return "TOK_AT";
 
 	case TOK_EQ:
 		return "TOK_EQ";

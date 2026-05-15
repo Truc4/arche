@@ -825,21 +825,60 @@ static Decl *parse_static_decl(Parser *parser) {
 
 static Decl *parse_decl(Parser *parser) {
 
+	/* Declaration-site decorators. Currently only @allow_pure_proc is
+	 * recognized; it sets a flag on the following proc declaration that
+	 * suppresses the proc-could-be-func lint. The decorator must be
+	 * followed immediately by a `proc` (or `extern proc`) declaration. */
+	int allow_pure_proc_flag = 0;
+	if (parser->current.kind == TOK_AT) {
+		advance(parser); /* consume '@' */
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected decorator name after '@'");
+			return NULL;
+		}
+		char *deco_name = token_text(parser->current);
+		if (strcmp(deco_name, "allow_pure_proc") != 0) {
+			error(parser, "Unknown decorator (only @allow_pure_proc is supported)");
+			free(deco_name);
+			return NULL;
+		}
+		free(deco_name);
+		advance(parser);
+		allow_pure_proc_flag = 1;
+		/* Must be followed by proc or extern proc — guard here so the
+		 * switch below doesn't silently consume the flag on a wrong kind. */
+		if (parser->current.kind != TOK_PROC && parser->current.kind != TOK_EXTERN) {
+			error(parser, "@allow_pure_proc must precede a proc declaration");
+			return NULL;
+		}
+	}
+
 	switch (parser->current.kind) {
 	case TOK_ARCHETYPE:
 		return parse_archetype_decl(parser);
 	case TOK_EXTERN:
 		advance(parser);
 		if (check(parser, TOK_FUNC)) {
+			if (allow_pure_proc_flag) {
+				error(parser, "@allow_pure_proc must precede a proc, not a func");
+				return NULL;
+			}
 			return parse_func_decl(parser);
 		} else if (check(parser, TOK_PROC)) {
-			return parse_proc_decl(parser);
+			Decl *d = parse_proc_decl(parser);
+			if (d && d->kind == DECL_PROC && allow_pure_proc_flag)
+				d->data.proc->allow_pure_proc = 1;
+			return d;
 		} else {
 			error(parser, "Expected 'func' or 'proc' after 'extern'");
 			return NULL;
 		}
-	case TOK_PROC:
-		return parse_proc_decl(parser);
+	case TOK_PROC: {
+		Decl *d = parse_proc_decl(parser);
+		if (d && d->kind == DECL_PROC && allow_pure_proc_flag)
+			d->data.proc->allow_pure_proc = 1;
+		return d;
+	}
 	case TOK_SYS:
 		return parse_sys_decl(parser);
 	case TOK_FUNC:
