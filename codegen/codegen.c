@@ -85,6 +85,17 @@ struct CodegenContext {
 
 	/* Return type of the function currently being generated */
 	const char *current_return_type;
+
+	/* Loop bound tracking for bounds-check elision. When a C-style `for`
+	 * loop has the shape `for (let v = 0; v < BOUND; v += 1)` with BOUND a
+	 * compile-time int, we push (v, BOUND) here. A bounds check on an
+	 * archetype column access whose index is `v` can then be elided when
+	 * BOUND <= the archetype's static capacity. */
+	struct {
+		char var_name[64];
+		int  bound;        /* exclusive upper bound */
+	} loop_bounds[16];
+	int loop_bound_count;
 };
 
 /* ========== SYSTEM VERSION MAPPING ========== */
@@ -574,6 +585,10 @@ static int resolve_index_arch(CodegenContext *ctx, AstExpr *base_expr, AstExpr *
                               const char **out_arch_ptr, int *out_count_idx, int *out_idx_is_i64);
 static void emit_bounds_check(CodegenContext *ctx, const char *arch_name, const char *arch_ptr, int count_field_idx,
                               const char *idx_buf, int idx_is_i64);
+static int bounds_check_elidable(CodegenContext *ctx, const char *arch_name, AstExpr *idx_expr);
+static int try_extract_loop_bound(AstStmt *for_stmt, char **out_var, int *out_bound);
+static void push_loop_bound(CodegenContext *ctx, const char *var_name, int bound);
+static void pop_loop_bound(CodegenContext *ctx);
 
 /* ========== EXPRESSION CODEGEN ========== */
 
@@ -726,9 +741,13 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 	case AST_EXPR_BINARY: {
 		char left_buf[256], right_buf[256];
 
-		/* Disable vectorization for comparisons (they return scalar int 0/1) */
+		/* For comparisons in scalar context, evaluate operands as scalars
+		 * (C-style: comparison returns scalar int 0/1). In vector context,
+		 * preserve vector lanes so operands load as <N x T> and the
+		 * comparison emits as a vector mask. */
 		int save_vector_lanes = ctx->vector_lanes;
-		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE) {
+		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE &&
+		    ctx->vector_lanes == 0) {
 			ctx->vector_lanes = 0;
 		}
 
@@ -879,16 +898,59 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		}
 
 		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE) {
-			/* Comparison: always scalar (C semantics: comparisons return int 0/1) */
-			/* For vectorized operands, use scalar paths for comparisons */
-			const char *cmp_type = is_float ? "double" : "i32";
-			char *cmp_i1 = gen_value_name(ctx);
-			if (is_float) {
-				buffer_append_fmt(ctx, "  %s = fcmp %s %s %s, %s\n", cmp_i1, op, cmp_type, left_val, right_val);
+			/* Comparison. In scalar context: emit scalar icmp/fcmp -> i1 -> zext to i32.
+			 * In vector context: splat scalar operands to <N x T>, emit vector icmp/fcmp
+			 * -> <N x i1>, then zext to <N x i32> so the result can feed downstream
+			 * vector arithmetic (e.g. `col * (col > 0)`). */
+			if (ctx->vector_lanes > 0) {
+				int lanes = ctx->vector_lanes;
+				const char *elem_t = is_float ? "double" : "i32";
+				char vec_t[32], vec_i1_t[32], vec_i32_t[32];
+				snprintf(vec_t, sizeof(vec_t), "<%d x %s>", lanes, elem_t);
+				snprintf(vec_i1_t, sizeof(vec_i1_t), "<%d x i1>", lanes);
+				snprintf(vec_i32_t, sizeof(vec_i32_t), "<%d x i32>", lanes);
+
+				/* Splat scalar operands (literals) to vectors. A "scalar" here is a
+				 * value whose name has no '%' prefix — i.e. a constant or global. */
+				const char *lv = left_val;
+				const char *rv = right_val;
+				if (strchr(lv, '%') == NULL) {
+					char *ins = gen_value_name(ctx);
+					char *splat = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = insertelement %s undef, %s %s, i32 0\n",
+					                  ins, vec_t, elem_t, lv);
+					buffer_append_fmt(ctx, "  %s = shufflevector %s %s, %s undef, <%d x i32> zeroinitializer\n",
+					                  splat, vec_t, ins, vec_t, lanes);
+					lv = splat;
+				}
+				if (strchr(rv, '%') == NULL) {
+					char *ins = gen_value_name(ctx);
+					char *splat = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = insertelement %s undef, %s %s, i32 0\n",
+					                  ins, vec_t, elem_t, rv);
+					buffer_append_fmt(ctx, "  %s = shufflevector %s %s, %s undef, <%d x i32> zeroinitializer\n",
+					                  splat, vec_t, ins, vec_t, lanes);
+					rv = splat;
+				}
+
+				char *cmp_vi1 = gen_value_name(ctx);
+				if (is_float) {
+					buffer_append_fmt(ctx, "  %s = fcmp %s %s %s, %s\n", cmp_vi1, op, vec_t, lv, rv);
+				} else {
+					buffer_append_fmt(ctx, "  %s = icmp %s %s %s, %s\n", cmp_vi1, op, vec_t, lv, rv);
+				}
+				buffer_append_fmt(ctx, "  %s = zext %s %s to %s\n", res_name, vec_i1_t, cmp_vi1, vec_i32_t);
 			} else {
-				buffer_append_fmt(ctx, "  %s = icmp %s %s %s, %s\n", cmp_i1, op, cmp_type, left_val, right_val);
+				/* Scalar context */
+				const char *cmp_type = is_float ? "double" : "i32";
+				char *cmp_i1 = gen_value_name(ctx);
+				if (is_float) {
+					buffer_append_fmt(ctx, "  %s = fcmp %s %s %s, %s\n", cmp_i1, op, cmp_type, left_val, right_val);
+				} else {
+					buffer_append_fmt(ctx, "  %s = icmp %s %s %s, %s\n", cmp_i1, op, cmp_type, left_val, right_val);
+				}
+				buffer_append_fmt(ctx, "  %s = zext i1 %s to i32\n", res_name, cmp_i1);
 			}
-			buffer_append_fmt(ctx, "  %s = zext i1 %s to i32\n", res_name, cmp_i1);
 		} else {
 			/* arithmetic: vectorized if ctx->vector_lanes > 0 */
 			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", res_name, op, type, left_val, right_val);
@@ -1257,12 +1319,13 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			break;
 		}
 
-		/* Bounds check for archetype column accesses */
+		/* Bounds check for archetype column accesses (elided when statically provable). */
 		const char *bc_arch_name = NULL, *bc_arch_ptr = NULL;
 		int bc_count_idx = -1, bc_idx_is_i64 = 0;
 		if (expr->data.index.index_count > 0 && !shaped_elem &&
 		    resolve_index_arch(ctx, expr->data.index.base, expr->data.index.indices[0], &bc_arch_name, &bc_arch_ptr,
-		                       &bc_count_idx, &bc_idx_is_i64)) {
+		                       &bc_count_idx, &bc_idx_is_i64) &&
+		    !bounds_check_elidable(ctx, bc_arch_name, expr->data.index.indices[0])) {
 			emit_bounds_check(ctx, bc_arch_name, bc_arch_ptr, bc_count_idx, idx_buf, bc_idx_is_i64);
 		}
 
@@ -2284,6 +2347,94 @@ static int resolve_index_arch(CodegenContext *ctx, AstExpr *base_expr, AstExpr *
 	}
 
 	return (*out_arch_name != NULL && *out_arch_ptr != NULL && *out_count_idx >= 0);
+}
+
+/* If `expr` is an int literal whose value parses to a non-negative int, return that
+ * value in *out and return 1. Otherwise return 0. */
+static int try_extract_int_literal(AstExpr *expr, int *out) {
+	if (!expr || expr->kind != AST_EXPR_LITERAL || !expr->data.literal.lexeme)
+		return 0;
+	const char *s = expr->data.literal.lexeme;
+	if (!*s) return 0;
+	long v = strtol(s, NULL, 10);
+	if (v < 0 || v > 2147483647L) return 0;
+	*out = (int)v;
+	return 1;
+}
+
+/* If the for-stmt has the shape `for (let v = <int_const>; v < BOUND; v += <step>)`
+ * (where BOUND is also an int constant), populate out_var/out_bound and return 1.
+ * Conservative: only matches the canonical 0..BOUND form actually used in practice. */
+static int try_extract_loop_bound(AstStmt *for_stmt, char **out_var, int *out_bound) {
+	if (!for_stmt || for_stmt->kind != AST_STMT_FOR) return 0;
+	AstStmt *init = for_stmt->data.for_stmt.init;
+	AstExpr *cond = for_stmt->data.for_stmt.cond;
+	if (!init || !cond) return 0;
+
+	/* Init: a `let` declaration introducing the loop variable. */
+	const char *var_name = NULL;
+	if (init->kind == AST_STMT_LET && init->data.let_stmt.name_count >= 1 &&
+	    init->data.let_stmt.names[0]) {
+		var_name = init->data.let_stmt.names[0];
+	}
+	if (!var_name) return 0;
+
+	/* Cond: <var> < <int_literal> (also accept <=). */
+	if (cond->kind != AST_EXPR_BINARY) return 0;
+	if (cond->data.binary.op != OP_LT && cond->data.binary.op != OP_LTE) return 0;
+	AstExpr *cmp_left = cond->data.binary.left;
+	AstExpr *cmp_right = cond->data.binary.right;
+	if (!cmp_left || cmp_left->kind != AST_EXPR_NAME) return 0;
+	if (strcmp(cmp_left->data.name.name, var_name) != 0) return 0;
+
+	int bound;
+	if (!try_extract_int_literal(cmp_right, &bound)) return 0;
+	if (cond->data.binary.op == OP_LTE) {
+		if (bound == 2147483647) return 0;  /* would overflow */
+		bound++;  /* `v <= N` means max `v` is N, so exclusive bound is N+1 */
+	}
+
+	*out_var = (char *)var_name;
+	*out_bound = bound;
+	return 1;
+}
+
+static void push_loop_bound(CodegenContext *ctx, const char *var_name, int bound) {
+	if (ctx->loop_bound_count >= (int)(sizeof(ctx->loop_bounds) / sizeof(ctx->loop_bounds[0])))
+		return;  /* stack full — silently drop; only affects bounds-check elision, not correctness */
+	int i = ctx->loop_bound_count++;
+	strncpy(ctx->loop_bounds[i].var_name, var_name, sizeof(ctx->loop_bounds[i].var_name) - 1);
+	ctx->loop_bounds[i].var_name[sizeof(ctx->loop_bounds[i].var_name) - 1] = '\0';
+	ctx->loop_bounds[i].bound = bound;
+}
+
+static void pop_loop_bound(CodegenContext *ctx) {
+	if (ctx->loop_bound_count > 0) ctx->loop_bound_count--;
+}
+
+/* If `idx_expr` references a loop variable currently in scope and we know the loop's
+ * upper bound, return that bound. Otherwise return -1. */
+static int lookup_loop_var_bound(CodegenContext *ctx, AstExpr *idx_expr) {
+	if (!idx_expr || idx_expr->kind != AST_EXPR_NAME) return -1;
+	const char *name = idx_expr->data.name.name;
+	for (int i = ctx->loop_bound_count - 1; i >= 0; i--) {
+		if (strcmp(ctx->loop_bounds[i].var_name, name) == 0)
+			return ctx->loop_bounds[i].bound;
+	}
+	return -1;
+}
+
+/* Returns 1 if a bounds check on `arch[idx_expr]` is provably unnecessary. */
+static int bounds_check_elidable(CodegenContext *ctx, const char *arch_name, AstExpr *idx_expr) {
+	int cap = arch_name ? get_arch_static_capacity(ctx, arch_name) : 0;
+	if (cap <= 0) return 0;  /* dynamic capacity — can't elide statically */
+	int lit;
+	if (try_extract_int_literal(idx_expr, &lit)) {
+		return lit >= 0 && lit < cap;
+	}
+	int loop_bound = lookup_loop_var_bound(ctx, idx_expr);
+	if (loop_bound > 0 && loop_bound <= cap) return 1;
+	return 0;
 }
 
 static void emit_bounds_check(CodegenContext *ctx, const char *arch_name, const char *arch_ptr, int count_field_idx,
@@ -3546,12 +3697,14 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			/* In vector mode, load/store use vector type; GEP uses scalar pointer */
 			const char *load_type = arche_type ? elem_llvm_type(ctx, arche_type) : scalar_type;
 
-			/* Bounds check for archetype column accesses */
+			/* Bounds check for archetype column accesses (elided when statically provable). */
 			const char *bc_arch_name = NULL, *bc_arch_ptr = NULL;
 			int bc_count_idx = -1, bc_idx_is_i64 = 0;
+			AstExpr *bc_idx_expr = stmt->data.assign_stmt.target->data.index.indices[0];
 			if (stmt->data.assign_stmt.target->data.index.index_count > 0 &&
-			    resolve_index_arch(ctx, base_expr, stmt->data.assign_stmt.target->data.index.indices[0], &bc_arch_name,
-			                       &bc_arch_ptr, &bc_count_idx, &bc_idx_is_i64)) {
+			    resolve_index_arch(ctx, base_expr, bc_idx_expr, &bc_arch_name,
+			                       &bc_arch_ptr, &bc_count_idx, &bc_idx_is_i64) &&
+			    !bounds_check_elidable(ctx, bc_arch_name, bc_idx_expr)) {
 				emit_bounds_check(ctx, bc_arch_name, bc_arch_ptr, bc_count_idx, idx_buf, bc_idx_is_i64);
 			}
 
@@ -3633,6 +3786,17 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 
 			push_value_scope(ctx);
 
+			/* If the loop is `for (let v = K; v < N; v += 1)` with N a compile-time int,
+			 * track (v, N) so bounds checks on column accesses indexed by v can be elided
+			 * when N <= archetype capacity. Pushed before the body, popped after exit. */
+			char *bound_var = NULL;
+			int bound_val = 0;
+			int pushed_bound = 0;
+			if (try_extract_loop_bound(stmt, &bound_var, &bound_val)) {
+				push_loop_bound(ctx, bound_var, bound_val);
+				pushed_bound = 1;
+			}
+
 			if (stmt->data.for_stmt.init) {
 				codegen_statement(ctx, stmt->data.for_stmt.init);
 			}
@@ -3671,6 +3835,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			buffer_append_fmt(ctx, "%s:\n", exit_label + 1);
 
 			ctx->loop_exit_count--;
+			if (pushed_bound) pop_loop_bound(ctx);
 			pop_value_scope(ctx);
 		} else if (!stmt->data.for_stmt.var_name) {
 			/* Condition-based or infinite for loop */

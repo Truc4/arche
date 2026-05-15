@@ -5,7 +5,7 @@ CC      ?= cc
 CFLAGS  ?= -O3 -march=native -Wall -Wextra -std=c11
 OUT_DIR ?= bin
 
-TASKS = task_1_derived_columns task_2_filter_invalid task_3_bucket_timestamps task_4_aggregate_region task_5_pipeline task_2_branchless task_5_branchless
+TASKS = task_1_derived_columns task_2_filter_invalid task_3_bucket_timestamps task_4_aggregate_region task_5_pipeline
 
 all: $(addprefix $(OUT_DIR)/,$(TASKS))
 

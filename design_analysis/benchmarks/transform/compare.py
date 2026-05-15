@@ -25,7 +25,9 @@ VENV_PY = REPO_ROOT / "design_analysis/benchmarks/etl/.venv/bin/python3"
 
 TASKS = {
     1: {"name": "derived_columns",    "checksum_type": float, "tolerance": 0.01},
-    2: {"name": "filter_invalid",     "checksum_type": int,   "tolerance": 0},
+    # T2 is a count (integer-valued) but arche prints it via %g as a float
+    # ("2.16e+09") since arche's int is i32 and would overflow at 2.16B.
+    2: {"name": "filter_invalid",     "checksum_type": float, "tolerance": 0.001},
     3: {"name": "bucket_timestamps",  "checksum_type": float, "tolerance": 0.01},
     4: {"name": "aggregate_region",   "checksum_type": float, "tolerance": 0.01},
     5: {"name": "pipeline",           "checksum_type": float, "tolerance": 0.01},
