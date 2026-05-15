@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Task 1 (Pandas): sum(price * quantity) over the full CSV."""
+"""Task 5 (Pandas): multi-step pipeline — filter q>0 AND price>10, then sum(price*quantity)."""
 
 import sys
 import time
@@ -11,11 +11,13 @@ DEFAULT_CSV = "design_analysis/benchmarks/etl/data/data_100m.csv"
 def main(csv_path):
     start = time.perf_counter()
     df = pd.read_csv(csv_path, usecols=["price", "quantity"])
-    df["revenue"] = df["price"] * df["quantity"]
-    checksum = df["revenue"].sum()
+    mask = (df["quantity"] > 0) & (df["price"] > 10.0)
+    filtered = df[mask]
+    revenue = filtered["price"] * filtered["quantity"]
+    checksum = revenue.sum()
     elapsed = time.perf_counter() - start
-    print(f"task1_checksum: {checksum}")
-    print(f"task1_time: {elapsed}")
+    print(f"task5_checksum: {checksum}")
+    print(f"task5_time: {elapsed}")
 
 
 if __name__ == "__main__":

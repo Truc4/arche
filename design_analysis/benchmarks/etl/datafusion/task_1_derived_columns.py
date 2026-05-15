@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""Task 1 (Pandas): sum(price * quantity) over the full CSV."""
+"""Task 1 (DataFusion): sum(price * quantity) over the full CSV."""
 
 import sys
 import time
-import pandas as pd
+from datafusion import SessionContext
 
 DEFAULT_CSV = "design_analysis/benchmarks/etl/data/data_100m.csv"
 
 
 def main(csv_path):
+    ctx = SessionContext()
     start = time.perf_counter()
-    df = pd.read_csv(csv_path, usecols=["price", "quantity"])
-    df["revenue"] = df["price"] * df["quantity"]
-    checksum = df["revenue"].sum()
+    ctx.register_csv("t", csv_path)
+    batches = ctx.sql("SELECT SUM(price * quantity) FROM t").collect()
     elapsed = time.perf_counter() - start
+    checksum = batches[0].column(0)[0].as_py()
     print(f"task1_checksum: {checksum}")
     print(f"task1_time: {elapsed}")
 

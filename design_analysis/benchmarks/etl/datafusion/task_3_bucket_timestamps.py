@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""Task 3 (Pandas): sum(price / 10.0). Matches arche_scale/task_3 checksum semantics."""
+"""Task 3 (DataFusion): sum(price / 10.0). Matches arche_scale/task_3 checksum semantics."""
 
 import sys
 import time
-import pandas as pd
+from datafusion import SessionContext
 
 DEFAULT_CSV = "design_analysis/benchmarks/etl/data/data_100m.csv"
 
 
 def main(csv_path):
+    ctx = SessionContext()
     start = time.perf_counter()
-    df = pd.read_csv(csv_path, usecols=["price"])
-    df["price_bucket"] = df["price"] / 10.0
-    checksum = df["price_bucket"].sum()
+    ctx.register_csv("t", csv_path)
+    batches = ctx.sql("SELECT SUM(price / 10.0) FROM t").collect()
     elapsed = time.perf_counter() - start
+    checksum = batches[0].column(0)[0].as_py()
     print(f"task3_checksum: {checksum}")
     print(f"task3_time: {elapsed}")
 

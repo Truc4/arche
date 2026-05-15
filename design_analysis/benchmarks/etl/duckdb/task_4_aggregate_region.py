@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""Task 1 (Pandas): sum(price * quantity) over the full CSV."""
+"""Task 4 (DuckDB): sum(price * quantity). Matches arche_scale/task_4 checksum semantics."""
 
 import sys
 import time
-import pandas as pd
+import duckdb
 
 DEFAULT_CSV = "design_analysis/benchmarks/etl/data/data_100m.csv"
 
 
 def main(csv_path):
     start = time.perf_counter()
-    df = pd.read_csv(csv_path, usecols=["price", "quantity"])
-    df["revenue"] = df["price"] * df["quantity"]
-    checksum = df["revenue"].sum()
+    checksum = duckdb.sql(
+        f"SELECT SUM(price * quantity) FROM read_csv('{csv_path}')"
+    ).fetchone()[0]
     elapsed = time.perf_counter() - start
-    print(f"task1_checksum: {checksum}")
-    print(f"task1_time: {elapsed}")
+    print(f"task4_checksum: {checksum}")
+    print(f"task4_time: {elapsed}")
 
 
 if __name__ == "__main__":

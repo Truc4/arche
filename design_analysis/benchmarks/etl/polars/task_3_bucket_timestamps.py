@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""Task 3 (Pandas): sum(price / 10.0). Matches arche_scale/task_3 checksum semantics."""
+"""Task 3 (Polars): sum(price / 10.0). Matches arche_scale/task_3 checksum semantics."""
 
 import sys
 import time
-import pandas as pd
+import polars as pl
 
 DEFAULT_CSV = "design_analysis/benchmarks/etl/data/data_100m.csv"
 
 
 def main(csv_path):
     start = time.perf_counter()
-    df = pd.read_csv(csv_path, usecols=["price"])
-    df["price_bucket"] = df["price"] / 10.0
-    checksum = df["price_bucket"].sum()
+    result = (
+        pl.scan_csv(csv_path)
+        .with_columns((pl.col("price") / 10.0).alias("price_bucket"))
+        .select(pl.col("price_bucket").sum())
+        .collect()
+    )
     elapsed = time.perf_counter() - start
+    checksum = result.item()
     print(f"task3_checksum: {checksum}")
     print(f"task3_time: {elapsed}")
 

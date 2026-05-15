@@ -6,7 +6,14 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
+
+double arche_now_sec(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
 
 #define ARCHE_MAX_FILES 64
 static FILE *arche_files[ARCHE_MAX_FILES];
