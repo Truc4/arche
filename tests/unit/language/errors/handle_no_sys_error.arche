@@ -12,5 +12,6 @@ sys process(next) {
 }
 
 
+@allow_pure_proc
 proc main() {
 }

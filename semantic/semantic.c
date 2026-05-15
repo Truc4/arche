@@ -1086,13 +1086,23 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 
 /* ========== PROC LINT HELPERS ========== */
 
+/* Builtins that mutate archetype state (registered in semantic_analyze). */
+static int name_is_archetype_mutating_builtin(const char *name) {
+	if (!name)
+		return 0;
+	return strcmp(name, "insert") == 0 || strcmp(name, "delete") == 0 ||
+	       strcmp(name, "dealloc") == 0;
+}
+
 /* Returns 1 if a call to `name` is a potential side effect. True when the
  * callee is (a) a proc / extern proc, (b) an extern func (anything could
- * happen in C), or (c) a regular func with at least one `out` parameter
- * (mutates state visible to the caller). */
+ * happen in C), (c) a regular func with at least one `out` parameter, or
+ * (d) an archetype-mutating builtin (insert / delete / dealloc). */
 static int name_is_effectful_callee(SemanticContext *ctx, const char *name) {
 	if (!ctx || !ctx->prog || !name)
 		return 0;
+	if (name_is_archetype_mutating_builtin(name))
+		return 1;
 	for (int i = 0; i < ctx->prog->decl_count; i++) {
 		Decl *d = ctx->prog->decls[i];
 		if (!d)

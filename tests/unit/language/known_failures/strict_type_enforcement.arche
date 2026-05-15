@@ -4,6 +4,7 @@
 // Expected: Type error
 // Current: Silently converts (wrong)
 
+@allow_pure_proc
 proc main() {
   let x := 3.14;
 }
