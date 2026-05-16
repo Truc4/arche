@@ -593,6 +593,29 @@ static void format_type(FILE *out, TypeRef *type) {
 
 static void format_expression(FILE *out, Expression *expr);
 
+/* Operator precedence for paren-wrapping. Higher binds tighter. Matches the
+ * grammar: mul/div > add/sub > comparison. */
+static int expr_binary_precedence(Operator op) {
+	switch (op) {
+	case OP_MUL:
+	case OP_DIV:
+		return 30;
+	case OP_ADD:
+	case OP_SUB:
+		return 20;
+	case OP_EQ:
+	case OP_NEQ:
+	case OP_LT:
+	case OP_GT:
+	case OP_LTE:
+	case OP_GTE:
+		return 10;
+	case OP_NONE:
+		return 0;
+	}
+	return 0;
+}
+
 static void format_expression(FILE *out, Expression *expr) {
 	if (!expr)
 		return;
@@ -654,9 +677,27 @@ static void format_expression(FILE *out, Expression *expr) {
 			op_str = ">=";
 			break;
 		}
-		format_expression(out, expr->data.binary.left);
+		/* Precedence-aware paren wrapping. The parser drops the explicit parens,
+		 * so the formatter has to re-introduce them whenever an operand is a
+		 * binary expression with lower-or-equal precedence than the current op.
+		 * Lower precedence on either side changes semantics; equal precedence on
+		 * the RIGHT changes semantics for left-associative operators. */
+		int this_prec = expr_binary_precedence(expr->data.binary.op);
+		Expression *l = expr->data.binary.left;
+		Expression *r = expr->data.binary.right;
+		int l_needs_parens = (l && l->type == EXPR_BINARY && expr_binary_precedence(l->data.binary.op) < this_prec);
+		int r_needs_parens = (r && r->type == EXPR_BINARY && expr_binary_precedence(r->data.binary.op) <= this_prec);
+		if (l_needs_parens)
+			fprintf(out, "(");
+		format_expression(out, l);
+		if (l_needs_parens)
+			fprintf(out, ")");
 		fprintf(out, " %s ", op_str);
-		format_expression(out, expr->data.binary.right);
+		if (r_needs_parens)
+			fprintf(out, "(");
+		format_expression(out, r);
+		if (r_needs_parens)
+			fprintf(out, ")");
 		break;
 	}
 	case EXPR_UNARY: {
