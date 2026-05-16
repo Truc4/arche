@@ -496,6 +496,34 @@ static int get_arch_static_capacity(CodegenContext *ctx, const char *arch_name) 
 	return 0;
 }
 
+/* Compile-time initialized count for a static archetype. Mirrors the
+ * count computation in codegen_alloc_expr:
+ *   - explicit `static T(cap, N)` second arg → N
+ *   - `static T(cap) { field: val, ... }` (init block present) → cap
+ *   - `static T(cap)` with no init block → 0
+ * Returns -1 if the count is not statically knowable (e.g. non-literal
+ * init_length). Callers MUST treat -1 as "cannot elide bounds checks". */
+static int get_arch_static_count(CodegenContext *ctx, const char *arch_name) {
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		if (ctx->ast->decls[i]->kind != AST_DECL_STATIC) continue;
+		AstStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
+		if (s->kind != AST_STATIC_ARCHETYPE) continue;
+		if (strcmp(s->archetype.archetype_name, arch_name) != 0) continue;
+		if (s->archetype.field_count == 0) return 0;
+		if (s->archetype.init_length) {
+			if (s->archetype.init_length->kind != AST_EXPR_LITERAL) return -1;
+			return atoi(s->archetype.init_length->data.literal.lexeme);
+		}
+		if (s->archetype.field_count > 1) {
+			/* Init block present — count = capacity. */
+			if (s->archetype.field_values[0]->kind != AST_EXPR_LITERAL) return -1;
+			return atoi(s->archetype.field_values[0]->data.literal.lexeme);
+		}
+		return 0;
+	}
+	return 0;
+}
+
 static AstSysDecl *find_sys_decl(CodegenContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		AstDecl *decl = ctx->ast->decls[i];
@@ -2481,14 +2509,21 @@ static int lookup_loop_var_bound(CodegenContext *ctx, AstExpr *idx_expr) {
 
 /* Returns 1 if a bounds check on `arch[idx_expr]` is provably unnecessary. */
 static int bounds_check_elidable(CodegenContext *ctx, const char *arch_name, AstExpr *idx_expr) {
-	int cap = arch_name ? get_arch_static_capacity(ctx, arch_name) : 0;
+	if (!arch_name) return 0;
+	int cap = get_arch_static_capacity(ctx, arch_name);
 	if (cap <= 0) return 0;  /* dynamic capacity — can't elide statically */
+	/* The runtime check is `index < count`, not `index < capacity`. Elide only
+	 * when the index is provably less than the static *count*. A static count of
+	 * -1 (unknowable at compile time) or 0 (uninitialized archetype) means we
+	 * cannot elide. */
+	int count = get_arch_static_count(ctx, arch_name);
+	if (count <= 0) return 0;
 	int lit;
 	if (try_extract_int_literal(idx_expr, &lit)) {
-		return lit >= 0 && lit < cap;
+		return lit >= 0 && lit < count;
 	}
 	int loop_bound = lookup_loop_var_bound(ctx, idx_expr);
-	if (loop_bound > 0 && loop_bound <= cap) return 1;
+	if (loop_bound > 0 && loop_bound <= count) return 1;
 	return 0;
 }
 

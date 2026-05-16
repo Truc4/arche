@@ -1,8 +1,20 @@
 // RUN: %arche -o %t %s && %t
 
+// The base case lets LLVM see a path on which the call returns, so the
+// post-call store to `sink` is reachable code. That store has an
+// observable side effect (writing to a global the signal handler can
+// see), which prevents the optimizer from turning recursion into a loop.
+// The runtime SIGSEGVs long before reaching the base case; the
+// stack_check.c handler then prints "stack overflow\n" and exits 0.
+static sink: char[1];
+
 func recurse(depth: int) -> int {
-  recurse(depth + 1);
-  return 0;
+  if (depth > 100000000) {
+    return depth;
+  }
+  let r := recurse(depth + 1);
+  sink[0] = r;
+  return r;
 }
 
 
