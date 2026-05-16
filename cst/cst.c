@@ -142,6 +142,7 @@ Parameter *parameter_create(char *name, TypeRef *type) {
 	Parameter *param = malloc(sizeof(Parameter));
 	param->name = name;
 	param->type = type;
+	param->is_out = 0;
 	param->loc.line = 1;
 	param->loc.column = 1;
 	return param;
@@ -1143,12 +1144,16 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 		}
 		case DECL_PROC: {
 			ProcDecl *proc = decl->data.proc;
+			if (proc->allow_pure_proc)
+				fprintf(out, "@allow_pure_proc\n");
 			if (proc->is_extern)
 				fprintf(out, "extern ");
 			fprintf(out, "proc %s(", proc->name);
 			for (int j = 0; j < proc->param_count; j++) {
 				if (j > 0)
 					fprintf(out, ", ");
+				if (proc->params[j]->is_out)
+					fprintf(out, "out ");
 				fprintf(out, "%s: ", proc->params[j]->name);
 				format_type(out, proc->params[j]->type);
 			}
@@ -1240,9 +1245,18 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			ctx.last_line = decl->loc.line;
 			break;
 		}
-		case DECL_FUNC_GROUP:
-			/* No formatter yet for func groups; skip silently */
+		case DECL_FUNC_GROUP: {
+			FuncGroup *g = decl->data.func_group;
+			fprintf(out, "func %s = { ", g->name);
+			for (int j = 0; j < g->member_count; j++) {
+				if (j > 0)
+					fprintf(out, ", ");
+				fprintf(out, "%s", g->member_names[j]);
+			}
+			fprintf(out, " };\n");
+			ctx.last_line = g->loc.line;
 			break;
+		}
 		case DECL_USE: {
 			fprintf(out, "use %s;\n", decl->data.use->name);
 			ctx.last_line = decl->loc.line;
