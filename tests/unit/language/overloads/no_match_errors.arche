@@ -1,4 +1,4 @@
-// RUN: not %arche -o %t %s
+// RUN: ! %arche -o %t %s 2>&1
 func pick_int(x: int) -> int {
   return x;
 }

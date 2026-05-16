@@ -1,4 +1,4 @@
-// RUN: not %arche -o %t %s
+// RUN: ! %arche -o %t %s 2>&1
 
 proc bad(a: archetype, b: archetype) {
   let n: int = a.field_count;

@@ -1173,9 +1173,12 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 		for (int i = 0; i < arch->field_count; i++) {
 			FieldDecl *field = arch->fields[i];
 			if (field->type->kind == TYPE_TUPLE) {
-				/* Create expanded field declarations */
+				/* Create expanded field declarations. calloc — the FieldDecl
+				 * carries trivia fields (leading_trivia / trailing_trivia)
+				 * that field_decl_free will free; uninitialized garbage
+				 * would crash later when arch is torn down. */
 				for (int j = 0; j < field->type->data.tuple.field_count; j++) {
-					FieldDecl *expanded_field = malloc(sizeof(FieldDecl));
+					FieldDecl *expanded_field = calloc(1, sizeof(FieldDecl));
 					char expanded_name[512];
 					snprintf(expanded_name, sizeof(expanded_name), "%s_%s", field->name,
 					         field->type->data.tuple.field_names[j]);
@@ -1186,6 +1189,8 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 					new_fields[field_idx++] = expanded_field;
 				}
 				free(field->name);
+				free(field->leading_trivia);
+				free(field->trailing_trivia);
 				free(field);
 			} else {
 				new_fields[field_idx++] = field;
