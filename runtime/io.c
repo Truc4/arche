@@ -186,12 +186,14 @@ int arche_csv_column_index(int handle, const char *name) {
 		const char *comma = memchr(base + pos, ',', size - pos);
 		const char *newline = memchr(base + pos, '\n', size - pos);
 		const char *end = comma;
-		if (!end || (newline && newline < end)) end = newline;
+		if (!end || (newline && newline < end))
+			end = newline;
 		size_t field_len = end ? (size_t)(end - (base + pos)) : (size - pos);
 		if (field_len == namelen && memcmp(base + pos, name, namelen) == 0) {
 			return col;
 		}
-		if (!comma || (newline && newline < comma)) break;
+		if (!comma || (newline && newline < comma))
+			break;
 		pos = (uint32_t)((comma - base) + 1);
 		col++;
 	}

@@ -97,10 +97,13 @@ FuncGroup *func_group_create(char *name) {
 }
 
 void func_group_free(FuncGroup *group) {
-	if (!group) return;
-	if (group->name) free(group->name);
+	if (!group)
+		return;
+	if (group->name)
+		free(group->name);
 	for (int i = 0; i < group->member_count; i++) {
-		if (group->member_names[i]) free(group->member_names[i]);
+		if (group->member_names[i])
+			free(group->member_names[i]);
 	}
 	free(group->member_names);
 	free(group);

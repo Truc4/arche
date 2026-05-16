@@ -299,7 +299,8 @@ void ast_decl_free(AstDecl *decl) {
 		AstFuncGroupDecl *g = decl->data.func_group;
 		if (g) {
 			free(g->name);
-			for (int i = 0; i < g->member_count; i++) free(g->member_names[i]);
+			for (int i = 0; i < g->member_count; i++)
+				free(g->member_names[i]);
 			free(g->member_names);
 			free(g);
 		}

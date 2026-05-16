@@ -617,7 +617,8 @@ static Decl *parse_func_decl(Parser *parser) {
 			advance(parser);
 			g->member_names = realloc(g->member_names, (g->member_count + 1) * sizeof(char *));
 			g->member_names[g->member_count++] = member;
-			if (!match(parser, TOK_COMMA)) break;
+			if (!match(parser, TOK_COMMA))
+				break;
 			/* Disallow trailing comma: after a `,` the next token must be IDENT, not `}`. */
 			if (check(parser, TOK_RBRACE)) {
 				error(parser, "trailing comma not allowed in func group member list");
@@ -1480,7 +1481,8 @@ static Statement *parse_statement(Parser *parser) {
 		int body_count = 0;
 		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
 			Statement *body_stmt = parse_statement(parser);
-			if (!body_stmt) break;
+			if (!body_stmt)
+				break;
 			body = realloc(body, (body_count + 1) * sizeof(Statement *));
 			body[body_count++] = body_stmt;
 		}

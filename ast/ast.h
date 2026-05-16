@@ -257,7 +257,7 @@ typedef struct {
 
 typedef struct {
 	char *binding_name;
-	AstType *filter_type;     /* may be NULL */
+	AstType *filter_type; /* may be NULL */
 	char *arch_param_name;
 	AstStmt **body;
 	int body_count;

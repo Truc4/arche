@@ -159,9 +159,14 @@ bench-mixed: design_analysis/array_ops/mixed_workload.c
 	$(CC) -Wall -Wextra -std=c99 -O3 -march=native -o $(BUILD_DIR)/bench-mixed design_analysis/array_ops/mixed_workload.c -lm
 	./$(BUILD_DIR)/bench-mixed
 
-# Format all Arche source files
+# Format all Arche source files and the compiler's C/H sources.
+# Skips Python venv / site-packages directories so we don't try to format
+# numpy/pyarrow's bundled C headers.
 format: $(FMT_BIN)
-	for f in $$(find . -name "*.arche" -type f); do \
+	for f in $$(find . -name "*.arche" -type f \
+	             -not -path "*/.venv/*" \
+	             -not -path "*/site-packages/*" \
+	             -not -path "*/__pycache__/*"); do \
 		tmp=$$(mktemp); \
 		if timeout 5 ./$(FMT_BIN) "$$f" > "$$tmp"; then \
 			mv "$$tmp" "$$f"; \
@@ -171,7 +176,12 @@ format: $(FMT_BIN)
 			echo "✗ $$f (parse error or timeout)"; \
 		fi; \
 	done
-	for f in $$(find . \( -name "*.c" -o -name "*.h" \) -type f | grep -v "tests/known_failures"); do \
+	for f in $$(find . \( -name "*.c" -o -name "*.h" \) -type f \
+	             -not -path "./build/*" \
+	             -not -path "*/.venv/*" \
+	             -not -path "*/site-packages/*" \
+	             -not -path "*/__pycache__/*" \
+	             -not -path "./tests/known_failures/*"); do \
 		clang-format -i "$$f"; \
 		echo "✓ $$f"; \
 	done

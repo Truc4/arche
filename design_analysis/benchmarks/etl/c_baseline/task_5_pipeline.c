@@ -56,7 +56,8 @@ int main(int argc, char **argv) {
 	double revenue_sum = 0.0;
 	while (p < end) {
 		char *nl = (char *)memchr(p, '\n', (size_t)(end - p));
-		if (!nl) break;
+		if (!nl)
+			break;
 		char *c1 = (char *)memchr(p, ',', (size_t)(nl - p));
 		if (!c1) {
 			p = nl + 1;

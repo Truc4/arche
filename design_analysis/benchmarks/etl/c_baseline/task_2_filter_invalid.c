@@ -56,7 +56,8 @@ int main(int argc, char **argv) {
 	long long count = 0;
 	while (p < end) {
 		char *nl = (char *)memchr(p, '\n', (size_t)(end - p));
-		if (!nl) break;
+		if (!nl)
+			break;
 		char *c1 = (char *)memchr(p, ',', (size_t)(nl - p));
 		if (!c1) {
 			p = nl + 1;
@@ -68,7 +69,8 @@ int main(int argc, char **argv) {
 			continue;
 		}
 		long quantity = strtol(c2 + 1, NULL, 10);
-		if (quantity > 0) count++;
+		if (quantity > 0)
+			count++;
 
 		p = nl + 1;
 	}

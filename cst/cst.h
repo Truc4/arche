@@ -319,9 +319,9 @@ typedef struct {
 } MultiBindStmt;
 
 typedef struct {
-	char *binding_name;     /* `f` in `each_field f in arch` */
-	TypeRef *filter_type;   /* optional `: T` filter; NULL = walk every field */
-	char *arch_param_name;  /* identifier on the right of `in` — must be archetype param at semantic time */
+	char *binding_name;    /* `f` in `each_field f in arch` */
+	TypeRef *filter_type;  /* optional `: T` filter; NULL = walk every field */
+	char *arch_param_name; /* identifier on the right of `in` — must be archetype param at semantic time */
 	Statement **body;
 	int body_count;
 } EachFieldStmt;

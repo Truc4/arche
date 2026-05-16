@@ -97,21 +97,21 @@ struct CodegenContext {
 	 * BOUND <= the archetype's static capacity. */
 	struct {
 		char var_name[64];
-		int  bound;        /* exclusive upper bound */
+		int bound; /* exclusive upper bound */
 	} loop_bounds[16];
 	int loop_bound_count;
 
 	/* Monomorphization state: set during specialized emission of an
 	 * archetype-parametric proc. NULL outside such emission. */
 	AstArchetypeDecl *current_archetype_param;
-	const char *current_arch_param_name;  /* proc parameter name bound to the archetype */
-	const char *current_arch_param_llvm;  /* LLVM register holding the archetype struct pointer */
+	const char *current_arch_param_name; /* proc parameter name bound to the archetype */
+	const char *current_arch_param_llvm; /* LLVM register holding the archetype struct pointer */
 
 	/* Active each_field expansion. NULL when not inside one. */
 	const char *current_each_field_binding;
-	AstField *current_each_field_target;   /* the archetype field f is bound to for THIS iteration */
-	int current_each_field_index;          /* compile-time f.index */
-	const char *current_each_field_name_global;  /* @.efield_name_NN symbol holding the field's name */
+	AstField *current_each_field_target;        /* the archetype field f is bound to for THIS iteration */
+	int current_each_field_index;               /* compile-time f.index */
+	const char *current_each_field_name_global; /* @.efield_name_NN symbol holding the field's name */
 
 	/* Memo of emitted monomorphs: per (proc_name, arch_name) → 1.
 	 * Used to avoid double-emitting the same specialization. */
@@ -542,18 +542,24 @@ static int get_arch_static_capacity(CodegenContext *ctx, const char *arch_name) 
  * init_length). Callers MUST treat -1 as "cannot elide bounds checks". */
 static int get_arch_static_count(CodegenContext *ctx, const char *arch_name) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
-		if (ctx->ast->decls[i]->kind != AST_DECL_STATIC) continue;
+		if (ctx->ast->decls[i]->kind != AST_DECL_STATIC)
+			continue;
 		AstStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
-		if (s->kind != AST_STATIC_ARCHETYPE) continue;
-		if (strcmp(s->archetype.archetype_name, arch_name) != 0) continue;
-		if (s->archetype.field_count == 0) return 0;
+		if (s->kind != AST_STATIC_ARCHETYPE)
+			continue;
+		if (strcmp(s->archetype.archetype_name, arch_name) != 0)
+			continue;
+		if (s->archetype.field_count == 0)
+			return 0;
 		if (s->archetype.init_length) {
-			if (s->archetype.init_length->kind != AST_EXPR_LITERAL) return -1;
+			if (s->archetype.init_length->kind != AST_EXPR_LITERAL)
+				return -1;
 			return atoi(s->archetype.init_length->data.literal.lexeme);
 		}
 		if (s->archetype.field_count > 1) {
 			/* Init block present — count = capacity. */
-			if (s->archetype.field_values[0]->kind != AST_EXPR_LITERAL) return -1;
+			if (s->archetype.field_values[0]->kind != AST_EXPR_LITERAL)
+				return -1;
 			return atoi(s->archetype.field_values[0]->data.literal.lexeme);
 		}
 		return 0;
@@ -602,7 +608,8 @@ static AstFuncGroupDecl *find_func_group(CodegenContext *ctx, const char *name) 
  * are NOT emitted as-is — they must be monomorphized per archetype passed at
  * each call site. */
 static int is_archetype_parametric(AstProcDecl *proc) {
-	if (!proc) return 0;
+	if (!proc)
+		return 0;
 	for (int i = 0; i < proc->param_count; i++) {
 		if (proc->params[i]->type && proc->params[i]->type->tag == AST_TYPE_ARCHETYPE)
 			return 1;
@@ -612,7 +619,8 @@ static int is_archetype_parametric(AstProcDecl *proc) {
 
 /* Index of the first archetype-typed parameter, or -1. */
 static int archetype_param_index(AstProcDecl *proc) {
-	if (!proc) return -1;
+	if (!proc)
+		return -1;
 	for (int i = 0; i < proc->param_count; i++) {
 		if (proc->params[i]->type && proc->params[i]->type->tag == AST_TYPE_ARCHETYPE)
 			return i;
@@ -623,13 +631,16 @@ static int archetype_param_index(AstProcDecl *proc) {
 /* Count COLUMN-kind primitive fields on an archetype (skips handle columns,
  * meta fields, tuples, etc. — what v1 each_field walks). */
 static int count_archetype_iterable_fields(AstArchetypeDecl *arch) {
-	if (!arch) return 0;
+	if (!arch)
+		return 0;
 	int n = 0;
 	for (int i = 0; i < arch->field_count; i++) {
 		AstField *f = arch->fields[i];
-		if (!f || f->kind != FIELD_COLUMN) continue;
+		if (!f || f->kind != FIELD_COLUMN)
+			continue;
 		AstType *t = f->type;
-		if (!t) continue;
+		if (!t)
+			continue;
 		AstTypeTag tag = t->tag;
 		if (tag == AST_TYPE_INT || tag == AST_TYPE_FLOAT || tag == AST_TYPE_CHAR)
 			n++;
@@ -649,8 +660,7 @@ static int monomorph_already_emitted(CodegenContext *ctx, const char *proc_name,
 static void monomorph_mark_emitted(CodegenContext *ctx, const char *proc_name, const char *arch_name) {
 	if (ctx->mono_emitted_count >= ctx->mono_emitted_capacity) {
 		ctx->mono_emitted_capacity = ctx->mono_emitted_capacity == 0 ? 8 : ctx->mono_emitted_capacity * 2;
-		ctx->mono_emitted = realloc(ctx->mono_emitted,
-		                            ctx->mono_emitted_capacity * sizeof(*ctx->mono_emitted));
+		ctx->mono_emitted = realloc(ctx->mono_emitted, ctx->mono_emitted_capacity * sizeof(*ctx->mono_emitted));
 	}
 	ctx->mono_emitted[ctx->mono_emitted_count].proc_name = malloc(strlen(proc_name) + 1);
 	strcpy(ctx->mono_emitted[ctx->mono_emitted_count].proc_name, proc_name);
@@ -668,14 +678,15 @@ static void monomorph_mangle(const char *proc_name, const char *arch_name, char 
 /* Queue a (proc, arch) pair for emission later, if not already pending or
  * emitted. Returns 1 if newly queued, 0 if already known. */
 static int monomorph_enqueue(CodegenContext *ctx, AstProcDecl *proc, AstArchetypeDecl *arch) {
-	if (monomorph_already_emitted(ctx, proc->name, arch->name)) return 0;
+	if (monomorph_already_emitted(ctx, proc->name, arch->name))
+		return 0;
 	for (int i = 0; i < ctx->mono_pending_count; i++) {
-		if (ctx->mono_pending[i].proc == proc && ctx->mono_pending[i].arch == arch) return 0;
+		if (ctx->mono_pending[i].proc == proc && ctx->mono_pending[i].arch == arch)
+			return 0;
 	}
 	if (ctx->mono_pending_count >= ctx->mono_pending_capacity) {
 		ctx->mono_pending_capacity = ctx->mono_pending_capacity == 0 ? 8 : ctx->mono_pending_capacity * 2;
-		ctx->mono_pending = realloc(ctx->mono_pending,
-		                            ctx->mono_pending_capacity * sizeof(*ctx->mono_pending));
+		ctx->mono_pending = realloc(ctx->mono_pending, ctx->mono_pending_capacity * sizeof(*ctx->mono_pending));
 	}
 	ctx->mono_pending[ctx->mono_pending_count].proc = proc;
 	ctx->mono_pending[ctx->mono_pending_count].arch = arch;
@@ -696,11 +707,13 @@ static void end_function_body(CodegenContext *ctx, FunctionBodyState fbs);
 /* Emit a monomorphized version of an archetype-parametric proc for one
  * concrete archetype. Adds an entry to mono_emitted. */
 static void emit_monomorphized_proc(CodegenContext *ctx, AstProcDecl *proc, AstArchetypeDecl *arch) {
-	if (monomorph_already_emitted(ctx, proc->name, arch->name)) return;
+	if (monomorph_already_emitted(ctx, proc->name, arch->name))
+		return;
 	monomorph_mark_emitted(ctx, proc->name, arch->name);
 
 	int arch_pidx = archetype_param_index(proc);
-	if (arch_pidx < 0) return;  /* shouldn't happen if caller checked */
+	if (arch_pidx < 0)
+		return; /* shouldn't happen if caller checked */
 
 	char mangled[256];
 	monomorph_mangle(proc->name, arch->name, mangled, sizeof(mangled));
@@ -712,14 +725,14 @@ static void emit_monomorphized_proc(CodegenContext *ctx, AstProcDecl *proc, AstA
 			buffer_append_fmt(ctx, "%%struct.%s* %%arg%d", arch->name, i);
 		} else if (param_type && param_type->tag == AST_TYPE_ARRAY) {
 			buffer_append_fmt(ctx, "%%struct.arche_array* %%arg%d", i);
-		} else if (param_type && param_type->tag == AST_TYPE_NAMED &&
-		           find_archetype_decl(ctx, param_type->name)) {
+		} else if (param_type && param_type->tag == AST_TYPE_NAMED && find_archetype_decl(ctx, param_type->name)) {
 			buffer_append_fmt(ctx, "%%struct.%s* %%arg%d", param_type->name, i);
 		} else {
 			const char *base_type = llvm_type_from_arche(field_base_type_name(param_type));
 			buffer_append_fmt(ctx, "%s %%arg%d", base_type, i);
 		}
-		if (i < proc->param_count - 1) buffer_append(ctx, ", ");
+		if (i < proc->param_count - 1)
+			buffer_append(ctx, ", ");
 	}
 	buffer_append(ctx, ") {\n");
 	buffer_append(ctx, "entry:\n");
@@ -740,8 +753,7 @@ static void emit_monomorphized_proc(CodegenContext *ctx, AstProcDecl *proc, AstA
 			add_arch_value(ctx, proc->params[i]->name, param_llvm, arch->name);
 		} else if (param_type && param_type->tag == AST_TYPE_ARRAY) {
 			add_array_value(ctx, proc->params[i]->name, param_llvm);
-		} else if (param_type && param_type->tag == AST_TYPE_NAMED &&
-		           find_archetype_decl(ctx, param_type->name)) {
+		} else if (param_type && param_type->tag == AST_TYPE_NAMED && find_archetype_decl(ctx, param_type->name)) {
 			add_arch_value(ctx, proc->params[i]->name, param_llvm, param_type->name);
 		} else {
 			add_value(ctx, proc->params[i]->name, param_llvm, 0);
@@ -786,25 +798,33 @@ static void drain_monomorph_worklist(CodegenContext *ctx) {
 /* For a group call, walk members and return the unique AstFuncDecl whose param
  * tags match args[].resolved.tag on int/float/char. Returns NULL on no-match or
  * ambiguous (which the semantic pass should have already diagnosed). */
-static AstFuncDecl *find_group_member_for_call(CodegenContext *ctx, AstFuncGroupDecl *g,
-                                                AstExpr **args, int arg_count) {
+static AstFuncDecl *find_group_member_for_call(CodegenContext *ctx, AstFuncGroupDecl *g, AstExpr **args,
+                                               int arg_count) {
 	AstFuncDecl *match = NULL;
 	int match_count = 0;
 	for (int m = 0; m < g->member_count; m++) {
 		AstFuncDecl *fd = find_func_decl(ctx, g->member_names[m]);
-		if (!fd) continue;
-		if (fd->param_count != arg_count) continue;
+		if (!fd)
+			continue;
+		if (fd->param_count != arg_count)
+			continue;
 		int ok = 1;
 		for (int j = 0; j < arg_count; j++) {
 			AstType *pt = fd->params[j]->type;
 			AstTypeTag at = args[j]->resolved.tag;
-			if (!pt) continue;
-			if (pt->tag == AST_TYPE_INT   && at == AST_TYPE_INT)   continue;
-			if (pt->tag == AST_TYPE_FLOAT && at == AST_TYPE_FLOAT) continue;
-			if (pt->tag == AST_TYPE_CHAR  && at == AST_TYPE_CHAR)  continue;
-			ok = 0; break;
+			if (!pt)
+				continue;
+			if (pt->tag == AST_TYPE_INT && at == AST_TYPE_INT)
+				continue;
+			if (pt->tag == AST_TYPE_FLOAT && at == AST_TYPE_FLOAT)
+				continue;
+			if (pt->tag == AST_TYPE_CHAR && at == AST_TYPE_CHAR)
+				continue;
+			ok = 0;
+			break;
 		}
-		if (!ok) continue;
+		if (!ok)
+			continue;
 		match = fd;
 		match_count++;
 	}
@@ -1033,8 +1053,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		 * preserve vector lanes so operands load as <N x T> and the
 		 * comparison emits as a vector mask. */
 		int save_vector_lanes = ctx->vector_lanes;
-		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE &&
-		    ctx->vector_lanes == 0) {
+		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE && ctx->vector_lanes == 0) {
 			ctx->vector_lanes = 0;
 		}
 
@@ -1204,19 +1223,17 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				if (strchr(lv, '%') == NULL) {
 					char *ins = gen_value_name(ctx);
 					char *splat = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = insertelement %s undef, %s %s, i32 0\n",
-					                  ins, vec_t, elem_t, lv);
-					buffer_append_fmt(ctx, "  %s = shufflevector %s %s, %s undef, <%d x i32> zeroinitializer\n",
-					                  splat, vec_t, ins, vec_t, lanes);
+					buffer_append_fmt(ctx, "  %s = insertelement %s undef, %s %s, i32 0\n", ins, vec_t, elem_t, lv);
+					buffer_append_fmt(ctx, "  %s = shufflevector %s %s, %s undef, <%d x i32> zeroinitializer\n", splat,
+					                  vec_t, ins, vec_t, lanes);
 					lv = splat;
 				}
 				if (strchr(rv, '%') == NULL) {
 					char *ins = gen_value_name(ctx);
 					char *splat = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = insertelement %s undef, %s %s, i32 0\n",
-					                  ins, vec_t, elem_t, rv);
-					buffer_append_fmt(ctx, "  %s = shufflevector %s %s, %s undef, <%d x i32> zeroinitializer\n",
-					                  splat, vec_t, ins, vec_t, lanes);
+					buffer_append_fmt(ctx, "  %s = insertelement %s undef, %s %s, i32 0\n", ins, vec_t, elem_t, rv);
+					buffer_append_fmt(ctx, "  %s = shufflevector %s %s, %s undef, <%d x i32> zeroinitializer\n", splat,
+					                  vec_t, ins, vec_t, lanes);
 					rv = splat;
 				}
 
@@ -1291,9 +1308,8 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 					 * passing this to printf get a regular C string. */
 					int len = (int)strlen(ctx->current_each_field_target->name) + 1;
 					char *ptr = gen_value_name(ctx);
-					buffer_append_fmt(ctx,
-					    "  %s = getelementptr [%d x i8], [%d x i8]* %s, i32 0, i32 0\n",
-					    ptr, len, len, ctx->current_each_field_name_global);
+					buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i32 0, i32 0\n", ptr, len,
+					                  len, ctx->current_each_field_name_global);
 					strcpy(result_buf, ptr);
 					expr->resolved.tag = AST_TYPE_CHAR_ARRAY;
 					break;
@@ -1507,28 +1523,26 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 	case AST_EXPR_INDEX: {
 		/* Each-field column read: f[i] where f is the current each_field
 		 * binding. Resolve to a load from the matching archetype column. */
-		if (ctx->current_each_field_binding && ctx->current_each_field_target &&
-		    ctx->current_archetype_param && ctx->current_arch_param_llvm &&
-		    expr->data.index.base->kind == AST_EXPR_NAME &&
+		if (ctx->current_each_field_binding && ctx->current_each_field_target && ctx->current_archetype_param &&
+		    ctx->current_arch_param_llvm && expr->data.index.base->kind == AST_EXPR_NAME &&
 		    strcmp(expr->data.index.base->data.name.name, ctx->current_each_field_binding) == 0 &&
 		    expr->data.index.index_count == 1) {
 			char idx_local[256];
 			codegen_expression(ctx, expr->data.index.indices[0], idx_local);
 			int cap = get_arch_static_capacity(ctx, ctx->current_archetype_param->name);
-			if (cap <= 0) cap = 1;
+			if (cap <= 0)
+				cap = 1;
 			const char *base_elem = field_base_type_name(ctx->current_each_field_target->type);
 			const char *llvm_elem = llvm_type_from_arche(base_elem);
 			char *col_gep = gen_value_name(ctx);
-			buffer_append_fmt(ctx,
-			    "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-			    col_gep, ctx->current_archetype_param->name, ctx->current_archetype_param->name,
-			    ctx->current_arch_param_llvm, ctx->current_each_field_index);
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", col_gep,
+			                  ctx->current_archetype_param->name, ctx->current_archetype_param->name,
+			                  ctx->current_arch_param_llvm, ctx->current_each_field_index);
 			char *idx64 = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx64, idx_local);
 			char *elem_gep = gen_value_name(ctx);
-			buffer_append_fmt(ctx,
-			    "  %s = getelementptr [%d x %s], [%d x %s]* %s, i64 0, i64 %s\n",
-			    elem_gep, cap, llvm_elem, cap, llvm_elem, col_gep, idx64);
+			buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* %s, i64 0, i64 %s\n", elem_gep, cap,
+			                  llvm_elem, cap, llvm_elem, col_gep, idx64);
 			char *val = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", val, llvm_elem, llvm_elem, elem_gep);
 			strcpy(result_buf, val);
@@ -1909,8 +1923,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				arg_is_array_literal[i] = 1;
 			}
 			/* `f.name` inside an each_field expansion: produces a raw i8* string. */
-			else if (ctx->current_each_field_binding &&
-			         expr->data.call.args[i]->kind == AST_EXPR_FIELD &&
+			else if (ctx->current_each_field_binding && expr->data.call.args[i]->kind == AST_EXPR_FIELD &&
 			         expr->data.call.args[i]->data.field.base->kind == AST_EXPR_NAME &&
 			         strcmp(expr->data.call.args[i]->data.field.base->data.name.name,
 			                ctx->current_each_field_binding) == 0 &&
@@ -1944,9 +1957,8 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		AstFuncDecl *callee_func = NULL;
 		AstFuncGroupDecl *callee_group = func_name ? find_func_group(ctx, func_name) : NULL;
 		if (callee_group) {
-			callee_func = find_group_member_for_call(ctx, callee_group,
-			                                        expr->data.call.args,
-			                                        expr->data.call.arg_count);
+			callee_func =
+			    find_group_member_for_call(ctx, callee_group, expr->data.call.args, expr->data.call.arg_count);
 			/* Safety fallback: if no member matched, route to first member to avoid
 			 * an undefined LLVM symbol. Semantic should have already emitted an error. */
 			if (!callee_func && callee_group->member_count > 0) {
@@ -2200,9 +2212,9 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		/* Special handling for print function with double arguments */
 		const char *actual_func_name;
 		if (mono_arch) {
-			actual_func_name = mono_call_name;  /* route to monomorphized symbol */
+			actual_func_name = mono_call_name; /* route to monomorphized symbol */
 		} else if (callee_group && callee_func) {
-			actual_func_name = callee_func->name;  /* route to matched member */
+			actual_func_name = callee_func->name; /* route to matched member */
 		} else {
 			actual_func_name = func_name ? func_name : "unknown";
 		}
@@ -2774,9 +2786,11 @@ static int try_extract_int_literal(AstExpr *expr, int *out) {
 	if (!expr || expr->kind != AST_EXPR_LITERAL || !expr->data.literal.lexeme)
 		return 0;
 	const char *s = expr->data.literal.lexeme;
-	if (!*s) return 0;
+	if (!*s)
+		return 0;
 	long v = strtol(s, NULL, 10);
-	if (v < 0 || v > 2147483647L) return 0;
+	if (v < 0 || v > 2147483647L)
+		return 0;
 	*out = (int)v;
 	return 1;
 }
@@ -2785,32 +2799,40 @@ static int try_extract_int_literal(AstExpr *expr, int *out) {
  * (where BOUND is also an int constant), populate out_var/out_bound and return 1.
  * Conservative: only matches the canonical 0..BOUND form actually used in practice. */
 static int try_extract_loop_bound(AstStmt *for_stmt, char **out_var, int *out_bound) {
-	if (!for_stmt || for_stmt->kind != AST_STMT_FOR) return 0;
+	if (!for_stmt || for_stmt->kind != AST_STMT_FOR)
+		return 0;
 	AstStmt *init = for_stmt->data.for_stmt.init;
 	AstExpr *cond = for_stmt->data.for_stmt.cond;
-	if (!init || !cond) return 0;
+	if (!init || !cond)
+		return 0;
 
 	/* Init: a `let` declaration introducing the loop variable. */
 	const char *var_name = NULL;
-	if (init->kind == AST_STMT_LET && init->data.let_stmt.name_count >= 1 &&
-	    init->data.let_stmt.names[0]) {
+	if (init->kind == AST_STMT_LET && init->data.let_stmt.name_count >= 1 && init->data.let_stmt.names[0]) {
 		var_name = init->data.let_stmt.names[0];
 	}
-	if (!var_name) return 0;
+	if (!var_name)
+		return 0;
 
 	/* Cond: <var> < <int_literal> (also accept <=). */
-	if (cond->kind != AST_EXPR_BINARY) return 0;
-	if (cond->data.binary.op != OP_LT && cond->data.binary.op != OP_LTE) return 0;
+	if (cond->kind != AST_EXPR_BINARY)
+		return 0;
+	if (cond->data.binary.op != OP_LT && cond->data.binary.op != OP_LTE)
+		return 0;
 	AstExpr *cmp_left = cond->data.binary.left;
 	AstExpr *cmp_right = cond->data.binary.right;
-	if (!cmp_left || cmp_left->kind != AST_EXPR_NAME) return 0;
-	if (strcmp(cmp_left->data.name.name, var_name) != 0) return 0;
+	if (!cmp_left || cmp_left->kind != AST_EXPR_NAME)
+		return 0;
+	if (strcmp(cmp_left->data.name.name, var_name) != 0)
+		return 0;
 
 	int bound;
-	if (!try_extract_int_literal(cmp_right, &bound)) return 0;
+	if (!try_extract_int_literal(cmp_right, &bound))
+		return 0;
 	if (cond->data.binary.op == OP_LTE) {
-		if (bound == 2147483647) return 0;  /* would overflow */
-		bound++;  /* `v <= N` means max `v` is N, so exclusive bound is N+1 */
+		if (bound == 2147483647)
+			return 0; /* would overflow */
+		bound++;      /* `v <= N` means max `v` is N, so exclusive bound is N+1 */
 	}
 
 	*out_var = (char *)var_name;
@@ -2820,7 +2842,7 @@ static int try_extract_loop_bound(AstStmt *for_stmt, char **out_var, int *out_bo
 
 static void push_loop_bound(CodegenContext *ctx, const char *var_name, int bound) {
 	if (ctx->loop_bound_count >= (int)(sizeof(ctx->loop_bounds) / sizeof(ctx->loop_bounds[0])))
-		return;  /* stack full — silently drop; only affects bounds-check elision, not correctness */
+		return; /* stack full — silently drop; only affects bounds-check elision, not correctness */
 	int i = ctx->loop_bound_count++;
 	strncpy(ctx->loop_bounds[i].var_name, var_name, sizeof(ctx->loop_bounds[i].var_name) - 1);
 	ctx->loop_bounds[i].var_name[sizeof(ctx->loop_bounds[i].var_name) - 1] = '\0';
@@ -2828,13 +2850,15 @@ static void push_loop_bound(CodegenContext *ctx, const char *var_name, int bound
 }
 
 static void pop_loop_bound(CodegenContext *ctx) {
-	if (ctx->loop_bound_count > 0) ctx->loop_bound_count--;
+	if (ctx->loop_bound_count > 0)
+		ctx->loop_bound_count--;
 }
 
 /* If `idx_expr` references a loop variable currently in scope and we know the loop's
  * upper bound, return that bound. Otherwise return -1. */
 static int lookup_loop_var_bound(CodegenContext *ctx, AstExpr *idx_expr) {
-	if (!idx_expr || idx_expr->kind != AST_EXPR_NAME) return -1;
+	if (!idx_expr || idx_expr->kind != AST_EXPR_NAME)
+		return -1;
 	const char *name = idx_expr->data.name.name;
 	for (int i = ctx->loop_bound_count - 1; i >= 0; i--) {
 		if (strcmp(ctx->loop_bounds[i].var_name, name) == 0)
@@ -2845,21 +2869,25 @@ static int lookup_loop_var_bound(CodegenContext *ctx, AstExpr *idx_expr) {
 
 /* Returns 1 if a bounds check on `arch[idx_expr]` is provably unnecessary. */
 static int bounds_check_elidable(CodegenContext *ctx, const char *arch_name, AstExpr *idx_expr) {
-	if (!arch_name) return 0;
+	if (!arch_name)
+		return 0;
 	int cap = get_arch_static_capacity(ctx, arch_name);
-	if (cap <= 0) return 0;  /* dynamic capacity — can't elide statically */
+	if (cap <= 0)
+		return 0; /* dynamic capacity — can't elide statically */
 	/* The runtime check is `index < count`, not `index < capacity`. Elide only
 	 * when the index is provably less than the static *count*. A static count of
 	 * -1 (unknowable at compile time) or 0 (uninitialized archetype) means we
 	 * cannot elide. */
 	int count = get_arch_static_count(ctx, arch_name);
-	if (count <= 0) return 0;
+	if (count <= 0)
+		return 0;
 	int lit;
 	if (try_extract_int_literal(idx_expr, &lit)) {
 		return lit >= 0 && lit < count;
 	}
 	int loop_bound = lookup_loop_var_bound(ctx, idx_expr);
-	if (loop_bound > 0 && loop_bound <= count) return 1;
+	if (loop_bound > 0 && loop_bound <= count)
+		return 1;
 	return 0;
 }
 
@@ -3665,31 +3693,29 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 	case AST_STMT_ASSIGN: {
 		/* Each-field column write: f[i] = expr where f is the current
 		 * each_field binding. */
-		if (ctx->current_each_field_binding && ctx->current_each_field_target &&
-		    ctx->current_archetype_param && ctx->current_arch_param_llvm &&
-		    stmt->data.assign_stmt.target->kind == AST_EXPR_INDEX &&
+		if (ctx->current_each_field_binding && ctx->current_each_field_target && ctx->current_archetype_param &&
+		    ctx->current_arch_param_llvm && stmt->data.assign_stmt.target->kind == AST_EXPR_INDEX &&
 		    stmt->data.assign_stmt.target->data.index.base->kind == AST_EXPR_NAME &&
-		    strcmp(stmt->data.assign_stmt.target->data.index.base->data.name.name,
-		           ctx->current_each_field_binding) == 0 &&
+		    strcmp(stmt->data.assign_stmt.target->data.index.base->data.name.name, ctx->current_each_field_binding) ==
+		        0 &&
 		    stmt->data.assign_stmt.target->data.index.index_count == 1) {
 			char idx_local[256], val_buf[256];
 			codegen_expression(ctx, stmt->data.assign_stmt.target->data.index.indices[0], idx_local);
 			codegen_expression(ctx, stmt->data.assign_stmt.value, val_buf);
 			int cap = get_arch_static_capacity(ctx, ctx->current_archetype_param->name);
-			if (cap <= 0) cap = 1;
+			if (cap <= 0)
+				cap = 1;
 			const char *base_elem = field_base_type_name(ctx->current_each_field_target->type);
 			const char *llvm_elem = llvm_type_from_arche(base_elem);
 			char *col_gep = gen_value_name(ctx);
-			buffer_append_fmt(ctx,
-			    "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
-			    col_gep, ctx->current_archetype_param->name, ctx->current_archetype_param->name,
-			    ctx->current_arch_param_llvm, ctx->current_each_field_index);
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", col_gep,
+			                  ctx->current_archetype_param->name, ctx->current_archetype_param->name,
+			                  ctx->current_arch_param_llvm, ctx->current_each_field_index);
 			char *idx64 = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx64, idx_local);
 			char *elem_gep = gen_value_name(ctx);
-			buffer_append_fmt(ctx,
-			    "  %s = getelementptr [%d x %s], [%d x %s]* %s, i64 0, i64 %s\n",
-			    elem_gep, cap, llvm_elem, cap, llvm_elem, col_gep, idx64);
+			buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* %s, i64 0, i64 %s\n", elem_gep, cap,
+			                  llvm_elem, cap, llvm_elem, col_gep, idx64);
 			buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", llvm_elem, val_buf, llvm_elem, elem_gep);
 			break;
 		}
@@ -4159,8 +4185,8 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			int bc_count_idx = -1, bc_idx_is_i64 = 0;
 			AstExpr *bc_idx_expr = stmt->data.assign_stmt.target->data.index.indices[0];
 			if (stmt->data.assign_stmt.target->data.index.index_count > 0 &&
-			    resolve_index_arch(ctx, base_expr, bc_idx_expr, &bc_arch_name,
-			                       &bc_arch_ptr, &bc_count_idx, &bc_idx_is_i64) &&
+			    resolve_index_arch(ctx, base_expr, bc_idx_expr, &bc_arch_name, &bc_arch_ptr, &bc_count_idx,
+			                       &bc_idx_is_i64) &&
 			    !bounds_check_elidable(ctx, bc_arch_name, bc_idx_expr)) {
 				emit_bounds_check(ctx, bc_arch_name, bc_arch_ptr, bc_count_idx, idx_buf, bc_idx_is_i64);
 			}
@@ -4292,7 +4318,8 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			buffer_append_fmt(ctx, "%s:\n", exit_label + 1);
 
 			ctx->loop_exit_count--;
-			if (pushed_bound) pop_loop_bound(ctx);
+			if (pushed_bound)
+				pop_loop_bound(ctx);
 			pop_value_scope(ctx);
 		} else if (!stmt->data.for_stmt.var_name) {
 			/* Condition-based or infinite for loop */
@@ -4654,10 +4681,12 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 	}
 	case AST_STMT_EACH_FIELD: {
 		/* Only meaningful inside a monomorphized archetype-parametric proc. */
-		if (!ctx->current_archetype_param) break;
+		if (!ctx->current_archetype_param)
+			break;
 		AstEachFieldStmt *ef = &stmt->data.each_field;
 		AstArchetypeDecl *arch = ctx->current_archetype_param;
-		if (strcmp(ef->arch_param_name, ctx->current_arch_param_name) != 0) break;
+		if (strcmp(ef->arch_param_name, ctx->current_arch_param_name) != 0)
+			break;
 
 		AstTypeTag filter_tag = AST_TYPE_UNKNOWN;
 		if (ef->filter_type) {
@@ -4666,11 +4695,14 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 
 		for (int i = 0; i < arch->field_count; i++) {
 			AstField *fd = arch->fields[i];
-			if (!fd || fd->kind != FIELD_COLUMN) continue;
+			if (!fd || fd->kind != FIELD_COLUMN)
+				continue;
 			AstType *t = fd->type;
-			if (!t) continue;
+			if (!t)
+				continue;
 			AstTypeTag tag = t->tag;
-			if (tag != AST_TYPE_INT && tag != AST_TYPE_FLOAT && tag != AST_TYPE_CHAR) continue;
+			if (tag != AST_TYPE_INT && tag != AST_TYPE_FLOAT && tag != AST_TYPE_CHAR)
+				continue;
 			if (ef->filter_type && tag != filter_tag) {
 				continue;
 			}
@@ -4680,9 +4712,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			char gname[64];
 			snprintf(gname, sizeof(gname), "@.efield_name_%d", ctx->efield_name_counter++);
 			char tmpbuf[256];
-			snprintf(tmpbuf, sizeof(tmpbuf),
-			    "%s = private unnamed_addr constant [%d x i8] c\"",
-			    gname, slen);
+			snprintf(tmpbuf, sizeof(tmpbuf), "%s = private unnamed_addr constant [%d x i8] c\"", gname, slen);
 			/* append the field name + null byte literal. We escape nothing because
 			 * arche field identifiers are [A-Za-z0-9_]. */
 			size_t pos = strlen(tmpbuf);

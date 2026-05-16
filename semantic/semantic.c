@@ -36,8 +36,8 @@ typedef struct {
 } Scope;
 
 typedef struct {
-	char *name;       /* group name (owned) */
-	char **members;   /* member func names (borrowed; pointers into CST FuncGroup) */
+	char *name;     /* group name (owned) */
+	char **members; /* member func names (borrowed; pointers into CST FuncGroup) */
 	int member_count;
 	SourceLoc loc;
 } GroupInfo;
@@ -166,16 +166,20 @@ static const char *normalize_type_name(const char *type_name);
 
 static GroupInfo *find_group(SemanticContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->group_count; i++) {
-		if (strcmp(ctx->groups[i].name, name) == 0) return &ctx->groups[i];
+		if (strcmp(ctx->groups[i].name, name) == 0)
+			return &ctx->groups[i];
 	}
 	return NULL;
 }
 
 /* TypeRef structural equality. Used for member-signature distinctness. */
 static int type_ref_equal(const TypeRef *a, const TypeRef *b) {
-	if (a == NULL && b == NULL) return 1;
-	if (a == NULL || b == NULL) return 0;
-	if (a->kind != b->kind) return 0;
+	if (a == NULL && b == NULL)
+		return 1;
+	if (a == NULL || b == NULL)
+		return 0;
+	if (a->kind != b->kind)
+		return 0;
 	switch (a->kind) {
 	case TYPE_NAME: {
 		const char *an = normalize_type_name(a->data.name);
@@ -193,20 +197,23 @@ static int type_ref_equal(const TypeRef *a, const TypeRef *b) {
 		return an && bn && strcmp(an, bn) == 0;
 	}
 	case TYPE_TUPLE: {
-		if (a->data.tuple.field_count != b->data.tuple.field_count) return 0;
+		if (a->data.tuple.field_count != b->data.tuple.field_count)
+			return 0;
 		for (int i = 0; i < a->data.tuple.field_count; i++) {
-			if (!type_ref_equal(a->data.tuple.field_types[i], b->data.tuple.field_types[i])) return 0;
+			if (!type_ref_equal(a->data.tuple.field_types[i], b->data.tuple.field_types[i]))
+				return 0;
 		}
 		return 1;
 	}
 	case TYPE_ARCHETYPE:
-		return 1;  /* `archetype` parameter type: any two are equal */
+		return 1; /* `archetype` parameter type: any two are equal */
 	}
 	return 0;
 }
 
 static FuncDecl *find_func_decl_cst(Program *prog, const char *name) {
-	if (!prog) return NULL;
+	if (!prog)
+		return NULL;
 	for (int i = 0; i < prog->decl_count; i++) {
 		Decl *d = prog->decls[i];
 		if (d->kind == DECL_FUNC && strcmp(d->data.func->name, name) == 0)
@@ -260,8 +267,7 @@ void semantic_set_lint_proc_no_effect(int enabled, int werror) {
 
 /* Emit a lint diagnostic. Promotes to a hard error if the corresponding
  * --Werror=... flag is set. */
-static void lint_emit(SemanticContext *ctx, int werror, SourceLoc loc, const char *name,
-                      const char *msg) {
+static void lint_emit(SemanticContext *ctx, int werror, SourceLoc loc, const char *name, const char *msg) {
 	const char *kind = werror ? "error" : "warning";
 	fprintf(stderr, "Lint %s [%s] at line %d, col %d: %s\n", kind, name, loc.line, loc.column, msg);
 	fflush(stderr);
@@ -458,23 +464,35 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME) {
 			func_name = expr->data.call.callee->data.name.name;
 		}
-		if (!func_name || !ctx->prog) return NULL;
+		if (!func_name || !ctx->prog)
+			return NULL;
 
 		/* If this name is a group, pick the matching member by static arg types. */
 		GroupInfo *gi = find_group(ctx, func_name);
 		if (gi) {
 			for (int m = 0; m < gi->member_count; m++) {
 				FuncDecl *fd = find_func_decl_cst(ctx->prog, gi->members[m]);
-				if (!fd) continue;
-				if (fd->param_count != expr->data.call.arg_count) continue;
+				if (!fd)
+					continue;
+				if (fd->param_count != expr->data.call.arg_count)
+					continue;
 				int ok = 1;
 				for (int j = 0; j < expr->data.call.arg_count; j++) {
 					const char *rt = resolve_expression_type(ctx, expr->data.call.args[j]);
-					if (!rt) { ok = 0; break; }
+					if (!rt) {
+						ok = 0;
+						break;
+					}
 					TypeRef *pt = fd->params[j]->type;
-					if (!pt || pt->kind != TYPE_NAME) { ok = 0; break; }
+					if (!pt || pt->kind != TYPE_NAME) {
+						ok = 0;
+						break;
+					}
 					const char *pn = normalize_type_name(pt->data.name);
-					if (strcmp(pn, normalize_type_name(rt)) != 0) { ok = 0; break; }
+					if (strcmp(pn, normalize_type_name(rt)) != 0) {
+						ok = 0;
+						break;
+					}
 				}
 				if (ok && fd->return_type && fd->return_type->kind == TYPE_NAME) {
 					return normalize_type_name(fd->return_type->data.name);
@@ -682,35 +700,50 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME) {
 			func_name = expr->data.call.callee->data.name.name;
 		}
-		if (!func_name) break;
+		if (!func_name)
+			break;
 
 		GroupInfo *gi = find_group(ctx, func_name);
-		if (!gi) break;  /* not a group; nothing to diagnose here */
+		if (!gi)
+			break; /* not a group; nothing to diagnose here */
 
 		/* Only diagnose when every arg has a concrete primitive type. */
 		int can_diagnose = 1;
 		for (int j = 0; j < expr->data.call.arg_count; j++) {
 			const char *rt = resolve_expression_type(ctx, expr->data.call.args[j]);
-			if (!rt) { can_diagnose = 0; break; }
+			if (!rt) {
+				can_diagnose = 0;
+				break;
+			}
 			const char *nrt = normalize_type_name(rt);
 			if (strcmp(nrt, "int") != 0 && strcmp(nrt, "float") != 0 && strcmp(nrt, "char") != 0) {
-				can_diagnose = 0; break;
+				can_diagnose = 0;
+				break;
 			}
 		}
-		if (!can_diagnose) break;
+		if (!can_diagnose)
+			break;
 
 		int match_count = 0;
 		for (int m = 0; m < gi->member_count; m++) {
 			FuncDecl *fd = find_func_decl_cst(ctx->prog, gi->members[m]);
-			if (!fd || fd->param_count != expr->data.call.arg_count) continue;
+			if (!fd || fd->param_count != expr->data.call.arg_count)
+				continue;
 			int ok = 1;
 			for (int j = 0; j < expr->data.call.arg_count; j++) {
 				const char *rt = resolve_expression_type(ctx, expr->data.call.args[j]);
 				TypeRef *pt = fd->params[j]->type;
-				if (!pt || pt->kind != TYPE_NAME) { ok = 0; break; }
-				if (strcmp(normalize_type_name(pt->data.name), normalize_type_name(rt)) != 0) { ok = 0; break; }
+				if (!pt || pt->kind != TYPE_NAME) {
+					ok = 0;
+					break;
+				}
+				if (strcmp(normalize_type_name(pt->data.name), normalize_type_name(rt)) != 0) {
+					ok = 0;
+					break;
+				}
 			}
-			if (ok) match_count++;
+			if (ok)
+				match_count++;
 		}
 		if (match_count == 0) {
 			char msg[256];
@@ -1033,8 +1066,8 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		if (ctx->current_proc) {
 			for (int i = 0; i < ctx->current_proc->param_count; i++) {
 				Parameter *p = ctx->current_proc->params[i];
-				if (p && p->name && strcmp(p->name, ef->arch_param_name) == 0 &&
-				    p->type && p->type->kind == TYPE_ARCHETYPE) {
+				if (p && p->name && strcmp(p->name, ef->arch_param_name) == 0 && p->type &&
+				    p->type->kind == TYPE_ARCHETYPE) {
 					arch_param_ok = 1;
 					break;
 				}
@@ -1280,8 +1313,7 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 static int name_is_archetype_mutating_builtin(const char *name) {
 	if (!name)
 		return 0;
-	return strcmp(name, "insert") == 0 || strcmp(name, "delete") == 0 ||
-	       strcmp(name, "dealloc") == 0;
+	return strcmp(name, "insert") == 0 || strcmp(name, "delete") == 0 || strcmp(name, "dealloc") == 0;
 }
 
 /* Returns 1 if a call to `name` is a potential side effect. True when the
@@ -1297,12 +1329,10 @@ static int name_is_effectful_callee(SemanticContext *ctx, const char *name) {
 		Decl *d = ctx->prog->decls[i];
 		if (!d)
 			continue;
-		if (d->kind == DECL_PROC && d->data.proc && d->data.proc->name &&
-		    strcmp(d->data.proc->name, name) == 0) {
+		if (d->kind == DECL_PROC && d->data.proc && d->data.proc->name && strcmp(d->data.proc->name, name) == 0) {
 			return 1; /* any proc is effectful */
 		}
-		if (d->kind == DECL_FUNC && d->data.func && d->data.func->name &&
-		    strcmp(d->data.func->name, name) == 0) {
+		if (d->kind == DECL_FUNC && d->data.func && d->data.func->name && strcmp(d->data.func->name, name) == 0) {
 			if (d->data.func->is_extern)
 				return 1; /* extern func: opaque C side effects */
 			for (int p = 0; p < d->data.func->param_count; p++) {
@@ -1406,14 +1436,11 @@ static int stmt_has_side_effects(SemanticContext *ctx, Statement *stmt, ProcDecl
 		       expr_has_side_effects(ctx, stmt->data.assign_stmt.target, proc);
 	}
 	case STMT_FOR:
-		if (stmt->data.for_stmt.init &&
-		    stmt_has_side_effects(ctx, stmt->data.for_stmt.init, proc))
+		if (stmt->data.for_stmt.init && stmt_has_side_effects(ctx, stmt->data.for_stmt.init, proc))
 			return 1;
-		if (stmt->data.for_stmt.condition &&
-		    expr_has_side_effects(ctx, stmt->data.for_stmt.condition, proc))
+		if (stmt->data.for_stmt.condition && expr_has_side_effects(ctx, stmt->data.for_stmt.condition, proc))
 			return 1;
-		if (stmt->data.for_stmt.increment &&
-		    stmt_has_side_effects(ctx, stmt->data.for_stmt.increment, proc))
+		if (stmt->data.for_stmt.increment && stmt_has_side_effects(ctx, stmt->data.for_stmt.increment, proc))
 			return 1;
 		return body_has_side_effects(ctx, stmt->data.for_stmt.body, stmt->data.for_stmt.body_count, proc);
 	case STMT_IF:
@@ -1630,7 +1657,8 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 }
 
 static void analyze_func_group(SemanticContext *ctx, FuncGroup *group) {
-	if (!group) return;
+	if (!group)
+		return;
 
 	/* Name collision: group name must not match a prior func, proc, extern, or group. */
 	if (find_known_func(ctx, group->name) || find_group(ctx, group->name)) {
@@ -1650,23 +1678,20 @@ static void analyze_func_group(SemanticContext *ctx, FuncGroup *group) {
 		FuncDecl *fd = find_func_decl_cst(ctx->prog, group->member_names[i]);
 		if (!fd) {
 			char msg[256];
-			snprintf(msg, sizeof(msg), "unknown member '%s' in func group '%s'",
-			         group->member_names[i], group->name);
+			snprintf(msg, sizeof(msg), "unknown member '%s' in func group '%s'", group->member_names[i], group->name);
 			error(ctx, msg);
 			continue;
 		}
 		if (fd->is_extern) {
 			char msg[256];
-			snprintf(msg, sizeof(msg),
-			         "member '%s' of func group '%s' is extern; extern funcs cannot be group members",
+			snprintf(msg, sizeof(msg), "member '%s' of func group '%s' is extern; extern funcs cannot be group members",
 			         group->member_names[i], group->name);
 			error(ctx, msg);
 		}
 		/* Forward-reference check: members declared earlier in source are already in known_funcs. */
 		if (!find_known_func(ctx, group->member_names[i])) {
 			char msg[256];
-			snprintf(msg, sizeof(msg),
-			         "member '%s' of func group '%s' must be declared before the group",
+			snprintf(msg, sizeof(msg), "member '%s' of func group '%s' must be declared before the group",
 			         group->member_names[i], group->name);
 			error(ctx, msg);
 		}
@@ -1675,20 +1700,23 @@ static void analyze_func_group(SemanticContext *ctx, FuncGroup *group) {
 
 	/* Pairwise signature distinctness. */
 	for (int i = 0; i < group->member_count; i++) {
-		if (!resolved[i]) continue;
+		if (!resolved[i])
+			continue;
 		for (int j = i + 1; j < group->member_count; j++) {
-			if (!resolved[j]) continue;
-			if (resolved[i]->param_count != resolved[j]->param_count) continue;
+			if (!resolved[j])
+				continue;
+			if (resolved[i]->param_count != resolved[j]->param_count)
+				continue;
 			int all_eq = 1;
 			for (int k = 0; k < resolved[i]->param_count; k++) {
 				if (!type_ref_equal(resolved[i]->params[k]->type, resolved[j]->params[k]->type)) {
-					all_eq = 0; break;
+					all_eq = 0;
+					break;
 				}
 			}
 			if (all_eq) {
 				char msg[256];
-				snprintf(msg, sizeof(msg),
-				         "members '%s' and '%s' of group '%s' share a parameter signature",
+				snprintf(msg, sizeof(msg), "members '%s' and '%s' of group '%s' share a parameter signature",
 				         group->member_names[i], group->member_names[j], group->name);
 				error(ctx, msg);
 			}
@@ -1701,7 +1729,7 @@ static void analyze_func_group(SemanticContext *ctx, FuncGroup *group) {
 	GroupInfo *gi = &ctx->groups[ctx->group_count++];
 	gi->name = malloc(strlen(group->name) + 1);
 	strcpy(gi->name, group->name);
-	gi->members = group->member_names;  /* borrowed */
+	gi->members = group->member_names; /* borrowed */
 	gi->member_count = group->member_count;
 	gi->loc = group->loc;
 	register_func(ctx, group->name);
@@ -1718,8 +1746,7 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 	for (int i = 0; i < func->param_count; i++) {
 		if (func->params[i]->type && func->params[i]->type->kind == TYPE_ARCHETYPE) {
 			char msg[256];
-			snprintf(msg, sizeof(msg),
-			         "func '%s': `archetype` parameter type is only allowed on procs, not funcs",
+			snprintf(msg, sizeof(msg), "func '%s': `archetype` parameter type is only allowed on procs, not funcs",
 			         func->name);
 			error(ctx, msg);
 			break;
