@@ -1,5 +1,4 @@
 // Task 2 (arche, transform-only): count(quantity > 0), repeated N=216,000 times.
-
 use csv;
 
 arche Transaction {

@@ -1,5 +1,4 @@
 // RUN: %arche -o %t %s && %t | grep "DEBUG"
-
 arche Particle {
   pos: float,
   vel: float,

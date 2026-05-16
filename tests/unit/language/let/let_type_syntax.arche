@@ -1,5 +1,4 @@
 // RUN: %arche -o %t %s && %t
-
 proc main() {
   let x := 42;
   assert(x == 42, "let with int type failed\n");

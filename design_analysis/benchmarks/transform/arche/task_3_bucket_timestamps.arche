@@ -1,5 +1,4 @@
 // Task 3 (arche, transform-only): price_bucket = price / 10.0, repeated N=216,000 times.
-
 use csv;
 
 arche Transaction {

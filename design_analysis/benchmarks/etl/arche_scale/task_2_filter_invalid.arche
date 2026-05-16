@@ -1,6 +1,5 @@
 // Task 2: Filter invalid rows
 // Count rows where quantity > 0
-
 use csv;
 
 arche Transaction {

@@ -1,6 +1,5 @@
 // Task 4: Aggregate (sum of revenue)
 // Compute revenue = price * quantity, then sum
-
 use csv;
 
 arche Transaction {

@@ -1,5 +1,4 @@
 // RUN: %arche -o %t %s && %t
-
 func check_buf(buf: char[32]) -> int {
   return strlen(buf);
 }

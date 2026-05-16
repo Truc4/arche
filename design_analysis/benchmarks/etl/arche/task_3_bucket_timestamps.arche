@@ -1,6 +1,5 @@
 // Task 3: Bucket prices into buckets
 // price_bucket = floor(price / 10)
-
 arche Transaction {
   price: float,
   quantity: int,

@@ -1,5 +1,4 @@
 // RUN: %arche -o %t %s && %t
-
 // The base case lets LLVM see a path on which the call returns, so the
 // post-call store to `sink` is reachable code. That store has an
 // observable side effect (writing to a global the signal handler can

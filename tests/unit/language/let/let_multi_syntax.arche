@@ -1,6 +1,5 @@
 // RUN: %arche -o %t %s && %t | grep "x=test1 y=test2 n=77"
 // Test that existing let buf, n := syntax still works
-
 func fill_two(out buf1: char[32], out buf2: char[32]) -> int {
   let r1 := sprintf(buf1, "test1");
   let r2 := sprintf(buf2, "test2");

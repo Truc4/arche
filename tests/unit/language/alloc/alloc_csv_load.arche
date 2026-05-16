@@ -1,5 +1,4 @@
 // RUN: %arche -o %t %s && %t
-
 arche Transaction {
   price: float,
   quantity: int,

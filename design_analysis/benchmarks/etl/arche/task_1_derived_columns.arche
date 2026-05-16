@@ -1,6 +1,5 @@
 // Task 1: Compute derived columns
 // Compute revenue = price * quantity for all rows
-
 arche Transaction {
   price: float,
   quantity: int,

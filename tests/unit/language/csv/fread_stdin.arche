@@ -1,5 +1,4 @@
 // RUN: %arche -o %t %s && %t
-
 proc main() {
   let buf: char[256];
   let n := arche_fread(1, buf, 256);

@@ -1,5 +1,4 @@
 // RUN: not %arche -o %t %s
-
 proc main() {
   let x: archetype = 0;
 }

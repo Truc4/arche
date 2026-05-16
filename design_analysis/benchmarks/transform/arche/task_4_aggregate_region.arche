@@ -1,6 +1,5 @@
 // Task 4 (arche, transform-only): sum(price * quantity), repeated N=216,000 times.
 // Materializes the revenue column each iter via the vector op, then scalar-reduces.
-
 use csv;
 
 arche Transaction {

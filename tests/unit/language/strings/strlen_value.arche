@@ -1,5 +1,4 @@
 // RUN: %arche -o %t %s && %t
-
 proc main() {
   let len := strlen("hello");
   printf("strlen returned: %d\n", len);

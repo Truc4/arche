@@ -1,6 +1,5 @@
 // Task 1: Compute derived columns
 // Compute revenue = price * quantity for all rows
-
 use csv;
 
 arche Transaction {
