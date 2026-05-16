@@ -5,4 +5,5 @@ proc bad(x: int) {
     let z := f;
   }
 }
-proc main() { }
+proc main() {
+}

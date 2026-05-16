@@ -3,4 +3,5 @@
 proc bad(a: archetype, b: archetype) {
   let n: int = a.field_count;
 }
-proc main() { }
+proc main() {
+}
