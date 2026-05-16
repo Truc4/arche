@@ -16,7 +16,7 @@ Program *program_create(void) {
 }
 
 Decl *decl_create(DeclKind kind) {
-	Decl *decl = malloc(sizeof(Decl));
+	Decl *decl = calloc(1, sizeof(Decl));
 	decl->kind = kind;
 	decl->loc.line = 1;
 	decl->loc.column = 1;
@@ -149,7 +149,7 @@ Parameter *parameter_create(char *name, TypeRef *type) {
 }
 
 FieldDecl *field_decl_create(FieldKind kind, char *name, TypeRef *type) {
-	FieldDecl *field = malloc(sizeof(FieldDecl));
+	FieldDecl *field = calloc(1, sizeof(FieldDecl));
 	field->kind = kind;
 	field->name = name;
 	field->type = type;
@@ -199,6 +199,7 @@ Statement *statement_create(StatementType type) {
 	stmt->type = type;
 	stmt->loc.line = 1;
 	stmt->loc.column = 1;
+	stmt->last_line = 1;
 	return stmt;
 }
 
@@ -228,6 +229,8 @@ void program_free(Program *prog) {
 void decl_free(Decl *decl) {
 	if (!decl)
 		return;
+	free(decl->leading_trivia);
+	free(decl->trailing_trivia);
 	switch (decl->kind) {
 	case DECL_WORLD:
 		world_decl_free(decl->data.world);
@@ -348,6 +351,8 @@ void field_decl_free(FieldDecl *field) {
 		return;
 	free(field->name);
 	type_ref_free(field->type);
+	free(field->leading_trivia);
+	free(field->trailing_trivia);
 	free(field);
 }
 
@@ -409,6 +414,8 @@ void type_ref_free(TypeRef *type) {
 void statement_free(Statement *stmt) {
 	if (!stmt)
 		return;
+	free(stmt->leading_trivia);
+	free(stmt->trailing_trivia);
 	switch (stmt->type) {
 	case STMT_LET:
 		free(stmt->data.let_stmt.name);
@@ -817,16 +824,48 @@ static void format_expression(FILE *out, Expression *expr) {
 	}
 }
 
-/* Context for tracking comment output during formatting */
+/* Format context. Used only for tracking whether we're at the start of the
+ * program (to suppress an initial blank line) — every other piece of formatting
+ * state now lives on the CST node itself (leading_trivia / trailing_trivia). */
 typedef struct {
-	Token *comments;
-	size_t comment_count;
-	size_t comment_idx;
-	int last_line;
-	const char *src;
+	int at_program_start;
 } FmtCtx;
 
-static void flush_before_line(FILE *out, FmtCtx *ctx, int line, int is_decl_boundary, const char *indent_str);
+/* Emit a node's leading trivia: comments on their own indented lines, blank
+ * lines as literal '\n's. If at_program_start, BLANK_LINES entries are
+ * suppressed (no leading blanks at file start). */
+static void emit_leading_trivia(FILE *out, Trivia *trivia, int count, const char *indent_str, FmtCtx *ctx) {
+	for (int i = 0; i < count; i++) {
+		Trivia *t = &trivia[i];
+		if (t->kind == TRIVIA_BLANK_LINES) {
+			if (ctx && ctx->at_program_start)
+				continue;
+			int n = t->blank_count;
+			if (n > 2)
+				n = 2; /* normalize: at most one blank line of separation */
+			for (int k = 0; k < n; k++)
+				fputc('\n', out);
+		} else if (t->kind == TRIVIA_LINE_COMMENT || t->kind == TRIVIA_BLOCK_COMMENT) {
+			if (indent_str && indent_str[0])
+				fputs(indent_str, out);
+			fprintf(out, "%.*s\n", (int)t->length, t->start);
+		}
+	}
+	if (ctx)
+		ctx->at_program_start = 0;
+}
+
+/* Emit a node's trailing trivia inline: each comment prefixed with two spaces,
+ * no leading newline (the caller emits its terminator AFTER). */
+static void emit_trailing_trivia(FILE *out, Trivia *trivia, int count) {
+	for (int i = 0; i < count; i++) {
+		Trivia *t = &trivia[i];
+		if (t->kind == TRIVIA_LINE_COMMENT || t->kind == TRIVIA_BLOCK_COMMENT) {
+			fprintf(out, "  %.*s", (int)t->length, t->start);
+		}
+	}
+}
+
 static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx);
 
 static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx) {
@@ -838,12 +877,7 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 		strcat(indent_str, "  ");
 	}
 
-	if (ctx && ctx->comment_idx < ctx->comment_count && ctx->comments[ctx->comment_idx].line < stmt->loc.line) {
-		flush_before_line(out, ctx, stmt->loc.line, 0, indent_str);
-	} else if (ctx) {
-		/* No comments to flush, but update last_line to current statement */
-		ctx->last_line = stmt->loc.line;
-	}
+	emit_leading_trivia(out, stmt->leading_trivia, stmt->leading_count, indent_str, ctx);
 
 	switch (stmt->type) {
 	case STMT_LET: {
@@ -877,7 +911,9 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 				format_expression(out, stmt->data.let_stmt.value);
 			}
 		}
-		fprintf(out, ";\n");
+		fprintf(out, ";");
+		emit_trailing_trivia(out, stmt->trailing_trivia, stmt->trailing_count);
+		fprintf(out, "\n");
 		break;
 	}
 	case STMT_ASSIGN: {
@@ -902,7 +938,9 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 		}
 		fprintf(out, " %s ", op_str);
 		format_expression(out, stmt->data.assign_stmt.value);
-		fprintf(out, ";\n");
+		fprintf(out, ";");
+		emit_trailing_trivia(out, stmt->trailing_trivia, stmt->trailing_count);
+		fprintf(out, "\n");
 		break;
 	}
 	case STMT_FOR: {
@@ -1012,23 +1050,31 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 	case STMT_EXPR: {
 		fprintf(out, "%s", indent_str);
 		format_expression(out, stmt->data.expr_stmt.expr);
-		fprintf(out, ";\n");
+		fprintf(out, ";");
+		emit_trailing_trivia(out, stmt->trailing_trivia, stmt->trailing_count);
+		fprintf(out, "\n");
 		break;
 	}
 	case STMT_FREE: {
 		fprintf(out, "%s?.free(", indent_str);
 		format_expression(out, stmt->data.free_stmt.value);
-		fprintf(out, ");\n");
+		fprintf(out, ");");
+		emit_trailing_trivia(out, stmt->trailing_trivia, stmt->trailing_count);
+		fprintf(out, "\n");
 		break;
 	}
 	case STMT_BREAK: {
-		fprintf(out, "%sbreak;\n", indent_str);
+		fprintf(out, "%sbreak;", indent_str);
+		emit_trailing_trivia(out, stmt->trailing_trivia, stmt->trailing_count);
+		fprintf(out, "\n");
 		break;
 	}
 	case STMT_RETURN: {
 		fprintf(out, "%sreturn ", indent_str);
 		format_expression(out, stmt->data.return_stmt.value);
-		fprintf(out, ";\n");
+		fprintf(out, ";");
+		emit_trailing_trivia(out, stmt->trailing_trivia, stmt->trailing_count);
+		fprintf(out, "\n");
 		break;
 	}
 	case STMT_MULTI_BIND: {
@@ -1062,7 +1108,9 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 			fprintf(out, ") = ");
 		}
 		format_expression(out, stmt->data.multi_bind.value);
-		fprintf(out, ";\n");
+		fprintf(out, ";");
+		emit_trailing_trivia(out, stmt->trailing_trivia, stmt->trailing_count);
+		fprintf(out, "\n");
 		break;
 	}
 	case STMT_EACH_FIELD: {
@@ -1106,68 +1154,28 @@ static int decl_start_line(Decl *decl) {
 	return 1;
 }
 
-/* Emit any comments that appear before the given line, plus blank lines if needed */
-static void flush_before_line(FILE *out, FmtCtx *ctx, int line, int is_decl_boundary, const char *indent_str) {
-	if (!ctx || !ctx->comments)
-		return;
-
-	/* Emit any comments with line < current line */
-	while (ctx->comment_idx < ctx->comment_count && ctx->comments[ctx->comment_idx].line < line) {
-		Token *comment = &ctx->comments[ctx->comment_idx];
-		int comment_line = comment->line;
-
-		/* Blank lines before this comment */
-		if (comment_line > ctx->last_line + 1) {
-			int gap = comment_line - ctx->last_line - 1;
-			fprintf(out, gap >= 2 ? "\n\n" : "\n");
-		}
-
-		/* Emit comment with proper indentation */
-		if (indent_str && indent_str[0]) {
-			fprintf(out, "%s", indent_str);
-		}
-		fprintf(out, "%.*s\n", (int)comment->length, comment->start);
-		ctx->last_line = comment_line;
-		ctx->comment_idx++;
-	}
-
-	/* Emit blank lines for gaps before the declaration (only at decl boundaries) */
-	if (is_decl_boundary && line > ctx->last_line + 1) {
-		int gap = line - ctx->last_line - 1;
-		fprintf(out, gap >= 2 ? "\n\n" : "\n");
-	}
-	ctx->last_line = line - 1;
-}
-
+/* If the next pending comment is on `line`, emit it as a trailing inline
+ * comment ("  // ...") WITHOUT a leading newline, and consume it. Caller is
+ * responsible for emitting the trailing '\n'. Returns 1 if a comment was
+ * emitted, 0 otherwise. */
 void format_program(FILE *out, Program *prog, Token *comments, size_t comment_count, const char *src) {
+	(void)comments;
+	(void)comment_count;
+	(void)src;
 	if (!prog)
 		return;
 
-	FmtCtx ctx = {.comments = comments, .comment_count = comment_count, .comment_idx = 0, .last_line = 0, .src = src};
-
-	/* Emit any leading comments before first declaration */
-	if (prog->decl_count > 0) {
-		int first_line = decl_start_line(prog->decls[0]);
-		flush_before_line(out, &ctx, first_line, 1, "");
-	} else {
-		/* No declarations, emit all comments */
-		for (size_t i = 0; i < comment_count; i++) {
-			fprintf(out, "%.*s\n", (int)comments[i].length, comments[i].start);
-		}
-		return;
-	}
+	FmtCtx ctx = {.at_program_start = 1};
 
 	for (int i = 0; i < prog->decl_count; i++) {
 		Decl *decl = prog->decls[i];
 
-		/* Emit comments before this declaration */
-		flush_before_line(out, &ctx, decl_start_line(decl), 1, "");
+		emit_leading_trivia(out, decl->leading_trivia, decl->leading_count, "", &ctx);
 
 		switch (decl->kind) {
 		case DECL_WORLD: {
 			WorldDecl *world = decl->data.world;
 			fprintf(out, "world %s()\n", world->name);
-			ctx.last_line = decl->loc.line;
 			break;
 		}
 		case DECL_ARCHETYPE: {
@@ -1175,12 +1183,16 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			fprintf(out, "arche %s {\n", arch->name);
 			for (int j = 0; j < arch->field_count; j++) {
 				FieldDecl *field = arch->fields[j];
+				emit_leading_trivia(out, field->leading_trivia, field->leading_count, "  ", &ctx);
 				fprintf(out, "  %s: ", field->name);
 				format_type(out, field->type);
-				fprintf(out, ",\n");
+				fprintf(out, ",");
+				emit_trailing_trivia(out, field->trailing_trivia, field->trailing_count);
+				fprintf(out, "\n");
 			}
-			fprintf(out, "}\n");
-			ctx.last_line = decl->loc.line + arch->field_count + 1;
+			fprintf(out, "}");
+			emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
+			fprintf(out, "\n");
 			break;
 		}
 		case DECL_PROC: {
@@ -1202,13 +1214,11 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				fprintf(out, ");\n");
 			} else {
 				fprintf(out, ") {\n");
-				ctx.last_line = proc->loc.line;
 				for (int j = 0; j < proc->statement_count; j++) {
 					format_statement(out, proc->statements[j], 1, &ctx);
 				}
 				fprintf(out, "}\n");
 			}
-			ctx.last_line = proc->end_line;
 			break;
 		}
 		case DECL_SYS: {
@@ -1220,12 +1230,10 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				fprintf(out, "%s", sys->params[j]->name);
 			}
 			fprintf(out, ") {\n");
-			ctx.last_line = sys->loc.line;
 			for (int j = 0; j < sys->statement_count; j++) {
 				format_statement(out, sys->statements[j], 1, &ctx);
 			}
 			fprintf(out, "}\n");
-			ctx.last_line = sys->end_line;
 			break;
 		}
 		case DECL_FUNC: {
@@ -1247,13 +1255,11 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				fprintf(out, ";\n");
 			} else {
 				fprintf(out, " {\n");
-				ctx.last_line = func->loc.line;
 				for (int j = 0; j < func->statement_count; j++) {
 					format_statement(out, func->statements[j], 1, &ctx);
 				}
 				fprintf(out, "}\n");
 			}
-			ctx.last_line = func->end_line;
 			break;
 		}
 		case DECL_STATIC: {
@@ -1283,7 +1289,6 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				fprintf(out, "[%d]", s->array.size);
 			}
 			fprintf(out, ";\n");
-			ctx.last_line = decl->loc.line;
 			break;
 		}
 		case DECL_FUNC_GROUP: {
@@ -1295,12 +1300,10 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				fprintf(out, "%s", g->member_names[j]);
 			}
 			fprintf(out, " };\n");
-			ctx.last_line = g->loc.line;
 			break;
 		}
 		case DECL_USE: {
 			fprintf(out, "use %s;\n", decl->data.use->name);
-			ctx.last_line = decl->loc.line;
 			break;
 		}
 		case DECL_CONST: {
@@ -1308,25 +1311,8 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			fprintf(out, "%s :: ", c->name);
 			format_expression(out, c->value);
 			fprintf(out, "\n");
-			ctx.last_line = decl->loc.line;
 			break;
 		}
 		}
-	}
-
-	/* Emit any trailing comments after the last declaration */
-	while (ctx.comment_idx < comment_count) {
-		Token *comment = &comments[ctx.comment_idx];
-		int comment_line = comment->line;
-
-		/* Blank lines before this comment */
-		if (comment_line > ctx.last_line + 1) {
-			int gap = comment_line - ctx.last_line - 1;
-			fprintf(out, gap >= 2 ? "\n\n" : "\n");
-		}
-
-		fprintf(out, "%.*s\n", (int)comment->length, comment->start);
-		ctx.last_line = comment_line;
-		ctx.comment_idx++;
 	}
 }

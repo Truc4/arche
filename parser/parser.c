@@ -14,19 +14,36 @@ struct Parser {
 	ParseError *errors;
 	size_t error_count;
 	size_t error_cap;
-	Token *comments;
-	size_t comment_count;
-	size_t comment_cap;
+	/* Trivia (comments + blank-line runs) collected between syntactic tokens.
+	 * Each TOK_COMMENT seen during advance() lands here; blank-line gaps detected
+	 * between the previous-syntactic-token's line and the next syntactic token's
+	 * line also land here as TRIVIA_BLANK_LINES entries. The pending list is
+	 * drained into the next CST node's leading_trivia at the start of its parse,
+	 * and any same-line entries are stolen back as the just-finished node's
+	 * trailing_trivia after parse. */
+	Trivia *pending_trivia;
+	int pending_count;
+	int pending_cap;
 	int recursion_depth;
 };
 
 /* ========== UTILITY FUNCTIONS ========== */
 
+static void append_pending_trivia(Parser *parser, Trivia tr) {
+	if (parser->pending_count >= parser->pending_cap) {
+		parser->pending_cap = parser->pending_cap ? parser->pending_cap * 2 : 8;
+		parser->pending_trivia = realloc(parser->pending_trivia, parser->pending_cap * sizeof(Trivia));
+	}
+	parser->pending_trivia[parser->pending_count++] = tr;
+}
+
 static void advance(Parser *parser) {
 	parser->previous = parser->current;
+	int prev_line = parser->previous.line;
+	if (parser->previous.kind == 0 && prev_line == 0)
+		prev_line = 0; /* uninitialized */
 	parser->current = lexer_next_token(parser->lexer);
 
-	/* Capture comment tokens instead of skipping */
 	int comment_loop_count = 0;
 	const int MAX_COMMENT_LOOP = 1000;
 	while (parser->current.kind == TOK_COMMENT) {
@@ -35,17 +52,104 @@ static void advance(Parser *parser) {
 			parser->current.kind = TOK_EOF;
 			break;
 		}
-		if (parser->comment_count >= parser->comment_cap) {
-			parser->comment_cap = (parser->comment_cap == 0) ? 16 : parser->comment_cap * 2;
-			parser->comments = realloc(parser->comments, parser->comment_cap * sizeof(Token));
+		/* If there's a blank-line gap between the previous-emitted-trivia/syntactic
+		 * line and this comment, record it. */
+		int last_line = prev_line;
+		if (parser->pending_count > 0) {
+			Trivia *last = &parser->pending_trivia[parser->pending_count - 1];
+			last_line = last->line;
+			if (last->kind == TRIVIA_BLANK_LINES)
+				last_line += last->blank_count;
 		}
-		parser->comments[parser->comment_count++] = parser->current;
+		if (prev_line != 0 && parser->current.line - last_line > 1) {
+			Trivia tr;
+			tr.kind = TRIVIA_BLANK_LINES;
+			tr.start = NULL;
+			tr.length = 0;
+			tr.line = last_line + 1;
+			tr.column = 1;
+			tr.blank_count = parser->current.line - last_line - 1;
+			append_pending_trivia(parser, tr);
+		}
+		Trivia ctr;
+		ctr.kind = TRIVIA_LINE_COMMENT;
+		ctr.start = parser->current.start;
+		ctr.length = parser->current.length;
+		ctr.line = parser->current.line;
+		ctr.column = parser->current.column;
+		ctr.blank_count = 0;
+		append_pending_trivia(parser, ctr);
 		parser->current = lexer_next_token(parser->lexer);
+	}
+
+	/* Blank-line gap between previous syntactic token (or last trivia line)
+	 * and current syntactic token. */
+	if (parser->current.kind != TOK_EOF && prev_line != 0) {
+		int last_line = prev_line;
+		if (parser->pending_count > 0) {
+			Trivia *last = &parser->pending_trivia[parser->pending_count - 1];
+			last_line = last->line;
+			if (last->kind == TRIVIA_BLANK_LINES)
+				last_line += last->blank_count;
+		}
+		if (parser->current.line - last_line > 1) {
+			Trivia tr;
+			tr.kind = TRIVIA_BLANK_LINES;
+			tr.start = NULL;
+			tr.length = 0;
+			tr.line = last_line + 1;
+			tr.column = 1;
+			tr.blank_count = parser->current.line - last_line - 1;
+			append_pending_trivia(parser, tr);
+		}
 	}
 
 	if (parser->current.kind == TOK_ERROR) {
 		parser->had_error = 1;
 	}
+}
+
+/* Drain pending trivia into the given (leading_trivia, leading_count) slots.
+ * The caller takes ownership of the allocated array. */
+static void take_pending_as_leading(Parser *parser, Trivia **out_trivia, int *out_count) {
+	if (parser->pending_count == 0) {
+		*out_trivia = NULL;
+		*out_count = 0;
+		return;
+	}
+	*out_trivia = malloc(parser->pending_count * sizeof(Trivia));
+	memcpy(*out_trivia, parser->pending_trivia, parser->pending_count * sizeof(Trivia));
+	*out_count = parser->pending_count;
+	parser->pending_count = 0;
+}
+
+/* If pending_trivia[0] is a comment on or before `line`, steal entries up to
+ * and including any same-line trailing comment as trailing trivia for the
+ * just-finished construct. */
+static void steal_trailing_inline(Parser *parser, int line, Trivia **out_trivia, int *out_count) {
+	*out_trivia = NULL;
+	*out_count = 0;
+	if (parser->pending_count == 0)
+		return;
+	int steal = 0;
+	for (int i = 0; i < parser->pending_count; i++) {
+		Trivia *t = &parser->pending_trivia[i];
+		if (t->kind == TRIVIA_LINE_COMMENT && t->line == line) {
+			steal = i + 1;
+		} else {
+			break;
+		}
+	}
+	if (steal == 0)
+		return;
+	*out_trivia = malloc(steal * sizeof(Trivia));
+	memcpy(*out_trivia, parser->pending_trivia, steal * sizeof(Trivia));
+	*out_count = steal;
+	int remaining = parser->pending_count - steal;
+	if (remaining > 0) {
+		memmove(parser->pending_trivia, parser->pending_trivia + steal, remaining * sizeof(Trivia));
+	}
+	parser->pending_count = remaining;
 }
 
 static int check(Parser *parser, TokenKind kind) {
@@ -374,12 +478,27 @@ static Decl *parse_archetype_decl(Parser *parser) {
 	arch->loc.column = parser->previous.column;
 
 	while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+		/* Pending trivia between fields → leading trivia of the next field group. */
+		Trivia *fleading = NULL;
+		int fleading_count = 0;
+		take_pending_as_leading(parser, &fleading, &fleading_count);
+
 		int field_count = 0;
 		FieldDecl **fields = parse_arch_field_expanded(parser, &field_count);
 		if (!fields || field_count == 0) {
+			free(fleading);
 			synchronize(parser);
 			continue;
 		}
+
+		/* Attach leading trivia to the FIRST field and trailing-inline to the
+		 * LAST field of the expanded group (typically the same field, but tuple
+		 * fields expand to many). */
+		fields[0]->leading_trivia = fleading;
+		fields[0]->leading_count = fleading_count;
+		int last_field_line = parser->previous.line;
+		steal_trailing_inline(parser, last_field_line, &fields[field_count - 1]->trailing_trivia,
+		                      &fields[field_count - 1]->trailing_count);
 
 		/* grow the fields array and add all expanded fields */
 		for (int i = 0; i < field_count; i++) {
@@ -1414,6 +1533,12 @@ static Statement *parse_statement(Parser *parser) {
 	parser->recursion_depth++;
 	Statement *result = NULL;
 
+	/* Drain pending trivia: any comments/blank-lines that appeared since the
+	 * previous syntactic token become the leading trivia of this statement. */
+	Trivia *leading = NULL;
+	int leading_count = 0;
+	take_pending_as_leading(parser, &leading, &leading_count);
+
 	if (match(parser, TOK_SEMI)) {
 		goto cleanup; /* empty statement */
 	}
@@ -2124,6 +2249,14 @@ static Statement *parse_statement(Parser *parser) {
 
 cleanup:
 	parser->recursion_depth--;
+	if (result) {
+		result->leading_trivia = leading;
+		result->leading_count = leading_count;
+		result->last_line = parser->previous.line;
+		steal_trailing_inline(parser, result->last_line, &result->trailing_trivia, &result->trailing_count);
+	} else {
+		free(leading);
+	}
 	return result;
 }
 
@@ -2136,10 +2269,12 @@ static void parser_init(Parser *parser, Lexer *lexer) {
 	parser->errors = NULL;
 	parser->error_count = 0;
 	parser->error_cap = 0;
-	parser->comments = NULL;
-	parser->comment_count = 0;
-	parser->comment_cap = 0;
+	parser->pending_trivia = NULL;
+	parser->pending_count = 0;
+	parser->pending_cap = 0;
 	parser->recursion_depth = 0;
+	memset(&parser->previous, 0, sizeof(Token));
+	parser->current.line = 0;
 	advance(parser);
 }
 
@@ -2153,11 +2288,24 @@ ParseResult parse_program(Parser *parser) {
 			parser->had_error = 1;
 			break;
 		}
+		/* Pending trivia accumulated since the previous decl (or program start)
+		 * becomes the leading trivia of THIS decl. */
+		Trivia *leading = NULL;
+		int leading_count = 0;
+		take_pending_as_leading(parser, &leading, &leading_count);
+
 		Decl *decl = parse_decl(parser);
 		if (!decl) {
+			free(leading);
 			synchronize(parser);
 			continue;
 		}
+		decl->leading_trivia = leading;
+		decl->leading_count = leading_count;
+		decl->last_line = parser->previous.line;
+		/* Inline-trailing comment on the decl's last line is stolen back from
+		 * pending so the NEXT decl doesn't pick it up as leading. */
+		steal_trailing_inline(parser, decl->last_line, &decl->trailing_trivia, &decl->trailing_count);
 
 		prog->decls = realloc(prog->decls, (prog->decl_count + 1) * sizeof(Decl *));
 		prog->decls[prog->decl_count++] = decl;
@@ -2167,12 +2315,10 @@ ParseResult parse_program(Parser *parser) {
 	result.ast = prog;
 	result.errors = parser->errors;
 	result.error_count = parser->error_count;
-	result.comments = parser->comments;
-	result.comment_count = parser->comment_count;
+	result.comments = NULL;
+	result.comment_count = 0;
 	parser->errors = NULL;
 	parser->error_count = 0;
-	parser->comments = NULL;
-	parser->comment_count = 0;
 	return result;
 }
 
@@ -2188,7 +2334,7 @@ void parser_free(Parser *parser) {
 			free(parser->errors[i].message);
 		}
 		free(parser->errors);
-		free(parser->comments);
+		free(parser->pending_trivia);
 		free(parser);
 	}
 }

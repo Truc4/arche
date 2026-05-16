@@ -73,6 +73,29 @@ typedef enum TokenKind {
 	TOK_BANG /* ! */
 } TokenKind;
 
+/* Trivia = anything between syntactic tokens that the parser doesn't structurally
+ * consume but the formatter needs to preserve: line comments, block comments, and
+ * runs of blank lines. Trivia is attached to the syntactic token that immediately
+ * follows it (Roslyn-style leading trivia). The formatter, when emitting that
+ * token, prints its leading trivia first. Inline (same-line) trailing comments
+ * are also represented this way — they land on the next syntactic token's
+ * leading trivia, and the formatter detects them by comparing line numbers. */
+typedef enum {
+	TRIVIA_LINE_COMMENT, /* // foo */
+	TRIVIA_BLOCK_COMMENT,
+	/* /* foo */        /* (not currently produced by lexer) */
+	TRIVIA_BLANK_LINES, /* one or more blank lines between syntactic tokens */
+} TriviaKind;
+
+typedef struct {
+	TriviaKind kind;
+	const char *start; /* meaningful for COMMENT kinds; NULL for BLANK_LINES */
+	size_t length;     /* meaningful for COMMENT kinds; 0 for BLANK_LINES */
+	int line;          /* source line where this trivia begins */
+	int column;
+	int blank_count; /* meaningful for BLANK_LINES (1 = one blank line between tokens) */
+} Trivia;
+
 typedef struct Token {
 	TokenKind kind;
 	const char *start;
@@ -80,6 +103,11 @@ typedef struct Token {
 	int line;
 	int column;
 	int int_val;
+	/* Leading trivia: heap-allocated, owned by the Token. Set by the lexer
+	 * (or token_buffer_attach_trivia for buffer-based parsing). NULL/0 when
+	 * the token has no preceding trivia. */
+	Trivia *leading_trivia;
+	int leading_count;
 } Token;
 
 typedef struct Lexer {

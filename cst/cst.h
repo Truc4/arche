@@ -1,6 +1,7 @@
 #ifndef CST_H
 #define CST_H
 
+#include "../lexer/lexer.h" /* Trivia, Token */
 #include <stddef.h>
 
 /* =========================
@@ -89,6 +90,15 @@ typedef struct {
 struct Decl {
 	DeclKind kind;
 	SourceLoc loc;
+	/* Trivia attached to this declaration. Leading = comments + blank-line
+	 * runs that appeared before this decl's first syntactic token. Trailing =
+	 * inline comments on the same line as this decl's last syntactic token.
+	 * Owned by the Decl; freed by decl_free. */
+	Trivia *leading_trivia;
+	int leading_count;
+	Trivia *trailing_trivia;
+	int trailing_count;
+	int last_line; /* line of this decl's last syntactic token */
 	union {
 		WorldDecl *world;
 		ArchetypeDecl *archetype;
@@ -167,6 +177,10 @@ struct FieldDecl {
 	char *name;
 	TypeRef *type;
 	SourceLoc loc;
+	Trivia *leading_trivia;
+	int leading_count;
+	Trivia *trailing_trivia;
+	int trailing_count;
 };
 
 struct ArchetypeDecl {
@@ -329,6 +343,11 @@ typedef struct {
 struct Statement {
 	StatementType type;
 	SourceLoc loc;
+	Trivia *leading_trivia;
+	int leading_count;
+	Trivia *trailing_trivia;
+	int trailing_count;
+	int last_line; /* line of this statement's last syntactic token */
 	union {
 		LetStmt let_stmt;
 		AssignStmt assign_stmt;

@@ -41,16 +41,23 @@ static Token make_token(Lexer *lexer, TokenKind kind, const char *start, size_t 
 	tok.length = length;
 	tok.line = line;
 	tok.column = column;
+	tok.int_val = 0;
+	tok.leading_trivia = NULL;
+	tok.leading_count = 0;
 	return tok;
 }
 
 static Token error_token(Lexer *lexer, const char *message, int line, int column) {
+	(void)lexer;
 	Token tok;
 	tok.kind = TOK_ERROR;
 	tok.start = message;
 	tok.length = strlen(message);
 	tok.line = line;
 	tok.column = column;
+	tok.int_val = 0;
+	tok.leading_trivia = NULL;
+	tok.leading_count = 0;
 	return tok;
 }
 
@@ -594,6 +601,9 @@ TokenBuffer lexer_tokenize(const char *src) {
 
 void token_buffer_free(TokenBuffer *buf) {
 	if (buf) {
+		for (size_t i = 0; i < buf->count; i++) {
+			free(buf->tokens[i].leading_trivia);
+		}
 		free(buf->tokens);
 		buf->tokens = NULL;
 		buf->count = 0;
