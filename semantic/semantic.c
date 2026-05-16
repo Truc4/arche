@@ -35,6 +35,13 @@ typedef struct {
 	int var_count;
 } Scope;
 
+typedef struct {
+	char *name;       /* group name (owned) */
+	char **members;   /* member func names (borrowed; pointers into CST FuncGroup) */
+	int member_count;
+	SourceLoc loc;
+} GroupInfo;
+
 struct SemanticContext {
 	ArchetypeInfo **archetypes; /* one per unique shape */
 	int archetype_count;
@@ -44,6 +51,9 @@ struct SemanticContext {
 
 	char **known_funcs;
 	int known_func_count;
+
+	GroupInfo *groups;
+	int group_count;
 
 	char **const_names;        /* compile-time constant names */
 	const char **const_values; /* literal lexeme strings */
@@ -145,6 +155,58 @@ static void register_func(SemanticContext *ctx, const char *name) {
 	ctx->known_funcs[ctx->known_func_count] = malloc(strlen(name) + 1);
 	strcpy(ctx->known_funcs[ctx->known_func_count], name);
 	ctx->known_func_count++;
+}
+
+/* Forward-declare normalize_type_name so helpers below can use it. */
+static const char *normalize_type_name(const char *type_name);
+
+static GroupInfo *find_group(SemanticContext *ctx, const char *name) {
+	for (int i = 0; i < ctx->group_count; i++) {
+		if (strcmp(ctx->groups[i].name, name) == 0) return &ctx->groups[i];
+	}
+	return NULL;
+}
+
+/* TypeRef structural equality. Used for member-signature distinctness. */
+static int type_ref_equal(const TypeRef *a, const TypeRef *b) {
+	if (a == NULL && b == NULL) return 1;
+	if (a == NULL || b == NULL) return 0;
+	if (a->kind != b->kind) return 0;
+	switch (a->kind) {
+	case TYPE_NAME: {
+		const char *an = normalize_type_name(a->data.name);
+		const char *bn = normalize_type_name(b->data.name);
+		return an && bn && strcmp(an, bn) == 0;
+	}
+	case TYPE_ARRAY:
+		return type_ref_equal(a->data.array.element_type, b->data.array.element_type);
+	case TYPE_SHAPED_ARRAY:
+		return a->data.shaped_array.rank == b->data.shaped_array.rank &&
+		       type_ref_equal(a->data.shaped_array.element_type, b->data.shaped_array.element_type);
+	case TYPE_HANDLE: {
+		const char *an = a->data.handle.archetype_name;
+		const char *bn = b->data.handle.archetype_name;
+		return an && bn && strcmp(an, bn) == 0;
+	}
+	case TYPE_TUPLE: {
+		if (a->data.tuple.field_count != b->data.tuple.field_count) return 0;
+		for (int i = 0; i < a->data.tuple.field_count; i++) {
+			if (!type_ref_equal(a->data.tuple.field_types[i], b->data.tuple.field_types[i])) return 0;
+		}
+		return 1;
+	}
+	}
+	return 0;
+}
+
+static FuncDecl *find_func_decl_cst(Program *prog, const char *name) {
+	if (!prog) return NULL;
+	for (int i = 0; i < prog->decl_count; i++) {
+		Decl *d = prog->decls[i];
+		if (d->kind == DECL_FUNC && strcmp(d->data.func->name, name) == 0)
+			return d->data.func;
+	}
+	return NULL;
 }
 
 static VariableInfo *find_variable(SemanticContext *ctx, const char *name) {
@@ -287,6 +349,11 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 			return "char_array";
 		}
 
+		/* Char literal: single-quoted character */
+		if (lex[0] == '\'') {
+			return "char";
+		}
+
 		/* Numeric literal */
 		if (strchr(lex, '.') || strchr(lex, 'e') || strchr(lex, 'E')) {
 			return "float"; /* Will be converted to double by codegen */
@@ -381,16 +448,36 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	}
 
 	case EXPR_CALL: {
-		/* Look up function to determine return type */
 		const char *func_name = NULL;
 		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME) {
 			func_name = expr->data.call.callee->data.name.name;
 		}
+		if (!func_name || !ctx->prog) return NULL;
 
-		if (!func_name || !ctx->prog)
+		/* If this name is a group, pick the matching member by static arg types. */
+		GroupInfo *gi = find_group(ctx, func_name);
+		if (gi) {
+			for (int m = 0; m < gi->member_count; m++) {
+				FuncDecl *fd = find_func_decl_cst(ctx->prog, gi->members[m]);
+				if (!fd) continue;
+				if (fd->param_count != expr->data.call.arg_count) continue;
+				int ok = 1;
+				for (int j = 0; j < expr->data.call.arg_count; j++) {
+					const char *rt = resolve_expression_type(ctx, expr->data.call.args[j]);
+					if (!rt) { ok = 0; break; }
+					TypeRef *pt = fd->params[j]->type;
+					if (!pt || pt->kind != TYPE_NAME) { ok = 0; break; }
+					const char *pn = normalize_type_name(pt->data.name);
+					if (strcmp(pn, normalize_type_name(rt)) != 0) { ok = 0; break; }
+				}
+				if (ok && fd->return_type && fd->return_type->kind == TYPE_NAME) {
+					return normalize_type_name(fd->return_type->data.name);
+				}
+			}
 			return NULL;
+		}
 
-		/* Check if it's a func with explicit return type */
+		/* Plain func path (unchanged from before). */
 		for (int i = 0; i < ctx->prog->decl_count; i++) {
 			Decl *decl = ctx->prog->decls[i];
 			if (decl->kind == DECL_FUNC && strcmp(decl->data.func->name, func_name) == 0) {
@@ -400,8 +487,6 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 				return NULL;
 			}
 		}
-
-		/* Procs don't return values */
 		return NULL;
 	}
 
@@ -582,12 +667,56 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		analyze_expression(ctx, expr->data.unary.operand);
 		break;
 
-	case EXPR_CALL:
+	case EXPR_CALL: {
 		analyze_expression(ctx, expr->data.call.callee);
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			analyze_expression(ctx, expr->data.call.args[i]);
 		}
+		const char *func_name = NULL;
+		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME) {
+			func_name = expr->data.call.callee->data.name.name;
+		}
+		if (!func_name) break;
+
+		GroupInfo *gi = find_group(ctx, func_name);
+		if (!gi) break;  /* not a group; nothing to diagnose here */
+
+		/* Only diagnose when every arg has a concrete primitive type. */
+		int can_diagnose = 1;
+		for (int j = 0; j < expr->data.call.arg_count; j++) {
+			const char *rt = resolve_expression_type(ctx, expr->data.call.args[j]);
+			if (!rt) { can_diagnose = 0; break; }
+			const char *nrt = normalize_type_name(rt);
+			if (strcmp(nrt, "int") != 0 && strcmp(nrt, "float") != 0 && strcmp(nrt, "char") != 0) {
+				can_diagnose = 0; break;
+			}
+		}
+		if (!can_diagnose) break;
+
+		int match_count = 0;
+		for (int m = 0; m < gi->member_count; m++) {
+			FuncDecl *fd = find_func_decl_cst(ctx->prog, gi->members[m]);
+			if (!fd || fd->param_count != expr->data.call.arg_count) continue;
+			int ok = 1;
+			for (int j = 0; j < expr->data.call.arg_count; j++) {
+				const char *rt = resolve_expression_type(ctx, expr->data.call.args[j]);
+				TypeRef *pt = fd->params[j]->type;
+				if (!pt || pt->kind != TYPE_NAME) { ok = 0; break; }
+				if (strcmp(normalize_type_name(pt->data.name), normalize_type_name(rt)) != 0) { ok = 0; break; }
+			}
+			if (ok) match_count++;
+		}
+		if (match_count == 0) {
+			char msg[256];
+			snprintf(msg, sizeof(msg), "no member of group '%s' matches the argument types", func_name);
+			error(ctx, msg);
+		} else if (match_count > 1) {
+			char msg[256];
+			snprintf(msg, sizeof(msg), "call to '%s' is ambiguous among group members", func_name);
+			error(ctx, msg);
+		}
 		break;
+	}
 
 	case EXPR_ALLOC: {
 		/* alloc only allowed at top-level, not inside proc/sys */
@@ -1416,6 +1545,84 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 	pop_scope(ctx);
 }
 
+static void analyze_func_group(SemanticContext *ctx, FuncGroup *group) {
+	if (!group) return;
+
+	/* Name collision: group name must not match a prior func, proc, extern, or group. */
+	if (find_known_func(ctx, group->name) || find_group(ctx, group->name)) {
+		char msg[256];
+		snprintf(msg, sizeof(msg), "name '%s' is already declared", group->name);
+		error(ctx, msg);
+		return;
+	}
+
+	if (group->member_count == 0) {
+		error(ctx, "func group must have at least one member");
+		return;
+	}
+
+	FuncDecl **resolved = calloc(group->member_count, sizeof(FuncDecl *));
+	for (int i = 0; i < group->member_count; i++) {
+		FuncDecl *fd = find_func_decl_cst(ctx->prog, group->member_names[i]);
+		if (!fd) {
+			char msg[256];
+			snprintf(msg, sizeof(msg), "unknown member '%s' in func group '%s'",
+			         group->member_names[i], group->name);
+			error(ctx, msg);
+			continue;
+		}
+		if (fd->is_extern) {
+			char msg[256];
+			snprintf(msg, sizeof(msg),
+			         "member '%s' of func group '%s' is extern; extern funcs cannot be group members",
+			         group->member_names[i], group->name);
+			error(ctx, msg);
+		}
+		/* Forward-reference check: members declared earlier in source are already in known_funcs. */
+		if (!find_known_func(ctx, group->member_names[i])) {
+			char msg[256];
+			snprintf(msg, sizeof(msg),
+			         "member '%s' of func group '%s' must be declared before the group",
+			         group->member_names[i], group->name);
+			error(ctx, msg);
+		}
+		resolved[i] = fd;
+	}
+
+	/* Pairwise signature distinctness. */
+	for (int i = 0; i < group->member_count; i++) {
+		if (!resolved[i]) continue;
+		for (int j = i + 1; j < group->member_count; j++) {
+			if (!resolved[j]) continue;
+			if (resolved[i]->param_count != resolved[j]->param_count) continue;
+			int all_eq = 1;
+			for (int k = 0; k < resolved[i]->param_count; k++) {
+				if (!type_ref_equal(resolved[i]->params[k]->type, resolved[j]->params[k]->type)) {
+					all_eq = 0; break;
+				}
+			}
+			if (all_eq) {
+				char msg[256];
+				snprintf(msg, sizeof(msg),
+				         "members '%s' and '%s' of group '%s' share a parameter signature",
+				         group->member_names[i], group->member_names[j], group->name);
+				error(ctx, msg);
+			}
+		}
+	}
+	free(resolved);
+
+	/* Register the group and treat its name as a known callable. */
+	ctx->groups = realloc(ctx->groups, (ctx->group_count + 1) * sizeof(GroupInfo));
+	GroupInfo *gi = &ctx->groups[ctx->group_count++];
+	gi->name = malloc(strlen(group->name) + 1);
+	strcpy(gi->name, group->name);
+	gi->members = group->member_names;  /* borrowed */
+	gi->member_count = group->member_count;
+	gi->loc = group->loc;
+	register_func(ctx, group->name);
+}
+
 static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 	if (!func)
 		return;
@@ -1471,6 +1678,9 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 	case DECL_FUNC:
 		analyze_func_decl(ctx, decl->data.func);
 		break;
+	case DECL_FUNC_GROUP:
+		analyze_func_group(ctx, decl->data.func_group);
+		break;
 	}
 }
 
@@ -1484,6 +1694,8 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->alias_count = 0;
 	ctx->known_funcs = NULL;
 	ctx->known_func_count = 0;
+	ctx->groups = NULL;
+	ctx->group_count = 0;
 	ctx->const_names = NULL;
 	ctx->const_values = NULL;
 	ctx->const_count = 0;
@@ -1587,6 +1799,12 @@ void semantic_context_free(SemanticContext *ctx) {
 		free(ctx->known_funcs[i]);
 	}
 	free(ctx->known_funcs);
+
+	/* free group table (members are borrowed from CST) */
+	for (int i = 0; i < ctx->group_count; i++) {
+		free(ctx->groups[i].name);
+	}
+	free(ctx->groups);
 
 	/* free scopes and variables (but not TypeRef) */
 	for (int i = 0; i < ctx->scope_count; i++) {

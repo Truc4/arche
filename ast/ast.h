@@ -60,6 +60,7 @@ typedef enum {
 	AST_DECL_PROC,
 	AST_DECL_SYS,
 	AST_DECL_FUNC,
+	AST_DECL_FUNC_GROUP,
 	AST_DECL_STATIC,
 	AST_DECL_CONST,
 } AstDeclKind;
@@ -114,6 +115,13 @@ typedef struct {
 
 typedef struct {
 	char *name;
+	char **member_names;
+	int member_count;
+	SourceLoc loc;
+} AstFuncGroupDecl;
+
+typedef struct {
+	char *name;
 	AstParam **params;
 	int param_count;
 	AstType *return_type;
@@ -155,6 +163,7 @@ struct AstDecl {
 		AstProcDecl *proc;
 		AstSysDecl *sys;
 		AstFuncDecl *func;
+		AstFuncGroupDecl *func_group;
 		AstStaticDecl *static_decl;
 		AstConstDecl *constant;
 	} data;

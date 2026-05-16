@@ -14,6 +14,7 @@ typedef struct ArchetypeDecl ArchetypeDecl;
 typedef struct ProcDecl ProcDecl;
 typedef struct SysDecl SysDecl;
 typedef struct FuncDecl FuncDecl;
+typedef struct FuncGroup FuncGroup;
 typedef struct Parameter Parameter;
 typedef struct FieldDecl FieldDecl;
 typedef struct TypeRef TypeRef;
@@ -41,6 +42,7 @@ typedef enum {
 	DECL_PROC,
 	DECL_SYS,
 	DECL_FUNC,
+	DECL_FUNC_GROUP,
 	DECL_STATIC,
 	DECL_CONST,
 	DECL_USE,
@@ -93,6 +95,7 @@ struct Decl {
 		ProcDecl *proc;
 		SysDecl *sys;
 		FuncDecl *func;
+		FuncGroup *func_group;
 		StaticDecl *static_decl;
 		ConstDecl *constant;
 		UseDecl *use;
@@ -210,6 +213,13 @@ struct FuncDecl {
 	Statement **statements;
 	int statement_count;
 	int end_line;
+	SourceLoc loc;
+};
+
+struct FuncGroup {
+	char *name;
+	char **member_names;
+	int member_count;
 	SourceLoc loc;
 };
 
@@ -428,6 +438,8 @@ ArchetypeDecl *archetype_decl_create(char *name);
 ProcDecl *proc_decl_create(char *name);
 SysDecl *sys_decl_create(char *name);
 FuncDecl *func_decl_create(char *name, TypeRef *return_type);
+FuncGroup *func_group_create(char *name);
+void func_group_free(FuncGroup *group);
 ConstDecl *const_decl_create(char *name, Expression *value);
 StaticDecl *static_decl_archetype_create(char *archetype_name);
 StaticDecl *static_decl_array_create(char *name, TypeRef *element_type, int size);

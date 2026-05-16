@@ -647,6 +647,83 @@ void test_task1_structure(void) {
 	test_pass_msg();
 }
 
+/* ========== FUNC GROUP TESTS ========== */
+
+void test_parse_func_group(void) {
+	test_start("parser: parse func group declaration");
+	ParseResult pr = parse_source("func a(x: int) -> int { return x; }\n"
+	                              "func b(x: float) -> float { return x; }\n"
+	                              "func g = { a, b };\n");
+	if (pr.error_count != 0) {
+		parse_result_free(&pr);
+		test_fail_msg("Parse errors");
+		return;
+	}
+	if (!pr.ast || pr.ast->decl_count != 3) {
+		parse_result_free(&pr);
+		test_fail_msg("Expected 3 declarations");
+		return;
+	}
+	if (pr.ast->decls[2]->kind != DECL_FUNC_GROUP) {
+		parse_result_free(&pr);
+		test_fail_msg("Third decl must be DECL_FUNC_GROUP");
+		return;
+	}
+	FuncGroup *g = pr.ast->decls[2]->data.func_group;
+	if (!g) {
+		parse_result_free(&pr);
+		test_fail_msg("func_group is NULL");
+		return;
+	}
+	if (strcmp(g->name, "g") != 0) {
+		parse_result_free(&pr);
+		test_fail_msg("group name mismatch");
+		return;
+	}
+	if (g->member_count != 2) {
+		parse_result_free(&pr);
+		test_fail_msg("expected 2 members");
+		return;
+	}
+	if (strcmp(g->member_names[0], "a") != 0) {
+		parse_result_free(&pr);
+		test_fail_msg("member[0] mismatch");
+		return;
+	}
+	if (strcmp(g->member_names[1], "b") != 0) {
+		parse_result_free(&pr);
+		test_fail_msg("member[1] mismatch");
+		return;
+	}
+	parse_result_free(&pr);
+	test_pass_msg();
+}
+
+void test_parse_func_group_empty_rejected(void) {
+	test_start("parser: empty func group rejected");
+	ParseResult pr = parse_source("func g = { };\n");
+	if (pr.error_count == 0) {
+		parse_result_free(&pr);
+		test_fail_msg("Expected parse error for empty group");
+		return;
+	}
+	parse_result_free(&pr);
+	test_pass_msg();
+}
+
+void test_parse_func_group_trailing_comma(void) {
+	test_start("parser: func group with trailing comma rejected");
+	ParseResult pr = parse_source("func a(x: int) -> int { return x; }\n"
+	                              "func g = { a, };\n");
+	if (pr.error_count == 0) {
+		parse_result_free(&pr);
+		test_fail_msg("Expected parse error for trailing comma");
+		return;
+	}
+	parse_result_free(&pr);
+	test_pass_msg();
+}
+
 /* ========== MULTIPLE DECLARATIONS ========== */
 
 void test_multiple_decls(void) {
@@ -711,6 +788,9 @@ int main(void) {
 	printf("\nFunction tests:\n");
 	test_func_simple();
 	test_func_multiple_params();
+	test_parse_func_group();
+	test_parse_func_group_empty_rejected();
+	test_parse_func_group_trailing_comma();
 
 	/* Expression tests */
 	printf("\nExpression tests:\n");

@@ -583,8 +583,54 @@ static Decl *parse_func_decl(Parser *parser) {
 	char *name = token_text(parser->current);
 	advance(parser);
 
+	/* Group-declaration branch: `func NAME = { IDENT (, IDENT)* };` */
+	if (match(parser, TOK_EQ)) {
+		if (!match(parser, TOK_LBRACE)) {
+			error(parser, "Expected '{' after '=' in func group declaration");
+			return NULL;
+		}
+		FuncGroup *g = func_group_create(name);
+		g->loc.line = parser->previous.line;
+		g->loc.column = parser->previous.column;
+		if (check(parser, TOK_RBRACE)) {
+			error(parser, "func group must have at least one member");
+			func_group_free(g);
+			return NULL;
+		}
+		while (1) {
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected member function name in func group");
+				func_group_free(g);
+				return NULL;
+			}
+			char *member = token_text(parser->current);
+			advance(parser);
+			g->member_names = realloc(g->member_names, (g->member_count + 1) * sizeof(char *));
+			g->member_names[g->member_count++] = member;
+			if (!match(parser, TOK_COMMA)) break;
+			/* Disallow trailing comma: after a `,` the next token must be IDENT, not `}`. */
+			if (check(parser, TOK_RBRACE)) {
+				error(parser, "trailing comma not allowed in func group member list");
+				func_group_free(g);
+				return NULL;
+			}
+		}
+		if (!match(parser, TOK_RBRACE)) {
+			error(parser, "Expected '}' or ',' in func group member list");
+			func_group_free(g);
+			return NULL;
+		}
+		if (!match(parser, TOK_SEMI)) {
+			error(parser, "Expected ';' after func group declaration");
+		}
+		Decl *decl = decl_create(DECL_FUNC_GROUP);
+		decl->data.func_group = g;
+		decl->loc = g->loc;
+		return decl;
+	}
+
 	if (!match(parser, TOK_LPAREN)) {
-		error(parser, "Expected '('");
+		error(parser, "Expected '(' or '=' after func name");
 		return NULL;
 	}
 

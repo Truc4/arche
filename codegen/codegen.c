@@ -524,6 +524,43 @@ static AstFuncDecl *find_func_decl(CodegenContext *ctx, const char *name) {
 	return NULL;
 }
 
+static AstFuncGroupDecl *find_func_group(CodegenContext *ctx, const char *name) {
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		AstDecl *decl = ctx->ast->decls[i];
+		if (decl->kind == AST_DECL_FUNC_GROUP && strcmp(decl->data.func_group->name, name) == 0)
+			return decl->data.func_group;
+	}
+	return NULL;
+}
+
+/* For a group call, walk members and return the unique AstFuncDecl whose param
+ * tags match args[].resolved.tag on int/float/char. Returns NULL on no-match or
+ * ambiguous (which the semantic pass should have already diagnosed). */
+static AstFuncDecl *find_group_member_for_call(CodegenContext *ctx, AstFuncGroupDecl *g,
+                                                AstExpr **args, int arg_count) {
+	AstFuncDecl *match = NULL;
+	int match_count = 0;
+	for (int m = 0; m < g->member_count; m++) {
+		AstFuncDecl *fd = find_func_decl(ctx, g->member_names[m]);
+		if (!fd) continue;
+		if (fd->param_count != arg_count) continue;
+		int ok = 1;
+		for (int j = 0; j < arg_count; j++) {
+			AstType *pt = fd->params[j]->type;
+			AstTypeTag at = args[j]->resolved.tag;
+			if (!pt) continue;
+			if (pt->tag == AST_TYPE_INT   && at == AST_TYPE_INT)   continue;
+			if (pt->tag == AST_TYPE_FLOAT && at == AST_TYPE_FLOAT) continue;
+			if (pt->tag == AST_TYPE_CHAR  && at == AST_TYPE_CHAR)  continue;
+			ok = 0; break;
+		}
+		if (!ok) continue;
+		match = fd;
+		match_count++;
+	}
+	return match_count == 1 ? match : NULL;
+}
+
 static const char *get_shaped_field_info(CodegenContext *ctx, AstExpr *field_expr, int *out_rank) {
 	if (field_expr->kind != AST_EXPR_FIELD || field_expr->data.field.base->kind != AST_EXPR_NAME)
 		return NULL;
@@ -1572,7 +1609,20 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		}
 
 		AstProcDecl *callee_proc = find_proc_decl(ctx, func_name);
-		AstFuncDecl *callee_func = find_func_decl(ctx, func_name);
+		AstFuncDecl *callee_func = NULL;
+		AstFuncGroupDecl *callee_group = func_name ? find_func_group(ctx, func_name) : NULL;
+		if (callee_group) {
+			callee_func = find_group_member_for_call(ctx, callee_group,
+			                                        expr->data.call.args,
+			                                        expr->data.call.arg_count);
+			/* Safety fallback: if no member matched, route to first member to avoid
+			 * an undefined LLVM symbol. Semantic should have already emitted an error. */
+			if (!callee_func && callee_group->member_count > 0) {
+				callee_func = find_func_decl(ctx, callee_group->member_names[0]);
+			}
+		} else {
+			callee_func = find_func_decl(ctx, func_name);
+		}
 		char **call_arg_vals = malloc(expr->data.call.arg_count * sizeof(char *));
 		const char **call_arg_types = malloc(expr->data.call.arg_count * sizeof(const char *));
 
@@ -1797,7 +1847,12 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		char *res_name = gen_value_name(ctx);
 
 		/* Special handling for print function with double arguments */
-		const char *actual_func_name = func_name ? func_name : "unknown";
+		const char *actual_func_name;
+		if (callee_group && callee_func) {
+			actual_func_name = callee_func->name;  /* route to matched member */
+		} else {
+			actual_func_name = func_name ? func_name : "unknown";
+		}
 		if (func_name && strcmp(func_name, "print") == 0 && expr->data.call.arg_count == 1 && call_arg_types[0]) {
 			if (strcmp(call_arg_types[0], "double") == 0) {
 				actual_func_name = "print_double";
@@ -5386,6 +5441,9 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		}
 		case AST_DECL_FUNC:
 			codegen_func_decl(ctx, decl->data.func);
+			break;
+		case AST_DECL_FUNC_GROUP:
+			/* No codegen for func groups yet */
 			break;
 		case AST_DECL_PROC:
 			if (strcmp(decl->data.proc->name, "init") == 0) {

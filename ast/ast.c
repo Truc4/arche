@@ -286,6 +286,16 @@ void ast_decl_free(AstDecl *decl) {
 	case AST_DECL_FUNC:
 		ast_func_decl_free(decl->data.func);
 		break;
+	case AST_DECL_FUNC_GROUP: {
+		AstFuncGroupDecl *g = decl->data.func_group;
+		if (g) {
+			free(g->name);
+			for (int i = 0; i < g->member_count; i++) free(g->member_names[i]);
+			free(g->member_names);
+			free(g);
+		}
+		break;
+	}
 	case AST_DECL_STATIC:
 		ast_static_decl_free(decl->data.static_decl);
 		break;

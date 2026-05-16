@@ -86,6 +86,26 @@ FuncDecl *func_decl_create(char *name, TypeRef *return_type) {
 	return func;
 }
 
+FuncGroup *func_group_create(char *name) {
+	FuncGroup *g = malloc(sizeof(FuncGroup));
+	g->name = name;
+	g->member_names = NULL;
+	g->member_count = 0;
+	g->loc.line = 0;
+	g->loc.column = 0;
+	return g;
+}
+
+void func_group_free(FuncGroup *group) {
+	if (!group) return;
+	if (group->name) free(group->name);
+	for (int i = 0; i < group->member_count; i++) {
+		if (group->member_names[i]) free(group->member_names[i]);
+	}
+	free(group->member_names);
+	free(group);
+}
+
 ConstDecl *const_decl_create(char *name, Expression *value) {
 	ConstDecl *constant = malloc(sizeof(ConstDecl));
 	constant->name = name;
@@ -219,6 +239,9 @@ void decl_free(Decl *decl) {
 		break;
 	case DECL_FUNC:
 		func_decl_free(decl->data.func);
+		break;
+	case DECL_FUNC_GROUP:
+		func_group_free(decl->data.func_group);
 		break;
 	case DECL_STATIC:
 		static_decl_free(decl->data.static_decl);
@@ -1001,6 +1024,8 @@ static int decl_start_line(Decl *decl) {
 		return decl->data.sys->loc.line;
 	case DECL_FUNC:
 		return decl->data.func->loc.line;
+	case DECL_FUNC_GROUP:
+		return decl->data.func_group->loc.line;
 	case DECL_CONST:
 	case DECL_STATIC:
 	case DECL_USE:
@@ -1185,6 +1210,9 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			ctx.last_line = decl->loc.line;
 			break;
 		}
+		case DECL_FUNC_GROUP:
+			/* No formatter yet for func groups; skip silently */
+			break;
 		case DECL_USE: {
 			fprintf(out, "use %s;\n", decl->data.use->name);
 			ctx.last_line = decl->loc.line;
