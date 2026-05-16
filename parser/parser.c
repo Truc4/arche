@@ -37,11 +37,38 @@ static void append_pending_trivia(Parser *parser, Trivia tr) {
 	parser->pending_trivia[parser->pending_count++] = tr;
 }
 
+/* Line of the most-recent reference point: last pending-trivia entry, else
+ * the previous syntactic token. Returns 0 only when neither exists (file
+ * start, before any tokens or trivia have been seen). */
+static int trivia_anchor_line(Parser *parser, int prev_line) {
+	if (parser->pending_count > 0) {
+		Trivia *last = &parser->pending_trivia[parser->pending_count - 1];
+		int line = last->line;
+		if (last->kind == TRIVIA_BLANK_LINES)
+			line += last->blank_count;
+		return line;
+	}
+	return prev_line;
+}
+
+static void maybe_append_blank_trivia(Parser *parser, int anchor_line, int next_line) {
+	if (anchor_line == 0)
+		return; /* file start — no leading blanks tracked */
+	if (next_line - anchor_line <= 1)
+		return;
+	Trivia tr;
+	tr.kind = TRIVIA_BLANK_LINES;
+	tr.start = NULL;
+	tr.length = 0;
+	tr.line = anchor_line + 1;
+	tr.column = 1;
+	tr.blank_count = next_line - anchor_line - 1;
+	append_pending_trivia(parser, tr);
+}
+
 static void advance(Parser *parser) {
 	parser->previous = parser->current;
 	int prev_line = parser->previous.line;
-	if (parser->previous.kind == 0 && prev_line == 0)
-		prev_line = 0; /* uninitialized */
 	parser->current = lexer_next_token(parser->lexer);
 
 	int comment_loop_count = 0;
@@ -52,25 +79,7 @@ static void advance(Parser *parser) {
 			parser->current.kind = TOK_EOF;
 			break;
 		}
-		/* If there's a blank-line gap between the previous-emitted-trivia/syntactic
-		 * line and this comment, record it. */
-		int last_line = prev_line;
-		if (parser->pending_count > 0) {
-			Trivia *last = &parser->pending_trivia[parser->pending_count - 1];
-			last_line = last->line;
-			if (last->kind == TRIVIA_BLANK_LINES)
-				last_line += last->blank_count;
-		}
-		if (prev_line != 0 && parser->current.line - last_line > 1) {
-			Trivia tr;
-			tr.kind = TRIVIA_BLANK_LINES;
-			tr.start = NULL;
-			tr.length = 0;
-			tr.line = last_line + 1;
-			tr.column = 1;
-			tr.blank_count = parser->current.line - last_line - 1;
-			append_pending_trivia(parser, tr);
-		}
+		maybe_append_blank_trivia(parser, trivia_anchor_line(parser, prev_line), parser->current.line);
 		Trivia ctr;
 		ctr.kind = TRIVIA_LINE_COMMENT;
 		ctr.start = parser->current.start;
@@ -82,26 +91,8 @@ static void advance(Parser *parser) {
 		parser->current = lexer_next_token(parser->lexer);
 	}
 
-	/* Blank-line gap between previous syntactic token (or last trivia line)
-	 * and current syntactic token. */
-	if (parser->current.kind != TOK_EOF && prev_line != 0) {
-		int last_line = prev_line;
-		if (parser->pending_count > 0) {
-			Trivia *last = &parser->pending_trivia[parser->pending_count - 1];
-			last_line = last->line;
-			if (last->kind == TRIVIA_BLANK_LINES)
-				last_line += last->blank_count;
-		}
-		if (parser->current.line - last_line > 1) {
-			Trivia tr;
-			tr.kind = TRIVIA_BLANK_LINES;
-			tr.start = NULL;
-			tr.length = 0;
-			tr.line = last_line + 1;
-			tr.column = 1;
-			tr.blank_count = parser->current.line - last_line - 1;
-			append_pending_trivia(parser, tr);
-		}
+	if (parser->current.kind != TOK_EOF) {
+		maybe_append_blank_trivia(parser, trivia_anchor_line(parser, prev_line), parser->current.line);
 	}
 
 	if (parser->current.kind == TOK_ERROR) {
@@ -1528,7 +1519,7 @@ static Statement *parse_statement(Parser *parser) {
 	const int MAX_RECURSION_DEPTH = 1000;
 	if (parser->recursion_depth > MAX_RECURSION_DEPTH) {
 		error(parser, "Recursion limit exceeded");
-		return NULL;
+		goto cleanup;
 	}
 	parser->recursion_depth++;
 	Statement *result = NULL;
@@ -1660,7 +1651,7 @@ static Statement *parse_statement(Parser *parser) {
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected system name");
 				parser->recursion_depth--;
-				return NULL;
+				goto cleanup;
 			}
 			char *system_name = token_text(parser->current);
 			advance(parser);
@@ -1674,8 +1665,8 @@ static Statement *parse_statement(Parser *parser) {
 			stmt->loc.column = parser->previous.column;
 			stmt->data.run_stmt.system_name = system_name;
 			stmt->data.run_stmt.world_name = NULL;
-			parser->recursion_depth--;
-			return stmt;
+			result = stmt;
+			goto cleanup;
 		}
 	}
 
@@ -1754,8 +1745,8 @@ static Statement *parse_statement(Parser *parser) {
 		stmt->data.multi_bind.target_count = target_count;
 		stmt->data.multi_bind.value = value;
 		stmt->data.multi_bind.from_shorthand = 0;
-		parser->recursion_depth--;
-		return stmt;
+		result = stmt;
+		goto cleanup;
 	}
 
 	if (match(parser, TOK_LET)) {
@@ -1783,7 +1774,7 @@ static Statement *parse_statement(Parser *parser) {
 				if (!check(parser, TOK_IDENT)) {
 					error(parser, "Expected variable name in multi-value let");
 					parser->recursion_depth--;
-					return NULL;
+					goto cleanup;
 				}
 				char *var_name = token_text(parser->current);
 				advance(parser);
@@ -1801,18 +1792,18 @@ static Statement *parse_statement(Parser *parser) {
 				if (!match(parser, TOK_EQ)) {
 					error(parser, "Expected '=' after ':' in multi-value let");
 					parser->recursion_depth--;
-					return NULL;
+					goto cleanup;
 				}
 			} else if (!match(parser, TOK_EQ)) {
 				error(parser, "Expected ':=' or '=' in multi-value let");
 				parser->recursion_depth--;
-				return NULL;
+				goto cleanup;
 			}
 
 			Expression *value = parse_expression(parser);
 			if (!value) {
 				parser->recursion_depth--;
-				return NULL;
+				goto cleanup;
 			}
 
 			if (!match(parser, TOK_SEMI)) {
@@ -1835,8 +1826,8 @@ static Statement *parse_statement(Parser *parser) {
 			stmt->data.multi_bind.target_count = name_count;
 			stmt->data.multi_bind.value = value;
 			stmt->data.multi_bind.from_shorthand = 1;
-			parser->recursion_depth--;
-			return stmt;
+			result = stmt;
+			goto cleanup;
 		}
 
 		/* Single-value let: let x := expr or let x: type = expr or let x: type or let x = expr (old) */
@@ -1851,21 +1842,21 @@ static Statement *parse_statement(Parser *parser) {
 				value = parse_expression(parser);
 				if (!value) {
 					parser->recursion_depth--;
-					return NULL;
+					goto cleanup;
 				}
 			} else {
 				/* Explicit: let x: type [= expr] */
 				type = parse_type(parser);
 				if (!type) {
 					parser->recursion_depth--;
-					return NULL;
+					goto cleanup;
 				}
 
 				if (match(parser, TOK_EQ)) {
 					value = parse_expression(parser);
 					if (!value) {
 						parser->recursion_depth--;
-						return NULL;
+						goto cleanup;
 					}
 				}
 			}
@@ -1874,7 +1865,7 @@ static Statement *parse_statement(Parser *parser) {
 			value = parse_expression(parser);
 			if (!value) {
 				parser->recursion_depth--;
-				return NULL;
+				goto cleanup;
 			}
 		} else {
 			error(parser, "Expected ':' or '=' after variable name");
@@ -2020,7 +2011,7 @@ static Statement *parse_statement(Parser *parser) {
 
 				if (!check(parser, TOK_IDENT)) {
 					error(parser, "Expected variable name after 'let'");
-					return NULL;
+					goto cleanup;
 				}
 
 				char *name = token_text(parser->current);
@@ -2030,17 +2021,17 @@ static Statement *parse_statement(Parser *parser) {
 				if (match(parser, TOK_COLON)) {
 					type = parse_type(parser);
 					if (!type)
-						return NULL;
+						goto cleanup;
 				}
 
 				Expression *value = NULL;
 				if (match(parser, TOK_EQ)) {
 					value = parse_expression(parser);
 					if (!value)
-						return NULL;
+						goto cleanup;
 				} else if (!type) {
 					error(parser, "Expected '=' or type annotation after variable name");
-					return NULL;
+					goto cleanup;
 				}
 
 				Statement *init_stmt = statement_create(STMT_LET);
@@ -2056,7 +2047,7 @@ static Statement *parse_statement(Parser *parser) {
 				/* Parse expression as init */
 				Expression *init_expr = parse_expression(parser);
 				if (!init_expr)
-					return NULL;
+					goto cleanup;
 				/* Wrap expression in statement */
 				Statement *init_stmt = statement_create(STMT_EXPR);
 				init_stmt->loc = init_expr->loc;
@@ -2067,20 +2058,20 @@ static Statement *parse_statement(Parser *parser) {
 			/* Expect and consume first semicolon */
 			if (!match(parser, TOK_SEMI)) {
 				error(parser, "Expected ';' in for loop");
-				return NULL;
+				goto cleanup;
 			}
 
 			/* Parse condition (can be empty) */
 			if (!check(parser, TOK_SEMI)) {
 				cond = parse_expression(parser);
 				if (!cond)
-					return NULL;
+					goto cleanup;
 			}
 
 			/* Expect and consume second semicolon (required) */
 			if (!match(parser, TOK_SEMI)) {
 				error(parser, "Expected ';' in for loop");
-				return NULL;
+				goto cleanup;
 			}
 
 			/* Parse increment statement (can be empty) */
@@ -2089,7 +2080,7 @@ static Statement *parse_statement(Parser *parser) {
 				/* Parse as an assignment or expression statement */
 				Expression *target = parse_expression(parser);
 				if (!target)
-					return NULL;
+					goto cleanup;
 
 				if (check(parser, TOK_EQ) || check(parser, TOK_PLUS_EQ) || check(parser, TOK_MINUS_EQ) ||
 				    check(parser, TOK_STAR_EQ) || check(parser, TOK_SLASH_EQ)) {
@@ -2110,7 +2101,7 @@ static Statement *parse_statement(Parser *parser) {
 					Expression *value = parse_expression(parser);
 					if (!value) {
 						error(parser, "Expected value in for increment assignment");
-						return NULL;
+						goto cleanup;
 					}
 
 					incr_stmt = statement_create(STMT_ASSIGN);
@@ -2132,18 +2123,18 @@ static Statement *parse_statement(Parser *parser) {
 
 			if (!match(parser, TOK_RPAREN)) {
 				error(parser, "Expected ')' after for clause");
-				return NULL;
+				goto cleanup;
 			}
 
 			if (!match(parser, TOK_LBRACE)) {
 				error(parser, "Expected '{'");
-				return NULL;
+				goto cleanup;
 			}
 		} else {
 			/* Range-based for: for var in iterable { } */
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected variable name after 'for'");
-				return NULL;
+				goto cleanup;
 			}
 
 			char *var_name = token_text(parser->current);
@@ -2151,12 +2142,12 @@ static Statement *parse_statement(Parser *parser) {
 
 			if (!match(parser, TOK_IN)) {
 				error(parser, "Expected 'in' in for loop");
-				return NULL;
+				goto cleanup;
 			}
 
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected iterable after 'in'");
-				return NULL;
+				goto cleanup;
 			}
 
 			char *iterable_name = token_text(parser->current);
@@ -2172,7 +2163,7 @@ static Statement *parse_statement(Parser *parser) {
 
 			if (!match(parser, TOK_LBRACE)) {
 				error(parser, "Expected '{'");
-				return NULL;
+				goto cleanup;
 			}
 		}
 
@@ -2192,13 +2183,14 @@ static Statement *parse_statement(Parser *parser) {
 			error(parser, "Expected '}'");
 		}
 
-		return stmt;
+		result = stmt;
+		goto cleanup;
 	}
 
 	/* try to parse as assignment */
 	Expression *target = parse_expression(parser);
 	if (!target)
-		return NULL;
+		goto cleanup;
 
 	/* check for assignment operators */
 	if (check(parser, TOK_EQ) || check(parser, TOK_PLUS_EQ) || check(parser, TOK_MINUS_EQ) ||
@@ -2210,7 +2202,7 @@ static Statement *parse_statement(Parser *parser) {
 
 		Expression *value = parse_expression(parser);
 		if (!value)
-			return NULL;
+			goto cleanup;
 
 		if (!match(parser, TOK_SEMI)) {
 			error(parser, "Expected ';' after assignment");
@@ -2233,7 +2225,8 @@ static Statement *parse_statement(Parser *parser) {
 		stmt->data.assign_stmt.target = target;
 		stmt->data.assign_stmt.value = value;
 		stmt->data.assign_stmt.op = op;
-		return stmt;
+		result = stmt;
+		goto cleanup;
 	}
 
 	/* otherwise it was an expression statement */

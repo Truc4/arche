@@ -81,10 +81,9 @@ typedef enum TokenKind {
  * are also represented this way — they land on the next syntactic token's
  * leading trivia, and the formatter detects them by comparing line numbers. */
 typedef enum {
-	TRIVIA_LINE_COMMENT, /* // foo */
-	TRIVIA_BLOCK_COMMENT,
-	/* /* foo */        /* (not currently produced by lexer) */
-	TRIVIA_BLANK_LINES, /* one or more blank lines between syntactic tokens */
+	TRIVIA_LINE_COMMENT,  /* line comment (not currently produced by lexer) */
+	TRIVIA_BLOCK_COMMENT, /* block comment (not currently produced by lexer) */
+	TRIVIA_BLANK_LINES,   /* one or more blank lines between syntactic tokens */
 } TriviaKind;
 
 typedef struct {

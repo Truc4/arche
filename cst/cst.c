@@ -838,6 +838,9 @@ static void emit_leading_trivia(FILE *out, Trivia *trivia, int count, const char
 	for (int i = 0; i < count; i++) {
 		Trivia *t = &trivia[i];
 		if (t->kind == TRIVIA_BLANK_LINES) {
+			/* Suppress only the LEADING blanks of the program (before any
+			 * content has been emitted). Once we've emitted a comment or
+			 * an actual decl, blank lines are real and should be preserved. */
 			if (ctx && ctx->at_program_start)
 				continue;
 			int n = t->blank_count;
@@ -849,10 +852,10 @@ static void emit_leading_trivia(FILE *out, Trivia *trivia, int count, const char
 			if (indent_str && indent_str[0])
 				fputs(indent_str, out);
 			fprintf(out, "%.*s\n", (int)t->length, t->start);
+			if (ctx)
+				ctx->at_program_start = 0;
 		}
 	}
-	if (ctx)
-		ctx->at_program_start = 0;
 }
 
 /* Emit a node's trailing trivia inline: each comment prefixed with two spaces,
@@ -1129,31 +1132,6 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 	}
 }
 
-/* Get the actual start line of a declaration (from inner payload, not the broken decl->loc) */
-static int decl_start_line(Decl *decl) {
-	if (!decl)
-		return 1;
-	switch (decl->kind) {
-	case DECL_WORLD:
-		return decl->data.world->loc.line;
-	case DECL_ARCHETYPE:
-		return decl->data.archetype->loc.line;
-	case DECL_PROC:
-		return decl->data.proc->loc.line;
-	case DECL_SYS:
-		return decl->data.sys->loc.line;
-	case DECL_FUNC:
-		return decl->data.func->loc.line;
-	case DECL_FUNC_GROUP:
-		return decl->data.func_group->loc.line;
-	case DECL_CONST:
-	case DECL_STATIC:
-	case DECL_USE:
-		return decl->loc.line;
-	}
-	return 1;
-}
-
 /* If the next pending comment is on `line`, emit it as a trailing inline
  * comment ("  // ...") WITHOUT a leading newline, and consume it. Caller is
  * responsible for emitting the trailing '\n'. Returns 1 if a comment was
@@ -1175,7 +1153,9 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 		switch (decl->kind) {
 		case DECL_WORLD: {
 			WorldDecl *world = decl->data.world;
-			fprintf(out, "world %s()\n", world->name);
+			fprintf(out, "world %s()", world->name);
+			emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
+			fprintf(out, "\n");
 			break;
 		}
 		case DECL_ARCHETYPE: {
@@ -1211,13 +1191,17 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				format_type(out, proc->params[j]->type);
 			}
 			if (proc->is_extern) {
-				fprintf(out, ");\n");
+				fprintf(out, ");");
+				emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
+				fprintf(out, "\n");
 			} else {
 				fprintf(out, ") {\n");
 				for (int j = 0; j < proc->statement_count; j++) {
 					format_statement(out, proc->statements[j], 1, &ctx);
 				}
-				fprintf(out, "}\n");
+				fprintf(out, "}");
+				emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
+				fprintf(out, "\n");
 			}
 			break;
 		}
@@ -1233,7 +1217,9 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			for (int j = 0; j < sys->statement_count; j++) {
 				format_statement(out, sys->statements[j], 1, &ctx);
 			}
-			fprintf(out, "}\n");
+			fprintf(out, "}");
+			emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
+			fprintf(out, "\n");
 			break;
 		}
 		case DECL_FUNC: {
@@ -1252,13 +1238,17 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			fprintf(out, ") -> ");
 			format_type(out, func->return_type);
 			if (func->is_extern) {
-				fprintf(out, ";\n");
+				fprintf(out, ";");
+				emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
+				fprintf(out, "\n");
 			} else {
 				fprintf(out, " {\n");
 				for (int j = 0; j < func->statement_count; j++) {
 					format_statement(out, func->statements[j], 1, &ctx);
 				}
-				fprintf(out, "}\n");
+				fprintf(out, "}");
+				emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
+				fprintf(out, "\n");
 			}
 			break;
 		}
@@ -1288,7 +1278,9 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				format_type(out, s->array.element_type);
 				fprintf(out, "[%d]", s->array.size);
 			}
-			fprintf(out, ";\n");
+			fprintf(out, ";");
+			emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
+			fprintf(out, "\n");
 			break;
 		}
 		case DECL_FUNC_GROUP: {
@@ -1299,20 +1291,26 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 					fprintf(out, ", ");
 				fprintf(out, "%s", g->member_names[j]);
 			}
-			fprintf(out, " };\n");
+			fprintf(out, " };");
+			emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
+			fprintf(out, "\n");
 			break;
 		}
 		case DECL_USE: {
-			fprintf(out, "use %s;\n", decl->data.use->name);
+			fprintf(out, "use %s;", decl->data.use->name);
+			emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
+			fprintf(out, "\n");
 			break;
 		}
 		case DECL_CONST: {
 			ConstDecl *c = decl->data.constant;
 			fprintf(out, "%s :: ", c->name);
 			format_expression(out, c->value);
+			emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
 			fprintf(out, "\n");
 			break;
 		}
 		}
+		ctx.at_program_start = 0;
 	}
 }
