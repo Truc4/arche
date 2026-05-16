@@ -1,0 +1,14 @@
+// RUN: %arche -o %t %s && %t | grep "I=11 F=4 C=99"
+
+func describe_int(x: int) -> int { return x + 1; }
+func describe_float(x: float) -> int { return 4; }
+func describe_char(x: char) -> int { return 99; }
+
+func describe = { describe_int, describe_float, describe_char };
+
+proc main() {
+  let a := describe(10);
+  let b := describe(2.0);
+  let c := describe('A');
+  printf("I=%d F=%d C=%d\n", a, b, c);
+}

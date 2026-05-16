@@ -57,6 +57,7 @@ ProcDecl *proc_decl_create(char *name) {
 	proc->statement_count = 0;
 	proc->loc.line = 1;
 	proc->loc.column = 1;
+	proc->allow_pure_proc = 0;
 	return proc;
 }
 
@@ -83,6 +84,26 @@ FuncDecl *func_decl_create(char *name, TypeRef *return_type) {
 	func->loc.line = 1;
 	func->loc.column = 1;
 	return func;
+}
+
+FuncGroup *func_group_create(char *name) {
+	FuncGroup *g = malloc(sizeof(FuncGroup));
+	g->name = name;
+	g->member_names = NULL;
+	g->member_count = 0;
+	g->loc.line = 0;
+	g->loc.column = 0;
+	return g;
+}
+
+void func_group_free(FuncGroup *group) {
+	if (!group) return;
+	if (group->name) free(group->name);
+	for (int i = 0; i < group->member_count; i++) {
+		if (group->member_names[i]) free(group->member_names[i]);
+	}
+	free(group->member_names);
+	free(group);
 }
 
 ConstDecl *const_decl_create(char *name, Expression *value) {
@@ -218,6 +239,9 @@ void decl_free(Decl *decl) {
 		break;
 	case DECL_FUNC:
 		func_decl_free(decl->data.func);
+		break;
+	case DECL_FUNC_GROUP:
+		func_group_free(decl->data.func_group);
 		break;
 	case DECL_STATIC:
 		static_decl_free(decl->data.static_decl);
@@ -372,6 +396,8 @@ void type_ref_free(TypeRef *type) {
 		break;
 	case TYPE_HANDLE:
 		break;
+	case TYPE_ARCHETYPE:
+		break;
 	}
 	free(type);
 }
@@ -437,6 +463,15 @@ void statement_free(Statement *stmt) {
 		}
 		free(stmt->data.multi_bind.targets);
 		expression_free(stmt->data.multi_bind.value);
+		break;
+	case STMT_EACH_FIELD:
+		free(stmt->data.each_field.binding_name);
+		type_ref_free(stmt->data.each_field.filter_type);
+		free(stmt->data.each_field.arch_param_name);
+		for (int i = 0; i < stmt->data.each_field.body_count; i++) {
+			statement_free(stmt->data.each_field.body[i]);
+		}
+		free(stmt->data.each_field.body);
 		break;
 	}
 	free(stmt);
@@ -544,6 +579,9 @@ static void format_type(FILE *out, TypeRef *type) {
 		break;
 	case TYPE_HANDLE:
 		fprintf(out, "handle(%s)", type->data.handle.archetype_name);
+		break;
+	case TYPE_ARCHETYPE:
+		fprintf(out, "archetype");
 		break;
 	}
 	format_type_depth--;
@@ -982,6 +1020,19 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 		fprintf(out, ";\n");
 		break;
 	}
+	case STMT_EACH_FIELD: {
+		fprintf(out, "%seach_field %s", indent_str, stmt->data.each_field.binding_name);
+		if (stmt->data.each_field.filter_type) {
+			fprintf(out, ": ");
+			format_type(out, stmt->data.each_field.filter_type);
+		}
+		fprintf(out, " in %s {\n", stmt->data.each_field.arch_param_name);
+		for (int i = 0; i < stmt->data.each_field.body_count; i++) {
+			format_statement(out, stmt->data.each_field.body[i], indent + 1, ctx);
+		}
+		fprintf(out, "%s}\n", indent_str);
+		break;
+	}
 	}
 }
 
@@ -1000,6 +1051,8 @@ static int decl_start_line(Decl *decl) {
 		return decl->data.sys->loc.line;
 	case DECL_FUNC:
 		return decl->data.func->loc.line;
+	case DECL_FUNC_GROUP:
+		return decl->data.func_group->loc.line;
 	case DECL_CONST:
 	case DECL_STATIC:
 	case DECL_USE:
@@ -1184,6 +1237,9 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			ctx.last_line = decl->loc.line;
 			break;
 		}
+		case DECL_FUNC_GROUP:
+			/* No formatter yet for func groups; skip silently */
+			break;
 		case DECL_USE: {
 			fprintf(out, "use %s;\n", decl->data.use->name);
 			ctx.last_line = decl->loc.line;

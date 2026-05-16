@@ -1,0 +1,5 @@
+// RUN: not %arche -o %t %s
+
+func a(x: int) -> int { return x; }
+func b(x: int) -> int { return x + 1; }
+func g = { a, b };   // error: members 'a' and 'b' share a parameter signature

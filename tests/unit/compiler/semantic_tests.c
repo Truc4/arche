@@ -280,6 +280,84 @@ void test_cross_archetype_field_mismatch(void) {
 	test_pass_msg();
 }
 
+/* ========== FUNC GROUP TESTS ========== */
+
+void test_group_with_distinct_members_ok(void) {
+	test_start("semantic: group with two distinct-signature members ok");
+	const char *src =
+	    "func a(x: int) -> int { return x; }\n"
+	    "func b(x: float) -> float { return x; }\n"
+	    "func g = { a, b };\n"
+	    "proc main() { let i := g(1); let f := g(2.0); }\n";
+	ParseResult pr = parse_source(src);
+	if (pr.error_count != 0) { test_fail_msg("Parse errors"); return; }
+	SemanticContext *sem = semantic_analyze(pr.ast);
+	if (semantic_has_errors(sem)) { test_fail_msg("Unexpected semantic errors"); semantic_context_free(sem); parse_result_free(&pr); return; }
+	semantic_context_free(sem);
+	parse_result_free(&pr);
+	test_pass_msg();
+}
+
+void test_group_member_unknown_errors(void) {
+	test_start("semantic: group with unknown member errors");
+	const char *src =
+	    "func a(x: int) -> int { return x; }\n"
+	    "func g = { a, missing };\n";
+	ParseResult pr = parse_source(src);
+	if (pr.error_count != 0) { test_fail_msg("Parse errors"); return; }
+	SemanticContext *sem = semantic_analyze(pr.ast);
+	if (!semantic_has_errors(sem)) { test_fail_msg("Expected error for unknown member"); semantic_context_free(sem); parse_result_free(&pr); return; }
+	semantic_context_free(sem);
+	parse_result_free(&pr);
+	test_pass_msg();
+}
+
+void test_group_duplicate_signature_errors(void) {
+	test_start("semantic: group with two same-signature members errors");
+	const char *src =
+	    "func a(x: int) -> int { return x; }\n"
+	    "func b(x: int) -> int { return x + 1; }\n"
+	    "func g = { a, b };\n";
+	ParseResult pr = parse_source(src);
+	if (pr.error_count != 0) { test_fail_msg("Parse errors"); return; }
+	SemanticContext *sem = semantic_analyze(pr.ast);
+	if (!semantic_has_errors(sem)) { test_fail_msg("Expected duplicate-signature error"); semantic_context_free(sem); parse_result_free(&pr); return; }
+	semantic_context_free(sem);
+	parse_result_free(&pr);
+	test_pass_msg();
+}
+
+void test_group_name_collision_errors(void) {
+	test_start("semantic: group name colliding with existing func errors");
+	const char *src =
+	    "func a(x: int) -> int { return x; }\n"
+	    "func b(x: float) -> float { return x; }\n"
+	    "func a = { a, b };\n";
+	ParseResult pr = parse_source(src);
+	if (pr.error_count != 0) { test_fail_msg("Parse errors"); return; }
+	SemanticContext *sem = semantic_analyze(pr.ast);
+	if (!semantic_has_errors(sem)) { test_fail_msg("Expected name-collision error"); semantic_context_free(sem); parse_result_free(&pr); return; }
+	semantic_context_free(sem);
+	parse_result_free(&pr);
+	test_pass_msg();
+}
+
+void test_call_no_matching_member_errors(void) {
+	test_start("semantic: call to group with no matching member errors");
+	const char *src =
+	    "func a(x: int) -> int { return x; }\n"
+	    "func b(x: float) -> float { return x; }\n"
+	    "func g = { a, b };\n"
+	    "proc main() { let c := 'X'; let r := g(c); }\n";
+	ParseResult pr = parse_source(src);
+	if (pr.error_count != 0) { test_fail_msg("Parse errors"); return; }
+	SemanticContext *sem = semantic_analyze(pr.ast);
+	if (!semantic_has_errors(sem)) { test_fail_msg("Expected no-matching-member error"); semantic_context_free(sem); parse_result_free(&pr); return; }
+	semantic_context_free(sem);
+	parse_result_free(&pr);
+	test_pass_msg();
+}
+
 /* ========== MAIN TEST RUNNER ========== */
 
 int main(void) {
@@ -325,6 +403,14 @@ int main(void) {
 	test_multiple_archetypes();
 	test_cross_archetype_field_access();
 	test_cross_archetype_field_mismatch();
+
+	/* Func groups */
+	printf("\nFunc group tests:\n");
+	test_group_with_distinct_members_ok();
+	test_group_member_unknown_errors();
+	test_group_duplicate_signature_errors();
+	test_group_name_collision_errors();
+	test_call_no_matching_member_errors();
 
 	/* Results */
 	printf("\n");

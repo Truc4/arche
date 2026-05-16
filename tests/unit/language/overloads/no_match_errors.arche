@@ -1,0 +1,10 @@
+// RUN: not %arche -o %t %s
+
+func pick_int(x: int) -> int { return x; }
+func pick_float(x: float) -> float { return x; }
+func pick = { pick_int, pick_float };
+
+proc main() {
+  let c := 'X';
+  let r := pick(c);   // error: no member of group 'pick' matches char arg
+}

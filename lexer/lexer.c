@@ -161,6 +161,9 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 3 && strncmp(start, "use", 3) == 0) {
 		return TOK_USE;
 	}
+	if (length == 10 && strncmp(start, "each_field", 10) == 0) {
+		return TOK_EACH_FIELD;
+	}
 	return TOK_IDENT;
 }
 
@@ -381,6 +384,8 @@ Token lexer_next_token(Lexer *lexer) {
 		return make_token(lexer, TOK_COLON, start, 1, line, column);
 	case ';':
 		return make_token(lexer, TOK_SEMI, start, 1, line, column);
+	case '@':
+		return make_token(lexer, TOK_AT, start, 1, line, column);
 
 	case '+':
 		if (peek(lexer) == '=') {
@@ -489,6 +494,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_OUT";
 	case TOK_RETURN:
 		return "TOK_RETURN";
+	case TOK_EACH_FIELD:
+		return "TOK_EACH_FIELD";
 	case TOK_CHAR_LIT:
 		return "TOK_CHAR_LIT";
 
@@ -512,6 +519,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_COLON";
 	case TOK_SEMI:
 		return "TOK_SEMI";
+	case TOK_AT:
+		return "TOK_AT";
 
 	case TOK_EQ:
 		return "TOK_EQ";

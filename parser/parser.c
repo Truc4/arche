@@ -141,6 +141,16 @@ static TypeRef *parse_type(Parser *parser) {
 	start_loc.line = parser->previous.line;
 	start_loc.column = parser->previous.column;
 
+	/* Bare-category `archetype` parameter type. Only legal where parse_type is
+	 * invoked from a parameter slot; semantic validates the context. */
+	if (strcmp(name, "archetype") == 0) {
+		free(name);
+		type = malloc(sizeof(TypeRef));
+		type->kind = TYPE_ARCHETYPE;
+		type->loc = start_loc;
+		return type;
+	}
+
 	/* Check for handle(ArchetypeName) */
 	if (strcmp(name, "handle") == 0 && check(parser, TOK_LPAREN)) {
 		advance(parser); /* consume ( */
@@ -583,8 +593,54 @@ static Decl *parse_func_decl(Parser *parser) {
 	char *name = token_text(parser->current);
 	advance(parser);
 
+	/* Group-declaration branch: `func NAME = { IDENT (, IDENT)* };` */
+	if (match(parser, TOK_EQ)) {
+		if (!match(parser, TOK_LBRACE)) {
+			error(parser, "Expected '{' after '=' in func group declaration");
+			return NULL;
+		}
+		FuncGroup *g = func_group_create(name);
+		g->loc.line = parser->previous.line;
+		g->loc.column = parser->previous.column;
+		if (check(parser, TOK_RBRACE)) {
+			error(parser, "func group must have at least one member");
+			func_group_free(g);
+			return NULL;
+		}
+		while (1) {
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected member function name in func group");
+				func_group_free(g);
+				return NULL;
+			}
+			char *member = token_text(parser->current);
+			advance(parser);
+			g->member_names = realloc(g->member_names, (g->member_count + 1) * sizeof(char *));
+			g->member_names[g->member_count++] = member;
+			if (!match(parser, TOK_COMMA)) break;
+			/* Disallow trailing comma: after a `,` the next token must be IDENT, not `}`. */
+			if (check(parser, TOK_RBRACE)) {
+				error(parser, "trailing comma not allowed in func group member list");
+				func_group_free(g);
+				return NULL;
+			}
+		}
+		if (!match(parser, TOK_RBRACE)) {
+			error(parser, "Expected '}' or ',' in func group member list");
+			func_group_free(g);
+			return NULL;
+		}
+		if (!match(parser, TOK_SEMI)) {
+			error(parser, "Expected ';' after func group declaration");
+		}
+		Decl *decl = decl_create(DECL_FUNC_GROUP);
+		decl->data.func_group = g;
+		decl->loc = g->loc;
+		return decl;
+	}
+
 	if (!match(parser, TOK_LPAREN)) {
-		error(parser, "Expected '('");
+		error(parser, "Expected '(' or '=' after func name");
 		return NULL;
 	}
 
@@ -825,21 +881,60 @@ static Decl *parse_static_decl(Parser *parser) {
 
 static Decl *parse_decl(Parser *parser) {
 
+	/* Declaration-site decorators. Currently only @allow_pure_proc is
+	 * recognized; it sets a flag on the following proc declaration that
+	 * suppresses the proc-could-be-func lint. The decorator must be
+	 * followed immediately by a `proc` (or `extern proc`) declaration. */
+	int allow_pure_proc_flag = 0;
+	if (parser->current.kind == TOK_AT) {
+		advance(parser); /* consume '@' */
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected decorator name after '@'");
+			return NULL;
+		}
+		char *deco_name = token_text(parser->current);
+		if (strcmp(deco_name, "allow_pure_proc") != 0) {
+			error(parser, "Unknown decorator (only @allow_pure_proc is supported)");
+			free(deco_name);
+			return NULL;
+		}
+		free(deco_name);
+		advance(parser);
+		allow_pure_proc_flag = 1;
+		/* Must be followed by proc or extern proc — guard here so the
+		 * switch below doesn't silently consume the flag on a wrong kind. */
+		if (parser->current.kind != TOK_PROC && parser->current.kind != TOK_EXTERN) {
+			error(parser, "@allow_pure_proc must precede a proc declaration");
+			return NULL;
+		}
+	}
+
 	switch (parser->current.kind) {
 	case TOK_ARCHETYPE:
 		return parse_archetype_decl(parser);
 	case TOK_EXTERN:
 		advance(parser);
 		if (check(parser, TOK_FUNC)) {
+			if (allow_pure_proc_flag) {
+				error(parser, "@allow_pure_proc must precede a proc, not a func");
+				return NULL;
+			}
 			return parse_func_decl(parser);
 		} else if (check(parser, TOK_PROC)) {
-			return parse_proc_decl(parser);
+			Decl *d = parse_proc_decl(parser);
+			if (d && d->kind == DECL_PROC && allow_pure_proc_flag)
+				d->data.proc->allow_pure_proc = 1;
+			return d;
 		} else {
 			error(parser, "Expected 'func' or 'proc' after 'extern'");
 			return NULL;
 		}
-	case TOK_PROC:
-		return parse_proc_decl(parser);
+	case TOK_PROC: {
+		Decl *d = parse_proc_decl(parser);
+		if (d && d->kind == DECL_PROC && allow_pure_proc_flag)
+			d->data.proc->allow_pure_proc = 1;
+		return d;
+	}
 	case TOK_SYS:
 		return parse_sys_decl(parser);
 	case TOK_FUNC:
@@ -1333,6 +1428,75 @@ static Statement *parse_statement(Parser *parser) {
 		Statement *stmt = statement_create(STMT_BREAK);
 		stmt->loc.line = break_line;
 		stmt->loc.column = break_column;
+		result = stmt;
+		goto cleanup;
+	}
+
+	if (match(parser, TOK_EACH_FIELD)) {
+		int ef_line = parser->previous.line;
+		int ef_column = parser->previous.column;
+
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected binding name after 'each_field'");
+			goto cleanup;
+		}
+		char *binding = token_text(parser->current);
+		advance(parser);
+
+		TypeRef *filter_type = NULL;
+		if (match(parser, TOK_COLON)) {
+			filter_type = parse_type(parser);
+			if (!filter_type) {
+				free(binding);
+				goto cleanup;
+			}
+		}
+
+		if (!match(parser, TOK_IN)) {
+			error(parser, "Expected 'in' after each_field binding");
+			free(binding);
+			type_ref_free(filter_type);
+			goto cleanup;
+		}
+
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected archetype parameter name after 'in'");
+			free(binding);
+			type_ref_free(filter_type);
+			goto cleanup;
+		}
+		char *arch_name = token_text(parser->current);
+		advance(parser);
+
+		if (!match(parser, TOK_LBRACE)) {
+			error(parser, "Expected '{' to start each_field body");
+			free(binding);
+			free(arch_name);
+			type_ref_free(filter_type);
+			goto cleanup;
+		}
+
+		Statement **body = NULL;
+		int body_count = 0;
+		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+			Statement *body_stmt = parse_statement(parser);
+			if (!body_stmt) break;
+			body = realloc(body, (body_count + 1) * sizeof(Statement *));
+			body[body_count++] = body_stmt;
+		}
+
+		if (!match(parser, TOK_RBRACE)) {
+			error(parser, "Expected '}' to close each_field body");
+		}
+
+		Statement *stmt = statement_create(STMT_EACH_FIELD);
+		stmt->loc.line = ef_line;
+		stmt->loc.column = ef_column;
+		stmt->data.each_field.binding_name = binding;
+		stmt->data.each_field.filter_type = filter_type;
+		stmt->data.each_field.arch_param_name = arch_name;
+		stmt->data.each_field.body = body;
+		stmt->data.each_field.body_count = body_count;
 		result = stmt;
 		goto cleanup;
 	}

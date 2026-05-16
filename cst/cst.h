@@ -14,6 +14,7 @@ typedef struct ArchetypeDecl ArchetypeDecl;
 typedef struct ProcDecl ProcDecl;
 typedef struct SysDecl SysDecl;
 typedef struct FuncDecl FuncDecl;
+typedef struct FuncGroup FuncGroup;
 typedef struct Parameter Parameter;
 typedef struct FieldDecl FieldDecl;
 typedef struct TypeRef TypeRef;
@@ -41,6 +42,7 @@ typedef enum {
 	DECL_PROC,
 	DECL_SYS,
 	DECL_FUNC,
+	DECL_FUNC_GROUP,
 	DECL_STATIC,
 	DECL_CONST,
 	DECL_USE,
@@ -93,6 +95,7 @@ struct Decl {
 		ProcDecl *proc;
 		SysDecl *sys;
 		FuncDecl *func;
+		FuncGroup *func_group;
 		StaticDecl *static_decl;
 		ConstDecl *constant;
 		UseDecl *use;
@@ -109,6 +112,7 @@ typedef enum {
 	TYPE_SHAPED_ARRAY, /* dense ranked array */
 	TYPE_TUPLE,        /* tuple: (x: float, y: float) */
 	TYPE_HANDLE,       /* handle(ArchetypeName) */
+	TYPE_ARCHETYPE,    /* bare-category `archetype` (parameter type only) */
 } TypeKind;
 
 struct TypeRef {
@@ -181,6 +185,7 @@ struct ProcDecl {
 	int statement_count;
 	int end_line;
 	SourceLoc loc;
+	int allow_pure_proc; /* 1 if @allow_pure_proc was on the decl; suppresses proc-could-be-func */
 };
 
 struct Parameter {
@@ -212,6 +217,13 @@ struct FuncDecl {
 	SourceLoc loc;
 };
 
+struct FuncGroup {
+	char *name;
+	char **member_names;
+	int member_count;
+	SourceLoc loc;
+};
+
 /* =========================
    Statements
    ========================= */
@@ -227,6 +239,7 @@ typedef enum {
 	STMT_FREE,
 	STMT_RETURN,
 	STMT_MULTI_BIND,
+	STMT_EACH_FIELD,
 } StatementType;
 
 typedef enum {
@@ -305,6 +318,14 @@ typedef struct {
 	int from_shorthand;
 } MultiBindStmt;
 
+typedef struct {
+	char *binding_name;     /* `f` in `each_field f in arch` */
+	TypeRef *filter_type;   /* optional `: T` filter; NULL = walk every field */
+	char *arch_param_name;  /* identifier on the right of `in` — must be archetype param at semantic time */
+	Statement **body;
+	int body_count;
+} EachFieldStmt;
+
 struct Statement {
 	StatementType type;
 	SourceLoc loc;
@@ -318,6 +339,7 @@ struct Statement {
 		FreeStmt free_stmt;
 		ReturnStmt return_stmt;
 		MultiBindStmt multi_bind;
+		EachFieldStmt each_field;
 	} data;
 };
 
@@ -427,6 +449,8 @@ ArchetypeDecl *archetype_decl_create(char *name);
 ProcDecl *proc_decl_create(char *name);
 SysDecl *sys_decl_create(char *name);
 FuncDecl *func_decl_create(char *name, TypeRef *return_type);
+FuncGroup *func_group_create(char *name);
+void func_group_free(FuncGroup *group);
 ConstDecl *const_decl_create(char *name, Expression *value);
 StaticDecl *static_decl_archetype_create(char *archetype_name);
 StaticDecl *static_decl_array_create(char *name, TypeRef *element_type, int size);

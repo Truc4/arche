@@ -171,3 +171,52 @@ int arche_mmap_parse_int(int handle, int pos_i) {
 	char *end;
 	return (int)strtol(arche_mmaps[handle - 1].data + pos, &end, 10);
 }
+
+/* Walk the header line (up to first '\n'), find the column whose name matches
+ * `name`, and return its zero-based index. -1 if not found. */
+int arche_csv_column_index(int handle, const char *name) {
+	if (handle < 1 || handle > ARCHE_MMAP_MAX || !arche_mmaps[handle - 1].data || !name)
+		return -1;
+	const char *base = arche_mmaps[handle - 1].data;
+	uint64_t size = (uint64_t)arche_mmaps[handle - 1].size;
+	size_t namelen = strlen(name);
+	uint32_t pos = 0;
+	int col = 0;
+	while (pos < size && base[pos] != '\n') {
+		const char *comma = memchr(base + pos, ',', size - pos);
+		const char *newline = memchr(base + pos, '\n', size - pos);
+		const char *end = comma;
+		if (!end || (newline && newline < end)) end = newline;
+		size_t field_len = end ? (size_t)(end - (base + pos)) : (size - pos);
+		if (field_len == namelen && memcmp(base + pos, name, namelen) == 0) {
+			return col;
+		}
+		if (!comma || (newline && newline < comma)) break;
+		pos = (uint32_t)((comma - base) + 1);
+		col++;
+	}
+	return -1;
+}
+
+/* Given a row starting at `row_start`, return the byte offset of the
+ * `col_idx`'th comma-separated field within that row. */
+int arche_csv_field_pos(int handle, int row_start_i, int col_idx) {
+	if (handle < 1 || handle > ARCHE_MMAP_MAX || !arche_mmaps[handle - 1].data)
+		return 0;
+	const char *base = arche_mmaps[handle - 1].data;
+	uint64_t size = (uint64_t)arche_mmaps[handle - 1].size;
+	uint32_t pos = (uint32_t)row_start_i;
+	int remaining = col_idx;
+	while (remaining > 0 && pos < size && base[pos] != '\n') {
+		const char *comma = memchr(base + pos, ',', size - pos);
+		const char *newline = memchr(base + pos, '\n', size - pos);
+		if (!comma || (newline && newline < comma)) {
+			/* Row ended before reaching col_idx; return position-just-past
+			 * so the parser sees an empty field and returns 0. */
+			return newline ? (int)(uint32_t)(newline - base) : (int)(uint32_t)size;
+		}
+		pos = (uint32_t)((comma - base) + 1);
+		remaining--;
+	}
+	return (int)pos;
+}

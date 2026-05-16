@@ -191,6 +191,15 @@ void ast_stmt_free(AstStmt *stmt) {
 		free(stmt->data.multi_bind.targets);
 		ast_expr_free(stmt->data.multi_bind.value);
 		break;
+	case AST_STMT_EACH_FIELD:
+		free(stmt->data.each_field.binding_name);
+		ast_type_free(stmt->data.each_field.filter_type);
+		free(stmt->data.each_field.arch_param_name);
+		for (int i = 0; i < stmt->data.each_field.body_count; i++) {
+			ast_stmt_free(stmt->data.each_field.body[i]);
+		}
+		free(stmt->data.each_field.body);
+		break;
 	}
 	free(stmt);
 }
@@ -286,6 +295,16 @@ void ast_decl_free(AstDecl *decl) {
 	case AST_DECL_FUNC:
 		ast_func_decl_free(decl->data.func);
 		break;
+	case AST_DECL_FUNC_GROUP: {
+		AstFuncGroupDecl *g = decl->data.func_group;
+		if (g) {
+			free(g->name);
+			for (int i = 0; i < g->member_count; i++) free(g->member_names[i]);
+			free(g->member_names);
+			free(g);
+		}
+		break;
+	}
 	case AST_DECL_STATIC:
 		ast_static_decl_free(decl->data.static_decl);
 		break;

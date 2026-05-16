@@ -63,6 +63,9 @@ static AstType *lower_type_ref(TypeRef *tr) {
 		t->tag = AST_TYPE_HANDLE;
 		t->name = tr->data.handle.archetype_name;
 		break;
+	case TYPE_ARCHETYPE:
+		t->tag = AST_TYPE_ARCHETYPE;
+		break;
 	}
 	return t;
 }
@@ -288,6 +291,21 @@ static AstStmt *lower_stmt(Statement *stmt) {
 		s->data.multi_bind.value = lower_expr(mb->value);
 		break;
 	}
+	case STMT_EACH_FIELD: {
+		s->kind = AST_STMT_EACH_FIELD;
+		EachFieldStmt *ef = &stmt->data.each_field;
+		s->data.each_field.binding_name = malloc(strlen(ef->binding_name) + 1);
+		strcpy(s->data.each_field.binding_name, ef->binding_name);
+		s->data.each_field.filter_type = lower_type_ref(ef->filter_type);
+		s->data.each_field.arch_param_name = malloc(strlen(ef->arch_param_name) + 1);
+		strcpy(s->data.each_field.arch_param_name, ef->arch_param_name);
+		s->data.each_field.body_count = ef->body_count;
+		s->data.each_field.body = calloc(ef->body_count, sizeof(AstStmt *));
+		for (int i = 0; i < ef->body_count; i++) {
+			s->data.each_field.body[i] = lower_stmt(ef->body[i]);
+		}
+		break;
+	}
 	}
 	return s;
 }
@@ -406,6 +424,23 @@ static AstDecl *lower_decl(Decl *decl) {
 		for (int i = 0; i < func->statement_count; i++)
 			afunc->stmts[i] = lower_stmt(func->statements[i]);
 		ad->data.func = afunc;
+		break;
+	}
+	case DECL_FUNC_GROUP: {
+		ad = ast_decl_create(AST_DECL_FUNC_GROUP);
+		ad->loc = decl->loc;
+		FuncGroup *g = decl->data.func_group;
+		AstFuncGroupDecl *ag = calloc(1, sizeof(AstFuncGroupDecl));
+		ag->loc = g->loc;
+		ag->name = malloc(strlen(g->name) + 1);
+		strcpy(ag->name, g->name);
+		ag->member_count = g->member_count;
+		ag->member_names = calloc(g->member_count, sizeof(char *));
+		for (int i = 0; i < g->member_count; i++) {
+			ag->member_names[i] = malloc(strlen(g->member_names[i]) + 1);
+			strcpy(ag->member_names[i], g->member_names[i]);
+		}
+		ad->data.func_group = ag;
 		break;
 	}
 	case DECL_STATIC: {

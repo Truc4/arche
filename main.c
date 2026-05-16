@@ -179,6 +179,10 @@ int main(int argc, char *argv[]) {
 	const char *output_file = NULL;
 	int emit_llvm = 0;
 
+	/* Lint config — both on by default; CLI can disable or promote to errors. */
+	int lint_pcbf_enabled = 1, lint_pcbf_werror = 0;
+	int lint_pne_enabled = 1, lint_pne_werror = 0;
+
 	/* Parse command-line arguments */
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-o") == 0) {
@@ -188,10 +192,24 @@ int main(int argc, char *argv[]) {
 			output_file = argv[++i];
 		} else if (strcmp(argv[i], "-emit-llvm") == 0) {
 			emit_llvm = 1;
+		} else if (strcmp(argv[i], "-Wno-proc-could-be-func") == 0) {
+			lint_pcbf_enabled = 0;
+		} else if (strcmp(argv[i], "-Wno-proc-no-effect") == 0) {
+			lint_pne_enabled = 0;
+		} else if (strcmp(argv[i], "-Werror=proc-could-be-func") == 0) {
+			lint_pcbf_werror = 1;
+		} else if (strcmp(argv[i], "-Werror=proc-no-effect") == 0) {
+			lint_pne_werror = 1;
+		} else if (strcmp(argv[i], "-Werror") == 0) {
+			lint_pcbf_werror = 1;
+			lint_pne_werror = 1;
 		} else if (argv[i][0] != '-') {
 			input_file = argv[i];
 		}
 	}
+
+	semantic_set_lint_proc_could_be_func(lint_pcbf_enabled, lint_pcbf_werror);
+	semantic_set_lint_proc_no_effect(lint_pne_enabled, lint_pne_werror);
 
 	if (!input_file) {
 		usage(argv[0]);
