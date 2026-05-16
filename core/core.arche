@@ -22,6 +22,8 @@ extern proc arche_mmap_close(handle: int);
 extern func arche_mmap_find(handle: int, start: int, end: int, ch: int) -> int;
 extern func arche_mmap_parse_float(handle: int, pos: int) -> float;
 extern func arche_mmap_parse_int(handle: int, pos: int) -> int;
+extern func arche_csv_column_index(handle: int, name: char[]) -> int;
+extern func arche_csv_field_pos(handle: int, row_start: int, col_idx: int) -> int;
 extern func arche_now_sec() -> float;
 proc print_float(f: float) {
   printf("%g", f);

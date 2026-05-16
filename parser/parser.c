@@ -141,6 +141,16 @@ static TypeRef *parse_type(Parser *parser) {
 	start_loc.line = parser->previous.line;
 	start_loc.column = parser->previous.column;
 
+	/* Bare-category `archetype` parameter type. Only legal where parse_type is
+	 * invoked from a parameter slot; semantic validates the context. */
+	if (strcmp(name, "archetype") == 0) {
+		free(name);
+		type = malloc(sizeof(TypeRef));
+		type->kind = TYPE_ARCHETYPE;
+		type->loc = start_loc;
+		return type;
+	}
+
 	/* Check for handle(ArchetypeName) */
 	if (strcmp(name, "handle") == 0 && check(parser, TOK_LPAREN)) {
 		advance(parser); /* consume ( */
@@ -1418,6 +1428,75 @@ static Statement *parse_statement(Parser *parser) {
 		Statement *stmt = statement_create(STMT_BREAK);
 		stmt->loc.line = break_line;
 		stmt->loc.column = break_column;
+		result = stmt;
+		goto cleanup;
+	}
+
+	if (match(parser, TOK_EACH_FIELD)) {
+		int ef_line = parser->previous.line;
+		int ef_column = parser->previous.column;
+
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected binding name after 'each_field'");
+			goto cleanup;
+		}
+		char *binding = token_text(parser->current);
+		advance(parser);
+
+		TypeRef *filter_type = NULL;
+		if (match(parser, TOK_COLON)) {
+			filter_type = parse_type(parser);
+			if (!filter_type) {
+				free(binding);
+				goto cleanup;
+			}
+		}
+
+		if (!match(parser, TOK_IN)) {
+			error(parser, "Expected 'in' after each_field binding");
+			free(binding);
+			type_ref_free(filter_type);
+			goto cleanup;
+		}
+
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected archetype parameter name after 'in'");
+			free(binding);
+			type_ref_free(filter_type);
+			goto cleanup;
+		}
+		char *arch_name = token_text(parser->current);
+		advance(parser);
+
+		if (!match(parser, TOK_LBRACE)) {
+			error(parser, "Expected '{' to start each_field body");
+			free(binding);
+			free(arch_name);
+			type_ref_free(filter_type);
+			goto cleanup;
+		}
+
+		Statement **body = NULL;
+		int body_count = 0;
+		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+			Statement *body_stmt = parse_statement(parser);
+			if (!body_stmt) break;
+			body = realloc(body, (body_count + 1) * sizeof(Statement *));
+			body[body_count++] = body_stmt;
+		}
+
+		if (!match(parser, TOK_RBRACE)) {
+			error(parser, "Expected '}' to close each_field body");
+		}
+
+		Statement *stmt = statement_create(STMT_EACH_FIELD);
+		stmt->loc.line = ef_line;
+		stmt->loc.column = ef_column;
+		stmt->data.each_field.binding_name = binding;
+		stmt->data.each_field.filter_type = filter_type;
+		stmt->data.each_field.arch_param_name = arch_name;
+		stmt->data.each_field.body = body;
+		stmt->data.each_field.body_count = body_count;
 		result = stmt;
 		goto cleanup;
 	}

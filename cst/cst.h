@@ -112,6 +112,7 @@ typedef enum {
 	TYPE_SHAPED_ARRAY, /* dense ranked array */
 	TYPE_TUPLE,        /* tuple: (x: float, y: float) */
 	TYPE_HANDLE,       /* handle(ArchetypeName) */
+	TYPE_ARCHETYPE,    /* bare-category `archetype` (parameter type only) */
 } TypeKind;
 
 struct TypeRef {
@@ -238,6 +239,7 @@ typedef enum {
 	STMT_FREE,
 	STMT_RETURN,
 	STMT_MULTI_BIND,
+	STMT_EACH_FIELD,
 } StatementType;
 
 typedef enum {
@@ -316,6 +318,14 @@ typedef struct {
 	int from_shorthand;
 } MultiBindStmt;
 
+typedef struct {
+	char *binding_name;     /* `f` in `each_field f in arch` */
+	TypeRef *filter_type;   /* optional `: T` filter; NULL = walk every field */
+	char *arch_param_name;  /* identifier on the right of `in` — must be archetype param at semantic time */
+	Statement **body;
+	int body_count;
+} EachFieldStmt;
+
 struct Statement {
 	StatementType type;
 	SourceLoc loc;
@@ -329,6 +339,7 @@ struct Statement {
 		FreeStmt free_stmt;
 		ReturnStmt return_stmt;
 		MultiBindStmt multi_bind;
+		EachFieldStmt each_field;
 	} data;
 };
 

@@ -396,6 +396,8 @@ void type_ref_free(TypeRef *type) {
 		break;
 	case TYPE_HANDLE:
 		break;
+	case TYPE_ARCHETYPE:
+		break;
 	}
 	free(type);
 }
@@ -461,6 +463,15 @@ void statement_free(Statement *stmt) {
 		}
 		free(stmt->data.multi_bind.targets);
 		expression_free(stmt->data.multi_bind.value);
+		break;
+	case STMT_EACH_FIELD:
+		free(stmt->data.each_field.binding_name);
+		type_ref_free(stmt->data.each_field.filter_type);
+		free(stmt->data.each_field.arch_param_name);
+		for (int i = 0; i < stmt->data.each_field.body_count; i++) {
+			statement_free(stmt->data.each_field.body[i]);
+		}
+		free(stmt->data.each_field.body);
 		break;
 	}
 	free(stmt);
@@ -568,6 +579,9 @@ static void format_type(FILE *out, TypeRef *type) {
 		break;
 	case TYPE_HANDLE:
 		fprintf(out, "handle(%s)", type->data.handle.archetype_name);
+		break;
+	case TYPE_ARCHETYPE:
+		fprintf(out, "archetype");
 		break;
 	}
 	format_type_depth--;
@@ -1004,6 +1018,19 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 		}
 		format_expression(out, stmt->data.multi_bind.value);
 		fprintf(out, ";\n");
+		break;
+	}
+	case STMT_EACH_FIELD: {
+		fprintf(out, "%seach_field %s", indent_str, stmt->data.each_field.binding_name);
+		if (stmt->data.each_field.filter_type) {
+			fprintf(out, ": ");
+			format_type(out, stmt->data.each_field.filter_type);
+		}
+		fprintf(out, " in %s {\n", stmt->data.each_field.arch_param_name);
+		for (int i = 0; i < stmt->data.each_field.body_count; i++) {
+			format_statement(out, stmt->data.each_field.body[i], indent + 1, ctx);
+		}
+		fprintf(out, "%s}\n", indent_str);
 		break;
 	}
 	}

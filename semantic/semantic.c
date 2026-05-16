@@ -67,6 +67,10 @@ struct SemanticContext {
 	/* Track which archetype we're analyzing a sys for (NULL if not in sys) */
 	const char *current_sys_archetype;
 
+	/* Track the proc currently being analyzed (NULL if not in a proc body).
+	 * Used by each_field to verify its RHS is an `archetype` parameter of this proc. */
+	ProcDecl *current_proc;
+
 	/* Track if inside proc/sys body (for alloc enforcement) */
 	int in_body;
 
@@ -195,6 +199,8 @@ static int type_ref_equal(const TypeRef *a, const TypeRef *b) {
 		}
 		return 1;
 	}
+	case TYPE_ARCHETYPE:
+		return 1;  /* `archetype` parameter type: any two are equal */
 	}
 	return 0;
 }
@@ -766,6 +772,11 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 
 	switch (stmt->type) {
 	case STMT_LET: {
+		/* `archetype` is only valid as a parameter type. */
+		if (stmt->data.let_stmt.type && stmt->data.let_stmt.type->kind == TYPE_ARCHETYPE) {
+			error(ctx, "`archetype` is only valid as a parameter type");
+			break;
+		}
 		/* For multivalue let with function calls, add out param variables BEFORE analyzing the call */
 		int is_multivalue_call = (stmt->data.let_stmt.name_count > 0 && stmt->data.let_stmt.names &&
 		                          stmt->data.let_stmt.value && stmt->data.let_stmt.value->type == EXPR_CALL);
@@ -998,6 +1009,56 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 	case STMT_FREE:
 		analyze_expression(ctx, stmt->data.free_stmt.value);
 		break;
+
+	case STMT_BREAK:
+		break;
+
+	case STMT_EACH_FIELD: {
+		EachFieldStmt *ef = &stmt->data.each_field;
+
+		/* Filter type, if present, must be a primitive (int/float/char). */
+		if (ef->filter_type) {
+			if (ef->filter_type->kind != TYPE_NAME) {
+				error(ctx, "each_field filter type must be a primitive type");
+			} else {
+				const char *fn = normalize_type_name(ef->filter_type->data.name);
+				if (!fn || (strcmp(fn, "int") != 0 && strcmp(fn, "float") != 0 && strcmp(fn, "char") != 0)) {
+					error(ctx, "each_field filter type must be a primitive type (int, float, or char)");
+				}
+			}
+		}
+
+		/* RHS must name an `archetype` parameter of the current proc. */
+		int arch_param_ok = 0;
+		if (ctx->current_proc) {
+			for (int i = 0; i < ctx->current_proc->param_count; i++) {
+				Parameter *p = ctx->current_proc->params[i];
+				if (p && p->name && strcmp(p->name, ef->arch_param_name) == 0 &&
+				    p->type && p->type->kind == TYPE_ARCHETYPE) {
+					arch_param_ok = 1;
+					break;
+				}
+			}
+		}
+		if (!arch_param_ok) {
+			char msg[256];
+			snprintf(msg, sizeof(msg),
+			         "each_field RHS '%s' must be an `archetype`-typed parameter of the enclosing proc",
+			         ef->arch_param_name);
+			error(ctx, msg);
+		}
+
+		/* Analyze body in a pushed scope where the binding is declared opaquely.
+		 * `f`'s real type varies per expansion; codegen substitutes the concrete
+		 * column reference per emitted copy. */
+		push_scope(ctx);
+		add_variable(ctx, ef->binding_name, NULL);
+		for (int i = 0; i < ef->body_count; i++) {
+			analyze_statement(ctx, ef->body[i]);
+		}
+		pop_scope(ctx);
+		break;
+	}
 	}
 }
 
@@ -1372,6 +1433,13 @@ static int stmt_has_side_effects(SemanticContext *ctx, Statement *stmt, ProcDecl
 		return 1; /* deallocation */
 	case STMT_MULTI_BIND:
 		return stmt->data.multi_bind.value ? expr_has_side_effects(ctx, stmt->data.multi_bind.value, proc) : 0;
+	case STMT_EACH_FIELD: {
+		for (int i = 0; i < stmt->data.each_field.body_count; i++) {
+			if (stmt_has_side_effects(ctx, stmt->data.each_field.body[i], proc))
+				return 1;
+		}
+		return 0;
+	}
 	}
 	return 0;
 }
@@ -1450,6 +1518,19 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 		return;
 	}
 
+	/* Validate `archetype` parameter constraints: at most one per proc. */
+	int archetype_param_count = 0;
+	for (int i = 0; i < proc->param_count; i++) {
+		if (proc->params[i]->type && proc->params[i]->type->kind == TYPE_ARCHETYPE) {
+			archetype_param_count++;
+		}
+	}
+	if (archetype_param_count > 1) {
+		char msg[256];
+		snprintf(msg, sizeof(msg), "proc '%s': only one `archetype` parameter is allowed per proc", proc->name);
+		error(ctx, msg);
+	}
+
 	push_scope(ctx);
 
 	/* Add parameters as variables in proc scope */
@@ -1471,11 +1552,14 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 		}
 	}
 
+	ProcDecl *prev_proc = ctx->current_proc;
+	ctx->current_proc = proc;
 	ctx->in_body = 1;
 	for (int i = 0; i < proc->statement_count; i++) {
 		analyze_statement(ctx, proc->statements[i]);
 	}
 	ctx->in_body = 0;
+	ctx->current_proc = prev_proc;
 
 	pop_scope(ctx);
 
@@ -1630,6 +1714,24 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 	/* Register func name as a known function */
 	register_func(ctx, func->name);
 
+	/* `archetype` is a proc-only parameter type in v1; funcs cannot have one. */
+	for (int i = 0; i < func->param_count; i++) {
+		if (func->params[i]->type && func->params[i]->type->kind == TYPE_ARCHETYPE) {
+			char msg[256];
+			snprintf(msg, sizeof(msg),
+			         "func '%s': `archetype` parameter type is only allowed on procs, not funcs",
+			         func->name);
+			error(ctx, msg);
+			break;
+		}
+	}
+	if (func->return_type && func->return_type->kind == TYPE_ARCHETYPE) {
+		char msg[256];
+		snprintf(msg, sizeof(msg), "func '%s': `archetype` is only valid as a parameter type, not a return type",
+		         func->name);
+		error(ctx, msg);
+	}
+
 	/* For extern funcs, no body to analyze */
 	if (func->is_extern) {
 		return;
@@ -1703,6 +1805,7 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->scope_count = 0;
 	ctx->error_count = 0;
 	ctx->current_sys_archetype = NULL;
+	ctx->current_proc = NULL;
 	ctx->in_body = 0;
 	ctx->prog = prog;
 

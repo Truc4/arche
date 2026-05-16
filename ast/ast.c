@@ -191,6 +191,15 @@ void ast_stmt_free(AstStmt *stmt) {
 		free(stmt->data.multi_bind.targets);
 		ast_expr_free(stmt->data.multi_bind.value);
 		break;
+	case AST_STMT_EACH_FIELD:
+		free(stmt->data.each_field.binding_name);
+		ast_type_free(stmt->data.each_field.filter_type);
+		free(stmt->data.each_field.arch_param_name);
+		for (int i = 0; i < stmt->data.each_field.body_count; i++) {
+			ast_stmt_free(stmt->data.each_field.body[i]);
+		}
+		free(stmt->data.each_field.body);
+		break;
 	}
 	free(stmt);
 }

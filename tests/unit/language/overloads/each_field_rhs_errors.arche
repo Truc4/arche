@@ -1,0 +1,8 @@
+// RUN: not %arche -o %t %s
+
+proc bad(x: int) {
+  each_field f in x {
+    let z := f;
+  }
+}
+proc main() { }

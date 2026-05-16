@@ -20,6 +20,7 @@ typedef enum {
 	AST_TYPE_ARRAY, /* element array */
 	AST_TYPE_SHAPED_ARRAY,
 	AST_TYPE_TUPLE,
+	AST_TYPE_ARCHETYPE, /* bare-category `archetype` parameter type */
 } AstTypeTag;
 
 typedef struct AstType AstType;
@@ -190,6 +191,7 @@ typedef enum {
 	AST_STMT_FREE,
 	AST_STMT_RETURN,
 	AST_STMT_MULTI_BIND,
+	AST_STMT_EACH_FIELD,
 } AstStmtKind;
 
 typedef struct {
@@ -253,6 +255,14 @@ typedef struct {
 	int from_shorthand;
 } AstMultiBindStmt;
 
+typedef struct {
+	char *binding_name;
+	AstType *filter_type;     /* may be NULL */
+	char *arch_param_name;
+	AstStmt **body;
+	int body_count;
+} AstEachFieldStmt;
+
 struct AstStmt {
 	AstStmtKind kind;
 	SourceLoc loc;
@@ -266,6 +276,7 @@ struct AstStmt {
 		AstFreeStmt free_stmt;
 		AstReturnStmt return_stmt;
 		AstMultiBindStmt multi_bind;
+		AstEachFieldStmt each_field;
 	} data;
 };
 

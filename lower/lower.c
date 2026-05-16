@@ -63,6 +63,9 @@ static AstType *lower_type_ref(TypeRef *tr) {
 		t->tag = AST_TYPE_HANDLE;
 		t->name = tr->data.handle.archetype_name;
 		break;
+	case TYPE_ARCHETYPE:
+		t->tag = AST_TYPE_ARCHETYPE;
+		break;
 	}
 	return t;
 }
@@ -286,6 +289,21 @@ static AstStmt *lower_stmt(Statement *stmt) {
 			s->data.multi_bind.targets[i].type = lower_type_ref(mb->targets[i].type);
 		}
 		s->data.multi_bind.value = lower_expr(mb->value);
+		break;
+	}
+	case STMT_EACH_FIELD: {
+		s->kind = AST_STMT_EACH_FIELD;
+		EachFieldStmt *ef = &stmt->data.each_field;
+		s->data.each_field.binding_name = malloc(strlen(ef->binding_name) + 1);
+		strcpy(s->data.each_field.binding_name, ef->binding_name);
+		s->data.each_field.filter_type = lower_type_ref(ef->filter_type);
+		s->data.each_field.arch_param_name = malloc(strlen(ef->arch_param_name) + 1);
+		strcpy(s->data.each_field.arch_param_name, ef->arch_param_name);
+		s->data.each_field.body_count = ef->body_count;
+		s->data.each_field.body = calloc(ef->body_count, sizeof(AstStmt *));
+		for (int i = 0; i < ef->body_count; i++) {
+			s->data.each_field.body[i] = lower_stmt(ef->body[i]);
+		}
 		break;
 	}
 	}
