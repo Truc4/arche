@@ -1,5 +1,4 @@
 // RUN: %arche -o %t %s && %t
-
 proc main() {
   write(1, "First\n", 6);
   write(1, "Second\n", 7);

@@ -1,6 +1,5 @@
 // RUN: %arche -o %t %s && %t
 // Step 1: Char literals
-
 proc main() {
   let c := 44;
   let nl := 10;

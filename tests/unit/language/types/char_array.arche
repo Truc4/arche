@@ -1,6 +1,5 @@
 // RUN: %arche -o %t %s && %t
 // Step 2: Stack-allocated char arrays
-
 proc main() {
   let buf: char[3];
   buf[0] = 104;

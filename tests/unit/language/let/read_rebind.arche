@@ -1,5 +1,4 @@
 // RUN: %arche -o %t %s && %t
-
 proc main() {
   let fd := arche_fopen_read("../../../../../tests/fixtures/transactions.csv");
   let buf: char[256];

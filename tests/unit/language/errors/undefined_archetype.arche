@@ -2,5 +2,6 @@ static UndefinedArch(10);
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -q "unknown archetype" %t.out
 
 
+@allow_pure_proc
 proc main() {
 }

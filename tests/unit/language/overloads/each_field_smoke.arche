@@ -1,0 +1,33 @@
+// RUN: %arche -o %t %s && %t | grep "col0=11 col1=21"
+arche Pair {
+  a: int,
+  b: int,
+}
+
+static Pair(3, 3) {
+  a: 10,
+  b: 20,
+};
+
+@allow_pure_proc
+proc bump(arch: archetype) {
+  each_field f: int in arch {
+    f[0] = f[0] + 1;
+  }
+}
+
+proc dump(arch: archetype) {
+  each_field f: int in arch {
+    if (f.index == 0) {
+      printf("col0=%d ", f[0]);
+    }
+    if (f.index == 1) {
+      printf("col1=%d\n", f[0]);
+    }
+  }
+}
+
+proc main() {
+  bump(Pair);
+  dump(Pair);
+}

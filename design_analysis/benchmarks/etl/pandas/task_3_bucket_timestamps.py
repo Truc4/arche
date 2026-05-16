@@ -1,25 +1,23 @@
 #!/usr/bin/env python3
-"""Benchmark Task 3: Bucket timestamps into hourly buckets."""
+"""Task 3 (Pandas): sum(price / 10.0). Matches arche_scale/task_3 checksum semantics."""
 
-import pandas as pd
-import time
 import sys
+import time
+import pandas as pd
 
-def main(csv_file):
-    print(f"Loading {csv_file}...")
-    df = pd.read_csv(csv_file, parse_dates=['timestamp'])
-    print(f"Loaded {len(df)} rows\n")
+DEFAULT_CSV = "design_analysis/benchmarks/etl/data/data_100m.csv"
 
-    print("Task 3: Bucket timestamps into hourly buckets")
+
+def main(csv_path):
     start = time.perf_counter()
-    df['hour_bucket'] = df['timestamp'].dt.floor('h')
+    df = pd.read_csv(csv_path, usecols=["price"])
+    df["price_bucket"] = df["price"] / 10.0
+    checksum = df["price_bucket"].sum()
     elapsed = time.perf_counter() - start
+    print(f"task3_checksum: {checksum}")
+    print(f"task3_time: {elapsed}")
 
-    print(f"  Time: {elapsed:.4f}s")
-    print(f"  Rows processed: {len(df)}")
-    print(f"  Unique hour buckets: {df['hour_bucket'].nunique()}")
-    print(f"  Date range: {df['hour_bucket'].min()} to {df['hour_bucket'].max()}")
 
 if __name__ == "__main__":
-    csv_file = sys.argv[1] if len(sys.argv) > 1 else "data.csv"
-    main(csv_file)
+    csv_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_CSV
+    main(csv_path)

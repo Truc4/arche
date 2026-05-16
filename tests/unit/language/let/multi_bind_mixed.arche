@@ -1,6 +1,5 @@
 // RUN: %arche -o %t %s && %t | grep -E "test1|test2|test3"
 // Multi-bind with mixed declaration and assignment
-
 func fill_two(out buf1: char[32], out buf2: char[32]) -> int {
   let r1 := sprintf(buf1, "hello");
   let r2 := sprintf(buf2, "world");

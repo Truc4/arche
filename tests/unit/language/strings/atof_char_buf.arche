@@ -1,5 +1,4 @@
 // RUN: %arche -o %t %s && %t
-
 proc main() {
   let s: char[32];
   s[0] = '1';

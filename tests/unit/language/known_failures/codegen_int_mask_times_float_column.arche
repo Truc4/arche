@@ -1,0 +1,41 @@
+// RUN: %arche -o %t %s && %t | grep "ok"
+// BUG: codegen produces malformed LLVM IR for `float_col = float_col * (int_col > <int>)`.
+//      llc rejects the IR with:
+//        'someValue' defined with type 'i32' but expected '<4 x i32>'
+//      See tests/known_failures/CODEGEN_INT_MASK_FLOAT_COL.md for the full root-cause writeup.
+//
+// Minimal repro: a single column-level expression where an int-column comparison
+// is used as a 0/1 mask multiplied into a float column. The README documents this
+// pattern as supported ("Conditional Behavior" section, `vel = vel * (pos > 10)`)
+// and it does work inside a `sys` body — it only blows up at proc-level on the
+// vectorized column path.
+//
+// Discovered: 2026-05-10 while writing Task 5 of the ETL benchmarks
+// (design_analysis/benchmarks/etl/arche_scale/task_5_pipeline.arche), which had
+// to fall back to a scalar `if`-filter loop instead of the natural vectorized form.
+
+arche Row {
+  price: float,
+  quantity: int,
+}
+
+
+static Row(10, 10) {
+  price: 5.0,
+  quantity: 1,
+};
+
+
+proc main() {
+  // Should be a no-op: every row has quantity=1, so the mask is all 1s, and
+  // price stays at 5.0. Today, this fails at the `llc` stage with a vector
+  // type mismatch.
+  Row.price = Row.price * (Row.quantity > 0);
+
+  let p0 := Row.price[0];
+  if (p0 == 5.0) {
+    printf("ok\n");
+  } else {
+    printf("fail: price[0] = %f, expected 5.0\n", p0);
+  }
+}

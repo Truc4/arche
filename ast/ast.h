@@ -20,6 +20,7 @@ typedef enum {
 	AST_TYPE_ARRAY, /* element array */
 	AST_TYPE_SHAPED_ARRAY,
 	AST_TYPE_TUPLE,
+	AST_TYPE_ARCHETYPE, /* bare-category `archetype` parameter type */
 } AstTypeTag;
 
 typedef struct AstType AstType;
@@ -60,6 +61,7 @@ typedef enum {
 	AST_DECL_PROC,
 	AST_DECL_SYS,
 	AST_DECL_FUNC,
+	AST_DECL_FUNC_GROUP,
 	AST_DECL_STATIC,
 	AST_DECL_CONST,
 } AstDeclKind;
@@ -114,6 +116,13 @@ typedef struct {
 
 typedef struct {
 	char *name;
+	char **member_names;
+	int member_count;
+	SourceLoc loc;
+} AstFuncGroupDecl;
+
+typedef struct {
+	char *name;
 	AstParam **params;
 	int param_count;
 	AstType *return_type;
@@ -155,6 +164,7 @@ struct AstDecl {
 		AstProcDecl *proc;
 		AstSysDecl *sys;
 		AstFuncDecl *func;
+		AstFuncGroupDecl *func_group;
 		AstStaticDecl *static_decl;
 		AstConstDecl *constant;
 	} data;
@@ -181,6 +191,7 @@ typedef enum {
 	AST_STMT_FREE,
 	AST_STMT_RETURN,
 	AST_STMT_MULTI_BIND,
+	AST_STMT_EACH_FIELD,
 } AstStmtKind;
 
 typedef struct {
@@ -244,6 +255,14 @@ typedef struct {
 	int from_shorthand;
 } AstMultiBindStmt;
 
+typedef struct {
+	char *binding_name;
+	AstType *filter_type; /* may be NULL */
+	char *arch_param_name;
+	AstStmt **body;
+	int body_count;
+} AstEachFieldStmt;
+
 struct AstStmt {
 	AstStmtKind kind;
 	SourceLoc loc;
@@ -257,6 +276,7 @@ struct AstStmt {
 		AstFreeStmt free_stmt;
 		AstReturnStmt return_stmt;
 		AstMultiBindStmt multi_bind;
+		AstEachFieldStmt each_field;
 	} data;
 };
 

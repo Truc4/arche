@@ -1,5 +1,6 @@
 arche Test {
   name: char[16],
 }
+@allow_pure_proc
 proc main() {
 }

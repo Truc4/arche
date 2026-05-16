@@ -1,6 +1,5 @@
 // Task 3: Bucket prices and extract hours from timestamps
 // Compute price_bucket = price / 10.0 and hour_bucket from timestamp
-
 use csv;
 
 arche Transaction {

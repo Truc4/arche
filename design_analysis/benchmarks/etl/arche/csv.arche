@@ -1,5 +1,4 @@
 // CSV loader module for Transaction archetype
-
 proc load_transactions() {
   let fd := open("design_analysis/benchmarks/etl/data/data.csv", 0);
   let buf: char[65536];

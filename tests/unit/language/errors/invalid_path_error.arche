@@ -1,5 +1,4 @@
 // RUN: %arche -o %t %s && %t
-
 proc main() {
   let fd := arche_fopen_read("/nonexistent/path/to/file.csv");
   printf("open() returned fd=%d\n", fd);

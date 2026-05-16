@@ -1,0 +1,97 @@
+// Systems benchmark stub: high-frequency tick loop
+//
+// Unlike the ETL benchmarks (load big CSV once, one compute pass, exit),
+// this measures steady-state throughput of Arche `sys` execution. Closer
+// to a game loop / sim tick / real-time pipeline: load once, transform
+// repeatedly, snapshot periodically.
+//
+// What this benchmark targets:
+//   - per-tick `sys` dispatch overhead
+//   - no-allocation guarantees in hot loop
+//   - write amortization (snapshot every Nth tick)
+//
+// TODO before this is runnable:
+//   - generate the input via `python design_analysis/benchmarks/etl/data/generate_data.py 100000 design_analysis/benchmarks/systems/data/data_100k.csv`
+//   - flesh out snapshot() body (currently a no-op)
+//   - add a clock helper to core/ so we can print iters/sec from inside Arche
+//     (currently we'd time externally via the runner)
+//   - write the Python/Polars comparison loop (deferred per plan)
+
+use csv;
+
+arche Transaction {
+  price: float,
+  quantity: int,
+  revenue: float,
+}
+
+
+static Transaction(100000, 100000) {
+  price: 0.0,
+  quantity: 0,
+  revenue: 0.0,
+};
+
+
+proc load_once() {
+  let mm := csv_mmap_open("design_analysis/benchmarks/systems/data/data_100k.csv");
+  let size := csv_mmap_size(mm);
+  let pos := csv_mmap_skip_header(mm, size);
+  for (let idx = 0; idx < 100000; idx += 1) {
+    let nl := csv_mmap_next_line(mm, pos, size);
+    let c1 := csv_mmap_find_comma(mm, pos, nl);
+    let c2 := csv_mmap_find_comma(mm, c1 + 1, nl);
+    Transaction.price[idx] = csv_mmap_parse_float(mm, c1 + 1);
+    Transaction.quantity[idx] = csv_mmap_parse_int(mm, c2 + 1);
+    pos = nl + 1;
+  }
+  csv_mmap_close(mm);
+}
+
+
+// Per-tick compute: revenue = price * quantity, then dampen.
+// Two sys calls so we exercise dispatch overhead, not just one big op.
+sys compute_revenue(price, quantity, revenue) {
+  revenue = price * quantity;
+}
+
+
+sys dampen(revenue) {
+  revenue = revenue * 0.999;
+}
+
+
+// TODO: write revenue column to build/benchmarks/systems/snapshot_<iter>.bin
+// For now this is a no-op so the loop structure is visible.
+proc snapshot(iter: int) {
+  // let buf: char[64];
+  // let n := sprintf(buf, "build/benchmarks/systems/snapshot_%d.bin", iter);
+  // let fd := arche_fopen_write(buf);
+  // arche_fwrite(fd, Transaction.revenue, 100000 * 4);
+  // arche_fclose(fd);
+}
+
+
+proc main() {
+  load_once();
+
+  let ITERS := 100000;
+  let SNAPSHOT_EVERY := 10000;
+
+  for (let i = 0; i < ITERS; i += 1) {
+    run compute_revenue;
+    run dampen;
+    if (i % SNAPSHOT_EVERY == 0) {
+      snapshot(i);
+    }
+  }
+
+  // Final checksum: sum of revenue column after ITERS iterations of dampen.
+  // Used to verify correctness across runs / engines.
+  let sum := 0.0;
+  for (let m = 0; m < 100000; m += 1) {
+    sum = sum + Transaction.revenue[m];
+  }
+  printf("systems_checksum: %g\n", sum);
+  printf("systems_iters: %d\n", ITERS);
+}

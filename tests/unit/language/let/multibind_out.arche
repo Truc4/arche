@@ -1,6 +1,5 @@
 // RUN: %arche -o %t %s && %t | grep "result: 99"
 // Simple test of multi-bind with out param
-
 func fill_buf(out buf: char[32]) -> int {
   let r := sprintf(buf, "hello");
   return 99;

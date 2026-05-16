@@ -1,0 +1,67 @@
+// Task 1 (arche, transform-only): revenue = price * quantity, repeated N=216,000 times.
+// Load CSV into static archetype once; the timed loop is pure vectorized column op.
+use csv;
+
+arche Transaction {
+  price: float,
+  quantity: int,
+  revenue: float,
+}
+
+
+static Transaction(10000, 10000) {
+  price: 0.0,
+  quantity: 0,
+  revenue: 0.0,
+};
+
+
+proc load_transactions() {
+  let mm := csv_mmap_open("design_analysis/benchmarks/etl/data/data_10k.csv");
+  let size := csv_mmap_size(mm);
+  let pos := csv_mmap_skip_header(mm, size);
+  for (let idx = 0; idx < 10000; idx += 1) {
+    let nl := csv_mmap_next_line(mm, pos, size);
+    let c1 := csv_mmap_find_comma(mm, pos, nl);
+    let c2 := csv_mmap_find_comma(mm, c1 + 1, nl);
+    Transaction.price[idx] = csv_mmap_parse_float(mm, c1 + 1);
+    Transaction.quantity[idx] = csv_mmap_parse_int(mm, c2 + 1);
+    pos = nl + 1;
+  }
+  csv_mmap_close(mm);
+}
+
+
+proc write_output() {
+  let fd := arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_1.csv");
+  let header: char[16];
+  sprintf(header, "revenue\n");
+  arche_fwrite(fd, header, strlen(header));
+  let buf: char[64];
+  for (let i = 0; i < 10000; i += 1) {
+    sprintf(buf, "%g\n", Transaction.revenue[i]);
+    arche_fwrite(fd, buf, strlen(buf));
+  }
+  arche_fclose(fd);
+}
+
+
+proc main() {
+  load_transactions();
+  let t0 := arche_now_sec();
+  for (let iter = 0; iter < 216000; iter += 1) {
+    Transaction.revenue = Transaction.price * Transaction.quantity;
+  }
+  let t1 := arche_now_sec();
+  let elapsed := t1 - t0;
+
+  let sum := 0.0;
+  for (let m = 0; m < 10000; m += 1) {
+    sum = sum + Transaction.revenue[m];
+  }
+
+  write_output();
+
+  printf("task1_checksum: %g\n", sum);
+  printf("task1_time: %g\n", elapsed / 216000.0);
+}

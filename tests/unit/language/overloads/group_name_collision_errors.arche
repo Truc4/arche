@@ -1,0 +1,9 @@
+// RUN: ! %arche -o %t %s 2>&1
+
+func a(x: int) -> int {
+  return x;
+}
+func b(x: float) -> float {
+  return x;
+}
+func a = { a, b };  // error: name 'a' is already declared

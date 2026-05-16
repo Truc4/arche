@@ -21,7 +21,9 @@ def generate_data(num_rows, output_file):
 
             ts = base_date + timedelta(seconds=i % 86400)
             price = round(5.0 + random.random() * 15.0, 1)
-            quantity = random.randint(1, 500)
+            # ~10% of rows have non-positive quantity (returns / invalid records)
+            # so `quantity > 0` is a meaningful filter, not a no-op.
+            quantity = random.randint(-50, 500)
             region = regions[random.randint(0, len(regions) - 1)]
             flags = random.randint(0, 1)
 

@@ -1,30 +1,23 @@
 #!/usr/bin/env python3
-"""Benchmark Task 4: Aggregate revenue per region."""
+"""Task 4 (Pandas): sum(price * quantity). Matches arche_scale/task_4 checksum semantics."""
 
-import pandas as pd
-import time
 import sys
+import time
+import pandas as pd
 
-def main(csv_file):
-    print(f"Loading {csv_file}...")
-    df = pd.read_csv(csv_file)
-    print(f"Loaded {len(df)} rows\n")
+DEFAULT_CSV = "design_analysis/benchmarks/etl/data/data_100m.csv"
 
-    print("Task 4: Aggregate revenue per region (sum revenue = price * quantity)")
 
-    # Compute revenue and aggregate in one go
+def main(csv_path):
     start = time.perf_counter()
-    df['revenue'] = df['price'] * df['quantity']
-    result = df.groupby('region')['revenue'].sum()
+    df = pd.read_csv(csv_path, usecols=["price", "quantity"])
+    df["revenue"] = df["price"] * df["quantity"]
+    checksum = df["revenue"].sum()
     elapsed = time.perf_counter() - start
+    print(f"task4_checksum: {checksum}")
+    print(f"task4_time: {elapsed}")
 
-    print(f"  Time: {elapsed:.4f}s")
-    print(f"  Rows processed: {len(df)}")
-    print(f"  Regions: {len(result)}")
-    print(f"\n  Revenue per region:")
-    for region, revenue in result.items():
-        print(f"    {region}: ${revenue:,.2f}")
 
 if __name__ == "__main__":
-    csv_file = sys.argv[1] if len(sys.argv) > 1 else "data.csv"
-    main(csv_file)
+    csv_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_CSV
+    main(csv_path)

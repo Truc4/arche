@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
-"""Benchmark Task 1: Compute derived columns (revenue = price * quantity)."""
+"""Task 1 (Pandas): sum(price * quantity) over the full CSV."""
 
-import pandas as pd
-import time
 import sys
+import time
+import pandas as pd
 
-def main(csv_file):
-    print(f"Loading {csv_file}...")
-    df = pd.read_csv(csv_file)
-    print(f"Loaded {len(df)} rows\n")
+DEFAULT_CSV = "design_analysis/benchmarks/etl/data/data_100m.csv"
 
-    print("Task 1: Compute derived columns (revenue = price * quantity)")
+
+def main(csv_path):
     start = time.perf_counter()
-    df['revenue'] = df['price'] * df['quantity']
+    df = pd.read_csv(csv_path, usecols=["price", "quantity"])
+    df["revenue"] = df["price"] * df["quantity"]
+    checksum = df["revenue"].sum()
     elapsed = time.perf_counter() - start
+    print(f"task1_checksum: {checksum}")
+    print(f"task1_time: {elapsed}")
 
-    print(f"  Time: {elapsed:.4f}s")
-    print(f"  Rows processed: {len(df)}")
-    print(f"  Sample revenue values:\n{df['revenue'].head()}")
 
 if __name__ == "__main__":
-    csv_file = sys.argv[1] if len(sys.argv) > 1 else "data.csv"
-    main(csv_file)
+    csv_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_CSV
+    main(csv_path)

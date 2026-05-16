@@ -1,5 +1,4 @@
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -q "Shape already allocated" %t.out
-
 arche Handle1 {
   val: int,
 }
@@ -20,5 +19,6 @@ static Handle2(1, 1) {
 };
 
 
+@allow_pure_proc
 proc main() {
 }

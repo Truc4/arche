@@ -1,6 +1,5 @@
 // Task 4: Aggregate total revenue
 // Sum revenue (price * quantity) across all rows
-
 arche Transaction {
   price: float,
   quantity: int,

@@ -233,6 +233,20 @@ void test_compile_simple_with_print(void) {
 	test_pass_msg();
 }
 
+/* Test: function-overloading smoke compiles without errors */
+void test_compile_overloads_smoke(void) {
+	test_start("compile overloads/two_funcs_smoke.arche");
+	char *source = read_file("tests/unit/language/overloads/two_funcs_smoke.arche");
+	ASSERT_TRUE(source != NULL, "Could not read two_funcs_smoke.arche");
+
+	char ir_buf[256];
+	int ok = compile_source(source, ir_buf, sizeof(ir_buf));
+	ASSERT_TRUE(ok, ir_buf);
+
+	free(source);
+	test_pass_msg();
+}
+
 int main(void) {
 	printf("codegen tests\n");
 
@@ -242,6 +256,7 @@ int main(void) {
 	test_compile_archetype();
 	test_compile_archetype_verbose();
 	test_compile_simple_with_print();
+	test_compile_overloads_smoke();
 
 	printf("\nResults: %d/%d passed\n", test_pass, test_count);
 	return test_fail == 0 ? 0 : 1;

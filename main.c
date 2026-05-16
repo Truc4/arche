@@ -179,6 +179,10 @@ int main(int argc, char *argv[]) {
 	const char *output_file = NULL;
 	int emit_llvm = 0;
 
+	/* Lint config — both on by default; CLI can disable or promote to errors. */
+	int lint_pcbf_enabled = 1, lint_pcbf_werror = 0;
+	int lint_pne_enabled = 1, lint_pne_werror = 0;
+
 	/* Parse command-line arguments */
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-o") == 0) {
@@ -188,10 +192,24 @@ int main(int argc, char *argv[]) {
 			output_file = argv[++i];
 		} else if (strcmp(argv[i], "-emit-llvm") == 0) {
 			emit_llvm = 1;
+		} else if (strcmp(argv[i], "-Wno-proc-could-be-func") == 0) {
+			lint_pcbf_enabled = 0;
+		} else if (strcmp(argv[i], "-Wno-proc-no-effect") == 0) {
+			lint_pne_enabled = 0;
+		} else if (strcmp(argv[i], "-Werror=proc-could-be-func") == 0) {
+			lint_pcbf_werror = 1;
+		} else if (strcmp(argv[i], "-Werror=proc-no-effect") == 0) {
+			lint_pne_werror = 1;
+		} else if (strcmp(argv[i], "-Werror") == 0) {
+			lint_pcbf_werror = 1;
+			lint_pne_werror = 1;
 		} else if (argv[i][0] != '-') {
 			input_file = argv[i];
 		}
 	}
+
+	semantic_set_lint_proc_could_be_func(lint_pcbf_enabled, lint_pcbf_werror);
+	semantic_set_lint_proc_no_effect(lint_pne_enabled, lint_pne_werror);
 
 	if (!input_file) {
 		usage(argv[0]);
@@ -348,15 +366,38 @@ int main(int argc, char *argv[]) {
 		return 0;
 	}
 
-	/* Compile IR to executable using llc and cc */
-	char asm_file[256];
+	/* Compile IR to executable using opt, llc, and cc */
+	char opt_file[256], asm_file[256];
+	snprintf(opt_file, sizeof(opt_file), "/tmp/arche_%d_opt.ll", (int)getpid());
 	snprintf(asm_file, sizeof(asm_file), "/tmp/arche_%d.s", (int)getpid());
 
-	/* Call llc to generate assembly */
+	/* Run `opt -O2` first to promote allocas to SSA (mem2reg), do basic CSE,
+	 * loop-invariant code motion, etc. The codegen emits stack-resident loop
+	 * counters and accumulators because that's easier than building SSA
+	 * directly; opt cleans them up before llc sees them. */
+	char opt_cmd[512];
+	snprintf(opt_cmd, sizeof(opt_cmd), "opt -O2 -S -o %s %s", opt_file, ir_file);
+	printf("Optimizing IR...\n");
+	int ret = system(opt_cmd);
+	if (ret != 0) {
+		fprintf(stderr, "Failed to optimize LLVM IR\n");
+		unlink(ir_file);
+		codegen_free(codegen_ctx);
+		semantic_context_free(sem_ctx);
+		ast_program_free(ast);
+		program_free(prog);
+		free(source);
+		return 1;
+	}
+
+	/* Call llc to generate assembly. -mcpu=x86-64-v3 = portable AVX2 baseline
+	 * (Haswell-era and newer): AVX, AVX2, BMI, BMI2, F16C, FMA, LZCNT, MOVBE,
+	 * XSAVE. Lets `<4 x double>` IR lower to ymm-wide vmulpd/vfmadd instead of
+	 * paired SSE2 mulpd, without tying the binary to the dev-machine CPU. */
 	char llc_cmd[512];
-	snprintf(llc_cmd, sizeof(llc_cmd), "llc -code-model=large -o %s %s", asm_file, ir_file);
+	snprintf(llc_cmd, sizeof(llc_cmd), "llc -code-model=large -mcpu=x86-64-v3 -o %s %s", asm_file, opt_file);
 	printf("Compiling to assembly...\n");
-	int ret = system(llc_cmd);
+	ret = system(llc_cmd);
 	if (ret != 0) {
 		fprintf(stderr, "Failed to compile LLVM IR to assembly\n");
 		/* Copy IR for debugging */

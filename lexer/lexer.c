@@ -41,16 +41,23 @@ static Token make_token(Lexer *lexer, TokenKind kind, const char *start, size_t 
 	tok.length = length;
 	tok.line = line;
 	tok.column = column;
+	tok.int_val = 0;
+	tok.leading_trivia = NULL;
+	tok.leading_count = 0;
 	return tok;
 }
 
 static Token error_token(Lexer *lexer, const char *message, int line, int column) {
+	(void)lexer;
 	Token tok;
 	tok.kind = TOK_ERROR;
 	tok.start = message;
 	tok.length = strlen(message);
 	tok.line = line;
 	tok.column = column;
+	tok.int_val = 0;
+	tok.leading_trivia = NULL;
+	tok.leading_count = 0;
 	return tok;
 }
 
@@ -160,6 +167,9 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	}
 	if (length == 3 && strncmp(start, "use", 3) == 0) {
 		return TOK_USE;
+	}
+	if (length == 10 && strncmp(start, "each_field", 10) == 0) {
+		return TOK_EACH_FIELD;
 	}
 	return TOK_IDENT;
 }
@@ -381,6 +391,8 @@ Token lexer_next_token(Lexer *lexer) {
 		return make_token(lexer, TOK_COLON, start, 1, line, column);
 	case ';':
 		return make_token(lexer, TOK_SEMI, start, 1, line, column);
+	case '@':
+		return make_token(lexer, TOK_AT, start, 1, line, column);
 
 	case '+':
 		if (peek(lexer) == '=') {
@@ -489,6 +501,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_OUT";
 	case TOK_RETURN:
 		return "TOK_RETURN";
+	case TOK_EACH_FIELD:
+		return "TOK_EACH_FIELD";
 	case TOK_CHAR_LIT:
 		return "TOK_CHAR_LIT";
 
@@ -512,6 +526,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_COLON";
 	case TOK_SEMI:
 		return "TOK_SEMI";
+	case TOK_AT:
+		return "TOK_AT";
 
 	case TOK_EQ:
 		return "TOK_EQ";
@@ -585,6 +601,9 @@ TokenBuffer lexer_tokenize(const char *src) {
 
 void token_buffer_free(TokenBuffer *buf) {
 	if (buf) {
+		for (size_t i = 0; i < buf->count; i++) {
+			free(buf->tokens[i].leading_trivia);
+		}
 		free(buf->tokens);
 		buf->tokens = NULL;
 		buf->count = 0;

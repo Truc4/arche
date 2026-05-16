@@ -1,5 +1,4 @@
 // RUN: %arche -o %t %s && %t
-
 proc main() {
   let x := 10;
   x += 5;

@@ -17,6 +17,16 @@ tests/tmp/
 # Generated benchmark data (ignore large files)
 design_analysis/benchmarks/etl/data/*.csv
 
+# C baseline compiled binaries
+design_analysis/benchmarks/etl/c_baseline/bin/
+
+# Python virtual environments created for benchmarks
+.venv*/
+
+# Local Claude Code state and conversation exports
+.claude/
+*-local-command-caveatcaveat-the-messages-below.txt
+
 # Python cache
 __pycache__/
 *.pyc
