@@ -220,6 +220,57 @@ static Statement *parse_statement(Parser *parser);
 static Expression *parse_expression(Parser *parser);
 static TypeRef *parse_type(Parser *parser);
 
+/* ========== EXTERN TYPE PARSING ========== */
+
+/* Called after 'extern' has been consumed; 'type' is the current token. */
+static Decl *parse_extern_type_decl(Parser *parser) {
+	/* 'extern' was already consumed by the dispatch in parse_decl().
+	 * 'type' (a TOK_IDENT) is the current token — consume it now. */
+	advance(parser); /* consume 'type' */
+
+	if (parser->current.kind != TOK_IDENT) {
+		error(parser, "Expected type name after 'extern type'");
+		return NULL;
+	}
+	char *name = token_text(parser->current);
+	advance(parser);
+
+	if (!match(parser, TOK_LPAREN)) {
+		error(parser, "Expected '(' after extern type name");
+		free(name);
+		return NULL;
+	}
+	if (parser->current.kind != TOK_NUMBER) {
+		error(parser, "Expected capacity number");
+		free(name);
+		return NULL;
+	}
+	int capacity = atoi(token_text(parser->current));
+	if (capacity <= 0 || capacity > 65535) {
+		error(parser, "Extern type capacity must be between 1 and 65535");
+	}
+	advance(parser);
+
+	if (!match(parser, TOK_RPAREN)) {
+		error(parser, "Expected ')' after capacity");
+		free(name);
+		return NULL;
+	}
+	if (!match(parser, TOK_SEMI)) {
+		error(parser, "Expected ';' after extern type declaration");
+		free(name);
+		return NULL;
+	}
+
+	ExternTypeDecl *et = extern_type_decl_create(name, capacity);
+
+	Decl *d = decl_create(DECL_EXTERN_TYPE);
+	d->loc.line = parser->previous.line;
+	d->loc.column = parser->previous.column;
+	d->data.extern_type = et;
+	return d;
+}
+
 /* ========== TYPE PARSING ========== */
 
 static TypeRef *parse_type(Parser *parser) {
@@ -542,6 +593,27 @@ static Decl *parse_proc_decl(Parser *parser) {
 	/* Parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
+			int param_is_out = 0;
+			int param_is_consume = 0;
+
+			/* Collect modifier keywords (out, consume) in either order */
+			int saw_modifier = 1;
+			while (saw_modifier) {
+				saw_modifier = 0;
+				if (match(parser, TOK_OUT)) {
+					param_is_out = 1;
+					saw_modifier = 1;
+				}
+				if (match(parser, TOK_CONSUME)) {
+					param_is_consume = 1;
+					saw_modifier = 1;
+				}
+			}
+
+			if (param_is_out && param_is_consume) {
+				error(parser, "'consume' and 'out' cannot both apply to the same parameter");
+			}
+
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected parameter name");
 				return NULL;
@@ -561,6 +633,8 @@ static Decl *parse_proc_decl(Parser *parser) {
 				return NULL;
 
 			Parameter *param = parameter_create(param_name, param_type);
+			param->is_out = param_is_out;
+			param->is_consume = param_is_consume;
 			param->loc.line = param_line;
 			param->loc.column = param_column;
 			proc->params = realloc(proc->params, (proc->param_count + 1) * sizeof(Parameter *));
@@ -1024,7 +1098,7 @@ static Decl *parse_decl(Parser *parser) {
 	case TOK_ARCHETYPE:
 		return parse_archetype_decl(parser);
 	case TOK_EXTERN:
-		advance(parser);
+		advance(parser); /* consume 'extern' */
 		if (check(parser, TOK_FUNC)) {
 			if (allow_pure_proc_flag) {
 				error(parser, "@allow_pure_proc must precede a proc, not a func");
@@ -1036,8 +1110,12 @@ static Decl *parse_decl(Parser *parser) {
 			if (d && d->kind == DECL_PROC && allow_pure_proc_flag)
 				d->data.proc->allow_pure_proc = 1;
 			return d;
+		} else if (parser->current.kind == TOK_IDENT &&
+		           parser->current.length == 4 &&
+		           memcmp(parser->current.start, "type", 4) == 0) {
+			return parse_extern_type_decl(parser);
 		} else {
-			error(parser, "Expected 'func' or 'proc' after 'extern'");
+			error(parser, "Expected 'func', 'proc', or 'type' after 'extern'");
 			return NULL;
 		}
 	case TOK_PROC: {

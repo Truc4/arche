@@ -440,6 +440,28 @@ The buffer `old_buf` is passed. Language copies it in, passes to C, returns modi
 
 All parameters are always copied. C functions cannot modify caller data directly. Out parameters are returned as new values. Every function parameter is **always copied** — there are no side effects on the original data. Functions are pure with respect to parameters; side effects are explicit in the code.
 
+## Extern Types (`extern type`)
+
+Arche references foreign resources (OS windows, audio voices, file handles outside the `io.c` pattern) via `extern type` declarations. Each declaration defines an opaque, fixed-capacity handle type usable only in `extern` signatures.
+
+```arche
+extern type Window(8);
+
+extern func window_open(title: char[], w: int, h: int) -> Window;
+extern proc window_present(w: Window, fb: int[], width: int, height: int);
+extern proc window_close(consume w: Window);
+```
+
+- `Window` is opaque to Arche — no inspection, arithmetic, or casting.
+- `0` is the null handle. Returning `NULL` from C marshals to `0`.
+- `consume` marks a parameter whose handle is freed by the call. Re-using a consumed binding is a compile error.
+- Distinct extern types are not interchangeable: `Window` and `Sound` are different types even though both are int handles at runtime.
+- Generation counters detect use-after-free at runtime when the static checker can't (e.g., handles stored in archetype columns).
+
+C authors write plain C with native pointer types (`HWND`, `FILE *`, etc.). The compiler emits all handle marshaling.
+
+See `docs/superpowers/specs/2026-05-16-extern-type-design.md` for the full design.
+
 ## Multi-Value Let
 
 The `let a, b, c = function()` syntax captures multiple return values from a single function call:

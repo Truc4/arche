@@ -12,6 +12,13 @@ void semantic_context_free(SemanticContext *ctx);
 
 /* Error checking */
 int semantic_has_errors(SemanticContext *ctx);
+int semantic_error_count(const SemanticContext *ctx);
+
+/* Extern type queries */
+int semantic_has_extern_type(const SemanticContext *ctx, const char *name);
+int semantic_extern_type_capacity(const SemanticContext *ctx, const char *name);
+int semantic_extern_type_count(const SemanticContext *ctx);
+const char *semantic_extern_type_name_at(const SemanticContext *ctx, int index);
 
 /* Archetype queries */
 int semantic_archetype_exists(SemanticContext *ctx, const char *name);

@@ -39,6 +39,12 @@ void test_fail_msg(const char *reason) {
 		return;                                                                                                        \
 	}
 
+#define ASSERT_TRUE(cond, msg)                                                                                         \
+	if (!(cond)) {                                                                                                     \
+		test_fail_msg(msg);                                                                                            \
+		return;                                                                                                        \
+	}
+
 /* Helper to parse a string */
 Program *parse_string(const char *src) {
 	ParseResult result = parse_source(src);
@@ -740,6 +746,85 @@ void test_multiple_decls(void) {
 	test_pass_msg();
 }
 
+/* ========== LEXER TESTS ========== */
+
+void test_lex_consume_keyword(void) {
+	test_start("lex consume keyword");
+	Lexer lex;
+	lexer_init(&lex, "consume foo");
+	Token t1 = lexer_next_token(&lex);
+	ASSERT_EQ(t1.kind, TOK_CONSUME, "first token should be TOK_CONSUME");
+	Token t2 = lexer_next_token(&lex);
+	ASSERT_EQ(t2.kind, TOK_IDENT, "second token should be TOK_IDENT");
+	lexer_free(&lex);
+	test_pass_msg();
+}
+
+/* ========== EXTERN TYPE TESTS ========== */
+
+void test_extern_type_decl(void) {
+	test_start("extern type Window(8)");
+	Program *prog = parse_string("extern type Window(8);");
+	ASSERT_NOT_NULL(prog, "program is null");
+	ASSERT_EQ(prog->decl_count, 1, "expected 1 decl");
+	ASSERT_EQ(prog->decls[0]->kind, DECL_EXTERN_TYPE, "expected DECL_EXTERN_TYPE");
+	ExternTypeDecl *et = prog->decls[0]->data.extern_type;
+	ASSERT_NOT_NULL(et, "extern_type is null");
+	ASSERT_EQ(strcmp(et->name, "Window"), 0, "wrong name");
+	ASSERT_EQ(et->capacity, 8, "wrong capacity");
+	program_free(prog);
+	test_pass_msg();
+}
+
+/* ========== EXTERN TYPE CONTRACT TESTS ========== */
+
+void test_parser_treats_extern_type_as_typename(void) {
+	test_start("parser leaves 'Window' as TYPE_NAME (semantic resolves)");
+	Program *prog = parse_string(
+	    "extern type Window(8);\n"
+	    "extern func window_open(w: int, h: int) -> Window;\n"
+	);
+	ASSERT_NOT_NULL(prog, "program is null");
+	ASSERT_EQ(prog->decl_count, 2, "expected 2 decls");
+	ASSERT_EQ(prog->decls[1]->kind, DECL_FUNC, "expected DECL_FUNC");
+	FuncDecl *f = prog->decls[1]->data.func;
+	ASSERT_NOT_NULL(f->return_type, "no return type");
+	ASSERT_EQ(f->return_type->kind, TYPE_NAME, "parser keeps 'Window' as TYPE_NAME");
+	ASSERT_EQ(strcmp(f->return_type->data.name, "Window"), 0, "wrong name");
+	program_free(prog);
+	test_pass_msg();
+}
+
+/* ========== CONSUME PARAMETER MODIFIER TESTS ========== */
+
+void test_consume_param_modifier(void) {
+	test_start("consume parameter modifier");
+	Program *prog = parse_string(
+	    "extern type Window(8);\n"
+	    "extern proc window_close(consume w: Window);\n"
+	);
+	ASSERT_NOT_NULL(prog, "program is null");
+	ASSERT_EQ(prog->decl_count, 2, "expected 2 decls");
+	ASSERT_EQ(prog->decls[1]->kind, DECL_PROC, "expected DECL_PROC");
+	ProcDecl *p = prog->decls[1]->data.proc;
+	ASSERT_EQ(p->param_count, 1, "expected 1 param");
+	ASSERT_EQ(p->params[0]->is_consume, 1, "param should be consume");
+	ASSERT_EQ(p->params[0]->is_out, 0, "param should NOT be out");
+	program_free(prog);
+	test_pass_msg();
+}
+
+void test_consume_and_out_mutually_exclusive(void) {
+	test_start("consume and out cannot both apply to same param");
+	ParseResult result = parse_source(
+	    "extern type Window(8);\n"
+	    "extern proc bad(consume out w: Window);\n"
+	);
+	ASSERT_TRUE(result.error_count >= 1, "expected at least one parse error");
+	parse_result_free(&result);
+	test_pass_msg();
+}
+
 /* ========== ASSIGNMENT OPERATORS ========== */
 
 void test_assign_op_eq(void) {
@@ -763,6 +848,10 @@ void test_assign_op_plus_eq(void) {
 
 int main(void) {
 	printf("Running parser tests...\n\n");
+
+	/* Lexer tests */
+	printf("Lexer tests:\n");
+	test_lex_consume_keyword();
 
 	/* Archetype tests */
 	printf("Archetype tests:\n");
@@ -815,6 +904,16 @@ int main(void) {
 	/* Multiple declarations */
 	printf("\nMultiple declarations tests:\n");
 	test_multiple_decls();
+
+	/* Extern type tests */
+	printf("\nExtern type tests:\n");
+	test_extern_type_decl();
+	test_parser_treats_extern_type_as_typename();
+
+	/* Consume parameter modifier tests */
+	printf("\nConsume parameter modifier tests:\n");
+	test_consume_param_modifier();
+	test_consume_and_out_mutually_exclusive();
 
 	/* Assignment operators */
 	printf("\nAssignment operator tests:\n");

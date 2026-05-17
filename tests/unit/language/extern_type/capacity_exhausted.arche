@@ -1,0 +1,10 @@
+// RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t > %t.out 2>&1 ; grep -qi "capacity" %t.out
+
+extern type Resource(2);
+extern func resource_open(initial: int) -> Resource;
+
+proc main() {
+  let a := resource_open(1);
+  let b := resource_open(2);
+  let c := resource_open(3);
+}

@@ -2,7 +2,7 @@
 
 Program ← _ (Decl _)* EOF
 
-Decl ← ArchetypeDecl / ProcDecl / SysDecl / FuncDecl
+Decl ← ArchetypeDecl / ProcDecl / SysDecl / FuncDecl / ExternTypeDecl
 
 # Declarations
 
@@ -17,6 +17,17 @@ SysDecl ← "sys" _ Identifier _ "(" _ (Identifier (_ "," _ Identifier)*)? _ ")"
 FuncDecl ← "func" _ Identifier _ "(" _ (FuncParam (_ "," _ FuncParam)*)? _ ")" _ "->" _ Type _ "{" _ Expression _ "}"
 
 FuncParam ← Identifier _ ":" _ Type
+
+# Extern type declarations introduce opaque foreign-resource types referenced
+# only inside `extern func` / `extern proc` signatures. Capacity (the maximum
+# number of live handles of this type) is required at declaration time.
+ExternTypeDecl ← "extern" _ "type" _ Identifier _ "(" _ Number _ ")" _ ";"
+
+# Parameter modifiers (extern signatures only)
+# - "out":     parameter is returned in the result tuple; caller may pre-fill
+# - "consume": parameter's handle slot is freed after the call; further use is an error
+# - Modifiers may appear in either order; both on the same parameter is a parse error.
+ExternFuncParam ← ("out" / "consume")? _ ("out" / "consume")? _ Identifier _ ":" _ Type
 
 # Statements
 

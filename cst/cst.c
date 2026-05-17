@@ -138,11 +138,21 @@ UseDecl *use_decl_create(char *name) {
 	return use;
 }
 
+ExternTypeDecl *extern_type_decl_create(char *name, int capacity) {
+	ExternTypeDecl *et = malloc(sizeof(ExternTypeDecl));
+	et->name = name;
+	et->capacity = capacity;
+	et->loc.line = 1;
+	et->loc.column = 1;
+	return et;
+}
+
 Parameter *parameter_create(char *name, TypeRef *type) {
 	Parameter *param = malloc(sizeof(Parameter));
 	param->name = name;
 	param->type = type;
 	param->is_out = 0;
+	param->is_consume = 0;
 	param->loc.line = 1;
 	param->loc.column = 1;
 	return param;
@@ -266,6 +276,9 @@ void decl_free(Decl *decl) {
 		use_decl_free(decl->data.use);
 		break;
 	}
+	case DECL_EXTERN_TYPE:
+		extern_type_decl_free(decl->data.extern_type);
+		break;
 	}
 	free(decl);
 }
@@ -380,6 +393,13 @@ void use_decl_free(UseDecl *use) {
 		return;
 	free(use->name);
 	free(use);
+}
+
+void extern_type_decl_free(ExternTypeDecl *et) {
+	if (!et)
+		return;
+	free(et->name);
+	free(et);
 }
 
 void type_ref_free(TypeRef *type) {
@@ -1310,6 +1330,9 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			fprintf(out, "\n");
 			break;
 		}
+		case DECL_EXTERN_TYPE:
+			/* Parser not yet implemented; no formatting needed */
+			break;
 		}
 		ctx.at_program_start = 0;
 	}

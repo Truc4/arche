@@ -1,0 +1,12 @@
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
+
+extern type Resource(8);
+extern func resource_open(initial: int) -> Resource;
+extern proc resource_close(consume r: Resource);
+extern func resource_get(r: Resource) -> int;
+
+proc main() {
+  let r := resource_open(10);
+  resource_close(r);
+  let v := resource_get(r);
+}

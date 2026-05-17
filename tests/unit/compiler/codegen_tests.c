@@ -149,6 +149,72 @@ static int compile_source(const char *source, char *ir_buf, int ir_len) {
 	return 1;
 }
 
+/* ASSERT_NOT_NULL macro */
+#define ASSERT_NOT_NULL(ptr, msg)                                                                                      \
+	if ((ptr) == NULL) {                                                                                               \
+		test_fail_msg(msg);                                                                                            \
+		return;                                                                                                        \
+	}
+
+/* Helper: compile source string to LLVM IR and return it as a malloc'd string.
+ * Does NOT prepend core.arche; intended for minimal snippets that must stand
+ * alone (e.g., `extern type Window(8);`).
+ * Returns NULL on any error (parse/semantic/codegen/IO). Caller must free(). */
+static char *compile_to_ir_string(const char *source) {
+	ParseResult parse_result = parse_source(source);
+	if (parse_result.error_count > 0) {
+		parse_result_free(&parse_result);
+		return NULL;
+	}
+
+	Program *prog = parse_result.ast;
+	parse_result_free(&parse_result);
+
+	SemanticContext *sem_ctx = semantic_analyze(prog);
+	if (semantic_has_errors(sem_ctx)) {
+		semantic_context_free(sem_ctx);
+		program_free(prog);
+		return NULL;
+	}
+
+	AstProgram *ast = lower_cst_to_ast(prog);
+	CodegenContext *codegen_ctx = codegen_create(ast, sem_ctx);
+
+	/* Write IR to a temp file. Prefer the build directory (portable across
+	 * Windows native + Unix shells). Fall back to a path in the system temp
+	 * dir so that re-runs don't leave stale files in the source tree. */
+	const char *ir_path = "build/test_extern_type.ll";
+	FILE *ir_output = fopen(ir_path, "w");
+	if (!ir_output) {
+		codegen_free(codegen_ctx);
+		semantic_context_free(sem_ctx);
+		ast_program_free(ast);
+		program_free(prog);
+		return NULL;
+	}
+
+	codegen_generate(codegen_ctx, ir_output);
+	fclose(ir_output);
+
+	codegen_free(codegen_ctx);
+	semantic_context_free(sem_ctx);
+	ast_program_free(ast);
+	program_free(prog);
+
+	return read_file(ir_path);
+}
+
+/* Test: extern type Window(8) emits a slot-table global in the IR */
+void test_codegen_extern_type_emits_table(void) {
+	test_start("extern type emits IR table");
+	char *ir = compile_to_ir_string("extern type Window(8);");
+	ASSERT_NOT_NULL(ir, "no IR produced");
+	ASSERT_TRUE(strstr(ir, "@__arche_Window_slots") != NULL, "no slots global");
+	ASSERT_TRUE(strstr(ir, "8 x") != NULL || strstr(ir, "[8 x") != NULL, "wrong capacity");
+	free(ir);
+	test_pass_msg();
+}
+
 /* Test: simple.arche compiles without errors */
 void test_compile_simple(void) {
 	test_start("compile simple.arche");
@@ -247,9 +313,57 @@ void test_compile_overloads_smoke(void) {
 	test_pass_msg();
 }
 
+void test_codegen_extern_return_marshal(void) {
+	test_start("extern returning extern type emits __arche_slot_alloc");
+	char *ir = compile_to_ir_string(
+	    "extern type Window(8);\n"
+	    "extern func open_(a: int, b: int) -> Window;\n"
+	    "proc main() { let w := open_(1, 2); }\n");
+	ASSERT_NOT_NULL(ir, "no IR");
+	ASSERT_TRUE(strstr(ir, "call i32 @__arche_slot_alloc") != NULL, "no alloc call emitted");
+	free(ir);
+	test_pass_msg();
+}
+
+void test_codegen_extern_param_marshal(void) {
+	test_start("extern with extern-type param emits __arche_slot_get");
+	char *ir = compile_to_ir_string(
+	    "extern type Window(8);\n"
+	    "extern func open_(a: int, b: int) -> Window;\n"
+	    "extern proc present_(w: Window);\n"
+	    "proc main() {\n"
+	    "  let w := open_(1, 2);\n"
+	    "  present_(w);\n"
+	    "}\n");
+	ASSERT_NOT_NULL(ir, "no IR");
+	ASSERT_TRUE(strstr(ir, "call i8* @__arche_slot_get") != NULL, "no get call emitted");
+	free(ir);
+	test_pass_msg();
+}
+
+void test_codegen_consume_emits_slot_free(void) {
+	test_start("consume extern emits __arche_slot_free");
+	char *ir = compile_to_ir_string(
+	    "extern type Window(8);\n"
+	    "extern func open_(a: int, b: int) -> Window;\n"
+	    "extern proc close_(consume w: Window);\n"
+	    "proc main() {\n"
+	    "  let w := open_(1, 2);\n"
+	    "  close_(w);\n"
+	    "}\n");
+	ASSERT_NOT_NULL(ir, "no IR");
+	ASSERT_TRUE(strstr(ir, "call void @__arche_slot_free") != NULL, "no free call emitted");
+	free(ir);
+	test_pass_msg();
+}
+
 int main(void) {
 	printf("codegen tests\n");
 
+	test_codegen_extern_type_emits_table();
+	test_codegen_extern_return_marshal();
+	test_codegen_extern_param_marshal();
+	test_codegen_consume_emits_slot_free();
 	test_compile_simple();
 	test_compile_hello_world();
 	test_compile_with_params();

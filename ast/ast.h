@@ -92,6 +92,7 @@ struct AstParam {
 	char *name;
 	AstType *type;
 	int is_out;
+	int is_consume;
 	SourceLoc loc;
 };
 

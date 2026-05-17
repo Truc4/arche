@@ -169,15 +169,23 @@ static char *read_file_optional(const char *path) {
 }
 
 static void usage(const char *prog) {
-	fprintf(stderr, "Usage: %s [-o executable] input.arche\n", prog);
+	fprintf(stderr, "Usage: %s [-o executable] [--link <path>] input.arche\n", prog);
 	fprintf(stderr, "       %s [-emit-llvm -o output.ll] input.arche\n", prog);
+	fprintf(stderr, "       --link <path>  Pass additional .c or .o file to cc at link time\n");
 	exit(1);
 }
+
+/* Maximum number of --link paths accepted on one command line */
+#define MAX_LINK_PATHS 32
 
 int main(int argc, char *argv[]) {
 	const char *input_file = NULL;
 	const char *output_file = NULL;
 	int emit_llvm = 0;
+
+	/* Extra files to pass to cc at link time (--link <path>) */
+	const char *link_paths[MAX_LINK_PATHS];
+	int link_count = 0;
 
 	/* Lint config — both on by default; CLI can disable or promote to errors. */
 	int lint_pcbf_enabled = 1, lint_pcbf_werror = 0;
@@ -190,6 +198,16 @@ int main(int argc, char *argv[]) {
 				usage(argv[0]);
 			}
 			output_file = argv[++i];
+		} else if (strcmp(argv[i], "--link") == 0) {
+			if (i + 1 >= argc) {
+				usage(argv[0]);
+			}
+			if (link_count < MAX_LINK_PATHS) {
+				link_paths[link_count++] = argv[++i];
+			} else {
+				fprintf(stderr, "Error: too many --link arguments (max %d)\n", MAX_LINK_PATHS);
+				return 1;
+			}
 		} else if (strcmp(argv[i], "-emit-llvm") == 0) {
 			emit_llvm = 1;
 		} else if (strcmp(argv[i], "-Wno-proc-could-be-func") == 0) {
@@ -415,10 +433,22 @@ int main(int argc, char *argv[]) {
 	}
 
 	/* Call cc to assemble and link with runtime objects */
-	char cc_cmd[1024];
-	snprintf(cc_cmd, sizeof(cc_cmd),
-	         "cc -no-pie -mcmodel=large -o %s %s " ARCHE_RUNTIME_DIR "/stack_check.o " ARCHE_RUNTIME_DIR "/io.o -lc",
-	         output_file, asm_file);
+	/* Base command: fixed runtime objects */
+	char cc_cmd[4096];
+	int cc_len = snprintf(cc_cmd, sizeof(cc_cmd),
+	                      "cc -no-pie -mcmodel=large -o %s %s "
+	                      ARCHE_RUNTIME_DIR "/stack_check.o "
+	                      ARCHE_RUNTIME_DIR "/io.o "
+	                      ARCHE_RUNTIME_DIR "/handles.o "
+	                      "-lc",
+	                      output_file, asm_file);
+
+	/* Append any --link paths supplied on the command line */
+	for (int li = 0; li < link_count && cc_len < (int)sizeof(cc_cmd) - 1; li++) {
+		cc_len += snprintf(cc_cmd + cc_len, sizeof(cc_cmd) - (size_t)cc_len,
+		                   " %s", link_paths[li]);
+	}
+
 	printf("Linking executable...\n");
 	ret = system(cc_cmd);
 	if (ret != 0) {

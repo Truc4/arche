@@ -318,6 +318,7 @@ static AstParam *lower_param(Parameter *p) {
 	AstParam *ap = ast_param_create(NULL, NULL);
 	ap->loc = p->loc;
 	ap->is_out = p->is_out;
+	ap->is_consume = p->is_consume;
 	ap->name = malloc(strlen(p->name) + 1);
 	strcpy(ap->name, p->name);
 	ap->type = lower_type_ref(p->type);
@@ -343,6 +344,9 @@ static AstDecl *lower_decl(Decl *decl) {
 	switch (decl->kind) {
 	case DECL_USE:
 		return NULL; /* stripped */
+
+	case DECL_EXTERN_TYPE:
+		return NULL; /* not lowered to AST yet */
 
 	case DECL_WORLD: {
 		ad = ast_decl_create(AST_DECL_WORLD);
