@@ -204,10 +204,10 @@ static char *compile_to_ir_string(const char *source) {
 	return read_file(ir_path);
 }
 
-/* Test: extern type Window(8) emits a slot-table global in the IR */
+/* Test: extern Window(8) emits a slot-table global in the IR */
 void test_codegen_extern_type_emits_table(void) {
-	test_start("extern type emits IR table");
-	char *ir = compile_to_ir_string("extern type Window(8);");
+	test_start("extern table emits IR slot table");
+	char *ir = compile_to_ir_string("extern Window(8);");
 	ASSERT_NOT_NULL(ir, "no IR produced");
 	ASSERT_TRUE(strstr(ir, "@__arche_Window_slots") != NULL, "no slots global");
 	ASSERT_TRUE(strstr(ir, "8 x") != NULL || strstr(ir, "[8 x") != NULL, "wrong capacity");
@@ -314,10 +314,10 @@ void test_compile_overloads_smoke(void) {
 }
 
 void test_codegen_extern_return_marshal(void) {
-	test_start("extern returning extern type emits __arche_slot_alloc");
+	test_start("extern returning handle(extern) emits __arche_slot_alloc");
 	char *ir = compile_to_ir_string(
-	    "extern type Window(8);\n"
-	    "extern func open_(a: int, b: int) -> Window;\n"
+	    "extern Window(8);\n"
+	    "extern func open_(a: int, b: int) -> handle(Window);\n"
 	    "proc main() { let w := open_(1, 2); }\n");
 	ASSERT_NOT_NULL(ir, "no IR");
 	ASSERT_TRUE(strstr(ir, "call i32 @__arche_slot_alloc") != NULL, "no alloc call emitted");
@@ -326,11 +326,11 @@ void test_codegen_extern_return_marshal(void) {
 }
 
 void test_codegen_extern_param_marshal(void) {
-	test_start("extern with extern-type param emits __arche_slot_get");
+	test_start("extern with handle(extern) param emits __arche_slot_get");
 	char *ir = compile_to_ir_string(
-	    "extern type Window(8);\n"
-	    "extern func open_(a: int, b: int) -> Window;\n"
-	    "extern proc present_(w: Window);\n"
+	    "extern Window(8);\n"
+	    "extern func open_(a: int, b: int) -> handle(Window);\n"
+	    "extern proc present_(w: handle(Window));\n"
 	    "proc main() {\n"
 	    "  let w := open_(1, 2);\n"
 	    "  present_(w);\n"
@@ -344,9 +344,9 @@ void test_codegen_extern_param_marshal(void) {
 void test_codegen_consume_emits_slot_free(void) {
 	test_start("consume extern emits __arche_slot_free");
 	char *ir = compile_to_ir_string(
-	    "extern type Window(8);\n"
-	    "extern func open_(a: int, b: int) -> Window;\n"
-	    "extern proc close_(consume w: Window);\n"
+	    "extern Window(8);\n"
+	    "extern func open_(a: int, b: int) -> handle(Window);\n"
+	    "extern proc close_(consume w: handle(Window));\n"
 	    "proc main() {\n"
 	    "  let w := open_(1, 2);\n"
 	    "  close_(w);\n"

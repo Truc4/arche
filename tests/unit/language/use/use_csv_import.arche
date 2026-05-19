@@ -5,5 +5,7 @@ static buf: char[65536];
 
 proc main() {
   let fd := csv_open("tests/fixtures/data.csv");
-  let buf, n := csv_read_chunk(fd, buf, 65536);
+  if (fd) {
+    let buf, n := csv_read_chunk(fd, buf, 65536);
+  }
 }

@@ -1,11 +1,11 @@
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t | grep "value=42"
 
-extern type Resource(8);
+extern Resource(8);
 
-extern func resource_open(initial: int) -> Resource;
-extern func resource_get(r: Resource) -> int;
-extern proc resource_set(r: Resource, v: int);
-extern proc resource_close(consume r: Resource);
+extern func resource_open(initial: int) -> handle(Resource);
+extern func resource_get(r: handle(Resource)) -> int;
+extern proc resource_set(r: handle(Resource), v: int);
+extern proc resource_close(consume r: handle(Resource));
 
 proc main() {
   let r := resource_open(10);

@@ -224,19 +224,18 @@ static TypeRef *parse_type(Parser *parser);
 
 /* Called after 'extern' has been consumed; 'type' is the current token. */
 static Decl *parse_extern_type_decl(Parser *parser) {
-	/* 'extern' was already consumed by the dispatch in parse_decl().
-	 * 'type' (a TOK_IDENT) is the current token — consume it now. */
-	advance(parser); /* consume 'type' */
-
+	/* 'extern' was already consumed; current token is the table name.
+	 * Form: extern <Ident>(<capacity>); — declares a foreign resource pool
+	 * referenced everywhere as handle(<Ident>). */
 	if (parser->current.kind != TOK_IDENT) {
-		error(parser, "Expected type name after 'extern type'");
+		error(parser, "Expected name after 'extern'");
 		return NULL;
 	}
 	char *name = token_text(parser->current);
 	advance(parser);
 
 	if (!match(parser, TOK_LPAREN)) {
-		error(parser, "Expected '(' after extern type name");
+		error(parser, "Expected '(' after extern table name");
 		free(name);
 		return NULL;
 	}
@@ -247,7 +246,7 @@ static Decl *parse_extern_type_decl(Parser *parser) {
 	}
 	int capacity = atoi(token_text(parser->current));
 	if (capacity <= 0 || capacity > 65535) {
-		error(parser, "Extern type capacity must be between 1 and 65535");
+		error(parser, "Extern table capacity must be between 1 and 65535");
 	}
 	advance(parser);
 
@@ -257,7 +256,7 @@ static Decl *parse_extern_type_decl(Parser *parser) {
 		return NULL;
 	}
 	if (!match(parser, TOK_SEMI)) {
-		error(parser, "Expected ';' after extern type declaration");
+		error(parser, "Expected ';' after extern declaration");
 		free(name);
 		return NULL;
 	}
@@ -1110,12 +1109,10 @@ static Decl *parse_decl(Parser *parser) {
 			if (d && d->kind == DECL_PROC && allow_pure_proc_flag)
 				d->data.proc->allow_pure_proc = 1;
 			return d;
-		} else if (parser->current.kind == TOK_IDENT &&
-		           parser->current.length == 4 &&
-		           memcmp(parser->current.start, "type", 4) == 0) {
+		} else if (parser->current.kind == TOK_IDENT) {
 			return parse_extern_type_decl(parser);
 		} else {
-			error(parser, "Expected 'func', 'proc', or 'type' after 'extern'");
+			error(parser, "Expected 'func', 'proc', or table name after 'extern'");
 			return NULL;
 		}
 	case TOK_PROC: {

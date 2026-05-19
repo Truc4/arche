@@ -308,6 +308,16 @@ static const char *ast_resolved_type_name(const AstExpr *expr) {
 	}
 }
 
+/* Returns the extern table target name if `type` is handle(X) where X is a
+ * registered extern table; NULL otherwise. */
+static const char *extern_handle_target_ast(const SemanticContext *sem, AstType *type) {
+	if (!type || type->tag != AST_TYPE_HANDLE || !type->name)
+		return NULL;
+	if (semantic_has_extern_type(sem, type->name))
+		return type->name;
+	return NULL;
+}
+
 static char *gen_value_name(CodegenContext *ctx) {
 	char *name = malloc(32);
 	snprintf(name, 32, "%%v%d", ctx->value_counter++);
@@ -2237,14 +2247,12 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				const char *ptn = NULL;
 				if (callee_proc && i < callee_proc->param_count) {
 					pc = callee_proc->params[i]->is_consume;
-					AstType *pt = callee_proc->params[i]->type;
-					if (pt) ptn = field_base_type_name(pt);
+					ptn = extern_handle_target_ast(ctx->sem_ctx, callee_proc->params[i]->type);
 				} else if (callee_func && i < callee_func->param_count) {
 					pc = callee_func->params[i]->is_consume;
-					AstType *pt = callee_func->params[i]->type;
-					if (pt) ptn = field_base_type_name(pt);
+					ptn = extern_handle_target_ast(ctx->sem_ctx, callee_func->params[i]->type);
 				}
-				if (pc && ptn && semantic_has_extern_type(ctx->sem_ctx, ptn)) {
+				if (pc && ptn) {
 					consume_pidx = i;
 					consume_type_name = ptn;
 					strncpy(consume_handle_val, call_arg_vals[i], sizeof(consume_handle_val) - 1);
@@ -2279,13 +2287,11 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				for (int i = 0; i < expr->data.call.arg_count; i++) {
 					const char *ptn = NULL;
 					if (callee_proc && i < callee_proc->param_count) {
-						AstType *pt = callee_proc->params[i]->type;
-						if (pt) ptn = field_base_type_name(pt);
+						ptn = extern_handle_target_ast(ctx->sem_ctx, callee_proc->params[i]->type);
 					} else if (callee_func && i < callee_func->param_count) {
-						AstType *pt = callee_func->params[i]->type;
-						if (pt) ptn = field_base_type_name(pt);
+						ptn = extern_handle_target_ast(ctx->sem_ctx, callee_func->params[i]->type);
 					}
-					if (!ptn || !semantic_has_extern_type(ctx->sem_ctx, ptn))
+					if (!ptn)
 						continue;
 
 					int cap = semantic_extern_type_capacity(ctx->sem_ctx, ptn);
@@ -2322,14 +2328,12 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 					char saved_handle[256] = {0};
 					if (callee_proc && i < callee_proc->param_count) {
 						pc = callee_proc->params[i]->is_consume;
-						AstType *pt = callee_proc->params[i]->type;
-						if (pt) ptn = field_base_type_name(pt);
+						ptn = extern_handle_target_ast(ctx->sem_ctx, callee_proc->params[i]->type);
 					} else if (callee_func && i < callee_func->param_count) {
 						pc = callee_func->params[i]->is_consume;
-						AstType *pt = callee_func->params[i]->type;
-						if (pt) ptn = field_base_type_name(pt);
+						ptn = extern_handle_target_ast(ctx->sem_ctx, callee_func->params[i]->type);
 					}
-					if (!pc || !ptn || !semantic_has_extern_type(ctx->sem_ctx, ptn))
+					if (!pc || !ptn)
 						continue;
 					/* We need the original handle, not the i8* that was substituted.
 					 * For the first consume param we saved it; for others, fall back to
@@ -2366,15 +2370,11 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				for (int i = 0; i < expr->data.call.arg_count; i++) {
 					const char *param_type_name = NULL;
 					if (callee_proc && i < callee_proc->param_count) {
-						AstType *pt = callee_proc->params[i]->type;
-						if (pt) param_type_name = field_base_type_name(pt);
+						param_type_name = extern_handle_target_ast(ctx->sem_ctx, callee_proc->params[i]->type);
 					} else if (callee_func && i < callee_func->param_count) {
-						AstType *pt = callee_func->params[i]->type;
-						if (pt) param_type_name = field_base_type_name(pt);
+						param_type_name = extern_handle_target_ast(ctx->sem_ctx, callee_func->params[i]->type);
 					}
 					if (!param_type_name)
-						continue;
-					if (!semantic_has_extern_type(ctx->sem_ctx, param_type_name))
 						continue;
 
 					int cap = semantic_extern_type_capacity(ctx->sem_ctx, param_type_name);
@@ -2479,19 +2479,20 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			/* Normal non-variadic call - determine return type */
 			const char *return_type = "i32"; /* default */
 
-			/* Detect extern-type return: extern func returning a registered extern type. */
+			/* Detect extern-type return: extern func returning handle(X) where X is registered. */
 			const char *extern_ret_type_name = NULL; /* non-NULL => marshal to handle */
 			if (callee_func && callee_func->is_extern && callee_func->return_type) {
-				const char *base = field_base_type_name(callee_func->return_type);
-				if (semantic_has_extern_type(ctx->sem_ctx, base)) {
-					extern_ret_type_name = base;
-				}
+				extern_ret_type_name = extern_handle_target_ast(ctx->sem_ctx, callee_func->return_type);
 			}
 
 			/* Check if we have return type info from the func declaration */
 			if (extern_ret_type_name) {
 				/* C function returns i8* (raw pointer) for extern type returns */
 				return_type = "i8*";
+			} else if (callee_func && callee_func->return_type &&
+			           extern_handle_target_ast(ctx->sem_ctx, callee_func->return_type)) {
+				/* Non-extern func returning handle(extern X): i32 (already-marshaled handle). */
+				return_type = "i32";
 			} else if (callee_func && callee_func->return_type) {
 				return_type = llvm_type_from_arche(field_base_type_name(callee_func->return_type));
 			} else if (callee_proc && callee_proc->is_extern) {
@@ -5646,23 +5647,24 @@ static void end_function_body(CodegenContext *ctx, FunctionBodyState state) {
 static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 	/* For extern funcs, emit declare stub */
 	if (func->is_extern) {
-		/* If the return type is a registered extern type, the C function returns i8* (opaque handle). */
+		/* If the return type is handle(X) for a registered extern table, the C
+		 * function returns i8* (opaque pointer the marshal layer wraps). */
+		int ret_is_extern = extern_handle_target_ast(ctx->sem_ctx, func->return_type) != NULL;
 		const char *ret_base_name = field_base_type_name(func->return_type);
-		int ret_is_extern_type = semantic_has_extern_type(ctx->sem_ctx, ret_base_name);
-		const char *return_type = ret_is_extern_type ? "i8*" : llvm_type_from_arche(ret_base_name);
+		const char *return_type = ret_is_extern ? "i8*" : llvm_type_from_arche(ret_base_name);
 		buffer_append_fmt(ctx, "declare %s @%s(", return_type, func->name);
 		for (int i = 0; i < func->param_count; i++) {
 			AstType *param_type = func->params[i]->type;
 			const char *type_name = field_base_type_name(param_type);
 			const char *base_type = llvm_type_from_arche(type_name);
 
-			/* Check if type is char[] (i8*), an archetype (struct*), or an extern type (i8* opaque handle) */
+			/* Check if type is char[] (i8*), an archetype (struct*), or handle(extern) (i8*) */
 			if (param_type && param_type->tag == AST_TYPE_ARRAY) {
 				buffer_append_fmt(ctx, "i8*"); /* C ABI: T[] = raw ptr */
 			} else if (find_archetype_decl(ctx, type_name)) {
 				buffer_append_fmt(ctx, "%%struct.%s*", type_name);
-			} else if (semantic_has_extern_type(ctx->sem_ctx, type_name)) {
-				buffer_append_fmt(ctx, "i8*"); /* extern type param: C func expects raw ptr */
+			} else if (extern_handle_target_ast(ctx->sem_ctx, param_type)) {
+				buffer_append_fmt(ctx, "i8*"); /* extern handle param: C func expects raw ptr */
 			} else {
 				buffer_append(ctx, base_type);
 			}
@@ -5676,7 +5678,12 @@ static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 	}
 
 	/* Generate function definition */
-	const char *return_type = llvm_type_from_arche(field_base_type_name(func->return_type));
+	const char *return_type;
+	if (extern_handle_target_ast(ctx->sem_ctx, func->return_type)) {
+		return_type = "i32"; /* handle(extern X) lowers to opaque i32 handle */
+	} else {
+		return_type = llvm_type_from_arche(field_base_type_name(func->return_type));
+	}
 	ctx->current_return_type = return_type;
 
 	buffer_append_fmt(ctx, "define %s @%s(", return_type, func->name);
@@ -5704,6 +5711,8 @@ static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 			} else {
 				buffer_append_fmt(ctx, "i8* %%arg%d", i);
 			}
+		} else if (extern_handle_target_ast(ctx->sem_ctx, param_type)) {
+			buffer_append_fmt(ctx, "i32 %%arg%d", i);
 		} else {
 			buffer_append_fmt(ctx, "%s %%arg%d", llvm_type, i);
 		}
@@ -5812,13 +5821,13 @@ static void codegen_proc_decl(CodegenContext *ctx, AstProcDecl *proc) {
 			const char *type_name = field_base_type_name(param_type);
 			const char *base_type = llvm_type_from_arche(type_name);
 
-			/* Check if type is char[] (i8*), an archetype (struct*), or an extern type (i8* opaque handle) */
+			/* Check if type is char[] (i8*), an archetype (struct*), or handle(extern) (i8*) */
 			if (param_type && param_type->tag == AST_TYPE_ARRAY) {
 				buffer_append_fmt(ctx, "i8*"); /* C ABI: T[] = raw ptr */
 			} else if (find_archetype_decl(ctx, type_name)) {
 				buffer_append_fmt(ctx, "%%struct.%s*", type_name);
-			} else if (semantic_has_extern_type(ctx->sem_ctx, type_name)) {
-				buffer_append_fmt(ctx, "i8*"); /* extern type param: C func expects raw ptr */
+			} else if (extern_handle_target_ast(ctx->sem_ctx, param_type)) {
+				buffer_append_fmt(ctx, "i8*"); /* extern handle param: C func expects raw ptr */
 			} else {
 				buffer_append(ctx, base_type);
 			}
@@ -5846,11 +5855,13 @@ static void codegen_proc_decl(CodegenContext *ctx, AstProcDecl *proc) {
 		const char *type_name = field_base_type_name(param_type);
 		const char *base_type = llvm_type_from_arche(type_name);
 
-		/* Check if type is char[] (struct*) or an archetype (struct*) */
+		/* Check if type is char[] (struct*), an archetype (struct*), or handle(extern) (i32) */
 		if (param_type && param_type->tag == AST_TYPE_ARRAY) {
 			buffer_append_fmt(ctx, "%%struct.arche_array* %%arg%d", i);
 		} else if (find_archetype_decl(ctx, type_name)) {
 			buffer_append_fmt(ctx, "%%struct.%s* %%arg%d", type_name, i);
+		} else if (extern_handle_target_ast(ctx->sem_ctx, param_type)) {
+			buffer_append_fmt(ctx, "i32 %%arg%d", i);
 		} else {
 			buffer_append_fmt(ctx, "%s %%arg%d", base_type, i);
 		}

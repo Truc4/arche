@@ -1,7 +1,7 @@
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t | grep "ok_null=1"
 
-extern type Resource(8);
-extern func resource_open(initial: int) -> Resource;
+extern Resource(8);
+extern func resource_open(initial: int) -> handle(Resource);
 
 proc main() {
   let r1 := resource_open(1);

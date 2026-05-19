@@ -440,23 +440,24 @@ The buffer `old_buf` is passed. Language copies it in, passes to C, returns modi
 
 All parameters are always copied. C functions cannot modify caller data directly. Out parameters are returned as new values. Every function parameter is **always copied** — there are no side effects on the original data. Functions are pure with respect to parameters; side effects are explicit in the code.
 
-## Extern Types (`extern type`)
+## Extern Tables (`extern Name(N)`) and `handle(Name)`
 
-Arche references foreign resources (OS windows, audio voices, file handles outside the `io.c` pattern) via `extern type` declarations. Each declaration defines an opaque, fixed-capacity handle type usable only in `extern` signatures.
+Arche references foreign resources (OS windows, audio voices, file pointers) via `extern` table declarations. Each declaration names a fixed-capacity slot pool. The name is never used bare — references go through `handle(Name)` everywhere, mirroring the way archetype rows are referenced via `handle(Player)`.
 
 ```arche
-extern type Window(8);
+extern Window(8);
 
-extern func window_open(title: char[], w: int, h: int) -> Window;
-extern proc window_present(w: Window, fb: int[], width: int, height: int);
-extern proc window_close(consume w: Window);
+extern func window_open(title: char[], w: int, h: int) -> handle(Window);
+extern proc window_present(w: handle(Window), fb: int[], width: int, height: int);
+extern proc window_close(consume w: handle(Window));
 ```
 
-- `Window` is opaque to Arche — no inspection, arithmetic, or casting.
+- `handle(Window)` is opaque to Arche — no inspection, arithmetic, or casting.
 - `0` is the null handle. Returning `NULL` from C marshals to `0`.
 - `consume` marks a parameter whose handle is freed by the call. Re-using a consumed binding is a compile error.
-- Distinct extern types are not interchangeable: `Window` and `Sound` are different types even though both are int handles at runtime.
-- Generation counters detect use-after-free at runtime when the static checker can't (e.g., handles stored in archetype columns).
+- Distinct extern tables produce distinct handle types: `handle(Window)` and `handle(Sound)` are not interchangeable even though both are int handles at runtime.
+- Extern handles may not appear in archetype fields. (Internal `handle(Archetype)` columns are fine.)
+- Generation counters detect use-after-free at runtime when the static checker can't (e.g., handles aliased through other bindings).
 
 C authors write plain C with native pointer types (`HWND`, `FILE *`, etc.). The compiler emits all handle marshaling.
 

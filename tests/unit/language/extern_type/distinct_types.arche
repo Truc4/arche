@@ -1,9 +1,9 @@
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qiE "(type mismatch|Sound|Window)" %t.out
 
-extern type Window(8);
-extern type Sound(64);
-extern func sound_open() -> Sound;
-extern proc window_close(consume w: Window);
+extern Window(8);
+extern Sound(64);
+extern func sound_open() -> handle(Sound);
+extern proc window_close(consume w: handle(Window));
 
 proc main() {
   let s := sound_open();

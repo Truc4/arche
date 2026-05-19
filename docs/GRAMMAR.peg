@@ -18,10 +18,11 @@ FuncDecl ← "func" _ Identifier _ "(" _ (FuncParam (_ "," _ FuncParam)*)? _ ")"
 
 FuncParam ← Identifier _ ":" _ Type
 
-# Extern type declarations introduce opaque foreign-resource types referenced
-# only inside `extern func` / `extern proc` signatures. Capacity (the maximum
-# number of live handles of this type) is required at declaration time.
-ExternTypeDecl ← "extern" _ "type" _ Identifier _ "(" _ Number _ ")" _ ";"
+# Extern table declarations introduce foreign-resource pools.  The name is
+# never used bare — references go through `handle(<Name>)` everywhere, just
+# like archetype handles. Capacity (the maximum number of live handles) is
+# required at declaration time.
+ExternTypeDecl ← "extern" _ Identifier _ "(" _ Number _ ")" _ ";"
 
 # Parameter modifiers (extern signatures only)
 # - "out":     parameter is returned in the result tuple; caller may pre-fill

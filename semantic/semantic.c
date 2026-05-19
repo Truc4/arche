@@ -366,11 +366,20 @@ static int is_primitive_type_name(const char *type_name) {
 	       strcmp(n, "void") == 0;
 }
 
-/* Returns 1 if `tr` is a TYPE_NAME whose name matches a registered extern type. */
+/* Returns the extern table name if `tr` is a handle(X) where X is a
+ * registered extern table; NULL otherwise. */
+static const char *extern_handle_target(SemanticContext *ctx, const TypeRef *tr) {
+	if (!tr || tr->kind != TYPE_HANDLE)
+		return NULL;
+	const char *name = tr->data.handle.archetype_name;
+	if (semantic_has_extern_type(ctx, name))
+		return name;
+	return NULL;
+}
+
+/* Returns 1 if `tr` is a handle(X) referencing a registered extern table. */
 static int is_extern_type_ref(SemanticContext *ctx, const TypeRef *tr) {
-	if (!tr || tr->kind != TYPE_NAME)
-		return 0;
-	return semantic_has_extern_type(ctx, tr->data.name);
+	return extern_handle_target(ctx, tr) != NULL;
 }
 
 static const char *resolve_expression_type(SemanticContext *ctx, Expression *expr) {
@@ -406,7 +415,10 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		VariableInfo *var = find_variable(ctx, name);
 		if (var) {
 			if (var->type) {
-				return normalize_type_name(var->type->data.name);
+				if (var->type->kind == TYPE_HANDLE)
+					return var->type->data.handle.archetype_name;
+				if (var->type->kind == TYPE_NAME)
+					return normalize_type_name(var->type->data.name);
 			}
 			/* Fallback to inferred type */
 			if (var->inferred_type) {
@@ -533,9 +545,13 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		for (int i = 0; i < ctx->prog->decl_count; i++) {
 			Decl *decl = ctx->prog->decls[i];
 			if (decl->kind == DECL_FUNC && strcmp(decl->data.func->name, func_name) == 0) {
-				if (decl->data.func->return_type) {
-					return normalize_type_name(decl->data.func->return_type->data.name);
-				}
+				TypeRef *rt = decl->data.func->return_type;
+				if (!rt)
+					return NULL;
+				if (rt->kind == TYPE_HANDLE)
+					return rt->data.handle.archetype_name;
+				if (rt->kind == TYPE_NAME)
+					return normalize_type_name(rt->data.name);
 				return NULL;
 			}
 		}
@@ -773,17 +789,18 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 					if (!is_extern)
 						break; /* non-extern: no extern-type params, skip */
 
-					/* For each argument, if the formal param is an extern type,
-					 * the argument's resolved type must be exactly the same extern
-					 * type name. Integer literal 0 is accepted as a null handle. */
+					/* For each argument, if the formal param is a foreign handle
+					 * (handle(X) where X is an extern table), the argument's resolved
+					 * type must be exactly the same extern handle. Integer literal 0
+					 * is accepted as a null handle. */
 					int arg_count = expr->data.call.arg_count;
 					int check_count = param_count < arg_count ? param_count : arg_count;
 					for (int j = 0; j < check_count; j++) {
 						Parameter *p = params[j];
-						if (!p || !p->type || p->type->kind != TYPE_NAME)
+						if (!p)
 							continue;
-						const char *formal_type = p->type->data.name;
-						if (!semantic_has_extern_type(ctx, formal_type))
+						const char *formal_type = extern_handle_target(ctx, p->type);
+						if (!formal_type)
 							continue;
 
 						/* Formal is an extern type. Check the argument. */
@@ -994,7 +1011,11 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 						var = scope->vars[scope->var_count - 1];
 						if (stmt->data.let_stmt.type) {
 							/* Type annotation: convert TypeRef to string type name */
-							var->inferred_type = stmt->data.let_stmt.type->data.name;
+							TypeRef *t = stmt->data.let_stmt.type;
+							if (t->kind == TYPE_HANDLE)
+								var->inferred_type = t->data.handle.archetype_name;
+							else
+								var->inferred_type = t->data.name;
 						} else if (stmt->data.let_stmt.value) {
 							/* No annotation: infer from value expression */
 							const char *inferred = resolve_expression_type(ctx, stmt->data.let_stmt.value);
@@ -1322,23 +1343,26 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 		arch->field_count = expanded_count;
 	}
 
-	/* Validate handle types reference valid archetypes */
+	/* Validate handle types: must reference a known archetype.  Foreign
+	 * handles (handle(X) where X is an extern table) are forbidden inside
+	 * archetype fields — extern handles may only appear in extern signatures. */
 	for (int i = 0; i < arch->field_count; i++) {
-		if (arch->fields[i]->type->kind == TYPE_HANDLE) {
-			const char *target_arch = arch->fields[i]->type->data.handle.archetype_name;
-			ArchetypeInfo *target = find_archetype(ctx, target_arch);
-			if (!target) {
-				fprintf(stderr, "Error: unknown archetype '%s' in handle type for field '%s'\n", target_arch,
-				        arch->fields[i]->name);
-				ctx->error_count++;
-			}
-		}
-		if (is_extern_type_ref(ctx, arch->fields[i]->type)) {
+		TypeRef *ft = arch->fields[i]->type;
+		if (ft->kind != TYPE_HANDLE)
+			continue;
+		const char *target = ft->data.handle.archetype_name;
+		if (semantic_has_extern_type(ctx, target)) {
 			char msg[256];
 			snprintf(msg, sizeof(msg),
-			         "extern type '%s' may only appear in extern signatures (archetype '%s' field '%s')",
-			         arch->fields[i]->type->data.name, arch->name, arch->fields[i]->name);
+			         "extern handle '%s' may only appear in extern signatures (archetype '%s' field '%s')",
+			         target, arch->name, arch->fields[i]->name);
 			error(ctx, msg);
+			continue;
+		}
+		if (!find_archetype(ctx, target)) {
+			fprintf(stderr, "Error: unknown archetype '%s' in handle type for field '%s'\n", target,
+			        arch->fields[i]->name);
+			ctx->error_count++;
 		}
 	}
 
@@ -1680,11 +1704,16 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 			continue;
 		TypeRef *pt = p->type;
 		if (proc->is_extern) {
-			/* In extern signatures: unknown TYPE_NAME (not primitive, not extern type, not archetype) is an error. */
-			if (pt && pt->kind == TYPE_NAME) {
+			/* Bare extern table name must be wrapped in handle(...). */
+			if (pt && pt->kind == TYPE_NAME && semantic_has_extern_type(ctx, pt->data.name)) {
+				char msg[256];
+				snprintf(msg, sizeof(msg),
+				         "extern table '%s' must be referenced as 'handle(%s)' (extern proc '%s')",
+				         pt->data.name, pt->data.name, proc->name);
+				error(ctx, msg);
+			} else if (pt && pt->kind == TYPE_NAME) {
 				const char *tname = pt->data.name;
-				if (!is_primitive_type_name(tname) && !semantic_has_extern_type(ctx, tname) &&
-				    !find_archetype(ctx, tname)) {
+				if (!is_primitive_type_name(tname) && !find_archetype(ctx, tname)) {
 					char msg[256];
 					snprintf(msg, sizeof(msg), "unknown type '%s' in extern proc '%s' signature",
 					         tname, proc->name);
@@ -1700,15 +1729,8 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 				error(ctx, msg);
 			}
 		} else {
-			/* Non-extern procs: extern types are forbidden. */
-			if (is_extern_type_ref(ctx, pt)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg),
-				         "extern type '%s' may only appear in extern signatures (proc '%s')",
-				         pt->data.name, proc->name);
-				error(ctx, msg);
-			}
-			/* 'consume' modifier is meaningless outside extern signatures. */
+			/* Non-extern procs: extern types may be passed through as opaque
+			 * params (per spec). 'consume' is only meaningful on extern calls. */
 			if (p->is_consume) {
 				char msg[256];
 				snprintf(msg, sizeof(msg),
@@ -1945,10 +1967,16 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 			continue;
 		TypeRef *pt = p->type;
 		if (func->is_extern) {
-			/* In extern signatures: unknown TYPE_NAME (not primitive, not extern type) is an error. */
-			if (pt && pt->kind == TYPE_NAME) {
+			/* Bare extern table name must be wrapped in handle(...). */
+			if (pt && pt->kind == TYPE_NAME && semantic_has_extern_type(ctx, pt->data.name)) {
+				char msg[256];
+				snprintf(msg, sizeof(msg),
+				         "extern table '%s' must be referenced as 'handle(%s)' (extern func '%s')",
+				         pt->data.name, pt->data.name, func->name);
+				error(ctx, msg);
+			} else if (pt && pt->kind == TYPE_NAME) {
 				const char *tname = pt->data.name;
-				if (!is_primitive_type_name(tname) && !semantic_has_extern_type(ctx, tname)) {
+				if (!is_primitive_type_name(tname)) {
 					char msg[256];
 					snprintf(msg, sizeof(msg), "unknown type '%s' in extern func '%s' signature",
 					         tname, func->name);
@@ -1964,15 +1992,8 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 				error(ctx, msg);
 			}
 		} else {
-			/* Non-extern funcs: extern types are forbidden in parameters. */
-			if (is_extern_type_ref(ctx, pt)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg),
-				         "extern type '%s' may only appear in extern signatures (func '%s')",
-				         pt->data.name, func->name);
-				error(ctx, msg);
-			}
-			/* 'consume' modifier is meaningless outside extern signatures. */
+			/* Non-extern funcs: extern types may pass through as opaque
+			 * params (per spec). 'consume' is only meaningful on extern calls. */
 			if (p->is_consume) {
 				char msg[256];
 				snprintf(msg, sizeof(msg),
@@ -1983,26 +2004,23 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 		}
 	}
 
-	/* Validate return type for extern vs non-extern rules. */
+	/* Validate return type: extern funcs must use known types; non-extern
+	 * funcs may return extern types as opaque scalars (per spec). */
 	if (func->is_extern) {
-		/* Extern func return type: unknown TYPE_NAME is an error. */
 		if (func->return_type && func->return_type->kind == TYPE_NAME) {
 			const char *tname = func->return_type->data.name;
-			if (!is_primitive_type_name(tname) && !semantic_has_extern_type(ctx, tname)) {
+			if (semantic_has_extern_type(ctx, tname)) {
+				char msg[256];
+				snprintf(msg, sizeof(msg),
+				         "extern table '%s' must be referenced as 'handle(%s)' (extern func '%s' return type)",
+				         tname, tname, func->name);
+				error(ctx, msg);
+			} else if (!is_primitive_type_name(tname)) {
 				char msg[256];
 				snprintf(msg, sizeof(msg), "unknown return type '%s' in extern func '%s' signature",
 				         tname, func->name);
 				error(ctx, msg);
 			}
-		}
-	} else {
-		/* Non-extern funcs: extern types are forbidden in return type. */
-		if (is_extern_type_ref(ctx, func->return_type)) {
-			char msg[256];
-			snprintf(msg, sizeof(msg),
-			         "extern type '%s' may only appear in extern signatures (func '%s' return type)",
-			         func->return_type->data.name, func->name);
-			error(ctx, msg);
 		}
 	}
 

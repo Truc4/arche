@@ -1,76 +1,76 @@
 // Legacy fread-based API
-func csv_open(path: char[]) -> int {
+func open(path: char[]) -> handle(File) {
   return arche_fopen_read(path);
 }
-proc csv_close(fd: int) {
+proc close(fd: handle(File)) {
   arche_fclose(fd);
 }
-proc csv_skip_header(fd: int) {
+proc skip_header(fd: handle(File)) {
   let line: char[256];
   arche_fread_line(fd, line, 256);
 }
-func csv_read_chunk(fd: int, out buf: char[], size: int) -> int {
+func read_chunk(fd: handle(File), out buf: char[], size: int) -> int {
   return arche_csv_read_chunk(fd, buf, size);
 }
 
 // mmap-based API
-func csv_mmap_open(path: char[]) -> int {
+func mmap_open(path: char[]) -> int {
   return arche_mmap_open(path);
 }
-func csv_mmap_size(handle: int) -> int {
+func mmap_size(handle: int) -> int {
   return arche_mmap_size(handle);
 }
-proc csv_mmap_close(handle: int) {
+proc mmap_close(handle: int) {
   arche_mmap_close(handle);
 }
-func csv_mmap_skip_header(handle: int, size: int) -> int {
+func mmap_skip_header(handle: int, size: int) -> int {
   return arche_mmap_find(handle, 0, size, '\n') + 1;
 }
-func csv_mmap_next_line(handle: int, pos: int, size: int) -> int {
+func mmap_next_line(handle: int, pos: int, size: int) -> int {
   return arche_mmap_find(handle, pos, size, '\n');
 }
-func csv_mmap_find_comma(handle: int, pos: int, end: int) -> int {
+func mmap_find_comma(handle: int, pos: int, end: int) -> int {
   return arche_mmap_find(handle, pos, end, ',');
 }
-func csv_mmap_parse_float(handle: int, pos: int) -> float {
+func mmap_parse_float(handle: int, pos: int) -> float {
   return arche_mmap_parse_float(handle, pos);
 }
-func csv_mmap_parse_int(handle: int, pos: int) -> int {
+func mmap_parse_int(handle: int, pos: int) -> int {
   return arche_mmap_parse_int(handle, pos);
 }
 
 // Per-type parse helpers — gathered into a procedure group so the call site
-// inside csv_fill's `each_field` body dispatches by the static type of f[i].
+// inside fill's `each_field` body dispatches by the static type of f[i].
 // `cell` is a type witness; only its static type matters.
-func csv_parse_float(cell: float, mm: int, pos: int) -> float {
+func parse_float(cell: float, mm: int, pos: int) -> float {
   return arche_mmap_parse_float(mm, pos);
 }
-func csv_parse_int(cell: int, mm: int, pos: int) -> int {
+func parse_int(cell: int, mm: int, pos: int) -> int {
   return arche_mmap_parse_int(mm, pos);
 }
-func csv_parse = { csv_parse_float, csv_parse_int };
+func parse = { parse_float, parse_int };
 
-// Shared column-index cache for csv_fill. Sized for archetypes up to 64 fields;
+// Shared column-index cache for fill. Sized for archetypes up to 64 fields;
 // the v1 each_field iterator addresses it by f.index (the field's declaration
-// position). csv_fill is single-threaded so reusing one buffer across calls is
+// position). fill is single-threaded so reusing one buffer across calls is
 // fine.
-static csv_fill_cols: int[64];
+static fill_cols: int[64];
 
-proc csv_fill(arch: archetype, path: char[]) {
+proc fill(arch: archetype, path: char[]) {
   let mm: int = arche_mmap_open(path);
   let size: int = arche_mmap_size(mm);
   let hdr_end: int = arche_mmap_find(mm, 0, size, 10) + 1;
 
   each_field f in arch {
-    csv_fill_cols[f.index] = arche_csv_column_index(mm, f.name);
+    fill_cols[f.index] = arche_csv_column_index(mm, f.name);
   }
 
   let pos: int = hdr_end;
   for (let i = 0; i < arch.capacity; i += 1) {
     let nl: int = arche_mmap_find(mm, pos, size, 10);
     each_field f in arch {
-      let fpos: int = arche_csv_field_pos(mm, pos, csv_fill_cols[f.index]);
-      f[i] = csv_parse(f[i], mm, fpos);
+      let fpos: int = arche_csv_field_pos(mm, pos, fill_cols[f.index]);
+      f[i] = parse(f[i], mm, fpos);
     }
     pos = nl + 1;
   }

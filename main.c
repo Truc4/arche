@@ -42,6 +42,267 @@ static char *source_dir_of(const char *path) {
 	return dir;
 }
 
+/* =========================
+   Module auto-prefix
+   =========================
+   When `use foo;` is resolved, every top-level name declared by the foo module
+   is rewritten to `foo_<name>`, and every internal reference to those names is
+   rewritten the same way.  External references (e.g. into core, or to extern
+   C functions) are left alone because they don't appear in the local-name set. */
+
+static int name_in_set(char **set, int count, const char *name) {
+	if (!name) return 0;
+	for (int i = 0; i < count; i++)
+		if (strcmp(set[i], name) == 0) return 1;
+	return 0;
+}
+
+static char *prefix_name(const char *prefix, const char *name) {
+	int p = (int)strlen(prefix), n = (int)strlen(name);
+	char *r = malloc(p + 1 + n + 1);
+	memcpy(r, prefix, p);
+	r[p] = '_';
+	memcpy(r + p + 1, name, n);
+	r[p + 1 + n] = 0;
+	return r;
+}
+
+static void maybe_rename(char **slot, const char *prefix, char **set, int count) {
+	if (!*slot || !name_in_set(set, count, *slot)) return;
+	char *old = *slot;
+	*slot = prefix_name(prefix, old);
+	free(old);
+}
+
+static void rename_typeref(TypeRef *t, const char *prefix, char **set, int count);
+static void rename_expr(Expression *e, const char *prefix, char **set, int count);
+static void rename_stmt(Statement *s, const char *prefix, char **set, int count);
+
+static void rename_typeref(TypeRef *t, const char *prefix, char **set, int count) {
+	if (!t) return;
+	switch (t->kind) {
+	case TYPE_NAME:
+		maybe_rename(&t->data.name, prefix, set, count);
+		break;
+	case TYPE_ARRAY:
+		rename_typeref(t->data.array.element_type, prefix, set, count);
+		break;
+	case TYPE_SHAPED_ARRAY:
+		rename_typeref(t->data.shaped_array.element_type, prefix, set, count);
+		break;
+	case TYPE_TUPLE:
+		for (int i = 0; i < t->data.tuple.field_count; i++)
+			rename_typeref(t->data.tuple.field_types[i], prefix, set, count);
+		break;
+	case TYPE_HANDLE:
+		maybe_rename(&t->data.handle.archetype_name, prefix, set, count);
+		break;
+	case TYPE_ARCHETYPE:
+		break;
+	}
+}
+
+static void rename_expr(Expression *e, const char *prefix, char **set, int count) {
+	if (!e) return;
+	switch (e->type) {
+	case EXPR_LITERAL:
+	case EXPR_STRING:
+		break;
+	case EXPR_NAME:
+		maybe_rename(&e->data.name.name, prefix, set, count);
+		break;
+	case EXPR_FIELD:
+		rename_expr(e->data.field.base, prefix, set, count);
+		break;
+	case EXPR_INDEX:
+		rename_expr(e->data.index.base, prefix, set, count);
+		for (int i = 0; i < e->data.index.index_count; i++)
+			rename_expr(e->data.index.indices[i], prefix, set, count);
+		break;
+	case EXPR_BINARY:
+		rename_expr(e->data.binary.left, prefix, set, count);
+		rename_expr(e->data.binary.right, prefix, set, count);
+		break;
+	case EXPR_UNARY:
+		rename_expr(e->data.unary.operand, prefix, set, count);
+		break;
+	case EXPR_CALL:
+		rename_expr(e->data.call.callee, prefix, set, count);
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			rename_expr(e->data.call.args[i], prefix, set, count);
+		break;
+	case EXPR_ALLOC:
+		maybe_rename(&e->data.alloc.archetype_name, prefix, set, count);
+		for (int i = 0; i < e->data.alloc.field_count; i++)
+			rename_expr(e->data.alloc.field_values[i], prefix, set, count);
+		rename_expr(e->data.alloc.init_length, prefix, set, count);
+		break;
+	case EXPR_ARRAY_LITERAL:
+		for (int i = 0; i < e->data.array_literal.element_count; i++)
+			rename_expr(e->data.array_literal.elements[i], prefix, set, count);
+		break;
+	}
+}
+
+static void rename_stmt(Statement *s, const char *prefix, char **set, int count) {
+	if (!s) return;
+	switch (s->type) {
+	case STMT_LET:
+		rename_typeref(s->data.let_stmt.type, prefix, set, count);
+		rename_expr(s->data.let_stmt.value, prefix, set, count);
+		break;
+	case STMT_ASSIGN:
+		rename_expr(s->data.assign_stmt.target, prefix, set, count);
+		rename_expr(s->data.assign_stmt.value, prefix, set, count);
+		break;
+	case STMT_FOR:
+		rename_expr(s->data.for_stmt.iterable, prefix, set, count);
+		rename_stmt(s->data.for_stmt.init, prefix, set, count);
+		rename_expr(s->data.for_stmt.condition, prefix, set, count);
+		rename_stmt(s->data.for_stmt.increment, prefix, set, count);
+		for (int i = 0; i < s->data.for_stmt.body_count; i++)
+			rename_stmt(s->data.for_stmt.body[i], prefix, set, count);
+		break;
+	case STMT_IF:
+		rename_expr(s->data.if_stmt.cond, prefix, set, count);
+		for (int i = 0; i < s->data.if_stmt.then_count; i++)
+			rename_stmt(s->data.if_stmt.then_body[i], prefix, set, count);
+		for (int i = 0; i < s->data.if_stmt.else_count; i++)
+			rename_stmt(s->data.if_stmt.else_body[i], prefix, set, count);
+		break;
+	case STMT_BREAK:
+		break;
+	case STMT_RUN:
+		break; /* world/system names — module-local sys not currently supported via use */
+	case STMT_EXPR:
+		rename_expr(s->data.expr_stmt.expr, prefix, set, count);
+		break;
+	case STMT_FREE:
+		rename_expr(s->data.free_stmt.value, prefix, set, count);
+		break;
+	case STMT_RETURN:
+		rename_expr(s->data.return_stmt.value, prefix, set, count);
+		break;
+	case STMT_MULTI_BIND:
+		for (int i = 0; i < s->data.multi_bind.target_count; i++)
+			rename_typeref(s->data.multi_bind.targets[i].type, prefix, set, count);
+		rename_expr(s->data.multi_bind.value, prefix, set, count);
+		break;
+	case STMT_EACH_FIELD:
+		rename_typeref(s->data.each_field.filter_type, prefix, set, count);
+		for (int i = 0; i < s->data.each_field.body_count; i++)
+			rename_stmt(s->data.each_field.body[i], prefix, set, count);
+		break;
+	}
+}
+
+static void collect_module_names(Program *mod, char ***out_set, int *out_count) {
+	int cap = 0;
+	int n = 0;
+	char **set = NULL;
+	for (int i = 0; i < mod->decl_count; i++) {
+		Decl *d = mod->decls[i];
+		const char *name = NULL;
+		switch (d->kind) {
+		case DECL_ARCHETYPE: name = d->data.archetype->name; break;
+		case DECL_PROC: name = d->data.proc->name; break;
+		case DECL_SYS: name = d->data.sys->name; break;
+		case DECL_FUNC: name = d->data.func->name; break;
+		case DECL_FUNC_GROUP: name = d->data.func_group->name; break;
+		case DECL_STATIC:
+			name = (d->data.static_decl->kind == STATIC_KIND_ARRAY)
+			    ? d->data.static_decl->array.name
+			    : d->data.static_decl->archetype.archetype_name;
+			break;
+		case DECL_CONST: name = d->data.constant->name; break;
+		case DECL_EXTERN_TYPE: name = d->data.extern_type->name; break;
+		case DECL_WORLD: name = d->data.world->name; break;
+		case DECL_USE: break;
+		}
+		if (!name) continue;
+		if (n == cap) { cap = cap ? cap * 2 : 16; set = realloc(set, cap * sizeof(char *)); }
+		set[n] = malloc(strlen(name) + 1);
+		strcpy(set[n], name);
+		n++;
+	}
+	*out_set = set;
+	*out_count = n;
+}
+
+static void free_name_set(char **set, int count) {
+	for (int i = 0; i < count; i++) free(set[i]);
+	free(set);
+}
+
+static void rename_decl(Decl *d, const char *prefix, char **set, int count) {
+	switch (d->kind) {
+	case DECL_ARCHETYPE:
+		maybe_rename(&d->data.archetype->name, prefix, set, count);
+		for (int i = 0; i < d->data.archetype->field_count; i++)
+			rename_typeref(d->data.archetype->fields[i]->type, prefix, set, count);
+		break;
+	case DECL_PROC:
+		maybe_rename(&d->data.proc->name, prefix, set, count);
+		for (int i = 0; i < d->data.proc->param_count; i++)
+			rename_typeref(d->data.proc->params[i]->type, prefix, set, count);
+		for (int i = 0; i < d->data.proc->statement_count; i++)
+			rename_stmt(d->data.proc->statements[i], prefix, set, count);
+		break;
+	case DECL_SYS:
+		maybe_rename(&d->data.sys->name, prefix, set, count);
+		for (int i = 0; i < d->data.sys->param_count; i++)
+			rename_typeref(d->data.sys->params[i]->type, prefix, set, count);
+		for (int i = 0; i < d->data.sys->statement_count; i++)
+			rename_stmt(d->data.sys->statements[i], prefix, set, count);
+		break;
+	case DECL_FUNC:
+		maybe_rename(&d->data.func->name, prefix, set, count);
+		rename_typeref(d->data.func->return_type, prefix, set, count);
+		for (int i = 0; i < d->data.func->param_count; i++)
+			rename_typeref(d->data.func->params[i]->type, prefix, set, count);
+		for (int i = 0; i < d->data.func->statement_count; i++)
+			rename_stmt(d->data.func->statements[i], prefix, set, count);
+		break;
+	case DECL_FUNC_GROUP:
+		maybe_rename(&d->data.func_group->name, prefix, set, count);
+		for (int i = 0; i < d->data.func_group->member_count; i++)
+			maybe_rename(&d->data.func_group->member_names[i], prefix, set, count);
+		break;
+	case DECL_STATIC:
+		if (d->data.static_decl->kind == STATIC_KIND_ARRAY) {
+			maybe_rename(&d->data.static_decl->array.name, prefix, set, count);
+			rename_typeref(d->data.static_decl->array.element_type, prefix, set, count);
+		} else {
+			maybe_rename(&d->data.static_decl->archetype.archetype_name, prefix, set, count);
+			for (int i = 0; i < d->data.static_decl->archetype.field_count; i++)
+				rename_expr(d->data.static_decl->archetype.field_values[i], prefix, set, count);
+			rename_expr(d->data.static_decl->archetype.init_length, prefix, set, count);
+		}
+		break;
+	case DECL_CONST:
+		maybe_rename(&d->data.constant->name, prefix, set, count);
+		rename_expr(d->data.constant->value, prefix, set, count);
+		break;
+	case DECL_EXTERN_TYPE:
+		maybe_rename(&d->data.extern_type->name, prefix, set, count);
+		break;
+	case DECL_WORLD:
+		maybe_rename(&d->data.world->name, prefix, set, count);
+		break;
+	case DECL_USE:
+		break;
+	}
+}
+
+static void prefix_module(Program *mod, const char *prefix) {
+	char **set = NULL;
+	int count = 0;
+	collect_module_names(mod, &set, &count);
+	for (int i = 0; i < mod->decl_count; i++)
+		rename_decl(mod->decls[i], prefix, set, count);
+	free_name_set(set, count);
+}
+
 static void resolve_uses(Program *prog, const char *source_path) {
 	int i = 0;
 	while (i < prog->decl_count) {
@@ -120,6 +381,11 @@ static void resolve_uses(Program *prog, const char *source_path) {
 			i++;
 			continue;
 		}
+
+		/* Auto-prefix every top-level name and its internal references
+		 * with the module name. After `use csv;`, csv.arche's `open` becomes
+		 * `csv_open` to callers and inside the module. */
+		prefix_module(mod, mod_name);
 
 		/* Insert module declarations at current position i (before DECL_USE) */
 		int new_count = prog->decl_count + mod->decl_count;
