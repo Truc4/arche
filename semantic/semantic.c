@@ -1333,6 +1333,13 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 				ctx->error_count++;
 			}
 		}
+		if (is_extern_type_ref(ctx, arch->fields[i]->type)) {
+			char msg[256];
+			snprintf(msg, sizeof(msg),
+			         "extern type '%s' may only appear in extern signatures (archetype '%s' field '%s')",
+			         arch->fields[i]->type->data.name, arch->name, arch->fields[i]->name);
+			error(ctx, msg);
+		}
 	}
 
 	/* Register alias */
@@ -2137,16 +2144,24 @@ SemanticContext *semantic_analyze(Program *prog) {
 	/* global scope: holds module-level variables (static arrays, etc.) */
 	push_scope(ctx);
 
-	/* first pass: collect all archetypes */
+	/* pass 1a: register extern types so archetype field checks see them */
+	for (int i = 0; i < prog->decl_count; i++) {
+		if (prog->decls[i]->kind == DECL_EXTERN_TYPE) {
+			analyze_decl(ctx, prog->decls[i]);
+		}
+	}
+
+	/* pass 1b: collect all archetypes */
 	for (int i = 0; i < prog->decl_count; i++) {
 		if (prog->decls[i]->kind == DECL_ARCHETYPE) {
 			analyze_decl(ctx, prog->decls[i]);
 		}
 	}
 
-	/* second pass: analyze other declarations */
+	/* pass 2: analyze other declarations */
 	for (int i = 0; i < prog->decl_count; i++) {
-		if (prog->decls[i]->kind != DECL_ARCHETYPE && prog->decls[i]->kind != DECL_CONST) {
+		if (prog->decls[i]->kind != DECL_ARCHETYPE && prog->decls[i]->kind != DECL_CONST
+		    && prog->decls[i]->kind != DECL_EXTERN_TYPE) {
 			analyze_decl(ctx, prog->decls[i]);
 		}
 	}

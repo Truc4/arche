@@ -1,0 +1,14 @@
+// RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t > %t.out 2>&1 ; grep -qi "stale" %t.out
+
+extern type Resource(8);
+extern func resource_open(initial: int) -> Resource;
+extern proc resource_close(consume r: Resource);
+extern func resource_get(r: Resource) -> int;
+
+proc main() {
+  let r := resource_open(10);
+  let alias := r;
+  resource_close(r);
+  let r2 := resource_open(99);
+  let v := resource_get(alias);
+}

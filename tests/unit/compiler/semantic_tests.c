@@ -436,6 +436,18 @@ void test_extern_type_only_in_externs(void) {
 	test_pass_msg();
 }
 
+void test_extern_type_in_archetype_field_is_error(void) {
+	test_start("extern type cannot appear as archetype field");
+	AnalysisResult r = analyze_string(
+	    "extern type Window(8);\n"
+	    "arche Holder { ref: Window, }\n"
+	);
+	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected error for extern type in archetype field");
+	semantic_context_free(r.ctx);
+	program_free(r.prog);
+	test_pass_msg();
+}
+
 void test_extern_signature_with_extern_type_ok(void) {
 	test_start("extern proc with extern-type param is accepted");
 	AnalysisResult r = analyze_string(
@@ -576,6 +588,7 @@ int main(void) {
 	test_extern_type_registered();
 	test_extern_type_duplicate_is_error();
 	test_extern_type_only_in_externs();
+	test_extern_type_in_archetype_field_is_error();
 	test_extern_signature_with_extern_type_ok();
 	test_unknown_type_name_still_errors();
 	test_extern_types_distinct();
