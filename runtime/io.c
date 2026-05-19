@@ -15,9 +15,16 @@ double arche_now_sec(void) {
 	return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
-/* File handles flow through the extern-type table (`extern type File(N)`).
+/* File handles flow through the extern-type table (`extern File(N)`).
  * The C ABI takes/returns `FILE*` directly; the codegen-emitted marshal layer
- * allocates a slot, stores the pointer, and hands Arche an opaque handle. */
+ * allocates a slot, stores the pointer, and hands Arche an opaque handle.
+ *
+ * Each arche_stdin/stdout/stderr call allocates a new slot, so Arche programs
+ * should bind it once at startup and reuse the handle. */
+
+FILE *arche_stdin(void) { return stdin; }
+FILE *arche_stdout(void) { return stdout; }
+FILE *arche_stderr(void) { return stderr; }
 
 FILE *arche_fopen_write(const char *path) {
 	return fopen(path, "w");
