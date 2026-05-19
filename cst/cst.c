@@ -1207,6 +1207,8 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 					fprintf(out, ", ");
 				if (proc->params[j]->is_out)
 					fprintf(out, "out ");
+				if (proc->params[j]->is_consume)
+					fprintf(out, "consume ");
 				fprintf(out, "%s: ", proc->params[j]->name);
 				format_type(out, proc->params[j]->type);
 			}
@@ -1252,6 +1254,8 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 					fprintf(out, ", ");
 				if (func->params[j]->is_out)
 					fprintf(out, "out ");
+				if (func->params[j]->is_consume)
+					fprintf(out, "consume ");
 				fprintf(out, "%s: ", func->params[j]->name);
 				format_type(out, func->params[j]->type);
 			}
@@ -1330,9 +1334,13 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			fprintf(out, "\n");
 			break;
 		}
-		case DECL_EXTERN_TYPE:
-			/* Parser not yet implemented; no formatting needed */
+		case DECL_EXTERN_TYPE: {
+			ExternTypeDecl *et = decl->data.extern_type;
+			fprintf(out, "extern %s(%d);", et->name, et->capacity);
+			emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
+			fprintf(out, "\n");
 			break;
+		}
 		}
 		ctx.at_program_start = 0;
 	}
