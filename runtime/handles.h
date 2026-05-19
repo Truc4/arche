@@ -20,27 +20,18 @@
 #include <stdint.h>
 
 typedef struct {
-    void    *ptr;
-    uint16_t gen;
-    uint16_t in_use;
+	void *ptr;
+	uint16_t gen;
+	uint16_t in_use;
 } __ArcheSlot;
 
 /* Allocate a free slot for ptr; return packed handle. Aborts if full. */
-int32_t __arche_slot_alloc(const char *type_name,
-                           __ArcheSlot *slots,
-                           int capacity,
-                           void *ptr);
+int32_t __arche_slot_alloc(const char *type_name, __ArcheSlot *slots, int capacity, void *ptr);
 
 /* Decode and validate handle; return ptr or abort on bad/stale handle. */
-void *__arche_slot_get(const char *type_name,
-                       __ArcheSlot *slots,
-                       int capacity,
-                       int32_t handle);
+void *__arche_slot_get(const char *type_name, __ArcheSlot *slots, int capacity, int32_t handle);
 
 /* Free slot; bump generation. No-op on null handle. */
-void __arche_slot_free(const char *type_name,
-                       __ArcheSlot *slots,
-                       int capacity,
-                       int32_t handle);
+void __arche_slot_free(const char *type_name, __ArcheSlot *slots, int capacity, int32_t handle);
 
 #endif /* ARCHE_HANDLES_H */

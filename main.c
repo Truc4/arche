@@ -51,9 +51,11 @@ static char *source_dir_of(const char *path) {
    C functions) are left alone because they don't appear in the local-name set. */
 
 static int name_in_set(char **set, int count, const char *name) {
-	if (!name) return 0;
+	if (!name)
+		return 0;
 	for (int i = 0; i < count; i++)
-		if (strcmp(set[i], name) == 0) return 1;
+		if (strcmp(set[i], name) == 0)
+			return 1;
 	return 0;
 }
 
@@ -68,7 +70,8 @@ static char *prefix_name(const char *prefix, const char *name) {
 }
 
 static void maybe_rename(char **slot, const char *prefix, char **set, int count) {
-	if (!*slot || !name_in_set(set, count, *slot)) return;
+	if (!*slot || !name_in_set(set, count, *slot))
+		return;
 	char *old = *slot;
 	*slot = prefix_name(prefix, old);
 	free(old);
@@ -79,7 +82,8 @@ static void rename_expr(Expression *e, const char *prefix, char **set, int count
 static void rename_stmt(Statement *s, const char *prefix, char **set, int count);
 
 static void rename_typeref(TypeRef *t, const char *prefix, char **set, int count) {
-	if (!t) return;
+	if (!t)
+		return;
 	switch (t->kind) {
 	case TYPE_NAME:
 		maybe_rename(&t->data.name, prefix, set, count);
@@ -103,7 +107,8 @@ static void rename_typeref(TypeRef *t, const char *prefix, char **set, int count
 }
 
 static void rename_expr(Expression *e, const char *prefix, char **set, int count) {
-	if (!e) return;
+	if (!e)
+		return;
 	switch (e->type) {
 	case EXPR_LITERAL:
 	case EXPR_STRING:
@@ -145,7 +150,8 @@ static void rename_expr(Expression *e, const char *prefix, char **set, int count
 }
 
 static void rename_stmt(Statement *s, const char *prefix, char **set, int count) {
-	if (!s) return;
+	if (!s)
+		return;
 	switch (s->type) {
 	case STMT_LET:
 		rename_typeref(s->data.let_stmt.type, prefix, set, count);
@@ -204,23 +210,43 @@ static void collect_module_names(Program *mod, char ***out_set, int *out_count) 
 		Decl *d = mod->decls[i];
 		const char *name = NULL;
 		switch (d->kind) {
-		case DECL_ARCHETYPE: name = d->data.archetype->name; break;
-		case DECL_PROC: name = d->data.proc->name; break;
-		case DECL_SYS: name = d->data.sys->name; break;
-		case DECL_FUNC: name = d->data.func->name; break;
-		case DECL_FUNC_GROUP: name = d->data.func_group->name; break;
-		case DECL_STATIC:
-			name = (d->data.static_decl->kind == STATIC_KIND_ARRAY)
-			    ? d->data.static_decl->array.name
-			    : d->data.static_decl->archetype.archetype_name;
+		case DECL_ARCHETYPE:
+			name = d->data.archetype->name;
 			break;
-		case DECL_CONST: name = d->data.constant->name; break;
-		case DECL_EXTERN_TYPE: name = d->data.extern_type->name; break;
-		case DECL_WORLD: name = d->data.world->name; break;
-		case DECL_USE: break;
+		case DECL_PROC:
+			name = d->data.proc->name;
+			break;
+		case DECL_SYS:
+			name = d->data.sys->name;
+			break;
+		case DECL_FUNC:
+			name = d->data.func->name;
+			break;
+		case DECL_FUNC_GROUP:
+			name = d->data.func_group->name;
+			break;
+		case DECL_STATIC:
+			name = (d->data.static_decl->kind == STATIC_KIND_ARRAY) ? d->data.static_decl->array.name
+			                                                        : d->data.static_decl->archetype.archetype_name;
+			break;
+		case DECL_CONST:
+			name = d->data.constant->name;
+			break;
+		case DECL_EXTERN_TYPE:
+			name = d->data.extern_type->name;
+			break;
+		case DECL_WORLD:
+			name = d->data.world->name;
+			break;
+		case DECL_USE:
+			break;
 		}
-		if (!name) continue;
-		if (n == cap) { cap = cap ? cap * 2 : 16; set = realloc(set, cap * sizeof(char *)); }
+		if (!name)
+			continue;
+		if (n == cap) {
+			cap = cap ? cap * 2 : 16;
+			set = realloc(set, cap * sizeof(char *));
+		}
 		set[n] = malloc(strlen(name) + 1);
 		strcpy(set[n], name);
 		n++;
@@ -230,7 +256,8 @@ static void collect_module_names(Program *mod, char ***out_set, int *out_count) 
 }
 
 static void free_name_set(char **set, int count) {
-	for (int i = 0; i < count; i++) free(set[i]);
+	for (int i = 0; i < count; i++)
+		free(set[i]);
 	free(set);
 }
 
@@ -702,17 +729,14 @@ int main(int argc, char *argv[]) {
 	/* Base command: fixed runtime objects */
 	char cc_cmd[4096];
 	int cc_len = snprintf(cc_cmd, sizeof(cc_cmd),
-	                      "cc -no-pie -mcmodel=large -o %s %s "
-	                      ARCHE_RUNTIME_DIR "/stack_check.o "
-	                      ARCHE_RUNTIME_DIR "/io.o "
-	                      ARCHE_RUNTIME_DIR "/handles.o "
+	                      "cc -no-pie -mcmodel=large -o %s %s " ARCHE_RUNTIME_DIR "/stack_check.o " ARCHE_RUNTIME_DIR
+	                      "/io.o " ARCHE_RUNTIME_DIR "/handles.o "
 	                      "-lc",
 	                      output_file, asm_file);
 
 	/* Append any --link paths supplied on the command line */
 	for (int li = 0; li < link_count && cc_len < (int)sizeof(cc_cmd) - 1; li++) {
-		cc_len += snprintf(cc_cmd + cc_len, sizeof(cc_cmd) - (size_t)cc_len,
-		                   " %s", link_paths[li]);
+		cc_len += snprintf(cc_cmd + cc_len, sizeof(cc_cmd) - (size_t)cc_len, " %s", link_paths[li]);
 	}
 
 	printf("Linking executable...\n");

@@ -22,20 +22,28 @@ double arche_now_sec(void) {
  * Each arche_stdin/stdout/stderr call allocates a new slot, so Arche programs
  * should bind it once at startup and reuse the handle. */
 
-FILE *arche_stdin(void) { return stdin; }
-FILE *arche_stdout(void) { return stdout; }
-FILE *arche_stderr(void) { return stderr; }
+FILE *arche_stdin(void) {
+	return stdin;
+}
+FILE *arche_stdout(void) {
+	return stdout;
+}
+FILE *arche_stderr(void) {
+	return stderr;
+}
 
 FILE *arche_fopen_write(const char *path) {
 	return fopen(path, "w");
 }
 
 void arche_fwrite(FILE *f, const char *buf, int n) {
-	if (f) fwrite(buf, 1, n, f);
+	if (f)
+		fwrite(buf, 1, n, f);
 }
 
 void arche_fclose(FILE *f) {
-	if (f) fclose(f);
+	if (f)
+		fclose(f);
 }
 
 FILE *arche_fopen_read(const char *path) {
@@ -43,13 +51,16 @@ FILE *arche_fopen_read(const char *path) {
 }
 
 int arche_fread(FILE *f, char *buf, int n) {
-	if (!f) return 0;
+	if (!f)
+		return 0;
 	return (int)fread(buf, 1, n, f);
 }
 
 int arche_fread_line(FILE *f, char *buf, int n) {
-	if (!f) return -1;
-	if (fgets(buf, n, f) == NULL) return 0;
+	if (!f)
+		return -1;
+	if (fgets(buf, n, f) == NULL)
+		return 0;
 	int len = strlen(buf);
 	if (len > 0 && buf[len - 1] == '\n') {
 		buf[len - 1] = '\0';
@@ -59,7 +70,8 @@ int arche_fread_line(FILE *f, char *buf, int n) {
 }
 
 int arche_csv_read_chunk(FILE *f, char *buf, int max_bytes) {
-	if (!f) return -1;
+	if (!f)
+		return -1;
 	return (int)fread(buf, 1, max_bytes, f);
 }
 

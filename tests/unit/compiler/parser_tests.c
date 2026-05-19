@@ -780,10 +780,8 @@ void test_extern_type_decl(void) {
 
 void test_parser_treats_extern_type_as_typename(void) {
 	test_start("parser leaves 'Window' as TYPE_NAME (semantic resolves)");
-	Program *prog = parse_string(
-	    "extern type Window(8);\n"
-	    "extern func window_open(w: int, h: int) -> Window;\n"
-	);
+	Program *prog = parse_string("extern type Window(8);\n"
+	                             "extern func window_open(w: int, h: int) -> Window;\n");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ASSERT_EQ(prog->decl_count, 2, "expected 2 decls");
 	ASSERT_EQ(prog->decls[1]->kind, DECL_FUNC, "expected DECL_FUNC");
@@ -799,10 +797,8 @@ void test_parser_treats_extern_type_as_typename(void) {
 
 void test_consume_param_modifier(void) {
 	test_start("consume parameter modifier");
-	Program *prog = parse_string(
-	    "extern type Window(8);\n"
-	    "extern proc window_close(consume w: Window);\n"
-	);
+	Program *prog = parse_string("extern type Window(8);\n"
+	                             "extern proc window_close(consume w: Window);\n");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ASSERT_EQ(prog->decl_count, 2, "expected 2 decls");
 	ASSERT_EQ(prog->decls[1]->kind, DECL_PROC, "expected DECL_PROC");
@@ -816,10 +812,8 @@ void test_consume_param_modifier(void) {
 
 void test_consume_and_out_mutually_exclusive(void) {
 	test_start("consume and out cannot both apply to same param");
-	ParseResult result = parse_source(
-	    "extern type Window(8);\n"
-	    "extern proc bad(consume out w: Window);\n"
-	);
+	ParseResult result = parse_source("extern type Window(8);\n"
+	                                  "extern proc bad(consume out w: Window);\n");
 	ASSERT_TRUE(result.error_count >= 1, "expected at least one parse error");
 	parse_result_free(&result);
 	test_pass_msg();

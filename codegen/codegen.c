@@ -2297,17 +2297,15 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 					int cap = semantic_extern_type_capacity(ctx->sem_ctx, ptn);
 					int namelen = (int)strlen(ptn);
 					char *ptr_val = gen_value_name(ctx);
-					buffer_append_fmt(ctx,
+					buffer_append_fmt(
+					    ctx,
 					    "  %s = call i8* @__arche_slot_get("
 					    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 0), "
-					    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* @__arche_%s_slots, i32 0, i32 0), "
+					    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* "
+					    "@__arche_%s_slots, i32 0, i32 0), "
 					    "i32 %d, "
 					    "i32 %s)\n",
-					    ptr_val,
-					    namelen + 1, namelen + 1, ptn,
-					    cap, cap, ptn,
-					    cap,
-					    call_arg_vals[i]);
+					    ptr_val, namelen + 1, namelen + 1, ptn, cap, cap, ptn, cap, call_arg_vals[i]);
 					strcpy(call_arg_vals[i], ptr_val);
 					call_arg_types[i] = "i8*";
 				}
@@ -2348,16 +2346,15 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 					}
 					int cap = semantic_extern_type_capacity(ctx->sem_ctx, ptn);
 					int namelen = (int)strlen(ptn);
-					buffer_append_fmt(ctx,
+					buffer_append_fmt(
+					    ctx,
 					    "  call void @__arche_slot_free("
 					    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 0), "
-					    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* @__arche_%s_slots, i32 0, i32 0), "
+					    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* "
+					    "@__arche_%s_slots, i32 0, i32 0), "
 					    "i32 %d, "
 					    "i32 %s)\n",
-					    namelen + 1, namelen + 1, ptn,
-					    cap, cap, ptn,
-					    cap,
-					    saved_handle);
+					    namelen + 1, namelen + 1, ptn, cap, cap, ptn, cap, saved_handle);
 				}
 
 				buffer_append_fmt(ctx, "  br label %%%s\n", skip_lbl);
@@ -2380,16 +2377,15 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 					int cap = semantic_extern_type_capacity(ctx->sem_ctx, param_type_name);
 					int namelen = (int)strlen(param_type_name);
 					char *ptr_val = gen_value_name(ctx);
-					buffer_append_fmt(ctx,
+					buffer_append_fmt(
+					    ctx,
 					    "  %s = call i8* @__arche_slot_get("
 					    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 0), "
-					    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* @__arche_%s_slots, i32 0, i32 0), "
+					    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* "
+					    "@__arche_%s_slots, i32 0, i32 0), "
 					    "i32 %d, "
 					    "i32 %s)\n",
-					    ptr_val,
-					    namelen + 1, namelen + 1, param_type_name,
-					    cap, cap, param_type_name,
-					    cap,
+					    ptr_val, namelen + 1, namelen + 1, param_type_name, cap, cap, param_type_name, cap,
 					    call_arg_vals[i]);
 					strcpy(call_arg_vals[i], ptr_val);
 					call_arg_types[i] = "i8*";
@@ -2432,7 +2428,8 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		int is_variadic = func_name && (strcmp(func_name, "sprintf") == 0 || strcmp(func_name, "printf") == 0);
 		int is_exit = func_name && strcmp(func_name, "exit") == 0;
 
-		if (consume_call_done) goto call_done;
+		if (consume_call_done)
+			goto call_done;
 
 		if (is_exit) {
 			/* exit() is a void function that never returns */
@@ -2564,24 +2561,22 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				int cap = semantic_extern_type_capacity(ctx->sem_ctx, extern_ret_type_name);
 				int namelen = (int)strlen(extern_ret_type_name);
 				char *h_wrap = gen_value_name(ctx);
-				buffer_append_fmt(ctx,
+				buffer_append_fmt(
+				    ctx,
 				    "  %s = call i32 @__arche_slot_alloc("
 				    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 0), "
-				    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* @__arche_%s_slots, i32 0, i32 0), "
+				    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* "
+				    "@__arche_%s_slots, i32 0, i32 0), "
 				    "i32 %d, "
 				    "i8* %s)\n",
-				    h_wrap,
-				    namelen + 1, namelen + 1, extern_ret_type_name,
-				    cap, cap, extern_ret_type_name,
-				    cap,
-				    raw);
+				    h_wrap, namelen + 1, namelen + 1, extern_ret_type_name, cap, cap, extern_ret_type_name, cap, raw);
 				buffer_append_fmt(ctx, "  br label %%%s\n", done_lbl);
 
 				/* done_h_N: phi to merge both paths */
 				char *phi_val = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "%s:\n", done_lbl);
-				buffer_append_fmt(ctx, "  %s = phi i32 [ %s, %%%s ], [ %s, %%%s ]\n",
-				    phi_val, h_null, null_lbl, h_wrap, wrap_lbl);
+				buffer_append_fmt(ctx, "  %s = phi i32 [ %s, %%%s ], [ %s, %%%s ]\n", phi_val, h_null, null_lbl, h_wrap,
+				                  wrap_lbl);
 				strcpy(result_buf, phi_val);
 			} else {
 				buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type, actual_func_name);
@@ -2596,7 +2591,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			}
 		}
 
-		call_done:;
+	call_done:;
 		/* Cleanup */
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			free(arg_bufs[i]);
@@ -5810,10 +5805,10 @@ static void codegen_proc_decl(CodegenContext *ctx, AstProcDecl *proc) {
 	/* For extern procs, emit declare stub */
 	if (proc->is_extern) {
 		/* Extern procs are C functions that return void, except known value-returning ones */
-		int is_value_func = (strcmp(proc->name, "atof") == 0 || strcmp(proc->name, "atoi") == 0 ||
-		                     strcmp(proc->name, "open") == 0 || strcmp(proc->name, "read") == 0 ||
-		                     strcmp(proc->name, "close") == 0 ||
-		                     strcmp(proc->name, "printf") == 0 || strcmp(proc->name, "sprintf") == 0);
+		int is_value_func =
+		    (strcmp(proc->name, "atof") == 0 || strcmp(proc->name, "atoi") == 0 || strcmp(proc->name, "open") == 0 ||
+		     strcmp(proc->name, "read") == 0 || strcmp(proc->name, "close") == 0 || strcmp(proc->name, "printf") == 0 ||
+		     strcmp(proc->name, "sprintf") == 0);
 		const char *decl_ret = is_value_func ? "i32" : "void";
 		buffer_append_fmt(ctx, "declare %s @%s(", decl_ret, proc->name);
 		for (int i = 0; i < proc->param_count; i++) {
@@ -6158,15 +6153,12 @@ static void codegen_emit_extern_types(CodegenContext *ctx) {
 		int cap = semantic_extern_type_capacity(ctx->sem_ctx, name);
 
 		/* Slot array global. */
-		buffer_append_fmt(ctx,
-		                  "@__arche_%s_slots = internal global [%d x %%__ArcheSlot] zeroinitializer\n",
-		                  name, cap);
+		buffer_append_fmt(ctx, "@__arche_%s_slots = internal global [%d x %%__ArcheSlot] zeroinitializer\n", name, cap);
 
 		/* Typename string constant (for error messages). */
 		int namelen = (int)strlen(name);
-		buffer_append_fmt(ctx,
-		                  "@__arche_%s_typename = internal constant [%d x i8] c\"%s\\00\"\n",
-		                  name, namelen + 1, name);
+		buffer_append_fmt(ctx, "@__arche_%s_typename = internal constant [%d x i8] c\"%s\\00\"\n", name, namelen + 1,
+		                  name);
 	}
 
 	/* Declare the three runtime helpers — defined in runtime/handles.c and

@@ -361,8 +361,7 @@ static int is_primitive_type_name(const char *type_name) {
 	if (!type_name)
 		return 0;
 	const char *n = normalize_type_name(type_name);
-	return strcmp(n, "int") == 0 || strcmp(n, "float") == 0 ||
-	       strcmp(n, "char") == 0 || strcmp(n, "str") == 0 ||
+	return strcmp(n, "int") == 0 || strcmp(n, "float") == 0 || strcmp(n, "char") == 0 || strcmp(n, "str") == 0 ||
 	       strcmp(n, "void") == 0;
 }
 
@@ -772,13 +771,13 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 					Parameter **params = NULL;
 					int is_extern = 0;
 
-					if (d->kind == DECL_FUNC && d->data.func &&
-					    d->data.func->name && strcmp(d->data.func->name, func_name) == 0) {
+					if (d->kind == DECL_FUNC && d->data.func && d->data.func->name &&
+					    strcmp(d->data.func->name, func_name) == 0) {
 						param_count = d->data.func->param_count;
 						params = d->data.func->params;
 						is_extern = d->data.func->is_extern;
-					} else if (d->kind == DECL_PROC && d->data.proc &&
-					           d->data.proc->name && strcmp(d->data.proc->name, func_name) == 0) {
+					} else if (d->kind == DECL_PROC && d->data.proc && d->data.proc->name &&
+					           strcmp(d->data.proc->name, func_name) == 0) {
 						param_count = d->data.proc->param_count;
 						params = d->data.proc->params;
 						is_extern = d->data.proc->is_extern;
@@ -1354,8 +1353,8 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 		if (semantic_has_extern_type(ctx, target)) {
 			char msg[256];
 			snprintf(msg, sizeof(msg),
-			         "extern handle '%s' may only appear in extern signatures (archetype '%s' field '%s')",
-			         target, arch->name, arch->fields[i]->name);
+			         "extern handle '%s' may only appear in extern signatures (archetype '%s' field '%s')", target,
+			         arch->name, arch->fields[i]->name);
 			error(ctx, msg);
 			continue;
 		}
@@ -1707,24 +1706,21 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 			/* Bare extern table name must be wrapped in handle(...). */
 			if (pt && pt->kind == TYPE_NAME && semantic_has_extern_type(ctx, pt->data.name)) {
 				char msg[256];
-				snprintf(msg, sizeof(msg),
-				         "extern table '%s' must be referenced as 'handle(%s)' (extern proc '%s')",
+				snprintf(msg, sizeof(msg), "extern table '%s' must be referenced as 'handle(%s)' (extern proc '%s')",
 				         pt->data.name, pt->data.name, proc->name);
 				error(ctx, msg);
 			} else if (pt && pt->kind == TYPE_NAME) {
 				const char *tname = pt->data.name;
 				if (!is_primitive_type_name(tname) && !find_archetype(ctx, tname)) {
 					char msg[256];
-					snprintf(msg, sizeof(msg), "unknown type '%s' in extern proc '%s' signature",
-					         tname, proc->name);
+					snprintf(msg, sizeof(msg), "unknown type '%s' in extern proc '%s' signature", tname, proc->name);
 					error(ctx, msg);
 				}
 			}
 			/* 'consume' modifier only makes sense on extern-type parameters. */
 			if (p->is_consume && !is_extern_type_ref(ctx, pt)) {
 				char msg[256];
-				snprintf(msg, sizeof(msg),
-				         "'consume' may only modify extern-type parameters (proc '%s', param '%s')",
+				snprintf(msg, sizeof(msg), "'consume' may only modify extern-type parameters (proc '%s', param '%s')",
 				         proc->name, p->name ? p->name : "?");
 				error(ctx, msg);
 			}
@@ -1733,8 +1729,7 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 			 * params (per spec). 'consume' is only meaningful on extern calls. */
 			if (p->is_consume) {
 				char msg[256];
-				snprintf(msg, sizeof(msg),
-				         "'consume' may only modify extern-type parameters (proc '%s', param '%s')",
+				snprintf(msg, sizeof(msg), "'consume' may only modify extern-type parameters (proc '%s', param '%s')",
 				         proc->name, p->name ? p->name : "?");
 				error(ctx, msg);
 			}
@@ -1970,24 +1965,21 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 			/* Bare extern table name must be wrapped in handle(...). */
 			if (pt && pt->kind == TYPE_NAME && semantic_has_extern_type(ctx, pt->data.name)) {
 				char msg[256];
-				snprintf(msg, sizeof(msg),
-				         "extern table '%s' must be referenced as 'handle(%s)' (extern func '%s')",
+				snprintf(msg, sizeof(msg), "extern table '%s' must be referenced as 'handle(%s)' (extern func '%s')",
 				         pt->data.name, pt->data.name, func->name);
 				error(ctx, msg);
 			} else if (pt && pt->kind == TYPE_NAME) {
 				const char *tname = pt->data.name;
 				if (!is_primitive_type_name(tname)) {
 					char msg[256];
-					snprintf(msg, sizeof(msg), "unknown type '%s' in extern func '%s' signature",
-					         tname, func->name);
+					snprintf(msg, sizeof(msg), "unknown type '%s' in extern func '%s' signature", tname, func->name);
 					error(ctx, msg);
 				}
 			}
 			/* 'consume' modifier only makes sense on extern-type parameters. */
 			if (p->is_consume && !is_extern_type_ref(ctx, pt)) {
 				char msg[256];
-				snprintf(msg, sizeof(msg),
-				         "'consume' may only modify extern-type parameters (func '%s', param '%s')",
+				snprintf(msg, sizeof(msg), "'consume' may only modify extern-type parameters (func '%s', param '%s')",
 				         func->name, p->name ? p->name : "?");
 				error(ctx, msg);
 			}
@@ -1996,8 +1988,7 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 			 * params (per spec). 'consume' is only meaningful on extern calls. */
 			if (p->is_consume) {
 				char msg[256];
-				snprintf(msg, sizeof(msg),
-				         "'consume' may only modify extern-type parameters (func '%s', param '%s')",
+				snprintf(msg, sizeof(msg), "'consume' may only modify extern-type parameters (func '%s', param '%s')",
 				         func->name, p->name ? p->name : "?");
 				error(ctx, msg);
 			}
@@ -2012,13 +2003,12 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 			if (semantic_has_extern_type(ctx, tname)) {
 				char msg[256];
 				snprintf(msg, sizeof(msg),
-				         "extern table '%s' must be referenced as 'handle(%s)' (extern func '%s' return type)",
-				         tname, tname, func->name);
+				         "extern table '%s' must be referenced as 'handle(%s)' (extern func '%s' return type)", tname,
+				         tname, func->name);
 				error(ctx, msg);
 			} else if (!is_primitive_type_name(tname)) {
 				char msg[256];
-				snprintf(msg, sizeof(msg), "unknown return type '%s' in extern func '%s' signature",
-				         tname, func->name);
+				snprintf(msg, sizeof(msg), "unknown return type '%s' in extern func '%s' signature", tname, func->name);
 				error(ctx, msg);
 			}
 		}
@@ -2071,8 +2061,7 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 			error(ctx, msg);
 			break;
 		}
-		ctx->extern_types = realloc(ctx->extern_types,
-		                            (ctx->extern_type_count + 1) * sizeof(ExternTypeEntry));
+		ctx->extern_types = realloc(ctx->extern_types, (ctx->extern_type_count + 1) * sizeof(ExternTypeEntry));
 		ctx->extern_types[ctx->extern_type_count].name = malloc(strlen(et->name) + 1);
 		strcpy(ctx->extern_types[ctx->extern_type_count].name, et->name);
 		ctx->extern_types[ctx->extern_type_count].capacity = et->capacity;
@@ -2178,8 +2167,8 @@ SemanticContext *semantic_analyze(Program *prog) {
 
 	/* pass 2: analyze other declarations */
 	for (int i = 0; i < prog->decl_count; i++) {
-		if (prog->decls[i]->kind != DECL_ARCHETYPE && prog->decls[i]->kind != DECL_CONST
-		    && prog->decls[i]->kind != DECL_EXTERN_TYPE) {
+		if (prog->decls[i]->kind != DECL_ARCHETYPE && prog->decls[i]->kind != DECL_CONST &&
+		    prog->decls[i]->kind != DECL_EXTERN_TYPE) {
 			analyze_decl(ctx, prog->decls[i]);
 		}
 	}
