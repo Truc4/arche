@@ -180,13 +180,33 @@ This keeps the language focused on whole-array transformations. Most operations 
 
 ## Numeric Model
 
-- Only numeric primitives: `int`, `float`, `char` (no `bool` type)
+- Base primitives: `int`, `float`, `char` (no `bool` type)
 - Comparisons produce numeric values (`0` or `1`)
 - Conditions treat `0` as false, non-zero as true
 
 ```arche
 x = a < b   // x is 0 or 1
 ```
+
+### Fixed-width integers
+
+Always available alongside `int`: `i8`/`u8`, `i16`/`u16`, `i32`/`u32`, `i64`/`u64`, `i128`/`u128`, and `byte` (= `u8`). `int` is an alias for `i32`; `char` is `i8`. These map to native LLVM integers — no software emulation. Signedness is part of the type and selects the machine operation (`sdiv`/`udiv`, signed/unsigned compares, `sext`/`zext`).
+
+```arche
+let offset: i64 = 3000000000;   // addresses past the 32-bit signed limit
+offset = offset + offset;       // i64 arithmetic
+let count: u32 = 4000000000;    // unsigned 32-bit
+let b: byte = 255;
+```
+
+Convert between widths with a call-style cast (`sext`/`zext` to widen, `trunc` to narrow):
+
+```arche
+let small := i32(offset);   // truncate i64 -> i32
+let wide: i64 = i64(small); // widen i32 -> i64
+```
+
+Integer literals adopt the type of their context (`let x: i64 = 3000000000` types the literal as `i64`, avoiding 32-bit overflow). Operands of differing widths are widened to the larger width before the operation.
 
 ## Procedures (`proc`)
 

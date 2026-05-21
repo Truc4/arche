@@ -63,6 +63,12 @@ Index ← Identifier _ "[" _ Expression (_ "," _ Expression)* _ "]"
 Path ← Identifier (_ "." _ Identifier)+
 
 # Types
+#
+# A type is an identifier. Built-in scalar types: int (= i32), float, char,
+# plus fixed-width integers (always available): i8/u8, i16/u16, i32/u32,
+# i64/u64, i128/u128, and byte (= u8). Signedness is part of the type and
+# selects signed vs unsigned machine operations. A width-type name used as a
+# call, e.g. i64(x), is a conversion (sext/zext/trunc), not a function call.
 
 Type ← Identifier
 

@@ -239,10 +239,99 @@ static const char *llvm_type_from_arche(const char *arche_type) {
 	if (strcmp(arche_type, "handle") == 0)
 		return "i64";
 
+	/* Fixed-width integer types map to LLVM iN (sign lives in the ops, not
+	 * the type): byte/u8/i8 -> i8, u16/i16 -> i16, ... i128/u128 -> i128. */
+	{
+		int w, sg;
+		if (ast_parse_int_width(arche_type, &w, &sg)) {
+			switch (w) {
+			case 8:
+				return "i8";
+			case 16:
+				return "i16";
+			case 32:
+				return "i32";
+			case 64:
+				return "i64";
+			case 128:
+				return "i128";
+			}
+		}
+	}
+
 	/* For custom types (Vec3, archetypes, etc.), use opaque structures */
 	static char buf[256];
 	snprintf(buf, sizeof(buf), "%%struct.%s", arche_type);
 	return buf;
+}
+
+static char *gen_value_name(CodegenContext *ctx);
+
+/* LLVM integer type name for a width (8/16/32/64/128). */
+static const char *llvm_int_type(int width) {
+	switch (width) {
+	case 8:
+		return "i8";
+	case 16:
+		return "i16";
+	case 64:
+		return "i64";
+	case 128:
+		return "i128";
+	default:
+		return "i32";
+	}
+}
+
+/* Convert integer value `val` (LLVM type from `from`) to width `to_w`, emitting
+ * sext/zext/trunc as needed. Writes the resulting SSA name (or `val` unchanged)
+ * into `out`. `from` may be NULL (treated as i32 signed). */
+static void emit_int_convert(CodegenContext *ctx, const char *val, AstType *from, int to_w, char *out) {
+	int from_w = (from && from->tag == AST_TYPE_INT && from->int_width) ? from->int_width : 32;
+	int from_signed = (from && from->tag == AST_TYPE_INT) ? from->int_signed : 1;
+	if (to_w == 0)
+		to_w = 32;
+	if (from_w == to_w) {
+		strcpy(out, val);
+		return;
+	}
+	/* An integer literal constant (no SSA '%') is width-agnostic in LLVM — emit
+	 * it directly at the target width. This implements literal-adopts-context
+	 * and avoids truncating/sign-extending a literal that doesn't fit i32
+	 * (e.g. `let x: i64 = 3000000000`). */
+	if (val && val[0] != '%') {
+		strcpy(out, val);
+		return;
+	}
+	const char *fl = llvm_int_type(from_w);
+	const char *tl = llvm_int_type(to_w);
+	char *r = gen_value_name(ctx);
+	if (to_w > from_w)
+		buffer_append_fmt(ctx, "  %s = %s %s %s to %s\n", r, from_signed ? "sext" : "zext", fl, val, tl);
+	else
+		buffer_append_fmt(ctx, "  %s = trunc %s %s to %s\n", r, fl, val, tl);
+	strcpy(out, r);
+}
+
+/* Coerce an index value to i64 for getelementptr, respecting the index
+ * expression's actual width: i64 passes through, i32/narrower sext/zext, i128
+ * truncates. `idx_expr` may be NULL (assumed i32 signed). */
+static void emit_index_i64(CodegenContext *ctx, const char *idx_val, const AstExpr *idx_expr, char *out) {
+	int w = 32, sgn = 1;
+	if (idx_expr && idx_expr->resolved.tag == AST_TYPE_INT && idx_expr->resolved.int_width) {
+		w = idx_expr->resolved.int_width;
+		sgn = idx_expr->resolved.int_signed;
+	}
+	if (w == 64) {
+		strcpy(out, idx_val);
+		return;
+	}
+	char *r = gen_value_name(ctx);
+	if (w < 64)
+		buffer_append_fmt(ctx, "  %s = %s %s %s to i64\n", r, sgn ? "sext" : "zext", llvm_int_type(w), idx_val);
+	else
+		buffer_append_fmt(ctx, "  %s = trunc i128 %s to i64\n", r, idx_val);
+	strcpy(out, r);
 }
 
 static const char *llvm_vector_type(const char *scalar_type, int lanes) {
@@ -258,6 +347,27 @@ static const char *elem_llvm_type(CodegenContext *ctx, const char *arche_type) {
 	return scalar;
 }
 
+/* Canonical Arche type-name string for an integer width/signedness.
+ * 32-bit signed stays "int" (back-compat); others use iN/uN. */
+static const char *int_width_name(int width, int is_signed) {
+	if (width == 32 && is_signed)
+		return "int";
+	switch (width) {
+	case 8:
+		return is_signed ? "i8" : "u8";
+	case 16:
+		return is_signed ? "i16" : "u16";
+	case 32:
+		return is_signed ? "i32" : "u32";
+	case 64:
+		return is_signed ? "i64" : "u64";
+	case 128:
+		return is_signed ? "i128" : "u128";
+	default:
+		return "int";
+	}
+}
+
 static const char *field_base_type_name(AstType *type) {
 	while (type && type->tag == AST_TYPE_SHAPED_ARRAY)
 		type = type->elem;
@@ -265,7 +375,7 @@ static const char *field_base_type_name(AstType *type) {
 		return "int";
 	switch (type->tag) {
 	case AST_TYPE_INT:
-		return "int";
+		return int_width_name(type->int_width, type->int_signed);
 	case AST_TYPE_FLOAT:
 		return "float";
 	case AST_TYPE_CHAR:
@@ -292,7 +402,7 @@ static const char *ast_resolved_type_name(const AstExpr *expr) {
 		return "int";
 	switch (expr->resolved.tag) {
 	case AST_TYPE_INT:
-		return "int";
+		return int_width_name(expr->resolved.int_width, expr->resolved.int_signed);
 	case AST_TYPE_FLOAT:
 		return "float";
 	case AST_TYPE_CHAR:
@@ -829,8 +939,15 @@ static AstFuncDecl *find_group_member_for_call(CodegenContext *ctx, AstFuncGroup
 			 * members and don't participate in witness-based dispatch. */
 			if (pt->tag != AST_TYPE_INT && pt->tag != AST_TYPE_FLOAT && pt->tag != AST_TYPE_CHAR)
 				continue;
-			if (pt->tag == AST_TYPE_INT && at == AST_TYPE_INT)
-				continue;
+			if (pt->tag == AST_TYPE_INT && at == AST_TYPE_INT) {
+				/* Distinguish int members by width + signedness (e.g. int vs i64). */
+				int pw = pt->int_width ? pt->int_width : 32;
+				int aw = args[j]->resolved.int_width ? args[j]->resolved.int_width : 32;
+				if (pw == aw && pt->int_signed == args[j]->resolved.int_signed)
+					continue;
+				ok = 0;
+				break;
+			}
 			if (pt->tag == AST_TYPE_FLOAT && at == AST_TYPE_FLOAT)
 				continue;
 			if (pt->tag == AST_TYPE_CHAR && at == AST_TYPE_CHAR)
@@ -1019,14 +1136,17 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				}
 				strcpy(result_buf, elem);
 			} else if (val->type == 1) {
-				/* Type-1: regular allocated value (i32, float, handle, etc) - load from pointer */
+				/* Type-1: regular allocated value (iN, float, handle, etc) - load from pointer */
 				char *loaded = gen_value_name(ctx);
 				const char *llvm_type = "i32";
 				if (val->field_type) {
+					int w, sg;
 					if (strcmp(val->field_type, "double") == 0 || strcmp(val->field_type, "float") == 0) {
 						llvm_type = "double";
 					} else if (strcmp(val->field_type, "handle") == 0) {
 						llvm_type = "i64";
+					} else if (ast_parse_int_width(val->field_type, &w, &sg)) {
+						llvm_type = llvm_int_type(w);
 					}
 				}
 				buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", loaded, llvm_type, llvm_type, val->llvm_name);
@@ -1094,6 +1214,23 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			}
 		}
 
+		/* Integer width/signedness from operands (max width; sign from the first
+		 * int operand). Drives iN type + signed/unsigned op selection. */
+		int int_width = 32, int_signed = 1;
+		if (!is_float) {
+			AstType *lt = &expr->data.binary.left->resolved;
+			AstType *rt = &expr->data.binary.right->resolved;
+			int lw = (lt->tag == AST_TYPE_INT) ? lt->int_width : 0;
+			int rw = (rt->tag == AST_TYPE_INT) ? rt->int_width : 0;
+			int_width = lw > rw ? lw : rw;
+			if (int_width == 0)
+				int_width = 32; /* unset/non-int operands default to i32 */
+			if (lt->tag == AST_TYPE_INT)
+				int_signed = lt->int_signed;
+			else if (rt->tag == AST_TYPE_INT)
+				int_signed = rt->int_signed;
+		}
+
 		switch (expr->data.binary.op) {
 		case OP_ADD:
 			op = is_float ? "fadd" : "add";
@@ -1105,7 +1242,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			op = is_float ? "fmul" : "mul";
 			break;
 		case OP_DIV:
-			op = is_float ? "fdiv" : "sdiv";
+			op = is_float ? "fdiv" : (int_signed ? "sdiv" : "udiv");
 			break;
 		case OP_EQ:
 			op = is_float ? "oeq" : "eq";
@@ -1114,16 +1251,16 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			op = is_float ? "one" : "ne";
 			break;
 		case OP_LT:
-			op = is_float ? "olt" : "slt";
+			op = is_float ? "olt" : (int_signed ? "slt" : "ult");
 			break;
 		case OP_GT:
-			op = is_float ? "ogt" : "sgt";
+			op = is_float ? "ogt" : (int_signed ? "sgt" : "ugt");
 			break;
 		case OP_LTE:
-			op = is_float ? "ole" : "sle";
+			op = is_float ? "ole" : (int_signed ? "sle" : "ule");
 			break;
 		case OP_GTE:
-			op = is_float ? "oge" : "sge";
+			op = is_float ? "oge" : (int_signed ? "sge" : "uge");
 			break;
 		default:
 			op = "add";
@@ -1134,8 +1271,12 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		const char *type;
 		if (is_float && ctx->vector_lanes > 0) {
 			type = llvm_vector_type("double", ctx->vector_lanes);
+		} else if (is_float) {
+			type = "double";
+		} else if (ctx->vector_lanes > 0) {
+			type = "i32"; /* vector int lanes stay i32 (column SIMD path) */
 		} else {
-			type = is_float ? "double" : "i32";
+			type = llvm_int_type(int_width);
 		}
 
 		/* For float operations, convert integer literals to doubles */
@@ -1218,6 +1359,16 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			}
 		}
 
+		/* Scalar integer operands: coerce both to the common width so the op
+		 * has matching operand types (e.g. i64 total + i8 byte). */
+		char lwconv[256], rwconv[256];
+		if (!is_float && ctx->vector_lanes == 0) {
+			emit_int_convert(ctx, left_val, &expr->data.binary.left->resolved, int_width, lwconv);
+			emit_int_convert(ctx, right_val, &expr->data.binary.right->resolved, int_width, rwconv);
+			left_val = lwconv;
+			right_val = rwconv;
+		}
+
 		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE) {
 			/* Comparison. In scalar context: emit scalar icmp/fcmp -> i1 -> zext to i32.
 			 * In vector context: splat scalar operands to <N x T>, emit vector icmp/fcmp
@@ -1261,7 +1412,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				buffer_append_fmt(ctx, "  %s = zext %s %s to %s\n", res_name, vec_i1_t, cmp_vi1, vec_i32_t);
 			} else {
 				/* Scalar context */
-				const char *cmp_type = is_float ? "double" : "i32";
+				const char *cmp_type = is_float ? "double" : llvm_int_type(int_width);
 				char *cmp_i1 = gen_value_name(ctx);
 				if (is_float) {
 					buffer_append_fmt(ctx, "  %s = fcmp %s %s %s, %s\n", cmp_i1, op, cmp_type, left_val, right_val);
@@ -1285,8 +1436,8 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 
 		char *res_name = gen_value_name(ctx);
 		if (expr->data.unary.op == UNARY_NEG) {
-			int is_float = expr->resolved.tag == AST_TYPE_FLOAT ||
-			               expr->data.unary.operand->resolved.tag == AST_TYPE_FLOAT;
+			int is_float =
+			    expr->resolved.tag == AST_TYPE_FLOAT || expr->data.unary.operand->resolved.tag == AST_TYPE_FLOAT;
 			if (is_float)
 				buffer_append_fmt(ctx, "  %s = fsub double 0.0, %s\n", res_name, operand_buf);
 			else
@@ -1566,9 +1717,18 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			char *val = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", val, llvm_elem, llvm_elem, elem_gep);
 			strcpy(result_buf, val);
-			/* Tag the expression with its resolved tag so callers (e.g. group
-			 * resolution) pick the right overload. */
-			expr->resolved.tag = ctx->current_each_field_target->type->tag;
+			/* Tag the expression with its resolved type (tag + int width/sign) so
+			 * callers (e.g. group resolution) pick the right overload. */
+			{
+				AstType *ft = ctx->current_each_field_target->type;
+				while (ft && ft->tag == AST_TYPE_SHAPED_ARRAY)
+					ft = ft->elem;
+				expr->resolved.tag = ft ? ft->tag : AST_TYPE_INT;
+				if (ft && ft->tag == AST_TYPE_INT) {
+					expr->resolved.int_width = ft->int_width ? ft->int_width : 32;
+					expr->resolved.int_signed = ft->int_signed;
+				}
+			}
 			break;
 		}
 
@@ -1671,9 +1831,9 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			char *data_ptr = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", data_ptr, ptr_gep);
 
-			/* Convert i32 index to i64 for getelementptr */
-			char *idx_i64 = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx_i64, idx_buf);
+			/* Coerce index to i64 for getelementptr (i64 indices pass through). */
+			char idx_i64[256];
+			emit_index_i64(ctx, idx_buf, expr->data.index.indices[0], idx_i64);
 
 			/* GEP into data pointer */
 			char *res_name = gen_value_name(ctx);
@@ -1694,9 +1854,9 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		if (type7_vi && expr->data.index.index_count > 0) {
 			codegen_expression(ctx, expr->data.index.indices[0], idx_buf);
 
-			/* Convert i32 index to i64 for getelementptr */
-			char *idx_i64 = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx_i64, idx_buf);
+			/* Coerce index to i64 for getelementptr (i64 indices pass through). */
+			char idx_i64[256];
+			emit_index_i64(ctx, idx_buf, expr->data.index.indices[0], idx_i64);
 
 			char *res_name = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i64 0, i64 %s\n", res_name,
@@ -1722,25 +1882,13 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			emit_bounds_check(ctx, bc_arch_name, bc_arch_ptr, bc_count_idx, idx_buf, bc_idx_is_i64);
 		}
 
-		/* Ensure index is i64 for getelementptr (simple heuristic: if not from shaped array ops, assume i32 and
-		 * convert) */
+		/* Ensure index is i64 for getelementptr, respecting the index's width. */
 		const char *final_idx = idx_buf;
-		int idx_is_i64 = 0;
+		char final_idx_buf[256];
 
-		/* Check if index is a loop variable that's already i64 */
-		if (expr->data.index.index_count > 0 && expr->data.index.indices[0]->kind == AST_EXPR_NAME) {
-			const char *idx_name = expr->data.index.indices[0]->data.name.name;
-			ValueInfo *idx_val = find_value(ctx, idx_name);
-			if (idx_val && idx_val->bit_width == 64) {
-				idx_is_i64 = 1;
-			}
-		}
-
-		if (expr->data.index.index_count > 0 && !shaped_elem && !idx_is_i64) {
-			/* Index likely came from a variable or expression, probably i32. Convert to i64. */
-			char *idx_i64 = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx_i64, idx_buf);
-			final_idx = idx_i64;
+		if (expr->data.index.index_count > 0 && !shaped_elem) {
+			emit_index_i64(ctx, idx_buf, expr->data.index.indices[0], final_idx_buf);
+			final_idx = final_idx_buf;
 		}
 
 		char *res_name = gen_value_name(ctx);
@@ -1783,6 +1931,20 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		char *func_name = NULL;
 		if (expr->data.call.callee->kind == AST_EXPR_NAME) {
 			func_name = expr->data.call.callee->data.name.name;
+		}
+
+		/* Width-type cast i64(x)/u8(x)/...: convert the single arg to the target
+		 * width (sext/zext/trunc) instead of emitting a call. */
+		{
+			int cw, csg;
+			if (func_name && expr->data.call.arg_count == 1 && ast_parse_int_width(func_name, &cw, &csg)) {
+				char arg_buf[256];
+				codegen_expression(ctx, expr->data.call.args[0], arg_buf);
+				char converted[256];
+				emit_int_convert(ctx, arg_buf, &expr->data.call.args[0]->resolved, cw, converted);
+				strcpy(result_buf, converted);
+				break;
+			}
 		}
 
 		/* Special handling for insert builtin */
@@ -2271,6 +2433,11 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				} else if (expr->data.call.args[i]->resolved.tag == AST_TYPE_FLOAT) {
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = "double";
+				} else if (expr->data.call.args[i]->resolved.tag == AST_TYPE_INT &&
+				           expr->data.call.args[i]->resolved.int_width != 32) {
+					/* Wider/narrower int (e.g. i64): pass at its actual LLVM width. */
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = llvm_int_type(expr->data.call.args[i]->resolved.int_width);
 				} else {
 					/* Default to i32 */
 					strcpy(call_arg_vals[i], arg_bufs[i]);
@@ -3743,6 +3910,21 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 				}
 			}
 
+			/* A fixed-width int annotation (let x: i64 = ...) sets the storage
+			 * width; the value is sext/zext/trunc'd to match (literals adopt the
+			 * annotated width per the language's literal-typing rule). */
+			AstType *ann = stmt->data.let_stmt.type;
+			if (ann && ann->tag == AST_TYPE_INT && ann->int_width != 32) {
+				const char *wt = llvm_int_type(ann->int_width);
+				char converted[256];
+				emit_int_convert(ctx, value_buf, &stmt->data.let_stmt.value->resolved, ann->int_width, converted);
+				strcpy(value_buf, converted);
+				alloc_type = wt;
+				store_type = wt;
+				bit_width = ann->int_width;
+				resolved_type = field_base_type_name(ann);
+			}
+
 			char *alloca_name = gen_value_name(ctx);
 			emit_alloca(ctx, "  %s = alloca %s\n", alloca_name, alloc_type);
 			buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", store_type, value_buf, store_type, alloca_name);
@@ -4102,12 +4284,22 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		if (stmt->data.assign_stmt.target->kind == AST_EXPR_NAME) {
 			const char *var_name = stmt->data.assign_stmt.target->data.name.name;
 			ValueInfo *val = find_value(ctx, var_name);
-			if (val && val->type == 1) { /* type 1 = i32* pointer */
+			if (val && val->type == 1) { /* type 1 = scalar pointer */
 				int is_float = val->field_type &&
 				               (strcmp(val->field_type, "float") == 0 || strcmp(val->field_type, "double") == 0);
-				const char *llvm_t = is_float ? "double" : "i32";
+				const char *llvm_t = is_float ? "double" : llvm_type_from_arche(val->field_type);
+				int unsigned_int = val->field_type && val->field_type[0] == 'u';
 
 				if (stmt->data.assign_stmt.op == OP_NONE) {
+					/* Convert RHS to the target int width (sext/zext/trunc). */
+					if (!is_float && stmt->data.assign_stmt.value) {
+						int tw = 32, sg;
+						if (val->field_type)
+							ast_parse_int_width(val->field_type, &tw, &sg); /* leaves tw=32 for "int" */
+						char converted[256];
+						emit_int_convert(ctx, value_buf, &stmt->data.assign_stmt.value->resolved, tw, converted);
+						strcpy(value_buf, converted);
+					}
 					buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", llvm_t, value_buf, llvm_t, val->llvm_name);
 				} else {
 					/* Compound assignment: load, compute, store */
@@ -4126,7 +4318,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 						op = is_float ? "fmul" : "mul";
 						break;
 					case OP_DIV:
-						op = is_float ? "fdiv" : "sdiv";
+						op = is_float ? "fdiv" : (unsigned_int ? "udiv" : "sdiv");
 						break;
 					default:
 						op = is_float ? "fadd" : "add";

@@ -6,14 +6,53 @@
    Type mapping
    ========================= */
 
+/* Recognize a fixed-width integer type name (byte, i8/u8 .. i64/u64, i128/u128).
+ * Returns 1 and fills width/signed on match. */
+int ast_parse_int_width(const char *s, int *width, int *is_signed) {
+	if (!s)
+		return 0;
+	if (strcmp(s, "byte") == 0) {
+		*width = 8;
+		*is_signed = 0;
+		return 1;
+	}
+	if (s[0] != 'i' && s[0] != 'u')
+		return 0;
+	int sign = (s[0] == 'i') ? 1 : 0;
+	const char *num = s + 1;
+	int w;
+	if (strcmp(num, "8") == 0)
+		w = 8;
+	else if (strcmp(num, "16") == 0)
+		w = 16;
+	else if (strcmp(num, "32") == 0)
+		w = 32;
+	else if (strcmp(num, "64") == 0)
+		w = 64;
+	else if (strcmp(num, "128") == 0)
+		w = 128;
+	else
+		return 0;
+	*width = w;
+	*is_signed = sign;
+	return 1;
+}
+
 static AstType map_type_str(const char *resolved_type) {
 	AstType t = {0};
 	if (!resolved_type) {
 		t.tag = AST_TYPE_UNKNOWN;
 		return t;
 	}
+	int w, sg;
 	if (strcmp(resolved_type, "int") == 0) {
 		t.tag = AST_TYPE_INT;
+		t.int_width = 32;
+		t.int_signed = 1;
+	} else if (ast_parse_int_width(resolved_type, &w, &sg)) {
+		t.tag = AST_TYPE_INT;
+		t.int_width = w;
+		t.int_signed = sg;
 	} else if (strcmp(resolved_type, "float") == 0 || strcmp(resolved_type, "double") == 0) {
 		t.tag = AST_TYPE_FLOAT;
 	} else if (strcmp(resolved_type, "char") == 0) {

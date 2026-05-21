@@ -1,0 +1,10 @@
+// RUN: %arche -o %t %s && %t | grep "u32big=1 u64big=1 b=200 c=1000 d=255"
+// Unsigned + small fixed-width integer types.
+proc main() {
+  let a: u32 = 4000000000;
+  let b: u8 = 200;
+  let c: i16 = 1000;
+  let d: byte = 255;
+  let e: u64 = 18000000000;
+  printf("u32big=%d u64big=%d b=%d c=%d d=%d\n", a > 2000000000, e > 17000000000, b, c, d);
+}

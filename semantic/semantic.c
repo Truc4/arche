@@ -356,13 +356,27 @@ static const char *normalize_type_name(const char *type_name) {
 	return type_name;
 }
 
+/* Returns 1 if `type_name` is a fixed-width integer type name
+ * (byte, i8/u8 .. i64/u64, i128/u128). Always available in the language. */
+static int is_width_int_name(const char *s) {
+	if (!s)
+		return 0;
+	if (strcmp(s, "byte") == 0)
+		return 1;
+	if (s[0] != 'i' && s[0] != 'u')
+		return 0;
+	const char *n = s + 1;
+	return strcmp(n, "8") == 0 || strcmp(n, "16") == 0 || strcmp(n, "32") == 0 || strcmp(n, "64") == 0 ||
+	       strcmp(n, "128") == 0;
+}
+
 /* Returns 1 if `type_name` (already normalized) is a built-in primitive. */
 static int is_primitive_type_name(const char *type_name) {
 	if (!type_name)
 		return 0;
 	const char *n = normalize_type_name(type_name);
 	return strcmp(n, "int") == 0 || strcmp(n, "float") == 0 || strcmp(n, "char") == 0 || strcmp(n, "str") == 0 ||
-	       strcmp(n, "void") == 0;
+	       strcmp(n, "void") == 0 || is_width_int_name(n);
 }
 
 /* Returns the extern table name if `tr` is a handle(X) where X is a
@@ -503,7 +517,14 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME) {
 			func_name = expr->data.call.callee->data.name.name;
 		}
-		if (!func_name || !ctx->prog)
+		if (!func_name)
+			return NULL;
+
+		/* Width-type cast i64(x): result type is the target width name. */
+		if (is_width_int_name(func_name))
+			return func_name;
+
+		if (!ctx->prog)
 			return NULL;
 
 		/* If this name is a group, pick the matching member by static arg types. */
@@ -744,6 +765,14 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		break;
 
 	case EXPR_CALL: {
+		/* Width-type cast: i64(x), u8(x), etc. The callee is a type name, not a
+		 * function — analyze only the argument(s) and stop. */
+		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME &&
+		    is_width_int_name(expr->data.call.callee->data.name.name)) {
+			for (int i = 0; i < expr->data.call.arg_count; i++)
+				analyze_expression(ctx, expr->data.call.args[i]);
+			break;
+		}
 		analyze_expression(ctx, expr->data.call.callee);
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			analyze_expression(ctx, expr->data.call.args[i]);
