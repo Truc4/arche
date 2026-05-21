@@ -28,6 +28,7 @@ typedef struct {
 	TypeRef *type;
 	char *archetype_name;      /* for variables that refer to archetype entries */
 	const char *inferred_type; /* for variables without explicit type, stores inferred type name */
+	int is_consumed;           /* 1 if a consume-param call has consumed this binding */
 } VariableInfo;
 
 typedef struct {
@@ -42,6 +43,12 @@ typedef struct {
 	SourceLoc loc;
 } GroupInfo;
 
+typedef struct {
+	char *name;
+	int capacity;
+	SourceLoc loc;
+} ExternTypeEntry;
+
 struct SemanticContext {
 	ArchetypeInfo **archetypes; /* one per unique shape */
 	int archetype_count;
@@ -54,6 +61,9 @@ struct SemanticContext {
 
 	GroupInfo *groups;
 	int group_count;
+
+	ExternTypeEntry *extern_types; /* registered extern type declarations */
+	int extern_type_count;
 
 	char **const_names;        /* compile-time constant names */
 	const char **const_values; /* literal lexeme strings */
@@ -316,6 +326,7 @@ static void add_variable_with_archetype(SemanticContext *ctx, const char *name, 
 	if (var->archetype_name)
 		strcpy(var->archetype_name, archetype_name);
 	var->inferred_type = NULL;
+	var->is_consumed = 0;
 
 	scope->vars = realloc(scope->vars, (scope->var_count + 1) * sizeof(VariableInfo *));
 	scope->vars[scope->var_count++] = var;
@@ -343,6 +354,45 @@ static const char *normalize_type_name(const char *type_name) {
 	if (strcmp(type_name, "Void") == 0)
 		return "void";
 	return type_name;
+}
+
+/* Returns 1 if `type_name` is a fixed-width integer type name
+ * (byte, i8/u8 .. i64/u64, i128/u128). Always available in the language. */
+static int is_width_int_name(const char *s) {
+	if (!s)
+		return 0;
+	if (strcmp(s, "byte") == 0)
+		return 1;
+	if (s[0] != 'i' && s[0] != 'u')
+		return 0;
+	const char *n = s + 1;
+	return strcmp(n, "8") == 0 || strcmp(n, "16") == 0 || strcmp(n, "32") == 0 || strcmp(n, "64") == 0 ||
+	       strcmp(n, "128") == 0;
+}
+
+/* Returns 1 if `type_name` (already normalized) is a built-in primitive. */
+static int is_primitive_type_name(const char *type_name) {
+	if (!type_name)
+		return 0;
+	const char *n = normalize_type_name(type_name);
+	return strcmp(n, "int") == 0 || strcmp(n, "float") == 0 || strcmp(n, "char") == 0 || strcmp(n, "str") == 0 ||
+	       strcmp(n, "void") == 0 || is_width_int_name(n);
+}
+
+/* Returns the extern table name if `tr` is a handle(X) where X is a
+ * registered extern table; NULL otherwise. */
+static const char *extern_handle_target(SemanticContext *ctx, const TypeRef *tr) {
+	if (!tr || tr->kind != TYPE_HANDLE)
+		return NULL;
+	const char *name = tr->data.handle.archetype_name;
+	if (semantic_has_extern_type(ctx, name))
+		return name;
+	return NULL;
+}
+
+/* Returns 1 if `tr` is a handle(X) referencing a registered extern table. */
+static int is_extern_type_ref(SemanticContext *ctx, const TypeRef *tr) {
+	return extern_handle_target(ctx, tr) != NULL;
 }
 
 static const char *resolve_expression_type(SemanticContext *ctx, Expression *expr) {
@@ -378,7 +428,10 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		VariableInfo *var = find_variable(ctx, name);
 		if (var) {
 			if (var->type) {
-				return normalize_type_name(var->type->data.name);
+				if (var->type->kind == TYPE_HANDLE)
+					return var->type->data.handle.archetype_name;
+				if (var->type->kind == TYPE_NAME)
+					return normalize_type_name(var->type->data.name);
 			}
 			/* Fallback to inferred type */
 			if (var->inferred_type) {
@@ -464,7 +517,14 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME) {
 			func_name = expr->data.call.callee->data.name.name;
 		}
-		if (!func_name || !ctx->prog)
+		if (!func_name)
+			return NULL;
+
+		/* Width-type cast i64(x): result type is the target width name. */
+		if (is_width_int_name(func_name))
+			return func_name;
+
+		if (!ctx->prog)
 			return NULL;
 
 		/* If this name is a group, pick the matching member by static arg types. */
@@ -505,9 +565,15 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		for (int i = 0; i < ctx->prog->decl_count; i++) {
 			Decl *decl = ctx->prog->decls[i];
 			if (decl->kind == DECL_FUNC && strcmp(decl->data.func->name, func_name) == 0) {
-				if (decl->data.func->return_type) {
-					return normalize_type_name(decl->data.func->return_type->data.name);
-				}
+				TypeRef *rt = decl->data.func->return_type;
+				if (!rt)
+					return NULL;
+				if (rt->kind == TYPE_HANDLE)
+					return rt->data.handle.archetype_name;
+				if (rt->kind == TYPE_NAME)
+					return normalize_type_name(rt->data.name);
+				if (rt->kind == TYPE_ARRAY)
+					return "char_array"; /* extern func returning char[] (raw byte view) */
 				return NULL;
 			}
 		}
@@ -549,13 +615,22 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 
 		/* Check if it's a known function, variable, archetype, or constant */
 		int is_known_func = find_known_func(ctx, name);
-		int is_var = find_variable(ctx, name) != NULL;
+		VariableInfo *name_var = find_variable(ctx, name);
+		int is_var = name_var != NULL;
 		int is_arch = find_archetype(ctx, name) != NULL;
 		int is_const = semantic_get_const_value(ctx, name) != NULL;
 
 		if (!is_known_func && !is_var && !is_arch && !is_const) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "Undefined symbol '%s'", name);
+			error(ctx, msg);
+		} else if (is_var && name_var->is_consumed) {
+			/* Use-after-consume: this binding was passed to a consume parameter earlier.
+			 * NOTE: v1 limitation — tracking is function-scope only (not branch-sensitive).
+			 * A consume inside an if-branch marks the binding consumed for the entire rest
+			 * of the proc body, which may over-reject some valid code. Revisit if needed. */
+			char msg[256];
+			snprintf(msg, sizeof(msg), "use of consumed handle '%s'", name);
 			error(ctx, msg);
 		}
 		break;
@@ -692,6 +767,14 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		break;
 
 	case EXPR_CALL: {
+		/* Width-type cast: i64(x), u8(x), etc. The callee is a type name, not a
+		 * function — analyze only the argument(s) and stop. */
+		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME &&
+		    is_width_int_name(expr->data.call.callee->data.name.name)) {
+			for (int i = 0; i < expr->data.call.arg_count; i++)
+				analyze_expression(ctx, expr->data.call.args[i]);
+			break;
+		}
 		analyze_expression(ctx, expr->data.call.callee);
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			analyze_expression(ctx, expr->data.call.args[i]);
@@ -704,8 +787,93 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 			break;
 
 		GroupInfo *gi = find_group(ctx, func_name);
-		if (!gi)
-			break; /* not a group; nothing to diagnose here */
+		if (!gi) {
+			/* Not a group: check extern-type argument distinctness at call sites.
+			 * Only applies when the callee is an extern proc or extern func with
+			 * extern-type parameters. */
+			if (ctx->prog) {
+				for (int i = 0; i < ctx->prog->decl_count; i++) {
+					Decl *d = ctx->prog->decls[i];
+					if (!d)
+						continue;
+
+					/* Collect param list from DECL_FUNC or DECL_PROC */
+					int param_count = 0;
+					Parameter **params = NULL;
+					int is_extern = 0;
+
+					if (d->kind == DECL_FUNC && d->data.func && d->data.func->name &&
+					    strcmp(d->data.func->name, func_name) == 0) {
+						param_count = d->data.func->param_count;
+						params = d->data.func->params;
+						is_extern = d->data.func->is_extern;
+					} else if (d->kind == DECL_PROC && d->data.proc && d->data.proc->name &&
+					           strcmp(d->data.proc->name, func_name) == 0) {
+						param_count = d->data.proc->param_count;
+						params = d->data.proc->params;
+						is_extern = d->data.proc->is_extern;
+					} else {
+						continue;
+					}
+
+					if (!is_extern)
+						break; /* non-extern: no extern-type params, skip */
+
+					/* For each argument, if the formal param is a foreign handle
+					 * (handle(X) where X is an extern table), the argument's resolved
+					 * type must be exactly the same extern handle. Integer literal 0
+					 * is accepted as a null handle. */
+					int arg_count = expr->data.call.arg_count;
+					int check_count = param_count < arg_count ? param_count : arg_count;
+					for (int j = 0; j < check_count; j++) {
+						Parameter *p = params[j];
+						if (!p)
+							continue;
+						const char *formal_type = extern_handle_target(ctx, p->type);
+						if (!formal_type)
+							continue;
+
+						/* Formal is an extern type. Check the argument. */
+						Expression *arg = expr->data.call.args[j];
+
+						/* Integer literal 0 is the null handle — always OK. */
+						if (arg->type == EXPR_LITERAL) {
+							const char *lex = arg->data.literal.lexeme;
+							if (strcmp(lex, "0") == 0)
+								continue;
+						}
+
+						const char *arg_type = resolve_expression_type(ctx, arg);
+						if (!arg_type) {
+							/* Type unknown — can't verify; skip to avoid false positives. */
+							continue;
+						}
+
+						/* arg_type must equal formal_type (both are extern type names). */
+						if (strcmp(arg_type, formal_type) != 0) {
+							char msg[256];
+							snprintf(msg, sizeof(msg),
+							         "type mismatch: extern proc/func '%s' parameter '%s' expects '%s' but got '%s'",
+							         func_name, p->name ? p->name : "?", formal_type, arg_type);
+							error(ctx, msg);
+						}
+
+						/* Consume tracking: if this formal is a consume parameter and
+						 * the argument is a simple identifier, mark that variable consumed
+						 * for the rest of the enclosing proc/func body.
+						 * NOTE: v1 — function-scope only, not branch-sensitive. */
+						if (p->is_consume && arg->type == EXPR_NAME) {
+							VariableInfo *consumed_var = find_variable(ctx, arg->data.name.name);
+							if (consumed_var) {
+								consumed_var->is_consumed = 1;
+							}
+						}
+					}
+					break; /* found the callee decl */
+				}
+			}
+			break; /* not a group; nothing further to diagnose here */
+		}
 
 		/* Only diagnose when every arg has a concrete primitive type. */
 		int can_diagnose = 1;
@@ -873,7 +1041,11 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 						var = scope->vars[scope->var_count - 1];
 						if (stmt->data.let_stmt.type) {
 							/* Type annotation: convert TypeRef to string type name */
-							var->inferred_type = stmt->data.let_stmt.type->data.name;
+							TypeRef *t = stmt->data.let_stmt.type;
+							if (t->kind == TYPE_HANDLE)
+								var->inferred_type = t->data.handle.archetype_name;
+							else
+								var->inferred_type = t->data.name;
 						} else if (stmt->data.let_stmt.value) {
 							/* No annotation: infer from value expression */
 							const char *inferred = resolve_expression_type(ctx, stmt->data.let_stmt.value);
@@ -1201,16 +1373,26 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 		arch->field_count = expanded_count;
 	}
 
-	/* Validate handle types reference valid archetypes */
+	/* Validate handle types: must reference a known archetype.  Foreign
+	 * handles (handle(X) where X is an extern table) are forbidden inside
+	 * archetype fields — extern handles may only appear in extern signatures. */
 	for (int i = 0; i < arch->field_count; i++) {
-		if (arch->fields[i]->type->kind == TYPE_HANDLE) {
-			const char *target_arch = arch->fields[i]->type->data.handle.archetype_name;
-			ArchetypeInfo *target = find_archetype(ctx, target_arch);
-			if (!target) {
-				fprintf(stderr, "Error: unknown archetype '%s' in handle type for field '%s'\n", target_arch,
-				        arch->fields[i]->name);
-				ctx->error_count++;
-			}
+		TypeRef *ft = arch->fields[i]->type;
+		if (ft->kind != TYPE_HANDLE)
+			continue;
+		const char *target = ft->data.handle.archetype_name;
+		if (semantic_has_extern_type(ctx, target)) {
+			char msg[256];
+			snprintf(msg, sizeof(msg),
+			         "extern handle '%s' may only appear in extern signatures (archetype '%s' field '%s')", target,
+			         arch->name, arch->fields[i]->name);
+			error(ctx, msg);
+			continue;
+		}
+		if (!find_archetype(ctx, target)) {
+			fprintf(stderr, "Error: unknown archetype '%s' in handle type for field '%s'\n", target,
+			        arch->fields[i]->name);
+			ctx->error_count++;
 		}
 	}
 
@@ -1545,6 +1727,46 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	/* Register proc name as a known function */
 	register_func(ctx, proc->name);
 
+	/* Validate parameters for extern vs non-extern rules. */
+	for (int i = 0; i < proc->param_count; i++) {
+		Parameter *p = proc->params[i];
+		if (!p)
+			continue;
+		TypeRef *pt = p->type;
+		if (proc->is_extern) {
+			/* Bare extern table name must be wrapped in handle(...). */
+			if (pt && pt->kind == TYPE_NAME && semantic_has_extern_type(ctx, pt->data.name)) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "extern table '%s' must be referenced as 'handle(%s)' (extern proc '%s')",
+				         pt->data.name, pt->data.name, proc->name);
+				error(ctx, msg);
+			} else if (pt && pt->kind == TYPE_NAME) {
+				const char *tname = pt->data.name;
+				if (!is_primitive_type_name(tname) && !find_archetype(ctx, tname)) {
+					char msg[256];
+					snprintf(msg, sizeof(msg), "unknown type '%s' in extern proc '%s' signature", tname, proc->name);
+					error(ctx, msg);
+				}
+			}
+			/* 'consume' modifier only makes sense on extern-type parameters. */
+			if (p->is_consume && !is_extern_type_ref(ctx, pt)) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "'consume' may only modify extern-type parameters (proc '%s', param '%s')",
+				         proc->name, p->name ? p->name : "?");
+				error(ctx, msg);
+			}
+		} else {
+			/* Non-extern procs: extern types may be passed through as opaque
+			 * params (per spec). 'consume' is only meaningful on extern calls. */
+			if (p->is_consume) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "'consume' may only modify extern-type parameters (proc '%s', param '%s')",
+				         proc->name, p->name ? p->name : "?");
+				error(ctx, msg);
+			}
+		}
+	}
+
 	/* For extern procs, no body to analyze */
 	if (proc->is_extern) {
 		return;
@@ -1764,6 +1986,65 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 		error(ctx, msg);
 	}
 
+	/* Validate parameters and return type for extern vs non-extern rules. */
+	for (int i = 0; i < func->param_count; i++) {
+		Parameter *p = func->params[i];
+		if (!p)
+			continue;
+		TypeRef *pt = p->type;
+		if (func->is_extern) {
+			/* Bare extern table name must be wrapped in handle(...). */
+			if (pt && pt->kind == TYPE_NAME && semantic_has_extern_type(ctx, pt->data.name)) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "extern table '%s' must be referenced as 'handle(%s)' (extern func '%s')",
+				         pt->data.name, pt->data.name, func->name);
+				error(ctx, msg);
+			} else if (pt && pt->kind == TYPE_NAME) {
+				const char *tname = pt->data.name;
+				if (!is_primitive_type_name(tname)) {
+					char msg[256];
+					snprintf(msg, sizeof(msg), "unknown type '%s' in extern func '%s' signature", tname, func->name);
+					error(ctx, msg);
+				}
+			}
+			/* 'consume' modifier only makes sense on extern-type parameters. */
+			if (p->is_consume && !is_extern_type_ref(ctx, pt)) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "'consume' may only modify extern-type parameters (func '%s', param '%s')",
+				         func->name, p->name ? p->name : "?");
+				error(ctx, msg);
+			}
+		} else {
+			/* Non-extern funcs: extern types may pass through as opaque
+			 * params (per spec). 'consume' is only meaningful on extern calls. */
+			if (p->is_consume) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "'consume' may only modify extern-type parameters (func '%s', param '%s')",
+				         func->name, p->name ? p->name : "?");
+				error(ctx, msg);
+			}
+		}
+	}
+
+	/* Validate return type: extern funcs must use known types; non-extern
+	 * funcs may return extern types as opaque scalars (per spec). */
+	if (func->is_extern) {
+		if (func->return_type && func->return_type->kind == TYPE_NAME) {
+			const char *tname = func->return_type->data.name;
+			if (semantic_has_extern_type(ctx, tname)) {
+				char msg[256];
+				snprintf(msg, sizeof(msg),
+				         "extern table '%s' must be referenced as 'handle(%s)' (extern func '%s' return type)", tname,
+				         tname, func->name);
+				error(ctx, msg);
+			} else if (!is_primitive_type_name(tname)) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "unknown return type '%s' in extern func '%s' signature", tname, func->name);
+				error(ctx, msg);
+			}
+		}
+	}
+
 	/* For extern funcs, no body to analyze */
 	if (func->is_extern) {
 		return;
@@ -1803,6 +2084,22 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 	case DECL_USE:
 		/* Module use — resolved before semantic analysis */
 		break;
+	case DECL_EXTERN_TYPE: {
+		ExternTypeDecl *et = decl->data.extern_type;
+		if (semantic_has_extern_type(ctx, et->name)) {
+			char msg[256];
+			snprintf(msg, sizeof(msg), "extern type '%s' redeclared", et->name);
+			error(ctx, msg);
+			break;
+		}
+		ctx->extern_types = realloc(ctx->extern_types, (ctx->extern_type_count + 1) * sizeof(ExternTypeEntry));
+		ctx->extern_types[ctx->extern_type_count].name = malloc(strlen(et->name) + 1);
+		strcpy(ctx->extern_types[ctx->extern_type_count].name, et->name);
+		ctx->extern_types[ctx->extern_type_count].capacity = et->capacity;
+		ctx->extern_types[ctx->extern_type_count].loc = et->loc;
+		ctx->extern_type_count++;
+		break;
+	}
 	case DECL_PROC:
 		analyze_proc_decl(ctx, decl->data.proc);
 		break;
@@ -1830,6 +2127,8 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->known_func_count = 0;
 	ctx->groups = NULL;
 	ctx->group_count = 0;
+	ctx->extern_types = NULL;
+	ctx->extern_type_count = 0;
 	ctx->const_names = NULL;
 	ctx->const_values = NULL;
 	ctx->const_count = 0;
@@ -1883,16 +2182,24 @@ SemanticContext *semantic_analyze(Program *prog) {
 	/* global scope: holds module-level variables (static arrays, etc.) */
 	push_scope(ctx);
 
-	/* first pass: collect all archetypes */
+	/* pass 1a: register extern types so archetype field checks see them */
+	for (int i = 0; i < prog->decl_count; i++) {
+		if (prog->decls[i]->kind == DECL_EXTERN_TYPE) {
+			analyze_decl(ctx, prog->decls[i]);
+		}
+	}
+
+	/* pass 1b: collect all archetypes */
 	for (int i = 0; i < prog->decl_count; i++) {
 		if (prog->decls[i]->kind == DECL_ARCHETYPE) {
 			analyze_decl(ctx, prog->decls[i]);
 		}
 	}
 
-	/* second pass: analyze other declarations */
+	/* pass 2: analyze other declarations */
 	for (int i = 0; i < prog->decl_count; i++) {
-		if (prog->decls[i]->kind != DECL_ARCHETYPE && prog->decls[i]->kind != DECL_CONST) {
+		if (prog->decls[i]->kind != DECL_ARCHETYPE && prog->decls[i]->kind != DECL_CONST &&
+		    prog->decls[i]->kind != DECL_EXTERN_TYPE) {
 			analyze_decl(ctx, prog->decls[i]);
 		}
 	}
@@ -1903,6 +2210,12 @@ SemanticContext *semantic_analyze(Program *prog) {
 void semantic_context_free(SemanticContext *ctx) {
 	if (!ctx)
 		return;
+
+	/* free extern type entries */
+	for (int i = 0; i < ctx->extern_type_count; i++) {
+		free(ctx->extern_types[i].name);
+	}
+	free(ctx->extern_types);
 
 	/* free constants (names only, values are owned by AST) */
 	free(ctx->const_names);
@@ -1959,6 +2272,44 @@ void semantic_context_free(SemanticContext *ctx) {
 
 int semantic_has_errors(SemanticContext *ctx) {
 	return ctx->error_count > 0;
+}
+
+int semantic_error_count(const SemanticContext *ctx) {
+	if (!ctx)
+		return 0;
+	return ctx->error_count;
+}
+
+int semantic_has_extern_type(const SemanticContext *ctx, const char *name) {
+	if (!ctx || !name)
+		return 0;
+	for (int i = 0; i < ctx->extern_type_count; i++) {
+		if (strcmp(ctx->extern_types[i].name, name) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+int semantic_extern_type_capacity(const SemanticContext *ctx, const char *name) {
+	if (!ctx || !name)
+		return -1;
+	for (int i = 0; i < ctx->extern_type_count; i++) {
+		if (strcmp(ctx->extern_types[i].name, name) == 0)
+			return ctx->extern_types[i].capacity;
+	}
+	return -1;
+}
+
+int semantic_extern_type_count(const SemanticContext *ctx) {
+	if (!ctx)
+		return 0;
+	return ctx->extern_type_count;
+}
+
+const char *semantic_extern_type_name_at(const SemanticContext *ctx, int index) {
+	if (!ctx || index < 0 || index >= ctx->extern_type_count)
+		return NULL;
+	return ctx->extern_types[index].name;
 }
 
 int semantic_archetype_exists(SemanticContext *ctx, const char *name) {

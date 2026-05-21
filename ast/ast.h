@@ -38,6 +38,8 @@ struct AstType {
 	int rank;              /* AST_TYPE_SHAPED_ARRAY */
 	AstTupleField *fields; /* AST_TYPE_TUPLE */
 	int field_count;       /* AST_TYPE_TUPLE */
+	int int_width;         /* AST_TYPE_INT: 8/16/32/64/128 (default 32) */
+	int int_signed;        /* AST_TYPE_INT: 1 signed, 0 unsigned (default 1) */
 };
 
 /* =========================
@@ -92,6 +94,7 @@ struct AstParam {
 	char *name;
 	AstType *type;
 	int is_out;
+	int is_consume;
 	SourceLoc loc;
 };
 
@@ -367,6 +370,10 @@ void ast_expr_free(AstExpr *expr);
 
 AstType *ast_type_create(AstTypeTag tag);
 void ast_type_free(AstType *type);
+
+/* Recognize a fixed-width int type name (byte, i8/u8 .. i64/u64, i128/u128).
+ * Returns 1 and fills width (8/16/32/64/128) + signedness on match. */
+int ast_parse_int_width(const char *s, int *width, int *is_signed);
 
 AstField *ast_field_create(FieldKind kind, char *name, AstType *type);
 void ast_field_free(AstField *field);

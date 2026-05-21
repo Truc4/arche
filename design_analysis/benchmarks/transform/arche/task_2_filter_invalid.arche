@@ -12,17 +12,7 @@ static Transaction(10000, 10000) {
 
 
 proc load_transactions() {
-  let mm := csv_mmap_open("design_analysis/benchmarks/etl/data/data_10k.csv");
-  let size := csv_mmap_size(mm);
-  let pos := csv_mmap_skip_header(mm, size);
-  for (let idx = 0; idx < 10000; idx += 1) {
-    let nl := csv_mmap_next_line(mm, pos, size);
-    let c1 := csv_mmap_find_comma(mm, pos, nl);
-    let c2 := csv_mmap_find_comma(mm, c1 + 1, nl);
-    Transaction.quantity[idx] = csv_mmap_parse_int(mm, c2 + 1);
-    pos = nl + 1;
-  }
-  csv_mmap_close(mm);
+  csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");
 }
 
 

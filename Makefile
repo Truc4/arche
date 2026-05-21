@@ -9,6 +9,7 @@ FMT_BIN = $(BUILD_DIR)/arche-fmt
 SEMANTIC_TEST_BIN = $(BUILD_DIR)/semantic-test
 CODEGEN_TEST_BIN = $(BUILD_DIR)/codegen-test
 LOWER_TEST_BIN = $(BUILD_DIR)/lower-test
+HANDLE_RUNTIME_TEST_BIN = $(BUILD_DIR)/handle-runtime-test
 LIBARCH = $(BUILD_DIR)/libarch.a
 LIBARCH_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/parser/parser.o
 
@@ -19,7 +20,7 @@ SRCS = lexer/lexer.c \
        semantic/semantic.c \
        codegen/codegen.c
 
-RUNTIME_SRCS = runtime/stack_check.c runtime/io.c
+RUNTIME_SRCS = runtime/stack_check.c runtime/io.c runtime/handles.c
 RUNTIME_OBJS = $(RUNTIME_SRCS:.c=.o)
 
 OBJS = $(SRCS:.c=.o)
@@ -30,9 +31,10 @@ FMT_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/parser
 SEMANTIC_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/unit/compiler/semantic_tests.o
 CODEGEN_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/unit/compiler/codegen_tests.o
 LOWER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/ast/ast.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/unit/compiler/lower_tests.o
+HANDLE_RUNTIME_TEST_OBJS = $(BUILD_DIR)/unit/compiler/handle_runtime_tests.o $(BUILD_DIR)/runtime/handles.o
 
 # Default target
-all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o
+all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/handles.o
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/cst $(BUILD_DIR)/ast $(BUILD_DIR)/lower $(BUILD_DIR)/parser $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/unit/compiler $(BUILD_DIR)/runtime
@@ -63,6 +65,9 @@ $(CODEGEN_TEST_BIN): $(CODEGEN_TEST_OBJS)
 
 # Build lower tests executable
 $(LOWER_TEST_BIN): $(LOWER_TEST_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^
+
+$(HANDLE_RUNTIME_TEST_BIN): $(HANDLE_RUNTIME_TEST_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
 # Build syntax/parsing library
@@ -105,8 +110,12 @@ test-codegen-unit: $(CODEGEN_TEST_BIN)
 test-lower: $(LOWER_TEST_BIN)
 	./$(LOWER_TEST_BIN)
 
+# Run handle runtime tests
+test-handle-runtime: $(HANDLE_RUNTIME_TEST_BIN)
+	./$(HANDLE_RUNTIME_TEST_BIN)
+
 # Run all tests with LIT
-test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o
+test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/handles.o $(HANDLE_RUNTIME_TEST_BIN)
 	lit -v tests/
 
 # Test folder with pattern: make test-folder FOLDER=path PATTERN="*.arche"
@@ -189,4 +198,4 @@ format: $(FMT_BIN)
 .PHONY: build
 
 # Phony targets
-.PHONY: all run run-lexer test test-lexer test-parser test-semantic test-codegen test-codegen-unit test-lit clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format
+.PHONY: all run run-lexer test test-lexer test-parser test-semantic test-codegen test-codegen-unit test-lit test-lower test-handle-runtime clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format

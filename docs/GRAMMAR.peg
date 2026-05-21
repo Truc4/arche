@@ -2,7 +2,7 @@
 
 Program ← _ (Decl _)* EOF
 
-Decl ← ArchetypeDecl / ProcDecl / SysDecl / FuncDecl
+Decl ← ArchetypeDecl / ProcDecl / SysDecl / FuncDecl / ExternTypeDecl
 
 # Declarations
 
@@ -17,6 +17,18 @@ SysDecl ← "sys" _ Identifier _ "(" _ (Identifier (_ "," _ Identifier)*)? _ ")"
 FuncDecl ← "func" _ Identifier _ "(" _ (FuncParam (_ "," _ FuncParam)*)? _ ")" _ "->" _ Type _ "{" _ Expression _ "}"
 
 FuncParam ← Identifier _ ":" _ Type
+
+# Extern table declarations introduce foreign-resource pools.  The name is
+# never used bare — references go through `handle(<Name>)` everywhere, just
+# like archetype handles. Capacity (the maximum number of live handles) is
+# required at declaration time.
+ExternTypeDecl ← "extern" _ Identifier _ "(" _ Number _ ")" _ ";"
+
+# Parameter modifiers (extern signatures only)
+# - "out":     parameter is returned in the result tuple; caller may pre-fill
+# - "consume": parameter's handle slot is freed after the call; further use is an error
+# - Modifiers may appear in either order; both on the same parameter is a parse error.
+ExternFuncParam ← ("out" / "consume")? _ ("out" / "consume")? _ Identifier _ ":" _ Type
 
 # Statements
 
@@ -51,6 +63,12 @@ Index ← Identifier _ "[" _ Expression (_ "," _ Expression)* _ "]"
 Path ← Identifier (_ "." _ Identifier)+
 
 # Types
+#
+# A type is an identifier. Built-in scalar types: int (= i32), float, char,
+# plus fixed-width integers (always available): i8/u8, i16/u16, i32/u32,
+# i64/u64, i128/u128, and byte (= u8). Signedness is part of the type and
+# selects signed vs unsigned machine operations. A width-type name used as a
+# call, e.g. i64(x), is a conversion (sext/zext/trunc), not a function call.
 
 Type ← Identifier
 

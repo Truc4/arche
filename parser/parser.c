@@ -220,6 +220,56 @@ static Statement *parse_statement(Parser *parser);
 static Expression *parse_expression(Parser *parser);
 static TypeRef *parse_type(Parser *parser);
 
+/* ========== EXTERN TYPE PARSING ========== */
+
+/* Called after 'extern' has been consumed; 'type' is the current token. */
+static Decl *parse_extern_type_decl(Parser *parser) {
+	/* 'extern' was already consumed; current token is the table name.
+	 * Form: extern <Ident>(<capacity>); — declares a foreign resource pool
+	 * referenced everywhere as handle(<Ident>). */
+	if (parser->current.kind != TOK_IDENT) {
+		error(parser, "Expected name after 'extern'");
+		return NULL;
+	}
+	char *name = token_text(parser->current);
+	advance(parser);
+
+	if (!match(parser, TOK_LPAREN)) {
+		error(parser, "Expected '(' after extern table name");
+		free(name);
+		return NULL;
+	}
+	if (parser->current.kind != TOK_NUMBER) {
+		error(parser, "Expected capacity number");
+		free(name);
+		return NULL;
+	}
+	int capacity = atoi(token_text(parser->current));
+	if (capacity <= 0 || capacity > 65535) {
+		error(parser, "Extern table capacity must be between 1 and 65535");
+	}
+	advance(parser);
+
+	if (!match(parser, TOK_RPAREN)) {
+		error(parser, "Expected ')' after capacity");
+		free(name);
+		return NULL;
+	}
+	if (!match(parser, TOK_SEMI)) {
+		error(parser, "Expected ';' after extern declaration");
+		free(name);
+		return NULL;
+	}
+
+	ExternTypeDecl *et = extern_type_decl_create(name, capacity);
+
+	Decl *d = decl_create(DECL_EXTERN_TYPE);
+	d->loc.line = parser->previous.line;
+	d->loc.column = parser->previous.column;
+	d->data.extern_type = et;
+	return d;
+}
+
 /* ========== TYPE PARSING ========== */
 
 static TypeRef *parse_type(Parser *parser) {
@@ -542,6 +592,27 @@ static Decl *parse_proc_decl(Parser *parser) {
 	/* Parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
+			int param_is_out = 0;
+			int param_is_consume = 0;
+
+			/* Collect modifier keywords (out, consume) in either order */
+			int saw_modifier = 1;
+			while (saw_modifier) {
+				saw_modifier = 0;
+				if (match(parser, TOK_OUT)) {
+					param_is_out = 1;
+					saw_modifier = 1;
+				}
+				if (match(parser, TOK_CONSUME)) {
+					param_is_consume = 1;
+					saw_modifier = 1;
+				}
+			}
+
+			if (param_is_out && param_is_consume) {
+				error(parser, "'consume' and 'out' cannot both apply to the same parameter");
+			}
+
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected parameter name");
 				return NULL;
@@ -561,6 +632,8 @@ static Decl *parse_proc_decl(Parser *parser) {
 				return NULL;
 
 			Parameter *param = parameter_create(param_name, param_type);
+			param->is_out = param_is_out;
+			param->is_consume = param_is_consume;
 			param->loc.line = param_line;
 			param->loc.column = param_column;
 			proc->params = realloc(proc->params, (proc->param_count + 1) * sizeof(Parameter *));
@@ -1024,7 +1097,7 @@ static Decl *parse_decl(Parser *parser) {
 	case TOK_ARCHETYPE:
 		return parse_archetype_decl(parser);
 	case TOK_EXTERN:
-		advance(parser);
+		advance(parser); /* consume 'extern' */
 		if (check(parser, TOK_FUNC)) {
 			if (allow_pure_proc_flag) {
 				error(parser, "@allow_pure_proc must precede a proc, not a func");
@@ -1036,8 +1109,10 @@ static Decl *parse_decl(Parser *parser) {
 			if (d && d->kind == DECL_PROC && allow_pure_proc_flag)
 				d->data.proc->allow_pure_proc = 1;
 			return d;
+		} else if (parser->current.kind == TOK_IDENT) {
+			return parse_extern_type_decl(parser);
 		} else {
-			error(parser, "Expected 'func' or 'proc' after 'extern'");
+			error(parser, "Expected 'func', 'proc', or table name after 'extern'");
 			return NULL;
 		}
 	case TOK_PROC: {
@@ -1437,6 +1512,27 @@ static Expression *parse_primary_expr(Parser *parser) {
 	return NULL;
 }
 
+/* Prefix unary operators: `-x` (negate) and `!x` (logical not). Binds tighter
+ * than binary operators, looser than postfix (calls/indexing in primary). */
+static Expression *parse_unary_expr(Parser *parser) {
+	if (check(parser, TOK_MINUS) || check(parser, TOK_BANG)) {
+		TokenKind op_kind = parser->current.kind;
+		int line = parser->current.line;
+		int col = parser->current.column;
+		advance(parser);
+		Expression *operand = parse_unary_expr(parser); /* allow -(-x), !!x */
+		if (!operand)
+			return NULL;
+		Expression *u = expression_create(EXPR_UNARY);
+		u->loc.line = line;
+		u->loc.column = col;
+		u->data.unary.op = (op_kind == TOK_MINUS) ? UNARY_NEG : UNARY_NOT;
+		u->data.unary.operand = operand;
+		return u;
+	}
+	return parse_primary_expr(parser);
+}
+
 static Expression *parse_binary_expr_with_left(Parser *parser, Expression *left) {
 	/* Continue parsing binary expression from a given left operand */
 	if (!left)
@@ -1449,7 +1545,7 @@ static Expression *parse_binary_expr_with_left(Parser *parser, Expression *left)
 		TokenKind op_kind = parser->current.kind;
 		advance(parser);
 
-		Expression *right = parse_primary_expr(parser);
+		Expression *right = parse_unary_expr(parser);
 		if (!right)
 			return NULL;
 
@@ -1504,7 +1600,7 @@ static Expression *parse_binary_expr_with_left(Parser *parser, Expression *left)
 }
 
 static Expression *parse_binary_expr(Parser *parser) {
-	Expression *left = parse_primary_expr(parser);
+	Expression *left = parse_unary_expr(parser);
 	return parse_binary_expr_with_left(parser, left);
 }
 

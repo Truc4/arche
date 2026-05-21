@@ -28,6 +28,10 @@ AstExpr *ast_expr_create(AstExprKind kind) {
 AstType *ast_type_create(AstTypeTag tag) {
 	AstType *type = calloc(1, sizeof(AstType));
 	type->tag = tag;
+	if (tag == AST_TYPE_INT) {
+		type->int_width = 32;
+		type->int_signed = 1;
+	}
 	return type;
 }
 

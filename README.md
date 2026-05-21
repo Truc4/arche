@@ -180,13 +180,33 @@ This keeps the language focused on whole-array transformations. Most operations 
 
 ## Numeric Model
 
-- Only numeric primitives: `int`, `float`, `char` (no `bool` type)
+- Base primitives: `int`, `float`, `char` (no `bool` type)
 - Comparisons produce numeric values (`0` or `1`)
 - Conditions treat `0` as false, non-zero as true
 
 ```arche
 x = a < b   // x is 0 or 1
 ```
+
+### Fixed-width integers
+
+Always available alongside `int`: `i8`/`u8`, `i16`/`u16`, `i32`/`u32`, `i64`/`u64`, `i128`/`u128`, and `byte` (= `u8`). `int` is an alias for `i32`; `char` is `i8`. These map to native LLVM integers — no software emulation. Signedness is part of the type and selects the machine operation (`sdiv`/`udiv`, signed/unsigned compares, `sext`/`zext`).
+
+```arche
+let offset: i64 = 3000000000;   // addresses past the 32-bit signed limit
+offset = offset + offset;       // i64 arithmetic
+let count: u32 = 4000000000;    // unsigned 32-bit
+let b: byte = 255;
+```
+
+Convert between widths with a call-style cast (`sext`/`zext` to widen, `trunc` to narrow):
+
+```arche
+let small := i32(offset);   // truncate i64 -> i32
+let wide: i64 = i64(small); // widen i32 -> i64
+```
+
+Integer literals adopt the type of their context (`let x: i64 = 3000000000` types the literal as `i64`, avoiding 32-bit overflow). Operands of differing widths are widened to the larger width before the operation.
 
 ## Procedures (`proc`)
 
@@ -439,6 +459,29 @@ The buffer `old_buf` is passed. Language copies it in, passes to C, returns modi
 ### Copy Semantics
 
 All parameters are always copied. C functions cannot modify caller data directly. Out parameters are returned as new values. Every function parameter is **always copied** — there are no side effects on the original data. Functions are pure with respect to parameters; side effects are explicit in the code.
+
+## Extern Tables (`extern Name(N)`) and `handle(Name)`
+
+Arche references foreign resources (OS windows, audio voices, file pointers) via `extern` table declarations. Each declaration names a fixed-capacity slot pool. The name is never used bare — references go through `handle(Name)` everywhere, mirroring the way archetype rows are referenced via `handle(Player)`.
+
+```arche
+extern Window(8);
+
+extern func window_open(title: char[], w: int, h: int) -> handle(Window);
+extern proc window_present(w: handle(Window), fb: int[], width: int, height: int);
+extern proc window_close(consume w: handle(Window));
+```
+
+- `handle(Window)` is opaque to Arche — no inspection, arithmetic, or casting.
+- `0` is the null handle. Returning `NULL` from C marshals to `0`.
+- `consume` marks a parameter whose handle is freed by the call. Re-using a consumed binding is a compile error.
+- Distinct extern tables produce distinct handle types: `handle(Window)` and `handle(Sound)` are not interchangeable even though both are int handles at runtime.
+- Extern handles may not appear in archetype fields. (Internal `handle(Archetype)` columns are fine.)
+- Generation counters detect use-after-free at runtime when the static checker can't (e.g., handles aliased through other bindings).
+
+C authors write plain C with native pointer types (`HWND`, `FILE *`, etc.). The compiler emits all handle marshaling.
+
+See `docs/superpowers/specs/2026-05-16-extern-type-design.md` for the full design.
 
 ## Multi-Value Let
 

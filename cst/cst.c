@@ -138,11 +138,21 @@ UseDecl *use_decl_create(char *name) {
 	return use;
 }
 
+ExternTypeDecl *extern_type_decl_create(char *name, int capacity) {
+	ExternTypeDecl *et = malloc(sizeof(ExternTypeDecl));
+	et->name = name;
+	et->capacity = capacity;
+	et->loc.line = 1;
+	et->loc.column = 1;
+	return et;
+}
+
 Parameter *parameter_create(char *name, TypeRef *type) {
 	Parameter *param = malloc(sizeof(Parameter));
 	param->name = name;
 	param->type = type;
 	param->is_out = 0;
+	param->is_consume = 0;
 	param->loc.line = 1;
 	param->loc.column = 1;
 	return param;
@@ -266,6 +276,9 @@ void decl_free(Decl *decl) {
 		use_decl_free(decl->data.use);
 		break;
 	}
+	case DECL_EXTERN_TYPE:
+		extern_type_decl_free(decl->data.extern_type);
+		break;
 	}
 	free(decl);
 }
@@ -380,6 +393,13 @@ void use_decl_free(UseDecl *use) {
 		return;
 	free(use->name);
 	free(use);
+}
+
+void extern_type_decl_free(ExternTypeDecl *et) {
+	if (!et)
+		return;
+	free(et->name);
+	free(et);
 }
 
 void type_ref_free(TypeRef *type) {
@@ -1187,6 +1207,8 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 					fprintf(out, ", ");
 				if (proc->params[j]->is_out)
 					fprintf(out, "out ");
+				if (proc->params[j]->is_consume)
+					fprintf(out, "consume ");
 				fprintf(out, "%s: ", proc->params[j]->name);
 				format_type(out, proc->params[j]->type);
 			}
@@ -1232,6 +1254,8 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 					fprintf(out, ", ");
 				if (func->params[j]->is_out)
 					fprintf(out, "out ");
+				if (func->params[j]->is_consume)
+					fprintf(out, "consume ");
 				fprintf(out, "%s: ", func->params[j]->name);
 				format_type(out, func->params[j]->type);
 			}
@@ -1306,6 +1330,13 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			ConstDecl *c = decl->data.constant;
 			fprintf(out, "%s :: ", c->name);
 			format_expression(out, c->value);
+			emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
+			fprintf(out, "\n");
+			break;
+		}
+		case DECL_EXTERN_TYPE: {
+			ExternTypeDecl *et = decl->data.extern_type;
+			fprintf(out, "extern %s(%d);", et->name, et->capacity);
 			emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
 			fprintf(out, "\n");
 			break;

@@ -1,5 +1,6 @@
 // Task 1: Compute derived columns
 // Compute revenue = price * quantity for all rows
+use csv;
 arche Transaction {
   price: float,
   quantity: int,
@@ -14,20 +15,7 @@ static Transaction(1000, 1000) {
 
 
 proc load_transactions() {
-  let mm := arche_mmap_open("design_analysis/benchmarks/etl/data/data.csv");
-  let size := arche_mmap_size(mm);
-  let pos := arche_mmap_find(mm, 0, size, '\n') + 1;
-  let idx := 0;
-  for (;idx < 1000;) {
-    let nl := arche_mmap_find(mm, pos, size, '\n');
-    let c1 := arche_mmap_find(mm, pos, nl, ',');
-    let c2 := arche_mmap_find(mm, c1 + 1, nl, ',');
-    Transaction.price[idx] = arche_mmap_parse_float(mm, c1 + 1);
-    Transaction.quantity[idx] = arche_mmap_parse_int(mm, c2 + 1);
-    pos = nl + 1;
-    idx = idx + 1;
-  }
-  arche_mmap_close(mm);
+  csv_load(Transaction, "design_analysis/benchmarks/etl/data/data.csv");
 }
 
 
