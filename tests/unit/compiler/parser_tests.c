@@ -763,8 +763,8 @@ void test_lex_consume_keyword(void) {
 /* ========== EXTERN TYPE TESTS ========== */
 
 void test_extern_type_decl(void) {
-	test_start("extern type Window(8)");
-	Program *prog = parse_string("extern type Window(8);");
+	test_start("extern Window(8)");
+	Program *prog = parse_string("extern Window(8);");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ASSERT_EQ(prog->decl_count, 1, "expected 1 decl");
 	ASSERT_EQ(prog->decls[0]->kind, DECL_EXTERN_TYPE, "expected DECL_EXTERN_TYPE");
@@ -779,16 +779,16 @@ void test_extern_type_decl(void) {
 /* ========== EXTERN TYPE CONTRACT TESTS ========== */
 
 void test_parser_treats_extern_type_as_typename(void) {
-	test_start("parser leaves 'Window' as TYPE_NAME (semantic resolves)");
-	Program *prog = parse_string("extern type Window(8);\n"
-	                             "extern func window_open(w: int, h: int) -> Window;\n");
+	test_start("extern table referenced via handle(Window) -> TYPE_HANDLE");
+	Program *prog = parse_string("extern Window(8);\n"
+	                             "extern func window_open(w: int, h: int) -> handle(Window);\n");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ASSERT_EQ(prog->decl_count, 2, "expected 2 decls");
 	ASSERT_EQ(prog->decls[1]->kind, DECL_FUNC, "expected DECL_FUNC");
 	FuncDecl *f = prog->decls[1]->data.func;
 	ASSERT_NOT_NULL(f->return_type, "no return type");
-	ASSERT_EQ(f->return_type->kind, TYPE_NAME, "parser keeps 'Window' as TYPE_NAME");
-	ASSERT_EQ(strcmp(f->return_type->data.name, "Window"), 0, "wrong name");
+	ASSERT_EQ(f->return_type->kind, TYPE_HANDLE, "handle(Window) is TYPE_HANDLE");
+	ASSERT_EQ(strcmp(f->return_type->data.handle.archetype_name, "Window"), 0, "wrong target");
 	program_free(prog);
 	test_pass_msg();
 }
@@ -797,8 +797,8 @@ void test_parser_treats_extern_type_as_typename(void) {
 
 void test_consume_param_modifier(void) {
 	test_start("consume parameter modifier");
-	Program *prog = parse_string("extern type Window(8);\n"
-	                             "extern proc window_close(consume w: Window);\n");
+	Program *prog = parse_string("extern Window(8);\n"
+	                             "extern proc window_close(consume w: handle(Window));\n");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ASSERT_EQ(prog->decl_count, 2, "expected 2 decls");
 	ASSERT_EQ(prog->decls[1]->kind, DECL_PROC, "expected DECL_PROC");
@@ -812,8 +812,8 @@ void test_consume_param_modifier(void) {
 
 void test_consume_and_out_mutually_exclusive(void) {
 	test_start("consume and out cannot both apply to same param");
-	ParseResult result = parse_source("extern type Window(8);\n"
-	                                  "extern proc bad(consume out w: Window);\n");
+	ParseResult result = parse_source("extern Window(8);\n"
+	                                  "extern proc bad(consume out w: handle(Window));\n");
 	ASSERT_TRUE(result.error_count >= 1, "expected at least one parse error");
 	parse_result_free(&result);
 	test_pass_msg();

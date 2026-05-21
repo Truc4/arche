@@ -2719,6 +2719,9 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			           extern_handle_target_ast(ctx->sem_ctx, callee_func->return_type)) {
 				/* Non-extern func returning handle(extern X): i32 (already-marshaled handle). */
 				return_type = "i32";
+			} else if (callee_func && callee_func->return_type && callee_func->return_type->tag == AST_TYPE_ARRAY) {
+				/* Func returning char[]: a raw i8* byte view. */
+				return_type = "i8*";
 			} else if (callee_func && callee_func->return_type) {
 				return_type = llvm_type_from_arche(field_base_type_name(callee_func->return_type));
 			} else if (callee_proc && callee_proc->is_extern) {
@@ -3816,7 +3819,28 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			strcpy(value_buf, "0");
 		}
 
-		if (is_multidim_slice) {
+		int is_char_array_call = stmt->data.let_stmt.value && stmt->data.let_stmt.value->kind == AST_EXPR_CALL &&
+		                         stmt->data.let_stmt.value->resolved.tag == AST_TYPE_CHAR_ARRAY;
+
+		if (is_char_array_call) {
+			/* A func returning char[] (e.g. arche_file_map) yields a raw i8* byte
+			 * view. Bind as type-6 (i8* char pointer) so data[i] indexes directly. */
+			ValueInfo *vi = malloc(sizeof(ValueInfo));
+			vi->name = malloc(strlen(var_name) + 1);
+			strcpy(vi->name, var_name);
+			vi->llvm_name = malloc(strlen(value_buf) + 1);
+			strcpy(vi->llvm_name, value_buf);
+			vi->type = 6; /* i8* char pointer */
+			vi->arch_name = NULL;
+			vi->string_len = -1;
+			vi->field_type = "char";
+			vi->bit_width = 8;
+			if (ctx->scope_count > 0) {
+				ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+				scope->values[scope->value_count++] = vi;
+			}
+		} else if (is_multidim_slice) {
 			/* value_buf is a raw pointer — store as type-6 ValueInfo */
 			ValueInfo *vi = malloc(sizeof(ValueInfo));
 			vi->name = malloc(strlen(var_name) + 1);
@@ -5896,11 +5920,12 @@ static void end_function_body(CodegenContext *ctx, FunctionBodyState state) {
 static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 	/* For extern funcs, emit declare stub */
 	if (func->is_extern) {
-		/* If the return type is handle(X) for a registered extern table, the C
-		 * function returns i8* (opaque pointer the marshal layer wraps). */
+		/* handle(X) returns i8* (marshal layer wraps it); char[] returns a raw
+		 * i8* byte view (e.g. arche_file_map for whole-file mmap). */
 		int ret_is_extern = extern_handle_target_ast(ctx->sem_ctx, func->return_type) != NULL;
+		int ret_is_array = func->return_type && func->return_type->tag == AST_TYPE_ARRAY;
 		const char *ret_base_name = field_base_type_name(func->return_type);
-		const char *return_type = ret_is_extern ? "i8*" : llvm_type_from_arche(ret_base_name);
+		const char *return_type = (ret_is_extern || ret_is_array) ? "i8*" : llvm_type_from_arche(ret_base_name);
 		buffer_append_fmt(ctx, "declare %s @%s(", return_type, func->name);
 		for (int i = 0; i < func->param_count; i++) {
 			AstType *param_type = func->params[i]->type;

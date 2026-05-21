@@ -572,6 +572,8 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 					return rt->data.handle.archetype_name;
 				if (rt->kind == TYPE_NAME)
 					return normalize_type_name(rt->data.name);
+				if (rt->kind == TYPE_ARRAY)
+					return "char_array"; /* extern func returning char[] (raw byte view) */
 				return NULL;
 			}
 		}

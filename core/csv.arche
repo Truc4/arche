@@ -13,81 +13,17 @@ func read_chunk(fd: handle(File), out buf: char[], size: int) -> int {
   return arche_csv_read_chunk(fd, buf, size);
 }
 
-// mmap-based API
-func mmap_open(path: char[]) -> int {
-  return arche_mmap_open(path);
-}
-func mmap_size(handle: int) -> int {
-  return arche_mmap_size(handle);
-}
-proc mmap_close(handle: int) {
-  arche_mmap_close(handle);
-}
-func mmap_skip_header(handle: int, size: int) -> int {
-  return arche_mmap_find(handle, 0, size, '\n') + 1;
-}
-func mmap_next_line(handle: int, pos: int, size: int) -> int {
-  return arche_mmap_find(handle, pos, size, '\n');
-}
-func mmap_find_comma(handle: int, pos: int, end: int) -> int {
-  return arche_mmap_find(handle, pos, end, ',');
-}
-func mmap_parse_float(handle: int, pos: int) -> float {
-  return arche_mmap_parse_float(handle, pos);
-}
-func mmap_parse_int(handle: int, pos: int) -> int {
-  return arche_mmap_parse_int(handle, pos);
-}
+// --- Pure-Arche CSV loader (no custom CSV C; only libc mmap/atof/atoi) ---
+// Memory-maps the whole file and scans it in Arche with i64 byte offsets, so
+// files larger than 2 GB work. Columns are matched by header name, so file
+// column order is irrelevant and extra columns are ignored. Use
+// `csv_load(Archetype, path)` after `use csv;`.
 
-// Per-type parse helpers — gathered into a procedure group so the call site
-// inside fill's `each_field` body dispatches by the static type of f[i].
-// `cell` is a type witness; only its static type matters.
-func parse_float(cell: float, mm: int, pos: int) -> float {
-  return arche_mmap_parse_float(mm, pos);
-}
-func parse_int(cell: int, mm: int, pos: int) -> int {
-  return arche_mmap_parse_int(mm, pos);
-}
-func parse = { parse_float, parse_int };
-
-// Shared column-index cache for fill. Sized for archetypes up to 64 fields;
-// the v1 each_field iterator addresses it by f.index (the field's declaration
-// position). fill is single-threaded so reusing one buffer across calls is
-// fine.
-static fill_cols: int[64];
-
-proc fill(arch: archetype, path: char[]) {
-  let mm: int = arche_mmap_open(path);
-  let size: int = arche_mmap_size(mm);
-  let hdr_end: int = arche_mmap_find(mm, 0, size, 10) + 1;
-
-  each_field f in arch {
-    fill_cols[f.index] = arche_csv_column_index(mm, f.name);
-  }
-
-  let pos: int = hdr_end;
-  for (let i = 0; i < arch.capacity; i += 1) {
-    let nl: int = arche_mmap_find(mm, pos, size, 10);
-    each_field f in arch {
-      let fpos: int = arche_csv_field_pos(mm, pos, fill_cols[f.index]);
-      f[i] = parse(f[i], mm, fpos);
-    }
-    pos = nl + 1;
-  }
-  arche_mmap_close(mm);
-}
-
-// --- Pure-Arche CSV loader (no custom CSV C; only libc fopen/fread/atof) ---
-// Reads the whole file into a fixed buffer, then scans/parses in Arche.
-// Columns are matched by header name, so file column order is irrelevant and
-// extra columns are ignored. Use `csv_load(Archetype, path)` after `use csv;`.
-
-static load_buf: char[1048576];
 static load_cols: int[64];
 
 // first index of byte `ch` in data[start..end), or end if absent
-func find_byte(data: char[], start: int, end: int, ch: int) -> int {
-  for (let i = start; i < end; i += 1) {
+func find_byte(data: char[], start: i64, end: i64, ch: int) -> i64 {
+  for (let i: i64 = start; i < end; i = i + 1) {
     if (data[i] == ch) {
       return i;
     }
@@ -96,12 +32,12 @@ func find_byte(data: char[], start: int, end: int, ch: int) -> int {
 }
 
 // 1 if archetype field name `name` equals the CSV header cell data[start..end)
-func name_eq(name: char[], data: char[], start: int, end: int) -> int {
-  let len := end - start;
+func name_eq(name: char[], data: char[], start: i64, end: i64) -> int {
+  let len: i64 = end - start;
   if (strlen(name) != len) {
     return 0;
   }
-  for (let i = 0; i < len; i += 1) {
+  for (let i: i64 = 0; i < len; i = i + 1) {
     if (name[i] != data[start + i]) {
       return 0;
     }
@@ -110,8 +46,8 @@ func name_eq(name: char[], data: char[], start: int, end: int) -> int {
 }
 
 // start offset of the col-th comma-separated field within data[row_start..row_end)
-func field_at(data: char[], row_start: int, row_end: int, col: int) -> int {
-  let p := row_start;
+func field_at(data: char[], row_start: i64, row_end: i64, col: int) -> i64 {
+  let p: i64 = row_start;
   for (let remaining = col; remaining > 0; remaining -= 1) {
     p = find_byte(data, p, row_end, ',') + 1;
   }
@@ -129,20 +65,19 @@ func cell_int(c: int, s: char[]) -> int {
 func cell = { cell_float, cell_int };
 
 proc load(arch: archetype, path: char[]) {
-  let fd := arche_fopen_read(path);
-  let size := arche_fread(fd, load_buf, 1048576);
-  arche_fclose(fd);
+  let data := arche_file_map(path);
+  let size: i64 = arche_file_size();
 
-  let hdr_end := find_byte(load_buf, 0, size, '\n');
+  let hdr_end: i64 = find_byte(data, 0, size, '\n');
 
   // header pass: map each archetype field to its file column by name
   each_field f in arch {
     load_cols[f.index] = -1;
     let col := 0;
-    let cstart := 0;
+    let cstart: i64 = 0;
     for (;cstart < hdr_end;) {
-      let cend := find_byte(load_buf, cstart, hdr_end, ',');
-      if (name_eq(f.name, load_buf, cstart, cend)) {
+      let cend: i64 = find_byte(data, cstart, hdr_end, ',');
+      if (name_eq(f.name, data, cstart, cend)) {
         load_cols[f.index] = col;
         break;
       }
@@ -152,21 +87,21 @@ proc load(arch: archetype, path: char[]) {
   }
 
   // row pass: pull each field from its mapped column
-  let pos := hdr_end + 1;
+  let pos: i64 = hdr_end + 1;
   for (let row = 0; row < arch.capacity; row += 1) {
     if (pos >= size) {
       break;
     }
-    let nl := find_byte(load_buf, pos, size, '\n');
+    let nl: i64 = find_byte(data, pos, size, '\n');
     each_field f in arch {
       let c := load_cols[f.index];
       if (c >= 0) {
-        let fstart := field_at(load_buf, pos, nl, c);
-        let fend := find_byte(load_buf, fstart, nl, ',');
+        let fstart: i64 = field_at(data, pos, nl, c);
+        let fend: i64 = find_byte(data, fstart, nl, ',');
         let scratch: char[64];
         let j := 0;
-        for (let i = fstart; i < fend; i += 1) {
-          scratch[j] = load_buf[i];
+        for (let i: i64 = fstart; i < fend; i = i + 1) {
+          scratch[j] = data[i];
           j += 1;
         }
         scratch[j] = 0;
@@ -175,4 +110,5 @@ proc load(arch: archetype, path: char[]) {
     }
     pos = nl + 1;
   }
+  arche_file_unmap(data, size);
 }
