@@ -1709,8 +1709,8 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", col_gep,
 			                  ctx->current_archetype_param->name, ctx->current_archetype_param->name,
 			                  ctx->current_arch_param_llvm, ctx->current_each_field_index);
-			char *idx64 = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx64, idx_local);
+			char idx64[256];
+			emit_index_i64(ctx, idx_local, expr->data.index.indices[0], idx64);
 			char *elem_gep = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* %s, i64 0, i64 %s\n", elem_gep, cap,
 			                  llvm_elem, cap, llvm_elem, col_gep, idx64);
@@ -4238,8 +4238,8 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", col_gep,
 			                  ctx->current_archetype_param->name, ctx->current_archetype_param->name,
 			                  ctx->current_arch_param_llvm, ctx->current_each_field_index);
-			char *idx64 = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx64, idx_local);
+			char idx64[256];
+			emit_index_i64(ctx, idx_local, stmt->data.assign_stmt.target->data.index.indices[0], idx64);
 			char *elem_gep = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* %s, i64 0, i64 %s\n", elem_gep, cap,
 			                  llvm_elem, cap, llvm_elem, col_gep, idx64);
@@ -4639,9 +4639,9 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 				char *data_ptr = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", data_ptr, ptr_gep);
 
-				/* Convert i32 index to i64 for getelementptr */
-				char *idx_i64 = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx_i64, idx_buf);
+				/* Coerce index to i64 for getelementptr (i64 indices pass through). */
+				char idx_i64[256];
+				emit_index_i64(ctx, idx_buf, stmt->data.assign_stmt.target->data.index.indices[0], idx_i64);
 
 				char *target_addr = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %s\n", target_addr, data_ptr, idx_i64);
@@ -4653,9 +4653,8 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 				break;
 			} else if (type7_target && stmt->data.assign_stmt.target->data.index.index_count > 0) {
 				/* Type-7 char buffer assignment */
-				/* Convert i32 index to i64 for getelementptr */
-				char *idx_i64 = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx_i64, idx_buf);
+				char idx_i64[256];
+				emit_index_i64(ctx, idx_buf, stmt->data.assign_stmt.target->data.index.indices[0], idx_i64);
 
 				char *target_addr = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i64 0, i64 %s\n", target_addr,
@@ -4668,9 +4667,8 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 				break;
 			} else if (type6_target && stmt->data.assign_stmt.target->data.index.index_count > 0) {
 				/* Type-6 i8* parameter (char array parameter) assignment */
-				/* Convert i32 index to i64 for getelementptr */
-				char *idx_i64 = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx_i64, idx_buf);
+				char idx_i64[256];
+				emit_index_i64(ctx, idx_buf, stmt->data.assign_stmt.target->data.index.indices[0], idx_i64);
 
 				char *target_addr = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %s\n", target_addr, base_buf, idx_i64);
@@ -4728,26 +4726,12 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 				emit_bounds_check(ctx, bc_arch_name, bc_arch_ptr, bc_count_idx, idx_buf, bc_idx_is_i64);
 			}
 
-			/* Ensure index is i64 for getelementptr (simple heuristic: if not from bounds check, assume i32 and
-			 * convert) */
+			/* Ensure index is i64 for getelementptr, respecting the index's width. */
 			const char *final_idx = idx_buf;
-			int idx_is_i64 = bc_idx_is_i64; /* Default: check bounds check result */
-
-			/* If index is a name (like loop var), check if it's already i64 */
-			if (stmt->data.assign_stmt.target->data.index.index_count > 0 &&
-			    stmt->data.assign_stmt.target->data.index.indices[0]->kind == AST_EXPR_NAME) {
-				const char *idx_name = stmt->data.assign_stmt.target->data.index.indices[0]->data.name.name;
-				ValueInfo *idx_val = find_value(ctx, idx_name);
-				if (idx_val && idx_val->bit_width == 64) {
-					idx_is_i64 = 1;
-				}
-			}
-
-			if (stmt->data.assign_stmt.target->data.index.index_count > 0 && !idx_is_i64) {
-				/* Index likely came from a variable or expression, probably i32. Convert to i64. */
-				char *idx_i64 = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx_i64, idx_buf);
-				final_idx = idx_i64;
+			char final_idx_buf[256];
+			if (stmt->data.assign_stmt.target->data.index.index_count > 0) {
+				emit_index_i64(ctx, idx_buf, stmt->data.assign_stmt.target->data.index.indices[0], final_idx_buf);
+				final_idx = final_idx_buf;
 			}
 
 			/* Compute target address (always uses scalar pointer) */
@@ -6165,8 +6149,30 @@ static void codegen_proc_decl(CodegenContext *ctx, AstProcDecl *proc) {
 		if (find_archetype_decl(ctx, type_name)) {
 			add_arch_value(ctx, proc->params[i]->name, param_llvm, type_name);
 		} else if (param_type && param_type->tag == AST_TYPE_ARRAY) {
-			/* T[] is a struct pointer (type 5) */
-			add_array_value(ctx, proc->params[i]->name, param_llvm);
+			/* char[] param: extract the data pointer ONCE at entry (type 6) so
+			 * indexing inside loops doesn't reload it every iteration — the
+			 * per-iteration reload blocks LICM and vectorization. Matches funcs. */
+			char *dp_gep = gen_value_name(ctx);
+			buffer_append_fmt(ctx,
+			                  "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+			                  dp_gep, param_llvm);
+			char *dp = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", dp, dp_gep);
+			ValueInfo *vi = malloc(sizeof(ValueInfo));
+			vi->name = malloc(strlen(proc->params[i]->name) + 1);
+			strcpy(vi->name, proc->params[i]->name);
+			vi->llvm_name = malloc(strlen(dp) + 1);
+			strcpy(vi->llvm_name, dp);
+			vi->type = 6; /* i8* data pointer */
+			vi->arch_name = NULL;
+			vi->string_len = -1;
+			vi->field_type = "char";
+			vi->bit_width = 8;
+			if (ctx->scope_count > 0) {
+				ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+				scope->values[scope->value_count++] = vi;
+			}
 		} else {
 			/* Default to i32 for Int, Float, etc. */
 			add_value(ctx, proc->params[i]->name, param_llvm, 0);
