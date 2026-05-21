@@ -1512,6 +1512,27 @@ static Expression *parse_primary_expr(Parser *parser) {
 	return NULL;
 }
 
+/* Prefix unary operators: `-x` (negate) and `!x` (logical not). Binds tighter
+ * than binary operators, looser than postfix (calls/indexing in primary). */
+static Expression *parse_unary_expr(Parser *parser) {
+	if (check(parser, TOK_MINUS) || check(parser, TOK_BANG)) {
+		TokenKind op_kind = parser->current.kind;
+		int line = parser->current.line;
+		int col = parser->current.column;
+		advance(parser);
+		Expression *operand = parse_unary_expr(parser); /* allow -(-x), !!x */
+		if (!operand)
+			return NULL;
+		Expression *u = expression_create(EXPR_UNARY);
+		u->loc.line = line;
+		u->loc.column = col;
+		u->data.unary.op = (op_kind == TOK_MINUS) ? UNARY_NEG : UNARY_NOT;
+		u->data.unary.operand = operand;
+		return u;
+	}
+	return parse_primary_expr(parser);
+}
+
 static Expression *parse_binary_expr_with_left(Parser *parser, Expression *left) {
 	/* Continue parsing binary expression from a given left operand */
 	if (!left)
@@ -1524,7 +1545,7 @@ static Expression *parse_binary_expr_with_left(Parser *parser, Expression *left)
 		TokenKind op_kind = parser->current.kind;
 		advance(parser);
 
-		Expression *right = parse_primary_expr(parser);
+		Expression *right = parse_unary_expr(parser);
 		if (!right)
 			return NULL;
 
@@ -1579,7 +1600,7 @@ static Expression *parse_binary_expr_with_left(Parser *parser, Expression *left)
 }
 
 static Expression *parse_binary_expr(Parser *parser) {
-	Expression *left = parse_primary_expr(parser);
+	Expression *left = parse_unary_expr(parser);
 	return parse_binary_expr_with_left(parser, left);
 }
 

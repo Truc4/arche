@@ -824,6 +824,11 @@ static AstFuncDecl *find_group_member_for_call(CodegenContext *ctx, AstFuncGroup
 			AstTypeTag at = args[j]->resolved.tag;
 			if (!pt)
 				continue;
+			/* Only scalar int/float/char params discriminate group members.
+			 * Non-scalar params (arrays, handles, etc.) are identical across
+			 * members and don't participate in witness-based dispatch. */
+			if (pt->tag != AST_TYPE_INT && pt->tag != AST_TYPE_FLOAT && pt->tag != AST_TYPE_CHAR)
+				continue;
 			if (pt->tag == AST_TYPE_INT && at == AST_TYPE_INT)
 				continue;
 			if (pt->tag == AST_TYPE_FLOAT && at == AST_TYPE_FLOAT)
@@ -1280,7 +1285,12 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 
 		char *res_name = gen_value_name(ctx);
 		if (expr->data.unary.op == UNARY_NEG) {
-			buffer_append_fmt(ctx, "  %s = sub i32 0, %s\n", res_name, operand_buf);
+			int is_float = expr->resolved.tag == AST_TYPE_FLOAT ||
+			               expr->data.unary.operand->resolved.tag == AST_TYPE_FLOAT;
+			if (is_float)
+				buffer_append_fmt(ctx, "  %s = fsub double 0.0, %s\n", res_name, operand_buf);
+			else
+				buffer_append_fmt(ctx, "  %s = sub i32 0, %s\n", res_name, operand_buf);
 		} else if (expr->data.unary.op == UNARY_NOT) {
 			buffer_append_fmt(ctx, "  %s = xor i1 1, %s\n", res_name, operand_buf);
 		}
@@ -2083,12 +2093,37 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 					call_arg_types[i] = "i8*";
 				}
 			} else if (arg_values[i] && arg_values[i]->type == 7) {
-				/* Arg is char buffer [N x i8]* — cast to i8* for C functions */
+				/* Arg is char buffer [N x i8]*. */
+				int buf_len = arg_values[i]->string_len;
 				char *bitcast = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", bitcast, arg_values[i]->string_len,
-				                  arg_bufs[i]);
-				strcpy(call_arg_vals[i], bitcast);
-				call_arg_types[i] = "i8*";
+				buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", bitcast, buf_len, arg_bufs[i]);
+				if (callee_wants_arr && !callee_is_extern) {
+					/* Non-extern callee expects char[] (arche_array*): wrap the
+					 * bare buffer pointer in a stack arche_array {ptr,len,cap}. */
+					char *arr_alloca = gen_value_name(ctx);
+					emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
+					char *ptr_gep = gen_value_name(ctx);
+					buffer_append_fmt(
+					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+					    ptr_gep, arr_alloca);
+					buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", bitcast, ptr_gep);
+					char *len_gep = gen_value_name(ctx);
+					buffer_append_fmt(
+					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
+					    len_gep, arr_alloca);
+					buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", buf_len, len_gep);
+					char *cap_gep = gen_value_name(ctx);
+					buffer_append_fmt(
+					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
+					    cap_gep, arr_alloca);
+					buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", buf_len, cap_gep);
+					strcpy(call_arg_vals[i], arr_alloca);
+					call_arg_types[i] = "%struct.arche_array*";
+				} else {
+					/* Extern (C ABI) or scalar callee: pass bare i8*. */
+					strcpy(call_arg_vals[i], bitcast);
+					call_arg_types[i] = "i8*";
+				}
 			} else if (arg_values[i] && arg_values[i]->type == 5) {
 				/* Arg is arche_array struct */
 				if (callee_is_extern && callee_wants_arr) {
@@ -2204,8 +2239,35 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			} else {
 				/* Check if arg is type 6 (i8* pointer parameter from array param) */
 				if (arg_values[i] && arg_values[i]->type == 6) {
-					strcpy(call_arg_vals[i], arg_bufs[i]);
-					call_arg_types[i] = "i8*";
+					if (callee_wants_arr && !callee_is_extern) {
+						/* Forwarding a char[] param (already an i8* data ptr) to a
+						 * non-extern callee that expects %struct.arche_array*:
+						 * re-wrap the pointer in a stack arche_array. The callee
+						 * reads only field 0 (data ptr) and uses explicit bounds,
+						 * so placeholder len/cap are fine. */
+						char *arr_alloca = gen_value_name(ctx);
+						emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
+						char *ptr_gep = gen_value_name(ctx);
+						buffer_append_fmt(
+						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+						    ptr_gep, arr_alloca);
+						buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", arg_bufs[i], ptr_gep);
+						char *len_gep = gen_value_name(ctx);
+						buffer_append_fmt(
+						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
+						    len_gep, arr_alloca);
+						buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", len_gep);
+						char *cap_gep = gen_value_name(ctx);
+						buffer_append_fmt(
+						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
+						    cap_gep, arr_alloca);
+						buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", cap_gep);
+						strcpy(call_arg_vals[i], arr_alloca);
+						call_arg_types[i] = "%struct.arche_array*";
+					} else {
+						strcpy(call_arg_vals[i], arg_bufs[i]);
+						call_arg_types[i] = "i8*";
+					}
 				} else if (expr->data.call.args[i]->resolved.tag == AST_TYPE_FLOAT) {
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = "double";

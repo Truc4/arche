@@ -76,3 +76,103 @@ proc fill(arch: archetype, path: char[]) {
   }
   arche_mmap_close(mm);
 }
+
+// --- Pure-Arche CSV loader (no custom CSV C; only libc fopen/fread/atof) ---
+// Reads the whole file into a fixed buffer, then scans/parses in Arche.
+// Columns are matched by header name, so file column order is irrelevant and
+// extra columns are ignored. Use `csv_load(Archetype, path)` after `use csv;`.
+
+static load_buf: char[1048576];
+static load_cols: int[64];
+
+// first index of byte `ch` in data[start..end), or end if absent
+func find_byte(data: char[], start: int, end: int, ch: int) -> int {
+  for (let i = start; i < end; i += 1) {
+    if (data[i] == ch) {
+      return i;
+    }
+  }
+  return end;
+}
+
+// 1 if archetype field name `name` equals the CSV header cell data[start..end)
+func name_eq(name: char[], data: char[], start: int, end: int) -> int {
+  let len := end - start;
+  if (strlen(name) != len) {
+    return 0;
+  }
+  for (let i = 0; i < len; i += 1) {
+    if (name[i] != data[start + i]) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+// start offset of the col-th comma-separated field within data[row_start..row_end)
+func field_at(data: char[], row_start: int, row_end: int, col: int) -> int {
+  let p := row_start;
+  for (let remaining = col; remaining > 0; remaining -= 1) {
+    p = find_byte(data, p, row_end, ',') + 1;
+  }
+  return p;
+}
+
+// Type-directed cell parser: the group dispatches on the static type of the
+// witness `c` (the destination column element).
+func cell_float(c: float, s: char[]) -> float {
+  return atof(s);
+}
+func cell_int(c: int, s: char[]) -> int {
+  return atoi(s);
+}
+func cell = { cell_float, cell_int };
+
+proc load(arch: archetype, path: char[]) {
+  let fd := arche_fopen_read(path);
+  let size := arche_fread(fd, load_buf, 1048576);
+  arche_fclose(fd);
+
+  let hdr_end := find_byte(load_buf, 0, size, '\n');
+
+  // header pass: map each archetype field to its file column by name
+  each_field f in arch {
+    load_cols[f.index] = -1;
+    let col := 0;
+    let cstart := 0;
+    for (;cstart < hdr_end;) {
+      let cend := find_byte(load_buf, cstart, hdr_end, ',');
+      if (name_eq(f.name, load_buf, cstart, cend)) {
+        load_cols[f.index] = col;
+        break;
+      }
+      col += 1;
+      cstart = cend + 1;
+    }
+  }
+
+  // row pass: pull each field from its mapped column
+  let pos := hdr_end + 1;
+  for (let row = 0; row < arch.capacity; row += 1) {
+    if (pos >= size) {
+      break;
+    }
+    let nl := find_byte(load_buf, pos, size, '\n');
+    each_field f in arch {
+      let c := load_cols[f.index];
+      if (c >= 0) {
+        let fstart := field_at(load_buf, pos, nl, c);
+        let fend := find_byte(load_buf, fstart, nl, ',');
+        let scratch: char[64];
+        let j := 0;
+        for (let i = fstart; i < fend; i += 1) {
+          scratch[j] = load_buf[i];
+          j += 1;
+        }
+        scratch[j] = 0;
+        f[row] = cell(f[row], scratch);
+      }
+    }
+    pos = nl + 1;
+  }
+}
