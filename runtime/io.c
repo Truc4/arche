@@ -116,3 +116,27 @@ void arche_file_unmap(char *data, long size) {
 	if (data)
 		munmap(data, (size_t)size);
 }
+
+/* =========================
+   Program command-line args
+   =========================
+   The codegen-emitted main() forwards (argc, argv) here once at startup; Arche
+   programs read them back via arche_argc()/arche_argv(i). argv[i] is returned
+   as a raw char* (Arche char[]); length is found with strlen, as with the file
+   APIs above. Out-of-range indices return 0. */
+
+static int g_arche_argc;
+static char **g_arche_argv;
+
+void arche_set_args(int argc, char **argv) {
+	g_arche_argc = argc;
+	g_arche_argv = argv;
+}
+
+int arche_argc(void) {
+	return g_arche_argc;
+}
+
+char *arche_argv(int i) {
+	return (i >= 0 && i < g_arche_argc) ? g_arche_argv[i] : 0;
+}
