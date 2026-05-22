@@ -204,6 +204,7 @@ struct ProcDecl {
 	Parameter **params;
 	int param_count;
 	int is_extern;
+	int is_unsafe; /* 1 if declared `unsafe proc`; may call unsafe builtins (syscall) */
 	Statement **statements;
 	int statement_count;
 	int end_line;
@@ -235,6 +236,7 @@ struct FuncDecl {
 	int param_count;
 	TypeRef *return_type;
 	int is_extern;
+	int is_unsafe; /* 1 if declared `unsafe func`; may call unsafe builtins (syscall) */
 	Statement **statements;
 	int statement_count;
 	int end_line;

@@ -1,0 +1,20 @@
+// A system over tuple-typed fields: `pos`/`vel` are tuples (x, y). Lowering
+// flattens them to columns pos_x/pos_y/vel_x/vel_y and rewrites the body's
+// pos.x/vel.x accesses, so `run` updates every row.
+//   pos0 (0,0)+(1,2) -> (1,2);  pos1 (10,10)+(-1,-1) -> (9,9)
+// RUN: %arche -o %t %s && %t | grep "R 1 2 9 9"
+arche Body {
+  pos: (x: int, y: int),
+  vel: (x: int, y: int),
+}
+static Body(2);
+sys move(pos, vel) {
+  pos.x = pos.x + vel.x;
+  pos.y = pos.y + vel.y;
+}
+proc main() {
+  insert(Body, 0, 0, 1, 2);
+  insert(Body, 10, 10, -1, -1);
+  run move;
+  printf("R %d %d %d %d\n", Body.pos.x[0], Body.pos.y[0], Body.pos.x[1], Body.pos.y[1]);
+}

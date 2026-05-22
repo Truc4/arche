@@ -1947,6 +1947,38 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			}
 		}
 
+		/* Raw Linux/x86-64 syscall intrinsic: syscall(n, a0..a5) -> i64.
+		 * Emits the `syscall` instruction directly (no libc, no C shim): number in
+		 * rax, args in rdi/rsi/rdx/r10/r8/r9, result in rax; rcx/r11/memory clobbered.
+		 * Each argument is coerced to i64 (sext/zext from narrower ints). */
+		if (func_name && strcmp(func_name, "syscall") == 0 && expr->data.call.arg_count == 7) {
+			char a[7][256];
+			for (int i = 0; i < 7; i++) {
+				char ab[256];
+				codegen_expression(ctx, expr->data.call.args[i], ab);
+				AstType *rt = &expr->data.call.args[i]->resolved;
+				if (rt->tag == AST_TYPE_INT && rt->int_width == 64) {
+					strcpy(a[i], ab);
+				} else if (rt->tag == AST_TYPE_INT) {
+					emit_int_convert(ctx, ab, rt, 64, a[i]);
+				} else {
+					AstType t32 = {0};
+					t32.tag = AST_TYPE_INT;
+					t32.int_width = 32;
+					t32.int_signed = 1;
+					emit_int_convert(ctx, ab, &t32, 64, a[i]);
+				}
+			}
+			char *res = gen_value_name(ctx);
+			buffer_append_fmt(ctx,
+			                  "  %s = call i64 asm sideeffect \"syscall\", "
+			                  "\"={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},~{rcx},~{r11},~{memory}\""
+			                  "(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n",
+			                  res, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+			strcpy(result_buf, res);
+			break;
+		}
+
 		/* Special handling for insert builtin */
 		if (func_name && strcmp(func_name, "insert") == 0 && expr->data.call.arg_count > 0) {
 			/* args[0] is archetype variable, args[1..] are field values */
@@ -2407,6 +2439,36 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 						 * re-wrap the pointer in a stack arche_array. The callee
 						 * reads only field 0 (data ptr) and uses explicit bounds,
 						 * so placeholder len/cap are fine. */
+						char *arr_alloca = gen_value_name(ctx);
+						emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
+						char *ptr_gep = gen_value_name(ctx);
+						buffer_append_fmt(
+						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+						    ptr_gep, arr_alloca);
+						buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", arg_bufs[i], ptr_gep);
+						char *len_gep = gen_value_name(ctx);
+						buffer_append_fmt(
+						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
+						    len_gep, arr_alloca);
+						buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", len_gep);
+						char *cap_gep = gen_value_name(ctx);
+						buffer_append_fmt(
+						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
+						    cap_gep, arr_alloca);
+						buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", cap_gep);
+						strcpy(call_arg_vals[i], arr_alloca);
+						call_arg_types[i] = "%struct.arche_array*";
+					} else {
+						strcpy(call_arg_vals[i], arg_bufs[i]);
+						call_arg_types[i] = "i8*";
+					}
+				} else if (expr->data.call.args[i]->resolved.tag == AST_TYPE_CHAR_ARRAY) {
+					/* Arg is a char[] value with no ValueInfo — e.g. the result of an
+					 * extern call like arche_argv() (a raw i8*). For a non-extern char[]
+					 * callee, wrap it in a stack arche_array (placeholder len/cap; callees
+					 * use strlen on the NUL-terminated data ptr). Extern (C ABI) callees
+					 * take the bare i8*. Previously this fell through to a bogus i32. */
+					if (callee_wants_arr && !callee_is_extern) {
 						char *arr_alloca = gen_value_name(ctx);
 						emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
 						char *ptr_gep = gen_value_name(ctx);
@@ -3931,6 +3993,14 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 					alloc_type = "i64";
 					store_type = "i64";
 					bit_width = 64;
+				} else if (stmt->data.let_stmt.value->resolved.tag == AST_TYPE_INT &&
+				           stmt->data.let_stmt.value->resolved.int_width != 32) {
+					/* RHS is a non-i32 integer (e.g. syscall -> i64): infer its width
+					   instead of defaulting to i32 and truncating. */
+					int w = stmt->data.let_stmt.value->resolved.int_width;
+					alloc_type = llvm_int_type(w);
+					store_type = alloc_type;
+					bit_width = w;
 				}
 			}
 
@@ -4142,8 +4212,32 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 						}
 						out_idx++;
 					} else {
-						strcpy(call_arg_vals[i], arg_bufs[i]);
-						call_arg_types[i] = "i32";
+						/* Non-out arg. For an extern callee a handle(T) argument must be
+						 * unwrapped to its i8* slot pointer (the EXPR_CALL path does this);
+						 * the multi-bind/out path used to skip it, passing the raw handle
+						 * int and crashing C that dereferenced it (handle + out param bug). */
+						const char *hptn = NULL;
+						if (callee_func->is_extern && i < callee_func->param_count && callee_func->params[i])
+							hptn = extern_handle_target_ast(ctx->sem_ctx, callee_func->params[i]->type);
+						if (hptn) {
+							int cap = semantic_extern_type_capacity(ctx->sem_ctx, hptn);
+							int namelen = (int)strlen(hptn);
+							char *ptr_val = gen_value_name(ctx);
+							buffer_append_fmt(
+							    ctx,
+							    "  %s = call i8* @__arche_slot_get("
+							    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 "
+							    "0), "
+							    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* "
+							    "@__arche_%s_slots, i32 0, i32 0), "
+							    "i32 %d, i32 %s)\n",
+							    ptr_val, namelen + 1, namelen + 1, hptn, cap, cap, hptn, cap, arg_bufs[i]);
+							strcpy(call_arg_vals[i], ptr_val);
+							call_arg_types[i] = "i8*";
+						} else {
+							strcpy(call_arg_vals[i], arg_bufs[i]);
+							call_arg_types[i] = "i32";
+						}
 					}
 				}
 
@@ -5074,17 +5168,30 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			branch_cond = truncated;
 		}
 
+		int has_else = stmt->data.if_stmt.else_count > 0;
+
 		char *then_label = gen_value_name(ctx);
+		char *else_label = has_else ? gen_value_name(ctx) : NULL;
 		char *exit_label = gen_value_name(ctx);
 
-		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", branch_cond, then_label, exit_label);
-		buffer_append_fmt(ctx, "%s:\n", then_label + 1);
+		/* false jumps to else body when present, otherwise straight to exit */
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", branch_cond, then_label,
+		                  has_else ? else_label : exit_label);
 
+		buffer_append_fmt(ctx, "%s:\n", then_label + 1);
 		for (int i = 0; i < stmt->data.if_stmt.then_count; i++) {
 			codegen_statement(ctx, stmt->data.if_stmt.then_body[i]);
 		}
-
 		buffer_append_fmt(ctx, "  br label %s\n", exit_label);
+
+		if (has_else) {
+			buffer_append_fmt(ctx, "%s:\n", else_label + 1);
+			for (int i = 0; i < stmt->data.if_stmt.else_count; i++) {
+				codegen_statement(ctx, stmt->data.if_stmt.else_body[i]);
+			}
+			buffer_append_fmt(ctx, "  br label %s\n", exit_label);
+		}
+
 		buffer_append_fmt(ctx, "%s:\n", exit_label + 1);
 		break;
 	}

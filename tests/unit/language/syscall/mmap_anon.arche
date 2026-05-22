@@ -1,0 +1,14 @@
+// mmap(0, 4096, PROT_READ|WRITE=3, MAP_PRIVATE|ANON=0x22=34, -1, 0) returns a
+// real address (not a small -errno), then munmap returns 0. Uses ALL SIX arg
+// registers (len=rsi, prot=rdx, flags=r10, fd=r8, off=r9) — and mmap is the
+// syscall the graphics framebuffer will use.
+// RUN: %arche -o %t %s && %t | grep "ok"
+unsafe proc main() {
+  let p := syscall(9, 0, 4096, 3, 34, -1, 0);
+  if (p > 1000000) {
+    let un := syscall(11, p, 4096, 0, 0, 0, 0);
+    if (un == 0) {
+      printf("ok\n");
+    }
+  }
+}

@@ -27,6 +27,7 @@ typedef enum TokenKind {
 	TOK_FREE,
 	TOK_BREAK,
 	TOK_EXTERN,
+	TOK_UNSAFE,
 	TOK_OUT,
 	TOK_CONSUME,
 	TOK_RETURN,

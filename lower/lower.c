@@ -374,6 +374,140 @@ static AstField *lower_field(FieldDecl *f) {
 }
 
 /* =========================
+   Tuple desugaring (CST -> AST)
+   =========================
+   Tuples exist only in the CST. Lowering flattens every tuple field
+   `pos: (x, y)` into scalar columns `pos_x`, `pos_y`, and rewrites system
+   parameters and bodies accordingly, so the AST (and every later pass) never
+   sees a tuple. The registry records each tuple field's components, collected
+   from the CST's archetype declarations. */
+
+typedef struct {
+	char *base;      /* tuple field name, e.g. "pos" (borrowed from CST) */
+	char **comp;     /* component names, e.g. {"x","y"} (borrowed) */
+	TypeRef **ctype; /* component types (borrowed) */
+	int n;
+} TupleFieldInfo;
+
+static TupleFieldInfo *g_tuples = NULL;
+static int g_tuple_count = 0;
+static int g_tuple_cap = 0;
+
+static void build_tuple_registry(Program *cst) {
+	g_tuples = NULL;
+	g_tuple_count = 0;
+	g_tuple_cap = 0;
+	for (int i = 0; i < cst->decl_count; i++) {
+		if (cst->decls[i]->kind != DECL_ARCHETYPE)
+			continue;
+		ArchetypeDecl *arch = cst->decls[i]->data.archetype;
+		for (int f = 0; f < arch->field_count; f++) {
+			FieldDecl *fd = arch->fields[f];
+			if (!fd->type || fd->type->kind != TYPE_TUPLE)
+				continue;
+			int seen = 0;
+			for (int k = 0; k < g_tuple_count; k++)
+				if (strcmp(g_tuples[k].base, fd->name) == 0) {
+					seen = 1;
+					break;
+				}
+			if (seen)
+				continue;
+			if (g_tuple_count == g_tuple_cap) {
+				g_tuple_cap = g_tuple_cap ? g_tuple_cap * 2 : 8;
+				g_tuples = realloc(g_tuples, g_tuple_cap * sizeof(TupleFieldInfo));
+			}
+			TupleFieldInfo *ti = &g_tuples[g_tuple_count++];
+			ti->base = fd->name;
+			ti->n = fd->type->data.tuple.field_count;
+			ti->comp = fd->type->data.tuple.field_names;
+			ti->ctype = fd->type->data.tuple.field_types;
+		}
+	}
+}
+
+static TupleFieldInfo *lookup_tuple(const char *name) {
+	for (int i = 0; i < g_tuple_count; i++)
+		if (strcmp(g_tuples[i].base, name) == 0)
+			return &g_tuples[i];
+	return NULL;
+}
+
+/* Rewrite `base.comp` (AST_EXPR_FIELD over NAME base) into NAME `base_comp`. */
+static void tuple_rewrite_expr(AstExpr *e, const char *base) {
+	if (!e)
+		return;
+	switch (e->kind) {
+	case AST_EXPR_FIELD:
+		tuple_rewrite_expr(e->data.field.base, base);
+		if (e->data.field.base && e->data.field.base->kind == AST_EXPR_NAME &&
+		    strcmp(e->data.field.base->data.name.name, base) == 0) {
+			const char *sub = e->data.field.field_name;
+			char *combined = malloc(strlen(base) + strlen(sub) + 2);
+			sprintf(combined, "%s_%s", base, sub);
+			e->kind = AST_EXPR_NAME;
+			e->data.name.name = combined; /* old base node intentionally leaked */
+		}
+		break;
+	case AST_EXPR_INDEX:
+		tuple_rewrite_expr(e->data.index.base, base);
+		for (int i = 0; i < e->data.index.index_count; i++)
+			tuple_rewrite_expr(e->data.index.indices[i], base);
+		break;
+	case AST_EXPR_BINARY:
+		tuple_rewrite_expr(e->data.binary.left, base);
+		tuple_rewrite_expr(e->data.binary.right, base);
+		break;
+	case AST_EXPR_UNARY:
+		tuple_rewrite_expr(e->data.unary.operand, base);
+		break;
+	case AST_EXPR_CALL:
+		tuple_rewrite_expr(e->data.call.callee, base);
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			tuple_rewrite_expr(e->data.call.args[i], base);
+		break;
+	default:
+		break;
+	}
+}
+
+static void tuple_rewrite_stmt(AstStmt *s, const char *base) {
+	if (!s)
+		return;
+	switch (s->kind) {
+	case AST_STMT_LET:
+		tuple_rewrite_expr(s->data.let_stmt.value, base);
+		break;
+	case AST_STMT_ASSIGN:
+		tuple_rewrite_expr(s->data.assign_stmt.target, base);
+		tuple_rewrite_expr(s->data.assign_stmt.value, base);
+		break;
+	case AST_STMT_FOR:
+		tuple_rewrite_stmt(s->data.for_stmt.init, base);
+		tuple_rewrite_expr(s->data.for_stmt.cond, base);
+		tuple_rewrite_stmt(s->data.for_stmt.incr, base);
+		for (int i = 0; i < s->data.for_stmt.body_count; i++)
+			tuple_rewrite_stmt(s->data.for_stmt.body[i], base);
+		break;
+	case AST_STMT_IF:
+		tuple_rewrite_expr(s->data.if_stmt.cond, base);
+		for (int i = 0; i < s->data.if_stmt.then_count; i++)
+			tuple_rewrite_stmt(s->data.if_stmt.then_body[i], base);
+		for (int i = 0; i < s->data.if_stmt.else_count; i++)
+			tuple_rewrite_stmt(s->data.if_stmt.else_body[i], base);
+		break;
+	case AST_STMT_EXPR:
+		tuple_rewrite_expr(s->data.expr_stmt.expr, base);
+		break;
+	case AST_STMT_RETURN:
+		tuple_rewrite_expr(s->data.return_stmt.value, base);
+		break;
+	default:
+		break;
+	}
+}
+
+/* =========================
    Declaration lowering
    ========================= */
 
@@ -402,10 +536,32 @@ static AstDecl *lower_decl(Decl *decl) {
 		AstArchetypeDecl *aarch = calloc(1, sizeof(AstArchetypeDecl));
 		aarch->name = malloc(strlen(arch->name) + 1);
 		strcpy(aarch->name, arch->name);
-		aarch->field_count = arch->field_count;
-		aarch->fields = calloc(arch->field_count, sizeof(AstField *));
-		for (int i = 0; i < arch->field_count; i++)
-			aarch->fields[i] = lower_field(arch->fields[i]);
+		/* Flatten tuple fields: `pos: (x, y)` -> columns `pos_x`, `pos_y`. */
+		int fcount = 0;
+		for (int i = 0; i < arch->field_count; i++) {
+			FieldDecl *fd = arch->fields[i];
+			fcount += (fd->type && fd->type->kind == TYPE_TUPLE) ? fd->type->data.tuple.field_count : 1;
+		}
+		aarch->field_count = fcount;
+		aarch->fields = calloc(fcount, sizeof(AstField *));
+		int fi = 0;
+		for (int i = 0; i < arch->field_count; i++) {
+			FieldDecl *fd = arch->fields[i];
+			if (fd->type && fd->type->kind == TYPE_TUPLE) {
+				for (int j = 0; j < fd->type->data.tuple.field_count; j++) {
+					AstField *af = ast_field_create(fd->kind, NULL, NULL);
+					af->loc = fd->loc;
+					char nm[256];
+					snprintf(nm, sizeof(nm), "%s_%s", fd->name, fd->type->data.tuple.field_names[j]);
+					af->name = malloc(strlen(nm) + 1);
+					strcpy(af->name, nm);
+					af->type = lower_type_ref(fd->type->data.tuple.field_types[j]);
+					aarch->fields[fi++] = af;
+				}
+			} else {
+				aarch->fields[fi++] = lower_field(fd);
+			}
+		}
 		ad->data.archetype = aarch;
 		break;
 	}
@@ -437,14 +593,46 @@ static AstDecl *lower_decl(Decl *decl) {
 		asys->loc = sys->loc;
 		asys->name = malloc(strlen(sys->name) + 1);
 		strcpy(asys->name, sys->name);
-		asys->param_count = sys->param_count;
-		asys->params = calloc(sys->param_count, sizeof(AstParam *));
-		for (int i = 0; i < sys->param_count; i++)
-			asys->params[i] = lower_param(sys->params[i]);
+
+		/* Lower the body first; tuple params then desugar against it. */
 		asys->stmt_count = sys->statement_count;
 		asys->stmts = calloc(sys->statement_count, sizeof(AstStmt *));
 		for (int i = 0; i < sys->statement_count; i++)
 			asys->stmts[i] = lower_stmt(sys->statements[i]);
+
+		/* A param naming a tuple field expands into one scalar param per
+		   component (`pos` -> `pos_x`, `pos_y`); its `pos.x` accesses in the body
+		   are rewritten to the flattened names, matching the flattened columns. */
+		int pcount = 0;
+		for (int i = 0; i < sys->param_count; i++) {
+			TupleFieldInfo *ti = lookup_tuple(sys->params[i]->name);
+			pcount += ti ? ti->n : 1;
+		}
+		asys->param_count = pcount;
+		asys->params = calloc(pcount, sizeof(AstParam *));
+		int pi = 0;
+		for (int i = 0; i < sys->param_count; i++) {
+			Parameter *cp = sys->params[i];
+			TupleFieldInfo *ti = lookup_tuple(cp->name);
+			if (!ti) {
+				asys->params[pi++] = lower_param(cp);
+				continue;
+			}
+			for (int s = 0; s < asys->stmt_count; s++)
+				tuple_rewrite_stmt(asys->stmts[s], cp->name);
+			for (int j = 0; j < ti->n; j++) {
+				char nm[256];
+				snprintf(nm, sizeof(nm), "%s_%s", cp->name, ti->comp[j]);
+				AstParam *ap = ast_param_create(NULL, NULL);
+				ap->loc = cp->loc;
+				ap->is_out = cp->is_out;
+				ap->is_consume = cp->is_consume;
+				ap->name = malloc(strlen(nm) + 1);
+				strcpy(ap->name, nm);
+				ap->type = lower_type_ref(ti->ctype[j]);
+				asys->params[pi++] = ap;
+			}
+		}
 		ad->data.sys = asys;
 		break;
 	}
@@ -541,6 +729,10 @@ AstProgram *lower_cst_to_ast(Program *cst) {
 
 	AstProgram *ast = ast_program_create();
 	ast->loc = cst->loc;
+
+	/* Collect tuple field definitions before lowering so archetype fields and
+	   system params/bodies can be desugared into flat scalar columns. */
+	build_tuple_registry(cst);
 
 	/* count non-USE decls */
 	int out_count = 0;

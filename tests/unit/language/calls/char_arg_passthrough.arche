@@ -1,0 +1,13 @@
+// Passing an extern char[]-returning call result (arche_argv) DIRECTLY as a
+// char[] argument used to miscompile (opt: "ptr but expected i32"); the only
+// workaround was binding to a `let` first. Both a non-extern callee (mylen,
+// wraps in arche_array) and an extern callee (atoi, takes i8*) must work.
+// RUN: %arche -o %t %s && %t 42 | grep "len=2"
+// RUN: %t 42 | grep "n=42"
+func mylen(s: char[]) -> int {
+  return strlen(s);
+}
+proc main() {
+  printf("len=%d\n", mylen(arche_argv(1)));
+  printf("n=%d\n", atoi(arche_argv(1)));
+}

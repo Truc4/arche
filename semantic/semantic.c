@@ -84,6 +84,10 @@ struct SemanticContext {
 	/* Track if inside proc/sys body (for alloc enforcement) */
 	int in_body;
 
+	/* 1 while analyzing the body of an `unsafe` proc/func; gates unsafe builtins
+	 * (currently `syscall`) so they cannot be called from ordinary safe code. */
+	int in_unsafe;
+
 	/* Program for looking up declarations */
 	Program *prog;
 };
@@ -786,6 +790,13 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		if (!func_name)
 			break;
 
+		/* Unsafe-builtin gate: `syscall` bypasses bounds/alloc/handle safety, so it
+		 * may only be called from an explicitly-marked `unsafe` proc/func. */
+		if (strcmp(func_name, "syscall") == 0 && !ctx->in_unsafe) {
+			error(ctx, "`syscall` may only be called from an `unsafe` proc or func");
+			break;
+		}
+
 		GroupInfo *gi = find_group(ctx, func_name);
 		if (!gi) {
 			/* Not a group: check extern-type argument distinctness at call sites.
@@ -1196,6 +1207,15 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		}
 
 		pop_scope(ctx);
+
+		/* analyze else body in its own scope */
+		push_scope(ctx);
+
+		for (int i = 0; i < stmt->data.if_stmt.else_count; i++) {
+			analyze_statement(ctx, stmt->data.if_stmt.else_body[i]);
+		}
+
+		pop_scope(ctx);
 		break;
 	}
 
@@ -1328,50 +1348,9 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 		free(sig); /* duplicate signature; existing shape already owns one */
 	}
 
-	/* Also expand tuples in the AST's field list so codegen sees expanded fields */
-	int expanded_count = 0;
-	for (int i = 0; i < arch->field_count; i++) {
-		if (arch->fields[i]->type->kind == TYPE_TUPLE) {
-			expanded_count += arch->fields[i]->type->data.tuple.field_count;
-		} else {
-			expanded_count++;
-		}
-	}
-
-	if (expanded_count != arch->field_count) {
-		/* Need to expand — reallocate arch->fields */
-		FieldDecl **new_fields = malloc(expanded_count * sizeof(FieldDecl *));
-		int field_idx = 0;
-		for (int i = 0; i < arch->field_count; i++) {
-			FieldDecl *field = arch->fields[i];
-			if (field->type->kind == TYPE_TUPLE) {
-				/* Create expanded field declarations. calloc — the FieldDecl
-				 * carries trivia fields (leading_trivia / trailing_trivia)
-				 * that field_decl_free will free; uninitialized garbage
-				 * would crash later when arch is torn down. */
-				for (int j = 0; j < field->type->data.tuple.field_count; j++) {
-					FieldDecl *expanded_field = calloc(1, sizeof(FieldDecl));
-					char expanded_name[512];
-					snprintf(expanded_name, sizeof(expanded_name), "%s_%s", field->name,
-					         field->type->data.tuple.field_names[j]);
-					expanded_field->name = malloc(strlen(expanded_name) + 1);
-					strcpy(expanded_field->name, expanded_name);
-					expanded_field->type = field->type->data.tuple.field_types[j];
-					expanded_field->kind = field->kind;
-					new_fields[field_idx++] = expanded_field;
-				}
-				free(field->name);
-				free(field->leading_trivia);
-				free(field->trailing_trivia);
-				free(field);
-			} else {
-				new_fields[field_idx++] = field;
-			}
-		}
-		free(arch->fields);
-		arch->fields = new_fields;
-		arch->field_count = expanded_count;
-	}
+	/* Tuple fields are flattened to scalar columns in lowering (CST->AST), not
+	   here: the AST is tuple-free, the CST keeps tuples. The flat `shape` above
+	   is still built from the tuple fields for type checking. */
 
 	/* Validate handle types: must reference a known archetype.  Foreign
 	 * handles (handle(X) where X is an extern table) are forbidden inside
@@ -1809,9 +1788,11 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	ProcDecl *prev_proc = ctx->current_proc;
 	ctx->current_proc = proc;
 	ctx->in_body = 1;
+	ctx->in_unsafe = proc->is_unsafe;
 	for (int i = 0; i < proc->statement_count; i++) {
 		analyze_statement(ctx, proc->statements[i]);
 	}
+	ctx->in_unsafe = 0;
 	ctx->in_body = 0;
 	ctx->current_proc = prev_proc;
 
@@ -2057,9 +2038,11 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 		add_variable(ctx, func->params[i]->name, func->params[i]->type);
 	}
 
+	ctx->in_unsafe = func->is_unsafe;
 	for (int i = 0; i < func->statement_count; i++) {
 		analyze_statement(ctx, func->statements[i]);
 	}
+	ctx->in_unsafe = 0;
 
 	pop_scope(ctx);
 }

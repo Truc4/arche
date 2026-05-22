@@ -1125,6 +1125,22 @@ static Decl *parse_decl(Parser *parser) {
 		return parse_sys_decl(parser);
 	case TOK_FUNC:
 		return parse_func_decl(parser);
+	case TOK_UNSAFE: {
+		advance(parser); /* consume 'unsafe' */
+		if (check(parser, TOK_FUNC)) {
+			Decl *d = parse_func_decl(parser);
+			if (d && d->kind == DECL_FUNC)
+				d->data.func->is_unsafe = 1;
+			return d;
+		} else if (check(parser, TOK_PROC)) {
+			Decl *d = parse_proc_decl(parser);
+			if (d && d->kind == DECL_PROC)
+				d->data.proc->is_unsafe = 1;
+			return d;
+		}
+		error(parser, "Expected 'proc' or 'func' after 'unsafe'");
+		return NULL;
+	}
 	case TOK_USE: {
 		advance(parser); /* consume 'use' */
 		if (!check(parser, TOK_IDENT)) {
@@ -1533,14 +1549,68 @@ static Expression *parse_unary_expr(Parser *parser) {
 	return parse_primary_expr(parser);
 }
 
-static Expression *parse_binary_expr_with_left(Parser *parser, Expression *left) {
-	/* Continue parsing binary expression from a given left operand */
+/* Map a binary-operator token to its Operator. Only called for tokens that
+   binop_prec() has already classified as binary operators. */
+static Operator tok_to_op(TokenKind k) {
+	switch (k) {
+	case TOK_PLUS:
+		return OP_ADD;
+	case TOK_MINUS:
+		return OP_SUB;
+	case TOK_STAR:
+		return OP_MUL;
+	case TOK_SLASH:
+		return OP_DIV;
+	case TOK_EQ_EQ:
+		return OP_EQ;
+	case TOK_BANG_EQ:
+		return OP_NEQ;
+	case TOK_LT:
+		return OP_LT;
+	case TOK_GT:
+		return OP_GT;
+	case TOK_LT_EQ:
+		return OP_LTE;
+	case TOK_GT_EQ:
+		return OP_GTE;
+	default:
+		return OP_ADD; /* unreachable: guarded by binop_prec */
+	}
+}
+
+/* Binary-operator precedence: higher binds tighter, -1 if not a binary op.
+   All operators are left-associative.
+     3: * /        2: + -        1: < > <= >= == != */
+static int binop_prec(TokenKind k) {
+	switch (k) {
+	case TOK_STAR:
+	case TOK_SLASH:
+		return 3;
+	case TOK_PLUS:
+	case TOK_MINUS:
+		return 2;
+	case TOK_LT:
+	case TOK_GT:
+	case TOK_LT_EQ:
+	case TOK_GT_EQ:
+	case TOK_EQ_EQ:
+	case TOK_BANG_EQ:
+		return 1;
+	default:
+		return -1;
+	}
+}
+
+/* Precedence climbing: extend `left` with binary operators whose precedence is
+   >= min_prec, so e.g. `2 + 3 * 2` builds (2 + (3 * 2)) rather than a flat fold. */
+static Expression *parse_binary_rhs(Parser *parser, Expression *left, int min_prec) {
 	if (!left)
 		return NULL;
 
-	while (check(parser, TOK_PLUS) || check(parser, TOK_MINUS) || check(parser, TOK_STAR) || check(parser, TOK_SLASH) ||
-	       check(parser, TOK_EQ_EQ) || check(parser, TOK_BANG_EQ) || check(parser, TOK_LT) || check(parser, TOK_GT) ||
-	       check(parser, TOK_LT_EQ) || check(parser, TOK_GT_EQ)) {
+	for (;;) {
+		int prec = binop_prec(parser->current.kind);
+		if (prec < min_prec)
+			return left;
 
 		TokenKind op_kind = parser->current.kind;
 		advance(parser);
@@ -1549,59 +1619,27 @@ static Expression *parse_binary_expr_with_left(Parser *parser, Expression *left)
 		if (!right)
 			return NULL;
 
-		Operator op;
-		switch (op_kind) {
-		case TOK_PLUS:
-			op = OP_ADD;
-			break;
-		case TOK_MINUS:
-			op = OP_SUB;
-			break;
-		case TOK_STAR:
-			op = OP_MUL;
-			break;
-		case TOK_SLASH:
-			op = OP_DIV;
-			break;
-		case TOK_EQ_EQ:
-			op = OP_EQ;
-			break;
-		case TOK_BANG_EQ:
-			op = OP_NEQ;
-			break;
-		case TOK_LT:
-			op = OP_LT;
-			break;
-		case TOK_GT:
-			op = OP_GT;
-			break;
-		case TOK_LT_EQ:
-			op = OP_LTE;
-			break;
-		case TOK_GT_EQ:
-			op = OP_GTE;
-			break;
-		default:
-			op = OP_ADD;
-			break;
+		/* Left-associative: only fold a strictly tighter operator into `right`. */
+		while (binop_prec(parser->current.kind) > prec) {
+			right = parse_binary_rhs(parser, right, prec + 1);
+			if (!right)
+				return NULL;
 		}
 
 		Expression *binary = expression_create(EXPR_BINARY);
 		binary->loc.line = left->loc.line;
 		binary->loc.column = left->loc.column;
-		binary->data.binary.op = op;
+		binary->data.binary.op = tok_to_op(op_kind);
 		binary->data.binary.left = left;
 		binary->data.binary.right = right;
 
 		left = binary;
 	}
-
-	return left;
 }
 
 static Expression *parse_binary_expr(Parser *parser) {
 	Expression *left = parse_unary_expr(parser);
-	return parse_binary_expr_with_left(parser, left);
+	return parse_binary_rhs(parser, left, 1);
 }
 
 static Expression *parse_expression(Parser *parser) {

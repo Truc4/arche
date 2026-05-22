@@ -1,0 +1,7 @@
+// Support module for cross_module.arche (loaded via `use xmod_b;`), not a
+// standalone test. It calls xmod_a's `helper` by its BARE name — the thing
+// cross-module resolution makes work.
+// RUN: true
+func useit(x: int) -> int {
+  return helper(x);
+}

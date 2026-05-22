@@ -332,6 +332,14 @@ static void prefix_module(Program *mod, const char *prefix) {
 
 static void resolve_uses(Program *prog, const char *source_path) {
 	int i = 0;
+
+	/* Accumulate each module's prefix + original exported names so that, after all
+	   modules are inlined, a bare cross-module reference can be resolved (below). */
+	char **acc_prefix = NULL;
+	char ***acc_set = NULL;
+	int *acc_count = NULL;
+	int acc_n = 0, acc_cap = 0;
+
 	while (i < prog->decl_count) {
 		if (prog->decls[i]->kind != DECL_USE) {
 			i++;
@@ -409,6 +417,25 @@ static void resolve_uses(Program *prog, const char *source_path) {
 			continue;
 		}
 
+		/* Record this module's prefix + original exported names (before prefixing,
+		   while the names are still bare) for cross-module resolution after the loop. */
+		{
+			char **mset;
+			int mcount;
+			collect_module_names(mod, &mset, &mcount);
+			if (acc_n == acc_cap) {
+				acc_cap = acc_cap ? acc_cap * 2 : 8;
+				acc_prefix = realloc(acc_prefix, acc_cap * sizeof(char *));
+				acc_set = realloc(acc_set, acc_cap * sizeof(char **));
+				acc_count = realloc(acc_count, acc_cap * sizeof(int));
+			}
+			acc_prefix[acc_n] = malloc(strlen(mod_name) + 1);
+			strcpy(acc_prefix[acc_n], mod_name);
+			acc_set[acc_n] = mset;
+			acc_count[acc_n] = mcount;
+			acc_n++;
+		}
+
 		/* Auto-prefix every top-level name and its internal references
 		 * with the module name. After `use csv;`, csv.arche's `open` becomes
 		 * `csv_open` to callers and inside the module. */
@@ -439,6 +466,41 @@ static void resolve_uses(Program *prog, const char *source_path) {
 		/* Skip past inserted module declarations and DECL_USE node */
 		i += mod_decl_count + 1;
 	}
+
+	/* Cross-module resolution.
+	   A module's exported names were rewritten to `<module>_<name>`, so a *bare*
+	   reference from another module (or main) to such a name is now dangling. For
+	   each module export whose bare name has NO top-level definition in the final
+	   program, rewrite bare references to it into the prefixed name. Exports that
+	   collide with an existing top-level name (e.g. a core function like `open`)
+	   are left alone, so bare `open` still means core's `open` — current scoping is
+	   preserved and only previously-undefined references gain a meaning. */
+	if (acc_n > 0) {
+		char **top_set;
+		int top_count;
+		collect_module_names(prog, &top_set, &top_count); /* all current top-level names */
+		for (int m = 0; m < acc_n; m++) {
+			char **dangling = malloc((acc_count[m] + 1) * sizeof(char *));
+			int dn = 0;
+			for (int s = 0; s < acc_count[m]; s++) {
+				if (!name_in_set(top_set, top_count, acc_set[m][s]))
+					dangling[dn++] = acc_set[m][s];
+			}
+			if (dn > 0) {
+				for (int k = 0; k < prog->decl_count; k++)
+					rename_decl(prog->decls[k], acc_prefix[m], dangling, dn);
+			}
+			free(dangling);
+		}
+		free_name_set(top_set, top_count);
+	}
+	for (int m = 0; m < acc_n; m++) {
+		free(acc_prefix[m]);
+		free_name_set(acc_set[m], acc_count[m]);
+	}
+	free(acc_prefix);
+	free(acc_set);
+	free(acc_count);
 }
 
 static char *read_file_optional(const char *path) {
@@ -728,11 +790,12 @@ int main(int argc, char *argv[]) {
 	/* Call cc to assemble and link with runtime objects */
 	/* Base command: fixed runtime objects */
 	char cc_cmd[4096];
-	int cc_len = snprintf(cc_cmd, sizeof(cc_cmd),
-	                      "cc -no-pie -mcmodel=large -o %s %s " ARCHE_RUNTIME_DIR "/stack_check.o " ARCHE_RUNTIME_DIR
-	                      "/io.o " ARCHE_RUNTIME_DIR "/handles.o "
-	                      "-lc",
-	                      output_file, asm_file);
+	int cc_len =
+	    snprintf(cc_cmd, sizeof(cc_cmd),
+	             "cc -no-pie -mcmodel=large -o %s %s " ARCHE_RUNTIME_DIR "/stack_check.o " ARCHE_RUNTIME_DIR
+	             "/io.o " ARCHE_RUNTIME_DIR "/handles.o " ARCHE_RUNTIME_DIR "/net.o " ARCHE_RUNTIME_DIR "/term.o "
+	             "-lc",
+	             output_file, asm_file);
 
 	/* Append any --link paths supplied on the command line */
 	for (int li = 0; li < link_count && cc_len < (int)sizeof(cc_cmd) - 1; li++) {

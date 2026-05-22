@@ -53,6 +53,7 @@ ProcDecl *proc_decl_create(char *name) {
 	proc->params = NULL;
 	proc->param_count = 0;
 	proc->is_extern = 0;
+	proc->is_unsafe = 0;
 	proc->statements = NULL;
 	proc->statement_count = 0;
 	proc->loc.line = 1;
@@ -79,6 +80,8 @@ FuncDecl *func_decl_create(char *name, TypeRef *return_type) {
 	func->return_type = return_type;
 	func->params = NULL;
 	func->param_count = 0;
+	func->is_extern = 0;
+	func->is_unsafe = 0;
 	func->statements = NULL;
 	func->statement_count = 0;
 	func->loc.line = 1;
@@ -1201,6 +1204,8 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				fprintf(out, "@allow_pure_proc\n");
 			if (proc->is_extern)
 				fprintf(out, "extern ");
+			if (proc->is_unsafe)
+				fprintf(out, "unsafe ");
 			fprintf(out, "proc %s(", proc->name);
 			for (int j = 0; j < proc->param_count; j++) {
 				if (j > 0)
@@ -1248,6 +1253,8 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			FuncDecl *func = decl->data.func;
 			if (func->is_extern)
 				fprintf(out, "extern ");
+			if (func->is_unsafe)
+				fprintf(out, "unsafe ");
 			fprintf(out, "func %s(", func->name);
 			for (int j = 0; j < func->param_count; j++) {
 				if (j > 0)
