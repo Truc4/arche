@@ -1337,50 +1337,9 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 		free(sig); /* duplicate signature; existing shape already owns one */
 	}
 
-	/* Also expand tuples in the AST's field list so codegen sees expanded fields */
-	int expanded_count = 0;
-	for (int i = 0; i < arch->field_count; i++) {
-		if (arch->fields[i]->type->kind == TYPE_TUPLE) {
-			expanded_count += arch->fields[i]->type->data.tuple.field_count;
-		} else {
-			expanded_count++;
-		}
-	}
-
-	if (expanded_count != arch->field_count) {
-		/* Need to expand — reallocate arch->fields */
-		FieldDecl **new_fields = malloc(expanded_count * sizeof(FieldDecl *));
-		int field_idx = 0;
-		for (int i = 0; i < arch->field_count; i++) {
-			FieldDecl *field = arch->fields[i];
-			if (field->type->kind == TYPE_TUPLE) {
-				/* Create expanded field declarations. calloc — the FieldDecl
-				 * carries trivia fields (leading_trivia / trailing_trivia)
-				 * that field_decl_free will free; uninitialized garbage
-				 * would crash later when arch is torn down. */
-				for (int j = 0; j < field->type->data.tuple.field_count; j++) {
-					FieldDecl *expanded_field = calloc(1, sizeof(FieldDecl));
-					char expanded_name[512];
-					snprintf(expanded_name, sizeof(expanded_name), "%s_%s", field->name,
-					         field->type->data.tuple.field_names[j]);
-					expanded_field->name = malloc(strlen(expanded_name) + 1);
-					strcpy(expanded_field->name, expanded_name);
-					expanded_field->type = field->type->data.tuple.field_types[j];
-					expanded_field->kind = field->kind;
-					new_fields[field_idx++] = expanded_field;
-				}
-				free(field->name);
-				free(field->leading_trivia);
-				free(field->trailing_trivia);
-				free(field);
-			} else {
-				new_fields[field_idx++] = field;
-			}
-		}
-		free(arch->fields);
-		arch->fields = new_fields;
-		arch->field_count = expanded_count;
-	}
+	/* Tuple fields are flattened to scalar columns in lowering (CST->AST), not
+	   here: the AST is tuple-free, the CST keeps tuples. The flat `shape` above
+	   is still built from the tuple fields for type checking. */
 
 	/* Validate handle types: must reference a known archetype.  Foreign
 	 * handles (handle(X) where X is an extern table) are forbidden inside

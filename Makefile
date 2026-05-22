@@ -115,7 +115,7 @@ test-handle-runtime: $(HANDLE_RUNTIME_TEST_BIN)
 	./$(HANDLE_RUNTIME_TEST_BIN)
 
 # Run all tests with LIT
-test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/handles.o $(HANDLE_RUNTIME_TEST_BIN)
+test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/handles.o $(HANDLE_RUNTIME_TEST_BIN)
 	lit -v tests/
 
 # Test folder with pattern: make test-folder FOLDER=path PATTERN="*.arche"
