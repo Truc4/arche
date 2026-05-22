@@ -2,7 +2,7 @@
 // `syscall` instruction directly (no libc, no C shim). Also exercises bare-`let`
 // inferring the i64 result. A live pid is always > 0.
 // RUN: %arche -o %t %s && %t | grep "ok"
-proc main() {
+unsafe proc main() {
   let pid := syscall(39, 0, 0, 0, 0, 0, 0);
   if (pid > 0) {
     printf("ok pid_is_positive\n");
