@@ -4142,8 +4142,31 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 						}
 						out_idx++;
 					} else {
-						strcpy(call_arg_vals[i], arg_bufs[i]);
-						call_arg_types[i] = "i32";
+						/* Non-out arg. For an extern callee a handle(T) argument must be
+						 * unwrapped to its i8* slot pointer (the EXPR_CALL path does this);
+						 * the multi-bind/out path used to skip it, passing the raw handle
+						 * int and crashing C that dereferenced it (handle + out param bug). */
+						const char *hptn = NULL;
+						if (callee_func->is_extern && i < callee_func->param_count && callee_func->params[i])
+							hptn = extern_handle_target_ast(ctx->sem_ctx, callee_func->params[i]->type);
+						if (hptn) {
+							int cap = semantic_extern_type_capacity(ctx->sem_ctx, hptn);
+							int namelen = (int)strlen(hptn);
+							char *ptr_val = gen_value_name(ctx);
+							buffer_append_fmt(
+							    ctx,
+							    "  %s = call i8* @__arche_slot_get("
+							    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 0), "
+							    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* "
+							    "@__arche_%s_slots, i32 0, i32 0), "
+							    "i32 %d, i32 %s)\n",
+							    ptr_val, namelen + 1, namelen + 1, hptn, cap, cap, hptn, cap, arg_bufs[i]);
+							strcpy(call_arg_vals[i], ptr_val);
+							call_arg_types[i] = "i8*";
+						} else {
+							strcpy(call_arg_vals[i], arg_bufs[i]);
+							call_arg_types[i] = "i32";
+						}
 					}
 				}
 
