@@ -1,0 +1,6 @@
+// Support module for cross_module.arche (loaded via `use xmod_a;`), not a
+// standalone test. The no-op RUN keeps lit from treating it as one.
+// RUN: true
+func helper(x: int) -> int {
+  return x + 100;
+}
