@@ -34,3 +34,16 @@ void resource_close(int *r) {
 		}
 	}
 }
+
+/* handle + out param: dereferences the handle (would crash on a raw, unwrapped
+ * handle int) and also fills an out buffer. Returns the resource value. */
+int resource_fill(int *r, char *buf, int n) {
+	int v = *r; /* <-- requires the handle to be unwrapped to a real pointer */
+	int k = 0;
+	if (n > 1) {
+		buf[0] = (char)('0' + (v % 10));
+		k = 1;
+	}
+	buf[k] = 0;
+	return v;
+}

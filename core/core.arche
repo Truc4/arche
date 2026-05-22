@@ -31,7 +31,7 @@ extern func net_listen(port: int) -> handle(Socket);
 extern func net_accept(s: handle(Socket)) -> handle(Socket);
 extern func net_connect(ip: char[], port: int) -> handle(Socket);
 extern func net_send(s: handle(Socket), buf: char[], n: int) -> int;
-extern func net_recv(s: handle(Socket), buf: char[], n: int) -> int;
+extern func net_recv(s: handle(Socket), out buf: char[], n: int) -> int;
 extern proc net_close(consume s: handle(Socket));
 proc print_float(f: float) {
   printf("%g", f);
