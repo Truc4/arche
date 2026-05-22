@@ -6617,8 +6617,10 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		}
 	}
 
-	buffer_append(ctx, "\ndefine i32 @main() {\n");
+	buffer_append(ctx, "\ndeclare void @arche_set_args(i32, i8**)\n");
+	buffer_append(ctx, "\ndefine i32 @main(i32 %argc, i8** %argv) {\n");
 	buffer_append(ctx, "entry:\n");
+	buffer_append(ctx, "  call void @arche_set_args(i32 %argc, i8** %argv)\n");
 
 	/* Emit allocation initialization code (always, regardless of user main) */
 	for (int i = 0; i < ctx->alloc_count; i++) {
