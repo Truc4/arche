@@ -74,10 +74,15 @@ $(HANDLE_RUNTIME_TEST_BIN): $(HANDLE_RUNTIME_TEST_OBJS)
 $(LIBARCH): $(LIBARCH_OBJS)
 	$(AR) rcs $@ $^
 
-# Compile object files
+# Compile object files. -MMD -MP emits a .d alongside each .o listing the headers
+# it includes, so editing a header (e.g. cst.h struct, lexer.h enum) rebuilds the
+# dependent objects instead of leaving stale, mismatched layouts.
 $(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 	mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
+
+# Pull in the generated header-dependency files (none on a clean build).
+-include $(shell find $(BUILD_DIR) -name '*.d' 2>/dev/null)
 
 # Run the compiler (produces executable)
 run: $(TARGET)
