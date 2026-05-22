@@ -1947,6 +1947,39 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			}
 		}
 
+		/* Raw Linux/x86-64 syscall intrinsic: syscall(n, a0..a5) -> i64.
+		 * Emits the `syscall` instruction directly (no libc, no C shim): number in
+		 * rax, args in rdi/rsi/rdx/r10/r8/r9, result in rax; rcx/r11/memory clobbered.
+		 * Each argument is coerced to i64 (sext/zext from narrower ints). */
+		if (func_name && strcmp(func_name, "syscall") == 0 && expr->data.call.arg_count == 7) {
+			char a[7][256];
+			for (int i = 0; i < 7; i++) {
+				char ab[256];
+				codegen_expression(ctx, expr->data.call.args[i], ab);
+				AstType *rt = &expr->data.call.args[i]->resolved;
+				if (rt->tag == AST_TYPE_INT && rt->int_width == 64) {
+					strcpy(a[i], ab);
+				} else if (rt->tag == AST_TYPE_INT) {
+					emit_int_convert(ctx, ab, rt, 64, a[i]);
+				} else {
+					AstType t32 = {0};
+					t32.tag = AST_TYPE_INT;
+					t32.int_width = 32;
+					t32.int_signed = 1;
+					emit_int_convert(ctx, ab, &t32, 64, a[i]);
+				}
+			}
+			char *res = gen_value_name(ctx);
+			buffer_append_fmt(
+			    ctx,
+			    "  %s = call i64 asm sideeffect \"syscall\", "
+			    "\"={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},~{rcx},~{r11},~{memory}\""
+			    "(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n",
+			    res, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+			strcpy(result_buf, res);
+			break;
+		}
+
 		/* Special handling for insert builtin */
 		if (func_name && strcmp(func_name, "insert") == 0 && expr->data.call.arg_count > 0) {
 			/* args[0] is archetype variable, args[1..] are field values */
@@ -3961,6 +3994,14 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 					alloc_type = "i64";
 					store_type = "i64";
 					bit_width = 64;
+				} else if (stmt->data.let_stmt.value->resolved.tag == AST_TYPE_INT &&
+				           stmt->data.let_stmt.value->resolved.int_width != 32) {
+					/* RHS is a non-i32 integer (e.g. syscall -> i64): infer its width
+					   instead of defaulting to i32 and truncating. */
+					int w = stmt->data.let_stmt.value->resolved.int_width;
+					alloc_type = llvm_int_type(w);
+					store_type = alloc_type;
+					bit_width = w;
 				}
 			}
 
