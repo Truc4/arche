@@ -16,7 +16,7 @@ void term_raw_enable(void) {
 		return; /* not a tty (e.g. piped) — leave as-is */
 	struct termios raw = g_saved;
 	raw.c_lflag &= (unsigned)~(ICANON | ECHO);
-	raw.c_cc[VMIN] = 0;  /* non-blocking: read returns immediately */
+	raw.c_cc[VMIN] = 0; /* non-blocking: read returns immediately */
 	raw.c_cc[VTIME] = 0;
 	tcsetattr(STDIN_FILENO, TCSANOW, &raw);
 	g_raw = 1;

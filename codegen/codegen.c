@@ -1970,12 +1970,11 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				}
 			}
 			char *res = gen_value_name(ctx);
-			buffer_append_fmt(
-			    ctx,
-			    "  %s = call i64 asm sideeffect \"syscall\", "
-			    "\"={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},~{rcx},~{r11},~{memory}\""
-			    "(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n",
-			    res, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+			buffer_append_fmt(ctx,
+			                  "  %s = call i64 asm sideeffect \"syscall\", "
+			                  "\"={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},~{rcx},~{r11},~{memory}\""
+			                  "(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n",
+			                  res, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
 			strcpy(result_buf, res);
 			break;
 		}
@@ -4227,7 +4226,8 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 							buffer_append_fmt(
 							    ctx,
 							    "  %s = call i8* @__arche_slot_get("
-							    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 0), "
+							    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 "
+							    "0), "
 							    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* "
 							    "@__arche_%s_slots, i32 0, i32 0), "
 							    "i32 %d, i32 %s)\n",

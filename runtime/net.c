@@ -60,8 +60,7 @@ int *net_connect(const char *ip, int port) {
 	struct sockaddr_in addr = {0};
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons((unsigned short)port);
-	if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1 ||
-	    connect(fd, (struct sockaddr *)&addr, sizeof addr) < 0) {
+	if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1 || connect(fd, (struct sockaddr *)&addr, sizeof addr) < 0) {
 		close(fd);
 		return NULL;
 	}
