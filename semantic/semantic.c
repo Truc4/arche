@@ -84,6 +84,10 @@ struct SemanticContext {
 	/* Track if inside proc/sys body (for alloc enforcement) */
 	int in_body;
 
+	/* 1 while analyzing the body of an `unsafe` proc/func; gates unsafe builtins
+	 * (currently `syscall`) so they cannot be called from ordinary safe code. */
+	int in_unsafe;
+
 	/* Program for looking up declarations */
 	Program *prog;
 };
@@ -785,6 +789,13 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		}
 		if (!func_name)
 			break;
+
+		/* Unsafe-builtin gate: `syscall` bypasses bounds/alloc/handle safety, so it
+		 * may only be called from an explicitly-marked `unsafe` proc/func. */
+		if (strcmp(func_name, "syscall") == 0 && !ctx->in_unsafe) {
+			error(ctx, "`syscall` may only be called from an `unsafe` proc or func");
+			break;
+		}
 
 		GroupInfo *gi = find_group(ctx, func_name);
 		if (!gi) {
@@ -1777,9 +1788,11 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	ProcDecl *prev_proc = ctx->current_proc;
 	ctx->current_proc = proc;
 	ctx->in_body = 1;
+	ctx->in_unsafe = proc->is_unsafe;
 	for (int i = 0; i < proc->statement_count; i++) {
 		analyze_statement(ctx, proc->statements[i]);
 	}
+	ctx->in_unsafe = 0;
 	ctx->in_body = 0;
 	ctx->current_proc = prev_proc;
 
@@ -2025,9 +2038,11 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 		add_variable(ctx, func->params[i]->name, func->params[i]->type);
 	}
 
+	ctx->in_unsafe = func->is_unsafe;
 	for (int i = 0; i < func->statement_count; i++) {
 		analyze_statement(ctx, func->statements[i]);
 	}
+	ctx->in_unsafe = 0;
 
 	pop_scope(ctx);
 }

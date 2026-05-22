@@ -20,7 +20,7 @@ SRCS = lexer/lexer.c \
        semantic/semantic.c \
        codegen/codegen.c
 
-RUNTIME_SRCS = runtime/stack_check.c runtime/io.c runtime/handles.c runtime/net.c
+RUNTIME_SRCS = runtime/stack_check.c runtime/io.c runtime/handles.c runtime/net.c runtime/term.c
 RUNTIME_OBJS = $(RUNTIME_SRCS:.c=.o)
 
 OBJS = $(SRCS:.c=.o)
@@ -34,7 +34,7 @@ LOWER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)
 HANDLE_RUNTIME_TEST_OBJS = $(BUILD_DIR)/unit/compiler/handle_runtime_tests.o $(BUILD_DIR)/runtime/handles.o
 
 # Default target
-all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/handles.o $(BUILD_DIR)/runtime/net.o
+all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/handles.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/cst $(BUILD_DIR)/ast $(BUILD_DIR)/lower $(BUILD_DIR)/parser $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/unit/compiler $(BUILD_DIR)/runtime
@@ -74,10 +74,15 @@ $(HANDLE_RUNTIME_TEST_BIN): $(HANDLE_RUNTIME_TEST_OBJS)
 $(LIBARCH): $(LIBARCH_OBJS)
 	$(AR) rcs $@ $^
 
-# Compile object files
+# Compile object files. -MMD -MP emits a .d alongside each .o listing the headers
+# it includes, so editing a header (e.g. cst.h struct, lexer.h enum) rebuilds the
+# dependent objects instead of leaving stale, mismatched layouts.
 $(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 	mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
+
+# Pull in the generated header-dependency files (none on a clean build).
+-include $(shell find $(BUILD_DIR) -name '*.d' 2>/dev/null)
 
 # Run the compiler (produces executable)
 run: $(TARGET)
@@ -115,7 +120,7 @@ test-handle-runtime: $(HANDLE_RUNTIME_TEST_BIN)
 	./$(HANDLE_RUNTIME_TEST_BIN)
 
 # Run all tests with LIT
-test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/handles.o $(HANDLE_RUNTIME_TEST_BIN)
+test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o $(BUILD_DIR)/runtime/handles.o $(HANDLE_RUNTIME_TEST_BIN)
 	lit -v tests/
 
 # Test folder with pattern: make test-folder FOLDER=path PATTERN="*.arche"

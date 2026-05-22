@@ -1125,6 +1125,22 @@ static Decl *parse_decl(Parser *parser) {
 		return parse_sys_decl(parser);
 	case TOK_FUNC:
 		return parse_func_decl(parser);
+	case TOK_UNSAFE: {
+		advance(parser); /* consume 'unsafe' */
+		if (check(parser, TOK_FUNC)) {
+			Decl *d = parse_func_decl(parser);
+			if (d && d->kind == DECL_FUNC)
+				d->data.func->is_unsafe = 1;
+			return d;
+		} else if (check(parser, TOK_PROC)) {
+			Decl *d = parse_proc_decl(parser);
+			if (d && d->kind == DECL_PROC)
+				d->data.proc->is_unsafe = 1;
+			return d;
+		}
+		error(parser, "Expected 'proc' or 'func' after 'unsafe'");
+		return NULL;
+	}
 	case TOK_USE: {
 		advance(parser); /* consume 'use' */
 		if (!check(parser, TOK_IDENT)) {
