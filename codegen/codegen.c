@@ -2430,6 +2430,36 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 						strcpy(call_arg_vals[i], arg_bufs[i]);
 						call_arg_types[i] = "i8*";
 					}
+				} else if (expr->data.call.args[i]->resolved.tag == AST_TYPE_CHAR_ARRAY) {
+					/* Arg is a char[] value with no ValueInfo — e.g. the result of an
+					 * extern call like arche_argv() (a raw i8*). For a non-extern char[]
+					 * callee, wrap it in a stack arche_array (placeholder len/cap; callees
+					 * use strlen on the NUL-terminated data ptr). Extern (C ABI) callees
+					 * take the bare i8*. Previously this fell through to a bogus i32. */
+					if (callee_wants_arr && !callee_is_extern) {
+						char *arr_alloca = gen_value_name(ctx);
+						emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
+						char *ptr_gep = gen_value_name(ctx);
+						buffer_append_fmt(
+						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+						    ptr_gep, arr_alloca);
+						buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", arg_bufs[i], ptr_gep);
+						char *len_gep = gen_value_name(ctx);
+						buffer_append_fmt(
+						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
+						    len_gep, arr_alloca);
+						buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", len_gep);
+						char *cap_gep = gen_value_name(ctx);
+						buffer_append_fmt(
+						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
+						    cap_gep, arr_alloca);
+						buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", cap_gep);
+						strcpy(call_arg_vals[i], arr_alloca);
+						call_arg_types[i] = "%struct.arche_array*";
+					} else {
+						strcpy(call_arg_vals[i], arg_bufs[i]);
+						call_arg_types[i] = "i8*";
+					}
 				} else if (expr->data.call.args[i]->resolved.tag == AST_TYPE_FLOAT) {
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = "double";
