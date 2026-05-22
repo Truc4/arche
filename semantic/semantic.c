@@ -1196,6 +1196,15 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		}
 
 		pop_scope(ctx);
+
+		/* analyze else body in its own scope */
+		push_scope(ctx);
+
+		for (int i = 0; i < stmt->data.if_stmt.else_count; i++) {
+			analyze_statement(ctx, stmt->data.if_stmt.else_body[i]);
+		}
+
+		pop_scope(ctx);
 		break;
 	}
 

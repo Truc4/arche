@@ -730,7 +730,7 @@ int main(int argc, char *argv[]) {
 	char cc_cmd[4096];
 	int cc_len = snprintf(cc_cmd, sizeof(cc_cmd),
 	                      "cc -no-pie -mcmodel=large -o %s %s " ARCHE_RUNTIME_DIR "/stack_check.o " ARCHE_RUNTIME_DIR
-	                      "/io.o " ARCHE_RUNTIME_DIR "/handles.o "
+	                      "/io.o " ARCHE_RUNTIME_DIR "/handles.o " ARCHE_RUNTIME_DIR "/net.o "
 	                      "-lc",
 	                      output_file, asm_file);
 
