@@ -5074,17 +5074,30 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			branch_cond = truncated;
 		}
 
+		int has_else = stmt->data.if_stmt.else_count > 0;
+
 		char *then_label = gen_value_name(ctx);
+		char *else_label = has_else ? gen_value_name(ctx) : NULL;
 		char *exit_label = gen_value_name(ctx);
 
-		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", branch_cond, then_label, exit_label);
-		buffer_append_fmt(ctx, "%s:\n", then_label + 1);
+		/* false jumps to else body when present, otherwise straight to exit */
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", branch_cond, then_label,
+		                  has_else ? else_label : exit_label);
 
+		buffer_append_fmt(ctx, "%s:\n", then_label + 1);
 		for (int i = 0; i < stmt->data.if_stmt.then_count; i++) {
 			codegen_statement(ctx, stmt->data.if_stmt.then_body[i]);
 		}
-
 		buffer_append_fmt(ctx, "  br label %s\n", exit_label);
+
+		if (has_else) {
+			buffer_append_fmt(ctx, "%s:\n", else_label + 1);
+			for (int i = 0; i < stmt->data.if_stmt.else_count; i++) {
+				codegen_statement(ctx, stmt->data.if_stmt.else_body[i]);
+			}
+			buffer_append_fmt(ctx, "  br label %s\n", exit_label);
+		}
+
 		buffer_append_fmt(ctx, "%s:\n", exit_label + 1);
 		break;
 	}
