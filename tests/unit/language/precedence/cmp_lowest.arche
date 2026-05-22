@@ -1,0 +1,5 @@
+// Comparisons bind looser than arithmetic: 1 + (2*3) == 7  -> true (1).
+// RUN: %arche -o %t %s && %t | grep "RESULT=1"
+proc main() {
+  printf("RESULT=%d\n", 1 + 2 * 3 == 7);
+}

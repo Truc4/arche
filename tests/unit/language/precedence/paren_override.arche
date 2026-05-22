@@ -1,0 +1,5 @@
+// Parentheses still override precedence.
+// RUN: %arche -o %t %s && %t | grep "RESULT=10"
+proc main() {
+  printf("RESULT=%d\n", (2 + 3) * 2);
+}

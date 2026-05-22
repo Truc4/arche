@@ -1,0 +1,4 @@
+// RUN: %arche -o %t %s && %t | grep "RESULT=5"
+proc main() {
+  printf("RESULT=%d\n", 10 - 2 - 3);
+}
