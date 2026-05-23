@@ -1,13 +1,14 @@
 // A foreign resource as a nominal opaque alias: `resource :: opaque` is distinct in the
 // checker but erases to a bare `opaque` cell (an i64 bitcast to the C pointer at the ABI).
-// open/set/get/close round-trips by value through C. (consume/move ownership is P5.)
+// open/set/get/close round-trips by value through C. The close is a terminal `consume`,
+// so it linearly retires the resource (must-consume satisfied).
 // RUN: %arche -o %t --link %S/../extern_type/runtime/test_resource.c %s && %t | grep "value=42"
 resource :: opaque
 
 extern func resource_open(initial: int) -> resource;
 extern func resource_get(r: resource) -> int;
 extern proc resource_set(r: resource, v: int);
-extern proc resource_close(r: resource);
+extern proc resource_close(consume r: resource);
 
 proc main() {
   let r := resource_open(10);

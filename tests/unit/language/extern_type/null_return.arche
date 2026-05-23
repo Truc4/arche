@@ -4,6 +4,7 @@
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t | grep "ok_null=1"
 resource :: opaque
 extern func resource_open(initial: int) -> resource;
+extern proc resource_close(consume r: resource);
 
 proc main() {
   let r1 := resource_open(1);
@@ -17,4 +18,14 @@ proc main() {
   let r9 := resource_open(9);
   let ok := r9 == 0;
   printf("ok_null=%d\n", ok);
+  // Linear retire: each opaque local (incl. the null r9 — close is null-safe) is consumed.
+  resource_close(r1);
+  resource_close(r2);
+  resource_close(r3);
+  resource_close(r4);
+  resource_close(r5);
+  resource_close(r6);
+  resource_close(r7);
+  resource_close(r8);
+  resource_close(r9);
 }

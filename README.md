@@ -17,8 +17,8 @@ Arche is a **high-level language** with several strong design constraints:
 - **No implicit row access**: You don’t work on individual elements unless you explicitly index.
 - **Columns only**: All archetype data is columnar (arrays). No metadata. Columns are primitives or tuple columns.
 - **Horizontal only**: No nested complex types, **no pointers**. Data layout is flat and explicit.
-- **Tuple columns**: Multi-component fields like position vectors are stored as separate side-by-side arrays (`pos_x`, `pos_y`) but accessed with clean syntax (`pos.x[i]`, `pos.y[i]`).
-- **Pooled allocation with free-lists**: `static Archetype(N, N)` pre-allocates capacity for N entries. Deleted slots are tracked in a free-list and reused by subsequent inserts, eliminating fragmentation.
+- **Tuple columns**: Multi-component fields like position vectors are stored as separate side-by-side arrays and accessed flat (`pos_x[i]`, `pos_y[i]`).
+- **Pooled allocation with free-lists**: `static pool<Archetype>(N, N)` pre-allocates capacity for N entries. Deleted slots are tracked in a free-list and reused by subsequent inserts, eliminating fragmentation.
 - **Minimal type system**: Primitives only: `int`, `float`, `char`. No booleans, no objects. This is a design principle, not a limitation.
 - **Explicit structure over flexibility**: Users have complete control and visibility over data layout in memory.
 
@@ -30,31 +30,31 @@ This leads to a style that feels closer to **data pipelines** or **vectorized co
 
 ### Allocation Strategy
 
-- **Explicit allocation**: `alloc Archetype(N)` declares a fixed-capacity allocation for archetype shape.
-- **Static storage**: All allocations have program lifetime. They exist from program start to end. No deallocation during execution.
-- **Fixed size**: Each allocation is immutable in size. No resizing, no growing vectors. Capacity is permanent once set.
-- **Implicit cleanup**: At program end, all allocations are implicitly freed. Explicit deallocation is **not allowed** (and unnecessary).
-- **Scope-implicit**: Scope (static vs world-scoped, when worlds exist) is determined by context where `alloc` appears.
+- **Explicit allocation**: `static pool<Archetype>(N)` declares a fixed-capacity pool for an archetype shape.
+- **Static storage**: All pools have program lifetime. They exist from program start to end. No deallocation during execution.
+- **Fixed size**: Each pool is immutable in size. No resizing, no growing vectors. Capacity is permanent once set.
+- **Implicit cleanup**: At program end, all storage is implicitly freed. Explicit deallocation is **not allowed** (and unnecessary).
+- **Scope-implicit**: Scope (static vs world-scoped, when worlds exist) is determined by where the pool declaration appears.
 
 ### Allocation Initialization
 
-Allocations can include field initialization to set all instances’ values at allocation time:
+A pool declaration can include field initialization to set all instances’ values at allocation time:
 
 ```arche
-static Counter(5, 5) { val: 7, score: 2.5 };
+static pool<Counter>(5, 5) { val: 7, score: 2.5 };
 ```
 
-This allocates capacity for 5 instances and initializes `val` and `score` fields. Uninitialized fields are zero-initialized.
+This reserves capacity for 5 instances and initializes the `val` and `score` columns. Uninitialized columns are zero-initialized.
 
 ### Encouraged Pattern
 
 Plan memory usage ahead of time, allocate what you need upfront, use predictably:
 
 ```arche
-// Allocate all archetype instances with fixed capacities upfront
-static Particle(10000, 10000) { active: 0 };
-static Enemy(5000, 5000);
-static Projectile(1000, 1000);
+// Reserve every shape's pool with fixed capacity upfront
+static pool<Particle>(10000, 10000) { active: 0 };
+static pool<Enemy>(5000, 5000);
+static pool<Projectile>(1000, 1000);
 
 proc main() {
   // Run program with fixed memory budget
@@ -82,70 +82,97 @@ world Simulation()
 
 Multiple worlds will allow parallel data-driven computations, with systems operating on all matching archetypes within a specific world. **This feature is not yet implemented.** Currently, systems operate on all matching archetypes in the scope.
 
+## Types and declarations (`::` / `:=`)
+
+Types are **nominal** — identity is the name, not the structure. A `::` declaration mints a
+compile-time constant: a *type* if the right-hand side is a type, a *value const* if it is a
+literal (the kind is inferred — there is no `type` keyword). Runtime variables bind with `:=`
+(or `: T =`); `::` and `:=` never collide.
+
+```arche
+meters :: float     // nominal type alias (distinct from any other float type)
+seconds :: float    // meters ≠ seconds, though both back to float
+MAX :: 100          // value const (literal RHS)
+let x := 5          // runtime variable
+```
+
+A type alias is **zero-cost** — it erases to its backing after checking. Operators resolve on
+the backing (so `meters + meters → meters`, and mixed-alias arithmetic over the same backing is
+fine), but **nominal identity is enforced at substitution boundaries** (parameters, assignment,
+return): you cannot pass `meters` where `seconds` is expected. This is the entire basis of
+foreign-resource safety (`file :: opaque` ≠ `socket :: opaque`).
+
 ## Archetypes (`arche`)
 
-An Archetype declaration defines a _shape_ (a unique column structure). The name is a handle to that shape. Declarations do **not** allocate space; only `alloc` does that.
+An archetype is an **unordered, duplicate-free set of nominal component types**. Its identity
+is that set of type names — there are **no field names and no accessors**. A component's type
+name *is* both the component and how you reach it (`h.mass`).
 
-A **shape** is defined by its columns and types. If two archetype declarations have identical columns and types, they are both handles to the same shape and will share an allocation if you allocate them.
+**Primitives:** `int`, `float`, `char`, the fixed-width ints, and `opaque`.
 
-**Primitives:** `int`, `float`, `char`
-
-**Column types:**
-
-- Single primitive: `mass: float` → column of floats
-- Tuple columns: `pos: (x: float, y: float)` → two separate arrays `pos_x[]` and `pos_y[]`
-- Multi-dimensional arrays: `text: char[256]` → N×256 array per entity
-
-Example:
+**Components** are either a *reference* to an existing type or an *inline definition*:
 
 ```arche
+mass :: float            // nominal type (lowercase = type)
+
 arche Particle {
-  pos: (x: float, y: float),
-  vel: (vx: float, vy: float),
-  mass: float
+  mass,                  // reference an existing component type
+  charge: float          // inline definition (mints a `charge` component)
 }
 ```
 
-This defines a shape with those columns. The name `Particle` is an alias. If you declare another archetype with the same columns:
+To carry two values of the same backing, **mint two distinct types** — you never alias one
+type under two names:
 
 ```arche
-arche Enemy {
-  pos: (x: float, y: float),
-  vel: (vx: float, vy: float),
-  mass: float
-}
+health :: int
+shield :: int
+arche Unit { health, shield }   // two int columns, reached as h.health / h.shield
 ```
 
-Both `Particle` and `Enemy` are handles to the same underlying shape. Allocations using either handle reference the same shape. You can allocate using either handle:
+**Set identity — `{a, b}` == `{b, a}`.** Two archetypes with the same component set *are* the
+same shape and share one pool; component order is irrelevant. A component type repeated in one
+archetype is a compile error (it would be unreachable). Because collapse requires reusing the
+same type *name*, it is always intentional:
 
 ```arche
-alloc Particle(1000);
-alloc Enemy(1000);  // ERROR: shape already allocated
+arche A { health, shield }
+arche B { shield, health }   // same shape as A
+
+static pool<A>(1000);
+static pool<B>(1000);        // ERROR: shape already allocated (B is the same shape as A)
 ```
 
-**Static allocation:**
+**Tuples** are named flat sugar. `pos :: (x, y: float)` mints the flat component types
+`pos_x` and `pos_y` (one level only — no nested tuples), reached as `h.pos_x` / `h.pos_y`.
+`pos` and `vel :: (x, y: float)` are **distinct** (`pos_x` ≠ `vel_x`); reuse is by name.
 
-Each shape is allocated exactly once via an explicit `alloc Archetype(N)` call. Attempting to allocate the same shape again (with any alias) is a compile error.
+```arche
+pos :: (x: float, y: float)
+arche Body { pos_x, pos_y }   // two flat columns
+```
 
-The allocation is **fixed size**. All capacity is allocated upfront. Reallocation is not possible. This is by design, dynamic memory is not a feature of this language.
+**Static allocation.** A shape's storage is one fixed-capacity static pool declared with
+`static pool<Foo>(N)`. There is no `alloc` and no resizing — all capacity is reserved upfront.
+Allocating the same shape twice (under any name) is a compile error.
 
 ## Array-Oriented Operations
 
 Operations on archetype columns apply across the entire collection without explicit loops:
 
 ```arche
-alloc Particle(1000);
+static pool<Particle>(1000);
 // ... insert particles
-Particle.pos = Particle.pos + Particle.vel;
+Particle.pos_x = Particle.pos_x + Particle.vel_x;
 ```
 
 This iterates all 1000 elements, updating each position by its velocity.
 
-Inside a system function, the archetype parameter names are available directly:
+Inside a system function, the component type names are available directly:
 
 ```arche
-sys move(pos, vel) {
-  pos = pos + vel;
+sys step(pos_x, vel_x) {
+  pos_x = pos_x + vel_x;
 }
 ```
 
@@ -158,15 +185,15 @@ Individual element access requires explicit column reference:
 **Scalar columns:**
 
 ```arche
-particles.mass[i]
+Particle.mass[i]
 ```
 
-**Tuple columns (labeled access):**
+**Tuple columns (flat access):**
 
 ```arche
-particles.pos.x[i]   // x component of position at index i
-particles.pos.y[i]   // y component of position at index i
-particles.vel.vx[i]  // x component of velocity at index i
+Particle.pos_x[i]   // x component of position at index i
+Particle.pos_y[i]   // y component of position at index i
+Particle.vel_vx[i]  // x component of velocity at index i
 ```
 
 **Multi-dimensional arrays:**
@@ -213,10 +240,10 @@ Integer literals adopt the type of their context (`let x: i64 = 3000000000` type
 Procedures perform **explicit operations**.
 
 ```arche
-static Particle(1000, 1000);
+static pool<Particle>(1000, 1000);
 
 proc main() {
-  Particle.pos = Particle.pos + Particle.vel;
+  Particle.pos_x = Particle.pos_x + Particle.vel_x;
 }
 ```
 
@@ -230,20 +257,20 @@ proc main() {
 Systems perform **data-driven transformations** over all matching archetypes.
 
 ```arche
-sys move(pos, vel) {
-  pos = pos + vel;
+sys step(pos_x, vel_x) {
+  pos_x = pos_x + vel_x;
 }
 
 proc update() {
-  run move;
+  run step;
 }
 ```
 
 ### Semantics
 
 - executes via `run system_name` statement
-- automatically matches any archetype in scope containing the required fields
-- binds those fields inside the system body
+- automatically matches any archetype in scope containing the required component types
+- binds those components inside the system body
 - operates on whole columns (array-first)
 
 This means the system applies to any archetype with `pos` and `vel`, such as:
@@ -281,27 +308,28 @@ Systems support if/for statements for control flow. For maximum cache efficiency
 ## Example
 
 ```arche
-// Define archetypes
-arche Particle {
-  pos: (x: float, y: float),
-  vel: (vx: float, vy: float)
+// Mint flat tuple component types
+pos :: (x: float, y: float)
+vel :: (vx: float, vy: float)
+
+// An archetype is the set of those components
+arche Particle { pos_x, pos_y, vel_vx, vel_vy }
+
+// Reserve the pool at top level
+static pool<Particle>(10000, 10000);
+
+// Systems operate on matching archetypes, binding components by name
+sys step(pos_x, vel_vx) {
+  pos_x = pos_x + vel_vx;
 }
 
-// Allocate at top level
-static Particle(10000, 10000);
-
-// Define systems that operate on matching archetypes
-sys move(pos, vel) {
-  pos = pos + vel;
-}
-
-sys dampen(vel) {
-  vel = vel * 0.99;
+sys dampen(vel_vx) {
+  vel_vx = vel_vx * 0.99;
 }
 
 // Run systems
 proc main() {
-  run move;
+  run step;
   run dampen;
 }
 ```
@@ -486,6 +514,28 @@ extern proc window_close(consume w: window);
   binding is a compile error.
 - A foreign resource can also live in a **pool**: put the type in an `arche` and use
   `pool<Foo>` + generation-checked handles for capacity-bounded, use-after-free-safe storage.
+
+### Ownership: by value, opaque is linear
+
+Everything is **by value**. Plain data and handles copy freely. An `opaque`-backed value
+**cannot copy** — it is move-only (linear), so ownership transfers are always visible:
+
+- **`move`** is a call-site marker that hands ownership over and kills the binding —
+  `window_close(move w)`; using `w` afterward is a compile error.
+- **`consume`** is the terminal parameter that receives such a value (the close-fn is an
+  ordinary `proc close(consume w: window)` — nothing runs automatically; you call it).
+- **Must-consume:** an opaque *local* must be consumed before its scope ends — moved into a
+  `consume` call, returned, or `insert`ed into a pool. Otherwise it is a compile error
+  (`opaque value 'w' not consumed before scope end`). There is no implicit `drop`/RAII and no
+  silent leak. (Borrowed params are exempt — they are owned by the caller.)
+
+```arche
+proc render() {
+  let w := window_open("demo", 640, 480);
+  window_present(w, fb, 640, 480);   // plain by-value read (borrow)
+  window_close(move w);              // consumes w — required before scope end
+}
+```
 
 ## Multi-Value Let
 

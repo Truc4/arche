@@ -666,7 +666,7 @@ static void format_expression(FILE *out, Expression *expr) {
 		break;
 	case EXPR_NAME:
 		if (expr->data.name.is_table_ref)
-			fprintf(out, "table<%s>", expr->data.name.name);
+			fprintf(out, "pool<%s>", expr->data.name.name);
 		else
 			fprintf(out, "%s", expr->data.name.name);
 		break;
@@ -1300,7 +1300,7 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 		case DECL_STATIC: {
 			StaticDecl *s = decl->data.static_decl;
 			if (s->kind == STATIC_KIND_ARCHETYPE) {
-				fprintf(out, "static table<%s>(", s->archetype.archetype_name);
+				fprintf(out, "static pool<%s>(", s->archetype.archetype_name);
 				if (s->archetype.field_count > 0) {
 					format_expression(out, s->archetype.field_values[0]);
 				}

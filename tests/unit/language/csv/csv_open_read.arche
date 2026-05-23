@@ -7,4 +7,5 @@ proc main() {
   printf("about to open file\n");
   let fd := csv_open("tests/fixtures/data.csv");
   printf("fd=%d\n", fd);
+  csv_close(fd);
 }

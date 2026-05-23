@@ -29,7 +29,9 @@ typedef struct {
 	char *archetype_name;      /* for variables that refer to archetype entries */
 	const char *inferred_type; /* for variables without explicit type, stores inferred type name (backing) */
 	const char *nominal_type;  /* unresolved nominal alias name (e.g. "file"), or NULL — for distinctness */
-	int is_consumed;           /* 1 if a consume-param call has consumed this binding */
+	int is_consumed;           /* 1 if a consume-param call / move / return has consumed this binding */
+	int is_param;              /* 1 if this is a function parameter (borrowed — exempt from must-consume) */
+	SourceLoc loc;             /* declaration site, for the must-consume diagnostic */
 } VariableInfo;
 
 typedef struct {
@@ -103,10 +105,17 @@ struct SemanticContext {
 
 /* ========== UTILITY FUNCTIONS ========== */
 
+static int sig_part_cmp(const void *a, const void *b) {
+	return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/* Archetype identity is the *set* of component type names — unordered. We build one
+ * "name:type:kind;" part per field and **sort** them, so `{a,b}` and `{b,a}` produce the
+ * same signature and share a shape. (Codegen is keyed by archetype name + per-decl column
+ * order, so the sort only affects shape dedup, not memory layout.) */
 static char *compute_shape_signature(FieldDecl **fields, int field_count) {
-	size_t sig_size = 256;
-	char *sig = malloc(sig_size);
-	sig[0] = '\0';
+	char **parts = field_count > 0 ? malloc(field_count * sizeof(char *)) : NULL;
+	size_t total = 1;
 	for (int i = 0; i < field_count; i++) {
 		FieldDecl *f = fields[i];
 		const char *type_name = "unknown";
@@ -128,14 +137,21 @@ static char *compute_shape_signature(FieldDecl **fields, int field_count) {
 			}
 		}
 		const char *kind_str = (f->kind == FIELD_META) ? "meta" : "col";
-		char part[128];
+		char part[256];
 		snprintf(part, sizeof(part), "%s:%s:%s;", f->name, type_name, kind_str);
-		if (strlen(sig) + strlen(part) >= sig_size - 1) {
-			sig_size = (strlen(sig) + strlen(part) + 1) * 2;
-			sig = realloc(sig, sig_size);
-		}
-		strcat(sig, part);
+		parts[i] = malloc(strlen(part) + 1);
+		strcpy(parts[i], part);
+		total += strlen(part);
 	}
+	if (parts)
+		qsort(parts, field_count, sizeof(char *), sig_part_cmp);
+	char *sig = malloc(total);
+	sig[0] = '\0';
+	for (int i = 0; i < field_count; i++) {
+		strcat(sig, parts[i]);
+		free(parts[i]);
+	}
+	free(parts);
 	return sig;
 }
 
@@ -317,6 +333,26 @@ static void lint_emit(SemanticContext *ctx, int werror, SourceLoc loc, const cha
 	}
 }
 
+static const char *resolve_type_alias(SemanticContext *ctx, const char *name);
+
+/* True if a binding is opaque-backed (the linear, move-only kind). Used both by the
+ * must-consume check and by return/insert auto-marking (only opaque is consumed by
+ * being returned or inserted — data and handles copy). */
+static int var_is_opaque(SemanticContext *ctx, VariableInfo *v) {
+	if (!v)
+		return 0;
+	if (v->inferred_type && strcmp(v->inferred_type, "opaque") == 0)
+		return 1;
+	if (v->type) {
+		if (v->type->kind == TYPE_OPAQUE)
+			return 1;
+		if (v->type->kind == TYPE_NAME &&
+		    strcmp(resolve_type_alias(ctx, v->type->data.name), "opaque") == 0)
+			return 1;
+	}
+	return 0;
+}
+
 static void push_scope(SemanticContext *ctx) {
 	ctx->scopes = realloc(ctx->scopes, (ctx->scope_count + 1) * sizeof(Scope));
 	ctx->scopes[ctx->scope_count].vars = NULL;
@@ -327,6 +363,17 @@ static void push_scope(SemanticContext *ctx) {
 static void pop_scope(SemanticContext *ctx) {
 	if (ctx->scope_count > 0) {
 		Scope *scope = &ctx->scopes[ctx->scope_count - 1];
+		for (int i = 0; i < scope->var_count; i++) {
+			VariableInfo *v = scope->vars[i];
+			/* Linear must-consume: an opaque LOCAL must be consumed (move / close / return /
+			 * insert) before its scope ends. Borrowed params are exempt. */
+			if (var_is_opaque(ctx, v) && !v->is_param && !v->is_consumed) {
+				char msg[256];
+				snprintf(msg, sizeof(msg),
+				         "opaque value '%s' not consumed before scope end (move/close/return/insert it)", v->name);
+				error(ctx, msg);
+			}
+		}
 		for (int i = 0; i < scope->var_count; i++) {
 			free(scope->vars[i]->name);
 			free(scope->vars[i]);
@@ -341,6 +388,16 @@ static void add_variable_with_archetype(SemanticContext *ctx, const char *name, 
 
 static void add_variable(SemanticContext *ctx, const char *name, TypeRef *type) {
 	add_variable_with_archetype(ctx, name, type, NULL);
+}
+
+/* Flag the most-recently-added variable as a (borrowed) parameter — exempt from the
+ * opaque must-consume check at scope exit. */
+static void mark_last_param(SemanticContext *ctx) {
+	if (ctx->scope_count > 0) {
+		Scope *s = &ctx->scopes[ctx->scope_count - 1];
+		if (s->var_count > 0)
+			s->vars[s->var_count - 1]->is_param = 1;
+	}
 }
 
 static void add_variable_with_archetype(SemanticContext *ctx, const char *name, TypeRef *type,
@@ -359,6 +416,9 @@ static void add_variable_with_archetype(SemanticContext *ctx, const char *name, 
 	var->inferred_type = NULL;
 	var->nominal_type = NULL;
 	var->is_consumed = 0;
+	var->is_param = 0;
+	var->loc.line = 0;
+	var->loc.column = 0;
 
 	scope->vars = realloc(scope->vars, (scope->var_count + 1) * sizeof(VariableInfo *));
 	scope->vars[scope->var_count++] = var;
@@ -894,6 +954,18 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		if (!func_name)
 			break;
 
+		/* insert(Foo, v1, …) moves its value args into the pool — counts as consumption
+		 * for any opaque-backed value argument. Arg 0 is the archetype name, skip it. */
+		if (strcmp(func_name, "insert") == 0) {
+			for (int i = 1; i < expr->data.call.arg_count; i++) {
+				if (expr->data.call.args[i] && expr->data.call.args[i]->type == EXPR_NAME) {
+					VariableInfo *iv = find_variable(ctx, expr->data.call.args[i]->data.name.name);
+					if (iv && var_is_opaque(ctx, iv))
+						iv->is_consumed = 1;
+				}
+			}
+		}
+
 		/* Unsafe-builtin gate: `syscall` bypasses bounds/alloc/handle safety, so it
 		 * may only be called from an explicitly-marked `unsafe` proc/func. */
 		if (strcmp(func_name, "syscall") == 0 && !ctx->in_unsafe) {
@@ -931,8 +1003,27 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 						continue;
 					}
 
+					/* Consume tracking: a `consume` param takes ownership, so mark the
+					 * argument's binding consumed for the rest of the body. Runs for BOTH
+					 * extern and non-extern callees — the canonical close-fn is a plain
+					 * non-extern `proc close(consume r: file)`. v1: function-scope. */
+					{
+						int ac = expr->data.call.arg_count;
+						int n = param_count < ac ? param_count : ac;
+						for (int j = 0; j < n; j++) {
+							Parameter *p = params[j];
+							if (p && p->is_consume && expr->data.call.args[j] &&
+							    expr->data.call.args[j]->type == EXPR_NAME) {
+								VariableInfo *cv =
+								    find_variable(ctx, expr->data.call.args[j]->data.name.name);
+								if (cv)
+									cv->is_consumed = 1;
+							}
+						}
+					}
+
 					if (!is_extern)
-						break; /* non-extern: no extern-type params, skip */
+						break; /* non-extern: no extern-type distinctness to check */
 
 					/* For each argument, if the formal param is a foreign handle
 					 * (handle(X) where X is an extern table), the argument's resolved
@@ -944,16 +1035,6 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 						Parameter *p = params[j];
 						if (!p)
 							continue;
-
-						/* Consume tracking: a `consume` param takes ownership, so mark the
-						 * argument variable consumed for the rest of the body. Applies to any
-						 * consumable resource — opaque cells and legacy extern handles alike.
-						 * v1: function-scope, not branch-sensitive. */
-						if (p->is_consume && expr->data.call.args[j] && expr->data.call.args[j]->type == EXPR_NAME) {
-							VariableInfo *cv = find_variable(ctx, expr->data.call.args[j]->data.name.name);
-							if (cv)
-								cv->is_consumed = 1;
-						}
 
 						/* Nominal distinctness: an alias-typed formal rejects an argument whose
 						 * nominal type is a *different* alias (file vs socket), even though both
@@ -1354,6 +1435,13 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 
 	case STMT_RETURN:
 		analyze_expression(ctx, stmt->data.return_stmt.value);
+		/* Returning an opaque binding moves it out — counts as consumption. (Data and
+		 * handles copy, so returning them must NOT kill the binding.) */
+		if (stmt->data.return_stmt.value && stmt->data.return_stmt.value->type == EXPR_NAME) {
+			VariableInfo *rv = find_variable(ctx, stmt->data.return_stmt.value->data.name.name);
+			if (rv && var_is_opaque(ctx, rv))
+				rv->is_consumed = 1;
+		}
 		break;
 
 	case STMT_FREE:
@@ -1441,6 +1529,20 @@ static void validate_opaque_tag(SemanticContext *ctx, TypeRef *t, const char *wh
 static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 	if (!arch)
 		return;
+
+	/* Set semantics: a component type may appear at most once in an archetype. The
+	 * component's type name IS its access path, so a repeat would be unreachable. */
+	for (int i = 0; i < arch->field_count; i++) {
+		for (int j = i + 1; j < arch->field_count; j++) {
+			if (arch->fields[i]->name && arch->fields[j]->name &&
+			    strcmp(arch->fields[i]->name, arch->fields[j]->name) == 0) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "duplicate component '%s' in archetype (a component type may appear only once)",
+				         arch->fields[i]->name);
+				error(ctx, msg);
+			}
+		}
+	}
 
 	char *sig = compute_shape_signature(arch->fields, arch->field_count);
 	ArchetypeInfo *shape = find_archetype_by_signature(ctx, sig);
@@ -1897,12 +1999,13 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 				error(ctx, msg);
 			}
 		} else {
-			/* Non-extern procs: extern types may be passed through as opaque
-			 * params (per spec). 'consume' is only meaningful on extern calls. */
-			if (p->is_consume) {
+			/* Non-extern procs: a plain `consume` close-fn is the canonical terminal sink
+			 * for a linear opaque, so allow `consume` on any opaque-backed param. */
+			if (p->is_consume && !is_consumable_ref(ctx, pt)) {
 				char msg[256];
-				snprintf(msg, sizeof(msg), "'consume' may only modify extern-type parameters (proc '%s', param '%s')",
-				         proc->name, p->name ? p->name : "?");
+				snprintf(msg, sizeof(msg),
+				         "'consume' may only modify a resource (opaque) parameter (proc '%s', param '%s')", proc->name,
+				         p->name ? p->name : "?");
 				error(ctx, msg);
 			}
 		}
@@ -1945,6 +2048,7 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 		} else {
 			add_variable(ctx, param_name, param_type);
 		}
+		mark_last_param(ctx);
 	}
 
 	ProcDecl *prev_proc = ctx->current_proc;
@@ -2011,6 +2115,7 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 			}
 		}
 		add_variable(ctx, sys->params[i]->name, param_type);
+		mark_last_param(ctx);
 	}
 
 	const char *old_sys_archetype = ctx->current_sys_archetype;
@@ -2169,12 +2274,12 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 				error(ctx, msg);
 			}
 		} else {
-			/* Non-extern funcs: extern types may pass through as opaque
-			 * params (per spec). 'consume' is only meaningful on extern calls. */
-			if (p->is_consume) {
+			/* Non-extern funcs: allow `consume` on any opaque-backed param (terminal sink). */
+			if (p->is_consume && !is_consumable_ref(ctx, pt)) {
 				char msg[256];
-				snprintf(msg, sizeof(msg), "'consume' may only modify extern-type parameters (func '%s', param '%s')",
-				         func->name, p->name ? p->name : "?");
+				snprintf(msg, sizeof(msg),
+				         "'consume' may only modify a resource (opaque) parameter (func '%s', param '%s')", func->name,
+				         p->name ? p->name : "?");
 				error(ctx, msg);
 			}
 		}
@@ -2209,6 +2314,7 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 	/* add parameters as variables */
 	for (int i = 0; i < func->param_count; i++) {
 		add_variable(ctx, func->params[i]->name, func->params[i]->type);
+		mark_last_param(ctx);
 	}
 
 	ctx->in_unsafe = func->is_unsafe;

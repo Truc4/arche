@@ -11,4 +11,5 @@ proc main() {
     let n := csv_read_chunk(fd, buf, 65536);
     printf("n=%d\n", n);
   }
+  csv_close(fd);
 }
