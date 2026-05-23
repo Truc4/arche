@@ -1,9 +1,12 @@
-// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qiE "(type mismatch|Sound|Window)" %t.out
-
-extern Window(8);
-extern Sound(64);
-extern func sound_open() -> handle<Sound>;
-extern proc window_close(consume w: handle<Window>);
+// opaque<Sound> and opaque<Window> are distinct types because Sound and Window are
+// distinct shapes — so passing an opaque<Sound> where opaque<Window> is expected is a
+// compile-time type error. (The cells are byte-identical i64s at runtime; the tag is
+// what the checker rejects.)
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qiE "(type|Sound|Window|opaque)" %t.out
+arche Window { w: opaque }
+arche Sound  { s: opaque }
+extern func sound_open() -> opaque<Sound>;
+extern proc window_close(consume w: opaque<Window>);
 
 proc main() {
   let s := sound_open();

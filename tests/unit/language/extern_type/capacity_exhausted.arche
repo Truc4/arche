@@ -1,10 +1,13 @@
-// RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t > %t.out 2>&1 ; grep -qi "capacity" %t.out
-
-extern Resource(2);
-extern func resource_open(initial: int) -> handle<Resource>;
+// Foreign resources can be POOLED in a table<Resource> (the gen-checked path, opt-in).
+// A fixed-capacity table aborts when overrun — here capacity 2, third insert aborts.
+// (Capacity/stale safety lives on the pooled path, not on by-value opaque<Resource>.)
+// RUN: %arche -o %t --link %S/runtime/test_resource.c %s && ! %t
+arche Resource { cell: opaque }
+extern func resource_open(initial: int) -> opaque<Resource>;
+static table<Resource>(2);
 
 proc main() {
-  let a := resource_open(1);
-  let b := resource_open(2);
-  let c := resource_open(3);
+  let a := insert(table<Resource>, resource_open(1));
+  let b := insert(table<Resource>, resource_open(2));
+  let c := insert(table<Resource>, resource_open(3));
 }

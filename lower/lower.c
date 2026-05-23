@@ -63,6 +63,8 @@ static AstType map_type_str(const char *resolved_type) {
 		t.tag = AST_TYPE_CHAR_ARRAY;
 	} else if (strcmp(resolved_type, "handle") == 0) {
 		t.tag = AST_TYPE_HANDLE;
+	} else if (strcmp(resolved_type, "opaque") == 0) {
+		t.tag = AST_TYPE_OPAQUE;
 	} else {
 		/* archetype or other named type — pointer into CST, safe since CST outlives AST */
 		t.tag = AST_TYPE_NAMED;

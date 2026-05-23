@@ -3999,6 +3999,11 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 					alloc_type = "i64";
 					store_type = "i64";
 					bit_width = 64;
+				} else if (strcmp(resolved_type, "opaque") == 0) {
+					/* opaque<X> resource value: pointer-width cell held as i64 */
+					alloc_type = "i64";
+					store_type = "i64";
+					bit_width = 64;
 				} else if (stmt->data.let_stmt.value->resolved.tag == AST_TYPE_INT &&
 				           stmt->data.let_stmt.value->resolved.int_width != 32) {
 					/* RHS is a non-i32 integer (e.g. syscall -> i64): infer its width

@@ -552,6 +552,12 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		if (is_width_int_name(func_name))
 			return func_name;
 
+		/* `insert(table<X>, …)` yields a handle into X's table (i64). Resolving it
+		 * lets `let h := insert(...)` carry a handle type, so copies like
+		 * `let alias := h` inherit it instead of defaulting to int. */
+		if (strcmp(func_name, "insert") == 0)
+			return "handle";
+
 		if (!ctx->prog)
 			return NULL;
 
@@ -602,6 +608,8 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 					return normalize_type_name(rt->data.name);
 				if (rt->kind == TYPE_ARRAY)
 					return "char_array"; /* extern func returning char[] (raw byte view) */
+				if (rt->kind == TYPE_OPAQUE)
+					return "opaque"; /* opaque<X> resource value (pointer-width i64) */
 				return NULL;
 			}
 		}
@@ -864,6 +872,17 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 						Parameter *p = params[j];
 						if (!p)
 							continue;
+
+						/* Consume tracking: a `consume` param takes ownership, so mark the
+						 * argument variable consumed for the rest of the body. Applies to any
+						 * consumable resource — opaque cells and legacy extern handles alike.
+						 * v1: function-scope, not branch-sensitive. */
+						if (p->is_consume && expr->data.call.args[j] && expr->data.call.args[j]->type == EXPR_NAME) {
+							VariableInfo *cv = find_variable(ctx, expr->data.call.args[j]->data.name.name);
+							if (cv)
+								cv->is_consumed = 1;
+						}
+
 						const char *formal_type = extern_handle_target(ctx, p->type);
 						if (!formal_type)
 							continue;
@@ -893,16 +912,6 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 							error(ctx, msg);
 						}
 
-						/* Consume tracking: if this formal is a consume parameter and
-						 * the argument is a simple identifier, mark that variable consumed
-						 * for the rest of the enclosing proc/func body.
-						 * NOTE: v1 — function-scope only, not branch-sensitive. */
-						if (p->is_consume && arg->type == EXPR_NAME) {
-							VariableInfo *consumed_var = find_variable(ctx, arg->data.name.name);
-							if (consumed_var) {
-								consumed_var->is_consumed = 1;
-							}
-						}
 					}
 					break; /* found the callee decl */
 				}

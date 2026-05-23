@@ -1,14 +1,15 @@
-// RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t > %t.out 2>&1 ; grep -qi "stale" %t.out
-
-extern Resource(8);
-extern func resource_open(initial: int) -> handle<Resource>;
-extern proc resource_close(consume r: handle<Resource>);
-extern func resource_get(r: handle<Resource>) -> int;
+// Pooled foreign resources get generation-checked handles: after a row is deleted and
+// its slot reused, an old handle to it is stale and any use aborts loudly. Here `alias`
+// outlives the delete+reinsert, so deleting through it aborts.
+// RUN: %arche -o %t --link %S/runtime/test_resource.c %s && ! %t
+arche Resource { cell: opaque }
+extern func resource_open(initial: int) -> opaque<Resource>;
+static table<Resource>(8);
 
 proc main() {
-  let r := resource_open(10);
-  let alias := r;
-  resource_close(r);
-  let r2 := resource_open(99);
-  let v := resource_get(alias);
+  let h := insert(table<Resource>, resource_open(10));
+  let alias := h;
+  delete(table<Resource>, h);
+  let h2 := insert(table<Resource>, resource_open(99));
+  delete(table<Resource>, alias);
 }
