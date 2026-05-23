@@ -101,6 +101,7 @@ static char *compute_shape_signature(FieldDecl **fields, int field_count) {
 	for (int i = 0; i < field_count; i++) {
 		FieldDecl *f = fields[i];
 		const char *type_name = "unknown";
+		char opaque_buf[256];
 		if (f->type) {
 			if (f->type->kind == TYPE_NAME)
 				type_name = f->type->data.name;
@@ -108,6 +109,14 @@ static char *compute_shape_signature(FieldDecl **fields, int field_count) {
 				type_name = "array";
 			else if (f->type->kind == TYPE_SHAPED_ARRAY)
 				type_name = "shaped_array";
+			else if (f->type->kind == TYPE_OPAQUE) {
+				if (f->type->data.opaque.archetype_name) {
+					snprintf(opaque_buf, sizeof(opaque_buf), "opaque<%s>", f->type->data.opaque.archetype_name);
+					type_name = opaque_buf;
+				} else {
+					type_name = "opaque";
+				}
+			}
 		}
 		const char *kind_str = (f->kind == FIELD_META) ? "meta" : "col";
 		char part[128];
@@ -221,6 +230,15 @@ static int type_ref_equal(const TypeRef *a, const TypeRef *b) {
 	}
 	case TYPE_ARCHETYPE:
 		return 1; /* `archetype` parameter type: any two are equal */
+	case TYPE_OPAQUE: {
+		/* opaque<File> != opaque<Socket>; bare opaque == bare opaque. The tag is
+		 * a compile-time phantom (erased before codegen) but distinguishes here. */
+		const char *an = a->data.opaque.archetype_name;
+		const char *bn = b->data.opaque.archetype_name;
+		if (!an && !bn)
+			return 1;
+		return an && bn && strcmp(an, bn) == 0;
+	}
 	}
 	return 0;
 }
@@ -397,6 +415,12 @@ static const char *extern_handle_target(SemanticContext *ctx, const TypeRef *tr)
 /* Returns 1 if `tr` is a handle(X) referencing a registered extern table. */
 static int is_extern_type_ref(SemanticContext *ctx, const TypeRef *tr) {
 	return extern_handle_target(ctx, tr) != NULL;
+}
+
+/* A parameter may carry `consume` if it owns a foreign resource: an `opaque` cell
+ * (opaque / opaque<X>) — the move-only resource value — or a legacy extern-type handle. */
+static int is_consumable_ref(SemanticContext *ctx, const TypeRef *tr) {
+	return (tr && tr->kind == TYPE_OPAQUE) || is_extern_type_ref(ctx, tr);
 }
 
 static const char *resolve_expression_type(SemanticContext *ctx, Expression *expr) {
@@ -1289,6 +1313,30 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 
 /* ========== DECLARATION ANALYSIS ========== */
 
+/* If `t` is opaque<X>, X must be a declared archetype that carries an opaque field
+ * (a foreign-resource shape) — opaque<X> means "X's foreign cell". `where` names the
+ * use site for the diagnostic. Bare opaque and non-opaque types are no-ops. Applies
+ * everywhere a type appears (archetype fields, proc/func params, func returns). */
+static void validate_opaque_tag(SemanticContext *ctx, TypeRef *t, const char *where) {
+	if (!t || t->kind != TYPE_OPAQUE || !t->data.opaque.archetype_name)
+		return;
+	const char *tag = t->data.opaque.archetype_name;
+	ArchetypeInfo *tag_arch = find_archetype(ctx, tag);
+	char msg[320];
+	if (!tag_arch) {
+		snprintf(msg, sizeof(msg), "opaque<%s>: '%s' is not a declared archetype (%s)", tag, tag, where);
+		error(ctx, msg);
+		return;
+	}
+	for (int j = 0; j < tag_arch->field_count; j++) {
+		if (tag_arch->fields[j]->type && tag_arch->fields[j]->type->kind == TYPE_OPAQUE)
+			return; /* foreign resource — ok */
+	}
+	snprintf(msg, sizeof(msg), "opaque<%s>: '%s' has no opaque field, so it is not a foreign resource (%s)", tag, tag,
+	         where);
+	error(ctx, msg);
+}
+
 static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 	if (!arch)
 		return;
@@ -1373,6 +1421,13 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 			        arch->fields[i]->name);
 			ctx->error_count++;
 		}
+	}
+
+	/* Validate opaque<X> tags on fields (X must be a foreign archetype). */
+	for (int i = 0; i < arch->field_count; i++) {
+		char where[256];
+		snprintf(where, sizeof(where), "field '%s' of '%s'", arch->fields[i]->name, arch->name);
+		validate_opaque_tag(ctx, arch->fields[i]->type, where);
 	}
 
 	/* Register alias */
@@ -1712,6 +1767,11 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 		if (!p)
 			continue;
 		TypeRef *pt = p->type;
+		{
+			char where[256];
+			snprintf(where, sizeof(where), "param '%s' of proc '%s'", p->name ? p->name : "?", proc->name);
+			validate_opaque_tag(ctx, pt, where);
+		}
 		if (proc->is_extern) {
 			/* Bare extern table name must be wrapped in handle(...). */
 			if (pt && pt->kind == TYPE_NAME && semantic_has_extern_type(ctx, pt->data.name)) {
@@ -1728,10 +1788,11 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 				}
 			}
 			/* 'consume' modifier only makes sense on extern-type parameters. */
-			if (p->is_consume && !is_extern_type_ref(ctx, pt)) {
+			if (p->is_consume && !is_consumable_ref(ctx, pt)) {
 				char msg[256];
-				snprintf(msg, sizeof(msg), "'consume' may only modify extern-type parameters (proc '%s', param '%s')",
-				         proc->name, p->name ? p->name : "?");
+				snprintf(msg, sizeof(msg),
+				         "'consume' may only modify a resource (opaque) parameter (proc '%s', param '%s')", proc->name,
+				         p->name ? p->name : "?");
 				error(ctx, msg);
 			}
 		} else {
@@ -1966,6 +2027,11 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 		         func->name);
 		error(ctx, msg);
 	}
+	{
+		char where[256];
+		snprintf(where, sizeof(where), "return type of func '%s'", func->name);
+		validate_opaque_tag(ctx, func->return_type, where);
+	}
 
 	/* Validate parameters and return type for extern vs non-extern rules. */
 	for (int i = 0; i < func->param_count; i++) {
@@ -1973,6 +2039,11 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 		if (!p)
 			continue;
 		TypeRef *pt = p->type;
+		{
+			char where[256];
+			snprintf(where, sizeof(where), "param '%s' of func '%s'", p->name ? p->name : "?", func->name);
+			validate_opaque_tag(ctx, pt, where);
+		}
 		if (func->is_extern) {
 			/* Bare extern table name must be wrapped in handle(...). */
 			if (pt && pt->kind == TYPE_NAME && semantic_has_extern_type(ctx, pt->data.name)) {
@@ -1989,10 +2060,11 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 				}
 			}
 			/* 'consume' modifier only makes sense on extern-type parameters. */
-			if (p->is_consume && !is_extern_type_ref(ctx, pt)) {
+			if (p->is_consume && !is_consumable_ref(ctx, pt)) {
 				char msg[256];
-				snprintf(msg, sizeof(msg), "'consume' may only modify extern-type parameters (func '%s', param '%s')",
-				         func->name, p->name ? p->name : "?");
+				snprintf(msg, sizeof(msg),
+				         "'consume' may only modify a resource (opaque) parameter (func '%s', param '%s')", func->name,
+				         p->name ? p->name : "?");
 				error(ctx, msg);
 			}
 		} else {

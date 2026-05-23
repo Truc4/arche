@@ -20,7 +20,7 @@ arche Row {
 }
 
 
-static Row(10, 10) {
+static table<Row>(10, 10) {
   price: 5.0,
   quantity: 1,
 };

@@ -217,7 +217,7 @@ Statement *statement_create(StatementType type) {
 }
 
 Expression *expression_create(ExpressionType type) {
-	Expression *expr = malloc(sizeof(Expression));
+	Expression *expr = calloc(1, sizeof(Expression));
 	expr->type = type;
 	expr->loc.line = 1;
 	expr->loc.column = 1;
@@ -430,6 +430,9 @@ void type_ref_free(TypeRef *type) {
 		break;
 	case TYPE_ARCHETYPE:
 		break;
+	case TYPE_OPAQUE:
+		free(type->data.opaque.archetype_name); /* NULL-safe */
+		break;
 	}
 	free(type);
 }
@@ -612,10 +615,16 @@ static void format_type(FILE *out, TypeRef *type) {
 		fprintf(out, ")");
 		break;
 	case TYPE_HANDLE:
-		fprintf(out, "handle(%s)", type->data.handle.archetype_name);
+		fprintf(out, "handle<%s>", type->data.handle.archetype_name);
 		break;
 	case TYPE_ARCHETYPE:
 		fprintf(out, "archetype");
+		break;
+	case TYPE_OPAQUE:
+		if (type->data.opaque.archetype_name)
+			fprintf(out, "opaque<%s>", type->data.opaque.archetype_name);
+		else
+			fprintf(out, "opaque");
 		break;
 	}
 	format_type_depth--;
@@ -655,7 +664,10 @@ static void format_expression(FILE *out, Expression *expr) {
 		fprintf(out, "%s", expr->data.literal.lexeme);
 		break;
 	case EXPR_NAME:
-		fprintf(out, "%s", expr->data.name.name);
+		if (expr->data.name.is_table_ref)
+			fprintf(out, "table<%s>", expr->data.name.name);
+		else
+			fprintf(out, "%s", expr->data.name.name);
 		break;
 	case EXPR_FIELD: {
 		format_expression(out, expr->data.field.base);
@@ -1286,7 +1298,7 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 		case DECL_STATIC: {
 			StaticDecl *s = decl->data.static_decl;
 			if (s->kind == STATIC_KIND_ARCHETYPE) {
-				fprintf(out, "static %s(", s->archetype.archetype_name);
+				fprintf(out, "static table<%s>(", s->archetype.archetype_name);
 				if (s->archetype.field_count > 0) {
 					format_expression(out, s->archetype.field_values[0]);
 				}

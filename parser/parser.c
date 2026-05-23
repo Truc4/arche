@@ -296,16 +296,47 @@ static TypeRef *parse_type(Parser *parser) {
 		return type;
 	}
 
-	/* Check for handle(ArchetypeName) */
-	if (strcmp(name, "handle") == 0 && check(parser, TOK_LPAREN)) {
-		advance(parser); /* consume ( */
+	/* `opaque` or `opaque<archetype>`: a pointer-width C-owned cell. The optional
+	 * <archetype> is a compile-time phantom tag (opaque<File> != opaque<Socket>),
+	 * erased before codegen. Recognized by name like `handle`/`archetype`. */
+	if (strcmp(name, "opaque") == 0) {
+		free(name);
+		type = malloc(sizeof(TypeRef));
+		type->kind = TYPE_OPAQUE;
+		type->data.opaque.archetype_name = NULL;
+		type->loc = start_loc;
+		if (check(parser, TOK_LT)) {
+			advance(parser); /* consume < */
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected archetype name in 'opaque<'");
+				return type;
+			}
+			type->data.opaque.archetype_name = token_text(parser->current);
+			advance(parser);
+			if (!match(parser, TOK_GT)) {
+				error(parser, "Expected '>' after archetype name in 'opaque<...>'");
+			}
+		}
+		return type;
+	}
+
+	/* handle<ArchetypeName> — a generation-checked reference to a row in a table.
+	 * Legacy handle(ArchetypeName) is still accepted during migration. */
+	if (strcmp(name, "handle") == 0 && (check(parser, TOK_LT) || check(parser, TOK_LPAREN))) {
+		int angle = check(parser, TOK_LT);
+		advance(parser); /* consume < or ( */
 		if (!check(parser, TOK_IDENT)) {
-			error(parser, "Expected archetype name after 'handle('");
+			error(parser, "Expected archetype name after 'handle<'");
 			return NULL;
 		}
 		char *arch_name = token_text(parser->current);
 		advance(parser);
-		if (!match(parser, TOK_RPAREN)) {
+		if (angle) {
+			if (!match(parser, TOK_GT)) {
+				error(parser, "Expected '>' after archetype name in handle type");
+				return NULL;
+			}
+		} else if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' after archetype name in handle type");
 			return NULL;
 		}
@@ -959,6 +990,26 @@ static Decl *parse_static_decl(Parser *parser) {
 		Token name_tok = parser->current;
 		advance(parser);
 
+		/* `static table<Name>(...)` — the table-addressed allocation form. The
+		 * `table<...>` wrapper just names the shape whose singleton table to
+		 * allocate; unwrap it to the archetype name. (Legacy `static Name(...)`
+		 * stays valid: only the array form uses ':'.) */
+		if (strcmp(name, "table") == 0 && check(parser, TOK_LT)) {
+			free(name);
+			advance(parser); /* consume < */
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected archetype name in 'static table<'");
+				return NULL;
+			}
+			name = token_text(parser->current);
+			name_tok = parser->current;
+			advance(parser);
+			if (!match(parser, TOK_GT)) {
+				error(parser, "Expected '>' after archetype name in 'static table<...>'");
+				return NULL;
+			}
+		}
+
 		/* Check if this is a static array (static name: type[size];) or archetype (static Name(n);) */
 		if (check(parser, TOK_COLON)) {
 			/* Static array declaration */
@@ -1288,6 +1339,31 @@ static Expression *parse_primary_expr(Parser *parser) {
 		advance(parser);
 		int name_line = parser->previous.line;
 		int name_column = parser->previous.column;
+
+		/* table<Name> in value position: the singleton table for shape Name.
+		 * Resolved as the bare archetype name (insert/delete/run resolve it); the
+		 * is_table_ref flag lets the formatter round-trip the `table<...>` form. */
+		if (strcmp(name, "table") == 0 && check(parser, TOK_LT)) {
+			free(name);
+			advance(parser); /* consume < */
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected archetype name in 'table<'");
+				return NULL;
+			}
+			char *tname = token_text(parser->current);
+			advance(parser);
+			if (!match(parser, TOK_GT)) {
+				error(parser, "Expected '>' after archetype name in 'table<...>'");
+				free(tname);
+				return NULL;
+			}
+			Expression *expr = expression_create(EXPR_NAME);
+			expr->loc.line = name_line;
+			expr->loc.column = name_column;
+			expr->data.name.name = tname;
+			expr->data.name.is_table_ref = 1;
+			return expr;
+		}
 
 		/* INFO: Expression-based alloc parsing preserved for future heap_alloc feature.
 		   Currently alloc is only allowed as a top-level declaration (DECL_STATIC).

@@ -4,10 +4,10 @@ arche Player {
 }
 
 
-static Player(10);
+static table<Player>(10);
 
 
 proc main() {
-  let h := insert(Player, 1.0);
+  let h := insert(table<Player>, 1.0);
   print("slot 0 handle created");
 }

@@ -1,0 +1,7 @@
+// The formatter must preserve the `opaque` field type — `make format` rewrites
+// every .arche file, so a dropped token silently corrupts source (cf. the
+// earlier `unsafe`-stripping bug).
+// RUN: %build/arche-fmt %s | grep "opaque"
+arche File {
+  fd: opaque
+}

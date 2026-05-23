@@ -1,9 +1,9 @@
 arche Counter {
   value: int,
 }
-static Counter(1);
+static table<Counter>(1);
 proc main() {
-  insert(Counter, 0);
+  insert(table<Counter>, 0);
   let x := 10;
   let y := 20;
   let msg := "counter allocated\n";

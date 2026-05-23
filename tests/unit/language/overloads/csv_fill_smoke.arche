@@ -6,7 +6,7 @@ arche Pair {
   b: int,
 }
 
-static Pair(3, 3) {
+static table<Pair>(3, 3) {
   a: 0,
   b: 0,
 };

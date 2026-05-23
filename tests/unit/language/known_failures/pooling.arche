@@ -5,19 +5,19 @@ arche Entity {
 }
 
 
-static Entity(100);
+static table<Entity>(100);
 
 
 proc main() {
-  insert(Entity, 1.0, 2.0);
-  insert(Entity, 3.0, 4.0);
-  insert(Entity, 5.0, 6.0);
-  insert(Entity, 7.0, 8.0);
-  insert(Entity, 9.0, 10.0);
+  insert(table<Entity>, 1.0, 2.0);
+  insert(table<Entity>, 3.0, 4.0);
+  insert(table<Entity>, 5.0, 6.0);
+  insert(table<Entity>, 7.0, 8.0);
+  insert(table<Entity>, 9.0, 10.0);
   Entity.x = Entity.x + 1.0;
   Entity.y = Entity.y * 2.0;
-  delete(Entity, 1);
-  insert(Entity, 11.0, 12.0);
+  delete(table<Entity>, 1);
+  insert(table<Entity>, 11.0, 12.0);
   let x0 := Entity.x[0];
   let y4 := Entity.y[4];
   let x0i := x0 * 10.0;

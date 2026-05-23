@@ -238,6 +238,8 @@ static const char *llvm_type_from_arche(const char *arche_type) {
 		return "void";
 	if (strcmp(arche_type, "handle") == 0)
 		return "i64";
+	if (strcmp(arche_type, "opaque") == 0)
+		return "i64"; /* pointer-width cell; holds a C pointer, never interpreted by Arche */
 
 	/* Fixed-width integer types map to LLVM iN (sign lives in the ops, not
 	 * the type): byte/u8/i8 -> i8, u16/i16 -> i16, ... i128/u128 -> i128. */
@@ -384,6 +386,8 @@ static const char *field_base_type_name(AstType *type) {
 		return "void";
 	case AST_TYPE_HANDLE:
 		return "handle";
+	case AST_TYPE_OPAQUE:
+		return "opaque";
 	case AST_TYPE_NAMED:
 		return type->name ? type->name : "int";
 	default:
@@ -411,6 +415,8 @@ static const char *ast_resolved_type_name(const AstExpr *expr) {
 		return "void";
 	case AST_TYPE_HANDLE:
 		return "handle";
+	case AST_TYPE_OPAQUE:
+		return "opaque";
 	case AST_TYPE_NAMED:
 		return expr->resolved.name ? expr->resolved.name : "int";
 	default:
@@ -5605,6 +5611,15 @@ static void codegen_archetype_decl(CodegenContext *ctx, AstArchetypeDecl *arch) 
 	buffer_append(ctx, "  unreachable\n\n");
 
 	buffer_append(ctx, "valid:\n");
+	/* Crash loudly on generation exhaustion instead of wrapping (silent ABA): a
+	 * slot freed 2^32 times can no longer mint a distinct generation, so a stale
+	 * handle could alias a fresh entity. Abort like a stack overflow would. */
+	buffer_append(ctx, "  %gen_maxed = icmp eq i32 %stored_gen, -1\n");
+	buffer_append(ctx, "  br i1 %gen_maxed, label %gen_exhausted, label %do_free\n\n");
+	buffer_append(ctx, "gen_exhausted:\n");
+	buffer_append(ctx, "  call void @abort()\n");
+	buffer_append(ctx, "  unreachable\n\n");
+	buffer_append(ctx, "do_free:\n");
 	/* Increment generation */
 	buffer_append(ctx, "  %new_gen = add i32 %stored_gen, 1\n");
 	buffer_append(ctx, "  store i32 %new_gen, i32* %gc_elem\n");
@@ -5633,6 +5648,60 @@ static void codegen_archetype_decl(CodegenContext *ctx, AstArchetypeDecl *arch) 
 
 	buffer_append(ctx, "  ret void\n");
 	buffer_append(ctx, "}\n\n");
+
+	/* Foreign-archetype cell-deref helper: given a handle, validate the
+	 * generation (abort on stale) and return the single opaque cell for the
+	 * C-marshal layer to hand to extern functions. Emitted only for shapes that
+	 * carry an opaque field (the marshal's "unwrap handle -> C pointer"). */
+	{
+		int opaque_col = -1;
+		for (int i = 0; i < arch->field_count; i++) {
+			if (arch->fields[i]->type && strcmp(field_base_type_name(arch->fields[i]->type), "opaque") == 0) {
+				opaque_col = i;
+				break;
+			}
+		}
+		if (opaque_col >= 0) {
+			buffer_append_fmt(ctx, "define i64 @arche_cell_%s(%%struct.%s* %%arch, i64 %%handle) {\n", arch->name,
+			                  arch->name);
+			buffer_append(ctx, "entry:\n");
+			buffer_append(ctx, "  %slot_i32 = trunc i64 %handle to i32\n");
+			buffer_append(ctx, "  %slot = zext i32 %slot_i32 to i64\n");
+			buffer_append(ctx, "  %hgen_raw = lshr i64 %handle, 32\n");
+			buffer_append(ctx, "  %hgen = trunc i64 %hgen_raw to i32\n");
+			if (static_cap > 0) {
+				buffer_append_fmt(
+				    ctx, "  %%gc_elem = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %%slot\n",
+				    arch->name, arch->name, gc_idx);
+			} else {
+				buffer_append_fmt(ctx,
+				                  "  %%gc_ptr_field = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
+				                  arch->name, arch->name, gc_idx);
+				buffer_append(ctx, "  %gc_arr = load i32*, i32** %gc_ptr_field\n");
+				buffer_append(ctx, "  %gc_elem = getelementptr i32, i32* %gc_arr, i64 %slot\n");
+			}
+			buffer_append(ctx, "  %stored_gen = load i32, i32* %gc_elem\n");
+			buffer_append(ctx, "  %gen_ok = icmp eq i32 %hgen, %stored_gen\n");
+			buffer_append(ctx, "  br i1 %gen_ok, label %valid, label %stale\n\n");
+			buffer_append(ctx, "stale:\n");
+			buffer_append(ctx, "  call void @abort()\n");
+			buffer_append(ctx, "  unreachable\n\n");
+			buffer_append(ctx, "valid:\n");
+			if (static_cap > 0) {
+				buffer_append_fmt(
+				    ctx, "  %%cell_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %%slot\n",
+				    arch->name, arch->name, opaque_col);
+			} else {
+				buffer_append_fmt(ctx, "  %%col_pp = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
+				                  arch->name, arch->name, opaque_col);
+				buffer_append(ctx, "  %col_p = load i64*, i64** %col_pp\n");
+				buffer_append(ctx, "  %cell_ptr = getelementptr i64, i64* %col_p, i64 %slot\n");
+			}
+			buffer_append(ctx, "  %cell = load i64, i64* %cell_ptr\n");
+			buffer_append(ctx, "  ret i64 %cell\n");
+			buffer_append(ctx, "}\n\n");
+		}
+	}
 
 	/* Emit dealloc helper function */
 	buffer_append_fmt(ctx, "define void @arche_dealloc_%s(%%struct.%s* %%arch) {\n", arch->name, arch->name);

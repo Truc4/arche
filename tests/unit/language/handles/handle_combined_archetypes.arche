@@ -5,19 +5,19 @@ arche Player {
 
 
 arche AliveList {
-  player_ref: handle(Player),
+  player_ref: handle<Player>,
 }
 
 
-static Player(10);
+static table<Player>(10);
 
-static AliveList(10);
+static table<AliveList>(10);
 
 
 proc main() {
-  let p1 := insert(Player, 1.0);
-  let p2 := insert(Player, 2.0);
-  insert(AliveList, p1);
-  insert(AliveList, p2);
+  let p1 := insert(table<Player>, 1.0);
+  let p2 := insert(table<Player>, 2.0);
+  insert(table<AliveList>, p1);
+  insert(table<AliveList>, p2);
   print("alive list created");
 }

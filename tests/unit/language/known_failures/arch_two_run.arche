@@ -13,9 +13,9 @@ arche Body {
 }
 
 
-static Particle(100);
+static table<Particle>(100);
 
-static Body(50);
+static table<Body>(50);
 
 
 sys move(pos, vel) {
@@ -24,8 +24,8 @@ sys move(pos, vel) {
 
 
 proc main() {
-  insert(Particle, 1.0, 0.1);
-  insert(Body, 5.0, 0.5, 10.0);
+  insert(table<Particle>, 1.0, 0.1);
+  insert(table<Body>, 5.0, 0.5, 10.0);
   run move;
   let pp := Particle.pos[0];
   let bp := Body.pos[0];

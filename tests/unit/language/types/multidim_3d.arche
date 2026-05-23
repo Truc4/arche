@@ -4,7 +4,7 @@ arche Tensor {
 }
 
 
-static Tensor(5);
+static table<Tensor>(5);
 
 
 proc main() {

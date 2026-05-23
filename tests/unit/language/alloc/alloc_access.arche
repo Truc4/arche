@@ -4,7 +4,7 @@ arche Point {
 }
 
 
-static Point(5, 5) {
+static table<Point>(5, 5) {
   x: 42,
 };
 

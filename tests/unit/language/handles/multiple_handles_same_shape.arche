@@ -12,7 +12,7 @@ arche Enemies {
 }
 
 
-static Players(2, 2) {
+static table<Players>(2, 2) {
   x: 1.0,
   y: 10,
 };

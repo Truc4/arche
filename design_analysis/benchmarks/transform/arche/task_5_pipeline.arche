@@ -10,7 +10,7 @@ arche Transaction {
 }
 
 
-static Transaction(10000, 10000) {
+static table<Transaction>(10000, 10000) {
   price: 0.0,
   quantity: 0,
   revenue: 0.0,

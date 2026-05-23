@@ -1,13 +1,13 @@
-// Regression: an extern func taking BOTH a handle(T) and an `out` array used to
+// Regression: an extern func taking BOTH a handle<T> and an `out` array used to
 // crash — the multi-bind/out codegen path skipped unwrapping the handle to its
 // slot pointer, so C that dereferenced it got a raw handle int. resource_fill
 // dereferences the handle (*r) and fills the out buffer.
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t | grep "v=42 b=2"
 
 extern Resource(8);
-extern func resource_open(initial: int) -> handle(Resource);
-extern func resource_fill(r: handle(Resource), out buf: char[], n: int) -> int;
-extern proc resource_close(consume r: handle(Resource));
+extern func resource_open(initial: int) -> handle<Resource>;
+extern func resource_fill(r: handle<Resource>, out buf: char[], n: int) -> int;
+extern proc resource_close(consume r: handle<Resource>);
 
 proc main() {
   let r := resource_open(42);

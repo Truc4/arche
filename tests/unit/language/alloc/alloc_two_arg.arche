@@ -4,7 +4,7 @@ arche Counter {
 }
 
 
-static Counter(10, 3);
+static table<Counter>(10, 3);
 
 
 proc main() {

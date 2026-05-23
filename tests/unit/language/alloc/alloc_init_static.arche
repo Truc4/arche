@@ -10,13 +10,13 @@ arche Empty {
 }
 
 
-static Counter(5, 5) {
+static table<Counter>(5, 5) {
   val: 7,
   score: 2.5,
 };
 
 
-static Empty(5);
+static table<Empty>(5);
 
 
 proc main() {

@@ -5,13 +5,13 @@ arche Particle {
 }
 
 
-static Particle(5);
+static table<Particle>(5);
 
 
 proc main() {
-  insert(Particle, 0.0, 1.0, 0.5, 0.1);
-  insert(Particle, 2.0, 3.0, 0.2, 0.3);
-  insert(Particle, 4.0, 5.0, 0.1, 0.2);
+  insert(table<Particle>, 0.0, 1.0, 0.5, 0.1);
+  insert(table<Particle>, 2.0, 3.0, 0.2, 0.3);
+  insert(table<Particle>, 4.0, 5.0, 0.1, 0.2);
   printf("Before: pos.x[0]=%g vel.x[0]=%g\n", Particle.pos.x[0], Particle.vel.x[0]);
   printf("Before: pos.y[2]=%g vel.y[2]=%g\n", Particle.pos.y[2], Particle.vel.y[2]);
   Particle.pos.x = Particle.pos.x + Particle.vel.x;

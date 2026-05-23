@@ -105,6 +105,9 @@ static AstType *lower_type_ref(TypeRef *tr) {
 	case TYPE_ARCHETYPE:
 		t->tag = AST_TYPE_ARCHETYPE;
 		break;
+	case TYPE_OPAQUE:
+		t->tag = AST_TYPE_OPAQUE;
+		break;
 	}
 	return t;
 }

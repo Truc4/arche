@@ -5,7 +5,7 @@ arche Particle {
 }
 
 
-static Particle(10);
+static table<Particle>(10);
 
 
 sys move(pos, vel) {
@@ -14,7 +14,7 @@ sys move(pos, vel) {
 
 
 proc main() {
-  insert(Particle, 1.0, 0.1);
+  insert(table<Particle>, 1.0, 0.1);
   run move;
   let p := Particle.pos[0];
   let pi := p * 10.0;

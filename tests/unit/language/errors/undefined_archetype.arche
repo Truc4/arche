@@ -1,4 +1,4 @@
-static UndefinedArch(10);
+static table<UndefinedArch>(10);
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -q "unknown archetype" %t.out
 
 

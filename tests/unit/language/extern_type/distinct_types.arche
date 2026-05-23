@@ -2,8 +2,8 @@
 
 extern Window(8);
 extern Sound(64);
-extern func sound_open() -> handle(Sound);
-extern proc window_close(consume w: handle(Window));
+extern func sound_open() -> handle<Sound>;
+extern proc window_close(consume w: handle<Window>);
 
 proc main() {
   let s := sound_open();

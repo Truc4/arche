@@ -7,14 +7,14 @@ arche Body {
   pos: (x: int, y: int),
   vel: (x: int, y: int),
 }
-static Body(2);
+static table<Body>(2);
 sys move(pos, vel) {
   pos.x = pos.x + vel.x;
   pos.y = pos.y + vel.y;
 }
 proc main() {
-  insert(Body, 0, 0, 1, 2);
-  insert(Body, 10, 10, -1, -1);
+  insert(table<Body>, 0, 0, 1, 2);
+  insert(table<Body>, 10, 10, -1, -1);
   run move;
   printf("R %d %d %d %d\n", Body.pos.x[0], Body.pos.y[0], Body.pos.x[1], Body.pos.y[1]);
 }

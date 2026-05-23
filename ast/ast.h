@@ -21,6 +21,7 @@ typedef enum {
 	AST_TYPE_SHAPED_ARRAY,
 	AST_TYPE_TUPLE,
 	AST_TYPE_ARCHETYPE, /* bare-category `archetype` parameter type */
+	AST_TYPE_OPAQUE,    /* opaque: pointer-width C-owned cell */
 } AstTypeTag;
 
 typedef struct AstType AstType;

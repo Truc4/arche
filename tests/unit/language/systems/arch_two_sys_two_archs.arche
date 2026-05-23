@@ -13,9 +13,9 @@ arche Body {
 }
 
 
-static Particle(5);
+static table<Particle>(5);
 
-static Body(5);
+static table<Body>(5);
 
 
 sys move(pos, vel) {
@@ -29,8 +29,8 @@ sys dampen(vel) {
 
 
 proc main() {
-  insert(Particle, 10.0, 1.0);
-  insert(Body, 20.0, 2.0, 10.0);
+  insert(table<Particle>, 10.0, 1.0);
+  insert(table<Body>, 20.0, 2.0, 10.0);
   run move;
   run dampen;
   let pp := Particle.pos[0];

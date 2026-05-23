@@ -1,0 +1,9 @@
+// `opaque<X>` means "X's foreign cell", so X must actually be a foreign archetype —
+// one that carries an opaque field. Tagging with a pure-data shape is meaningless and
+// is rejected at compile time.
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -q "no opaque field" %t.out
+arche Plain { x: int }
+arche Bad { cell: opaque<Plain> }
+proc main() {
+  printf("unreachable\n");
+}

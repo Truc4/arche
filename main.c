@@ -103,6 +103,10 @@ static void rename_typeref(TypeRef *t, const char *prefix, char **set, int count
 		break;
 	case TYPE_ARCHETYPE:
 		break;
+	case TYPE_OPAQUE:
+		if (t->data.opaque.archetype_name)
+			maybe_rename(&t->data.opaque.archetype_name, prefix, set, count);
+		break;
 	}
 }
 

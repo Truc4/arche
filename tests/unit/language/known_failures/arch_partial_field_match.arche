@@ -13,9 +13,9 @@ arche Body {
 }
 
 
-static Particle(5);
+static table<Particle>(5);
 
-static Body(5);
+static table<Body>(5);
 
 
 sys gravity(pos, mass) {
@@ -24,8 +24,8 @@ sys gravity(pos, mass) {
 
 
 proc main() {
-  insert(Particle, 1.0, 0.1);
-  insert(Body, 2.0, 0.2, 10.0);
+  insert(table<Particle>, 1.0, 0.1);
+  insert(table<Body>, 2.0, 0.2, 10.0);
   run gravity;
   let pp := Particle.pos[0];
   let bp := Body.pos[0];

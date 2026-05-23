@@ -1,11 +1,14 @@
+// A foreign resource is an archetype with an opaque cell; its C functions traffic in
+// opaque<Resource> by value (the cell, an i64, bitcast to the C pointer at the ABI).
+// No extern-table, no handle, no marshal. `consume` on close ends the value's life.
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t | grep "value=42"
 
-extern Resource(8);
+arche Resource { cell: opaque }
 
-extern func resource_open(initial: int) -> handle(Resource);
-extern func resource_get(r: handle(Resource)) -> int;
-extern proc resource_set(r: handle(Resource), v: int);
-extern proc resource_close(consume r: handle(Resource));
+extern func resource_open(initial: int) -> opaque<Resource>;
+extern func resource_get(r: opaque<Resource>) -> int;
+extern proc resource_set(r: opaque<Resource>, v: int);
+extern proc resource_close(consume r: opaque<Resource>);
 
 proc main() {
   let r := resource_open(10);

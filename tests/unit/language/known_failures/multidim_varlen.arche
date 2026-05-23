@@ -5,7 +5,7 @@ arche Message {
 }
 
 
-static Message(100);
+static table<Message>(100);
 
 
 proc main() {

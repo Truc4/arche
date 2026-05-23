@@ -132,6 +132,7 @@ typedef enum {
 	TYPE_TUPLE,        /* tuple: (x: float, y: float) */
 	TYPE_HANDLE,       /* handle(ArchetypeName) */
 	TYPE_ARCHETYPE,    /* bare-category `archetype` (parameter type only) */
+	TYPE_OPAQUE,       /* opaque: pointer-width C-owned cell, never read/written/forged by Arche */
 } TypeKind;
 
 struct TypeRef {
@@ -158,6 +159,10 @@ struct TypeRef {
 		struct {
 			char *archetype_name;
 		} handle;
+
+		struct {
+			char *archetype_name; /* NULL = bare `opaque`; else `opaque<archetype>` — a compile-time phantom tag */
+		} opaque;
 	} data;
 };
 
@@ -402,6 +407,7 @@ typedef struct {
 
 typedef struct {
 	char *name;
+	int is_table_ref; /* 1 if written `table<name>` (value-position table reference); formats back as table<...> */
 } NameExpr;
 
 typedef struct {

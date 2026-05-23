@@ -4,7 +4,7 @@ arche Particle {
 }
 
 
-static Particle(10);
+static table<Particle>(10);
 
 
 sys dummy(pos) {
@@ -14,7 +14,7 @@ sys dummy(pos) {
 
 
 proc main() {
-  insert(Particle, 1.0);
+  insert(table<Particle>, 1.0);
   run dummy;
   printf("pos[0]=%f\n", Particle.pos[0]);
 }

@@ -9,12 +9,12 @@ arche Handle2 {
 }
 
 
-static Handle1(1, 1) {
+static table<Handle1>(1, 1) {
   val: 5,
 };
 
 
-static Handle2(1, 1) {
+static table<Handle2>(1, 1) {
   val: 10,
 };
 

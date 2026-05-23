@@ -4,7 +4,7 @@ arche Task {
 }
 
 
-static Task(1, 1) {
+static table<Task>(1, 1) {
   val: 5,
 };
 

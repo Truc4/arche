@@ -1,0 +1,12 @@
+// A foreign resource is an archetype carrying an opaque cell — File has `fd: opaque`.
+// `opaque<File>` is the type of *that* cell: what File's C open/read/close functions
+// traffic in, and what other code holds to refer to a File's resource. The <File> tag
+// is a compile-time phantom — distinct from opaque<Socket> to the checker, erased to a
+// plain pointer-width slot at codegen (zero runtime cost).
+// RUN: %arche -o %t %s && %t | grep "ok"
+arche File { fd: opaque }
+arche OpenFiles { f: opaque<File> }
+static table<OpenFiles>(8);
+proc main() {
+  printf("ok opaque_domain\n");
+}
