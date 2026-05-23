@@ -9,12 +9,12 @@ arche AliveList {
 }
 
 
-static table<Player>(10);
+static pool<Player>(10);
 
-static table<AliveList>(10);
+static pool<AliveList>(10);
 
 
 proc main() {
-  let p_handle := insert(table<Player>, 1.0);
-  insert(table<AliveList>, p_handle);
+  let p_handle := insert(Player, 1.0);
+  insert(AliveList, p_handle);
 }

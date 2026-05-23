@@ -290,6 +290,8 @@ static const char *llvm_int_type(int width) {
  * into `out`. `from` may be NULL (treated as i32 signed). */
 static void emit_int_convert(CodegenContext *ctx, const char *val, AstType *from, int to_w, char *out) {
 	int from_w = (from && from->tag == AST_TYPE_INT && from->int_width) ? from->int_width : 32;
+	if (from && (from->tag == AST_TYPE_OPAQUE || from->tag == AST_TYPE_HANDLE))
+		from_w = 64; /* opaque cell / handle are pointer-width i64 */
 	int from_signed = (from && from->tag == AST_TYPE_INT) ? from->int_signed : 1;
 	if (to_w == 0)
 		to_w = 32;
@@ -1149,7 +1151,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 					int w, sg;
 					if (strcmp(val->field_type, "double") == 0 || strcmp(val->field_type, "float") == 0) {
 						llvm_type = "double";
-					} else if (strcmp(val->field_type, "handle") == 0) {
+					} else if (strcmp(val->field_type, "handle") == 0 || strcmp(val->field_type, "opaque") == 0) {
 						llvm_type = "i64";
 					} else if (ast_parse_int_width(val->field_type, &w, &sg)) {
 						llvm_type = llvm_int_type(w);
@@ -1231,6 +1233,9 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			int_width = lw > rw ? lw : rw;
 			if (int_width == 0)
 				int_width = 32; /* unset/non-int operands default to i32 */
+			if (expr->data.binary.left->resolved.tag == AST_TYPE_OPAQUE ||
+			    expr->data.binary.right->resolved.tag == AST_TYPE_OPAQUE)
+				int_width = 64; /* opaque cells are pointer-width i64 (e.g. `r == 0`) */
 			if (lt->tag == AST_TYPE_INT)
 				int_signed = lt->int_signed;
 			else if (rt->tag == AST_TYPE_INT)
@@ -1439,6 +1444,10 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 	case AST_EXPR_UNARY: {
 		char operand_buf[256];
 		codegen_expression(ctx, expr->data.unary.operand, operand_buf);
+		if (expr->data.unary.op == UNARY_MOVE) {
+			strcpy(result_buf, operand_buf); /* `move x` is transparent — the value passes through */
+			break;
+		}
 
 		char *res_name = gen_value_name(ctx);
 		if (expr->data.unary.op == UNARY_NEG) {
@@ -2047,42 +2056,46 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		}
 
 		/* Special handling for delete builtin */
-		if (func_name && strcmp(func_name, "delete") == 0 && expr->data.call.arg_count >= 2) {
-			/* args[0] is archetype variable, args[1] is handle */
+		if (func_name && strcmp(func_name, "delete") == 0 && expr->data.call.arg_count >= 1) {
+			/* delete(h) infers the pool from the handle's archetype; legacy
+			 * delete(table<X>, h) names the target explicitly. */
 			char arch_buf[256];
-			codegen_expression(ctx, expr->data.call.args[0], arch_buf);
-
 			char idx_buf[256];
-			codegen_expression(ctx, expr->data.call.args[1], idx_buf);
-
-			/* Get arch_name from ValueInfo or archetype name of args[0] */
+			arch_buf[0] = '\0';
+			idx_buf[0] = '\0';
 			const char *arch_name = NULL;
-			if (expr->data.call.args[0]->kind == AST_EXPR_NAME) {
-				const char *name = expr->data.call.args[0]->data.name.name;
-				ValueInfo *arch_var = find_value(ctx, name);
-				if (arch_var && arch_var->arch_name) {
-					arch_name = arch_var->arch_name;
-				} else if (find_archetype_decl(ctx, name)) {
-					/* Direct archetype name */
-					arch_name = name;
+			if (expr->data.call.arg_count >= 2) {
+				codegen_expression(ctx, expr->data.call.args[0], arch_buf);
+				codegen_expression(ctx, expr->data.call.args[1], idx_buf);
+				if (expr->data.call.args[0]->kind == AST_EXPR_NAME) {
+					const char *name = expr->data.call.args[0]->data.name.name;
+					ValueInfo *arch_var = find_value(ctx, name);
+					if (arch_var && arch_var->arch_name)
+						arch_name = arch_var->arch_name;
+					else if (find_archetype_decl(ctx, name))
+						arch_name = name;
 				}
-			}
-
-			/* Check handle type matches delete archetype */
-			if (expr->data.call.args[1]->kind == AST_EXPR_NAME) {
-				const char *handle_var = expr->data.call.args[1]->data.name.name;
-				ValueInfo *handle_vi = find_value(ctx, handle_var);
-				if (handle_vi && handle_vi->field_type && strcmp(handle_vi->field_type, "handle") == 0) {
-					if (handle_vi->handle_archetype && arch_name &&
-					    strcmp(handle_vi->handle_archetype, arch_name) != 0) {
+				if (expr->data.call.args[1]->kind == AST_EXPR_NAME) {
+					ValueInfo *hvi = find_value(ctx, expr->data.call.args[1]->data.name.name);
+					if (hvi && hvi->field_type && strcmp(hvi->field_type, "handle") == 0 &&
+					    hvi->handle_archetype && arch_name &&
+					    strcmp(hvi->handle_archetype, arch_name) != 0) {
 						fprintf(stderr, "Error: type mismatch in delete: handle for %s cannot delete %s\n",
-						        handle_vi->handle_archetype, arch_name);
+						        hvi->handle_archetype, arch_name);
 						strcpy(result_buf, "0");
 						break;
 					}
 				}
+			} else {
+				codegen_expression(ctx, expr->data.call.args[0], idx_buf);
+				if (expr->data.call.args[0]->kind == AST_EXPR_NAME) {
+					ValueInfo *hv = find_value(ctx, expr->data.call.args[0]->data.name.name);
+					if (hv && hv->handle_archetype)
+						arch_name = hv->handle_archetype;
+				}
+				if (arch_name)
+					snprintf(arch_buf, sizeof(arch_buf), "@%s", arch_name);
 			}
-
 			if (arch_name) {
 				buffer_append_fmt(ctx, "  call void @arche_delete_%s(%%struct.%s* %s, i64 %s)\n", arch_name, arch_name,
 				                  arch_buf, idx_buf);
@@ -2506,6 +2519,10 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 					/* Wider/narrower int (e.g. i64): pass at its actual LLVM width. */
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = llvm_int_type(expr->data.call.args[i]->resolved.int_width);
+				} else if (expr->data.call.args[i]->resolved.tag == AST_TYPE_OPAQUE) {
+					/* An opaque cell (a nominal `:: opaque` value) is pointer-width i64. */
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = "i64";
 				} else {
 					/* Default to i32 */
 					strcpy(call_arg_vals[i], arg_bufs[i]);
@@ -4048,6 +4065,16 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 				vi->handle_archetype = malloc(strlen(insert_archetype) + 1);
 				strcpy(vi->handle_archetype, insert_archetype);
 			}
+				/* Propagate the handle's archetype through a copy (let alias := h) so
+				 * delete(alias) can infer the pool. */
+				if (!vi->handle_archetype && stmt->data.let_stmt.value &&
+				    stmt->data.let_stmt.value->kind == AST_EXPR_NAME) {
+					ValueInfo *src = find_value(ctx, stmt->data.let_stmt.value->data.name.name);
+					if (src && src->handle_archetype) {
+						vi->handle_archetype = malloc(strlen(src->handle_archetype) + 1);
+						strcpy(vi->handle_archetype, src->handle_archetype);
+					}
+				}
 			vi->bit_width = bit_width;
 
 			if (ctx->scope_count > 0) {
@@ -4247,7 +4274,11 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 							call_arg_types[i] = "i8*";
 						} else {
 							strcpy(call_arg_vals[i], arg_bufs[i]);
-							call_arg_types[i] = "i32";
+							AstType *pty =
+								    (i < callee_func->param_count && callee_func->params[i]) ? callee_func->params[i]->type
+								                                                            : NULL;
+							/* opaque cell args are pointer-width i64; everything else stays i32. */
+							call_arg_types[i] = (pty && pty->tag == AST_TYPE_OPAQUE) ? "i64" : "i32";
 						}
 					}
 				}
@@ -5175,7 +5206,12 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		const char *branch_cond = cond_buf;
 		if (cond_buf[0] == '%') {
 			char *truncated = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = trunc i32 %s to i1\n", truncated, cond_buf);
+			if (stmt->data.if_stmt.cond &&
+			    (stmt->data.if_stmt.cond->resolved.tag == AST_TYPE_OPAQUE ||
+			     stmt->data.if_stmt.cond->resolved.tag == AST_TYPE_HANDLE))
+				buffer_append_fmt(ctx, "  %s = icmp ne i64 %s, 0\n", truncated, cond_buf); /* non-null cell */
+			else
+				buffer_append_fmt(ctx, "  %s = trunc i32 %s to i1\n", truncated, cond_buf);
 			branch_cond = truncated;
 		}
 

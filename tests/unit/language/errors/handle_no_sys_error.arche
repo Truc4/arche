@@ -4,7 +4,7 @@ arche Entity {
 }
 
 
-static table<Entity>(10);
+static pool<Entity>(10);
 
 
 sys process(next) {

@@ -1,13 +1,15 @@
-// Foreign resources can be POOLED in a table<Resource> (the gen-checked path, opt-in).
-// A fixed-capacity table aborts when overrun — here capacity 2, third insert aborts.
-// (Capacity/stale safety lives on the pooled path, not on by-value opaque<Resource>.)
+// Foreign resources can be POOLED: an archetype with an opaque `cell` component, stored
+// in a fixed-capacity pool with generation-checked handles. A full pool aborts when
+// overrun — here capacity 2, the third insert aborts. (Pooled is the opt-in gen-checked
+// path; the by-value `resource :: opaque` path is separate.)
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && ! %t
-arche Resource { cell: opaque }
-extern func resource_open(initial: int) -> opaque<Resource>;
-static table<Resource>(2);
+cell :: opaque
+arche Resource { cell }
+extern func resource_open(initial: int) -> cell;
+static pool<Resource>(2);
 
 proc main() {
-  let a := insert(table<Resource>, resource_open(1));
-  let b := insert(table<Resource>, resource_open(2));
-  let c := insert(table<Resource>, resource_open(3));
+  let a := insert(Resource, resource_open(1));
+  let b := insert(Resource, resource_open(2));
+  let c := insert(Resource, resource_open(3));
 }

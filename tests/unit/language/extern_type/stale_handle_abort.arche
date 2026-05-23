@@ -1,15 +1,16 @@
-// Pooled foreign resources get generation-checked handles: after a row is deleted and
-// its slot reused, an old handle to it is stale and any use aborts loudly. Here `alias`
+// Pooled foreign resources get generation-checked handles: after a row is deleted and its
+// slot reused, an old handle to it is stale and any use aborts loudly. Here `alias`
 // outlives the delete+reinsert, so deleting through it aborts.
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && ! %t
-arche Resource { cell: opaque }
-extern func resource_open(initial: int) -> opaque<Resource>;
-static table<Resource>(8);
+cell :: opaque
+arche Resource { cell }
+extern func resource_open(initial: int) -> cell;
+static pool<Resource>(8);
 
 proc main() {
-  let h := insert(table<Resource>, resource_open(10));
+  let h := insert(Resource, resource_open(10));
   let alias := h;
-  delete(table<Resource>, h);
-  let h2 := insert(table<Resource>, resource_open(99));
-  delete(table<Resource>, alias);
+  delete(h);
+  let h2 := insert(Resource, resource_open(99));
+  delete(alias);
 }

@@ -12,14 +12,14 @@ arche Body {
 }
 
 
-static table<Particle>(5);
+static pool<Particle>(5);
 
-static table<Body>(5);
+static pool<Body>(5);
 
 
 proc main() {
-  insert(table<Particle>, 1.0, 0.1);
-  insert(table<Body>, 5.0, 0.5, 10.0);
+  insert(Particle, 1.0, 0.1);
+  insert(Body, 5.0, 0.5, 10.0);
   let pp := Particle.pos[0];
   let bp := Body.pos[0];
   let ppi := pp * 10.0;

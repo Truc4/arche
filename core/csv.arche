@@ -1,15 +1,15 @@
 // Legacy fread-based API
-func open(path: char[]) -> handle<File> {
+func open(path: char[]) -> file {
   return arche_fopen_read(path);
 }
-proc close(fd: handle<File>) {
+proc close(fd: file) {
   arche_fclose(fd);
 }
-proc skip_header(fd: handle<File>) {
+proc skip_header(fd: file) {
   let line: char[256];
   arche_fread_line(fd, line, 256);
 }
-func read_chunk(fd: handle<File>, out buf: char[], size: int) -> int {
+func read_chunk(fd: file, out buf: char[], size: int) -> int {
   return arche_csv_read_chunk(fd, buf, size);
 }
 

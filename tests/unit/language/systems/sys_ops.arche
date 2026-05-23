@@ -6,28 +6,28 @@ arche Body {
 }
 
 
-static table<Body>(500);
+static pool<Body>(500);
 
 
-sys move(position, velocity) {
+sys step(position, velocity) {
   position = position + velocity;
 }
 
 
 proc main() {
-  insert(table<Body>, 10.0, 1.0);
-  insert(table<Body>, 20.0, 2.0);
-  insert(table<Body>, 30.0, 3.0);
-  insert(table<Body>, 40.0, 4.0);
-  insert(table<Body>, 50.0, 5.0);
-  insert(table<Body>, 60.0, 6.0);
-  insert(table<Body>, 70.0, 7.0);
-  insert(table<Body>, 80.0, 8.0);
-  insert(table<Body>, 90.0, 9.0);
-  insert(table<Body>, 100.0, 10.0);
-  insert(table<Body>, 110.0, 11.0);
-  insert(table<Body>, 120.0, 12.0);
-  run move;
+  insert(Body, 10.0, 1.0);
+  insert(Body, 20.0, 2.0);
+  insert(Body, 30.0, 3.0);
+  insert(Body, 40.0, 4.0);
+  insert(Body, 50.0, 5.0);
+  insert(Body, 60.0, 6.0);
+  insert(Body, 70.0, 7.0);
+  insert(Body, 80.0, 8.0);
+  insert(Body, 90.0, 9.0);
+  insert(Body, 100.0, 10.0);
+  insert(Body, 110.0, 11.0);
+  insert(Body, 120.0, 12.0);
+  run step;
   let p0 := Body.position[0];
   let p11 := Body.position[11];
   let p0i := p0 * 10.0;

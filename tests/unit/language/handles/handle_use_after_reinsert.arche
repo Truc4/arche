@@ -4,12 +4,12 @@ arche Player {
 }
 
 
-static table<Player>(10);
+static pool<Player>(10);
 
 
 proc main() {
-  let h1 := insert(table<Player>, 1.0);
-  delete(table<Player>, h1);
-  let h2 := insert(table<Player>, 2.0);
-  delete(table<Player>, h1);
+  let h1 := insert(Player, 1.0);
+  delete(h1);
+  let h2 := insert(Player, 2.0);
+  delete(h1);
 }

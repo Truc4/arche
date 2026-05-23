@@ -461,7 +461,13 @@ static int is_extern_type_ref(SemanticContext *ctx, const TypeRef *tr) {
 /* A parameter may carry `consume` if it owns a foreign resource: an `opaque` cell
  * (opaque / opaque<X>) — the move-only resource value — or a legacy extern-type handle. */
 static int is_consumable_ref(SemanticContext *ctx, const TypeRef *tr) {
-	return (tr && tr->kind == TYPE_OPAQUE) || is_extern_type_ref(ctx, tr);
+	if (tr && tr->kind == TYPE_OPAQUE)
+		return 1;
+	/* A nominal alias whose backing is `opaque` (e.g. `resource :: opaque`) is a
+	 * consumable foreign-resource value, same as a bare opaque. */
+	if (tr && tr->kind == TYPE_NAME && strcmp(resolve_type_alias(ctx, tr->data.name), "opaque") == 0)
+		return 1;
+	return is_extern_type_ref(ctx, tr);
 }
 
 static const char *resolve_expression_type(SemanticContext *ctx, Expression *expr) {
@@ -500,11 +506,11 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 				if (var->type->kind == TYPE_HANDLE)
 					return var->type->data.handle.archetype_name;
 				if (var->type->kind == TYPE_NAME)
-					return normalize_type_name(var->type->data.name);
+					return resolve_type_alias(ctx, normalize_type_name(var->type->data.name));
 			}
 			/* Fallback to inferred type */
 			if (var->inferred_type) {
-				return normalize_type_name(var->inferred_type);
+				return resolve_type_alias(ctx, normalize_type_name(var->inferred_type));
 			}
 		}
 		/* Check if it's an archetype being referenced */
@@ -542,7 +548,7 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 					while (ft->kind == TYPE_SHAPED_ARRAY)
 						ft = ft->data.shaped_array.element_type;
 					if (ft->kind == TYPE_NAME)
-						return normalize_type_name(ft->data.name);
+						return resolve_type_alias(ctx, normalize_type_name(ft->data.name));
 				}
 			}
 		}
@@ -860,6 +866,12 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 
 	case EXPR_UNARY:
 		analyze_expression(ctx, expr->data.unary.operand);
+		/* `move x` transfers ownership: mark x consumed (use-after-move is an error). */
+		if (expr->data.unary.op == UNARY_MOVE && expr->data.unary.operand->type == EXPR_NAME) {
+			VariableInfo *mv = find_variable(ctx, expr->data.unary.operand->data.name.name);
+			if (mv)
+				mv->is_consumed = 1;
+		}
 		break;
 
 	case EXPR_CALL: {
@@ -2464,10 +2476,15 @@ SemanticContext *semantic_analyze(Program *prog) {
 		}
 
 		if (c->value && c->value->type == EXPR_NAME) {
+			/* Redefinition must AGREE: the same alias with the same backing is fine
+			 * (e.g. core's `file :: opaque` and a user's `file :: opaque`); a different
+			 * backing is a conflict. */
 			for (int j = 0; j < ctx->type_alias_count; j++) {
 				if (strcmp(ctx->type_alias_names[j], c->name) == 0) {
+					if (strcmp(ctx->type_alias_backings[j], c->value->data.name.name) == 0)
+						goto next_const; /* agrees — silently share */
 					char msg[256];
-					snprintf(msg, sizeof(msg), "type '%s' already defined", c->name);
+					snprintf(msg, sizeof(msg), "type '%s' redefined with a different backing", c->name);
 					error(ctx, msg);
 					goto next_const;
 				}

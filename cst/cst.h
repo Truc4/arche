@@ -400,6 +400,7 @@ typedef enum {
 typedef enum {
 	UNARY_NEG,
 	UNARY_NOT,
+	UNARY_MOVE, /* `move x` — call-site ownership transfer; transparent value, marks x consumed */
 } UnaryOperator;
 
 typedef struct {

@@ -1,20 +1,17 @@
 // RUN: %arche -o %t %s && %t | grep "system_ran"
-arche Particle {
-  pos: float,
-}
+pos :: float
 
+arche Particle { pos }
 
-static table<Particle>(10);
-
+static pool<Particle>(10);
 
 sys dummy(pos) {
   printf("system_ran\n");
   pos = pos;
 }
 
-
 proc main() {
-  insert(table<Particle>, 1.0);
+  insert(Particle, 1.0);
   run dummy;
   printf("pos[0]=%f\n", Particle.pos[0]);
 }

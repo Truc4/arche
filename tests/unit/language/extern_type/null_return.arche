@@ -2,8 +2,8 @@
 // (the only inspection allowed on an opaque value). Here the C pool (8) is exhausted,
 // so the 9th open returns null.
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t | grep "ok_null=1"
-arche Resource { cell: opaque }
-extern func resource_open(initial: int) -> opaque<Resource>;
+resource :: opaque
+extern func resource_open(initial: int) -> resource;
 
 proc main() {
   let r1 := resource_open(1);

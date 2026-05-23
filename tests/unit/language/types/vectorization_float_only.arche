@@ -4,7 +4,7 @@ arche FloatOps {
 }
 
 
-static table<FloatOps>(8);
+static pool<FloatOps>(8);
 
 sys float_multiply(val) {
   val = val * 2.0;
@@ -12,14 +12,14 @@ sys float_multiply(val) {
 
 
 proc main() {
-  insert(table<FloatOps>, 1.0);
-  insert(table<FloatOps>, 1.0);
-  insert(table<FloatOps>, 1.0);
-  insert(table<FloatOps>, 1.0);
-  insert(table<FloatOps>, 1.0);
-  insert(table<FloatOps>, 1.0);
-  insert(table<FloatOps>, 1.0);
-  insert(table<FloatOps>, 1.0);
+  insert(FloatOps, 1.0);
+  insert(FloatOps, 1.0);
+  insert(FloatOps, 1.0);
+  insert(FloatOps, 1.0);
+  insert(FloatOps, 1.0);
+  insert(FloatOps, 1.0);
+  insert(FloatOps, 1.0);
+  insert(FloatOps, 1.0);
   run float_multiply;
   let v0 := FloatOps.val[0];
   let v1 := FloatOps.val[1];

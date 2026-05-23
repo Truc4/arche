@@ -12,12 +12,12 @@ arche Body {
 }
 
 
-static table<Particle>(100);
+static pool<Particle>(100);
 
-static table<Body>(50);
+static pool<Body>(50);
 
 
-sys move(pos, vel) {
+sys step(pos, vel) {
   pos = pos + vel;
 }
 
@@ -28,12 +28,12 @@ sys dampen(vel) {
 
 
 proc main() {
-  insert(table<Particle>, 10.0, 1.0);
-  insert(table<Particle>, 20.0, 2.0);
-  insert(table<Particle>, 30.0, 3.0);
-  insert(table<Body>, 50.0, 5.0, 10.0);
-  insert(table<Body>, 60.0, 6.0, 20.0);
-  run move;
+  insert(Particle, 10.0, 1.0);
+  insert(Particle, 20.0, 2.0);
+  insert(Particle, 30.0, 3.0);
+  insert(Body, 50.0, 5.0, 10.0);
+  insert(Body, 60.0, 6.0, 20.0);
+  run step;
   run dampen;
   let pp := Particle.pos[0];
   let bp := Body.vel[0];

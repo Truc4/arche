@@ -1,11 +1,10 @@
-// An archetype may carry one `opaque` field — a pointer-width, C-owned cell that
-// Arche never reads, writes, or fabricates. It declares and statically allocates
-// like any column (stored as a pointer-width slot); nothing touches the cell here.
+// An archetype may carry an `opaque` component — a pointer-width, C-owned cell that
+// Arche never reads, writes, or fabricates. It declares and statically allocates like
+// any column (a pointer-width slot); nothing touches the cell here.
 // RUN: %arche -o %t %s && %t | grep "ok"
-arche File {
-  fd: opaque
-}
-static table<File>(4);
+fd :: opaque
+arche File { fd }
+static pool<File>(4);
 proc main() {
   printf("ok opaque_declared\n");
 }

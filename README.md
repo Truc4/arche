@@ -460,28 +460,32 @@ The buffer `old_buf` is passed. Language copies it in, passes to C, returns modi
 
 All parameters are always copied. C functions cannot modify caller data directly. Out parameters are returned as new values. Every function parameter is **always copied** — there are no side effects on the original data. Functions are pure with respect to parameters; side effects are explicit in the code.
 
-## Extern Tables (`extern Name(N)`) and `handle(Name)`
+## Foreign resources: nominal `opaque` types
 
-Arche references foreign resources (OS windows, audio voices, file pointers) via `extern` table declarations. Each declaration names a fixed-capacity slot pool. The name is never used bare — references go through `handle(Name)` everywhere, mirroring the way archetype rows are referenced via `handle(Player)`.
+There is no separate "extern type" system. A foreign resource (OS window, audio voice, file
+pointer) is just a **nominal type aliased over `opaque`** — a pointer-width, C-owned cell that
+Arche never reads, writes, or fabricates. Distinctness comes from the *name*, not a wrapper.
 
 ```arche
-extern Window(8);
+window :: opaque
+sound  :: opaque
 
-extern func window_open(title: char[], w: int, h: int) -> handle(Window);
-extern proc window_present(w: handle(Window), fb: int[], width: int, height: int);
-extern proc window_close(consume w: handle(Window));
+extern func window_open(title: char[], w: int, h: int) -> window;
+extern proc window_present(w: window, fb: int[], width: int, height: int);
+extern proc window_close(consume w: window);
 ```
 
-- `handle(Window)` is opaque to Arche — no inspection, arithmetic, or casting.
-- `0` is the null handle. Returning `NULL` from C marshals to `0`.
-- `consume` marks a parameter whose handle is freed by the call. Re-using a consumed binding is a compile error.
-- Distinct extern tables produce distinct handle types: `handle(Window)` and `handle(Sound)` are not interchangeable even though both are int handles at runtime.
-- Extern handles may not appear in archetype fields. (Internal `handle(Archetype)` columns are fine.)
-- Generation counters detect use-after-free at runtime when the static checker can't (e.g., handles aliased through other bindings).
-
-C authors write plain C with native pointer types (`HWND`, `FILE *`, etc.). The compiler emits all handle marshaling.
-
-See `docs/superpowers/specs/2026-05-16-extern-type-design.md` for the full design.
+- An `opaque` value is passed to/from C **by value** — the cell *is* an `i64`, ABI-compatible
+  with the native pointer (`HWND`, `FILE *`, …). No marshal, no slot table; C authors write
+  plain C with native pointer types.
+- `window` and `sound` are **distinct types** though both back to `opaque`: passing a `window`
+  where a `sound` is expected is a compile error. Identity is checked at boundaries (params,
+  assignment, return).
+- `0` is the null cell; returning `NULL` from C yields `0`, and `if (w)` is a non-null check.
+- `consume` marks a parameter that ends the value's life (e.g. close). Re-using a consumed
+  binding is a compile error.
+- A foreign resource can also live in a **pool**: put the type in an `arche` and use
+  `pool<Foo>` + generation-checked handles for capacity-bounded, use-after-free-safe storage.
 
 ## Multi-Value Let
 

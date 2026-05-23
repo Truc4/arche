@@ -744,7 +744,8 @@ static void format_expression(FILE *out, Expression *expr) {
 		break;
 	}
 	case EXPR_UNARY: {
-		const char *op_str = expr->data.unary.op == UNARY_NEG ? "-" : "!";
+		const char *op_str =
+		    expr->data.unary.op == UNARY_NEG ? "-" : (expr->data.unary.op == UNARY_MOVE ? "move " : "!");
 		fprintf(out, "%s", op_str);
 		format_expression(out, expr->data.unary.operand);
 		break;

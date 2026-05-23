@@ -9,12 +9,12 @@ arche Enemy {
 }
 
 
-static table<Player>(10);
+static pool<Player>(10);
 
-static table<Enemy>(10);
+static pool<Enemy>(10);
 
 
 proc main() {
-  let p := insert(table<Player>, 1.0);
+  let p := insert(Player, 1.0);
   delete(table<Enemy>, p);
 }

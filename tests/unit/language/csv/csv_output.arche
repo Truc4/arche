@@ -6,7 +6,7 @@ arche Task1Data {
 }
 
 
-static table<Task1Data>(1000, 1000) {
+static pool<Task1Data>(1000, 1000) {
   price: 0.0,
   quantity: 0,
 };

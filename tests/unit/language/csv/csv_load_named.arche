@@ -8,7 +8,7 @@ arche Row {
   quantity: int,
 }
 
-static table<Row>(3, 3) {
+static pool<Row>(3, 3) {
   price: 0.0,
   quantity: 0,
 };

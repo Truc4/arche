@@ -12,7 +12,7 @@ arche Enemies {
 }
 
 
-static table<Players>(2, 2) {
+static pool<Players>(2, 2) {
   x: 1.0,
   y: 10,
 };

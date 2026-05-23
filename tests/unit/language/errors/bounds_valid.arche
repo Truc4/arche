@@ -4,12 +4,12 @@ arche Particle {
 }
 
 
-static table<Particle>(5);
+static pool<Particle>(5);
 
 
 proc main() {
-  insert(table<Particle>, 1);
-  insert(table<Particle>, 2);
+  insert(Particle, 1);
+  insert(Particle, 2);
   let a := Particle.id[0];
   let b := Particle.id[1];
   assert(a == 1, "a != 1\n");

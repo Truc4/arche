@@ -1,9 +1,8 @@
-// opaque<File> in a function signature — the real point of the type. A func takes a
-// File's foreign cell by value (File is a foreign archetype with an opaque cell). The
-// <File> tag is a compile-time phantom, erased to an i64 param at codegen.
+// A nominal opaque type in a function signature — a func takes a `file` by value (an i64
+// cell at the ABI). `file` is distinct in the checker, erased to i64 at codegen.
 // RUN: %arche -o %t %s && %t | grep "ok"
-arche File { fd: opaque }
-func describe(f: opaque<File>) -> int {
+file :: opaque
+func describe(f: file) -> int {
   return 0;
 }
 proc main() {

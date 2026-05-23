@@ -1,5 +1,5 @@
-// The formatter must round-trip the opaque<archetype> phantom tag, not just bare
-// opaque (`make format` rewrites every .arche file).
-// RUN: %build/arche-fmt %s | grep "opaque<File>"
-arche File { fd: opaque }
-arche OpenFiles { f: opaque<File> }
+// The formatter must round-trip a nominal opaque alias and an archetype that carries an
+// opaque component (`make format` rewrites every .arche file).
+// RUN: %build/arche-fmt %s | grep "file :: opaque"
+file :: opaque
+arche OpenFiles { file }

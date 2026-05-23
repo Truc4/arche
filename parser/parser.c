@@ -423,12 +423,24 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 	strcpy(name_copy, name);
 	advance(parser);
 
-	if (!match(parser, TOK_COLON)) {
-		error(parser, "Expected ':'");
-		free(name_copy);
-		*out_count = 0;
-		return NULL;
+	/* New model: a bare component `a` (no accessor) — its type is its own name.
+	 * `arche Foo { a, b }` is a set of nominal component types. */
+	if (!check(parser, TOK_COLON)) {
+		char *type_name_dup = malloc(strlen(name_copy) + 1);
+		strcpy(type_name_dup, name_copy);
+		TypeRef *t = type_name_create(type_name_dup);
+		t->loc.line = parser->previous.line;
+		t->loc.column = parser->previous.column;
+		FieldDecl *field = field_decl_create(kind, name_copy, t);
+		field->loc.line = parser->previous.line;
+		field->loc.column = parser->previous.column;
+		match(parser, TOK_COMMA); /* optional trailing comma */
+		FieldDecl **result = malloc(sizeof(FieldDecl *));
+		result[0] = field;
+		*out_count = 1;
+		return result;
 	}
+	advance(parser); /* consume ':' (old accessor form: `field: type`) */
 
 	/* Check for tuple syntax: (x: float, y: float) */
 	if (check(parser, TOK_LPAREN)) {
@@ -1044,11 +1056,11 @@ static Decl *parse_static_decl(Parser *parser) {
 		 * `table<...>` wrapper just names the shape whose singleton table to
 		 * allocate; unwrap it to the archetype name. (Legacy `static Name(...)`
 		 * stays valid: only the array form uses ':'.) */
-		if (strcmp(name, "table") == 0 && check(parser, TOK_LT)) {
+		if ((strcmp(name, "table") == 0 || strcmp(name, "pool") == 0) && check(parser, TOK_LT)) {
 			free(name);
 			advance(parser); /* consume < */
 			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected archetype name in 'static table<'");
+				error(parser, "Expected archetype name in 'static pool<'");
 				return NULL;
 			}
 			name = token_text(parser->current);
@@ -1657,6 +1669,26 @@ static Expression *parse_primary_expr(Parser *parser) {
 /* Prefix unary operators: `-x` (negate) and `!x` (logical not). Binds tighter
  * than binary operators, looser than postfix (calls/indexing in primary). */
 static Expression *parse_unary_expr(Parser *parser) {
+	/* `move <expr>` — call-site ownership transfer (contextual keyword). The value is
+	 * transparent; the checker marks the operand consumed (use-after-move is an error). */
+	if (check(parser, TOK_IDENT)) {
+		char *tt = token_text(parser->current);
+		int is_move = (strcmp(tt, "move") == 0);
+		free(tt);
+		if (is_move) {
+			int line = parser->current.line, col = parser->current.column;
+			advance(parser);
+			Expression *operand = parse_unary_expr(parser);
+			if (!operand)
+				return NULL;
+			Expression *u = expression_create(EXPR_UNARY);
+			u->loc.line = line;
+			u->loc.column = col;
+			u->data.unary.op = UNARY_MOVE;
+			u->data.unary.operand = operand;
+			return u;
+		}
+	}
 	if (check(parser, TOK_MINUS) || check(parser, TOK_BANG)) {
 		TokenKind op_kind = parser->current.kind;
 		int line = parser->current.line;

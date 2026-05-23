@@ -4,11 +4,11 @@ arche Matrix {
 }
 
 
-static table<Matrix>(5);
+static pool<Matrix>(5);
 
 
 proc main() {
-  insert(table<Matrix>, 1.5);
+  insert(Matrix, 1.5);
   let val := Matrix.data[0, 0];
   let vi := val * 10.0;
   print("value: 15\n");
