@@ -1,0 +1,11 @@
+// A `::` with a type RHS mints a zero-cost nominal type over its backing. Among its
+// own kind it inherits the backing's operators and erases to the backing in codegen,
+// so `count + count` is `int + int` and prints 30.
+// RUN: %arche -o %t %s && %t | grep "result: 30"
+count :: int
+
+proc main() {
+  let a: count = 10;
+  let b: count = 20;
+  printf("result: %d\n", a + b);
+}
