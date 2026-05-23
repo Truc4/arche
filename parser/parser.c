@@ -965,7 +965,57 @@ static Decl *parse_static_decl(Parser *parser) {
 			advance(parser); /* consume first : */
 			if (check(parser, TOK_COLON)) {
 				advance(parser); /* consume second : */
-				Expression *val = parse_expression(parser);
+				if (check(parser, TOK_LPAREN)) {
+						/* Tuple type alias: `pos :: (x: int, y: int)` mints flat types pos_x, pos_y.
+						 * The RHS is a tuple type, not an expression, so parse it directly. */
+						advance(parser); /* consume ( */
+						char **fnames = NULL;
+						TypeRef **ftypes = NULL;
+						int fcount = 0;
+						while (!check(parser, TOK_RPAREN) && !check(parser, TOK_EOF)) {
+							if (!check(parser, TOK_IDENT)) {
+								error(parser, "Expected field name in tuple type");
+								break;
+							}
+							char *fname = token_text(parser->current);
+							advance(parser);
+							if (!match(parser, TOK_COLON)) {
+								error(parser, "Expected ':' after tuple field name");
+								free(fname);
+								break;
+							}
+							TypeRef *ftype = parse_type(parser);
+							if (!ftype) {
+								free(fname);
+								break;
+							}
+							fnames = realloc(fnames, (fcount + 1) * sizeof(char *));
+							ftypes = realloc(ftypes, (fcount + 1) * sizeof(TypeRef *));
+							fnames[fcount] = fname;
+							ftypes[fcount] = ftype;
+							fcount++;
+							if (!match(parser, TOK_COMMA))
+								break;
+						}
+						match(parser, TOK_RPAREN);
+						TypeRef *tt = malloc(sizeof(TypeRef));
+						tt->kind = TYPE_TUPLE;
+						tt->loc.line = ident_tok.line;
+						tt->loc.column = ident_tok.column;
+						tt->data.tuple.field_names = fnames;
+						tt->data.tuple.field_types = ftypes;
+						tt->data.tuple.field_count = fcount;
+						Decl *dt = decl_create(DECL_CONST);
+						dt->loc.line = ident_tok.line;
+						dt->loc.column = ident_tok.column;
+						dt->data.constant = const_decl_create(name, NULL);
+						dt->data.constant->type_value = tt;
+						if (check(parser, TOK_SEMI))
+							advance(parser);
+						return dt;
+					}
+
+					Expression *val = parse_expression(parser);
 				Decl *d = decl_create(DECL_CONST);
 				d->loc.line = ident_tok.line;
 				d->loc.column = ident_tok.column;

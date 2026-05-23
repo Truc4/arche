@@ -1,0 +1,8 @@
+// A type name may not be defined twice.
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "already defined" %t.out
+thing :: int
+thing :: float
+
+proc main() {
+  printf("unreachable\n");
+}

@@ -27,7 +27,8 @@ typedef struct {
 	char *name;
 	TypeRef *type;
 	char *archetype_name;      /* for variables that refer to archetype entries */
-	const char *inferred_type; /* for variables without explicit type, stores inferred type name */
+	const char *inferred_type; /* for variables without explicit type, stores inferred type name (backing) */
+	const char *nominal_type;  /* unresolved nominal alias name (e.g. "file"), or NULL — for distinctness */
 	int is_consumed;           /* 1 if a consume-param call has consumed this binding */
 } VariableInfo;
 
@@ -356,6 +357,7 @@ static void add_variable_with_archetype(SemanticContext *ctx, const char *name, 
 	if (var->archetype_name)
 		strcpy(var->archetype_name, archetype_name);
 	var->inferred_type = NULL;
+	var->nominal_type = NULL;
 	var->is_consumed = 0;
 
 	scope->vars = realloc(scope->vars, (scope->var_count + 1) * sizeof(VariableInfo *));
@@ -670,6 +672,25 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	}
 }
 
+/* The *nominal* type of an expression for distinctness checks — the unresolved alias name
+ * (e.g. "file"), NOT the backing. NULL when the expression has no known nominal alias
+ * (a literal, a raw primitive, an unknown). Distinct from resolve_expression_type, which
+ * resolves through to the backing for ops/codegen. */
+static const char *nominal_type_of_expr(SemanticContext *ctx, Expression *e) {
+	if (!e)
+		return NULL;
+	if (e->type == EXPR_NAME) {
+		VariableInfo *v = find_variable(ctx, e->data.name.name);
+		return v ? v->nominal_type : NULL;
+	}
+	if (e->type == EXPR_CALL && e->data.call.callee && e->data.call.callee->type == EXPR_NAME) {
+		FuncDecl *fd = find_func_decl_cst(ctx->prog, e->data.call.callee->data.name.name);
+		if (fd && fd->return_type && fd->return_type->kind == TYPE_NAME && is_type_alias(ctx, fd->return_type->data.name))
+			return fd->return_type->data.name;
+	}
+	return NULL;
+}
+
 /* ========== EXPRESSION ANALYSIS ========== */
 
 static void analyze_expression(SemanticContext *ctx, Expression *expr) {
@@ -922,6 +943,20 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 								cv->is_consumed = 1;
 						}
 
+						/* Nominal distinctness: an alias-typed formal rejects an argument whose
+						 * nominal type is a *different* alias (file vs socket), even though both
+						 * back to opaque. Untyped/unknown args (nominal NULL) are lenient. */
+						if (p->type && p->type->kind == TYPE_NAME && is_type_alias(ctx, p->type->data.name)) {
+							const char *arg_nominal = nominal_type_of_expr(ctx, expr->data.call.args[j]);
+							if (arg_nominal && strcmp(arg_nominal, p->type->data.name) != 0) {
+								char msg[256];
+								snprintf(msg, sizeof(msg),
+								         "type mismatch: '%s' parameter '%s' expects '%s' but got '%s'", func_name,
+								         p->name ? p->name : "?", p->type->data.name, arg_nominal);
+								error(ctx, msg);
+							}
+						}
+
 						const char *formal_type = extern_handle_target(ctx, p->type);
 						if (!formal_type)
 							continue;
@@ -1127,9 +1162,11 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 							TypeRef *t = stmt->data.let_stmt.type;
 							if (t->kind == TYPE_HANDLE)
 								var->inferred_type = t->data.handle.archetype_name;
-							else if (t->kind == TYPE_NAME)
+							else if (t->kind == TYPE_NAME) {
 								var->inferred_type = resolve_type_alias(ctx, t->data.name);
-							else
+								if (is_type_alias(ctx, t->data.name))
+									var->nominal_type = t->data.name;
+							} else
 								var->inferred_type = t->data.name;
 						} else if (stmt->data.let_stmt.value) {
 							/* No annotation: infer from value expression */
@@ -1137,6 +1174,8 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 							if (inferred) {
 								var->inferred_type = inferred;
 							}
+							/* keep the nominal alias name (if any) for distinctness checks */
+							var->nominal_type = nominal_type_of_expr(ctx, stmt->data.let_stmt.value);
 						}
 					}
 				}
@@ -2383,6 +2422,47 @@ SemanticContext *semantic_analyze(Program *prog) {
 
 		/* Type alias: `count :: int`, `file :: opaque`. RHS is a bare name; the backing
 		 * is validated after the loop (so aliases may reference later aliases). */
+		/* Tuple type alias: `pos :: (x: int, y: int)` mints flat name-prefixed nominal
+		 * types pos_x, pos_y (each a normal alias over the field's backing). */
+		if (c->type_value && c->type_value->kind == TYPE_TUPLE) {
+			for (int f = 0; f < c->type_value->data.tuple.field_count; f++) {
+				TypeRef *ft = c->type_value->data.tuple.field_types[f];
+				const char *fbacking = NULL;
+				if (ft && ft->kind == TYPE_NAME)
+					fbacking = ft->data.name;
+				else if (ft && ft->kind == TYPE_OPAQUE)
+					fbacking = "opaque";
+				else {
+					error(ctx, "tuple field must be a simple type (nested tuples are not allowed)");
+					continue;
+				}
+				const char *fn = c->type_value->data.tuple.field_names[f];
+				size_t L = strlen(c->name) + 1 + strlen(fn) + 1;
+				char *aname = malloc(L);
+				snprintf(aname, L, "%s_%s", c->name, fn);
+				int dup = 0;
+				for (int j = 0; j < ctx->type_alias_count; j++)
+					if (strcmp(ctx->type_alias_names[j], aname) == 0) {
+						dup = 1;
+						break;
+					}
+				if (dup) {
+					char msg[256];
+					snprintf(msg, sizeof(msg), "type '%s' already defined", aname);
+					error(ctx, msg);
+					free(aname);
+					continue;
+				}
+				ctx->type_alias_names = realloc(ctx->type_alias_names, (ctx->type_alias_count + 1) * sizeof(char *));
+				ctx->type_alias_backings =
+				    realloc(ctx->type_alias_backings, (ctx->type_alias_count + 1) * sizeof(char *));
+				ctx->type_alias_names[ctx->type_alias_count] = aname;
+				ctx->type_alias_backings[ctx->type_alias_count] = (char *)fbacking;
+				ctx->type_alias_count++;
+			}
+			goto next_const;
+		}
+
 		if (c->value && c->value->type == EXPR_NAME) {
 			for (int j = 0; j < ctx->type_alias_count; j++) {
 				if (strcmp(ctx->type_alias_names[j], c->name) == 0) {

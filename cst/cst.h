@@ -92,7 +92,8 @@ struct ExternTypeDecl {
 
 typedef struct {
 	char *name;
-	Expression *value; /* must be a literal */
+	Expression *value;   /* literal RHS (value const) or a bare name (simple type alias) */
+	TypeRef *type_value; /* set when the RHS is a type form (e.g. a tuple) — a nominal type alias */
 } ConstDecl;
 
 struct Decl {

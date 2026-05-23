@@ -116,6 +116,7 @@ ConstDecl *const_decl_create(char *name, Expression *value) {
 	ConstDecl *constant = malloc(sizeof(ConstDecl));
 	constant->name = name;
 	constant->value = value;
+	constant->type_value = NULL;
 	return constant;
 }
 
@@ -1348,7 +1349,10 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 		case DECL_CONST: {
 			ConstDecl *c = decl->data.constant;
 			fprintf(out, "%s :: ", c->name);
-			format_expression(out, c->value);
+			if (c->type_value) /* tuple / type-form RHS (a nominal type alias) */
+				format_type(out, c->type_value);
+			else
+				format_expression(out, c->value);
 			emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
 			fprintf(out, "\n");
 			break;
