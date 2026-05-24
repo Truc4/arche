@@ -429,6 +429,30 @@ static void func_llvm_return_type(AstFuncDecl *f, char *out, size_t cap) {
 	snprintf(out + n, cap - n, " }");
 }
 
+/* Decode a char-literal lexeme ('a', '\n', …) to its integer code, for emission as an LLVM
+ * value (LLVM has no char-literal token — a char is just its integer value). */
+static int char_literal_value(const char *lex) {
+	if (lex[1] == '\\') {
+		switch (lex[2]) {
+		case 'n':
+			return '\n';
+		case 't':
+			return '\t';
+		case 'r':
+			return '\r';
+		case '\\':
+			return '\\';
+		case '\'':
+			return '\'';
+		case '0':
+			return '\0';
+		default:
+			return lex[2];
+		}
+	}
+	return lex[1];
+}
+
 static const char *ast_resolved_type_name(const AstExpr *expr) {
 	if (!expr)
 		return "int";
@@ -1112,34 +1136,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 
 		/* Check if it's a char literal (starts with ') */
 		if (lex[0] == '\'') {
-			int char_value = 0;
-			if (lex[1] == '\\') {
-				/* Escape sequence */
-				switch (lex[2]) {
-				case 'n':
-					char_value = '\n';
-					break;
-				case 't':
-					char_value = '\t';
-					break;
-				case 'r':
-					char_value = '\r';
-					break;
-				case '\\':
-					char_value = '\\';
-					break;
-				case '\'':
-					char_value = '\'';
-					break;
-				default:
-					char_value = lex[2];
-					break;
-				}
-			} else {
-				/* Regular character */
-				char_value = lex[1];
-			}
-			snprintf(result_buf, sizeof(result_buf), "%d", char_value);
+			snprintf(result_buf, sizeof(result_buf), "%d", char_literal_value(lex));
 		} else if (lex[0] == '"') {
 			/* String literal */
 			char *global_name = emit_string_global(ctx, lex);
@@ -1174,8 +1171,12 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		/* Check if this is a compile-time constant */
 		const char *const_val = semantic_get_const_value(ctx->sem_ctx, name);
 		if (const_val) {
-			/* Inline the constant lexeme */
-			strcpy(result_buf, const_val);
+			/* Inline the constant's value. A char-literal lexeme must be emitted as its integer
+			 * code (LLVM has no char token); int/float lexemes pass through verbatim. */
+			if (const_val[0] == '\'')
+				snprintf(result_buf, sizeof(result_buf), "%d", char_literal_value(const_val));
+			else
+				strcpy(result_buf, const_val);
 			return;
 		}
 
