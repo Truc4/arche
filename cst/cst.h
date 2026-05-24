@@ -86,6 +86,8 @@ typedef struct {
 	char *name;
 	Expression *value;   /* literal RHS (value const) or a bare name (simple type alias) */
 	TypeRef *type_value; /* set when the RHS is a type form (e.g. a tuple) — a nominal type alias */
+	TypeRef *decl_type;  /* the explicit `T` in `name : T : value` (the declared meta/type); NULL
+	                        for the elided `name :: value` form. `T == TYPE_TYPE` marks an alias. */
 } ConstDecl;
 
 struct Decl {
@@ -125,6 +127,8 @@ typedef enum {
 	TYPE_HANDLE,       /* handle(ArchetypeName) */
 	TYPE_ARCHETYPE,    /* bare-category `archetype` (parameter type only) */
 	TYPE_OPAQUE,       /* opaque: pointer-width C-owned cell, never read/written/forged by Arche */
+	TYPE_TYPE,         /* `type`: the meta-type (type-of-types). A type alias is a constant of this
+	                      type; compile-time only, erased before lowering. */
 } TypeKind;
 
 struct TypeRef {
@@ -283,6 +287,9 @@ typedef struct {
 	int name_count;    /* 0 = use .name, >0 = use .names[] */
 	TypeRef *type;     /* optional, may be NULL — only for single-var */
 	Expression *value; /* optional, may be NULL */
+	int is_const;      /* 1 = an immutable local constant (`k :: e` / `k : T : e`) */
+	TypeRef *type_value; /* the type RHS of a `k : type : T` local type alias, else NULL */
+	int is_type_alias; /* set by semantic: this const's RHS denotes a type → erased, no runtime */
 } BindStmt;
 
 typedef struct {

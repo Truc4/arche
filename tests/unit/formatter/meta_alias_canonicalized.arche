@@ -1,0 +1,9 @@
+// The meta-type longhand `foo : type : T` is semantically identical to `foo :: T`; the formatter
+// canonicalizes it to the `::` shorthand.
+// RUN: %build/arche-fmt %s | grep -F "weight :: int"
+weight : type : int
+
+proc main() {
+  w: weight = 7;
+  printf("%d\n", w);
+}

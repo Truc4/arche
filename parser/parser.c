@@ -263,6 +263,16 @@ static TypeRef *parse_type(Parser *parser) {
 		return type;
 	}
 
+	/* `type`: the meta-type (type-of-types). Appears as the declared type in the alias
+	 * longhand `foo : type : float` and (later) generic params. Compile-time only. */
+	if (strcmp(name, "type") == 0) {
+		free(name);
+		type = malloc(sizeof(TypeRef));
+		type->kind = TYPE_TYPE;
+		type->loc = start_loc;
+		return type;
+	}
+
 	/* handle<ArchetypeName> — a generation-checked reference to a row in a table.
 	 * Legacy handle(ArchetypeName) is still accepted during migration. */
 	if (strcmp(name, "handle") == 0 && (check(parser, TOK_LT) || check(parser, TOK_LPAREN))) {
@@ -460,16 +470,36 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 		return result;
 	}
 	advance(parser); /* consume first ':' */
-	if (!check(parser, TOK_COLON)) {
-		error(parser, "archetype components are types: write `name :: type` to define a component, "
-		              "or a bare type name to reference one (`name: type` is not valid)");
-		free(name_copy);
-		*out_count = 0;
-		return NULL;
+	if (check(parser, TOK_COLON)) {
+		advance(parser); /* second ':' — `name :: type`, inferred meta-type */
+	} else {
+		/* The only other accepted form is the explicit meta-type longhand `name : type : type`.
+		 * A bare single colon (`name: type`) names nothing and is rejected. */
+		int is_meta = 0;
+		if (check(parser, TOK_IDENT)) {
+			char *kw = token_text(parser->current);
+			is_meta = (strcmp(kw, "type") == 0);
+			free(kw);
+		}
+		if (!is_meta) {
+			error(parser, "archetype components are types: write `name :: type` to define a component, "
+			              "or a bare type name to reference one (`name: type` is not valid)");
+			free(name_copy);
+			*out_count = 0;
+			return NULL;
+		}
+		advance(parser); /* consume the meta-type `type` */
+		if (!match(parser, TOK_COLON)) {
+			error(parser, "expected `:` after `type`: write `name : type : T`");
+			free(name_copy);
+			*out_count = 0;
+			return NULL;
+		}
 	}
-	advance(parser); /* consume second ':' — this was `::`, an inline component definition */
 
-	/* Inline scalar component definition `name :: type` (tuple groups use `name (a, b) :: T`). */
+	/* Inline scalar component definition `name :: type` / `name : type : type` (tuple groups use
+	 * `name (a, b) :: T`). The component type follows; a value RHS (e.g. `hp :: 10`) is rejected by
+	 * parse_type, which requires a type name. */
 	TypeRef *type = parse_type(parser);
 	if (!type) {
 		free(name_copy);
@@ -954,21 +984,72 @@ static Decl *parse_static_decl(Parser *parser) {
 			return dt;
 		}
 
-		/* `name :: <value-or-type>` — value const (literal RHS) or nominal alias (name RHS). */
+		/* Universal constant declaration: `name : [type] : value`.
+		 *   `name :: value`        — elided meta/type (inferred): alias if RHS denotes a type,
+		 *                            else a value const.
+		 *   `name : type : value`  — explicit meta-type `type`: a nominal type alias.
+		 *   `name : T : value`     — explicit concrete type T: a typed value const.
+		 * Top level is constants only: the `=` (variable) separator is rejected here — mutable
+		 * global storage is expressed with `static`. */
 		if (check(parser, TOK_COLON)) {
 			advance(parser); /* first ':' */
-			if (check(parser, TOK_COLON)) {
-				advance(parser); /* second ':' (`::`) */
-				Expression *val = parse_expression(parser);
-				Decl *d = decl_create(DECL_CONST);
-				d->loc.line = ident_tok.line;
-				d->loc.column = ident_tok.column;
-				d->data.constant = const_decl_create(name, val);
-				if (check(parser, TOK_SEMI)) {
-					advance(parser); /* consume optional semicolon */
+			TypeRef *decl_type = NULL;
+			if (!check(parser, TOK_COLON)) {
+				/* explicit declared type before the second ':' */
+				if (check(parser, TOK_EQ)) {
+					error(parser, "top-level declarations are constants: use `name :: value` or "
+					              "`name : T : value` (`=` makes a mutable variable — use `static` "
+					              "for mutable global storage)");
+					free(name);
+					return NULL;
 				}
-				return d;
+				decl_type = parse_type(parser);
+				if (!decl_type) {
+					free(name);
+					return NULL;
+				}
 			}
+			if (check(parser, TOK_EQ)) {
+				error(parser, "top-level declarations are constants: write `name : T : value` "
+				              "(`=` makes a mutable variable — use `static` for mutable global "
+				              "storage)");
+				type_ref_free(decl_type);
+				free(name);
+				return NULL;
+			}
+			if (!match(parser, TOK_COLON)) {
+				error(parser, "expected `:` and a value: write `name :: value` or "
+				              "`name : T : value`");
+				type_ref_free(decl_type);
+				free(name);
+				return NULL;
+			}
+			Decl *d = decl_create(DECL_CONST);
+			d->loc.line = ident_tok.line;
+			d->loc.column = ident_tok.column;
+			/* When the declared meta-type is `type`, the RHS is a type form (a nominal alias);
+			 * parse it as a type. Otherwise the RHS is a value expression (the elided `::` form
+			 * also lands here — semantic classifies it by what it denotes). */
+			if (decl_type && decl_type->kind == TYPE_TYPE) {
+				TypeRef *rhs = parse_type(parser);
+				if (!rhs) {
+					type_ref_free(decl_type);
+					free(name);
+					decl_free(d);
+					return NULL;
+				}
+				d->data.constant = const_decl_create(name, NULL);
+				d->data.constant->type_value = rhs;
+				d->data.constant->decl_type = decl_type;
+			} else {
+				Expression *val = parse_expression(parser);
+				d->data.constant = const_decl_create(name, val);
+				d->data.constant->decl_type = decl_type;
+			}
+			if (check(parser, TOK_SEMI)) {
+				advance(parser); /* consume optional semicolon */
+			}
+			return d;
 		}
 		/* Not a const. This fallthrough path shouldn't happen; return NULL to let caller report error */
 		free(name);
@@ -1788,24 +1869,59 @@ static Statement *parse_binding_tail(Parser *parser, char *name, int let_line, i
 		return stmt;
 	}
 
-	/* Single binding: `x := expr`, `x: type [= expr]`, or legacy `x = expr`. */
+	/* Single binding. The universal form is `name : [type] (: | =) value`:
+	 *   `x := e`        — variable, inferred type
+	 *   `x : T = e`     — variable, explicit type
+	 *   `x : T`         — variable, explicit type, no init (zero-init)
+	 *   `x :: e`        — constant, inferred type (value const, or a type alias if e denotes a type)
+	 *   `x : T : e`     — constant, explicit type/meta (`x : type : T` is a local type alias)
+	 *   `x = e`         — legacy assignment-style binding
+	 * `:` separator ⇒ constant; `=` ⇒ variable. */
 	TypeRef *type = NULL;
 	Expression *value = NULL;
+	int is_const = 0;
+	TypeRef *type_value = NULL;
 	if (match(parser, TOK_COLON)) {
 		if (check(parser, TOK_EQ)) {
-			advance(parser); /* `:=` — inferred */
+			advance(parser); /* `:=` — inferred variable */
 			value = parse_expression(parser);
 			if (!value)
 				return NULL;
+		} else if (check(parser, TOK_COLON)) {
+			advance(parser); /* `::` — inferred-meta local constant */
+			is_const = 1;
+			value = parse_expression(parser); /* semantic classifies alias vs value const */
+			if (!value)
+				return NULL;
 		} else {
-			type = parse_type(parser); /* `x: type [= expr]` */
+			type = parse_type(parser); /* explicit declared type / meta `T` */
 			if (!type)
 				return NULL;
-			if (match(parser, TOK_EQ)) {
-				value = parse_expression(parser);
-				if (!value)
+			if (match(parser, TOK_COLON)) {
+				/* `x : T : value` — explicit-meta/typed local constant. */
+				is_const = 1;
+				if (type->kind == TYPE_TYPE) {
+					/* `x : type : <type>` — a local type alias; the RHS is a type. */
+					type_value = parse_type(parser);
+					type_ref_free(type);
+					type = NULL;
+					if (!type_value)
+						return NULL;
+				} else {
+					value = parse_expression(parser); /* typed value const */
+					if (!value) {
+						type_ref_free(type);
+						return NULL;
+					}
+				}
+			} else if (match(parser, TOK_EQ)) {
+				value = parse_expression(parser); /* `x : T = e` variable */
+				if (!value) {
+					type_ref_free(type);
 					return NULL;
+				}
 			}
+			/* else `x : T` — variable, no initializer */
 		}
 	} else if (match(parser, TOK_EQ)) {
 		value = parse_expression(parser);
@@ -1823,6 +1939,8 @@ static Statement *parse_binding_tail(Parser *parser, char *name, int let_line, i
 	stmt->data.bind_stmt.name_count = 0;
 	stmt->data.bind_stmt.type = type;
 	stmt->data.bind_stmt.value = value;
+	stmt->data.bind_stmt.is_const = is_const;
+	stmt->data.bind_stmt.type_value = type_value;
 	return stmt;
 }
 

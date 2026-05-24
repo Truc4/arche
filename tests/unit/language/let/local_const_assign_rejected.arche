@@ -1,0 +1,7 @@
+// A local constant is immutable: assigning to a `::` binding is a compile-time error.
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "cannot assign to constant" %t.out
+proc main() {
+  k :: 1;
+  k = 2;
+  printf("unreachable\n");
+}

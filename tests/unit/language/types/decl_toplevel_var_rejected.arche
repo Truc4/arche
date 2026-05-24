@@ -1,0 +1,8 @@
+// Top level is constants only: the `:=` / `=` variable forms are rejected. Mutable global storage
+// is expressed with `static`.
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "top-level declarations are constants" %t.out
+count := 0
+
+proc main() {
+  printf("unreachable\n");
+}

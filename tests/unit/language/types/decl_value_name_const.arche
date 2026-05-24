@@ -1,0 +1,10 @@
+// A value const may be bound to another value const by name (`tau :: pi`). The RHS is classified
+// by what it denotes — `pi` is a value, so `tau` is a value const, NOT misread as a type alias.
+// (Regression: this used to fail with "type alias 'tau' has unknown backing type 'pi'".)
+// RUN: %arche -o %t %s && %t | grep "tau: 3"
+pi :: 3
+tau :: pi
+
+proc main() {
+  printf("tau: %d\n", tau);
+}
