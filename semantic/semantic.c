@@ -60,8 +60,8 @@ struct SemanticContext {
 	GroupInfo *groups;
 	int group_count;
 
-	char **const_names;        /* compile-time constant names */
-	const char **const_values; /* literal lexeme strings */
+	char **const_names;             /* compile-time constant names */
+	const char **const_values;      /* literal lexeme strings */
 	const char **const_value_types; /* each const's resolved type name ("int"/"float"/"char"/…) */
 	int const_count;
 
@@ -543,8 +543,7 @@ static const char *value_const_type(SemanticContext *ctx, const char *name) {
 
 /* Register a value const `name = lexeme` of type `type`; redefinition is an error. The type lets a
  * const reference resolve to its real type (so a float const is a float, not a default int). */
-static void register_value_const(SemanticContext *ctx, const char *name, const char *lexeme,
-                                  const char *type) {
+static void register_value_const(SemanticContext *ctx, const char *name, const char *lexeme, const char *type) {
 	for (int j = 0; j < ctx->const_count; j++) {
 		if (strcmp(ctx->const_names[j], name) == 0) {
 			char msg[256];
@@ -1424,8 +1423,7 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		 * binding's explicit type must agree with its value for the int/float pair. Catches a float
 		 * const used as an int (`x: int = PI`) and vice versa (`y: float = N`), with a clean error
 		 * instead of a downstream LLVM crash. Conservative: only the int↔float mismatch. */
-		if (stmt->data.bind_stmt.type && stmt->data.bind_stmt.type->kind == TYPE_NAME &&
-		    stmt->data.bind_stmt.value) {
+		if (stmt->data.bind_stmt.type && stmt->data.bind_stmt.type->kind == TYPE_NAME && stmt->data.bind_stmt.value) {
 			const char *want = resolve_type_alias(ctx, normalize_type_name(stmt->data.bind_stmt.type->data.name));
 			const char *got = resolve_expression_type(ctx, stmt->data.bind_stmt.value);
 			if (want && got &&
@@ -1433,8 +1431,8 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 			     (strcmp(want, "float") == 0 && strcmp(got, "int") == 0))) {
 				char msg[256];
 				snprintf(msg, sizeof(msg),
-				         "cannot bind a %s value to '%s' declared `%s` — arche has no implicit numeric conversion",
-				         got, stmt->data.bind_stmt.name, want);
+				         "cannot bind a %s value to '%s' declared `%s` — arche has no implicit numeric conversion", got,
+				         stmt->data.bind_stmt.name, want);
 				error(ctx, msg);
 			}
 		}
