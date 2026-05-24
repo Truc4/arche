@@ -364,7 +364,7 @@ static AstStmt *lower_stmt(Statement *stmt) {
 static AstParam *lower_param(Parameter *p) {
 	AstParam *ap = ast_param_create(NULL, NULL);
 	ap->loc = p->loc;
-	ap->is_consume = p->is_consume;
+	ap->is_move = p->is_move;
 	ap->name = malloc(strlen(p->name) + 1);
 	strcpy(ap->name, p->name);
 	ap->type = lower_type_ref(p->type);
@@ -630,7 +630,7 @@ static AstDecl *lower_decl(Decl *decl) {
 				snprintf(nm, sizeof(nm), "%s_%s", cp->name, ti->comp[j]);
 				AstParam *ap = ast_param_create(NULL, NULL);
 				ap->loc = cp->loc;
-				ap->is_consume = cp->is_consume;
+				ap->is_move = cp->is_move;
 				ap->name = malloc(strlen(nm) + 1);
 				strcpy(ap->name, nm);
 				ap->type = lower_type_ref(ti->ctype[j]);

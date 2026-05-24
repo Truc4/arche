@@ -208,7 +208,7 @@ struct ProcDecl {
 struct Parameter {
 	char *name;
 	TypeRef *type;
-	int is_consume;
+	int is_move; /* `move` param: caller must `move` the arg (by-ref, no silent copy) */
 	SourceLoc loc;
 };
 

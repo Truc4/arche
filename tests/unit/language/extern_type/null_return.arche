@@ -4,7 +4,7 @@
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t | grep "ok_null=1"
 resource :: opaque
 extern func resource_open(initial: int) -> resource;
-extern proc resource_close(consume r: resource);
+extern proc resource_close(move r: resource);
 
 proc main() {
   r1 := resource_open(1);

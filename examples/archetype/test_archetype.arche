@@ -9,7 +9,7 @@ arche Body {
 }
 static table<Particle>(100);
 static table<Body>(50);
-sys move(pos, vel) {
+sys integrate(pos, vel) {
   pos = pos + vel;
 }
 sys dampen(vel) {
@@ -21,7 +21,7 @@ proc main() {
   insert(table<Particle>, 3.0, 0.3);
   insert(table<Body>, 5.0, 0.5, 10.0);
   insert(table<Body>, 6.0, 0.6, 20.0);
-  run move;
+  run integrate;
   run dampen;
   print("systems executed\n");
 }

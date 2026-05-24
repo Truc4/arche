@@ -3,7 +3,7 @@
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "not consumed" %t.out
 resource :: opaque
 extern func resource_open(initial: int) -> resource;
-extern proc resource_close(consume r: resource);
+extern proc resource_close(move r: resource);
 
 proc main() {
   r := resource_open(10);

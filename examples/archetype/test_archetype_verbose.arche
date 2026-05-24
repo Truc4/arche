@@ -10,7 +10,7 @@ arche Body {
 }
 static table<Particle>(1000);
 static table<Body>(100);
-sys move(pos, vel) {
+sys integrate(pos, vel) {
   pos = pos + vel;
 }
 sys dampen(vel) {
@@ -22,7 +22,7 @@ proc main() {
   insert(table<Particle>, 3.0, 0.3, 15.0);
   insert(table<Body>, 5.0, 0.5, 1.0);
   insert(table<Body>, 6.0, 0.6, 2.0);
-  run move;
+  run integrate;
   run dampen;
   print("simulation completed\n");
 }

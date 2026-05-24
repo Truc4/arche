@@ -582,15 +582,15 @@ static Decl *parse_proc_decl(Parser *parser) {
 	/* Parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
-			int param_is_consume = 0;
+			int param_is_move = 0;
 
 			if (check(parser, TOK_OUT)) {
 				error(parser, "`out` parameters were removed; return the value instead via a "
 				              "multi-return signature `-> (T, ...)`");
 				advance(parser);
 			}
-			if (match(parser, TOK_CONSUME)) {
-				param_is_consume = 1;
+			if (match(parser, TOK_MOVE)) {
+				param_is_move = 1;
 			}
 
 			if (!check(parser, TOK_IDENT)) {
@@ -612,7 +612,7 @@ static Decl *parse_proc_decl(Parser *parser) {
 				return NULL;
 
 			Parameter *param = parameter_create(param_name, param_type);
-			param->is_consume = param_is_consume;
+			param->is_move = param_is_move;
 			param->loc.line = param_line;
 			param->loc.column = param_column;
 			proc->params = realloc(proc->params, (proc->param_count + 1) * sizeof(Parameter *));
@@ -815,10 +815,15 @@ static Decl *parse_func_decl(Parser *parser) {
 	/* parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
+			int param_is_move = 0;
+
 			if (check(parser, TOK_OUT)) {
 				error(parser, "`out` parameters were removed; return the value instead via a "
 				              "multi-return signature `-> (T, ...)`");
 				advance(parser);
+			}
+			if (match(parser, TOK_MOVE)) {
+				param_is_move = 1;
 			}
 
 			if (!check(parser, TOK_IDENT)) {
@@ -841,6 +846,7 @@ static Decl *parse_func_decl(Parser *parser) {
 				return NULL;
 
 			Parameter *param = parameter_create(param_name, param_type);
+			param->is_move = param_is_move;
 			param->loc.line = param_line;
 			param->loc.column = param_column;
 			func->params = realloc(func->params, (func->param_count + 1) * sizeof(Parameter *));
@@ -1598,25 +1604,20 @@ static Expression *parse_primary_expr(Parser *parser) {
 /* Prefix unary operators: `-x` (negate) and `!x` (logical not). Binds tighter
  * than binary operators, looser than postfix (calls/indexing in primary). */
 static Expression *parse_unary_expr(Parser *parser) {
-	/* `move <expr>` — call-site ownership transfer (contextual keyword). The value is
-	 * transparent; the checker marks the operand consumed (use-after-move is an error). */
-	if (check(parser, TOK_IDENT)) {
-		char *tt = token_text(parser->current);
-		int is_move = (strcmp(tt, "move") == 0);
-		free(tt);
-		if (is_move) {
-			int line = parser->current.line, col = parser->current.column;
-			advance(parser);
-			Expression *operand = parse_unary_expr(parser);
-			if (!operand)
-				return NULL;
-			Expression *u = expression_create(EXPR_UNARY);
-			u->loc.line = line;
-			u->loc.column = col;
-			u->data.unary.op = UNARY_MOVE;
-			u->data.unary.operand = operand;
-			return u;
-		}
+	/* `move <expr>` — call-site ownership transfer. The value is transparent; the checker
+	 * marks the operand consumed (use-after-move is an error). */
+	if (check(parser, TOK_MOVE)) {
+		int line = parser->current.line, col = parser->current.column;
+		advance(parser);
+		Expression *operand = parse_unary_expr(parser);
+		if (!operand)
+			return NULL;
+		Expression *u = expression_create(EXPR_UNARY);
+		u->loc.line = line;
+		u->loc.column = col;
+		u->data.unary.op = UNARY_MOVE;
+		u->data.unary.operand = operand;
+		return u;
 	}
 	if (check(parser, TOK_MINUS) || check(parser, TOK_BANG)) {
 		TokenKind op_kind = parser->current.kind;

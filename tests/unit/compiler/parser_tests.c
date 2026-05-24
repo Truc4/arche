@@ -185,7 +185,7 @@ void test_sys_no_params_empty(void) {
 
 void test_sys_with_params(void) {
 	test_start("sys with params");
-	Program *prog = parse_string("sys move(pos, vel) {}");
+	Program *prog = parse_string("sys integrate(pos, vel) {}");
 	ASSERT_NOT_NULL(prog, "program is null");
 	SysDecl *sys = prog->decls[0]->data.sys;
 	ASSERT_EQ(sys->param_count, 2, "expected 2 params");
@@ -197,7 +197,7 @@ void test_sys_with_params(void) {
 
 void test_sys_with_body(void) {
 	test_start("sys with body statement");
-	Program *prog = parse_string("sys move(pos, vel) {\n"
+	Program *prog = parse_string("sys integrate(pos, vel) {\n"
 	                             "  pos = pos + vel;\n"
 	                             "}");
 	ASSERT_NOT_NULL(prog, "program is null");
@@ -736,7 +736,7 @@ void test_multiple_decls(void) {
 	test_start("multiple declarations");
 	Program *prog = parse_string("arche Player { x :: Float }\n"
 	                             "proc init() {}\n"
-	                             "sys move(pos) {}\n");
+	                             "sys integrate(pos) {}\n");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ASSERT_EQ(prog->decl_count, 3, "expected 3 decls");
 	ASSERT_EQ(prog->decls[0]->kind, DECL_ARCHETYPE, "decl 0 should be archetype");
@@ -748,12 +748,12 @@ void test_multiple_decls(void) {
 
 /* ========== LEXER TESTS ========== */
 
-void test_lex_consume_keyword(void) {
-	test_start("lex consume keyword");
+void test_lex_move_keyword(void) {
+	test_start("lex move keyword");
 	Lexer lex;
-	lexer_init(&lex, "consume foo");
+	lexer_init(&lex, "move foo");
 	Token t1 = lexer_next_token(&lex);
-	ASSERT_EQ(t1.kind, TOK_CONSUME, "first token should be TOK_CONSUME");
+	ASSERT_EQ(t1.kind, TOK_MOVE, "first token should be TOK_MOVE");
 	Token t2 = lexer_next_token(&lex);
 	ASSERT_EQ(t2.kind, TOK_IDENT, "second token should be TOK_IDENT");
 	lexer_free(&lex);
@@ -777,18 +777,18 @@ void test_parser_handle_type_is_typename(void) {
 	test_pass_msg();
 }
 
-/* ========== CONSUME PARAMETER MODIFIER TESTS ========== */
+/* ========== MOVE PARAMETER MODIFIER TESTS ========== */
 
-void test_consume_param_modifier(void) {
-	test_start("consume parameter modifier");
+void test_move_param_modifier(void) {
+	test_start("move parameter modifier");
 	Program *prog = parse_string("window :: opaque\n"
-	                             "extern proc window_close(consume w: window);\n");
+	                             "extern proc window_close(move w: window);\n");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ASSERT_EQ(prog->decl_count, 2, "expected 2 decls");
 	ASSERT_EQ(prog->decls[1]->kind, DECL_PROC, "expected DECL_PROC");
 	ProcDecl *p = prog->decls[1]->data.proc;
 	ASSERT_EQ(p->param_count, 1, "expected 1 param");
-	ASSERT_EQ(p->params[0]->is_consume, 1, "param should be consume");
+	ASSERT_EQ(p->params[0]->is_move, 1, "param should be move");
 	program_free(prog);
 	test_pass_msg();
 }
@@ -828,7 +828,7 @@ int main(void) {
 
 	/* Lexer tests */
 	printf("Lexer tests:\n");
-	test_lex_consume_keyword();
+	test_lex_move_keyword();
 
 	/* Archetype tests */
 	printf("Archetype tests:\n");
@@ -888,7 +888,7 @@ int main(void) {
 
 	/* Consume parameter modifier tests */
 	printf("\nConsume parameter modifier tests:\n");
-	test_consume_param_modifier();
+	test_move_param_modifier();
 	test_out_keyword_rejected();
 
 	/* Assignment operators */

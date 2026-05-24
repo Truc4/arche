@@ -147,7 +147,7 @@ Parameter *parameter_create(char *name, TypeRef *type) {
 	Parameter *param = malloc(sizeof(Parameter));
 	param->name = name;
 	param->type = type;
-	param->is_consume = 0;
+	param->is_move = 0;
 	param->loc.line = 1;
 	param->loc.column = 1;
 	return param;
@@ -1240,8 +1240,8 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			for (int j = 0; j < proc->param_count; j++) {
 				if (j > 0)
 					fprintf(out, ", ");
-				if (proc->params[j]->is_consume)
-					fprintf(out, "consume ");
+				if (proc->params[j]->is_move)
+					fprintf(out, "move ");
 				fprintf(out, "%s: ", proc->params[j]->name);
 				format_type(out, proc->params[j]->type);
 			}
@@ -1287,8 +1287,8 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			for (int j = 0; j < func->param_count; j++) {
 				if (j > 0)
 					fprintf(out, ", ");
-				if (func->params[j]->is_consume)
-					fprintf(out, "consume ");
+				if (func->params[j]->is_move)
+					fprintf(out, "move ");
 				fprintf(out, "%s: ", func->params[j]->name);
 				format_type(out, func->params[j]->type);
 			}

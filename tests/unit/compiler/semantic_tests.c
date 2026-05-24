@@ -404,7 +404,7 @@ void test_call_no_matching_member_errors(void) {
 void test_opaque_passthrough_in_proc_ok(void) {
 	test_start("opaque value may pass through a non-extern proc param");
 	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "extern proc window_close(consume w: window);\n"
+	                                  "extern proc window_close(move w: window);\n"
 	                                  "proc wrap_close(w: window) { window_close(move w); }\n");
 	ASSERT_EQ(semantic_error_count(r.ctx), 0, "should be no errors");
 	semantic_context_free(r.ctx);
@@ -425,7 +425,7 @@ void test_opaque_aliases_distinct(void) {
 	test_start("window and sound opaque aliases are not interchangeable");
 	AnalysisResult r = analyze_string("window :: opaque\n"
 	                                  "sound :: opaque\n"
-	                                  "extern proc window_close(consume w: window);\n"
+	                                  "extern proc window_close(move w: window);\n"
 	                                  "extern func sound_open() -> sound;\n"
 	                                  "proc main() {\n"
 	                                  "  s := sound_open();\n"
@@ -443,7 +443,7 @@ void test_use_after_consume_local_error(void) {
 	test_start("use after consume in same scope is a compile error");
 	AnalysisResult r = analyze_string("window :: opaque\n"
 	                                  "extern func open_(t: char[], a: int, b: int) -> window;\n"
-	                                  "extern proc close_(consume w: window);\n"
+	                                  "extern proc close_(move w: window);\n"
 	                                  "extern proc poll_(w: window);\n"
 	                                  "proc main() {\n"
 	                                  "  w := open_(\"\", 1, 1);\n"
@@ -460,7 +460,7 @@ void test_no_false_positive_when_unconsumed(void) {
 	test_start("normal borrow then consume is fine");
 	AnalysisResult r = analyze_string("window :: opaque\n"
 	                                  "extern func open_(t: char[], a: int, b: int) -> window;\n"
-	                                  "extern proc close_(consume w: window);\n"
+	                                  "extern proc close_(move w: window);\n"
 	                                  "extern proc poll_(w: window);\n"
 	                                  "proc main() {\n"
 	                                  "  w := open_(\"\", 1, 1);\n"

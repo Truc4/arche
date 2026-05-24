@@ -485,18 +485,6 @@ static int is_type_alias(SemanticContext *ctx, const char *name) {
 	return 0;
 }
 
-/* A parameter may carry `consume` if it owns a foreign resource: an `opaque` cell — the
- * move-only resource value — including a nominal alias whose backing is `opaque`. */
-static int is_consumable_ref(SemanticContext *ctx, const TypeRef *tr) {
-	if (tr && tr->kind == TYPE_OPAQUE)
-		return 1;
-	/* A nominal alias whose backing is `opaque` (e.g. `resource :: opaque`) is a
-	 * consumable foreign-resource value, same as a bare opaque. */
-	if (tr && tr->kind == TYPE_NAME && strcmp(resolve_type_alias(ctx, tr->data.name), "opaque") == 0)
-		return 1;
-	return 0;
-}
-
 static const char *resolve_expression_type(SemanticContext *ctx, Expression *expr) {
 	if (!expr)
 		return NULL;
@@ -975,20 +963,19 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 						continue;
 					}
 
-					/* Ownership transfer into a `consume` parameter must be explicit: consume
-					 * consumes, for ANY type — a named binding handed to a consume param must be
-					 * written `move x` (the binding is given up; it does not come back). The
-					 * `move` itself (UNARY_MOVE, handled in analyze_expression) marks the binding
-					 * consumed; a bare name is an error. (Rvalues — e.g. a call result — have no
-					 * binding to kill, so move is not required there.) This is NOT opaque-special:
-					 * opaque is merely the case where copy is also impossible. Runs for BOTH
-					 * extern and non-extern callees. */
+					/* A `move` parameter is the by-reference contract: a named binding handed to
+					 * it must be written `move x` (no silent copy; the binding is given up and
+					 * comes back only if the function returns it). The `move` itself (UNARY_MOVE,
+					 * handled in analyze_expression) marks the binding consumed; a bare name is an
+					 * error. (Rvalues — e.g. a call result — have no binding to kill, so move is not
+					 * required there.) Works for ANY type — opaque is merely the case where a copy
+					 * is also impossible. Runs for BOTH extern and non-extern callees. */
 					{
 						int ac = expr->data.call.arg_count;
 						int n = param_count < ac ? param_count : ac;
 						for (int j = 0; j < n; j++) {
 							Parameter *p = params[j];
-							if (!p || !p->is_consume || !expr->data.call.args[j])
+							if (!p || !p->is_move || !expr->data.call.args[j])
 								continue;
 							Expression *a = expr->data.call.args[j];
 							if (a->type == EXPR_NAME) {
@@ -996,8 +983,8 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 								if (cv) {
 									char msg[256];
 									snprintf(msg, sizeof(msg),
-									         "value '%s' must be moved into consuming parameter '%s' of "
-									         "'%s' (write `move %s`)",
+									         "value '%s' must be moved into `move` parameter '%s' of '%s' "
+									         "(write `move %s`)",
 									         a->data.name.name, p->name ? p->name : "?", func_name,
 									         a->data.name.name);
 									error(ctx, msg);
@@ -1883,24 +1870,7 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 					error(ctx, msg);
 				}
 			}
-			/* 'consume' modifier only makes sense on opaque (resource) parameters. */
-			if (p->is_consume && !is_consumable_ref(ctx, pt)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg),
-				         "'consume' may only modify a resource (opaque) parameter (proc '%s', param '%s')", proc->name,
-				         p->name ? p->name : "?");
-				error(ctx, msg);
-			}
-		} else {
-			/* Non-extern procs: a plain `consume` close-fn is the canonical terminal sink
-			 * for a linear opaque, so allow `consume` on any opaque-backed param. */
-			if (p->is_consume && !is_consumable_ref(ctx, pt)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg),
-				         "'consume' may only modify a resource (opaque) parameter (proc '%s', param '%s')", proc->name,
-				         p->name ? p->name : "?");
-				error(ctx, msg);
-			}
+			/* `consume` is valid on any param type (consume consumes — not opaque-special). */
 		}
 	}
 
@@ -2144,23 +2114,7 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 					error(ctx, msg);
 				}
 			}
-			/* 'consume' modifier only makes sense on opaque (resource) parameters. */
-			if (p->is_consume && !is_consumable_ref(ctx, pt)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg),
-				         "'consume' may only modify a resource (opaque) parameter (func '%s', param '%s')", func->name,
-				         p->name ? p->name : "?");
-				error(ctx, msg);
-			}
-		} else {
-			/* Non-extern funcs: allow `consume` on any opaque-backed param (terminal sink). */
-			if (p->is_consume && !is_consumable_ref(ctx, pt)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg),
-				         "'consume' may only modify a resource (opaque) parameter (func '%s', param '%s')", func->name,
-				         p->name ? p->name : "?");
-				error(ctx, msg);
-			}
+			/* `consume` is valid on any param type (consume consumes — not opaque-special). */
 		}
 	}
 

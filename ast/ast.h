@@ -94,7 +94,7 @@ struct AstField {
 struct AstParam {
 	char *name;
 	AstType *type;
-	int is_consume;
+	int is_move; /* `move` param: caller must `move` the arg (by-ref, no silent copy) */
 	SourceLoc loc;
 };
 

@@ -29,7 +29,7 @@ typedef enum TokenKind {
 	TOK_EXTERN,
 	TOK_UNSAFE,
 	TOK_OUT,
-	TOK_CONSUME,
+	TOK_MOVE,
 	TOK_RETURN,
 	TOK_USE,
 	TOK_EACH_FIELD,
