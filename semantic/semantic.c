@@ -887,6 +887,11 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		/* string literals are always valid */
 		break;
 
+	case EXPR_ARRAY_LITERAL:
+		/* Array literals have no name to resolve here; their elements are handled where the
+		 * literal is consumed (binding / call / store). */
+		break;
+
 	case EXPR_NAME: {
 		const char *name = expr->data.name.name;
 
@@ -2434,6 +2439,13 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 		break;
 	case DECL_FUNC_GROUP:
 		analyze_func_group(ctx, decl->data.func_group);
+		break;
+	case DECL_CONST:
+		/* Value consts and nominal type aliases are collected in pass 0 (and aliases erased before
+		 * lowering); there is nothing to analyze per-declaration here. */
+		break;
+	case DECL_WORLD:
+		/* Worlds carry no analyzable body in v1. */
 		break;
 	}
 }

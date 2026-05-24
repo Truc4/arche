@@ -1136,7 +1136,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 
 		/* Check if it's a char literal (starts with ') */
 		if (lex[0] == '\'') {
-			snprintf(result_buf, sizeof(result_buf), "%d", char_literal_value(lex));
+			snprintf(result_buf, 256, "%d", char_literal_value(lex)); /* result_buf is char[256] by caller contract */
 		} else if (lex[0] == '"') {
 			/* String literal */
 			char *global_name = emit_string_global(ctx, lex);
@@ -1174,7 +1174,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			/* Inline the constant's value. A char-literal lexeme must be emitted as its integer
 			 * code (LLVM has no char token); int/float lexemes pass through verbatim. */
 			if (const_val[0] == '\'')
-				snprintf(result_buf, sizeof(result_buf), "%d", char_literal_value(const_val));
+				snprintf(result_buf, 256, "%d", char_literal_value(const_val));
 			else
 				strcpy(result_buf, const_val);
 			return;
@@ -6516,6 +6516,13 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			break;
 		case AST_DECL_SYS:
 			codegen_sys_decl(ctx, decl->data.sys);
+			break;
+		case AST_DECL_CONST:
+			/* Value consts are inlined at their use sites (semantic_get_const_value); type
+			 * aliases are erased before lowering. No per-declaration code to emit. */
+			break;
+		case AST_DECL_WORLD:
+			/* No codegen for worlds. */
 			break;
 		}
 	}

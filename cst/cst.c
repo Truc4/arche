@@ -723,6 +723,8 @@ static void format_expression(FILE *out, Expression *expr) {
 		case OP_GTE:
 			op_str = ">=";
 			break;
+		case OP_NONE:
+			break; /* not a binary operator; op_str stays "?" (unreachable for a valid EXPR_BINARY) */
 		}
 		/* Precedence-aware paren wrapping. The parser drops the explicit parens,
 		 * so the formatter has to re-introduce them whenever an operand is a
