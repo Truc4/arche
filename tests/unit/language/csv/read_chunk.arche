@@ -8,7 +8,7 @@ proc main() {
   printf("fd=%d\n", fd);
   if (fd > 0) {
     printf("calling csv_read_chunk\n");
-    buf, n := csv_read_chunk(fd, buf, 65536);
+    n := csv_read_chunk(fd, buf, 65536);
     printf("n=%d\n", n);
   }
   csv_close(move fd);

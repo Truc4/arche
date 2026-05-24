@@ -173,23 +173,29 @@ OOM core dump**. Rejecting single-colon newly triggered it. Fix: the field loop 
 malformed component (the missing `}` is reported after) instead of `synchronize`+`continue`. Bad input
 no longer hangs/leaks.
 
-## DONE (user request) — `out` keyword DELETED, replaced by multi-return signatures
+## DONE (user request) — REAL multi-value return (struct ABI); `out` keyword DELETED
 The `out` parameter keyword and the `is_out` field are **gone** (cst/ast Parameter, parser,
-lower, semantic name_is_out_param, codegen). A buffer-filling function now takes the buffer as an
-ordinary param and **returns it**: `func read_chunk(fd, buf, size) -> (char[], int) { … return buf, n; }`,
-caller `let buf, n := read_chunk(fd, buf, 65536)`. Surface = real multi-return:
-- Parser: `-> (T1, …, Tn)` return-type list; `return e1, …, en` value list; `out` is now a parse error
-  (helpful message). FuncDecl gains `return_types[]`/`return_type_count` (return_type aliases the
-  final/scalar); ReturnStmt gains `values[]`/`value_count` (value aliases the last) — kept so the
-  **formatter round-trips `return buf, n` faithfully** (verified) rather than dropping tokens.
-- Codegen UNCHANGED in spirit: the function still physically returns only the scalar; the leading
-  array returns are caller-passed buffers filled in place. The old `is_out` per-param flag is replaced
-  by `param_is_fill_buffer(func, i)` derived from the signature (first n−1 array params are buffers).
-- Migrated: core `read`/`net_recv`, csv `read_chunk`, and the out tests (out_param_basic, multibind_*,
-  multi_bind*, let_multi_syntax, handle_out_param). New parser test: `out` keyword rejected.
-- **Decision/limit:** only the (buffers…, scalar) shape is wired (every real use). A genuine
-  multi-*scalar* return (e.g. `-> (int, int)` via struct return) is a clean future extension; nothing
-  needs it yet. This supersedes the earlier "out RETAINED" decision (#11).
+lower, semantic name_is_out_param, codegen). Multi-return is now a **genuine multi-value return**
+— no buffer-fill disguise:
+- `func sum_diff(a, b) -> (int, int) { return a+b, a-b; }`, caller `s, d := sum_diff(10, 3)` →
+  s=13 d=7. Verified end to end (`tests/unit/language/let/multi_return.arche`).
+- **Codegen — aggregate ABI:** a function with `return_type_count > 1` returns an LLVM literal
+  struct `{ T1, …, Tn }`. `return e1, …, en` packs the values with an `insertvalue` chain;
+  the caller `%res = call {…} @f(args)` then `extractvalue`s each member into its bind target.
+  The fallback safety `ret` for multi-return funcs uses `zeroinitializer` (0 isn't an aggregate).
+- **Uniform list representation (Go-style):** there is **no single-return special case**.
+  FuncDecl is `return_types[]`/`return_type_count` (single = count 1, no scalar field); ReturnStmt
+  is `values[]`/`count` (single = count 1). Formatter: `count==1 → T` else `(T1, …, Tn)`; round-trips
+  `return a, b` and `-> (int, int)` faithfully (verified).
+- **Buffer-fill is a separate thing, NOT a return.** An array is reached by reference, so a
+  buffer-filling function takes the buffer as an ordinary param and returns just the scalar count:
+  `func read(fd, buf, size) -> int { … }`, caller `n := read(fd, buf, 256)` (buf filled in place).
+  No `param_is_fill_buffer`, no leading-array-return trick — all removed.
+- Migrated: core `read`/`net_recv` → `-> int`; csv `read_chunk` → `-> int`; out/buffer tests
+  (out_param_basic, multibind_*, multi_bind*, let_multi_syntax, multi_bind_mixed, handle_out_param,
+  csv_load_buffer) → single-return + in-place. multivalue_let_simple → real `pair() -> (int,int)`.
+  New: multi_return.arche (genuine multi-scalar). Parser test: `out` keyword rejected.
+- This supersedes the earlier "out RETAINED" (#11) AND the intermediate buffer-fill-multi-return cut.
 
 ## DONE (user request) — `move` REQUIRED for opaque→consume transfers
 A named opaque binding handed to a `consume` parameter must be written `move x`; a bare name is a
@@ -234,7 +240,7 @@ ALL planned work is done or explicitly cancelled:
   delete aborts loudly instead of wrapping — `codegen.c` `gen_exhausted:`. Reaching it needs 2^32
   deletes (untestable live), so `codegen_tests.c: test_codegen_gen_exhaustion_abort` asserts the branch
   is emitted. DONE.
-- **Multi-*scalar* return** (`-> (int, int)` via struct return) — not built; only the buffer+scalar
-  shape is. Deferred; nothing needs it.
+- **Multi-*scalar* return** (`-> (int, int)` via LLVM struct ABI) — **DONE** (insertvalue/extractvalue,
+  uniform return-value lists, no single-return special case). See the multi-return DONE block above.
 - **Repo-wide `make format`** still has the pre-existing RAM-explosion/semicolon bug — do not run it
   blanket. (Per-file `arche-fmt` is fine and round-trips all current constructs, verified.)

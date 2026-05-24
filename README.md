@@ -455,24 +455,34 @@ Arche is an experiment in:
 
 ## Multi-return signatures
 
-A function returns more than one value with a parenthesized return type `-> (T1, …, Tn)`. There
-is no `out` parameter keyword — a function that fills a buffer takes the buffer as an ordinary
-parameter and **returns it** alongside its scalar result:
+A function returns more than one value with a parenthesized return type `-> (T1, …, Tn)`. This is
+a genuine multi-value return — the values are returned as an aggregate and destructured by a
+multi-bind. There is no `out` parameter (gone) and no buffer-fill trickery:
 
 ```arche
-func read_chunk(fd: file, buf: char[], size: int) -> (char[], int) {
-  n := arche_csv_read_chunk(fd, buf, size);
-  return buf, n;
+func sum_diff(a: int, b: int) -> (int, int) {
+  return a + b, a - b;
 }
 
-// caller binds both with a multi-value binding
-buf, n := read_chunk(fd, buf, 65536);
+s, d := sum_diff(10, 3);   // s = 13, d = 7
 ```
 
-The buffer is caller-allocated and filled in place; the leading array return is that same
-buffer, bound at the call. The final type is the scalar physically returned. `return a, …, n`
-lists the values in signature order. (A genuine multi-scalar return is a natural extension; the
-current cut covers the buffer-fill shape that the old `out` keyword served.)
+A single return is just `count == 1` — there is no special case in the grammar or the AST; the
+return type and the `return` statement are uniform lists. `return e1, …, en` lists the values in
+signature order.
+
+**Filling a caller buffer is a different thing** — not a return. An array is reached by
+reference, so a function that fills one takes it as an ordinary parameter and returns just the
+scalar count; the caller already holds the (now-filled) buffer:
+
+```arche
+func read_chunk(fd: file, buf: char[], size: int) -> int {
+  return arche_csv_read_chunk(fd, buf, size);   // fills buf in place
+}
+
+buf: char[65536];
+n := read_chunk(fd, buf, 65536);   // buf is filled; n is the byte count
+```
 
 ## Foreign resources: nominal `opaque` types
 
@@ -533,12 +543,13 @@ The `a, b, … := function()` syntax captures the multiple return values of a mu
 function (see above):
 
 ```arche
-buf, n := read(fd, buf, 256);    // bind the filled buffer + the scalar
+s, d := sum_diff(10, 3);          // bind both returns
 x, y, z := some_func();           // bind all returns
 ```
 
-Targets bind **left-to-right** in the function's return-type order (the leading buffer returns
-first, the scalar last). A target may be a new `x:` or an existing variable.
+Targets bind **left-to-right** in the function's return-type order. A target may be a new `x:`
+or an existing variable. (Buffer-fill is *not* a multi-bind — the buffer is a by-reference param
+filled in place, so `n := read(fd, buf, 256)` binds only the scalar count.)
 
 ## Status
 
@@ -555,7 +566,7 @@ first, the scalar last). A target may be a new `x:` or an existing variable.
 - **Systems**: Data-driven transformations over matching archetypes
 - **For loops**: Infinite loops, condition-based loops, range iteration
 - **External Functions**: C function calls with copy semantics
-- **Multi-return signatures**: `-> (T1, …, Tn)`; buffer-fill funcs return their buffer + scalar
+- **Multi-return signatures**: `-> (T1, …, Tn)` — genuine multi-value return (aggregate ABI), destructured by a multi-bind
 - **Multi-value Let**: Capture multiple return values from function calls
 - **Archetype Operations**: Allocation, indexing, column access, tuple columns, shaped arrays
 - **C Stdlib Interop**: File I/O via C stdlib wrappers (fopen, fread, fwrite, fclose)

@@ -1,11 +1,12 @@
 // RUN: %arche -o %t %s && %t | grep "result: 99"
-// Simple test of multi-bind with out param
-func fill_buf(buf: char[32]) -> (char[], int) {
-  r := sprintf(buf, "hello");
-  return buf, 99;
+// A function fills the caller's buffer in place and returns a scalar count.
+func fill_buf(buf: char[32]) -> int {
+  sprintf(buf, "hello");
+  return 99;
 }
 
 proc main() {
-  buf, result := fill_buf(buf);
+  buf: char[32];
+  result := fill_buf(buf);
   printf("result: %d\n", result);
 }

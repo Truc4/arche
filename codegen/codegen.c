@@ -87,8 +87,12 @@ struct CodegenContext {
 	size_t alloca_buf_pos;
 	int hoisting_allocas;
 
-	/* Return type of the function currently being generated */
+	/* Return type of the function currently being generated. For a multi-return func this is
+	 * the literal aggregate type (e.g. "{i32, i32}"); current_func gives the member types so a
+	 * `return a, b` can build the aggregate. */
 	const char *current_return_type;
+	AstFuncDecl *current_func; /* the func being generated (for multi-return packing) */
+	char current_return_type_buf[512];
 
 	/* Loop bound tracking for bounds-check elision. When a C-style `for`
 	 * loop has the shape `for (let v = 0; v < BOUND; v += 1)` with BOUND a
@@ -403,24 +407,26 @@ static int field_total_elements(AstType *type) {
 	return 1;
 }
 
-/* A parameter that backs a leading (buffer) return of a multi-return func: the caller passes
- * it in, the callee fills it in place, and the call binds it alongside the scalar return.
- * Derived from the `-> (T1, …, Tn)` signature — the first (n-1) array-typed params are the
- * buffers. (Replaces the old per-param `out` flag; that keyword is gone.) */
-static int param_is_fill_buffer(AstFuncDecl *f, int idx) {
-	if (!f || f->return_type_count <= 1)
-		return 0;
-	int k = f->return_type_count - 1; /* number of leading buffer returns */
-	int ord = 0;
-	for (int i = 0; i < f->param_count && i <= idx; i++) {
-		AstType *t = f->params[i] ? f->params[i]->type : NULL;
-		int is_arr = t && (t->tag == AST_TYPE_ARRAY || t->tag == AST_TYPE_SHAPED_ARRAY);
-		if (i == idx)
-			return is_arr && ord < k;
-		if (is_arr)
-			ord++;
+/* LLVM type of one return value. char[] returns a raw i8* byte view; everything else maps
+ * through the normal type lowering (int→iN, float→double, handle/opaque→i64, …). */
+static const char *return_member_llvm(AstType *t) {
+	if (t && (t->tag == AST_TYPE_ARRAY || t->tag == AST_TYPE_SHAPED_ARRAY))
+		return "i8*";
+	return llvm_type_from_arche(field_base_type_name(t));
+}
+
+/* Fill `out` with a function's LLVM return type: the single type when count == 1, or a literal
+ * aggregate `{T1, T2, …}` for a multi-value return. */
+static void func_llvm_return_type(AstFuncDecl *f, char *out, size_t cap) {
+	if (f->return_type_count == 1) {
+		snprintf(out, cap, "%s", return_member_llvm(f->return_types[0]));
+		return;
 	}
-	return 0;
+	size_t n = 0;
+	n += (size_t)snprintf(out + n, cap - n, "{ ");
+	for (int i = 0; i < f->return_type_count; i++)
+		n += (size_t)snprintf(out + n, cap - n, "%s%s", i ? ", " : "", return_member_llvm(f->return_types[i]));
+	snprintf(out + n, cap - n, " }");
 }
 
 static const char *ast_resolved_type_name(const AstExpr *expr) {
@@ -2680,12 +2686,32 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			/* Normal non-variadic call - determine return type */
 			const char *return_type = "i32"; /* default */
 
-			/* Check if we have return type info from the func declaration */
-			if (callee_func && callee_func->return_type && callee_func->return_type->tag == AST_TYPE_ARRAY) {
+			/* A multi-return callee returns an aggregate `{T1, …, Tn}`; the multi-bind that
+			 * wraps this call extractvalue's the members. */
+			char multiret_buf[512];
+			if (callee_func && callee_func->return_type_count > 1) {
+				func_llvm_return_type(callee_func, multiret_buf, sizeof(multiret_buf));
+				return_type = multiret_buf;
+				buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type,
+				                  func_name ? func_name : "unknown");
+				for (int i = 0; i < expr->data.call.arg_count; i++) {
+					buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
+					if (i < expr->data.call.arg_count - 1)
+						buffer_append(ctx, ", ");
+				}
+				buffer_append(ctx, ")\n");
+				strcpy(result_buf, res_name);
+				goto call_done;
+			}
+
+			/* Return type from the func declaration. A scalar-position call uses the single
+			 * return type. */
+			AstType *crt = (callee_func && callee_func->return_type_count > 0) ? callee_func->return_types[0] : NULL;
+			if (crt && crt->tag == AST_TYPE_ARRAY) {
 				/* Func returning char[]: a raw i8* byte view. */
 				return_type = "i8*";
-			} else if (callee_func && callee_func->return_type) {
-				return_type = llvm_type_from_arche(field_base_type_name(callee_func->return_type));
+			} else if (crt) {
+				return_type = llvm_type_from_arche(field_base_type_name(crt));
 			} else if (callee_proc && callee_proc->is_extern) {
 				/* For extern procs, check if they're in core lib (known to return a value) */
 				if (strcmp(func_name, "atof") == 0) {
@@ -3914,238 +3940,68 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 	}
 
 	case AST_STMT_MULTI_BIND: {
+		/* `(t0, …, tk) := f(…)` binds the members of a multi-value return. The call emits an
+		 * aggregate `{T0, …, Tk}` (via the EXPR_CALL path); each target gets one extractvalue. */
 		AstExpr *rhs = stmt->data.multi_bind.value;
-		if (rhs && rhs->kind == AST_EXPR_CALL) {
-			char *func_name = NULL;
-			if (rhs->data.call.callee && rhs->data.call.callee->kind == AST_EXPR_NAME) {
-				func_name = rhs->data.call.callee->data.name.name;
-			}
-
-			AstFuncDecl *callee_func = func_name ? find_func_decl(ctx, func_name) : NULL;
-			if (callee_func && callee_func->param_count >= 0) {
-				int target_count = stmt->data.multi_bind.target_count;
-				AstBindingTarget *targets = stmt->data.multi_bind.targets;
-				int arg_count = rhs->data.call.arg_count;
-
-				/* out_mem[j]  = [N x i8]* pointer for j-th out param
-				   out_sizes[j] = byte size of that buffer */
-				char **out_mem = malloc(callee_func->param_count * sizeof(char *));
-				int *out_sizes = malloc(callee_func->param_count * sizeof(int));
-				int out_param_count = 0;
-
-				/* Phase 1 — pre-call:
-				   For each out param, determine the backing memory.
-				   If the corresponding target is `let x:`, alloca the buffer now
-				   and register x in scope so it is visible as an arg.
-				   If the target is existing, the arg already has memory. */
-				for (int i = 0; i < callee_func->param_count; i++) {
-					if (!param_is_fill_buffer(callee_func, i))
-						continue;
-
-					AstType *pt = callee_func->params[i]->type;
-					int size = 256;
-					if (pt && pt->tag == AST_TYPE_SHAPED_ARRAY && pt->elem && pt->elem->tag == AST_TYPE_CHAR) {
-						size = pt->rank;
-					} else if (pt && pt->tag == AST_TYPE_ARRAY && i < arg_count) {
-						AstExpr *arg = rhs->data.call.args[i];
-						if (arg && arg->kind == AST_EXPR_NAME) {
-							AstStaticDecl *sa = codegen_find_static_array(ctx, arg->data.name.name);
-							if (sa && sa->array.element_type && sa->array.element_type->tag == AST_TYPE_CHAR) {
-								size = sa->array.size;
-							} else {
-								ValueInfo *vi = find_value(ctx, arg->data.name.name);
-								if (vi && vi->string_len > 0)
-									size = vi->string_len;
-							}
-						}
+		int target_count = stmt->data.multi_bind.target_count;
+		AstBindingTarget *targets = stmt->data.multi_bind.targets;
+		const char *fn = (rhs && rhs->kind == AST_EXPR_CALL && rhs->data.call.callee &&
+		                  rhs->data.call.callee->kind == AST_EXPR_NAME)
+		                     ? rhs->data.call.callee->data.name.name
+		                     : NULL;
+		AstFuncDecl *callee_func = fn ? find_func_decl(ctx, fn) : NULL;
+		if (callee_func && callee_func->return_type_count > 1) {
+			char struct_buf[256];
+			codegen_expression(ctx, rhs, struct_buf); /* %res = call {…} @f(…) */
+			char ret_type[512];
+			func_llvm_return_type(callee_func, ret_type, sizeof(ret_type));
+			int n = target_count < callee_func->return_type_count ? target_count : callee_func->return_type_count;
+			for (int i = 0; i < n; i++) {
+				AstType *mt = callee_func->return_types[i];
+				const char *llvm = return_member_llvm(mt);
+				char *val = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", val, ret_type, struct_buf, i);
+				const char *ft = "int";
+				int bw = 32;
+				if (mt && mt->tag == AST_TYPE_FLOAT) {
+					ft = "float";
+					bw = 64;
+				} else if (mt && mt->tag == AST_TYPE_INT) {
+					ft = "int";
+					bw = mt->int_width;
+				} else if (mt && mt->tag == AST_TYPE_HANDLE) {
+					ft = "handle";
+					bw = 64;
+				} else if (mt && mt->tag == AST_TYPE_OPAQUE) {
+					ft = "opaque";
+					bw = 64;
+				}
+				AstBindingTarget *tgt = &targets[i];
+				if (tgt->is_new) {
+					char *a = gen_value_name(ctx);
+					emit_alloca(ctx, "  %s = alloca %s\n", a, llvm);
+					buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", llvm, val, llvm, a);
+					ValueInfo *vi = malloc(sizeof(ValueInfo));
+					vi->name = malloc(strlen(tgt->name) + 1);
+					strcpy(vi->name, tgt->name);
+					vi->llvm_name = malloc(strlen(a) + 1);
+					strcpy(vi->llvm_name, a);
+					vi->type = 1;
+					vi->arch_name = NULL;
+					vi->string_len = -1;
+					vi->field_type = ft;
+					vi->handle_archetype = (mt && mt->tag == AST_TYPE_HANDLE) ? mt->name : NULL;
+					vi->bit_width = bw;
+					if (ctx->scope_count > 0) {
+						ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+						scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+						scope->values[scope->value_count++] = vi;
 					}
-
-					AstBindingTarget *tgt = (out_param_count < target_count) ? &targets[out_param_count] : NULL;
-
-					if (tgt && tgt->is_new) {
-						/* `let x:` — alloca the buffer, register in scope immediately */
-						char *buf = gen_value_name(ctx);
-						emit_alloca(ctx, "  %s = alloca [%d x i8]\n", buf, size);
-						ValueInfo *vi = malloc(sizeof(ValueInfo));
-						vi->name = malloc(strlen(tgt->name) + 1);
-						strcpy(vi->name, tgt->name);
-						vi->llvm_name = malloc(strlen(buf) + 1);
-						strcpy(vi->llvm_name, buf);
-						vi->type = 7;
-						vi->arch_name = NULL;
-						vi->string_len = size;
-						vi->field_type = "char";
-						vi->bit_width = 8;
-						if (ctx->scope_count > 0) {
-							ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
-							scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
-							scope->values[scope->value_count++] = vi;
-						}
-						out_mem[out_param_count] = buf;
-					} else {
-						/* Existing var: get the arg's backing memory — no alloca */
-						char *mem = NULL;
-						AstExpr *arg = (i < arg_count) ? rhs->data.call.args[i] : NULL;
-						if (arg && arg->kind == AST_EXPR_NAME) {
-							const char *aname = arg->data.name.name;
-							AstStaticDecl *sa = codegen_find_static_array(ctx, aname);
-							if (sa && sa->array.element_type && sa->array.element_type->tag == AST_TYPE_CHAR) {
-								mem = malloc(strlen(aname) + 8);
-								sprintf(mem, "@%s_data", aname);
-								size = sa->array.size;
-							} else {
-								ValueInfo *vi = find_value(ctx, aname);
-								if (vi) {
-									mem = malloc(strlen(vi->llvm_name) + 1);
-									strcpy(mem, vi->llvm_name);
-									if (vi->string_len > 0)
-										size = vi->string_len;
-								}
-							}
-						}
-						if (!mem) {
-							mem = malloc(4);
-							strcpy(mem, "%0");
-						}
-						out_mem[out_param_count] = mem;
-					}
-					out_sizes[out_param_count] = size;
-					out_param_count++;
+				} else {
+					ValueInfo *e = find_value(ctx, tgt->name);
+					if (e)
+						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", llvm, val, llvm, e->llvm_name);
 				}
-
-				/* Phase 2 — evaluate non-out args, build call arg lists */
-				char **arg_bufs = malloc(arg_count * sizeof(char *));
-				for (int i = 0; i < arg_count; i++) {
-					arg_bufs[i] = malloc(256);
-					int is_out = param_is_fill_buffer(callee_func, i);
-					if (!is_out)
-						codegen_expression(ctx, rhs->data.call.args[i], arg_bufs[i]);
-				}
-
-				char **call_arg_vals = malloc(arg_count * sizeof(char *));
-				const char **call_arg_types = malloc(arg_count * sizeof(const char *));
-				int out_idx = 0;
-
-				for (int i = 0; i < arg_count; i++) {
-					call_arg_vals[i] = malloc(256);
-					int is_out = param_is_fill_buffer(callee_func, i);
-
-					if (is_out && out_idx < out_param_count) {
-						AstType *pt = callee_func->params[i]->type;
-						int is_char_array = (pt && pt->tag == AST_TYPE_ARRAY);
-
-						if (is_char_array && !callee_func->is_extern) {
-							/* Non-extern char[] out param: wrap in arche_array struct */
-							char *arr_alloca = gen_value_name(ctx);
-							emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
-							char *ptr_cast = gen_value_name(ctx);
-							buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", ptr_cast,
-							                  out_sizes[out_idx], out_mem[out_idx]);
-							char *ptr_gep = gen_value_name(ctx);
-							buffer_append_fmt(ctx,
-							                  "  %s = getelementptr %%struct.arche_array, "
-							                  "%%struct.arche_array* %s, i32 0, i32 0\n",
-							                  ptr_gep, arr_alloca);
-							buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", ptr_cast, ptr_gep);
-							char *len_gep = gen_value_name(ctx);
-							buffer_append_fmt(ctx,
-							                  "  %s = getelementptr %%struct.arche_array, "
-							                  "%%struct.arche_array* %s, i32 0, i32 1\n",
-							                  len_gep, arr_alloca);
-							buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", out_sizes[out_idx], len_gep);
-							char *cap_gep = gen_value_name(ctx);
-							buffer_append_fmt(ctx,
-							                  "  %s = getelementptr %%struct.arche_array, "
-							                  "%%struct.arche_array* %s, i32 0, i32 2\n",
-							                  cap_gep, arr_alloca);
-							buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", out_sizes[out_idx], cap_gep);
-							strcpy(call_arg_vals[i], arr_alloca);
-							call_arg_types[i] = "%struct.arche_array*";
-						} else {
-							/* Extern or shaped: bitcast [N x i8]* to i8* */
-							char *ptr_cast = gen_value_name(ctx);
-							buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", ptr_cast,
-							                  out_sizes[out_idx], out_mem[out_idx]);
-							strcpy(call_arg_vals[i], ptr_cast);
-							call_arg_types[i] = "i8*";
-						}
-						out_idx++;
-					} else {
-						/* Non-out arg. */
-						strcpy(call_arg_vals[i], arg_bufs[i]);
-						AstType *pty =
-							    (i < callee_func->param_count && callee_func->params[i]) ? callee_func->params[i]->type
-							                                                            : NULL;
-						/* opaque cell args are pointer-width i64; everything else stays i32. */
-						call_arg_types[i] = (pty && pty->tag == AST_TYPE_OPAQUE) ? "i64" : "i32";
-					}
-				}
-
-				/* Emit call */
-				char *res_name = gen_value_name(ctx);
-				const char *return_type = "i32";
-				if (callee_func->return_type)
-					return_type = llvm_type_from_arche(field_base_type_name(callee_func->return_type));
-
-				buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type, func_name ? func_name : "unknown");
-				for (int i = 0; i < arg_count; i++) {
-					buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
-					if (i < arg_count - 1)
-						buffer_append(ctx, ", ");
-				}
-				buffer_append(ctx, ")\n");
-
-				/* Phase 3 — post-call: only the return value target.
-				   Out-param targets were written in place; `let` ones already in scope. */
-				if (out_param_count < target_count) {
-					AstBindingTarget *ret_tgt = &targets[out_param_count];
-					if (ret_tgt->is_new) {
-						char *alloca_name = gen_value_name(ctx);
-						emit_alloca(ctx, "  %s = alloca %s\n", alloca_name, return_type);
-						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", return_type, res_name, return_type,
-						                  alloca_name);
-						ValueInfo *vi = malloc(sizeof(ValueInfo));
-						vi->name = malloc(strlen(ret_tgt->name) + 1);
-						strcpy(vi->name, ret_tgt->name);
-						vi->llvm_name = malloc(strlen(alloca_name) + 1);
-						strcpy(vi->llvm_name, alloca_name);
-						vi->type = 1;
-						vi->arch_name = NULL;
-						vi->string_len = -1;
-						if (return_type[0] == 'd') {
-							vi->field_type = "float";
-							vi->bit_width = 64;
-						} else if (strcmp(return_type, "i64") == 0) {
-							vi->field_type = "handle";
-							vi->bit_width = 64;
-						} else {
-							vi->field_type = "int";
-							vi->bit_width = 32;
-						}
-						if (ctx->scope_count > 0) {
-							ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
-							scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
-							scope->values[scope->value_count++] = vi;
-						}
-					} else {
-						ValueInfo *existing = find_value(ctx, ret_tgt->name);
-						if (existing)
-							buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", return_type, res_name, return_type,
-							                  existing->llvm_name);
-					}
-				}
-
-				/* Cleanup */
-				free(out_mem);
-				free(out_sizes);
-				for (int i = 0; i < arg_count; i++)
-					free(arg_bufs[i]);
-				free(arg_bufs);
-				for (int i = 0; i < arg_count; i++)
-					free(call_arg_vals[i]);
-				free(call_arg_vals);
-				free(call_arg_types);
-				break;
 			}
 		}
 		break;
@@ -5146,10 +5002,29 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 	}
 
 	case AST_STMT_RETURN: {
-		char value_buf[256];
-		codegen_expression(ctx, stmt->data.return_stmt.value, value_buf);
+		AstReturnStmt *rs = &stmt->data.return_stmt;
 		const char *ret_type = ctx->current_return_type ? ctx->current_return_type : "i32";
-		buffer_append_fmt(ctx, "  ret %s %s\n", ret_type, value_buf);
+		if (rs->count <= 1) {
+			char value_buf[256];
+			codegen_expression(ctx, rs->values[0], value_buf);
+			buffer_append_fmt(ctx, "  ret %s %s\n", ret_type, value_buf);
+		} else {
+			/* Multi-value return: build the aggregate with insertvalue, then ret it. */
+			char prev[64];
+			strcpy(prev, "undef");
+			for (int i = 0; i < rs->count; i++) {
+				char vbuf[256];
+				codegen_expression(ctx, rs->values[i], vbuf);
+				const char *mt = (ctx->current_func && i < ctx->current_func->return_type_count)
+				                     ? return_member_llvm(ctx->current_func->return_types[i])
+				                     : "i32";
+				char *acc = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = insertvalue %s %s, %s %s, %d\n", acc, ret_type, prev, mt, vbuf, i);
+				strncpy(prev, acc, sizeof(prev) - 1);
+				prev[sizeof(prev) - 1] = '\0';
+			}
+			buffer_append_fmt(ctx, "  ret %s %s\n", ret_type, prev);
+		}
 		break;
 	}
 	case AST_STMT_EACH_FIELD: {
@@ -5927,10 +5802,9 @@ static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 	/* For extern funcs, emit declare stub */
 	if (func->is_extern) {
 		/* char[] returns a raw i8* byte view (e.g. arche_file_map for whole-file mmap). */
-		int ret_is_array = func->return_type && func->return_type->tag == AST_TYPE_ARRAY;
-		const char *ret_base_name = field_base_type_name(func->return_type);
-		const char *return_type = ret_is_array ? "i8*" : llvm_type_from_arche(ret_base_name);
-		buffer_append_fmt(ctx, "declare %s @%s(", return_type, func->name);
+		char ret_buf[512];
+		func_llvm_return_type(func, ret_buf, sizeof(ret_buf));
+		buffer_append_fmt(ctx, "declare %s @%s(", ret_buf, func->name);
 		for (int i = 0; i < func->param_count; i++) {
 			AstType *param_type = func->params[i]->type;
 			const char *type_name = field_base_type_name(param_type);
@@ -5954,8 +5828,10 @@ static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 	}
 
 	/* Generate function definition */
-	const char *return_type = llvm_type_from_arche(field_base_type_name(func->return_type));
+	func_llvm_return_type(func, ctx->current_return_type_buf, sizeof(ctx->current_return_type_buf));
+	const char *return_type = ctx->current_return_type_buf;
 	ctx->current_return_type = return_type;
+	ctx->current_func = func;
 
 	buffer_append_fmt(ctx, "define %s @%s(", return_type, func->name);
 
@@ -6065,9 +5941,11 @@ static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 
 	pop_value_scope(ctx);
 
-	/* Generate appropriate return value */
+	/* Fallback return (reached only if the body has no terminating return). */
 	const char *ret_value = "0";
-	if (strcmp(return_type, "double") == 0) {
+	if (func->return_type_count > 1) {
+		ret_value = "zeroinitializer"; /* aggregate return type */
+	} else if (strcmp(return_type, "double") == 0) {
 		ret_value = "0.0";
 	}
 	buffer_append_fmt(ctx, "  ret %s %s\n", return_type, ret_value);

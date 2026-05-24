@@ -9,9 +9,8 @@ proc skip_header(fd: file) {
   line: char[256];
   arche_fread_line(fd, line, 256);
 }
-func read_chunk(fd: file, buf: char[], size: int) -> (char[], int) {
-  n := arche_csv_read_chunk(fd, buf, size);
-  return buf, n;
+func read_chunk(fd: file, buf: char[], size: int) -> int {
+  return arche_csv_read_chunk(fd, buf, size);
 }
 
 // --- Pure-Arche CSV loader (no custom CSV C; only libc mmap/atof/atoi) ---

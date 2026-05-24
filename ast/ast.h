@@ -128,10 +128,8 @@ typedef struct {
 	char *name;
 	AstParam **params;
 	int param_count;
-	/* return_type = the scalar physically returned. For multi-return `-> (T1,…,Tn)`,
-	 * return_types holds all n (return_type == return_types[n-1]); the leading array
-	 * returns are caller-passed buffers filled in place. return_type_count==0 ⇒ single. */
-	AstType *return_type;
+	/* A function's return is a list of types; a single return is just count == 1, and a
+	 * multi-return (count > 1) is handed back as an aggregate. No scalar special-case. */
 	AstType **return_types;
 	int return_type_count;
 	int is_extern;
@@ -247,7 +245,8 @@ typedef struct {
 } AstFreeStmt;
 
 typedef struct {
-	AstExpr *value;
+	AstExpr **values; /* returned values, in order; a single return is just count == 1 */
+	int count;
 } AstReturnStmt;
 
 typedef struct {

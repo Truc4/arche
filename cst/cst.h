@@ -226,10 +226,8 @@ struct FuncDecl {
 	char *name;
 	Parameter **params;
 	int param_count;
-	/* return_type is the *scalar* return (the value physically returned). For a multi-return
-	 * signature `-> (T1, …, Tn)`, return_types holds all n and return_type == return_types[n-1];
-	 * the leading array returns are caller-passed buffers filled in place (bound at the call). */
-	TypeRef *return_type;
+	/* A function's return is a list of types; a single return is just count == 1. `-> (T1, …, Tn)`
+	 * with n > 1 is returned as an aggregate. (No scalar special-case.) */
 	TypeRef **return_types;
 	int return_type_count;
 	int is_extern;
@@ -325,12 +323,9 @@ typedef struct {
 } FreeStmt;
 
 typedef struct {
-	/* value is the scalar physically returned (the last value). For a multi-return
-	 * `return buf, …, n`, values holds all of them (value == values[count-1]); the leading
-	 * ones are caller-passed buffers filled in place — kept only so the formatter round-trips. */
-	Expression *value;
+	/* Returned values, in order; a single return is just count == 1. */
 	Expression **values;
-	int value_count;
+	int count;
 } ReturnStmt;
 
 typedef struct {
@@ -483,7 +478,7 @@ WorldDecl *world_decl_create(char *name);
 ArchetypeDecl *archetype_decl_create(char *name);
 ProcDecl *proc_decl_create(char *name);
 SysDecl *sys_decl_create(char *name);
-FuncDecl *func_decl_create(char *name, TypeRef *return_type);
+FuncDecl *func_decl_create(char *name);
 FuncGroup *func_group_create(char *name);
 void func_group_free(FuncGroup *group);
 ConstDecl *const_decl_create(char *name, Expression *value);

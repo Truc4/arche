@@ -7,7 +7,7 @@ proc main() {
   fd := csv_open("tests/fixtures/data.csv");
   csv_skip_header(fd);
   rows := 0;
-  (buf, n:) = csv_read_chunk(fd, buf, 65536);
+  n := csv_read_chunk(fd, buf, 65536);
   pos := 0;
   for (;pos < n;) {
     if (buf[pos] == 10) {

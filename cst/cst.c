@@ -74,10 +74,9 @@ SysDecl *sys_decl_create(char *name) {
 	return sys;
 }
 
-FuncDecl *func_decl_create(char *name, TypeRef *return_type) {
+FuncDecl *func_decl_create(char *name) {
 	FuncDecl *func = malloc(sizeof(FuncDecl));
 	func->name = name;
-	func->return_type = return_type;
 	func->return_types = NULL;
 	func->return_type_count = 0;
 	func->params = NULL;
@@ -332,14 +331,9 @@ void func_decl_free(FuncDecl *func) {
 	if (!func)
 		return;
 	free(func->name);
-	if (func->return_type_count > 0) {
-		/* return_type aliases return_types[last]; free the list (covers it). */
-		for (int i = 0; i < func->return_type_count; i++)
-			type_ref_free(func->return_types[i]);
-		free(func->return_types);
-	} else {
-		type_ref_free(func->return_type);
-	}
+	for (int i = 0; i < func->return_type_count; i++)
+		type_ref_free(func->return_types[i]);
+	free(func->return_types);
 	for (int i = 0; i < func->param_count; i++) {
 		parameter_free(func->params[i]);
 	}
@@ -478,14 +472,9 @@ void statement_free(Statement *stmt) {
 	case STMT_BREAK:
 		break;
 	case STMT_RETURN:
-		if (stmt->data.return_stmt.value_count > 0) {
-			/* value aliases values[last]; the list free covers it. */
-			for (int i = 0; i < stmt->data.return_stmt.value_count; i++)
-				expression_free(stmt->data.return_stmt.values[i]);
-			free(stmt->data.return_stmt.values);
-		} else {
-			expression_free(stmt->data.return_stmt.value);
-		}
+		for (int i = 0; i < stmt->data.return_stmt.count; i++)
+			expression_free(stmt->data.return_stmt.values[i]);
+		free(stmt->data.return_stmt.values);
 		break;
 	case STMT_MULTI_BIND:
 		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
@@ -1124,14 +1113,10 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 	}
 	case STMT_RETURN: {
 		fprintf(out, "%sreturn ", indent_str);
-		if (stmt->data.return_stmt.value_count > 1) {
-			for (int j = 0; j < stmt->data.return_stmt.value_count; j++) {
-				if (j > 0)
-					fprintf(out, ", ");
-				format_expression(out, stmt->data.return_stmt.values[j]);
-			}
-		} else {
-			format_expression(out, stmt->data.return_stmt.value);
+		for (int j = 0; j < stmt->data.return_stmt.count; j++) {
+			if (j > 0)
+				fprintf(out, ", ");
+			format_expression(out, stmt->data.return_stmt.values[j]);
 		}
 		fprintf(out, ";");
 		emit_trailing_trivia(out, stmt->trailing_trivia, stmt->trailing_count);
@@ -1140,7 +1125,7 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 	}
 	case STMT_MULTI_BIND: {
 		if (stmt->data.multi_bind.from_shorthand) {
-			fprintf(out, "%slet ", indent_str);
+			fprintf(out, "%s", indent_str);
 			for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
 				fprintf(out, "%s", stmt->data.multi_bind.targets[i].name);
 				if (i < stmt->data.multi_bind.target_count - 1) {
@@ -1151,16 +1136,14 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 		} else {
 			fprintf(out, "%s(", indent_str);
 			for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
+				/* A trailing `:` (optionally a type) marks a newly-declared target. */
+				fprintf(out, "%s", stmt->data.multi_bind.targets[i].name);
 				if (stmt->data.multi_bind.targets[i].is_new) {
-					fprintf(out, "let %s", stmt->data.multi_bind.targets[i].name);
+					fprintf(out, ":");
 					if (stmt->data.multi_bind.targets[i].type) {
-						fprintf(out, ": ");
+						fprintf(out, " ");
 						format_type(out, stmt->data.multi_bind.targets[i].type);
-					} else {
-						fprintf(out, ":");
 					}
-				} else {
-					fprintf(out, "%s", stmt->data.multi_bind.targets[i].name);
 				}
 				if (i < stmt->data.multi_bind.target_count - 1) {
 					fprintf(out, ", ");
@@ -1310,7 +1293,9 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				format_type(out, func->params[j]->type);
 			}
 			fprintf(out, ") -> ");
-			if (func->return_type_count > 1) {
+			if (func->return_type_count == 1) {
+				format_type(out, func->return_types[0]);
+			} else {
 				fprintf(out, "(");
 				for (int j = 0; j < func->return_type_count; j++) {
 					if (j > 0)
@@ -1318,8 +1303,6 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 					format_type(out, func->return_types[j]);
 				}
 				fprintf(out, ")");
-			} else {
-				format_type(out, func->return_type);
 			}
 			if (func->is_extern) {
 				fprintf(out, ";");

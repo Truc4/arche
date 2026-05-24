@@ -189,7 +189,8 @@ static void rename_stmt(Statement *s, const char *prefix, char **set, int count)
 		rename_expr(s->data.free_stmt.value, prefix, set, count);
 		break;
 	case STMT_RETURN:
-		rename_expr(s->data.return_stmt.value, prefix, set, count);
+		for (int i = 0; i < s->data.return_stmt.count; i++)
+			rename_expr(s->data.return_stmt.values[i], prefix, set, count);
 		break;
 	case STMT_MULTI_BIND:
 		for (int i = 0; i < s->data.multi_bind.target_count; i++)
@@ -283,7 +284,8 @@ static void rename_decl(Decl *d, const char *prefix, char **set, int count) {
 		break;
 	case DECL_FUNC:
 		maybe_rename(&d->data.func->name, prefix, set, count);
-		rename_typeref(d->data.func->return_type, prefix, set, count);
+		for (int i = 0; i < d->data.func->return_type_count; i++)
+			rename_typeref(d->data.func->return_types[i], prefix, set, count);
 		for (int i = 0; i < d->data.func->param_count; i++)
 			rename_typeref(d->data.func->params[i]->type, prefix, set, count);
 		for (int i = 0; i < d->data.func->statement_count; i++)

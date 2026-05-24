@@ -317,7 +317,10 @@ static AstStmt *lower_stmt(Statement *stmt) {
 	}
 	case STMT_RETURN: {
 		s->kind = AST_STMT_RETURN;
-		s->data.return_stmt.value = lower_expr(stmt->data.return_stmt.value);
+		s->data.return_stmt.count = stmt->data.return_stmt.count;
+		s->data.return_stmt.values = calloc(stmt->data.return_stmt.count, sizeof(AstExpr *));
+		for (int i = 0; i < stmt->data.return_stmt.count; i++)
+			s->data.return_stmt.values[i] = lower_expr(stmt->data.return_stmt.values[i]);
 		break;
 	}
 	case STMT_MULTI_BIND: {
@@ -504,7 +507,8 @@ static void tuple_rewrite_stmt(AstStmt *s, const char *base) {
 		tuple_rewrite_expr(s->data.expr_stmt.expr, base);
 		break;
 	case AST_STMT_RETURN:
-		tuple_rewrite_expr(s->data.return_stmt.value, base);
+		for (int i = 0; i < s->data.return_stmt.count; i++)
+			tuple_rewrite_expr(s->data.return_stmt.values[i], base);
 		break;
 	default:
 		break;
@@ -649,15 +653,10 @@ static AstDecl *lower_decl(Decl *decl) {
 		afunc->params = calloc(func->param_count, sizeof(AstParam *));
 		for (int i = 0; i < func->param_count; i++)
 			afunc->params[i] = lower_param(func->params[i]);
-		if (func->return_type_count > 0) {
-			afunc->return_type_count = func->return_type_count;
-			afunc->return_types = calloc(func->return_type_count, sizeof(AstType *));
-			for (int i = 0; i < func->return_type_count; i++)
-				afunc->return_types[i] = lower_type_ref(func->return_types[i]);
-			afunc->return_type = afunc->return_types[func->return_type_count - 1];
-		} else {
-			afunc->return_type = lower_type_ref(func->return_type);
-		}
+		afunc->return_type_count = func->return_type_count;
+		afunc->return_types = calloc(func->return_type_count, sizeof(AstType *));
+		for (int i = 0; i < func->return_type_count; i++)
+			afunc->return_types[i] = lower_type_ref(func->return_types[i]);
 		afunc->stmt_count = func->statement_count;
 		afunc->stmts = calloc(func->statement_count, sizeof(AstStmt *));
 		for (int i = 0; i < func->statement_count; i++)

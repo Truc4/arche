@@ -1,12 +1,12 @@
 // RUN: %arche -o %t %s && %t | grep "result: 99"
-// Multi-bind with unbounded char[] out param
-func fill_buf(buf: char[]) -> (char[], int) {
-  r := sprintf(buf, "hello");
-  return buf, 99;
+// Unbounded char[] buffer filled in place, scalar count returned.
+func fill_buf(buf: char[]) -> int {
+  sprintf(buf, "hello");
+  return 99;
 }
 
 proc main() {
   buf: char[32];
-  (buf, result:) = fill_buf(buf);
+  result := fill_buf(buf);
   printf("result: %d\n", result);
 }

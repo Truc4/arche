@@ -1,0 +1,11 @@
+// Genuine multi-value return: a function returns two computed values as an aggregate, and a
+// multi-bind destructures them. (No buffers, no out — a real struct return.)
+// RUN: %arche -o %t %s && %t | grep "s=13 d=7"
+func sum_diff(a: int, b: int) -> (int, int) {
+  return a + b, a - b;
+}
+
+proc main() {
+  s, d := sum_diff(10, 3);
+  printf("s=%d d=%d\n", s, d);
+}

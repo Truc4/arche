@@ -770,9 +770,9 @@ void test_parser_handle_type_is_typename(void) {
 	ASSERT_EQ(prog->decl_count, 2, "expected 2 decls");
 	ASSERT_EQ(prog->decls[1]->kind, DECL_FUNC, "expected DECL_FUNC");
 	FuncDecl *f = prog->decls[1]->data.func;
-	ASSERT_NOT_NULL(f->return_type, "no return type");
-	ASSERT_EQ(f->return_type->kind, TYPE_HANDLE, "handle(Window) is TYPE_HANDLE");
-	ASSERT_EQ(strcmp(f->return_type->data.handle.archetype_name, "Window"), 0, "wrong target");
+	ASSERT_EQ(f->return_type_count, 1, "expected 1 return type");
+	ASSERT_EQ(f->return_types[0]->kind, TYPE_HANDLE, "handle(Window) is TYPE_HANDLE");
+	ASSERT_EQ(strcmp(f->return_types[0]->data.handle.archetype_name, "Window"), 0, "wrong target");
 	program_free(prog);
 	test_pass_msg();
 }

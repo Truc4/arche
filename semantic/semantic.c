@@ -256,6 +256,12 @@ static FuncDecl *find_func_decl_cst(Program *prog, const char *name) {
 	return NULL;
 }
 
+/* The first declared return type, or NULL. Single-return funcs have exactly one; this is
+ * what scalar-position type inference uses (a multi-return func is only valid in a multi-bind). */
+static TypeRef *func_first_return_type(const FuncDecl *f) {
+	return (f && f->return_type_count > 0) ? f->return_types[0] : NULL;
+}
+
 static VariableInfo *find_variable(SemanticContext *ctx, const char *name) {
 	/* search from innermost to outermost scope */
 	for (int i = ctx->scope_count - 1; i >= 0; i--) {
@@ -656,8 +662,9 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 						break;
 					}
 				}
-				if (ok && fd->return_type && fd->return_type->kind == TYPE_NAME) {
-					return normalize_type_name(fd->return_type->data.name);
+				TypeRef *frt = func_first_return_type(fd);
+				if (ok && frt && frt->kind == TYPE_NAME) {
+					return normalize_type_name(frt->data.name);
 				}
 			}
 			return NULL;
@@ -667,7 +674,7 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		for (int i = 0; i < ctx->prog->decl_count; i++) {
 			Decl *decl = ctx->prog->decls[i];
 			if (decl->kind == DECL_FUNC && strcmp(decl->data.func->name, func_name) == 0) {
-				TypeRef *rt = decl->data.func->return_type;
+				TypeRef *rt = func_first_return_type(decl->data.func);
 				if (!rt)
 					return NULL;
 				if (rt->kind == TYPE_HANDLE)
@@ -715,8 +722,9 @@ static const char *nominal_type_of_expr(SemanticContext *ctx, Expression *e) {
 	}
 	if (e->type == EXPR_CALL && e->data.call.callee && e->data.call.callee->type == EXPR_NAME) {
 		FuncDecl *fd = find_func_decl_cst(ctx->prog, e->data.call.callee->data.name.name);
-		if (fd && fd->return_type && fd->return_type->kind == TYPE_NAME && is_type_alias(ctx, fd->return_type->data.name))
-			return fd->return_type->data.name;
+		TypeRef *frt = func_first_return_type(fd);
+		if (frt && frt->kind == TYPE_NAME && is_type_alias(ctx, frt->data.name))
+			return frt->data.name;
 	}
 	return NULL;
 }
@@ -1378,13 +1386,16 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		break;
 
 	case STMT_RETURN:
-		analyze_expression(ctx, stmt->data.return_stmt.value);
 		/* Returning an opaque binding moves it out — counts as consumption. (Data and
 		 * handles copy, so returning them must NOT kill the binding.) */
-		if (stmt->data.return_stmt.value && stmt->data.return_stmt.value->type == EXPR_NAME) {
-			VariableInfo *rv = find_variable(ctx, stmt->data.return_stmt.value->data.name.name);
-			if (rv && var_is_opaque(ctx, rv))
-				rv->is_consumed = 1;
+		for (int i = 0; i < stmt->data.return_stmt.count; i++) {
+			Expression *rval = stmt->data.return_stmt.values[i];
+			analyze_expression(ctx, rval);
+			if (rval && rval->type == EXPR_NAME) {
+				VariableInfo *rv = find_variable(ctx, rval->data.name.name);
+				if (rv && var_is_opaque(ctx, rv))
+					rv->is_consumed = 1;
+			}
 		}
 		break;
 
@@ -2102,11 +2113,14 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 			break;
 		}
 	}
-	if (func->return_type && func->return_type->kind == TYPE_ARCHETYPE) {
-		char msg[256];
-		snprintf(msg, sizeof(msg), "func '%s': `archetype` is only valid as a parameter type, not a return type",
-		         func->name);
-		error(ctx, msg);
+	for (int i = 0; i < func->return_type_count; i++) {
+		if (func->return_types[i] && func->return_types[i]->kind == TYPE_ARCHETYPE) {
+			char msg[256];
+			snprintf(msg, sizeof(msg), "func '%s': `archetype` is only valid as a parameter type, not a return type",
+			         func->name);
+			error(ctx, msg);
+			break;
+		}
 	}
 	/* Validate parameters and return type for extern vs non-extern rules. */
 	for (int i = 0; i < func->param_count; i++) {
@@ -2143,14 +2157,18 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 		}
 	}
 
-	/* Validate return type: extern funcs must use known types. */
+	/* Validate return types: extern funcs must use known types. */
 	if (func->is_extern) {
-		if (func->return_type && func->return_type->kind == TYPE_NAME) {
-			const char *tname = func->return_type->data.name;
-			if (!is_primitive_type_name(tname) && !is_type_alias(ctx, tname)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "unknown return type '%s' in extern func '%s' signature", tname, func->name);
-				error(ctx, msg);
+		for (int i = 0; i < func->return_type_count; i++) {
+			TypeRef *rt = func->return_types[i];
+			if (rt && rt->kind == TYPE_NAME) {
+				const char *tname = rt->data.name;
+				if (!is_primitive_type_name(tname) && !is_type_alias(ctx, tname)) {
+					char msg[256];
+					snprintf(msg, sizeof(msg), "unknown return type '%s' in extern func '%s' signature", tname,
+					         func->name);
+					error(ctx, msg);
+				}
 			}
 		}
 	}
@@ -2305,7 +2323,8 @@ static void erase_aliases_decl(SemanticContext *ctx, Decl *d) {
 			erase_aliases_stmt(ctx, d->data.sys->statements[i]);
 		break;
 	case DECL_FUNC:
-		erase_aliases_typeref(ctx, d->data.func->return_type);
+		for (int i = 0; i < d->data.func->return_type_count; i++)
+			erase_aliases_typeref(ctx, d->data.func->return_types[i]);
 		for (int i = 0; i < d->data.func->param_count; i++)
 			erase_aliases_typeref(ctx, d->data.func->params[i]->type);
 		for (int i = 0; i < d->data.func->statement_count; i++)
