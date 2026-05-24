@@ -3782,8 +3782,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 				is_char_array_call = 1;
 			} else if (stmt->data.bind_stmt.value->data.call.callee &&
 			           stmt->data.bind_stmt.value->data.call.callee->kind == AST_EXPR_NAME) {
-				AstFuncDecl *cf =
-				    find_func_decl(ctx, stmt->data.bind_stmt.value->data.call.callee->data.name.name);
+				AstFuncDecl *cf = find_func_decl(ctx, stmt->data.bind_stmt.value->data.call.callee->data.name.name);
 				if (cf && cf->return_type_count == 1 && cf->return_types[0]) {
 					AstType *rt = cf->return_types[0];
 					if (rt->tag == AST_TYPE_ARRAY ||

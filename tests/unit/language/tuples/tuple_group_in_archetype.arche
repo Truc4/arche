@@ -5,7 +5,10 @@
 pos (x, y) :: float
 vel (vx, vy) :: float
 
-arche Particle { pos, vel }
+arche Particle {
+  pos,
+  vel,
+}
 
 static pool<Particle>(5);
 
