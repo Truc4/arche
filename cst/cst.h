@@ -182,6 +182,7 @@ struct FieldDecl {
 	FieldKind kind;
 	char *name;
 	TypeRef *type;
+	int meta_explicit; /* 1 if written with the explicit meta longhand `name : type : T` (vs `name :: T`) */
 	SourceLoc loc;
 	Trivia *leading_trivia;
 	int leading_count;
@@ -282,14 +283,14 @@ typedef enum {
 } Operator;
 
 typedef struct {
-	char *name;        /* single var name (backward compat) */
-	char **names;      /* multiple var names for multi-value let */
-	int name_count;    /* 0 = use .name, >0 = use .names[] */
-	TypeRef *type;     /* optional, may be NULL — only for single-var */
-	Expression *value; /* optional, may be NULL */
-	int is_const;      /* 1 = an immutable local constant (`k :: e` / `k : T : e`) */
+	char *name;          /* single var name (backward compat) */
+	char **names;        /* multiple var names for multi-value let */
+	int name_count;      /* 0 = use .name, >0 = use .names[] */
+	TypeRef *type;       /* optional, may be NULL — only for single-var */
+	Expression *value;   /* optional, may be NULL */
+	int is_const;        /* 1 = an immutable local constant (`k :: e` / `k : T : e`) */
 	TypeRef *type_value; /* the type RHS of a `k : type : T` local type alias, else NULL */
-	int is_type_alias; /* set by semantic: this const's RHS denotes a type → erased, no runtime */
+	int is_type_alias;   /* set by semantic: this const's RHS denotes a type → erased, no runtime */
 } BindStmt;
 
 typedef struct {

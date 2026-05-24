@@ -554,6 +554,39 @@ static int name_denotes_type(SemanticContext *ctx, const char *r) {
 	return is_primitive_type_name(r) || strcmp(r, "opaque") == 0 || is_type_alias(ctx, r);
 }
 
+/* For a typed value const `name : T : <literal>`, check the literal is compatible with the declared
+ * type T. Only concrete primitive types are checked; a clear category mismatch (a float literal for
+ * an int, a string for a number) is an error. So an explicit annotation is no longer inert. */
+static void check_const_literal_type(SemanticContext *ctx, ConstDecl *c) {
+	if (!c || !c->decl_type || c->decl_type->kind != TYPE_NAME)
+		return; /* only concrete named declared types */
+	if (!c->value || c->value->type != EXPR_LITERAL)
+		return; /* only literal RHS (a name RHS is a value-const chain, checked elsewhere) */
+	const char *want = resolve_type_alias(ctx, normalize_type_name(c->decl_type->data.name));
+	if (!is_primitive_type_name(want))
+		return; /* non-primitive declared type: out of scope for the literal check */
+	const char *got = resolve_expression_type(ctx, c->value); /* "int" / "float" / "char" / "char_array" */
+	if (!got)
+		return;
+	/* A value const is substituted as its raw literal lexeme, so the literal's category must match
+	 * the declared type — there is no coercion at the substitution site. A string never fits a
+	 * scalar; a `float` const needs a float literal (an int lexeme in a double slot miscompiles);
+	 * a float literal never fits int/char. int and char literals interchange (C treats them alike). */
+	int ok = 1;
+	if (strcmp(got, "char_array") == 0)
+		ok = 0;
+	else if (strcmp(want, "float") == 0)
+		ok = (strcmp(got, "float") == 0);
+	else if (strcmp(got, "float") == 0)
+		ok = 0;
+	if (!ok) {
+		char msg[256];
+		snprintf(msg, sizeof(msg), "constant '%s' is declared `%s` but its value is a %s literal", c->name,
+		         want, strcmp(got, "char_array") == 0 ? "string" : got);
+		error(ctx, msg);
+	}
+}
+
 /* The backing-type name for a type-form RHS (`name : type : T` or a tuple field), or NULL if the
  * form can't back a nominal alias (e.g. array/handle/shaped — unsupported as alias backings). */
 static const char *type_backing_name(TypeRef *t) {
@@ -1257,8 +1290,7 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 			const char *backing = NULL;
 			if (b->type_value)
 				backing = type_backing_name(b->type_value);
-			else if (b->value && b->value->type == EXPR_NAME &&
-			         name_denotes_type(ctx, b->value->data.name.name))
+			else if (b->value && b->value->type == EXPR_NAME && name_denotes_type(ctx, b->value->data.name.name))
 				backing = b->value->data.name.name;
 			if (backing || b->type_value) {
 				/* This constant's RHS is a type — a local nominal type alias. */
@@ -1269,8 +1301,7 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 					const char *resolved = resolve_type_alias(ctx, b->name);
 					if (!is_primitive_type_name(resolved) && strcmp(resolved, "opaque") != 0) {
 						char msg[256];
-						snprintf(msg, sizeof(msg), "type alias '%s' has unknown backing type '%s'",
-						         b->name, resolved);
+						snprintf(msg, sizeof(msg), "type alias '%s' has unknown backing type '%s'", b->name, resolved);
 						error(ctx, msg);
 					}
 				}
@@ -2596,8 +2627,7 @@ SemanticContext *semantic_analyze(Program *prog) {
 			if (name_denotes_type(ctx, r)) {
 				if (deferred_value_ctx[d]) {
 					char msg[256];
-					snprintf(msg, sizeof(msg),
-					         "constant '%s' has a value type but its RHS '%s' names a type",
+					snprintf(msg, sizeof(msg), "constant '%s' has a value type but its RHS '%s' names a type",
 					         deferred_name[d], r);
 					error(ctx, msg);
 				} else {
@@ -2622,8 +2652,7 @@ SemanticContext *semantic_analyze(Program *prog) {
 			continue;
 		if (deferred_value_ctx[d]) {
 			char msg[256];
-			snprintf(msg, sizeof(msg), "unknown value '%s' in declaration of '%s'", deferred_rhs[d],
-			         deferred_name[d]);
+			snprintf(msg, sizeof(msg), "unknown value '%s' in declaration of '%s'", deferred_rhs[d], deferred_name[d]);
 			error(ctx, msg);
 		} else {
 			register_type_alias(ctx, deferred_name[d], deferred_rhs[d]);
@@ -2687,6 +2716,12 @@ SemanticContext *semantic_analyze(Program *prog) {
 			snprintf(msg, sizeof(msg), "type alias '%s' has unknown backing type '%s'", ctx->type_alias_names[i], b);
 			error(ctx, msg);
 		}
+	}
+
+	/* Typed value consts: the explicit declared type now constrains the literal (no longer inert). */
+	for (int i = 0; i < prog->decl_count; i++) {
+		if (prog->decls[i]->kind == DECL_CONST)
+			check_const_literal_type(ctx, prog->decls[i]->data.constant);
 	}
 
 	/* global scope: holds module-level variables (static arrays, etc.) */

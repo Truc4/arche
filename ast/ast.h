@@ -159,6 +159,7 @@ typedef struct {
 typedef struct {
 	char *name;
 	AstExpr *value;
+	AstType *type; /* explicit declared type from `name : T : value` (concrete T); NULL if inferred */
 } AstConstDecl;
 
 struct AstDecl {

@@ -944,8 +944,10 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 			fprintf(out, "%s", b->name);
 			if (b->is_const) {
 				if (b->type_value) {
-					/* local type alias `V :: T` (the `: type :` longhand canonicalizes to `::`) */
-					fprintf(out, " :: ");
+					/* local type alias written with the explicit meta longhand: `V : type : T`
+					 * (type_value is only set for that form; the inferred `V :: T` keeps its RHS
+					 * in `value`). Preserved faithfully. */
+					fprintf(out, " : type : ");
 					format_type(out, b->type_value);
 				} else if (b->type) {
 					/* typed value const: `k : T : value` */
@@ -1240,6 +1242,11 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				           strcmp(field->type->data.name, field->name) == 0) {
 					/* Bare component reference — its type is its own name. */
 					fprintf(out, "  %s,", field->name);
+				} else if (field->meta_explicit) {
+					/* Inline component, explicit meta longhand `name : type : T`. */
+					fprintf(out, "  %s : type : ", field->name);
+					format_type(out, field->type);
+					fprintf(out, ",");
 				} else {
 					/* Inline component definition `name :: type`. */
 					fprintf(out, "  %s :: ", field->name);
@@ -1399,14 +1406,18 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			ConstDecl *c = decl->data.constant;
 			if (c->type_value && c->type_value->kind == TYPE_TUPLE) {
 				format_tuple_group(out, c->name, c->type_value); /* `name (a, b) :: T` */
-			} else if (c->decl_type && c->decl_type->kind != TYPE_TYPE) {
-				/* explicit concrete type: `name : T : value` (a typed value const) */
+			} else if (c->decl_type) {
+				/* explicit declared type: `name : T : <rhs>` (T may be the meta-type `type`).
+				 * Preserved faithfully — the formatter does not canonicalize the longhand. */
 				fprintf(out, "%s : ", c->name);
 				format_type(out, c->decl_type);
 				fprintf(out, " : ");
-				format_expression(out, c->value);
+				if (c->type_value) /* type-form RHS (a nominal type alias) */
+					format_type(out, c->type_value);
+				else
+					format_expression(out, c->value);
 			} else {
-				/* `name :: <rhs>` — the meta-type `type` longhand canonicalizes to `::`. */
+				/* implicit `name :: <rhs>` */
 				fprintf(out, "%s :: ", c->name);
 				if (c->type_value) /* type-form RHS (a nominal type alias) */
 					format_type(out, c->type_value);

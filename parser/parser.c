@@ -470,6 +470,7 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 		return result;
 	}
 	advance(parser); /* consume first ':' */
+	int meta_explicit = 0;
 	if (check(parser, TOK_COLON)) {
 		advance(parser); /* second ':' — `name :: type`, inferred meta-type */
 	} else {
@@ -495,6 +496,7 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 			*out_count = 0;
 			return NULL;
 		}
+		meta_explicit = 1; /* remember the longhand was written, for faithful formatting */
 	}
 
 	/* Inline scalar component definition `name :: type` / `name : type : type` (tuple groups use
@@ -511,6 +513,7 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 	match(parser, TOK_COMMA);
 
 	FieldDecl *field = field_decl_create(kind, name_copy, type);
+	field->meta_explicit = meta_explicit;
 	field->loc.line = parser->previous.line;
 	field->loc.column = parser->previous.column;
 

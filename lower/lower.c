@@ -734,6 +734,10 @@ static AstDecl *lower_decl(Decl *decl) {
 		acd->name = malloc(strlen(cd->name) + 1);
 		strcpy(acd->name, cd->name);
 		acd->value = lower_expr(cd->value);
+		/* Carry the explicit declared type into the AST. The meta-type `type` (a type alias) is
+		 * compile-time only and stays erased — only a concrete `name : T : value` keeps its T. */
+		if (cd->decl_type && cd->decl_type->kind != TYPE_TYPE)
+			acd->type = lower_type_ref(cd->decl_type);
 		ad->data.constant = acd;
 		break;
 	}
