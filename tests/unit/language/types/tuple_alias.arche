@@ -1,8 +1,8 @@
-// A tuple type alias `pos :: (x: int, y: int)` desugars to flat, name-prefixed nominal
+// A tuple type alias `pos (x, y) :: int` desugars to flat, name-prefixed nominal
 // types `pos_x` and `pos_y` (each a normal alias over the field's backing). They behave
 // like their backing among their own kind, so `pos_x + pos_y` is int arithmetic.
 // RUN: %arche -o %t %s && %t | grep "sum: 7"
-pos :: (x: int, y: int)
+pos (x, y) :: int
 
 proc main() {
   a: pos_x = 3;

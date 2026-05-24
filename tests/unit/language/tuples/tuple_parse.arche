@@ -1,5 +1,5 @@
 // RUN: %arche -o %t %s && %t
-pos :: (x: float, y: float)
+pos (x, y) :: float
 
 arche Particle { pos_x, pos_y }
 

@@ -143,12 +143,14 @@ static pool<A>(1000);
 static pool<B>(1000);        // ERROR: shape already allocated (B is the same shape as A)
 ```
 
-**Tuples** are named flat sugar. `pos :: (x, y: float)` mints the flat component types
-`pos_x` and `pos_y` (one level only — no nested tuples), reached as `h.pos_x` / `h.pos_y`.
-`pos` and `vel :: (x, y: float)` are **distinct** (`pos_x` ≠ `vel_x`); reuse is by name.
+**Tuples** are named flat sugar: `pos (x, y) :: float` mints the flat component types
+`pos_x` and `pos_y` of the shared type — the suffixes are part of the *name*, the type comes
+after `::`. (One level only — no nested tuples; one shared type — heterogeneous fields are just
+separate components.) Reached as `h.pos_x` / `h.pos_y`. `pos (x, y) :: float` and
+`vel (x, y) :: float` are **distinct** (`pos_x` ≠ `vel_x`); reuse is by name.
 
 ```arche
-pos :: (x: float, y: float)
+pos (x, y) :: float
 arche Body { pos_x, pos_y }   // two flat columns
 ```
 
@@ -309,8 +311,8 @@ Systems support if/for statements for control flow. For maximum cache efficiency
 
 ```arche
 // Mint flat tuple component types
-pos :: (x: float, y: float)
-vel :: (vx: float, vy: float)
+pos (x, y) :: float
+vel (vx, vy) :: float
 
 // An archetype is the set of those components
 arche Particle { pos_x, pos_y, vel_vx, vel_vy }

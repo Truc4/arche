@@ -623,6 +623,20 @@ static void format_type(FILE *out, TypeRef *type) {
 	format_type_depth--;
 }
 
+/* Emit a tuple group declaration `name (a, b, …) :: T` — the suffixes are part of the name,
+ * the shared type follows `::`. (All members of a tuple group share one type.) */
+static void format_tuple_group(FILE *out, const char *name, TypeRef *t) {
+	fprintf(out, "%s (", name);
+	for (int i = 0; i < t->data.tuple.field_count; i++) {
+		if (i > 0)
+			fprintf(out, ", ");
+		fprintf(out, "%s", t->data.tuple.field_names[i]);
+	}
+	fprintf(out, ") :: ");
+	if (t->data.tuple.field_count > 0)
+		format_type(out, t->data.tuple.field_types[0]);
+}
+
 static void format_expression(FILE *out, Expression *expr);
 
 /* Operator precedence for paren-wrapping. Higher binds tighter. Matches the
@@ -1208,8 +1222,13 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			for (int j = 0; j < arch->field_count; j++) {
 				FieldDecl *field = arch->fields[j];
 				emit_leading_trivia(out, field->leading_trivia, field->leading_count, "  ", &ctx);
-				if (field->type && field->type->kind == TYPE_NAME &&
-				    strcmp(field->type->data.name, field->name) == 0) {
+				if (field->type && field->type->kind == TYPE_TUPLE) {
+					/* Tuple group component `name (a, b) :: T`. */
+					fprintf(out, "  ");
+					format_tuple_group(out, field->name, field->type);
+					fprintf(out, ",");
+				} else if (field->type && field->type->kind == TYPE_NAME &&
+				           strcmp(field->type->data.name, field->name) == 0) {
 					/* Bare component reference — its type is its own name. */
 					fprintf(out, "  %s,", field->name);
 				} else {
@@ -1369,11 +1388,15 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 		}
 		case DECL_CONST: {
 			ConstDecl *c = decl->data.constant;
-			fprintf(out, "%s :: ", c->name);
-			if (c->type_value) /* tuple / type-form RHS (a nominal type alias) */
-				format_type(out, c->type_value);
-			else
-				format_expression(out, c->value);
+			if (c->type_value && c->type_value->kind == TYPE_TUPLE) {
+				format_tuple_group(out, c->name, c->type_value); /* `name (a, b) :: T` */
+			} else {
+				fprintf(out, "%s :: ", c->name);
+				if (c->type_value) /* type-form RHS (a nominal type alias) */
+					format_type(out, c->type_value);
+				else
+					format_expression(out, c->value);
+			}
 			emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
 			fprintf(out, "\n");
 			break;

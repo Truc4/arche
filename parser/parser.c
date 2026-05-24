@@ -343,6 +343,61 @@ static TypeRef *parse_type(Parser *parser) {
 	return type;
 }
 
+/* Shallow-clone a simple type (TYPE_NAME / TYPE_OPAQUE) — used to give each member of a
+ * homogeneous tuple group `name (a, b) :: T` its own TypeRef (so each frees independently). */
+static TypeRef *clone_simple_type(TypeRef *t) {
+	TypeRef *c = malloc(sizeof(TypeRef));
+	c->kind = t->kind;
+	c->loc = t->loc;
+	if (t->kind == TYPE_NAME) {
+		c->data.name = malloc(strlen(t->data.name) + 1);
+		strcpy(c->data.name, t->data.name);
+	}
+	return c;
+}
+
+/* Parse a tuple name-group `(a, b, …) :: T` after the leading name was consumed. The suffixes
+ * are part of the name (minting `name_a`, `name_b`, …), `T` is the shared type. Returns a
+ * TYPE_TUPLE (field_names = suffixes, field_types = a clone of T per field), or NULL on error. */
+static TypeRef *parse_tuple_name_group(Parser *parser, SourceLoc loc) {
+	advance(parser); /* consume '(' */
+	char **fnames = NULL;
+	int fcount = 0;
+	while (!check(parser, TOK_RPAREN) && !check(parser, TOK_EOF)) {
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected a name in tuple group `(a, b, …)`");
+			break;
+		}
+		char *fn = token_text(parser->current);
+		advance(parser);
+		fnames = realloc(fnames, (fcount + 1) * sizeof(char *));
+		fnames[fcount++] = fn;
+		if (!match(parser, TOK_COMMA))
+			break;
+	}
+	if (!match(parser, TOK_RPAREN)) {
+		error(parser, "Expected ')' to close tuple name group");
+		return NULL;
+	}
+	if (!match(parser, TOK_COLON) || !match(parser, TOK_COLON)) {
+		error(parser, "Expected `::` and a shared type after tuple name group `(a, b) :: T`");
+		return NULL;
+	}
+	TypeRef *shared = parse_type(parser);
+	if (!shared)
+		return NULL;
+	TypeRef **ftypes = malloc((fcount > 0 ? fcount : 1) * sizeof(TypeRef *));
+	for (int i = 0; i < fcount; i++)
+		ftypes[i] = (i == 0) ? shared : clone_simple_type(shared);
+	TypeRef *tt = malloc(sizeof(TypeRef));
+	tt->kind = TYPE_TUPLE;
+	tt->loc = loc;
+	tt->data.tuple.field_names = fnames;
+	tt->data.tuple.field_types = ftypes;
+	tt->data.tuple.field_count = fcount;
+	return tt;
+}
+
 /* ========== ARCHETYPE PARSING ========== */
 
 static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
@@ -358,6 +413,25 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 	char *name_copy = malloc(strlen(name) + 1);
 	strcpy(name_copy, name);
 	advance(parser);
+
+	/* Tuple group component: `pos (x, y) :: float` — the suffixes mint flat `pos_x`/`pos_y`
+	 * of the shared type. */
+	if (check(parser, TOK_LPAREN)) {
+		SourceLoc loc = {parser->previous.line, parser->previous.column};
+		TypeRef *tt = parse_tuple_name_group(parser, loc);
+		if (!tt) {
+			free(name_copy);
+			*out_count = 0;
+			return NULL;
+		}
+		FieldDecl *field = field_decl_create(kind, name_copy, tt);
+		field->loc = loc;
+		match(parser, TOK_COMMA); /* optional trailing comma */
+		FieldDecl **result = malloc(sizeof(FieldDecl *));
+		result[0] = field;
+		*out_count = 1;
+		return result;
+	}
 
 	/* A component is a type. A bare `a` references the type `a` (`arche Foo { a, b }` is a
 	 * set of nominal component types). `name :: type` defines one inline (mints the nominal
@@ -388,83 +462,7 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 	}
 	advance(parser); /* consume second ':' — this was `::`, an inline component definition */
 
-	/* Check for tuple syntax: (x: float, y: float) */
-	if (check(parser, TOK_LPAREN)) {
-		advance(parser); /* consume ( */
-		char **tuple_field_names = NULL;
-		TypeRef **tuple_field_types = NULL;
-		int tuple_field_count = 0;
-
-		while (!check(parser, TOK_RPAREN) && !check(parser, TOK_EOF)) {
-			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected field name in tuple");
-				free(name_copy);
-				*out_count = 0;
-				return NULL;
-			}
-			char *field_name = token_text(parser->current);
-			char *field_name_copy = malloc(strlen(field_name) + 1);
-			strcpy(field_name_copy, field_name);
-			advance(parser);
-
-			if (!match(parser, TOK_COLON)) {
-				error(parser, "Expected ':' after tuple field name");
-				free(name_copy);
-				free(field_name_copy);
-				*out_count = 0;
-				return NULL;
-			}
-
-			TypeRef *field_type = parse_type(parser);
-			if (!field_type) {
-				free(name_copy);
-				free(field_name_copy);
-				*out_count = 0;
-				return NULL;
-			}
-
-			/* Collect tuple field info */
-			tuple_field_names = realloc(tuple_field_names, (tuple_field_count + 1) * sizeof(char *));
-			tuple_field_types = realloc(tuple_field_types, (tuple_field_count + 1) * sizeof(TypeRef *));
-			tuple_field_names[tuple_field_count] = field_name_copy;
-			tuple_field_types[tuple_field_count] = field_type;
-			tuple_field_count++;
-
-			if (!match(parser, TOK_COMMA))
-				break;
-		}
-
-		if (!match(parser, TOK_RPAREN)) {
-			error(parser, "Expected ')' to close tuple type");
-			free(name_copy);
-			*out_count = 0;
-			return NULL;
-		}
-
-		/* Create TYPE_TUPLE */
-		TypeRef *tuple_type = malloc(sizeof(TypeRef));
-		tuple_type->kind = TYPE_TUPLE;
-		tuple_type->loc.line = parser->previous.line;
-		tuple_type->loc.column = parser->previous.column;
-		tuple_type->data.tuple.field_names = tuple_field_names;
-		tuple_type->data.tuple.field_types = tuple_field_types;
-		tuple_type->data.tuple.field_count = tuple_field_count;
-
-		/* Create single field with tuple type */
-		FieldDecl *field = field_decl_create(kind, name_copy, tuple_type);
-		field->loc.line = parser->previous.line;
-		field->loc.column = parser->previous.column;
-
-		/* trailing comma is optional */
-		match(parser, TOK_COMMA);
-
-		FieldDecl **result = malloc(sizeof(FieldDecl *));
-		result[0] = field;
-		*out_count = 1;
-		return result;
-	}
-
-	/* Regular (non-tuple) field */
+	/* Inline scalar component definition `name :: type` (tuple groups use `name (a, b) :: T`). */
 	TypeRef *type = parse_type(parser);
 	if (!type) {
 		free(name_copy);
@@ -934,61 +932,31 @@ static Decl *parse_static_decl(Parser *parser) {
 		char *name = token_text(parser->current);
 		Token ident_tok = parser->current;
 		advance(parser);
-		if (check(parser, TOK_COLON)) {
-			advance(parser); /* consume first : */
-			if (check(parser, TOK_COLON)) {
-				advance(parser); /* consume second : */
-				if (check(parser, TOK_LPAREN)) {
-						/* Tuple type alias: `pos :: (x: int, y: int)` mints flat types pos_x, pos_y.
-						 * The RHS is a tuple type, not an expression, so parse it directly. */
-						advance(parser); /* consume ( */
-						char **fnames = NULL;
-						TypeRef **ftypes = NULL;
-						int fcount = 0;
-						while (!check(parser, TOK_RPAREN) && !check(parser, TOK_EOF)) {
-							if (!check(parser, TOK_IDENT)) {
-								error(parser, "Expected field name in tuple type");
-								break;
-							}
-							char *fname = token_text(parser->current);
-							advance(parser);
-							if (!match(parser, TOK_COLON)) {
-								error(parser, "Expected ':' after tuple field name");
-								free(fname);
-								break;
-							}
-							TypeRef *ftype = parse_type(parser);
-							if (!ftype) {
-								free(fname);
-								break;
-							}
-							fnames = realloc(fnames, (fcount + 1) * sizeof(char *));
-							ftypes = realloc(ftypes, (fcount + 1) * sizeof(TypeRef *));
-							fnames[fcount] = fname;
-							ftypes[fcount] = ftype;
-							fcount++;
-							if (!match(parser, TOK_COMMA))
-								break;
-						}
-						match(parser, TOK_RPAREN);
-						TypeRef *tt = malloc(sizeof(TypeRef));
-						tt->kind = TYPE_TUPLE;
-						tt->loc.line = ident_tok.line;
-						tt->loc.column = ident_tok.column;
-						tt->data.tuple.field_names = fnames;
-						tt->data.tuple.field_types = ftypes;
-						tt->data.tuple.field_count = fcount;
-						Decl *dt = decl_create(DECL_CONST);
-						dt->loc.line = ident_tok.line;
-						dt->loc.column = ident_tok.column;
-						dt->data.constant = const_decl_create(name, NULL);
-						dt->data.constant->type_value = tt;
-						if (check(parser, TOK_SEMI))
-							advance(parser);
-						return dt;
-					}
 
-					Expression *val = parse_expression(parser);
+		/* Tuple group: `pos (x, y) :: float` — the suffixes are part of the name (minting flat
+		 * `pos_x`, `pos_y`), the type comes after `::`. */
+		if (check(parser, TOK_LPAREN)) {
+			SourceLoc loc = {ident_tok.line, ident_tok.column};
+			TypeRef *tt = parse_tuple_name_group(parser, loc);
+			if (!tt) {
+				free(name);
+				return NULL;
+			}
+			Decl *dt = decl_create(DECL_CONST);
+			dt->loc = loc;
+			dt->data.constant = const_decl_create(name, NULL);
+			dt->data.constant->type_value = tt;
+			if (check(parser, TOK_SEMI))
+				advance(parser);
+			return dt;
+		}
+
+		/* `name :: <value-or-type>` — value const (literal RHS) or nominal alias (name RHS). */
+		if (check(parser, TOK_COLON)) {
+			advance(parser); /* first ':' */
+			if (check(parser, TOK_COLON)) {
+				advance(parser); /* second ':' (`::`) */
+				Expression *val = parse_expression(parser);
 				Decl *d = decl_create(DECL_CONST);
 				d->loc.line = ident_tok.line;
 				d->loc.column = ident_tok.column;
@@ -1000,6 +968,7 @@ static Decl *parse_static_decl(Parser *parser) {
 			}
 		}
 		/* Not a const. This fallthrough path shouldn't happen; return NULL to let caller report error */
+		free(name);
 		return NULL;
 	}
 

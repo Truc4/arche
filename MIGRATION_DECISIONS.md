@@ -11,9 +11,13 @@ the decision, why, and how to revisit. Plan: `~/.claude/plans/alright-new-huge-c
    (`MAX :: 100`) stays a value const. Consts are literal-only, so name/type RHS is
    unambiguously a type. No `type` keyword.
 
-2. **Tuple alias** — `pos :: (x: int, y: int)` mints flat name-prefixed nominal types
-   `pos_x`, `pos_y`. *Decision:* used the **per-field** tuple form `(x: int, y: int)`
-   (each field typed), not the grouped `(x, y: int)` sugar — grouped can be added later.
+2. **Tuple group** — `pos (x, y) :: float` mints flat name-prefixed nominal types `pos_x`,
+   `pos_y` of the **shared** type. *Decision (per user, supersedes the old per-field form):* the
+   suffixes `(x, y)` are part of the *name*; the type follows `::`. Homogeneous only (one shared
+   type) — heterogeneous fields are just separate component mints. The old
+   `pos :: (x: int, y: int)` per-field syntax was **removed** (parser + formatter) and all decls
+   migrated. Parsed by `parse_tuple_name_group`; internal rep stays `TYPE_TUPLE` (field_types =
+   the shared type cloned per field), so the existing semantic expansion is unchanged.
 
 3. **Archetype components** — `arche Foo { a, b }`: bare type names, no accessors. The
    component's type name IS its access path (`field name = type name`). Multi-same-type
