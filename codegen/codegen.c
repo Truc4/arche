@@ -2427,9 +2427,10 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 					call_arg_types[i] = "i8*";
 				}
 			} else if (arg_values[i] && arg_values[i]->type == 5) {
-				/* Arg is arche_array struct */
-				if (callee_is_extern && callee_wants_arr) {
-					/* Extract i8* data ptr from struct (field 0) — C ABI */
+				/* Arg is arche_array struct (e.g. a static char buffer) */
+				if ((callee_is_extern && callee_wants_arr) || callee_wants_shaped_arr) {
+					/* Extract i8* data ptr from struct (field 0): C ABI, or a sized char[N]
+					 * param (which takes a bare i8*). */
 					char *dp_gep = gen_value_name(ctx);
 					buffer_append_fmt(
 					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
@@ -6051,6 +6052,10 @@ static void codegen_proc_decl(CodegenContext *ctx, AstProcDecl *proc) {
 		/* Check if type is char[] (struct*) or an archetype (struct*). */
 		if (param_type && param_type->tag == AST_TYPE_ARRAY) {
 			buffer_append_fmt(ctx, "%%struct.arche_array* %%arg%d", i);
+		} else if (param_type && param_type->tag == AST_TYPE_SHAPED_ARRAY && param_type->elem &&
+		           param_type->elem->tag == AST_TYPE_CHAR) {
+			/* sized char[N] param arrives as a bare i8* (like funcs) */
+			buffer_append_fmt(ctx, "i8* %%arg%d", i);
 		} else if (find_archetype_decl(ctx, type_name)) {
 			buffer_append_fmt(ctx, "%%struct.%s* %%arg%d", type_name, i);
 		} else {
@@ -6100,6 +6105,25 @@ static void codegen_proc_decl(CodegenContext *ctx, AstProcDecl *proc) {
 			vi->arch_name = NULL;
 			vi->string_len = -1;
 			vi->field_type = "char";
+			vi->bit_width = 8;
+			if (ctx->scope_count > 0) {
+				ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+				scope->values[scope->value_count++] = vi;
+			}
+		} else if (param_type && param_type->tag == AST_TYPE_SHAPED_ARRAY && param_type->elem &&
+		           param_type->elem->tag == AST_TYPE_CHAR) {
+			/* sized char[N] param: %argN is already the i8* — bind as type-6 so it indexes. */
+			ValueInfo *vi = malloc(sizeof(ValueInfo));
+			vi->name = malloc(strlen(proc->params[i]->name) + 1);
+			strcpy(vi->name, proc->params[i]->name);
+			vi->llvm_name = malloc(strlen(param_llvm) + 1);
+			strcpy(vi->llvm_name, param_llvm);
+			vi->type = 6;
+			vi->arch_name = NULL;
+			vi->string_len = -1;
+			vi->field_type = "char";
+			vi->handle_archetype = NULL;
 			vi->bit_width = 8;
 			if (ctx->scope_count > 0) {
 				ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];

@@ -226,12 +226,19 @@ The ownership model the user demanded: **a function has no side effects unless y
   `is_consume`→`is_move`; formatter emits `move `. Reserving `move` collided with `sys move` →
   renamed example/test systems to `integrate`. Tests: `ownership/move_param_fill`,
   `move_param_requires_move`; C: `test_move_param_modifier`, `test_lex_move_keyword`.
-- **Codegen fix — indexing a returned/rebound buffer.** A `char[]` member of a multi-return was
-  bound as a scalar int, so `b[i]` after `b, n := f(move b)` mis-typed (`i32` vs `ptr`). Now
-  bound as type-6 (`i8*` byte view, value-is-pointer, no alloca) like a func returning `char[]`.
-  Test: `ownership/index_rebound_buffer`. (Still open: indexing a *shaped* `char[N]` param inside
-  a callee, and `move` on a *static* buffer — both pre-existing; the lib uses unbounded `char[]`
-  + local buffers, which avoid both.)
+- **Codegen fixes — buffers crossing a call boundary** (three pre-existing gaps, all closed):
+  1. *Indexing a returned/rebound buffer* — a `char[]` member of a multi-return was bound as a
+     scalar int, so `b[i]` after `b, n := f(move b)` mis-typed (`i32` vs `ptr`). Now bound as
+     type-6 (`i8*` byte view, value-is-pointer, no alloca) like a func returning `char[]`. Test:
+     `ownership/index_rebound_buffer`.
+  2. *Indexing a sized `char[N]` param* — `codegen_proc_decl` declared it as scalar `i8` and bound
+     it as a scalar; the func path already used `i8*`/type-6. Proc path now matches. Test:
+     `ownership/shaped_param_index`.
+  3. *`move` on a static buffer* — a static is an `arche_array` global; the type-5 arg path didn't
+     handle a *shaped* callee param and fell through to `i32`, emitting `call …(i32 @sbuf)`. Now
+     extracts the data pointer (`i8*`) for shaped params. The *binding* (name) dies at the `move`
+     and is rebound from the return; the global storage persists — no leak. Test:
+     `ownership/move_static_buffer`.
 - **Lib/FFI enforce good practice.** Raw libc/runtime externs (`read`, `net_recv`,
   `arche_csv_read_chunk`) stay plain (the FFI escape hatch — C ABI can't return the buffer).
   Safe move-enforcing arche wrappers added: `csv.read_chunk`, `read_into`, `recv_into` — each
