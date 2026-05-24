@@ -241,7 +241,14 @@ static void ast_func_decl_free(AstFuncDecl *func) {
 	for (int i = 0; i < func->param_count; i++)
 		ast_param_free(func->params[i]);
 	free(func->params);
-	ast_type_free(func->return_type);
+	if (func->return_type_count > 0) {
+		/* return_type aliases return_types[last]; the list free covers it. */
+		for (int i = 0; i < func->return_type_count; i++)
+			ast_type_free(func->return_types[i]);
+		free(func->return_types);
+	} else {
+		ast_type_free(func->return_type);
+	}
 	for (int i = 0; i < func->stmt_count; i++)
 		ast_stmt_free(func->stmts[i]);
 	free(func->stmts);

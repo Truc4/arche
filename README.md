@@ -451,42 +451,26 @@ Arche is an experiment in:
   - primitives
   - structured grouping
 
-## Out Parameters (`out`)
+## Multi-return signatures
 
-Out parameters allow functions to fill buffers and return them as values. When a parameter is marked `out`, the language allocates a buffer and returns it as part of the function result.
-
-### Signature
-
-Out parameters have no size specified in the type. Size is determined by parameters passed at call time:
+A function returns more than one value with a parenthesized return type `-> (T1, …, Tn)`. There
+is no `out` parameter keyword — a function that fills a buffer takes the buffer as an ordinary
+parameter and **returns it** alongside its scalar result:
 
 ```arche
-extern func read(fd: int, out buf: char[], len: int) -> int;
-extern proc write(fd: int, buf: char[], len: int);
+func read_chunk(fd: file, buf: char[], size: int) -> (char[], int) {
+  let n := arche_csv_read_chunk(fd, buf, size);
+  return buf, n;
+}
+
+// caller binds both with a multi-value let
+let buf, n := read_chunk(fd, buf, 65536);
 ```
 
-### Pattern 1: Zero-initialized buffer (language allocates)
-
-Don't pass a buffer; language creates one:
-
-```arche
-let buf, bytes_read = read(fd, 256);
-```
-
-The `out buf` argument is omitted. Language allocates a fresh 256-byte buffer on the stack, passes to C, returns it.
-
-### Pattern 2: Copy-in semantics (you provide buffer)
-
-Pass a buffer for the out parameter:
-
-```arche
-let new_buf, bytes_read = read(fd, old_buf, 256);
-```
-
-The buffer `old_buf` is passed. Language copies it in, passes to C, returns modified copy. Original `old_buf` unchanged.
-
-### Copy Semantics
-
-All parameters are always copied. C functions cannot modify caller data directly. Out parameters are returned as new values. Every function parameter is **always copied** — there are no side effects on the original data. Functions are pure with respect to parameters; side effects are explicit in the code.
+The buffer is caller-allocated and filled in place; the leading array return is that same
+buffer, bound at the call. The final type is the scalar physically returned. `return a, …, n`
+lists the values in signature order. (A genuine multi-scalar return is a natural extension; the
+current cut covers the buffer-fill shape that the old `out` keyword served.)
 
 ## Foreign resources: nominal `opaque` types
 
@@ -543,23 +527,16 @@ proc render() {
 
 ## Multi-Value Let
 
-The `let a, b, c = function()` syntax captures multiple return values from a single function call:
+The `let a, b, … := function()` syntax captures the multiple return values of a multi-return
+function (see above):
 
 ```arche
-let buf, n = read(fd, buf, 256);     // Capture buffer and return value
-let x, y, z = some_func();            // Capture multiple returns
+let buf, n := read(fd, buf, 256);    // bind the filled buffer + the scalar
+let x, y, z := some_func();           // bind all returns
 ```
 
-Values are assigned **left-to-right** in signature order:
-
-- Out parameters first (in order)
-- Function return value last
-
-Use `_` to discard values:
-
-```arche
-let buf, _ = read(fd, buf, 256);     // Discard return value, keep buffer
-```
+Targets bind **left-to-right** in the function's return-type order (the leading buffer returns
+first, the scalar last). A target may be a new `let x:` or an existing variable.
 
 ## Status
 
@@ -576,7 +553,7 @@ let buf, _ = read(fd, buf, 256);     // Discard return value, keep buffer
 - **Systems**: Data-driven transformations over matching archetypes
 - **For loops**: Infinite loops, condition-based loops, range iteration
 - **External Functions**: C function calls with copy semantics
-- **Out Parameters**: Buffer allocation and return as values, with copy-in semantics
+- **Multi-return signatures**: `-> (T1, …, Tn)`; buffer-fill funcs return their buffer + scalar
 - **Multi-value Let**: Capture multiple return values from function calls
 - **Archetype Operations**: Allocation, indexing, column access, tuple columns, shaped arrays
 - **C Stdlib Interop**: File I/O via C stdlib wrappers (fopen, fread, fwrite, fclose)

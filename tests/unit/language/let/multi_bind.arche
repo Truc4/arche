@@ -1,13 +1,13 @@
 // RUN: %arche -o %t %s && %t | grep "x=ab y=cd n=42"
 // Multi-bind statement tests - mixed declaration and assignment
 
-func fill_two(out buf1: char[32], out buf2: char[32]) -> int {
+func fill_two(buf1: char[32], buf2: char[32]) -> (char[], char[], int) {
   buf1[0] = 'a';
   buf1[1] = 'b';
   // Note: '\0' escape not implemented, so use sprintf to get null-terminated string
   let result1 := sprintf(buf1, "ab");
   let result2 := sprintf(buf2, "cd");
-  return 42;
+  return buf1, buf2, 42;
 }
 
 proc main() {

@@ -361,7 +361,6 @@ static AstStmt *lower_stmt(Statement *stmt) {
 static AstParam *lower_param(Parameter *p) {
 	AstParam *ap = ast_param_create(NULL, NULL);
 	ap->loc = p->loc;
-	ap->is_out = p->is_out;
 	ap->is_consume = p->is_consume;
 	ap->name = malloc(strlen(p->name) + 1);
 	strcpy(ap->name, p->name);
@@ -627,7 +626,6 @@ static AstDecl *lower_decl(Decl *decl) {
 				snprintf(nm, sizeof(nm), "%s_%s", cp->name, ti->comp[j]);
 				AstParam *ap = ast_param_create(NULL, NULL);
 				ap->loc = cp->loc;
-				ap->is_out = cp->is_out;
 				ap->is_consume = cp->is_consume;
 				ap->name = malloc(strlen(nm) + 1);
 				strcpy(ap->name, nm);
@@ -651,7 +649,15 @@ static AstDecl *lower_decl(Decl *decl) {
 		afunc->params = calloc(func->param_count, sizeof(AstParam *));
 		for (int i = 0; i < func->param_count; i++)
 			afunc->params[i] = lower_param(func->params[i]);
-		afunc->return_type = lower_type_ref(func->return_type);
+		if (func->return_type_count > 0) {
+			afunc->return_type_count = func->return_type_count;
+			afunc->return_types = calloc(func->return_type_count, sizeof(AstType *));
+			for (int i = 0; i < func->return_type_count; i++)
+				afunc->return_types[i] = lower_type_ref(func->return_types[i]);
+			afunc->return_type = afunc->return_types[func->return_type_count - 1];
+		} else {
+			afunc->return_type = lower_type_ref(func->return_type);
+		}
 		afunc->stmt_count = func->statement_count;
 		afunc->stmts = calloc(func->statement_count, sizeof(AstStmt *));
 		for (int i = 0; i < func->statement_count; i++)

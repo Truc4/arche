@@ -571,25 +571,15 @@ static Decl *parse_proc_decl(Parser *parser) {
 	/* Parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
-			int param_is_out = 0;
 			int param_is_consume = 0;
 
-			/* Collect modifier keywords (out, consume) in either order */
-			int saw_modifier = 1;
-			while (saw_modifier) {
-				saw_modifier = 0;
-				if (match(parser, TOK_OUT)) {
-					param_is_out = 1;
-					saw_modifier = 1;
-				}
-				if (match(parser, TOK_CONSUME)) {
-					param_is_consume = 1;
-					saw_modifier = 1;
-				}
+			if (check(parser, TOK_OUT)) {
+				error(parser, "`out` parameters were removed; return the value instead via a "
+				              "multi-return signature `-> (T, ...)`");
+				advance(parser);
 			}
-
-			if (param_is_out && param_is_consume) {
-				error(parser, "'consume' and 'out' cannot both apply to the same parameter");
+			if (match(parser, TOK_CONSUME)) {
+				param_is_consume = 1;
 			}
 
 			if (!check(parser, TOK_IDENT)) {
@@ -611,7 +601,6 @@ static Decl *parse_proc_decl(Parser *parser) {
 				return NULL;
 
 			Parameter *param = parameter_create(param_name, param_type);
-			param->is_out = param_is_out;
 			param->is_consume = param_is_consume;
 			param->loc.line = param_line;
 			param->loc.column = param_column;
@@ -815,9 +804,10 @@ static Decl *parse_func_decl(Parser *parser) {
 	/* parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
-			int param_is_out = 0;
-			if (match(parser, TOK_OUT)) {
-				param_is_out = 1;
+			if (check(parser, TOK_OUT)) {
+				error(parser, "`out` parameters were removed; return the value instead via a "
+				              "multi-return signature `-> (T, ...)`");
+				advance(parser);
 			}
 
 			if (!check(parser, TOK_IDENT)) {
@@ -840,7 +830,6 @@ static Decl *parse_func_decl(Parser *parser) {
 				return NULL;
 
 			Parameter *param = parameter_create(param_name, param_type);
-			param->is_out = param_is_out;
 			param->loc.line = param_line;
 			param->loc.column = param_column;
 			func->params = realloc(func->params, (func->param_count + 1) * sizeof(Parameter *));
@@ -858,10 +847,33 @@ static Decl *parse_func_decl(Parser *parser) {
 		return NULL;
 	}
 
-	TypeRef *return_type = parse_type(parser);
-	if (!return_type)
-		return NULL;
-	func->return_type = return_type;
+	/* Return type: single `-> T`, or multi-return `-> (T1, …, Tn)`. In the multi form the
+	 * leading array returns are caller-passed buffers the func fills in place; the final
+	 * type is the scalar physically returned. return_type tracks that scalar. */
+	if (match(parser, TOK_LPAREN)) {
+		do {
+			TypeRef *rt = parse_type(parser);
+			if (!rt)
+				return NULL;
+			func->return_types =
+			    realloc(func->return_types, (func->return_type_count + 1) * sizeof(TypeRef *));
+			func->return_types[func->return_type_count++] = rt;
+		} while (match(parser, TOK_COMMA));
+		if (!match(parser, TOK_RPAREN)) {
+			error(parser, "Expected ')' after multi-return type list");
+			return NULL;
+		}
+		if (func->return_type_count < 2) {
+			error(parser, "a parenthesized return type must list at least two types");
+			return NULL;
+		}
+		func->return_type = func->return_types[func->return_type_count - 1];
+	} else {
+		TypeRef *return_type = parse_type(parser);
+		if (!return_type)
+			return NULL;
+		func->return_type = return_type;
+	}
 
 	/* For extern funcs, no body needed */
 	if (is_extern) {
@@ -1855,6 +1867,23 @@ static Statement *parse_statement(Parser *parser) {
 			goto cleanup;
 		}
 
+		/* Multi-return `return buf, …, n`: collect all values. The leading ones are
+		 * caller-passed buffers filled in place (no codegen at the return); only the final
+		 * scalar is physically returned. The full list is kept for faithful formatting. */
+		Expression **ret_values = malloc(sizeof(Expression *));
+		ret_values[0] = value;
+		int ret_value_count = 1;
+		while (match(parser, TOK_COMMA)) {
+			Expression *nv = parse_expression(parser);
+			if (!nv) {
+				error(parser, "Expected expression after ',' in return statement");
+				goto cleanup;
+			}
+			ret_values = realloc(ret_values, (ret_value_count + 1) * sizeof(Expression *));
+			ret_values[ret_value_count++] = nv;
+		}
+		value = ret_values[ret_value_count - 1]; /* scalar = last */
+
 		if (!match(parser, TOK_SEMI)) {
 			error(parser, "Expected ';' after return statement");
 		}
@@ -1863,6 +1892,8 @@ static Statement *parse_statement(Parser *parser) {
 		stmt->loc.line = return_line;
 		stmt->loc.column = return_column;
 		stmt->data.return_stmt.value = value;
+		stmt->data.return_stmt.values = ret_values;
+		stmt->data.return_stmt.value_count = ret_value_count;
 		result = stmt;
 		goto cleanup;
 	}

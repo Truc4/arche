@@ -1662,10 +1662,8 @@ static int name_is_effectful_callee(SemanticContext *ctx, const char *name) {
 		if (d->kind == DECL_FUNC && d->data.func && d->data.func->name && strcmp(d->data.func->name, name) == 0) {
 			if (d->data.func->is_extern)
 				return 1; /* extern func: opaque C side effects */
-			for (int p = 0; p < d->data.func->param_count; p++) {
-				if (d->data.func->params[p] && d->data.func->params[p]->is_out)
-					return 1; /* out param means callee mutates caller's value */
-			}
+			if (d->data.func->return_type_count > 1)
+				return 1; /* multi-return func fills caller-passed buffers in place */
 			return 0; /* pure-ish func */
 		}
 	}
@@ -1690,19 +1688,6 @@ static const char *lvalue_leftmost_name(Expression *expr) {
 		}
 	}
 	return NULL;
-}
-
-/* Returns 1 if `name` matches a parameter of `proc` whose is_out flag is set. */
-static int name_is_out_param(ProcDecl *proc, const char *name) {
-	if (!proc || !name)
-		return 0;
-	for (int i = 0; i < proc->param_count; i++) {
-		if (proc->params[i] && proc->params[i]->is_out && proc->params[i]->name &&
-		    strcmp(proc->params[i]->name, name) == 0) {
-			return 1;
-		}
-	}
-	return 0;
 }
 
 /* Forward declarations for mutual recursion */
@@ -1754,8 +1739,6 @@ static int stmt_has_side_effects(SemanticContext *ctx, Statement *stmt, ProcDecl
 	case STMT_ASSIGN: {
 		const char *target_name = lvalue_leftmost_name(stmt->data.assign_stmt.target);
 		if (target_name) {
-			if (name_is_out_param(proc, target_name))
-				return 1;
 			if (find_archetype(ctx, target_name))
 				return 1; /* writing through an archetype = column write */
 		}

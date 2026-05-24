@@ -66,7 +66,7 @@ the decision, why, and how to revisit. Plan: `~/.claude/plans/alright-new-huge-c
    (`"redefined with a different backing"`). Lets core + a test both declare `file :: opaque`.
 9. **`sys`/`run name` RETAINED** (not yet `run { comps } { body }` query) — query-driven run deferred.
 10. **`delete(table<X>, h)` RETAINED** as interim (works via the `table<X>` value-ref) — `delete(h)` deferred.
-11. **`out` params RETAINED** (handle_out_param) — multi-return desugaring deferred.
+11. ~~`out` params RETAINED~~ — **SUPERSEDED: `out` deleted, replaced by multi-return** (see DONE block below).
 12. Removed 2 obsolete `opaque<X>` phantom-tag rule tests (no end-product equivalent).
 
 ## RESOLVED — opaque-i64 codegen + stdlib migration DONE (207/207 green)
@@ -122,17 +122,43 @@ An opaque LOCAL must be consumed before scope end (`pop_scope` check via `var_is
 User: "leave run alone, run sys; that's all it will ever be until I say otherwise." The
 query-driven `run { pos, vel } { … }` form is OFF. `sys`/`run name` stays as-is, permanently.
 
-## DEFERRED (deliberate, documented) — delete the dead extern-type code path
-The extern-type path (`parse_extern_type_decl`, `DECL_EXTERN_TYPE`/`ExternTypeDecl`, extern-table
-codegen, `runtime/handles.c __arche_slot_*`, `semantic_has_extern_type`, the `opaque<archetype>`
-phantom-tag + `validate_opaque_tag`) is **dead for all `.arche`** (stdlib + every test migrated to
-nominal opaque). But it is **69 references across 14 files**, and 4 of those are the C unit-test
-files (`tests/unit/compiler/{parser,semantic,codegen,handle_runtime}_tests.c`) which actively
-exercise `extern Window(8)` and are GREEN. **Decision (autonomous):** leave it. Ripping out 69
-refs + rewriting 4 green C-test files is a large mechanical change with ZERO behavioral benefit and
-real risk to the all-green suite — against the "done = everything green" bar. The product goal (one
-type system for all real code) is already met. Best done later as its own focused pass with explicit
-greenlight. NOT a blocker for the migration being functionally complete.
+## DONE (user greenlit "delete it all then make it green") — extern-type path removed
+The entire extern-type path is **gone**: `parse_extern_type_decl`, `DECL_EXTERN_TYPE`/`ExternTypeDecl`
+(cst.h/cst.c), the slot-marshal + slot-pool codegen (`codegen_emit_extern_types`, the arg/return
+`__arche_slot_*` blocks), `runtime/handles.{c,h}` (deleted), `semantic_has_extern_type` +
+`semantic_extern_type_*` + `ExternTypeEntry` + `validate_opaque_tag`, the `opaque<archetype>`
+phantom-tag (`TypeRef.data.opaque`), and the `extern_handle_target[_ast]` shims. Makefile + main.c
+link line scrubbed of `handles.o`. The C unit tests that exercised `extern Window(8)`
+(`parser/semantic/codegen/handle_runtime_tests.c`) were rewritten to the nominal `:: opaque` model or
+removed; `handle_runtime_tests.c` deleted. Suite: 213/213 lit + all C tests green.
+
+## DONE (user request) — `out` keyword DELETED, replaced by multi-return signatures
+The `out` parameter keyword and the `is_out` field are **gone** (cst/ast Parameter, parser,
+lower, semantic name_is_out_param, codegen). A buffer-filling function now takes the buffer as an
+ordinary param and **returns it**: `func read_chunk(fd, buf, size) -> (char[], int) { … return buf, n; }`,
+caller `let buf, n := read_chunk(fd, buf, 65536)`. Surface = real multi-return:
+- Parser: `-> (T1, …, Tn)` return-type list; `return e1, …, en` value list; `out` is now a parse error
+  (helpful message). FuncDecl gains `return_types[]`/`return_type_count` (return_type aliases the
+  final/scalar); ReturnStmt gains `values[]`/`value_count` (value aliases the last) — kept so the
+  **formatter round-trips `return buf, n` faithfully** (verified) rather than dropping tokens.
+- Codegen UNCHANGED in spirit: the function still physically returns only the scalar; the leading
+  array returns are caller-passed buffers filled in place. The old `is_out` per-param flag is replaced
+  by `param_is_fill_buffer(func, i)` derived from the signature (first n−1 array params are buffers).
+- Migrated: core `read`/`net_recv`, csv `read_chunk`, and the out tests (out_param_basic, multibind_*,
+  multi_bind*, let_multi_syntax, handle_out_param). New parser test: `out` keyword rejected.
+- **Decision/limit:** only the (buffers…, scalar) shape is wired (every real use). A genuine
+  multi-*scalar* return (e.g. `-> (int, int)` via struct return) is a clean future extension; nothing
+  needs it yet. This supersedes the earlier "out RETAINED" decision (#11).
+
+## DONE (user request) — `move` REQUIRED for opaque→consume transfers
+A named opaque binding handed to a `consume` parameter must be written `move x`; a bare name is a
+compile error (`opaque value 'x' must be moved into consuming parameter …`). Opaque can't copy, so
+the transfer is always visible. Plain (non-consume) params borrow — no `move` needed. The old
+auto-consume-on-bare-name (the "hack" the user flagged) is removed; consumption now flows only
+through `move` (UNARY_MOVE marks the binding consumed), `return`, or `insert`. `nominal_type_of_expr`
+sees through `move` so distinctness still checks the moved value. Cascade: ~33 `.arche` files
+(stdlib `csv.close`→`arche_fclose(move fd)`, every test close site) updated to `move`. Negative test:
+`types/consume_requires_move`.
 
 ## DONE (this session, all green)
 - Linear must-consume (P5) — see RESOLVED block above.
@@ -142,29 +168,20 @@ greenlight. NOT a blocker for the migration being functionally complete.
   no `alloc`); flat tuple access (`pos_x`); `sys step` examples; ownership/`move`/must-consume
   subsection in foreign-resources.
 
-## Still TODO (end-product gaps remaining — all DOCUMENTED; suite is 212/212 green)
-DONE: P1 aliases/distinctness/redef-agree; P2 tuples flat; P3 pool/insert/`delete(h)` (handle→archetype
-inference, propagated through `let alias := h`)/access; P4 nominal opaque foreign + stdlib + opaque-i64;
-**P5 `move` keyword** (contextual `UNARY_MOVE`: transparent value, marks operand consumed → use-after-move
-errors; renamed `sys move`→`sys step` to free the word) + `consume`; README foreign-types section.
-Remaining (each distinct; suite green so do one at a time):
-- **Linear must-consume** (the strict half of P5): an opaque LOCAL must be consumed before scope end.
-  NUANCED — must (a) apply only to `let`-bound opaque locals, NOT params (a plain opaque param is borrowed,
-  e.g. `resource_get(r)` reads without consuming), (b) count `return`/`insert`/`move`/`consume`-call as
-  consumption. A naive pop_scope check would wrongly flag params + returned values. Will (intentionally)
-  break non-consuming tests (`null_return` opens r1–r9 without closing) → needs paired test rewrites.
-- **`run { comps } { body }` query** (replace `sys`/`run name`) — real feature: match ALL pools whose
-  component set ⊇ {comps} (multi-pool iteration), reusing the sys/column codegen per matching archetype.
-- **`delete(h)`** (replace interim `delete(table<X>, h)`) — needs handle→archetype inference; codegen
-  `ValueInfo.handle_archetype` already tracks it, so `delete(h)` can emit `arche_delete_<X>`.
-- **Identity set/dedup** — order-independent `compute_shape_signature` (`semantic.c:~106`) + dup-component
-  -name error. RISK: collapsing two reordered archetypes to one ArchetypeInfo while codegen lays columns
-  by per-decl order → mismatch. Needs care (key identity by sorted set but keep per-decl column order).
-- **Delete the extern-type PATH** — `parse_extern_type_decl`, `ExternTypeDecl`/`DECL_EXTERN_TYPE`, the
-  extern-table codegen, `runtime/handles.c __arche_slot_*`, `semantic_has_extern_type`, and the
-  consume-slot-marshal in codegen. Now DEAD for all `.arche` (stdlib migrated), but still exercised by C
-  unit tests (`tests/unit/compiler/{codegen,parser}_tests.c` use `extern Window(8)`), which must be removed
-  with it. Also revert the `opaque<archetype>` phantom-tag code (parser `:302`, `validate_opaque_tag`,
-  type_ref_equal, cst `format_type` `opaque<%s>`) — likewise dead.
-- **README**: foreign-types section rewritten ✓; still stale — Archetypes section (old `field: type` framing),
-  Memory Model (`table`→`pool`), `handle(Name)` paren syntax mentions, Out Parameters section.
+## Status — migration COMPLETE, suite 213/213 lit + all C unit tests green
+ALL planned work is done or explicitly cancelled:
+- P1 aliases/distinctness/redef-agree + **set-based identity** (sorted `compute_shape_signature`) +
+  **dup-component error** — DONE.
+- P2 tuples flat — DONE.
+- P3 `pool`/`insert`/`delete(h)`/access — DONE. (`run`-query CANCELLED by user; `sys`/`run name` stays.)
+- P4 nominal opaque foreign + stdlib + opaque-i64 + **extern-type PATH fully deleted** — DONE.
+- P5 `move`/`consume` + **linear must-consume** + **`move` REQUIRED for opaque→consume** — DONE.
+- P6 stdlib migrated + README rewritten to the nominal model — DONE.
+
+### Remaining KNOWN GAPS (deliberate, documented; not blockers)
+- **`run { comps }` query** — CANCELLED by user ("run sys; that's all it will ever be").
+- **Cross-name shape sharing in codegen** — inserting/accessing a shape via a *different* same-set
+  archetype name (codegen is name-based; no `@B$pool`). Niche; the query consumer is cancelled.
+- **Formatter** emits inline components as `name: type` (round-trips, same signature) rather than bare
+  `name`; `static pool` and `move`/`consume`/`opaque` all round-trip correctly. (Repo-wide `make format`
+  still has the separate RAM-explosion/semicolon bug — do not run it blanket.)

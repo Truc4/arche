@@ -1,10 +1,11 @@
-// A foreign resource (nominal `resource :: opaque`) passed alongside an `out` array. The
-// C side reads the cell and fills the out buffer; the resource is a plain param, the
-// buffer is `out`. (Multi-return desugaring of `out` is a deferred convenience.)
+// A foreign resource (nominal `resource :: opaque`) passed alongside a fill buffer. The C
+// side reads the cell and fills the buffer; the resource is a plain param. The buffer is a
+// leading return of the multi-return signature `-> (char[], int)` — filled in place, bound
+// alongside the scalar at the call.
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t | grep "v=42 b=2"
 resource :: opaque
 extern func resource_open(initial: int) -> resource;
-extern func resource_fill(r: resource, out buf: char[], n: int) -> int;
+extern func resource_fill(r: resource, buf: char[], n: int) -> (char[], int);
 extern proc resource_close(consume r: resource);
 
 proc main() {

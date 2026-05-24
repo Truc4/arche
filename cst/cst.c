@@ -78,6 +78,8 @@ FuncDecl *func_decl_create(char *name, TypeRef *return_type) {
 	FuncDecl *func = malloc(sizeof(FuncDecl));
 	func->name = name;
 	func->return_type = return_type;
+	func->return_types = NULL;
+	func->return_type_count = 0;
 	func->params = NULL;
 	func->param_count = 0;
 	func->is_extern = 0;
@@ -146,7 +148,6 @@ Parameter *parameter_create(char *name, TypeRef *type) {
 	Parameter *param = malloc(sizeof(Parameter));
 	param->name = name;
 	param->type = type;
-	param->is_out = 0;
 	param->is_consume = 0;
 	param->loc.line = 1;
 	param->loc.column = 1;
@@ -331,7 +332,14 @@ void func_decl_free(FuncDecl *func) {
 	if (!func)
 		return;
 	free(func->name);
-	type_ref_free(func->return_type);
+	if (func->return_type_count > 0) {
+		/* return_type aliases return_types[last]; free the list (covers it). */
+		for (int i = 0; i < func->return_type_count; i++)
+			type_ref_free(func->return_types[i]);
+		free(func->return_types);
+	} else {
+		type_ref_free(func->return_type);
+	}
 	for (int i = 0; i < func->param_count; i++) {
 		parameter_free(func->params[i]);
 	}
@@ -470,7 +478,14 @@ void statement_free(Statement *stmt) {
 	case STMT_BREAK:
 		break;
 	case STMT_RETURN:
-		expression_free(stmt->data.return_stmt.value);
+		if (stmt->data.return_stmt.value_count > 0) {
+			/* value aliases values[last]; the list free covers it. */
+			for (int i = 0; i < stmt->data.return_stmt.value_count; i++)
+				expression_free(stmt->data.return_stmt.values[i]);
+			free(stmt->data.return_stmt.values);
+		} else {
+			expression_free(stmt->data.return_stmt.value);
+		}
 		break;
 	case STMT_MULTI_BIND:
 		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
@@ -1088,7 +1103,15 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 	}
 	case STMT_RETURN: {
 		fprintf(out, "%sreturn ", indent_str);
-		format_expression(out, stmt->data.return_stmt.value);
+		if (stmt->data.return_stmt.value_count > 1) {
+			for (int j = 0; j < stmt->data.return_stmt.value_count; j++) {
+				if (j > 0)
+					fprintf(out, ", ");
+				format_expression(out, stmt->data.return_stmt.values[j]);
+			}
+		} else {
+			format_expression(out, stmt->data.return_stmt.value);
+		}
 		fprintf(out, ";");
 		emit_trailing_trivia(out, stmt->trailing_trivia, stmt->trailing_count);
 		fprintf(out, "\n");
@@ -1201,8 +1224,6 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			for (int j = 0; j < proc->param_count; j++) {
 				if (j > 0)
 					fprintf(out, ", ");
-				if (proc->params[j]->is_out)
-					fprintf(out, "out ");
 				if (proc->params[j]->is_consume)
 					fprintf(out, "consume ");
 				fprintf(out, "%s: ", proc->params[j]->name);
@@ -1250,15 +1271,23 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			for (int j = 0; j < func->param_count; j++) {
 				if (j > 0)
 					fprintf(out, ", ");
-				if (func->params[j]->is_out)
-					fprintf(out, "out ");
 				if (func->params[j]->is_consume)
 					fprintf(out, "consume ");
 				fprintf(out, "%s: ", func->params[j]->name);
 				format_type(out, func->params[j]->type);
 			}
 			fprintf(out, ") -> ");
-			format_type(out, func->return_type);
+			if (func->return_type_count > 1) {
+				fprintf(out, "(");
+				for (int j = 0; j < func->return_type_count; j++) {
+					if (j > 0)
+						fprintf(out, ", ");
+					format_type(out, func->return_types[j]);
+				}
+				fprintf(out, ")");
+			} else {
+				format_type(out, func->return_type);
+			}
 			if (func->is_extern) {
 				fprintf(out, ";");
 				emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);

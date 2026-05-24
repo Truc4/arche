@@ -208,7 +208,6 @@ struct ProcDecl {
 struct Parameter {
 	char *name;
 	TypeRef *type;
-	int is_out;
 	int is_consume;
 	SourceLoc loc;
 };
@@ -227,7 +226,12 @@ struct FuncDecl {
 	char *name;
 	Parameter **params;
 	int param_count;
+	/* return_type is the *scalar* return (the value physically returned). For a multi-return
+	 * signature `-> (T1, …, Tn)`, return_types holds all n and return_type == return_types[n-1];
+	 * the leading array returns are caller-passed buffers filled in place (bound at the call). */
 	TypeRef *return_type;
+	TypeRef **return_types;
+	int return_type_count;
 	int is_extern;
 	int is_unsafe; /* 1 if declared `unsafe func`; may call unsafe builtins (syscall) */
 	Statement **statements;
@@ -321,7 +325,12 @@ typedef struct {
 } FreeStmt;
 
 typedef struct {
+	/* value is the scalar physically returned (the last value). For a multi-return
+	 * `return buf, …, n`, values holds all of them (value == values[count-1]); the leading
+	 * ones are caller-passed buffers filled in place — kept only so the formatter round-trips. */
 	Expression *value;
+	Expression **values;
+	int value_count;
 } ReturnStmt;
 
 typedef struct {

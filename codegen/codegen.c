@@ -403,6 +403,26 @@ static int field_total_elements(AstType *type) {
 	return 1;
 }
 
+/* A parameter that backs a leading (buffer) return of a multi-return func: the caller passes
+ * it in, the callee fills it in place, and the call binds it alongside the scalar return.
+ * Derived from the `-> (T1, …, Tn)` signature — the first (n-1) array-typed params are the
+ * buffers. (Replaces the old per-param `out` flag; that keyword is gone.) */
+static int param_is_fill_buffer(AstFuncDecl *f, int idx) {
+	if (!f || f->return_type_count <= 1)
+		return 0;
+	int k = f->return_type_count - 1; /* number of leading buffer returns */
+	int ord = 0;
+	for (int i = 0; i < f->param_count && i <= idx; i++) {
+		AstType *t = f->params[i] ? f->params[i]->type : NULL;
+		int is_arr = t && (t->tag == AST_TYPE_ARRAY || t->tag == AST_TYPE_SHAPED_ARRAY);
+		if (i == idx)
+			return is_arr && ord < k;
+		if (is_arr)
+			ord++;
+	}
+	return 0;
+}
+
 static const char *ast_resolved_type_name(const AstExpr *expr) {
 	if (!expr)
 		return "int";
@@ -3866,7 +3886,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 				   and register x in scope so it is visible as an arg.
 				   If the target is existing, the arg already has memory. */
 				for (int i = 0; i < callee_func->param_count; i++) {
-					if (!callee_func->params[i] || !callee_func->params[i]->is_out)
+					if (!param_is_fill_buffer(callee_func, i))
 						continue;
 
 					AstType *pt = callee_func->params[i]->type;
@@ -3944,8 +3964,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 				char **arg_bufs = malloc(arg_count * sizeof(char *));
 				for (int i = 0; i < arg_count; i++) {
 					arg_bufs[i] = malloc(256);
-					int is_out =
-					    (i < callee_func->param_count && callee_func->params[i] && callee_func->params[i]->is_out);
+					int is_out = param_is_fill_buffer(callee_func, i);
 					if (!is_out)
 						codegen_expression(ctx, rhs->data.call.args[i], arg_bufs[i]);
 				}
@@ -3956,8 +3975,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 
 				for (int i = 0; i < arg_count; i++) {
 					call_arg_vals[i] = malloc(256);
-					int is_out =
-					    (i < callee_func->param_count && callee_func->params[i] && callee_func->params[i]->is_out);
+					int is_out = param_is_fill_buffer(callee_func, i);
 
 					if (is_out && out_idx < out_param_count) {
 						AstType *pt = callee_func->params[i]->type;

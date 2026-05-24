@@ -94,7 +94,6 @@ struct AstField {
 struct AstParam {
 	char *name;
 	AstType *type;
-	int is_out;
 	int is_consume;
 	SourceLoc loc;
 };
@@ -129,7 +128,12 @@ typedef struct {
 	char *name;
 	AstParam **params;
 	int param_count;
+	/* return_type = the scalar physically returned. For multi-return `-> (T1,…,Tn)`,
+	 * return_types holds all n (return_type == return_types[n-1]); the leading array
+	 * returns are caller-passed buffers filled in place. return_type_count==0 ⇒ single. */
 	AstType *return_type;
+	AstType **return_types;
+	int return_type_count;
 	int is_extern;
 	AstStmt **stmts;
 	int stmt_count;

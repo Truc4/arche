@@ -789,16 +789,15 @@ void test_consume_param_modifier(void) {
 	ProcDecl *p = prog->decls[1]->data.proc;
 	ASSERT_EQ(p->param_count, 1, "expected 1 param");
 	ASSERT_EQ(p->params[0]->is_consume, 1, "param should be consume");
-	ASSERT_EQ(p->params[0]->is_out, 0, "param should NOT be out");
 	program_free(prog);
 	test_pass_msg();
 }
 
-void test_consume_and_out_mutually_exclusive(void) {
-	test_start("consume and out cannot both apply to same param");
+void test_out_keyword_rejected(void) {
+	test_start("removed `out` keyword is rejected");
 	ParseResult result = parse_source("window :: opaque\n"
-	                                  "extern proc bad(consume out w: window);\n");
-	ASSERT_TRUE(result.error_count >= 1, "expected at least one parse error");
+	                                  "extern proc bad(out w: window);\n");
+	ASSERT_TRUE(result.error_count >= 1, "expected a parse error for `out` parameter");
 	parse_result_free(&result);
 	test_pass_msg();
 }
@@ -890,7 +889,7 @@ int main(void) {
 	/* Consume parameter modifier tests */
 	printf("\nConsume parameter modifier tests:\n");
 	test_consume_param_modifier();
-	test_consume_and_out_mutually_exclusive();
+	test_out_keyword_rejected();
 
 	/* Assignment operators */
 	printf("\nAssignment operator tests:\n");
