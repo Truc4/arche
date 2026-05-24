@@ -221,11 +221,20 @@ ALL planned work is done or explicitly cancelled:
 
 ### Remaining KNOWN GAPS (deliberate, documented; not blockers)
 - **`run { comps }` query** — CANCELLED by user ("run sys; that's all it will ever be").
-- **Handle-field *read* (`h.comp`) is unimplemented** — reading a component through a handle value
-  (e.g. `let a := insert(A,…); printf(a.hp)`) emits the field name as a raw token → invalid IR.
-  PRE-EXISTING (affects even non-aliased archetypes; uncovered while testing A4), NOT caused by the
-  migration. No test/real code reads `h.comp` today (column access `A.hp[i]` is the supported path).
-  Wire it (handle → pool slot → column load) when handle-centric access is wanted.
-- **Formatter** emits inline components as `name: type` (round-trips, same signature) rather than bare
-  `name`; `static pool` and `move`/`consume`/`opaque` all round-trip correctly. (Repo-wide `make format`
-  still has the separate RAM-explosion/semicolon bug — do not run it blanket.)
+- **Handle-field read `h.comp` — DELIBERATE NON-GOAL (per user).** Reading a component through a
+  handle value (`h.hp`) is intentionally not in the language. Column access `Foo.comp[i]` is THE way
+  to touch data; a handle is a lifetime/capacity token (produced by `insert`, stored, passed,
+  null-checked, `delete`d with generation/stale-handle abort), not a read handle. The codegen path
+  that would deref `h.comp` does not exist and there are **no plans to add it** — not adding a feature
+  just because other languages have it. (A bare `h.comp` currently emits an invalid token rather than
+  a diagnostic; if it ever needs guarding, reject it at semantic time, but it's not on the roadmap.)
+- **Generation-checked handles** — handle is `i64` = slot (low 32) | generation (high 32); a slot's
+  i32 gen bumps on `delete`, validated on use (mismatch → abort: stale/use-after-free/ABA, tested by
+  `stale_handle_abort` / `handle_use_after_free` / `handle_use_after_reinsert`). At gen `0xFFFFFFFF` a
+  delete aborts loudly instead of wrapping — `codegen.c` `gen_exhausted:`. Reaching it needs 2^32
+  deletes (untestable live), so `codegen_tests.c: test_codegen_gen_exhaustion_abort` asserts the branch
+  is emitted. DONE.
+- **Multi-*scalar* return** (`-> (int, int)` via struct return) — not built; only the buffer+scalar
+  shape is. Deferred; nothing needs it.
+- **Repo-wide `make format`** still has the pre-existing RAM-explosion/semicolon bug — do not run it
+  blanket. (Per-file `arche-fmt` is fine and round-trips all current constructs, verified.)

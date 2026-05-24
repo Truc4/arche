@@ -303,9 +303,29 @@ void test_compile_overloads_smoke(void) {
 }
 
 
+/* Test: delete emits the generation-exhaustion abort. A handle is i64 = slot(low 32) |
+ * gen(high 32); a slot's i32 generation bumps on each delete. At 0xFFFFFFFF it would wrap and
+ * a stale handle could alias a fresh entity (ABA), so delete aborts loudly instead. Reaching it
+ * needs 2^32 deletes — untestable at runtime — so assert the guard branch is emitted. */
+void test_codegen_gen_exhaustion_abort(void) {
+	test_start("delete emits generation-exhaustion abort");
+	char *ir = compile_to_ir_string("hp :: int\n"
+	                                "arche Unit { hp }\n"
+	                                "static pool<Unit>(4);\n"
+	                                "proc main() {\n"
+	                                "  h := insert(Unit, 1);\n"
+	                                "  delete(h);\n"
+	                                "}\n");
+	ASSERT_NOT_NULL(ir, "no IR produced");
+	ASSERT_TRUE(strstr(ir, "gen_exhausted") != NULL, "no generation-exhaustion abort branch in delete");
+	free(ir);
+	test_pass_msg();
+}
+
 int main(void) {
 	printf("codegen tests\n");
 
+	test_codegen_gen_exhaustion_abort();
 	test_compile_simple();
 	test_compile_hello_world();
 	test_compile_with_params();
