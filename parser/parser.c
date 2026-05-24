@@ -359,8 +359,10 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 	strcpy(name_copy, name);
 	advance(parser);
 
-	/* New model: a bare component `a` (no accessor) — its type is its own name.
-	 * `arche Foo { a, b }` is a set of nominal component types. */
+	/* A component is a type. A bare `a` references the type `a` (`arche Foo { a, b }` is a
+	 * set of nominal component types). `name :: type` defines one inline (mints the nominal
+	 * type `name` and includes it). The old single-colon accessor `name: type` is rejected —
+	 * `foo : bar` names nothing. */
 	if (!check(parser, TOK_COLON)) {
 		char *type_name_dup = malloc(strlen(name_copy) + 1);
 		strcpy(type_name_dup, name_copy);
@@ -376,7 +378,15 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 		*out_count = 1;
 		return result;
 	}
-	advance(parser); /* consume ':' (old accessor form: `field: type`) */
+	advance(parser); /* consume first ':' */
+	if (!check(parser, TOK_COLON)) {
+		error(parser, "archetype components are types: write `name :: type` to define a component, "
+		              "or a bare type name to reference one (`name: type` is not valid)");
+		free(name_copy);
+		*out_count = 0;
+		return NULL;
+	}
+	advance(parser); /* consume second ':' — this was `::`, an inline component definition */
 
 	/* Check for tuple syntax: (x: float, y: float) */
 	if (check(parser, TOK_LPAREN)) {
@@ -506,9 +516,12 @@ static Decl *parse_archetype_decl(Parser *parser) {
 		int field_count = 0;
 		FieldDecl **fields = parse_arch_field_expanded(parser, &field_count);
 		if (!fields || field_count == 0) {
+			/* Malformed component. Stop the body loop — global `synchronize` can skip past
+			 * the closing `}` to the next decl keyword and park there without advancing,
+			 * which would spin this loop (allocating trivia each pass → RAM blowup). The
+			 * missing `}` is reported below. */
 			free(fleading);
-			synchronize(parser);
-			continue;
+			break;
 		}
 
 		/* Attach leading trivia to the FIRST field and trailing-inline to the

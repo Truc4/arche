@@ -1,6 +1,6 @@
 // RUN: %arche -o %t %s && %t | grep "value:"
 arche Matrix {
-  data: float[10],
+  data :: float[10],
 }
 
 

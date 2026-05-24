@@ -1,6 +1,6 @@
 // RUN: %arche -o %t %s && %t
 arche C {
-  x: int,
+  x :: int,
 }
 
 

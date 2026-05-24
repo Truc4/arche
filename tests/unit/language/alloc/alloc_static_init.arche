@@ -1,13 +1,13 @@
 // RUN: %arche -o %t %s && %t
 // Task 1: Static alloc with bulk initialization (top-level only)
 arche Counter {
-  val: int,
-  score: float,
+  val :: int,
+  score :: float,
 }
 
 
 arche Empty {
-  x: int,
+  x :: int,
 }
 
 

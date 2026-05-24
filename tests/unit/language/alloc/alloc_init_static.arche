@@ -1,12 +1,12 @@
 // RUN: %arche -o %t %s && %t
 arche Counter {
-  val: int,
-  score: float,
+  val :: int,
+  score :: float,
 }
 
 
 arche Empty {
-  x: int,
+  x :: int,
 }
 
 

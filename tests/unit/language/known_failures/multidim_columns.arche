@@ -1,12 +1,12 @@
 // RUN: %arche -o %t %s && %t | grep "allocations done"
 arche Message {
-  text: char[256],
-  author: char[64],
+  text :: char[256],
+  author :: char[64],
 }
 
 
 arche Matrix {
-  data: float[10][10],
+  data :: float[10][10],
 }
 
 

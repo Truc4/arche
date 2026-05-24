@@ -2,9 +2,9 @@
 // Compute revenue = price * quantity for all rows
 use csv;
 arche Transaction {
-  price: float,
-  quantity: int,
-  revenue: float,
+  price :: float,
+  quantity :: int,
+  revenue :: float,
 }
 
 

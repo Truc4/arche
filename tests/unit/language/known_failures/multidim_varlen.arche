@@ -1,7 +1,7 @@
 // RUN: %arche -o %t %s && %t | grep "allocations done"
 arche Message {
-  text: char[256],
-  author: char[64],
+  text :: char[256],
+  author :: char[64],
 }
 
 

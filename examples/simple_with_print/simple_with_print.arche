@@ -1,5 +1,5 @@
 arche Counter {
-  value: int,
+  value :: int,
 }
 static table<Counter>(1);
 proc main() {

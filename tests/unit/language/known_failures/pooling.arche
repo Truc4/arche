@@ -1,7 +1,7 @@
 // RUN: %arche -o %t %s && %t | grep "DEBUG"
 arche Entity {
-  x: float,
-  y: float,
+  x :: float,
+  y :: float,
 }
 
 

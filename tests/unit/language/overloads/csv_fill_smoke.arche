@@ -2,8 +2,8 @@
 use csv;
 
 arche Pair {
-  a: int,
-  b: int,
+  a :: int,
+  b :: int,
 }
 
 static pool<Pair>(3, 3) {

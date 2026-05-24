@@ -1,11 +1,11 @@
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -q "type mismatch\|error" %t.out
 arche Player {
-  pos: float,
+  pos :: float,
 }
 
 
 arche Enemy {
-  health: float,
+  health :: float,
 }
 
 

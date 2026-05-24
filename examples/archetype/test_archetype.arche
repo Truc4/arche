@@ -1,11 +1,11 @@
 arche Particle {
-  pos: float,
-  vel: float,
+  pos :: float,
+  vel :: float,
 }
 arche Body {
-  pos: float,
-  vel: float,
-  mass: float,
+  pos :: float,
+  vel :: float,
+  mass :: float,
 }
 static table<Particle>(100);
 static table<Body>(50);

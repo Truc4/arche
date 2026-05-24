@@ -1,14 +1,14 @@
 // RUN: %arche -o %t %s && %t
 // Multiple handles to same shape is allowed - they're just names/aliases
 arche Players {
-  x: float,
-  y: int,
+  x :: float,
+  y :: int,
 }
 
 
 arche Enemies {
-  x: float,
-  y: int,
+  x :: float,
+  y :: int,
 }
 
 

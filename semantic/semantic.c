@@ -2459,6 +2459,51 @@ SemanticContext *semantic_analyze(Program *prog) {
 	next_const:;
 	}
 
+	/* Inline component definitions: `arche Foo { hp :: int, … }` mints the nominal type `hp`
+	 * (≡ a top-level `hp :: int`) and includes it as a component — so the component is a real
+	 * type, not a bare field label. A bare reference (`arche Foo { hp }`) has field type == its
+	 * own name and is skipped here. Array/tuple components are the column's own type, not a
+	 * registerable alias. Redefinition must agree, exactly as for top-level aliases. */
+	for (int i = 0; i < prog->decl_count; i++) {
+		if (prog->decls[i]->kind != DECL_ARCHETYPE)
+			continue;
+		ArchetypeDecl *a = prog->decls[i]->data.archetype;
+		for (int f = 0; f < a->field_count; f++) {
+			FieldDecl *fd = a->fields[f];
+			if (!fd->type || !fd->name)
+				continue;
+			const char *backing = NULL;
+			if (fd->type->kind == TYPE_NAME) {
+				if (strcmp(fd->type->data.name, fd->name) == 0)
+					continue; /* bare reference, not an inline definition */
+				backing = fd->type->data.name;
+			} else if (fd->type->kind == TYPE_OPAQUE) {
+				backing = "opaque";
+			} else {
+				continue; /* array/tuple component: column-only, no nominal alias */
+			}
+			int done = 0;
+			for (int j = 0; j < ctx->type_alias_count; j++) {
+				if (strcmp(ctx->type_alias_names[j], fd->name) == 0) {
+					if (strcmp(ctx->type_alias_backings[j], backing) != 0) {
+						char msg[256];
+						snprintf(msg, sizeof(msg), "type '%s' redefined with a different backing", fd->name);
+						error(ctx, msg);
+					}
+					done = 1;
+					break;
+				}
+			}
+			if (done)
+				continue;
+			ctx->type_alias_names = realloc(ctx->type_alias_names, (ctx->type_alias_count + 1) * sizeof(char *));
+			ctx->type_alias_backings = realloc(ctx->type_alias_backings, (ctx->type_alias_count + 1) * sizeof(char *));
+			ctx->type_alias_names[ctx->type_alias_count] = fd->name;
+			ctx->type_alias_backings[ctx->type_alias_count] = (char *)backing;
+			ctx->type_alias_count++;
+		}
+	}
+
 	/* Validate each alias resolves (through any chain) to a real backing type. */
 	for (int i = 0; i < ctx->type_alias_count; i++) {
 		const char *b = resolve_type_alias(ctx, ctx->type_alias_names[i]);

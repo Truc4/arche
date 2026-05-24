@@ -1,9 +1,9 @@
 // Task 2: Filter invalid rows
 // Mark rows as valid (valid=1) if quantity > 0
 arche Transaction {
-  price: float,
-  quantity: int,
-  valid: int,
+  price :: float,
+  quantity :: int,
+  valid :: int,
 }
 
 

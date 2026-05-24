@@ -1,9 +1,9 @@
 // RUN: %arche -o %t %s && %t
 // Task 1: Derived columns (revenue = price * quantity)
 arche Task1 {
-  price: float,
-  quantity: int,
-  revenue: float,
+  price :: float,
+  quantity :: int,
+  revenue :: float,
 }
 
 
@@ -19,8 +19,8 @@ sys task1_compute_revenue(price, quantity, revenue) {
 }
 // Task 2: Filter invalid (valid flag for quantity > 0)
 arche Task2 {
-  quantity: int,
-  valid: int,
+  quantity :: int,
+  valid :: int,
 }
 
 
@@ -35,8 +35,8 @@ sys task2_filter_invalid(quantity, valid) {
 }
 // Task 3: Bucket timestamps (hour_bucket = timestamp rounded down to nearest hour)
 arche Task3 {
-  timestamp: int,
-  hour_bucket: int,
+  timestamp :: int,
+  hour_bucket :: int,
 }
 
 
@@ -51,9 +51,9 @@ sys task3_bucket_timestamps(timestamp, hour_bucket) {
 }
 // Task 4: Aggregate region (total revenue by region, simplified to single value per archetype)
 arche Task4 {
-  price: float,
-  qty: int,
-  total: float,
+  price :: float,
+  qty :: int,
+  total :: float,
 }
 
 

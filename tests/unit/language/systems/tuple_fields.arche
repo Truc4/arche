@@ -4,8 +4,8 @@
 //   pos0 (0,0)+(1,2) -> (1,2);  pos1 (10,10)+(-1,-1) -> (9,9)
 // RUN: %arche -o %t %s && %t | grep "R 1 2 9 9"
 arche Body {
-  pos: (x: int, y: int),
-  vel: (x: int, y: int),
+  pos :: (x: int, y: int),
+  vel :: (x: int, y: int),
 }
 static pool<Body>(2);
 sys step(pos, vel) {

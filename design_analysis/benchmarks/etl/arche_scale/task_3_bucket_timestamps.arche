@@ -3,9 +3,9 @@
 use csv;
 
 arche Transaction {
-  price: float,
-  hour_bucket: int,
-  price_bucket: float,
+  price :: float,
+  hour_bucket :: int,
+  price_bucket :: float,
 }
 
 

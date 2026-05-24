@@ -1201,9 +1201,16 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			for (int j = 0; j < arch->field_count; j++) {
 				FieldDecl *field = arch->fields[j];
 				emit_leading_trivia(out, field->leading_trivia, field->leading_count, "  ", &ctx);
-				fprintf(out, "  %s: ", field->name);
-				format_type(out, field->type);
-				fprintf(out, ",");
+				if (field->type && field->type->kind == TYPE_NAME &&
+				    strcmp(field->type->data.name, field->name) == 0) {
+					/* Bare component reference — its type is its own name. */
+					fprintf(out, "  %s,", field->name);
+				} else {
+					/* Inline component definition `name :: type`. */
+					fprintf(out, "  %s :: ", field->name);
+					format_type(out, field->type);
+					fprintf(out, ",");
+				}
 				emit_trailing_trivia(out, field->trailing_trivia, field->trailing_count);
 				fprintf(out, "\n");
 			}

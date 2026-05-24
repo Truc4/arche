@@ -1,6 +1,6 @@
 // RUN: %arche -o %t %s && %t
 arche Point {
-  x: int,
+  x :: int,
 }
 
 

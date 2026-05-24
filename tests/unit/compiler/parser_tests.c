@@ -70,7 +70,7 @@ void test_archetype_empty(void) {
 
 void test_archetype_meta_field(void) {
 	test_start("archetype with meta field");
-	Program *prog = parse_string("arche Player {\n  drag: Float\n}");
+	Program *prog = parse_string("arche Player {\n  drag :: Float\n}");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ASSERT_EQ(prog->decl_count, 1, "expected 1 decl");
 	ArchetypeDecl *arch = prog->decls[0]->data.archetype;
@@ -83,7 +83,7 @@ void test_archetype_meta_field(void) {
 
 void test_archetype_col_field(void) {
 	test_start("archetype with col field");
-	Program *prog = parse_string("arche Particle {\n  pos: Float\n}");
+	Program *prog = parse_string("arche Particle {\n  pos :: Float\n}");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ArchetypeDecl *arch = prog->decls[0]->data.archetype;
 	ASSERT_EQ(arch->field_count, 1, "expected 1 field");
@@ -95,9 +95,9 @@ void test_archetype_col_field(void) {
 void test_archetype_multiple_fields(void) {
 	test_start("archetype with multiple fields");
 	Program *prog = parse_string("arche Body {\n"
-	                             "  drag: Float,\n"
-	                             "  pos: Vec3,\n"
-	                             "  vel: Vec3\n"
+	                             "  drag :: Float,\n"
+	                             "  pos :: Vec3,\n"
+	                             "  vel :: Vec3\n"
 	                             "}");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ArchetypeDecl *arch = prog->decls[0]->data.archetype;
@@ -610,9 +610,9 @@ void test_toplevel_else(void) {
 void test_task1_structure(void) {
 	test_start("complex ETL program structure");
 	int ok = parse_succeeds("arche Transaction {\n"
-	                        "  price: float,\n"
-	                        "  quantity: int,\n"
-	                        "  revenue: float,\n"
+	                        "  price :: float,\n"
+	                        "  quantity :: int,\n"
+	                        "  revenue :: float,\n"
 	                        "}\n"
 	                        "static Transaction(1000, 1000) {\n"
 	                        "  price: 0.0,\n"
@@ -734,7 +734,7 @@ void test_parse_func_group_trailing_comma(void) {
 
 void test_multiple_decls(void) {
 	test_start("multiple declarations");
-	Program *prog = parse_string("arche Player { x: Float }\n"
+	Program *prog = parse_string("arche Player { x :: Float }\n"
 	                             "proc init() {}\n"
 	                             "sys move(pos) {}\n");
 	ASSERT_NOT_NULL(prog, "program is null");
@@ -764,7 +764,7 @@ void test_lex_consume_keyword(void) {
 
 void test_parser_handle_type_is_typename(void) {
 	test_start("handle(Window) over an archetype -> TYPE_HANDLE");
-	Program *prog = parse_string("arche Window { id: int }\n"
+	Program *prog = parse_string("arche Window { id :: int }\n"
 	                             "func window_open(w: int, h: int) -> handle(Window) { }\n");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ASSERT_EQ(prog->decl_count, 2, "expected 2 decls");

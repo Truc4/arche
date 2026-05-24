@@ -1,6 +1,6 @@
 arche Message {
-  id: int,
-  value: float,
+  id :: int,
+  value :: float,
 }
 static table<Message>(100);
 proc main() {

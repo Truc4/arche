@@ -1,7 +1,7 @@
 arche Transaction {
-  price: float,
-  quantity: int,
-  revenue: float,
+  price :: float,
+  quantity :: int,
+  revenue :: float,
 }
 static table<Transaction>(100, 100) {
   price: 0.0,

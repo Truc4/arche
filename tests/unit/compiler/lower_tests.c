@@ -58,7 +58,7 @@ static Program *parse_and_analyze(const char *src) {
 
 static void test_lower_range_for(void) {
 	test_start("range for: var_name set, iterable set");
-	Program *cst = parse_and_analyze("arche Particle { x: float, }\n"
+	Program *cst = parse_and_analyze("arche Particle { x :: float, }\n"
 	                                 "static Particle(100);\n"
 	                                 "sys Move() {\n"
 	                                 "  for p in Particle {\n"

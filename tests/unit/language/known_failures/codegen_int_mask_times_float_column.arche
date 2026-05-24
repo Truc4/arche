@@ -15,8 +15,8 @@
 // to fall back to a scalar `if`-filter loop instead of the natural vectorized form.
 
 arche Row {
-  price: float,
-  quantity: int,
+  price :: float,
+  quantity :: int,
 }
 
 

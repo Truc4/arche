@@ -1,11 +1,11 @@
 // RUN: %arche -o %t %s && %t | grep "alive"
 arche Player {
-  pos: float,
+  pos :: float,
 }
 
 
 arche AliveList {
-  player_ref: handle<Player>,
+  player_ref :: handle<Player>,
 }
 
 

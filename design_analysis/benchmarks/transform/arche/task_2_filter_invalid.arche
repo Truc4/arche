@@ -2,7 +2,7 @@
 use csv;
 
 arche Transaction {
-  quantity: int,
+  quantity :: int,
 }
 
 

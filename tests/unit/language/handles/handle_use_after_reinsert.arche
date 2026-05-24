@@ -1,6 +1,6 @@
 // RUN: %arche -o %t %s && ! %t
 arche Player {
-  pos: float,
+  pos :: float,
 }
 
 

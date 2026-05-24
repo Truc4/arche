@@ -1,15 +1,15 @@
 // RUN: %arche -o %t %s && %t
 // BUG: System operations don't modify fields (see COMPILER_BUG_SYSTEM_OPERATIONS.md)
 arche Particle {
-  pos: float,
-  vel: float,
+  pos :: float,
+  vel :: float,
 }
 
 
 arche Body {
-  pos: float,
-  vel: float,
-  mass: float,
+  pos :: float,
+  vel :: float,
+  mass :: float,
 }
 
 

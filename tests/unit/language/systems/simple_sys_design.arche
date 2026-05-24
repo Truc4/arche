@@ -1,6 +1,6 @@
 // RUN: %arche -o %t %s && %t | grep "system_ran"
 arche Counter {
-  val: int,
+  val :: int,
 }
 
 

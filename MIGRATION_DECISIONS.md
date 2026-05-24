@@ -137,6 +137,22 @@ link line scrubbed of `handles.o`. The C unit tests that exercised `extern Windo
 (`parser/semantic/codegen/handle_runtime_tests.c`) were rewritten to the nominal `:: opaque` model or
 removed; `handle_runtime_tests.c` deleted. Suite: 213/213 lit + all C tests green.
 
+## DONE (user request) — archetype grammar: components are TYPES, single-colon `:` removed
+"foo : bar means nothing." The archetype body now accepts only **type references** (`arche Foo { a, b }`)
+and **inline definitions** `name :: type` (≡ a top-level `name :: type` + include — mints the nominal
+type globally, registered in semantic pass-0, redefinition-must-agree). The old accessor `name: type`
+is a **parse error** ("archetype components are types …"). Tuple/array components stay column-only (no
+nominal alias). Migrated ~86 `.arche` files + 4 C-test files (`:` → `::` inside archetype bodies only).
+Formatter emits bare for refs, `name :: type` for inline defs (round-trips + recompiles). Negative test:
+`types/arche_colon_rejected`.
+
+**Crash/leak fixed (the user's "it leaked again"):** a malformed archetype body made the global
+`synchronize` skip past the closing `}` to the next decl keyword and park there without advancing, so
+`parse_archetype_decl`'s field loop **spun forever allocating leading-trivia each pass → RAM blowup →
+OOM core dump**. Rejecting single-colon newly triggered it. Fix: the field loop now **breaks** on a
+malformed component (the missing `}` is reported after) instead of `synchronize`+`continue`. Bad input
+no longer hangs/leaks.
+
 ## DONE (user request) — `out` keyword DELETED, replaced by multi-return signatures
 The `out` parameter keyword and the `is_out` field are **gone** (cst/ast Parameter, parser,
 lower, semantic name_is_out_param, codegen). A buffer-filling function now takes the buffer as an
@@ -185,8 +201,11 @@ ALL planned work is done or explicitly cancelled:
 
 ### Remaining KNOWN GAPS (deliberate, documented; not blockers)
 - **`run { comps }` query** — CANCELLED by user ("run sys; that's all it will ever be").
-- **Cross-name shape sharing in codegen** — inserting/accessing a shape via a *different* same-set
-  archetype name (codegen is name-based; no `@B$pool`). Niche; the query consumer is cancelled.
+- **Handle-field *read* (`h.comp`) is unimplemented** — reading a component through a handle value
+  (e.g. `let a := insert(A,…); printf(a.hp)`) emits the field name as a raw token → invalid IR.
+  PRE-EXISTING (affects even non-aliased archetypes; uncovered while testing A4), NOT caused by the
+  migration. No test/real code reads `h.comp` today (column access `A.hp[i]` is the supported path).
+  Wire it (handle → pool slot → column load) when handle-centric access is wanted.
 - **Formatter** emits inline components as `name: type` (round-trips, same signature) rather than bare
   `name`; `static pool` and `move`/`consume`/`opaque` all round-trip correctly. (Repo-wide `make format`
   still has the separate RAM-explosion/semicolon bug — do not run it blanket.)

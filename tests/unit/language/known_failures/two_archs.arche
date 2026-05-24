@@ -1,14 +1,14 @@
 // RUN: %arche -o %t %s && %t | grep "DEBUG"
 arche Particle {
-  pos: float,
-  vel: float,
+  pos :: float,
+  vel :: float,
 }
 
 
 arche Body {
-  pos: float,
-  vel: float,
-  mass: float,
+  pos :: float,
+  vel :: float,
+  mass :: float,
 }
 
 

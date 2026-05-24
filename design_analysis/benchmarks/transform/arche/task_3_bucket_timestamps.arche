@@ -2,8 +2,8 @@
 use csv;
 
 arche Transaction {
-  price: float,
-  price_bucket: float,
+  price :: float,
+  price_bucket :: float,
 }
 
 

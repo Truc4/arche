@@ -2,7 +2,7 @@
 // alloc inside proc should error (parse-time: alloc only allowed as declaration)
 
 arche Counter {
-  val: int,
+  val :: int,
 }
 
 static pool<Counter>(5);
