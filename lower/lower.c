@@ -672,6 +672,14 @@ static AstDecl *lower_decl(Decl *decl) {
 		afunc->return_types = calloc(func->return_type_count, sizeof(AstType *));
 		for (int i = 0; i < func->return_type_count; i++)
 			afunc->return_types[i] = lower_type_ref(func->return_types[i]);
+		if (func->return_names) {
+			afunc->return_names = calloc(func->return_type_count, sizeof(char *));
+			for (int i = 0; i < func->return_type_count; i++)
+				if (func->return_names[i]) {
+					afunc->return_names[i] = malloc(strlen(func->return_names[i]) + 1);
+					strcpy(afunc->return_names[i], func->return_names[i]);
+				}
+		}
 		afunc->stmt_count = func->statement_count;
 		afunc->stmts = calloc(func->statement_count, sizeof(AstStmt *));
 		for (int i = 0; i < func->statement_count; i++)

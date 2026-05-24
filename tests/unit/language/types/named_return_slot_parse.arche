@@ -1,0 +1,11 @@
+// A named return slot `-> (dst: T)` parses and (for now) behaves like a plain single return —
+// the name is representation only until the caller-allocated-slot codegen lands.
+// RUN: %arche -o %t %s && %t | grep "sum=7"
+func add(a: int, b: int) -> (sum: int) {
+  return a + b;
+}
+
+proc main() {
+  s := add(3, 4);
+  printf("sum=%d\n", s);
+}

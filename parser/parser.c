@@ -154,6 +154,22 @@ static int match(Parser *parser, TokenKind kind) {
 	return 1;
 }
 
+/* Kind of the token immediately after `current`, without consuming. Restores only the lexer's
+ * scan cursor (cur/line/column) so the next real advance() re-lexes the same token; safe in the
+ * contexts it is used (the peeked token is never a string/interpolation). Used to disambiguate a
+ * named return slot `name: T` from a bare type `T` in a return list. */
+static TokenKind peek_next_kind(Parser *parser) {
+	Lexer *lx = parser->lexer;
+	const char *save_cur = lx->cur;
+	int save_line = lx->line;
+	int save_col = lx->column;
+	TokenKind kind = lexer_next_token(lx).kind;
+	lx->cur = save_cur;
+	lx->line = save_line;
+	lx->column = save_col;
+	return kind;
+}
+
 static char *token_text(Token tok) {
 	char *text = malloc(tok.length + 1);
 	strncpy(text, tok.start, tok.length);
@@ -894,23 +910,47 @@ static Decl *parse_func_decl(Parser *parser) {
 		return NULL;
 	}
 
-	/* Return type: single `-> T`, or multi-return `-> (T1, …, Tn)`. In the multi form the
-	 * leading array returns are caller-passed buffers the func fills in place; the final
-	 * return types is a list — a single return is just count == 1. */
+	/* Return slots: single `-> T`, or a parenthesized list `-> (T1, …)` / `-> (name: T, …)`.
+	 * A named slot `-> (dst: T)` is a caller-allocated return slot; a name matching a param marks
+	 * an in-place (same-name in/out) slot. Names use 2-token lookahead (`IDENT :`) to tell a
+	 * named slot apart from a bare type. A list is all-named or all-unnamed. */
 	if (match(parser, TOK_LPAREN)) {
+		int any_named = 0, any_unnamed = 0;
 		do {
+			char *rname = NULL;
+			if (check(parser, TOK_IDENT) && peek_next_kind(parser) == TOK_COLON) {
+				rname = token_text(parser->current);
+				advance(parser); /* name */
+				advance(parser); /* ':' */
+			}
 			TypeRef *rt = parse_type(parser);
-			if (!rt)
+			if (!rt) {
+				free(rname);
 				return NULL;
-			func->return_types = realloc(func->return_types, (func->return_type_count + 1) * sizeof(TypeRef *));
-			func->return_types[func->return_type_count++] = rt;
+			}
+			int n = func->return_type_count;
+			func->return_types = realloc(func->return_types, (n + 1) * sizeof(TypeRef *));
+			func->return_names = realloc(func->return_names, (n + 1) * sizeof(char *));
+			func->return_types[n] = rt;
+			func->return_names[n] = rname;
+			func->return_type_count = n + 1;
+			if (rname)
+				any_named = 1;
+			else
+				any_unnamed = 1;
 		} while (match(parser, TOK_COMMA));
 		if (!match(parser, TOK_RPAREN)) {
-			error(parser, "Expected ')' after multi-return type list");
+			error(parser, "Expected ')' after return type list");
 			return NULL;
 		}
-		if (func->return_type_count < 2) {
-			error(parser, "a parenthesized return type must list at least two types");
+		if (any_named && any_unnamed) {
+			error(parser, "return list must be either all-named or all-unnamed");
+			return NULL;
+		}
+		/* An unnamed parenthesized list is the multi-return form (needs >= 2 types); a single
+		 * named slot `-> (dst: T)` is allowed. */
+		if (!any_named && func->return_type_count < 2) {
+			error(parser, "a parenthesized return type must list at least two types, or name a single slot");
 			return NULL;
 		}
 	} else {
@@ -919,6 +959,7 @@ static Decl *parse_func_decl(Parser *parser) {
 			return NULL;
 		func->return_types = malloc(sizeof(TypeRef *));
 		func->return_types[0] = return_type;
+		func->return_names = calloc(1, sizeof(char *)); /* unnamed */
 		func->return_type_count = 1;
 	}
 

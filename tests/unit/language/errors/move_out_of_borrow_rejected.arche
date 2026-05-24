@@ -1,0 +1,15 @@
+// You cannot `move` a borrowed (read-only) array parameter — it is borrowed, not owned.
+// Moving it out would hand the caller's buffer to a callee that may mutate it (a purity
+// leak), since borrowed array params are by-reference. Own it with `move`, or copy to a local.
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "borrowed, not owned" %t.out
+proc sink(move b: char[8]) {
+  b[0] = 'X';
+}
+func relay(b: char[8]) -> int {
+  sink(move b);
+  return 0;
+}
+proc main() {
+  buf: char[8];
+  relay(buf);
+}

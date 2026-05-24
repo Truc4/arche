@@ -2388,17 +2388,12 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				int buf_len = arg_values[i]->string_len;
 				char *bitcast = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", bitcast, buf_len, arg_bufs[i]);
-				/* By-value (non-`move`) array arg to an arche function: copy the buffer so the
-				 * callee's mutations don't leak back. Externs (C ABI) and `move` stay by-ref. */
-				if ((callee_wants_arr || callee_wants_shaped_arr) && !callee_is_extern && !arg_is_move[i]) {
-					char *copy = gen_value_name(ctx);
-					emit_alloca(ctx, "  %s = alloca [%d x i8]\n", copy, buf_len);
-					char *copy_i8 = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", copy_i8, buf_len, copy);
-					buffer_append_fmt(ctx, "  call void @llvm.memcpy.p0.p0.i64(i8* %s, i8* %s, i64 %d, i1 false)\n",
-					                  copy_i8, bitcast, buf_len);
-					bitcast = copy_i8;
-				}
+				/* Array args pass BY REFERENCE — read-only borrow is the default, so no copy. A
+				 * borrowed (non-`move`) array param cannot be mutated (semantic purity check), so
+				 * the caller's buffer is never clobbered; `move` args are by-ref too (ownership
+				 * handed over). The old by-value memcpy clone is gone.
+				 * TODO(FBIP reuse): a producer that does need a private result buffer can reuse a
+				 * dead input's storage when aliasing is provably safe (see plan Phase C). */
 				if (callee_wants_arr && !callee_is_extern) {
 					/* Non-extern callee expects char[] (arche_array*): wrap the
 					 * bare buffer pointer in a stack arche_array {ptr,len,cap}. */
@@ -6449,7 +6444,8 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "declare i8* @calloc(i64, i64)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
 	buffer_append(ctx, "declare void @abort()\n");
-	/* By-value array args are copied at the call site (no side effects without `move`). */
+	/* memcpy intrinsic (string/array initialization, struct copies). Array args are passed by
+	 * reference (read-only borrow); they are no longer copied at the call site. */
 	buffer_append(ctx, "declare void @llvm.memcpy.p0.p0.i64(i8*, i8*, i64, i1)\n\n");
 
 	/* Global error message for bounds check failures */

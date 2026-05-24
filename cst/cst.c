@@ -78,6 +78,7 @@ FuncDecl *func_decl_create(char *name) {
 	FuncDecl *func = malloc(sizeof(FuncDecl));
 	func->name = name;
 	func->return_types = NULL;
+	func->return_names = NULL;
 	func->return_type_count = 0;
 	func->params = NULL;
 	func->param_count = 0;
@@ -337,6 +338,11 @@ void func_decl_free(FuncDecl *func) {
 	for (int i = 0; i < func->return_type_count; i++)
 		type_ref_free(func->return_types[i]);
 	free(func->return_types);
+	if (func->return_names) {
+		for (int i = 0; i < func->return_type_count; i++)
+			free(func->return_names[i]);
+		free(func->return_names);
+	}
 	for (int i = 0; i < func->param_count; i++) {
 		parameter_free(func->params[i]);
 	}
@@ -1328,13 +1334,24 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				format_type(out, func->params[j]->type);
 			}
 			fprintf(out, ") -> ");
-			if (func->return_type_count == 1) {
+			/* A single UNNAMED return prints bare `T`; any named slot (or multi-return) prints the
+			 * parenthesized `(name: T, …)` form so return-slot names round-trip through the formatter. */
+			int has_return_names = 0;
+			if (func->return_names)
+				for (int j = 0; j < func->return_type_count; j++)
+					if (func->return_names[j]) {
+						has_return_names = 1;
+						break;
+					}
+			if (func->return_type_count == 1 && !has_return_names) {
 				format_type(out, func->return_types[0]);
 			} else {
 				fprintf(out, "(");
 				for (int j = 0; j < func->return_type_count; j++) {
 					if (j > 0)
 						fprintf(out, ", ");
+					if (func->return_names && func->return_names[j])
+						fprintf(out, "%s: ", func->return_names[j]);
 					format_type(out, func->return_types[j]);
 				}
 				fprintf(out, ")");

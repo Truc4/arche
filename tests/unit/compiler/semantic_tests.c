@@ -473,6 +473,57 @@ void test_no_false_positive_when_unconsumed(void) {
 	test_pass_msg();
 }
 
+/* ========== Read-only borrow / purity ========== */
+
+void test_mutate_borrow_param_error(void) {
+	test_start("mutating a borrowed (non-move) array param is a compile error");
+	AnalysisResult r = analyze_string("func clobber(b: char[8]) -> int {\n"
+	                                  "  b[0] = 'X';\n"
+	                                  "  return 0;\n"
+	                                  "}\n");
+	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected read-only-parameter error");
+	semantic_context_free(r.ctx);
+	program_free(r.prog);
+	test_pass_msg();
+}
+
+void test_move_param_can_mutate(void) {
+	test_start("a `move` array param is owned and may be mutated");
+	AnalysisResult r = analyze_string("func fill(move b: char[8]) -> int {\n"
+	                                  "  b[0] = 'X';\n"
+	                                  "  return 0;\n"
+	                                  "}\n");
+	ASSERT_EQ(semantic_error_count(r.ctx), 0, "owned move param mutation should be allowed");
+	semantic_context_free(r.ctx);
+	program_free(r.prog);
+	test_pass_msg();
+}
+
+void test_scalar_param_mutation_ok(void) {
+	test_start("a scalar param is by value and may be reassigned locally");
+	AnalysisResult r = analyze_string("func f(n: int) -> int {\n"
+	                                  "  n = 5;\n"
+	                                  "  return n;\n"
+	                                  "}\n");
+	ASSERT_EQ(semantic_error_count(r.ctx), 0, "scalar param reassignment should be allowed");
+	semantic_context_free(r.ctx);
+	program_free(r.prog);
+	test_pass_msg();
+}
+
+void test_move_out_of_borrow_error(void) {
+	test_start("moving a borrowed array param out is a compile error");
+	AnalysisResult r = analyze_string("proc sink(move b: char[8]) { b[0] = 'X'; }\n"
+	                                  "func relay(b: char[8]) -> int {\n"
+	                                  "  sink(move b);\n"
+	                                  "  return 0;\n"
+	                                  "}\n");
+	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected move-out-of-borrow error");
+	semantic_context_free(r.ctx);
+	program_free(r.prog);
+	test_pass_msg();
+}
+
 /* ========== MAIN TEST RUNNER ========== */
 
 int main(void) {
@@ -537,6 +588,13 @@ int main(void) {
 	printf("\nUse-after-consume tests:\n");
 	test_use_after_consume_local_error();
 	test_no_false_positive_when_unconsumed();
+
+	/* Read-only borrow default / purity */
+	printf("\nRead-only borrow / purity tests:\n");
+	test_mutate_borrow_param_error();
+	test_move_param_can_mutate();
+	test_scalar_param_mutation_ok();
+	test_move_out_of_borrow_error();
 
 	/* Results */
 	printf("\n");

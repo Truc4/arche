@@ -1,0 +1,14 @@
+// A plain (non-move) array parameter is a read-only borrow: mutating it is a compile error.
+// Functions are pure by use — to mutate, take it `move` and return it (same-name in/out),
+// or copy it into a local. (Replaces the old copy-by-value `copy_no_side_effect` behavior.)
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "read-only parameter" %t.out
+func clobber(b: char[8]) -> int {
+  b[0] = 'X';
+  return 0;
+}
+
+proc main() {
+  buf: char[8];
+  buf[0] = 'A';
+  clobber(buf);
+}

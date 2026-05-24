@@ -232,6 +232,30 @@ void test_func_multiple_params(void) {
 	test_pass_msg();
 }
 
+void test_func_named_return_slot(void) {
+	test_start("func named return slot");
+	Program *prog = parse_string("func add(x: int, y: int) -> (sum: int) { return x + y; }");
+	ASSERT_NOT_NULL(prog, "program is null");
+	FuncDecl *func = prog->decls[0]->data.func;
+	ASSERT_EQ(func->return_type_count, 1, "expected 1 return slot");
+	ASSERT_NOT_NULL(func->return_names, "return_names should be allocated");
+	ASSERT_NOT_NULL(func->return_names[0], "return slot should be named");
+	ASSERT_EQ(strcmp(func->return_names[0], "sum"), 0, "wrong return slot name");
+	program_free(prog);
+	test_pass_msg();
+}
+
+void test_func_unnamed_return(void) {
+	test_start("func unnamed single return has no slot name");
+	Program *prog = parse_string("func id(x: int) -> int { return x; }");
+	ASSERT_NOT_NULL(prog, "program is null");
+	FuncDecl *func = prog->decls[0]->data.func;
+	ASSERT_EQ(func->return_type_count, 1, "expected 1 return");
+	ASSERT_TRUE(!func->return_names || func->return_names[0] == NULL, "single return should be unnamed");
+	program_free(prog);
+	test_pass_msg();
+}
+
 /* ========== EXPRESSION TESTS ========== */
 
 void test_expr_literal(void) {
@@ -854,6 +878,8 @@ int main(void) {
 	printf("\nFunction tests:\n");
 	test_func_simple();
 	test_func_multiple_params();
+	test_func_named_return_slot();
+	test_func_unnamed_return();
 	test_parse_func_group();
 	test_parse_func_group_empty_rejected();
 	test_parse_func_group_trailing_comma();

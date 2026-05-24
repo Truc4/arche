@@ -31,6 +31,7 @@ typedef struct {
 	const char *nominal_type;  /* unresolved nominal alias name (e.g. "file"), or NULL — for distinctness */
 	int is_consumed;           /* 1 if a consume-param call / move / return has consumed this binding */
 	int is_param;              /* 1 if this is a function parameter (borrowed — exempt from must-consume) */
+	int is_move;               /* 1 if a `move` parameter (owned: caller donated it, may be mutated) */
 	int is_const;              /* 1 if an immutable local constant (`k :: e` / `k : T : e`) */
 	SourceLoc loc;             /* declaration site, for the must-consume diagnostic */
 } VariableInfo;
@@ -378,13 +379,16 @@ static void add_variable(SemanticContext *ctx, const char *name, TypeRef *type) 
 	add_variable_with_archetype(ctx, name, type, NULL);
 }
 
-/* Flag the most-recently-added variable as a (borrowed) parameter — exempt from the
- * opaque must-consume check at scope exit. */
-static void mark_last_param(SemanticContext *ctx) {
+/* Flag the most-recently-added variable as a parameter — exempt from the opaque must-consume
+ * check at scope exit. `is_move` records whether it was declared `move` (owned: the caller
+ * donated it, so the body may mutate it); a non-move param is a read-only borrow. */
+static void mark_last_param(SemanticContext *ctx, int is_move) {
 	if (ctx->scope_count > 0) {
 		Scope *s = &ctx->scopes[ctx->scope_count - 1];
-		if (s->var_count > 0)
+		if (s->var_count > 0) {
 			s->vars[s->var_count - 1]->is_param = 1;
+			s->vars[s->var_count - 1]->is_move = is_move;
+		}
 	}
 }
 
@@ -405,6 +409,7 @@ static void add_variable_with_archetype(SemanticContext *ctx, const char *name, 
 	var->nominal_type = NULL;
 	var->is_consumed = 0;
 	var->is_param = 0;
+	var->is_move = 0;
 	var->is_const = 0;
 	var->loc.line = 0;
 	var->loc.column = 0;
@@ -427,6 +432,14 @@ static void mark_last_const(SemanticContext *ctx) {
 static void analyze_expression(SemanticContext *ctx, Expression *expr);
 static void analyze_statement(SemanticContext *ctx, Statement *stmt);
 static const char *resolve_expression_type(SemanticContext *ctx, Expression *expr);
+static const char *lvalue_leftmost_name(Expression *expr);
+
+/* By-reference aggregate param types: arrays are passed by reference (borrowed read-only by
+ * default), so mutating one through a non-`move` param is a purity violation. Scalars are by
+ * value (a freely-mutable local copy); opaque can't be indexed/assigned at all. */
+static int type_is_byref_aggregate(const TypeRef *t) {
+	return t && (t->kind == TYPE_ARRAY || t->kind == TYPE_SHAPED_ARRAY);
+}
 
 /* ========== TYPE RESOLUTION ========== */
 
@@ -1068,8 +1081,21 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		/* `move x` transfers ownership: mark x consumed (use-after-move is an error). */
 		if (expr->data.unary.op == UNARY_MOVE && expr->data.unary.operand->type == EXPR_NAME) {
 			VariableInfo *mv = find_variable(ctx, expr->data.unary.operand->data.name.name);
-			if (mv)
+			if (mv) {
+				/* Can't move out of a borrow: a read-only (non-`move`) array parameter is
+				 * borrowed by reference, not owned. Moving it would hand the caller's buffer to a
+				 * callee that may mutate it — a purity leak. Owned bindings (locals, `move` params)
+				 * move freely. */
+				if (mv->is_param && !mv->is_move && type_is_byref_aggregate(mv->type)) {
+					char msg[256];
+					snprintf(msg, sizeof(msg),
+					         "cannot move read-only parameter '%s' — it is borrowed, not owned; take "
+					         "it `move` to own it, or copy it into a local",
+					         expr->data.unary.operand->data.name.name);
+					error(ctx, msg);
+				}
 				mv->is_consumed = 1;
+			}
 		}
 		break;
 
@@ -1494,6 +1520,23 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				char msg[256];
 				snprintf(msg, sizeof(msg), "cannot assign to '%s' after it was moved — rebind with `:=`",
 				         stmt->data.assign_stmt.target->data.name.name);
+				error(ctx, msg);
+			}
+		}
+		/* Purity: a borrowed (non-`move`) array parameter is read-only — `p = …`, `p[i] = …`,
+		 * `p.f = …` are all rejected. Functions are pure by use; to mutate, take it `move` and
+		 * return it (same-name in/out), or copy it into a local. Uses the leftmost name so index
+		 * and field writes are caught, not just bare `p`. */
+		{
+			const char *ln = lvalue_leftmost_name(stmt->data.assign_stmt.target);
+			VariableInfo *pv = ln ? find_variable(ctx, ln) : NULL;
+			if (pv && pv->is_param && !pv->is_move && type_is_byref_aggregate(pv->type)) {
+				char msg[320];
+				snprintf(msg, sizeof(msg),
+				         "cannot mutate read-only parameter '%s' — array parameters are borrowed "
+				         "(read-only) by default; to mutate, take it `move` and return it (same-name "
+				         "in/out), or copy it into a local",
+				         ln);
 				error(ctx, msg);
 			}
 		}
@@ -2160,7 +2203,7 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 		} else {
 			add_variable(ctx, param_name, param_type);
 		}
-		mark_last_param(ctx);
+		mark_last_param(ctx, proc->params[i]->is_move);
 	}
 
 	ProcDecl *prev_proc = ctx->current_proc;
@@ -2228,7 +2271,7 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 			}
 		}
 		add_variable(ctx, sys->params[i]->name, param_type);
-		mark_last_param(ctx);
+		mark_last_param(ctx, sys->params[i]->is_move);
 	}
 
 	const char *old_sys_archetype = ctx->current_sys_archetype;
@@ -2351,6 +2394,24 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 			break;
 		}
 	}
+	/* Return-slot names (if any) must be unique within the list. A name may intentionally match
+	 * a PARAMETER name — that marks an in-place (same-name in/out) slot, handled in codegen — so
+	 * matching a param is allowed here. */
+	if (func->return_names) {
+		for (int i = 0; i < func->return_type_count; i++) {
+			if (!func->return_names[i])
+				continue;
+			for (int j = i + 1; j < func->return_type_count; j++) {
+				if (func->return_names[j] && strcmp(func->return_names[i], func->return_names[j]) == 0) {
+					char msg[256];
+					snprintf(msg, sizeof(msg), "func '%s': duplicate return slot name '%s'", func->name,
+					         func->return_names[i]);
+					error(ctx, msg);
+				}
+			}
+		}
+	}
+
 	/* Validate parameters and return type for extern vs non-extern rules. */
 	for (int i = 0; i < func->param_count; i++) {
 		Parameter *p = func->params[i];
@@ -2396,7 +2457,7 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 	/* add parameters as variables */
 	for (int i = 0; i < func->param_count; i++) {
 		add_variable(ctx, func->params[i]->name, func->params[i]->type);
-		mark_last_param(ctx);
+		mark_last_param(ctx, func->params[i]->is_move);
 	}
 
 	ctx->in_unsafe = func->is_unsafe;

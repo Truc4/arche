@@ -234,6 +234,10 @@ struct FuncDecl {
 	/* A function's return is a list of types; a single return is just count == 1. `-> (T1, …, Tn)`
 	 * with n > 1 is returned as an aggregate. (No scalar special-case.) */
 	TypeRef **return_types;
+	/* Optional per-return-slot names, parallel to return_types (entries may be NULL when a
+	 * slot is unnamed). A named slot `-> (dst: T)` makes the return a caller-allocated slot;
+	 * a name matching a param name marks an in-place (same-name in/out) slot. */
+	char **return_names;
 	int return_type_count;
 	int is_extern;
 	int is_unsafe; /* 1 if declared `unsafe func`; may call unsafe builtins (syscall) */

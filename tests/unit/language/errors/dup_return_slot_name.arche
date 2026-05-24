@@ -1,0 +1,10 @@
+// Return-slot names must be unique within the list.
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "duplicate return slot name" %t.out
+func two() -> (x: int, x: int) {
+  return 1, 2;
+}
+
+proc main() {
+  a, b := two();
+  printf("%d %d\n", a, b);
+}
