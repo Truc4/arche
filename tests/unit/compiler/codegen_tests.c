@@ -204,17 +204,6 @@ static char *compile_to_ir_string(const char *source) {
 	return read_file(ir_path);
 }
 
-/* Test: extern Window(8) emits a slot-table global in the IR */
-void test_codegen_extern_type_emits_table(void) {
-	test_start("extern table emits IR slot table");
-	char *ir = compile_to_ir_string("extern Window(8);");
-	ASSERT_NOT_NULL(ir, "no IR produced");
-	ASSERT_TRUE(strstr(ir, "@__arche_Window_slots") != NULL, "no slots global");
-	ASSERT_TRUE(strstr(ir, "8 x") != NULL || strstr(ir, "[8 x") != NULL, "wrong capacity");
-	free(ir);
-	test_pass_msg();
-}
-
 /* Test: simple.arche compiles without errors */
 void test_compile_simple(void) {
 	test_start("compile simple.arche");
@@ -313,43 +302,21 @@ void test_compile_overloads_smoke(void) {
 	test_pass_msg();
 }
 
-void test_codegen_extern_return_marshal(void) {
-	test_start("extern returning handle(extern) emits __arche_slot_alloc");
-	char *ir = compile_to_ir_string("extern Window(8);\n"
-	                                "extern func open_(a: int, b: int) -> handle(Window);\n"
-	                                "proc main() { let w := open_(1, 2); }\n");
-	ASSERT_NOT_NULL(ir, "no IR");
-	ASSERT_TRUE(strstr(ir, "call i32 @__arche_slot_alloc") != NULL, "no alloc call emitted");
-	free(ir);
-	test_pass_msg();
-}
-
-void test_codegen_extern_param_marshal(void) {
-	test_start("extern with handle(extern) param emits __arche_slot_get");
-	char *ir = compile_to_ir_string("extern Window(8);\n"
-	                                "extern func open_(a: int, b: int) -> handle(Window);\n"
-	                                "extern proc present_(w: handle(Window));\n"
+/* Test: delete emits the generation-exhaustion abort. A handle is i64 = slot(low 32) |
+ * gen(high 32); a slot's i32 generation bumps on each delete. At 0xFFFFFFFF it would wrap and
+ * a stale handle could alias a fresh entity (ABA), so delete aborts loudly instead. Reaching it
+ * needs 2^32 deletes — untestable at runtime — so assert the guard branch is emitted. */
+void test_codegen_gen_exhaustion_abort(void) {
+	test_start("delete emits generation-exhaustion abort");
+	char *ir = compile_to_ir_string("hp :: int\n"
+	                                "arche Unit { hp }\n"
+	                                "static pool<Unit>(4);\n"
 	                                "proc main() {\n"
-	                                "  let w := open_(1, 2);\n"
-	                                "  present_(w);\n"
+	                                "  h := insert(Unit, 1);\n"
+	                                "  delete(h);\n"
 	                                "}\n");
-	ASSERT_NOT_NULL(ir, "no IR");
-	ASSERT_TRUE(strstr(ir, "call i8* @__arche_slot_get") != NULL, "no get call emitted");
-	free(ir);
-	test_pass_msg();
-}
-
-void test_codegen_consume_emits_slot_free(void) {
-	test_start("consume extern emits __arche_slot_free");
-	char *ir = compile_to_ir_string("extern Window(8);\n"
-	                                "extern func open_(a: int, b: int) -> handle(Window);\n"
-	                                "extern proc close_(consume w: handle(Window));\n"
-	                                "proc main() {\n"
-	                                "  let w := open_(1, 2);\n"
-	                                "  close_(w);\n"
-	                                "}\n");
-	ASSERT_NOT_NULL(ir, "no IR");
-	ASSERT_TRUE(strstr(ir, "call void @__arche_slot_free") != NULL, "no free call emitted");
+	ASSERT_NOT_NULL(ir, "no IR produced");
+	ASSERT_TRUE(strstr(ir, "gen_exhausted") != NULL, "no generation-exhaustion abort branch in delete");
 	free(ir);
 	test_pass_msg();
 }
@@ -357,10 +324,7 @@ void test_codegen_consume_emits_slot_free(void) {
 int main(void) {
 	printf("codegen tests\n");
 
-	test_codegen_extern_type_emits_table();
-	test_codegen_extern_return_marshal();
-	test_codegen_extern_param_marshal();
-	test_codegen_consume_emits_slot_free();
+	test_codegen_gen_exhaustion_abort();
 	test_compile_simple();
 	test_compile_hello_world();
 	test_compile_with_params();

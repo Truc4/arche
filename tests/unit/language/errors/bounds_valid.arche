@@ -1,17 +1,17 @@
 // RUN: %arche -o %t %s && %t
 arche Particle {
-  id: int,
+  id :: int,
 }
 
 
-static Particle(5);
+static pool<Particle>(5);
 
 
 proc main() {
   insert(Particle, 1);
   insert(Particle, 2);
-  let a := Particle.id[0];
-  let b := Particle.id[1];
+  a := Particle.id[0];
+  b := Particle.id[1];
   assert(a == 1, "a != 1\n");
   assert(b == 2, "b != 2\n");
 }

@@ -1,23 +1,23 @@
 // RUN: %arche -o %t %s && %t
 // Task 1: Static alloc with bulk initialization (top-level only)
 arche Counter {
-  val: int,
-  score: float,
+  val :: int,
+  score :: float,
 }
 
 
 arche Empty {
-  x: int,
+  x :: int,
 }
 
 
-static Counter(5, 5) {
+static pool<Counter>(5, 5) {
   val: 7,
   score: 2.5,
 };
 
 
-static Empty(5);
+static pool<Empty>(5);
 
 
 proc main() {

@@ -1,12 +1,13 @@
+// Using a resource after it's been consumed (closed) is a compile error. `consume`
+// ends the value's life; the checker rejects the later use.
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
-
-extern Resource(8);
-extern func resource_open(initial: int) -> handle(Resource);
-extern proc resource_close(consume r: handle(Resource));
-extern func resource_get(r: handle(Resource)) -> int;
+resource :: opaque
+extern func resource_open(initial: int) -> resource;
+extern proc resource_close(move r: resource);
+extern func resource_get(r: resource) -> int;
 
 proc main() {
-  let r := resource_open(10);
-  resource_close(r);
-  let v := resource_get(r);
+  r := resource_open(10);
+  resource_close(move r);  // not moving should be an error
+  v := resource_get(r);
 }

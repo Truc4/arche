@@ -1,17 +1,16 @@
 // RUN: %arche -o %t %s && %t | grep "x=ab y=cd n=42"
-// Multi-bind statement tests - mixed declaration and assignment
-
-func fill_two(out buf1: char[32], out buf2: char[32]) -> int {
-  buf1[0] = 'a';
-  buf1[1] = 'b';
-  // Note: '\0' escape not implemented, so use sprintf to get null-terminated string
-  let result1 := sprintf(buf1, "ab");
-  let result2 := sprintf(buf2, "cd");
-  return 42;
+// Two caller buffers moved in by reference, filled, and returned (real multi-return).
+// `move` = by-ref + the binding dies, so the buffers come back through the return and
+// are rebound at the call. Without `move` the args would be copied (no side effect).
+func fill_two(buf1: char[32], buf2: char[32]) -> (char[32], char[32], int) {
+  sprintf(buf1, "ab");
+  sprintf(buf2, "cd");
+  return buf1, buf2, 42;
 }
 
 proc main() {
-  // Test: both new declarations with out params (+ return value)
-  (let x:, let y:, let n:) = fill_two(x, y);
+  x: char[32];
+  y: char[32];
+  x, y, n := fill_two(move x, move y);
   printf("x=%s y=%s n=%d\n", x, y, n);
 }

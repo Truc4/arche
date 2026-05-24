@@ -1,0 +1,21 @@
+// Set-based archetype identity: a component set is unordered, so {hp, mp} and {mp, hp}
+// denote the SAME shape. Allocating a pool for each is therefore a double-allocation of
+// one shape — the compiler recognizes the reorder as identical and rejects it.
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "already allocated" %t.out
+hp :: int
+mp :: int
+
+arche A {
+  hp,
+  mp,
+}
+arche B {
+  mp,
+  hp,
+}
+
+static pool<A>(4);
+static pool<B>(4);
+
+proc main() {
+}

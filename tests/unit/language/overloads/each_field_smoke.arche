@@ -1,10 +1,10 @@
 // RUN: %arche -o %t %s && %t | grep "col0=11 col1=21"
 arche Pair {
-  a: int,
-  b: int,
+  a :: int,
+  b :: int,
 }
 
-static Pair(3, 3) {
+static pool<Pair>(3, 3) {
   a: 10,
   b: 20,
 };

@@ -8,6 +8,6 @@ func pick_float(x: float) -> float {
 func pick = { pick_int, pick_float };
 
 proc main() {
-  let c := 'X';
-  let r := pick(c);  // error: no member of group 'pick' matches char arg
+  c := 'X';
+  r := pick(c);  // error: no member of group 'pick' matches char arg
 }

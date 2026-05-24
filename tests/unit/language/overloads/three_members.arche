@@ -12,8 +12,8 @@ func describe_char(x: char) -> int {
 func describe = { describe_int, describe_float, describe_char };
 
 proc main() {
-  let a := describe(10);
-  let b := describe(2.0);
-  let c := describe('A');
+  a := describe(10);
+  b := describe(2.0);
+  c := describe('A');
   printf("I=%d F=%d C=%d\n", a, b, c);
 }

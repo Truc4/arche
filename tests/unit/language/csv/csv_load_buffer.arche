@@ -1,25 +1,25 @@
 // RUN: %arche -o %t %s && %t
 arche Transaction {
-  price: float,
-  quantity: int,
+  price :: float,
+  quantity :: int,
 }
 
 
-static Transaction(100, 100) {
+static pool<Transaction>(100, 100) {
   price: 0.0,
   quantity: 0,
 };
 
 
 proc main() {
-  let fd := open("../../../../../tests/fixtures/transactions.csv", 0);
-  let buf: char[256];
-  let buf, total_n := read(fd, buf, 256);
-  close(fd);
+  fd := open("../../../../../tests/fixtures/transactions.csv", 0);
+  buf: char[256];
+  buf, total_n := read_into(fd, move buf, 256);
+  close(move fd);
   printf("total_n=%d\n", total_n);
-  let idx := 0;
-  let pos := 0;
-  let line_start := 0;
+  idx := 0;
+  pos := 0;
+  line_start := 0;
   for (;pos < total_n;) {
     if (buf[pos] == '\n') {
       line_start = pos + 1;
@@ -28,28 +28,28 @@ proc main() {
     }
     pos = pos + 1;
   }
-  let price_str: char[32];
-  let qty_str: char[32];
+  price_str: char[32];
+  qty_str: char[32];
   for (;idx < 100;) {
     if (line_start >= total_n) {
       break;
     }
-    let line_end := line_start;
+    line_end := line_start;
     for (;line_end < total_n;) {
       if (buf[line_end] == '\n') {
         break;
       }
       line_end = line_end + 1;
     }
-    let comma_pos := line_start;
+    comma_pos := line_start;
     for (;comma_pos < line_end;) {
       if (buf[comma_pos] == ',') {
         break;
       }
       comma_pos = comma_pos + 1;
     }
-    let j := 0;
-    let i := line_start;
+    j := 0;
+    i := line_start;
     for (;i < comma_pos;) {
       price_str[j] = buf[i];
       j = j + 1;

@@ -23,7 +23,6 @@ typedef struct Statement Statement;
 typedef struct Expression Expression;
 typedef struct StaticArrayDecl StaticArrayDecl;
 typedef struct UseDecl UseDecl;
-typedef struct ExternTypeDecl ExternTypeDecl;
 
 /* =========================
    Source location
@@ -48,7 +47,6 @@ typedef enum {
 	DECL_STATIC,
 	DECL_CONST,
 	DECL_USE,
-	DECL_EXTERN_TYPE,
 } DeclKind;
 
 typedef enum {
@@ -84,15 +82,10 @@ struct UseDecl {
 	char *name; /* module name, e.g. "csv" from `use csv;` */
 };
 
-struct ExternTypeDecl {
-	char *name;
-	int capacity;
-	SourceLoc loc;
-};
-
 typedef struct {
 	char *name;
-	Expression *value; /* must be a literal */
+	Expression *value;   /* literal RHS (value const) or a bare name (simple type alias) */
+	TypeRef *type_value; /* set when the RHS is a type form (e.g. a tuple) — a nominal type alias */
 } ConstDecl;
 
 struct Decl {
@@ -117,7 +110,6 @@ struct Decl {
 		StaticDecl *static_decl;
 		ConstDecl *constant;
 		UseDecl *use;
-		ExternTypeDecl *extern_type;
 	} data;
 };
 
@@ -132,6 +124,7 @@ typedef enum {
 	TYPE_TUPLE,        /* tuple: (x: float, y: float) */
 	TYPE_HANDLE,       /* handle(ArchetypeName) */
 	TYPE_ARCHETYPE,    /* bare-category `archetype` (parameter type only) */
+	TYPE_OPAQUE,       /* opaque: pointer-width C-owned cell, never read/written/forged by Arche */
 } TypeKind;
 
 struct TypeRef {
@@ -215,8 +208,7 @@ struct ProcDecl {
 struct Parameter {
 	char *name;
 	TypeRef *type;
-	int is_out;
-	int is_consume;
+	int is_move; /* `move` param: caller must `move` the arg (by-ref, no silent copy) */
 	SourceLoc loc;
 };
 
@@ -234,7 +226,10 @@ struct FuncDecl {
 	char *name;
 	Parameter **params;
 	int param_count;
-	TypeRef *return_type;
+	/* A function's return is a list of types; a single return is just count == 1. `-> (T1, …, Tn)`
+	 * with n > 1 is returned as an aggregate. (No scalar special-case.) */
+	TypeRef **return_types;
+	int return_type_count;
 	int is_extern;
 	int is_unsafe; /* 1 if declared `unsafe func`; may call unsafe builtins (syscall) */
 	Statement **statements;
@@ -255,7 +250,7 @@ struct FuncGroup {
    ========================= */
 
 typedef enum {
-	STMT_LET,
+	STMT_BIND,
 	STMT_ASSIGN,
 	STMT_FOR,
 	STMT_IF,
@@ -288,7 +283,7 @@ typedef struct {
 	int name_count;    /* 0 = use .name, >0 = use .names[] */
 	TypeRef *type;     /* optional, may be NULL — only for single-var */
 	Expression *value; /* optional, may be NULL */
-} LetStmt;
+} BindStmt;
 
 typedef struct {
 	Expression *target; /* must be assignable: name, field, or index */
@@ -328,7 +323,9 @@ typedef struct {
 } FreeStmt;
 
 typedef struct {
-	Expression *value;
+	/* Returned values, in order; a single return is just count == 1. */
+	Expression **values;
+	int count;
 } ReturnStmt;
 
 typedef struct {
@@ -361,7 +358,7 @@ struct Statement {
 	int trailing_count;
 	int last_line; /* line of this statement's last syntactic token */
 	union {
-		LetStmt let_stmt;
+		BindStmt bind_stmt;
 		AssignStmt assign_stmt;
 		ForStmt for_stmt;
 		IfStmt if_stmt;
@@ -394,6 +391,7 @@ typedef enum {
 typedef enum {
 	UNARY_NEG,
 	UNARY_NOT,
+	UNARY_MOVE, /* `move x` — call-site ownership transfer; transparent value, marks x consumed */
 } UnaryOperator;
 
 typedef struct {
@@ -402,6 +400,7 @@ typedef struct {
 
 typedef struct {
 	char *name;
+	int is_table_ref; /* 1 if written `table<name>` (value-position table reference); formats back as table<...> */
 } NameExpr;
 
 typedef struct {
@@ -479,14 +478,13 @@ WorldDecl *world_decl_create(char *name);
 ArchetypeDecl *archetype_decl_create(char *name);
 ProcDecl *proc_decl_create(char *name);
 SysDecl *sys_decl_create(char *name);
-FuncDecl *func_decl_create(char *name, TypeRef *return_type);
+FuncDecl *func_decl_create(char *name);
 FuncGroup *func_group_create(char *name);
 void func_group_free(FuncGroup *group);
 ConstDecl *const_decl_create(char *name, Expression *value);
 StaticDecl *static_decl_archetype_create(char *archetype_name);
 StaticDecl *static_decl_array_create(char *name, TypeRef *element_type, int size);
 UseDecl *use_decl_create(char *name);
-ExternTypeDecl *extern_type_decl_create(char *name, int capacity);
 Parameter *parameter_create(char *name, TypeRef *type);
 FieldDecl *field_decl_create(FieldKind kind, char *name, TypeRef *type);
 
@@ -513,7 +511,6 @@ void parameter_free(Parameter *param);
 void field_decl_free(FieldDecl *field);
 void static_decl_free(StaticDecl *s);
 void use_decl_free(UseDecl *use);
-void extern_type_decl_free(ExternTypeDecl *et);
 void type_ref_free(TypeRef *type);
 
 void statement_free(Statement *stmt);

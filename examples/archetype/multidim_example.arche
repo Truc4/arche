@@ -1,9 +1,9 @@
 arche Message {
-  id: int,
-  value: float,
+  id :: int,
+  value :: float,
 }
-static Message(100);
+static pool<Message>(100);
 proc main() {
-  let msg := "allocations done\n";
+  msg := "allocations done\n";
   print(msg);
 }

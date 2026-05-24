@@ -15,12 +15,12 @@
 // to fall back to a scalar `if`-filter loop instead of the natural vectorized form.
 
 arche Row {
-  price: float,
-  quantity: int,
+  price :: float,
+  quantity :: int,
 }
 
 
-static Row(10, 10) {
+static pool<Row>(10, 10) {
   price: 5.0,
   quantity: 1,
 };
@@ -32,7 +32,7 @@ proc main() {
   // type mismatch.
   Row.price = Row.price * (Row.quantity > 0);
 
-  let p0 := Row.price[0];
+  p0 := Row.price[0];
   if (p0 == 5.0) {
     printf("ok\n");
   } else {

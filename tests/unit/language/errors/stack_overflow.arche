@@ -11,7 +11,7 @@ func recurse(depth: int) -> int {
   if (depth > 100000000) {
     return depth;
   }
-  let r := recurse(depth + 1);
+  r := recurse(depth + 1);
   sink[0] = r;
   return r;
 }

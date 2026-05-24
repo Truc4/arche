@@ -1,29 +1,24 @@
 // RUN: %arche -o %t %s && %t | grep -E "test1|test2|test3"
-// Multi-bind with mixed declaration and assignment
-func fill_two(out buf1: char[32], out buf2: char[32]) -> int {
-  let r1 := sprintf(buf1, "hello");
-  let r2 := sprintf(buf2, "world");
+// Buffers filled in place across several calls.
+func fill_two(buf1: char[32], buf2: char[32]) -> int {
+  sprintf(buf1, "hello");
+  sprintf(buf2, "world");
   return 99;
 }
 
 proc main() {
-  // Test 1: existing var gets first out param, new var gets second
-  let x: char[32];
-  let r1 := sprintf(x, "old");
-  (x, let y:, let n:) = fill_two(x, y);
+  x: char[32];
+  y: char[32];
+  n := fill_two(x, y);
   printf("test1: x=%s y=%s n=%d\n", x, y, n);
 
-  // Test 2: new var first, existing var second
-  let z: char[32];
-  let r2 := sprintf(z, "old");
-  (let a:, z, let m:) = fill_two(a, z);
+  a: char[32];
+  z: char[32];
+  m := fill_two(a, z);
   printf("test2: a=%s z=%s m=%d\n", a, z, m);
 
-  // Test 3: both existing
-  let p: char[32];
-  let q: char[32];
-  let r3 := sprintf(p, "p1");
-  let r4 := sprintf(q, "q1");
-  (p, q, let k:) = fill_two(p, q);
+  p: char[32];
+  q: char[32];
+  k := fill_two(p, q);
   printf("test3: p=%s q=%s k=%d\n", p, q, k);
 }

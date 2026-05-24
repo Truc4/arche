@@ -1,10 +1,10 @@
 // RUN: %arche -o %t %s && %t | grep "system_ran"
 arche Task {
-  val: int,
+  val :: int,
 }
 
 
-static Task(1, 1) {
+static pool<Task>(1, 1) {
   val: 5,
 };
 

@@ -1,18 +1,21 @@
 // RUN: %arche -o %t %s && %t
+// New model: a tuple alias mints flat name-prefixed components (pos_x, pos_y); access is
+// flat (Particle.pos_x), never nested (no Particle.pos.x).
+pos (x, y) :: float
+
 arche Particle {
-  pos: (x: float, y: float),
+  pos_x,
+  pos_y,
 }
 
-
-static Particle(5);
-
+static pool<Particle>(5);
 
 proc main() {
   insert(Particle, 1.0, 2.0);
-  let x := Particle.pos.x[0];
-  let y := Particle.pos.y[0];
-  let xi := x * 10.0;
-  let yi := y * 10.0;
+  x := Particle.pos_x[0];
+  y := Particle.pos_y[0];
+  xi := x * 10.0;
+  yi := y * 10.0;
   assert(xi == 10, "x != 1.0\n");
   assert(yi == 20, "y != 2.0\n");
 }

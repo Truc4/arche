@@ -1,0 +1,16 @@
+// A static buffer can be moved into a fill function by reference. The *name*'s binding
+// dies at the `move` and is rebound from the return; the global storage persists the
+// whole time (no leak, no copy). Then the rebound name indexes the filled bytes.
+// RUN: %arche -o %t %s && %t | grep "b0=88 b1=89 n=2"
+static sbuf: char[16];
+
+func fill2(move buf: char[16]) -> (char[16], int) {
+  buf[0] = 88;
+  buf[1] = 89;
+  return buf, 2;
+}
+
+proc main() {
+  sbuf, n := fill2(move sbuf);
+  printf("b0=%d b1=%d n=%d\n", sbuf[0], sbuf[1], n);
+}

@@ -1,30 +1,30 @@
 arche Transaction {
-  price: float,
-  quantity: int,
-  revenue: float,
+  price :: float,
+  quantity :: int,
+  revenue :: float,
 }
-static Transaction(100, 100) {
+static pool<Transaction>(100, 100) {
   price: 0.0,
   quantity: 0,
   revenue: 0.0,
 };
 proc main() {
-  let fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv");
-  let line: char[128];
-  let price_str: char[32];
-  let qty_str: char[32];
+  fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv");
+  line: char[128];
+  price_str: char[32];
+  qty_str: char[32];
   arche_fread_line(fd, line, 128);
-  let idx := 0;
+  idx := 0;
   for (;idx < 100;) {
-    let n := arche_fread_line(fd, line, 128);
+    n := arche_fread_line(fd, line, 128);
     if (n <= 0) {
       break;
     }
-    let line_pos := 0;
-    let field_idx := 0;
-    let c1 := 0;
-    let c2 := 0;
-    let c3 := 0;
+    line_pos := 0;
+    field_idx := 0;
+    c1 := 0;
+    c2 := 0;
+    c3 := 0;
     for (;line_pos < n;) {
       if (line[line_pos] == ',') {
         field_idx = field_idx + 1;

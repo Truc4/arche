@@ -2,11 +2,11 @@
 use csv;
 
 arche Pair {
-  a: int,
-  b: int,
+  a :: int,
+  b :: int,
 }
 
-static Pair(3, 3) {
+static pool<Pair>(3, 3) {
   a: 0,
   b: 0,
 };

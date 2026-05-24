@@ -27,8 +27,11 @@ typedef struct {
 	char *name;
 	TypeRef *type;
 	char *archetype_name;      /* for variables that refer to archetype entries */
-	const char *inferred_type; /* for variables without explicit type, stores inferred type name */
-	int is_consumed;           /* 1 if a consume-param call has consumed this binding */
+	const char *inferred_type; /* for variables without explicit type, stores inferred type name (backing) */
+	const char *nominal_type;  /* unresolved nominal alias name (e.g. "file"), or NULL — for distinctness */
+	int is_consumed;           /* 1 if a consume-param call / move / return has consumed this binding */
+	int is_param;              /* 1 if this is a function parameter (borrowed — exempt from must-consume) */
+	SourceLoc loc;             /* declaration site, for the must-consume diagnostic */
 } VariableInfo;
 
 typedef struct {
@@ -43,12 +46,6 @@ typedef struct {
 	SourceLoc loc;
 } GroupInfo;
 
-typedef struct {
-	char *name;
-	int capacity;
-	SourceLoc loc;
-} ExternTypeEntry;
-
 struct SemanticContext {
 	ArchetypeInfo **archetypes; /* one per unique shape */
 	int archetype_count;
@@ -62,12 +59,17 @@ struct SemanticContext {
 	GroupInfo *groups;
 	int group_count;
 
-	ExternTypeEntry *extern_types; /* registered extern type declarations */
-	int extern_type_count;
-
 	char **const_names;        /* compile-time constant names */
 	const char **const_values; /* literal lexeme strings */
 	int const_count;
+
+	/* Nominal type aliases: `name :: <type>` (a `::` decl whose RHS names a type, not a
+	 * literal). Identity is the name; `backing` is the RHS name (possibly another alias —
+	 * resolved through the chain by resolve_type_alias). Erased to the backing before
+	 * lowering, so codegen never sees an alias. */
+	char **type_alias_names;
+	char **type_alias_backings;
+	int type_alias_count;
 
 	Scope *scopes;
 	int scope_count;
@@ -94,10 +96,17 @@ struct SemanticContext {
 
 /* ========== UTILITY FUNCTIONS ========== */
 
+static int sig_part_cmp(const void *a, const void *b) {
+	return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/* Archetype identity is the *set* of component type names — unordered. We build one
+ * "name:type:kind;" part per field and **sort** them, so `{a,b}` and `{b,a}` produce the
+ * same signature and share a shape. (Codegen is keyed by archetype name + per-decl column
+ * order, so the sort only affects shape dedup, not memory layout.) */
 static char *compute_shape_signature(FieldDecl **fields, int field_count) {
-	size_t sig_size = 256;
-	char *sig = malloc(sig_size);
-	sig[0] = '\0';
+	char **parts = field_count > 0 ? malloc(field_count * sizeof(char *)) : NULL;
+	size_t total = 1;
 	for (int i = 0; i < field_count; i++) {
 		FieldDecl *f = fields[i];
 		const char *type_name = "unknown";
@@ -108,16 +117,25 @@ static char *compute_shape_signature(FieldDecl **fields, int field_count) {
 				type_name = "array";
 			else if (f->type->kind == TYPE_SHAPED_ARRAY)
 				type_name = "shaped_array";
+			else if (f->type->kind == TYPE_OPAQUE)
+				type_name = "opaque";
 		}
 		const char *kind_str = (f->kind == FIELD_META) ? "meta" : "col";
-		char part[128];
+		char part[256];
 		snprintf(part, sizeof(part), "%s:%s:%s;", f->name, type_name, kind_str);
-		if (strlen(sig) + strlen(part) >= sig_size - 1) {
-			sig_size = (strlen(sig) + strlen(part) + 1) * 2;
-			sig = realloc(sig, sig_size);
-		}
-		strcat(sig, part);
+		parts[i] = malloc(strlen(part) + 1);
+		strcpy(parts[i], part);
+		total += strlen(part);
 	}
+	if (parts)
+		qsort(parts, field_count, sizeof(char *), sig_part_cmp);
+	char *sig = malloc(total);
+	sig[0] = '\0';
+	for (int i = 0; i < field_count; i++) {
+		strcat(sig, parts[i]);
+		free(parts[i]);
+	}
+	free(parts);
 	return sig;
 }
 
@@ -221,6 +239,8 @@ static int type_ref_equal(const TypeRef *a, const TypeRef *b) {
 	}
 	case TYPE_ARCHETYPE:
 		return 1; /* `archetype` parameter type: any two are equal */
+	case TYPE_OPAQUE:
+		return 1; /* bare opaque == bare opaque; nominal distinctness is by alias name */
 	}
 	return 0;
 }
@@ -236,11 +256,19 @@ static FuncDecl *find_func_decl_cst(Program *prog, const char *name) {
 	return NULL;
 }
 
+/* The first declared return type, or NULL. Single-return funcs have exactly one; this is
+ * what scalar-position type inference uses (a multi-return func is only valid in a multi-bind). */
+static TypeRef *func_first_return_type(const FuncDecl *f) {
+	return (f && f->return_type_count > 0) ? f->return_types[0] : NULL;
+}
+
 static VariableInfo *find_variable(SemanticContext *ctx, const char *name) {
-	/* search from innermost to outermost scope */
+	/* Search innermost to outermost scope; within a scope prefer the NEWEST binding so a
+	 * shadow wins. This is what makes `:=` rebinding work: `buf := foo(move buf)` consumes the
+	 * old `buf` and binds a fresh one, and name resolution then sees the fresh one. */
 	for (int i = ctx->scope_count - 1; i >= 0; i--) {
 		Scope *scope = &ctx->scopes[i];
-		for (int j = 0; j < scope->var_count; j++) {
+		for (int j = scope->var_count - 1; j >= 0; j--) {
 			if (strcmp(scope->vars[j]->name, name) == 0) {
 				return scope->vars[j];
 			}
@@ -290,6 +318,25 @@ static void lint_emit(SemanticContext *ctx, int werror, SourceLoc loc, const cha
 	}
 }
 
+static const char *resolve_type_alias(SemanticContext *ctx, const char *name);
+
+/* True if a binding is opaque-backed (the linear, move-only kind). Used both by the
+ * must-consume check and by return/insert auto-marking (only opaque is consumed by
+ * being returned or inserted — data and handles copy). */
+static int var_is_opaque(SemanticContext *ctx, VariableInfo *v) {
+	if (!v)
+		return 0;
+	if (v->inferred_type && strcmp(v->inferred_type, "opaque") == 0)
+		return 1;
+	if (v->type) {
+		if (v->type->kind == TYPE_OPAQUE)
+			return 1;
+		if (v->type->kind == TYPE_NAME && strcmp(resolve_type_alias(ctx, v->type->data.name), "opaque") == 0)
+			return 1;
+	}
+	return 0;
+}
+
 static void push_scope(SemanticContext *ctx) {
 	ctx->scopes = realloc(ctx->scopes, (ctx->scope_count + 1) * sizeof(Scope));
 	ctx->scopes[ctx->scope_count].vars = NULL;
@@ -300,6 +347,17 @@ static void push_scope(SemanticContext *ctx) {
 static void pop_scope(SemanticContext *ctx) {
 	if (ctx->scope_count > 0) {
 		Scope *scope = &ctx->scopes[ctx->scope_count - 1];
+		for (int i = 0; i < scope->var_count; i++) {
+			VariableInfo *v = scope->vars[i];
+			/* Linear must-consume: an opaque LOCAL must be consumed (move / close / return /
+			 * insert) before its scope ends. Borrowed params are exempt. */
+			if (var_is_opaque(ctx, v) && !v->is_param && !v->is_consumed) {
+				char msg[256];
+				snprintf(msg, sizeof(msg),
+				         "opaque value '%s' not consumed before scope end (move/close/return/insert it)", v->name);
+				error(ctx, msg);
+			}
+		}
 		for (int i = 0; i < scope->var_count; i++) {
 			free(scope->vars[i]->name);
 			free(scope->vars[i]);
@@ -316,6 +374,16 @@ static void add_variable(SemanticContext *ctx, const char *name, TypeRef *type) 
 	add_variable_with_archetype(ctx, name, type, NULL);
 }
 
+/* Flag the most-recently-added variable as a (borrowed) parameter — exempt from the
+ * opaque must-consume check at scope exit. */
+static void mark_last_param(SemanticContext *ctx) {
+	if (ctx->scope_count > 0) {
+		Scope *s = &ctx->scopes[ctx->scope_count - 1];
+		if (s->var_count > 0)
+			s->vars[s->var_count - 1]->is_param = 1;
+	}
+}
+
 static void add_variable_with_archetype(SemanticContext *ctx, const char *name, TypeRef *type,
                                         const char *archetype_name) {
 	if (ctx->scope_count == 0)
@@ -330,7 +398,11 @@ static void add_variable_with_archetype(SemanticContext *ctx, const char *name, 
 	if (var->archetype_name)
 		strcpy(var->archetype_name, archetype_name);
 	var->inferred_type = NULL;
+	var->nominal_type = NULL;
 	var->is_consumed = 0;
+	var->is_param = 0;
+	var->loc.line = 0;
+	var->loc.column = 0;
 
 	scope->vars = realloc(scope->vars, (scope->var_count + 1) * sizeof(VariableInfo *));
 	scope->vars[scope->var_count++] = var;
@@ -383,20 +455,35 @@ static int is_primitive_type_name(const char *type_name) {
 	       strcmp(n, "void") == 0 || is_width_int_name(n);
 }
 
-/* Returns the extern table name if `tr` is a handle(X) where X is a
- * registered extern table; NULL otherwise. */
-static const char *extern_handle_target(SemanticContext *ctx, const TypeRef *tr) {
-	if (!tr || tr->kind != TYPE_HANDLE)
-		return NULL;
-	const char *name = tr->data.handle.archetype_name;
-	if (semantic_has_extern_type(ctx, name))
+/* If `name` is a nominal type alias, follow the chain to its ultimate backing type
+ * name (a primitive or `opaque`); otherwise return `name` unchanged. The guard bounds
+ * the walk so an accidental cycle can't loop forever. */
+static const char *resolve_type_alias(SemanticContext *ctx, const char *name) {
+	if (!ctx || !name)
 		return name;
-	return NULL;
+	for (int guard = 0; guard <= ctx->type_alias_count; guard++) {
+		int found = 0;
+		for (int i = 0; i < ctx->type_alias_count; i++) {
+			if (strcmp(ctx->type_alias_names[i], name) == 0) {
+				name = ctx->type_alias_backings[i];
+				found = 1;
+				break;
+			}
+		}
+		if (!found)
+			break;
+	}
+	return name;
 }
 
-/* Returns 1 if `tr` is a handle(X) referencing a registered extern table. */
-static int is_extern_type_ref(SemanticContext *ctx, const TypeRef *tr) {
-	return extern_handle_target(ctx, tr) != NULL;
+/* 1 if `name` is a registered nominal type alias. */
+static int is_type_alias(SemanticContext *ctx, const char *name) {
+	if (!ctx || !name)
+		return 0;
+	for (int i = 0; i < ctx->type_alias_count; i++)
+		if (strcmp(ctx->type_alias_names[i], name) == 0)
+			return 1;
+	return 0;
 }
 
 static const char *resolve_expression_type(SemanticContext *ctx, Expression *expr) {
@@ -435,11 +522,11 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 				if (var->type->kind == TYPE_HANDLE)
 					return var->type->data.handle.archetype_name;
 				if (var->type->kind == TYPE_NAME)
-					return normalize_type_name(var->type->data.name);
+					return resolve_type_alias(ctx, normalize_type_name(var->type->data.name));
 			}
 			/* Fallback to inferred type */
 			if (var->inferred_type) {
-				return normalize_type_name(var->inferred_type);
+				return resolve_type_alias(ctx, normalize_type_name(var->inferred_type));
 			}
 		}
 		/* Check if it's an archetype being referenced */
@@ -477,7 +564,7 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 					while (ft->kind == TYPE_SHAPED_ARRAY)
 						ft = ft->data.shaped_array.element_type;
 					if (ft->kind == TYPE_NAME)
-						return normalize_type_name(ft->data.name);
+						return resolve_type_alias(ctx, normalize_type_name(ft->data.name));
 				}
 			}
 		}
@@ -485,8 +572,14 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	}
 
 	case EXPR_INDEX: {
-		/* Index expression has same type as base element */
-		return resolve_expression_type(ctx, expr->data.index.base);
+		/* An index yields the base's ELEMENT type. A char buffer resolves to "char_array"
+		 * (unbounded) or "char" (sized); indexing either gives a single `char`. Without this
+		 * reduction an unbounded `char[]` index would inherit "char_array" and be treated as a
+		 * string (i8*) at call sites (e.g. printf). */
+		const char *base_type = resolve_expression_type(ctx, expr->data.index.base);
+		if (base_type && strcmp(base_type, "char_array") == 0)
+			return "char";
+		return base_type;
 	}
 
 	case EXPR_BINARY: {
@@ -528,6 +621,12 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		if (is_width_int_name(func_name))
 			return func_name;
 
+		/* `insert(table<X>, …)` yields a handle into X's table (i64). Resolving it
+		 * lets `let h := insert(...)` carry a handle type, so copies like
+		 * `let alias := h` inherit it instead of defaulting to int. */
+		if (strcmp(func_name, "insert") == 0)
+			return "handle";
+
 		if (!ctx->prog)
 			return NULL;
 
@@ -558,8 +657,9 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 						break;
 					}
 				}
-				if (ok && fd->return_type && fd->return_type->kind == TYPE_NAME) {
-					return normalize_type_name(fd->return_type->data.name);
+				TypeRef *frt = func_first_return_type(fd);
+				if (ok && frt && frt->kind == TYPE_NAME) {
+					return normalize_type_name(frt->data.name);
 				}
 			}
 			return NULL;
@@ -569,15 +669,17 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		for (int i = 0; i < ctx->prog->decl_count; i++) {
 			Decl *decl = ctx->prog->decls[i];
 			if (decl->kind == DECL_FUNC && strcmp(decl->data.func->name, func_name) == 0) {
-				TypeRef *rt = decl->data.func->return_type;
+				TypeRef *rt = func_first_return_type(decl->data.func);
 				if (!rt)
 					return NULL;
 				if (rt->kind == TYPE_HANDLE)
 					return rt->data.handle.archetype_name;
 				if (rt->kind == TYPE_NAME)
-					return normalize_type_name(rt->data.name);
+					return resolve_type_alias(ctx, normalize_type_name(rt->data.name));
 				if (rt->kind == TYPE_ARRAY)
 					return "char_array"; /* extern func returning char[] (raw byte view) */
+				if (rt->kind == TYPE_OPAQUE)
+					return "opaque"; /* foreign resource value (pointer-width i64) */
 				return NULL;
 			}
 		}
@@ -597,6 +699,29 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	default:
 		return NULL;
 	}
+}
+
+/* The *nominal* type of an expression for distinctness checks — the unresolved alias name
+ * (e.g. "file"), NOT the backing. NULL when the expression has no known nominal alias
+ * (a literal, a raw primitive, an unknown). Distinct from resolve_expression_type, which
+ * resolves through to the backing for ops/codegen. */
+static const char *nominal_type_of_expr(SemanticContext *ctx, Expression *e) {
+	if (!e)
+		return NULL;
+	/* `move x` is a transparent ownership marker — its nominal type is the operand's. */
+	if (e->type == EXPR_UNARY && e->data.unary.op == UNARY_MOVE)
+		return nominal_type_of_expr(ctx, e->data.unary.operand);
+	if (e->type == EXPR_NAME) {
+		VariableInfo *v = find_variable(ctx, e->data.name.name);
+		return v ? v->nominal_type : NULL;
+	}
+	if (e->type == EXPR_CALL && e->data.call.callee && e->data.call.callee->type == EXPR_NAME) {
+		FuncDecl *fd = find_func_decl_cst(ctx->prog, e->data.call.callee->data.name.name);
+		TypeRef *frt = func_first_return_type(fd);
+		if (frt && frt->kind == TYPE_NAME && is_type_alias(ctx, frt->data.name))
+			return frt->data.name;
+	}
+	return NULL;
 }
 
 /* ========== EXPRESSION ANALYSIS ========== */
@@ -697,6 +822,25 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 					error(ctx, msg);
 					break;
 				}
+				/* `h.comp` — reading a component through a HANDLE value is not supported
+				 * (a handle is a lifetime token, not a row view); use column access
+				 * `Foo.comp[i]`. An archetype-struct parameter (`p: Player`) is a different
+				 * thing and stays valid. Handles arrive two ways: an annotated `handle<Foo>`
+				 * (TYPE_HANDLE) or an inferred `:= insert(...)` (inferred_type "handle").
+				 * Reject cleanly here (else codegen emits a bare token). */
+				int base_is_handle = (var->type && var->type->kind == TYPE_HANDLE) ||
+				                     (var->inferred_type && strcmp(var->inferred_type, "handle") == 0);
+				if (base_is_handle) {
+					const char *an =
+					    (var->type && var->type->kind == TYPE_HANDLE) ? var->type->data.handle.archetype_name : NULL;
+					char msg[256];
+					snprintf(msg, sizeof(msg),
+					         "cannot read component '%s' through handle '%s': a handle is a lifetime token, "
+					         "not a row view — use column access `%s.%s[i]`",
+					         field_name, base_name, an ? an : "the archetype", field_name);
+					error(ctx, msg);
+					break;
+				}
 				/* check if variable refers to an archetype entry */
 				if (var->archetype_name) {
 					arch = find_archetype(ctx, var->archetype_name);
@@ -768,6 +912,12 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 
 	case EXPR_UNARY:
 		analyze_expression(ctx, expr->data.unary.operand);
+		/* `move x` transfers ownership: mark x consumed (use-after-move is an error). */
+		if (expr->data.unary.op == UNARY_MOVE && expr->data.unary.operand->type == EXPR_NAME) {
+			VariableInfo *mv = find_variable(ctx, expr->data.unary.operand->data.name.name);
+			if (mv)
+				mv->is_consumed = 1;
+		}
 		break;
 
 	case EXPR_CALL: {
@@ -789,6 +939,18 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		}
 		if (!func_name)
 			break;
+
+		/* insert(Foo, v1, …) moves its value args into the pool — counts as consumption
+		 * for any opaque-backed value argument. Arg 0 is the archetype name, skip it. */
+		if (strcmp(func_name, "insert") == 0) {
+			for (int i = 1; i < expr->data.call.arg_count; i++) {
+				if (expr->data.call.args[i] && expr->data.call.args[i]->type == EXPR_NAME) {
+					VariableInfo *iv = find_variable(ctx, expr->data.call.args[i]->data.name.name);
+					if (iv && var_is_opaque(ctx, iv))
+						iv->is_consumed = 1;
+				}
+			}
+		}
 
 		/* Unsafe-builtin gate: `syscall` bypasses bounds/alloc/handle safety, so it
 		 * may only be called from an explicitly-marked `unsafe` proc/func. */
@@ -827,8 +989,37 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 						continue;
 					}
 
+					/* A `move` parameter is the by-reference contract: a named binding handed to
+					 * it must be written `move x` (no silent copy; the binding is given up and
+					 * comes back only if the function returns it). The `move` itself (UNARY_MOVE,
+					 * handled in analyze_expression) marks the binding consumed; a bare name is an
+					 * error. (Rvalues — e.g. a call result — have no binding to kill, so move is not
+					 * required there.) Works for ANY type — opaque is merely the case where a copy
+					 * is also impossible. Runs for BOTH extern and non-extern callees. */
+					{
+						int ac = expr->data.call.arg_count;
+						int n = param_count < ac ? param_count : ac;
+						for (int j = 0; j < n; j++) {
+							Parameter *p = params[j];
+							if (!p || !p->is_move || !expr->data.call.args[j])
+								continue;
+							Expression *a = expr->data.call.args[j];
+							if (a->type == EXPR_NAME) {
+								VariableInfo *cv = find_variable(ctx, a->data.name.name);
+								if (cv) {
+									char msg[256];
+									snprintf(msg, sizeof(msg),
+									         "value '%s' must be moved into `move` parameter '%s' of '%s' "
+									         "(write `move %s`)",
+									         a->data.name.name, p->name ? p->name : "?", func_name, a->data.name.name);
+									error(ctx, msg);
+								}
+							}
+						}
+					}
+
 					if (!is_extern)
-						break; /* non-extern: no extern-type params, skip */
+						break; /* non-extern: no extern-type distinctness to check */
 
 					/* For each argument, if the formal param is a foreign handle
 					 * (handle(X) where X is an extern table), the argument's resolved
@@ -840,43 +1031,18 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 						Parameter *p = params[j];
 						if (!p)
 							continue;
-						const char *formal_type = extern_handle_target(ctx, p->type);
-						if (!formal_type)
-							continue;
 
-						/* Formal is an extern type. Check the argument. */
-						Expression *arg = expr->data.call.args[j];
-
-						/* Integer literal 0 is the null handle — always OK. */
-						if (arg->type == EXPR_LITERAL) {
-							const char *lex = arg->data.literal.lexeme;
-							if (strcmp(lex, "0") == 0)
-								continue;
-						}
-
-						const char *arg_type = resolve_expression_type(ctx, arg);
-						if (!arg_type) {
-							/* Type unknown — can't verify; skip to avoid false positives. */
-							continue;
-						}
-
-						/* arg_type must equal formal_type (both are extern type names). */
-						if (strcmp(arg_type, formal_type) != 0) {
-							char msg[256];
-							snprintf(msg, sizeof(msg),
-							         "type mismatch: extern proc/func '%s' parameter '%s' expects '%s' but got '%s'",
-							         func_name, p->name ? p->name : "?", formal_type, arg_type);
-							error(ctx, msg);
-						}
-
-						/* Consume tracking: if this formal is a consume parameter and
-						 * the argument is a simple identifier, mark that variable consumed
-						 * for the rest of the enclosing proc/func body.
-						 * NOTE: v1 — function-scope only, not branch-sensitive. */
-						if (p->is_consume && arg->type == EXPR_NAME) {
-							VariableInfo *consumed_var = find_variable(ctx, arg->data.name.name);
-							if (consumed_var) {
-								consumed_var->is_consumed = 1;
+						/* Nominal distinctness: an alias-typed formal rejects an argument whose
+						 * nominal type is a *different* alias (file vs socket), even though both
+						 * back to opaque. Untyped/unknown args (nominal NULL) are lenient. */
+						if (p->type && p->type->kind == TYPE_NAME && is_type_alias(ctx, p->type->data.name)) {
+							const char *arg_nominal = nominal_type_of_expr(ctx, expr->data.call.args[j]);
+							if (arg_nominal && strcmp(arg_nominal, p->type->data.name) != 0) {
+								char msg[256];
+								snprintf(msg, sizeof(msg),
+								         "type mismatch: '%s' parameter '%s' expects '%s' but got '%s'", func_name,
+								         p->name ? p->name : "?", p->type->data.name, arg_nominal);
+								error(ctx, msg);
 							}
 						}
 					}
@@ -983,51 +1149,51 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		return;
 
 	switch (stmt->type) {
-	case STMT_LET: {
+	case STMT_BIND: {
 		/* `archetype` is only valid as a parameter type. */
-		if (stmt->data.let_stmt.type && stmt->data.let_stmt.type->kind == TYPE_ARCHETYPE) {
+		if (stmt->data.bind_stmt.type && stmt->data.bind_stmt.type->kind == TYPE_ARCHETYPE) {
 			error(ctx, "`archetype` is only valid as a parameter type");
 			break;
 		}
 		/* For multivalue let with function calls, add out param variables BEFORE analyzing the call */
-		int is_multivalue_call = (stmt->data.let_stmt.name_count > 0 && stmt->data.let_stmt.names &&
-		                          stmt->data.let_stmt.value && stmt->data.let_stmt.value->type == EXPR_CALL);
+		int is_multivalue_call = (stmt->data.bind_stmt.name_count > 0 && stmt->data.bind_stmt.names &&
+		                          stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->type == EXPR_CALL);
 
 		if (is_multivalue_call) {
 			/* Add all variables first so out parameters can reference them */
-			for (int i = 0; i < stmt->data.let_stmt.name_count; i++) {
-				const char *var_name = stmt->data.let_stmt.names[i];
+			for (int i = 0; i < stmt->data.bind_stmt.name_count; i++) {
+				const char *var_name = stmt->data.bind_stmt.names[i];
 				if (var_name && strcmp(var_name, "_") != 0) {
 					add_variable(ctx, var_name, NULL);
 				}
 			}
 			/* Now analyze the call expression after variables are defined */
-			analyze_expression(ctx, stmt->data.let_stmt.value);
+			analyze_expression(ctx, stmt->data.bind_stmt.value);
 		} else {
 			/* Single-value let or non-call multivalue expressions: analyze value first */
-			analyze_expression(ctx, stmt->data.let_stmt.value);
+			analyze_expression(ctx, stmt->data.bind_stmt.value);
 
 			/* Multi-value let (non-call): add all variables from names array */
-			if (stmt->data.let_stmt.name_count > 0 && stmt->data.let_stmt.names) {
-				for (int i = 0; i < stmt->data.let_stmt.name_count; i++) {
-					const char *var_name = stmt->data.let_stmt.names[i];
+			if (stmt->data.bind_stmt.name_count > 0 && stmt->data.bind_stmt.names) {
+				for (int i = 0; i < stmt->data.bind_stmt.name_count; i++) {
+					const char *var_name = stmt->data.bind_stmt.names[i];
 					if (var_name && strcmp(var_name, "_") != 0) {
 						/* Add variable (no type annotation for multi-value let) */
 						add_variable(ctx, var_name, NULL);
 
 						/* Try to infer type from expression if it's callable with multiple returns */
-						if (stmt->data.let_stmt.value && i < 10) { /* arbitrary limit */
+						if (stmt->data.bind_stmt.value && i < 10) { /* arbitrary limit */
 							/* For now, just skip type inference for multi-value let */
 							/* This would require analyzing the function's return signature */
 						}
 					}
 				}
-			} else if (stmt->data.let_stmt.name) {
+			} else if (stmt->data.bind_stmt.name) {
 				/* Single-value let */
 				/* Check if value is an alloc expression */
 				const char *archetype_name = NULL;
-				if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->type == EXPR_ALLOC) {
-					archetype_name = stmt->data.let_stmt.value->data.alloc.archetype_name;
+				if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->type == EXPR_ALLOC) {
+					archetype_name = stmt->data.bind_stmt.value->data.alloc.archetype_name;
 					if (!find_archetype(ctx, archetype_name)) {
 						char msg[256];
 						snprintf(msg, sizeof(msg), "Archetype '%s' not defined", archetype_name);
@@ -1039,10 +1205,10 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				/* create local variable */
 				VariableInfo *var = NULL;
 				if (archetype_name) {
-					add_variable_with_archetype(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type,
+					add_variable_with_archetype(ctx, stmt->data.bind_stmt.name, stmt->data.bind_stmt.type,
 					                            archetype_name);
 				} else {
-					add_variable(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type);
+					add_variable(ctx, stmt->data.bind_stmt.name, stmt->data.bind_stmt.type);
 				}
 
 				/* Handle type annotations and type inference */
@@ -1050,19 +1216,25 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 					Scope *scope = &ctx->scopes[ctx->scope_count - 1];
 					if (scope->var_count > 0) {
 						var = scope->vars[scope->var_count - 1];
-						if (stmt->data.let_stmt.type) {
+						if (stmt->data.bind_stmt.type) {
 							/* Type annotation: convert TypeRef to string type name */
-							TypeRef *t = stmt->data.let_stmt.type;
+							TypeRef *t = stmt->data.bind_stmt.type;
 							if (t->kind == TYPE_HANDLE)
 								var->inferred_type = t->data.handle.archetype_name;
-							else
+							else if (t->kind == TYPE_NAME) {
+								var->inferred_type = resolve_type_alias(ctx, t->data.name);
+								if (is_type_alias(ctx, t->data.name))
+									var->nominal_type = t->data.name;
+							} else
 								var->inferred_type = t->data.name;
-						} else if (stmt->data.let_stmt.value) {
+						} else if (stmt->data.bind_stmt.value) {
 							/* No annotation: infer from value expression */
-							const char *inferred = resolve_expression_type(ctx, stmt->data.let_stmt.value);
+							const char *inferred = resolve_expression_type(ctx, stmt->data.bind_stmt.value);
 							if (inferred) {
 								var->inferred_type = inferred;
 							}
+							/* keep the nominal alias name (if any) for distinctness checks */
+							var->nominal_type = nominal_type_of_expr(ctx, stmt->data.bind_stmt.value);
 						}
 					}
 				}
@@ -1072,26 +1244,29 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 	}
 
 	case STMT_MULTI_BIND: {
-		/* Multi-bind: (let x:, y) = expr */
-		/* Add new variables FIRST so they're in scope for the RHS expression */
+		/* Multi-bind: `x, y, n := expr`. Analyze the RHS FIRST so a `move x` inside it
+		 * refers to the existing binding (e.g. a buffer being passed by reference and
+		 * returned), not a target we are about to introduce. */
+		analyze_expression(ctx, stmt->data.multi_bind.value);
+
+		/* Then bind the targets. A new target (`x` / `x:`) introduces a FRESH binding that
+		 * shadows any same-named one — so `buf := f(move buf)` rebinds the moved buffer with
+		 * no special-casing. An existing target (assignment-style) must be declared and live;
+		 * assigning to a moved (dead) binding is an error — use `:=`. */
 		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
 			BindingTarget *target = &stmt->data.multi_bind.targets[i];
 			if (target->is_new) {
 				add_variable(ctx, target->name, target->type);
-			}
-		}
-
-		/* Now analyze the RHS expression (out params can reference newly declared vars) */
-		analyze_expression(ctx, stmt->data.multi_bind.value);
-
-		/* Validate that existing variables are actually defined */
-		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
-			BindingTarget *target = &stmt->data.multi_bind.targets[i];
-			if (!target->is_new) {
+			} else {
 				VariableInfo *existing = find_variable(ctx, target->name);
 				if (!existing) {
 					char msg[256];
 					snprintf(msg, sizeof(msg), "Variable '%s' not declared", target->name);
+					error(ctx, msg);
+				} else if (existing->is_consumed) {
+					char msg[256];
+					snprintf(msg, sizeof(msg), "cannot assign to '%s' after it was moved — rebind with `:=`",
+					         target->name);
 					error(ctx, msg);
 				}
 			}
@@ -1102,6 +1277,18 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 	case STMT_ASSIGN:
 		analyze_expression(ctx, stmt->data.assign_stmt.target);
 		analyze_expression(ctx, stmt->data.assign_stmt.value);
+		/* You cannot assign to a binding that was moved (it's dead): `buf = foo(move buf)` must
+		 * be written `buf := foo(move buf)` (a fresh binding). The move in the RHS consumes the
+		 * target above, so check it here. */
+		if (stmt->data.assign_stmt.target->type == EXPR_NAME) {
+			VariableInfo *t = find_variable(ctx, stmt->data.assign_stmt.target->data.name.name);
+			if (t && t->is_consumed) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "cannot assign to '%s' after it was moved — rebind with `:=`",
+				         stmt->data.assign_stmt.target->data.name.name);
+				error(ctx, msg);
+			}
+		}
 		break;
 
 	case STMT_FOR: {
@@ -1228,7 +1415,17 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		break;
 
 	case STMT_RETURN:
-		analyze_expression(ctx, stmt->data.return_stmt.value);
+		/* Returning an opaque binding moves it out — counts as consumption. (Data and
+		 * handles copy, so returning them must NOT kill the binding.) */
+		for (int i = 0; i < stmt->data.return_stmt.count; i++) {
+			Expression *rval = stmt->data.return_stmt.values[i];
+			analyze_expression(ctx, rval);
+			if (rval && rval->type == EXPR_NAME) {
+				VariableInfo *rv = find_variable(ctx, rval->data.name.name);
+				if (rv && var_is_opaque(ctx, rv))
+					rv->is_consumed = 1;
+			}
+		}
 		break;
 
 	case STMT_FREE:
@@ -1293,6 +1490,21 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 	if (!arch)
 		return;
 
+	/* Set semantics: a component type may appear at most once in an archetype. The
+	 * component's type name IS its access path, so a repeat would be unreachable. */
+	for (int i = 0; i < arch->field_count; i++) {
+		for (int j = i + 1; j < arch->field_count; j++) {
+			if (arch->fields[i]->name && arch->fields[j]->name &&
+			    strcmp(arch->fields[i]->name, arch->fields[j]->name) == 0) {
+				char msg[256];
+				snprintf(msg, sizeof(msg),
+				         "duplicate component '%s' in archetype (a component type may appear only once)",
+				         arch->fields[i]->name);
+				error(ctx, msg);
+			}
+		}
+	}
+
 	char *sig = compute_shape_signature(arch->fields, arch->field_count);
 	ArchetypeInfo *shape = find_archetype_by_signature(ctx, sig);
 
@@ -1352,22 +1564,12 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 	   here: the AST is tuple-free, the CST keeps tuples. The flat `shape` above
 	   is still built from the tuple fields for type checking. */
 
-	/* Validate handle types: must reference a known archetype.  Foreign
-	 * handles (handle(X) where X is an extern table) are forbidden inside
-	 * archetype fields — extern handles may only appear in extern signatures. */
+	/* Validate handle types: must reference a known archetype. */
 	for (int i = 0; i < arch->field_count; i++) {
 		TypeRef *ft = arch->fields[i]->type;
 		if (ft->kind != TYPE_HANDLE)
 			continue;
 		const char *target = ft->data.handle.archetype_name;
-		if (semantic_has_extern_type(ctx, target)) {
-			char msg[256];
-			snprintf(msg, sizeof(msg),
-			         "extern handle '%s' may only appear in extern signatures (archetype '%s' field '%s')", target,
-			         arch->name, arch->fields[i]->name);
-			error(ctx, msg);
-			continue;
-		}
 		if (!find_archetype(ctx, target)) {
 			fprintf(stderr, "Error: unknown archetype '%s' in handle type for field '%s'\n", target,
 			        arch->fields[i]->name);
@@ -1501,11 +1703,9 @@ static int name_is_effectful_callee(SemanticContext *ctx, const char *name) {
 		if (d->kind == DECL_FUNC && d->data.func && d->data.func->name && strcmp(d->data.func->name, name) == 0) {
 			if (d->data.func->is_extern)
 				return 1; /* extern func: opaque C side effects */
-			for (int p = 0; p < d->data.func->param_count; p++) {
-				if (d->data.func->params[p] && d->data.func->params[p]->is_out)
-					return 1; /* out param means callee mutates caller's value */
-			}
-			return 0; /* pure-ish func */
+			if (d->data.func->return_type_count > 1)
+				return 1; /* multi-return func fills caller-passed buffers in place */
+			return 0;     /* pure-ish func */
 		}
 	}
 	return 0;
@@ -1529,19 +1729,6 @@ static const char *lvalue_leftmost_name(Expression *expr) {
 		}
 	}
 	return NULL;
-}
-
-/* Returns 1 if `name` matches a parameter of `proc` whose is_out flag is set. */
-static int name_is_out_param(ProcDecl *proc, const char *name) {
-	if (!proc || !name)
-		return 0;
-	for (int i = 0; i < proc->param_count; i++) {
-		if (proc->params[i] && proc->params[i]->is_out && proc->params[i]->name &&
-		    strcmp(proc->params[i]->name, name) == 0) {
-			return 1;
-		}
-	}
-	return 0;
 }
 
 /* Forward declarations for mutual recursion */
@@ -1588,13 +1775,11 @@ static int stmt_has_side_effects(SemanticContext *ctx, Statement *stmt, ProcDecl
 	if (!stmt)
 		return 0;
 	switch (stmt->type) {
-	case STMT_LET:
-		return stmt->data.let_stmt.value ? expr_has_side_effects(ctx, stmt->data.let_stmt.value, proc) : 0;
+	case STMT_BIND:
+		return stmt->data.bind_stmt.value ? expr_has_side_effects(ctx, stmt->data.bind_stmt.value, proc) : 0;
 	case STMT_ASSIGN: {
 		const char *target_name = lvalue_leftmost_name(stmt->data.assign_stmt.target);
 		if (target_name) {
-			if (name_is_out_param(proc, target_name))
-				return 1;
 			if (find_archetype(ctx, target_name))
 				return 1; /* writing through an archetype = column write */
 		}
@@ -1657,8 +1842,8 @@ static int body_is_effectively_empty(SemanticContext *ctx, ProcDecl *proc) {
 		if (!s)
 			continue;
 		switch (s->type) {
-		case STMT_LET:
-			if (s->data.let_stmt.value && expr_has_side_effects(ctx, s->data.let_stmt.value, proc))
+		case STMT_BIND:
+			if (s->data.bind_stmt.value && expr_has_side_effects(ctx, s->data.bind_stmt.value, proc))
 				return 0;
 			break; /* let with pure init: still empty */
 		case STMT_RETURN:
@@ -1713,36 +1898,15 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 			continue;
 		TypeRef *pt = p->type;
 		if (proc->is_extern) {
-			/* Bare extern table name must be wrapped in handle(...). */
-			if (pt && pt->kind == TYPE_NAME && semantic_has_extern_type(ctx, pt->data.name)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "extern table '%s' must be referenced as 'handle(%s)' (extern proc '%s')",
-				         pt->data.name, pt->data.name, proc->name);
-				error(ctx, msg);
-			} else if (pt && pt->kind == TYPE_NAME) {
+			if (pt && pt->kind == TYPE_NAME) {
 				const char *tname = pt->data.name;
-				if (!is_primitive_type_name(tname) && !find_archetype(ctx, tname)) {
+				if (!is_primitive_type_name(tname) && !find_archetype(ctx, tname) && !is_type_alias(ctx, tname)) {
 					char msg[256];
 					snprintf(msg, sizeof(msg), "unknown type '%s' in extern proc '%s' signature", tname, proc->name);
 					error(ctx, msg);
 				}
 			}
-			/* 'consume' modifier only makes sense on extern-type parameters. */
-			if (p->is_consume && !is_extern_type_ref(ctx, pt)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "'consume' may only modify extern-type parameters (proc '%s', param '%s')",
-				         proc->name, p->name ? p->name : "?");
-				error(ctx, msg);
-			}
-		} else {
-			/* Non-extern procs: extern types may be passed through as opaque
-			 * params (per spec). 'consume' is only meaningful on extern calls. */
-			if (p->is_consume) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "'consume' may only modify extern-type parameters (proc '%s', param '%s')",
-				         proc->name, p->name ? p->name : "?");
-				error(ctx, msg);
-			}
+			/* `consume` is valid on any param type (consume consumes — not opaque-special). */
 		}
 	}
 
@@ -1783,6 +1947,7 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 		} else {
 			add_variable(ctx, param_name, param_type);
 		}
+		mark_last_param(ctx);
 	}
 
 	ProcDecl *prev_proc = ctx->current_proc;
@@ -1849,6 +2014,7 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 			}
 		}
 		add_variable(ctx, sys->params[i]->name, param_type);
+		mark_last_param(ctx);
 	}
 
 	const char *old_sys_archetype = ctx->current_sys_archetype;
@@ -1960,13 +2126,15 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 			break;
 		}
 	}
-	if (func->return_type && func->return_type->kind == TYPE_ARCHETYPE) {
-		char msg[256];
-		snprintf(msg, sizeof(msg), "func '%s': `archetype` is only valid as a parameter type, not a return type",
-		         func->name);
-		error(ctx, msg);
+	for (int i = 0; i < func->return_type_count; i++) {
+		if (func->return_types[i] && func->return_types[i]->kind == TYPE_ARCHETYPE) {
+			char msg[256];
+			snprintf(msg, sizeof(msg), "func '%s': `archetype` is only valid as a parameter type, not a return type",
+			         func->name);
+			error(ctx, msg);
+			break;
+		}
 	}
-
 	/* Validate parameters and return type for extern vs non-extern rules. */
 	for (int i = 0; i < func->param_count; i++) {
 		Parameter *p = func->params[i];
@@ -1974,54 +2142,30 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 			continue;
 		TypeRef *pt = p->type;
 		if (func->is_extern) {
-			/* Bare extern table name must be wrapped in handle(...). */
-			if (pt && pt->kind == TYPE_NAME && semantic_has_extern_type(ctx, pt->data.name)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "extern table '%s' must be referenced as 'handle(%s)' (extern func '%s')",
-				         pt->data.name, pt->data.name, func->name);
-				error(ctx, msg);
-			} else if (pt && pt->kind == TYPE_NAME) {
+			if (pt && pt->kind == TYPE_NAME) {
 				const char *tname = pt->data.name;
-				if (!is_primitive_type_name(tname)) {
+				if (!is_primitive_type_name(tname) && !is_type_alias(ctx, tname)) {
 					char msg[256];
 					snprintf(msg, sizeof(msg), "unknown type '%s' in extern func '%s' signature", tname, func->name);
 					error(ctx, msg);
 				}
 			}
-			/* 'consume' modifier only makes sense on extern-type parameters. */
-			if (p->is_consume && !is_extern_type_ref(ctx, pt)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "'consume' may only modify extern-type parameters (func '%s', param '%s')",
-				         func->name, p->name ? p->name : "?");
-				error(ctx, msg);
-			}
-		} else {
-			/* Non-extern funcs: extern types may pass through as opaque
-			 * params (per spec). 'consume' is only meaningful on extern calls. */
-			if (p->is_consume) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "'consume' may only modify extern-type parameters (func '%s', param '%s')",
-				         func->name, p->name ? p->name : "?");
-				error(ctx, msg);
-			}
+			/* `consume` is valid on any param type (consume consumes — not opaque-special). */
 		}
 	}
 
-	/* Validate return type: extern funcs must use known types; non-extern
-	 * funcs may return extern types as opaque scalars (per spec). */
+	/* Validate return types: extern funcs must use known types. */
 	if (func->is_extern) {
-		if (func->return_type && func->return_type->kind == TYPE_NAME) {
-			const char *tname = func->return_type->data.name;
-			if (semantic_has_extern_type(ctx, tname)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg),
-				         "extern table '%s' must be referenced as 'handle(%s)' (extern func '%s' return type)", tname,
-				         tname, func->name);
-				error(ctx, msg);
-			} else if (!is_primitive_type_name(tname)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "unknown return type '%s' in extern func '%s' signature", tname, func->name);
-				error(ctx, msg);
+		for (int i = 0; i < func->return_type_count; i++) {
+			TypeRef *rt = func->return_types[i];
+			if (rt && rt->kind == TYPE_NAME) {
+				const char *tname = rt->data.name;
+				if (!is_primitive_type_name(tname) && !is_type_alias(ctx, tname)) {
+					char msg[256];
+					snprintf(msg, sizeof(msg), "unknown return type '%s' in extern func '%s' signature", tname,
+					         func->name);
+					error(ctx, msg);
+				}
 			}
 		}
 	}
@@ -2036,6 +2180,7 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 	/* add parameters as variables */
 	for (int i = 0; i < func->param_count; i++) {
 		add_variable(ctx, func->params[i]->name, func->params[i]->type);
+		mark_last_param(ctx);
 	}
 
 	ctx->in_unsafe = func->is_unsafe;
@@ -2067,22 +2212,6 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 	case DECL_USE:
 		/* Module use — resolved before semantic analysis */
 		break;
-	case DECL_EXTERN_TYPE: {
-		ExternTypeDecl *et = decl->data.extern_type;
-		if (semantic_has_extern_type(ctx, et->name)) {
-			char msg[256];
-			snprintf(msg, sizeof(msg), "extern type '%s' redeclared", et->name);
-			error(ctx, msg);
-			break;
-		}
-		ctx->extern_types = realloc(ctx->extern_types, (ctx->extern_type_count + 1) * sizeof(ExternTypeEntry));
-		ctx->extern_types[ctx->extern_type_count].name = malloc(strlen(et->name) + 1);
-		strcpy(ctx->extern_types[ctx->extern_type_count].name, et->name);
-		ctx->extern_types[ctx->extern_type_count].capacity = et->capacity;
-		ctx->extern_types[ctx->extern_type_count].loc = et->loc;
-		ctx->extern_type_count++;
-		break;
-	}
 	case DECL_PROC:
 		analyze_proc_decl(ctx, decl->data.proc);
 		break;
@@ -2098,6 +2227,122 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 	}
 }
 
+/* ========== TYPE-ALIAS ERASURE ========== */
+/* After all checks pass, nominal aliases have done their job (distinctness was enforced
+ * at substitution boundaries). Rewrite every alias type-name in the CST to its backing
+ * so lowering/codegen never see an alias — the alias is zero-cost. */
+
+static void erase_aliases_typeref(SemanticContext *ctx, TypeRef *t) {
+	if (!t)
+		return;
+	switch (t->kind) {
+	case TYPE_NAME: {
+		const char *b = resolve_type_alias(ctx, t->data.name);
+		if (b != t->data.name) {
+			/* Became its backing. `opaque` is its own TypeRef kind (not a named type),
+			 * so rewrite the kind to match a native `opaque`; other backings are named. */
+			if (strcmp(b, "opaque") == 0) {
+				t->kind = TYPE_OPAQUE;
+			} else {
+				char *dup = malloc(strlen(b) + 1);
+				strcpy(dup, b);
+				t->data.name = dup;
+			}
+		}
+		break;
+	}
+	case TYPE_ARRAY:
+		erase_aliases_typeref(ctx, t->data.array.element_type);
+		break;
+	case TYPE_SHAPED_ARRAY:
+		erase_aliases_typeref(ctx, t->data.shaped_array.element_type);
+		break;
+	case TYPE_TUPLE:
+		for (int i = 0; i < t->data.tuple.field_count; i++)
+			erase_aliases_typeref(ctx, t->data.tuple.field_types[i]);
+		break;
+	default:
+		break;
+	}
+}
+
+static void erase_aliases_stmt(SemanticContext *ctx, Statement *s) {
+	if (!s)
+		return;
+	switch (s->type) {
+	case STMT_BIND:
+		erase_aliases_typeref(ctx, s->data.bind_stmt.type);
+		break;
+	case STMT_FOR:
+		erase_aliases_stmt(ctx, s->data.for_stmt.init);
+		erase_aliases_stmt(ctx, s->data.for_stmt.increment);
+		for (int i = 0; i < s->data.for_stmt.body_count; i++)
+			erase_aliases_stmt(ctx, s->data.for_stmt.body[i]);
+		break;
+	case STMT_IF:
+		for (int i = 0; i < s->data.if_stmt.then_count; i++)
+			erase_aliases_stmt(ctx, s->data.if_stmt.then_body[i]);
+		for (int i = 0; i < s->data.if_stmt.else_count; i++)
+			erase_aliases_stmt(ctx, s->data.if_stmt.else_body[i]);
+		break;
+	case STMT_MULTI_BIND:
+		for (int i = 0; i < s->data.multi_bind.target_count; i++)
+			erase_aliases_typeref(ctx, s->data.multi_bind.targets[i].type);
+		break;
+	case STMT_EACH_FIELD:
+		erase_aliases_typeref(ctx, s->data.each_field.filter_type);
+		for (int i = 0; i < s->data.each_field.body_count; i++)
+			erase_aliases_stmt(ctx, s->data.each_field.body[i]);
+		break;
+	default:
+		break;
+	}
+}
+
+static void erase_aliases_decl(SemanticContext *ctx, Decl *d) {
+	if (!d)
+		return;
+	switch (d->kind) {
+	case DECL_ARCHETYPE:
+		for (int i = 0; i < d->data.archetype->field_count; i++)
+			erase_aliases_typeref(ctx, d->data.archetype->fields[i]->type);
+		break;
+	case DECL_PROC:
+		for (int i = 0; i < d->data.proc->param_count; i++)
+			erase_aliases_typeref(ctx, d->data.proc->params[i]->type);
+		for (int i = 0; i < d->data.proc->statement_count; i++)
+			erase_aliases_stmt(ctx, d->data.proc->statements[i]);
+		break;
+	case DECL_SYS:
+		for (int i = 0; i < d->data.sys->param_count; i++)
+			erase_aliases_typeref(ctx, d->data.sys->params[i]->type);
+		for (int i = 0; i < d->data.sys->statement_count; i++)
+			erase_aliases_stmt(ctx, d->data.sys->statements[i]);
+		break;
+	case DECL_FUNC:
+		for (int i = 0; i < d->data.func->return_type_count; i++)
+			erase_aliases_typeref(ctx, d->data.func->return_types[i]);
+		for (int i = 0; i < d->data.func->param_count; i++)
+			erase_aliases_typeref(ctx, d->data.func->params[i]->type);
+		for (int i = 0; i < d->data.func->statement_count; i++)
+			erase_aliases_stmt(ctx, d->data.func->statements[i]);
+		break;
+	case DECL_STATIC:
+		if (d->data.static_decl->kind == STATIC_KIND_ARRAY)
+			erase_aliases_typeref(ctx, d->data.static_decl->array.element_type);
+		break;
+	default:
+		break;
+	}
+}
+
+static void erase_type_aliases(SemanticContext *ctx, Program *prog) {
+	if (ctx->type_alias_count == 0)
+		return;
+	for (int i = 0; i < prog->decl_count; i++)
+		erase_aliases_decl(ctx, prog->decls[i]);
+}
+
 /* ========== PUBLIC API ========== */
 
 SemanticContext *semantic_analyze(Program *prog) {
@@ -2110,11 +2355,12 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->known_func_count = 0;
 	ctx->groups = NULL;
 	ctx->group_count = 0;
-	ctx->extern_types = NULL;
-	ctx->extern_type_count = 0;
 	ctx->const_names = NULL;
 	ctx->const_values = NULL;
 	ctx->const_count = 0;
+	ctx->type_alias_names = NULL;
+	ctx->type_alias_backings = NULL;
+	ctx->type_alias_count = 0;
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
 	ctx->error_count = 0;
@@ -2132,47 +2378,161 @@ SemanticContext *semantic_analyze(Program *prog) {
 	if (!prog)
 		return ctx;
 
-	/* pass 0: collect all constants */
+	/* pass 0: collect constants and nominal type aliases. A `name :: <RHS>` decl is a
+	 * value const when RHS is a literal, or a type alias when RHS is a bare name —
+	 * consts are literal-only, so a name RHS is unambiguously a type (Odin's model). */
 	for (int i = 0; i < prog->decl_count; i++) {
-		if (prog->decls[i]->kind == DECL_CONST) {
-			ConstDecl *c = prog->decls[i]->data.constant;
-			/* Validate: value must be a literal */
-			if (!c->value || c->value->type != EXPR_LITERAL) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "constant '%s' must be a literal value", c->name);
-				error(ctx, msg);
-				continue;
-			}
-			/* Check for duplicates */
-			for (int j = 0; j < ctx->const_count; j++) {
-				if (strcmp(ctx->const_names[j], c->name) == 0) {
+		if (prog->decls[i]->kind != DECL_CONST)
+			continue;
+		ConstDecl *c = prog->decls[i]->data.constant;
+
+		/* Type alias: `count :: int`, `file :: opaque`. RHS is a bare name; the backing
+		 * is validated after the loop (so aliases may reference later aliases). */
+		/* Tuple type alias: `pos :: (x: int, y: int)` mints flat name-prefixed nominal
+		 * types pos_x, pos_y (each a normal alias over the field's backing). */
+		if (c->type_value && c->type_value->kind == TYPE_TUPLE) {
+			for (int f = 0; f < c->type_value->data.tuple.field_count; f++) {
+				TypeRef *ft = c->type_value->data.tuple.field_types[f];
+				const char *fbacking = NULL;
+				if (ft && ft->kind == TYPE_NAME)
+					fbacking = ft->data.name;
+				else if (ft && ft->kind == TYPE_OPAQUE)
+					fbacking = "opaque";
+				else {
+					error(ctx, "tuple field must be a simple type (nested tuples are not allowed)");
+					continue;
+				}
+				const char *fn = c->type_value->data.tuple.field_names[f];
+				size_t L = strlen(c->name) + 1 + strlen(fn) + 1;
+				char *aname = malloc(L);
+				snprintf(aname, L, "%s_%s", c->name, fn);
+				int dup = 0;
+				for (int j = 0; j < ctx->type_alias_count; j++)
+					if (strcmp(ctx->type_alias_names[j], aname) == 0) {
+						dup = 1;
+						break;
+					}
+				if (dup) {
 					char msg[256];
-					snprintf(msg, sizeof(msg), "constant '%s' already defined", c->name);
+					snprintf(msg, sizeof(msg), "type '%s' already defined", aname);
 					error(ctx, msg);
-					goto dup_const;
+					free(aname);
+					continue;
+				}
+				ctx->type_alias_names = realloc(ctx->type_alias_names, (ctx->type_alias_count + 1) * sizeof(char *));
+				ctx->type_alias_backings =
+				    realloc(ctx->type_alias_backings, (ctx->type_alias_count + 1) * sizeof(char *));
+				ctx->type_alias_names[ctx->type_alias_count] = aname;
+				ctx->type_alias_backings[ctx->type_alias_count] = (char *)fbacking;
+				ctx->type_alias_count++;
+			}
+			goto next_const;
+		}
+
+		if (c->value && c->value->type == EXPR_NAME) {
+			/* Redefinition must AGREE: the same alias with the same backing is fine
+			 * (e.g. core's `file :: opaque` and a user's `file :: opaque`); a different
+			 * backing is a conflict. */
+			for (int j = 0; j < ctx->type_alias_count; j++) {
+				if (strcmp(ctx->type_alias_names[j], c->name) == 0) {
+					if (strcmp(ctx->type_alias_backings[j], c->value->data.name.name) == 0)
+						goto next_const; /* agrees — silently share */
+					char msg[256];
+					snprintf(msg, sizeof(msg), "type '%s' redefined with a different backing", c->name);
+					error(ctx, msg);
+					goto next_const;
 				}
 			}
-			/* Register */
-			ctx->const_names = realloc(ctx->const_names, (ctx->const_count + 1) * sizeof(char *));
-			ctx->const_values = realloc(ctx->const_values, (ctx->const_count + 1) * sizeof(const char *));
-			ctx->const_names[ctx->const_count] = c->name;
-			ctx->const_values[ctx->const_count] = c->value->data.literal.lexeme;
-			ctx->const_count++;
-		dup_const:;
+			ctx->type_alias_names = realloc(ctx->type_alias_names, (ctx->type_alias_count + 1) * sizeof(char *));
+			ctx->type_alias_backings = realloc(ctx->type_alias_backings, (ctx->type_alias_count + 1) * sizeof(char *));
+			ctx->type_alias_names[ctx->type_alias_count] = c->name;
+			ctx->type_alias_backings[ctx->type_alias_count] = c->value->data.name.name;
+			ctx->type_alias_count++;
+			goto next_const;
+		}
+
+		/* Value const: RHS must be a literal. */
+		if (!c->value || c->value->type != EXPR_LITERAL) {
+			char msg[256];
+			snprintf(msg, sizeof(msg), "constant '%s' must be a literal value", c->name);
+			error(ctx, msg);
+			goto next_const;
+		}
+		for (int j = 0; j < ctx->const_count; j++) {
+			if (strcmp(ctx->const_names[j], c->name) == 0) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "constant '%s' already defined", c->name);
+				error(ctx, msg);
+				goto next_const;
+			}
+		}
+		ctx->const_names = realloc(ctx->const_names, (ctx->const_count + 1) * sizeof(char *));
+		ctx->const_values = realloc(ctx->const_values, (ctx->const_count + 1) * sizeof(const char *));
+		ctx->const_names[ctx->const_count] = c->name;
+		ctx->const_values[ctx->const_count] = c->value->data.literal.lexeme;
+		ctx->const_count++;
+	next_const:;
+	}
+
+	/* Inline component definitions: `arche Foo { hp :: int, … }` mints the nominal type `hp`
+	 * (≡ a top-level `hp :: int`) and includes it as a component — so the component is a real
+	 * type, not a bare field label. A bare reference (`arche Foo { hp }`) has field type == its
+	 * own name and is skipped here. Array/tuple components are the column's own type, not a
+	 * registerable alias. Redefinition must agree, exactly as for top-level aliases. */
+	for (int i = 0; i < prog->decl_count; i++) {
+		if (prog->decls[i]->kind != DECL_ARCHETYPE)
+			continue;
+		ArchetypeDecl *a = prog->decls[i]->data.archetype;
+		for (int f = 0; f < a->field_count; f++) {
+			FieldDecl *fd = a->fields[f];
+			if (!fd->type || !fd->name)
+				continue;
+			const char *backing = NULL;
+			if (fd->type->kind == TYPE_NAME) {
+				if (strcmp(fd->type->data.name, fd->name) == 0)
+					continue; /* bare reference, not an inline definition */
+				backing = fd->type->data.name;
+			} else if (fd->type->kind == TYPE_OPAQUE) {
+				backing = "opaque";
+			} else {
+				continue; /* array/tuple component: column-only, no nominal alias */
+			}
+			int done = 0;
+			for (int j = 0; j < ctx->type_alias_count; j++) {
+				if (strcmp(ctx->type_alias_names[j], fd->name) == 0) {
+					if (strcmp(ctx->type_alias_backings[j], backing) != 0) {
+						char msg[256];
+						snprintf(msg, sizeof(msg), "type '%s' redefined with a different backing", fd->name);
+						error(ctx, msg);
+					}
+					done = 1;
+					break;
+				}
+			}
+			if (done)
+				continue;
+			ctx->type_alias_names = realloc(ctx->type_alias_names, (ctx->type_alias_count + 1) * sizeof(char *));
+			ctx->type_alias_backings = realloc(ctx->type_alias_backings, (ctx->type_alias_count + 1) * sizeof(char *));
+			ctx->type_alias_names[ctx->type_alias_count] = fd->name;
+			ctx->type_alias_backings[ctx->type_alias_count] = (char *)backing;
+			ctx->type_alias_count++;
+		}
+	}
+
+	/* Validate each alias resolves (through any chain) to a real backing type. */
+	for (int i = 0; i < ctx->type_alias_count; i++) {
+		const char *b = resolve_type_alias(ctx, ctx->type_alias_names[i]);
+		if (!is_primitive_type_name(b) && strcmp(b, "opaque") != 0) {
+			char msg[256];
+			snprintf(msg, sizeof(msg), "type alias '%s' has unknown backing type '%s'", ctx->type_alias_names[i], b);
+			error(ctx, msg);
 		}
 	}
 
 	/* global scope: holds module-level variables (static arrays, etc.) */
 	push_scope(ctx);
 
-	/* pass 1a: register extern types so archetype field checks see them */
-	for (int i = 0; i < prog->decl_count; i++) {
-		if (prog->decls[i]->kind == DECL_EXTERN_TYPE) {
-			analyze_decl(ctx, prog->decls[i]);
-		}
-	}
-
-	/* pass 1b: collect all archetypes */
+	/* pass 1: collect all archetypes */
 	for (int i = 0; i < prog->decl_count; i++) {
 		if (prog->decls[i]->kind == DECL_ARCHETYPE) {
 			analyze_decl(ctx, prog->decls[i]);
@@ -2181,11 +2541,13 @@ SemanticContext *semantic_analyze(Program *prog) {
 
 	/* pass 2: analyze other declarations */
 	for (int i = 0; i < prog->decl_count; i++) {
-		if (prog->decls[i]->kind != DECL_ARCHETYPE && prog->decls[i]->kind != DECL_CONST &&
-		    prog->decls[i]->kind != DECL_EXTERN_TYPE) {
+		if (prog->decls[i]->kind != DECL_ARCHETYPE && prog->decls[i]->kind != DECL_CONST) {
 			analyze_decl(ctx, prog->decls[i]);
 		}
 	}
+
+	/* pass 3: erase nominal aliases to their backing (zero-cost; codegen never sees them). */
+	erase_type_aliases(ctx, prog);
 
 	return ctx;
 }
@@ -2194,15 +2556,13 @@ void semantic_context_free(SemanticContext *ctx) {
 	if (!ctx)
 		return;
 
-	/* free extern type entries */
-	for (int i = 0; i < ctx->extern_type_count; i++) {
-		free(ctx->extern_types[i].name);
-	}
-	free(ctx->extern_types);
-
 	/* free constants (names only, values are owned by AST) */
 	free(ctx->const_names);
 	free(ctx->const_values);
+
+	/* free type-alias tables (name/backing strings are owned by the CST) */
+	free(ctx->type_alias_names);
+	free(ctx->type_alias_backings);
 
 	/* free shapes (one per unique column structure) */
 	for (int i = 0; i < ctx->archetype_count; i++) {
@@ -2261,38 +2621,6 @@ int semantic_error_count(const SemanticContext *ctx) {
 	if (!ctx)
 		return 0;
 	return ctx->error_count;
-}
-
-int semantic_has_extern_type(const SemanticContext *ctx, const char *name) {
-	if (!ctx || !name)
-		return 0;
-	for (int i = 0; i < ctx->extern_type_count; i++) {
-		if (strcmp(ctx->extern_types[i].name, name) == 0)
-			return 1;
-	}
-	return 0;
-}
-
-int semantic_extern_type_capacity(const SemanticContext *ctx, const char *name) {
-	if (!ctx || !name)
-		return -1;
-	for (int i = 0; i < ctx->extern_type_count; i++) {
-		if (strcmp(ctx->extern_types[i].name, name) == 0)
-			return ctx->extern_types[i].capacity;
-	}
-	return -1;
-}
-
-int semantic_extern_type_count(const SemanticContext *ctx) {
-	if (!ctx)
-		return 0;
-	return ctx->extern_type_count;
-}
-
-const char *semantic_extern_type_name_at(const SemanticContext *ctx, int index) {
-	if (!ctx || index < 0 || index >= ctx->extern_type_count)
-		return NULL;
-	return ctx->extern_types[index].name;
 }
 
 int semantic_archetype_exists(SemanticContext *ctx, const char *name) {

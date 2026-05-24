@@ -87,8 +87,12 @@ struct CodegenContext {
 	size_t alloca_buf_pos;
 	int hoisting_allocas;
 
-	/* Return type of the function currently being generated */
+	/* Return type of the function currently being generated. For a multi-return func this is
+	 * the literal aggregate type (e.g. "{i32, i32}"); current_func gives the member types so a
+	 * `return a, b` can build the aggregate. */
 	const char *current_return_type;
+	AstFuncDecl *current_func; /* the func being generated (for multi-return packing) */
+	char current_return_type_buf[512];
 
 	/* Loop bound tracking for bounds-check elision. When a C-style `for`
 	 * loop has the shape `for (let v = 0; v < BOUND; v += 1)` with BOUND a
@@ -238,6 +242,8 @@ static const char *llvm_type_from_arche(const char *arche_type) {
 		return "void";
 	if (strcmp(arche_type, "handle") == 0)
 		return "i64";
+	if (strcmp(arche_type, "opaque") == 0)
+		return "i64"; /* pointer-width cell; holds a C pointer, never interpreted by Arche */
 
 	/* Fixed-width integer types map to LLVM iN (sign lives in the ops, not
 	 * the type): byte/u8/i8 -> i8, u16/i16 -> i16, ... i128/u128 -> i128. */
@@ -288,6 +294,8 @@ static const char *llvm_int_type(int width) {
  * into `out`. `from` may be NULL (treated as i32 signed). */
 static void emit_int_convert(CodegenContext *ctx, const char *val, AstType *from, int to_w, char *out) {
 	int from_w = (from && from->tag == AST_TYPE_INT && from->int_width) ? from->int_width : 32;
+	if (from && (from->tag == AST_TYPE_OPAQUE || from->tag == AST_TYPE_HANDLE))
+		from_w = 64; /* opaque cell / handle are pointer-width i64 */
 	int from_signed = (from && from->tag == AST_TYPE_INT) ? from->int_signed : 1;
 	if (to_w == 0)
 		to_w = 32;
@@ -384,6 +392,8 @@ static const char *field_base_type_name(AstType *type) {
 		return "void";
 	case AST_TYPE_HANDLE:
 		return "handle";
+	case AST_TYPE_OPAQUE:
+		return "opaque";
 	case AST_TYPE_NAMED:
 		return type->name ? type->name : "int";
 	default:
@@ -395,6 +405,28 @@ static int field_total_elements(AstType *type) {
 	if (type && type->tag == AST_TYPE_SHAPED_ARRAY)
 		return type->rank * field_total_elements(type->elem);
 	return 1;
+}
+
+/* LLVM type of one return value. char[] returns a raw i8* byte view; everything else maps
+ * through the normal type lowering (int→iN, float→double, handle/opaque→i64, …). */
+static const char *return_member_llvm(AstType *t) {
+	if (t && (t->tag == AST_TYPE_ARRAY || t->tag == AST_TYPE_SHAPED_ARRAY))
+		return "i8*";
+	return llvm_type_from_arche(field_base_type_name(t));
+}
+
+/* Fill `out` with a function's LLVM return type: the single type when count == 1, or a literal
+ * aggregate `{T1, T2, …}` for a multi-value return. */
+static void func_llvm_return_type(AstFuncDecl *f, char *out, size_t cap) {
+	if (f->return_type_count == 1) {
+		snprintf(out, cap, "%s", return_member_llvm(f->return_types[0]));
+		return;
+	}
+	size_t n = 0;
+	n += (size_t)snprintf(out + n, cap - n, "{ ");
+	for (int i = 0; i < f->return_type_count; i++)
+		n += (size_t)snprintf(out + n, cap - n, "%s%s", i ? ", " : "", return_member_llvm(f->return_types[i]));
+	snprintf(out + n, cap - n, " }");
 }
 
 static const char *ast_resolved_type_name(const AstExpr *expr) {
@@ -411,21 +443,13 @@ static const char *ast_resolved_type_name(const AstExpr *expr) {
 		return "void";
 	case AST_TYPE_HANDLE:
 		return "handle";
+	case AST_TYPE_OPAQUE:
+		return "opaque";
 	case AST_TYPE_NAMED:
 		return expr->resolved.name ? expr->resolved.name : "int";
 	default:
 		return "int";
 	}
-}
-
-/* Returns the extern table target name if `type` is handle(X) where X is a
- * registered extern table; NULL otherwise. */
-static const char *extern_handle_target_ast(const SemanticContext *sem, AstType *type) {
-	if (!type || type->tag != AST_TYPE_HANDLE || !type->name)
-		return NULL;
-	if (semantic_has_extern_type(sem, type->name))
-		return type->name;
-	return NULL;
 }
 
 static char *gen_value_name(CodegenContext *ctx) {
@@ -628,15 +652,58 @@ static void register_static_arrays_in_scope(CodegenContext *ctx) {
 	}
 }
 
-/* Helper: find archetype declaration by name */
+/* Two archetype decls denote the same shape iff they have the same *set* of component
+ * names (order-independent — an archetype is an unordered set of component types). */
+static int archetypes_same_shape(AstArchetypeDecl *a, AstArchetypeDecl *b) {
+	if (a == b)
+		return 1;
+	if (!a || !b || a->field_count != b->field_count)
+		return 0;
+	for (int i = 0; i < a->field_count; i++) {
+		int found = 0;
+		for (int j = 0; j < b->field_count; j++) {
+			if (a->fields[i]->name && b->fields[j]->name && strcmp(a->fields[i]->name, b->fields[j]->name) == 0) {
+				found = 1;
+				break;
+			}
+		}
+		if (!found)
+			return 0;
+	}
+	return 1;
+}
+
+/* One shape = one pool. An archetype name is an *alias* for its shape; every alias resolves
+ * to the same storage. The canonical decl is the first-declared archetype of that shape —
+ * its name backs the single `%struct.` / `@archetype_` / `@` symbols and its field order is
+ * the shape's column layout. */
+static AstArchetypeDecl *canonical_archetype_decl(CodegenContext *ctx, AstArchetypeDecl *arch) {
+	if (!arch)
+		return NULL;
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		AstDecl *decl = ctx->ast->decls[i];
+		if (decl->kind == AST_DECL_ARCHETYPE && archetypes_same_shape(decl->data.archetype, arch))
+			return decl->data.archetype;
+	}
+	return arch;
+}
+
+/* Find an archetype declaration by name, resolving aliases to the shape's canonical decl. */
 static AstArchetypeDecl *find_archetype_decl(CodegenContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		AstDecl *decl = ctx->ast->decls[i];
 		if (decl->kind == AST_DECL_ARCHETYPE && strcmp(decl->data.archetype->name, name) == 0) {
-			return decl->data.archetype;
+			return canonical_archetype_decl(ctx, decl->data.archetype);
 		}
 	}
 	return NULL;
+}
+
+/* The canonical shape name for an archetype name (used to form storage symbols). Returns the
+ * input unchanged if no archetype by that name exists. */
+static const char *canonical_arch_name(CodegenContext *ctx, const char *name) {
+	AstArchetypeDecl *c = find_archetype_decl(ctx, name);
+	return c ? c->name : name;
 }
 
 /* Return compile-time capacity for arch from static declaration, or 0 if not declared static */
@@ -644,7 +711,9 @@ static int get_arch_static_capacity(CodegenContext *ctx, const char *arch_name) 
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		if (ctx->ast->decls[i]->kind == AST_DECL_STATIC) {
 			AstStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
-			if (s->kind == AST_STATIC_ARCHETYPE && strcmp(s->archetype.archetype_name, arch_name) == 0 &&
+			if (s->kind == AST_STATIC_ARCHETYPE &&
+			    strcmp(canonical_arch_name(ctx, s->archetype.archetype_name), canonical_arch_name(ctx, arch_name)) ==
+			        0 &&
 			    s->archetype.field_count > 0 && s->archetype.field_values[0]->kind == AST_EXPR_LITERAL) {
 				return atoi(s->archetype.field_values[0]->data.literal.lexeme);
 			}
@@ -667,7 +736,7 @@ static int get_arch_static_count(CodegenContext *ctx, const char *arch_name) {
 		AstStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
 		if (s->kind != AST_STATIC_ARCHETYPE)
 			continue;
-		if (strcmp(s->archetype.archetype_name, arch_name) != 0)
+		if (strcmp(canonical_arch_name(ctx, s->archetype.archetype_name), canonical_arch_name(ctx, arch_name)) != 0)
 			continue;
 		if (s->archetype.field_count == 0)
 			return 0;
@@ -1143,7 +1212,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 					int w, sg;
 					if (strcmp(val->field_type, "double") == 0 || strcmp(val->field_type, "float") == 0) {
 						llvm_type = "double";
-					} else if (strcmp(val->field_type, "handle") == 0) {
+					} else if (strcmp(val->field_type, "handle") == 0 || strcmp(val->field_type, "opaque") == 0) {
 						llvm_type = "i64";
 					} else if (ast_parse_int_width(val->field_type, &w, &sg)) {
 						llvm_type = llvm_int_type(w);
@@ -1162,15 +1231,17 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			snprintf(global_ref, sizeof(global_ref), "@%s", name);
 			strcpy(result_buf, global_ref);
 		} else if (find_archetype_decl(ctx, name)) {
-			/* Archetype name — static global is @X directly; dynamic is loaded from @archetype_X */
-			if (get_arch_static_capacity(ctx, name) > 0) {
+			/* Archetype name → its shape's storage. Aliases resolve to the canonical name, so
+			 * every alias references the one struct/global. Static global is @X directly;
+			 * dynamic is loaded from @archetype_X. */
+			const char *cn = canonical_arch_name(ctx, name);
+			if (get_arch_static_capacity(ctx, cn) > 0) {
 				char global_ref[256];
-				snprintf(global_ref, sizeof(global_ref), "@%s", name);
+				snprintf(global_ref, sizeof(global_ref), "@%s", cn);
 				strcpy(result_buf, global_ref);
 			} else {
 				char *loaded = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", loaded, name, name,
-				                  name);
+				buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", loaded, cn, cn, cn);
 				strcpy(result_buf, loaded);
 			}
 		} else {
@@ -1225,6 +1296,9 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			int_width = lw > rw ? lw : rw;
 			if (int_width == 0)
 				int_width = 32; /* unset/non-int operands default to i32 */
+			if (expr->data.binary.left->resolved.tag == AST_TYPE_OPAQUE ||
+			    expr->data.binary.right->resolved.tag == AST_TYPE_OPAQUE)
+				int_width = 64; /* opaque cells are pointer-width i64 (e.g. `r == 0`) */
 			if (lt->tag == AST_TYPE_INT)
 				int_signed = lt->int_signed;
 			else if (rt->tag == AST_TYPE_INT)
@@ -1433,6 +1507,10 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 	case AST_EXPR_UNARY: {
 		char operand_buf[256];
 		codegen_expression(ctx, expr->data.unary.operand, operand_buf);
+		if (expr->data.unary.op == UNARY_MOVE) {
+			strcpy(result_buf, operand_buf); /* `move x` is transparent — the value passes through */
+			break;
+		}
 
 		char *res_name = gen_value_name(ctx);
 		if (expr->data.unary.op == UNARY_NEG) {
@@ -2001,6 +2079,9 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				}
 			}
 
+			if (arch) {
+				arch_name = arch->name; /* canonical shape name backs @arche_insert_/%struct. */
+			}
 			if (arch_name && arch) {
 				/* Evaluate all field arguments first */
 				char field_bufs[32][256];
@@ -2041,45 +2122,51 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		}
 
 		/* Special handling for delete builtin */
-		if (func_name && strcmp(func_name, "delete") == 0 && expr->data.call.arg_count >= 2) {
-			/* args[0] is archetype variable, args[1] is handle */
+		if (func_name && strcmp(func_name, "delete") == 0 && expr->data.call.arg_count >= 1) {
+			/* delete(h) infers the pool from the handle's archetype; legacy
+			 * delete(table<X>, h) names the target explicitly. */
 			char arch_buf[256];
-			codegen_expression(ctx, expr->data.call.args[0], arch_buf);
-
 			char idx_buf[256];
-			codegen_expression(ctx, expr->data.call.args[1], idx_buf);
-
-			/* Get arch_name from ValueInfo or archetype name of args[0] */
+			arch_buf[0] = '\0';
+			idx_buf[0] = '\0';
 			const char *arch_name = NULL;
-			if (expr->data.call.args[0]->kind == AST_EXPR_NAME) {
-				const char *name = expr->data.call.args[0]->data.name.name;
-				ValueInfo *arch_var = find_value(ctx, name);
-				if (arch_var && arch_var->arch_name) {
-					arch_name = arch_var->arch_name;
-				} else if (find_archetype_decl(ctx, name)) {
-					/* Direct archetype name */
-					arch_name = name;
+			if (expr->data.call.arg_count >= 2) {
+				codegen_expression(ctx, expr->data.call.args[0], arch_buf);
+				codegen_expression(ctx, expr->data.call.args[1], idx_buf);
+				if (expr->data.call.args[0]->kind == AST_EXPR_NAME) {
+					const char *name = expr->data.call.args[0]->data.name.name;
+					ValueInfo *arch_var = find_value(ctx, name);
+					if (arch_var && arch_var->arch_name)
+						arch_name = arch_var->arch_name;
+					else if (find_archetype_decl(ctx, name))
+						arch_name = name;
 				}
-			}
-
-			/* Check handle type matches delete archetype */
-			if (expr->data.call.args[1]->kind == AST_EXPR_NAME) {
-				const char *handle_var = expr->data.call.args[1]->data.name.name;
-				ValueInfo *handle_vi = find_value(ctx, handle_var);
-				if (handle_vi && handle_vi->field_type && strcmp(handle_vi->field_type, "handle") == 0) {
-					if (handle_vi->handle_archetype && arch_name &&
-					    strcmp(handle_vi->handle_archetype, arch_name) != 0) {
+				if (expr->data.call.args[1]->kind == AST_EXPR_NAME) {
+					ValueInfo *hvi = find_value(ctx, expr->data.call.args[1]->data.name.name);
+					if (hvi && hvi->field_type && strcmp(hvi->field_type, "handle") == 0 && hvi->handle_archetype &&
+					    arch_name && strcmp(hvi->handle_archetype, arch_name) != 0) {
 						fprintf(stderr, "Error: type mismatch in delete: handle for %s cannot delete %s\n",
-						        handle_vi->handle_archetype, arch_name);
+						        hvi->handle_archetype, arch_name);
 						strcpy(result_buf, "0");
 						break;
 					}
 				}
+			} else {
+				codegen_expression(ctx, expr->data.call.args[0], idx_buf);
+				if (expr->data.call.args[0]->kind == AST_EXPR_NAME) {
+					ValueInfo *hv = find_value(ctx, expr->data.call.args[0]->data.name.name);
+					if (hv && hv->handle_archetype)
+						arch_name = hv->handle_archetype;
+				}
+				if (arch_name) {
+					arch_name = canonical_arch_name(ctx, arch_name);
+					snprintf(arch_buf, sizeof(arch_buf), "@%s", arch_name);
+				}
 			}
-
 			if (arch_name) {
-				buffer_append_fmt(ctx, "  call void @arche_delete_%s(%%struct.%s* %s, i64 %s)\n", arch_name, arch_name,
-				                  arch_buf, idx_buf);
+				const char *cn = canonical_arch_name(ctx, arch_name);
+				buffer_append_fmt(ctx, "  call void @arche_delete_%s(%%struct.%s* %s, i64 %s)\n", cn, cn, arch_buf,
+				                  idx_buf);
 				strcpy(result_buf, "0");
 			}
 			break;
@@ -2105,8 +2192,8 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			}
 
 			if (arch_name) {
-				buffer_append_fmt(ctx, "  call void @arche_dealloc_%s(%%struct.%s* %s)\n", arch_name, arch_name,
-				                  arch_buf);
+				const char *cn = canonical_arch_name(ctx, arch_name);
+				buffer_append_fmt(ctx, "  call void @arche_dealloc_%s(%%struct.%s* %s)\n", cn, cn, arch_buf);
 				strcpy(result_buf, "0");
 			}
 			break;
@@ -2117,32 +2204,40 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		int *arg_is_string = malloc(expr->data.call.arg_count * sizeof(int));
 		int *arg_is_array_literal = malloc(expr->data.call.arg_count * sizeof(int));
 		ValueInfo **arg_values = malloc(expr->data.call.arg_count * sizeof(ValueInfo *));
+		/* `move x` at a call site = by-reference (no copy). A plain arg is copied (below),
+		 * so a function has no side effects on its caller's data unless `move`d in. The
+		 * move marker is transparent in codegen, so unwrap it to classify the operand. */
+		int *arg_is_move = malloc(expr->data.call.arg_count * sizeof(int));
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			arg_bufs[i] = malloc(256);
 			arg_is_string[i] = 0;
 			arg_is_array_literal[i] = 0;
 			arg_values[i] = NULL;
+			arg_is_move[i] = 0;
+
+			AstExpr *inner = expr->data.call.args[i];
+			if (inner->kind == AST_EXPR_UNARY && inner->data.unary.op == UNARY_MOVE) {
+				arg_is_move[i] = 1;
+				inner = inner->data.unary.operand;
+			}
 
 			/* Check if this arg is a string literal */
-			if (expr->data.call.args[i]->kind == AST_EXPR_STRING) {
+			if (inner->kind == AST_EXPR_STRING) {
 				arg_is_string[i] = 1;
 			}
 			/* Check if this arg is an old-style string literal (AST_EXPR_LITERAL with quotes) */
-			else if (expr->data.call.args[i]->kind == AST_EXPR_LITERAL &&
-			         expr->data.call.args[i]->data.literal.lexeme[0] == '"') {
+			else if (inner->kind == AST_EXPR_LITERAL && inner->data.literal.lexeme[0] == '"') {
 				arg_is_string[i] = 1;
 			}
 			/* Check if this arg is an array literal */
-			else if (expr->data.call.args[i]->kind == AST_EXPR_ARRAY_LITERAL) {
+			else if (inner->kind == AST_EXPR_ARRAY_LITERAL) {
 				arg_is_array_literal[i] = 1;
 			}
 			/* `f.name` inside an each_field expansion: produces a raw i8* string. */
-			else if (ctx->current_each_field_binding && expr->data.call.args[i]->kind == AST_EXPR_FIELD &&
-			         expr->data.call.args[i]->data.field.base->kind == AST_EXPR_NAME &&
-			         strcmp(expr->data.call.args[i]->data.field.base->data.name.name,
-			                ctx->current_each_field_binding) == 0 &&
-			         expr->data.call.args[i]->data.field.field_name &&
-			         strcmp(expr->data.call.args[i]->data.field.field_name, "name") == 0) {
+			else if (ctx->current_each_field_binding && inner->kind == AST_EXPR_FIELD &&
+			         inner->data.field.base->kind == AST_EXPR_NAME &&
+			         strcmp(inner->data.field.base->data.name.name, ctx->current_each_field_binding) == 0 &&
+			         inner->data.field.field_name && strcmp(inner->data.field.field_name, "name") == 0) {
 				arg_is_string[i] = 1;
 			}
 
@@ -2153,8 +2248,11 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		int *arg_is_static_array = malloc(expr->data.call.arg_count * sizeof(int));
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			arg_is_static_array[i] = 0;
-			if (!arg_is_string[i] && !arg_is_array_literal[i] && expr->data.call.args[i]->kind == AST_EXPR_NAME) {
-				const char *arg_name = expr->data.call.args[i]->data.name.name;
+			AstExpr *inner = expr->data.call.args[i];
+			if (inner->kind == AST_EXPR_UNARY && inner->data.unary.op == UNARY_MOVE)
+				inner = inner->data.unary.operand;
+			if (!arg_is_string[i] && !arg_is_array_literal[i] && inner->kind == AST_EXPR_NAME) {
+				const char *arg_name = inner->data.name.name;
 				ValueInfo *var = find_value(ctx, arg_name);
 				if (var) {
 					arg_values[i] = var;
@@ -2209,20 +2307,18 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			call_arg_types[i] = "i32"; /* Default type */
 
 			/* Determine what callee param expects */
-			int callee_wants_arr = 0;
+			int callee_wants_arr = 0;        /* unbounded char[] (arche_array struct on non-extern) */
+			int callee_wants_shaped_arr = 0; /* sized char[N] (raw i8*) */
 			int callee_is_extern = (callee_proc && callee_proc->is_extern) || (callee_func && callee_func->is_extern);
-			if (callee_proc && i < callee_proc->param_count) {
-				AstType *pt = callee_proc->params[i]->type;
-				if (pt && pt->tag == AST_TYPE_ARRAY) {
-					callee_wants_arr = 1;
-				}
-			}
-			if (callee_func && i < callee_func->param_count) {
-				AstType *pt = callee_func->params[i]->type;
-				if (pt && pt->tag == AST_TYPE_ARRAY) {
-					callee_wants_arr = 1;
-				}
-			}
+			AstType *callee_pt = NULL;
+			if (callee_proc && i < callee_proc->param_count)
+				callee_pt = callee_proc->params[i]->type;
+			if (callee_func && i < callee_func->param_count)
+				callee_pt = callee_func->params[i]->type;
+			if (callee_pt && callee_pt->tag == AST_TYPE_ARRAY)
+				callee_wants_arr = 1;
+			else if (callee_pt && callee_pt->tag == AST_TYPE_SHAPED_ARRAY)
+				callee_wants_shaped_arr = 1;
 
 			/* Handle type conversions, emit code before call if needed */
 			if (arg_is_static_array[i]) {
@@ -2291,6 +2387,17 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				int buf_len = arg_values[i]->string_len;
 				char *bitcast = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", bitcast, buf_len, arg_bufs[i]);
+				/* By-value (non-`move`) array arg to an arche function: copy the buffer so the
+				 * callee's mutations don't leak back. Externs (C ABI) and `move` stay by-ref. */
+				if ((callee_wants_arr || callee_wants_shaped_arr) && !callee_is_extern && !arg_is_move[i]) {
+					char *copy = gen_value_name(ctx);
+					emit_alloca(ctx, "  %s = alloca [%d x i8]\n", copy, buf_len);
+					char *copy_i8 = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", copy_i8, buf_len, copy);
+					buffer_append_fmt(ctx, "  call void @llvm.memcpy.p0.p0.i64(i8* %s, i8* %s, i64 %d, i1 false)\n",
+					                  copy_i8, bitcast, buf_len);
+					bitcast = copy_i8;
+				}
 				if (callee_wants_arr && !callee_is_extern) {
 					/* Non-extern callee expects char[] (arche_array*): wrap the
 					 * bare buffer pointer in a stack arche_array {ptr,len,cap}. */
@@ -2319,9 +2426,10 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 					call_arg_types[i] = "i8*";
 				}
 			} else if (arg_values[i] && arg_values[i]->type == 5) {
-				/* Arg is arche_array struct */
-				if (callee_is_extern && callee_wants_arr) {
-					/* Extract i8* data ptr from struct (field 0) — C ABI */
+				/* Arg is arche_array struct (e.g. a static char buffer) */
+				if ((callee_is_extern && callee_wants_arr) || callee_wants_shaped_arr) {
+					/* Extract i8* data ptr from struct (field 0): C ABI, or a sized char[N]
+					 * param (which takes a bare i8*). */
 					char *dp_gep = gen_value_name(ctx);
 					buffer_append_fmt(
 					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
@@ -2500,6 +2608,10 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 					/* Wider/narrower int (e.g. i64): pass at its actual LLVM width. */
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = llvm_int_type(expr->data.call.args[i]->resolved.int_width);
+				} else if (expr->data.call.args[i]->resolved.tag == AST_TYPE_OPAQUE) {
+					/* An opaque cell (a nominal `:: opaque` value) is pointer-width i64. */
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = "i64";
 				} else {
 					/* Default to i32 */
 					strcpy(call_arg_vals[i], arg_bufs[i]);
@@ -2508,182 +2620,9 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			}
 		}
 
-		/* Extern-type parameter marshaling:
-		 * For each argument whose corresponding formal parameter is an extern type,
-		 * emit a __arche_slot_get call to convert the i32 handle to an i8* pointer.
-		 * When a parameter is marked consume, wrap the entire get+call+free sequence
-		 * in a null-check branch so null handles (0) are silently skipped. */
-		int call_callee_is_extern = (callee_proc && callee_proc->is_extern) || (callee_func && callee_func->is_extern);
-
-		/* Determine actual_func_name early so consume block can emit the call inline. */
-		const char *actual_func_name_early;
-		if (mono_arch) {
-			actual_func_name_early = mono_call_name;
-		} else if (callee_group && callee_func) {
-			actual_func_name_early = callee_func->name;
-		} else {
-			actual_func_name_early = func_name ? func_name : "unknown";
-		}
-
-		/* Track whether the entire call was emitted inside a consume block. */
+		/* The extern-type slot marshal was removed; opaque values pass to C by value
+		 * (i64 cell), so no handle->pointer conversion is needed. */
 		int consume_call_done = 0;
-
-		if (call_callee_is_extern) {
-			/* Pass 1: find the first consume parameter (index and saved handle value). */
-			int consume_pidx = -1;
-			char consume_handle_val[256] = {0};
-			const char *consume_type_name = NULL;
-			for (int i = 0; i < expr->data.call.arg_count; i++) {
-				int pc = 0;
-				const char *ptn = NULL;
-				if (callee_proc && i < callee_proc->param_count) {
-					pc = callee_proc->params[i]->is_consume;
-					ptn = extern_handle_target_ast(ctx->sem_ctx, callee_proc->params[i]->type);
-				} else if (callee_func && i < callee_func->param_count) {
-					pc = callee_func->params[i]->is_consume;
-					ptn = extern_handle_target_ast(ctx->sem_ctx, callee_func->params[i]->type);
-				}
-				if (pc && ptn) {
-					consume_pidx = i;
-					consume_type_name = ptn;
-					strncpy(consume_handle_val, call_arg_vals[i], sizeof(consume_handle_val) - 1);
-					break;
-				}
-			}
-
-			if (consume_pidx >= 0) {
-				/* Consume path: wrap slot_get + C-call + slot_free in a null-check branch.
-				 *
-				 *   %is_null = icmp eq i32 %handle, 0
-				 *   br i1 %is_null, label %skip_N, label %do_consume_N
-				 * do_consume_N:
-				 *   ; slot_get for each extern-type param
-				 *   call void @C_func(...)
-				 *   ; slot_free for each consume param
-				 *   br label %skip_N
-				 * skip_N:
-				 */
-				int consume_id = ctx->value_counter++;
-				char do_lbl[64], skip_lbl[64];
-				snprintf(do_lbl, sizeof(do_lbl), "do_consume_%d", consume_id);
-				snprintf(skip_lbl, sizeof(skip_lbl), "skip_%d", consume_id);
-
-				/* %is_null = icmp eq i32 %handle, 0 */
-				char *is_null = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = icmp eq i32 %s, 0\n", is_null, consume_handle_val);
-				buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n", is_null, skip_lbl, do_lbl);
-				buffer_append_fmt(ctx, "%s:\n", do_lbl);
-
-				/* Pass 2: emit slot_get for every extern-type param inside the branch. */
-				for (int i = 0; i < expr->data.call.arg_count; i++) {
-					const char *ptn = NULL;
-					if (callee_proc && i < callee_proc->param_count) {
-						ptn = extern_handle_target_ast(ctx->sem_ctx, callee_proc->params[i]->type);
-					} else if (callee_func && i < callee_func->param_count) {
-						ptn = extern_handle_target_ast(ctx->sem_ctx, callee_func->params[i]->type);
-					}
-					if (!ptn)
-						continue;
-
-					int cap = semantic_extern_type_capacity(ctx->sem_ctx, ptn);
-					int namelen = (int)strlen(ptn);
-					char *ptr_val = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx,
-					    "  %s = call i8* @__arche_slot_get("
-					    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 0), "
-					    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* "
-					    "@__arche_%s_slots, i32 0, i32 0), "
-					    "i32 %d, "
-					    "i32 %s)\n",
-					    ptr_val, namelen + 1, namelen + 1, ptn, cap, cap, ptn, cap, call_arg_vals[i]);
-					strcpy(call_arg_vals[i], ptr_val);
-					call_arg_types[i] = "i8*";
-				}
-
-				/* Emit the C call (always void for consume procs). */
-				buffer_append_fmt(ctx, "  call void @%s(", actual_func_name_early);
-				for (int i = 0; i < expr->data.call.arg_count; i++) {
-					buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
-					if (i < expr->data.call.arg_count - 1)
-						buffer_append(ctx, ", ");
-				}
-				buffer_append(ctx, ")\n");
-
-				/* Pass 3: emit slot_free for every consume param (using saved handle). */
-				for (int i = 0; i < expr->data.call.arg_count; i++) {
-					int pc = 0;
-					const char *ptn = NULL;
-					char saved_handle[256] = {0};
-					if (callee_proc && i < callee_proc->param_count) {
-						pc = callee_proc->params[i]->is_consume;
-						ptn = extern_handle_target_ast(ctx->sem_ctx, callee_proc->params[i]->type);
-					} else if (callee_func && i < callee_func->param_count) {
-						pc = callee_func->params[i]->is_consume;
-						ptn = extern_handle_target_ast(ctx->sem_ctx, callee_func->params[i]->type);
-					}
-					if (!pc || !ptn)
-						continue;
-					/* We need the original handle, not the i8* that was substituted.
-					 * For the first consume param we saved it; for others, fall back to
-					 * the original arg expression value. For v1 single-consume, this
-					 * correctly uses consume_handle_val for the only consume param. */
-					if (i == consume_pidx) {
-						strncpy(saved_handle, consume_handle_val, sizeof(saved_handle) - 1);
-					} else {
-						/* Re-evaluate from original arg buf (before slot_get replaced it).
-						 * Since call_arg_vals[i] was already overwritten, use arg_bufs[i]. */
-						strncpy(saved_handle, arg_bufs[i], sizeof(saved_handle) - 1);
-					}
-					int cap = semantic_extern_type_capacity(ctx->sem_ctx, ptn);
-					int namelen = (int)strlen(ptn);
-					buffer_append_fmt(
-					    ctx,
-					    "  call void @__arche_slot_free("
-					    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 0), "
-					    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* "
-					    "@__arche_%s_slots, i32 0, i32 0), "
-					    "i32 %d, "
-					    "i32 %s)\n",
-					    namelen + 1, namelen + 1, ptn, cap, cap, ptn, cap, saved_handle);
-				}
-
-				buffer_append_fmt(ctx, "  br label %%%s\n", skip_lbl);
-				buffer_append_fmt(ctx, "%s:\n", skip_lbl);
-
-				strcpy(result_buf, "0");
-				consume_call_done = 1;
-			} else {
-				/* Non-consume path: existing behavior — slot_get before the main call. */
-				for (int i = 0; i < expr->data.call.arg_count; i++) {
-					const char *param_type_name = NULL;
-					if (callee_proc && i < callee_proc->param_count) {
-						param_type_name = extern_handle_target_ast(ctx->sem_ctx, callee_proc->params[i]->type);
-					} else if (callee_func && i < callee_func->param_count) {
-						param_type_name = extern_handle_target_ast(ctx->sem_ctx, callee_func->params[i]->type);
-					}
-					if (!param_type_name)
-						continue;
-
-					int cap = semantic_extern_type_capacity(ctx->sem_ctx, param_type_name);
-					int namelen = (int)strlen(param_type_name);
-					char *ptr_val = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx,
-					    "  %s = call i8* @__arche_slot_get("
-					    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 0), "
-					    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* "
-					    "@__arche_%s_slots, i32 0, i32 0), "
-					    "i32 %d, "
-					    "i32 %s)\n",
-					    ptr_val, namelen + 1, namelen + 1, param_type_name, cap, cap, param_type_name, cap,
-					    call_arg_vals[i]);
-					strcpy(call_arg_vals[i], ptr_val);
-					call_arg_types[i] = "i8*";
-				}
-			}
-		}
-
 		char *res_name = gen_value_name(ctx);
 
 		/* Special handling for print function with double arguments */
@@ -2767,25 +2706,30 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			/* Normal non-variadic call - determine return type */
 			const char *return_type = "i32"; /* default */
 
-			/* Detect extern-type return: extern func returning handle(X) where X is registered. */
-			const char *extern_ret_type_name = NULL; /* non-NULL => marshal to handle */
-			if (callee_func && callee_func->is_extern && callee_func->return_type) {
-				extern_ret_type_name = extern_handle_target_ast(ctx->sem_ctx, callee_func->return_type);
+			/* A multi-return callee returns an aggregate `{T1, …, Tn}`; the multi-bind that
+			 * wraps this call extractvalue's the members. */
+			char multiret_buf[512];
+			if (callee_func && callee_func->return_type_count > 1) {
+				func_llvm_return_type(callee_func, multiret_buf, sizeof(multiret_buf));
+				return_type = multiret_buf;
+				buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type, func_name ? func_name : "unknown");
+				for (int i = 0; i < expr->data.call.arg_count; i++) {
+					buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
+					if (i < expr->data.call.arg_count - 1)
+						buffer_append(ctx, ", ");
+				}
+				buffer_append(ctx, ")\n");
+				strcpy(result_buf, res_name);
+				goto call_done;
 			}
 
-			/* Check if we have return type info from the func declaration */
-			if (extern_ret_type_name) {
-				/* C function returns i8* (raw pointer) for extern type returns */
-				return_type = "i8*";
-			} else if (callee_func && callee_func->return_type &&
-			           extern_handle_target_ast(ctx->sem_ctx, callee_func->return_type)) {
-				/* Non-extern func returning handle(extern X): i32 (already-marshaled handle). */
-				return_type = "i32";
-			} else if (callee_func && callee_func->return_type && callee_func->return_type->tag == AST_TYPE_ARRAY) {
-				/* Func returning char[]: a raw i8* byte view. */
-				return_type = "i8*";
-			} else if (callee_func && callee_func->return_type) {
-				return_type = llvm_type_from_arche(field_base_type_name(callee_func->return_type));
+			/* Return type from the func declaration. A scalar-position call uses the single
+			 * return type. */
+			AstType *crt = (callee_func && callee_func->return_type_count > 0) ? callee_func->return_types[0] : NULL;
+			if (crt) {
+				/* Use the same mapping as the function definition's return type so the call
+				 * site and the callee agree — char[] / char[N] both become i8* (a byte view). */
+				return_type = return_member_llvm(crt);
 			} else if (callee_proc && callee_proc->is_extern) {
 				/* For extern procs, check if they're in core lib (known to return a value) */
 				if (strcmp(func_name, "atof") == 0) {
@@ -2818,60 +2762,6 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				}
 				buffer_append(ctx, ")\n");
 				strcpy(result_buf, "0");
-			} else if (extern_ret_type_name) {
-				/* Extern-type return: emit call returning i8*, then marshal to i32 handle via __arche_slot_alloc */
-				int marshal_id = ctx->value_counter++;
-				char null_lbl[64], wrap_lbl[64], done_lbl[64];
-				snprintf(null_lbl, sizeof(null_lbl), "null_h_%d", marshal_id);
-				snprintf(wrap_lbl, sizeof(wrap_lbl), "wrap_h_%d", marshal_id);
-				snprintf(done_lbl, sizeof(done_lbl), "done_h_%d", marshal_id);
-
-				/* %raw = call i8* @func(...) */
-				char *raw = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = call i8* @%s(", raw, actual_func_name);
-				for (int i = 0; i < expr->data.call.arg_count; i++) {
-					buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
-					if (i < expr->data.call.arg_count - 1) {
-						buffer_append(ctx, ", ");
-					}
-				}
-				buffer_append(ctx, ")\n");
-
-				/* %is_null = icmp eq i8* %raw, null */
-				char *is_null = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = icmp eq i8* %s, null\n", is_null, raw);
-
-				/* br i1 %is_null, label %null_h_N, label %wrap_h_N */
-				buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n", is_null, null_lbl, wrap_lbl);
-
-				/* null_h_N: result = handle 0 */
-				buffer_append_fmt(ctx, "%s:\n", null_lbl);
-				char *h_null = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = add i32 0, 0\n", h_null);
-				buffer_append_fmt(ctx, "  br label %%%s\n", done_lbl);
-
-				/* wrap_h_N: result = __arche_slot_alloc(typename_ptr, slots_ptr, cap, raw) */
-				buffer_append_fmt(ctx, "%s:\n", wrap_lbl);
-				int cap = semantic_extern_type_capacity(ctx->sem_ctx, extern_ret_type_name);
-				int namelen = (int)strlen(extern_ret_type_name);
-				char *h_wrap = gen_value_name(ctx);
-				buffer_append_fmt(
-				    ctx,
-				    "  %s = call i32 @__arche_slot_alloc("
-				    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 0), "
-				    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* "
-				    "@__arche_%s_slots, i32 0, i32 0), "
-				    "i32 %d, "
-				    "i8* %s)\n",
-				    h_wrap, namelen + 1, namelen + 1, extern_ret_type_name, cap, cap, extern_ret_type_name, cap, raw);
-				buffer_append_fmt(ctx, "  br label %%%s\n", done_lbl);
-
-				/* done_h_N: phi to merge both paths */
-				char *phi_val = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "%s:\n", done_lbl);
-				buffer_append_fmt(ctx, "  %s = phi i32 [ %s, %%%s ], [ %s, %%%s ]\n", phi_val, h_null, null_lbl, h_wrap,
-				                  wrap_lbl);
-				strcpy(result_buf, phi_val);
 			} else {
 				buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type, actual_func_name);
 				for (int i = 0; i < expr->data.call.arg_count; i++) {
@@ -2896,6 +2786,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		free(arg_is_array_literal);
 		free(arg_is_static_array);
 		free(arg_values);
+		free(arg_is_move);
 		free(call_arg_vals);
 		free(call_arg_types);
 		break;
@@ -3361,8 +3252,8 @@ static int try_extract_loop_bound(AstStmt *for_stmt, char **out_var, int *out_bo
 
 	/* Init: a `let` declaration introducing the loop variable. */
 	const char *var_name = NULL;
-	if (init->kind == AST_STMT_LET && init->data.let_stmt.name_count >= 1 && init->data.let_stmt.names[0]) {
-		var_name = init->data.let_stmt.names[0];
+	if (init->kind == AST_STMT_BIND && init->data.bind_stmt.name_count >= 1 && init->data.bind_stmt.names[0]) {
+		var_name = init->data.bind_stmt.names[0];
 	}
 	if (!var_name)
 		return 0;
@@ -3757,13 +3648,13 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		return;
 
 	switch (stmt->kind) {
-	case AST_STMT_LET: {
-		const char *var_name = stmt->data.let_stmt.names[0];
+	case AST_STMT_BIND: {
+		const char *var_name = stmt->data.bind_stmt.names[0];
 		char value_buf[256];
 
 		/* Handle type-annotated declaration without initialization */
-		if (stmt->data.let_stmt.type && !stmt->data.let_stmt.value) {
-			AstType *type = stmt->data.let_stmt.type;
+		if (stmt->data.bind_stmt.type && !stmt->data.bind_stmt.value) {
+			AstType *type = stmt->data.bind_stmt.type;
 
 			/* Check for array type */
 			if (type->tag == AST_TYPE_ARRAY) {
@@ -3844,14 +3735,14 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 
 		/* Check if the value is a string literal (old style) or array literal (new style from string expansion) */
 		int is_string = 0;
-		if (stmt->data.let_stmt.value) {
-			if (stmt->data.let_stmt.value->kind == AST_EXPR_LITERAL &&
-			    stmt->data.let_stmt.value->data.literal.lexeme[0] == '"') {
+		if (stmt->data.bind_stmt.value) {
+			if (stmt->data.bind_stmt.value->kind == AST_EXPR_LITERAL &&
+			    stmt->data.bind_stmt.value->data.literal.lexeme[0] == '"') {
 				is_string = 1;
-			} else if (stmt->data.let_stmt.value->kind == AST_EXPR_STRING) {
+			} else if (stmt->data.bind_stmt.value->kind == AST_EXPR_STRING) {
 				/* AST_EXPR_STRING is also a string */
 				is_string = 1;
-			} else if (stmt->data.let_stmt.value->kind == AST_EXPR_ARRAY_LITERAL) {
+			} else if (stmt->data.bind_stmt.value->kind == AST_EXPR_ARRAY_LITERAL) {
 				/* Array literal from string expansion */
 				is_string = 1;
 			}
@@ -3860,29 +3751,46 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		/* Check if value is an alloc expression */
 		int is_alloc = 0;
 		const char *alloc_arch_name = NULL;
-		if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->kind == AST_EXPR_ALLOC) {
+		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == AST_EXPR_ALLOC) {
 			is_alloc = 1;
-			alloc_arch_name = stmt->data.let_stmt.value->data.alloc.archetype_name;
+			alloc_arch_name = stmt->data.bind_stmt.value->data.alloc.archetype_name;
 		}
 
 		/* Detect: let row = arch.field[entity] where field is shaped array */
 		int is_multidim_slice = 0;
 		const char *slice_elem_type = NULL;
-		if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->kind == AST_EXPR_INDEX &&
-		    stmt->data.let_stmt.value->data.index.index_count == 1) {
-			slice_elem_type = get_shaped_field_info(ctx, stmt->data.let_stmt.value->data.index.base, NULL);
+		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == AST_EXPR_INDEX &&
+		    stmt->data.bind_stmt.value->data.index.index_count == 1) {
+			slice_elem_type = get_shaped_field_info(ctx, stmt->data.bind_stmt.value->data.index.base, NULL);
 			if (slice_elem_type)
 				is_multidim_slice = 1;
 		}
 
-		if (stmt->data.let_stmt.value) {
-			codegen_expression(ctx, stmt->data.let_stmt.value, value_buf);
+		if (stmt->data.bind_stmt.value) {
+			codegen_expression(ctx, stmt->data.bind_stmt.value, value_buf);
 		} else {
 			strcpy(value_buf, "0");
 		}
 
-		int is_char_array_call = stmt->data.let_stmt.value && stmt->data.let_stmt.value->kind == AST_EXPR_CALL &&
-		                         stmt->data.let_stmt.value->resolved.tag == AST_TYPE_CHAR_ARRAY;
+		/* A call that returns a char array — unbounded `char[]` or sized `char[N]` — yields a
+		 * raw i8* byte view; bind it as type-6 so `b := f(move b)` is indexable. Check the
+		 * resolved tag, and (since a single `char[N]` return resolves to a shaped type) the
+		 * callee's declared return type directly. */
+		int is_char_array_call = 0;
+		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == AST_EXPR_CALL) {
+			if (stmt->data.bind_stmt.value->resolved.tag == AST_TYPE_CHAR_ARRAY) {
+				is_char_array_call = 1;
+			} else if (stmt->data.bind_stmt.value->data.call.callee &&
+			           stmt->data.bind_stmt.value->data.call.callee->kind == AST_EXPR_NAME) {
+				AstFuncDecl *cf = find_func_decl(ctx, stmt->data.bind_stmt.value->data.call.callee->data.name.name);
+				if (cf && cf->return_type_count == 1 && cf->return_types[0]) {
+					AstType *rt = cf->return_types[0];
+					if (rt->tag == AST_TYPE_ARRAY ||
+					    (rt->tag == AST_TYPE_SHAPED_ARRAY && rt->elem && rt->elem->tag == AST_TYPE_CHAR))
+						is_char_array_call = 1;
+				}
+			}
+		}
 
 		if (is_char_array_call) {
 			/* A func returning char[] (e.g. arche_file_map) yields a raw i8* byte
@@ -3924,7 +3832,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			add_arch_value(ctx, var_name, value_buf, alloc_arch_name);
 		} else if (is_string) {
 			/* For strings, handle based on type */
-			if (stmt->data.let_stmt.value->kind == AST_EXPR_ARRAY_LITERAL) {
+			if (stmt->data.bind_stmt.value->kind == AST_EXPR_ARRAY_LITERAL) {
 				/* Array literal: value_buf is already a struct pointer, just use it */
 				add_array_value(ctx, var_name, value_buf);
 			} else {
@@ -3961,11 +3869,11 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			/* Check if RHS is an insert call (returns handle/i64) */
 			int is_insert_call = 0;
 			const char *insert_archetype = NULL;
-			if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->kind == AST_EXPR_CALL) {
+			if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == AST_EXPR_CALL) {
 				const char *func_name = NULL;
-				if (stmt->data.let_stmt.value->data.call.callee &&
-				    stmt->data.let_stmt.value->data.call.callee->kind == AST_EXPR_NAME) {
-					func_name = stmt->data.let_stmt.value->data.call.callee->data.name.name;
+				if (stmt->data.bind_stmt.value->data.call.callee &&
+				    stmt->data.bind_stmt.value->data.call.callee->kind == AST_EXPR_NAME) {
+					func_name = stmt->data.bind_stmt.value->data.call.callee->data.name.name;
 				}
 				if (func_name && strcmp(func_name, "insert") == 0) {
 					is_insert_call = 1;
@@ -3974,17 +3882,17 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 					bit_width = 64;
 					resolved_type = "handle";
 					/* Extract archetype from insert's first argument */
-					if (stmt->data.let_stmt.value->data.call.arg_count > 0 &&
-					    stmt->data.let_stmt.value->data.call.args[0]->kind == AST_EXPR_NAME) {
-						insert_archetype = stmt->data.let_stmt.value->data.call.args[0]->data.name.name;
+					if (stmt->data.bind_stmt.value->data.call.arg_count > 0 &&
+					    stmt->data.bind_stmt.value->data.call.args[0]->kind == AST_EXPR_NAME) {
+						insert_archetype = stmt->data.bind_stmt.value->data.call.args[0]->data.name.name;
 					}
 				}
 			}
 
 			/* Check the resolved type of the value expression */
-			if (!is_insert_call && stmt->data.let_stmt.value &&
-			    stmt->data.let_stmt.value->resolved.tag != AST_TYPE_UNKNOWN) {
-				resolved_type = ast_resolved_type_name(stmt->data.let_stmt.value);
+			if (!is_insert_call && stmt->data.bind_stmt.value &&
+			    stmt->data.bind_stmt.value->resolved.tag != AST_TYPE_UNKNOWN) {
+				resolved_type = ast_resolved_type_name(stmt->data.bind_stmt.value);
 				if (strcmp(resolved_type, "double") == 0 || strcmp(resolved_type, "float") == 0) {
 					alloc_type = "double";
 					store_type = "double";
@@ -3993,11 +3901,16 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 					alloc_type = "i64";
 					store_type = "i64";
 					bit_width = 64;
-				} else if (stmt->data.let_stmt.value->resolved.tag == AST_TYPE_INT &&
-				           stmt->data.let_stmt.value->resolved.int_width != 32) {
+				} else if (strcmp(resolved_type, "opaque") == 0) {
+					/* foreign resource value: pointer-width cell held as i64 */
+					alloc_type = "i64";
+					store_type = "i64";
+					bit_width = 64;
+				} else if (stmt->data.bind_stmt.value->resolved.tag == AST_TYPE_INT &&
+				           stmt->data.bind_stmt.value->resolved.int_width != 32) {
 					/* RHS is a non-i32 integer (e.g. syscall -> i64): infer its width
 					   instead of defaulting to i32 and truncating. */
-					int w = stmt->data.let_stmt.value->resolved.int_width;
+					int w = stmt->data.bind_stmt.value->resolved.int_width;
 					alloc_type = llvm_int_type(w);
 					store_type = alloc_type;
 					bit_width = w;
@@ -4007,11 +3920,11 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			/* A fixed-width int annotation (let x: i64 = ...) sets the storage
 			 * width; the value is sext/zext/trunc'd to match (literals adopt the
 			 * annotated width per the language's literal-typing rule). */
-			AstType *ann = stmt->data.let_stmt.type;
+			AstType *ann = stmt->data.bind_stmt.type;
 			if (ann && ann->tag == AST_TYPE_INT && ann->int_width != 32) {
 				const char *wt = llvm_int_type(ann->int_width);
 				char converted[256];
-				emit_int_convert(ctx, value_buf, &stmt->data.let_stmt.value->resolved, ann->int_width, converted);
+				emit_int_convert(ctx, value_buf, &stmt->data.bind_stmt.value->resolved, ann->int_width, converted);
 				strcpy(value_buf, converted);
 				alloc_type = wt;
 				store_type = wt;
@@ -4037,6 +3950,16 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 				vi->handle_archetype = malloc(strlen(insert_archetype) + 1);
 				strcpy(vi->handle_archetype, insert_archetype);
 			}
+			/* Propagate the handle's archetype through a copy (let alias := h) so
+			 * delete(alias) can infer the pool. */
+			if (!vi->handle_archetype && stmt->data.bind_stmt.value &&
+			    stmt->data.bind_stmt.value->kind == AST_EXPR_NAME) {
+				ValueInfo *src = find_value(ctx, stmt->data.bind_stmt.value->data.name.name);
+				if (src && src->handle_archetype) {
+					vi->handle_archetype = malloc(strlen(src->handle_archetype) + 1);
+					strcpy(vi->handle_archetype, src->handle_archetype);
+				}
+			}
 			vi->bit_width = bit_width;
 
 			if (ctx->scope_count > 0) {
@@ -4053,259 +3976,93 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 	}
 
 	case AST_STMT_MULTI_BIND: {
+		/* `(t0, …, tk) := f(…)` binds the members of a multi-value return. The call emits an
+		 * aggregate `{T0, …, Tk}` (via the EXPR_CALL path); each target gets one extractvalue. */
 		AstExpr *rhs = stmt->data.multi_bind.value;
-		if (rhs && rhs->kind == AST_EXPR_CALL) {
-			char *func_name = NULL;
-			if (rhs->data.call.callee && rhs->data.call.callee->kind == AST_EXPR_NAME) {
-				func_name = rhs->data.call.callee->data.name.name;
-			}
+		int target_count = stmt->data.multi_bind.target_count;
+		AstBindingTarget *targets = stmt->data.multi_bind.targets;
+		const char *fn =
+		    (rhs && rhs->kind == AST_EXPR_CALL && rhs->data.call.callee && rhs->data.call.callee->kind == AST_EXPR_NAME)
+		        ? rhs->data.call.callee->data.name.name
+		        : NULL;
+		AstFuncDecl *callee_func = fn ? find_func_decl(ctx, fn) : NULL;
+		if (callee_func && callee_func->return_type_count > 1) {
+			char struct_buf[256];
+			codegen_expression(ctx, rhs, struct_buf); /* %res = call {…} @f(…) */
+			char ret_type[512];
+			func_llvm_return_type(callee_func, ret_type, sizeof(ret_type));
+			int n = target_count < callee_func->return_type_count ? target_count : callee_func->return_type_count;
+			for (int i = 0; i < n; i++) {
+				AstType *mt = callee_func->return_types[i];
+				const char *llvm = return_member_llvm(mt);
+				char *val = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", val, ret_type, struct_buf, i);
+				AstBindingTarget *atgt = &targets[i];
 
-			AstFuncDecl *callee_func = func_name ? find_func_decl(ctx, func_name) : NULL;
-			if (callee_func && callee_func->param_count >= 0) {
-				int target_count = stmt->data.multi_bind.target_count;
-				AstBindingTarget *targets = stmt->data.multi_bind.targets;
-				int arg_count = rhs->data.call.arg_count;
-
-				/* out_mem[j]  = [N x i8]* pointer for j-th out param
-				   out_sizes[j] = byte size of that buffer */
-				char **out_mem = malloc(callee_func->param_count * sizeof(char *));
-				int *out_sizes = malloc(callee_func->param_count * sizeof(int));
-				int out_param_count = 0;
-
-				/* Phase 1 — pre-call:
-				   For each out param, determine the backing memory.
-				   If the corresponding target is `let x:`, alloca the buffer now
-				   and register x in scope so it is visible as an arg.
-				   If the target is existing, the arg already has memory. */
-				for (int i = 0; i < callee_func->param_count; i++) {
-					if (!callee_func->params[i] || !callee_func->params[i]->is_out)
-						continue;
-
-					AstType *pt = callee_func->params[i]->type;
-					int size = 256;
-					if (pt && pt->tag == AST_TYPE_SHAPED_ARRAY && pt->elem && pt->elem->tag == AST_TYPE_CHAR) {
-						size = pt->rank;
-					} else if (pt && pt->tag == AST_TYPE_ARRAY && i < arg_count) {
-						AstExpr *arg = rhs->data.call.args[i];
-						if (arg && arg->kind == AST_EXPR_NAME) {
-							AstStaticDecl *sa = codegen_find_static_array(ctx, arg->data.name.name);
-							if (sa && sa->array.element_type && sa->array.element_type->tag == AST_TYPE_CHAR) {
-								size = sa->array.size;
-							} else {
-								ValueInfo *vi = find_value(ctx, arg->data.name.name);
-								if (vi && vi->string_len > 0)
-									size = vi->string_len;
-							}
-						}
+				/* An array member is a raw i8* byte view. Bind it as type-6 (i8* char pointer,
+				 * the value IS the pointer — no alloca) so the caller can index it: `b[i]` after
+				 * `b, n := f(move b)`. Mirrors a func returning char[]. */
+				if (mt && (mt->tag == AST_TYPE_ARRAY || mt->tag == AST_TYPE_SHAPED_ARRAY)) {
+					ValueInfo *vi = malloc(sizeof(ValueInfo));
+					vi->name = malloc(strlen(atgt->name) + 1);
+					strcpy(vi->name, atgt->name);
+					vi->llvm_name = malloc(strlen(val) + 1);
+					strcpy(vi->llvm_name, val);
+					vi->type = 6; /* i8* char pointer */
+					vi->arch_name = NULL;
+					vi->string_len = -1;
+					vi->field_type = "char";
+					vi->handle_archetype = NULL;
+					vi->bit_width = 8;
+					if (ctx->scope_count > 0) {
+						ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+						scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+						scope->values[scope->value_count++] = vi;
 					}
+					continue;
+				}
 
-					AstBindingTarget *tgt = (out_param_count < target_count) ? &targets[out_param_count] : NULL;
-
-					if (tgt && tgt->is_new) {
-						/* `let x:` — alloca the buffer, register in scope immediately */
-						char *buf = gen_value_name(ctx);
-						emit_alloca(ctx, "  %s = alloca [%d x i8]\n", buf, size);
-						ValueInfo *vi = malloc(sizeof(ValueInfo));
-						vi->name = malloc(strlen(tgt->name) + 1);
-						strcpy(vi->name, tgt->name);
-						vi->llvm_name = malloc(strlen(buf) + 1);
-						strcpy(vi->llvm_name, buf);
-						vi->type = 7;
-						vi->arch_name = NULL;
-						vi->string_len = size;
-						vi->field_type = "char";
-						vi->bit_width = 8;
-						if (ctx->scope_count > 0) {
-							ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
-							scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
-							scope->values[scope->value_count++] = vi;
-						}
-						out_mem[out_param_count] = buf;
-					} else {
-						/* Existing var: get the arg's backing memory — no alloca */
-						char *mem = NULL;
-						AstExpr *arg = (i < arg_count) ? rhs->data.call.args[i] : NULL;
-						if (arg && arg->kind == AST_EXPR_NAME) {
-							const char *aname = arg->data.name.name;
-							AstStaticDecl *sa = codegen_find_static_array(ctx, aname);
-							if (sa && sa->array.element_type && sa->array.element_type->tag == AST_TYPE_CHAR) {
-								mem = malloc(strlen(aname) + 8);
-								sprintf(mem, "@%s_data", aname);
-								size = sa->array.size;
-							} else {
-								ValueInfo *vi = find_value(ctx, aname);
-								if (vi) {
-									mem = malloc(strlen(vi->llvm_name) + 1);
-									strcpy(mem, vi->llvm_name);
-									if (vi->string_len > 0)
-										size = vi->string_len;
-								}
-							}
-						}
-						if (!mem) {
-							mem = malloc(4);
-							strcpy(mem, "%0");
-						}
-						out_mem[out_param_count] = mem;
+				const char *ft = "int";
+				int bw = 32;
+				if (mt && mt->tag == AST_TYPE_FLOAT) {
+					ft = "float";
+					bw = 64;
+				} else if (mt && mt->tag == AST_TYPE_INT) {
+					ft = "int";
+					bw = mt->int_width;
+				} else if (mt && mt->tag == AST_TYPE_HANDLE) {
+					ft = "handle";
+					bw = 64;
+				} else if (mt && mt->tag == AST_TYPE_OPAQUE) {
+					ft = "opaque";
+					bw = 64;
+				}
+				AstBindingTarget *tgt = &targets[i];
+				if (tgt->is_new) {
+					char *a = gen_value_name(ctx);
+					emit_alloca(ctx, "  %s = alloca %s\n", a, llvm);
+					buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", llvm, val, llvm, a);
+					ValueInfo *vi = malloc(sizeof(ValueInfo));
+					vi->name = malloc(strlen(tgt->name) + 1);
+					strcpy(vi->name, tgt->name);
+					vi->llvm_name = malloc(strlen(a) + 1);
+					strcpy(vi->llvm_name, a);
+					vi->type = 1;
+					vi->arch_name = NULL;
+					vi->string_len = -1;
+					vi->field_type = ft;
+					vi->handle_archetype = (mt && mt->tag == AST_TYPE_HANDLE) ? mt->name : NULL;
+					vi->bit_width = bw;
+					if (ctx->scope_count > 0) {
+						ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+						scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+						scope->values[scope->value_count++] = vi;
 					}
-					out_sizes[out_param_count] = size;
-					out_param_count++;
+				} else {
+					ValueInfo *e = find_value(ctx, tgt->name);
+					if (e)
+						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", llvm, val, llvm, e->llvm_name);
 				}
-
-				/* Phase 2 — evaluate non-out args, build call arg lists */
-				char **arg_bufs = malloc(arg_count * sizeof(char *));
-				for (int i = 0; i < arg_count; i++) {
-					arg_bufs[i] = malloc(256);
-					int is_out =
-					    (i < callee_func->param_count && callee_func->params[i] && callee_func->params[i]->is_out);
-					if (!is_out)
-						codegen_expression(ctx, rhs->data.call.args[i], arg_bufs[i]);
-				}
-
-				char **call_arg_vals = malloc(arg_count * sizeof(char *));
-				const char **call_arg_types = malloc(arg_count * sizeof(const char *));
-				int out_idx = 0;
-
-				for (int i = 0; i < arg_count; i++) {
-					call_arg_vals[i] = malloc(256);
-					int is_out =
-					    (i < callee_func->param_count && callee_func->params[i] && callee_func->params[i]->is_out);
-
-					if (is_out && out_idx < out_param_count) {
-						AstType *pt = callee_func->params[i]->type;
-						int is_char_array = (pt && pt->tag == AST_TYPE_ARRAY);
-
-						if (is_char_array && !callee_func->is_extern) {
-							/* Non-extern char[] out param: wrap in arche_array struct */
-							char *arr_alloca = gen_value_name(ctx);
-							emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
-							char *ptr_cast = gen_value_name(ctx);
-							buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", ptr_cast,
-							                  out_sizes[out_idx], out_mem[out_idx]);
-							char *ptr_gep = gen_value_name(ctx);
-							buffer_append_fmt(ctx,
-							                  "  %s = getelementptr %%struct.arche_array, "
-							                  "%%struct.arche_array* %s, i32 0, i32 0\n",
-							                  ptr_gep, arr_alloca);
-							buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", ptr_cast, ptr_gep);
-							char *len_gep = gen_value_name(ctx);
-							buffer_append_fmt(ctx,
-							                  "  %s = getelementptr %%struct.arche_array, "
-							                  "%%struct.arche_array* %s, i32 0, i32 1\n",
-							                  len_gep, arr_alloca);
-							buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", out_sizes[out_idx], len_gep);
-							char *cap_gep = gen_value_name(ctx);
-							buffer_append_fmt(ctx,
-							                  "  %s = getelementptr %%struct.arche_array, "
-							                  "%%struct.arche_array* %s, i32 0, i32 2\n",
-							                  cap_gep, arr_alloca);
-							buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", out_sizes[out_idx], cap_gep);
-							strcpy(call_arg_vals[i], arr_alloca);
-							call_arg_types[i] = "%struct.arche_array*";
-						} else {
-							/* Extern or shaped: bitcast [N x i8]* to i8* */
-							char *ptr_cast = gen_value_name(ctx);
-							buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", ptr_cast,
-							                  out_sizes[out_idx], out_mem[out_idx]);
-							strcpy(call_arg_vals[i], ptr_cast);
-							call_arg_types[i] = "i8*";
-						}
-						out_idx++;
-					} else {
-						/* Non-out arg. For an extern callee a handle(T) argument must be
-						 * unwrapped to its i8* slot pointer (the EXPR_CALL path does this);
-						 * the multi-bind/out path used to skip it, passing the raw handle
-						 * int and crashing C that dereferenced it (handle + out param bug). */
-						const char *hptn = NULL;
-						if (callee_func->is_extern && i < callee_func->param_count && callee_func->params[i])
-							hptn = extern_handle_target_ast(ctx->sem_ctx, callee_func->params[i]->type);
-						if (hptn) {
-							int cap = semantic_extern_type_capacity(ctx->sem_ctx, hptn);
-							int namelen = (int)strlen(hptn);
-							char *ptr_val = gen_value_name(ctx);
-							buffer_append_fmt(
-							    ctx,
-							    "  %s = call i8* @__arche_slot_get("
-							    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 "
-							    "0), "
-							    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* "
-							    "@__arche_%s_slots, i32 0, i32 0), "
-							    "i32 %d, i32 %s)\n",
-							    ptr_val, namelen + 1, namelen + 1, hptn, cap, cap, hptn, cap, arg_bufs[i]);
-							strcpy(call_arg_vals[i], ptr_val);
-							call_arg_types[i] = "i8*";
-						} else {
-							strcpy(call_arg_vals[i], arg_bufs[i]);
-							call_arg_types[i] = "i32";
-						}
-					}
-				}
-
-				/* Emit call */
-				char *res_name = gen_value_name(ctx);
-				const char *return_type = "i32";
-				if (callee_func->return_type)
-					return_type = llvm_type_from_arche(field_base_type_name(callee_func->return_type));
-
-				buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type, func_name ? func_name : "unknown");
-				for (int i = 0; i < arg_count; i++) {
-					buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
-					if (i < arg_count - 1)
-						buffer_append(ctx, ", ");
-				}
-				buffer_append(ctx, ")\n");
-
-				/* Phase 3 — post-call: only the return value target.
-				   Out-param targets were written in place; `let` ones already in scope. */
-				if (out_param_count < target_count) {
-					AstBindingTarget *ret_tgt = &targets[out_param_count];
-					if (ret_tgt->is_new) {
-						char *alloca_name = gen_value_name(ctx);
-						emit_alloca(ctx, "  %s = alloca %s\n", alloca_name, return_type);
-						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", return_type, res_name, return_type,
-						                  alloca_name);
-						ValueInfo *vi = malloc(sizeof(ValueInfo));
-						vi->name = malloc(strlen(ret_tgt->name) + 1);
-						strcpy(vi->name, ret_tgt->name);
-						vi->llvm_name = malloc(strlen(alloca_name) + 1);
-						strcpy(vi->llvm_name, alloca_name);
-						vi->type = 1;
-						vi->arch_name = NULL;
-						vi->string_len = -1;
-						if (return_type[0] == 'd') {
-							vi->field_type = "float";
-							vi->bit_width = 64;
-						} else if (strcmp(return_type, "i64") == 0) {
-							vi->field_type = "handle";
-							vi->bit_width = 64;
-						} else {
-							vi->field_type = "int";
-							vi->bit_width = 32;
-						}
-						if (ctx->scope_count > 0) {
-							ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
-							scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
-							scope->values[scope->value_count++] = vi;
-						}
-					} else {
-						ValueInfo *existing = find_value(ctx, ret_tgt->name);
-						if (existing)
-							buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", return_type, res_name, return_type,
-							                  existing->llvm_name);
-					}
-				}
-
-				/* Cleanup */
-				free(out_mem);
-				free(out_sizes);
-				for (int i = 0; i < arg_count; i++)
-					free(arg_bufs[i]);
-				free(arg_bufs);
-				for (int i = 0; i < arg_count; i++)
-					free(call_arg_vals[i]);
-				free(call_arg_vals);
-				free(call_arg_types);
-				break;
 			}
 		}
 		break;
@@ -5164,7 +4921,11 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		const char *branch_cond = cond_buf;
 		if (cond_buf[0] == '%') {
 			char *truncated = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = trunc i32 %s to i1\n", truncated, cond_buf);
+			if (stmt->data.if_stmt.cond && (stmt->data.if_stmt.cond->resolved.tag == AST_TYPE_OPAQUE ||
+			                                stmt->data.if_stmt.cond->resolved.tag == AST_TYPE_HANDLE))
+				buffer_append_fmt(ctx, "  %s = icmp ne i64 %s, 0\n", truncated, cond_buf); /* non-null cell */
+			else
+				buffer_append_fmt(ctx, "  %s = trunc i32 %s to i1\n", truncated, cond_buf);
 			branch_cond = truncated;
 		}
 
@@ -5301,10 +5062,29 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 	}
 
 	case AST_STMT_RETURN: {
-		char value_buf[256];
-		codegen_expression(ctx, stmt->data.return_stmt.value, value_buf);
+		AstReturnStmt *rs = &stmt->data.return_stmt;
 		const char *ret_type = ctx->current_return_type ? ctx->current_return_type : "i32";
-		buffer_append_fmt(ctx, "  ret %s %s\n", ret_type, value_buf);
+		if (rs->count <= 1) {
+			char value_buf[256];
+			codegen_expression(ctx, rs->values[0], value_buf);
+			buffer_append_fmt(ctx, "  ret %s %s\n", ret_type, value_buf);
+		} else {
+			/* Multi-value return: build the aggregate with insertvalue, then ret it. */
+			char prev[64];
+			strcpy(prev, "undef");
+			for (int i = 0; i < rs->count; i++) {
+				char vbuf[256];
+				codegen_expression(ctx, rs->values[i], vbuf);
+				const char *mt = (ctx->current_func && i < ctx->current_func->return_type_count)
+				                     ? return_member_llvm(ctx->current_func->return_types[i])
+				                     : "i32";
+				char *acc = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = insertvalue %s %s, %s %s, %d\n", acc, ret_type, prev, mt, vbuf, i);
+				strncpy(prev, acc, sizeof(prev) - 1);
+				prev[sizeof(prev) - 1] = '\0';
+			}
+			buffer_append_fmt(ctx, "  ret %s %s\n", ret_type, prev);
+		}
 		break;
 	}
 	case AST_STMT_EACH_FIELD: {
@@ -5395,6 +5175,11 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 /* ========== DECLARATION CODEGEN ========== */
 
 static void codegen_archetype_decl(CodegenContext *ctx, AstArchetypeDecl *arch) {
+	/* One shape = one pool. Aliases (other names for the same component set) share the
+	 * canonical decl's struct + storage + helpers, so emit only for the canonical. */
+	if (canonical_archetype_decl(ctx, arch) != arch)
+		return;
+
 	int static_cap = get_arch_static_capacity(ctx, arch->name);
 
 	/* Generate struct definition for archetype */
@@ -5605,6 +5390,15 @@ static void codegen_archetype_decl(CodegenContext *ctx, AstArchetypeDecl *arch) 
 	buffer_append(ctx, "  unreachable\n\n");
 
 	buffer_append(ctx, "valid:\n");
+	/* Crash loudly on generation exhaustion instead of wrapping (silent ABA): a
+	 * slot freed 2^32 times can no longer mint a distinct generation, so a stale
+	 * handle could alias a fresh entity. Abort like a stack overflow would. */
+	buffer_append(ctx, "  %gen_maxed = icmp eq i32 %stored_gen, -1\n");
+	buffer_append(ctx, "  br i1 %gen_maxed, label %gen_exhausted, label %do_free\n\n");
+	buffer_append(ctx, "gen_exhausted:\n");
+	buffer_append(ctx, "  call void @abort()\n");
+	buffer_append(ctx, "  unreachable\n\n");
+	buffer_append(ctx, "do_free:\n");
 	/* Increment generation */
 	buffer_append(ctx, "  %new_gen = add i32 %stored_gen, 1\n");
 	buffer_append(ctx, "  store i32 %new_gen, i32* %gc_elem\n");
@@ -5633,6 +5427,60 @@ static void codegen_archetype_decl(CodegenContext *ctx, AstArchetypeDecl *arch) 
 
 	buffer_append(ctx, "  ret void\n");
 	buffer_append(ctx, "}\n\n");
+
+	/* Foreign-archetype cell-deref helper: given a handle, validate the
+	 * generation (abort on stale) and return the single opaque cell for the
+	 * C-marshal layer to hand to extern functions. Emitted only for shapes that
+	 * carry an opaque field (the marshal's "unwrap handle -> C pointer"). */
+	{
+		int opaque_col = -1;
+		for (int i = 0; i < arch->field_count; i++) {
+			if (arch->fields[i]->type && strcmp(field_base_type_name(arch->fields[i]->type), "opaque") == 0) {
+				opaque_col = i;
+				break;
+			}
+		}
+		if (opaque_col >= 0) {
+			buffer_append_fmt(ctx, "define i64 @arche_cell_%s(%%struct.%s* %%arch, i64 %%handle) {\n", arch->name,
+			                  arch->name);
+			buffer_append(ctx, "entry:\n");
+			buffer_append(ctx, "  %slot_i32 = trunc i64 %handle to i32\n");
+			buffer_append(ctx, "  %slot = zext i32 %slot_i32 to i64\n");
+			buffer_append(ctx, "  %hgen_raw = lshr i64 %handle, 32\n");
+			buffer_append(ctx, "  %hgen = trunc i64 %hgen_raw to i32\n");
+			if (static_cap > 0) {
+				buffer_append_fmt(
+				    ctx, "  %%gc_elem = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %%slot\n",
+				    arch->name, arch->name, gc_idx);
+			} else {
+				buffer_append_fmt(ctx,
+				                  "  %%gc_ptr_field = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
+				                  arch->name, arch->name, gc_idx);
+				buffer_append(ctx, "  %gc_arr = load i32*, i32** %gc_ptr_field\n");
+				buffer_append(ctx, "  %gc_elem = getelementptr i32, i32* %gc_arr, i64 %slot\n");
+			}
+			buffer_append(ctx, "  %stored_gen = load i32, i32* %gc_elem\n");
+			buffer_append(ctx, "  %gen_ok = icmp eq i32 %hgen, %stored_gen\n");
+			buffer_append(ctx, "  br i1 %gen_ok, label %valid, label %stale\n\n");
+			buffer_append(ctx, "stale:\n");
+			buffer_append(ctx, "  call void @abort()\n");
+			buffer_append(ctx, "  unreachable\n\n");
+			buffer_append(ctx, "valid:\n");
+			if (static_cap > 0) {
+				buffer_append_fmt(
+				    ctx, "  %%cell_ptr = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %%slot\n",
+				    arch->name, arch->name, opaque_col);
+			} else {
+				buffer_append_fmt(ctx, "  %%col_pp = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n",
+				                  arch->name, arch->name, opaque_col);
+				buffer_append(ctx, "  %col_p = load i64*, i64** %col_pp\n");
+				buffer_append(ctx, "  %cell_ptr = getelementptr i64, i64* %col_p, i64 %slot\n");
+			}
+			buffer_append(ctx, "  %cell = load i64, i64* %cell_ptr\n");
+			buffer_append(ctx, "  ret i64 %cell\n");
+			buffer_append(ctx, "}\n\n");
+		}
+	}
 
 	/* Emit dealloc helper function */
 	buffer_append_fmt(ctx, "define void @arche_dealloc_%s(%%struct.%s* %%arch) {\n", arch->name, arch->name);
@@ -5684,11 +5532,13 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, AstStaticDecl *alloc) {
 		strcpy(length_buf, "0");
 	}
 
-	/* Find archetype declaration */
+	/* Find archetype declaration (canonical shape). Storage symbols use the canonical name,
+	 * so a pool declared under any alias initializes the shape's one struct/global. */
 	AstArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
 	if (!arch) {
 		return;
 	}
+	arch_name = arch->name;
 
 	int static_cap = get_arch_static_capacity(ctx, arch_name);
 
@@ -6011,25 +5861,20 @@ static void end_function_body(CodegenContext *ctx, FunctionBodyState state) {
 static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 	/* For extern funcs, emit declare stub */
 	if (func->is_extern) {
-		/* handle(X) returns i8* (marshal layer wraps it); char[] returns a raw
-		 * i8* byte view (e.g. arche_file_map for whole-file mmap). */
-		int ret_is_extern = extern_handle_target_ast(ctx->sem_ctx, func->return_type) != NULL;
-		int ret_is_array = func->return_type && func->return_type->tag == AST_TYPE_ARRAY;
-		const char *ret_base_name = field_base_type_name(func->return_type);
-		const char *return_type = (ret_is_extern || ret_is_array) ? "i8*" : llvm_type_from_arche(ret_base_name);
-		buffer_append_fmt(ctx, "declare %s @%s(", return_type, func->name);
+		/* char[] returns a raw i8* byte view (e.g. arche_file_map for whole-file mmap). */
+		char ret_buf[512];
+		func_llvm_return_type(func, ret_buf, sizeof(ret_buf));
+		buffer_append_fmt(ctx, "declare %s @%s(", ret_buf, func->name);
 		for (int i = 0; i < func->param_count; i++) {
 			AstType *param_type = func->params[i]->type;
 			const char *type_name = field_base_type_name(param_type);
 			const char *base_type = llvm_type_from_arche(type_name);
 
-			/* Check if type is char[] (i8*), an archetype (struct*), or handle(extern) (i8*) */
+			/* Check if type is char[] (i8*) or an archetype (struct*). */
 			if (param_type && param_type->tag == AST_TYPE_ARRAY) {
 				buffer_append_fmt(ctx, "i8*"); /* C ABI: T[] = raw ptr */
 			} else if (find_archetype_decl(ctx, type_name)) {
 				buffer_append_fmt(ctx, "%%struct.%s*", type_name);
-			} else if (extern_handle_target_ast(ctx->sem_ctx, param_type)) {
-				buffer_append_fmt(ctx, "i8*"); /* extern handle param: C func expects raw ptr */
 			} else {
 				buffer_append(ctx, base_type);
 			}
@@ -6043,13 +5888,10 @@ static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 	}
 
 	/* Generate function definition */
-	const char *return_type;
-	if (extern_handle_target_ast(ctx->sem_ctx, func->return_type)) {
-		return_type = "i32"; /* handle(extern X) lowers to opaque i32 handle */
-	} else {
-		return_type = llvm_type_from_arche(field_base_type_name(func->return_type));
-	}
+	func_llvm_return_type(func, ctx->current_return_type_buf, sizeof(ctx->current_return_type_buf));
+	const char *return_type = ctx->current_return_type_buf;
 	ctx->current_return_type = return_type;
+	ctx->current_func = func;
 
 	buffer_append_fmt(ctx, "define %s @%s(", return_type, func->name);
 
@@ -6076,8 +5918,6 @@ static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 			} else {
 				buffer_append_fmt(ctx, "i8* %%arg%d", i);
 			}
-		} else if (extern_handle_target_ast(ctx->sem_ctx, param_type)) {
-			buffer_append_fmt(ctx, "i32 %%arg%d", i);
 		} else {
 			buffer_append_fmt(ctx, "%s %%arg%d", llvm_type, i);
 		}
@@ -6161,10 +6001,14 @@ static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 
 	pop_value_scope(ctx);
 
-	/* Generate appropriate return value */
+	/* Fallback return (reached only if the body has no terminating return). */
 	const char *ret_value = "0";
-	if (strcmp(return_type, "double") == 0) {
+	if (func->return_type_count > 1) {
+		ret_value = "zeroinitializer"; /* aggregate return type */
+	} else if (strcmp(return_type, "double") == 0) {
 		ret_value = "0.0";
+	} else if (strchr(return_type, '*')) {
+		ret_value = "null"; /* pointer return (e.g. char[] -> i8*) */
 	}
 	buffer_append_fmt(ctx, "  ret %s %s\n", return_type, ret_value);
 	end_function_body(ctx, fbs_func);
@@ -6186,13 +6030,11 @@ static void codegen_proc_decl(CodegenContext *ctx, AstProcDecl *proc) {
 			const char *type_name = field_base_type_name(param_type);
 			const char *base_type = llvm_type_from_arche(type_name);
 
-			/* Check if type is char[] (i8*), an archetype (struct*), or handle(extern) (i8*) */
+			/* Check if type is char[] (i8*) or an archetype (struct*). */
 			if (param_type && param_type->tag == AST_TYPE_ARRAY) {
 				buffer_append_fmt(ctx, "i8*"); /* C ABI: T[] = raw ptr */
 			} else if (find_archetype_decl(ctx, type_name)) {
 				buffer_append_fmt(ctx, "%%struct.%s*", type_name);
-			} else if (extern_handle_target_ast(ctx->sem_ctx, param_type)) {
-				buffer_append_fmt(ctx, "i8*"); /* extern handle param: C func expects raw ptr */
 			} else {
 				buffer_append(ctx, base_type);
 			}
@@ -6220,13 +6062,15 @@ static void codegen_proc_decl(CodegenContext *ctx, AstProcDecl *proc) {
 		const char *type_name = field_base_type_name(param_type);
 		const char *base_type = llvm_type_from_arche(type_name);
 
-		/* Check if type is char[] (struct*), an archetype (struct*), or handle(extern) (i32) */
+		/* Check if type is char[] (struct*) or an archetype (struct*). */
 		if (param_type && param_type->tag == AST_TYPE_ARRAY) {
 			buffer_append_fmt(ctx, "%%struct.arche_array* %%arg%d", i);
+		} else if (param_type && param_type->tag == AST_TYPE_SHAPED_ARRAY && param_type->elem &&
+		           param_type->elem->tag == AST_TYPE_CHAR) {
+			/* sized char[N] param arrives as a bare i8* (like funcs) */
+			buffer_append_fmt(ctx, "i8* %%arg%d", i);
 		} else if (find_archetype_decl(ctx, type_name)) {
 			buffer_append_fmt(ctx, "%%struct.%s* %%arg%d", type_name, i);
-		} else if (extern_handle_target_ast(ctx->sem_ctx, param_type)) {
-			buffer_append_fmt(ctx, "i32 %%arg%d", i);
 		} else {
 			buffer_append_fmt(ctx, "%s %%arg%d", base_type, i);
 		}
@@ -6274,6 +6118,25 @@ static void codegen_proc_decl(CodegenContext *ctx, AstProcDecl *proc) {
 			vi->arch_name = NULL;
 			vi->string_len = -1;
 			vi->field_type = "char";
+			vi->bit_width = 8;
+			if (ctx->scope_count > 0) {
+				ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+				scope->values[scope->value_count++] = vi;
+			}
+		} else if (param_type && param_type->tag == AST_TYPE_SHAPED_ARRAY && param_type->elem &&
+		           param_type->elem->tag == AST_TYPE_CHAR) {
+			/* sized char[N] param: %argN is already the i8* — bind as type-6 so it indexes. */
+			ValueInfo *vi = malloc(sizeof(ValueInfo));
+			vi->name = malloc(strlen(proc->params[i]->name) + 1);
+			strcpy(vi->name, proc->params[i]->name);
+			vi->llvm_name = malloc(strlen(param_llvm) + 1);
+			strcpy(vi->llvm_name, param_llvm);
+			vi->type = 6;
+			vi->arch_name = NULL;
+			vi->string_len = -1;
+			vi->field_type = "char";
+			vi->handle_archetype = NULL;
 			vi->bit_width = 8;
 			if (ctx->scope_count > 0) {
 				ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
@@ -6515,51 +6378,6 @@ static void codegen_sys_decl(CodegenContext *ctx, AstSysDecl *sys) {
 	codegen_register_sys_version(ctx, sys->name, sys->name);
 }
 
-/* ========== EXTERN TYPE CODEGEN ========== */
-
-/*
- * Emit per-extern-type slot table globals and, once per module, the three
- * runtime helper declarations from runtime/handles.h.
- *
- * For each `extern type T(N)` the emitted IR is:
- *
- *   %__ArcheSlot = type { i8*, i16, i16 }
- *   @__arche_T_slots = internal global [N x %__ArcheSlot] zeroinitializer
- *   @__arche_T_typename = internal constant [<len+1> x i8] c"T\00"
- *
- * The runtime helpers are declared once:
- *   declare i32 @__arche_slot_alloc(i8*, %__ArcheSlot*, i32, i8*)
- *   declare i8* @__arche_slot_get(i8*, %__ArcheSlot*, i32, i32)
- *   declare void @__arche_slot_free(i8*, %__ArcheSlot*, i32, i32)
- */
-static void codegen_emit_extern_types(CodegenContext *ctx) {
-	int count = semantic_extern_type_count(ctx->sem_ctx);
-	if (count == 0)
-		return;
-
-	/* Emit the __ArcheSlot struct type once. */
-	buffer_append(ctx, "%__ArcheSlot = type { i8*, i16, i16 }\n\n");
-
-	for (int i = 0; i < count; i++) {
-		const char *name = semantic_extern_type_name_at(ctx->sem_ctx, i);
-		int cap = semantic_extern_type_capacity(ctx->sem_ctx, name);
-
-		/* Slot array global. */
-		buffer_append_fmt(ctx, "@__arche_%s_slots = internal global [%d x %%__ArcheSlot] zeroinitializer\n", name, cap);
-
-		/* Typename string constant (for error messages). */
-		int namelen = (int)strlen(name);
-		buffer_append_fmt(ctx, "@__arche_%s_typename = internal constant [%d x i8] c\"%s\\00\"\n", name, namelen + 1,
-		                  name);
-	}
-
-	/* Declare the three runtime helpers — defined in runtime/handles.c and
-	 * linked in as a separate object. */
-	buffer_append(ctx, "\ndeclare i32 @__arche_slot_alloc(i8*, %__ArcheSlot*, i32, i8*)\n");
-	buffer_append(ctx, "declare i8* @__arche_slot_get(i8*, %__ArcheSlot*, i32, i32)\n");
-	buffer_append(ctx, "declare void @__arche_slot_free(i8*, %__ArcheSlot*, i32, i32)\n\n");
-}
-
 /* ========== PUBLIC API ========== */
 
 CodegenContext *codegen_create(AstProgram *ast, SemanticContext *sem_ctx) {
@@ -6629,10 +6447,9 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "declare i8* @malloc(i32)\n");
 	buffer_append(ctx, "declare i8* @calloc(i64, i64)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
-	buffer_append(ctx, "declare void @abort()\n\n");
-
-	/* Extern-type slot tables (one per `extern type T(N)` declaration). */
-	codegen_emit_extern_types(ctx);
+	buffer_append(ctx, "declare void @abort()\n");
+	/* By-value array args are copied at the call site (no side effects without `move`). */
+	buffer_append(ctx, "declare void @llvm.memcpy.p0.p0.i64(i8*, i8*, i64, i1)\n\n");
 
 	/* Global error message for bounds check failures */
 	buffer_append(

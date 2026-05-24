@@ -4,11 +4,11 @@
 use csv;
 
 arche Row {
-  price: float,
-  quantity: int,
+  price :: float,
+  quantity :: int,
 }
 
-static Row(3, 3) {
+static pool<Row>(3, 3) {
   price: 0.0,
   quantity: 0,
 };

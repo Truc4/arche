@@ -3,7 +3,7 @@
 // inferring the i64 result. A live pid is always > 0.
 // RUN: %arche -o %t %s && %t | grep "ok"
 unsafe proc main() {
-  let pid := syscall(39, 0, 0, 0, 0, 0, 0);
+  pid := syscall(39, 0, 0, 0, 0, 0, 0);
   if (pid > 0) {
     printf("ok pid_is_positive\n");
   }

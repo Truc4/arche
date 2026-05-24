@@ -1,11 +1,11 @@
 // RUN: %arche -o %t %s && %t
 use csv;
 
-static buf: char[65536];
-
 proc main() {
-  let fd := csv_open("tests/fixtures/data.csv");
+  fd := csv_open("tests/fixtures/data.csv");
   if (fd) {
-    let buf, n := csv_read_chunk(fd, buf, 65536);
+    buf: char[65536];
+    buf, n := csv_read_chunk(fd, move buf, 65536);
   }
+  csv_close(move fd);
 }

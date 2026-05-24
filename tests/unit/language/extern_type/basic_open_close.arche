@@ -1,16 +1,19 @@
+// A foreign resource is a nominal opaque-backed type: `resource :: opaque` is distinct in
+// the checker but erases to a bare opaque cell (an i64 bitcast to the C pointer at the
+// ABI). No extern-table, no handle, no marshal. `consume` on close ends the value's life.
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t | grep "value=42"
 
-extern Resource(8);
+resource :: opaque
 
-extern func resource_open(initial: int) -> handle(Resource);
-extern func resource_get(r: handle(Resource)) -> int;
-extern proc resource_set(r: handle(Resource), v: int);
-extern proc resource_close(consume r: handle(Resource));
+extern func resource_open(initial: int) -> resource;
+extern func resource_get(r: resource) -> int;
+extern proc resource_set(r: resource, v: int);
+extern proc resource_close(move r: resource);
 
 proc main() {
-  let r := resource_open(10);
+  r := resource_open(10);
   resource_set(r, 42);
-  let v := resource_get(r);
+  v := resource_get(r);
   printf("value=%d\n", v);
-  resource_close(r);
+  resource_close(move r);
 }

@@ -58,7 +58,7 @@ static Program *parse_and_analyze(const char *src) {
 
 static void test_lower_range_for(void) {
 	test_start("range for: var_name set, iterable set");
-	Program *cst = parse_and_analyze("arche Particle { x: float, }\n"
+	Program *cst = parse_and_analyze("arche Particle { x :: float, }\n"
 	                                 "static Particle(100);\n"
 	                                 "sys Move() {\n"
 	                                 "  for p in Particle {\n"
@@ -94,7 +94,7 @@ static void test_lower_range_for(void) {
 static void test_lower_c_style_for(void) {
 	test_start("c-style for: init/cond/incr set");
 	Program *cst = parse_and_analyze("proc Count() {\n"
-	                                 "  for (let i: int = 0; i < 10; i += 1) {\n"
+	                                 "  for (i: int = 0; i < 10; i += 1) {\n"
 	                                 "  }\n"
 	                                 "}\n");
 	ASSERT(cst, "parse/semantic failed");
@@ -126,7 +126,7 @@ static void test_lower_c_style_for(void) {
 static void test_lower_while_for(void) {
 	test_start("while-style for: cond set, no init/incr/var");
 	Program *cst = parse_and_analyze("proc Loop() {\n"
-	                                 "  let done: int = 0;\n"
+	                                 "  done: int = 0;\n"
 	                                 "  for (;done < 5;) {\n"
 	                                 "    done += 1;\n"
 	                                 "  }\n"
@@ -191,12 +191,12 @@ static void test_lower_infinite_for(void) {
 	pass();
 }
 
-/* ========== let normalization ========== */
+/* ========== normalization ========== */
 
 static void test_lower_single_let_normalized(void) {
-	test_start("single let → names[0]");
+	test_start("single → names[0]");
 	Program *cst = parse_and_analyze("proc Foo() {\n"
-	                                 "  let x: int = 42;\n"
+	                                 "  x: int = 42;\n"
 	                                 "}\n");
 	ASSERT(cst, "parse/semantic failed");
 
@@ -213,11 +213,11 @@ static void test_lower_single_let_normalized(void) {
 	ASSERT(proc_decl, "no proc decl");
 	AstProcDecl *proc = proc_decl->data.proc;
 	ASSERT(proc->stmt_count == 1, "expected 1 stmt");
-	AstStmt *let = proc->stmts[0];
-	ASSERT(let->kind == AST_STMT_LET, "expected let stmt");
-	ASSERT(let->data.let_stmt.name_count == 1, "expected name_count==1");
-	ASSERT(let->data.let_stmt.names != NULL, "names is NULL");
-	ASSERT(strcmp(let->data.let_stmt.names[0], "x") == 0, "wrong name");
+	AstStmt *bind = proc->stmts[0];
+	ASSERT(bind->kind == AST_STMT_BIND, "expected stmt");
+	ASSERT(bind->data.bind_stmt.name_count == 1, "expected name_count==1");
+	ASSERT(bind->data.bind_stmt.names != NULL, "names is NULL");
+	ASSERT(strcmp(bind->data.bind_stmt.names[0], "x") == 0, "wrong name");
 
 	ast_program_free(ast);
 	program_free(cst);
@@ -229,8 +229,8 @@ static void test_lower_single_let_normalized(void) {
 static void test_lower_type_int(void) {
 	test_start("resolved_type int → AST_TYPE_INT");
 	Program *cst = parse_and_analyze("proc Foo() {\n"
-	                                 "  let x: int = 1;\n"
-	                                 "  let y := x;\n"
+	                                 "  x: int = 1;\n"
+	                                 "  y := x;\n"
 	                                 "}\n");
 	ASSERT(cst, "parse/semantic failed");
 
@@ -248,11 +248,11 @@ static void test_lower_type_int(void) {
 	AstProcDecl *proc = proc_decl->data.proc;
 	ASSERT(proc->stmt_count == 2, "expected 2 stmts");
 
-	/* second let: `let y := x` — x is int, so value expr resolved to int */
+	/* second let: `y := x` — x is int, so value expr resolved to int */
 	AstStmt *let2 = proc->stmts[1];
-	ASSERT(let2->kind == AST_STMT_LET, "expected let");
-	ASSERT(let2->data.let_stmt.value != NULL, "value is NULL");
-	ASSERT(let2->data.let_stmt.value->resolved.tag == AST_TYPE_INT, "expected AST_TYPE_INT");
+	ASSERT(let2->kind == AST_STMT_BIND, "expected let");
+	ASSERT(let2->data.bind_stmt.value != NULL, "value is NULL");
+	ASSERT(let2->data.bind_stmt.value->resolved.tag == AST_TYPE_INT, "expected AST_TYPE_INT");
 
 	ast_program_free(ast);
 	program_free(cst);

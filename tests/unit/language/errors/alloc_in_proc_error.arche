@@ -1,11 +1,11 @@
-// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -q "Error.*expression" %t.out
-// alloc inside proc should error (parse-time: alloc only allowed as declaration)
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "Error" %t.out
+// `alloc` (dynamic allocation) is not a valid statement — it errors at parse time.
 
 arche Counter {
-  val: int,
+  val :: int,
 }
 
-static Counter(5);
+static pool<Counter>(5);
 
 proc main() {
   alloc Counter(10);

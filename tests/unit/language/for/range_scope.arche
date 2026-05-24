@@ -1,11 +1,11 @@
 // RUN: %arche -o %t %s && %t
 arche C {
-  x: int,
+  x :: int,
 }
 
 
 proc main() {
-  let i := 0;
+  i := 0;
   for p in C {
     printf("i = %d\n", i);
     i = i + 1;

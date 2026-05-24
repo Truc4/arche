@@ -2,11 +2,11 @@
 use csv;
 
 arche Transaction {
-  quantity: int,
+  quantity :: int,
 }
 
 
-static Transaction(10000, 10000) {
+static pool<Transaction>(10000, 10000) {
   quantity: 0,
 };
 
@@ -16,34 +16,34 @@ proc load_transactions() {
 }
 
 
-proc write_output(count: float) {
-  let fd := arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_2.csv");
-  let buf: char[64];
-  sprintf(buf, "count\n%g\n", count);
+proc write_output(count: i64) {
+  fd := arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_2.csv");
+  buf: char[64];
+  sprintf(buf, "count\n%ld\n", count);
   arche_fwrite(fd, buf, strlen(buf));
-  arche_fclose(fd);
+  arche_fclose(move fd);
 }
 
 
 proc main() {
   load_transactions();
 
-  // Accumulating over 216,000 iters × 10,000 rows yields up to 2.16e9 — overflows
-  // arche's i32 `int`. Use a float scalar (2^53 headroom for exact integer counts).
-  let count := 0.0;
-  let t0 := arche_now_sec();
-  for (let iter = 0; iter < 216000; iter += 1) {
-    for (let i = 0; i < 10000; i += 1) {
+  // Up to 2.16e9 across all iters — past i32 but well within i64. An integer accumulator
+  // (unlike a float one) lets the conditional count auto-vectorize into a SIMD masked-add.
+  count: i64 = 0;
+  t0 := arche_now_sec();
+  for (iter := 0; iter < 216000; iter += 1) {
+    for (i := 0; i < 10000; i += 1) {
       if (Transaction.quantity[i] > 0) {
-        count = count + 1.0;
+        count = count + 1;
       }
     }
   }
-  let t1 := arche_now_sec();
-  let elapsed := t1 - t0;
+  t1 := arche_now_sec();
+  elapsed := t1 - t0;
 
   write_output(count);
 
-  printf("task2_checksum: %g\n", count);
+  printf("task2_checksum: %ld\n", count);
   printf("task2_time: %g\n", elapsed / 216000.0);
 }

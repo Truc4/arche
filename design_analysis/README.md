@@ -102,6 +102,57 @@ Test datasets for benchmarks:
 3. **C stdlib interop via bounded handle table**: Portable file I/O without platform-specific flags (O_CREAT)
 4. **Manual CSV parsing**: No string library overhead, explicit bounds
 
+## Transform Benchmarks (compute-only, single-threaded)
+
+Isolates the *compute* from I/O. Each engine loads a 10k-row CSV **off the clock**, then times only
+the transform body over **216,000 iterations** — removing the CSV-parse and threading confounds of
+the end-to-end ETL run below, so it's the honest single-threaded apples-to-apples for the column
+math itself. Machine: AMD Ryzen 5 7600X, native Linux, AVX2 (`x86-64-v3`). All checksums match
+across engines.
+
+**Per-iteration time** (lower is better):
+
+| Task | Operation | C (`-O3`) | **Arche** | pandas | polars |
+|------|-----------|----------:|----------:|-------:|-------:|
+| 1 | `revenue = price × quantity` | 1.24µs | **1.17µs** | 41.7µs | 155µs |
+| 2 | count `quantity > 0` | 0.44µs | **0.52µs** | 28.6µs | 19.6µs |
+| 3 | bucket timestamps (`price/10`, hour) | 2.30µs | **2.35µs** | 29.2µs | 122µs |
+| 4 | aggregate by region | 6.22µs | **6.67µs** | 46.3µs | 51.6µs |
+| 5 | combined pipeline | 6.36µs | **8.34µs** | 181µs | 248µs |
+
+- **Arche is within ~1–1.3× of hand-written `-O3` C** (task 1 is actually faster) — both AVX2-
+  vectorize the SoA column ops.
+- **Arche is ~7–55× faster than single-threaded pandas**, and faster than polars here too:
+  polars/duckdb win on *large* data via lazy multicore execution, but carry a high fixed per-call
+  overhead that dominates this tight per-op loop.
+- Engines: C (`cc -O3 -march=native`), pandas 3.0.3, polars 1.40.1 (`benchmarks/.venv`).
+
+**Two things that decide Arche's compute speed here (static-IR findings):**
+- The backend passes `-mcpu=x86-64-v3` to **both `opt` and `llc`**. The loop vectorizer runs in
+  `opt`; without `-mcpu` there it defaults to generic **2-wide**, ~halving throughput on every
+  vectorizable loop. With it, Task 2's filter vectorizes 4-wide (`load <4 x i32>` → `icmp sgt` →
+  `zext to <4 x i64>` → `add`, unrolled 8×, branchless) — 2× faster than the 2-wide build.
+- Task 2 still trails C slightly (4-wide vs clang's **8-wide** `<8 x i32>`): the `i64` accumulator
+  caps the i32 lane count to the reduction's 256-bit register (4×i64). Confirmed by IR diff — same
+  loop shape, half the lanes; an `i32` inner accumulator folded into an `i64` total per outer pass
+  vectorizes 8-wide and closes it.
+
+**Verbosity** — lines to express each task end-to-end (load, compute, write, time):
+
+| | C | Arche | pandas |
+|--|----:|------:|-------:|
+| lines / task | ~100 | ~38 | ~22 |
+
+The transform itself is *one* vectorized line in both Arche and pandas
+(`Transaction.revenue = Transaction.price * Transaction.quantity`); C needs an explicit element
+loop plus ~80 lines of `mmap` + manual CSV parsing. Arche keeps the scripting-style column
+expression while compiling to C-class machine code.
+
+**Reproduce** (from the repo root, so the tasks' relative CSV paths resolve):
+`python design_analysis/benchmarks/transform/compare.py --task all --engines arche,c,pandas,polars`.
+Build first: `make -C design_analysis/benchmarks/transform/c`, and
+`build/arche -o …/arche/bin/task_N …/arche/task_N_*.arche` per task.
+
 ## ETL Benchmarks (100M rows)
 
 Real-world data processing tasks at scale. All tasks read a 3.4 GB CSV file (100M rows, columns: timestamp, price, quantity, region, flags) using mmap-based I/O, load into columnar archetypes, run a compute pass, and print a checksum.

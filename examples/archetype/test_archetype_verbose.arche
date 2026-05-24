@@ -1,16 +1,16 @@
 arche Particle {
-  pos: float,
-  vel: float,
-  mass: float,
+  pos :: float,
+  vel :: float,
+  mass :: float,
 }
 arche Body {
-  pos: float,
-  vel: float,
-  density: float,
+  pos :: float,
+  vel :: float,
+  density :: float,
 }
-static Particle(1000);
-static Body(100);
-sys move(pos, vel) {
+static pool<Particle>(1000);
+static pool<Body>(100);
+sys integrate(pos, vel) {
   pos = pos + vel;
 }
 sys dampen(vel) {
@@ -22,7 +22,7 @@ proc main() {
   insert(Particle, 3.0, 0.3, 15.0);
   insert(Body, 5.0, 0.5, 1.0);
   insert(Body, 6.0, 0.6, 2.0);
-  run move;
+  run integrate;
   run dampen;
   print("simulation completed\n");
 }

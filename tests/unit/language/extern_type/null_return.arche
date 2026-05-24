@@ -1,18 +1,31 @@
+// A C open that fails hands back a null opaque cell (0). Arche can null-check it
+// (the only inspection allowed on an opaque value). Here the C pool (8) is exhausted,
+// so the 9th open returns null.
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t | grep "ok_null=1"
-
-extern Resource(8);
-extern func resource_open(initial: int) -> handle(Resource);
+resource :: opaque
+extern func resource_open(initial: int) -> resource;
+extern proc resource_close(move r: resource);
 
 proc main() {
-  let r1 := resource_open(1);
-  let r2 := resource_open(2);
-  let r3 := resource_open(3);
-  let r4 := resource_open(4);
-  let r5 := resource_open(5);
-  let r6 := resource_open(6);
-  let r7 := resource_open(7);
-  let r8 := resource_open(8);
-  let r9 := resource_open(9);
-  let ok := r9 == 0;
+  r1 := resource_open(1);
+  r2 := resource_open(2);
+  r3 := resource_open(3);
+  r4 := resource_open(4);
+  r5 := resource_open(5);
+  r6 := resource_open(6);
+  r7 := resource_open(7);
+  r8 := resource_open(8);
+  r9 := resource_open(9);
+  ok := r9 == 0;
   printf("ok_null=%d\n", ok);
+  // Linear retire: each opaque local (incl. the null r9 — close is null-safe) is consumed.
+  resource_close(move r1);
+  resource_close(move r2);
+  resource_close(move r3);
+  resource_close(move r4);
+  resource_close(move r5);
+  resource_close(move r6);
+  resource_close(move r7);
+  resource_close(move r8);
+  resource_close(move r9);
 }

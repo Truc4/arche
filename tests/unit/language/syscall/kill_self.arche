@@ -2,8 +2,8 @@
 // reach rdi and rsi correctly and a 0/success return is read.
 // RUN: %arche -o %t %s && %t | grep "ok"
 unsafe proc main() {
-  let pid := syscall(39, 0, 0, 0, 0, 0, 0);
-  let r := syscall(62, pid, 0, 0, 0, 0, 0);
+  pid := syscall(39, 0, 0, 0, 0, 0, 0);
+  r := syscall(62, pid, 0, 0, 0, 0, 0);
   if (r == 0) {
     printf("ok\n");
   }

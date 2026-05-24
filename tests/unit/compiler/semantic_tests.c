@@ -90,7 +90,7 @@ void analysis_result_free(AnalysisResult *result) {
 
 void test_archetype_defined(void) {
 	test_start("archetype is registered in symbol table");
-	AnalysisResult result = analyze_string("arche Player { x: Float }");
+	AnalysisResult result = analyze_string("arche Player { x :: Float }");
 	ASSERT_TRUE(result.ctx != NULL, "context is null");
 	ASSERT_TRUE(semantic_archetype_exists(result.ctx, "Player"), "Player archetype not found");
 	ASSERT_FALSE(semantic_archetype_exists(result.ctx, "Enemy"), "Enemy shouldn't exist");
@@ -100,7 +100,7 @@ void test_archetype_defined(void) {
 
 void test_archetype_field_exists(void) {
 	test_start("archetype fields are registered");
-	AnalysisResult result = analyze_string("arche Player { pos: Float, health: Float }");
+	AnalysisResult result = analyze_string("arche Player { pos :: Float, health :: Float }");
 	ASSERT_TRUE(result.ctx != NULL, "context is null");
 	ASSERT_TRUE(semantic_field_exists(result.ctx, "Player", "pos"), "pos field not found");
 	ASSERT_TRUE(semantic_field_exists(result.ctx, "Player", "health"), "health field not found");
@@ -111,7 +111,7 @@ void test_archetype_field_exists(void) {
 
 void test_archetype_field_kind(void) {
 	test_start("archetype field kind is tracked");
-	AnalysisResult result = analyze_string("arche Player { gravity: Float, pos: Float }");
+	AnalysisResult result = analyze_string("arche Player { gravity :: Float, pos :: Float }");
 	ASSERT_TRUE(result.ctx != NULL, "context is null");
 	ASSERT_EQ(semantic_field_kind(result.ctx, "Player", "gravity"), FIELD_COLUMN, "gravity should be column");
 	ASSERT_EQ(semantic_field_kind(result.ctx, "Player", "pos"), FIELD_COLUMN, "pos should be column");
@@ -121,7 +121,7 @@ void test_archetype_field_kind(void) {
 
 void test_archetype_field_type(void) {
 	test_start("archetype field types are tracked");
-	AnalysisResult result = analyze_string("arche Player { pos: Vec3, health: Float }");
+	AnalysisResult result = analyze_string("arche Player { pos :: Vec3, health :: Float }");
 	ASSERT_TRUE(result.ctx != NULL, "context is null");
 	const char *pos_type = semantic_field_type_name(result.ctx, "Player", "pos");
 	const char *health_type = semantic_field_type_name(result.ctx, "Player", "health");
@@ -137,8 +137,8 @@ void test_archetype_field_type(void) {
 
 void test_valid_field_access_in_proc(void) {
 	test_start("valid field access in procedure");
-	AnalysisResult result = analyze_string("arche Player { x: Float }\n"
-	                                       "proc test() { for p in Player { let v = p.x; } }");
+	AnalysisResult result = analyze_string("arche Player { x :: Float }\n"
+	                                       "proc test() { for p in Player { v := p.x; } }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -146,8 +146,8 @@ void test_valid_field_access_in_proc(void) {
 
 void test_invalid_field_access_in_proc(void) {
 	test_start("invalid field access caught");
-	AnalysisResult result = analyze_string("arche Player { x: Float }\n"
-	                                       "proc test() { for p in Player { let v = p.missing; } }");
+	AnalysisResult result = analyze_string("arche Player { x :: Float }\n"
+	                                       "proc test() { for p in Player { v := p.missing; } }");
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for missing field");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -155,7 +155,7 @@ void test_invalid_field_access_in_proc(void) {
 
 void test_field_access_on_undefined_archetype(void) {
 	test_start("field access on undefined archetype caught");
-	AnalysisResult result = analyze_string("proc test() { let v = undefined.field; }");
+	AnalysisResult result = analyze_string("proc test() { v := undefined.field; }");
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for undefined archetype");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -164,8 +164,8 @@ void test_field_access_on_undefined_archetype(void) {
 /* ========== VARIABLE SCOPE TESTS ========== */
 
 void test_let_binding_creates_local(void) {
-	test_start("let binding creates local variable");
-	AnalysisResult result = analyze_string("proc test() { let x = 42; }");
+	test_start("binding creates local variable");
+	AnalysisResult result = analyze_string("proc test() { x := 42; }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -173,7 +173,7 @@ void test_let_binding_creates_local(void) {
 
 void test_undefined_variable_access(void) {
 	test_start("undefined variable access caught");
-	AnalysisResult result = analyze_string("proc test() { let x = undefined_var; }");
+	AnalysisResult result = analyze_string("proc test() { x := undefined_var; }");
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for undefined variable");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -182,8 +182,8 @@ void test_undefined_variable_access(void) {
 void test_variable_shadowing(void) {
 	test_start("variable shadowing allowed");
 	AnalysisResult result = analyze_string("proc test() {\n"
-	                                       "  let x = 1;\n"
-	                                       "  let x = 2;\n"
+	                                       "  x := 1;\n"
+	                                       "  x := 2;\n"
 	                                       "}");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "shadowing should be allowed");
 	analysis_result_free(&result);
@@ -194,7 +194,7 @@ void test_variable_shadowing(void) {
 
 void test_assignment_valid_type(void) {
 	test_start("valid type assignment");
-	AnalysisResult result = analyze_string("proc test() { let x = 42; x = 100; }");
+	AnalysisResult result = analyze_string("proc test() { x := 42; x = 100; }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -202,7 +202,7 @@ void test_assignment_valid_type(void) {
 
 void test_binary_op_same_types(void) {
 	test_start("binary op with same types");
-	AnalysisResult result = analyze_string("proc test() { let x = 1 + 2; }");
+	AnalysisResult result = analyze_string("proc test() { x := 1 + 2; }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -210,7 +210,7 @@ void test_binary_op_same_types(void) {
 
 void test_comparison_produces_number(void) {
 	test_start("comparison expressions are valid");
-	AnalysisResult result = analyze_string("proc test() { let x = 1 < 2; }");
+	AnalysisResult result = analyze_string("proc test() { x := 1 < 2; }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -220,7 +220,7 @@ void test_comparison_produces_number(void) {
 
 void test_for_loop_undefined_iterable(void) {
 	test_start("for loop with undefined iterable caught");
-	AnalysisResult result = analyze_string("proc test() { for item in UndefinedPool { let x = 1; } }");
+	AnalysisResult result = analyze_string("proc test() { for item in UndefinedPool { x := 1; } }");
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for undefined pool");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -228,8 +228,8 @@ void test_for_loop_undefined_iterable(void) {
 
 void test_for_loop_valid_iterable(void) {
 	test_start("for loop with defined archetype");
-	AnalysisResult result = analyze_string("arche Item { value: Float }\n"
-	                                       "proc test() { for item in Item { let x = 1; } }");
+	AnalysisResult result = analyze_string("arche Item { value :: Float }\n"
+	                                       "proc test() { for item in Item { x := 1; } }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -257,8 +257,8 @@ void test_function_undefined_parameter(void) {
 
 void test_multiple_archetypes(void) {
 	test_start("multiple archetypes are all registered");
-	AnalysisResult result = analyze_string("arche Player { x: Float }\n"
-	                                       "arche Enemy { y: Float }");
+	AnalysisResult result = analyze_string("arche Player { x :: Float }\n"
+	                                       "arche Enemy { y :: Float }");
 	ASSERT_TRUE(semantic_archetype_exists(result.ctx, "Player"), "Player not found");
 	ASSERT_TRUE(semantic_archetype_exists(result.ctx, "Enemy"), "Enemy not found");
 	analysis_result_free(&result);
@@ -268,9 +268,9 @@ void test_multiple_archetypes(void) {
 void test_cross_archetype_field_access(void) {
 	test_start("accessing correct archetype field");
 	AnalysisResult result =
-	    analyze_string("arche Player { x: Float }\n"
-	                   "arche Enemy { y: Float }\n"
-	                   "proc test() { for p in Player { let v1 = p.x; } for e in Enemy { let v2 = e.y; } }");
+	    analyze_string("arche Player { x :: Float }\n"
+	                   "arche Enemy { y :: Float }\n"
+	                   "proc test() { for p in Player { v1 := p.x; } for e in Enemy { v2 := e.y; } }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -278,9 +278,9 @@ void test_cross_archetype_field_access(void) {
 
 void test_cross_archetype_field_mismatch(void) {
 	test_start("accessing wrong archetype field caught");
-	AnalysisResult result = analyze_string("arche Player { x: Float }\n"
-	                                       "arche Enemy { y: Float }\n"
-	                                       "proc test() { for p in Player { let v = p.y; } }");
+	AnalysisResult result = analyze_string("arche Player { x :: Float }\n"
+	                                       "arche Enemy { y :: Float }\n"
+	                                       "proc test() { for p in Player { v := p.y; } }");
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for wrong field");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -293,7 +293,7 @@ void test_group_with_distinct_members_ok(void) {
 	const char *src = "func a(x: int) -> int { return x; }\n"
 	                  "func b(x: float) -> float { return x; }\n"
 	                  "func g = { a, b };\n"
-	                  "proc main() { let i := g(1); let f := g(2.0); }\n";
+	                  "proc main() { i := g(1); f := g(2.0); }\n";
 	ParseResult pr = parse_source(src);
 	if (pr.error_count != 0) {
 		test_fail_msg("Parse errors");
@@ -381,7 +381,7 @@ void test_call_no_matching_member_errors(void) {
 	const char *src = "func a(x: int) -> int { return x; }\n"
 	                  "func b(x: float) -> float { return x; }\n"
 	                  "func g = { a, b };\n"
-	                  "proc main() { let c := 'X'; let r := g(c); }\n";
+	                  "proc main() { c := 'X'; r := g(c); }\n";
 	ParseResult pr = parse_source(src);
 	if (pr.error_count != 0) {
 		test_fail_msg("Parse errors");
@@ -399,64 +399,13 @@ void test_call_no_matching_member_errors(void) {
 	test_pass_msg();
 }
 
-/* ========== EXTERN TYPE TESTS ========== */
+/* ========== FOREIGN OPAQUE TYPE TESTS ========== */
 
-void test_extern_type_registered(void) {
-	test_start("extern table registered in symbol table");
-	AnalysisResult r = analyze_string("extern Window(8);");
-	ASSERT_NOT_NULL(r.ctx, "no semantic context");
-	ASSERT_TRUE(semantic_has_extern_type(r.ctx, "Window"), "Window not registered");
-	ASSERT_EQ(semantic_extern_type_capacity(r.ctx, "Window"), 8, "wrong capacity");
-	semantic_context_free(r.ctx);
-	program_free(r.prog);
-	test_pass_msg();
-}
-
-void test_extern_type_duplicate_is_error(void) {
-	test_start("duplicate extern table name is rejected");
-	AnalysisResult r = analyze_string("extern Window(8);\n"
-	                                  "extern Window(16);\n");
-	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected redeclaration error");
-	semantic_context_free(r.ctx);
-	program_free(r.prog);
-	test_pass_msg();
-}
-
-void test_extern_type_passthrough_in_proc_ok(void) {
-	test_start("extern handle may pass through non-extern proc param");
-	AnalysisResult r = analyze_string("extern Window(8);\n"
-	                                  "extern proc window_close(consume w: handle(Window));\n"
-	                                  "proc wrap_close(w: handle(Window)) { window_close(w); }\n");
-	ASSERT_EQ(semantic_error_count(r.ctx), 0, "should be no errors");
-	semantic_context_free(r.ctx);
-	program_free(r.prog);
-	test_pass_msg();
-}
-
-void test_extern_type_in_archetype_field_is_error(void) {
-	test_start("extern handle cannot appear as archetype field");
-	AnalysisResult r = analyze_string("extern Window(8);\n"
-	                                  "arche Holder { ref: handle(Window), }\n");
-	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected error for extern handle in archetype field");
-	semantic_context_free(r.ctx);
-	program_free(r.prog);
-	test_pass_msg();
-}
-
-void test_bare_extern_name_in_signature_is_error(void) {
-	test_start("bare extern name in signature must be handle(X)");
-	AnalysisResult r = analyze_string("extern Window(8);\n"
-	                                  "extern proc bad(w: Window);\n");
-	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected error: bare extern name in extern signature");
-	semantic_context_free(r.ctx);
-	program_free(r.prog);
-	test_pass_msg();
-}
-
-void test_extern_signature_with_extern_type_ok(void) {
-	test_start("extern proc with handle(X) param is accepted");
-	AnalysisResult r = analyze_string("extern Window(8);\n"
-	                                  "extern proc close(consume w: handle(Window));\n");
+void test_opaque_passthrough_in_proc_ok(void) {
+	test_start("opaque value may pass through a non-extern proc param");
+	AnalysisResult r = analyze_string("window :: opaque\n"
+	                                  "extern proc window_close(move w: window);\n"
+	                                  "proc wrap_close(w: window) { window_close(move w); }\n");
 	ASSERT_EQ(semantic_error_count(r.ctx), 0, "should be no errors");
 	semantic_context_free(r.ctx);
 	program_free(r.prog);
@@ -472,15 +421,15 @@ void test_unknown_type_name_still_errors(void) {
 	test_pass_msg();
 }
 
-void test_extern_types_distinct(void) {
-	test_start("Window and Sound handles are not interchangeable");
-	AnalysisResult r = analyze_string("extern Window(8);\n"
-	                                  "extern Sound(64);\n"
-	                                  "extern proc window_close(consume w: handle(Window));\n"
-	                                  "extern func sound_open() -> handle(Sound);\n"
+void test_opaque_aliases_distinct(void) {
+	test_start("window and sound opaque aliases are not interchangeable");
+	AnalysisResult r = analyze_string("window :: opaque\n"
+	                                  "sound :: opaque\n"
+	                                  "extern proc window_close(move w: window);\n"
+	                                  "extern func sound_open() -> sound;\n"
 	                                  "proc main() {\n"
-	                                  "  let s := sound_open();\n"
-	                                  "  window_close(s);\n"
+	                                  "  s := sound_open();\n"
+	                                  "  window_close(move s);\n"
 	                                  "}\n");
 	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected type-mismatch error");
 	semantic_context_free(r.ctx);
@@ -492,13 +441,13 @@ void test_extern_types_distinct(void) {
 
 void test_use_after_consume_local_error(void) {
 	test_start("use after consume in same scope is a compile error");
-	AnalysisResult r = analyze_string("extern Window(8);\n"
-	                                  "extern func open_(t: char[], a: int, b: int) -> handle(Window);\n"
-	                                  "extern proc close_(consume w: handle(Window));\n"
-	                                  "extern proc poll_(w: handle(Window));\n"
+	AnalysisResult r = analyze_string("window :: opaque\n"
+	                                  "extern func open_(t: char[], a: int, b: int) -> window;\n"
+	                                  "extern proc close_(move w: window);\n"
+	                                  "extern proc poll_(w: window);\n"
 	                                  "proc main() {\n"
-	                                  "  let w := open_(\"\", 1, 1);\n"
-	                                  "  close_(w);\n"
+	                                  "  w := open_(\"\", 1, 1);\n"
+	                                  "  close_(move w);\n"
 	                                  "  poll_(w);\n"
 	                                  "}\n");
 	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected use-after-consume error");
@@ -508,15 +457,15 @@ void test_use_after_consume_local_error(void) {
 }
 
 void test_no_false_positive_when_unconsumed(void) {
-	test_start("normal pass-through use is fine");
-	AnalysisResult r = analyze_string("extern Window(8);\n"
-	                                  "extern func open_(t: char[], a: int, b: int) -> handle(Window);\n"
-	                                  "extern proc close_(consume w: handle(Window));\n"
-	                                  "extern proc poll_(w: handle(Window));\n"
+	test_start("normal borrow then consume is fine");
+	AnalysisResult r = analyze_string("window :: opaque\n"
+	                                  "extern func open_(t: char[], a: int, b: int) -> window;\n"
+	                                  "extern proc close_(move w: window);\n"
+	                                  "extern proc poll_(w: window);\n"
 	                                  "proc main() {\n"
-	                                  "  let w := open_(\"\", 1, 1);\n"
+	                                  "  w := open_(\"\", 1, 1);\n"
 	                                  "  poll_(w);\n"
-	                                  "  close_(w);\n"
+	                                  "  close_(move w);\n"
 	                                  "}\n");
 	ASSERT_EQ(semantic_error_count(r.ctx), 0, "should be no errors");
 	semantic_context_free(r.ctx);
@@ -578,16 +527,11 @@ int main(void) {
 	test_group_name_collision_errors();
 	test_call_no_matching_member_errors();
 
-	/* Extern types */
-	printf("\nExtern type tests:\n");
-	test_extern_type_registered();
-	test_extern_type_duplicate_is_error();
-	test_extern_type_passthrough_in_proc_ok();
-	test_extern_type_in_archetype_field_is_error();
-	test_bare_extern_name_in_signature_is_error();
-	test_extern_signature_with_extern_type_ok();
+	/* Foreign opaque types */
+	printf("\nForeign opaque type tests:\n");
+	test_opaque_passthrough_in_proc_ok();
 	test_unknown_type_name_still_errors();
-	test_extern_types_distinct();
+	test_opaque_aliases_distinct();
 
 	/* Use-after-consume tracking */
 	printf("\nUse-after-consume tests:\n");

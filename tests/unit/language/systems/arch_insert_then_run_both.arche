@@ -1,24 +1,24 @@
 // RUN: %arche -o %t %s && %t
 // BUG: System operations don't modify fields (see COMPILER_BUG_SYSTEM_OPERATIONS.md)
 arche Particle {
-  pos: float,
-  vel: float,
+  pos :: float,
+  vel :: float,
 }
 
 
 arche Body {
-  pos: float,
-  vel: float,
-  mass: float,
+  pos :: float,
+  vel :: float,
+  mass :: float,
 }
 
 
-static Particle(10);
+static pool<Particle>(10);
 
-static Body(10);
+static pool<Body>(10);
 
 
-sys move(pos, vel) {
+sys step(pos, vel) {
   pos = pos + vel;
 }
 
@@ -34,12 +34,12 @@ proc main() {
   insert(Particle, 30.0, 3.0);
   insert(Body, 50.0, 5.0, 10.0);
   insert(Body, 60.0, 6.0, 20.0);
-  run move;
+  run step;
   run dampen;
-  let pp := Particle.pos[0];
-  let bp := Body.vel[0];
-  let ppi := pp * 10.0;
-  let bpi := bp * 100.0;
+  pp := Particle.pos[0];
+  bp := Body.vel[0];
+  ppi := pp * 10.0;
+  bpi := bp * 100.0;
   assert(ppi == 110.0, "Particle.pos != 11.0\n");
   assert(bpi == 495.0, "Body.vel != 4.95\n");
 }

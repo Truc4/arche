@@ -1,15 +1,15 @@
 // RUN: %arche -o %t %s && %t | grep "p0i"
 // BUG: System operations don't modify fields (see COMPILER_BUG_SYSTEM_OPERATIONS.md)
 arche Body {
-  position: float,
-  velocity: float,
+  position :: float,
+  velocity :: float,
 }
 
 
-static Body(500);
+static pool<Body>(500);
 
 
-sys move(position, velocity) {
+sys step(position, velocity) {
   position = position + velocity;
 }
 
@@ -27,11 +27,11 @@ proc main() {
   insert(Body, 100.0, 10.0);
   insert(Body, 110.0, 11.0);
   insert(Body, 120.0, 12.0);
-  run move;
-  let p0 := Body.position[0];
-  let p11 := Body.position[11];
-  let p0i := p0 * 10.0;
-  let p11i := p11 * 10.0;
+  run step;
+  p0 := Body.position[0];
+  p11 := Body.position[11];
+  p0i := p0 * 10.0;
+  p11i := p11 * 10.0;
   print("p0i=");
   print_float(p0i);
   print(" p11i=");

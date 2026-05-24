@@ -21,6 +21,7 @@ typedef enum {
 	AST_TYPE_SHAPED_ARRAY,
 	AST_TYPE_TUPLE,
 	AST_TYPE_ARCHETYPE, /* bare-category `archetype` parameter type */
+	AST_TYPE_OPAQUE,    /* opaque: pointer-width C-owned cell */
 } AstTypeTag;
 
 typedef struct AstType AstType;
@@ -93,8 +94,7 @@ struct AstField {
 struct AstParam {
 	char *name;
 	AstType *type;
-	int is_out;
-	int is_consume;
+	int is_move; /* `move` param: caller must `move` the arg (by-ref, no silent copy) */
 	SourceLoc loc;
 };
 
@@ -128,7 +128,10 @@ typedef struct {
 	char *name;
 	AstParam **params;
 	int param_count;
-	AstType *return_type;
+	/* A function's return is a list of types; a single return is just count == 1, and a
+	 * multi-return (count > 1) is handed back as an aggregate. No scalar special-case. */
+	AstType **return_types;
+	int return_type_count;
 	int is_extern;
 	AstStmt **stmts;
 	int stmt_count;
@@ -184,7 +187,7 @@ struct AstProgram {
    ========================= */
 
 typedef enum {
-	AST_STMT_LET,
+	AST_STMT_BIND,
 	AST_STMT_ASSIGN,
 	AST_STMT_FOR,
 	AST_STMT_IF,
@@ -202,7 +205,7 @@ typedef struct {
 	int name_count;
 	AstType *type; /* optional explicit type, only single-var */
 	AstExpr *value;
-} AstLetStmt;
+} AstBindStmt;
 
 typedef struct {
 	AstExpr *target;
@@ -242,7 +245,8 @@ typedef struct {
 } AstFreeStmt;
 
 typedef struct {
-	AstExpr *value;
+	AstExpr **values; /* returned values, in order; a single return is just count == 1 */
+	int count;
 } AstReturnStmt;
 
 typedef struct {
@@ -270,7 +274,7 @@ struct AstStmt {
 	AstStmtKind kind;
 	SourceLoc loc;
 	union {
-		AstLetStmt let_stmt;
+		AstBindStmt bind_stmt;
 		AstAssignStmt assign_stmt;
 		AstForStmt for_stmt;
 		AstIfStmt if_stmt;

@@ -1,10 +1,10 @@
 // RUN: %arche -o %t %s && %t
 arche Counter {
-  val: int,
+  val :: int,
 }
 
 
-static Counter(10, 3);
+static pool<Counter>(10, 3);
 
 
 proc main() {

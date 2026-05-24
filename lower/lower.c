@@ -63,6 +63,8 @@ static AstType map_type_str(const char *resolved_type) {
 		t.tag = AST_TYPE_CHAR_ARRAY;
 	} else if (strcmp(resolved_type, "handle") == 0) {
 		t.tag = AST_TYPE_HANDLE;
+	} else if (strcmp(resolved_type, "opaque") == 0) {
+		t.tag = AST_TYPE_OPAQUE;
 	} else {
 		/* archetype or other named type — pointer into CST, safe since CST outlives AST */
 		t.tag = AST_TYPE_NAMED;
@@ -104,6 +106,9 @@ static AstType *lower_type_ref(TypeRef *tr) {
 		break;
 	case TYPE_ARCHETYPE:
 		t->tag = AST_TYPE_ARCHETYPE;
+		break;
+	case TYPE_OPAQUE:
+		t->tag = AST_TYPE_OPAQUE;
 		break;
 	}
 	return t;
@@ -231,26 +236,26 @@ static AstStmt *lower_stmt(Statement *stmt) {
 	s->loc = stmt->loc;
 
 	switch (stmt->type) {
-	case STMT_LET: {
-		s->kind = AST_STMT_LET;
-		LetStmt *ls = &stmt->data.let_stmt;
+	case STMT_BIND: {
+		s->kind = AST_STMT_BIND;
+		BindStmt *ls = &stmt->data.bind_stmt;
 		if (ls->name_count > 0 && ls->names) {
 			/* multi-value let: copy names[] */
-			s->data.let_stmt.name_count = ls->name_count;
-			s->data.let_stmt.names = calloc(ls->name_count, sizeof(char *));
+			s->data.bind_stmt.name_count = ls->name_count;
+			s->data.bind_stmt.names = calloc(ls->name_count, sizeof(char *));
 			for (int i = 0; i < ls->name_count; i++) {
-				s->data.let_stmt.names[i] = malloc(strlen(ls->names[i]) + 1);
-				strcpy(s->data.let_stmt.names[i], ls->names[i]);
+				s->data.bind_stmt.names[i] = malloc(strlen(ls->names[i]) + 1);
+				strcpy(s->data.bind_stmt.names[i], ls->names[i]);
 			}
 		} else {
 			/* single-var let: normalize to names[0] */
-			s->data.let_stmt.name_count = 1;
-			s->data.let_stmt.names = calloc(1, sizeof(char *));
-			s->data.let_stmt.names[0] = malloc(strlen(ls->name) + 1);
-			strcpy(s->data.let_stmt.names[0], ls->name);
+			s->data.bind_stmt.name_count = 1;
+			s->data.bind_stmt.names = calloc(1, sizeof(char *));
+			s->data.bind_stmt.names[0] = malloc(strlen(ls->name) + 1);
+			strcpy(s->data.bind_stmt.names[0], ls->name);
 		}
-		s->data.let_stmt.type = lower_type_ref(ls->type);
-		s->data.let_stmt.value = lower_expr(ls->value);
+		s->data.bind_stmt.type = lower_type_ref(ls->type);
+		s->data.bind_stmt.value = lower_expr(ls->value);
 		break;
 	}
 	case STMT_ASSIGN: {
@@ -312,7 +317,10 @@ static AstStmt *lower_stmt(Statement *stmt) {
 	}
 	case STMT_RETURN: {
 		s->kind = AST_STMT_RETURN;
-		s->data.return_stmt.value = lower_expr(stmt->data.return_stmt.value);
+		s->data.return_stmt.count = stmt->data.return_stmt.count;
+		s->data.return_stmt.values = calloc(stmt->data.return_stmt.count, sizeof(AstExpr *));
+		for (int i = 0; i < stmt->data.return_stmt.count; i++)
+			s->data.return_stmt.values[i] = lower_expr(stmt->data.return_stmt.values[i]);
 		break;
 	}
 	case STMT_MULTI_BIND: {
@@ -356,8 +364,7 @@ static AstStmt *lower_stmt(Statement *stmt) {
 static AstParam *lower_param(Parameter *p) {
 	AstParam *ap = ast_param_create(NULL, NULL);
 	ap->loc = p->loc;
-	ap->is_out = p->is_out;
-	ap->is_consume = p->is_consume;
+	ap->is_move = p->is_move;
 	ap->name = malloc(strlen(p->name) + 1);
 	strcpy(ap->name, p->name);
 	ap->type = lower_type_ref(p->type);
@@ -475,8 +482,8 @@ static void tuple_rewrite_stmt(AstStmt *s, const char *base) {
 	if (!s)
 		return;
 	switch (s->kind) {
-	case AST_STMT_LET:
-		tuple_rewrite_expr(s->data.let_stmt.value, base);
+	case AST_STMT_BIND:
+		tuple_rewrite_expr(s->data.bind_stmt.value, base);
 		break;
 	case AST_STMT_ASSIGN:
 		tuple_rewrite_expr(s->data.assign_stmt.target, base);
@@ -500,7 +507,8 @@ static void tuple_rewrite_stmt(AstStmt *s, const char *base) {
 		tuple_rewrite_expr(s->data.expr_stmt.expr, base);
 		break;
 	case AST_STMT_RETURN:
-		tuple_rewrite_expr(s->data.return_stmt.value, base);
+		for (int i = 0; i < s->data.return_stmt.count; i++)
+			tuple_rewrite_expr(s->data.return_stmt.values[i], base);
 		break;
 	default:
 		break;
@@ -517,9 +525,6 @@ static AstDecl *lower_decl(Decl *decl) {
 	switch (decl->kind) {
 	case DECL_USE:
 		return NULL; /* stripped */
-
-	case DECL_EXTERN_TYPE:
-		return NULL; /* not lowered to AST yet */
 
 	case DECL_WORLD: {
 		ad = ast_decl_create(AST_DECL_WORLD);
@@ -625,8 +630,7 @@ static AstDecl *lower_decl(Decl *decl) {
 				snprintf(nm, sizeof(nm), "%s_%s", cp->name, ti->comp[j]);
 				AstParam *ap = ast_param_create(NULL, NULL);
 				ap->loc = cp->loc;
-				ap->is_out = cp->is_out;
-				ap->is_consume = cp->is_consume;
+				ap->is_move = cp->is_move;
 				ap->name = malloc(strlen(nm) + 1);
 				strcpy(ap->name, nm);
 				ap->type = lower_type_ref(ti->ctype[j]);
@@ -649,7 +653,10 @@ static AstDecl *lower_decl(Decl *decl) {
 		afunc->params = calloc(func->param_count, sizeof(AstParam *));
 		for (int i = 0; i < func->param_count; i++)
 			afunc->params[i] = lower_param(func->params[i]);
-		afunc->return_type = lower_type_ref(func->return_type);
+		afunc->return_type_count = func->return_type_count;
+		afunc->return_types = calloc(func->return_type_count, sizeof(AstType *));
+		for (int i = 0; i < func->return_type_count; i++)
+			afunc->return_types[i] = lower_type_ref(func->return_types[i]);
 		afunc->stmt_count = func->statement_count;
 		afunc->stmts = calloc(func->statement_count, sizeof(AstStmt *));
 		for (int i = 0; i < func->statement_count; i++)

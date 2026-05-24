@@ -1,26 +1,26 @@
 // RUN: %arche -o %t %s && %t
 arche Transaction {
-  price: float,
-  quantity: int,
+  price :: float,
+  quantity :: int,
 }
 
 
-static Transaction(5, 5) {
+static pool<Transaction>(5, 5) {
   price: 0.0,
   quantity: 0,
 };
 
 
 proc main() {
-  let fd := arche_fopen_read("../../../../../tests/fixtures/transactions.csv");
-  let buf: char[256];
-  let price_str: char[32];
-  let qty_str: char[32];
-  let total_n := arche_fread(fd, buf, 256);
-  arche_fclose(fd);
-  let idx := 0;
-  let pos := 0;
-  let line_start := 0;
+  fd := arche_fopen_read("../../../../../tests/fixtures/transactions.csv");
+  buf: char[256];
+  price_str: char[32];
+  qty_str: char[32];
+  total_n := arche_fread(fd, buf, 256);
+  arche_fclose(move fd);
+  idx := 0;
+  pos := 0;
+  line_start := 0;
   for (;pos < total_n;) {
     if (buf[pos] == '\n') {
       line_start = pos + 1;
@@ -33,22 +33,22 @@ proc main() {
     if (line_start >= total_n) {
       break;
     }
-    let line_end := line_start;
+    line_end := line_start;
     for (;line_end < total_n;) {
       if (buf[line_end] == '\n') {
         break;
       }
       line_end = line_end + 1;
     }
-    let comma_pos := line_start;
+    comma_pos := line_start;
     for (;comma_pos < line_end;) {
       if (buf[comma_pos] == ',') {
         break;
       }
       comma_pos = comma_pos + 1;
     }
-    let j := 0;
-    let i := line_start;
+    j := 0;
+    i := line_start;
     for (;i < comma_pos;) {
       price_str[j] = buf[i];
       j = j + 1;

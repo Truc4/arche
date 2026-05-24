@@ -1,10 +1,17 @@
-// RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t > %t.out 2>&1 ; grep -qi "capacity" %t.out
-
-extern Resource(2);
-extern func resource_open(initial: int) -> handle(Resource);
+// Foreign resources can be POOLED: an archetype with an opaque `cell` component, stored
+// in a fixed-capacity pool with generation-checked handles. A full pool aborts when
+// overrun — here capacity 2, the third insert aborts. (Pooled is the opt-in gen-checked
+// path; the by-value `resource :: opaque` path is separate.)
+// RUN: %arche -o %t --link %S/runtime/test_resource.c %s && ! %t
+cell :: opaque
+arche Resource {
+  cell,
+}
+extern func resource_open(initial: int) -> cell;
+static pool<Resource>(2);
 
 proc main() {
-  let a := resource_open(1);
-  let b := resource_open(2);
-  let c := resource_open(3);
+  a := insert(Resource, resource_open(1));
+  b := insert(Resource, resource_open(2));
+  c := insert(Resource, resource_open(3));
 }

@@ -1,11 +1,11 @@
 // RUN: %arche -o %t %s && %t | grep "p0i"
 arche Particle {
-  pos: float,
-  vel: float,
+  pos :: float,
+  vel :: float,
 }
 
 
-static Particle(10);
+static table<Particle>(10);
 
 
 sys move(pos, vel) {
@@ -14,14 +14,14 @@ sys move(pos, vel) {
 
 
 proc main() {
-  insert(Particle, 1.0, 0.1);
-  insert(Particle, 2.0, 0.2);
-  insert(Particle, 3.0, 0.3);
+  insert(table<Particle>, 1.0, 0.1);
+  insert(table<Particle>, 2.0, 0.2);
+  insert(table<Particle>, 3.0, 0.3);
   run move;
-  let p0 := Particle.pos[0];
-  let p1 := Particle.pos[1];
-  let p0i := p0 * 10.0;
-  let p1i := p1 * 10.0;
+  p0 := Particle.pos[0];
+  p1 := Particle.pos[1];
+  p0i := p0 * 10.0;
+  p1i := p1 * 10.0;
   print("p0i=");
   print_float(p0i);
   print(" p1i=");

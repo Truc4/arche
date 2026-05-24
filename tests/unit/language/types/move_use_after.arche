@@ -1,0 +1,12 @@
+// `move r` transfers ownership at the call site; using r afterward is a compile error —
+// even when the callee does not itself consume (the `move` marks the hand-off explicitly).
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
+resource :: opaque
+extern func resource_open(initial: int) -> resource;
+extern func resource_get(r: resource) -> int;
+
+proc main() {
+  r := resource_open(10);
+  v := resource_get(move r);
+  w := resource_get(r);
+}

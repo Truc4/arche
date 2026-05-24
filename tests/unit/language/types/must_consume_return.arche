@@ -1,0 +1,19 @@
+// Returning an opaque local moves it out of the scope — that counts as consumption, so
+// `make_resource` does not trip the must-consume check. The caller then retires it.
+// RUN: %arche -o %t --link %S/../extern_type/runtime/test_resource.c %s && %t | grep "value=7"
+resource :: opaque
+extern func resource_open(initial: int) -> resource;
+extern func resource_get(r: resource) -> int;
+extern proc resource_close(move r: resource);
+
+func make_resource(v: int) -> resource {
+  r := resource_open(v);
+  return r;
+}
+
+proc main() {
+  r := make_resource(7);
+  v := resource_get(r);
+  printf("value=%d\n", v);
+  resource_close(move r);
+}

@@ -3,13 +3,13 @@
 use csv;
 
 arche Transaction {
-  price: float,
-  quantity: int,
-  revenue: float,
+  price :: float,
+  quantity :: int,
+  revenue :: float,
 }
 
 
-static Transaction(10000, 10000) {
+static pool<Transaction>(10000, 10000) {
   price: 0.0,
   quantity: 0,
   revenue: 0.0,
@@ -22,30 +22,30 @@ proc load_transactions() {
 
 
 proc write_output() {
-  let fd := arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_1.csv");
-  let header: char[16];
+  fd := arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_1.csv");
+  header: char[16];
   sprintf(header, "revenue\n");
   arche_fwrite(fd, header, strlen(header));
-  let buf: char[64];
-  for (let i = 0; i < 10000; i += 1) {
+  buf: char[64];
+  for (i := 0; i < 10000; i += 1) {
     sprintf(buf, "%g\n", Transaction.revenue[i]);
     arche_fwrite(fd, buf, strlen(buf));
   }
-  arche_fclose(fd);
+  arche_fclose(move fd);
 }
 
 
 proc main() {
   load_transactions();
-  let t0 := arche_now_sec();
-  for (let iter = 0; iter < 216000; iter += 1) {
+  t0 := arche_now_sec();
+  for (iter := 0; iter < 216000; iter += 1) {
     Transaction.revenue = Transaction.price * Transaction.quantity;
   }
-  let t1 := arche_now_sec();
-  let elapsed := t1 - t0;
+  t1 := arche_now_sec();
+  elapsed := t1 - t0;
 
-  let sum := 0.0;
-  for (let m = 0; m < 10000; m += 1) {
+  sum := 0.0;
+  for (m := 0; m < 10000; m += 1) {
     sum = sum + Transaction.revenue[m];
   }
 

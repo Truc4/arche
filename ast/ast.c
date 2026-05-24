@@ -142,12 +142,12 @@ void ast_stmt_free(AstStmt *stmt) {
 	if (!stmt)
 		return;
 	switch (stmt->kind) {
-	case AST_STMT_LET:
-		for (int i = 0; i < stmt->data.let_stmt.name_count; i++)
-			free(stmt->data.let_stmt.names[i]);
-		free(stmt->data.let_stmt.names);
-		ast_type_free(stmt->data.let_stmt.type);
-		ast_expr_free(stmt->data.let_stmt.value);
+	case AST_STMT_BIND:
+		for (int i = 0; i < stmt->data.bind_stmt.name_count; i++)
+			free(stmt->data.bind_stmt.names[i]);
+		free(stmt->data.bind_stmt.names);
+		ast_type_free(stmt->data.bind_stmt.type);
+		ast_expr_free(stmt->data.bind_stmt.value);
 		break;
 	case AST_STMT_ASSIGN:
 		ast_expr_free(stmt->data.assign_stmt.target);
@@ -185,7 +185,9 @@ void ast_stmt_free(AstStmt *stmt) {
 		ast_expr_free(stmt->data.free_stmt.value);
 		break;
 	case AST_STMT_RETURN:
-		ast_expr_free(stmt->data.return_stmt.value);
+		for (int i = 0; i < stmt->data.return_stmt.count; i++)
+			ast_expr_free(stmt->data.return_stmt.values[i]);
+		free(stmt->data.return_stmt.values);
 		break;
 	case AST_STMT_MULTI_BIND:
 		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
@@ -241,7 +243,9 @@ static void ast_func_decl_free(AstFuncDecl *func) {
 	for (int i = 0; i < func->param_count; i++)
 		ast_param_free(func->params[i]);
 	free(func->params);
-	ast_type_free(func->return_type);
+	for (int i = 0; i < func->return_type_count; i++)
+		ast_type_free(func->return_types[i]);
+	free(func->return_types);
 	for (int i = 0; i < func->stmt_count; i++)
 		ast_stmt_free(func->stmts[i]);
 	free(func->stmts);

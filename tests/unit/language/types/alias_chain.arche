@@ -1,0 +1,11 @@
+// Alias chains resolve through to the ultimate backing: `level` backs `base` backs `int`,
+// so `level` arithmetic is int arithmetic and prints 10.
+// RUN: %arche -o %t %s && %t | grep "result: 10"
+base :: int
+level :: base
+
+proc main() {
+  x: level = 4;
+  y: level = 6;
+  printf("result: %d\n", x + y);
+}

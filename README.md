@@ -17,8 +17,8 @@ Arche is a **high-level language** with several strong design constraints:
 - **No implicit row access**: You don’t work on individual elements unless you explicitly index.
 - **Columns only**: All archetype data is columnar (arrays). No metadata. Columns are primitives or tuple columns.
 - **Horizontal only**: No nested complex types, **no pointers**. Data layout is flat and explicit.
-- **Tuple columns**: Multi-component fields like position vectors are stored as separate side-by-side arrays (`pos_x`, `pos_y`) but accessed with clean syntax (`pos.x[i]`, `pos.y[i]`).
-- **Pooled allocation with free-lists**: `static Archetype(N, N)` pre-allocates capacity for N entries. Deleted slots are tracked in a free-list and reused by subsequent inserts, eliminating fragmentation.
+- **Tuple columns**: Multi-component fields like position vectors are stored as separate side-by-side arrays and accessed flat (`pos_x[i]`, `pos_y[i]`).
+- **Pooled allocation with free-lists**: `static pool<Archetype>(N, N)` pre-allocates capacity for N entries. Deleted slots are tracked in a free-list and reused by subsequent inserts, eliminating fragmentation.
 - **Minimal type system**: Primitives only: `int`, `float`, `char`. No booleans, no objects. This is a design principle, not a limitation.
 - **Explicit structure over flexibility**: Users have complete control and visibility over data layout in memory.
 
@@ -30,31 +30,31 @@ This leads to a style that feels closer to **data pipelines** or **vectorized co
 
 ### Allocation Strategy
 
-- **Explicit allocation**: `alloc Archetype(N)` declares a fixed-capacity allocation for archetype shape.
-- **Static storage**: All allocations have program lifetime. They exist from program start to end. No deallocation during execution.
-- **Fixed size**: Each allocation is immutable in size. No resizing, no growing vectors. Capacity is permanent once set.
-- **Implicit cleanup**: At program end, all allocations are implicitly freed. Explicit deallocation is **not allowed** (and unnecessary).
-- **Scope-implicit**: Scope (static vs world-scoped, when worlds exist) is determined by context where `alloc` appears.
+- **Explicit allocation**: `static pool<Archetype>(N)` declares a fixed-capacity pool for an archetype shape.
+- **Static storage**: All pools have program lifetime. They exist from program start to end. No deallocation during execution.
+- **Fixed size**: Each pool is immutable in size. No resizing, no growing vectors. Capacity is permanent once set.
+- **Implicit cleanup**: At program end, all storage is implicitly freed. Explicit deallocation is **not allowed** (and unnecessary).
+- **Scope-implicit**: Scope (static vs world-scoped, when worlds exist) is determined by where the pool declaration appears.
 
 ### Allocation Initialization
 
-Allocations can include field initialization to set all instances’ values at allocation time:
+A pool declaration can include field initialization to set all instances’ values at allocation time:
 
 ```arche
-static Counter(5, 5) { val: 7, score: 2.5 };
+static pool<Counter>(5, 5) { val: 7, score: 2.5 };
 ```
 
-This allocates capacity for 5 instances and initializes `val` and `score` fields. Uninitialized fields are zero-initialized.
+This reserves capacity for 5 instances and initializes the `val` and `score` columns. Uninitialized columns are zero-initialized.
 
 ### Encouraged Pattern
 
 Plan memory usage ahead of time, allocate what you need upfront, use predictably:
 
 ```arche
-// Allocate all archetype instances with fixed capacities upfront
-static Particle(10000, 10000) { active: 0 };
-static Enemy(5000, 5000);
-static Projectile(1000, 1000);
+// Reserve every shape's pool with fixed capacity upfront
+static pool<Particle>(10000, 10000) { active: 0 };
+static pool<Enemy>(5000, 5000);
+static pool<Projectile>(1000, 1000);
 
 proc main() {
   // Run program with fixed memory budget
@@ -82,70 +82,99 @@ world Simulation()
 
 Multiple worlds will allow parallel data-driven computations, with systems operating on all matching archetypes within a specific world. **This feature is not yet implemented.** Currently, systems operate on all matching archetypes in the scope.
 
+## Types and declarations (`::` / `:=`)
+
+Types are **nominal** — identity is the name, not the structure. A `::` declaration mints a
+compile-time constant: a *type* if the right-hand side is a type, a *value const* if it is a
+literal (the kind is inferred — there is no `type` keyword). Runtime variables bind with `:=`
+(or `: T =`); `::` and `:=` never collide.
+
+```arche
+meters :: float     // nominal type alias (distinct from any other float type)
+seconds :: float    // meters ≠ seconds, though both back to float
+MAX :: 100          // value const (literal RHS)
+x := 5          // runtime variable
+```
+
+A type alias is **zero-cost** — it erases to its backing after checking. Operators resolve on
+the backing (so `meters + meters → meters`, and mixed-alias arithmetic over the same backing is
+fine), but **nominal identity is enforced at substitution boundaries** (parameters, assignment,
+return): you cannot pass `meters` where `seconds` is expected. This is the entire basis of
+foreign-resource safety (`file :: opaque` ≠ `socket :: opaque`).
+
 ## Archetypes (`arche`)
 
-An Archetype declaration defines a _shape_ (a unique column structure). The name is a handle to that shape. Declarations do **not** allocate space; only `alloc` does that.
+An archetype is an **unordered, duplicate-free set of nominal component types**. Its identity
+is that set of type names — there are **no field names and no accessors**. A component's type
+name *is* both the component and how you reach it (`h.mass`).
 
-A **shape** is defined by its columns and types. If two archetype declarations have identical columns and types, they are both handles to the same shape and will share an allocation if you allocate them.
+**Primitives:** `int`, `float`, `char`, the fixed-width ints, and `opaque`.
 
-**Primitives:** `int`, `float`, `char`
-
-**Column types:**
-
-- Single primitive: `mass: float` → column of floats
-- Tuple columns: `pos: (x: float, y: float)` → two separate arrays `pos_x[]` and `pos_y[]`
-- Multi-dimensional arrays: `text: char[256]` → N×256 array per entity
-
-Example:
+**Components** are either a *reference* to an existing type or an *inline definition*:
 
 ```arche
+mass :: float            // nominal type (lowercase = type)
+
 arche Particle {
-  pos: (x: float, y: float),
-  vel: (vx: float, vy: float),
-  mass: float
+  mass,                  // reference an existing component type
+  charge :: float        // inline definition (mints a `charge` component)
 }
 ```
 
-This defines a shape with those columns. The name `Particle` is an alias. If you declare another archetype with the same columns:
+To carry two values of the same backing, **mint two distinct types** — you never alias one
+type under two names:
 
 ```arche
-arche Enemy {
-  pos: (x: float, y: float),
-  vel: (vx: float, vy: float),
-  mass: float
-}
+health :: int
+shield :: int
+arche Unit { health, shield }   // two int columns, reached as h.health / h.shield
 ```
 
-Both `Particle` and `Enemy` are handles to the same underlying shape. Allocations using either handle reference the same shape. You can allocate using either handle:
+**Set identity — `{a, b}` == `{b, a}`.** Two archetypes with the same component set *are* the
+same shape and share one pool; component order is irrelevant. A component type repeated in one
+archetype is a compile error (it would be unreachable). Because collapse requires reusing the
+same type *name*, it is always intentional:
 
 ```arche
-alloc Particle(1000);
-alloc Enemy(1000);  // ERROR: shape already allocated
+arche A { health, shield }
+arche B { shield, health }   // same shape as A
+
+static pool<A>(1000);
+static pool<B>(1000);        // ERROR: shape already allocated (B is the same shape as A)
 ```
 
-**Static allocation:**
+**Tuples** are named flat sugar: `pos (x, y) :: float` mints the flat component types
+`pos_x` and `pos_y` of the shared type — the suffixes are part of the *name*, the type comes
+after `::`. (One level only — no nested tuples; one shared type — heterogeneous fields are just
+separate components.) Reached as `h.pos_x` / `h.pos_y`. `pos (x, y) :: float` and
+`vel (x, y) :: float` are **distinct** (`pos_x` ≠ `vel_x`); reuse is by name.
 
-Each shape is allocated exactly once via an explicit `alloc Archetype(N)` call. Attempting to allocate the same shape again (with any alias) is a compile error.
+```arche
+pos (x, y) :: float
+arche Body { pos_x, pos_y }   // two flat columns
+```
 
-The allocation is **fixed size**. All capacity is allocated upfront. Reallocation is not possible. This is by design, dynamic memory is not a feature of this language.
+**Static allocation.** A shape's storage is one fixed-capacity static pool declared with
+`static pool<Foo>(N)`. There is no `alloc` and no resizing — all capacity is reserved upfront.
+Allocating the same shape twice (under any name) is a compile error.
 
 ## Array-Oriented Operations
 
 Operations on archetype columns apply across the entire collection without explicit loops:
 
 ```arche
-alloc Particle(1000);
+static pool<Particle>(1000);
 // ... insert particles
-Particle.pos = Particle.pos + Particle.vel;
+Particle.pos_x = Particle.pos_x + Particle.vel_x;
 ```
 
 This iterates all 1000 elements, updating each position by its velocity.
 
-Inside a system function, the archetype parameter names are available directly:
+Inside a system function, the component type names are available directly:
 
 ```arche
-sys move(pos, vel) {
-  pos = pos + vel;
+sys step(pos_x, vel_x) {
+  pos_x = pos_x + vel_x;
 }
 ```
 
@@ -158,15 +187,15 @@ Individual element access requires explicit column reference:
 **Scalar columns:**
 
 ```arche
-particles.mass[i]
+Particle.mass[i]
 ```
 
-**Tuple columns (labeled access):**
+**Tuple columns (flat access):**
 
 ```arche
-particles.pos.x[i]   // x component of position at index i
-particles.pos.y[i]   // y component of position at index i
-particles.vel.vx[i]  // x component of velocity at index i
+Particle.pos_x[i]   // x component of position at index i
+Particle.pos_y[i]   // y component of position at index i
+Particle.vel_vx[i]  // x component of velocity at index i
 ```
 
 **Multi-dimensional arrays:**
@@ -193,30 +222,30 @@ x = a < b   // x is 0 or 1
 Always available alongside `int`: `i8`/`u8`, `i16`/`u16`, `i32`/`u32`, `i64`/`u64`, `i128`/`u128`, and `byte` (= `u8`). `int` is an alias for `i32`; `char` is `i8`. These map to native LLVM integers — no software emulation. Signedness is part of the type and selects the machine operation (`sdiv`/`udiv`, signed/unsigned compares, `sext`/`zext`).
 
 ```arche
-let offset: i64 = 3000000000;   // addresses past the 32-bit signed limit
+offset: i64 = 3000000000;   // addresses past the 32-bit signed limit
 offset = offset + offset;       // i64 arithmetic
-let count: u32 = 4000000000;    // unsigned 32-bit
-let b: byte = 255;
+count: u32 = 4000000000;    // unsigned 32-bit
+b: byte = 255;
 ```
 
 Convert between widths with a call-style cast (`sext`/`zext` to widen, `trunc` to narrow):
 
 ```arche
-let small := i32(offset);   // truncate i64 -> i32
-let wide: i64 = i64(small); // widen i32 -> i64
+small := i32(offset);   // truncate i64 -> i32
+wide: i64 = i64(small); // widen i32 -> i64
 ```
 
-Integer literals adopt the type of their context (`let x: i64 = 3000000000` types the literal as `i64`, avoiding 32-bit overflow). Operands of differing widths are widened to the larger width before the operation.
+Integer literals adopt the type of their context (`x: i64 = 3000000000` types the literal as `i64`, avoiding 32-bit overflow). Operands of differing widths are widened to the larger width before the operation.
 
 ## Procedures (`proc`)
 
 Procedures perform **explicit operations**.
 
 ```arche
-static Particle(1000, 1000);
+static pool<Particle>(1000, 1000);
 
 proc main() {
-  Particle.pos = Particle.pos + Particle.vel;
+  Particle.pos_x = Particle.pos_x + Particle.vel_x;
 }
 ```
 
@@ -230,20 +259,20 @@ proc main() {
 Systems perform **data-driven transformations** over all matching archetypes.
 
 ```arche
-sys move(pos, vel) {
-  pos = pos + vel;
+sys step(pos_x, vel_x) {
+  pos_x = pos_x + vel_x;
 }
 
 proc update() {
-  run move;
+  run step;
 }
 ```
 
 ### Semantics
 
 - executes via `run system_name` statement
-- automatically matches any archetype in scope containing the required fields
-- binds those fields inside the system body
+- automatically matches any archetype in scope containing the required component types
+- binds those components inside the system body
 - operates on whole columns (array-first)
 
 This means the system applies to any archetype with `pos` and `vel`, such as:
@@ -281,27 +310,29 @@ Systems support if/for statements for control flow. For maximum cache efficiency
 ## Example
 
 ```arche
-// Define archetypes
-arche Particle {
-  pos: (x: float, y: float),
-  vel: (vx: float, vy: float)
+// Define tuple groups (each mints flat components, e.g. pos_x, pos_y)
+pos (x, y) :: float
+vel (vx, vy) :: float
+
+// Reference the groups by name — they expand to their flat columns
+// (`{ pos, vel }` == `{ pos_x, pos_y, vel_vx, vel_vy }`)
+arche Particle { pos, vel }
+
+// Reserve the pool at top level
+static pool<Particle>(10000, 10000);
+
+// Systems operate on matching archetypes, binding components by name
+sys step(pos_x, vel_vx) {
+  pos_x = pos_x + vel_vx;
 }
 
-// Allocate at top level
-static Particle(10000, 10000);
-
-// Define systems that operate on matching archetypes
-sys move(pos, vel) {
-  pos = pos + vel;
-}
-
-sys dampen(vel) {
-  vel = vel * 0.99;
+sys dampen(vel_vx) {
+  vel_vx = vel_vx * 0.99;
 }
 
 // Run systems
 proc main() {
-  run move;
+  run step;
   run dampen;
 }
 ```
@@ -381,24 +412,33 @@ This is a deliberate choice: **prefer fast, predictable memory access over minim
 
 The `design_analysis/` directory contains exploration and documentation of data layout patterns. Data drives the language design, and patterns and constraints discovered here shape feature decisions.
 
-## Practical Example: ETL Workloads
+## Performance: C speed, scripting brevity
 
-Real-world benchmarks on CSV data show Arche's performance on data processing tasks.
+Single-threaded **transform** benchmark — a 10k-row CSV loaded once (off the clock), then the
+transform body timed over 216,000 iterations. All engines produce identical checksums.
 
-**ETL Tasks** (100M rows, 3.4 GB CSV, end-to-end: mmap load + compute + checksum):
+| Task | C (`-O3`) | **Arche** | pandas | Arche vs C | Arche vs pandas |
+|------|----------:|----------:|-------:|:----------:|:---------------:|
+| `revenue = price × quantity` | 1.24µs | **1.17µs** | 41.7µs | 0.95× (faster) | 36× faster |
+| count `quantity > 0`         | 0.44µs | **0.52µs** | 28.6µs | 1.2×           | 55× faster |
+| bucket timestamps            | 2.30µs | **2.35µs** | 29.2µs | 1.02×          | 12× faster |
+| aggregate by region          | 6.22µs | **6.67µs** | 46.3µs | 1.07×          | 7× faster  |
+| combined pipeline            | 6.36µs | **8.34µs** | 181µs  | 1.31×          | 22× faster |
 
-| Task | Operation | Arche | Pandas | Speedup |
-|------|-----------|-------|--------|---------|
-| Task 1 | `revenue = price × quantity` | 7.1s | 28.8s | **4.1x** |
-| Task 2 | count rows where `quantity > 0` | 2.9s | 29.2s | **10.1x** |
-| Task 3 | `price_bucket = price / 10`, extract hour | 6.7s | 35.9s | **5.4x** |
-| Task 4 | `Σ(price × quantity)` | 7.2s | 31.6s | **4.4x** |
+**Verbosity** — lines to express a task end-to-end (load + compute + output):
 
-Arche uses mmap + in-place parsing (no temp buffers, no per-line syscalls) with columnar static archetypes and vectorized column operations.
+| C | Arche | pandas |
+|----:|------:|-------:|
+| ~100 | ~38 | ~22 |
 
-> ⚠️ **These benchmarks need more validation.** Pandas is interpreted Python — a compiled baseline (Polars, DuckDB, hand-written C) is the meaningful comparison. Numbers are single-run with hot page cache. Task 2's 10x gap is partly unfair: Arche stops at column 2 while Pandas reads all 5. See `design_analysis/README.md` for the full disclaimer.
+Arche runs within **~1–1.3× of hand-written `-O3` C** while the code reads like a vectorized
+script: the transform is a single line in both Arche and pandas
+(`Transaction.revenue = Transaction.price * Transaction.quantity`), where C needs an explicit
+element loop plus ~80 lines of manual CSV parsing. Net — roughly C's speed, ~7–55× faster than
+single-threaded pandas, in ~⅓ the code of C.
 
-See `design_analysis/README.md` for full analysis. See `design_analysis/benchmarks/etl/` for benchmark code and scripts.
+> Single-threaded, AVX2. polars/duckdb are multi-threaded and win on *large* data but lose on this
+> tight per-op loop. Full cross-engine numbers + a 100M-row end-to-end run: `design_analysis/README.md`.
 
 ## Implicit Loop Implementation
 
@@ -423,85 +463,109 @@ Arche is an experiment in:
   - primitives
   - structured grouping
 
-## Out Parameters (`out`)
+## Multi-return signatures
 
-Out parameters allow functions to fill buffers and return them as values. When a parameter is marked `out`, the language allocates a buffer and returns it as part of the function result.
-
-### Signature
-
-Out parameters have no size specified in the type. Size is determined by parameters passed at call time:
+A function returns more than one value with a parenthesized return type `-> (T1, …, Tn)`. This is
+a genuine multi-value return — the values are returned as an aggregate and destructured by a
+multi-bind. There is no `out` parameter (gone) and no buffer-fill trickery:
 
 ```arche
-extern func read(fd: int, out buf: char[], len: int) -> int;
-extern proc write(fd: int, buf: char[], len: int);
+func sum_diff(a: int, b: int) -> (int, int) {
+  return a + b, a - b;
+}
+
+s, d := sum_diff(10, 3);   // s = 13, d = 7
 ```
 
-### Pattern 1: Zero-initialized buffer (language allocates)
+A single return is just `count == 1` — there is no special case in the grammar or the AST; the
+return type and the `return` statement are uniform lists. `return e1, …, en` lists the values in
+signature order.
 
-Don't pass a buffer; language creates one:
+**Filling a caller buffer is a different thing** — not a return. An array is reached by
+reference, so a function that fills one takes it as an ordinary parameter and returns just the
+scalar count; the caller already holds the (now-filled) buffer:
 
 ```arche
-let buf, bytes_read = read(fd, 256);
+func read_chunk(fd: file, buf: char[], size: int) -> int {
+  return arche_csv_read_chunk(fd, buf, size);   // fills buf in place
+}
+
+buf: char[65536];
+n := read_chunk(fd, buf, 65536);   // buf is filled; n is the byte count
 ```
 
-The `out buf` argument is omitted. Language allocates a fresh 256-byte buffer on the stack, passes to C, returns it.
+## Foreign resources: nominal `opaque` types
 
-### Pattern 2: Copy-in semantics (you provide buffer)
-
-Pass a buffer for the out parameter:
+There is no separate "extern type" system. A foreign resource (OS window, audio voice, file
+pointer) is just a **nominal type aliased over `opaque`** — a pointer-width, C-owned cell that
+Arche never reads, writes, or fabricates. Distinctness comes from the *name*, not a wrapper.
 
 ```arche
-let new_buf, bytes_read = read(fd, old_buf, 256);
+window :: opaque
+sound  :: opaque
+
+extern func window_open(title: char[], w: int, h: int) -> window;
+extern proc window_present(w: window, fb: int[], width: int, height: int);
+extern proc window_close(move w: window);
 ```
 
-The buffer `old_buf` is passed. Language copies it in, passes to C, returns modified copy. Original `old_buf` unchanged.
+- An `opaque` value is passed to/from C **by value** — the cell *is* an `i64`, ABI-compatible
+  with the native pointer (`HWND`, `FILE *`, …). No marshal, no slot table; C authors write
+  plain C with native pointer types.
+- `window` and `sound` are **distinct types** though both back to `opaque`: passing a `window`
+  where a `sound` is expected is a compile error. Identity is checked at boundaries (params,
+  assignment, return).
+- `0` is the null cell; returning `NULL` from C yields `0`, and `if (w)` is a non-null check.
+- A foreign resource can also live in a **pool**: put the type in an `arche` and use
+  `pool<Foo>` + generation-checked handles for capacity-bounded, use-after-free-safe storage.
 
-### Copy Semantics
+### Ownership: by value; `move` is the only way to mutate across a call
 
-All parameters are always copied. C functions cannot modify caller data directly. Out parameters are returned as new values. Every function parameter is **always copied** — there are no side effects on the original data. Functions are pure with respect to parameters; side effects are explicit in the code.
+Everything is **by value, and functions have no side effects unless you `move`.** Plain data,
+handles, and arrays passed plainly are *copied* — the callee's mutations never leak back. A
+foreign `opaque` value **cannot copy** at all, so it is move-only (linear). One keyword,
+`move`, governs both the call site and the parameter contract:
 
-## Extern Tables (`extern Name(N)`) and `handle(Name)`
-
-Arche references foreign resources (OS windows, audio voices, file pointers) via `extern` table declarations. Each declaration names a fixed-capacity slot pool. The name is never used bare — references go through `handle(Name)` everywhere, mirroring the way archetype rows are referenced via `handle(Player)`.
+- **`move` (call site)** hands ownership over by reference and kills the binding —
+  `window_close(move w)`; using `w` afterward is a compile error. A moved value comes back
+  only through a return value.
+- **`move` (parameter)** is the by-reference *contract*: the caller **must** write `move`, so
+  the hand-off is always visible — no silent copy. `window_close(w)` is a compile error
+  (`value 'w' must be moved into 'move' parameter …`). A plain parameter is by value (copied,
+  no side effect). A `move` parameter **may be returned**, which is the fill-buffer / FFI
+  shape — the buffer is moved in by reference, filled, and handed back:
+  ```arche
+  func read_into(fd: int, move buf: char[], len: int) -> (char[], int) {
+    n := read(fd, buf, len);            // raw extern fills by-ref (the FFI escape hatch)
+    return buf, n;
+  }
+  buf, n := read_into(0, move buf, 256);   // move required; buf comes back, now indexable
+  ```
+- **Must-consume:** an opaque *local* must leave its scope before the end — moved into a
+  `move`-parameter call, returned, or `insert`ed into a pool. Otherwise it is a compile error
+  (`opaque value 'w' not consumed before scope end`). No implicit `drop`/RAII, no silent leak.
 
 ```arche
-extern Window(8);
-
-extern func window_open(title: char[], w: int, h: int) -> handle(Window);
-extern proc window_present(w: handle(Window), fb: int[], width: int, height: int);
-extern proc window_close(consume w: handle(Window));
+proc render() {
+  w := window_open("demo", 640, 480);
+  window_present(w, fb, 640, 480);   // plain by-value read
+  window_close(move w);              // move required — w dead afterward
+}
 ```
-
-- `handle(Window)` is opaque to Arche — no inspection, arithmetic, or casting.
-- `0` is the null handle. Returning `NULL` from C marshals to `0`.
-- `consume` marks a parameter whose handle is freed by the call. Re-using a consumed binding is a compile error.
-- Distinct extern tables produce distinct handle types: `handle(Window)` and `handle(Sound)` are not interchangeable even though both are int handles at runtime.
-- Extern handles may not appear in archetype fields. (Internal `handle(Archetype)` columns are fine.)
-- Generation counters detect use-after-free at runtime when the static checker can't (e.g., handles aliased through other bindings).
-
-C authors write plain C with native pointer types (`HWND`, `FILE *`, etc.). The compiler emits all handle marshaling.
-
-See `docs/superpowers/specs/2026-05-16-extern-type-design.md` for the full design.
 
 ## Multi-Value Let
 
-The `let a, b, c = function()` syntax captures multiple return values from a single function call:
+The `a, b, … := function()` syntax captures the multiple return values of a multi-return
+function (see above):
 
 ```arche
-let buf, n = read(fd, buf, 256);     // Capture buffer and return value
-let x, y, z = some_func();            // Capture multiple returns
+s, d := sum_diff(10, 3);          // bind both returns
+x, y, z := some_func();           // bind all returns
 ```
 
-Values are assigned **left-to-right** in signature order:
-
-- Out parameters first (in order)
-- Function return value last
-
-Use `_` to discard values:
-
-```arche
-let buf, _ = read(fd, buf, 256);     // Discard return value, keep buffer
-```
+Targets bind **left-to-right** in the function's return-type order. A target may be a new `x:`
+or an existing variable. (Buffer-fill is *not* a multi-bind — the buffer is a by-reference param
+filled in place, so `n := read(fd, buf, 256)` binds only the scalar count.)
 
 ## Status
 
@@ -510,15 +574,15 @@ let buf, _ = read(fd, buf, 256);     // Discard return value, keep buffer
 ### What's Working
 
 - **Lexer**: Tokenizes source into language constructs (keywords, identifiers, operators)
-- **Parser**: Builds AST for archetypes, procedures, systems, functions, expressions, multi-value let
-- **Semantic Analysis**: Symbol table, scope tracking, type checking, field validation, multi-value let binding
+- **Parser**: Builds AST for archetypes, procedures, systems, functions, expressions, multi-value bindings
+- **Semantic Analysis**: Symbol table, scope tracking, type checking, field validation, multi-value binding
 - **Code Generation**: Compiles to LLVM IR, assembles, and links to executables
 - **Functions**: User-defined and extern functions with return values
 - **Procedures**: User-defined and extern procedures (void)
 - **Systems**: Data-driven transformations over matching archetypes
 - **For loops**: Infinite loops, condition-based loops, range iteration
 - **External Functions**: C function calls with copy semantics
-- **Out Parameters**: Buffer allocation and return as values, with copy-in semantics
+- **Multi-return signatures**: `-> (T1, …, Tn)` — genuine multi-value return (aggregate ABI), destructured by a multi-bind
 - **Multi-value Let**: Capture multiple return values from function calls
 - **Archetype Operations**: Allocation, indexing, column access, tuple columns, shaped arrays
 - **C Stdlib Interop**: File I/O via C stdlib wrappers (fopen, fread, fwrite, fclose)

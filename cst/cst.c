@@ -74,10 +74,11 @@ SysDecl *sys_decl_create(char *name) {
 	return sys;
 }
 
-FuncDecl *func_decl_create(char *name, TypeRef *return_type) {
+FuncDecl *func_decl_create(char *name) {
 	FuncDecl *func = malloc(sizeof(FuncDecl));
 	func->name = name;
-	func->return_type = return_type;
+	func->return_types = NULL;
+	func->return_type_count = 0;
 	func->params = NULL;
 	func->param_count = 0;
 	func->is_extern = 0;
@@ -116,6 +117,7 @@ ConstDecl *const_decl_create(char *name, Expression *value) {
 	ConstDecl *constant = malloc(sizeof(ConstDecl));
 	constant->name = name;
 	constant->value = value;
+	constant->type_value = NULL;
 	return constant;
 }
 
@@ -141,21 +143,11 @@ UseDecl *use_decl_create(char *name) {
 	return use;
 }
 
-ExternTypeDecl *extern_type_decl_create(char *name, int capacity) {
-	ExternTypeDecl *et = malloc(sizeof(ExternTypeDecl));
-	et->name = name;
-	et->capacity = capacity;
-	et->loc.line = 1;
-	et->loc.column = 1;
-	return et;
-}
-
 Parameter *parameter_create(char *name, TypeRef *type) {
 	Parameter *param = malloc(sizeof(Parameter));
 	param->name = name;
 	param->type = type;
-	param->is_out = 0;
-	param->is_consume = 0;
+	param->is_move = 0;
 	param->loc.line = 1;
 	param->loc.column = 1;
 	return param;
@@ -217,7 +209,7 @@ Statement *statement_create(StatementType type) {
 }
 
 Expression *expression_create(ExpressionType type) {
-	Expression *expr = malloc(sizeof(Expression));
+	Expression *expr = calloc(1, sizeof(Expression));
 	expr->type = type;
 	expr->loc.line = 1;
 	expr->loc.column = 1;
@@ -279,9 +271,6 @@ void decl_free(Decl *decl) {
 		use_decl_free(decl->data.use);
 		break;
 	}
-	case DECL_EXTERN_TYPE:
-		extern_type_decl_free(decl->data.extern_type);
-		break;
 	}
 	free(decl);
 }
@@ -342,7 +331,9 @@ void func_decl_free(FuncDecl *func) {
 	if (!func)
 		return;
 	free(func->name);
-	type_ref_free(func->return_type);
+	for (int i = 0; i < func->return_type_count; i++)
+		type_ref_free(func->return_types[i]);
+	free(func->return_types);
 	for (int i = 0; i < func->param_count; i++) {
 		parameter_free(func->params[i]);
 	}
@@ -398,13 +389,6 @@ void use_decl_free(UseDecl *use) {
 	free(use);
 }
 
-void extern_type_decl_free(ExternTypeDecl *et) {
-	if (!et)
-		return;
-	free(et->name);
-	free(et);
-}
-
 void type_ref_free(TypeRef *type) {
 	if (!type)
 		return;
@@ -430,6 +414,8 @@ void type_ref_free(TypeRef *type) {
 		break;
 	case TYPE_ARCHETYPE:
 		break;
+	case TYPE_OPAQUE:
+		break;
 	}
 	free(type);
 }
@@ -440,10 +426,10 @@ void statement_free(Statement *stmt) {
 	free(stmt->leading_trivia);
 	free(stmt->trailing_trivia);
 	switch (stmt->type) {
-	case STMT_LET:
-		free(stmt->data.let_stmt.name);
-		type_ref_free(stmt->data.let_stmt.type);
-		expression_free(stmt->data.let_stmt.value);
+	case STMT_BIND:
+		free(stmt->data.bind_stmt.name);
+		type_ref_free(stmt->data.bind_stmt.type);
+		expression_free(stmt->data.bind_stmt.value);
 		break;
 	case STMT_ASSIGN:
 		expression_free(stmt->data.assign_stmt.target);
@@ -486,7 +472,9 @@ void statement_free(Statement *stmt) {
 	case STMT_BREAK:
 		break;
 	case STMT_RETURN:
-		expression_free(stmt->data.return_stmt.value);
+		for (int i = 0; i < stmt->data.return_stmt.count; i++)
+			expression_free(stmt->data.return_stmt.values[i]);
+		free(stmt->data.return_stmt.values);
 		break;
 	case STMT_MULTI_BIND:
 		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
@@ -612,13 +600,30 @@ static void format_type(FILE *out, TypeRef *type) {
 		fprintf(out, ")");
 		break;
 	case TYPE_HANDLE:
-		fprintf(out, "handle(%s)", type->data.handle.archetype_name);
+		fprintf(out, "handle<%s>", type->data.handle.archetype_name);
 		break;
 	case TYPE_ARCHETYPE:
 		fprintf(out, "archetype");
 		break;
+	case TYPE_OPAQUE:
+		fprintf(out, "opaque");
+		break;
 	}
 	format_type_depth--;
+}
+
+/* Emit a tuple group declaration `name (a, b, …) :: T` — the suffixes are part of the name,
+ * the shared type follows `::`. (All members of a tuple group share one type.) */
+static void format_tuple_group(FILE *out, const char *name, TypeRef *t) {
+	fprintf(out, "%s (", name);
+	for (int i = 0; i < t->data.tuple.field_count; i++) {
+		if (i > 0)
+			fprintf(out, ", ");
+		fprintf(out, "%s", t->data.tuple.field_names[i]);
+	}
+	fprintf(out, ") :: ");
+	if (t->data.tuple.field_count > 0)
+		format_type(out, t->data.tuple.field_types[0]);
 }
 
 static void format_expression(FILE *out, Expression *expr);
@@ -655,7 +660,10 @@ static void format_expression(FILE *out, Expression *expr) {
 		fprintf(out, "%s", expr->data.literal.lexeme);
 		break;
 	case EXPR_NAME:
-		fprintf(out, "%s", expr->data.name.name);
+		if (expr->data.name.is_table_ref)
+			fprintf(out, "pool<%s>", expr->data.name.name);
+		else
+			fprintf(out, "%s", expr->data.name.name);
 		break;
 	case EXPR_FIELD: {
 		format_expression(out, expr->data.field.base);
@@ -731,7 +739,8 @@ static void format_expression(FILE *out, Expression *expr) {
 		break;
 	}
 	case EXPR_UNARY: {
-		const char *op_str = expr->data.unary.op == UNARY_NEG ? "-" : "!";
+		const char *op_str =
+		    expr->data.unary.op == UNARY_NEG ? "-" : (expr->data.unary.op == UNARY_MOVE ? "move " : "!");
 		fprintf(out, "%s", op_str);
 		format_expression(out, expr->data.unary.operand);
 		break;
@@ -906,35 +915,35 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 	emit_leading_trivia(out, stmt->leading_trivia, stmt->leading_count, indent_str, ctx);
 
 	switch (stmt->type) {
-	case STMT_LET: {
-		fprintf(out, "%slet ", indent_str);
+	case STMT_BIND: {
+		fprintf(out, "%s", indent_str);
 
-		/* Multi-value let */
-		if (stmt->data.let_stmt.name_count > 0 && stmt->data.let_stmt.names) {
-			for (int i = 0; i < stmt->data.let_stmt.name_count; i++) {
-				fprintf(out, "%s", stmt->data.let_stmt.names[i]);
-				if (i < stmt->data.let_stmt.name_count - 1) {
+		/* Multi-value binding: `a, b := value` */
+		if (stmt->data.bind_stmt.name_count > 0 && stmt->data.bind_stmt.names) {
+			for (int i = 0; i < stmt->data.bind_stmt.name_count; i++) {
+				fprintf(out, "%s", stmt->data.bind_stmt.names[i]);
+				if (i < stmt->data.bind_stmt.name_count - 1) {
 					fprintf(out, ", ");
 				}
 			}
 			/* Multi-value always inferred (no type), so := */
 			fprintf(out, " := ");
-			format_expression(out, stmt->data.let_stmt.value);
+			format_expression(out, stmt->data.bind_stmt.value);
 		} else {
 			/* Single-value let */
-			fprintf(out, "%s", stmt->data.let_stmt.name);
-			if (stmt->data.let_stmt.type) {
+			fprintf(out, "%s", stmt->data.bind_stmt.name);
+			if (stmt->data.bind_stmt.type) {
 				/* Explicit type: let x: type = value */
 				fprintf(out, ": ");
-				format_type(out, stmt->data.let_stmt.type);
-				if (stmt->data.let_stmt.value) {
+				format_type(out, stmt->data.bind_stmt.type);
+				if (stmt->data.bind_stmt.value) {
 					fprintf(out, " = ");
-					format_expression(out, stmt->data.let_stmt.value);
+					format_expression(out, stmt->data.bind_stmt.value);
 				}
-			} else if (stmt->data.let_stmt.value) {
+			} else if (stmt->data.bind_stmt.value) {
 				/* Inferred type: let x := value */
 				fprintf(out, " := ");
-				format_expression(out, stmt->data.let_stmt.value);
+				format_expression(out, stmt->data.bind_stmt.value);
 			}
 		}
 		fprintf(out, ";");
@@ -976,17 +985,24 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 			fprintf(out, " (");
 			if (stmt->data.for_stmt.init) {
 				/* Format statement without leading indent/newline */
-				if (stmt->data.for_stmt.init->type == STMT_LET) {
-					LetStmt *let = &stmt->data.for_stmt.init->data.let_stmt;
-					fprintf(out, "let %s", let->name);
-					if (let->type) {
+				if (stmt->data.for_stmt.init->type == STMT_BIND) {
+					BindStmt *b = &stmt->data.for_stmt.init->data.bind_stmt;
+					fprintf(out, "%s", b->name);
+					if (b->type) {
 						fprintf(out, ": ");
-						format_type(out, let->type);
+						format_type(out, b->type);
+						if (b->value) {
+							fprintf(out, " = ");
+							format_expression(out, b->value);
+						}
+					} else if (b->value) {
+						fprintf(out, " := ");
+						format_expression(out, b->value);
 					}
-					if (let->value) {
-						fprintf(out, " = ");
-						format_expression(out, let->value);
-					}
+				} else if (stmt->data.for_stmt.init->type == STMT_ASSIGN) {
+					format_expression(out, stmt->data.for_stmt.init->data.assign_stmt.target);
+					fprintf(out, " = ");
+					format_expression(out, stmt->data.for_stmt.init->data.assign_stmt.value);
 				} else if (stmt->data.for_stmt.init->type == STMT_EXPR) {
 					format_expression(out, stmt->data.for_stmt.init->data.expr_stmt.expr);
 				}
@@ -1097,7 +1113,11 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 	}
 	case STMT_RETURN: {
 		fprintf(out, "%sreturn ", indent_str);
-		format_expression(out, stmt->data.return_stmt.value);
+		for (int j = 0; j < stmt->data.return_stmt.count; j++) {
+			if (j > 0)
+				fprintf(out, ", ");
+			format_expression(out, stmt->data.return_stmt.values[j]);
+		}
 		fprintf(out, ";");
 		emit_trailing_trivia(out, stmt->trailing_trivia, stmt->trailing_count);
 		fprintf(out, "\n");
@@ -1105,7 +1125,7 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 	}
 	case STMT_MULTI_BIND: {
 		if (stmt->data.multi_bind.from_shorthand) {
-			fprintf(out, "%slet ", indent_str);
+			fprintf(out, "%s", indent_str);
 			for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
 				fprintf(out, "%s", stmt->data.multi_bind.targets[i].name);
 				if (i < stmt->data.multi_bind.target_count - 1) {
@@ -1116,16 +1136,14 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 		} else {
 			fprintf(out, "%s(", indent_str);
 			for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
+				/* A trailing `:` (optionally a type) marks a newly-declared target. */
+				fprintf(out, "%s", stmt->data.multi_bind.targets[i].name);
 				if (stmt->data.multi_bind.targets[i].is_new) {
-					fprintf(out, "let %s", stmt->data.multi_bind.targets[i].name);
+					fprintf(out, ":");
 					if (stmt->data.multi_bind.targets[i].type) {
-						fprintf(out, ": ");
+						fprintf(out, " ");
 						format_type(out, stmt->data.multi_bind.targets[i].type);
-					} else {
-						fprintf(out, ":");
 					}
-				} else {
-					fprintf(out, "%s", stmt->data.multi_bind.targets[i].name);
 				}
 				if (i < stmt->data.multi_bind.target_count - 1) {
 					fprintf(out, ", ");
@@ -1187,9 +1205,21 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			for (int j = 0; j < arch->field_count; j++) {
 				FieldDecl *field = arch->fields[j];
 				emit_leading_trivia(out, field->leading_trivia, field->leading_count, "  ", &ctx);
-				fprintf(out, "  %s: ", field->name);
-				format_type(out, field->type);
-				fprintf(out, ",");
+				if (field->type && field->type->kind == TYPE_TUPLE) {
+					/* Tuple group component `name (a, b) :: T`. */
+					fprintf(out, "  ");
+					format_tuple_group(out, field->name, field->type);
+					fprintf(out, ",");
+				} else if (field->type && field->type->kind == TYPE_NAME &&
+				           strcmp(field->type->data.name, field->name) == 0) {
+					/* Bare component reference — its type is its own name. */
+					fprintf(out, "  %s,", field->name);
+				} else {
+					/* Inline component definition `name :: type`. */
+					fprintf(out, "  %s :: ", field->name);
+					format_type(out, field->type);
+					fprintf(out, ",");
+				}
 				emit_trailing_trivia(out, field->trailing_trivia, field->trailing_count);
 				fprintf(out, "\n");
 			}
@@ -1210,10 +1240,8 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			for (int j = 0; j < proc->param_count; j++) {
 				if (j > 0)
 					fprintf(out, ", ");
-				if (proc->params[j]->is_out)
-					fprintf(out, "out ");
-				if (proc->params[j]->is_consume)
-					fprintf(out, "consume ");
+				if (proc->params[j]->is_move)
+					fprintf(out, "move ");
 				fprintf(out, "%s: ", proc->params[j]->name);
 				format_type(out, proc->params[j]->type);
 			}
@@ -1259,15 +1287,23 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			for (int j = 0; j < func->param_count; j++) {
 				if (j > 0)
 					fprintf(out, ", ");
-				if (func->params[j]->is_out)
-					fprintf(out, "out ");
-				if (func->params[j]->is_consume)
-					fprintf(out, "consume ");
+				if (func->params[j]->is_move)
+					fprintf(out, "move ");
 				fprintf(out, "%s: ", func->params[j]->name);
 				format_type(out, func->params[j]->type);
 			}
 			fprintf(out, ") -> ");
-			format_type(out, func->return_type);
+			if (func->return_type_count == 1) {
+				format_type(out, func->return_types[0]);
+			} else {
+				fprintf(out, "(");
+				for (int j = 0; j < func->return_type_count; j++) {
+					if (j > 0)
+						fprintf(out, ", ");
+					format_type(out, func->return_types[j]);
+				}
+				fprintf(out, ")");
+			}
 			if (func->is_extern) {
 				fprintf(out, ";");
 				emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
@@ -1286,7 +1322,7 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 		case DECL_STATIC: {
 			StaticDecl *s = decl->data.static_decl;
 			if (s->kind == STATIC_KIND_ARCHETYPE) {
-				fprintf(out, "static %s(", s->archetype.archetype_name);
+				fprintf(out, "static pool<%s>(", s->archetype.archetype_name);
 				if (s->archetype.field_count > 0) {
 					format_expression(out, s->archetype.field_values[0]);
 				}
@@ -1335,15 +1371,15 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 		}
 		case DECL_CONST: {
 			ConstDecl *c = decl->data.constant;
-			fprintf(out, "%s :: ", c->name);
-			format_expression(out, c->value);
-			emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
-			fprintf(out, "\n");
-			break;
-		}
-		case DECL_EXTERN_TYPE: {
-			ExternTypeDecl *et = decl->data.extern_type;
-			fprintf(out, "extern %s(%d);", et->name, et->capacity);
+			if (c->type_value && c->type_value->kind == TYPE_TUPLE) {
+				format_tuple_group(out, c->name, c->type_value); /* `name (a, b) :: T` */
+			} else {
+				fprintf(out, "%s :: ", c->name);
+				if (c->type_value) /* type-form RHS (a nominal type alias) */
+					format_type(out, c->type_value);
+				else
+					format_expression(out, c->value);
+			}
 			emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
 			fprintf(out, "\n");
 			break;

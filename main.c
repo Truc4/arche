@@ -103,6 +103,8 @@ static void rename_typeref(TypeRef *t, const char *prefix, char **set, int count
 		break;
 	case TYPE_ARCHETYPE:
 		break;
+	case TYPE_OPAQUE:
+		break;
 	}
 }
 
@@ -153,9 +155,9 @@ static void rename_stmt(Statement *s, const char *prefix, char **set, int count)
 	if (!s)
 		return;
 	switch (s->type) {
-	case STMT_LET:
-		rename_typeref(s->data.let_stmt.type, prefix, set, count);
-		rename_expr(s->data.let_stmt.value, prefix, set, count);
+	case STMT_BIND:
+		rename_typeref(s->data.bind_stmt.type, prefix, set, count);
+		rename_expr(s->data.bind_stmt.value, prefix, set, count);
 		break;
 	case STMT_ASSIGN:
 		rename_expr(s->data.assign_stmt.target, prefix, set, count);
@@ -187,7 +189,8 @@ static void rename_stmt(Statement *s, const char *prefix, char **set, int count)
 		rename_expr(s->data.free_stmt.value, prefix, set, count);
 		break;
 	case STMT_RETURN:
-		rename_expr(s->data.return_stmt.value, prefix, set, count);
+		for (int i = 0; i < s->data.return_stmt.count; i++)
+			rename_expr(s->data.return_stmt.values[i], prefix, set, count);
 		break;
 	case STMT_MULTI_BIND:
 		for (int i = 0; i < s->data.multi_bind.target_count; i++)
@@ -231,9 +234,6 @@ static void collect_module_names(Program *mod, char ***out_set, int *out_count) 
 			break;
 		case DECL_CONST:
 			name = d->data.constant->name;
-			break;
-		case DECL_EXTERN_TYPE:
-			name = d->data.extern_type->name;
 			break;
 		case DECL_WORLD:
 			name = d->data.world->name;
@@ -284,7 +284,8 @@ static void rename_decl(Decl *d, const char *prefix, char **set, int count) {
 		break;
 	case DECL_FUNC:
 		maybe_rename(&d->data.func->name, prefix, set, count);
-		rename_typeref(d->data.func->return_type, prefix, set, count);
+		for (int i = 0; i < d->data.func->return_type_count; i++)
+			rename_typeref(d->data.func->return_types[i], prefix, set, count);
 		for (int i = 0; i < d->data.func->param_count; i++)
 			rename_typeref(d->data.func->params[i]->type, prefix, set, count);
 		for (int i = 0; i < d->data.func->statement_count; i++)
@@ -309,9 +310,6 @@ static void rename_decl(Decl *d, const char *prefix, char **set, int count) {
 	case DECL_CONST:
 		maybe_rename(&d->data.constant->name, prefix, set, count);
 		rename_expr(d->data.constant->value, prefix, set, count);
-		break;
-	case DECL_EXTERN_TYPE:
-		maybe_rename(&d->data.extern_type->name, prefix, set, count);
 		break;
 	case DECL_WORLD:
 		maybe_rename(&d->data.world->name, prefix, set, count);
@@ -530,6 +528,60 @@ static void usage(const char *prog) {
 	exit(1);
 }
 
+/* Expand a bare archetype component that references a top-level tuple group into the inline
+ * tuple form, so `pos (x, y) :: float` + `arche P { pos }` becomes the flat columns
+ * `pos_x`, `pos_y` via the existing tuple flattening (semantic + lower). Each reference gets
+ * its own cloned TYPE_TUPLE so there is no shared/aliased node. */
+static void expand_archetype_tuple_groups(Program *prog) {
+	if (!prog)
+		return;
+	for (int a = 0; a < prog->decl_count; a++) {
+		if (prog->decls[a]->kind != DECL_ARCHETYPE)
+			continue;
+		ArchetypeDecl *arch = prog->decls[a]->data.archetype;
+		for (int f = 0; f < arch->field_count; f++) {
+			FieldDecl *fd = arch->fields[f];
+			if (!fd->type || fd->type->kind != TYPE_NAME || !fd->type->data.name)
+				continue;
+			const char *ref = fd->type->data.name;
+			for (int d = 0; d < prog->decl_count; d++) {
+				if (prog->decls[d]->kind != DECL_CONST)
+					continue;
+				ConstDecl *cd = prog->decls[d]->data.constant;
+				if (!cd || !cd->name || !cd->type_value || cd->type_value->kind != TYPE_TUPLE)
+					continue;
+				if (strcmp(cd->name, ref) != 0)
+					continue;
+				/* Clone the group's tuple into this field; the field name (e.g. "pos") stays the
+				 * column prefix, so flattening yields `pos_<member>`. */
+				TypeRef *src = cd->type_value;
+				int n = src->data.tuple.field_count;
+				TypeRef *tt = malloc(sizeof(TypeRef));
+				tt->kind = TYPE_TUPLE;
+				tt->loc = fd->type->loc;
+				tt->data.tuple.field_count = n;
+				tt->data.tuple.field_names = malloc((n > 0 ? n : 1) * sizeof(char *));
+				tt->data.tuple.field_types = malloc((n > 0 ? n : 1) * sizeof(TypeRef *));
+				for (int j = 0; j < n; j++) {
+					const char *fn = src->data.tuple.field_names[j];
+					tt->data.tuple.field_names[j] = malloc(strlen(fn) + 1);
+					strcpy(tt->data.tuple.field_names[j], fn);
+					TypeRef *st = src->data.tuple.field_types[j];
+					TypeRef *ct = malloc(sizeof(TypeRef));
+					*ct = *st;
+					if (st->kind == TYPE_NAME && st->data.name) {
+						ct->data.name = malloc(strlen(st->data.name) + 1);
+						strcpy(ct->data.name, st->data.name);
+					}
+					tt->data.tuple.field_types[j] = ct;
+				}
+				fd->type = tt; /* old TYPE_NAME ref is abandoned (small, one-shot leak) */
+				break;
+			}
+		}
+	}
+}
+
 /* Maximum number of --link paths accepted on one command line */
 #define MAX_LINK_PATHS 32
 
@@ -684,6 +736,9 @@ int main(int argc, char *argv[]) {
 	/* Resolve use declarations (module loading) */
 	resolve_uses(prog, input_file);
 
+	/* Expand `arche { pos }` references to top-level tuple groups into flat columns. */
+	expand_archetype_tuple_groups(prog);
+
 	/* Semantic analysis */
 	SemanticContext *sem_ctx = semantic_analyze(prog);
 
@@ -749,7 +804,9 @@ int main(int argc, char *argv[]) {
 	 * counters and accumulators because that's easier than building SSA
 	 * directly; opt cleans them up before llc sees them. */
 	char opt_cmd[512];
-	snprintf(opt_cmd, sizeof(opt_cmd), "opt -O2 -S -o %s %s", opt_file, ir_file);
+	/* `-mcpu=x86-64-v3` matches llc's target so the loop vectorizer (which runs here in opt)
+	 * uses the AVX2 vector width instead of the generic 2-wide default. */
+	snprintf(opt_cmd, sizeof(opt_cmd), "opt -O2 -mcpu=x86-64-v3 -S -o %s %s", opt_file, ir_file);
 	printf("Optimizing IR...\n");
 	int ret = system(opt_cmd);
 	if (ret != 0) {
@@ -790,12 +847,11 @@ int main(int argc, char *argv[]) {
 	/* Call cc to assemble and link with runtime objects */
 	/* Base command: fixed runtime objects */
 	char cc_cmd[4096];
-	int cc_len =
-	    snprintf(cc_cmd, sizeof(cc_cmd),
-	             "cc -no-pie -mcmodel=large -o %s %s " ARCHE_RUNTIME_DIR "/stack_check.o " ARCHE_RUNTIME_DIR
-	             "/io.o " ARCHE_RUNTIME_DIR "/handles.o " ARCHE_RUNTIME_DIR "/net.o " ARCHE_RUNTIME_DIR "/term.o "
-	             "-lc",
-	             output_file, asm_file);
+	int cc_len = snprintf(cc_cmd, sizeof(cc_cmd),
+	                      "cc -no-pie -mcmodel=large -o %s %s " ARCHE_RUNTIME_DIR "/stack_check.o " ARCHE_RUNTIME_DIR
+	                      "/io.o " ARCHE_RUNTIME_DIR "/net.o " ARCHE_RUNTIME_DIR "/term.o "
+	                      "-lc",
+	                      output_file, asm_file);
 
 	/* Append any --link paths supplied on the command line */
 	for (int li = 0; li < link_count && cc_len < (int)sizeof(cc_cmd) - 1; li++) {
