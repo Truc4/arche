@@ -1,0 +1,22 @@
+// The formatter must PRESERVE what was written — a CST is faithful to concrete syntax. The explicit
+// meta-type longhand `name : type : T` round-trips as itself (it is NOT canonicalized to `::`), at
+// top level, in an archetype component, and as a local. The inferred `::` forms round-trip too.
+// RUN: %build/arche-fmt %s | grep -F "alias_top : type : int"
+// RUN: %build/arche-fmt %s | grep -F "mass : type : int"
+// RUN: %build/arche-fmt %s | grep -F "loc : type : int"
+// RUN: %build/arche-fmt %s | grep -F "short_top :: int"
+alias_top : type : int
+short_top :: int
+
+arche Body {
+  mass : type : int,
+}
+
+proc main() {
+  loc : type : int;
+  p: loc = 1;
+  q: alias_top = 2;
+  r: short_top = 3;
+  m: mass = 4;
+  printf("%d\n", p + q + r + m);
+}

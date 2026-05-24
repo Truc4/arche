@@ -31,6 +31,7 @@ typedef struct {
 	const char *nominal_type;  /* unresolved nominal alias name (e.g. "file"), or NULL — for distinctness */
 	int is_consumed;           /* 1 if a consume-param call / move / return has consumed this binding */
 	int is_param;              /* 1 if this is a function parameter (borrowed — exempt from must-consume) */
+	int is_const;              /* 1 if an immutable local constant (`k :: e` / `k : T : e`) */
 	SourceLoc loc;             /* declaration site, for the must-consume diagnostic */
 } VariableInfo;
 
@@ -59,8 +60,9 @@ struct SemanticContext {
 	GroupInfo *groups;
 	int group_count;
 
-	char **const_names;        /* compile-time constant names */
-	const char **const_values; /* literal lexeme strings */
+	char **const_names;             /* compile-time constant names */
+	const char **const_values;      /* literal lexeme strings */
+	const char **const_value_types; /* each const's resolved type name ("int"/"float"/"char"/…) */
 	int const_count;
 
 	/* Nominal type aliases: `name :: <type>` (a `::` decl whose RHS names a type, not a
@@ -241,6 +243,8 @@ static int type_ref_equal(const TypeRef *a, const TypeRef *b) {
 		return 1; /* `archetype` parameter type: any two are equal */
 	case TYPE_OPAQUE:
 		return 1; /* bare opaque == bare opaque; nominal distinctness is by alias name */
+	case TYPE_TYPE:
+		return 1; /* the meta-type: any two `type` are equal */
 	}
 	return 0;
 }
@@ -401,11 +405,21 @@ static void add_variable_with_archetype(SemanticContext *ctx, const char *name, 
 	var->nominal_type = NULL;
 	var->is_consumed = 0;
 	var->is_param = 0;
+	var->is_const = 0;
 	var->loc.line = 0;
 	var->loc.column = 0;
 
 	scope->vars = realloc(scope->vars, (scope->var_count + 1) * sizeof(VariableInfo *));
 	scope->vars[scope->var_count++] = var;
+}
+
+/* Flag the most-recently-added variable as an immutable constant (`k :: e` / `k : T : e`). */
+static void mark_last_const(SemanticContext *ctx) {
+	if (ctx->scope_count > 0) {
+		Scope *s = &ctx->scopes[ctx->scope_count - 1];
+		if (s->var_count > 0)
+			s->vars[s->var_count - 1]->is_const = 1;
+	}
 }
 
 /* ========== FORWARD DECLARATIONS ========== */
@@ -486,6 +500,135 @@ static int is_type_alias(SemanticContext *ctx, const char *name) {
 	return 0;
 }
 
+/* ---- constant / type-alias registration (pass 0 helpers) ----
+ * A `name : [meta] : value` declaration is a *type alias* when its RHS denotes a type, or a
+ * *value const* when its RHS denotes a value. The classification is by denotation (what the RHS
+ * names), not by syntactic node kind — so `tau :: pi` (pi a value) is a value const, not an alias.
+ * `name`/`backing`/`lexeme` are stored by pointer and must outlive ctx (CST or static strings). */
+
+/* Register a nominal alias `name → backing`; redefinition must AGREE (same backing). */
+static void register_type_alias(SemanticContext *ctx, const char *name, const char *backing) {
+	for (int j = 0; j < ctx->type_alias_count; j++) {
+		if (strcmp(ctx->type_alias_names[j], name) == 0) {
+			if (strcmp(ctx->type_alias_backings[j], backing) != 0) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "type '%s' redefined with a different backing", name);
+				error(ctx, msg);
+			}
+			return; /* agrees — share the one nominal type */
+		}
+	}
+	ctx->type_alias_names = realloc(ctx->type_alias_names, (ctx->type_alias_count + 1) * sizeof(char *));
+	ctx->type_alias_backings = realloc(ctx->type_alias_backings, (ctx->type_alias_count + 1) * sizeof(char *));
+	ctx->type_alias_names[ctx->type_alias_count] = (char *)name;
+	ctx->type_alias_backings[ctx->type_alias_count] = (char *)backing;
+	ctx->type_alias_count++;
+}
+
+/* The stored value lexeme of a value const, or NULL. */
+static const char *value_const_lexeme(SemanticContext *ctx, const char *name) {
+	for (int j = 0; j < ctx->const_count; j++)
+		if (strcmp(ctx->const_names[j], name) == 0)
+			return ctx->const_values[j];
+	return NULL;
+}
+
+/* The resolved type name of a value const ("int"/"float"/"char"/…), or NULL. */
+static const char *value_const_type(SemanticContext *ctx, const char *name) {
+	for (int j = 0; j < ctx->const_count; j++)
+		if (strcmp(ctx->const_names[j], name) == 0)
+			return ctx->const_value_types[j];
+	return NULL;
+}
+
+/* Register a value const `name = lexeme` of type `type`; redefinition is an error. The type lets a
+ * const reference resolve to its real type (so a float const is a float, not a default int). */
+static void register_value_const(SemanticContext *ctx, const char *name, const char *lexeme, const char *type) {
+	for (int j = 0; j < ctx->const_count; j++) {
+		if (strcmp(ctx->const_names[j], name) == 0) {
+			char msg[256];
+			snprintf(msg, sizeof(msg), "constant '%s' already defined", name);
+			error(ctx, msg);
+			return;
+		}
+	}
+	ctx->const_names = realloc(ctx->const_names, (ctx->const_count + 1) * sizeof(char *));
+	ctx->const_values = realloc(ctx->const_values, (ctx->const_count + 1) * sizeof(const char *));
+	ctx->const_value_types = realloc(ctx->const_value_types, (ctx->const_count + 1) * sizeof(const char *));
+	ctx->const_names[ctx->const_count] = (char *)name;
+	ctx->const_values[ctx->const_count] = lexeme;
+	ctx->const_value_types[ctx->const_count] = type;
+	ctx->const_count++;
+}
+
+/* 1 if the bare name `r` currently denotes a type (a primitive, opaque, or a registered alias). */
+static int name_denotes_type(SemanticContext *ctx, const char *r) {
+	return is_primitive_type_name(r) || strcmp(r, "opaque") == 0 || is_type_alias(ctx, r);
+}
+
+/* For a typed value const `name : T : <literal>`, check the literal is compatible with the declared
+ * type T. Only concrete primitive types are checked; a clear category mismatch (a float literal for
+ * an int, a string for a number) is an error. So an explicit annotation is no longer inert. */
+static void check_const_literal_type(SemanticContext *ctx, ConstDecl *c) {
+	if (!c || !c->decl_type || c->decl_type->kind != TYPE_NAME)
+		return; /* only concrete named declared types */
+	if (!c->value || c->value->type != EXPR_LITERAL)
+		return; /* only literal RHS (a name RHS is a value-const chain, checked elsewhere) */
+	const char *want = resolve_type_alias(ctx, normalize_type_name(c->decl_type->data.name));
+	if (!is_primitive_type_name(want))
+		return; /* non-primitive declared type: out of scope for the literal check */
+	const char *got = resolve_expression_type(ctx, c->value); /* "int" / "float" / "char" / "char_array" */
+	if (!got)
+		return;
+	/* A value const is substituted as its raw literal lexeme, so the literal's category must match
+	 * the declared type — there is no coercion at the substitution site. A string never fits a
+	 * scalar; a `float` const needs a float literal (an int lexeme in a double slot miscompiles);
+	 * a float literal never fits int/char. int and char literals interchange (C treats them alike). */
+	int ok = 1;
+	if (strcmp(got, "char_array") == 0)
+		ok = 0;
+	else if (strcmp(want, "float") == 0)
+		ok = (strcmp(got, "float") == 0);
+	else if (strcmp(got, "float") == 0)
+		ok = 0;
+	if (!ok) {
+		char msg[256];
+		snprintf(msg, sizeof(msg), "constant '%s' is declared `%s` but its value is a %s literal", c->name, want,
+		         strcmp(got, "char_array") == 0 ? "string" : got);
+		error(ctx, msg);
+	}
+}
+
+/* The backing-type name for a type-form RHS (`name : type : T` or a tuple field), or NULL if the
+ * form can't back a nominal alias (e.g. array/handle/shaped — unsupported as alias backings). */
+static const char *type_backing_name(TypeRef *t) {
+	if (!t)
+		return NULL;
+	if (t->kind == TYPE_NAME)
+		return t->data.name;
+	if (t->kind == TYPE_OPAQUE)
+		return "opaque";
+	return NULL;
+}
+
+/* The meta-type `type` is legal ONLY as a declaration's declared type (`name : type : T`). It is
+ * not a storable value type, so it must not reach a parameter / return / field / variable slot —
+ * a parameter of type `type` would be a generic type parameter, and generics (monomorphization)
+ * are not implemented yet. Reject it there with a clear "not supported yet" message (the grammar
+ * admits the form; the feature behind it just doesn't exist). Returns 1 if it errored. */
+static int reject_meta_type(SemanticContext *ctx, TypeRef *t, const char *where) {
+	if (t && t->kind == TYPE_TYPE) {
+		char msg[256];
+		snprintf(msg, sizeof(msg),
+		         "the meta-type `type` is only valid as a declaration's type (`name : type : T`); "
+		         "type parameters (generics) are not supported yet (%s)",
+		         where);
+		error(ctx, msg);
+		return 1;
+	}
+	return 0;
+}
+
 static const char *resolve_expression_type(SemanticContext *ctx, Expression *expr) {
 	if (!expr)
 		return NULL;
@@ -529,6 +672,11 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 				return resolve_type_alias(ctx, normalize_type_name(var->inferred_type));
 			}
 		}
+		/* A reference to a top-level value const resolves to that const's type — so a float const
+		 * is a float, not a defaulted int. (A local var of the same name shadows it, handled above.) */
+		const char *ct = value_const_type(ctx, name);
+		if (ct)
+			return ct;
 		/* Check if it's an archetype being referenced */
 		ArchetypeInfo *arch = find_archetype(ctx, name);
 		if (arch) {
@@ -737,6 +885,11 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 
 	case EXPR_STRING:
 		/* string literals are always valid */
+		break;
+
+	case EXPR_ARRAY_LITERAL:
+		/* Array literals have no name to resolve here; their elements are handled where the
+		 * literal is consumed (binding / call / store). */
 		break;
 
 	case EXPR_NAME: {
@@ -1150,11 +1303,42 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 
 	switch (stmt->type) {
 	case STMT_BIND: {
+		/* A local constant (`k :: e` / `k : T : e`) whose RHS denotes a TYPE is a local nominal
+		 * type alias: register it (globally, by nominal name — nominal identity is global) and
+		 * erase it (no runtime value). A constant whose RHS is a value falls through to the normal
+		 * binding path below and is marked immutable. */
+		if (stmt->data.bind_stmt.is_const) {
+			BindStmt *b = &stmt->data.bind_stmt;
+			const char *backing = NULL;
+			if (b->type_value)
+				backing = type_backing_name(b->type_value);
+			else if (b->value && b->value->type == EXPR_NAME && name_denotes_type(ctx, b->value->data.name.name))
+				backing = b->value->data.name.name;
+			if (backing || b->type_value) {
+				/* This constant's RHS is a type — a local nominal type alias. */
+				if (!backing) {
+					error(ctx, "a local type alias backing must be a type name or `opaque`");
+				} else {
+					register_type_alias(ctx, b->name, backing);
+					const char *resolved = resolve_type_alias(ctx, b->name);
+					if (!is_primitive_type_name(resolved) && strcmp(resolved, "opaque") != 0) {
+						char msg[256];
+						snprintf(msg, sizeof(msg), "type alias '%s' has unknown backing type '%s'", b->name, resolved);
+						error(ctx, msg);
+					}
+				}
+				b->is_type_alias = 1;
+				break; /* compile-time only: no runtime binding */
+			}
+			/* else: a value const — fall through to the normal binding path (marked const below). */
+		}
 		/* `archetype` is only valid as a parameter type. */
 		if (stmt->data.bind_stmt.type && stmt->data.bind_stmt.type->kind == TYPE_ARCHETYPE) {
 			error(ctx, "`archetype` is only valid as a parameter type");
 			break;
 		}
+		if (reject_meta_type(ctx, stmt->data.bind_stmt.type, "variable type"))
+			break;
 		/* For multivalue let with function calls, add out param variables BEFORE analyzing the call */
 		int is_multivalue_call = (stmt->data.bind_stmt.name_count > 0 && stmt->data.bind_stmt.names &&
 		                          stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->type == EXPR_CALL);
@@ -1240,6 +1424,25 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				}
 			}
 		}
+		/* No implicit numeric conversion (arche is strict — proven by `y: float = 3` failing): a
+		 * binding's explicit type must agree with its value for the int/float pair. Catches a float
+		 * const used as an int (`x: int = PI`) and vice versa (`y: float = N`), with a clean error
+		 * instead of a downstream LLVM crash. Conservative: only the int↔float mismatch. */
+		if (stmt->data.bind_stmt.type && stmt->data.bind_stmt.type->kind == TYPE_NAME && stmt->data.bind_stmt.value) {
+			const char *want = resolve_type_alias(ctx, normalize_type_name(stmt->data.bind_stmt.type->data.name));
+			const char *got = resolve_expression_type(ctx, stmt->data.bind_stmt.value);
+			if (want && got &&
+			    ((strcmp(want, "int") == 0 && strcmp(got, "float") == 0) ||
+			     (strcmp(want, "float") == 0 && strcmp(got, "int") == 0))) {
+				char msg[256];
+				snprintf(msg, sizeof(msg),
+				         "cannot bind a %s value to '%s' declared `%s` — arche has no implicit numeric conversion", got,
+				         stmt->data.bind_stmt.name, want);
+				error(ctx, msg);
+			}
+		}
+		if (stmt->data.bind_stmt.is_const)
+			mark_last_const(ctx); /* immutable: reject later assignment */
 		break;
 	}
 
@@ -1282,7 +1485,12 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		 * target above, so check it here. */
 		if (stmt->data.assign_stmt.target->type == EXPR_NAME) {
 			VariableInfo *t = find_variable(ctx, stmt->data.assign_stmt.target->data.name.name);
-			if (t && t->is_consumed) {
+			if (t && t->is_const) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "cannot assign to constant '%s' (declared with `::`)",
+				         stmt->data.assign_stmt.target->data.name.name);
+				error(ctx, msg);
+			} else if (t && t->is_consumed) {
 				char msg[256];
 				snprintf(msg, sizeof(msg), "cannot assign to '%s' after it was moved — rebind with `:=`",
 				         stmt->data.assign_stmt.target->data.name.name);
@@ -1489,6 +1697,10 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 	if (!arch)
 		return;
+
+	/* A `type`-typed component (`arche A { f :: type }`) is a generic component — not supported. */
+	for (int i = 0; i < arch->field_count; i++)
+		reject_meta_type(ctx, arch->fields[i]->type, "archetype component type");
 
 	/* Set semantics: a component type may appear at most once in an archetype. The
 	 * component's type name IS its access path, so a repeat would be unreachable. */
@@ -1897,6 +2109,7 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 		if (!p)
 			continue;
 		TypeRef *pt = p->type;
+		reject_meta_type(ctx, pt, "parameter type");
 		if (proc->is_extern) {
 			if (pt && pt->kind == TYPE_NAME) {
 				const char *tname = pt->data.name;
@@ -2006,6 +2219,7 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 	/* add parameters as variables, using field types from archetype if available */
 	for (int i = 0; i < sys->param_count; i++) {
 		TypeRef *param_type = sys->params[i]->type;
+		reject_meta_type(ctx, param_type, "sys parameter type");
 		/* If no explicit type and we found the archetype, use the field's type */
 		if (!param_type && arch_info) {
 			FieldInfo *field = find_field(arch_info, sys->params[i]->name);
@@ -2118,6 +2332,7 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 
 	/* `archetype` is a proc-only parameter type in v1; funcs cannot have one. */
 	for (int i = 0; i < func->param_count; i++) {
+		reject_meta_type(ctx, func->params[i]->type, "parameter type");
 		if (func->params[i]->type && func->params[i]->type->kind == TYPE_ARCHETYPE) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "func '%s': `archetype` parameter type is only allowed on procs, not funcs",
@@ -2127,6 +2342,7 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 		}
 	}
 	for (int i = 0; i < func->return_type_count; i++) {
+		reject_meta_type(ctx, func->return_types[i], "return type");
 		if (func->return_types[i] && func->return_types[i]->kind == TYPE_ARCHETYPE) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "func '%s': `archetype` is only valid as a parameter type, not a return type",
@@ -2223,6 +2439,13 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 		break;
 	case DECL_FUNC_GROUP:
 		analyze_func_group(ctx, decl->data.func_group);
+		break;
+	case DECL_CONST:
+		/* Value consts and nominal type aliases are collected in pass 0 (and aliases erased before
+		 * lowering); there is nothing to analyze per-declaration here. */
+		break;
+	case DECL_WORLD:
+		/* Worlds carry no analyzable body in v1. */
 		break;
 	}
 }
@@ -2357,6 +2580,7 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->group_count = 0;
 	ctx->const_names = NULL;
 	ctx->const_values = NULL;
+	ctx->const_value_types = NULL;
 	ctx->const_count = 0;
 	ctx->type_alias_names = NULL;
 	ctx->type_alias_backings = NULL;
@@ -2378,101 +2602,120 @@ SemanticContext *semantic_analyze(Program *prog) {
 	if (!prog)
 		return ctx;
 
-	/* pass 0: collect constants and nominal type aliases. A `name :: <RHS>` decl is a
-	 * value const when RHS is a literal, or a type alias when RHS is a bare name —
-	 * consts are literal-only, so a name RHS is unambiguously a type (Odin's model). */
+	/* pass 0: collect constants and nominal type aliases. A `name : [meta] : value` decl is a
+	 * value const when its RHS denotes a value, or a type alias when its RHS denotes a type.
+	 * Unambiguous forms (type-form RHS, literal RHS) are classified directly; a bare-name RHS is
+	 * deferred and resolved by a small fixpoint below — so `tau :: pi` is a value const (not an
+	 * alias), and chains / forward refs resolve regardless of declaration order. */
+	int deferred_cap = prog->decl_count > 0 ? prog->decl_count : 1;
+	const char **deferred_name = malloc(sizeof(char *) * deferred_cap);
+	const char **deferred_rhs = malloc(sizeof(char *) * deferred_cap);
+	int *deferred_value_ctx = malloc(sizeof(int) * deferred_cap);
+	int *deferred_done = calloc(deferred_cap, sizeof(int));
+	int deferred_count = 0;
+
 	for (int i = 0; i < prog->decl_count; i++) {
 		if (prog->decls[i]->kind != DECL_CONST)
 			continue;
 		ConstDecl *c = prog->decls[i]->data.constant;
 
-		/* Type alias: `count :: int`, `file :: opaque`. RHS is a bare name; the backing
-		 * is validated after the loop (so aliases may reference later aliases). */
-		/* Tuple type alias: `pos :: (x: int, y: int)` mints flat name-prefixed nominal
-		 * types pos_x, pos_y (each a normal alias over the field's backing). */
-		if (c->type_value && c->type_value->kind == TYPE_TUPLE) {
-			for (int f = 0; f < c->type_value->data.tuple.field_count; f++) {
-				TypeRef *ft = c->type_value->data.tuple.field_types[f];
-				const char *fbacking = NULL;
-				if (ft && ft->kind == TYPE_NAME)
-					fbacking = ft->data.name;
-				else if (ft && ft->kind == TYPE_OPAQUE)
-					fbacking = "opaque";
-				else {
-					error(ctx, "tuple field must be a simple type (nested tuples are not allowed)");
-					continue;
-				}
-				const char *fn = c->type_value->data.tuple.field_names[f];
-				size_t L = strlen(c->name) + 1 + strlen(fn) + 1;
-				char *aname = malloc(L);
-				snprintf(aname, L, "%s_%s", c->name, fn);
-				int dup = 0;
-				for (int j = 0; j < ctx->type_alias_count; j++)
-					if (strcmp(ctx->type_alias_names[j], aname) == 0) {
-						dup = 1;
-						break;
+		/* Type-form RHS (`name : type : T`, or the tuple `name :: (x,y:..)`): a nominal alias. */
+		if (c->type_value) {
+			if (c->type_value->kind == TYPE_TUPLE) {
+				for (int f = 0; f < c->type_value->data.tuple.field_count; f++) {
+					const char *fbacking = type_backing_name(c->type_value->data.tuple.field_types[f]);
+					if (!fbacking) {
+						error(ctx, "tuple field must be a simple type (nested tuples are not allowed)");
+						continue;
 					}
-				if (dup) {
-					char msg[256];
-					snprintf(msg, sizeof(msg), "type '%s' already defined", aname);
-					error(ctx, msg);
-					free(aname);
-					continue;
+					const char *fn = c->type_value->data.tuple.field_names[f];
+					size_t L = strlen(c->name) + 1 + strlen(fn) + 1;
+					char *aname = malloc(L);
+					snprintf(aname, L, "%s_%s", c->name, fn);
+					register_type_alias(ctx, aname, fbacking); /* aname leaks like the old path */
 				}
-				ctx->type_alias_names = realloc(ctx->type_alias_names, (ctx->type_alias_count + 1) * sizeof(char *));
-				ctx->type_alias_backings =
-				    realloc(ctx->type_alias_backings, (ctx->type_alias_count + 1) * sizeof(char *));
-				ctx->type_alias_names[ctx->type_alias_count] = aname;
-				ctx->type_alias_backings[ctx->type_alias_count] = (char *)fbacking;
-				ctx->type_alias_count++;
+			} else {
+				const char *backing = type_backing_name(c->type_value);
+				if (!backing)
+					error(ctx, "a type alias backing must be a type name, `opaque`, or a tuple");
+				else
+					register_type_alias(ctx, c->name, backing);
 			}
-			goto next_const;
+			continue;
 		}
 
+		/* Literal RHS: a value const. Its type is the explicit declared type if present, else the
+		 * literal's own type (`3.14`→float, `42`→int) — so the const resolves to its real type. */
+		if (c->value && c->value->type == EXPR_LITERAL) {
+			const char *vt = NULL;
+			if (c->decl_type && c->decl_type->kind == TYPE_NAME)
+				vt = resolve_type_alias(ctx, normalize_type_name(c->decl_type->data.name));
+			if (!vt)
+				vt = resolve_expression_type(ctx, c->value);
+			register_value_const(ctx, c->name, c->value->data.literal.lexeme, vt);
+			continue;
+		}
+
+		/* Bare-name RHS: ambiguous (type or value) — defer for the fixpoint. An explicit concrete
+		 * declared type (`PI : float : x`) forces value context. */
 		if (c->value && c->value->type == EXPR_NAME) {
-			/* Redefinition must AGREE: the same alias with the same backing is fine
-			 * (e.g. core's `file :: opaque` and a user's `file :: opaque`); a different
-			 * backing is a conflict. */
-			for (int j = 0; j < ctx->type_alias_count; j++) {
-				if (strcmp(ctx->type_alias_names[j], c->name) == 0) {
-					if (strcmp(ctx->type_alias_backings[j], c->value->data.name.name) == 0)
-						goto next_const; /* agrees — silently share */
-					char msg[256];
-					snprintf(msg, sizeof(msg), "type '%s' redefined with a different backing", c->name);
-					error(ctx, msg);
-					goto next_const;
-				}
-			}
-			ctx->type_alias_names = realloc(ctx->type_alias_names, (ctx->type_alias_count + 1) * sizeof(char *));
-			ctx->type_alias_backings = realloc(ctx->type_alias_backings, (ctx->type_alias_count + 1) * sizeof(char *));
-			ctx->type_alias_names[ctx->type_alias_count] = c->name;
-			ctx->type_alias_backings[ctx->type_alias_count] = c->value->data.name.name;
-			ctx->type_alias_count++;
-			goto next_const;
+			deferred_name[deferred_count] = c->name;
+			deferred_rhs[deferred_count] = c->value->data.name.name;
+			deferred_value_ctx[deferred_count] = (c->decl_type != NULL);
+			deferred_count++;
+			continue;
 		}
 
-		/* Value const: RHS must be a literal. */
-		if (!c->value || c->value->type != EXPR_LITERAL) {
-			char msg[256];
-			snprintf(msg, sizeof(msg), "constant '%s' must be a literal value", c->name);
-			error(ctx, msg);
-			goto next_const;
-		}
-		for (int j = 0; j < ctx->const_count; j++) {
-			if (strcmp(ctx->const_names[j], c->name) == 0) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "constant '%s' already defined", c->name);
-				error(ctx, msg);
-				goto next_const;
+		error(ctx, "a constant's value must be a literal, a name, or a type");
+	}
+
+	/* Fixpoint: classify each deferred bare-name const by what its RHS denotes. */
+	int progress = 1;
+	while (progress) {
+		progress = 0;
+		for (int d = 0; d < deferred_count; d++) {
+			if (deferred_done[d])
+				continue;
+			const char *r = deferred_rhs[d];
+			if (name_denotes_type(ctx, r)) {
+				if (deferred_value_ctx[d]) {
+					char msg[256];
+					snprintf(msg, sizeof(msg), "constant '%s' has a value type but its RHS '%s' names a type",
+					         deferred_name[d], r);
+					error(ctx, msg);
+				} else {
+					register_type_alias(ctx, deferred_name[d], r);
+				}
+				deferred_done[d] = 1;
+				progress = 1;
+				continue;
+			}
+			const char *lex = value_const_lexeme(ctx, r);
+			if (lex) {
+				/* `tau :: pi` — tau takes pi's value AND pi's type. */
+				register_value_const(ctx, deferred_name[d], lex, value_const_type(ctx, r));
+				deferred_done[d] = 1;
+				progress = 1;
 			}
 		}
-		ctx->const_names = realloc(ctx->const_names, (ctx->const_count + 1) * sizeof(char *));
-		ctx->const_values = realloc(ctx->const_values, (ctx->const_count + 1) * sizeof(const char *));
-		ctx->const_names[ctx->const_count] = c->name;
-		ctx->const_values[ctx->const_count] = c->value->data.literal.lexeme;
-		ctx->const_count++;
-	next_const:;
 	}
+	/* Unresolved leftovers: a value context names something undefined; otherwise presume an
+	 * intended type alias with an unknown backing (reported by the validation loop below). */
+	for (int d = 0; d < deferred_count; d++) {
+		if (deferred_done[d])
+			continue;
+		if (deferred_value_ctx[d]) {
+			char msg[256];
+			snprintf(msg, sizeof(msg), "unknown value '%s' in declaration of '%s'", deferred_rhs[d], deferred_name[d]);
+			error(ctx, msg);
+		} else {
+			register_type_alias(ctx, deferred_name[d], deferred_rhs[d]);
+		}
+	}
+	free(deferred_name);
+	free(deferred_rhs);
+	free(deferred_value_ctx);
+	free(deferred_done);
 
 	/* Inline component definitions: `arche Foo { hp :: int, … }` mints the nominal type `hp`
 	 * (≡ a top-level `hp :: int`) and includes it as a component — so the component is a real
@@ -2529,6 +2772,12 @@ SemanticContext *semantic_analyze(Program *prog) {
 		}
 	}
 
+	/* Typed value consts: the explicit declared type now constrains the literal (no longer inert). */
+	for (int i = 0; i < prog->decl_count; i++) {
+		if (prog->decls[i]->kind == DECL_CONST)
+			check_const_literal_type(ctx, prog->decls[i]->data.constant);
+	}
+
 	/* global scope: holds module-level variables (static arrays, etc.) */
 	push_scope(ctx);
 
@@ -2559,6 +2808,7 @@ void semantic_context_free(SemanticContext *ctx) {
 	/* free constants (names only, values are owned by AST) */
 	free(ctx->const_names);
 	free(ctx->const_values);
+	free(ctx->const_value_types);
 
 	/* free type-alias tables (name/backing strings are owned by the CST) */
 	free(ctx->type_alias_names);

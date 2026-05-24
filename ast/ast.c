@@ -321,6 +321,7 @@ void ast_decl_free(AstDecl *decl) {
 		if (decl->data.constant) {
 			free(decl->data.constant->name);
 			ast_expr_free(decl->data.constant->value);
+			ast_type_free(decl->data.constant->type);
 			free(decl->data.constant);
 		}
 		break;

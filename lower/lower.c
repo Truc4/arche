@@ -110,6 +110,10 @@ static AstType *lower_type_ref(TypeRef *tr) {
 	case TYPE_OPAQUE:
 		t->tag = AST_TYPE_OPAQUE;
 		break;
+	case TYPE_TYPE:
+		/* The meta-type is compile-time only; a type alias carrying it is erased before
+		 * lowering, so this should never reach codegen. Leave AST_TYPE_UNKNOWN defensively. */
+		break;
 	}
 	return t;
 }
@@ -237,8 +241,19 @@ static AstStmt *lower_stmt(Statement *stmt) {
 
 	switch (stmt->type) {
 	case STMT_BIND: {
-		s->kind = AST_STMT_BIND;
 		BindStmt *ls = &stmt->data.bind_stmt;
+		/* A local type alias (`V :: float`) is compile-time only — the alias is erased and its
+		 * references resolve to the backing. It declares no runtime value, so emit a harmless
+		 * no-op expression statement (`0;`) in its place. */
+		if (ls->is_type_alias) {
+			s->kind = AST_STMT_EXPR;
+			AstExpr *zero = ast_expr_create(AST_EXPR_LITERAL);
+			zero->data.literal.lexeme = malloc(2);
+			strcpy(zero->data.literal.lexeme, "0");
+			s->data.expr_stmt.expr = zero;
+			break;
+		}
+		s->kind = AST_STMT_BIND;
 		if (ls->name_count > 0 && ls->names) {
 			/* multi-value let: copy names[] */
 			s->data.bind_stmt.name_count = ls->name_count;
@@ -719,6 +734,10 @@ static AstDecl *lower_decl(Decl *decl) {
 		acd->name = malloc(strlen(cd->name) + 1);
 		strcpy(acd->name, cd->name);
 		acd->value = lower_expr(cd->value);
+		/* Carry the explicit declared type into the AST. The meta-type `type` (a type alias) is
+		 * compile-time only and stays erased — only a concrete `name : T : value` keeps its T. */
+		if (cd->decl_type && cd->decl_type->kind != TYPE_TYPE)
+			acd->type = lower_type_ref(cd->decl_type);
 		ad->data.constant = acd;
 		break;
 	}

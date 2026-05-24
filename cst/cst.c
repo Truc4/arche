@@ -118,6 +118,7 @@ ConstDecl *const_decl_create(char *name, Expression *value) {
 	constant->name = name;
 	constant->value = value;
 	constant->type_value = NULL;
+	constant->decl_type = NULL;
 	return constant;
 }
 
@@ -263,6 +264,8 @@ void decl_free(Decl *decl) {
 		if (c) {
 			free(c->name);
 			expression_free(c->value);
+			type_ref_free(c->type_value);
+			type_ref_free(c->decl_type);
 			free(c);
 		}
 		break;
@@ -416,6 +419,8 @@ void type_ref_free(TypeRef *type) {
 		break;
 	case TYPE_OPAQUE:
 		break;
+	case TYPE_TYPE:
+		break;
 	}
 	free(type);
 }
@@ -430,6 +435,7 @@ void statement_free(Statement *stmt) {
 		free(stmt->data.bind_stmt.name);
 		type_ref_free(stmt->data.bind_stmt.type);
 		expression_free(stmt->data.bind_stmt.value);
+		type_ref_free(stmt->data.bind_stmt.type_value);
 		break;
 	case STMT_ASSIGN:
 		expression_free(stmt->data.assign_stmt.target);
@@ -608,6 +614,9 @@ static void format_type(FILE *out, TypeRef *type) {
 	case TYPE_OPAQUE:
 		fprintf(out, "opaque");
 		break;
+	case TYPE_TYPE:
+		fprintf(out, "type");
+		break;
 	}
 	format_type_depth--;
 }
@@ -714,6 +723,8 @@ static void format_expression(FILE *out, Expression *expr) {
 		case OP_GTE:
 			op_str = ">=";
 			break;
+		case OP_NONE:
+			break; /* not a binary operator; op_str stays "?" (unreachable for a valid EXPR_BINARY) */
 		}
 		/* Precedence-aware paren wrapping. The parser drops the explicit parens,
 		 * so the formatter has to re-introduce them whenever an operand is a
@@ -930,20 +941,39 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 			fprintf(out, " := ");
 			format_expression(out, stmt->data.bind_stmt.value);
 		} else {
-			/* Single-value let */
-			fprintf(out, "%s", stmt->data.bind_stmt.name);
-			if (stmt->data.bind_stmt.type) {
-				/* Explicit type: let x: type = value */
-				fprintf(out, ": ");
-				format_type(out, stmt->data.bind_stmt.type);
-				if (stmt->data.bind_stmt.value) {
-					fprintf(out, " = ");
-					format_expression(out, stmt->data.bind_stmt.value);
+			/* Single-value binding */
+			BindStmt *b = &stmt->data.bind_stmt;
+			fprintf(out, "%s", b->name);
+			if (b->is_const) {
+				if (b->type_value) {
+					/* local type alias written with the explicit meta longhand: `V : type : T`
+					 * (type_value is only set for that form; the inferred `V :: T` keeps its RHS
+					 * in `value`). Preserved faithfully. */
+					fprintf(out, " : type : ");
+					format_type(out, b->type_value);
+				} else if (b->type) {
+					/* typed value const: `k : T : value` */
+					fprintf(out, " : ");
+					format_type(out, b->type);
+					fprintf(out, " : ");
+					format_expression(out, b->value);
+				} else {
+					/* inferred const: `k :: value` */
+					fprintf(out, " :: ");
+					format_expression(out, b->value);
 				}
-			} else if (stmt->data.bind_stmt.value) {
-				/* Inferred type: let x := value */
+			} else if (b->type) {
+				/* Explicit type variable: `x: type [= value]` */
+				fprintf(out, ": ");
+				format_type(out, b->type);
+				if (b->value) {
+					fprintf(out, " = ");
+					format_expression(out, b->value);
+				}
+			} else if (b->value) {
+				/* Inferred-type variable: `x := value` */
 				fprintf(out, " := ");
-				format_expression(out, stmt->data.bind_stmt.value);
+				format_expression(out, b->value);
 			}
 		}
 		fprintf(out, ";");
@@ -1214,6 +1244,11 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				           strcmp(field->type->data.name, field->name) == 0) {
 					/* Bare component reference — its type is its own name. */
 					fprintf(out, "  %s,", field->name);
+				} else if (field->meta_explicit) {
+					/* Inline component, explicit meta longhand `name : type : T`. */
+					fprintf(out, "  %s : type : ", field->name);
+					format_type(out, field->type);
+					fprintf(out, ",");
 				} else {
 					/* Inline component definition `name :: type`. */
 					fprintf(out, "  %s :: ", field->name);
@@ -1373,7 +1408,18 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			ConstDecl *c = decl->data.constant;
 			if (c->type_value && c->type_value->kind == TYPE_TUPLE) {
 				format_tuple_group(out, c->name, c->type_value); /* `name (a, b) :: T` */
+			} else if (c->decl_type) {
+				/* explicit declared type: `name : T : <rhs>` (T may be the meta-type `type`).
+				 * Preserved faithfully — the formatter does not canonicalize the longhand. */
+				fprintf(out, "%s : ", c->name);
+				format_type(out, c->decl_type);
+				fprintf(out, " : ");
+				if (c->type_value) /* type-form RHS (a nominal type alias) */
+					format_type(out, c->type_value);
+				else
+					format_expression(out, c->value);
 			} else {
+				/* implicit `name :: <rhs>` */
 				fprintf(out, "%s :: ", c->name);
 				if (c->type_value) /* type-form RHS (a nominal type alias) */
 					format_type(out, c->type_value);

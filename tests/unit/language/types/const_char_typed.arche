@@ -1,0 +1,9 @@
+// A char value const works in a char context: the const inlines as its integer code (LLVM has no
+// char token). Both the inferred `::` and the explicit `: char :` forms work.
+// RUN: %arche -o %t %s && %t | grep "a=A b=B"
+A :: 'A'
+B : char : 'B'
+
+proc main() {
+  printf("a=%c b=%c\n", A, B);
+}

@@ -105,6 +105,8 @@ static void rename_typeref(TypeRef *t, const char *prefix, char **set, int count
 		break;
 	case TYPE_OPAQUE:
 		break;
+	case TYPE_TYPE:
+		break;
 	}
 }
 
