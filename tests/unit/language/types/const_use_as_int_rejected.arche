@@ -1,0 +1,9 @@
+// A float const used where an int is required is a compile error — arche has no implicit numeric
+// conversion, so binding the float `PI` to an `int` variable is caught (not silently miscompiled).
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "no implicit numeric conversion" %t.out
+PI :: 3.14
+
+proc main() {
+  x: int = PI;
+  printf("%d\n", x);
+}

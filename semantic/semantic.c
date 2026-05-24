@@ -62,6 +62,7 @@ struct SemanticContext {
 
 	char **const_names;        /* compile-time constant names */
 	const char **const_values; /* literal lexeme strings */
+	const char **const_value_types; /* each const's resolved type name ("int"/"float"/"char"/…) */
 	int const_count;
 
 	/* Nominal type aliases: `name :: <type>` (a `::` decl whose RHS names a type, not a
@@ -532,8 +533,18 @@ static const char *value_const_lexeme(SemanticContext *ctx, const char *name) {
 	return NULL;
 }
 
-/* Register a value const `name = lexeme`; redefinition is an error. */
-static void register_value_const(SemanticContext *ctx, const char *name, const char *lexeme) {
+/* The resolved type name of a value const ("int"/"float"/"char"/…), or NULL. */
+static const char *value_const_type(SemanticContext *ctx, const char *name) {
+	for (int j = 0; j < ctx->const_count; j++)
+		if (strcmp(ctx->const_names[j], name) == 0)
+			return ctx->const_value_types[j];
+	return NULL;
+}
+
+/* Register a value const `name = lexeme` of type `type`; redefinition is an error. The type lets a
+ * const reference resolve to its real type (so a float const is a float, not a default int). */
+static void register_value_const(SemanticContext *ctx, const char *name, const char *lexeme,
+                                  const char *type) {
 	for (int j = 0; j < ctx->const_count; j++) {
 		if (strcmp(ctx->const_names[j], name) == 0) {
 			char msg[256];
@@ -544,8 +555,10 @@ static void register_value_const(SemanticContext *ctx, const char *name, const c
 	}
 	ctx->const_names = realloc(ctx->const_names, (ctx->const_count + 1) * sizeof(char *));
 	ctx->const_values = realloc(ctx->const_values, (ctx->const_count + 1) * sizeof(const char *));
+	ctx->const_value_types = realloc(ctx->const_value_types, (ctx->const_count + 1) * sizeof(const char *));
 	ctx->const_names[ctx->const_count] = (char *)name;
 	ctx->const_values[ctx->const_count] = lexeme;
+	ctx->const_value_types[ctx->const_count] = type;
 	ctx->const_count++;
 }
 
@@ -660,6 +673,11 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 				return resolve_type_alias(ctx, normalize_type_name(var->inferred_type));
 			}
 		}
+		/* A reference to a top-level value const resolves to that const's type — so a float const
+		 * is a float, not a defaulted int. (A local var of the same name shadows it, handled above.) */
+		const char *ct = value_const_type(ctx, name);
+		if (ct)
+			return ct;
 		/* Check if it's an archetype being referenced */
 		ArchetypeInfo *arch = find_archetype(ctx, name);
 		if (arch) {
@@ -1400,6 +1418,24 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 						}
 					}
 				}
+			}
+		}
+		/* No implicit numeric conversion (arche is strict — proven by `y: float = 3` failing): a
+		 * binding's explicit type must agree with its value for the int/float pair. Catches a float
+		 * const used as an int (`x: int = PI`) and vice versa (`y: float = N`), with a clean error
+		 * instead of a downstream LLVM crash. Conservative: only the int↔float mismatch. */
+		if (stmt->data.bind_stmt.type && stmt->data.bind_stmt.type->kind == TYPE_NAME &&
+		    stmt->data.bind_stmt.value) {
+			const char *want = resolve_type_alias(ctx, normalize_type_name(stmt->data.bind_stmt.type->data.name));
+			const char *got = resolve_expression_type(ctx, stmt->data.bind_stmt.value);
+			if (want && got &&
+			    ((strcmp(want, "int") == 0 && strcmp(got, "float") == 0) ||
+			     (strcmp(want, "float") == 0 && strcmp(got, "int") == 0))) {
+				char msg[256];
+				snprintf(msg, sizeof(msg),
+				         "cannot bind a %s value to '%s' declared `%s` — arche has no implicit numeric conversion",
+				         got, stmt->data.bind_stmt.name, want);
+				error(ctx, msg);
 			}
 		}
 		if (stmt->data.bind_stmt.is_const)
@@ -2534,6 +2570,7 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->group_count = 0;
 	ctx->const_names = NULL;
 	ctx->const_values = NULL;
+	ctx->const_value_types = NULL;
 	ctx->const_count = 0;
 	ctx->type_alias_names = NULL;
 	ctx->type_alias_backings = NULL;
@@ -2597,9 +2634,15 @@ SemanticContext *semantic_analyze(Program *prog) {
 			continue;
 		}
 
-		/* Literal RHS: a value const. */
+		/* Literal RHS: a value const. Its type is the explicit declared type if present, else the
+		 * literal's own type (`3.14`→float, `42`→int) — so the const resolves to its real type. */
 		if (c->value && c->value->type == EXPR_LITERAL) {
-			register_value_const(ctx, c->name, c->value->data.literal.lexeme);
+			const char *vt = NULL;
+			if (c->decl_type && c->decl_type->kind == TYPE_NAME)
+				vt = resolve_type_alias(ctx, normalize_type_name(c->decl_type->data.name));
+			if (!vt)
+				vt = resolve_expression_type(ctx, c->value);
+			register_value_const(ctx, c->name, c->value->data.literal.lexeme, vt);
 			continue;
 		}
 
@@ -2639,7 +2682,8 @@ SemanticContext *semantic_analyze(Program *prog) {
 			}
 			const char *lex = value_const_lexeme(ctx, r);
 			if (lex) {
-				register_value_const(ctx, deferred_name[d], lex);
+				/* `tau :: pi` — tau takes pi's value AND pi's type. */
+				register_value_const(ctx, deferred_name[d], lex, value_const_type(ctx, r));
 				deferred_done[d] = 1;
 				progress = 1;
 			}
@@ -2754,6 +2798,7 @@ void semantic_context_free(SemanticContext *ctx) {
 	/* free constants (names only, values are owned by AST) */
 	free(ctx->const_names);
 	free(ctx->const_values);
+	free(ctx->const_value_types);
 
 	/* free type-alias tables (name/backing strings are owned by the CST) */
 	free(ctx->type_alias_names);
