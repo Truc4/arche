@@ -496,7 +496,7 @@ sound  :: opaque
 
 extern func window_open(title: char[], w: int, h: int) -> window;
 extern proc window_present(w: window, fb: int[], width: int, height: int);
-extern proc window_close(consume w: window);
+extern proc window_close(move w: window);
 ```
 
 - An `opaque` value is passed to/from C **by value** — the cell *is* an `i64`, ABI-compatible
@@ -506,34 +506,40 @@ extern proc window_close(consume w: window);
   where a `sound` is expected is a compile error. Identity is checked at boundaries (params,
   assignment, return).
 - `0` is the null cell; returning `NULL` from C yields `0`, and `if (w)` is a non-null check.
-- `consume` marks a parameter that ends the value's life (e.g. close). Re-using a consumed
-  binding is a compile error.
 - A foreign resource can also live in a **pool**: put the type in an `arche` and use
   `pool<Foo>` + generation-checked handles for capacity-bounded, use-after-free-safe storage.
 
-### Ownership: by value, opaque is linear
+### Ownership: by value; `move` is the only way to mutate across a call
 
-Everything is **by value**. Plain data and handles copy freely. An `opaque`-backed value
-**cannot copy** — it is move-only (linear), so ownership transfers are always visible:
+Everything is **by value, and functions have no side effects unless you `move`.** Plain data,
+handles, and arrays passed plainly are *copied* — the callee's mutations never leak back. A
+foreign `opaque` value **cannot copy** at all, so it is move-only (linear). One keyword,
+`move`, governs both the call site and the parameter contract:
 
-- **`move`** is a call-site marker that hands ownership over and kills the binding —
-  `window_close(move w)`; using `w` afterward is a compile error.
-- **`consume`** is the terminal parameter that receives such a value (the close-fn is an
-  ordinary `proc close(consume w: window)` — nothing runs automatically; you call it).
-  Handing a named opaque to a `consume` parameter **requires** `move` — a bare
-  `window_close(w)` is a compile error (`opaque value 'w' must be moved …`). A plain
-  (non-`consume`) parameter borrows and needs no `move`: `window_present(w, …)` reads `w`
-  and leaves the caller owning it.
-- **Must-consume:** an opaque *local* must be consumed before its scope ends — moved into a
-  `consume` call, returned, or `insert`ed into a pool. Otherwise it is a compile error
-  (`opaque value 'w' not consumed before scope end`). There is no implicit `drop`/RAII and no
-  silent leak. (Borrowed params are exempt — they are owned by the caller.)
+- **`move` (call site)** hands ownership over by reference and kills the binding —
+  `window_close(move w)`; using `w` afterward is a compile error. A moved value comes back
+  only through a return value.
+- **`move` (parameter)** is the by-reference *contract*: the caller **must** write `move`, so
+  the hand-off is always visible — no silent copy. `window_close(w)` is a compile error
+  (`value 'w' must be moved into 'move' parameter …`). A plain parameter is by value (copied,
+  no side effect). A `move` parameter **may be returned**, which is the fill-buffer / FFI
+  shape — the buffer is moved in by reference, filled, and handed back:
+  ```arche
+  func read_into(fd: int, move buf: char[], len: int) -> (char[], int) {
+    n := read(fd, buf, len);            // raw extern fills by-ref (the FFI escape hatch)
+    return buf, n;
+  }
+  buf, n := read_into(0, move buf, 256);   // move required; buf comes back, now indexable
+  ```
+- **Must-consume:** an opaque *local* must leave its scope before the end — moved into a
+  `move`-parameter call, returned, or `insert`ed into a pool. Otherwise it is a compile error
+  (`opaque value 'w' not consumed before scope end`). No implicit `drop`/RAII, no silent leak.
 
 ```arche
 proc render() {
   w := window_open("demo", 640, 480);
-  window_present(w, fb, 640, 480);   // plain by-value read (borrow)
-  window_close(move w);              // consumes w — required before scope end
+  window_present(w, fb, 640, 480);   // plain by-value read
+  window_close(move w);              // move required — w dead afterward
 }
 ```
 

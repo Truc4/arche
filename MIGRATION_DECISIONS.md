@@ -207,6 +207,38 @@ sees through `move` so distinctness still checks the moved value. Cascade: ~33 `
 (stdlib `csv.close`→`arche_fclose(move fd)`, every test close site) updated to `move`. Negative test:
 `types/consume_requires_move`.
 
+## DONE (user request) — by-value/no-side-effect model; `consume` RENAMED to `move`
+The ownership model the user demanded: **a function has no side effects unless you `move`.**
+- **By-value default:** a plain (non-`move`) array argument is COPIED at the call site
+  (`llvm.memcpy` using the arg's known size) so the callee's mutations never leak. Externs (C
+  ABI) and `move` args stay by-reference. Codegen: `codegen.c` EXPR_CALL, `arg_is_move[]` +
+  the type-7/shaped copy. Verified: `ownership/copy_no_side_effect`.
+- **`move` (call site)** = by-ref + the binding dies (use-after-move → error, for ANY type, via
+  the existing `is_consumed` tracking). A moved value comes back only through a return value;
+  reassignment/multi-bind revives the binding (`semantic.c` STMT_ASSIGN / STMT_MULTI_BIND clear
+  `is_consumed`; multi-bind now analyzes the RHS *before* binding targets so `move x` refers to
+  the existing buffer). Tests: `ownership/move_data_use_after`, `let/multi_bind`.
+- **`consume` → `move` (parameter modifier).** `consume` was opaque-special and only ever
+  *forced the caller to move* (no terminality, no codegen) — so it was renamed to `move` (one
+  keyword, reserved `TOK_MOVE`; call-site `move` is no longer contextual). A `move` param forces
+  the caller to write `move` (no silent copy, by-ref) for ANY type, and **may be returned** (the
+  fill-buffer contract). Parses on `func` params now (was proc-only — a latent bug). Field
+  `is_consume`→`is_move`; formatter emits `move `. Reserving `move` collided with `sys move` →
+  renamed example/test systems to `integrate`. Tests: `ownership/move_param_fill`,
+  `move_param_requires_move`; C: `test_move_param_modifier`, `test_lex_move_keyword`.
+- **Codegen fix — indexing a returned/rebound buffer.** A `char[]` member of a multi-return was
+  bound as a scalar int, so `b[i]` after `b, n := f(move b)` mis-typed (`i32` vs `ptr`). Now
+  bound as type-6 (`i8*` byte view, value-is-pointer, no alloca) like a func returning `char[]`.
+  Test: `ownership/index_rebound_buffer`. (Still open: indexing a *shaped* `char[N]` param inside
+  a callee, and `move` on a *static* buffer — both pre-existing; the lib uses unbounded `char[]`
+  + local buffers, which avoid both.)
+- **Lib/FFI enforce good practice.** Raw libc/runtime externs (`read`, `net_recv`,
+  `arche_csv_read_chunk`) stay plain (the FFI escape hatch — C ABI can't return the buffer).
+  Safe move-enforcing arche wrappers added: `csv.read_chunk`, `read_into`, `recv_into` — each
+  takes `move buf` and returns `(char[], int)`. (`recv_into`, not `recv`, to avoid clobbering
+  libc `recv`.) Callers migrated to **local** buffers + `move` (csv tests: `static buf` →
+  local; `socket_loopback`, `csv_load_buffer`).
+
 ## DONE (this session, all green)
 - Linear must-consume (P5) — see RESOLVED block above.
 - Set-based archetype identity + dup-component (P1 finish) — see RESOLVED block above.

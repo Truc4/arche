@@ -3982,6 +3982,31 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 				const char *llvm = return_member_llvm(mt);
 				char *val = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", val, ret_type, struct_buf, i);
+				AstBindingTarget *atgt = &targets[i];
+
+				/* An array member is a raw i8* byte view. Bind it as type-6 (i8* char pointer,
+				 * the value IS the pointer — no alloca) so the caller can index it: `b[i]` after
+				 * `b, n := f(move b)`. Mirrors a func returning char[]. */
+				if (mt && (mt->tag == AST_TYPE_ARRAY || mt->tag == AST_TYPE_SHAPED_ARRAY)) {
+					ValueInfo *vi = malloc(sizeof(ValueInfo));
+					vi->name = malloc(strlen(atgt->name) + 1);
+					strcpy(vi->name, atgt->name);
+					vi->llvm_name = malloc(strlen(val) + 1);
+					strcpy(vi->llvm_name, val);
+					vi->type = 6; /* i8* char pointer */
+					vi->arch_name = NULL;
+					vi->string_len = -1;
+					vi->field_type = "char";
+					vi->handle_archetype = NULL;
+					vi->bit_width = 8;
+					if (ctx->scope_count > 0) {
+						ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+						scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+						scope->values[scope->value_count++] = vi;
+					}
+					continue;
+				}
+
 				const char *ft = "int";
 				int bw = 32;
 				if (mt && mt->tag == AST_TYPE_FLOAT) {

@@ -1,13 +1,12 @@
 // RUN: %arche -o %t %s && cd %repo && %t | grep "rows: 1000"
 use csv;
 
-static buf: char[65536];
-
 proc main() {
   fd := csv_open("tests/fixtures/data.csv");
   csv_skip_header(fd);
   rows := 0;
-  n := csv_read_chunk(fd, buf, 65536);
+  buf: char[65536];
+  buf, n := csv_read_chunk(fd, move buf, 65536);
   pos := 0;
   for (;pos < n;) {
     if (buf[pos] == 10) {

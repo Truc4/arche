@@ -54,6 +54,17 @@ proc stderr_write(buf: char[], n: int) {
 proc stdin_read(buf: char[], n: int) {
   read(0, buf, n);
 }
+// Safe buffer reads: the caller moves the buffer in (the by-ref fill is visible at the
+// call site) and gets it back with the byte count. The raw `read`/`net_recv` externs
+// remain as the low-level FFI escape hatch.
+func read_into(fd: int, move buf: char[], len: int) -> (char[], int) {
+  n := read(fd, buf, len);
+  return buf, n;
+}
+func recv_into(s: socket, move buf: char[], n: int) -> (char[], int) {
+  k := net_recv(s, buf, n);
+  return buf, k;
+}
 proc assert(condition: int, message: char[]) {
   if (condition == 0) {
     fflush(0);

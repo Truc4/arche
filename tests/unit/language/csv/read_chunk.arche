@@ -1,14 +1,13 @@
 // RUN: %arche -o %t %s && %t
 use csv;
 
-static buf: char[65536];
-
 proc main() {
   fd := csv_open("tests/fixtures/data.csv");
   printf("fd=%d\n", fd);
   if (fd > 0) {
     printf("calling csv_read_chunk\n");
-    n := csv_read_chunk(fd, buf, 65536);
+    buf: char[65536];
+    buf, n := csv_read_chunk(fd, move buf, 65536);
     printf("n=%d\n", n);
   }
   csv_close(move fd);
