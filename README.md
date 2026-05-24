@@ -412,24 +412,33 @@ This is a deliberate choice: **prefer fast, predictable memory access over minim
 
 The `design_analysis/` directory contains exploration and documentation of data layout patterns. Data drives the language design, and patterns and constraints discovered here shape feature decisions.
 
-## Practical Example: ETL Workloads
+## Performance: C speed, scripting brevity
 
-Real-world benchmarks on CSV data show Arche's performance on data processing tasks.
+Single-threaded **transform** benchmark — a 10k-row CSV loaded once (off the clock), then the
+transform body timed over 216,000 iterations. All engines produce identical checksums.
 
-**ETL Tasks** (100M rows, 3.4 GB CSV, end-to-end: mmap load + compute + checksum):
+| Task | C (`-O3`) | **Arche** | pandas | Arche vs C | Arche vs pandas |
+|------|----------:|----------:|-------:|:----------:|:---------------:|
+| `revenue = price × quantity` | 1.24µs | **1.17µs** | 41.7µs | 0.95× (faster) | 36× faster |
+| count `quantity > 0`         | 0.44µs | **0.52µs** | 28.6µs | 1.2×           | 55× faster |
+| bucket timestamps            | 2.30µs | **2.35µs** | 29.2µs | 1.02×          | 12× faster |
+| aggregate by region          | 6.22µs | **6.67µs** | 46.3µs | 1.07×          | 7× faster  |
+| combined pipeline            | 6.36µs | **8.34µs** | 181µs  | 1.31×          | 22× faster |
 
-| Task | Operation | Arche | Pandas | Speedup |
-|------|-----------|-------|--------|---------|
-| Task 1 | `revenue = price × quantity` | 7.1s | 28.8s | **4.1x** |
-| Task 2 | count rows where `quantity > 0` | 2.9s | 29.2s | **10.1x** |
-| Task 3 | `price_bucket = price / 10`, extract hour | 6.7s | 35.9s | **5.4x** |
-| Task 4 | `Σ(price × quantity)` | 7.2s | 31.6s | **4.4x** |
+**Verbosity** — lines to express a task end-to-end (load + compute + output):
 
-Arche uses mmap + in-place parsing (no temp buffers, no per-line syscalls) with columnar static archetypes and vectorized column operations.
+| C | Arche | pandas |
+|----:|------:|-------:|
+| ~100 | ~38 | ~22 |
 
-> ⚠️ **These benchmarks need more validation.** Pandas is interpreted Python — a compiled baseline (Polars, DuckDB, hand-written C) is the meaningful comparison. Numbers are single-run with hot page cache. Task 2's 10x gap is partly unfair: Arche stops at column 2 while Pandas reads all 5. See `design_analysis/README.md` for the full disclaimer.
+Arche runs within **~1–1.3× of hand-written `-O3` C** while the code reads like a vectorized
+script: the transform is a single line in both Arche and pandas
+(`Transaction.revenue = Transaction.price * Transaction.quantity`), where C needs an explicit
+element loop plus ~80 lines of manual CSV parsing. Net — roughly C's speed, ~7–55× faster than
+single-threaded pandas, in ~⅓ the code of C.
 
-See `design_analysis/README.md` for full analysis. See `design_analysis/benchmarks/etl/` for benchmark code and scripts.
+> Single-threaded, AVX2. polars/duckdb are multi-threaded and win on *large* data but lose on this
+> tight per-op loop. Full cross-engine numbers + a 100M-row end-to-end run: `design_analysis/README.md`.
 
 ## Implicit Loop Implementation
 

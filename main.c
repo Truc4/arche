@@ -804,7 +804,9 @@ int main(int argc, char *argv[]) {
 	 * counters and accumulators because that's easier than building SSA
 	 * directly; opt cleans them up before llc sees them. */
 	char opt_cmd[512];
-	snprintf(opt_cmd, sizeof(opt_cmd), "opt -O2 -S -o %s %s", opt_file, ir_file);
+	/* `-mcpu=x86-64-v3` matches llc's target so the loop vectorizer (which runs here in opt)
+	 * uses the AVX2 vector width instead of the generic 2-wide default. */
+	snprintf(opt_cmd, sizeof(opt_cmd), "opt -O2 -mcpu=x86-64-v3 -S -o %s %s", opt_file, ir_file);
 	printf("Optimizing IR...\n");
 	int ret = system(opt_cmd);
 	if (ret != 0) {
