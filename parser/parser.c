@@ -591,11 +591,6 @@ static Decl *parse_proc_decl(Parser *parser) {
 		do {
 			int param_is_move = 0;
 
-			if (check(parser, TOK_OUT)) {
-				error(parser, "`out` parameters were removed; return the value instead via a "
-				              "multi-return signature `-> (T, ...)`");
-				advance(parser);
-			}
 			if (match(parser, TOK_MOVE)) {
 				param_is_move = 1;
 			}
@@ -824,11 +819,6 @@ static Decl *parse_func_decl(Parser *parser) {
 		do {
 			int param_is_move = 0;
 
-			if (check(parser, TOK_OUT)) {
-				error(parser, "`out` parameters were removed; return the value instead via a "
-				              "multi-return signature `-> (T, ...)`");
-				advance(parser);
-			}
 			if (match(parser, TOK_MOVE)) {
 				param_is_move = 1;
 			}

@@ -31,7 +31,7 @@ proc write_output() {
     sprintf(buf, "%g\n", Transaction.revenue[i]);
     arche_fwrite(fd, buf, strlen(buf));
   }
-  arche_fclose(fd);
+  arche_fclose(move fd);
 }
 
 

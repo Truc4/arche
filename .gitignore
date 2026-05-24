@@ -20,6 +20,9 @@ design_analysis/benchmarks/etl/data/*.csv
 # C baseline compiled binaries
 design_analysis/benchmarks/etl/c_baseline/bin/
 
+# Benchmark output CSVs (regenerated on every run)
+design_analysis/benchmarks/transform/out/
+
 # Python virtual environments created for benchmarks
 .venv*/
 

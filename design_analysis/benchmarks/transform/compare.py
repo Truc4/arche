@@ -21,7 +21,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 BENCH_DIR = Path(__file__).resolve().parent
 DEFAULT_CSV = REPO_ROOT / "design_analysis/benchmarks/etl/data/data_10k.csv"
-VENV_PY = REPO_ROOT / "design_analysis/benchmarks/etl/.venv/bin/python3"
+VENV_PY = REPO_ROOT / "design_analysis/benchmarks/.venv/bin/python3"
 
 TASKS = {
     1: {"name": "derived_columns",    "checksum_type": float, "tolerance": 0.01},
