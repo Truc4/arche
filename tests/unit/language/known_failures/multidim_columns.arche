@@ -10,9 +10,9 @@ arche Matrix {
 }
 
 
-static table<Message>(100);
+static pool<Message>(100);
 
-static table<Matrix>(50);
+static pool<Matrix>(50);
 
 
 proc main() {

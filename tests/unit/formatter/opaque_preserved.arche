@@ -3,5 +3,5 @@
 // earlier `unsafe`-stripping bug).
 // RUN: %build/arche-fmt %s | grep "opaque"
 arche File {
-  fd :: opaque
+  fd :: opaque,
 }

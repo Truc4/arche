@@ -1,7 +1,10 @@
 // RUN: %arche -o %t %s && %t
 pos (x, y) :: float
 
-arche Particle { pos_x, pos_y }
+arche Particle {
+  pos_x,
+  pos_y,
+}
 
 static pool<Particle>(5);
 

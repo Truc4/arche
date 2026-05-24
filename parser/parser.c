@@ -188,6 +188,13 @@ static void synchronize(Parser *parser) {
 	int sync_loop_count = 0;
 	const int MAX_SYNC_LOOP = 1000;
 
+	/* Always consume the offending token first, so every synchronize() call makes
+	 * forward progress. Otherwise a caller loop `if (!stmt) { synchronize(); continue; }`
+	 * can re-parse the same token forever (the early returns below would advance 0 tokens),
+	 * spinning and growing memory without bound — the `if (x;)` RAM-explosion bug. */
+	if (parser->current.kind != TOK_EOF)
+		advance(parser);
+
 	while (parser->current.kind != TOK_EOF) {
 		if (++sync_loop_count > MAX_SYNC_LOOP) {
 			parser->had_error = 1;
@@ -872,8 +879,7 @@ static Decl *parse_func_decl(Parser *parser) {
 			TypeRef *rt = parse_type(parser);
 			if (!rt)
 				return NULL;
-			func->return_types =
-			    realloc(func->return_types, (func->return_type_count + 1) * sizeof(TypeRef *));
+			func->return_types = realloc(func->return_types, (func->return_type_count + 1) * sizeof(TypeRef *));
 			func->return_types[func->return_type_count++] = rt;
 		} while (match(parser, TOK_COMMA));
 		if (!match(parser, TOK_RPAREN)) {

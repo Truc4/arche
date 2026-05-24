@@ -9,7 +9,7 @@ arche Transaction {
 }
 
 
-static table<Transaction>(100000000, 100000000) {
+static pool<Transaction>(100000000, 100000000) {
   price: 0.0,
   hour_bucket: 0,
   price_bucket: 0.0,
@@ -25,7 +25,7 @@ proc main() {
   load_transactions();
   Transaction.price_bucket = Transaction.price / 10.0;
   price_sum := 0.0;
-  for (m :=  0; m < 100000000; m += 1) {
+  for (m := 0; m < 100000000; m += 1) {
     price_sum = price_sum + Transaction.price_bucket[m];
   }
   printf("task3_checksum: %g\n", price_sum);

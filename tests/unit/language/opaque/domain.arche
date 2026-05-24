@@ -3,7 +3,9 @@
 // `file` is just a distinct nominal type that erases to a pointer-width slot.
 // RUN: %arche -o %t %s && %t | grep "ok"
 file :: opaque
-arche OpenFiles { file }
+arche OpenFiles {
+  file,
+}
 static pool<OpenFiles>(8);
 proc main() {
   printf("ok opaque_domain\n");

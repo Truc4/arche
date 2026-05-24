@@ -3,7 +3,10 @@
 // flat (Particle.pos_x), never nested (no Particle.pos.x).
 pos (x, y) :: float
 
-arche Particle { pos_x, pos_y }
+arche Particle {
+  pos_x,
+  pos_y,
+}
 
 static pool<Particle>(5);
 

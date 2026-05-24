@@ -329,8 +329,7 @@ static int var_is_opaque(SemanticContext *ctx, VariableInfo *v) {
 	if (v->type) {
 		if (v->type->kind == TYPE_OPAQUE)
 			return 1;
-		if (v->type->kind == TYPE_NAME &&
-		    strcmp(resolve_type_alias(ctx, v->type->data.name), "opaque") == 0)
+		if (v->type->kind == TYPE_NAME && strcmp(resolve_type_alias(ctx, v->type->data.name), "opaque") == 0)
 			return 1;
 	}
 	return 0;
@@ -815,6 +814,25 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 					error(ctx, msg);
 					break;
 				}
+				/* `h.comp` — reading a component through a HANDLE value is not supported
+				 * (a handle is a lifetime token, not a row view); use column access
+				 * `Foo.comp[i]`. An archetype-struct parameter (`p: Player`) is a different
+				 * thing and stays valid. Handles arrive two ways: an annotated `handle<Foo>`
+				 * (TYPE_HANDLE) or an inferred `:= insert(...)` (inferred_type "handle").
+				 * Reject cleanly here (else codegen emits a bare token). */
+				int base_is_handle = (var->type && var->type->kind == TYPE_HANDLE) ||
+				                     (var->inferred_type && strcmp(var->inferred_type, "handle") == 0);
+				if (base_is_handle) {
+					const char *an =
+					    (var->type && var->type->kind == TYPE_HANDLE) ? var->type->data.handle.archetype_name : NULL;
+					char msg[256];
+					snprintf(msg, sizeof(msg),
+					         "cannot read component '%s' through handle '%s': a handle is a lifetime token, "
+					         "not a row view — use column access `%s.%s[i]`",
+					         field_name, base_name, an ? an : "the archetype", field_name);
+					error(ctx, msg);
+					break;
+				}
 				/* check if variable refers to an archetype entry */
 				if (var->archetype_name) {
 					arch = find_archetype(ctx, var->archetype_name);
@@ -985,8 +1003,7 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 									snprintf(msg, sizeof(msg),
 									         "value '%s' must be moved into `move` parameter '%s' of '%s' "
 									         "(write `move %s`)",
-									         a->data.name.name, p->name ? p->name : "?", func_name,
-									         a->data.name.name);
+									         a->data.name.name, p->name ? p->name : "?", func_name, a->data.name.name);
 									error(ctx, msg);
 								}
 							}
@@ -1462,7 +1479,8 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 			if (arch->fields[i]->name && arch->fields[j]->name &&
 			    strcmp(arch->fields[i]->name, arch->fields[j]->name) == 0) {
 				char msg[256];
-				snprintf(msg, sizeof(msg), "duplicate component '%s' in archetype (a component type may appear only once)",
+				snprintf(msg, sizeof(msg),
+				         "duplicate component '%s' in archetype (a component type may appear only once)",
 				         arch->fields[i]->name);
 				error(ctx, msg);
 			}
@@ -1669,7 +1687,7 @@ static int name_is_effectful_callee(SemanticContext *ctx, const char *name) {
 				return 1; /* extern func: opaque C side effects */
 			if (d->data.func->return_type_count > 1)
 				return 1; /* multi-return func fills caller-passed buffers in place */
-			return 0; /* pure-ish func */
+			return 0;     /* pure-ish func */
 		}
 	}
 	return 0;
@@ -2408,8 +2426,7 @@ SemanticContext *semantic_analyze(Program *prog) {
 				}
 			}
 			ctx->type_alias_names = realloc(ctx->type_alias_names, (ctx->type_alias_count + 1) * sizeof(char *));
-			ctx->type_alias_backings =
-			    realloc(ctx->type_alias_backings, (ctx->type_alias_count + 1) * sizeof(char *));
+			ctx->type_alias_backings = realloc(ctx->type_alias_backings, (ctx->type_alias_count + 1) * sizeof(char *));
 			ctx->type_alias_names[ctx->type_alias_count] = c->name;
 			ctx->type_alias_backings[ctx->type_alias_count] = c->value->data.name.name;
 			ctx->type_alias_count++;
@@ -2489,8 +2506,7 @@ SemanticContext *semantic_analyze(Program *prog) {
 		const char *b = resolve_type_alias(ctx, ctx->type_alias_names[i]);
 		if (!is_primitive_type_name(b) && strcmp(b, "opaque") != 0) {
 			char msg[256];
-			snprintf(msg, sizeof(msg), "type alias '%s' has unknown backing type '%s'", ctx->type_alias_names[i],
-			         b);
+			snprintf(msg, sizeof(msg), "type alias '%s' has unknown backing type '%s'", ctx->type_alias_names[i], b);
 			error(ctx, msg);
 		}
 	}

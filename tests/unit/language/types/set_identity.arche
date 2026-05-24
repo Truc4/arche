@@ -5,8 +5,14 @@
 hp :: int
 mp :: int
 
-arche A { hp, mp }
-arche B { mp, hp }
+arche A {
+  hp,
+  mp,
+}
+arche B {
+  mp,
+  hp,
+}
 
 static pool<A>(4);
 static pool<B>(4);

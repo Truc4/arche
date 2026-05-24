@@ -2,4 +2,6 @@
 // opaque component (`make format` rewrites every .arche file).
 // RUN: %build/arche-fmt %s | grep "file :: opaque"
 file :: opaque
-arche OpenFiles { file }
+arche OpenFiles {
+  file,
+}

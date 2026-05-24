@@ -302,7 +302,6 @@ void test_compile_overloads_smoke(void) {
 	test_pass_msg();
 }
 
-
 /* Test: delete emits the generation-exhaustion abort. A handle is i64 = slot(low 32) |
  * gen(high 32); a slot's i32 generation bumps on each delete. At 0xFFFFFFFF it would wrap and
  * a stale handle could alias a fresh entity (ABA), so delete aborts loudly instead. Reaching it

@@ -662,8 +662,7 @@ static int archetypes_same_shape(AstArchetypeDecl *a, AstArchetypeDecl *b) {
 	for (int i = 0; i < a->field_count; i++) {
 		int found = 0;
 		for (int j = 0; j < b->field_count; j++) {
-			if (a->fields[i]->name && b->fields[j]->name &&
-			    strcmp(a->fields[i]->name, b->fields[j]->name) == 0) {
+			if (a->fields[i]->name && b->fields[j]->name && strcmp(a->fields[i]->name, b->fields[j]->name) == 0) {
 				found = 1;
 				break;
 			}
@@ -713,7 +712,8 @@ static int get_arch_static_capacity(CodegenContext *ctx, const char *arch_name) 
 		if (ctx->ast->decls[i]->kind == AST_DECL_STATIC) {
 			AstStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
 			if (s->kind == AST_STATIC_ARCHETYPE &&
-			    strcmp(canonical_arch_name(ctx, s->archetype.archetype_name), canonical_arch_name(ctx, arch_name)) == 0 &&
+			    strcmp(canonical_arch_name(ctx, s->archetype.archetype_name), canonical_arch_name(ctx, arch_name)) ==
+			        0 &&
 			    s->archetype.field_count > 0 && s->archetype.field_values[0]->kind == AST_EXPR_LITERAL) {
 				return atoi(s->archetype.field_values[0]->data.literal.lexeme);
 			}
@@ -2143,9 +2143,8 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				}
 				if (expr->data.call.args[1]->kind == AST_EXPR_NAME) {
 					ValueInfo *hvi = find_value(ctx, expr->data.call.args[1]->data.name.name);
-					if (hvi && hvi->field_type && strcmp(hvi->field_type, "handle") == 0 &&
-					    hvi->handle_archetype && arch_name &&
-					    strcmp(hvi->handle_archetype, arch_name) != 0) {
+					if (hvi && hvi->field_type && strcmp(hvi->field_type, "handle") == 0 && hvi->handle_archetype &&
+					    arch_name && strcmp(hvi->handle_archetype, arch_name) != 0) {
 						fprintf(stderr, "Error: type mismatch in delete: handle for %s cannot delete %s\n",
 						        hvi->handle_archetype, arch_name);
 						strcpy(result_buf, "0");
@@ -2308,7 +2307,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			call_arg_types[i] = "i32"; /* Default type */
 
 			/* Determine what callee param expects */
-			int callee_wants_arr = 0;       /* unbounded char[] (arche_array struct on non-extern) */
+			int callee_wants_arr = 0;        /* unbounded char[] (arche_array struct on non-extern) */
 			int callee_wants_shaped_arr = 0; /* sized char[N] (raw i8*) */
 			int callee_is_extern = (callee_proc && callee_proc->is_extern) || (callee_func && callee_func->is_extern);
 			AstType *callee_pt = NULL;
@@ -2713,8 +2712,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			if (callee_func && callee_func->return_type_count > 1) {
 				func_llvm_return_type(callee_func, multiret_buf, sizeof(multiret_buf));
 				return_type = multiret_buf;
-				buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type,
-				                  func_name ? func_name : "unknown");
+				buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type, func_name ? func_name : "unknown");
 				for (int i = 0; i < expr->data.call.arg_count; i++) {
 					buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
 					if (i < expr->data.call.arg_count - 1)
@@ -3936,16 +3934,16 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 				vi->handle_archetype = malloc(strlen(insert_archetype) + 1);
 				strcpy(vi->handle_archetype, insert_archetype);
 			}
-				/* Propagate the handle's archetype through a copy (let alias := h) so
-				 * delete(alias) can infer the pool. */
-				if (!vi->handle_archetype && stmt->data.bind_stmt.value &&
-				    stmt->data.bind_stmt.value->kind == AST_EXPR_NAME) {
-					ValueInfo *src = find_value(ctx, stmt->data.bind_stmt.value->data.name.name);
-					if (src && src->handle_archetype) {
-						vi->handle_archetype = malloc(strlen(src->handle_archetype) + 1);
-						strcpy(vi->handle_archetype, src->handle_archetype);
-					}
+			/* Propagate the handle's archetype through a copy (let alias := h) so
+			 * delete(alias) can infer the pool. */
+			if (!vi->handle_archetype && stmt->data.bind_stmt.value &&
+			    stmt->data.bind_stmt.value->kind == AST_EXPR_NAME) {
+				ValueInfo *src = find_value(ctx, stmt->data.bind_stmt.value->data.name.name);
+				if (src && src->handle_archetype) {
+					vi->handle_archetype = malloc(strlen(src->handle_archetype) + 1);
+					strcpy(vi->handle_archetype, src->handle_archetype);
 				}
+			}
 			vi->bit_width = bit_width;
 
 			if (ctx->scope_count > 0) {
@@ -3967,10 +3965,10 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		AstExpr *rhs = stmt->data.multi_bind.value;
 		int target_count = stmt->data.multi_bind.target_count;
 		AstBindingTarget *targets = stmt->data.multi_bind.targets;
-		const char *fn = (rhs && rhs->kind == AST_EXPR_CALL && rhs->data.call.callee &&
-		                  rhs->data.call.callee->kind == AST_EXPR_NAME)
-		                     ? rhs->data.call.callee->data.name.name
-		                     : NULL;
+		const char *fn =
+		    (rhs && rhs->kind == AST_EXPR_CALL && rhs->data.call.callee && rhs->data.call.callee->kind == AST_EXPR_NAME)
+		        ? rhs->data.call.callee->data.name.name
+		        : NULL;
 		AstFuncDecl *callee_func = fn ? find_func_decl(ctx, fn) : NULL;
 		if (callee_func && callee_func->return_type_count > 1) {
 			char struct_buf[256];
@@ -4907,9 +4905,8 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		const char *branch_cond = cond_buf;
 		if (cond_buf[0] == '%') {
 			char *truncated = gen_value_name(ctx);
-			if (stmt->data.if_stmt.cond &&
-			    (stmt->data.if_stmt.cond->resolved.tag == AST_TYPE_OPAQUE ||
-			     stmt->data.if_stmt.cond->resolved.tag == AST_TYPE_HANDLE))
+			if (stmt->data.if_stmt.cond && (stmt->data.if_stmt.cond->resolved.tag == AST_TYPE_OPAQUE ||
+			                                stmt->data.if_stmt.cond->resolved.tag == AST_TYPE_HANDLE))
 				buffer_append_fmt(ctx, "  %s = icmp ne i64 %s, 0\n", truncated, cond_buf); /* non-null cell */
 			else
 				buffer_append_fmt(ctx, "  %s = trunc i32 %s to i1\n", truncated, cond_buf);
@@ -6364,7 +6361,6 @@ static void codegen_sys_decl(CodegenContext *ctx, AstSysDecl *sys) {
 	/* Register function name (no version suffix) for AST_STMT_RUN lookup */
 	codegen_register_sys_version(ctx, sys->name, sys->name);
 }
-
 
 /* ========== PUBLIC API ========== */
 

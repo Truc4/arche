@@ -172,13 +172,14 @@ format: $(FMT_BIN)
 	             -not -path "*/.venv/*" \
 	             -not -path "*/site-packages/*" \
 	             -not -path "*/__pycache__/*"); do \
-		tmp=$$(mktemp); \
-		if timeout 5 ./$(FMT_BIN) "$$f" > "$$tmp"; then \
+		tmp=$$(mktemp --suffix=.arche); \
+		if timeout 5 ./$(FMT_BIN) "$$f" > "$$tmp" 2>/dev/null \
+		   && timeout 5 ./$(FMT_BIN) "$$tmp" > /dev/null 2>&1; then \
 			mv "$$tmp" "$$f"; \
 			echo "✓ $$f"; \
 		else \
 			rm -f "$$tmp"; \
-			echo "✗ $$f (parse error or timeout)"; \
+			echo "✗ $$f (parse error or output would not round-trip — left unchanged)"; \
 		fi; \
 	done
 	for f in $$(find . \( -name "*.c" -o -name "*.h" \) -type f \

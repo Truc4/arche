@@ -6,7 +6,7 @@ arche Transaction {
 }
 
 
-static table<Transaction>(10000, 10000) {
+static pool<Transaction>(10000, 10000) {
   quantity: 0,
 };
 
@@ -32,8 +32,8 @@ proc main() {
   // arche's i32 `int`. Use a float scalar (2^53 headroom for exact integer counts).
   count := 0.0;
   t0 := arche_now_sec();
-  for (iter :=  0; iter < 216000; iter += 1) {
-    for (i :=  0; i < 10000; i += 1) {
+  for (iter := 0; iter < 216000; iter += 1) {
+    for (i := 0; i < 10000; i += 1) {
       if (Transaction.quantity[i] > 0) {
         count = count + 1.0;
       }

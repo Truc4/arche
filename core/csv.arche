@@ -51,7 +51,7 @@ func name_eq(name: char[], data: char[], start: i64, end: i64) -> int {
 // start offset of the col-th comma-separated field within data[row_start..row_end)
 func field_at(data: char[], row_start: i64, row_end: i64, col: int) -> i64 {
   p: i64 = row_start;
-  for (remaining :=  col; remaining > 0; remaining -= 1) {
+  for (remaining := col; remaining > 0; remaining -= 1) {
     p = find_byte(data, p, row_end, ',') + 1;
   }
   return p;
@@ -91,7 +91,7 @@ proc load(arch: archetype, path: char[]) {
 
   // row pass: pull each field from its mapped column
   pos: i64 = hdr_end + 1;
-  for (row :=  0; row < arch.capacity; row += 1) {
+  for (row := 0; row < arch.capacity; row += 1) {
     if (pos >= size) {
       break;
     }

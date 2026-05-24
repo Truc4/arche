@@ -271,8 +271,10 @@ ALL planned work is done or explicitly cancelled:
   to touch data; a handle is a lifetime/capacity token (produced by `insert`, stored, passed,
   null-checked, `delete`d with generation/stale-handle abort), not a read handle. The codegen path
   that would deref `h.comp` does not exist and there are **no plans to add it** — not adding a feature
-  just because other languages have it. (A bare `h.comp` currently emits an invalid token rather than
-  a diagnostic; if it ever needs guarding, reject it at semantic time, but it's not on the roadmap.)
+  just because other languages have it. **Now rejected cleanly at semantic time** (`semantic.c`
+  EXPR_FIELD: a handle base — annotated `handle<Foo>` or inferred from `insert` — errors "a handle is
+  a lifetime token, not a row view; use column access `Foo.comp[i]`") instead of emitting a bare
+  token. Test: `handles/handle_field_read_rejected`.
 - **Generation-checked handles** — handle is `i64` = slot (low 32) | generation (high 32); a slot's
   i32 gen bumps on `delete`, validated on use (mismatch → abort: stale/use-after-free/ABA, tested by
   `stale_handle_abort` / `handle_use_after_free` / `handle_use_after_reinsert`). At gen `0xFFFFFFFF` a
@@ -281,5 +283,12 @@ ALL planned work is done or explicitly cancelled:
   is emitted. DONE.
 - **Multi-*scalar* return** (`-> (int, int)` via LLVM struct ABI) — **DONE** (insertvalue/extractvalue,
   uniform return-value lists, no single-return special case). See the multi-return DONE block above.
-- **Repo-wide `make format`** still has the pre-existing RAM-explosion/semicolon bug — do not run it
-  blanket. (Per-file `arche-fmt` is fine and round-trips all current constructs, verified.)
+- **Repo-wide `make format` — FIXED, safe to run blanket.** Two fixes: (1) the parser's error
+  recovery `synchronize()` now always consumes ≥1 token, so a syntax error can no longer spin the
+  caller loop forever (the `if (x;)` RAM explosion — confirmed it core-dumped under a 1.5 GB cap
+  before, fails gracefully after); (2) the `make format` target now re-parses the formatted output
+  and only overwrites when it round-trips, so the formatter can never corrupt a file into a syntax
+  error. Blanket run: 318 formatted, 15 skipped (left unchanged) — the 11 `known_failures/*`, two
+  negative parse tests, the stale `errors/handle_type_mismatch_error` (tests removed explicit-pool
+  delete mismatch — `delete(h)` infers the pool, so the mismatch can't occur), and a pre-broken
+  `design_analysis` benchmark (`csv_tick`, not lit-tested). Suite stays 224/224 + all C tests green.

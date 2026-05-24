@@ -7,8 +7,8 @@ arche Body {
   vel :: float,
   mass :: float,
 }
-static table<Particle>(100);
-static table<Body>(50);
+static pool<Particle>(100);
+static pool<Body>(50);
 sys integrate(pos, vel) {
   pos = pos + vel;
 }
@@ -16,11 +16,11 @@ sys dampen(vel) {
   vel = vel * 0.99;
 }
 proc main() {
-  insert(table<Particle>, 1.0, 0.1);
-  insert(table<Particle>, 2.0, 0.2);
-  insert(table<Particle>, 3.0, 0.3);
-  insert(table<Body>, 5.0, 0.5, 10.0);
-  insert(table<Body>, 6.0, 0.6, 20.0);
+  insert(Particle, 1.0, 0.1);
+  insert(Particle, 2.0, 0.2);
+  insert(Particle, 3.0, 0.3);
+  insert(Body, 5.0, 0.5, 10.0);
+  insert(Body, 6.0, 0.6, 20.0);
   run integrate;
   run dampen;
   print("systems executed\n");

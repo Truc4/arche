@@ -3,7 +3,10 @@
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "duplicate component" %t.out
 hp :: int
 
-arche Foo { hp, hp }
+arche Foo {
+  hp,
+  hp,
+}
 
 proc main() {
 }

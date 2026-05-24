@@ -788,12 +788,11 @@ int main(int argc, char *argv[]) {
 	/* Call cc to assemble and link with runtime objects */
 	/* Base command: fixed runtime objects */
 	char cc_cmd[4096];
-	int cc_len =
-	    snprintf(cc_cmd, sizeof(cc_cmd),
-	             "cc -no-pie -mcmodel=large -o %s %s " ARCHE_RUNTIME_DIR "/stack_check.o " ARCHE_RUNTIME_DIR
-	             "/io.o " ARCHE_RUNTIME_DIR "/net.o " ARCHE_RUNTIME_DIR "/term.o "
-	             "-lc",
-	             output_file, asm_file);
+	int cc_len = snprintf(cc_cmd, sizeof(cc_cmd),
+	                      "cc -no-pie -mcmodel=large -o %s %s " ARCHE_RUNTIME_DIR "/stack_check.o " ARCHE_RUNTIME_DIR
+	                      "/io.o " ARCHE_RUNTIME_DIR "/net.o " ARCHE_RUNTIME_DIR "/term.o "
+	                      "-lc",
+	                      output_file, asm_file);
 
 	/* Append any --link paths supplied on the command line */
 	for (int li = 0; li < link_count && cc_len < (int)sizeof(cc_cmd) - 1; li++) {

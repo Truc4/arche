@@ -3,7 +3,9 @@
 // outlives the delete+reinsert, so deleting through it aborts.
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && ! %t
 cell :: opaque
-arche Resource { cell }
+arche Resource {
+  cell,
+}
 extern func resource_open(initial: int) -> cell;
 static pool<Resource>(8);
 

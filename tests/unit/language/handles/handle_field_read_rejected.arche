@@ -1,0 +1,15 @@
+// Reading a component through a handle is a deliberate non-goal: a handle is a lifetime
+// token (produced by insert, stored, passed, null-checked, deleted), not a row view.
+// Column access `Foo.hp[i]` is the way to touch data. The access is rejected cleanly
+// rather than emitting a bare token into the IR.
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "handle is a lifetime token" %t.out
+arche Foo {
+  hp :: int,
+}
+static pool<Foo>(10);
+
+proc main() {
+  h := insert(Foo, 5);
+  x := h.hp;
+  printf("x=%d\n", x);
+}
