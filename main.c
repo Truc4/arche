@@ -528,6 +528,60 @@ static void usage(const char *prog) {
 	exit(1);
 }
 
+/* Expand a bare archetype component that references a top-level tuple group into the inline
+ * tuple form, so `pos (x, y) :: float` + `arche P { pos }` becomes the flat columns
+ * `pos_x`, `pos_y` via the existing tuple flattening (semantic + lower). Each reference gets
+ * its own cloned TYPE_TUPLE so there is no shared/aliased node. */
+static void expand_archetype_tuple_groups(Program *prog) {
+	if (!prog)
+		return;
+	for (int a = 0; a < prog->decl_count; a++) {
+		if (prog->decls[a]->kind != DECL_ARCHETYPE)
+			continue;
+		ArchetypeDecl *arch = prog->decls[a]->data.archetype;
+		for (int f = 0; f < arch->field_count; f++) {
+			FieldDecl *fd = arch->fields[f];
+			if (!fd->type || fd->type->kind != TYPE_NAME || !fd->type->data.name)
+				continue;
+			const char *ref = fd->type->data.name;
+			for (int d = 0; d < prog->decl_count; d++) {
+				if (prog->decls[d]->kind != DECL_CONST)
+					continue;
+				ConstDecl *cd = prog->decls[d]->data.constant;
+				if (!cd || !cd->name || !cd->type_value || cd->type_value->kind != TYPE_TUPLE)
+					continue;
+				if (strcmp(cd->name, ref) != 0)
+					continue;
+				/* Clone the group's tuple into this field; the field name (e.g. "pos") stays the
+				 * column prefix, so flattening yields `pos_<member>`. */
+				TypeRef *src = cd->type_value;
+				int n = src->data.tuple.field_count;
+				TypeRef *tt = malloc(sizeof(TypeRef));
+				tt->kind = TYPE_TUPLE;
+				tt->loc = fd->type->loc;
+				tt->data.tuple.field_count = n;
+				tt->data.tuple.field_names = malloc((n > 0 ? n : 1) * sizeof(char *));
+				tt->data.tuple.field_types = malloc((n > 0 ? n : 1) * sizeof(TypeRef *));
+				for (int j = 0; j < n; j++) {
+					const char *fn = src->data.tuple.field_names[j];
+					tt->data.tuple.field_names[j] = malloc(strlen(fn) + 1);
+					strcpy(tt->data.tuple.field_names[j], fn);
+					TypeRef *st = src->data.tuple.field_types[j];
+					TypeRef *ct = malloc(sizeof(TypeRef));
+					*ct = *st;
+					if (st->kind == TYPE_NAME && st->data.name) {
+						ct->data.name = malloc(strlen(st->data.name) + 1);
+						strcpy(ct->data.name, st->data.name);
+					}
+					tt->data.tuple.field_types[j] = ct;
+				}
+				fd->type = tt; /* old TYPE_NAME ref is abandoned (small, one-shot leak) */
+				break;
+			}
+		}
+	}
+}
+
 /* Maximum number of --link paths accepted on one command line */
 #define MAX_LINK_PATHS 32
 
@@ -681,6 +735,9 @@ int main(int argc, char *argv[]) {
 
 	/* Resolve use declarations (module loading) */
 	resolve_uses(prog, input_file);
+
+	/* Expand `arche { pos }` references to top-level tuple groups into flat columns. */
+	expand_archetype_tuple_groups(prog);
 
 	/* Semantic analysis */
 	SemanticContext *sem_ctx = semantic_analyze(prog);

@@ -2726,11 +2726,10 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			/* Return type from the func declaration. A scalar-position call uses the single
 			 * return type. */
 			AstType *crt = (callee_func && callee_func->return_type_count > 0) ? callee_func->return_types[0] : NULL;
-			if (crt && crt->tag == AST_TYPE_ARRAY) {
-				/* Func returning char[]: a raw i8* byte view. */
-				return_type = "i8*";
-			} else if (crt) {
-				return_type = llvm_type_from_arche(field_base_type_name(crt));
+			if (crt) {
+				/* Use the same mapping as the function definition's return type so the call
+				 * site and the callee agree — char[] / char[N] both become i8* (a byte view). */
+				return_type = return_member_llvm(crt);
 			} else if (callee_proc && callee_proc->is_extern) {
 				/* For extern procs, check if they're in core lib (known to return a value) */
 				if (strcmp(func_name, "atof") == 0) {
@@ -3773,8 +3772,26 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			strcpy(value_buf, "0");
 		}
 
-		int is_char_array_call = stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == AST_EXPR_CALL &&
-		                         stmt->data.bind_stmt.value->resolved.tag == AST_TYPE_CHAR_ARRAY;
+		/* A call that returns a char array — unbounded `char[]` or sized `char[N]` — yields a
+		 * raw i8* byte view; bind it as type-6 so `b := f(move b)` is indexable. Check the
+		 * resolved tag, and (since a single `char[N]` return resolves to a shaped type) the
+		 * callee's declared return type directly. */
+		int is_char_array_call = 0;
+		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == AST_EXPR_CALL) {
+			if (stmt->data.bind_stmt.value->resolved.tag == AST_TYPE_CHAR_ARRAY) {
+				is_char_array_call = 1;
+			} else if (stmt->data.bind_stmt.value->data.call.callee &&
+			           stmt->data.bind_stmt.value->data.call.callee->kind == AST_EXPR_NAME) {
+				AstFuncDecl *cf =
+				    find_func_decl(ctx, stmt->data.bind_stmt.value->data.call.callee->data.name.name);
+				if (cf && cf->return_type_count == 1 && cf->return_types[0]) {
+					AstType *rt = cf->return_types[0];
+					if (rt->tag == AST_TYPE_ARRAY ||
+					    (rt->tag == AST_TYPE_SHAPED_ARRAY && rt->elem && rt->elem->tag == AST_TYPE_CHAR))
+						is_char_array_call = 1;
+				}
+			}
+		}
 
 		if (is_char_array_call) {
 			/* A func returning char[] (e.g. arche_file_map) yields a raw i8* byte

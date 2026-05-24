@@ -26,9 +26,9 @@ proc main() {
   src[6] = 'e';
   src[7] = 'f';
   dst: char[8];
-  dst = copy_bytes(move dst, src, 8);
+  dst := copy_bytes(move dst, src, 8);
   mask: char[8];
-  mask = classify_commas(src, move mask, 8);
+  mask := classify_commas(src, move mask, 8);
   commas: i64 = 0;
   for (i: i64 = 0; i < 8; i = i + 1) {
     commas = commas + mask[i];

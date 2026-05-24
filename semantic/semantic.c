@@ -263,10 +263,12 @@ static TypeRef *func_first_return_type(const FuncDecl *f) {
 }
 
 static VariableInfo *find_variable(SemanticContext *ctx, const char *name) {
-	/* search from innermost to outermost scope */
+	/* Search innermost to outermost scope; within a scope prefer the NEWEST binding so a
+	 * shadow wins. This is what makes `:=` rebinding work: `buf := foo(move buf)` consumes the
+	 * old `buf` and binds a fresh one, and name resolution then sees the fresh one. */
 	for (int i = ctx->scope_count - 1; i >= 0; i--) {
 		Scope *scope = &ctx->scopes[i];
-		for (int j = 0; j < scope->var_count; j++) {
+		for (int j = scope->var_count - 1; j >= 0; j--) {
 			if (strcmp(scope->vars[j]->name, name) == 0) {
 				return scope->vars[j];
 			}
@@ -1241,22 +1243,26 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		 * returned), not a target we are about to introduce. */
 		analyze_expression(ctx, stmt->data.multi_bind.value);
 
-		/* Then bind the targets. A new target introduces a binding (a moved value coming
-		 * back rebinds an existing name, reviving it); an existing target must be declared. */
+		/* Then bind the targets. A new target (`x` / `x:`) introduces a FRESH binding that
+		 * shadows any same-named one — so `buf := f(move buf)` rebinds the moved buffer with
+		 * no special-casing. An existing target (assignment-style) must be declared and live;
+		 * assigning to a moved (dead) binding is an error — use `:=`. */
 		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
 			BindingTarget *target = &stmt->data.multi_bind.targets[i];
-			VariableInfo *existing = find_variable(ctx, target->name);
 			if (target->is_new) {
-				if (existing)
-					existing->is_consumed = 0; /* moved-out buffer coming back */
-				else
-					add_variable(ctx, target->name, target->type);
-			} else if (!existing) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "Variable '%s' not declared", target->name);
-				error(ctx, msg);
+				add_variable(ctx, target->name, target->type);
 			} else {
-				existing->is_consumed = 0; /* reassignment revives a moved binding */
+				VariableInfo *existing = find_variable(ctx, target->name);
+				if (!existing) {
+					char msg[256];
+					snprintf(msg, sizeof(msg), "Variable '%s' not declared", target->name);
+					error(ctx, msg);
+				} else if (existing->is_consumed) {
+					char msg[256];
+					snprintf(msg, sizeof(msg), "cannot assign to '%s' after it was moved — rebind with `:=`",
+					         target->name);
+					error(ctx, msg);
+				}
 			}
 		}
 		break;
@@ -1265,11 +1271,17 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 	case STMT_ASSIGN:
 		analyze_expression(ctx, stmt->data.assign_stmt.target);
 		analyze_expression(ctx, stmt->data.assign_stmt.value);
-		/* Reassigning a name revives it if it was moved: `buf = foo(move buf)`. */
+		/* You cannot assign to a binding that was moved (it's dead): `buf = foo(move buf)` must
+		 * be written `buf := foo(move buf)` (a fresh binding). The move in the RHS consumes the
+		 * target above, so check it here. */
 		if (stmt->data.assign_stmt.target->type == EXPR_NAME) {
 			VariableInfo *t = find_variable(ctx, stmt->data.assign_stmt.target->data.name.name);
-			if (t)
-				t->is_consumed = 0;
+			if (t && t->is_consumed) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "cannot assign to '%s' after it was moved — rebind with `:=`",
+				         stmt->data.assign_stmt.target->data.name.name);
+				error(ctx, msg);
+			}
 		}
 		break;
 

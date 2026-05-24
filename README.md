@@ -310,12 +310,13 @@ Systems support if/for statements for control flow. For maximum cache efficiency
 ## Example
 
 ```arche
-// Mint flat tuple component types
+// Define tuple groups (each mints flat components, e.g. pos_x, pos_y)
 pos (x, y) :: float
 vel (vx, vy) :: float
 
-// An archetype is the set of those components
-arche Particle { pos_x, pos_y, vel_vx, vel_vy }
+// Reference the groups by name — they expand to their flat columns
+// (`{ pos, vel }` == `{ pos_x, pos_y, vel_vx, vel_vy }`)
+arche Particle { pos, vel }
 
 // Reserve the pool at top level
 static pool<Particle>(10000, 10000);
