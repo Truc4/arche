@@ -113,10 +113,15 @@ An opaque LOCAL must be consumed before scope end (`pop_scope` check via `var_is
   is rejected (`analyze_archetype_decl`). Test: `types/dup_component` (negative).
 - Set-identity is observable via the existing "Shape already allocated" guard: two reordered
   same-set archetypes can't both declare a pool. Test: `types/set_identity` (negative — proves dedup).
-- **KNOWN GAP (deferred, documented):** inserting/accessing a shape via a *different* same-set
-  archetype name (e.g. `insert(B,…)`/`b.hp` where B shares A's shape and only A has a pool) is NOT
-  wired in codegen (codegen is name-based; B has no `@B$pool`, emits raw token). Niche; the main
-  set-identity consumer (`run {comps}` queries) is CANCELLED, so nothing needs cross-name sharing.
+- **RESOLVED — aliases share one pool (shape-keyed codegen).** Corrected model (per user): one
+  shape = one pool; archetype *names* are aliases for the shape, and every alias resolves to that
+  one pool/struct. Codegen now canonicalizes: `find_archetype_decl` returns the first-declared decl
+  of the same shape; `codegen_archetype_decl` emits the struct + `@arche_insert/_delete/_dealloc` +
+  global ONCE per shape (skips non-canonical aliases); `get_arch_static_capacity/count`, the
+  archetype-name→pointer path, alloc-init, and insert/delete/dealloc call sites all canonicalize the
+  name. So `insert(B,…)` lands in `pool<A>`'s storage; positional insert uses the shape's canonical
+  (first-declared) component order. Tests: `types/alias_shared_pool` (sharing), `types/set_identity`
+  (one-shape-one-pool double-alloc guard). The "shape already allocated" guard is CORRECT and stays.
 
 ## CANCELLED (per user) — `run {comps}` query
 User: "leave run alone, run sys; that's all it will ever be until I say otherwise." The

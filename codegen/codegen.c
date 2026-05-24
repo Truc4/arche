@@ -646,15 +646,59 @@ static void register_static_arrays_in_scope(CodegenContext *ctx) {
 	}
 }
 
-/* Helper: find archetype declaration by name */
+/* Two archetype decls denote the same shape iff they have the same *set* of component
+ * names (order-independent — an archetype is an unordered set of component types). */
+static int archetypes_same_shape(AstArchetypeDecl *a, AstArchetypeDecl *b) {
+	if (a == b)
+		return 1;
+	if (!a || !b || a->field_count != b->field_count)
+		return 0;
+	for (int i = 0; i < a->field_count; i++) {
+		int found = 0;
+		for (int j = 0; j < b->field_count; j++) {
+			if (a->fields[i]->name && b->fields[j]->name &&
+			    strcmp(a->fields[i]->name, b->fields[j]->name) == 0) {
+				found = 1;
+				break;
+			}
+		}
+		if (!found)
+			return 0;
+	}
+	return 1;
+}
+
+/* One shape = one pool. An archetype name is an *alias* for its shape; every alias resolves
+ * to the same storage. The canonical decl is the first-declared archetype of that shape —
+ * its name backs the single `%struct.` / `@archetype_` / `@` symbols and its field order is
+ * the shape's column layout. */
+static AstArchetypeDecl *canonical_archetype_decl(CodegenContext *ctx, AstArchetypeDecl *arch) {
+	if (!arch)
+		return NULL;
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		AstDecl *decl = ctx->ast->decls[i];
+		if (decl->kind == AST_DECL_ARCHETYPE && archetypes_same_shape(decl->data.archetype, arch))
+			return decl->data.archetype;
+	}
+	return arch;
+}
+
+/* Find an archetype declaration by name, resolving aliases to the shape's canonical decl. */
 static AstArchetypeDecl *find_archetype_decl(CodegenContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		AstDecl *decl = ctx->ast->decls[i];
 		if (decl->kind == AST_DECL_ARCHETYPE && strcmp(decl->data.archetype->name, name) == 0) {
-			return decl->data.archetype;
+			return canonical_archetype_decl(ctx, decl->data.archetype);
 		}
 	}
 	return NULL;
+}
+
+/* The canonical shape name for an archetype name (used to form storage symbols). Returns the
+ * input unchanged if no archetype by that name exists. */
+static const char *canonical_arch_name(CodegenContext *ctx, const char *name) {
+	AstArchetypeDecl *c = find_archetype_decl(ctx, name);
+	return c ? c->name : name;
 }
 
 /* Return compile-time capacity for arch from static declaration, or 0 if not declared static */
@@ -662,7 +706,8 @@ static int get_arch_static_capacity(CodegenContext *ctx, const char *arch_name) 
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		if (ctx->ast->decls[i]->kind == AST_DECL_STATIC) {
 			AstStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
-			if (s->kind == AST_STATIC_ARCHETYPE && strcmp(s->archetype.archetype_name, arch_name) == 0 &&
+			if (s->kind == AST_STATIC_ARCHETYPE &&
+			    strcmp(canonical_arch_name(ctx, s->archetype.archetype_name), canonical_arch_name(ctx, arch_name)) == 0 &&
 			    s->archetype.field_count > 0 && s->archetype.field_values[0]->kind == AST_EXPR_LITERAL) {
 				return atoi(s->archetype.field_values[0]->data.literal.lexeme);
 			}
@@ -685,7 +730,7 @@ static int get_arch_static_count(CodegenContext *ctx, const char *arch_name) {
 		AstStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
 		if (s->kind != AST_STATIC_ARCHETYPE)
 			continue;
-		if (strcmp(s->archetype.archetype_name, arch_name) != 0)
+		if (strcmp(canonical_arch_name(ctx, s->archetype.archetype_name), canonical_arch_name(ctx, arch_name)) != 0)
 			continue;
 		if (s->archetype.field_count == 0)
 			return 0;
@@ -1180,15 +1225,17 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			snprintf(global_ref, sizeof(global_ref), "@%s", name);
 			strcpy(result_buf, global_ref);
 		} else if (find_archetype_decl(ctx, name)) {
-			/* Archetype name — static global is @X directly; dynamic is loaded from @archetype_X */
-			if (get_arch_static_capacity(ctx, name) > 0) {
+			/* Archetype name → its shape's storage. Aliases resolve to the canonical name, so
+			 * every alias references the one struct/global. Static global is @X directly;
+			 * dynamic is loaded from @archetype_X. */
+			const char *cn = canonical_arch_name(ctx, name);
+			if (get_arch_static_capacity(ctx, cn) > 0) {
 				char global_ref[256];
-				snprintf(global_ref, sizeof(global_ref), "@%s", name);
+				snprintf(global_ref, sizeof(global_ref), "@%s", cn);
 				strcpy(result_buf, global_ref);
 			} else {
 				char *loaded = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", loaded, name, name,
-				                  name);
+				buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", loaded, cn, cn, cn);
 				strcpy(result_buf, loaded);
 			}
 		} else {
@@ -2026,6 +2073,9 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				}
 			}
 
+			if (arch) {
+				arch_name = arch->name; /* canonical shape name backs @arche_insert_/%struct. */
+			}
 			if (arch_name && arch) {
 				/* Evaluate all field arguments first */
 				char field_bufs[32][256];
@@ -2103,12 +2153,15 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 					if (hv && hv->handle_archetype)
 						arch_name = hv->handle_archetype;
 				}
-				if (arch_name)
+				if (arch_name) {
+					arch_name = canonical_arch_name(ctx, arch_name);
 					snprintf(arch_buf, sizeof(arch_buf), "@%s", arch_name);
+				}
 			}
 			if (arch_name) {
-				buffer_append_fmt(ctx, "  call void @arche_delete_%s(%%struct.%s* %s, i64 %s)\n", arch_name, arch_name,
-				                  arch_buf, idx_buf);
+				const char *cn = canonical_arch_name(ctx, arch_name);
+				buffer_append_fmt(ctx, "  call void @arche_delete_%s(%%struct.%s* %s, i64 %s)\n", cn, cn, arch_buf,
+				                  idx_buf);
 				strcpy(result_buf, "0");
 			}
 			break;
@@ -2134,8 +2187,8 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			}
 
 			if (arch_name) {
-				buffer_append_fmt(ctx, "  call void @arche_dealloc_%s(%%struct.%s* %s)\n", arch_name, arch_name,
-				                  arch_buf);
+				const char *cn = canonical_arch_name(ctx, arch_name);
+				buffer_append_fmt(ctx, "  call void @arche_dealloc_%s(%%struct.%s* %s)\n", cn, cn, arch_buf);
 				strcpy(result_buf, "0");
 			}
 			break;
@@ -5187,6 +5240,11 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 /* ========== DECLARATION CODEGEN ========== */
 
 static void codegen_archetype_decl(CodegenContext *ctx, AstArchetypeDecl *arch) {
+	/* One shape = one pool. Aliases (other names for the same component set) share the
+	 * canonical decl's struct + storage + helpers, so emit only for the canonical. */
+	if (canonical_archetype_decl(ctx, arch) != arch)
+		return;
+
 	int static_cap = get_arch_static_capacity(ctx, arch->name);
 
 	/* Generate struct definition for archetype */
@@ -5539,11 +5597,13 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, AstStaticDecl *alloc) {
 		strcpy(length_buf, "0");
 	}
 
-	/* Find archetype declaration */
+	/* Find archetype declaration (canonical shape). Storage symbols use the canonical name,
+	 * so a pool declared under any alias initializes the shape's one struct/global. */
 	AstArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
 	if (!arch) {
 		return;
 	}
+	arch_name = arch->name;
 
 	int static_cap = get_arch_static_capacity(ctx, arch_name);
 

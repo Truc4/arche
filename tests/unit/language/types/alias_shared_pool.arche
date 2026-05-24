@@ -1,0 +1,17 @@
+// One shape = one pool; archetype names are aliases for the shape. A and B are the same
+// shape (the set {hp, mp}), so `insert(B, …)` lands in the single pool declared as `pool<A>`
+// — a column read through name A sees both rows. Positional insert uses the shape's
+// canonical (first-declared) component order, so `insert(B, 30, 40)` fills hp then mp.
+// RUN: %arche -o %t %s && %t | grep "hp0=10 mp0=20 hp1=30 mp1=40"
+hp :: int
+mp :: int
+arche A { hp, mp }
+arche B { mp, hp }
+
+static pool<A>(4);
+
+proc main() {
+  insert(A, 10, 20);
+  insert(B, 30, 40);
+  printf("hp0=%d mp0=%d hp1=%d mp1=%d\n", A.hp[0], A.mp[0], A.hp[1], A.mp[1]);
+}
