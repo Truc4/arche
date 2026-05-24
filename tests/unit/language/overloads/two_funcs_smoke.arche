@@ -9,7 +9,7 @@ func pick_float(x: float) -> float {
 func pick = { pick_int, pick_float };
 
 proc main() {
-  let a := pick(2);
-  let b := pick(1.0);
+  a := pick(2);
+  b := pick(1.0);
   printf("INT=%d FLOAT=%g\n", a, b);
 }

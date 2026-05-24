@@ -1,21 +1,21 @@
 // RUN: %arche -o %t %s && %t | grep "sum=294 big=6000000000 ok=1"
 // i64 arithmetic past 2^31, comparison, loop counter, and array indexing.
 proc main() {
-  let buf: char[16];
+  buf: char[16];
   buf[0] = 'a';
   buf[1] = 'b';
   buf[2] = 'c';
 
   // i64 loop counter + i64 array index
-  let sum: i64 = 0;
-  for (let i: i64 = 0; i < 3; i = i + 1) {
+  sum: i64 = 0;
+  for (i: i64 = 0; i < 3; i = i + 1) {
     sum = sum + buf[i];
   }
 
   // i64 arithmetic past the 32-bit signed limit
-  let big: i64 = 3000000000;
+  big: i64 = 3000000000;
   big = big + big;
-  let ok: i64 = 0;
+  ok: i64 = 0;
   if (big > 3000000000) {
     ok = 1;
   }

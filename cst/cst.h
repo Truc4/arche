@@ -252,7 +252,7 @@ struct FuncGroup {
    ========================= */
 
 typedef enum {
-	STMT_LET,
+	STMT_BIND,
 	STMT_ASSIGN,
 	STMT_FOR,
 	STMT_IF,
@@ -285,7 +285,7 @@ typedef struct {
 	int name_count;    /* 0 = use .name, >0 = use .names[] */
 	TypeRef *type;     /* optional, may be NULL — only for single-var */
 	Expression *value; /* optional, may be NULL */
-} LetStmt;
+} BindStmt;
 
 typedef struct {
 	Expression *target; /* must be assignable: name, field, or index */
@@ -363,7 +363,7 @@ struct Statement {
 	int trailing_count;
 	int last_line; /* line of this statement's last syntactic token */
 	union {
-		LetStmt let_stmt;
+		BindStmt bind_stmt;
 		AssignStmt assign_stmt;
 		ForStmt for_stmt;
 		IfStmt if_stmt;

@@ -8,9 +8,9 @@ extern func resource_open(initial: int) -> cell;
 static pool<Resource>(8);
 
 proc main() {
-  let h := insert(Resource, resource_open(10));
-  let alias := h;
+  h := insert(Resource, resource_open(10));
+  alias := h;
   delete(h);
-  let h2 := insert(Resource, resource_open(99));
+  h2 := insert(Resource, resource_open(99));
   delete(alias);
 }

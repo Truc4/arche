@@ -1765,6 +1765,152 @@ static Expression *parse_expression(Parser *parser) {
 
 /* ========== STATEMENT PARSING ========== */
 
+/* Parse the tail of a binding statement after its first target name has been consumed.
+ * `name` (owned) is the first target; the current token is at `,` (multi-bind), `:`
+ * (`x := e` or `x: T [= e]`), or `=` (legacy `x = e`). Returns STMT_BIND / STMT_MULTI_BIND,
+ * or NULL on error. There is no `let` keyword — bindings are recognized by this shape. */
+static Statement *parse_binding_tail(Parser *parser, char *name, int let_line, int let_column) {
+	/* Multi-value binding: `a, b, c := expr` (or legacy `= expr`). */
+	if (match(parser, TOK_COMMA)) {
+		char **names = malloc(sizeof(char *));
+		names[0] = name;
+		int name_count = 1;
+		while (!check(parser, TOK_COLON) && !check(parser, TOK_EQ) && !check(parser, TOK_EOF)) {
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected variable name in multi-value binding");
+				free(names);
+				return NULL;
+			}
+			char *var_name = token_text(parser->current);
+			advance(parser);
+			names = realloc(names, (name_count + 1) * sizeof(char *));
+			names[name_count++] = var_name;
+			if (!match(parser, TOK_COMMA))
+				break;
+		}
+		if (match(parser, TOK_COLON)) {
+			if (!match(parser, TOK_EQ)) {
+				error(parser, "Expected '=' after ':' in multi-value binding");
+				free(names);
+				return NULL;
+			}
+		} else if (!match(parser, TOK_EQ)) {
+			error(parser, "Expected ':=' or '=' in multi-value binding");
+			free(names);
+			return NULL;
+		}
+		Expression *value = parse_expression(parser);
+		if (!value) {
+			free(names);
+			return NULL;
+		}
+		BindingTarget *targets = malloc(name_count * sizeof(BindingTarget));
+		for (int i = 0; i < name_count; i++) {
+			targets[i].name = names[i];
+			targets[i].is_new = 1;
+			targets[i].type = NULL;
+		}
+		free(names);
+		Statement *stmt = statement_create(STMT_MULTI_BIND);
+		stmt->loc.line = let_line;
+		stmt->loc.column = let_column;
+		stmt->data.multi_bind.targets = targets;
+		stmt->data.multi_bind.target_count = name_count;
+		stmt->data.multi_bind.value = value;
+		stmt->data.multi_bind.from_shorthand = 1;
+		return stmt;
+	}
+
+	/* Single binding: `x := expr`, `x: type [= expr]`, or legacy `x = expr`. */
+	TypeRef *type = NULL;
+	Expression *value = NULL;
+	if (match(parser, TOK_COLON)) {
+		if (check(parser, TOK_EQ)) {
+			advance(parser); /* `:=` — inferred */
+			value = parse_expression(parser);
+			if (!value)
+				return NULL;
+		} else {
+			type = parse_type(parser); /* `x: type [= expr]` */
+			if (!type)
+				return NULL;
+			if (match(parser, TOK_EQ)) {
+				value = parse_expression(parser);
+				if (!value)
+					return NULL;
+			}
+		}
+	} else if (match(parser, TOK_EQ)) {
+		value = parse_expression(parser);
+		if (!value)
+			return NULL;
+	} else {
+		error(parser, "Expected ':' or '=' after variable name");
+		return NULL;
+	}
+	Statement *stmt = statement_create(STMT_BIND);
+	stmt->loc.line = let_line;
+	stmt->loc.column = let_column;
+	stmt->data.bind_stmt.name = name;
+	stmt->data.bind_stmt.names = NULL;
+	stmt->data.bind_stmt.name_count = 0;
+	stmt->data.bind_stmt.type = type;
+	stmt->data.bind_stmt.value = value;
+	return stmt;
+}
+
+/* Parse a "simple statement" — a binding (`x := e`, `x: T [= e]`, `a, b := e`), an assignment
+ * (`lvalue op= e`), or an expression — WITHOUT consuming a terminator. The caller consumes
+ * whatever terminates it (`;` for a statement, `;`/`)` for the parts of a `for` header). This
+ * is the one place these forms are parsed; `for` no longer hand-rolls its own. */
+static Statement *parse_simple_statement(Parser *parser) {
+	Expression *target = parse_expression(parser);
+	if (!target)
+		return NULL;
+
+	/* Bare binding: a plain name then `:` (`x := e` / `x: T [= e]`) or `,` (`a, b := e`). */
+	if (target->type == EXPR_NAME && (check(parser, TOK_COLON) || check(parser, TOK_COMMA))) {
+		char *bname = malloc(strlen(target->data.name.name) + 1);
+		strcpy(bname, target->data.name.name);
+		int bl = target->loc.line, bc = target->loc.column;
+		expression_free(target);
+		return parse_binding_tail(parser, bname, bl, bc);
+	}
+
+	/* Assignment: `lvalue = / += / -= / *= / /= expr`. */
+	if (check(parser, TOK_EQ) || check(parser, TOK_PLUS_EQ) || check(parser, TOK_MINUS_EQ) ||
+	    check(parser, TOK_STAR_EQ) || check(parser, TOK_SLASH_EQ)) {
+		TokenKind op_token = parser->current.kind;
+		advance(parser);
+		Expression *value = parse_expression(parser);
+		if (!value) {
+			expression_free(target);
+			return NULL;
+		}
+		Operator op = OP_NONE;
+		if (op_token == TOK_PLUS_EQ)
+			op = OP_ADD;
+		else if (op_token == TOK_MINUS_EQ)
+			op = OP_SUB;
+		else if (op_token == TOK_STAR_EQ)
+			op = OP_MUL;
+		else if (op_token == TOK_SLASH_EQ)
+			op = OP_DIV;
+		Statement *stmt = statement_create(STMT_ASSIGN);
+		stmt->loc = target->loc;
+		stmt->data.assign_stmt.target = target;
+		stmt->data.assign_stmt.value = value;
+		stmt->data.assign_stmt.op = op;
+		return stmt;
+	}
+
+	/* Otherwise an expression statement. */
+	Statement *stmt = statement_create(STMT_EXPR);
+	stmt->loc = target->loc;
+	stmt->data.expr_stmt.expr = target;
+	return stmt;
+}
+
 static Statement *parse_statement(Parser *parser) {
 	/* Prevent stack overflow from unbounded recursion */
 	const int MAX_RECURSION_DEPTH = 1000;
@@ -1940,7 +2086,8 @@ static Statement *parse_statement(Parser *parser) {
 		}
 	}
 
-	/* Paren-based multi-bind: (let x:, y) = expr; */
+	/* Paren-based multi-bind: `(x, y:, n: int) = expr;` — a target with a trailing `:`
+	 * (optionally a type) declares a new variable; a bare name assigns to an existing one. */
 	if (match(parser, TOK_LPAREN)) {
 
 		BindingTarget *targets = NULL;
@@ -1957,8 +2104,6 @@ static Statement *parse_statement(Parser *parser) {
 				break;
 			}
 
-			int is_new = match(parser, TOK_LET) ? 1 : 0;
-
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected variable name in binding");
 				break;
@@ -1967,8 +2112,12 @@ static Statement *parse_statement(Parser *parser) {
 			char *name = token_text(parser->current);
 			advance(parser);
 
+			/* A trailing `:` marks a newly-declared target (optionally with a type);
+			 * a bare name assigns to an existing variable. */
+			int is_new = 0;
 			TypeRef *type = NULL;
-			if (is_new && match(parser, TOK_COLON)) {
+			if (match(parser, TOK_COLON)) {
+				is_new = 1;
 				if (!check(parser, TOK_COMMA) && !check(parser, TOK_RPAREN)) {
 					type = parse_type(parser);
 				}
@@ -2019,142 +2168,12 @@ static Statement *parse_statement(Parser *parser) {
 		goto cleanup;
 	}
 
-	if (match(parser, TOK_LET)) {
-		int let_line = parser->previous.line;
-		int let_column = parser->previous.column;
-
-		if (!check(parser, TOK_IDENT)) {
-			error(parser, "Expected variable name after 'let'");
-			goto cleanup;
-		}
-
-		char *name = token_text(parser->current);
+	/* `let` was removed — bindings are recognized by shape (handled in the assignment/expr
+	 * fallback below). A leftover `let` is a clear error so old code is caught, not silently
+	 * misparsed. */
+	if (check(parser, TOK_LET)) {
+		error(parser, "`let` was removed — write a bare binding: `x := expr`, `x: T = expr`, or `a, b := expr`");
 		advance(parser);
-
-		/* Check for multi-value let: let a, b, c := expr or let a, b = expr (old) */
-		char **names = NULL;
-		int name_count = 0;
-		if (match(parser, TOK_COMMA)) {
-			/* Multi-value let */
-			names = malloc(sizeof(char *));
-			names[0] = name;
-			name_count = 1;
-
-			while (!check(parser, TOK_COLON) && !check(parser, TOK_EQ) && !check(parser, TOK_EOF)) {
-				if (!check(parser, TOK_IDENT)) {
-					error(parser, "Expected variable name in multi-value let");
-					parser->recursion_depth--;
-					goto cleanup;
-				}
-				char *var_name = token_text(parser->current);
-				advance(parser);
-
-				names = realloc(names, (name_count + 1) * sizeof(char *));
-				names[name_count++] = var_name;
-
-				if (!match(parser, TOK_COMMA)) {
-					break;
-				}
-			}
-
-			/* Support both new syntax (:=) and old syntax (=) */
-			if (match(parser, TOK_COLON)) {
-				if (!match(parser, TOK_EQ)) {
-					error(parser, "Expected '=' after ':' in multi-value let");
-					parser->recursion_depth--;
-					goto cleanup;
-				}
-			} else if (!match(parser, TOK_EQ)) {
-				error(parser, "Expected ':=' or '=' in multi-value let");
-				parser->recursion_depth--;
-				goto cleanup;
-			}
-
-			Expression *value = parse_expression(parser);
-			if (!value) {
-				parser->recursion_depth--;
-				goto cleanup;
-			}
-
-			if (!match(parser, TOK_SEMI)) {
-				error(parser, "Expected ';' after let statement");
-			}
-
-			/* Convert to STMT_MULTI_BIND with is_new=1 for all targets */
-			BindingTarget *targets = malloc(name_count * sizeof(BindingTarget));
-			for (int i = 0; i < name_count; i++) {
-				targets[i].name = names[i];
-				targets[i].is_new = 1;
-				targets[i].type = NULL;
-			}
-			free(names);
-
-			Statement *stmt = statement_create(STMT_MULTI_BIND);
-			stmt->loc.line = let_line;
-			stmt->loc.column = let_column;
-			stmt->data.multi_bind.targets = targets;
-			stmt->data.multi_bind.target_count = name_count;
-			stmt->data.multi_bind.value = value;
-			stmt->data.multi_bind.from_shorthand = 1;
-			result = stmt;
-			goto cleanup;
-		}
-
-		/* Single-value let: let x := expr or let x: type = expr or let x: type or let x = expr (old) */
-		TypeRef *type = NULL;
-		Expression *value = NULL;
-
-		if (match(parser, TOK_COLON)) {
-			/* New/explicit syntax: colon present */
-			if (check(parser, TOK_EQ)) {
-				/* Inferred: let x := expr */
-				advance(parser); /* consume '=' */
-				value = parse_expression(parser);
-				if (!value) {
-					parser->recursion_depth--;
-					goto cleanup;
-				}
-			} else {
-				/* Explicit: let x: type [= expr] */
-				type = parse_type(parser);
-				if (!type) {
-					parser->recursion_depth--;
-					goto cleanup;
-				}
-
-				if (match(parser, TOK_EQ)) {
-					value = parse_expression(parser);
-					if (!value) {
-						parser->recursion_depth--;
-						goto cleanup;
-					}
-				}
-			}
-		} else if (match(parser, TOK_EQ)) {
-			/* Old syntax (backward compat): let x = expr */
-			value = parse_expression(parser);
-			if (!value) {
-				parser->recursion_depth--;
-				goto cleanup;
-			}
-		} else {
-			error(parser, "Expected ':' or '=' after variable name");
-			goto cleanup;
-		}
-
-		if (!match(parser, TOK_SEMI)) {
-			error(parser, "Expected ';' after let statement");
-		}
-
-		Statement *stmt = statement_create(STMT_LET);
-		stmt->loc.line = let_line;
-		stmt->loc.column = let_column;
-		stmt->data.let_stmt.name = name;
-		stmt->data.let_stmt.names = NULL;
-		stmt->data.let_stmt.name_count = 0;
-		stmt->data.let_stmt.type = type;
-		stmt->data.let_stmt.value = value;
-		result = stmt;
 		goto cleanup;
 	}
 
@@ -2272,57 +2291,11 @@ static Statement *parse_statement(Parser *parser) {
 			Statement *init = NULL;
 			Expression *cond = NULL;
 
-			/* Parse init (can be let statement or expression, or empty) */
-			if (check(parser, TOK_LET)) {
-				/* Parse let statement without trailing semicolon requirement */
-				advance(parser); /* consume LET */
-				int let_line = parser->previous.line;
-				int let_column = parser->previous.column;
-
-				if (!check(parser, TOK_IDENT)) {
-					error(parser, "Expected variable name after 'let'");
+			/* init: a binding/assignment/expression, or empty. Shared parser — no `let`. */
+			if (!check(parser, TOK_SEMI)) {
+				init = parse_simple_statement(parser);
+				if (!init)
 					goto cleanup;
-				}
-
-				char *name = token_text(parser->current);
-				advance(parser);
-
-				TypeRef *type = NULL;
-				if (match(parser, TOK_COLON)) {
-					type = parse_type(parser);
-					if (!type)
-						goto cleanup;
-				}
-
-				Expression *value = NULL;
-				if (match(parser, TOK_EQ)) {
-					value = parse_expression(parser);
-					if (!value)
-						goto cleanup;
-				} else if (!type) {
-					error(parser, "Expected '=' or type annotation after variable name");
-					goto cleanup;
-				}
-
-				Statement *init_stmt = statement_create(STMT_LET);
-				init_stmt->loc.line = let_line;
-				init_stmt->loc.column = let_column;
-				init_stmt->data.let_stmt.name = name;
-				init_stmt->data.let_stmt.names = NULL;
-				init_stmt->data.let_stmt.name_count = 0;
-				init_stmt->data.let_stmt.type = type;
-				init_stmt->data.let_stmt.value = value;
-				init = init_stmt;
-			} else if (!check(parser, TOK_SEMI)) {
-				/* Parse expression as init */
-				Expression *init_expr = parse_expression(parser);
-				if (!init_expr)
-					goto cleanup;
-				/* Wrap expression in statement */
-				Statement *init_stmt = statement_create(STMT_EXPR);
-				init_stmt->loc = init_expr->loc;
-				init_stmt->data.expr_stmt.expr = init_expr;
-				init = init_stmt;
 			}
 
 			/* Expect and consume first semicolon */
@@ -2344,47 +2317,12 @@ static Statement *parse_statement(Parser *parser) {
 				goto cleanup;
 			}
 
-			/* Parse increment statement (can be empty) */
+			/* increment: a binding/assignment/expression, or empty. */
 			Statement *incr_stmt = NULL;
 			if (!check(parser, TOK_RPAREN)) {
-				/* Parse as an assignment or expression statement */
-				Expression *target = parse_expression(parser);
-				if (!target)
+				incr_stmt = parse_simple_statement(parser);
+				if (!incr_stmt)
 					goto cleanup;
-
-				if (check(parser, TOK_EQ) || check(parser, TOK_PLUS_EQ) || check(parser, TOK_MINUS_EQ) ||
-				    check(parser, TOK_STAR_EQ) || check(parser, TOK_SLASH_EQ)) {
-					/* Assignment statement */
-					Operator op = OP_NONE;
-					if (match(parser, TOK_EQ)) {
-						op = OP_NONE;
-					} else if (match(parser, TOK_PLUS_EQ)) {
-						op = OP_ADD;
-					} else if (match(parser, TOK_MINUS_EQ)) {
-						op = OP_SUB;
-					} else if (match(parser, TOK_STAR_EQ)) {
-						op = OP_MUL;
-					} else if (match(parser, TOK_SLASH_EQ)) {
-						op = OP_DIV;
-					}
-
-					Expression *value = parse_expression(parser);
-					if (!value) {
-						error(parser, "Expected value in for increment assignment");
-						goto cleanup;
-					}
-
-					incr_stmt = statement_create(STMT_ASSIGN);
-					incr_stmt->loc = target->loc;
-					incr_stmt->data.assign_stmt.target = target;
-					incr_stmt->data.assign_stmt.value = value;
-					incr_stmt->data.assign_stmt.op = op;
-				} else {
-					/* Expression statement */
-					incr_stmt = statement_create(STMT_EXPR);
-					incr_stmt->loc = target->loc;
-					incr_stmt->data.expr_stmt.expr = target;
-				}
 			}
 
 			stmt->data.for_stmt.init = init;
@@ -2457,58 +2395,12 @@ static Statement *parse_statement(Parser *parser) {
 		goto cleanup;
 	}
 
-	/* try to parse as assignment */
-	Expression *target = parse_expression(parser);
-	if (!target)
-		goto cleanup;
-
-	/* check for assignment operators */
-	if (check(parser, TOK_EQ) || check(parser, TOK_PLUS_EQ) || check(parser, TOK_MINUS_EQ) ||
-	    check(parser, TOK_STAR_EQ) || check(parser, TOK_SLASH_EQ)) {
-
-		/* capture the operator before consuming it */
-		TokenKind op_token = parser->current.kind;
-		advance(parser); /* consume assignment operator */
-
-		Expression *value = parse_expression(parser);
-		if (!value)
-			goto cleanup;
-
-		if (!match(parser, TOK_SEMI)) {
-			error(parser, "Expected ';' after assignment");
-		}
-
-		/* map token to Operator enum */
-		Operator op = OP_NONE;
-		if (op_token == TOK_PLUS_EQ)
-			op = OP_ADD;
-		else if (op_token == TOK_MINUS_EQ)
-			op = OP_SUB;
-		else if (op_token == TOK_STAR_EQ)
-			op = OP_MUL;
-		else if (op_token == TOK_SLASH_EQ)
-			op = OP_DIV;
-
-		Statement *stmt = statement_create(STMT_ASSIGN);
-		stmt->loc.line = target->loc.line;
-		stmt->loc.column = target->loc.column;
-		stmt->data.assign_stmt.target = target;
-		stmt->data.assign_stmt.value = value;
-		stmt->data.assign_stmt.op = op;
-		result = stmt;
-		goto cleanup;
+	/* A binding, assignment, or expression statement — parsed by the shared helper, then
+	 * terminated by `;`. */
+	result = parse_simple_statement(parser);
+	if (result && !match(parser, TOK_SEMI)) {
+		error(parser, "Expected ';' after statement");
 	}
-
-	/* otherwise it was an expression statement */
-	if (!match(parser, TOK_SEMI)) {
-		error(parser, "Expected ';' after expression statement");
-	}
-
-	Statement *stmt = statement_create(STMT_EXPR);
-	stmt->loc.line = target->loc.line;
-	stmt->loc.column = target->loc.column;
-	stmt->data.expr_stmt.expr = target;
-	result = stmt;
 
 cleanup:
 	parser->recursion_depth--;

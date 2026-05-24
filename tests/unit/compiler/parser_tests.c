@@ -125,14 +125,14 @@ void test_proc_no_params_empty(void) {
 }
 
 void test_proc_with_let_statement(void) {
-	test_start("proc with let statement");
+	test_start("proc with statement");
 	Program *prog = parse_string("proc test() {\n"
-	                             "  let x := 42;\n"
+	                             "  x := 42;\n"
 	                             "}");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
 	ASSERT_EQ(proc->statement_count, 1, "expected 1 statement");
-	ASSERT_EQ(proc->statements[0]->type, STMT_LET, "expected STMT_LET");
+	ASSERT_EQ(proc->statements[0]->type, STMT_BIND, "expected STMT_BIND");
 	program_free(prog);
 	test_pass_msg();
 }
@@ -154,7 +154,7 @@ void test_proc_with_for_loop(void) {
 	test_start("proc with for loop");
 	Program *prog = parse_string("proc iterate() {\n"
 	                             "  for item in Collection {\n"
-	                             "    let x := 1;\n"
+	                             "    x := 1;\n"
 	                             "  }\n"
 	                             "}");
 	ASSERT_NOT_NULL(prog, "program is null");
@@ -236,10 +236,10 @@ void test_func_multiple_params(void) {
 
 void test_expr_literal(void) {
 	test_start("expression literal");
-	Program *prog = parse_string("proc test() { let x := 42; }");
+	Program *prog = parse_string("proc test() { x := 42; }");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
-	Expression *expr = proc->statements[0]->data.let_stmt.value;
+	Expression *expr = proc->statements[0]->data.bind_stmt.value;
 	ASSERT_EQ(expr->type, EXPR_LITERAL, "expected EXPR_LITERAL");
 	program_free(prog);
 	test_pass_msg();
@@ -247,10 +247,10 @@ void test_expr_literal(void) {
 
 void test_expr_field_access(void) {
 	test_start("expression field access");
-	Program *prog = parse_string("proc test() { let x := player.pos; }");
+	Program *prog = parse_string("proc test() { x := player.pos; }");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
-	Expression *expr = proc->statements[0]->data.let_stmt.value;
+	Expression *expr = proc->statements[0]->data.bind_stmt.value;
 	ASSERT_EQ(expr->type, EXPR_FIELD, "expected EXPR_FIELD");
 	program_free(prog);
 	test_pass_msg();
@@ -258,10 +258,10 @@ void test_expr_field_access(void) {
 
 void test_expr_index(void) {
 	test_start("expression indexing");
-	Program *prog = parse_string("proc test() { let x := arr[0]; }");
+	Program *prog = parse_string("proc test() { x := arr[0]; }");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
-	Expression *expr = proc->statements[0]->data.let_stmt.value;
+	Expression *expr = proc->statements[0]->data.bind_stmt.value;
 	ASSERT_EQ(expr->type, EXPR_INDEX, "expected EXPR_INDEX");
 	program_free(prog);
 	test_pass_msg();
@@ -269,10 +269,10 @@ void test_expr_index(void) {
 
 void test_expr_binary_op(void) {
 	test_start("expression binary operation");
-	Program *prog = parse_string("proc test() { let x := a + b; }");
+	Program *prog = parse_string("proc test() { x := a + b; }");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
-	Expression *expr = proc->statements[0]->data.let_stmt.value;
+	Expression *expr = proc->statements[0]->data.bind_stmt.value;
 	ASSERT_EQ(expr->type, EXPR_BINARY, "expected EXPR_BINARY");
 	program_free(prog);
 	test_pass_msg();
@@ -281,60 +281,60 @@ void test_expr_binary_op(void) {
 /* ========== LET TYPE ANNOTATION TESTS ========== */
 
 void test_let_type_annotation_with_value(void) {
-	test_start("let with type annotation and value");
-	Program *prog = parse_string("proc test() { let x: int = 5; }");
+	test_start("with type annotation and value");
+	Program *prog = parse_string("proc test() { x: int = 5; }");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
 	ASSERT_EQ(proc->statement_count, 1, "expected 1 statement");
 	Statement *stmt = proc->statements[0];
-	ASSERT_EQ(stmt->type, STMT_LET, "expected STMT_LET");
-	ASSERT_NOT_NULL(stmt->data.let_stmt.type, "type annotation should not be null");
-	ASSERT_EQ(stmt->data.let_stmt.type->kind, TYPE_NAME, "expected TYPE_NAME");
-	ASSERT_NOT_NULL(stmt->data.let_stmt.value, "value should not be null");
+	ASSERT_EQ(stmt->type, STMT_BIND, "expected STMT_BIND");
+	ASSERT_NOT_NULL(stmt->data.bind_stmt.type, "type annotation should not be null");
+	ASSERT_EQ(stmt->data.bind_stmt.type->kind, TYPE_NAME, "expected TYPE_NAME");
+	ASSERT_NOT_NULL(stmt->data.bind_stmt.value, "value should not be null");
 	program_free(prog);
 	test_pass_msg();
 }
 
 void test_let_type_annotation_no_value(void) {
-	test_start("let with type annotation, no value");
-	Program *prog = parse_string("proc test() { let x: int; }");
+	test_start("with type annotation, no value");
+	Program *prog = parse_string("proc test() { x: int; }");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
 	ASSERT_EQ(proc->statement_count, 1, "expected 1 statement");
 	Statement *stmt = proc->statements[0];
-	ASSERT_EQ(stmt->type, STMT_LET, "expected STMT_LET");
-	ASSERT_NOT_NULL(stmt->data.let_stmt.type, "type annotation should not be null");
-	ASSERT_EQ(stmt->data.let_stmt.type->kind, TYPE_NAME, "expected TYPE_NAME");
-	ASSERT_EQ(stmt->data.let_stmt.value, NULL, "value should be null");
+	ASSERT_EQ(stmt->type, STMT_BIND, "expected STMT_BIND");
+	ASSERT_NOT_NULL(stmt->data.bind_stmt.type, "type annotation should not be null");
+	ASSERT_EQ(stmt->data.bind_stmt.type->kind, TYPE_NAME, "expected TYPE_NAME");
+	ASSERT_EQ(stmt->data.bind_stmt.value, NULL, "value should be null");
 	program_free(prog);
 	test_pass_msg();
 }
 
 void test_let_array_type_annotation(void) {
-	test_start("let with array type annotation");
-	Program *prog = parse_string("proc test() { let buf: char[]; }");
+	test_start("with array type annotation");
+	Program *prog = parse_string("proc test() { buf: char[]; }");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
 	ASSERT_EQ(proc->statement_count, 1, "expected 1 statement");
 	Statement *stmt = proc->statements[0];
-	ASSERT_EQ(stmt->type, STMT_LET, "expected STMT_LET");
-	ASSERT_NOT_NULL(stmt->data.let_stmt.type, "type annotation should not be null");
-	ASSERT_EQ(stmt->data.let_stmt.type->kind, TYPE_ARRAY, "expected TYPE_ARRAY");
-	ASSERT_EQ(stmt->data.let_stmt.value, NULL, "value should be null");
+	ASSERT_EQ(stmt->type, STMT_BIND, "expected STMT_BIND");
+	ASSERT_NOT_NULL(stmt->data.bind_stmt.type, "type annotation should not be null");
+	ASSERT_EQ(stmt->data.bind_stmt.type->kind, TYPE_ARRAY, "expected TYPE_ARRAY");
+	ASSERT_EQ(stmt->data.bind_stmt.value, NULL, "value should be null");
 	program_free(prog);
 	test_pass_msg();
 }
 
 void test_let_float_type_annotation(void) {
-	test_start("let with float type annotation");
-	Program *prog = parse_string("proc test() { let f: float = 1.5; }");
+	test_start("with float type annotation");
+	Program *prog = parse_string("proc test() { f: float = 1.5; }");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
 	ASSERT_EQ(proc->statement_count, 1, "expected 1 statement");
 	Statement *stmt = proc->statements[0];
-	ASSERT_EQ(stmt->type, STMT_LET, "expected STMT_LET");
-	ASSERT_NOT_NULL(stmt->data.let_stmt.type, "type annotation should not be null");
-	ASSERT_NOT_NULL(stmt->data.let_stmt.value, "value should not be null");
+	ASSERT_EQ(stmt->type, STMT_BIND, "expected STMT_BIND");
+	ASSERT_NOT_NULL(stmt->data.bind_stmt.type, "type annotation should not be null");
+	ASSERT_NOT_NULL(stmt->data.bind_stmt.value, "value should not be null");
 	program_free(prog);
 	test_pass_msg();
 }
@@ -358,7 +358,7 @@ void test_printf_with_float(void) {
 
 void test_printf_with_variable_float(void) {
 	test_start("printf with variable float argument");
-	Program *prog = parse_string("proc test() { let f: float = 1.5; printf(\"Float: %f\\n\", f); }");
+	Program *prog = parse_string("proc test() { f: float = 1.5; printf(\"Float: %f\\n\", f); }");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ProcDecl *proc = prog->decls[0]->data.proc;
 	ASSERT_EQ(proc->statement_count, 2, "expected 2 statements");
@@ -396,9 +396,9 @@ static int parse_succeeds(const char *src) {
 void test_else_break(void) {
 	test_start("else clause with break in nested for");
 	int ok = parse_succeeds("proc main() {\n"
-	                        "  let idx := 0;\n"
+	                        "  idx := 0;\n"
 	                        "  for (;idx < 10;) {\n"
-	                        "    let line_pos := 0;\n"
+	                        "    line_pos := 0;\n"
 	                        "    for (;line_pos < 5;) {\n"
 	                        "      if (1 == 1) { line_pos = 1; }\n"
 	                        "      else { break; }\n"
@@ -413,14 +413,14 @@ void test_else_break(void) {
 }
 
 void test_else_let(void) {
-	test_start("else clause with let in nested for");
+	test_start("else clause with in nested for");
 	int ok = parse_succeeds("proc main() {\n"
-	                        "  let idx := 0;\n"
+	                        "  idx := 0;\n"
 	                        "  for (;idx < 10;) {\n"
-	                        "    let line_pos := 0;\n"
+	                        "    line_pos := 0;\n"
 	                        "    for (;line_pos < 5;) {\n"
 	                        "      if (1 == 1) { line_pos = 1; }\n"
-	                        "      else { let x := 1; }\n"
+	                        "      else { x := 1; }\n"
 	                        "    }\n"
 	                        "  }\n"
 	                        "}\n");
@@ -434,9 +434,9 @@ void test_else_let(void) {
 void test_else_assign(void) {
 	test_start("else clause with assignment in nested for");
 	int ok = parse_succeeds("proc main() {\n"
-	                        "  let idx := 0;\n"
+	                        "  idx := 0;\n"
 	                        "  for (;idx < 10;) {\n"
-	                        "    let line_pos := 0;\n"
+	                        "    line_pos := 0;\n"
 	                        "    for (;line_pos < 5;) {\n"
 	                        "      if (1 == 1) { line_pos = 1; }\n"
 	                        "      else { line_pos = 2; }\n"
@@ -453,11 +453,11 @@ void test_else_assign(void) {
 void test_nested_for_no_array_index(void) {
 	test_start("nested for with else, no array indexing");
 	int ok = parse_succeeds("proc main() {\n"
-	                        "  let idx := 0;\n"
+	                        "  idx := 0;\n"
 	                        "  for (;idx < 10;) {\n"
-	                        "    let n := 5;\n"
-	                        "    let line_pos := 0;\n"
-	                        "    let field_idx := 0;\n"
+	                        "    n := 5;\n"
+	                        "    line_pos := 0;\n"
+	                        "    field_idx := 0;\n"
 	                        "    for (;line_pos < n;) {\n"
 	                        "      if (field_idx == 1) { line_pos = line_pos + 1; }\n"
 	                        "      else { line_pos = line_pos + 1; }\n"
@@ -475,10 +475,10 @@ void test_nested_for_no_array_index(void) {
 void test_nested_for_else_assign(void) {
 	test_start("nested for with assignment in else");
 	int ok = parse_succeeds("proc main() {\n"
-	                        "  let idx := 0;\n"
+	                        "  idx := 0;\n"
 	                        "  for (;idx < 10;) {\n"
-	                        "    let n := 5;\n"
-	                        "    let line_pos := 0;\n"
+	                        "    n := 5;\n"
+	                        "    line_pos := 0;\n"
 	                        "    for (;line_pos < n;) {\n"
 	                        "      if (1 == 1) { line_pos = line_pos + 1; }\n"
 	                        "      else { line_pos = line_pos + 1; }\n"
@@ -494,10 +494,10 @@ void test_nested_for_else_assign(void) {
 }
 
 void test_nested_let_simple(void) {
-	test_start("let declaration inside for loop");
+	test_start("declaration inside for loop");
 	ParseResult result = parse_source("proc main() {\n"
 	                                  "  for (;1 > 0;) {\n"
-	                                  "    let x := 5;\n"
+	                                  "    x := 5;\n"
 	                                  "    break;\n"
 	                                  "  }\n"
 	                                  "}\n");
@@ -511,10 +511,10 @@ void test_nested_let_simple(void) {
 }
 
 void test_nested_let_in_for_loop(void) {
-	test_start("let + nested for inside for loop");
+	test_start("+ nested for inside for loop");
 	ParseResult result = parse_source("proc main() {\n"
 	                                  "  for (;1 > 0;) {\n"
-	                                  "    let x := 0;\n"
+	                                  "    x := 0;\n"
 	                                  "    for (;x < 5;) {\n"
 	                                  "      x = x + 1;\n"
 	                                  "    }\n"
@@ -528,7 +528,7 @@ void test_nested_let_in_for_loop(void) {
 	}
 	Program *prog = result.ast;
 	ForStmt *for_loop = &prog->decls[0]->data.proc->statements[0]->data.for_stmt;
-	if (for_loop->body_count < 2 || for_loop->body[0]->type != STMT_LET || for_loop->body[1]->type != STMT_FOR) {
+	if (for_loop->body_count < 2 || for_loop->body[0]->type != STMT_BIND || for_loop->body[1]->type != STMT_FOR) {
 		parse_result_free(&result);
 		test_fail_msg("unexpected body structure");
 		return;
@@ -540,7 +540,7 @@ void test_nested_let_in_for_loop(void) {
 void test_single_for_else_break(void) {
 	test_start("single for with if-else-break");
 	int ok = parse_succeeds("proc main() {\n"
-	                        "  let idx := 0;\n"
+	                        "  idx := 0;\n"
 	                        "  for (;idx < 10;) {\n"
 	                        "    if (1 == 1) { idx = 1; }\n"
 	                        "    else { break; }\n"
@@ -556,9 +556,9 @@ void test_single_for_else_break(void) {
 void test_two_for_else_inner(void) {
 	test_start("two nested fors with if-else at inner level");
 	int ok = parse_succeeds("proc main() {\n"
-	                        "  let idx := 0;\n"
+	                        "  idx := 0;\n"
 	                        "  for (;idx < 10;) {\n"
-	                        "    let pos := 0;\n"
+	                        "    pos := 0;\n"
 	                        "    for (;pos < 5;) {\n"
 	                        "      if (1 == 1) { pos = 1; }\n"
 	                        "      else { break; }\n"
@@ -575,11 +575,11 @@ void test_two_for_else_inner(void) {
 void test_printf_after_complex_nesting(void) {
 	test_start("printf after deeply nested for loops");
 	int ok = parse_succeeds("proc main() {\n"
-	                        "  let sum := 0.0;\n"
+	                        "  sum := 0.0;\n"
 	                        "  for (;0 < 1;) {\n"
-	                        "    let idx := 0;\n"
+	                        "    idx := 0;\n"
 	                        "    for (;idx < 5;) {\n"
-	                        "      let x := 1.0;\n"
+	                        "      x := 1.0;\n"
 	                        "      sum = sum + x;\n"
 	                        "      idx = idx + 1;\n"
 	                        "    }\n"
@@ -597,7 +597,7 @@ void test_printf_after_complex_nesting(void) {
 void test_toplevel_else(void) {
 	test_start("if-else at proc top level");
 	int ok = parse_succeeds("proc main() {\n"
-	                        "  if (1 == 1) { let x := 1; }\n"
+	                        "  if (1 == 1) { x := 1; }\n"
 	                        "  else { break; }\n"
 	                        "}\n");
 	if (!ok) {
@@ -620,14 +620,14 @@ void test_task1_structure(void) {
 	                        "  revenue: 0.0,\n"
 	                        "};\n"
 	                        "proc main() {\n"
-	                        "  let fd := 1;\n"
-	                        "  let line: char[128];\n"
-	                        "  let idx := 0;\n"
+	                        "  fd := 1;\n"
+	                        "  line: char[128];\n"
+	                        "  idx := 0;\n"
 	                        "  for (;idx < 1000;) {\n"
-	                        "    let n := 10;\n"
+	                        "    n := 10;\n"
 	                        "    if (n <= 0) { break; }\n"
-	                        "    let line_pos := 0;\n"
-	                        "    let field_idx := 0;\n"
+	                        "    line_pos := 0;\n"
+	                        "    field_idx := 0;\n"
 	                        "    for (;line_pos < n;) {\n"
 	                        "      if (line[line_pos] == ',') {\n"
 	                        "        field_idx = field_idx + 1;\n"
@@ -638,8 +638,8 @@ void test_task1_structure(void) {
 	                        "    }\n"
 	                        "    idx = idx + 1;\n"
 	                        "  }\n"
-	                        "  let sum := 0.0;\n"
-	                        "  let m := 0;\n"
+	                        "  sum := 0.0;\n"
+	                        "  m := 0;\n"
 	                        "  for (;m < 1000;) {\n"
 	                        "    sum = sum + 1.0;\n"
 	                        "    m = m + 1;\n"

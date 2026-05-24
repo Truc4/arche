@@ -14,10 +14,10 @@ proc main() {
   Nums.val[1] = 2.0;
   Nums.val[2] = 3.0;
   Nums.val[3] = 4.0;
-  let total: float = 0.0;
-  let i := 0;
+  total: float = 0.0;
+  i := 0;
   for (;i < 4;) {
-    let v := Nums.val[i];
+    v := Nums.val[i];
     total = total + v;
     i = i + 1;
   }

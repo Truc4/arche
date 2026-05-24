@@ -5,7 +5,7 @@ use csv;
 static buf: char[65536];
 
 proc main() {
-  let fd := csv_open("tests/fixtures/data.csv");
+  fd := csv_open("tests/fixtures/data.csv");
   printf("fd=%d\n", fd);
   csv_close(move fd);
 }

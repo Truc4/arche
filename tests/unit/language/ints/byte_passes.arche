@@ -2,17 +2,17 @@
 // Branchless byte-column passes over a buffer (copy + classify). These shapes
 // vectorize (data pointer hoisted once at entry, not reloaded per iteration).
 proc copy_bytes(dst: char[], src: char[], n: i64) {
-  for (let i: i64 = 0; i < n; i = i + 1) {
+  for (i: i64 = 0; i < n; i = i + 1) {
     dst[i] = src[i];
   }
 }
 proc classify_commas(data: char[], mask: char[], n: i64) {
-  for (let i: i64 = 0; i < n; i = i + 1) {
+  for (i: i64 = 0; i < n; i = i + 1) {
     mask[i] = data[i] == 44;
   }
 }
 proc main() {
-  let src: char[8];
+  src: char[8];
   src[0] = 'a';
   src[1] = ',';
   src[2] = 'b';
@@ -21,15 +21,15 @@ proc main() {
   src[5] = 'd';
   src[6] = 'e';
   src[7] = 'f';
-  let dst: char[8];
+  dst: char[8];
   copy_bytes(dst, src, 8);
-  let mask: char[8];
+  mask: char[8];
   classify_commas(src, mask, 8);
-  let commas: i64 = 0;
-  for (let i: i64 = 0; i < 8; i = i + 1) {
+  commas: i64 = 0;
+  for (i: i64 = 0; i < 8; i = i + 1) {
     commas = commas + mask[i];
   }
-  let ok := 0;
+  ok := 0;
   if (dst[1] == src[1]) {
     if (dst[7] == src[7]) {
       ok = 1;

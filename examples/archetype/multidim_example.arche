@@ -4,6 +4,6 @@ arche Message {
 }
 static table<Message>(100);
 proc main() {
-  let msg := "allocations done\n";
+  msg := "allocations done\n";
   print(msg);
 }

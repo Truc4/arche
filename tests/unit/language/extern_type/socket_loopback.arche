@@ -5,11 +5,11 @@
 // and a byte survives the round trip ('h' == 104).
 static buf: char[64];
 proc main() {
-  let srv := net_listen(34567);
-  let cli := net_connect("127.0.0.1", 34567);
-  let conn := net_accept(srv);
-  let sent := net_send(cli, "hi", 2);
-  let n := net_recv(conn, buf, 64);
+  srv := net_listen(34567);
+  cli := net_connect("127.0.0.1", 34567);
+  conn := net_accept(srv);
+  sent := net_send(cli, "hi", 2);
+  n := net_recv(conn, buf, 64);
   printf("ok n=%d first=%d\n", n, buf[0]);
   net_close(move cli);
   net_close(move conn);

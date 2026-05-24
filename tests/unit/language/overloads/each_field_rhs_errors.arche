@@ -2,7 +2,7 @@
 
 proc bad(x: int) {
   each_field f in x {
-    let z := f;
+    z := f;
   }
 }
 proc main() {

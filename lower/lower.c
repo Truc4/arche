@@ -236,26 +236,26 @@ static AstStmt *lower_stmt(Statement *stmt) {
 	s->loc = stmt->loc;
 
 	switch (stmt->type) {
-	case STMT_LET: {
-		s->kind = AST_STMT_LET;
-		LetStmt *ls = &stmt->data.let_stmt;
+	case STMT_BIND: {
+		s->kind = AST_STMT_BIND;
+		BindStmt *ls = &stmt->data.bind_stmt;
 		if (ls->name_count > 0 && ls->names) {
 			/* multi-value let: copy names[] */
-			s->data.let_stmt.name_count = ls->name_count;
-			s->data.let_stmt.names = calloc(ls->name_count, sizeof(char *));
+			s->data.bind_stmt.name_count = ls->name_count;
+			s->data.bind_stmt.names = calloc(ls->name_count, sizeof(char *));
 			for (int i = 0; i < ls->name_count; i++) {
-				s->data.let_stmt.names[i] = malloc(strlen(ls->names[i]) + 1);
-				strcpy(s->data.let_stmt.names[i], ls->names[i]);
+				s->data.bind_stmt.names[i] = malloc(strlen(ls->names[i]) + 1);
+				strcpy(s->data.bind_stmt.names[i], ls->names[i]);
 			}
 		} else {
 			/* single-var let: normalize to names[0] */
-			s->data.let_stmt.name_count = 1;
-			s->data.let_stmt.names = calloc(1, sizeof(char *));
-			s->data.let_stmt.names[0] = malloc(strlen(ls->name) + 1);
-			strcpy(s->data.let_stmt.names[0], ls->name);
+			s->data.bind_stmt.name_count = 1;
+			s->data.bind_stmt.names = calloc(1, sizeof(char *));
+			s->data.bind_stmt.names[0] = malloc(strlen(ls->name) + 1);
+			strcpy(s->data.bind_stmt.names[0], ls->name);
 		}
-		s->data.let_stmt.type = lower_type_ref(ls->type);
-		s->data.let_stmt.value = lower_expr(ls->value);
+		s->data.bind_stmt.type = lower_type_ref(ls->type);
+		s->data.bind_stmt.value = lower_expr(ls->value);
 		break;
 	}
 	case STMT_ASSIGN: {
@@ -479,8 +479,8 @@ static void tuple_rewrite_stmt(AstStmt *s, const char *base) {
 	if (!s)
 		return;
 	switch (s->kind) {
-	case AST_STMT_LET:
-		tuple_rewrite_expr(s->data.let_stmt.value, base);
+	case AST_STMT_BIND:
+		tuple_rewrite_expr(s->data.bind_stmt.value, base);
 		break;
 	case AST_STMT_ASSIGN:
 		tuple_rewrite_expr(s->data.assign_stmt.target, base);

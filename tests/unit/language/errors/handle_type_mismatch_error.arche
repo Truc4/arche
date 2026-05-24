@@ -15,6 +15,6 @@ static pool<Enemy>(10);
 
 
 proc main() {
-  let p := insert(Player, 1.0);
+  p := insert(Player, 1.0);
   delete(table<Enemy>, p);
 }

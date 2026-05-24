@@ -5,13 +5,13 @@ func fill_two(buf1: char[32], buf2: char[32]) -> (char[], char[], int) {
   buf1[0] = 'a';
   buf1[1] = 'b';
   // Note: '\0' escape not implemented, so use sprintf to get null-terminated string
-  let result1 := sprintf(buf1, "ab");
-  let result2 := sprintf(buf2, "cd");
+  result1 := sprintf(buf1, "ab");
+  result2 := sprintf(buf2, "cd");
   return buf1, buf2, 42;
 }
 
 proc main() {
   // Test: both new declarations with out params (+ return value)
-  (let x:, let y:, let n:) = fill_two(x, y);
+  (x:, y:, n:) = fill_two(x, y);
   printf("x=%s y=%s n=%d\n", x, y, n);
 }

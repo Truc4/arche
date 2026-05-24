@@ -6,7 +6,7 @@ extern func resource_open(initial: int) -> resource;
 extern func resource_get(r: resource) -> int;
 
 proc main() {
-  let r := resource_open(10);
-  let v := resource_get(move r);
-  let w := resource_get(r);
+  r := resource_open(10);
+  v := resource_get(move r);
+  w := resource_get(r);
 }

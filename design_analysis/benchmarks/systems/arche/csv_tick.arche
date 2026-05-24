@@ -64,10 +64,10 @@ proc snapshot(iter: int) {
 proc main() {
   load_once();
 
-  let ITERS := 100000;
-  let SNAPSHOT_EVERY := 10000;
+  ITERS := 100000;
+  SNAPSHOT_EVERY := 10000;
 
-  for (let i = 0; i < ITERS; i += 1) {
+  for (i :=  0; i < ITERS; i += 1) {
     run compute_revenue;
     run dampen;
     if (i % SNAPSHOT_EVERY == 0) {
@@ -77,8 +77,8 @@ proc main() {
 
   // Final checksum: sum of revenue column after ITERS iterations of dampen.
   // Used to verify correctness across runs / engines.
-  let sum := 0.0;
-  for (let m = 0; m < 100000; m += 1) {
+  sum := 0.0;
+  for (m :=  0; m < 100000; m += 1) {
     sum = sum + Transaction.revenue[m];
   }
   printf("systems_checksum: %g\n", sum);

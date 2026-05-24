@@ -1,8 +1,8 @@
 // RUN: %arche -o %t %s && %t
 proc main() {
-  let buf: char[256];
-  let fd := arche_stdin();
-  let n := arche_fread(fd, buf, 256);
+  buf: char[256];
+  fd := arche_stdin();
+  n := arche_fread(fd, buf, 256);
   printf("read from stdin returned %d bytes\n", n);
   printf("multi-assignment with read() works\n");
   arche_fclose(move fd);

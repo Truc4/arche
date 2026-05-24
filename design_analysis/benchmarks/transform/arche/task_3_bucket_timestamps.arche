@@ -19,12 +19,12 @@ proc load_transactions() {
 
 
 proc write_output() {
-  let fd := arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_3.csv");
-  let header: char[32];
+  fd := arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_3.csv");
+  header: char[32];
   sprintf(header, "price_bucket\n");
   arche_fwrite(fd, header, strlen(header));
-  let buf: char[64];
-  for (let i = 0; i < 10000; i += 1) {
+  buf: char[64];
+  for (i :=  0; i < 10000; i += 1) {
     sprintf(buf, "%g\n", Transaction.price_bucket[i]);
     arche_fwrite(fd, buf, strlen(buf));
   }
@@ -34,15 +34,15 @@ proc write_output() {
 
 proc main() {
   load_transactions();
-  let t0 := arche_now_sec();
-  for (let iter = 0; iter < 216000; iter += 1) {
+  t0 := arche_now_sec();
+  for (iter :=  0; iter < 216000; iter += 1) {
     Transaction.price_bucket = Transaction.price / 10.0;
   }
-  let t1 := arche_now_sec();
-  let elapsed := t1 - t0;
+  t1 := arche_now_sec();
+  elapsed := t1 - t0;
 
-  let sum := 0.0;
-  for (let m = 0; m < 10000; m += 1) {
+  sum := 0.0;
+  for (m :=  0; m < 10000; m += 1) {
     sum = sum + Transaction.price_bucket[m];
   }
 

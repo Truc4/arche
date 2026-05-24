@@ -15,8 +15,8 @@ static pool<AliveList>(10);
 
 
 proc main() {
-  let p1 := insert(Player, 1.0);
-  let p2 := insert(Player, 2.0);
+  p1 := insert(Player, 1.0);
+  p2 := insert(Player, 2.0);
   insert(AliveList, p1);
   insert(AliveList, p2);
   print("alive list created");

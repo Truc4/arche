@@ -1127,51 +1127,51 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		return;
 
 	switch (stmt->type) {
-	case STMT_LET: {
+	case STMT_BIND: {
 		/* `archetype` is only valid as a parameter type. */
-		if (stmt->data.let_stmt.type && stmt->data.let_stmt.type->kind == TYPE_ARCHETYPE) {
+		if (stmt->data.bind_stmt.type && stmt->data.bind_stmt.type->kind == TYPE_ARCHETYPE) {
 			error(ctx, "`archetype` is only valid as a parameter type");
 			break;
 		}
 		/* For multivalue let with function calls, add out param variables BEFORE analyzing the call */
-		int is_multivalue_call = (stmt->data.let_stmt.name_count > 0 && stmt->data.let_stmt.names &&
-		                          stmt->data.let_stmt.value && stmt->data.let_stmt.value->type == EXPR_CALL);
+		int is_multivalue_call = (stmt->data.bind_stmt.name_count > 0 && stmt->data.bind_stmt.names &&
+		                          stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->type == EXPR_CALL);
 
 		if (is_multivalue_call) {
 			/* Add all variables first so out parameters can reference them */
-			for (int i = 0; i < stmt->data.let_stmt.name_count; i++) {
-				const char *var_name = stmt->data.let_stmt.names[i];
+			for (int i = 0; i < stmt->data.bind_stmt.name_count; i++) {
+				const char *var_name = stmt->data.bind_stmt.names[i];
 				if (var_name && strcmp(var_name, "_") != 0) {
 					add_variable(ctx, var_name, NULL);
 				}
 			}
 			/* Now analyze the call expression after variables are defined */
-			analyze_expression(ctx, stmt->data.let_stmt.value);
+			analyze_expression(ctx, stmt->data.bind_stmt.value);
 		} else {
 			/* Single-value let or non-call multivalue expressions: analyze value first */
-			analyze_expression(ctx, stmt->data.let_stmt.value);
+			analyze_expression(ctx, stmt->data.bind_stmt.value);
 
 			/* Multi-value let (non-call): add all variables from names array */
-			if (stmt->data.let_stmt.name_count > 0 && stmt->data.let_stmt.names) {
-				for (int i = 0; i < stmt->data.let_stmt.name_count; i++) {
-					const char *var_name = stmt->data.let_stmt.names[i];
+			if (stmt->data.bind_stmt.name_count > 0 && stmt->data.bind_stmt.names) {
+				for (int i = 0; i < stmt->data.bind_stmt.name_count; i++) {
+					const char *var_name = stmt->data.bind_stmt.names[i];
 					if (var_name && strcmp(var_name, "_") != 0) {
 						/* Add variable (no type annotation for multi-value let) */
 						add_variable(ctx, var_name, NULL);
 
 						/* Try to infer type from expression if it's callable with multiple returns */
-						if (stmt->data.let_stmt.value && i < 10) { /* arbitrary limit */
+						if (stmt->data.bind_stmt.value && i < 10) { /* arbitrary limit */
 							/* For now, just skip type inference for multi-value let */
 							/* This would require analyzing the function's return signature */
 						}
 					}
 				}
-			} else if (stmt->data.let_stmt.name) {
+			} else if (stmt->data.bind_stmt.name) {
 				/* Single-value let */
 				/* Check if value is an alloc expression */
 				const char *archetype_name = NULL;
-				if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->type == EXPR_ALLOC) {
-					archetype_name = stmt->data.let_stmt.value->data.alloc.archetype_name;
+				if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->type == EXPR_ALLOC) {
+					archetype_name = stmt->data.bind_stmt.value->data.alloc.archetype_name;
 					if (!find_archetype(ctx, archetype_name)) {
 						char msg[256];
 						snprintf(msg, sizeof(msg), "Archetype '%s' not defined", archetype_name);
@@ -1183,10 +1183,10 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				/* create local variable */
 				VariableInfo *var = NULL;
 				if (archetype_name) {
-					add_variable_with_archetype(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type,
+					add_variable_with_archetype(ctx, stmt->data.bind_stmt.name, stmt->data.bind_stmt.type,
 					                            archetype_name);
 				} else {
-					add_variable(ctx, stmt->data.let_stmt.name, stmt->data.let_stmt.type);
+					add_variable(ctx, stmt->data.bind_stmt.name, stmt->data.bind_stmt.type);
 				}
 
 				/* Handle type annotations and type inference */
@@ -1194,9 +1194,9 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 					Scope *scope = &ctx->scopes[ctx->scope_count - 1];
 					if (scope->var_count > 0) {
 						var = scope->vars[scope->var_count - 1];
-						if (stmt->data.let_stmt.type) {
+						if (stmt->data.bind_stmt.type) {
 							/* Type annotation: convert TypeRef to string type name */
-							TypeRef *t = stmt->data.let_stmt.type;
+							TypeRef *t = stmt->data.bind_stmt.type;
 							if (t->kind == TYPE_HANDLE)
 								var->inferred_type = t->data.handle.archetype_name;
 							else if (t->kind == TYPE_NAME) {
@@ -1205,14 +1205,14 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 									var->nominal_type = t->data.name;
 							} else
 								var->inferred_type = t->data.name;
-						} else if (stmt->data.let_stmt.value) {
+						} else if (stmt->data.bind_stmt.value) {
 							/* No annotation: infer from value expression */
-							const char *inferred = resolve_expression_type(ctx, stmt->data.let_stmt.value);
+							const char *inferred = resolve_expression_type(ctx, stmt->data.bind_stmt.value);
 							if (inferred) {
 								var->inferred_type = inferred;
 							}
 							/* keep the nominal alias name (if any) for distinctness checks */
-							var->nominal_type = nominal_type_of_expr(ctx, stmt->data.let_stmt.value);
+							var->nominal_type = nominal_type_of_expr(ctx, stmt->data.bind_stmt.value);
 						}
 					}
 				}
@@ -1734,8 +1734,8 @@ static int stmt_has_side_effects(SemanticContext *ctx, Statement *stmt, ProcDecl
 	if (!stmt)
 		return 0;
 	switch (stmt->type) {
-	case STMT_LET:
-		return stmt->data.let_stmt.value ? expr_has_side_effects(ctx, stmt->data.let_stmt.value, proc) : 0;
+	case STMT_BIND:
+		return stmt->data.bind_stmt.value ? expr_has_side_effects(ctx, stmt->data.bind_stmt.value, proc) : 0;
 	case STMT_ASSIGN: {
 		const char *target_name = lvalue_leftmost_name(stmt->data.assign_stmt.target);
 		if (target_name) {
@@ -1801,8 +1801,8 @@ static int body_is_effectively_empty(SemanticContext *ctx, ProcDecl *proc) {
 		if (!s)
 			continue;
 		switch (s->type) {
-		case STMT_LET:
-			if (s->data.let_stmt.value && expr_has_side_effects(ctx, s->data.let_stmt.value, proc))
+		case STMT_BIND:
+			if (s->data.bind_stmt.value && expr_has_side_effects(ctx, s->data.bind_stmt.value, proc))
 				return 0;
 			break; /* let with pure init: still empty */
 		case STMT_RETURN:
@@ -2255,8 +2255,8 @@ static void erase_aliases_stmt(SemanticContext *ctx, Statement *s) {
 	if (!s)
 		return;
 	switch (s->type) {
-	case STMT_LET:
-		erase_aliases_typeref(ctx, s->data.let_stmt.type);
+	case STMT_BIND:
+		erase_aliases_typeref(ctx, s->data.bind_stmt.type);
 		break;
 	case STMT_FOR:
 		erase_aliases_stmt(ctx, s->data.for_stmt.init);

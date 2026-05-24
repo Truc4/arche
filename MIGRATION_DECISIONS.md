@@ -137,6 +137,22 @@ link line scrubbed of `handles.o`. The C unit tests that exercised `extern Windo
 (`parser/semantic/codegen/handle_runtime_tests.c`) were rewritten to the nominal `:: opaque` model or
 removed; `handle_runtime_tests.c` deleted. Suite: 213/213 lit + all C tests green.
 
+## DONE (user request) — `let` keyword REMOVED; bindings are bare; for-loop de-hacked
+There is no `let`. A binding is recognized by shape: `x := e`, `x: T [= e]`, `a, b := e`, and the
+paren multi-bind `(x, y:, n: T) = e` (a trailing `:` marks a newly-declared target). A leftover
+`let` is a clear parse error. Implementation:
+- New `parse_simple_statement` parses binding/assignment/expression CONTENT (no terminator); the
+  statement fallback consumes `;`, and the `for` header consumes `;`/`)`. `parse_binding_tail`
+  no longer eats the terminator.
+- **The for-loop's hand-rolled init/incr parsers (which hard-coded `let`) are GONE** — `for` now
+  uses `parse_simple_statement` for both init and increment. One code path, no duplication.
+- AST/CST node renamed `STMT_LET`/`LetStmt`/`let_stmt` → `STMT_BIND`/`BindStmt`/`bind_stmt`
+  (`AST_STMT_LET`→`AST_STMT_BIND`) — `let` is not a concept anymore.
+- Formatter emits bare bindings (`x := e`, `x: T = e`, `for (i := 0; …)`); round-trips + recompiles.
+- Migrated ~177 `.arche` + the C-test string literals; the old `let x = e` (single-`=` decl) and
+  `for (let i = 0; …)` forms became `x := e` / `for (i := 0; …)`. Suite: 215/215 lit + all C tests.
+- `alloc_in_proc_error` now greps the generic parse error (the message is no longer "expression").
+
 ## DONE (user request) — archetype grammar: components are TYPES, single-colon `:` removed
 "foo : bar means nothing." The archetype body now accepts only **type references** (`arche Foo { a, b }`)
 and **inline definitions** `name :: type` (≡ a top-level `name :: type` + include — mints the nominal

@@ -2,7 +2,7 @@
 // negative errno directly (no libc errno indirection) — proves error returns.
 // RUN: %arche -o %t %s && %t | grep "ok"
 unsafe proc main() {
-  let r := syscall(62, 2000000000, 0, 0, 0, 0, 0);
+  r := syscall(62, 2000000000, 0, 0, 0, 0, 0);
   if (r < 0) {
     printf("ok\n");
   }

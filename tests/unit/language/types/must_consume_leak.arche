@@ -6,5 +6,5 @@ extern func resource_open(initial: int) -> resource;
 extern proc resource_close(consume r: resource);
 
 proc main() {
-  let r := resource_open(10);
+  r := resource_open(10);
 }

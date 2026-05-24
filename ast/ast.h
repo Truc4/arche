@@ -189,7 +189,7 @@ struct AstProgram {
    ========================= */
 
 typedef enum {
-	AST_STMT_LET,
+	AST_STMT_BIND,
 	AST_STMT_ASSIGN,
 	AST_STMT_FOR,
 	AST_STMT_IF,
@@ -207,7 +207,7 @@ typedef struct {
 	int name_count;
 	AstType *type; /* optional explicit type, only single-var */
 	AstExpr *value;
-} AstLetStmt;
+} AstBindStmt;
 
 typedef struct {
 	AstExpr *target;
@@ -275,7 +275,7 @@ struct AstStmt {
 	AstStmtKind kind;
 	SourceLoc loc;
 	union {
-		AstLetStmt let_stmt;
+		AstBindStmt bind_stmt;
 		AstAssignStmt assign_stmt;
 		AstForStmt for_stmt;
 		AstIfStmt if_stmt;

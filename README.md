@@ -93,7 +93,7 @@ literal (the kind is inferred — there is no `type` keyword). Runtime variables
 meters :: float     // nominal type alias (distinct from any other float type)
 seconds :: float    // meters ≠ seconds, though both back to float
 MAX :: 100          // value const (literal RHS)
-let x := 5          // runtime variable
+x := 5          // runtime variable
 ```
 
 A type alias is **zero-cost** — it erases to its backing after checking. Operators resolve on
@@ -117,7 +117,7 @@ mass :: float            // nominal type (lowercase = type)
 
 arche Particle {
   mass,                  // reference an existing component type
-  charge: float          // inline definition (mints a `charge` component)
+  charge :: float        // inline definition (mints a `charge` component)
 }
 ```
 
@@ -220,20 +220,20 @@ x = a < b   // x is 0 or 1
 Always available alongside `int`: `i8`/`u8`, `i16`/`u16`, `i32`/`u32`, `i64`/`u64`, `i128`/`u128`, and `byte` (= `u8`). `int` is an alias for `i32`; `char` is `i8`. These map to native LLVM integers — no software emulation. Signedness is part of the type and selects the machine operation (`sdiv`/`udiv`, signed/unsigned compares, `sext`/`zext`).
 
 ```arche
-let offset: i64 = 3000000000;   // addresses past the 32-bit signed limit
+offset: i64 = 3000000000;   // addresses past the 32-bit signed limit
 offset = offset + offset;       // i64 arithmetic
-let count: u32 = 4000000000;    // unsigned 32-bit
-let b: byte = 255;
+count: u32 = 4000000000;    // unsigned 32-bit
+b: byte = 255;
 ```
 
 Convert between widths with a call-style cast (`sext`/`zext` to widen, `trunc` to narrow):
 
 ```arche
-let small := i32(offset);   // truncate i64 -> i32
-let wide: i64 = i64(small); // widen i32 -> i64
+small := i32(offset);   // truncate i64 -> i32
+wide: i64 = i64(small); // widen i32 -> i64
 ```
 
-Integer literals adopt the type of their context (`let x: i64 = 3000000000` types the literal as `i64`, avoiding 32-bit overflow). Operands of differing widths are widened to the larger width before the operation.
+Integer literals adopt the type of their context (`x: i64 = 3000000000` types the literal as `i64`, avoiding 32-bit overflow). Operands of differing widths are widened to the larger width before the operation.
 
 ## Procedures (`proc`)
 
@@ -459,12 +459,12 @@ parameter and **returns it** alongside its scalar result:
 
 ```arche
 func read_chunk(fd: file, buf: char[], size: int) -> (char[], int) {
-  let n := arche_csv_read_chunk(fd, buf, size);
+  n := arche_csv_read_chunk(fd, buf, size);
   return buf, n;
 }
 
-// caller binds both with a multi-value let
-let buf, n := read_chunk(fd, buf, 65536);
+// caller binds both with a multi-value binding
+buf, n := read_chunk(fd, buf, 65536);
 ```
 
 The buffer is caller-allocated and filled in place; the leading array return is that same
@@ -519,7 +519,7 @@ Everything is **by value**. Plain data and handles copy freely. An `opaque`-back
 
 ```arche
 proc render() {
-  let w := window_open("demo", 640, 480);
+  w := window_open("demo", 640, 480);
   window_present(w, fb, 640, 480);   // plain by-value read (borrow)
   window_close(move w);              // consumes w — required before scope end
 }
@@ -527,16 +527,16 @@ proc render() {
 
 ## Multi-Value Let
 
-The `let a, b, … := function()` syntax captures the multiple return values of a multi-return
+The `a, b, … := function()` syntax captures the multiple return values of a multi-return
 function (see above):
 
 ```arche
-let buf, n := read(fd, buf, 256);    // bind the filled buffer + the scalar
-let x, y, z := some_func();           // bind all returns
+buf, n := read(fd, buf, 256);    // bind the filled buffer + the scalar
+x, y, z := some_func();           // bind all returns
 ```
 
 Targets bind **left-to-right** in the function's return-type order (the leading buffer returns
-first, the scalar last). A target may be a new `let x:` or an existing variable.
+first, the scalar last). A target may be a new `x:` or an existing variable.
 
 ## Status
 
@@ -545,8 +545,8 @@ first, the scalar last). A target may be a new `let x:` or an existing variable.
 ### What's Working
 
 - **Lexer**: Tokenizes source into language constructs (keywords, identifiers, operators)
-- **Parser**: Builds AST for archetypes, procedures, systems, functions, expressions, multi-value let
-- **Semantic Analysis**: Symbol table, scope tracking, type checking, field validation, multi-value let binding
+- **Parser**: Builds AST for archetypes, procedures, systems, functions, expressions, multi-value bindings
+- **Semantic Analysis**: Symbol table, scope tracking, type checking, field validation, multi-value binding
 - **Code Generation**: Compiles to LLVM IR, assembles, and links to executables
 - **Functions**: User-defined and extern functions with return values
 - **Procedures**: User-defined and extern procedures (void)

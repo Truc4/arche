@@ -5,7 +5,7 @@
 pos :: (x: int, y: int)
 
 proc main() {
-  let a: pos_x = 3;
-  let b: pos_y = 4;
+  a: pos_x = 3;
+  b: pos_y = 4;
   printf("sum: %d\n", a + b);
 }

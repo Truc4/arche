@@ -142,12 +142,12 @@ void ast_stmt_free(AstStmt *stmt) {
 	if (!stmt)
 		return;
 	switch (stmt->kind) {
-	case AST_STMT_LET:
-		for (int i = 0; i < stmt->data.let_stmt.name_count; i++)
-			free(stmt->data.let_stmt.names[i]);
-		free(stmt->data.let_stmt.names);
-		ast_type_free(stmt->data.let_stmt.type);
-		ast_expr_free(stmt->data.let_stmt.value);
+	case AST_STMT_BIND:
+		for (int i = 0; i < stmt->data.bind_stmt.name_count; i++)
+			free(stmt->data.bind_stmt.names[i]);
+		free(stmt->data.bind_stmt.names);
+		ast_type_free(stmt->data.bind_stmt.type);
+		ast_expr_free(stmt->data.bind_stmt.value);
 		break;
 	case AST_STMT_ASSIGN:
 		ast_expr_free(stmt->data.assign_stmt.target);

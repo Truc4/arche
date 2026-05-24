@@ -8,6 +8,6 @@ extern func sound_open() -> sound;
 extern proc window_close(consume w: window);
 
 proc main() {
-  let s := sound_open();
+  s := sound_open();
   window_close(move s);
 }

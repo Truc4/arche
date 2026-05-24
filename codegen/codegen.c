@@ -3207,8 +3207,8 @@ static int try_extract_loop_bound(AstStmt *for_stmt, char **out_var, int *out_bo
 
 	/* Init: a `let` declaration introducing the loop variable. */
 	const char *var_name = NULL;
-	if (init->kind == AST_STMT_LET && init->data.let_stmt.name_count >= 1 && init->data.let_stmt.names[0]) {
-		var_name = init->data.let_stmt.names[0];
+	if (init->kind == AST_STMT_BIND && init->data.bind_stmt.name_count >= 1 && init->data.bind_stmt.names[0]) {
+		var_name = init->data.bind_stmt.names[0];
 	}
 	if (!var_name)
 		return 0;
@@ -3603,13 +3603,13 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		return;
 
 	switch (stmt->kind) {
-	case AST_STMT_LET: {
-		const char *var_name = stmt->data.let_stmt.names[0];
+	case AST_STMT_BIND: {
+		const char *var_name = stmt->data.bind_stmt.names[0];
 		char value_buf[256];
 
 		/* Handle type-annotated declaration without initialization */
-		if (stmt->data.let_stmt.type && !stmt->data.let_stmt.value) {
-			AstType *type = stmt->data.let_stmt.type;
+		if (stmt->data.bind_stmt.type && !stmt->data.bind_stmt.value) {
+			AstType *type = stmt->data.bind_stmt.type;
 
 			/* Check for array type */
 			if (type->tag == AST_TYPE_ARRAY) {
@@ -3690,14 +3690,14 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 
 		/* Check if the value is a string literal (old style) or array literal (new style from string expansion) */
 		int is_string = 0;
-		if (stmt->data.let_stmt.value) {
-			if (stmt->data.let_stmt.value->kind == AST_EXPR_LITERAL &&
-			    stmt->data.let_stmt.value->data.literal.lexeme[0] == '"') {
+		if (stmt->data.bind_stmt.value) {
+			if (stmt->data.bind_stmt.value->kind == AST_EXPR_LITERAL &&
+			    stmt->data.bind_stmt.value->data.literal.lexeme[0] == '"') {
 				is_string = 1;
-			} else if (stmt->data.let_stmt.value->kind == AST_EXPR_STRING) {
+			} else if (stmt->data.bind_stmt.value->kind == AST_EXPR_STRING) {
 				/* AST_EXPR_STRING is also a string */
 				is_string = 1;
-			} else if (stmt->data.let_stmt.value->kind == AST_EXPR_ARRAY_LITERAL) {
+			} else if (stmt->data.bind_stmt.value->kind == AST_EXPR_ARRAY_LITERAL) {
 				/* Array literal from string expansion */
 				is_string = 1;
 			}
@@ -3706,29 +3706,29 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		/* Check if value is an alloc expression */
 		int is_alloc = 0;
 		const char *alloc_arch_name = NULL;
-		if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->kind == AST_EXPR_ALLOC) {
+		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == AST_EXPR_ALLOC) {
 			is_alloc = 1;
-			alloc_arch_name = stmt->data.let_stmt.value->data.alloc.archetype_name;
+			alloc_arch_name = stmt->data.bind_stmt.value->data.alloc.archetype_name;
 		}
 
 		/* Detect: let row = arch.field[entity] where field is shaped array */
 		int is_multidim_slice = 0;
 		const char *slice_elem_type = NULL;
-		if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->kind == AST_EXPR_INDEX &&
-		    stmt->data.let_stmt.value->data.index.index_count == 1) {
-			slice_elem_type = get_shaped_field_info(ctx, stmt->data.let_stmt.value->data.index.base, NULL);
+		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == AST_EXPR_INDEX &&
+		    stmt->data.bind_stmt.value->data.index.index_count == 1) {
+			slice_elem_type = get_shaped_field_info(ctx, stmt->data.bind_stmt.value->data.index.base, NULL);
 			if (slice_elem_type)
 				is_multidim_slice = 1;
 		}
 
-		if (stmt->data.let_stmt.value) {
-			codegen_expression(ctx, stmt->data.let_stmt.value, value_buf);
+		if (stmt->data.bind_stmt.value) {
+			codegen_expression(ctx, stmt->data.bind_stmt.value, value_buf);
 		} else {
 			strcpy(value_buf, "0");
 		}
 
-		int is_char_array_call = stmt->data.let_stmt.value && stmt->data.let_stmt.value->kind == AST_EXPR_CALL &&
-		                         stmt->data.let_stmt.value->resolved.tag == AST_TYPE_CHAR_ARRAY;
+		int is_char_array_call = stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == AST_EXPR_CALL &&
+		                         stmt->data.bind_stmt.value->resolved.tag == AST_TYPE_CHAR_ARRAY;
 
 		if (is_char_array_call) {
 			/* A func returning char[] (e.g. arche_file_map) yields a raw i8* byte
@@ -3770,7 +3770,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			add_arch_value(ctx, var_name, value_buf, alloc_arch_name);
 		} else if (is_string) {
 			/* For strings, handle based on type */
-			if (stmt->data.let_stmt.value->kind == AST_EXPR_ARRAY_LITERAL) {
+			if (stmt->data.bind_stmt.value->kind == AST_EXPR_ARRAY_LITERAL) {
 				/* Array literal: value_buf is already a struct pointer, just use it */
 				add_array_value(ctx, var_name, value_buf);
 			} else {
@@ -3807,11 +3807,11 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			/* Check if RHS is an insert call (returns handle/i64) */
 			int is_insert_call = 0;
 			const char *insert_archetype = NULL;
-			if (stmt->data.let_stmt.value && stmt->data.let_stmt.value->kind == AST_EXPR_CALL) {
+			if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == AST_EXPR_CALL) {
 				const char *func_name = NULL;
-				if (stmt->data.let_stmt.value->data.call.callee &&
-				    stmt->data.let_stmt.value->data.call.callee->kind == AST_EXPR_NAME) {
-					func_name = stmt->data.let_stmt.value->data.call.callee->data.name.name;
+				if (stmt->data.bind_stmt.value->data.call.callee &&
+				    stmt->data.bind_stmt.value->data.call.callee->kind == AST_EXPR_NAME) {
+					func_name = stmt->data.bind_stmt.value->data.call.callee->data.name.name;
 				}
 				if (func_name && strcmp(func_name, "insert") == 0) {
 					is_insert_call = 1;
@@ -3820,17 +3820,17 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 					bit_width = 64;
 					resolved_type = "handle";
 					/* Extract archetype from insert's first argument */
-					if (stmt->data.let_stmt.value->data.call.arg_count > 0 &&
-					    stmt->data.let_stmt.value->data.call.args[0]->kind == AST_EXPR_NAME) {
-						insert_archetype = stmt->data.let_stmt.value->data.call.args[0]->data.name.name;
+					if (stmt->data.bind_stmt.value->data.call.arg_count > 0 &&
+					    stmt->data.bind_stmt.value->data.call.args[0]->kind == AST_EXPR_NAME) {
+						insert_archetype = stmt->data.bind_stmt.value->data.call.args[0]->data.name.name;
 					}
 				}
 			}
 
 			/* Check the resolved type of the value expression */
-			if (!is_insert_call && stmt->data.let_stmt.value &&
-			    stmt->data.let_stmt.value->resolved.tag != AST_TYPE_UNKNOWN) {
-				resolved_type = ast_resolved_type_name(stmt->data.let_stmt.value);
+			if (!is_insert_call && stmt->data.bind_stmt.value &&
+			    stmt->data.bind_stmt.value->resolved.tag != AST_TYPE_UNKNOWN) {
+				resolved_type = ast_resolved_type_name(stmt->data.bind_stmt.value);
 				if (strcmp(resolved_type, "double") == 0 || strcmp(resolved_type, "float") == 0) {
 					alloc_type = "double";
 					store_type = "double";
@@ -3844,11 +3844,11 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 					alloc_type = "i64";
 					store_type = "i64";
 					bit_width = 64;
-				} else if (stmt->data.let_stmt.value->resolved.tag == AST_TYPE_INT &&
-				           stmt->data.let_stmt.value->resolved.int_width != 32) {
+				} else if (stmt->data.bind_stmt.value->resolved.tag == AST_TYPE_INT &&
+				           stmt->data.bind_stmt.value->resolved.int_width != 32) {
 					/* RHS is a non-i32 integer (e.g. syscall -> i64): infer its width
 					   instead of defaulting to i32 and truncating. */
-					int w = stmt->data.let_stmt.value->resolved.int_width;
+					int w = stmt->data.bind_stmt.value->resolved.int_width;
 					alloc_type = llvm_int_type(w);
 					store_type = alloc_type;
 					bit_width = w;
@@ -3858,11 +3858,11 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			/* A fixed-width int annotation (let x: i64 = ...) sets the storage
 			 * width; the value is sext/zext/trunc'd to match (literals adopt the
 			 * annotated width per the language's literal-typing rule). */
-			AstType *ann = stmt->data.let_stmt.type;
+			AstType *ann = stmt->data.bind_stmt.type;
 			if (ann && ann->tag == AST_TYPE_INT && ann->int_width != 32) {
 				const char *wt = llvm_int_type(ann->int_width);
 				char converted[256];
-				emit_int_convert(ctx, value_buf, &stmt->data.let_stmt.value->resolved, ann->int_width, converted);
+				emit_int_convert(ctx, value_buf, &stmt->data.bind_stmt.value->resolved, ann->int_width, converted);
 				strcpy(value_buf, converted);
 				alloc_type = wt;
 				store_type = wt;
@@ -3890,9 +3890,9 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			}
 				/* Propagate the handle's archetype through a copy (let alias := h) so
 				 * delete(alias) can infer the pool. */
-				if (!vi->handle_archetype && stmt->data.let_stmt.value &&
-				    stmt->data.let_stmt.value->kind == AST_EXPR_NAME) {
-					ValueInfo *src = find_value(ctx, stmt->data.let_stmt.value->data.name.name);
+				if (!vi->handle_archetype && stmt->data.bind_stmt.value &&
+				    stmt->data.bind_stmt.value->kind == AST_EXPR_NAME) {
+					ValueInfo *src = find_value(ctx, stmt->data.bind_stmt.value->data.name.name);
 					if (src && src->handle_archetype) {
 						vi->handle_archetype = malloc(strlen(src->handle_archetype) + 1);
 						strcpy(vi->handle_archetype, src->handle_archetype);

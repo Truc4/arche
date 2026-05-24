@@ -6,11 +6,11 @@ proc close(consume fd: file) {
   arche_fclose(move fd);
 }
 proc skip_header(fd: file) {
-  let line: char[256];
+  line: char[256];
   arche_fread_line(fd, line, 256);
 }
 func read_chunk(fd: file, buf: char[], size: int) -> (char[], int) {
-  let n := arche_csv_read_chunk(fd, buf, size);
+  n := arche_csv_read_chunk(fd, buf, size);
   return buf, n;
 }
 
@@ -24,7 +24,7 @@ static load_cols: int[64];
 
 // first index of byte `ch` in data[start..end), or end if absent
 func find_byte(data: char[], start: i64, end: i64, ch: int) -> i64 {
-  for (let i: i64 = start; i < end; i = i + 1) {
+  for (i: i64 = start; i < end; i = i + 1) {
     if (data[i] == ch) {
       return i;
     }
@@ -34,11 +34,11 @@ func find_byte(data: char[], start: i64, end: i64, ch: int) -> i64 {
 
 // 1 if archetype field name `name` equals the CSV header cell data[start..end)
 func name_eq(name: char[], data: char[], start: i64, end: i64) -> int {
-  let len: i64 = end - start;
+  len: i64 = end - start;
   if (strlen(name) != len) {
     return 0;
   }
-  for (let i: i64 = 0; i < len; i = i + 1) {
+  for (i: i64 = 0; i < len; i = i + 1) {
     if (name[i] != data[start + i]) {
       return 0;
     }
@@ -48,8 +48,8 @@ func name_eq(name: char[], data: char[], start: i64, end: i64) -> int {
 
 // start offset of the col-th comma-separated field within data[row_start..row_end)
 func field_at(data: char[], row_start: i64, row_end: i64, col: int) -> i64 {
-  let p: i64 = row_start;
-  for (let remaining = col; remaining > 0; remaining -= 1) {
+  p: i64 = row_start;
+  for (remaining :=  col; remaining > 0; remaining -= 1) {
     p = find_byte(data, p, row_end, ',') + 1;
   }
   return p;
@@ -66,18 +66,18 @@ func cell_int(c: int, s: char[]) -> int {
 func cell = { cell_float, cell_int };
 
 proc load(arch: archetype, path: char[]) {
-  let data := arche_file_map(path);
-  let size: i64 = arche_file_size();
+  data := arche_file_map(path);
+  size: i64 = arche_file_size();
 
-  let hdr_end: i64 = find_byte(data, 0, size, '\n');
+  hdr_end: i64 = find_byte(data, 0, size, '\n');
 
   // header pass: map each archetype field to its file column by name
   each_field f in arch {
     load_cols[f.index] = -1;
-    let col := 0;
-    let cstart: i64 = 0;
+    col := 0;
+    cstart: i64 = 0;
     for (;cstart < hdr_end;) {
-      let cend: i64 = find_byte(data, cstart, hdr_end, ',');
+      cend: i64 = find_byte(data, cstart, hdr_end, ',');
       if (name_eq(f.name, data, cstart, cend)) {
         load_cols[f.index] = col;
         break;
@@ -88,20 +88,20 @@ proc load(arch: archetype, path: char[]) {
   }
 
   // row pass: pull each field from its mapped column
-  let pos: i64 = hdr_end + 1;
-  for (let row = 0; row < arch.capacity; row += 1) {
+  pos: i64 = hdr_end + 1;
+  for (row :=  0; row < arch.capacity; row += 1) {
     if (pos >= size) {
       break;
     }
-    let nl: i64 = find_byte(data, pos, size, '\n');
+    nl: i64 = find_byte(data, pos, size, '\n');
     each_field f in arch {
-      let c := load_cols[f.index];
+      c := load_cols[f.index];
       if (c >= 0) {
-        let fstart: i64 = field_at(data, pos, nl, c);
-        let fend: i64 = find_byte(data, fstart, nl, ',');
-        let scratch: char[64];
-        let j := 0;
-        for (let i: i64 = fstart; i < fend; i = i + 1) {
+        fstart: i64 = field_at(data, pos, nl, c);
+        fend: i64 = find_byte(data, fstart, nl, ',');
+        scratch: char[64];
+        j := 0;
+        for (i: i64 = fstart; i < fend; i = i + 1) {
           scratch[j] = data[i];
           j += 1;
         }

@@ -24,8 +24,8 @@ proc load_transactions() {
 proc main() {
   load_transactions();
   Transaction.revenue = Transaction.price * Transaction.quantity;
-  let sum := 0.0;
-  for (let m = 0; m < 100000000; m += 1) {
+  sum := 0.0;
+  for (m :=  0; m < 100000000; m += 1) {
     sum = sum + Transaction.revenue[m];
   }
   printf("task1_checksum: %g\n", sum);

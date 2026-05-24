@@ -155,9 +155,9 @@ static void rename_stmt(Statement *s, const char *prefix, char **set, int count)
 	if (!s)
 		return;
 	switch (s->type) {
-	case STMT_LET:
-		rename_typeref(s->data.let_stmt.type, prefix, set, count);
-		rename_expr(s->data.let_stmt.value, prefix, set, count);
+	case STMT_BIND:
+		rename_typeref(s->data.bind_stmt.type, prefix, set, count);
+		rename_expr(s->data.bind_stmt.value, prefix, set, count);
 		break;
 	case STMT_ASSIGN:
 		rename_expr(s->data.assign_stmt.target, prefix, set, count);

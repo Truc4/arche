@@ -11,7 +11,7 @@ static pool<Point>(5, 5) {
 
 proc main() {
   printf("before access\n");
-  let val := Point.x[0];
+  val := Point.x[0];
   assert(val == 42, "val not 42\n");
   printf("ok\n");
 }

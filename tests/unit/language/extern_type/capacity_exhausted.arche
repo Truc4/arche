@@ -9,7 +9,7 @@ extern func resource_open(initial: int) -> cell;
 static pool<Resource>(2);
 
 proc main() {
-  let a := insert(Resource, resource_open(1));
-  let b := insert(Resource, resource_open(2));
-  let c := insert(Resource, resource_open(3));
+  a := insert(Resource, resource_open(1));
+  b := insert(Resource, resource_open(2));
+  c := insert(Resource, resource_open(3));
 }

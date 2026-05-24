@@ -11,9 +11,9 @@ extern proc resource_set(r: resource, v: int);
 extern proc resource_close(consume r: resource);
 
 proc main() {
-  let r := resource_open(10);
+  r := resource_open(10);
   resource_set(r, 42);
-  let v := resource_get(r);
+  v := resource_get(r);
   printf("value=%d\n", v);
   resource_close(move r);
 }

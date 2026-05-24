@@ -27,10 +27,10 @@ proc main() {
   insert(table<Particle>, 1.0, 0.1);
   insert(table<Body>, 2.0, 0.2, 10.0);
   run move;
-  let pp := Particle.pos[0];
-  let bp := Body.pos[0];
-  let ppi := pp * 10.0;
-  let bpi := bp * 10.0;
+  pp := Particle.pos[0];
+  bp := Body.pos[0];
+  ppi := pp * 10.0;
+  bpi := bp * 10.0;
   assert(ppi == 11, "Particle.pos != 1.1\n");
   assert(bpi == 22, "Body.pos != 2.2\n");
 }

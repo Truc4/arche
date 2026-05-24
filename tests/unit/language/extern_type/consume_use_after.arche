@@ -7,7 +7,7 @@ extern proc resource_close(consume r: resource);
 extern func resource_get(r: resource) -> int;
 
 proc main() {
-  let r := resource_open(10);
+  r := resource_open(10);
   resource_close(move r); // not moving should be an error
-  let v := resource_get(r);
+  v := resource_get(r);
 }

@@ -5,7 +5,7 @@ base :: int
 level :: base
 
 proc main() {
-  let x: level = 4;
-  let y: level = 6;
+  x: level = 4;
+  y: level = 6;
   printf("result: %d\n", x + y);
 }

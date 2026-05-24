@@ -5,7 +5,7 @@
 count :: int
 
 proc main() {
-  let a: count = 10;
-  let b: count = 20;
+  a: count = 10;
+  b: count = 20;
   printf("result: %d\n", a + b);
 }

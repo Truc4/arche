@@ -9,6 +9,6 @@ extern func open_file() -> file;
 extern proc use_socket(s: socket);
 
 proc main() {
-  let f := open_file();
+  f := open_file();
   use_socket(f);
 }

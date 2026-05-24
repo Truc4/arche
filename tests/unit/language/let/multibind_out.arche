@@ -1,11 +1,11 @@
 // RUN: %arche -o %t %s && %t | grep "result: 99"
 // Simple test of multi-bind with out param
 func fill_buf(buf: char[32]) -> (char[], int) {
-  let r := sprintf(buf, "hello");
+  r := sprintf(buf, "hello");
   return buf, 99;
 }
 
 proc main() {
-  let buf, result := fill_buf(buf);
+  buf, result := fill_buf(buf);
   printf("result: %d\n", result);
 }

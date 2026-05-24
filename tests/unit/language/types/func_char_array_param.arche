@@ -1,7 +1,7 @@
 // RUN: %arche -o %t %s && %t | grep "comma=1 first=3"
 
 func find_byte(data: char[], start: int, end: int, ch: int) -> int {
-  for (let i = start; i < end; i += 1) {
+  for (i :=  start; i < end; i += 1) {
     if (data[i] == ch) {
       return i;
     }
@@ -10,12 +10,12 @@ func find_byte(data: char[], start: int, end: int, ch: int) -> int {
 }
 
 proc main() {
-  let buf: char[8];
+  buf: char[8];
   buf[0] = 'a';
   buf[1] = ',';
   buf[2] = 'b';
   buf[3] = 'c';
-  let comma := find_byte(buf, 0, 8, ',');
-  let first := find_byte(buf, 2, 8, 'b') + 1;
+  comma := find_byte(buf, 0, 8, ',');
+  first := find_byte(buf, 2, 8, 'b') + 1;
   printf("comma=%d first=%d\n", comma, first);
 }

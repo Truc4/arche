@@ -20,11 +20,11 @@ proc load_transactions() {
 
 
 proc write_transactions() {
-  let fd := arche_fopen_write("build/benchmarks/etl/task1/arche_output.csv");
-  let buf: char[256];
-  let i := 0;
+  fd := arche_fopen_write("build/benchmarks/etl/task1/arche_output.csv");
+  buf: char[256];
+  i := 0;
   for (;i < 1000;) {
-    let n := sprintf(buf, "%f,%d,%f\n", Transaction.price[i], Transaction.quantity[i], Transaction.revenue[i]);
+    n := sprintf(buf, "%f,%d,%f\n", Transaction.price[i], Transaction.quantity[i], Transaction.revenue[i]);
     arche_fwrite(fd, buf, n);
     i = i + 1;
   }

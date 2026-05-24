@@ -7,16 +7,16 @@ extern func resource_open(initial: int) -> resource;
 extern proc resource_close(consume r: resource);
 
 proc main() {
-  let r1 := resource_open(1);
-  let r2 := resource_open(2);
-  let r3 := resource_open(3);
-  let r4 := resource_open(4);
-  let r5 := resource_open(5);
-  let r6 := resource_open(6);
-  let r7 := resource_open(7);
-  let r8 := resource_open(8);
-  let r9 := resource_open(9);
-  let ok := r9 == 0;
+  r1 := resource_open(1);
+  r2 := resource_open(2);
+  r3 := resource_open(3);
+  r4 := resource_open(4);
+  r5 := resource_open(5);
+  r6 := resource_open(6);
+  r7 := resource_open(7);
+  r8 := resource_open(8);
+  r9 := resource_open(9);
+  ok := r9 == 0;
   printf("ok_null=%d\n", ok);
   // Linear retire: each opaque local (incl. the null r9 — close is null-safe) is consumed.
   resource_close(move r1);

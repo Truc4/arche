@@ -432,10 +432,10 @@ void statement_free(Statement *stmt) {
 	free(stmt->leading_trivia);
 	free(stmt->trailing_trivia);
 	switch (stmt->type) {
-	case STMT_LET:
-		free(stmt->data.let_stmt.name);
-		type_ref_free(stmt->data.let_stmt.type);
-		expression_free(stmt->data.let_stmt.value);
+	case STMT_BIND:
+		free(stmt->data.bind_stmt.name);
+		type_ref_free(stmt->data.bind_stmt.type);
+		expression_free(stmt->data.bind_stmt.value);
 		break;
 	case STMT_ASSIGN:
 		expression_free(stmt->data.assign_stmt.target);
@@ -912,35 +912,35 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 	emit_leading_trivia(out, stmt->leading_trivia, stmt->leading_count, indent_str, ctx);
 
 	switch (stmt->type) {
-	case STMT_LET: {
-		fprintf(out, "%slet ", indent_str);
+	case STMT_BIND: {
+		fprintf(out, "%s", indent_str);
 
-		/* Multi-value let */
-		if (stmt->data.let_stmt.name_count > 0 && stmt->data.let_stmt.names) {
-			for (int i = 0; i < stmt->data.let_stmt.name_count; i++) {
-				fprintf(out, "%s", stmt->data.let_stmt.names[i]);
-				if (i < stmt->data.let_stmt.name_count - 1) {
+		/* Multi-value binding: `a, b := value` */
+		if (stmt->data.bind_stmt.name_count > 0 && stmt->data.bind_stmt.names) {
+			for (int i = 0; i < stmt->data.bind_stmt.name_count; i++) {
+				fprintf(out, "%s", stmt->data.bind_stmt.names[i]);
+				if (i < stmt->data.bind_stmt.name_count - 1) {
 					fprintf(out, ", ");
 				}
 			}
 			/* Multi-value always inferred (no type), so := */
 			fprintf(out, " := ");
-			format_expression(out, stmt->data.let_stmt.value);
+			format_expression(out, stmt->data.bind_stmt.value);
 		} else {
 			/* Single-value let */
-			fprintf(out, "%s", stmt->data.let_stmt.name);
-			if (stmt->data.let_stmt.type) {
+			fprintf(out, "%s", stmt->data.bind_stmt.name);
+			if (stmt->data.bind_stmt.type) {
 				/* Explicit type: let x: type = value */
 				fprintf(out, ": ");
-				format_type(out, stmt->data.let_stmt.type);
-				if (stmt->data.let_stmt.value) {
+				format_type(out, stmt->data.bind_stmt.type);
+				if (stmt->data.bind_stmt.value) {
 					fprintf(out, " = ");
-					format_expression(out, stmt->data.let_stmt.value);
+					format_expression(out, stmt->data.bind_stmt.value);
 				}
-			} else if (stmt->data.let_stmt.value) {
+			} else if (stmt->data.bind_stmt.value) {
 				/* Inferred type: let x := value */
 				fprintf(out, " := ");
-				format_expression(out, stmt->data.let_stmt.value);
+				format_expression(out, stmt->data.bind_stmt.value);
 			}
 		}
 		fprintf(out, ";");
@@ -982,17 +982,24 @@ static void format_statement(FILE *out, Statement *stmt, int indent, FmtCtx *ctx
 			fprintf(out, " (");
 			if (stmt->data.for_stmt.init) {
 				/* Format statement without leading indent/newline */
-				if (stmt->data.for_stmt.init->type == STMT_LET) {
-					LetStmt *let = &stmt->data.for_stmt.init->data.let_stmt;
-					fprintf(out, "let %s", let->name);
-					if (let->type) {
+				if (stmt->data.for_stmt.init->type == STMT_BIND) {
+					BindStmt *b = &stmt->data.for_stmt.init->data.bind_stmt;
+					fprintf(out, "%s", b->name);
+					if (b->type) {
 						fprintf(out, ": ");
-						format_type(out, let->type);
+						format_type(out, b->type);
+						if (b->value) {
+							fprintf(out, " = ");
+							format_expression(out, b->value);
+						}
+					} else if (b->value) {
+						fprintf(out, " := ");
+						format_expression(out, b->value);
 					}
-					if (let->value) {
-						fprintf(out, " = ");
-						format_expression(out, let->value);
-					}
+				} else if (stmt->data.for_stmt.init->type == STMT_ASSIGN) {
+					format_expression(out, stmt->data.for_stmt.init->data.assign_stmt.target);
+					fprintf(out, " = ");
+					format_expression(out, stmt->data.for_stmt.init->data.assign_stmt.value);
 				} else if (stmt->data.for_stmt.init->type == STMT_EXPR) {
 					format_expression(out, stmt->data.for_stmt.init->data.expr_stmt.expr);
 				}
