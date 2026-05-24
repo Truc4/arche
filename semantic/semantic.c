@@ -975,12 +975,14 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 						continue;
 					}
 
-					/* Ownership transfer into a `consume` parameter must be explicit: an
-					 * opaque value cannot copy, so a named opaque binding handed to a consume
-					 * param must be written `move x`. The `move` itself (UNARY_MOVE, handled in
-					 * analyze_expression) marks the binding consumed; a bare name is an error.
-					 * (Rvalues — e.g. a call result — have no binding to kill, so move is not
-					 * required there.) Runs for BOTH extern and non-extern callees. */
+					/* Ownership transfer into a `consume` parameter must be explicit: consume
+					 * consumes, for ANY type — a named binding handed to a consume param must be
+					 * written `move x` (the binding is given up; it does not come back). The
+					 * `move` itself (UNARY_MOVE, handled in analyze_expression) marks the binding
+					 * consumed; a bare name is an error. (Rvalues — e.g. a call result — have no
+					 * binding to kill, so move is not required there.) This is NOT opaque-special:
+					 * opaque is merely the case where copy is also impossible. Runs for BOTH
+					 * extern and non-extern callees. */
 					{
 						int ac = expr->data.call.arg_count;
 						int n = param_count < ac ? param_count : ac;
@@ -991,10 +993,10 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 							Expression *a = expr->data.call.args[j];
 							if (a->type == EXPR_NAME) {
 								VariableInfo *cv = find_variable(ctx, a->data.name.name);
-								if (cv && var_is_opaque(ctx, cv)) {
+								if (cv) {
 									char msg[256];
 									snprintf(msg, sizeof(msg),
-									         "opaque value '%s' must be moved into consuming parameter '%s' of "
+									         "value '%s' must be moved into consuming parameter '%s' of "
 									         "'%s' (write `move %s`)",
 									         a->data.name.name, p->name ? p->name : "?", func_name,
 									         a->data.name.name);
@@ -1230,28 +1232,27 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 	}
 
 	case STMT_MULTI_BIND: {
-		/* Multi-bind: (let x:, y) = expr */
-		/* Add new variables FIRST so they're in scope for the RHS expression */
-		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
-			BindingTarget *target = &stmt->data.multi_bind.targets[i];
-			if (target->is_new) {
-				add_variable(ctx, target->name, target->type);
-			}
-		}
-
-		/* Now analyze the RHS expression (out params can reference newly declared vars) */
+		/* Multi-bind: `x, y, n := expr`. Analyze the RHS FIRST so a `move x` inside it
+		 * refers to the existing binding (e.g. a buffer being passed by reference and
+		 * returned), not a target we are about to introduce. */
 		analyze_expression(ctx, stmt->data.multi_bind.value);
 
-		/* Validate that existing variables are actually defined */
+		/* Then bind the targets. A new target introduces a binding (a moved value coming
+		 * back rebinds an existing name, reviving it); an existing target must be declared. */
 		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
 			BindingTarget *target = &stmt->data.multi_bind.targets[i];
-			if (!target->is_new) {
-				VariableInfo *existing = find_variable(ctx, target->name);
-				if (!existing) {
-					char msg[256];
-					snprintf(msg, sizeof(msg), "Variable '%s' not declared", target->name);
-					error(ctx, msg);
-				}
+			VariableInfo *existing = find_variable(ctx, target->name);
+			if (target->is_new) {
+				if (existing)
+					existing->is_consumed = 0; /* moved-out buffer coming back */
+				else
+					add_variable(ctx, target->name, target->type);
+			} else if (!existing) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "Variable '%s' not declared", target->name);
+				error(ctx, msg);
+			} else {
+				existing->is_consumed = 0; /* reassignment revives a moved binding */
 			}
 		}
 		break;
@@ -1260,6 +1261,12 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 	case STMT_ASSIGN:
 		analyze_expression(ctx, stmt->data.assign_stmt.target);
 		analyze_expression(ctx, stmt->data.assign_stmt.value);
+		/* Reassigning a name revives it if it was moved: `buf = foo(move buf)`. */
+		if (stmt->data.assign_stmt.target->type == EXPR_NAME) {
+			VariableInfo *t = find_variable(ctx, stmt->data.assign_stmt.target->data.name.name);
+			if (t)
+				t->is_consumed = 0;
+		}
 		break;
 
 	case STMT_FOR: {

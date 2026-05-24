@@ -1,15 +1,19 @@
 // RUN: %arche -o %t %s && %t | grep "copied=ok commas=2"
 // Branchless byte-column passes over a buffer (copy + classify). These shapes
 // vectorize (data pointer hoisted once at entry, not reloaded per iteration).
-proc copy_bytes(dst: char[], src: char[], n: i64) {
+// The written buffer is moved in by reference and returned; the read-only source
+// is passed by value (copied in, no side effect).
+func copy_bytes(dst: char[], src: char[], n: i64) -> char[] {
   for (i: i64 = 0; i < n; i = i + 1) {
     dst[i] = src[i];
   }
+  return dst;
 }
-proc classify_commas(data: char[], mask: char[], n: i64) {
+func classify_commas(data: char[], mask: char[], n: i64) -> char[] {
   for (i: i64 = 0; i < n; i = i + 1) {
     mask[i] = data[i] == 44;
   }
+  return mask;
 }
 proc main() {
   src: char[8];
@@ -22,9 +26,9 @@ proc main() {
   src[6] = 'e';
   src[7] = 'f';
   dst: char[8];
-  copy_bytes(dst, src, 8);
+  dst = copy_bytes(move dst, src, 8);
   mask: char[8];
-  classify_commas(src, mask, 8);
+  mask = classify_commas(src, move mask, 8);
   commas: i64 = 0;
   for (i: i64 = 0; i < 8; i = i + 1) {
     commas = commas + mask[i];

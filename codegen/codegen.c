@@ -2205,32 +2205,40 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		int *arg_is_string = malloc(expr->data.call.arg_count * sizeof(int));
 		int *arg_is_array_literal = malloc(expr->data.call.arg_count * sizeof(int));
 		ValueInfo **arg_values = malloc(expr->data.call.arg_count * sizeof(ValueInfo *));
+		/* `move x` at a call site = by-reference (no copy). A plain arg is copied (below),
+		 * so a function has no side effects on its caller's data unless `move`d in. The
+		 * move marker is transparent in codegen, so unwrap it to classify the operand. */
+		int *arg_is_move = malloc(expr->data.call.arg_count * sizeof(int));
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			arg_bufs[i] = malloc(256);
 			arg_is_string[i] = 0;
 			arg_is_array_literal[i] = 0;
 			arg_values[i] = NULL;
+			arg_is_move[i] = 0;
+
+			AstExpr *inner = expr->data.call.args[i];
+			if (inner->kind == AST_EXPR_UNARY && inner->data.unary.op == UNARY_MOVE) {
+				arg_is_move[i] = 1;
+				inner = inner->data.unary.operand;
+			}
 
 			/* Check if this arg is a string literal */
-			if (expr->data.call.args[i]->kind == AST_EXPR_STRING) {
+			if (inner->kind == AST_EXPR_STRING) {
 				arg_is_string[i] = 1;
 			}
 			/* Check if this arg is an old-style string literal (AST_EXPR_LITERAL with quotes) */
-			else if (expr->data.call.args[i]->kind == AST_EXPR_LITERAL &&
-			         expr->data.call.args[i]->data.literal.lexeme[0] == '"') {
+			else if (inner->kind == AST_EXPR_LITERAL && inner->data.literal.lexeme[0] == '"') {
 				arg_is_string[i] = 1;
 			}
 			/* Check if this arg is an array literal */
-			else if (expr->data.call.args[i]->kind == AST_EXPR_ARRAY_LITERAL) {
+			else if (inner->kind == AST_EXPR_ARRAY_LITERAL) {
 				arg_is_array_literal[i] = 1;
 			}
 			/* `f.name` inside an each_field expansion: produces a raw i8* string. */
-			else if (ctx->current_each_field_binding && expr->data.call.args[i]->kind == AST_EXPR_FIELD &&
-			         expr->data.call.args[i]->data.field.base->kind == AST_EXPR_NAME &&
-			         strcmp(expr->data.call.args[i]->data.field.base->data.name.name,
-			                ctx->current_each_field_binding) == 0 &&
-			         expr->data.call.args[i]->data.field.field_name &&
-			         strcmp(expr->data.call.args[i]->data.field.field_name, "name") == 0) {
+			else if (ctx->current_each_field_binding && inner->kind == AST_EXPR_FIELD &&
+			         inner->data.field.base->kind == AST_EXPR_NAME &&
+			         strcmp(inner->data.field.base->data.name.name, ctx->current_each_field_binding) == 0 &&
+			         inner->data.field.field_name && strcmp(inner->data.field.field_name, "name") == 0) {
 				arg_is_string[i] = 1;
 			}
 
@@ -2241,8 +2249,11 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		int *arg_is_static_array = malloc(expr->data.call.arg_count * sizeof(int));
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			arg_is_static_array[i] = 0;
-			if (!arg_is_string[i] && !arg_is_array_literal[i] && expr->data.call.args[i]->kind == AST_EXPR_NAME) {
-				const char *arg_name = expr->data.call.args[i]->data.name.name;
+			AstExpr *inner = expr->data.call.args[i];
+			if (inner->kind == AST_EXPR_UNARY && inner->data.unary.op == UNARY_MOVE)
+				inner = inner->data.unary.operand;
+			if (!arg_is_string[i] && !arg_is_array_literal[i] && inner->kind == AST_EXPR_NAME) {
+				const char *arg_name = inner->data.name.name;
 				ValueInfo *var = find_value(ctx, arg_name);
 				if (var) {
 					arg_values[i] = var;
@@ -2297,20 +2308,18 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			call_arg_types[i] = "i32"; /* Default type */
 
 			/* Determine what callee param expects */
-			int callee_wants_arr = 0;
+			int callee_wants_arr = 0;       /* unbounded char[] (arche_array struct on non-extern) */
+			int callee_wants_shaped_arr = 0; /* sized char[N] (raw i8*) */
 			int callee_is_extern = (callee_proc && callee_proc->is_extern) || (callee_func && callee_func->is_extern);
-			if (callee_proc && i < callee_proc->param_count) {
-				AstType *pt = callee_proc->params[i]->type;
-				if (pt && pt->tag == AST_TYPE_ARRAY) {
-					callee_wants_arr = 1;
-				}
-			}
-			if (callee_func && i < callee_func->param_count) {
-				AstType *pt = callee_func->params[i]->type;
-				if (pt && pt->tag == AST_TYPE_ARRAY) {
-					callee_wants_arr = 1;
-				}
-			}
+			AstType *callee_pt = NULL;
+			if (callee_proc && i < callee_proc->param_count)
+				callee_pt = callee_proc->params[i]->type;
+			if (callee_func && i < callee_func->param_count)
+				callee_pt = callee_func->params[i]->type;
+			if (callee_pt && callee_pt->tag == AST_TYPE_ARRAY)
+				callee_wants_arr = 1;
+			else if (callee_pt && callee_pt->tag == AST_TYPE_SHAPED_ARRAY)
+				callee_wants_shaped_arr = 1;
 
 			/* Handle type conversions, emit code before call if needed */
 			if (arg_is_static_array[i]) {
@@ -2379,6 +2388,17 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				int buf_len = arg_values[i]->string_len;
 				char *bitcast = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", bitcast, buf_len, arg_bufs[i]);
+				/* By-value (non-`move`) array arg to an arche function: copy the buffer so the
+				 * callee's mutations don't leak back. Externs (C ABI) and `move` stay by-ref. */
+				if ((callee_wants_arr || callee_wants_shaped_arr) && !callee_is_extern && !arg_is_move[i]) {
+					char *copy = gen_value_name(ctx);
+					emit_alloca(ctx, "  %s = alloca [%d x i8]\n", copy, buf_len);
+					char *copy_i8 = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", copy_i8, buf_len, copy);
+					buffer_append_fmt(ctx, "  call void @llvm.memcpy.p0.p0.i64(i8* %s, i8* %s, i64 %d, i1 false)\n",
+					                  copy_i8, bitcast, buf_len);
+					bitcast = copy_i8;
+				}
 				if (callee_wants_arr && !callee_is_extern) {
 					/* Non-extern callee expects char[] (arche_array*): wrap the
 					 * bare buffer pointer in a stack arche_array {ptr,len,cap}. */
@@ -2768,6 +2788,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		free(arg_is_array_literal);
 		free(arg_is_static_array);
 		free(arg_values);
+		free(arg_is_move);
 		free(call_arg_vals);
 		free(call_arg_types);
 		break;
@@ -5947,6 +5968,8 @@ static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 		ret_value = "zeroinitializer"; /* aggregate return type */
 	} else if (strcmp(return_type, "double") == 0) {
 		ret_value = "0.0";
+	} else if (strchr(return_type, '*')) {
+		ret_value = "null"; /* pointer return (e.g. char[] -> i8*) */
 	}
 	buffer_append_fmt(ctx, "  ret %s %s\n", return_type, ret_value);
 	end_function_body(ctx, fbs_func);
@@ -6363,7 +6386,9 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "declare i8* @malloc(i32)\n");
 	buffer_append(ctx, "declare i8* @calloc(i64, i64)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
-	buffer_append(ctx, "declare void @abort()\n\n");
+	buffer_append(ctx, "declare void @abort()\n");
+	/* By-value array args are copied at the call site (no side effects without `move`). */
+	buffer_append(ctx, "declare void @llvm.memcpy.p0.p0.i64(i8*, i8*, i64, i1)\n\n");
 
 	/* Global error message for bounds check failures */
 	buffer_append(

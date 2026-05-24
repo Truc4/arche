@@ -1,14 +1,16 @@
 // RUN: %arche -o %t %s && %t | grep "x=ab y=cd n=42"
-// Two caller buffers filled in place + a scalar count.
-func fill_two(buf1: char[32], buf2: char[32]) -> int {
+// Two caller buffers moved in by reference, filled, and returned (real multi-return).
+// `move` = by-ref + the binding dies, so the buffers come back through the return and
+// are rebound at the call. Without `move` the args would be copied (no side effect).
+func fill_two(buf1: char[32], buf2: char[32]) -> (char[32], char[32], int) {
   sprintf(buf1, "ab");
   sprintf(buf2, "cd");
-  return 42;
+  return buf1, buf2, 42;
 }
 
 proc main() {
   x: char[32];
   y: char[32];
-  n := fill_two(x, y);
+  x, y, n := fill_two(move x, move y);
   printf("x=%s y=%s n=%d\n", x, y, n);
 }
