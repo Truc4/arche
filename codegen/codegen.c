@@ -426,16 +426,6 @@ static const char *ast_resolved_type_name(const AstExpr *expr) {
 	}
 }
 
-/* Returns the extern table target name if `type` is handle(X) where X is a
- * registered extern table; NULL otherwise. */
-static const char *extern_handle_target_ast(const SemanticContext *sem, AstType *type) {
-	if (!type || type->tag != AST_TYPE_HANDLE || !type->name)
-		return NULL;
-	if (semantic_has_extern_type(sem, type->name))
-		return type->name;
-	return NULL;
-}
-
 static char *gen_value_name(CodegenContext *ctx) {
 	char *name = malloc(32);
 	snprintf(name, 32, "%%v%d", ctx->value_counter++);
@@ -2531,182 +2521,9 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			}
 		}
 
-		/* Extern-type parameter marshaling:
-		 * For each argument whose corresponding formal parameter is an extern type,
-		 * emit a __arche_slot_get call to convert the i32 handle to an i8* pointer.
-		 * When a parameter is marked consume, wrap the entire get+call+free sequence
-		 * in a null-check branch so null handles (0) are silently skipped. */
-		int call_callee_is_extern = (callee_proc && callee_proc->is_extern) || (callee_func && callee_func->is_extern);
-
-		/* Determine actual_func_name early so consume block can emit the call inline. */
-		const char *actual_func_name_early;
-		if (mono_arch) {
-			actual_func_name_early = mono_call_name;
-		} else if (callee_group && callee_func) {
-			actual_func_name_early = callee_func->name;
-		} else {
-			actual_func_name_early = func_name ? func_name : "unknown";
-		}
-
-		/* Track whether the entire call was emitted inside a consume block. */
+		/* The extern-type slot marshal was removed; opaque values pass to C by value
+		 * (i64 cell), so no handle->pointer conversion is needed. */
 		int consume_call_done = 0;
-
-		if (call_callee_is_extern) {
-			/* Pass 1: find the first consume parameter (index and saved handle value). */
-			int consume_pidx = -1;
-			char consume_handle_val[256] = {0};
-			const char *consume_type_name = NULL;
-			for (int i = 0; i < expr->data.call.arg_count; i++) {
-				int pc = 0;
-				const char *ptn = NULL;
-				if (callee_proc && i < callee_proc->param_count) {
-					pc = callee_proc->params[i]->is_consume;
-					ptn = extern_handle_target_ast(ctx->sem_ctx, callee_proc->params[i]->type);
-				} else if (callee_func && i < callee_func->param_count) {
-					pc = callee_func->params[i]->is_consume;
-					ptn = extern_handle_target_ast(ctx->sem_ctx, callee_func->params[i]->type);
-				}
-				if (pc && ptn) {
-					consume_pidx = i;
-					consume_type_name = ptn;
-					strncpy(consume_handle_val, call_arg_vals[i], sizeof(consume_handle_val) - 1);
-					break;
-				}
-			}
-
-			if (consume_pidx >= 0) {
-				/* Consume path: wrap slot_get + C-call + slot_free in a null-check branch.
-				 *
-				 *   %is_null = icmp eq i32 %handle, 0
-				 *   br i1 %is_null, label %skip_N, label %do_consume_N
-				 * do_consume_N:
-				 *   ; slot_get for each extern-type param
-				 *   call void @C_func(...)
-				 *   ; slot_free for each consume param
-				 *   br label %skip_N
-				 * skip_N:
-				 */
-				int consume_id = ctx->value_counter++;
-				char do_lbl[64], skip_lbl[64];
-				snprintf(do_lbl, sizeof(do_lbl), "do_consume_%d", consume_id);
-				snprintf(skip_lbl, sizeof(skip_lbl), "skip_%d", consume_id);
-
-				/* %is_null = icmp eq i32 %handle, 0 */
-				char *is_null = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = icmp eq i32 %s, 0\n", is_null, consume_handle_val);
-				buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n", is_null, skip_lbl, do_lbl);
-				buffer_append_fmt(ctx, "%s:\n", do_lbl);
-
-				/* Pass 2: emit slot_get for every extern-type param inside the branch. */
-				for (int i = 0; i < expr->data.call.arg_count; i++) {
-					const char *ptn = NULL;
-					if (callee_proc && i < callee_proc->param_count) {
-						ptn = extern_handle_target_ast(ctx->sem_ctx, callee_proc->params[i]->type);
-					} else if (callee_func && i < callee_func->param_count) {
-						ptn = extern_handle_target_ast(ctx->sem_ctx, callee_func->params[i]->type);
-					}
-					if (!ptn)
-						continue;
-
-					int cap = semantic_extern_type_capacity(ctx->sem_ctx, ptn);
-					int namelen = (int)strlen(ptn);
-					char *ptr_val = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx,
-					    "  %s = call i8* @__arche_slot_get("
-					    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 0), "
-					    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* "
-					    "@__arche_%s_slots, i32 0, i32 0), "
-					    "i32 %d, "
-					    "i32 %s)\n",
-					    ptr_val, namelen + 1, namelen + 1, ptn, cap, cap, ptn, cap, call_arg_vals[i]);
-					strcpy(call_arg_vals[i], ptr_val);
-					call_arg_types[i] = "i8*";
-				}
-
-				/* Emit the C call (always void for consume procs). */
-				buffer_append_fmt(ctx, "  call void @%s(", actual_func_name_early);
-				for (int i = 0; i < expr->data.call.arg_count; i++) {
-					buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
-					if (i < expr->data.call.arg_count - 1)
-						buffer_append(ctx, ", ");
-				}
-				buffer_append(ctx, ")\n");
-
-				/* Pass 3: emit slot_free for every consume param (using saved handle). */
-				for (int i = 0; i < expr->data.call.arg_count; i++) {
-					int pc = 0;
-					const char *ptn = NULL;
-					char saved_handle[256] = {0};
-					if (callee_proc && i < callee_proc->param_count) {
-						pc = callee_proc->params[i]->is_consume;
-						ptn = extern_handle_target_ast(ctx->sem_ctx, callee_proc->params[i]->type);
-					} else if (callee_func && i < callee_func->param_count) {
-						pc = callee_func->params[i]->is_consume;
-						ptn = extern_handle_target_ast(ctx->sem_ctx, callee_func->params[i]->type);
-					}
-					if (!pc || !ptn)
-						continue;
-					/* We need the original handle, not the i8* that was substituted.
-					 * For the first consume param we saved it; for others, fall back to
-					 * the original arg expression value. For v1 single-consume, this
-					 * correctly uses consume_handle_val for the only consume param. */
-					if (i == consume_pidx) {
-						strncpy(saved_handle, consume_handle_val, sizeof(saved_handle) - 1);
-					} else {
-						/* Re-evaluate from original arg buf (before slot_get replaced it).
-						 * Since call_arg_vals[i] was already overwritten, use arg_bufs[i]. */
-						strncpy(saved_handle, arg_bufs[i], sizeof(saved_handle) - 1);
-					}
-					int cap = semantic_extern_type_capacity(ctx->sem_ctx, ptn);
-					int namelen = (int)strlen(ptn);
-					buffer_append_fmt(
-					    ctx,
-					    "  call void @__arche_slot_free("
-					    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 0), "
-					    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* "
-					    "@__arche_%s_slots, i32 0, i32 0), "
-					    "i32 %d, "
-					    "i32 %s)\n",
-					    namelen + 1, namelen + 1, ptn, cap, cap, ptn, cap, saved_handle);
-				}
-
-				buffer_append_fmt(ctx, "  br label %%%s\n", skip_lbl);
-				buffer_append_fmt(ctx, "%s:\n", skip_lbl);
-
-				strcpy(result_buf, "0");
-				consume_call_done = 1;
-			} else {
-				/* Non-consume path: existing behavior — slot_get before the main call. */
-				for (int i = 0; i < expr->data.call.arg_count; i++) {
-					const char *param_type_name = NULL;
-					if (callee_proc && i < callee_proc->param_count) {
-						param_type_name = extern_handle_target_ast(ctx->sem_ctx, callee_proc->params[i]->type);
-					} else if (callee_func && i < callee_func->param_count) {
-						param_type_name = extern_handle_target_ast(ctx->sem_ctx, callee_func->params[i]->type);
-					}
-					if (!param_type_name)
-						continue;
-
-					int cap = semantic_extern_type_capacity(ctx->sem_ctx, param_type_name);
-					int namelen = (int)strlen(param_type_name);
-					char *ptr_val = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx,
-					    "  %s = call i8* @__arche_slot_get("
-					    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 0), "
-					    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* "
-					    "@__arche_%s_slots, i32 0, i32 0), "
-					    "i32 %d, "
-					    "i32 %s)\n",
-					    ptr_val, namelen + 1, namelen + 1, param_type_name, cap, cap, param_type_name, cap,
-					    call_arg_vals[i]);
-					strcpy(call_arg_vals[i], ptr_val);
-					call_arg_types[i] = "i8*";
-				}
-			}
-		}
-
 		char *res_name = gen_value_name(ctx);
 
 		/* Special handling for print function with double arguments */
@@ -2790,21 +2607,8 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			/* Normal non-variadic call - determine return type */
 			const char *return_type = "i32"; /* default */
 
-			/* Detect extern-type return: extern func returning handle(X) where X is registered. */
-			const char *extern_ret_type_name = NULL; /* non-NULL => marshal to handle */
-			if (callee_func && callee_func->is_extern && callee_func->return_type) {
-				extern_ret_type_name = extern_handle_target_ast(ctx->sem_ctx, callee_func->return_type);
-			}
-
 			/* Check if we have return type info from the func declaration */
-			if (extern_ret_type_name) {
-				/* C function returns i8* (raw pointer) for extern type returns */
-				return_type = "i8*";
-			} else if (callee_func && callee_func->return_type &&
-			           extern_handle_target_ast(ctx->sem_ctx, callee_func->return_type)) {
-				/* Non-extern func returning handle(extern X): i32 (already-marshaled handle). */
-				return_type = "i32";
-			} else if (callee_func && callee_func->return_type && callee_func->return_type->tag == AST_TYPE_ARRAY) {
+			if (callee_func && callee_func->return_type && callee_func->return_type->tag == AST_TYPE_ARRAY) {
 				/* Func returning char[]: a raw i8* byte view. */
 				return_type = "i8*";
 			} else if (callee_func && callee_func->return_type) {
@@ -2841,60 +2645,6 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				}
 				buffer_append(ctx, ")\n");
 				strcpy(result_buf, "0");
-			} else if (extern_ret_type_name) {
-				/* Extern-type return: emit call returning i8*, then marshal to i32 handle via __arche_slot_alloc */
-				int marshal_id = ctx->value_counter++;
-				char null_lbl[64], wrap_lbl[64], done_lbl[64];
-				snprintf(null_lbl, sizeof(null_lbl), "null_h_%d", marshal_id);
-				snprintf(wrap_lbl, sizeof(wrap_lbl), "wrap_h_%d", marshal_id);
-				snprintf(done_lbl, sizeof(done_lbl), "done_h_%d", marshal_id);
-
-				/* %raw = call i8* @func(...) */
-				char *raw = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = call i8* @%s(", raw, actual_func_name);
-				for (int i = 0; i < expr->data.call.arg_count; i++) {
-					buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
-					if (i < expr->data.call.arg_count - 1) {
-						buffer_append(ctx, ", ");
-					}
-				}
-				buffer_append(ctx, ")\n");
-
-				/* %is_null = icmp eq i8* %raw, null */
-				char *is_null = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = icmp eq i8* %s, null\n", is_null, raw);
-
-				/* br i1 %is_null, label %null_h_N, label %wrap_h_N */
-				buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n", is_null, null_lbl, wrap_lbl);
-
-				/* null_h_N: result = handle 0 */
-				buffer_append_fmt(ctx, "%s:\n", null_lbl);
-				char *h_null = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = add i32 0, 0\n", h_null);
-				buffer_append_fmt(ctx, "  br label %%%s\n", done_lbl);
-
-				/* wrap_h_N: result = __arche_slot_alloc(typename_ptr, slots_ptr, cap, raw) */
-				buffer_append_fmt(ctx, "%s:\n", wrap_lbl);
-				int cap = semantic_extern_type_capacity(ctx->sem_ctx, extern_ret_type_name);
-				int namelen = (int)strlen(extern_ret_type_name);
-				char *h_wrap = gen_value_name(ctx);
-				buffer_append_fmt(
-				    ctx,
-				    "  %s = call i32 @__arche_slot_alloc("
-				    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 0), "
-				    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* "
-				    "@__arche_%s_slots, i32 0, i32 0), "
-				    "i32 %d, "
-				    "i8* %s)\n",
-				    h_wrap, namelen + 1, namelen + 1, extern_ret_type_name, cap, cap, extern_ret_type_name, cap, raw);
-				buffer_append_fmt(ctx, "  br label %%%s\n", done_lbl);
-
-				/* done_h_N: phi to merge both paths */
-				char *phi_val = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "%s:\n", done_lbl);
-				buffer_append_fmt(ctx, "  %s = phi i32 [ %s, %%%s ], [ %s, %%%s ]\n", phi_val, h_null, null_lbl, h_wrap,
-				                  wrap_lbl);
-				strcpy(result_buf, phi_val);
 			} else {
 				buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type, actual_func_name);
 				for (int i = 0; i < expr->data.call.arg_count; i++) {
@@ -4017,7 +3767,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 					store_type = "i64";
 					bit_width = 64;
 				} else if (strcmp(resolved_type, "opaque") == 0) {
-					/* opaque<X> resource value: pointer-width cell held as i64 */
+					/* foreign resource value: pointer-width cell held as i64 */
 					alloc_type = "i64";
 					store_type = "i64";
 					bit_width = 64;
@@ -4250,36 +4000,13 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 						}
 						out_idx++;
 					} else {
-						/* Non-out arg. For an extern callee a handle(T) argument must be
-						 * unwrapped to its i8* slot pointer (the EXPR_CALL path does this);
-						 * the multi-bind/out path used to skip it, passing the raw handle
-						 * int and crashing C that dereferenced it (handle + out param bug). */
-						const char *hptn = NULL;
-						if (callee_func->is_extern && i < callee_func->param_count && callee_func->params[i])
-							hptn = extern_handle_target_ast(ctx->sem_ctx, callee_func->params[i]->type);
-						if (hptn) {
-							int cap = semantic_extern_type_capacity(ctx->sem_ctx, hptn);
-							int namelen = (int)strlen(hptn);
-							char *ptr_val = gen_value_name(ctx);
-							buffer_append_fmt(
-							    ctx,
-							    "  %s = call i8* @__arche_slot_get("
-							    "i8* getelementptr inbounds ([%d x i8], [%d x i8]* @__arche_%s_typename, i32 0, i32 "
-							    "0), "
-							    "%%__ArcheSlot* getelementptr inbounds ([%d x %%__ArcheSlot], [%d x %%__ArcheSlot]* "
-							    "@__arche_%s_slots, i32 0, i32 0), "
-							    "i32 %d, i32 %s)\n",
-							    ptr_val, namelen + 1, namelen + 1, hptn, cap, cap, hptn, cap, arg_bufs[i]);
-							strcpy(call_arg_vals[i], ptr_val);
-							call_arg_types[i] = "i8*";
-						} else {
-							strcpy(call_arg_vals[i], arg_bufs[i]);
-							AstType *pty =
-								    (i < callee_func->param_count && callee_func->params[i]) ? callee_func->params[i]->type
-								                                                            : NULL;
-							/* opaque cell args are pointer-width i64; everything else stays i32. */
-							call_arg_types[i] = (pty && pty->tag == AST_TYPE_OPAQUE) ? "i64" : "i32";
-						}
+						/* Non-out arg. */
+						strcpy(call_arg_vals[i], arg_bufs[i]);
+						AstType *pty =
+							    (i < callee_func->param_count && callee_func->params[i]) ? callee_func->params[i]->type
+							                                                            : NULL;
+						/* opaque cell args are pointer-width i64; everything else stays i32. */
+						call_arg_types[i] = (pty && pty->tag == AST_TYPE_OPAQUE) ? "i64" : "i32";
 					}
 				}
 
@@ -6121,25 +5848,21 @@ static void end_function_body(CodegenContext *ctx, FunctionBodyState state) {
 static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 	/* For extern funcs, emit declare stub */
 	if (func->is_extern) {
-		/* handle(X) returns i8* (marshal layer wraps it); char[] returns a raw
-		 * i8* byte view (e.g. arche_file_map for whole-file mmap). */
-		int ret_is_extern = extern_handle_target_ast(ctx->sem_ctx, func->return_type) != NULL;
+		/* char[] returns a raw i8* byte view (e.g. arche_file_map for whole-file mmap). */
 		int ret_is_array = func->return_type && func->return_type->tag == AST_TYPE_ARRAY;
 		const char *ret_base_name = field_base_type_name(func->return_type);
-		const char *return_type = (ret_is_extern || ret_is_array) ? "i8*" : llvm_type_from_arche(ret_base_name);
+		const char *return_type = ret_is_array ? "i8*" : llvm_type_from_arche(ret_base_name);
 		buffer_append_fmt(ctx, "declare %s @%s(", return_type, func->name);
 		for (int i = 0; i < func->param_count; i++) {
 			AstType *param_type = func->params[i]->type;
 			const char *type_name = field_base_type_name(param_type);
 			const char *base_type = llvm_type_from_arche(type_name);
 
-			/* Check if type is char[] (i8*), an archetype (struct*), or handle(extern) (i8*) */
+			/* Check if type is char[] (i8*) or an archetype (struct*). */
 			if (param_type && param_type->tag == AST_TYPE_ARRAY) {
 				buffer_append_fmt(ctx, "i8*"); /* C ABI: T[] = raw ptr */
 			} else if (find_archetype_decl(ctx, type_name)) {
 				buffer_append_fmt(ctx, "%%struct.%s*", type_name);
-			} else if (extern_handle_target_ast(ctx->sem_ctx, param_type)) {
-				buffer_append_fmt(ctx, "i8*"); /* extern handle param: C func expects raw ptr */
 			} else {
 				buffer_append(ctx, base_type);
 			}
@@ -6153,12 +5876,7 @@ static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 	}
 
 	/* Generate function definition */
-	const char *return_type;
-	if (extern_handle_target_ast(ctx->sem_ctx, func->return_type)) {
-		return_type = "i32"; /* handle(extern X) lowers to opaque i32 handle */
-	} else {
-		return_type = llvm_type_from_arche(field_base_type_name(func->return_type));
-	}
+	const char *return_type = llvm_type_from_arche(field_base_type_name(func->return_type));
 	ctx->current_return_type = return_type;
 
 	buffer_append_fmt(ctx, "define %s @%s(", return_type, func->name);
@@ -6186,8 +5904,6 @@ static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 			} else {
 				buffer_append_fmt(ctx, "i8* %%arg%d", i);
 			}
-		} else if (extern_handle_target_ast(ctx->sem_ctx, param_type)) {
-			buffer_append_fmt(ctx, "i32 %%arg%d", i);
 		} else {
 			buffer_append_fmt(ctx, "%s %%arg%d", llvm_type, i);
 		}
@@ -6296,13 +6012,11 @@ static void codegen_proc_decl(CodegenContext *ctx, AstProcDecl *proc) {
 			const char *type_name = field_base_type_name(param_type);
 			const char *base_type = llvm_type_from_arche(type_name);
 
-			/* Check if type is char[] (i8*), an archetype (struct*), or handle(extern) (i8*) */
+			/* Check if type is char[] (i8*) or an archetype (struct*). */
 			if (param_type && param_type->tag == AST_TYPE_ARRAY) {
 				buffer_append_fmt(ctx, "i8*"); /* C ABI: T[] = raw ptr */
 			} else if (find_archetype_decl(ctx, type_name)) {
 				buffer_append_fmt(ctx, "%%struct.%s*", type_name);
-			} else if (extern_handle_target_ast(ctx->sem_ctx, param_type)) {
-				buffer_append_fmt(ctx, "i8*"); /* extern handle param: C func expects raw ptr */
 			} else {
 				buffer_append(ctx, base_type);
 			}
@@ -6330,13 +6044,11 @@ static void codegen_proc_decl(CodegenContext *ctx, AstProcDecl *proc) {
 		const char *type_name = field_base_type_name(param_type);
 		const char *base_type = llvm_type_from_arche(type_name);
 
-		/* Check if type is char[] (struct*), an archetype (struct*), or handle(extern) (i32) */
+		/* Check if type is char[] (struct*) or an archetype (struct*). */
 		if (param_type && param_type->tag == AST_TYPE_ARRAY) {
 			buffer_append_fmt(ctx, "%%struct.arche_array* %%arg%d", i);
 		} else if (find_archetype_decl(ctx, type_name)) {
 			buffer_append_fmt(ctx, "%%struct.%s* %%arg%d", type_name, i);
-		} else if (extern_handle_target_ast(ctx->sem_ctx, param_type)) {
-			buffer_append_fmt(ctx, "i32 %%arg%d", i);
 		} else {
 			buffer_append_fmt(ctx, "%s %%arg%d", base_type, i);
 		}
@@ -6625,50 +6337,6 @@ static void codegen_sys_decl(CodegenContext *ctx, AstSysDecl *sys) {
 	codegen_register_sys_version(ctx, sys->name, sys->name);
 }
 
-/* ========== EXTERN TYPE CODEGEN ========== */
-
-/*
- * Emit per-extern-type slot table globals and, once per module, the three
- * runtime helper declarations from runtime/handles.h.
- *
- * For each `extern type T(N)` the emitted IR is:
- *
- *   %__ArcheSlot = type { i8*, i16, i16 }
- *   @__arche_T_slots = internal global [N x %__ArcheSlot] zeroinitializer
- *   @__arche_T_typename = internal constant [<len+1> x i8] c"T\00"
- *
- * The runtime helpers are declared once:
- *   declare i32 @__arche_slot_alloc(i8*, %__ArcheSlot*, i32, i8*)
- *   declare i8* @__arche_slot_get(i8*, %__ArcheSlot*, i32, i32)
- *   declare void @__arche_slot_free(i8*, %__ArcheSlot*, i32, i32)
- */
-static void codegen_emit_extern_types(CodegenContext *ctx) {
-	int count = semantic_extern_type_count(ctx->sem_ctx);
-	if (count == 0)
-		return;
-
-	/* Emit the __ArcheSlot struct type once. */
-	buffer_append(ctx, "%__ArcheSlot = type { i8*, i16, i16 }\n\n");
-
-	for (int i = 0; i < count; i++) {
-		const char *name = semantic_extern_type_name_at(ctx->sem_ctx, i);
-		int cap = semantic_extern_type_capacity(ctx->sem_ctx, name);
-
-		/* Slot array global. */
-		buffer_append_fmt(ctx, "@__arche_%s_slots = internal global [%d x %%__ArcheSlot] zeroinitializer\n", name, cap);
-
-		/* Typename string constant (for error messages). */
-		int namelen = (int)strlen(name);
-		buffer_append_fmt(ctx, "@__arche_%s_typename = internal constant [%d x i8] c\"%s\\00\"\n", name, namelen + 1,
-		                  name);
-	}
-
-	/* Declare the three runtime helpers — defined in runtime/handles.c and
-	 * linked in as a separate object. */
-	buffer_append(ctx, "\ndeclare i32 @__arche_slot_alloc(i8*, %__ArcheSlot*, i32, i8*)\n");
-	buffer_append(ctx, "declare i8* @__arche_slot_get(i8*, %__ArcheSlot*, i32, i32)\n");
-	buffer_append(ctx, "declare void @__arche_slot_free(i8*, %__ArcheSlot*, i32, i32)\n\n");
-}
 
 /* ========== PUBLIC API ========== */
 
@@ -6740,9 +6408,6 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "declare i8* @calloc(i64, i64)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
 	buffer_append(ctx, "declare void @abort()\n\n");
-
-	/* Extern-type slot tables (one per `extern type T(N)` declaration). */
-	codegen_emit_extern_types(ctx);
 
 	/* Global error message for bounds check failures */
 	buffer_append(

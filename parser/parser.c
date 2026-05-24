@@ -220,56 +220,6 @@ static Statement *parse_statement(Parser *parser);
 static Expression *parse_expression(Parser *parser);
 static TypeRef *parse_type(Parser *parser);
 
-/* ========== EXTERN TYPE PARSING ========== */
-
-/* Called after 'extern' has been consumed; 'type' is the current token. */
-static Decl *parse_extern_type_decl(Parser *parser) {
-	/* 'extern' was already consumed; current token is the table name.
-	 * Form: extern <Ident>(<capacity>); — declares a foreign resource pool
-	 * referenced everywhere as handle(<Ident>). */
-	if (parser->current.kind != TOK_IDENT) {
-		error(parser, "Expected name after 'extern'");
-		return NULL;
-	}
-	char *name = token_text(parser->current);
-	advance(parser);
-
-	if (!match(parser, TOK_LPAREN)) {
-		error(parser, "Expected '(' after extern table name");
-		free(name);
-		return NULL;
-	}
-	if (parser->current.kind != TOK_NUMBER) {
-		error(parser, "Expected capacity number");
-		free(name);
-		return NULL;
-	}
-	int capacity = atoi(token_text(parser->current));
-	if (capacity <= 0 || capacity > 65535) {
-		error(parser, "Extern table capacity must be between 1 and 65535");
-	}
-	advance(parser);
-
-	if (!match(parser, TOK_RPAREN)) {
-		error(parser, "Expected ')' after capacity");
-		free(name);
-		return NULL;
-	}
-	if (!match(parser, TOK_SEMI)) {
-		error(parser, "Expected ';' after extern declaration");
-		free(name);
-		return NULL;
-	}
-
-	ExternTypeDecl *et = extern_type_decl_create(name, capacity);
-
-	Decl *d = decl_create(DECL_EXTERN_TYPE);
-	d->loc.line = parser->previous.line;
-	d->loc.column = parser->previous.column;
-	d->data.extern_type = et;
-	return d;
-}
-
 /* ========== TYPE PARSING ========== */
 
 static TypeRef *parse_type(Parser *parser) {
@@ -296,27 +246,13 @@ static TypeRef *parse_type(Parser *parser) {
 		return type;
 	}
 
-	/* `opaque` or `opaque<archetype>`: a pointer-width C-owned cell. The optional
-	 * <archetype> is a compile-time phantom tag (opaque<File> != opaque<Socket>),
-	 * erased before codegen. Recognized by name like `handle`/`archetype`. */
+	/* `opaque`: a pointer-width, C-owned cell. A foreign-resource type is a nominal
+	 * alias over it (`file :: opaque`); distinctness comes from the alias name. */
 	if (strcmp(name, "opaque") == 0) {
 		free(name);
 		type = malloc(sizeof(TypeRef));
 		type->kind = TYPE_OPAQUE;
-		type->data.opaque.archetype_name = NULL;
 		type->loc = start_loc;
-		if (check(parser, TOK_LT)) {
-			advance(parser); /* consume < */
-			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected archetype name in 'opaque<'");
-				return type;
-			}
-			type->data.opaque.archetype_name = token_text(parser->current);
-			advance(parser);
-			if (!match(parser, TOK_GT)) {
-				error(parser, "Expected '>' after archetype name in 'opaque<...>'");
-			}
-		}
 		return type;
 	}
 
@@ -1222,10 +1158,8 @@ static Decl *parse_decl(Parser *parser) {
 			if (d && d->kind == DECL_PROC && allow_pure_proc_flag)
 				d->data.proc->allow_pure_proc = 1;
 			return d;
-		} else if (parser->current.kind == TOK_IDENT) {
-			return parse_extern_type_decl(parser);
 		} else {
-			error(parser, "Expected 'func', 'proc', or table name after 'extern'");
+			error(parser, "Expected 'func' or 'proc' after 'extern'");
 			return NULL;
 		}
 	case TOK_PROC: {

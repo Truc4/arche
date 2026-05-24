@@ -142,15 +142,6 @@ UseDecl *use_decl_create(char *name) {
 	return use;
 }
 
-ExternTypeDecl *extern_type_decl_create(char *name, int capacity) {
-	ExternTypeDecl *et = malloc(sizeof(ExternTypeDecl));
-	et->name = name;
-	et->capacity = capacity;
-	et->loc.line = 1;
-	et->loc.column = 1;
-	return et;
-}
-
 Parameter *parameter_create(char *name, TypeRef *type) {
 	Parameter *param = malloc(sizeof(Parameter));
 	param->name = name;
@@ -280,9 +271,6 @@ void decl_free(Decl *decl) {
 		use_decl_free(decl->data.use);
 		break;
 	}
-	case DECL_EXTERN_TYPE:
-		extern_type_decl_free(decl->data.extern_type);
-		break;
 	}
 	free(decl);
 }
@@ -399,13 +387,6 @@ void use_decl_free(UseDecl *use) {
 	free(use);
 }
 
-void extern_type_decl_free(ExternTypeDecl *et) {
-	if (!et)
-		return;
-	free(et->name);
-	free(et);
-}
-
 void type_ref_free(TypeRef *type) {
 	if (!type)
 		return;
@@ -432,7 +413,6 @@ void type_ref_free(TypeRef *type) {
 	case TYPE_ARCHETYPE:
 		break;
 	case TYPE_OPAQUE:
-		free(type->data.opaque.archetype_name); /* NULL-safe */
 		break;
 	}
 	free(type);
@@ -622,10 +602,7 @@ static void format_type(FILE *out, TypeRef *type) {
 		fprintf(out, "archetype");
 		break;
 	case TYPE_OPAQUE:
-		if (type->data.opaque.archetype_name)
-			fprintf(out, "opaque<%s>", type->data.opaque.archetype_name);
-		else
-			fprintf(out, "opaque");
+		fprintf(out, "opaque");
 		break;
 	}
 	format_type_depth--;
@@ -1354,13 +1331,6 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 				format_type(out, c->type_value);
 			else
 				format_expression(out, c->value);
-			emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
-			fprintf(out, "\n");
-			break;
-		}
-		case DECL_EXTERN_TYPE: {
-			ExternTypeDecl *et = decl->data.extern_type;
-			fprintf(out, "extern %s(%d);", et->name, et->capacity);
 			emit_trailing_trivia(out, decl->trailing_trivia, decl->trailing_count);
 			fprintf(out, "\n");
 			break;

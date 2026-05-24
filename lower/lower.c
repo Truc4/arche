@@ -523,9 +523,6 @@ static AstDecl *lower_decl(Decl *decl) {
 	case DECL_USE:
 		return NULL; /* stripped */
 
-	case DECL_EXTERN_TYPE:
-		return NULL; /* not lowered to AST yet */
-
 	case DECL_WORLD: {
 		ad = ast_decl_create(AST_DECL_WORLD);
 		ad->loc = decl->loc;

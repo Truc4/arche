@@ -399,64 +399,13 @@ void test_call_no_matching_member_errors(void) {
 	test_pass_msg();
 }
 
-/* ========== EXTERN TYPE TESTS ========== */
+/* ========== FOREIGN OPAQUE TYPE TESTS ========== */
 
-void test_extern_type_registered(void) {
-	test_start("extern table registered in symbol table");
-	AnalysisResult r = analyze_string("extern Window(8);");
-	ASSERT_NOT_NULL(r.ctx, "no semantic context");
-	ASSERT_TRUE(semantic_has_extern_type(r.ctx, "Window"), "Window not registered");
-	ASSERT_EQ(semantic_extern_type_capacity(r.ctx, "Window"), 8, "wrong capacity");
-	semantic_context_free(r.ctx);
-	program_free(r.prog);
-	test_pass_msg();
-}
-
-void test_extern_type_duplicate_is_error(void) {
-	test_start("duplicate extern table name is rejected");
-	AnalysisResult r = analyze_string("extern Window(8);\n"
-	                                  "extern Window(16);\n");
-	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected redeclaration error");
-	semantic_context_free(r.ctx);
-	program_free(r.prog);
-	test_pass_msg();
-}
-
-void test_extern_type_passthrough_in_proc_ok(void) {
-	test_start("extern handle may pass through non-extern proc param");
-	AnalysisResult r = analyze_string("extern Window(8);\n"
-	                                  "extern proc window_close(consume w: handle(Window));\n"
-	                                  "proc wrap_close(w: handle(Window)) { window_close(w); }\n");
-	ASSERT_EQ(semantic_error_count(r.ctx), 0, "should be no errors");
-	semantic_context_free(r.ctx);
-	program_free(r.prog);
-	test_pass_msg();
-}
-
-void test_extern_type_in_archetype_field_is_error(void) {
-	test_start("extern handle cannot appear as archetype field");
-	AnalysisResult r = analyze_string("extern Window(8);\n"
-	                                  "arche Holder { ref: handle(Window), }\n");
-	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected error for extern handle in archetype field");
-	semantic_context_free(r.ctx);
-	program_free(r.prog);
-	test_pass_msg();
-}
-
-void test_bare_extern_name_in_signature_is_error(void) {
-	test_start("bare extern name in signature must be handle(X)");
-	AnalysisResult r = analyze_string("extern Window(8);\n"
-	                                  "extern proc bad(w: Window);\n");
-	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected error: bare extern name in extern signature");
-	semantic_context_free(r.ctx);
-	program_free(r.prog);
-	test_pass_msg();
-}
-
-void test_extern_signature_with_extern_type_ok(void) {
-	test_start("extern proc with handle(X) param is accepted");
-	AnalysisResult r = analyze_string("extern Window(8);\n"
-	                                  "extern proc close(consume w: handle(Window));\n");
+void test_opaque_passthrough_in_proc_ok(void) {
+	test_start("opaque value may pass through a non-extern proc param");
+	AnalysisResult r = analyze_string("window :: opaque\n"
+	                                  "extern proc window_close(consume w: window);\n"
+	                                  "proc wrap_close(w: window) { window_close(move w); }\n");
 	ASSERT_EQ(semantic_error_count(r.ctx), 0, "should be no errors");
 	semantic_context_free(r.ctx);
 	program_free(r.prog);
@@ -472,15 +421,15 @@ void test_unknown_type_name_still_errors(void) {
 	test_pass_msg();
 }
 
-void test_extern_types_distinct(void) {
-	test_start("Window and Sound handles are not interchangeable");
-	AnalysisResult r = analyze_string("extern Window(8);\n"
-	                                  "extern Sound(64);\n"
-	                                  "extern proc window_close(consume w: handle(Window));\n"
-	                                  "extern func sound_open() -> handle(Sound);\n"
+void test_opaque_aliases_distinct(void) {
+	test_start("window and sound opaque aliases are not interchangeable");
+	AnalysisResult r = analyze_string("window :: opaque\n"
+	                                  "sound :: opaque\n"
+	                                  "extern proc window_close(consume w: window);\n"
+	                                  "extern func sound_open() -> sound;\n"
 	                                  "proc main() {\n"
 	                                  "  let s := sound_open();\n"
-	                                  "  window_close(s);\n"
+	                                  "  window_close(move s);\n"
 	                                  "}\n");
 	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected type-mismatch error");
 	semantic_context_free(r.ctx);
@@ -492,13 +441,13 @@ void test_extern_types_distinct(void) {
 
 void test_use_after_consume_local_error(void) {
 	test_start("use after consume in same scope is a compile error");
-	AnalysisResult r = analyze_string("extern Window(8);\n"
-	                                  "extern func open_(t: char[], a: int, b: int) -> handle(Window);\n"
-	                                  "extern proc close_(consume w: handle(Window));\n"
-	                                  "extern proc poll_(w: handle(Window));\n"
+	AnalysisResult r = analyze_string("window :: opaque\n"
+	                                  "extern func open_(t: char[], a: int, b: int) -> window;\n"
+	                                  "extern proc close_(consume w: window);\n"
+	                                  "extern proc poll_(w: window);\n"
 	                                  "proc main() {\n"
 	                                  "  let w := open_(\"\", 1, 1);\n"
-	                                  "  close_(w);\n"
+	                                  "  close_(move w);\n"
 	                                  "  poll_(w);\n"
 	                                  "}\n");
 	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected use-after-consume error");
@@ -508,15 +457,15 @@ void test_use_after_consume_local_error(void) {
 }
 
 void test_no_false_positive_when_unconsumed(void) {
-	test_start("normal pass-through use is fine");
-	AnalysisResult r = analyze_string("extern Window(8);\n"
-	                                  "extern func open_(t: char[], a: int, b: int) -> handle(Window);\n"
-	                                  "extern proc close_(consume w: handle(Window));\n"
-	                                  "extern proc poll_(w: handle(Window));\n"
+	test_start("normal borrow then consume is fine");
+	AnalysisResult r = analyze_string("window :: opaque\n"
+	                                  "extern func open_(t: char[], a: int, b: int) -> window;\n"
+	                                  "extern proc close_(consume w: window);\n"
+	                                  "extern proc poll_(w: window);\n"
 	                                  "proc main() {\n"
 	                                  "  let w := open_(\"\", 1, 1);\n"
 	                                  "  poll_(w);\n"
-	                                  "  close_(w);\n"
+	                                  "  close_(move w);\n"
 	                                  "}\n");
 	ASSERT_EQ(semantic_error_count(r.ctx), 0, "should be no errors");
 	semantic_context_free(r.ctx);
@@ -578,16 +527,11 @@ int main(void) {
 	test_group_name_collision_errors();
 	test_call_no_matching_member_errors();
 
-	/* Extern types */
-	printf("\nExtern type tests:\n");
-	test_extern_type_registered();
-	test_extern_type_duplicate_is_error();
-	test_extern_type_passthrough_in_proc_ok();
-	test_extern_type_in_archetype_field_is_error();
-	test_bare_extern_name_in_signature_is_error();
-	test_extern_signature_with_extern_type_ok();
+	/* Foreign opaque types */
+	printf("\nForeign opaque type tests:\n");
+	test_opaque_passthrough_in_proc_ok();
 	test_unknown_type_name_still_errors();
-	test_extern_types_distinct();
+	test_opaque_aliases_distinct();
 
 	/* Use-after-consume tracking */
 	printf("\nUse-after-consume tests:\n");

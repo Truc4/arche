@@ -104,8 +104,6 @@ static void rename_typeref(TypeRef *t, const char *prefix, char **set, int count
 	case TYPE_ARCHETYPE:
 		break;
 	case TYPE_OPAQUE:
-		if (t->data.opaque.archetype_name)
-			maybe_rename(&t->data.opaque.archetype_name, prefix, set, count);
 		break;
 	}
 }
@@ -236,9 +234,6 @@ static void collect_module_names(Program *mod, char ***out_set, int *out_count) 
 		case DECL_CONST:
 			name = d->data.constant->name;
 			break;
-		case DECL_EXTERN_TYPE:
-			name = d->data.extern_type->name;
-			break;
 		case DECL_WORLD:
 			name = d->data.world->name;
 			break;
@@ -313,9 +308,6 @@ static void rename_decl(Decl *d, const char *prefix, char **set, int count) {
 	case DECL_CONST:
 		maybe_rename(&d->data.constant->name, prefix, set, count);
 		rename_expr(d->data.constant->value, prefix, set, count);
-		break;
-	case DECL_EXTERN_TYPE:
-		maybe_rename(&d->data.extern_type->name, prefix, set, count);
 		break;
 	case DECL_WORLD:
 		maybe_rename(&d->data.world->name, prefix, set, count);
@@ -797,7 +789,7 @@ int main(int argc, char *argv[]) {
 	int cc_len =
 	    snprintf(cc_cmd, sizeof(cc_cmd),
 	             "cc -no-pie -mcmodel=large -o %s %s " ARCHE_RUNTIME_DIR "/stack_check.o " ARCHE_RUNTIME_DIR
-	             "/io.o " ARCHE_RUNTIME_DIR "/handles.o " ARCHE_RUNTIME_DIR "/net.o " ARCHE_RUNTIME_DIR "/term.o "
+	             "/io.o " ARCHE_RUNTIME_DIR "/net.o " ARCHE_RUNTIME_DIR "/term.o "
 	             "-lc",
 	             output_file, asm_file);
 

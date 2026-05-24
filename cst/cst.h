@@ -23,7 +23,6 @@ typedef struct Statement Statement;
 typedef struct Expression Expression;
 typedef struct StaticArrayDecl StaticArrayDecl;
 typedef struct UseDecl UseDecl;
-typedef struct ExternTypeDecl ExternTypeDecl;
 
 /* =========================
    Source location
@@ -48,7 +47,6 @@ typedef enum {
 	DECL_STATIC,
 	DECL_CONST,
 	DECL_USE,
-	DECL_EXTERN_TYPE,
 } DeclKind;
 
 typedef enum {
@@ -84,12 +82,6 @@ struct UseDecl {
 	char *name; /* module name, e.g. "csv" from `use csv;` */
 };
 
-struct ExternTypeDecl {
-	char *name;
-	int capacity;
-	SourceLoc loc;
-};
-
 typedef struct {
 	char *name;
 	Expression *value;   /* literal RHS (value const) or a bare name (simple type alias) */
@@ -118,7 +110,6 @@ struct Decl {
 		StaticDecl *static_decl;
 		ConstDecl *constant;
 		UseDecl *use;
-		ExternTypeDecl *extern_type;
 	} data;
 };
 
@@ -160,10 +151,6 @@ struct TypeRef {
 		struct {
 			char *archetype_name;
 		} handle;
-
-		struct {
-			char *archetype_name; /* NULL = bare `opaque`; else `opaque<archetype>` — a compile-time phantom tag */
-		} opaque;
 	} data;
 };
 
@@ -494,7 +481,6 @@ ConstDecl *const_decl_create(char *name, Expression *value);
 StaticDecl *static_decl_archetype_create(char *archetype_name);
 StaticDecl *static_decl_array_create(char *name, TypeRef *element_type, int size);
 UseDecl *use_decl_create(char *name);
-ExternTypeDecl *extern_type_decl_create(char *name, int capacity);
 Parameter *parameter_create(char *name, TypeRef *type);
 FieldDecl *field_decl_create(FieldKind kind, char *name, TypeRef *type);
 
@@ -521,7 +507,6 @@ void parameter_free(Parameter *param);
 void field_decl_free(FieldDecl *field);
 void static_decl_free(StaticDecl *s);
 void use_decl_free(UseDecl *use);
-void extern_type_decl_free(ExternTypeDecl *et);
 void type_ref_free(TypeRef *type);
 
 void statement_free(Statement *stmt);

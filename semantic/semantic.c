@@ -46,12 +46,6 @@ typedef struct {
 	SourceLoc loc;
 } GroupInfo;
 
-typedef struct {
-	char *name;
-	int capacity;
-	SourceLoc loc;
-} ExternTypeEntry;
-
 struct SemanticContext {
 	ArchetypeInfo **archetypes; /* one per unique shape */
 	int archetype_count;
@@ -64,9 +58,6 @@ struct SemanticContext {
 
 	GroupInfo *groups;
 	int group_count;
-
-	ExternTypeEntry *extern_types; /* registered extern type declarations */
-	int extern_type_count;
 
 	char **const_names;        /* compile-time constant names */
 	const char **const_values; /* literal lexeme strings */
@@ -119,7 +110,6 @@ static char *compute_shape_signature(FieldDecl **fields, int field_count) {
 	for (int i = 0; i < field_count; i++) {
 		FieldDecl *f = fields[i];
 		const char *type_name = "unknown";
-		char opaque_buf[256];
 		if (f->type) {
 			if (f->type->kind == TYPE_NAME)
 				type_name = f->type->data.name;
@@ -127,14 +117,8 @@ static char *compute_shape_signature(FieldDecl **fields, int field_count) {
 				type_name = "array";
 			else if (f->type->kind == TYPE_SHAPED_ARRAY)
 				type_name = "shaped_array";
-			else if (f->type->kind == TYPE_OPAQUE) {
-				if (f->type->data.opaque.archetype_name) {
-					snprintf(opaque_buf, sizeof(opaque_buf), "opaque<%s>", f->type->data.opaque.archetype_name);
-					type_name = opaque_buf;
-				} else {
-					type_name = "opaque";
-				}
-			}
+			else if (f->type->kind == TYPE_OPAQUE)
+				type_name = "opaque";
 		}
 		const char *kind_str = (f->kind == FIELD_META) ? "meta" : "col";
 		char part[256];
@@ -255,15 +239,8 @@ static int type_ref_equal(const TypeRef *a, const TypeRef *b) {
 	}
 	case TYPE_ARCHETYPE:
 		return 1; /* `archetype` parameter type: any two are equal */
-	case TYPE_OPAQUE: {
-		/* opaque<File> != opaque<Socket>; bare opaque == bare opaque. The tag is
-		 * a compile-time phantom (erased before codegen) but distinguishes here. */
-		const char *an = a->data.opaque.archetype_name;
-		const char *bn = b->data.opaque.archetype_name;
-		if (!an && !bn)
-			return 1;
-		return an && bn && strcmp(an, bn) == 0;
-	}
+	case TYPE_OPAQUE:
+		return 1; /* bare opaque == bare opaque; nominal distinctness is by alias name */
 	}
 	return 0;
 }
@@ -502,24 +479,8 @@ static int is_type_alias(SemanticContext *ctx, const char *name) {
 	return 0;
 }
 
-/* Returns the extern table name if `tr` is a handle(X) where X is a
- * registered extern table; NULL otherwise. */
-static const char *extern_handle_target(SemanticContext *ctx, const TypeRef *tr) {
-	if (!tr || tr->kind != TYPE_HANDLE)
-		return NULL;
-	const char *name = tr->data.handle.archetype_name;
-	if (semantic_has_extern_type(ctx, name))
-		return name;
-	return NULL;
-}
-
-/* Returns 1 if `tr` is a handle(X) referencing a registered extern table. */
-static int is_extern_type_ref(SemanticContext *ctx, const TypeRef *tr) {
-	return extern_handle_target(ctx, tr) != NULL;
-}
-
-/* A parameter may carry `consume` if it owns a foreign resource: an `opaque` cell
- * (opaque / opaque<X>) — the move-only resource value — or a legacy extern-type handle. */
+/* A parameter may carry `consume` if it owns a foreign resource: an `opaque` cell — the
+ * move-only resource value — including a nominal alias whose backing is `opaque`. */
 static int is_consumable_ref(SemanticContext *ctx, const TypeRef *tr) {
 	if (tr && tr->kind == TYPE_OPAQUE)
 		return 1;
@@ -527,7 +488,7 @@ static int is_consumable_ref(SemanticContext *ctx, const TypeRef *tr) {
 	 * consumable foreign-resource value, same as a bare opaque. */
 	if (tr && tr->kind == TYPE_NAME && strcmp(resolve_type_alias(ctx, tr->data.name), "opaque") == 0)
 		return 1;
-	return is_extern_type_ref(ctx, tr);
+	return 0;
 }
 
 static const char *resolve_expression_type(SemanticContext *ctx, Expression *expr) {
@@ -716,7 +677,7 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 				if (rt->kind == TYPE_ARRAY)
 					return "char_array"; /* extern func returning char[] (raw byte view) */
 				if (rt->kind == TYPE_OPAQUE)
-					return "opaque"; /* opaque<X> resource value (pointer-width i64) */
+					return "opaque"; /* foreign resource value (pointer-width i64) */
 				return NULL;
 			}
 		}
@@ -745,6 +706,9 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 static const char *nominal_type_of_expr(SemanticContext *ctx, Expression *e) {
 	if (!e)
 		return NULL;
+	/* `move x` is a transparent ownership marker — its nominal type is the operand's. */
+	if (e->type == EXPR_UNARY && e->data.unary.op == UNARY_MOVE)
+		return nominal_type_of_expr(ctx, e->data.unary.operand);
 	if (e->type == EXPR_NAME) {
 		VariableInfo *v = find_variable(ctx, e->data.name.name);
 		return v ? v->nominal_type : NULL;
@@ -1003,21 +967,31 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 						continue;
 					}
 
-					/* Consume tracking: a `consume` param takes ownership, so mark the
-					 * argument's binding consumed for the rest of the body. Runs for BOTH
-					 * extern and non-extern callees — the canonical close-fn is a plain
-					 * non-extern `proc close(consume r: file)`. v1: function-scope. */
+					/* Ownership transfer into a `consume` parameter must be explicit: an
+					 * opaque value cannot copy, so a named opaque binding handed to a consume
+					 * param must be written `move x`. The `move` itself (UNARY_MOVE, handled in
+					 * analyze_expression) marks the binding consumed; a bare name is an error.
+					 * (Rvalues — e.g. a call result — have no binding to kill, so move is not
+					 * required there.) Runs for BOTH extern and non-extern callees. */
 					{
 						int ac = expr->data.call.arg_count;
 						int n = param_count < ac ? param_count : ac;
 						for (int j = 0; j < n; j++) {
 							Parameter *p = params[j];
-							if (p && p->is_consume && expr->data.call.args[j] &&
-							    expr->data.call.args[j]->type == EXPR_NAME) {
-								VariableInfo *cv =
-								    find_variable(ctx, expr->data.call.args[j]->data.name.name);
-								if (cv)
-									cv->is_consumed = 1;
+							if (!p || !p->is_consume || !expr->data.call.args[j])
+								continue;
+							Expression *a = expr->data.call.args[j];
+							if (a->type == EXPR_NAME) {
+								VariableInfo *cv = find_variable(ctx, a->data.name.name);
+								if (cv && var_is_opaque(ctx, cv)) {
+									char msg[256];
+									snprintf(msg, sizeof(msg),
+									         "opaque value '%s' must be moved into consuming parameter '%s' of "
+									         "'%s' (write `move %s`)",
+									         a->data.name.name, p->name ? p->name : "?", func_name,
+									         a->data.name.name);
+									error(ctx, msg);
+								}
 							}
 						}
 					}
@@ -1049,36 +1023,6 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 								error(ctx, msg);
 							}
 						}
-
-						const char *formal_type = extern_handle_target(ctx, p->type);
-						if (!formal_type)
-							continue;
-
-						/* Formal is an extern type. Check the argument. */
-						Expression *arg = expr->data.call.args[j];
-
-						/* Integer literal 0 is the null handle — always OK. */
-						if (arg->type == EXPR_LITERAL) {
-							const char *lex = arg->data.literal.lexeme;
-							if (strcmp(lex, "0") == 0)
-								continue;
-						}
-
-						const char *arg_type = resolve_expression_type(ctx, arg);
-						if (!arg_type) {
-							/* Type unknown — can't verify; skip to avoid false positives. */
-							continue;
-						}
-
-						/* arg_type must equal formal_type (both are extern type names). */
-						if (strcmp(arg_type, formal_type) != 0) {
-							char msg[256];
-							snprintf(msg, sizeof(msg),
-							         "type mismatch: extern proc/func '%s' parameter '%s' expects '%s' but got '%s'",
-							         func_name, p->name ? p->name : "?", formal_type, arg_type);
-							error(ctx, msg);
-						}
-
 					}
 					break; /* found the callee decl */
 				}
@@ -1502,30 +1446,6 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 
 /* ========== DECLARATION ANALYSIS ========== */
 
-/* If `t` is opaque<X>, X must be a declared archetype that carries an opaque field
- * (a foreign-resource shape) — opaque<X> means "X's foreign cell". `where` names the
- * use site for the diagnostic. Bare opaque and non-opaque types are no-ops. Applies
- * everywhere a type appears (archetype fields, proc/func params, func returns). */
-static void validate_opaque_tag(SemanticContext *ctx, TypeRef *t, const char *where) {
-	if (!t || t->kind != TYPE_OPAQUE || !t->data.opaque.archetype_name)
-		return;
-	const char *tag = t->data.opaque.archetype_name;
-	ArchetypeInfo *tag_arch = find_archetype(ctx, tag);
-	char msg[320];
-	if (!tag_arch) {
-		snprintf(msg, sizeof(msg), "opaque<%s>: '%s' is not a declared archetype (%s)", tag, tag, where);
-		error(ctx, msg);
-		return;
-	}
-	for (int j = 0; j < tag_arch->field_count; j++) {
-		if (tag_arch->fields[j]->type && tag_arch->fields[j]->type->kind == TYPE_OPAQUE)
-			return; /* foreign resource — ok */
-	}
-	snprintf(msg, sizeof(msg), "opaque<%s>: '%s' has no opaque field, so it is not a foreign resource (%s)", tag, tag,
-	         where);
-	error(ctx, msg);
-}
-
 static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 	if (!arch)
 		return;
@@ -1603,34 +1523,17 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 	   here: the AST is tuple-free, the CST keeps tuples. The flat `shape` above
 	   is still built from the tuple fields for type checking. */
 
-	/* Validate handle types: must reference a known archetype.  Foreign
-	 * handles (handle(X) where X is an extern table) are forbidden inside
-	 * archetype fields — extern handles may only appear in extern signatures. */
+	/* Validate handle types: must reference a known archetype. */
 	for (int i = 0; i < arch->field_count; i++) {
 		TypeRef *ft = arch->fields[i]->type;
 		if (ft->kind != TYPE_HANDLE)
 			continue;
 		const char *target = ft->data.handle.archetype_name;
-		if (semantic_has_extern_type(ctx, target)) {
-			char msg[256];
-			snprintf(msg, sizeof(msg),
-			         "extern handle '%s' may only appear in extern signatures (archetype '%s' field '%s')", target,
-			         arch->name, arch->fields[i]->name);
-			error(ctx, msg);
-			continue;
-		}
 		if (!find_archetype(ctx, target)) {
 			fprintf(stderr, "Error: unknown archetype '%s' in handle type for field '%s'\n", target,
 			        arch->fields[i]->name);
 			ctx->error_count++;
 		}
-	}
-
-	/* Validate opaque<X> tags on fields (X must be a foreign archetype). */
-	for (int i = 0; i < arch->field_count; i++) {
-		char where[256];
-		snprintf(where, sizeof(where), "field '%s' of '%s'", arch->fields[i]->name, arch->name);
-		validate_opaque_tag(ctx, arch->fields[i]->type, where);
 	}
 
 	/* Register alias */
@@ -1970,19 +1873,8 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 		if (!p)
 			continue;
 		TypeRef *pt = p->type;
-		{
-			char where[256];
-			snprintf(where, sizeof(where), "param '%s' of proc '%s'", p->name ? p->name : "?", proc->name);
-			validate_opaque_tag(ctx, pt, where);
-		}
 		if (proc->is_extern) {
-			/* Bare extern table name must be wrapped in handle(...). */
-			if (pt && pt->kind == TYPE_NAME && semantic_has_extern_type(ctx, pt->data.name)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "extern table '%s' must be referenced as 'handle(%s)' (extern proc '%s')",
-				         pt->data.name, pt->data.name, proc->name);
-				error(ctx, msg);
-			} else if (pt && pt->kind == TYPE_NAME) {
+			if (pt && pt->kind == TYPE_NAME) {
 				const char *tname = pt->data.name;
 				if (!is_primitive_type_name(tname) && !find_archetype(ctx, tname) && !is_type_alias(ctx, tname)) {
 					char msg[256];
@@ -1990,7 +1882,7 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 					error(ctx, msg);
 				}
 			}
-			/* 'consume' modifier only makes sense on extern-type parameters. */
+			/* 'consume' modifier only makes sense on opaque (resource) parameters. */
 			if (p->is_consume && !is_consumable_ref(ctx, pt)) {
 				char msg[256];
 				snprintf(msg, sizeof(msg),
@@ -2233,31 +2125,14 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 		         func->name);
 		error(ctx, msg);
 	}
-	{
-		char where[256];
-		snprintf(where, sizeof(where), "return type of func '%s'", func->name);
-		validate_opaque_tag(ctx, func->return_type, where);
-	}
-
 	/* Validate parameters and return type for extern vs non-extern rules. */
 	for (int i = 0; i < func->param_count; i++) {
 		Parameter *p = func->params[i];
 		if (!p)
 			continue;
 		TypeRef *pt = p->type;
-		{
-			char where[256];
-			snprintf(where, sizeof(where), "param '%s' of func '%s'", p->name ? p->name : "?", func->name);
-			validate_opaque_tag(ctx, pt, where);
-		}
 		if (func->is_extern) {
-			/* Bare extern table name must be wrapped in handle(...). */
-			if (pt && pt->kind == TYPE_NAME && semantic_has_extern_type(ctx, pt->data.name)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "extern table '%s' must be referenced as 'handle(%s)' (extern func '%s')",
-				         pt->data.name, pt->data.name, func->name);
-				error(ctx, msg);
-			} else if (pt && pt->kind == TYPE_NAME) {
+			if (pt && pt->kind == TYPE_NAME) {
 				const char *tname = pt->data.name;
 				if (!is_primitive_type_name(tname) && !is_type_alias(ctx, tname)) {
 					char msg[256];
@@ -2265,7 +2140,7 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 					error(ctx, msg);
 				}
 			}
-			/* 'consume' modifier only makes sense on extern-type parameters. */
+			/* 'consume' modifier only makes sense on opaque (resource) parameters. */
 			if (p->is_consume && !is_consumable_ref(ctx, pt)) {
 				char msg[256];
 				snprintf(msg, sizeof(msg),
@@ -2285,18 +2160,11 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 		}
 	}
 
-	/* Validate return type: extern funcs must use known types; non-extern
-	 * funcs may return extern types as opaque scalars (per spec). */
+	/* Validate return type: extern funcs must use known types. */
 	if (func->is_extern) {
 		if (func->return_type && func->return_type->kind == TYPE_NAME) {
 			const char *tname = func->return_type->data.name;
-			if (semantic_has_extern_type(ctx, tname)) {
-				char msg[256];
-				snprintf(msg, sizeof(msg),
-				         "extern table '%s' must be referenced as 'handle(%s)' (extern func '%s' return type)", tname,
-				         tname, func->name);
-				error(ctx, msg);
-			} else if (!is_primitive_type_name(tname) && !is_type_alias(ctx, tname)) {
+			if (!is_primitive_type_name(tname) && !is_type_alias(ctx, tname)) {
 				char msg[256];
 				snprintf(msg, sizeof(msg), "unknown return type '%s' in extern func '%s' signature", tname, func->name);
 				error(ctx, msg);
@@ -2346,22 +2214,6 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 	case DECL_USE:
 		/* Module use — resolved before semantic analysis */
 		break;
-	case DECL_EXTERN_TYPE: {
-		ExternTypeDecl *et = decl->data.extern_type;
-		if (semantic_has_extern_type(ctx, et->name)) {
-			char msg[256];
-			snprintf(msg, sizeof(msg), "extern type '%s' redeclared", et->name);
-			error(ctx, msg);
-			break;
-		}
-		ctx->extern_types = realloc(ctx->extern_types, (ctx->extern_type_count + 1) * sizeof(ExternTypeEntry));
-		ctx->extern_types[ctx->extern_type_count].name = malloc(strlen(et->name) + 1);
-		strcpy(ctx->extern_types[ctx->extern_type_count].name, et->name);
-		ctx->extern_types[ctx->extern_type_count].capacity = et->capacity;
-		ctx->extern_types[ctx->extern_type_count].loc = et->loc;
-		ctx->extern_type_count++;
-		break;
-	}
 	case DECL_PROC:
 		analyze_proc_decl(ctx, decl->data.proc);
 		break;
@@ -2393,7 +2245,6 @@ static void erase_aliases_typeref(SemanticContext *ctx, TypeRef *t) {
 			 * so rewrite the kind to match a native `opaque`; other backings are named. */
 			if (strcmp(b, "opaque") == 0) {
 				t->kind = TYPE_OPAQUE;
-				t->data.opaque.archetype_name = NULL;
 			} else {
 				char *dup = malloc(strlen(b) + 1);
 				strcpy(dup, b);
@@ -2505,8 +2356,6 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->known_func_count = 0;
 	ctx->groups = NULL;
 	ctx->group_count = 0;
-	ctx->extern_types = NULL;
-	ctx->extern_type_count = 0;
 	ctx->const_names = NULL;
 	ctx->const_values = NULL;
 	ctx->const_count = 0;
@@ -2641,14 +2490,7 @@ SemanticContext *semantic_analyze(Program *prog) {
 	/* global scope: holds module-level variables (static arrays, etc.) */
 	push_scope(ctx);
 
-	/* pass 1a: register extern types so archetype field checks see them */
-	for (int i = 0; i < prog->decl_count; i++) {
-		if (prog->decls[i]->kind == DECL_EXTERN_TYPE) {
-			analyze_decl(ctx, prog->decls[i]);
-		}
-	}
-
-	/* pass 1b: collect all archetypes */
+	/* pass 1: collect all archetypes */
 	for (int i = 0; i < prog->decl_count; i++) {
 		if (prog->decls[i]->kind == DECL_ARCHETYPE) {
 			analyze_decl(ctx, prog->decls[i]);
@@ -2657,8 +2499,7 @@ SemanticContext *semantic_analyze(Program *prog) {
 
 	/* pass 2: analyze other declarations */
 	for (int i = 0; i < prog->decl_count; i++) {
-		if (prog->decls[i]->kind != DECL_ARCHETYPE && prog->decls[i]->kind != DECL_CONST &&
-		    prog->decls[i]->kind != DECL_EXTERN_TYPE) {
+		if (prog->decls[i]->kind != DECL_ARCHETYPE && prog->decls[i]->kind != DECL_CONST) {
 			analyze_decl(ctx, prog->decls[i]);
 		}
 	}
@@ -2672,12 +2513,6 @@ SemanticContext *semantic_analyze(Program *prog) {
 void semantic_context_free(SemanticContext *ctx) {
 	if (!ctx)
 		return;
-
-	/* free extern type entries */
-	for (int i = 0; i < ctx->extern_type_count; i++) {
-		free(ctx->extern_types[i].name);
-	}
-	free(ctx->extern_types);
 
 	/* free constants (names only, values are owned by AST) */
 	free(ctx->const_names);
@@ -2744,38 +2579,6 @@ int semantic_error_count(const SemanticContext *ctx) {
 	if (!ctx)
 		return 0;
 	return ctx->error_count;
-}
-
-int semantic_has_extern_type(const SemanticContext *ctx, const char *name) {
-	if (!ctx || !name)
-		return 0;
-	for (int i = 0; i < ctx->extern_type_count; i++) {
-		if (strcmp(ctx->extern_types[i].name, name) == 0)
-			return 1;
-	}
-	return 0;
-}
-
-int semantic_extern_type_capacity(const SemanticContext *ctx, const char *name) {
-	if (!ctx || !name)
-		return -1;
-	for (int i = 0; i < ctx->extern_type_count; i++) {
-		if (strcmp(ctx->extern_types[i].name, name) == 0)
-			return ctx->extern_types[i].capacity;
-	}
-	return -1;
-}
-
-int semantic_extern_type_count(const SemanticContext *ctx) {
-	if (!ctx)
-		return 0;
-	return ctx->extern_type_count;
-}
-
-const char *semantic_extern_type_name_at(const SemanticContext *ctx, int index) {
-	if (!ctx || index < 0 || index >= ctx->extern_type_count)
-		return NULL;
-	return ctx->extern_types[index].name;
 }
 
 int semantic_archetype_exists(SemanticContext *ctx, const char *name) {
