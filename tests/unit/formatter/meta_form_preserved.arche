@@ -8,7 +8,9 @@
 alias_top : type : int
 short_top :: int
 
-arche Body { mass : type : int }
+arche Body {
+  mass : type : int,
+}
 
 proc main() {
   loc : type : int;

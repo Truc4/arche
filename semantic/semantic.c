@@ -581,8 +581,8 @@ static void check_const_literal_type(SemanticContext *ctx, ConstDecl *c) {
 		ok = 0;
 	if (!ok) {
 		char msg[256];
-		snprintf(msg, sizeof(msg), "constant '%s' is declared `%s` but its value is a %s literal", c->name,
-		         want, strcmp(got, "char_array") == 0 ? "string" : got);
+		snprintf(msg, sizeof(msg), "constant '%s' is declared `%s` but its value is a %s literal", c->name, want,
+		         strcmp(got, "char_array") == 0 ? "string" : got);
 		error(ctx, msg);
 	}
 }
