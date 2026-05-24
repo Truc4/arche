@@ -9,5 +9,5 @@ proc main() {
   if (n2 > 0) {
     printf("rebind ok\n");
   }
-  arche_fclose(fd);
+  arche_fclose(move fd);
 }

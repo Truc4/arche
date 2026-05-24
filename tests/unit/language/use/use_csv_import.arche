@@ -8,5 +8,5 @@ proc main() {
   if (fd) {
     let buf, n := csv_read_chunk(fd, buf, 65536);
   }
-  csv_close(fd);
+  csv_close(move fd);
 }

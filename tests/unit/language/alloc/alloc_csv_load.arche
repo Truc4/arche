@@ -17,7 +17,7 @@ proc main() {
   let price_str: char[32];
   let qty_str: char[32];
   let total_n := arche_fread(fd, buf, 256);
-  arche_fclose(fd);
+  arche_fclose(move fd);
   let idx := 0;
   let pos := 0;
   let line_start := 0;

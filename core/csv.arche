@@ -3,7 +3,7 @@ func open(path: char[]) -> file {
   return arche_fopen_read(path);
 }
 proc close(consume fd: file) {
-  arche_fclose(fd);
+  arche_fclose(move fd);
 }
 proc skip_header(fd: file) {
   let line: char[256];

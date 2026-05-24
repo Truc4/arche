@@ -4,6 +4,6 @@ proc main() {
   let buf: char[32];
   let n := sprintf(buf, "test123\n");
   arche_fwrite(fd, buf, n);
-  arche_fclose(fd);
+  arche_fclose(move fd);
   printf("done\n");
 }

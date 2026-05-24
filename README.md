@@ -524,6 +524,10 @@ Everything is **by value**. Plain data and handles copy freely. An `opaque`-back
   `window_close(move w)`; using `w` afterward is a compile error.
 - **`consume`** is the terminal parameter that receives such a value (the close-fn is an
   ordinary `proc close(consume w: window)` — nothing runs automatically; you call it).
+  Handing a named opaque to a `consume` parameter **requires** `move` — a bare
+  `window_close(w)` is a compile error (`opaque value 'w' must be moved …`). A plain
+  (non-`consume`) parameter borrows and needs no `move`: `window_present(w, …)` reads `w`
+  and leaves the caller owning it.
 - **Must-consume:** an opaque *local* must be consumed before its scope ends — moved into a
   `consume` call, returned, or `insert`ed into a pool. Otherwise it is a compile error
   (`opaque value 'w' not consumed before scope end`). There is no implicit `drop`/RAII and no

@@ -5,5 +5,5 @@ proc main() {
   let n := arche_fread(fd, buf, 256);
   printf("read from stdin returned %d bytes\n", n);
   printf("multi-assignment with read() works\n");
-  arche_fclose(fd);
+  arche_fclose(move fd);
 }

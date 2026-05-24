@@ -7,7 +7,7 @@ proc main() {
   let fd := csv_open("tests/fixtures/data.csv");
   if (fd > 0) {
     let buf, n := csv_read_chunk(fd, buf, 65536);
-    csv_close(fd);
+    csv_close(move fd);
     if (n > 0) {
       printf("PASS: read %d bytes\n", n);
     } else {

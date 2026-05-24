@@ -15,7 +15,7 @@ proc main() {
   let fd := open("../../../../../tests/fixtures/transactions.csv", 0);
   let buf: char[256];
   let buf, total_n := read(fd, buf, 256);
-  close(fd);
+  close(move fd);
   printf("total_n=%d\n", total_n);
   let idx := 0;
   let pos := 0;

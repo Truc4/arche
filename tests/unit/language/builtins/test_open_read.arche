@@ -3,6 +3,6 @@ proc main() {
   let fd := open("/dev/null", 0);
   if (fd >= 0) {
     printf("open succeeded: fd=%d\n", fd);
-    close(fd);
+    close(move fd);
   }
 }

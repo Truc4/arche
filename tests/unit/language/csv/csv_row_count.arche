@@ -15,6 +15,6 @@ proc main() {
     }
     pos = pos + 1;
   }
-  csv_close(fd);
+  csv_close(move fd);
   printf("rows: %d\n", rows);
 }

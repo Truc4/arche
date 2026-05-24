@@ -9,5 +9,5 @@ extern proc window_close(consume w: window);
 
 proc main() {
   let s := sound_open();
-  window_close(s);
+  window_close(move s);
 }

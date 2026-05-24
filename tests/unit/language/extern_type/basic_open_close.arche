@@ -15,5 +15,5 @@ proc main() {
   resource_set(r, 42);
   let v := resource_get(r);
   printf("value=%d\n", v);
-  resource_close(r);
+  resource_close(move r);
 }

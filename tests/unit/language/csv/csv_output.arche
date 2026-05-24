@@ -40,6 +40,6 @@ proc main() {
     let n := sprintf(buf, "%f\n", Task1Data.revenue[i]);
     arche_fwrite(fd, buf, n);
   }
-  arche_fclose(fd);
+  arche_fclose(move fd);
   printf("Task1 output written\n");
 }

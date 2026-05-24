@@ -12,5 +12,5 @@ proc main() {
   let buf: char[8];
   let buf, v := resource_fill(r, buf, 8);
   printf("v=%d b=%s\n", v, buf);
-  resource_close(r);
+  resource_close(move r);
 }

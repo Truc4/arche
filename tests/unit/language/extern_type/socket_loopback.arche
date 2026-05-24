@@ -11,7 +11,7 @@ proc main() {
   let sent := net_send(cli, "hi", 2);
   let n := net_recv(conn, buf, 64);
   printf("ok n=%d first=%d\n", n, buf[0]);
-  net_close(cli);
-  net_close(conn);
-  net_close(srv);
+  net_close(move cli);
+  net_close(move conn);
+  net_close(move srv);
 }
