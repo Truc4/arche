@@ -572,8 +572,14 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	}
 
 	case EXPR_INDEX: {
-		/* Index expression has same type as base element */
-		return resolve_expression_type(ctx, expr->data.index.base);
+		/* An index yields the base's ELEMENT type. A char buffer resolves to "char_array"
+		 * (unbounded) or "char" (sized); indexing either gives a single `char`. Without this
+		 * reduction an unbounded `char[]` index would inherit "char_array" and be treated as a
+		 * string (i8*) at call sites (e.g. printf). */
+		const char *base_type = resolve_expression_type(ctx, expr->data.index.base);
+		if (base_type && strcmp(base_type, "char_array") == 0)
+			return "char";
+		return base_type;
 	}
 
 	case EXPR_BINARY: {

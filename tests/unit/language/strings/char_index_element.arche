@@ -1,0 +1,15 @@
+// Indexing a char buffer yields a single `char` element (not the array), so it passes to
+// printf `%d` as an int — including for an unbounded `char[]` that crossed a call boundary
+// (the index no longer inherits the "char_array" type and get mistaken for a string).
+// RUN: %arche -o %t %s && %t | grep "first=72 second=105"
+func passthru(buf: char[]) -> char[] {
+  return buf;
+}
+
+proc main() {
+  b: char[8];
+  b[0] = 72;
+  b[1] = 105;
+  b := passthru(move b);
+  printf("first=%d second=%d\n", b[0], b[1]);
+}
