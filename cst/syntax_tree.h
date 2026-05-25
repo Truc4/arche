@@ -127,7 +127,6 @@ typedef struct CstBuilder {
 	SyntaxElem *items;
 	int count;
 	int cap;
-	uint32_t next_id; /* monotonic node-id counter; assigned at wrap/finish time */
 } CstBuilder;
 
 CstBuilder *cst_builder_new(void);

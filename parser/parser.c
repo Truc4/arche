@@ -1207,6 +1207,7 @@ static Decl *parse_static_decl(Parser *parser) {
 			error(parser, "Expected name after 'static'");
 			return NULL;
 		}
+		int static_name_cp = cst_cp(parser);
 		char *name = token_text(parser->current);
 		Token name_tok = parser->current;
 		advance(parser);
@@ -1230,6 +1231,8 @@ static Decl *parse_static_decl(Parser *parser) {
 				return NULL;
 			}
 		}
+		/* The archetype/table reference (`Name` or `table<Name>`) is a type position. */
+		cst_wrap(parser, static_name_cp, SN_TYPE_REF);
 
 		/* Check if this is a static array (static name: type[size];) or archetype (static Name(n);) */
 		if (check(parser, TOK_COLON)) {

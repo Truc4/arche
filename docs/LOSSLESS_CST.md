@@ -145,13 +145,41 @@ The work follows a 9-stage gated migration (see the approved plan). Decisions so
   `Program`). NOTE the lossless CST is *already* immutable — semantic only mutates `Program`
   (the abstract AST), never the CST — so the side model's real purpose is to give semantic a
   home for types once it walks the CST directly (4d), not to "stop mutating the CST".
-- **Lowering reads the side model (4b) is gated off until S6.** The read path
-  (`lower_set_model` + `lower_expr_type`) is built, but activating it revealed — via the
-  codegen-golden gate — that `use`-module inlining merges several independently-parsed CSTs
-  whose `cst_id`s restart at 0 and therefore **collide** in the flat side model (wrong type for
-  inlined expressions: `i64` vs `i32`). Globally-unique ids across modules is S6's job
-  (`resolve_uses`), so 4b activation waits for S6. Until then lowering keeps using
-  `Expression.resolved_type` (correct for every program, modules included).
+- **Lowering reads the side model (4b): ACTIVE and verified.** The codegen-golden gate first
+  caught that `use`-module inlining merges several independently-parsed CSTs whose `cst_id`s
+  restarted at 0 and **collided** in the flat side model (`i64` vs `i32` for inlined exprs).
+  Fixed by making node ids a **single monotonic id space for the whole compiler process**
+  (`g_node_id` in `syntax_tree.c`) spanning the main file and all inlined modules — like a
+  compiler-session id space. With unique ids, lowering reads types from the model
+  (`lower_set_model`/`lower_expr_type`) and the IR goldens match, modules included. The model
+  is now genuinely load-bearing: semantic populates it, lowering consumes it.
+- **Still on `Expression.resolved_type` (deferred): 4c (stop mutating)** and **4d (semantic
+  walks the CST instead of `Program`).** These retire the parser's parallel `Program` tree —
+  the largest, highest-risk piece (a ~3k-line semantic rewrite onto views) — and are done with
+  S5 (lower onto views) and S8 (delete `Program`). Since `resolved_type` lives on `Program`
+  (not the immutable CST), 4c falls out naturally when `Program` is deleted in S8.
+
+- **CST-driven formatter (S7), PoC done as an isolated binary** (`arche-fmt-cst`,
+  `cst/format_cst.{h,c}`). Walks the CST's token leaves with structure-aware spacing —
+  each leaf carries its parent node-kind, so types/generics compact (`handle<X>`,
+  `table<P>`, `float[5]`), `:=`/`::` glue as compound operators (arche lexes them as two
+  tokens), and archetype fields print one per line. Idempotent across the whole corpus
+  (`fmt(fmt(x))==fmt(x)`). Built alongside `arche-fmt` (which still uses the Program-based
+  `format_program`) so nothing churns; replacing it is the rest of S7. This validates the
+  CST as load-bearing for a real tool, not just highlighting. Known nit: a `static
+  table<X> (n)` keeps one space before `(` (cross-node-kind boundary); structural-walk
+  polish. Wrapping the `static` archetype/table ref as a `SN_TYPE_REF` (a real S2
+  completeness fix) is what made `table<X>` compact.
+
+## Status of the heavy half (not yet done)
+
+Retiring `Program` requires rewriting the two heaviest passes onto the CST views, then
+deleting it: **4d** (semantic, ~3000 lines), **S5** (lower + thin HIR), and **S8** (delete
+`Program`), plus **S6** (finish modules) and **S9** (rename). These are an all-or-nothing
+per-pass rewrite of the type checker and lowerer — the highest-risk work, where codegen can
+shift with no failing unit test (only the 11 IR goldens guard it). Approach when resumed:
+build a CST-driven `lower`/semantic *alongside* the Program-based one, validate IR-identical
+on the goldens + corpus, then switch and delete `Program` — never a half-migrated state.
 
 ## Guiding references
 

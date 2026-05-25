@@ -1,12 +1,17 @@
 #include "syntax_tree.h"
 #include <stdlib.h>
 
+/* Monotonic node-id counter for one compiler process. Spanning all parses (the
+ * main file AND inlined `use` modules, which are separate parse_source calls) in
+ * a single id space keeps ids globally unique, so a side model keyed by id never
+ * collides across modules. Never reset; ids only grow. */
+static uint32_t g_node_id = 0;
+
 CstBuilder *cst_builder_new(void) {
 	CstBuilder *b = malloc(sizeof(CstBuilder));
 	b->items = NULL;
 	b->count = 0;
 	b->cap = 0;
-	b->next_id = 0;
 	return b;
 }
 
@@ -82,7 +87,7 @@ SyntaxNode *cst_builder_wrap(CstBuilder *b, int checkpoint, SyntaxNodeKind kind)
 		return NULL; /* nothing to wrap (e.g. an errored parse that consumed no tokens) */
 
 	SyntaxNode *node = make_node(b->items, checkpoint, b->count, kind);
-	node->id = b->next_id++;
+	node->id = g_node_id++;
 
 	SyntaxElem e;
 	e.tag = SE_NODE;
@@ -94,7 +99,7 @@ SyntaxNode *cst_builder_wrap(CstBuilder *b, int checkpoint, SyntaxNodeKind kind)
 
 SyntaxNode *cst_builder_finish(CstBuilder *b) {
 	SyntaxNode *root = make_node(b->items, 0, b->count, SN_SOURCE_FILE);
-	root->id = b->next_id++; /* root created last → largest id; node_count == root->id + 1 */
+	root->id = g_node_id++;
 	free(b->items);
 	free(b);
 	return root;

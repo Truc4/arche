@@ -754,11 +754,9 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	/* Lower CST → AST. The semantic side model (keyed by CST node id) is populated
-	 * and ready, but reading it here is gated until module inlining gives globally
-	 * unique CST ids (S6: resolve_uses) — without that, inlined modules' ids collide.
-	 * Until then, lowering uses the type carried on each expression. */
-	/* enable after S6:  lower_set_model(sem_context_model(sem_ctx)); */
+	/* Lower CST → AST. Resolved types come from the semantic side model (keyed by
+	 * CST node id; ids are globally unique across inlined modules). */
+	lower_set_model(sem_context_model(sem_ctx));
 	AstProgram *ast = lower_cst_to_ast(prog);
 
 	/* Code generation */
