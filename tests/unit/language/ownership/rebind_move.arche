@@ -2,11 +2,11 @@
 // to the returned buffer. Works for a string fill and for in-place mutation, and the rebound
 // name indexes correctly afterward.
 // RUN: %arche -o %t %s && %t | grep "a=hi b0=11"
-func fill(move buf: char[16]) -> char[16] {
+func fill(own buf: char[16]) -> char[16] {
   sprintf(buf, "hi");
   return buf;
 }
-func bump(move buf: char[16]) -> char[16] {
+func bump(own buf: char[16]) -> char[16] {
   buf[0] = buf[0] + 1;
   return buf;
 }

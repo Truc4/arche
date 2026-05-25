@@ -213,7 +213,7 @@ struct ProcDecl {
 struct Parameter {
 	char *name;
 	TypeRef *type;
-	int is_move; /* `move` param: caller must `move` the arg (by-ref, no silent copy) */
+	int is_own; /* `own` param: function owns it (may mutate/consume); caller passes via `move` or `copy` */
 	SourceLoc loc;
 };
 
@@ -234,10 +234,6 @@ struct FuncDecl {
 	/* A function's return is a list of types; a single return is just count == 1. `-> (T1, …, Tn)`
 	 * with n > 1 is returned as an aggregate. (No scalar special-case.) */
 	TypeRef **return_types;
-	/* Optional per-return-slot names, parallel to return_types (entries may be NULL when a
-	 * slot is unnamed). A named slot `-> (dst: T)` makes the return a caller-allocated slot;
-	 * a name matching a param name marks an in-place (same-name in/out) slot. */
-	char **return_names;
 	int return_type_count;
 	int is_extern;
 	int is_unsafe; /* 1 if declared `unsafe func`; may call unsafe builtins (syscall) */
@@ -404,6 +400,7 @@ typedef enum {
 	UNARY_NEG,
 	UNARY_NOT,
 	UNARY_MOVE, /* `move x` — call-site ownership transfer; transparent value, marks x consumed */
+	UNARY_COPY, /* `copy x` — call-site duplication; caller keeps the original (x not consumed) */
 } UnaryOperator;
 
 typedef struct {

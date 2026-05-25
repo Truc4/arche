@@ -19,7 +19,7 @@ extern func arche_fopen_read(path: char[]) -> file;
 extern func arche_fread(fd: file, buf: char[], n: int) -> int;
 extern func arche_fread_line(fd: file, buf: char[], n: int) -> int;
 extern func arche_csv_read_chunk(fd: file, buf: char[], max_bytes: int) -> int;
-extern proc arche_fclose(move fd: file);
+extern proc arche_fclose(own fd: file);
 extern func arche_file_map(path: char[]) -> char[];
 extern func arche_file_size() -> i64;
 extern proc arche_file_unmap(data: char[], size: i64);
@@ -37,7 +37,7 @@ extern func net_accept(s: socket) -> socket;
 extern func net_connect(ip: char[], port: int) -> socket;
 extern func net_send(s: socket, buf: char[], n: int) -> int;
 extern func net_recv(s: socket, buf: char[], n: int) -> int;
-extern proc net_close(move s: socket);
+extern proc net_close(own s: socket);
 proc print_float(f: float) {
   printf("%g", f);
   fflush(0);
@@ -57,11 +57,11 @@ proc stdin_read(buf: char[], n: int) {
 // Safe buffer reads: the caller moves the buffer in (the by-ref fill is visible at the
 // call site) and gets it back with the byte count. The raw `read`/`net_recv` externs
 // remain as the low-level FFI escape hatch.
-func read_into(fd: int, move buf: char[], len: int) -> (char[], int) {
+func read_into(fd: int, own buf: char[], len: int) -> (char[], int) {
   n := read(fd, buf, len);
   return buf, n;
 }
-func recv_into(s: socket, move buf: char[], n: int) -> (char[], int) {
+func recv_into(s: socket, own buf: char[], n: int) -> (char[], int) {
   k := net_recv(s, buf, n);
   return buf, k;
 }

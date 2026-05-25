@@ -1,0 +1,14 @@
+// `copy x` hands the function an owned duplicate; the caller keeps its original unchanged.
+// (Contrast `move`, which donates the buffer by reference with no copy.)
+// RUN: %arche -o %t %s && %t | grep "src=hi out=yo"
+func fill(own b: char[8], s: char[]) -> char[8] {
+  sprintf(b, "%s", s);
+  return b;
+}
+
+proc main() {
+  src: char[8];
+  sprintf(src, "%s", "hi");
+  out := fill(copy src, "yo");
+  printf("src=%s out=%s\n", src, out);
+}

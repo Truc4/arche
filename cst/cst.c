@@ -78,7 +78,6 @@ FuncDecl *func_decl_create(char *name) {
 	FuncDecl *func = malloc(sizeof(FuncDecl));
 	func->name = name;
 	func->return_types = NULL;
-	func->return_names = NULL;
 	func->return_type_count = 0;
 	func->params = NULL;
 	func->param_count = 0;
@@ -149,7 +148,7 @@ Parameter *parameter_create(char *name, TypeRef *type) {
 	Parameter *param = malloc(sizeof(Parameter));
 	param->name = name;
 	param->type = type;
-	param->is_move = 0;
+	param->is_own = 0;
 	param->loc.line = 1;
 	param->loc.column = 1;
 	return param;
@@ -338,11 +337,6 @@ void func_decl_free(FuncDecl *func) {
 	for (int i = 0; i < func->return_type_count; i++)
 		type_ref_free(func->return_types[i]);
 	free(func->return_types);
-	if (func->return_names) {
-		for (int i = 0; i < func->return_type_count; i++)
-			free(func->return_names[i]);
-		free(func->return_names);
-	}
 	for (int i = 0; i < func->param_count; i++) {
 		parameter_free(func->params[i]);
 	}
@@ -756,8 +750,10 @@ static void format_expression(FILE *out, Expression *expr) {
 		break;
 	}
 	case EXPR_UNARY: {
-		const char *op_str =
-		    expr->data.unary.op == UNARY_NEG ? "-" : (expr->data.unary.op == UNARY_MOVE ? "move " : "!");
+		const char *op_str = expr->data.unary.op == UNARY_NEG    ? "-"
+		                     : expr->data.unary.op == UNARY_MOVE ? "move "
+		                     : expr->data.unary.op == UNARY_COPY ? "copy "
+		                                                         : "!";
 		fprintf(out, "%s", op_str);
 		format_expression(out, expr->data.unary.operand);
 		break;
@@ -1281,8 +1277,8 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			for (int j = 0; j < proc->param_count; j++) {
 				if (j > 0)
 					fprintf(out, ", ");
-				if (proc->params[j]->is_move)
-					fprintf(out, "move ");
+				if (proc->params[j]->is_own)
+					fprintf(out, "own ");
 				fprintf(out, "%s: ", proc->params[j]->name);
 				format_type(out, proc->params[j]->type);
 			}
@@ -1328,30 +1324,19 @@ void format_program(FILE *out, Program *prog, Token *comments, size_t comment_co
 			for (int j = 0; j < func->param_count; j++) {
 				if (j > 0)
 					fprintf(out, ", ");
-				if (func->params[j]->is_move)
-					fprintf(out, "move ");
+				if (func->params[j]->is_own)
+					fprintf(out, "own ");
 				fprintf(out, "%s: ", func->params[j]->name);
 				format_type(out, func->params[j]->type);
 			}
 			fprintf(out, ") -> ");
-			/* A single UNNAMED return prints bare `T`; any named slot (or multi-return) prints the
-			 * parenthesized `(name: T, …)` form so return-slot names round-trip through the formatter. */
-			int has_return_names = 0;
-			if (func->return_names)
-				for (int j = 0; j < func->return_type_count; j++)
-					if (func->return_names[j]) {
-						has_return_names = 1;
-						break;
-					}
-			if (func->return_type_count == 1 && !has_return_names) {
+			if (func->return_type_count == 1) {
 				format_type(out, func->return_types[0]);
 			} else {
 				fprintf(out, "(");
 				for (int j = 0; j < func->return_type_count; j++) {
 					if (j > 0)
 						fprintf(out, ", ");
-					if (func->return_names && func->return_names[j])
-						fprintf(out, "%s: ", func->return_names[j]);
 					format_type(out, func->return_types[j]);
 				}
 				fprintf(out, ")");

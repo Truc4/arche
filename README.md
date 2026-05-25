@@ -481,17 +481,18 @@ A single return is just `count == 1` — there is no special case in the grammar
 return type and the `return` statement are uniform lists. `return e1, …, en` lists the values in
 signature order.
 
-**Filling a caller buffer is a different thing** — not a return. An array is reached by
-reference, so a function that fills one takes it as an ordinary parameter and returns just the
-scalar count; the caller already holds the (now-filled) buffer:
+**Filling a caller buffer** uses the `own` ownership shape (see *Ownership* below): the function
+takes the buffer `own`, fills it, and returns it; the caller `move`s it in and rebinds it (the
+buffer threads through with no copy):
 
 ```arche
-func read_chunk(fd: file, buf: char[], size: int) -> int {
-  return arche_csv_read_chunk(fd, buf, size);   // fills buf in place
+func read_chunk(fd: file, own buf: char[], size: int) -> (char[], int) {
+  n := arche_csv_read_chunk(fd, buf, size);   // the extern fills the owned buffer
+  return buf, n;
 }
 
 buf: char[65536];
-n := read_chunk(fd, buf, 65536);   // buf is filled; n is the byte count
+buf, n := read_chunk(fd, move buf, 65536);   // buf comes back filled; n is the byte count
 ```
 
 ## Foreign resources: nominal `opaque` types
@@ -506,7 +507,7 @@ sound  :: opaque
 
 extern func window_open(title: char[], w: int, h: int) -> window;
 extern proc window_present(w: window, fb: int[], width: int, height: int);
-extern proc window_close(move w: window);
+extern proc window_close(own w: window);
 ```
 
 - An `opaque` value is passed to/from C **by value** — the cell *is* an `i64`, ABI-compatible
@@ -519,37 +520,53 @@ extern proc window_close(move w: window);
 - A foreign resource can also live in a **pool**: put the type in an `arche` and use
   `pool<Foo>` + generation-checked handles for capacity-bounded, use-after-free-safe storage.
 
-### Ownership: by value; `move` is the only way to mutate across a call
+### Ownership: read-only borrow by default; `own` + caller `move`/`copy`
 
-Everything is **by value, and functions have no side effects unless you `move`.** Plain data,
-handles, and arrays passed plainly are *copied* — the callee's mutations never leak back. A
-foreign `opaque` value **cannot copy** at all, so it is move-only (linear). One keyword,
-`move`, governs both the call site and the parameter contract:
+Functions are **pure by use** — a function never mutates its caller's data as a side effect. The
+default parameter mode is a **read-only borrow**: a plain `buf: T` is passed by reference (zero
+copy), is read-only (mutating it is a compile error), and is not consumed (the caller keeps it
+unchanged). Scalars are passed by value. A foreign `opaque` value is move-only (linear).
 
-- **`move` (call site)** hands ownership over by reference and kills the binding —
-  `window_close(move w)`; using `w` afterward is a compile error. A moved value comes back
-  only through a return value.
-- **`move` (parameter)** is the by-reference *contract*: the caller **must** write `move`, so
-  the hand-off is always visible — no silent copy. `window_close(w)` is a compile error
-  (`value 'w' must be moved into 'move' parameter …`). A plain parameter is by value (copied,
-  no side effect). A `move` parameter **may be returned**, which is the fill-buffer / FFI
-  shape — the buffer is moved in by reference, filled, and handed back:
-  ```arche
-  func read_into(fd: int, move buf: char[], len: int) -> (char[], int) {
-    n := read(fd, buf, len);            // raw extern fills by-ref (the FFI escape hatch)
-    return buf, n;
-  }
-  buf, n := read_into(0, move buf, 256);   // move required; buf comes back, now indexable
-  ```
-- **Must-consume:** an opaque *local* must leave its scope before the end — moved into a
-  `move`-parameter call, returned, or `insert`ed into a pool. Otherwise it is a compile error
+To mutate or consume an argument, the function declares the parameter **`own`** — it takes
+ownership. The caller then chooses, **explicitly**, how to satisfy that — there is no implicit
+copy and no implicit move:
+
+- **`move x`** — donate `x` by reference (zero copy); `x` is consumed (using it afterward is a
+  compile error). The owned buffer comes back only through a return value.
+- **`copy x`** — hand over a *duplicate* (a memcpy); the caller keeps its original. (`copy` of an
+  `opaque` is rejected — it is non-copyable.)
+
+A bare name passed to an `own` parameter is a compile error
+(`value 'x' must be moved or copied into 'own' parameter …`). This is the fill-buffer / FFI shape —
+an `own` buffer is filled and handed back:
+
+```arche
+func read_into(fd: int, own buf: char[], len: int) -> (char[], int) {
+  n := read(fd, buf, len);                 // the extern fills the owned buffer
+  return buf, n;
+}
+
+buf: char[256];
+buf,   n := read_into(0, move buf, 256);   // zero copy: buf threaded in and back out, in place
+other, n := read_into(0, copy buf, 256);   // buf kept; `other` is a fresh, filled duplicate
+```
+
+Because a function only ever mutates storage it **owns**, *in-place vs. fresh is the caller's
+decision*: `buf := f(move buf)` reuses `buf`'s storage with **no copy at all** (the buffer pointer
+threads straight through and is returned), while `out := f(copy buf)` leaves `buf` intact. The
+function is identical either way.
+
+- **You can't move out of a borrow.** `move`-ing a borrowed (non-`own`) array parameter is a
+  compile error — it would let a callee mutate the caller's buffer. You *may* `copy` a borrow.
+- **Must-consume:** an opaque *local* must leave its scope before the end — moved into an `own`
+  parameter, returned, or `insert`ed into a pool. Otherwise it is a compile error
   (`opaque value 'w' not consumed before scope end`). No implicit `drop`/RAII, no silent leak.
 
 ```arche
 proc render() {
   w := window_open("demo", 640, 480);
-  window_present(w, fb, 640, 480);   // plain by-value read
-  window_close(move w);              // move required — w dead afterward
+  window_present(w, fb, 640, 480);   // plain read-only borrow
+  window_close(move w);              // `own` param consumes it — w dead afterward
 }
 ```
 
@@ -563,9 +580,10 @@ s, d := sum_diff(10, 3);          // bind both returns
 x, y, z := some_func();           // bind all returns
 ```
 
-Targets bind **left-to-right** in the function's return-type order. A target may be a new `x:`
-or an existing variable. (Buffer-fill is *not* a multi-bind — the buffer is a by-reference param
-filled in place, so `n := read(fd, buf, 256)` binds only the scalar count.)
+Targets bind **left-to-right** in the function's return-type order. A target may be a new `x:` or
+an existing variable. A filled buffer is **returned** like any other value, so it is part of the
+multi-bind — `buf, n := read_into(0, move buf, 256)` rebinds `buf` and binds the count, with no
+hidden side effect.
 
 ## Status
 

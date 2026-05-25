@@ -154,22 +154,6 @@ static int match(Parser *parser, TokenKind kind) {
 	return 1;
 }
 
-/* Kind of the token immediately after `current`, without consuming. Restores only the lexer's
- * scan cursor (cur/line/column) so the next real advance() re-lexes the same token; safe in the
- * contexts it is used (the peeked token is never a string/interpolation). Used to disambiguate a
- * named return slot `name: T` from a bare type `T` in a return list. */
-static TokenKind peek_next_kind(Parser *parser) {
-	Lexer *lx = parser->lexer;
-	const char *save_cur = lx->cur;
-	int save_line = lx->line;
-	int save_col = lx->column;
-	TokenKind kind = lexer_next_token(lx).kind;
-	lx->cur = save_cur;
-	lx->line = save_line;
-	lx->column = save_col;
-	return kind;
-}
-
 static char *token_text(Token tok) {
 	char *text = malloc(tok.length + 1);
 	strncpy(text, tok.start, tok.length);
@@ -638,10 +622,10 @@ static Decl *parse_proc_decl(Parser *parser) {
 	/* Parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
-			int param_is_move = 0;
+			int param_is_own = 0;
 
-			if (match(parser, TOK_MOVE)) {
-				param_is_move = 1;
+			if (match(parser, TOK_OWN)) {
+				param_is_own = 1;
 			}
 
 			if (!check(parser, TOK_IDENT)) {
@@ -663,7 +647,7 @@ static Decl *parse_proc_decl(Parser *parser) {
 				return NULL;
 
 			Parameter *param = parameter_create(param_name, param_type);
-			param->is_move = param_is_move;
+			param->is_own = param_is_own;
 			param->loc.line = param_line;
 			param->loc.column = param_column;
 			proc->params = realloc(proc->params, (proc->param_count + 1) * sizeof(Parameter *));
@@ -866,10 +850,10 @@ static Decl *parse_func_decl(Parser *parser) {
 	/* parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
-			int param_is_move = 0;
+			int param_is_own = 0;
 
-			if (match(parser, TOK_MOVE)) {
-				param_is_move = 1;
+			if (match(parser, TOK_OWN)) {
+				param_is_own = 1;
 			}
 
 			if (!check(parser, TOK_IDENT)) {
@@ -892,7 +876,7 @@ static Decl *parse_func_decl(Parser *parser) {
 				return NULL;
 
 			Parameter *param = parameter_create(param_name, param_type);
-			param->is_move = param_is_move;
+			param->is_own = param_is_own;
 			param->loc.line = param_line;
 			param->loc.column = param_column;
 			func->params = realloc(func->params, (func->param_count + 1) * sizeof(Parameter *));
@@ -910,47 +894,23 @@ static Decl *parse_func_decl(Parser *parser) {
 		return NULL;
 	}
 
-	/* Return slots: single `-> T`, or a parenthesized list `-> (T1, …)` / `-> (name: T, …)`.
-	 * A named slot `-> (dst: T)` is a caller-allocated return slot; a name matching a param marks
-	 * an in-place (same-name in/out) slot. Names use 2-token lookahead (`IDENT :`) to tell a
-	 * named slot apart from a bare type. A list is all-named or all-unnamed. */
+	/* Return type: single `-> T`, or multi-return `-> (T1, …, Tn)`. In the multi form the
+	 * leading array returns are caller-passed buffers the func fills in place; the final
+	 * return types is a list — a single return is just count == 1. */
 	if (match(parser, TOK_LPAREN)) {
-		int any_named = 0, any_unnamed = 0;
 		do {
-			char *rname = NULL;
-			if (check(parser, TOK_IDENT) && peek_next_kind(parser) == TOK_COLON) {
-				rname = token_text(parser->current);
-				advance(parser); /* name */
-				advance(parser); /* ':' */
-			}
 			TypeRef *rt = parse_type(parser);
-			if (!rt) {
-				free(rname);
+			if (!rt)
 				return NULL;
-			}
-			int n = func->return_type_count;
-			func->return_types = realloc(func->return_types, (n + 1) * sizeof(TypeRef *));
-			func->return_names = realloc(func->return_names, (n + 1) * sizeof(char *));
-			func->return_types[n] = rt;
-			func->return_names[n] = rname;
-			func->return_type_count = n + 1;
-			if (rname)
-				any_named = 1;
-			else
-				any_unnamed = 1;
+			func->return_types = realloc(func->return_types, (func->return_type_count + 1) * sizeof(TypeRef *));
+			func->return_types[func->return_type_count++] = rt;
 		} while (match(parser, TOK_COMMA));
 		if (!match(parser, TOK_RPAREN)) {
-			error(parser, "Expected ')' after return type list");
+			error(parser, "Expected ')' after multi-return type list");
 			return NULL;
 		}
-		if (any_named && any_unnamed) {
-			error(parser, "return list must be either all-named or all-unnamed");
-			return NULL;
-		}
-		/* An unnamed parenthesized list is the multi-return form (needs >= 2 types); a single
-		 * named slot `-> (dst: T)` is allowed. */
-		if (!any_named && func->return_type_count < 2) {
-			error(parser, "a parenthesized return type must list at least two types, or name a single slot");
+		if (func->return_type_count < 2) {
+			error(parser, "a parenthesized return type must list at least two types");
 			return NULL;
 		}
 	} else {
@@ -959,7 +919,6 @@ static Decl *parse_func_decl(Parser *parser) {
 			return NULL;
 		func->return_types = malloc(sizeof(TypeRef *));
 		func->return_types[0] = return_type;
-		func->return_names = calloc(1, sizeof(char *)); /* unnamed */
 		func->return_type_count = 1;
 	}
 
@@ -1737,6 +1696,21 @@ static Expression *parse_unary_expr(Parser *parser) {
 		u->loc.line = line;
 		u->loc.column = col;
 		u->data.unary.op = UNARY_MOVE;
+		u->data.unary.operand = operand;
+		return u;
+	}
+	/* `copy <expr>` — call-site duplication: the caller keeps its original; the function gets an
+	 * owned copy. The checker does NOT mark the operand consumed; codegen duplicates the buffer. */
+	if (check(parser, TOK_COPY)) {
+		int line = parser->current.line, col = parser->current.column;
+		advance(parser);
+		Expression *operand = parse_unary_expr(parser);
+		if (!operand)
+			return NULL;
+		Expression *u = expression_create(EXPR_UNARY);
+		u->loc.line = line;
+		u->loc.column = col;
+		u->data.unary.op = UNARY_COPY;
 		u->data.unary.operand = operand;
 		return u;
 	}

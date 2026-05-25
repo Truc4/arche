@@ -3,7 +3,7 @@
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
 resource :: opaque
 extern func resource_open(initial: int) -> resource;
-extern proc resource_close(move r: resource);
+extern proc resource_close(own r: resource);
 extern func resource_get(r: resource) -> int;
 
 proc main() {

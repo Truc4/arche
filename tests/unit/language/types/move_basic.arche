@@ -5,7 +5,7 @@ resource :: opaque
 extern func resource_open(initial: int) -> resource;
 extern proc resource_set(r: resource, v: int);
 extern func resource_get(r: resource) -> int;
-extern proc resource_close(move r: resource);
+extern proc resource_close(own r: resource);
 
 proc main() {
   r := resource_open(10);

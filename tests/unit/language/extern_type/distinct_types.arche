@@ -5,7 +5,7 @@
 sound :: opaque
 window :: opaque
 extern func sound_open() -> sound;
-extern proc window_close(move w: window);
+extern proc window_close(own w: window);
 
 proc main() {
   s := sound_open();

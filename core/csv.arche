@@ -2,16 +2,16 @@
 func open(path: char[]) -> file {
   return arche_fopen_read(path);
 }
-proc close(move fd: file) {
+proc close(own fd: file) {
   arche_fclose(move fd);
 }
 proc skip_header(fd: file) {
   line: char[256];
   arche_fread_line(fd, line, 256);
 }
-// Fill the caller's buffer (moved in by reference) and hand it back with the byte count.
-// `move` makes the by-ref fill visible at the call site: `buf, n := csv_read_chunk(fd, move buf, size)`.
-func read_chunk(fd: file, move buf: char[], size: int) -> (char[], int) {
+// Fill the caller's buffer and hand it back with the byte count. `buf` is an `own` parameter;
+// the caller passes it `move` (zero copy): `buf, n := read_chunk(fd, move buf, size)`.
+func read_chunk(fd: file, own buf: char[], size: int) -> (char[], int) {
   n := arche_csv_read_chunk(fd, buf, size);
   return buf, n;
 }

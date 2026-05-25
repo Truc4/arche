@@ -232,30 +232,6 @@ void test_func_multiple_params(void) {
 	test_pass_msg();
 }
 
-void test_func_named_return_slot(void) {
-	test_start("func named return slot");
-	Program *prog = parse_string("func add(x: int, y: int) -> (sum: int) { return x + y; }");
-	ASSERT_NOT_NULL(prog, "program is null");
-	FuncDecl *func = prog->decls[0]->data.func;
-	ASSERT_EQ(func->return_type_count, 1, "expected 1 return slot");
-	ASSERT_NOT_NULL(func->return_names, "return_names should be allocated");
-	ASSERT_NOT_NULL(func->return_names[0], "return slot should be named");
-	ASSERT_EQ(strcmp(func->return_names[0], "sum"), 0, "wrong return slot name");
-	program_free(prog);
-	test_pass_msg();
-}
-
-void test_func_unnamed_return(void) {
-	test_start("func unnamed single return has no slot name");
-	Program *prog = parse_string("func id(x: int) -> int { return x; }");
-	ASSERT_NOT_NULL(prog, "program is null");
-	FuncDecl *func = prog->decls[0]->data.func;
-	ASSERT_EQ(func->return_type_count, 1, "expected 1 return");
-	ASSERT_TRUE(!func->return_names || func->return_names[0] == NULL, "single return should be unnamed");
-	program_free(prog);
-	test_pass_msg();
-}
-
 /* ========== EXPRESSION TESTS ========== */
 
 void test_expr_literal(void) {
@@ -784,6 +760,18 @@ void test_lex_move_keyword(void) {
 	test_pass_msg();
 }
 
+void test_lex_own_keyword(void) {
+	test_start("lex own keyword");
+	Lexer lex;
+	lexer_init(&lex, "own foo");
+	Token t1 = lexer_next_token(&lex);
+	ASSERT_EQ(t1.kind, TOK_OWN, "first token should be TOK_OWN");
+	Token t2 = lexer_next_token(&lex);
+	ASSERT_EQ(t2.kind, TOK_IDENT, "second token should be TOK_IDENT");
+	lexer_free(&lex);
+	test_pass_msg();
+}
+
 /* ========== HANDLE TYPE TESTS ========== */
 
 void test_parser_handle_type_is_typename(void) {
@@ -801,18 +789,18 @@ void test_parser_handle_type_is_typename(void) {
 	test_pass_msg();
 }
 
-/* ========== MOVE PARAMETER MODIFIER TESTS ========== */
+/* ========== OWN PARAMETER MODIFIER TESTS ========== */
 
-void test_move_param_modifier(void) {
-	test_start("move parameter modifier");
+void test_own_param_modifier(void) {
+	test_start("own parameter modifier");
 	Program *prog = parse_string("window :: opaque\n"
-	                             "extern proc window_close(move w: window);\n");
+	                             "extern proc window_close(own w: window);\n");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ASSERT_EQ(prog->decl_count, 2, "expected 2 decls");
 	ASSERT_EQ(prog->decls[1]->kind, DECL_PROC, "expected DECL_PROC");
 	ProcDecl *p = prog->decls[1]->data.proc;
 	ASSERT_EQ(p->param_count, 1, "expected 1 param");
-	ASSERT_EQ(p->params[0]->is_move, 1, "param should be move");
+	ASSERT_EQ(p->params[0]->is_own, 1, "param should be own");
 	program_free(prog);
 	test_pass_msg();
 }
@@ -853,6 +841,7 @@ int main(void) {
 	/* Lexer tests */
 	printf("Lexer tests:\n");
 	test_lex_move_keyword();
+	test_lex_own_keyword();
 
 	/* Archetype tests */
 	printf("Archetype tests:\n");
@@ -878,8 +867,6 @@ int main(void) {
 	printf("\nFunction tests:\n");
 	test_func_simple();
 	test_func_multiple_params();
-	test_func_named_return_slot();
-	test_func_unnamed_return();
 	test_parse_func_group();
 	test_parse_func_group_empty_rejected();
 	test_parse_func_group_trailing_comma();
@@ -914,7 +901,7 @@ int main(void) {
 
 	/* Consume parameter modifier tests */
 	printf("\nConsume parameter modifier tests:\n");
-	test_move_param_modifier();
+	test_own_param_modifier();
 	test_out_keyword_rejected();
 
 	/* Assignment operators */

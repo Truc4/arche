@@ -94,7 +94,7 @@ struct AstField {
 struct AstParam {
 	char *name;
 	AstType *type;
-	int is_move; /* `move` param: caller must `move` the arg (by-ref, no silent copy) */
+	int is_own; /* `own` param: function owns it (may mutate/consume); caller passes via `move` or `copy` */
 	SourceLoc loc;
 };
 
@@ -131,7 +131,6 @@ typedef struct {
 	/* A function's return is a list of types; a single return is just count == 1, and a
 	 * multi-return (count > 1) is handed back as an aggregate. No scalar special-case. */
 	AstType **return_types;
-	char **return_names; /* parallel to return_types; NULL entries for unnamed slots */
 	int return_type_count;
 	int is_extern;
 	AstStmt **stmts;
