@@ -5,11 +5,12 @@ live in the working tree on the current branch for review.
 
 ## Verification (as of this session)
 
-- `make` builds clean; compiler test suites unchanged: parser 47/47, semantic 37/37,
-  codegen 8/8, lower 7/7 — the CST instrumentation is purely additive and the AST path
-  is invariant.
-- Lossless round-trip across the whole corpus: **271/271** `.arche` files reconstruct
-  byte-for-byte from token spans + inter-token gaps.
+- `make` builds clean; unit suites: parser 47/47, semantic 37/37, codegen 8/8, lower 7/7,
+  cst-view 13/13.
+- **The CST is now the compiler's lowering source** (`lower_cst_to_ast_v2` is the default;
+  the Program lowerer is the `ARCHE_LOWER_PROGRAM` A/B fallback). Validated: lit corpus
+  **253/253**, **11/11 codegen goldens byte-identical**, `verify-cst` **292/292** lossless
+  round-trip.
 - `arche-cst-tokens` classifies identifiers by node context (type / property / function /
   parameter / variable) — confirmed on real examples.
 - Editor end-to-end in Neovim 0.12: `.arche` buffer → LSP attach → `semanticTokens/full`
@@ -180,46 +181,59 @@ binds (`sem_model_bind_alias`, via `Statement.cst_id`) — and **no semantic fac
 (`SN_TYPE_REF`/`ARRAY`/`SHAPED_ARRAY`/`TUPLE`/`HANDLE`), so the CST distinguishes
 `float[5]` / `handle<X>` / tuples; the highlighter and CST formatter use this.
 
-## CST-driven lowering: UNDERWAY (behind `ARCHE_LOWER_CST`, validated vs IR goldens)
+## CST-driven lowering: DONE — now the default (S5 complete)
 
 `lower_cst_to_ast_v2` (in `lower/lower.c`) lowers straight from the CST via `cst_view` +
-the side model, gated by the `ARCHE_LOWER_CST` env var so the default `Program` path is
-untouched (all gates stay green). Validated against the codegen goldens:
+the semantic side model, and is now the **default** lowering path (`main.c`). The legacy
+Program-tree lowerer (`lower_cst_to_ast`) is retained only behind `ARCHE_LOWER_PROGRAM` for
+A/B comparison. Full verification, all green:
 
-- **3/10 goldens IR-identical** through the full compiler (`simple`, `with_params`,
-  `hello_world`) — proves the approach + infrastructure end-to-end.
-- Two real couplings were found and fixed against the IR oracle: (1) param/field/return/bind
-  types must be looked up as *any* type form (`SN_TYPE_*`), not just `SN_TYPE_REF`, else
-  array/handle params lose their type (corrupted every core builtin → `i32`); (2) nominal
-  type **aliases** (`file` → `opaque`) must be resolved via `semantic_resolve_type_alias`
-  (the Program path got this from in-place erasure). Also required keeping `cst_root` alive
-  through lowering (`main.c` used to free it right after parse).
-- Remaining diffs are **unported constructs**, each identified: `SN_STATIC_DECL` (started —
-  emits the archetype name + init count, but codegen lays out the archetype struct from the
-  static *capacity*; my port doesn't yet convey it, so the struct comes out dynamic `i32*`
-  instead of fixed `[1 x i32]` — the next debugging item), field-init blocks on `static`,
-  `SN_ALLOC_EXPR` / `SN_ARRAY_LIT_EXPR` (stubbed), tuple-field flattening (archetype columns +
-  sys param/body rewrite), `SN_FUNC_GROUP_DECL`, multi-bind, and module inlining. Add each,
-  re-diff the goldens until 10/10; then make it the default, delete the Program-based
-  `lower_*`, and `Program` loses its first major consumer. Note: capacity-layout shows codegen
-  reads facts (static capacity) that aren't purely in the AST shape — the side model likely
-  needs to carry them, or decl processing order must match.
+- **11/11 codegen goldens byte-identical** through the whole compiler (incl. the tuple and
+  module programs); **lit corpus 253/253**; `verify-cst` 292/292; parser/semantic/codegen/
+  lower/cst-view units 47/37/8/7/13.
+
+Couplings found + fixed against the IR oracle (each a real bug the goldens caught):
+- param/field/return/bind types must be looked up as *any* `SN_TYPE_*` form, not just
+  `SN_TYPE_REF` (else array/handle params silently became `i32`).
+- nominal aliases (`file`→`opaque`) resolved via `semantic_resolve_type_alias` (the Program
+  path got this from in-place erasure); `cst_root` kept alive through lowering.
+- static archetype: `(capacity[, init_length]) { field: value … }` parsed phase-aware
+  (parens args vs brace init block); capacity = `field_values[0]`, `init_length` drives
+  bounds-check elision.
+- index over a member chain (`Particle.pos_x[0]`) must rebuild the `FIELD` base (was dropped,
+  giving a raw `double*` access); the indexed column's element type is propagated onto that
+  base `FIELD` so codegen sizes the store (a literal RHS with no side-model entry is typed
+  from its lexeme).
+- 3-part `for ( init ; cond ; incr )` headers: the parser now wraps `init`/`incr` as
+  statement nodes; lowering splits the clauses by the two `;` (segment-indexed, so empty
+  clauses like `for (; i<n; )` work) and takes the body after `{`.
+- multi-bind (`a, b := f()` and `(a: T, b) = e`), `SN_FUNC_GROUP_DECL`, and `use`-module
+  inlining (modules' CSTs registered via `lower_add_module`, lowered + name-prefixed +
+  cross-module-resolved at lowering, mirroring `resolve_uses`).
+- tuple groups: top-level `pos (x,y) :: T` and inline `arche { pos (x,y) :: T }` build a
+  registry (`build_tgroups`); archetype fields flatten to scalar columns `pos_x`/`pos_y`
+  (codegen has no tuple type); sys tuple params expand to component params with body
+  rewrite (`tuple_rewrite_stmt`); nested `arch.pos.x` accesses are collapsed to the flat
+  column `arch.pos_x` (`tuple_collapse_*`).
+
+Process note: lit **scrubs the subprocess environment**, so `ARCHE_LOWER_CST=1 lit` did not
+reach the compiler until `tests/lit.cfg` was made to forward the toggle — until then the
+"253/253" runs were silently the *Program* path. Lesson: verify the toggle actually reaches
+the binary (a direct `env VAR=1 ./build/arche …` invocation) before trusting a corpus pass.
+
+`Program` still has consumers: the semantic analyzer walks it (populating the side model),
+and the `resolve_uses` / `expand_archetype_tuple_groups` pre-passes feed semantic. Those go
+away once semantic moves onto the CST (below).
 
 ## Resume plan for the heavy half (mapped, not yet done)
 
 Order: **lower → semantic → delete Program**. Lowering is the easier first switch because
 its output (`AstProgram`) is unchanged, so the IR goldens validate it independently.
 
-1. **Lower onto the CST.** Add CST-walking `lower_*_cst(CstView)` next to the existing
-   `lower_expr/stmt/decl/type/param/field` in `lower/lower.c`, **reusing** the existing
-   `map_type_str`, the tuple registry + `lookup_tuple`, and the AST-level `tuple_rewrite_*`
-   (those operate on the built `AstProgram`, so they're unchanged). Only the CST→AST
-   *construction* is rewritten to read `cst_view.h` instead of `Program` structs; types come
-   from `lower_expr_type`/`lower_bind_is_alias` (already side-model backed). Add
-   `lower_cst_to_ast_from_cst(const SyntaxNode*)`; switch `main.c` to it; validate
-   `verify-codegen` + `make test` IR-identical; then delete the Program-based `lower_*`.
-   Note: needs `Decl`/param/field also linked to CST nodes (add `cst_id` like Expression/
-   Statement) OR navigate purely structurally via views.
+1. **Lower onto the CST — DONE.** `lower_cst_to_ast_v2` walks the CST purely structurally
+   via `cst_view.h` (no `cst_id` on `Decl`/param/field was needed), reads types from the side
+   model, and is now the default. The Program lowerer survives only as the `ARCHE_LOWER_PROGRAM`
+   A/B path. See "CST-driven lowering: DONE" above for the construct list + couplings fixed.
 2. **Semantic onto the CST** (~3000 lines): the type checker reads its own `resolved_type`
    writes during inference, so it can't be decoupled piecemeal — it walks `Program` today.
    Rewrite its traversal onto `cst_view.h`, writing results only to the side model (drop the

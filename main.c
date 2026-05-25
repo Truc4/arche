@@ -395,7 +395,11 @@ static void resolve_uses(Program *prog, const char *source_path) {
 
 		/* Parse module without prepending core (avoid duplicate declarations) */
 		ParseResult mod_parse = parse_source(mod_src);
-		free(mod_src);
+		/* CST-driven lowering inlines modules from their CST; keep that CST + its
+		 * source text (leaf spans reference it) alive past parse_result_free. */
+		int keep_mod_cst = mod_parse.cst_root && mod_parse.error_count == 0;
+		if (!keep_mod_cst)
+			free(mod_src);
 
 		if (mod_parse.error_count > 0) {
 			fprintf(stderr, "Error: Failed to parse module %s\n", mod_name);
@@ -408,6 +412,10 @@ static void resolve_uses(Program *prog, const char *source_path) {
 		}
 
 		Program *mod = mod_parse.ast;
+		if (keep_mod_cst) {
+			lower_add_module(mod_name, mod_parse.cst_root, mod_src);
+			mod_parse.cst_root = NULL; /* ownership transferred to the module registry */
+		}
 		parse_result_free(&mod_parse);
 
 		if (!mod || mod->decl_count == 0) {
@@ -758,13 +766,14 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	/* Lower CST → AST. Resolved types come from the semantic side model (keyed by
-	 * CST node id; ids are globally unique across inlined modules). ARCHE_LOWER_CST
-	 * selects the in-progress CST-driven lowerer for validation against the goldens. */
+	/* Lower the lossless CST → AST. Resolved types come from the semantic side model
+	 * (keyed by CST node id, globally unique across inlined modules); `use` modules are
+	 * inlined from their registered CSTs (see resolve_uses / lower_add_module). Setting
+	 * ARCHE_LOWER_PROGRAM selects the legacy Program-tree lowerer for A/B comparison. */
 	lower_set_model(sem_context_model(sem_ctx));
 	lower_set_sem(sem_ctx);
 	AstProgram *ast =
-	    getenv("ARCHE_LOWER_CST") ? lower_cst_to_ast_v2(cst_root, source) : lower_cst_to_ast(prog);
+	    getenv("ARCHE_LOWER_PROGRAM") ? lower_cst_to_ast(prog) : lower_cst_to_ast_v2(cst_root, source);
 
 	/* Code generation */
 	CodegenContext *codegen_ctx = codegen_create(ast, sem_ctx);

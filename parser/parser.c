@@ -2596,11 +2596,14 @@ static Statement *parse_statement(Parser *parser) {
 			Statement *init = NULL;
 			Expression *cond = NULL;
 
-			/* init: a binding/assignment/expression, or empty. Shared parser — no `let`. */
+			/* init: a binding/assignment/expression, or empty. Shared parser — no `let`.
+			 * Wrap it as its statement node so the CST header is structured (not flat). */
 			if (!check(parser, TOK_SEMI)) {
+				int init_cp = cst_cp(parser);
 				init = parse_simple_statement(parser);
 				if (!init)
 					goto cleanup;
+				cst_wrap(parser, init_cp, stmt_type_to_sn(init->type));
 			}
 
 			/* Expect and consume first semicolon */
@@ -2622,12 +2625,14 @@ static Statement *parse_statement(Parser *parser) {
 				goto cleanup;
 			}
 
-			/* increment: a binding/assignment/expression, or empty. */
+			/* increment: a binding/assignment/expression, or empty. Wrapped like init. */
 			Statement *incr_stmt = NULL;
 			if (!check(parser, TOK_RPAREN)) {
+				int incr_cp = cst_cp(parser);
 				incr_stmt = parse_simple_statement(parser);
 				if (!incr_stmt)
 					goto cleanup;
+				cst_wrap(parser, incr_cp, stmt_type_to_sn(incr_stmt->type));
 			}
 
 			stmt->data.for_stmt.init = init;

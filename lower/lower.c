@@ -803,6 +803,8 @@ static char *cv_dup(CstView v) {
 }
 
 /* malloc'd NUL-terminated copy of a borrowed text slice. */
+static char *dupz(const char *s); /* defined with the module helpers below */
+
 static char *txt_dup(CvText t) {
 	char *s = malloc(t.len + 1);
 	if (t.ptr)
@@ -1025,6 +1027,21 @@ static AstExpr *lower_expr_cst(CstView e) {
 	case SN_LITERAL_EXPR:
 		ax->kind = AST_EXPR_LITERAL;
 		ax->data.literal.lexeme = cv_dup(e);
+		/* Literals are self-describing: if semantic left no resolved type (it doesn't
+		 * key every literal, e.g. assignment RHS), infer it from the lexeme so codegen
+		 * stores the right width. A recorded type wins (it may carry a coercion). */
+		if (ax->resolved.tag == AST_TYPE_UNKNOWN) {
+			const char *lx = ax->data.literal.lexeme;
+			if (lx && lx[0] == '\'') {
+				ax->resolved.tag = AST_TYPE_CHAR;
+			} else if (lx && strchr(lx, '.')) {
+				ax->resolved.tag = AST_TYPE_FLOAT;
+			} else if (lx && (lx[0] == '-' || (lx[0] >= '0' && lx[0] <= '9'))) {
+				ax->resolved.tag = AST_TYPE_INT;
+				ax->resolved.int_width = 32;
+				ax->resolved.int_signed = 1;
+			}
+		}
 		break;
 	case SN_STRING_EXPR: {
 		ax->kind = AST_EXPR_STRING;
@@ -1070,6 +1087,10 @@ static AstExpr *lower_expr_cst(CstView e) {
 		/* trailing index over the final field */
 		if (cv_has_token(e, TOK_LBRACKET)) {
 			AstExpr *idx = ast_expr_create(AST_EXPR_INDEX);
+			/* the column's element type is this expr's resolved type; codegen reads it
+			 * off the base field to size the store/GEP. */
+			if (cur->kind == AST_EXPR_FIELD)
+				cur->resolved = cst_expr_type(e);
 			idx->data.index.base = cur;
 			int ic = 0;
 			for (int i = 0; i < e.node->child_count; i++)
@@ -1096,8 +1117,21 @@ static AstExpr *lower_expr_cst(CstView e) {
 	}
 	case SN_INDEX_EXPR: {
 		ax->kind = AST_EXPR_INDEX;
+		/* base may be a `name.f1.f2…` member chain folded into this node
+		 * (e.g. `Particle.pos_x[0]`); rebuild the FIELD chain over the IDENT. */
 		AstExpr *base = ast_expr_create(AST_EXPR_NAME);
 		base->data.name.name = txt_dup(cv_token(e, TOK_IDENT));
+		int nfields = cv_count(e, SN_FIELD_NAME);
+		for (int i = 0; i < nfields; i++) {
+			AstExpr *f = ast_expr_create(AST_EXPR_FIELD);
+			f->data.field.base = base;
+			f->data.field.field_name = cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+			base = f;
+		}
+		/* The indexed column's element type equals this index expr's resolved type;
+		 * codegen reads it off the base (FIELD) to pick the store/GEP width. */
+		if (base->kind == AST_EXPR_FIELD)
+			base->resolved = ax->resolved;
 		ax->data.index.base = base;
 		int ic = 0;
 		for (int i = 0; i < e.node->child_count; i++)
@@ -1284,16 +1318,18 @@ static AstStmt *lower_stmt_cst(CstView s) {
 	}
 	case SN_RUN_STMT: {
 		as->kind = AST_STMT_RUN;
-		/* `run sys` or `run sys in world`: collect IDENTs (skip the `in` keyword). */
-		char *names[2] = {NULL, NULL};
+		/* `run sys` / `run sys in world`: `run` is an identifier (not a keyword), so the
+		 * IDENTs are [run, sys, world?] (the `in` keyword is TOK_IN). System = IDENT[1]. */
+		char *names[3] = {NULL, NULL, NULL};
 		int ni = 0;
-		for (int i = 0; i < s.node->child_count && ni < 2; i++)
+		for (int i = 0; i < s.node->child_count && ni < 3; i++)
 			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
 				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
 				names[ni++] = txt_dup(t);
 			}
-		as->data.run_stmt.system_name = names[0] ? names[0] : txt_dup((CvText){"", 0});
-		as->data.run_stmt.world_name = names[1];
+		as->data.run_stmt.system_name = names[1] ? names[1] : txt_dup((CvText){"", 0});
+		as->data.run_stmt.world_name = names[2];
+		free(names[0]);
 		break;
 	}
 	case SN_IF_STMT: {
@@ -1308,7 +1344,55 @@ static AstStmt *lower_stmt_cst(CstView s) {
 	}
 	case SN_FOR_STMT: {
 		as->kind = AST_STMT_FOR;
-		/* range form: `for IDENT in IDENT { body }` */
+		if (cv_has_token(s, TOK_LPAREN)) {
+			/* C-style: `for ( init ; cond ; incr ) { body }`. The two header `;` split
+			 * the clauses into segments 0/1/2 (any may be empty); init/incr are statement
+			 * nodes, cond a bare expr node. Body statements follow the `{`. */
+			int seen_brace = 0, seg = 0, nbody = 0;
+			for (int i = 0; i < s.node->child_count; i++) {
+				SyntaxElem *ch = &s.node->children[i];
+				if (ch->tag == SE_TOKEN) {
+					if (ch->as.token.kind == TOK_LBRACE)
+						seen_brace = 1;
+					else if (ch->as.token.kind == TOK_SEMI && !seen_brace && seg < 2)
+						seg++;
+					continue;
+				}
+				SyntaxNodeKind k = ch->as.node->kind;
+				CstView cv = {ch->as.node, s.src};
+				if (seen_brace) {
+					if (k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+						nbody++;
+					continue;
+				}
+				if (seg == 0 && k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+					as->data.for_stmt.init = lower_stmt_cst(cv);
+				else if (seg == 1 && k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+					as->data.for_stmt.cond = lower_expr_cst(cv);
+				else if (seg == 2 && k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+					as->data.for_stmt.incr = lower_stmt_cst(cv);
+			}
+			as->data.for_stmt.body = calloc(nbody ? nbody : 1, sizeof(AstStmt *));
+			as->data.for_stmt.body_count = 0;
+			seen_brace = 0;
+			for (int i = 0; i < s.node->child_count; i++) {
+				SyntaxElem *ch = &s.node->children[i];
+				if (ch->tag == SE_TOKEN) {
+					if (ch->as.token.kind == TOK_LBRACE)
+						seen_brace = 1;
+					continue;
+				}
+				if (!seen_brace)
+					continue;
+				SyntaxNodeKind k = ch->as.node->kind;
+				if (k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT) {
+					CstView cv = {ch->as.node, s.src};
+					as->data.for_stmt.body[as->data.for_stmt.body_count++] = lower_stmt_cst(cv);
+				}
+			}
+			break;
+		}
+		/* range form `for IDENT in IDENT { body }`, or infinite `for { body }`. */
 		int ni = 0;
 		char *vname = NULL, *iname = NULL;
 		for (int i = 0; i < s.node->child_count; i++)
@@ -1341,8 +1425,83 @@ static AstStmt *lower_stmt_cst(CstView s) {
 		as->data.each_field.body = cst_lower_body(s, &as->data.each_field.body_count);
 		break;
 	}
+	case SN_MULTI_BIND_STMT: {
+		as->kind = AST_STMT_MULTI_BIND;
+		/* The binding operator is the first `=` token; targets precede it, the value
+		 * follows. Shorthand `a, b := e` has no leading `(` (all targets new, untyped);
+		 * the paren form `(a: T, b) = e` carries per-target types + `is_new`. */
+		int eq_idx = -1, lparen_idx = -1;
+		for (int i = 0; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_TOKEN) {
+				TokenKind tk = s.node->children[i].as.token.kind;
+				if (tk == TOK_LPAREN && lparen_idx < 0)
+					lparen_idx = i;
+				if (tk == TOK_EQ) {
+					eq_idx = i;
+					break;
+				}
+			}
+		int paren = (lparen_idx >= 0 && lparen_idx < eq_idx);
+		as->data.multi_bind.from_shorthand = paren ? 0 : 1;
+		as->data.multi_bind.targets = calloc(s.node->child_count, sizeof(AstBindingTarget));
+		as->data.multi_bind.target_count = 0;
+		const char *pend = NULL;
+		int pend_len = 0, pend_active = 0, pend_new = 0;
+		AstType *pend_type = NULL;
+#define MB_FLUSH()                                                                                                     \
+	do {                                                                                                               \
+		if (pend_active) {                                                                                             \
+			int ti = as->data.multi_bind.target_count++;                                                               \
+			as->data.multi_bind.targets[ti].name = txt_dup((CvText){pend, pend_len});                                  \
+			as->data.multi_bind.targets[ti].is_new = paren ? pend_new : 1;                                             \
+			as->data.multi_bind.targets[ti].type = pend_type;                                                          \
+			pend_active = 0;                                                                                           \
+			pend_new = 0;                                                                                              \
+			pend_type = NULL;                                                                                          \
+		}                                                                                                              \
+	} while (0)
+		for (int i = 0; i < eq_idx; i++) {
+			SyntaxElem *ch = &s.node->children[i];
+			if (ch->tag == SE_NODE) {
+				SyntaxNodeKind k = ch->as.node->kind;
+				if (k == SN_NAME_EXPR) { /* the first shorthand target is a NAME_EXPR */
+					MB_FLUSH();
+					CvText t = cv_token((CstView){ch->as.node, s.src}, TOK_IDENT);
+					pend = t.ptr;
+					pend_len = (int)t.len;
+					pend_active = 1;
+				} else if (k >= SN_TYPE_REF && k <= SN_TYPE_HANDLE && pend_active) {
+					pend_type = lower_type_cst((CstView){ch->as.node, s.src});
+				}
+				continue;
+			}
+			TokenKind tk = ch->as.token.kind;
+			if (tk == TOK_IDENT) {
+				MB_FLUSH();
+				pend = s.src + ch->as.token.offset;
+				pend_len = (int)ch->as.token.length;
+				pend_active = 1;
+			} else if (tk == TOK_COLON && pend_active) {
+				pend_new = 1; /* `name:` → newly declared (paren form) */
+			} else if (tk == TOK_COMMA) {
+				MB_FLUSH();
+			}
+		}
+		MB_FLUSH();
+#undef MB_FLUSH
+		/* value: first expr node after the `=` */
+		for (int i = eq_idx + 1; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_NODE) {
+				SyntaxNodeKind k = s.node->children[i].as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
+					as->data.multi_bind.value = lower_expr_cst((CstView){s.node->children[i].as.node, s.src});
+					break;
+				}
+			}
+		break;
+	}
 	default:
-		/* SN_MULTI_BIND_STMT and anything unhandled: placeholder no-op. */
+		/* anything still unhandled: placeholder no-op. */
 		as->kind = AST_STMT_EXPR;
 		as->data.expr_stmt.expr = NULL;
 		break;
@@ -1356,6 +1515,221 @@ static AstParam *lower_param_cst(CstView p) {
 	ap->type = lower_type_cst(cv_type_at(p, 0)); /* NULL for sys params */
 	ap->is_own = cv_has_token(p, TOK_OWN);
 	return ap;
+}
+
+/* ---- tuple-group registry (CST equivalent of main.c expand_archetype_tuple_groups) ----
+ * A top-level `pos (x, y) :: T` declares a tuple group: a bare archetype field `pos`
+ * expands to flat columns `pos_x`, `pos_y` (each of type T). */
+typedef struct {
+	char *name;
+	char **suffix;
+	int nsuf;
+	AstType member;
+} CstTupleGroup;
+static CstTupleGroup g_tgroups[64];
+static int g_tgroup_count = 0;
+
+/* Register a tuple group `name (s0, s1, …) :: T` from a contiguous child range
+ * [start,end) of `parent`: `name` is the IDENT before `(`, the suffixes are the
+ * IDENTs inside `()`, and the member type is the first type node after `)`. */
+static void register_tgroup(const SyntaxNode *parent, const char *src, int start, int end, const char *forced_name) {
+	if (g_tgroup_count >= 64)
+		return;
+	CstTupleGroup *g = &g_tgroups[g_tgroup_count];
+	g->name = forced_name ? dupz(forced_name) : NULL;
+	g->suffix = calloc(end - start + 1, sizeof(char *));
+	g->nsuf = 0;
+	g->member = (AstType){.tag = AST_TYPE_UNKNOWN};
+	int in_paren = 0;
+	for (int k = start; k < end; k++) {
+		SyntaxElem *ch = &parent->children[k];
+		if (ch->tag == SE_TOKEN) {
+			if (ch->as.token.kind == TOK_LPAREN)
+				in_paren = 1;
+			else if (ch->as.token.kind == TOK_RPAREN)
+				in_paren = 0;
+			else if (ch->as.token.kind == TOK_IDENT) {
+				CvText t = {src + ch->as.token.offset, ch->as.token.length};
+				if (!in_paren && !g->name)
+					g->name = txt_dup(t);
+				else if (in_paren)
+					g->suffix[g->nsuf++] = txt_dup(t);
+			}
+		} else {
+			SyntaxNodeKind kk = ch->as.node->kind;
+			if (kk >= SN_TYPE_REF && kk <= SN_TYPE_HANDLE && g->member.tag == AST_TYPE_UNKNOWN) {
+				AstType *mt = lower_type_cst((CstView){ch->as.node, src});
+				if (mt)
+					g->member = *mt;
+			}
+		}
+	}
+	if (g->name && g->nsuf > 0)
+		g_tgroup_count++;
+}
+
+static void build_tgroups(const SyntaxNode *root, const char *src) {
+	g_tgroup_count = 0;
+	for (int i = 0; i < root->child_count; i++) {
+		if (root->children[i].tag != SE_NODE)
+			continue;
+		const SyntaxNode *d = root->children[i].as.node;
+		/* top-level tuple group: `pos (x, y) :: T` */
+		if (d->kind == SN_CONST_DECL && cv_has_token((CstView){d, src}, TOK_LPAREN))
+			register_tgroup(d, src, 0, d->child_count, NULL);
+		/* inline archetype tuple field: `pos (x, y) :: T` inside `arche { … }` */
+		else if (d->kind == SN_ARCHETYPE_DECL) {
+			for (int k = 0; k < d->child_count; k++) {
+				if (d->children[k].tag != SE_NODE || d->children[k].as.node->kind != SN_FIELD_NAME)
+					continue;
+				/* a `(` immediately following this FIELD_NAME marks an inline tuple */
+				int j = k + 1;
+				if (j < d->child_count && d->children[j].tag == SE_TOKEN &&
+				    d->children[j].as.token.kind == TOK_LPAREN) {
+					int e = j;
+					while (e < d->child_count &&
+					       !(d->children[e].tag == SE_NODE && d->children[e].as.node->kind == SN_FIELD_NAME &&
+					         e != k))
+						e++;
+					char *nm = cv_dup((CstView){d->children[k].as.node, src});
+					register_tgroup(d, src, j, e, nm);
+					free(nm);
+				}
+			}
+		}
+	}
+}
+
+static CstTupleGroup *tgroup_lookup(const char *name) {
+	if (!name)
+		return NULL;
+	for (int i = 0; i < g_tgroup_count; i++)
+		if (strcmp(g_tgroups[i].name, name) == 0)
+			return &g_tgroups[i];
+	return NULL;
+}
+
+/* Collapse a nested tuple-field access `arch.pos.x` (FIELD over FIELD over NAME,
+ * where `pos` is a tuple group with component `x`) into the flattened column
+ * `arch.pos_x`, matching the flattened archetype columns. Recurses over the tree. */
+static void tuple_collapse_expr(AstExpr *e) {
+	if (!e)
+		return;
+	switch (e->kind) {
+	case AST_EXPR_FIELD: {
+		tuple_collapse_expr(e->data.field.base);
+		AstExpr *b = e->data.field.base;
+		if (b && b->kind == AST_EXPR_FIELD && b->data.field.base && b->data.field.base->kind == AST_EXPR_NAME) {
+			CstTupleGroup *g = tgroup_lookup(b->data.field.field_name);
+			const char *comp = e->data.field.field_name;
+			if (g) {
+				for (int s = 0; s < g->nsuf; s++)
+					if (strcmp(g->suffix[s], comp) == 0) {
+						char *combined = malloc(strlen(b->data.field.field_name) + 1 + strlen(comp) + 1);
+						sprintf(combined, "%s_%s", b->data.field.field_name, comp);
+						free(e->data.field.field_name);
+						e->data.field.field_name = combined;
+						e->data.field.base = b->data.field.base; /* drop the middle FIELD (leaked) */
+						break;
+					}
+			}
+		}
+		break;
+	}
+	case AST_EXPR_INDEX:
+		tuple_collapse_expr(e->data.index.base);
+		for (int i = 0; i < e->data.index.index_count; i++)
+			tuple_collapse_expr(e->data.index.indices[i]);
+		break;
+	case AST_EXPR_BINARY:
+		tuple_collapse_expr(e->data.binary.left);
+		tuple_collapse_expr(e->data.binary.right);
+		break;
+	case AST_EXPR_UNARY:
+		tuple_collapse_expr(e->data.unary.operand);
+		break;
+	case AST_EXPR_CALL:
+		tuple_collapse_expr(e->data.call.callee);
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			tuple_collapse_expr(e->data.call.args[i]);
+		break;
+	case AST_EXPR_ALLOC:
+		for (int i = 0; i < e->data.alloc.field_count; i++)
+			tuple_collapse_expr(e->data.alloc.field_values[i]);
+		tuple_collapse_expr(e->data.alloc.init_length);
+		break;
+	case AST_EXPR_ARRAY_LITERAL:
+		for (int i = 0; i < e->data.array_literal.element_count; i++)
+			tuple_collapse_expr(e->data.array_literal.elements[i]);
+		break;
+	default:
+		break;
+	}
+}
+static void tuple_collapse_stmt(AstStmt *s) {
+	if (!s)
+		return;
+	switch (s->kind) {
+	case AST_STMT_BIND:
+		tuple_collapse_expr(s->data.bind_stmt.value);
+		break;
+	case AST_STMT_ASSIGN:
+		tuple_collapse_expr(s->data.assign_stmt.target);
+		tuple_collapse_expr(s->data.assign_stmt.value);
+		break;
+	case AST_STMT_FOR:
+		tuple_collapse_stmt(s->data.for_stmt.init);
+		tuple_collapse_expr(s->data.for_stmt.cond);
+		tuple_collapse_stmt(s->data.for_stmt.incr);
+		tuple_collapse_expr(s->data.for_stmt.iterable);
+		for (int i = 0; i < s->data.for_stmt.body_count; i++)
+			tuple_collapse_stmt(s->data.for_stmt.body[i]);
+		break;
+	case AST_STMT_IF:
+		tuple_collapse_expr(s->data.if_stmt.cond);
+		for (int i = 0; i < s->data.if_stmt.then_count; i++)
+			tuple_collapse_stmt(s->data.if_stmt.then_body[i]);
+		for (int i = 0; i < s->data.if_stmt.else_count; i++)
+			tuple_collapse_stmt(s->data.if_stmt.else_body[i]);
+		break;
+	case AST_STMT_EXPR:
+		tuple_collapse_expr(s->data.expr_stmt.expr);
+		break;
+	case AST_STMT_FREE:
+		tuple_collapse_expr(s->data.free_stmt.value);
+		break;
+	case AST_STMT_RETURN:
+		for (int i = 0; i < s->data.return_stmt.count; i++)
+			tuple_collapse_expr(s->data.return_stmt.values[i]);
+		break;
+	case AST_STMT_MULTI_BIND:
+		tuple_collapse_expr(s->data.multi_bind.value);
+		break;
+	case AST_STMT_EACH_FIELD:
+		for (int i = 0; i < s->data.each_field.body_count; i++)
+			tuple_collapse_stmt(s->data.each_field.body[i]);
+		break;
+	default:
+		break;
+	}
+}
+static void tuple_collapse_decl(AstDecl *d) {
+	switch (d->kind) {
+	case AST_DECL_PROC:
+		for (int i = 0; i < d->data.proc->stmt_count; i++)
+			tuple_collapse_stmt(d->data.proc->stmts[i]);
+		break;
+	case AST_DECL_SYS:
+		for (int i = 0; i < d->data.sys->stmt_count; i++)
+			tuple_collapse_stmt(d->data.sys->stmts[i]);
+		break;
+	case AST_DECL_FUNC:
+		for (int i = 0; i < d->data.func->stmt_count; i++)
+			tuple_collapse_stmt(d->data.func->stmts[i]);
+		break;
+	default:
+		break;
+	}
 }
 
 static AstDecl *lower_decl_cst(CstView d) {
@@ -1373,13 +1747,70 @@ static AstDecl *lower_decl_cst(CstView d) {
 		AstArchetypeDecl *aa = calloc(1, sizeof(AstArchetypeDecl));
 		aa->name = cv_dup(cv_child(d, SN_TYPE_DEF_NAME));
 		int nf = cv_count(d, SN_FIELD_NAME);
-		aa->fields = calloc(nf ? nf : 1, sizeof(AstField *));
+		int cap = nf > 0 ? nf : 1;
+		aa->fields = calloc(cap, sizeof(AstField *));
 		aa->field_count = 0;
-		for (int i = 0; i < nf; i++) {
+		for (int i = 0; i < d.node->child_count; i++) {
+			if (d.node->children[i].tag != SE_NODE || d.node->children[i].as.node->kind != SN_FIELD_NAME)
+				continue;
+			CstView fn = {d.node->children[i].as.node, d.src};
+			/* type = a type node before the next field; else a bare field (`arche { a, b }`)
+			 * whose component type is the field name itself (resolved through aliases). */
+			CstView ty = {NULL, d.src};
+			for (int k = i + 1; k < d.node->child_count; k++)
+				if (d.node->children[k].tag == SE_NODE) {
+					SyntaxNodeKind kk = d.node->children[k].as.node->kind;
+					if (kk == SN_FIELD_NAME)
+						break;
+					if (kk >= SN_TYPE_REF && kk <= SN_TYPE_HANDLE) {
+						ty.node = d.node->children[k].as.node;
+						break;
+					}
+				}
+			char *raw = cv_dup(fn);
+			/* bare field matching a top-level group, or an inline `pos (x,y) :: T` field
+			 * (both registered in the tuple-group table) → one tuple-typed column. */
+			if (aa->field_count >= cap) {
+				cap *= 2;
+				aa->fields = realloc(aa->fields, cap * sizeof(AstField *));
+			}
+			CstTupleGroup *g = tgroup_lookup(raw);
+			if (g) {
+				/* tuple group: flatten to scalar columns `pos_x`, `pos_y` (mirrors the
+				 * Program path; codegen has no tuple type). `pos.x`/`Body.pos.x` accesses
+				 * are collapsed to the combined column name during statement lowering. */
+				for (int sx = 0; sx < g->nsuf; sx++) {
+					if (aa->field_count >= cap) {
+						cap *= 2;
+						aa->fields = realloc(aa->fields, cap * sizeof(AstField *));
+					}
+					AstField *cf = ast_field_create(FIELD_COLUMN, NULL, NULL);
+					cf->name = malloc(strlen(raw) + 1 + strlen(g->suffix[sx]) + 1);
+					sprintf(cf->name, "%s_%s", raw, g->suffix[sx]);
+					AstType *mt = ast_type_create(AST_TYPE_UNKNOWN);
+					*mt = g->member;
+					cf->type = mt;
+					aa->fields[aa->field_count++] = cf;
+				}
+				free(raw);
+				continue;
+			}
 			AstField *af = ast_field_create(FIELD_COLUMN, NULL, NULL);
-			af->name = cv_dup(cv_child_at(d, SN_FIELD_NAME, i));
-			/* field type = the i-th type node in the body (paired positionally) */
-			af->type = lower_type_cst(cv_type_at(d, i));
+			af->name = cv_dup(fn);
+			if (cv_present(ty)) {
+				af->type = lower_type_cst(ty);
+			} else {
+				const char *r = g_lower_sem ? semantic_resolve_type_alias(g_lower_sem, raw) : raw;
+				AstType *t = ast_type_create(AST_TYPE_UNKNOWN);
+				*t = map_type_str(r);
+				if (t->tag == AST_TYPE_NAMED) {
+					char *nm = malloc(strlen(r) + 1);
+					strcpy(nm, r);
+					t->name = nm;
+				}
+				af->type = t;
+			}
+			free(raw);
 			aa->fields[aa->field_count++] = af;
 		}
 		ad->data.archetype = aa;
@@ -1403,12 +1834,44 @@ static AstDecl *lower_decl_cst(CstView d) {
 		AstDecl *ad = ast_decl_create(AST_DECL_SYS);
 		AstSysDecl *as = calloc(1, sizeof(AstSysDecl));
 		as->name = cv_dup(cv_child(d, SN_FUNC_DEF_NAME));
-		int np = cv_count(d, SN_PARAM);
-		as->params = calloc(np ? np : 1, sizeof(AstParam *));
-		for (int i = 0; i < np; i++)
-			as->params[i] = lower_param_cst(cv_child_at(d, SN_PARAM, i));
-		as->param_count = np;
+		/* Lower the body first; a tuple-group param then expands into one scalar param
+		 * per component (`pos` → `pos_x`, `pos_y`) and its `pos.x` body accesses are
+		 * rewritten to the flattened names (mirrors the Program-path sys lowering). */
 		as->stmts = cst_lower_body(d, &as->stmt_count);
+		int np = cv_count(d, SN_PARAM);
+		int pcount = 0;
+		for (int i = 0; i < np; i++) {
+			char *pn = cv_dup(cv_child(cv_child_at(d, SN_PARAM, i), SN_PARAM_NAME));
+			CstTupleGroup *g = tgroup_lookup(pn);
+			pcount += g ? g->nsuf : 1;
+			free(pn);
+		}
+		as->params = calloc(pcount ? pcount : 1, sizeof(AstParam *));
+		as->param_count = 0;
+		for (int i = 0; i < np; i++) {
+			CstView p = cv_child_at(d, SN_PARAM, i);
+			char *pn = cv_dup(cv_child(p, SN_PARAM_NAME));
+			CstTupleGroup *g = tgroup_lookup(pn);
+			if (!g) {
+				as->params[as->param_count++] = lower_param_cst(p);
+				free(pn);
+				continue;
+			}
+			for (int sx = 0; sx < as->stmt_count; sx++)
+				tuple_rewrite_stmt(as->stmts[sx], pn);
+			int is_own = cv_has_token(p, TOK_OWN);
+			for (int j = 0; j < g->nsuf; j++) {
+				AstParam *ap = ast_param_create(NULL, NULL);
+				ap->name = malloc(strlen(pn) + 1 + strlen(g->suffix[j]) + 1);
+				sprintf(ap->name, "%s_%s", pn, g->suffix[j]);
+				AstType *mt = ast_type_create(AST_TYPE_UNKNOWN);
+				*mt = g->member;
+				ap->type = mt;
+				ap->is_own = is_own;
+				as->params[as->param_count++] = ap;
+			}
+			free(pn);
+		}
 		ad->data.sys = as;
 		return ad;
 	}
@@ -1433,6 +1896,10 @@ static AstDecl *lower_decl_cst(CstView d) {
 		return ad;
 	}
 	case SN_CONST_DECL: {
+		/* Tuple-group type definition `pos (x, y) :: T` mints nominal component types
+		 * (pos_x, pos_y); it's compile-time only and erased before codegen. */
+		if (cv_has_token(d, TOK_LPAREN))
+			return NULL;
 		AstDecl *ad = ast_decl_create(AST_DECL_CONST);
 		AstConstDecl *ac = calloc(1, sizeof(AstConstDecl));
 		ac->name = txt_dup(cv_token(d, TOK_IDENT));
@@ -1463,32 +1930,334 @@ static AstDecl *lower_decl_cst(CstView d) {
 				an = txt_dup(cv_token(ty, TOK_IDENT));
 			}
 			sd->archetype.archetype_name = an ? an : txt_dup((CvText){"", 0});
-			sd->archetype.init_length = lower_expr_cst(cv_node_at_expr(d, 0)); /* the (count) */
+			/* `(capacity [, init_length]) [{ field: value, ... }]`. Args inside `()` are
+			 * positional: capacity → field_values[0] (field_names[0]=NULL), init_length →
+			 * the known row count (drives bounds-check elision). Each `field: value` in the
+			 * `{}` block appends a named initializer. Expr nodes appear in both bracket
+			 * kinds, so track which we're inside. */
+			int cap_alloc = d.node->child_count + 1;
+			sd->archetype.field_names = calloc(cap_alloc, sizeof(char *));
+			sd->archetype.field_values = calloc(cap_alloc, sizeof(AstExpr *));
 			sd->archetype.field_count = 0;
-		} else {
-			/* `static name : T[size]` — static array */
-			sd->kind = AST_STATIC_ARRAY;
-			sd->array.name = txt_dup(cv_token(d, TOK_IDENT));
-			sd->array.element_type = lower_type_cst(cv_type_at(d, 0));
-			for (int i = 0; i < d.node->child_count; i++)
-				if (d.node->children[i].tag == SE_TOKEN && d.node->children[i].as.token.kind == TOK_NUMBER) {
-					char buf[32];
-					int l = (int)d.node->children[i].as.token.length;
-					if (l > 31)
-						l = 31;
-					memcpy(buf, d.src + d.node->children[i].as.token.offset, l);
-					buf[l] = '\0';
-					sd->array.size = atoi(buf);
-					break;
+			int phase = 0; /* 0=outside, 1=in (), 2=in {} */
+			int paren_arg = 0;
+			const char *pend = NULL;
+			int pend_len = 0;
+			for (int i = 0; i < d.node->child_count; i++) {
+				SyntaxElem *ch = &d.node->children[i];
+				if (ch->tag == SE_TOKEN) {
+					switch (ch->as.token.kind) {
+					case TOK_LPAREN: phase = 1; break;
+					case TOK_RPAREN: phase = 0; break;
+					case TOK_LBRACE: phase = 2; break;
+					case TOK_RBRACE: phase = 0; break;
+					case TOK_IDENT:
+						if (phase == 2) {
+							pend = d.src + ch->as.token.offset;
+							pend_len = (int)ch->as.token.length;
+						}
+						break;
+					default: break;
+					}
+					continue;
 				}
+				SyntaxNodeKind k = ch->as.node->kind;
+				if (k < SN_LITERAL_EXPR || k > SN_PAREN_EXPR)
+					continue;
+				CstView ev = {ch->as.node, d.src};
+				if (phase == 1) {
+					if (paren_arg == 0) {
+						sd->archetype.field_values[0] = lower_expr_cst(ev);
+						sd->archetype.field_count = 1;
+					} else if (paren_arg == 1) {
+						sd->archetype.init_length = lower_expr_cst(ev);
+					}
+					paren_arg++;
+				} else if (phase == 2 && pend) {
+					int fc = sd->archetype.field_count;
+					sd->archetype.field_names[fc] = txt_dup((CvText){pend, pend_len});
+					sd->archetype.field_values[fc] = lower_expr_cst(ev);
+					sd->archetype.field_count++;
+					pend = NULL;
+				}
+			}
+		} else {
+			/* `static name : T[size]` — static array. The name is wrapped in the first
+			 * type node (TYPE_REF); the declared array type is the second. */
+			sd->kind = AST_STATIC_ARRAY;
+			CstView name_ty = cv_type_at(d, 0);
+			sd->array.name = txt_dup(cv_token(name_ty, TOK_IDENT));
+			CstView arr_ty = cv_type_at(d, 1);
+			AstType *full = lower_type_cst(arr_ty);
+			/* unwrap to the element type (codegen wants element + size, not the array) */
+			sd->array.element_type = (full && full->elem) ? full->elem : full;
+			if (cv_present(arr_ty))
+				for (int i = 0; i < arr_ty.node->child_count; i++)
+					if (arr_ty.node->children[i].tag == SE_TOKEN &&
+					    arr_ty.node->children[i].as.token.kind == TOK_NUMBER) {
+						char buf[32];
+						int l = (int)arr_ty.node->children[i].as.token.length;
+						if (l > 31)
+							l = 31;
+						memcpy(buf, arr_ty.src + arr_ty.node->children[i].as.token.offset, l);
+						buf[l] = '\0';
+						sd->array.size = atoi(buf);
+						break;
+					}
 		}
 		ad->data.static_decl = sd;
 		return ad;
 	}
+	case SN_FUNC_GROUP_DECL: {
+		/* `func g = { a, b };` — name in FUNC_DEF_NAME, members are the bare IDENTs. */
+		AstDecl *ad = ast_decl_create(AST_DECL_FUNC_GROUP);
+		AstFuncGroupDecl *fg = calloc(1, sizeof(AstFuncGroupDecl));
+		fg->name = cv_dup(cv_child(d, SN_FUNC_DEF_NAME));
+		int nmem = 0;
+		for (int i = 0; i < d.node->child_count; i++)
+			if (d.node->children[i].tag == SE_TOKEN && d.node->children[i].as.token.kind == TOK_IDENT)
+				nmem++;
+		fg->member_names = calloc(nmem ? nmem : 1, sizeof(char *));
+		fg->member_count = 0;
+		for (int i = 0; i < d.node->child_count; i++)
+			if (d.node->children[i].tag == SE_TOKEN && d.node->children[i].as.token.kind == TOK_IDENT) {
+				CvText t = {d.src + d.node->children[i].as.token.offset, d.node->children[i].as.token.length};
+				fg->member_names[fg->member_count++] = txt_dup(t);
+			}
+		ad->data.func_group = fg;
+		return ad;
+	}
 	default:
-		/* SN_FUNC_GROUP_DECL (+ tuple flattening, field-init blocks) not yet ported. */
+		/* tuple flattening + field-init blocks not yet ported. */
 		return NULL;
 	}
+}
+
+/* ---- module inlining: CST-path equivalent of main.c's resolve_uses ----
+ * `use foo;` inlines foo.arche's decls at the use site, auto-prefixing every
+ * name foo declares (and foo-internal references to them) with `foo_`. main.c
+ * registers each used module's CST here before calling lower_cst_to_ast_v2. */
+typedef struct {
+	char *name;
+	const SyntaxNode *root;
+	const char *src;
+} LowerModule;
+static LowerModule g_modules[64];
+static int g_module_count = 0;
+
+static char *dupz(const char *s) {
+	char *r = malloc(strlen(s) + 1);
+	strcpy(r, s);
+	return r;
+}
+
+void lower_add_module(const char *name, const SyntaxNode *root, const char *src) {
+	if (g_module_count >= 64 || !name || !root)
+		return;
+	g_modules[g_module_count].name = dupz(name);
+	g_modules[g_module_count].root = root;
+	g_modules[g_module_count].src = src;
+	g_module_count++;
+}
+
+/* If `name` is in set, return a freshly-allocated `prefix_name`; else NULL. */
+static char *prefixed_dup(const char *name, const char *prefix, char **set, int count) {
+	if (!name)
+		return NULL;
+	for (int i = 0; i < count; i++)
+		if (strcmp(name, set[i]) == 0) {
+			char *r = malloc(strlen(prefix) + 1 + strlen(name) + 1);
+			sprintf(r, "%s_%s", prefix, name);
+			return r;
+		}
+	return NULL;
+}
+static void rn_owned(char **slot, const char *prefix, char **set, int count) {
+	char *p = prefixed_dup(*slot, prefix, set, count);
+	if (p) {
+		free(*slot);
+		*slot = p;
+	}
+}
+/* AstType.name points into the CST (not owned) — swap the pointer, never free it. */
+static void rn_const(const char **slot, const char *prefix, char **set, int count) {
+	char *p = prefixed_dup(*slot, prefix, set, count);
+	if (p)
+		*slot = p;
+}
+
+static void ast_rn_type(AstType *t, const char *prefix, char **set, int count) {
+	if (!t)
+		return;
+	if (t->tag == AST_TYPE_NAMED)
+		rn_const(&t->name, prefix, set, count);
+	ast_rn_type(t->elem, prefix, set, count);
+	for (int i = 0; i < t->field_count; i++)
+		ast_rn_type(t->fields[i].type, prefix, set, count);
+}
+static void ast_rn_expr(AstExpr *e, const char *prefix, char **set, int count) {
+	if (!e)
+		return;
+	switch (e->kind) {
+	case AST_EXPR_NAME:
+		rn_owned(&e->data.name.name, prefix, set, count);
+		break;
+	case AST_EXPR_FIELD:
+		ast_rn_expr(e->data.field.base, prefix, set, count);
+		break;
+	case AST_EXPR_INDEX:
+		ast_rn_expr(e->data.index.base, prefix, set, count);
+		for (int i = 0; i < e->data.index.index_count; i++)
+			ast_rn_expr(e->data.index.indices[i], prefix, set, count);
+		break;
+	case AST_EXPR_BINARY:
+		ast_rn_expr(e->data.binary.left, prefix, set, count);
+		ast_rn_expr(e->data.binary.right, prefix, set, count);
+		break;
+	case AST_EXPR_UNARY:
+		ast_rn_expr(e->data.unary.operand, prefix, set, count);
+		break;
+	case AST_EXPR_CALL:
+		ast_rn_expr(e->data.call.callee, prefix, set, count);
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			ast_rn_expr(e->data.call.args[i], prefix, set, count);
+		break;
+	case AST_EXPR_ALLOC:
+		rn_owned(&e->data.alloc.archetype_name, prefix, set, count);
+		for (int i = 0; i < e->data.alloc.field_count; i++)
+			ast_rn_expr(e->data.alloc.field_values[i], prefix, set, count);
+		ast_rn_expr(e->data.alloc.init_length, prefix, set, count);
+		break;
+	case AST_EXPR_ARRAY_LITERAL:
+		for (int i = 0; i < e->data.array_literal.element_count; i++)
+			ast_rn_expr(e->data.array_literal.elements[i], prefix, set, count);
+		break;
+	default:
+		break;
+	}
+}
+static void ast_rn_stmt(AstStmt *s, const char *prefix, char **set, int count) {
+	if (!s)
+		return;
+	switch (s->kind) {
+	case AST_STMT_BIND:
+		ast_rn_type(s->data.bind_stmt.type, prefix, set, count);
+		ast_rn_expr(s->data.bind_stmt.value, prefix, set, count);
+		break;
+	case AST_STMT_ASSIGN:
+		ast_rn_expr(s->data.assign_stmt.target, prefix, set, count);
+		ast_rn_expr(s->data.assign_stmt.value, prefix, set, count);
+		break;
+	case AST_STMT_FOR:
+		ast_rn_expr(s->data.for_stmt.iterable, prefix, set, count);
+		ast_rn_stmt(s->data.for_stmt.init, prefix, set, count);
+		ast_rn_expr(s->data.for_stmt.cond, prefix, set, count);
+		ast_rn_stmt(s->data.for_stmt.incr, prefix, set, count);
+		for (int i = 0; i < s->data.for_stmt.body_count; i++)
+			ast_rn_stmt(s->data.for_stmt.body[i], prefix, set, count);
+		break;
+	case AST_STMT_IF:
+		ast_rn_expr(s->data.if_stmt.cond, prefix, set, count);
+		for (int i = 0; i < s->data.if_stmt.then_count; i++)
+			ast_rn_stmt(s->data.if_stmt.then_body[i], prefix, set, count);
+		for (int i = 0; i < s->data.if_stmt.else_count; i++)
+			ast_rn_stmt(s->data.if_stmt.else_body[i], prefix, set, count);
+		break;
+	case AST_STMT_EXPR:
+		ast_rn_expr(s->data.expr_stmt.expr, prefix, set, count);
+		break;
+	case AST_STMT_FREE:
+		ast_rn_expr(s->data.free_stmt.value, prefix, set, count);
+		break;
+	case AST_STMT_RETURN:
+		for (int i = 0; i < s->data.return_stmt.count; i++)
+			ast_rn_expr(s->data.return_stmt.values[i], prefix, set, count);
+		break;
+	case AST_STMT_MULTI_BIND:
+		for (int i = 0; i < s->data.multi_bind.target_count; i++)
+			ast_rn_type(s->data.multi_bind.targets[i].type, prefix, set, count);
+		ast_rn_expr(s->data.multi_bind.value, prefix, set, count);
+		break;
+	case AST_STMT_EACH_FIELD:
+		ast_rn_type(s->data.each_field.filter_type, prefix, set, count);
+		for (int i = 0; i < s->data.each_field.body_count; i++)
+			ast_rn_stmt(s->data.each_field.body[i], prefix, set, count);
+		break;
+	default: /* BREAK, RUN — no embedded names (run is world/system, not module-local) */
+		break;
+	}
+}
+static void ast_rn_decl(AstDecl *d, const char *prefix, char **set, int count) {
+	switch (d->kind) {
+	case AST_DECL_ARCHETYPE:
+		rn_owned(&d->data.archetype->name, prefix, set, count);
+		for (int i = 0; i < d->data.archetype->field_count; i++)
+			ast_rn_type(d->data.archetype->fields[i]->type, prefix, set, count);
+		break;
+	case AST_DECL_PROC:
+		rn_owned(&d->data.proc->name, prefix, set, count);
+		for (int i = 0; i < d->data.proc->param_count; i++)
+			ast_rn_type(d->data.proc->params[i]->type, prefix, set, count);
+		for (int i = 0; i < d->data.proc->stmt_count; i++)
+			ast_rn_stmt(d->data.proc->stmts[i], prefix, set, count);
+		break;
+	case AST_DECL_SYS:
+		rn_owned(&d->data.sys->name, prefix, set, count);
+		for (int i = 0; i < d->data.sys->param_count; i++)
+			ast_rn_type(d->data.sys->params[i]->type, prefix, set, count);
+		for (int i = 0; i < d->data.sys->stmt_count; i++)
+			ast_rn_stmt(d->data.sys->stmts[i], prefix, set, count);
+		break;
+	case AST_DECL_FUNC:
+		rn_owned(&d->data.func->name, prefix, set, count);
+		for (int i = 0; i < d->data.func->return_type_count; i++)
+			ast_rn_type(d->data.func->return_types[i], prefix, set, count);
+		for (int i = 0; i < d->data.func->param_count; i++)
+			ast_rn_type(d->data.func->params[i]->type, prefix, set, count);
+		for (int i = 0; i < d->data.func->stmt_count; i++)
+			ast_rn_stmt(d->data.func->stmts[i], prefix, set, count);
+		break;
+	case AST_DECL_FUNC_GROUP:
+		rn_owned(&d->data.func_group->name, prefix, set, count);
+		for (int i = 0; i < d->data.func_group->member_count; i++)
+			rn_owned(&d->data.func_group->member_names[i], prefix, set, count);
+		break;
+	case AST_DECL_STATIC:
+		if (d->data.static_decl->kind == AST_STATIC_ARRAY) {
+			rn_owned(&d->data.static_decl->array.name, prefix, set, count);
+			ast_rn_type(d->data.static_decl->array.element_type, prefix, set, count);
+		} else {
+			rn_owned(&d->data.static_decl->archetype.archetype_name, prefix, set, count);
+			for (int i = 0; i < d->data.static_decl->archetype.field_count; i++)
+				ast_rn_expr(d->data.static_decl->archetype.field_values[i], prefix, set, count);
+			ast_rn_expr(d->data.static_decl->archetype.init_length, prefix, set, count);
+		}
+		break;
+	case AST_DECL_CONST:
+		rn_owned(&d->data.constant->name, prefix, set, count);
+		ast_rn_expr(d->data.constant->value, prefix, set, count);
+		break;
+	case AST_DECL_WORLD:
+		rn_owned(&d->data.world->name, prefix, set, count);
+		break;
+	}
+}
+
+/* The top-level name an AstDecl defines (NULL if none / world). */
+static const char *ast_decl_name(AstDecl *d) {
+	switch (d->kind) {
+	case AST_DECL_ARCHETYPE: return d->data.archetype->name;
+	case AST_DECL_PROC: return d->data.proc->name;
+	case AST_DECL_SYS: return d->data.sys->name;
+	case AST_DECL_FUNC: return d->data.func->name;
+	case AST_DECL_FUNC_GROUP: return d->data.func_group->name;
+	case AST_DECL_STATIC:
+		return d->data.static_decl->kind == AST_STATIC_ARRAY ? d->data.static_decl->array.name
+		                                                      : d->data.static_decl->archetype.archetype_name;
+	case AST_DECL_CONST: return d->data.constant->name;
+	case AST_DECL_WORLD: return d->data.world->name;
+	}
+	return NULL;
 }
 
 /* CST-driven entry, gated by ARCHE_LOWER_CST (validated against the IR goldens). */
@@ -1497,9 +2266,20 @@ AstProgram *lower_cst_to_ast_v2(const SyntaxNode *root, const char *src) {
 		return NULL;
 	AstProgram *ast = ast_program_create();
 	CstView r = cv_root(root, src);
+	build_tgroups(root, src); /* tuple-group consts → archetype-field expansion table */
 	int cap = cv_node_count(r);
+	for (int m = 0; m < g_module_count; m++)
+		cap += cv_node_count(cv_root(g_modules[m].root, g_modules[m].src));
 	ast->decls = calloc(cap ? cap : 1, sizeof(AstDecl *));
 	ast->decl_count = 0;
+
+	/* Per inlined module: its prefix + the bare names it exported (for the
+	 * cross-module bare-reference pass below). */
+	char *mod_prefix[64];
+	char **mod_exports[64];
+	int mod_export_n[64];
+	int inlined = 0;
+
 	for (int i = 0; i < root->child_count; i++) {
 		if (root->children[i].tag != SE_NODE)
 			continue;
@@ -1507,10 +2287,94 @@ AstProgram *lower_cst_to_ast_v2(const SyntaxNode *root, const char *src) {
 		if (k < SN_WORLD_DECL || k > SN_USE_DECL)
 			continue;
 		CstView dv = {root->children[i].as.node, src};
+
+		if (k == SN_USE_DECL) {
+			/* Inline the named module's decls here, auto-prefixing every name it
+			 * declares (and its internal references to them) with `<module>_`. */
+			char *mod_name = txt_dup(cv_token(dv, TOK_IDENT));
+			LowerModule *mod = NULL;
+			for (int m = 0; m < g_module_count; m++)
+				if (strcmp(g_modules[m].name, mod_name) == 0) {
+					mod = &g_modules[m];
+					break;
+				}
+			free(mod_name);
+			if (!mod)
+				continue;
+
+			int first = ast->decl_count;
+			const SyntaxNode *mr = mod->root;
+			for (int j = 0; j < mr->child_count; j++) {
+				if (mr->children[j].tag != SE_NODE)
+					continue;
+				SyntaxNodeKind mk = mr->children[j].as.node->kind;
+				if (mk < SN_WORLD_DECL || mk > SN_USE_DECL || mk == SN_USE_DECL)
+					continue;
+				CstView mdv = {mr->children[j].as.node, mod->src};
+				AstDecl *md = lower_decl_cst(mdv);
+				if (md)
+					ast->decls[ast->decl_count++] = md;
+			}
+			/* Collect this module's exported names (still bare), then prefix. */
+			int ndefs = ast->decl_count - first;
+			char **exports = calloc(ndefs ? ndefs : 1, sizeof(char *));
+			int en = 0;
+			for (int d = first; d < ast->decl_count; d++) {
+				const char *nm = ast_decl_name(ast->decls[d]);
+				if (nm)
+					exports[en++] = dupz(nm);
+			}
+			for (int d = first; d < ast->decl_count; d++)
+				ast_rn_decl(ast->decls[d], mod->name, exports, en);
+			if (inlined < 64) {
+				mod_prefix[inlined] = dupz(mod->name);
+				mod_exports[inlined] = exports;
+				mod_export_n[inlined] = en;
+				inlined++;
+			}
+			continue;
+		}
+
 		AstDecl *ad = lower_decl_cst(dv);
 		if (ad)
 			ast->decls[ast->decl_count++] = ad;
 	}
+
+	/* Cross-module bare references: a module export rewritten to `<mod>_<name>`
+	 * leaves bare references from elsewhere dangling. For each export whose bare
+	 * name has no top-level definition in the final program, rewrite bare refs to
+	 * it into the prefixed name; collisions with an existing top-level name (e.g.
+	 * a core function) are left alone so bare names keep their current meaning. */
+	for (int m = 0; m < inlined; m++) {
+		char *dangling[256];
+		int dn = 0;
+		for (int s = 0; s < mod_export_n[m] && dn < 256; s++) {
+			int defined = 0;
+			for (int d = 0; d < ast->decl_count; d++) {
+				const char *nm = ast_decl_name(ast->decls[d]);
+				if (nm && strcmp(nm, mod_exports[m][s]) == 0) {
+					defined = 1;
+					break;
+				}
+			}
+			if (!defined)
+				dangling[dn++] = mod_exports[m][s];
+		}
+		if (dn > 0)
+			for (int d = 0; d < ast->decl_count; d++)
+				ast_rn_decl(ast->decls[d], mod_prefix[m], dangling, dn);
+	}
+	for (int m = 0; m < inlined; m++) {
+		for (int s = 0; s < mod_export_n[m]; s++)
+			free(mod_exports[m][s]);
+		free(mod_exports[m]);
+		free(mod_prefix[m]);
+	}
+	/* Collapse nested tuple-field accesses (`arch.pos.x` → `arch.pos_x`) to match the
+	 * flattened archetype columns; no-op when no tuple groups are declared. */
+	if (g_tgroup_count > 0)
+		for (int i = 0; i < ast->decl_count; i++)
+			tuple_collapse_decl(ast->decls[i]);
 	return ast;
 }
 
