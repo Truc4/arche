@@ -366,6 +366,7 @@ struct Statement {
 	Trivia *trailing_trivia;
 	int trailing_count;
 	int last_line; /* line of this statement's last syntactic token */
+	uint32_t cst_id; /* TRANSIENT: CST node id (+1; 0 = unlinked) — see Expression.cst_id */
 	union {
 		BindStmt bind_stmt;
 		AssignStmt assign_stmt;

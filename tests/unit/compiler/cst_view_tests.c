@@ -26,8 +26,10 @@ int main(void) {
 		CstView proc = cv_child(root, SN_PROC_DECL);
 		CHECK(cv_present(proc), "proc decl present");
 		CHECK(cv_text_eq(cv_child(proc, SN_FUNC_DEF_NAME), "add"), "proc name == add");
-		CHECK(cv_count(proc, SN_PARAM_NAME) == 2, "two params");
-		CHECK(cv_count(proc, SN_TYPE_REF) == 2, "two type refs");
+		CHECK(cv_count(proc, SN_PARAM) == 2, "two params");
+		CstView p0 = cv_child(proc, SN_PARAM);
+		CHECK(cv_text_eq(cv_child(p0, SN_PARAM_NAME), "a") && cv_text_eq(cv_child(p0, SN_TYPE_REF), "int"),
+		      "first param is a: int");
 
 		CstView bind = cv_child(proc, SN_BIND_STMT);
 		CHECK(cv_present(bind), "bind stmt present");

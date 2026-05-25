@@ -346,12 +346,28 @@ static TypeRef *parse_type_inner(Parser *parser);
 
 /* ========== TYPE PARSING ========== */
 
-/* Wrapper: every type position becomes a TYPE_REF node in the CST, so the
- * identifiers within are classified as types. All call sites go through here. */
+static SyntaxNodeKind type_kind_to_sn(TypeKind k) {
+	switch (k) {
+	case TYPE_ARRAY:
+		return SN_TYPE_ARRAY;
+	case TYPE_SHAPED_ARRAY:
+		return SN_TYPE_SHAPED_ARRAY;
+	case TYPE_TUPLE:
+		return SN_TYPE_TUPLE;
+	case TYPE_HANDLE:
+		return SN_TYPE_HANDLE;
+	default: /* TYPE_NAME / TYPE_ARCHETYPE / TYPE_OPAQUE / TYPE_TYPE */
+		return SN_TYPE_REF;
+	}
+}
+
+/* Wrapper: every type position becomes a type node in the CST, tagged by the
+ * specific form so identifiers within are classified as types and consumers can
+ * tell arrays/tuples/handles apart. All call sites go through here. */
 static TypeRef *parse_type(Parser *parser) {
 	int cp = cst_cp(parser);
 	TypeRef *t = parse_type_inner(parser);
-	cst_wrap(parser, cp, SN_TYPE_REF);
+	cst_wrap(parser, cp, t ? type_kind_to_sn(t->kind) : SN_TYPE_REF);
 	return t;
 }
 
@@ -754,6 +770,7 @@ static Decl *parse_proc_decl(Parser *parser) {
 	/* Parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
+			int param_cp = cst_cp(parser);
 			int param_is_own = 0;
 
 			if (match(parser, TOK_OWN)) {
@@ -786,6 +803,7 @@ static Decl *parse_proc_decl(Parser *parser) {
 			param->loc.column = param_column;
 			proc->params = realloc(proc->params, (proc->param_count + 1) * sizeof(Parameter *));
 			proc->params[proc->param_count++] = param;
+			cst_wrap(parser, param_cp, SN_PARAM);
 		} while (match(parser, TOK_COMMA));
 	}
 
@@ -860,6 +878,7 @@ static Decl *parse_sys_decl(Parser *parser) {
 	/* parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
+			int param_cp = cst_cp(parser);
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected parameter name");
 				return NULL;
@@ -875,6 +894,7 @@ static Decl *parse_sys_decl(Parser *parser) {
 			Parameter *param = parameter_create(param_name, NULL);
 			param->loc.line = param_line;
 			param->loc.column = param_column;
+			cst_wrap(parser, param_cp, SN_PARAM);
 			sys->params = realloc(sys->params, (sys->param_count + 1) * sizeof(Parameter *));
 			sys->params[sys->param_count++] = param;
 		} while (match(parser, TOK_COMMA));
@@ -990,6 +1010,7 @@ static Decl *parse_func_decl(Parser *parser) {
 	/* parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
+			int param_cp = cst_cp(parser);
 			int param_is_own = 0;
 
 			if (match(parser, TOK_OWN)) {
@@ -1023,6 +1044,7 @@ static Decl *parse_func_decl(Parser *parser) {
 			param->loc.column = param_column;
 			func->params = realloc(func->params, (func->param_count + 1) * sizeof(Parameter *));
 			func->params[func->param_count++] = param;
+			cst_wrap(parser, param_cp, SN_PARAM);
 		} while (match(parser, TOK_COMMA));
 	}
 
@@ -2688,7 +2710,9 @@ static Statement *parse_statement(Parser *parser) {
 cleanup:
 	parser->recursion_depth--;
 	if (result) {
-		cst_wrap(parser, stmt_cp, stmt_type_to_sn(result->type));
+		SyntaxNode *sn = cst_wrap(parser, stmt_cp, stmt_type_to_sn(result->type));
+		if (sn)
+			result->cst_id = sn->id + 1;
 		result->leading_trivia = leading;
 		result->leading_count = leading_count;
 		result->last_line = parser->previous.line;

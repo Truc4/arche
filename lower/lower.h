@@ -14,4 +14,10 @@ void lower_set_model(const SemModel *model);
    CST must outlive the returned AstProgram (AST_TYPE_NAMED names point into CST). */
 AstProgram *lower_cst_to_ast(Program *cst);
 
+/* CST-driven lowering (reads the lossless CST + side model). Gated by
+   ARCHE_LOWER_CST until validated IR-identical against the Program-based path. */
+AstProgram *lower_cst_to_ast_v2(const SyntaxNode *root, const char *src);
+struct SemanticContext;                          /* file-scope tag (defined in semantic.c) */
+void lower_set_sem(struct SemanticContext *ctx); /* for type-alias resolution */
+
 #endif /* LOWER_H */

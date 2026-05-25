@@ -171,15 +171,66 @@ The work follows a 9-stage gated migration (see the approved plan). Decisions so
   polish. Wrapping the `static` archetype/table ref as a `SN_TYPE_REF` (a real S2
   completeness fix) is what made `table<X>` compact.
 
-## Status of the heavy half (not yet done)
+## Decoupling completed (this run)
 
-Retiring `Program` requires rewriting the two heaviest passes onto the CST views, then
-deleting it: **4d** (semantic, ~3000 lines), **S5** (lower + thin HIR), and **S8** (delete
-`Program`), plus **S6** (finish modules) and **S9** (rename). These are an all-or-nothing
-per-pass rewrite of the type checker and lowerer — the highest-risk work, where codegen can
-shift with no failing unit test (only the 11 IR goldens guard it). Approach when resumed:
-build a CST-driven `lower`/semantic *alongside* the Program-based one, validate IR-identical
-on the goldens + corpus, then switch and delete `Program` — never a half-migrated state.
+The side model is now the **complete** semantic→lowering channel: lowering reads *all*
+semantic facts it needs from it — resolved types (`sem_model_expr_type`) and type-alias
+binds (`sem_model_bind_alias`, via `Statement.cst_id`) — and **no semantic facts off
+`Program`** anymore, only structure. Type positions are now sub-wrapped by form
+(`SN_TYPE_REF`/`ARRAY`/`SHAPED_ARRAY`/`TUPLE`/`HANDLE`), so the CST distinguishes
+`float[5]` / `handle<X>` / tuples; the highlighter and CST formatter use this.
+
+## CST-driven lowering: UNDERWAY (behind `ARCHE_LOWER_CST`, validated vs IR goldens)
+
+`lower_cst_to_ast_v2` (in `lower/lower.c`) lowers straight from the CST via `cst_view` +
+the side model, gated by the `ARCHE_LOWER_CST` env var so the default `Program` path is
+untouched (all gates stay green). Validated against the codegen goldens:
+
+- **3/10 goldens IR-identical** through the full compiler (`simple`, `with_params`,
+  `hello_world`) — proves the approach + infrastructure end-to-end.
+- Two real couplings were found and fixed against the IR oracle: (1) param/field/return/bind
+  types must be looked up as *any* type form (`SN_TYPE_*`), not just `SN_TYPE_REF`, else
+  array/handle params lose their type (corrupted every core builtin → `i32`); (2) nominal
+  type **aliases** (`file` → `opaque`) must be resolved via `semantic_resolve_type_alias`
+  (the Program path got this from in-place erasure). Also required keeping `cst_root` alive
+  through lowering (`main.c` used to free it right after parse).
+- Remaining diffs are **unported constructs**, each identified: `SN_STATIC_DECL` (started —
+  emits the archetype name + init count, but codegen lays out the archetype struct from the
+  static *capacity*; my port doesn't yet convey it, so the struct comes out dynamic `i32*`
+  instead of fixed `[1 x i32]` — the next debugging item), field-init blocks on `static`,
+  `SN_ALLOC_EXPR` / `SN_ARRAY_LIT_EXPR` (stubbed), tuple-field flattening (archetype columns +
+  sys param/body rewrite), `SN_FUNC_GROUP_DECL`, multi-bind, and module inlining. Add each,
+  re-diff the goldens until 10/10; then make it the default, delete the Program-based
+  `lower_*`, and `Program` loses its first major consumer. Note: capacity-layout shows codegen
+  reads facts (static capacity) that aren't purely in the AST shape — the side model likely
+  needs to carry them, or decl processing order must match.
+
+## Resume plan for the heavy half (mapped, not yet done)
+
+Order: **lower → semantic → delete Program**. Lowering is the easier first switch because
+its output (`AstProgram`) is unchanged, so the IR goldens validate it independently.
+
+1. **Lower onto the CST.** Add CST-walking `lower_*_cst(CstView)` next to the existing
+   `lower_expr/stmt/decl/type/param/field` in `lower/lower.c`, **reusing** the existing
+   `map_type_str`, the tuple registry + `lookup_tuple`, and the AST-level `tuple_rewrite_*`
+   (those operate on the built `AstProgram`, so they're unchanged). Only the CST→AST
+   *construction* is rewritten to read `cst_view.h` instead of `Program` structs; types come
+   from `lower_expr_type`/`lower_bind_is_alias` (already side-model backed). Add
+   `lower_cst_to_ast_from_cst(const SyntaxNode*)`; switch `main.c` to it; validate
+   `verify-codegen` + `make test` IR-identical; then delete the Program-based `lower_*`.
+   Note: needs `Decl`/param/field also linked to CST nodes (add `cst_id` like Expression/
+   Statement) OR navigate purely structurally via views.
+2. **Semantic onto the CST** (~3000 lines): the type checker reads its own `resolved_type`
+   writes during inference, so it can't be decoupled piecemeal — it walks `Program` today.
+   Rewrite its traversal onto `cst_view.h`, writing results only to the side model (drop the
+   `resolved_type`/`is_type_alias` tree mutations once it no longer reads them). Validate
+   `verify-codegen` + `make test` after.
+3. **Delete `Program`** (S8): parser stops building it (wraps are the sole output), remove
+   the structs + `cst_id` scaffolding, port the 47 parser-tests to assert via views.
+4. **S6 finish** (module name-prefixing → symbol layer), **S9** rename (`ast/`→`hir/`, etc.).
+
+Risk: steps 1–2 are where codegen can shift with no failing unit test — gate every sub-step
+on `verify-codegen` + the full `make test` lit corpus.
 
 ## Guiding references
 

@@ -4,6 +4,7 @@
 SemModel *sem_model_new(void) {
 	SemModel *m = malloc(sizeof(SemModel));
 	m->expr_type = NULL;
+	m->bind_alias = NULL;
 	m->cap = 0;
 	return m;
 }
@@ -12,6 +13,7 @@ void sem_model_free(SemModel *m) {
 	if (!m)
 		return;
 	free(m->expr_type); /* strings are borrowed; not freed here */
+	free(m->bind_alias);
 	free(m);
 }
 
@@ -22,8 +24,11 @@ static void ensure(SemModel *m, uint32_t node_id) {
 	while (newcap <= (int)node_id)
 		newcap *= 2;
 	m->expr_type = realloc(m->expr_type, (size_t)newcap * sizeof(const char *));
-	for (int i = m->cap; i < newcap; i++)
+	m->bind_alias = realloc(m->bind_alias, (size_t)newcap * sizeof(uint8_t));
+	for (int i = m->cap; i < newcap; i++) {
 		m->expr_type[i] = NULL;
+		m->bind_alias[i] = 0;
+	}
 	m->cap = newcap;
 }
 
@@ -36,4 +41,15 @@ const char *sem_model_expr_type(const SemModel *m, uint32_t node_id) {
 	if (!m || (int)node_id >= m->cap)
 		return NULL;
 	return m->expr_type[node_id];
+}
+
+void sem_model_set_bind_alias(SemModel *m, uint32_t node_id) {
+	ensure(m, node_id);
+	m->bind_alias[node_id] = 1;
+}
+
+int sem_model_bind_alias(const SemModel *m, uint32_t node_id) {
+	if (!m || (int)node_id >= m->cap)
+		return 0;
+	return m->bind_alias[node_id];
 }

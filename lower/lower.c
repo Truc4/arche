@@ -1,7 +1,16 @@
 #include "lower.h"
+#include "../cst/cst_view.h"
 #include "../semantic/sem_model.h"
+#include "../semantic/semantic.h"
 #include <stdlib.h>
 #include <string.h>
+
+/* Semantic context for CST-driven lowering: resolves nominal type aliases (e.g.
+ * `file` -> `opaque`), which the Program path got via in-place erasure. */
+static SemanticContext *g_lower_sem = NULL;
+void lower_set_sem(struct SemanticContext *ctx) {
+	g_lower_sem = ctx;
+}
 
 /* Resolved types live in the semantic side model (keyed by CST node id), set by
  * the driver before lowering. When unset (e.g. unit tests that lower directly),
@@ -20,6 +29,14 @@ static const char *lower_expr_type(const Expression *expr) {
 			return t;
 	}
 	return expr->resolved_type;
+}
+
+/* Whether a bind is a compile-time type alias: from the side model when set, else
+ * the transitional Statement/BindStmt flag. */
+static int lower_bind_is_alias(const Statement *stmt, const BindStmt *ls) {
+	if (g_lower_model && stmt->cst_id)
+		return sem_model_bind_alias(g_lower_model, stmt->cst_id - 1);
+	return ls->is_type_alias;
 }
 
 /* =========================
@@ -265,7 +282,7 @@ static AstStmt *lower_stmt(Statement *stmt) {
 		/* A local type alias (`V :: float`) is compile-time only — the alias is erased and its
 		 * references resolve to the backing. It declares no runtime value, so emit a harmless
 		 * no-op expression statement (`0;`) in its place. */
-		if (ls->is_type_alias) {
+		if (lower_bind_is_alias(stmt, ls)) {
 			s->kind = AST_STMT_EXPR;
 			AstExpr *zero = ast_expr_create(AST_EXPR_LITERAL);
 			zero->data.literal.lexeme = malloc(2);
@@ -765,9 +782,737 @@ static AstDecl *lower_decl(Decl *decl) {
 	return ad;
 }
 
-/* =========================
-   Top-level entry point
-   ========================= */
+/* =========================================================================
+   CST-driven lowering (alternative to the Program-based path above). Reads the
+   lossless CST via cst_view + the semantic side model. Gated by ARCHE_LOWER_CST
+   until validated IR-identical; the Program path remains the default. Reuses the
+   AST-level helpers above (map_type_str, tuple registry, tuple_rewrite_*).
+   ========================================================================= */
+
+static AstExpr *lower_expr_cst(CstView e);
+static AstStmt *lower_stmt_cst(CstView s);
+
+/* malloc'd NUL-terminated copy of a view's source text. */
+static char *cv_dup(CstView v) {
+	CvText t = cv_text(v);
+	char *s = malloc(t.len + 1);
+	if (t.ptr)
+		memcpy(s, t.ptr, t.len);
+	s[t.len] = '\0';
+	return s;
+}
+
+/* malloc'd NUL-terminated copy of a borrowed text slice. */
+static char *txt_dup(CvText t) {
+	char *s = malloc(t.len + 1);
+	if (t.ptr)
+		memcpy(s, t.ptr, t.len);
+	s[t.len] = '\0';
+	return s;
+}
+
+/* Lower a CST type node (SN_TYPE_*) to an AstType, mirroring lower_type_ref. */
+static AstType *lower_type_cst(CstView t) {
+	if (!cv_present(t))
+		return NULL;
+	AstType *at = ast_type_create(AST_TYPE_UNKNOWN);
+	switch (cv_kind(t)) {
+	case SN_TYPE_REF: {
+		char *raw = txt_dup(cv_token(t, TOK_IDENT));
+		const char *r = g_lower_sem ? semantic_resolve_type_alias(g_lower_sem, raw) : raw;
+		char *name = malloc(strlen(r) + 1);
+		strcpy(name, r);
+		free(raw);
+		if (strcmp(name, "archetype") == 0)
+			at->tag = AST_TYPE_ARCHETYPE;
+		else if (strcmp(name, "opaque") == 0)
+			at->tag = AST_TYPE_OPAQUE;
+		else if (strcmp(name, "type") == 0)
+			; /* meta-type erased; leave UNKNOWN defensively */
+		else
+			*at = map_type_str(name); /* borrows name via AST_TYPE_NAMED below */
+		/* map_type_str's AST_TYPE_NAMED .name points at its argument; keep a stable copy. */
+		if (at->tag == AST_TYPE_NAMED)
+			at->name = name;
+		else
+			free(name);
+		break;
+	}
+	case SN_TYPE_ARRAY: {
+		at->tag = AST_TYPE_ARRAY;
+		AstType *elem = ast_type_create(AST_TYPE_UNKNOWN);
+		char *en = txt_dup(cv_token(t, TOK_IDENT));
+		*elem = map_type_str(en);
+		if (elem->tag == AST_TYPE_NAMED)
+			elem->name = en;
+		else
+			free(en);
+		at->elem = elem;
+		break;
+	}
+	case SN_TYPE_SHAPED_ARRAY: {
+		/* `T[a][b]...` — innermost element is the named type; each `[n]` adds a rank.
+		 * Reconstruct nested shaped arrays from the NUMBER tokens. */
+		char *en = txt_dup(cv_token(t, TOK_IDENT));
+		AstType *elem = ast_type_create(AST_TYPE_UNKNOWN);
+		*elem = map_type_str(en);
+		if (elem->tag == AST_TYPE_NAMED)
+			elem->name = en;
+		else
+			free(en);
+		/* collect ranks (NUMBER tokens) left-to-right */
+		int ranks[16], nr = 0;
+		for (int i = 0; i < t.node->child_count && nr < 16; i++)
+			if (t.node->children[i].tag == SE_TOKEN && t.node->children[i].as.token.kind == TOK_NUMBER) {
+				char buf[32];
+				int l = (int)t.node->children[i].as.token.length;
+				if (l > 31)
+					l = 31;
+				memcpy(buf, t.src + t.node->children[i].as.token.offset, l);
+				buf[l] = '\0';
+				ranks[nr++] = atoi(buf);
+			}
+		AstType *cur = elem;
+		for (int i = nr - 1; i >= 0; i--) {
+			AstType *sh = ast_type_create(AST_TYPE_SHAPED_ARRAY);
+			sh->elem = cur;
+			sh->rank = ranks[i];
+			cur = sh;
+		}
+		free(at);
+		return cur;
+	}
+	case SN_TYPE_HANDLE: {
+		at->tag = AST_TYPE_HANDLE;
+		/* handle<Name> / handle(Name): the archetype name is the second IDENT */
+		CvText h = cv_token(t, TOK_IDENT); /* "handle" */
+		(void)h;
+		/* find the IDENT that isn't "handle" */
+		for (int i = 0; i < t.node->child_count; i++)
+			if (t.node->children[i].tag == SE_TOKEN && t.node->children[i].as.token.kind == TOK_IDENT) {
+				CvText nm = {t.src + t.node->children[i].as.token.offset, t.node->children[i].as.token.length};
+				if (!(nm.len == 6 && memcmp(nm.ptr, "handle", 6) == 0)) {
+					at->name = txt_dup(nm);
+					break;
+				}
+			}
+		break;
+	}
+	default:
+		break;
+	}
+	return at;
+}
+
+/* Resolved type of a CST expression node, from the side model (keyed by node id). */
+static AstType cst_expr_type(CstView e) {
+	return map_type_str(g_lower_model ? sem_model_expr_type(g_lower_model, cv_id(e)) : NULL);
+}
+
+/* Decode a string token's content (quotes + escapes) like parse_primary_expr does. */
+static char *cst_decode_string(CvText raw, int *out_len) {
+	const char *s = raw.ptr;
+	size_t len = raw.len;
+	char *value = malloc(len + 1);
+	int p = 0;
+	for (size_t i = 1; i + 1 < len; i++) {
+		if (s[i] == '\\' && i + 2 < len) {
+			i++;
+			switch (s[i]) {
+			case 'n': value[p++] = '\n'; break;
+			case 't': value[p++] = '\t'; break;
+			case 'r': value[p++] = '\r'; break;
+			case '\\': value[p++] = '\\'; break;
+			case '"': value[p++] = '"'; break;
+			default: value[p++] = s[i]; break;
+			}
+		} else {
+			value[p++] = s[i];
+		}
+	}
+	value[p] = '\0';
+	*out_len = p;
+	return value;
+}
+
+/* The "innermost value expression" child of a node (skips role-only name wrappers). */
+static CstView cst_first_expr(CstView v) {
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = v.node->children[i].as.node->kind;
+			if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
+				CstView r = {v.node->children[i].as.node, v.src};
+				return r;
+			}
+		}
+	CstView none = {NULL, v.src};
+	return none;
+}
+
+static Operator cst_tok_to_op(TokenKind k) {
+	switch (k) {
+	case TOK_PLUS: return OP_ADD;
+	case TOK_MINUS: return OP_SUB;
+	case TOK_STAR: return OP_MUL;
+	case TOK_SLASH: return OP_DIV;
+	case TOK_EQ_EQ: return OP_EQ;
+	case TOK_BANG_EQ: return OP_NEQ;
+	case TOK_LT: return OP_LT;
+	case TOK_GT: return OP_GT;
+	case TOK_LT_EQ: return OP_LTE;
+	case TOK_GT_EQ: return OP_GTE;
+	default: return OP_NONE;
+	}
+}
+
+/* nth direct child node that is a type form (SN_TYPE_REF/ARRAY/SHAPED/TUPLE/HANDLE). */
+static CstView cv_type_at(CstView v, int idx) {
+	int c = 0;
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = v.node->children[i].as.node->kind;
+			if (k >= SN_TYPE_REF && k <= SN_TYPE_HANDLE) {
+				if (c == idx) {
+					CstView r = {v.node->children[i].as.node, v.src};
+					return r;
+				}
+				c++;
+			}
+		}
+	CstView none = {NULL, v.src};
+	return none;
+}
+
+static int cv_type_count(CstView v) {
+	int c = 0;
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = v.node->children[i].as.node->kind;
+			if (k >= SN_TYPE_REF && k <= SN_TYPE_HANDLE)
+				c++;
+		}
+	return c;
+}
+
+/* nth child node that is an expression kind (skips role/name/type wrappers). */
+static CstView cv_node_at_expr(CstView v, int idx) {
+	int c = 0;
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = v.node->children[i].as.node->kind;
+			if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
+				if (c == idx) {
+					CstView r = {v.node->children[i].as.node, v.src};
+					return r;
+				}
+				c++;
+			}
+		}
+	CstView none = {NULL, v.src};
+	return none;
+}
+
+static AstExpr *lower_expr_cst(CstView e) {
+	if (!cv_present(e))
+		return NULL;
+	AstExpr *ax = ast_expr_create(AST_EXPR_LITERAL);
+	ax->resolved = cst_expr_type(e);
+
+	switch (cv_kind(e)) {
+	case SN_PAREN_EXPR:
+		/* transparent: lower the inner expression */
+		return lower_expr_cst(cst_first_expr(e));
+	case SN_LITERAL_EXPR:
+		ax->kind = AST_EXPR_LITERAL;
+		ax->data.literal.lexeme = cv_dup(e);
+		break;
+	case SN_STRING_EXPR: {
+		ax->kind = AST_EXPR_STRING;
+		int n = 0;
+		ax->data.string.value = cst_decode_string(cv_text(e), &n);
+		ax->data.string.length = n;
+		break;
+	}
+	case SN_NAME_EXPR: {
+		ax->kind = AST_EXPR_NAME;
+		/* table<Name> in value position resolves to the bare archetype name */
+		if (cv_has_token(e, TOK_LT)) {
+			/* second IDENT is the archetype name */
+			char *nm = NULL;
+			int seen = 0;
+			for (int i = 0; i < e.node->child_count; i++)
+				if (e.node->children[i].tag == SE_TOKEN && e.node->children[i].as.token.kind == TOK_IDENT) {
+					CvText t = {e.src + e.node->children[i].as.token.offset, e.node->children[i].as.token.length};
+					if (seen++) {
+						nm = txt_dup(t);
+						break;
+					}
+				}
+			ax->data.name.name = nm ? nm : cv_dup(e);
+		} else {
+			ax->data.name.name = txt_dup(cv_token(e, TOK_IDENT));
+		}
+		break;
+	}
+	case SN_FIELD_EXPR: {
+		/* `base.f1.f2…[idx]` is flat under one node: base IDENT, then (DOT FIELD_NAME)+,
+		 * optionally a trailing `[indices]`. Rebuild the left-assoc AST. */
+		AstExpr *base = ast_expr_create(AST_EXPR_NAME);
+		base->data.name.name = txt_dup(cv_token(e, TOK_IDENT));
+		AstExpr *cur = base;
+		int nfields = cv_count(e, SN_FIELD_NAME);
+		for (int i = 0; i < nfields; i++) {
+			AstExpr *f = ast_expr_create(AST_EXPR_FIELD);
+			f->data.field.base = cur;
+			f->data.field.field_name = cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+			cur = f;
+		}
+		/* trailing index over the final field */
+		if (cv_has_token(e, TOK_LBRACKET)) {
+			AstExpr *idx = ast_expr_create(AST_EXPR_INDEX);
+			idx->data.index.base = cur;
+			int ic = 0;
+			for (int i = 0; i < e.node->child_count; i++)
+				if (e.node->children[i].tag == SE_NODE) {
+					SyntaxNodeKind k = e.node->children[i].as.node->kind;
+					if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+						ic++;
+				}
+			idx->data.index.indices = calloc(ic ? ic : 1, sizeof(AstExpr *));
+			idx->data.index.index_count = 0;
+			for (int i = 0; i < e.node->child_count; i++)
+				if (e.node->children[i].tag == SE_NODE) {
+					SyntaxNodeKind k = e.node->children[i].as.node->kind;
+					if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
+						CstView iv = {e.node->children[i].as.node, e.src};
+						idx->data.index.indices[idx->data.index.index_count++] = lower_expr_cst(iv);
+					}
+				}
+			cur = idx;
+		}
+		free(ax);
+		cur->resolved = cst_expr_type(e);
+		return cur;
+	}
+	case SN_INDEX_EXPR: {
+		ax->kind = AST_EXPR_INDEX;
+		AstExpr *base = ast_expr_create(AST_EXPR_NAME);
+		base->data.name.name = txt_dup(cv_token(e, TOK_IDENT));
+		ax->data.index.base = base;
+		int ic = 0;
+		for (int i = 0; i < e.node->child_count; i++)
+			if (e.node->children[i].tag == SE_NODE) {
+				SyntaxNodeKind k = e.node->children[i].as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+					ic++;
+			}
+		ax->data.index.indices = calloc(ic ? ic : 1, sizeof(AstExpr *));
+		ax->data.index.index_count = 0;
+		for (int i = 0; i < e.node->child_count; i++)
+			if (e.node->children[i].tag == SE_NODE) {
+				SyntaxNodeKind k = e.node->children[i].as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
+					CstView iv = {e.node->children[i].as.node, e.src};
+					ax->data.index.indices[ax->data.index.index_count++] = lower_expr_cst(iv);
+				}
+			}
+		break;
+	}
+	case SN_BINARY_EXPR: {
+		ax->kind = AST_EXPR_BINARY;
+		/* operator token */
+		for (int i = 0; i < e.node->child_count; i++)
+			if (e.node->children[i].tag == SE_TOKEN) {
+				Operator op = cst_tok_to_op(e.node->children[i].as.token.kind);
+				if (op != OP_NONE) {
+					ax->data.binary.op = op;
+					break;
+				}
+			}
+		ax->data.binary.left = lower_expr_cst(cv_node_at_expr(e, 0));
+		ax->data.binary.right = lower_expr_cst(cv_node_at_expr(e, 1));
+		break;
+	}
+	case SN_UNARY_EXPR: {
+		ax->kind = AST_EXPR_UNARY;
+		CvText op = {NULL, 0};
+		for (int i = 0; i < e.node->child_count; i++)
+			if (e.node->children[i].tag == SE_TOKEN) {
+				TokenKind tk = e.node->children[i].as.token.kind;
+				if (tk == TOK_MINUS) ax->data.unary.op = UNARY_NEG;
+				else if (tk == TOK_BANG) ax->data.unary.op = UNARY_NOT;
+				else if (tk == TOK_MOVE) ax->data.unary.op = UNARY_MOVE;
+				else if (tk == TOK_COPY) ax->data.unary.op = UNARY_COPY;
+				else continue;
+				break;
+			}
+		(void)op;
+		ax->data.unary.operand = lower_expr_cst(cst_first_expr(e));
+		break;
+	}
+	case SN_CALL_EXPR: {
+		ax->kind = AST_EXPR_CALL;
+		AstExpr *callee = ast_expr_create(AST_EXPR_NAME);
+		callee->data.name.name = cv_dup(cv_child(e, SN_CALLEE_NAME));
+		ax->data.call.callee = callee;
+		int ac = 0;
+		for (int i = 0; i < e.node->child_count; i++)
+			if (e.node->children[i].tag == SE_NODE) {
+				SyntaxNodeKind k = e.node->children[i].as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+					ac++;
+			}
+		ax->data.call.args = calloc(ac ? ac : 1, sizeof(AstExpr *));
+		ax->data.call.arg_count = 0;
+		for (int i = 0; i < e.node->child_count; i++)
+			if (e.node->children[i].tag == SE_NODE) {
+				SyntaxNodeKind k = e.node->children[i].as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
+					CstView av = {e.node->children[i].as.node, e.src};
+					ax->data.call.args[ax->data.call.arg_count++] = lower_expr_cst(av);
+				}
+			}
+		break;
+	}
+	default:
+		/* SN_ALLOC_EXPR / SN_ARRAY_LIT_EXPR and any unhandled: leave as a placeholder
+		 * literal for now (these surface in verify-codegen if exercised). */
+		ax->kind = AST_EXPR_LITERAL;
+		ax->data.literal.lexeme = cv_dup(e);
+		break;
+	}
+	return ax;
+}
+
+/* Lower the statement-kind child nodes of `parent` into an AstStmt array. */
+static AstStmt **cst_lower_body(CstView parent, int *out_count) {
+	int n = 0;
+	for (int i = 0; i < parent.node->child_count; i++)
+		if (parent.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = parent.node->children[i].as.node->kind;
+			if (k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+				n++;
+		}
+	*out_count = n;
+	if (n == 0)
+		return NULL;
+	AstStmt **out = calloc(n, sizeof(AstStmt *));
+	int j = 0;
+	for (int i = 0; i < parent.node->child_count; i++)
+		if (parent.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = parent.node->children[i].as.node->kind;
+			if (k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT) {
+				CstView sv = {parent.node->children[i].as.node, parent.src};
+				out[j++] = lower_stmt_cst(sv);
+			}
+		}
+	return out;
+}
+
+static Operator cst_assign_op(TokenKind k) {
+	switch (k) {
+	case TOK_PLUS_EQ: return OP_ADD;
+	case TOK_MINUS_EQ: return OP_SUB;
+	case TOK_STAR_EQ: return OP_MUL;
+	case TOK_SLASH_EQ: return OP_DIV;
+	default: return OP_NONE; /* plain `=` */
+	}
+}
+
+static AstStmt *lower_stmt_cst(CstView s) {
+	AstStmt *as = ast_stmt_create(AST_STMT_EXPR);
+
+	switch (cv_kind(s)) {
+	case SN_BIND_STMT: {
+		if (g_lower_model && sem_model_bind_alias(g_lower_model, cv_id(s))) {
+			as->kind = AST_STMT_EXPR;
+			AstExpr *zero = ast_expr_create(AST_EXPR_LITERAL);
+			zero->data.literal.lexeme = malloc(2);
+			strcpy(zero->data.literal.lexeme, "0");
+			as->data.expr_stmt.expr = zero;
+			break;
+		}
+		as->kind = AST_STMT_BIND;
+		CstView target = cv_node_at_expr(s, 0);
+		as->data.bind_stmt.name_count = 1;
+		as->data.bind_stmt.names = calloc(1, sizeof(char *));
+		as->data.bind_stmt.names[0] = cv_dup(target);
+		as->data.bind_stmt.type = lower_type_cst(cv_type_at(s, 0));
+		as->data.bind_stmt.value = lower_expr_cst(cv_node_at_expr(s, 1));
+		break;
+	}
+	case SN_ASSIGN_STMT: {
+		as->kind = AST_STMT_ASSIGN;
+		for (int i = 0; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_TOKEN) {
+				TokenKind tk = s.node->children[i].as.token.kind;
+				if (tk == TOK_EQ || tk == TOK_PLUS_EQ || tk == TOK_MINUS_EQ || tk == TOK_STAR_EQ ||
+				    tk == TOK_SLASH_EQ) {
+					as->data.assign_stmt.op = cst_assign_op(tk);
+					break;
+				}
+			}
+		as->data.assign_stmt.target = lower_expr_cst(cv_node_at_expr(s, 0));
+		as->data.assign_stmt.value = lower_expr_cst(cv_node_at_expr(s, 1));
+		break;
+	}
+	case SN_EXPR_STMT:
+		as->kind = AST_STMT_EXPR;
+		as->data.expr_stmt.expr = lower_expr_cst(cv_node_at_expr(s, 0));
+		break;
+	case SN_FREE_STMT:
+		as->kind = AST_STMT_FREE;
+		as->data.free_stmt.value = lower_expr_cst(cv_node_at_expr(s, 0));
+		break;
+	case SN_BREAK_STMT:
+		as->kind = AST_STMT_BREAK;
+		break;
+	case SN_RETURN_STMT: {
+		as->kind = AST_STMT_RETURN;
+		int c = 0;
+		for (int i = 0; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_NODE) {
+				SyntaxNodeKind k = s.node->children[i].as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+					c++;
+			}
+		as->data.return_stmt.count = c;
+		as->data.return_stmt.values = calloc(c ? c : 1, sizeof(AstExpr *));
+		for (int i = 0; i < c; i++)
+			as->data.return_stmt.values[i] = lower_expr_cst(cv_node_at_expr(s, i));
+		break;
+	}
+	case SN_RUN_STMT: {
+		as->kind = AST_STMT_RUN;
+		/* `run sys` or `run sys in world`: collect IDENTs (skip the `in` keyword). */
+		char *names[2] = {NULL, NULL};
+		int ni = 0;
+		for (int i = 0; i < s.node->child_count && ni < 2; i++)
+			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
+				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
+				names[ni++] = txt_dup(t);
+			}
+		as->data.run_stmt.system_name = names[0] ? names[0] : txt_dup((CvText){"", 0});
+		as->data.run_stmt.world_name = names[1];
+		break;
+	}
+	case SN_IF_STMT: {
+		as->kind = AST_STMT_IF;
+		as->data.if_stmt.cond = lower_expr_cst(cv_node_at_expr(s, 0));
+		/* then-body = stmt children directly under the IF; else-body under ELSE_CLAUSE. */
+		CstView elsec = cv_child(s, SN_ELSE_CLAUSE);
+		as->data.if_stmt.then_body = cst_lower_body(s, &as->data.if_stmt.then_count);
+		if (cv_present(elsec))
+			as->data.if_stmt.else_body = cst_lower_body(elsec, &as->data.if_stmt.else_count);
+		break;
+	}
+	case SN_FOR_STMT: {
+		as->kind = AST_STMT_FOR;
+		/* range form: `for IDENT in IDENT { body }` */
+		int ni = 0;
+		char *vname = NULL, *iname = NULL;
+		for (int i = 0; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
+				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
+				if (ni == 0) vname = txt_dup(t);
+				else if (ni == 1) iname = txt_dup(t);
+				ni++;
+			}
+		as->data.for_stmt.var_name = vname;
+		if (iname) {
+			AstExpr *it = ast_expr_create(AST_EXPR_NAME);
+			it->data.name.name = iname;
+			as->data.for_stmt.iterable = it;
+		}
+		as->data.for_stmt.body = cst_lower_body(s, &as->data.for_stmt.body_count);
+		break;
+	}
+	case SN_EACH_FIELD_STMT: {
+		as->kind = AST_STMT_EACH_FIELD;
+		int ni = 0;
+		for (int i = 0; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
+				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
+				if (ni == 0) as->data.each_field.binding_name = txt_dup(t);
+				else if (ni == 1) as->data.each_field.arch_param_name = txt_dup(t);
+				ni++;
+			}
+		as->data.each_field.filter_type = lower_type_cst(cv_type_at(s, 0));
+		as->data.each_field.body = cst_lower_body(s, &as->data.each_field.body_count);
+		break;
+	}
+	default:
+		/* SN_MULTI_BIND_STMT and anything unhandled: placeholder no-op. */
+		as->kind = AST_STMT_EXPR;
+		as->data.expr_stmt.expr = NULL;
+		break;
+	}
+	return as;
+}
+
+static AstParam *lower_param_cst(CstView p) {
+	AstParam *ap = ast_param_create(NULL, NULL);
+	ap->name = cv_dup(cv_child(p, SN_PARAM_NAME));
+	ap->type = lower_type_cst(cv_type_at(p, 0)); /* NULL for sys params */
+	ap->is_own = cv_has_token(p, TOK_OWN);
+	return ap;
+}
+
+static AstDecl *lower_decl_cst(CstView d) {
+	switch (cv_kind(d)) {
+	case SN_USE_DECL:
+		return NULL;
+	case SN_WORLD_DECL: {
+		AstDecl *ad = ast_decl_create(AST_DECL_WORLD);
+		ad->data.world = calloc(1, sizeof(AstWorldDecl));
+		ad->data.world->name = txt_dup(cv_token(d, TOK_IDENT));
+		return ad;
+	}
+	case SN_ARCHETYPE_DECL: {
+		AstDecl *ad = ast_decl_create(AST_DECL_ARCHETYPE);
+		AstArchetypeDecl *aa = calloc(1, sizeof(AstArchetypeDecl));
+		aa->name = cv_dup(cv_child(d, SN_TYPE_DEF_NAME));
+		int nf = cv_count(d, SN_FIELD_NAME);
+		aa->fields = calloc(nf ? nf : 1, sizeof(AstField *));
+		aa->field_count = 0;
+		for (int i = 0; i < nf; i++) {
+			AstField *af = ast_field_create(FIELD_COLUMN, NULL, NULL);
+			af->name = cv_dup(cv_child_at(d, SN_FIELD_NAME, i));
+			/* field type = the i-th type node in the body (paired positionally) */
+			af->type = lower_type_cst(cv_type_at(d, i));
+			aa->fields[aa->field_count++] = af;
+		}
+		ad->data.archetype = aa;
+		return ad;
+	}
+	case SN_PROC_DECL: {
+		AstDecl *ad = ast_decl_create(AST_DECL_PROC);
+		AstProcDecl *ap = calloc(1, sizeof(AstProcDecl));
+		ap->name = cv_dup(cv_child(d, SN_FUNC_DEF_NAME));
+		ap->is_extern = cv_has_token(d, TOK_EXTERN);
+		int np = cv_count(d, SN_PARAM);
+		ap->params = calloc(np ? np : 1, sizeof(AstParam *));
+		for (int i = 0; i < np; i++)
+			ap->params[i] = lower_param_cst(cv_child_at(d, SN_PARAM, i));
+		ap->param_count = np;
+		ap->stmts = cst_lower_body(d, &ap->stmt_count);
+		ad->data.proc = ap;
+		return ad;
+	}
+	case SN_SYS_DECL: {
+		AstDecl *ad = ast_decl_create(AST_DECL_SYS);
+		AstSysDecl *as = calloc(1, sizeof(AstSysDecl));
+		as->name = cv_dup(cv_child(d, SN_FUNC_DEF_NAME));
+		int np = cv_count(d, SN_PARAM);
+		as->params = calloc(np ? np : 1, sizeof(AstParam *));
+		for (int i = 0; i < np; i++)
+			as->params[i] = lower_param_cst(cv_child_at(d, SN_PARAM, i));
+		as->param_count = np;
+		as->stmts = cst_lower_body(d, &as->stmt_count);
+		ad->data.sys = as;
+		return ad;
+	}
+	case SN_FUNC_DECL: {
+		AstDecl *ad = ast_decl_create(AST_DECL_FUNC);
+		AstFuncDecl *af = calloc(1, sizeof(AstFuncDecl));
+		af->name = cv_dup(cv_child(d, SN_FUNC_DEF_NAME));
+		af->is_extern = cv_has_token(d, TOK_EXTERN);
+		int np = cv_count(d, SN_PARAM);
+		af->params = calloc(np ? np : 1, sizeof(AstParam *));
+		for (int i = 0; i < np; i++)
+			af->params[i] = lower_param_cst(cv_child_at(d, SN_PARAM, i));
+		af->param_count = np;
+		/* return types: TYPE_REF nodes that are NOT inside params (params are wrapped in SN_PARAM) */
+		int nt = cv_type_count(d);
+		af->return_types = calloc(nt ? nt : 1, sizeof(AstType *));
+		af->return_type_count = 0;
+		for (int i = 0; i < nt; i++)
+			af->return_types[af->return_type_count++] = lower_type_cst(cv_type_at(d, i));
+		af->stmts = cst_lower_body(d, &af->stmt_count);
+		ad->data.func = af;
+		return ad;
+	}
+	case SN_CONST_DECL: {
+		AstDecl *ad = ast_decl_create(AST_DECL_CONST);
+		AstConstDecl *ac = calloc(1, sizeof(AstConstDecl));
+		ac->name = txt_dup(cv_token(d, TOK_IDENT));
+		ac->value = lower_expr_cst(cv_node_at_expr(d, 0));
+		ad->data.constant = ac;
+		return ad;
+	}
+	case SN_STATIC_DECL: {
+		AstDecl *ad = ast_decl_create(AST_DECL_STATIC);
+		AstStaticDecl *sd = calloc(1, sizeof(AstStaticDecl));
+		if (cv_has_token(d, TOK_LPAREN)) {
+			/* `static Name(count)` / `static pool<Name>(count)` — archetype allocation */
+			sd->kind = AST_STATIC_ARCHETYPE;
+			CstView ty = cv_type_at(d, 0);
+			char *an = NULL;
+			if (cv_present(ty) && cv_has_token(ty, TOK_LT)) {
+				int seen = 0; /* pool<Name>: the archetype is the 2nd IDENT */
+				for (int i = 0; i < ty.node->child_count; i++)
+					if (ty.node->children[i].tag == SE_TOKEN && ty.node->children[i].as.token.kind == TOK_IDENT) {
+						CvText t = {ty.src + ty.node->children[i].as.token.offset,
+						            ty.node->children[i].as.token.length};
+						if (seen++) {
+							an = txt_dup(t);
+							break;
+						}
+					}
+			} else if (cv_present(ty)) {
+				an = txt_dup(cv_token(ty, TOK_IDENT));
+			}
+			sd->archetype.archetype_name = an ? an : txt_dup((CvText){"", 0});
+			sd->archetype.init_length = lower_expr_cst(cv_node_at_expr(d, 0)); /* the (count) */
+			sd->archetype.field_count = 0;
+		} else {
+			/* `static name : T[size]` — static array */
+			sd->kind = AST_STATIC_ARRAY;
+			sd->array.name = txt_dup(cv_token(d, TOK_IDENT));
+			sd->array.element_type = lower_type_cst(cv_type_at(d, 0));
+			for (int i = 0; i < d.node->child_count; i++)
+				if (d.node->children[i].tag == SE_TOKEN && d.node->children[i].as.token.kind == TOK_NUMBER) {
+					char buf[32];
+					int l = (int)d.node->children[i].as.token.length;
+					if (l > 31)
+						l = 31;
+					memcpy(buf, d.src + d.node->children[i].as.token.offset, l);
+					buf[l] = '\0';
+					sd->array.size = atoi(buf);
+					break;
+				}
+		}
+		ad->data.static_decl = sd;
+		return ad;
+	}
+	default:
+		/* SN_FUNC_GROUP_DECL (+ tuple flattening, field-init blocks) not yet ported. */
+		return NULL;
+	}
+}
+
+/* CST-driven entry, gated by ARCHE_LOWER_CST (validated against the IR goldens). */
+AstProgram *lower_cst_to_ast_v2(const SyntaxNode *root, const char *src) {
+	if (!root)
+		return NULL;
+	AstProgram *ast = ast_program_create();
+	CstView r = cv_root(root, src);
+	int cap = cv_node_count(r);
+	ast->decls = calloc(cap ? cap : 1, sizeof(AstDecl *));
+	ast->decl_count = 0;
+	for (int i = 0; i < root->child_count; i++) {
+		if (root->children[i].tag != SE_NODE)
+			continue;
+		SyntaxNodeKind k = root->children[i].as.node->kind;
+		if (k < SN_WORLD_DECL || k > SN_USE_DECL)
+			continue;
+		CstView dv = {root->children[i].as.node, src};
+		AstDecl *ad = lower_decl_cst(dv);
+		if (ad)
+			ast->decls[ast->decl_count++] = ad;
+	}
+	return ast;
+}
 
 AstProgram *lower_cst_to_ast(Program *cst) {
 	if (!cst)

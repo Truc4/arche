@@ -1405,6 +1405,8 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 					}
 				}
 				b->is_type_alias = 1;
+				if (ctx->model && stmt->cst_id)
+					sem_model_set_bind_alias(ctx->model, stmt->cst_id - 1);
 				break; /* compile-time only: no runtime binding */
 			}
 			/* else: a value const — fall through to the normal binding path (marked const below). */
@@ -2966,6 +2968,12 @@ int semantic_has_errors(SemanticContext *ctx) {
 
 SemModel *sem_context_model(SemanticContext *ctx) {
 	return ctx ? ctx->model : NULL;
+}
+
+const char *semantic_resolve_type_alias(SemanticContext *ctx, const char *name) {
+	if (!ctx || !name)
+		return name;
+	return resolve_type_alias(ctx, name);
 }
 
 int semantic_error_count(const SemanticContext *ctx) {

@@ -22,6 +22,10 @@
 static const char *ident_role(SyntaxNodeKind parent) {
 	switch (parent) {
 	case SN_TYPE_REF:
+	case SN_TYPE_ARRAY:
+	case SN_TYPE_SHAPED_ARRAY:
+	case SN_TYPE_TUPLE:
+	case SN_TYPE_HANDLE:
 	case SN_ALLOC_TYPE:
 	case SN_TYPE_DEF_NAME:
 		return "type";

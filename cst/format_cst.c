@@ -107,7 +107,10 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 			int want_nl = force_nl || arch_field_break || l->kind == TOK_RBRACE || prev == TOK_LBRACE ||
 			              prev == TOK_SEMI || prev == TOK_RBRACE;
 			/* a type/generic/table reference is compact: handle<X>, float[5], table<P> */
-			int compact = (l->parent == prev_parent && (l->parent == SN_TYPE_REF || l->parent == SN_NAME_EXPR));
+			int compact = (l->parent == prev_parent &&
+			               (l->parent == SN_TYPE_REF || l->parent == SN_TYPE_ARRAY ||
+			                l->parent == SN_TYPE_SHAPED_ARRAY || l->parent == SN_TYPE_HANDLE ||
+			                l->parent == SN_NAME_EXPR));
 			if (l->kind == TOK_RBRACE && indent > 0)
 				indent--;
 			if (want_nl) {

@@ -725,6 +725,10 @@ int main(int argc, char *argv[]) {
 	}
 
 	Program *prog = parse_result.ast;
+	/* Keep the CST alive through lowering (CST-driven lowering reads it); the rest
+	 * of the parse result is freed now. */
+	SyntaxNode *cst_root = parse_result.cst_root;
+	parse_result.cst_root = NULL;
 	parse_result_free(&parse_result);
 
 	if (!prog || prog->decl_count == 0) {
@@ -755,9 +759,12 @@ int main(int argc, char *argv[]) {
 	}
 
 	/* Lower CST → AST. Resolved types come from the semantic side model (keyed by
-	 * CST node id; ids are globally unique across inlined modules). */
+	 * CST node id; ids are globally unique across inlined modules). ARCHE_LOWER_CST
+	 * selects the in-progress CST-driven lowerer for validation against the goldens. */
 	lower_set_model(sem_context_model(sem_ctx));
-	AstProgram *ast = lower_cst_to_ast(prog);
+	lower_set_sem(sem_ctx);
+	AstProgram *ast =
+	    getenv("ARCHE_LOWER_CST") ? lower_cst_to_ast_v2(cst_root, source) : lower_cst_to_ast(prog);
 
 	/* Code generation */
 	CodegenContext *codegen_ctx = codegen_create(ast, sem_ctx);

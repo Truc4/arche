@@ -14,6 +14,10 @@ void semantic_context_free(SemanticContext *ctx);
 /* The resolved-type side model (keyed by CST node id); read by lowering. */
 SemModel *sem_context_model(SemanticContext *ctx);
 
+/* Resolve a (possibly nominal-alias) type name through the alias chain to its
+ * backing; returns `name` unchanged if not an alias. */
+const char *semantic_resolve_type_alias(SemanticContext *ctx, const char *name);
+
 /* Error checking */
 int semantic_has_errors(SemanticContext *ctx);
 int semantic_error_count(const SemanticContext *ctx);
