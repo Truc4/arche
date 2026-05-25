@@ -2,6 +2,7 @@
 #define SEMANTIC_H
 
 #include "../cst/cst.h"
+#include "sem_model.h"
 
 /* Semantic analysis context */
 typedef struct SemanticContext SemanticContext;
@@ -9,6 +10,9 @@ typedef struct SemanticContext SemanticContext;
 /* Create and analyze a program */
 SemanticContext *semantic_analyze(Program *prog);
 void semantic_context_free(SemanticContext *ctx);
+
+/* The resolved-type side model (keyed by CST node id); read by lowering. */
+SemModel *sem_context_model(SemanticContext *ctx);
 
 /* Error checking */
 int semantic_has_errors(SemanticContext *ctx);

@@ -1,4 +1,5 @@
 #include "parser.h"
+#include "../cst/syntax_tree.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +26,9 @@ struct Parser {
 	int pending_count;
 	int pending_cap;
 	int recursion_depth;
+	/* Lossless CST builder. Built alongside the AST purely by appending; never
+	 * affects parse control flow, so CST bugs can't change compiler output. */
+	CstBuilder *builder;
 };
 
 /* ========== UTILITY FUNCTIONS ========== */
@@ -67,6 +71,16 @@ static void maybe_append_blank_trivia(Parser *parser, int anchor_line, int next_
 }
 
 static void advance(Parser *parser) {
+	/* CST: emit the token being consumed (the current lookahead) as a leaf, in
+	 * source order. Skips the priming/end sentinel (EOF) and error tokens (whose
+	 * `start` points at a message literal, not into source). */
+	if (parser->builder && parser->current.kind != TOK_EOF && parser->current.kind != TOK_ERROR &&
+	    parser->current.start != NULL) {
+		uint32_t off = (uint32_t)(parser->current.start - parser->lexer->src);
+		cst_builder_token(parser->builder, parser->current.kind, off, (uint32_t)parser->current.length,
+		                  parser->current.line, parser->current.column);
+	}
+
 	parser->previous = parser->current;
 	int prev_line = parser->previous.line;
 	parser->current = lexer_next_token(parser->lexer);
@@ -78,6 +92,12 @@ static void advance(Parser *parser) {
 			parser->had_error = 1;
 			parser->current.kind = TOK_EOF;
 			break;
+		}
+		/* CST: comments are real leaves too, keeping the tree lossless. */
+		if (parser->builder && parser->current.start != NULL) {
+			uint32_t coff = (uint32_t)(parser->current.start - parser->lexer->src);
+			cst_builder_token(parser->builder, TOK_COMMENT, coff, (uint32_t)parser->current.length,
+			                  parser->current.line, parser->current.column);
 		}
 		maybe_append_blank_trivia(parser, trivia_anchor_line(parser, prev_line), parser->current.line);
 		Trivia ctr;
@@ -220,16 +240,122 @@ static void synchronize(Parser *parser) {
 	}
 }
 
+/* ===== CST builder helpers (no-ops when no builder is attached) ===== */
+static int cst_cp(Parser *parser) {
+	return parser->builder ? cst_builder_checkpoint(parser->builder) : 0;
+}
+static SyntaxNode *cst_wrap(Parser *parser, int checkpoint, SyntaxNodeKind kind) {
+	if (parser->builder)
+		return cst_builder_wrap(parser->builder, checkpoint, kind);
+	return NULL;
+}
+
+static SyntaxNodeKind decl_kind_to_sn(DeclKind k) {
+	switch (k) {
+	case DECL_WORLD:
+		return SN_WORLD_DECL;
+	case DECL_ARCHETYPE:
+		return SN_ARCHETYPE_DECL;
+	case DECL_PROC:
+		return SN_PROC_DECL;
+	case DECL_SYS:
+		return SN_SYS_DECL;
+	case DECL_FUNC:
+		return SN_FUNC_DECL;
+	case DECL_FUNC_GROUP:
+		return SN_FUNC_GROUP_DECL;
+	case DECL_STATIC:
+		return SN_STATIC_DECL;
+	case DECL_CONST:
+		return SN_CONST_DECL;
+	case DECL_USE:
+		return SN_USE_DECL;
+	}
+	return SN_ERROR;
+}
+
+static SyntaxNodeKind stmt_type_to_sn(StatementType t) {
+	switch (t) {
+	case STMT_BIND:
+		return SN_BIND_STMT;
+	case STMT_ASSIGN:
+		return SN_ASSIGN_STMT;
+	case STMT_FOR:
+		return SN_FOR_STMT;
+	case STMT_IF:
+		return SN_IF_STMT;
+	case STMT_BREAK:
+		return SN_BREAK_STMT;
+	case STMT_RUN:
+		return SN_RUN_STMT;
+	case STMT_EXPR:
+		return SN_EXPR_STMT;
+	case STMT_FREE:
+		return SN_FREE_STMT;
+	case STMT_RETURN:
+		return SN_RETURN_STMT;
+	case STMT_MULTI_BIND:
+		return SN_MULTI_BIND_STMT;
+	case STMT_EACH_FIELD:
+		return SN_EACH_FIELD_STMT;
+	}
+	return SN_ERROR;
+}
+
+static SyntaxNodeKind expr_type_to_sn(ExpressionType t) {
+	switch (t) {
+	case EXPR_LITERAL:
+		return SN_LITERAL_EXPR;
+	case EXPR_NAME:
+		return SN_NAME_EXPR;
+	case EXPR_FIELD:
+		return SN_FIELD_EXPR;
+	case EXPR_INDEX:
+		return SN_INDEX_EXPR;
+	case EXPR_BINARY:
+		return SN_BINARY_EXPR;
+	case EXPR_UNARY:
+		return SN_UNARY_EXPR;
+	case EXPR_CALL:
+		return SN_CALL_EXPR;
+	case EXPR_ALLOC:
+		return SN_ALLOC_EXPR;
+	case EXPR_ARRAY_LITERAL:
+		return SN_ARRAY_LIT_EXPR;
+	case EXPR_STRING:
+		return SN_STRING_EXPR;
+	}
+	return SN_NAME_EXPR;
+}
+
+/* True if everything emitted since `checkpoint` already collapsed to a single
+ * node (e.g. a parenthesised expression wrapped itself), so the caller should
+ * not wrap it again. */
+static int cst_single_node(Parser *parser, int checkpoint) {
+	CstBuilder *b = parser->builder;
+	return b && b->count == checkpoint + 1 && b->items[checkpoint].tag == SE_NODE;
+}
+
 /* ========== FORWARD DECLARATIONS ========== */
 
 static Decl *parse_decl(Parser *parser);
 static Statement *parse_statement(Parser *parser);
 static Expression *parse_expression(Parser *parser);
 static TypeRef *parse_type(Parser *parser);
+static TypeRef *parse_type_inner(Parser *parser);
 
 /* ========== TYPE PARSING ========== */
 
+/* Wrapper: every type position becomes a TYPE_REF node in the CST, so the
+ * identifiers within are classified as types. All call sites go through here. */
 static TypeRef *parse_type(Parser *parser) {
+	int cp = cst_cp(parser);
+	TypeRef *t = parse_type_inner(parser);
+	cst_wrap(parser, cp, SN_TYPE_REF);
+	return t;
+}
+
+static TypeRef *parse_type_inner(Parser *parser) {
 	if (!check(parser, TOK_IDENT)) {
 		error(parser, "Expected type name");
 		return NULL;
@@ -426,10 +552,12 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 		*out_count = 0;
 		return NULL;
 	}
+	int field_decl_name_cp = cst_cp(parser);
 	char *name = token_text(parser->current);
 	char *name_copy = malloc(strlen(name) + 1);
 	strcpy(name_copy, name);
 	advance(parser);
+	cst_wrap(parser, field_decl_name_cp, SN_FIELD_NAME);
 
 	/* Tuple group component: `pos (x, y) :: float` — the suffixes mint flat `pos_x`/`pos_y`
 	 * of the shared type. */
@@ -533,8 +661,10 @@ static Decl *parse_archetype_decl(Parser *parser) {
 		error(parser, "Expected archetype name");
 		return NULL;
 	}
+	int arch_name_cp = cst_cp(parser);
 	char *name = token_text(parser->current);
 	advance(parser);
+	cst_wrap(parser, arch_name_cp, SN_TYPE_DEF_NAME);
 
 	if (!match(parser, TOK_LBRACE)) {
 		error(parser, "Expected '{'");
@@ -606,8 +736,10 @@ static Decl *parse_proc_decl(Parser *parser) {
 		error(parser, "Expected procedure name");
 		return NULL;
 	}
+	int proc_name_cp = cst_cp(parser);
 	char *name = token_text(parser->current);
 	advance(parser);
+	cst_wrap(parser, proc_name_cp, SN_FUNC_DEF_NAME);
 
 	if (!match(parser, TOK_LPAREN)) {
 		error(parser, "Expected '('");
@@ -632,8 +764,10 @@ static Decl *parse_proc_decl(Parser *parser) {
 				error(parser, "Expected parameter name");
 				return NULL;
 			}
+			int param_name_cp = cst_cp(parser);
 			char *param_name = token_text(parser->current);
 			advance(parser);
+			cst_wrap(parser, param_name_cp, SN_PARAM_NAME);
 			int param_line = parser->previous.line;
 			int param_column = parser->previous.column;
 
@@ -709,8 +843,10 @@ static Decl *parse_sys_decl(Parser *parser) {
 		error(parser, "Expected system name");
 		return NULL;
 	}
+	int sys_name_cp = cst_cp(parser);
 	char *name = token_text(parser->current);
 	advance(parser);
+	cst_wrap(parser, sys_name_cp, SN_FUNC_DEF_NAME);
 
 	if (!match(parser, TOK_LPAREN)) {
 		error(parser, "Expected '('");
@@ -729,8 +865,10 @@ static Decl *parse_sys_decl(Parser *parser) {
 				return NULL;
 			}
 
+			int param_name_cp = cst_cp(parser);
 			char *param_name = token_text(parser->current);
 			advance(parser);
+			cst_wrap(parser, param_name_cp, SN_PARAM_NAME);
 			int param_line = parser->previous.line;
 			int param_column = parser->previous.column;
 
@@ -787,8 +925,10 @@ static Decl *parse_func_decl(Parser *parser) {
 		error(parser, "Expected function name");
 		return NULL;
 	}
+	int func_name_cp = cst_cp(parser);
 	char *name = token_text(parser->current);
 	advance(parser);
+	cst_wrap(parser, func_name_cp, SN_FUNC_DEF_NAME);
 
 	/* Group-declaration branch: `func NAME = { IDENT (, IDENT)* };` */
 	if (match(parser, TOK_EQ)) {
@@ -861,8 +1001,10 @@ static Decl *parse_func_decl(Parser *parser) {
 				return NULL;
 			}
 
+			int param_name_cp = cst_cp(parser);
 			char *param_name = token_text(parser->current);
 			advance(parser);
+			cst_wrap(parser, param_name_cp, SN_PARAM_NAME);
 			int param_line = parser->previous.line;
 			int param_column = parser->previous.column;
 
@@ -1306,6 +1448,7 @@ static Decl *parse_decl(Parser *parser) {
 /* ========== EXPRESSION PARSING ========== */
 
 static Expression *parse_primary_expr(Parser *parser) {
+	int prim_start = cst_cp(parser);
 	if (check(parser, TOK_NUMBER)) {
 		char *lexeme = token_text(parser->current);
 		advance(parser);
@@ -1412,6 +1555,7 @@ static Expression *parse_primary_expr(Parser *parser) {
 	}
 
 	if (check(parser, TOK_IDENT)) {
+		int prim_name_cp = cst_cp(parser);
 		char *name = token_text(parser->current);
 		advance(parser);
 		int name_line = parser->previous.line;
@@ -1536,8 +1680,10 @@ static Expression *parse_primary_expr(Parser *parser) {
 			base->data.name.name = name;
 
 			/* Process first field (DOT already consumed) */
+			int field_name_cp = cst_cp(parser);
 			char *field_name = token_text(parser->current);
 			advance(parser);
+			cst_wrap(parser, field_name_cp, SN_FIELD_NAME);
 
 			Expression *field = expression_create(EXPR_FIELD);
 			field->loc.line = base->loc.line;
@@ -1554,8 +1700,10 @@ static Expression *parse_primary_expr(Parser *parser) {
 					return NULL;
 				}
 
+				int chained_field_cp = cst_cp(parser);
 				field_name = token_text(parser->current);
 				advance(parser);
+				cst_wrap(parser, chained_field_cp, SN_FIELD_NAME);
 
 				field = expression_create(EXPR_FIELD);
 				field->loc.line = base->loc.line;
@@ -1629,7 +1777,11 @@ static Expression *parse_primary_expr(Parser *parser) {
 		}
 
 		/* check for function call */
-		if (match(parser, TOK_LPAREN)) {
+		if (check(parser, TOK_LPAREN)) {
+			/* Wrap just the callee name (nothing else has been emitted since the
+			 * name token), then consume '(' as a sibling. */
+			cst_wrap(parser, prim_name_cp, SN_CALLEE_NAME);
+			advance(parser); /* consume '(' */
 			Expression *expr = expression_create(EXPR_CALL);
 			Expression *callee = expression_create(EXPR_NAME);
 			callee->loc.line = name_line;
@@ -1674,6 +1826,7 @@ static Expression *parse_primary_expr(Parser *parser) {
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' after expression");
 		}
+		cst_wrap(parser, prim_start, SN_PAREN_EXPR);
 		return expr;
 	}
 
@@ -1684,6 +1837,7 @@ static Expression *parse_primary_expr(Parser *parser) {
 /* Prefix unary operators: `-x` (negate) and `!x` (logical not). Binds tighter
  * than binary operators, looser than postfix (calls/indexing in primary). */
 static Expression *parse_unary_expr(Parser *parser) {
+	int u_cp = cst_cp(parser);
 	/* `move <expr>` — call-site ownership transfer. The value is transparent; the checker
 	 * marks the operand consumed (use-after-move is an error). */
 	if (check(parser, TOK_MOVE)) {
@@ -1697,6 +1851,9 @@ static Expression *parse_unary_expr(Parser *parser) {
 		u->loc.column = col;
 		u->data.unary.op = UNARY_MOVE;
 		u->data.unary.operand = operand;
+		SyntaxNode *un = cst_wrap(parser, u_cp, SN_UNARY_EXPR);
+		if (un)
+			u->cst_id = un->id + 1;
 		return u;
 	}
 	/* `copy <expr>` — call-site duplication: the caller keeps its original; the function gets an
@@ -1712,6 +1869,9 @@ static Expression *parse_unary_expr(Parser *parser) {
 		u->loc.column = col;
 		u->data.unary.op = UNARY_COPY;
 		u->data.unary.operand = operand;
+		SyntaxNode *un = cst_wrap(parser, u_cp, SN_UNARY_EXPR);
+		if (un)
+			u->cst_id = un->id + 1;
 		return u;
 	}
 	if (check(parser, TOK_MINUS) || check(parser, TOK_BANG)) {
@@ -1727,9 +1887,21 @@ static Expression *parse_unary_expr(Parser *parser) {
 		u->loc.column = col;
 		u->data.unary.op = (op_kind == TOK_MINUS) ? UNARY_NEG : UNARY_NOT;
 		u->data.unary.operand = operand;
+		SyntaxNode *un = cst_wrap(parser, u_cp, SN_UNARY_EXPR);
+		if (un)
+			u->cst_id = un->id + 1;
 		return u;
 	}
-	return parse_primary_expr(parser);
+	/* Primary expression: wrap it by the kind it parsed into, unless it already
+	 * collapsed to a single node (a parenthesised expr wraps itself). */
+	int p_cp = cst_cp(parser);
+	Expression *e = parse_primary_expr(parser);
+	if (e && !cst_single_node(parser, p_cp)) {
+		SyntaxNode *n = cst_wrap(parser, p_cp, expr_type_to_sn(e->type));
+		if (n)
+			e->cst_id = n->id + 1;
+	}
+	return e;
 }
 
 /* Map a binary-operator token to its Operator. Only called for tokens that
@@ -1786,7 +1958,10 @@ static int binop_prec(TokenKind k) {
 
 /* Precedence climbing: extend `left` with binary operators whose precedence is
    >= min_prec, so e.g. `2 + 3 * 2` builds (2 + (3 * 2)) rather than a flat fold. */
-static Expression *parse_binary_rhs(Parser *parser, Expression *left, int min_prec) {
+/* `left_cp` is the CST checkpoint taken before `left` was parsed, so each fold can
+ * retroactively wrap [left_cp .. end-of-right] into a SN_BINARY_EXPR — left-assoc
+ * nesting falls out because the previous fold collapses to one node at left_cp. */
+static Expression *parse_binary_rhs(Parser *parser, Expression *left, int left_cp, int min_prec) {
 	if (!left)
 		return NULL;
 
@@ -1798,13 +1973,14 @@ static Expression *parse_binary_rhs(Parser *parser, Expression *left, int min_pr
 		TokenKind op_kind = parser->current.kind;
 		advance(parser);
 
+		int right_cp = cst_cp(parser);
 		Expression *right = parse_unary_expr(parser);
 		if (!right)
 			return NULL;
 
 		/* Left-associative: only fold a strictly tighter operator into `right`. */
 		while (binop_prec(parser->current.kind) > prec) {
-			right = parse_binary_rhs(parser, right, prec + 1);
+			right = parse_binary_rhs(parser, right, right_cp, prec + 1);
 			if (!right)
 				return NULL;
 		}
@@ -1816,13 +1992,17 @@ static Expression *parse_binary_rhs(Parser *parser, Expression *left, int min_pr
 		binary->data.binary.left = left;
 		binary->data.binary.right = right;
 
+		SyntaxNode *bn = cst_wrap(parser, left_cp, SN_BINARY_EXPR);
+		if (bn)
+			binary->cst_id = bn->id + 1;
 		left = binary;
 	}
 }
 
 static Expression *parse_binary_expr(Parser *parser) {
+	int left_cp = cst_cp(parser);
 	Expression *left = parse_unary_expr(parser);
-	return parse_binary_rhs(parser, left, 1);
+	return parse_binary_rhs(parser, left, left_cp, 1);
 }
 
 static Expression *parse_expression(Parser *parser) {
@@ -2015,6 +2195,7 @@ static Statement *parse_simple_statement(Parser *parser) {
 }
 
 static Statement *parse_statement(Parser *parser) {
+	int stmt_cp = cst_cp(parser);
 	/* Prevent stack overflow from unbounded recursion */
 	const int MAX_RECURSION_DEPTH = 1000;
 	if (parser->recursion_depth > MAX_RECURSION_DEPTH) {
@@ -2504,6 +2685,7 @@ static Statement *parse_statement(Parser *parser) {
 cleanup:
 	parser->recursion_depth--;
 	if (result) {
+		cst_wrap(parser, stmt_cp, stmt_type_to_sn(result->type));
 		result->leading_trivia = leading;
 		result->leading_count = leading_count;
 		result->last_line = parser->previous.line;
@@ -2529,6 +2711,7 @@ static void parser_init(Parser *parser, Lexer *lexer) {
 	parser->recursion_depth = 0;
 	memset(&parser->previous, 0, sizeof(Token));
 	parser->current.line = 0;
+	parser->builder = cst_builder_new();
 	advance(parser);
 }
 
@@ -2548,12 +2731,15 @@ ParseResult parse_program(Parser *parser) {
 		int leading_count = 0;
 		take_pending_as_leading(parser, &leading, &leading_count);
 
+		int decl_cp = cst_cp(parser);
 		Decl *decl = parse_decl(parser);
 		if (!decl) {
 			free(leading);
 			synchronize(parser);
+			cst_wrap(parser, decl_cp, SN_ERROR);
 			continue;
 		}
+		cst_wrap(parser, decl_cp, decl_kind_to_sn(decl->kind));
 		decl->leading_trivia = leading;
 		decl->leading_count = leading_count;
 		decl->last_line = parser->previous.line;
@@ -2571,6 +2757,9 @@ ParseResult parse_program(Parser *parser) {
 	result.error_count = parser->error_count;
 	result.comments = NULL;
 	result.comment_count = 0;
+	/* Close out the lossless CST and hand ownership to the caller. */
+	result.cst_root = parser->builder ? cst_builder_finish(parser->builder) : NULL;
+	parser->builder = NULL;
 	parser->errors = NULL;
 	parser->error_count = 0;
 	return result;
@@ -2589,6 +2778,8 @@ void parser_free(Parser *parser) {
 		}
 		free(parser->errors);
 		free(parser->pending_trivia);
+		/* Non-NULL only if parse_program never ran to claim the tree. */
+		cst_builder_free(parser->builder);
 		free(parser);
 	}
 }
@@ -2610,9 +2801,11 @@ void parse_result_free(ParseResult *result) {
 		}
 		free(result->errors);
 		free(result->comments);
+		syntax_node_free(result->cst_root);
 		result->errors = NULL;
 		result->error_count = 0;
 		result->comments = NULL;
 		result->comment_count = 0;
+		result->cst_root = NULL;
 	}
 }

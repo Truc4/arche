@@ -2,6 +2,7 @@
 #define CST_H
 
 #include "../lexer/lexer.h" /* Trivia, Token */
+#include "syntax_tree.h"    /* SyntaxNode (transient Expression->cst_node link) */
 #include <stddef.h>
 
 /* =========================
@@ -474,6 +475,11 @@ struct Expression {
 		StringExpr string;
 	} data;
 	char *resolved_type; /* Semantic analysis populates: "int", "double", "Vec3", etc. NULL if not yet analyzed */
+	/* TRANSIENT migration scaffolding (removed in the final stage): id of the CST
+	 * node this expression was parsed from (stored +1, so 0 means "not linked").
+	 * Stored as a value, not a pointer, so it survives the CST being freed. Lets
+	 * semantic/lower key a side model instead of mutating resolved_type. */
+	uint32_t cst_id;
 };
 
 /* =========================

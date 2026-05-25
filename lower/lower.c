@@ -1,6 +1,26 @@
 #include "lower.h"
+#include "../semantic/sem_model.h"
 #include <stdlib.h>
 #include <string.h>
+
+/* Resolved types live in the semantic side model (keyed by CST node id), set by
+ * the driver before lowering. When unset (e.g. unit tests that lower directly),
+ * we fall back to the type still carried on the expression. */
+static const SemModel *g_lower_model = NULL;
+void lower_set_model(const SemModel *m) {
+	g_lower_model = m;
+}
+
+/* The resolved type of an expression: from the side model when available, else
+ * the transitional Expression.resolved_type. */
+static const char *lower_expr_type(const Expression *expr) {
+	if (g_lower_model && expr->cst_id) {
+		const char *t = sem_model_expr_type(g_lower_model, expr->cst_id - 1);
+		if (t)
+			return t;
+	}
+	return expr->resolved_type;
+}
 
 /* =========================
    Type mapping
@@ -127,7 +147,7 @@ static AstExpr *lower_expr(Expression *expr) {
 		return NULL;
 	AstExpr *e = ast_expr_create(AST_EXPR_LITERAL);
 	e->loc = expr->loc;
-	e->resolved = map_type_str(expr->resolved_type);
+	e->resolved = map_type_str(lower_expr_type(expr));
 
 	switch (expr->type) {
 	case EXPR_LITERAL: {

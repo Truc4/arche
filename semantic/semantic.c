@@ -1,4 +1,5 @@
 #include "semantic.h"
+#include "sem_model.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -95,6 +96,10 @@ struct SemanticContext {
 
 	/* Program for looking up declarations */
 	Program *prog;
+
+	/* MIGRATION: resolved types keyed by CST node id, kept out of the tree.
+	 * Populated alongside Expression.resolved_type; lowering reads it from here. */
+	SemModel *model;
 };
 
 /* ========== UTILITY FUNCTIONS ========== */
@@ -1360,6 +1365,11 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 
 	/* Resolve and store the type of this expression */
 	expr->resolved_type = (char *)resolve_expression_type(ctx, expr);
+	/* MIGRATION (4a): mirror into the side model keyed by the CST node, so lowering
+	 * can read it there instead of off the tree. Parser-built expressions always link
+	 * to a CST node; synthesized ones (if any) keep relying on resolved_type. */
+	if (ctx->model && expr->cst_id)
+		sem_model_set_expr_type(ctx->model, expr->cst_id - 1, expr->resolved_type);
 }
 
 /* ========== STATEMENT ANALYSIS ========== */
@@ -2676,6 +2686,7 @@ SemanticContext *semantic_analyze(Program *prog) {
 	ctx->current_proc = NULL;
 	ctx->in_body = 0;
 	ctx->prog = prog;
+	ctx->model = sem_model_new();
 
 	/* Register builtins */
 	register_func(ctx, "write");
@@ -2889,6 +2900,8 @@ void semantic_context_free(SemanticContext *ctx) {
 	if (!ctx)
 		return;
 
+	sem_model_free(ctx->model);
+
 	/* free constants (names only, values are owned by AST) */
 	free(ctx->const_names);
 	free(ctx->const_values);
@@ -2949,6 +2962,10 @@ void semantic_context_free(SemanticContext *ctx) {
 
 int semantic_has_errors(SemanticContext *ctx) {
 	return ctx->error_count > 0;
+}
+
+SemModel *sem_context_model(SemanticContext *ctx) {
+	return ctx ? ctx->model : NULL;
 }
 
 int semantic_error_count(const SemanticContext *ctx) {

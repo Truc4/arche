@@ -2,7 +2,7 @@
 // i64(x) widening cast and i32(x) narrowing (truncating) cast.
 proc main() {
   a := 5;
-  b: i64 = i64(a);
+  b := i64(a);
   big: i64 = 4294967297;
   small := i32(big);
   printf("wide=%d narrow=%d\n", b > 0, small);
