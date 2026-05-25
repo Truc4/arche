@@ -9,6 +9,16 @@ typedef struct SemanticContext SemanticContext;
 
 /* Create and analyze a program */
 SemanticContext *semantic_analyze(Program *prog);
+
+/* CST-driven semantic analysis (migration path; gated by ARCHE_SEM_CST in main.c).
+ * Walks the lossless CST + registered module CSTs to build the analyzable program,
+ * keying the side model by CST node id — identical contract to semantic_analyze. */
+SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src);
+
+/* Register a `use`-module's CST so semantic_analyze_cst can inline it (parallel to
+ * lower_add_module). Call once per module before semantic_analyze_cst. */
+void semantic_add_module(const char *name, const SyntaxNode *root, const char *src);
+
 void semantic_context_free(SemanticContext *ctx);
 
 /* The resolved-type side model (keyed by CST node id); read by lowering. */

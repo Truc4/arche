@@ -413,7 +413,11 @@ static void resolve_uses(Program *prog, const char *source_path) {
 
 		Program *mod = mod_parse.ast;
 		if (keep_mod_cst) {
+			/* Register the module CST with both back-ends: the lowerer (always) and the
+			 * CST-driven semantic analyzer (used when ARCHE_SEM_CST is set). Both borrow
+			 * the same CST + source; ownership of the CST transfers to the registries. */
 			lower_add_module(mod_name, mod_parse.cst_root, mod_src);
+			semantic_add_module(mod_name, mod_parse.cst_root, mod_src);
 			mod_parse.cst_root = NULL; /* ownership transferred to the module registry */
 		}
 		parse_result_free(&mod_parse);
@@ -753,8 +757,15 @@ int main(int argc, char *argv[]) {
 	/* Expand `arche { pos }` references to top-level tuple groups into flat columns. */
 	expand_archetype_tuple_groups(prog);
 
-	/* Semantic analysis */
-	SemanticContext *sem_ctx = semantic_analyze(prog);
+	/* Semantic analysis. The default analyzer reconstructs the abstract AST from the lossless
+	 * CST (+ registered module CSTs) and analyzes that (rustc/Go-style: CST → AST → check),
+	 * leaving the parser-built Program unused. ARCHE_SEM_PROGRAM selects the legacy analyzer
+	 * over the parser-built Program for A/B comparison. Both populate the same side model
+	 * (keyed by CST node id), so lowering is unaffected. The legacy Program lowerer
+	 * (ARCHE_LOWER_PROGRAM) reads resolved types the legacy analyzer writes onto the
+	 * parser-built Program, so it implies the legacy analyzer. */
+	int use_legacy_sem = getenv("ARCHE_SEM_PROGRAM") || getenv("ARCHE_LOWER_PROGRAM");
+	SemanticContext *sem_ctx = use_legacy_sem ? semantic_analyze(prog) : semantic_analyze_cst(cst_root, source);
 
 	if (!sem_ctx || semantic_has_errors(sem_ctx)) {
 		fprintf(stderr, "Semantic analysis failed\n");

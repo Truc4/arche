@@ -7,19 +7,33 @@ live in the working tree on the current branch for review.
 
 - `make` builds clean; unit suites: parser 47/47, semantic 37/37, codegen 8/8, lower 7/7,
   cst-view 13/13.
-- **The CST is now the compiler's lowering source** (`lower_cst_to_ast_v2` is the default;
-  the Program lowerer is the `ARCHE_LOWER_PROGRAM` A/B fallback). Validated: lit corpus
-  **253/253**, **11/11 codegen goldens byte-identical**, `verify-cst` **292/292** lossless
-  round-trip.
+- **The CST is now the compiler's source of truth for both phases by default.** Semantic
+  analysis reconstructs the abstract AST from the lossless CST (`semantic_analyze_cst` →
+  `cst_to_program` → shared `analyze_program_core`) and lowering reads the CST
+  (`lower_cst_to_ast_v2`) — both default. The legacy paths over the *parser-built* `Program`
+  survive only as A/B fallbacks: `ARCHE_SEM_PROGRAM` and `ARCHE_LOWER_PROGRAM`. So the
+  parser-built `Program` is **dead in the default pipeline** (vestigial: it still drives the
+  parser's CST-wrap keying and feeds the two fallbacks + the 47 parser unit-tests).
+- Validated on the default (CST) pipeline: lit corpus **253/253**, **11/11 codegen goldens
+  byte-identical**, `verify-cst` **292/292** lossless round-trip; and against the toggles
+  (`ARCHE_SEM_PROGRAM`, `ARCHE_LOWER_PROGRAM`) the legacy paths stay green for A/B.
+- Design note (rust/go-aligned): the compiler builds an abstract AST from the parse and
+  analyzes *that* — rustc/Go model — while the lossless CST is the single syntax tree feeding
+  lowering and tooling. (rust-*analyzer*'s "analysis as typed views over the CST" is the IDE
+  tool's model; not adopted for the batch compiler. `cst_to_program` is that CST→AST build.)
 - `arche-cst-tokens` classifies identifiers by node context (type / property / function /
   parameter / variable) — confirmed on real examples.
 - Editor end-to-end in Neovim 0.12: `.arche` buffer → LSP attach → `semanticTokens/full`
   → 25 correctly-classified tokens.
 
-What is NOT done (deliberate follow-ons): the rust-analyzer end-state where the AST is a
-typed *view* over the CST (here the AST is still built directly, alongside the CST); and
-the semantic-token layer pulled from the type checker (archetype-vs-builtin, aliases,
-mutability, unused).
+What is NOT done (the remaining physical cleanup, S6/S8/S9): the parser still *constructs* the
+`Program` tree (its CST-wrap keying reads `decl->kind`/`stmt->type`/`expr->type`), the two
+pre-passes (`resolve_uses`, `expand_archetype_tuple_groups`) + legacy `semantic_analyze`/
+`lower_cst_to_ast` still exist for the fallbacks, and 47 parser tests assert via `Program`.
+Deleting `Program` means re-keying the parser's wraps off the tokens directly, porting those
+tests to views, and dropping the fallbacks + pre-passes — large and hard-to-reverse, so it
+removes the A/B safety nets. Then S9 renames (`Program`→ the abstract AST, `AstProgram`→HIR,
+`ast/`→`hir/`).
 
 ## Goal
 
@@ -225,6 +239,92 @@ the binary (a direct `env VAR=1 ./build/arche …` invocation) before trusting a
 and the `resolve_uses` / `expand_archetype_tuple_groups` pre-passes feed semantic. Those go
 away once semantic moves onto the CST (below).
 
+## CST-driven semantic: DONE — behind `ARCHE_SEM_CST` (S4)
+
+`semantic_analyze_cst(const SyntaxNode *root, const char *src)` in `semantic/semantic.c`
+runs the type checker from the lossless CST instead of the parser-built `Program`. It is
+selected in `main.c` by the env var `ARCHE_SEM_CST`; **the default (unset) stays the legacy
+`semantic_analyze(Program*)` path** (the final flip is deferred). `tests/lit.cfg` forwards
+the toggle into the test environment.
+
+### Design decision (how, and why this shape)
+
+A full rewrite of the ~3000-line traversal onto views is the highest-risk piece in the
+migration; the analyzer also *reads its own inference writes* and *mutates* the `Program`
+(tuple-field rewrites, alias erasure), so it can't be decoupled statement-by-statement.
+Instead — mirroring how lowering was migrated and keeping the side-model + error contract
+**provably identical** — the CST path **reconstructs an analyzable `Program` directly from
+the immutable CST** (`cst_to_program` → `cst_build_decl`/`cst_build_stmt`/`cst_build_expr`/
+`cst_build_type`, walking the exact node shapes `lower/lower.c` uses), then runs the SAME
+analysis core (`analyze_program_core`, factored out of the old `semantic_analyze`). The key
+invariant: each reconstructed Expression/Statement carries `cst_id = (CST node id + 1)`, so
+the side model — keyed by `cst_id - 1` — is keyed by the exact node id the CST lowerer reads
+back. Identical side model ⇒ identical IR. This genuinely removes the dependency on the
+*parser-built* `Program`: the analyzer now reconstructs its working tree from the CST that is
+the single source of syntax.
+
+**Modules:** `main.c`'s `resolve_uses` registers each used module's CST with the analyzer via
+the new `semantic_add_module` (parallel to `lower_add_module`). `cst_to_program` inlines those
+module CSTs and applies the same name-prefixing + cross-module bare-reference resolution as
+`resolve_uses` (the helpers are reimplemented over the reconstructed `Program` — `sem_rename_*`),
+so symbol resolution / error detection match the Program path. Chosen over "read module decls
+from `prog`" so the analyzer needs nothing from the parser-built `Program`.
+
+**Pre-passes:** `cst_to_program` reproduces `expand_archetype_tuple_groups` (top-level
+`pos (x,y) :: T` + `arche P { pos }` → flat tuple columns) as `sem_expand_tuple_groups`.
+Top-level tuple-group consts are reconstructed as `TYPE_TUPLE`-valued `ConstDecl`s, and
+inline archetype-component aliases / fixpoint const classification fall out of the unchanged
+pass-0 core.
+
+**No erasure on the CST path:** `analyze_program_core(ctx, prog, erase)` takes an `erase`
+flag. The Program path passes `erase=1` (the legacy Program lowerer needs aliases rewritten in
+place); the CST path passes `erase=0` — the CST lowerer reads aliases from the side model
+(`bind_alias` + `semantic_resolve_type_alias`), so the tree mutation is unnecessary. The
+reconstructed `Program` is owned by the `SemanticContext` (`owned_prog`) and freed with it,
+because the side model borrows type-name strings that live in it (it must outlive
+lowering+codegen, exactly as `main.c` keeps the parser-built `prog` alive).
+
+### Constructs handled
+
+All of them — every declaration (world, archetype incl. inline components + tuple-group
+fields, proc/sys/func incl. `extern`/`unsafe`/`own`/`@allow_pure_proc`, func-group, const in
+all `::`/`: T :`/`: type : T`/tuple-group forms, static archetype-alloc with `(cap[,init]) {
+field: v }` init blocks, static array), every statement (bind incl. const vs variable
+classification + local type aliases, multi-bind shorthand + paren forms, assign incl.
+compound ops, for in C-style / range / infinite forms, if/else, return, free, break, run,
+each_field), and every expression form the corpus exercises (literal, string, name incl.
+`table<X>`, field/member chains, index incl. member-chain bases, binary, unary incl.
+move/copy, call, array literal). Source `line:column` is reconstructed from token leaves so
+lint diagnostics report identical positions.
+
+### Verification (this session, exact commands)
+
+- `make build/arche` clean (no new warnings from `semantic/semantic.c` or `main.c`).
+- IR-golden parity **11/11** byte-identical: for each P in `VERIFY_CG_PROGRAMS`,
+  `ARCHE_SEM_CST=1 ./build/arche -emit-llvm -o /tmp/s.ll P` == `tests/codegen_golden/<base>.ll`
+  (incl. the module + tuple programs).
+- `ARCHE_SEM_CST=1 lit tests/` = **253/253** (CST-semantic + CST-lower together, incl. every
+  error test ⇒ error parity).
+- Diagnostic parity: a sweep of 110 error/overload/type/ownership/handle/extern/alloc tests —
+  sorted stderr + exit codes byte-identical between the two paths (including lint line:col).
+- Default path fully green: plain `lit tests/` **253/253**, `make verify-codegen` matches
+  golden, `make test-semantic` **37/37**, `make verify-cst` **292/292**.
+- UBSAN build of the whole compiler: **0** runtime errors across the csv/tuple/use/archetype/
+  errors/overloads corpora under `ARCHE_SEM_CST=1` (ASAN can't init under the sandbox's
+  address-space limit; UBSAN was used instead).
+
+### Remaining gaps / follow-ons
+
+- The CST path still *builds a `Program`* internally (it just no longer needs the
+  parser-built one). The rust-analyzer end-state (analysis as a typed view over the CST, no
+  intermediate `Program`) is the larger S8 rewrite; this lands the decoupling without that
+  risk. When the default flips and the parser stops building `Program` (S8), the analyzer's
+  internal builder + the reimplemented `sem_rename_*`/`sem_expand_tuple_groups` are the
+  natural home for those pre-passes (S6), letting `main.c`'s `resolve_uses`/
+  `expand_archetype_tuple_groups`/erasure be deleted.
+- `EXPR_ALLOC` is reconstructed defensively but never occurs (the parser's heap-`alloc`
+  expression form is commented out; `alloc` only exists as `static`).
+
 ## Resume plan for the heavy half (mapped, not yet done)
 
 Order: **lower → semantic → delete Program**. Lowering is the easier first switch because
@@ -234,11 +334,8 @@ its output (`AstProgram`) is unchanged, so the IR goldens validate it independen
    via `cst_view.h` (no `cst_id` on `Decl`/param/field was needed), reads types from the side
    model, and is now the default. The Program lowerer survives only as the `ARCHE_LOWER_PROGRAM`
    A/B path. See "CST-driven lowering: DONE" above for the construct list + couplings fixed.
-2. **Semantic onto the CST** (~3000 lines): the type checker reads its own `resolved_type`
-   writes during inference, so it can't be decoupled piecemeal — it walks `Program` today.
-   Rewrite its traversal onto `cst_view.h`, writing results only to the side model (drop the
-   `resolved_type`/`is_type_alias` tree mutations once it no longer reads them). Validate
-   `verify-codegen` + `make test` after.
+2. **Semantic onto the CST** (~3000 lines): DONE behind `ARCHE_SEM_CST` (see "CST-driven
+   semantic" below). Default path unchanged.
 3. **Delete `Program`** (S8): parser stops building it (wraps are the sole output), remove
    the structs + `cst_id` scaffolding, port the 47 parser-tests to assert via views.
 4. **S6 finish** (module name-prefixing → symbol layer), **S9** rename (`ast/`→`hir/`, etc.).
