@@ -2,7 +2,7 @@
 // (no silent copy), the function fills it in place, and hands it back through the return.
 // This is the canonical fill-buffer / FFI shape.
 // RUN: %arche -o %t %s && %t | grep "filled=hello n=5"
-func fill(move buf: char[32], s: char[]) -> (char[32], int) {
+func fill(own buf: char[32], s: char[]) -> (char[32], int) {
   sprintf(buf, "%s", s);
   return buf, strlen(s);
 }

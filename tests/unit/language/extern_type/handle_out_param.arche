@@ -6,7 +6,7 @@
 resource :: opaque
 extern func resource_open(initial: int) -> resource;
 extern func resource_fill(r: resource, buf: char[], n: int) -> int;
-extern proc resource_close(move r: resource);
+extern proc resource_close(own r: resource);
 
 proc main() {
   r := resource_open(42);

@@ -2,7 +2,7 @@
 // hand-off is always visible (no silent copy). Passing a bare name is a compile error.
 // Works for any type (this is a plain data buffer, not opaque).
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "must be moved" %t.out
-proc sink(move buf: char[]) {
+proc sink(own buf: char[]) {
   buf[0] = 'X';
 }
 

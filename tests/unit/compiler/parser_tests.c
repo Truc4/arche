@@ -760,6 +760,18 @@ void test_lex_move_keyword(void) {
 	test_pass_msg();
 }
 
+void test_lex_own_keyword(void) {
+	test_start("lex own keyword");
+	Lexer lex;
+	lexer_init(&lex, "own foo");
+	Token t1 = lexer_next_token(&lex);
+	ASSERT_EQ(t1.kind, TOK_OWN, "first token should be TOK_OWN");
+	Token t2 = lexer_next_token(&lex);
+	ASSERT_EQ(t2.kind, TOK_IDENT, "second token should be TOK_IDENT");
+	lexer_free(&lex);
+	test_pass_msg();
+}
+
 /* ========== HANDLE TYPE TESTS ========== */
 
 void test_parser_handle_type_is_typename(void) {
@@ -777,18 +789,18 @@ void test_parser_handle_type_is_typename(void) {
 	test_pass_msg();
 }
 
-/* ========== MOVE PARAMETER MODIFIER TESTS ========== */
+/* ========== OWN PARAMETER MODIFIER TESTS ========== */
 
-void test_move_param_modifier(void) {
-	test_start("move parameter modifier");
+void test_own_param_modifier(void) {
+	test_start("own parameter modifier");
 	Program *prog = parse_string("window :: opaque\n"
-	                             "extern proc window_close(move w: window);\n");
+	                             "extern proc window_close(own w: window);\n");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ASSERT_EQ(prog->decl_count, 2, "expected 2 decls");
 	ASSERT_EQ(prog->decls[1]->kind, DECL_PROC, "expected DECL_PROC");
 	ProcDecl *p = prog->decls[1]->data.proc;
 	ASSERT_EQ(p->param_count, 1, "expected 1 param");
-	ASSERT_EQ(p->params[0]->is_move, 1, "param should be move");
+	ASSERT_EQ(p->params[0]->is_own, 1, "param should be own");
 	program_free(prog);
 	test_pass_msg();
 }
@@ -829,6 +841,7 @@ int main(void) {
 	/* Lexer tests */
 	printf("Lexer tests:\n");
 	test_lex_move_keyword();
+	test_lex_own_keyword();
 
 	/* Archetype tests */
 	printf("Archetype tests:\n");
@@ -888,7 +901,7 @@ int main(void) {
 
 	/* Consume parameter modifier tests */
 	printf("\nConsume parameter modifier tests:\n");
-	test_move_param_modifier();
+	test_own_param_modifier();
 	test_out_keyword_rejected();
 
 	/* Assignment operators */

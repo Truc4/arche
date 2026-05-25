@@ -1512,6 +1512,29 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			strcpy(result_buf, operand_buf); /* `move x` is transparent — the value passes through */
 			break;
 		}
+		if (expr->data.unary.op == UNARY_COPY) {
+			/* `copy x`: duplicate a local char[N] buffer into a fresh stack buffer so the function
+			 * gets an owned copy and the caller keeps the original. Other operands pass through
+			 * (scalars are values; unsupported array kinds are rejected by the checker). */
+			if (expr->data.unary.operand->kind == AST_EXPR_NAME) {
+				ValueInfo *ov = find_value(ctx, expr->data.unary.operand->data.name.name);
+				if (ov && ov->type == 7) {
+					int n = ov->string_len;
+					char *dup = gen_value_name(ctx);
+					emit_alloca(ctx, "  %s = alloca [%d x i8]\n", dup, n);
+					char *src_i8 = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", src_i8, n, operand_buf);
+					char *dst_i8 = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", dst_i8, n, dup);
+					buffer_append_fmt(ctx, "  call void @llvm.memcpy.p0.p0.i64(i8* %s, i8* %s, i64 %d, i1 false)\n",
+					                  dst_i8, src_i8, n);
+					strcpy(result_buf, dup);
+					break;
+				}
+			}
+			strcpy(result_buf, operand_buf); /* transparent: scalar / pass-through */
+			break;
+		}
 
 		char *res_name = gen_value_name(ctx);
 		if (expr->data.unary.op == UNARY_NEG) {
@@ -2217,8 +2240,12 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			arg_is_move[i] = 0;
 
 			AstExpr *inner = expr->data.call.args[i];
-			if (inner->kind == AST_EXPR_UNARY && inner->data.unary.op == UNARY_MOVE) {
-				arg_is_move[i] = 1;
+			if (inner->kind == AST_EXPR_UNARY &&
+			    (inner->data.unary.op == UNARY_MOVE || inner->data.unary.op == UNARY_COPY)) {
+				/* `move` is by-ref (transparent); `copy` already duplicated in codegen_expression.
+				 * Either way, unwrap to the operand to classify its type/size. */
+				if (inner->data.unary.op == UNARY_MOVE)
+					arg_is_move[i] = 1;
 				inner = inner->data.unary.operand;
 			}
 
@@ -2250,7 +2277,8 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			arg_is_static_array[i] = 0;
 			AstExpr *inner = expr->data.call.args[i];
-			if (inner->kind == AST_EXPR_UNARY && inner->data.unary.op == UNARY_MOVE)
+			if (inner->kind == AST_EXPR_UNARY &&
+			    (inner->data.unary.op == UNARY_MOVE || inner->data.unary.op == UNARY_COPY))
 				inner = inner->data.unary.operand;
 			if (!arg_is_string[i] && !arg_is_array_literal[i] && inner->kind == AST_EXPR_NAME) {
 				const char *arg_name = inner->data.name.name;
@@ -2388,17 +2416,12 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				int buf_len = arg_values[i]->string_len;
 				char *bitcast = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", bitcast, buf_len, arg_bufs[i]);
-				/* By-value (non-`move`) array arg to an arche function: copy the buffer so the
-				 * callee's mutations don't leak back. Externs (C ABI) and `move` stay by-ref. */
-				if ((callee_wants_arr || callee_wants_shaped_arr) && !callee_is_extern && !arg_is_move[i]) {
-					char *copy = gen_value_name(ctx);
-					emit_alloca(ctx, "  %s = alloca [%d x i8]\n", copy, buf_len);
-					char *copy_i8 = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", copy_i8, buf_len, copy);
-					buffer_append_fmt(ctx, "  call void @llvm.memcpy.p0.p0.i64(i8* %s, i8* %s, i64 %d, i1 false)\n",
-					                  copy_i8, bitcast, buf_len);
-					bitcast = copy_i8;
-				}
+				/* Array args pass BY REFERENCE — read-only borrow is the default, so no copy. A
+				 * borrowed (non-`move`) array param cannot be mutated (semantic purity check), so
+				 * the caller's buffer is never clobbered; `move` args are by-ref too (ownership
+				 * handed over). The old by-value memcpy clone is gone.
+				 * TODO(FBIP reuse): a producer that does need a private result buffer can reuse a
+				 * dead input's storage when aliasing is provably safe (see plan Phase C). */
 				if (callee_wants_arr && !callee_is_extern) {
 					/* Non-extern callee expects char[] (arche_array*): wrap the
 					 * bare buffer pointer in a stack arche_array {ptr,len,cap}. */
@@ -5063,6 +5086,10 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 	}
 
 	case AST_STMT_RETURN: {
+		/* TODO(sret): a from-scratch aggregate return (`x := make()`, with no `own` input buffer to
+		 * thread back) could caller-allocate the bind target and pass it as a hidden out-pointer
+		 * here, so the result is built directly in the caller's slot. Deferred — today such a value
+		 * is produced by threading an `own` buffer (`g: T[N]; g := fill(move g)`). */
 		AstReturnStmt *rs = &stmt->data.return_stmt;
 		const char *ret_type = ctx->current_return_type ? ctx->current_return_type : "i32";
 		if (rs->count <= 1) {
@@ -6449,7 +6476,8 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "declare i8* @calloc(i64, i64)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
 	buffer_append(ctx, "declare void @abort()\n");
-	/* By-value array args are copied at the call site (no side effects without `move`). */
+	/* memcpy intrinsic (string/array initialization, struct copies). Array args are passed by
+	 * reference (read-only borrow); they are no longer copied at the call site. */
 	buffer_append(ctx, "declare void @llvm.memcpy.p0.p0.i64(i8*, i8*, i64, i1)\n\n");
 
 	/* Global error message for bounds check failures */

@@ -4,7 +4,7 @@
 // RUN: %arche -o %t %s && %t | grep "b0=88 b1=89 n=2"
 static sbuf: char[16];
 
-func fill2(move buf: char[16]) -> (char[16], int) {
+func fill2(own buf: char[16]) -> (char[16], int) {
   buf[0] = 88;
   buf[1] = 89;
   return buf, 2;

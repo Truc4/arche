@@ -622,10 +622,10 @@ static Decl *parse_proc_decl(Parser *parser) {
 	/* Parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
-			int param_is_move = 0;
+			int param_is_own = 0;
 
-			if (match(parser, TOK_MOVE)) {
-				param_is_move = 1;
+			if (match(parser, TOK_OWN)) {
+				param_is_own = 1;
 			}
 
 			if (!check(parser, TOK_IDENT)) {
@@ -647,7 +647,7 @@ static Decl *parse_proc_decl(Parser *parser) {
 				return NULL;
 
 			Parameter *param = parameter_create(param_name, param_type);
-			param->is_move = param_is_move;
+			param->is_own = param_is_own;
 			param->loc.line = param_line;
 			param->loc.column = param_column;
 			proc->params = realloc(proc->params, (proc->param_count + 1) * sizeof(Parameter *));
@@ -850,10 +850,10 @@ static Decl *parse_func_decl(Parser *parser) {
 	/* parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
-			int param_is_move = 0;
+			int param_is_own = 0;
 
-			if (match(parser, TOK_MOVE)) {
-				param_is_move = 1;
+			if (match(parser, TOK_OWN)) {
+				param_is_own = 1;
 			}
 
 			if (!check(parser, TOK_IDENT)) {
@@ -876,7 +876,7 @@ static Decl *parse_func_decl(Parser *parser) {
 				return NULL;
 
 			Parameter *param = parameter_create(param_name, param_type);
-			param->is_move = param_is_move;
+			param->is_own = param_is_own;
 			param->loc.line = param_line;
 			param->loc.column = param_column;
 			func->params = realloc(func->params, (func->param_count + 1) * sizeof(Parameter *));
@@ -1696,6 +1696,21 @@ static Expression *parse_unary_expr(Parser *parser) {
 		u->loc.line = line;
 		u->loc.column = col;
 		u->data.unary.op = UNARY_MOVE;
+		u->data.unary.operand = operand;
+		return u;
+	}
+	/* `copy <expr>` — call-site duplication: the caller keeps its original; the function gets an
+	 * owned copy. The checker does NOT mark the operand consumed; codegen duplicates the buffer. */
+	if (check(parser, TOK_COPY)) {
+		int line = parser->current.line, col = parser->current.column;
+		advance(parser);
+		Expression *operand = parse_unary_expr(parser);
+		if (!operand)
+			return NULL;
+		Expression *u = expression_create(EXPR_UNARY);
+		u->loc.line = line;
+		u->loc.column = col;
+		u->data.unary.op = UNARY_COPY;
 		u->data.unary.operand = operand;
 		return u;
 	}

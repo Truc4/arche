@@ -16,7 +16,10 @@ SysDecl ← "sys" _ Identifier _ "(" _ (Identifier (_ "," _ Identifier)*)? _ ")"
 
 FuncDecl ← "func" _ Identifier _ "(" _ (FuncParam (_ "," _ FuncParam)*)? _ ")" _ "->" _ Type _ "{" _ Expression _ "}"
 
-FuncParam ← Identifier _ ":" _ Type
+# A parameter is a read-only borrow by default; `own` means the function takes ownership (may
+# mutate/consume). At the call site an `own` argument is satisfied with `move <expr>` (donate,
+# consumed) or `copy <expr>` (duplicate, kept) — see UnaryExpr.
+FuncParam ← ("own" _)? Identifier _ ":" _ Type
 
 # Extern table declarations introduce foreign-resource pools.  The name is
 # never used bare — references go through `handle(<Name>)` everywhere, just
@@ -24,11 +27,8 @@ FuncParam ← Identifier _ ":" _ Type
 # required at declaration time.
 ExternTypeDecl ← "extern" _ Identifier _ "(" _ Number _ ")" _ ";"
 
-# Parameter modifiers (extern signatures only)
-# - "out":     parameter is returned in the result tuple; caller may pre-fill
-# - "consume": parameter's handle slot is freed after the call; further use is an error
-# - Modifiers may appear in either order; both on the same parameter is a parse error.
-ExternFuncParam ← ("out" / "consume")? _ ("out" / "consume")? _ Identifier _ ":" _ Type
+# Extern parameters take the same `own` modifier as ordinary funcs (no more `out`/`consume`).
+ExternFuncParam ← ("own" _)? Identifier _ ":" _ Type
 
 # Statements
 

@@ -1,7 +1,7 @@
 // RUN: %arche -o %t %s && %t | grep "b3=7 b5=9 sum=16"
 // Storing into a char[] / buffer at an i64 index (write-path index coercion).
 // The buffer is moved in by reference (so the store reaches the caller) and returned.
-func setb(buf: char[], i: i64, v: int) -> char[] {
+func setb(own buf: char[], i: i64, v: int) -> char[] {
   buf[i] = v;
   return buf;
 }

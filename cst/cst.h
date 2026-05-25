@@ -213,7 +213,7 @@ struct ProcDecl {
 struct Parameter {
 	char *name;
 	TypeRef *type;
-	int is_move; /* `move` param: caller must `move` the arg (by-ref, no silent copy) */
+	int is_own; /* `own` param: function owns it (may mutate/consume); caller passes via `move` or `copy` */
 	SourceLoc loc;
 };
 
@@ -400,6 +400,7 @@ typedef enum {
 	UNARY_NEG,
 	UNARY_NOT,
 	UNARY_MOVE, /* `move x` — call-site ownership transfer; transparent value, marks x consumed */
+	UNARY_COPY, /* `copy x` — call-site duplication; caller keeps the original (x not consumed) */
 } UnaryOperator;
 
 typedef struct {
