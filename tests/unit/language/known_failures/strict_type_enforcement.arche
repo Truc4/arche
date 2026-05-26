@@ -3,7 +3,6 @@
 // BUG: Compiler should reject explicit float→int assignment
 // Expected: Type error
 // Current: Silently converts (wrong)
-@allow_pure_proc
-proc main() {
+@allow_pure_proc proc main() {
   x := 3.14;
 }

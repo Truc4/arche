@@ -1,7 +1,7 @@
 #ifndef CODEGEN_H
 #define CODEGEN_H
 
-#include "../ast/ast.h"
+#include "../hir/hir.h"
 #include "../semantic/semantic.h"
 #include <stdio.h>
 
@@ -9,7 +9,7 @@
 typedef struct CodegenContext CodegenContext;
 
 /* Create, generate, and free codegen context */
-CodegenContext *codegen_create(AstProgram *ast, SemanticContext *sem_ctx);
+CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx);
 void codegen_generate(CodegenContext *ctx, FILE *output);
 void codegen_free(CodegenContext *ctx);
 

@@ -3,7 +3,6 @@ func pair() -> (int, int) {
   return 42, 7;
 }
 
-
 proc main() {
   x, y := pair();
   assert(x == 42, "x not 42\n");

@@ -6,17 +6,14 @@ arche Transaction {
   price_bucket :: float,
 }
 
-
-static pool<Transaction>(10000, 10000) {
-  price: 0.0,
-  price_bucket: 0.0,
-};
-
+static pool<Transaction> (10000, 10000) {
+  price: 0.0, price_bucket: 0.0,
+}
+;
 
 proc load_transactions() {
   csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");
 }
-
 
 proc write_output() {
   fd := arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_3.csv");
@@ -24,25 +21,30 @@ proc write_output() {
   sprintf(header, "price_bucket\n");
   arche_fwrite(fd, header, strlen(header));
   buf: char[64];
-  for (i := 0; i < 10000; i += 1) {
+  for (i := 0;
+  i < 10000;
+  i += 1) {
     sprintf(buf, "%g\n", Transaction.price_bucket[i]);
     arche_fwrite(fd, buf, strlen(buf));
   }
   arche_fclose(move fd);
 }
 
-
 proc main() {
   load_transactions();
   t0 := arche_now_sec();
-  for (iter := 0; iter < 216000; iter += 1) {
+  for (iter := 0;
+  iter < 216000;
+  iter += 1) {
     Transaction.price_bucket = Transaction.price / 10.0;
   }
   t1 := arche_now_sec();
   elapsed := t1 - t0;
 
   sum := 0.0;
-  for (m := 0; m < 10000; m += 1) {
+  for (m := 0;
+  m < 10000;
+  m += 1) {
     sum = sum + Transaction.price_bucket[m];
   }
 

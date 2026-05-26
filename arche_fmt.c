@@ -1,4 +1,5 @@
 #include "cst/cst.h"
+#include "cst/format_cst.h"
 #include "lexer/lexer.h"
 #include "parser/parser.h"
 #include <stdio.h>
@@ -46,7 +47,8 @@ int main(int argc, char *argv[]) {
 	src[bytes_read] = '\0';
 	fclose(file);
 
-	/* lex and parse */
+	/* Lex + parse. The formatter is driven entirely by the lossless CST, so it preserves
+	 * comments and needs no abstract-AST reconstruction. */
 	ParseResult parse_result = parse_source(src);
 
 	if (parse_result.error_count > 0) {
@@ -65,28 +67,15 @@ int main(int argc, char *argv[]) {
 		if (parse_result.error_count > unique_errors) {
 			fprintf(stderr, "  ... and %zu more errors\n", parse_result.error_count - unique_errors);
 		}
-		Program *prog = parse_result.ast;
 		parse_result_free(&parse_result);
-		program_free(prog);
 		free(src);
 		return 1;
 	}
+	/* Format directly from the lossless CST (comment- and structure-preserving). */
+	format_cst(stdout, parse_result.cst_root, src);
 
-	Program *prog = parse_result.ast;
-	Token *comments = parse_result.comments;
-	size_t comment_count = parse_result.comment_count;
-
-	/* format and print with comment preservation */
-	format_program(stdout, prog, comments, comment_count, src);
-
-	/* cleanup */
-	program_free(prog);
-	free(comments);
+	parse_result_free(&parse_result);
 	free(src);
-	for (size_t i = 0; i < parse_result.error_count; i++) {
-		free(parse_result.errors[i].message);
-	}
-	free(parse_result.errors);
 
 	return 0;
 }

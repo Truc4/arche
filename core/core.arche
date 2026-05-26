@@ -9,8 +9,7 @@ extern proc fflush(stream: int);
 extern func atof(str: char[]) -> float;
 extern func atoi(str: char[]) -> int;
 extern func strlen(str: char[]) -> int;
-file :: opaque
-extern func arche_stdin() -> file;
+file :: opaque extern func arche_stdin() -> file;
 extern func arche_stdout() -> file;
 extern func arche_stderr() -> file;
 extern func arche_fopen_write(path: char[]) -> file;
@@ -31,8 +30,7 @@ extern proc term_raw_restore();
 extern func term_read_key() -> int;
 extern proc arche_sleep_ms(ms: int);
 extern func syscall(n: i64, a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64;
-socket :: opaque
-extern func net_listen(port: int) -> socket;
+socket :: opaque extern func net_listen(port: int) -> socket;
 extern func net_accept(s: socket) -> socket;
 extern func net_connect(ip: char[], port: int) -> socket;
 extern func net_send(s: socket, buf: char[], n: int) -> int;

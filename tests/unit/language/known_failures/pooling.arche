@@ -4,9 +4,7 @@ arche Entity {
   y :: float,
 }
 
-
-static table<Entity>(100);
-
+static table<Entity> (100);
 
 proc main() {
   insert(table<Entity>, 1.0, 2.0);

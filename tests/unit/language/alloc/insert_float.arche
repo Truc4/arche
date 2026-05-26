@@ -3,8 +3,7 @@ arche FloatOps {
   val :: float,
 }
 
-
-static pool<FloatOps>(8);
+static pool<FloatOps> (8);
 
 proc main() {
   insert(FloatOps, 1.0);

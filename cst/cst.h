@@ -2,13 +2,14 @@
 #define CST_H
 
 #include "../lexer/lexer.h" /* Trivia, Token */
+#include "syntax_tree.h"    /* SyntaxNode (transient Expression->cst_node link) */
 #include <stddef.h>
 
 /* =========================
    Forward declarations
    ========================= */
 
-typedef struct Program Program;
+typedef struct AstProgram AstProgram;
 typedef struct Decl Decl;
 typedef struct WorldDecl WorldDecl;
 typedef struct ArchetypeDecl ArchetypeDecl;
@@ -34,7 +35,7 @@ typedef struct {
 } SourceLoc;
 
 /* =========================
-   Program / declarations
+   AstProgram / declarations
    ========================= */
 
 typedef enum {
@@ -54,7 +55,7 @@ typedef enum {
 	STATIC_KIND_ARRAY,
 } StaticKind;
 
-struct Program {
+struct AstProgram {
 	Decl **decls;
 	int decl_count;
 	SourceLoc loc;
@@ -364,7 +365,8 @@ struct Statement {
 	int leading_count;
 	Trivia *trailing_trivia;
 	int trailing_count;
-	int last_line; /* line of this statement's last syntactic token */
+	int last_line;   /* line of this statement's last syntactic token */
+	uint32_t cst_id; /* TRANSIENT: CST node id (+1; 0 = unlinked) — see Expression.cst_id */
 	union {
 		BindStmt bind_stmt;
 		AssignStmt assign_stmt;
@@ -474,13 +476,18 @@ struct Expression {
 		StringExpr string;
 	} data;
 	char *resolved_type; /* Semantic analysis populates: "int", "double", "Vec3", etc. NULL if not yet analyzed */
+	/* TRANSIENT migration scaffolding (removed in the final stage): id of the CST
+	 * node this expression was parsed from (stored +1, so 0 means "not linked").
+	 * Stored as a value, not a pointer, so it survives the CST being freed. Lets
+	 * semantic/lower key a side model instead of mutating resolved_type. */
+	uint32_t cst_id;
 };
 
 /* =========================
    Constructors
    ========================= */
 
-Program *program_create(void);
+AstProgram *ast_program_create(void);
 Decl *decl_create(DeclKind kind);
 
 WorldDecl *world_decl_create(char *name);
@@ -508,7 +515,7 @@ Expression *expression_create(ExpressionType type);
    Destructors
    ========================= */
 
-void program_free(Program *prog);
+void ast_program_free(AstProgram *prog);
 void decl_free(Decl *decl);
 
 void world_decl_free(WorldDecl *world);
@@ -530,8 +537,6 @@ void expression_free(Expression *expr);
    ========================= */
 
 #include "../lexer/lexer.h"
-#include <stdio.h>
-
-void format_program(FILE *out, Program *prog, Token *comments, size_t comment_count, const char *src);
+#include <stdio.h> /* widely relied on transitively by includers (sprintf/FILE*) */
 
 #endif /* CST_H */

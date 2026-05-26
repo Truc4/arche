@@ -6,7 +6,10 @@ func pick_float(x: float) -> float {
   return x + 1.5;
 }
 
-func pick = { pick_int, pick_float };
+func pick = {
+  pick_int, pick_float
+}
+;
 
 proc main() {
   a := pick(2);

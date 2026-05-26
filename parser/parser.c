@@ -1,4 +1,5 @@
 #include "parser.h"
+#include "../cst/syntax_tree.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +26,9 @@ struct Parser {
 	int pending_count;
 	int pending_cap;
 	int recursion_depth;
+	/* Lossless CST builder. Built alongside the AST purely by appending; never
+	 * affects parse control flow, so CST bugs can't change compiler output. */
+	CstBuilder *builder;
 };
 
 /* ========== UTILITY FUNCTIONS ========== */
@@ -67,6 +71,16 @@ static void maybe_append_blank_trivia(Parser *parser, int anchor_line, int next_
 }
 
 static void advance(Parser *parser) {
+	/* CST: emit the token being consumed (the current lookahead) as a leaf, in
+	 * source order. Skips the priming/end sentinel (EOF) and error tokens (whose
+	 * `start` points at a message literal, not into source). */
+	if (parser->builder && parser->current.kind != TOK_EOF && parser->current.kind != TOK_ERROR &&
+	    parser->current.start != NULL) {
+		uint32_t off = (uint32_t)(parser->current.start - parser->lexer->src);
+		cst_builder_token(parser->builder, parser->current.kind, off, (uint32_t)parser->current.length,
+		                  parser->current.line, parser->current.column);
+	}
+
 	parser->previous = parser->current;
 	int prev_line = parser->previous.line;
 	parser->current = lexer_next_token(parser->lexer);
@@ -78,6 +92,12 @@ static void advance(Parser *parser) {
 			parser->had_error = 1;
 			parser->current.kind = TOK_EOF;
 			break;
+		}
+		/* CST: comments are real leaves too, keeping the tree lossless. */
+		if (parser->builder && parser->current.start != NULL) {
+			uint32_t coff = (uint32_t)(parser->current.start - parser->lexer->src);
+			cst_builder_token(parser->builder, TOK_COMMENT, coff, (uint32_t)parser->current.length,
+			                  parser->current.line, parser->current.column);
 		}
 		maybe_append_blank_trivia(parser, trivia_anchor_line(parser, prev_line), parser->current.line);
 		Trivia ctr;
@@ -100,6 +120,14 @@ static void advance(Parser *parser) {
 	}
 }
 
+/* Discard accumulated pending trivia. Comments are already emitted as CST leaves
+ * in advance(); the pending list only tracked comments/blank-lines for the old
+ * AST-node trivia (consumed by the legacy formatter). Draining keeps the list
+ * bounded during a parse without affecting the CST. */
+static void drain_pending_trivia(Parser *parser) {
+	parser->pending_count = 0;
+}
+
 /* Drain pending trivia into the given (leading_trivia, leading_count) slots.
  * The caller takes ownership of the allocated array. */
 static void take_pending_as_leading(Parser *parser, Trivia **out_trivia, int *out_count) {
@@ -114,35 +142,6 @@ static void take_pending_as_leading(Parser *parser, Trivia **out_trivia, int *ou
 	parser->pending_count = 0;
 }
 
-/* If pending_trivia[0] is a comment on or before `line`, steal entries up to
- * and including any same-line trailing comment as trailing trivia for the
- * just-finished construct. */
-static void steal_trailing_inline(Parser *parser, int line, Trivia **out_trivia, int *out_count) {
-	*out_trivia = NULL;
-	*out_count = 0;
-	if (parser->pending_count == 0)
-		return;
-	int steal = 0;
-	for (int i = 0; i < parser->pending_count; i++) {
-		Trivia *t = &parser->pending_trivia[i];
-		if (t->kind == TRIVIA_LINE_COMMENT && t->line == line) {
-			steal = i + 1;
-		} else {
-			break;
-		}
-	}
-	if (steal == 0)
-		return;
-	*out_trivia = malloc(steal * sizeof(Trivia));
-	memcpy(*out_trivia, parser->pending_trivia, steal * sizeof(Trivia));
-	*out_count = steal;
-	int remaining = parser->pending_count - steal;
-	if (remaining > 0) {
-		memmove(parser->pending_trivia, parser->pending_trivia + steal, remaining * sizeof(Trivia));
-	}
-	parser->pending_count = remaining;
-}
-
 static int check(Parser *parser, TokenKind kind) {
 	return parser->current.kind == kind;
 }
@@ -152,13 +151,6 @@ static int match(Parser *parser, TokenKind kind) {
 		return 0;
 	advance(parser);
 	return 1;
-}
-
-static char *token_text(Token tok) {
-	char *text = malloc(tok.length + 1);
-	strncpy(text, tok.start, tok.length);
-	text[tok.length] = '\0';
-	return text;
 }
 
 static void error(Parser *parser, const char *msg) {
@@ -220,97 +212,136 @@ static void synchronize(Parser *parser) {
 	}
 }
 
+/* ===== CST builder helpers (no-ops when no builder is attached) ===== */
+static int cst_cp(Parser *parser) {
+	return parser->builder ? cst_builder_checkpoint(parser->builder) : 0;
+}
+static SyntaxNode *cst_wrap(Parser *parser, int checkpoint, SyntaxNodeKind kind) {
+	if (parser->builder)
+		return cst_builder_wrap(parser->builder, checkpoint, kind);
+	return NULL;
+}
+
+/* True if everything emitted since `checkpoint` already collapsed to a single
+ * node (e.g. a parenthesised expression wrapped itself), so the caller should
+ * not wrap it again. */
+static int cst_single_node(Parser *parser, int checkpoint) {
+	CstBuilder *b = parser->builder;
+	return b && b->count == checkpoint + 1 && b->items[checkpoint].tag == SE_NODE;
+}
+
+/* Kind of the single CST node emitted since `checkpoint`, or SN_ERROR if the region
+ * isn't exactly one node. Lets statement parsing tell a bare-name target (SN_NAME_EXPR)
+ * from a field/index/call lvalue without an AST. */
+static SyntaxNodeKind cst_single_node_kind(Parser *parser, int checkpoint) {
+	CstBuilder *b = parser->builder;
+	if (b && b->count == checkpoint + 1 && b->items[checkpoint].tag == SE_NODE)
+		return b->items[checkpoint].as.node->kind;
+	return SN_ERROR;
+}
+
 /* ========== FORWARD DECLARATIONS ========== */
 
-static Decl *parse_decl(Parser *parser);
-static Statement *parse_statement(Parser *parser);
-static Expression *parse_expression(Parser *parser);
-static TypeRef *parse_type(Parser *parser);
+/* The parser builds ONLY the lossless CST: every parse_* function consumes tokens,
+ * emits CST node wraps, and returns success (1) / failure (0). It builds no abstract
+ * AST — that is reconstructed from the CST by cst_to_program. A few parse decisions
+ * still depend on the *form* of a just-parsed sub-construct (a bare-name LHS, a `type`
+ * meta-type, a shaped-array element type); those are threaded back through small
+ * out-params instead of inspecting a built node. */
+
+/* Form of a parsed type, for the few callers that branch on it. `cst_kind` is the
+ * CST wrap kind; `is_type_meta` marks the bare `type` meta-keyword (which shares
+ * SN_TYPE_REF with ordinary names but drives const/bind RHS parsing). */
+typedef struct {
+	SyntaxNodeKind cst_kind;
+	int is_type_meta;
+} TypeForm;
+
+static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind);
+static int parse_statement(Parser *parser);
+static int parse_expression(Parser *parser);
+static int parse_type(Parser *parser);
+static int parse_type_form(Parser *parser, TypeForm *out);
+static int parse_type_inner(Parser *parser, TypeForm *out);
 
 /* ========== TYPE PARSING ========== */
 
-static TypeRef *parse_type(Parser *parser) {
+/* Wrapper: every type position becomes a type node in the CST, tagged by the
+ * specific form so identifiers within are classified as types and consumers can
+ * tell arrays/tuples/handles apart. All call sites go through here. */
+static int parse_type(Parser *parser) {
+	TypeForm form;
+	return parse_type_form(parser, &form);
+}
+
+static int parse_type_form(Parser *parser, TypeForm *out) {
+	int cp = cst_cp(parser);
+	int ok = parse_type_inner(parser, out);
+	cst_wrap(parser, cp, out->cst_kind);
+	return ok;
+}
+
+/* `out->cst_kind` receives the CST type-node kind for the form parsed, from parse
+ * context. Pre-set to SN_TYPE_REF; overridden for array/shaped/handle forms. */
+static int parse_type_inner(Parser *parser, TypeForm *out) {
+	out->cst_kind = SN_TYPE_REF;
+	out->is_type_meta = 0;
 	if (!check(parser, TOK_IDENT)) {
 		error(parser, "Expected type name");
-		return NULL;
+		return 0;
 	}
 
-	char *name = token_text(parser->current);
+	int is_handle = (parser->current.length == 6 && strncmp(parser->current.start, "handle", 6) == 0);
+	int is_type_kw = (parser->current.length == 4 && strncmp(parser->current.start, "type", 4) == 0);
+	int is_archetype = (parser->current.length == 9 && strncmp(parser->current.start, "archetype", 9) == 0);
+	int is_opaque = (parser->current.length == 6 && strncmp(parser->current.start, "opaque", 6) == 0);
 	advance(parser);
 
-	TypeRef *type = NULL;
-	SourceLoc start_loc;
-	start_loc.line = parser->previous.line;
-	start_loc.column = parser->previous.column;
-
-	/* Bare-category `archetype` parameter type. Only legal where parse_type is
-	 * invoked from a parameter slot; semantic validates the context. */
-	if (strcmp(name, "archetype") == 0) {
-		free(name);
-		type = malloc(sizeof(TypeRef));
-		type->kind = TYPE_ARCHETYPE;
-		type->loc = start_loc;
-		return type;
-	}
-
-	/* `opaque`: a pointer-width, C-owned cell. A foreign-resource type is a nominal
-	 * alias over it (`file :: opaque`); distinctness comes from the alias name. */
-	if (strcmp(name, "opaque") == 0) {
-		free(name);
-		type = malloc(sizeof(TypeRef));
-		type->kind = TYPE_OPAQUE;
-		type->loc = start_loc;
-		return type;
-	}
+	/* Bare-category names `archetype` / `opaque` are leaf types (no array/handle suffix):
+	 * `archetype` is a parameter category; `opaque` is a pointer-width C-owned cell. */
+	if (is_archetype || is_opaque)
+		return 1;
 
 	/* `type`: the meta-type (type-of-types). Appears as the declared type in the alias
 	 * longhand `foo : type : float` and (later) generic params. Compile-time only. */
-	if (strcmp(name, "type") == 0) {
-		free(name);
-		type = malloc(sizeof(TypeRef));
-		type->kind = TYPE_TYPE;
-		type->loc = start_loc;
-		return type;
+	if (is_type_kw) {
+		out->is_type_meta = 1;
+		return 1;
 	}
 
 	/* handle<ArchetypeName> — a generation-checked reference to a row in a table.
 	 * Legacy handle(ArchetypeName) is still accepted during migration. */
-	if (strcmp(name, "handle") == 0 && (check(parser, TOK_LT) || check(parser, TOK_LPAREN))) {
+	if (is_handle && (check(parser, TOK_LT) || check(parser, TOK_LPAREN))) {
 		int angle = check(parser, TOK_LT);
 		advance(parser); /* consume < or ( */
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected archetype name after 'handle<'");
-			return NULL;
+			return 0;
 		}
-		char *arch_name = token_text(parser->current);
 		advance(parser);
 		if (angle) {
 			if (!match(parser, TOK_GT)) {
 				error(parser, "Expected '>' after archetype name in handle type");
-				return NULL;
+				return 0;
 			}
 		} else if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' after archetype name in handle type");
-			return NULL;
+			return 0;
 		}
-		type = malloc(sizeof(TypeRef));
-		type->kind = TYPE_HANDLE;
-		type->data.handle.archetype_name = arch_name;
-		type->loc = start_loc;
-		return type;
+		out->cst_kind = SN_TYPE_HANDLE;
+		return 1;
 	}
 
-	type = type_name_create(name);
-	type->loc = start_loc;
+	/* `archetype` / `opaque` bare-category names parse like an ordinary type name (the
+	 * CST records the keyword token; semantic interprets it). */
 
 	if (check(parser, TOK_LBRACKET)) {
 		advance(parser); /* consume [ */
 		if (check(parser, TOK_RBRACKET)) {
 			/* float[] → TYPE_ARRAY */
 			advance(parser);
-			TypeRef *arr = type_array_create(type);
-			arr->loc = type->loc;
-			return arr;
+			out->cst_kind = SN_TYPE_ARRAY;
+			return 1;
 		}
 		if (!check(parser, TOK_NUMBER)) {
 			error(parser, "Expected ']' or integer size after '['");
@@ -320,17 +351,14 @@ static TypeRef *parse_type(Parser *parser) {
 			if (check(parser, TOK_RBRACKET)) {
 				advance(parser);
 			}
-			return type;
+			return 1;
 		}
-		int rank = atoi(token_text(parser->current));
-		advance(parser);
+		advance(parser); /* size */
 		if (!match(parser, TOK_RBRACKET)) {
 			error(parser, "Expected ']' after array size");
-			return type;
+			return 1;
 		}
-		TypeRef *shaped = type_shaped_array_create(type, rank);
-		shaped->loc = type->loc;
-		type = shaped;
+		out->cst_kind = SN_TYPE_SHAPED_ARRAY;
 		/* chain: float[5][5] */
 		while (check(parser, TOK_LBRACKET)) {
 			advance(parser);
@@ -342,112 +370,66 @@ static TypeRef *parse_type(Parser *parser) {
 				if (check(parser, TOK_RBRACKET)) {
 					advance(parser);
 				}
-				return type;
+				return 1;
 			}
-			int r = atoi(token_text(parser->current));
-			advance(parser);
+			advance(parser); /* size */
 			if (!match(parser, TOK_RBRACKET)) {
 				error(parser, "Expected ']' after array size");
-				return type;
+				return 1;
 			}
-			TypeRef *outer = type_shaped_array_create(type, r);
-			outer->loc = shaped->loc;
-			type = outer;
 		}
-		return type;
+		return 1;
 	}
 
-	return type;
+	return 1;
 }
 
-/* Shallow-clone a simple type (TYPE_NAME / TYPE_OPAQUE) — used to give each member of a
- * homogeneous tuple group `name (a, b) :: T` its own TypeRef (so each frees independently). */
-static TypeRef *clone_simple_type(TypeRef *t) {
-	TypeRef *c = malloc(sizeof(TypeRef));
-	c->kind = t->kind;
-	c->loc = t->loc;
-	if (t->kind == TYPE_NAME) {
-		c->data.name = malloc(strlen(t->data.name) + 1);
-		strcpy(c->data.name, t->data.name);
-	}
-	return c;
-}
-
-/* Parse a tuple name-group `(a, b, …) :: T` after the leading name was consumed. The suffixes
- * are part of the name (minting `name_a`, `name_b`, …), `T` is the shared type. Returns a
- * TYPE_TUPLE (field_names = suffixes, field_types = a clone of T per field), or NULL on error. */
-static TypeRef *parse_tuple_name_group(Parser *parser, SourceLoc loc) {
+/* Parse a tuple name-group `(a, b, …) :: T` after the leading name was consumed. The
+ * suffixes are part of the name (minting `name_a`, `name_b`, …), `T` is the shared type. */
+static int parse_tuple_name_group(Parser *parser) {
 	advance(parser); /* consume '(' */
-	char **fnames = NULL;
-	int fcount = 0;
 	while (!check(parser, TOK_RPAREN) && !check(parser, TOK_EOF)) {
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected a name in tuple group `(a, b, …)`");
 			break;
 		}
-		char *fn = token_text(parser->current);
 		advance(parser);
-		fnames = realloc(fnames, (fcount + 1) * sizeof(char *));
-		fnames[fcount++] = fn;
 		if (!match(parser, TOK_COMMA))
 			break;
 	}
 	if (!match(parser, TOK_RPAREN)) {
 		error(parser, "Expected ')' to close tuple name group");
-		return NULL;
+		return 0;
 	}
 	if (!match(parser, TOK_COLON) || !match(parser, TOK_COLON)) {
 		error(parser, "Expected `::` and a shared type after tuple name group `(a, b) :: T`");
-		return NULL;
+		return 0;
 	}
-	TypeRef *shared = parse_type(parser);
-	if (!shared)
-		return NULL;
-	TypeRef **ftypes = malloc((fcount > 0 ? fcount : 1) * sizeof(TypeRef *));
-	for (int i = 0; i < fcount; i++)
-		ftypes[i] = (i == 0) ? shared : clone_simple_type(shared);
-	TypeRef *tt = malloc(sizeof(TypeRef));
-	tt->kind = TYPE_TUPLE;
-	tt->loc = loc;
-	tt->data.tuple.field_names = fnames;
-	tt->data.tuple.field_types = ftypes;
-	tt->data.tuple.field_count = fcount;
-	return tt;
+	if (!parse_type(parser))
+		return 0;
+	return 1;
 }
 
 /* ========== ARCHETYPE PARSING ========== */
 
-static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
-	/* All fields are columns (no metadata) */
-	FieldKind kind = FIELD_COLUMN;
-
+/* Parse one archetype field/component, wrapping its CST. Returns 1 on success,
+ * 0 on a malformed component (so the body loop stops). */
+static int parse_arch_field(Parser *parser) {
 	if (!check(parser, TOK_IDENT)) {
 		error(parser, "Expected field name");
-		*out_count = 0;
-		return NULL;
+		return 0;
 	}
-	char *name = token_text(parser->current);
-	char *name_copy = malloc(strlen(name) + 1);
-	strcpy(name_copy, name);
+	int field_decl_name_cp = cst_cp(parser);
 	advance(parser);
+	cst_wrap(parser, field_decl_name_cp, SN_FIELD_NAME);
 
 	/* Tuple group component: `pos (x, y) :: float` — the suffixes mint flat `pos_x`/`pos_y`
 	 * of the shared type. */
 	if (check(parser, TOK_LPAREN)) {
-		SourceLoc loc = {parser->previous.line, parser->previous.column};
-		TypeRef *tt = parse_tuple_name_group(parser, loc);
-		if (!tt) {
-			free(name_copy);
-			*out_count = 0;
-			return NULL;
-		}
-		FieldDecl *field = field_decl_create(kind, name_copy, tt);
-		field->loc = loc;
+		if (!parse_tuple_name_group(parser))
+			return 0;
 		match(parser, TOK_COMMA); /* optional trailing comma */
-		FieldDecl **result = malloc(sizeof(FieldDecl *));
-		result[0] = field;
-		*out_count = 1;
-		return result;
+		return 1;
 	}
 
 	/* A component is a type. A bare `a` references the type `a` (`arche Foo { a, b }` is a
@@ -455,142 +437,83 @@ static FieldDecl **parse_arch_field_expanded(Parser *parser, int *out_count) {
 	 * type `name` and includes it). The old single-colon accessor `name: type` is rejected —
 	 * `foo : bar` names nothing. */
 	if (!check(parser, TOK_COLON)) {
-		char *type_name_dup = malloc(strlen(name_copy) + 1);
-		strcpy(type_name_dup, name_copy);
-		TypeRef *t = type_name_create(type_name_dup);
-		t->loc.line = parser->previous.line;
-		t->loc.column = parser->previous.column;
-		FieldDecl *field = field_decl_create(kind, name_copy, t);
-		field->loc.line = parser->previous.line;
-		field->loc.column = parser->previous.column;
 		match(parser, TOK_COMMA); /* optional trailing comma */
-		FieldDecl **result = malloc(sizeof(FieldDecl *));
-		result[0] = field;
-		*out_count = 1;
-		return result;
+		return 1;
 	}
 	advance(parser); /* consume first ':' */
-	int meta_explicit = 0;
 	if (check(parser, TOK_COLON)) {
 		advance(parser); /* second ':' — `name :: type`, inferred meta-type */
 	} else {
 		/* The only other accepted form is the explicit meta-type longhand `name : type : type`.
 		 * A bare single colon (`name: type`) names nothing and is rejected. */
-		int is_meta = 0;
-		if (check(parser, TOK_IDENT)) {
-			char *kw = token_text(parser->current);
-			is_meta = (strcmp(kw, "type") == 0);
-			free(kw);
-		}
+		int is_meta =
+		    (check(parser, TOK_IDENT) && parser->current.length == 4 && strncmp(parser->current.start, "type", 4) == 0);
 		if (!is_meta) {
 			error(parser, "archetype components are types: write `name :: type` to define a component, "
 			              "or a bare type name to reference one (`name: type` is not valid)");
-			free(name_copy);
-			*out_count = 0;
-			return NULL;
+			return 0;
 		}
 		advance(parser); /* consume the meta-type `type` */
 		if (!match(parser, TOK_COLON)) {
 			error(parser, "expected `:` after `type`: write `name : type : T`");
-			free(name_copy);
-			*out_count = 0;
-			return NULL;
+			return 0;
 		}
-		meta_explicit = 1; /* remember the longhand was written, for faithful formatting */
 	}
 
 	/* Inline scalar component definition `name :: type` / `name : type : type` (tuple groups use
 	 * `name (a, b) :: T`). The component type follows; a value RHS (e.g. `hp :: 10`) is rejected by
 	 * parse_type, which requires a type name. */
-	TypeRef *type = parse_type(parser);
-	if (!type) {
-		free(name_copy);
-		*out_count = 0;
-		return NULL;
-	}
+	if (!parse_type(parser))
+		return 0;
 
-	/* trailing comma is optional */
-	match(parser, TOK_COMMA);
-
-	FieldDecl *field = field_decl_create(kind, name_copy, type);
-	field->meta_explicit = meta_explicit;
-	field->loc.line = parser->previous.line;
-	field->loc.column = parser->previous.column;
-
-	FieldDecl **result = malloc(sizeof(FieldDecl *));
-	result[0] = field;
-	*out_count = 1;
-	return result;
+	match(parser, TOK_COMMA); /* optional trailing comma */
+	return 1;
 }
 
-static Decl *parse_archetype_decl(Parser *parser) {
+static int parse_archetype_decl(Parser *parser, SyntaxNodeKind *out_kind) {
+	*out_kind = SN_ARCHETYPE_DECL;
 	if (!match(parser, TOK_ARCHETYPE)) {
 		error(parser, "Expected 'arche'");
-		return NULL;
+		return 0;
 	}
 
 	if (!check(parser, TOK_IDENT)) {
 		error(parser, "Expected archetype name");
-		return NULL;
+		return 0;
 	}
-	char *name = token_text(parser->current);
+	int arch_name_cp = cst_cp(parser);
 	advance(parser);
+	cst_wrap(parser, arch_name_cp, SN_TYPE_DEF_NAME);
 
 	if (!match(parser, TOK_LBRACE)) {
 		error(parser, "Expected '{'");
-		return NULL;
+		return 0;
 	}
 
-	ArchetypeDecl *arch = archetype_decl_create(name);
-	arch->loc.line = parser->previous.line;
-	arch->loc.column = parser->previous.column;
-
 	while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-		/* Pending trivia between fields → leading trivia of the next field group. */
-		Trivia *fleading = NULL;
-		int fleading_count = 0;
-		take_pending_as_leading(parser, &fleading, &fleading_count);
+		/* Drain any pending trivia between fields (comments are already CST leaves;
+		 * dropping the drained copy keeps the pending list from growing unbounded). */
+		drain_pending_trivia(parser);
 
-		int field_count = 0;
-		FieldDecl **fields = parse_arch_field_expanded(parser, &field_count);
-		if (!fields || field_count == 0) {
+		if (!parse_arch_field(parser)) {
 			/* Malformed component. Stop the body loop — global `synchronize` can skip past
 			 * the closing `}` to the next decl keyword and park there without advancing,
-			 * which would spin this loop (allocating trivia each pass → RAM blowup). The
-			 * missing `}` is reported below. */
-			free(fleading);
+			 * which would spin this loop. The missing `}` is reported below. */
 			break;
 		}
-
-		/* Attach leading trivia to the FIRST field and trailing-inline to the
-		 * LAST field of the expanded group (typically the same field, but tuple
-		 * fields expand to many). */
-		fields[0]->leading_trivia = fleading;
-		fields[0]->leading_count = fleading_count;
-		int last_field_line = parser->previous.line;
-		steal_trailing_inline(parser, last_field_line, &fields[field_count - 1]->trailing_trivia,
-		                      &fields[field_count - 1]->trailing_count);
-
-		/* grow the fields array and add all expanded fields */
-		for (int i = 0; i < field_count; i++) {
-			arch->fields = realloc(arch->fields, (arch->field_count + 1) * sizeof(FieldDecl *));
-			arch->fields[arch->field_count++] = fields[i];
-		}
-		free(fields);
 	}
 
 	if (!match(parser, TOK_RBRACE)) {
 		error(parser, "Expected '}'");
 	}
 
-	Decl *decl = decl_create(DECL_ARCHETYPE);
-	decl->data.archetype = arch;
-	return decl;
+	return 1;
 }
 
 /* ========== PROCEDURE PARSING ========== */
 
-static Decl *parse_proc_decl(Parser *parser) {
+static int parse_proc_decl(Parser *parser, SyntaxNodeKind *out_kind) {
+	*out_kind = SN_PROC_DECL;
 	int is_extern = 0;
 
 	if (parser->previous.kind == TOK_EXTERN || match(parser, TOK_EXTERN)) {
@@ -599,65 +522,52 @@ static Decl *parse_proc_decl(Parser *parser) {
 
 	if (!match(parser, TOK_PROC)) {
 		error(parser, "Expected 'proc'");
-		return NULL;
+		return 0;
 	}
 
 	if (!check(parser, TOK_IDENT)) {
 		error(parser, "Expected procedure name");
-		return NULL;
+		return 0;
 	}
-	char *name = token_text(parser->current);
+	int proc_name_cp = cst_cp(parser);
 	advance(parser);
+	cst_wrap(parser, proc_name_cp, SN_FUNC_DEF_NAME);
 
 	if (!match(parser, TOK_LPAREN)) {
 		error(parser, "Expected '('");
-		return NULL;
+		return 0;
 	}
-
-	ProcDecl *proc = proc_decl_create(name);
-	proc->is_extern = is_extern;
-	proc->loc.line = parser->previous.line;
-	proc->loc.column = parser->previous.column;
 
 	/* Parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
-			int param_is_own = 0;
+			int param_cp = cst_cp(parser);
 
-			if (match(parser, TOK_OWN)) {
-				param_is_own = 1;
-			}
+			match(parser, TOK_OWN); /* optional `own` qualifier (CST records the token) */
 
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected parameter name");
-				return NULL;
+				return 0;
 			}
-			char *param_name = token_text(parser->current);
+			int param_name_cp = cst_cp(parser);
 			advance(parser);
-			int param_line = parser->previous.line;
-			int param_column = parser->previous.column;
+			cst_wrap(parser, param_name_cp, SN_PARAM_NAME);
 
 			if (!match(parser, TOK_COLON)) {
 				error(parser, "Expected ':' after parameter name");
-				return NULL;
+				return 0;
 			}
 
-			TypeRef *param_type = parse_type(parser);
-			if (!param_type)
-				return NULL;
+			if (!parse_type(parser))
+				return 0;
 
-			Parameter *param = parameter_create(param_name, param_type);
-			param->is_own = param_is_own;
-			param->loc.line = param_line;
-			param->loc.column = param_column;
-			proc->params = realloc(proc->params, (proc->param_count + 1) * sizeof(Parameter *));
-			proc->params[proc->param_count++] = param;
+			cst_wrap(parser, param_cp, SN_PARAM);
 		} while (match(parser, TOK_COMMA));
 	}
 
 	if (!match(parser, TOK_RPAREN)) {
 		error(parser, "Expected ')' after parameters");
-		return NULL;
+		return 0;
 	}
 
 	/* For extern procs, no body needed */
@@ -665,261 +575,206 @@ static Decl *parse_proc_decl(Parser *parser) {
 		if (!match(parser, TOK_SEMI)) {
 			error(parser, "Expected ';' after extern proc declaration");
 		}
-		Decl *decl = decl_create(DECL_PROC);
-		decl->data.proc = proc;
-		return decl;
+		return 1;
 	}
 
 	/* Regular proc: require body */
 	if (!match(parser, TOK_LBRACE)) {
 		error(parser, "Expected '{'");
-		return NULL;
+		return 0;
 	}
 
 	while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-		Statement *stmt = parse_statement(parser);
-		if (!stmt) {
+		if (!parse_statement(parser))
 			synchronize(parser);
-			continue;
-		}
-
-		proc->statements = realloc(proc->statements, (proc->statement_count + 1) * sizeof(Statement *));
-		proc->statements[proc->statement_count++] = stmt;
 	}
 
 	if (!match(parser, TOK_RBRACE)) {
 		error(parser, "Expected '}'");
 	}
 
-	proc->end_line = parser->previous.line;
-	Decl *decl = decl_create(DECL_PROC);
-	decl->data.proc = proc;
-	return decl;
+	return 1;
 }
 
 /* ========== SYSTEM PARSING ========== */
 
-static Decl *parse_sys_decl(Parser *parser) {
+static int parse_sys_decl(Parser *parser, SyntaxNodeKind *out_kind) {
+	*out_kind = SN_SYS_DECL;
 	if (!match(parser, TOK_SYS)) {
 		error(parser, "Expected 'sys'");
-		return NULL;
+		return 0;
 	}
 
 	if (!check(parser, TOK_IDENT)) {
 		error(parser, "Expected system name");
-		return NULL;
+		return 0;
 	}
-	char *name = token_text(parser->current);
+	int sys_name_cp = cst_cp(parser);
 	advance(parser);
+	cst_wrap(parser, sys_name_cp, SN_FUNC_DEF_NAME);
 
 	if (!match(parser, TOK_LPAREN)) {
 		error(parser, "Expected '('");
-		return NULL;
+		return 0;
 	}
-
-	SysDecl *sys = sys_decl_create(name);
-	sys->loc.line = parser->previous.line;
-	sys->loc.column = parser->previous.column;
 
 	/* parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
+			int param_cp = cst_cp(parser);
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected parameter name");
-				return NULL;
+				return 0;
 			}
 
-			char *param_name = token_text(parser->current);
+			int param_name_cp = cst_cp(parser);
 			advance(parser);
-			int param_line = parser->previous.line;
-			int param_column = parser->previous.column;
+			cst_wrap(parser, param_name_cp, SN_PARAM_NAME);
 
-			Parameter *param = parameter_create(param_name, NULL);
-			param->loc.line = param_line;
-			param->loc.column = param_column;
-			sys->params = realloc(sys->params, (sys->param_count + 1) * sizeof(Parameter *));
-			sys->params[sys->param_count++] = param;
+			cst_wrap(parser, param_cp, SN_PARAM);
 		} while (match(parser, TOK_COMMA));
 	}
 
 	if (!match(parser, TOK_RPAREN)) {
 		error(parser, "Expected ')'");
-		return NULL;
+		return 0;
 	}
 
 	if (!match(parser, TOK_LBRACE)) {
 		error(parser, "Expected '{'");
-		return NULL;
+		return 0;
 	}
 
 	while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-		Statement *stmt = parse_statement(parser);
-		if (!stmt) {
+		if (!parse_statement(parser))
 			synchronize(parser);
-			continue;
-		}
-
-		sys->statements = realloc(sys->statements, (sys->statement_count + 1) * sizeof(Statement *));
-		sys->statements[sys->statement_count++] = stmt;
 	}
 
 	if (!match(parser, TOK_RBRACE)) {
 		error(parser, "Expected '}'");
 	}
 
-	sys->end_line = parser->previous.line;
-	Decl *decl = decl_create(DECL_SYS);
-	decl->data.sys = sys;
-	return decl;
+	return 1;
 }
 
 /* ========== FUNCTION PARSING ========== */
 
-static Decl *parse_func_decl(Parser *parser) {
+static int parse_func_decl(Parser *parser, SyntaxNodeKind *out_kind) {
+	*out_kind = SN_FUNC_DECL;
 	int is_extern = parser->previous.kind == TOK_EXTERN;
 
 	if (!match(parser, TOK_FUNC)) {
 		error(parser, "Expected 'func'");
-		return NULL;
+		return 0;
 	}
 
 	if (!check(parser, TOK_IDENT)) {
 		error(parser, "Expected function name");
-		return NULL;
+		return 0;
 	}
-	char *name = token_text(parser->current);
+	int func_name_cp = cst_cp(parser);
 	advance(parser);
+	cst_wrap(parser, func_name_cp, SN_FUNC_DEF_NAME);
 
 	/* Group-declaration branch: `func NAME = { IDENT (, IDENT)* };` */
 	if (match(parser, TOK_EQ)) {
+		*out_kind = SN_FUNC_GROUP_DECL;
 		if (!match(parser, TOK_LBRACE)) {
 			error(parser, "Expected '{' after '=' in func group declaration");
-			return NULL;
+			return 0;
 		}
-		FuncGroup *g = func_group_create(name);
-		g->loc.line = parser->previous.line;
-		g->loc.column = parser->previous.column;
 		if (check(parser, TOK_RBRACE)) {
 			error(parser, "func group must have at least one member");
-			func_group_free(g);
-			return NULL;
+			return 0;
 		}
 		while (1) {
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected member function name in func group");
-				func_group_free(g);
-				return NULL;
+				return 0;
 			}
-			char *member = token_text(parser->current);
 			advance(parser);
-			g->member_names = realloc(g->member_names, (g->member_count + 1) * sizeof(char *));
-			g->member_names[g->member_count++] = member;
 			if (!match(parser, TOK_COMMA))
 				break;
 			/* Disallow trailing comma: after a `,` the next token must be IDENT, not `}`. */
 			if (check(parser, TOK_RBRACE)) {
 				error(parser, "trailing comma not allowed in func group member list");
-				func_group_free(g);
-				return NULL;
+				return 0;
 			}
 		}
 		if (!match(parser, TOK_RBRACE)) {
 			error(parser, "Expected '}' or ',' in func group member list");
-			func_group_free(g);
-			return NULL;
+			return 0;
 		}
 		if (!match(parser, TOK_SEMI)) {
 			error(parser, "Expected ';' after func group declaration");
 		}
-		Decl *decl = decl_create(DECL_FUNC_GROUP);
-		decl->data.func_group = g;
-		decl->loc = g->loc;
-		return decl;
+		return 1;
 	}
 
 	if (!match(parser, TOK_LPAREN)) {
 		error(parser, "Expected '(' or '=' after func name");
-		return NULL;
+		return 0;
 	}
-
-	FuncDecl *func = func_decl_create(name);
-	func->is_extern = is_extern;
-	func->loc.line = parser->previous.line;
-	func->loc.column = parser->previous.column;
 
 	/* parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
-			int param_is_own = 0;
+			int param_cp = cst_cp(parser);
 
-			if (match(parser, TOK_OWN)) {
-				param_is_own = 1;
-			}
+			match(parser, TOK_OWN); /* optional `own` qualifier (CST records the token) */
 
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected parameter name");
-				return NULL;
+				return 0;
 			}
 
-			char *param_name = token_text(parser->current);
+			int param_name_cp = cst_cp(parser);
 			advance(parser);
-			int param_line = parser->previous.line;
-			int param_column = parser->previous.column;
+			cst_wrap(parser, param_name_cp, SN_PARAM_NAME);
 
 			if (!match(parser, TOK_COLON)) {
 				error(parser, "Expected ':' after parameter name");
-				return NULL;
+				return 0;
 			}
 
-			TypeRef *param_type = parse_type(parser);
-			if (!param_type)
-				return NULL;
+			if (!parse_type(parser))
+				return 0;
 
-			Parameter *param = parameter_create(param_name, param_type);
-			param->is_own = param_is_own;
-			param->loc.line = param_line;
-			param->loc.column = param_column;
-			func->params = realloc(func->params, (func->param_count + 1) * sizeof(Parameter *));
-			func->params[func->param_count++] = param;
+			cst_wrap(parser, param_cp, SN_PARAM);
 		} while (match(parser, TOK_COMMA));
 	}
 
 	if (!match(parser, TOK_RPAREN)) {
 		error(parser, "Expected ')'");
-		return NULL;
+		return 0;
 	}
 
 	if (!match(parser, TOK_ARROW)) {
 		error(parser, "Expected '->'");
-		return NULL;
+		return 0;
 	}
 
 	/* Return type: single `-> T`, or multi-return `-> (T1, …, Tn)`. In the multi form the
 	 * leading array returns are caller-passed buffers the func fills in place; the final
 	 * return types is a list — a single return is just count == 1. */
 	if (match(parser, TOK_LPAREN)) {
+		int return_type_count = 0;
 		do {
-			TypeRef *rt = parse_type(parser);
-			if (!rt)
-				return NULL;
-			func->return_types = realloc(func->return_types, (func->return_type_count + 1) * sizeof(TypeRef *));
-			func->return_types[func->return_type_count++] = rt;
+			if (!parse_type(parser))
+				return 0;
+			return_type_count++;
 		} while (match(parser, TOK_COMMA));
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' after multi-return type list");
-			return NULL;
+			return 0;
 		}
-		if (func->return_type_count < 2) {
+		if (return_type_count < 2) {
 			error(parser, "a parenthesized return type must list at least two types");
-			return NULL;
+			return 0;
 		}
 	} else {
-		TypeRef *return_type = parse_type(parser);
-		if (!return_type)
-			return NULL;
-		func->return_types = malloc(sizeof(TypeRef *));
-		func->return_types[0] = return_type;
-		func->return_type_count = 1;
+		if (!parse_type(parser))
+			return 0;
 	}
 
 	/* For extern funcs, no body needed */
@@ -927,64 +782,49 @@ static Decl *parse_func_decl(Parser *parser) {
 		if (!match(parser, TOK_SEMI)) {
 			error(parser, "Expected ';' after extern func declaration");
 		}
-		Decl *decl = decl_create(DECL_FUNC);
-		decl->data.func = func;
-		return decl;
+		return 1;
 	}
 
 	if (!match(parser, TOK_LBRACE)) {
 		error(parser, "Expected '{'");
-		return NULL;
+		return 0;
 	}
 
 	while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-		Statement *stmt = parse_statement(parser);
-		if (!stmt) {
+		if (!parse_statement(parser))
 			synchronize(parser);
-			continue;
-		}
-
-		func->statements = realloc(func->statements, (func->statement_count + 1) * sizeof(Statement *));
-		func->statements[func->statement_count++] = stmt;
 	}
 
 	if (!match(parser, TOK_RBRACE)) {
 		error(parser, "Expected '}'");
 	}
 
-	func->end_line = parser->previous.line;
-	Decl *decl = decl_create(DECL_FUNC);
-	decl->data.func = func;
-	return decl;
+	return 1;
 }
 
 /* ========== DECLARATION PARSING ========== */
 
 /* ========== WORLD PARSING ========== */
 
-static Decl *parse_static_decl(Parser *parser) {
+/* True if the current token is the identifier matching `kw` (length `len`). */
+static int cur_ident_is(Parser *parser, const char *kw, size_t len) {
+	return check(parser, TOK_IDENT) && parser->current.length == len && strncmp(parser->current.start, kw, len) == 0;
+}
+
+static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	/* Check for const IDENT : : expr ; first */
-	if (check(parser, TOK_IDENT) && strcmp(token_text(parser->current), "static") != 0) {
-		char *name = token_text(parser->current);
-		Token ident_tok = parser->current;
+	if (check(parser, TOK_IDENT) && !cur_ident_is(parser, "static", 6)) {
+		*out_kind = SN_CONST_DECL;
 		advance(parser);
 
 		/* Tuple group: `pos (x, y) :: float` — the suffixes are part of the name (minting flat
 		 * `pos_x`, `pos_y`), the type comes after `::`. */
 		if (check(parser, TOK_LPAREN)) {
-			SourceLoc loc = {ident_tok.line, ident_tok.column};
-			TypeRef *tt = parse_tuple_name_group(parser, loc);
-			if (!tt) {
-				free(name);
-				return NULL;
-			}
-			Decl *dt = decl_create(DECL_CONST);
-			dt->loc = loc;
-			dt->data.constant = const_decl_create(name, NULL);
-			dt->data.constant->type_value = tt;
+			if (!parse_tuple_name_group(parser))
+				return 0;
 			if (check(parser, TOK_SEMI))
 				advance(parser);
-			return dt;
+			return 1;
 		}
 
 		/* Universal constant declaration: `name : [type] : value`.
@@ -996,151 +836,113 @@ static Decl *parse_static_decl(Parser *parser) {
 		 * global storage is expressed with `static`. */
 		if (check(parser, TOK_COLON)) {
 			advance(parser); /* first ':' */
-			TypeRef *decl_type = NULL;
+			int decl_type_is_meta = 0;
+			int has_decl_type = 0;
 			if (!check(parser, TOK_COLON)) {
 				/* explicit declared type before the second ':' */
 				if (check(parser, TOK_EQ)) {
 					error(parser, "top-level declarations are constants: use `name :: value` or "
 					              "`name : T : value` (`=` makes a mutable variable — use `static` "
 					              "for mutable global storage)");
-					free(name);
-					return NULL;
+					return 0;
 				}
-				decl_type = parse_type(parser);
-				if (!decl_type) {
-					free(name);
-					return NULL;
-				}
+				TypeForm form;
+				if (!parse_type_form(parser, &form))
+					return 0;
+				has_decl_type = 1;
+				decl_type_is_meta = form.is_type_meta;
 			}
 			if (check(parser, TOK_EQ)) {
 				error(parser, "top-level declarations are constants: write `name : T : value` "
 				              "(`=` makes a mutable variable — use `static` for mutable global "
 				              "storage)");
-				type_ref_free(decl_type);
-				free(name);
-				return NULL;
+				return 0;
 			}
 			if (!match(parser, TOK_COLON)) {
 				error(parser, "expected `:` and a value: write `name :: value` or "
 				              "`name : T : value`");
-				type_ref_free(decl_type);
-				free(name);
-				return NULL;
+				return 0;
 			}
-			Decl *d = decl_create(DECL_CONST);
-			d->loc.line = ident_tok.line;
-			d->loc.column = ident_tok.column;
+			(void)has_decl_type;
 			/* When the declared meta-type is `type`, the RHS is a type form (a nominal alias);
 			 * parse it as a type. Otherwise the RHS is a value expression (the elided `::` form
 			 * also lands here — semantic classifies it by what it denotes). */
-			if (decl_type && decl_type->kind == TYPE_TYPE) {
-				TypeRef *rhs = parse_type(parser);
-				if (!rhs) {
-					type_ref_free(decl_type);
-					free(name);
-					decl_free(d);
-					return NULL;
-				}
-				d->data.constant = const_decl_create(name, NULL);
-				d->data.constant->type_value = rhs;
-				d->data.constant->decl_type = decl_type;
+			if (decl_type_is_meta) {
+				if (!parse_type(parser))
+					return 0;
 			} else {
-				Expression *val = parse_expression(parser);
-				d->data.constant = const_decl_create(name, val);
-				d->data.constant->decl_type = decl_type;
+				if (!parse_expression(parser))
+					return 0;
 			}
 			if (check(parser, TOK_SEMI)) {
 				advance(parser); /* consume optional semicolon */
 			}
-			return d;
+			return 1;
 		}
-		/* Not a const. This fallthrough path shouldn't happen; return NULL to let caller report error */
-		free(name);
-		return NULL;
+		/* Not a const. This fallthrough shouldn't happen; fail to let the caller report. */
+		return 0;
 	}
 
-	if (check(parser, TOK_IDENT) && strcmp(token_text(parser->current), "static") == 0) {
+	if (cur_ident_is(parser, "static", 6)) {
+		*out_kind = SN_STATIC_DECL;
 		advance(parser);
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected name after 'static'");
-			return NULL;
+			return 0;
 		}
-		char *name = token_text(parser->current);
-		Token name_tok = parser->current;
+		int static_name_cp = cst_cp(parser);
+		int is_table = (cur_ident_is(parser, "table", 5) || cur_ident_is(parser, "pool", 4));
 		advance(parser);
 
 		/* `static table<Name>(...)` — the table-addressed allocation form. The
 		 * `table<...>` wrapper just names the shape whose singleton table to
 		 * allocate; unwrap it to the archetype name. (Legacy `static Name(...)`
 		 * stays valid: only the array form uses ':'.) */
-		if ((strcmp(name, "table") == 0 || strcmp(name, "pool") == 0) && check(parser, TOK_LT)) {
-			free(name);
+		if (is_table && check(parser, TOK_LT)) {
 			advance(parser); /* consume < */
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected archetype name in 'static pool<'");
-				return NULL;
+				return 0;
 			}
-			name = token_text(parser->current);
-			name_tok = parser->current;
 			advance(parser);
 			if (!match(parser, TOK_GT)) {
 				error(parser, "Expected '>' after archetype name in 'static table<...>'");
-				return NULL;
+				return 0;
 			}
 		}
+		/* The archetype/table reference (`Name` or `table<Name>`) is a type position. */
+		cst_wrap(parser, static_name_cp, SN_TYPE_REF);
 
 		/* Check if this is a static array (static name: type[size];) or archetype (static Name(n);) */
 		if (check(parser, TOK_COLON)) {
 			/* Static array declaration */
 			advance(parser); /* consume ':' */
-			TypeRef *element_type = parse_type(parser);
-			if (!element_type) {
+			TypeForm form;
+			if (!parse_type_form(parser, &form)) {
 				error(parser, "Expected type in static array declaration");
-				return NULL;
+				return 0;
 			}
 
 			/* Validate that type is a shaped array */
-			if (element_type->kind != TYPE_SHAPED_ARRAY) {
+			if (form.cst_kind != SN_TYPE_SHAPED_ARRAY) {
 				error(parser, "Expected sized array type for static array (e.g. char[4194304])");
-				type_ref_free(element_type);
-				return NULL;
+				return 0;
 			}
-
-			int size = element_type->data.shaped_array.rank;
-			TypeRef *elem_type = element_type->data.shaped_array.element_type;
 
 			if (!match(parser, TOK_SEMI)) {
 				error(parser, "Expected ';' after static array declaration");
-				type_ref_free(element_type);
-				return NULL;
+				return 0;
 			}
-
-			Decl *decl = decl_create(DECL_STATIC);
-			decl->loc.line = name_tok.line;
-			decl->loc.column = name_tok.column;
-			decl->data.static_decl = static_decl_array_create(name, elem_type, size);
-
-			return decl;
+			return 1;
 		}
 
 		/* Otherwise, treat as static archetype allocation */
-		Decl *decl = decl_create(DECL_STATIC);
-		decl->loc.line = name_tok.line;
-		decl->loc.column = name_tok.column;
-
-		StaticDecl *s = static_decl_archetype_create(name);
-
 		if (match(parser, TOK_LPAREN)) {
-			Expression *capacity = parse_expression(parser);
-			if (capacity) {
-				s->archetype.field_names = malloc(sizeof(char *));
-				s->archetype.field_values = malloc(sizeof(Expression *));
-				s->archetype.field_names[0] = NULL;
-				s->archetype.field_values[0] = capacity;
-				s->archetype.field_count = 1;
-			}
+			if (!parse_expression(parser))
+				return 0;
 			if (match(parser, TOK_COMMA)) {
-				s->archetype.init_length = parse_expression(parser);
+				if (!parse_expression(parser))
+					return 0;
 			}
 			if (!match(parser, TOK_RPAREN)) {
 				error(parser, "Expected ')' after alloc count");
@@ -1153,7 +955,6 @@ static Decl *parse_static_decl(Parser *parser) {
 							error(parser, "Expected field name in alloc init");
 							break;
 						}
-						char *field_name = token_text(parser->current);
 						advance(parser);
 
 						if (!match(parser, TOK_COLON)) {
@@ -1161,19 +962,10 @@ static Decl *parse_static_decl(Parser *parser) {
 							break;
 						}
 
-						Expression *field_value = parse_expression(parser);
-						if (!field_value) {
+						if (!parse_expression(parser)) {
 							error(parser, "Expected expression after ':' in alloc init");
 							break;
 						}
-
-						s->archetype.field_names =
-						    realloc(s->archetype.field_names, (s->archetype.field_count + 1) * sizeof(char *));
-						s->archetype.field_values =
-						    realloc(s->archetype.field_values, (s->archetype.field_count + 1) * sizeof(Expression *));
-						s->archetype.field_names[s->archetype.field_count] = field_name;
-						s->archetype.field_values[s->archetype.field_count] = field_value;
-						s->archetype.field_count++;
 					} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACE));
 				}
 
@@ -1187,578 +979,274 @@ static Decl *parse_static_decl(Parser *parser) {
 			error(parser, "Expected ';' after alloc declaration");
 		}
 
-		decl->data.static_decl = s;
-		return decl;
+		return 1;
 	}
-	return NULL;
+	return 0;
 }
 
-static Decl *parse_decl(Parser *parser) {
+/* `out_kind` receives the CST node kind for the declaration form, from parse
+ * context. Pre-set to SN_ERROR; each leaf parser / branch sets the real kind. */
+static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
+	*out_kind = SN_ERROR;
 
-	/* Declaration-site decorators. Currently only @allow_pure_proc is
-	 * recognized; it sets a flag on the following proc declaration that
-	 * suppresses the proc-could-be-func lint. The decorator must be
-	 * followed immediately by a `proc` (or `extern proc`) declaration. */
-	int allow_pure_proc_flag = 0;
+	/* Declaration-site decorators. Currently only @allow_pure_proc is recognized;
+	 * the CST records the `@allow_pure_proc` tokens (cst_to_program reads them via
+	 * cv_has_token). The decorator must be followed immediately by a `proc` (or
+	 * `extern proc`) declaration. */
 	if (parser->current.kind == TOK_AT) {
 		advance(parser); /* consume '@' */
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected decorator name after '@'");
-			return NULL;
+			return 0;
 		}
-		char *deco_name = token_text(parser->current);
-		if (strcmp(deco_name, "allow_pure_proc") != 0) {
+		int is_allow = cur_ident_is(parser, "allow_pure_proc", 15);
+		if (!is_allow) {
 			error(parser, "Unknown decorator (only @allow_pure_proc is supported)");
-			free(deco_name);
-			return NULL;
+			return 0;
 		}
-		free(deco_name);
 		advance(parser);
-		allow_pure_proc_flag = 1;
 		/* Must be followed by proc or extern proc — guard here so the
 		 * switch below doesn't silently consume the flag on a wrong kind. */
 		if (parser->current.kind != TOK_PROC && parser->current.kind != TOK_EXTERN) {
 			error(parser, "@allow_pure_proc must precede a proc declaration");
-			return NULL;
+			return 0;
 		}
 	}
 
 	switch (parser->current.kind) {
 	case TOK_ARCHETYPE:
-		return parse_archetype_decl(parser);
+		return parse_archetype_decl(parser, out_kind);
 	case TOK_EXTERN:
 		advance(parser); /* consume 'extern' */
 		if (check(parser, TOK_FUNC)) {
-			if (allow_pure_proc_flag) {
-				error(parser, "@allow_pure_proc must precede a proc, not a func");
-				return NULL;
-			}
-			return parse_func_decl(parser);
+			return parse_func_decl(parser, out_kind);
 		} else if (check(parser, TOK_PROC)) {
-			Decl *d = parse_proc_decl(parser);
-			if (d && d->kind == DECL_PROC && allow_pure_proc_flag)
-				d->data.proc->allow_pure_proc = 1;
-			return d;
+			return parse_proc_decl(parser, out_kind);
 		} else {
 			error(parser, "Expected 'func' or 'proc' after 'extern'");
-			return NULL;
+			return 0;
 		}
-	case TOK_PROC: {
-		Decl *d = parse_proc_decl(parser);
-		if (d && d->kind == DECL_PROC && allow_pure_proc_flag)
-			d->data.proc->allow_pure_proc = 1;
-		return d;
-	}
+	case TOK_PROC:
+		return parse_proc_decl(parser, out_kind);
 	case TOK_SYS:
-		return parse_sys_decl(parser);
+		return parse_sys_decl(parser, out_kind);
 	case TOK_FUNC:
-		return parse_func_decl(parser);
+		return parse_func_decl(parser, out_kind);
 	case TOK_UNSAFE: {
 		advance(parser); /* consume 'unsafe' */
 		if (check(parser, TOK_FUNC)) {
-			Decl *d = parse_func_decl(parser);
-			if (d && d->kind == DECL_FUNC)
-				d->data.func->is_unsafe = 1;
-			return d;
+			return parse_func_decl(parser, out_kind);
 		} else if (check(parser, TOK_PROC)) {
-			Decl *d = parse_proc_decl(parser);
-			if (d && d->kind == DECL_PROC)
-				d->data.proc->is_unsafe = 1;
-			return d;
+			return parse_proc_decl(parser, out_kind);
 		}
 		error(parser, "Expected 'proc' or 'func' after 'unsafe'");
-		return NULL;
+		return 0;
 	}
 	case TOK_USE: {
 		advance(parser); /* consume 'use' */
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected module name after 'use'");
-			return NULL;
+			return 0;
 		}
-		char *mod_name = token_text(parser->current);
-		Token use_tok = parser->current;
 		advance(parser);
 
 		if (!match(parser, TOK_SEMI)) {
 			error(parser, "Expected ';' after use declaration");
-			return NULL;
+			return 0;
 		}
 
-		Decl *decl = decl_create(DECL_USE);
-		decl->loc.line = use_tok.line;
-		decl->loc.column = use_tok.column;
-		decl->data.use = use_decl_create(mod_name);
-		return decl;
+		*out_kind = SN_USE_DECL;
+		return 1;
 	}
 	default:
 		/* INFO: Check for top-level const or alloc */
 		if (check(parser, TOK_IDENT)) {
-			Decl *static_decl = parse_static_decl(parser);
-			if (static_decl) {
-				return static_decl;
-			}
+			if (parse_static_decl(parser, out_kind))
+				return 1;
 		}
 		error(parser, "Expected declaration");
-		return NULL;
+		return 0;
 	}
 }
 
 /* ========== EXPRESSION PARSING ========== */
 
-static Expression *parse_primary_expr(Parser *parser) {
+/* `out_kind` receives the SyntaxNodeKind for the primary expression form parsed,
+ * derived from parse context (not from a built AST node). The caller wraps the
+ * CST node with it. Left untouched when the primary already wrapped itself (paren). */
+static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
+	int prim_start = cst_cp(parser);
 	if (check(parser, TOK_NUMBER)) {
-		char *lexeme = token_text(parser->current);
 		advance(parser);
-
-		Expression *expr = expression_create(EXPR_LITERAL);
-		expr->loc.line = parser->previous.line;
-		expr->loc.column = parser->previous.column;
-		expr->data.literal.lexeme = lexeme;
-		return expr;
+		*out_kind = SN_LITERAL_EXPR;
+		return 1;
 	}
 
 	if (check(parser, TOK_STRING)) {
-		const char *lexeme = parser->current.start;
-		size_t len = parser->current.length;
-		int str_line = parser->current.line;
-		int str_column = parser->current.column;
 		advance(parser);
-
-		/* Extract string content (without quotes) and process escape sequences */
-		char *value = malloc(len - 1); /* -2 for quotes, +1 for null */
-		int out_pos = 0;
-
-		for (size_t i = 1; i < len - 1; i++) {
-			if (lexeme[i] == '\\' && i + 1 < len - 1) {
-				i++;
-				switch (lexeme[i]) {
-				case 'n':
-					value[out_pos++] = '\n';
-					break;
-				case 't':
-					value[out_pos++] = '\t';
-					break;
-				case 'r':
-					value[out_pos++] = '\r';
-					break;
-				case '\\':
-					value[out_pos++] = '\\';
-					break;
-				case '"':
-					value[out_pos++] = '"';
-					break;
-				default:
-					value[out_pos++] = lexeme[i];
-					break;
-				}
-			} else {
-				value[out_pos++] = lexeme[i];
-			}
-		}
-		value[out_pos] = '\0';
-
-		Expression *expr = expression_create(EXPR_STRING);
-		expr->loc.line = str_line;
-		expr->loc.column = str_column;
-		expr->data.string.value = value;
-		expr->data.string.length = out_pos;
-		return expr;
+		*out_kind = SN_STRING_EXPR;
+		return 1;
 	}
 
 	if (check(parser, TOK_CHAR_LIT)) {
-		char *lexeme = malloc(parser->current.length + 1);
-		strncpy(lexeme, parser->current.start, parser->current.length);
-		lexeme[parser->current.length] = '\0';
 		advance(parser);
-
-		Expression *expr = expression_create(EXPR_LITERAL);
-		expr->loc.line = parser->previous.line;
-		expr->loc.column = parser->previous.column;
-		expr->data.literal.lexeme = lexeme;
-		return expr;
+		*out_kind = SN_LITERAL_EXPR;
+		return 1;
 	}
 
 	if (check(parser, TOK_LBRACE)) {
 		advance(parser);
-		int arr_line = parser->previous.line;
-		int arr_column = parser->previous.column;
-
-		Expression *arr_expr = expression_create(EXPR_ARRAY_LITERAL);
-		arr_expr->loc.line = arr_line;
-		arr_expr->loc.column = arr_column;
-		arr_expr->data.array_literal.elements = NULL;
-		arr_expr->data.array_literal.element_count = 0;
-
+		*out_kind = SN_ARRAY_LIT_EXPR;
 		if (!check(parser, TOK_RBRACE)) {
 			do {
-				Expression *elem = parse_expression(parser);
-				if (!elem) {
-					return NULL;
-				}
-
-				arr_expr->data.array_literal.elements =
-				    realloc(arr_expr->data.array_literal.elements,
-				            (arr_expr->data.array_literal.element_count + 1) * sizeof(Expression *));
-				arr_expr->data.array_literal.elements[arr_expr->data.array_literal.element_count++] = elem;
+				if (!parse_expression(parser))
+					return 0;
 			} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACE));
 		}
-
 		if (!match(parser, TOK_RBRACE)) {
 			error(parser, "Expected '}' after array literal");
-			return NULL;
+			return 0;
 		}
-
-		return arr_expr;
+		return 1;
 	}
 
 	if (check(parser, TOK_IDENT)) {
-		char *name = token_text(parser->current);
+		int prim_name_cp = cst_cp(parser);
+		int is_table = cur_ident_is(parser, "table", 5);
 		advance(parser);
-		int name_line = parser->previous.line;
-		int name_column = parser->previous.column;
 
-		/* table<Name> in value position: the singleton table for shape Name.
-		 * Resolved as the bare archetype name (insert/delete/run resolve it); the
-		 * is_table_ref flag lets the formatter round-trip the `table<...>` form. */
-		if (strcmp(name, "table") == 0 && check(parser, TOK_LT)) {
-			free(name);
+		/* table<Name> in value position: the singleton table for shape Name. */
+		if (is_table && check(parser, TOK_LT)) {
 			advance(parser); /* consume < */
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected archetype name in 'table<'");
-				return NULL;
+				return 0;
 			}
-			char *tname = token_text(parser->current);
 			advance(parser);
 			if (!match(parser, TOK_GT)) {
 				error(parser, "Expected '>' after archetype name in 'table<...>'");
-				free(tname);
-				return NULL;
+				return 0;
 			}
-			Expression *expr = expression_create(EXPR_NAME);
-			expr->loc.line = name_line;
-			expr->loc.column = name_column;
-			expr->data.name.name = tname;
-			expr->data.name.is_table_ref = 1;
-			return expr;
+			*out_kind = SN_NAME_EXPR;
+			return 1;
 		}
 
-		/* INFO: Expression-based alloc parsing preserved for future heap_alloc feature.
-		   Currently alloc is only allowed as a top-level declaration (DECL_STATIC).
-		   When heap allocation is implemented, uncomment this block and create EXPR_HEAP_ALLOC.
-		if (strcmp(name, "static") == 0) {
-		    if (!check(parser, TOK_IDENT)) {
-		        error(parser, "Expected archetype name after 'alloc'");
-		        free(name);
-		        return NULL;
-		    }
-		    char *arch_name = token_text(parser->current);
-		    advance(parser);
-		    int alloc_line = parser->previous.line;
-		    int alloc_column = parser->previous.column;
-
-		    Expression *alloc_expr = expression_create(EXPR_ALLOC);
-		    alloc_expr->loc.line = alloc_line;
-		    alloc_expr->loc.column = alloc_column;
-		    alloc_expr->data.alloc.archetype_name = arch_name;
-		    alloc_expr->data.alloc.field_names = NULL;
-		    alloc_expr->data.alloc.field_values = NULL;
-		    alloc_expr->data.alloc.field_count = 0;
-		    alloc_expr->data.alloc.init_length = NULL;
-
-		    if (match(parser, TOK_LPAREN)) {
-		        Expression *count = parse_expression(parser);
-		        if (count) {
-		            alloc_expr->data.alloc.field_names = malloc(sizeof(char *));
-		            alloc_expr->data.alloc.field_values = malloc(sizeof(Expression *));
-		            alloc_expr->data.alloc.field_names[0] = NULL;
-		            alloc_expr->data.alloc.field_values[0] = count;
-		            alloc_expr->data.alloc.field_count = 1;
-		        }
-		        if (!match(parser, TOK_RPAREN)) {
-		            error(parser, "Expected ')' after alloc count");
-		        }
-
-		        if (match(parser, TOK_LBRACE)) {
-		            if (!check(parser, TOK_RBRACE)) {
-		                do {
-		                    if (!check(parser, TOK_IDENT)) {
-		                        error(parser, "Expected field name in alloc init");
-		                        break;
-		                    }
-		                    char *field_name = token_text(parser->current);
-		                    advance(parser);
-
-		                    if (!match(parser, TOK_COLON)) {
-		                        error(parser, "Expected ':' after field name in alloc init");
-		                        break;
-		                    }
-
-		                    Expression *field_value = parse_expression(parser);
-		                    if (!field_value) {
-		                        error(parser, "Expected expression after ':' in alloc init");
-		                        break;
-		                    }
-
-		                    alloc_expr->data.alloc.field_names =
-		                        realloc(alloc_expr->data.alloc.field_names,
-		                                (alloc_expr->data.alloc.field_count + 1) * sizeof(char *));
-		                    alloc_expr->data.alloc.field_values =
-		                        realloc(alloc_expr->data.alloc.field_values,
-		                                (alloc_expr->data.alloc.field_count + 1) * sizeof(Expression *));
-		                    alloc_expr->data.alloc.field_names[alloc_expr->data.alloc.field_count] = field_name;
-		                    alloc_expr->data.alloc.field_values[alloc_expr->data.alloc.field_count] = field_value;
-		                    alloc_expr->data.alloc.field_count++;
-		                } while (match(parser, TOK_COMMA));
-		            }
-
-		            if (!match(parser, TOK_RBRACE)) {
-		                error(parser, "Expected '}' after alloc init block");
-		            }
-		        }
-		    }
-
-		    free(name);
-		    return alloc_expr;
-		}
-		*/
-
-		/* check for field access or indexing */
+		/* field access (and optional trailing index): `a.b.c[i]` */
 		if (match(parser, TOK_DOT)) {
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected field name after '.'");
-				free(name);
-				return NULL;
+				return 0;
 			}
-
-			Expression *base = expression_create(EXPR_NAME);
-			base->loc.line = name_line;
-			base->loc.column = name_column;
-			base->data.name.name = name;
-
-			/* Process first field (DOT already consumed) */
-			char *field_name = token_text(parser->current);
+			int field_name_cp = cst_cp(parser);
 			advance(parser);
+			cst_wrap(parser, field_name_cp, SN_FIELD_NAME);
 
-			Expression *field = expression_create(EXPR_FIELD);
-			field->loc.line = base->loc.line;
-			field->loc.column = base->loc.column;
-			field->data.field.base = base;
-			field->data.field.field_name = field_name;
-
-			base = field;
-
-			/* Handle chained field access: p.pos.x.y */
 			while (match(parser, TOK_DOT)) {
 				if (!check(parser, TOK_IDENT)) {
 					error(parser, "Expected field name after '.'");
-					return NULL;
+					return 0;
 				}
-
-				field_name = token_text(parser->current);
+				int chained_field_cp = cst_cp(parser);
 				advance(parser);
-
-				field = expression_create(EXPR_FIELD);
-				field->loc.line = base->loc.line;
-				field->loc.column = base->loc.column;
-				field->data.field.base = base;
-				field->data.field.field_name = field_name;
-
-				base = field;
+				cst_wrap(parser, chained_field_cp, SN_FIELD_NAME);
 			}
 
-			/* check for indexing on the final field */
 			if (match(parser, TOK_LBRACKET)) {
-				Expression *index = expression_create(EXPR_INDEX);
-				index->loc.line = base->loc.line;
-				index->loc.column = base->loc.column;
-				index->data.index.base = base;
-				index->data.index.indices = NULL;
-				index->data.index.index_count = 0;
-
 				do {
-					Expression *idx_expr = parse_expression(parser);
-					if (!idx_expr)
-						return NULL;
-
-					index->data.index.indices =
-					    realloc(index->data.index.indices, (index->data.index.index_count + 1) * sizeof(Expression *));
-					index->data.index.indices[index->data.index.index_count++] = idx_expr;
+					if (!parse_expression(parser))
+						return 0;
 				} while (match(parser, TOK_COMMA));
-
 				if (!match(parser, TOK_RBRACKET)) {
 					error(parser, "Expected ']'");
-					return NULL;
+					return 0;
 				}
-
-				return index;
+				*out_kind = SN_INDEX_EXPR;
+				return 1;
 			}
 
-			return base;
+			*out_kind = SN_FIELD_EXPR;
+			return 1;
 		}
 
-		/* check for indexing */
+		/* indexing: `a[i]` */
 		if (match(parser, TOK_LBRACKET)) {
-			Expression *index = expression_create(EXPR_INDEX);
-
-			Expression *base = expression_create(EXPR_NAME);
-			base->loc.line = name_line;
-			base->loc.column = name_column;
-			base->data.name.name = name;
-			index->loc.line = base->loc.line;
-			index->loc.column = base->loc.column;
-			index->data.index.base = base;
-			index->data.index.indices = NULL;
-			index->data.index.index_count = 0;
-
 			do {
-				Expression *idx_expr = parse_expression(parser);
-				if (!idx_expr)
-					return NULL;
-
-				index->data.index.indices =
-				    realloc(index->data.index.indices, (index->data.index.index_count + 1) * sizeof(Expression *));
-				index->data.index.indices[index->data.index.index_count++] = idx_expr;
+				if (!parse_expression(parser))
+					return 0;
 			} while (match(parser, TOK_COMMA));
-
 			if (!match(parser, TOK_RBRACKET)) {
 				error(parser, "Expected ']'");
-				return NULL;
+				return 0;
 			}
-
-			return index;
+			*out_kind = SN_INDEX_EXPR;
+			return 1;
 		}
 
-		/* check for function call */
-		if (match(parser, TOK_LPAREN)) {
-			Expression *expr = expression_create(EXPR_CALL);
-			Expression *callee = expression_create(EXPR_NAME);
-			callee->loc.line = name_line;
-			callee->loc.column = name_column;
-			callee->data.name.name = name;
-			expr->loc.line = callee->loc.line;
-			expr->loc.column = callee->loc.column;
-			expr->data.call.callee = callee;
-			expr->data.call.args = NULL;
-			expr->data.call.arg_count = 0;
-
-			/* parse arguments */
+		/* function call: `f(args)` — wrap the callee name, then consume '(' as a sibling. */
+		if (check(parser, TOK_LPAREN)) {
+			cst_wrap(parser, prim_name_cp, SN_CALLEE_NAME);
+			advance(parser); /* consume '(' */
 			if (!check(parser, TOK_RPAREN)) {
 				do {
-					Expression *arg = parse_expression(parser);
-					if (!arg)
-						return NULL;
-
-					expr->data.call.args =
-					    realloc(expr->data.call.args, (expr->data.call.arg_count + 1) * sizeof(Expression *));
-					expr->data.call.args[expr->data.call.arg_count++] = arg;
+					if (!parse_expression(parser))
+						return 0;
 				} while (match(parser, TOK_COMMA));
 			}
-
 			if (!match(parser, TOK_RPAREN)) {
 				error(parser, "Expected ')' after arguments");
-				return NULL;
+				return 0;
 			}
-
-			return expr;
+			*out_kind = SN_CALL_EXPR;
+			return 1;
 		}
 
-		Expression *expr = expression_create(EXPR_NAME);
-		expr->loc.line = name_line;
-		expr->loc.column = name_column;
-		expr->data.name.name = name;
-		return expr;
+		*out_kind = SN_NAME_EXPR;
+		return 1;
 	}
 
 	if (match(parser, TOK_LPAREN)) {
-		Expression *expr = parse_expression(parser);
+		parse_expression(parser);
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' after expression");
 		}
-		return expr;
+		cst_wrap(parser, prim_start, SN_PAREN_EXPR);
+		return 1;
 	}
 
 	error(parser, "Expected expression");
-	return NULL;
+	return 0;
 }
 
 /* Prefix unary operators: `-x` (negate) and `!x` (logical not). Binds tighter
  * than binary operators, looser than postfix (calls/indexing in primary). */
-static Expression *parse_unary_expr(Parser *parser) {
-	/* `move <expr>` — call-site ownership transfer. The value is transparent; the checker
-	 * marks the operand consumed (use-after-move is an error). */
-	if (check(parser, TOK_MOVE)) {
-		int line = parser->current.line, col = parser->current.column;
+static int parse_unary_expr(Parser *parser) {
+	int u_cp = cst_cp(parser);
+	/* `move <expr>` / `copy <expr>` — call-site ownership markers; transparent to the
+	 * grammar (the CST records the keyword token, read back by cst_to_program). */
+	if (check(parser, TOK_MOVE) || check(parser, TOK_COPY)) {
 		advance(parser);
-		Expression *operand = parse_unary_expr(parser);
-		if (!operand)
-			return NULL;
-		Expression *u = expression_create(EXPR_UNARY);
-		u->loc.line = line;
-		u->loc.column = col;
-		u->data.unary.op = UNARY_MOVE;
-		u->data.unary.operand = operand;
-		return u;
-	}
-	/* `copy <expr>` — call-site duplication: the caller keeps its original; the function gets an
-	 * owned copy. The checker does NOT mark the operand consumed; codegen duplicates the buffer. */
-	if (check(parser, TOK_COPY)) {
-		int line = parser->current.line, col = parser->current.column;
-		advance(parser);
-		Expression *operand = parse_unary_expr(parser);
-		if (!operand)
-			return NULL;
-		Expression *u = expression_create(EXPR_UNARY);
-		u->loc.line = line;
-		u->loc.column = col;
-		u->data.unary.op = UNARY_COPY;
-		u->data.unary.operand = operand;
-		return u;
+		if (!parse_unary_expr(parser))
+			return 0;
+		cst_wrap(parser, u_cp, SN_UNARY_EXPR);
+		return 1;
 	}
 	if (check(parser, TOK_MINUS) || check(parser, TOK_BANG)) {
-		TokenKind op_kind = parser->current.kind;
-		int line = parser->current.line;
-		int col = parser->current.column;
 		advance(parser);
-		Expression *operand = parse_unary_expr(parser); /* allow -(-x), !!x */
-		if (!operand)
-			return NULL;
-		Expression *u = expression_create(EXPR_UNARY);
-		u->loc.line = line;
-		u->loc.column = col;
-		u->data.unary.op = (op_kind == TOK_MINUS) ? UNARY_NEG : UNARY_NOT;
-		u->data.unary.operand = operand;
-		return u;
+		if (!parse_unary_expr(parser)) /* allow -(-x), !!x */
+			return 0;
+		cst_wrap(parser, u_cp, SN_UNARY_EXPR);
+		return 1;
 	}
-	return parse_primary_expr(parser);
-}
-
-/* Map a binary-operator token to its Operator. Only called for tokens that
-   binop_prec() has already classified as binary operators. */
-static Operator tok_to_op(TokenKind k) {
-	switch (k) {
-	case TOK_PLUS:
-		return OP_ADD;
-	case TOK_MINUS:
-		return OP_SUB;
-	case TOK_STAR:
-		return OP_MUL;
-	case TOK_SLASH:
-		return OP_DIV;
-	case TOK_EQ_EQ:
-		return OP_EQ;
-	case TOK_BANG_EQ:
-		return OP_NEQ;
-	case TOK_LT:
-		return OP_LT;
-	case TOK_GT:
-		return OP_GT;
-	case TOK_LT_EQ:
-		return OP_LTE;
-	case TOK_GT_EQ:
-		return OP_GTE;
-	default:
-		return OP_ADD; /* unreachable: guarded by binop_prec */
-	}
+	/* Primary expression: wrap it by the kind it parsed into (tracked by parse
+	 * context in `prim_kind`), unless it already collapsed to a single node (a
+	 * parenthesised expr wraps itself). */
+	int p_cp = cst_cp(parser);
+	SyntaxNodeKind prim_kind = SN_NAME_EXPR;
+	if (!parse_primary_expr(parser, &prim_kind))
+		return 0;
+	if (!cst_single_node(parser, p_cp))
+		cst_wrap(parser, p_cp, prim_kind);
+	return 1;
 }
 
 /* Binary-operator precedence: higher binds tighter, -1 if not a binary op.
@@ -1786,46 +1274,43 @@ static int binop_prec(TokenKind k) {
 
 /* Precedence climbing: extend `left` with binary operators whose precedence is
    >= min_prec, so e.g. `2 + 3 * 2` builds (2 + (3 * 2)) rather than a flat fold. */
-static Expression *parse_binary_rhs(Parser *parser, Expression *left, int min_prec) {
-	if (!left)
-		return NULL;
+/* `left_cp` is the CST checkpoint taken before `left` was parsed, so each fold can
+ * retroactively wrap [left_cp .. end-of-right] into a SN_BINARY_EXPR — left-assoc
+ * nesting falls out because the previous fold collapses to one node at left_cp. */
+static int parse_binary_rhs(Parser *parser, int ok_left, int left_cp, int min_prec) {
+	if (!ok_left)
+		return 0;
 
 	for (;;) {
 		int prec = binop_prec(parser->current.kind);
 		if (prec < min_prec)
-			return left;
+			return 1;
 
-		TokenKind op_kind = parser->current.kind;
-		advance(parser);
+		advance(parser); /* consume the operator token */
 
-		Expression *right = parse_unary_expr(parser);
-		if (!right)
-			return NULL;
+		int right_cp = cst_cp(parser);
+		if (!parse_unary_expr(parser))
+			return 0;
 
 		/* Left-associative: only fold a strictly tighter operator into `right`. */
 		while (binop_prec(parser->current.kind) > prec) {
-			right = parse_binary_rhs(parser, right, prec + 1);
-			if (!right)
-				return NULL;
+			if (!parse_binary_rhs(parser, 1, right_cp, prec + 1))
+				return 0;
 		}
 
-		Expression *binary = expression_create(EXPR_BINARY);
-		binary->loc.line = left->loc.line;
-		binary->loc.column = left->loc.column;
-		binary->data.binary.op = tok_to_op(op_kind);
-		binary->data.binary.left = left;
-		binary->data.binary.right = right;
-
-		left = binary;
+		/* Retroactively wrap [left_cp .. end-of-right] into a binary node; the next
+		 * fold reuses left_cp so left-assoc nesting falls out. */
+		cst_wrap(parser, left_cp, SN_BINARY_EXPR);
 	}
 }
 
-static Expression *parse_binary_expr(Parser *parser) {
-	Expression *left = parse_unary_expr(parser);
-	return parse_binary_rhs(parser, left, 1);
+static int parse_binary_expr(Parser *parser) {
+	int left_cp = cst_cp(parser);
+	int ok = parse_unary_expr(parser);
+	return parse_binary_rhs(parser, ok, left_cp, 1);
 }
 
-static Expression *parse_expression(Parser *parser) {
+static int parse_expression(Parser *parser) {
 	return parse_binary_expr(parser);
 }
 
@@ -1835,56 +1320,32 @@ static Expression *parse_expression(Parser *parser) {
  * `name` (owned) is the first target; the current token is at `,` (multi-bind), `:`
  * (`x := e` or `x: T [= e]`), or `=` (legacy `x = e`). Returns STMT_BIND / STMT_MULTI_BIND,
  * or NULL on error. There is no `let` keyword — bindings are recognized by this shape. */
-static Statement *parse_binding_tail(Parser *parser, char *name, int let_line, int let_column) {
-	/* Multi-value binding: `a, b, c := expr` (or legacy `= expr`). */
+static int parse_binding_tail(Parser *parser, SyntaxNodeKind *out_kind) {
+	/* Multi-value binding: `a, b, c := expr` (or legacy `= expr`). The first name was
+	 * already consumed by the caller and is recorded in the CST. */
 	if (match(parser, TOK_COMMA)) {
-		char **names = malloc(sizeof(char *));
-		names[0] = name;
-		int name_count = 1;
+		*out_kind = SN_MULTI_BIND_STMT;
 		while (!check(parser, TOK_COLON) && !check(parser, TOK_EQ) && !check(parser, TOK_EOF)) {
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected variable name in multi-value binding");
-				free(names);
-				return NULL;
+				return 0;
 			}
-			char *var_name = token_text(parser->current);
 			advance(parser);
-			names = realloc(names, (name_count + 1) * sizeof(char *));
-			names[name_count++] = var_name;
 			if (!match(parser, TOK_COMMA))
 				break;
 		}
 		if (match(parser, TOK_COLON)) {
 			if (!match(parser, TOK_EQ)) {
 				error(parser, "Expected '=' after ':' in multi-value binding");
-				free(names);
-				return NULL;
+				return 0;
 			}
 		} else if (!match(parser, TOK_EQ)) {
 			error(parser, "Expected ':=' or '=' in multi-value binding");
-			free(names);
-			return NULL;
+			return 0;
 		}
-		Expression *value = parse_expression(parser);
-		if (!value) {
-			free(names);
-			return NULL;
-		}
-		BindingTarget *targets = malloc(name_count * sizeof(BindingTarget));
-		for (int i = 0; i < name_count; i++) {
-			targets[i].name = names[i];
-			targets[i].is_new = 1;
-			targets[i].type = NULL;
-		}
-		free(names);
-		Statement *stmt = statement_create(STMT_MULTI_BIND);
-		stmt->loc.line = let_line;
-		stmt->loc.column = let_column;
-		stmt->data.multi_bind.targets = targets;
-		stmt->data.multi_bind.target_count = name_count;
-		stmt->data.multi_bind.value = value;
-		stmt->data.multi_bind.from_shorthand = 1;
-		return stmt;
+		if (!parse_expression(parser))
+			return 0;
+		return 1;
 	}
 
 	/* Single binding. The universal form is `name : [type] (: | =) value`:
@@ -1894,127 +1355,87 @@ static Statement *parse_binding_tail(Parser *parser, char *name, int let_line, i
 	 *   `x :: e`        — constant, inferred type (value const, or a type alias if e denotes a type)
 	 *   `x : T : e`     — constant, explicit type/meta (`x : type : T` is a local type alias)
 	 *   `x = e`         — legacy assignment-style binding
-	 * `:` separator ⇒ constant; `=` ⇒ variable. */
-	TypeRef *type = NULL;
-	Expression *value = NULL;
-	int is_const = 0;
-	TypeRef *type_value = NULL;
+	 * `:` separator ⇒ constant; `=` ⇒ variable. cst_to_program re-derives all of this
+	 * from the CST tokens; here we only consume + drive the CST. */
 	if (match(parser, TOK_COLON)) {
 		if (check(parser, TOK_EQ)) {
 			advance(parser); /* `:=` — inferred variable */
-			value = parse_expression(parser);
-			if (!value)
-				return NULL;
+			if (!parse_expression(parser))
+				return 0;
 		} else if (check(parser, TOK_COLON)) {
 			advance(parser); /* `::` — inferred-meta local constant */
-			is_const = 1;
-			value = parse_expression(parser); /* semantic classifies alias vs value const */
-			if (!value)
-				return NULL;
+			if (!parse_expression(parser))
+				return 0;
 		} else {
-			type = parse_type(parser); /* explicit declared type / meta `T` */
-			if (!type)
-				return NULL;
+			TypeForm tf;
+			if (!parse_type_form(parser, &tf)) /* explicit declared type / meta `T` */
+				return 0;
 			if (match(parser, TOK_COLON)) {
 				/* `x : T : value` — explicit-meta/typed local constant. */
-				is_const = 1;
-				if (type->kind == TYPE_TYPE) {
+				if (tf.is_type_meta) {
 					/* `x : type : <type>` — a local type alias; the RHS is a type. */
-					type_value = parse_type(parser);
-					type_ref_free(type);
-					type = NULL;
-					if (!type_value)
-						return NULL;
+					if (!parse_type(parser))
+						return 0;
 				} else {
-					value = parse_expression(parser); /* typed value const */
-					if (!value) {
-						type_ref_free(type);
-						return NULL;
-					}
+					if (!parse_expression(parser)) /* typed value const */
+						return 0;
 				}
 			} else if (match(parser, TOK_EQ)) {
-				value = parse_expression(parser); /* `x : T = e` variable */
-				if (!value) {
-					type_ref_free(type);
-					return NULL;
-				}
+				if (!parse_expression(parser)) /* `x : T = e` variable */
+					return 0;
 			}
 			/* else `x : T` — variable, no initializer */
 		}
 	} else if (match(parser, TOK_EQ)) {
-		value = parse_expression(parser);
-		if (!value)
-			return NULL;
+		if (!parse_expression(parser))
+			return 0;
 	} else {
 		error(parser, "Expected ':' or '=' after variable name");
-		return NULL;
+		return 0;
 	}
-	Statement *stmt = statement_create(STMT_BIND);
-	stmt->loc.line = let_line;
-	stmt->loc.column = let_column;
-	stmt->data.bind_stmt.name = name;
-	stmt->data.bind_stmt.names = NULL;
-	stmt->data.bind_stmt.name_count = 0;
-	stmt->data.bind_stmt.type = type;
-	stmt->data.bind_stmt.value = value;
-	stmt->data.bind_stmt.is_const = is_const;
-	stmt->data.bind_stmt.type_value = type_value;
-	return stmt;
+	*out_kind = SN_BIND_STMT;
+	return 1;
 }
 
 /* Parse a "simple statement" — a binding (`x := e`, `x: T [= e]`, `a, b := e`), an assignment
  * (`lvalue op= e`), or an expression — WITHOUT consuming a terminator. The caller consumes
  * whatever terminates it (`;` for a statement, `;`/`)` for the parts of a `for` header). This
  * is the one place these forms are parsed; `for` no longer hand-rolls its own. */
-static Statement *parse_simple_statement(Parser *parser) {
-	Expression *target = parse_expression(parser);
-	if (!target)
-		return NULL;
+static int parse_simple_statement(Parser *parser, SyntaxNodeKind *out_kind) {
+	int target_cp = cst_cp(parser);
+	if (!parse_expression(parser))
+		return 0;
 
-	/* Bare binding: a plain name then `:` (`x := e` / `x: T [= e]`) or `,` (`a, b := e`). */
-	if (target->type == EXPR_NAME && (check(parser, TOK_COLON) || check(parser, TOK_COMMA))) {
-		char *bname = malloc(strlen(target->data.name.name) + 1);
-		strcpy(bname, target->data.name.name);
-		int bl = target->loc.line, bc = target->loc.column;
-		expression_free(target);
-		return parse_binding_tail(parser, bname, bl, bc);
+	/* Bare binding: a plain name (the target collapsed to a single SN_NAME_EXPR) then `:`
+	 * (`x := e` / `x: T [= e]`) or `,` (`a, b := e`). The name token is already in the CST. */
+	if (cst_single_node_kind(parser, target_cp) == SN_NAME_EXPR &&
+	    (check(parser, TOK_COLON) || check(parser, TOK_COMMA))) {
+		return parse_binding_tail(parser, out_kind);
 	}
 
 	/* Assignment: `lvalue = / += / -= / *= / /= expr`. */
 	if (check(parser, TOK_EQ) || check(parser, TOK_PLUS_EQ) || check(parser, TOK_MINUS_EQ) ||
 	    check(parser, TOK_STAR_EQ) || check(parser, TOK_SLASH_EQ)) {
-		TokenKind op_token = parser->current.kind;
 		advance(parser);
-		Expression *value = parse_expression(parser);
-		if (!value) {
-			expression_free(target);
-			return NULL;
-		}
-		Operator op = OP_NONE;
-		if (op_token == TOK_PLUS_EQ)
-			op = OP_ADD;
-		else if (op_token == TOK_MINUS_EQ)
-			op = OP_SUB;
-		else if (op_token == TOK_STAR_EQ)
-			op = OP_MUL;
-		else if (op_token == TOK_SLASH_EQ)
-			op = OP_DIV;
-		Statement *stmt = statement_create(STMT_ASSIGN);
-		stmt->loc = target->loc;
-		stmt->data.assign_stmt.target = target;
-		stmt->data.assign_stmt.value = value;
-		stmt->data.assign_stmt.op = op;
-		return stmt;
+		if (!parse_expression(parser))
+			return 0;
+		*out_kind = SN_ASSIGN_STMT;
+		return 1;
 	}
 
 	/* Otherwise an expression statement. */
-	Statement *stmt = statement_create(STMT_EXPR);
-	stmt->loc = target->loc;
-	stmt->data.expr_stmt.expr = target;
-	return stmt;
+	*out_kind = SN_EXPR_STMT;
+	return 1;
 }
 
-static Statement *parse_statement(Parser *parser) {
+static int parse_statement(Parser *parser) {
+	int stmt_cp = cst_cp(parser);
+	int ok = 0; /* 1 once a statement has been parsed (drives the cleanup wrap) */
+	/* CST wrap kind for the statement, tracked by parse context (not a built AST node).
+	 * Each branch that produces a statement sets it before `goto cleanup`. */
+	SyntaxNodeKind stmt_kind = SN_ERROR;
+	Trivia *leading = NULL;
+	int leading_count = 0;
 	/* Prevent stack overflow from unbounded recursion */
 	const int MAX_RECURSION_DEPTH = 1000;
 	if (parser->recursion_depth > MAX_RECURSION_DEPTH) {
@@ -2022,12 +1443,10 @@ static Statement *parse_statement(Parser *parser) {
 		goto cleanup;
 	}
 	parser->recursion_depth++;
-	Statement *result = NULL;
 
-	/* Drain pending trivia: any comments/blank-lines that appeared since the
-	 * previous syntactic token become the leading trivia of this statement. */
-	Trivia *leading = NULL;
-	int leading_count = 0;
+	/* Drain pending trivia (comments/blank lines) to keep comment association tidy; the
+	 * parser no longer builds an AST to attach it to, so the drained trivia is freed at
+	 * cleanup. Comments survive in the CST as their own leaves regardless. */
 	take_pending_as_leading(parser, &leading, &leading_count);
 
 	if (match(parser, TOK_SEMI)) {
@@ -2035,132 +1454,81 @@ static Statement *parse_statement(Parser *parser) {
 	}
 
 	if (match(parser, TOK_BREAK)) {
-		int break_line = parser->previous.line;
-		int break_column = parser->previous.column;
-
 		if (!match(parser, TOK_SEMI)) {
 			error(parser, "Expected ';' after break");
 		}
-
-		Statement *stmt = statement_create(STMT_BREAK);
-		stmt->loc.line = break_line;
-		stmt->loc.column = break_column;
-		result = stmt;
+		stmt_kind = SN_BREAK_STMT;
+		ok = 1;
 		goto cleanup;
 	}
 
 	if (match(parser, TOK_EACH_FIELD)) {
-		int ef_line = parser->previous.line;
-		int ef_column = parser->previous.column;
-
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected binding name after 'each_field'");
 			goto cleanup;
 		}
-		char *binding = token_text(parser->current);
 		advance(parser);
 
-		TypeRef *filter_type = NULL;
 		if (match(parser, TOK_COLON)) {
-			filter_type = parse_type(parser);
-			if (!filter_type) {
-				free(binding);
+			if (!parse_type(parser))
 				goto cleanup;
-			}
 		}
 
 		if (!match(parser, TOK_IN)) {
 			error(parser, "Expected 'in' after each_field binding");
-			free(binding);
-			type_ref_free(filter_type);
 			goto cleanup;
 		}
 
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected archetype parameter name after 'in'");
-			free(binding);
-			type_ref_free(filter_type);
 			goto cleanup;
 		}
-		char *arch_name = token_text(parser->current);
 		advance(parser);
 
 		if (!match(parser, TOK_LBRACE)) {
 			error(parser, "Expected '{' to start each_field body");
-			free(binding);
-			free(arch_name);
-			type_ref_free(filter_type);
 			goto cleanup;
 		}
 
-		Statement **body = NULL;
-		int body_count = 0;
 		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-			Statement *body_stmt = parse_statement(parser);
-			if (!body_stmt)
+			if (!parse_statement(parser))
 				break;
-			body = realloc(body, (body_count + 1) * sizeof(Statement *));
-			body[body_count++] = body_stmt;
 		}
 
 		if (!match(parser, TOK_RBRACE)) {
 			error(parser, "Expected '}' to close each_field body");
 		}
 
-		Statement *stmt = statement_create(STMT_EACH_FIELD);
-		stmt->loc.line = ef_line;
-		stmt->loc.column = ef_column;
-		stmt->data.each_field.binding_name = binding;
-		stmt->data.each_field.filter_type = filter_type;
-		stmt->data.each_field.arch_param_name = arch_name;
-		stmt->data.each_field.body = body;
-		stmt->data.each_field.body_count = body_count;
-		result = stmt;
+		stmt_kind = SN_EACH_FIELD_STMT;
+		ok = 1;
 		goto cleanup;
 	}
 
 	if (match(parser, TOK_RETURN)) {
-		int return_line = parser->previous.line;
-		int return_column = parser->previous.column;
-
-		Expression *value = parse_expression(parser);
-		if (!value) {
+		/* `return e1, …, en` — a list of returned values (single return is just count 1). */
+		if (!parse_expression(parser)) {
 			error(parser, "Expected expression after 'return'");
 			goto cleanup;
 		}
-
-		/* `return e1, …, en` — a list of returned values (single return is just count 1). */
-		Expression **ret_values = malloc(sizeof(Expression *));
-		ret_values[0] = value;
-		int ret_value_count = 1;
 		while (match(parser, TOK_COMMA)) {
-			Expression *nv = parse_expression(parser);
-			if (!nv) {
+			if (!parse_expression(parser)) {
 				error(parser, "Expected expression after ',' in return statement");
 				goto cleanup;
 			}
-			ret_values = realloc(ret_values, (ret_value_count + 1) * sizeof(Expression *));
-			ret_values[ret_value_count++] = nv;
 		}
 
 		if (!match(parser, TOK_SEMI)) {
 			error(parser, "Expected ';' after return statement");
 		}
 
-		Statement *stmt = statement_create(STMT_RETURN);
-		stmt->loc.line = return_line;
-		stmt->loc.column = return_column;
-		stmt->data.return_stmt.values = ret_values;
-		stmt->data.return_stmt.count = ret_value_count;
-		result = stmt;
+		stmt_kind = SN_RETURN_STMT;
+		ok = 1;
 		goto cleanup;
 	}
 
 	/* check for run statement */
 	if (check(parser, TOK_IDENT)) {
-		const char *text = parser->current.start;
-		size_t len = parser->current.length;
-		if (len == 3 && strncmp(text, "run", 3) == 0) {
+		if (cur_ident_is(parser, "run", 3)) {
 			advance(parser); /* consume 'run' */
 
 			if (!check(parser, TOK_IDENT)) {
@@ -2168,19 +1536,14 @@ static Statement *parse_statement(Parser *parser) {
 				parser->recursion_depth--;
 				goto cleanup;
 			}
-			char *system_name = token_text(parser->current);
 			advance(parser);
 
 			if (!match(parser, TOK_SEMI)) {
 				error(parser, "Expected ';'");
 			}
 
-			Statement *stmt = statement_create(STMT_RUN);
-			stmt->loc.line = parser->previous.line;
-			stmt->loc.column = parser->previous.column;
-			stmt->data.run_stmt.system_name = system_name;
-			stmt->data.run_stmt.world_name = NULL;
-			result = stmt;
+			stmt_kind = SN_RUN_STMT;
+			ok = 1;
 			goto cleanup;
 		}
 	}
@@ -2188,13 +1551,7 @@ static Statement *parse_statement(Parser *parser) {
 	/* Paren-based multi-bind: `(x, y:, n: int) = expr;` — a target with a trailing `:`
 	 * (optionally a type) declares a new variable; a bare name assigns to an existing one. */
 	if (match(parser, TOK_LPAREN)) {
-
-		BindingTarget *targets = NULL;
-		int target_count = 0;
-		int max_targets = 16;
-		targets = malloc(max_targets * sizeof(BindingTarget));
-
-		/* Parse binding targets with loop guard */
+		/* Parse binding targets: `name` (assign) or `name:` / `name: T` (declare). */
 		int loop_count = 0;
 		const int MAX_TARGETS = 1000;
 		while (!check(parser, TOK_RPAREN) && !check(parser, TOK_EOF)) {
@@ -2202,39 +1559,19 @@ static Statement *parse_statement(Parser *parser) {
 				error(parser, "Too many binding targets");
 				break;
 			}
-
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected variable name in binding");
 				break;
 			}
-
-			char *name = token_text(parser->current);
 			advance(parser);
-
-			/* A trailing `:` marks a newly-declared target (optionally with a type);
-			 * a bare name assigns to an existing variable. */
-			int is_new = 0;
-			TypeRef *type = NULL;
 			if (match(parser, TOK_COLON)) {
-				is_new = 1;
 				if (!check(parser, TOK_COMMA) && !check(parser, TOK_RPAREN)) {
-					type = parse_type(parser);
+					if (!parse_type(parser))
+						goto cleanup;
 				}
 			}
-
-			if (target_count >= max_targets) {
-				max_targets *= 2;
-				targets = realloc(targets, max_targets * sizeof(BindingTarget));
-			}
-
-			targets[target_count].name = name;
-			targets[target_count].is_new = is_new;
-			targets[target_count].type = type;
-			target_count++;
-
-			if (!match(parser, TOK_COMMA)) {
+			if (!match(parser, TOK_COMMA))
 				break;
-			}
 		}
 
 		if (!match(parser, TOK_RPAREN)) {
@@ -2247,23 +1584,15 @@ static Statement *parse_statement(Parser *parser) {
 			goto cleanup;
 		}
 
-		Expression *value = parse_expression(parser);
-		if (!value) {
+		if (!parse_expression(parser))
 			goto cleanup;
-		}
 
 		if (!match(parser, TOK_SEMI)) {
 			error(parser, "Expected ';' after binding statement");
 		}
 
-		Statement *stmt = statement_create(STMT_MULTI_BIND);
-		stmt->loc.line = parser->previous.line;
-		stmt->loc.column = parser->previous.column;
-		stmt->data.multi_bind.targets = targets;
-		stmt->data.multi_bind.target_count = target_count;
-		stmt->data.multi_bind.value = value;
-		stmt->data.multi_bind.from_shorthand = 0;
-		result = stmt;
+		stmt_kind = SN_MULTI_BIND_STMT;
+		ok = 1;
 		goto cleanup;
 	}
 
@@ -2277,162 +1606,86 @@ static Statement *parse_statement(Parser *parser) {
 	}
 
 	if (match(parser, TOK_IF)) {
-		int if_line = parser->previous.line;
-		int if_column = parser->previous.column;
-
 		if (!match(parser, TOK_LPAREN)) {
 			error(parser, "Expected '(' after 'if'");
 			goto cleanup;
 		}
-
-		Expression *cond = parse_expression(parser);
-		if (!cond) {
+		if (!parse_expression(parser)) {
 			goto cleanup;
 		}
-
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' after if condition");
 			goto cleanup;
 		}
 
-		Statement *stmt = statement_create(STMT_IF);
-		stmt->loc.line = if_line;
-		stmt->loc.column = if_column;
-		stmt->data.if_stmt.cond = cond;
-		stmt->data.if_stmt.then_body = NULL;
-		stmt->data.if_stmt.then_count = 0;
-		stmt->data.if_stmt.else_body = NULL;
-		stmt->data.if_stmt.else_count = 0;
-
 		if (match(parser, TOK_LBRACE)) {
-			/* Braced block: collect statements until } */
 			while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-				Statement *body_stmt = parse_statement(parser);
-				if (!body_stmt) {
+				if (!parse_statement(parser))
 					synchronize(parser);
-					continue;
-				}
-
-				stmt->data.if_stmt.then_body =
-				    realloc(stmt->data.if_stmt.then_body, (stmt->data.if_stmt.then_count + 1) * sizeof(Statement *));
-				stmt->data.if_stmt.then_body[stmt->data.if_stmt.then_count++] = body_stmt;
 			}
-
 			if (!match(parser, TOK_RBRACE)) {
 				error(parser, "Expected '}' after if body");
 			}
 		} else {
-			/* Braceless: parse exactly one statement */
-			Statement *body_stmt = parse_statement(parser);
-			if (body_stmt) {
-				stmt->data.if_stmt.then_body = malloc(sizeof(Statement *));
-				stmt->data.if_stmt.then_body[0] = body_stmt;
-				stmt->data.if_stmt.then_count = 1;
-			}
+			parse_statement(parser); /* braceless: exactly one statement */
 		}
 
-		/* Parse else clause if present */
 		if (match(parser, TOK_ELSE)) {
 			if (match(parser, TOK_LBRACE)) {
-				/* Braced else block: collect statements until } */
 				while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-					Statement *body_stmt = parse_statement(parser);
-					if (!body_stmt) {
+					if (!parse_statement(parser))
 						synchronize(parser);
-						continue;
-					}
-
-					stmt->data.if_stmt.else_body = realloc(stmt->data.if_stmt.else_body,
-					                                       (stmt->data.if_stmt.else_count + 1) * sizeof(Statement *));
-					stmt->data.if_stmt.else_body[stmt->data.if_stmt.else_count++] = body_stmt;
 				}
-
 				if (!match(parser, TOK_RBRACE)) {
 					error(parser, "Expected '}' after else body");
 				}
 			} else {
-				/* Braceless else: parse exactly one statement */
-				Statement *body_stmt = parse_statement(parser);
-				if (body_stmt) {
-					stmt->data.if_stmt.else_body = malloc(sizeof(Statement *));
-					stmt->data.if_stmt.else_body[0] = body_stmt;
-					stmt->data.if_stmt.else_count = 1;
-				}
+				parse_statement(parser); /* braceless else */
 			}
 		}
 
-		result = stmt;
+		stmt_kind = SN_IF_STMT;
+		ok = 1;
 		goto cleanup;
 	}
 
 	if (match(parser, TOK_FOR)) {
-		int for_line = parser->previous.line;
-		int for_column = parser->previous.column;
-
-		Statement *stmt = statement_create(STMT_FOR);
-		stmt->loc.line = for_line;
-		stmt->loc.column = for_column;
-		stmt->data.for_stmt.var_name = NULL;
-		stmt->data.for_stmt.iterable = NULL;
-		stmt->data.for_stmt.init = NULL;
-		stmt->data.for_stmt.condition = NULL;
-		stmt->data.for_stmt.increment = NULL;
-		stmt->data.for_stmt.body = NULL;
-		stmt->data.for_stmt.body_count = 0;
-
 		/* Check for infinite for: for { } */
 		if (match(parser, TOK_LBRACE)) {
-			/* Infinite loop - no var_name, iterable, or condition (already set to NULL above) */
+			/* infinite loop — no header */
 		} else if (match(parser, TOK_LPAREN)) {
-			/* for loop: for (init; cond; incr) { } */
-			/* All three parts are optional */
-
-			Statement *init = NULL;
-			Expression *cond = NULL;
-
-			/* init: a binding/assignment/expression, or empty. Shared parser — no `let`. */
+			/* for (init; cond; incr) { } — all three optional. init/incr are wrapped as
+			 * their own statement nodes so the CST header is structured (not flat). */
 			if (!check(parser, TOK_SEMI)) {
-				init = parse_simple_statement(parser);
-				if (!init)
+				int init_cp = cst_cp(parser);
+				SyntaxNodeKind init_kind = SN_EXPR_STMT;
+				if (!parse_simple_statement(parser, &init_kind))
 					goto cleanup;
+				cst_wrap(parser, init_cp, init_kind);
 			}
-
-			/* Expect and consume first semicolon */
 			if (!match(parser, TOK_SEMI)) {
 				error(parser, "Expected ';' in for loop");
 				goto cleanup;
 			}
-
-			/* Parse condition (can be empty) */
 			if (!check(parser, TOK_SEMI)) {
-				cond = parse_expression(parser);
-				if (!cond)
+				if (!parse_expression(parser))
 					goto cleanup;
 			}
-
-			/* Expect and consume second semicolon (required) */
 			if (!match(parser, TOK_SEMI)) {
 				error(parser, "Expected ';' in for loop");
 				goto cleanup;
 			}
-
-			/* increment: a binding/assignment/expression, or empty. */
-			Statement *incr_stmt = NULL;
 			if (!check(parser, TOK_RPAREN)) {
-				incr_stmt = parse_simple_statement(parser);
-				if (!incr_stmt)
+				int incr_cp = cst_cp(parser);
+				SyntaxNodeKind incr_kind = SN_EXPR_STMT;
+				if (!parse_simple_statement(parser, &incr_kind))
 					goto cleanup;
+				cst_wrap(parser, incr_cp, incr_kind);
 			}
-
-			stmt->data.for_stmt.init = init;
-			stmt->data.for_stmt.condition = cond;
-			stmt->data.for_stmt.increment = incr_stmt;
-
 			if (!match(parser, TOK_RPAREN)) {
 				error(parser, "Expected ')' after for clause");
 				goto cleanup;
 			}
-
 			if (!match(parser, TOK_LBRACE)) {
 				error(parser, "Expected '{'");
 				goto cleanup;
@@ -2443,31 +1696,16 @@ static Statement *parse_statement(Parser *parser) {
 				error(parser, "Expected variable name after 'for'");
 				goto cleanup;
 			}
-
-			char *var_name = token_text(parser->current);
 			advance(parser);
-
 			if (!match(parser, TOK_IN)) {
 				error(parser, "Expected 'in' in for loop");
 				goto cleanup;
 			}
-
 			if (!check(parser, TOK_IDENT)) {
 				error(parser, "Expected iterable after 'in'");
 				goto cleanup;
 			}
-
-			char *iterable_name = token_text(parser->current);
 			advance(parser);
-
-			Expression *iterable = expression_create(EXPR_NAME);
-			iterable->loc.line = parser->previous.line;
-			iterable->loc.column = parser->previous.column;
-			iterable->data.name.name = iterable_name;
-
-			stmt->data.for_stmt.var_name = var_name;
-			stmt->data.for_stmt.iterable = iterable;
-
 			if (!match(parser, TOK_LBRACE)) {
 				error(parser, "Expected '{'");
 				goto cleanup;
@@ -2475,43 +1713,31 @@ static Statement *parse_statement(Parser *parser) {
 		}
 
 		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-			Statement *body_stmt = parse_statement(parser);
-			if (!body_stmt) {
+			if (!parse_statement(parser))
 				synchronize(parser);
-				continue;
-			}
-
-			stmt->data.for_stmt.body =
-			    realloc(stmt->data.for_stmt.body, (stmt->data.for_stmt.body_count + 1) * sizeof(Statement *));
-			stmt->data.for_stmt.body[stmt->data.for_stmt.body_count++] = body_stmt;
 		}
-
 		if (!match(parser, TOK_RBRACE)) {
 			error(parser, "Expected '}'");
 		}
 
-		result = stmt;
+		stmt_kind = SN_FOR_STMT;
+		ok = 1;
 		goto cleanup;
 	}
 
 	/* A binding, assignment, or expression statement — parsed by the shared helper, then
 	 * terminated by `;`. */
-	result = parse_simple_statement(parser);
-	if (result && !match(parser, TOK_SEMI)) {
+	ok = parse_simple_statement(parser, &stmt_kind);
+	if (ok && !match(parser, TOK_SEMI)) {
 		error(parser, "Expected ';' after statement");
 	}
 
 cleanup:
 	parser->recursion_depth--;
-	if (result) {
-		result->leading_trivia = leading;
-		result->leading_count = leading_count;
-		result->last_line = parser->previous.line;
-		steal_trailing_inline(parser, result->last_line, &result->trailing_trivia, &result->trailing_count);
-	} else {
-		free(leading);
-	}
-	return result;
+	free(leading);
+	if (ok)
+		cst_wrap(parser, stmt_cp, stmt_kind);
+	return ok;
 }
 
 /* ========== MAIN PARSER ========== */
@@ -2529,11 +1755,11 @@ static void parser_init(Parser *parser, Lexer *lexer) {
 	parser->recursion_depth = 0;
 	memset(&parser->previous, 0, sizeof(Token));
 	parser->current.line = 0;
+	parser->builder = cst_builder_new();
 	advance(parser);
 }
 
 ParseResult parse_program(Parser *parser) {
-	Program *prog = program_create();
 	int decl_loop_count = 0;
 	const int MAX_DECL_LOOP = 10000;
 
@@ -2542,35 +1768,33 @@ ParseResult parse_program(Parser *parser) {
 			parser->had_error = 1;
 			break;
 		}
-		/* Pending trivia accumulated since the previous decl (or program start)
-		 * becomes the leading trivia of THIS decl. */
+		/* Drain pending trivia (comments/blank lines). The parser builds only the CST now,
+		 * where comments live as their own leaves, so there's no AST node to attach it to. */
 		Trivia *leading = NULL;
 		int leading_count = 0;
 		take_pending_as_leading(parser, &leading, &leading_count);
+		free(leading);
+		(void)leading_count;
 
-		Decl *decl = parse_decl(parser);
-		if (!decl) {
-			free(leading);
+		int decl_cp = cst_cp(parser);
+		SyntaxNodeKind decl_kind = SN_ERROR;
+		if (!parse_decl(parser, &decl_kind)) {
 			synchronize(parser);
+			cst_wrap(parser, decl_cp, SN_ERROR);
 			continue;
 		}
-		decl->leading_trivia = leading;
-		decl->leading_count = leading_count;
-		decl->last_line = parser->previous.line;
-		/* Inline-trailing comment on the decl's last line is stolen back from
-		 * pending so the NEXT decl doesn't pick it up as leading. */
-		steal_trailing_inline(parser, decl->last_line, &decl->trailing_trivia, &decl->trailing_count);
-
-		prog->decls = realloc(prog->decls, (prog->decl_count + 1) * sizeof(Decl *));
-		prog->decls[prog->decl_count++] = decl;
+		cst_wrap(parser, decl_cp, decl_kind);
 	}
 
 	ParseResult result;
-	result.ast = prog;
+	result.ast = NULL; /* the parser produces only the lossless CST; cst_to_program builds the AST */
 	result.errors = parser->errors;
 	result.error_count = parser->error_count;
 	result.comments = NULL;
 	result.comment_count = 0;
+	/* Close out the lossless CST and hand ownership to the caller. */
+	result.cst_root = parser->builder ? cst_builder_finish(parser->builder) : NULL;
+	parser->builder = NULL;
 	parser->errors = NULL;
 	parser->error_count = 0;
 	return result;
@@ -2589,6 +1813,8 @@ void parser_free(Parser *parser) {
 		}
 		free(parser->errors);
 		free(parser->pending_trivia);
+		/* Non-NULL only if parse_program never ran to claim the tree. */
+		cst_builder_free(parser->builder);
 		free(parser);
 	}
 }
@@ -2610,9 +1836,11 @@ void parse_result_free(ParseResult *result) {
 		}
 		free(result->errors);
 		free(result->comments);
+		syntax_node_free(result->cst_root);
 		result->errors = NULL;
 		result->error_count = 0;
 		result->comments = NULL;
 		result->comment_count = 0;
+		result->cst_root = NULL;
 	}
 }

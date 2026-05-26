@@ -3,7 +3,6 @@ arche C {
   x :: int,
 }
 
-
 proc main() {
   i := 0;
   for p in C {

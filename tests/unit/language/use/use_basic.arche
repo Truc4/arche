@@ -9,10 +9,12 @@ proc main() {
     csv_close(move fd);
     if (n > 0) {
       printf("PASS: read %d bytes\n", n);
-    } else {
+    }
+    else {
       printf("FAIL: no bytes read\n");
     }
-  } else {
+  }
+  else {
     printf("FAIL: could not open file\n");
   }
 }

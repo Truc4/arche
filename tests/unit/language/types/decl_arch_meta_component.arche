@@ -2,7 +2,7 @@
 // equivalent to `name :: T`. The minted nominal type `mass` backs int and is usable as a type.
 // RUN: %arche -o %t %s && %t | grep "m: 5"
 arche Body {
-  mass : type : int,
+  mass: type: int,
 }
 
 proc main() {

@@ -3,14 +3,10 @@ arche Entity {
   next :: handle<Entity>,
 }
 
-
-static pool<Entity>(10);
-
+static pool<Entity> (10);
 
 sys process(next) {
 }
 
-
-@allow_pure_proc
-proc main() {
+@allow_pure_proc proc main() {
 }

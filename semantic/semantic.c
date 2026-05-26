@@ -1,4 +1,7 @@
 #include "semantic.h"
+#include "../cst/cst_view.h"
+#include "../parser/parser.h"
+#include "sem_model.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,8 +96,17 @@ struct SemanticContext {
 	 * (currently `syscall`) so they cannot be called from ordinary safe code. */
 	int in_unsafe;
 
-	/* Program for looking up declarations */
-	Program *prog;
+	/* AstProgram for looking up declarations */
+	AstProgram *prog;
+
+	/* CST path only: the AstProgram reconstructed from the CST (owned here; freed with the
+	 * context). The side model borrows type-name strings that live in it, so it must
+	 * outlive lowering+codegen — exactly like main.c keeps the parser-built `prog` alive. */
+	AstProgram *owned_prog;
+
+	/* MIGRATION: resolved types keyed by CST node id, kept out of the tree.
+	 * Populated alongside Expression.resolved_type; lowering reads it from here. */
+	SemModel *model;
 };
 
 /* ========== UTILITY FUNCTIONS ========== */
@@ -250,7 +262,7 @@ static int type_ref_equal(const TypeRef *a, const TypeRef *b) {
 	return 0;
 }
 
-static FuncDecl *find_func_decl_cst(Program *prog, const char *name) {
+static FuncDecl *find_func_decl_cst(AstProgram *prog, const char *name) {
 	if (!prog)
 		return NULL;
 	for (int i = 0; i < prog->decl_count; i++) {
@@ -1360,6 +1372,11 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 
 	/* Resolve and store the type of this expression */
 	expr->resolved_type = (char *)resolve_expression_type(ctx, expr);
+	/* MIGRATION (4a): mirror into the side model keyed by the CST node, so lowering
+	 * can read it there instead of off the tree. Parser-built expressions always link
+	 * to a CST node; synthesized ones (if any) keep relying on resolved_type. */
+	if (ctx->model && expr->cst_id)
+		sem_model_set_expr_type(ctx->model, expr->cst_id - 1, expr->resolved_type);
 }
 
 /* ========== STATEMENT ANALYSIS ========== */
@@ -1395,6 +1412,8 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 					}
 				}
 				b->is_type_alias = 1;
+				if (ctx->model && stmt->cst_id)
+					sem_model_set_bind_alias(ctx->model, stmt->cst_id - 1);
 				break; /* compile-time only: no runtime binding */
 			}
 			/* else: a value const — fall through to the normal binding path (marked const below). */
@@ -2643,48 +2662,1605 @@ static void erase_aliases_decl(SemanticContext *ctx, Decl *d) {
 	}
 }
 
-static void erase_type_aliases(SemanticContext *ctx, Program *prog) {
+static void erase_type_aliases(SemanticContext *ctx, AstProgram *prog) {
 	if (ctx->type_alias_count == 0)
 		return;
 	for (int i = 0; i < prog->decl_count; i++)
 		erase_aliases_decl(ctx, prog->decls[i]);
 }
 
+/* ========== CST -> AstProgram reconstruction (semantic_analyze_cst) ==========
+ *
+ * Rather than rewrite the ~3000-line analysis traversal onto views, the CST path
+ * reconstructs an analyzable `AstProgram` directly from the immutable lossless CST
+ * (mirroring lower/lower.c's lower_*_cst walk), then runs the SAME analysis core.
+ * This guarantees the side-model + error contract is byte-identical to the
+ * AstProgram path: each Expression/Statement carries cst_id = (CST node id + 1), so
+ * the side model — keyed by `cst_id - 1` — is keyed by the exact node id the CST
+ * lowerer reads back. Module CSTs are inlined + name-prefixed exactly as main.c's
+ * resolve_uses does, and top-level tuple groups are expanded into archetype fields
+ * exactly as main.c's expand_archetype_tuple_groups does. */
+
+/* ---- small text helpers ---- */
+static char *sem_txt_dup(CvText t) {
+	char *s = malloc(t.len + 1);
+	if (t.ptr)
+		memcpy(s, t.ptr, t.len);
+	s[t.len] = '\0';
+	return s;
+}
+static char *sem_cv_dup(CstView v) {
+	return sem_txt_dup(cv_text(v));
+}
+static char *sem_dupz(const char *s) {
+	char *r = malloc(strlen(s) + 1);
+	strcpy(r, s);
+	return r;
+}
+
+/* The 1-based line/column of the first DIRECT child token of `kind`, or {0,0}. */
+static SourceLoc sem_direct_token_loc(const SyntaxNode *n, TokenKind kind) {
+	SourceLoc loc = {0, 0};
+	if (!n)
+		return loc;
+	for (int i = 0; i < n->child_count; i++)
+		if (n->children[i].tag == SE_TOKEN && n->children[i].as.token.kind == kind) {
+			loc.line = n->children[i].as.token.line;
+			loc.column = n->children[i].as.token.column;
+			return loc;
+		}
+	return loc;
+}
+
+/* The 1-based line/column of the first token leaf in a node's subtree (the node's start),
+ * so reconstructed decls/statements carry source locations for diagnostics. */
+static SourceLoc sem_node_loc(const SyntaxNode *n) {
+	SourceLoc loc = {0, 0};
+	if (!n)
+		return loc;
+	for (int i = 0; i < n->child_count; i++) {
+		if (n->children[i].tag == SE_TOKEN) {
+			loc.line = n->children[i].as.token.line;
+			loc.column = n->children[i].as.token.column;
+			return loc;
+		}
+		SourceLoc sub = sem_node_loc(n->children[i].as.node);
+		if (sub.line) {
+			return sub;
+		}
+	}
+	return loc;
+}
+
+/* ---- type reconstruction (CST type node -> TypeRef) ---- */
+static TypeRef *cst_build_type(CstView t);
+static int cv_type_count_sem(CstView v);
+
+/* The archetype name inside `handle<X>` / `handle(X)` (the IDENT that isn't "handle"). */
+static char *cst_handle_name(CstView t) {
+	for (int i = 0; i < t.node->child_count; i++)
+		if (t.node->children[i].tag == SE_TOKEN && t.node->children[i].as.token.kind == TOK_IDENT) {
+			CvText nm = {t.src + t.node->children[i].as.token.offset, t.node->children[i].as.token.length};
+			if (!(nm.len == 6 && memcmp(nm.ptr, "handle", 6) == 0))
+				return sem_txt_dup(nm);
+		}
+	return sem_dupz("");
+}
+
+static TypeRef *cst_build_type(CstView t) {
+	if (!cv_present(t))
+		return NULL;
+	TypeRef *tr = malloc(sizeof(TypeRef));
+	tr->loc.line = 0;
+	tr->loc.column = 0;
+	switch (cv_kind(t)) {
+	case SN_TYPE_REF: {
+		char *raw = sem_txt_dup(cv_token(t, TOK_IDENT));
+		if (strcmp(raw, "archetype") == 0) {
+			tr->kind = TYPE_ARCHETYPE;
+			free(raw);
+		} else if (strcmp(raw, "opaque") == 0) {
+			tr->kind = TYPE_OPAQUE;
+			free(raw);
+		} else if (strcmp(raw, "type") == 0) {
+			tr->kind = TYPE_TYPE;
+			free(raw);
+		} else {
+			tr->kind = TYPE_NAME;
+			tr->data.name = raw; /* owned */
+		}
+		break;
+	}
+	case SN_TYPE_ARRAY: {
+		tr->kind = TYPE_ARRAY;
+		TypeRef *elem = malloc(sizeof(TypeRef));
+		elem->loc = tr->loc;
+		char *en = sem_txt_dup(cv_token(t, TOK_IDENT));
+		if (strcmp(en, "opaque") == 0) {
+			elem->kind = TYPE_OPAQUE;
+			free(en);
+		} else {
+			elem->kind = TYPE_NAME;
+			elem->data.name = en;
+		}
+		tr->data.array.element_type = elem;
+		break;
+	}
+	case SN_TYPE_SHAPED_ARRAY: {
+		/* `T[a][b]…` — innermost element is the named type; each `[n]` adds a rank. */
+		char *en = sem_txt_dup(cv_token(t, TOK_IDENT));
+		TypeRef *elem = malloc(sizeof(TypeRef));
+		elem->loc = tr->loc;
+		if (strcmp(en, "opaque") == 0) {
+			elem->kind = TYPE_OPAQUE;
+			free(en);
+		} else {
+			elem->kind = TYPE_NAME;
+			elem->data.name = en;
+		}
+		int ranks[16], nr = 0;
+		for (int i = 0; i < t.node->child_count && nr < 16; i++)
+			if (t.node->children[i].tag == SE_TOKEN && t.node->children[i].as.token.kind == TOK_NUMBER) {
+				char buf[32];
+				int l = (int)t.node->children[i].as.token.length;
+				if (l > 31)
+					l = 31;
+				memcpy(buf, t.src + t.node->children[i].as.token.offset, l);
+				buf[l] = '\0';
+				ranks[nr++] = atoi(buf);
+			}
+		TypeRef *cur = elem;
+		for (int i = nr - 1; i >= 0; i--) {
+			TypeRef *sh = malloc(sizeof(TypeRef));
+			sh->loc = tr->loc;
+			sh->kind = TYPE_SHAPED_ARRAY;
+			sh->data.shaped_array.element_type = cur;
+			sh->data.shaped_array.rank = ranks[i];
+			cur = sh;
+		}
+		free(tr);
+		return cur;
+	}
+	case SN_TYPE_HANDLE: {
+		tr->kind = TYPE_HANDLE;
+		tr->data.handle.archetype_name = cst_handle_name(t);
+		break;
+	}
+	case SN_TYPE_TUPLE: {
+		/* `(x: T, y: U)` — field names are IDENTs, field types are the SN_TYPE_* children. */
+		tr->kind = TYPE_TUPLE;
+		int n = cv_type_count_sem(t);
+		tr->data.tuple.field_count = n;
+		tr->data.tuple.field_names = malloc((n > 0 ? n : 1) * sizeof(char *));
+		tr->data.tuple.field_types = malloc((n > 0 ? n : 1) * sizeof(TypeRef *));
+		/* field names: IDENT tokens preceding each `:`; collect in order */
+		int fi = 0;
+		const char *pend = NULL;
+		int pend_len = 0;
+		for (int i = 0; i < t.node->child_count && fi < n; i++) {
+			SyntaxElem *ch = &t.node->children[i];
+			if (ch->tag == SE_TOKEN && ch->as.token.kind == TOK_IDENT) {
+				pend = t.src + ch->as.token.offset;
+				pend_len = (int)ch->as.token.length;
+			} else if (ch->tag == SE_NODE) {
+				SyntaxNodeKind k = ch->as.node->kind;
+				if (k >= SN_TYPE_REF && k <= SN_TYPE_HANDLE) {
+					tr->data.tuple.field_names[fi] = sem_txt_dup((CvText){pend, pend ? pend_len : 0});
+					tr->data.tuple.field_types[fi] = cst_build_type((CstView){ch->as.node, t.src});
+					fi++;
+					pend = NULL;
+				}
+			}
+		}
+		tr->data.tuple.field_count = fi;
+		break;
+	}
+	default:
+		tr->kind = TYPE_NAME;
+		tr->data.name = sem_dupz("");
+		break;
+	}
+	return tr;
+}
+
+/* ---- CST navigation (same shapes as lower/lower.c) ---- */
+static CstView sem_first_expr(CstView v) {
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = v.node->children[i].as.node->kind;
+			if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+				return (CstView){v.node->children[i].as.node, v.src};
+		}
+	return (CstView){NULL, v.src};
+}
+static CstView sem_type_at(CstView v, int idx) {
+	int c = 0;
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = v.node->children[i].as.node->kind;
+			if (k >= SN_TYPE_REF && k <= SN_TYPE_HANDLE) {
+				if (c == idx)
+					return (CstView){v.node->children[i].as.node, v.src};
+				c++;
+			}
+		}
+	return (CstView){NULL, v.src};
+}
+static int cv_type_count_sem(CstView v) {
+	int c = 0;
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = v.node->children[i].as.node->kind;
+			if (k >= SN_TYPE_REF && k <= SN_TYPE_HANDLE)
+				c++;
+		}
+	return c;
+}
+static CstView sem_node_at_expr(CstView v, int idx) {
+	int c = 0;
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = v.node->children[i].as.node->kind;
+			if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
+				if (c == idx)
+					return (CstView){v.node->children[i].as.node, v.src};
+				c++;
+			}
+		}
+	return (CstView){NULL, v.src};
+}
+
+static Operator sem_tok_to_op(TokenKind k) {
+	switch (k) {
+	case TOK_PLUS:
+		return OP_ADD;
+	case TOK_MINUS:
+		return OP_SUB;
+	case TOK_STAR:
+		return OP_MUL;
+	case TOK_SLASH:
+		return OP_DIV;
+	case TOK_EQ_EQ:
+		return OP_EQ;
+	case TOK_BANG_EQ:
+		return OP_NEQ;
+	case TOK_LT:
+		return OP_LT;
+	case TOK_GT:
+		return OP_GT;
+	case TOK_LT_EQ:
+		return OP_LTE;
+	case TOK_GT_EQ:
+		return OP_GTE;
+	default:
+		return OP_NONE;
+	}
+}
+static Operator sem_assign_op(TokenKind k) {
+	switch (k) {
+	case TOK_PLUS_EQ:
+		return OP_ADD;
+	case TOK_MINUS_EQ:
+		return OP_SUB;
+	case TOK_STAR_EQ:
+		return OP_MUL;
+	case TOK_SLASH_EQ:
+		return OP_DIV;
+	default:
+		return OP_NONE;
+	}
+}
+
+/* Decode a string literal's content (quotes + escapes), like parse_primary_expr. */
+static char *cst_decode_str(CvText raw, int *out_len) {
+	const char *s = raw.ptr;
+	size_t len = raw.len;
+	char *value = malloc(len + 1);
+	int p = 0;
+	for (size_t i = 1; i + 1 < len; i++) {
+		if (s[i] == '\\' && i + 2 < len) {
+			i++;
+			switch (s[i]) {
+			case 'n':
+				value[p++] = '\n';
+				break;
+			case 't':
+				value[p++] = '\t';
+				break;
+			case 'r':
+				value[p++] = '\r';
+				break;
+			case '\\':
+				value[p++] = '\\';
+				break;
+			case '"':
+				value[p++] = '"';
+				break;
+			default:
+				value[p++] = s[i];
+				break;
+			}
+		} else {
+			value[p++] = s[i];
+		}
+	}
+	value[p] = '\0';
+	*out_len = p;
+	return value;
+}
+
+/* ---- expression reconstruction ---- */
+static Expression *cst_build_expr(CstView e) {
+	if (!cv_present(e))
+		return NULL;
+	Expression *ax = expression_create(EXPR_LITERAL);
+	ax->cst_id = cv_id(e) + 1;
+	ax->loc = sem_node_loc(e.node);
+
+	switch (cv_kind(e)) {
+	case SN_PAREN_EXPR: {
+		Expression *inner = cst_build_expr(sem_first_expr(e));
+		expression_free(ax);
+		return inner;
+	}
+	case SN_LITERAL_EXPR:
+		ax->type = EXPR_LITERAL;
+		ax->data.literal.lexeme = sem_cv_dup(e);
+		break;
+	case SN_STRING_EXPR: {
+		ax->type = EXPR_STRING;
+		int n = 0;
+		ax->data.string.value = cst_decode_str(cv_text(e), &n);
+		ax->data.string.length = n;
+		break;
+	}
+	case SN_NAME_EXPR: {
+		ax->type = EXPR_NAME;
+		ax->data.name.is_table_ref = 0;
+		if (cv_has_token(e, TOK_LT)) {
+			/* table<Name> in value position resolves to the bare archetype name */
+			char *nm = NULL;
+			int seen = 0;
+			for (int i = 0; i < e.node->child_count; i++)
+				if (e.node->children[i].tag == SE_TOKEN && e.node->children[i].as.token.kind == TOK_IDENT) {
+					CvText t = {e.src + e.node->children[i].as.token.offset, e.node->children[i].as.token.length};
+					if (seen++) {
+						nm = sem_txt_dup(t);
+						break;
+					}
+				}
+			ax->data.name.name = nm ? nm : sem_cv_dup(e);
+			ax->data.name.is_table_ref = 1;
+		} else {
+			ax->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
+		}
+		break;
+	}
+	case SN_FIELD_EXPR: {
+		/* `base.f1.f2…[idx]` flat: base IDENT, then (DOT FIELD_NAME)+, optional trailing index. */
+		Expression *base = expression_create(EXPR_NAME);
+		base->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
+		base->data.name.is_table_ref = 0;
+		Expression *cur = base;
+		int nfields = cv_count(e, SN_FIELD_NAME);
+		for (int i = 0; i < nfields; i++) {
+			Expression *f = expression_create(EXPR_FIELD);
+			f->data.field.base = cur;
+			f->data.field.field_name = sem_cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+			cur = f;
+		}
+		if (cv_has_token(e, TOK_LBRACKET)) {
+			Expression *idx = expression_create(EXPR_INDEX);
+			idx->data.index.base = cur;
+			int ic = 0;
+			for (int i = 0; i < e.node->child_count; i++)
+				if (e.node->children[i].tag == SE_NODE) {
+					SyntaxNodeKind k = e.node->children[i].as.node->kind;
+					if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+						ic++;
+				}
+			idx->data.index.indices = calloc(ic ? ic : 1, sizeof(Expression *));
+			idx->data.index.index_count = 0;
+			for (int i = 0; i < e.node->child_count; i++)
+				if (e.node->children[i].tag == SE_NODE) {
+					SyntaxNodeKind k = e.node->children[i].as.node->kind;
+					if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+						idx->data.index.indices[idx->data.index.index_count++] =
+						    cst_build_expr((CstView){e.node->children[i].as.node, e.src});
+				}
+			cur = idx;
+		}
+		cur->cst_id = cv_id(e) + 1;
+		expression_free(ax);
+		return cur;
+	}
+	case SN_INDEX_EXPR: {
+		ax->type = EXPR_INDEX;
+		Expression *base = expression_create(EXPR_NAME);
+		base->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
+		base->data.name.is_table_ref = 0;
+		int nfields = cv_count(e, SN_FIELD_NAME);
+		for (int i = 0; i < nfields; i++) {
+			Expression *f = expression_create(EXPR_FIELD);
+			f->data.field.base = base;
+			f->data.field.field_name = sem_cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+			base = f;
+		}
+		ax->data.index.base = base;
+		int ic = 0;
+		for (int i = 0; i < e.node->child_count; i++)
+			if (e.node->children[i].tag == SE_NODE) {
+				SyntaxNodeKind k = e.node->children[i].as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+					ic++;
+			}
+		ax->data.index.indices = calloc(ic ? ic : 1, sizeof(Expression *));
+		ax->data.index.index_count = 0;
+		for (int i = 0; i < e.node->child_count; i++)
+			if (e.node->children[i].tag == SE_NODE) {
+				SyntaxNodeKind k = e.node->children[i].as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+					ax->data.index.indices[ax->data.index.index_count++] =
+					    cst_build_expr((CstView){e.node->children[i].as.node, e.src});
+			}
+		break;
+	}
+	case SN_BINARY_EXPR: {
+		ax->type = EXPR_BINARY;
+		for (int i = 0; i < e.node->child_count; i++)
+			if (e.node->children[i].tag == SE_TOKEN) {
+				Operator op = sem_tok_to_op(e.node->children[i].as.token.kind);
+				if (op != OP_NONE) {
+					ax->data.binary.op = op;
+					break;
+				}
+			}
+		ax->data.binary.left = cst_build_expr(sem_node_at_expr(e, 0));
+		ax->data.binary.right = cst_build_expr(sem_node_at_expr(e, 1));
+		break;
+	}
+	case SN_UNARY_EXPR: {
+		ax->type = EXPR_UNARY;
+		ax->data.unary.op = UNARY_NEG;
+		for (int i = 0; i < e.node->child_count; i++)
+			if (e.node->children[i].tag == SE_TOKEN) {
+				TokenKind tk = e.node->children[i].as.token.kind;
+				if (tk == TOK_MINUS)
+					ax->data.unary.op = UNARY_NEG;
+				else if (tk == TOK_BANG)
+					ax->data.unary.op = UNARY_NOT;
+				else if (tk == TOK_MOVE)
+					ax->data.unary.op = UNARY_MOVE;
+				else if (tk == TOK_COPY)
+					ax->data.unary.op = UNARY_COPY;
+				else
+					continue;
+				break;
+			}
+		ax->data.unary.operand = cst_build_expr(sem_first_expr(e));
+		break;
+	}
+	case SN_CALL_EXPR: {
+		ax->type = EXPR_CALL;
+		Expression *callee = expression_create(EXPR_NAME);
+		callee->data.name.name = sem_cv_dup(cv_child(e, SN_CALLEE_NAME));
+		callee->data.name.is_table_ref = 0;
+		ax->data.call.callee = callee;
+		int ac = 0;
+		for (int i = 0; i < e.node->child_count; i++)
+			if (e.node->children[i].tag == SE_NODE) {
+				SyntaxNodeKind k = e.node->children[i].as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+					ac++;
+			}
+		ax->data.call.args = calloc(ac ? ac : 1, sizeof(Expression *));
+		ax->data.call.arg_count = 0;
+		for (int i = 0; i < e.node->child_count; i++)
+			if (e.node->children[i].tag == SE_NODE) {
+				SyntaxNodeKind k = e.node->children[i].as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+					ax->data.call.args[ax->data.call.arg_count++] =
+					    cst_build_expr((CstView){e.node->children[i].as.node, e.src});
+			}
+		break;
+	}
+	case SN_ARRAY_LIT_EXPR: {
+		ax->type = EXPR_ARRAY_LITERAL;
+		int n = 0;
+		for (int i = 0; i < e.node->child_count; i++)
+			if (e.node->children[i].tag == SE_NODE) {
+				SyntaxNodeKind k = e.node->children[i].as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+					n++;
+			}
+		ax->data.array_literal.elements = calloc(n ? n : 1, sizeof(Expression *));
+		ax->data.array_literal.element_count = 0;
+		for (int i = 0; i < e.node->child_count; i++)
+			if (e.node->children[i].tag == SE_NODE) {
+				SyntaxNodeKind k = e.node->children[i].as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+					ax->data.array_literal.elements[ax->data.array_literal.element_count++] =
+					    cst_build_expr((CstView){e.node->children[i].as.node, e.src});
+			}
+		break;
+	}
+	default:
+		ax->type = EXPR_LITERAL;
+		ax->data.literal.lexeme = sem_cv_dup(e);
+		break;
+	}
+	return ax;
+}
+
+/* ---- statement reconstruction ---- */
+static Statement *cst_build_stmt(CstView s);
+
+/* Lower the statement-kind child nodes of `parent` into a Statement array. */
+static Statement **cst_build_body(CstView parent, int *out_count) {
+	int n = 0;
+	for (int i = 0; i < parent.node->child_count; i++)
+		if (parent.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = parent.node->children[i].as.node->kind;
+			if (k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+				n++;
+		}
+	*out_count = n;
+	if (n == 0)
+		return NULL;
+	Statement **out = calloc(n, sizeof(Statement *));
+	int j = 0;
+	for (int i = 0; i < parent.node->child_count; i++)
+		if (parent.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = parent.node->children[i].as.node->kind;
+			if (k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+				out[j++] = cst_build_stmt((CstView){parent.node->children[i].as.node, parent.src});
+		}
+	return out;
+}
+
+static Statement *cst_build_stmt(CstView s) {
+	Statement *as = statement_create(STMT_EXPR);
+	as->cst_id = cv_id(s) + 1;
+	as->loc = sem_node_loc(s.node);
+
+	switch (cv_kind(s)) {
+	case SN_BIND_STMT: {
+		as->type = STMT_BIND;
+		CstView target = sem_node_at_expr(s, 0);
+		as->data.bind_stmt.name = sem_cv_dup(target);
+		as->data.bind_stmt.names = NULL;
+		as->data.bind_stmt.name_count = 0;
+		as->data.bind_stmt.type = NULL;
+		as->data.bind_stmt.value = NULL;
+		as->data.bind_stmt.type_value = NULL;
+		as->data.bind_stmt.is_type_alias = 0;
+		/* `:` introduces the value ⇒ constant; `=` ⇒ variable. The bind node holds the
+		 * separator tokens directly: `x := e` / `x : T = e` have an `=`; `x :: e` /
+		 * `x : T : e` use only `:` (>=2 of them). Mirror parse_binding_tail's classification. */
+		int n_colon = 0, has_eq = 0;
+		for (int i = 0; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_TOKEN) {
+				TokenKind tk = s.node->children[i].as.token.kind;
+				if (tk == TOK_COLON)
+					n_colon++;
+				else if (tk == TOK_EQ)
+					has_eq = 1;
+			}
+		int is_const = (!has_eq && n_colon >= 2);
+		as->data.bind_stmt.is_const = is_const;
+		/* The first type node (if any) is the declared type T. For `x : type : <T>` the parser
+		 * keeps type=NULL, type_value=<T>; detect that via the meta-type `type` as the first
+		 * type node, with a second type node as the alias backing. */
+		CstView t0 = sem_type_at(s, 0);
+		CstView t1 = sem_type_at(s, 1);
+		CvText t0name = cv_present(t0) ? cv_token(t0, TOK_IDENT) : (CvText){NULL, 0};
+		int t0_is_meta = t0name.ptr && t0name.len == 4 && memcmp(t0name.ptr, "type", 4) == 0;
+		if (is_const && t0_is_meta && cv_present(t1)) {
+			/* `x : type : <T>` — local type alias; RHS is a type. */
+			as->data.bind_stmt.type_value = cst_build_type(t1);
+		} else {
+			as->data.bind_stmt.type = cst_build_type(t0);
+			as->data.bind_stmt.value = cst_build_expr(sem_node_at_expr(s, 1));
+		}
+		break;
+	}
+	case SN_ASSIGN_STMT: {
+		as->type = STMT_ASSIGN;
+		as->data.assign_stmt.op = OP_NONE;
+		for (int i = 0; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_TOKEN) {
+				TokenKind tk = s.node->children[i].as.token.kind;
+				if (tk == TOK_EQ || tk == TOK_PLUS_EQ || tk == TOK_MINUS_EQ || tk == TOK_STAR_EQ ||
+				    tk == TOK_SLASH_EQ) {
+					as->data.assign_stmt.op = sem_assign_op(tk);
+					break;
+				}
+			}
+		as->data.assign_stmt.target = cst_build_expr(sem_node_at_expr(s, 0));
+		as->data.assign_stmt.value = cst_build_expr(sem_node_at_expr(s, 1));
+		break;
+	}
+	case SN_EXPR_STMT:
+		as->type = STMT_EXPR;
+		as->data.expr_stmt.expr = cst_build_expr(sem_node_at_expr(s, 0));
+		break;
+	case SN_FREE_STMT:
+		as->type = STMT_FREE;
+		as->data.free_stmt.value = cst_build_expr(sem_node_at_expr(s, 0));
+		break;
+	case SN_BREAK_STMT:
+		as->type = STMT_BREAK;
+		break;
+	case SN_RUN_STMT: {
+		as->type = STMT_RUN;
+		char *names[3] = {NULL, NULL, NULL};
+		int ni = 0;
+		for (int i = 0; i < s.node->child_count && ni < 3; i++)
+			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
+				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
+				names[ni++] = sem_txt_dup(t);
+			}
+		as->data.run_stmt.system_name = names[1] ? names[1] : sem_dupz("");
+		as->data.run_stmt.world_name = names[2];
+		free(names[0]);
+		break;
+	}
+	case SN_RETURN_STMT: {
+		as->type = STMT_RETURN;
+		int c = 0;
+		for (int i = 0; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_NODE) {
+				SyntaxNodeKind k = s.node->children[i].as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+					c++;
+			}
+		as->data.return_stmt.count = c;
+		as->data.return_stmt.values = calloc(c ? c : 1, sizeof(Expression *));
+		for (int i = 0; i < c; i++)
+			as->data.return_stmt.values[i] = cst_build_expr(sem_node_at_expr(s, i));
+		break;
+	}
+	case SN_IF_STMT: {
+		as->type = STMT_IF;
+		as->data.if_stmt.cond = cst_build_expr(sem_node_at_expr(s, 0));
+		CstView elsec = cv_child(s, SN_ELSE_CLAUSE);
+		as->data.if_stmt.then_body = cst_build_body(s, &as->data.if_stmt.then_count);
+		as->data.if_stmt.else_body = NULL;
+		as->data.if_stmt.else_count = 0;
+		if (cv_present(elsec))
+			as->data.if_stmt.else_body = cst_build_body(elsec, &as->data.if_stmt.else_count);
+		break;
+	}
+	case SN_FOR_STMT: {
+		as->type = STMT_FOR;
+		as->data.for_stmt.var_name = NULL;
+		as->data.for_stmt.iterable = NULL;
+		as->data.for_stmt.init = NULL;
+		as->data.for_stmt.condition = NULL;
+		as->data.for_stmt.increment = NULL;
+		as->data.for_stmt.body = NULL;
+		as->data.for_stmt.body_count = 0;
+		if (cv_has_token(s, TOK_LPAREN)) {
+			/* C-style: `for ( init ; cond ; incr ) { body }` */
+			int seen_brace = 0, seg = 0, nbody = 0;
+			for (int i = 0; i < s.node->child_count; i++) {
+				SyntaxElem *ch = &s.node->children[i];
+				if (ch->tag == SE_TOKEN) {
+					if (ch->as.token.kind == TOK_LBRACE)
+						seen_brace = 1;
+					else if (ch->as.token.kind == TOK_SEMI && !seen_brace && seg < 2)
+						seg++;
+					continue;
+				}
+				SyntaxNodeKind k = ch->as.node->kind;
+				CstView cv = {ch->as.node, s.src};
+				if (seen_brace) {
+					if (k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+						nbody++;
+					continue;
+				}
+				if (seg == 0 && k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+					as->data.for_stmt.init = cst_build_stmt(cv);
+				else if (seg == 1 && k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+					as->data.for_stmt.condition = cst_build_expr(cv);
+				else if (seg == 2 && k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+					as->data.for_stmt.increment = cst_build_stmt(cv);
+			}
+			as->data.for_stmt.body = calloc(nbody ? nbody : 1, sizeof(Statement *));
+			seen_brace = 0;
+			for (int i = 0; i < s.node->child_count; i++) {
+				SyntaxElem *ch = &s.node->children[i];
+				if (ch->tag == SE_TOKEN) {
+					if (ch->as.token.kind == TOK_LBRACE)
+						seen_brace = 1;
+					continue;
+				}
+				if (!seen_brace)
+					continue;
+				SyntaxNodeKind k = ch->as.node->kind;
+				if (k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+					as->data.for_stmt.body[as->data.for_stmt.body_count++] =
+					    cst_build_stmt((CstView){ch->as.node, s.src});
+			}
+			break;
+		}
+		/* range form `for IDENT in IDENT { body }`, or infinite `for { body }`. */
+		int ni = 0;
+		char *vname = NULL, *iname = NULL;
+		for (int i = 0; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
+				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
+				if (ni == 0)
+					vname = sem_txt_dup(t);
+				else if (ni == 1)
+					iname = sem_txt_dup(t);
+				ni++;
+			}
+		as->data.for_stmt.var_name = vname;
+		if (iname) {
+			Expression *it = expression_create(EXPR_NAME);
+			it->data.name.name = iname;
+			it->data.name.is_table_ref = 0;
+			as->data.for_stmt.iterable = it;
+		}
+		as->data.for_stmt.body = cst_build_body(s, &as->data.for_stmt.body_count);
+		break;
+	}
+	case SN_EACH_FIELD_STMT: {
+		as->type = STMT_EACH_FIELD;
+		as->data.each_field.binding_name = NULL;
+		as->data.each_field.arch_param_name = NULL;
+		int ni = 0;
+		for (int i = 0; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
+				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
+				if (ni == 0)
+					as->data.each_field.binding_name = sem_txt_dup(t);
+				else if (ni == 1)
+					as->data.each_field.arch_param_name = sem_txt_dup(t);
+				ni++;
+			}
+		if (!as->data.each_field.binding_name)
+			as->data.each_field.binding_name = sem_dupz("");
+		if (!as->data.each_field.arch_param_name)
+			as->data.each_field.arch_param_name = sem_dupz("");
+		as->data.each_field.filter_type = cst_build_type(sem_type_at(s, 0));
+		as->data.each_field.body = cst_build_body(s, &as->data.each_field.body_count);
+		break;
+	}
+	case SN_MULTI_BIND_STMT: {
+		as->type = STMT_MULTI_BIND;
+		int eq_idx = -1, lparen_idx = -1;
+		for (int i = 0; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_TOKEN) {
+				TokenKind tk = s.node->children[i].as.token.kind;
+				if (tk == TOK_LPAREN && lparen_idx < 0)
+					lparen_idx = i;
+				if (tk == TOK_EQ) {
+					eq_idx = i;
+					break;
+				}
+			}
+		int paren = (lparen_idx >= 0 && lparen_idx < eq_idx);
+		as->data.multi_bind.from_shorthand = paren ? 0 : 1;
+		as->data.multi_bind.targets = calloc(s.node->child_count, sizeof(BindingTarget));
+		as->data.multi_bind.target_count = 0;
+		as->data.multi_bind.value = NULL;
+		const char *pend = NULL;
+		int pend_len = 0, pend_active = 0, pend_new = 0;
+		TypeRef *pend_type = NULL;
+#define SEM_MB_FLUSH()                                                                                                 \
+	do {                                                                                                               \
+		if (pend_active) {                                                                                             \
+			int ti = as->data.multi_bind.target_count++;                                                               \
+			as->data.multi_bind.targets[ti].name = sem_txt_dup((CvText){pend, pend_len});                              \
+			as->data.multi_bind.targets[ti].is_new = paren ? pend_new : 1;                                             \
+			as->data.multi_bind.targets[ti].type = pend_type;                                                          \
+			pend_active = 0;                                                                                           \
+			pend_new = 0;                                                                                              \
+			pend_type = NULL;                                                                                          \
+		}                                                                                                              \
+	} while (0)
+		for (int i = 0; i < eq_idx; i++) {
+			SyntaxElem *ch = &s.node->children[i];
+			if (ch->tag == SE_NODE) {
+				SyntaxNodeKind k = ch->as.node->kind;
+				if (k == SN_NAME_EXPR) {
+					SEM_MB_FLUSH();
+					CvText t = cv_token((CstView){ch->as.node, s.src}, TOK_IDENT);
+					pend = t.ptr;
+					pend_len = (int)t.len;
+					pend_active = 1;
+				} else if (k >= SN_TYPE_REF && k <= SN_TYPE_HANDLE && pend_active) {
+					pend_type = cst_build_type((CstView){ch->as.node, s.src});
+				}
+				continue;
+			}
+			TokenKind tk = ch->as.token.kind;
+			if (tk == TOK_IDENT) {
+				SEM_MB_FLUSH();
+				pend = s.src + ch->as.token.offset;
+				pend_len = (int)ch->as.token.length;
+				pend_active = 1;
+			} else if (tk == TOK_COLON && pend_active) {
+				pend_new = 1;
+			} else if (tk == TOK_COMMA) {
+				SEM_MB_FLUSH();
+			}
+		}
+		SEM_MB_FLUSH();
+#undef SEM_MB_FLUSH
+		for (int i = eq_idx + 1; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_NODE) {
+				SyntaxNodeKind k = s.node->children[i].as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
+					as->data.multi_bind.value = cst_build_expr((CstView){s.node->children[i].as.node, s.src});
+					break;
+				}
+			}
+		break;
+	}
+	default:
+		as->type = STMT_EXPR;
+		as->data.expr_stmt.expr = NULL;
+		break;
+	}
+	return as;
+}
+
+/* ---- parameter reconstruction ---- */
+static Parameter *cst_build_param(CstView p) {
+	Parameter *ap = parameter_create(sem_cv_dup(cv_child(p, SN_PARAM_NAME)), NULL);
+	ap->type = cst_build_type(sem_type_at(p, 0)); /* NULL for sys params */
+	ap->is_own = cv_has_token(p, TOK_OWN);
+	ap->loc.line = 0;
+	ap->loc.column = 0;
+	return ap;
+}
+
+/* ---- declaration reconstruction (CST decl node -> Decl) ---- */
+static Decl *cst_build_decl(CstView d) {
+	switch (cv_kind(d)) {
+	case SN_USE_DECL:
+		return NULL; /* modules are inlined separately */
+	case SN_WORLD_DECL: {
+		Decl *ad = decl_create(DECL_WORLD);
+		ad->data.world = world_decl_create(sem_txt_dup(cv_token(d, TOK_IDENT)));
+		return ad;
+	}
+	case SN_ARCHETYPE_DECL: {
+		Decl *ad = decl_create(DECL_ARCHETYPE);
+		ArchetypeDecl *aa = archetype_decl_create(sem_cv_dup(cv_child(d, SN_TYPE_DEF_NAME)));
+		int nf = cv_count(d, SN_FIELD_NAME);
+		aa->fields = calloc(nf > 0 ? nf : 1, sizeof(FieldDecl *));
+		aa->field_count = 0;
+		for (int i = 0; i < d.node->child_count; i++) {
+			if (d.node->children[i].tag != SE_NODE || d.node->children[i].as.node->kind != SN_FIELD_NAME)
+				continue;
+			CstView fn = {d.node->children[i].as.node, d.src};
+			/* the inline component type is a type node before the next FIELD_NAME; else a bare
+			 * field whose component type is the field's own name. Between the name and the type,
+			 * a `type` keyword token marks the explicit meta longhand `name : type : T` (vs the
+			 * inferred `name :: T`); preserve it so the formatter round-trips concrete syntax. */
+			CstView ty = {NULL, d.src};
+			int meta_explicit = 0;
+			for (int k = i + 1; k < d.node->child_count; k++) {
+				if (d.node->children[k].tag == SE_TOKEN) {
+					if (d.node->children[k].as.token.kind == TOK_IDENT && d.node->children[k].as.token.length == 4 &&
+					    strncmp(d.src + d.node->children[k].as.token.offset, "type", 4) == 0)
+						meta_explicit = 1;
+					continue;
+				}
+				SyntaxNodeKind kk = d.node->children[k].as.node->kind;
+				if (kk == SN_FIELD_NAME)
+					break;
+				if (kk >= SN_TYPE_REF && kk <= SN_TYPE_HANDLE) {
+					ty.node = d.node->children[k].as.node;
+					break;
+				}
+			}
+			char *fname = sem_cv_dup(fn);
+			TypeRef *ft;
+			if (cv_present(ty)) {
+				ft = cst_build_type(ty);
+			} else {
+				ft = malloc(sizeof(TypeRef));
+				ft->kind = TYPE_NAME;
+				ft->loc.line = 0;
+				ft->loc.column = 0;
+				ft->data.name = sem_dupz(fname);
+			}
+			FieldDecl *fd = field_decl_create(FIELD_COLUMN, fname, ft);
+			fd->meta_explicit = meta_explicit;
+			aa->fields[aa->field_count++] = fd;
+		}
+		ad->data.archetype = aa;
+		return ad;
+	}
+	case SN_PROC_DECL: {
+		Decl *ad = decl_create(DECL_PROC);
+		ad->loc = sem_node_loc(d.node);
+		ProcDecl *ap = proc_decl_create(sem_cv_dup(cv_child(d, SN_FUNC_DEF_NAME)));
+		ap->loc = sem_direct_token_loc(d.node, TOK_LPAREN); /* lint location: the `(`, like the parser */
+		ap->is_extern = cv_has_token(d, TOK_EXTERN);
+		ap->is_unsafe = cv_has_token(d, TOK_UNSAFE);
+		ap->allow_pure_proc = cv_has_token(d, TOK_AT);
+		int np = cv_count(d, SN_PARAM);
+		ap->params = calloc(np ? np : 1, sizeof(Parameter *));
+		for (int i = 0; i < np; i++)
+			ap->params[i] = cst_build_param(cv_child_at(d, SN_PARAM, i));
+		ap->param_count = np;
+		ap->statements = cst_build_body(d, &ap->statement_count);
+		ad->data.proc = ap;
+		return ad;
+	}
+	case SN_SYS_DECL: {
+		Decl *ad = decl_create(DECL_SYS);
+		ad->loc = sem_node_loc(d.node);
+		SysDecl *as = sys_decl_create(sem_cv_dup(cv_child(d, SN_FUNC_DEF_NAME)));
+		as->loc = sem_direct_token_loc(d.node, TOK_LPAREN);
+		int np = cv_count(d, SN_PARAM);
+		as->params = calloc(np ? np : 1, sizeof(Parameter *));
+		for (int i = 0; i < np; i++)
+			as->params[i] = cst_build_param(cv_child_at(d, SN_PARAM, i));
+		as->param_count = np;
+		as->statements = cst_build_body(d, &as->statement_count);
+		ad->data.sys = as;
+		return ad;
+	}
+	case SN_FUNC_DECL: {
+		Decl *ad = decl_create(DECL_FUNC);
+		ad->loc = sem_node_loc(d.node);
+		FuncDecl *af = func_decl_create(sem_cv_dup(cv_child(d, SN_FUNC_DEF_NAME)));
+		af->loc = sem_direct_token_loc(d.node, TOK_LPAREN);
+		af->is_extern = cv_has_token(d, TOK_EXTERN);
+		af->is_unsafe = cv_has_token(d, TOK_UNSAFE);
+		int np = cv_count(d, SN_PARAM);
+		af->params = calloc(np ? np : 1, sizeof(Parameter *));
+		for (int i = 0; i < np; i++)
+			af->params[i] = cst_build_param(cv_child_at(d, SN_PARAM, i));
+		af->param_count = np;
+		int nt = cv_type_count_sem(d); /* return types are the direct type-node children */
+		af->return_types = calloc(nt ? nt : 1, sizeof(TypeRef *));
+		af->return_type_count = 0;
+		for (int i = 0; i < nt; i++)
+			af->return_types[af->return_type_count++] = cst_build_type(sem_type_at(d, i));
+		af->statements = cst_build_body(d, &af->statement_count);
+		ad->data.func = af;
+		return ad;
+	}
+	case SN_FUNC_GROUP_DECL: {
+		Decl *ad = decl_create(DECL_FUNC_GROUP);
+		ad->loc = sem_node_loc(d.node);
+		FuncGroup *fg = func_group_create(sem_cv_dup(cv_child(d, SN_FUNC_DEF_NAME)));
+		fg->loc = sem_direct_token_loc(d.node, TOK_LBRACE);
+		int nmem = 0;
+		for (int i = 0; i < d.node->child_count; i++)
+			if (d.node->children[i].tag == SE_TOKEN && d.node->children[i].as.token.kind == TOK_IDENT)
+				nmem++;
+		fg->member_names = calloc(nmem ? nmem : 1, sizeof(char *));
+		fg->member_count = 0;
+		for (int i = 0; i < d.node->child_count; i++)
+			if (d.node->children[i].tag == SE_TOKEN && d.node->children[i].as.token.kind == TOK_IDENT) {
+				CvText t = {d.src + d.node->children[i].as.token.offset, d.node->children[i].as.token.length};
+				fg->member_names[fg->member_count++] = sem_txt_dup(t);
+			}
+		ad->data.func_group = fg;
+		return ad;
+	}
+	case SN_CONST_DECL: {
+		Decl *ad = decl_create(DECL_CONST);
+		char *cname = sem_txt_dup(cv_token(d, TOK_IDENT));
+		ConstDecl *ac = const_decl_create(cname, NULL);
+		ac->decl_type = NULL;
+		ac->type_value = NULL;
+		ac->value = NULL;
+		if (cv_has_token(d, TOK_LPAREN)) {
+			/* tuple group `name (a, b, …) :: T`: a nominal type alias whose RHS is a TYPE_TUPLE
+			 * built from the parenthesized suffixes, each typed by the shared type after `::`. */
+			CstView memberty = sem_type_at(d, 0);
+			TypeRef *shared = cv_present(memberty) ? cst_build_type(memberty) : NULL;
+			/* collect suffix names inside the parens */
+			int in_paren = 0, n = 0;
+			for (int i = 0; i < d.node->child_count; i++)
+				if (d.node->children[i].tag == SE_TOKEN) {
+					TokenKind tk = d.node->children[i].as.token.kind;
+					if (tk == TOK_LPAREN)
+						in_paren = 1;
+					else if (tk == TOK_RPAREN)
+						in_paren = 0;
+					else if (tk == TOK_IDENT && in_paren)
+						n++;
+				}
+			TypeRef *tt = malloc(sizeof(TypeRef));
+			tt->kind = TYPE_TUPLE;
+			tt->loc.line = 0;
+			tt->loc.column = 0;
+			tt->data.tuple.field_count = n;
+			tt->data.tuple.field_names = malloc((n > 0 ? n : 1) * sizeof(char *));
+			tt->data.tuple.field_types = malloc((n > 0 ? n : 1) * sizeof(TypeRef *));
+			int fi = 0;
+			in_paren = 0;
+			for (int i = 0; i < d.node->child_count && fi < n; i++)
+				if (d.node->children[i].tag == SE_TOKEN) {
+					TokenKind tk = d.node->children[i].as.token.kind;
+					if (tk == TOK_LPAREN)
+						in_paren = 1;
+					else if (tk == TOK_RPAREN)
+						in_paren = 0;
+					else if (tk == TOK_IDENT && in_paren) {
+						CvText t = {d.src + d.node->children[i].as.token.offset, d.node->children[i].as.token.length};
+						tt->data.tuple.field_names[fi] = sem_txt_dup(t);
+						TypeRef *ct = malloc(sizeof(TypeRef));
+						if (shared) {
+							*ct = *shared;
+							if (shared->kind == TYPE_NAME && shared->data.name)
+								ct->data.name = sem_dupz(shared->data.name);
+						} else {
+							ct->kind = TYPE_NAME;
+							ct->loc.line = 0;
+							ct->loc.column = 0;
+							ct->data.name = sem_dupz("");
+						}
+						tt->data.tuple.field_types[fi] = ct;
+						fi++;
+					}
+				}
+			if (shared)
+				type_ref_free(shared);
+			ac->type_value = tt;
+			ad->data.constant = ac;
+			return ad;
+		}
+		/* Non-tuple const: classify by separator tokens + type/expr children.
+		 *   `name :: value`       — value (or simple alias); value = expr.
+		 *   `name : T : value`    — typed value const; decl_type = T, value = expr.
+		 *   `name : type : <T>`   — nominal type alias; decl_type = TYPE_TYPE, type_value = T. */
+		CstView t0 = sem_type_at(d, 0);
+		CstView t1 = sem_type_at(d, 1);
+		CvText t0name = cv_present(t0) ? cv_token(t0, TOK_IDENT) : (CvText){NULL, 0};
+		int t0_is_meta = t0name.ptr && t0name.len == 4 && memcmp(t0name.ptr, "type", 4) == 0;
+		if (t0_is_meta && cv_present(t1)) {
+			ac->decl_type = cst_build_type(t0); /* TYPE_TYPE */
+			ac->type_value = cst_build_type(t1);
+		} else {
+			if (cv_present(t0))
+				ac->decl_type = cst_build_type(t0);
+			ac->value = cst_build_expr(sem_node_at_expr(d, 0));
+		}
+		ad->data.constant = ac;
+		return ad;
+	}
+	case SN_STATIC_DECL: {
+		Decl *ad = decl_create(DECL_STATIC);
+		if (cv_has_token(d, TOK_LPAREN)) {
+			/* `static Name(count[, init])` / `static pool<Name>(count) { field: v, … }` */
+			CstView ty = sem_type_at(d, 0);
+			char *an = NULL;
+			if (cv_present(ty) && cv_has_token(ty, TOK_LT)) {
+				int seen = 0;
+				for (int i = 0; i < ty.node->child_count; i++)
+					if (ty.node->children[i].tag == SE_TOKEN && ty.node->children[i].as.token.kind == TOK_IDENT) {
+						CvText t = {ty.src + ty.node->children[i].as.token.offset,
+						            ty.node->children[i].as.token.length};
+						if (seen++) {
+							an = sem_txt_dup(t);
+							break;
+						}
+					}
+			} else if (cv_present(ty)) {
+				an = sem_txt_dup(cv_token(ty, TOK_IDENT));
+			}
+			StaticDecl *sd = static_decl_archetype_create(an ? an : sem_dupz(""));
+			int cap_alloc = d.node->child_count + 1;
+			sd->archetype.field_names = calloc(cap_alloc, sizeof(char *));
+			sd->archetype.field_values = calloc(cap_alloc, sizeof(Expression *));
+			sd->archetype.field_count = 0;
+			sd->archetype.init_length = NULL;
+			int phase = 0; /* 0=outside, 1=in (), 2=in {} */
+			int paren_arg = 0;
+			const char *pend = NULL;
+			int pend_len = 0;
+			for (int i = 0; i < d.node->child_count; i++) {
+				SyntaxElem *ch = &d.node->children[i];
+				if (ch->tag == SE_TOKEN) {
+					switch (ch->as.token.kind) {
+					case TOK_LPAREN:
+						phase = 1;
+						break;
+					case TOK_RPAREN:
+						phase = 0;
+						break;
+					case TOK_LBRACE:
+						phase = 2;
+						break;
+					case TOK_RBRACE:
+						phase = 0;
+						break;
+					case TOK_IDENT:
+						if (phase == 2) {
+							pend = d.src + ch->as.token.offset;
+							pend_len = (int)ch->as.token.length;
+						}
+						break;
+					default:
+						break;
+					}
+					continue;
+				}
+				SyntaxNodeKind k = ch->as.node->kind;
+				if (k < SN_LITERAL_EXPR || k > SN_PAREN_EXPR)
+					continue;
+				CstView ev = {ch->as.node, d.src};
+				if (phase == 1) {
+					if (paren_arg == 0) {
+						sd->archetype.field_values[0] = cst_build_expr(ev);
+						sd->archetype.field_names[0] = NULL;
+						sd->archetype.field_count = 1;
+					} else if (paren_arg == 1) {
+						sd->archetype.init_length = cst_build_expr(ev);
+					}
+					paren_arg++;
+				} else if (phase == 2 && pend) {
+					int fc = sd->archetype.field_count;
+					sd->archetype.field_names[fc] = sem_txt_dup((CvText){pend, pend_len});
+					sd->archetype.field_values[fc] = cst_build_expr(ev);
+					sd->archetype.field_count++;
+					pend = NULL;
+				}
+			}
+			ad->data.static_decl = sd;
+		} else {
+			/* `static name : T[size]` — static array. name in the first type node; array type 2nd. */
+			CstView name_ty = sem_type_at(d, 0);
+			char *aname = sem_txt_dup(cv_token(name_ty, TOK_IDENT));
+			CstView arr_ty = sem_type_at(d, 1);
+			TypeRef *full = cst_build_type(arr_ty);
+			TypeRef *elem = full;
+			if (full && full->kind == TYPE_SHAPED_ARRAY)
+				elem = full->data.shaped_array.element_type;
+			else if (full && full->kind == TYPE_ARRAY)
+				elem = full->data.array.element_type;
+			int size = 0;
+			if (cv_present(arr_ty))
+				for (int i = 0; i < arr_ty.node->child_count; i++)
+					if (arr_ty.node->children[i].tag == SE_TOKEN &&
+					    arr_ty.node->children[i].as.token.kind == TOK_NUMBER) {
+						char buf[32];
+						int l = (int)arr_ty.node->children[i].as.token.length;
+						if (l > 31)
+							l = 31;
+						memcpy(buf, arr_ty.src + arr_ty.node->children[i].as.token.offset, l);
+						buf[l] = '\0';
+						size = atoi(buf);
+						break;
+					}
+			StaticDecl *sd = static_decl_array_create(aname, elem, size);
+			/* static_decl_array_create takes ownership of `elem`; free the array wrapper only. */
+			if (full && full != elem)
+				free(full); /* shaped/array wrapper node; element ownership moved to sd */
+			ad->data.static_decl = sd;
+		}
+		return ad;
+	}
+	default:
+		return NULL;
+	}
+}
+
+/* ---- module CST registry (parallel to lower_add_module) ---- */
+typedef struct {
+	char *name;
+	const SyntaxNode *root;
+	const char *src;
+} SemModule;
+static SemModule g_sem_modules[64];
+static int g_sem_module_count = 0;
+
+void semantic_add_module(const char *name, const SyntaxNode *root, const char *src) {
+	if (g_sem_module_count >= 64 || !name || !root)
+		return;
+	g_sem_modules[g_sem_module_count].name = sem_dupz(name);
+	g_sem_modules[g_sem_module_count].root = root;
+	g_sem_modules[g_sem_module_count].src = src;
+	g_sem_module_count++;
+}
+
+/* ---- module name-prefixing (mirrors main.c resolve_uses / prefix_module) ---- */
+static int sem_name_in_set(char **set, int count, const char *name) {
+	for (int i = 0; i < count; i++)
+		if (strcmp(set[i], name) == 0)
+			return 1;
+	return 0;
+}
+static char *sem_prefix_name(const char *prefix, const char *name) {
+	int p = (int)strlen(prefix), n = (int)strlen(name);
+	char *r = malloc(p + 1 + n + 1);
+	memcpy(r, prefix, p);
+	r[p] = '_';
+	memcpy(r + p + 1, name, n);
+	r[p + 1 + n] = 0;
+	return r;
+}
+static void sem_maybe_rename(char **slot, const char *prefix, char **set, int count) {
+	if (!*slot || !sem_name_in_set(set, count, *slot))
+		return;
+	char *old = *slot;
+	*slot = sem_prefix_name(prefix, old);
+	free(old);
+}
+static void sem_rename_typeref(TypeRef *t, const char *prefix, char **set, int count);
+static void sem_rename_expr(Expression *e, const char *prefix, char **set, int count);
+static void sem_rename_stmt(Statement *s, const char *prefix, char **set, int count);
+
+static void sem_rename_typeref(TypeRef *t, const char *prefix, char **set, int count) {
+	if (!t)
+		return;
+	switch (t->kind) {
+	case TYPE_NAME:
+		sem_maybe_rename(&t->data.name, prefix, set, count);
+		break;
+	case TYPE_ARRAY:
+		sem_rename_typeref(t->data.array.element_type, prefix, set, count);
+		break;
+	case TYPE_SHAPED_ARRAY:
+		sem_rename_typeref(t->data.shaped_array.element_type, prefix, set, count);
+		break;
+	case TYPE_TUPLE:
+		for (int i = 0; i < t->data.tuple.field_count; i++)
+			sem_rename_typeref(t->data.tuple.field_types[i], prefix, set, count);
+		break;
+	case TYPE_HANDLE:
+		sem_maybe_rename(&t->data.handle.archetype_name, prefix, set, count);
+		break;
+	default:
+		break;
+	}
+}
+static void sem_rename_expr(Expression *e, const char *prefix, char **set, int count) {
+	if (!e)
+		return;
+	switch (e->type) {
+	case EXPR_LITERAL:
+	case EXPR_STRING:
+		break;
+	case EXPR_NAME:
+		sem_maybe_rename(&e->data.name.name, prefix, set, count);
+		break;
+	case EXPR_FIELD:
+		sem_rename_expr(e->data.field.base, prefix, set, count);
+		break;
+	case EXPR_INDEX:
+		sem_rename_expr(e->data.index.base, prefix, set, count);
+		for (int i = 0; i < e->data.index.index_count; i++)
+			sem_rename_expr(e->data.index.indices[i], prefix, set, count);
+		break;
+	case EXPR_BINARY:
+		sem_rename_expr(e->data.binary.left, prefix, set, count);
+		sem_rename_expr(e->data.binary.right, prefix, set, count);
+		break;
+	case EXPR_UNARY:
+		sem_rename_expr(e->data.unary.operand, prefix, set, count);
+		break;
+	case EXPR_CALL:
+		sem_rename_expr(e->data.call.callee, prefix, set, count);
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			sem_rename_expr(e->data.call.args[i], prefix, set, count);
+		break;
+	case EXPR_ALLOC:
+		sem_maybe_rename(&e->data.alloc.archetype_name, prefix, set, count);
+		for (int i = 0; i < e->data.alloc.field_count; i++)
+			sem_rename_expr(e->data.alloc.field_values[i], prefix, set, count);
+		sem_rename_expr(e->data.alloc.init_length, prefix, set, count);
+		break;
+	case EXPR_ARRAY_LITERAL:
+		for (int i = 0; i < e->data.array_literal.element_count; i++)
+			sem_rename_expr(e->data.array_literal.elements[i], prefix, set, count);
+		break;
+	}
+}
+static void sem_rename_stmt(Statement *s, const char *prefix, char **set, int count) {
+	if (!s)
+		return;
+	switch (s->type) {
+	case STMT_BIND:
+		sem_rename_typeref(s->data.bind_stmt.type, prefix, set, count);
+		sem_rename_expr(s->data.bind_stmt.value, prefix, set, count);
+		break;
+	case STMT_ASSIGN:
+		sem_rename_expr(s->data.assign_stmt.target, prefix, set, count);
+		sem_rename_expr(s->data.assign_stmt.value, prefix, set, count);
+		break;
+	case STMT_FOR:
+		sem_rename_expr(s->data.for_stmt.iterable, prefix, set, count);
+		sem_rename_stmt(s->data.for_stmt.init, prefix, set, count);
+		sem_rename_expr(s->data.for_stmt.condition, prefix, set, count);
+		sem_rename_stmt(s->data.for_stmt.increment, prefix, set, count);
+		for (int i = 0; i < s->data.for_stmt.body_count; i++)
+			sem_rename_stmt(s->data.for_stmt.body[i], prefix, set, count);
+		break;
+	case STMT_IF:
+		sem_rename_expr(s->data.if_stmt.cond, prefix, set, count);
+		for (int i = 0; i < s->data.if_stmt.then_count; i++)
+			sem_rename_stmt(s->data.if_stmt.then_body[i], prefix, set, count);
+		for (int i = 0; i < s->data.if_stmt.else_count; i++)
+			sem_rename_stmt(s->data.if_stmt.else_body[i], prefix, set, count);
+		break;
+	case STMT_EXPR:
+		sem_rename_expr(s->data.expr_stmt.expr, prefix, set, count);
+		break;
+	case STMT_FREE:
+		sem_rename_expr(s->data.free_stmt.value, prefix, set, count);
+		break;
+	case STMT_RETURN:
+		for (int i = 0; i < s->data.return_stmt.count; i++)
+			sem_rename_expr(s->data.return_stmt.values[i], prefix, set, count);
+		break;
+	case STMT_MULTI_BIND:
+		for (int i = 0; i < s->data.multi_bind.target_count; i++)
+			sem_rename_typeref(s->data.multi_bind.targets[i].type, prefix, set, count);
+		sem_rename_expr(s->data.multi_bind.value, prefix, set, count);
+		break;
+	case STMT_EACH_FIELD:
+		sem_rename_typeref(s->data.each_field.filter_type, prefix, set, count);
+		for (int i = 0; i < s->data.each_field.body_count; i++)
+			sem_rename_stmt(s->data.each_field.body[i], prefix, set, count);
+		break;
+	default:
+		break;
+	}
+}
+static const char *sem_decl_name(Decl *d) {
+	switch (d->kind) {
+	case DECL_ARCHETYPE:
+		return d->data.archetype->name;
+	case DECL_PROC:
+		return d->data.proc->name;
+	case DECL_SYS:
+		return d->data.sys->name;
+	case DECL_FUNC:
+		return d->data.func->name;
+	case DECL_FUNC_GROUP:
+		return d->data.func_group->name;
+	case DECL_STATIC:
+		return d->data.static_decl->kind == STATIC_KIND_ARRAY ? d->data.static_decl->array.name
+		                                                      : d->data.static_decl->archetype.archetype_name;
+	case DECL_CONST:
+		return d->data.constant->name;
+	case DECL_WORLD:
+		return d->data.world->name;
+	default:
+		return NULL;
+	}
+}
+static void sem_rename_decl(Decl *d, const char *prefix, char **set, int count) {
+	switch (d->kind) {
+	case DECL_ARCHETYPE:
+		sem_maybe_rename(&d->data.archetype->name, prefix, set, count);
+		for (int i = 0; i < d->data.archetype->field_count; i++)
+			sem_rename_typeref(d->data.archetype->fields[i]->type, prefix, set, count);
+		break;
+	case DECL_PROC:
+		sem_maybe_rename(&d->data.proc->name, prefix, set, count);
+		for (int i = 0; i < d->data.proc->param_count; i++)
+			sem_rename_typeref(d->data.proc->params[i]->type, prefix, set, count);
+		for (int i = 0; i < d->data.proc->statement_count; i++)
+			sem_rename_stmt(d->data.proc->statements[i], prefix, set, count);
+		break;
+	case DECL_SYS:
+		sem_maybe_rename(&d->data.sys->name, prefix, set, count);
+		for (int i = 0; i < d->data.sys->param_count; i++)
+			sem_rename_typeref(d->data.sys->params[i]->type, prefix, set, count);
+		for (int i = 0; i < d->data.sys->statement_count; i++)
+			sem_rename_stmt(d->data.sys->statements[i], prefix, set, count);
+		break;
+	case DECL_FUNC:
+		sem_maybe_rename(&d->data.func->name, prefix, set, count);
+		for (int i = 0; i < d->data.func->return_type_count; i++)
+			sem_rename_typeref(d->data.func->return_types[i], prefix, set, count);
+		for (int i = 0; i < d->data.func->param_count; i++)
+			sem_rename_typeref(d->data.func->params[i]->type, prefix, set, count);
+		for (int i = 0; i < d->data.func->statement_count; i++)
+			sem_rename_stmt(d->data.func->statements[i], prefix, set, count);
+		break;
+	case DECL_FUNC_GROUP:
+		sem_maybe_rename(&d->data.func_group->name, prefix, set, count);
+		for (int i = 0; i < d->data.func_group->member_count; i++)
+			sem_maybe_rename(&d->data.func_group->member_names[i], prefix, set, count);
+		break;
+	case DECL_STATIC:
+		if (d->data.static_decl->kind == STATIC_KIND_ARRAY) {
+			sem_maybe_rename(&d->data.static_decl->array.name, prefix, set, count);
+			sem_rename_typeref(d->data.static_decl->array.element_type, prefix, set, count);
+		} else {
+			sem_maybe_rename(&d->data.static_decl->archetype.archetype_name, prefix, set, count);
+			for (int i = 0; i < d->data.static_decl->archetype.field_count; i++)
+				sem_rename_expr(d->data.static_decl->archetype.field_values[i], prefix, set, count);
+			sem_rename_expr(d->data.static_decl->archetype.init_length, prefix, set, count);
+		}
+		break;
+	case DECL_CONST:
+		sem_maybe_rename(&d->data.constant->name, prefix, set, count);
+		sem_rename_expr(d->data.constant->value, prefix, set, count);
+		break;
+	case DECL_WORLD:
+		sem_maybe_rename(&d->data.world->name, prefix, set, count);
+		break;
+	default:
+		break;
+	}
+}
+
+/* Expand a bare archetype component referencing a top-level tuple group into the inline tuple
+ * form (mirrors main.c expand_archetype_tuple_groups), so flattening yields `pos_<member>`. */
+static void sem_expand_tuple_groups(AstProgram *prog) {
+	if (!prog)
+		return;
+	for (int a = 0; a < prog->decl_count; a++) {
+		if (prog->decls[a]->kind != DECL_ARCHETYPE)
+			continue;
+		ArchetypeDecl *arch = prog->decls[a]->data.archetype;
+		for (int f = 0; f < arch->field_count; f++) {
+			FieldDecl *fd = arch->fields[f];
+			if (!fd->type || fd->type->kind != TYPE_NAME || !fd->type->data.name)
+				continue;
+			const char *ref = fd->type->data.name;
+			for (int dd = 0; dd < prog->decl_count; dd++) {
+				if (prog->decls[dd]->kind != DECL_CONST)
+					continue;
+				ConstDecl *cd = prog->decls[dd]->data.constant;
+				if (!cd || !cd->name || !cd->type_value || cd->type_value->kind != TYPE_TUPLE)
+					continue;
+				if (strcmp(cd->name, ref) != 0)
+					continue;
+				TypeRef *src = cd->type_value;
+				int n = src->data.tuple.field_count;
+				TypeRef *tt = malloc(sizeof(TypeRef));
+				tt->kind = TYPE_TUPLE;
+				tt->loc = fd->type->loc;
+				tt->data.tuple.field_count = n;
+				tt->data.tuple.field_names = malloc((n > 0 ? n : 1) * sizeof(char *));
+				tt->data.tuple.field_types = malloc((n > 0 ? n : 1) * sizeof(TypeRef *));
+				for (int j = 0; j < n; j++) {
+					tt->data.tuple.field_names[j] = sem_dupz(src->data.tuple.field_names[j]);
+					TypeRef *st = src->data.tuple.field_types[j];
+					TypeRef *ct = malloc(sizeof(TypeRef));
+					*ct = *st;
+					if (st->kind == TYPE_NAME && st->data.name)
+						ct->data.name = sem_dupz(st->data.name);
+					tt->data.tuple.field_types[j] = ct;
+				}
+				type_ref_free(fd->type);
+				fd->type = tt;
+				break;
+			}
+		}
+	}
+}
+
+/* Build the analyzable AstProgram from the main-file CST plus all registered module CSTs,
+ * inlining + name-prefixing modules exactly as main.c's resolve_uses does, then expanding
+ * top-level tuple groups. The returned AstProgram owns all its memory (free with ast_program_free). */
+static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
+	AstProgram *prog = ast_program_create();
+	CstView r = cv_root(root, src);
+	int cap = cv_node_count(r) + 8;
+	for (int m = 0; m < g_sem_module_count; m++)
+		cap += cv_node_count(cv_root(g_sem_modules[m].root, g_sem_modules[m].src)) + 1;
+	prog->decls = calloc(cap ? cap : 1, sizeof(Decl *));
+	prog->decl_count = 0;
+
+	/* Per-module: prefix + exported (still-bare) names, for cross-module resolution. */
+	char *acc_prefix[64];
+	char **acc_set[64];
+	int acc_count[64];
+	int acc_n = 0;
+
+	for (int i = 0; i < root->child_count; i++) {
+		if (root->children[i].tag != SE_NODE)
+			continue;
+		SyntaxNodeKind k = root->children[i].as.node->kind;
+		if (k < SN_WORLD_DECL || k > SN_USE_DECL)
+			continue;
+		CstView dv = {root->children[i].as.node, src};
+
+		if (k == SN_USE_DECL) {
+			char *mod_name = sem_txt_dup(cv_token(dv, TOK_IDENT));
+			SemModule *mod = NULL;
+			for (int m = 0; m < g_sem_module_count; m++)
+				if (strcmp(g_sem_modules[m].name, mod_name) == 0) {
+					mod = &g_sem_modules[m];
+					break;
+				}
+			if (!mod) {
+				free(mod_name);
+				continue;
+			}
+			int first = prog->decl_count;
+			const SyntaxNode *mr = mod->root;
+			for (int j = 0; j < mr->child_count; j++) {
+				if (mr->children[j].tag != SE_NODE)
+					continue;
+				SyntaxNodeKind mk = mr->children[j].as.node->kind;
+				if (mk < SN_WORLD_DECL || mk > SN_USE_DECL || mk == SN_USE_DECL)
+					continue;
+				Decl *md = cst_build_decl((CstView){mr->children[j].as.node, mod->src});
+				if (md)
+					prog->decls[prog->decl_count++] = md;
+			}
+			/* collect this module's exported (bare) names, then prefix them. */
+			int ndefs = prog->decl_count - first;
+			char **exports = calloc(ndefs ? ndefs : 1, sizeof(char *));
+			int en = 0;
+			for (int dd = first; dd < prog->decl_count; dd++) {
+				const char *nm = sem_decl_name(prog->decls[dd]);
+				if (nm)
+					exports[en++] = sem_dupz(nm);
+			}
+			for (int dd = first; dd < prog->decl_count; dd++)
+				sem_rename_decl(prog->decls[dd], mod->name, exports, en);
+			if (acc_n < 64) {
+				acc_prefix[acc_n] = sem_dupz(mod->name);
+				acc_set[acc_n] = exports;
+				acc_count[acc_n] = en;
+				acc_n++;
+			} else {
+				for (int e = 0; e < en; e++)
+					free(exports[e]);
+				free(exports);
+			}
+			free(mod_name);
+			continue;
+		}
+
+		Decl *ad = cst_build_decl(dv);
+		if (ad)
+			prog->decls[prog->decl_count++] = ad;
+	}
+
+	/* Cross-module bare-reference resolution: rewrite bare refs to a module export that has
+	 * no top-level definition into the prefixed name (collisions left alone). */
+	for (int m = 0; m < acc_n; m++) {
+		char *dangling[256];
+		int dn = 0;
+		for (int s2 = 0; s2 < acc_count[m] && dn < 256; s2++) {
+			int defined = 0;
+			for (int dd = 0; dd < prog->decl_count; dd++) {
+				const char *nm = sem_decl_name(prog->decls[dd]);
+				if (nm && strcmp(nm, acc_set[m][s2]) == 0) {
+					defined = 1;
+					break;
+				}
+			}
+			if (!defined)
+				dangling[dn++] = acc_set[m][s2];
+		}
+		if (dn > 0)
+			for (int dd = 0; dd < prog->decl_count; dd++)
+				sem_rename_decl(prog->decls[dd], acc_prefix[m], dangling, dn);
+	}
+	for (int m = 0; m < acc_n; m++) {
+		for (int e = 0; e < acc_count[m]; e++)
+			free(acc_set[m][e]);
+		free(acc_set[m]);
+		free(acc_prefix[m]);
+	}
+
+	sem_expand_tuple_groups(prog);
+	return prog;
+}
+
 /* ========== PUBLIC API ========== */
 
-SemanticContext *semantic_analyze(Program *prog) {
-	SemanticContext *ctx = malloc(sizeof(SemanticContext));
-	ctx->archetypes = NULL;
-	ctx->archetype_count = 0;
-	ctx->aliases = NULL;
-	ctx->alias_count = 0;
-	ctx->known_funcs = NULL;
-	ctx->known_func_count = 0;
-	ctx->groups = NULL;
-	ctx->group_count = 0;
-	ctx->const_names = NULL;
-	ctx->const_values = NULL;
-	ctx->const_value_types = NULL;
-	ctx->const_count = 0;
-	ctx->type_alias_names = NULL;
-	ctx->type_alias_backings = NULL;
-	ctx->type_alias_count = 0;
-	ctx->scopes = NULL;
-	ctx->scope_count = 0;
-	ctx->error_count = 0;
-	ctx->current_sys_archetype = NULL;
-	ctx->current_proc = NULL;
-	ctx->in_body = 0;
-	ctx->prog = prog;
-
-	/* Register builtins */
-	register_func(ctx, "write");
-	register_func(ctx, "insert");
-	register_func(ctx, "delete");
-	register_func(ctx, "dealloc");
-
+/* The shared analysis core: all passes that read the (already-prepared) AstProgram tree.
+ * Both entry points run this — semantic_analyze on the parser-built AstProgram, and
+ * semantic_analyze_cst on a AstProgram reconstructed from the CST. `erase` controls the
+ * final alias-erasure pass: the AstProgram lowerer needs it; the CST lowerer does not
+ * (it reads aliases from the side model), so the CST path passes erase=0. */
+static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int erase) {
 	if (!prog)
-		return ctx;
+		return;
+	ctx->prog = prog;
 
 	/* pass 0: collect constants and nominal type aliases. A `name : [meta] : value` decl is a
 	 * value const when its RHS denotes a value, or a type alias when its RHS denotes a type.
@@ -2879,15 +4455,84 @@ SemanticContext *semantic_analyze(Program *prog) {
 		}
 	}
 
-	/* pass 3: erase nominal aliases to their backing (zero-cost; codegen never sees them). */
-	erase_type_aliases(ctx, prog);
+	/* pass 3: erase nominal aliases to their backing (zero-cost; codegen never sees them).
+	 * Only the legacy AstProgram lowerer needs this tree mutation; the CST lowerer reads
+	 * aliases from the side model, so the CST path skips erasure (erase=0). */
+	if (erase)
+		erase_type_aliases(ctx, prog);
+}
 
+/* Allocate + zero-initialize a SemanticContext and register builtins. Shared by both
+ * entry points. */
+static SemanticContext *make_context(void) {
+	SemanticContext *ctx = malloc(sizeof(SemanticContext));
+	ctx->archetypes = NULL;
+	ctx->archetype_count = 0;
+	ctx->aliases = NULL;
+	ctx->alias_count = 0;
+	ctx->known_funcs = NULL;
+	ctx->known_func_count = 0;
+	ctx->groups = NULL;
+	ctx->group_count = 0;
+	ctx->const_names = NULL;
+	ctx->const_values = NULL;
+	ctx->const_value_types = NULL;
+	ctx->const_count = 0;
+	ctx->type_alias_names = NULL;
+	ctx->type_alias_backings = NULL;
+	ctx->type_alias_count = 0;
+	ctx->scopes = NULL;
+	ctx->scope_count = 0;
+	ctx->error_count = 0;
+	ctx->current_sys_archetype = NULL;
+	ctx->current_proc = NULL;
+	ctx->in_body = 0;
+	ctx->in_unsafe = 0;
+	ctx->prog = NULL;
+	ctx->owned_prog = NULL;
+	ctx->model = sem_model_new();
+
+	register_func(ctx, "write");
+	register_func(ctx, "insert");
+	register_func(ctx, "delete");
+	register_func(ctx, "dealloc");
 	return ctx;
+}
+
+SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src) {
+	SemanticContext *ctx = make_context();
+	if (!root)
+		return ctx;
+	/* Reconstruct the analyzable AstProgram from the immutable CST (+ module CSTs), keep it
+	 * alive on the context, and run the SAME analysis core. erase=0: the CST lowerer reads
+	 * aliases from the side model, so the alias-erasure tree mutation is not needed. */
+	ctx->owned_prog = cst_to_program(root, src);
+	analyze_program_core(ctx, ctx->owned_prog, /*erase=*/0);
+	return ctx;
+}
+
+/* Test/helper entry: parse `src`, build the abstract `AstProgram` from the resulting lossless
+ * CST (via cst_to_program), then free the parse result + CST. The reconstructed AstProgram owns
+ * all its memory (every string is copied out of the source), so it outlives the CST and can
+ * be freed with ast_program_free. This is the only sanctioned way to obtain a `AstProgram` now that
+ * the parser produces just the CST — unit tests use it to validate cst_to_program faithfully
+ * reconstructs each construct. Returns NULL on parse error. */
+AstProgram *cst_to_program_from_source(const char *src) {
+	ParseResult pr = parse_source(src);
+	if (pr.error_count > 0 || !pr.cst_root) {
+		parse_result_free(&pr);
+		return NULL;
+	}
+	AstProgram *prog = cst_to_program(pr.cst_root, src);
+	parse_result_free(&pr);
+	return prog;
 }
 
 void semantic_context_free(SemanticContext *ctx) {
 	if (!ctx)
 		return;
+
+	sem_model_free(ctx->model);
 
 	/* free constants (names only, values are owned by AST) */
 	free(ctx->const_names);
@@ -2944,11 +4589,25 @@ void semantic_context_free(SemanticContext *ctx) {
 	}
 	free(ctx->scopes);
 
+	/* CST path: free the AstProgram we reconstructed (and kept alive for the side model). */
+	if (ctx->owned_prog)
+		ast_program_free(ctx->owned_prog);
+
 	free(ctx);
 }
 
 int semantic_has_errors(SemanticContext *ctx) {
 	return ctx->error_count > 0;
+}
+
+SemModel *sem_context_model(SemanticContext *ctx) {
+	return ctx ? ctx->model : NULL;
+}
+
+const char *semantic_resolve_type_alias(SemanticContext *ctx, const char *name) {
+	if (!ctx || !name)
+		return name;
+	return resolve_type_alias(ctx, name);
 }
 
 int semantic_error_count(const SemanticContext *ctx) {

@@ -3,4 +3,8 @@
 func a(x: int) -> int {
   return x;
 }
-func g = { a, missing };  // error: unknown member 'missing' in group 'g'
+func g = {
+  a, missing
+}
+;
+// error: unknown member 'missing' in group 'g'

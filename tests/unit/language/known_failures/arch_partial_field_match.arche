@@ -5,23 +5,19 @@ arche Particle {
   vel :: float,
 }
 
-
 arche Body {
   pos :: float,
   vel :: float,
   mass :: float,
 }
 
+static table<Particle> (5);
 
-static table<Particle>(5);
-
-static table<Body>(5);
-
+static table<Body> (5);
 
 sys gravity(pos, mass) {
   pos = pos + mass;
 }
-
 
 proc main() {
   insert(table<Particle>, 1.0, 0.1);

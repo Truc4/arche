@@ -2,7 +2,7 @@ arche Message {
   id :: int,
   value :: float,
 }
-static pool<Message>(100);
+static pool<Message> (100);
 proc main() {
   msg := "allocations done\n";
   print(msg);

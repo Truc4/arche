@@ -6,7 +6,7 @@
 arche Foo {
   hp :: int,
 }
-static pool<Foo>(10);
+static pool<Foo> (10);
 
 proc main() {
   h := insert(Foo, 5);

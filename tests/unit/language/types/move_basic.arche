@@ -1,8 +1,7 @@
 // `move` at the call site marks an ownership transfer; here the resource is moved into
 // its close (which consumes it). Runs end to end.
 // RUN: %arche -o %t --link %S/../extern_type/runtime/test_resource.c %s && %t | grep "value=42"
-resource :: opaque
-extern func resource_open(initial: int) -> resource;
+resource :: opaque extern func resource_open(initial: int) -> resource;
 extern proc resource_set(r: resource, v: int);
 extern func resource_get(r: resource) -> int;
 extern proc resource_close(own r: resource);

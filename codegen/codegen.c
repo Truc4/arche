@@ -33,7 +33,7 @@ typedef struct {
 } SysVersion;
 
 struct CodegenContext {
-	AstProgram *ast;
+	HirProgram *ast;
 	SemanticContext *sem_ctx;
 
 	/* For tracking allocated values */
@@ -72,12 +72,12 @@ struct CodegenContext {
 	int sys_version_capacity;
 
 	/* Top-level allocations to initialize in main() */
-	AstStaticDecl **top_level_allocs;
+	HirStaticDecl **top_level_allocs;
 	int alloc_count;
 	int alloc_capacity;
 
-	/* Static arrays (name -> AstStaticDecl mapping, kind == AST_STATIC_ARRAY) */
-	AstStaticDecl **static_arrays;
+	/* Static arrays (name -> HirStaticDecl mapping, kind == HIR_STATIC_ARRAY) */
+	HirStaticDecl **static_arrays;
 	int static_array_count;
 	int static_array_capacity;
 
@@ -91,7 +91,7 @@ struct CodegenContext {
 	 * the literal aggregate type (e.g. "{i32, i32}"); current_func gives the member types so a
 	 * `return a, b` can build the aggregate. */
 	const char *current_return_type;
-	AstFuncDecl *current_func; /* the func being generated (for multi-return packing) */
+	HirFuncDecl *current_func; /* the func being generated (for multi-return packing) */
 	char current_return_type_buf[512];
 
 	/* Loop bound tracking for bounds-check elision. When a C-style `for`
@@ -107,13 +107,13 @@ struct CodegenContext {
 
 	/* Monomorphization state: set during specialized emission of an
 	 * archetype-parametric proc. NULL outside such emission. */
-	AstArchetypeDecl *current_archetype_param;
+	HirArchetypeDecl *current_archetype_param;
 	const char *current_arch_param_name; /* proc parameter name bound to the archetype */
 	const char *current_arch_param_llvm; /* LLVM register holding the archetype struct pointer */
 
 	/* Active each_field expansion. NULL when not inside one. */
 	const char *current_each_field_binding;
-	AstField *current_each_field_target;        /* the archetype field f is bound to for THIS iteration */
+	HirField *current_each_field_target;        /* the archetype field f is bound to for THIS iteration */
 	int current_each_field_index;               /* compile-time f.index */
 	const char *current_each_field_name_global; /* @.efield_name_NN symbol holding the field's name */
 
@@ -129,8 +129,8 @@ struct CodegenContext {
 	/* Worklist of monomorphizations queued from inside other functions'
 	 * emission. Drained at the end of codegen_generate. */
 	struct {
-		AstProcDecl *proc;
-		AstArchetypeDecl *arch;
+		HirProcDecl *proc;
+		HirArchetypeDecl *arch;
 	} *mono_pending;
 	int mono_pending_count;
 	int mono_pending_capacity;
@@ -168,15 +168,15 @@ static const char *codegen_get_sys_version(CodegenContext *ctx, const char *sys_
 
 /* ========== STATIC ARRAY TRACKING ========== */
 
-static void codegen_register_static_array(CodegenContext *ctx, AstStaticDecl *sa) {
+static void codegen_register_static_array(CodegenContext *ctx, HirStaticDecl *sa) {
 	if (ctx->static_array_count >= ctx->static_array_capacity) {
 		ctx->static_array_capacity = (ctx->static_array_capacity == 0) ? 16 : ctx->static_array_capacity * 2;
-		ctx->static_arrays = realloc(ctx->static_arrays, ctx->static_array_capacity * sizeof(AstStaticDecl *));
+		ctx->static_arrays = realloc(ctx->static_arrays, ctx->static_array_capacity * sizeof(HirStaticDecl *));
 	}
 	ctx->static_arrays[ctx->static_array_count++] = sa;
 }
 
-static AstStaticDecl *codegen_find_static_array(CodegenContext *ctx, const char *name) {
+static HirStaticDecl *codegen_find_static_array(CodegenContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->static_array_count; i++) {
 		if (strcmp(ctx->static_arrays[i]->array.name, name) == 0) {
 			return ctx->static_arrays[i];
@@ -249,7 +249,7 @@ static const char *llvm_type_from_arche(const char *arche_type) {
 	 * the type): byte/u8/i8 -> i8, u16/i16 -> i16, ... i128/u128 -> i128. */
 	{
 		int w, sg;
-		if (ast_parse_int_width(arche_type, &w, &sg)) {
+		if (hir_parse_int_width(arche_type, &w, &sg)) {
 			switch (w) {
 			case 8:
 				return "i8";
@@ -292,11 +292,11 @@ static const char *llvm_int_type(int width) {
 /* Convert integer value `val` (LLVM type from `from`) to width `to_w`, emitting
  * sext/zext/trunc as needed. Writes the resulting SSA name (or `val` unchanged)
  * into `out`. `from` may be NULL (treated as i32 signed). */
-static void emit_int_convert(CodegenContext *ctx, const char *val, AstType *from, int to_w, char *out) {
-	int from_w = (from && from->tag == AST_TYPE_INT && from->int_width) ? from->int_width : 32;
-	if (from && (from->tag == AST_TYPE_OPAQUE || from->tag == AST_TYPE_HANDLE))
+static void emit_int_convert(CodegenContext *ctx, const char *val, HirType *from, int to_w, char *out) {
+	int from_w = (from && from->tag == HIR_TYPE_INT && from->int_width) ? from->int_width : 32;
+	if (from && (from->tag == HIR_TYPE_OPAQUE || from->tag == HIR_TYPE_HANDLE))
 		from_w = 64; /* opaque cell / handle are pointer-width i64 */
-	int from_signed = (from && from->tag == AST_TYPE_INT) ? from->int_signed : 1;
+	int from_signed = (from && from->tag == HIR_TYPE_INT) ? from->int_signed : 1;
 	if (to_w == 0)
 		to_w = 32;
 	if (from_w == to_w) {
@@ -324,9 +324,9 @@ static void emit_int_convert(CodegenContext *ctx, const char *val, AstType *from
 /* Coerce an index value to i64 for getelementptr, respecting the index
  * expression's actual width: i64 passes through, i32/narrower sext/zext, i128
  * truncates. `idx_expr` may be NULL (assumed i32 signed). */
-static void emit_index_i64(CodegenContext *ctx, const char *idx_val, const AstExpr *idx_expr, char *out) {
+static void emit_index_i64(CodegenContext *ctx, const char *idx_val, const HirExpr *idx_expr, char *out) {
 	int w = 32, sgn = 1;
-	if (idx_expr && idx_expr->resolved.tag == AST_TYPE_INT && idx_expr->resolved.int_width) {
+	if (idx_expr && idx_expr->resolved.tag == HIR_TYPE_INT && idx_expr->resolved.int_width) {
 		w = idx_expr->resolved.int_width;
 		sgn = idx_expr->resolved.int_signed;
 	}
@@ -376,48 +376,48 @@ static const char *int_width_name(int width, int is_signed) {
 	}
 }
 
-static const char *field_base_type_name(AstType *type) {
-	while (type && type->tag == AST_TYPE_SHAPED_ARRAY)
+static const char *field_base_type_name(HirType *type) {
+	while (type && type->tag == HIR_TYPE_SHAPED_ARRAY)
 		type = type->elem;
 	if (!type)
 		return "int";
 	switch (type->tag) {
-	case AST_TYPE_INT:
+	case HIR_TYPE_INT:
 		return int_width_name(type->int_width, type->int_signed);
-	case AST_TYPE_FLOAT:
+	case HIR_TYPE_FLOAT:
 		return "float";
-	case AST_TYPE_CHAR:
+	case HIR_TYPE_CHAR:
 		return "char";
-	case AST_TYPE_VOID:
+	case HIR_TYPE_VOID:
 		return "void";
-	case AST_TYPE_HANDLE:
+	case HIR_TYPE_HANDLE:
 		return "handle";
-	case AST_TYPE_OPAQUE:
+	case HIR_TYPE_OPAQUE:
 		return "opaque";
-	case AST_TYPE_NAMED:
+	case HIR_TYPE_NAMED:
 		return type->name ? type->name : "int";
 	default:
 		return "int";
 	}
 }
 
-static int field_total_elements(AstType *type) {
-	if (type && type->tag == AST_TYPE_SHAPED_ARRAY)
+static int field_total_elements(HirType *type) {
+	if (type && type->tag == HIR_TYPE_SHAPED_ARRAY)
 		return type->rank * field_total_elements(type->elem);
 	return 1;
 }
 
 /* LLVM type of one return value. char[] returns a raw i8* byte view; everything else maps
  * through the normal type lowering (int→iN, float→double, handle/opaque→i64, …). */
-static const char *return_member_llvm(AstType *t) {
-	if (t && (t->tag == AST_TYPE_ARRAY || t->tag == AST_TYPE_SHAPED_ARRAY))
+static const char *return_member_llvm(HirType *t) {
+	if (t && (t->tag == HIR_TYPE_ARRAY || t->tag == HIR_TYPE_SHAPED_ARRAY))
 		return "i8*";
 	return llvm_type_from_arche(field_base_type_name(t));
 }
 
 /* Fill `out` with a function's LLVM return type: the single type when count == 1, or a literal
  * aggregate `{T1, T2, …}` for a multi-value return. */
-static void func_llvm_return_type(AstFuncDecl *f, char *out, size_t cap) {
+static void func_llvm_return_type(HirFuncDecl *f, char *out, size_t cap) {
 	if (f->return_type_count == 1) {
 		snprintf(out, cap, "%s", return_member_llvm(f->return_types[0]));
 		return;
@@ -453,23 +453,23 @@ static int char_literal_value(const char *lex) {
 	return lex[1];
 }
 
-static const char *ast_resolved_type_name(const AstExpr *expr) {
+static const char *hir_resolved_type_name(const HirExpr *expr) {
 	if (!expr)
 		return "int";
 	switch (expr->resolved.tag) {
-	case AST_TYPE_INT:
+	case HIR_TYPE_INT:
 		return int_width_name(expr->resolved.int_width, expr->resolved.int_signed);
-	case AST_TYPE_FLOAT:
+	case HIR_TYPE_FLOAT:
 		return "float";
-	case AST_TYPE_CHAR:
+	case HIR_TYPE_CHAR:
 		return "char";
-	case AST_TYPE_VOID:
+	case HIR_TYPE_VOID:
 		return "void";
-	case AST_TYPE_HANDLE:
+	case HIR_TYPE_HANDLE:
 		return "handle";
-	case AST_TYPE_OPAQUE:
+	case HIR_TYPE_OPAQUE:
 		return "opaque";
-	case AST_TYPE_NAMED:
+	case HIR_TYPE_NAMED:
 		return expr->resolved.name ? expr->resolved.name : "int";
 	default:
 		return "int";
@@ -653,8 +653,8 @@ static void register_static_arrays_in_scope(CodegenContext *ctx) {
 		return;
 
 	for (int i = 0; i < ctx->static_array_count; i++) {
-		AstStaticDecl *sa = ctx->static_arrays[i];
-		if (sa && sa->array.element_type && sa->array.element_type->tag == AST_TYPE_CHAR) {
+		HirStaticDecl *sa = ctx->static_arrays[i];
+		if (sa && sa->array.element_type && sa->array.element_type->tag == HIR_TYPE_CHAR) {
 			/* Register as type=5 array with global struct name */
 			ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
 			ValueInfo *vi = malloc(sizeof(ValueInfo));
@@ -678,7 +678,7 @@ static void register_static_arrays_in_scope(CodegenContext *ctx) {
 
 /* Two archetype decls denote the same shape iff they have the same *set* of component
  * names (order-independent — an archetype is an unordered set of component types). */
-static int archetypes_same_shape(AstArchetypeDecl *a, AstArchetypeDecl *b) {
+static int archetypes_same_shape(HirArchetypeDecl *a, HirArchetypeDecl *b) {
 	if (a == b)
 		return 1;
 	if (!a || !b || a->field_count != b->field_count)
@@ -701,22 +701,22 @@ static int archetypes_same_shape(AstArchetypeDecl *a, AstArchetypeDecl *b) {
  * to the same storage. The canonical decl is the first-declared archetype of that shape —
  * its name backs the single `%struct.` / `@archetype_` / `@` symbols and its field order is
  * the shape's column layout. */
-static AstArchetypeDecl *canonical_archetype_decl(CodegenContext *ctx, AstArchetypeDecl *arch) {
+static HirArchetypeDecl *canonical_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) {
 	if (!arch)
 		return NULL;
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
-		AstDecl *decl = ctx->ast->decls[i];
-		if (decl->kind == AST_DECL_ARCHETYPE && archetypes_same_shape(decl->data.archetype, arch))
+		HirDecl *decl = ctx->ast->decls[i];
+		if (decl->kind == HIR_DECL_ARCHETYPE && archetypes_same_shape(decl->data.archetype, arch))
 			return decl->data.archetype;
 	}
 	return arch;
 }
 
 /* Find an archetype declaration by name, resolving aliases to the shape's canonical decl. */
-static AstArchetypeDecl *find_archetype_decl(CodegenContext *ctx, const char *name) {
+static HirArchetypeDecl *find_archetype_decl(CodegenContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
-		AstDecl *decl = ctx->ast->decls[i];
-		if (decl->kind == AST_DECL_ARCHETYPE && strcmp(decl->data.archetype->name, name) == 0) {
+		HirDecl *decl = ctx->ast->decls[i];
+		if (decl->kind == HIR_DECL_ARCHETYPE && strcmp(decl->data.archetype->name, name) == 0) {
 			return canonical_archetype_decl(ctx, decl->data.archetype);
 		}
 	}
@@ -726,19 +726,19 @@ static AstArchetypeDecl *find_archetype_decl(CodegenContext *ctx, const char *na
 /* The canonical shape name for an archetype name (used to form storage symbols). Returns the
  * input unchanged if no archetype by that name exists. */
 static const char *canonical_arch_name(CodegenContext *ctx, const char *name) {
-	AstArchetypeDecl *c = find_archetype_decl(ctx, name);
+	HirArchetypeDecl *c = find_archetype_decl(ctx, name);
 	return c ? c->name : name;
 }
 
 /* Return compile-time capacity for arch from static declaration, or 0 if not declared static */
 static int get_arch_static_capacity(CodegenContext *ctx, const char *arch_name) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
-		if (ctx->ast->decls[i]->kind == AST_DECL_STATIC) {
-			AstStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
-			if (s->kind == AST_STATIC_ARCHETYPE &&
+		if (ctx->ast->decls[i]->kind == HIR_DECL_STATIC) {
+			HirStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
+			if (s->kind == HIR_STATIC_ARCHETYPE &&
 			    strcmp(canonical_arch_name(ctx, s->archetype.archetype_name), canonical_arch_name(ctx, arch_name)) ==
 			        0 &&
-			    s->archetype.field_count > 0 && s->archetype.field_values[0]->kind == AST_EXPR_LITERAL) {
+			    s->archetype.field_count > 0 && s->archetype.field_values[0]->kind == HIR_EXPR_LITERAL) {
 				return atoi(s->archetype.field_values[0]->data.literal.lexeme);
 			}
 		}
@@ -755,23 +755,23 @@ static int get_arch_static_capacity(CodegenContext *ctx, const char *arch_name) 
  * init_length). Callers MUST treat -1 as "cannot elide bounds checks". */
 static int get_arch_static_count(CodegenContext *ctx, const char *arch_name) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
-		if (ctx->ast->decls[i]->kind != AST_DECL_STATIC)
+		if (ctx->ast->decls[i]->kind != HIR_DECL_STATIC)
 			continue;
-		AstStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
-		if (s->kind != AST_STATIC_ARCHETYPE)
+		HirStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
+		if (s->kind != HIR_STATIC_ARCHETYPE)
 			continue;
 		if (strcmp(canonical_arch_name(ctx, s->archetype.archetype_name), canonical_arch_name(ctx, arch_name)) != 0)
 			continue;
 		if (s->archetype.field_count == 0)
 			return 0;
 		if (s->archetype.init_length) {
-			if (s->archetype.init_length->kind != AST_EXPR_LITERAL)
+			if (s->archetype.init_length->kind != HIR_EXPR_LITERAL)
 				return -1;
 			return atoi(s->archetype.init_length->data.literal.lexeme);
 		}
 		if (s->archetype.field_count > 1) {
 			/* Init block present — count = capacity. */
-			if (s->archetype.field_values[0]->kind != AST_EXPR_LITERAL)
+			if (s->archetype.field_values[0]->kind != HIR_EXPR_LITERAL)
 				return -1;
 			return atoi(s->archetype.field_values[0]->data.literal.lexeme);
 		}
@@ -780,38 +780,38 @@ static int get_arch_static_count(CodegenContext *ctx, const char *arch_name) {
 	return 0;
 }
 
-static AstSysDecl *find_sys_decl(CodegenContext *ctx, const char *name) {
+static HirSysDecl *find_sys_decl(CodegenContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
-		AstDecl *decl = ctx->ast->decls[i];
-		if (decl->kind == AST_DECL_SYS && strcmp(decl->data.sys->name, name) == 0) {
+		HirDecl *decl = ctx->ast->decls[i];
+		if (decl->kind == HIR_DECL_SYS && strcmp(decl->data.sys->name, name) == 0) {
 			return decl->data.sys;
 		}
 	}
 	return NULL;
 }
 
-static AstProcDecl *find_proc_decl(CodegenContext *ctx, const char *name) {
+static HirProcDecl *find_proc_decl(CodegenContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
-		AstDecl *decl = ctx->ast->decls[i];
-		if (decl->kind == AST_DECL_PROC && strcmp(decl->data.proc->name, name) == 0)
+		HirDecl *decl = ctx->ast->decls[i];
+		if (decl->kind == HIR_DECL_PROC && strcmp(decl->data.proc->name, name) == 0)
 			return decl->data.proc;
 	}
 	return NULL;
 }
 
-static AstFuncDecl *find_func_decl(CodegenContext *ctx, const char *name) {
+static HirFuncDecl *find_func_decl(CodegenContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
-		AstDecl *decl = ctx->ast->decls[i];
-		if (decl->kind == AST_DECL_FUNC && strcmp(decl->data.func->name, name) == 0)
+		HirDecl *decl = ctx->ast->decls[i];
+		if (decl->kind == HIR_DECL_FUNC && strcmp(decl->data.func->name, name) == 0)
 			return decl->data.func;
 	}
 	return NULL;
 }
 
-static AstFuncGroupDecl *find_func_group(CodegenContext *ctx, const char *name) {
+static HirFuncGroupDecl *find_func_group(CodegenContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
-		AstDecl *decl = ctx->ast->decls[i];
-		if (decl->kind == AST_DECL_FUNC_GROUP && strcmp(decl->data.func_group->name, name) == 0)
+		HirDecl *decl = ctx->ast->decls[i];
+		if (decl->kind == HIR_DECL_FUNC_GROUP && strcmp(decl->data.func_group->name, name) == 0)
 			return decl->data.func_group;
 	}
 	return NULL;
@@ -820,22 +820,22 @@ static AstFuncGroupDecl *find_func_group(CodegenContext *ctx, const char *name) 
 /* True if `proc` has a parameter of bare-category `archetype` type. Such procs
  * are NOT emitted as-is — they must be monomorphized per archetype passed at
  * each call site. */
-static int is_archetype_parametric(AstProcDecl *proc) {
+static int is_archetype_parametric(HirProcDecl *proc) {
 	if (!proc)
 		return 0;
 	for (int i = 0; i < proc->param_count; i++) {
-		if (proc->params[i]->type && proc->params[i]->type->tag == AST_TYPE_ARCHETYPE)
+		if (proc->params[i]->type && proc->params[i]->type->tag == HIR_TYPE_ARCHETYPE)
 			return 1;
 	}
 	return 0;
 }
 
 /* Index of the first archetype-typed parameter, or -1. */
-static int archetype_param_index(AstProcDecl *proc) {
+static int archetype_param_index(HirProcDecl *proc) {
 	if (!proc)
 		return -1;
 	for (int i = 0; i < proc->param_count; i++) {
-		if (proc->params[i]->type && proc->params[i]->type->tag == AST_TYPE_ARCHETYPE)
+		if (proc->params[i]->type && proc->params[i]->type->tag == HIR_TYPE_ARCHETYPE)
 			return i;
 	}
 	return -1;
@@ -843,19 +843,19 @@ static int archetype_param_index(AstProcDecl *proc) {
 
 /* Count COLUMN-kind primitive fields on an archetype (skips handle columns,
  * meta fields, tuples, etc. — what v1 each_field walks). */
-static int count_archetype_iterable_fields(AstArchetypeDecl *arch) {
+static int count_archetype_iterable_fields(HirArchetypeDecl *arch) {
 	if (!arch)
 		return 0;
 	int n = 0;
 	for (int i = 0; i < arch->field_count; i++) {
-		AstField *f = arch->fields[i];
+		HirField *f = arch->fields[i];
 		if (!f || f->kind != FIELD_COLUMN)
 			continue;
-		AstType *t = f->type;
+		HirType *t = f->type;
 		if (!t)
 			continue;
-		AstTypeTag tag = t->tag;
-		if (tag == AST_TYPE_INT || tag == AST_TYPE_FLOAT || tag == AST_TYPE_CHAR)
+		HirTypeTag tag = t->tag;
+		if (tag == HIR_TYPE_INT || tag == HIR_TYPE_FLOAT || tag == HIR_TYPE_CHAR)
 			n++;
 	}
 	return n;
@@ -890,7 +890,7 @@ static void monomorph_mangle(const char *proc_name, const char *arch_name, char 
 
 /* Queue a (proc, arch) pair for emission later, if not already pending or
  * emitted. Returns 1 if newly queued, 0 if already known. */
-static int monomorph_enqueue(CodegenContext *ctx, AstProcDecl *proc, AstArchetypeDecl *arch) {
+static int monomorph_enqueue(CodegenContext *ctx, HirProcDecl *proc, HirArchetypeDecl *arch) {
 	if (monomorph_already_emitted(ctx, proc->name, arch->name))
 		return 0;
 	for (int i = 0; i < ctx->mono_pending_count; i++) {
@@ -913,13 +913,13 @@ typedef struct {
 	size_t saved_buffer_size;
 	size_t saved_buffer_pos;
 } FunctionBodyState;
-static void codegen_statement(CodegenContext *ctx, AstStmt *stmt);
+static void codegen_statement(CodegenContext *ctx, HirStmt *stmt);
 static FunctionBodyState begin_function_body(CodegenContext *ctx);
 static void end_function_body(CodegenContext *ctx, FunctionBodyState fbs);
 
 /* Emit a monomorphized version of an archetype-parametric proc for one
  * concrete archetype. Adds an entry to mono_emitted. */
-static void emit_monomorphized_proc(CodegenContext *ctx, AstProcDecl *proc, AstArchetypeDecl *arch) {
+static void emit_monomorphized_proc(CodegenContext *ctx, HirProcDecl *proc, HirArchetypeDecl *arch) {
 	if (monomorph_already_emitted(ctx, proc->name, arch->name))
 		return;
 	monomorph_mark_emitted(ctx, proc->name, arch->name);
@@ -933,12 +933,12 @@ static void emit_monomorphized_proc(CodegenContext *ctx, AstProcDecl *proc, AstA
 
 	buffer_append_fmt(ctx, "define void @%s(", mangled);
 	for (int i = 0; i < proc->param_count; i++) {
-		AstType *param_type = proc->params[i]->type;
+		HirType *param_type = proc->params[i]->type;
 		if (i == arch_pidx) {
 			buffer_append_fmt(ctx, "%%struct.%s* %%arg%d", arch->name, i);
-		} else if (param_type && param_type->tag == AST_TYPE_ARRAY) {
+		} else if (param_type && param_type->tag == HIR_TYPE_ARRAY) {
 			buffer_append_fmt(ctx, "%%struct.arche_array* %%arg%d", i);
-		} else if (param_type && param_type->tag == AST_TYPE_NAMED && find_archetype_decl(ctx, param_type->name)) {
+		} else if (param_type && param_type->tag == HIR_TYPE_NAMED && find_archetype_decl(ctx, param_type->name)) {
 			buffer_append_fmt(ctx, "%%struct.%s* %%arg%d", param_type->name, i);
 		} else {
 			const char *base_type = llvm_type_from_arche(field_base_type_name(param_type));
@@ -961,12 +961,12 @@ static void emit_monomorphized_proc(CodegenContext *ctx, AstProcDecl *proc, AstA
 	for (int i = 0; i < proc->param_count; i++) {
 		char param_llvm[32];
 		snprintf(param_llvm, sizeof(param_llvm), "%%arg%d", i);
-		AstType *param_type = proc->params[i]->type;
+		HirType *param_type = proc->params[i]->type;
 		if (i == arch_pidx) {
 			add_arch_value(ctx, proc->params[i]->name, param_llvm, arch->name);
-		} else if (param_type && param_type->tag == AST_TYPE_ARRAY) {
+		} else if (param_type && param_type->tag == HIR_TYPE_ARRAY) {
 			add_array_value(ctx, proc->params[i]->name, param_llvm);
-		} else if (param_type && param_type->tag == AST_TYPE_NAMED && find_archetype_decl(ctx, param_type->name)) {
+		} else if (param_type && param_type->tag == HIR_TYPE_NAMED && find_archetype_decl(ctx, param_type->name)) {
 			add_arch_value(ctx, proc->params[i]->name, param_llvm, param_type->name);
 		} else {
 			add_value(ctx, proc->params[i]->name, param_llvm, 0);
@@ -974,7 +974,7 @@ static void emit_monomorphized_proc(CodegenContext *ctx, AstProcDecl *proc, AstA
 	}
 
 	/* Activate monomorphization context for the duration of the body emission. */
-	AstArchetypeDecl *saved_arch = ctx->current_archetype_param;
+	HirArchetypeDecl *saved_arch = ctx->current_archetype_param;
 	const char *saved_pname = ctx->current_arch_param_name;
 	const char *saved_pllvm = ctx->current_arch_param_llvm;
 	ctx->current_archetype_param = arch;
@@ -1002,37 +1002,37 @@ static void drain_monomorph_worklist(CodegenContext *ctx) {
 	while (ctx->mono_pending_count > 0) {
 		/* Pop the last entry. Order doesn't matter for correctness. */
 		ctx->mono_pending_count--;
-		AstProcDecl *p = ctx->mono_pending[ctx->mono_pending_count].proc;
-		AstArchetypeDecl *a = ctx->mono_pending[ctx->mono_pending_count].arch;
+		HirProcDecl *p = ctx->mono_pending[ctx->mono_pending_count].proc;
+		HirArchetypeDecl *a = ctx->mono_pending[ctx->mono_pending_count].arch;
 		emit_monomorphized_proc(ctx, p, a);
 	}
 }
 
-/* For a group call, walk members and return the unique AstFuncDecl whose param
+/* For a group call, walk members and return the unique HirFuncDecl whose param
  * tags match args[].resolved.tag on int/float/char. Returns NULL on no-match or
  * ambiguous (which the semantic pass should have already diagnosed). */
-static AstFuncDecl *find_group_member_for_call(CodegenContext *ctx, AstFuncGroupDecl *g, AstExpr **args,
+static HirFuncDecl *find_group_member_for_call(CodegenContext *ctx, HirFuncGroupDecl *g, HirExpr **args,
                                                int arg_count) {
-	AstFuncDecl *match = NULL;
+	HirFuncDecl *match = NULL;
 	int match_count = 0;
 	for (int m = 0; m < g->member_count; m++) {
-		AstFuncDecl *fd = find_func_decl(ctx, g->member_names[m]);
+		HirFuncDecl *fd = find_func_decl(ctx, g->member_names[m]);
 		if (!fd)
 			continue;
 		if (fd->param_count != arg_count)
 			continue;
 		int ok = 1;
 		for (int j = 0; j < arg_count; j++) {
-			AstType *pt = fd->params[j]->type;
-			AstTypeTag at = args[j]->resolved.tag;
+			HirType *pt = fd->params[j]->type;
+			HirTypeTag at = args[j]->resolved.tag;
 			if (!pt)
 				continue;
 			/* Only scalar int/float/char params discriminate group members.
 			 * Non-scalar params (arrays, handles, etc.) are identical across
 			 * members and don't participate in witness-based dispatch. */
-			if (pt->tag != AST_TYPE_INT && pt->tag != AST_TYPE_FLOAT && pt->tag != AST_TYPE_CHAR)
+			if (pt->tag != HIR_TYPE_INT && pt->tag != HIR_TYPE_FLOAT && pt->tag != HIR_TYPE_CHAR)
 				continue;
-			if (pt->tag == AST_TYPE_INT && at == AST_TYPE_INT) {
+			if (pt->tag == HIR_TYPE_INT && at == HIR_TYPE_INT) {
 				/* Distinguish int members by width + signedness (e.g. int vs i64). */
 				int pw = pt->int_width ? pt->int_width : 32;
 				int aw = args[j]->resolved.int_width ? args[j]->resolved.int_width : 32;
@@ -1041,9 +1041,9 @@ static AstFuncDecl *find_group_member_for_call(CodegenContext *ctx, AstFuncGroup
 				ok = 0;
 				break;
 			}
-			if (pt->tag == AST_TYPE_FLOAT && at == AST_TYPE_FLOAT)
+			if (pt->tag == HIR_TYPE_FLOAT && at == HIR_TYPE_FLOAT)
 				continue;
-			if (pt->tag == AST_TYPE_CHAR && at == AST_TYPE_CHAR)
+			if (pt->tag == HIR_TYPE_CHAR && at == HIR_TYPE_CHAR)
 				continue;
 			ok = 0;
 			break;
@@ -1056,8 +1056,8 @@ static AstFuncDecl *find_group_member_for_call(CodegenContext *ctx, AstFuncGroup
 	return match_count == 1 ? match : NULL;
 }
 
-static const char *get_shaped_field_info(CodegenContext *ctx, AstExpr *field_expr, int *out_rank) {
-	if (field_expr->kind != AST_EXPR_FIELD || field_expr->data.field.base->kind != AST_EXPR_NAME)
+static const char *get_shaped_field_info(CodegenContext *ctx, HirExpr *field_expr, int *out_rank) {
+	if (field_expr->kind != HIR_EXPR_FIELD || field_expr->data.field.base->kind != HIR_EXPR_NAME)
 		return NULL;
 	const char *vn = field_expr->data.field.base->data.name.name;
 	const char *fn = field_expr->data.field.field_name;
@@ -1070,11 +1070,11 @@ static const char *get_shaped_field_info(CodegenContext *ctx, AstExpr *field_exp
 	}
 	if (!arch_name)
 		return NULL;
-	AstArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+	HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
 	if (!arch)
 		return NULL;
 	for (int j = 0; j < arch->field_count; j++) {
-		if (strcmp(arch->fields[j]->name, fn) == 0 && arch->fields[j]->type->tag == AST_TYPE_SHAPED_ARRAY) {
+		if (strcmp(arch->fields[j]->name, fn) == 0 && arch->fields[j]->type->tag == HIR_TYPE_SHAPED_ARRAY) {
 			if (out_rank)
 				*out_rank = field_total_elements(arch->fields[j]->type);
 			return field_base_type_name(arch->fields[j]->type);
@@ -1084,7 +1084,7 @@ static const char *get_shaped_field_info(CodegenContext *ctx, AstExpr *field_exp
 }
 
 /* Check if archetype has a field with given name */
-static int archetype_has_field(AstArchetypeDecl *arch, const char *field_name) {
+static int archetype_has_field(HirArchetypeDecl *arch, const char *field_name) {
 	for (int i = 0; i < arch->field_count; i++) {
 		if (strcmp(arch->fields[i]->name, field_name) == 0) {
 			return 1;
@@ -1094,7 +1094,7 @@ static int archetype_has_field(AstArchetypeDecl *arch, const char *field_name) {
 }
 
 /* Check if archetype has all required fields for a system */
-static int archetype_matches_system(AstArchetypeDecl *arch, AstSysDecl *sys) {
+static int archetype_matches_system(HirArchetypeDecl *arch, HirSysDecl *sys) {
 	if (!arch || !sys || !sys->params) {
 		return 0;
 	}
@@ -1111,27 +1111,27 @@ static int archetype_matches_system(AstArchetypeDecl *arch, AstSysDecl *sys) {
 }
 
 /* Forward declarations */
-static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_buf);
-static void codegen_statement(CodegenContext *ctx, AstStmt *stmt);
-static int resolve_index_arch(CodegenContext *ctx, AstExpr *base_expr, AstExpr *idx_expr, const char **out_arch_name,
+static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_buf);
+static void codegen_statement(CodegenContext *ctx, HirStmt *stmt);
+static int resolve_index_arch(CodegenContext *ctx, HirExpr *base_expr, HirExpr *idx_expr, const char **out_arch_name,
                               const char **out_arch_ptr, int *out_count_idx, int *out_idx_is_i64);
 static void emit_bounds_check(CodegenContext *ctx, const char *arch_name, const char *arch_ptr, int count_field_idx,
                               const char *idx_buf, int idx_is_i64);
-static int bounds_check_elidable(CodegenContext *ctx, const char *arch_name, AstExpr *idx_expr);
-static int try_extract_loop_bound(AstStmt *for_stmt, char **out_var, int *out_bound);
+static int bounds_check_elidable(CodegenContext *ctx, const char *arch_name, HirExpr *idx_expr);
+static int try_extract_loop_bound(HirStmt *for_stmt, char **out_var, int *out_bound);
 static void push_loop_bound(CodegenContext *ctx, const char *var_name, int bound);
 static void pop_loop_bound(CodegenContext *ctx);
 
 /* ========== EXPRESSION CODEGEN ========== */
 
-static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_buf) {
+static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 	if (!expr) {
 		strcpy(result_buf, "0");
 		return;
 	}
 
 	switch (expr->kind) {
-	case AST_EXPR_LITERAL: {
+	case HIR_EXPR_LITERAL: {
 		const char *lex = expr->data.literal.lexeme;
 
 		/* Check if it's a char literal (starts with ') */
@@ -1165,7 +1165,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		break;
 	}
 
-	case AST_EXPR_NAME: {
+	case HIR_EXPR_NAME: {
 		const char *name = expr->data.name.name;
 
 		/* Check if this is a compile-time constant */
@@ -1215,7 +1215,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 						llvm_type = "double";
 					} else if (strcmp(val->field_type, "handle") == 0 || strcmp(val->field_type, "opaque") == 0) {
 						llvm_type = "i64";
-					} else if (ast_parse_int_width(val->field_type, &w, &sg)) {
+					} else if (hir_parse_int_width(val->field_type, &w, &sg)) {
 						llvm_type = llvm_int_type(w);
 					}
 				}
@@ -1252,7 +1252,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		break;
 	}
 
-	case AST_EXPR_BINARY: {
+	case HIR_EXPR_BINARY: {
 		char left_buf[256], right_buf[256];
 
 		/* For comparisons in scalar context, evaluate operands as scalars
@@ -1273,11 +1273,11 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		int is_float = 0;
 
 		/* Use semantic resolved type if available */
-		if (expr->resolved.tag == AST_TYPE_FLOAT) {
+		if (expr->resolved.tag == HIR_TYPE_FLOAT) {
 			is_float = 1;
-		} else if (expr->data.binary.left->resolved.tag == AST_TYPE_FLOAT) {
+		} else if (expr->data.binary.left->resolved.tag == HIR_TYPE_FLOAT) {
 			is_float = 1;
-		} else if (expr->data.binary.right->resolved.tag == AST_TYPE_FLOAT) {
+		} else if (expr->data.binary.right->resolved.tag == HIR_TYPE_FLOAT) {
 			is_float = 1;
 		} else {
 			/* Fallback: Try to infer float type from operands */
@@ -1290,19 +1290,19 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		 * int operand). Drives iN type + signed/unsigned op selection. */
 		int int_width = 32, int_signed = 1;
 		if (!is_float) {
-			AstType *lt = &expr->data.binary.left->resolved;
-			AstType *rt = &expr->data.binary.right->resolved;
-			int lw = (lt->tag == AST_TYPE_INT) ? lt->int_width : 0;
-			int rw = (rt->tag == AST_TYPE_INT) ? rt->int_width : 0;
+			HirType *lt = &expr->data.binary.left->resolved;
+			HirType *rt = &expr->data.binary.right->resolved;
+			int lw = (lt->tag == HIR_TYPE_INT) ? lt->int_width : 0;
+			int rw = (rt->tag == HIR_TYPE_INT) ? rt->int_width : 0;
 			int_width = lw > rw ? lw : rw;
 			if (int_width == 0)
 				int_width = 32; /* unset/non-int operands default to i32 */
-			if (expr->data.binary.left->resolved.tag == AST_TYPE_OPAQUE ||
-			    expr->data.binary.right->resolved.tag == AST_TYPE_OPAQUE)
+			if (expr->data.binary.left->resolved.tag == HIR_TYPE_OPAQUE ||
+			    expr->data.binary.right->resolved.tag == HIR_TYPE_OPAQUE)
 				int_width = 64; /* opaque cells are pointer-width i64 (e.g. `r == 0`) */
-			if (lt->tag == AST_TYPE_INT)
+			if (lt->tag == HIR_TYPE_INT)
 				int_signed = lt->int_signed;
-			else if (rt->tag == AST_TYPE_INT)
+			else if (rt->tag == HIR_TYPE_INT)
 				int_signed = rt->int_signed;
 		}
 
@@ -1363,7 +1363,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		if (is_float) {
 			/* Check if left operand needs conversion to double */
 			int left_needs_conv = 0;
-			if (expr->data.binary.left->resolved.tag == AST_TYPE_INT) {
+			if (expr->data.binary.left->resolved.tag == HIR_TYPE_INT) {
 				left_needs_conv = 1;
 			} else if (strchr(left_buf, '.') == NULL && strchr(left_buf, 'v') == NULL &&
 			           strchr(left_buf, '%') == NULL) {
@@ -1387,7 +1387,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 
 			/* Check if right operand needs conversion to double */
 			int right_needs_conv = 0;
-			if (expr->data.binary.right->resolved.tag == AST_TYPE_INT) {
+			if (expr->data.binary.right->resolved.tag == HIR_TYPE_INT) {
 				right_needs_conv = 1;
 			} else if (strchr(right_buf, '.') == NULL && strchr(right_buf, 'v') == NULL &&
 			           strchr(right_buf, '%') == NULL) {
@@ -1505,7 +1505,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		break;
 	}
 
-	case AST_EXPR_UNARY: {
+	case HIR_EXPR_UNARY: {
 		char operand_buf[256];
 		codegen_expression(ctx, expr->data.unary.operand, operand_buf);
 		if (expr->data.unary.op == UNARY_MOVE) {
@@ -1516,7 +1516,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			/* `copy x`: duplicate a local char[N] buffer into a fresh stack buffer so the function
 			 * gets an owned copy and the caller keeps the original. Other operands pass through
 			 * (scalars are values; unsupported array kinds are rejected by the checker). */
-			if (expr->data.unary.operand->kind == AST_EXPR_NAME) {
+			if (expr->data.unary.operand->kind == HIR_EXPR_NAME) {
 				ValueInfo *ov = find_value(ctx, expr->data.unary.operand->data.name.name);
 				if (ov && ov->type == 7) {
 					int n = ov->string_len;
@@ -1539,7 +1539,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		char *res_name = gen_value_name(ctx);
 		if (expr->data.unary.op == UNARY_NEG) {
 			int is_float =
-			    expr->resolved.tag == AST_TYPE_FLOAT || expr->data.unary.operand->resolved.tag == AST_TYPE_FLOAT;
+			    expr->resolved.tag == HIR_TYPE_FLOAT || expr->data.unary.operand->resolved.tag == HIR_TYPE_FLOAT;
 			if (is_float)
 				buffer_append_fmt(ctx, "  %s = fsub double 0.0, %s\n", res_name, operand_buf);
 			else
@@ -1551,10 +1551,10 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		break;
 	}
 
-	case AST_EXPR_FIELD: {
+	case HIR_EXPR_FIELD: {
 		/* Compile-time scalars from a monomorphized archetype-parametric proc.
 		 * Short-circuit before the normal field-access path. */
-		if (expr->data.field.base->kind == AST_EXPR_NAME && expr->data.field.field_name) {
+		if (expr->data.field.base->kind == HIR_EXPR_NAME && expr->data.field.field_name) {
 			const char *base_name = expr->data.field.base->data.name.name;
 			const char *fname = expr->data.field.field_name;
 			if (ctx->current_archetype_param && ctx->current_arch_param_name &&
@@ -1584,7 +1584,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 					buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i32 0, i32 0\n", ptr, len,
 					                  len, ctx->current_each_field_name_global);
 					strcpy(result_buf, ptr);
-					expr->resolved.tag = AST_TYPE_CHAR_ARRAY;
+					expr->resolved.tag = HIR_TYPE_CHAR_ARRAY;
 					break;
 				}
 			}
@@ -1599,7 +1599,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		/* Check if base is an arch pointer (type 3) or archetype name */
 		ValueInfo *base_val = NULL;
 		const char *arch_name_direct = NULL;
-		if (expr->data.field.base->kind == AST_EXPR_NAME) {
+		if (expr->data.field.base->kind == HIR_EXPR_NAME) {
 			const char *name = expr->data.field.base->data.name.name;
 			base_val = find_value(ctx, name);
 			if (!base_val && find_archetype_decl(ctx, name)) {
@@ -1612,7 +1612,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			/* For archetype columns: load count field */
 			if (base_val && base_val->type == 3 && base_val->arch_name) {
 				/* count field is always the last field in archetype struct */
-				AstArchetypeDecl *arch = find_archetype_decl(ctx, base_val->arch_name);
+				HirArchetypeDecl *arch = find_archetype_decl(ctx, base_val->arch_name);
 				if (arch) {
 					int count_idx = arch->field_count; /* count field index */
 					char *gep = gen_value_name(ctx);
@@ -1642,7 +1642,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 
 			/* For archetype: max_length is the capacity field */
 			if (strcmp(field_name, "max_length") == 0 && base_val && base_val->type == 3 && base_val->arch_name) {
-				AstArchetypeDecl *arch = find_archetype_decl(ctx, base_val->arch_name);
+				HirArchetypeDecl *arch = find_archetype_decl(ctx, base_val->arch_name);
 				if (arch) {
 					int cap_idx = arch->field_count + 1;
 					char *gep = gen_value_name(ctx);
@@ -1658,10 +1658,10 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 
 		if (base_val && base_val->type == 3 && base_val->arch_name) {
 			/* Find field index in archetype */
-			AstArchetypeDecl *arch = find_archetype_decl(ctx, base_val->arch_name);
+			HirArchetypeDecl *arch = find_archetype_decl(ctx, base_val->arch_name);
 			if (arch) {
 				int field_idx = -1;
-				AstField *fdecl = NULL;
+				HirField *fdecl = NULL;
 				for (int i = 0; i < arch->field_count; i++) {
 					if (strcmp(arch->fields[i]->name, field_name) == 0) {
 						field_idx = i;
@@ -1723,10 +1723,10 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			}
 		} else if (arch_name_direct) {
 			/* Direct archetype name reference */
-			AstArchetypeDecl *arch = find_archetype_decl(ctx, arch_name_direct);
+			HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name_direct);
 			if (arch) {
 				int field_idx = -1;
-				AstField *fdecl = NULL;
+				HirField *fdecl = NULL;
 				for (int i = 0; i < arch->field_count; i++) {
 					if (strcmp(arch->fields[i]->name, field_name) == 0) {
 						field_idx = i;
@@ -1793,11 +1793,11 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		break;
 	}
 
-	case AST_EXPR_INDEX: {
+	case HIR_EXPR_INDEX: {
 		/* Each-field column read: f[i] where f is the current each_field
 		 * binding. Resolve to a load from the matching archetype column. */
 		if (ctx->current_each_field_binding && ctx->current_each_field_target && ctx->current_archetype_param &&
-		    ctx->current_arch_param_llvm && expr->data.index.base->kind == AST_EXPR_NAME &&
+		    ctx->current_arch_param_llvm && expr->data.index.base->kind == HIR_EXPR_NAME &&
 		    strcmp(expr->data.index.base->data.name.name, ctx->current_each_field_binding) == 0 &&
 		    expr->data.index.index_count == 1) {
 			char idx_local[256];
@@ -1822,11 +1822,11 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			/* Tag the expression with its resolved type (tag + int width/sign) so
 			 * callers (e.g. group resolution) pick the right overload. */
 			{
-				AstType *ft = ctx->current_each_field_target->type;
-				while (ft && ft->tag == AST_TYPE_SHAPED_ARRAY)
+				HirType *ft = ctx->current_each_field_target->type;
+				while (ft && ft->tag == HIR_TYPE_SHAPED_ARRAY)
 					ft = ft->elem;
-				expr->resolved.tag = ft ? ft->tag : AST_TYPE_INT;
-				if (ft && ft->tag == AST_TYPE_INT) {
+				expr->resolved.tag = ft ? ft->tag : HIR_TYPE_INT;
+				if (ft && ft->tag == HIR_TYPE_INT) {
 					expr->resolved.int_width = ft->int_width ? ft->int_width : 32;
 					expr->resolved.int_signed = ft->int_signed;
 				}
@@ -1840,7 +1840,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 
 		/* Check if base is a type-5 arche_array (static or dynamic char buffer) */
 		ValueInfo *type5_vi = NULL;
-		if (expr->data.index.base->kind == AST_EXPR_NAME) {
+		if (expr->data.index.base->kind == HIR_EXPR_NAME) {
 			ValueInfo *vi = find_value(ctx, expr->data.index.base->data.name.name);
 			if (vi && vi->type == 5) {
 				type5_vi = vi;
@@ -1849,7 +1849,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 
 		/* Check if base is a type-7 char buffer (let buf: char[256];) */
 		ValueInfo *type7_vi = NULL;
-		if (expr->data.index.base->kind == AST_EXPR_NAME) {
+		if (expr->data.index.base->kind == HIR_EXPR_NAME) {
 			ValueInfo *vi = find_value(ctx, expr->data.index.base->data.name.name);
 			if (vi && vi->type == 7) {
 				type7_vi = vi;
@@ -1859,7 +1859,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		/* Check if base is a type-6 slice pointer variable */
 		const char *type6_elem_type = NULL;
 		int type6_is_char = 0;
-		if (expr->data.index.base->kind == AST_EXPR_NAME) {
+		if (expr->data.index.base->kind == HIR_EXPR_NAME) {
 			ValueInfo *vi = find_value(ctx, expr->data.index.base->data.name.name);
 			if (vi && vi->type == 6 && vi->field_type) {
 				type6_elem_type = vi->field_type;
@@ -1909,12 +1909,12 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		} else if (shaped_elem) {
 			arche_type = shaped_elem;
 			scalar_type = llvm_type_from_arche(shaped_elem);
-		} else if (expr->resolved.tag != AST_TYPE_UNKNOWN) {
-			arche_type = ast_resolved_type_name(expr);
+		} else if (expr->resolved.tag != HIR_TYPE_UNKNOWN) {
+			arche_type = hir_resolved_type_name(expr);
 			scalar_type = llvm_type_from_arche(arche_type);
-		} else if (expr->data.index.base->resolved.tag != AST_TYPE_UNKNOWN) {
+		} else if (expr->data.index.base->resolved.tag != HIR_TYPE_UNKNOWN) {
 			/* Use base's resolved type (e.g., for pos[i] where pos is double*) */
-			arche_type = ast_resolved_type_name(expr->data.index.base);
+			arche_type = hir_resolved_type_name(expr->data.index.base);
 			scalar_type = llvm_type_from_arche(arche_type);
 		}
 
@@ -2028,10 +2028,10 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		break;
 	}
 
-	case AST_EXPR_CALL: {
+	case HIR_EXPR_CALL: {
 		/* function call */
 		char *func_name = NULL;
-		if (expr->data.call.callee->kind == AST_EXPR_NAME) {
+		if (expr->data.call.callee->kind == HIR_EXPR_NAME) {
 			func_name = expr->data.call.callee->data.name.name;
 		}
 
@@ -2039,7 +2039,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		 * width (sext/zext/trunc) instead of emitting a call. */
 		{
 			int cw, csg;
-			if (func_name && expr->data.call.arg_count == 1 && ast_parse_int_width(func_name, &cw, &csg)) {
+			if (func_name && expr->data.call.arg_count == 1 && hir_parse_int_width(func_name, &cw, &csg)) {
 				char arg_buf[256];
 				codegen_expression(ctx, expr->data.call.args[0], arg_buf);
 				char converted[256];
@@ -2058,14 +2058,14 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			for (int i = 0; i < 7; i++) {
 				char ab[256];
 				codegen_expression(ctx, expr->data.call.args[i], ab);
-				AstType *rt = &expr->data.call.args[i]->resolved;
-				if (rt->tag == AST_TYPE_INT && rt->int_width == 64) {
+				HirType *rt = &expr->data.call.args[i]->resolved;
+				if (rt->tag == HIR_TYPE_INT && rt->int_width == 64) {
 					strcpy(a[i], ab);
-				} else if (rt->tag == AST_TYPE_INT) {
+				} else if (rt->tag == HIR_TYPE_INT) {
 					emit_int_convert(ctx, ab, rt, 64, a[i]);
 				} else {
-					AstType t32 = {0};
-					t32.tag = AST_TYPE_INT;
+					HirType t32 = {0};
+					t32.tag = HIR_TYPE_INT;
 					t32.int_width = 32;
 					t32.int_signed = 1;
 					emit_int_convert(ctx, ab, &t32, 64, a[i]);
@@ -2089,8 +2089,8 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 
 			/* Get arch_name from ValueInfo or archetype name of args[0] */
 			const char *arch_name = NULL;
-			AstArchetypeDecl *arch = NULL;
-			if (expr->data.call.args[0]->kind == AST_EXPR_NAME) {
+			HirArchetypeDecl *arch = NULL;
+			if (expr->data.call.args[0]->kind == HIR_EXPR_NAME) {
 				const char *name = expr->data.call.args[0]->data.name.name;
 				ValueInfo *arch_var = find_value(ctx, name);
 				if (arch_var && arch_var->arch_name) {
@@ -2157,7 +2157,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			if (expr->data.call.arg_count >= 2) {
 				codegen_expression(ctx, expr->data.call.args[0], arch_buf);
 				codegen_expression(ctx, expr->data.call.args[1], idx_buf);
-				if (expr->data.call.args[0]->kind == AST_EXPR_NAME) {
+				if (expr->data.call.args[0]->kind == HIR_EXPR_NAME) {
 					const char *name = expr->data.call.args[0]->data.name.name;
 					ValueInfo *arch_var = find_value(ctx, name);
 					if (arch_var && arch_var->arch_name)
@@ -2165,7 +2165,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 					else if (find_archetype_decl(ctx, name))
 						arch_name = name;
 				}
-				if (expr->data.call.args[1]->kind == AST_EXPR_NAME) {
+				if (expr->data.call.args[1]->kind == HIR_EXPR_NAME) {
 					ValueInfo *hvi = find_value(ctx, expr->data.call.args[1]->data.name.name);
 					if (hvi && hvi->field_type && strcmp(hvi->field_type, "handle") == 0 && hvi->handle_archetype &&
 					    arch_name && strcmp(hvi->handle_archetype, arch_name) != 0) {
@@ -2177,7 +2177,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				}
 			} else {
 				codegen_expression(ctx, expr->data.call.args[0], idx_buf);
-				if (expr->data.call.args[0]->kind == AST_EXPR_NAME) {
+				if (expr->data.call.args[0]->kind == HIR_EXPR_NAME) {
 					ValueInfo *hv = find_value(ctx, expr->data.call.args[0]->data.name.name);
 					if (hv && hv->handle_archetype)
 						arch_name = hv->handle_archetype;
@@ -2204,7 +2204,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 
 			/* Get arch_name from ValueInfo or archetype name of args[0] */
 			const char *arch_name = NULL;
-			if (expr->data.call.args[0]->kind == AST_EXPR_NAME) {
+			if (expr->data.call.args[0]->kind == HIR_EXPR_NAME) {
 				const char *name = expr->data.call.args[0]->data.name.name;
 				ValueInfo *arch_var = find_value(ctx, name);
 				if (arch_var && arch_var->arch_name) {
@@ -2239,8 +2239,8 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			arg_values[i] = NULL;
 			arg_is_move[i] = 0;
 
-			AstExpr *inner = expr->data.call.args[i];
-			if (inner->kind == AST_EXPR_UNARY &&
+			HirExpr *inner = expr->data.call.args[i];
+			if (inner->kind == HIR_EXPR_UNARY &&
 			    (inner->data.unary.op == UNARY_MOVE || inner->data.unary.op == UNARY_COPY)) {
 				/* `move` is by-ref (transparent); `copy` already duplicated in codegen_expression.
 				 * Either way, unwrap to the operand to classify its type/size. */
@@ -2250,20 +2250,20 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			}
 
 			/* Check if this arg is a string literal */
-			if (inner->kind == AST_EXPR_STRING) {
+			if (inner->kind == HIR_EXPR_STRING) {
 				arg_is_string[i] = 1;
 			}
-			/* Check if this arg is an old-style string literal (AST_EXPR_LITERAL with quotes) */
-			else if (inner->kind == AST_EXPR_LITERAL && inner->data.literal.lexeme[0] == '"') {
+			/* Check if this arg is an old-style string literal (HIR_EXPR_LITERAL with quotes) */
+			else if (inner->kind == HIR_EXPR_LITERAL && inner->data.literal.lexeme[0] == '"') {
 				arg_is_string[i] = 1;
 			}
 			/* Check if this arg is an array literal */
-			else if (inner->kind == AST_EXPR_ARRAY_LITERAL) {
+			else if (inner->kind == HIR_EXPR_ARRAY_LITERAL) {
 				arg_is_array_literal[i] = 1;
 			}
 			/* `f.name` inside an each_field expansion: produces a raw i8* string. */
-			else if (ctx->current_each_field_binding && inner->kind == AST_EXPR_FIELD &&
-			         inner->data.field.base->kind == AST_EXPR_NAME &&
+			else if (ctx->current_each_field_binding && inner->kind == HIR_EXPR_FIELD &&
+			         inner->data.field.base->kind == HIR_EXPR_NAME &&
 			         strcmp(inner->data.field.base->data.name.name, ctx->current_each_field_binding) == 0 &&
 			         inner->data.field.field_name && strcmp(inner->data.field.field_name, "name") == 0) {
 				arg_is_string[i] = 1;
@@ -2276,11 +2276,11 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		int *arg_is_static_array = malloc(expr->data.call.arg_count * sizeof(int));
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			arg_is_static_array[i] = 0;
-			AstExpr *inner = expr->data.call.args[i];
-			if (inner->kind == AST_EXPR_UNARY &&
+			HirExpr *inner = expr->data.call.args[i];
+			if (inner->kind == HIR_EXPR_UNARY &&
 			    (inner->data.unary.op == UNARY_MOVE || inner->data.unary.op == UNARY_COPY))
 				inner = inner->data.unary.operand;
-			if (!arg_is_string[i] && !arg_is_array_literal[i] && inner->kind == AST_EXPR_NAME) {
+			if (!arg_is_string[i] && !arg_is_array_literal[i] && inner->kind == HIR_EXPR_NAME) {
 				const char *arg_name = inner->data.name.name;
 				ValueInfo *var = find_value(ctx, arg_name);
 				if (var) {
@@ -2294,9 +2294,9 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			}
 		}
 
-		AstProcDecl *callee_proc = find_proc_decl(ctx, func_name);
-		AstFuncDecl *callee_func = NULL;
-		AstFuncGroupDecl *callee_group = func_name ? find_func_group(ctx, func_name) : NULL;
+		HirProcDecl *callee_proc = find_proc_decl(ctx, func_name);
+		HirFuncDecl *callee_func = NULL;
+		HirFuncGroupDecl *callee_group = func_name ? find_func_group(ctx, func_name) : NULL;
 		if (callee_group) {
 			callee_func =
 			    find_group_member_for_call(ctx, callee_group, expr->data.call.args, expr->data.call.arg_count);
@@ -2310,15 +2310,15 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		}
 
 		/* Archetype-parametric call site detection. The arg in the archetype
-		 * slot must be an AST_EXPR_NAME referring to a declared archetype. */
+		 * slot must be an HIR_EXPR_NAME referring to a declared archetype. */
 		char mono_call_name[256] = {0};
-		AstArchetypeDecl *mono_arch = NULL;
+		HirArchetypeDecl *mono_arch = NULL;
 		int mono_arch_pidx = -1;
 		if (callee_proc && is_archetype_parametric(callee_proc)) {
 			mono_arch_pidx = archetype_param_index(callee_proc);
 			if (mono_arch_pidx >= 0 && mono_arch_pidx < expr->data.call.arg_count) {
-				AstExpr *aexpr = expr->data.call.args[mono_arch_pidx];
-				if (aexpr && aexpr->kind == AST_EXPR_NAME) {
+				HirExpr *aexpr = expr->data.call.args[mono_arch_pidx];
+				if (aexpr && aexpr->kind == HIR_EXPR_NAME) {
 					mono_arch = find_archetype_decl(ctx, aexpr->data.name.name);
 				}
 			}
@@ -2339,21 +2339,21 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			int callee_wants_arr = 0;        /* unbounded char[] (arche_array struct on non-extern) */
 			int callee_wants_shaped_arr = 0; /* sized char[N] (raw i8*) */
 			int callee_is_extern = (callee_proc && callee_proc->is_extern) || (callee_func && callee_func->is_extern);
-			AstType *callee_pt = NULL;
+			HirType *callee_pt = NULL;
 			if (callee_proc && i < callee_proc->param_count)
 				callee_pt = callee_proc->params[i]->type;
 			if (callee_func && i < callee_func->param_count)
 				callee_pt = callee_func->params[i]->type;
-			if (callee_pt && callee_pt->tag == AST_TYPE_ARRAY)
+			if (callee_pt && callee_pt->tag == HIR_TYPE_ARRAY)
 				callee_wants_arr = 1;
-			else if (callee_pt && callee_pt->tag == AST_TYPE_SHAPED_ARRAY)
+			else if (callee_pt && callee_pt->tag == HIR_TYPE_SHAPED_ARRAY)
 				callee_wants_shaped_arr = 1;
 
 			/* Handle type conversions, emit code before call if needed */
 			if (arg_is_static_array[i]) {
 				/* Static array: check if needs wrapping in arche_array struct */
 				const char *arg_name = expr->data.call.args[i]->data.name.name;
-				AstStaticDecl *sa = codegen_find_static_array(ctx, arg_name);
+				HirStaticDecl *sa = codegen_find_static_array(ctx, arg_name);
 				if (sa) {
 					const char *elem_type = "i8";
 					const char *elem_ptr_type = "i8*";
@@ -2482,11 +2482,11 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 
 					/* Need to know string length */
 					size_t str_len = 0;
-					AstExpr *arg_expr = expr->data.call.args[i];
-					if (arg_expr->kind == AST_EXPR_STRING) {
+					HirExpr *arg_expr = expr->data.call.args[i];
+					if (arg_expr->kind == HIR_EXPR_STRING) {
 						/* String from parser (already processed, without quotes) */
 						str_len = arg_expr->data.string.length;
-					} else if (arg_expr->kind == AST_EXPR_LITERAL && arg_expr->data.literal.lexeme[0] == '"') {
+					} else if (arg_expr->kind == HIR_EXPR_LITERAL && arg_expr->data.literal.lexeme[0] == '"') {
 						/* Old-style string literal with quotes */
 						const char *lex = arg_expr->data.literal.lexeme;
 						for (int j = 1; lex[j] != '"' && lex[j] != '\0'; j++) {
@@ -2594,7 +2594,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 						strcpy(call_arg_vals[i], arg_bufs[i]);
 						call_arg_types[i] = "i8*";
 					}
-				} else if (expr->data.call.args[i]->resolved.tag == AST_TYPE_CHAR_ARRAY) {
+				} else if (expr->data.call.args[i]->resolved.tag == HIR_TYPE_CHAR_ARRAY) {
 					/* Arg is a char[] value with no ValueInfo — e.g. the result of an
 					 * extern call like arche_argv() (a raw i8*). For a non-extern char[]
 					 * callee, wrap it in a stack arche_array (placeholder len/cap; callees
@@ -2624,15 +2624,15 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 						strcpy(call_arg_vals[i], arg_bufs[i]);
 						call_arg_types[i] = "i8*";
 					}
-				} else if (expr->data.call.args[i]->resolved.tag == AST_TYPE_FLOAT) {
+				} else if (expr->data.call.args[i]->resolved.tag == HIR_TYPE_FLOAT) {
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = "double";
-				} else if (expr->data.call.args[i]->resolved.tag == AST_TYPE_INT &&
+				} else if (expr->data.call.args[i]->resolved.tag == HIR_TYPE_INT &&
 				           expr->data.call.args[i]->resolved.int_width != 32) {
 					/* Wider/narrower int (e.g. i64): pass at its actual LLVM width. */
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = llvm_int_type(expr->data.call.args[i]->resolved.int_width);
-				} else if (expr->data.call.args[i]->resolved.tag == AST_TYPE_OPAQUE) {
+				} else if (expr->data.call.args[i]->resolved.tag == HIR_TYPE_OPAQUE) {
 					/* An opaque cell (a nominal `:: opaque` value) is pointer-width i64. */
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = "i64";
@@ -2749,7 +2749,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 
 			/* Return type from the func declaration. A scalar-position call uses the single
 			 * return type. */
-			AstType *crt = (callee_func && callee_func->return_type_count > 0) ? callee_func->return_types[0] : NULL;
+			HirType *crt = (callee_func && callee_func->return_type_count > 0) ? callee_func->return_types[0] : NULL;
 			if (crt) {
 				/* Use the same mapping as the function definition's return type so the call
 				 * site and the callee agree — char[] / char[N] both become i8* (a byte view). */
@@ -2770,9 +2770,9 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			} else if (callee_proc && callee_proc->is_extern == 0) {
 				/* Non-extern proc: always void */
 				return_type = "void";
-			} else if (expr->resolved.tag != AST_TYPE_UNKNOWN) {
+			} else if (expr->resolved.tag != HIR_TYPE_UNKNOWN) {
 				/* Fallback: use resolved type if available */
-				return_type = llvm_type_from_arche(ast_resolved_type_name(expr));
+				return_type = llvm_type_from_arche(hir_resolved_type_name(expr));
 			}
 
 			/* If return type is void, emit void call without assignment */
@@ -2816,10 +2816,10 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		break;
 	}
 
-	case AST_EXPR_ARRAY_LITERAL: {
+	case HIR_EXPR_ARRAY_LITERAL: {
 		/* Array literal: {elem1, elem2, ...} */
 		/* Generate global constant array and wrap in arche_array struct */
-		AstExpr **elems = expr->data.array_literal.elements;
+		HirExpr **elems = expr->data.array_literal.elements;
 		int elem_count = expr->data.array_literal.element_count;
 
 		if (elem_count == 0) {
@@ -2894,7 +2894,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		break;
 	}
 
-	case AST_EXPR_ALLOC: {
+	case HIR_EXPR_ALLOC: {
 		/* allocation expression: alloc ArchetypeName(count) */
 		const char *arch_name = expr->data.alloc.archetype_name;
 
@@ -2905,7 +2905,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		}
 
 		/* Find archetype declaration */
-		AstArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+		HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
 		if (!arch) {
 			strcpy(result_buf, "0");
 			break;
@@ -3030,7 +3030,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		/* Handle field initialization: for each named field, fill with the init value */
 		for (int init_idx = 1; init_idx < expr->data.alloc.field_count; init_idx++) {
 			const char *field_name = expr->data.alloc.field_names[init_idx];
-			AstExpr *init_value = expr->data.alloc.field_values[init_idx];
+			HirExpr *init_value = expr->data.alloc.field_values[init_idx];
 
 			/* Find field in archetype */
 			int field_idx = -1;
@@ -3045,7 +3045,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 				continue;
 			}
 
-			AstField *field = arch->fields[field_idx];
+			HirField *field = arch->fields[field_idx];
 			if (field->kind != FIELD_COLUMN) {
 				/* Only fill column fields */
 				continue;
@@ -3099,7 +3099,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 			codegen_expression(ctx, init_value, init_val_buf);
 
 			/* Convert type if needed (e.g., i32 to double) */
-			const char *init_type = ast_resolved_type_name(init_value);
+			const char *init_type = hir_resolved_type_name(init_value);
 			const char *init_llvm_type = llvm_type_from_arche(init_type);
 
 			if (strcmp(init_llvm_type, elem_type) != 0) {
@@ -3145,7 +3145,7 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 		break;
 	}
 
-	case AST_EXPR_STRING: {
+	case HIR_EXPR_STRING: {
 		/* Create global constant for string literal */
 		char global_name[64];
 		snprintf(global_name, sizeof(global_name), "@.str%d", ctx->string_counter++);
@@ -3188,19 +3188,19 @@ static void codegen_expression(CodegenContext *ctx, AstExpr *expr, char *result_
 
 /* ========== BOUNDS CHECK HELPERS ========== */
 
-static int resolve_index_arch(CodegenContext *ctx, AstExpr *base_expr, AstExpr *idx_expr, const char **out_arch_name,
+static int resolve_index_arch(CodegenContext *ctx, HirExpr *base_expr, HirExpr *idx_expr, const char **out_arch_name,
                               const char **out_arch_ptr, int *out_count_idx, int *out_idx_is_i64) {
 	*out_arch_name = NULL;
 	*out_arch_ptr = NULL;
 	*out_count_idx = -1;
 	*out_idx_is_i64 = 0;
 
-	/* Case 1: base is AST_EXPR_FIELD with archetype backing (e.g., particles.mass[i]) */
-	if (base_expr->kind == AST_EXPR_FIELD && base_expr->data.field.base->kind == AST_EXPR_NAME) {
+	/* Case 1: base is HIR_EXPR_FIELD with archetype backing (e.g., particles.mass[i]) */
+	if (base_expr->kind == HIR_EXPR_FIELD && base_expr->data.field.base->kind == HIR_EXPR_NAME) {
 		const char *var_name = base_expr->data.field.base->data.name.name;
 		ValueInfo *vi = find_value(ctx, var_name);
 		if (vi && vi->type == 3 && vi->arch_name) {
-			AstArchetypeDecl *arch = find_archetype_decl(ctx, vi->arch_name);
+			HirArchetypeDecl *arch = find_archetype_decl(ctx, vi->arch_name);
 			if (arch) {
 				*out_arch_name = vi->arch_name;
 				*out_arch_ptr = vi->llvm_name;
@@ -3208,7 +3208,7 @@ static int resolve_index_arch(CodegenContext *ctx, AstExpr *base_expr, AstExpr *
 			}
 		} else {
 			/* Try direct archetype name (for static allocations) */
-			AstArchetypeDecl *arch = find_archetype_decl(ctx, var_name);
+			HirArchetypeDecl *arch = find_archetype_decl(ctx, var_name);
 			if (arch) {
 				static char global_buf[256];
 				*out_arch_name = var_name;
@@ -3222,11 +3222,11 @@ static int resolve_index_arch(CodegenContext *ctx, AstExpr *base_expr, AstExpr *
 			}
 		}
 	}
-	/* Case 2: base is AST_EXPR_NAME with type 4 (column param in sys) */
-	else if (base_expr->kind == AST_EXPR_NAME) {
+	/* Case 2: base is HIR_EXPR_NAME with type 4 (column param in sys) */
+	else if (base_expr->kind == HIR_EXPR_NAME) {
 		ValueInfo *vi = find_value(ctx, base_expr->data.name.name);
 		if (vi && vi->type == 4 && vi->arch_name) {
-			AstArchetypeDecl *arch = find_archetype_decl(ctx, vi->arch_name);
+			HirArchetypeDecl *arch = find_archetype_decl(ctx, vi->arch_name);
 			if (arch) {
 				static char arch_ptr_buf[256];
 				*out_arch_name = vi->arch_name;
@@ -3238,7 +3238,7 @@ static int resolve_index_arch(CodegenContext *ctx, AstExpr *base_expr, AstExpr *
 	}
 
 	/* Determine if index is i64 */
-	if (idx_expr->kind == AST_EXPR_NAME) {
+	if (idx_expr->kind == HIR_EXPR_NAME) {
 		ValueInfo *idx_vi = find_value(ctx, idx_expr->data.name.name);
 		if (idx_vi && idx_vi->bit_width == 64) {
 			*out_idx_is_i64 = 1;
@@ -3250,8 +3250,8 @@ static int resolve_index_arch(CodegenContext *ctx, AstExpr *base_expr, AstExpr *
 
 /* If `expr` is an int literal whose value parses to a non-negative int, return that
  * value in *out and return 1. Otherwise return 0. */
-static int try_extract_int_literal(AstExpr *expr, int *out) {
-	if (!expr || expr->kind != AST_EXPR_LITERAL || !expr->data.literal.lexeme)
+static int try_extract_int_literal(HirExpr *expr, int *out) {
+	if (!expr || expr->kind != HIR_EXPR_LITERAL || !expr->data.literal.lexeme)
 		return 0;
 	const char *s = expr->data.literal.lexeme;
 	if (!*s)
@@ -3266,30 +3266,30 @@ static int try_extract_int_literal(AstExpr *expr, int *out) {
 /* If the for-stmt has the shape `for (let v = <int_const>; v < BOUND; v += <step>)`
  * (where BOUND is also an int constant), populate out_var/out_bound and return 1.
  * Conservative: only matches the canonical 0..BOUND form actually used in practice. */
-static int try_extract_loop_bound(AstStmt *for_stmt, char **out_var, int *out_bound) {
-	if (!for_stmt || for_stmt->kind != AST_STMT_FOR)
+static int try_extract_loop_bound(HirStmt *for_stmt, char **out_var, int *out_bound) {
+	if (!for_stmt || for_stmt->kind != HIR_STMT_FOR)
 		return 0;
-	AstStmt *init = for_stmt->data.for_stmt.init;
-	AstExpr *cond = for_stmt->data.for_stmt.cond;
+	HirStmt *init = for_stmt->data.for_stmt.init;
+	HirExpr *cond = for_stmt->data.for_stmt.cond;
 	if (!init || !cond)
 		return 0;
 
 	/* Init: a `let` declaration introducing the loop variable. */
 	const char *var_name = NULL;
-	if (init->kind == AST_STMT_BIND && init->data.bind_stmt.name_count >= 1 && init->data.bind_stmt.names[0]) {
+	if (init->kind == HIR_STMT_BIND && init->data.bind_stmt.name_count >= 1 && init->data.bind_stmt.names[0]) {
 		var_name = init->data.bind_stmt.names[0];
 	}
 	if (!var_name)
 		return 0;
 
 	/* Cond: <var> < <int_literal> (also accept <=). */
-	if (cond->kind != AST_EXPR_BINARY)
+	if (cond->kind != HIR_EXPR_BINARY)
 		return 0;
 	if (cond->data.binary.op != OP_LT && cond->data.binary.op != OP_LTE)
 		return 0;
-	AstExpr *cmp_left = cond->data.binary.left;
-	AstExpr *cmp_right = cond->data.binary.right;
-	if (!cmp_left || cmp_left->kind != AST_EXPR_NAME)
+	HirExpr *cmp_left = cond->data.binary.left;
+	HirExpr *cmp_right = cond->data.binary.right;
+	if (!cmp_left || cmp_left->kind != HIR_EXPR_NAME)
 		return 0;
 	if (strcmp(cmp_left->data.name.name, var_name) != 0)
 		return 0;
@@ -3324,8 +3324,8 @@ static void pop_loop_bound(CodegenContext *ctx) {
 
 /* If `idx_expr` references a loop variable currently in scope and we know the loop's
  * upper bound, return that bound. Otherwise return -1. */
-static int lookup_loop_var_bound(CodegenContext *ctx, AstExpr *idx_expr) {
-	if (!idx_expr || idx_expr->kind != AST_EXPR_NAME)
+static int lookup_loop_var_bound(CodegenContext *ctx, HirExpr *idx_expr) {
+	if (!idx_expr || idx_expr->kind != HIR_EXPR_NAME)
 		return -1;
 	const char *name = idx_expr->data.name.name;
 	for (int i = ctx->loop_bound_count - 1; i >= 0; i--) {
@@ -3336,7 +3336,7 @@ static int lookup_loop_var_bound(CodegenContext *ctx, AstExpr *idx_expr) {
 }
 
 /* Returns 1 if a bounds check on `arch[idx_expr]` is provably unnecessary. */
-static int bounds_check_elidable(CodegenContext *ctx, const char *arch_name, AstExpr *idx_expr) {
+static int bounds_check_elidable(CodegenContext *ctx, const char *arch_name, HirExpr *idx_expr) {
 	if (!arch_name)
 		return 0;
 	int cap = get_arch_static_capacity(ctx, arch_name);
@@ -3414,19 +3414,19 @@ static void emit_bounds_check(CodegenContext *ctx, const char *arch_name, const 
 /* ========== WHOLE-COLUMN LOOP HELPER ========== */
 
 /* Walk expression tree and pre-compute column base pointers to hoist them out of loop */
-static void hoist_column_geps(CodegenContext *ctx, AstExpr *expr, const char *struct_ptr_val) {
+static void hoist_column_geps(CodegenContext *ctx, HirExpr *expr, const char *struct_ptr_val) {
 	if (!expr)
 		return;
 
 	switch (expr->kind) {
-	case AST_EXPR_FIELD: {
-		AstExpr *base = expr->data.field.base;
-		if (base && base->kind == AST_EXPR_NAME) {
+	case HIR_EXPR_FIELD: {
+		HirExpr *base = expr->data.field.base;
+		if (base && base->kind == HIR_EXPR_NAME) {
 			const char *arch_name = base->data.name.name;
 			const char *field_name = expr->data.field.field_name;
 
 			/* Find field index */
-			AstArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+			HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
 			if (arch) {
 				int field_idx = -1;
 				for (int i = 0; i < arch->field_count; i++) {
@@ -3459,11 +3459,11 @@ static void hoist_column_geps(CodegenContext *ctx, AstExpr *expr, const char *st
 			hoist_column_geps(ctx, base, struct_ptr_val);
 		break;
 	}
-	case AST_EXPR_BINARY:
+	case HIR_EXPR_BINARY:
 		hoist_column_geps(ctx, expr->data.binary.left, struct_ptr_val);
 		hoist_column_geps(ctx, expr->data.binary.right, struct_ptr_val);
 		break;
-	case AST_EXPR_UNARY:
+	case HIR_EXPR_UNARY:
 		hoist_column_geps(ctx, expr->data.unary.operand, struct_ptr_val);
 		break;
 	default:
@@ -3475,7 +3475,7 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
                                    const char *count,                        /* SSA reg: i64 element count */
                                    const char *scalar_type,                  /* "double" or "i32" */
                                    const char *arche_type,                   /* "float" or "int" */
-                                   AstExpr *rhs,                             /* RHS expression */
+                                   HirExpr *rhs,                             /* RHS expression */
                                    int op,                     /* OP_NONE = store, others = load+op+store */
                                    const char *struct_ptr_val) /* struct pointer for hoisting */
 {
@@ -3667,21 +3667,21 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 
 /* ========== STATEMENT CODEGEN ========== */
 
-static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
+static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 	if (!stmt)
 		return;
 
 	switch (stmt->kind) {
-	case AST_STMT_BIND: {
+	case HIR_STMT_BIND: {
 		const char *var_name = stmt->data.bind_stmt.names[0];
 		char value_buf[256];
 
 		/* Handle type-annotated declaration without initialization */
 		if (stmt->data.bind_stmt.type && !stmt->data.bind_stmt.value) {
-			AstType *type = stmt->data.bind_stmt.type;
+			HirType *type = stmt->data.bind_stmt.type;
 
 			/* Check for array type */
-			if (type->tag == AST_TYPE_ARRAY) {
+			if (type->tag == HIR_TYPE_ARRAY) {
 				char *arr_alloca = gen_value_name(ctx);
 				emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
 
@@ -3704,7 +3704,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 				buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", cap_gep);
 
 				add_array_value(ctx, var_name, arr_alloca);
-			} else if (type->tag == AST_TYPE_SHAPED_ARRAY && type->elem && type->elem->tag == AST_TYPE_CHAR) {
+			} else if (type->tag == HIR_TYPE_SHAPED_ARRAY && type->elem && type->elem->tag == HIR_TYPE_CHAR) {
 				/* Stack-allocated char array: let buf: char[256]; */
 				int rank = type->rank;
 				char *alloca_name = gen_value_name(ctx);
@@ -3729,7 +3729,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			} else {
 				/* Scalar type: allocate and zero-initialize */
 				const char *alloc_type = "i32";
-				if (type->tag == AST_TYPE_FLOAT) {
+				if (type->tag == HIR_TYPE_FLOAT) {
 					alloc_type = "double";
 				}
 
@@ -3760,13 +3760,13 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		/* Check if the value is a string literal (old style) or array literal (new style from string expansion) */
 		int is_string = 0;
 		if (stmt->data.bind_stmt.value) {
-			if (stmt->data.bind_stmt.value->kind == AST_EXPR_LITERAL &&
+			if (stmt->data.bind_stmt.value->kind == HIR_EXPR_LITERAL &&
 			    stmt->data.bind_stmt.value->data.literal.lexeme[0] == '"') {
 				is_string = 1;
-			} else if (stmt->data.bind_stmt.value->kind == AST_EXPR_STRING) {
-				/* AST_EXPR_STRING is also a string */
+			} else if (stmt->data.bind_stmt.value->kind == HIR_EXPR_STRING) {
+				/* HIR_EXPR_STRING is also a string */
 				is_string = 1;
-			} else if (stmt->data.bind_stmt.value->kind == AST_EXPR_ARRAY_LITERAL) {
+			} else if (stmt->data.bind_stmt.value->kind == HIR_EXPR_ARRAY_LITERAL) {
 				/* Array literal from string expansion */
 				is_string = 1;
 			}
@@ -3775,7 +3775,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		/* Check if value is an alloc expression */
 		int is_alloc = 0;
 		const char *alloc_arch_name = NULL;
-		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == AST_EXPR_ALLOC) {
+		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == HIR_EXPR_ALLOC) {
 			is_alloc = 1;
 			alloc_arch_name = stmt->data.bind_stmt.value->data.alloc.archetype_name;
 		}
@@ -3783,7 +3783,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		/* Detect: let row = arch.field[entity] where field is shaped array */
 		int is_multidim_slice = 0;
 		const char *slice_elem_type = NULL;
-		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == AST_EXPR_INDEX &&
+		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == HIR_EXPR_INDEX &&
 		    stmt->data.bind_stmt.value->data.index.index_count == 1) {
 			slice_elem_type = get_shaped_field_info(ctx, stmt->data.bind_stmt.value->data.index.base, NULL);
 			if (slice_elem_type)
@@ -3801,16 +3801,16 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		 * resolved tag, and (since a single `char[N]` return resolves to a shaped type) the
 		 * callee's declared return type directly. */
 		int is_char_array_call = 0;
-		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == AST_EXPR_CALL) {
-			if (stmt->data.bind_stmt.value->resolved.tag == AST_TYPE_CHAR_ARRAY) {
+		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == HIR_EXPR_CALL) {
+			if (stmt->data.bind_stmt.value->resolved.tag == HIR_TYPE_CHAR_ARRAY) {
 				is_char_array_call = 1;
 			} else if (stmt->data.bind_stmt.value->data.call.callee &&
-			           stmt->data.bind_stmt.value->data.call.callee->kind == AST_EXPR_NAME) {
-				AstFuncDecl *cf = find_func_decl(ctx, stmt->data.bind_stmt.value->data.call.callee->data.name.name);
+			           stmt->data.bind_stmt.value->data.call.callee->kind == HIR_EXPR_NAME) {
+				HirFuncDecl *cf = find_func_decl(ctx, stmt->data.bind_stmt.value->data.call.callee->data.name.name);
 				if (cf && cf->return_type_count == 1 && cf->return_types[0]) {
-					AstType *rt = cf->return_types[0];
-					if (rt->tag == AST_TYPE_ARRAY ||
-					    (rt->tag == AST_TYPE_SHAPED_ARRAY && rt->elem && rt->elem->tag == AST_TYPE_CHAR))
+					HirType *rt = cf->return_types[0];
+					if (rt->tag == HIR_TYPE_ARRAY ||
+					    (rt->tag == HIR_TYPE_SHAPED_ARRAY && rt->elem && rt->elem->tag == HIR_TYPE_CHAR))
 						is_char_array_call = 1;
 				}
 			}
@@ -3856,11 +3856,11 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			add_arch_value(ctx, var_name, value_buf, alloc_arch_name);
 		} else if (is_string) {
 			/* For strings, handle based on type */
-			if (stmt->data.bind_stmt.value->kind == AST_EXPR_ARRAY_LITERAL) {
+			if (stmt->data.bind_stmt.value->kind == HIR_EXPR_ARRAY_LITERAL) {
 				/* Array literal: value_buf is already a struct pointer, just use it */
 				add_array_value(ctx, var_name, value_buf);
 			} else {
-				/* String literal (AST_EXPR_LITERAL or AST_EXPR_STRING): store as i8* pointer (type 2) */
+				/* String literal (HIR_EXPR_LITERAL or HIR_EXPR_STRING): store as i8* pointer (type 2) */
 				/* Only string literals should be full "Strings"; variables are just char arrays */
 				ValueInfo *vi = malloc(sizeof(ValueInfo));
 				vi->name = malloc(strlen(var_name) + 1);
@@ -3893,10 +3893,10 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			/* Check if RHS is an insert call (returns handle/i64) */
 			int is_insert_call = 0;
 			const char *insert_archetype = NULL;
-			if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == AST_EXPR_CALL) {
+			if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == HIR_EXPR_CALL) {
 				const char *func_name = NULL;
 				if (stmt->data.bind_stmt.value->data.call.callee &&
-				    stmt->data.bind_stmt.value->data.call.callee->kind == AST_EXPR_NAME) {
+				    stmt->data.bind_stmt.value->data.call.callee->kind == HIR_EXPR_NAME) {
 					func_name = stmt->data.bind_stmt.value->data.call.callee->data.name.name;
 				}
 				if (func_name && strcmp(func_name, "insert") == 0) {
@@ -3907,7 +3907,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 					resolved_type = "handle";
 					/* Extract archetype from insert's first argument */
 					if (stmt->data.bind_stmt.value->data.call.arg_count > 0 &&
-					    stmt->data.bind_stmt.value->data.call.args[0]->kind == AST_EXPR_NAME) {
+					    stmt->data.bind_stmt.value->data.call.args[0]->kind == HIR_EXPR_NAME) {
 						insert_archetype = stmt->data.bind_stmt.value->data.call.args[0]->data.name.name;
 					}
 				}
@@ -3915,8 +3915,8 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 
 			/* Check the resolved type of the value expression */
 			if (!is_insert_call && stmt->data.bind_stmt.value &&
-			    stmt->data.bind_stmt.value->resolved.tag != AST_TYPE_UNKNOWN) {
-				resolved_type = ast_resolved_type_name(stmt->data.bind_stmt.value);
+			    stmt->data.bind_stmt.value->resolved.tag != HIR_TYPE_UNKNOWN) {
+				resolved_type = hir_resolved_type_name(stmt->data.bind_stmt.value);
 				if (strcmp(resolved_type, "double") == 0 || strcmp(resolved_type, "float") == 0) {
 					alloc_type = "double";
 					store_type = "double";
@@ -3930,7 +3930,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 					alloc_type = "i64";
 					store_type = "i64";
 					bit_width = 64;
-				} else if (stmt->data.bind_stmt.value->resolved.tag == AST_TYPE_INT &&
+				} else if (stmt->data.bind_stmt.value->resolved.tag == HIR_TYPE_INT &&
 				           stmt->data.bind_stmt.value->resolved.int_width != 32) {
 					/* RHS is a non-i32 integer (e.g. syscall -> i64): infer its width
 					   instead of defaulting to i32 and truncating. */
@@ -3944,8 +3944,8 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			/* A fixed-width int annotation (let x: i64 = ...) sets the storage
 			 * width; the value is sext/zext/trunc'd to match (literals adopt the
 			 * annotated width per the language's literal-typing rule). */
-			AstType *ann = stmt->data.bind_stmt.type;
-			if (ann && ann->tag == AST_TYPE_INT && ann->int_width != 32) {
+			HirType *ann = stmt->data.bind_stmt.type;
+			if (ann && ann->tag == HIR_TYPE_INT && ann->int_width != 32) {
 				const char *wt = llvm_int_type(ann->int_width);
 				char converted[256];
 				emit_int_convert(ctx, value_buf, &stmt->data.bind_stmt.value->resolved, ann->int_width, converted);
@@ -3977,7 +3977,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			/* Propagate the handle's archetype through a copy (let alias := h) so
 			 * delete(alias) can infer the pool. */
 			if (!vi->handle_archetype && stmt->data.bind_stmt.value &&
-			    stmt->data.bind_stmt.value->kind == AST_EXPR_NAME) {
+			    stmt->data.bind_stmt.value->kind == HIR_EXPR_NAME) {
 				ValueInfo *src = find_value(ctx, stmt->data.bind_stmt.value->data.name.name);
 				if (src && src->handle_archetype) {
 					vi->handle_archetype = malloc(strlen(src->handle_archetype) + 1);
@@ -3999,17 +3999,17 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		break;
 	}
 
-	case AST_STMT_MULTI_BIND: {
+	case HIR_STMT_MULTI_BIND: {
 		/* `(t0, …, tk) := f(…)` binds the members of a multi-value return. The call emits an
 		 * aggregate `{T0, …, Tk}` (via the EXPR_CALL path); each target gets one extractvalue. */
-		AstExpr *rhs = stmt->data.multi_bind.value;
+		HirExpr *rhs = stmt->data.multi_bind.value;
 		int target_count = stmt->data.multi_bind.target_count;
-		AstBindingTarget *targets = stmt->data.multi_bind.targets;
+		HirBindingTarget *targets = stmt->data.multi_bind.targets;
 		const char *fn =
-		    (rhs && rhs->kind == AST_EXPR_CALL && rhs->data.call.callee && rhs->data.call.callee->kind == AST_EXPR_NAME)
+		    (rhs && rhs->kind == HIR_EXPR_CALL && rhs->data.call.callee && rhs->data.call.callee->kind == HIR_EXPR_NAME)
 		        ? rhs->data.call.callee->data.name.name
 		        : NULL;
-		AstFuncDecl *callee_func = fn ? find_func_decl(ctx, fn) : NULL;
+		HirFuncDecl *callee_func = fn ? find_func_decl(ctx, fn) : NULL;
 		if (callee_func && callee_func->return_type_count > 1) {
 			char struct_buf[256];
 			codegen_expression(ctx, rhs, struct_buf); /* %res = call {…} @f(…) */
@@ -4017,16 +4017,16 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			func_llvm_return_type(callee_func, ret_type, sizeof(ret_type));
 			int n = target_count < callee_func->return_type_count ? target_count : callee_func->return_type_count;
 			for (int i = 0; i < n; i++) {
-				AstType *mt = callee_func->return_types[i];
+				HirType *mt = callee_func->return_types[i];
 				const char *llvm = return_member_llvm(mt);
 				char *val = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", val, ret_type, struct_buf, i);
-				AstBindingTarget *atgt = &targets[i];
+				HirBindingTarget *atgt = &targets[i];
 
 				/* An array member is a raw i8* byte view. Bind it as type-6 (i8* char pointer,
 				 * the value IS the pointer — no alloca) so the caller can index it: `b[i]` after
 				 * `b, n := f(move b)`. Mirrors a func returning char[]. */
-				if (mt && (mt->tag == AST_TYPE_ARRAY || mt->tag == AST_TYPE_SHAPED_ARRAY)) {
+				if (mt && (mt->tag == HIR_TYPE_ARRAY || mt->tag == HIR_TYPE_SHAPED_ARRAY)) {
 					ValueInfo *vi = malloc(sizeof(ValueInfo));
 					vi->name = malloc(strlen(atgt->name) + 1);
 					strcpy(vi->name, atgt->name);
@@ -4048,20 +4048,20 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 
 				const char *ft = "int";
 				int bw = 32;
-				if (mt && mt->tag == AST_TYPE_FLOAT) {
+				if (mt && mt->tag == HIR_TYPE_FLOAT) {
 					ft = "float";
 					bw = 64;
-				} else if (mt && mt->tag == AST_TYPE_INT) {
+				} else if (mt && mt->tag == HIR_TYPE_INT) {
 					ft = "int";
 					bw = mt->int_width;
-				} else if (mt && mt->tag == AST_TYPE_HANDLE) {
+				} else if (mt && mt->tag == HIR_TYPE_HANDLE) {
 					ft = "handle";
 					bw = 64;
-				} else if (mt && mt->tag == AST_TYPE_OPAQUE) {
+				} else if (mt && mt->tag == HIR_TYPE_OPAQUE) {
 					ft = "opaque";
 					bw = 64;
 				}
-				AstBindingTarget *tgt = &targets[i];
+				HirBindingTarget *tgt = &targets[i];
 				if (tgt->is_new) {
 					char *a = gen_value_name(ctx);
 					emit_alloca(ctx, "  %s = alloca %s\n", a, llvm);
@@ -4075,7 +4075,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 					vi->arch_name = NULL;
 					vi->string_len = -1;
 					vi->field_type = ft;
-					vi->handle_archetype = (mt && mt->tag == AST_TYPE_HANDLE) ? mt->name : NULL;
+					vi->handle_archetype = (mt && mt->tag == HIR_TYPE_HANDLE) ? mt->name : NULL;
 					vi->bit_width = bw;
 					if (ctx->scope_count > 0) {
 						ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
@@ -4092,12 +4092,12 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		break;
 	}
 
-	case AST_STMT_ASSIGN: {
+	case HIR_STMT_ASSIGN: {
 		/* Each-field column write: f[i] = expr where f is the current
 		 * each_field binding. */
 		if (ctx->current_each_field_binding && ctx->current_each_field_target && ctx->current_archetype_param &&
-		    ctx->current_arch_param_llvm && stmt->data.assign_stmt.target->kind == AST_EXPR_INDEX &&
-		    stmt->data.assign_stmt.target->data.index.base->kind == AST_EXPR_NAME &&
+		    ctx->current_arch_param_llvm && stmt->data.assign_stmt.target->kind == HIR_EXPR_INDEX &&
+		    stmt->data.assign_stmt.target->data.index.base->kind == HIR_EXPR_NAME &&
 		    strcmp(stmt->data.assign_stmt.target->data.index.base->data.name.name, ctx->current_each_field_binding) ==
 		        0 &&
 		    stmt->data.assign_stmt.target->data.index.index_count == 1) {
@@ -4125,9 +4125,9 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		/* Check if this is a whole-column operation (Path A or B) */
 		int is_whole_column = 0;
 
-		/* Check Path A: target is AST_EXPR_FIELD of FIELD_COLUMN (p.pos = p.pos + p.vel) */
-		if (stmt->data.assign_stmt.target->kind == AST_EXPR_FIELD &&
-		    stmt->data.assign_stmt.target->data.field.base->kind == AST_EXPR_NAME) {
+		/* Check Path A: target is HIR_EXPR_FIELD of FIELD_COLUMN (p.pos = p.pos + p.vel) */
+		if (stmt->data.assign_stmt.target->kind == HIR_EXPR_FIELD &&
+		    stmt->data.assign_stmt.target->data.field.base->kind == HIR_EXPR_NAME) {
 			const char *inst_name = stmt->data.assign_stmt.target->data.field.base->data.name.name;
 			ValueInfo *inst = find_value(ctx, inst_name);
 			const char *arch_name_direct = NULL;
@@ -4136,7 +4136,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			}
 			if ((inst && inst->type == 3 && inst->arch_name) || arch_name_direct) {
 				const char *arch_check_name = inst ? inst->arch_name : arch_name_direct;
-				AstArchetypeDecl *arch = find_archetype_decl(ctx, arch_check_name);
+				HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_check_name);
 				if (arch) {
 					const char *fname = stmt->data.assign_stmt.target->data.field.field_name;
 					/* Check if fname is a direct field or tuple base */
@@ -4164,8 +4164,8 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			}
 		}
 
-		/* Check Path B: target is AST_EXPR_NAME type-4 (sys parameter) */
-		if (stmt->data.assign_stmt.target->kind == AST_EXPR_NAME) {
+		/* Check Path B: target is HIR_EXPR_NAME type-4 (sys parameter) */
+		if (stmt->data.assign_stmt.target->kind == HIR_EXPR_NAME) {
 			const char *var_name = stmt->data.assign_stmt.target->data.name.name;
 			ValueInfo *val = find_value(ctx, var_name);
 			if (val && val->type == 4) {
@@ -4180,7 +4180,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		}
 
 		/* assignment - find the target variable */
-		if (stmt->data.assign_stmt.target->kind == AST_EXPR_NAME) {
+		if (stmt->data.assign_stmt.target->kind == HIR_EXPR_NAME) {
 			const char *var_name = stmt->data.assign_stmt.target->data.name.name;
 			ValueInfo *val = find_value(ctx, var_name);
 			if (val && val->type == 1) { /* type 1 = scalar pointer */
@@ -4194,7 +4194,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 					if (!is_float && stmt->data.assign_stmt.value) {
 						int tw = 32, sg;
 						if (val->field_type)
-							ast_parse_int_width(val->field_type, &tw, &sg); /* leaves tw=32 for "int" */
+							hir_parse_int_width(val->field_type, &tw, &sg); /* leaves tw=32 for "int" */
 						char converted[256];
 						emit_int_convert(ctx, value_buf, &stmt->data.assign_stmt.value->resolved, tw, converted);
 						strcpy(value_buf, converted);
@@ -4230,7 +4230,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 				}
 			}
 
-			/* Path B: target is AST_EXPR_NAME type-4 (sys parameter) */
+			/* Path B: target is HIR_EXPR_NAME type-4 (sys parameter) */
 			if (val && val->type == 4) {
 				/* Column parameter: emit whole-column loop */
 				const char *arche_type = val->field_type ? val->field_type : "float";
@@ -4242,7 +4242,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 
 				/* Get count from archetype struct */
 				char *count_gep = gen_value_name(ctx);
-				AstArchetypeDecl *arch = find_archetype_decl(ctx, val->arch_name);
+				HirArchetypeDecl *arch = find_archetype_decl(ctx, val->arch_name);
 				if (arch) {
 					int count_idx = arch->field_count;
 					/* Construct the archetype parameter name (handles both old %archetype and new %arch_<name>) */
@@ -4258,9 +4258,9 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 					                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op, arch_param);
 				}
 			}
-		} else if (stmt->data.assign_stmt.target->kind == AST_EXPR_FIELD) {
-			/* Path A: target is AST_EXPR_FIELD of FIELD_COLUMN (p.pos = p.pos + p.vel) */
-			if (stmt->data.assign_stmt.target->data.field.base->kind == AST_EXPR_NAME) {
+		} else if (stmt->data.assign_stmt.target->kind == HIR_EXPR_FIELD) {
+			/* Path A: target is HIR_EXPR_FIELD of FIELD_COLUMN (p.pos = p.pos + p.vel) */
+			if (stmt->data.assign_stmt.target->data.field.base->kind == HIR_EXPR_NAME) {
 				const char *inst_name = stmt->data.assign_stmt.target->data.field.base->data.name.name;
 				ValueInfo *inst = find_value(ctx, inst_name);
 				const char *arch_name_direct = NULL;
@@ -4271,13 +4271,13 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 				if ((inst && inst->type == 3 && inst->arch_name) || arch_name_direct) {
 					const char *arch_check_name = inst ? inst->arch_name : arch_name_direct;
 					char loaded_global[256] = {0};
-					AstArchetypeDecl *arch = find_archetype_decl(ctx, arch_check_name);
+					HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_check_name);
 					const char *fname = stmt->data.assign_stmt.target->data.field.field_name;
 
 					if (arch) {
 						/* Find field in archetype */
 						int field_idx = -1;
-						AstField *fdecl = NULL;
+						HirField *fdecl = NULL;
 						for (int i = 0; i < arch->field_count; i++) {
 							if (strcmp(arch->fields[i]->name, fname) == 0) {
 								field_idx = i;
@@ -4334,7 +4334,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 							                       struct_ptr_val);
 						} else {
 							/* Tuple field: emit loop for each component */
-							AstField **tuple_components = NULL;
+							HirField **tuple_components = NULL;
 							int tuple_count = 0;
 							size_t prefix_len = strlen(fname);
 
@@ -4342,13 +4342,13 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 								const char *aname = arch->fields[i]->name;
 								if (strncmp(aname, fname, prefix_len) == 0 && aname[prefix_len] == '_') {
 									tuple_components =
-									    realloc(tuple_components, (tuple_count + 1) * sizeof(AstField *));
+									    realloc(tuple_components, (tuple_count + 1) * sizeof(HirField *));
 									tuple_components[tuple_count++] = arch->fields[i];
 								}
 							}
 
 							for (int t = 0; t < tuple_count; t++) {
-								AstField *comp = tuple_components[t];
+								HirField *comp = tuple_components[t];
 								int comp_idx = -1;
 								for (int i = 0; i < arch->field_count; i++) {
 									if (strcmp(arch->fields[i]->name, comp->name) == 0) {
@@ -4404,12 +4404,12 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 									buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, count_gep);
 
 									/* Check if RHS is tuple binary op - if so, expand component names */
-									AstExpr *rhs_expr = stmt->data.assign_stmt.value;
+									HirExpr *rhs_expr = stmt->data.assign_stmt.value;
 									const char *scalar_type = llvm_type_from_arche(field_base_type_name(comp->type));
 
-									if (rhs_expr->kind == AST_EXPR_BINARY &&
-									    rhs_expr->data.binary.left->kind == AST_EXPR_FIELD &&
-									    rhs_expr->data.binary.right->kind == AST_EXPR_FIELD) {
+									if (rhs_expr->kind == HIR_EXPR_BINARY &&
+									    rhs_expr->data.binary.left->kind == HIR_EXPR_FIELD &&
+									    rhs_expr->data.binary.right->kind == HIR_EXPR_FIELD) {
 										const char *suffix = strchr(comp->name, '_') + 1;
 										const char *left_base = rhs_expr->data.binary.left->data.field.field_name;
 										const char *right_base = rhs_expr->data.binary.right->data.field.field_name;
@@ -4420,9 +4420,9 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 										snprintf(right_comp, sizeof(right_comp), "%s_%s", right_base, suffix);
 
 										/* Create temporary binary expression with component field names */
-										AstExpr temp_rhs = *rhs_expr;
-										AstExpr temp_left = *rhs_expr->data.binary.left;
-										AstExpr temp_right = *rhs_expr->data.binary.right;
+										HirExpr temp_rhs = *rhs_expr;
+										HirExpr temp_left = *rhs_expr->data.binary.left;
+										HirExpr temp_right = *rhs_expr->data.binary.right;
 										temp_left.data.field.field_name = left_comp;
 										temp_right.data.field.field_name = right_comp;
 										temp_rhs.data.binary.left = &temp_left;
@@ -4433,13 +4433,13 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 										emit_whole_column_loop(ctx, col_ptr, count, scalar_type,
 										                       field_base_type_name(comp->type), &temp_rhs,
 										                       stmt->data.assign_stmt.op, struct_ptr_val);
-									} else if (rhs_expr->kind == AST_EXPR_FIELD) {
+									} else if (rhs_expr->kind == HIR_EXPR_FIELD) {
 										/* Check if RHS is tuple field reference - match components by position */
 										const char *rhs_base = rhs_expr->data.field.field_name;
 
 										/* Find which component position this is (t) and find RHS component at same
 										 * position */
-										AstField **rhs_tuple_components = NULL;
+										HirField **rhs_tuple_components = NULL;
 										int rhs_tuple_count = 0;
 										size_t rhs_prefix_len = strlen(rhs_base);
 
@@ -4448,7 +4448,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 											if (strncmp(aname, rhs_base, rhs_prefix_len) == 0 &&
 											    aname[rhs_prefix_len] == '_') {
 												rhs_tuple_components = realloc(
-												    rhs_tuple_components, (rhs_tuple_count + 1) * sizeof(AstField *));
+												    rhs_tuple_components, (rhs_tuple_count + 1) * sizeof(HirField *));
 												rhs_tuple_components[rhs_tuple_count++] = arch->fields[i];
 											}
 										}
@@ -4458,7 +4458,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 											const char *rhs_comp_name = rhs_tuple_components[t]->name;
 
 											/* Create temporary field expression with component field name */
-											AstExpr temp_rhs = *rhs_expr;
+											HirExpr temp_rhs = *rhs_expr;
 											temp_rhs.data.field.field_name = rhs_comp_name;
 											/* Preserve resolved type */
 											temp_rhs.resolved = *comp->type;
@@ -4482,7 +4482,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 					}
 				}
 			}
-		} else if (stmt->data.assign_stmt.target->kind == AST_EXPR_INDEX) {
+		} else if (stmt->data.assign_stmt.target->kind == HIR_EXPR_INDEX) {
 			/* Field indexing assignment: pos[i] = value or pos[i] += value */
 			char base_buf[256], idx_buf[256];
 			codegen_expression(ctx, stmt->data.assign_stmt.target->data.index.base, base_buf);
@@ -4494,7 +4494,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			ValueInfo *type5_target = NULL;
 			ValueInfo *type7_target = NULL;
 			ValueInfo *type6_target = NULL;
-			if (stmt->data.assign_stmt.target->data.index.base->kind == AST_EXPR_NAME) {
+			if (stmt->data.assign_stmt.target->data.index.base->kind == HIR_EXPR_NAME) {
 				ValueInfo *vi = find_value(ctx, stmt->data.assign_stmt.target->data.index.base->data.name.name);
 				if (vi && vi->type == 5) {
 					type5_target = vi;
@@ -4560,21 +4560,21 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			const char *arche_type = NULL;
 
 			/* Try to get element type from resolved type info */
-			AstExpr *base_expr = stmt->data.assign_stmt.target->data.index.base;
-			if (base_expr->resolved.tag != AST_TYPE_UNKNOWN) {
-				arche_type = ast_resolved_type_name(base_expr);
+			HirExpr *base_expr = stmt->data.assign_stmt.target->data.index.base;
+			if (base_expr->resolved.tag != HIR_TYPE_UNKNOWN) {
+				arche_type = hir_resolved_type_name(base_expr);
 				scalar_type = llvm_type_from_arche(arche_type);
-			} else if (base_expr->kind == AST_EXPR_FIELD) {
+			} else if (base_expr->kind == HIR_EXPR_FIELD) {
 				/* Fallback: lookup field type from archetype */
 				const char *field_name = base_expr->data.field.field_name;
 				ValueInfo *base_val = NULL;
 
-				if (base_expr->data.field.base->kind == AST_EXPR_NAME) {
+				if (base_expr->data.field.base->kind == HIR_EXPR_NAME) {
 					base_val = find_value(ctx, base_expr->data.field.base->data.name.name);
 				}
 
 				if (base_val && base_val->type == 3 && base_val->arch_name) {
-					AstArchetypeDecl *arch = find_archetype_decl(ctx, base_val->arch_name);
+					HirArchetypeDecl *arch = find_archetype_decl(ctx, base_val->arch_name);
 					if (arch) {
 						for (int i = 0; i < arch->field_count; i++) {
 							if (strcmp(arch->fields[i]->name, field_name) == 0) {
@@ -4593,7 +4593,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			/* Bounds check for archetype column accesses (elided when statically provable). */
 			const char *bc_arch_name = NULL, *bc_arch_ptr = NULL;
 			int bc_count_idx = -1, bc_idx_is_i64 = 0;
-			AstExpr *bc_idx_expr = stmt->data.assign_stmt.target->data.index.indices[0];
+			HirExpr *bc_idx_expr = stmt->data.assign_stmt.target->data.index.indices[0];
 			if (stmt->data.assign_stmt.target->data.index.index_count > 0 &&
 			    resolve_index_arch(ctx, base_expr, bc_idx_expr, &bc_arch_name, &bc_arch_ptr, &bc_count_idx,
 			                       &bc_idx_is_i64) &&
@@ -4656,7 +4656,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		break;
 	}
 
-	case AST_STMT_FOR: {
+	case HIR_STMT_FOR: {
 		if (stmt->data.for_stmt.init || stmt->data.for_stmt.incr) {
 			/* C-style for loop: for (init; cond; incr) */
 			char *loop_label = gen_value_name(ctx);
@@ -4760,7 +4760,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 			const char *var_name = stmt->data.for_stmt.var_name;
 			char iter_buf[256];
 
-			if (stmt->data.for_stmt.iterable->kind == AST_EXPR_NAME) {
+			if (stmt->data.for_stmt.iterable->kind == HIR_EXPR_NAME) {
 				const char *iter_name = stmt->data.for_stmt.iterable->data.name.name;
 				ValueInfo *iter_val = find_value(ctx, iter_name);
 
@@ -4937,7 +4937,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		break;
 	}
 
-	case AST_STMT_IF: {
+	case HIR_STMT_IF: {
 		char cond_buf[256];
 		codegen_expression(ctx, stmt->data.if_stmt.cond, cond_buf);
 
@@ -4945,8 +4945,8 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		const char *branch_cond = cond_buf;
 		if (cond_buf[0] == '%') {
 			char *truncated = gen_value_name(ctx);
-			if (stmt->data.if_stmt.cond && (stmt->data.if_stmt.cond->resolved.tag == AST_TYPE_OPAQUE ||
-			                                stmt->data.if_stmt.cond->resolved.tag == AST_TYPE_HANDLE))
+			if (stmt->data.if_stmt.cond && (stmt->data.if_stmt.cond->resolved.tag == HIR_TYPE_OPAQUE ||
+			                                stmt->data.if_stmt.cond->resolved.tag == HIR_TYPE_HANDLE))
 				buffer_append_fmt(ctx, "  %s = icmp ne i64 %s, 0\n", truncated, cond_buf); /* non-null cell */
 			else
 				buffer_append_fmt(ctx, "  %s = trunc i32 %s to i1\n", truncated, cond_buf);
@@ -4981,12 +4981,12 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		break;
 	}
 
-	case AST_STMT_RUN: {
+	case HIR_STMT_RUN: {
 		/* run system - call one function with all matching archetypes as params */
 		const char *system_name = stmt->data.run_stmt.system_name;
 
 		/* Find the system definition */
-		AstSysDecl *sys = find_sys_decl(ctx, system_name);
+		HirSysDecl *sys = find_sys_decl(ctx, system_name);
 		if (!sys) {
 			buffer_append_fmt(ctx, "  ; ERROR: undefined system '%s'\n", system_name);
 			break;
@@ -4997,9 +4997,9 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		int matching_count = 0;
 
 		for (int d = 0; d < ctx->ast->decl_count; d++) {
-			AstDecl *decl = ctx->ast->decls[d];
-			if (decl->kind == AST_DECL_ARCHETYPE) {
-				AstArchetypeDecl *arch = decl->data.archetype;
+			HirDecl *decl = ctx->ast->decls[d];
+			if (decl->kind == HIR_DECL_ARCHETYPE) {
+				HirArchetypeDecl *arch = decl->data.archetype;
 				if (archetype_matches_system(arch, sys) && matching_count < 256) {
 					matching_archs[matching_count++] = arch->name;
 				}
@@ -5042,9 +5042,9 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		break;
 	}
 
-	case AST_STMT_EXPR: {
+	case HIR_STMT_EXPR: {
 		/* Handle archetype allocation as statement: alloc Particle(5); */
-		if (stmt->data.expr_stmt.expr->kind == AST_EXPR_ALLOC) {
+		if (stmt->data.expr_stmt.expr->kind == HIR_EXPR_ALLOC) {
 			const char *arch_name = stmt->data.expr_stmt.expr->data.alloc.archetype_name;
 			char expr_buf[256];
 			codegen_expression(ctx, stmt->data.expr_stmt.expr, expr_buf);
@@ -5064,14 +5064,14 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		break;
 	}
 
-	case AST_STMT_FREE: {
+	case HIR_STMT_FREE: {
 		char value_buf[256];
 		codegen_expression(ctx, stmt->data.free_stmt.value, value_buf);
 		buffer_append_fmt(ctx, "  call void @free(i8* %s)\n", value_buf);
 		break;
 	}
 
-	case AST_STMT_BREAK: {
+	case HIR_STMT_BREAK: {
 		if (ctx->loop_exit_count > 0) {
 			char *exit_label = ctx->loop_exit_labels[ctx->loop_exit_count - 1];
 			buffer_append_fmt(ctx, "  br label %s\n", exit_label);
@@ -5085,12 +5085,12 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		break;
 	}
 
-	case AST_STMT_RETURN: {
+	case HIR_STMT_RETURN: {
 		/* TODO(sret): a from-scratch aggregate return (`x := make()`, with no `own` input buffer to
 		 * thread back) could caller-allocate the bind target and pass it as a hidden out-pointer
 		 * here, so the result is built directly in the caller's slot. Deferred — today such a value
 		 * is produced by threading an `own` buffer (`g: T[N]; g := fill(move g)`). */
-		AstReturnStmt *rs = &stmt->data.return_stmt;
+		HirReturnStmt *rs = &stmt->data.return_stmt;
 		const char *ret_type = ctx->current_return_type ? ctx->current_return_type : "i32";
 		if (rs->count <= 1) {
 			char value_buf[256];
@@ -5115,29 +5115,29 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 		}
 		break;
 	}
-	case AST_STMT_EACH_FIELD: {
+	case HIR_STMT_EACH_FIELD: {
 		/* Only meaningful inside a monomorphized archetype-parametric proc. */
 		if (!ctx->current_archetype_param)
 			break;
-		AstEachFieldStmt *ef = &stmt->data.each_field;
-		AstArchetypeDecl *arch = ctx->current_archetype_param;
+		HirEachFieldStmt *ef = &stmt->data.each_field;
+		HirArchetypeDecl *arch = ctx->current_archetype_param;
 		if (strcmp(ef->arch_param_name, ctx->current_arch_param_name) != 0)
 			break;
 
-		AstTypeTag filter_tag = AST_TYPE_UNKNOWN;
+		HirTypeTag filter_tag = HIR_TYPE_UNKNOWN;
 		if (ef->filter_type) {
 			filter_tag = ef->filter_type->tag;
 		}
 
 		for (int i = 0; i < arch->field_count; i++) {
-			AstField *fd = arch->fields[i];
+			HirField *fd = arch->fields[i];
 			if (!fd || fd->kind != FIELD_COLUMN)
 				continue;
-			AstType *t = fd->type;
+			HirType *t = fd->type;
 			if (!t)
 				continue;
-			AstTypeTag tag = t->tag;
-			if (tag != AST_TYPE_INT && tag != AST_TYPE_FLOAT && tag != AST_TYPE_CHAR)
+			HirTypeTag tag = t->tag;
+			if (tag != HIR_TYPE_INT && tag != HIR_TYPE_FLOAT && tag != HIR_TYPE_CHAR)
 				continue;
 			if (ef->filter_type && tag != filter_tag) {
 				continue;
@@ -5175,7 +5175,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 
 			/* Push expansion state. */
 			const char *saved_bind = ctx->current_each_field_binding;
-			AstField *saved_target = ctx->current_each_field_target;
+			HirField *saved_target = ctx->current_each_field_target;
 			int saved_idx = ctx->current_each_field_index;
 			const char *saved_gn = ctx->current_each_field_name_global;
 			ctx->current_each_field_binding = ef->binding_name;
@@ -5202,7 +5202,7 @@ static void codegen_statement(CodegenContext *ctx, AstStmt *stmt) {
 
 /* ========== DECLARATION CODEGEN ========== */
 
-static void codegen_archetype_decl(CodegenContext *ctx, AstArchetypeDecl *arch) {
+static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) {
 	/* One shape = one pool. Aliases (other names for the same component set) share the
 	 * canonical decl's struct + storage + helpers, so emit only for the canonical. */
 	if (canonical_archetype_decl(ctx, arch) != arch)
@@ -5531,7 +5531,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, AstArchetypeDecl *arch) 
 	}
 }
 
-static void codegen_static_decl(CodegenContext *ctx, AstStaticDecl *alloc) {
+static void codegen_static_decl(CodegenContext *ctx, HirStaticDecl *alloc) {
 	/* Register the allocation for initialization in main() */
 	if (ctx->alloc_count >= ctx->alloc_capacity) {
 		ctx->alloc_capacity = (ctx->alloc_capacity == 0) ? 16 : ctx->alloc_capacity * 2;
@@ -5541,7 +5541,7 @@ static void codegen_static_decl(CodegenContext *ctx, AstStaticDecl *alloc) {
 }
 
 /* Generate allocation initialization code (for use in main/init) */
-static void codegen_emit_alloc_init(CodegenContext *ctx, AstStaticDecl *alloc) {
+static void codegen_emit_alloc_init(CodegenContext *ctx, HirStaticDecl *alloc) {
 	const char *arch_name = alloc->archetype.archetype_name;
 
 	/* Get capacity from first field_value */
@@ -5562,7 +5562,7 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, AstStaticDecl *alloc) {
 
 	/* Find archetype declaration (canonical shape). Storage symbols use the canonical name,
 	 * so a pool declared under any alias initializes the shape's one struct/global. */
-	AstArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+	HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
 	if (!arch) {
 		return;
 	}
@@ -5590,7 +5590,7 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, AstStaticDecl *alloc) {
 		/* Field initialization loops */
 		for (int init_idx = 1; init_idx < alloc->archetype.field_count; init_idx++) {
 			const char *field_name = alloc->archetype.field_names[init_idx];
-			AstExpr *init_value = alloc->archetype.field_values[init_idx];
+			HirExpr *init_value = alloc->archetype.field_values[init_idx];
 
 			int field_idx = -1;
 			for (int i = 0; i < arch->field_count; i++) {
@@ -5602,7 +5602,7 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, AstStaticDecl *alloc) {
 			if (field_idx == -1)
 				continue;
 
-			AstField *field = arch->fields[field_idx];
+			HirField *field = arch->fields[field_idx];
 			if (field->kind != FIELD_COLUMN)
 				continue;
 
@@ -5636,7 +5636,7 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, AstStaticDecl *alloc) {
 			char init_val_buf[256];
 			codegen_expression(ctx, init_value, init_val_buf);
 
-			const char *init_type = ast_resolved_type_name(init_value);
+			const char *init_type = hir_resolved_type_name(init_value);
 			const char *init_llvm_type = llvm_type_from_arche(init_type);
 
 			if (strcmp(init_llvm_type, elem_type) != 0) {
@@ -5765,7 +5765,7 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, AstStaticDecl *alloc) {
 
 	for (int init_idx = 1; init_idx < alloc->archetype.field_count; init_idx++) {
 		const char *field_name = alloc->archetype.field_names[init_idx];
-		AstExpr *init_value = alloc->archetype.field_values[init_idx];
+		HirExpr *init_value = alloc->archetype.field_values[init_idx];
 
 		int field_idx = -1;
 		for (int i = 0; i < arch->field_count; i++) {
@@ -5777,7 +5777,7 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, AstStaticDecl *alloc) {
 		if (field_idx == -1)
 			continue;
 
-		AstField *field = arch->fields[field_idx];
+		HirField *field = arch->fields[field_idx];
 		if (field->kind != FIELD_COLUMN)
 			continue;
 
@@ -5816,7 +5816,7 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, AstStaticDecl *alloc) {
 		char init_val_buf[256];
 		codegen_expression(ctx, init_value, init_val_buf);
 
-		const char *init_type = ast_resolved_type_name(init_value);
+		const char *init_type = hir_resolved_type_name(init_value);
 		const char *init_llvm_type = llvm_type_from_arche(init_type);
 
 		if (strcmp(init_llvm_type, elem_type) != 0) {
@@ -5886,7 +5886,7 @@ static void end_function_body(CodegenContext *ctx, FunctionBodyState state) {
 	free(body_buf);
 }
 
-static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
+static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 	/* For extern funcs, emit declare stub */
 	if (func->is_extern) {
 		/* char[] returns a raw i8* byte view (e.g. arche_file_map for whole-file mmap). */
@@ -5894,12 +5894,12 @@ static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 		func_llvm_return_type(func, ret_buf, sizeof(ret_buf));
 		buffer_append_fmt(ctx, "declare %s @%s(", ret_buf, func->name);
 		for (int i = 0; i < func->param_count; i++) {
-			AstType *param_type = func->params[i]->type;
+			HirType *param_type = func->params[i]->type;
 			const char *type_name = field_base_type_name(param_type);
 			const char *base_type = llvm_type_from_arche(type_name);
 
 			/* Check if type is char[] (i8*) or an archetype (struct*). */
-			if (param_type && param_type->tag == AST_TYPE_ARRAY) {
+			if (param_type && param_type->tag == HIR_TYPE_ARRAY) {
 				buffer_append_fmt(ctx, "i8*"); /* C ABI: T[] = raw ptr */
 			} else if (find_archetype_decl(ctx, type_name)) {
 				buffer_append_fmt(ctx, "%%struct.%s*", type_name);
@@ -5924,23 +5924,23 @@ static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 	buffer_append_fmt(ctx, "define %s @%s(", return_type, func->name);
 
 	for (int i = 0; i < func->param_count; i++) {
-		AstType *param_type = func->params[i]->type;
+		HirType *param_type = func->params[i]->type;
 		const char *type_name = field_base_type_name(param_type);
 		const char *llvm_type = llvm_type_from_arche(type_name);
 
-		/* Check if type is char[] (either AST_TYPE_ARRAY or AST_TYPE_SHAPED_ARRAY with char element) */
+		/* Check if type is char[] (either HIR_TYPE_ARRAY or HIR_TYPE_SHAPED_ARRAY with char element) */
 		int is_char_array = 0;
 		int is_type_array_char = 0;
-		if (param_type && param_type->tag == AST_TYPE_ARRAY) {
+		if (param_type && param_type->tag == HIR_TYPE_ARRAY) {
 			is_char_array = 1;
 			is_type_array_char = 1;
-		} else if (param_type && param_type->tag == AST_TYPE_SHAPED_ARRAY && param_type->elem &&
-		           param_type->elem->tag == AST_TYPE_CHAR) {
+		} else if (param_type && param_type->tag == HIR_TYPE_SHAPED_ARRAY && param_type->elem &&
+		           param_type->elem->tag == HIR_TYPE_CHAR) {
 			is_char_array = 1;
 		}
 
 		if (is_char_array) {
-			/* For AST_TYPE_ARRAY char[], non-extern use arche_array struct; otherwise use i8* */
+			/* For HIR_TYPE_ARRAY char[], non-extern use arche_array struct; otherwise use i8* */
 			if (is_type_array_char && !func->is_extern) {
 				buffer_append_fmt(ctx, "%%struct.arche_array* %%arg%d", i);
 			} else {
@@ -5968,20 +5968,20 @@ static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 		snprintf(param_name, sizeof(param_name), "%%arg%d", i);
 
 		/* Check if type is char[] */
-		AstType *ptype = func->params[i]->type;
+		HirType *ptype = func->params[i]->type;
 		int is_char_array = 0;
 		int is_type_array_char = 0;
-		if (ptype && ptype->tag == AST_TYPE_ARRAY) {
+		if (ptype && ptype->tag == HIR_TYPE_ARRAY) {
 			is_char_array = 1;
 			is_type_array_char = 1;
-		} else if (ptype && ptype->tag == AST_TYPE_SHAPED_ARRAY && ptype->elem && ptype->elem->tag == AST_TYPE_CHAR) {
+		} else if (ptype && ptype->tag == HIR_TYPE_SHAPED_ARRAY && ptype->elem && ptype->elem->tag == HIR_TYPE_CHAR) {
 			is_char_array = 1;
 		}
 
 		if (is_char_array) {
 			ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
 			if (is_type_array_char && !func->is_extern) {
-				/* Non-extern AST_TYPE_ARRAY char[]: extract data pointer from arche_array struct parameter */
+				/* Non-extern HIR_TYPE_ARRAY char[]: extract data pointer from arche_array struct parameter */
 				char *dp_gep = gen_value_name(ctx);
 				buffer_append_fmt(ctx,
 				                  "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
@@ -6003,7 +6003,7 @@ static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
 				scope->values[scope->value_count++] = vi;
 			} else {
-				/* All other char arrays (extern or AST_TYPE_SHAPED_ARRAY) use i8* directly */
+				/* All other char arrays (extern or HIR_TYPE_SHAPED_ARRAY) use i8* directly */
 				ValueInfo *vi = malloc(sizeof(ValueInfo));
 				vi->name = malloc(strlen(func->params[i]->name) + 1);
 				strcpy(vi->name, func->params[i]->name);
@@ -6043,7 +6043,7 @@ static void codegen_func_decl(CodegenContext *ctx, AstFuncDecl *func) {
 	buffer_append(ctx, "}\n\n");
 }
 
-static void codegen_proc_decl(CodegenContext *ctx, AstProcDecl *proc) {
+static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 	/* For extern procs, emit declare stub */
 	if (proc->is_extern) {
 		/* Extern procs are C functions that return void, except known value-returning ones */
@@ -6054,12 +6054,12 @@ static void codegen_proc_decl(CodegenContext *ctx, AstProcDecl *proc) {
 		const char *decl_ret = is_value_func ? "i32" : "void";
 		buffer_append_fmt(ctx, "declare %s @%s(", decl_ret, proc->name);
 		for (int i = 0; i < proc->param_count; i++) {
-			AstType *param_type = proc->params[i]->type;
+			HirType *param_type = proc->params[i]->type;
 			const char *type_name = field_base_type_name(param_type);
 			const char *base_type = llvm_type_from_arche(type_name);
 
 			/* Check if type is char[] (i8*) or an archetype (struct*). */
-			if (param_type && param_type->tag == AST_TYPE_ARRAY) {
+			if (param_type && param_type->tag == HIR_TYPE_ARRAY) {
 				buffer_append_fmt(ctx, "i8*"); /* C ABI: T[] = raw ptr */
 			} else if (find_archetype_decl(ctx, type_name)) {
 				buffer_append_fmt(ctx, "%%struct.%s*", type_name);
@@ -6086,15 +6086,15 @@ static void codegen_proc_decl(CodegenContext *ctx, AstProcDecl *proc) {
 
 	/* Emit parameter types and names */
 	for (int i = 0; i < proc->param_count; i++) {
-		AstType *param_type = proc->params[i]->type;
+		HirType *param_type = proc->params[i]->type;
 		const char *type_name = field_base_type_name(param_type);
 		const char *base_type = llvm_type_from_arche(type_name);
 
 		/* Check if type is char[] (struct*) or an archetype (struct*). */
-		if (param_type && param_type->tag == AST_TYPE_ARRAY) {
+		if (param_type && param_type->tag == HIR_TYPE_ARRAY) {
 			buffer_append_fmt(ctx, "%%struct.arche_array* %%arg%d", i);
-		} else if (param_type && param_type->tag == AST_TYPE_SHAPED_ARRAY && param_type->elem &&
-		           param_type->elem->tag == AST_TYPE_CHAR) {
+		} else if (param_type && param_type->tag == HIR_TYPE_SHAPED_ARRAY && param_type->elem &&
+		           param_type->elem->tag == HIR_TYPE_CHAR) {
 			/* sized char[N] param arrives as a bare i8* (like funcs) */
 			buffer_append_fmt(ctx, "i8* %%arg%d", i);
 		} else if (find_archetype_decl(ctx, type_name)) {
@@ -6121,13 +6121,13 @@ static void codegen_proc_decl(CodegenContext *ctx, AstProcDecl *proc) {
 	for (int i = 0; i < proc->param_count; i++) {
 		char param_llvm[32];
 		snprintf(param_llvm, sizeof(param_llvm), "%%arg%d", i);
-		AstType *param_type = proc->params[i]->type;
+		HirType *param_type = proc->params[i]->type;
 		const char *type_name = field_base_type_name(param_type);
 
 		/* If param type is an archetype, track it as arch pointer (type 3) */
 		if (find_archetype_decl(ctx, type_name)) {
 			add_arch_value(ctx, proc->params[i]->name, param_llvm, type_name);
-		} else if (param_type && param_type->tag == AST_TYPE_ARRAY) {
+		} else if (param_type && param_type->tag == HIR_TYPE_ARRAY) {
 			/* char[] param: extract the data pointer ONCE at entry (type 6) so
 			 * indexing inside loops doesn't reload it every iteration — the
 			 * per-iteration reload blocks LICM and vectorization. Matches funcs. */
@@ -6152,8 +6152,8 @@ static void codegen_proc_decl(CodegenContext *ctx, AstProcDecl *proc) {
 				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
 				scope->values[scope->value_count++] = vi;
 			}
-		} else if (param_type && param_type->tag == AST_TYPE_SHAPED_ARRAY && param_type->elem &&
-		           param_type->elem->tag == AST_TYPE_CHAR) {
+		} else if (param_type && param_type->tag == HIR_TYPE_SHAPED_ARRAY && param_type->elem &&
+		           param_type->elem->tag == HIR_TYPE_CHAR) {
 			/* sized char[N] param: %argN is already the i8* — bind as type-6 so it indexes. */
 			ValueInfo *vi = malloc(sizeof(ValueInfo));
 			vi->name = malloc(strlen(proc->params[i]->name) + 1);
@@ -6188,7 +6188,7 @@ static void codegen_proc_decl(CodegenContext *ctx, AstProcDecl *proc) {
 	buffer_append(ctx, "}\n\n");
 }
 
-static void codegen_sys_version(CodegenContext *ctx, AstSysDecl *sys, const char *arch_name) {
+static void codegen_sys_version(CodegenContext *ctx, HirSysDecl *sys, const char *arch_name) {
 	/* Generate a single versioned system function for a specific archetype */
 	char versioned_name[512];
 	snprintf(versioned_name, sizeof(versioned_name), "%s_%s", sys->name, arch_name);
@@ -6204,7 +6204,7 @@ static void codegen_sys_version(CodegenContext *ctx, AstSysDecl *sys, const char
 	push_value_scope(ctx);
 
 	/* Bind field parameters to their column pointers */
-	AstArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+	HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
 	if (arch) {
 		for (int p = 0; p < sys->param_count; p++) {
 			const char *param_name = sys->params[p]->name;
@@ -6273,7 +6273,7 @@ static void codegen_sys_version(CodegenContext *ctx, AstSysDecl *sys, const char
 	buffer_append(ctx, "}\n\n");
 }
 
-static void codegen_sys_decl(CodegenContext *ctx, AstSysDecl *sys) {
+static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys) {
 
 	/* Collect all archetypes that have the required fields */
 	const char *matching_archs[256];
@@ -6282,9 +6282,9 @@ static void codegen_sys_decl(CodegenContext *ctx, AstSysDecl *sys) {
 	if (sys->param_count > 0 && sys->params[0] && sys->params[0]->name) {
 		/* Find all archetypes that have ALL required fields */
 		for (int d = 0; d < ctx->ast->decl_count; d++) {
-			AstDecl *decl = ctx->ast->decls[d];
-			if (decl->kind == AST_DECL_ARCHETYPE) {
-				AstArchetypeDecl *arch = decl->data.archetype;
+			HirDecl *decl = ctx->ast->decls[d];
+			if (decl->kind == HIR_DECL_ARCHETYPE) {
+				HirArchetypeDecl *arch = decl->data.archetype;
 
 				/* Check if archetype has ALL required fields */
 				int has_all_fields = 1;
@@ -6333,7 +6333,7 @@ static void codegen_sys_decl(CodegenContext *ctx, AstSysDecl *sys) {
 		push_value_scope(ctx);
 
 		/* Bind field parameters to this archetype's columns */
-		AstArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+		HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
 		if (arch) {
 			for (int p = 0; p < sys->param_count; p++) {
 				const char *param_name = sys->params[p]->name;
@@ -6402,13 +6402,13 @@ static void codegen_sys_decl(CodegenContext *ctx, AstSysDecl *sys) {
 	end_function_body(ctx, fbs);
 	buffer_append(ctx, "}\n\n");
 
-	/* Register function name (no version suffix) for AST_STMT_RUN lookup */
+	/* Register function name (no version suffix) for HIR_STMT_RUN lookup */
 	codegen_register_sys_version(ctx, sys->name, sys->name);
 }
 
 /* ========== PUBLIC API ========== */
 
-CodegenContext *codegen_create(AstProgram *ast, SemanticContext *sem_ctx) {
+CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	CodegenContext *ctx = malloc(sizeof(CodegenContext));
 	ctx->ast = ast;
 	ctx->sem_ctx = sem_ctx;
@@ -6488,15 +6488,15 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	/* Generate code for all declarations (this will populate globals_buffer with string constants) */
 	int has_init_proc = 0;
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
-		AstDecl *decl = ctx->ast->decls[i];
+		HirDecl *decl = ctx->ast->decls[i];
 
 		switch (decl->kind) {
-		case AST_DECL_ARCHETYPE:
+		case HIR_DECL_ARCHETYPE:
 			codegen_archetype_decl(ctx, decl->data.archetype);
 			break;
-		case AST_DECL_STATIC: {
-			AstStaticDecl *s = decl->data.static_decl;
-			if (s->kind == AST_STATIC_ARCHETYPE) {
+		case HIR_DECL_STATIC: {
+			HirStaticDecl *s = decl->data.static_decl;
+			if (s->kind == HIR_STATIC_ARCHETYPE) {
 				codegen_static_decl(ctx, s);
 			} else {
 				const char *llvm_type = "i8";
@@ -6525,13 +6525,13 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			}
 			break;
 		}
-		case AST_DECL_FUNC:
+		case HIR_DECL_FUNC:
 			codegen_func_decl(ctx, decl->data.func);
 			break;
-		case AST_DECL_FUNC_GROUP:
+		case HIR_DECL_FUNC_GROUP:
 			/* No codegen for func groups yet */
 			break;
-		case AST_DECL_PROC:
+		case HIR_DECL_PROC:
 			if (strcmp(decl->data.proc->name, "init") == 0) {
 				has_init_proc = 1;
 			}
@@ -6542,14 +6542,14 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			}
 			codegen_proc_decl(ctx, decl->data.proc);
 			break;
-		case AST_DECL_SYS:
+		case HIR_DECL_SYS:
 			codegen_sys_decl(ctx, decl->data.sys);
 			break;
-		case AST_DECL_CONST:
+		case HIR_DECL_CONST:
 			/* Value consts are inlined at their use sites (semantic_get_const_value); type
 			 * aliases are erased before lowering. No per-declaration code to emit. */
 			break;
-		case AST_DECL_WORLD:
+		case HIR_DECL_WORLD:
 			/* No codegen for worlds. */
 			break;
 		}
@@ -6571,7 +6571,7 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	/* Generate main entry point (always needed for initialization) */
 	int has_main_proc = 0;
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
-		if (ctx->ast->decls[i]->kind == AST_DECL_PROC && strcmp(ctx->ast->decls[i]->data.proc->name, "main") == 0) {
+		if (ctx->ast->decls[i]->kind == HIR_DECL_PROC && strcmp(ctx->ast->decls[i]->data.proc->name, "main") == 0) {
 			has_main_proc = 1;
 			break;
 		}

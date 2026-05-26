@@ -3,13 +3,11 @@ arche FloatOps {
   val :: float,
 }
 
-
-static pool<FloatOps>(8);
+static pool<FloatOps> (8);
 
 sys float_multiply(val) {
   val = val * 2.0;
 }
-
 
 proc main() {
   insert(FloatOps, 1.0);

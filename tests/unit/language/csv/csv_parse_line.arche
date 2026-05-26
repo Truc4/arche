@@ -16,7 +16,9 @@ proc main() {
   qty_str: char[32];
   j := 0;
   i := line_start;
-  for (;i < comma_pos;) {
+  for (;
+  i < comma_pos;
+  ) {
     price_str[j] = buf[i];
     j = j + 1;
     i = i + 1;
@@ -24,7 +26,9 @@ proc main() {
   price_str[j] = 0;
   j = 0;
   i = comma_pos + 1;
-  for (;i < line_end;) {
+  for (;
+  i < line_end;
+  ) {
     qty_str[j] = buf[i];
     j = j + 1;
     i = i + 1;

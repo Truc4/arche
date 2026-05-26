@@ -3,11 +3,10 @@ arche Point {
   x :: int,
 }
 
-
-static pool<Point>(5, 5) {
+static pool<Point> (5, 5) {
   x: 42,
-};
-
+}
+;
 
 proc main() {
   printf("before access\n");

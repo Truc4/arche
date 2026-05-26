@@ -1,6 +1,6 @@
-#include "../../../ast/ast.h"
 #include "../../../codegen/codegen.h"
 #include "../../../cst/cst.h"
+#include "../../../hir/hir.h"
 #include "../../../lexer/lexer.h"
 #include "../../../lower/lower.h"
 #include "../../../parser/parser.h"
@@ -95,30 +95,36 @@ static int compile_source(const char *source, char *ir_buf, int ir_len) {
 	ParseResult parse_result = parse_source(combined_src);
 	fprintf(stderr, "DEBUG: parse complete\n");
 	fflush(stderr);
-	free(combined_src);
 
-	if (parse_result.error_count > 0) {
+	if (parse_result.error_count > 0 || !parse_result.cst_root) {
 		snprintf(ir_buf, ir_len, "Parse errors: %zu", parse_result.error_count);
 		parse_result_free(&parse_result);
+		free(combined_src);
 		return 0;
 	}
 
-	Program *prog = parse_result.ast;
+	/* CST-driven path: analyze + lower from the lossless CST. The CST + its source text
+	 * (combined_src) must outlive lowering (HIR_TYPE_NAMED names point into the CST). */
+	SyntaxNode *cst_root = parse_result.cst_root;
+	parse_result.cst_root = NULL; /* keep the CST past parse_result_free */
 	parse_result_free(&parse_result);
 
 	fprintf(stderr, "DEBUG: starting semantic\n");
 	fflush(stderr);
-	SemanticContext *sem_ctx = semantic_analyze(prog);
+	SemanticContext *sem_ctx = semantic_analyze_cst(cst_root, combined_src);
 	fprintf(stderr, "DEBUG: semantic complete\n");
 	fflush(stderr);
 	if (semantic_has_errors(sem_ctx)) {
 		snprintf(ir_buf, ir_len, "Semantic errors");
 		semantic_context_free(sem_ctx);
-		program_free(prog);
+		syntax_node_free(cst_root);
+		free(combined_src);
 		return 0;
 	}
 
-	AstProgram *ast = lower_cst_to_ast(prog);
+	lower_set_model(sem_context_model(sem_ctx));
+	lower_set_sem(sem_ctx);
+	HirProgram *ast = lower_to_hir(cst_root, combined_src);
 
 	fprintf(stderr, "DEBUG: starting codegen_create\n");
 	fflush(stderr);
@@ -130,8 +136,9 @@ static int compile_source(const char *source, char *ir_buf, int ir_len) {
 		snprintf(ir_buf, ir_len, "Could not open temp file");
 		codegen_free(codegen_ctx);
 		semantic_context_free(sem_ctx);
-		ast_program_free(ast);
-		program_free(prog);
+		hir_program_free(ast);
+		syntax_node_free(cst_root);
+		free(combined_src);
 		return 0;
 	}
 
@@ -144,8 +151,9 @@ static int compile_source(const char *source, char *ir_buf, int ir_len) {
 
 	codegen_free(codegen_ctx);
 	semantic_context_free(sem_ctx);
-	ast_program_free(ast);
-	program_free(prog);
+	hir_program_free(ast);
+	syntax_node_free(cst_root);
+	free(combined_src);
 	return 1;
 }
 
@@ -162,22 +170,27 @@ static int compile_source(const char *source, char *ir_buf, int ir_len) {
  * Returns NULL on any error (parse/semantic/codegen/IO). Caller must free(). */
 static char *compile_to_ir_string(const char *source) {
 	ParseResult parse_result = parse_source(source);
-	if (parse_result.error_count > 0) {
+	if (parse_result.error_count > 0 || !parse_result.cst_root) {
 		parse_result_free(&parse_result);
 		return NULL;
 	}
 
-	Program *prog = parse_result.ast;
+	/* CST-driven path. `source` (the caller's argument) backs the CST leaf spans and stays
+	 * valid for the whole call, so it can be used directly through lowering. */
+	SyntaxNode *cst_root = parse_result.cst_root;
+	parse_result.cst_root = NULL;
 	parse_result_free(&parse_result);
 
-	SemanticContext *sem_ctx = semantic_analyze(prog);
+	SemanticContext *sem_ctx = semantic_analyze_cst(cst_root, source);
 	if (semantic_has_errors(sem_ctx)) {
 		semantic_context_free(sem_ctx);
-		program_free(prog);
+		syntax_node_free(cst_root);
 		return NULL;
 	}
 
-	AstProgram *ast = lower_cst_to_ast(prog);
+	lower_set_model(sem_context_model(sem_ctx));
+	lower_set_sem(sem_ctx);
+	HirProgram *ast = lower_to_hir(cst_root, source);
 	CodegenContext *codegen_ctx = codegen_create(ast, sem_ctx);
 
 	/* Write IR to a temp file. Prefer the build directory (portable across
@@ -188,8 +201,8 @@ static char *compile_to_ir_string(const char *source) {
 	if (!ir_output) {
 		codegen_free(codegen_ctx);
 		semantic_context_free(sem_ctx);
-		ast_program_free(ast);
-		program_free(prog);
+		hir_program_free(ast);
+		syntax_node_free(cst_root);
 		return NULL;
 	}
 
@@ -198,8 +211,8 @@ static char *compile_to_ir_string(const char *source) {
 
 	codegen_free(codegen_ctx);
 	semantic_context_free(sem_ctx);
-	ast_program_free(ast);
-	program_free(prog);
+	hir_program_free(ast);
+	syntax_node_free(cst_root);
 
 	return read_file(ir_path);
 }

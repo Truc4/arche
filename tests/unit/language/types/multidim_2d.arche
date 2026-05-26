@@ -3,9 +3,7 @@ arche Matrix {
   data :: float[10],
 }
 
-
-static pool<Matrix>(5);
-
+static pool<Matrix> (5);
 
 proc main() {
   insert(Matrix, 1.5);

@@ -40,25 +40,21 @@ void test_fail_msg(const char *reason) {
 	}
 
 typedef struct {
-	Program *prog;
 	SemanticContext *ctx;
 } AnalysisResult;
 
 AnalysisResult analyze_string(const char *src) {
-	AnalysisResult result = {NULL, NULL};
+	AnalysisResult result = {NULL};
 
 	ParseResult parse_result = parse_source(src);
-	Program *prog = parse_result.ast;
-
-	if (parse_result.error_count > 0) {
+	if (parse_result.error_count > 0 || !parse_result.cst_root) {
 		parse_result_free(&parse_result);
 		return result;
 	}
 
+	/* CST-driven analysis: the context owns the reconstructed AstProgram. */
+	result.ctx = semantic_analyze_cst(parse_result.cst_root, src);
 	parse_result_free(&parse_result);
-
-	result.prog = prog;
-	result.ctx = semantic_analyze(prog);
 	return result;
 }
 
@@ -67,8 +63,6 @@ void analysis_result_free(AnalysisResult *result) {
 		return;
 	if (result->ctx)
 		semantic_context_free(result->ctx);
-	if (result->prog)
-		program_free(result->prog);
 }
 
 void test_const_basic_int(void) {

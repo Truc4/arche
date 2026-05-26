@@ -26,7 +26,9 @@ static load_cols: int[64];
 
 // first index of byte `ch` in data[start..end), or end if absent
 func find_byte(data: char[], start: i64, end: i64, ch: int) -> i64 {
-  for (i: i64 = start; i < end; i = i + 1) {
+  for (i: i64 = start;
+  i < end;
+  i = i + 1) {
     if (data[i] == ch) {
       return i;
     }
@@ -40,7 +42,9 @@ func name_eq(name: char[], data: char[], start: i64, end: i64) -> int {
   if (strlen(name) != len) {
     return 0;
   }
-  for (i: i64 = 0; i < len; i = i + 1) {
+  for (i: i64 = 0;
+  i < len;
+  i = i + 1) {
     if (name[i] != data[start + i]) {
       return 0;
     }
@@ -51,7 +55,9 @@ func name_eq(name: char[], data: char[], start: i64, end: i64) -> int {
 // start offset of the col-th comma-separated field within data[row_start..row_end)
 func field_at(data: char[], row_start: i64, row_end: i64, col: int) -> i64 {
   p: i64 = row_start;
-  for (remaining := col; remaining > 0; remaining -= 1) {
+  for (remaining := col;
+  remaining > 0;
+  remaining -= 1) {
     p = find_byte(data, p, row_end, ',') + 1;
   }
   return p;
@@ -65,7 +71,10 @@ func cell_float(c: float, s: char[]) -> float {
 func cell_int(c: int, s: char[]) -> int {
   return atoi(s);
 }
-func cell = { cell_float, cell_int };
+func cell = {
+  cell_float, cell_int
+}
+;
 
 proc load(arch: archetype, path: char[]) {
   data := arche_file_map(path);
@@ -75,10 +84,12 @@ proc load(arch: archetype, path: char[]) {
 
   // header pass: map each archetype field to its file column by name
   each_field f in arch {
-    load_cols[f.index] = -1;
+    load_cols[f.index] = - 1;
     col := 0;
     cstart: i64 = 0;
-    for (;cstart < hdr_end;) {
+    for (;
+    cstart < hdr_end;
+    ) {
       cend: i64 = find_byte(data, cstart, hdr_end, ',');
       if (name_eq(f.name, data, cstart, cend)) {
         load_cols[f.index] = col;
@@ -91,7 +102,9 @@ proc load(arch: archetype, path: char[]) {
 
   // row pass: pull each field from its mapped column
   pos: i64 = hdr_end + 1;
-  for (row := 0; row < arch.capacity; row += 1) {
+  for (row := 0;
+  row < arch.capacity;
+  row += 1) {
     if (pos >= size) {
       break;
     }
@@ -103,7 +116,9 @@ proc load(arch: archetype, path: char[]) {
         fend: i64 = find_byte(data, fstart, nl, ',');
         scratch: char[64];
         j := 0;
-        for (i: i64 = fstart; i < fend; i = i + 1) {
+        for (i: i64 = fstart;
+        i < fend;
+        i = i + 1) {
           scratch[j] = data[i];
           j += 1;
         }

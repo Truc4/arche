@@ -4,9 +4,7 @@ arche Message {
   author :: char[64],
 }
 
-
-static pool<Message>(100);
-
+static pool<Message> (100);
 
 proc main() {
   print("allocations done\n");

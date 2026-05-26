@@ -5,9 +5,13 @@ func pick_int(x: int) -> int {
 func pick_float(x: float) -> float {
   return x;
 }
-func pick = { pick_int, pick_float };
+func pick = {
+  pick_int, pick_float
+}
+;
 
 proc main() {
   c := 'X';
-  r := pick(c);  // error: no member of group 'pick' matches char arg
+  r := pick(c);
+  // error: no member of group 'pick' matches char arg
 }

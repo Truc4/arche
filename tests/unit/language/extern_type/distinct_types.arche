@@ -2,9 +2,7 @@
 // passing a `sound` where a `window` is expected is a compile-time type error. (The cells
 // are byte-identical i64s at runtime; the nominal name is what the checker rejects.)
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qiE "(type|sound|window|opaque)" %t.out
-sound :: opaque
-window :: opaque
-extern func sound_open() -> sound;
+sound :: opaque window :: opaque extern func sound_open() -> sound;
 extern proc window_close(own w: window);
 
 proc main() {

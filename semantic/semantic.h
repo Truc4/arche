@@ -2,13 +2,34 @@
 #define SEMANTIC_H
 
 #include "../cst/cst.h"
+#include "sem_model.h"
 
 /* Semantic analysis context */
 typedef struct SemanticContext SemanticContext;
 
-/* Create and analyze a program */
-SemanticContext *semantic_analyze(Program *prog);
+/* Create and analyze a program. Reconstructs the abstract `AstProgram` from the lossless CST
+ * (+ registered module CSTs) via cst_to_program, analyzes it, and keys the side model by
+ * CST node id (read by lowering). This is the only analysis entry. */
+SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src);
+
+/* Register a `use`-module's CST so semantic_analyze_cst can inline it (parallel to
+ * lower_add_module). Call once per module before semantic_analyze_cst. */
+void semantic_add_module(const char *name, const SyntaxNode *root, const char *src);
+
+/* Test/helper: parse `src` and reconstruct the abstract `AstProgram` from the lossless CST
+ * (parse -> cst_to_program). The returned AstProgram is self-contained (owns all its strings)
+ * and outlives the CST, so free it with ast_program_free. Returns NULL on parse error. This is
+ * how callers obtain a `AstProgram` now that the parser builds only the CST. */
+AstProgram *cst_to_program_from_source(const char *src);
+
 void semantic_context_free(SemanticContext *ctx);
+
+/* The resolved-type side model (keyed by CST node id); read by lowering. */
+SemModel *sem_context_model(SemanticContext *ctx);
+
+/* Resolve a (possibly nominal-alias) type name through the alias chain to its
+ * backing; returns `name` unchanged if not an alias. */
+const char *semantic_resolve_type_alias(SemanticContext *ctx, const char *name);
 
 /* Error checking */
 int semantic_has_errors(SemanticContext *ctx);

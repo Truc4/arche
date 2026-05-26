@@ -3,17 +3,15 @@ arche Counter {
   val :: int,
 }
 
-
-static pool<Counter>(1, 1) {
+static pool<Counter> (1, 1) {
   val: 0,
-};
-
+}
+;
 
 sys increment(val) {
   printf("system_ran\n");
   val = val + 1;
 }
-
 
 proc main() {
   run increment;

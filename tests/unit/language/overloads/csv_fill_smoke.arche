@@ -6,10 +6,10 @@ arche Pair {
   b :: int,
 }
 
-static pool<Pair>(3, 3) {
-  a: 0,
-  b: 0,
-};
+static pool<Pair> (3, 3) {
+  a: 0, b: 0,
+}
+;
 
 proc main() {
   csv_load(Pair, "/tmp/csv_fill_smoke.csv");
