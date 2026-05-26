@@ -6,4 +6,8 @@ func a(x: int) -> int {
 func b(x: float) -> float {
   return x;
 }
-func a = { a, b };  // error: name 'a' is already declared
+func a = {
+  a, b
+}
+;
+// error: name 'a' is already declared

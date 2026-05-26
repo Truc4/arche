@@ -4,20 +4,16 @@ arche Counter {
   score :: float,
 }
 
-
 arche Empty {
   x :: int,
 }
 
+static pool<Counter> (5, 5) {
+  val: 7, score: 2.5,
+}
+;
 
-static pool<Counter>(5, 5) {
-  val: 7,
-  score: 2.5,
-};
-
-
-static pool<Empty>(5);
-
+static pool<Empty> (5);
 
 proc main() {
   assert(Counter.val[0] == 7, "val[0] not 7\n");

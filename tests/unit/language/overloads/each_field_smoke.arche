@@ -4,13 +4,12 @@ arche Pair {
   b :: int,
 }
 
-static pool<Pair>(3, 3) {
-  a: 10,
-  b: 20,
-};
+static pool<Pair> (3, 3) {
+  a: 10, b: 20,
+}
+;
 
-@allow_pure_proc
-proc bump(arch: archetype) {
+@allow_pure_proc proc bump(arch: archetype) {
   each_field f: int in arch {
     f[0] = f[0] + 1;
   }

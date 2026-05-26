@@ -3,11 +3,10 @@ arche Transaction {
   quantity :: int,
   revenue :: float,
 }
-static pool<Transaction>(100, 100) {
-  price: 0.0,
-  quantity: 0,
-  revenue: 0.0,
-};
+static pool<Transaction> (100, 100) {
+  price: 0.0, quantity: 0, revenue: 0.0,
+}
+;
 proc main() {
   fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv");
   line: char[128];
@@ -15,7 +14,9 @@ proc main() {
   qty_str: char[32];
   arche_fread_line(fd, line, 128);
   idx := 0;
-  for (;idx < 100;) {
+  for (;
+  idx < 100;
+  ) {
     n := arche_fread_line(fd, line, 128);
     if (n <= 0) {
       break;
@@ -25,7 +26,9 @@ proc main() {
     c1 := 0;
     c2 := 0;
     c3 := 0;
-    for (;line_pos < n;) {
+    for (;
+    line_pos < n;
+    ) {
       if (line[line_pos] == ',') {
         field_idx = field_idx + 1;
         if (field_idx == 1) {
@@ -38,7 +41,8 @@ proc main() {
           c3 = line_pos;
         }
         line_pos = line_pos + 1;
-      } else {
+      }
+      else {
         line_pos = line_pos + 1;
       }
     }

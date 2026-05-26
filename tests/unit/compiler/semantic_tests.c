@@ -52,28 +52,26 @@ void test_fail_msg(const char *reason) {
 		return;                                                                                                        \
 	}
 
-/* Helper to parse and analyze a string
-   NOTE: Keeps program alive to preserve semantic analysis data */
+/* Helper to parse and analyze a string.
+ * The parser produces only the lossless CST; analysis runs via semantic_analyze_cst, which
+ * reconstructs its analyzable AstProgram from that CST (owned by the context). cst_to_program
+ * copies every string out of the source, so the CST + source can be freed once analysis
+ * returns. These tests therefore validate the CST-driven semantic path end to end. */
 typedef struct {
-	Program *prog;
 	SemanticContext *ctx;
 } AnalysisResult;
 
 AnalysisResult analyze_string(const char *src) {
-	AnalysisResult result = {NULL, NULL};
+	AnalysisResult result = {NULL};
 
 	ParseResult parse_result = parse_source(src);
-	Program *prog = parse_result.ast;
-
-	if (parse_result.error_count > 0) {
+	if (parse_result.error_count > 0 || !parse_result.cst_root) {
 		parse_result_free(&parse_result);
 		return result;
 	}
 
+	result.ctx = semantic_analyze_cst(parse_result.cst_root, src);
 	parse_result_free(&parse_result);
-
-	result.prog = prog;
-	result.ctx = semantic_analyze(prog);
 	return result;
 }
 
@@ -82,8 +80,6 @@ void analysis_result_free(AnalysisResult *result) {
 		return;
 	if (result->ctx)
 		semantic_context_free(result->ctx);
-	if (result->prog)
-		program_free(result->prog);
 }
 
 /* ========== ARCHETYPE VALIDATION TESTS ========== */
@@ -299,7 +295,7 @@ void test_group_with_distinct_members_ok(void) {
 		test_fail_msg("Parse errors");
 		return;
 	}
-	SemanticContext *sem = semantic_analyze(pr.ast);
+	SemanticContext *sem = semantic_analyze_cst(pr.cst_root, src);
 	if (semantic_has_errors(sem)) {
 		test_fail_msg("Unexpected semantic errors");
 		semantic_context_free(sem);
@@ -320,7 +316,7 @@ void test_group_member_unknown_errors(void) {
 		test_fail_msg("Parse errors");
 		return;
 	}
-	SemanticContext *sem = semantic_analyze(pr.ast);
+	SemanticContext *sem = semantic_analyze_cst(pr.cst_root, src);
 	if (!semantic_has_errors(sem)) {
 		test_fail_msg("Expected error for unknown member");
 		semantic_context_free(sem);
@@ -342,7 +338,7 @@ void test_group_duplicate_signature_errors(void) {
 		test_fail_msg("Parse errors");
 		return;
 	}
-	SemanticContext *sem = semantic_analyze(pr.ast);
+	SemanticContext *sem = semantic_analyze_cst(pr.cst_root, src);
 	if (!semantic_has_errors(sem)) {
 		test_fail_msg("Expected duplicate-signature error");
 		semantic_context_free(sem);
@@ -364,7 +360,7 @@ void test_group_name_collision_errors(void) {
 		test_fail_msg("Parse errors");
 		return;
 	}
-	SemanticContext *sem = semantic_analyze(pr.ast);
+	SemanticContext *sem = semantic_analyze_cst(pr.cst_root, src);
 	if (!semantic_has_errors(sem)) {
 		test_fail_msg("Expected name-collision error");
 		semantic_context_free(sem);
@@ -387,7 +383,7 @@ void test_call_no_matching_member_errors(void) {
 		test_fail_msg("Parse errors");
 		return;
 	}
-	SemanticContext *sem = semantic_analyze(pr.ast);
+	SemanticContext *sem = semantic_analyze_cst(pr.cst_root, src);
 	if (!semantic_has_errors(sem)) {
 		test_fail_msg("Expected no-matching-member error");
 		semantic_context_free(sem);
@@ -408,7 +404,6 @@ void test_opaque_passthrough_in_proc_ok(void) {
 	                                  "proc wrap_close(w: window) { window_close(move w); }\n");
 	ASSERT_EQ(semantic_error_count(r.ctx), 0, "should be no errors");
 	semantic_context_free(r.ctx);
-	program_free(r.prog);
 	test_pass_msg();
 }
 
@@ -417,7 +412,6 @@ void test_unknown_type_name_still_errors(void) {
 	AnalysisResult r = analyze_string("extern func bad() -> Doesnotexist;\n");
 	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected unknown-type error");
 	semantic_context_free(r.ctx);
-	program_free(r.prog);
 	test_pass_msg();
 }
 
@@ -433,7 +427,6 @@ void test_opaque_aliases_distinct(void) {
 	                                  "}\n");
 	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected type-mismatch error");
 	semantic_context_free(r.ctx);
-	program_free(r.prog);
 	test_pass_msg();
 }
 
@@ -452,7 +445,6 @@ void test_use_after_consume_local_error(void) {
 	                                  "}\n");
 	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected use-after-consume error");
 	semantic_context_free(r.ctx);
-	program_free(r.prog);
 	test_pass_msg();
 }
 
@@ -469,7 +461,6 @@ void test_no_false_positive_when_unconsumed(void) {
 	                                  "}\n");
 	ASSERT_EQ(semantic_error_count(r.ctx), 0, "should be no errors");
 	semantic_context_free(r.ctx);
-	program_free(r.prog);
 	test_pass_msg();
 }
 
@@ -483,7 +474,6 @@ void test_mutate_borrow_param_error(void) {
 	                                  "}\n");
 	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected read-only-parameter error");
 	semantic_context_free(r.ctx);
-	program_free(r.prog);
 	test_pass_msg();
 }
 
@@ -495,7 +485,6 @@ void test_move_param_can_mutate(void) {
 	                                  "}\n");
 	ASSERT_EQ(semantic_error_count(r.ctx), 0, "owned move param mutation should be allowed");
 	semantic_context_free(r.ctx);
-	program_free(r.prog);
 	test_pass_msg();
 }
 
@@ -507,7 +496,6 @@ void test_scalar_param_mutation_ok(void) {
 	                                  "}\n");
 	ASSERT_EQ(semantic_error_count(r.ctx), 0, "scalar param reassignment should be allowed");
 	semantic_context_free(r.ctx);
-	program_free(r.prog);
 	test_pass_msg();
 }
 
@@ -520,7 +508,6 @@ void test_move_out_of_borrow_error(void) {
 	                                  "}\n");
 	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected move-out-of-borrow error");
 	semantic_context_free(r.ctx);
-	program_free(r.prog);
 	test_pass_msg();
 }
 
@@ -537,7 +524,6 @@ void test_copy_does_not_consume(void) {
 	                                  "}\n");
 	ASSERT_EQ(semantic_error_count(r.ctx), 0, "copy must not consume the source");
 	semantic_context_free(r.ctx);
-	program_free(r.prog);
 	test_pass_msg();
 }
 
@@ -553,7 +539,6 @@ void test_own_param_bare_arg_error(void) {
 	                                  "}\n");
 	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected must-be-moved-or-copied error");
 	semantic_context_free(r.ctx);
-	program_free(r.prog);
 	test_pass_msg();
 }
 
@@ -568,7 +553,6 @@ void test_copy_opaque_error(void) {
 	                                  "}\n");
 	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected copy-of-opaque error");
 	semantic_context_free(r.ctx);
-	program_free(r.prog);
 	test_pass_msg();
 }
 

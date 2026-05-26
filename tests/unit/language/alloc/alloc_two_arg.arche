@@ -3,9 +3,7 @@ arche Counter {
   val :: int,
 }
 
-
-static pool<Counter>(10, 3);
-
+static pool<Counter> (10, 3);
 
 proc main() {
   assert(Counter.val[0] == 0, "val[0] not 0\n");

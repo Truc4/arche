@@ -1,8 +1,7 @@
 // A nominal opaque type in a function signature — a func takes a `file` by value (an i64
 // cell at the ABI). `file` is distinct in the checker, erased to i64 at codegen.
 // RUN: %arche -o %t %s && %t | grep "ok"
-file :: opaque
-func describe(f: file) -> int {
+file :: opaque func describe(f: file) -> int {
   return 0;
 }
 proc main() {

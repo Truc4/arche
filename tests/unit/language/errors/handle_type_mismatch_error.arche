@@ -3,16 +3,13 @@ arche Player {
   pos :: float,
 }
 
-
 arche Enemy {
   health :: float,
 }
 
+static pool<Player> (10);
 
-static pool<Player>(10);
-
-static pool<Enemy>(10);
-
+static pool<Enemy> (10);
 
 proc main() {
   p := insert(Player, 1.0);

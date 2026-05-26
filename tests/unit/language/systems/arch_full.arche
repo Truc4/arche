@@ -4,28 +4,23 @@ arche Particle {
   vel :: float,
 }
 
-
 arche Body {
   pos :: float,
   vel :: float,
   mass :: float,
 }
 
+static pool<Particle> (100);
 
-static pool<Particle>(100);
-
-static pool<Body>(50);
-
+static pool<Body> (50);
 
 sys step(pos, vel) {
   pos = pos + vel;
 }
 
-
 sys dampen(vel) {
   vel = vel * 0.99;
 }
-
 
 proc main() {
   insert(Particle, 10.0, 1.0);

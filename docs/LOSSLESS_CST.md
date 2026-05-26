@@ -7,33 +7,51 @@ live in the working tree on the current branch for review.
 
 - `make` builds clean; unit suites: parser 47/47, semantic 37/37, codegen 8/8, lower 7/7,
   cst-view 13/13.
-- **The CST is now the compiler's source of truth for both phases by default.** Semantic
-  analysis reconstructs the abstract AST from the lossless CST (`semantic_analyze_cst` →
-  `cst_to_program` → shared `analyze_program_core`) and lowering reads the CST
-  (`lower_cst_to_ast_v2`) — both default. The legacy paths over the *parser-built* `Program`
-  survive only as A/B fallbacks: `ARCHE_SEM_PROGRAM` and `ARCHE_LOWER_PROGRAM`. So the
-  parser-built `Program` is **dead in the default pipeline** (vestigial: it still drives the
-  parser's CST-wrap keying and feeds the two fallbacks + the 47 parser unit-tests).
-- Validated on the default (CST) pipeline: lit corpus **253/253**, **11/11 codegen goldens
-  byte-identical**, `verify-cst` **292/292** lossless round-trip; and against the toggles
-  (`ARCHE_SEM_PROGRAM`, `ARCHE_LOWER_PROGRAM`) the legacy paths stay green for A/B.
-- Design note (rust/go-aligned): the compiler builds an abstract AST from the parse and
-  analyzes *that* — rustc/Go model — while the lossless CST is the single syntax tree feeding
-  lowering and tooling. (rust-*analyzer*'s "analysis as typed views over the CST" is the IDE
-  tool's model; not adopted for the batch compiler. `cst_to_program` is that CST→AST build.)
+- **The CST is the compiler's single syntax tree.** The parser now builds ONLY the lossless
+  CST — every `parse_*` returns `int` (success) and drives `cst_cp`/`cst_wrap`; it constructs
+  **no** AST nodes (0 AST constructors in `parser/parser.c`; `parse_source().ast == NULL`).
+  The abstract `AstProgram` is built solely by `cst_to_program` (from the CST), consumed by
+  semantic (`semantic_analyze_cst` → `analyze_program_core`); lowering reads the CST
+  (`lower_to_hir`). Other AST consumers obtain it the same way: `cst_to_program_from_source`
+  (parser unit-tests, `arche-fmt`).
+- **Naming (S9 done) — three clearly-distinguished trees:** the lossless **CST** is
+  `SyntaxNode` (`cst/syntax_tree`, `cst/cst_view`); the abstract **AST** is `AstProgram` +
+  idiomatic `Decl`/`Statement`/`Expression`/`TypeRef` (`cst/cst.{c,h}`, built by
+  `cst_to_program`); the **HIR** is `HirProgram`/`HirDecl`/`HIR_*` (`hir/hir.{c,h}`, built by
+  `lower_to_hir`, consumed by codegen).
+- The legacy Program-tree backends were deleted (lower) / made CST-fed (semantic); the
+  `resolve_uses` pre-pass is CST-driven (registers module CSTs only) and the
+  `expand_archetype_tuple_groups` pre-pass + module-prefix machinery are gone.
+- Validated: lit corpus **253/253**, **11/11 codegen goldens byte-identical**, `verify-cst`
+  **292/292** lossless round-trip, unit suites parser 47 / semantic 37 / codegen 8 / lower 7 /
+  cst-view 13. The CST round-trip (292/292) is what proves the parser's wrap re-keying — done
+  while removing AST construction — kept the CST byte-identical.
+- Design (rust/go-aligned): the compiler builds an abstract AST from the parse and analyzes
+  *that* — rustc/Go model — except the AST is built from the lossless CST (`cst_to_program`)
+  rather than directly by the parser, so the CST is the one syntax tree feeding analysis,
+  lowering, and tooling. (rust-*analyzer*'s "analysis as typed views over the CST" is the IDE
+  tool's model; not adopted for this batch compiler.)
+- **Formatter is CST-native (S7 done):** `arche-fmt` now formats straight from the lossless
+  CST via `format_cst` (`cst/format_cst.{c,h}`) — comment-preserving (comments are CST leaves)
+  and idempotent over all 357 parseable corpus files (`make format`). The old 874-line
+  AST-based `format_program` + helpers were deleted from `cst/cst.c`, and the redundant
+  `arche-fmt-cst` PoC was removed (its job is now `arche-fmt` itself).
 - `arche-cst-tokens` classifies identifiers by node context (type / property / function /
   parameter / variable) — confirmed on real examples.
 - Editor end-to-end in Neovim 0.12: `.arche` buffer → LSP attach → `semanticTokens/full`
   → 25 correctly-classified tokens.
 
-What is NOT done (the remaining physical cleanup, S6/S8/S9): the parser still *constructs* the
-`Program` tree (its CST-wrap keying reads `decl->kind`/`stmt->type`/`expr->type`), the two
-pre-passes (`resolve_uses`, `expand_archetype_tuple_groups`) + legacy `semantic_analyze`/
-`lower_cst_to_ast` still exist for the fallbacks, and 47 parser tests assert via `Program`.
-Deleting `Program` means re-keying the parser's wraps off the tokens directly, porting those
-tests to views, and dropping the fallbacks + pre-passes — large and hard-to-reverse, so it
-removes the A/B safety nets. Then S9 renames (`Program`→ the abstract AST, `AstProgram`→HIR,
-`ast/`→`hir/`).
+**All 9 stages (S1–S9) are complete.** The front-end is a single lossless CST: the parser
+builds only the CST; the abstract `AstProgram` is derived from it (`cst_to_program`) for the
+analyzer; the `HirProgram` is derived from it (`lower_to_hir`) for codegen; and all tooling
+(highlighting, formatting, round-trip) reads the CST. The `AstProgram` struct remains by design
+as the abstract-AST IR (built from the CST, not a duplicate parser tree).
+
+Recovery note: a delegated attempt at the parser conversion crashed mid-edit leaving
+`parser.c` half-converted (forward decls + decl subtree to `int`, expr/stmt subtree still
+building AST, non-compiling — and a stale `parser.o` initially masked it). It was finished by
+hand: expr + statement subtrees converted to `int`/CST-only, guarded by `verify-cst` staying
+292/292. Lesson: after a large/aborted edit, force-rebuild the touched `.o` before trusting gates.
 
 ## Goal
 

@@ -1,5 +1,4 @@
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -q "Undefined symbol" %t.out
-@allow_pure_proc
-proc main() {
+@allow_pure_proc proc main() {
   x := undefined_var;
 }

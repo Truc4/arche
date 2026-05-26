@@ -3,12 +3,11 @@
 // overrun — here capacity 2, the third insert aborts. (Pooled is the opt-in gen-checked
 // path; the by-value `resource :: opaque` path is separate.)
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && ! %t
-cell :: opaque
-arche Resource {
+cell :: opaque arche Resource {
   cell,
 }
 extern func resource_open(initial: int) -> cell;
-static pool<Resource>(2);
+static pool<Resource> (2);
 
 proc main() {
   a := insert(Resource, resource_open(1));

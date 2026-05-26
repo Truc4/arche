@@ -1,7 +1,5 @@
 // A value const written with the explicit-type longhand `name : T : value`.
 // RUN: %arche -o %t %s && %t | grep "v: 42"
-answer : int : 42
-
-proc main() {
+answer: int: 42 proc main() {
   printf("v: %d\n", answer);
 }

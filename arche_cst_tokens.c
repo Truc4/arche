@@ -121,8 +121,8 @@ static void walk(const SyntaxNode *node) {
 		} else {
 			const char *cat = token_category(e->as.token.kind, node->kind);
 			if (cat) {
-				printf("%u %u %d %d %s\n", e->as.token.offset, e->as.token.length, e->as.token.line,
-				       e->as.token.column, cat);
+				printf("%u %u %d %d %s\n", e->as.token.offset, e->as.token.length, e->as.token.line, e->as.token.column,
+				       cat);
 			}
 		}
 	}
@@ -173,9 +173,9 @@ int main(int argc, char *argv[]) {
 		walk(result.cst_root);
 	}
 
-	Program *prog = result.ast;
+	AstProgram *prog = result.ast;
 	parse_result_free(&result);
-	program_free(prog);
+	ast_program_free(prog);
 	free(src);
 	return 0;
 }

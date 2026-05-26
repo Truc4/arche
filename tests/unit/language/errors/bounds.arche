@@ -3,9 +3,7 @@ arche Particle {
   id :: int,
 }
 
-
-static pool<Particle>(5);
-
+static pool<Particle> (5);
 
 proc main() {
   insert(Particle, 1);

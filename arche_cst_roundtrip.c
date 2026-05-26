@@ -60,17 +60,16 @@ static int roundtrip(const char *path, const char *src) {
 			long i = 0;
 			while (i < outlen && i < (long)srclen && out[i] == src[i])
 				i++;
-			fprintf(stderr, "MISMATCH %s: diverges at byte %ld (recon %ld vs src %zu)\n", path, i, outlen,
-			        srclen);
+			fprintf(stderr, "MISMATCH %s: diverges at byte %ld (recon %ld vs src %zu)\n", path, i, outlen, srclen);
 		}
 		free(out);
 	} else {
 		fprintf(stderr, "MISMATCH %s: no CST produced\n", path);
 	}
 
-	Program *prog = result.ast;
+	AstProgram *prog = result.ast;
 	parse_result_free(&result);
-	program_free(prog);
+	ast_program_free(prog);
 	return ok;
 }
 
@@ -116,9 +115,9 @@ int main(int argc, char *argv[]) {
 		ParseResult r = parse_source(src);
 		if (r.cst_root)
 			print_tree(r.cst_root, src, 0);
-		Program *prog = r.ast;
+		AstProgram *prog = r.ast;
 		parse_result_free(&r);
-		program_free(prog);
+		ast_program_free(prog);
 		free(src);
 		return 0;
 	}

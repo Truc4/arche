@@ -38,9 +38,9 @@ typedef enum {
 	SN_PARAM_LIST,
 	SN_PARAM,
 	SN_FIELD_DECL,
-	SN_BLOCK,         /* a `{ ... }` statement body */
-	SN_RETURN_TYPES,  /* the `-> (T, ...)` of a func */
-	SN_ARG_LIST,      /* call argument list */
+	SN_BLOCK,        /* a `{ ... }` statement body */
+	SN_RETURN_TYPES, /* the `-> (T, ...)` of a func */
+	SN_ARG_LIST,     /* call argument list */
 
 	/* Statements */
 	SN_BIND_STMT,
@@ -70,7 +70,7 @@ typedef enum {
 	SN_PAREN_EXPR,
 
 	/* Types (children of / refinements within a type position) */
-	SN_TYPE_REF,         /* a type position: identifiers within are types */
+	SN_TYPE_REF, /* a type position: identifiers within are types */
 	SN_TYPE_ARRAY,
 	SN_TYPE_SHAPED_ARRAY,
 	SN_TYPE_TUPLE,

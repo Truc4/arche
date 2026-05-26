@@ -16,8 +16,6 @@ func recurse(depth: int) -> int {
   return r;
 }
 
-
-@allow_pure_proc
-proc main() {
+@allow_pure_proc proc main() {
   recurse(0);
 }

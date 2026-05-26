@@ -9,7 +9,10 @@ func describe_char(x: char) -> int {
   return 99;
 }
 
-func describe = { describe_int, describe_float, describe_char };
+func describe = {
+  describe_int, describe_float, describe_char
+}
+;
 
 proc main() {
   a := describe(10);

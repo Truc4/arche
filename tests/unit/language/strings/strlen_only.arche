@@ -3,7 +3,6 @@ func test_strlen(s: char[]) -> int {
   return strlen(s);
 }
 
-
 proc main() {
   n := test_strlen("hello");
   assert(n == 5, "strlen failed\n");

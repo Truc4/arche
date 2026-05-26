@@ -5,16 +5,14 @@ arche Transaction {
   quantity :: int,
 }
 
-
-static pool<Transaction>(10000, 10000) {
+static pool<Transaction> (10000, 10000) {
   quantity: 0,
-};
-
+}
+;
 
 proc load_transactions() {
   csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");
 }
-
 
 proc write_output(count: i64) {
   fd := arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_2.csv");
@@ -24,7 +22,6 @@ proc write_output(count: i64) {
   arche_fclose(move fd);
 }
 
-
 proc main() {
   load_transactions();
 
@@ -32,8 +29,12 @@ proc main() {
   // (unlike a float one) lets the conditional count auto-vectorize into a SIMD masked-add.
   count: i64 = 0;
   t0 := arche_now_sec();
-  for (iter := 0; iter < 216000; iter += 1) {
-    for (i := 0; i < 10000; i += 1) {
+  for (iter := 0;
+  iter < 216000;
+  iter += 1) {
+    for (i := 0;
+    i < 10000;
+    i += 1) {
       if (Transaction.quantity[i] > 0) {
         count = count + 1;
       }

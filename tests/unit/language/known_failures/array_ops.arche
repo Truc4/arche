@@ -4,9 +4,7 @@ arche Particle {
   vel :: float,
 }
 
-
-static table<Particle>(1000);
-
+static table<Particle> (1000);
 
 proc main() {
   insert(table<Particle>, 1.0, 0.1);

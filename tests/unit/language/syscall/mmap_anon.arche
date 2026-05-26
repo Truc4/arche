@@ -4,7 +4,7 @@
 // syscall the graphics framebuffer will use.
 // RUN: %arche -o %t %s && %t | grep "ok"
 unsafe proc main() {
-  p := syscall(9, 0, 4096, 3, 34, -1, 0);
+  p := syscall(9, 0, 4096, 3, 34, - 1, 0);
   if (p > 1000000) {
     un := syscall(11, p, 4096, 0, 0, 0, 0);
     if (un == 0) {

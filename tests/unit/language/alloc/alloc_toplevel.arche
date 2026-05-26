@@ -3,7 +3,6 @@ arche Point {
   x :: int,
 }
 
-
 proc main() {
   printf("allocated\n");
 }

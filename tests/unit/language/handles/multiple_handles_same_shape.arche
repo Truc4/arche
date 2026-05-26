@@ -5,21 +5,17 @@ arche Players {
   y :: int,
 }
 
-
 arche Enemies {
   x :: float,
   y :: int,
 }
 
-
-static pool<Players>(2, 2) {
-  x: 1.0,
-  y: 10,
-};
-
+static pool<Players> (2, 2) {
+  x: 1.0, y: 10,
+}
+;
 
 // Only ONE can be allocated
-
 
 proc main() {
   printf("multiple handles ok\n");

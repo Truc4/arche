@@ -4,12 +4,10 @@ arche Transaction {
   quantity :: int,
 }
 
-
-static pool<Transaction>(100, 100) {
-  price: 0.0,
-  quantity: 0,
-};
-
+static pool<Transaction> (100, 100) {
+  price: 0.0, quantity: 0,
+}
+;
 
 proc main() {
   fd := open("../../../../../tests/fixtures/transactions.csv", 0);
@@ -20,7 +18,9 @@ proc main() {
   idx := 0;
   pos := 0;
   line_start := 0;
-  for (;pos < total_n;) {
+  for (;
+  pos < total_n;
+  ) {
     if (buf[pos] == '\n') {
       line_start = pos + 1;
       pos = pos + 1;
@@ -30,19 +30,25 @@ proc main() {
   }
   price_str: char[32];
   qty_str: char[32];
-  for (;idx < 100;) {
+  for (;
+  idx < 100;
+  ) {
     if (line_start >= total_n) {
       break;
     }
     line_end := line_start;
-    for (;line_end < total_n;) {
+    for (;
+    line_end < total_n;
+    ) {
       if (buf[line_end] == '\n') {
         break;
       }
       line_end = line_end + 1;
     }
     comma_pos := line_start;
-    for (;comma_pos < line_end;) {
+    for (;
+    comma_pos < line_end;
+    ) {
       if (buf[comma_pos] == ',') {
         break;
       }
@@ -50,7 +56,9 @@ proc main() {
     }
     j := 0;
     i := line_start;
-    for (;i < comma_pos;) {
+    for (;
+    i < comma_pos;
+    ) {
       price_str[j] = buf[i];
       j = j + 1;
       i = i + 1;
@@ -58,7 +66,9 @@ proc main() {
     price_str[j] = 0;
     j = 0;
     i = comma_pos + 1;
-    for (;i < line_end;) {
+    for (;
+    i < line_end;
+    ) {
       qty_str[j] = buf[i];
       j = j + 1;
       i = i + 1;

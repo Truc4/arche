@@ -107,58 +107,110 @@ SyntaxNode *cst_builder_finish(CstBuilder *b) {
 
 const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 	switch (kind) {
-	case SN_SOURCE_FILE: return "SOURCE_FILE";
-	case SN_WORLD_DECL: return "WORLD_DECL";
-	case SN_ARCHETYPE_DECL: return "ARCHETYPE_DECL";
-	case SN_PROC_DECL: return "PROC_DECL";
-	case SN_SYS_DECL: return "SYS_DECL";
-	case SN_FUNC_DECL: return "FUNC_DECL";
-	case SN_FUNC_GROUP_DECL: return "FUNC_GROUP_DECL";
-	case SN_STATIC_DECL: return "STATIC_DECL";
-	case SN_CONST_DECL: return "CONST_DECL";
-	case SN_USE_DECL: return "USE_DECL";
-	case SN_PARAM_LIST: return "PARAM_LIST";
-	case SN_PARAM: return "PARAM";
-	case SN_FIELD_DECL: return "FIELD_DECL";
-	case SN_BLOCK: return "BLOCK";
-	case SN_RETURN_TYPES: return "RETURN_TYPES";
-	case SN_ARG_LIST: return "ARG_LIST";
-	case SN_BIND_STMT: return "BIND_STMT";
-	case SN_ASSIGN_STMT: return "ASSIGN_STMT";
-	case SN_FOR_STMT: return "FOR_STMT";
-	case SN_IF_STMT: return "IF_STMT";
-	case SN_ELSE_CLAUSE: return "ELSE_CLAUSE";
-	case SN_BREAK_STMT: return "BREAK_STMT";
-	case SN_RUN_STMT: return "RUN_STMT";
-	case SN_EXPR_STMT: return "EXPR_STMT";
-	case SN_FREE_STMT: return "FREE_STMT";
-	case SN_RETURN_STMT: return "RETURN_STMT";
-	case SN_MULTI_BIND_STMT: return "MULTI_BIND_STMT";
-	case SN_EACH_FIELD_STMT: return "EACH_FIELD_STMT";
-	case SN_LITERAL_EXPR: return "LITERAL_EXPR";
-	case SN_NAME_EXPR: return "NAME_EXPR";
-	case SN_FIELD_EXPR: return "FIELD_EXPR";
-	case SN_INDEX_EXPR: return "INDEX_EXPR";
-	case SN_BINARY_EXPR: return "BINARY_EXPR";
-	case SN_UNARY_EXPR: return "UNARY_EXPR";
-	case SN_CALL_EXPR: return "CALL_EXPR";
-	case SN_ALLOC_EXPR: return "ALLOC_EXPR";
-	case SN_ARRAY_LIT_EXPR: return "ARRAY_LIT_EXPR";
-	case SN_STRING_EXPR: return "STRING_EXPR";
-	case SN_PAREN_EXPR: return "PAREN_EXPR";
-	case SN_TYPE_REF: return "TYPE_REF";
-	case SN_TYPE_ARRAY: return "TYPE_ARRAY";
-	case SN_TYPE_SHAPED_ARRAY: return "TYPE_SHAPED_ARRAY";
-	case SN_TYPE_TUPLE: return "TYPE_TUPLE";
-	case SN_TYPE_HANDLE: return "TYPE_HANDLE";
-	case SN_TYPE_DEF_NAME: return "TYPE_DEF_NAME";
-	case SN_FUNC_DEF_NAME: return "FUNC_DEF_NAME";
-	case SN_FIELD_NAME: return "FIELD_NAME";
-	case SN_PARAM_NAME: return "PARAM_NAME";
-	case SN_CALLEE_NAME: return "CALLEE_NAME";
-	case SN_ALLOC_TYPE: return "ALLOC_TYPE";
-	case SN_NAME_REF: return "NAME_REF";
-	case SN_ERROR: return "ERROR";
+	case SN_SOURCE_FILE:
+		return "SOURCE_FILE";
+	case SN_WORLD_DECL:
+		return "WORLD_DECL";
+	case SN_ARCHETYPE_DECL:
+		return "ARCHETYPE_DECL";
+	case SN_PROC_DECL:
+		return "PROC_DECL";
+	case SN_SYS_DECL:
+		return "SYS_DECL";
+	case SN_FUNC_DECL:
+		return "FUNC_DECL";
+	case SN_FUNC_GROUP_DECL:
+		return "FUNC_GROUP_DECL";
+	case SN_STATIC_DECL:
+		return "STATIC_DECL";
+	case SN_CONST_DECL:
+		return "CONST_DECL";
+	case SN_USE_DECL:
+		return "USE_DECL";
+	case SN_PARAM_LIST:
+		return "PARAM_LIST";
+	case SN_PARAM:
+		return "PARAM";
+	case SN_FIELD_DECL:
+		return "FIELD_DECL";
+	case SN_BLOCK:
+		return "BLOCK";
+	case SN_RETURN_TYPES:
+		return "RETURN_TYPES";
+	case SN_ARG_LIST:
+		return "ARG_LIST";
+	case SN_BIND_STMT:
+		return "BIND_STMT";
+	case SN_ASSIGN_STMT:
+		return "ASSIGN_STMT";
+	case SN_FOR_STMT:
+		return "FOR_STMT";
+	case SN_IF_STMT:
+		return "IF_STMT";
+	case SN_ELSE_CLAUSE:
+		return "ELSE_CLAUSE";
+	case SN_BREAK_STMT:
+		return "BREAK_STMT";
+	case SN_RUN_STMT:
+		return "RUN_STMT";
+	case SN_EXPR_STMT:
+		return "EXPR_STMT";
+	case SN_FREE_STMT:
+		return "FREE_STMT";
+	case SN_RETURN_STMT:
+		return "RETURN_STMT";
+	case SN_MULTI_BIND_STMT:
+		return "MULTI_BIND_STMT";
+	case SN_EACH_FIELD_STMT:
+		return "EACH_FIELD_STMT";
+	case SN_LITERAL_EXPR:
+		return "LITERAL_EXPR";
+	case SN_NAME_EXPR:
+		return "NAME_EXPR";
+	case SN_FIELD_EXPR:
+		return "FIELD_EXPR";
+	case SN_INDEX_EXPR:
+		return "INDEX_EXPR";
+	case SN_BINARY_EXPR:
+		return "BINARY_EXPR";
+	case SN_UNARY_EXPR:
+		return "UNARY_EXPR";
+	case SN_CALL_EXPR:
+		return "CALL_EXPR";
+	case SN_ALLOC_EXPR:
+		return "ALLOC_EXPR";
+	case SN_ARRAY_LIT_EXPR:
+		return "ARRAY_LIT_EXPR";
+	case SN_STRING_EXPR:
+		return "STRING_EXPR";
+	case SN_PAREN_EXPR:
+		return "PAREN_EXPR";
+	case SN_TYPE_REF:
+		return "TYPE_REF";
+	case SN_TYPE_ARRAY:
+		return "TYPE_ARRAY";
+	case SN_TYPE_SHAPED_ARRAY:
+		return "TYPE_SHAPED_ARRAY";
+	case SN_TYPE_TUPLE:
+		return "TYPE_TUPLE";
+	case SN_TYPE_HANDLE:
+		return "TYPE_HANDLE";
+	case SN_TYPE_DEF_NAME:
+		return "TYPE_DEF_NAME";
+	case SN_FUNC_DEF_NAME:
+		return "FUNC_DEF_NAME";
+	case SN_FIELD_NAME:
+		return "FIELD_NAME";
+	case SN_PARAM_NAME:
+		return "PARAM_NAME";
+	case SN_CALLEE_NAME:
+		return "CALLEE_NAME";
+	case SN_ALLOC_TYPE:
+		return "ALLOC_TYPE";
+	case SN_NAME_REF:
+		return "NAME_REF";
+	case SN_ERROR:
+		return "ERROR";
 	}
 	return "?";
 }

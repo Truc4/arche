@@ -8,18 +8,14 @@ arche Transaction {
   revenue :: float,
 }
 
-
-static pool<Transaction>(10000, 10000) {
-  price: 0.0,
-  quantity: 0,
-  revenue: 0.0,
-};
-
+static pool<Transaction> (10000, 10000) {
+  price: 0.0, quantity: 0, revenue: 0.0,
+}
+;
 
 proc load_transactions() {
   csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");
 }
-
 
 proc write_output(total: float) {
   fd := arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_4.csv");
@@ -29,15 +25,18 @@ proc write_output(total: float) {
   arche_fclose(move fd);
 }
 
-
 proc main() {
   load_transactions();
 
   total := 0.0;
   t0 := arche_now_sec();
-  for (iter := 0; iter < 216000; iter += 1) {
+  for (iter := 0;
+  iter < 216000;
+  iter += 1) {
     Transaction.revenue = Transaction.price * Transaction.quantity;
-    for (m := 0; m < 10000; m += 1) {
+    for (m := 0;
+    m < 10000;
+    m += 1) {
       total = total + Transaction.revenue[m];
     }
   }

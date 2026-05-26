@@ -3,7 +3,6 @@ func get_len(s: char[]) -> int {
   return strlen(s);
 }
 
-
 proc main() {
   len := get_len("hello");
   if (len == 5) {

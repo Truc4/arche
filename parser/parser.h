@@ -15,7 +15,7 @@ typedef struct {
 
 /* Result of parsing */
 typedef struct {
-	Program *ast;
+	AstProgram *ast;
 	ParseError *errors;
 	size_t error_count;
 	Token *comments;

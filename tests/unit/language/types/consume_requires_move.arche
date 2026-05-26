@@ -2,8 +2,7 @@
 // value cannot copy, so handing a bare binding to a consuming parameter (no `move`) is a
 // compile error — the transfer must be visible as `move r`.
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "must be moved" %t.out
-resource :: opaque
-extern func resource_open(initial: int) -> resource;
+resource :: opaque extern func resource_open(initial: int) -> resource;
 extern proc resource_close(own r: resource);
 
 proc main() {

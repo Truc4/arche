@@ -8,7 +8,9 @@ proc main() {
   buf: char[65536];
   buf, n := csv_read_chunk(fd, move buf, 65536);
   pos := 0;
-  for (;pos < n;) {
+  for (;
+  pos < n;
+  ) {
     if (buf[pos] == 10) {
       rows = rows + 1;
     }

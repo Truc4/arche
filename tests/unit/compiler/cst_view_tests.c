@@ -7,7 +7,7 @@
 #include <stdlib.h>
 
 static int pass = 0, fail = 0;
-#define CHECK(cond, msg)                                                                                                \
+#define CHECK(cond, msg)                                                                                               \
 	do {                                                                                                               \
 		if (cond) {                                                                                                    \
 			pass++;                                                                                                    \
@@ -40,9 +40,9 @@ int main(void) {
 		CHECK(cv_kind(lhs) == SN_NAME_EXPR && cv_text_eq(lhs, "a"), "binary lhs == name 'a'");
 		CHECK(cv_kind(rhs) == SN_BINARY_EXPR, "binary rhs nested (a + (b*c)) — precedence");
 
-		Program *p = r.ast;
+		AstProgram *p = r.ast;
 		parse_result_free(&r);
-		program_free(p);
+		ast_program_free(p);
 	}
 
 	/* 2. Call expression: callee + string argument. */
@@ -55,9 +55,9 @@ int main(void) {
 		CHECK(cv_text_eq(cv_child(call, SN_CALLEE_NAME), "print"), "callee == print");
 		CHECK(cv_present(cv_child(call, SN_STRING_EXPR)), "string argument present");
 
-		Program *p = r.ast;
+		AstProgram *p = r.ast;
 		parse_result_free(&r);
-		program_free(p);
+		ast_program_free(p);
 	}
 
 	/* 3. Node ids are dense: the root has the largest id == node_count - 1. */
@@ -65,9 +65,9 @@ int main(void) {
 		const char *src = "proc m() {\n  x := 1;\n}\n";
 		ParseResult r = parse_source(src);
 		CHECK(r.cst_root && r.cst_root->id > 0, "root id assigned (post-order, nonzero)");
-		Program *p = r.ast;
+		AstProgram *p = r.ast;
 		parse_result_free(&r);
-		program_free(p);
+		ast_program_free(p);
 	}
 
 	/* 4. Malformed input is flagged (parse error and/or an error node). */
@@ -76,9 +76,9 @@ int main(void) {
 		ParseResult r = parse_source(src);
 		CstView root = cv_root(r.cst_root, src);
 		CHECK(r.error_count > 0 || cv_has_error(root), "malformed input flagged");
-		Program *p = r.ast;
+		AstProgram *p = r.ast;
 		parse_result_free(&r);
-		program_free(p);
+		ast_program_free(p);
 	}
 
 	printf("\nResults: %d/%d passed\n", pass, pass + fail);

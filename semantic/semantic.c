@@ -1,5 +1,6 @@
 #include "semantic.h"
 #include "../cst/cst_view.h"
+#include "../parser/parser.h"
 #include "sem_model.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -95,13 +96,13 @@ struct SemanticContext {
 	 * (currently `syscall`) so they cannot be called from ordinary safe code. */
 	int in_unsafe;
 
-	/* Program for looking up declarations */
-	Program *prog;
+	/* AstProgram for looking up declarations */
+	AstProgram *prog;
 
-	/* CST path only: the Program reconstructed from the CST (owned here; freed with the
+	/* CST path only: the AstProgram reconstructed from the CST (owned here; freed with the
 	 * context). The side model borrows type-name strings that live in it, so it must
 	 * outlive lowering+codegen — exactly like main.c keeps the parser-built `prog` alive. */
-	Program *owned_prog;
+	AstProgram *owned_prog;
 
 	/* MIGRATION: resolved types keyed by CST node id, kept out of the tree.
 	 * Populated alongside Expression.resolved_type; lowering reads it from here. */
@@ -261,7 +262,7 @@ static int type_ref_equal(const TypeRef *a, const TypeRef *b) {
 	return 0;
 }
 
-static FuncDecl *find_func_decl_cst(Program *prog, const char *name) {
+static FuncDecl *find_func_decl_cst(AstProgram *prog, const char *name) {
 	if (!prog)
 		return NULL;
 	for (int i = 0; i < prog->decl_count; i++) {
@@ -2661,20 +2662,20 @@ static void erase_aliases_decl(SemanticContext *ctx, Decl *d) {
 	}
 }
 
-static void erase_type_aliases(SemanticContext *ctx, Program *prog) {
+static void erase_type_aliases(SemanticContext *ctx, AstProgram *prog) {
 	if (ctx->type_alias_count == 0)
 		return;
 	for (int i = 0; i < prog->decl_count; i++)
 		erase_aliases_decl(ctx, prog->decls[i]);
 }
 
-/* ========== CST -> Program reconstruction (semantic_analyze_cst) ==========
+/* ========== CST -> AstProgram reconstruction (semantic_analyze_cst) ==========
  *
  * Rather than rewrite the ~3000-line analysis traversal onto views, the CST path
- * reconstructs an analyzable `Program` directly from the immutable lossless CST
+ * reconstructs an analyzable `AstProgram` directly from the immutable lossless CST
  * (mirroring lower/lower.c's lower_*_cst walk), then runs the SAME analysis core.
  * This guarantees the side-model + error contract is byte-identical to the
- * Program path: each Expression/Statement carries cst_id = (CST node id + 1), so
+ * AstProgram path: each Expression/Statement carries cst_id = (CST node id + 1), so
  * the side model — keyed by `cst_id - 1` — is keyed by the exact node id the CST
  * lowerer reads back. Module CSTs are inlined + name-prefixed exactly as main.c's
  * resolve_uses does, and top-level tuple groups are expanded into archetype fields
@@ -2688,7 +2689,9 @@ static char *sem_txt_dup(CvText t) {
 	s[t.len] = '\0';
 	return s;
 }
-static char *sem_cv_dup(CstView v) { return sem_txt_dup(cv_text(v)); }
+static char *sem_cv_dup(CstView v) {
+	return sem_txt_dup(cv_text(v));
+}
 static char *sem_dupz(const char *s) {
 	char *r = malloc(strlen(s) + 1);
 	strcpy(r, s);
@@ -2909,26 +2912,42 @@ static CstView sem_node_at_expr(CstView v, int idx) {
 
 static Operator sem_tok_to_op(TokenKind k) {
 	switch (k) {
-	case TOK_PLUS: return OP_ADD;
-	case TOK_MINUS: return OP_SUB;
-	case TOK_STAR: return OP_MUL;
-	case TOK_SLASH: return OP_DIV;
-	case TOK_EQ_EQ: return OP_EQ;
-	case TOK_BANG_EQ: return OP_NEQ;
-	case TOK_LT: return OP_LT;
-	case TOK_GT: return OP_GT;
-	case TOK_LT_EQ: return OP_LTE;
-	case TOK_GT_EQ: return OP_GTE;
-	default: return OP_NONE;
+	case TOK_PLUS:
+		return OP_ADD;
+	case TOK_MINUS:
+		return OP_SUB;
+	case TOK_STAR:
+		return OP_MUL;
+	case TOK_SLASH:
+		return OP_DIV;
+	case TOK_EQ_EQ:
+		return OP_EQ;
+	case TOK_BANG_EQ:
+		return OP_NEQ;
+	case TOK_LT:
+		return OP_LT;
+	case TOK_GT:
+		return OP_GT;
+	case TOK_LT_EQ:
+		return OP_LTE;
+	case TOK_GT_EQ:
+		return OP_GTE;
+	default:
+		return OP_NONE;
 	}
 }
 static Operator sem_assign_op(TokenKind k) {
 	switch (k) {
-	case TOK_PLUS_EQ: return OP_ADD;
-	case TOK_MINUS_EQ: return OP_SUB;
-	case TOK_STAR_EQ: return OP_MUL;
-	case TOK_SLASH_EQ: return OP_DIV;
-	default: return OP_NONE;
+	case TOK_PLUS_EQ:
+		return OP_ADD;
+	case TOK_MINUS_EQ:
+		return OP_SUB;
+	case TOK_STAR_EQ:
+		return OP_MUL;
+	case TOK_SLASH_EQ:
+		return OP_DIV;
+	default:
+		return OP_NONE;
 	}
 }
 
@@ -2942,12 +2961,24 @@ static char *cst_decode_str(CvText raw, int *out_len) {
 		if (s[i] == '\\' && i + 2 < len) {
 			i++;
 			switch (s[i]) {
-			case 'n': value[p++] = '\n'; break;
-			case 't': value[p++] = '\t'; break;
-			case 'r': value[p++] = '\r'; break;
-			case '\\': value[p++] = '\\'; break;
-			case '"': value[p++] = '"'; break;
-			default: value[p++] = s[i]; break;
+			case 'n':
+				value[p++] = '\n';
+				break;
+			case 't':
+				value[p++] = '\t';
+				break;
+			case 'r':
+				value[p++] = '\r';
+				break;
+			case '\\':
+				value[p++] = '\\';
+				break;
+			case '"':
+				value[p++] = '"';
+				break;
+			default:
+				value[p++] = s[i];
+				break;
 			}
 		} else {
 			value[p++] = s[i];
@@ -3094,11 +3125,16 @@ static Expression *cst_build_expr(CstView e) {
 		for (int i = 0; i < e.node->child_count; i++)
 			if (e.node->children[i].tag == SE_TOKEN) {
 				TokenKind tk = e.node->children[i].as.token.kind;
-				if (tk == TOK_MINUS) ax->data.unary.op = UNARY_NEG;
-				else if (tk == TOK_BANG) ax->data.unary.op = UNARY_NOT;
-				else if (tk == TOK_MOVE) ax->data.unary.op = UNARY_MOVE;
-				else if (tk == TOK_COPY) ax->data.unary.op = UNARY_COPY;
-				else continue;
+				if (tk == TOK_MINUS)
+					ax->data.unary.op = UNARY_NEG;
+				else if (tk == TOK_BANG)
+					ax->data.unary.op = UNARY_NOT;
+				else if (tk == TOK_MOVE)
+					ax->data.unary.op = UNARY_MOVE;
+				else if (tk == TOK_COPY)
+					ax->data.unary.op = UNARY_COPY;
+				else
+					continue;
 				break;
 			}
 		ax->data.unary.operand = cst_build_expr(sem_first_expr(e));
@@ -3343,7 +3379,8 @@ static Statement *cst_build_stmt(CstView s) {
 					continue;
 				SyntaxNodeKind k = ch->as.node->kind;
 				if (k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
-					as->data.for_stmt.body[as->data.for_stmt.body_count++] = cst_build_stmt((CstView){ch->as.node, s.src});
+					as->data.for_stmt.body[as->data.for_stmt.body_count++] =
+					    cst_build_stmt((CstView){ch->as.node, s.src});
 			}
 			break;
 		}
@@ -3353,8 +3390,10 @@ static Statement *cst_build_stmt(CstView s) {
 		for (int i = 0; i < s.node->child_count; i++)
 			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
 				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
-				if (ni == 0) vname = sem_txt_dup(t);
-				else if (ni == 1) iname = sem_txt_dup(t);
+				if (ni == 0)
+					vname = sem_txt_dup(t);
+				else if (ni == 1)
+					iname = sem_txt_dup(t);
 				ni++;
 			}
 		as->data.for_stmt.var_name = vname;
@@ -3375,8 +3414,10 @@ static Statement *cst_build_stmt(CstView s) {
 		for (int i = 0; i < s.node->child_count; i++)
 			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
 				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
-				if (ni == 0) as->data.each_field.binding_name = sem_txt_dup(t);
-				else if (ni == 1) as->data.each_field.arch_param_name = sem_txt_dup(t);
+				if (ni == 0)
+					as->data.each_field.binding_name = sem_txt_dup(t);
+				else if (ni == 1)
+					as->data.each_field.arch_param_name = sem_txt_dup(t);
 				ni++;
 			}
 		if (!as->data.each_field.binding_name)
@@ -3498,18 +3539,26 @@ static Decl *cst_build_decl(CstView d) {
 				continue;
 			CstView fn = {d.node->children[i].as.node, d.src};
 			/* the inline component type is a type node before the next FIELD_NAME; else a bare
-			 * field whose component type is the field's own name. */
+			 * field whose component type is the field's own name. Between the name and the type,
+			 * a `type` keyword token marks the explicit meta longhand `name : type : T` (vs the
+			 * inferred `name :: T`); preserve it so the formatter round-trips concrete syntax. */
 			CstView ty = {NULL, d.src};
-			for (int k = i + 1; k < d.node->child_count; k++)
-				if (d.node->children[k].tag == SE_NODE) {
-					SyntaxNodeKind kk = d.node->children[k].as.node->kind;
-					if (kk == SN_FIELD_NAME)
-						break;
-					if (kk >= SN_TYPE_REF && kk <= SN_TYPE_HANDLE) {
-						ty.node = d.node->children[k].as.node;
-						break;
-					}
+			int meta_explicit = 0;
+			for (int k = i + 1; k < d.node->child_count; k++) {
+				if (d.node->children[k].tag == SE_TOKEN) {
+					if (d.node->children[k].as.token.kind == TOK_IDENT && d.node->children[k].as.token.length == 4 &&
+					    strncmp(d.src + d.node->children[k].as.token.offset, "type", 4) == 0)
+						meta_explicit = 1;
+					continue;
 				}
+				SyntaxNodeKind kk = d.node->children[k].as.node->kind;
+				if (kk == SN_FIELD_NAME)
+					break;
+				if (kk >= SN_TYPE_REF && kk <= SN_TYPE_HANDLE) {
+					ty.node = d.node->children[k].as.node;
+					break;
+				}
+			}
 			char *fname = sem_cv_dup(fn);
 			TypeRef *ft;
 			if (cv_present(ty)) {
@@ -3522,6 +3571,7 @@ static Decl *cst_build_decl(CstView d) {
 				ft->data.name = sem_dupz(fname);
 			}
 			FieldDecl *fd = field_decl_create(FIELD_COLUMN, fname, ft);
+			fd->meta_explicit = meta_explicit;
 			aa->fields[aa->field_count++] = fd;
 		}
 		ad->data.archetype = aa;
@@ -3691,7 +3741,8 @@ static Decl *cst_build_decl(CstView d) {
 				int seen = 0;
 				for (int i = 0; i < ty.node->child_count; i++)
 					if (ty.node->children[i].tag == SE_TOKEN && ty.node->children[i].as.token.kind == TOK_IDENT) {
-						CvText t = {ty.src + ty.node->children[i].as.token.offset, ty.node->children[i].as.token.length};
+						CvText t = {ty.src + ty.node->children[i].as.token.offset,
+						            ty.node->children[i].as.token.length};
 						if (seen++) {
 							an = sem_txt_dup(t);
 							break;
@@ -3714,17 +3765,26 @@ static Decl *cst_build_decl(CstView d) {
 				SyntaxElem *ch = &d.node->children[i];
 				if (ch->tag == SE_TOKEN) {
 					switch (ch->as.token.kind) {
-					case TOK_LPAREN: phase = 1; break;
-					case TOK_RPAREN: phase = 0; break;
-					case TOK_LBRACE: phase = 2; break;
-					case TOK_RBRACE: phase = 0; break;
+					case TOK_LPAREN:
+						phase = 1;
+						break;
+					case TOK_RPAREN:
+						phase = 0;
+						break;
+					case TOK_LBRACE:
+						phase = 2;
+						break;
+					case TOK_RBRACE:
+						phase = 0;
+						break;
 					case TOK_IDENT:
 						if (phase == 2) {
 							pend = d.src + ch->as.token.offset;
 							pend_len = (int)ch->as.token.length;
 						}
 						break;
-					default: break;
+					default:
+						break;
 					}
 					continue;
 				}
@@ -3952,17 +4012,25 @@ static void sem_rename_stmt(Statement *s, const char *prefix, char **set, int co
 }
 static const char *sem_decl_name(Decl *d) {
 	switch (d->kind) {
-	case DECL_ARCHETYPE: return d->data.archetype->name;
-	case DECL_PROC: return d->data.proc->name;
-	case DECL_SYS: return d->data.sys->name;
-	case DECL_FUNC: return d->data.func->name;
-	case DECL_FUNC_GROUP: return d->data.func_group->name;
+	case DECL_ARCHETYPE:
+		return d->data.archetype->name;
+	case DECL_PROC:
+		return d->data.proc->name;
+	case DECL_SYS:
+		return d->data.sys->name;
+	case DECL_FUNC:
+		return d->data.func->name;
+	case DECL_FUNC_GROUP:
+		return d->data.func_group->name;
 	case DECL_STATIC:
 		return d->data.static_decl->kind == STATIC_KIND_ARRAY ? d->data.static_decl->array.name
-		                                                       : d->data.static_decl->archetype.archetype_name;
-	case DECL_CONST: return d->data.constant->name;
-	case DECL_WORLD: return d->data.world->name;
-	default: return NULL;
+		                                                      : d->data.static_decl->archetype.archetype_name;
+	case DECL_CONST:
+		return d->data.constant->name;
+	case DECL_WORLD:
+		return d->data.world->name;
+	default:
+		return NULL;
 	}
 }
 static void sem_rename_decl(Decl *d, const char *prefix, char **set, int count) {
@@ -4025,7 +4093,7 @@ static void sem_rename_decl(Decl *d, const char *prefix, char **set, int count) 
 
 /* Expand a bare archetype component referencing a top-level tuple group into the inline tuple
  * form (mirrors main.c expand_archetype_tuple_groups), so flattening yields `pos_<member>`. */
-static void sem_expand_tuple_groups(Program *prog) {
+static void sem_expand_tuple_groups(AstProgram *prog) {
 	if (!prog)
 		return;
 	for (int a = 0; a < prog->decl_count; a++) {
@@ -4070,11 +4138,11 @@ static void sem_expand_tuple_groups(Program *prog) {
 	}
 }
 
-/* Build the analyzable Program from the main-file CST plus all registered module CSTs,
+/* Build the analyzable AstProgram from the main-file CST plus all registered module CSTs,
  * inlining + name-prefixing modules exactly as main.c's resolve_uses does, then expanding
- * top-level tuple groups. The returned Program owns all its memory (free with program_free). */
-static Program *cst_to_program(const SyntaxNode *root, const char *src) {
-	Program *prog = program_create();
+ * top-level tuple groups. The returned AstProgram owns all its memory (free with ast_program_free). */
+static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
+	AstProgram *prog = ast_program_create();
 	CstView r = cv_root(root, src);
 	int cap = cv_node_count(r) + 8;
 	for (int m = 0; m < g_sem_module_count; m++)
@@ -4184,12 +4252,12 @@ static Program *cst_to_program(const SyntaxNode *root, const char *src) {
 
 /* ========== PUBLIC API ========== */
 
-/* The shared analysis core: all passes that read the (already-prepared) Program tree.
- * Both entry points run this — semantic_analyze on the parser-built Program, and
- * semantic_analyze_cst on a Program reconstructed from the CST. `erase` controls the
- * final alias-erasure pass: the Program lowerer needs it; the CST lowerer does not
+/* The shared analysis core: all passes that read the (already-prepared) AstProgram tree.
+ * Both entry points run this — semantic_analyze on the parser-built AstProgram, and
+ * semantic_analyze_cst on a AstProgram reconstructed from the CST. `erase` controls the
+ * final alias-erasure pass: the AstProgram lowerer needs it; the CST lowerer does not
  * (it reads aliases from the side model), so the CST path passes erase=0. */
-static void analyze_program_core(SemanticContext *ctx, Program *prog, int erase) {
+static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int erase) {
 	if (!prog)
 		return;
 	ctx->prog = prog;
@@ -4388,7 +4456,7 @@ static void analyze_program_core(SemanticContext *ctx, Program *prog, int erase)
 	}
 
 	/* pass 3: erase nominal aliases to their backing (zero-cost; codegen never sees them).
-	 * Only the legacy Program lowerer needs this tree mutation; the CST lowerer reads
+	 * Only the legacy AstProgram lowerer needs this tree mutation; the CST lowerer reads
 	 * aliases from the side model, so the CST path skips erasure (erase=0). */
 	if (erase)
 		erase_type_aliases(ctx, prog);
@@ -4431,22 +4499,33 @@ static SemanticContext *make_context(void) {
 	return ctx;
 }
 
-SemanticContext *semantic_analyze(Program *prog) {
-	SemanticContext *ctx = make_context();
-	analyze_program_core(ctx, prog, /*erase=*/1);
-	return ctx;
-}
-
 SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src) {
 	SemanticContext *ctx = make_context();
 	if (!root)
 		return ctx;
-	/* Reconstruct the analyzable Program from the immutable CST (+ module CSTs), keep it
+	/* Reconstruct the analyzable AstProgram from the immutable CST (+ module CSTs), keep it
 	 * alive on the context, and run the SAME analysis core. erase=0: the CST lowerer reads
 	 * aliases from the side model, so the alias-erasure tree mutation is not needed. */
 	ctx->owned_prog = cst_to_program(root, src);
 	analyze_program_core(ctx, ctx->owned_prog, /*erase=*/0);
 	return ctx;
+}
+
+/* Test/helper entry: parse `src`, build the abstract `AstProgram` from the resulting lossless
+ * CST (via cst_to_program), then free the parse result + CST. The reconstructed AstProgram owns
+ * all its memory (every string is copied out of the source), so it outlives the CST and can
+ * be freed with ast_program_free. This is the only sanctioned way to obtain a `AstProgram` now that
+ * the parser produces just the CST — unit tests use it to validate cst_to_program faithfully
+ * reconstructs each construct. Returns NULL on parse error. */
+AstProgram *cst_to_program_from_source(const char *src) {
+	ParseResult pr = parse_source(src);
+	if (pr.error_count > 0 || !pr.cst_root) {
+		parse_result_free(&pr);
+		return NULL;
+	}
+	AstProgram *prog = cst_to_program(pr.cst_root, src);
+	parse_result_free(&pr);
+	return prog;
 }
 
 void semantic_context_free(SemanticContext *ctx) {
@@ -4510,9 +4589,9 @@ void semantic_context_free(SemanticContext *ctx) {
 	}
 	free(ctx->scopes);
 
-	/* CST path: free the Program we reconstructed (and kept alive for the side model). */
+	/* CST path: free the AstProgram we reconstructed (and kept alive for the side model). */
 	if (ctx->owned_prog)
-		program_free(ctx->owned_prog);
+		ast_program_free(ctx->owned_prog);
 
 	free(ctx);
 }

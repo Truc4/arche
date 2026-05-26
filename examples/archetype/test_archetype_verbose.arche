@@ -8,8 +8,8 @@ arche Body {
   vel :: float,
   density :: float,
 }
-static pool<Particle>(1000);
-static pool<Body>(100);
+static pool<Particle> (1000);
+static pool<Body> (100);
 sys integrate(pos, vel) {
   pos = pos + vel;
 }

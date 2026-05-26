@@ -6,4 +6,8 @@ func a(x: int) -> int {
 func b(x: int) -> int {
   return x + 1;
 }
-func g = { a, b };  // error: members 'a' and 'b' share a parameter signature
+func g = {
+  a, b
+}
+;
+// error: members 'a' and 'b' share a parameter signature

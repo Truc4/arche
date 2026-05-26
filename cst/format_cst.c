@@ -35,8 +35,8 @@ static void collect(const SyntaxNode *n, const char *src, Leaves *ls) {
 		if (e->tag == SE_NODE) {
 			collect(e->as.node, src, ls);
 		} else {
-			push_leaf(ls, e->as.token.kind, src + e->as.token.offset, (int)e->as.token.length,
-			          e->as.token.line, n->kind);
+			push_leaf(ls, e->as.token.kind, src + e->as.token.offset, (int)e->as.token.length, e->as.token.line,
+			          n->kind);
 		}
 	}
 }
@@ -61,7 +61,7 @@ static int no_space_before(TokenKind t, TokenKind prev, TokenKind next) {
 			return 1; /* second `:` of `::` glues to the first */
 		if (next == TOK_EQ || next == TOK_COLON)
 			return 0; /* first colon of a `:=` / `::` operator: space before it */
-		return 1; /* type-annotation colon: `a: int` */
+		return 1;     /* type-annotation colon: `a: int` */
 	case TOK_EQ:
 		return prev == TOK_COLON; /* `=` of `:=` glues to the `:` */
 	case TOK_LPAREN:
@@ -107,10 +107,9 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 			int want_nl = force_nl || arch_field_break || l->kind == TOK_RBRACE || prev == TOK_LBRACE ||
 			              prev == TOK_SEMI || prev == TOK_RBRACE;
 			/* a type/generic/table reference is compact: handle<X>, float[5], table<P> */
-			int compact = (l->parent == prev_parent &&
-			               (l->parent == SN_TYPE_REF || l->parent == SN_TYPE_ARRAY ||
-			                l->parent == SN_TYPE_SHAPED_ARRAY || l->parent == SN_TYPE_HANDLE ||
-			                l->parent == SN_NAME_EXPR));
+			int compact = (l->parent == prev_parent && (l->parent == SN_TYPE_REF || l->parent == SN_TYPE_ARRAY ||
+			                                            l->parent == SN_TYPE_SHAPED_ARRAY ||
+			                                            l->parent == SN_TYPE_HANDLE || l->parent == SN_NAME_EXPR));
 			if (l->kind == TOK_RBRACE && indent > 0)
 				indent--;
 			if (want_nl) {

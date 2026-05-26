@@ -3,9 +3,7 @@
 // — a column read through name A sees both rows. Positional insert uses the shape's
 // canonical (first-declared) component order, so `insert(B, 30, 40)` fills hp then mp.
 // RUN: %arche -o %t %s && %t | grep "hp0=10 mp0=20 hp1=30 mp1=40"
-hp :: int
-mp :: int
-arche A {
+hp :: int mp :: int arche A {
   hp,
   mp,
 }
@@ -14,7 +12,7 @@ arche B {
   hp,
 }
 
-static pool<A>(4);
+static pool<A> (4);
 
 proc main() {
   insert(A, 10, 20);
