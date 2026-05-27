@@ -61,7 +61,12 @@ int arche_fread_line(FILE *f, char *buf, int n) {
 		return -1;
 	if (fgets(buf, n, f) == NULL)
 		return 0;
-	int len = strlen(buf);
+	/* NB: compute the length inline rather than calling libc strlen — an arche program may define
+	 * its own `func strlen` (core does), which emits a global `@strlen` that overrides libc's for
+	 * the whole executable with an incompatible ABI. Don't call a libc symbol an arche func can own. */
+	int len = 0;
+	while (buf[len] != '\0')
+		len++;
 	if (len > 0 && buf[len - 1] == '\n') {
 		buf[len - 1] = '\0';
 		len--;

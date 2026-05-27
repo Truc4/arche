@@ -570,6 +570,31 @@ static int parse_proc_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		return 0;
 	}
 
+	/* Optional return type: `-> T` or `-> (T1, …, Tn)`. A proc with no arrow returns nothing
+	 * (void) — it's an action with no value. Mirrors a func's return list (the arrow is mandatory
+	 * for a func, optional for a proc). */
+	if (match(parser, TOK_ARROW)) {
+		if (match(parser, TOK_LPAREN)) {
+			int return_type_count = 0;
+			do {
+				if (!parse_type(parser))
+					return 0;
+				return_type_count++;
+			} while (match(parser, TOK_COMMA));
+			if (!match(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')' after multi-return type list");
+				return 0;
+			}
+			if (return_type_count < 2) {
+				error(parser, "a parenthesized return type must list at least two types");
+				return 0;
+			}
+		} else {
+			if (!parse_type(parser))
+				return 0;
+		}
+	}
+
 	/* For extern procs, no body needed */
 	if (is_extern) {
 		if (!match(parser, TOK_SEMI)) {

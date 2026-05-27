@@ -92,6 +92,10 @@ struct CodegenContext {
 	 * `return a, b` can build the aggregate. */
 	const char *current_return_type;
 	HirFuncDecl *current_func; /* the func being generated (for multi-return packing) */
+	/* The return-type list of the func OR proc being generated — used for multi-return member
+	 * types, so the packing works for procs too (which aren't a HirFuncDecl). */
+	HirType **current_return_types;
+	int current_return_type_count;
 	char current_return_type_buf[512];
 
 	/* Loop bound tracking for bounds-check elision. When a C-style `for`
@@ -415,18 +419,27 @@ static const char *return_member_llvm(HirType *t) {
 	return llvm_type_from_arche(field_base_type_name(t));
 }
 
-/* Fill `out` with a function's LLVM return type: the single type when count == 1, or a literal
- * aggregate `{T1, T2, …}` for a multi-value return. */
-static void func_llvm_return_type(HirFuncDecl *f, char *out, size_t cap) {
-	if (f->return_type_count == 1) {
-		snprintf(out, cap, "%s", return_member_llvm(f->return_types[0]));
+/* Fill `out` with the LLVM type for a return-type list: `void` for count 0, the single type for
+ * count 1, or a literal aggregate `{T1, T2, …}` for a multi-value return. Shared by funcs and procs
+ * (both now carry a `return_types`/`return_type_count` list). */
+static void llvm_return_list_type(HirType **return_types, int count, char *out, size_t cap) {
+	if (count == 0) {
+		snprintf(out, cap, "void");
+		return;
+	}
+	if (count == 1) {
+		snprintf(out, cap, "%s", return_member_llvm(return_types[0]));
 		return;
 	}
 	size_t n = 0;
 	n += (size_t)snprintf(out + n, cap - n, "{ ");
-	for (int i = 0; i < f->return_type_count; i++)
-		n += (size_t)snprintf(out + n, cap - n, "%s%s", i ? ", " : "", return_member_llvm(f->return_types[i]));
+	for (int i = 0; i < count; i++)
+		n += (size_t)snprintf(out + n, cap - n, "%s%s", i ? ", " : "", return_member_llvm(return_types[i]));
 	snprintf(out + n, cap - n, " }");
+}
+
+static void func_llvm_return_type(HirFuncDecl *f, char *out, size_t cap) {
+	llvm_return_list_type(f->return_types, f->return_type_count, out, cap);
 }
 
 /* Decode a char-literal lexeme ('a', '\n', …) to its integer code, for emission as an LLVM
@@ -2740,8 +2753,12 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			/* A multi-return callee returns an aggregate `{T1, …, Tn}`; the multi-bind that
 			 * wraps this call extractvalue's the members. */
 			char multiret_buf[512];
-			if (callee_func && callee_func->return_type_count > 1) {
-				func_llvm_return_type(callee_func, multiret_buf, sizeof(multiret_buf));
+			HirType **mr_types =
+			    callee_func ? callee_func->return_types : (callee_proc ? callee_proc->return_types : NULL);
+			int mr_count =
+			    callee_func ? callee_func->return_type_count : (callee_proc ? callee_proc->return_type_count : 0);
+			if (mr_count > 1) {
+				llvm_return_list_type(mr_types, mr_count, multiret_buf, sizeof(multiret_buf));
 				return_type = multiret_buf;
 				buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type, func_name ? func_name : "unknown");
 				for (int i = 0; i < expr->data.call.arg_count; i++) {
@@ -2756,18 +2773,19 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 
 			/* Return type from the func declaration. A scalar-position call uses the single
 			 * return type. */
-			HirType *crt = (callee_func && callee_func->return_type_count > 0) ? callee_func->return_types[0] : NULL;
+			HirType *crt = (callee_func && callee_func->return_type_count > 0)   ? callee_func->return_types[0]
+			               : (callee_proc && callee_proc->return_type_count > 0) ? callee_proc->return_types[0]
+			                                                                     : NULL;
 			if (crt) {
-				/* Use the same mapping as the function definition's return type so the call
-				 * site and the callee agree — char[] / char[N] both become i8* (a byte view). */
+				/* Use the same mapping as the definition's return type so the call site and the
+				 * callee agree — char[] / char[N] both become i8* (a byte view). Works for a
+				 * returning func, a returning proc, or a returning extern. */
 				return_type = return_member_llvm(crt);
 			} else if (callee_func && callee_func->is_extern) {
-				/* Bare extern with no declared return (`extern name(...)`) ⇒ void. A returning
-				 * extern carries its type in `return_types` and is handled by the `crt` branch
-				 * above — the return type now always comes from the declaration, no name list. */
+				/* Bare extern with no declared return (`extern name(...)`) ⇒ void. */
 				return_type = "void";
 			} else if (callee_proc) {
-				/* Procs never return a value (extern or not). */
+				/* A proc with no return list is void (an action with no value). */
 				return_type = "void";
 			} else if (expr->resolved.tag != HIR_TYPE_UNKNOWN) {
 				/* Fallback: use resolved type if available */
@@ -4009,14 +4027,21 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		        ? rhs->data.call.callee->data.name.name
 		        : NULL;
 		HirFuncDecl *callee_func = fn ? find_func_decl(ctx, fn) : NULL;
-		if (callee_func && callee_func->return_type_count > 1) {
+		HirProcDecl *callee_proc = (!callee_func && fn) ? find_proc_decl(ctx, fn) : NULL;
+		/* Return-type list of the callee — a func OR a returning proc; the multi-bind extracts the
+		 * members of its aggregate return. */
+		HirType **ret_types =
+		    callee_func ? callee_func->return_types : (callee_proc ? callee_proc->return_types : NULL);
+		int ret_count =
+		    callee_func ? callee_func->return_type_count : (callee_proc ? callee_proc->return_type_count : 0);
+		if (ret_types && ret_count > 1) {
 			char struct_buf[256];
 			codegen_expression(ctx, rhs, struct_buf); /* %res = call {…} @f(…) */
 			char ret_type[512];
-			func_llvm_return_type(callee_func, ret_type, sizeof(ret_type));
-			int n = target_count < callee_func->return_type_count ? target_count : callee_func->return_type_count;
+			llvm_return_list_type(ret_types, ret_count, ret_type, sizeof(ret_type));
+			int n = target_count < ret_count ? target_count : ret_count;
 			for (int i = 0; i < n; i++) {
-				HirType *mt = callee_func->return_types[i];
+				HirType *mt = ret_types[i];
 				const char *llvm = return_member_llvm(mt);
 				char *val = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", val, ret_type, struct_buf, i);
@@ -5102,9 +5127,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			for (int i = 0; i < rs->count; i++) {
 				char vbuf[256];
 				codegen_expression(ctx, rs->values[i], vbuf);
-				const char *mt = (ctx->current_func && i < ctx->current_func->return_type_count)
-				                     ? return_member_llvm(ctx->current_func->return_types[i])
-				                     : "i32";
+				const char *mt =
+				    (i < ctx->current_return_type_count) ? return_member_llvm(ctx->current_return_types[i]) : "i32";
 				char *acc = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = insertvalue %s %s, %s %s, %d\n", acc, ret_type, prev, mt, vbuf, i);
 				strncpy(prev, acc, sizeof(prev) - 1);
@@ -5926,6 +5950,8 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 	const char *return_type = ctx->current_return_type_buf;
 	ctx->current_return_type = return_type;
 	ctx->current_func = func;
+	ctx->current_return_types = func->return_types;
+	ctx->current_return_type_count = func->return_type_count;
 
 	buffer_append_fmt(ctx, "define %s @%s(", return_type, func->name);
 
@@ -6084,7 +6110,21 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 	/* Generate procedure - rename user main to main_user to allow our wrapper */
 	int is_user_main = (strcmp(proc->name, "main") == 0);
 	const char *proc_name = is_user_main ? "main_user" : proc->name;
-	buffer_append_fmt(ctx, "define void @%s(", proc_name);
+	/* A proc may return a value now (void when its return list is empty). `main` stays void — the
+	 * wrapper drives process exit. The return-type list also feeds multi-return packing. */
+	if (is_user_main) {
+		snprintf(ctx->current_return_type_buf, sizeof(ctx->current_return_type_buf), "void");
+		ctx->current_return_types = NULL;
+		ctx->current_return_type_count = 0;
+	} else {
+		llvm_return_list_type(proc->return_types, proc->return_type_count, ctx->current_return_type_buf,
+		                      sizeof(ctx->current_return_type_buf));
+		ctx->current_return_types = proc->return_types;
+		ctx->current_return_type_count = proc->return_type_count;
+	}
+	ctx->current_return_type = ctx->current_return_type_buf;
+	ctx->current_func = NULL;
+	buffer_append_fmt(ctx, "define %s @%s(", ctx->current_return_type_buf, proc_name);
 
 	/* Emit parameter types and names */
 	for (int i = 0; i < proc->param_count; i++) {
@@ -6185,7 +6225,21 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 
 	pop_value_scope(ctx);
 
-	buffer_append(ctx, "  ret void\n");
+	/* Fallback return (reached only if the body has no terminating return), mirroring funcs.
+	 * A void proc (incl. main) just `ret void`. */
+	if (strcmp(ctx->current_return_type_buf, "void") == 0) {
+		buffer_append(ctx, "  ret void\n");
+	} else {
+		const char *ret_value = "0";
+		if (proc->return_type_count > 1) {
+			ret_value = "zeroinitializer"; /* aggregate return type */
+		} else if (strcmp(ctx->current_return_type_buf, "double") == 0) {
+			ret_value = "0.0";
+		} else if (strchr(ctx->current_return_type_buf, '*')) {
+			ret_value = "null"; /* pointer return (e.g. char[] -> i8*) */
+		}
+		buffer_append_fmt(ctx, "  ret %s %s\n", ctx->current_return_type_buf, ret_value);
+	}
 	end_function_body(ctx, fbs_proc);
 	buffer_append(ctx, "}\n\n");
 }

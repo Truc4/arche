@@ -202,6 +202,10 @@ struct ProcDecl {
 	char *name;
 	Parameter **params;
 	int param_count;
+	/* A proc may return a list of types (a single return is count == 1; `-> (T1, …, Tn)` an
+	 * aggregate), exactly like a func. count == 0 is a void proc — an action with no value. */
+	TypeRef **return_types;
+	int return_type_count;
 	int is_extern;
 	int is_unsafe; /* 1 if declared `unsafe proc`; may call unsafe builtins (syscall) */
 	Statement **statements;

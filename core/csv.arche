@@ -1,20 +1,4 @@
-// Legacy fread-based API
-func open(path: char[]) -> file {
-  return arche_fopen_read(path);
-}
-proc close(own fd: file) {
-  arche_fclose(move fd);
-}
-proc skip_header(fd: file) {
-  line: char[256];
-  arche_fread_line(fd, line, 256);
-}
-// Fill the caller's buffer and hand it back with the byte count. `buf` is an `own` parameter;
-// the caller passes it `move` (zero copy): `buf, n := read_chunk(fd, move buf, size)`.
-func read_chunk(fd: file, own buf: char[], size: int) -> (char[], int) {
-  n := arche_csv_read_chunk(fd, buf, size);
-  return buf, n;
-}
+// The file-handle / streaming API (open/close/skip_header/read_chunk) now lives in io.arche.
 
 // --- Pure-Arche CSV loader (no custom CSV C; only libc mmap/atof/atoi) ---
 // Memory-maps the whole file and scans it in Arche with i64 byte offsets, so

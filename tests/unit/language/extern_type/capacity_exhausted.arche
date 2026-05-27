@@ -10,7 +10,10 @@ extern resource_open(initial: int) -> cell;
 static pool<Resource> (2);
 
 proc main() {
-  a := insert(Resource, resource_open(1));
-  b := insert(Resource, resource_open(2));
-  c := insert(Resource, resource_open(3));
+  r1 := resource_open(1);
+  a := insert(Resource, r1);
+  r2 := resource_open(2);
+  b := insert(Resource, r2);
+  r3 := resource_open(3);
+  c := insert(Resource, r3);
 }

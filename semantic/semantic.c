@@ -96,6 +96,13 @@ struct SemanticContext {
 	 * (currently `syscall`) so they cannot be called from ordinary safe code. */
 	int in_unsafe;
 
+	/* 1 only while analyzing a call that sits in a statement / bind-RHS position (where an
+	 * *action* is allowed). A proc or extern call is an action, not a value, so it may appear
+	 * only there — never nested inside another expression. Set by STMT_EXPR / STMT_BIND /
+	 * STMT_ASSIGN, captured-and-cleared at the top of EXPR_CALL so the call's own args are
+	 * value positions. */
+	int stmt_call_ok;
+
 	/* AstProgram for looking up declarations */
 	AstProgram *prog;
 
@@ -862,23 +869,29 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 			return NULL;
 		}
 
-		/* Plain func path (unchanged from before). */
+		/* Plain func/proc path: a returning proc yields its first return type exactly like a func. */
 		for (int i = 0; i < ctx->prog->decl_count; i++) {
 			Decl *decl = ctx->prog->decls[i];
-			if (decl->kind == DECL_FUNC && strcmp(decl->data.func->name, func_name) == 0) {
-				TypeRef *rt = func_first_return_type(decl->data.func);
-				if (!rt)
-					return NULL;
-				if (rt->kind == TYPE_HANDLE)
-					return rt->data.handle.archetype_name;
-				if (rt->kind == TYPE_NAME)
-					return resolve_type_alias(ctx, normalize_type_name(rt->data.name));
-				if (rt->kind == TYPE_ARRAY)
-					return "char_array"; /* extern func returning char[] (raw byte view) */
-				if (rt->kind == TYPE_OPAQUE)
-					return "opaque"; /* foreign resource value (pointer-width i64) */
-				return NULL;
+			TypeRef *rt = NULL;
+			if (decl->kind == DECL_FUNC && decl->data.func->name && strcmp(decl->data.func->name, func_name) == 0) {
+				rt = func_first_return_type(decl->data.func);
+			} else if (decl->kind == DECL_PROC && decl->data.proc->name &&
+			           strcmp(decl->data.proc->name, func_name) == 0) {
+				rt = (decl->data.proc->return_type_count > 0) ? decl->data.proc->return_types[0] : NULL;
+			} else {
+				continue;
 			}
+			if (!rt)
+				return NULL;
+			if (rt->kind == TYPE_HANDLE)
+				return rt->data.handle.archetype_name;
+			if (rt->kind == TYPE_NAME)
+				return resolve_type_alias(ctx, normalize_type_name(rt->data.name));
+			if (rt->kind == TYPE_ARRAY)
+				return "char_array"; /* returning char[] (raw byte view) */
+			if (rt->kind == TYPE_OPAQUE)
+				return "opaque"; /* foreign resource value (pointer-width i64) */
+			return NULL;
 		}
 		return NULL;
 	}
@@ -1160,6 +1173,11 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		break;
 
 	case EXPR_CALL: {
+		/* A proc/extern call is an action, allowed only as a statement or a whole bind/assign RHS.
+		 * Capture whether THIS call is in such a position, then clear the flag so the call's own
+		 * arguments (and any nested calls) are value positions. */
+		int call_stmt_ok = ctx->stmt_call_ok;
+		ctx->stmt_call_ok = 0;
 		/* Width-type cast: i64(x), u8(x), etc. The callee is a type name, not a
 		 * function — analyze only the argument(s) and stop. */
 		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME &&
@@ -1226,6 +1244,19 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 						is_extern = d->data.proc->is_extern;
 					} else {
 						continue;
+					}
+
+					/* Value/action boundary: a `proc`, or an `extern` (a foreign-bodied proc), is an
+					 * action — usable only as a standalone statement or the whole RHS of a bind/assign,
+					 * never nested inside another expression. A `func` is a value and may appear
+					 * anywhere. */
+					if ((d->kind == DECL_PROC || is_extern) && !call_stmt_ok) {
+						char msg[320];
+						snprintf(msg, sizeof(msg),
+						         "a %s call is an action, not a value — bind it (`x := %s(...)`) or call "
+						         "it as a statement; it can't appear inside an expression",
+						         is_extern ? "extern" : "proc", func_name);
+						error(ctx, msg);
 					}
 
 					/* An `own` parameter takes ownership: a named binding handed to it must be
@@ -1446,11 +1477,17 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 					add_variable(ctx, var_name, NULL);
 				}
 			}
-			/* Now analyze the call expression after variables are defined */
+			/* Now analyze the call expression after variables are defined. A multi-bind RHS IS the
+			 * whole call, so a proc/extern there is allowed (it's an action whose result is bound). */
+			ctx->stmt_call_ok = 1;
 			analyze_expression(ctx, stmt->data.bind_stmt.value);
+			ctx->stmt_call_ok = 0;
 		} else {
-			/* Single-value let or non-call multivalue expressions: analyze value first */
+			/* Single-value let or non-call multivalue expressions: analyze value first. A proc/extern
+			 * call is allowed only when it is the whole RHS (`x := p(...)`), not nested in it. */
+			ctx->stmt_call_ok = (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->type == EXPR_CALL);
 			analyze_expression(ctx, stmt->data.bind_stmt.value);
+			ctx->stmt_call_ok = 0;
 
 			/* Multi-value let (non-call): add all variables from names array */
 			if (stmt->data.bind_stmt.name_count > 0 && stmt->data.bind_stmt.names) {
@@ -1544,8 +1581,11 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 	case STMT_MULTI_BIND: {
 		/* Multi-bind: `x, y, n := expr`. Analyze the RHS FIRST so a `move x` inside it
 		 * refers to the existing binding (e.g. a buffer being passed by reference and
-		 * returned), not a target we are about to introduce. */
+		 * returned), not a target we are about to introduce. The RHS is the whole (multi-return)
+		 * call, so a proc/extern there is allowed — an action whose results are bound. */
+		ctx->stmt_call_ok = (stmt->data.multi_bind.value && stmt->data.multi_bind.value->type == EXPR_CALL);
 		analyze_expression(ctx, stmt->data.multi_bind.value);
+		ctx->stmt_call_ok = 0;
 
 		/* Then bind the targets. A new target (`x` / `x:`) introduces a FRESH binding that
 		 * shadows any same-named one — so `buf := f(move buf)` rebinds the moved buffer with
@@ -1574,7 +1614,10 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 
 	case STMT_ASSIGN:
 		analyze_expression(ctx, stmt->data.assign_stmt.target);
+		/* A proc/extern call is allowed only as the whole RHS of the assign (`x = p(...)`). */
+		ctx->stmt_call_ok = (stmt->data.assign_stmt.value && stmt->data.assign_stmt.value->type == EXPR_CALL);
 		analyze_expression(ctx, stmt->data.assign_stmt.value);
+		ctx->stmt_call_ok = 0;
 		/* You cannot assign to a binding that was moved (it's dead): `buf = foo(move buf)` must
 		 * be written `buf := foo(move buf)` (a fresh binding). The move in the RHS consumes the
 		 * target above, so check it here. */
@@ -1731,7 +1774,11 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		break;
 
 	case STMT_EXPR:
+		/* A standalone expression statement: a proc/extern call here is allowed — it's an action
+		 * performed for its effect (its return value, if any, is discarded). */
+		ctx->stmt_call_ok = 1;
 		analyze_expression(ctx, stmt->data.expr_stmt.expr);
+		ctx->stmt_call_ok = 0;
 		break;
 
 	case STMT_RETURN:
@@ -2156,55 +2203,37 @@ static int body_has_side_effects(SemanticContext *ctx, Statement **stmts, int co
 	return 0;
 }
 
-/* True if the body is empty or contains only effect-free statements (lets with
- * pure initializers, returns, breaks). Stricter signal than "no side effects". */
-static int body_is_effectively_empty(SemanticContext *ctx, ProcDecl *proc) {
-	if (proc->statement_count == 0)
-		return 1;
-	for (int i = 0; i < proc->statement_count; i++) {
-		Statement *s = proc->statements[i];
-		if (!s)
-			continue;
-		switch (s->type) {
-		case STMT_BIND:
-			if (s->data.bind_stmt.value && expr_has_side_effects(ctx, s->data.bind_stmt.value, proc))
-				return 0;
-			break; /* let with pure init: still empty */
-		case STMT_RETURN:
-		case STMT_BREAK:
-			break; /* control flow only */
-		default:
-			return 0;
-		}
-	}
-	return 1;
-}
-
 /* Run the proc-could-be-func and proc-no-effect lints on a non-extern proc. */
+/* A proc "could be a func" iff its body would pass func-purity — the SAME predicate
+ * `enforce_func_purity` uses — so the lint and the hard error agree on what "pure" means. */
+static const char *func_purity_body(SemanticContext *ctx, Statement **stmts, int count);
+
 static void lint_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	if (!proc || proc->is_extern || proc->allow_pure_proc)
 		return;
 
-	/* proc-no-effect is the stricter case; emit only that one if it applies. */
-	if (body_is_effectively_empty(ctx, proc)) {
-		if (g_lint_config.proc_no_effect_enabled) {
-			char msg[256];
-			snprintf(msg, sizeof(msg),
-			         "proc '%s' has an empty or effect-free body; remove it or add the intended logic",
-			         proc->name ? proc->name : "<unknown>");
-			lint_emit(ctx, g_lint_config.proc_no_effect_werror, proc->loc, "proc-no-effect", msg);
-		}
+	/* A proc whose body has effects is legitimately a proc — nothing to lint. */
+	if (func_purity_body(ctx, proc->statements, proc->statement_count) != NULL)
 		return;
-	}
 
-	if (g_lint_config.proc_could_be_func_enabled &&
-	    !body_has_side_effects(ctx, proc->statements, proc->statement_count, proc)) {
-		char msg[320];
-		snprintf(msg, sizeof(msg),
-		         "proc '%s' has no detectable side effects; consider declaring it as 'func' "
-		         "(suppress with @allow_pure_proc)",
+	/* Pure body. If it returns a value it computes something — it should be a `func` (procs are
+	 * for effects). If it returns nothing, it's a no-op proc (does nothing observable) — flag for
+	 * removal. The purity test is the SAME predicate `enforce_func_purity` uses, so "could be a
+	 * func" means exactly "would compile as a func". */
+	if (proc->return_type_count > 0) {
+		if (g_lint_config.proc_could_be_func_enabled) {
+			char msg[320];
+			snprintf(msg, sizeof(msg),
+			         "proc '%s' has a pure body and returns a value — it should be a 'func' "
+			         "(suppress with @allow_pure_proc)",
+			         proc->name ? proc->name : "<unknown>");
+			lint_emit(ctx, g_lint_config.proc_could_be_func_werror, proc->loc, "proc-could-be-func", msg);
+		}
+	} else if (g_lint_config.proc_no_effect_enabled) {
+		char msg[256];
+		snprintf(msg, sizeof(msg), "proc '%s' has an empty or effect-free body; remove it or add the intended logic",
 		         proc->name ? proc->name : "<unknown>");
-		lint_emit(ctx, g_lint_config.proc_could_be_func_werror, proc->loc, "proc-could-be-func", msg);
+		lint_emit(ctx, g_lint_config.proc_no_effect_werror, proc->loc, "proc-no-effect", msg);
 	}
 }
 
@@ -3740,6 +3769,11 @@ static Decl *cst_build_decl(CstView d) {
 		for (int i = 0; i < np; i++)
 			ap->params[i] = cst_build_param(cv_child_at(d, SN_PARAM, i));
 		ap->param_count = np;
+		int pnt = cv_type_count_sem(d); /* return types are the direct type-node children (0 = void) */
+		ap->return_types = calloc(pnt ? pnt : 1, sizeof(TypeRef *));
+		ap->return_type_count = 0;
+		for (int i = 0; i < pnt; i++)
+			ap->return_types[ap->return_type_count++] = cst_build_type(sem_type_at(d, i));
 		ap->statements = cst_build_body(d, &ap->statement_count);
 		ad->data.proc = ap;
 		return ad;
