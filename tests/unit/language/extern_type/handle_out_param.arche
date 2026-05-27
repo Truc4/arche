@@ -3,9 +3,9 @@
 // leading return of the multi-return signature `-> (char[], int)` — filled in place, bound
 // alongside the scalar at the call.
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t | grep "v=42 b=2"
-resource :: opaque extern func resource_open(initial: int) -> resource;
-extern func resource_fill(r: resource, buf: char[], n: int) -> int;
-extern proc resource_close(own r: resource);
+resource :: opaque extern resource_open(initial: int) -> resource;
+extern resource_fill(r: resource, buf: char[], n: int) -> int;
+extern resource_close(own r: resource);
 
 proc main() {
   r := resource_open(42);

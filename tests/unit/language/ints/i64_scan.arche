@@ -8,9 +8,7 @@ proc main() {
 
   // i64 loop counter + i64 array index
   sum: i64 = 0;
-  for (i: i64 = 0;
-  i < 3;
-  i = i + 1) {
+  for (i: i64 = 0; i < 3; i = i + 1) {
     sum = sum + buf[i];
   }
 

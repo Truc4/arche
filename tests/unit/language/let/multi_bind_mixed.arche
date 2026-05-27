@@ -1,24 +1,24 @@
 // RUN: %arche -o %t %s && %t | grep -E "test1|test2|test3"
 // Buffers filled in place across several calls.
-func fill_two(buf1: char[32], buf2: char[32]) -> int {
-  sprintf(buf1, "hello");
-  sprintf(buf2, "world");
-  return 99;
+func fill_two(own buf1: char[32], own buf2: char[32]) -> (char[32], char[32], int) {
+  buf1 := strcopy(move buf1, "hello");
+  buf2 := strcopy(move buf2, "world");
+  return buf1, buf2, 99;
 }
 
 proc main() {
   x: char[32];
   y: char[32];
-  n := fill_two(x, y);
+  x, y, n := fill_two(move x, move y);
   printf("test1: x=%s y=%s n=%d\n", x, y, n);
 
   a: char[32];
   z: char[32];
-  m := fill_two(a, z);
+  a, z, m := fill_two(move a, move z);
   printf("test2: a=%s z=%s m=%d\n", a, z, m);
 
   p: char[32];
   q: char[32];
-  k := fill_two(p, q);
+  p, q, k := fill_two(move p, move q);
   printf("test3: p=%s q=%s k=%d\n", p, q, k);
 }

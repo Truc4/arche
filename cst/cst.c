@@ -52,6 +52,8 @@ ProcDecl *proc_decl_create(char *name) {
 	proc->name = name;
 	proc->params = NULL;
 	proc->param_count = 0;
+	proc->return_types = NULL;
+	proc->return_type_count = 0;
 	proc->is_extern = 0;
 	proc->is_unsafe = 0;
 	proc->statements = NULL;

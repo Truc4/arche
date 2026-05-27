@@ -20,9 +20,7 @@ proc write_transactions() {
   fd := arche_fopen_write("build/benchmarks/etl/task1/arche_output.csv");
   buf: char[256];
   i := 0;
-  for (;
-  i < 1000;
-  ) {
+  for (; i < 1000;) {
     n := sprintf(buf, "%f,%d,%f\n", Transaction.price[i], Transaction.quantity[i], Transaction.revenue[i]);
     arche_fwrite(fd, buf, n);
     i = i + 1;

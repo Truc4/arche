@@ -1,21 +1,19 @@
 // RUN: %arche -o %t %s && cd %repo && %t | grep "rows: 1000"
-use csv;
+use io;
 
 proc main() {
-  fd := csv_open("tests/fixtures/data.csv");
-  csv_skip_header(fd);
+  fd := io_open("tests/fixtures/data.csv");
+  io_skip_header(fd);
   rows := 0;
   buf: char[65536];
-  buf, n := csv_read_chunk(fd, move buf, 65536);
+  buf, n := io_read_chunk(fd, move buf, 65536);
   pos := 0;
-  for (;
-  pos < n;
-  ) {
+  for (; pos < n;) {
     if (buf[pos] == 10) {
       rows = rows + 1;
     }
     pos = pos + 1;
   }
-  csv_close(move fd);
+  io_close(move fd);
   printf("rows: %d\n", rows);
 }

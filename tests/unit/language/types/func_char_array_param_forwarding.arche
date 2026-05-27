@@ -1,5 +1,5 @@
 // RUN: %arche -o %t %s && %t | grep "commas=2"
-// BUG: forwarding a `char[]` parameter into another non-extern func that also
+// BUG: forwarding a `char[]` parameter into another non-extern that also
 //      takes `char[]` passes the wrong LLVM type, causing a SIGSEGV at runtime
 //      (printed as "stack overflow" by the SIGSEGV handler in runtime/stack_check.c).
 //
@@ -27,9 +27,7 @@
 
 func inner(data: char[], n: int) -> int {
   cnt := 0;
-  for (i := 0;
-  i < n;
-  i += 1) {
+  for (i := 0; i < n; i += 1) {
     if (data[i] == ',') {
       cnt += 1;
     }

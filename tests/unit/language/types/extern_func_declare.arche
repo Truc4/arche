@@ -1,5 +1,5 @@
 // RUN: %arche -o %t %s && %t
-// Test just extern func declarations via core.arche
+// Test just extern declarations via core.arche
 proc main() {
-  printf("extern func declarations ok\n");
+  printf("extern declarations ok\n");
 }

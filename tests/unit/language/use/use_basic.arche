@@ -1,12 +1,12 @@
 // RUN: %arche -o %t %s && cd %repo && %t | grep "PASS"
-use csv;
+use io;
 
 proc main() {
-  fd := csv_open("tests/fixtures/data.csv");
+  fd := io_open("tests/fixtures/data.csv");
   if (fd > 0) {
     buf: char[65536];
-    buf, n := csv_read_chunk(fd, move buf, 65536);
-    csv_close(move fd);
+    buf, n := io_read_chunk(fd, move buf, 65536);
+    io_close(move fd);
     if (n > 0) {
       printf("PASS: read %d bytes\n", n);
     }

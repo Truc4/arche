@@ -31,13 +31,9 @@ proc main() {
 
   total := 0.0;
   t0 := arche_now_sec();
-  for (iter := 0;
-  iter < 216000;
-  iter += 1) {
+  for (iter := 0; iter < 216000; iter += 1) {
     Transaction.revenue = Transaction.price * Transaction.quantity * (Transaction.quantity > 0) * (Transaction.price > 10.0);
-    for (m := 0;
-    m < 10000;
-    m += 1) {
+    for (m := 0; m < 10000; m += 1) {
       total = total + Transaction.revenue[m];
     }
   }

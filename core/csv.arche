@@ -1,20 +1,4 @@
-// Legacy fread-based API
-func open(path: char[]) -> file {
-  return arche_fopen_read(path);
-}
-proc close(own fd: file) {
-  arche_fclose(move fd);
-}
-proc skip_header(fd: file) {
-  line: char[256];
-  arche_fread_line(fd, line, 256);
-}
-// Fill the caller's buffer and hand it back with the byte count. `buf` is an `own` parameter;
-// the caller passes it `move` (zero copy): `buf, n := read_chunk(fd, move buf, size)`.
-func read_chunk(fd: file, own buf: char[], size: int) -> (char[], int) {
-  n := arche_csv_read_chunk(fd, buf, size);
-  return buf, n;
-}
+// The file-handle / streaming API (open/close/skip_header/read_chunk) now lives in io.arche.
 
 // --- Pure-Arche CSV loader (no custom CSV C; only libc mmap/atof/atoi) ---
 // Memory-maps the whole file and scans it in Arche with i64 byte offsets, so
@@ -26,9 +10,7 @@ static load_cols: int[64];
 
 // first index of byte `ch` in data[start..end), or end if absent
 func find_byte(data: char[], start: i64, end: i64, ch: int) -> i64 {
-  for (i: i64 = start;
-  i < end;
-  i = i + 1) {
+  for (i: i64 = start; i < end; i = i + 1) {
     if (data[i] == ch) {
       return i;
     }
@@ -42,9 +24,7 @@ func name_eq(name: char[], data: char[], start: i64, end: i64) -> int {
   if (strlen(name) != len) {
     return 0;
   }
-  for (i: i64 = 0;
-  i < len;
-  i = i + 1) {
+  for (i: i64 = 0; i < len; i = i + 1) {
     if (name[i] != data[start + i]) {
       return 0;
     }
@@ -55,9 +35,7 @@ func name_eq(name: char[], data: char[], start: i64, end: i64) -> int {
 // start offset of the col-th comma-separated field within data[row_start..row_end)
 func field_at(data: char[], row_start: i64, row_end: i64, col: int) -> i64 {
   p: i64 = row_start;
-  for (remaining := col;
-  remaining > 0;
-  remaining -= 1) {
+  for (remaining := col; remaining > 0; remaining -= 1) {
     p = find_byte(data, p, row_end, ',') + 1;
   }
   return p;
@@ -87,9 +65,7 @@ proc load(arch: archetype, path: char[]) {
     load_cols[f.index] = - 1;
     col := 0;
     cstart: i64 = 0;
-    for (;
-    cstart < hdr_end;
-    ) {
+    for (; cstart < hdr_end;) {
       cend: i64 = find_byte(data, cstart, hdr_end, ',');
       if (name_eq(f.name, data, cstart, cend)) {
         load_cols[f.index] = col;
@@ -102,9 +78,7 @@ proc load(arch: archetype, path: char[]) {
 
   // row pass: pull each field from its mapped column
   pos: i64 = hdr_end + 1;
-  for (row := 0;
-  row < arch.capacity;
-  row += 1) {
+  for (row := 0; row < arch.capacity; row += 1) {
     if (pos >= size) {
       break;
     }
@@ -116,9 +90,7 @@ proc load(arch: archetype, path: char[]) {
         fend: i64 = find_byte(data, fstart, nl, ',');
         scratch: char[64];
         j := 0;
-        for (i: i64 = fstart;
-        i < fend;
-        i = i + 1) {
+        for (i: i64 = fstart; i < fend; i = i + 1) {
           scratch[j] = data[i];
           j += 1;
         }

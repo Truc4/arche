@@ -8,17 +8,13 @@ func setb(own buf: char[], i: i64, v: int) -> char[] {
 proc main() {
   b: char[16];
   // i64-indexed stores into a local buffer and via a char[] param
-  for (i: i64 = 0;
-  i < 16;
-  i = i + 1) {
+  for (i: i64 = 0; i < 16; i = i + 1) {
     b[i] = 0;
   }
   b := setb(move b, 3, 7);
   b := setb(move b, 5, 9);
   sum: i64 = 0;
-  for (i: i64 = 0;
-  i < 16;
-  i = i + 1) {
+  for (i: i64 = 0; i < 16; i = i + 1) {
     sum = sum + b[i];
   }
   printf("b3=%d b5=%d sum=%ld\n", b[3], b[5], sum);

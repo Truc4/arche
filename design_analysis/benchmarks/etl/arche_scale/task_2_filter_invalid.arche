@@ -18,9 +18,7 @@ proc load_transactions() {
 proc main() {
   load_transactions();
   count := 0;
-  for (m := 0;
-  m < 100000000;
-  m += 1) {
+  for (m := 0; m < 100000000; m += 1) {
     if (Transaction.quantity[m] > 0) {
       count += 1;
     }

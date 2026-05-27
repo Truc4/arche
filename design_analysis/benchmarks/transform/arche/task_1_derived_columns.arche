@@ -23,9 +23,7 @@ proc write_output() {
   sprintf(header, "revenue\n");
   arche_fwrite(fd, header, strlen(header));
   buf: char[64];
-  for (i := 0;
-  i < 10000;
-  i += 1) {
+  for (i := 0; i < 10000; i += 1) {
     sprintf(buf, "%g\n", Transaction.revenue[i]);
     arche_fwrite(fd, buf, strlen(buf));
   }
@@ -35,18 +33,14 @@ proc write_output() {
 proc main() {
   load_transactions();
   t0 := arche_now_sec();
-  for (iter := 0;
-  iter < 216000;
-  iter += 1) {
+  for (iter := 0; iter < 216000; iter += 1) {
     Transaction.revenue = Transaction.price * Transaction.quantity;
   }
   t1 := arche_now_sec();
   elapsed := t1 - t0;
 
   sum := 0.0;
-  for (m := 0;
-  m < 10000;
-  m += 1) {
+  for (m := 0; m < 10000; m += 1) {
     sum = sum + Transaction.revenue[m];
   }
 

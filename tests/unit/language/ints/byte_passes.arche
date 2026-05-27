@@ -4,17 +4,13 @@
 // The written buffer is moved in by reference and returned; the read-only source
 // is passed by value (copied in, no side effect).
 func copy_bytes(own dst: char[], src: char[], n: i64) -> char[] {
-  for (i: i64 = 0;
-  i < n;
-  i = i + 1) {
+  for (i: i64 = 0; i < n; i = i + 1) {
     dst[i] = src[i];
   }
   return dst;
 }
 func classify_commas(data: char[], own mask: char[], n: i64) -> char[] {
-  for (i: i64 = 0;
-  i < n;
-  i = i + 1) {
+  for (i: i64 = 0; i < n; i = i + 1) {
     mask[i] = data[i] == 44;
   }
   return mask;
@@ -34,9 +30,7 @@ proc main() {
   mask: char[8];
   mask := classify_commas(src, move mask, 8);
   commas: i64 = 0;
-  for (i: i64 = 0;
-  i < 8;
-  i = i + 1) {
+  for (i: i64 = 0; i < 8; i = i + 1) {
     commas = commas + mask[i];
   }
   ok := 0;
