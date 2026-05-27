@@ -5,7 +5,7 @@
 cell :: opaque arche Resource {
   cell,
 }
-extern func resource_open(initial: int) -> cell;
+extern resource_open(initial: int) -> cell;
 static pool<Resource> (8);
 
 proc main() {

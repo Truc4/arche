@@ -663,7 +663,8 @@ static int parse_func_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	*out_kind = SN_FUNC_DECL;
 	int is_extern = parser->previous.kind == TOK_EXTERN;
 
-	if (!match(parser, TOK_FUNC)) {
+	/* `func` keyword is optional for a bare extern (`extern name(...)`); required otherwise. */
+	if (!match(parser, TOK_FUNC) && !is_extern) {
 		error(parser, "Expected 'func'");
 		return 0;
 	}
@@ -749,32 +750,33 @@ static int parse_func_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		return 0;
 	}
 
-	if (!match(parser, TOK_ARROW)) {
-		error(parser, "Expected '->'");
-		return 0;
-	}
-
 	/* Return type: single `-> T`, or multi-return `-> (T1, …, Tn)`. In the multi form the
 	 * leading array returns are caller-passed buffers the func fills in place; the final
-	 * return types is a list — a single return is just count == 1. */
-	if (match(parser, TOK_LPAREN)) {
-		int return_type_count = 0;
-		do {
+	 * return types is a list — a single return is just count == 1. The `->` is optional for a
+	 * bare extern (absent ⇒ void, 0 return types); mandatory for an ordinary func. */
+	if (match(parser, TOK_ARROW)) {
+		if (match(parser, TOK_LPAREN)) {
+			int return_type_count = 0;
+			do {
+				if (!parse_type(parser))
+					return 0;
+				return_type_count++;
+			} while (match(parser, TOK_COMMA));
+			if (!match(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')' after multi-return type list");
+				return 0;
+			}
+			if (return_type_count < 2) {
+				error(parser, "a parenthesized return type must list at least two types");
+				return 0;
+			}
+		} else {
 			if (!parse_type(parser))
 				return 0;
-			return_type_count++;
-		} while (match(parser, TOK_COMMA));
-		if (!match(parser, TOK_RPAREN)) {
-			error(parser, "Expected ')' after multi-return type list");
-			return 0;
 		}
-		if (return_type_count < 2) {
-			error(parser, "a parenthesized return type must list at least two types");
-			return 0;
-		}
-	} else {
-		if (!parse_type(parser))
-			return 0;
+	} else if (!is_extern) {
+		error(parser, "Expected '->'");
+		return 0;
 	}
 
 	/* For extern funcs, no body needed */
@@ -1018,14 +1020,12 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		return parse_archetype_decl(parser, out_kind);
 	case TOK_EXTERN:
 		advance(parser); /* consume 'extern' */
-		if (check(parser, TOK_FUNC)) {
-			return parse_func_decl(parser, out_kind);
-		} else if (check(parser, TOK_PROC)) {
+		/* `extern name(args) [-> ret];` — a foreign C decl, neither func nor proc. Reconstructed
+		 * as FuncDecl+is_extern with an optional return (no `->` ⇒ void, 0 return types). The
+		 * `func`/`proc` keyword after `extern` is no longer required (still tolerated). */
+		if (check(parser, TOK_PROC))
 			return parse_proc_decl(parser, out_kind);
-		} else {
-			error(parser, "Expected 'func' or 'proc' after 'extern'");
-			return 0;
-		}
+		return parse_func_decl(parser, out_kind);
 	case TOK_PROC:
 		return parse_proc_decl(parser, out_kind);
 	case TOK_SYS:

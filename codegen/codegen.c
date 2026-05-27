@@ -2754,21 +2754,13 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				/* Use the same mapping as the function definition's return type so the call
 				 * site and the callee agree — char[] / char[N] both become i8* (a byte view). */
 				return_type = return_member_llvm(crt);
-			} else if (callee_proc && callee_proc->is_extern) {
-				/* For extern procs, check if they're in core lib (known to return a value) */
-				if (strcmp(func_name, "atof") == 0) {
-					return_type = "double";
-				} else if (strcmp(func_name, "atoi") == 0) {
-					return_type = "i32";
-				} else if (strcmp(func_name, "open") == 0 || strcmp(func_name, "read") == 0 ||
-				           strcmp(func_name, "close") == 0) {
-					return_type = "i32";
-				} else {
-					/* All other extern procs are void — they are C functions that don't return a value */
-					return_type = "void";
-				}
-			} else if (callee_proc && callee_proc->is_extern == 0) {
-				/* Non-extern proc: always void */
+			} else if (callee_func && callee_func->is_extern) {
+				/* Bare extern with no declared return (`extern name(...)`) ⇒ void. A returning
+				 * extern carries its type in `return_types` and is handled by the `crt` branch
+				 * above — the return type now always comes from the declaration, no name list. */
+				return_type = "void";
+			} else if (callee_proc) {
+				/* Procs never return a value (extern or not). */
 				return_type = "void";
 			} else if (expr->resolved.tag != HIR_TYPE_UNKNOWN) {
 				/* Fallback: use resolved type if available */
@@ -5889,9 +5881,13 @@ static void end_function_body(CodegenContext *ctx, FunctionBodyState state) {
 static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 	/* For extern funcs, emit declare stub */
 	if (func->is_extern) {
-		/* char[] returns a raw i8* byte view (e.g. arche_file_map for whole-file mmap). */
+		/* Return type from the declaration: a bare extern with no `->` is void; char[] returns a
+		 * raw i8* byte view (e.g. arche_file_map for whole-file mmap). */
 		char ret_buf[512];
-		func_llvm_return_type(func, ret_buf, sizeof(ret_buf));
+		if (func->return_type_count == 0)
+			snprintf(ret_buf, sizeof(ret_buf), "void");
+		else
+			func_llvm_return_type(func, ret_buf, sizeof(ret_buf));
 		buffer_append_fmt(ctx, "declare %s @%s(", ret_buf, func->name);
 		for (int i = 0; i < func->param_count; i++) {
 			HirType *param_type = func->params[i]->type;
@@ -5911,6 +5907,9 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 				buffer_append(ctx, ", ");
 			}
 		}
+		/* Arche has no variadic syntax; keep the name-based special-case for the C variadics we use. */
+		if (strcmp(func->name, "printf") == 0 || strcmp(func->name, "sprintf") == 0)
+			buffer_append(ctx, ", ...");
 		buffer_append(ctx, ")\n");
 		return;
 	}
@@ -6046,13 +6045,9 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 	/* For extern procs, emit declare stub */
 	if (proc->is_extern) {
-		/* Extern procs are C functions that return void, except known value-returning ones */
-		int is_value_func =
-		    (strcmp(proc->name, "atof") == 0 || strcmp(proc->name, "atoi") == 0 || strcmp(proc->name, "open") == 0 ||
-		     strcmp(proc->name, "read") == 0 || strcmp(proc->name, "close") == 0 || strcmp(proc->name, "printf") == 0 ||
-		     strcmp(proc->name, "sprintf") == 0);
-		const char *decl_ret = is_value_func ? "i32" : "void";
-		buffer_append_fmt(ctx, "declare %s @%s(", decl_ret, proc->name);
+		/* Extern procs are void C functions. (Returning externs are now extern funcs, which
+		 * carry their return type in the declaration — no name-based return-type list.) */
+		buffer_append_fmt(ctx, "declare void @%s(", proc->name);
 		for (int i = 0; i < proc->param_count; i++) {
 			HirType *param_type = proc->params[i]->type;
 			const char *type_name = field_base_type_name(param_type);

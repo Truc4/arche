@@ -3,7 +3,9 @@
 // name indexes correctly afterward.
 // RUN: %arche -o %t %s && %t | grep "a=hi b0=11"
 func fill(own buf: char[16]) -> char[16] {
-  sprintf(buf, "hi");
+  buf[0] = 'h';
+  buf[1] = 'i';
+  buf[2] = 0;
   return buf;
 }
 func bump(own buf: char[16]) -> char[16] {

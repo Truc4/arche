@@ -1,7 +1,7 @@
 // Opaque values are non-copyable (move-only): `copy` of one is a compile error.
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "move-only" %t.out
-window :: opaque extern func window_open(t: char[], w: int, h: int) -> window;
-extern proc window_use(own w: window);
+window :: opaque extern window_open(t: char[], w: int, h: int) -> window;
+extern window_use(own w: window);
 
 proc main() {
   w := window_open("", 1, 1);

@@ -1,5 +1,5 @@
 // RUN: %arche -o %t %s && %t | grep "commas=2"
-// BUG: forwarding a `char[]` parameter into another non-extern func that also
+// BUG: forwarding a `char[]` parameter into another non-extern that also
 //      takes `char[]` passes the wrong LLVM type, causing a SIGSEGV at runtime
 //      (printed as "stack overflow" by the SIGSEGV handler in runtime/stack_check.c).
 //

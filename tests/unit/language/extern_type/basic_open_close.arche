@@ -3,10 +3,10 @@
 // ABI). No extern-table, no handle, no marshal. `consume` on close ends the value's life.
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t | grep "value=42"
 
-resource :: opaque extern func resource_open(initial: int) -> resource;
-extern func resource_get(r: resource) -> int;
-extern proc resource_set(r: resource, v: int);
-extern proc resource_close(own r: resource);
+resource :: opaque extern resource_open(initial: int) -> resource;
+extern resource_get(r: resource) -> int;
+extern resource_set(r: resource, v: int);
+extern resource_close(own r: resource);
 
 proc main() {
   r := resource_open(10);
