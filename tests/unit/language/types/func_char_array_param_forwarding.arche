@@ -27,9 +27,7 @@
 
 func inner(data: char[], n: int) -> int {
   cnt := 0;
-  for (i := 0;
-  i < n;
-  i += 1) {
+  for (i := 0; i < n; i += 1) {
     if (data[i] == ',') {
       cnt += 1;
     }

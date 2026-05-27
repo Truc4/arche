@@ -1361,9 +1361,15 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		char *right_conv = NULL;
 
 		if (is_float) {
-			/* Check if left operand needs conversion to double */
+			/* Usual arithmetic conversions: the op's type is double, so each integer operand is
+			 * promoted to double (sitofp). `char` is an integer type and promotes too — keying
+			 * off the integer *category* (INT or CHAR), not just HIR_TYPE_INT, is what catches a
+			 * char-derived digit like `s[i] - '0'`. A bare integer literal (no '.', not an SSA
+			 * name) is likewise converted; an already-double value (float-tagged SSA or a '.'
+			 * literal) is left alone. */
 			int left_needs_conv = 0;
-			if (expr->data.binary.left->resolved.tag == HIR_TYPE_INT) {
+			if (expr->data.binary.left->resolved.tag == HIR_TYPE_INT ||
+			    expr->data.binary.left->resolved.tag == HIR_TYPE_CHAR) {
 				left_needs_conv = 1;
 			} else if (strchr(left_buf, '.') == NULL && strchr(left_buf, 'v') == NULL &&
 			           strchr(left_buf, '%') == NULL) {
@@ -1385,9 +1391,10 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				left_val = left_conv;
 			}
 
-			/* Check if right operand needs conversion to double */
+			/* Right operand: same usual-arithmetic-conversion rule as the left. */
 			int right_needs_conv = 0;
-			if (expr->data.binary.right->resolved.tag == HIR_TYPE_INT) {
+			if (expr->data.binary.right->resolved.tag == HIR_TYPE_INT ||
+			    expr->data.binary.right->resolved.tag == HIR_TYPE_CHAR) {
 				right_needs_conv = 1;
 			} else if (strchr(right_buf, '.') == NULL && strchr(right_buf, 'v') == NULL &&
 			           strchr(right_buf, '%') == NULL) {

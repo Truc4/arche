@@ -1,0 +1,16 @@
+// Usual arithmetic conversions: in a floating-point expression, an integer operand is
+// promoted to double (sitofp). The operand must convert regardless of its exact resolved
+// tag — including a char-derived value like `s[i] - '0'` (tag char, materialized i32).
+// Regression: `float_expr + d` only converted `d` when its tag was exactly HIR_TYPE_INT, so
+// a char-derived digit slipped through as `fadd double, i32` and the verifier rejected it —
+// which is precisely what blocked a pure-arche `atof`.
+// RUN: %arche -o %t %s && %t | grep "r=23"
+proc main() {
+  s := "23";
+  acc := 0.0;
+  for (i := 0; s[i] != 0; i += 1) {
+    d := s[i] - '0';
+    acc = acc * 10.0 + d;
+  }
+  printf("r=%g\n", acc);
+}

@@ -4,9 +4,7 @@ proc main() {
   data := arche_file_map("/tmp/file_map.txt");
   size: i64 = arche_file_size();
   commas: i64 = 0;
-  for (i: i64 = 0;
-  i < size;
-  i = i + 1) {
+  for (i: i64 = 0; i < size; i = i + 1) {
     if (data[i] == ',') {
       commas = commas + 1;
     }

@@ -104,8 +104,15 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 		} else {
 			/* one archetype field per line: a comma directly in the archetype body */
 			int arch_field_break = (prev == TOK_COMMA && prev_parent == SN_ARCHETYPE_DECL);
+			/* `;` ends a statement → newline. The two `;` in a `for (init; cond; incr)` header are
+			 * direct children of the for-statement node; they separate clauses, not statements, so
+			 * we don't force a break. Instead the author's layout is preserved (like blank lines
+			 * below): an inline header stays inline, a hand-split one keeps its breaks. */
+			int for_header_semi = (prev == TOK_SEMI && prev_parent == SN_FOR_STMT);
 			int want_nl = force_nl || arch_field_break || l->kind == TOK_RBRACE || prev == TOK_LBRACE ||
-			              prev == TOK_SEMI || prev == TOK_RBRACE;
+			              (prev == TOK_SEMI && !for_header_semi) || prev == TOK_RBRACE;
+			if (for_header_semi && l->line > prev_line)
+				want_nl = 1; /* the author split the header across lines — keep it */
 			/* a type/generic/table reference is compact: handle<X>, float[5], table<P> */
 			int compact = (l->parent == prev_parent && (l->parent == SN_TYPE_REF || l->parent == SN_TYPE_ARRAY ||
 			                                            l->parent == SN_TYPE_SHAPED_ARRAY ||

@@ -29,12 +29,8 @@ proc main() {
   // (unlike a float one) lets the conditional count auto-vectorize into a SIMD masked-add.
   count: i64 = 0;
   t0 := arche_now_sec();
-  for (iter := 0;
-  iter < 216000;
-  iter += 1) {
-    for (i := 0;
-    i < 10000;
-    i += 1) {
+  for (iter := 0; iter < 216000; iter += 1) {
+    for (i := 0; i < 10000; i += 1) {
       if (Transaction.quantity[i] > 0) {
         count = count + 1;
       }

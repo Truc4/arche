@@ -33,9 +33,7 @@ proc main() {
   Task1Data.quantity[9] = 7;
   Task1Data.revenue = Task1Data.price * Task1Data.quantity;
   fd := arche_fopen_write("/tmp/task1_output.csv");
-  for (i := 0;
-  i < 1000;
-  i = i + 1) {
+  for (i := 0; i < 1000; i = i + 1) {
     buf: char[64];
     n := sprintf(buf, "%f\n", Task1Data.revenue[i]);
     arche_fwrite(fd, buf, n);
