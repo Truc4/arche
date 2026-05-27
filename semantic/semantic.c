@@ -307,11 +307,15 @@ static struct {
 	int proc_could_be_func_werror;
 	int proc_no_effect_enabled;
 	int proc_no_effect_werror;
+	int func_impure_enabled; /* a `func` body must be pure (no effects) */
+	int func_impure_werror;
 } g_lint_config = {
     .proc_could_be_func_enabled = 1,
     .proc_could_be_func_werror = 0,
     .proc_no_effect_enabled = 1,
     .proc_no_effect_werror = 0,
+    .func_impure_enabled = 1,
+    .func_impure_werror = 0,
 };
 
 void semantic_set_lint_proc_could_be_func(int enabled, int werror) {
@@ -322,6 +326,11 @@ void semantic_set_lint_proc_could_be_func(int enabled, int werror) {
 void semantic_set_lint_proc_no_effect(int enabled, int werror) {
 	g_lint_config.proc_no_effect_enabled = enabled;
 	g_lint_config.proc_no_effect_werror = werror;
+}
+
+void semantic_set_lint_func_impure(int enabled, int werror) {
+	g_lint_config.func_impure_enabled = enabled;
+	g_lint_config.func_impure_werror = werror;
 }
 
 /* Emit a lint diagnostic. Promotes to a hard error if the corresponding
@@ -2199,6 +2208,145 @@ static void lint_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	}
 }
 
+/* ===== func-purity (`func-impure` lint) =====
+ * A `func` must be functional. Unlike `name_is_effectful_callee` (the proc-could-be-func lint),
+ * we do NOT treat a multi-return func as effectful — calling another (enforced-pure) func is fine.
+ * A call is an effect iff the callee is a proc, an extern, or an archetype-mutating builtin. */
+static const char *func_call_effect_reason(SemanticContext *ctx, const char *name) {
+	static char buf[160];
+	if (!ctx || !ctx->prog || !name)
+		return NULL;
+	if (name_is_archetype_mutating_builtin(name)) {
+		snprintf(buf, sizeof(buf), "calls archetype-mutating builtin '%s'", name);
+		return buf;
+	}
+	for (int i = 0; i < ctx->prog->decl_count; i++) {
+		Decl *d = ctx->prog->decls[i];
+		if (!d)
+			continue;
+		if (d->kind == DECL_PROC && d->data.proc && d->data.proc->name && strcmp(d->data.proc->name, name) == 0) {
+			snprintf(buf, sizeof(buf), d->data.proc->is_extern ? "calls extern '%s'" : "calls proc '%s'", name);
+			return buf;
+		}
+		if (d->kind == DECL_FUNC && d->data.func && d->data.func->name && strcmp(d->data.func->name, name) == 0) {
+			if (d->data.func->is_extern) {
+				snprintf(buf, sizeof(buf), "calls extern '%s'", name);
+				return buf;
+			}
+			return NULL; /* a non-extern func is (being) enforced pure — fine to call */
+		}
+	}
+	return NULL;
+}
+
+static const char *func_purity_body(SemanticContext *ctx, Statement **stmts, int count);
+
+static const char *func_purity_expr(SemanticContext *ctx, Expression *e) {
+	const char *r;
+	if (!e)
+		return NULL;
+	switch (e->type) {
+	case EXPR_CALL:
+		if (e->data.call.callee && e->data.call.callee->type == EXPR_NAME &&
+		    (r = func_call_effect_reason(ctx, e->data.call.callee->data.name.name)))
+			return r;
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			if ((r = func_purity_expr(ctx, e->data.call.args[i])))
+				return r;
+		return NULL;
+	case EXPR_BINARY:
+		if ((r = func_purity_expr(ctx, e->data.binary.left)))
+			return r;
+		return func_purity_expr(ctx, e->data.binary.right);
+	case EXPR_UNARY:
+		return func_purity_expr(ctx, e->data.unary.operand);
+	case EXPR_FIELD:
+		return func_purity_expr(ctx, e->data.field.base);
+	case EXPR_INDEX:
+		if ((r = func_purity_expr(ctx, e->data.index.base)))
+			return r;
+		for (int i = 0; i < e->data.index.index_count; i++)
+			if ((r = func_purity_expr(ctx, e->data.index.indices[i])))
+				return r;
+		return NULL;
+	case EXPR_ALLOC:
+		return "allocates (`alloc`)";
+	default:
+		return NULL;
+	}
+}
+
+static const char *func_purity_stmt(SemanticContext *ctx, Statement *s) {
+	const char *r;
+	if (!s)
+		return NULL;
+	switch (s->type) {
+	case STMT_BIND:
+		return s->data.bind_stmt.value ? func_purity_expr(ctx, s->data.bind_stmt.value) : NULL;
+	case STMT_MULTI_BIND:
+		return s->data.multi_bind.value ? func_purity_expr(ctx, s->data.multi_bind.value) : NULL;
+	case STMT_ASSIGN: {
+		const char *tn = lvalue_leftmost_name(s->data.assign_stmt.target);
+		if (tn && find_archetype(ctx, tn))
+			return "writes static memory (an archetype column)";
+		if ((r = func_purity_expr(ctx, s->data.assign_stmt.value)))
+			return r;
+		return func_purity_expr(ctx, s->data.assign_stmt.target);
+	}
+	case STMT_FOR:
+		if (s->data.for_stmt.init && (r = func_purity_stmt(ctx, s->data.for_stmt.init)))
+			return r;
+		if (s->data.for_stmt.condition && (r = func_purity_expr(ctx, s->data.for_stmt.condition)))
+			return r;
+		if (s->data.for_stmt.increment && (r = func_purity_stmt(ctx, s->data.for_stmt.increment)))
+			return r;
+		return func_purity_body(ctx, s->data.for_stmt.body, s->data.for_stmt.body_count);
+	case STMT_IF:
+		if (s->data.if_stmt.cond && (r = func_purity_expr(ctx, s->data.if_stmt.cond)))
+			return r;
+		if ((r = func_purity_body(ctx, s->data.if_stmt.then_body, s->data.if_stmt.then_count)))
+			return r;
+		return func_purity_body(ctx, s->data.if_stmt.else_body, s->data.if_stmt.else_count);
+	case STMT_EXPR:
+		return func_purity_expr(ctx, s->data.expr_stmt.expr);
+	case STMT_RETURN:
+		for (int i = 0; i < s->data.return_stmt.count; i++)
+			if ((r = func_purity_expr(ctx, s->data.return_stmt.values[i])))
+				return r;
+		return NULL;
+	case STMT_RUN:
+		return "runs a system (`run`)";
+	case STMT_FREE:
+		return "frees memory (`free`)";
+	case STMT_EACH_FIELD:
+		return func_purity_body(ctx, s->data.each_field.body, s->data.each_field.body_count);
+	default:
+		return NULL;
+	}
+}
+
+static const char *func_purity_body(SemanticContext *ctx, Statement **stmts, int count) {
+	const char *r;
+	for (int i = 0; i < count; i++)
+		if ((r = func_purity_stmt(ctx, stmts[i])))
+			return r;
+	return NULL;
+}
+
+/* Enforce func purity: a non-extern `func` body must be pure (no effects). This is a RULE, not a
+ * lint — a violation is a hard compile error. Effects belong in a proc. */
+static void enforce_func_purity(SemanticContext *ctx, FuncDecl *func) {
+	if (!func || func->is_extern)
+		return;
+	const char *reason = func_purity_body(ctx, func->statements, func->statement_count);
+	if (reason) {
+		char msg[400];
+		snprintf(msg, sizeof(msg), "func '%s' is not pure — %s (effects belong in a proc)",
+		         func->name ? func->name : "<unknown>", reason);
+		error(ctx, msg);
+	}
+}
+
 static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	if (!proc)
 		return;
@@ -2507,6 +2655,8 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 		analyze_statement(ctx, func->statements[i]);
 	}
 	ctx->in_unsafe = 0;
+
+	enforce_func_purity(ctx, func); /* a `func` must be pure — hard error if not */
 
 	pop_scope(ctx);
 }
