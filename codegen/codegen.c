@@ -1858,14 +1858,10 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 
 		/* Check if base is a type-6 slice pointer variable */
 		const char *type6_elem_type = NULL;
-		int type6_is_char = 0;
 		if (expr->data.index.base->kind == HIR_EXPR_NAME) {
 			ValueInfo *vi = find_value(ctx, expr->data.index.base->data.name.name);
 			if (vi && vi->type == 6 && vi->field_type) {
 				type6_elem_type = vi->field_type;
-				if (strcmp(vi->field_type, "char") == 0) {
-					type6_is_char = 1;
-				}
 			}
 		}
 
@@ -2016,8 +2012,12 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				                  align);
 			}
 
-			/* Zero-extend i8 to i32 if loading from char buffer via type-6 pointer */
-			if (type6_is_char && scalar_type && strcmp(scalar_type, "i8") == 0) {
+			/* Zero-extend an i8 element load to i32, matching the type-5 (arche_array) and
+			 * type-7 (char[N]) paths which always promote: a char/byte element acts as an i32 in
+			 * int contexts (printf %d, compares, arithmetic), and a store back to an i8 target
+			 * truncs as needed. Without this a local string-literal index (`s := "hi"; s[0]`, a
+			 * raw i8* on this general path) stayed i8 and failed the verifier. */
+			if (scalar_type && strcmp(scalar_type, "i8") == 0) {
 				char *extended = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = zext i8 %s to i32\n", extended, loaded);
 				strcpy(result_buf, extended);
