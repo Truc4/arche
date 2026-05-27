@@ -2,15 +2,7 @@
 // (Contrast `move`, which donates the buffer by reference with no copy.)
 // RUN: %arche -o %t %s && %t | grep "src=hi out=yo"
 func fill(own b: char[8], s: char[]) -> char[8] {
-  i := 0;
-  for (;
-  s[i] != 0;
-  ) {
-    b[i] = s[i];
-    i = i + 1;
-  }
-  b[i] = 0;
-  return b;
+  return strcopy(move b, s);
 }
 
 proc main() {

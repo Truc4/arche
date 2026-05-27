@@ -17,6 +17,19 @@ func strlen(s: char[]) -> int {
   }
   return n;
 }
+// Copy C-string `src` (through its NUL) into `dst`, NUL-terminate, return the filled buffer.
+// Pure; the own/move contract makes the in-place fill explicit: `b := strcopy(move b, s)`.
+func strcopy(own dst: char[], src: char[]) -> char[] {
+  i := 0;
+  for (;
+  src[i] != 0;
+  ) {
+    dst[i] = src[i];
+    i = i + 1;
+  }
+  dst[i] = 0;
+  return dst;
+}
 file :: opaque extern arche_stdin() -> file;
 extern arche_stdout() -> file;
 extern arche_stderr() -> file;

@@ -1,8 +1,8 @@
 // RUN: %arche -o %t %s && %t | grep "x=test1 y=test2 n=77"
 // Two buffers moved in by reference, filled, and returned (real multi-return).
-func fill_two(buf1: char[32], buf2: char[32]) -> (char[32], char[32], int) {
-  sprintf(buf1, "test1");
-  sprintf(buf2, "test2");
+func fill_two(own buf1: char[32], own buf2: char[32]) -> (char[32], char[32], int) {
+  buf1 := strcopy(move buf1, "test1");
+  buf2 := strcopy(move buf2, "test2");
   return buf1, buf2, 77;
 }
 

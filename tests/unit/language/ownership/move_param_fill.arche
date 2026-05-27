@@ -3,15 +3,8 @@
 // This is the canonical fill-buffer / FFI shape.
 // RUN: %arche -o %t %s && %t | grep "filled=hello n=5"
 func fill(own buf: char[32], s: char[]) -> (char[32], int) {
-  i := 0;
-  for (;
-  s[i] != 0;
-  ) {
-    buf[i] = s[i];
-    i = i + 1;
-  }
-  buf[i] = 0;
-  return buf, i;
+  buf := strcopy(move buf, s);
+  return buf, strlen(buf);
 }
 
 proc main() {

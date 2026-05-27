@@ -2,15 +2,8 @@
 // indexable in the caller — the CSV reader fills a buffer then scans it byte by byte.
 // RUN: %arche -o %t %s && %t | grep "c0=72 c1=105 n=2"
 func fill(own buf: char[32], s: char[]) -> (char[32], int) {
-  i := 0;
-  for (;
-  s[i] != 0;
-  ) {
-    buf[i] = s[i];
-    i = i + 1;
-  }
-  buf[i] = 0;
-  return buf, i;
+  buf := strcopy(move buf, s);
+  return buf, strlen(buf);
 }
 
 proc main() {
