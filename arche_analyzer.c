@@ -208,26 +208,27 @@ static const char *display_type(const char *ty) {
 }
 
 /* Emit a SYN line, translating combined→user coords and dropping the core region.
- * `after` anchors at the token's end column, `before` at its start. */
-static void emit_syn(CvPos anchor, const char *side, const char *kind, const char *text) {
-	if (!anchor.line)
-		return;
-	int uline = anchor.line - g_core_lines;
+ * Format: SYN <line> <col> <padL> <padR> <kind> <text>. Position is the column the
+ * virtual text anchors at; padL/padR are render-time spaces around the label, so
+ * the result reads as the longhand of the surrounding real tokens. */
+static void emit_syn(int line, int col, int padL, int padR, const char *kind, const char *text) {
+	int uline = line - g_core_lines;
 	if (uline <= 0)
 		return; /* inside the prepended core region */
-	int col = strcmp(side, "after") == 0 ? anchor.column + (int)anchor.length : anchor.column;
-	printf("SYN %d %d %s %s %s\n", uline, col, side, kind, text);
+	printf("SYN %d %d %d %d %s %s\n", uline, col, padL ? 1 : 0, padR ? 1 : 0, kind, text);
 }
 
-/* Inferred-type hint: for a `x := e` bind with no written type, show `: <inferred>`
- * after the variable name. Skips type-alias declarations and any bind that already
- * states its type. The value expression's type lives in the node-id model. */
+/* Inferred-type hint: for a bind with no written type, slot the inferred type
+ * INTO the bind operator so the rendered view reads exactly as the longhand —
+ *   `r := e`  →  `r : int = e`     (anchor before the `=`, pad both sides)
+ *   `x :: e`  →  `x : int : e`     (anchor before the 2nd `:`, pad both sides)
+ * Skips type-alias declarations and any bind that already states its type. */
 static void emit_bind_hint(CstView bind, SemanticContext *ctx) {
 	const SemModel *model = sem_context_model(ctx);
 	if (sem_model_bind_alias(model, cv_id(bind)))
-		return; /* a local type alias declaration; nothing to infer */
+		return;
 	if (cv_type_count(bind) > 0)
-		return; /* type is written explicitly — nothing implicit to show */
+		return;
 	CstView target = cv_expr_at(bind, 0);
 	CstView value = cv_expr_at(bind, 1);
 	if (!cv_present(target) || !cv_present(value) || cv_kind(target) != SN_NAME_EXPR)
@@ -235,9 +236,15 @@ static void emit_bind_hint(CstView bind, SemanticContext *ctx) {
 	const char *ty = sem_model_expr_type(model, cv_id(value));
 	if (!ty)
 		return;
-	char text[260];
-	snprintf(text, sizeof(text), ": %s", display_type(ty));
-	emit_syn(cv_last_token_pos(target), "after", "type", text);
+	/* Anchor at the 2nd separator token of the bind operator: the `=` of `:=`, or
+	 * (when there is no `=`) the 2nd `:` of `::`. The type then renders between
+	 * the two real tokens that the bind operator is made of. */
+	CvPos anchor = cv_token_pos(bind, TOK_EQ);
+	if (!anchor.line)
+		anchor = cv_token_pos_at(bind, TOK_COLON, 1);
+	if (!anchor.line)
+		return;
+	emit_syn(anchor.line, anchor.column, 1, 1, "type", display_type(ty));
 }
 
 /* A type position naming an alias shows its backing type, e.g. `count (int)`. */
@@ -254,7 +261,11 @@ static void emit_typeref_hint(CstView tr, SemanticContext *ctx) {
 		return; /* not an alias (or already its own backing) */
 	char text[260];
 	snprintf(text, sizeof(text), "(%s)", display_type(backing));
-	emit_syn(cv_last_token_pos(tr), "after", "alias", text);
+	/* Annotation after the alias name: pad-left only (space between name and `(`). */
+	CvPos end = cv_last_token_pos(tr);
+	if (!end.line)
+		return;
+	emit_syn(end.line, end.column + (int)end.length, 1, 0, "alias", text);
 }
 
 /* Call-site parameter hint (gopls-style): show the resolved parameter's name
@@ -267,7 +278,11 @@ static void emit_param_hint(CstView arg, SemanticContext *ctx) {
 		return;
 	char text[300];
 	snprintf(text, sizeof(text), "%s%s:", sem_hints_param_is_own(h, cv_id(arg)) ? "own " : "", name);
-	emit_syn(cv_first_token_pos(arg), "before", "param", text);
+	/* Anchor at the argument's start: pad-right only (space between `name:` and arg). */
+	CvPos start = cv_first_token_pos(arg);
+	if (!start.line)
+		return;
+	emit_syn(start.line, start.column, 0, 1, "param", text);
 }
 
 static void walk(CstView v, SemanticContext *ctx) {

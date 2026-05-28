@@ -70,6 +70,10 @@ typedef struct {
 CvPos cv_first_token_pos(CstView v);
 CvPos cv_last_token_pos(CstView v);
 
+/* Position of the first / nth direct-child token of `kind`. line==0 if absent. */
+CvPos cv_token_pos(CstView v, TokenKind kind);
+CvPos cv_token_pos_at(CstView v, TokenKind kind, int n);
+
 /* Does the subtree contain an SN_ERROR node? */
 int cv_has_error(CstView v);
 

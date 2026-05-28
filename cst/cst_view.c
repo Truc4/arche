@@ -169,6 +169,28 @@ CvPos cv_last_token_pos(CstView v) {
 	return token_pos_edge(v, 1);
 }
 
+CvPos cv_token_pos_at(CstView v, TokenKind kind, int n) {
+	CvPos none = {0, 0, 0, 0};
+	if (!v.node)
+		return none;
+	int c = 0;
+	for (int i = 0; i < v.node->child_count; i++) {
+		const SyntaxElem *e = &v.node->children[i];
+		if (e->tag != SE_TOKEN || e->as.token.kind != kind)
+			continue;
+		if (c == n) {
+			CvPos p = {e->as.token.line, e->as.token.column, e->as.token.offset, e->as.token.length};
+			return p;
+		}
+		c++;
+	}
+	return none;
+}
+
+CvPos cv_token_pos(CstView v, TokenKind kind) {
+	return cv_token_pos_at(v, kind, 0);
+}
+
 int cv_has_error(CstView v) {
 	if (!v.node)
 		return 0;
