@@ -26,23 +26,24 @@ SRCS = lexer/lexer.c \
        parser/parser.c \
        semantic/semantic.c \
        semantic/sem_model.c \
+       semantic/sem_hints.c \
        codegen/codegen.c
 
 RUNTIME_SRCS = runtime/stack_check.c runtime/io.c runtime/net.c runtime/term.c
 RUNTIME_OBJS = $(RUNTIME_SRCS:.c=.o)
 
 OBJS = $(SRCS:.c=.o)
-COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/main.o
+COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/main.o
 LEXER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/lexer/lexer_main.o
-PARSER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/unit/compiler/parser_tests.o
+PARSER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/unit/compiler/parser_tests.o
 FMT_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/cst/format_cst.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_fmt.o
 CST_TOKENS_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/cst/token_category.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_cst_tokens.o
-ANALYZER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/cst/token_category.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/arche_analyzer.o
+ANALYZER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/cst/token_category.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/arche_analyzer.o
 CST_ROUNDTRIP_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_cst_roundtrip.o
 CST_VIEW_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/unit/compiler/cst_view_tests.o
-SEMANTIC_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/unit/compiler/semantic_tests.o
-CODEGEN_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/unit/compiler/codegen_tests.o
-LOWER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/unit/compiler/lower_tests.o
+SEMANTIC_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/unit/compiler/semantic_tests.o
+CODEGEN_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/unit/compiler/codegen_tests.o
+LOWER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/unit/compiler/lower_tests.o
 
 # Default target
 all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(CST_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o

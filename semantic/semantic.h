@@ -2,6 +2,7 @@
 #define SEMANTIC_H
 
 #include "../cst/cst.h"
+#include "sem_hints.h"
 #include "sem_model.h"
 
 /* Semantic analysis context */
@@ -26,6 +27,9 @@ void semantic_context_free(SemanticContext *ctx);
 
 /* The resolved-type side model (keyed by CST node id); read by lowering. */
 SemModel *sem_context_model(SemanticContext *ctx);
+
+/* Editor-facing inferred facts (keyed by CST node id); read by the analyzer. */
+SemHints *sem_context_hints(SemanticContext *ctx);
 
 /* Resolve a (possibly nominal-alias) type name through the alias chain to its
  * backing; returns `name` unchanged if not an alias. */

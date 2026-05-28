@@ -1,0 +1,17 @@
+// Explicit view: gopls-style call-site parameter-name hints, with `own` marked.
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 14 12 before param a:"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 14 15 before param b:"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 16 9 before param own dst:"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 16 19 before param src:"
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN ") -eq 6
+func add(a: int, b: int) -> int {
+  return a + b;
+}
+proc store(own dst: char[], src: char[]) {
+  dst[0] = src[0];
+}
+proc main() {
+  r := add(1, 2);
+  buf := "xx";
+  store(copy buf, buf);
+}

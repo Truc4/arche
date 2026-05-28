@@ -1,6 +1,7 @@
 #include "semantic.h"
 #include "../cst/cst_view.h"
 #include "../parser/parser.h"
+#include "sem_hints.h"
 #include "sem_model.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -114,6 +115,10 @@ struct SemanticContext {
 	/* MIGRATION: resolved types keyed by CST node id, kept out of the tree.
 	 * Populated alongside Expression.resolved_type; lowering reads it from here. */
 	SemModel *model;
+
+	/* Editor-facing inferred facts keyed by CST node id (call-site param resolution).
+	 * Populated during analysis; read by the analyzer's explicit view, not by lowering. */
+	SemHints *hints;
 };
 
 /* ========== UTILITY FUNCTIONS ========== */
@@ -1257,6 +1262,21 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 						         "it as a statement; it can't appear inside an expression",
 						         is_extern ? "extern" : "proc", func_name);
 						error(ctx, msg);
+					}
+
+					/* Editor explicit view: record the resolved parameter (name + `own`) each
+					 * argument binds to, keyed by the argument's CST node. This needs the call
+					 * resolved to a signature, so it can't be a syntactic lens. (Overloaded-group
+					 * calls resolve elsewhere — see the group branch — and are a follow-up.) */
+					{
+						int ac = expr->data.call.arg_count;
+						int n = param_count < ac ? param_count : ac;
+						for (int j = 0; j < n; j++) {
+							Parameter *p = params[j];
+							Expression *a = expr->data.call.args[j];
+							if (p && p->name && a && a->cst_id)
+								sem_hints_set_param(ctx->hints, a->cst_id - 1, p->name, p->is_own);
+						}
 					}
 
 					/* An `own` parameter takes ownership: a named binding handed to it must be
@@ -4675,6 +4695,7 @@ static SemanticContext *make_context(void) {
 	ctx->prog = NULL;
 	ctx->owned_prog = NULL;
 	ctx->model = sem_model_new();
+	ctx->hints = sem_hints_new();
 
 	register_func(ctx, "write");
 	register_func(ctx, "insert");
@@ -4717,6 +4738,7 @@ void semantic_context_free(SemanticContext *ctx) {
 		return;
 
 	sem_model_free(ctx->model);
+	sem_hints_free(ctx->hints);
 
 	/* free constants (names only, values are owned by AST) */
 	free(ctx->const_names);
@@ -4786,6 +4808,10 @@ int semantic_has_errors(SemanticContext *ctx) {
 
 SemModel *sem_context_model(SemanticContext *ctx) {
 	return ctx ? ctx->model : NULL;
+}
+
+SemHints *sem_context_hints(SemanticContext *ctx) {
+	return ctx ? ctx->hints : NULL;
 }
 
 const char *semantic_resolve_type_alias(SemanticContext *ctx, const char *name) {

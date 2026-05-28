@@ -207,14 +207,16 @@ static const char *display_type(const char *ty) {
 	return ty;
 }
 
-/* Emit a SYN line, translating combined→user coords and dropping the core region. */
+/* Emit a SYN line, translating combined→user coords and dropping the core region.
+ * `after` anchors at the token's end column, `before` at its start. */
 static void emit_syn(CvPos anchor, const char *side, const char *kind, const char *text) {
 	if (!anchor.line)
 		return;
 	int uline = anchor.line - g_core_lines;
 	if (uline <= 0)
 		return; /* inside the prepended core region */
-	printf("SYN %d %d %s %s %s\n", uline, anchor.column + (int)anchor.length, side, kind, text);
+	int col = strcmp(side, "after") == 0 ? anchor.column + (int)anchor.length : anchor.column;
+	printf("SYN %d %d %s %s %s\n", uline, col, side, kind, text);
 }
 
 /* Inferred-type hint: for a `x := e` bind with no written type, show `: <inferred>`
@@ -255,9 +257,23 @@ static void emit_typeref_hint(CstView tr, SemanticContext *ctx) {
 	emit_syn(cv_last_token_pos(tr), "after", "alias", text);
 }
 
+/* Call-site parameter hint (gopls-style): show the resolved parameter's name
+ * before the argument, prefixed `own ` when it takes ownership. Recorded by
+ * semantic analysis (needs call resolution), keyed by the argument's node. */
+static void emit_param_hint(CstView arg, SemanticContext *ctx) {
+	const SemHints *h = sem_context_hints(ctx);
+	const char *name = sem_hints_param_name(h, cv_id(arg));
+	if (!name)
+		return;
+	char text[300];
+	snprintf(text, sizeof(text), "%s%s:", sem_hints_param_is_own(h, cv_id(arg)) ? "own " : "", name);
+	emit_syn(cv_first_token_pos(arg), "before", "param", text);
+}
+
 static void walk(CstView v, SemanticContext *ctx) {
 	if (!v.node)
 		return;
+	emit_param_hint(v, ctx); /* any node may be a resolved call argument */
 	if (cv_kind(v) == SN_BIND_STMT)
 		emit_bind_hint(v, ctx);
 	else if (cv_kind(v) == SN_TYPE_REF)
