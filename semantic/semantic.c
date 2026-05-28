@@ -1410,13 +1410,13 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 	}
 	}
 
-	/* Resolve and store the type of this expression */
-	expr->resolved_type = (char *)resolve_expression_type(ctx, expr);
-	/* MIGRATION (4a): mirror into the side model keyed by the CST node, so lowering
-	 * can read it there instead of off the tree. Parser-built expressions always link
-	 * to a CST node; synthesized ones (if any) keep relying on resolved_type. */
+	/* Resolve the type of this expression and record it in the side model, keyed by
+	 * the CST node. The model owns its copy; the tree is not mutated (lowering reads
+	 * the model, not Expression.resolved_type). Call resolve unconditionally to keep
+	 * its side effects; parser-built expressions always link to a CST node. */
+	const char *resolved = resolve_expression_type(ctx, expr);
 	if (ctx->model && expr->cst_id)
-		sem_model_set_expr_type(ctx->model, expr->cst_id - 1, expr->resolved_type);
+		sem_model_set_expr_type(ctx->model, expr->cst_id - 1, resolved);
 }
 
 /* ========== STATEMENT ANALYSIS ========== */
