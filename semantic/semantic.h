@@ -39,6 +39,20 @@ const char *semantic_resolve_type_alias(SemanticContext *ctx, const char *name);
 int semantic_has_errors(SemanticContext *ctx);
 int semantic_error_count(const SemanticContext *ctx);
 
+/* Structured diagnostics collected during analysis (mirrors the stderr lint/error
+ * prints but kept queryable for editor consumers). `has_loc==0` means the source
+ * position is unknown (deep helpers); editors should surface it at file top. */
+typedef struct {
+	int severity;     /* 0 = warning, 1 = error */
+	int has_loc;      /* 0 = no source position known */
+	SourceLoc loc;    /* line/col when known */
+	const char *name; /* lint name (e.g. "proc-no-effect") or "semantic" */
+	char *message;    /* owned */
+} SemDiag;
+
+int sem_diag_count(const SemanticContext *ctx);
+const SemDiag *sem_diag_at(const SemanticContext *ctx, int i);
+
 /* Archetype queries */
 int semantic_archetype_exists(SemanticContext *ctx, const char *name);
 int semantic_field_exists(SemanticContext *ctx, const char *archetype_name, const char *field_name);

@@ -7,6 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* C99 doesn't expose strdup; declare it explicitly (as sem_model.c does). */
+char *strdup(const char *s);
+
 /* ========== DATA STRUCTURES ========== */
 
 typedef struct {
@@ -119,6 +122,16 @@ struct SemanticContext {
 	/* Editor-facing inferred facts keyed by CST node id (call-site param resolution).
 	 * Populated during analysis; read by the analyzer's explicit view, not by lowering. */
 	SemHints *hints;
+
+	/* Structured diagnostics: appended by error()/lint_emit() so editors can iterate
+	 * them after analysis (alongside the existing stderr prints, which stay for CLI). */
+	SemDiag *diags;
+	int diag_count, diag_cap;
+
+	/* Ambient source position for error(): analyze_expression / analyze_statement set
+	 * this to the node they're currently analyzing, so all the existing error() call
+	 * sites in those frames pick up a real loc without manual migration. {0,0} = none. */
+	SourceLoc current_loc;
 };
 
 /* ========== UTILITY FUNCTIONS ========== */
@@ -306,10 +319,34 @@ static VariableInfo *find_variable(SemanticContext *ctx, const char *name) {
 	return NULL;
 }
 
+/* Append a structured diagnostic. The CLI's stderr print is left to the caller so
+ * --dump and the warm server share the same in-memory list without doubling output. */
+static void diag_push(SemanticContext *ctx, int severity, int has_loc, SourceLoc loc, const char *name,
+                      const char *msg) {
+	if (!ctx)
+		return;
+	if (ctx->diag_count >= ctx->diag_cap) {
+		ctx->diag_cap = ctx->diag_cap ? ctx->diag_cap * 2 : 16;
+		ctx->diags = realloc(ctx->diags, (size_t)ctx->diag_cap * sizeof(SemDiag));
+	}
+	SemDiag *d = &ctx->diags[ctx->diag_count++];
+	d->severity = severity ? 1 : 0;
+	d->has_loc = has_loc ? 1 : 0;
+	d->loc = loc;
+	d->name = name ? name : "semantic";
+	d->message = strdup(msg ? msg : "");
+}
+
 static void error(SemanticContext *ctx, const char *msg) {
 	ctx->error_count++;
-	fprintf(stderr, "Semantic error: %s\n", msg);
+	SourceLoc loc = ctx->current_loc;
+	int has_loc = loc.line != 0;
+	if (has_loc)
+		fprintf(stderr, "Semantic error at line %d, col %d: %s\n", loc.line, loc.column, msg);
+	else
+		fprintf(stderr, "Semantic error: %s\n", msg);
 	fflush(stderr);
+	diag_push(ctx, /*severity=*/1, has_loc, loc, "semantic", msg);
 }
 
 /* ========== LINT CONFIGURATION ========== */
@@ -354,6 +391,7 @@ static void lint_emit(SemanticContext *ctx, int werror, SourceLoc loc, const cha
 	if (werror) {
 		ctx->error_count++;
 	}
+	diag_push(ctx, werror ? 1 : 0, /*has_loc=*/1, loc, name, msg);
 }
 
 static const char *resolve_type_alias(SemanticContext *ctx, const char *name);
@@ -944,6 +982,10 @@ static const char *nominal_type_of_expr(SemanticContext *ctx, Expression *e) {
 static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 	if (!expr)
 		return;
+	/* Ambient loc for any error() call in this frame — see SemanticContext.current_loc. */
+	SourceLoc saved_loc = ctx->current_loc;
+	if (expr->loc.line)
+		ctx->current_loc = expr->loc;
 
 	switch (expr->type) {
 	case EXPR_LITERAL:
@@ -1437,6 +1479,8 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 	const char *resolved = resolve_expression_type(ctx, expr);
 	if (ctx->model && expr->cst_id)
 		sem_model_set_expr_type(ctx->model, expr->cst_id - 1, resolved);
+
+	ctx->current_loc = saved_loc;
 }
 
 /* ========== STATEMENT ANALYSIS ========== */
@@ -1444,6 +1488,9 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 	if (!stmt)
 		return;
+	SourceLoc saved_loc = ctx->current_loc;
+	if (stmt->loc.line)
+		ctx->current_loc = stmt->loc;
 
 	switch (stmt->type) {
 	case STMT_BIND: {
@@ -1869,6 +1916,8 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		break;
 	}
 	}
+
+	ctx->current_loc = saved_loc;
 }
 
 /* ========== DECLARATION ANALYSIS ========== */
@@ -4696,6 +4745,10 @@ static SemanticContext *make_context(void) {
 	ctx->owned_prog = NULL;
 	ctx->model = sem_model_new();
 	ctx->hints = sem_hints_new();
+	ctx->diags = NULL;
+	ctx->diag_count = 0;
+	ctx->diag_cap = 0;
+	ctx->current_loc = (SourceLoc){0, 0};
 
 	register_func(ctx, "write");
 	register_func(ctx, "insert");
@@ -4739,6 +4792,10 @@ void semantic_context_free(SemanticContext *ctx) {
 
 	sem_model_free(ctx->model);
 	sem_hints_free(ctx->hints);
+
+	for (int i = 0; i < ctx->diag_count; i++)
+		free(ctx->diags[i].message);
+	free(ctx->diags);
 
 	/* free constants (names only, values are owned by AST) */
 	free(ctx->const_names);
@@ -4812,6 +4869,16 @@ SemModel *sem_context_model(SemanticContext *ctx) {
 
 SemHints *sem_context_hints(SemanticContext *ctx) {
 	return ctx ? ctx->hints : NULL;
+}
+
+int sem_diag_count(const SemanticContext *ctx) {
+	return ctx ? ctx->diag_count : 0;
+}
+
+const SemDiag *sem_diag_at(const SemanticContext *ctx, int i) {
+	if (!ctx || i < 0 || i >= ctx->diag_count)
+		return NULL;
+	return &ctx->diags[i];
 }
 
 const char *semantic_resolve_type_alias(SemanticContext *ctx, const char *name) {

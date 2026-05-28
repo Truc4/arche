@@ -9,8 +9,8 @@
  * facts — so the output tracks the language as it evolves.
  *
  * Output lines (positions are 1-based, translated to USER-file coordinates):
- *   SYN <line> <col> <side> <kind> <text...>   inlay hint (side: before|after)
- *   DIAG <line> <col> <severity> <name> <msg>  diagnostic (added later)
+ *   SYN <line> <col> <padL> <padR> <kind> <text...>   inlay hint
+ *   DIAG <line> <col> <severity> <name> <msg...>      diagnostic (error|warning)
  *
  * Modes:
  *   --dump [file]   one-shot: analyze file (or stdin) and print all lines.
@@ -351,6 +351,29 @@ static void emit_hints(const Analysis *a) {
 		walk(cv_root(a->cst_root, a->combined), a->ctx);
 }
 
+/* Emit diagnostics collected during semantic analysis, translated to user coords.
+ * Errors with no source position default to user line 1 col 1 so they still surface;
+ * anything inside the prepended core region is dropped (belongs to the prelude). */
+static void emit_diags(const Analysis *a) {
+	if (!a->ctx)
+		return;
+	int n = sem_diag_count(a->ctx);
+	for (int i = 0; i < n; i++) {
+		const SemDiag *d = sem_diag_at(a->ctx, i);
+		if (!d)
+			continue;
+		int line = 1, col = 1;
+		if (d->has_loc) {
+			int uline = d->loc.line - g_core_lines;
+			if (uline <= 0)
+				continue; /* inside the core prelude */
+			line = uline;
+			col = d->loc.column;
+		}
+		printf("DIAG %d %d %s %s %s\n", line, col, d->severity ? "error" : "warning", d->name, d->message);
+	}
+}
+
 /* Syntax-highlighting tokens, same `offset length line col CATEGORY` format the
  * editor already consumes — but served from the warm parse and translated to user
  * coordinates (core-region tokens dropped). Needs only the CST, not analysis. */
@@ -391,6 +414,7 @@ static int run_dump(const char *path) {
 		return 1;
 	}
 	emit_hints(&a);
+	emit_diags(&a);
 	analysis_free(&a);
 	return 0;
 }
@@ -503,6 +527,12 @@ static int run_serve(void) {
 			Doc *doc = docs_find(&docs, line + 7);
 			if (doc)
 				emit_tokens(&doc->a);
+			printf("\n");
+			fflush(stdout);
+		} else if (strncmp(line, "DIAG ", 5) == 0) {
+			Doc *doc = docs_find(&docs, line + 5);
+			if (doc)
+				emit_diags(&doc->a);
 			printf("\n");
 			fflush(stdout);
 		} else if (strncmp(line, "CLOSE ", 6) == 0) {
