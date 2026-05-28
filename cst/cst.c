@@ -306,6 +306,9 @@ void proc_decl_free(ProcDecl *proc) {
 	if (!proc)
 		return;
 	free(proc->name);
+	for (int i = 0; i < proc->return_type_count; i++)
+		type_ref_free(proc->return_types[i]);
+	free(proc->return_types);
 	for (int i = 0; i < proc->param_count; i++) {
 		parameter_free(proc->params[i]);
 	}

@@ -1,10 +1,14 @@
 #include "semantic.h"
 #include "../cst/cst_view.h"
 #include "../parser/parser.h"
+#include "sem_hints.h"
 #include "sem_model.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* C99 doesn't expose strdup; declare it explicitly (as sem_model.c does). */
+char *strdup(const char *s);
 
 /* ========== DATA STRUCTURES ========== */
 
@@ -67,6 +71,7 @@ struct SemanticContext {
 	char **const_names;             /* compile-time constant names */
 	const char **const_values;      /* literal lexeme strings */
 	const char **const_value_types; /* each const's resolved type name ("int"/"float"/"char"/…) */
+	SourceLoc *const_locs;          /* loc of each const's declaration */
 	int const_count;
 
 	/* Nominal type aliases: `name :: <type>` (a `::` decl whose RHS names a type, not a
@@ -75,6 +80,7 @@ struct SemanticContext {
 	 * lowering, so codegen never sees an alias. */
 	char **type_alias_names;
 	char **type_alias_backings;
+	SourceLoc *type_alias_locs; /* loc of each alias's declaration, for late diagnostics */
 	int type_alias_count;
 
 	Scope *scopes;
@@ -114,6 +120,15 @@ struct SemanticContext {
 	/* MIGRATION: resolved types keyed by CST node id, kept out of the tree.
 	 * Populated alongside Expression.resolved_type; lowering reads it from here. */
 	SemModel *model;
+
+	/* Editor-facing inferred facts keyed by CST node id (call-site param resolution).
+	 * Populated during analysis; read by the analyzer's explicit view, not by lowering. */
+	SemHints *hints;
+
+	/* Structured diagnostics: appended by error_at()/lint_emit() so editors can iterate
+	 * them after analysis (alongside the existing stderr prints, which stay for CLI). */
+	SemDiag *diags;
+	int diag_count, diag_cap;
 };
 
 /* ========== UTILITY FUNCTIONS ========== */
@@ -301,10 +316,35 @@ static VariableInfo *find_variable(SemanticContext *ctx, const char *name) {
 	return NULL;
 }
 
-static void error(SemanticContext *ctx, const char *msg) {
+/* Append a structured diagnostic. The CLI's stderr print is left to the caller so
+ * --dump and the warm server share the same in-memory list without doubling output. */
+static void diag_push(SemanticContext *ctx, int severity, int has_loc, SourceLoc loc, const char *name,
+                      const char *msg) {
+	if (!ctx)
+		return;
+	if (ctx->diag_count >= ctx->diag_cap) {
+		ctx->diag_cap = ctx->diag_cap ? ctx->diag_cap * 2 : 16;
+		ctx->diags = realloc(ctx->diags, (size_t)ctx->diag_cap * sizeof(SemDiag));
+	}
+	SemDiag *d = &ctx->diags[ctx->diag_count++];
+	d->severity = severity ? 1 : 0;
+	d->has_loc = has_loc ? 1 : 0;
+	d->loc = loc;
+	d->name = name ? name : "semantic";
+	d->message = strdup(msg ? msg : "");
+}
+
+/* Canonical form: every error site picks the most specific SourceLoc available
+ * (the sub-node that's actually wrong — Go/Rust style). */
+static void error_at(SemanticContext *ctx, SourceLoc loc, const char *msg) {
 	ctx->error_count++;
-	fprintf(stderr, "Semantic error: %s\n", msg);
+	int has_loc = loc.line != 0;
+	if (has_loc)
+		fprintf(stderr, "Semantic error at line %d, col %d: %s\n", loc.line, loc.column, msg);
+	else
+		fprintf(stderr, "Semantic error: %s\n", msg);
 	fflush(stderr);
+	diag_push(ctx, /*severity=*/1, has_loc, loc, "semantic", msg);
 }
 
 /* ========== LINT CONFIGURATION ========== */
@@ -349,6 +389,7 @@ static void lint_emit(SemanticContext *ctx, int werror, SourceLoc loc, const cha
 	if (werror) {
 		ctx->error_count++;
 	}
+	diag_push(ctx, werror ? 1 : 0, /*has_loc=*/1, loc, name, msg);
 }
 
 static const char *resolve_type_alias(SemanticContext *ctx, const char *name);
@@ -388,7 +429,7 @@ static void pop_scope(SemanticContext *ctx) {
 				char msg[256];
 				snprintf(msg, sizeof(msg),
 				         "opaque value '%s' not consumed before scope end (move/close/return/insert it)", v->name);
-				error(ctx, msg);
+				error_at(ctx, v->loc, msg);
 			}
 		}
 		for (int i = 0; i < scope->var_count; i++) {
@@ -562,22 +603,26 @@ static int is_type_alias(SemanticContext *ctx, const char *name) {
  * names), not by syntactic node kind — so `tau :: pi` (pi a value) is a value const, not an alias.
  * `name`/`backing`/`lexeme` are stored by pointer and must outlive ctx (CST or static strings). */
 
-/* Register a nominal alias `name → backing`; redefinition must AGREE (same backing). */
-static void register_type_alias(SemanticContext *ctx, const char *name, const char *backing) {
+/* Register a nominal alias `name → backing`; redefinition must AGREE (same backing).
+ * `loc` is the alias declaration's source position — used for the redefinition error
+ * and stored so the late "unknown backing" pass can blame the original site. */
+static void register_type_alias(SemanticContext *ctx, const char *name, const char *backing, SourceLoc loc) {
 	for (int j = 0; j < ctx->type_alias_count; j++) {
 		if (strcmp(ctx->type_alias_names[j], name) == 0) {
 			if (strcmp(ctx->type_alias_backings[j], backing) != 0) {
 				char msg[256];
 				snprintf(msg, sizeof(msg), "type '%s' redefined with a different backing", name);
-				error(ctx, msg);
+				error_at(ctx, loc, msg);
 			}
 			return; /* agrees — share the one nominal type */
 		}
 	}
 	ctx->type_alias_names = realloc(ctx->type_alias_names, (ctx->type_alias_count + 1) * sizeof(char *));
 	ctx->type_alias_backings = realloc(ctx->type_alias_backings, (ctx->type_alias_count + 1) * sizeof(char *));
+	ctx->type_alias_locs = realloc(ctx->type_alias_locs, (ctx->type_alias_count + 1) * sizeof(SourceLoc));
 	ctx->type_alias_names[ctx->type_alias_count] = (char *)name;
 	ctx->type_alias_backings[ctx->type_alias_count] = (char *)backing;
+	ctx->type_alias_locs[ctx->type_alias_count] = loc;
 	ctx->type_alias_count++;
 }
 
@@ -598,22 +643,26 @@ static const char *value_const_type(SemanticContext *ctx, const char *name) {
 }
 
 /* Register a value const `name = lexeme` of type `type`; redefinition is an error. The type lets a
- * const reference resolve to its real type (so a float const is a float, not a default int). */
-static void register_value_const(SemanticContext *ctx, const char *name, const char *lexeme, const char *type) {
+ * const reference resolve to its real type (so a float const is a float, not a default int).
+ * `loc` is the constant's declaration position — used for the redefinition error. */
+static void register_value_const(SemanticContext *ctx, const char *name, const char *lexeme, const char *type,
+                                 SourceLoc loc) {
 	for (int j = 0; j < ctx->const_count; j++) {
 		if (strcmp(ctx->const_names[j], name) == 0) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "constant '%s' already defined", name);
-			error(ctx, msg);
+			error_at(ctx, loc, msg);
 			return;
 		}
 	}
 	ctx->const_names = realloc(ctx->const_names, (ctx->const_count + 1) * sizeof(char *));
 	ctx->const_values = realloc(ctx->const_values, (ctx->const_count + 1) * sizeof(const char *));
 	ctx->const_value_types = realloc(ctx->const_value_types, (ctx->const_count + 1) * sizeof(const char *));
+	ctx->const_locs = realloc(ctx->const_locs, (ctx->const_count + 1) * sizeof(SourceLoc));
 	ctx->const_names[ctx->const_count] = (char *)name;
 	ctx->const_values[ctx->const_count] = lexeme;
 	ctx->const_value_types[ctx->const_count] = type;
+	ctx->const_locs[ctx->const_count] = loc;
 	ctx->const_count++;
 }
 
@@ -651,7 +700,7 @@ static void check_const_literal_type(SemanticContext *ctx, ConstDecl *c) {
 		char msg[256];
 		snprintf(msg, sizeof(msg), "constant '%s' is declared `%s` but its value is a %s literal", c->name, want,
 		         strcmp(got, "char_array") == 0 ? "string" : got);
-		error(ctx, msg);
+		error_at(ctx, c->value->loc, msg);
 	}
 }
 
@@ -679,7 +728,7 @@ static int reject_meta_type(SemanticContext *ctx, TypeRef *t, const char *where)
 		         "the meta-type `type` is only valid as a declaration's type (`name : type : T`); "
 		         "type parameters (generics) are not supported yet (%s)",
 		         where);
-		error(ctx, msg);
+		error_at(ctx, t->loc, msg);
 		return 1;
 	}
 	return 0;
@@ -967,7 +1016,7 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		if (!is_known_func && !is_var && !is_arch && !is_const) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "Undefined symbol '%s'", name);
-			error(ctx, msg);
+			error_at(ctx, expr->loc, msg);
 		} else if (is_var && name_var->is_consumed) {
 			/* Use-after-consume: this binding was passed to a consume parameter earlier.
 			 * NOTE: v1 limitation — tracking is function-scope only (not branch-sensitive).
@@ -975,7 +1024,7 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 			 * of the proc body, which may over-reject some valid code. Revisit if needed. */
 			char msg[256];
 			snprintf(msg, sizeof(msg), "use of consumed handle '%s'", name);
-			error(ctx, msg);
+			error_at(ctx, expr->loc, msg);
 		}
 		break;
 	}
@@ -1034,7 +1083,7 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 				if (!var) {
 					char msg[256];
 					snprintf(msg, sizeof(msg), "Undefined variable '%s'", base_name);
-					error(ctx, msg);
+					error_at(ctx, expr->data.field.base->loc, msg);
 					break;
 				}
 				/* `h.comp` — reading a component through a HANDLE value is not supported
@@ -1053,7 +1102,7 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 					         "cannot read component '%s' through handle '%s': a handle is a lifetime token, "
 					         "not a row view — use column access `%s.%s[i]`",
 					         field_name, base_name, an ? an : "the archetype", field_name);
-					error(ctx, msg);
+					error_at(ctx, expr->loc, msg);
 					break;
 				}
 				/* check if variable refers to an archetype entry */
@@ -1099,13 +1148,13 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 							char msg[256];
 							snprintf(msg, sizeof(msg), "Archetype '%s' has no field '%s'",
 							         archetype_any_alias(ctx, arch), field_name);
-							error(ctx, msg);
+							error_at(ctx, expr->loc, msg);
 						}
 					} else {
 						char msg[256];
 						snprintf(msg, sizeof(msg), "Archetype '%s' has no field '%s'", archetype_any_alias(ctx, arch),
 						         field_name);
-						error(ctx, msg);
+						error_at(ctx, expr->loc, msg);
 					}
 				}
 			}
@@ -1143,7 +1192,7 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 					         "cannot move read-only parameter '%s' — it is borrowed, not owned; take "
 					         "it `move` to own it, or copy it into a local",
 					         expr->data.unary.operand->data.name.name);
-					error(ctx, msg);
+					error_at(ctx, expr->data.unary.operand->loc, msg);
 				}
 				mv->is_consumed = 1;
 			}
@@ -1159,14 +1208,14 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 					char msg[256];
 					snprintf(msg, sizeof(msg), "cannot copy opaque value '%s' — it is move-only; use `move`",
 					         expr->data.unary.operand->data.name.name);
-					error(ctx, msg);
+					error_at(ctx, expr->data.unary.operand->loc, msg);
 				} else if (type_is_byref_aggregate(cv->type) && !(type_is_char_array(cv->type) && !cv->is_param)) {
 					char msg[256];
 					snprintf(msg, sizeof(msg),
 					         "copy of '%s' is not yet supported (only a local `char[N]` buffer can be "
 					         "copied); copy it into a local first, or use `move`",
 					         expr->data.unary.operand->data.name.name);
-					error(ctx, msg);
+					error_at(ctx, expr->data.unary.operand->loc, msg);
 				}
 			}
 		}
@@ -1212,7 +1261,7 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		/* Unsafe-builtin gate: `syscall` bypasses bounds/alloc/handle safety, so it
 		 * may only be called from an explicitly-marked `unsafe` proc/func. */
 		if (strcmp(func_name, "syscall") == 0 && !ctx->in_unsafe) {
-			error(ctx, "`syscall` may only be called from an `unsafe` proc or func");
+			error_at(ctx, expr->loc, "`syscall` may only be called from an `unsafe` proc or func");
 			break;
 		}
 
@@ -1256,7 +1305,22 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 						         "a %s call is an action, not a value — bind it (`x := %s(...)`) or call "
 						         "it as a statement; it can't appear inside an expression",
 						         is_extern ? "extern" : "proc", func_name);
-						error(ctx, msg);
+						error_at(ctx, expr->loc, msg);
+					}
+
+					/* Editor explicit view: record the resolved parameter (name + `own`) each
+					 * argument binds to, keyed by the argument's CST node. This needs the call
+					 * resolved to a signature, so it can't be a syntactic lens. (Overloaded-group
+					 * calls resolve elsewhere — see the group branch — and are a follow-up.) */
+					{
+						int ac = expr->data.call.arg_count;
+						int n = param_count < ac ? param_count : ac;
+						for (int j = 0; j < n; j++) {
+							Parameter *p = params[j];
+							Expression *a = expr->data.call.args[j];
+							if (p && p->name && a && a->cst_id)
+								sem_hints_set_param(ctx->hints, a->cst_id - 1, p->name, p->is_own);
+						}
 					}
 
 					/* An `own` parameter takes ownership: a named binding handed to it must be
@@ -1284,7 +1348,7 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 									         "(write `move %s` or `copy %s`)",
 									         a->data.name.name, p->name ? p->name : "?", func_name, a->data.name.name,
 									         a->data.name.name);
-									error(ctx, msg);
+									error_at(ctx, a->loc, msg);
 								}
 							}
 						}
@@ -1314,7 +1378,7 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 								snprintf(msg, sizeof(msg),
 								         "type mismatch: '%s' parameter '%s' expects '%s' but got '%s'", func_name,
 								         p->name ? p->name : "?", p->type->data.name, arg_nominal);
-								error(ctx, msg);
+								error_at(ctx, expr->data.call.args[j]->loc, msg);
 							}
 						}
 					}
@@ -1365,11 +1429,11 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		if (match_count == 0) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "no member of group '%s' matches the argument types", func_name);
-			error(ctx, msg);
+			error_at(ctx, expr->loc, msg);
 		} else if (match_count > 1) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "call to '%s' is ambiguous among group members", func_name);
-			error(ctx, msg);
+			error_at(ctx, expr->loc, msg);
 		}
 		break;
 	}
@@ -1377,7 +1441,7 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 	case EXPR_ALLOC: {
 		/* alloc only allowed at top-level, not inside proc/sys */
 		if (ctx->in_body) {
-			error(ctx, "alloc only allowed at top-level, not inside proc or sys body");
+			error_at(ctx, expr->loc, "alloc only allowed at top-level, not inside proc or sys body");
 			break;
 		}
 
@@ -1385,7 +1449,7 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		if (expr->data.alloc.field_count > 0 && expr->data.alloc.field_values[0]) {
 			Expression *count_expr = expr->data.alloc.field_values[0];
 			if (count_expr->type != EXPR_LITERAL) {
-				error(ctx, "alloc count must be a literal; dynamic counts not yet supported");
+				error_at(ctx, expr->loc, "alloc count must be a literal; dynamic counts not yet supported");
 				break;
 			}
 		}
@@ -1394,12 +1458,12 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		if (!alloc_shape) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "Undefined archetype '%s'", expr->data.alloc.archetype_name);
-			error(ctx, msg);
+			error_at(ctx, expr->loc, msg);
 		} else if (alloc_shape->is_allocated) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "Shape already allocated (alias '%s' shares shape with an earlier alloc)",
 			         expr->data.alloc.archetype_name);
-			error(ctx, msg);
+			error_at(ctx, expr->loc, msg);
 		} else {
 			alloc_shape->is_allocated = 1;
 		}
@@ -1410,13 +1474,13 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 	}
 	}
 
-	/* Resolve and store the type of this expression */
-	expr->resolved_type = (char *)resolve_expression_type(ctx, expr);
-	/* MIGRATION (4a): mirror into the side model keyed by the CST node, so lowering
-	 * can read it there instead of off the tree. Parser-built expressions always link
-	 * to a CST node; synthesized ones (if any) keep relying on resolved_type. */
+	/* Resolve the type of this expression and record it in the side model, keyed by
+	 * the CST node. The model owns its copy; the tree is not mutated (lowering reads
+	 * the model, not Expression.resolved_type). Call resolve unconditionally to keep
+	 * its side effects; parser-built expressions always link to a CST node. */
+	const char *resolved = resolve_expression_type(ctx, expr);
 	if (ctx->model && expr->cst_id)
-		sem_model_set_expr_type(ctx->model, expr->cst_id - 1, expr->resolved_type);
+		sem_model_set_expr_type(ctx->model, expr->cst_id - 1, resolved);
 }
 
 /* ========== STATEMENT ANALYSIS ========== */
@@ -1441,14 +1505,14 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 			if (backing || b->type_value) {
 				/* This constant's RHS is a type — a local nominal type alias. */
 				if (!backing) {
-					error(ctx, "a local type alias backing must be a type name or `opaque`");
+					error_at(ctx, stmt->loc, "a local type alias backing must be a type name or `opaque`");
 				} else {
-					register_type_alias(ctx, b->name, backing);
+					register_type_alias(ctx, b->name, backing, stmt->loc);
 					const char *resolved = resolve_type_alias(ctx, b->name);
 					if (!is_primitive_type_name(resolved) && strcmp(resolved, "opaque") != 0) {
 						char msg[256];
 						snprintf(msg, sizeof(msg), "type alias '%s' has unknown backing type '%s'", b->name, resolved);
-						error(ctx, msg);
+						error_at(ctx, stmt->loc, msg);
 					}
 				}
 				b->is_type_alias = 1;
@@ -1460,7 +1524,7 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		}
 		/* `archetype` is only valid as a parameter type. */
 		if (stmt->data.bind_stmt.type && stmt->data.bind_stmt.type->kind == TYPE_ARCHETYPE) {
-			error(ctx, "`archetype` is only valid as a parameter type");
+			error_at(ctx, stmt->loc, "`archetype` is only valid as a parameter type");
 			break;
 		}
 		if (reject_meta_type(ctx, stmt->data.bind_stmt.type, "variable type"))
@@ -1513,7 +1577,7 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 					if (!find_archetype(ctx, archetype_name)) {
 						char msg[256];
 						snprintf(msg, sizeof(msg), "Archetype '%s' not defined", archetype_name);
-						error(ctx, msg);
+						error_at(ctx, stmt->loc, msg);
 						archetype_name = NULL;
 					}
 				}
@@ -1570,7 +1634,7 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				snprintf(msg, sizeof(msg),
 				         "cannot bind a %s value to '%s' declared `%s` — arche has no implicit numeric conversion", got,
 				         stmt->data.bind_stmt.name, want);
-				error(ctx, msg);
+				error_at(ctx, stmt->data.bind_stmt.value->loc, msg);
 			}
 		}
 		if (stmt->data.bind_stmt.is_const)
@@ -1600,12 +1664,12 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				if (!existing) {
 					char msg[256];
 					snprintf(msg, sizeof(msg), "Variable '%s' not declared", target->name);
-					error(ctx, msg);
+					error_at(ctx, stmt->loc, msg);
 				} else if (existing->is_consumed) {
 					char msg[256];
 					snprintf(msg, sizeof(msg), "cannot assign to '%s' after it was moved — rebind with `:=`",
 					         target->name);
-					error(ctx, msg);
+					error_at(ctx, stmt->loc, msg);
 				}
 			}
 		}
@@ -1627,12 +1691,12 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				char msg[256];
 				snprintf(msg, sizeof(msg), "cannot assign to constant '%s' (declared with `::`)",
 				         stmt->data.assign_stmt.target->data.name.name);
-				error(ctx, msg);
+				error_at(ctx, stmt->data.assign_stmt.target->loc, msg);
 			} else if (t && t->is_consumed) {
 				char msg[256];
 				snprintf(msg, sizeof(msg), "cannot assign to '%s' after it was moved — rebind with `:=`",
 				         stmt->data.assign_stmt.target->data.name.name);
-				error(ctx, msg);
+				error_at(ctx, stmt->data.assign_stmt.target->loc, msg);
 			}
 		}
 		/* Purity: a borrowed (non-`move`) array parameter is read-only — `p = …`, `p[i] = …`,
@@ -1649,7 +1713,7 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				         "(read-only) by default; to mutate, take it `move` and return it (same-name "
 				         "in/out), or copy it into a local",
 				         ln);
-				error(ctx, msg);
+				error_at(ctx, stmt->loc, msg);
 			}
 		}
 		break;
@@ -1719,7 +1783,7 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				} else {
 					char msg[256];
 					snprintf(msg, sizeof(msg), "Variable '%s' does not refer to an archetype instance", iterable_name);
-					error(ctx, msg);
+					error_at(ctx, stmt->loc, msg);
 					archetype_name = NULL;
 				}
 			}
@@ -1729,7 +1793,7 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 			} else {
 				char msg[256];
 				snprintf(msg, sizeof(msg), "For loop iterates over undefined archetype '%s'", iterable_name);
-				error(ctx, msg);
+				error_at(ctx, stmt->loc, msg);
 				archetype_name = NULL;
 			}
 		}
@@ -1808,11 +1872,11 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		/* Filter type, if present, must be a primitive (int/float/char). */
 		if (ef->filter_type) {
 			if (ef->filter_type->kind != TYPE_NAME) {
-				error(ctx, "each_field filter type must be a primitive type");
+				error_at(ctx, stmt->loc, "each_field filter type must be a primitive type");
 			} else {
 				const char *fn = normalize_type_name(ef->filter_type->data.name);
 				if (!fn || (strcmp(fn, "int") != 0 && strcmp(fn, "float") != 0 && strcmp(fn, "char") != 0)) {
-					error(ctx, "each_field filter type must be a primitive type (int, float, or char)");
+					error_at(ctx, stmt->loc, "each_field filter type must be a primitive type (int, float, or char)");
 				}
 			}
 		}
@@ -1834,7 +1898,7 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 			snprintf(msg, sizeof(msg),
 			         "each_field RHS '%s' must be an `archetype`-typed parameter of the enclosing proc",
 			         ef->arch_param_name);
-			error(ctx, msg);
+			error_at(ctx, stmt->loc, msg);
 		}
 
 		/* Analyze body in a pushed scope where the binding is declared opaquely.
@@ -1871,7 +1935,7 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 				snprintf(msg, sizeof(msg),
 				         "duplicate component '%s' in archetype (a component type may appear only once)",
 				         arch->fields[i]->name);
-				error(ctx, msg);
+				error_at(ctx, arch->fields[i]->loc, msg);
 			}
 		}
 	}
@@ -2372,7 +2436,7 @@ static void enforce_func_purity(SemanticContext *ctx, FuncDecl *func) {
 		char msg[400];
 		snprintf(msg, sizeof(msg), "func '%s' is not pure — %s (effects belong in a proc)",
 		         func->name ? func->name : "<unknown>", reason);
-		error(ctx, msg);
+		error_at(ctx, func->loc, msg);
 	}
 }
 
@@ -2396,7 +2460,7 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 				if (!is_primitive_type_name(tname) && !find_archetype(ctx, tname) && !is_type_alias(ctx, tname)) {
 					char msg[256];
 					snprintf(msg, sizeof(msg), "unknown type '%s' in extern proc '%s' signature", tname, proc->name);
-					error(ctx, msg);
+					error_at(ctx, pt->loc, msg);
 				}
 			}
 			/* `consume` is valid on any param type (consume consumes — not opaque-special). */
@@ -2418,7 +2482,7 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	if (archetype_param_count > 1) {
 		char msg[256];
 		snprintf(msg, sizeof(msg), "proc '%s': only one `archetype` parameter is allowed per proc", proc->name);
-		error(ctx, msg);
+		error_at(ctx, proc->loc, msg);
 	}
 
 	push_scope(ctx);
@@ -2491,7 +2555,7 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 			if (field && field->type && field->type->kind == TYPE_HANDLE) {
 				char msg[256];
 				snprintf(msg, sizeof(msg), "handle column '%s' cannot be sys parameter", sys->params[p]->name);
-				error(ctx, msg);
+				error_at(ctx, sys->params[p]->loc, msg);
 			}
 		}
 	}
@@ -2532,12 +2596,12 @@ static void analyze_func_group(SemanticContext *ctx, FuncGroup *group) {
 	if (find_known_func(ctx, group->name) || find_group(ctx, group->name)) {
 		char msg[256];
 		snprintf(msg, sizeof(msg), "name '%s' is already declared", group->name);
-		error(ctx, msg);
+		error_at(ctx, group->loc, msg);
 		return;
 	}
 
 	if (group->member_count == 0) {
-		error(ctx, "func group must have at least one member");
+		error_at(ctx, group->loc, "func group must have at least one member");
 		return;
 	}
 
@@ -2547,21 +2611,21 @@ static void analyze_func_group(SemanticContext *ctx, FuncGroup *group) {
 		if (!fd) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "unknown member '%s' in func group '%s'", group->member_names[i], group->name);
-			error(ctx, msg);
+			error_at(ctx, group->loc, msg);
 			continue;
 		}
 		if (fd->is_extern) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "member '%s' of func group '%s' is extern; extern funcs cannot be group members",
 			         group->member_names[i], group->name);
-			error(ctx, msg);
+			error_at(ctx, group->loc, msg);
 		}
 		/* Forward-reference check: members declared earlier in source are already in known_funcs. */
 		if (!find_known_func(ctx, group->member_names[i])) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "member '%s' of func group '%s' must be declared before the group",
 			         group->member_names[i], group->name);
-			error(ctx, msg);
+			error_at(ctx, group->loc, msg);
 		}
 		resolved[i] = fd;
 	}
@@ -2586,7 +2650,7 @@ static void analyze_func_group(SemanticContext *ctx, FuncGroup *group) {
 				char msg[256];
 				snprintf(msg, sizeof(msg), "members '%s' and '%s' of group '%s' share a parameter signature",
 				         group->member_names[i], group->member_names[j], group->name);
-				error(ctx, msg);
+				error_at(ctx, group->loc, msg);
 			}
 		}
 	}
@@ -2617,7 +2681,7 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "func '%s': `archetype` parameter type is only allowed on procs, not funcs",
 			         func->name);
-			error(ctx, msg);
+			error_at(ctx, func->params[i]->type->loc, msg);
 			break;
 		}
 	}
@@ -2627,7 +2691,7 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "func '%s': `archetype` is only valid as a parameter type, not a return type",
 			         func->name);
-			error(ctx, msg);
+			error_at(ctx, func->return_types[i]->loc, msg);
 			break;
 		}
 	}
@@ -2643,7 +2707,7 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 				if (!is_primitive_type_name(tname) && !is_type_alias(ctx, tname)) {
 					char msg[256];
 					snprintf(msg, sizeof(msg), "unknown type '%s' in extern func '%s' signature", tname, func->name);
-					error(ctx, msg);
+					error_at(ctx, pt->loc, msg);
 				}
 			}
 			/* `consume` is valid on any param type (consume consumes — not opaque-special). */
@@ -2660,7 +2724,7 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 					char msg[256];
 					snprintf(msg, sizeof(msg), "unknown return type '%s' in extern func '%s' signature", tname,
 					         func->name);
-					error(ctx, msg);
+					error_at(ctx, rt->loc, msg);
 				}
 			}
 		}
@@ -4456,6 +4520,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 	const char **deferred_rhs = malloc(sizeof(char *) * deferred_cap);
 	int *deferred_value_ctx = malloc(sizeof(int) * deferred_cap);
 	int *deferred_done = calloc(deferred_cap, sizeof(int));
+	SourceLoc *deferred_loc = malloc(sizeof(SourceLoc) * deferred_cap);
 	int deferred_count = 0;
 
 	for (int i = 0; i < prog->decl_count; i++) {
@@ -4463,27 +4528,32 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 			continue;
 		ConstDecl *c = prog->decls[i]->data.constant;
 
+		/* Loc for diagnostics + registry storage: prefer the value/type-form's own loc
+		 * (the offending sub-node) over the wrapping Decl's; falls back to decl loc. */
+		SourceLoc cloc = c->value ? c->value->loc : (c->type_value ? c->type_value->loc : prog->decls[i]->loc);
+
 		/* Type-form RHS (`name : type : T`, or the tuple `name :: (x,y:..)`): a nominal alias. */
 		if (c->type_value) {
 			if (c->type_value->kind == TYPE_TUPLE) {
 				for (int f = 0; f < c->type_value->data.tuple.field_count; f++) {
-					const char *fbacking = type_backing_name(c->type_value->data.tuple.field_types[f]);
+					TypeRef *ft = c->type_value->data.tuple.field_types[f];
+					const char *fbacking = type_backing_name(ft);
 					if (!fbacking) {
-						error(ctx, "tuple field must be a simple type (nested tuples are not allowed)");
+						error_at(ctx, ft->loc, "tuple field must be a simple type (nested tuples are not allowed)");
 						continue;
 					}
 					const char *fn = c->type_value->data.tuple.field_names[f];
 					size_t L = strlen(c->name) + 1 + strlen(fn) + 1;
 					char *aname = malloc(L);
 					snprintf(aname, L, "%s_%s", c->name, fn);
-					register_type_alias(ctx, aname, fbacking); /* aname leaks like the old path */
+					register_type_alias(ctx, aname, fbacking, ft->loc); /* aname leaks like the old path */
 				}
 			} else {
 				const char *backing = type_backing_name(c->type_value);
 				if (!backing)
-					error(ctx, "a type alias backing must be a type name, `opaque`, or a tuple");
+					error_at(ctx, c->type_value->loc, "a type alias backing must be a type name, `opaque`, or a tuple");
 				else
-					register_type_alias(ctx, c->name, backing);
+					register_type_alias(ctx, c->name, backing, cloc);
 			}
 			continue;
 		}
@@ -4496,7 +4566,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 				vt = resolve_type_alias(ctx, normalize_type_name(c->decl_type->data.name));
 			if (!vt)
 				vt = resolve_expression_type(ctx, c->value);
-			register_value_const(ctx, c->name, c->value->data.literal.lexeme, vt);
+			register_value_const(ctx, c->name, c->value->data.literal.lexeme, vt, cloc);
 			continue;
 		}
 
@@ -4506,11 +4576,12 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 			deferred_name[deferred_count] = c->name;
 			deferred_rhs[deferred_count] = c->value->data.name.name;
 			deferred_value_ctx[deferred_count] = (c->decl_type != NULL);
+			deferred_loc[deferred_count] = cloc;
 			deferred_count++;
 			continue;
 		}
 
-		error(ctx, "a constant's value must be a literal, a name, or a type");
+		error_at(ctx, cloc, "a constant's value must be a literal, a name, or a type");
 	}
 
 	/* Fixpoint: classify each deferred bare-name const by what its RHS denotes. */
@@ -4526,9 +4597,9 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 					char msg[256];
 					snprintf(msg, sizeof(msg), "constant '%s' has a value type but its RHS '%s' names a type",
 					         deferred_name[d], r);
-					error(ctx, msg);
+					error_at(ctx, deferred_loc[d], msg);
 				} else {
-					register_type_alias(ctx, deferred_name[d], r);
+					register_type_alias(ctx, deferred_name[d], r, deferred_loc[d]);
 				}
 				deferred_done[d] = 1;
 				progress = 1;
@@ -4537,7 +4608,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 			const char *lex = value_const_lexeme(ctx, r);
 			if (lex) {
 				/* `tau :: pi` — tau takes pi's value AND pi's type. */
-				register_value_const(ctx, deferred_name[d], lex, value_const_type(ctx, r));
+				register_value_const(ctx, deferred_name[d], lex, value_const_type(ctx, r), deferred_loc[d]);
 				deferred_done[d] = 1;
 				progress = 1;
 			}
@@ -4551,15 +4622,16 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 		if (deferred_value_ctx[d]) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "unknown value '%s' in declaration of '%s'", deferred_rhs[d], deferred_name[d]);
-			error(ctx, msg);
+			error_at(ctx, deferred_loc[d], msg);
 		} else {
-			register_type_alias(ctx, deferred_name[d], deferred_rhs[d]);
+			register_type_alias(ctx, deferred_name[d], deferred_rhs[d], deferred_loc[d]);
 		}
 	}
 	free(deferred_name);
 	free(deferred_rhs);
 	free(deferred_value_ctx);
 	free(deferred_done);
+	free(deferred_loc);
 
 	/* Inline component definitions: `arche Foo { hp :: int, … }` mints the nominal type `hp`
 	 * (≡ a top-level `hp :: int`) and includes it as a component — so the component is a real
@@ -4590,7 +4662,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 					if (strcmp(ctx->type_alias_backings[j], backing) != 0) {
 						char msg[256];
 						snprintf(msg, sizeof(msg), "type '%s' redefined with a different backing", fd->name);
-						error(ctx, msg);
+						error_at(ctx, fd->loc, msg);
 					}
 					done = 1;
 					break;
@@ -4600,8 +4672,10 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 				continue;
 			ctx->type_alias_names = realloc(ctx->type_alias_names, (ctx->type_alias_count + 1) * sizeof(char *));
 			ctx->type_alias_backings = realloc(ctx->type_alias_backings, (ctx->type_alias_count + 1) * sizeof(char *));
+			ctx->type_alias_locs = realloc(ctx->type_alias_locs, (ctx->type_alias_count + 1) * sizeof(SourceLoc));
 			ctx->type_alias_names[ctx->type_alias_count] = fd->name;
 			ctx->type_alias_backings[ctx->type_alias_count] = (char *)backing;
+			ctx->type_alias_locs[ctx->type_alias_count] = fd->loc;
 			ctx->type_alias_count++;
 		}
 	}
@@ -4612,7 +4686,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 		if (!is_primitive_type_name(b) && strcmp(b, "opaque") != 0) {
 			char msg[256];
 			snprintf(msg, sizeof(msg), "type alias '%s' has unknown backing type '%s'", ctx->type_alias_names[i], b);
-			error(ctx, msg);
+			error_at(ctx, ctx->type_alias_locs[i], msg);
 		}
 	}
 
@@ -4661,9 +4735,11 @@ static SemanticContext *make_context(void) {
 	ctx->const_names = NULL;
 	ctx->const_values = NULL;
 	ctx->const_value_types = NULL;
+	ctx->const_locs = NULL;
 	ctx->const_count = 0;
 	ctx->type_alias_names = NULL;
 	ctx->type_alias_backings = NULL;
+	ctx->type_alias_locs = NULL;
 	ctx->type_alias_count = 0;
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
@@ -4675,6 +4751,10 @@ static SemanticContext *make_context(void) {
 	ctx->prog = NULL;
 	ctx->owned_prog = NULL;
 	ctx->model = sem_model_new();
+	ctx->hints = sem_hints_new();
+	ctx->diags = NULL;
+	ctx->diag_count = 0;
+	ctx->diag_cap = 0;
 
 	register_func(ctx, "write");
 	register_func(ctx, "insert");
@@ -4717,15 +4797,22 @@ void semantic_context_free(SemanticContext *ctx) {
 		return;
 
 	sem_model_free(ctx->model);
+	sem_hints_free(ctx->hints);
+
+	for (int i = 0; i < ctx->diag_count; i++)
+		free(ctx->diags[i].message);
+	free(ctx->diags);
 
 	/* free constants (names only, values are owned by AST) */
 	free(ctx->const_names);
 	free(ctx->const_values);
 	free(ctx->const_value_types);
+	free(ctx->const_locs);
 
 	/* free type-alias tables (name/backing strings are owned by the CST) */
 	free(ctx->type_alias_names);
 	free(ctx->type_alias_backings);
+	free(ctx->type_alias_locs);
 
 	/* free shapes (one per unique column structure) */
 	for (int i = 0; i < ctx->archetype_count; i++) {
@@ -4786,6 +4873,20 @@ int semantic_has_errors(SemanticContext *ctx) {
 
 SemModel *sem_context_model(SemanticContext *ctx) {
 	return ctx ? ctx->model : NULL;
+}
+
+SemHints *sem_context_hints(SemanticContext *ctx) {
+	return ctx ? ctx->hints : NULL;
+}
+
+int sem_diag_count(const SemanticContext *ctx) {
+	return ctx ? ctx->diag_count : 0;
+}
+
+const SemDiag *sem_diag_at(const SemanticContext *ctx, int i) {
+	if (!ctx || i < 0 || i >= ctx->diag_count)
+		return NULL;
+	return &ctx->diags[i];
 }
 
 const char *semantic_resolve_type_alias(SemanticContext *ctx, const char *name) {

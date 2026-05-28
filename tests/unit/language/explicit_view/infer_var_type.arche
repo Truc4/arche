@@ -1,0 +1,13 @@
+// Explicit view: inferred variable types appear as inlay hints after `:=` binds.
+// Positions are in user-file coordinates (core.arche is prepended then subtracted).
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 9 10 1 1 type int"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 10 10 1 1 type char[]"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 11 10 1 1 type float"
+// A written type is not implicit: `typed` gets no hint, so exactly 3 SYN lines.
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN ") -eq 3
+proc main() {
+  count := 5;
+  label := "hi";
+  ratio := 1.5;
+  typed: int = 7;
+}

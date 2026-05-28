@@ -383,34 +383,7 @@ static Operator cst_tok_to_op(TokenKind k) {
 	}
 }
 
-/* nth direct child node that is a type form (SN_TYPE_REF/ARRAY/SHAPED/TUPLE/HANDLE). */
-static CstView cv_type_at(CstView v, int idx) {
-	int c = 0;
-	for (int i = 0; i < v.node->child_count; i++)
-		if (v.node->children[i].tag == SE_NODE) {
-			SyntaxNodeKind k = v.node->children[i].as.node->kind;
-			if (k >= SN_TYPE_REF && k <= SN_TYPE_HANDLE) {
-				if (c == idx) {
-					CstView r = {v.node->children[i].as.node, v.src};
-					return r;
-				}
-				c++;
-			}
-		}
-	CstView none = {NULL, v.src};
-	return none;
-}
-
-static int cv_type_count(CstView v) {
-	int c = 0;
-	for (int i = 0; i < v.node->child_count; i++)
-		if (v.node->children[i].tag == SE_NODE) {
-			SyntaxNodeKind k = v.node->children[i].as.node->kind;
-			if (k >= SN_TYPE_REF && k <= SN_TYPE_HANDLE)
-				c++;
-		}
-	return c;
-}
+/* cv_type_at / cv_type_count now live in cst_view.h (shared with the analyzer). */
 
 /* nth child node that is an expression kind (skips role/name/type wrappers). */
 static CstView cv_node_at_expr(CstView v, int idx) {

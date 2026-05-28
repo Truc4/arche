@@ -1,0 +1,9 @@
+// Explicit view: semantic errors + lints emerge as DIAG lines with positions
+// translated to user-file coordinates (core region suppressed).
+// RUN: %build/arche-analyzer --dump %s | grep -qF "error semantic Undefined symbol 'unknown_thing'"
+// RUN: %build/arche-analyzer --dump %s | grep -qF "warning proc-no-effect proc 'main'"
+// Error carries the offending expression's position (the name token).
+// RUN: %build/arche-analyzer --dump %s 2>/dev/null | grep -qxE "^DIAG 8 [0-9]+ error semantic Undefined symbol 'unknown_thing'"
+proc main() {
+  x := unknown_thing;
+}
