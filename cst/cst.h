@@ -103,6 +103,12 @@ struct Decl {
 	Trivia *trailing_trivia;
 	int trailing_count;
 	int last_line; /* line of this decl's last syntactic token */
+	/* `@allow(<slug>)` suppressions in the order they appeared on the decl.
+	 * Each entry is a diagnostic slug (e.g. "unused-local"). Semantic analysis
+	 * pushes the set when entering this decl so its lints can be silenced.
+	 * Errors are NEVER suppressible — silently ignored if listed here. */
+	char **allow_slugs;
+	int allow_slug_count;
 	union {
 		WorldDecl *world;
 		ArchetypeDecl *archetype;

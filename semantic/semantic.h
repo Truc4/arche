@@ -39,19 +39,42 @@ const char *semantic_resolve_type_alias(SemanticContext *ctx, const char *name);
 int semantic_has_errors(SemanticContext *ctx);
 int semantic_error_count(const SemanticContext *ctx);
 
+/* A secondary location attached to a parent diagnostic — like rustc's "note: …"
+ * or clang's related-info. `message` is owned. */
+typedef struct {
+	SourceLoc loc;
+	char *message;
+} SemDiagNote;
+
 /* Structured diagnostics collected during analysis (mirrors the stderr lint/error
  * prints but kept queryable for editor consumers). `has_loc==0` means the source
- * position is unknown (deep helpers); editors should surface it at file top. */
+ * position is unknown; editors surface it at file top.
+ *
+ * Stored as individually heap-allocated objects (ctx->diags is `SemDiag **`), so
+ * pointers handed out by sem_emit_<slug> wrappers stay valid for the lifetime
+ * of the SemanticContext — `sem_diag_note(d, ...)` after intervening emits is safe. */
 typedef struct {
-	int severity;     /* 0 = warning, 1 = error */
-	int has_loc;      /* 0 = no source position known */
-	SourceLoc loc;    /* line/col when known */
-	const char *name; /* lint name (e.g. "proc-no-effect") or "semantic" */
-	char *message;    /* owned */
+	int severity;       /* 0 = warning, 1 = error */
+	int has_loc;        /* 0 = no source position known */
+	SourceLoc loc;      /* line/col when known */
+	const char *code;   /* stable identifier ("E0001"); NULL only for the legacy path */
+	const char *name;   /* slug ("undefined-symbol", "proc-no-effect") or "semantic" */
+	char *message;      /* owned */
+	SemDiagNote *notes; /* NULL when none; appended via sem_diag_note */
+	int note_count;
 } SemDiag;
 
 int sem_diag_count(const SemanticContext *ctx);
 const SemDiag *sem_diag_at(const SemanticContext *ctx, int i);
+
+/* Attach a related-location note to a previously-emitted diagnostic. NULL-tolerant —
+ * sem_emit_<slug> wrappers return NULL for suppressed lints, and `sem_diag_note(NULL, ...)`
+ * is a safe no-op so callers don't need to branch. */
+void sem_diag_note(SemDiag *parent, SourceLoc loc, const char *fmt, ...)
+#ifdef __GNUC__
+    __attribute__((format(printf, 3, 4)))
+#endif
+    ;
 
 /* Archetype queries */
 int semantic_archetype_exists(SemanticContext *ctx, const char *name);

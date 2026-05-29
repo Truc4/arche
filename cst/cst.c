@@ -239,6 +239,9 @@ void decl_free(Decl *decl) {
 		return;
 	free(decl->leading_trivia);
 	free(decl->trailing_trivia);
+	for (int i = 0; i < decl->allow_slug_count; i++)
+		free(decl->allow_slugs[i]);
+	free(decl->allow_slugs);
 	switch (decl->kind) {
 	case DECL_WORLD:
 		world_decl_free(decl->data.world);

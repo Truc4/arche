@@ -1,9 +1,13 @@
 // Explicit view: semantic errors + lints emerge as DIAG lines with positions
-// translated to user-file coordinates (core region suppressed).
-// RUN: %build/arche-analyzer --dump %s | grep -qF "error semantic Undefined symbol 'unknown_thing'"
-// RUN: %build/arche-analyzer --dump %s | grep -qF "warning proc-no-effect proc 'main'"
+// translated to user-file coordinates (core region suppressed). Wire protocol:
+//   DIAG <line> <col> <severity> <code> <slug> <note_count> <message>
+//   NOTE <line> <col> <message>   × note_count
+// The code (E0001/W0002) is stable forever; the slug ("undefined_symbol") is
+// the diagnostic's human-readable identity; the message can evolve.
+// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0001 undefined_symbol 0 Undefined symbol 'unknown_thing'"
+// RUN: %build/arche-analyzer --dump %s | grep -qF "warning W0002 proc_no_effect 0 proc 'main'"
 // Error carries the offending expression's position (the name token).
-// RUN: %build/arche-analyzer --dump %s 2>/dev/null | grep -qxE "^DIAG 8 [0-9]+ error semantic Undefined symbol 'unknown_thing'"
+// RUN: %build/arche-analyzer --dump %s 2>/dev/null | grep -qxE "^DIAG 12 [0-9]+ error E0001 undefined_symbol 0 Undefined symbol 'unknown_thing'"
 proc main() {
   x := unknown_thing;
 }

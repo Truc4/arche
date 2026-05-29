@@ -1016,28 +1016,45 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	*out_kind = SN_ERROR;
 
-	/* Declaration-site decorators. Currently only @allow_pure_proc is recognized;
-	 * the CST records the `@allow_pure_proc` tokens (cst_to_program reads them via
-	 * cv_has_token). The decorator must be followed immediately by a `proc` (or
-	 * `extern proc`) declaration. */
-	if (parser->current.kind == TOK_AT) {
+	/* Declaration-site decorators. Two recognized forms:
+	 *
+	 *   @allow_pure_proc           — legacy, proc-only: suppresses proc-could-be-func.
+	 *   @allow(<diagnostic-slug>)  — general lint suppression, any decl kind.
+	 *
+	 * Multiple decorators may be stacked. Tokens are stored in the CST at decl
+	 * level; `cst_to_program` reads them — `cv_has_token(d, TOK_AT)` for the
+	 * legacy flag and a slug scan for `@allow(...)` entries. */
+	while (parser->current.kind == TOK_AT) {
 		advance(parser); /* consume '@' */
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected decorator name after '@'");
 			return 0;
 		}
-		int is_allow = cur_ident_is(parser, "allow_pure_proc", 15);
-		if (!is_allow) {
-			error(parser, "Unknown decorator (only @allow_pure_proc is supported)");
-			return 0;
+		if (cur_ident_is(parser, "allow_pure_proc", 15)) {
+			advance(parser);
+			continue;
 		}
-		advance(parser);
-		/* Must be followed by proc or extern proc — guard here so the
-		 * switch below doesn't silently consume the flag on a wrong kind. */
-		if (parser->current.kind != TOK_PROC && parser->current.kind != TOK_EXTERN) {
-			error(parser, "@allow_pure_proc must precede a proc declaration");
-			return 0;
+		if (cur_ident_is(parser, "allow", 5)) {
+			advance(parser);
+			if (!check(parser, TOK_LPAREN)) {
+				error(parser, "Expected '(' after @allow");
+				return 0;
+			}
+			advance(parser); /* consume '(' */
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected diagnostic slug inside @allow(...)");
+				return 0;
+			}
+			advance(parser); /* consume slug */
+			if (!check(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')' to close @allow(...)");
+				return 0;
+			}
+			advance(parser); /* consume ')' */
+			continue;
 		}
+		error(parser, "Unknown decorator (recognized: @allow_pure_proc, @allow(<slug>))");
+		return 0;
 	}
 
 	switch (parser->current.kind) {

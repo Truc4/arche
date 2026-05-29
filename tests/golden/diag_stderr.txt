@@ -1,0 +1,40 @@
+=== tests/unit/language/errors/undefined_variable.arche ===
+Semantic error at line 138, col 8: Undefined symbol 'undefined_var'
+Semantic analysis failed
+=== tests/unit/language/errors/undefined_archetype.arche ===
+Error: unknown archetype 'UndefinedArch' in alloc
+Semantic analysis failed
+=== tests/unit/language/errors/copy_opaque_rejected.arche ===
+Semantic error at line 143, col 19: cannot copy opaque value 'w' — it is move-only; use `move`
+Semantic error: opaque value 'w' not consumed before scope end (move/close/return/insert it)
+Semantic analysis failed
+=== tests/unit/language/errors/copy_param_array_rejected.arche ===
+Semantic error at line 145, col 25: copy of 'b' is not yet supported (only a local `char[N]` buffer can be copied); copy it into a local first, or use `move`
+Lint warning [proc-no-effect] at line 149, col 10: proc 'main' has an empty or effect-free body; remove it or add the intended logic
+Semantic analysis failed
+=== tests/unit/language/errors/move_out_of_borrow_rejected.arche ===
+Lint warning [proc-no-effect] at line 140, col 10: proc 'sink' has an empty or effect-free body; remove it or add the intended logic
+Semantic error at line 144, col 13: cannot move read-only parameter 'b' — it is borrowed, not owned; take it `move` to own it, or copy it into a local
+Semantic error at line 143, col 11: func 'relay' is not pure — calls proc 'sink' (effects belong in a proc)
+Lint warning [proc-no-effect] at line 147, col 10: proc 'main' has an empty or effect-free body; remove it or add the intended logic
+Semantic analysis failed
+=== tests/unit/language/errors/own_param_requires_move_or_copy.arche ===
+Semantic error at line 146, col 15: value 'buf' must be moved or copied into `own` parameter 'b' of 'fill' (write `move buf` or `copy buf`)
+Lint warning [proc-no-effect] at line 144, col 10: proc 'main' has an empty or effect-free body; remove it or add the intended logic
+Semantic analysis failed
+=== tests/unit/language/errors/duplicate_shape_error.arche ===
+Error: Shape already allocated (archetype 'Handle2' shares shape with an earlier allocation)
+Semantic analysis failed
+=== tests/unit/language/errors/mutate_borrow_param_rejected.arche ===
+Semantic error at line 141, col 3: cannot mutate read-only parameter 'b' — array parameters are borrowed (read-only) by default; to mutate, take it `move` and return it (same-name in/out), or copy it into a local
+Lint warning [proc-no-effect] at line 145, col 10: proc 'main' has an empty or effect-free body; remove it or add the intended logic
+Semantic analysis failed
+=== tests/unit/language/errors/alloc_in_proc_error.arche ===
+[Line 146, Col 9] Error: Expected ';' after statement
+=== tests/unit/language/errors/handle_no_sys_error.arche ===
+Error: unknown archetype 'Entity' in handle type for field 'next'
+Semantic error: handle column 'next' cannot be sys parameter
+Semantic analysis failed
+=== tests/unit/language/types/alias_redefine.arche ===
+Semantic error at line 138, col 23: type 'thing' redefined with a different backing
+Semantic analysis failed

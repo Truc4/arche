@@ -9,8 +9,9 @@
  * facts — so the output tracks the language as it evolves.
  *
  * Output lines (positions are 1-based, translated to USER-file coordinates):
- *   SYN <line> <col> <padL> <padR> <kind> <text...>   inlay hint
- *   DIAG <line> <col> <severity> <name> <msg...>      diagnostic (error|warning)
+ *   SYN <line> <col> <padL> <padR> <kind> <text...>                                inlay hint
+ *   DIAG <line> <col> <severity> <code> <slug> <note_count> <msg...>               diagnostic
+ *   NOTE <line> <col> <msg...>                                                     × note_count after DIAG
  *
  * Modes:
  *   --dump [file]   one-shot: analyze file (or stdin) and print all lines.
@@ -26,6 +27,7 @@
 #include "cst/token_category.h"
 #include "lexer/lexer.h"
 #include "parser/parser.h"
+#include "semantic/sem_diagnostics.h"
 #include "semantic/semantic.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -129,11 +131,46 @@ static void holds_free(ModuleHolds *h) {
 	free(h->items);
 }
 
+/* Diagnostics found before the SemanticContext exists (parse errors, module-load
+ * failures) buffer here, then get flushed into the ctx once it's created. Single
+ * string arg suffices for the kinds we surface: parse_error carries the parser's
+ * message; module_* carries the module name. */
+typedef struct {
+	SemDiagKind kind;
+	SourceLoc loc;
+	char *str; /* owned */
+} DeferredDiag;
+
+typedef struct {
+	DeferredDiag *items;
+	int count, cap;
+} DeferredDiags;
+
+static void deferred_push(DeferredDiags *d, SemDiagKind kind, SourceLoc loc, const char *str) {
+	if (d->count >= d->cap) {
+		d->cap = d->cap ? d->cap * 2 : 8;
+		d->items = realloc(d->items, (size_t)d->cap * sizeof(DeferredDiag));
+	}
+	d->items[d->count].kind = kind;
+	d->items[d->count].loc = loc;
+	d->items[d->count].str = str ? strdup(str) : NULL;
+	d->count++;
+}
+
+static void deferred_free(DeferredDiags *d) {
+	for (int i = 0; i < d->count; i++)
+		free(d->items[i].str);
+	free(d->items);
+	d->items = NULL;
+	d->count = d->cap = 0;
+}
+
 /* Parse each `use <name>;` module and register its CST with the semantic analyzer
  * (which inlines + name-prefixes it). Analysis-only: unlike main.c's resolve_uses
  * we don't touch the lowerer. The module CST + source are borrowed by the registry,
  * so we keep them alive in `holds` until after analysis. */
-static void resolve_uses_sem(const SyntaxNode *root, const char *src, const char *path, ModuleHolds *holds) {
+static void resolve_uses_sem(const SyntaxNode *root, const char *src, const char *path, ModuleHolds *holds,
+                             DeferredDiags *diags) {
 	if (!root)
 		return;
 	for (int u = 0; u < root->child_count; u++) {
@@ -143,6 +180,7 @@ static void resolve_uses_sem(const SyntaxNode *root, const char *src, const char
 
 		char mod_name[256];
 		mod_name[0] = '\0';
+		SourceLoc use_loc = {0, 0};
 		for (int k = 0; k < ud->child_count; k++)
 			if (ud->children[k].tag == SE_TOKEN && ud->children[k].as.token.kind == TOK_IDENT) {
 				size_t L = ud->children[k].as.token.length;
@@ -150,6 +188,8 @@ static void resolve_uses_sem(const SyntaxNode *root, const char *src, const char
 					L = sizeof(mod_name) - 1;
 				memcpy(mod_name, src + ud->children[k].as.token.offset, L);
 				mod_name[L] = '\0';
+				use_loc.line = ud->children[k].as.token.line;
+				use_loc.column = ud->children[k].as.token.column;
 				break;
 			}
 		if (!mod_name[0])
@@ -161,14 +201,19 @@ static void resolve_uses_sem(const SyntaxNode *root, const char *src, const char
 		free(dir);
 		snprintf(path2, sizeof(path2), "%s/%s.arche", ARCHE_CORE_DIR, mod_name);
 		const char *found = file_exists(path1) ? path1 : (file_exists(path2) ? path2 : NULL);
-		if (!found)
+		if (!found) {
+			deferred_push(diags, SEM_DIAG_module_not_found, use_loc, mod_name);
 			continue;
+		}
 
 		char *mod_src = read_file(found);
-		if (!mod_src)
+		if (!mod_src) {
+			deferred_push(diags, SEM_DIAG_module_not_found, use_loc, mod_name);
 			continue;
+		}
 		ParseResult mp = parse_source(mod_src);
 		if (mp.error_count > 0 || !mp.cst_root) {
+			deferred_push(diags, SEM_DIAG_module_parse_failed, use_loc, mod_name);
 			parse_result_free(&mp);
 			free(mod_src);
 			continue;
@@ -326,11 +371,55 @@ static Analysis analyze(char *user, const char *path) {
 	ParseResult pr = parse_source(a.combined);
 	a.cst_root = pr.cst_root;
 	pr.cst_root = NULL;
+
+	/* Capture parse errors before freeing pr — they get pushed into ctx below so
+	 * the editor sees them through the same channel as semantic errors. This is
+	 * the single biggest live-typing coverage win: half-typed code (which always
+	 * has parse errors) now produces diagnostics instead of silence. */
+	DeferredDiags deferred = {NULL, 0, 0};
+	for (size_t i = 0; i < pr.error_count; i++) {
+		SourceLoc loc = {pr.errors[i].line, pr.errors[i].column};
+		deferred_push(&deferred, SEM_DIAG_parse_error, loc, pr.errors[i].message);
+	}
 	parse_result_free(&pr);
-	if (!a.cst_root)
+
+	if (!a.cst_root) {
+		/* No CST → no semantic analysis; parse errors are all we have. The caller
+		 * gets an analysis with ctx=NULL, but we created it for the deferred-emit
+		 * path: emit parse errors before returning so they're not lost. */
+		if (deferred.count) {
+			/* We need a ctx to push into; analyze() returns ctx=NULL when there's
+			 * no CST. For now drop these parse errors when CST is null — the user
+			 * sees stderr from the parser already. Future: build a fallback ctx. */
+		}
+		deferred_free(&deferred);
 		return a;
-	resolve_uses_sem(a.cst_root, a.combined, path && path[0] ? path : ".", &a.holds);
+	}
+
+	resolve_uses_sem(a.cst_root, a.combined, path && path[0] ? path : ".", &a.holds, &deferred);
 	a.ctx = semantic_analyze_cst(a.cst_root, a.combined);
+
+	/* Flush deferred diagnostics now that the ctx exists. The typed wrappers do
+	 * the byte-stable stderr print + diag_push, so editors and CLI both see them. */
+	if (a.ctx) {
+		for (int i = 0; i < deferred.count; i++) {
+			DeferredDiag *d = &deferred.items[i];
+			switch (d->kind) {
+			case SEM_DIAG_parse_error:
+				sem_emit_parse_error(a.ctx, d->loc, d->str ? d->str : "");
+				break;
+			case SEM_DIAG_module_not_found:
+				sem_emit_module_not_found(a.ctx, d->loc, d->str ? d->str : "");
+				break;
+			case SEM_DIAG_module_parse_failed:
+				sem_emit_module_parse_failed(a.ctx, d->loc, d->str ? d->str : "");
+				break;
+			default:
+				break;
+			}
+		}
+	}
+	deferred_free(&deferred);
 	return a;
 }
 
@@ -353,7 +442,16 @@ static void emit_hints(const Analysis *a) {
 
 /* Emit diagnostics collected during semantic analysis, translated to user coords.
  * Errors with no source position default to user line 1 col 1 so they still surface;
- * anything inside the prepended core region is dropped (belongs to the prelude). */
+ * anything inside the prepended core region is dropped (belongs to the prelude).
+ *
+ * Wire protocol (self-framing — robust to mid-emit interruptions in the warm server):
+ *   DIAG <line> <col> <severity> <code> <slug> <note_count> <message…>
+ *   NOTE <line> <col> <message…>     × note_count
+ *
+ * <code> is the stable identifier (e.g. "E0001"); editors should surface it as
+ * LSP `Diagnostic.code`. `<note_count>` lets the parser know exactly how many
+ * NOTE lines belong to this DIAG — no in-band terminator needed. A `code` of
+ * "-" is emitted for legacy diagnostics that haven't been bound to a kind yet. */
 static void emit_diags(const Analysis *a) {
 	if (!a->ctx)
 		return;
@@ -370,7 +468,15 @@ static void emit_diags(const Analysis *a) {
 			line = uline;
 			col = d->loc.column;
 		}
-		printf("DIAG %d %d %s %s %s\n", line, col, d->severity ? "error" : "warning", d->name, d->message);
+		printf("DIAG %d %d %s %s %s %d %s\n", line, col, d->severity ? "error" : "warning", d->code ? d->code : "-",
+		       d->name, d->note_count, d->message);
+		for (int j = 0; j < d->note_count; j++) {
+			const SemDiagNote *nt = &d->notes[j];
+			int nline = nt->loc.line - g_core_lines;
+			if (nline <= 0)
+				nline = 1;
+			printf("NOTE %d %d %s\n", nline, nt->loc.column, nt->message);
+		}
 	}
 }
 

@@ -19,6 +19,10 @@
 #define ARCHE_RUNTIME_DIR "build/runtime"
 #endif
 
+#ifndef ARCHE_EXPLAIN_DIR
+#define ARCHE_EXPLAIN_DIR "docs/explain"
+#endif
+
 static char *read_file_optional(const char *path);
 
 static int file_exists(const char *path) {
@@ -166,6 +170,34 @@ int main(int argc, char *argv[]) {
 	/* Lint config — both on by default; CLI can disable or promote to errors. */
 	int lint_pcbf_enabled = 1, lint_pcbf_werror = 0;
 	int lint_pne_enabled = 1, lint_pne_werror = 0;
+
+	/* `--explain <code>` prints long-form help for a diagnostic code (e.g.
+	 * `--explain E0001`) from docs/explain/<code>.md, then exits. Codes are
+	 * stable forever (see docs/DIAGNOSTICS.md); the markdown files are added
+	 * incrementally — a missing file prints a short fallback rather than failing. */
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--explain") == 0) {
+			if (i + 1 >= argc) {
+				fprintf(stderr, "usage: %s --explain <code> (e.g. E0001)\n", argv[0]);
+				return 1;
+			}
+			const char *code = argv[i + 1];
+			char path[512];
+			snprintf(path, sizeof(path), "%s/%s.md", ARCHE_EXPLAIN_DIR, code);
+			FILE *ef = fopen(path, "r");
+			if (!ef) {
+				fprintf(stderr, "%s: no long-form explanation yet.\n", code);
+				fprintf(stderr, "(would live at %s — contributions welcome; see docs/DIAGNOSTICS.md)\n", path);
+				return 1;
+			}
+			char buf[4096];
+			size_t n;
+			while ((n = fread(buf, 1, sizeof(buf), ef)) > 0)
+				fwrite(buf, 1, n, stdout);
+			fclose(ef);
+			return 0;
+		}
+	}
 
 	/* Parse command-line arguments */
 	for (int i = 1; i < argc; i++) {
