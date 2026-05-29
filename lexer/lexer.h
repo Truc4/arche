@@ -26,7 +26,6 @@ typedef enum TokenKind {
 	TOK_IN,
 	TOK_BREAK,
 	TOK_EXTERN,
-	TOK_UNSAFE,
 	TOK_MOVE,
 	TOK_OWN,
 	TOK_COPY,

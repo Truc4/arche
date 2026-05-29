@@ -92,9 +92,6 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_extern_func_bad_type]          = { "E0061", "extern_func_bad_type",          CLASS_ERROR, 1 },
 	[SEM_DIAG_extern_func_bad_return]        = { "E0062", "extern_func_bad_return",        CLASS_ERROR, 1 },
 
-	/* Unsafe */
-	[SEM_DIAG_syscall_in_safe]               = { "E0070", "syscall_in_safe",               CLASS_ERROR, 1 },
-
 	/* Constants */
 	[SEM_DIAG_constant_redefined]            = { "E0080", "constant_redefined",            CLASS_ERROR, 1 },
 	[SEM_DIAG_const_value_is_type]           = { "E0081", "const_value_is_type",           CLASS_ERROR, 1 },
@@ -612,11 +609,8 @@ SemDiag *sem_emit_extern_func_bad_return(SemanticContext *ctx, SourceLoc loc, co
 	                 "unknown return type '%s' in extern func '%s' signature", type, func_name);
 }
 
-/* --- Unsafe / constants / purity --- */
+/* --- Constants / purity --- */
 
-SemDiag *sem_emit_syscall_in_safe(SemanticContext *ctx, SourceLoc loc) {
-	return sem_emit_(ctx, SEM_DIAG_syscall_in_safe, loc, "`syscall` may only be called from an `unsafe` proc or func");
-}
 SemDiag *sem_emit_constant_redefined(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_constant_redefined, loc, "constant '%s' already defined", name);
 }

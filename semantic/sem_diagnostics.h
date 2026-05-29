@@ -100,9 +100,6 @@ typedef enum {
 	SEM_DIAG_extern_func_bad_return,
 	SEM_DIAG_extern_proc_bad_return,
 
-	/* Unsafe / builtins */
-	SEM_DIAG_syscall_in_safe,
-
 	/* Constants / meta */
 	SEM_DIAG_constant_redefined,
 	SEM_DIAG_const_value_is_type,
@@ -248,8 +245,6 @@ SemDiag *sem_emit_empty_group(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_extern_proc_bad_type(SemanticContext *ctx, SourceLoc loc, const char *type, const char *proc_name);
 SemDiag *sem_emit_extern_func_bad_type(SemanticContext *ctx, SourceLoc loc, const char *type, const char *func_name);
 SemDiag *sem_emit_extern_func_bad_return(SemanticContext *ctx, SourceLoc loc, const char *type, const char *func_name);
-
-SemDiag *sem_emit_syscall_in_safe(SemanticContext *ctx, SourceLoc loc);
 
 SemDiag *sem_emit_constant_redefined(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_const_value_is_type(SemanticContext *ctx, SourceLoc loc, const char *name, const char *rhs);

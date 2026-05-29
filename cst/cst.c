@@ -52,10 +52,9 @@ ProcDecl *proc_decl_create(char *name) {
 	proc->name = name;
 	proc->params = NULL;
 	proc->param_count = 0;
-	proc->return_types = NULL;
-	proc->return_type_count = 0;
+	proc->out_params = NULL;
+	proc->out_param_count = 0;
 	proc->is_extern = 0;
-	proc->is_unsafe = 0;
 	proc->is_variadic = 0;
 	proc->statements = NULL;
 	proc->statement_count = 0;
@@ -85,7 +84,6 @@ FuncDecl *func_decl_create(char *name) {
 	func->params = NULL;
 	func->param_count = 0;
 	func->is_extern = 0;
-	func->is_unsafe = 0;
 	func->is_variadic = 0;
 	func->statements = NULL;
 	func->statement_count = 0;
@@ -311,9 +309,9 @@ void proc_decl_free(ProcDecl *proc) {
 	if (!proc)
 		return;
 	free(proc->name);
-	for (int i = 0; i < proc->return_type_count; i++)
-		type_ref_free(proc->return_types[i]);
-	free(proc->return_types);
+	for (int i = 0; i < proc->out_param_count; i++)
+		parameter_free(proc->out_params[i]);
+	free(proc->out_params);
 	for (int i = 0; i < proc->param_count; i++) {
 		parameter_free(proc->params[i]);
 	}

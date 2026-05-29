@@ -102,10 +102,10 @@ typedef struct {
 	char *name;
 	HirParam **params;
 	int param_count;
-	/* A proc may return a list of types (single = count 1; count > 1 = aggregate), like a func.
-	 * count == 0 is a void proc. */
-	HirType **return_types;
-	int return_type_count;
+	/* A proc has no return value — results are OUT-PARAMETERS written in place (the `(out)` of
+	 * `proc f(in)(out)`). A name shared with `params` is an in-out param. count == 0 = no outputs. */
+	HirParam **out_params;
+	int out_param_count;
 	int is_extern;
 	HirStmt **stmts;
 	int stmt_count;

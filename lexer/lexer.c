@@ -156,9 +156,6 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 6 && strncmp(start, "extern", 6) == 0) {
 		return TOK_EXTERN;
 	}
-	if (length == 6 && strncmp(start, "unsafe", 6) == 0) {
-		return TOK_UNSAFE;
-	}
 	if (length == 4 && strncmp(start, "move", 4) == 0) {
 		return TOK_MOVE;
 	}
@@ -508,8 +505,6 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_BREAK";
 	case TOK_EXTERN:
 		return "TOK_EXTERN";
-	case TOK_UNSAFE:
-		return "TOK_UNSAFE";
 	case TOK_MOVE:
 		return "TOK_MOVE";
 	case TOK_OWN:

@@ -131,6 +131,8 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "PARAM_LIST";
 	case SN_PARAM:
 		return "PARAM";
+	case SN_OUT_PARAM:
+		return "OUT_PARAM";
 	case SN_FIELD_DECL:
 		return "FIELD_DECL";
 	case SN_BLOCK:

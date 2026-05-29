@@ -103,10 +103,6 @@ struct SemanticContext {
 	/* Track if inside proc/sys body (for alloc enforcement) */
 	int in_body;
 
-	/* 1 while analyzing the body of an `unsafe` proc/func; gates unsafe builtins
-	 * (currently `syscall`) so they cannot be called from ordinary safe code. */
-	int in_unsafe;
-
 	/* 1 only while analyzing a call that sits in a statement / bind-RHS position (where an
 	 * *action* is allowed). A proc or extern call is an action, not a value, so it may appear
 	 * only there — never nested inside another expression. Set by STMT_EXPR / STMT_BIND /
@@ -899,15 +895,13 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 			return NULL;
 		}
 
-		/* Plain func/proc path: a returning proc yields its first return type exactly like a func. */
+		/* Plain func path: a func yields its return type. A proc is not a value — it has no
+		 * result type here (its outputs are written into caller-provided out-params). */
 		for (int i = 0; i < ctx->prog->decl_count; i++) {
 			Decl *decl = ctx->prog->decls[i];
 			TypeRef *rt = NULL;
 			if (decl->kind == DECL_FUNC && decl->data.func->name && strcmp(decl->data.func->name, func_name) == 0) {
 				rt = func_first_return_type(decl->data.func);
-			} else if (decl->kind == DECL_PROC && decl->data.proc->name &&
-			           strcmp(decl->data.proc->name, func_name) == 0) {
-				rt = (decl->data.proc->return_type_count > 0) ? decl->data.proc->return_types[0] : NULL;
 			} else {
 				continue;
 			}
@@ -1277,13 +1271,6 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 						iv->is_consumed = 1;
 				}
 			}
-		}
-
-		/* Unsafe-builtin gate: `syscall` bypasses bounds/alloc/handle safety, so it
-		 * may only be called from an explicitly-marked `unsafe` proc/func. */
-		if (strcmp(func_name, "syscall") == 0 && !ctx->in_unsafe) {
-			sem_emit_syscall_in_safe(ctx, expr->loc);
-			break;
 		}
 
 		GroupInfo *gi = find_group(ctx, func_name);
@@ -2228,11 +2215,11 @@ static void lint_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	if (func_purity_body(ctx, proc->statements, proc->statement_count) != NULL)
 		return;
 
-	/* Pure body. If it returns a value it computes something — it should be a `func` (procs are
-	 * for effects). If it returns nothing, it's a no-op proc (does nothing observable) — flag for
+	/* Pure body. If it produces outputs it computes something — it should be a `func` (procs are
+	 * for effects). If it has no outputs, it's a no-op proc (does nothing observable) — flag for
 	 * removal. The purity test is the SAME predicate `enforce_func_purity` uses, so "could be a
 	 * func" means exactly "would compile as a func". */
-	if (proc->return_type_count > 0) {
+	if (proc->out_param_count > 0) {
 		sem_emit_lint_proc_could_be_func(ctx, proc->loc, proc->name ? proc->name : "<unknown>");
 	} else {
 		sem_emit_lint_proc_no_effect(ctx, proc->loc, proc->name ? proc->name : "<unknown>");
@@ -2398,10 +2385,11 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 		}
 	}
 
-	/* For extern procs, validate the return types too (parity with extern func). */
+	/* For extern procs, validate the out-param types too (parity with extern func return). An
+	 * out-only out-param maps to the C return value; an in-out one to an in-place pointer write. */
 	if (proc->is_extern) {
-		for (int i = 0; i < proc->return_type_count; i++) {
-			TypeRef *rt = proc->return_types[i];
+		for (int i = 0; i < proc->out_param_count; i++) {
+			TypeRef *rt = proc->out_params[i] ? proc->out_params[i]->type : NULL;
 			if (rt && rt->kind == TYPE_NAME) {
 				const char *tname = rt->data.name;
 				if (!is_primitive_type_name(tname) && !find_archetype(ctx, tname) && !is_type_alias(ctx, tname)) {
@@ -2448,11 +2436,9 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	ProcDecl *prev_proc = ctx->current_proc;
 	ctx->current_proc = proc;
 	ctx->in_body = 1;
-	ctx->in_unsafe = proc->is_unsafe;
 	for (int i = 0; i < proc->statement_count; i++) {
 		analyze_statement(ctx, proc->statements[i]);
 	}
-	ctx->in_unsafe = 0;
 	ctx->in_body = 0;
 	ctx->current_proc = prev_proc;
 
@@ -2656,11 +2642,9 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 		mark_last_param(ctx, func->params[i]->is_own);
 	}
 
-	ctx->in_unsafe = func->is_unsafe;
 	for (int i = 0; i < func->statement_count; i++) {
 		analyze_statement(ctx, func->statements[i]);
 	}
-	ctx->in_unsafe = 0;
 
 	enforce_func_purity(ctx, func); /* a `func` must be pure — hard error if not */
 
@@ -3794,7 +3778,6 @@ static Decl *cst_build_decl_inner(CstView d) {
 		ProcDecl *ap = proc_decl_create(sem_cv_dup(cv_child(d, SN_FUNC_DEF_NAME)));
 		ap->loc = sem_direct_token_loc(d.node, TOK_LPAREN); /* lint location: the `(`, like the parser */
 		ap->is_extern = cv_has_token(d, TOK_EXTERN);
-		ap->is_unsafe = cv_has_token(d, TOK_UNSAFE);
 		ap->is_variadic = cv_has_token(d, TOK_DOTDOTDOT);
 		ap->allow_pure_proc = cv_has_token(d, TOK_AT);
 		int np = cv_count(d, SN_PARAM);
@@ -3802,11 +3785,11 @@ static Decl *cst_build_decl_inner(CstView d) {
 		for (int i = 0; i < np; i++)
 			ap->params[i] = cst_build_param(cv_child_at(d, SN_PARAM, i));
 		ap->param_count = np;
-		int pnt = cv_type_count_sem(d); /* return types are the direct type-node children (0 = void) */
-		ap->return_types = calloc(pnt ? pnt : 1, sizeof(TypeRef *));
-		ap->return_type_count = 0;
-		for (int i = 0; i < pnt; i++)
-			ap->return_types[ap->return_type_count++] = cst_build_type(sem_type_at(d, i));
+		int nout = cv_count(d, SN_OUT_PARAM); /* the `(out)` list: results written in place (0 = no outputs) */
+		ap->out_params = calloc(nout ? nout : 1, sizeof(Parameter *));
+		for (int i = 0; i < nout; i++)
+			ap->out_params[i] = cst_build_param(cv_child_at(d, SN_OUT_PARAM, i));
+		ap->out_param_count = nout;
 		ap->statements = cst_build_body(d, &ap->statement_count);
 		ad->data.proc = ap;
 		return ad;
@@ -3831,7 +3814,6 @@ static Decl *cst_build_decl_inner(CstView d) {
 		FuncDecl *af = func_decl_create(sem_cv_dup(cv_child(d, SN_FUNC_DEF_NAME)));
 		af->loc = sem_direct_token_loc(d.node, TOK_LPAREN);
 		af->is_extern = cv_has_token(d, TOK_EXTERN);
-		af->is_unsafe = cv_has_token(d, TOK_UNSAFE);
 		af->is_variadic = cv_has_token(d, TOK_DOTDOTDOT);
 		int np = cv_count(d, SN_PARAM);
 		af->params = calloc(np ? np : 1, sizeof(Parameter *));
@@ -4710,7 +4692,6 @@ static SemanticContext *make_context(void) {
 	ctx->current_sys_archetype = NULL;
 	ctx->current_proc = NULL;
 	ctx->in_body = 0;
-	ctx->in_unsafe = 0;
 	ctx->prog = NULL;
 	ctx->owned_prog = NULL;
 	ctx->model = sem_model_new();

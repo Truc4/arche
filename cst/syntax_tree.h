@@ -37,6 +37,7 @@ typedef enum {
 	/* Structure */
 	SN_PARAM_LIST,
 	SN_PARAM,
+	SN_OUT_PARAM, /* an out-parameter of a proc: `name: T` in the second `(...)` list */
 	SN_FIELD_DECL,
 	SN_BLOCK,        /* a `{ ... }` statement body */
 	SN_RETURN_TYPES, /* the `-> (T, ...)` of a func */

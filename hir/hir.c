@@ -214,6 +214,9 @@ static void hir_proc_decl_free(HirProcDecl *proc) {
 	for (int i = 0; i < proc->param_count; i++)
 		hir_param_free(proc->params[i]);
 	free(proc->params);
+	for (int i = 0; i < proc->out_param_count; i++)
+		hir_param_free(proc->out_params[i]);
+	free(proc->out_params);
 	for (int i = 0; i < proc->stmt_count; i++)
 		hir_stmt_free(proc->stmts[i]);
 	free(proc->stmts);

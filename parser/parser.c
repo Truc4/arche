@@ -578,28 +578,47 @@ static int parse_proc_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		return 0;
 	}
 
-	/* Optional return type: `-> T` or `-> (T1, …, Tn)`. A proc with no arrow returns nothing
-	 * (void) — it's an action with no value. Mirrors a func's return list (the arrow is mandatory
-	 * for a func, optional for a proc). */
-	if (match(parser, TOK_ARROW)) {
-		if (match(parser, TOK_LPAREN)) {
-			int return_type_count = 0;
+	/* A proc declares its results as out-parameters in a SECOND `(...)` list — it has no
+	 * return type (a proc is an action, not a value). The list is optional: absent means
+	 * no outputs (an effect-only action). An out-param is owned by definition, so `own` is
+	 * not written there. The in-list/out-list split is `proc f(in)(out)`; a name echoed in
+	 * both is an in-out param (in-place mutation), supported mainly for extern C signatures. */
+	if (check(parser, TOK_ARROW)) {
+		error(parser, "a proc has no return type — declare results as out-parameters in a second `(...)` list");
+		return 0;
+	}
+	if (match(parser, TOK_LPAREN)) {
+		if (!check(parser, TOK_RPAREN)) {
 			do {
+				int out_param_cp = cst_cp(parser);
+
+				if (check(parser, TOK_OWN)) {
+					error(parser, "an out-parameter is owned by definition — drop `own`");
+					return 0;
+				}
+
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "Expected out-parameter name");
+					return 0;
+				}
+				int out_param_name_cp = cst_cp(parser);
+				advance(parser);
+				cst_wrap(parser, out_param_name_cp, SN_PARAM_NAME);
+
+				if (!match(parser, TOK_COLON)) {
+					error(parser, "Expected ':' after out-parameter name");
+					return 0;
+				}
+
 				if (!parse_type(parser))
 					return 0;
-				return_type_count++;
+
+				cst_wrap(parser, out_param_cp, SN_OUT_PARAM);
 			} while (match(parser, TOK_COMMA));
-			if (!match(parser, TOK_RPAREN)) {
-				error(parser, "Expected ')' after multi-return type list");
-				return 0;
-			}
-			if (return_type_count < 2) {
-				error(parser, "a parenthesized return type must list at least two types");
-				return 0;
-			}
-		} else {
-			if (!parse_type(parser))
-				return 0;
+		}
+		if (!match(parser, TOK_RPAREN)) {
+			error(parser, "Expected ')' after out-parameters");
+			return 0;
 		}
 	}
 
@@ -1092,16 +1111,6 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		return parse_sys_decl(parser, out_kind);
 	case TOK_FUNC:
 		return parse_func_decl(parser, out_kind);
-	case TOK_UNSAFE: {
-		advance(parser); /* consume 'unsafe' */
-		if (check(parser, TOK_FUNC)) {
-			return parse_func_decl(parser, out_kind);
-		} else if (check(parser, TOK_PROC)) {
-			return parse_proc_decl(parser, out_kind);
-		}
-		error(parser, "Expected 'proc' or 'func' after 'unsafe'");
-		return 0;
-	}
 	case TOK_USE: {
 		advance(parser); /* consume 'use' */
 		if (!check(parser, TOK_IDENT)) {

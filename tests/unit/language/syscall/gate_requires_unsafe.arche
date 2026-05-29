@@ -1,7 +1,0 @@
-// `syscall` from a non-`unsafe` proc must be rejected at compile time — the
-// raw kernel boundary is gated so it can't be called from ordinary safe code.
-// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -q "may only be called from an .unsafe." %t.out
-proc main() {
-  pid := syscall(39, 0, 0, 0, 0, 0, 0);
-  printf("should not compile: %ld\n", pid);
-}
