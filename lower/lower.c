@@ -693,10 +693,6 @@ static HirStmt *lower_stmt_cst(CstView s) {
 		as->kind = HIR_STMT_EXPR;
 		as->data.expr_stmt.expr = lower_expr_cst(cv_node_at_expr(s, 0));
 		break;
-	case SN_FREE_STMT:
-		as->kind = HIR_STMT_FREE;
-		as->data.free_stmt.value = lower_expr_cst(cv_node_at_expr(s, 0));
-		break;
 	case SN_BREAK_STMT:
 		as->kind = HIR_STMT_BREAK;
 		break;
@@ -1096,9 +1092,6 @@ static void tuple_collapse_stmt(HirStmt *s) {
 		break;
 	case HIR_STMT_EXPR:
 		tuple_collapse_expr(s->data.expr_stmt.expr);
-		break;
-	case HIR_STMT_FREE:
-		tuple_collapse_expr(s->data.free_stmt.value);
 		break;
 	case HIR_STMT_RETURN:
 		for (int i = 0; i < s->data.return_stmt.count; i++)
@@ -1582,9 +1575,6 @@ static void hir_rn_stmt(HirStmt *s, const char *prefix, char **set, int count) {
 		break;
 	case HIR_STMT_EXPR:
 		hir_rn_expr(s->data.expr_stmt.expr, prefix, set, count);
-		break;
-	case HIR_STMT_FREE:
-		hir_rn_expr(s->data.free_stmt.value, prefix, set, count);
 		break;
 	case HIR_STMT_RETURN:
 		for (int i = 0; i < s->data.return_stmt.count; i++)

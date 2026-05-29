@@ -150,9 +150,6 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 2 && strncmp(start, "in", 2) == 0) {
 		return TOK_IN;
 	}
-	if (length == 4 && strncmp(start, "free", 4) == 0) {
-		return TOK_FREE;
-	}
 	if (length == 5 && strncmp(start, "break", 5) == 0) {
 		return TOK_BREAK;
 	}
@@ -395,6 +392,13 @@ Token lexer_next_token(Lexer *lexer) {
 	case ',':
 		return make_token(lexer, TOK_COMMA, start, 1, line, column);
 	case '.':
+		/* `...` is the variadic marker (only meaningful in extern signatures); a
+		 * single `.` stays a field accessor. */
+		if (lexer->cur[0] == '.' && lexer->cur[1] == '.') {
+			lexer->cur += 2;
+			lexer->column += 2;
+			return make_token(lexer, TOK_DOTDOTDOT, start, 3, line, column);
+		}
 		return make_token(lexer, TOK_DOT, start, 1, line, column);
 	case ':':
 		return make_token(lexer, TOK_COLON, start, 1, line, column);
@@ -500,8 +504,6 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_IF";
 	case TOK_IN:
 		return "TOK_IN";
-	case TOK_FREE:
-		return "TOK_FREE";
 	case TOK_BREAK:
 		return "TOK_BREAK";
 	case TOK_EXTERN:
@@ -537,6 +539,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_COMMA";
 	case TOK_DOT:
 		return "TOK_DOT";
+	case TOK_DOTDOTDOT:
+		return "TOK_DOTDOTDOT";
 	case TOK_COLON:
 		return "TOK_COLON";
 	case TOK_SEMI:

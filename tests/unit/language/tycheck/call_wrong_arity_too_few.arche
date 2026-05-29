@@ -1,0 +1,10 @@
+// E0203: passing too few arguments is a tycheck error.
+// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0203 wrong_arity 0 'add' expects 2 arguments, got 1"
+func add(a: int, b: int) -> int {
+  return a + b;
+}
+
+proc main() {
+  x := add(1);
+  print(x);
+}

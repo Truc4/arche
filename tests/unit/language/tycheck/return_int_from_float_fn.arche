@@ -1,0 +1,12 @@
+// E0200: strict no implicit conversion between TYPED values (Rust/Go-style).
+// Untyped literal constants (`1`) flow flexibly — they fit any numeric type. Only
+// typed-variable mismatches are rejected. A string literal isn't numeric, so a
+// `func -> float` returning `"x"` is the test.
+// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 return value: expected 'float', got 'str'"
+func bar() -> float {
+  return "hello";
+}
+
+proc main() {
+  print(0);
+}

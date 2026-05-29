@@ -103,6 +103,12 @@ struct Decl {
 	Trivia *trailing_trivia;
 	int trailing_count;
 	int last_line; /* line of this decl's last syntactic token */
+	/* `@allow(<slug>)` suppressions in the order they appeared on the decl.
+	 * Each entry is a diagnostic slug (e.g. "unused-local"). Semantic analysis
+	 * pushes the set when entering this decl so its lints can be silenced.
+	 * Errors are NEVER suppressible — silently ignored if listed here. */
+	char **allow_slugs;
+	int allow_slug_count;
 	union {
 		WorldDecl *world;
 		ArchetypeDecl *archetype;
@@ -207,7 +213,8 @@ struct ProcDecl {
 	TypeRef **return_types;
 	int return_type_count;
 	int is_extern;
-	int is_unsafe; /* 1 if declared `unsafe proc`; may call unsafe builtins (syscall) */
+	int is_unsafe;   /* 1 if declared `unsafe proc`; may call unsafe builtins (syscall) */
+	int is_variadic; /* 1 if last param is `...`; only valid on extern decls. */
 	Statement **statements;
 	int statement_count;
 	int end_line;
@@ -241,7 +248,8 @@ struct FuncDecl {
 	TypeRef **return_types;
 	int return_type_count;
 	int is_extern;
-	int is_unsafe; /* 1 if declared `unsafe func`; may call unsafe builtins (syscall) */
+	int is_unsafe;   /* 1 if declared `unsafe func`; may call unsafe builtins (syscall) */
+	int is_variadic; /* 1 if last param is `...`; only valid on extern decls (printf etc.). */
 	Statement **statements;
 	int statement_count;
 	int end_line;
@@ -267,7 +275,6 @@ typedef enum {
 	STMT_BREAK,
 	STMT_RUN,
 	STMT_EXPR,
-	STMT_FREE,
 	STMT_RETURN,
 	STMT_MULTI_BIND,
 	STMT_EACH_FIELD,
@@ -332,10 +339,6 @@ typedef struct {
 } ExprStmt;
 
 typedef struct {
-	Expression *value;
-} FreeStmt;
-
-typedef struct {
 	/* Returned values, in order; a single return is just count == 1. */
 	Expression **values;
 	int count;
@@ -378,7 +381,6 @@ struct Statement {
 		IfStmt if_stmt;
 		RunStmt run_stmt;
 		ExprStmt expr_stmt;
-		FreeStmt free_stmt;
 		ReturnStmt return_stmt;
 		MultiBindStmt multi_bind;
 		EachFieldStmt each_field;

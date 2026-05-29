@@ -181,9 +181,6 @@ void hir_stmt_free(HirStmt *stmt) {
 	case HIR_STMT_EXPR:
 		hir_expr_free(stmt->data.expr_stmt.expr);
 		break;
-	case HIR_STMT_FREE:
-		hir_expr_free(stmt->data.free_stmt.value);
-		break;
 	case HIR_STMT_RETURN:
 		for (int i = 0; i < stmt->data.return_stmt.count; i++)
 			hir_expr_free(stmt->data.return_stmt.values[i]);

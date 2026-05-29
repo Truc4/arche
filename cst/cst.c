@@ -56,6 +56,7 @@ ProcDecl *proc_decl_create(char *name) {
 	proc->return_type_count = 0;
 	proc->is_extern = 0;
 	proc->is_unsafe = 0;
+	proc->is_variadic = 0;
 	proc->statements = NULL;
 	proc->statement_count = 0;
 	proc->loc.line = 1;
@@ -85,6 +86,7 @@ FuncDecl *func_decl_create(char *name) {
 	func->param_count = 0;
 	func->is_extern = 0;
 	func->is_unsafe = 0;
+	func->is_variadic = 0;
 	func->statements = NULL;
 	func->statement_count = 0;
 	func->loc.line = 1;
@@ -239,6 +241,9 @@ void decl_free(Decl *decl) {
 		return;
 	free(decl->leading_trivia);
 	free(decl->trailing_trivia);
+	for (int i = 0; i < decl->allow_slug_count; i++)
+		free(decl->allow_slugs[i]);
+	free(decl->allow_slugs);
 	switch (decl->kind) {
 	case DECL_WORLD:
 		world_decl_free(decl->data.world);
@@ -476,9 +481,6 @@ void statement_free(Statement *stmt) {
 		break;
 	case STMT_EXPR:
 		expression_free(stmt->data.expr_stmt.expr);
-		break;
-	case STMT_FREE:
-		expression_free(stmt->data.free_stmt.value);
 		break;
 	case STMT_BREAK:
 		break;

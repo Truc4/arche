@@ -24,7 +24,6 @@ typedef enum TokenKind {
 	TOK_IF,
 	TOK_ELSE,
 	TOK_IN,
-	TOK_FREE,
 	TOK_BREAK,
 	TOK_EXTERN,
 	TOK_UNSAFE,
@@ -36,17 +35,18 @@ typedef enum TokenKind {
 	TOK_EACH_FIELD,
 
 	/* punctuation */
-	TOK_LPAREN,   /* ( */
-	TOK_RPAREN,   /* ) */
-	TOK_LBRACE,   /* { */
-	TOK_RBRACE,   /* } */
-	TOK_LBRACKET, /* [ */
-	TOK_RBRACKET, /* ] */
-	TOK_COMMA,    /* , */
-	TOK_DOT,      /* . */
-	TOK_COLON,    /* : */
-	TOK_SEMI,     /* ; */
-	TOK_AT,       /* @  (decl-site decorators like @allow_pure_proc) */
+	TOK_LPAREN,    /* ( */
+	TOK_RPAREN,    /* ) */
+	TOK_LBRACE,    /* { */
+	TOK_RBRACE,    /* } */
+	TOK_LBRACKET,  /* [ */
+	TOK_RBRACKET,  /* ] */
+	TOK_COMMA,     /* , */
+	TOK_DOT,       /* . */
+	TOK_DOTDOTDOT, /* ... — variadic marker in extern signatures */
+	TOK_COLON,     /* : */
+	TOK_SEMI,      /* ; */
+	TOK_AT,        /* @  (decl-site decorators like @allow_pure_proc) */
 
 	/* assignment */
 	TOK_EQ,       /* = */

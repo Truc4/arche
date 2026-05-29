@@ -2,6 +2,7 @@
 #include "lexer/lexer.h"
 #include "lower/lower.h"
 #include "parser/parser.h"
+#include "semantic/sem_diagnostics.h"
 #include "semantic/semantic.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +18,10 @@
 
 #ifndef ARCHE_RUNTIME_DIR
 #define ARCHE_RUNTIME_DIR "build/runtime"
+#endif
+
+#ifndef ARCHE_EXPLAIN_DIR
+#define ARCHE_EXPLAIN_DIR "docs/explain"
 #endif
 
 static char *read_file_optional(const char *path);
@@ -167,6 +172,34 @@ int main(int argc, char *argv[]) {
 	int lint_pcbf_enabled = 1, lint_pcbf_werror = 0;
 	int lint_pne_enabled = 1, lint_pne_werror = 0;
 
+	/* `--explain <code>` prints long-form help for a diagnostic code (e.g.
+	 * `--explain E0001`) from docs/explain/<code>.md, then exits. Codes are
+	 * stable forever (see docs/DIAGNOSTICS.md); the markdown files are added
+	 * incrementally — a missing file prints a short fallback rather than failing. */
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--explain") == 0) {
+			if (i + 1 >= argc) {
+				fprintf(stderr, "usage: %s --explain <code> (e.g. E0001)\n", argv[0]);
+				return 1;
+			}
+			const char *code = argv[i + 1];
+			char path[512];
+			snprintf(path, sizeof(path), "%s/%s.md", ARCHE_EXPLAIN_DIR, code);
+			FILE *ef = fopen(path, "r");
+			if (!ef) {
+				fprintf(stderr, "%s: no long-form explanation yet.\n", code);
+				fprintf(stderr, "(would live at %s — contributions welcome; see docs/DIAGNOSTICS.md)\n", path);
+				return 1;
+			}
+			char buf[4096];
+			size_t n;
+			while ((n = fread(buf, 1, sizeof(buf), ef)) > 0)
+				fwrite(buf, 1, n, stdout);
+			fclose(ef);
+			return 0;
+		}
+	}
+
 	/* Parse command-line arguments */
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-o") == 0) {
@@ -258,13 +291,19 @@ int main(int argc, char *argv[]) {
 	source[file_size] = '\0';
 	fclose(input);
 
-	/* Load and prepend core library */
+	/* Load and prepend core library. Count its newlines so we can subtract them
+	 * from any combined-source line numbers we surface — the user wrote line N of
+	 * their file, not line N + core_lines of the combined stream. */
 	char core_path[512];
 	snprintf(core_path, sizeof(core_path), "%s/core.arche", ARCHE_CORE_DIR);
 	char *core_src = read_file_optional(core_path);
 
+	int core_lines = 0;
 	char *combined_source = NULL;
 	if (core_src && strlen(core_src) > 0) {
+		for (const char *p = core_src; *p; p++)
+			if (*p == '\n')
+				core_lines++;
 		/* Combine: core + user source */
 		combined_source = malloc(strlen(core_src) + strlen(source) + 1);
 		strcpy(combined_source, core_src);
@@ -276,12 +315,19 @@ int main(int argc, char *argv[]) {
 		free(core_src); /* core.arche was empty */
 	}
 
+	/* Diagnostics from semantic analysis carry combined-source line numbers; tell
+	 * the diagnostic printer to subtract the core prelude before printing. */
+	semantic_set_print_line_offset(core_lines);
+
 	/* Lexical analysis and parsing */
 	ParseResult parse_result = parse_source(source);
 
 	if (parse_result.error_count > 0) {
 		for (size_t i = 0; i < parse_result.error_count; i++) {
-			fprintf(stderr, "[Line %d, Col %d] Error: %s\n", parse_result.errors[i].line, parse_result.errors[i].column,
+			int line = parse_result.errors[i].line - core_lines;
+			if (line < 1)
+				line = 1; /* error inside core; clamp so we don't show negative lines */
+			fprintf(stderr, "[Line %d, Col %d] Error: %s\n", line, parse_result.errors[i].column,
 			        parse_result.errors[i].message);
 		}
 		parse_result_free(&parse_result);

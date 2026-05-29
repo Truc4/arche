@@ -1,0 +1,67 @@
+#ifndef SEM_TYPES_H
+#define SEM_TYPES_H
+
+/* Type intern table: TypeId (u32) names a structural type interned in a
+ * per-compilation arena. Equality is `a == b` on TypeId. The arena owns all
+ * strings the data refers to (e.g. archetype names, opaque nominal names).
+ *
+ * This is the source-of-truth representation for types in the typechecker.
+ * The string-based `sem_model_expr_type` table coexists during Phase B
+ * migration and will be retired once codegen reads tyid directly.
+ *
+ * Design notes:
+ * - TypeId 0 is reserved as the "unknown" sentinel. Fail-open during build-out:
+ *   `check(e, expected)` matches anything against `tyid_unknown` so missing
+ *   rules don't generate noise.
+ * - Hash-consing is structural: identical (kind, payload) tuples intern once.
+ *   Two `tyid_of_array(arena, Int)` calls return the same TypeId.
+ * - Function types (`tyid_of_func`) carry param + return TypeId arrays; the
+ *   arrays are owned by the arena. */
+
+#include <stdint.h>
+
+typedef uint32_t TypeId;
+
+#define TYID_UNKNOWN ((TypeId)0)
+
+/* Primitive kinds the arena knows by construction. Anything else is named
+ * (TYK_NOMINAL) — archetype names, type aliases, opaque tags. */
+typedef enum { PRIM_VOID, PRIM_BOOL, PRIM_INT, PRIM_FLOAT, PRIM_CHAR, PRIM_STR, PRIM_COUNT } PrimKind;
+
+typedef enum {
+	TYK_UNKNOWN, /* sentinel — id 0 */
+	TYK_PRIM,
+	TYK_NOMINAL, /* archetype names, type aliases, opaque tags */
+	TYK_ARRAY,
+	TYK_SHAPED_ARRAY,
+	TYK_TUPLE,
+	TYK_HANDLE,
+	TYK_ARCHETYPE_CATEGORY, /* the bare `archetype` keyword (sys param only) */
+	TYK_FUNC                /* callable: (params) -> (returns) */
+} TyKind;
+
+typedef struct TypeArena TypeArena;
+
+TypeArena *ty_arena_new(void);
+void ty_arena_free(TypeArena *a);
+
+/* Constructors. All deterministic / hash-consed. */
+TypeId tyid_of_prim(TypeArena *a, PrimKind p);
+TypeId tyid_of_nominal(TypeArena *a, const char *name);
+TypeId tyid_of_array(TypeArena *a, TypeId elem);
+TypeId tyid_of_shaped(TypeArena *a, TypeId elem, int rank);
+TypeId tyid_of_tuple(TypeArena *a, const char *const *field_names, const TypeId *field_types, int field_count);
+TypeId tyid_of_handle(TypeArena *a, const char *archetype_name);
+TypeId tyid_of_archetype_category(TypeArena *a);
+TypeId tyid_of_func(TypeArena *a, const TypeId *params, int param_count, const TypeId *returns, int return_count);
+
+/* Inspection. */
+TyKind tyid_kind(const TypeArena *a, TypeId t);
+int tyid_equal(TypeId a, TypeId b); /* same interned id */
+int tyid_is_unknown(TypeId t);
+
+/* Display: writes a human-friendly type string into buf (truncates safely).
+ * Returns buf for chaining. Used by E0200 type_mismatch and friends. */
+const char *tyid_display(const TypeArena *a, TypeId t, char *buf, int buflen);
+
+#endif /* SEM_TYPES_H */

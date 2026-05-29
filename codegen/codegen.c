@@ -5088,13 +5088,6 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		break;
 	}
 
-	case HIR_STMT_FREE: {
-		char value_buf[256];
-		codegen_expression(ctx, stmt->data.free_stmt.value, value_buf);
-		buffer_append_fmt(ctx, "  call void @free(i8* %s)\n", value_buf);
-		break;
-	}
-
 	case HIR_STMT_BREAK: {
 		if (ctx->loop_exit_count > 0) {
 			char *exit_label = ctx->loop_exit_labels[ctx->loop_exit_count - 1];

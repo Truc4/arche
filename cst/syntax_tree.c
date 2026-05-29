@@ -155,8 +155,6 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "RUN_STMT";
 	case SN_EXPR_STMT:
 		return "EXPR_STMT";
-	case SN_FREE_STMT:
-		return "FREE_STMT";
 	case SN_RETURN_STMT:
 		return "RETURN_STMT";
 	case SN_MULTI_BIND_STMT:

@@ -1,0 +1,7 @@
+// printf is declared `extern printf(fmt: char[], ...) -> int;` — variadic. The
+// fixed prefix (`fmt`) is still checked, but trailing args are unconstrained, so
+// `printf("%d %d %d\n", 1, 2, 3)` is accepted with three extras.
+// RUN: %arche -o %t %s && %t | grep "1 2 3"
+proc main() {
+  printf("%d %d %d\n", 1, 2, 3);
+}
