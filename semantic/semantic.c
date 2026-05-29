@@ -1089,11 +1089,49 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 				if (var->archetype_name) {
 					arch = find_archetype(ctx, var->archetype_name);
 				}
-				/* E0111 reserved: the obvious "variable that isn't an archetype" check
-				 * over-rejects tuple-typed parameters (`pos.x` where `pos` is a
-				 * tuple sys-param) because tuple-component access isn't recognized
-				 * at this layer. Enable when the type system distinguishes
-				 * "non-archetype-non-tuple-non-handle" cleanly. */
+				/* E0111: variable has a known type that provides no field-access shape.
+				 * Skip tuples (`.x .y`) and archetype-param category; TYPE_NAME may still
+				 * resolve to an archetype that wasn't recorded as archetype_name.
+				 * Also skip sys-param column-access: in `sys s(pos, ...)`, `pos` is a column of
+				 * the current archetype. Field access on a column (`pos.x`) is tuple-component
+				 * access resolved at lower-stage, not at this layer. */
+				int sys_column_access = 0;
+				if (var->is_param && ctx->current_sys_archetype) {
+					ArchetypeInfo *sa = find_archetype(ctx, ctx->current_sys_archetype);
+					if (sa && find_field(sa, base_name)) {
+						sys_column_access = 1;
+					}
+				}
+				if (!arch && var->type && !sys_column_access) {
+					if (var->type->kind == TYPE_NAME) {
+						arch = find_archetype(ctx, var->type->data.name);
+					}
+					if (!arch && var->type->kind != TYPE_TUPLE && var->type->kind != TYPE_ARCHETYPE) {
+						const char *kind_name;
+						switch (var->type->kind) {
+						case TYPE_NAME:
+							kind_name = var->type->data.name;
+							break;
+						case TYPE_ARRAY:
+							kind_name = "array";
+							break;
+						case TYPE_SHAPED_ARRAY:
+							kind_name = "shaped array";
+							break;
+						case TYPE_OPAQUE:
+							kind_name = "opaque";
+							break;
+						case TYPE_TYPE:
+							kind_name = "type";
+							break;
+						default:
+							kind_name = "value";
+							break;
+						}
+						sem_emit_field_on_non_archetype(ctx, expr->loc, kind_name, field_name);
+						break;
+					}
+				}
 			}
 
 			/* now check if field exists on this archetype */
@@ -1793,28 +1831,6 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		}
 		break;
 
-	case STMT_FREE:
-		analyze_expression(ctx, stmt->data.free_stmt.value);
-		/* `free x` requires x to be an opaque value that hasn't already been freed.
-		 * Non-opaque values (data, handles, arrays) aren't backed by a separate
-		 * allocation. Double-freeing an opaque is undefined; the linear-consumed
-		 * tracker already knows. We only validate bare-name targets; expression
-		 * targets (`free f.field`) reach the runtime check. */
-		if (stmt->data.free_stmt.value && stmt->data.free_stmt.value->type == EXPR_NAME) {
-			const char *fname = stmt->data.free_stmt.value->data.name.name;
-			VariableInfo *fv = find_variable(ctx, fname);
-			if (fv) {
-				if (!var_is_opaque(ctx, fv)) {
-					sem_emit_free_non_opaque(ctx, stmt->data.free_stmt.value->loc, fname);
-				} else if (fv->is_consumed) {
-					sem_emit_double_free(ctx, stmt->data.free_stmt.value->loc, fname);
-				} else {
-					fv->is_consumed = 1;
-				}
-			}
-		}
-		break;
-
 	case STMT_BREAK:
 		break;
 
@@ -2186,8 +2202,6 @@ static int stmt_has_side_effects(SemanticContext *ctx, Statement *stmt, ProcDecl
 		return 1; /* running a system mutates archetype state */
 	case STMT_EXPR:
 		return expr_has_side_effects(ctx, stmt->data.expr_stmt.expr, proc);
-	case STMT_FREE:
-		return 1; /* deallocation */
 	case STMT_MULTI_BIND:
 		return stmt->data.multi_bind.value ? expr_has_side_effects(ctx, stmt->data.multi_bind.value, proc) : 0;
 	case STMT_EACH_FIELD: {
@@ -2343,8 +2357,6 @@ static const char *func_purity_stmt(SemanticContext *ctx, Statement *s) {
 		return NULL;
 	case STMT_RUN:
 		return "runs a system (`run`)";
-	case STMT_FREE:
-		return "frees memory (`free`)";
 	case STMT_EACH_FIELD:
 		return func_purity_body(ctx, s->data.each_field.body, s->data.each_field.body_count);
 	default:
@@ -3450,10 +3462,6 @@ static Statement *cst_build_stmt(CstView s) {
 		as->type = STMT_EXPR;
 		as->data.expr_stmt.expr = cst_build_expr(sem_node_at_expr(s, 0));
 		break;
-	case SN_FREE_STMT:
-		as->type = STMT_FREE;
-		as->data.free_stmt.value = cst_build_expr(sem_node_at_expr(s, 0));
-		break;
 	case SN_BREAK_STMT:
 		as->type = STMT_BREAK;
 		break;
@@ -4206,9 +4214,6 @@ static void sem_rename_stmt(Statement *s, const char *prefix, char **set, int co
 		break;
 	case STMT_EXPR:
 		sem_rename_expr(s->data.expr_stmt.expr, prefix, set, count);
-		break;
-	case STMT_FREE:
-		sem_rename_expr(s->data.free_stmt.value, prefix, set, count);
 		break;
 	case STMT_RETURN:
 		for (int i = 0; i < s->data.return_stmt.count; i++)

@@ -58,8 +58,8 @@ typedef enum {
 	SEM_DIAG_own_requires_move_or_copy,
 	SEM_DIAG_cannot_mutate_borrowed,
 	SEM_DIAG_move_outside_arg,
-	SEM_DIAG_free_non_opaque,
-	SEM_DIAG_double_free,
+	/* E0113/E0114 retired: arche has zero runtime allocation, no `free` statement.
+	 * Burn-on-delete (codes never reused). */
 
 	/* Field / component access */
 	SEM_DIAG_no_field,
@@ -258,8 +258,6 @@ SemDiag *sem_emit_binop_type_mismatch(SemanticContext *ctx, SourceLoc loc, const
                                       const char *rhs);
 SemDiag *sem_emit_field_on_non_archetype(SemanticContext *ctx, SourceLoc loc, const char *base_type, const char *field);
 SemDiag *sem_emit_move_outside_arg(SemanticContext *ctx, SourceLoc loc, const char *keyword);
-SemDiag *sem_emit_free_non_opaque(SemanticContext *ctx, SourceLoc loc, const char *name);
-SemDiag *sem_emit_double_free(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_extern_proc_bad_return(SemanticContext *ctx, SourceLoc loc, const char *type, const char *proc_name);
 
 /* Lints */

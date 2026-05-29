@@ -199,7 +199,6 @@ typedef enum {
 	HIR_STMT_BREAK,
 	HIR_STMT_RUN,
 	HIR_STMT_EXPR,
-	HIR_STMT_FREE,
 	HIR_STMT_RETURN,
 	HIR_STMT_MULTI_BIND,
 	HIR_STMT_EACH_FIELD,
@@ -246,10 +245,6 @@ typedef struct {
 } HirExprStmt;
 
 typedef struct {
-	HirExpr *value;
-} HirFreeStmt;
-
-typedef struct {
 	HirExpr **values; /* returned values, in order; a single return is just count == 1 */
 	int count;
 } HirReturnStmt;
@@ -285,7 +280,6 @@ struct HirStmt {
 		HirIfStmt if_stmt;
 		HirRunStmt run_stmt;
 		HirExprStmt expr_stmt;
-		HirFreeStmt free_stmt;
 		HirReturnStmt return_stmt;
 		HirMultiBindStmt multi_bind;
 		HirEachFieldStmt each_field;

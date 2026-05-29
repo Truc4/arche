@@ -480,9 +480,6 @@ void statement_free(Statement *stmt) {
 	case STMT_EXPR:
 		expression_free(stmt->data.expr_stmt.expr);
 		break;
-	case STMT_FREE:
-		expression_free(stmt->data.free_stmt.value);
-		break;
 	case STMT_BREAK:
 		break;
 	case STMT_RETURN:

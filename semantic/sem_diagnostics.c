@@ -117,8 +117,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_binop_type_mismatch]           = { "E0110", "binop_type_mismatch",           CLASS_ERROR, 1 },
 	[SEM_DIAG_field_on_non_archetype]        = { "E0111", "field_on_non_archetype",        CLASS_ERROR, 1 },
 	[SEM_DIAG_move_outside_arg]              = { "E0112", "move_outside_arg",              CLASS_ERROR, 1 },
-	[SEM_DIAG_free_non_opaque]               = { "E0113", "free_non_opaque",               CLASS_ERROR, 1 },
-	[SEM_DIAG_double_free]                   = { "E0114", "double_free",                   CLASS_ERROR, 1 },
+	/* E0113 free_non_opaque, E0114 double_free — retired (zero runtime alloc, no free stmt). */
 	[SEM_DIAG_extern_proc_bad_return]        = { "E0115", "extern_proc_bad_return",        CLASS_ERROR, 1 },
 
 	/* Lints */
@@ -665,12 +664,6 @@ SemDiag *sem_emit_field_on_non_archetype(SemanticContext *ctx, SourceLoc loc, co
 SemDiag *sem_emit_move_outside_arg(SemanticContext *ctx, SourceLoc loc, const char *keyword) {
 	return sem_emit_(ctx, SEM_DIAG_move_outside_arg, loc, "`%s` is only valid in a function-call argument position",
 	                 keyword);
-}
-SemDiag *sem_emit_free_non_opaque(SemanticContext *ctx, SourceLoc loc, const char *name) {
-	return sem_emit_(ctx, SEM_DIAG_free_non_opaque, loc, "cannot free '%s' — only opaque values can be freed", name);
-}
-SemDiag *sem_emit_double_free(SemanticContext *ctx, SourceLoc loc, const char *name) {
-	return sem_emit_(ctx, SEM_DIAG_double_free, loc, "double free of '%s' — it was already consumed", name);
 }
 SemDiag *sem_emit_extern_proc_bad_return(SemanticContext *ctx, SourceLoc loc, const char *type, const char *proc_name) {
 	return sem_emit_(ctx, SEM_DIAG_extern_proc_bad_return, loc,

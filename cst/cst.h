@@ -273,7 +273,6 @@ typedef enum {
 	STMT_BREAK,
 	STMT_RUN,
 	STMT_EXPR,
-	STMT_FREE,
 	STMT_RETURN,
 	STMT_MULTI_BIND,
 	STMT_EACH_FIELD,
@@ -338,10 +337,6 @@ typedef struct {
 } ExprStmt;
 
 typedef struct {
-	Expression *value;
-} FreeStmt;
-
-typedef struct {
 	/* Returned values, in order; a single return is just count == 1. */
 	Expression **values;
 	int count;
@@ -384,7 +379,6 @@ struct Statement {
 		IfStmt if_stmt;
 		RunStmt run_stmt;
 		ExprStmt expr_stmt;
-		FreeStmt free_stmt;
 		ReturnStmt return_stmt;
 		MultiBindStmt multi_bind;
 		EachFieldStmt each_field;

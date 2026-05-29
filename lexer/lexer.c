@@ -150,9 +150,6 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 2 && strncmp(start, "in", 2) == 0) {
 		return TOK_IN;
 	}
-	if (length == 4 && strncmp(start, "free", 4) == 0) {
-		return TOK_FREE;
-	}
 	if (length == 5 && strncmp(start, "break", 5) == 0) {
 		return TOK_BREAK;
 	}
@@ -500,8 +497,6 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_IF";
 	case TOK_IN:
 		return "TOK_IN";
-	case TOK_FREE:
-		return "TOK_FREE";
 	case TOK_BREAK:
 		return "TOK_BREAK";
 	case TOK_EXTERN:
