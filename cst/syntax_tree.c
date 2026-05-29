@@ -133,6 +133,8 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "PARAM";
 	case SN_OUT_PARAM:
 		return "OUT_PARAM";
+	case SN_OUT_ARG:
+		return "OUT_ARG";
 	case SN_FIELD_DECL:
 		return "FIELD_DECL";
 	case SN_BLOCK:
@@ -161,6 +163,8 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "RETURN_STMT";
 	case SN_MULTI_BIND_STMT:
 		return "MULTI_BIND_STMT";
+	case SN_PROC_CALL_STMT:
+		return "PROC_CALL_STMT";
 	case SN_EACH_FIELD_STMT:
 		return "EACH_FIELD_STMT";
 	case SN_LITERAL_EXPR:

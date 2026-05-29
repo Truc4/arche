@@ -239,20 +239,48 @@ Integer literals adopt the type of their context (`x: i64 = 3000000000` types th
 
 ## Procedures (`proc`)
 
-Procedures perform **explicit operations**.
+**Procedures DO things; functions ARE things.** This split is fundamental and shows up in the
+*grammar itself* — a `func` and a `proc` have different signatures:
+
+```arche
+func area(w: int, h: int) -> int   // a value: one return, no side effects
+proc divmod(a: int, b: int)(q: int, r: int)   // an action: inputs `(in)`, outputs `(out)`
+```
+
+A procedure performs an **action**. It is **not a value** — it has no return type. Instead it
+declares its results as **out-parameters** in a second parameter list. An out-param is a
+caller-provided place the proc writes **in place**:
+
+```arche
+proc divmod(a: int, b: int)(q: int, r: int) {
+  q = a / b;          // write the out-params; no `return`
+  r = a - q * b;
+}
+
+proc main() {
+  divmod(17, 5)(q:, r:);          // call mirrors the signature: foo(in)(out)
+  printf("%d %d\n", q, r);        // q and r are declared by the out-args, scoped here
+}
+```
+
+- **No return.** A `proc` is an action, never a value. `x := some_proc(...)` does not parse — a
+  proc call is a *statement*, written `foo(in)(out)`.
+- **Out-params are read-write places.** The caller supplies the slot (`name:` declares + zero-inits
+  it; `name` reuses an existing one); the proc may read and write it; the value is the caller's
+  afterward.
+- **In-out (zero-copy mutate-in-place).** A name in *both* lists is passed in and handed back —
+  used to fill a caller-owned buffer without copying (see *Multi-return / out-params* below).
+- The out-list is optional: `proc main()` (or any effect-only action) simply has no outputs.
+
+Procedures are also used for setup, orchestration, and whole-collection array ops on archetypes:
 
 ```arche
 static pool<Particle>(1000, 1000);
 
 proc main() {
-  Particle.pos_x = Particle.pos_x + Particle.vel_x;
+  Particle.pos_x = Particle.pos_x + Particle.vel_x;   // array op over the whole column
 }
 ```
-
-- run once
-- operate on explicitly referenced data (archetype names are handles to allocated shapes)
-- array ops apply to the whole collection
-- used for setup, orchestration, or control flow
 
 ## Systems (`sys`)
 
@@ -339,32 +367,36 @@ proc main() {
 
 ## Functions (`func`)
 
-Functions are **pure computations** and do **not** mutate archetype data.
+A function **IS a value**: it computes one result from its inputs, with no side effects.
 
 ```arche
 func drag_factor(x: float) -> float {
-  x * 0.98
+  return x * 0.98;
 }
 ```
 
 ### Design rules for `func`
 
-- cannot assign to arche fields
-- cannot perform data transforms
-- return a value
-- used inside expressions
+- **Exactly one return** — `-> T` is mandatory; there is no multi-return (that's what a proc's
+  out-list is for) and no `out` parameters.
+- **Pure** — a func body may not perform effects (call a proc, an extern, or a mutating builtin);
+  this is enforced as a hard error. Effects belong in a `proc`.
+- **No `extern`, no `unsafe`.** Those don't make sense for a value: a foreign-bodied action is an
+  `extern proc`, and there is no `unsafe` qualifier in the language.
+- Used inside expressions; freely callable as a proc's **in**-argument (a func call is a value), but
+  never as an **out**-argument (a value is not a place).
 
 ## `proc` vs `sys` vs `func`
 
-| Kind   | Purpose          |
-| ------ | ---------------- |
-| `proc` | explicit logic   |
-| `sys`  | data transforms  |
-| `func` | pure computation |
+| Kind   | Signature              | Is it a value? | Purpose                         |
+| ------ | ---------------------- | -------------- | ------------------------------- |
+| `func` | `name(in) -> T`        | yes            | pure computation, one return    |
+| `proc` | `name(in)(out)`        | no             | an action; writes out-params    |
+| `sys`  | `name(components)`     | no             | data transform over archetypes  |
 
-- `proc`: “run this on _that data_”
-- `sys`: “run this on _any data shaped like this_”
-- `func`: “compute a value without modifying data”
+- `func`: “compute a value” — `r := area(w, h)`
+- `proc`: “do this, writing the results into these places” — `divmod(17, 5)(q:, r:)`
+- `sys`: “run this on _any data shaped like this_” — `run step;`
 
 ## What Arche Is _Not_
 
@@ -463,37 +495,41 @@ Arche is an experiment in:
   - primitives
   - structured grouping
 
-## Multi-return signatures
+## Multiple outputs and mutate-in-place (proc out-params)
 
-A function returns more than one value with a parenthesized return type `-> (T1, …, Tn)`. This is
-a genuine multi-value return — the values are returned as an aggregate and destructured by a
-multi-bind. There is no `out` parameter (gone) and no buffer-fill trickery:
+A `func` returns exactly one value. To produce **several** results, or to mutate a value in place,
+use a `proc` and its out-parameter list `(out)` — the values are written into caller-provided
+places, never returned:
 
 ```arche
-func sum_diff(a: int, b: int) -> (int, int) {
-  return a + b, a - b;
+proc sum_diff(a: int, b: int)(s: int, d: int) {
+  s = a + b;
+  d = a - b;
 }
 
-s, d := sum_diff(10, 3);   // s = 13, d = 7
+sum_diff(10, 3)(s:, d:);   // s = 13, d = 7 — declared + scoped by the out-args
 ```
 
-A single return is just `count == 1` — there is no special case in the grammar or the AST; the
-return type and the `return` statement are uniform lists. `return e1, …, en` lists the values in
-signature order.
+Out-params are caller-provided **read-write places**: `name:` declares and zero-inits a fresh one,
+`name` reuses an existing live binding. The call mirrors the signature: `foo(in)(out)`.
 
-**Filling a caller buffer** uses the `own` ownership shape (see *Ownership* below): the function
-takes the buffer `own`, fills it, and returns it; the caller `move`s it in and rebinds it (the
-buffer threads through with no copy):
+**Filling a caller buffer (zero-copy in-out).** A name in *both* the in-list and the out-list is an
+**in-out** parameter: the caller lends a buffer with `move` (no copy), the proc fills it in place,
+and it is handed back to the caller live. The in-list `own` is *whose* memory + the argument
+position; the out-list hands ownership back so the caller can read the result:
 
 ```arche
-func read_chunk(fd: file, own buf: char[], size: int) -> (char[], int) {
-  n := arche_csv_read_chunk(fd, buf, size);   // the extern fills the owned buffer
-  return buf, n;
+proc read_chunk(fd: file, own buf: char[], size: int)(buf: char[], n: int) {
+  n = arche_csv_read_chunk(fd, buf, size);   // the extern fills the owned buffer in place
 }
 
 buf: char[65536];
-buf, n := read_chunk(fd, move buf, 65536);   // buf comes back filled; n is the byte count
+read_chunk(fd, move buf, 65536)(buf, n:);    // buf comes back filled; n is the byte count
 ```
+
+For an `extern proc`, the in-list maps the C argument order, an in-out name is an in-place pointer
+write, and an **out-only** name (one not echoed in the in-list) maps to the C **return value** —
+so the same `(in)(out)` shape describes both Arche procs and foreign C functions.
 
 ## Foreign resources: nominal `opaque` types
 
@@ -541,20 +577,17 @@ A bare name passed to an `own` parameter is a compile error
 an `own` buffer is filled and handed back:
 
 ```arche
-func read_into(fd: int, own buf: char[], len: int) -> (char[], int) {
-  n := read(fd, buf, len);                 // the extern fills the owned buffer
-  return buf, n;
+proc read_into(fd: int, own buf: char[], len: int)(buf: char[], n: int) {
+  n = read(fd, buf, len);                  // the extern fills the owned buffer in place
 }
 
 buf: char[256];
-buf,   n := read_into(0, move buf, 256);   // zero copy: buf threaded in and back out, in place
-other, n := read_into(0, copy buf, 256);   // buf kept; `other` is a fresh, filled duplicate
+read_into(0, move buf, 256)(buf, n:);      // zero copy: buf threaded in and back out, in place
 ```
 
-Because a function only ever mutates storage it **owns**, *in-place vs. fresh is the caller's
-decision*: `buf := f(move buf)` reuses `buf`'s storage with **no copy at all** (the buffer pointer
-threads straight through and is returned), while `out := f(copy buf)` leaves `buf` intact. The
-function is identical either way.
+Because a proc only ever mutates storage it **owns**, passing `move buf` reuses `buf`'s storage with
+**no copy at all** (the buffer threads straight through the in-out param and is handed back). To keep
+the original intact, `copy` the buffer into the proc instead.
 
 - **You can't move out of a borrow.** `move`-ing a borrowed (non-`own`) array parameter is a
   compile error — it would let a callee mutate the caller's buffer. You *may* `copy` a borrow.
@@ -570,20 +603,19 @@ proc render() {
 }
 ```
 
-## Multi-Value Let
+## Binding a proc's outputs
 
-The `a, b, … := function()` syntax captures the multiple return values of a multi-return
-function (see above):
+A `func` yields a single value bound with `:=` (`r := area(w, h)`). Multiple results come from a
+`proc`'s out-list, written at the call site as out-arguments:
 
 ```arche
-s, d := sum_diff(10, 3);          // bind both returns
-x, y, z := some_func();           // bind all returns
+sum_diff(10, 3)(s:, d:);          // s, d declared + bound by the out-args
+read_into(0, move buf, 256)(buf, n:);   // in-out buf handed back; n is fresh
 ```
 
-Targets bind **left-to-right** in the function's return-type order. A target may be a new `x:` or
-an existing variable. A filled buffer is **returned** like any other value, so it is part of the
-multi-bind — `buf, n := read_into(0, move buf, 256)` rebinds `buf` and binds the count, with no
-hidden side effect.
+Out-args bind **left-to-right** in the proc's out-param order. Each is a new place (`x:`, declared +
+zero-inited) or an existing live variable (`x`). An in-out out-arg (a name also passed in the
+in-list) rebinds the lent buffer live; there is no hidden side effect and no copy.
 
 ## Status
 
@@ -600,8 +632,8 @@ hidden side effect.
 - **Systems**: Data-driven transformations over matching archetypes
 - **For loops**: Infinite loops, condition-based loops, range iteration
 - **External Functions**: C function calls with copy semantics
-- **Multi-return signatures**: `-> (T1, …, Tn)` — genuine multi-value return (aggregate ABI), destructured by a multi-bind
-- **Multi-value Let**: Capture multiple return values from function calls
+- **Proc out-params**: `proc f(in)(out)` — actions write results into caller-provided places in place; in-out (name in both lists) is zero-copy mutate-in-place; call mirrors as `f(in)(out)`
+- **Func/proc split**: `func` is a pure single-return value; `proc` is an effectful action with no return — enforced by the grammar
 - **Archetype Operations**: Allocation, indexing, column access, tuple columns, shaped arrays
 - **C Stdlib Interop**: File I/O via C stdlib wrappers (fopen, fread, fwrite, fclose)
 - **Real-world ETL**: CSV loading and data processing benchmarks

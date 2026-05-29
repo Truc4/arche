@@ -38,6 +38,7 @@ typedef enum {
 	SN_PARAM_LIST,
 	SN_PARAM,
 	SN_OUT_PARAM, /* an out-parameter of a proc: `name: T` in the second `(...)` list */
+	SN_OUT_ARG,   /* an out-argument at a proc call site: `name`, `name:`, or `name: T` */
 	SN_FIELD_DECL,
 	SN_BLOCK,        /* a `{ ... }` statement body */
 	SN_RETURN_TYPES, /* the `-> (T, ...)` of a func */
@@ -54,6 +55,7 @@ typedef enum {
 	SN_EXPR_STMT,
 	SN_RETURN_STMT,
 	SN_MULTI_BIND_STMT,
+	SN_PROC_CALL_STMT, /* `foo(in)(out)` — an action with out-arguments */
 	SN_EACH_FIELD_STMT,
 
 	/* Expressions */

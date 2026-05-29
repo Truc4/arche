@@ -1619,18 +1619,48 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		analyze_expression(ctx, stmt->data.multi_bind.value);
 		ctx->stmt_call_ok = 0;
 
+		/* If the RHS is a proc call (`foo(in)(out)`), each out-arg target corresponds positionally
+		 * to one of the proc's out-params. Infer a new target's type from that out-param when it
+		 * wasn't written explicitly (`name:`), so e.g. an opaque `file` out resolves as opaque, not
+		 * a default int. */
+		ProcDecl *mb_callee_proc = NULL;
+		{
+			Expression *cv = stmt->data.multi_bind.value;
+			if (cv && cv->type == EXPR_CALL && cv->data.call.callee && cv->data.call.callee->type == EXPR_NAME) {
+				const char *cn = cv->data.call.callee->data.name.name;
+				for (int i = 0; i < ctx->prog->decl_count; i++) {
+					Decl *d = ctx->prog->decls[i];
+					if (d->kind == DECL_PROC && d->data.proc && d->data.proc->name &&
+					    strcmp(d->data.proc->name, cn) == 0) {
+						mb_callee_proc = d->data.proc;
+						break;
+					}
+				}
+			}
+		}
+
 		/* Then bind the targets. A new target (`x` / `x:`) introduces a FRESH binding that
 		 * shadows any same-named one — so `buf := f(move buf)` rebinds the moved buffer with
 		 * no special-casing. An existing target (assignment-style) must be declared and live;
 		 * assigning to a moved (dead) binding is an error — use `:=`. */
 		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
 			BindingTarget *target = &stmt->data.multi_bind.targets[i];
+			/* Bind with the explicit target type, or the inferred out-param type. Pass the inferred
+			 * type by reference only (the AST owns it) — do NOT store it into target->type, which the
+			 * statement frees, to avoid a double free with the proc decl. */
+			TypeRef *bind_type = target->type;
+			if (!bind_type && mb_callee_proc && i < mb_callee_proc->out_param_count && mb_callee_proc->out_params[i])
+				bind_type = mb_callee_proc->out_params[i]->type;
 			if (target->is_new) {
-				add_variable(ctx, target->name, target->type);
+				add_variable(ctx, target->name, bind_type);
 			} else {
 				VariableInfo *existing = find_variable(ctx, target->name);
 				if (!existing) {
 					sem_emit_assign_to_undeclared(ctx, stmt->loc, target->name);
+				} else if (existing->is_consumed && mb_callee_proc) {
+					/* In-out out-arg: the buffer was `move`d into the proc's in-args and is handed
+					 * back through the out-list — revive the (consumed) binding so it's live again. */
+					existing->is_consumed = 0;
 				} else if (existing->is_consumed) {
 					sem_emit_assign_after_move(ctx, stmt->loc, target->name);
 				}
@@ -2431,6 +2461,22 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 			add_variable(ctx, param_name, param_type);
 		}
 		mark_last_param(ctx, proc->params[i]->is_own);
+	}
+
+	/* Out-only out-params are writable places the body must fill before returning (in-out ones are
+	 * already the in-param binding above). Register them so `name = …` in the body resolves. */
+	for (int i = 0; i < proc->out_param_count; i++) {
+		const char *on = proc->out_params[i]->name;
+		int is_inout = 0;
+		for (int j = 0; j < proc->param_count; j++)
+			if (proc->params[j]->name && on && strcmp(proc->params[j]->name, on) == 0) {
+				is_inout = 1;
+				break;
+			}
+		if (is_inout)
+			continue;
+		add_variable(ctx, on, proc->out_params[i]->type);
+		mark_last_param(ctx, 1); /* owned: a writable place */
 	}
 
 	ProcDecl *prev_proc = ctx->current_proc;
@@ -3646,6 +3692,37 @@ static Statement *cst_build_stmt(CstView s) {
 					break;
 				}
 			}
+		break;
+	}
+	case SN_PROC_CALL_STMT: {
+		/* `foo(in)(out)` — modeled as a multi-bind whose value is the call `foo(in)` and whose
+		 * targets are the out-args. Codegen passes the targets' addresses as the proc's out-pointers.
+		 * An out-arg is `name` (existing place), `name:` (declare, type inferred from the out-param),
+		 * or `name: T` (declare, typed). */
+		as->type = STMT_MULTI_BIND;
+		as->data.multi_bind.from_shorthand = 0;
+		int nout = 0;
+		for (int i = 0; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_NODE && s.node->children[i].as.node->kind == SN_OUT_ARG)
+				nout++;
+		as->data.multi_bind.targets = calloc(nout ? nout : 1, sizeof(BindingTarget));
+		as->data.multi_bind.target_count = 0;
+		as->data.multi_bind.value = NULL;
+		for (int i = 0; i < s.node->child_count; i++) {
+			if (s.node->children[i].tag != SE_NODE)
+				continue;
+			SyntaxNode *cn = s.node->children[i].as.node;
+			CstView cnv = (CstView){cn, s.src};
+			if (cn->kind == SN_CALL_EXPR) {
+				as->data.multi_bind.value = cst_build_expr(cnv);
+			} else if (cn->kind == SN_OUT_ARG) {
+				int ti = as->data.multi_bind.target_count++;
+				as->data.multi_bind.targets[ti].name = sem_txt_dup(cv_token(cnv, TOK_IDENT));
+				as->data.multi_bind.targets[ti].is_new = cv_has_token(cnv, TOK_COLON);
+				as->data.multi_bind.targets[ti].type =
+				    cv_type_count_sem(cnv) > 0 ? cst_build_type(sem_type_at(cnv, 0)) : NULL;
+			}
+		}
 		break;
 	}
 	default:

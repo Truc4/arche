@@ -1482,6 +1482,38 @@ static int parse_simple_statement(Parser *parser, SyntaxNodeKind *out_kind) {
 		return parse_binding_tail(parser, out_kind);
 	}
 
+	/* Proc-call statement: `foo(in)(out)`. The call `foo(in)` was parsed above as a CALL_EXPR; a
+	 * following `(` opens the out-argument list — caller-provided places written in place. Each
+	 * out-arg is `name` (existing place), `name:` (declare, type from the out-param), or `name: T`
+	 * (declare, typed). A proc is an action, so this is a statement, never a value. */
+	if (cst_single_node_kind(parser, target_cp) == SN_CALL_EXPR && check(parser, TOK_LPAREN)) {
+		advance(parser); /* consume out-list `(` */
+		if (!check(parser, TOK_RPAREN)) {
+			do {
+				int out_arg_cp = cst_cp(parser);
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "Expected out-argument name");
+					return 0;
+				}
+				advance(parser); /* the out-arg name IDENT stays a direct token child of SN_OUT_ARG */
+				if (match(parser, TOK_COLON)) {
+					/* `name:` — declare, type inferred from the out-param; `name: T` — declare typed. */
+					if (!check(parser, TOK_RPAREN) && !check(parser, TOK_COMMA)) {
+						if (!parse_type(parser))
+							return 0;
+					}
+				}
+				cst_wrap(parser, out_arg_cp, SN_OUT_ARG);
+			} while (match(parser, TOK_COMMA));
+		}
+		if (!match(parser, TOK_RPAREN)) {
+			error(parser, "Expected ')' after out-arguments");
+			return 0;
+		}
+		*out_kind = SN_PROC_CALL_STMT;
+		return 1;
+	}
+
 	/* Assignment: `lvalue = / += / -= / *= / /= expr`. */
 	if (check(parser, TOK_EQ) || check(parser, TOK_PLUS_EQ) || check(parser, TOK_MINUS_EQ) ||
 	    check(parser, TOK_STAR_EQ) || check(parser, TOK_SLASH_EQ)) {

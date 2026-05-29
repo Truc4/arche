@@ -5,7 +5,7 @@ static buf: char[65536];
 
 proc main() {
   printf("about to open file\n");
-  fd := io_open("tests/fixtures/data.csv");
+  io_open("tests/fixtures/data.csv")(fd:);
   printf("fd=%d\n", fd);
   io_close(move fd);
 }

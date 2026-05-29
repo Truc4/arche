@@ -121,6 +121,12 @@ struct CodegenContext {
 	int current_each_field_index;               /* compile-time f.index */
 	const char *current_each_field_name_global; /* @.efield_name_NN symbol holding the field's name */
 
+	/* Trailing out-pointer args for a non-extern proc call: set by the proc-call multi-bind path,
+	 * appended to the `call void` argument list when the call expression is emitted, then cleared. */
+	char *pending_out_ptr_vals[16];
+	const char *pending_out_ptr_types[16];
+	int pending_out_ptr_count;
+
 	/* Memo of emitted monomorphs: per (proc_name, arch_name) → 1.
 	 * Used to avoid double-emitting the same specialization. */
 	struct {
@@ -413,6 +419,8 @@ static int field_total_elements(HirType *type) {
 
 /* LLVM type of one return value. char[] returns a raw i8* byte view; everything else maps
  * through the normal type lowering (int→iN, float→double, handle/opaque→i64, …). */
+static int proc_out_param_is_inout(HirProcDecl *proc, int oi);
+
 static const char *return_member_llvm(HirType *t) {
 	if (t && (t->tag == HIR_TYPE_ARRAY || t->tag == HIR_TYPE_SHAPED_ARRAY))
 		return "i8*";
@@ -2798,6 +2806,13 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 						buffer_append(ctx, ", ");
 					}
 				}
+				/* Append the proc's out-pointer args (a non-extern proc writes its results through
+				 * them). Set by the enclosing proc-call multi-bind path. */
+				for (int i = 0; i < ctx->pending_out_ptr_count; i++) {
+					if (expr->data.call.arg_count > 0 || i > 0)
+						buffer_append(ctx, ", ");
+					buffer_append_fmt(ctx, "%s* %s", ctx->pending_out_ptr_types[i], ctx->pending_out_ptr_vals[i]);
+				}
 				buffer_append(ctx, ")\n");
 				strcpy(result_buf, "0");
 			} else {
@@ -4025,6 +4040,64 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		        : NULL;
 		HirFuncDecl *callee_func = fn ? find_func_decl(ctx, fn) : NULL;
 		HirProcDecl *callee_proc = (!callee_func && fn) ? find_proc_decl(ctx, fn) : NULL;
+
+		/* Proc-call statement `foo(in)(out)`: a non-extern proc writes each out-only result through
+		 * a trailing out-pointer; in-out results are written in place via the in-arg buffer (so they
+		 * are not appended). Allocate/bind each out-only target, stash its pointer, emit the call. */
+		if (callee_proc && !callee_proc->is_extern) {
+			ctx->pending_out_ptr_count = 0;
+			for (int i = 0; i < target_count && i < callee_proc->out_param_count; i++) {
+				if (proc_out_param_is_inout(callee_proc, i))
+					continue; /* in-out: carried by the in-arg buffer */
+				HirBindingTarget *tgt = &targets[i];
+				HirType *ot = callee_proc->out_params[i]->type;
+				const char *elem = return_member_llvm(ot);
+				char *ptr;
+				if (tgt->is_new) {
+					ptr = gen_value_name(ctx);
+					emit_alloca(ctx, "  %s = alloca %s\n", ptr, elem);
+					/* Zero-init the fresh slot so the proc may safely READ an out-param before
+					 * writing it — out-params are read-write places, not write-only. */
+					if (strcmp(elem, "double") == 0)
+						buffer_append_fmt(ctx, "  store double 0.0, double* %s\n", ptr);
+					else if (strchr(elem, '*'))
+						buffer_append_fmt(ctx, "  store %s null, %s* %s\n", elem, elem, ptr);
+					else
+						buffer_append_fmt(ctx, "  store %s 0, %s* %s\n", elem, elem, ptr);
+					ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+					vi->name = malloc(strlen(tgt->name) + 1);
+					strcpy(vi->name, tgt->name);
+					vi->llvm_name = malloc(strlen(ptr) + 1);
+					strcpy(vi->llvm_name, ptr);
+					vi->type = 1; /* pointer-backed scalar/handle: loads/stores through %ptr */
+					vi->string_len = -1;
+					vi->field_type = field_base_type_name(ot);
+					vi->bit_width = (ot && ot->tag == HIR_TYPE_FLOAT) ? 64
+					                : (ot && ot->tag == HIR_TYPE_INT) ? ot->int_width
+					                                                  : 64;
+					vi->handle_archetype = (ot && ot->tag == HIR_TYPE_HANDLE) ? ot->name : NULL;
+					if (ctx->scope_count > 0) {
+						ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+						sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+						sc->values[sc->value_count++] = vi;
+					}
+				} else {
+					ValueInfo *e = find_value(ctx, tgt->name);
+					ptr = e ? e->llvm_name : (char *)"null";
+				}
+				int k = ctx->pending_out_ptr_count++;
+				ctx->pending_out_ptr_vals[k] = malloc(strlen(ptr) + 1);
+				strcpy(ctx->pending_out_ptr_vals[k], ptr);
+				ctx->pending_out_ptr_types[k] = elem;
+			}
+			char tmp[256];
+			codegen_expression(ctx, rhs, tmp); /* emits `call void @proc(in…, out-ptrs…)` */
+			for (int i = 0; i < ctx->pending_out_ptr_count; i++)
+				free(ctx->pending_out_ptr_vals[i]);
+			ctx->pending_out_ptr_count = 0;
+			break;
+		}
+
 		/* Return-type list of the callee — a func OR a returning proc; the multi-bind extracts the
 		 * members of its aggregate return. */
 		HirType **ret_types = callee_func ? callee_func->return_types : NULL;
@@ -4205,12 +4278,16 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			if (val && val->type == 1) { /* type 1 = scalar pointer */
 				int is_float = val->field_type &&
 				               (strcmp(val->field_type, "float") == 0 || strcmp(val->field_type, "double") == 0);
+				/* opaque/handle cells are pointer-width i64 carried verbatim — never an integer
+				 * width conversion (that would truncate a real i64 handle to i32). */
+				int is_ptr_cell = val->field_type &&
+				                  (strcmp(val->field_type, "opaque") == 0 || strcmp(val->field_type, "handle") == 0);
 				const char *llvm_t = is_float ? "double" : llvm_type_from_arche(val->field_type);
 				int unsigned_int = val->field_type && val->field_type[0] == 'u';
 
 				if (stmt->data.assign_stmt.op == OP_NONE) {
 					/* Convert RHS to the target int width (sext/zext/trunc). */
-					if (!is_float && stmt->data.assign_stmt.value) {
+					if (!is_float && !is_ptr_cell && stmt->data.assign_stmt.value) {
 						int tw = 32, sg;
 						if (val->field_type)
 							hir_parse_int_width(val->field_type, &tw, &sg); /* leaves tw=32 for "int" */
@@ -6547,6 +6624,7 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->current_each_field_target = NULL;
 	ctx->current_each_field_index = 0;
 	ctx->current_each_field_name_global = NULL;
+	ctx->pending_out_ptr_count = 0;
 	ctx->mono_emitted = NULL;
 	ctx->mono_emitted_count = 0;
 	ctx->mono_emitted_capacity = 0;

@@ -2,9 +2,8 @@
 // opaque, move-only, must-consume resource: `open` hands one back, `close` consumes it. `open` and
 // `read_chunk` perform I/O (effects) and return a value, so they are procs — actions with results,
 // not funcs. Use after `use io;` (names are prefixed: `io_open`, `io_read_chunk`, …).
-proc open(path: char[]) -> file {
-  fd := arche_fopen_read(path);
-  return fd;
+proc open(path: char[])(fd: file) {
+  fd = arche_fopen_read(path);
 }
 proc close(own fd: file) {
   arche_fclose(move fd);
@@ -13,9 +12,8 @@ proc skip_header(fd: file) {
   line: char[256];
   arche_fread_line(fd, line, 256);
 }
-// Fill the caller's buffer (passed `move`, zero-copy) and hand it back with the byte count:
-// `buf, n := io_read_chunk(fd, move buf, size)`.
-proc read_chunk(fd: file, own buf: char[], size: int) -> (char[], int) {
-  n := arche_csv_read_chunk(fd, buf, size);
-  return buf, n;
+// Fill the caller's buffer (passed `move`, zero-copy) in place and hand back the byte count:
+// `io_read_chunk(fd, move buf, size)(buf, n:)`. `buf` is an in-out param (in + out); `n` is out-only.
+proc read_chunk(fd: file, own buf: char[], size: int)(buf: char[], n: int) {
+  n = arche_csv_read_chunk(fd, buf, size);
 }
