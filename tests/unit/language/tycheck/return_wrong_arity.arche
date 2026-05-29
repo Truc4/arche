@@ -1,0 +1,11 @@
+// E0203: a func declared to return (int, int) but returning only one value is
+// caught at tycheck. Today's compiler bumped this to LLVM
+// ("integer constant must have integer type"); we emit a clean diagnostic now.
+// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0203 wrong_arity 0 'two' declares 2 return values, returned 1"
+func two() -> (int, int) {
+  return 1;
+}
+
+proc main() {
+  print(0);
+}

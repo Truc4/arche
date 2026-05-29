@@ -28,6 +28,10 @@ void semantic_context_free(SemanticContext *ctx);
 /* The resolved-type side model (keyed by CST node id); read by lowering. */
 SemModel *sem_context_model(SemanticContext *ctx);
 
+/* The reconstructed AstProgram (read-only); used by passes that need to walk
+ * decls. tycheck uses this to traverse function bodies. */
+AstProgram *semantic_context_program(SemanticContext *ctx);
+
 /* Editor-facing inferred facts (keyed by CST node id); read by the analyzer. */
 SemHints *sem_context_hints(SemanticContext *ctx);
 

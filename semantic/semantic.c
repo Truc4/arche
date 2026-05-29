@@ -5,6 +5,7 @@
 #include "sem_diagnostics.h"
 #include "sem_hints.h"
 #include "sem_model.h"
+#include "tycheck.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1614,20 +1615,9 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				}
 			}
 		}
-		/* No implicit numeric conversion (arche is strict — proven by `y: float = 3` failing): a
-		 * binding's explicit type must agree with its value for the int/float pair. Catches a float
-		 * const used as an int (`x: int = PI`) and vice versa (`y: float = N`), with a clean error
-		 * instead of a downstream LLVM crash. Conservative: only the int↔float mismatch. */
-		if (stmt->data.bind_stmt.type && stmt->data.bind_stmt.type->kind == TYPE_NAME && stmt->data.bind_stmt.value) {
-			const char *want = resolve_type_alias(ctx, normalize_type_name(stmt->data.bind_stmt.type->data.name));
-			const char *got = resolve_expression_type(ctx, stmt->data.bind_stmt.value);
-			if (want && got &&
-			    ((strcmp(want, "int") == 0 && strcmp(got, "float") == 0) ||
-			     (strcmp(want, "float") == 0 && strcmp(got, "int") == 0))) {
-				sem_emit_no_implicit_conversion(ctx, stmt->data.bind_stmt.value->loc, got, stmt->data.bind_stmt.name,
-				                                want);
-			}
-		}
+		/* The narrow int↔float check that used to live here is subsumed by tycheck's
+		 * STMT_BIND rule (E0200 'binding: expected T, got U'). Kept the
+		 * sem_emit_no_implicit_conversion wrapper in place for any remaining caller. */
 		if (stmt->data.bind_stmt.is_const)
 			mark_last_const(ctx); /* immutable: reject later assignment */
 		break;
@@ -3805,6 +3795,7 @@ static Decl *cst_build_decl_inner(CstView d) {
 		ap->loc = sem_direct_token_loc(d.node, TOK_LPAREN); /* lint location: the `(`, like the parser */
 		ap->is_extern = cv_has_token(d, TOK_EXTERN);
 		ap->is_unsafe = cv_has_token(d, TOK_UNSAFE);
+		ap->is_variadic = cv_has_token(d, TOK_DOTDOTDOT);
 		ap->allow_pure_proc = cv_has_token(d, TOK_AT);
 		int np = cv_count(d, SN_PARAM);
 		ap->params = calloc(np ? np : 1, sizeof(Parameter *));
@@ -3841,6 +3832,7 @@ static Decl *cst_build_decl_inner(CstView d) {
 		af->loc = sem_direct_token_loc(d.node, TOK_LPAREN);
 		af->is_extern = cv_has_token(d, TOK_EXTERN);
 		af->is_unsafe = cv_has_token(d, TOK_UNSAFE);
+		af->is_variadic = cv_has_token(d, TOK_DOTDOTDOT);
 		int np = cv_count(d, SN_PARAM);
 		af->params = calloc(np ? np : 1, sizeof(Parameter *));
 		for (int i = 0; i < np; i++)
@@ -4684,6 +4676,11 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 	 * aliases from the side model, so the CST path skips erasure (erase=0). */
 	if (erase)
 		erase_type_aliases(ctx, prog);
+
+	/* pass 4: tycheck — bidirectional type checker. Phase A encodes one rule
+	 * (return-value types). Diagnostics flow through the same registry as
+	 * everything else. Fail-open: unencoded shapes synth to TYID_UNKNOWN. */
+	tycheck_run(ctx);
 }
 
 /* Allocate + zero-initialize a SemanticContext and register builtins. Shared by both
@@ -4852,6 +4849,10 @@ SemModel *sem_context_model(SemanticContext *ctx) {
 
 SemHints *sem_context_hints(SemanticContext *ctx) {
 	return ctx ? ctx->hints : NULL;
+}
+
+AstProgram *semantic_context_program(SemanticContext *ctx) {
+	return ctx ? ctx->prog : NULL;
 }
 
 int sem_diag_slug_suppressed(SemanticContext *ctx, const char *slug) {

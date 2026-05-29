@@ -2,6 +2,7 @@
 #include "lexer/lexer.h"
 #include "lower/lower.h"
 #include "parser/parser.h"
+#include "semantic/sem_diagnostics.h"
 #include "semantic/semantic.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -290,13 +291,19 @@ int main(int argc, char *argv[]) {
 	source[file_size] = '\0';
 	fclose(input);
 
-	/* Load and prepend core library */
+	/* Load and prepend core library. Count its newlines so we can subtract them
+	 * from any combined-source line numbers we surface — the user wrote line N of
+	 * their file, not line N + core_lines of the combined stream. */
 	char core_path[512];
 	snprintf(core_path, sizeof(core_path), "%s/core.arche", ARCHE_CORE_DIR);
 	char *core_src = read_file_optional(core_path);
 
+	int core_lines = 0;
 	char *combined_source = NULL;
 	if (core_src && strlen(core_src) > 0) {
+		for (const char *p = core_src; *p; p++)
+			if (*p == '\n')
+				core_lines++;
 		/* Combine: core + user source */
 		combined_source = malloc(strlen(core_src) + strlen(source) + 1);
 		strcpy(combined_source, core_src);
@@ -308,12 +315,19 @@ int main(int argc, char *argv[]) {
 		free(core_src); /* core.arche was empty */
 	}
 
+	/* Diagnostics from semantic analysis carry combined-source line numbers; tell
+	 * the diagnostic printer to subtract the core prelude before printing. */
+	semantic_set_print_line_offset(core_lines);
+
 	/* Lexical analysis and parsing */
 	ParseResult parse_result = parse_source(source);
 
 	if (parse_result.error_count > 0) {
 		for (size_t i = 0; i < parse_result.error_count; i++) {
-			fprintf(stderr, "[Line %d, Col %d] Error: %s\n", parse_result.errors[i].line, parse_result.errors[i].column,
+			int line = parse_result.errors[i].line - core_lines;
+			if (line < 1)
+				line = 1; /* error inside core; clamp so we don't show negative lines */
+			fprintf(stderr, "[Line %d, Col %d] Error: %s\n", line, parse_result.errors[i].column,
 			        parse_result.errors[i].message);
 		}
 		parse_result_free(&parse_result);

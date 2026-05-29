@@ -121,6 +121,15 @@ typedef enum {
 	SEM_DIAG_module_not_found,
 	SEM_DIAG_module_parse_failed,
 
+	/* Control-flow + declaration uniqueness (P3 Phase C — E0030+) */
+	SEM_DIAG_break_outside_loop,
+	SEM_DIAG_duplicate_decl,
+
+	/* Tycheck (P3 type-check pass — E0200+) */
+	SEM_DIAG_type_mismatch,
+	SEM_DIAG_not_indexable,
+	SEM_DIAG_wrong_arity,
+
 	/* === Lints (promotable warnings) === */
 	SEM_LINT_proc_could_be_func,
 	SEM_LINT_proc_no_effect,
@@ -141,6 +150,10 @@ const char *sem_diag_slug(SemDiagKind kind); /* "undefined_symbol" / "proc_no_ef
 void semantic_set_diag(SemDiagKind kind, int enabled, int werror);
 int semantic_diag_enabled(SemDiagKind kind);
 int semantic_diag_werror(SemDiagKind kind);
+
+/* CLI sets this after prepending core.arche so user-typed diagnostic lines show
+ * the user's file line, not the combined-source line. 0 = no translation. */
+void semantic_set_print_line_offset(int offset);
 
 /* Escape-hatch builder for diagnostics that need rich multi-span structure
  * (two-span type-mismatch, did-you-mean suggestions). Reserved for the ~20% of
@@ -259,6 +272,17 @@ SemDiag *sem_emit_binop_type_mismatch(SemanticContext *ctx, SourceLoc loc, const
 SemDiag *sem_emit_field_on_non_archetype(SemanticContext *ctx, SourceLoc loc, const char *base_type, const char *field);
 SemDiag *sem_emit_move_outside_arg(SemanticContext *ctx, SourceLoc loc, const char *keyword);
 SemDiag *sem_emit_extern_proc_bad_return(SemanticContext *ctx, SourceLoc loc, const char *type, const char *proc_name);
+
+/* Tycheck (P3 type-check pass). E0200 is the general type_mismatch — every
+ * typing-rule failure routes here. The `where` string describes the constraint
+ * source (e.g. "if condition", "argument 2 of 'foo'", "return value"). */
+SemDiag *sem_emit_type_mismatch(SemanticContext *ctx, SourceLoc loc, const char *where, const char *expected,
+                                const char *got);
+SemDiag *sem_emit_not_indexable(SemanticContext *ctx, SourceLoc loc, const char *base_type);
+SemDiag *sem_emit_wrong_arity(SemanticContext *ctx, SourceLoc loc, const char *name, int expected, int got);
+SemDiag *sem_emit_wrong_return_arity(SemanticContext *ctx, SourceLoc loc, const char *fn_name, int expected, int got);
+SemDiag *sem_emit_break_outside_loop(SemanticContext *ctx, SourceLoc loc);
+SemDiag *sem_emit_duplicate_decl(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name);
 
 /* Lints */
 SemDiag *sem_emit_lint_proc_could_be_func(SemanticContext *ctx, SourceLoc loc, const char *name);

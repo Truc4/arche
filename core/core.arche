@@ -3,8 +3,8 @@ extern read(fd: int, buf: char[], len: int) -> int;
 extern write(fd: int, buf: char[], len: int);
 extern close(fd: int);
 extern exit(code: int);
-extern sprintf(buf: char[], fmt: char[]) -> int;
-extern printf(fmt: char[]) -> int;
+extern sprintf(buf: char[], fmt: char[], ...) -> int;
+extern printf(fmt: char[], ...) -> int;
 extern fflush(stream: int);
 // Pure-arche numeric/string helpers (no FFI). A func may call these; it can't call externs, so
 // libc's atoi/atof/strlen are reimplemented here to keep type-directed CSV cell parsing pure.

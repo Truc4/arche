@@ -56,6 +56,7 @@ ProcDecl *proc_decl_create(char *name) {
 	proc->return_type_count = 0;
 	proc->is_extern = 0;
 	proc->is_unsafe = 0;
+	proc->is_variadic = 0;
 	proc->statements = NULL;
 	proc->statement_count = 0;
 	proc->loc.line = 1;
@@ -85,6 +86,7 @@ FuncDecl *func_decl_create(char *name) {
 	func->param_count = 0;
 	func->is_extern = 0;
 	func->is_unsafe = 0;
+	func->is_variadic = 0;
 	func->statements = NULL;
 	func->statement_count = 0;
 	func->loc.line = 1;

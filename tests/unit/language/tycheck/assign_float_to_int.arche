@@ -1,0 +1,8 @@
+// E0200: float literal into int-declared variable rejected. arche has no
+// implicit numeric conversion between int and float (Rust/Go model).
+// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 assignment: expected 'int', got 'float'"
+proc main() {
+  x: int = 5;
+  x = 1.5;
+  print(x);
+}

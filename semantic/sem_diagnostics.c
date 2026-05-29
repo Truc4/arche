@@ -120,6 +120,14 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	/* E0113 free_non_opaque, E0114 double_free — retired (zero runtime alloc, no free stmt). */
 	[SEM_DIAG_extern_proc_bad_return]        = { "E0115", "extern_proc_bad_return",        CLASS_ERROR, 1 },
 
+	/* Tycheck (P3 type-check pass — E0200+). All typing-rule violations route through
+	 * E0200; sharper kind/arity constraints get their own codes in Phase B. */
+	[SEM_DIAG_break_outside_loop]            = { "E0030", "break_outside_loop",            CLASS_ERROR, 1 },
+	[SEM_DIAG_duplicate_decl]                = { "E0031", "duplicate_decl",                CLASS_ERROR, 1 },
+	[SEM_DIAG_type_mismatch]                 = { "E0200", "type_mismatch",                 CLASS_ERROR, 1 },
+	[SEM_DIAG_not_indexable]                 = { "E0201", "not_indexable",                 CLASS_ERROR, 1 },
+	[SEM_DIAG_wrong_arity]                   = { "E0203", "wrong_arity",                   CLASS_ERROR, 1 },
+
 	/* Lints */
 	[SEM_LINT_proc_could_be_func]            = { "W0001", "proc_could_be_func",            CLASS_LINT, 1 },
 	[SEM_LINT_proc_no_effect]                = { "W0002", "proc_no_effect",                CLASS_LINT, 1 },
@@ -175,6 +183,16 @@ int semantic_diag_enabled(SemDiagKind kind) {
 	return g_enabled[kind];
 }
 
+/* CLI line-coord offset (subtracted from .line before stderr printing). main.c
+ * sets this to core.arche's newline count so user code shows user-line numbers.
+ * 0 (the default) means no translation, used by the warm analyzer which does its
+ * own coord translation in arche_analyzer.c. */
+static int g_print_line_offset = 0;
+
+void semantic_set_print_line_offset(int offset) {
+	g_print_line_offset = offset;
+}
+
 int semantic_diag_werror(SemDiagKind kind) {
 	ensure_init();
 	if (kind < 0 || kind >= SEM_DIAG_KIND_COUNT)
@@ -226,16 +244,21 @@ static SemDiag *sem_emit_v(SemanticContext *ctx, SemDiagKind kind, SourceLoc loc
 	vsnprintf(msg, (size_t)needed + 1, fmt, ap);
 
 	/* Byte-stable stderr — must match the legacy error_at / lint_emit formats so
-	 * the Phase 1 golden-file check passes through the migration unchanged. */
+	 * the Phase 1 golden-file check passes through the migration unchanged.
+	 * Line numbers are translated by g_print_line_offset when set (main.c does so
+	 * after computing core.arche's newline count). */
 	int has_loc = loc.line != 0;
+	int print_line = loc.line - g_print_line_offset;
+	if (print_line < 1)
+		print_line = loc.line; /* error inside the core region — show raw line */
 	if (desc->class == CLASS_ERROR) {
 		if (has_loc)
-			fprintf(stderr, "Semantic error at line %d, col %d: %s\n", loc.line, loc.column, msg);
+			fprintf(stderr, "Semantic error at line %d, col %d: %s\n", print_line, loc.column, msg);
 		else
 			fprintf(stderr, "Semantic error: %s\n", msg);
 	} else {
 		const char *kind_word = severity ? "error" : "warning";
-		fprintf(stderr, "Lint %s [%s] at line %d, col %d: %s\n", kind_word, desc->slug, loc.line, loc.column, msg);
+		fprintf(stderr, "Lint %s [%s] at line %d, col %d: %s\n", kind_word, desc->slug, print_line, loc.column, msg);
 	}
 	fflush(stderr);
 
@@ -668,6 +691,35 @@ SemDiag *sem_emit_move_outside_arg(SemanticContext *ctx, SourceLoc loc, const ch
 SemDiag *sem_emit_extern_proc_bad_return(SemanticContext *ctx, SourceLoc loc, const char *type, const char *proc_name) {
 	return sem_emit_(ctx, SEM_DIAG_extern_proc_bad_return, loc,
 	                 "unknown return type '%s' in extern proc '%s' signature", type, proc_name);
+}
+
+SemDiag *sem_emit_type_mismatch(SemanticContext *ctx, SourceLoc loc, const char *where, const char *expected,
+                                const char *got) {
+	return sem_emit_(ctx, SEM_DIAG_type_mismatch, loc, "%s: expected '%s', got '%s'", where, expected, got);
+}
+
+SemDiag *sem_emit_wrong_arity(SemanticContext *ctx, SourceLoc loc, const char *name, int expected, int got) {
+	return sem_emit_(ctx, SEM_DIAG_wrong_arity, loc, "'%s' expects %d argument%s, got %d", name, expected,
+	                 expected == 1 ? "" : "s", got);
+}
+
+SemDiag *sem_emit_not_indexable(SemanticContext *ctx, SourceLoc loc, const char *base_type) {
+	return sem_emit_(ctx, SEM_DIAG_not_indexable, loc,
+	                 "value of type '%s' is not indexable — only arrays/strings/archetype columns can be indexed",
+	                 base_type);
+}
+
+SemDiag *sem_emit_wrong_return_arity(SemanticContext *ctx, SourceLoc loc, const char *fn_name, int expected, int got) {
+	return sem_emit_(ctx, SEM_DIAG_wrong_arity, loc, "'%s' declares %d return value%s, returned %d", fn_name, expected,
+	                 expected == 1 ? "" : "s", got);
+}
+
+SemDiag *sem_emit_break_outside_loop(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_DIAG_break_outside_loop, loc, "`break` can only appear inside a loop body");
+}
+
+SemDiag *sem_emit_duplicate_decl(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_duplicate_decl, loc, "%s '%s' is already declared at this scope", kind, name);
 }
 
 SemDiag *sem_emit_lint_unused_local(SemanticContext *ctx, SourceLoc loc, const char *name) {

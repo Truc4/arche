@@ -213,7 +213,8 @@ struct ProcDecl {
 	TypeRef **return_types;
 	int return_type_count;
 	int is_extern;
-	int is_unsafe; /* 1 if declared `unsafe proc`; may call unsafe builtins (syscall) */
+	int is_unsafe;   /* 1 if declared `unsafe proc`; may call unsafe builtins (syscall) */
+	int is_variadic; /* 1 if last param is `...`; only valid on extern decls. */
 	Statement **statements;
 	int statement_count;
 	int end_line;
@@ -247,7 +248,8 @@ struct FuncDecl {
 	TypeRef **return_types;
 	int return_type_count;
 	int is_extern;
-	int is_unsafe; /* 1 if declared `unsafe func`; may call unsafe builtins (syscall) */
+	int is_unsafe;   /* 1 if declared `unsafe func`; may call unsafe builtins (syscall) */
+	int is_variadic; /* 1 if last param is `...`; only valid on extern decls (printf etc.). */
 	Statement **statements;
 	int statement_count;
 	int end_line;

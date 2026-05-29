@@ -1,0 +1,15 @@
+// E0031: declaring two procs with the same name is a hard error. Today's
+// compiler bumps this to LLVM ("invalid redefinition of function 'foo'"); we
+// catch it at the decl site upstream.
+// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0031 duplicate_decl 0 proc 'foo' is already declared at this scope"
+proc foo() {
+  print(1);
+}
+
+proc foo() {
+  print(2);
+}
+
+proc main() {
+  foo();
+}

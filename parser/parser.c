@@ -541,6 +541,14 @@ static int parse_proc_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	/* Parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
+			/* `...` variadic marker — extern only, last param only. */
+			if (check(parser, TOK_DOTDOTDOT)) {
+				if (!is_extern)
+					error(parser, "`...` variadic marker is only valid in extern signatures");
+				advance(parser);
+				break;
+			}
+
 			int param_cp = cst_cp(parser);
 
 			match(parser, TOK_OWN); /* optional `own` qualifier (CST records the token) */
@@ -745,6 +753,16 @@ static int parse_func_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	/* parse parameters */
 	if (!check(parser, TOK_RPAREN)) {
 		do {
+			/* `...` is a variadic marker — only legal on extern signatures, only as the
+			 * LAST param. CST records the TOK_DOTDOTDOT directly; the cst-to-program
+			 * pass detects it and sets FuncDecl.is_variadic. */
+			if (check(parser, TOK_DOTDOTDOT)) {
+				if (!is_extern)
+					error(parser, "`...` variadic marker is only valid in extern signatures");
+				advance(parser);
+				break; /* must be last; the loop's trailing `match COMMA` is skipped */
+			}
+
 			int param_cp = cst_cp(parser);
 
 			match(parser, TOK_OWN); /* optional `own` qualifier (CST records the token) */
