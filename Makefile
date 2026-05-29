@@ -200,7 +200,39 @@ bench-mixed: design_analysis/array_ops/mixed_workload.c
 # Format all Arche source files and the compiler's C/H sources.
 # Skips Python venv / site-packages directories so we don't try to format
 # numpy/pyarrow's bundled C headers.
+#
+# CLANG_FORMAT is pinned to a single major version (read from .clang-format-version)
+# so local and CI agree byte-for-byte. clang-format's defaults shift between
+# majors and the .clang-format file doesn't enumerate every option — pinning
+# the version is the only way to keep the two in sync without lots of options
+# churn.
+#
+# The picker logic: try `clang-format-<N>` first (apt.llvm.org / Debian convention),
+# then fall back to plain `clang-format` IF it reports the pinned major (Arch and
+# some other distros don't suffix the binary). Fails fast with an install hint
+# instead of silently using a mismatched version.
+CLANG_FORMAT_VERSION := $(shell cat .clang-format-version 2>/dev/null)
+CLANG_FORMAT := $(shell \
+	if command -v clang-format-$(CLANG_FORMAT_VERSION) >/dev/null 2>&1; then \
+		echo clang-format-$(CLANG_FORMAT_VERSION); \
+	elif command -v clang-format >/dev/null 2>&1 \
+	     && clang-format --version | grep -qE 'version $(CLANG_FORMAT_VERSION)\.'; then \
+		echo clang-format; \
+	fi)
+
 format: $(FMT_BIN)
+	@if [ -z "$(CLANG_FORMAT_VERSION)" ]; then \
+		echo "error: .clang-format-version missing"; exit 1; \
+	fi
+	@if [ -z "$(CLANG_FORMAT)" ]; then \
+		echo "error: no clang-format matching pinned version $(CLANG_FORMAT_VERSION) on PATH"; \
+		echo "  expected 'clang-format-$(CLANG_FORMAT_VERSION)' or 'clang-format' reporting major $(CLANG_FORMAT_VERSION)"; \
+		echo "  install from apt.llvm.org (Debian/Ubuntu):"; \
+		echo "    wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- $(CLANG_FORMAT_VERSION)"; \
+		echo "    sudo apt-get install clang-format-$(CLANG_FORMAT_VERSION)"; \
+		echo "  or via your distro's package manager (Arch: clang)"; \
+		exit 1; \
+	fi
 	for f in $$(find . -name "*.arche" -type f \
 	             -not -path "*/.venv/*" \
 	             -not -path "*/site-packages/*" \
@@ -221,7 +253,7 @@ format: $(FMT_BIN)
 	             -not -path "*/site-packages/*" \
 	             -not -path "*/__pycache__/*" \
 	             -not -path "./tests/known_failures/*"); do \
-		clang-format -i "$$f"; \
+		$(CLANG_FORMAT) -i "$$f"; \
 		echo "✓ $$f"; \
 	done
 
