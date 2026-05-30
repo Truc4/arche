@@ -58,6 +58,8 @@ typedef enum {
 	SEM_DIAG_own_requires_move_or_copy,
 	SEM_DIAG_cannot_mutate_borrowed,
 	SEM_DIAG_extern_array_param_needs_own,
+	SEM_DIAG_proc_return_has_value,
+	SEM_DIAG_sys_no_return,
 	SEM_DIAG_move_outside_arg,
 	/* E0113/E0114 retired: arche has zero runtime allocation, no `free` statement.
 	 * Burn-on-delete (codes never reused). */
@@ -214,6 +216,8 @@ SemDiag *sem_emit_own_requires_move_or_copy(SemanticContext *ctx, SourceLoc loc,
 SemDiag *sem_emit_cannot_mutate_borrowed(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_extern_array_param_needs_own(SemanticContext *ctx, SourceLoc loc, const char *param_name,
                                                const char *proc_name);
+SemDiag *sem_emit_proc_return_has_value(SemanticContext *ctx, SourceLoc loc);
+SemDiag *sem_emit_sys_no_return(SemanticContext *ctx, SourceLoc loc);
 
 SemDiag *sem_emit_no_field(SemanticContext *ctx, SourceLoc loc, const char *arch_name, const char *field_name);
 SemDiag *sem_emit_cannot_read_through_handle(SemanticContext *ctx, SourceLoc loc, const char *field_name,

@@ -5246,6 +5246,12 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		 * is produced by threading an `own` buffer (`g: T[N]; g := fill(move g)`). */
 		HirReturnStmt *rs = &stmt->data.return_stmt;
 		const char *ret_type = ctx->current_return_type ? ctx->current_return_type : "i32";
+		if (rs->count == 0) {
+			/* Naked `return;` — early exit from a proc (which is `define void`). Out-params are
+			 * written in place as the body runs, so an early exit just terminates the block. */
+			buffer_append(ctx, "  ret void\n");
+			break;
+		}
 		if (rs->count <= 1) {
 			char value_buf[256];
 			codegen_expression(ctx, rs->values[0], value_buf);
