@@ -32,12 +32,23 @@ func add(a: int, b: int) -> int {
 arche test <file.arche>     # one file
 arche test <dir>            # every .arche under <dir>, recursively
 arche test ./...            # Go-style: recurse from the current directory
+arche test -v ./...         # verbose: a line per example, not just per file
 ```
 
-Recursive runs skip files with no examples and print a grand total
-(`N passed, M failed, K ignored across F files`); they exit non-zero if any
-example failed. `build/`, hidden, `node_modules`, and `site-packages` dirs are
-skipped.
+Output is `go test`-style: one status line per file, details only on failure.
+
+```
+$ arche test ./...
+ok   ./math.arche
+    --- FAIL: neg (line 2): exit 1
+        neg is wrong!                 ← the failing example's own output
+FAIL ./sub/broken.arche
+```
+
+`ok` = all examples passed, `FAIL` = at least one failed, `?` = no examples.
+Files with no examples are silent in a tree sweep. The process exits non-zero if
+any example failed. `build/`, hidden, `node_modules`, and `site-packages` dirs
+are skipped.
 
 For each ```arche example the runner:
 
@@ -51,10 +62,16 @@ value, use the ordinary `assert(condition, message)` from the core library —
 the same call you'd write in any test. A failed `assert` exits non-zero, so the
 doctest fails.
 
-The command exits non-zero if any example fails, so it drops straight into CI
-(`make test` runs every `tests/unit/doctest/*.arche`). Each example runs under a
-10-second timeout; a hanging example is killed and reported `(timed out)`. A
-failing example reports the exact source line of its ```arche fence.
+The command exits non-zero if any example fails, so it drops straight into CI.
+`make test` runs the lit suite **and** `make test-doc`, which runs
+`arche test core/... examples/...` over the real sources (`arche test` accepts
+multiple path specs). Each example runs under a 10-second timeout; a hanging
+example is killed and reported `(timed out)`. A failing example reports the exact
+source line of its ```arche fence.
+
+> `core/core.arche` is auto-prepended to every program, so doctests *in core*
+> must not `use core;` — the runner detects this and omits it. `strlen`/`atoi`
+> in core carry tested examples as a reference.
 
 ### Fence flags
 

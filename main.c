@@ -25,11 +25,22 @@ int main(int argc, char *argv[]) {
 	/* Subcommand dispatch. `arche test <file.arche>` runs the file's doctests;
 	 * the bare `arche [flags] <file>` form compiles, as it always has. */
 	if (argc >= 2 && strcmp(argv[1], "test") == 0) {
-		if (argc < 3) {
-			fprintf(stderr, "usage: %s test <file.arche | dir | ./...>\n", argv[0]);
+		int verbose = 0;
+		for (int i = 2; i < argc; i++)
+			if (strcmp(argv[i], "-v") == 0)
+				verbose = 1;
+		int nspec = 0, rc = 0;
+		for (int i = 2; i < argc; i++) {
+			if (argv[i][0] == '-')
+				continue;
+			rc |= doctest_run_path(argv[i], verbose); /* run every spec; fail if any fails */
+			nspec++;
+		}
+		if (nspec == 0) {
+			fprintf(stderr, "usage: %s test [-v] <file.arche | dir | ./...> ...\n", argv[0]);
 			return 1;
 		}
-		return doctest_run_path(argv[2]);
+		return rc ? 1 : 0;
 	}
 
 	const char *input_file = NULL;

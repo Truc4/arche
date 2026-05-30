@@ -149,6 +149,14 @@ test-lower: $(LOWER_TEST_BIN)
 # Run all tests with LIT
 test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(CST_VIEW_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 	lit -v tests/
+	$(MAKE) test-doc
+
+# Run doctests (```arche examples in /// doc comments) over the real source tree.
+# The synthetic runner fixtures in tests/unit/doctest/ are exercised by lit above
+# (some are intentional failures wrapped in `not`); this sweeps the production
+# sources so any documented example is CI-gated. Skips files with no examples.
+test-doc: $(TARGET) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
+	./$(TARGET) test core/... examples/...
 
 # Test folder with pattern: make test-folder FOLDER=path PATTERN="*.arche"
 test-folder: $(TARGET) $(BUILD_DIR)
@@ -304,4 +312,4 @@ verify-codegen: $(TARGET)
 	[ $$fail -eq 0 ] && echo "verify-codegen: IR matches golden" || (echo "verify-codegen: FAILED"; exit 1)
 
 # Phony targets
-.PHONY: all run run-lexer test test-lexer test-parser test-semantic test-codegen test-codegen-unit test-lit test-lower clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-cst verify-codegen
+.PHONY: all run run-lexer test test-doc test-lexer test-parser test-semantic test-codegen test-codegen-unit test-lit test-lower clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-cst verify-codegen

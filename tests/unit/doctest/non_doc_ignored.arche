@@ -1,4 +1,4 @@
-// RUN: %arche test %s 2>&1 | grep -qF "no examples found"
+// RUN: %arche test %s 2>&1 | grep -qF "[no examples]"
 
 //! Module-level inner doc. Inner docs are not runnable examples, even with a
 //! fence:

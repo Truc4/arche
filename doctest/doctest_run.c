@@ -68,59 +68,138 @@ static void dir_of(const char *path, char *buf, size_t bufsz) {
 
 /* Build the synthesized program for one example: bring the documented file's
  * API into scope via `use <module>;`, then the example (wrapped in a `proc main`
- * if it does not declare one). Returns an owned, NUL-terminated string. */
+ * if it does not declare one). Returns an owned, NUL-terminated string.
+ *
+ * `core` is special — compile_source already prepends core.arche to every unit,
+ * so a doctest in core/core.arche must NOT `use core;` (that would redeclare the
+ * whole prelude). Its functions are in scope implicitly. */
 static char *synthesize(const char *module, const DoctestExample *ex) {
-	size_t need = strlen("use ;\nproc main() {\n}\n") + strlen(module) + strlen(ex->code) + 8;
+	char prefix[300] = "";
+	if (strcmp(module, "core") != 0) /* core is auto-prepended; never `use` it */
+		snprintf(prefix, sizeof(prefix), "use %s;\n", module);
+
+	size_t need = strlen(prefix) + strlen("proc main() {\n}\n") + strlen(ex->code) + 8;
 	char *out = malloc(need);
 	if (!out)
 		return NULL;
 	if (ex->has_main)
-		snprintf(out, need, "use %s;\n%s", module, ex->code);
+		snprintf(out, need, "%s%s", prefix, ex->code);
 	else
-		snprintf(out, need, "use %s;\nproc main() {\n%s}\n", module, ex->code);
+		snprintf(out, need, "%sproc main() {\n%s}\n", prefix, ex->code);
 	return out;
 }
 
-/* Run a freshly built executable with a wall-clock timeout. Returns its exit
- * code (>= 0), DT_CRASHED if it died by signal, or DT_TIMEOUT if it ran past the
- * limit (its whole process group is then SIGKILLed). */
-static int run_executable(const char *exe) {
-	/* Flush our buffered stdout before forking: otherwise the child inherits a
-	 * copy of the buffer and freopen() re-emits it to the real stdout (duplicate
-	 * lines when stdout is a pipe, i.e. under the test harness). */
+/* Capture a child/compiler fd into `buf` from a temp file, trimming a trailing
+ * newline. Rewinds and reads up to cap-1 bytes. */
+static void slurp_fd_file(int fd, char *buf, size_t cap) {
+	if (!buf || cap == 0)
+		return;
+	buf[0] = '\0';
+	lseek(fd, 0, SEEK_SET);
+	ssize_t n = read(fd, buf, cap - 1);
+	if (n < 0)
+		n = 0;
+	while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r'))
+		n--;
+	buf[n] = '\0';
+}
+
+/* Run a freshly built executable with a wall-clock timeout, capturing its
+ * stdout+stderr into `out` (shown only if the example fails). Returns its exit
+ * code (>= 0), DT_CRASHED on signal, or DT_TIMEOUT (process group SIGKILLed). */
+static int run_executable(const char *exe, char *out, size_t outcap) {
+	if (out && outcap)
+		out[0] = '\0';
+	char tmpl[] = "/tmp/arche_dtout_XXXXXX";
+	int fd = mkstemp(tmpl);
+	if (fd < 0)
+		return DT_CRASHED;
+	unlink(tmpl); /* anonymous: vanishes when the fd closes */
+
 	fflush(stdout);
 	pid_t pid = fork();
-	if (pid < 0)
+	if (pid < 0) {
+		close(fd);
 		return DT_CRASHED;
+	}
 	if (pid == 0) {
 		setpgid(0, 0); /* own process group, so a timeout can kill any children it spawns */
-		/* Silence the child's stdout so doctest output stays clean; a failing
-		 * example is reported by exit code, not its chatter. */
-		freopen("/dev/null", "w", stdout);
+		dup2(fd, 1);   /* capture stdout */
+		dup2(fd, 2);   /* and stderr */
 		execl(exe, exe, (char *)NULL);
 		_exit(127); /* exec failed */
 	}
 	setpgid(pid, pid); /* also set from the parent to close the fork/exec race */
 
-	int waited_ms = 0, status = 0;
+	int waited_ms = 0, status = 0, code;
 	for (;;) {
 		pid_t r = waitpid(pid, &status, WNOHANG);
-		if (r == pid)
+		if (r == pid) {
+			code = WIFEXITED(status) ? WEXITSTATUS(status) : DT_CRASHED;
 			break;
-		if (r < 0)
-			return DT_CRASHED;
+		}
+		if (r < 0) {
+			code = DT_CRASHED;
+			break;
+		}
 		if (waited_ms >= DOCTEST_TIMEOUT_SECS * 1000) {
 			kill(-pid, SIGKILL); /* kill the whole process group */
 			waitpid(pid, &status, 0);
-			return DT_TIMEOUT;
+			code = DT_TIMEOUT;
+			break;
 		}
 		struct timespec ts = {0, 10 * 1000 * 1000}; /* 10ms */
 		nanosleep(&ts, NULL);
 		waited_ms += 10;
 	}
-	if (WIFEXITED(status))
-		return WEXITSTATUS(status);
-	return DT_CRASHED;
+	slurp_fd_file(fd, out, outcap);
+	close(fd);
+	return code;
+}
+
+/* compile_source writes its diagnostics straight to stderr; redirect fd 2 to a
+ * temp file across the call so the runner can show those diagnostics only when
+ * an example fails unexpectedly (and stay silent otherwise). */
+static int compile_capturing(const char *synth, const char *synth_path, const char *exe, char *err, size_t errcap) {
+	if (err && errcap)
+		err[0] = '\0';
+	char tmpl[] = "/tmp/arche_dterr_XXXXXX";
+	int fd = mkstemp(tmpl);
+	if (fd < 0) {
+		CompileOpts o = {0};
+		o.quiet = 1;
+		return compile_source(synth, synth_path, exe, &o);
+	}
+	unlink(tmpl);
+
+	fflush(stderr);
+	int saved = dup(2);
+	dup2(fd, 2);
+	CompileOpts opts = {0};
+	opts.quiet = 1;
+	int rc = compile_source(synth, synth_path, exe, &opts);
+	fflush(stderr);
+	dup2(saved, 2);
+	close(saved);
+
+	slurp_fd_file(fd, err, errcap);
+	close(fd);
+	return rc;
+}
+
+/* Print captured output indented under a failing example, go-test style. */
+static void print_indented(const char *text) {
+	if (!text || !text[0])
+		return;
+	const char *p = text;
+	while (*p) {
+		const char *nl = strchr(p, '\n');
+		int len = nl ? (int)(nl - p) : (int)strlen(p);
+		printf("        %.*s\n", len, p);
+		if (!nl)
+			break;
+		p = nl + 1;
+	}
 }
 
 /* Accumulated tallies across one or many files. */
@@ -131,34 +210,32 @@ typedef struct {
 	int ignored;
 } DtTally;
 
-/* Run the doctests in one file. When quiet_empty is set, a file with no examples
- * prints nothing (used by recursive runs). Tallies fold into *t. Returns
- * non-zero if any example in this file failed. */
-static int run_one(const char *path, int quiet_empty, DtTally *t) {
+/* Run the doctests in one file, go-test style: silent per-example on success,
+ * a single `ok`/`FAIL`/`?` status line per file, and the failing examples'
+ * output shown only on failure. `verbose` adds a per-example PASS line.
+ * `quiet_empty` suppresses the `?` line (recursive runs). Tallies fold into *t.
+ * Returns non-zero if any example in this file failed. */
+static int run_one(const char *path, int quiet_empty, int verbose, DtTally *t) {
 	char *source = read_file(path);
 	if (!source) {
-		fprintf(stderr, "doctest: cannot read %s\n", path);
+		printf("FAIL %s  (cannot read)\n", path);
 		return 1;
 	}
 
-	/* Parse the documented file just to walk its declarations + doc comments. */
+	/* Parse the file and extract doctests from the (error-recovering) CST. A file
+	 * with no extractable examples is NOT a doctest target — skip it silently,
+	 * even if it has parse errors (e.g. intentional negative-test fixtures). We
+	 * only surface failures for files that actually carry doctests. */
 	ParseResult pr = parse_source(source);
-	if (pr.error_count > 0 || !pr.cst_root) {
-		fprintf(stderr, "doctest: %s has parse errors; cannot extract examples\n", path);
-		for (size_t i = 0; i < pr.error_count; i++)
-			fprintf(stderr, "  [Line %d] %s\n", pr.errors[i].line, pr.errors[i].message);
-		parse_result_free(&pr);
-		free(source);
-		return 1;
-	}
-
-	DoctestExamples ex = doctest_extract(pr.cst_root, source);
+	DoctestExamples ex = {NULL, 0};
+	if (pr.cst_root)
+		ex = doctest_extract(pr.cst_root, source);
 	parse_result_free(&pr); /* examples own copies of everything they need */
 	free(source);
 
 	if (ex.count == 0) {
 		if (!quiet_empty)
-			printf("doctest %s: no examples found\n", path);
+			printf("?    %s  [no examples]\n", path);
 		doctest_examples_free(&ex);
 		return 0;
 	}
@@ -175,72 +252,72 @@ static int run_one(const char *path, int quiet_empty, DtTally *t) {
 	snprintf(synth_path, sizeof(synth_path), "%s/__arche_doctest_synth__.arche", dir);
 
 	int passed = 0, failed = 0, ignored = 0;
-	printf("doctest %s: running %d example%s\n", path, ex.count, ex.count == 1 ? "" : "s");
 	for (int i = 0; i < ex.count; i++) {
 		DoctestExample *e = &ex.items[i];
-		const char *result = "ok";
-		char detail[64] = "";
+		char detail[80] = "", captured[4096] = "";
 
 		if (e->flags & DOCTEST_IGNORE) {
 			ignored++;
-			printf("  %s (line %d): ignored\n", e->decl_name, e->src_line);
+			if (verbose)
+				printf("    --- ignore: %s (line %d)\n", e->decl_name, e->src_line);
 			continue;
 		}
 
 		char *synth = synthesize(module, e);
 		char exe[256];
 		snprintf(exe, sizeof(exe), "/tmp/arche_dt_%d_%d", (int)getpid(), i);
-		CompileOpts opts = {0};
-		opts.quiet = 1;
-		int rc = synth ? compile_source(synth, synth_path, exe, &opts) : 1;
+		int rc = synth ? compile_capturing(synth, synth_path, exe, captured, sizeof(captured)) : 1;
 		free(synth);
 
 		int ok;
 		if (e->flags & DOCTEST_COMPILE_FAIL) {
-			/* Expected to fail compilation; must NOT be run. */
-			ok = (rc != 0);
+			ok = (rc != 0); /* expected to fail compilation; not run */
 			if (!ok)
-				snprintf(detail, sizeof(detail), " (expected compile error, but it compiled)");
+				snprintf(detail, sizeof(detail), "expected compile error, but it compiled");
+			captured[0] = '\0'; /* an expected compile error is not interesting output */
 		} else if (rc != 0) {
 			ok = 0;
-			snprintf(detail, sizeof(detail), " (compile error)");
+			snprintf(detail, sizeof(detail), "compile error");
 		} else if (e->flags & DOCTEST_NO_RUN) {
 			ok = 1; /* compiled; not run by request */
 			unlink(exe);
 		} else {
-			int code = run_executable(exe);
+			int code = run_executable(exe, captured, sizeof(captured));
 			unlink(exe);
 			if (e->flags & DOCTEST_SHOULD_PANIC) {
-				ok = (code > 0); /* a clean exit (0) or a timeout is not the expected panic */
+				ok = (code > 0); /* clean exit / timeout is not the expected panic */
 				if (!ok)
-					snprintf(detail, sizeof(detail),
-					         code == DT_TIMEOUT ? " (timed out)" : " (expected panic, exited 0)");
+					snprintf(detail, sizeof(detail), code == DT_TIMEOUT ? "timed out" : "expected panic, exited 0");
 			} else {
 				ok = (code == 0);
-				if (!ok) {
-					if (code == DT_TIMEOUT)
-						snprintf(detail, sizeof(detail), " (timed out)");
-					else if (code == DT_CRASHED)
-						snprintf(detail, sizeof(detail), " (crashed)");
-					else
-						snprintf(detail, sizeof(detail), " (exit %d)", code);
-				}
+				if (code == DT_TIMEOUT)
+					snprintf(detail, sizeof(detail), "timed out");
+				else if (code == DT_CRASHED)
+					snprintf(detail, sizeof(detail), "crashed");
+				else if (code != 0)
+					snprintf(detail, sizeof(detail), "exit %d", code);
 			}
 		}
 
-		if (ok)
+		if (ok) {
 			passed++;
-		else {
+			if (verbose)
+				printf("    --- PASS: %s (line %d)\n", e->decl_name, e->src_line);
+		} else {
 			failed++;
-			result = "FAILED";
+			printf("    --- FAIL: %s (line %d)%s%s\n", e->decl_name, e->src_line, detail[0] ? ": " : "", detail);
+			print_indented(captured);
 		}
-		printf("  %s (line %d): %s%s\n", e->decl_name, e->src_line, result, detail);
 	}
 
-	if (ignored)
-		printf("doctest %s: %d passed, %d failed, %d ignored\n", path, passed, failed, ignored);
+	/* One go-test-style status line per file. */
+	if (failed > 0)
+		printf("FAIL %s\n", path);
+	else if (verbose)
+		printf("ok   %s  (%d passed%s)\n", path, passed, ignored ? ", some ignored" : "");
 	else
-		printf("doctest %s: %d passed, %d failed\n", path, passed, failed);
+		printf("ok   %s\n", path);
+
 	t->passed += passed;
 	t->failed += failed;
 	t->ignored += ignored;
@@ -250,7 +327,7 @@ static int run_one(const char *path, int quiet_empty, DtTally *t) {
 
 int doctest_run_file(const char *path) {
 	DtTally t = {0, 0, 0, 0};
-	return run_one(path, 0, &t);
+	return run_one(path, 0, 0, &t);
 }
 
 /* ---- recursive directory walking (Go-style `arche test ./...` / a dir) ---- */
@@ -306,7 +383,7 @@ static int cmp_str(const void *a, const void *b) {
 	return strcmp(*(const char *const *)a, *(const char *const *)b);
 }
 
-static int run_dir(const char *root) {
+static int run_dir(const char *root, int verbose) {
 	PathList pl = {NULL, 0, 0};
 	collect_arche(root, &pl);
 	qsort(pl.items, (size_t)pl.count, sizeof(char *), cmp_str); /* deterministic order */
@@ -314,22 +391,20 @@ static int run_dir(const char *root) {
 	DtTally t = {0, 0, 0, 0};
 	int any_failed = 0;
 	for (int i = 0; i < pl.count; i++) {
-		if (run_one(pl.items[i], 1 /* quiet on empty */, &t))
+		/* quiet_empty: in a tree sweep, don't print a line for every file that
+		 * has no examples — only the ones with doctests get an ok/FAIL line. */
+		if (run_one(pl.items[i], 1, verbose, &t))
 			any_failed = 1;
 		free(pl.items[i]);
 	}
 	free(pl.items);
 
-	if (t.files == 0) {
-		printf("doctest %s: no examples found in any file\n", root);
-		return 0;
-	}
-	printf("doctest %s: %d passed, %d failed, %d ignored across %d file%s\n", root, t.passed, t.failed, t.ignored,
-	       t.files, t.files == 1 ? "" : "s");
+	if (t.files == 0)
+		printf("?    %s  [no examples in any file]\n", root);
 	return any_failed ? 1 : 0;
 }
 
-int doctest_run_path(const char *spec) {
+int doctest_run_path(const char *spec, int verbose) {
 	/* Go-style `<dir>/...` or bare `...` → recurse from <dir> (or cwd). */
 	size_t n = strlen(spec);
 	if (n >= 3 && strcmp(spec + n - 3, "...") == 0) {
@@ -346,12 +421,13 @@ int doctest_run_path(const char *spec) {
 			memcpy(root, spec, rl);
 			root[rl] = '\0';
 		}
-		return run_dir(root);
+		return run_dir(root, verbose);
 	}
 
 	struct stat sb;
 	if (stat(spec, &sb) == 0 && S_ISDIR(sb.st_mode))
-		return run_dir(spec);
+		return run_dir(spec, verbose);
 
-	return doctest_run_file(spec);
+	DtTally t = {0, 0, 0, 0};
+	return run_one(spec, 0, verbose, &t);
 }

@@ -12,8 +12,9 @@ int doctest_run_file(const char *path);
  *   - a `.arche` file      → that file (same as doctest_run_file);
  *   - a directory          → every `.arche` file under it, recursively;
  *   - a Go-style `<dir>/...` or `...` → recursive from <dir> (or cwd).
- * Recursive runs skip files with no examples quietly and print a grand total.
- * Returns non-zero if any example failed. */
-int doctest_run_path(const char *spec);
+ * Recursive runs print one `ok`/`FAIL` status line per file that has examples
+ * (go-test style) and stay silent on files with none. `verbose` adds a per-
+ * example PASS/ignore line. Returns non-zero if any example failed. */
+int doctest_run_path(const char *spec, int verbose);
 
 #endif /* ARCHE_DOCTEST_RUN_H */
