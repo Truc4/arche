@@ -99,6 +99,7 @@ typedef enum {
 	SEM_DIAG_extern_func_bad_type,
 	SEM_DIAG_extern_func_bad_return,
 	SEM_DIAG_extern_proc_bad_return,
+	SEM_DIAG_out_not_written,
 
 	/* Constants / meta */
 	SEM_DIAG_constant_redefined,
@@ -267,6 +268,7 @@ SemDiag *sem_emit_binop_type_mismatch(SemanticContext *ctx, SourceLoc loc, const
 SemDiag *sem_emit_field_on_non_archetype(SemanticContext *ctx, SourceLoc loc, const char *base_type, const char *field);
 SemDiag *sem_emit_move_outside_arg(SemanticContext *ctx, SourceLoc loc, const char *keyword);
 SemDiag *sem_emit_extern_proc_bad_return(SemanticContext *ctx, SourceLoc loc, const char *type, const char *proc_name);
+SemDiag *sem_emit_out_not_written(SemanticContext *ctx, SourceLoc loc, const char *out_name, const char *proc_name);
 
 /* Tycheck (P3 type-check pass). E0200 is the general type_mismatch — every
  * typing-rule failure routes here. The `where` string describes the constraint

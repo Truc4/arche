@@ -116,6 +116,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_move_outside_arg]              = { "E0112", "move_outside_arg",              CLASS_ERROR, 1 },
 	/* E0113 free_non_opaque, E0114 double_free — retired (zero runtime alloc, no free stmt). */
 	[SEM_DIAG_extern_proc_bad_return]        = { "E0115", "extern_proc_bad_return",        CLASS_ERROR, 1 },
+	[SEM_DIAG_out_not_written]               = { "E0116", "out_not_written",               CLASS_ERROR, 1 },
 
 	/* Tycheck (P3 type-check pass — E0200+). All typing-rule violations route through
 	 * E0200; sharper kind/arity constraints get their own codes in Phase B. */
@@ -685,6 +686,11 @@ SemDiag *sem_emit_move_outside_arg(SemanticContext *ctx, SourceLoc loc, const ch
 SemDiag *sem_emit_extern_proc_bad_return(SemanticContext *ctx, SourceLoc loc, const char *type, const char *proc_name) {
 	return sem_emit_(ctx, SEM_DIAG_extern_proc_bad_return, loc,
 	                 "unknown return type '%s' in extern proc '%s' signature", type, proc_name);
+}
+SemDiag *sem_emit_out_not_written(SemanticContext *ctx, SourceLoc loc, const char *out_name, const char *proc_name) {
+	return sem_emit_(ctx, SEM_DIAG_out_not_written, loc,
+	                 "out-parameter '%s' of proc '%s' is never written — assign it before the proc returns",
+	                 out_name, proc_name);
 }
 
 SemDiag *sem_emit_type_mismatch(SemanticContext *ctx, SourceLoc loc, const char *where, const char *expected,

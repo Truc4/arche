@@ -2330,6 +2330,13 @@ static const char *func_purity_expr(SemanticContext *ctx, Expression *e) {
 		return NULL;
 	case EXPR_ALLOC:
 		return "allocates (`alloc`)";
+	case EXPR_NAME:
+		/* Reading an archetype column is reading mutable global state — impure. A func's inputs are
+		 * only its parameters and `::` constants, so its output depends solely on them. (Reaches
+		 * `Player`, and `Player.x` / `Player[i]` via the EXPR_FIELD/EXPR_INDEX base recursion above.) */
+		if (find_archetype(ctx, e->data.name.name))
+			return "reads static memory (an archetype column)";
+		return NULL;
 	default:
 		return NULL;
 	}
@@ -2399,6 +2406,49 @@ static void enforce_func_purity(SemanticContext *ctx, FuncDecl *func) {
 	if (reason) {
 		sem_emit_func_not_pure(ctx, func->loc, func->name ? func->name : "<unknown>", reason);
 	}
+}
+
+/* Does any statement (recursively) WRITE the binding `name`? A write is an assignment whose lvalue
+ * leftmost name is `name` (`n = …`, `n[i] = …`), or a proc-call / multi-bind out-arg that is an
+ * existing binding (`f(...)(n)` captures into n). A fresh `n:` / `n :=` shadows, so it does NOT
+ * count. Lenient over branches (any path) — flags only out-params written on NO path. */
+static int stmts_write_name(Statement **stmts, int count, const char *name);
+static int stmt_writes_name(Statement *s, const char *name) {
+	if (!s || !name)
+		return 0;
+	switch (s->type) {
+	case STMT_ASSIGN: {
+		const char *ln = lvalue_leftmost_name(s->data.assign_stmt.target);
+		return ln && strcmp(ln, name) == 0;
+	}
+	case STMT_MULTI_BIND:
+		for (int i = 0; i < s->data.multi_bind.target_count; i++) {
+			BindingTarget *t = &s->data.multi_bind.targets[i];
+			if (!t->is_new && t->name && strcmp(t->name, name) == 0)
+				return 1;
+		}
+		return 0;
+	case STMT_FOR:
+		if (stmt_writes_name(s->data.for_stmt.init, name))
+			return 1;
+		if (stmt_writes_name(s->data.for_stmt.increment, name))
+			return 1;
+		return stmts_write_name(s->data.for_stmt.body, s->data.for_stmt.body_count, name);
+	case STMT_IF:
+		if (stmts_write_name(s->data.if_stmt.then_body, s->data.if_stmt.then_count, name))
+			return 1;
+		return stmts_write_name(s->data.if_stmt.else_body, s->data.if_stmt.else_count, name);
+	case STMT_EACH_FIELD:
+		return stmts_write_name(s->data.each_field.body, s->data.each_field.body_count, name);
+	default:
+		return 0;
+	}
+}
+static int stmts_write_name(Statement **stmts, int count, const char *name) {
+	for (int i = 0; i < count; i++)
+		if (stmt_writes_name(stmts[i], name))
+			return 1;
+	return 0;
 }
 
 static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
@@ -2500,6 +2550,25 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	ctx->current_proc = prev_proc;
 
 	pop_scope(ctx);
+
+	/* Flow rule: every out-only out-param must be written somewhere in the body before the proc
+	 * returns. In-out out-params (also an in-param) are written through their in-arg. Externs have
+	 * no body. */
+	if (!proc->is_extern) {
+		for (int i = 0; i < proc->out_param_count; i++) {
+			const char *on = proc->out_params[i]->name;
+			if (!on)
+				continue;
+			int inout = 0;
+			for (int j = 0; j < proc->param_count; j++)
+				if (proc->params[j]->name && strcmp(proc->params[j]->name, on) == 0) {
+					inout = 1;
+					break;
+				}
+			if (!inout && !stmts_write_name(proc->statements, proc->statement_count, on))
+				sem_emit_out_not_written(ctx, proc->loc, on, proc->name);
+		}
+	}
 
 	/* Run the proc-vs-func lints after typechecking the body. */
 	lint_proc_decl(ctx, proc);
@@ -4738,6 +4807,30 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 	for (int i = 0; i < prog->decl_count; i++) {
 		if (prog->decls[i]->kind != DECL_ARCHETYPE && prog->decls[i]->kind != DECL_CONST) {
 			analyze_decl(ctx, prog->decls[i]);
+		}
+	}
+
+	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The
+	 * two kinds are still distinct (keyword, `-> T` vs out-list, call form), but the name namespace
+	 * is single, so a clash is E0031. Scans real decls only (not builtins). */
+	for (int i = 0; i < prog->decl_count; i++) {
+		Decl *di = prog->decls[i];
+		const char *ni = (di->kind == DECL_FUNC)   ? di->data.func->name
+		                 : (di->kind == DECL_PROC) ? di->data.proc->name
+		                                           : NULL;
+		if (!ni)
+			continue;
+		SourceLoc li = (di->kind == DECL_FUNC) ? di->data.func->loc : di->data.proc->loc;
+		const char *ki = (di->kind == DECL_FUNC) ? "func" : "proc";
+		for (int j = 0; j < i; j++) {
+			Decl *dj = prog->decls[j];
+			const char *nj = (dj->kind == DECL_FUNC)   ? dj->data.func->name
+			                 : (dj->kind == DECL_PROC) ? dj->data.proc->name
+			                                           : NULL;
+			if (nj && strcmp(nj, ni) == 0) {
+				sem_emit_duplicate_decl(ctx, li, ki, ni);
+				break;
+			}
 		}
 	}
 
