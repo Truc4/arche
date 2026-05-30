@@ -2,6 +2,5 @@ proc main() {
   x := 10;
   y := 20;
   result := x + y;
-  msg := "result: 30\n";
-  print(msg);
+  print("result: 30\n");
 }

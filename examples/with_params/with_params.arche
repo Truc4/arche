@@ -1,7 +1,6 @@
 proc add(a: int, b: int) {
   result := a + b;
-  msg := "sum: 15\n";
-  print(msg);
+  print("sum: 15\n");
 }
 proc main() {
   add(5, 10);

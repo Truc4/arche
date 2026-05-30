@@ -54,6 +54,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_assign_after_move]             = { "E0024", "assign_after_move",             CLASS_ERROR, 1 },
 	[SEM_DIAG_own_requires_move_or_copy]     = { "E0025", "own_requires_move_or_copy",     CLASS_ERROR, 1 },
 	[SEM_DIAG_cannot_mutate_borrowed]        = { "E0026", "cannot_mutate_borrowed",        CLASS_ERROR, 1 },
+	[SEM_DIAG_extern_array_param_needs_own]  = { "E0027", "extern_array_param_needs_own",  CLASS_ERROR, 1 },
 
 	/* Field / component */
 	[SEM_DIAG_no_field]                      = { "E0030", "no_field",                      CLASS_ERROR, 1 },
@@ -483,9 +484,17 @@ SemDiag *sem_emit_own_requires_move_or_copy(SemanticContext *ctx, SourceLoc loc,
 SemDiag *sem_emit_cannot_mutate_borrowed(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_cannot_mutate_borrowed, loc,
 	                 "cannot mutate read-only parameter '%s' — array parameters are borrowed "
-	                 "(read-only) by default; to mutate, take it `move` and return it (same-name "
-	                 "in/out), or copy it into a local",
+	                 "(read-only) by default; to write one, make it in-out (the same name in "
+	                 "both the in-list and out-list, no `own`/`move`), or copy it into a local",
 	                 name);
+}
+SemDiag *sem_emit_extern_array_param_needs_own(SemanticContext *ctx, SourceLoc loc, const char *param_name,
+                                               const char *proc_name) {
+	return sem_emit_(ctx, SEM_DIAG_extern_array_param_needs_own, loc,
+	                 "array parameter '%s' of extern proc '%s' must be `own`, or be shadowed by "
+	                 "an out-param (in-out, the same name in the out-list) — an extern is assumed "
+	                 "to mutate its in-params, and a mutated read-only borrow cannot be allowed",
+	                 param_name, proc_name);
 }
 
 /* --- Field / component --- */

@@ -237,11 +237,12 @@ proc main() {
 - **Out-params are read-write places.** The caller supplies the slot (`name:` declares +
   zero-inits it; `name` reuses an existing one); the proc may read and write it; the value is
   the caller's afterward.
-- **In-out (a name in *both* lists).** Every out-param is already a read-write place; an
-  in-out exists for two reasons: (1) for an `extern proc` the in-list fixes the C argument
-  order, so a name in the in-list is a C argument (an array -> written in place) while an
-  out-only name maps to the C **return value**; and (2) the `own buf` + `move buf` ceremony
-  makes a zero-copy ownership hand-off explicit.
+- **In-out (a name in *both* lists).** The out occurrence shadows the in-list borrow, making it
+  a zero-copy *fill-in-place* slot: the body writes the buffer with no `own` and no `move`, and
+  the binding is never killed. For an `extern proc` the in-list also fixes the C argument order,
+  so an in-out name is a C argument written in place while an out-only name maps to the C
+  **return value**. (A borrowed in-out may be written but not `move`d - it is still the caller's
+  buffer.)
 - The out-list is optional: `proc main()` (or any effect-only action) simply has no outputs.
 
 Procedures are also used for setup, orchestration, and whole-collection array ops:
@@ -335,25 +336,30 @@ To mutate or consume an argument, the function declares the parameter **`own`** 
 ownership. The caller then chooses, **explicitly**, how to satisfy that - there is no implicit
 copy and no implicit move:
 
-- **`move x`** - donate `x` by reference (zero copy); `x` is consumed (using it afterward is a
-  compile error). The owned buffer comes back only through a return/out value.
+- **`move x`** - donate `x` by reference (zero copy); `x` is consumed - it is **dead**
+  afterward, with no revival. Using it again, including reusing the *same name* as an out-arg, is
+  a compile error; bind a fresh name instead (`f(move x)(x:)`). `move` is for one-way hand-offs.
 - **`copy x`** - hand over a *duplicate* (a memcpy); the caller keeps its original. (`copy` of
   an `opaque` is rejected - it is non-copyable.)
 
 A bare name passed to an `own` parameter is a compile error
-(`value 'x' must be moved or copied into 'own' parameter …`):
+(`value 'x' must be moved or copied into 'own' parameter …`).
+
+To **fill a caller buffer in place** you don't need `own` or `move` at all - use an **in-out**
+parameter (the same name in both the in-list and the out-list). The out occurrence shadows the
+in-list borrow, so the body writes the buffer in place and the binding is never killed:
 
 ```arche
-proc read_into(fd: int, own buf: char[], len: int)(buf: char[], n: int) {
-  n = read(fd, buf, len);                  // the extern fills the owned buffer in place
+proc read_into(fd: int, buf: char[], len: int)(buf: char[], n: int) {
+  read(fd, buf, len)(buf, n);             // the extern fills the in-out buffer in place
 }
 
 buf: char[256];
-read_into(0, move buf, 256)(buf, n:);      // zero copy: buf threaded in and back out, in place
+read_into(0, buf, 256)(buf, n:);          // zero copy: buf lent in, handed back, stays live
 ```
 
-- **You can't move out of a borrow.** `move`-ing a borrowed (non-`own`) array parameter is a
-  compile error. You *may* `copy` a borrow.
+- **You can't move out of a borrow.** `move`-ing a borrowed (non-`own`) array parameter - which
+  includes an in-out buffer - is a compile error. You *may* `copy` a borrow.
 - **Must-consume:** an opaque *local* must leave its scope before the end - moved into an
   `own` parameter, returned, or `insert`ed into a pool. Otherwise it is a compile error
   (`opaque value 'w' not consumed before scope end`). No implicit `drop`/RAII, no silent leak.
@@ -368,8 +374,8 @@ Arche never reads, writes, or fabricates. Distinctness comes from the *name*, no
 window :: opaque
 sound  :: opaque
 
-extern proc window_open(title: char[], w: int, h: int)(w: window);   // out-only w = C return
-extern proc window_present(w: window, fb: int[], width: int, height: int)();
+extern proc window_open(own title: char[], w: int, h: int)(w: window);   // out-only w = C return
+extern proc window_present(w: window, fb: int[], width: int, height: int)(fb: int[]);  // fb in-out
 extern proc window_close(own w: window)();
 ```
 
@@ -384,7 +390,7 @@ extern proc window_close(own w: window)();
 ```arche
 proc render() {
   w := window_open("demo", 640, 480);
-  window_present(w, fb, 640, 480);   // plain read-only borrow
+  window_present(w, fb, 640, 480)(fb);   // in-out: fb lent and handed back, stays live
   window_close(move w);              // `own` param consumes it - w dead afterward
 }
 ```
@@ -405,16 +411,16 @@ sum_diff(10, 3)(s:, d:);   // s = 13, d = 7 - declared + scoped by the out-args
 ```
 
 **Filling a caller buffer (zero-copy in-out).** A name in *both* the in-list and the out-list
-is an **in-out** parameter: the caller lends a buffer with `move` (no copy), the proc fills it
-in place, and it is handed back live:
+is an **in-out** parameter: the caller lends a buffer (no `own`, no `move`, no copy), the proc
+fills it in place, and the same live binding is handed back through the out-arg:
 
 ```arche
-proc read_chunk(fd: file, own buf: char[], size: int)(buf: char[], n: int) {
-  n = arche_csv_read_chunk(fd, buf, size);   // the extern fills the owned buffer in place
+proc read_chunk(fd: file, buf: char[], size: int)(buf: char[], n: int) {
+  arche_csv_read_chunk(fd, buf, size)(buf, n);   // the extern fills the in-out buffer in place
 }
 
 buf: char[65536];
-read_chunk(fd, move buf, 65536)(buf, n:);    // buf comes back filled; n is the byte count
+read_chunk(fd, buf, 65536)(buf, n:);             // buf comes back filled; n is the byte count
 ```
 
 For an `extern proc`, the in-list maps the C argument order, an in-out name is an in-place

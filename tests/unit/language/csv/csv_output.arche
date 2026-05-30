@@ -35,8 +35,8 @@ proc main() {
   arche_fopen_write("/tmp/task1_output.csv")(fd:);
   for (i := 0; i < 1000; i = i + 1) {
     buf: char[64];
-    sprintf(buf, "%f\n", Task1Data.revenue[i])(n:);
-    arche_fwrite(fd, buf, n);
+    sprintf(buf, "%f\n", Task1Data.revenue[i])(buf, n:);
+    arche_fwrite(fd, move buf, n);
   }
   arche_fclose(move fd);
   printf("Task1 output written\n");

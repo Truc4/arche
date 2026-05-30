@@ -9,7 +9,7 @@ proc main() {
   net_accept(srv)(conn:);
   net_send(cli, "hi", 2)(sent:);
   buf: char[64];
-  net_recv(conn, buf, 64)(n:);
+  net_recv(conn, buf, 64)(buf, n:);
   printf("ok n=%d first=%d\n", n, buf[0]);
   net_close(move cli);
   net_close(move conn);

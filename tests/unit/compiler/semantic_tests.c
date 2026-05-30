@@ -435,7 +435,7 @@ void test_opaque_aliases_distinct(void) {
 void test_use_after_consume_local_error(void) {
 	test_start("use after consume in same scope is a compile error");
 	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "extern proc open_(t: char[], a: int, b: int)(ret: window);\n"
+	                                  "extern proc open_(own t: char[], a: int, b: int)(ret: window);\n"
 	                                  "extern proc close_(own w: window);\n"
 	                                  "extern proc poll_(w: window);\n"
 	                                  "proc main() {\n"
@@ -451,7 +451,7 @@ void test_use_after_consume_local_error(void) {
 void test_no_false_positive_when_unconsumed(void) {
 	test_start("normal borrow then consume is fine");
 	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "extern proc open_(t: char[], a: int, b: int)(ret: window);\n"
+	                                  "extern proc open_(own t: char[], a: int, b: int)(ret: window);\n"
 	                                  "extern proc close_(own w: window);\n"
 	                                  "extern proc poll_(w: window);\n"
 	                                  "proc main() {\n"

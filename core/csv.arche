@@ -54,8 +54,8 @@ func cell = {
 }
 ;
 
-proc load(arch: archetype, path: char[]) {
-  arche_file_map(path)(data:);
+proc load(arch: archetype, own path: char[]) {
+  arche_file_map(move path)(data:);
   arche_file_size()(size: i64);
 
   hdr_end: i64 = find_byte(data, 0, size, '\n');
@@ -100,5 +100,5 @@ proc load(arch: archetype, path: char[]) {
     }
     pos = nl + 1;
   }
-  arche_file_unmap(data, size);
+  arche_file_unmap(move data, size);
 }

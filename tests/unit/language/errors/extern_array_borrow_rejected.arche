@@ -1,0 +1,10 @@
+// An extern array in-param that is neither `own` nor in-out is rejected: an extern has no body
+// to verify, so every in-param is assumed mutated, and a mutated read-only borrow can't be
+// allowed. Declare the buffer `own` (handed to C) or in-out (filled and handed back).
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "assumed to mutate" %t.out
+extern proc fill_it(buf: char[], n: int)(r: int);
+
+proc main() {
+  b: char[8];
+  fill_it(b, 8)(r:);
+}

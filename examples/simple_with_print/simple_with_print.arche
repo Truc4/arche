@@ -6,6 +6,5 @@ proc main() {
   insert(Counter, 0);
   x := 10;
   y := 20;
-  msg := "counter allocated\n";
-  print(msg);
+  print("counter allocated\n");
 }

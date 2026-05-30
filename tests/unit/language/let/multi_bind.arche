@@ -1,15 +1,20 @@
 // RUN: %arche -o %t %s && %t | grep "x=ab y=cd n=42"
-// Two caller buffers moved in by reference (in-out), filled, and handed back through the
-// out-list. `move` = by-ref + the binding dies, so the buffers come back through the out-args.
-proc fill_two(own buf1: char[32], own buf2: char[32])(buf1: char[32], buf2: char[32], n: int) {
-  buf1 := strcopy(move buf1, "ab");
-  buf2 := strcopy(move buf2, "cd");
+// Two caller buffers lent by reference (in-out), filled in place, and handed back through the
+// out-list. No `own`, no `move`: the out occurrences shadow the in-list borrows, so the buffers
+// stay live and come back through the out-args.
+proc fill_two(buf1: char[32], buf2: char[32])(buf1: char[32], buf2: char[32], n: int) {
+  buf1[0] = 'a';
+  buf1[1] = 'b';
+  buf1[2] = 0;
+  buf2[0] = 'c';
+  buf2[1] = 'd';
+  buf2[2] = 0;
   n = 42;
 }
 
 proc main() {
   x: char[32];
   y: char[32];
-  fill_two(move x, move y)(x, y, n:);
+  fill_two(x, y)(x, y, n:);
   printf("x=%s y=%s n=%d\n", x, y, n);
 }
