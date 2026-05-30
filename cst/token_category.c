@@ -42,6 +42,9 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_RETURN:
 	case TOK_USE:
 	case TOK_EACH_FIELD:
+	case TOK_STATIC:
+	case TOK_POOL:
+	case TOK_RUN:
 		return "keyword";
 
 	case TOK_NUMBER:
