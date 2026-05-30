@@ -8,12 +8,12 @@ static pool<Transaction> (100, 100) {
 }
 ;
 proc main() {
-  fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv");
+  arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv")(fd:);
   line: char[128];
   arche_fread_line(fd, line, 128);
   idx := 0;
   for (; idx < 100;) {
-    n := arche_fread_line(fd, line, 128);
+    arche_fread_line(fd, line, 128)(n:);
     if (n <= 0) {
       break;
     }

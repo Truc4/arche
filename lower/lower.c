@@ -899,6 +899,35 @@ static HirStmt *lower_stmt_cst(CstView s) {
 			}
 		break;
 	}
+	case SN_PROC_CALL_STMT: {
+		/* `foo(in)(out)` — lowered as a multi-bind: value = the call `foo(in)`, targets = the
+		 * out-args. Codegen passes the targets' addresses as the proc's out-pointers. */
+		as->kind = HIR_STMT_MULTI_BIND;
+		as->data.multi_bind.from_shorthand = 0;
+		int nout = 0;
+		for (int i = 0; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_NODE && s.node->children[i].as.node->kind == SN_OUT_ARG)
+				nout++;
+		as->data.multi_bind.targets = calloc(nout ? nout : 1, sizeof(HirBindingTarget));
+		as->data.multi_bind.target_count = 0;
+		as->data.multi_bind.value = NULL;
+		for (int i = 0; i < s.node->child_count; i++) {
+			if (s.node->children[i].tag != SE_NODE)
+				continue;
+			SyntaxNode *cn = s.node->children[i].as.node;
+			CstView cnv = (CstView){cn, s.src};
+			if (cn->kind == SN_CALL_EXPR) {
+				as->data.multi_bind.value = lower_expr_cst(cnv);
+			} else if (cn->kind == SN_OUT_ARG) {
+				int ti = as->data.multi_bind.target_count++;
+				as->data.multi_bind.targets[ti].name = txt_dup(cv_token(cnv, TOK_IDENT));
+				as->data.multi_bind.targets[ti].is_new = cv_has_token(cnv, TOK_COLON);
+				as->data.multi_bind.targets[ti].type =
+				    cv_type_count(cnv) > 0 ? lower_type_cst(cv_type_at(cnv, 0)) : NULL;
+			}
+		}
+		break;
+	}
 	default:
 		/* anything still unhandled: placeholder no-op. */
 		as->kind = HIR_STMT_EXPR;
@@ -1221,12 +1250,12 @@ static HirDecl *lower_decl_cst(CstView d) {
 		for (int i = 0; i < np; i++)
 			ap->params[i] = lower_param_cst(cv_child_at(d, SN_PARAM, i));
 		ap->param_count = np;
-		/* return types: TYPE_REF nodes not inside params (0 = void proc) */
-		int pnt = cv_type_count(d);
-		ap->return_types = calloc(pnt ? pnt : 1, sizeof(HirType *));
-		ap->return_type_count = 0;
-		for (int i = 0; i < pnt; i++)
-			ap->return_types[ap->return_type_count++] = lower_type_cst(cv_type_at(d, i));
+		/* out-params: the `(out)` list, written in place (0 = no outputs) */
+		int nout = cv_count(d, SN_OUT_PARAM);
+		ap->out_params = calloc(nout ? nout : 1, sizeof(HirParam *));
+		for (int i = 0; i < nout; i++)
+			ap->out_params[i] = lower_param_cst(cv_child_at(d, SN_OUT_PARAM, i));
+		ap->out_param_count = nout;
 		ap->stmts = cst_lower_body(d, &ap->stmt_count);
 		ad->data.proc = ap;
 		return ad;

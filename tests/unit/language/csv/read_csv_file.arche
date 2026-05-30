@@ -1,8 +1,8 @@
 // RUN: %arche -o %t %s && %t
 proc main() {
-  fd := arche_fopen_read("../../../../../tests/fixtures/data.csv");
+  arche_fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
   buf: char[4096];
-  total_n := arche_fread(fd, buf, 4096);
+  arche_fread(fd, buf, 4096)(total_n:);
   arche_fclose(move fd);
   printf("Read %d bytes from CSV file\n", total_n);
   assert(total_n > 0, "should read CSV file\n");

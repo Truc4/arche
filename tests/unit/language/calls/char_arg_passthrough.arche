@@ -7,7 +7,7 @@ func mylen(s: char[]) -> int {
   return strlen(s);
 }
 proc main() {
-  arg := arche_argv(1);
+  arche_argv(1)(arg:);
   printf("len=%d\n", mylen(arg));
   printf("n=%d\n", atoi(arg));
 }

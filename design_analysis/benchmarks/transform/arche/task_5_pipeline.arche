@@ -19,7 +19,7 @@ proc load_transactions() {
 }
 
 proc write_output(total: float) {
-  fd := arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_5.csv");
+  arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_5.csv")(fd:);
   buf: char[64];
   sprintf(buf, "total\n%g\n", total);
   arche_fwrite(fd, buf, strlen(buf));
@@ -30,14 +30,14 @@ proc main() {
   load_transactions();
 
   total := 0.0;
-  t0 := arche_now_sec();
+  arche_now_sec()(t0:);
   for (iter := 0; iter < 216000; iter += 1) {
     Transaction.revenue = Transaction.price * Transaction.quantity * (Transaction.quantity > 0) * (Transaction.price > 10.0);
     for (m := 0; m < 10000; m += 1) {
       total = total + Transaction.revenue[m];
     }
   }
-  t1 := arche_now_sec();
+  arche_now_sec()(t1:);
   elapsed := t1 - t0;
 
   write_output(total);

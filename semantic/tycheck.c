@@ -223,8 +223,8 @@ static TypeId synth_call(TyCtx *cx, Expression *e) {
 	} else {
 		params = cr.u.proc->params;
 		param_count = cr.u.proc->param_count;
-		rets = cr.u.proc->return_types;
-		ret_count = cr.u.proc->return_type_count;
+		rets = NULL; /* a proc is not a value — its outputs are out-params, not a return type */
+		ret_count = 0;
 		is_variadic = cr.u.proc->is_variadic;
 	}
 

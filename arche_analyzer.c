@@ -330,6 +330,54 @@ static void emit_param_hint(CstView arg, SemanticContext *ctx) {
 	emit_syn(start.line, start.column, 0, 1, "param", text);
 }
 
+/* Proc names gathered from the CST (combined core+user). A proc is an SN_PROC_DECL node, so this is
+ * a purely syntactic fact — no whole-program query needed. Borrowed slices into the analysis source,
+ * which outlives the walk. Reset per emit_hints; the buffer is reused (grows once). */
+static CvText *g_proc_names;
+static int g_proc_name_count, g_proc_name_cap;
+
+static void collect_proc_names(CstView v) {
+	if (!v.node)
+		return;
+	if (cv_kind(v) == SN_PROC_DECL) {
+		CvText nm = cv_text(cv_child(v, SN_FUNC_DEF_NAME));
+		if (nm.ptr) {
+			if (g_proc_name_count == g_proc_name_cap) {
+				g_proc_name_cap = g_proc_name_cap ? g_proc_name_cap * 2 : 32;
+				g_proc_names = realloc(g_proc_names, (size_t)g_proc_name_cap * sizeof(CvText));
+			}
+			g_proc_names[g_proc_name_count++] = nm;
+		}
+	}
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE)
+			collect_proc_names((CstView){v.node->children[i].as.node, v.src});
+}
+
+static int name_is_proc(CvText n) {
+	for (int i = 0; i < g_proc_name_count; i++)
+		if (g_proc_names[i].len == n.len && memcmp(g_proc_names[i].ptr, n.ptr, n.len) == 0)
+			return 1;
+	return 0;
+}
+
+/* A bare proc/extern call statement (`printf(x);`) omits its out-list — that omission means "no
+ * captured results", but the call is still an ACTION. Render a ghost `()` right after it so a reader
+ * sees it may have effects. The capture form `f(x)(out)` is an SN_PROC_CALL_STMT (not an
+ * SN_EXPR_STMT, so not reached here) and already shows its out-list. */
+static void emit_effect_hint(CstView expr_stmt) {
+	CstView call = cv_child(expr_stmt, SN_CALL_EXPR);
+	if (!call.node)
+		return;
+	CvText callee = cv_text(cv_child(call, SN_CALLEE_NAME));
+	if (!callee.ptr || !name_is_proc(callee))
+		return;
+	CvPos end = cv_last_token_pos(call);
+	if (!end.line)
+		return;
+	emit_syn(end.line, end.column + (int)end.length, 0, 0, "effect", "()");
+}
+
 static void walk(CstView v, SemanticContext *ctx) {
 	if (!v.node)
 		return;
@@ -338,6 +386,8 @@ static void walk(CstView v, SemanticContext *ctx) {
 		emit_bind_hint(v, ctx);
 	else if (cv_kind(v) == SN_TYPE_REF)
 		emit_typeref_hint(v, ctx);
+	else if (cv_kind(v) == SN_EXPR_STMT)
+		emit_effect_hint(v); /* bare proc call → ghost `()` */
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
 			CstView c = {v.node->children[i].as.node, v.src};
@@ -436,8 +486,12 @@ static void analysis_free(Analysis *a) {
 }
 
 static void emit_hints(const Analysis *a) {
-	if (a->ctx)
-		walk(cv_root(a->cst_root, a->combined), a->ctx);
+	if (!a->ctx)
+		return;
+	CstView root = cv_root(a->cst_root, a->combined);
+	g_proc_name_count = 0;
+	collect_proc_names(root); /* gather proc names first (a call may precede its decl) */
+	walk(root, a->ctx);
 }
 
 /* Emit diagnostics collected during semantic analysis, translated to user coords.

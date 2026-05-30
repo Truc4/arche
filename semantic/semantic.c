@@ -70,6 +70,11 @@ struct SemanticContext {
 	char **known_funcs;
 	int known_func_count;
 
+	/* Names of `static` global arrays, registered in a pre-pass (order-independent) so func-purity
+	 * can reject a func reading or writing one — a func's only inputs are params + `::` constants. */
+	char **static_names;
+	int static_name_count;
+
 	GroupInfo *groups;
 	int group_count;
 
@@ -102,10 +107,6 @@ struct SemanticContext {
 
 	/* Track if inside proc/sys body (for alloc enforcement) */
 	int in_body;
-
-	/* 1 while analyzing the body of an `unsafe` proc/func; gates unsafe builtins
-	 * (currently `syscall`) so they cannot be called from ordinary safe code. */
-	int in_unsafe;
 
 	/* 1 only while analyzing a call that sits in a statement / bind-RHS position (where an
 	 * *action* is allowed). A proc or extern call is an action, not a value, so it may appear
@@ -250,6 +251,24 @@ static void register_func(SemanticContext *ctx, const char *name) {
 	ctx->known_funcs[ctx->known_func_count] = malloc(strlen(name) + 1);
 	strcpy(ctx->known_funcs[ctx->known_func_count], name);
 	ctx->known_func_count++;
+}
+
+static int is_static_name(SemanticContext *ctx, const char *name) {
+	if (!name)
+		return 0;
+	for (int i = 0; i < ctx->static_name_count; i++)
+		if (strcmp(ctx->static_names[i], name) == 0)
+			return 1;
+	return 0;
+}
+
+static void register_static_name(SemanticContext *ctx, const char *name) {
+	if (!name || is_static_name(ctx, name))
+		return;
+	ctx->static_names = realloc(ctx->static_names, (ctx->static_name_count + 1) * sizeof(char *));
+	ctx->static_names[ctx->static_name_count] = malloc(strlen(name) + 1);
+	strcpy(ctx->static_names[ctx->static_name_count], name);
+	ctx->static_name_count++;
 }
 
 /* Forward-declare normalize_type_name so helpers below can use it. */
@@ -899,15 +918,13 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 			return NULL;
 		}
 
-		/* Plain func/proc path: a returning proc yields its first return type exactly like a func. */
+		/* Plain func path: a func yields its return type. A proc is not a value — it has no
+		 * result type here (its outputs are written into caller-provided out-params). */
 		for (int i = 0; i < ctx->prog->decl_count; i++) {
 			Decl *decl = ctx->prog->decls[i];
 			TypeRef *rt = NULL;
 			if (decl->kind == DECL_FUNC && decl->data.func->name && strcmp(decl->data.func->name, func_name) == 0) {
 				rt = func_first_return_type(decl->data.func);
-			} else if (decl->kind == DECL_PROC && decl->data.proc->name &&
-			           strcmp(decl->data.proc->name, func_name) == 0) {
-				rt = (decl->data.proc->return_type_count > 0) ? decl->data.proc->return_types[0] : NULL;
 			} else {
 				continue;
 			}
@@ -1279,13 +1296,6 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 			}
 		}
 
-		/* Unsafe-builtin gate: `syscall` bypasses bounds/alloc/handle safety, so it
-		 * may only be called from an explicitly-marked `unsafe` proc/func. */
-		if (strcmp(func_name, "syscall") == 0 && !ctx->in_unsafe) {
-			sem_emit_syscall_in_safe(ctx, expr->loc);
-			break;
-		}
-
 		GroupInfo *gi = find_group(ctx, func_name);
 		if (!gi) {
 			/* Not a group: check extern-type argument distinctness at call sites.
@@ -1632,18 +1642,59 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		analyze_expression(ctx, stmt->data.multi_bind.value);
 		ctx->stmt_call_ok = 0;
 
+		/* If the RHS is a proc call (`foo(in)(out)`), each out-arg target corresponds positionally
+		 * to one of the proc's out-params. Infer a new target's type from that out-param when it
+		 * wasn't written explicitly (`name:`), so e.g. an opaque `file` out resolves as opaque, not
+		 * a default int. */
+		ProcDecl *mb_callee_proc = NULL;
+		{
+			Expression *cv = stmt->data.multi_bind.value;
+			if (cv && cv->type == EXPR_CALL && cv->data.call.callee && cv->data.call.callee->type == EXPR_NAME) {
+				const char *cn = cv->data.call.callee->data.name.name;
+				for (int i = 0; i < ctx->prog->decl_count; i++) {
+					Decl *d = ctx->prog->decls[i];
+					if (d->kind == DECL_PROC && d->data.proc && d->data.proc->name &&
+					    strcmp(d->data.proc->name, cn) == 0) {
+						mb_callee_proc = d->data.proc;
+						break;
+					}
+				}
+			}
+		}
+
 		/* Then bind the targets. A new target (`x` / `x:`) introduces a FRESH binding that
 		 * shadows any same-named one — so `buf := f(move buf)` rebinds the moved buffer with
 		 * no special-casing. An existing target (assignment-style) must be declared and live;
 		 * assigning to a moved (dead) binding is an error — use `:=`. */
 		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
 			BindingTarget *target = &stmt->data.multi_bind.targets[i];
+			/* Bind with the explicit target type, or the inferred out-param type. Pass the inferred
+			 * type by reference only (the AST owns it) — do NOT store it into target->type, which the
+			 * statement frees, to avoid a double free with the proc decl. */
+			TypeRef *bind_type = target->type;
+			if (!bind_type && mb_callee_proc && i < mb_callee_proc->out_param_count && mb_callee_proc->out_params[i])
+				bind_type = mb_callee_proc->out_params[i]->type;
 			if (target->is_new) {
-				add_variable(ctx, target->name, target->type);
+				add_variable(ctx, target->name, bind_type);
+				/* Record the nominal alias name (file/socket/window/…) so opaque-distinctness checks
+				 * see it — mirrors the `x: T` single-bind path. add_variable alone leaves it NULL. */
+				if (bind_type && bind_type->kind == TYPE_NAME && ctx->scope_count > 0) {
+					Scope *sc = &ctx->scopes[ctx->scope_count - 1];
+					if (sc->var_count > 0) {
+						VariableInfo *v = sc->vars[sc->var_count - 1];
+						v->inferred_type = resolve_type_alias(ctx, bind_type->data.name);
+						if (is_type_alias(ctx, bind_type->data.name))
+							v->nominal_type = bind_type->data.name;
+					}
+				}
 			} else {
 				VariableInfo *existing = find_variable(ctx, target->name);
 				if (!existing) {
 					sem_emit_assign_to_undeclared(ctx, stmt->loc, target->name);
+				} else if (existing->is_consumed && mb_callee_proc) {
+					/* In-out out-arg: the buffer was `move`d into the proc's in-args and is handed
+					 * back through the out-list — revive the (consumed) binding so it's live again. */
+					existing->is_consumed = 0;
 				} else if (existing->is_consumed) {
 					sem_emit_assign_after_move(ctx, stmt->loc, target->name);
 				}
@@ -2228,11 +2279,11 @@ static void lint_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	if (func_purity_body(ctx, proc->statements, proc->statement_count) != NULL)
 		return;
 
-	/* Pure body. If it returns a value it computes something — it should be a `func` (procs are
-	 * for effects). If it returns nothing, it's a no-op proc (does nothing observable) — flag for
+	/* Pure body. If it produces outputs it computes something — it should be a `func` (procs are
+	 * for effects). If it has no outputs, it's a no-op proc (does nothing observable) — flag for
 	 * removal. The purity test is the SAME predicate `enforce_func_purity` uses, so "could be a
 	 * func" means exactly "would compile as a func". */
-	if (proc->return_type_count > 0) {
+	if (proc->out_param_count > 0) {
 		sem_emit_lint_proc_could_be_func(ctx, proc->loc, proc->name ? proc->name : "<unknown>");
 	} else {
 		sem_emit_lint_proc_no_effect(ctx, proc->loc, proc->name ? proc->name : "<unknown>");
@@ -2302,6 +2353,15 @@ static const char *func_purity_expr(SemanticContext *ctx, Expression *e) {
 		return NULL;
 	case EXPR_ALLOC:
 		return "allocates (`alloc`)";
+	case EXPR_NAME:
+		/* Reading mutable global state — an archetype column or a `static` global — is impure. A
+		 * func's inputs are only its parameters and `::` constants, so its output depends solely on
+		 * them. (Reaches `Player`/`sbuf`, and `Player.x` / `sbuf[i]` via the field/index base recursion.) */
+		if (find_archetype(ctx, e->data.name.name))
+			return "reads static memory (an archetype column)";
+		if (is_static_name(ctx, e->data.name.name))
+			return "reads a `static` global";
+		return NULL;
 	default:
 		return NULL;
 	}
@@ -2320,6 +2380,8 @@ static const char *func_purity_stmt(SemanticContext *ctx, Statement *s) {
 		const char *tn = lvalue_leftmost_name(s->data.assign_stmt.target);
 		if (tn && find_archetype(ctx, tn))
 			return "writes static memory (an archetype column)";
+		if (tn && is_static_name(ctx, tn))
+			return "writes a `static` global";
 		if ((r = func_purity_expr(ctx, s->data.assign_stmt.value)))
 			return r;
 		return func_purity_expr(ctx, s->data.assign_stmt.target);
@@ -2398,10 +2460,11 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 		}
 	}
 
-	/* For extern procs, validate the return types too (parity with extern func). */
+	/* For extern procs, validate the out-param types too (parity with extern func return). An
+	 * out-only out-param maps to the C return value; an in-out one to an in-place pointer write. */
 	if (proc->is_extern) {
-		for (int i = 0; i < proc->return_type_count; i++) {
-			TypeRef *rt = proc->return_types[i];
+		for (int i = 0; i < proc->out_param_count; i++) {
+			TypeRef *rt = proc->out_params[i] ? proc->out_params[i]->type : NULL;
 			if (rt && rt->kind == TYPE_NAME) {
 				const char *tname = rt->data.name;
 				if (!is_primitive_type_name(tname) && !find_archetype(ctx, tname) && !is_type_alias(ctx, tname)) {
@@ -2445,18 +2508,36 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 		mark_last_param(ctx, proc->params[i]->is_own);
 	}
 
+	/* Out-only out-params are writable places the body must fill before returning (in-out ones are
+	 * already the in-param binding above). Register them so `name = …` in the body resolves. */
+	for (int i = 0; i < proc->out_param_count; i++) {
+		const char *on = proc->out_params[i]->name;
+		int is_inout = 0;
+		for (int j = 0; j < proc->param_count; j++)
+			if (proc->params[j]->name && on && strcmp(proc->params[j]->name, on) == 0) {
+				is_inout = 1;
+				break;
+			}
+		if (is_inout)
+			continue;
+		add_variable(ctx, on, proc->out_params[i]->type);
+		mark_last_param(ctx, 1); /* owned: a writable place */
+	}
+
 	ProcDecl *prev_proc = ctx->current_proc;
 	ctx->current_proc = proc;
 	ctx->in_body = 1;
-	ctx->in_unsafe = proc->is_unsafe;
 	for (int i = 0; i < proc->statement_count; i++) {
 		analyze_statement(ctx, proc->statements[i]);
 	}
-	ctx->in_unsafe = 0;
 	ctx->in_body = 0;
 	ctx->current_proc = prev_proc;
 
 	pop_scope(ctx);
+
+	/* No flow check: an unwritten out-param is fine — out slots are zero-initialized before the
+	 * call (a fresh `name:` is zero-stored; an existing place is already initialized), so a proc
+	 * can never hand back garbage. Zero is just its default result. */
 
 	/* Run the proc-vs-func lints after typechecking the body. */
 	lint_proc_decl(ctx, proc);
@@ -2656,11 +2737,9 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 		mark_last_param(ctx, func->params[i]->is_own);
 	}
 
-	ctx->in_unsafe = func->is_unsafe;
 	for (int i = 0; i < func->statement_count; i++) {
 		analyze_statement(ctx, func->statements[i]);
 	}
-	ctx->in_unsafe = 0;
 
 	enforce_func_purity(ctx, func); /* a `func` must be pure — hard error if not */
 
@@ -3664,6 +3743,37 @@ static Statement *cst_build_stmt(CstView s) {
 			}
 		break;
 	}
+	case SN_PROC_CALL_STMT: {
+		/* `foo(in)(out)` — modeled as a multi-bind whose value is the call `foo(in)` and whose
+		 * targets are the out-args. Codegen passes the targets' addresses as the proc's out-pointers.
+		 * An out-arg is `name` (existing place), `name:` (declare, type inferred from the out-param),
+		 * or `name: T` (declare, typed). */
+		as->type = STMT_MULTI_BIND;
+		as->data.multi_bind.from_shorthand = 0;
+		int nout = 0;
+		for (int i = 0; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_NODE && s.node->children[i].as.node->kind == SN_OUT_ARG)
+				nout++;
+		as->data.multi_bind.targets = calloc(nout ? nout : 1, sizeof(BindingTarget));
+		as->data.multi_bind.target_count = 0;
+		as->data.multi_bind.value = NULL;
+		for (int i = 0; i < s.node->child_count; i++) {
+			if (s.node->children[i].tag != SE_NODE)
+				continue;
+			SyntaxNode *cn = s.node->children[i].as.node;
+			CstView cnv = (CstView){cn, s.src};
+			if (cn->kind == SN_CALL_EXPR) {
+				as->data.multi_bind.value = cst_build_expr(cnv);
+			} else if (cn->kind == SN_OUT_ARG) {
+				int ti = as->data.multi_bind.target_count++;
+				as->data.multi_bind.targets[ti].name = sem_txt_dup(cv_token(cnv, TOK_IDENT));
+				as->data.multi_bind.targets[ti].is_new = cv_has_token(cnv, TOK_COLON);
+				as->data.multi_bind.targets[ti].type =
+				    cv_type_count_sem(cnv) > 0 ? cst_build_type(sem_type_at(cnv, 0)) : NULL;
+			}
+		}
+		break;
+	}
 	default:
 		as->type = STMT_EXPR;
 		as->data.expr_stmt.expr = NULL;
@@ -3794,7 +3904,6 @@ static Decl *cst_build_decl_inner(CstView d) {
 		ProcDecl *ap = proc_decl_create(sem_cv_dup(cv_child(d, SN_FUNC_DEF_NAME)));
 		ap->loc = sem_direct_token_loc(d.node, TOK_LPAREN); /* lint location: the `(`, like the parser */
 		ap->is_extern = cv_has_token(d, TOK_EXTERN);
-		ap->is_unsafe = cv_has_token(d, TOK_UNSAFE);
 		ap->is_variadic = cv_has_token(d, TOK_DOTDOTDOT);
 		ap->allow_pure_proc = cv_has_token(d, TOK_AT);
 		int np = cv_count(d, SN_PARAM);
@@ -3802,11 +3911,11 @@ static Decl *cst_build_decl_inner(CstView d) {
 		for (int i = 0; i < np; i++)
 			ap->params[i] = cst_build_param(cv_child_at(d, SN_PARAM, i));
 		ap->param_count = np;
-		int pnt = cv_type_count_sem(d); /* return types are the direct type-node children (0 = void) */
-		ap->return_types = calloc(pnt ? pnt : 1, sizeof(TypeRef *));
-		ap->return_type_count = 0;
-		for (int i = 0; i < pnt; i++)
-			ap->return_types[ap->return_type_count++] = cst_build_type(sem_type_at(d, i));
+		int nout = cv_count(d, SN_OUT_PARAM); /* the `(out)` list: results written in place (0 = no outputs) */
+		ap->out_params = calloc(nout ? nout : 1, sizeof(Parameter *));
+		for (int i = 0; i < nout; i++)
+			ap->out_params[i] = cst_build_param(cv_child_at(d, SN_OUT_PARAM, i));
+		ap->out_param_count = nout;
 		ap->statements = cst_build_body(d, &ap->statement_count);
 		ad->data.proc = ap;
 		return ad;
@@ -3831,7 +3940,6 @@ static Decl *cst_build_decl_inner(CstView d) {
 		FuncDecl *af = func_decl_create(sem_cv_dup(cv_child(d, SN_FUNC_DEF_NAME)));
 		af->loc = sem_direct_token_loc(d.node, TOK_LPAREN);
 		af->is_extern = cv_has_token(d, TOK_EXTERN);
-		af->is_unsafe = cv_has_token(d, TOK_UNSAFE);
 		af->is_variadic = cv_has_token(d, TOK_DOTDOTDOT);
 		int np = cv_count(d, SN_PARAM);
 		af->params = calloc(np ? np : 1, sizeof(Parameter *));
@@ -4664,10 +4772,42 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 		}
 	}
 
+	/* pre-pass: register every `static` array name so func-purity can reject a func touching one,
+	 * regardless of whether the static is declared before or after the func. */
+	for (int i = 0; i < prog->decl_count; i++) {
+		Decl *d = prog->decls[i];
+		if (d->kind == DECL_STATIC && d->data.static_decl && d->data.static_decl->kind == STATIC_KIND_ARRAY)
+			register_static_name(ctx, d->data.static_decl->array.name);
+	}
+
 	/* pass 2: analyze other declarations */
 	for (int i = 0; i < prog->decl_count; i++) {
 		if (prog->decls[i]->kind != DECL_ARCHETYPE && prog->decls[i]->kind != DECL_CONST) {
 			analyze_decl(ctx, prog->decls[i]);
+		}
+	}
+
+	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The
+	 * two kinds are still distinct (keyword, `-> T` vs out-list, call form), but the name namespace
+	 * is single, so a clash is E0031. Scans real decls only (not builtins). */
+	for (int i = 0; i < prog->decl_count; i++) {
+		Decl *di = prog->decls[i];
+		const char *ni = (di->kind == DECL_FUNC)   ? di->data.func->name
+		                 : (di->kind == DECL_PROC) ? di->data.proc->name
+		                                           : NULL;
+		if (!ni)
+			continue;
+		SourceLoc li = (di->kind == DECL_FUNC) ? di->data.func->loc : di->data.proc->loc;
+		const char *ki = (di->kind == DECL_FUNC) ? "func" : "proc";
+		for (int j = 0; j < i; j++) {
+			Decl *dj = prog->decls[j];
+			const char *nj = (dj->kind == DECL_FUNC)   ? dj->data.func->name
+			                 : (dj->kind == DECL_PROC) ? dj->data.proc->name
+			                                           : NULL;
+			if (nj && strcmp(nj, ni) == 0) {
+				sem_emit_duplicate_decl(ctx, li, ki, ni);
+				break;
+			}
 		}
 	}
 
@@ -4693,6 +4833,8 @@ static SemanticContext *make_context(void) {
 	ctx->alias_count = 0;
 	ctx->known_funcs = NULL;
 	ctx->known_func_count = 0;
+	ctx->static_names = NULL;
+	ctx->static_name_count = 0;
 	ctx->groups = NULL;
 	ctx->group_count = 0;
 	ctx->const_names = NULL;
@@ -4710,7 +4852,6 @@ static SemanticContext *make_context(void) {
 	ctx->current_sys_archetype = NULL;
 	ctx->current_proc = NULL;
 	ctx->in_body = 0;
-	ctx->in_unsafe = 0;
 	ctx->prog = NULL;
 	ctx->owned_prog = NULL;
 	ctx->model = sem_model_new();
@@ -4812,6 +4953,11 @@ void semantic_context_free(SemanticContext *ctx) {
 		free(ctx->known_funcs[i]);
 	}
 	free(ctx->known_funcs);
+
+	/* free static-global names */
+	for (int i = 0; i < ctx->static_name_count; i++)
+		free(ctx->static_names[i]);
+	free(ctx->static_names);
 
 	/* free group table (members are borrowed from CST) */
 	for (int i = 0; i < ctx->group_count; i++) {

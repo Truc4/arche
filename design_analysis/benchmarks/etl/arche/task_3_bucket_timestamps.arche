@@ -12,11 +12,11 @@ static pool<Transaction> (1000, 1000) {
 ;
 
 proc load_transactions() {
-  fd := arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv");
+  arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv")(fd:);
   buf: char[65536];
   price_str: char[32];
   qty_str: char[32];
-  total_n := arche_fread(fd, buf, 65536);
+  arche_fread(fd, buf, 65536)(total_n:);
   arche_fclose(fd);
   idx := 0;
   pos := 0;
@@ -78,11 +78,11 @@ proc load_transactions() {
 }
 
 proc write_transactions() {
-  fd := arche_fopen_write("build/benchmarks/etl/task3/arche_output.csv");
+  arche_fopen_write("build/benchmarks/etl/task3/arche_output.csv")(fd:);
   buf: char[256];
   i := 0;
   for (; i < 1000;) {
-    n := sprintf(buf, "%f,%d,%f\n", Transaction.price[i], Transaction.quantity[i], Transaction.price_bucket[i]);
+    sprintf(buf, "%f,%d,%f\n", Transaction.price[i], Transaction.quantity[i], Transaction.price_bucket[i])(n:);
     arche_fwrite(fd, buf, n);
     i = i + 1;
   }

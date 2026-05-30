@@ -10,11 +10,11 @@ static pool<Transaction> (5, 5) {
 ;
 
 proc main() {
-  fd := arche_fopen_read("../../../../../tests/fixtures/transactions.csv");
+  arche_fopen_read("../../../../../tests/fixtures/transactions.csv")(fd:);
   buf: char[256];
   price_str: char[32];
   qty_str: char[32];
-  total_n := arche_fread(fd, buf, 256);
+  arche_fread(fd, buf, 256)(total_n:);
   arche_fclose(move fd);
   idx := 0;
   pos := 0;

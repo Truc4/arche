@@ -1,11 +1,11 @@
 // `move r` transfers ownership at the call site; using r afterward is a compile error —
 // even when the callee does not itself consume (the `move` marks the hand-off explicitly).
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
-resource :: opaque extern resource_open(initial: int) -> resource;
-extern resource_get(r: resource) -> int;
+resource :: opaque extern proc resource_open(initial: int)(ret: resource);
+extern proc resource_get(r: resource)(ret: int);
 
 proc main() {
-  r := resource_open(10);
-  v := resource_get(move r);
-  w := resource_get(r);
+  resource_open(10)(r:);
+  resource_get(move r)(v:);
+  resource_get(r)(w:);
 }

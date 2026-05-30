@@ -208,12 +208,13 @@ struct ProcDecl {
 	char *name;
 	Parameter **params;
 	int param_count;
-	/* A proc may return a list of types (a single return is count == 1; `-> (T1, …, Tn)` an
-	 * aggregate), exactly like a func. count == 0 is a void proc — an action with no value. */
-	TypeRef **return_types;
-	int return_type_count;
+	/* A proc has no return value — it declares its results as OUT-PARAMETERS: caller-provided
+	 * places written in place (the `(out)` of `proc f(in)(out)`). An out-param is owned by
+	 * definition (no `own` keyword). A name appearing in both `params` and `out_params` is an
+	 * in-out param: read in, mutated, handed back (used mainly for extern C signatures). */
+	Parameter **out_params;
+	int out_param_count;
 	int is_extern;
-	int is_unsafe;   /* 1 if declared `unsafe proc`; may call unsafe builtins (syscall) */
 	int is_variadic; /* 1 if last param is `...`; only valid on extern decls. */
 	Statement **statements;
 	int statement_count;
@@ -248,7 +249,6 @@ struct FuncDecl {
 	TypeRef **return_types;
 	int return_type_count;
 	int is_extern;
-	int is_unsafe;   /* 1 if declared `unsafe func`; may call unsafe builtins (syscall) */
 	int is_variadic; /* 1 if last param is `...`; only valid on extern decls (printf etc.). */
 	Statement **statements;
 	int statement_count;

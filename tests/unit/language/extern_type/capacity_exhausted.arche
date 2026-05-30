@@ -6,14 +6,14 @@
 cell :: opaque arche Resource {
   cell,
 }
-extern resource_open(initial: int) -> cell;
+extern proc resource_open(initial: int)(ret: cell);
 static pool<Resource> (2);
 
 proc main() {
-  r1 := resource_open(1);
+  resource_open(1)(r1:);
   a := insert(Resource, r1);
-  r2 := resource_open(2);
+  resource_open(2)(r2:);
   b := insert(Resource, r2);
-  r3 := resource_open(3);
+  resource_open(3)(r3:);
   c := insert(Resource, r3);
 }

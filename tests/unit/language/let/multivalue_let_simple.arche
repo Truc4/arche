@@ -1,10 +1,11 @@
 // RUN: %arche -o %t %s && %t
-func pair() -> (int, int) {
-  return 42, 7;
+proc pair()(x: int, y: int) {
+  x = 42;
+  y = 7;
 }
 
 proc main() {
-  x, y := pair();
+  pair()(x:, y:);
   assert(x == 42, "x not 42\n");
   assert(y == 7, "y not 7\n");
   printf("multivalue test ok\n");

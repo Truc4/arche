@@ -1,8 +1,8 @@
 // getuid (102) == geteuid (107) for a normally-launched process.
 // RUN: %arche -o %t %s && %t | grep "ok"
-unsafe proc main() {
-  uid := syscall(102, 0, 0, 0, 0, 0, 0);
-  euid := syscall(107, 0, 0, 0, 0, 0, 0);
+proc main() {
+  syscall(102, 0, 0, 0, 0, 0, 0)(uid:);
+  syscall(107, 0, 0, 0, 0, 0, 0)(euid:);
   if (uid == euid) {
     printf("ok\n");
   }

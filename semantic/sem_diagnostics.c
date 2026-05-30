@@ -92,9 +92,6 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_extern_func_bad_type]          = { "E0061", "extern_func_bad_type",          CLASS_ERROR, 1 },
 	[SEM_DIAG_extern_func_bad_return]        = { "E0062", "extern_func_bad_return",        CLASS_ERROR, 1 },
 
-	/* Unsafe */
-	[SEM_DIAG_syscall_in_safe]               = { "E0070", "syscall_in_safe",               CLASS_ERROR, 1 },
-
 	/* Constants */
 	[SEM_DIAG_constant_redefined]            = { "E0080", "constant_redefined",            CLASS_ERROR, 1 },
 	[SEM_DIAG_const_value_is_type]           = { "E0081", "const_value_is_type",           CLASS_ERROR, 1 },
@@ -119,11 +116,12 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_move_outside_arg]              = { "E0112", "move_outside_arg",              CLASS_ERROR, 1 },
 	/* E0113 free_non_opaque, E0114 double_free — retired (zero runtime alloc, no free stmt). */
 	[SEM_DIAG_extern_proc_bad_return]        = { "E0115", "extern_proc_bad_return",        CLASS_ERROR, 1 },
+	/* E0116 retired (out_not_written — flow check dropped; out-params are zero-initialized). */
+	[SEM_DIAG_duplicate_decl]                = { "E0117", "duplicate_decl",                CLASS_ERROR, 1 },
 
 	/* Tycheck (P3 type-check pass — E0200+). All typing-rule violations route through
 	 * E0200; sharper kind/arity constraints get their own codes in Phase B. */
 	[SEM_DIAG_break_outside_loop]            = { "E0030", "break_outside_loop",            CLASS_ERROR, 1 },
-	[SEM_DIAG_duplicate_decl]                = { "E0031", "duplicate_decl",                CLASS_ERROR, 1 },
 	[SEM_DIAG_type_mismatch]                 = { "E0200", "type_mismatch",                 CLASS_ERROR, 1 },
 	[SEM_DIAG_not_indexable]                 = { "E0201", "not_indexable",                 CLASS_ERROR, 1 },
 	[SEM_DIAG_wrong_arity]                   = { "E0203", "wrong_arity",                   CLASS_ERROR, 1 },
@@ -612,11 +610,8 @@ SemDiag *sem_emit_extern_func_bad_return(SemanticContext *ctx, SourceLoc loc, co
 	                 "unknown return type '%s' in extern func '%s' signature", type, func_name);
 }
 
-/* --- Unsafe / constants / purity --- */
+/* --- Constants / purity --- */
 
-SemDiag *sem_emit_syscall_in_safe(SemanticContext *ctx, SourceLoc loc) {
-	return sem_emit_(ctx, SEM_DIAG_syscall_in_safe, loc, "`syscall` may only be called from an `unsafe` proc or func");
-}
 SemDiag *sem_emit_constant_redefined(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_constant_redefined, loc, "constant '%s' already defined", name);
 }

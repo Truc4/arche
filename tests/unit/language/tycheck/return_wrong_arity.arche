@@ -1,9 +1,8 @@
-// E0203: a func declared to return (int, int) but returning only one value is
-// caught at tycheck. Today's compiler bumped this to LLVM
-// ("integer constant must have integer type"); we emit a clean diagnostic now.
-// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0203 wrong_arity 0 'two' declares 2 return values, returned 1"
-func two() -> (int, int) {
-  return 1;
+// E0203: a func returns exactly ONE value; returning two is caught at tycheck (a func is a
+// value, not a multi-output action — that's a proc's out-list).
+// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0203 wrong_arity 0 'two' declares 1 return value, returned 2"
+func two() -> int {
+  return 1, 2;
 }
 
 proc main() {

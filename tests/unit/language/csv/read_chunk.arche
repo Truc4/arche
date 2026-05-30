@@ -2,12 +2,12 @@
 use io;
 
 proc main() {
-  fd := io_open("tests/fixtures/data.csv");
+  io_open("tests/fixtures/data.csv")(fd:);
   printf("fd=%d\n", fd);
   if (fd > 0) {
     printf("calling csv_read_chunk\n");
     buf: char[65536];
-    buf, n := io_read_chunk(fd, move buf, 65536);
+    io_read_chunk(fd, move buf, 65536)(buf, n:);
     printf("n=%d\n", n);
   }
   io_close(move fd);
