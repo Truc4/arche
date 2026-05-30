@@ -1,21 +1,22 @@
 // RUN: %arche -o %t %s && %t
-// The base case lets LLVM see a path on which the call returns, so the
-// post-call store to `sink` is reachable code. That store has an
-// observable side effect (writing to a global the signal handler can
-// see), which prevents the optimizer from turning recursion into a loop.
-// The runtime SIGSEGVs long before reaching the base case; the
-// stack_check.c handler then prints "stack overflow\n" and exits 0.
+// `recurse` writes the global `sink`, so it's a `proc` (an action) — a func may not touch a static.
+// The base case lets LLVM see a path on which the call returns, so the post-call store to `sink`
+// is reachable code with an observable side effect (a global the signal handler can see), which
+// prevents the optimizer from turning recursion into a loop. The runtime SIGSEGVs long before the
+// base case; the stack_check.c handler prints "stack overflow\n" and exits 0.
 static sink: char[1];
 
-func recurse(depth: int) -> int {
+proc recurse(depth: int)(r: int) {
   if (depth > 100000000) {
-    return depth;
+    r = depth;
   }
-  r := recurse(depth + 1);
-  sink[0] = r;
-  return r;
+  else {
+    recurse(depth + 1)(inner:);
+    sink[0] = inner;
+    r = inner;
+  }
 }
 
-@allow_pure_proc proc main() {
-  recurse(0);
+proc main() {
+  recurse(0)(top:);
 }

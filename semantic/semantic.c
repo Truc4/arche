@@ -70,6 +70,11 @@ struct SemanticContext {
 	char **known_funcs;
 	int known_func_count;
 
+	/* Names of `static` global arrays, registered in a pre-pass (order-independent) so func-purity
+	 * can reject a func reading or writing one — a func's only inputs are params + `::` constants. */
+	char **static_names;
+	int static_name_count;
+
 	GroupInfo *groups;
 	int group_count;
 
@@ -246,6 +251,24 @@ static void register_func(SemanticContext *ctx, const char *name) {
 	ctx->known_funcs[ctx->known_func_count] = malloc(strlen(name) + 1);
 	strcpy(ctx->known_funcs[ctx->known_func_count], name);
 	ctx->known_func_count++;
+}
+
+static int is_static_name(SemanticContext *ctx, const char *name) {
+	if (!name)
+		return 0;
+	for (int i = 0; i < ctx->static_name_count; i++)
+		if (strcmp(ctx->static_names[i], name) == 0)
+			return 1;
+	return 0;
+}
+
+static void register_static_name(SemanticContext *ctx, const char *name) {
+	if (!name || is_static_name(ctx, name))
+		return;
+	ctx->static_names = realloc(ctx->static_names, (ctx->static_name_count + 1) * sizeof(char *));
+	ctx->static_names[ctx->static_name_count] = malloc(strlen(name) + 1);
+	strcpy(ctx->static_names[ctx->static_name_count], name);
+	ctx->static_name_count++;
 }
 
 /* Forward-declare normalize_type_name so helpers below can use it. */
@@ -2331,11 +2354,13 @@ static const char *func_purity_expr(SemanticContext *ctx, Expression *e) {
 	case EXPR_ALLOC:
 		return "allocates (`alloc`)";
 	case EXPR_NAME:
-		/* Reading an archetype column is reading mutable global state — impure. A func's inputs are
-		 * only its parameters and `::` constants, so its output depends solely on them. (Reaches
-		 * `Player`, and `Player.x` / `Player[i]` via the EXPR_FIELD/EXPR_INDEX base recursion above.) */
+		/* Reading mutable global state — an archetype column or a `static` global — is impure. A
+		 * func's inputs are only its parameters and `::` constants, so its output depends solely on
+		 * them. (Reaches `Player`/`sbuf`, and `Player.x` / `sbuf[i]` via the field/index base recursion.) */
 		if (find_archetype(ctx, e->data.name.name))
 			return "reads static memory (an archetype column)";
+		if (is_static_name(ctx, e->data.name.name))
+			return "reads a `static` global";
 		return NULL;
 	default:
 		return NULL;
@@ -2355,6 +2380,8 @@ static const char *func_purity_stmt(SemanticContext *ctx, Statement *s) {
 		const char *tn = lvalue_leftmost_name(s->data.assign_stmt.target);
 		if (tn && find_archetype(ctx, tn))
 			return "writes static memory (an archetype column)";
+		if (tn && is_static_name(ctx, tn))
+			return "writes a `static` global";
 		if ((r = func_purity_expr(ctx, s->data.assign_stmt.value)))
 			return r;
 		return func_purity_expr(ctx, s->data.assign_stmt.target);
@@ -2406,49 +2433,6 @@ static void enforce_func_purity(SemanticContext *ctx, FuncDecl *func) {
 	if (reason) {
 		sem_emit_func_not_pure(ctx, func->loc, func->name ? func->name : "<unknown>", reason);
 	}
-}
-
-/* Does any statement (recursively) WRITE the binding `name`? A write is an assignment whose lvalue
- * leftmost name is `name` (`n = …`, `n[i] = …`), or a proc-call / multi-bind out-arg that is an
- * existing binding (`f(...)(n)` captures into n). A fresh `n:` / `n :=` shadows, so it does NOT
- * count. Lenient over branches (any path) — flags only out-params written on NO path. */
-static int stmts_write_name(Statement **stmts, int count, const char *name);
-static int stmt_writes_name(Statement *s, const char *name) {
-	if (!s || !name)
-		return 0;
-	switch (s->type) {
-	case STMT_ASSIGN: {
-		const char *ln = lvalue_leftmost_name(s->data.assign_stmt.target);
-		return ln && strcmp(ln, name) == 0;
-	}
-	case STMT_MULTI_BIND:
-		for (int i = 0; i < s->data.multi_bind.target_count; i++) {
-			BindingTarget *t = &s->data.multi_bind.targets[i];
-			if (!t->is_new && t->name && strcmp(t->name, name) == 0)
-				return 1;
-		}
-		return 0;
-	case STMT_FOR:
-		if (stmt_writes_name(s->data.for_stmt.init, name))
-			return 1;
-		if (stmt_writes_name(s->data.for_stmt.increment, name))
-			return 1;
-		return stmts_write_name(s->data.for_stmt.body, s->data.for_stmt.body_count, name);
-	case STMT_IF:
-		if (stmts_write_name(s->data.if_stmt.then_body, s->data.if_stmt.then_count, name))
-			return 1;
-		return stmts_write_name(s->data.if_stmt.else_body, s->data.if_stmt.else_count, name);
-	case STMT_EACH_FIELD:
-		return stmts_write_name(s->data.each_field.body, s->data.each_field.body_count, name);
-	default:
-		return 0;
-	}
-}
-static int stmts_write_name(Statement **stmts, int count, const char *name) {
-	for (int i = 0; i < count; i++)
-		if (stmt_writes_name(stmts[i], name))
-			return 1;
-	return 0;
 }
 
 static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
@@ -2551,24 +2535,9 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 
 	pop_scope(ctx);
 
-	/* Flow rule: every out-only out-param must be written somewhere in the body before the proc
-	 * returns. In-out out-params (also an in-param) are written through their in-arg. Externs have
-	 * no body. */
-	if (!proc->is_extern) {
-		for (int i = 0; i < proc->out_param_count; i++) {
-			const char *on = proc->out_params[i]->name;
-			if (!on)
-				continue;
-			int inout = 0;
-			for (int j = 0; j < proc->param_count; j++)
-				if (proc->params[j]->name && strcmp(proc->params[j]->name, on) == 0) {
-					inout = 1;
-					break;
-				}
-			if (!inout && !stmts_write_name(proc->statements, proc->statement_count, on))
-				sem_emit_out_not_written(ctx, proc->loc, on, proc->name);
-		}
-	}
+	/* No flow check: an unwritten out-param is fine — out slots are zero-initialized before the
+	 * call (a fresh `name:` is zero-stored; an existing place is already initialized), so a proc
+	 * can never hand back garbage. Zero is just its default result. */
 
 	/* Run the proc-vs-func lints after typechecking the body. */
 	lint_proc_decl(ctx, proc);
@@ -4803,6 +4772,14 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 		}
 	}
 
+	/* pre-pass: register every `static` array name so func-purity can reject a func touching one,
+	 * regardless of whether the static is declared before or after the func. */
+	for (int i = 0; i < prog->decl_count; i++) {
+		Decl *d = prog->decls[i];
+		if (d->kind == DECL_STATIC && d->data.static_decl && d->data.static_decl->kind == STATIC_KIND_ARRAY)
+			register_static_name(ctx, d->data.static_decl->array.name);
+	}
+
 	/* pass 2: analyze other declarations */
 	for (int i = 0; i < prog->decl_count; i++) {
 		if (prog->decls[i]->kind != DECL_ARCHETYPE && prog->decls[i]->kind != DECL_CONST) {
@@ -4856,6 +4833,8 @@ static SemanticContext *make_context(void) {
 	ctx->alias_count = 0;
 	ctx->known_funcs = NULL;
 	ctx->known_func_count = 0;
+	ctx->static_names = NULL;
+	ctx->static_name_count = 0;
 	ctx->groups = NULL;
 	ctx->group_count = 0;
 	ctx->const_names = NULL;
@@ -4974,6 +4953,11 @@ void semantic_context_free(SemanticContext *ctx) {
 		free(ctx->known_funcs[i]);
 	}
 	free(ctx->known_funcs);
+
+	/* free static-global names */
+	for (int i = 0; i < ctx->static_name_count; i++)
+		free(ctx->static_names[i]);
+	free(ctx->static_names);
 
 	/* free group table (members are borrowed from CST) */
 	for (int i = 0; i < ctx->group_count; i++) {

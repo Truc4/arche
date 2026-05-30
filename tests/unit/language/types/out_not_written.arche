@@ -1,7 +1,0 @@
-// E0116: a proc must write every out-parameter before it returns (SPARK-style flow rule). Here
-// `x` is declared as an out-param but never assigned in the body.
-// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0116 out_not_written 0 out-parameter 'x' of proc 'f' is never written"
-proc f()(x: int) {
-}
-proc main() {
-}
