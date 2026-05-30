@@ -9,7 +9,6 @@ SemHints *sem_hints_new(void) {
 	SemHints *h = malloc(sizeof(SemHints));
 	h->param_name = NULL;
 	h->param_is_own = NULL;
-	h->effect_call = NULL;
 	h->cap = 0;
 	return h;
 }
@@ -23,7 +22,6 @@ void sem_hints_free(SemHints *h) {
 	}
 	free(h->param_name);
 	free(h->param_is_own);
-	free(h->effect_call);
 	free(h);
 }
 
@@ -35,11 +33,9 @@ static void ensure(SemHints *h, uint32_t node_id) {
 		newcap *= 2;
 	h->param_name = realloc(h->param_name, (size_t)newcap * sizeof(const char *));
 	h->param_is_own = realloc(h->param_is_own, (size_t)newcap * sizeof(uint8_t));
-	h->effect_call = realloc(h->effect_call, (size_t)newcap * sizeof(uint8_t));
 	for (int i = h->cap; i < newcap; i++) {
 		h->param_name[i] = NULL;
 		h->param_is_own[i] = 0;
-		h->effect_call[i] = 0;
 	}
 	h->cap = newcap;
 }
@@ -63,15 +59,4 @@ int sem_hints_param_is_own(const SemHints *h, uint32_t node_id) {
 	if (!h || (int)node_id >= h->cap)
 		return 0;
 	return h->param_is_own[node_id];
-}
-
-void sem_hints_set_effect_call(SemHints *h, uint32_t node_id) {
-	ensure(h, node_id);
-	h->effect_call[node_id] = 1;
-}
-
-int sem_hints_is_effect_call(const SemHints *h, uint32_t node_id) {
-	if (!h || (int)node_id >= h->cap)
-		return 0;
-	return h->effect_call[node_id];
 }
