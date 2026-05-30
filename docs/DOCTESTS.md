@@ -5,10 +5,10 @@ as tests**, so the code in your docs can never silently rot.
 
 ## Doc comments
 
-- `/// ...` — an **outer** doc comment. Attaches to the declaration immediately
+- `/// ...` - an **outer** doc comment. Attaches to the declaration immediately
   below it (a `func`, `proc`, `sys`, archetype, `const`, …). A blank line or a
   plain `//` comment between the doc and the declaration detaches it.
-- `//!` — an **inner**/module-level doc comment (file-level docs).
+- `//!` - an **inner**/module-level doc comment (file-level docs).
 - `//// ...` (four or more slashes) is a plain banner comment, not a doc comment.
 
 Doc text is Markdown. Inside it, a fenced block tagged `arche` is a runnable
@@ -58,7 +58,7 @@ For each ```arche example the runner:
 
 An example **passes if it compiles and exits 0**. There is nothing special to
 remember: an example is ordinary arche code that must run cleanly. To check a
-value, use the ordinary `assert(condition, message)` from the core library —
+value, use the ordinary `assert(condition, message)` from the core library -
 the same call you'd write in any test. A failed `assert` exits non-zero, so the
 doctest fails.
 
@@ -70,22 +70,22 @@ example is killed and reported `(timed out)`. A failing example reports the exac
 source line of its ```arche fence.
 
 > `core/core.arche` is auto-prepended to every program, so doctests *in core*
-> must not `use core;` — the runner detects this and omits it. `strlen`/`atoi`
+> must not `use core;` - the runner detects this and omits it. `strlen`/`atoi`
 > in core carry tested examples as a reference.
 
 ### Fence flags
 
 The fence info string takes Rust-style flags after `arche`:
 
-- `` ```arche `` — compile and run; pass on exit 0 (the default).
-- `` ```arche,no_run `` — compile only, don't run.
-- `` ```arche,compile_fail `` — must *fail* to compile (documents a misuse).
-- `` ```arche,should_panic `` — must exit non-zero when run.
-- `` ```arche,ignore `` — shown in docs but never compiled or run.
+- `` ```arche `` - compile and run; pass on exit 0 (the default).
+- `` ```arche,no_run `` - compile only, don't run.
+- `` ```arche,compile_fail `` - must *fail* to compile (documents a misuse).
+- `` ```arche,should_panic `` - must exit non-zero when run.
+- `` ```arche,ignore `` - shown in docs but never compiled or run.
 
 ### What goes in a doctest
 
-- **Example/API-shaped tests** belong inline in doc comments — they double as
+- **Example/API-shaped tests** belong inline in doc comments - they double as
   documentation.
 - **Regression / negative / edge-case tests** belong in normal test files; they
   aren't documentation and would clutter the docs.
@@ -93,7 +93,7 @@ The fence info string takes Rust-style flags after `arche`:
 ### Limitation: documented files are libraries
 
 Because the runner does `use <file>;`, the documented file must not define a
-top-level `proc main` of its own — that would collide with the example's `main`
+top-level `proc main` of its own - that would collide with the example's `main`
 (a duplicate-declaration compile error, reported as a failing doctest). This
 matches Rust, where doctest targets are library crates. Document libraries, not
 programs.
