@@ -3536,16 +3536,17 @@ static Statement *cst_build_stmt(CstView s) {
 		break;
 	case SN_RUN_STMT: {
 		as->type = STMT_RUN;
-		char *names[3] = {NULL, NULL, NULL};
+		/* `run` and `in` are keywords (TOK_RUN/TOK_IN), so the only IDENTs are
+		 * [sys, world?]. System = IDENT[0]. */
+		char *names[2] = {NULL, NULL};
 		int ni = 0;
-		for (int i = 0; i < s.node->child_count && ni < 3; i++)
+		for (int i = 0; i < s.node->child_count && ni < 2; i++)
 			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
 				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
 				names[ni++] = sem_txt_dup(t);
 			}
-		as->data.run_stmt.system_name = names[1] ? names[1] : sem_dupz("");
-		as->data.run_stmt.world_name = names[2];
-		free(names[0]);
+		as->data.run_stmt.system_name = names[0] ? names[0] : sem_dupz("");
+		as->data.run_stmt.world_name = names[1];
 		break;
 	}
 	case SN_RETURN_STMT: {
@@ -4064,16 +4065,24 @@ static Decl *cst_build_decl_inner(CstView d) {
 			CstView ty = sem_type_at(d, 0);
 			char *an = NULL;
 			if (cv_present(ty) && cv_has_token(ty, TOK_LT)) {
-				int seen = 0;
-				for (int i = 0; i < ty.node->child_count; i++)
-					if (ty.node->children[i].tag == SE_TOKEN && ty.node->children[i].as.token.kind == TOK_IDENT) {
-						CvText t = {ty.src + ty.node->children[i].as.token.offset,
-						            ty.node->children[i].as.token.length};
-						if (seen++) {
-							an = sem_txt_dup(t);
-							break;
-						}
+				/* `pool<Name>` / legacy `table<Name>`: the archetype name is the IDENT
+				 * inside the angle brackets. `pool` is its own keyword token (not an
+				 * IDENT) while legacy `table` is still an IDENT, so anchor on TOK_LT and
+				 * take the first IDENT after it rather than counting leading idents. */
+				int after_lt = 0;
+				for (int i = 0; i < ty.node->child_count; i++) {
+					SyntaxElem *e = &ty.node->children[i];
+					if (e->tag != SE_TOKEN)
+						continue;
+					if (e->as.token.kind == TOK_LT) {
+						after_lt = 1;
+						continue;
 					}
+					if (after_lt && e->as.token.kind == TOK_IDENT) {
+						an = sem_txt_dup((CvText){ty.src + e->as.token.offset, e->as.token.length});
+						break;
+					}
+				}
 			} else if (cv_present(ty)) {
 				an = sem_txt_dup(cv_token(ty, TOK_IDENT));
 			}

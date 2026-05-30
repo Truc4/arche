@@ -713,18 +713,17 @@ static HirStmt *lower_stmt_cst(CstView s) {
 	}
 	case SN_RUN_STMT: {
 		as->kind = HIR_STMT_RUN;
-		/* `run sys` / `run sys in world`: `run` is an identifier (not a keyword), so the
-		 * IDENTs are [run, sys, world?] (the `in` keyword is TOK_IN). System = IDENT[1]. */
-		char *names[3] = {NULL, NULL, NULL};
+		/* `run sys` / `run sys in world`: `run` and `in` are keywords (TOK_RUN/TOK_IN),
+		 * so the only IDENTs are [sys, world?]. System = IDENT[0]. */
+		char *names[2] = {NULL, NULL};
 		int ni = 0;
-		for (int i = 0; i < s.node->child_count && ni < 3; i++)
+		for (int i = 0; i < s.node->child_count && ni < 2; i++)
 			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
 				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
 				names[ni++] = txt_dup(t);
 			}
-		as->data.run_stmt.system_name = names[1] ? names[1] : txt_dup((CvText){"", 0});
-		as->data.run_stmt.world_name = names[2];
-		free(names[0]);
+		as->data.run_stmt.system_name = names[0] ? names[0] : txt_dup((CvText){"", 0});
+		as->data.run_stmt.world_name = names[1];
 		break;
 	}
 	case SN_IF_STMT: {
@@ -1346,16 +1345,23 @@ static HirDecl *lower_decl_cst(CstView d) {
 			CstView ty = cv_type_at(d, 0);
 			char *an = NULL;
 			if (cv_present(ty) && cv_has_token(ty, TOK_LT)) {
-				int seen = 0; /* pool<Name>: the archetype is the 2nd IDENT */
-				for (int i = 0; i < ty.node->child_count; i++)
-					if (ty.node->children[i].tag == SE_TOKEN && ty.node->children[i].as.token.kind == TOK_IDENT) {
-						CvText t = {ty.src + ty.node->children[i].as.token.offset,
-						            ty.node->children[i].as.token.length};
-						if (seen++) {
-							an = txt_dup(t);
-							break;
-						}
+				/* `pool<Name>` / legacy `table<Name>`: archetype is the IDENT after `<`.
+				 * `pool` is a keyword token, legacy `table` is an IDENT, so anchor on
+				 * TOK_LT rather than counting leading idents. */
+				int after_lt = 0;
+				for (int i = 0; i < ty.node->child_count; i++) {
+					SyntaxElem *e2 = &ty.node->children[i];
+					if (e2->tag != SE_TOKEN)
+						continue;
+					if (e2->as.token.kind == TOK_LT) {
+						after_lt = 1;
+						continue;
 					}
+					if (after_lt && e2->as.token.kind == TOK_IDENT) {
+						an = txt_dup((CvText){ty.src + e2->as.token.offset, e2->as.token.length});
+						break;
+					}
+				}
 			} else if (cv_present(ty)) {
 				an = txt_dup(cv_token(ty, TOK_IDENT));
 			}

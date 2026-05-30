@@ -174,6 +174,15 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 10 && strncmp(start, "each_field", 10) == 0) {
 		return TOK_EACH_FIELD;
 	}
+	if (length == 6 && strncmp(start, "static", 6) == 0) {
+		return TOK_STATIC;
+	}
+	if (length == 4 && strncmp(start, "pool", 4) == 0) {
+		return TOK_POOL;
+	}
+	if (length == 3 && strncmp(start, "run", 3) == 0) {
+		return TOK_RUN;
+	}
 	return TOK_IDENT;
 }
 

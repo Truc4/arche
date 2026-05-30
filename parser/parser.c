@@ -935,15 +935,15 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		return 0;
 	}
 
-	if (cur_ident_is(parser, "static", 6)) {
+	if (check(parser, TOK_STATIC)) {
 		*out_kind = SN_STATIC_DECL;
 		advance(parser);
-		if (!check(parser, TOK_IDENT)) {
+		if (!check(parser, TOK_IDENT) && !check(parser, TOK_POOL)) {
 			error(parser, "Expected name after 'static'");
 			return 0;
 		}
 		int static_name_cp = cst_cp(parser);
-		int is_table = (cur_ident_is(parser, "table", 5) || cur_ident_is(parser, "pool", 4));
+		int is_table = (cur_ident_is(parser, "table", 5) || check(parser, TOK_POOL));
 		advance(parser);
 
 		/* `static table<Name>(...)` — the table-addressed allocation form. The
@@ -1115,7 +1115,7 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	}
 	default:
 		/* INFO: Check for top-level const or alloc */
-		if (check(parser, TOK_IDENT)) {
+		if (check(parser, TOK_IDENT) || check(parser, TOK_STATIC)) {
 			if (parse_static_decl(parser, out_kind))
 				return 1;
 		}
@@ -1614,25 +1614,23 @@ static int parse_statement(Parser *parser) {
 	}
 
 	/* check for run statement */
-	if (check(parser, TOK_IDENT)) {
-		if (cur_ident_is(parser, "run", 3)) {
-			advance(parser); /* consume 'run' */
+	if (check(parser, TOK_RUN)) {
+		advance(parser); /* consume 'run' */
 
-			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected system name");
-				parser->recursion_depth--;
-				goto cleanup;
-			}
-			advance(parser);
-
-			if (!match(parser, TOK_SEMI)) {
-				error(parser, "Expected ';'");
-			}
-
-			stmt_kind = SN_RUN_STMT;
-			ok = 1;
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected system name");
+			parser->recursion_depth--;
 			goto cleanup;
 		}
+		advance(parser);
+
+		if (!match(parser, TOK_SEMI)) {
+			error(parser, "Expected ';'");
+		}
+
+		stmt_kind = SN_RUN_STMT;
+		ok = 1;
+		goto cleanup;
 	}
 
 	/* Paren-based multi-bind: `(x, y:, n: int) = expr;` — a target with a trailing `:`

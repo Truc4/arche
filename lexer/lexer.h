@@ -32,6 +32,9 @@ typedef enum TokenKind {
 	TOK_RETURN,
 	TOK_USE,
 	TOK_EACH_FIELD,
+	TOK_STATIC,
+	TOK_POOL,
+	TOK_RUN,
 
 	/* punctuation */
 	TOK_LPAREN,    /* ( */
