@@ -2,8 +2,8 @@
 
 ## Symptom
 
-Arche source like the following — directly from the "Conditional Behavior"
-example in the top-level `README.md` — fails to compile when used as a
+Arche source like the following - directly from the "Conditional Behavior"
+example in the top-level `README.md` - fails to compile when used as a
 column-level expression at proc level:
 
 ```arche
@@ -41,7 +41,7 @@ proc main() {
 }
 ```
 
-The mask is all-ones for this data, so the operation is a logical no-op —
+The mask is all-ones for this data, so the operation is a logical no-op -
 the bug is purely in codegen, not in any runtime arithmetic.
 
 ## What's actually wrong
@@ -62,7 +62,7 @@ The third is closest to what the README documents and is the expected behavior.
 
 ## Where it works (and so the workaround)
 
-The same pattern works inside a `sys` body — that codegen path is different.
+The same pattern works inside a `sys` body - that codegen path is different.
 The README's example uses a `sys`:
 
 ```arche
@@ -76,13 +76,13 @@ So the workaround at proc level is one of:
 1. Wrap the masked compute in a `sys` and `run` it. Most idiomatic.
 2. Fall back to a scalar `if`-filter loop. Slower but compiles. This is
    what `design_analysis/benchmarks/etl/arche_scale/task_5_pipeline.arche`
-   currently does — see the comment block in that file.
+   currently does - see the comment block in that file.
 
 ## Discovered
 
 2026-05-10, while writing Task 5 (multi-step pipeline) for the ETL
-benchmark suite. The natural form — `revenue = price * quantity * (quantity > 0) * (price > 10.0)`
-— hit this bug, as did the split form (`revenue = revenue * (quantity > 0)`
+benchmark suite. The natural form - `revenue = price * quantity * (quantity > 0) * (price > 10.0)`
+- hit this bug, as did the split form (`revenue = revenue * (quantity > 0)`
 as its own statement). Both produce identical `sitofp` IR errors.
 
 ## Test runs

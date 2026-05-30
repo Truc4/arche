@@ -6,19 +6,20 @@ When running systems with `run` statements, the system does not correctly modify
 ## Example
 ```arche
 arche Particle {
-  pos: float,
-  vel: float,
+  pos :: float,
+  vel :: float,
 }
+
+static pool<Particle>(10);
 
 sys move(pos, vel) {
   pos = pos + vel;  // Should add velocity to position
 }
 
 proc main() {
-  alloc Particle(10);
   insert(Particle, 1.0, 0.1);
   run move;
-  let p = Particle.pos[0];  // Expected: 1.1, Actual: 1.0
+  p := Particle.pos[0];  // Expected: 1.1, Actual: 1.0
   assert(p * 10.0 == 11, "Expected 1.1");  // FAILS
 }
 ```

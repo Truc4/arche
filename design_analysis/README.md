@@ -8,7 +8,7 @@ Benchmarks validating columnar (SoA) layout for performance-critical workloads.
 
 ### Physics Update (SIMD Workload)
 
-**Benchmark**: `array_ops/physics_update.c` — N-body particle update with position/velocity.
+**Benchmark**: `array_ops/physics_update.c` - N-body particle update with position/velocity.
 
 **Results** (10000 particles, 1000 iterations):
 
@@ -28,7 +28,7 @@ Benchmarks validating columnar (SoA) layout for performance-critical workloads.
 
 ### Lifecycle Operations (Allocation/Deallocation)
 
-**Benchmark**: `array_ops/lifecycle_operations.c` — Add/remove/modify entities over time.
+**Benchmark**: `array_ops/lifecycle_operations.c` - Add/remove/modify entities over time.
 
 **Results** (500 adds + 400 deletes + 200 modifies per iteration, 100 iterations):
 
@@ -48,7 +48,7 @@ Benchmarks validating columnar (SoA) layout for performance-critical workloads.
 
 ### Mixed Workload (95% compute + 5% lifecycle)
 
-**Benchmark**: `array_ops/mixed_workload.c` — Realistic: mostly math, occasional entity changes.
+**Benchmark**: `array_ops/mixed_workload.c` - Realistic: mostly math, occasional entity changes.
 
 **Results** (10,000 entities, 1000 iterations):
 
@@ -65,7 +65,7 @@ Fixed-length string handling with 2D char arrays for predictable access patterns
 
 ### Design Choice: 2D char Arrays
 
-**Arche approach**: `char[N][M]` — Array of fixed-length strings (N strings, each M bytes max).
+**Arche approach**: `char[N][M]` - Array of fixed-length strings (N strings, each M bytes max).
 
 **Why this over alternatives?**
 
@@ -90,7 +90,7 @@ Run benchmarks with `make bench-physics`, `make bench-lifecycle`, `make bench-mi
 
 Test datasets for benchmarks:
 
-- `benchmarks/etl/data/generate_data.py` — Generate CSV with 1M rows (configurable)
+- `benchmarks/etl/data/generate_data.py` - Generate CSV with 1M rows (configurable)
   - Columns: timestamp, price (1.0-1000.0), quantity (-100 to 10000), region, flags
   - Usage: `python3 generate_data.py <rows> <output_file>`
   - Default: `python3 generate_data.py 1000 data.csv`
@@ -105,7 +105,7 @@ Test datasets for benchmarks:
 ## Transform Benchmarks (compute-only, single-threaded)
 
 Isolates the *compute* from I/O. Each engine loads a 10k-row CSV **off the clock**, then times only
-the transform body over **216,000 iterations** — removing the CSV-parse and threading confounds of
+the transform body over **216,000 iterations** - removing the CSV-parse and threading confounds of
 the end-to-end ETL run below, so it's the honest single-threaded apples-to-apples for the column
 math itself. Machine: AMD Ryzen 5 7600X, native Linux, AVX2 (`x86-64-v3`). All checksums match
 across engines.
@@ -120,8 +120,9 @@ across engines.
 | 4 | aggregate by region | 6.22µs | **6.67µs** | 46.3µs | 51.6µs |
 | 5 | combined pipeline | 6.36µs | **8.34µs** | 181µs | 248µs |
 
-- **Arche is within ~1–1.3× of hand-written `-O3` C** (task 1 is actually faster) — both AVX2-
-  vectorize the SoA column ops.
+- **Arche is within ~1–1.3× of hand-written `-O3` C** - both AVX2-vectorize the SoA column ops.
+  Task 1 lands at parity (a sub-1.0× reading is LLVM codegen noise, not a real win - both
+  backends are LLVM).
 - **Arche is ~7–55× faster than single-threaded pandas**, and faster than polars here too:
   polars/duckdb win on *large* data via lazy multicore execution, but carry a high fixed per-call
   overhead that dominates this tight per-op loop.
@@ -131,13 +132,13 @@ across engines.
 - The backend passes `-mcpu=x86-64-v3` to **both `opt` and `llc`**. The loop vectorizer runs in
   `opt`; without `-mcpu` there it defaults to generic **2-wide**, ~halving throughput on every
   vectorizable loop. With it, Task 2's filter vectorizes 4-wide (`load <4 x i32>` → `icmp sgt` →
-  `zext to <4 x i64>` → `add`, unrolled 8×, branchless) — 2× faster than the 2-wide build.
+  `zext to <4 x i64>` → `add`, unrolled 8×, branchless) - 2× faster than the 2-wide build.
 - Task 2 still trails C slightly (4-wide vs clang's **8-wide** `<8 x i32>`): the `i64` accumulator
-  caps the i32 lane count to the reduction's 256-bit register (4×i64). Confirmed by IR diff — same
+  caps the i32 lane count to the reduction's 256-bit register (4×i64). Confirmed by IR diff - same
   loop shape, half the lanes; an `i32` inner accumulator folded into an `i64` total per outer pass
   vectorizes 8-wide and closes it.
 
-**Verbosity** — lines to express each task end-to-end (load, compute, write, time):
+**Verbosity** - lines to express each task end-to-end (load, compute, write, time):
 
 | | C | Arche | pandas |
 |--|----:|------:|-------:|
@@ -157,9 +158,9 @@ Build first: `make -C design_analysis/benchmarks/transform/c`, and
 
 Real-world data processing tasks at scale. All tasks read a 3.4 GB CSV file (100M rows, columns: timestamp, price, quantity, region, flags) using mmap-based I/O, load into columnar archetypes, run a compute pass, and print a checksum.
 
-**Dataset**: `benchmarks/etl/data/data_100m.csv` — 100,000,000 rows, ~35 bytes/row, 3.4 GB.
+**Dataset**: `benchmarks/etl/data/data_100m.csv` - 100,000,000 rows, ~35 bytes/row, 3.4 GB.
 
-**Arche implementation**: `use csv;` → `csv_load(Transaction, path)` — whole-file mmap (`arche_file_map`) scanned in Arche with i64 offsets, name-matched into columnar static archetypes, vectorized column ops.
+**Arche implementation**: `use csv;` → `csv_load(Transaction, path)` - whole-file mmap (`arche_file_map`) scanned in Arche with i64 offsets, name-matched into columnar static archetypes, vectorized column ops.
 
 ### Results
 
@@ -175,36 +176,36 @@ Full cross-engine comparison, end-to-end **wall time** (process start → result
 
 Engines: C baseline (`cc -O3 -march=native`, `mmap` + `memchr` + `strtod`), pandas 3.0.3, polars 1.40.1, duckdb 1.5.3, datafusion 53.0.0. All checksums match across engines.
 
-**Threading is the dominant factor — read these numbers with that in mind.** polars/duckdb/datafusion are **multi-threaded** (all 12 logical cores) with hand-tuned SIMD CSV readers; that's why they beat even hand-written C. C, Arche, and pandas are effectively **single-threaded**. The honest peer comparison for single-threaded Arche:
+**Threading is the dominant factor - read these numbers with that in mind.** polars/duckdb/datafusion are **multi-threaded** (all 12 logical cores) with hand-tuned SIMD CSV readers; that's why they beat even hand-written C. C, Arche, and pandas are effectively **single-threaded**. The honest peer comparison for single-threaded Arche:
 
 - **Arche is within ~1.6× of hand-written optimized C** (single-threaded), and **1.6–3.6× faster than single-threaded pandas**.
 - polars/duckdb/datafusion are a different category (multicore + SIMD CSV) until Arche has parallelism.
 
-**Where Arche's gap to C comes from:** the column *compute* is already AVX2-vectorized (`revenue = price * quantity` → `fmul <N x double>` over SoA columns). The remaining gap is entirely the **CSV parse** — Arche scans delimiters with a scalar byte loop, while C calls glibc `memchr` (hand-written AVX2). C's *compiler* doesn't vectorize its parse either (zero inline vector ops in the scan IR) — its speed there is purely from *calling* a SIMD primitive. Task 2 (most parse-bound) shows the widest Arche/C ratio, consistent with this.
+**Where Arche's gap to C comes from:** the column *compute* is already AVX2-vectorized (`revenue = price * quantity` → `fmul <N x double>` over SoA columns). The remaining gap is entirely the **CSV parse** - Arche scans delimiters with a scalar byte loop, while C calls glibc `memchr` (hand-written AVX2). C's *compiler* doesn't vectorize its parse either (zero inline vector ops in the scan IR) - its speed there is purely from *calling* a SIMD primitive. Task 2 (most parse-bound) shows the widest Arche/C ratio, consistent with this.
 
 > **Reproducing:** the multi-engine runner (`compare_scale.py`) invokes the Arche binary from a directory where its hardcoded relative CSV path doesn't resolve, so it reports a `0.0` checksum for Arche. The Arche numbers above are from running the compiled task **from the repo root**. The Python-engine numbers are straight from the runner. Engines live in `benchmarks/.venv` (`python -m venv` + `pip install pandas polars duckdb datafusion`).
 
 ### Task Details
 
-**Task 1 — Derived columns** (`arche_scale/task_1_derived_columns.arche`):
+**Task 1 - Derived columns** (`arche_scale/task_1_derived_columns.arche`):
 - Loads price (float) and quantity (int) for 100M rows via mmap
 - Computes `Transaction.revenue = Transaction.price * Transaction.quantity` (vectorized SIMD column op)
 - Sums all revenue values; prints checksum
 
-**Task 2 — Filter invalid rows** (`arche_scale/task_2_filter_invalid.arche`):
+**Task 2 - Filter invalid rows** (`arche_scale/task_2_filter_invalid.arche`):
 - `csv_load` matches only the columns the archetype declares (by header name); undeclared columns are skipped
 - Counts rows where `quantity > 0`
 
-**Task 3 — Bucket timestamps** (`arche_scale/task_3_bucket_timestamps.arche`):
+**Task 3 - Bucket timestamps** (`arche_scale/task_3_bucket_timestamps.arche`):
 - Loads price; computes `price_bucket = price / 10` (vectorized)
 
-**Task 4 — Aggregate revenue** (`arche_scale/task_4_aggregate_region.arche`):
+**Task 4 - Aggregate revenue** (`arche_scale/task_4_aggregate_region.arche`):
 - Same load as Task 1, same vectorized multiply
 - Sums per-region revenue; prints total checksum
 
 ### I/O Strategy
 
-Arche loads CSV via the `csv` module's single entry point — a **pure-Arche** loader (no custom CSV C; only libc `mmap`/`atof`/`atoi`):
+Arche loads CSV via the `csv` module's single entry point - a **pure-Arche** loader (no custom CSV C; only libc `mmap`/`atof`/`atoi`):
 
 ```arche
 use csv;
@@ -218,23 +219,23 @@ proc main() {
 }
 ```
 
-`csv_load` memory-maps the whole file (`arche_file_map`, returns a `char[]` byte view), then scans it **in Arche** with i64 offsets — so files >2 GB work — matching columns to fields by header name. No temp buffers, no per-line syscalls. The scan and `atof`/`atoi` are the parse cost (see TODO below).
+`csv_load` memory-maps the whole file (`arche_file_map`, returns a `char[]` byte view), then scans it **in Arche** with i64 offsets - so files >2 GB work - matching columns to fields by header name. No temp buffers, no per-line syscalls. The scan and `atof`/`atoi` are the parse cost (see TODO below).
 
 > Earlier versions used a granular `csv_mmap_*` C-wrapper API (`memchr`/`strtod` in C). That "Family B" was deleted once `csv_load` + i64 offsets could handle multi-GB files in pure Arche.
 
 ### TODO: implicit-SIMD parse via classify-then-structure
 
-The parse is the only thing keeping single-threaded Arche off C's pace, and it can be closed **without intrinsics or a hand-written `memchr`** (which would betray the "data speaks for itself" design). The fix is to stop *searching* for delimiters (`find_byte` — an early-exit loop, which no compiler vectorizes) and instead:
+The parse is the only thing keeping single-threaded Arche off C's pace, and it can be closed **without intrinsics or a hand-written `memchr`** (which would betray the "data speaks for itself" design). The fix is to stop *searching* for delimiters (`find_byte` - an early-exit loop, which no compiler vectorizes) and instead:
 
-1. **Classify** (auto-vectorizes): one uniform, exit-free pass over the byte buffer producing a delimiter mask — `mask[i] = data[i] == ','`. A byte buffer is just a column of bytes, so this is the same shape as `revenue = price * quantity` and the compiler vectorizes it. (Confirmed: byte-column passes emit `<16 x i8>` for copies, `<4 x i8>` for compares, after the per-iteration pointer-reload fix in codegen.)
-2. **Structure** (sparse, scalar): walk the mask — only the delimiter positions, not all 3.4 GB — to find field boundaries and parse values.
+1. **Classify** (auto-vectorizes): one uniform, exit-free pass over the byte buffer producing a delimiter mask - `mask[i] = data[i] == ','`. A byte buffer is just a column of bytes, so this is the same shape as `revenue = price * quantity` and the compiler vectorizes it. (Confirmed: byte-column passes emit `<16 x i8>` for copies, `<4 x i8>` for compares, after the per-iteration pointer-reload fix in codegen.)
+2. **Structure** (sparse, scalar): walk the mask - only the delimiter positions, not all 3.4 GB - to find field boundaries and parse values.
 
-This moves the per-byte work into the vectorizable stage and leaves only the sparse delimiter set scalar. It's the simdjson architecture expressed as ordinary Arche column maps — the SIMD path that fits the no-intrinsics rule. Sub-tasks:
+This moves the per-byte work into the vectorizable stage and leaves only the sparse delimiter set scalar. It's the simdjson architecture expressed as ordinary Arche column maps - the SIMD path that fits the no-intrinsics rule. Sub-tasks:
 
 - Rewrite `core/csv.arche`'s scan from `find_byte` (early-exit search) to classify + structural walk.
 - Codegen: keep byte comparisons `i8`-wide instead of round-tripping through `i32`, so classify reaches the full `<16 x i8>` (currently capped at `<4 x i8>`).
 - Emit `noalias` on distinct `char[]` params so conditional-store classify loops vectorize without bailing on may-alias.
-- (Separate, larger win) data/thread parallelism — the multi-threaded engines win purely on cores.
+- (Separate, larger win) data/thread parallelism - the multi-threaded engines win purely on cores.
 
 ## Implementation Complexity: Python vs Arche
 
@@ -330,7 +331,7 @@ These results need more validation before drawing strong conclusions.
 - **Compiled baselines**: Polars, DuckDB, DataFusion, and a hand-written C baseline (mmap + manual parse + accumulate) all run via `compare_scale.py`. See `polars/`, `duckdb/`, `datafusion/`, and `c_baseline/`.
 - **Selective column loading**: `pandas/task_*.py` scripts use `usecols` to read only the fields each task needs, matching what Arche parses.
 - **Multi-run variance**: `compare_scale.py` defaults to 10 iterations and reports min / median / max for both wall time and internal (parse+compute) time.
-- **Cold-cache mode**: `compare_scale.py --cold-cache` drops the OS page cache before each iteration (Linux only; requires NOPASSWD sudo for `/sbin/sysctl vm.drop_caches=3` — see runner module docstring).
+- **Cold-cache mode**: `compare_scale.py --cold-cache` drops the OS page cache before each iteration (Linux only; requires NOPASSWD sudo for `/sbin/sysctl vm.drop_caches=3` - see runner module docstring).
 - **Multi-step pipelines**: Task 5 (`pipeline`) implements a filter→compute→reduce pipeline (`quantity > 0 AND price > 10`, then `sum(price*quantity)`) across all engines.
 - **Internal vs wall time**: Runner reports both. `internal` excludes Python interpreter startup and library import; `wall` includes them. Apples-to-apples comparison for compiled engines uses `internal`.
 
@@ -346,5 +347,5 @@ Remaining ideas (cheaper-first):
 1. **Multi-thread variants**: Add Dask version of pandas; run polars/duckdb/datafusion with `--threads=1` to isolate compiled-vs-pandas single-thread speedup from the parallelism dividend.
 2. **Star-schema join**: Joining region dimension data to fact-table revenue. Forces engines to actually plan a join, not just scan.
 3. **Dirty-data parity**: Verify each engine's behavior on the dirty generator (skip rows? error? coerce?) and adjust the runner to handle expected-different checksums.
-4. **Cold-vs-hot comparison table**: Run the suite both with and without `--cold-cache` and show both columns side-by-side — that's where I/O cost actually shows up vs. parse+compute.
+4. **Cold-vs-hot comparison table**: Run the suite both with and without `--cold-cache` and show both columns side-by-side - that's where I/O cost actually shows up vs. parse+compute.
 5. **Cross-machine reference run**: The README's headline Arche numbers (Linux x86-64) and the current WSL numbers (i5-4570 reading from `/mnt/c` 9p mount) aren't directly comparable. A single-machine native-Linux run would give the canonical headline numbers.
