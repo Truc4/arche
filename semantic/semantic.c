@@ -43,6 +43,7 @@ typedef struct {
 	int is_consumed;           /* 1 if a consume-param call / move / return has consumed this binding */
 	int is_param;              /* 1 if this is a function parameter (borrowed — exempt from must-consume) */
 	int is_own;                /* 1 if an `own` parameter (owned: caller passed it via move/copy, may be mutated) */
+	int is_out_place;          /* 1 if a writable out-param slot (out-only, or the out side of an in-out that shadows the in borrow) */
 	int is_const;              /* 1 if an immutable local constant (`k :: e` / `k : T : e`) */
 	int is_referenced;         /* 1 once any read-site (EXPR_NAME, field-base, etc.) touched this binding */
 	SourceLoc loc;             /* declaration site, for the must-consume / unused-local diagnostics */
@@ -489,6 +490,7 @@ static void add_variable_with_archetype(SemanticContext *ctx, const char *name, 
 	var->is_consumed = 0;
 	var->is_param = 0;
 	var->is_own = 0;
+	var->is_out_place = 0;
 	var->is_const = 0;
 	var->is_referenced = 0;
 	var->loc.line = 0;
@@ -496,6 +498,16 @@ static void add_variable_with_archetype(SemanticContext *ctx, const char *name, 
 
 	scope->vars = realloc(scope->vars, (scope->var_count + 1) * sizeof(VariableInfo *));
 	scope->vars[scope->var_count++] = var;
+}
+
+/* Flag the most-recently-added variable as a writable out-param slot. An out-param is a place
+ * the body fills; for an in-out it shadows the in-list borrow, so writing it needs no `own`. */
+static void mark_last_out_place(SemanticContext *ctx) {
+	if (ctx->scope_count > 0) {
+		Scope *s = &ctx->scopes[ctx->scope_count - 1];
+		if (s->var_count > 0)
+			s->vars[s->var_count - 1]->is_out_place = 1;
+	}
 }
 
 /* Flag the most-recently-added variable as an immutable constant (`k :: e` / `k : T : e`). */
@@ -1691,11 +1703,11 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				VariableInfo *existing = find_variable(ctx, target->name);
 				if (!existing) {
 					sem_emit_assign_to_undeclared(ctx, stmt->loc, target->name);
-				} else if (existing->is_consumed && mb_callee_proc) {
-					/* In-out out-arg: the buffer was `move`d into the proc's in-args and is handed
-					 * back through the out-list — revive the (consumed) binding so it's live again. */
-					existing->is_consumed = 0;
 				} else if (existing->is_consumed) {
+					/* The binding was `move`d (killed). A killed binding can't be reused as an
+					 * out-arg — there is no revival. The canonical in-place fill never moves
+					 * (`foo(buf)(buf)`); a consuming hand-off must bind a FRESH out name
+					 * (`foo(move buf)(buf:)`). So `foo(move buf)(buf)` is rejected here. */
 					sem_emit_assign_after_move(ctx, stmt->loc, target->name);
 				}
 			}
@@ -1723,13 +1735,14 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 			}
 		}
 		/* Purity: a borrowed (non-`move`) array parameter is read-only — `p = …`, `p[i] = …`,
-		 * `p.f = …` are all rejected. Functions are pure by use; to mutate, take it `move` and
-		 * return it (same-name in/out), or copy it into a local. Uses the leftmost name so index
-		 * and field writes are caught, not just bare `p`. */
+		 * `p.f = …` are all rejected. To write one, make it in-out (same name in both lists, no
+		 * `own`/`move`) so the out place shadows the borrow, or copy it into a local. An out place
+		 * (`is_out_place`) is writable, as is an `own` param. Uses the leftmost name so index and
+		 * field writes are caught, not just bare `p`. */
 		{
 			const char *ln = lvalue_leftmost_name(stmt->data.assign_stmt.target);
 			VariableInfo *pv = ln ? find_variable(ctx, ln) : NULL;
-			if (pv && pv->is_param && !pv->is_own && type_is_byref_aggregate(pv->type)) {
+			if (pv && pv->is_param && !pv->is_own && !pv->is_out_place && type_is_byref_aggregate(pv->type)) {
 				sem_emit_cannot_mutate_borrowed(ctx, stmt->loc, ln);
 			}
 		}
@@ -2435,6 +2448,20 @@ static void enforce_func_purity(SemanticContext *ctx, FuncDecl *func) {
 	}
 }
 
+/* True if in-param `param_idx` is an in-out param: its name also appears in the out-list.
+ * Mirrors codegen's proc_out_param_is_inout (codegen.c). An in-out's out-param shadows it. */
+static int proc_param_is_inout(ProcDecl *proc, int param_idx) {
+	if (!proc || param_idx < 0 || param_idx >= proc->param_count)
+		return 0;
+	const char *pn = proc->params[param_idx]->name;
+	if (!pn)
+		return 0;
+	for (int i = 0; i < proc->out_param_count; i++)
+		if (proc->out_params[i]->name && strcmp(proc->out_params[i]->name, pn) == 0)
+			return 1;
+	return 0;
+}
+
 static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	if (!proc)
 		return;
@@ -2455,6 +2482,12 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 				if (!is_primitive_type_name(tname) && !find_archetype(ctx, tname) && !is_type_alias(ctx, tname)) {
 					sem_emit_extern_proc_bad_type(ctx, pt->loc, tname, proc->name);
 				}
+			}
+			/* An extern is assumed to mutate every in-param (no body to verify). A mutated borrow
+			 * breaks the read-only contract, so a by-ref array in-param must be `own` — UNLESS an
+			 * out-param shadows it (in-out), in which case the write targets the out place. */
+			if (type_is_byref_aggregate(pt) && !p->is_own && !proc_param_is_inout(proc, i)) {
+				sem_emit_extern_array_param_needs_own(ctx, p->loc, p->name ? p->name : "?", proc->name);
 			}
 			/* `consume` is valid on any param type (consume consumes — not opaque-special). */
 		}
@@ -2508,20 +2541,23 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 		mark_last_param(ctx, proc->params[i]->is_own);
 	}
 
-	/* Out-only out-params are writable places the body must fill before returning (in-out ones are
-	 * already the in-param binding above). Register them so `name = …` in the body resolves. */
+	/* Out-params are writable places the body fills. An OUT-ONLY param is a fresh owned slot.
+	 * An IN-OUT param (its name is also in the in-list) is registered AGAIN here so the out
+	 * place SHADOWS the in-list borrow — that is what lets the body write it without `own`
+	 * (ownership is enforced on the in-list only). The shadow inherits the matching in-param's
+	 * `is_own`, so a borrowed in-out stays non-movable (only mutable in place) while an `own`
+	 * in-out stays movable. `name = …` in the body resolves to this place. */
 	for (int i = 0; i < proc->out_param_count; i++) {
 		const char *on = proc->out_params[i]->name;
-		int is_inout = 0;
+		int in_idx = -1;
 		for (int j = 0; j < proc->param_count; j++)
 			if (proc->params[j]->name && on && strcmp(proc->params[j]->name, on) == 0) {
-				is_inout = 1;
+				in_idx = j;
 				break;
 			}
-		if (is_inout)
-			continue;
 		add_variable(ctx, on, proc->out_params[i]->type);
-		mark_last_param(ctx, 1); /* owned: a writable place */
+		mark_last_param(ctx, in_idx >= 0 ? proc->params[in_idx]->is_own : 1);
+		mark_last_out_place(ctx);
 	}
 
 	ProcDecl *prev_proc = ctx->current_proc;

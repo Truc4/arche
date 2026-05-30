@@ -9,12 +9,12 @@ static pool<Transaction> (3, 3) {
 }
 ;
 
-proc load_csv(path: char[]) {
-  arche_fopen_read(path)(fd:);
+proc load_csv(own path: char[]) {
+  arche_fopen_read(move path)(fd:);
   buf: char[256];
   price_str: char[32];
   qty_str: char[32];
-  arche_fread(fd, buf, 256)(total_n:);
+  arche_fread(fd, buf, 256)(buf, total_n:);
   arche_fclose(move fd);
   idx := 0;
   pos := 0;

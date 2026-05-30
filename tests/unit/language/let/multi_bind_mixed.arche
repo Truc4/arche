@@ -1,5 +1,6 @@
 // RUN: %arche -o %t %s && %t | grep -E "test1|test2|test3"
-// Buffers filled in place across several proc calls (in-out out-params).
+// Buffers moved in (own, consumed) and handed back through fresh out-bindings across several
+// calls — the `f(move x)(x:)` kill-and-rebind form (a killed binding can't be reused bare).
 proc fill_two(own buf1: char[32], own buf2: char[32])(buf1: char[32], buf2: char[32], n: int) {
   buf1 := strcopy(move buf1, "hello");
   buf2 := strcopy(move buf2, "world");
@@ -9,16 +10,16 @@ proc fill_two(own buf1: char[32], own buf2: char[32])(buf1: char[32], buf2: char
 proc main() {
   x: char[32];
   y: char[32];
-  fill_two(move x, move y)(x, y, n:);
+  fill_two(move x, move y)(x:, y:, n:);
   printf("test1: x=%s y=%s n=%d\n", x, y, n);
 
   a: char[32];
   z: char[32];
-  fill_two(move a, move z)(a, z, m:);
+  fill_two(move a, move z)(a:, z:, m:);
   printf("test2: a=%s z=%s m=%d\n", a, z, m);
 
   p: char[32];
   q: char[32];
-  fill_two(move p, move q)(p, q, k:);
+  fill_two(move p, move q)(p:, q:, k:);
   printf("test3: p=%s q=%s k=%d\n", p, q, k);
 }

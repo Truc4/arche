@@ -6,7 +6,7 @@ proc main() {
   io_skip_header(fd);
   rows := 0;
   buf: char[65536];
-  io_read_chunk(fd, move buf, 65536)(buf, n:);
+  io_read_chunk(fd, buf, 65536)(buf, n:);
   pos := 0;
   for (; pos < n;) {
     if (buf[pos] == 10) {

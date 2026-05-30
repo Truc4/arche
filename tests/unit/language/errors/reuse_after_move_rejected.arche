@@ -1,0 +1,13 @@
+// A binding killed by `move` can't be reused as an out-arg — there is no revival. `f(move b)(b)`
+// is rejected; bind a fresh one with `f(move b)(b:)`, or fill in place with `f(b)(b)` (in-out,
+// no `move`).
+// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "after it was moved" %t.out
+proc fill(own buf: char[8])(buf: char[8], n: int) {
+  buf[0] = 65;
+  n = 1;
+}
+
+proc main() {
+  b: char[8];
+  fill(move b)(b, n:);
+}

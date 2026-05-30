@@ -10,5 +10,5 @@ proc main() {
     }
   }
   printf("size=%ld commas=%ld\n", size, commas);
-  arche_file_unmap(data, size);
+  arche_file_unmap(move data, size);
 }

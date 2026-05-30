@@ -2,7 +2,7 @@
 proc main() {
   arche_fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
   buf: char[4096];
-  arche_fread(fd, buf, 4096)(total_n:);
+  arche_fread(fd, buf, 4096)(buf, total_n:);
   arche_fclose(move fd);
   printf("Read %d bytes from CSV file\n", total_n);
   assert(total_n > 0, "should read CSV file\n");

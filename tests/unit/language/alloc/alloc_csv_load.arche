@@ -14,7 +14,7 @@ proc main() {
   buf: char[256];
   price_str: char[32];
   qty_str: char[32];
-  arche_fread(fd, buf, 256)(total_n:);
+  arche_fread(fd, buf, 256)(buf, total_n:);
   arche_fclose(move fd);
   idx := 0;
   pos := 0;

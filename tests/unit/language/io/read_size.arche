@@ -2,7 +2,7 @@
 proc main() {
   arche_fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
   buf: char[256];
-  arche_fread(fd, buf, 256)(n:);
+  arche_fread(fd, buf, 256)(buf, n:);
   arche_fclose(move fd);
   printf("read 256 returned: %d\n", n);
   assert(n == 256, "should read 256 bytes\n");

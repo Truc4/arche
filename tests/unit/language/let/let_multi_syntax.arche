@@ -1,5 +1,7 @@
 // RUN: %arche -o %t %s && %t | grep "x=test1 y=test2 n=77"
-// Two buffers moved in by reference (in-out), filled, and handed back through the out-list.
+// Two buffers moved in (own, consumed) and handed back through fresh out-bindings — the
+// `f(move x)(x:)` kill-and-rebind form: `move` kills the in-binding, the `x:` out-arg mints a
+// fresh one (you can't reuse a killed binding, so the out-arg must be `x:`, not bare `x`).
 proc fill_two(own buf1: char[32], own buf2: char[32])(buf1: char[32], buf2: char[32], n: int) {
   buf1 := strcopy(move buf1, "test1");
   buf2 := strcopy(move buf2, "test2");
@@ -9,6 +11,6 @@ proc fill_two(own buf1: char[32], own buf2: char[32])(buf1: char[32], buf2: char
 proc main() {
   x: char[32];
   y: char[32];
-  fill_two(move x, move y)(x, y, n:);
+  fill_two(move x, move y)(x:, y:, n:);
   printf("x=%s y=%s n=%d\n", x, y, n);
 }
