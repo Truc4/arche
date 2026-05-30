@@ -5,15 +5,15 @@
 cell :: opaque arche Resource {
   cell,
 }
-extern resource_open(initial: int) -> cell;
+extern proc resource_open(initial: int)(ret: cell);
 static pool<Resource> (8);
 
 proc main() {
-  r1 := resource_open(10);
+  resource_open(10)(r1:);
   h := insert(Resource, r1);
   alias := h;
   delete(h);
-  r2 := resource_open(99);
+  resource_open(99)(r2:);
   h2 := insert(Resource, r2);
   delete(alias);
 }

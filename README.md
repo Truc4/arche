@@ -268,8 +268,12 @@ proc main() {
 - **Out-params are read-write places.** The caller supplies the slot (`name:` declares + zero-inits
   it; `name` reuses an existing one); the proc may read and write it; the value is the caller's
   afterward.
-- **In-out (zero-copy mutate-in-place).** A name in *both* lists is passed in and handed back —
-  used to fill a caller-owned buffer without copying (see *Multi-return / out-params* below).
+- **In-out (a name in *both* lists).** This is **not** a different capability — every out-param is
+  already a read-write place. It exists for two reasons: (1) for an `extern proc` the in-list fixes
+  the C argument order, so a name in the in-list is a C argument (an array → written in place) while
+  an out-only name maps to the C **return value**; and (2) the `own buf` + `move buf` ceremony makes
+  a zero-copy ownership hand-off explicit (the caller's binding goes dead for the call, then is
+  handed back). For a plain proc you can usually just use an out-param.
 - The out-list is optional: `proc main()` (or any effect-only action) simply has no outputs.
 
 Procedures are also used for setup, orchestration, and whole-collection array ops on archetypes:
@@ -381,8 +385,9 @@ func drag_factor(x: float) -> float {
   out-list is for) and no `out` parameters.
 - **Pure** — a func body may not perform effects (call a proc, an extern, or a mutating builtin);
   this is enforced as a hard error. Effects belong in a `proc`.
-- **No `extern`, no `unsafe`.** Those don't make sense for a value: a foreign-bodied action is an
-  `extern proc`, and there is no `unsafe` qualifier in the language.
+- **Never `extern`.** `extern` exists, but it always pairs with `proc` — a foreign C function is an
+  *action* (`extern proc`), never a `func`. A `func` is always pure Arche code with a body. (There
+  is also no `unsafe` qualifier in the language.)
 - Used inside expressions; freely callable as a proc's **in**-argument (a func call is a value), but
   never as an **out**-argument (a value is not a place).
 
@@ -541,9 +546,9 @@ Arche never reads, writes, or fabricates. Distinctness comes from the *name*, no
 window :: opaque
 sound  :: opaque
 
-extern func window_open(title: char[], w: int, h: int) -> window;
-extern proc window_present(w: window, fb: int[], width: int, height: int);
-extern proc window_close(own w: window);
+extern proc window_open(title: char[], w: int, h: int)(w: window);   // out-only w = C return
+extern proc window_present(w: window, fb: int[], width: int, height: int)();
+extern proc window_close(own w: window)();
 ```
 
 - An `opaque` value is passed to/from C **by value** — the cell *is* an `i64`, ABI-compatible
@@ -627,8 +632,8 @@ in-list) rebinds the lent buffer live; there is no hidden side effect and no cop
 - **Parser**: Builds AST for archetypes, procedures, systems, functions, expressions, multi-value bindings
 - **Semantic Analysis**: Symbol table, scope tracking, type checking, field validation, multi-value binding
 - **Code Generation**: Compiles to LLVM IR, assembles, and links to executables
-- **Functions**: User-defined and extern functions with return values
-- **Procedures**: User-defined and extern procedures (void)
+- **Functions**: pure user-defined values with a single return (`func name(in) -> T`)
+- **Procedures**: actions with out-params (`proc name(in)(out)`); `extern proc` binds foreign C functions
 - **Systems**: Data-driven transformations over matching archetypes
 - **For loops**: Infinite loops, condition-based loops, range iteration
 - **External Functions**: C function calls with copy semantics

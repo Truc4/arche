@@ -4,12 +4,12 @@
 // send/recv all exercise without threads. Proves the `Socket` extern type links
 // and a byte survives the round trip ('h' == 104).
 proc main() {
-  srv := net_listen(34567);
-  cli := net_connect("127.0.0.1", 34567);
-  conn := net_accept(srv);
-  sent := net_send(cli, "hi", 2);
+  net_listen(34567)(srv:);
+  net_connect("127.0.0.1", 34567)(cli:);
+  net_accept(srv)(conn:);
+  net_send(cli, "hi", 2)(sent:);
   buf: char[64];
-  n := net_recv(conn, buf, 64);
+  net_recv(conn, buf, 64)(n:);
   printf("ok n=%d first=%d\n", n, buf[0]);
   net_close(move cli);
   net_close(move conn);

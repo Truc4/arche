@@ -2,8 +2,8 @@
 // reach rdi and rsi correctly and a 0/success return is read.
 // RUN: %arche -o %t %s && %t | grep "ok"
 proc main() {
-  pid := syscall(39, 0, 0, 0, 0, 0, 0);
-  r := syscall(62, pid, 0, 0, 0, 0, 0);
+  syscall(39, 0, 0, 0, 0, 0, 0)(pid:);
+  syscall(62, pid, 0, 0, 0, 0, 0)(r:);
   if (r == 0) {
     printf("ok\n");
   }

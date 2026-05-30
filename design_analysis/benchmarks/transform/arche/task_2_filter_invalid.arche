@@ -15,7 +15,7 @@ proc load_transactions() {
 }
 
 proc write_output(count: i64) {
-  fd := arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_2.csv");
+  arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_2.csv")(fd:);
   buf: char[64];
   sprintf(buf, "count\n%ld\n", count);
   arche_fwrite(fd, buf, strlen(buf));
@@ -28,7 +28,7 @@ proc main() {
   // Up to 2.16e9 across all iters — past i32 but well within i64. An integer accumulator
   // (unlike a float one) lets the conditional count auto-vectorize into a SIMD masked-add.
   count: i64 = 0;
-  t0 := arche_now_sec();
+  arche_now_sec()(t0:);
   for (iter := 0; iter < 216000; iter += 1) {
     for (i := 0; i < 10000; i += 1) {
       if (Transaction.quantity[i] > 0) {
@@ -36,7 +36,7 @@ proc main() {
       }
     }
   }
-  t1 := arche_now_sec();
+  arche_now_sec()(t1:);
   elapsed := t1 - t0;
 
   write_output(count);

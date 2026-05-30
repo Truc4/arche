@@ -3,12 +3,12 @@
 // leading return of the multi-return signature `-> (char[], int)` — filled in place, bound
 // alongside the scalar at the call.
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t | grep "v=42 b=2"
-resource :: opaque extern resource_open(initial: int) -> resource;
-extern resource_fill(r: resource, buf: char[], n: int) -> int;
-extern resource_close(own r: resource);
+resource :: opaque extern proc resource_open(initial: int)(ret: resource);
+extern proc resource_fill(r: resource, buf: char[], n: int)(ret: int);
+extern proc resource_close(own r: resource);
 
 proc main() {
-  r := resource_open(42);
+  resource_open(42)(r:);
   buf: char[8];
   v := resource_fill(r, buf, 8);
   printf("v=%d b=%s\n", v, buf);

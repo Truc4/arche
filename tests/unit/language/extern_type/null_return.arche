@@ -2,19 +2,19 @@
 // (the only inspection allowed on an opaque value). Here the C pool (8) is exhausted,
 // so the 9th open returns null.
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t | grep "ok_null=1"
-resource :: opaque extern resource_open(initial: int) -> resource;
-extern resource_close(own r: resource);
+resource :: opaque extern proc resource_open(initial: int)(ret: resource);
+extern proc resource_close(own r: resource);
 
 proc main() {
-  r1 := resource_open(1);
-  r2 := resource_open(2);
-  r3 := resource_open(3);
-  r4 := resource_open(4);
-  r5 := resource_open(5);
-  r6 := resource_open(6);
-  r7 := resource_open(7);
-  r8 := resource_open(8);
-  r9 := resource_open(9);
+  resource_open(1)(r1:);
+  resource_open(2)(r2:);
+  resource_open(3)(r3:);
+  resource_open(4)(r4:);
+  resource_open(5)(r5:);
+  resource_open(6)(r6:);
+  resource_open(7)(r7:);
+  resource_open(8)(r8:);
+  resource_open(9)(r9:);
   ok := r9 == 0;
   printf("ok_null=%d\n", ok);
   // Linear retire: each opaque local (incl. the null r9 — close is null-safe) is consumed.

@@ -420,6 +420,7 @@ static int field_total_elements(HirType *type) {
 /* LLVM type of one return value. char[] returns a raw i8* byte view; everything else maps
  * through the normal type lowering (int→iN, float→double, handle/opaque→i64, …). */
 static int proc_out_param_is_inout(HirProcDecl *proc, int oi);
+static const char *extern_proc_cret(HirProcDecl *proc);
 
 static const char *return_member_llvm(HirType *t) {
 	if (t && (t->tag == HIR_TYPE_ARRAY || t->tag == HIR_TYPE_SHAPED_ARRAY))
@@ -2789,8 +2790,11 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			} else if (callee_func && callee_func->is_extern) {
 				/* Bare extern with no declared return (`extern name(...)`) ⇒ void. */
 				return_type = "void";
+			} else if (callee_proc && callee_proc->is_extern) {
+				/* An extern proc's C return value is its out-only out-param (void if none). */
+				return_type = extern_proc_cret(callee_proc);
 			} else if (callee_proc) {
-				/* A proc with no return list is void (an action with no value). */
+				/* A non-extern proc returns void — its results go through out-pointers. */
 				return_type = "void";
 			} else if (expr->resolved.tag != HIR_TYPE_UNKNOWN) {
 				/* Fallback: use resolved type if available */
@@ -4040,6 +4044,67 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		        : NULL;
 		HirFuncDecl *callee_func = fn ? find_func_decl(ctx, fn) : NULL;
 		HirProcDecl *callee_proc = (!callee_func && fn) ? find_proc_decl(ctx, fn) : NULL;
+
+		/* Extern proc call with capture `ext(in)(out)`: C writes in-place buffers through the in-args
+		 * and returns one value. Emit the C call (its result is the out-only out-param), then store
+		 * that result into the out-only target. In-out targets are written in place — skipped here. */
+		if (callee_proc && callee_proc->is_extern) {
+			char res[256];
+			codegen_expression(ctx, rhs, res); /* emits `%res = call <cret> @ext(in-args)` */
+			for (int i = 0; i < target_count && i < callee_proc->out_param_count; i++) {
+				if (proc_out_param_is_inout(callee_proc, i))
+					continue;
+				HirBindingTarget *tgt = &targets[i];
+				HirType *ot = callee_proc->out_params[i]->type;
+				int is_arr = ot && (ot->tag == HIR_TYPE_ARRAY || ot->tag == HIR_TYPE_SHAPED_ARRAY);
+				const char *elem = return_member_llvm(ot);
+				if (tgt->is_new) {
+					if (is_arr) {
+						/* an array C-return is a raw i8* byte view — bind type-6 (value IS the ptr). */
+						ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+						vi->name = malloc(strlen(tgt->name) + 1);
+						strcpy(vi->name, tgt->name);
+						vi->llvm_name = malloc(strlen(res) + 1);
+						strcpy(vi->llvm_name, res);
+						vi->type = 6;
+						vi->string_len = -1;
+						vi->field_type = "char";
+						vi->bit_width = 8;
+						if (ctx->scope_count > 0) {
+							ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+							sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+							sc->values[sc->value_count++] = vi;
+						}
+					} else {
+						char *a = gen_value_name(ctx);
+						emit_alloca(ctx, "  %s = alloca %s\n", a, elem);
+						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", elem, res, elem, a);
+						ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+						vi->name = malloc(strlen(tgt->name) + 1);
+						strcpy(vi->name, tgt->name);
+						vi->llvm_name = malloc(strlen(a) + 1);
+						strcpy(vi->llvm_name, a);
+						vi->type = 1;
+						vi->string_len = -1;
+						vi->field_type = field_base_type_name(ot);
+						vi->bit_width = (ot && ot->tag == HIR_TYPE_FLOAT) ? 64
+						                : (ot && ot->tag == HIR_TYPE_INT) ? ot->int_width
+						                                                  : 64;
+						vi->handle_archetype = (ot && ot->tag == HIR_TYPE_HANDLE) ? ot->name : NULL;
+						if (ctx->scope_count > 0) {
+							ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+							sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+							sc->values[sc->value_count++] = vi;
+						}
+					}
+				} else {
+					ValueInfo *e = find_value(ctx, tgt->name);
+					if (e && e->type == 1)
+						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", elem, res, elem, e->llvm_name);
+				}
+			}
+			break;
+		}
 
 		/* Proc-call statement `foo(in)(out)`: a non-extern proc writes each out-only result through
 		 * a trailing out-pointer; in-out results are written in place via the in-arg buffer (so they
@@ -6151,6 +6216,15 @@ static int proc_out_param_is_inout(HirProcDecl *proc, int oi) {
 		if (proc->params[ii]->name && strcmp(proc->params[ii]->name, on) == 0)
 			return 1;
 	return 0;
+}
+
+/* The C return type of an extern proc = its single out-only out-param's LLVM type (an out-param
+ * not echoed in the in-list). `void` when there is none. */
+static const char *extern_proc_cret(HirProcDecl *proc) {
+	for (int oi = 0; oi < proc->out_param_count; oi++)
+		if (!proc_out_param_is_inout(proc, oi))
+			return return_member_llvm(proc->out_params[oi]->type);
+	return "void";
 }
 
 static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {

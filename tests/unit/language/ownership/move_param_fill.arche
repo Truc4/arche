@@ -1,14 +1,14 @@
-// A `move` param is the by-reference fill contract: the caller MUST pass `move buf`
-// (no silent copy), the function fills it in place, and hands it back through the return.
-// This is the canonical fill-buffer / FFI shape.
+// A `move` in-arg paired with an in-out out-param is the by-reference fill contract: the
+// caller MUST pass `move buf` (no silent copy), the proc fills it in place, and hands it back
+// through the out-list. This is the canonical fill-buffer / FFI shape.
 // RUN: %arche -o %t %s && %t | grep "filled=hello n=5"
-func fill(own buf: char[32], s: char[]) -> (char[32], int) {
+proc fill(own buf: char[32], s: char[])(buf: char[32], n: int) {
   buf := strcopy(move buf, s);
-  return buf, strlen(buf);
+  n = strlen(buf);
 }
 
 proc main() {
   b: char[32];
-  b, n := fill(move b, "hello");
+  fill(move b, "hello")(b, n:);
   printf("filled=%s n=%d\n", b, n);
 }

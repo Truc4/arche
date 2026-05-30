@@ -2,8 +2,8 @@
 // syscall result register is read correctly across two distinct syscalls.
 // RUN: %arche -o %t %s && %t | grep "ok"
 proc main() {
-  pid := syscall(39, 0, 0, 0, 0, 0, 0);
-  tid := syscall(186, 0, 0, 0, 0, 0, 0);
+  syscall(39, 0, 0, 0, 0, 0, 0)(pid:);
+  syscall(186, 0, 0, 0, 0, 0, 0)(tid:);
   if (pid == tid) {
     printf("ok\n");
   }

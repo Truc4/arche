@@ -1653,6 +1653,17 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				bind_type = mb_callee_proc->out_params[i]->type;
 			if (target->is_new) {
 				add_variable(ctx, target->name, bind_type);
+				/* Record the nominal alias name (file/socket/window/…) so opaque-distinctness checks
+				 * see it — mirrors the `x: T` single-bind path. add_variable alone leaves it NULL. */
+				if (bind_type && bind_type->kind == TYPE_NAME && ctx->scope_count > 0) {
+					Scope *sc = &ctx->scopes[ctx->scope_count - 1];
+					if (sc->var_count > 0) {
+						VariableInfo *v = sc->vars[sc->var_count - 1];
+						v->inferred_type = resolve_type_alias(ctx, bind_type->data.name);
+						if (is_type_alias(ctx, bind_type->data.name))
+							v->nominal_type = bind_type->data.name;
+					}
+				}
 			} else {
 				VariableInfo *existing = find_variable(ctx, target->name);
 				if (!existing) {

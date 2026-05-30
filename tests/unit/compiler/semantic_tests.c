@@ -409,7 +409,7 @@ void test_opaque_passthrough_in_proc_ok(void) {
 
 void test_unknown_type_name_still_errors(void) {
 	test_start("unknown type name in extern signature is still an error");
-	AnalysisResult r = analyze_string("extern func bad() -> Doesnotexist;\n");
+	AnalysisResult r = analyze_string("extern proc bad()(ret: Doesnotexist);\n");
 	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected unknown-type error");
 	semantic_context_free(r.ctx);
 	test_pass_msg();
@@ -420,9 +420,9 @@ void test_opaque_aliases_distinct(void) {
 	AnalysisResult r = analyze_string("window :: opaque\n"
 	                                  "sound :: opaque\n"
 	                                  "extern proc window_close(own w: window);\n"
-	                                  "extern func sound_open() -> sound;\n"
+	                                  "extern proc sound_open()(ret: sound);\n"
 	                                  "proc main() {\n"
-	                                  "  s := sound_open();\n"
+	                                  "  sound_open()(s:);\n"
 	                                  "  window_close(move s);\n"
 	                                  "}\n");
 	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected type-mismatch error");
@@ -435,11 +435,11 @@ void test_opaque_aliases_distinct(void) {
 void test_use_after_consume_local_error(void) {
 	test_start("use after consume in same scope is a compile error");
 	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "extern func open_(t: char[], a: int, b: int) -> window;\n"
+	                                  "extern proc open_(t: char[], a: int, b: int)(ret: window);\n"
 	                                  "extern proc close_(own w: window);\n"
 	                                  "extern proc poll_(w: window);\n"
 	                                  "proc main() {\n"
-	                                  "  w := open_(\"\", 1, 1);\n"
+	                                  "  open_(\"\", 1, 1)(w:);\n"
 	                                  "  close_(move w);\n"
 	                                  "  poll_(w);\n"
 	                                  "}\n");
@@ -451,11 +451,11 @@ void test_use_after_consume_local_error(void) {
 void test_no_false_positive_when_unconsumed(void) {
 	test_start("normal borrow then consume is fine");
 	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "extern func open_(t: char[], a: int, b: int) -> window;\n"
+	                                  "extern proc open_(t: char[], a: int, b: int)(ret: window);\n"
 	                                  "extern proc close_(own w: window);\n"
 	                                  "extern proc poll_(w: window);\n"
 	                                  "proc main() {\n"
-	                                  "  w := open_(\"\", 1, 1);\n"
+	                                  "  open_(\"\", 1, 1)(w:);\n"
 	                                  "  poll_(w);\n"
 	                                  "  close_(move w);\n"
 	                                  "}\n");
@@ -545,10 +545,10 @@ void test_own_param_bare_arg_error(void) {
 void test_copy_opaque_error(void) {
 	test_start("`copy` of an opaque value is a compile error (move-only)");
 	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "extern func wopen() -> window;\n"
+	                                  "extern proc wopen()(ret: window);\n"
 	                                  "extern proc wuse(own w: window);\n"
 	                                  "proc main() {\n"
-	                                  "  w := wopen();\n"
+	                                  "  wopen()(w:);\n"
 	                                  "  wuse(copy w);\n"
 	                                  "}\n");
 	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected copy-of-opaque error");

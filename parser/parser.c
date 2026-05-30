@@ -578,13 +578,14 @@ static int parse_proc_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		return 0;
 	}
 
-	/* A proc declares its results as out-parameters in a SECOND `(...)` list — it has no
-	 * return type (a proc is an action, not a value). The list is optional: absent means
-	 * no outputs (an effect-only action). An out-param is owned by definition, so `own` is
-	 * not written there. The in-list/out-list split is `proc f(in)(out)`; a name echoed in
-	 * both is an in-out param (in-place mutation), supported mainly for extern C signatures. */
+	/* A proc declares its results as out-parameters in an OPTIONAL second `(...)` list — it has no
+	 * return type (a proc is an action, not a value; the `->` arrow is a func-only marker). The
+	 * out-list is omitted when the proc has no outputs (`proc main()`). An out-param is owned by
+	 * definition, so `own` is not written there; a name echoed in the in-list is an in-out param
+	 * (in-place mutation), used mainly for extern C signatures. */
 	if (check(parser, TOK_ARROW)) {
-		error(parser, "a proc has no return type — declare results as out-parameters in a second `(...)` list");
+		error(parser, "a proc has no return type (`->` is a func-only marker) — declare results as out-parameters in a "
+		              "`(...)` list");
 		return 0;
 	}
 	if (match(parser, TOK_LPAREN)) {
@@ -812,30 +813,17 @@ static int parse_func_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		return 0;
 	}
 
-	/* Return type: single `-> T`, or multi-return `-> (T1, …, Tn)`. In the multi form the
-	 * leading array returns are caller-passed buffers the func fills in place; the final
-	 * return types is a list — a single return is just count == 1. The `->` is optional for a
-	 * bare extern (absent ⇒ void, 0 return types); mandatory for an ordinary func. */
+	/* Return type: a single `-> T`. A func IS a value — exactly one return, no multi-return. For
+	 * several results or an in-place fill, use a `proc` with an out-parameter list `(out)`. The
+	 * `->` is optional for a bare extern (absent ⇒ void); mandatory for an ordinary func. */
 	if (match(parser, TOK_ARROW)) {
-		if (match(parser, TOK_LPAREN)) {
-			int return_type_count = 0;
-			do {
-				if (!parse_type(parser))
-					return 0;
-				return_type_count++;
-			} while (match(parser, TOK_COMMA));
-			if (!match(parser, TOK_RPAREN)) {
-				error(parser, "Expected ')' after multi-return type list");
-				return 0;
-			}
-			if (return_type_count < 2) {
-				error(parser, "a parenthesized return type must list at least two types");
-				return 0;
-			}
-		} else {
-			if (!parse_type(parser))
-				return 0;
+		if (check(parser, TOK_LPAREN)) {
+			error(parser, "a func has exactly one return type — use a `proc` with an out-parameter list "
+			              "`(out)` for multiple results or an in-place fill");
+			return 0;
 		}
+		if (!parse_type(parser))
+			return 0;
 	} else if (!is_extern) {
 		error(parser, "Expected '->'");
 		return 0;
@@ -1099,12 +1087,10 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		return parse_archetype_decl(parser, out_kind);
 	case TOK_EXTERN:
 		advance(parser); /* consume 'extern' */
-		/* `extern name(args) [-> ret];` — a foreign C decl, neither func nor proc. Reconstructed
-		 * as FuncDecl+is_extern with an optional return (no `->` ⇒ void, 0 return types). The
-		 * `func`/`proc` keyword after `extern` is no longer required (still tolerated). */
-		if (check(parser, TOK_PROC))
-			return parse_proc_decl(parser, out_kind);
-		return parse_func_decl(parser, out_kind);
+		/* Every extern is an `extern proc` — a foreign-bodied action with the `(in)(out)` shape:
+		 * the in-list maps the C argument order, an out-only out-param is the C return value, and a
+		 * name echoed in both lists is an in-place C pointer write. There is no "extern func". */
+		return parse_proc_decl(parser, out_kind);
 	case TOK_PROC:
 		return parse_proc_decl(parser, out_kind);
 	case TOK_SYS:

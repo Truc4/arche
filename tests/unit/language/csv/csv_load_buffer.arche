@@ -10,9 +10,9 @@ static pool<Transaction> (100, 100) {
 ;
 
 proc main() {
-  fd := open("../../../../../tests/fixtures/transactions.csv", 0);
+  open("../../../../../tests/fixtures/transactions.csv", 0)(fd:);
   buf: char[256];
-  total_n := read(fd, buf, 256);
+  read(fd, buf, 256)(total_n:);
   close(move fd);
   printf("total_n=%d\n", total_n);
   idx := 0;

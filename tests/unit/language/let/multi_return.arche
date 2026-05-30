@@ -1,11 +1,11 @@
-// Genuine multi-value return: a function returns two computed values as an aggregate, and a
-// multi-bind destructures them. (No buffers, no out — a real struct return.)
+// Several computed results come from a proc's out-list, not a func (a func returns one value).
 // RUN: %arche -o %t %s && %t | grep "s=13 d=7"
-func sum_diff(a: int, b: int) -> (int, int) {
-  return a + b, a - b;
+proc sum_diff(a: int, b: int)(s: int, d: int) {
+  s = a + b;
+  d = a - b;
 }
 
 proc main() {
-  s, d := sum_diff(10, 3);
+  sum_diff(10, 3)(s:, d:);
   printf("s=%d d=%d\n", s, d);
 }

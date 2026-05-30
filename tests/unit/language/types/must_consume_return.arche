@@ -3,17 +3,17 @@
 // opening the resource — and returns the handle); a func couldn't call the extern. The caller
 // then retires it.
 // RUN: %arche -o %t --link %S/../extern_type/runtime/test_resource.c %s && %t | grep "value=7"
-resource :: opaque extern resource_open(initial: int) -> resource;
-extern resource_get(r: resource) -> int;
-extern resource_close(own r: resource);
+resource :: opaque extern proc resource_open(initial: int)(ret: resource);
+extern proc resource_get(r: resource)(ret: int);
+extern proc resource_close(own r: resource);
 
 proc make_resource(v: int)(r: resource) {
-  r = resource_open(v);
+  resource_open(v)(r);
 }
 
 proc main() {
   make_resource(7)(r:);
-  v := resource_get(r);
+  resource_get(r)(v:);
   printf("value=%d\n", v);
   resource_close(move r);
 }

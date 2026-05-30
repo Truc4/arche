@@ -1,14 +1,14 @@
-// A buffer that comes back through a multi-return (`b, n := f(move b)`) must be
+// A buffer handed back through a proc's in-out out-param (`f(move b)(b, n:)`) must be
 // indexable in the caller — the CSV reader fills a buffer then scans it byte by byte.
 // RUN: %arche -o %t %s && %t | grep "c0=72 c1=105 n=2"
-func fill(own buf: char[32], s: char[]) -> (char[32], int) {
+proc fill(own buf: char[32], s: char[])(buf: char[32], n: int) {
   buf := strcopy(move buf, s);
-  return buf, strlen(buf);
+  n = strlen(buf);
 }
 
 proc main() {
   b: char[32];
-  b, n := fill(move b, "Hi");
+  fill(move b, "Hi")(b, n:);
   c0 := b[0];
   c1 := b[1];
   printf("c0=%d c1=%d n=%d\n", c0, c1, n);
