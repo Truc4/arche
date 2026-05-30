@@ -205,3 +205,119 @@ int cv_has_error(CstView v) {
 	}
 	return 0;
 }
+
+/* Strip a doc marker (`marker_len` bytes) and one optional leading space from a
+ * comment leaf's source span; return the borrowed remainder slice. */
+static CvText doc_strip(const char *text, size_t len, size_t marker_len) {
+	CvText t = {NULL, 0};
+	if (len < marker_len)
+		return t;
+	const char *p = text + marker_len;
+	size_t n = len - marker_len;
+	if (n > 0 && *p == ' ') {
+		p++;
+		n--;
+	}
+	t.ptr = p;
+	t.len = n;
+	return t;
+}
+
+/* A comment leaf gathered during the in-order walk. */
+typedef struct {
+	int line;
+	const char *ptr;
+	uint32_t len;
+} CmtLeaf;
+
+/* Gather, in source order, the most recent comment leaves with offset < limit
+ * (i.e. everything lexically before the declaration). The parser may absorb a
+ * doc comment that follows a complete declaration as a trailing leaf *inside*
+ * that declaration's node rather than as a root-level sibling — so attachment
+ * must be decided by source position over a flat list, not by tree adjacency.
+ * The buffer keeps the most recent `cap` leaves (a doc run is short, so the tail
+ * is all that matters). */
+static void gather_comments_before(const SyntaxNode *node, const char *src, uint32_t limit, CmtLeaf *buf, int cap,
+                                   int *count) {
+	for (int i = 0; i < node->child_count; i++) {
+		const SyntaxElem *e = &node->children[i];
+		if (e->tag == SE_TOKEN) {
+			if (e->as.token.kind == TOK_COMMENT && e->as.token.offset < limit) {
+				if (*count < cap) {
+					buf[*count].line = e->as.token.line;
+					buf[*count].ptr = src + e->as.token.offset;
+					buf[*count].len = e->as.token.length;
+					(*count)++;
+				} else { /* keep most recent: drop the oldest */
+					for (int k = 1; k < cap; k++)
+						buf[k - 1] = buf[k];
+					buf[cap - 1].line = e->as.token.line;
+					buf[cap - 1].ptr = src + e->as.token.offset;
+					buf[cap - 1].len = e->as.token.length;
+				}
+			}
+		} else if (e->as.node->offset < limit) {
+			/* only descend into subtrees that begin before the declaration */
+			gather_comments_before(e->as.node, src, limit, buf, cap, count);
+		}
+	}
+}
+
+int cv_decl_doc_lines(CstView root, CstView decl, CvText *out, int *out_lines, int max) {
+	if (!root.node || !decl.node || !out || max <= 0)
+		return 0;
+
+	CvPos dp = cv_first_token_pos(decl);
+	if (dp.line == 0)
+		return 0;
+
+#define CV_DOC_GATHER_CAP 1024
+	CmtLeaf buf[CV_DOC_GATHER_CAP];
+	int total = 0;
+	gather_comments_before(root.node, root.src, decl.node->offset, buf, CV_DOC_GATHER_CAP, &total);
+
+	/* Walk the gathered comments from the tail: the contiguous run of `///`
+	 * comments ending on the line immediately above the declaration. A blank
+	 * line, a plain `//`, or anything else breaks the run. */
+	int start = total;
+	int expect = dp.line;
+	for (int j = total - 1; j >= 0; j--) {
+		if (!arche_is_doc_comment(buf[j].ptr, buf[j].len))
+			break;
+		if (buf[j].line != expect - 1)
+			break; /* blank-line gap */
+		expect = buf[j].line;
+		start = j;
+	}
+
+	int count = 0;
+	for (int j = start; j < total && count < max; j++) {
+		if (out_lines)
+			out_lines[count] = buf[j].line;
+		out[count++] = doc_strip(buf[j].ptr, buf[j].len, 3);
+	}
+	return count;
+#undef CV_DOC_GATHER_CAP
+}
+
+int cv_module_doc_lines(CstView root, CvText *out, int max) {
+	if (!root.node || !out || max <= 0)
+		return 0;
+	int count = 0;
+	int expect = 0; /* 0 = no line seen yet; otherwise subsequent lines must be consecutive */
+	for (int i = 0; i < root.node->child_count && count < max; i++) {
+		const SyntaxElem *e = &root.node->children[i];
+		if (e->tag == SE_NODE)
+			break; /* first declaration ends the leading module-doc region */
+		if (e->tag != SE_TOKEN || e->as.token.kind != TOK_COMMENT)
+			break;
+		const char *t = root.src + e->as.token.offset;
+		if (!arche_is_inner_doc_comment(t, e->as.token.length))
+			break;
+		if (expect != 0 && e->as.token.line != expect + 1)
+			break; /* blank-line gap */
+		expect = e->as.token.line;
+		out[count++] = doc_strip(t, e->as.token.length, 3);
+	}
+	return count;
+}

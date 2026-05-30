@@ -132,6 +132,20 @@ void lexer_free(Lexer *lexer);
 Token lexer_next_token(Lexer *lexer);
 const char *token_kind_name(TokenKind kind);
 
+/* Doc-comment classification. A doc comment is just a TOK_COMMENT whose text
+ * begins with the doc marker — there is no separate token kind (so doc comments
+ * round-trip through the formatter for free). These are the ONE place that
+ * decides "is this a doc comment"; every consumer (cst_view doc query, doctest
+ * extractor, hover) must call them rather than re-checking the prefix inline, so
+ * the marker can evolve from a single definition.
+ *
+ * arche_is_doc_comment    → outer doc `///` (attaches to the following decl),
+ *                            excluding `////`+ banner rules (Rust convention).
+ * arche_is_inner_doc_comment → inner/module doc `//!`.
+ * `text`/`len` are the comment leaf's exact source span (leading `//` included). */
+int arche_is_doc_comment(const char *text, size_t len);
+int arche_is_inner_doc_comment(const char *text, size_t len);
+
 /* Full-buffer tokenization: lex entire source into an array.
  * Returns a TokenBuffer with all tokens (including TOK_COMMENT).
  * Terminates with TOK_EOF as the last entry.

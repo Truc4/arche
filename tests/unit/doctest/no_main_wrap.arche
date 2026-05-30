@@ -1,0 +1,13 @@
+// RUN: %arche test %s
+
+/// Squares a value. The example body is bare statements with no `proc main`;
+/// the runner must wrap them in a main automatically.
+///
+/// # Example
+/// ```arche
+/// x := sq(4);
+/// assert(x == 16, "sq broken\n");
+/// ```
+func sq(a: int) -> int {
+  return a * a;
+}

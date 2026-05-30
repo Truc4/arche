@@ -1,0 +1,15 @@
+// RUN: %arche test %s 2>&1 | grep -qF "[no examples]"
+
+//! Module-level inner doc. Inner docs are not runnable examples, even with a
+//! fence:
+//! ```arche
+//! this would not compile and must be ignored
+//! ```
+
+// A plain comment, also not a doc comment, with a fence that must be ignored:
+// ```arche
+// neither is this
+// ```
+func plain(a: int) -> int {
+  return a;
+}

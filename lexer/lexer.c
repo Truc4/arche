@@ -94,6 +94,25 @@ static Token lex_comment(Lexer *lexer) {
 	return make_token(lexer, TOK_COMMENT, start, (size_t)(lexer->cur - start), line, column);
 }
 
+/* Doc-comment classifiers — see lexer.h. Pure text predicates over a comment
+ * leaf's source span; no lexer state. Single source of truth for the doc marker. */
+int arche_is_doc_comment(const char *text, size_t len) {
+	if (!text || len < 3)
+		return 0;
+	if (text[0] != '/' || text[1] != '/' || text[2] != '/')
+		return 0;
+	/* `////`+ is a banner/separator comment, not a doc comment (Rust convention). */
+	if (len >= 4 && text[3] == '/')
+		return 0;
+	return 1;
+}
+
+int arche_is_inner_doc_comment(const char *text, size_t len) {
+	if (!text || len < 3)
+		return 0;
+	return text[0] == '/' && text[1] == '/' && text[2] == '!';
+}
+
 static Token lex_block_comment(Lexer *lexer) {
 	const char *start = lexer->cur;
 	int line = lexer->line;
