@@ -43,10 +43,11 @@ typedef struct {
 	int is_consumed;           /* 1 if a consume-param call / move / return has consumed this binding */
 	int is_param;              /* 1 if this is a function parameter (borrowed — exempt from must-consume) */
 	int is_own;                /* 1 if an `own` parameter (owned: caller passed it via move/copy, may be mutated) */
-	int is_out_place;          /* 1 if a writable out-param slot (out-only, or the out side of an in-out that shadows the in borrow) */
-	int is_const;              /* 1 if an immutable local constant (`k :: e` / `k : T : e`) */
-	int is_referenced;         /* 1 once any read-site (EXPR_NAME, field-base, etc.) touched this binding */
-	SourceLoc loc;             /* declaration site, for the must-consume / unused-local diagnostics */
+	int is_out_place;  /* 1 if a writable out-param slot (out-only, or the out side of an in-out that shadows the in
+	                      borrow) */
+	int is_const;      /* 1 if an immutable local constant (`k :: e` / `k : T : e`) */
+	int is_referenced; /* 1 once any read-site (EXPR_NAME, field-base, etc.) touched this binding */
+	SourceLoc loc;     /* declaration site, for the must-consume / unused-local diagnostics */
 } VariableInfo;
 
 typedef struct {
