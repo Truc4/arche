@@ -107,8 +107,15 @@ struct SemanticContext {
 	 * Used by each_field to verify its RHS is an `archetype` parameter of this proc. */
 	ProcDecl *current_proc;
 
+	/* Track the func currently being analyzed (NULL if not in a func body). Used by STMT_RETURN
+	 * to require a value in a func and forbid one in a proc/sys (which use out-params). */
+	FuncDecl *current_func;
+
 	/* Track if inside proc/sys body (for alloc enforcement) */
 	int in_body;
+
+	/* 1 while analyzing a `sys` body. A `sys` supports no `return` at all (naked or valued). */
+	int in_sys;
 
 	/* 1 only while analyzing a call that sits in a statement / bind-RHS position (where an
 	 * *action* is allowed). A proc or extern call is an action, not a value, so it may appear
@@ -1873,6 +1880,15 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		break;
 
 	case STMT_RETURN:
+		/* A `sys` supports no `return` at all — reject any. A `proc` is an action with no return
+		 * value: a naked `return;` is an early exit, but a valued `return e;` is an error (results
+		 * go through out-params). A `func` is a value and must return one — that arity is checked
+		 * in tycheck (wrong_return_arity), which also rejects a naked `return;` in a func. */
+		if (ctx->in_sys) {
+			sem_emit_sys_no_return(ctx, stmt->loc);
+		} else if (stmt->data.return_stmt.count > 0 && !ctx->current_func) {
+			sem_emit_proc_return_has_value(ctx, stmt->loc);
+		}
 		/* Returning an opaque binding moves it out — counts as consumption. (Data and
 		 * handles copy, so returning them must NOT kill the binding.) */
 		for (int i = 0; i < stmt->data.return_stmt.count; i++) {
@@ -2632,11 +2648,14 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 	const char *old_sys_archetype = ctx->current_sys_archetype;
 	ctx->current_sys_archetype = sys_archetype;
 
+	int prev_in_sys = ctx->in_sys;
+	ctx->in_sys = 1;
 	ctx->in_body = 1;
 	for (int i = 0; i < sys->statement_count; i++) {
 		analyze_statement(ctx, sys->statements[i]);
 	}
 	ctx->in_body = 0;
+	ctx->in_sys = prev_in_sys;
 
 	ctx->current_sys_archetype = old_sys_archetype;
 	pop_scope(ctx);
@@ -2774,9 +2793,12 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 		mark_last_param(ctx, func->params[i]->is_own);
 	}
 
+	FuncDecl *prev_func = ctx->current_func;
+	ctx->current_func = func;
 	for (int i = 0; i < func->statement_count; i++) {
 		analyze_statement(ctx, func->statements[i]);
 	}
+	ctx->current_func = prev_func;
 
 	enforce_func_purity(ctx, func); /* a `func` must be pure — hard error if not */
 
@@ -4897,6 +4919,8 @@ static SemanticContext *make_context(void) {
 	ctx->error_count = 0;
 	ctx->current_sys_archetype = NULL;
 	ctx->current_proc = NULL;
+	ctx->current_func = NULL;
+	ctx->in_sys = 0;
 	ctx->in_body = 0;
 	ctx->prog = NULL;
 	ctx->owned_prog = NULL;

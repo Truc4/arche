@@ -55,6 +55,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_own_requires_move_or_copy]     = { "E0025", "own_requires_move_or_copy",     CLASS_ERROR, 1 },
 	[SEM_DIAG_cannot_mutate_borrowed]        = { "E0026", "cannot_mutate_borrowed",        CLASS_ERROR, 1 },
 	[SEM_DIAG_extern_array_param_needs_own]  = { "E0027", "extern_array_param_needs_own",  CLASS_ERROR, 1 },
+	[SEM_DIAG_proc_return_has_value]         = { "E0028", "proc_return_has_value",         CLASS_ERROR, 1 },
+	[SEM_DIAG_sys_no_return]                 = { "E0029", "sys_no_return",                 CLASS_ERROR, 1 },
 
 	/* Field / component */
 	[SEM_DIAG_no_field]                      = { "E0030", "no_field",                      CLASS_ERROR, 1 },
@@ -495,6 +497,16 @@ SemDiag *sem_emit_extern_array_param_needs_own(SemanticContext *ctx, SourceLoc l
 	                 "an out-param (in-out, the same name in the out-list) — an extern is assumed "
 	                 "to mutate its in-params, and a mutated read-only borrow cannot be allowed",
 	                 param_name, proc_name);
+}
+SemDiag *sem_emit_proc_return_has_value(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_DIAG_proc_return_has_value, loc,
+	                 "a `proc` has no return value — write results to out-params; a bare "
+	                 "`return;` is an early exit");
+}
+SemDiag *sem_emit_sys_no_return(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_DIAG_sys_no_return, loc,
+	                 "a `sys` does not support `return` — it runs to completion over all matching "
+	                 "archetypes; use an `if` to guard work instead");
 }
 
 /* --- Field / component --- */

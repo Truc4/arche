@@ -1592,15 +1592,19 @@ static int parse_statement(Parser *parser) {
 	}
 
 	if (match(parser, TOK_RETURN)) {
-		/* `return e1, …, en` — a list of returned values (single return is just count 1). */
-		if (!parse_expression(parser)) {
-			error(parser, "Expected expression after 'return'");
-			goto cleanup;
-		}
-		while (match(parser, TOK_COMMA)) {
+		/* `return;` — naked early exit (valid in a proc/sys); or `return e1, …, en` — a list of
+		 * returned values (a single return is just count 1, for a func). The expression list is
+		 * present only when the next token isn't `;`. */
+		if (!check(parser, TOK_SEMI)) {
 			if (!parse_expression(parser)) {
-				error(parser, "Expected expression after ',' in return statement");
+				error(parser, "Expected expression after 'return'");
 				goto cleanup;
+			}
+			while (match(parser, TOK_COMMA)) {
+				if (!parse_expression(parser)) {
+					error(parser, "Expected expression after ',' in return statement");
+					goto cleanup;
+				}
 			}
 		}
 
