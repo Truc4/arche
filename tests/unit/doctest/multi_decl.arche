@@ -1,0 +1,21 @@
+// RUN: %arche test %s
+
+// Regression: a doc comment that follows a complete declaration is absorbed by
+// the parser as a trailing leaf of the PREVIOUS decl's node, not a root-level
+// sibling. The doc query must still attach it to the following decl, so the
+// second function's example must be found and run.
+
+/// The first function (documented, no example).
+func first(a: int) -> int {
+  return a;
+}
+
+/// The second function.
+///
+/// # Example
+/// ```arche
+/// assert(second(3) == 9, "second broken\n");
+/// ```
+func second(a: int) -> int {
+  return a * a;
+}

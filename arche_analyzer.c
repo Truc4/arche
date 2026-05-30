@@ -12,6 +12,8 @@
  *   SYN <line> <col> <padL> <padR> <kind> <text...>                                inlay hint
  *   DIAG <line> <col> <severity> <code> <slug> <note_count> <msg...>               diagnostic
  *   NOTE <line> <col> <msg...>                                                     × note_count after DIAG
+ *   DOC <line> <col> <name> <linecount>                                            doc comment (hover)
+ *   DOCLINE <text...>                                                              × linecount after DOC
  *
  * Modes:
  *   --dump [file]   one-shot: analyze file (or stdin) and print all lines.
@@ -534,6 +536,43 @@ static void emit_diags(const Analysis *a) {
 	}
 }
 
+/* Documentation comments, for editor hover. Self-framing like DIAG/NOTE:
+ *   DOC <line> <col> <name> <linecount>
+ *   DOCLINE <text…>                     × linecount
+ * <line>/<col> point at the documented declaration's first token (user coords);
+ * <name> is its identifier. Each DOCLINE is one `///` line with the marker and a
+ * leading space stripped (see cv_decl_doc_lines). The editor joins them as the
+ * hover body. Needs only the CST, so it works even when analysis is partial. */
+static void emit_docs(const Analysis *a) {
+	if (!a->cst_root)
+		return;
+	CstView root = cv_root(a->cst_root, a->combined);
+	int nn = cv_node_count(root);
+	for (int i = 0; i < nn; i++) {
+		CstView decl = cv_node_at(root, i);
+		SyntaxNodeKind k = cv_kind(decl);
+		if (k < SN_WORLD_DECL || k > SN_USE_DECL)
+			continue;
+
+		CvText lines[256];
+		int n = cv_decl_doc_lines(root, decl, lines, NULL, 256);
+		if (n <= 0)
+			continue;
+
+		CvPos p = cv_first_token_pos(decl);
+		int uline = p.line - g_core_lines;
+		if (uline <= 0)
+			continue; /* core region */
+
+		CvText name = cv_text(cv_child(decl, SN_FUNC_DEF_NAME));
+		if (!name.ptr)
+			name = cv_text(cv_child(decl, SN_TYPE_DEF_NAME));
+		printf("DOC %d %d %.*s %d\n", uline, p.column, name.ptr ? (int)name.len : 4, name.ptr ? name.ptr : "item", n);
+		for (int j = 0; j < n; j++)
+			printf("DOCLINE %.*s\n", (int)lines[j].len, lines[j].ptr);
+	}
+}
+
 /* Syntax-highlighting tokens, same `offset length line col CATEGORY` format the
  * editor already consumes — but served from the warm parse and translated to user
  * coordinates (core-region tokens dropped). Needs only the CST, not analysis. */
@@ -575,6 +614,7 @@ static int run_dump(const char *path) {
 	}
 	emit_hints(&a);
 	emit_diags(&a);
+	emit_docs(&a);
 	analysis_free(&a);
 	return 0;
 }

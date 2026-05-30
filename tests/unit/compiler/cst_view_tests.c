@@ -5,6 +5,7 @@
 #include "../../../parser/parser.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static int pass = 0, fail = 0;
 #define CHECK(cond, msg)                                                                                               \
@@ -16,6 +17,11 @@ static int pass = 0, fail = 0;
 			printf("  [FAIL] %s\n", msg);                                                                              \
 		}                                                                                                              \
 	} while (0)
+
+static int cvtext_eq(CvText t, const char *s) {
+	size_t n = strlen(s);
+	return t.ptr && t.len == n && memcmp(t.ptr, s, n) == 0;
+}
 
 int main(void) {
 	/* 1. Declaration + params + types + statement + precedence nesting. */
@@ -76,6 +82,75 @@ int main(void) {
 		ParseResult r = parse_source(src);
 		CstView root = cv_root(r.cst_root, src);
 		CHECK(r.error_count > 0 || cv_has_error(root), "malformed input flagged");
+		AstProgram *p = r.ast;
+		parse_result_free(&r);
+		ast_program_free(p);
+	}
+
+	/* 5. Doc-comment classifiers (the single source of truth for the doc marker). */
+	{
+		CHECK(arche_is_doc_comment("/// x", 5), "/// is a doc comment");
+		CHECK(!arche_is_doc_comment("// x", 4), "// is not a doc comment");
+		CHECK(!arche_is_doc_comment("//// banner", 11), "//// banner is not a doc comment");
+		CHECK(!arche_is_doc_comment("//! x", 5), "//! is not an outer doc comment");
+		CHECK(arche_is_inner_doc_comment("//! x", 5), "//! is an inner doc comment");
+		CHECK(!arche_is_inner_doc_comment("/// x", 5), "/// is not an inner doc comment");
+	}
+
+	/* 6. Doc lines attach to the FOLLOWING decl — including the 2nd decl, whose
+	 * doc the parser absorbs as a trailing leaf of the 1st (regression). */
+	{
+		const char *src = "/// First line.\n/// Second line.\nfunc a() -> int { return 0; }\n\n"
+		                  "/// Doc for b.\nfunc b() -> int { return 1; }\n";
+		ParseResult r = parse_source(src);
+		CstView root = cv_root(r.cst_root, src);
+		CvText la[8];
+		int lna[8];
+		int na = cv_decl_doc_lines(root, cv_node_at(root, 0), la, lna, 8);
+		CHECK(na == 2, "decl a has 2 doc lines");
+		CHECK(na == 2 && cvtext_eq(la[0], "First line.") && cvtext_eq(la[1], "Second line."),
+		      "a doc text + marker strip");
+		CHECK(na == 2 && lna[0] == 1 && lna[1] == 2, "a doc line numbers reported");
+		CvText lb[8];
+		int lnb[8];
+		int nb = cv_decl_doc_lines(root, cv_node_at(root, 1), lb, lnb, 8);
+		CHECK(nb == 1 && cvtext_eq(lb[0], "Doc for b."), "decl b doc attaches (absorbed-comment regression)");
+		CHECK(nb == 1 && lnb[0] == 5, "decl b doc line number reported");
+		AstProgram *p = r.ast;
+		parse_result_free(&r);
+		ast_program_free(p);
+	}
+
+	/* 7. A blank line, and a plain //, both break attachment. */
+	{
+		const char *src = "/// detached\n\nfunc a() -> int { return 0; }\n";
+		ParseResult r = parse_source(src);
+		CstView root = cv_root(r.cst_root, src);
+		CvText l[8];
+		CHECK(cv_decl_doc_lines(root, cv_node_at(root, 0), l, NULL, 8) == 0, "blank line detaches doc comment");
+		AstProgram *p = r.ast;
+		parse_result_free(&r);
+		ast_program_free(p);
+	}
+	{
+		const char *src = "// plain\nfunc a() -> int { return 0; }\n";
+		ParseResult r = parse_source(src);
+		CstView root = cv_root(r.cst_root, src);
+		CvText l[8];
+		CHECK(cv_decl_doc_lines(root, cv_node_at(root, 0), l, NULL, 8) == 0, "plain // does not attach");
+		AstProgram *p = r.ast;
+		parse_result_free(&r);
+		ast_program_free(p);
+	}
+
+	/* 8. Module-level //! inner-doc lines. */
+	{
+		const char *src = "//! Module doc.\n//! Line two.\nfunc a() -> int { return 0; }\n";
+		ParseResult r = parse_source(src);
+		CstView root = cv_root(r.cst_root, src);
+		CvText l[8];
+		int n = cv_module_doc_lines(root, l, 8);
+		CHECK(n == 2 && cvtext_eq(l[0], "Module doc.") && cvtext_eq(l[1], "Line two."), "module //! doc lines");
 		AstProgram *p = r.ast;
 		parse_result_free(&r);
 		ast_program_free(p);

@@ -1,0 +1,12 @@
+// RUN: not %arche test %s
+
+/// Doubles a value. The example's assertion is deliberately wrong, so the
+/// doctest must FAIL (non-zero exit).
+///
+/// # Example
+/// ```arche
+/// assert(dbl(2) == 5, "expected failure\n");
+/// ```
+func dbl(a: int) -> int {
+  return a + a;
+}

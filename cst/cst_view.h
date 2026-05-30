@@ -77,4 +77,20 @@ CvPos cv_token_pos_at(CstView v, TokenKind kind, int n);
 /* Does the subtree contain an SN_ERROR node? */
 int cv_has_error(CstView v);
 
+/* Doc comments. Built on the lexer's single doc-comment classifier (no prefix
+ * re-checks here). Each returned CvText is the comment line with its marker and
+ * one optional leading space stripped — a borrowed slice into the source, NOT
+ * NUL-terminated. Returns the count written to out[] (capped at max).
+ *
+ * cv_decl_doc_lines: the contiguous run of outer `///` comments immediately
+ *   preceding `decl` among `root`'s children, in source order. The run is broken
+ *   by a blank line, a plain `//` comment, or any intervening node — so only docs
+ *   physically attached to the declaration are returned.
+ * cv_module_doc_lines: the leading run of inner `//!` comments before the file's
+ *   first node.
+ * When `out_lines` is non-NULL, out_lines[i] receives the 1-based source line of
+ *   the i-th returned comment (so callers can report exact fence positions). */
+int cv_decl_doc_lines(CstView root, CstView decl, CvText *out, int *out_lines, int max);
+int cv_module_doc_lines(CstView root, CvText *out, int max);
+
 #endif /* CST_VIEW_H */

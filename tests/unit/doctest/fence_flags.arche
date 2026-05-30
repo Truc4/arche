@@ -1,0 +1,30 @@
+// Fence info-string flags (Rust-style): no_run, compile_fail, should_panic,
+// ignore. All four examples below must be treated correctly and the run passes.
+// RUN: %arche test %s
+
+/// `no_run`: compiles but is not executed (so the wrong assertion never runs).
+///
+/// ```arche,no_run
+/// assert(val() == 999, "would fail if run, but no_run\n");
+/// ```
+///
+/// `compile_fail`: must fail to compile (documents a misuse), so the run passes.
+///
+/// ```arche,compile_fail
+/// x := no_such_symbol(1);
+/// ```
+///
+/// `should_panic`: must exit non-zero (the assertion fails on purpose).
+///
+/// ```arche,should_panic
+/// assert(val() == 0, "intentional panic\n");
+/// ```
+///
+/// `ignore`: never compiled or run, even though it is nonsense.
+///
+/// ```arche,ignore
+/// this is not even valid arche
+/// ```
+func val() -> int {
+  return 42;
+}

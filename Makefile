@@ -24,6 +24,9 @@ SRCS = lexer/lexer.c \
        cst/token_category.c \
        cst/format_cst.c \
        parser/parser.c \
+       driver/compile.c \
+       doctest/doctest_extract.c \
+       doctest/doctest_run.c \
        semantic/semantic.c \
        semantic/sem_model.c \
        semantic/sem_hints.c \
@@ -36,7 +39,7 @@ RUNTIME_SRCS = runtime/stack_check.c runtime/io.c runtime/net.c runtime/term.c
 RUNTIME_OBJS = $(RUNTIME_SRCS:.c=.o)
 
 OBJS = $(SRCS:.c=.o)
-COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/main.o
+COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/driver/compile.o $(BUILD_DIR)/doctest/doctest_extract.o $(BUILD_DIR)/doctest/doctest_run.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/main.o
 LEXER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/lexer/lexer_main.o
 PARSER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/unit/compiler/parser_tests.o
 FMT_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/cst/format_cst.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_fmt.o
@@ -49,10 +52,10 @@ CODEGEN_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DI
 LOWER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/unit/compiler/lower_tests.o
 
 # Default target
-all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(CST_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
+all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(CST_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(CST_VIEW_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 
 $(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/cst $(BUILD_DIR)/hir $(BUILD_DIR)/lower $(BUILD_DIR)/parser $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/unit/compiler $(BUILD_DIR)/runtime
+	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/cst $(BUILD_DIR)/hir $(BUILD_DIR)/lower $(BUILD_DIR)/parser $(BUILD_DIR)/driver $(BUILD_DIR)/doctest $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/unit/compiler $(BUILD_DIR)/runtime
 
 # Build main compiler executable
 $(TARGET): $(COMPILER_OBJS)
@@ -144,7 +147,7 @@ test-lower: $(LOWER_TEST_BIN)
 	./$(LOWER_TEST_BIN)
 
 # Run all tests with LIT
-test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
+test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(CST_VIEW_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 	lit -v tests/
 
 # Test folder with pattern: make test-folder FOLDER=path PATTERN="*.arche"
