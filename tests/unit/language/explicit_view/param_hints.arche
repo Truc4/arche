@@ -7,13 +7,13 @@
 // call may have effects. The func call `add(1, 2)` (a value) gets no such hint.
 // RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 19 23 0 0 effect ()"
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN ") -eq 7
-func add(a: int, b: int) -> int {
+add :: func(a: int, b: int) -> int {
   return a + b;
 }
-proc store(own dst: char[], src: char[]) {
+store :: proc(own dst: char[], src: char[]) {
   dst[0] = src[0];
 }
-proc main() {
+main :: proc() {
   r := add(1, 2);
   buf := "xx";
   store(copy buf, buf);

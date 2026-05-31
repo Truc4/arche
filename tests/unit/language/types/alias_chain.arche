@@ -3,7 +3,7 @@
 // RUN: %arche build -o %t %s && %t | grep "result: 10"
 base :: int
 level :: base
-proc main() {
+main :: proc() {
   x: level = 4;
   y: level = 6;
   printf("result: %d\n", x + y);

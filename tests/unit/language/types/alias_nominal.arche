@@ -3,7 +3,7 @@
 // so `count + count` is `int + int` and prints 30.
 // RUN: %arche build -o %t %s && %t | grep "result: 30"
 count :: int
-proc main() {
+main :: proc() {
   a: count = 10;
   b: count = 20;
   printf("result: %d\n", a + b);

@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "wide=1 narrow=1"
 // i64(x) widening cast and i32(x) narrowing (truncating) cast.
-proc main() {
+main :: proc() {
   a := 5;
   b := i64(a);
   big: i64 = 4294967297;

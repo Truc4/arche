@@ -1,11 +1,11 @@
 // Several computed results come from a proc's out-list, not a func (a func returns one value).
 // RUN: %arche build -o %t %s && %t | grep "s=13 d=7"
-proc sum_diff(a: int, b: int)(s: int, d: int) {
+sum_diff :: proc(a: int, b: int)(s: int, d: int) {
   s = a + b;
   d = a - b;
 }
 
-proc main() {
+main :: proc() {
   sum_diff(10, 3)(s:, d:);
   printf("s=%d d=%d\n", s, d);
 }

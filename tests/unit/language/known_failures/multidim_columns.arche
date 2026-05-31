@@ -1,10 +1,10 @@
 // RUN: %arche build -o %t %s && %t | grep "allocations done"
-arche Message {
+Message :: arche {
   text :: char[256],
   author :: char[64],
 }
 
-arche Matrix {
+Matrix :: arche {
   data :: float[10][10],
 }
 
@@ -12,6 +12,6 @@ static pool<Message> (100);
 
 static pool<Matrix> (50);
 
-proc main() {
+main :: proc() {
   print("allocations done\n");
 }

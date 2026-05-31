@@ -26,12 +26,16 @@ static int cvtext_eq(CvText t, const char *s) {
 int main(void) {
 	/* 1. Declaration + params + types + statement + precedence nesting. */
 	{
-		const char *src = "proc add(a: int, b: int) {\n  x := a + b * c;\n}\n";
+		const char *src = "add :: proc(a: int, b: int) {\n  x := a + b * c;\n}\n";
 		ParseResult r = parse_source(src);
 		CstView root = cv_root(r.cst_root, src);
-		CstView proc = cv_child(root, SN_PROC_DECL);
-		CHECK(cv_present(proc), "proc decl present");
-		CHECK(cv_text_eq(cv_child(proc, SN_FUNC_DEF_NAME), "add"), "proc name == add");
+		/* Unified grammar: `add :: proc(...)` is a const-decl binding whose value is an
+		 * SN_PROC_EXPR; the name is the decl's IDENT token (no SN_FUNC_DEF_NAME). */
+		CstView decl = cv_child(root, SN_CONST_DECL);
+		CHECK(cv_present(decl), "const decl present");
+		CHECK(cvtext_eq(cv_token(decl, TOK_IDENT), "add"), "binding name == add");
+		CstView proc = cv_child(decl, SN_PROC_EXPR);
+		CHECK(cv_present(proc), "proc value form present");
 		CHECK(cv_count(proc, SN_PARAM) == 2, "two params");
 		CstView p0 = cv_child(proc, SN_PARAM);
 		CHECK(cv_text_eq(cv_child(p0, SN_PARAM_NAME), "a") && cv_text_eq(cv_child(p0, SN_TYPE_REF), "int"),
@@ -53,10 +57,11 @@ int main(void) {
 
 	/* 2. Call expression: callee + string argument. */
 	{
-		const char *src = "proc m() {\n  print(\"hi\");\n}\n";
+		const char *src = "m :: proc() {\n  print(\"hi\");\n}\n";
 		ParseResult r = parse_source(src);
 		CstView root = cv_root(r.cst_root, src);
-		CstView call = cv_child(cv_child(cv_child(root, SN_PROC_DECL), SN_EXPR_STMT), SN_CALL_EXPR);
+		CstView call =
+		    cv_child(cv_child(cv_child(cv_child(root, SN_CONST_DECL), SN_PROC_EXPR), SN_EXPR_STMT), SN_CALL_EXPR);
 		CHECK(cv_present(call), "call expr present");
 		CHECK(cv_text_eq(cv_child(call, SN_CALLEE_NAME), "print"), "callee == print");
 		CHECK(cv_present(cv_child(call, SN_STRING_EXPR)), "string argument present");
@@ -68,7 +73,7 @@ int main(void) {
 
 	/* 3. Node ids are dense: the root has the largest id == node_count - 1. */
 	{
-		const char *src = "proc m() {\n  x := 1;\n}\n";
+		const char *src = "m :: proc() {\n  x := 1;\n}\n";
 		ParseResult r = parse_source(src);
 		CHECK(r.cst_root && r.cst_root->id > 0, "root id assigned (post-order, nonzero)");
 		AstProgram *p = r.ast;
@@ -78,7 +83,7 @@ int main(void) {
 
 	/* 4. Malformed input is flagged (parse error and/or an error node). */
 	{
-		const char *src = "proc m( {\n";
+		const char *src = "m :: proc( {\n";
 		ParseResult r = parse_source(src);
 		CstView root = cv_root(r.cst_root, src);
 		CHECK(r.error_count > 0 || cv_has_error(root), "malformed input flagged");
@@ -100,8 +105,8 @@ int main(void) {
 	/* 6. Doc lines attach to the FOLLOWING decl — including the 2nd decl, whose
 	 * doc the parser absorbs as a trailing leaf of the 1st (regression). */
 	{
-		const char *src = "/// First line.\n/// Second line.\nfunc a() -> int { return 0; }\n\n"
-		                  "/// Doc for b.\nfunc b() -> int { return 1; }\n";
+		const char *src = "/// First line.\n/// Second line.\na :: func() -> int { return 0; }\n\n"
+		                  "/// Doc for b.\nb :: func() -> int { return 1; }\n";
 		ParseResult r = parse_source(src);
 		CstView root = cv_root(r.cst_root, src);
 		CvText la[8];
@@ -123,7 +128,7 @@ int main(void) {
 
 	/* 7. A blank line, and a plain //, both break attachment. */
 	{
-		const char *src = "/// detached\n\nfunc a() -> int { return 0; }\n";
+		const char *src = "/// detached\n\na :: func() -> int { return 0; }\n";
 		ParseResult r = parse_source(src);
 		CstView root = cv_root(r.cst_root, src);
 		CvText l[8];
@@ -133,7 +138,7 @@ int main(void) {
 		ast_program_free(p);
 	}
 	{
-		const char *src = "// plain\nfunc a() -> int { return 0; }\n";
+		const char *src = "// plain\na :: func() -> int { return 0; }\n";
 		ParseResult r = parse_source(src);
 		CstView root = cv_root(r.cst_root, src);
 		CvText l[8];
@@ -145,7 +150,7 @@ int main(void) {
 
 	/* 8. Module-level //! inner-doc lines. */
 	{
-		const char *src = "//! Module doc.\n//! Line two.\nfunc a() -> int { return 0; }\n";
+		const char *src = "//! Module doc.\n//! Line two.\na :: func() -> int { return 0; }\n";
 		ParseResult r = parse_source(src);
 		CstView root = cv_root(r.cst_root, src);
 		CvText l[8];

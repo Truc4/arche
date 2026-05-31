@@ -2,6 +2,6 @@
 // standalone test. It calls xmod_a's `helper` by its BARE name — the thing
 // cross-module resolution makes work.
 // RUN: true
-func useit(x: int) -> int {
+useit :: func(x: int) -> int {
   return helper(x);
 }

@@ -76,8 +76,8 @@ void analysis_result_free(AnalysisResult *result) {
 
 void test_handle_field_declared(void) {
 	test_start("handle field syntax is accepted");
-	AnalysisResult result = analyze_string("arche Player { pos :: Float }\n"
-	                                       "arche AliveList { player_ref :: handle(Player) }");
+	AnalysisResult result = analyze_string("Player :: arche { pos :: Float }\n"
+	                                       "AliveList :: arche { player_ref :: handle(Player) }");
 	ASSERT_TRUE(result.ctx != NULL, "context is null");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should accept handle field");
 	ASSERT_TRUE(semantic_field_exists(result.ctx, "AliveList", "player_ref"), "player_ref field not found");
@@ -87,7 +87,7 @@ void test_handle_field_declared(void) {
 
 void test_handle_unknown_archetype_error(void) {
 	test_start("handle to unknown archetype detected");
-	AnalysisResult result = analyze_string("arche AliveList { player_ref :: handle(UnknownArch) }");
+	AnalysisResult result = analyze_string("AliveList :: arche { player_ref :: handle(UnknownArch) }");
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "should error for unknown archetype");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -97,8 +97,8 @@ void test_handle_unknown_archetype_error(void) {
 
 void test_insert_returns_handle(void) {
 	test_start("insert returns handle value");
-	AnalysisResult result = analyze_string("arche Player { pos :: Float }\n"
-	                                       "proc main() { h := insert(Player, 1.0); }");
+	AnalysisResult result = analyze_string("Player :: arche { pos :: Float }\n"
+	                                       "main :: proc() { h := insert(Player, 1.0); }");
 	ASSERT_TRUE(result.ctx != NULL, "context is null");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "insert should compile");
 	analysis_result_free(&result);
@@ -107,9 +107,9 @@ void test_insert_returns_handle(void) {
 
 void test_handle_stored_in_column(void) {
 	test_start("handle stored in handle column");
-	AnalysisResult result = analyze_string("arche Player { pos :: Float }\n"
-	                                       "arche AliveList { player_ref :: handle(Player) }\n"
-	                                       "proc main() {\n"
+	AnalysisResult result = analyze_string("Player :: arche { pos :: Float }\n"
+	                                       "AliveList :: arche { player_ref :: handle(Player) }\n"
+	                                       "main :: proc() {\n"
 	                                       "  p := insert(Player, 1.0);\n"
 	                                       "  insert(AliveList, p);\n"
 	                                       "}");
@@ -123,9 +123,9 @@ void test_handle_stored_in_column(void) {
 
 void test_handle_column_blocks_sys(void) {
 	test_start("handle column cannot be sys parameter");
-	AnalysisResult result = analyze_string("arche Player { pos :: Float }\n"
-	                                       "arche AliveList { player_ref :: handle(Player) }\n"
-	                                       "sys process_alive(player_ref) { }");
+	AnalysisResult result = analyze_string("Player :: arche { pos :: Float }\n"
+	                                       "AliveList :: arche { player_ref :: handle(Player) }\n"
+	                                       "process_alive :: sys(player_ref) { }");
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "sys with handle column should error");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -133,8 +133,8 @@ void test_handle_column_blocks_sys(void) {
 
 void test_regular_column_allowed_in_sys(void) {
 	test_start("regular columns allowed in sys");
-	AnalysisResult result = analyze_string("arche Player { pos :: Float }\n"
-	                                       "sys process(pos) { }");
+	AnalysisResult result = analyze_string("Player :: arche { pos :: Float }\n"
+	                                       "process :: sys(pos) { }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "sys with regular column should compile");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -144,9 +144,9 @@ void test_regular_column_allowed_in_sys(void) {
 
 void test_handle_type_mismatch_delete(void) {
 	test_start("delete with wrong handle type errors");
-	AnalysisResult result = analyze_string("arche Player { pos :: Float }\n"
-	                                       "arche Enemy { health :: Float }\n"
-	                                       "proc main() {\n"
+	AnalysisResult result = analyze_string("Player :: arche { pos :: Float }\n"
+	                                       "Enemy :: arche { health :: Float }\n"
+	                                       "main :: proc() {\n"
 	                                       "  p := insert(Player, 1.0);\n"
 	                                       "  delete(Enemy, p);\n"
 	                                       "}");
@@ -157,8 +157,8 @@ void test_handle_type_mismatch_delete(void) {
 
 void test_handle_type_correct_delete(void) {
 	test_start("delete with correct handle type succeeds");
-	AnalysisResult result = analyze_string("arche Player { pos :: Float }\n"
-	                                       "proc main() {\n"
+	AnalysisResult result = analyze_string("Player :: arche { pos :: Float }\n"
+	                                       "main :: proc() {\n"
 	                                       "  p := insert(Player, 1.0);\n"
 	                                       "  delete(Player, p);\n"
 	                                       "}");

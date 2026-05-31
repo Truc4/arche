@@ -4,10 +4,10 @@
 // RUN: %arche build -o %t %s && %t 42 | grep "len=2"
 // RUN: %t 42 | grep "n=42"
 #import os;
-func mylen(s: char[]) -> int {
+mylen :: func(s: char[]) -> int {
   return strlen(s);
 }
-proc main() {
+main :: proc() {
   arche_argv(1)(arg:);
   printf("len=%d\n", mylen(arg));
   printf("n=%d\n", atoi(arg));

@@ -2,10 +2,10 @@
 // even when the callee does not itself consume (the `move` marks the hand-off explicitly).
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
 resource :: opaque
-extern proc resource_open(initial: int)(ret: resource);
-extern proc resource_get(r: resource)(ret: int);
+resource_open :: extern proc(initial: int)(ret: resource);
+resource_get :: extern proc(r: resource)(ret: int);
 
-proc main() {
+main :: proc() {
   resource_open(10)(r:);
   resource_get(move r)(v:);
   resource_get(r)(w:);

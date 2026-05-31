@@ -1,7 +1,7 @@
-proc add(a: int, b: int) {
+add :: proc(a: int, b: int) {
   result := a + b;
   print("sum: 15\n");
 }
-proc main() {
+main :: proc() {
   add(5, 10);
 }

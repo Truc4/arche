@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "Value: 42"
-proc main() {
+main :: proc() {
   printf("Value: %d\n", 42);
   printf("Value: %d\n", 42);
 }

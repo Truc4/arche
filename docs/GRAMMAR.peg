@@ -1,95 +1,100 @@
 # Arche — Grammar (PEG)
-
-Program ← _ (Decl _)* EOF
-
-Decl ← ArchetypeDecl / ProcDecl / SysDecl / FuncDecl / ExternTypeDecl
-
-# Declarations
-
-ArchetypeDecl ← "arche" _ Identifier _ "{" _ (ArchField _)* "}"
-
-ArchField ← Identifier _ ":" _ Type _ ("," _)?
-
-ProcDecl ← "proc" _ Identifier _ "(" _ (Identifier (_ "," _ Identifier)*)? _ ")" _ "{" _ (Statement _)* "}"
-
-SysDecl ← "sys" _ Identifier _ "(" _ (Identifier (_ "," _ Identifier)*)? _ ")" _ "{" _ (Statement _)* "}"
-
-FuncDecl ← "func" _ Identifier _ "(" _ (FuncParam (_ "," _ FuncParam)*)? _ ")" _ "->" _ Type _ "{" _ Expression _ "}"
-
-# A parameter is a read-only borrow by default; `own` means the function takes ownership (may
-# mutate/consume). At the call site an `own` argument is satisfied with `move <expr>` (donate,
-# consumed) or `copy <expr>` (duplicate, kept) — see UnaryExpr.
-FuncParam ← ("own" _)? Identifier _ ":" _ Type
-
-# Extern table declarations introduce foreign-resource pools.  The name is
-# never used bare — references go through `handle(<Name>)` everywhere, just
-# like archetype handles. Capacity (the maximum number of live handles) is
-# required at declaration time.
-ExternTypeDecl ← "extern" _ Identifier _ "(" _ Number _ ")" _ ";"
-
-# Extern parameters take the same `own` modifier as ordinary funcs (no more `out`/`consume`).
-ExternFuncParam ← ("own" _)? Identifier _ ":" _ Type
-
-# Statements
-
-Statement ← LetBinding / ForLoop / RunSystem / Assignment / ";"
-
-LetBinding ← "let" _ Identifier _ "=" _ Expression _ ";"
-
-Assignment ← Path _ AssignOp _ Expression _ ";"
-
-AssignOp ← "+=" / "-=" / "*=" / "/=" / "="
-
-ForLoop ← "for" _ Identifier _ "in" _ Identifier _ "{" _ (Statement _)* "}"
-
-RunSystem ← "run" _ Identifier _ ";"
-
-# Expressions
-
-Expression ← BinaryOp / Allocation / Deallocation / ExprPrimary
-
-ExprPrimary ← Literal / Path / Identifier / Index / "(" _ Expression _ ")"
-
-BinaryOp ← ExprPrimary (_ Operator _ ExprPrimary)+
-
-Allocation ← "alloc" _ Identifier _ "(" _ Expression _ ")"
-
-Deallocation ← "free" _ Identifier
-
-Index ← Identifier _ "[" _ Expression (_ "," _ Expression)* _ "]"
-
-# Paths and Access
-
-Path ← Identifier (_ "." _ Identifier)+
-
-# Types
 #
-# A type is an identifier. Built-in scalar types: int (= i32), float, char,
-# plus fixed-width integers (always available): i8/u8, i16/u16, i32/u32,
-# i64/u64, i128/u128, and byte (= u8). Signedness is part of the type and
-# selects signed vs unsigned machine operations. A width-type name used as a
-# call, e.g. i64(x), is a conversion (sext/zext/trunc), not a function call.
+# Unified binding grammar: every top-level declaration is a binding `name : meta : value`.
+# proc / func / sys / arche are RHS value-literal forms (with a body) or type forms (bodiless).
+# `proc`/`func`/`sys`/`arche` are NOT statement keywords — there are no keyword-led declarations.
 
-Type ← Identifier
+Program  ← _ (Decl _)* EOF
 
-# Literals
+Decl     ← Binding / UseDecl / VisMarker / StaticDecl
 
-Literal ← Number
+# ---- The one declaration form ---------------------------------------------------------------
+# x := e        variable, inferred       x :: e        constant, inferred (value / type / callable)
+# x : T = e     variable, typed          x : T : e     constant, typed
+# x : T         typed, zero-init (no init)             @decorator may precede the binding name
+Binding   ← (Decorator _)* Identifier _ ":" _ Type? _ (BindTail)?
+BindTail  ← (":" / "=") _ RHS
+RHS       ← Expr / TypeForm
 
-Number ← [0-9]+ ("." [0-9]+)?
+Decorator ← "@" ("allow_pure_proc" / "allow" _ "(" _ Identifier _ ")")
 
-# Tokens
+# ---- Value-literal RHS forms (the name is the binding LHS; these carry no name) --------------
+ProcLit   ← ("extern" _)? "proc" _ ParamList _ OutList? _ Block        # value (or extern, bodiless)
+FuncLit   ← "func" _ ParamList _ "->" _ Type _ Block                   # value
+SysLit    ← "sys" _ SysParams _ Block                                  # data transform over archetypes
+ArcheLit  ← "arche" _ "{" _ (ArchField _)* "}"                         # record (archetype) type def
+GroupLit  ← ("proc" / "func") _ "{" _ Identifier (_ "," _ Identifier)* _ "}"   # overload group (Odin-style)
 
+# ---- Type forms (a bodiless callable signature is a TYPE) ------------------------------------
+TypeForm  ← ProcType / FuncType / Type
+ProcType  ← ("extern" _)? "proc" _ ParamList _ OutList?                # = ProcLit − Block
+FuncType  ← "func" _ ParamList _ "->" _ Type                          # = FuncLit − Block
+
+# ---- Signatures -----------------------------------------------------------------------------
+ParamList ← "(" _ (Param (_ "," _ Param)* (_ "," _ "...")?)? _ ")"     # `...` only in extern sigs
+Param     ← ("own" _)? Identifier _ ":" _ Type
+OutList   ← "(" _ (OutParam (_ "," _ OutParam)*)? _ ")"                # proc results, written in place
+OutParam  ← Identifier _ ":" _ Type
+SysParams ← "(" _ (Identifier (_ "," _ Identifier)*)? _ ")"           # bare component names
+ArchField ← Identifier (_ "(" _ Identifier (_ "," _ Identifier)* _ ")")? _ ("::" _ Type)? _ ("," _)?
+
+Block     ← "{" _ (Statement _)* "}"
+
+# ---- Directives -----------------------------------------------------------------------------
+UseDecl    ← "#import" _ Identifier _ ";"
+VisMarker  ← "#module" / "#file"
+StaticDecl ← "static" _ (PoolDecl / ArrayDecl)
+PoolDecl   ← "pool" _ "<" _ Identifier _ ">" _ "(" _ Expr (_ "," _ Expr)* _ ")" _ ("{" _ (FieldInit _)* "}")?
+ArrayDecl  ← Identifier _ ":" _ Type
+FieldInit  ← Identifier _ ":" _ Expr _ ("," _)?
+
+# ---- Statements -----------------------------------------------------------------------------
+Statement ← Binding / Assignment / ForLoop / IfStmt / RunSystem / ReturnStmt / ProcCall / EachField / ExprStmt / ";"
+
+Assignment ← Path _ AssignOp _ Expr _ ";"
+AssignOp   ← "+=" / "-=" / "*=" / "/=" / "="
+ForLoop    ← "for" _ Identifier _ "in" _ Expr _ Block
+IfStmt     ← "if" _ "(" _ Expr _ ")" _ Block (_ "else" _ (IfStmt / Block))?
+RunSystem  ← "run" _ Identifier _ ";"
+ReturnStmt ← "return" (_ Expr)? _ ";"
+EachField  ← "#each_field" _ Identifier _ ":" _ Type _ "in" _ Identifier _ Block
+# A proc call is a statement (an action), not a value: `foo(in)(out)`. The out-args declare
+# (`name:`) or reuse (`name`) caller places the proc writes in place.
+ProcCall   ← Path _ "(" _ ArgList? _ ")" _ "(" _ OutArg (_ "," _ OutArg)* _ ")" _ ";"
+OutArg     ← Identifier (":" (_ Type)?)?
+ExprStmt   ← Expr _ ";"
+
+# ---- Expressions ----------------------------------------------------------------------------
+# proc/func/sys/arche literals & type forms are expressions too (RHS of a binding, call args, …).
+Expr       ← BinaryOp / UnaryExpr
+BinaryOp   ← UnaryExpr (_ Operator _ UnaryExpr)*
+UnaryExpr  ← (("-" / "!" / "move" / "copy") _)? Postfix
+Postfix    ← Primary (_ ("." Identifier / "[" _ Expr (_ "," _ Expr)* _ "]" / "(" _ ArgList? _ ")"))*
+Primary    ← Number / String / CharLit / ArrayLit / Alloc
+           / ProcLit / FuncLit / SysLit / ArcheLit / GroupLit / ProcType / FuncType
+           / Path / Identifier / "(" _ Expr _ ")"
+ArgList    ← Expr (_ "," _ Expr)*
+ArrayLit   ← "{" _ (Expr (_ "," _ Expr)*)? _ "}"
+Alloc      ← "alloc" _ Identifier _ "(" _ Expr _ ")" (_ "{" _ (FieldInit _)* "}")?
+Path       ← Identifier (_ "." _ Identifier)+
+
+# ---- Types ----------------------------------------------------------------------------------
+# A type is a name (primitive / nominal alias / archetype), an array/handle form, a bare category
+# (`archetype` / `opaque`), the meta-type `type`, or a callable signature (ProcType / FuncType).
+# Identity is nominal for data types (each `name :: T` mints a distinct type); callable types are
+# structural (matched by signature). `int`=i32, `byte`=u8 (transparent `alias`es; see decisions).
+Type       ← ProcType / FuncType / HandleType / ArrayType / Identifier
+HandleType ← "handle" ("<" _ Identifier _ ">" / "(" _ Identifier _ ")")
+ArrayType  ← Identifier ("[" _ (Number)? _ "]")+
+
+# ---- Tokens ---------------------------------------------------------------------------------
 Identifier ← [a-zA-Z_] [a-zA-Z0-9_]*
+Number     ← [0-9]+ ("." [0-9]+)?
+String     ← '"' (!'"' .)* '"'
+CharLit    ← "'" (!"'" .) "'"
+Operator   ← "==" / "!=" / "<=" / ">=" / "<" / ">" / "+" / "-" / "*" / "/"
 
-Operator ← "==" / "!=" / "<=" / ">=" / "<" / ">" / "+" / "-" / "*" / "/"
-
-# Whitespace and Comments
-
-_ ← (Whitespace / Comment)*
-
+_          ← (Whitespace / Comment)*
 Whitespace ← [ \t\r\n]+
-
-Comment ← "//" (!'\n' .)*
-
-EOF ← !.
+Comment    ← "//" (!'\n' .)*       # `///` outer-doc, `//!` inner-doc are comment subforms
+EOF        ← !.

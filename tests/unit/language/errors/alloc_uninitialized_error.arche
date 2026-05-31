@@ -1,12 +1,12 @@
 // RUN: %arche build -o %t %s > /dev/null 2>&1 && ! %t 2>&1
 // Uninitialized alloc has count=0, accessing any row should error
-arche Counter {
+Counter :: arche {
   val :: int,
 }
 
 static pool<Counter> (5);
 
-proc main() {
+main :: proc() {
   x := Counter.val[0];
   printf("should not reach\n");
 }

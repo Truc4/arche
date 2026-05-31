@@ -1,11 +1,11 @@
 // RUN: %arche build -o %t %s && %t
-arche Particle {
+Particle :: arche {
   pos :: float,
 }
 
 static pool<Particle> (5);
 
-proc main() {
+main :: proc() {
   insert(Particle, 1.0);
   v := Particle.pos[0];
   vi := v * 10.0;

@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-proc main() {
+main :: proc() {
   printf("string: '%s'\n", "hello");
   printf("length: %d\n", strlen("hello"));
 }

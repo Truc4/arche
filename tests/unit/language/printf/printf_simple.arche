@@ -1,4 +1,4 @@
 // RUN: %arche build -o %t %s && %t | grep 123
-proc main() {
+main :: proc() {
   printf("Value: %d\n", 123);
 }

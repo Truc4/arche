@@ -1,0 +1,19 @@
+// Stage A of proc/func types: a callable alias binds a name to an existing proc/func value
+// (`handler :: not_found`), and calls through the alias dispatch to the target. The binding is
+// compile-time — calls compile to a direct call to the target.
+// RUN: %arche build -o %t %s && %t | grep "code=404 sum=7"
+not_found :: proc()(code: int) {
+  code = 404;
+}
+add :: func(a: int, b: int) -> int {
+  return a + b;
+}
+
+handler :: not_found    // proc alias
+plus :: add             // func alias
+
+main :: proc() {
+  handler()(c:);
+  s := plus(3, 4);
+  printf("code=%d sum=%d\n", c, s);
+}

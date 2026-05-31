@@ -1,9 +1,9 @@
 // RUN: %arche build -o %t %s && %t
-func test_strlen(s: char[]) -> int {
+test_strlen :: func(s: char[]) -> int {
   return strlen(s);
 }
 
-proc main() {
+main :: proc() {
   n := test_strlen("hello");
   assert(n == 5, "strlen failed\n");
   printf("ok\n");

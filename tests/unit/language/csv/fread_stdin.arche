@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import io;
-proc main() {
+main :: proc() {
   buf: char[256];
   arche_stdin()(fd:);
   arche_fread(fd, buf, 256)(n:);

@@ -1,8 +1,8 @@
 // Task 3: Bucket prices and extract hours from timestamps
 // Compute price_bucket = price / 10.0 and hour_bucket from timestamp
-use csv;
+#import csv;
 
-arche Transaction {
+Transaction :: arche {
   price :: float,
   hour_bucket :: int,
   price_bucket :: float,
@@ -13,11 +13,11 @@ static pool<Transaction> (100000000, 100000000) {
 }
 ;
 
-proc load_transactions() {
+load_transactions :: proc() {
   csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_100m.csv");
 }
 
-proc main() {
+main :: proc() {
   load_transactions();
   Transaction.price_bucket = Transaction.price / 10.0;
   price_sum := 0.0;

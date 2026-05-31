@@ -1,8 +1,8 @@
 // An archetype is a collection of nominal *types*; an inline component's RHS must be a type, not a
 // value. `hp :: 10` is rejected (parse_type requires a type name).
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "type name" %t.out
-arche Mob { hp :: 10 }
+Mob :: arche { hp :: 10 }
 
-proc main() {
+main :: proc() {
   printf("unreachable\n");
 }

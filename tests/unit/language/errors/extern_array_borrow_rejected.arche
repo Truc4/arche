@@ -2,9 +2,9 @@
 // to verify, so every in-param is assumed mutated, and a mutated read-only borrow can't be
 // allowed. Declare the buffer `own` (handed to C) or in-out (filled and handed back).
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "assumed to mutate" %t.out
-extern proc fill_it(buf: char[], n: int)(r: int);
+fill_it :: extern proc(buf: char[], n: int)(r: int);
 
-proc main() {
+main :: proc() {
   b: char[8];
   fill_it(b, 8)(r:);
 }

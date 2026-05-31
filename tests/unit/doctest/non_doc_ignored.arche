@@ -10,6 +10,6 @@
 // ```arche
 // neither is this
 // ```
-func plain(a: int) -> int {
+plain :: func(a: int) -> int {
   return a;
 }

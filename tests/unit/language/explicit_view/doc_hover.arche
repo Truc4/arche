@@ -4,6 +4,6 @@
 // RUN: %build/arche-analyzer --dump %s | grep -qF "DOCLINE Adds two integers."
 
 /// Adds two integers.
-func add(a: int, b: int) -> int {
+add :: func(a: int, b: int) -> int {
   return a + b;
 }

@@ -191,6 +191,16 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "STRING_EXPR";
 	case SN_PAREN_EXPR:
 		return "PAREN_EXPR";
+	case SN_PROC_EXPR:
+		return "PROC_EXPR";
+	case SN_FUNC_EXPR:
+		return "FUNC_EXPR";
+	case SN_GROUP_EXPR:
+		return "GROUP_EXPR";
+	case SN_ARCH_EXPR:
+		return "ARCH_EXPR";
+	case SN_SYS_EXPR:
+		return "SYS_EXPR";
 	case SN_TYPE_REF:
 		return "TYPE_REF";
 	case SN_TYPE_ARRAY:
@@ -201,6 +211,10 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "TYPE_TUPLE";
 	case SN_TYPE_HANDLE:
 		return "TYPE_HANDLE";
+	case SN_TYPE_PROC:
+		return "TYPE_PROC";
+	case SN_TYPE_FUNC:
+		return "TYPE_FUNC";
 	case SN_TYPE_DEF_NAME:
 		return "TYPE_DEF_NAME";
 	case SN_FUNC_DEF_NAME:

@@ -1,11 +1,11 @@
 // RUN: %arche build -o %t %s && %t | grep "value:"
-arche Matrix {
+Matrix :: arche {
   data :: float[10],
 }
 
 static pool<Matrix> (5);
 
-proc main() {
+main :: proc() {
   insert(Matrix, 1.5);
   val := Matrix.data[0, 0];
   vi := val * 10.0;

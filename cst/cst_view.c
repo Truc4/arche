@@ -94,7 +94,7 @@ static int is_expr_kind(SyntaxNodeKind k) {
 	return k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR;
 }
 static int is_type_kind(SyntaxNodeKind k) {
-	return k >= SN_TYPE_REF && k <= SN_TYPE_HANDLE;
+	return k >= SN_TYPE_REF && k <= SN_TYPE_FUNC;
 }
 
 CstView cv_expr_at(CstView v, int idx) {

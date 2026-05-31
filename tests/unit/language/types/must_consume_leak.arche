@@ -2,9 +2,9 @@
 // call, returned, or inserted) before its scope ends is a compile error. No silent leak.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "not consumed" %t.out
 resource :: opaque
-extern proc resource_open(initial: int)(ret: resource);
-extern proc resource_close(own r: resource);
+resource_open :: extern proc(initial: int)(ret: resource);
+resource_close :: extern proc(own r: resource);
 
-proc main() {
+main :: proc() {
   resource_open(10)(r:);
 }

@@ -53,7 +53,8 @@ TypeId tyid_of_shaped(TypeArena *a, TypeId elem, int rank);
 TypeId tyid_of_tuple(TypeArena *a, const char *const *field_names, const TypeId *field_types, int field_count);
 TypeId tyid_of_handle(TypeArena *a, const char *archetype_name);
 TypeId tyid_of_archetype_category(TypeArena *a);
-TypeId tyid_of_func(TypeArena *a, const TypeId *params, int param_count, const TypeId *returns, int return_count);
+TypeId tyid_of_func(TypeArena *a, const TypeId *params, int param_count, const TypeId *returns, int return_count,
+                    int is_proc);
 
 /* Inspection. */
 TyKind tyid_kind(const TypeArena *a, TypeId t);

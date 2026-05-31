@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-proc main() {
+main :: proc() {
   open("/dev/null", 0)(fd:);
   if (fd >= 0) {
     close(move fd);

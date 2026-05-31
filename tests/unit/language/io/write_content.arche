@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t && test -f /tmp/arche_test_write.txt && grep -q "test123" /tmp/arche_test_write.txt && echo "PASS"
 #import io;
-proc main() {
+main :: proc() {
   arche_fopen_write("/tmp/arche_test_write.txt")(fd:);
   buf: char[32];
   sprintf(buf, "test123\n")(buf, n:);

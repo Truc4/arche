@@ -1,7 +1,7 @@
 // Task 3 (arche, transform-only): price_bucket = price / 10.0, repeated N=216,000 times.
-use csv;
+#import csv;
 
-arche Transaction {
+Transaction :: arche {
   price :: float,
   price_bucket :: float,
 }
@@ -11,11 +11,11 @@ static pool<Transaction> (10000, 10000) {
 }
 ;
 
-proc load_transactions() {
+load_transactions :: proc() {
   csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");
 }
 
-proc write_output() {
+write_output :: proc() {
   arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_3.csv")(fd:);
   header: char[32];
   sprintf(header, "price_bucket\n");
@@ -28,7 +28,7 @@ proc write_output() {
   arche_fclose(move fd);
 }
 
-proc main() {
+main :: proc() {
   load_transactions();
   arche_now_sec()(t0:);
   for (iter := 0; iter < 216000; iter += 1) {

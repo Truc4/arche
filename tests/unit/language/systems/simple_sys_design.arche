@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "system_ran"
-arche Counter {
+Counter :: arche {
   val :: int,
 }
 
@@ -8,12 +8,12 @@ static pool<Counter> (1, 1) {
 }
 ;
 
-sys increment(val) {
+increment :: sys(val) {
   printf("system_ran\n");
   val = val + 1;
 }
 
-proc main() {
+main :: proc() {
   run increment;
   assert(Counter.val[0] == 1, "system did not run\n");
 }

@@ -1,11 +1,11 @@
 // E0031: a func and a proc may not share a name. The two kinds are distinct (keyword, `-> T` vs
 // out-list, call form), but names live in ONE namespace (Rust/Go-style), so a clash is an error.
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0117 duplicate_decl 0 proc 'foo' is already declared at this scope"
-func foo(x: int) -> int {
+foo :: func(x: int) -> int {
   return x;
 }
-proc foo(x: int) {
+foo :: proc(x: int) {
   printf("%d", x);
 }
-proc main() {
+main :: proc() {
 }

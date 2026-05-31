@@ -322,9 +322,9 @@ void test_compile_overloads_smoke(void) {
 void test_codegen_gen_exhaustion_abort(void) {
 	test_start("delete emits generation-exhaustion abort");
 	char *ir = compile_to_ir_string("hp :: int\n"
-	                                "arche Unit { hp }\n"
+	                                "Unit :: arche { hp }\n"
 	                                "static pool<Unit>(4);\n"
-	                                "proc main() {\n"
+	                                "main :: proc() {\n"
 	                                "  h := insert(Unit, 1);\n"
 	                                "  delete(h);\n"
 	                                "}\n");

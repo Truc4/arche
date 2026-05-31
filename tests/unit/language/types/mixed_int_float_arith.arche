@@ -5,7 +5,7 @@
 // a char-derived digit slipped through as `fadd double, i32` and the verifier rejected it —
 // which is precisely what blocked a pure-arche `atof`.
 // RUN: %arche build -o %t %s && %t | grep "r=23"
-proc main() {
+main :: proc() {
   s := "23";
   acc := 0.0;
   for (i := 0; s[i] != 0; i += 1) {

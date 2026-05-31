@@ -1,7 +1,7 @@
 // Task 2 (arche, transform-only): count(quantity > 0), repeated N=216,000 times.
-use csv;
+#import csv;
 
-arche Transaction {
+Transaction :: arche {
   quantity :: int,
 }
 
@@ -10,11 +10,11 @@ static pool<Transaction> (10000, 10000) {
 }
 ;
 
-proc load_transactions() {
+load_transactions :: proc() {
   csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");
 }
 
-proc write_output(count: i64) {
+write_output :: proc(count: i64) {
   arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_2.csv")(fd:);
   buf: char[64];
   sprintf(buf, "count\n%ld\n", count);
@@ -22,7 +22,7 @@ proc write_output(count: i64) {
   arche_fclose(move fd);
 }
 
-proc main() {
+main :: proc() {
   load_transactions();
 
   // Up to 2.16e9 across all iters — past i32 but well within i64. An integer accumulator

@@ -3,6 +3,6 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "top-level declarations are constants" %t.out
 count := 0
 
-proc main() {
+main :: proc() {
   printf("unreachable\n");
 }

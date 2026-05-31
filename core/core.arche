@@ -5,28 +5,28 @@
 
 // Raw Linux/x86-64 syscall intrinsic: emits the `syscall` instruction directly (no libc). A
 // buffer arg decays to its data pointer (like C). Declared first so the fd wrappers below can use it.
-extern proc syscall(n: i64, a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64)(r: i64);
+syscall :: extern proc(n: i64, a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64)(r: i64);
 // Raw fd I/O — thin syscall wrappers (x86-64 Linux), no libc. Read-only buffers (`write`/`open`
 // path) are plain borrows; a filled buffer (`read`) is in-out (handed back through the out-list).
-proc open(path: char[], flags: int)(fd: int) {
+open :: proc(path: char[], flags: int)(fd: int) {
   syscall(2, path, flags, 0, 0, 0, 0)(r:); // SYS_open(path, flags, mode=0)
   fd = i32(r);
 }
-proc read(fd: int, buf: char[], len: int)(buf: char[], n: int) {
+read :: proc(fd: int, buf: char[], len: int)(buf: char[], n: int) {
   syscall(0, fd, buf, len, 0, 0, 0)(r:); // SYS_read(fd, buf, len)
   n = i32(r);
 }
-proc write(fd: int, buf: char[], len: int) {
+write :: proc(fd: int, buf: char[], len: int) {
   syscall(1, fd, buf, len, 0, 0, 0)(_r:); // SYS_write(fd, buf, len)
 }
-proc close(fd: int) {
+close :: proc(fd: int) {
   syscall(3, fd, 0, 0, 0, 0, 0)(_r:); // SYS_close(fd)
 }
-proc lseek(fd: int, off: i64, whence: int)(pos: i64) {
+lseek :: proc(fd: int, off: i64, whence: int)(pos: i64) {
   syscall(8, fd, off, whence, 0, 0, 0)(r:); // SYS_lseek(fd, off, whence)
   pos = r;
 }
-proc exit(code: int) {
+exit :: proc(code: int) {
   syscall(231, code, 0, 0, 0, 0, 0)(_r:); // SYS_exit_group(code) — does not return
 }
 // Primitive opaque handle types (operations live in the io/net modules). They stay in core so the
@@ -35,12 +35,12 @@ file :: opaque
 socket :: opaque
 // Whole-file mmap view (C-runtime externs). Kept in core so any module can map a file without a
 // module-to-module import (e.g. the csv loader).
-extern proc arche_file_map(own path: char[])(data: char[]);
-extern proc arche_file_size()(n: i64);
-extern proc arche_file_unmap(own data: char[], size: i64);
-extern proc sprintf(buf: char[], own fmt: char[], ...)(buf: char[], n: int);
-extern proc printf(own fmt: char[], ...)(n: int);
-extern proc fflush(stream: int);
+arche_file_map :: extern proc(own path: char[])(data: char[]);
+arche_file_size :: extern proc()(n: i64);
+arche_file_unmap :: extern proc(own data: char[], size: i64);
+sprintf :: extern proc(buf: char[], own fmt: char[], ...)(buf: char[], n: int);
+printf :: extern proc(own fmt: char[], ...)(n: int);
+fflush :: extern proc(stream: int);
 // Pure-arche numeric/string helpers (no FFI). A func may call these; it can't call externs, so
 // libc's atoi/atof/strlen are reimplemented here to keep type-directed CSV cell parsing pure.
 
@@ -50,7 +50,7 @@ extern proc fflush(stream: int);
 /// assert(strlen("hello") == 5, "strlen hello\n");
 /// assert(strlen("") == 0, "strlen empty\n");
 /// ```
-func strlen(s: char[]) -> int {
+strlen :: func(s: char[]) -> int {
   i := 0;
   for (; s[i] != 0; i += 1) {
   }
@@ -58,7 +58,7 @@ func strlen(s: char[]) -> int {
 }
 // Copy C-string `src` (through its NUL) into `dst`, NUL-terminate, return the filled buffer.
 // Pure; the own/move contract makes the in-place fill explicit: `b := strcopy(move b, s)`.
-func strcopy(own dst: char[], src: char[]) -> char[] {
+strcopy :: func(own dst: char[], src: char[]) -> char[] {
   i := 0;
   for (; src[i] != 0; i += 1) {
     dst[i] = src[i];
@@ -73,7 +73,7 @@ func strcopy(own dst: char[], src: char[]) -> char[] {
 /// assert(atoi("-7") == -7, "atoi -7\n");
 /// assert(atoi("13abc") == 13, "atoi stops at non-digit\n");
 /// ```
-func atoi(s: char[]) -> int {
+atoi :: func(s: char[]) -> int {
   i := 0;
   sign := 1;
   if (s[0] == '-') {
@@ -93,7 +93,7 @@ func atoi(s: char[]) -> int {
   return sign * n;
 }
 // Parse a leading (optionally signed) decimal: integer part then optional fraction, like libc atof.
-func atof(s: char[]) -> float {
+atof :: func(s: char[]) -> float {
   i := 0;
   sign := 1.0;
   if (s[0] == '-') {
@@ -128,14 +128,14 @@ func atof(s: char[]) -> float {
   }
   return sign * (whole + frac / scale);
 }
-proc print_float(f: float) {
+print_float :: proc(f: float) {
   printf("%g", f);
   fflush(0);
 }
-proc print(msg: char[]) {
+print :: proc(msg: char[]) {
   write(1, msg, strlen(msg));
 }
-proc assert(condition: int, message: char[]) {
+assert :: proc(condition: int, message: char[]) {
   if (condition == 0) {
     fflush(0);
     print(message);

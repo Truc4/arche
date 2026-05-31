@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "system_ran"
-arche Task {
+Task :: arche {
   val :: int,
 }
 
@@ -8,12 +8,12 @@ static pool<Task> (1, 1) {
 }
 ;
 
-sys double_val(val) {
+double_val :: sys(val) {
   printf("system_ran\n");
   val = val * 2;
 }
 
-proc main() {
+main :: proc() {
   run double_val;
   assert(Task.val[0] == 10, "val not 10\n");
 }

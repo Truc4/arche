@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t
 pos(x, y) :: float
 vel(x, y) :: float
-arche Particle {
+Particle :: arche {
   pos_x,
   pos_y,
   vel_x,
@@ -10,7 +10,7 @@ arche Particle {
 
 static pool<Particle> (5);
 
-proc main() {
+main :: proc() {
   insert(Particle, 0.0, 1.0, 0.5, 0.1);
   insert(Particle, 2.0, 3.0, 0.2, 0.3);
   insert(Particle, 4.0, 5.0, 0.1, 0.2);

@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-arche Counter {
+Counter :: arche {
   val :: int,
 }
 
@@ -8,7 +8,7 @@ static pool<Counter> (5, 5) {
 }
 ;
 
-proc main() {
+main :: proc() {
   assert(Counter.val[0] == 7, "val[0] not 7\n");
   printf("ok\n");
 }

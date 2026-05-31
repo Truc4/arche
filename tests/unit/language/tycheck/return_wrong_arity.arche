@@ -1,10 +1,10 @@
 // E0203: a func returns exactly ONE value; returning two is caught at tycheck (a func is a
 // value, not a multi-output action — that's a proc's out-list).
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0203 wrong_arity 0 'two' declares 1 return value, returned 2"
-func two() -> int {
+two :: func() -> int {
   return 1, 2;
 }
 
-proc main() {
+main :: proc() {
   print(0);
 }

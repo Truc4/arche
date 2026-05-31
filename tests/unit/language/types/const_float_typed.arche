@@ -4,6 +4,6 @@
 // RUN: %arche build -o %t %s && %t | grep "pi: 3.14 tau: 3.14"
 PI :: 3.14
 TAU: float: 6.28
-proc main() {
+main :: proc() {
   printf("pi: %.2f tau: %.2f\n", PI, TAU - PI);
 }

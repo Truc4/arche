@@ -2,8 +2,8 @@
 // grammar error — define a component inline with `name :: type`, or reference one by bare
 // name. (This also guards the parser against spinning on a malformed archetype body.)
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "components are types" %t.out
-arche Foo {
+Foo :: arche {
   hp: int
 }
 
-proc main() {}
+main :: proc() {}

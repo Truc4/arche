@@ -2,10 +2,10 @@
 // type name IS its access path, so a repeat would be unreachable — it's a compile error.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "duplicate component" %t.out
 hp :: int
-arche Foo {
+Foo :: arche {
   hp,
   hp,
 }
 
-proc main() {
+main :: proc() {
 }

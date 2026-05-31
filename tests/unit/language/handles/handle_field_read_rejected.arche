@@ -3,12 +3,12 @@
 // Column access `Foo.hp[i]` is the way to touch data. The access is rejected cleanly
 // rather than emitting a bare token into the IR.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "handle is a lifetime token" %t.out
-arche Foo {
+Foo :: arche {
   hp :: int,
 }
 static pool<Foo> (10);
 
-proc main() {
+main :: proc() {
   h := insert(Foo, 5);
   x := h.hp;
   printf("x=%d\n", x);

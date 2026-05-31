@@ -3,10 +3,10 @@
 // any column (a pointer-width slot); nothing touches the cell here.
 // RUN: %arche build -o %t %s && %t | grep "ok"
 fd :: opaque
-arche File {
+File :: arche {
   fd,
 }
 static pool<File> (4);
-proc main() {
+main :: proc() {
   printf("ok opaque_declared\n");
 }

@@ -3,10 +3,10 @@
 // so the 9th open returns null.
 // RUN: %arche build -o %t --link %S/runtime/test_resource.c %s && %t | grep "ok_null=1"
 resource :: opaque
-extern proc resource_open(initial: int)(ret: resource);
-extern proc resource_close(own r: resource);
+resource_open :: extern proc(initial: int)(ret: resource);
+resource_close :: extern proc(own r: resource);
 
-proc main() {
+main :: proc() {
   resource_open(1)(r1:);
   resource_open(2)(r2:);
   resource_open(3)(r3:);

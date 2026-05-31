@@ -6,10 +6,10 @@
 #import net;
 file :: opaque
 socket :: opaque
-extern proc open_file()(ret: file);
-extern proc use_socket(s: socket);
+open_file :: extern proc()(ret: file);
+use_socket :: extern proc(s: socket);
 
-proc main() {
+main :: proc() {
   open_file()(f:);
   use_socket(f);
 }

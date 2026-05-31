@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t | grep ABC
 static buf: char[128];
 
-proc main() {
+main :: proc() {
   buf[0] = 65;
   buf[1] = 66;
   buf[2] = 67;

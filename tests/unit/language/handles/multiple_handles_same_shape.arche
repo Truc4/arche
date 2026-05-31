@@ -1,11 +1,11 @@
 // RUN: %arche build -o %t %s && %t
 // Multiple handles to same shape is allowed - they're just names/aliases
-arche Players {
+Players :: arche {
   x :: float,
   y :: int,
 }
 
-arche Enemies {
+Enemies :: arche {
   x :: float,
   y :: int,
 }
@@ -17,6 +17,6 @@ static pool<Players> (2, 2) {
 
 // Only ONE can be allocated
 
-proc main() {
+main :: proc() {
   printf("multiple handles ok\n");
 }

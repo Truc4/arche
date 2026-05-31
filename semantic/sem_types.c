@@ -33,8 +33,9 @@ typedef struct {
 		struct {
 			TypeId *params;
 			int param_count;
-			TypeId *returns;
+			TypeId *returns; /* proc: out-params; func: the single return */
 			int return_count;
+			int is_proc; /* 1 = proc (action), 0 = func (value): proc()(int) != func()->int */
 		} func;
 	} data;
 } TypeNode;
@@ -212,10 +213,12 @@ TypeId tyid_of_archetype_category(TypeArena *a) {
 	return push_node(a, node);
 }
 
-TypeId tyid_of_func(TypeArena *a, const TypeId *params, int param_count, const TypeId *returns, int return_count) {
+TypeId tyid_of_func(TypeArena *a, const TypeId *params, int param_count, const TypeId *returns, int return_count,
+                    int is_proc) {
 	for (int i = 1; i < a->node_count; i++) {
 		TypeNode *n = &a->nodes[i];
-		if (n->kind != TYK_FUNC || n->data.func.param_count != param_count || n->data.func.return_count != return_count)
+		if (n->kind != TYK_FUNC || n->data.func.is_proc != is_proc || n->data.func.param_count != param_count ||
+		    n->data.func.return_count != return_count)
 			continue;
 		int eq = 1;
 		for (int j = 0; j < param_count && eq; j++)
@@ -229,6 +232,7 @@ TypeId tyid_of_func(TypeArena *a, const TypeId *params, int param_count, const T
 	}
 	TypeNode node = {0};
 	node.kind = TYK_FUNC;
+	node.data.func.is_proc = is_proc;
 	node.data.func.param_count = param_count;
 	node.data.func.return_count = return_count;
 	node.data.func.params = malloc(param_count * sizeof(TypeId));
@@ -309,7 +313,10 @@ const char *tyid_display(const TypeArena *a, TypeId t, char *buf, int buflen) {
 		snprintf(buf, buflen, "archetype");
 		break;
 	case TYK_FUNC:
-		snprintf(buf, buflen, "func(%d) -> (%d)", n->data.func.param_count, n->data.func.return_count);
+		if (n->data.func.is_proc)
+			snprintf(buf, buflen, "proc(%d)(%d)", n->data.func.param_count, n->data.func.return_count);
+		else
+			snprintf(buf, buflen, "func(%d) -> (%d)", n->data.func.param_count, n->data.func.return_count);
 		break;
 	}
 	return buf;

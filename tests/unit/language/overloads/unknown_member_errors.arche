@@ -1,10 +1,9 @@
 // RUN: ! %arche build -o %t %s 2>&1
 
-func a(x: int) -> int {
+a :: func(x: int) -> int {
   return x;
 }
-func g = {
+g :: func{
   a, missing
 }
-;
 // error: unknown member 'missing' in group 'g'

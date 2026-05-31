@@ -4,13 +4,13 @@
 // path; the by-value `resource :: opaque` path is separate.)
 // RUN: %arche build -o %t --link %S/runtime/test_resource.c %s && ! %t
 cell :: opaque
-arche Resource {
+Resource :: arche {
   cell,
 }
-extern proc resource_open(initial: int)(ret: cell);
+resource_open :: extern proc(initial: int)(ret: cell);
 static pool<Resource> (2);
 
-proc main() {
+main :: proc() {
   resource_open(1)(r1:);
   a := insert(Resource, r1);
   resource_open(2)(r2:);

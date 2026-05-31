@@ -43,6 +43,10 @@ SemHints *sem_context_hints(SemanticContext *ctx);
  * backing; returns `name` unchanged if not an alias. */
 const char *semantic_resolve_type_alias(SemanticContext *ctx, const char *name);
 
+/* If `name` is a callable alias (`handler :: some_proc`), the ultimate proc/func target name;
+ * else NULL. Lowering rewrites call callees through this and drops the alias binding. */
+const char *semantic_resolve_callable_alias(SemanticContext *ctx, const char *name);
+
 /* Error checking */
 int semantic_has_errors(SemanticContext *ctx);
 int semantic_error_count(const SemanticContext *ctx);

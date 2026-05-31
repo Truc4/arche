@@ -1,10 +1,10 @@
 // RUN: %arche build -o %t %s && %t
-proc pair()(x: int, y: int) {
+pair :: proc()(x: int, y: int) {
   x = 42;
   y = 7;
 }
 
-proc main() {
+main :: proc() {
   pair()(x:, y:);
   assert(x == 42, "x not 42\n");
   assert(y == 7, "y not 7\n");

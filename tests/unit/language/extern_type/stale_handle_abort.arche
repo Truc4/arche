@@ -3,13 +3,13 @@
 // outlives the delete+reinsert, so deleting through it aborts.
 // RUN: %arche build -o %t --link %S/runtime/test_resource.c %s && ! %t
 cell :: opaque
-arche Resource {
+Resource :: arche {
   cell,
 }
-extern proc resource_open(initial: int)(ret: cell);
+resource_open :: extern proc(initial: int)(ret: cell);
 static pool<Resource> (8);
 
-proc main() {
+main :: proc() {
   resource_open(10)(r1:);
   h := insert(Resource, r1);
   alias := h;
