@@ -1743,10 +1743,10 @@ static const char *hir_decl_name(HirDecl *d) {
  * access on a value (`h.mass`) or archetype column (`Particle.pos`) is left untouched, since the
  * base name isn't a module. */
 typedef struct {
-	char **prefix;     /* module names (the `io` in `io.open`) */
-	char ***exports;   /* each module's exported bare names */
-	int *export_n;     /* count per module */
-	int n;             /* number of inlined modules */
+	char **prefix;   /* module names (the `io` in `io.open`) */
+	char ***exports; /* each module's exported bare names */
+	int *export_n;   /* count per module */
+	int n;           /* number of inlined modules */
 } QualCtx;
 
 static int qual_lookup(const QualCtx *q, const char *base, const char *field, char *out, size_t out_sz) {

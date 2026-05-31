@@ -2101,8 +2101,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 					if (avi->type == 5) {
 						char *g = gen_value_name(ctx);
 						buffer_append_fmt(
-						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n", g,
-						    ab);
+						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+						    g, ab);
 						char *l = gen_value_name(ctx);
 						buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", l, g);
 						strcpy(dptr, l);

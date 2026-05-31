@@ -229,8 +229,7 @@ static int sem_register_module_file(const char *mod_name, const char *path, cons
 
 /* A module is a FOLDER `<dir>/<name>/` of `.arche` files merged into one namespace; falls back to a
  * single file `<dir>/<name>.arche`. Returns files registered. */
-static int sem_try_load_module_dir(const char *mod_name, const char *dir, const char *source_dir,
-                                   ModuleHolds *holds) {
+static int sem_try_load_module_dir(const char *mod_name, const char *dir, const char *source_dir, ModuleHolds *holds) {
 	char folder[640];
 	snprintf(folder, sizeof(folder), "%s/%s", dir, mod_name);
 	DIR *d = opendir(folder);

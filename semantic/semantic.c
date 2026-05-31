@@ -4434,8 +4434,8 @@ static void sem_rename_stmt(Statement *s, const char *prefix, char **set, int co
 }
 /* Qualified module access (semantic AST mirror of lower.c's hir_q_*): rewrite `mod.name` →
  * `mod_name` for inlined modules, so `io.open(...)` resolves to io's exported `open`. */
-static int sem_qual_lookup(char **prefix, char ***set, int *count, int n, const char *base,
-                           const char *field, char *out, size_t out_sz) {
+static int sem_qual_lookup(char **prefix, char ***set, int *count, int n, const char *base, const char *field,
+                           char *out, size_t out_sz) {
 	for (int m = 0; m < n; m++) {
 		if (strcmp(base, prefix[m]) != 0)
 			continue;
