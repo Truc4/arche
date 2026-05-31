@@ -27,70 +27,22 @@ way to write code.
 ## Quick start
 
 ```sh
-make                                              # build the compiler -> build/arche
-./build/arche build examples/hello_world/hello_world.arche -o hello
-./hello                                           # -> Hello, World!
+git clone https://github.com/Truc4/arche && cd arche
+make                  # builds ./build/arche
+sudo make install     # optional: put `arche` on your PATH (PREFIX=<dir> for a custom location)
 ```
+
+Needs an LLVM + C toolchain (`opt`, `llc`, `cc`) on your `PATH`. The installed `arche` is
+relocatable — it finds its standard library and runtime relative to the binary.
 
 ```sh
-./build/arche run examples/archetype/test_archetype.arche   # compile + run in one step
-make test                                         # run the full test suite
+echo 'proc main() { print("Hello, World!\n"); }' > hello.arche
+arche run hello.arche                # compile + run     -> Hello, World!
+arche build hello.arche -o hello     # …or build a binary
+./hello                              # -> Hello, World!
 ```
 
-## Installation
-
-Build the compiler and install it system-wide. The installed `arche` is relocatable — it finds its
-standard library and runtime relative to the binary, so it works from any directory:
-
-```sh
-make                                              # build everything
-sudo make install                                 # -> /usr/local/bin/arche (+ /usr/local/lib/arche/…)
-arche version
-```
-
-Install to a custom prefix (no root needed):
-
-```sh
-make install PREFIX=$HOME/.local                  # binary in ~/.local/bin, support files in ~/.local/lib/arche
-```
-
-`make install` lays out:
-
-| Path | Contents |
-|------|----------|
-| `$PREFIX/bin/arche` | the compiler |
-| `$PREFIX/bin/arche-analyzer` | language-server backend (also `arche analyze`) |
-| `$PREFIX/lib/arche/{core,stdlib,runtime,explain}` | prelude, modules, runtime objects, diagnostics |
-| `$PREFIX/share/{bash-completion,zsh,fish}/…` | shell completion scripts |
-
-Resource discovery order: `$ARCHE_SYSROOT` → the per-resource env overrides (`ARCHE_CORE_DIR`, …) →
-the exe-relative install layout → the in-tree build paths. So a freshly built `build/arche` also
-works in place with no configuration.
-
-The compiler shells out to `opt`, `llc`, and `cc` (LLVM + a C toolchain) for optimization,
-assembly, and linking — make sure those are on your `PATH`.
-
-### Commands
-
-```
-arche build <file>     compile to an executable        arche fmt <files>      format (--check / --write)
-arche run <file>       compile and run                 arche check <file>     type-check only (no output)
-arche test <paths>     run doctests                    arche explain <code>   long-form diagnostic help
-arche analyze [--serve] language-server analysis        arche completion <sh>  bash | zsh | fish
-```
-
-Run `arche --help` or `arche help <command>` for the full flag list, and `arche build --emit=<kind>`
-to emit `llvm-ir`, `asm`, or `obj` instead of a linked executable.
-
-### Shell completion
-
-```sh
-arche completion bash | sudo tee /usr/share/bash-completion/completions/arche
-arche completion zsh  > ~/.zsh/completions/_arche      # ensure the dir is on $fpath
-arche completion fish > ~/.config/fish/completions/arche.fish
-```
-
-(`make install` already drops these in the standard system locations.)
+(If you skipped `make install`, use `./build/arche` in place of `arche`.)
 
 ## A taste of Arche
 
@@ -116,6 +68,42 @@ proc main() {
 A `sys` automatically matches any archetype carrying the components it names; `run` executes
 it over every matching column. See the [language reference](docs/language.md) for archetypes,
 the `proc`/`func`/`sys` split, ownership, and more.
+
+## Command-line interface
+
+```
+arche build <file>      compile to an executable       arche fmt <files>      format (--check / --write)
+arche run <file>        compile and run                arche check <file>     type-check only (no output)
+arche test <paths>      run doctests                   arche explain <code>   long-form diagnostic help
+arche analyze [--serve] language-server analysis       arche completion <sh>  bash | zsh | fish
+```
+
+`arche --help` or `arche help <command>` lists every flag; `arche build --emit=<kind>` emits
+`llvm-ir`, `asm`, or `obj` instead of a linked executable.
+
+Shell completion (also installed by `make install`):
+
+```sh
+arche completion bash | sudo tee /usr/share/bash-completion/completions/arche
+arche completion zsh  > ~/.zsh/completions/_arche      # ensure the dir is on $fpath
+arche completion fish > ~/.config/fish/completions/arche.fish
+```
+
+## Installing system-wide
+
+`make install` (default `PREFIX=/usr/local`, override for a rootless install) lays out a
+relocatable tree:
+
+| Path | Contents |
+|------|----------|
+| `$PREFIX/bin/arche` | the compiler |
+| `$PREFIX/bin/arche-analyzer` | language-server backend (also `arche analyze`) |
+| `$PREFIX/lib/arche/{core,stdlib,runtime,explain}` | prelude, modules, runtime objects, diagnostics |
+| `$PREFIX/share/{bash-completion,zsh,fish}/…` | completion scripts |
+
+Resource discovery order: `$ARCHE_SYSROOT` → per-resource env overrides (`ARCHE_CORE_DIR`, …) →
+the exe-relative install layout → the in-tree build paths — so an uninstalled `build/arche` also
+works in place with no configuration.
 
 ## Experimental features
 

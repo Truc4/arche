@@ -51,14 +51,19 @@ int check_run(int argc, char **argv, const GlobalOpts *g) {
 		args_usage(stderr, g_prog, "check", "[flags] <input.arche>", k_check_specs);
 		return ARCHE_USAGE;
 	}
-	const char *input = p.pos[p.pos_count - 1];
+	char *input = cli_resolve_input(p.pos[p.pos_count - 1]);
+	if (!input)
+		return ARCHE_USAGE;
 	char *src = cli_read_file(input);
-	if (!src)
+	if (!src) {
+		free(input);
 		return ARCHE_ERR;
+	}
 
 	CompileOpts opts = {0};
 	int rc = compile_check(src, input, &opts);
 	free(src);
+	free(input);
 	return rc; /* diagnostics already on stderr; silent on success, like `cargo check` */
 }
 

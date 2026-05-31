@@ -72,8 +72,19 @@ int fmt_run(int argc, char **argv, const GlobalOpts *g) {
 	int write = args_has(&p, F_WRITE);
 	int rc = ARCHE_OK;
 
-	for (int i = 0; i < p.pos_count; i++) {
-		const char *path = p.pos[i];
+	/* Expand each argument: a file is taken as-is; a directory or `./...` recurses over its
+	 * `.arche` files (gofmt / `arche test ./...` style). */
+	CliPathList files = {0};
+	for (int i = 0; i < p.pos_count; i++)
+		cli_collect_arche(p.pos[i], &files);
+	if (files.count == 0) {
+		fprintf(stderr, "%s: no .arche files matched\n", g_prog);
+		cli_pathlist_free(&files);
+		return ARCHE_USAGE;
+	}
+
+	for (int i = 0; i < files.count; i++) {
+		const char *path = files.items[i];
 		char *src = cli_read_file(path);
 		if (!src) {
 			rc = ARCHE_ERR;
@@ -109,6 +120,7 @@ int fmt_run(int argc, char **argv, const GlobalOpts *g) {
 		free(out);
 		free(src);
 	}
+	cli_pathlist_free(&files);
 	return rc;
 }
 

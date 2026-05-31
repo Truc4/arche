@@ -43,6 +43,26 @@ int cli_main(int argc, char **argv);
  * a perror message and returns NULL. Shared by the build/check/run subcommands. */
 char *cli_read_file(const char *path);
 
+/* A growable list of paths (used to expand fmt's arguments into a concrete file set). */
+typedef struct {
+	char **items;
+	int count, cap;
+} CliPathList;
+
+/* Expand one command-line path spec into `.arche` files, appended to *pl:
+ *   - a `...`-suffixed spec (`./...`, `src/...`) or a directory → recurse, collecting `*.arche`
+ *     and skipping dotfiles / build / node_modules / site-packages;
+ *   - anything else → taken as a literal path (added as-is, extension notwithstanding).
+ * Results from a recursive walk are sorted for deterministic order. */
+void cli_collect_arche(const char *spec, CliPathList *pl);
+void cli_pathlist_free(CliPathList *pl);
+
+/* Resolve a build/run/check input argument to a source file (freshly malloc'd; caller frees). A
+ * regular path is returned as-is; a directory resolves to its `main.arche`, or the single `.arche`
+ * file it contains (go-`run .` style). Returns NULL after printing a message if a directory has no
+ * `.arche` file or more than one and no `main.arche`. */
+char *cli_resolve_input(const char *path);
+
 /* Subcommand entry points (defined in cmd_*.c). */
 int build_run(int argc, char **argv, const GlobalOpts *g);
 int test_run(int argc, char **argv, const GlobalOpts *g);

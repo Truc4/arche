@@ -60,10 +60,15 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 		args_usage(stderr, g_prog, "run", "[flags] <input.arche> [-- program-args...]", k_run_specs);
 		return ARCHE_USAGE;
 	}
-	const char *input = p.pos[0]; /* first positional is the source; the rest are program args */
+	/* First positional is the source (a file, or a directory to resolve); the rest are program args. */
+	char *input = cli_resolve_input(p.pos[0]);
+	if (!input)
+		return ARCHE_USAGE;
 	char *src = cli_read_file(input);
-	if (!src)
+	if (!src) {
+		free(input);
 		return ARCHE_ERR;
+	}
 
 	/* Build into a private temp dir (mkdtemp, mode 0700 — same approach as the driver's workdir). */
 	char dir[] = "/tmp/arche_run_XXXXXX";

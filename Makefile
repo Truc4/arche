@@ -123,7 +123,9 @@ $(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
 # Pull in the generated header-dependency files (none on a clean build).
--include $(shell find $(BUILD_DIR) -name '*.d' 2>/dev/null)
+# Auto-dependency files only — `-type f` so a test artifact directory that happens to end in `.d`
+# (e.g. a `%t.d` lit temp dir) can never be pulled in here and break the build.
+-include $(shell find $(BUILD_DIR) -name '*.d' -type f 2>/dev/null)
 
 # Run the compiler (produces executable)
 run: $(TARGET)
@@ -327,6 +329,15 @@ verify-codegen: $(TARGET)
 PREFIX ?= /usr/local
 ARCHE_LIBDIR = $(DESTDIR)$(PREFIX)/lib/arche
 ARCHE_BINDIR = $(DESTDIR)$(PREFIX)/bin
+
+# Shell-completion directories. Completion only auto-loads from the dirs each shell scans — which are
+# system paths (under /usr/share), NOT $(PREFIX)/share — so we install there directly. We ask
+# pkg-config where bash-completion / fish keep theirs (distro-correct), falling back to the
+# conventions; zsh has no pkg-config var, so we use the standard site-functions dir. Override any of
+# these on the command line for non-standard layouts.
+BASHCOMP_DIR ?= $(shell pkg-config --variable=completionsdir bash-completion 2>/dev/null || echo /usr/share/bash-completion/completions)
+FISHCOMP_DIR ?= $(shell pkg-config --variable=completionsdir fish 2>/dev/null || echo /usr/share/fish/vendor_completions.d)
+ZSHCOMP_DIR ?= /usr/share/zsh/site-functions
 install: all
 	install -d "$(ARCHE_BINDIR)" "$(ARCHE_LIBDIR)/core" "$(ARCHE_LIBDIR)/stdlib" "$(ARCHE_LIBDIR)/runtime" "$(ARCHE_LIBDIR)/explain"
 	install -m 0755 $(TARGET) "$(ARCHE_BINDIR)/arche"
@@ -335,16 +346,23 @@ install: all
 	cp -R stdlib/. "$(ARCHE_LIBDIR)/stdlib/"
 	install -m 0644 $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o "$(ARCHE_LIBDIR)/runtime/"
 	@[ -d docs/explain ] && cp -R docs/explain/. "$(ARCHE_LIBDIR)/explain/" || true
-	install -d "$(DESTDIR)$(PREFIX)/share/bash-completion/completions" "$(DESTDIR)$(PREFIX)/share/zsh/site-functions" "$(DESTDIR)$(PREFIX)/share/fish/vendor_completions.d"
-	$(TARGET) completion bash > "$(DESTDIR)$(PREFIX)/share/bash-completion/completions/arche"
-	$(TARGET) completion zsh  > "$(DESTDIR)$(PREFIX)/share/zsh/site-functions/_arche"
-	$(TARGET) completion fish > "$(DESTDIR)$(PREFIX)/share/fish/vendor_completions.d/arche.fish"
-	@echo "installed arche $(ARCHE_VERSION) to $(DESTDIR)$(PREFIX)"
+	@# Install shell completions into the dirs each installed shell auto-scans, so they "just work"
+	@# in a new shell with no sourcing. Gated on the shell being present so we don't litter.
+	@if command -v bash >/dev/null 2>&1; then \
+		d="$(DESTDIR)$(BASHCOMP_DIR)"; install -d "$$d" && $(TARGET) completion bash > "$$d/arche" && echo "  bash  -> $$d/arche"; \
+	fi
+	@if command -v zsh >/dev/null 2>&1; then \
+		d="$(DESTDIR)$(ZSHCOMP_DIR)"; install -d "$$d" && $(TARGET) completion zsh > "$$d/_arche" && echo "  zsh   -> $$d/_arche"; \
+	fi
+	@if command -v fish >/dev/null 2>&1; then \
+		d="$(DESTDIR)$(FISHCOMP_DIR)"; install -d "$$d" && $(TARGET) completion fish > "$$d/arche.fish" && echo "  fish  -> $$d/arche.fish"; \
+	fi
+	@echo "installed arche $(ARCHE_VERSION) to $(DESTDIR)$(PREFIX) — open a new shell for completion"
 
 # Smoke-test relocatability: install to a throwaway prefix and compile+run from an unrelated cwd,
 # so the binary must resolve core/stdlib/runtime via the exe-relative layout (no in-tree paths).
 test-install: all
-	@root=$$(mktemp -d); $(MAKE) -s install PREFIX=$$root >/dev/null; \
+	@root=$$(mktemp -d); $(MAKE) -s install PREFIX=$$root BASHCOMP_DIR=$$root/bashcomp ZSHCOMP_DIR=$$root/zshcomp FISHCOMP_DIR=$$root/fishcomp >/dev/null; \
 	printf 'proc main() { printf("install-ok\\n"); }\n' > $$root/t.arche; \
 	out=$$(cd /tmp && $$root/bin/arche run $$root/t.arche); \
 	rm -rf $$root; \

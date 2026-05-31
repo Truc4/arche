@@ -79,7 +79,10 @@ static void emit_zsh(FILE *f) {
 	fprintf(f, "    *) _files;;\n");
 	fprintf(f, "  esac\n");
 	fprintf(f, "}\n");
-	fprintf(f, "_arche \"$@\"\n");
+	/* Register the completion. Works whether this file is autoloaded from $fpath (the `#compdef`
+	 * tag handles it) or simply sourced after compinit. Calling `_arche` directly here would instead
+	 * try to run the widget at load time. */
+	fprintf(f, "compdef _arche arche\n");
 }
 
 static void emit_fish(FILE *f) {

@@ -85,8 +85,11 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 		args_usage(stderr, g_prog, "build", "[flags] <input.arche>", k_build_specs);
 		return ARCHE_USAGE;
 	}
-	/* Last positional wins, matching the historical scan that overwrote input_file each time. */
-	const char *input_file = p.pos[p.pos_count - 1];
+	/* Last positional wins, matching the historical scan that overwrote input_file each time.
+	 * A directory resolves to its entry file (main.arche / the sole .arche), like `arche run .`. */
+	char *input_file = cli_resolve_input(p.pos[p.pos_count - 1]);
+	if (!input_file)
+		return ARCHE_USAGE;
 	const char *output_file = args_value(&p, B_OUT); /* last-wins, or NULL */
 
 	/* Output kind: `--emit=<kind>` (canonical) or the `-emit-llvm` alias; default is a full link. */

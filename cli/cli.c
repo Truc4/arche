@@ -1,10 +1,141 @@
+/* opendir/readdir/stat (directory entry-point resolution) are POSIX; expose under -std=c99. */
+#define _POSIX_C_SOURCE 200809L
 #include "cli.h"
 #include "resource.h"
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 const char *g_prog = "arche";
+
+static int cli_has_arche_ext(const char *name) {
+	size_t n = strlen(name);
+	return n > 6 && strcmp(name + n - 6, ".arche") == 0;
+}
+
+/* Directories never descended into during a recursive walk: dotdirs, build artifacts, deps. */
+static int cli_skip_dir(const char *name) {
+	return name[0] == '.' || strcmp(name, "build") == 0 || strcmp(name, "node_modules") == 0 ||
+	       strcmp(name, "site-packages") == 0;
+}
+
+static void cli_pl_push(CliPathList *pl, const char *path) {
+	if (pl->count >= pl->cap) {
+		pl->cap = pl->cap ? pl->cap * 2 : 32;
+		pl->items = realloc(pl->items, (size_t)pl->cap * sizeof(char *));
+	}
+	pl->items[pl->count++] = strdup(path);
+}
+
+static void cli_recurse_arche(const char *dir, CliPathList *pl) {
+	DIR *d = opendir(dir);
+	if (!d)
+		return;
+	struct dirent *e;
+	while ((e = readdir(d))) {
+		if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+			continue;
+		char full[1024];
+		snprintf(full, sizeof(full), "%s/%s", dir, e->d_name);
+		struct stat sb;
+		if (stat(full, &sb) != 0)
+			continue;
+		if (S_ISDIR(sb.st_mode)) {
+			if (!cli_skip_dir(e->d_name))
+				cli_recurse_arche(full, pl);
+		} else if (S_ISREG(sb.st_mode) && cli_has_arche_ext(e->d_name)) {
+			cli_pl_push(pl, full);
+		}
+	}
+	closedir(d);
+}
+
+static int cli_cmp_str(const void *a, const void *b) {
+	return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+void cli_collect_arche(const char *spec, CliPathList *pl) {
+	size_t n = strlen(spec);
+	int start = pl->count;
+	if (n >= 3 && strcmp(spec + n - 3, "...") == 0) {
+		/* `<dir>/...` (or bare `...`) → recurse from <dir>, defaulting to "." */
+		char dir[1024];
+		size_t dn = n - 3;
+		while (dn > 0 && spec[dn - 1] == '/') /* drop the slash before `...` */
+			dn--;
+		if (dn == 0) {
+			strcpy(dir, ".");
+		} else {
+			if (dn >= sizeof(dir))
+				dn = sizeof(dir) - 1;
+			memcpy(dir, spec, dn);
+			dir[dn] = '\0';
+		}
+		cli_recurse_arche(dir, pl);
+	} else {
+		struct stat sb;
+		if (stat(spec, &sb) == 0 && S_ISDIR(sb.st_mode))
+			cli_recurse_arche(spec, pl);
+		else
+			cli_pl_push(pl, spec); /* literal path, as given */
+	}
+	/* sort just the entries this call added, for deterministic output */
+	if (pl->count - start > 1)
+		qsort(pl->items + start, (size_t)(pl->count - start), sizeof(char *), cli_cmp_str);
+}
+
+void cli_pathlist_free(CliPathList *pl) {
+	for (int i = 0; i < pl->count; i++)
+		free(pl->items[i]);
+	free(pl->items);
+	pl->items = NULL;
+	pl->count = pl->cap = 0;
+}
+
+char *cli_resolve_input(const char *path) {
+	struct stat st;
+	if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode))
+		return strdup(path); /* not a directory (or doesn't exist) — use verbatim; fopen reports later */
+
+	/* Directory: prefer `main.arche`, else the single `.arche` file in it (go-run-`.` semantics). */
+	char cand[1024];
+	snprintf(cand, sizeof(cand), "%s/main.arche", path);
+	if (stat(cand, &st) == 0 && S_ISREG(st.st_mode))
+		return strdup(cand);
+
+	DIR *d = opendir(path);
+	if (!d) {
+		fprintf(stderr, "%s: cannot open directory '%s'\n", g_prog, path);
+		return NULL;
+	}
+	char *found = NULL;
+	int count = 0;
+	struct dirent *e;
+	while ((e = readdir(d)) != NULL) {
+		size_t L = strlen(e->d_name);
+		if (L > 6 && strcmp(e->d_name + L - 6, ".arche") == 0) {
+			count++;
+			if (!found) {
+				snprintf(cand, sizeof(cand), "%s/%s", path, e->d_name);
+				found = strdup(cand);
+			}
+		}
+	}
+	closedir(d);
+	if (count == 0) {
+		fprintf(stderr, "%s: no .arche file in '%s'\n", g_prog, path);
+		free(found);
+		return NULL;
+	}
+	if (count > 1) {
+		fprintf(stderr, "%s: multiple .arche files in '%s' — name one, or add a main.arche\n", g_prog, path);
+		free(found);
+		return NULL;
+	}
+	return found;
+}
 
 char *cli_read_file(const char *path) {
 	FILE *f = fopen(path, "r");
