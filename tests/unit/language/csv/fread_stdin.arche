@@ -1,4 +1,5 @@
 // RUN: %arche -o %t %s && %t
+#import io;
 proc main() {
   buf: char[256];
   arche_stdin()(fd:);

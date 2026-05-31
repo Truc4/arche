@@ -18,6 +18,10 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src);
  * (the CST-path equivalent of main.c's resolve_uses). The CST + src must outlive
  * lowering. Call once per `use` before lower_to_hir. */
 void lower_add_module(const char *name, const SyntaxNode *root, const char *src);
+/* Clear registered modules. The registry is a static global; reset it at the start of each
+ * compilation or stale entries accumulate and get inlined again (modules can be folders with
+ * multiple files, all inlined). */
+void lower_reset_modules(void);
 
 struct SemanticContext;                          /* file-scope tag (defined in semantic.c) */
 void lower_set_sem(struct SemanticContext *ctx); /* for type-alias resolution */

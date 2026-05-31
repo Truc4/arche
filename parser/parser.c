@@ -1113,6 +1113,13 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		*out_kind = SN_USE_DECL;
 		return 1;
 	}
+	case TOK_HASH_MODULE:
+	case TOK_HASH_FILE:
+		/* Visibility region marker (`#module` / `#file`): a standalone banner that narrows the
+		 * visibility of every following decl in this file. The token itself is the whole marker. */
+		advance(parser);
+		*out_kind = SN_VIS_MARKER;
+		return 1;
 	default:
 		/* INFO: Check for top-level const or alloc */
 		if (check(parser, TOK_IDENT) || check(parser, TOK_STATIC)) {
@@ -1216,6 +1223,25 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 					return 0;
 				}
 				*out_kind = SN_INDEX_EXPR;
+				return 1;
+			}
+
+			/* Qualified call: `mod.name(args)`. The callee is the field-access (base IDENT +
+			 * SN_FIELD_NAME); args are the expr-node children. No SN_CALLEE_NAME wrap — lowering
+			 * detects a field callee by the presence of SN_FIELD_NAME children. */
+			if (check(parser, TOK_LPAREN)) {
+				advance(parser); /* consume '(' */
+				if (!check(parser, TOK_RPAREN)) {
+					do {
+						if (!parse_expression(parser))
+							return 0;
+					} while (match(parser, TOK_COMMA));
+				}
+				if (!match(parser, TOK_RPAREN)) {
+					error(parser, "Expected ')' after arguments");
+					return 0;
+				}
+				*out_kind = SN_CALL_EXPR;
 				return 1;
 			}
 

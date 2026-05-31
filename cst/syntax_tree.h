@@ -33,6 +33,7 @@ typedef enum {
 	SN_STATIC_DECL,
 	SN_CONST_DECL,
 	SN_USE_DECL,
+	SN_VIS_MARKER, /* `#module` / `#file` — narrows visibility of following decls in this file */
 
 	/* Structure */
 	SN_PARAM_LIST,

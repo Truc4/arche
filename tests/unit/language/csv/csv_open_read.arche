@@ -1,5 +1,5 @@
 // RUN: %arche -o %t %s && %t
-use io;
+#import io;
 
 static buf: char[65536];
 

@@ -3,6 +3,7 @@
 // directly inside another call's arguments; binding it names and sequences the effect.
 // RUN: %arche -o %t %s && %t 42 | grep "len=2"
 // RUN: %t 42 | grep "n=42"
+#import os;
 func mylen(s: char[]) -> int {
   return strlen(s);
 }

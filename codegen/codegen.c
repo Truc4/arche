@@ -2088,10 +2088,42 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				char ab[256];
 				codegen_expression(ctx, expr->data.call.args[i], ab);
 				HirType *rt = &expr->data.call.args[i]->resolved;
+				/* A buffer arg decays to its data pointer (like C): extract the i8* and `ptrtoint`
+				 * it to i64 so a buffer can be handed to a raw syscall. The arg's LLVM repr is
+				 * known from its ValueInfo type: 5 = %struct.arche_array* (static buffer),
+				 * 7 = [N x i8]* (local char buffer), 2 = i8* (string), 6 = i8* (char[] param,
+				 * data ptr pre-extracted at entry). */
+				ValueInfo *avi = (expr->data.call.args[i]->kind == HIR_EXPR_NAME)
+				                     ? find_value(ctx, expr->data.call.args[i]->data.name.name)
+				                     : NULL;
+				if (avi && (avi->type == 5 || avi->type == 7 || avi->type == 2 || avi->type == 6)) {
+					char dptr[256];
+					if (avi->type == 5) {
+						char *g = gen_value_name(ctx);
+						buffer_append_fmt(
+						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n", g,
+						    ab);
+						char *l = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", l, g);
+						strcpy(dptr, l);
+					} else if (avi->type == 7) {
+						char *b = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", b, avi->string_len, ab);
+						strcpy(dptr, b);
+					} else {
+						strcpy(dptr, ab); /* type 2: already i8* */
+					}
+					char *pi = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = ptrtoint i8* %s to i64\n", pi, dptr);
+					strcpy(a[i], pi);
+					continue;
+				}
 				if (rt->tag == HIR_TYPE_INT && rt->int_width == 64) {
 					strcpy(a[i], ab);
 				} else if (rt->tag == HIR_TYPE_INT) {
 					emit_int_convert(ctx, ab, rt, 64, a[i]);
+				} else if (rt->tag == HIR_TYPE_OPAQUE || rt->tag == HIR_TYPE_HANDLE) {
+					strcpy(a[i], ab); /* opaque cell / handle is already pointer-width i64 */
 				} else {
 					HirType t32 = {0};
 					t32.tag = HIR_TYPE_INT;
@@ -6089,7 +6121,11 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 	ctx->current_return_types = func->return_types;
 	ctx->current_return_type_count = func->return_type_count;
 
-	buffer_append_fmt(ctx, "define %s @%s(", return_type, func->name);
+	/* `internal` linkage: an Arche program is whole-program-compiled to one LLVM module, so its
+	 * funcs/procs need no external symbols. Keeping them out of the global namespace prevents a
+	 * user/stdlib name (e.g. the `open`/`read`/`write` syscall wrappers) from overriding the
+	 * identically-named libc symbol that the C runtime (io.c's arche_file_map, etc.) links against. */
+	buffer_append_fmt(ctx, "define internal %s @%s(", return_type, func->name);
 
 	for (int i = 0; i < func->param_count; i++) {
 		HirType *param_type = func->params[i]->type;
@@ -6284,7 +6320,10 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 	ctx->current_return_type_count = 0;
 	ctx->current_return_type = ctx->current_return_type_buf;
 	ctx->current_func = NULL;
-	buffer_append_fmt(ctx, "define void @%s(", proc_name);
+	/* `internal` linkage (see func emission): keeps `main_user` and the syscall-wrapper procs
+	 * (`open`/`read`/`write`/…) out of the link-time global namespace, so they don't shadow the
+	 * libc symbols the C runtime depends on. The real `@main` entry wrapper stays external. */
+	buffer_append_fmt(ctx, "define internal void @%s(", proc_name);
 
 	/* Emit parameter types and names */
 	for (int i = 0; i < proc->param_count; i++) {
@@ -6568,8 +6607,8 @@ static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys) {
 		return;
 	}
 
-	/* Generate ONE function taking all matching archetypes as params */
-	buffer_append_fmt(ctx, "define void @%s(", sys->name);
+	/* Generate ONE function taking all matching archetypes as params (internal linkage, see above) */
+	buffer_append_fmt(ctx, "define internal void @%s(", sys->name);
 	for (int i = 0; i < matching_count; i++) {
 		if (i > 0)
 			buffer_append(ctx, ", ");

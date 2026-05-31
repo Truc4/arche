@@ -3448,9 +3448,27 @@ static Expression *cst_build_expr(CstView e) {
 	}
 	case SN_CALL_EXPR: {
 		ax->type = EXPR_CALL;
-		Expression *callee = expression_create(EXPR_NAME);
-		callee->data.name.name = sem_cv_dup(cv_child(e, SN_CALLEE_NAME));
-		callee->data.name.is_table_ref = 0;
+		Expression *callee;
+		int callee_nfields = cv_count(e, SN_FIELD_NAME);
+		if (callee_nfields > 0) {
+			/* Qualified callee `mod.name` (no SN_CALLEE_NAME): rebuild the field access; the
+			 * qualify pass folds `mod.name` → `mod_name` for imported modules. */
+			Expression *base = expression_create(EXPR_NAME);
+			base->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
+			base->data.name.is_table_ref = 0;
+			Expression *cur = base;
+			for (int i = 0; i < callee_nfields; i++) {
+				Expression *f = expression_create(EXPR_FIELD);
+				f->data.field.base = cur;
+				f->data.field.field_name = sem_cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+				cur = f;
+			}
+			callee = cur;
+		} else {
+			callee = expression_create(EXPR_NAME);
+			callee->data.name.name = sem_cv_dup(cv_child(e, SN_CALLEE_NAME));
+			callee->data.name.is_table_ref = 0;
+		}
 		ax->data.call.callee = callee;
 		int ac = 0;
 		for (int i = 0; i < e.node->child_count; i++)
@@ -4260,6 +4278,19 @@ void semantic_add_module(const char *name, const SyntaxNode *root, const char *s
 	g_sem_module_count++;
 }
 
+void semantic_reset_modules(void) {
+	for (int i = 0; i < g_sem_module_count; i++)
+		free(g_sem_modules[i].name);
+	g_sem_module_count = 0;
+}
+
+int semantic_has_module(const char *name) {
+	for (int i = 0; i < g_sem_module_count; i++)
+		if (strcmp(g_sem_modules[i].name, name) == 0)
+			return 1;
+	return 0;
+}
+
 /* ---- module name-prefixing (mirrors main.c resolve_uses / prefix_module) ---- */
 static int sem_name_in_set(char **set, int count, const char *name) {
 	for (int i = 0; i < count; i++)
@@ -4401,6 +4432,127 @@ static void sem_rename_stmt(Statement *s, const char *prefix, char **set, int co
 		break;
 	}
 }
+/* Qualified module access (semantic AST mirror of lower.c's hir_q_*): rewrite `mod.name` →
+ * `mod_name` for inlined modules, so `io.open(...)` resolves to io's exported `open`. */
+static int sem_qual_lookup(char **prefix, char ***set, int *count, int n, const char *base,
+                           const char *field, char *out, size_t out_sz) {
+	for (int m = 0; m < n; m++) {
+		if (strcmp(base, prefix[m]) != 0)
+			continue;
+		for (int s = 0; s < count[m]; s++)
+			if (strcmp(field, set[m][s]) == 0) {
+				snprintf(out, out_sz, "%s_%s", prefix[m], field);
+				return 1;
+			}
+	}
+	return 0;
+}
+static void sem_qualify_expr(Expression *e, char **prefix, char ***set, int *count, int n) {
+	if (!e)
+		return;
+	if (e->type == EXPR_FIELD && e->data.field.base && e->data.field.base->type == EXPR_NAME &&
+	    e->data.field.field_name) {
+		char mangled[256];
+		if (sem_qual_lookup(prefix, set, count, n, e->data.field.base->data.name.name, e->data.field.field_name,
+		                    mangled, sizeof(mangled))) {
+			e->type = EXPR_NAME;
+			e->data.name.name = sem_dupz(mangled);
+			e->data.name.is_table_ref = 0;
+			return;
+		}
+	}
+	switch (e->type) {
+	case EXPR_FIELD:
+		sem_qualify_expr(e->data.field.base, prefix, set, count, n);
+		break;
+	case EXPR_INDEX:
+		sem_qualify_expr(e->data.index.base, prefix, set, count, n);
+		for (int i = 0; i < e->data.index.index_count; i++)
+			sem_qualify_expr(e->data.index.indices[i], prefix, set, count, n);
+		break;
+	case EXPR_BINARY:
+		sem_qualify_expr(e->data.binary.left, prefix, set, count, n);
+		sem_qualify_expr(e->data.binary.right, prefix, set, count, n);
+		break;
+	case EXPR_UNARY:
+		sem_qualify_expr(e->data.unary.operand, prefix, set, count, n);
+		break;
+	case EXPR_CALL:
+		sem_qualify_expr(e->data.call.callee, prefix, set, count, n);
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			sem_qualify_expr(e->data.call.args[i], prefix, set, count, n);
+		break;
+	case EXPR_ALLOC:
+		for (int i = 0; i < e->data.alloc.field_count; i++)
+			sem_qualify_expr(e->data.alloc.field_values[i], prefix, set, count, n);
+		sem_qualify_expr(e->data.alloc.init_length, prefix, set, count, n);
+		break;
+	case EXPR_ARRAY_LITERAL:
+		for (int i = 0; i < e->data.array_literal.element_count; i++)
+			sem_qualify_expr(e->data.array_literal.elements[i], prefix, set, count, n);
+		break;
+	default:
+		break;
+	}
+}
+static void sem_qualify_stmt(Statement *s, char **prefix, char ***set, int *count, int n) {
+	if (!s)
+		return;
+	switch (s->type) {
+	case STMT_BIND:
+		sem_qualify_expr(s->data.bind_stmt.value, prefix, set, count, n);
+		break;
+	case STMT_ASSIGN:
+		sem_qualify_expr(s->data.assign_stmt.target, prefix, set, count, n);
+		sem_qualify_expr(s->data.assign_stmt.value, prefix, set, count, n);
+		break;
+	case STMT_FOR:
+		sem_qualify_expr(s->data.for_stmt.iterable, prefix, set, count, n);
+		sem_qualify_stmt(s->data.for_stmt.init, prefix, set, count, n);
+		sem_qualify_expr(s->data.for_stmt.condition, prefix, set, count, n);
+		sem_qualify_stmt(s->data.for_stmt.increment, prefix, set, count, n);
+		for (int i = 0; i < s->data.for_stmt.body_count; i++)
+			sem_qualify_stmt(s->data.for_stmt.body[i], prefix, set, count, n);
+		break;
+	case STMT_IF:
+		sem_qualify_expr(s->data.if_stmt.cond, prefix, set, count, n);
+		for (int i = 0; i < s->data.if_stmt.then_count; i++)
+			sem_qualify_stmt(s->data.if_stmt.then_body[i], prefix, set, count, n);
+		for (int i = 0; i < s->data.if_stmt.else_count; i++)
+			sem_qualify_stmt(s->data.if_stmt.else_body[i], prefix, set, count, n);
+		break;
+	case STMT_EXPR:
+		sem_qualify_expr(s->data.expr_stmt.expr, prefix, set, count, n);
+		break;
+	case STMT_RETURN:
+		for (int i = 0; i < s->data.return_stmt.count; i++)
+			sem_qualify_expr(s->data.return_stmt.values[i], prefix, set, count, n);
+		break;
+	case STMT_MULTI_BIND:
+		sem_qualify_expr(s->data.multi_bind.value, prefix, set, count, n);
+		break;
+	case STMT_EACH_FIELD:
+		for (int i = 0; i < s->data.each_field.body_count; i++)
+			sem_qualify_stmt(s->data.each_field.body[i], prefix, set, count, n);
+		break;
+	default:
+		break;
+	}
+}
+static void sem_qualify_decl(Decl *d, char **prefix, char ***set, int *count, int n) {
+	if (!d)
+		return;
+	if (d->kind == DECL_PROC)
+		for (int i = 0; i < d->data.proc->statement_count; i++)
+			sem_qualify_stmt(d->data.proc->statements[i], prefix, set, count, n);
+	else if (d->kind == DECL_SYS)
+		for (int i = 0; i < d->data.sys->statement_count; i++)
+			sem_qualify_stmt(d->data.sys->statements[i], prefix, set, count, n);
+	else if (d->kind == DECL_FUNC)
+		for (int i = 0; i < d->data.func->statement_count; i++)
+			sem_qualify_stmt(d->data.func->statements[i], prefix, set, count, n);
+}
+
 static const char *sem_decl_name(Decl *d) {
 	switch (d->kind) {
 	case DECL_ARCHETYPE:
@@ -4435,6 +4587,8 @@ static void sem_rename_decl(Decl *d, const char *prefix, char **set, int count) 
 		sem_maybe_rename(&d->data.proc->name, prefix, set, count);
 		for (int i = 0; i < d->data.proc->param_count; i++)
 			sem_rename_typeref(d->data.proc->params[i]->type, prefix, set, count);
+		for (int i = 0; i < d->data.proc->out_param_count; i++)
+			sem_rename_typeref(d->data.proc->out_params[i]->type, prefix, set, count);
 		for (int i = 0; i < d->data.proc->statement_count; i++)
 			sem_rename_stmt(d->data.proc->statements[i], prefix, set, count);
 		break;
@@ -4557,48 +4711,75 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 
 		if (k == SN_USE_DECL) {
 			char *mod_name = sem_txt_dup(cv_token(dv, TOK_IDENT));
-			SemModule *mod = NULL;
-			for (int m = 0; m < g_sem_module_count; m++)
-				if (strcmp(g_sem_modules[m].name, mod_name) == 0) {
-					mod = &g_sem_modules[m];
-					break;
+			int first = prog->decl_count;
+			int found = 0;
+			/* full = ALL non-extern symbols (prefix everything → intra-module refs resolve);
+			 * expset = only #export-band symbols (the only ones externally visible). */
+			char **full = NULL;
+			int fulln = 0, fullcap = 0;
+			char **expset = NULL;
+			int expn = 0, expcap = 0;
+			for (int m = 0; m < g_sem_module_count; m++) {
+				if (strcmp(g_sem_modules[m].name, mod_name) != 0)
+					continue;
+				found = 1;
+				const SyntaxNode *mr = g_sem_modules[m].root;
+				int exported = 1; /* band resets per file */
+				for (int j = 0; j < mr->child_count; j++) {
+					if (mr->children[j].tag != SE_NODE)
+						continue;
+					SyntaxNodeKind mk = mr->children[j].as.node->kind;
+					if (mk == SN_VIS_MARKER) {
+						exported = 0;
+						continue;
+					}
+					if (mk < SN_WORLD_DECL || mk > SN_USE_DECL || mk == SN_USE_DECL)
+						continue;
+					Decl *md = cst_build_decl((CstView){mr->children[j].as.node, g_sem_modules[m].src});
+					if (!md)
+						continue;
+					prog->decls[prog->decl_count++] = md;
+					int is_ext = (md->kind == DECL_PROC && md->data.proc->is_extern) ||
+					             (md->kind == DECL_FUNC && md->data.func->is_extern);
+					const char *nm = sem_decl_name(md);
+					if (nm && !is_ext) {
+						if (fulln == fullcap) {
+							fullcap = fullcap ? fullcap * 2 : 8;
+							full = realloc(full, (size_t)fullcap * sizeof(char *));
+						}
+						full[fulln++] = sem_dupz(nm);
+						if (exported) {
+							if (expn == expcap) {
+								expcap = expcap ? expcap * 2 : 8;
+								expset = realloc(expset, (size_t)expcap * sizeof(char *));
+							}
+							expset[expn++] = sem_dupz(nm);
+						}
+					}
 				}
-			if (!mod) {
+			}
+			if (!found) {
 				free(mod_name);
+				free(full);
+				free(expset);
 				continue;
 			}
-			int first = prog->decl_count;
-			const SyntaxNode *mr = mod->root;
-			for (int j = 0; j < mr->child_count; j++) {
-				if (mr->children[j].tag != SE_NODE)
-					continue;
-				SyntaxNodeKind mk = mr->children[j].as.node->kind;
-				if (mk < SN_WORLD_DECL || mk > SN_USE_DECL || mk == SN_USE_DECL)
-					continue;
-				Decl *md = cst_build_decl((CstView){mr->children[j].as.node, mod->src});
-				if (md)
-					prog->decls[prog->decl_count++] = md;
-			}
-			/* collect this module's exported (bare) names, then prefix them. */
-			int ndefs = prog->decl_count - first;
-			char **exports = calloc(ndefs ? ndefs : 1, sizeof(char *));
-			int en = 0;
-			for (int dd = first; dd < prog->decl_count; dd++) {
-				const char *nm = sem_decl_name(prog->decls[dd]);
-				if (nm)
-					exports[en++] = sem_dupz(nm);
-			}
+			/* Prefix the module's own decls with the FULL set (intra-module refs resolve). */
 			for (int dd = first; dd < prog->decl_count; dd++)
-				sem_rename_decl(prog->decls[dd], mod->name, exports, en);
+				sem_rename_decl(prog->decls[dd], mod_name, full, fulln);
+			for (int x = 0; x < fulln; x++)
+				free(full[x]);
+			free(full);
+			/* Only the EXPORT set is externally visible. */
 			if (acc_n < 64) {
-				acc_prefix[acc_n] = sem_dupz(mod->name);
-				acc_set[acc_n] = exports;
-				acc_count[acc_n] = en;
+				acc_prefix[acc_n] = sem_dupz(mod_name);
+				acc_set[acc_n] = expset;
+				acc_count[acc_n] = expn;
 				acc_n++;
 			} else {
-				for (int e = 0; e < en; e++)
-					free(exports[e]);
-				free(exports);
+				for (int x = 0; x < expn; x++)
+					free(expset[x]);
+				free(expset);
 			}
 			free(mod_name);
 			continue;
@@ -4608,6 +4789,11 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 		if (ad)
 			prog->decls[prog->decl_count++] = ad;
 	}
+
+	/* Qualified module access: rewrite `mod.name` → `mod_name` for every inlined module. */
+	if (acc_n > 0)
+		for (int dd = 0; dd < prog->decl_count; dd++)
+			sem_qualify_decl(prog->decls[dd], acc_prefix, acc_set, acc_count, acc_n);
 
 	/* Cross-module bare-reference resolution: rewrite bare refs to a module export that has
 	 * no top-level definition into the prefixed name (collisions left alone). */
@@ -4846,6 +5032,19 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 		Decl *d = prog->decls[i];
 		if (d->kind == DECL_STATIC && d->data.static_decl && d->data.static_decl->kind == STATIC_KIND_ARRAY)
 			register_static_name(ctx, d->data.static_decl->array.name);
+	}
+
+	/* pre-pass: register every proc/func name so a body may reference any function regardless of
+	 * declaration order — module scope is order-independent (a module proc may call one defined
+	 * later in the same file/folder). register_func dedups, so the later per-decl registration in
+	 * analyze_{proc,func}_decl is a no-op. Func GROUPS are excluded: analyze_func_group_decl checks
+	 * find_known_func to detect a clashing name, so pre-registering the group would self-trip E0031. */
+	for (int i = 0; i < prog->decl_count; i++) {
+		Decl *d = prog->decls[i];
+		if (d->kind == DECL_PROC && d->data.proc)
+			register_func(ctx, d->data.proc->name);
+		else if (d->kind == DECL_FUNC && d->data.func)
+			register_func(ctx, d->data.func->name);
 	}
 
 	/* pass 2: analyze other declarations */

@@ -1,5 +1,5 @@
 // RUN: %arche -o %t %s && %t
-use io;
+#import io;
 
 proc main() {
   io_open("tests/fixtures/data.csv")(fd:);

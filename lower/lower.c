@@ -580,8 +580,26 @@ static HirExpr *lower_expr_cst(CstView e) {
 	}
 	case SN_CALL_EXPR: {
 		ax->kind = HIR_EXPR_CALL;
-		HirExpr *callee = hir_expr_create(HIR_EXPR_NAME);
-		callee->data.name.name = cv_dup(cv_child(e, SN_CALLEE_NAME));
+		HirExpr *callee;
+		int nfields = cv_count(e, SN_FIELD_NAME);
+		if (nfields > 0) {
+			/* Qualified callee `mod.name` (no SN_CALLEE_NAME): rebuild the field access from the
+			 * base IDENT + SN_FIELD_NAME children. The qualify pass later folds `mod.name` →
+			 * `mod_name` for imported modules. */
+			HirExpr *base = hir_expr_create(HIR_EXPR_NAME);
+			base->data.name.name = txt_dup(cv_token(e, TOK_IDENT));
+			HirExpr *cur = base;
+			for (int i = 0; i < nfields; i++) {
+				HirExpr *f = hir_expr_create(HIR_EXPR_FIELD);
+				f->data.field.base = cur;
+				f->data.field.field_name = cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+				cur = f;
+			}
+			callee = cur;
+		} else {
+			callee = hir_expr_create(HIR_EXPR_NAME);
+			callee->data.name.name = cv_dup(cv_child(e, SN_CALLEE_NAME));
+		}
 		ax->data.call.callee = callee;
 		int ac = 0;
 		for (int i = 0; i < e.node->child_count; i++)
@@ -1505,6 +1523,12 @@ void lower_add_module(const char *name, const SyntaxNode *root, const char *src)
 	g_module_count++;
 }
 
+void lower_reset_modules(void) {
+	for (int i = 0; i < g_module_count; i++)
+		free(g_modules[i].name);
+	g_module_count = 0;
+}
+
 /* If `name` is in set, return a freshly-allocated `prefix_name`; else NULL. */
 static char *prefixed_dup(const char *name, const char *prefix, char **set, int count) {
 	if (!name)
@@ -1640,6 +1664,8 @@ static void hir_rn_decl(HirDecl *d, const char *prefix, char **set, int count) {
 		rn_owned(&d->data.proc->name, prefix, set, count);
 		for (int i = 0; i < d->data.proc->param_count; i++)
 			hir_rn_type(d->data.proc->params[i]->type, prefix, set, count);
+		for (int i = 0; i < d->data.proc->out_param_count; i++)
+			hir_rn_type(d->data.proc->out_params[i]->type, prefix, set, count);
 		for (int i = 0; i < d->data.proc->stmt_count; i++)
 			hir_rn_stmt(d->data.proc->stmts[i], prefix, set, count);
 		break;
@@ -1709,6 +1735,158 @@ static const char *hir_decl_name(HirDecl *d) {
 	return NULL;
 }
 
+/* ---- Qualified module access: rewrite `mod.name` → the mangled `mod_name` symbol ----
+ * `#import io;` inlines io's decls renamed to `io_<name>`. A use site writes `io.open`, which
+ * parses as a field access NAME(io).open. This pass turns that into NAME(io_open) when `io` is an
+ * inlined module and `open` is one of its exports — so qualified access resolves to the real
+ * symbol. (The bare `io_open` form keeps working; this just adds the `io.open` spelling.) Field
+ * access on a value (`h.mass`) or archetype column (`Particle.pos`) is left untouched, since the
+ * base name isn't a module. */
+typedef struct {
+	char **prefix;     /* module names (the `io` in `io.open`) */
+	char ***exports;   /* each module's exported bare names */
+	int *export_n;     /* count per module */
+	int n;             /* number of inlined modules */
+} QualCtx;
+
+static int qual_lookup(const QualCtx *q, const char *base, const char *field, char *out, size_t out_sz) {
+	for (int m = 0; m < q->n; m++) {
+		if (strcmp(base, q->prefix[m]) != 0)
+			continue;
+		for (int s = 0; s < q->export_n[m]; s++)
+			if (strcmp(field, q->exports[m][s]) == 0) {
+				snprintf(out, out_sz, "%s_%s", q->prefix[m], field);
+				return 1;
+			}
+	}
+	return 0;
+}
+
+static void hir_q_expr(HirExpr *e, const QualCtx *q) {
+	if (!e)
+		return;
+	if (e->kind == HIR_EXPR_FIELD && e->data.field.base && e->data.field.base->kind == HIR_EXPR_NAME &&
+	    e->data.field.field_name) {
+		char mangled[256];
+		if (qual_lookup(q, e->data.field.base->data.name.name, e->data.field.field_name, mangled, sizeof(mangled))) {
+			/* Transmute FIELD → NAME(mod_field). Old base/field_name are left to the arena
+			 * (small, bounded; the union write below clobbers the field pointers anyway). */
+			e->kind = HIR_EXPR_NAME;
+			e->data.name.name = dupz(mangled);
+			return;
+		}
+	}
+	switch (e->kind) {
+	case HIR_EXPR_FIELD:
+		hir_q_expr(e->data.field.base, q);
+		break;
+	case HIR_EXPR_INDEX:
+		hir_q_expr(e->data.index.base, q);
+		for (int i = 0; i < e->data.index.index_count; i++)
+			hir_q_expr(e->data.index.indices[i], q);
+		break;
+	case HIR_EXPR_BINARY:
+		hir_q_expr(e->data.binary.left, q);
+		hir_q_expr(e->data.binary.right, q);
+		break;
+	case HIR_EXPR_UNARY:
+		hir_q_expr(e->data.unary.operand, q);
+		break;
+	case HIR_EXPR_CALL:
+		hir_q_expr(e->data.call.callee, q);
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			hir_q_expr(e->data.call.args[i], q);
+		break;
+	case HIR_EXPR_ALLOC:
+		for (int i = 0; i < e->data.alloc.field_count; i++)
+			hir_q_expr(e->data.alloc.field_values[i], q);
+		hir_q_expr(e->data.alloc.init_length, q);
+		break;
+	case HIR_EXPR_ARRAY_LITERAL:
+		for (int i = 0; i < e->data.array_literal.element_count; i++)
+			hir_q_expr(e->data.array_literal.elements[i], q);
+		break;
+	default:
+		break;
+	}
+}
+
+static void hir_q_stmt(HirStmt *s, const QualCtx *q) {
+	if (!s)
+		return;
+	switch (s->kind) {
+	case HIR_STMT_BIND:
+		hir_q_expr(s->data.bind_stmt.value, q);
+		break;
+	case HIR_STMT_ASSIGN:
+		hir_q_expr(s->data.assign_stmt.target, q);
+		hir_q_expr(s->data.assign_stmt.value, q);
+		break;
+	case HIR_STMT_FOR:
+		hir_q_expr(s->data.for_stmt.iterable, q);
+		hir_q_stmt(s->data.for_stmt.init, q);
+		hir_q_expr(s->data.for_stmt.cond, q);
+		hir_q_stmt(s->data.for_stmt.incr, q);
+		for (int i = 0; i < s->data.for_stmt.body_count; i++)
+			hir_q_stmt(s->data.for_stmt.body[i], q);
+		break;
+	case HIR_STMT_IF:
+		hir_q_expr(s->data.if_stmt.cond, q);
+		for (int i = 0; i < s->data.if_stmt.then_count; i++)
+			hir_q_stmt(s->data.if_stmt.then_body[i], q);
+		for (int i = 0; i < s->data.if_stmt.else_count; i++)
+			hir_q_stmt(s->data.if_stmt.else_body[i], q);
+		break;
+	case HIR_STMT_EXPR:
+		hir_q_expr(s->data.expr_stmt.expr, q);
+		break;
+	case HIR_STMT_RETURN:
+		for (int i = 0; i < s->data.return_stmt.count; i++)
+			hir_q_expr(s->data.return_stmt.values[i], q);
+		break;
+	case HIR_STMT_MULTI_BIND:
+		hir_q_expr(s->data.multi_bind.value, q);
+		break;
+	case HIR_STMT_EACH_FIELD:
+		for (int i = 0; i < s->data.each_field.body_count; i++)
+			hir_q_stmt(s->data.each_field.body[i], q);
+		break;
+	default:
+		break;
+	}
+}
+
+static void hir_q_decl(HirDecl *d, const QualCtx *q) {
+	if (!d)
+		return;
+	switch (d->kind) {
+	case HIR_DECL_PROC:
+		for (int i = 0; i < d->data.proc->stmt_count; i++)
+			hir_q_stmt(d->data.proc->stmts[i], q);
+		break;
+	case HIR_DECL_SYS:
+		for (int i = 0; i < d->data.sys->stmt_count; i++)
+			hir_q_stmt(d->data.sys->stmts[i], q);
+		break;
+	case HIR_DECL_FUNC:
+		for (int i = 0; i < d->data.func->stmt_count; i++)
+			hir_q_stmt(d->data.func->stmts[i], q);
+		break;
+	case HIR_DECL_STATIC:
+		if (d->data.static_decl->kind != HIR_STATIC_ARRAY) {
+			for (int i = 0; i < d->data.static_decl->archetype.field_count; i++)
+				hir_q_expr(d->data.static_decl->archetype.field_values[i], q);
+			hir_q_expr(d->data.static_decl->archetype.init_length, q);
+		}
+		break;
+	case HIR_DECL_CONST:
+		hir_q_expr(d->data.constant->value, q);
+		break;
+	default:
+		break;
+	}
+}
+
 /* CST-driven entry, gated by ARCHE_LOWER_CST (validated against the IR goldens). */
 HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 	if (!root)
@@ -1739,54 +1917,100 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 
 		if (k == SN_USE_DECL) {
 			/* Inline the named module's decls here, auto-prefixing every name it
-			 * declares (and its internal references to them) with `<module>_`. */
+			 * declares (and its internal references to them) with `<module>_`. A module is a
+			 * folder, so it may register as several files under the same name — inline them all. */
 			char *mod_name = txt_dup(cv_token(dv, TOK_IDENT));
-			LowerModule *mod = NULL;
-			for (int m = 0; m < g_module_count; m++)
-				if (strcmp(g_modules[m].name, mod_name) == 0) {
-					mod = &g_modules[m];
-					break;
-				}
-			free(mod_name);
-			if (!mod)
-				continue;
-
 			int first = ast->decl_count;
-			const SyntaxNode *mr = mod->root;
-			for (int j = 0; j < mr->child_count; j++) {
-				if (mr->children[j].tag != SE_NODE)
+			int found = 0;
+			/* Two name sets (externs excluded — their bare name is the C ABI symbol):
+			 *   `full`   — ALL module symbols; the module's own decls are prefixed against this so
+			 *              intra-module references (across the folder's files) resolve.
+			 *   `expset` — only symbols in the default (#export) band; ONLY these are externally
+			 *              qualify-able (`io.x`) and bare-resolvable. `#module`/`#file` narrow the
+			 *              band, dropping the following decls from `expset` → not visible outside. */
+			char **full = NULL;
+			int fulln = 0, fullcap = 0;
+			char **expset = NULL;
+			int expn = 0, expcap = 0;
+			for (int m = 0; m < g_module_count; m++) {
+				if (strcmp(g_modules[m].name, mod_name) != 0)
 					continue;
-				SyntaxNodeKind mk = mr->children[j].as.node->kind;
-				if (mk < SN_WORLD_DECL || mk > SN_USE_DECL || mk == SN_USE_DECL)
-					continue;
-				CstView mdv = {mr->children[j].as.node, mod->src};
-				HirDecl *md = lower_decl_cst(mdv);
-				if (md)
+				found = 1;
+				const SyntaxNode *mr = g_modules[m].root;
+				int exported = 1; /* band resets per file */
+				for (int j = 0; j < mr->child_count; j++) {
+					if (mr->children[j].tag != SE_NODE)
+						continue;
+					SyntaxNodeKind mk = mr->children[j].as.node->kind;
+					if (mk == SN_VIS_MARKER) {
+						exported = 0;
+						continue;
+					}
+					if (mk < SN_WORLD_DECL || mk > SN_USE_DECL || mk == SN_USE_DECL)
+						continue;
+					CstView mdv = {mr->children[j].as.node, g_modules[m].src};
+					HirDecl *md = lower_decl_cst(mdv);
+					if (!md)
+						continue;
 					ast->decls[ast->decl_count++] = md;
+					int is_ext = (md->kind == HIR_DECL_PROC && md->data.proc->is_extern) ||
+					             (md->kind == HIR_DECL_FUNC && md->data.func->is_extern);
+					const char *nm = hir_decl_name(md);
+					if (nm && !is_ext) {
+						if (fulln == fullcap) {
+							fullcap = fullcap ? fullcap * 2 : 8;
+							full = realloc(full, (size_t)fullcap * sizeof(char *));
+						}
+						full[fulln++] = dupz(nm);
+						if (exported) {
+							if (expn == expcap) {
+								expcap = expcap ? expcap * 2 : 8;
+								expset = realloc(expset, (size_t)expcap * sizeof(char *));
+							}
+							expset[expn++] = dupz(nm);
+						}
+					}
+				}
 			}
-			/* Collect this module's exported names (still bare), then prefix. */
-			int ndefs = ast->decl_count - first;
-			char **exports = calloc(ndefs ? ndefs : 1, sizeof(char *));
-			int en = 0;
-			for (int d = first; d < ast->decl_count; d++) {
-				const char *nm = hir_decl_name(ast->decls[d]);
-				if (nm)
-					exports[en++] = dupz(nm);
+			if (!found) {
+				free(mod_name);
+				free(full);
+				free(expset);
+				continue;
 			}
+			/* Prefix the module's own decls with the FULL set (intra-module refs resolve). */
 			for (int d = first; d < ast->decl_count; d++)
-				hir_rn_decl(ast->decls[d], mod->name, exports, en);
+				hir_rn_decl(ast->decls[d], mod_name, full, fulln);
+			for (int x = 0; x < fulln; x++)
+				free(full[x]);
+			free(full);
+			/* Only the EXPORT set is externally visible (dangling-bare-resolve + qualify). */
 			if (inlined < 64) {
-				mod_prefix[inlined] = dupz(mod->name);
-				mod_exports[inlined] = exports;
-				mod_export_n[inlined] = en;
+				mod_prefix[inlined] = dupz(mod_name);
+				mod_exports[inlined] = expset;
+				mod_export_n[inlined] = expn;
 				inlined++;
+			} else {
+				for (int x = 0; x < expn; x++)
+					free(expset[x]);
+				free(expset);
 			}
+			free(mod_name);
 			continue;
 		}
 
 		HirDecl *ad = lower_decl_cst(dv);
 		if (ad)
 			ast->decls[ast->decl_count++] = ad;
+	}
+
+	/* Qualified module access: rewrite `mod.name` → the mangled `mod_name` symbol for every
+	 * inlined module (so `io.open` resolves to io's exported `open`). Runs before the dangling
+	 * pass; both land on the same `mod_name` symbol. */
+	if (inlined > 0) {
+		QualCtx q = {mod_prefix, mod_exports, mod_export_n, inlined};
+		for (int d = 0; d < ast->decl_count; d++)
+			hir_q_decl(ast->decls[d], &q);
 	}
 
 	/* Cross-module bare references: a module export rewritten to `<mod>_<name>`
