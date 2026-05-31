@@ -1,4 +1,5 @@
 // RUN: %arche -o %t %s && %t
+#import io;
 arche Transaction {
   price :: float,
   quantity :: int,

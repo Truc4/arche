@@ -1,5 +1,5 @@
 // RUN: %arche -o %t %s && cd %repo && %t | grep "PASS"
-use io;
+#import io;
 
 proc main() {
   io_open("tests/fixtures/data.csv")(fd:);

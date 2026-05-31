@@ -9,6 +9,7 @@ typedef struct {
 	int len;
 	int line;
 	SyntaxNodeKind parent; /* node directly containing this token — for structure-aware spacing */
+	int decl_start;        /* first token of a top-level (SOURCE_FILE-child) declaration */
 } Leaf;
 
 typedef struct {
@@ -26,6 +27,7 @@ static void push_leaf(Leaves *ls, TokenKind k, const char *text, int len, int li
 	ls->items[ls->count].len = len;
 	ls->items[ls->count].line = line;
 	ls->items[ls->count].parent = parent;
+	ls->items[ls->count].decl_start = 0;
 	ls->count++;
 }
 
@@ -33,7 +35,14 @@ static void collect(const SyntaxNode *n, const char *src, Leaves *ls) {
 	for (int i = 0; i < n->child_count; i++) {
 		const SyntaxElem *e = &n->children[i];
 		if (e->tag == SE_NODE) {
+			/* A direct child node of SOURCE_FILE is a top-level declaration. Tag its first leaf so
+			 * the printer breaks before it — needed for decls with no `;`/`}` terminator (e.g.
+			 * `file :: opaque`), which would otherwise glue onto the previous declaration. */
+			int top = (n->kind == SN_SOURCE_FILE);
+			int before = ls->count;
 			collect(e->as.node, src, ls);
+			if (top && ls->count > before)
+				ls->items[before].decl_start = 1;
 		} else {
 			push_leaf(ls, e->as.token.kind, src + e->as.token.offset, (int)e->as.token.length, e->as.token.line,
 			          n->kind);
@@ -109,8 +118,18 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 			 * we don't force a break. Instead the author's layout is preserved (like blank lines
 			 * below): an inline header stays inline, a hand-split one keeps its breaks. */
 			int for_header_semi = (prev == TOK_SEMI && prev_parent == SN_FOR_STMT);
+			/* `#module` / `#file` visibility markers are standalone section banners: break onto their
+			 * own line, and break again after them so the following decl starts fresh. */
+			int vis_marker = (l->kind == TOK_HASH_MODULE || l->kind == TOK_HASH_FILE);
+			int after_vis_marker = (prev == TOK_HASH_MODULE || prev == TOK_HASH_FILE);
 			int want_nl = force_nl || arch_field_break || l->kind == TOK_RBRACE || prev == TOK_LBRACE ||
-			              (prev == TOK_SEMI && !for_header_semi) || prev == TOK_RBRACE;
+			              (prev == TOK_SEMI && !for_header_semi) || prev == TOK_RBRACE || vis_marker ||
+			              after_vis_marker || l->decl_start;
+			/* A comment on a NEW source line gets its own line; a trailing comment on the SAME line as
+			 * the code it follows stays inline (don't force it down). This override wins over the
+			 * statement-break rules above (e.g. a `// note` after `stmt;` stays put). */
+			if (l->kind == TOK_COMMENT)
+				want_nl = (l->line != prev_line);
 			if (for_header_semi && l->line > prev_line)
 				want_nl = 1; /* the author split the header across lines — keep it */
 			/* a type/generic/table reference is compact: handle<X>, float[5], table<P> */
@@ -125,8 +144,13 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 					fputc('\n', out);
 				for (int t = 0; t < indent; t++)
 					fputs("  ", out);
-			} else if (!compact && !no_space_before(l->kind, prev, next)) {
-				fputc(' ', out);
+			} else {
+				/* No space after a symbolic unary operator (`-1`, `!flag`): the operator and its
+				 * operand are direct children of SN_UNARY_EXPR. `move`/`copy` are keyword unaries and
+				 * keep their space, so only `-` / `!` are special-cased here. */
+				int after_unary_op = (prev_parent == SN_UNARY_EXPR && (prev == TOK_MINUS || prev == TOK_BANG));
+				if (!compact && !after_unary_op && !no_space_before(l->kind, prev, next))
+					fputc(' ', out);
 			}
 		}
 

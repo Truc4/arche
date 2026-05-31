@@ -1,5 +1,5 @@
 // RUN: %arche -o %t %s && cd %repo && %t | grep "rows: 1000"
-use io;
+#import io;
 
 proc main() {
   io_open("tests/fixtures/data.csv")(fd:);

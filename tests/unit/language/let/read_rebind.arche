@@ -1,4 +1,5 @@
 // RUN: %arche -o %t %s && %t
+#import io;
 proc main() {
   arche_fopen_read("../../../../../tests/fixtures/transactions.csv")(fd:);
   buf: char[256];

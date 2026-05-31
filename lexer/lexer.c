@@ -187,12 +187,8 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 6 && strncmp(start, "return", 6) == 0) {
 		return TOK_RETURN;
 	}
-	if (length == 3 && strncmp(start, "use", 3) == 0) {
-		return TOK_USE;
-	}
-	if (length == 10 && strncmp(start, "each_field", 10) == 0) {
-		return TOK_EACH_FIELD;
-	}
+	/* `use` and `each_field` are retired as bare keywords — they're now the `#import` and
+	 * `#each_field` directives (see lex_hash_directive). Bare `use`/`each_field` are plain idents. */
 	if (length == 6 && strncmp(start, "static", 6) == 0) {
 		return TOK_STATIC;
 	}
@@ -431,6 +427,27 @@ Token lexer_next_token(Lexer *lexer) {
 		return make_token(lexer, TOK_SEMI, start, 1, line, column);
 	case '@':
 		return make_token(lexer, TOK_AT, start, 1, line, column);
+	case '#': {
+		/* `#`-directive: read the directive word and map it. `#import`/`#each_field` reuse the
+		 * existing TOK_USE/TOK_EACH_FIELD tokens so the parser + CST consumers are unchanged;
+		 * `#module`/`#file` are visibility markers. Unknown `#word` → TOK_HASH (parser errors). */
+		const char *word = lexer->cur; /* first char after '#' */
+		while (is_ident_char(peek(lexer))) {
+			advance(lexer);
+		}
+		size_t wlen = (size_t)(lexer->cur - word);
+		size_t tlen = (size_t)(lexer->cur - start); /* spans '#' + word */
+		TokenKind k = TOK_HASH;
+		if (wlen == 6 && strncmp(word, "import", 6) == 0)
+			k = TOK_USE;
+		else if (wlen == 10 && strncmp(word, "each_field", 10) == 0)
+			k = TOK_EACH_FIELD;
+		else if (wlen == 6 && strncmp(word, "module", 6) == 0)
+			k = TOK_HASH_MODULE;
+		else if (wlen == 4 && strncmp(word, "file", 4) == 0)
+			k = TOK_HASH_FILE;
+		return make_token(lexer, k, start, tlen, line, column);
+	}
 
 	case '+':
 		if (peek(lexer) == '=') {
@@ -570,6 +587,12 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_SEMI";
 	case TOK_AT:
 		return "TOK_AT";
+	case TOK_HASH:
+		return "TOK_HASH";
+	case TOK_HASH_MODULE:
+		return "TOK_HASH_MODULE";
+	case TOK_HASH_FILE:
+		return "TOK_HASH_FILE";
 
 	case TOK_EQ:
 		return "TOK_EQ";

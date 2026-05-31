@@ -1,7 +1,7 @@
 // RUN: ! %arche -o %t %s 2>&1
 
 proc bad(x: int) {
-  each_field f in x {
+  #each_field f in x {
     z := f;
   }
 }

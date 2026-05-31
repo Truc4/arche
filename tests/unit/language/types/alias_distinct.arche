@@ -2,7 +2,11 @@
 // `file` where a `socket` is expected is a compile error — nominal identity is checked at
 // substitution boundaries (here, a call argument), even though both erase to `opaque`.
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "expects 'socket'" %t.out
-file :: opaque socket :: opaque extern proc open_file()(ret: file);
+#import io;
+#import net;
+file :: opaque
+socket :: opaque
+extern proc open_file()(ret: file);
 extern proc use_socket(s: socket);
 
 proc main() {

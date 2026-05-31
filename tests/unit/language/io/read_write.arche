@@ -1,4 +1,5 @@
 // RUN: %arche -o %t %s && %t
+#import io;
 proc main() {
   stdout_write("hello\n", 6);
 }

@@ -2,7 +2,8 @@
 // (the only inspection allowed on an opaque value). Here the C pool (8) is exhausted,
 // so the 9th open returns null.
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t | grep "ok_null=1"
-resource :: opaque extern proc resource_open(initial: int)(ret: resource);
+resource :: opaque
+extern proc resource_open(initial: int)(ret: resource);
 extern proc resource_close(own r: resource);
 
 proc main() {

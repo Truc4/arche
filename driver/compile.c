@@ -5,6 +5,7 @@
 #include "../parser/parser.h"
 #include "../semantic/sem_diagnostics.h"
 #include "../semantic/semantic.h"
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,10 @@
 
 #ifndef ARCHE_CORE_DIR
 #define ARCHE_CORE_DIR "core"
+#endif
+
+#ifndef ARCHE_STDLIB_DIR
+#define ARCHE_STDLIB_DIR "stdlib"
 #endif
 
 #ifndef ARCHE_RUNTIME_DIR
@@ -79,69 +84,130 @@ static char *read_file_optional(const char *path) {
 	return buf;
 }
 
-/* Resolve `use foo;` declarations from the CST: for each, locate the module file, parse it,
- * and register its lossless CST with the lowerer and the CST analyzer (both inline + name-
- * prefix the module themselves, so nothing is inlined into a AstProgram here). The module's CST
- * + source are kept alive — the registries borrow them. */
+/* Dedup set of already-loaded module names (per compilation; reset in resolve_uses). Marking a
+ * name BEFORE loading also makes transitive `#import` cycle-safe. */
+#define MAX_LOADED_MODS 256
+static char *g_loaded_mods[MAX_LOADED_MODS];
+static int g_loaded_count;
+
+static void load_module(const char *name, const char *source_dir); /* fwd (mutual recursion) */
+
+/* Extract the module name (first IDENT token) from a `#import <name>;` (SN_USE_DECL) node. */
+static int module_name_of(const SyntaxNode *ud, const char *src, char *out, size_t sz) {
+	out[0] = '\0';
+	for (int k = 0; k < ud->child_count; k++)
+		if (ud->children[k].tag == SE_TOKEN && ud->children[k].as.token.kind == TOK_IDENT) {
+			size_t L = ud->children[k].as.token.length;
+			if (L > sz - 1)
+				L = sz - 1;
+			memcpy(out, src + ud->children[k].as.token.offset, L);
+			out[L] = '\0';
+			return 1;
+		}
+	return 0;
+}
+
+/* Parse one module file, register its lossless CST with both back-ends (which borrow the CST +
+ * source), then recurse into the module's own `#import`s. Returns 1 on success. */
+static int register_module_file(const char *mod_name, const char *path, const char *source_dir) {
+	char *mod_src = read_file_optional(path);
+	if (!mod_src)
+		return 0;
+	ParseResult mp = parse_source(mod_src);
+	if (mp.error_count > 0 || !mp.cst_root) {
+		fprintf(stderr, "Error: Failed to parse module file %s\n", path);
+		for (size_t j = 0; j < mp.error_count; j++)
+			fprintf(stderr, "  [Line %d] %s\n", mp.errors[j].line, mp.errors[j].message);
+		parse_result_free(&mp);
+		free(mod_src);
+		return 0;
+	}
+	lower_add_module(mod_name, mp.cst_root, mod_src);
+	semantic_add_module(mod_name, mp.cst_root, mod_src);
+	const SyntaxNode *root = mp.cst_root;
+	const char *src = mod_src;
+	mp.cst_root = NULL;
+	parse_result_free(&mp); /* mod_src + CST kept alive (borrowed by the registries) */
+	/* Transitive imports: a module may `#import` other modules (e.g. csv → io). */
+	for (int u = 0; u < root->child_count; u++) {
+		if (root->children[u].tag != SE_NODE || root->children[u].as.node->kind != SN_USE_DECL)
+			continue;
+		char dep[256];
+		if (module_name_of(root->children[u].as.node, src, dep, sizeof(dep)))
+			load_module(dep, source_dir);
+	}
+	return 1;
+}
+
+/* A module is a FOLDER: `<dir>/<name>/` with one or more `.arche` files, all merged into one
+ * module namespace. Falls back to a single file `<dir>/<name>.arche`. Returns files registered. */
+static int try_load_module_dir(const char *mod_name, const char *dir, const char *source_dir) {
+	char folder[640];
+	snprintf(folder, sizeof(folder), "%s/%s", dir, mod_name);
+	DIR *d = opendir(folder);
+	if (d) {
+		int n = 0;
+		struct dirent *ent;
+		while ((ent = readdir(d)) != NULL) {
+			size_t L = strlen(ent->d_name);
+			if (L > 6 && strcmp(ent->d_name + L - 6, ".arche") == 0) {
+				char fp[1300];
+				snprintf(fp, sizeof(fp), "%s/%s", folder, ent->d_name);
+				n += register_module_file(mod_name, fp, source_dir);
+			}
+		}
+		closedir(d);
+		if (n > 0)
+			return n;
+	}
+	char fp[640];
+	snprintf(fp, sizeof(fp), "%s/%s.arche", dir, mod_name);
+	if (file_exists(fp))
+		return register_module_file(mod_name, fp, source_dir);
+	return 0;
+}
+
+/* Load module `name` (dedup'd) by searching the source dir, then stdlib, then core. */
+static void load_module(const char *name, const char *source_dir) {
+	for (int i = 0; i < g_loaded_count; i++)
+		if (strcmp(g_loaded_mods[i], name) == 0)
+			return;
+	if (g_loaded_count < MAX_LOADED_MODS) {
+		char *dup = malloc(strlen(name) + 1);
+		strcpy(dup, name);
+		g_loaded_mods[g_loaded_count++] = dup; /* mark before load → cycle-safe */
+	}
+	int loaded = try_load_module_dir(name, source_dir, source_dir);
+	if (!loaded)
+		loaded = try_load_module_dir(name, ARCHE_STDLIB_DIR, source_dir);
+	if (!loaded)
+		loaded = try_load_module_dir(name, ARCHE_CORE_DIR, source_dir);
+	if (!loaded)
+		fprintf(stderr, "Error: Module not found: %s\n", name);
+}
+
+/* Resolve `#import foo;` from the CST: locate each module (folder or file), register it with both
+ * back-ends, and recurse into its transitive imports. CST + source are kept alive (borrowed). */
 static void resolve_uses(const SyntaxNode *cst_root, const char *src, const char *source_path) {
 	if (!cst_root)
 		return;
+	/* Static registries — clear leftovers from a prior compilation (the doctest runner compiles
+	 * many examples in one process) so modules aren't inlined twice. */
+	lower_reset_modules();
+	semantic_reset_modules();
+	for (int i = 0; i < g_loaded_count; i++)
+		free(g_loaded_mods[i]);
+	g_loaded_count = 0;
+
+	char *source_dir = source_dir_of(source_path);
 	for (int u = 0; u < cst_root->child_count; u++) {
 		if (cst_root->children[u].tag != SE_NODE || cst_root->children[u].as.node->kind != SN_USE_DECL)
 			continue;
-		const SyntaxNode *ud = cst_root->children[u].as.node;
-
-		/* module name = the IDENT token in `use <name> ;` (`use` itself is TOK_USE) */
 		char mod_name[256];
-		mod_name[0] = '\0';
-		for (int k = 0; k < ud->child_count; k++)
-			if (ud->children[k].tag == SE_TOKEN && ud->children[k].as.token.kind == TOK_IDENT) {
-				size_t L = ud->children[k].as.token.length;
-				if (L > sizeof(mod_name) - 1)
-					L = sizeof(mod_name) - 1;
-				memcpy(mod_name, src + ud->children[k].as.token.offset, L);
-				mod_name[L] = '\0';
-				break;
-			}
-		if (!mod_name[0])
-			continue;
-
-		/* Try the source file's directory first, then the core library. */
-		char *source_dir = source_dir_of(source_path);
-		char path1[512], path2[512];
-		snprintf(path1, sizeof(path1), "%s/%s.arche", source_dir, mod_name);
-		free(source_dir);
-		snprintf(path2, sizeof(path2), "%s/%s.arche", ARCHE_CORE_DIR, mod_name);
-		const char *found = file_exists(path1) ? path1 : (file_exists(path2) ? path2 : NULL);
-		if (!found) {
-			fprintf(stderr, "Error: Module not found: %s\n", mod_name);
-			continue;
-		}
-
-		char *mod_src = read_file_optional(found);
-		if (!mod_src) {
-			fprintf(stderr, "Error: Failed to open module: %s\n", found);
-			continue;
-		}
-
-		/* Parse without prepending core (avoid duplicate declarations). */
-		ParseResult mod_parse = parse_source(mod_src);
-		if (mod_parse.error_count > 0 || !mod_parse.cst_root) {
-			fprintf(stderr, "Error: Failed to parse module %s\n", mod_name);
-			for (size_t j = 0; j < mod_parse.error_count; j++)
-				fprintf(stderr, "  [Line %d] %s\n", mod_parse.errors[j].line, mod_parse.errors[j].message);
-			parse_result_free(&mod_parse);
-			free(mod_src);
-			continue;
-		}
-
-		/* Register the module CST with both back-ends; they borrow the CST + source (leaf
-		 * spans reference it), so transfer ownership out of the parse result and keep it. */
-		lower_add_module(mod_name, mod_parse.cst_root, mod_src);
-		semantic_add_module(mod_name, mod_parse.cst_root, mod_src);
-		mod_parse.cst_root = NULL;
-		parse_result_free(&mod_parse); /* frees the module's parser-built AstProgram */
+		if (module_name_of(cst_root->children[u].as.node, src, mod_name, sizeof(mod_name)))
+			load_module(mod_name, source_dir);
 	}
+	free(source_dir);
 }
 
 int compile_source(const char *user_source, const char *source_path, const char *out_path, const CompileOpts *opts) {

@@ -1,10 +1,7 @@
-// The file-handle / streaming API (open/close/skip_header/read_chunk) now lives in io.arche.
-
-// --- Pure-Arche CSV loader (no custom CSV C; only libc mmap/atof/atoi) ---
-// Memory-maps the whole file and scans it in Arche with i64 byte offsets, so
-// files larger than 2 GB work. Columns are matched by header name, so file
-// column order is irrelevant and extra columns are ignored. Use
-// `csv_load(Archetype, path)` after `use csv;`.
+// The `csv` module — pure-Arche, header-name-matched CSV loader. `#import csv;` then
+// `csv.load(Archetype, path)` (bare `csv_load` also resolves). Memory-maps the file (via `io`)
+// and scans it with i64 offsets, so files larger than 2 GB work; columns match by header name.
+// (`arche_file_map`/`_size`/`_unmap` are core primitives, so no module import is needed.)
 
 static load_cols: int[64];
 
@@ -61,8 +58,8 @@ proc load(arch: archetype, own path: char[]) {
   hdr_end: i64 = find_byte(data, 0, size, '\n');
 
   // header pass: map each archetype field to its file column by name
-  each_field f in arch {
-    load_cols[f.index] = - 1;
+  #each_field f in arch {
+    load_cols[f.index] = -1;
     col := 0;
     cstart: i64 = 0;
     for (; cstart < hdr_end;) {
@@ -83,7 +80,7 @@ proc load(arch: archetype, own path: char[]) {
       break;
     }
     nl: i64 = find_byte(data, pos, size, '\n');
-    each_field f in arch {
+    #each_field f in arch {
       c := load_cols[f.index];
       if (c >= 0) {
         fstart: i64 = field_at(data, pos, nl, c);

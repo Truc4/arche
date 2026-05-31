@@ -42,6 +42,8 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_RETURN:
 	case TOK_USE:
 	case TOK_EACH_FIELD:
+	case TOK_HASH_MODULE:
+	case TOK_HASH_FILE:
 	case TOK_STATIC:
 	case TOK_POOL:
 	case TOK_RUN:

@@ -2,7 +2,8 @@
 // widening). Binding the int `N` to a `float` variable is caught.
 // Tycheck (E0200) reports it as `binding: expected 'float', got 'int'`.
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "expected 'float', got 'int'" %t.out
-N :: 42 proc main() {
+N :: 42
+proc main() {
   y: float = N;
   printf("%.1f\n", y);
 }

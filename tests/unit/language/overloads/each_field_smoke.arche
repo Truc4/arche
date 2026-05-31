@@ -10,13 +10,13 @@ static pool<Pair> (3, 3) {
 ;
 
 @allow_pure_proc proc bump(arch: archetype) {
-  each_field f: int in arch {
+  #each_field f: int in arch {
     f[0] = f[0] + 1;
   }
 }
 
 proc dump(arch: archetype) {
-  each_field f: int in arch {
+  #each_field f: int in arch {
     if (f.index == 0) {
       printf("col0=%d ", f[0]);
     }

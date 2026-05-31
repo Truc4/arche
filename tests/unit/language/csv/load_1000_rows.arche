@@ -1,4 +1,5 @@
 // RUN: %arche -o %t %s && %t | grep "Loaded 1000 rows"
+#import io;
 arche Transaction {
   price :: float,
   quantity :: int,

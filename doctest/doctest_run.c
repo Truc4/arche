@@ -67,16 +67,16 @@ static void dir_of(const char *path, char *buf, size_t bufsz) {
 }
 
 /* Build the synthesized program for one example: bring the documented file's
- * API into scope via `use <module>;`, then the example (wrapped in a `proc main`
+ * API into scope via `#import <module>;`, then the example (wrapped in a `proc main`
  * if it does not declare one). Returns an owned, NUL-terminated string.
  *
  * `core` is special — compile_source already prepends core.arche to every unit,
- * so a doctest in core/core.arche must NOT `use core;` (that would redeclare the
+ * so a doctest in core/core.arche must NOT `#import core;` (that would redeclare the
  * whole prelude). Its functions are in scope implicitly. */
 static char *synthesize(const char *module, const DoctestExample *ex) {
 	char prefix[300] = "";
-	if (strcmp(module, "core") != 0) /* core is auto-prepended; never `use` it */
-		snprintf(prefix, sizeof(prefix), "use %s;\n", module);
+	if (strcmp(module, "core") != 0) /* core is auto-prepended; never import it */
+		snprintf(prefix, sizeof(prefix), "#import %s;\n", module);
 
 	size_t need = strlen(prefix) + strlen("proc main() {\n}\n") + strlen(ex->code) + 8;
 	char *out = malloc(need);

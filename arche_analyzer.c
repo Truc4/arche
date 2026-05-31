@@ -31,6 +31,7 @@
 #include "parser/parser.h"
 #include "semantic/sem_diagnostics.h"
 #include "semantic/semantic.h"
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +39,9 @@
 
 #ifndef ARCHE_CORE_DIR
 #define ARCHE_CORE_DIR "core"
+#endif
+#ifndef ARCHE_STDLIB_DIR
+#define ARCHE_STDLIB_DIR "stdlib"
 #endif
 
 /* C99 doesn't expose strdup; declare it explicitly (as codegen.c / sem_model.c do). */
@@ -171,60 +175,135 @@ static void deferred_free(DeferredDiags *d) {
  * (which inlines + name-prefixes it). Analysis-only: unlike main.c's resolve_uses
  * we don't touch the lowerer. The module CST + source are borrowed by the registry,
  * so we keep them alive in `holds` until after analysis. */
+/* Module name (first IDENT) of a `#import <name>;` (SN_USE_DECL) node. */
+static int sem_module_name_of(const SyntaxNode *ud, const char *src, char *out, size_t sz) {
+	out[0] = '\0';
+	for (int k = 0; k < ud->child_count; k++)
+		if (ud->children[k].tag == SE_TOKEN && ud->children[k].as.token.kind == TOK_IDENT) {
+			size_t L = ud->children[k].as.token.length;
+			if (L > sz - 1)
+				L = sz - 1;
+			memcpy(out, src + ud->children[k].as.token.offset, L);
+			out[L] = '\0';
+			return 1;
+		}
+	return 0;
+}
+
+/* Dedup set of already-loaded modules (per analyze call; reset in resolve_uses_sem). Marking a
+ * name before load also makes transitive `#import` cycle-safe. Mirrors driver/compile.c. */
+#define SEM_MAX_LOADED_MODS 256
+static char *g_sem_loaded_mods[SEM_MAX_LOADED_MODS];
+static int g_sem_loaded_count;
+
+static void sem_load_module(const char *name, const char *source_dir, ModuleHolds *holds);
+
+/* Parse one module file, register its CST with the semantic registry (which borrows the CST +
+ * source — kept alive in `holds`), then recurse into the module's own `#import`s. */
+static int sem_register_module_file(const char *mod_name, const char *path, const char *source_dir,
+                                    ModuleHolds *holds) {
+	char *mod_src = read_file(path);
+	if (!mod_src)
+		return 0;
+	ParseResult mp = parse_source(mod_src);
+	if (mp.error_count > 0 || !mp.cst_root) {
+		parse_result_free(&mp);
+		free(mod_src);
+		return 0;
+	}
+	semantic_add_module(mod_name, mp.cst_root, mod_src);
+	const SyntaxNode *root = mp.cst_root;
+	const char *src = mod_src;
+	holds_push(holds, mp.cst_root, mod_src); /* keep alive; registry borrows */
+	mp.cst_root = NULL;
+	parse_result_free(&mp);
+	for (int u = 0; u < root->child_count; u++) {
+		if (root->children[u].tag != SE_NODE || root->children[u].as.node->kind != SN_USE_DECL)
+			continue;
+		char dep[256];
+		if (sem_module_name_of(root->children[u].as.node, src, dep, sizeof(dep)))
+			sem_load_module(dep, source_dir, holds);
+	}
+	return 1;
+}
+
+/* A module is a FOLDER `<dir>/<name>/` of `.arche` files merged into one namespace; falls back to a
+ * single file `<dir>/<name>.arche`. Returns files registered. */
+static int sem_try_load_module_dir(const char *mod_name, const char *dir, const char *source_dir, ModuleHolds *holds) {
+	char folder[640];
+	snprintf(folder, sizeof(folder), "%s/%s", dir, mod_name);
+	DIR *d = opendir(folder);
+	if (d) {
+		int n = 0;
+		struct dirent *ent;
+		while ((ent = readdir(d)) != NULL) {
+			size_t L = strlen(ent->d_name);
+			if (L > 6 && strcmp(ent->d_name + L - 6, ".arche") == 0) {
+				char fp[1300];
+				snprintf(fp, sizeof(fp), "%s/%s", folder, ent->d_name);
+				n += sem_register_module_file(mod_name, fp, source_dir, holds);
+			}
+		}
+		closedir(d);
+		if (n > 0)
+			return n;
+	}
+	char fp[640];
+	snprintf(fp, sizeof(fp), "%s/%s.arche", dir, mod_name);
+	if (file_exists(fp))
+		return sem_register_module_file(mod_name, fp, source_dir, holds);
+	return 0;
+}
+
+/* Load module `name` (dedup'd) by searching the source dir, then stdlib, then core. */
+static void sem_load_module(const char *name, const char *source_dir, ModuleHolds *holds) {
+	for (int i = 0; i < g_sem_loaded_count; i++)
+		if (strcmp(g_sem_loaded_mods[i], name) == 0)
+			return;
+	if (g_sem_loaded_count < SEM_MAX_LOADED_MODS)
+		g_sem_loaded_mods[g_sem_loaded_count++] = strdup(name); /* mark before load → cycle-safe */
+	int loaded = sem_try_load_module_dir(name, source_dir, source_dir, holds);
+	if (!loaded)
+		loaded = sem_try_load_module_dir(name, ARCHE_STDLIB_DIR, source_dir, holds);
+	if (!loaded)
+		loaded = sem_try_load_module_dir(name, ARCHE_CORE_DIR, source_dir, holds);
+	(void)loaded; /* not-found is reported per import-site by the caller below */
+}
+
 static void resolve_uses_sem(const SyntaxNode *root, const char *src, const char *path, ModuleHolds *holds,
                              DeferredDiags *diags) {
 	if (!root)
 		return;
+	/* Clear leftovers from a prior analysis (--serve reuses the process). */
+	semantic_reset_modules();
+	for (int i = 0; i < g_sem_loaded_count; i++)
+		free(g_sem_loaded_mods[i]);
+	g_sem_loaded_count = 0;
+
+	char *source_dir = source_dir_of(path);
 	for (int u = 0; u < root->child_count; u++) {
 		if (root->children[u].tag != SE_NODE || root->children[u].as.node->kind != SN_USE_DECL)
 			continue;
 		const SyntaxNode *ud = root->children[u].as.node;
-
 		char mod_name[256];
-		mod_name[0] = '\0';
 		SourceLoc use_loc = {0, 0};
+		mod_name[0] = '\0';
 		for (int k = 0; k < ud->child_count; k++)
 			if (ud->children[k].tag == SE_TOKEN && ud->children[k].as.token.kind == TOK_IDENT) {
-				size_t L = ud->children[k].as.token.length;
-				if (L > sizeof(mod_name) - 1)
-					L = sizeof(mod_name) - 1;
-				memcpy(mod_name, src + ud->children[k].as.token.offset, L);
-				mod_name[L] = '\0';
 				use_loc.line = ud->children[k].as.token.line;
 				use_loc.column = ud->children[k].as.token.column;
 				break;
 			}
-		if (!mod_name[0])
+		if (!sem_module_name_of(ud, src, mod_name, sizeof(mod_name)) || !mod_name[0])
 			continue;
-
-		char *dir = source_dir_of(path);
-		char path1[512], path2[512];
-		snprintf(path1, sizeof(path1), "%s/%s.arche", dir, mod_name);
-		free(dir);
-		snprintf(path2, sizeof(path2), "%s/%s.arche", ARCHE_CORE_DIR, mod_name);
-		const char *found = file_exists(path1) ? path1 : (file_exists(path2) ? path2 : NULL);
-		if (!found) {
+		int before = g_sem_loaded_count;
+		sem_load_module(mod_name, source_dir, holds);
+		/* If the name was newly marked but nothing registered, it wasn't found. (A dedup hit — the
+		 * module already loaded via another import — leaves `before` unchanged and is fine.) */
+		if (g_sem_loaded_count > before && !semantic_has_module(mod_name))
 			deferred_push(diags, SEM_DIAG_module_not_found, use_loc, mod_name);
-			continue;
-		}
-
-		char *mod_src = read_file(found);
-		if (!mod_src) {
-			deferred_push(diags, SEM_DIAG_module_not_found, use_loc, mod_name);
-			continue;
-		}
-		ParseResult mp = parse_source(mod_src);
-		if (mp.error_count > 0 || !mp.cst_root) {
-			deferred_push(diags, SEM_DIAG_module_parse_failed, use_loc, mod_name);
-			parse_result_free(&mp);
-			free(mod_src);
-			continue;
-		}
-		semantic_add_module(mod_name, mp.cst_root, mod_src);
-		holds_push(holds, mp.cst_root, mod_src); /* keep alive; registry borrows */
-		mp.cst_root = NULL;
-		parse_result_free(&mp);
 	}
+	free(source_dir);
 }
 
 /* ---- explicit-view emission ---- */

@@ -125,6 +125,8 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "STATIC_DECL";
 	case SN_CONST_DECL:
 		return "CONST_DECL";
+	case SN_VIS_MARKER:
+		return "VIS_MARKER";
 	case SN_USE_DECL:
 		return "USE_DECL";
 	case SN_PARAM_LIST:

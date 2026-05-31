@@ -1,4 +1,5 @@
 // RUN: %arche -o %t %s && %t && test -f /tmp/task1_output.csv && wc -l /tmp/task1_output.csv | grep -q "1000"
+#import io;
 arche Task1Data {
   price :: float,
   quantity :: int,

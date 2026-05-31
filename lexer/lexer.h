@@ -37,18 +37,21 @@ typedef enum TokenKind {
 	TOK_RUN,
 
 	/* punctuation */
-	TOK_LPAREN,    /* ( */
-	TOK_RPAREN,    /* ) */
-	TOK_LBRACE,    /* { */
-	TOK_RBRACE,    /* } */
-	TOK_LBRACKET,  /* [ */
-	TOK_RBRACKET,  /* ] */
-	TOK_COMMA,     /* , */
-	TOK_DOT,       /* . */
-	TOK_DOTDOTDOT, /* ... — variadic marker in extern signatures */
-	TOK_COLON,     /* : */
-	TOK_SEMI,      /* ; */
-	TOK_AT,        /* @  (decl-site decorators like @allow_pure_proc) */
+	TOK_LPAREN,      /* ( */
+	TOK_RPAREN,      /* ) */
+	TOK_LBRACE,      /* { */
+	TOK_RBRACE,      /* } */
+	TOK_LBRACKET,    /* [ */
+	TOK_RBRACKET,    /* ] */
+	TOK_COMMA,       /* , */
+	TOK_DOT,         /* . */
+	TOK_DOTDOTDOT,   /* ... — variadic marker in extern signatures */
+	TOK_COLON,       /* : */
+	TOK_SEMI,        /* ; */
+	TOK_AT,          /* @  (decl-site decorators like @allow_pure_proc) */
+	TOK_HASH,        /* #  bare/unknown directive (error) */
+	TOK_HASH_MODULE, /* #module — narrow visibility to module scope (phase B) */
+	TOK_HASH_FILE,   /* #file   — narrow visibility to file scope (phase B) */
 
 	/* assignment */
 	TOK_EQ,       /* = */
