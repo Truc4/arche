@@ -30,15 +30,15 @@ char *cli_read_file(const char *path) {
 /* The dispatch table. New subcommands land here (one row) + their own cmd_*.c. During the migration
  * the bare form `arche <file>` is an implicit `build` (see cli_main); a later phase removes that. */
 static const SubCmd k_cmds[] = {
-	{"build", "compile a source file to an executable", 0, build_run, build_specs},
-	{"run", "compile and immediately run a source file", 0, run_run, run_specs},
-	{"check", "parse + type-check without producing output", 0, check_run, check_specs},
-	{"test", "run the doctests in source files", 0, test_run, test_specs},
-	{"fmt", "format source files", 0, fmt_run, fmt_specs},
-	{"explain", "show the long-form help for a diagnostic code", 0, explain_run, NULL},
-	{"analyze", "language-server analysis (one-shot or --serve)", 0, analyze_run, analyze_specs},
-	{"completion", "print a shell completion script (bash|zsh|fish)", 0, completion_run, NULL},
-	{"version", "print the arche version", 0, version_run, NULL},
+    {"build", "compile a source file to an executable", 0, build_run, build_specs},
+    {"run", "compile and immediately run a source file", 0, run_run, run_specs},
+    {"check", "parse + type-check without producing output", 0, check_run, check_specs},
+    {"test", "run the doctests in source files", 0, test_run, test_specs},
+    {"fmt", "format source files", 0, fmt_run, fmt_specs},
+    {"explain", "show the long-form help for a diagnostic code", 0, explain_run, NULL},
+    {"analyze", "language-server analysis (one-shot or --serve)", 0, analyze_run, analyze_specs},
+    {"completion", "print a shell completion script (bash|zsh|fish)", 0, completion_run, NULL},
+    {"version", "print the arche version", 0, version_run, NULL},
 };
 static const int k_cmd_count = (int)(sizeof(k_cmds) / sizeof(k_cmds[0]));
 

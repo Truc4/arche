@@ -8,12 +8,13 @@
 enum { C_WNO_PCBF = 1, C_WNO_PNE, C_WERR_PCBF, C_WERR_PNE, C_WERR };
 
 static const ArgSpec k_check_specs[] = {
-	{C_WNO_PCBF, "-Wno-proc-could-be-func", ARG_FLAG, 0, 0, NULL, "disable the proc-could-be-func lint"},
-	{C_WNO_PNE, "-Wno-proc-no-effect", ARG_FLAG, 0, 0, NULL, "disable the proc-no-effect lint"},
-	{C_WERR_PCBF, "-Werror=proc-could-be-func", ARG_FLAG, 0, 0, NULL, "promote the proc-could-be-func lint to an error"},
-	{C_WERR_PNE, "-Werror=proc-no-effect", ARG_FLAG, 0, 0, NULL, "promote the proc-no-effect lint to an error"},
-	{C_WERR, "-Werror", ARG_FLAG, 0, 0, NULL, "promote all lints to errors"},
-	{0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
+    {C_WNO_PCBF, "-Wno-proc-could-be-func", ARG_FLAG, 0, 0, NULL, "disable the proc-could-be-func lint"},
+    {C_WNO_PNE, "-Wno-proc-no-effect", ARG_FLAG, 0, 0, NULL, "disable the proc-no-effect lint"},
+    {C_WERR_PCBF, "-Werror=proc-could-be-func", ARG_FLAG, 0, 0, NULL,
+     "promote the proc-could-be-func lint to an error"},
+    {C_WERR_PNE, "-Werror=proc-no-effect", ARG_FLAG, 0, 0, NULL, "promote the proc-no-effect lint to an error"},
+    {C_WERR, "-Werror", ARG_FLAG, 0, 0, NULL, "promote all lints to errors"},
+    {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
 int check_run(int argc, char **argv, const GlobalOpts *g) {
@@ -61,4 +62,6 @@ int check_run(int argc, char **argv, const GlobalOpts *g) {
 	return rc; /* diagnostics already on stderr; silent on success, like `cargo check` */
 }
 
-const ArgSpec *check_specs(void) { return k_check_specs; }
+const ArgSpec *check_specs(void) {
+	return k_check_specs;
+}

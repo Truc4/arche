@@ -13,12 +13,13 @@
 enum { R_WNO_PCBF = 1, R_WNO_PNE, R_WERR_PCBF, R_WERR_PNE, R_WERR };
 
 static const ArgSpec k_run_specs[] = {
-	{R_WNO_PCBF, "-Wno-proc-could-be-func", ARG_FLAG, 0, 0, NULL, "disable the proc-could-be-func lint"},
-	{R_WNO_PNE, "-Wno-proc-no-effect", ARG_FLAG, 0, 0, NULL, "disable the proc-no-effect lint"},
-	{R_WERR_PCBF, "-Werror=proc-could-be-func", ARG_FLAG, 0, 0, NULL, "promote the proc-could-be-func lint to an error"},
-	{R_WERR_PNE, "-Werror=proc-no-effect", ARG_FLAG, 0, 0, NULL, "promote the proc-no-effect lint to an error"},
-	{R_WERR, "-Werror", ARG_FLAG, 0, 0, NULL, "promote all lints to errors"},
-	{0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
+    {R_WNO_PCBF, "-Wno-proc-could-be-func", ARG_FLAG, 0, 0, NULL, "disable the proc-could-be-func lint"},
+    {R_WNO_PNE, "-Wno-proc-no-effect", ARG_FLAG, 0, 0, NULL, "disable the proc-no-effect lint"},
+    {R_WERR_PCBF, "-Werror=proc-could-be-func", ARG_FLAG, 0, 0, NULL,
+     "promote the proc-could-be-func lint to an error"},
+    {R_WERR_PNE, "-Werror=proc-no-effect", ARG_FLAG, 0, 0, NULL, "promote the proc-no-effect lint to an error"},
+    {R_WERR, "-Werror", ARG_FLAG, 0, 0, NULL, "promote all lints to errors"},
+    {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
 /* `arche run <file> [prog-args...]` / `arche run <file> -- [prog-args...]`: compile to a temp
@@ -118,4 +119,6 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 	return ARCHE_ERR;
 }
 
-const ArgSpec *run_specs(void) { return k_run_specs; }
+const ArgSpec *run_specs(void) {
+	return k_run_specs;
+}

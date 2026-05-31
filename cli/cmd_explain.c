@@ -3,7 +3,7 @@
 #include <stdio.h>
 
 static const ArgSpec k_explain_specs[] = {
-	{0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
+    {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
 int explain_run(int argc, char **argv, const GlobalOpts *g) {

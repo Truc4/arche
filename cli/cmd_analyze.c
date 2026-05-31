@@ -6,8 +6,8 @@
 enum { A_SERVE = 1 };
 
 static const ArgSpec k_analyze_specs[] = {
-	{A_SERVE, "--serve", ARG_FLAG, 0, 0, NULL, "run the persistent LSP line-protocol server"},
-	{0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
+    {A_SERVE, "--serve", ARG_FLAG, 0, 0, NULL, "run the persistent LSP line-protocol server"},
+    {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
 /* `arche analyze --serve` runs the language-server loop; `arche analyze [file]` does a one-shot dump
@@ -38,4 +38,6 @@ int analyze_run(int argc, char **argv, const GlobalOpts *g) {
 	return analyze_main(2, av);
 }
 
-const ArgSpec *analyze_specs(void) { return k_analyze_specs; }
+const ArgSpec *analyze_specs(void) {
+	return k_analyze_specs;
+}

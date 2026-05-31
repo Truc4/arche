@@ -20,13 +20,13 @@
 typedef enum { ARG_FLAG, ARG_VALUE } ArgKind;
 
 typedef struct {
-	int id;             /* caller's enum, returned on match (use values >= 1; 0 ends the table)   */
-	const char *forms;  /* space-separated accepted spellings, canonical first ("--emit -emit-llvm") */
-	ArgKind kind;       /* flag or value-taking                                                    */
-	int repeatable;     /* may appear more than once (e.g. --link); else last occurrence wins      */
-	int hidden;         /* omit from generated help (aliases, dev flags)                           */
-	const char *metavar;/* value placeholder for help ("<path>", "<kind>"); NULL for flags         */
-	const char *help;   /* one-line description for help                                           */
+	int id;              /* caller's enum, returned on match (use values >= 1; 0 ends the table)   */
+	const char *forms;   /* space-separated accepted spellings, canonical first ("--emit -emit-llvm") */
+	ArgKind kind;        /* flag or value-taking                                                    */
+	int repeatable;      /* may appear more than once (e.g. --link); else last occurrence wins      */
+	int hidden;          /* omit from generated help (aliases, dev flags)                           */
+	const char *metavar; /* value placeholder for help ("<path>", "<kind>"); NULL for flags         */
+	const char *help;    /* one-line description for help                                           */
 } ArgSpec;
 
 #define ARG_MAX_HITS 128

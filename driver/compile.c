@@ -411,8 +411,8 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	const char *asm_target = (emit == EMIT_ASM) ? out_path : asm_file;
 	{
 		char llc_cmd[1024];
-		int m = snprintf(llc_cmd, sizeof(llc_cmd), "llc -code-model=large -mcpu=x86-64-v3 -o %s %s", asm_target,
-		                 opt_file);
+		int m =
+		    snprintf(llc_cmd, sizeof(llc_cmd), "llc -code-model=large -mcpu=x86-64-v3 -o %s %s", asm_target, opt_file);
 		if (m < 0 || m >= (int)sizeof(llc_cmd)) {
 			fprintf(stderr, "llc command too long\n");
 			goto cleanup;

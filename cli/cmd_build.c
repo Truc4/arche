@@ -23,16 +23,17 @@ enum {
  * gcc-style single-dash longs matched as exact ARG_FLAG tokens; `-emit-llvm` is preserved here (it
  * becomes a hidden alias of `--emit=llvm-ir` in a later phase). */
 static const ArgSpec k_build_specs[] = {
-	{B_OUT, "-o", ARG_VALUE, 0, 0, "<path>", "output path (executable, or the emitted artifact)"},
-	{B_LINK, "--link", ARG_VALUE, 1, 0, "<path>", "pass an extra .c/.o file to cc at link time (repeatable)"},
-	{B_EMIT, "--emit", ARG_VALUE, 0, 0, "<kind>", "what to produce: link (default), llvm-ir, asm, obj"},
-	{B_EMIT_LLVM, "-emit-llvm", ARG_FLAG, 0, 1, NULL, "alias for --emit=llvm-ir"},
-	{B_WNO_PCBF, "-Wno-proc-could-be-func", ARG_FLAG, 0, 0, NULL, "disable the proc-could-be-func lint"},
-	{B_WNO_PNE, "-Wno-proc-no-effect", ARG_FLAG, 0, 0, NULL, "disable the proc-no-effect lint"},
-	{B_WERR_PCBF, "-Werror=proc-could-be-func", ARG_FLAG, 0, 0, NULL, "promote the proc-could-be-func lint to an error"},
-	{B_WERR_PNE, "-Werror=proc-no-effect", ARG_FLAG, 0, 0, NULL, "promote the proc-no-effect lint to an error"},
-	{B_WERR, "-Werror", ARG_FLAG, 0, 0, NULL, "promote all lints to errors"},
-	{0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
+    {B_OUT, "-o", ARG_VALUE, 0, 0, "<path>", "output path (executable, or the emitted artifact)"},
+    {B_LINK, "--link", ARG_VALUE, 1, 0, "<path>", "pass an extra .c/.o file to cc at link time (repeatable)"},
+    {B_EMIT, "--emit", ARG_VALUE, 0, 0, "<kind>", "what to produce: link (default), llvm-ir, asm, obj"},
+    {B_EMIT_LLVM, "-emit-llvm", ARG_FLAG, 0, 1, NULL, "alias for --emit=llvm-ir"},
+    {B_WNO_PCBF, "-Wno-proc-could-be-func", ARG_FLAG, 0, 0, NULL, "disable the proc-could-be-func lint"},
+    {B_WNO_PNE, "-Wno-proc-no-effect", ARG_FLAG, 0, 0, NULL, "disable the proc-no-effect lint"},
+    {B_WERR_PCBF, "-Werror=proc-could-be-func", ARG_FLAG, 0, 0, NULL,
+     "promote the proc-could-be-func lint to an error"},
+    {B_WERR_PNE, "-Werror=proc-no-effect", ARG_FLAG, 0, 0, NULL, "promote the proc-no-effect lint to an error"},
+    {B_WERR, "-Werror", ARG_FLAG, 0, 0, NULL, "promote all lints to errors"},
+    {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
 /* Derive the default output path "build/<basename-without-extension>" (heap; leaked at exit). */
@@ -157,4 +158,6 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 	return rc;
 }
 
-const ArgSpec *build_specs(void) { return k_build_specs; }
+const ArgSpec *build_specs(void) {
+	return k_build_specs;
+}

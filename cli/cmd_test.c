@@ -6,8 +6,8 @@
 enum { T_VERBOSE = 1 };
 
 static const ArgSpec k_test_specs[] = {
-	{T_VERBOSE, "-v --verbose", ARG_FLAG, 0, 0, NULL, "verbose: show each doctest as it runs"},
-	{0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
+    {T_VERBOSE, "-v --verbose", ARG_FLAG, 0, 0, NULL, "verbose: show each doctest as it runs"},
+    {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
 int test_run(int argc, char **argv, const GlobalOpts *g) {
@@ -34,4 +34,6 @@ int test_run(int argc, char **argv, const GlobalOpts *g) {
 	return rc ? ARCHE_ERR : ARCHE_OK;
 }
 
-const ArgSpec *test_specs(void) { return k_test_specs; }
+const ArgSpec *test_specs(void) {
+	return k_test_specs;
+}

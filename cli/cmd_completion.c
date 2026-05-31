@@ -111,8 +111,8 @@ static void emit_fish(FILE *f) {
 					p++;
 				size_t len = (size_t)(p - start);
 				if (len > 2 && start[0] == '-' && start[1] == '-')
-					fprintf(f, "complete -c arche -n '__fish_seen_subcommand_from %s' -l %.*s -d '%s'\n",
-					        cmds[i].name, (int)(len - 2), start + 2, s->help ? s->help : "");
+					fprintf(f, "complete -c arche -n '__fish_seen_subcommand_from %s' -l %.*s -d '%s'\n", cmds[i].name,
+					        (int)(len - 2), start + 2, s->help ? s->help : "");
 			}
 		}
 	}

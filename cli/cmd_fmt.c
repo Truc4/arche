@@ -9,9 +9,9 @@
 enum { F_CHECK = 1, F_WRITE };
 
 static const ArgSpec k_fmt_specs[] = {
-	{F_CHECK, "--check", ARG_FLAG, 0, 0, NULL, "exit non-zero if any file is not formatted; write nothing"},
-	{F_WRITE, "-w --write", ARG_FLAG, 0, 0, NULL, "rewrite each file in place"},
-	{0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
+    {F_CHECK, "--check", ARG_FLAG, 0, 0, NULL, "exit non-zero if any file is not formatted; write nothing"},
+    {F_WRITE, "-w --write", ARG_FLAG, 0, 0, NULL, "rewrite each file in place"},
+    {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
 /* Format `src` through the lossless CST into a freshly malloc'd buffer (caller frees), via a
@@ -112,4 +112,6 @@ int fmt_run(int argc, char **argv, const GlobalOpts *g) {
 	return rc;
 }
 
-const ArgSpec *fmt_specs(void) { return k_fmt_specs; }
+const ArgSpec *fmt_specs(void) {
+	return k_fmt_specs;
+}
