@@ -484,6 +484,28 @@ static HirExpr *lower_expr_cst(CstView e) {
 		break;
 	}
 	case SN_FIELD_EXPR: {
+		/* Enum variant access `Enum.variant` → its int value (enums are compile-time, erased). */
+		if (g_lower_sem && cv_count(e, SN_FIELD_NAME) == 1) {
+			char *bn = txt_dup(cv_token(e, TOK_IDENT));
+			if (bn && semantic_is_enum_type(g_lower_sem, bn)) {
+				char *vn = cv_dup(cv_child_at(e, SN_FIELD_NAME, 0));
+				long val = 0;
+				if (vn && semantic_enum_variant_value(g_lower_sem, bn, vn, &val)) {
+					char buf[32];
+					snprintf(buf, sizeof(buf), "%ld", val);
+					ax->kind = HIR_EXPR_LITERAL;
+					ax->data.literal.lexeme = dupz(buf);
+					ax->resolved.tag = HIR_TYPE_INT;
+					ax->resolved.int_width = 32;
+					ax->resolved.int_signed = 1;
+					free(bn);
+					free(vn);
+					break;
+				}
+				free(vn);
+			}
+			free(bn);
+		}
 		/* `base.f1.f2…[idx]` is flat under one node: base IDENT, then (DOT FIELD_NAME)+,
 		 * optionally a trailing `[indices]`. Rebuild the left-assoc AST. */
 		HirExpr *base = hir_expr_create(HIR_EXPR_NAME);
@@ -669,7 +691,7 @@ static HirStmt **cst_lower_body(CstView parent, int *out_count) {
 	for (int i = 0; i < parent.node->child_count; i++)
 		if (parent.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = parent.node->children[i].as.node->kind;
-			if (k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+			if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
 				n++;
 		}
 	*out_count = n;
@@ -680,7 +702,7 @@ static HirStmt **cst_lower_body(CstView parent, int *out_count) {
 	for (int i = 0; i < parent.node->child_count; i++)
 		if (parent.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = parent.node->children[i].as.node->kind;
-			if (k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT) {
+			if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT) {
 				CstView sv = {parent.node->children[i].as.node, parent.src};
 				out[j++] = lower_stmt_cst(sv);
 			}
@@ -806,15 +828,15 @@ static HirStmt *lower_stmt_cst(CstView s) {
 				SyntaxNodeKind k = ch->as.node->kind;
 				CstView cv = {ch->as.node, s.src};
 				if (seen_brace) {
-					if (k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+					if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
 						nbody++;
 					continue;
 				}
-				if (seg == 0 && k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+				if (seg == 0 && k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
 					as->data.for_stmt.init = lower_stmt_cst(cv);
 				else if (seg == 1 && k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
 					as->data.for_stmt.cond = lower_expr_cst(cv);
-				else if (seg == 2 && k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+				else if (seg == 2 && k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
 					as->data.for_stmt.incr = lower_stmt_cst(cv);
 			}
 			as->data.for_stmt.body = calloc(nbody ? nbody : 1, sizeof(HirStmt *));
@@ -830,7 +852,7 @@ static HirStmt *lower_stmt_cst(CstView s) {
 				if (!seen_brace)
 					continue;
 				SyntaxNodeKind k = ch->as.node->kind;
-				if (k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT) {
+				if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT) {
 					CstView cv = {ch->as.node, s.src};
 					as->data.for_stmt.body[as->data.for_stmt.body_count++] = lower_stmt_cst(cv);
 				}
@@ -976,6 +998,118 @@ static HirStmt *lower_stmt_cst(CstView s) {
 				    cv_type_count(cnv) > 0 ? lower_type_cst(cv_type_at(cnv, 0)) : NULL;
 			}
 		}
+		break;
+	}
+	case SN_BLOCK: {
+		/* a surface `{ … }` block statement */
+		as->kind = HIR_STMT_BLOCK;
+		as->data.block.stmts = cst_lower_body(s, &as->data.block.count);
+		break;
+	}
+	case SN_MATCH_STMT: {
+		/* Desugar `match scrut { p0 : b0, …, _ : bdef }` into a block:
+		 *   __match := scrut;
+		 *   if (__match == p0) { b0 } else if (__match == p1) { b1 } … else { bdef }
+		 * Int/char-literal patterns and `_` are handled here; string/enum patterns are
+		 * lowered in their own steps (str_eq chain / enum tag). */
+		CstView scrut = cv_node_at_expr(s, 0);
+		char tmp[40];
+		snprintf(tmp, sizeof(tmp), "__match_%u", (unsigned)cv_id(s));
+
+		HirStmt *bind = hir_stmt_create(HIR_STMT_BIND);
+		bind->data.bind_stmt.names = calloc(1, sizeof(char *));
+		bind->data.bind_stmt.names[0] = dupz(tmp);
+		bind->data.bind_stmt.name_count = 1;
+		bind->data.bind_stmt.type = NULL;
+		bind->data.bind_stmt.value = lower_expr_cst(scrut);
+
+		int narm = cv_count(s, SN_MATCH_ARM);
+		/* wildcard `_` arm becomes the final else */
+		HirStmt **chain = NULL;
+		int chain_count = 0;
+		for (int i = 0; i < narm; i++) {
+			CstView arm = cv_child_at(s, SN_MATCH_ARM, i);
+			CvText pt = {NULL, 0};
+			TokenKind pk = TOK_EOF;
+			for (int c = 0; c < arm.node->child_count; c++)
+				if (arm.node->children[c].tag == SE_TOKEN) {
+					TokenKind k = arm.node->children[c].as.token.kind;
+					if (k == TOK_NUMBER || k == TOK_STRING || k == TOK_CHAR_LIT || k == TOK_IDENT) {
+						pk = k;
+						pt = (CvText){arm.src + arm.node->children[c].as.token.offset,
+						              arm.node->children[c].as.token.length};
+						break;
+					}
+				}
+			if (pk == TOK_IDENT && pt.len == 1 && pt.ptr[0] == '_') {
+				chain = cst_lower_body(arm, &chain_count); /* wildcard → default else */
+				break;
+			}
+		}
+		/* build the if-chain from last arm to first (non-wildcard arms only) */
+		for (int i = narm - 1; i >= 0; i--) {
+			CstView arm = cv_child_at(s, SN_MATCH_ARM, i);
+			CvText pt = {NULL, 0};
+			TokenKind pk = TOK_EOF;
+			for (int c = 0; c < arm.node->child_count; c++)
+				if (arm.node->children[c].tag == SE_TOKEN) {
+					TokenKind k = arm.node->children[c].as.token.kind;
+					if (k == TOK_NUMBER || k == TOK_STRING || k == TOK_CHAR_LIT || k == TOK_IDENT) {
+						pk = k;
+						pt = (CvText){arm.src + arm.node->children[c].as.token.offset,
+						              arm.node->children[c].as.token.length};
+						break;
+					}
+				}
+			if (pk == TOK_IDENT && pt.len == 1 && pt.ptr[0] == '_')
+				continue; /* the wildcard, already captured */
+			/* Comparison lexeme: int/char literal used directly; a bare IDENT is an enum variant,
+			 * resolved to its int value. (String patterns are handled in a later step.) */
+			char enumbuf[32];
+			const char *litlex = NULL;
+			if (pk == TOK_NUMBER || pk == TOK_CHAR_LIT) {
+				litlex = NULL; /* use pt verbatim below */
+			} else if (pk == TOK_IDENT && g_lower_sem) {
+				char *vn = txt_dup(pt);
+				long v = 0;
+				int found = vn && semantic_find_enum_variant(g_lower_sem, vn, &v);
+				free(vn);
+				if (!found)
+					continue; /* unknown bare pattern (e.g. string) — later step */
+				snprintf(enumbuf, sizeof(enumbuf), "%ld", v);
+				litlex = enumbuf;
+			} else {
+				continue; /* string patterns: later step */
+			}
+
+			HirStmt *iff = hir_stmt_create(HIR_STMT_IF);
+			HirExpr *nm = hir_expr_create(HIR_EXPR_NAME);
+			nm->data.name.name = dupz(tmp);
+			HirExpr *lit = hir_expr_create(HIR_EXPR_LITERAL);
+			lit->data.literal.lexeme = litlex ? dupz(litlex) : txt_dup(pt);
+			HirExpr *cond = hir_expr_create(HIR_EXPR_BINARY);
+			cond->data.binary.op = OP_EQ;
+			cond->data.binary.left = nm;
+			cond->data.binary.right = lit;
+			iff->data.if_stmt.cond = cond;
+			iff->data.if_stmt.then_body = cst_lower_body(arm, &iff->data.if_stmt.then_count);
+			iff->data.if_stmt.else_body = chain;
+			iff->data.if_stmt.else_count = chain_count;
+			chain = calloc(1, sizeof(HirStmt *));
+			chain[0] = iff;
+			chain_count = 1;
+		}
+
+		as->kind = HIR_STMT_BLOCK;
+		as->data.block.stmts = calloc(2, sizeof(HirStmt *));
+		as->data.block.stmts[0] = bind;
+		if (chain_count > 0) {
+			as->data.block.stmts[1] = chain[0];
+			as->data.block.count = 2;
+		} else {
+			as->data.block.count = 1; /* no arms matched the supported forms */
+		}
+		free(chain);
 		break;
 	}
 	default:
@@ -1418,7 +1552,7 @@ static CstView lower_rhs_form(CstView d) {
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
 		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR || k == SN_GROUP_EXPR ||
-		    k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
+		    k == SN_ENUM_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
 			CstView v = {d.node->children[i].as.node, d.src};
 			return v;
 		}
@@ -1619,6 +1753,9 @@ static HirDecl *lower_decl_cst(CstView d) {
 					break;
 				}
 			}
+			/* enum: compile-time only (variants resolve to int literals); emit no decl. */
+			if (rk == SN_ENUM_EXPR)
+				return NULL;
 		}
 		/* Callable alias `handler :: some_proc`: compile-time only (calls are rewritten to the
 		 * target); emit no decl. */

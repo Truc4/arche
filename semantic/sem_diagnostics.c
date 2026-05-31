@@ -128,6 +128,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_type_mismatch]                 = { "E0200", "type_mismatch",                 CLASS_ERROR, 1 },
 	[SEM_DIAG_not_indexable]                 = { "E0201", "not_indexable",                 CLASS_ERROR, 1 },
 	[SEM_DIAG_wrong_arity]                   = { "E0203", "wrong_arity",                   CLASS_ERROR, 1 },
+	[SEM_DIAG_non_exhaustive_match]          = { "E0210", "non_exhaustive_match",          CLASS_ERROR, 1 },
+	[SEM_DIAG_callable_in_archetype]         = { "E0211", "callable_in_archetype",         CLASS_ERROR, 1 },
 
 	/* Lints */
 	[SEM_LINT_proc_could_be_func]            = { "W0001", "proc_could_be_func",            CLASS_LINT, 1 },
@@ -576,6 +578,18 @@ SemDiag *sem_emit_shape_already_allocated(SemanticContext *ctx, SourceLoc loc, c
 SemDiag *sem_emit_duplicate_component(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_duplicate_component, loc,
 	                 "duplicate component '%s' in archetype (a component type may appear only once)", name);
+}
+
+SemDiag *sem_emit_non_exhaustive_match(SemanticContext *ctx, SourceLoc loc, const char *missing) {
+	return sem_emit_(ctx, SEM_DIAG_non_exhaustive_match, loc,
+	                 "non-exhaustive match: missing '%s' (cover every variant, or add a `_` arm)", missing);
+}
+
+SemDiag *sem_emit_callable_in_archetype(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_callable_in_archetype, loc,
+	                 "proc/func types cannot be archetype components ('%s') — archetypes are data; "
+	                 "dispatch with `match` or a system",
+	                 name);
 }
 
 /* --- Calls / groups --- */

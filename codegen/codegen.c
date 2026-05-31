@@ -147,6 +147,31 @@ struct CodegenContext {
 
 	/* Counter for per-field name globals (@.efield_name_NN). */
 	int efield_name_counter;
+
+	/* Compile-time callback monomorphization. A proc with a proc/func-typed
+	 * (HIR_TYPE_FUNC) param is callback-parametric: it is never emitted directly,
+	 * only specialized per call site where each callback arg is a known proc/func
+	 * NAME. The callback param carries no runtime value — inside the specialized
+	 * body, a call to the callback param name is rewritten to a direct call to the
+	 * bound proc via these active bindings. */
+	const char *cb_param_names[8]; /* callback param names bound in the current specialization */
+	const char *cb_bound_names[8]; /* the proc/func each is bound to (direct-call target) */
+	int cb_binding_count;          /* 0 outside a callback specialization */
+
+	/* Memo of emitted callback specializations, keyed by mangled symbol. */
+	char **cb_emitted;
+	int cb_emitted_count;
+	int cb_emitted_capacity;
+
+	/* Worklist of callback specializations queued from call sites, drained with
+	 * the archetype worklist. Each carries the bound names per callback param. */
+	struct {
+		HirProcDecl *proc;
+		char *mangled;
+		const char *bound[8]; /* bound proc/func name per callback param (NULL = non-callback param) */
+	} *cb_pending;
+	int cb_pending_count;
+	int cb_pending_capacity;
 };
 
 /* ========== SYSTEM VERSION MAPPING ========== */
@@ -883,6 +908,61 @@ static int archetype_param_index(HirProcDecl *proc) {
 	return -1;
 }
 
+/* A proc/func-typed parameter is a compile-time callback: it carries no runtime
+ * value, only a known proc/func bound per call site (monomorphized). The type is
+ * either an inline proc/func signature (HIR_TYPE_FUNC) or a named alias to one
+ * (`done_handler :: proc()()`), resolved through the semantic registry. */
+static int is_callback_param(CodegenContext *ctx, HirParam *p) {
+	if (!p || !p->type)
+		return 0;
+	if (p->type->tag == HIR_TYPE_FUNC)
+		return 1;
+	if (p->type->tag == HIR_TYPE_NAMED && ctx->sem_ctx && p->type->name &&
+	    semantic_callable_type_alias(ctx->sem_ctx, p->type->name))
+		return 1;
+	return 0;
+}
+
+/* A proc is callback-parametric if it takes any callback param. Such procs are
+ * never emitted directly — only specialized per call site. */
+static int has_callback_param(CodegenContext *ctx, HirProcDecl *proc) {
+	if (!proc)
+		return 0;
+	for (int i = 0; i < proc->param_count; i++)
+		if (is_callback_param(ctx, proc->params[i]))
+			return 1;
+	return 0;
+}
+
+/* Inside a callback specialization, resolve a callee name that refers to a
+ * callback param to its bound proc/func (a direct-call target). Returns `name`
+ * unchanged when not an active callback binding. */
+static const char *cb_resolve(CodegenContext *ctx, const char *name) {
+	if (!name)
+		return name;
+	for (int i = 0; i < ctx->cb_binding_count; i++)
+		if (strcmp(ctx->cb_param_names[i], name) == 0)
+			return ctx->cb_bound_names[i];
+	return name;
+}
+
+/* Emit a comma-separated `type val` argument list, skipping any slot flagged in
+ * `skip` (callback args, which have no runtime value). Returns the number of
+ * args actually emitted, so callers can get trailing separators right. */
+static int emit_call_arglist(CodegenContext *ctx, int count, const int *skip, const char *const *types,
+                             char *const *vals) {
+	int emitted = 0;
+	for (int i = 0; i < count; i++) {
+		if (skip && skip[i])
+			continue;
+		if (emitted > 0)
+			buffer_append(ctx, ", ");
+		buffer_append_fmt(ctx, "%s %s", types[i], vals[i]);
+		emitted++;
+	}
+	return emitted;
+}
+
 /* Count COLUMN-kind primitive fields on an archetype (skips handle columns,
  * meta fields, tuples, etc. — what v1 each_field walks). */
 static int count_archetype_iterable_fields(HirArchetypeDecl *arch) {
@@ -1038,15 +1118,144 @@ static void emit_monomorphized_proc(CodegenContext *ctx, HirProcDecl *proc, HirA
 	end_function_body(ctx, fbs);
 }
 
+/* Build the mangled symbol for a callback specialization: the proc name plus
+ * each callback arg's bound proc/func name. `bound[i]` is non-NULL only at
+ * callback-param indices. */
+static void cb_mangle(HirProcDecl *proc, const char *const *bound, char *out, size_t out_sz) {
+	int n = snprintf(out, out_sz, "__%s", proc->name);
+	for (int i = 0; i < proc->param_count && n < (int)out_sz; i++) {
+		if (bound[i])
+			n += snprintf(out + n, out_sz - n, "__%s", bound[i]);
+	}
+}
+
+static int cb_already_emitted(CodegenContext *ctx, const char *mangled) {
+	for (int i = 0; i < ctx->cb_emitted_count; i++)
+		if (strcmp(ctx->cb_emitted[i], mangled) == 0)
+			return 1;
+	return 0;
+}
+
+static void cb_mark_emitted(CodegenContext *ctx, const char *mangled) {
+	if (ctx->cb_emitted_count >= ctx->cb_emitted_capacity) {
+		ctx->cb_emitted_capacity = ctx->cb_emitted_capacity == 0 ? 8 : ctx->cb_emitted_capacity * 2;
+		ctx->cb_emitted = realloc(ctx->cb_emitted, ctx->cb_emitted_capacity * sizeof(*ctx->cb_emitted));
+	}
+	ctx->cb_emitted[ctx->cb_emitted_count] = strdup(mangled);
+	ctx->cb_emitted_count++;
+}
+
+/* Queue a callback specialization (proc + per-param bound names). Dedups by
+ * mangled symbol. Takes ownership of nothing; copies bound names. */
+static void cb_enqueue(CodegenContext *ctx, HirProcDecl *proc, const char *const *bound, const char *mangled) {
+	for (int i = 0; i < ctx->cb_pending_count; i++)
+		if (strcmp(ctx->cb_pending[i].mangled, mangled) == 0)
+			return;
+	if (cb_already_emitted(ctx, mangled))
+		return;
+	if (ctx->cb_pending_count >= ctx->cb_pending_capacity) {
+		ctx->cb_pending_capacity = ctx->cb_pending_capacity == 0 ? 8 : ctx->cb_pending_capacity * 2;
+		ctx->cb_pending = realloc(ctx->cb_pending, ctx->cb_pending_capacity * sizeof(*ctx->cb_pending));
+	}
+	int slot = ctx->cb_pending_count++;
+	ctx->cb_pending[slot].proc = proc;
+	ctx->cb_pending[slot].mangled = strdup(mangled);
+	for (int i = 0; i < proc->param_count && i < 8; i++)
+		ctx->cb_pending[slot].bound[i] = bound[i] ? strdup(bound[i]) : NULL;
+}
+
+/* Emit a callback-specialized copy of a callback-parametric proc. Callback
+ * params take no runtime slot of their own beyond an ignored `i8*` placeholder
+ * (so call/define arg counts stay aligned); their calls in the body are
+ * rewritten to direct calls to the bound proc via the cb_* active bindings. */
+static void emit_callback_monomorphized_proc(CodegenContext *ctx, HirProcDecl *proc, const char *const *bound,
+                                             const char *mangled) {
+	if (cb_already_emitted(ctx, mangled))
+		return;
+	cb_mark_emitted(ctx, mangled);
+
+	buffer_append_fmt(ctx, "define void @%s(", mangled);
+	int emitted = 0;
+	for (int i = 0; i < proc->param_count; i++) {
+		HirType *param_type = proc->params[i]->type;
+		if (is_callback_param(ctx, proc->params[i]))
+			continue; /* callback params carry no runtime value — dropped from the ABI */
+		if (emitted > 0)
+			buffer_append(ctx, ", ");
+		if (param_type && param_type->tag == HIR_TYPE_ARRAY) {
+			buffer_append_fmt(ctx, "%%struct.arche_array* %%arg%d", i);
+		} else if (param_type && param_type->tag == HIR_TYPE_NAMED && find_archetype_decl(ctx, param_type->name)) {
+			buffer_append_fmt(ctx, "%%struct.%s* %%arg%d", param_type->name, i);
+		} else {
+			const char *base_type = llvm_type_from_arche(field_base_type_name(param_type));
+			buffer_append_fmt(ctx, "%s %%arg%d", base_type, i);
+		}
+		emitted++;
+	}
+	buffer_append(ctx, ") {\n");
+	buffer_append(ctx, "entry:\n");
+
+	FunctionBodyState fbs = begin_function_body(ctx);
+	push_value_scope(ctx);
+	register_static_arrays_in_scope(ctx);
+
+	/* Activate the callback bindings (param name → bound proc) for the body. */
+	int saved_cb = ctx->cb_binding_count;
+	ctx->cb_binding_count = 0;
+	for (int i = 0; i < proc->param_count; i++) {
+		char param_llvm[32];
+		snprintf(param_llvm, sizeof(param_llvm), "%%arg%d", i);
+		HirType *param_type = proc->params[i]->type;
+		if (is_callback_param(ctx, proc->params[i])) {
+			if (ctx->cb_binding_count < 8) {
+				ctx->cb_param_names[ctx->cb_binding_count] = proc->params[i]->name;
+				ctx->cb_bound_names[ctx->cb_binding_count] = bound[i];
+				ctx->cb_binding_count++;
+			}
+		} else if (param_type && param_type->tag == HIR_TYPE_ARRAY) {
+			add_array_value(ctx, proc->params[i]->name, param_llvm);
+		} else if (param_type && param_type->tag == HIR_TYPE_NAMED && find_archetype_decl(ctx, param_type->name)) {
+			add_arch_value(ctx, proc->params[i]->name, param_llvm, param_type->name);
+		} else {
+			add_value(ctx, proc->params[i]->name, param_llvm, 0);
+		}
+	}
+
+	for (int i = 0; i < proc->stmt_count; i++)
+		codegen_statement(ctx, proc->stmts[i]);
+
+	ctx->cb_binding_count = saved_cb;
+	pop_value_scope(ctx);
+	buffer_append(ctx, "  ret void\n");
+	buffer_append(ctx, "}\n\n");
+	end_function_body(ctx, fbs);
+}
+
 /* Drain the pending monomorph worklist. May add more entries while emitting,
  * so keep looping until empty. */
 static void drain_monomorph_worklist(CodegenContext *ctx) {
-	while (ctx->mono_pending_count > 0) {
-		/* Pop the last entry. Order doesn't matter for correctness. */
-		ctx->mono_pending_count--;
-		HirProcDecl *p = ctx->mono_pending[ctx->mono_pending_count].proc;
-		HirArchetypeDecl *a = ctx->mono_pending[ctx->mono_pending_count].arch;
-		emit_monomorphized_proc(ctx, p, a);
+	while (ctx->mono_pending_count > 0 || ctx->cb_pending_count > 0) {
+		while (ctx->mono_pending_count > 0) {
+			/* Pop the last entry. Order doesn't matter for correctness. */
+			ctx->mono_pending_count--;
+			HirProcDecl *p = ctx->mono_pending[ctx->mono_pending_count].proc;
+			HirArchetypeDecl *a = ctx->mono_pending[ctx->mono_pending_count].arch;
+			emit_monomorphized_proc(ctx, p, a);
+		}
+		while (ctx->cb_pending_count > 0) {
+			/* Take ownership of the popped entry's heap into locals BEFORE emitting:
+			 * emit may enqueue a forwarded callback, reusing this now-free slot. */
+			int idx = --ctx->cb_pending_count;
+			HirProcDecl *p = ctx->cb_pending[idx].proc;
+			char *mangled = ctx->cb_pending[idx].mangled;
+			char *bound[8] = {0};
+			for (int i = 0; i < p->param_count && i < 8; i++)
+				bound[i] = (char *)ctx->cb_pending[idx].bound[i];
+			emit_callback_monomorphized_proc(ctx, p, (const char *const *)bound, mangled);
+			for (int i = 0; i < p->param_count && i < 8; i++)
+				free(bound[i]);
+			free(mangled);
+		}
 	}
 }
 
@@ -2082,6 +2291,9 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		char *func_name = NULL;
 		if (expr->data.call.callee->kind == HIR_EXPR_NAME) {
 			func_name = expr->data.call.callee->data.name.name;
+			/* Inside a callback specialization, a call to a callback param resolves to
+			 * its bound proc/func (direct call). No-op (idempotent) outside one. */
+			func_name = (char *)cb_resolve(ctx, func_name);
 		}
 
 		/* Width-type cast i64(x)/u8(x)/...: convert the single arg to the target
@@ -2313,6 +2525,20 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		 * so a function has no side effects on its caller's data unless `move`d in. The
 		 * move marker is transparent in codegen, so unwrap it to classify the operand. */
 		int *arg_is_move = malloc(expr->data.call.arg_count * sizeof(int));
+		/* A callback-parametric callee takes proc/func-typed params: the matching
+		 * args are bare proc/func names with no runtime value (monomorphized away),
+		 * so emit no code for them. */
+		int *arg_is_callback = malloc(expr->data.call.arg_count * sizeof(int));
+		for (int i = 0; i < expr->data.call.arg_count; i++)
+			arg_is_callback[i] = 0;
+		{
+			HirProcDecl *cb_cal = func_name ? find_proc_decl(ctx, func_name) : NULL;
+			if (cb_cal && has_callback_param(ctx, cb_cal)) {
+				for (int i = 0; i < cb_cal->param_count && i < expr->data.call.arg_count; i++)
+					if (is_callback_param(ctx, cb_cal->params[i]))
+						arg_is_callback[i] = 1;
+			}
+		}
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			arg_bufs[i] = malloc(256);
 			arg_is_string[i] = 0;
@@ -2350,6 +2576,10 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				arg_is_string[i] = 1;
 			}
 
+			if (arg_is_callback[i]) {
+				strcpy(arg_bufs[i], "null"); /* dead placeholder; selection is the mangled symbol */
+				continue;
+			}
 			codegen_expression(ctx, expr->data.call.args[i], arg_bufs[i]);
 		}
 
@@ -2408,6 +2638,32 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				monomorph_mangle(callee_proc->name, mono_arch->name, mono_call_name, sizeof(mono_call_name));
 			}
 		}
+
+		/* Callback-parametric call site: each callback arg must be a bare proc/func
+		 * NAME (compile-time known). Specialize the callee per chosen callback and
+		 * route the call to the mangled symbol. */
+		int cb_mono = 0;
+		if (callee_proc && has_callback_param(ctx, callee_proc)) {
+			const char *bound[8] = {0};
+			int ok = 1;
+			for (int i = 0; i < callee_proc->param_count && i < 8; i++) {
+				if (!is_callback_param(ctx, callee_proc->params[i]))
+					continue;
+				HirExpr *a = (i < expr->data.call.arg_count) ? expr->data.call.args[i] : NULL;
+				if (a && a->kind == HIR_EXPR_NAME) {
+					/* cb_resolve so a forwarded callback param binds to the concrete proc
+					 * of the enclosing specialization, not the param name. */
+					bound[i] = cb_resolve(ctx, a->data.name.name);
+				} else {
+					ok = 0; /* not a known proc/func name — semantic should have flagged it */
+				}
+			}
+			if (ok) {
+				cb_mangle(callee_proc, bound, mono_call_name, sizeof(mono_call_name));
+				cb_enqueue(ctx, callee_proc, bound, mono_call_name);
+				cb_mono = 1;
+			}
+		}
 		char **call_arg_vals = malloc(expr->data.call.arg_count * sizeof(char *));
 		const char **call_arg_types = malloc(expr->data.call.arg_count * sizeof(const char *));
 
@@ -2415,6 +2671,12 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			call_arg_vals[i] = malloc(256);
 			call_arg_types[i] = "i32"; /* Default type */
+
+			if (arg_is_callback[i]) {
+				strcpy(call_arg_vals[i], "null");
+				call_arg_types[i] = "i8*";
+				continue;
+			}
 
 			/* Determine what callee param expects */
 			int callee_wants_arr = 0;        /* unbounded char[] (arche_array struct on non-extern) */
@@ -2732,7 +2994,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 
 		/* Special handling for print function with double arguments */
 		const char *actual_func_name;
-		if (mono_arch) {
+		if (mono_arch || cb_mono) {
 			actual_func_name = mono_call_name; /* route to monomorphized symbol */
 		} else if (callee_group && callee_func) {
 			actual_func_name = callee_func->name; /* route to matched member */
@@ -2769,18 +3031,15 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		if (is_exit) {
 			/* exit() is a void function that never returns */
 			buffer_append_fmt(ctx, "  call void @%s(", actual_func_name);
-			for (int i = 0; i < expr->data.call.arg_count; i++) {
-				buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
-				if (i < expr->data.call.arg_count - 1) {
-					buffer_append(ctx, ", ");
-				}
-			}
+			emit_call_arglist(ctx, expr->data.call.arg_count, arg_is_callback, call_arg_types, call_arg_vals);
 			buffer_append(ctx, ")\n");
 			buffer_append(ctx, "  unreachable\n");
 			strcpy(result_buf, "0");
 		} else if (is_variadic) {
 			/* For variadic C functions, array struct args must be unwrapped to i8* */
 			for (int i = 0; i < expr->data.call.arg_count; i++) {
+				if (arg_is_callback[i])
+					continue;
 				if (call_arg_types[i] && strcmp(call_arg_types[i], "%struct.arche_array*") == 0) {
 					char *dp_gep = gen_value_name(ctx);
 					buffer_append_fmt(
@@ -2799,12 +3058,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				buffer_append_fmt(ctx, "  %s = call i32 (i8*, ...)", res_name);
 			}
 			buffer_append_fmt(ctx, " @%s(", actual_func_name);
-			for (int i = 0; i < expr->data.call.arg_count; i++) {
-				buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
-				if (i < expr->data.call.arg_count - 1) {
-					buffer_append(ctx, ", ");
-				}
-			}
+			emit_call_arglist(ctx, expr->data.call.arg_count, arg_is_callback, call_arg_types, call_arg_vals);
 			buffer_append(ctx, ")\n");
 			strcpy(result_buf, res_name);
 		} else {
@@ -2820,11 +3074,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				llvm_return_list_type(mr_types, mr_count, multiret_buf, sizeof(multiret_buf));
 				return_type = multiret_buf;
 				buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type, func_name ? func_name : "unknown");
-				for (int i = 0; i < expr->data.call.arg_count; i++) {
-					buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
-					if (i < expr->data.call.arg_count - 1)
-						buffer_append(ctx, ", ");
-				}
+				emit_call_arglist(ctx, expr->data.call.arg_count, arg_is_callback, call_arg_types, call_arg_vals);
 				buffer_append(ctx, ")\n");
 				strcpy(result_buf, res_name);
 				goto call_done;
@@ -2856,16 +3106,12 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			/* If return type is void, emit void call without assignment */
 			if (strcmp(return_type, "void") == 0) {
 				buffer_append_fmt(ctx, "  call void @%s(", actual_func_name);
-				for (int i = 0; i < expr->data.call.arg_count; i++) {
-					buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
-					if (i < expr->data.call.arg_count - 1) {
-						buffer_append(ctx, ", ");
-					}
-				}
+				int n_emitted =
+				    emit_call_arglist(ctx, expr->data.call.arg_count, arg_is_callback, call_arg_types, call_arg_vals);
 				/* Append the proc's out-pointer args (a non-extern proc writes its results through
 				 * them). Set by the enclosing proc-call multi-bind path. */
 				for (int i = 0; i < ctx->pending_out_ptr_count; i++) {
-					if (expr->data.call.arg_count > 0 || i > 0)
+					if (n_emitted > 0 || i > 0)
 						buffer_append(ctx, ", ");
 					buffer_append_fmt(ctx, "%s* %s", ctx->pending_out_ptr_types[i], ctx->pending_out_ptr_vals[i]);
 				}
@@ -2873,12 +3119,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				strcpy(result_buf, "0");
 			} else {
 				buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type, actual_func_name);
-				for (int i = 0; i < expr->data.call.arg_count; i++) {
-					buffer_append_fmt(ctx, "%s %s", call_arg_types[i], call_arg_vals[i]);
-					if (i < expr->data.call.arg_count - 1) {
-						buffer_append(ctx, ", ");
-					}
-				}
+				emit_call_arglist(ctx, expr->data.call.arg_count, arg_is_callback, call_arg_types, call_arg_vals);
 				buffer_append(ctx, ")\n");
 				strcpy(result_buf, res_name);
 			}
@@ -2896,6 +3137,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		free(arg_is_static_array);
 		free(arg_values);
 		free(arg_is_move);
+		free(arg_is_callback);
 		free(call_arg_vals);
 		free(call_arg_types);
 		break;
@@ -4094,6 +4336,9 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		    (rhs && rhs->kind == HIR_EXPR_CALL && rhs->data.call.callee && rhs->data.call.callee->kind == HIR_EXPR_NAME)
 		        ? rhs->data.call.callee->data.name.name
 		        : NULL;
+		/* Inside a callback specialization, a call to a callback param resolves to
+		 * its bound proc (matches the EXPR_CALL path). */
+		fn = cb_resolve(ctx, fn);
 		HirFuncDecl *callee_func = fn ? find_func_decl(ctx, fn) : NULL;
 		HirProcDecl *callee_proc = (!callee_func && fn) ? find_proc_decl(ctx, fn) : NULL;
 
@@ -5150,6 +5395,12 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		break;
 	}
 
+	case HIR_STMT_BLOCK:
+		/* A scoped statement sequence (match desugar / surface `{ }` block). Locals are
+		 * function-scoped SSA/allocas, so emit the statements in sequence. */
+		for (int i = 0; i < stmt->data.block.count; i++)
+			codegen_statement(ctx, stmt->data.block.stmts[i]);
+		break;
 	case HIR_STMT_IF: {
 		char cond_buf[256];
 		codegen_expression(ctx, stmt->data.if_stmt.cond, cond_buf);
@@ -6770,6 +7021,13 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->mono_pending = NULL;
 	ctx->mono_pending_count = 0;
 	ctx->mono_pending_capacity = 0;
+	ctx->cb_binding_count = 0;
+	ctx->cb_emitted = NULL;
+	ctx->cb_emitted_count = 0;
+	ctx->cb_emitted_capacity = 0;
+	ctx->cb_pending = NULL;
+	ctx->cb_pending_count = 0;
+	ctx->cb_pending_capacity = 0;
 	ctx->efield_name_counter = 0;
 	return ctx;
 }
@@ -6850,9 +7108,10 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			if (strcmp(decl->data.proc->name, "init") == 0) {
 				has_init_proc = 1;
 			}
-			/* Archetype-parametric procs only emit when called with a concrete
-			 * archetype. Defer to the EXPR_CALL handler to materialize them. */
-			if (is_archetype_parametric(decl->data.proc)) {
+			/* Archetype-parametric and callback-parametric procs only emit when
+			 * called with a concrete archetype / known callback. Defer to the
+			 * EXPR_CALL handler to materialize the specializations. */
+			if (is_archetype_parametric(decl->data.proc) || has_callback_param(ctx, decl->data.proc)) {
 				break;
 			}
 			codegen_proc_decl(ctx, decl->data.proc);

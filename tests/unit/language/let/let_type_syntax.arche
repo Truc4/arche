@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-main :: proc() {
+main :: proc () {
   x := 42;
   assert(x == 42, "with int type failed\n");
   y := 3.14;

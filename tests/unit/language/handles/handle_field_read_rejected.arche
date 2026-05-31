@@ -8,7 +8,7 @@ Foo :: arche {
 }
 static pool<Foo> (10);
 
-main :: proc() {
+main :: proc () {
   h := insert(Foo, 5);
   x := h.hp;
   printf("x=%d\n", x);

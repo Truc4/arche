@@ -3,7 +3,7 @@ C :: arche {
   x :: int,
 }
 
-main :: proc() {
+main :: proc () {
   for p in C {
   }
   printf("ok\n");

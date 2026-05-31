@@ -1,9 +1,7 @@
 // Task 4: Aggregate total revenue
 // Sum revenue (price * quantity) across all rows
 Transaction :: arche {
-  price :: float,
-  quantity :: int,
-  revenue :: float,
+  price :: float, quantity :: int, revenue :: float,
 }
 
 static pool<Transaction> (1000, 1000) {
@@ -11,7 +9,7 @@ static pool<Transaction> (1000, 1000) {
 }
 ;
 
-load_transactions :: proc() {
+load_transactions :: proc () {
   arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv")(fd:);
   buf: char[65536];
   price_str: char[32];
@@ -77,7 +75,7 @@ load_transactions :: proc() {
   }
 }
 
-main :: proc() {
+main :: proc () {
   load_transactions();
   Transaction.revenue = Transaction.price * Transaction.quantity;
   total_revenue: float = 0.0;

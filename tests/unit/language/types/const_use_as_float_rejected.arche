@@ -3,7 +3,7 @@
 // Tycheck (E0200) reports it as `binding: expected 'float', got 'int'`.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'float', got 'int'" %t.out
 N :: 42
-main :: proc() {
+main :: proc () {
   y: float = N;
   printf("%.1f\n", y);
 }

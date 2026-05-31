@@ -15,8 +15,7 @@
 // to fall back to a scalar `if`-filter loop instead of the natural vectorized form.
 
 Row :: arche {
-  price :: float,
-  quantity :: int,
+  price :: float, quantity :: int,
 }
 
 static pool<Row> (10, 10) {
@@ -24,7 +23,7 @@ static pool<Row> (10, 10) {
 }
 ;
 
-main :: proc() {
+main :: proc () {
   // Should be a no-op: every row has quantity=1, so the mask is all 1s, and
   // price stays at 5.0. Today, this fails at the `llc` stage with a vector
   // type mismatch.

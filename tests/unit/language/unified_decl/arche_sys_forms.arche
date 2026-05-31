@@ -9,11 +9,11 @@ Particle :: arche {
 
 static pool<Particle> (10);
 
-bump :: sys(pos) {
+bump :: sys (pos) {
   pos = pos + 2.0;
 }
 
-main :: proc() {
+main :: proc () {
   insert(Particle, 1.0);
   run bump;
   printf("pos0=%f\n", Particle.pos[0]);

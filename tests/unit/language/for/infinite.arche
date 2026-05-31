@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 // Minimal infinite for loop test
-main :: proc() {
+main :: proc () {
   for {
     break;
   }

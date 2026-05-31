@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 // Step 3: Braceless if body (single statement)
-main :: proc() {
+main :: proc () {
   x := 1;
   if (x == 1) {
     printf("braceless if ok\n");

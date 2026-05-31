@@ -1,5 +1,5 @@
 // Prefix unary minus composes with a tighter binary op: 2 * (-3) -> -6.
 // RUN: %arche build -o %t %s && %t | grep "RESULT=-6"
-main :: proc() {
+main :: proc () {
   printf("RESULT=%d\n", 2 * -3);
 }

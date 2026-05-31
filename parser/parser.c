@@ -1610,7 +1610,7 @@ static int parse_statement(Parser *parser) {
 	}
 
 	if (check(parser, TOK_MATCH)) {
-		advance(parser); /* consume 'match' */
+		advance(parser);               /* consume 'match' */
 		if (!parse_expression(parser)) /* scrutinee */
 			goto cleanup;
 		if (!match(parser, TOK_LBRACE)) {
@@ -1644,6 +1644,16 @@ static int parse_statement(Parser *parser) {
 		if (!match(parser, TOK_RBRACE))
 			error(parser, "Expected '}' to close match");
 		stmt_kind = SN_MATCH_STMT;
+		ok = 1;
+		goto cleanup;
+	}
+
+	/* A standalone `{ … }` block statement (a nested scope). A statement that starts with `{` is a
+	 * block, not an array-literal expression-statement (a bare array literal has no effect). */
+	if (check(parser, TOK_LBRACE)) {
+		if (!parse_block_body(parser))
+			goto cleanup;
+		stmt_kind = SN_BLOCK;
 		ok = 1;
 		goto cleanup;
 	}

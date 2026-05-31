@@ -11,7 +11,7 @@ Body :: arche {
   mass: type: int,
 }
 
-main :: proc() {
+main :: proc () {
   loc: type: int;
   p: loc = 1;
   q: alias_top = 2;

@@ -3,6 +3,6 @@
 // BUG: Compiler should reject explicit float→int assignment
 // Expected: Type error
 // Current: Silently converts (wrong)
-@allow_pure_proc main :: proc() {
+@allow_pure_proc main :: proc () {
   x := 3.14;
 }

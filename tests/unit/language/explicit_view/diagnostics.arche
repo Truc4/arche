@@ -8,6 +8,6 @@
 // RUN: %build/arche-analyzer --dump %s | grep -qF "warning W0002 proc_no_effect 0 proc 'main'"
 // Error carries the offending expression's position (the name token).
 // RUN: %build/arche-analyzer --dump %s 2>/dev/null | grep -qxE "^DIAG 12 [0-9]+ error E0001 undefined_symbol 0 Undefined symbol 'unknown_thing'"
-main :: proc() {
+main :: proc () {
   x := unknown_thing;
 }

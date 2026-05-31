@@ -2,14 +2,14 @@
 // Moving it out would hand the caller's buffer to a callee that may mutate it (a purity
 // leak), since borrowed array params are by-reference. Own it with `move`, or copy to a local.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "borrowed, not owned" %t.out
-sink :: proc(own b: char[8]) {
+sink :: proc (own b: char[8]) {
   b[0] = 'X';
 }
-relay :: func(b: char[8]) -> int {
+relay :: func (b: char[8]) -> int {
   sink(move b);
   return 0;
 }
-main :: proc() {
+main :: proc () {
   buf: char[8];
   relay(buf);
 }

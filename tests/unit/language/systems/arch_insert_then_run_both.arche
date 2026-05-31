@@ -1,29 +1,26 @@
 // RUN: %arche build -o %t %s && %t
 // BUG: System operations don't modify fields (see COMPILER_BUG_SYSTEM_OPERATIONS.md)
 Particle :: arche {
-  pos :: float,
-  vel :: float,
+  pos :: float, vel :: float,
 }
 
 Body :: arche {
-  pos :: float,
-  vel :: float,
-  mass :: float,
+  pos :: float, vel :: float, mass :: float,
 }
 
 static pool<Particle> (10);
 
 static pool<Body> (10);
 
-step :: sys(pos, vel) {
+step :: sys (pos, vel) {
   pos = pos + vel;
 }
 
-dampen :: sys(vel) {
+dampen :: sys (vel) {
   vel = vel * 0.99;
 }
 
-main :: proc() {
+main :: proc () {
   insert(Particle, 10.0, 1.0);
   insert(Particle, 20.0, 2.0);
   insert(Particle, 30.0, 3.0);

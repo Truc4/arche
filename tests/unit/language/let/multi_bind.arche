@@ -2,7 +2,7 @@
 // Two caller buffers lent by reference (in-out), filled in place, and handed back through the
 // out-list. No `own`, no `move`: the out occurrences shadow the in-list borrows, so the buffers
 // stay live and come back through the out-args.
-fill_two :: proc(buf1: char[32], buf2: char[32])(buf1: char[32], buf2: char[32], n: int) {
+fill_two :: proc (buf1: char[32], buf2: char[32])(buf1: char[32], buf2: char[32], n: int) {
   buf1[0] = 'a';
   buf1[1] = 'b';
   buf1[2] = 0;
@@ -12,7 +12,7 @@ fill_two :: proc(buf1: char[32], buf2: char[32])(buf1: char[32], buf2: char[32],
   n = 42;
 }
 
-main :: proc() {
+main :: proc () {
   x: char[32];
   y: char[32];
   fill_two(x, y)(x, y, n:);

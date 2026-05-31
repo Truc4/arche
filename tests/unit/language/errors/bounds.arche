@@ -5,7 +5,7 @@ Particle :: arche {
 
 static pool<Particle> (5);
 
-main :: proc() {
+main :: proc () {
   insert(Particle, 1);
   insert(Particle, 2);
   a := Particle.id[0];

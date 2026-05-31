@@ -4,7 +4,7 @@
 
 static buf: char[65536];
 
-main :: proc() {
+main :: proc () {
   io_open("tests/fixtures/data.csv")(fd:);
   printf("fd=%d\n", fd);
   io_close(move fd);

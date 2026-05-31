@@ -6,17 +6,15 @@
 hp :: int
 mp :: int
 A :: arche {
-  hp,
-  mp,
+  hp, mp,
 }
 B :: arche {
-  mp,
-  hp,
+  mp, hp,
 }
 
 static pool<A> (4);
 
-main :: proc() {
+main :: proc () {
   insert(A, 10, 20);
   insert(B, 30, 40);
   printf("hp0=%d mp0=%d hp1=%d mp1=%d\n", A.hp[0], A.mp[0], A.hp[1], A.mp[1]);

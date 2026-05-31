@@ -1,14 +1,14 @@
 // Unified grammar: func and proc declared as RHS value forms (`name :: func/proc(...)`).
 // RUN: %arche build -o %t %s && %t | grep "sum=12 d=6"
-add :: func(a: int, b: int) -> int {
+add :: func (a: int, b: int) -> int {
   return a + b;
 }
 
-double :: proc(x: int)(out: int) {
+double :: proc (x: int)(out: int) {
   out = x + x;
 }
 
-main :: proc() {
+main :: proc () {
   s := add(5, 7);
   double(3)(d:);
   printf("sum=%d d=%d\n", s, d);

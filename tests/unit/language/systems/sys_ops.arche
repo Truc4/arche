@@ -1,17 +1,16 @@
 // RUN: %arche build -o %t %s && %t | grep "p0i"
 // BUG: System operations don't modify fields (see COMPILER_BUG_SYSTEM_OPERATIONS.md)
 Body :: arche {
-  position :: float,
-  velocity :: float,
+  position :: float, velocity :: float,
 }
 
 static pool<Body> (500);
 
-step :: sys(position, velocity) {
+step :: sys (position, velocity) {
   position = position + velocity;
 }
 
-main :: proc() {
+main :: proc () {
   insert(Body, 10.0, 1.0);
   insert(Body, 20.0, 2.0);
   insert(Body, 30.0, 3.0);

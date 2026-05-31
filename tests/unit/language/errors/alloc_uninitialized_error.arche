@@ -6,7 +6,7 @@ Counter :: arche {
 
 static pool<Counter> (5);
 
-main :: proc() {
+main :: proc () {
   x := Counter.val[0];
   printf("should not reach\n");
 }

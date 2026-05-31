@@ -7,6 +7,6 @@ File :: arche {
   fd,
 }
 static pool<File> (4);
-main :: proc() {
+main :: proc () {
   printf("ok opaque_declared\n");
 }

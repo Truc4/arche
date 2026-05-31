@@ -8,12 +8,12 @@ static pool<Counter> (1, 1) {
 }
 ;
 
-increment :: sys(val) {
+increment :: sys (val) {
   printf("system_ran\n");
   val = val + 1;
 }
 
-main :: proc() {
+main :: proc () {
   run increment;
   assert(Counter.val[0] == 1, "system did not run\n");
 }

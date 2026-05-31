@@ -1,11 +1,10 @@
 // RUN: %arche build -o %t %s && %t | grep "allocations done"
 Message :: arche {
-  text :: char[256],
-  author :: char[64],
+  text :: char[256], author :: char[64],
 }
 
 static pool<Message> (100);
 
-main :: proc() {
+main :: proc () {
   print("allocations done\n");
 }

@@ -2,8 +2,7 @@
 #import csv;
 
 Transaction :: arche {
-  price :: float,
-  price_bucket :: float,
+  price :: float, price_bucket :: float,
 }
 
 static pool<Transaction> (10000, 10000) {
@@ -11,11 +10,11 @@ static pool<Transaction> (10000, 10000) {
 }
 ;
 
-load_transactions :: proc() {
+load_transactions :: proc () {
   csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");
 }
 
-write_output :: proc() {
+write_output :: proc () {
   arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_3.csv")(fd:);
   header: char[32];
   sprintf(header, "price_bucket\n");
@@ -28,7 +27,7 @@ write_output :: proc() {
   arche_fclose(move fd);
 }
 
-main :: proc() {
+main :: proc () {
   load_transactions();
   arche_now_sec()(t0:);
   for (iter := 0; iter < 216000; iter += 1) {

@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import io;
-main :: proc() {
+main :: proc () {
   arche_fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
   buf: char[256];
   arche_fread(fd, buf, 256)(buf, n:);

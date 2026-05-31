@@ -17,5 +17,5 @@ static pool<Handle2> (1, 1) {
 }
 ;
 
-@allow_pure_proc main :: proc() {
+@allow_pure_proc main :: proc () {
 }

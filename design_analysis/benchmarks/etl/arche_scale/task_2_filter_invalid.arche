@@ -11,11 +11,11 @@ static pool<Transaction> (100000000, 100000000) {
 }
 ;
 
-load_transactions :: proc() {
+load_transactions :: proc () {
   csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_100m.csv");
 }
 
-main :: proc() {
+main :: proc () {
   load_transactions();
   count := 0;
   for (m := 0; m < 100000000; m += 1) {

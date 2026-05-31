@@ -2,7 +2,7 @@
 // arg decays to its data pointer when handed to `syscall`, exactly like C. Open a file
 // read-only, read some bytes, and echo a marker via raw write (`print`).
 // RUN: printf 'syscall-io\n' > /tmp/arche_raw_io.txt && %arche build -o %t %s && %t | grep "read ok"
-main :: proc() {
+main :: proc () {
   open("/tmp/arche_raw_io.txt", 0)(fd:);
   if (fd > 0) {
     buf: char[64];

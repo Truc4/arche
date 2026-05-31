@@ -2,6 +2,6 @@
 // Simple test to see if 'use' statement works
 #import csv;
 
-main :: proc() {
+main :: proc () {
   printf("ok\n");
 }

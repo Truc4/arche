@@ -5,16 +5,14 @@
 hp :: int
 mp :: int
 A :: arche {
-  hp,
-  mp,
+  hp, mp,
 }
 B :: arche {
-  mp,
-  hp,
+  mp, hp,
 }
 
 static pool<A> (4);
 static pool<B> (4);
 
-main :: proc() {
+main :: proc () {
 }

@@ -7,10 +7,10 @@ cell :: opaque
 Resource :: arche {
   cell,
 }
-resource_open :: extern proc(initial: int)(ret: cell);
+resource_open :: extern proc (initial: int)(ret: cell);
 static pool<Resource> (2);
 
-main :: proc() {
+main :: proc () {
   resource_open(1)(r1:);
   a := insert(Resource, r1);
   resource_open(2)(r2:);

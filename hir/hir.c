@@ -203,6 +203,11 @@ void hir_stmt_free(HirStmt *stmt) {
 		}
 		free(stmt->data.each_field.body);
 		break;
+	case HIR_STMT_BLOCK:
+		for (int i = 0; i < stmt->data.block.count; i++)
+			hir_stmt_free(stmt->data.block.stmts[i]);
+		free(stmt->data.block.stmts);
+		break;
 	}
 	free(stmt);
 }

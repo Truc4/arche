@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 // Step 5: Break statement with infinite for loop
-main :: proc() {
+main :: proc () {
   i := 0;
   for {
     if (i == 2) {

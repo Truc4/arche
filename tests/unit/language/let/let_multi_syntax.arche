@@ -2,13 +2,13 @@
 // Two buffers moved in (own, consumed) and handed back through fresh out-bindings — the
 // `f(move x)(x:)` kill-and-rebind form: `move` kills the in-binding, the `x:` out-arg mints a
 // fresh one (you can't reuse a killed binding, so the out-arg must be `x:`, not bare `x`).
-fill_two :: proc(own buf1: char[32], own buf2: char[32])(buf1: char[32], buf2: char[32], n: int) {
+fill_two :: proc (own buf1: char[32], own buf2: char[32])(buf1: char[32], buf2: char[32], n: int) {
   buf1 := strcopy(move buf1, "test1");
   buf2 := strcopy(move buf2, "test2");
   n = 77;
 }
 
-main :: proc() {
+main :: proc () {
   x: char[32];
   y: char[32];
   fill_two(move x, move y)(x:, y:, n:);

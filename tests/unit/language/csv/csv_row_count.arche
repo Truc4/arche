@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && cd %repo && %t | grep "rows: 1000"
 #import io;
 
-main :: proc() {
+main :: proc () {
   io_open("tests/fixtures/data.csv")(fd:);
   io_skip_header(fd);
   rows := 0;

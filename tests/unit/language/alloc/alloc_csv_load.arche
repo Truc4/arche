@@ -1,8 +1,7 @@
 // RUN: %arche build -o %t %s && %t
 #import io;
 Transaction :: arche {
-  price :: float,
-  quantity :: int,
+  price :: float, quantity :: int,
 }
 
 static pool<Transaction> (5, 5) {
@@ -10,7 +9,7 @@ static pool<Transaction> (5, 5) {
 }
 ;
 
-main :: proc() {
+main :: proc () {
   arche_fopen_read("../../../../../tests/fixtures/transactions.csv")(fd:);
   buf: char[256];
   price_str: char[32];

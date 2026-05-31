@@ -1,0 +1,12 @@
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'proc" %t.out
+// A non-proc value cannot be passed where a proc-typed (callback) param is expected;
+// there are no runtime proc values, only compile-time-known proc/func names.
+h :: proc ()()
+
+apply :: proc (cb: h)() {
+  cb()();
+}
+
+main :: proc () {
+  apply(42)();
+}

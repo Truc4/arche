@@ -51,6 +51,11 @@ const char *semantic_resolve_callable_alias(SemanticContext *ctx, const char *na
  * else NULL. tycheck resolves the name to the structural signature's TypeId. */
 struct TypeRef *semantic_callable_type_alias(SemanticContext *ctx, const char *name);
 
+/* Enum support (used by lowering to resolve `Enum.variant` and bare variant patterns to int values). */
+int semantic_is_enum_type(SemanticContext *ctx, const char *name);
+int semantic_enum_variant_value(SemanticContext *ctx, const char *enum_name, const char *variant, long *out);
+int semantic_find_enum_variant(SemanticContext *ctx, const char *variant, long *out);
+
 /* Error checking */
 int semantic_has_errors(SemanticContext *ctx);
 int semantic_error_count(const SemanticContext *ctx);

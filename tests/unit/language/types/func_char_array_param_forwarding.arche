@@ -25,7 +25,7 @@
 // Discovered: 2026-05-19 while building the pure-Arche CSV loader, where
 // field_at(data: char[], ...) forwards `data` to find_byte(data: char[], ...).
 
-inner :: func(data: char[], n: int) -> int {
+inner :: func (data: char[], n: int) -> int {
   cnt := 0;
   for (i := 0; i < n; i += 1) {
     if (data[i] == ',') {
@@ -35,11 +35,11 @@ inner :: func(data: char[], n: int) -> int {
   return cnt;
 }
 
-outer :: func(data: char[], n: int) -> int {
+outer :: func (data: char[], n: int) -> int {
   return inner(data, n);
 }
 
-main :: proc() {
+main :: proc () {
   buf: char[8];
   buf[0] = 'a';
   buf[1] = ',';

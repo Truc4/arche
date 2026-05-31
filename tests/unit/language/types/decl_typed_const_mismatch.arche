@@ -2,6 +2,6 @@
 // an int-typed constant cannot take a float literal.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "declared .int. but its value is a float literal" %t.out
 bad: int: 3.5
-main :: proc() {
+main :: proc () {
   printf("unreachable\n");
 }

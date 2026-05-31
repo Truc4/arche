@@ -5,6 +5,6 @@ Tensor :: arche {
 
 static pool<Tensor> (5);
 
-main :: proc() {
+main :: proc () {
   print("allocations done\n");
 }

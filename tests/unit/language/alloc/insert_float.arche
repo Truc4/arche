@@ -5,7 +5,7 @@ FloatOps :: arche {
 
 static pool<FloatOps> (8);
 
-main :: proc() {
+main :: proc () {
   insert(FloatOps, 1.0);
   insert(FloatOps, 2.0);
   print("done\n");

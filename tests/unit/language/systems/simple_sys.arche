@@ -6,12 +6,12 @@ Body :: arche {
 
 static pool<Body> (5);
 
-dummy :: sys(pos) {
+dummy :: sys (pos) {
   printf("system_ran\n");
   pos = pos;
 }
 
-main :: proc() {
+main :: proc () {
   insert(Body, 1.0);
   insert(Body, 2.0);
   insert(Body, 3.0);

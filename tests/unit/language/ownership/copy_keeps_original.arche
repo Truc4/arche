@@ -1,11 +1,11 @@
 // `copy x` hands the function an owned duplicate; the caller keeps its original unchanged.
 // (Contrast `move`, which donates the buffer by reference with no copy.)
 // RUN: %arche build -o %t %s && %t | grep "src=hi out=yo"
-fill :: func(own b: char[8], s: char[]) -> char[8] {
+fill :: func (own b: char[8], s: char[]) -> char[8] {
   return strcopy(move b, s);
 }
 
-main :: proc() {
+main :: proc () {
   src: char[8];
   sprintf(src, "%s", "hi");
   out := fill(copy src, "yo");

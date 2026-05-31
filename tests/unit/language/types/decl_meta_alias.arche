@@ -3,7 +3,7 @@
 // formatter (see formatter/meta_alias_preserved), so this file keeps `: type :`.
 // RUN: %arche build -o %t %s && %t | grep "ok: 7"
 weight: type: int
-main :: proc() {
+main :: proc () {
   w: weight = 7;
   printf("ok: %d\n", w);
 }

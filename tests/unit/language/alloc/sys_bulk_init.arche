@@ -8,12 +8,12 @@ static pool<Task> (1, 1) {
 }
 ;
 
-double_val :: sys(val) {
+double_val :: sys (val) {
   printf("system_ran\n");
   val = val * 2;
 }
 
-main :: proc() {
+main :: proc () {
   run double_val;
   assert(Task.val[0] == 10, "val not 10\n");
 }

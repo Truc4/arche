@@ -1,9 +1,9 @@
 // RUN: ! %arche build -o %t %s 2>&1
 
-bad :: proc(x: int) {
+bad :: proc (x: int) {
   #each_field f in x {
     z := f;
   }
 }
-main :: proc() {
+main :: proc () {
 }

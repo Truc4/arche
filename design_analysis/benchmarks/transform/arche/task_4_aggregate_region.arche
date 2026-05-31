@@ -3,9 +3,7 @@
 #import csv;
 
 Transaction :: arche {
-  price :: float,
-  quantity :: int,
-  revenue :: float,
+  price :: float, quantity :: int, revenue :: float,
 }
 
 static pool<Transaction> (10000, 10000) {
@@ -13,11 +11,11 @@ static pool<Transaction> (10000, 10000) {
 }
 ;
 
-load_transactions :: proc() {
+load_transactions :: proc () {
   csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");
 }
 
-write_output :: proc(total: float) {
+write_output :: proc (total: float) {
   arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_4.csv")(fd:);
   buf: char[64];
   sprintf(buf, "total\n%g\n", total);
@@ -25,7 +23,7 @@ write_output :: proc(total: float) {
   arche_fclose(move fd);
 }
 
-main :: proc() {
+main :: proc () {
   load_transactions();
 
   total := 0.0;

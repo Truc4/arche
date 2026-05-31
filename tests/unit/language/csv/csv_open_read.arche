@@ -3,7 +3,7 @@
 
 static buf: char[65536];
 
-main :: proc() {
+main :: proc () {
   printf("about to open file\n");
   io_open("tests/fixtures/data.csv")(fd:);
   printf("fd=%d\n", fd);

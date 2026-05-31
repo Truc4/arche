@@ -210,6 +210,7 @@ typedef enum {
 	HIR_STMT_RETURN,
 	HIR_STMT_MULTI_BIND,
 	HIR_STMT_EACH_FIELD,
+	HIR_STMT_BLOCK, /* a scoped statement sequence (desugaring target, e.g. match) */
 } HirStmtKind;
 
 typedef struct {
@@ -278,6 +279,11 @@ typedef struct {
 	int body_count;
 } HirEachFieldStmt;
 
+typedef struct {
+	HirStmt **stmts;
+	int count;
+} HirBlockStmt;
+
 struct HirStmt {
 	HirStmtKind kind;
 	SourceLoc loc;
@@ -291,6 +297,7 @@ struct HirStmt {
 		HirReturnStmt return_stmt;
 		HirMultiBindStmt multi_bind;
 		HirEachFieldStmt each_field;
+		HirBlockStmt block;
 	} data;
 };
 

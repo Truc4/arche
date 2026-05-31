@@ -129,6 +129,8 @@ typedef enum {
 	SEM_DIAG_type_mismatch,
 	SEM_DIAG_not_indexable,
 	SEM_DIAG_wrong_arity,
+	SEM_DIAG_non_exhaustive_match,
+	SEM_DIAG_callable_in_archetype,
 
 	/* === Lints (promotable warnings) === */
 	SEM_LINT_proc_could_be_func,
@@ -205,6 +207,8 @@ SemDiag *sem_emit_tuple_field_not_simple(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_const_type_mismatch(SemanticContext *ctx, SourceLoc loc, const char *name, const char *want,
                                       const char *got);
 SemDiag *sem_emit_meta_type_invalid_position(SemanticContext *ctx, SourceLoc loc, const char *where);
+SemDiag *sem_emit_non_exhaustive_match(SemanticContext *ctx, SourceLoc loc, const char *missing);
+SemDiag *sem_emit_callable_in_archetype(SemanticContext *ctx, SourceLoc loc, const char *name);
 
 SemDiag *sem_emit_opaque_not_consumed(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_cannot_copy_opaque(SemanticContext *ctx, SourceLoc loc, const char *name);

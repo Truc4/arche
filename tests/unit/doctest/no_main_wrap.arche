@@ -8,6 +8,6 @@
 /// x := sq(4);
 /// assert(x == 16, "sq broken\n");
 /// ```
-sq :: func(a: int) -> int {
+sq :: func (a: int) -> int {
   return a * a;
 }

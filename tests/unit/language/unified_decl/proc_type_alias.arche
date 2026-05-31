@@ -1,15 +1,15 @@
 // A named proc TYPE (`handler :: proc()(...)`, structural) annotating a top-level default binding.
 // proc/func type names are lowercase (Uppercase is reserved for archetypes).
 // RUN: %arche build -o %t %s && %t | grep "code=404"
-handler :: proc()(code: int)
+handler :: proc ()(code: int)
 
-not_found :: proc()(code: int) {
+not_found :: proc ()(code: int) {
   code = 404;
 }
 
-h : handler : not_found
+h: handler: not_found
 
-main :: proc() {
+main :: proc () {
   h()(c:);
   printf("code=%d\n", c);
 }

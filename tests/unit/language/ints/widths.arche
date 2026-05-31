@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "u32big=1 u64big=1 b=200 c=1000 d=255"
 // Unsigned + small fixed-width integer types.
-main :: proc() {
+main :: proc () {
   a: u32 = 4000000000;
   b: u8 = 200;
   c: i16 = 1000;

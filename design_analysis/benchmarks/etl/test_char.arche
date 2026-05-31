@@ -1,5 +1,5 @@
 Test :: arche {
   name :: char[16],
 }
-@allow_pure_proc main :: proc() {
+@allow_pure_proc main :: proc () {
 }

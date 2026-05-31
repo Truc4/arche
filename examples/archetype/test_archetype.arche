@@ -1,21 +1,18 @@
 Particle :: arche {
-  pos :: float,
-  vel :: float,
+  pos :: float, vel :: float,
 }
 Body :: arche {
-  pos :: float,
-  vel :: float,
-  mass :: float,
+  pos :: float, vel :: float, mass :: float,
 }
 static pool<Particle> (100);
 static pool<Body> (50);
-integrate :: sys(pos, vel) {
+integrate :: sys (pos, vel) {
   pos = pos + vel;
 }
-dampen :: sys(vel) {
+dampen :: sys (vel) {
   vel = vel * 0.99;
 }
-main :: proc() {
+main :: proc () {
   insert(Particle, 1.0, 0.1);
   insert(Particle, 2.0, 0.2);
   insert(Particle, 3.0, 0.3);

@@ -2,7 +2,7 @@ Counter :: arche {
   value :: int,
 }
 static pool<Counter> (1);
-main :: proc() {
+main :: proc () {
   insert(Counter, 0);
   x := 10;
   y := 20;

@@ -5,7 +5,7 @@ Counter :: arche {
 
 static pool<Counter> (10, 3);
 
-main :: proc() {
+main :: proc () {
   assert(Counter.val[0] == 0, "val[0] not 0\n");
   assert(Counter.val[2] == 0, "val[2] not 0\n");
   printf("two-arg alloc ok\n");

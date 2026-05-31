@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-main :: proc() {
+main :: proc () {
   buf: char[256];
   c := ',';
   printf("ok\n");
