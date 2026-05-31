@@ -6,7 +6,7 @@
 // second function's example must be found and run.
 
 /// The first function (documented, no example).
-func first(a: int) -> int {
+first :: func (a: int) -> int {
   return a;
 }
 
@@ -16,6 +16,6 @@ func first(a: int) -> int {
 /// ```arche
 /// assert(second(3) == 9, "second broken\n");
 /// ```
-func second(a: int) -> int {
+second :: func (a: int) -> int {
   return a * a;
 }

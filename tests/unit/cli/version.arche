@@ -1,6 +1,6 @@
 // `arche version` and `--version` both print the version banner.
 // RUN: %arche version | grep -q "^arche "
 // RUN: %arche --version | grep -q "^arche "
-proc main() {
+main :: proc () {
   printf("x\n");
 }

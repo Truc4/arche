@@ -4,12 +4,12 @@
 // so it linearly retires the resource (must-consume satisfied).
 // RUN: %arche build -o %t --link %S/../extern_type/runtime/test_resource.c %s && %t | grep "value=42"
 resource :: opaque
-extern proc resource_open(initial: int)(ret: resource);
-extern proc resource_get(r: resource)(ret: int);
-extern proc resource_set(r: resource, v: int);
-extern proc resource_close(own r: resource);
+resource_open :: extern proc (initial: int)(ret: resource);
+resource_get :: extern proc (r: resource)(ret: int);
+resource_set :: extern proc (r: resource, v: int);
+resource_close :: extern proc (own r: resource);
 
-proc main() {
+main :: proc () {
   resource_open(10)(r:);
   resource_set(r, 42);
   resource_get(r)(v:);

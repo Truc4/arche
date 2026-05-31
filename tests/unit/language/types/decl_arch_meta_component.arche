@@ -1,11 +1,11 @@
 // `name : type : T` is the explicit meta-type longhand for an inline archetype component —
 // equivalent to `name :: T`. The minted nominal type `mass` backs int and is usable as a type.
 // RUN: %arche build -o %t %s && %t | grep "m: 5"
-arche Body {
+Body :: arche {
   mass: type: int,
 }
 
-proc main() {
+main :: proc () {
   m: mass = 5;
   printf("m: %d\n", m);
 }

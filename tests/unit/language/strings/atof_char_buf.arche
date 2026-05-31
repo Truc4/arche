@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-proc main() {
+main :: proc () {
   s: char[32];
   s[0] = '1';
   s[1] = '.';

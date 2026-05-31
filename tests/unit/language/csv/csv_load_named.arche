@@ -3,17 +3,15 @@
 // is present; csv_load must map price/quantity by header name and ignore note.
 #import csv;
 
-arche Row {
-  price :: float,
-  quantity :: int,
+Row :: arche {
+  price :: float, quantity :: int,
 }
 
 static pool<Row> (3, 3) {
   price: 0.0, quantity: 0,
 }
-;
 
-proc main() {
+main :: proc () {
   csv_load(Row, "/tmp/csv_load_named.csv");
   printf("p=[%g %g %g] q=[%d %d %d]\n", Row.price[0], Row.price[1], Row.price[2], Row.quantity[0], Row.quantity[1], Row.quantity[2]);
 }

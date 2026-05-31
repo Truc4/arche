@@ -1,9 +1,9 @@
 // RUN: %arche build -o %t %s && %t
 #import io;
 
-static buf: char[65536];
+static buf: char[65536]
 
-proc main() {
+main :: proc () {
   printf("about to open file\n");
   io_open("tests/fixtures/data.csv")(fd:);
   printf("fd=%d\n", fd);

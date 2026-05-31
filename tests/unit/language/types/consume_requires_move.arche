@@ -3,10 +3,10 @@
 // compile error — the transfer must be visible as `move r`.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "must be moved" %t.out
 resource :: opaque
-extern proc resource_open(initial: int)(ret: resource);
-extern proc resource_close(own r: resource);
+resource_open :: extern proc (initial: int)(ret: resource);
+resource_close :: extern proc (own r: resource);
 
-proc main() {
+main :: proc () {
   resource_open(10)(r:);
   resource_close(r);
 }

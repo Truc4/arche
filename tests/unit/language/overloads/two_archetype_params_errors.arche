@@ -1,7 +1,7 @@
 // RUN: ! %arche build -o %t %s 2>&1
 
-proc bad(a: archetype, b: archetype) {
+bad :: proc (a: archetype, b: archetype) {
   n: int = a.field_count;
 }
-proc main() {
+main :: proc () {
 }

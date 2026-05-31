@@ -48,6 +48,7 @@ typedef enum {
 	DECL_STATIC,
 	DECL_CONST,
 	DECL_USE,
+	DECL_ENUM,
 } DeclKind;
 
 typedef enum {
@@ -82,6 +83,16 @@ typedef struct {
 struct UseDecl {
 	char *name; /* module name, e.g. "csv" from `use csv;` */
 };
+
+/* A classical enum: a distinct int-backed type with named variants. Variants are compile-time
+ * int constants (explicit `= N` or auto-incrementing). Erased before codegen (variants become
+ * literals; the type resolves to int). */
+typedef struct {
+	char *name;
+	char **variant_names;
+	long *variant_values;
+	int variant_count;
+} EnumDecl;
 
 typedef struct {
 	char *name;
@@ -119,6 +130,7 @@ struct Decl {
 		StaticDecl *static_decl;
 		ConstDecl *constant;
 		UseDecl *use;
+		EnumDecl *enum_decl;
 	} data;
 };
 
@@ -136,6 +148,8 @@ typedef enum {
 	TYPE_OPAQUE,       /* opaque: pointer-width C-owned cell, never read/written/forged by Arche */
 	TYPE_TYPE,         /* `type`: the meta-type (type-of-types). A type alias is a constant of this
 	                      type; compile-time only, erased before lowering. */
+	TYPE_PROC,         /* a proc type (bodiless signature): `proc(in)(out)` — structural */
+	TYPE_FUNC,         /* a func type (bodiless signature): `func(in) -> T` — structural */
 } TypeKind;
 
 struct TypeRef {
@@ -162,6 +176,16 @@ struct TypeRef {
 		struct {
 			char *archetype_name;
 		} handle;
+
+		/* TYPE_PROC / TYPE_FUNC: a callable signature. `results` are a proc's out-params or a
+		 * func's single return. Matched structurally (names ignored). */
+		struct {
+			TypeRef **param_types;
+			int param_count;
+			TypeRef **result_types;
+			int result_count;
+			int is_proc;
+		} callable;
 	} data;
 };
 

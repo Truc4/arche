@@ -2,6 +2,6 @@
 // fixed prefix (`fmt`) is still checked, but trailing args are unconstrained, so
 // `printf("%d %d %d\n", 1, 2, 3)` is accepted with three extras.
 // RUN: %arche build -o %t %s && %t | grep "1 2 3"
-proc main() {
+main :: proc () {
   printf("%d %d %d\n", 1, 2, 3);
 }

@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-proc main() {
+main :: proc () {
   total := 0.0;
   i := 0;
   for (; i < 4;) {

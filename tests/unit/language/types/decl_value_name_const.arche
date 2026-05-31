@@ -4,6 +4,6 @@
 // RUN: %arche build -o %t %s && %t | grep "tau: 3"
 pi :: 3
 tau :: pi
-proc main() {
+main :: proc () {
   printf("tau: %d\n", tau);
 }

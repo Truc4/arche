@@ -1,6 +1,6 @@
 // A local value constant `k :: e` inside a proc body — the inferred-type constant form.
 // RUN: %arche build -o %t %s && %t | grep "k: 10"
-proc main() {
+main :: proc () {
   k :: 10;
   printf("k: %d\n", k);
 }

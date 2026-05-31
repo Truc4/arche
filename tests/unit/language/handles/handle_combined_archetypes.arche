@@ -1,17 +1,17 @@
 // RUN: %arche build -o %t %s && %t | grep "alive"
-arche Player {
+Player :: arche {
   pos :: float,
 }
 
-arche AliveList {
+AliveList :: arche {
   player_ref :: handle<Player>,
 }
 
-static pool<Player> (10);
+static pool<Player> (10)
 
-static pool<AliveList> (10);
+static pool<AliveList> (10)
 
-proc main() {
+main :: proc () {
   p1 := insert(Player, 1.0);
   p2 := insert(Player, 2.0);
   insert(AliveList, p1);

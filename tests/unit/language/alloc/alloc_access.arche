@@ -1,14 +1,13 @@
 // RUN: %arche build -o %t %s && %t
-arche Point {
+Point :: arche {
   x :: int,
 }
 
 static pool<Point> (5, 5) {
   x: 42,
 }
-;
 
-proc main() {
+main :: proc () {
   printf("before access\n");
   val := Point.x[0];
   assert(val == 42, "val not 42\n");

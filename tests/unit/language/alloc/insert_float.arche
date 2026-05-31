@@ -1,11 +1,11 @@
 // RUN: %arche build -o %t %s && %t | grep "done"
-arche FloatOps {
+FloatOps :: arche {
   val :: float,
 }
 
-static pool<FloatOps> (8);
+static pool<FloatOps> (8)
 
-proc main() {
+main :: proc () {
   insert(FloatOps, 1.0);
   insert(FloatOps, 2.0);
   print("done\n");

@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && cd %repo && %t | grep "PASS"
 #import io;
 
-proc main() {
+main :: proc () {
   io_open("tests/fixtures/data.csv")(fd:);
   if (fd > 0) {
     buf: char[65536];

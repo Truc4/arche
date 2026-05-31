@@ -1,11 +1,11 @@
 // RUN: %arche build -o %t %s && ! %t
-arche Player {
+Player :: arche {
   pos :: float,
 }
 
-static pool<Player> (10);
+static pool<Player> (10)
 
-proc main() {
+main :: proc () {
   h1 := insert(Player, 1.0);
   delete(h1);
   h2 := insert(Player, 2.0);

@@ -1,21 +1,19 @@
 // RUN: %arche build -o %t %s && %t
-arche Counter {
-  val :: int,
-  score :: float,
+Counter :: arche {
+  val :: int, score :: float,
 }
 
-arche Empty {
+Empty :: arche {
   x :: int,
 }
 
 static pool<Counter> (5, 5) {
   val: 7, score: 2.5,
 }
-;
 
-static pool<Empty> (5);
+static pool<Empty> (5)
 
-proc main() {
+main :: proc () {
   assert(Counter.val[0] == 7, "val[0] not 7\n");
   assert(Counter.score[0] == 2.5, "score[0] not 2.5\n");
   assert(Counter.val[4] == 7, "val[4] not 7\n");

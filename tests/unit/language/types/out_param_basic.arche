@@ -1,11 +1,11 @@
 // A function fills a caller buffer in place and returns a scalar. (Arrays are reached by
 // reference; the buffer is the caller's, filled by the callee.)
 // RUN: %arche build -o %t %s && %t
-func test_fill_buf(buf: char[32]) -> int {
+test_fill_buf :: func (buf: char[32]) -> int {
   return 5;
 }
 
-proc main() {
+main :: proc () {
   buf: char[32];
   n := test_fill_buf(buf);
   assert(n > 0, "test_fill_buf returned <= 0\n");

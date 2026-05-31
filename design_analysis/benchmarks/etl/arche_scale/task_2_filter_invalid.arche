@@ -1,21 +1,20 @@
 // Task 2: Filter invalid rows
 // Count rows where quantity > 0
-use csv;
+#import csv;
 
-arche Transaction {
+Transaction :: arche {
   quantity :: int,
 }
 
 static pool<Transaction> (100000000, 100000000) {
   quantity: 0,
 }
-;
 
-proc load_transactions() {
+load_transactions :: proc () {
   csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_100m.csv");
 }
 
-proc main() {
+main :: proc () {
   load_transactions();
   count := 0;
   for (m := 0; m < 100000000; m += 1) {

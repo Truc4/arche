@@ -2,6 +2,6 @@
 // RUN: %arche --help | grep -q build
 // RUN: %arche --help | grep -q check
 // RUN: %arche help build | grep -q emit
-proc main() {
+main :: proc () {
   printf("x\n");
 }

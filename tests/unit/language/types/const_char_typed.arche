@@ -3,6 +3,6 @@
 // RUN: %arche build -o %t %s && %t | grep "a=A b=B"
 A :: 'A'
 B: char: 'B'
-proc main() {
+main :: proc () {
   printf("a=%c b=%c\n", A, B);
 }

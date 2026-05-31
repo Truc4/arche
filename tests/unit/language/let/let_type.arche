@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-proc main() {
+main :: proc () {
   x := 42;
   assert(x == 42, "type syntax failed\n");
   print("test passed\n");

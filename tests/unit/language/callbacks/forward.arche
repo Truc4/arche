@@ -1,0 +1,21 @@
+// A callback param can be forwarded to another callback-taking proc: at each
+// specialization the forwarded param resolves to the concrete bound proc, so the
+// inner call lands directly on it.
+// RUN: %arche build -o %t %s && %t | grep "hello"
+h :: proc ()()
+
+hello :: proc ()() {
+  printf("hello\n");
+}
+
+inner :: proc (cb: h)() {
+  cb()();
+}
+
+outer :: proc (cb: h)() {
+  inner(cb)();
+}
+
+main :: proc () {
+  outer(hello)();
+}

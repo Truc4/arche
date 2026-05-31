@@ -43,6 +43,19 @@ SemHints *sem_context_hints(SemanticContext *ctx);
  * backing; returns `name` unchanged if not an alias. */
 const char *semantic_resolve_type_alias(SemanticContext *ctx, const char *name);
 
+/* If `name` is a callable alias (`handler :: some_proc`), the ultimate proc/func target name;
+ * else NULL. Lowering rewrites call callees through this and drops the alias binding. */
+const char *semantic_resolve_callable_alias(SemanticContext *ctx, const char *name);
+
+/* If `name` is a named callable-type alias (`handler :: proc()(w:int)`), its callable TypeRef;
+ * else NULL. tycheck resolves the name to the structural signature's TypeId. */
+struct TypeRef *semantic_callable_type_alias(SemanticContext *ctx, const char *name);
+
+/* Enum support (used by lowering to resolve `Enum.variant` and bare variant patterns to int values). */
+int semantic_is_enum_type(SemanticContext *ctx, const char *name);
+int semantic_enum_variant_value(SemanticContext *ctx, const char *enum_name, const char *variant, long *out);
+int semantic_find_enum_variant(SemanticContext *ctx, const char *variant, long *out);
+
 /* Error checking */
 int semantic_has_errors(SemanticContext *ctx);
 int semantic_error_count(const SemanticContext *ctx);

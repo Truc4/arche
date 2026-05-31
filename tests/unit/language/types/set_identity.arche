@@ -4,17 +4,15 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "already allocated" %t.out
 hp :: int
 mp :: int
-arche A {
-  hp,
-  mp,
+A :: arche {
+  hp, mp,
 }
-arche B {
-  mp,
-  hp,
+B :: arche {
+  mp, hp,
 }
 
-static pool<A> (4);
-static pool<B> (4);
+static pool<A> (4)
+static pool<B> (4)
 
-proc main() {
+main :: proc () {
 }

@@ -2,43 +2,43 @@
 // (bare names also resolve). Built on the core `syscall`/`read`/`write` primitives; a `file` is a
 // raw fd held in the opaque cell (must-consume: open it, then close it). The `file` type is a
 // core primitive; this module provides the operations.
-@allow(proc_could_be_func) proc arche_stdin()(f: file) {
+@allow(proc_could_be_func) arche_stdin :: proc ()(f: file) {
   f = 0;
 }
-@allow(proc_could_be_func) proc arche_stdout()(f: file) {
+@allow(proc_could_be_func) arche_stdout :: proc ()(f: file) {
   f = 1;
 }
-@allow(proc_could_be_func) proc arche_stderr()(f: file) {
+@allow(proc_could_be_func) arche_stderr :: proc ()(f: file) {
   f = 2;
 }
 // open returns a negative errno on failure; map that to the null cell (0) so callers keep the
 // `fd == 0`-is-failure convention. open flags (x86-64 Linux): O_RDONLY=0; O_WRONLY|O_CREAT|O_TRUNC=577, mode 0644=420.
-proc arche_fopen_read(path: char[])(f: file) {
+arche_fopen_read :: proc (path: char[])(f: file) {
   syscall(2, path, 0, 0, 0, 0, 0)(r:);
   if (r < 0) {
     r = 0;
   }
   f = r;
 }
-proc arche_fopen_write(path: char[])(f: file) {
+arche_fopen_write :: proc (path: char[])(f: file) {
   syscall(2, path, 577, 420, 0, 0, 0)(r:);
   if (r < 0) {
     r = 0;
   }
   f = r;
 }
-proc arche_fwrite(fd: file, buf: char[], n: int) {
+arche_fwrite :: proc (fd: file, buf: char[], n: int) {
   syscall(1, fd, buf, n, 0, 0, 0)(_w:);
 }
-proc arche_fread(fd: file, buf: char[], n: int)(buf: char[], r: int) {
+arche_fread :: proc (fd: file, buf: char[], n: int)(buf: char[], r: int) {
   syscall(0, fd, buf, n, 0, 0, 0)(rr:);
   r = i32(rr);
 }
-proc arche_csv_read_chunk(fd: file, buf: char[], max_bytes: int)(buf: char[], r: int) {
+arche_csv_read_chunk :: proc (fd: file, buf: char[], max_bytes: int)(buf: char[], r: int) {
   syscall(0, fd, buf, max_bytes, 0, 0, 0)(rr:);
   r = i32(rr);
 }
-proc arche_fread_line(fd: file, buf: char[], n: int)(buf: char[], r: int) {
+arche_fread_line :: proc (fd: file, buf: char[], n: int)(buf: char[], r: int) {
   i := 0;
   ch: char[1];
   for (; i < n - 1;) {
@@ -55,31 +55,31 @@ proc arche_fread_line(fd: file, buf: char[], n: int)(buf: char[], r: int) {
   buf[i] = 0;
   r = i;
 }
-proc arche_fclose(own fd: file) {
+arche_fclose :: proc (own fd: file) {
   syscall(3, fd, 0, 0, 0, 0, 0)(_c:);
 }
 
-proc stdout_write(buf: char[], n: int) {
+stdout_write :: proc (buf: char[], n: int) {
   write(1, buf, n);
 }
-proc stderr_write(buf: char[], n: int) {
+stderr_write :: proc (buf: char[], n: int) {
   write(2, buf, n);
 }
-proc stdin_read(buf: char[], n: int)(buf: char[]) {
+stdin_read :: proc (buf: char[], n: int)(buf: char[]) {
   read(0, buf, n)(buf, _cnt:);
 }
 
 // File-handle convenience wrappers (`io.open`, `io.read_chunk`, …).
-proc open(own path: char[])(fd: file) {
+open :: proc (own path: char[])(fd: file) {
   arche_fopen_read(move path)(fd);
 }
-proc close(own fd: file) {
+close :: proc (own fd: file) {
   arche_fclose(move fd);
 }
-proc skip_header(fd: file) {
+skip_header :: proc (fd: file) {
   line: char[256];
   arche_fread_line(fd, line, 256)(line, _r:);
 }
-proc read_chunk(fd: file, buf: char[], size: int)(buf: char[], n: int) {
+read_chunk :: proc (fd: file, buf: char[], size: int)(buf: char[], n: int) {
   arche_csv_read_chunk(fd, buf, size)(buf, n);
 }

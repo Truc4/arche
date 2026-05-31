@@ -1,28 +1,25 @@
 // RUN: %arche build -o %t %s && %t | grep "DEBUG:"
-arche Particle {
-  pos :: float,
-  vel :: float,
+Particle :: arche {
+  pos :: float, vel :: float,
 }
 
-arche Body {
-  pos :: float,
-  vel :: float,
-  mass :: float,
+Body :: arche {
+  pos :: float, vel :: float, mass :: float,
 }
 
-static pool<Particle> (100);
+static pool<Particle> (100)
 
-static pool<Body> (50);
+static pool<Body> (50)
 
-sys step(pos, vel) {
+step :: sys (pos, vel) {
   pos = pos + vel;
 }
 
-sys dampen(vel) {
+dampen :: sys (vel) {
   vel = vel * 0.99;
 }
 
-proc main() {
+main :: proc () {
   insert(Particle, 10.0, 1.0);
   insert(Particle, 20.0, 2.0);
   insert(Particle, 30.0, 3.0);

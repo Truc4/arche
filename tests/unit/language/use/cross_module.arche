@@ -4,6 +4,6 @@
 #import xmod_a;
 #import xmod_b;
 
-proc main() {
+main :: proc () {
   printf("RESULT=%d\n", useit(10));
 }

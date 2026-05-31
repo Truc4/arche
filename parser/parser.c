@@ -263,6 +263,10 @@ static int parse_expression(Parser *parser);
 static int parse_type(Parser *parser);
 static int parse_type_form(Parser *parser, TypeForm *out);
 static int parse_type_inner(Parser *parser, TypeForm *out);
+/* Signature parsers (defined with the shared sub-parsers below); forward-declared here so a
+ * proc/func type form can appear in type-annotation position (`h: proc()(w: writer)`). */
+static int parse_proc_sig(Parser *parser, int is_extern);
+static int parse_func_sig(Parser *parser, int is_extern);
 
 /* ========== TYPE PARSING ========== */
 
@@ -286,6 +290,22 @@ static int parse_type_form(Parser *parser, TypeForm *out) {
 static int parse_type_inner(Parser *parser, TypeForm *out) {
 	out->cst_kind = SN_TYPE_REF;
 	out->is_type_meta = 0;
+
+	/* A proc/func type in annotation position: `h: proc(in)(out)`, `f: func(in) -> T`. The
+	 * `type` meta is implied (a callable signature denotes a type). Bodiless — no `{...}` here. */
+	if (check(parser, TOK_PROC)) {
+		advance(parser);
+		out->cst_kind = SN_TYPE_PROC;
+		out->is_type_meta = 1;
+		return parse_proc_sig(parser, 0);
+	}
+	if (check(parser, TOK_FUNC)) {
+		advance(parser);
+		out->cst_kind = SN_TYPE_FUNC;
+		out->is_type_meta = 1;
+		return parse_func_sig(parser, 0);
+	}
+
 	if (!check(parser, TOK_IDENT)) {
 		error(parser, "Expected type name");
 		return 0;
@@ -470,119 +490,56 @@ static int parse_arch_field(Parser *parser) {
 	return 1;
 }
 
-static int parse_archetype_decl(Parser *parser, SyntaxNodeKind *out_kind) {
-	*out_kind = SN_ARCHETYPE_DECL;
-	if (!match(parser, TOK_ARCHETYPE)) {
-		error(parser, "Expected 'arche'");
-		return 0;
-	}
+/* ========== SHARED SIGNATURE / BODY SUB-PARSERS ========== */
+/* These factor the param-list, out-list, return-type, and block-body parsing out of the
+ * keyword-led decl parsers so the same code backs both `proc name(...)` (legacy) and the
+ * unified `name :: proc(...)` RHS forms. Extraction is behaviour-preserving — every error
+ * message is kept verbatim. */
 
-	if (!check(parser, TOK_IDENT)) {
-		error(parser, "Expected archetype name");
-		return 0;
-	}
-	int arch_name_cp = cst_cp(parser);
-	advance(parser);
-	cst_wrap(parser, arch_name_cp, SN_TYPE_DEF_NAME);
-
-	if (!match(parser, TOK_LBRACE)) {
-		error(parser, "Expected '{'");
-		return 0;
-	}
-
-	while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-		/* Drain any pending trivia between fields (comments are already CST leaves;
-		 * dropping the drained copy keeps the pending list from growing unbounded). */
-		drain_pending_trivia(parser);
-
-		if (!parse_arch_field(parser)) {
-			/* Malformed component. Stop the body loop — global `synchronize` can skip past
-			 * the closing `}` to the next decl keyword and park there without advancing,
-			 * which would spin this loop. The missing `}` is reported below. */
+/* Parse the comma-separated in-parameters between an already-consumed '(' and the closing
+ * ')' (which the caller matches). `...` (variadic) is accepted only when is_extern. Shared
+ * verbatim by proc and func signatures. */
+static int parse_param_list_body(Parser *parser, int is_extern) {
+	if (check(parser, TOK_RPAREN))
+		return 1;
+	do {
+		/* `...` variadic marker — extern only, last param only. */
+		if (check(parser, TOK_DOTDOTDOT)) {
+			if (!is_extern)
+				error(parser, "`...` variadic marker is only valid in extern signatures");
+			advance(parser);
 			break;
 		}
-	}
 
-	if (!match(parser, TOK_RBRACE)) {
-		error(parser, "Expected '}'");
-	}
+		int param_cp = cst_cp(parser);
 
+		match(parser, TOK_OWN); /* optional `own` qualifier (CST records the token) */
+
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected parameter name");
+			return 0;
+		}
+		int param_name_cp = cst_cp(parser);
+		advance(parser);
+		cst_wrap(parser, param_name_cp, SN_PARAM_NAME);
+
+		if (!match(parser, TOK_COLON)) {
+			error(parser, "Expected ':' after parameter name");
+			return 0;
+		}
+
+		if (!parse_type(parser))
+			return 0;
+
+		cst_wrap(parser, param_cp, SN_PARAM);
+	} while (match(parser, TOK_COMMA));
 	return 1;
 }
 
-/* ========== PROCEDURE PARSING ========== */
-
-static int parse_proc_decl(Parser *parser, SyntaxNodeKind *out_kind) {
-	*out_kind = SN_PROC_DECL;
-	int is_extern = 0;
-
-	if (parser->previous.kind == TOK_EXTERN || match(parser, TOK_EXTERN)) {
-		is_extern = 1;
-	}
-
-	if (!match(parser, TOK_PROC)) {
-		error(parser, "Expected 'proc'");
-		return 0;
-	}
-
-	if (!check(parser, TOK_IDENT)) {
-		error(parser, "Expected procedure name");
-		return 0;
-	}
-	int proc_name_cp = cst_cp(parser);
-	advance(parser);
-	cst_wrap(parser, proc_name_cp, SN_FUNC_DEF_NAME);
-
-	if (!match(parser, TOK_LPAREN)) {
-		error(parser, "Expected '('");
-		return 0;
-	}
-
-	/* Parse parameters */
-	if (!check(parser, TOK_RPAREN)) {
-		do {
-			/* `...` variadic marker — extern only, last param only. */
-			if (check(parser, TOK_DOTDOTDOT)) {
-				if (!is_extern)
-					error(parser, "`...` variadic marker is only valid in extern signatures");
-				advance(parser);
-				break;
-			}
-
-			int param_cp = cst_cp(parser);
-
-			match(parser, TOK_OWN); /* optional `own` qualifier (CST records the token) */
-
-			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected parameter name");
-				return 0;
-			}
-			int param_name_cp = cst_cp(parser);
-			advance(parser);
-			cst_wrap(parser, param_name_cp, SN_PARAM_NAME);
-
-			if (!match(parser, TOK_COLON)) {
-				error(parser, "Expected ':' after parameter name");
-				return 0;
-			}
-
-			if (!parse_type(parser))
-				return 0;
-
-			cst_wrap(parser, param_cp, SN_PARAM);
-		} while (match(parser, TOK_COMMA));
-	}
-
-	if (!match(parser, TOK_RPAREN)) {
-		error(parser, "Expected ')' after parameters");
-		return 0;
-	}
-
-	/* A proc declares its results as out-parameters in an OPTIONAL second `(...)` list — it has no
-	 * return type (a proc is an action, not a value; the `->` arrow is a func-only marker). The
-	 * out-list is omitted when the proc has no outputs (`proc main()`). An out-param is owned by
-	 * definition, so `own` is not written there; a name echoed in the in-list is an in-out param
-	 * (in-place mutation), used mainly for extern C signatures. */
+/* A proc declares its results as an OPTIONAL second `(...)` out-parameter list — it has no
+ * return type (`->` is a func-only marker). Parses the `->`-rejection guard plus the optional
+ * list. The caller has already consumed the in-param list's ')'. */
+static int parse_proc_out_list(Parser *parser) {
 	if (check(parser, TOK_ARROW)) {
 		error(parser, "a proc has no return type (`->` is a func-only marker) — declare results as out-parameters in a "
 		              "`(...)` list");
@@ -622,200 +579,12 @@ static int parse_proc_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			return 0;
 		}
 	}
-
-	/* For extern procs, no body needed */
-	if (is_extern) {
-		if (!match(parser, TOK_SEMI)) {
-			error(parser, "Expected ';' after extern proc declaration");
-		}
-		return 1;
-	}
-
-	/* Regular proc: require body */
-	if (!match(parser, TOK_LBRACE)) {
-		error(parser, "Expected '{'");
-		return 0;
-	}
-
-	while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-		if (!parse_statement(parser))
-			synchronize(parser);
-	}
-
-	if (!match(parser, TOK_RBRACE)) {
-		error(parser, "Expected '}'");
-	}
-
 	return 1;
 }
 
-/* ========== SYSTEM PARSING ========== */
-
-static int parse_sys_decl(Parser *parser, SyntaxNodeKind *out_kind) {
-	*out_kind = SN_SYS_DECL;
-	if (!match(parser, TOK_SYS)) {
-		error(parser, "Expected 'sys'");
-		return 0;
-	}
-
-	if (!check(parser, TOK_IDENT)) {
-		error(parser, "Expected system name");
-		return 0;
-	}
-	int sys_name_cp = cst_cp(parser);
-	advance(parser);
-	cst_wrap(parser, sys_name_cp, SN_FUNC_DEF_NAME);
-
-	if (!match(parser, TOK_LPAREN)) {
-		error(parser, "Expected '('");
-		return 0;
-	}
-
-	/* parse parameters */
-	if (!check(parser, TOK_RPAREN)) {
-		do {
-			int param_cp = cst_cp(parser);
-			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected parameter name");
-				return 0;
-			}
-
-			int param_name_cp = cst_cp(parser);
-			advance(parser);
-			cst_wrap(parser, param_name_cp, SN_PARAM_NAME);
-
-			cst_wrap(parser, param_cp, SN_PARAM);
-		} while (match(parser, TOK_COMMA));
-	}
-
-	if (!match(parser, TOK_RPAREN)) {
-		error(parser, "Expected ')'");
-		return 0;
-	}
-
-	if (!match(parser, TOK_LBRACE)) {
-		error(parser, "Expected '{'");
-		return 0;
-	}
-
-	while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-		if (!parse_statement(parser))
-			synchronize(parser);
-	}
-
-	if (!match(parser, TOK_RBRACE)) {
-		error(parser, "Expected '}'");
-	}
-
-	return 1;
-}
-
-/* ========== FUNCTION PARSING ========== */
-
-static int parse_func_decl(Parser *parser, SyntaxNodeKind *out_kind) {
-	*out_kind = SN_FUNC_DECL;
-	int is_extern = parser->previous.kind == TOK_EXTERN;
-
-	/* `func` keyword is optional for a bare extern (`extern name(...)`); required otherwise. */
-	if (!match(parser, TOK_FUNC) && !is_extern) {
-		error(parser, "Expected 'func'");
-		return 0;
-	}
-
-	if (!check(parser, TOK_IDENT)) {
-		error(parser, "Expected function name");
-		return 0;
-	}
-	int func_name_cp = cst_cp(parser);
-	advance(parser);
-	cst_wrap(parser, func_name_cp, SN_FUNC_DEF_NAME);
-
-	/* Group-declaration branch: `func NAME = { IDENT (, IDENT)* };` */
-	if (match(parser, TOK_EQ)) {
-		*out_kind = SN_FUNC_GROUP_DECL;
-		if (!match(parser, TOK_LBRACE)) {
-			error(parser, "Expected '{' after '=' in func group declaration");
-			return 0;
-		}
-		if (check(parser, TOK_RBRACE)) {
-			error(parser, "func group must have at least one member");
-			return 0;
-		}
-		while (1) {
-			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected member function name in func group");
-				return 0;
-			}
-			advance(parser);
-			if (!match(parser, TOK_COMMA))
-				break;
-			/* Disallow trailing comma: after a `,` the next token must be IDENT, not `}`. */
-			if (check(parser, TOK_RBRACE)) {
-				error(parser, "trailing comma not allowed in func group member list");
-				return 0;
-			}
-		}
-		if (!match(parser, TOK_RBRACE)) {
-			error(parser, "Expected '}' or ',' in func group member list");
-			return 0;
-		}
-		if (!match(parser, TOK_SEMI)) {
-			error(parser, "Expected ';' after func group declaration");
-		}
-		return 1;
-	}
-
-	if (!match(parser, TOK_LPAREN)) {
-		error(parser, "Expected '(' or '=' after func name");
-		return 0;
-	}
-
-	/* parse parameters */
-	if (!check(parser, TOK_RPAREN)) {
-		do {
-			/* `...` is a variadic marker — only legal on extern signatures, only as the
-			 * LAST param. CST records the TOK_DOTDOTDOT directly; the cst-to-program
-			 * pass detects it and sets FuncDecl.is_variadic. */
-			if (check(parser, TOK_DOTDOTDOT)) {
-				if (!is_extern)
-					error(parser, "`...` variadic marker is only valid in extern signatures");
-				advance(parser);
-				break; /* must be last; the loop's trailing `match COMMA` is skipped */
-			}
-
-			int param_cp = cst_cp(parser);
-
-			match(parser, TOK_OWN); /* optional `own` qualifier (CST records the token) */
-
-			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected parameter name");
-				return 0;
-			}
-
-			int param_name_cp = cst_cp(parser);
-			advance(parser);
-			cst_wrap(parser, param_name_cp, SN_PARAM_NAME);
-
-			if (!match(parser, TOK_COLON)) {
-				error(parser, "Expected ':' after parameter name");
-				return 0;
-			}
-
-			if (!parse_type(parser))
-				return 0;
-
-			cst_wrap(parser, param_cp, SN_PARAM);
-		} while (match(parser, TOK_COMMA));
-	}
-
-	if (!match(parser, TOK_RPAREN)) {
-		error(parser, "Expected ')'");
-		return 0;
-	}
-
-	/* Return type: a single `-> T`. A func IS a value — exactly one return, no multi-return. For
-	 * several results or an in-place fill, use a `proc` with an out-parameter list `(out)`. The
-	 * `->` is optional for a bare extern (absent ⇒ void); mandatory for an ordinary func. */
+/* A func's single return type: `-> T`. Optional only for a bare extern (absent ⇒ void);
+ * mandatory for an ordinary func. */
+static int parse_func_return(Parser *parser, int is_extern) {
 	if (match(parser, TOK_ARROW)) {
 		if (check(parser, TOK_LPAREN)) {
 			error(parser, "a func has exactly one return type — use a `proc` with an out-parameter list "
@@ -828,15 +597,32 @@ static int parse_func_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		error(parser, "Expected '->'");
 		return 0;
 	}
+	return 1;
+}
 
-	/* For extern funcs, no body needed */
-	if (is_extern) {
-		if (!match(parser, TOK_SEMI)) {
-			error(parser, "Expected ';' after extern func declaration");
-		}
+/* sys parameters are bare component names (no `: T`) between an already-consumed '(' and the
+ * closing ')' (matched by the caller). */
+static int parse_sys_param_list_body(Parser *parser) {
+	if (check(parser, TOK_RPAREN))
 		return 1;
-	}
+	do {
+		int param_cp = cst_cp(parser);
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected parameter name");
+			return 0;
+		}
 
+		int param_name_cp = cst_cp(parser);
+		advance(parser);
+		cst_wrap(parser, param_name_cp, SN_PARAM_NAME);
+
+		cst_wrap(parser, param_cp, SN_PARAM);
+	} while (match(parser, TOK_COMMA));
+	return 1;
+}
+
+/* A `{ statement* }` body. Identical across proc / sys / func. */
+static int parse_block_body(Parser *parser) {
 	if (!match(parser, TOK_LBRACE)) {
 		error(parser, "Expected '{'");
 		return 0;
@@ -851,6 +637,93 @@ static int parse_func_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		error(parser, "Expected '}'");
 	}
 
+	return 1;
+}
+
+/* A proc signature `(in)(out?)` after the `proc` keyword has been consumed. Shared by the
+ * value-literal form (parse_proc_form) and the type form (parse_type_inner). */
+static int parse_proc_sig(Parser *parser, int is_extern) {
+	if (!match(parser, TOK_LPAREN)) {
+		error(parser, "Expected '(' after 'proc'");
+		return 0;
+	}
+	if (!parse_param_list_body(parser, is_extern))
+		return 0;
+	if (!match(parser, TOK_RPAREN)) {
+		error(parser, "Expected ')' after parameters");
+		return 0;
+	}
+	return parse_proc_out_list(parser);
+}
+
+/* A func signature `(in) -> T` after the `func` keyword has been consumed. */
+static int parse_func_sig(Parser *parser, int is_extern) {
+	if (!match(parser, TOK_LPAREN)) {
+		error(parser, "Expected '(' after 'func'");
+		return 0;
+	}
+	if (!parse_param_list_body(parser, is_extern))
+		return 0;
+	if (!match(parser, TOK_RPAREN)) {
+		error(parser, "Expected ')' after parameters");
+		return 0;
+	}
+	return parse_func_return(parser, is_extern);
+}
+
+/* A proc as an RHS value/type form (the `proc` keyword already consumed). A body `{...}` (or
+ * `extern`) makes it a value literal (SN_PROC_EXPR); a bare bodiless signature is a proc type
+ * (SN_TYPE_PROC). The binding LHS supplies the name. */
+static int parse_proc_form(Parser *parser, int is_extern, SyntaxNodeKind *out_kind) {
+	if (!parse_proc_sig(parser, is_extern))
+		return 0;
+	if (!is_extern && check(parser, TOK_LBRACE)) {
+		*out_kind = SN_PROC_EXPR;
+		return parse_block_body(parser);
+	}
+	*out_kind = is_extern ? SN_PROC_EXPR : SN_TYPE_PROC;
+	return 1;
+}
+
+/* A func as an RHS value/type form (the `func` keyword already consumed). Body ⇒ SN_FUNC_EXPR
+ * value; bodiless ⇒ SN_TYPE_FUNC type. */
+static int parse_func_form(Parser *parser, SyntaxNodeKind *out_kind) {
+	if (!parse_func_sig(parser, 0))
+		return 0;
+	if (check(parser, TOK_LBRACE)) {
+		*out_kind = SN_FUNC_EXPR;
+		return parse_block_body(parser);
+	}
+	*out_kind = SN_TYPE_FUNC;
+	return 1;
+}
+
+/* An Odin-style overload group `{ a, b, c }` (the `proc`/`func` keyword already consumed). */
+static int parse_group_form(Parser *parser, SyntaxNodeKind *out_kind) {
+	*out_kind = SN_GROUP_EXPR;
+	advance(parser); /* consume '{' (caller verified) */
+	if (check(parser, TOK_RBRACE)) {
+		error(parser, "group must have at least one member");
+		return 0;
+	}
+	while (1) {
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected member name in group");
+			return 0;
+		}
+		advance(parser);
+		if (!match(parser, TOK_COMMA))
+			break;
+		/* Disallow a trailing comma: after `,` the next token must be a member name. */
+		if (check(parser, TOK_RBRACE)) {
+			error(parser, "trailing comma not allowed in group member list");
+			return 0;
+		}
+	}
+	if (!match(parser, TOK_RBRACE)) {
+		error(parser, "Expected '}' or ',' in group member list");
+		return 0;
+	}
 	return 1;
 }
 
@@ -981,10 +854,7 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 				return 0;
 			}
 
-			if (!match(parser, TOK_SEMI)) {
-				error(parser, "Expected ';' after static array declaration");
-				return 0;
-			}
+			match(parser, TOK_SEMI); /* recorded; formatter drops it for static decls */
 			return 1;
 		}
 
@@ -1027,9 +897,7 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			}
 		}
 
-		if (!match(parser, TOK_SEMI)) {
-			error(parser, "Expected ';' after alloc declaration");
-		}
+		match(parser, TOK_SEMI); /* recorded; formatter drops it for static decls */
 
 		return 1;
 	}
@@ -1083,20 +951,9 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	}
 
 	switch (parser->current.kind) {
-	case TOK_ARCHETYPE:
-		return parse_archetype_decl(parser, out_kind);
-	case TOK_EXTERN:
-		advance(parser); /* consume 'extern' */
-		/* Every extern is an `extern proc` — a foreign-bodied action with the `(in)(out)` shape:
-		 * the in-list maps the C argument order, an out-only out-param is the C return value, and a
-		 * name echoed in both lists is an in-place C pointer write. There is no "extern func". */
-		return parse_proc_decl(parser, out_kind);
-	case TOK_PROC:
-		return parse_proc_decl(parser, out_kind);
-	case TOK_SYS:
-		return parse_sys_decl(parser, out_kind);
-	case TOK_FUNC:
-		return parse_func_decl(parser, out_kind);
+	/* Unified grammar: declarations are bindings `name :: <form>`. proc/func/sys/arche (and
+	 * `extern proc`) are RHS value/type forms (see parse_primary_expr / parse_type_inner), reached
+	 * via the IDENT-led default case below. There are no keyword-led top-level declarations. */
 	case TOK_USE: {
 		advance(parser); /* consume 'use' */
 		if (!check(parser, TOK_IDENT)) {
@@ -1167,6 +1024,90 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 		}
 		if (!match(parser, TOK_RBRACE)) {
 			error(parser, "Expected '}' after array literal");
+			return 0;
+		}
+		return 1;
+	}
+
+	/* Unified-grammar RHS forms — proc/func/sys/archetype as value literals or type forms.
+	 * The name is the binding LHS, so none of these consume a name. Top-level keyword-led decls
+	 * are still handled by parse_decl; these fire only in expression/RHS position. */
+	if (check(parser, TOK_PROC) || check(parser, TOK_FUNC)) {
+		int is_proc = check(parser, TOK_PROC);
+		advance(parser); /* consume 'proc' / 'func' */
+		if (check(parser, TOK_LBRACE))
+			return parse_group_form(parser, out_kind);
+		return is_proc ? parse_proc_form(parser, 0, out_kind) : parse_func_form(parser, out_kind);
+	}
+	if (check(parser, TOK_EXTERN)) {
+		advance(parser); /* consume 'extern' — externs are procs */
+		if (!match(parser, TOK_PROC)) {
+			error(parser, "Expected 'proc' after 'extern' (externs are procs)");
+			return 0;
+		}
+		return parse_proc_form(parser, 1, out_kind);
+	}
+	if (check(parser, TOK_ARCHETYPE)) {
+		advance(parser); /* consume 'archetype' */
+		*out_kind = SN_ARCH_EXPR;
+		if (!match(parser, TOK_LBRACE)) {
+			error(parser, "Expected '{' after 'archetype'");
+			return 0;
+		}
+		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+			drain_pending_trivia(parser);
+			if (!parse_arch_field(parser))
+				break;
+		}
+		if (!match(parser, TOK_RBRACE)) {
+			error(parser, "Expected '}'");
+		}
+		return 1;
+	}
+	if (check(parser, TOK_SYS)) {
+		advance(parser); /* consume 'sys' */
+		*out_kind = SN_SYS_EXPR;
+		if (!match(parser, TOK_LPAREN)) {
+			error(parser, "Expected '(' after 'sys'");
+			return 0;
+		}
+		if (!parse_sys_param_list_body(parser))
+			return 0;
+		if (!match(parser, TOK_RPAREN)) {
+			error(parser, "Expected ')'");
+			return 0;
+		}
+		return parse_block_body(parser);
+	}
+	if (check(parser, TOK_ENUM)) {
+		advance(parser); /* consume 'enum' */
+		*out_kind = SN_ENUM_EXPR;
+		if (!match(parser, TOK_LBRACE)) {
+			error(parser, "Expected '{' after 'enum'");
+			return 0;
+		}
+		if (!check(parser, TOK_RBRACE)) {
+			do {
+				if (check(parser, TOK_RBRACE)) /* trailing comma */
+					break;
+				int v_cp = cst_cp(parser);
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "Expected enum variant name");
+					return 0;
+				}
+				advance(parser); /* variant name */
+				if (match(parser, TOK_EQ)) {
+					if (!check(parser, TOK_NUMBER)) {
+						error(parser, "Expected integer after '=' in enum variant");
+						return 0;
+					}
+					advance(parser); /* explicit value */
+				}
+				cst_wrap(parser, v_cp, SN_ENUM_VARIANT);
+			} while (match(parser, TOK_COMMA));
+		}
+		if (!match(parser, TOK_RBRACE)) {
+			error(parser, "Expected '}' to close enum");
 			return 0;
 		}
 		return 1;
@@ -1659,6 +1600,55 @@ static int parse_statement(Parser *parser) {
 		}
 
 		stmt_kind = SN_RUN_STMT;
+		ok = 1;
+		goto cleanup;
+	}
+
+	if (check(parser, TOK_MATCH)) {
+		advance(parser);               /* consume 'match' */
+		if (!parse_expression(parser)) /* scrutinee */
+			goto cleanup;
+		if (!match(parser, TOK_LBRACE)) {
+			error(parser, "Expected '{' after match scrutinee");
+			goto cleanup;
+		}
+		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+			int arm_cp = cst_cp(parser);
+			/* pattern: an enum variant / `_` ident, or an int/string/char literal */
+			if (check(parser, TOK_IDENT) || check(parser, TOK_NUMBER) || check(parser, TOK_STRING) ||
+			    check(parser, TOK_CHAR_LIT)) {
+				advance(parser);
+			} else {
+				error(parser, "Expected match pattern (variant, literal, or '_')");
+				break;
+			}
+			if (!match(parser, TOK_COLON)) {
+				error(parser, "Expected ':' after match pattern");
+				break;
+			}
+			/* body: a `{ … }` block or a single statement */
+			if (check(parser, TOK_LBRACE)) {
+				if (!parse_block_body(parser))
+					break;
+			} else if (!parse_statement(parser)) {
+				synchronize(parser);
+			}
+			cst_wrap(parser, arm_cp, SN_MATCH_ARM);
+			match(parser, TOK_COMMA); /* optional separator between arms */
+		}
+		if (!match(parser, TOK_RBRACE))
+			error(parser, "Expected '}' to close match");
+		stmt_kind = SN_MATCH_STMT;
+		ok = 1;
+		goto cleanup;
+	}
+
+	/* A standalone `{ … }` block statement (a nested scope). A statement that starts with `{` is a
+	 * block, not an array-literal expression-statement (a bare array literal has no effect). */
+	if (check(parser, TOK_LBRACE)) {
+		if (!parse_block_body(parser))
+			goto cleanup;
+		stmt_kind = SN_BLOCK;
 		ok = 1;
 		goto cleanup;
 	}

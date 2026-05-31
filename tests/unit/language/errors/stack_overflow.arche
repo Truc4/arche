@@ -4,9 +4,9 @@
 // is reachable code with an observable side effect (a global the signal handler can see), which
 // prevents the optimizer from turning recursion into a loop. The runtime SIGSEGVs long before the
 // base case; the stack_check.c handler prints "stack overflow\n" and exits 0.
-static sink: char[1];
+static sink: char[1]
 
-proc recurse(depth: int)(r: int) {
+recurse :: proc (depth: int)(r: int) {
   if (depth > 100000000) {
     r = depth;
   }
@@ -17,6 +17,6 @@ proc recurse(depth: int)(r: int) {
   }
 }
 
-proc main() {
+main :: proc () {
   recurse(0)(top:);
 }

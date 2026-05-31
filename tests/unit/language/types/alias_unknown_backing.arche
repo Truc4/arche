@@ -1,6 +1,6 @@
 // A `::` type alias whose RHS names no real type is rejected at compile time.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "unknown backing type" %t.out
 gadget :: bogus
-proc main() {
+main :: proc () {
   printf("unreachable\n");
 }

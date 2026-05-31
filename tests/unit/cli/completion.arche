@@ -2,6 +2,6 @@
 // RUN: %arche completion bash | grep -q _arche
 // RUN: %arche completion zsh | grep -q "#compdef arche"
 // RUN: %arche completion fish | grep -q "complete -c arche"
-proc main() {
+main :: proc () {
   printf("x\n");
 }

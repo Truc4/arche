@@ -2,7 +2,7 @@
 PI :: 3.14159
 SCALE :: 2
 ANSWER :: 42
-proc main() {
+main :: proc () {
   x := ANSWER;
   print("result: ");
   printf("%d\n", x);

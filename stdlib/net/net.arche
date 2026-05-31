@@ -1,8 +1,8 @@
 // The `net` module — TCP sockets (C-backed in runtime/net.c). `#import net;` then `net.listen`,
 // `net.send`, … (bare names also resolve). The `socket` opaque handle type is a core primitive.
-extern proc net_listen(port: int)(s: socket);
-extern proc net_accept(s: socket)(r: socket);
-extern proc net_connect(own ip: char[], port: int)(s: socket);
-extern proc net_send(s: socket, own buf: char[], n: int)(r: int);
-extern proc net_recv(s: socket, buf: char[], n: int)(buf: char[], r: int);
-extern proc net_close(own s: socket);
+net_listen :: extern proc (port: int)(s: socket);
+net_accept :: extern proc (s: socket)(r: socket);
+net_connect :: extern proc (own ip: char[], port: int)(s: socket);
+net_send :: extern proc (s: socket, own buf: char[], n: int)(r: int);
+net_recv :: extern proc (s: socket, buf: char[], n: int)(buf: char[], r: int);
+net_close :: extern proc (own s: socket);

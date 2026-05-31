@@ -86,7 +86,7 @@ void analysis_result_free(AnalysisResult *result) {
 
 void test_archetype_defined(void) {
 	test_start("archetype is registered in symbol table");
-	AnalysisResult result = analyze_string("arche Player { x :: Float }");
+	AnalysisResult result = analyze_string("Player :: arche { x :: Float }");
 	ASSERT_TRUE(result.ctx != NULL, "context is null");
 	ASSERT_TRUE(semantic_archetype_exists(result.ctx, "Player"), "Player archetype not found");
 	ASSERT_FALSE(semantic_archetype_exists(result.ctx, "Enemy"), "Enemy shouldn't exist");
@@ -96,7 +96,7 @@ void test_archetype_defined(void) {
 
 void test_archetype_field_exists(void) {
 	test_start("archetype fields are registered");
-	AnalysisResult result = analyze_string("arche Player { pos :: Float, health :: Float }");
+	AnalysisResult result = analyze_string("Player :: arche { pos :: Float, health :: Float }");
 	ASSERT_TRUE(result.ctx != NULL, "context is null");
 	ASSERT_TRUE(semantic_field_exists(result.ctx, "Player", "pos"), "pos field not found");
 	ASSERT_TRUE(semantic_field_exists(result.ctx, "Player", "health"), "health field not found");
@@ -107,7 +107,7 @@ void test_archetype_field_exists(void) {
 
 void test_archetype_field_kind(void) {
 	test_start("archetype field kind is tracked");
-	AnalysisResult result = analyze_string("arche Player { gravity :: Float, pos :: Float }");
+	AnalysisResult result = analyze_string("Player :: arche { gravity :: Float, pos :: Float }");
 	ASSERT_TRUE(result.ctx != NULL, "context is null");
 	ASSERT_EQ(semantic_field_kind(result.ctx, "Player", "gravity"), FIELD_COLUMN, "gravity should be column");
 	ASSERT_EQ(semantic_field_kind(result.ctx, "Player", "pos"), FIELD_COLUMN, "pos should be column");
@@ -117,7 +117,7 @@ void test_archetype_field_kind(void) {
 
 void test_archetype_field_type(void) {
 	test_start("archetype field types are tracked");
-	AnalysisResult result = analyze_string("arche Player { pos :: Vec3, health :: Float }");
+	AnalysisResult result = analyze_string("Player :: arche { pos :: Vec3, health :: Float }");
 	ASSERT_TRUE(result.ctx != NULL, "context is null");
 	const char *pos_type = semantic_field_type_name(result.ctx, "Player", "pos");
 	const char *health_type = semantic_field_type_name(result.ctx, "Player", "health");
@@ -133,8 +133,8 @@ void test_archetype_field_type(void) {
 
 void test_valid_field_access_in_proc(void) {
 	test_start("valid field access in procedure");
-	AnalysisResult result = analyze_string("arche Player { x :: Float }\n"
-	                                       "proc test() { for p in Player { v := p.x; } }");
+	AnalysisResult result = analyze_string("Player :: arche { x :: Float }\n"
+	                                       "test :: proc() { for p in Player { v := p.x; } }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -142,8 +142,8 @@ void test_valid_field_access_in_proc(void) {
 
 void test_invalid_field_access_in_proc(void) {
 	test_start("invalid field access caught");
-	AnalysisResult result = analyze_string("arche Player { x :: Float }\n"
-	                                       "proc test() { for p in Player { v := p.missing; } }");
+	AnalysisResult result = analyze_string("Player :: arche { x :: Float }\n"
+	                                       "test :: proc() { for p in Player { v := p.missing; } }");
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for missing field");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -151,7 +151,7 @@ void test_invalid_field_access_in_proc(void) {
 
 void test_field_access_on_undefined_archetype(void) {
 	test_start("field access on undefined archetype caught");
-	AnalysisResult result = analyze_string("proc test() { v := undefined.field; }");
+	AnalysisResult result = analyze_string("test :: proc() { v := undefined.field; }");
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for undefined archetype");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -161,7 +161,7 @@ void test_field_access_on_undefined_archetype(void) {
 
 void test_let_binding_creates_local(void) {
 	test_start("binding creates local variable");
-	AnalysisResult result = analyze_string("proc test() { x := 42; }");
+	AnalysisResult result = analyze_string("test :: proc() { x := 42; }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -169,7 +169,7 @@ void test_let_binding_creates_local(void) {
 
 void test_undefined_variable_access(void) {
 	test_start("undefined variable access caught");
-	AnalysisResult result = analyze_string("proc test() { x := undefined_var; }");
+	AnalysisResult result = analyze_string("test :: proc() { x := undefined_var; }");
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for undefined variable");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -177,7 +177,7 @@ void test_undefined_variable_access(void) {
 
 void test_variable_shadowing(void) {
 	test_start("variable shadowing allowed");
-	AnalysisResult result = analyze_string("proc test() {\n"
+	AnalysisResult result = analyze_string("test :: proc() {\n"
 	                                       "  x := 1;\n"
 	                                       "  x := 2;\n"
 	                                       "}");
@@ -190,7 +190,7 @@ void test_variable_shadowing(void) {
 
 void test_assignment_valid_type(void) {
 	test_start("valid type assignment");
-	AnalysisResult result = analyze_string("proc test() { x := 42; x = 100; }");
+	AnalysisResult result = analyze_string("test :: proc() { x := 42; x = 100; }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -198,7 +198,7 @@ void test_assignment_valid_type(void) {
 
 void test_binary_op_same_types(void) {
 	test_start("binary op with same types");
-	AnalysisResult result = analyze_string("proc test() { x := 1 + 2; }");
+	AnalysisResult result = analyze_string("test :: proc() { x := 1 + 2; }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -206,7 +206,7 @@ void test_binary_op_same_types(void) {
 
 void test_comparison_produces_number(void) {
 	test_start("comparison expressions are valid");
-	AnalysisResult result = analyze_string("proc test() { x := 1 < 2; }");
+	AnalysisResult result = analyze_string("test :: proc() { x := 1 < 2; }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -216,7 +216,7 @@ void test_comparison_produces_number(void) {
 
 void test_for_loop_undefined_iterable(void) {
 	test_start("for loop with undefined iterable caught");
-	AnalysisResult result = analyze_string("proc test() { for item in UndefinedPool { x := 1; } }");
+	AnalysisResult result = analyze_string("test :: proc() { for item in UndefinedPool { x := 1; } }");
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for undefined pool");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -224,8 +224,8 @@ void test_for_loop_undefined_iterable(void) {
 
 void test_for_loop_valid_iterable(void) {
 	test_start("for loop with defined archetype");
-	AnalysisResult result = analyze_string("arche Item { value :: Float }\n"
-	                                       "proc test() { for item in Item { x := 1; } }");
+	AnalysisResult result = analyze_string("Item :: arche { value :: Float }\n"
+	                                       "test :: proc() { for item in Item { x := 1; } }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -235,7 +235,7 @@ void test_for_loop_valid_iterable(void) {
 
 void test_function_parameter_scope(void) {
 	test_start("function parameters are in scope");
-	AnalysisResult result = analyze_string("func double(x: Float) -> Float { return x * 2; }");
+	AnalysisResult result = analyze_string("double :: func(x: Float) -> Float { return x * 2; }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -243,7 +243,7 @@ void test_function_parameter_scope(void) {
 
 void test_function_undefined_parameter(void) {
 	test_start("undefined parameter in function caught");
-	AnalysisResult result = analyze_string("func test() -> Float { return undefined_param + 1; }");
+	AnalysisResult result = analyze_string("test :: func() -> Float { return undefined_param + 1; }");
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for undefined parameter");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -253,8 +253,8 @@ void test_function_undefined_parameter(void) {
 
 void test_multiple_archetypes(void) {
 	test_start("multiple archetypes are all registered");
-	AnalysisResult result = analyze_string("arche Player { x :: Float }\n"
-	                                       "arche Enemy { y :: Float }");
+	AnalysisResult result = analyze_string("Player :: arche { x :: Float }\n"
+	                                       "Enemy :: arche { y :: Float }");
 	ASSERT_TRUE(semantic_archetype_exists(result.ctx, "Player"), "Player not found");
 	ASSERT_TRUE(semantic_archetype_exists(result.ctx, "Enemy"), "Enemy not found");
 	analysis_result_free(&result);
@@ -264,9 +264,9 @@ void test_multiple_archetypes(void) {
 void test_cross_archetype_field_access(void) {
 	test_start("accessing correct archetype field");
 	AnalysisResult result =
-	    analyze_string("arche Player { x :: Float }\n"
-	                   "arche Enemy { y :: Float }\n"
-	                   "proc test() { for p in Player { v1 := p.x; } for e in Enemy { v2 := e.y; } }");
+	    analyze_string("Player :: arche { x :: Float }\n"
+	                   "Enemy :: arche { y :: Float }\n"
+	                   "test :: proc() { for p in Player { v1 := p.x; } for e in Enemy { v2 := e.y; } }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -274,9 +274,9 @@ void test_cross_archetype_field_access(void) {
 
 void test_cross_archetype_field_mismatch(void) {
 	test_start("accessing wrong archetype field caught");
-	AnalysisResult result = analyze_string("arche Player { x :: Float }\n"
-	                                       "arche Enemy { y :: Float }\n"
-	                                       "proc test() { for p in Player { v := p.y; } }");
+	AnalysisResult result = analyze_string("Player :: arche { x :: Float }\n"
+	                                       "Enemy :: arche { y :: Float }\n"
+	                                       "test :: proc() { for p in Player { v := p.y; } }");
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for wrong field");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -286,10 +286,10 @@ void test_cross_archetype_field_mismatch(void) {
 
 void test_group_with_distinct_members_ok(void) {
 	test_start("semantic: group with two distinct-signature members ok");
-	const char *src = "func a(x: int) -> int { return x; }\n"
-	                  "func b(x: float) -> float { return x; }\n"
-	                  "func g = { a, b };\n"
-	                  "proc main() { i := g(1); f := g(2.0); }\n";
+	const char *src = "a :: func(x: int) -> int { return x; }\n"
+	                  "b :: func(x: float) -> float { return x; }\n"
+	                  "g :: func{ a, b }\n"
+	                  "main :: proc() { i := g(1); f := g(2.0); }\n";
 	ParseResult pr = parse_source(src);
 	if (pr.error_count != 0) {
 		test_fail_msg("Parse errors");
@@ -309,8 +309,8 @@ void test_group_with_distinct_members_ok(void) {
 
 void test_group_member_unknown_errors(void) {
 	test_start("semantic: group with unknown member errors");
-	const char *src = "func a(x: int) -> int { return x; }\n"
-	                  "func g = { a, missing };\n";
+	const char *src = "a :: func(x: int) -> int { return x; }\n"
+	                  "g :: func{ a, missing }\n";
 	ParseResult pr = parse_source(src);
 	if (pr.error_count != 0) {
 		test_fail_msg("Parse errors");
@@ -330,9 +330,9 @@ void test_group_member_unknown_errors(void) {
 
 void test_group_duplicate_signature_errors(void) {
 	test_start("semantic: group with two same-signature members errors");
-	const char *src = "func a(x: int) -> int { return x; }\n"
-	                  "func b(x: int) -> int { return x + 1; }\n"
-	                  "func g = { a, b };\n";
+	const char *src = "a :: func(x: int) -> int { return x; }\n"
+	                  "b :: func(x: int) -> int { return x + 1; }\n"
+	                  "g :: func{ a, b }\n";
 	ParseResult pr = parse_source(src);
 	if (pr.error_count != 0) {
 		test_fail_msg("Parse errors");
@@ -352,9 +352,9 @@ void test_group_duplicate_signature_errors(void) {
 
 void test_group_name_collision_errors(void) {
 	test_start("semantic: group name colliding with existing func errors");
-	const char *src = "func a(x: int) -> int { return x; }\n"
-	                  "func b(x: float) -> float { return x; }\n"
-	                  "func a = { a, b };\n";
+	const char *src = "a :: func(x: int) -> int { return x; }\n"
+	                  "b :: func(x: float) -> float { return x; }\n"
+	                  "a :: func{ a, b }\n";
 	ParseResult pr = parse_source(src);
 	if (pr.error_count != 0) {
 		test_fail_msg("Parse errors");
@@ -374,10 +374,10 @@ void test_group_name_collision_errors(void) {
 
 void test_call_no_matching_member_errors(void) {
 	test_start("semantic: call to group with no matching member errors");
-	const char *src = "func a(x: int) -> int { return x; }\n"
-	                  "func b(x: float) -> float { return x; }\n"
-	                  "func g = { a, b };\n"
-	                  "proc main() { c := 'X'; r := g(c); }\n";
+	const char *src = "a :: func(x: int) -> int { return x; }\n"
+	                  "b :: func(x: float) -> float { return x; }\n"
+	                  "g :: func{ a, b }\n"
+	                  "main :: proc() { c := 'X'; r := g(c); }\n";
 	ParseResult pr = parse_source(src);
 	if (pr.error_count != 0) {
 		test_fail_msg("Parse errors");
@@ -400,8 +400,8 @@ void test_call_no_matching_member_errors(void) {
 void test_opaque_passthrough_in_proc_ok(void) {
 	test_start("opaque value may pass through a non-extern proc param");
 	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "extern proc window_close(own w: window);\n"
-	                                  "proc wrap_close(w: window) { window_close(move w); }\n");
+	                                  "window_close :: extern proc(own w: window);\n"
+	                                  "wrap_close :: proc(w: window) { window_close(move w); }\n");
 	ASSERT_EQ(semantic_error_count(r.ctx), 0, "should be no errors");
 	semantic_context_free(r.ctx);
 	test_pass_msg();
@@ -409,7 +409,7 @@ void test_opaque_passthrough_in_proc_ok(void) {
 
 void test_unknown_type_name_still_errors(void) {
 	test_start("unknown type name in extern signature is still an error");
-	AnalysisResult r = analyze_string("extern proc bad()(ret: Doesnotexist);\n");
+	AnalysisResult r = analyze_string("bad :: extern proc()(ret: Doesnotexist);\n");
 	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected unknown-type error");
 	semantic_context_free(r.ctx);
 	test_pass_msg();
@@ -419,9 +419,9 @@ void test_opaque_aliases_distinct(void) {
 	test_start("window and sound opaque aliases are not interchangeable");
 	AnalysisResult r = analyze_string("window :: opaque\n"
 	                                  "sound :: opaque\n"
-	                                  "extern proc window_close(own w: window);\n"
-	                                  "extern proc sound_open()(ret: sound);\n"
-	                                  "proc main() {\n"
+	                                  "window_close :: extern proc(own w: window);\n"
+	                                  "sound_open :: extern proc()(ret: sound);\n"
+	                                  "main :: proc() {\n"
 	                                  "  sound_open()(s:);\n"
 	                                  "  window_close(move s);\n"
 	                                  "}\n");
@@ -435,10 +435,10 @@ void test_opaque_aliases_distinct(void) {
 void test_use_after_consume_local_error(void) {
 	test_start("use after consume in same scope is a compile error");
 	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "extern proc open_(own t: char[], a: int, b: int)(ret: window);\n"
-	                                  "extern proc close_(own w: window);\n"
-	                                  "extern proc poll_(w: window);\n"
-	                                  "proc main() {\n"
+	                                  "open_ :: extern proc(own t: char[], a: int, b: int)(ret: window);\n"
+	                                  "close_ :: extern proc(own w: window);\n"
+	                                  "poll_ :: extern proc(w: window);\n"
+	                                  "main :: proc() {\n"
 	                                  "  open_(\"\", 1, 1)(w:);\n"
 	                                  "  close_(move w);\n"
 	                                  "  poll_(w);\n"
@@ -451,10 +451,10 @@ void test_use_after_consume_local_error(void) {
 void test_no_false_positive_when_unconsumed(void) {
 	test_start("normal borrow then consume is fine");
 	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "extern proc open_(own t: char[], a: int, b: int)(ret: window);\n"
-	                                  "extern proc close_(own w: window);\n"
-	                                  "extern proc poll_(w: window);\n"
-	                                  "proc main() {\n"
+	                                  "open_ :: extern proc(own t: char[], a: int, b: int)(ret: window);\n"
+	                                  "close_ :: extern proc(own w: window);\n"
+	                                  "poll_ :: extern proc(w: window);\n"
+	                                  "main :: proc() {\n"
 	                                  "  open_(\"\", 1, 1)(w:);\n"
 	                                  "  poll_(w);\n"
 	                                  "  close_(move w);\n"
@@ -468,7 +468,7 @@ void test_no_false_positive_when_unconsumed(void) {
 
 void test_mutate_borrow_param_error(void) {
 	test_start("mutating a borrowed (non-move) array param is a compile error");
-	AnalysisResult r = analyze_string("func clobber(b: char[8]) -> int {\n"
+	AnalysisResult r = analyze_string("clobber :: func(b: char[8]) -> int {\n"
 	                                  "  b[0] = 'X';\n"
 	                                  "  return 0;\n"
 	                                  "}\n");
@@ -479,7 +479,7 @@ void test_mutate_borrow_param_error(void) {
 
 void test_move_param_can_mutate(void) {
 	test_start("a `move` array param is owned and may be mutated");
-	AnalysisResult r = analyze_string("func fill(own b: char[8]) -> int {\n"
+	AnalysisResult r = analyze_string("fill :: func(own b: char[8]) -> int {\n"
 	                                  "  b[0] = 'X';\n"
 	                                  "  return 0;\n"
 	                                  "}\n");
@@ -490,7 +490,7 @@ void test_move_param_can_mutate(void) {
 
 void test_scalar_param_mutation_ok(void) {
 	test_start("a scalar param is by value and may be reassigned locally");
-	AnalysisResult r = analyze_string("func f(n: int) -> int {\n"
+	AnalysisResult r = analyze_string("f :: func(n: int) -> int {\n"
 	                                  "  n = 5;\n"
 	                                  "  return n;\n"
 	                                  "}\n");
@@ -501,8 +501,8 @@ void test_scalar_param_mutation_ok(void) {
 
 void test_move_out_of_borrow_error(void) {
 	test_start("moving a borrowed array param out is a compile error");
-	AnalysisResult r = analyze_string("proc sink(own b: char[8]) { b[0] = 'X'; }\n"
-	                                  "func relay(b: char[8]) -> int {\n"
+	AnalysisResult r = analyze_string("sink :: proc(own b: char[8]) { b[0] = 'X'; }\n"
+	                                  "relay :: func(b: char[8]) -> int {\n"
 	                                  "  sink(move b);\n"
 	                                  "  return 0;\n"
 	                                  "}\n");
@@ -513,11 +513,11 @@ void test_move_out_of_borrow_error(void) {
 
 void test_copy_does_not_consume(void) {
 	test_start("`copy` does not consume — the source stays usable");
-	AnalysisResult r = analyze_string("func fill(own b: char[8]) -> char[8] {\n"
+	AnalysisResult r = analyze_string("fill :: func(own b: char[8]) -> char[8] {\n"
 	                                  "  b[0] = 'X';\n"
 	                                  "  return b;\n"
 	                                  "}\n"
-	                                  "proc main() {\n"
+	                                  "main :: proc() {\n"
 	                                  "  src: char[8];\n"
 	                                  "  out := fill(copy src);\n"
 	                                  "  src[0] = 'Y';\n"
@@ -529,11 +529,11 @@ void test_copy_does_not_consume(void) {
 
 void test_own_param_bare_arg_error(void) {
 	test_start("bare arg to an `own` param must be moved or copied");
-	AnalysisResult r = analyze_string("func fill(own b: char[8]) -> char[8] {\n"
+	AnalysisResult r = analyze_string("fill :: func(own b: char[8]) -> char[8] {\n"
 	                                  "  b[0] = 'X';\n"
 	                                  "  return b;\n"
 	                                  "}\n"
-	                                  "proc main() {\n"
+	                                  "main :: proc() {\n"
 	                                  "  buf: char[8];\n"
 	                                  "  out := fill(buf);\n"
 	                                  "}\n");
@@ -545,9 +545,9 @@ void test_own_param_bare_arg_error(void) {
 void test_copy_opaque_error(void) {
 	test_start("`copy` of an opaque value is a compile error (move-only)");
 	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "extern proc wopen()(ret: window);\n"
-	                                  "extern proc wuse(own w: window);\n"
-	                                  "proc main() {\n"
+	                                  "wopen :: extern proc()(ret: window);\n"
+	                                  "wuse :: extern proc(own w: window);\n"
+	                                  "main :: proc() {\n"
 	                                  "  wopen()(w:);\n"
 	                                  "  wuse(copy w);\n"
 	                                  "}\n");

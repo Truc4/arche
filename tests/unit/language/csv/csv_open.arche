@@ -2,9 +2,9 @@
 // Test if csv_open causes segfault
 #import io;
 
-static buf: char[65536];
+static buf: char[65536]
 
-proc main() {
+main :: proc () {
   io_open("tests/fixtures/data.csv")(fd:);
   printf("fd=%d\n", fd);
   io_close(move fd);

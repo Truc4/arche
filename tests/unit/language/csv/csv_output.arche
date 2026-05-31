@@ -1,17 +1,14 @@
 // RUN: %arche build -o %t %s && %t && test -f /tmp/task1_output.csv && wc -l /tmp/task1_output.csv | grep -q "1000"
 #import io;
-arche Task1Data {
-  price :: float,
-  quantity :: int,
-  revenue :: float,
+Task1Data :: arche {
+  price :: float, quantity :: int, revenue :: float,
 }
 
 static pool<Task1Data> (1000, 1000) {
   price: 0.0, quantity: 0,
 }
-;
 
-proc main() {
+main :: proc () {
   Task1Data.price[0] = 100.0;
   Task1Data.quantity[0] = 5;
   Task1Data.price[1] = 50.0;

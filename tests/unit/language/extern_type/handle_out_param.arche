@@ -4,12 +4,12 @@
 // alongside the scalar at the call.
 // RUN: %arche build -o %t --link %S/runtime/test_resource.c %s && %t | grep "v=42 b=2"
 resource :: opaque
-extern proc resource_open(initial: int)(ret: resource);
+resource_open :: extern proc (initial: int)(ret: resource);
 // `buf` is filled by C, so it must be handed back: in-out (its name is also in the out-list).
-extern proc resource_fill(r: resource, buf: char[], n: int)(buf: char[], ret: int);
-extern proc resource_close(own r: resource);
+resource_fill :: extern proc (r: resource, buf: char[], n: int)(buf: char[], ret: int);
+resource_close :: extern proc (own r: resource);
 
-proc main() {
+main :: proc () {
   resource_open(42)(r:);
   buf: char[8];
   resource_fill(r, buf, 8)(buf, v:);

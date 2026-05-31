@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-proc main() {
+main :: proc () {
   for (i := 0; i < 3; i += 1) {
     printf("before if\n");
     if (1) {

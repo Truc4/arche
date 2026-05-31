@@ -1,9 +1,9 @@
 // RUN: %arche build -o %t %s && %t
-func check_buf(buf: char[]) -> int {
+check_buf :: func (buf: char[]) -> int {
   return strlen(buf);
 }
 
-proc main() {
+main :: proc () {
   n1 := strlen("hello");
   printf("direct strlen: %d\n", n1);
   n2 := check_buf("hello");

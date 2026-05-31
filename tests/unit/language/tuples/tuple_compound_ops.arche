@@ -2,18 +2,13 @@
 pos(x, y) :: float
 vel(dx, dy) :: float
 acc(i, j) :: float
-arche Particle {
-  pos_x,
-  pos_y,
-  vel_dx,
-  vel_dy,
-  acc_i,
-  acc_j,
+Particle :: arche {
+  pos_x, pos_y, vel_dx, vel_dy, acc_i, acc_j,
 }
 
-static pool<Particle> (5);
+static pool<Particle> (5)
 
-proc main() {
+main :: proc () {
   insert(Particle, 0.0, 0.0, 1.0, 2.0, 0.1, 0.2);
   insert(Particle, 5.0, 5.0, 0.5, 0.5, 0.05, 0.05);
   Particle.vel_dx = Particle.acc_i;

@@ -78,14 +78,14 @@ static char *synthesize(const char *module, const DoctestExample *ex) {
 	if (strcmp(module, "core") != 0) /* core is auto-prepended; never import it */
 		snprintf(prefix, sizeof(prefix), "#import %s;\n", module);
 
-	size_t need = strlen(prefix) + strlen("proc main() {\n}\n") + strlen(ex->code) + 8;
+	size_t need = strlen(prefix) + strlen("main :: proc() {\n}\n") + strlen(ex->code) + 8;
 	char *out = malloc(need);
 	if (!out)
 		return NULL;
 	if (ex->has_main)
 		snprintf(out, need, "%s%s", prefix, ex->code);
 	else
-		snprintf(out, need, "%sproc main() {\n%s}\n", prefix, ex->code);
+		snprintf(out, need, "%smain :: proc() {\n%s}\n", prefix, ex->code);
 	return out;
 }
 

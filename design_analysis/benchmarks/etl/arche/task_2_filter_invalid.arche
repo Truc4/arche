@@ -1,17 +1,14 @@
 // Task 2: Filter invalid rows
 // Mark rows as valid (valid=1) if quantity > 0
-arche Transaction {
-  price :: float,
-  quantity :: int,
-  valid :: int,
+Transaction :: arche {
+  price :: float, quantity :: int, valid :: int,
 }
 
 static pool<Transaction> (1000, 1000) {
   price: 0.0, quantity: 0, valid: 0,
 }
-;
 
-proc load_transactions() {
+load_transactions :: proc () {
   arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv")(fd:);
   buf: char[65536];
   price_str: char[32];
@@ -77,7 +74,7 @@ proc load_transactions() {
   }
 }
 
-proc write_transactions() {
+write_transactions :: proc () {
   arche_fopen_write("build/benchmarks/etl/task2/arche_output.csv")(fd:);
   buf: char[256];
   i := 0;
@@ -89,7 +86,7 @@ proc write_transactions() {
   arche_fclose(fd);
 }
 
-proc main() {
+main :: proc () {
   load_transactions();
   Transaction.valid = Transaction.quantity > 0;
   write_transactions();

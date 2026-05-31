@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-proc main() {
+main :: proc () {
   buf: char[256];
   read(0, buf, 256)(n:);
   printf("read returned: %d\n", n);

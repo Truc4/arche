@@ -1,23 +1,20 @@
 // Task 4 (arche, transform-only): sum(price * quantity), repeated N=216,000 times.
 // Materializes the revenue column each iter via the vector op, then scalar-reduces.
-use csv;
+#import csv;
 
-arche Transaction {
-  price :: float,
-  quantity :: int,
-  revenue :: float,
+Transaction :: arche {
+  price :: float, quantity :: int, revenue :: float,
 }
 
 static pool<Transaction> (10000, 10000) {
   price: 0.0, quantity: 0, revenue: 0.0,
 }
-;
 
-proc load_transactions() {
+load_transactions :: proc () {
   csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");
 }
 
-proc write_output(total: float) {
+write_output :: proc (total: float) {
   arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_4.csv")(fd:);
   buf: char[64];
   sprintf(buf, "total\n%g\n", total);
@@ -25,7 +22,7 @@ proc write_output(total: float) {
   arche_fclose(move fd);
 }
 
-proc main() {
+main :: proc () {
   load_transactions();
 
   total := 0.0;

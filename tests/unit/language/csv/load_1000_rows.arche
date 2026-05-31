@@ -1,16 +1,14 @@
 // RUN: %arche build -o %t %s && %t | grep "Loaded 1000 rows"
 #import io;
-arche Transaction {
-  price :: float,
-  quantity :: int,
+Transaction :: arche {
+  price :: float, quantity :: int,
 }
 
 static pool<Transaction> (1000, 1000) {
   price: 0.0, quantity: 0,
 }
-;
 
-proc main() {
+main :: proc () {
   arche_fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
   buf: char[50000];
   price_str: char[32];

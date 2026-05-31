@@ -1,7 +1,7 @@
 // A naked `return;` is an early exit from a proc. Out-params written before the return keep
 // their values; those not yet written stay zero-initialized.
 // RUN: %arche build -o %t %s && %t | grep "a=0 b=10"
-proc f(x: int)(y: int) {
+f :: proc (x: int)(y: int) {
   y = 0;
   if (x < 0) {
     return;
@@ -9,7 +9,7 @@ proc f(x: int)(y: int) {
   y = x * 2;
 }
 
-proc main() {
+main :: proc () {
   f(-1)(a:);
   f(5)(b:);
   printf("a=%d b=%d\n", a, b);

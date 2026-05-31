@@ -1,17 +1,17 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "type mismatch\|error" %t.out
-arche Player {
+Player :: arche {
   pos :: float,
 }
 
-arche Enemy {
+Enemy :: arche {
   health :: float,
 }
 
-static pool<Player> (10);
+static pool<Player> (10)
 
-static pool<Enemy> (10);
+static pool<Enemy> (10)
 
-proc main() {
+main :: proc () {
   p := insert(Player, 1.0);
   delete(table<Enemy>, p);
 }

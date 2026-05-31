@@ -1,15 +1,15 @@
 // RUN: %arche build -o %t %s && %t | grep "PASS"
-arche FloatOps {
+FloatOps :: arche {
   val :: float,
 }
 
-static pool<FloatOps> (8);
+static pool<FloatOps> (8)
 
-sys float_multiply(val) {
+float_multiply :: sys (val) {
   val = val * 2.0;
 }
 
-proc main() {
+main :: proc () {
   insert(FloatOps, 1.0);
   insert(FloatOps, 1.0);
   insert(FloatOps, 1.0);

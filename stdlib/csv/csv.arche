@@ -3,10 +3,10 @@
 // and scans it with i64 offsets, so files larger than 2 GB work; columns match by header name.
 // (`arche_file_map`/`_size`/`_unmap` are core primitives, so no module import is needed.)
 
-static load_cols: int[64];
+static load_cols: int[64]
 
 // first index of byte `ch` in data[start..end), or end if absent
-func find_byte(data: char[], start: i64, end: i64, ch: int) -> i64 {
+find_byte :: func (data: char[], start: i64, end: i64, ch: int) -> i64 {
   for (i: i64 = start; i < end; i = i + 1) {
     if (data[i] == ch) {
       return i;
@@ -16,7 +16,7 @@ func find_byte(data: char[], start: i64, end: i64, ch: int) -> i64 {
 }
 
 // 1 if archetype field name `name` equals the CSV header cell data[start..end)
-func name_eq(name: char[], data: char[], start: i64, end: i64) -> int {
+name_eq :: func (name: char[], data: char[], start: i64, end: i64) -> int {
   len: i64 = end - start;
   if (strlen(name) != len) {
     return 0;
@@ -30,7 +30,7 @@ func name_eq(name: char[], data: char[], start: i64, end: i64) -> int {
 }
 
 // start offset of the col-th comma-separated field within data[row_start..row_end)
-func field_at(data: char[], row_start: i64, row_end: i64, col: int) -> i64 {
+field_at :: func (data: char[], row_start: i64, row_end: i64, col: int) -> i64 {
   p: i64 = row_start;
   for (remaining := col; remaining > 0; remaining -= 1) {
     p = find_byte(data, p, row_end, ',') + 1;
@@ -40,18 +40,17 @@ func field_at(data: char[], row_start: i64, row_end: i64, col: int) -> i64 {
 
 // Type-directed cell parser: the group dispatches on the static type of the
 // witness `c` (the destination column element).
-func cell_float(c: float, s: char[]) -> float {
+cell_float :: func (c: float, s: char[]) -> float {
   return atof(s);
 }
-func cell_int(c: int, s: char[]) -> int {
+cell_int :: func (c: int, s: char[]) -> int {
   return atoi(s);
 }
-func cell = {
+cell :: func {
   cell_float, cell_int
 }
-;
 
-proc load(arch: archetype, own path: char[]) {
+load :: proc (arch: archetype, own path: char[]) {
   arche_file_map(move path)(data:);
   arche_file_size()(size: i64);
 

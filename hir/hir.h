@@ -22,6 +22,7 @@ typedef enum {
 	HIR_TYPE_TUPLE,
 	HIR_TYPE_ARCHETYPE, /* bare-category `archetype` parameter type */
 	HIR_TYPE_OPAQUE,    /* opaque: pointer-width C-owned cell */
+	HIR_TYPE_FUNC,      /* a callable value: proc/func type (structural) */
 } HirTypeTag;
 
 typedef struct HirType HirType;
@@ -41,6 +42,13 @@ struct HirType {
 	int field_count;       /* HIR_TYPE_TUPLE */
 	int int_width;         /* HIR_TYPE_INT: 8/16/32/64/128 (default 32) */
 	int int_signed;        /* HIR_TYPE_INT: 1 signed, 0 unsigned (default 1) */
+	/* HIR_TYPE_FUNC: a callable signature. `params`/`results` are owned arrays; `results` are a
+	 * proc's out-params or a func's single return. */
+	HirType **params;
+	int param_count;
+	HirType **results;
+	int result_count;
+	int is_proc;
 };
 
 /* =========================
@@ -202,6 +210,7 @@ typedef enum {
 	HIR_STMT_RETURN,
 	HIR_STMT_MULTI_BIND,
 	HIR_STMT_EACH_FIELD,
+	HIR_STMT_BLOCK, /* a scoped statement sequence (desugaring target, e.g. match) */
 } HirStmtKind;
 
 typedef struct {
@@ -270,6 +279,11 @@ typedef struct {
 	int body_count;
 } HirEachFieldStmt;
 
+typedef struct {
+	HirStmt **stmts;
+	int count;
+} HirBlockStmt;
+
 struct HirStmt {
 	HirStmtKind kind;
 	SourceLoc loc;
@@ -283,6 +297,7 @@ struct HirStmt {
 		HirReturnStmt return_stmt;
 		HirMultiBindStmt multi_bind;
 		HirEachFieldStmt each_field;
+		HirBlockStmt block;
 	} data;
 };
 

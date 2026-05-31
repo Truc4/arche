@@ -3,7 +3,7 @@
 // The lenient binop rule allows numeric mixing (float+int etc.) but rejects
 // str↔scalar pairings — the audit's "a" + 1 gap.
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 binary operand: expected 'str', got 'int'"
-proc main() {
+main :: proc () {
   s: str = "a";
   x := s + 1;
   print(x);

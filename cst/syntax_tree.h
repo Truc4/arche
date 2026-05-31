@@ -41,7 +41,6 @@ typedef enum {
 	SN_OUT_PARAM, /* an out-parameter of a proc: `name: T` in the second `(...)` list */
 	SN_OUT_ARG,   /* an out-argument at a proc call site: `name`, `name:`, or `name: T` */
 	SN_FIELD_DECL,
-	SN_BLOCK,        /* a `{ ... }` statement body */
 	SN_RETURN_TYPES, /* the `-> (T, ...)` of a func */
 	SN_ARG_LIST,     /* call argument list */
 
@@ -58,6 +57,9 @@ typedef enum {
 	SN_MULTI_BIND_STMT,
 	SN_PROC_CALL_STMT, /* `foo(in)(out)` — an action with out-arguments */
 	SN_EACH_FIELD_STMT,
+	SN_BLOCK,      /* a standalone `{ … }` block statement (a nested scope) */
+	SN_MATCH_STMT, /* `match expr { pat : body, … }` — exhaustive dispatch */
+	SN_MATCH_ARM,  /* one arm: a pattern (variant / literal / `_`) + body */
 
 	/* Expressions */
 	SN_LITERAL_EXPR,
@@ -71,6 +73,16 @@ typedef enum {
 	SN_ARRAY_LIT_EXPR,
 	SN_STRING_EXPR,
 	SN_PAREN_EXPR,
+	/* Unified-grammar RHS value forms: the name is the binding LHS, so these carry no
+	 * SN_FUNC_DEF_NAME. A bodied (or `extern`) proc/func is a value; a bodiless one is a
+	 * type (SN_TYPE_PROC / SN_TYPE_FUNC below). */
+	SN_PROC_EXPR,    /* proc value literal: `proc(in)(out){body}` or `extern proc(in)(out)` */
+	SN_FUNC_EXPR,    /* func value literal: `func(in)->T{body}` */
+	SN_GROUP_EXPR,   /* Odin-style overload group: `proc{a,b}` / `func{a,b}` */
+	SN_ARCH_EXPR,    /* archetype (record type) definition: `archetype{ fields }` */
+	SN_SYS_EXPR,     /* sys definition: `sys(components){body}` */
+	SN_ENUM_EXPR,    /* enum type definition: `enum { a, b = 2, c }` */
+	SN_ENUM_VARIANT, /* one enum variant: name + optional `= N` */
 
 	/* Types (children of / refinements within a type position) */
 	SN_TYPE_REF, /* a type position: identifiers within are types */
@@ -78,6 +90,8 @@ typedef enum {
 	SN_TYPE_SHAPED_ARRAY,
 	SN_TYPE_TUPLE,
 	SN_TYPE_HANDLE,
+	SN_TYPE_PROC, /* a proc type (bodiless signature): `proc(in)(out)` */
+	SN_TYPE_FUNC, /* a func type (bodiless signature): `func(in)->T` */
 
 	/* Identifier-role leaves (kept for the highlighter's classification; these
 	 * wrap a single identifier token inside the structural nodes above) */

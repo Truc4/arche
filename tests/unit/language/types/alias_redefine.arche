@@ -2,6 +2,6 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "different backing" %t.out
 thing :: int
 thing :: float
-proc main() {
+main :: proc () {
   printf("unreachable\n");
 }

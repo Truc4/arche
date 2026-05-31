@@ -279,6 +279,18 @@ void decl_free(Decl *decl) {
 		use_decl_free(decl->data.use);
 		break;
 	}
+	case DECL_ENUM: {
+		EnumDecl *e = decl->data.enum_decl;
+		if (e) {
+			for (int i = 0; i < e->variant_count; i++)
+				free(e->variant_names[i]);
+			free(e->variant_names);
+			free(e->variant_values);
+			free(e->name);
+			free(e);
+		}
+		break;
+	}
 	}
 	free(decl);
 }

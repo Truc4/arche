@@ -1,16 +1,14 @@
 // RUN: %arche build -o %t %s && %t
 #import io;
-arche Transaction {
-  price :: float,
-  quantity :: int,
+Transaction :: arche {
+  price :: float, quantity :: int,
 }
 
 static pool<Transaction> (3, 3) {
   price: 0.0, quantity: 0,
 }
-;
 
-proc load_csv(own path: char[]) {
+load_csv :: proc (own path: char[]) {
   arche_fopen_read(move path)(fd:);
   buf: char[256];
   price_str: char[32];
@@ -75,7 +73,7 @@ proc load_csv(own path: char[]) {
 // Copy quantity string (after comma)
 // Convert and assign
 
-proc main() {
+main :: proc () {
   load_csv("../../../../../tests/fixtures/transactions.csv");
   assert(Transaction.price[0] == 1.0, "price[0] not 1.0\n");
   printf("csv ok\n");

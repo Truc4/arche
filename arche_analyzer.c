@@ -420,6 +420,35 @@ static int g_proc_name_count, g_proc_name_cap;
 static void collect_proc_names(CstView v) {
 	if (!v.node)
 		return;
+	/* Unified grammar: a proc is `name :: proc(...)…` — an SN_CONST_DECL with an SN_PROC_EXPR RHS.
+	 * The name is the IDENT immediately before the first top-level `:` (skips `@decorator` idents). */
+	int is_unified_proc = 0;
+	if (cv_kind(v) == SN_CONST_DECL) {
+		for (int i = 0; i < v.node->child_count; i++)
+			if (v.node->children[i].tag == SE_NODE && v.node->children[i].as.node->kind == SN_PROC_EXPR) {
+				is_unified_proc = 1;
+				break;
+			}
+	}
+	if (is_unified_proc) {
+		CvText nm = {NULL, 0};
+		for (int i = 0; i < v.node->child_count; i++) {
+			SyntaxElem *e = &v.node->children[i];
+			if (e->tag != SE_TOKEN)
+				continue;
+			if (e->as.token.kind == TOK_COLON)
+				break;
+			if (e->as.token.kind == TOK_IDENT)
+				nm = (CvText){v.src + e->as.token.offset, e->as.token.length};
+		}
+		if (nm.ptr) {
+			if (g_proc_name_count == g_proc_name_cap) {
+				g_proc_name_cap = g_proc_name_cap ? g_proc_name_cap * 2 : 32;
+				g_proc_names = realloc(g_proc_names, (size_t)g_proc_name_cap * sizeof(CvText));
+			}
+			g_proc_names[g_proc_name_count++] = nm;
+		}
+	}
 	if (cv_kind(v) == SN_PROC_DECL) {
 		CvText nm = cv_text(cv_child(v, SN_FUNC_DEF_NAME));
 		if (nm.ptr) {

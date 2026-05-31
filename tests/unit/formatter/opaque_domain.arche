@@ -3,6 +3,6 @@
 // RUN: %arche fmt %s | grep "file :: opaque"
 #import io;
 file :: opaque
-arche OpenFiles {
+OpenFiles :: arche {
   file,
 }

@@ -72,6 +72,29 @@ struct SemanticContext {
 	char **known_funcs;
 	int known_func_count;
 
+	/* Callable aliases: `handler :: some_proc` binds a name to an existing proc/func value
+	 * (Stage A of proc/func types). Resolved to the target at call sites; the binding itself
+	 * is compile-time (dropped before codegen). Distinct from type aliases and value consts. */
+	char **callable_alias_names;
+	char **callable_alias_targets;
+	int callable_alias_count;
+
+	/* Named callable-type aliases: `Handler :: proc()(w:int)` binds a name to a structural
+	 * callable type. tyid_from_name resolves the name to the signature's TypeId. */
+	char **ctype_alias_names;
+	struct TypeRef **ctype_alias_refs; /* owned by the AST */
+	int ctype_alias_count;
+
+	/* Enums: a distinct int-backed type with named variants. enum_type_names lists the enum type
+	 * names; the flat (enum, variant, value) triples back variant resolution (`method.get` and bare
+	 * variants in `match`). Compile-time only — erased before codegen. */
+	char **enum_type_names;
+	int enum_type_count;
+	char **enum_var_enum;
+	char **enum_var_name;
+	long *enum_var_value;
+	int enum_var_count;
+
 	/* Names of `static` global arrays, registered in a pre-pass (order-independent) so func-purity
 	 * can reject a func reading or writing one — a func's only inputs are params + `::` constants. */
 	char **static_names;
@@ -260,6 +283,118 @@ static void register_func(SemanticContext *ctx, const char *name) {
 	ctx->known_funcs[ctx->known_func_count] = malloc(strlen(name) + 1);
 	strcpy(ctx->known_funcs[ctx->known_func_count], name);
 	ctx->known_func_count++;
+}
+
+/* 1 if `name` is the name of a proc / func / overload-group declared anywhere in the program
+ * (order-independent — the whole AST exists). Backs callable-alias classification. */
+static int prog_has_callable(AstProgram *prog, const char *name) {
+	if (!prog || !name)
+		return 0;
+	for (int i = 0; i < prog->decl_count; i++) {
+		Decl *d = prog->decls[i];
+		if (!d)
+			continue;
+		if (d->kind == DECL_PROC && d->data.proc && d->data.proc->name && strcmp(d->data.proc->name, name) == 0)
+			return 1;
+		if (d->kind == DECL_FUNC && d->data.func && d->data.func->name && strcmp(d->data.func->name, name) == 0)
+			return 1;
+		if (d->kind == DECL_FUNC_GROUP && d->data.func_group && d->data.func_group->name &&
+		    strcmp(d->data.func_group->name, name) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static void register_callable_alias(SemanticContext *ctx, const char *name, const char *target) {
+	ctx->callable_alias_names = realloc(ctx->callable_alias_names, (ctx->callable_alias_count + 1) * sizeof(char *));
+	ctx->callable_alias_targets =
+	    realloc(ctx->callable_alias_targets, (ctx->callable_alias_count + 1) * sizeof(char *));
+	char *n = malloc(strlen(name) + 1), *t = malloc(strlen(target) + 1);
+	strcpy(n, name);
+	strcpy(t, target);
+	ctx->callable_alias_names[ctx->callable_alias_count] = n;
+	ctx->callable_alias_targets[ctx->callable_alias_count] = t;
+	ctx->callable_alias_count++;
+	register_func(ctx, name); /* so calls through the alias aren't flagged undefined */
+}
+
+/* Resolve a callable-alias name to its ultimate proc/func target (follows chains, guarded
+ * against cycles). Returns NULL if `name` is not a callable alias. */
+static const char *resolve_callable_alias(SemanticContext *ctx, const char *name) {
+	const char *cur = NULL;
+	for (int hop = 0; name && hop < 64; hop++) {
+		const char *next = NULL;
+		for (int i = 0; i < ctx->callable_alias_count; i++)
+			if (strcmp(ctx->callable_alias_names[i], name) == 0) {
+				next = ctx->callable_alias_targets[i];
+				break;
+			}
+		if (!next)
+			break;
+		cur = next;
+		name = next;
+	}
+	return cur;
+}
+
+static void register_callable_type_alias(SemanticContext *ctx, const char *name, TypeRef *ref) {
+	ctx->ctype_alias_names = realloc(ctx->ctype_alias_names, (ctx->ctype_alias_count + 1) * sizeof(char *));
+	ctx->ctype_alias_refs = realloc(ctx->ctype_alias_refs, (ctx->ctype_alias_count + 1) * sizeof(TypeRef *));
+	char *n = malloc(strlen(name) + 1);
+	strcpy(n, name);
+	ctx->ctype_alias_names[ctx->ctype_alias_count] = n;
+	ctx->ctype_alias_refs[ctx->ctype_alias_count] = ref;
+	ctx->ctype_alias_count++;
+}
+
+static TypeRef *callable_type_alias_ref(SemanticContext *ctx, const char *name) {
+	if (!ctx || !name)
+		return NULL;
+	for (int i = 0; i < ctx->ctype_alias_count; i++)
+		if (strcmp(ctx->ctype_alias_names[i], name) == 0)
+			return ctx->ctype_alias_refs[i];
+	return NULL;
+}
+
+static char *sem_dupz(const char *s);
+
+/* Record an enum's type name + its (variant → value) entries. The type-alias-to-int registration
+ * is done by the caller (register_type_alias is defined later). */
+static void register_enum_entries(SemanticContext *ctx, EnumDecl *e) {
+	ctx->enum_type_names = realloc(ctx->enum_type_names, (ctx->enum_type_count + 1) * sizeof(char *));
+	ctx->enum_type_names[ctx->enum_type_count++] = sem_dupz(e->name);
+	for (int i = 0; i < e->variant_count; i++) {
+		int n = ctx->enum_var_count;
+		ctx->enum_var_enum = realloc(ctx->enum_var_enum, (n + 1) * sizeof(char *));
+		ctx->enum_var_name = realloc(ctx->enum_var_name, (n + 1) * sizeof(char *));
+		ctx->enum_var_value = realloc(ctx->enum_var_value, (n + 1) * sizeof(long));
+		ctx->enum_var_enum[n] = sem_dupz(e->name);
+		ctx->enum_var_name[n] = sem_dupz(e->variant_names[i]);
+		ctx->enum_var_value[n] = e->variant_values[i];
+		ctx->enum_var_count++;
+	}
+}
+
+static int enum_is_type(SemanticContext *ctx, const char *name) {
+	if (!ctx || !name)
+		return 0;
+	for (int i = 0; i < ctx->enum_type_count; i++)
+		if (strcmp(ctx->enum_type_names[i], name) == 0)
+			return 1;
+	return 0;
+}
+
+/* Look up a variant's value. If `en` is non-NULL, scope to that enum; else search all enums
+ * (for bare variant patterns in `match`). Returns 1 + sets *out on success. */
+static int enum_variant_lookup(SemanticContext *ctx, const char *en, const char *variant, long *out) {
+	if (!ctx || !variant)
+		return 0;
+	for (int i = 0; i < ctx->enum_var_count; i++)
+		if ((!en || strcmp(ctx->enum_var_enum[i], en) == 0) && strcmp(ctx->enum_var_name[i], variant) == 0) {
+			*out = ctx->enum_var_value[i];
+			return 1;
+		}
+	return 0;
 }
 
 static int is_static_name(SemanticContext *ctx, const char *name) {
@@ -1054,6 +1189,20 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 	}
 
 	case EXPR_FIELD: {
+		/* Enum variant access `Enum.variant` → fold to its int value (enums are compile-time).
+		 * Done before analyzing the base, since `Enum` is a type, not a variable. */
+		if (expr->data.field.base->type == EXPR_NAME && enum_is_type(ctx, expr->data.field.base->data.name.name)) {
+			long v = 0;
+			if (enum_variant_lookup(ctx, expr->data.field.base->data.name.name, expr->data.field.field_name, &v)) {
+				char buf[32];
+				snprintf(buf, sizeof(buf), "%ld", v);
+				expression_free(expr->data.field.base);
+				free(expr->data.field.field_name);
+				expr->type = EXPR_LITERAL;
+				expr->data.literal.lexeme = sem_dupz(buf);
+				break;
+			}
+		}
 		/* expr.field - need to know what expr resolves to */
 		analyze_expression(ctx, expr->data.field.base);
 
@@ -1960,6 +2109,19 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 	for (int i = 0; i < arch->field_count; i++)
 		reject_meta_type(ctx, arch->fields[i]->type, "archetype component type");
 
+	/* proc/func types can't be archetype components — archetypes are data; per-row behavior
+	 * dispatch is the anti-pattern (Stage D dropped). Use `match` or a system instead. */
+	for (int i = 0; i < arch->field_count; i++) {
+		TypeRef *t = arch->fields[i]->type;
+		if (!t)
+			continue;
+		/* inline `on_hit :: proc()()`, or a named callable-type alias `on_hit :: handler`. */
+		int callable = (t->kind == TYPE_PROC || t->kind == TYPE_FUNC) ||
+		               (t->kind == TYPE_NAME && callable_type_alias_ref(ctx, t->data.name) != NULL);
+		if (callable)
+			sem_emit_callable_in_archetype(ctx, arch->fields[i]->loc, arch->fields[i]->name);
+	}
+
 	/* Set semantics: a component type may appear at most once in an archetype. The
 	 * component's type name IS its access path, so a repeat would be unreachable. */
 	for (int i = 0; i < arch->field_count; i++) {
@@ -2177,6 +2339,33 @@ static int name_is_effectful_callee(SemanticContext *ctx, const char *name) {
 	return 0;
 }
 
+/* A call to a proc-typed parameter (a compile-time callback) is an action, so it
+ * counts as an effect — same as calling a named proc. A func-typed callback call
+ * is pure. The param type may be an inline `proc(...)` or a named alias to one. */
+static int name_is_proc_typed_param(SemanticContext *ctx, ProcDecl *proc, const char *name) {
+	if (!proc || !name)
+		return 0;
+	for (int i = 0; i < proc->param_count; i++) {
+		Parameter *p = proc->params[i];
+		if (!p || !p->name || strcmp(p->name, name) != 0)
+			continue;
+		TypeRef *t = p->type;
+		if (!t)
+			return 0;
+		if (t->kind == TYPE_PROC)
+			return 1;
+		if (t->kind == TYPE_FUNC)
+			return 0;
+		if (t->kind == TYPE_NAME && t->data.name) {
+			TypeRef *al = semantic_callable_type_alias(ctx, t->data.name);
+			if (al && al->kind == TYPE_PROC)
+				return 1;
+		}
+		return 0;
+	}
+	return 0;
+}
+
 /* Returns the leftmost identifier in an lvalue-ish expression chain, or NULL.
  * For `Transaction.price[i]` returns "Transaction"; for `x` returns "x". */
 static const char *lvalue_leftmost_name(Expression *expr) {
@@ -2207,7 +2396,8 @@ static int expr_has_side_effects(SemanticContext *ctx, Expression *expr, ProcDec
 	switch (expr->type) {
 	case EXPR_CALL:
 		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME &&
-		    name_is_effectful_callee(ctx, expr->data.call.callee->data.name.name)) {
+		    (name_is_effectful_callee(ctx, expr->data.call.callee->data.name.name) ||
+		     name_is_proc_typed_param(ctx, proc, expr->data.call.callee->data.name.name))) {
 			return 1;
 		}
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
@@ -2304,6 +2494,13 @@ static const char *func_purity_body(SemanticContext *ctx, Statement **stmts, int
 static void lint_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	if (!proc || proc->is_extern || proc->allow_pure_proc)
 		return;
+
+	/* A proc taking a proc-typed callback param is inherently action-shaped: it
+	 * exists to invoke that callback (an effect the purity walk can't see, since
+	 * the callee is a param, not a named proc). Don't nudge it toward `func`. */
+	for (int i = 0; i < proc->param_count; i++)
+		if (proc->params[i] && name_is_proc_typed_param(ctx, proc, proc->params[i]->name))
+			return;
 
 	/* A proc whose body has effects is legitimately a proc — nothing to lint. */
 	if (func_purity_body(ctx, proc->statements, proc->statement_count) != NULL)
@@ -2853,6 +3050,9 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 	case DECL_WORLD:
 		/* Worlds carry no analyzable body in v1. */
 		break;
+	case DECL_ENUM:
+		/* Registered in pass 0 (enum type + variants); erased before lowering. */
+		break;
 	}
 
 	ctx->active_allow_slugs = prev_slugs;
@@ -3040,6 +3240,7 @@ static SourceLoc sem_node_loc(const SyntaxNode *n) {
 
 /* ---- type reconstruction (CST type node -> TypeRef) ---- */
 static TypeRef *cst_build_type(CstView t);
+static CstView sem_type_at(CstView v, int idx);
 static int cv_type_count_sem(CstView v);
 
 /* The archetype name inside `handle<X>` / `handle(X)` (the IDENT that isn't "handle"). */
@@ -3150,7 +3351,7 @@ static TypeRef *cst_build_type(CstView t) {
 				pend_len = (int)ch->as.token.length;
 			} else if (ch->tag == SE_NODE) {
 				SyntaxNodeKind k = ch->as.node->kind;
-				if (k >= SN_TYPE_REF && k <= SN_TYPE_HANDLE) {
+				if (k >= SN_TYPE_REF && k <= SN_TYPE_FUNC) {
 					tr->data.tuple.field_names[fi] = sem_txt_dup((CvText){pend, pend ? pend_len : 0});
 					tr->data.tuple.field_types[fi] = cst_build_type((CstView){ch->as.node, t.src});
 					fi++;
@@ -3159,6 +3360,30 @@ static TypeRef *cst_build_type(CstView t) {
 			}
 		}
 		tr->data.tuple.field_count = fi;
+		break;
+	}
+	case SN_TYPE_PROC:
+	case SN_TYPE_FUNC: {
+		int is_proc = (cv_kind(t) == SN_TYPE_PROC);
+		tr->kind = is_proc ? TYPE_PROC : TYPE_FUNC;
+		tr->data.callable.is_proc = is_proc;
+		int np = cv_count(t, SN_PARAM);
+		tr->data.callable.param_count = np;
+		tr->data.callable.param_types = malloc((np ? np : 1) * sizeof(TypeRef *));
+		for (int i = 0; i < np; i++)
+			tr->data.callable.param_types[i] = cst_build_type(sem_type_at(cv_child_at(t, SN_PARAM, i), 0));
+		if (is_proc) {
+			int no = cv_count(t, SN_OUT_PARAM);
+			tr->data.callable.result_count = no;
+			tr->data.callable.result_types = malloc((no ? no : 1) * sizeof(TypeRef *));
+			for (int i = 0; i < no; i++)
+				tr->data.callable.result_types[i] = cst_build_type(sem_type_at(cv_child_at(t, SN_OUT_PARAM, i), 0));
+		} else {
+			/* a func's single return is the SN_TYPE_FUNC's direct type-node child (params are in SN_PARAM) */
+			tr->data.callable.result_count = 1;
+			tr->data.callable.result_types = malloc(sizeof(TypeRef *));
+			tr->data.callable.result_types[0] = cst_build_type(sem_type_at(t, 0));
+		}
 		break;
 	}
 	default:
@@ -3184,7 +3409,7 @@ static CstView sem_type_at(CstView v, int idx) {
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = v.node->children[i].as.node->kind;
-			if (k >= SN_TYPE_REF && k <= SN_TYPE_HANDLE) {
+			if (k >= SN_TYPE_REF && k <= SN_TYPE_FUNC) {
 				if (c == idx)
 					return (CstView){v.node->children[i].as.node, v.src};
 				c++;
@@ -3197,7 +3422,7 @@ static int cv_type_count_sem(CstView v) {
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = v.node->children[i].as.node->kind;
-			if (k >= SN_TYPE_REF && k <= SN_TYPE_HANDLE)
+			if (k >= SN_TYPE_REF && k <= SN_TYPE_FUNC)
 				c++;
 		}
 	return c;
@@ -3525,7 +3750,7 @@ static Statement **cst_build_body(CstView parent, int *out_count) {
 	for (int i = 0; i < parent.node->child_count; i++)
 		if (parent.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = parent.node->children[i].as.node->kind;
-			if (k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+			if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
 				n++;
 		}
 	*out_count = n;
@@ -3536,7 +3761,7 @@ static Statement **cst_build_body(CstView parent, int *out_count) {
 	for (int i = 0; i < parent.node->child_count; i++)
 		if (parent.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = parent.node->children[i].as.node->kind;
-			if (k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+			if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
 				out[j++] = cst_build_stmt((CstView){parent.node->children[i].as.node, parent.src});
 		}
 	return out;
@@ -3676,15 +3901,15 @@ static Statement *cst_build_stmt(CstView s) {
 				SyntaxNodeKind k = ch->as.node->kind;
 				CstView cv = {ch->as.node, s.src};
 				if (seen_brace) {
-					if (k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+					if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
 						nbody++;
 					continue;
 				}
-				if (seg == 0 && k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+				if (seg == 0 && k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
 					as->data.for_stmt.init = cst_build_stmt(cv);
 				else if (seg == 1 && k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
 					as->data.for_stmt.condition = cst_build_expr(cv);
-				else if (seg == 2 && k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+				else if (seg == 2 && k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
 					as->data.for_stmt.increment = cst_build_stmt(cv);
 			}
 			as->data.for_stmt.body = calloc(nbody ? nbody : 1, sizeof(Statement *));
@@ -3699,7 +3924,7 @@ static Statement *cst_build_stmt(CstView s) {
 				if (!seen_brace)
 					continue;
 				SyntaxNodeKind k = ch->as.node->kind;
-				if (k >= SN_BIND_STMT && k <= SN_EACH_FIELD_STMT)
+				if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
 					as->data.for_stmt.body[as->data.for_stmt.body_count++] =
 					    cst_build_stmt((CstView){ch->as.node, s.src});
 			}
@@ -3792,7 +4017,7 @@ static Statement *cst_build_stmt(CstView s) {
 					pend = t.ptr;
 					pend_len = (int)t.len;
 					pend_active = 1;
-				} else if (k >= SN_TYPE_REF && k <= SN_TYPE_HANDLE && pend_active) {
+				} else if (k >= SN_TYPE_REF && k <= SN_TYPE_FUNC && pend_active) {
 					pend_type = cst_build_type((CstView){ch->as.node, s.src});
 				}
 				continue;
@@ -3918,6 +4143,204 @@ static Decl *cst_build_decl(CstView d) {
 	return ad;
 }
 
+/* ===== Unified-grammar RHS value forms (P2 classification) =====
+ * In the unified grammar a declaration is a binding `name :: <form>`. These helpers build the
+ * abstract decl from the RHS value-form node `f` (an SN_PROC_EXPR / SN_FUNC_EXPR / …) with the
+ * name taken from the binding LHS. The extraction mirrors the legacy keyword-led decl cases
+ * below (which become dead code once old syntax is removed); the only differences are the name
+ * source and that children are read from `f` rather than the decl node. `name` is owned. */
+
+static Decl *build_proc_from(CstView f, char *name) {
+	Decl *ad = decl_create(DECL_PROC);
+	ad->loc = sem_node_loc(f.node);
+	ProcDecl *ap = proc_decl_create(name);
+	ap->loc = sem_direct_token_loc(f.node, TOK_LPAREN);
+	ap->is_extern = cv_has_token(f, TOK_EXTERN);
+	ap->is_variadic = cv_has_token(f, TOK_DOTDOTDOT);
+	ap->allow_pure_proc = cv_has_token(f, TOK_AT);
+	int np = cv_count(f, SN_PARAM);
+	ap->params = calloc(np ? np : 1, sizeof(Parameter *));
+	for (int i = 0; i < np; i++)
+		ap->params[i] = cst_build_param(cv_child_at(f, SN_PARAM, i));
+	ap->param_count = np;
+	int nout = cv_count(f, SN_OUT_PARAM);
+	ap->out_params = calloc(nout ? nout : 1, sizeof(Parameter *));
+	for (int i = 0; i < nout; i++)
+		ap->out_params[i] = cst_build_param(cv_child_at(f, SN_OUT_PARAM, i));
+	ap->out_param_count = nout;
+	ap->statements = cst_build_body(f, &ap->statement_count);
+	ad->data.proc = ap;
+	return ad;
+}
+
+static Decl *build_func_from(CstView f, char *name) {
+	Decl *ad = decl_create(DECL_FUNC);
+	ad->loc = sem_node_loc(f.node);
+	FuncDecl *af = func_decl_create(name);
+	af->loc = sem_direct_token_loc(f.node, TOK_LPAREN);
+	af->is_extern = cv_has_token(f, TOK_EXTERN);
+	af->is_variadic = cv_has_token(f, TOK_DOTDOTDOT);
+	int np = cv_count(f, SN_PARAM);
+	af->params = calloc(np ? np : 1, sizeof(Parameter *));
+	for (int i = 0; i < np; i++)
+		af->params[i] = cst_build_param(cv_child_at(f, SN_PARAM, i));
+	af->param_count = np;
+	int nt = cv_type_count_sem(f);
+	af->return_types = calloc(nt ? nt : 1, sizeof(TypeRef *));
+	af->return_type_count = 0;
+	for (int i = 0; i < nt; i++)
+		af->return_types[af->return_type_count++] = cst_build_type(sem_type_at(f, i));
+	af->statements = cst_build_body(f, &af->statement_count);
+	ad->data.func = af;
+	return ad;
+}
+
+static Decl *build_sys_from(CstView f, char *name) {
+	Decl *ad = decl_create(DECL_SYS);
+	ad->loc = sem_node_loc(f.node);
+	SysDecl *as = sys_decl_create(name);
+	as->loc = sem_direct_token_loc(f.node, TOK_LPAREN);
+	int np = cv_count(f, SN_PARAM);
+	as->params = calloc(np ? np : 1, sizeof(Parameter *));
+	for (int i = 0; i < np; i++)
+		as->params[i] = cst_build_param(cv_child_at(f, SN_PARAM, i));
+	as->param_count = np;
+	as->statements = cst_build_body(f, &as->statement_count);
+	ad->data.sys = as;
+	return ad;
+}
+
+static Decl *build_func_group_from(CstView f, char *name) {
+	Decl *ad = decl_create(DECL_FUNC_GROUP);
+	ad->loc = sem_node_loc(f.node);
+	FuncGroup *fg = func_group_create(name);
+	fg->loc = sem_direct_token_loc(f.node, TOK_LBRACE);
+	int nmem = 0;
+	for (int i = 0; i < f.node->child_count; i++)
+		if (f.node->children[i].tag == SE_TOKEN && f.node->children[i].as.token.kind == TOK_IDENT)
+			nmem++;
+	fg->member_names = calloc(nmem ? nmem : 1, sizeof(char *));
+	fg->member_count = 0;
+	for (int i = 0; i < f.node->child_count; i++)
+		if (f.node->children[i].tag == SE_TOKEN && f.node->children[i].as.token.kind == TOK_IDENT) {
+			CvText t = {f.src + f.node->children[i].as.token.offset, f.node->children[i].as.token.length};
+			fg->member_names[fg->member_count++] = sem_txt_dup(t);
+		}
+	ad->data.func_group = fg;
+	return ad;
+}
+
+static Decl *build_enum_from(CstView f, char *name) {
+	Decl *ad = decl_create(DECL_ENUM);
+	ad->loc = sem_node_loc(f.node);
+	EnumDecl *e = calloc(1, sizeof(EnumDecl));
+	e->name = name;
+	int nv = cv_count(f, SN_ENUM_VARIANT);
+	e->variant_names = calloc(nv ? nv : 1, sizeof(char *));
+	e->variant_values = calloc(nv ? nv : 1, sizeof(long));
+	e->variant_count = 0;
+	long next = 0;
+	for (int i = 0; i < nv; i++) {
+		CstView v = cv_child_at(f, SN_ENUM_VARIANT, i);
+		long val = next;
+		for (int c = 0; c < v.node->child_count; c++)
+			if (v.node->children[c].tag == SE_TOKEN && v.node->children[c].as.token.kind == TOK_NUMBER) {
+				char buf[32];
+				int l = (int)v.node->children[c].as.token.length;
+				if (l > 31)
+					l = 31;
+				memcpy(buf, v.src + v.node->children[c].as.token.offset, l);
+				buf[l] = '\0';
+				val = atol(buf);
+				break;
+			}
+		e->variant_names[e->variant_count] = sem_txt_dup(cv_token(v, TOK_IDENT));
+		e->variant_values[e->variant_count] = val;
+		e->variant_count++;
+		next = val + 1;
+	}
+	ad->data.enum_decl = e;
+	return ad;
+}
+
+static Decl *build_archetype_from(CstView f, char *name) {
+	Decl *ad = decl_create(DECL_ARCHETYPE);
+	ArchetypeDecl *aa = archetype_decl_create(name);
+	int nf = cv_count(f, SN_FIELD_NAME);
+	aa->fields = calloc(nf > 0 ? nf : 1, sizeof(FieldDecl *));
+	aa->field_count = 0;
+	for (int i = 0; i < f.node->child_count; i++) {
+		if (f.node->children[i].tag != SE_NODE || f.node->children[i].as.node->kind != SN_FIELD_NAME)
+			continue;
+		CstView fn = {f.node->children[i].as.node, f.src};
+		CstView ty = {NULL, f.src};
+		int meta_explicit = 0;
+		for (int k = i + 1; k < f.node->child_count; k++) {
+			if (f.node->children[k].tag == SE_TOKEN) {
+				if (f.node->children[k].as.token.kind == TOK_IDENT && f.node->children[k].as.token.length == 4 &&
+				    strncmp(f.src + f.node->children[k].as.token.offset, "type", 4) == 0)
+					meta_explicit = 1;
+				continue;
+			}
+			SyntaxNodeKind kk = f.node->children[k].as.node->kind;
+			if (kk == SN_FIELD_NAME)
+				break;
+			if (kk >= SN_TYPE_REF && kk <= SN_TYPE_FUNC) {
+				ty.node = f.node->children[k].as.node;
+				break;
+			}
+		}
+		char *fname = sem_cv_dup(fn);
+		TypeRef *ft;
+		if (cv_present(ty)) {
+			ft = cst_build_type(ty);
+		} else {
+			ft = malloc(sizeof(TypeRef));
+			ft->kind = TYPE_NAME;
+			ft->loc.line = 0;
+			ft->loc.column = 0;
+			ft->data.name = sem_dupz(fname);
+		}
+		FieldDecl *fd = field_decl_create(FIELD_COLUMN, fname, ft);
+		fd->meta_explicit = meta_explicit;
+		aa->fields[aa->field_count++] = fd;
+	}
+	ad->data.archetype = aa;
+	return ad;
+}
+
+/* The binding LHS name: the IDENT immediately before the first top-level `:` of the decl.
+ * Skips any leading `@decorator` / `@allow(slug)` idents (which precede the name). */
+static CvText sem_binding_name(CstView d) {
+	CvText last = {NULL, 0};
+	for (int i = 0; i < d.node->child_count; i++) {
+		SyntaxElem *e = &d.node->children[i];
+		if (e->tag != SE_TOKEN)
+			continue;
+		if (e->as.token.kind == TOK_COLON)
+			break;
+		if (e->as.token.kind == TOK_IDENT)
+			last = (CvText){d.src + e->as.token.offset, e->as.token.length};
+	}
+	return last;
+}
+
+/* Find the unified-grammar RHS value/type form among a binding's children, if any. */
+static CstView sem_rhs_form(CstView d) {
+	for (int i = 0; i < d.node->child_count; i++) {
+		if (d.node->children[i].tag != SE_NODE)
+			continue;
+		SyntaxNodeKind k = d.node->children[i].as.node->kind;
+		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR || k == SN_GROUP_EXPR ||
+		    k == SN_ENUM_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
+			CstView v = {d.node->children[i].as.node, d.src};
+			return v;
+		}
+	}
+	CstView none = {NULL, d.src};
+	return none;
+}
+
 static Decl *cst_build_decl_inner(CstView d) {
 	switch (cv_kind(d)) {
 	case SN_USE_DECL:
@@ -3953,7 +4376,7 @@ static Decl *cst_build_decl_inner(CstView d) {
 				SyntaxNodeKind kk = d.node->children[k].as.node->kind;
 				if (kk == SN_FIELD_NAME)
 					break;
-				if (kk >= SN_TYPE_REF && kk <= SN_TYPE_HANDLE) {
+				if (kk >= SN_TYPE_REF && kk <= SN_TYPE_FUNC) {
 					ty.node = d.node->children[k].as.node;
 					break;
 				}
@@ -4053,6 +4476,50 @@ static Decl *cst_build_decl_inner(CstView d) {
 		return ad;
 	}
 	case SN_CONST_DECL: {
+		/* Unified grammar: a binding `name :: <value form>` declares that kind, named by the LHS.
+		 * Bodiless proc/func type forms (SN_TYPE_PROC/SN_TYPE_FUNC) fall through to the type-alias
+		 * path below (handled by the type system in a later phase). */
+		CstView rhs = sem_rhs_form(d);
+		if (cv_present(rhs)) {
+			SyntaxNodeKind rk = cv_kind(rhs);
+			if (rk == SN_PROC_EXPR || rk == SN_FUNC_EXPR || rk == SN_SYS_EXPR || rk == SN_ARCH_EXPR ||
+			    rk == SN_GROUP_EXPR || rk == SN_ENUM_EXPR) {
+				char *nm = sem_txt_dup(sem_binding_name(d));
+				switch (rk) {
+				case SN_ENUM_EXPR:
+					return build_enum_from(rhs, nm);
+				case SN_PROC_EXPR: {
+					Decl *ad = build_proc_from(rhs, nm);
+					/* decorators live at the binding level (`@allow_pure_proc name :: proc…`) */
+					if (cv_has_token(d, TOK_AT))
+						ad->data.proc->allow_pure_proc = 1;
+					return ad;
+				}
+				case SN_FUNC_EXPR:
+					return build_func_from(rhs, nm);
+				case SN_SYS_EXPR:
+					return build_sys_from(rhs, nm);
+				case SN_ARCH_EXPR:
+					return build_archetype_from(rhs, nm);
+				case SN_GROUP_EXPR:
+					return build_func_group_from(rhs, nm);
+				default:
+					break;
+				}
+			}
+			/* Bodiless callable RHS `name :: proc()(…)` / `func(…)->T` — a named proc/func TYPE.
+			 * Recorded as a const whose type_value is the callable signature; the classifier
+			 * registers it as a callable-type alias. */
+			if (rk == SN_TYPE_PROC || rk == SN_TYPE_FUNC) {
+				Decl *adc = decl_create(DECL_CONST);
+				ConstDecl *acc = const_decl_create(sem_txt_dup(sem_binding_name(d)), NULL);
+				acc->decl_type = NULL;
+				acc->type_value = cst_build_type(rhs);
+				acc->value = NULL;
+				adc->data.constant = acc;
+				return adc;
+			}
+		}
 		Decl *ad = decl_create(DECL_CONST);
 		char *cname = sem_txt_dup(cv_token(d, TOK_IDENT));
 		ConstDecl *ac = const_decl_create(cname, NULL);
@@ -4863,6 +5330,11 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 
 		/* Type-form RHS (`name : type : T`, or the tuple `name :: (x,y:..)`): a nominal alias. */
 		if (c->type_value) {
+			if (c->type_value->kind == TYPE_PROC || c->type_value->kind == TYPE_FUNC) {
+				/* `name :: proc()(…)` — a named structural callable type. */
+				register_callable_type_alias(ctx, c->name, c->type_value);
+				continue;
+			}
 			if (c->type_value->kind == TYPE_TUPLE) {
 				for (int f = 0; f < c->type_value->data.tuple.field_count; f++) {
 					TypeRef *ft = c->type_value->data.tuple.field_types[f];
@@ -4937,6 +5409,13 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 				register_value_const(ctx, deferred_name[d], lex, value_const_type(ctx, r), deferred_loc[d]);
 				deferred_done[d] = 1;
 				progress = 1;
+				continue;
+			}
+			/* `handler :: some_proc` — a callable alias (Stage A of proc/func types). */
+			if (prog_has_callable(prog, r)) {
+				register_callable_alias(ctx, deferred_name[d], r);
+				deferred_done[d] = 1;
+				progress = 1;
 			}
 		}
 	}
@@ -4956,6 +5435,16 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 	free(deferred_value_ctx);
 	free(deferred_done);
 	free(deferred_loc);
+
+	/* Enums: register the type (as an int-backed alias so `m: method` resolves) and its variants
+	 * (so `method.get` and bare variants in `match` resolve to their int values). Compile-time only. */
+	for (int i = 0; i < prog->decl_count; i++) {
+		if (prog->decls[i]->kind != DECL_ENUM)
+			continue;
+		EnumDecl *e = prog->decls[i]->data.enum_decl;
+		register_enum_entries(ctx, e);
+		register_type_alias(ctx, sem_dupz(e->name), "int", prog->decls[i]->loc);
+	}
 
 	/* Inline component definitions: `arche Foo { hp :: int, … }` mints the nominal type `hp`
 	 * (≡ a top-level `hp :: int`) and includes it as a component — so the component is a real
@@ -5100,6 +5589,18 @@ static SemanticContext *make_context(void) {
 	ctx->alias_count = 0;
 	ctx->known_funcs = NULL;
 	ctx->known_func_count = 0;
+	ctx->callable_alias_names = NULL;
+	ctx->callable_alias_targets = NULL;
+	ctx->callable_alias_count = 0;
+	ctx->ctype_alias_names = NULL;
+	ctx->ctype_alias_refs = NULL;
+	ctx->ctype_alias_count = 0;
+	ctx->enum_type_names = NULL;
+	ctx->enum_type_count = 0;
+	ctx->enum_var_enum = NULL;
+	ctx->enum_var_name = NULL;
+	ctx->enum_var_value = NULL;
+	ctx->enum_var_count = 0;
 	ctx->static_names = NULL;
 	ctx->static_name_count = 0;
 	ctx->groups = NULL;
@@ -5139,6 +5640,85 @@ static SemanticContext *make_context(void) {
 	return ctx;
 }
 
+/* The first pattern token of a match arm (variant / literal / `_`), or NULL. */
+static const SyntaxElem *match_arm_pattern_tok(const SyntaxNode *arm) {
+	for (int c = 0; c < arm->child_count; c++) {
+		if (arm->children[c].tag != SE_TOKEN)
+			continue;
+		TokenKind k = arm->children[c].as.token.kind;
+		if (k == TOK_IDENT || k == TOK_NUMBER || k == TOK_STRING || k == TOK_CHAR_LIT)
+			return &arm->children[c];
+		return NULL; /* something else came first */
+	}
+	return NULL;
+}
+
+/* The enum a bare variant name belongs to, or NULL. */
+static const char *enum_of_variant(SemanticContext *ctx, const char *var, int len) {
+	for (int i = 0; i < ctx->enum_var_count; i++)
+		if ((int)strlen(ctx->enum_var_name[i]) == len && memcmp(ctx->enum_var_name[i], var, len) == 0)
+			return ctx->enum_var_enum[i];
+	return NULL;
+}
+
+/* Exhaustiveness check for one `match`: an enum match must cover every variant (or have `_`);
+ * an open-key (int/string/char) match must have a `_`. */
+static void check_one_match(SemanticContext *ctx, const SyntaxNode *m, const char *src) {
+	int has_wild = 0;
+	const char *en = NULL;
+	for (int i = 0; i < m->child_count; i++) {
+		if (m->children[i].tag != SE_NODE || m->children[i].as.node->kind != SN_MATCH_ARM)
+			continue;
+		const SyntaxElem *pt = match_arm_pattern_tok(m->children[i].as.node);
+		if (!pt)
+			continue;
+		const char *txt = src + pt->as.token.offset;
+		int len = (int)pt->as.token.length;
+		if (pt->as.token.kind == TOK_IDENT) {
+			if (len == 1 && txt[0] == '_')
+				has_wild = 1;
+			else {
+				const char *e = enum_of_variant(ctx, txt, len);
+				if (e && !en)
+					en = e;
+			}
+		}
+	}
+	SourceLoc loc = sem_direct_token_loc((SyntaxNode *)m, TOK_MATCH);
+	if (en) {
+		if (has_wild)
+			return; /* `_` covers any uncovered variants */
+		for (int v = 0; v < ctx->enum_var_count; v++) {
+			if (strcmp(ctx->enum_var_enum[v], en) != 0)
+				continue;
+			int covered = 0;
+			for (int i = 0; i < m->child_count && !covered; i++) {
+				if (m->children[i].tag != SE_NODE || m->children[i].as.node->kind != SN_MATCH_ARM)
+					continue;
+				const SyntaxElem *pt = match_arm_pattern_tok(m->children[i].as.node);
+				if (pt && pt->as.token.kind == TOK_IDENT &&
+				    (int)strlen(ctx->enum_var_name[v]) == (int)pt->as.token.length &&
+				    memcmp(ctx->enum_var_name[v], src + pt->as.token.offset, pt->as.token.length) == 0)
+					covered = 1;
+			}
+			if (!covered)
+				sem_emit_non_exhaustive_match(ctx, loc, ctx->enum_var_name[v]);
+		}
+	} else if (!has_wild) {
+		sem_emit_non_exhaustive_match(ctx, loc, "_");
+	}
+}
+
+static void walk_matches(SemanticContext *ctx, const SyntaxNode *n, const char *src) {
+	if (!n)
+		return;
+	if (n->kind == SN_MATCH_STMT)
+		check_one_match(ctx, n, src);
+	for (int i = 0; i < n->child_count; i++)
+		if (n->children[i].tag == SE_NODE)
+			walk_matches(ctx, n->children[i].as.node, src);
+}
+
 SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src) {
 	SemanticContext *ctx = make_context();
 	if (!root)
@@ -5148,6 +5728,7 @@ SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src) {
 	 * aliases from the side model, so the alias-erasure tree mutation is not needed. */
 	ctx->owned_prog = cst_to_program(root, src);
 	analyze_program_core(ctx, ctx->owned_prog, /*erase=*/0);
+	walk_matches(ctx, root, src); /* exhaustiveness: enums register during analyze, so check after */
 	return ctx;
 }
 
@@ -5318,6 +5899,28 @@ const char *semantic_resolve_type_alias(SemanticContext *ctx, const char *name) 
 	if (!ctx || !name)
 		return name;
 	return resolve_type_alias(ctx, name);
+}
+
+const char *semantic_resolve_callable_alias(SemanticContext *ctx, const char *name) {
+	if (!ctx || !name)
+		return NULL;
+	return resolve_callable_alias(ctx, name);
+}
+
+TypeRef *semantic_callable_type_alias(SemanticContext *ctx, const char *name) {
+	return callable_type_alias_ref(ctx, name);
+}
+
+int semantic_is_enum_type(SemanticContext *ctx, const char *name) {
+	return enum_is_type(ctx, name);
+}
+
+int semantic_enum_variant_value(SemanticContext *ctx, const char *enum_name, const char *variant, long *out) {
+	return enum_variant_lookup(ctx, enum_name, variant, out);
+}
+
+int semantic_find_enum_variant(SemanticContext *ctx, const char *variant, long *out) {
+	return enum_variant_lookup(ctx, NULL, variant, out);
 }
 
 int semantic_error_count(const SemanticContext *ctx) {

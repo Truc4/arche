@@ -1,0 +1,10 @@
+// match on integer literals → if-chain of direct dispatch; `_` is the required catch-all.
+// RUN: %arche build -o %t %s && %t | grep "two"
+main :: proc () {
+  x := 2;
+  match x {
+    1: printf("one\n");
+    2: printf("two\n");
+    _: printf("other\n");
+  }
+}

@@ -91,7 +91,7 @@ void test_const_basic_float(void) {
 
 void test_const_use_in_expr(void) {
 	test_start("const used in expression");
-	AnalysisResult result = analyze_string("FOO :: 10\nproc main()() { x := FOO; }");
+	AnalysisResult result = analyze_string("FOO :: 10\nmain :: proc()() { x := FOO; }");
 	ASSERT_TRUE(result.ctx != NULL, "context is null");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should not error");
 	analysis_result_free(&result);

@@ -25,6 +25,6 @@
 /// ```arche,ignore
 /// this is not even valid arche
 /// ```
-func val() -> int {
+val :: func () -> int {
   return 42;
 }

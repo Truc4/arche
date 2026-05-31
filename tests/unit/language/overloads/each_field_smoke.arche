@@ -1,21 +1,19 @@
 // RUN: %arche build -o %t %s && %t | grep "col0=11 col1=21"
-arche Pair {
-  a :: int,
-  b :: int,
+Pair :: arche {
+  a :: int, b :: int,
 }
 
 static pool<Pair> (3, 3) {
   a: 10, b: 20,
 }
-;
 
-@allow_pure_proc proc bump(arch: archetype) {
+@allow_pure_proc bump :: proc (arch: archetype) {
   #each_field f: int in arch {
     f[0] = f[0] + 1;
   }
 }
 
-proc dump(arch: archetype) {
+dump :: proc (arch: archetype) {
   #each_field f: int in arch {
     if (f.index == 0) {
       printf("col0=%d ", f[0]);
@@ -26,7 +24,7 @@ proc dump(arch: archetype) {
   }
 }
 
-proc main() {
+main :: proc () {
   bump(Pair);
   dump(Pair);
 }
