@@ -79,6 +79,12 @@ struct SemanticContext {
 	char **callable_alias_targets;
 	int callable_alias_count;
 
+	/* Named callable-type aliases: `Handler :: proc()(w:int)` binds a name to a structural
+	 * callable type. tyid_from_name resolves the name to the signature's TypeId. */
+	char **ctype_alias_names;
+	struct TypeRef **ctype_alias_refs; /* owned by the AST */
+	int ctype_alias_count;
+
 	/* Names of `static` global arrays, registered in a pre-pass (order-independent) so func-purity
 	 * can reject a func reading or writing one — a func's only inputs are params + `::` constants. */
 	char **static_names;
@@ -318,6 +324,25 @@ static const char *resolve_callable_alias(SemanticContext *ctx, const char *name
 		name = next;
 	}
 	return cur;
+}
+
+static void register_callable_type_alias(SemanticContext *ctx, const char *name, TypeRef *ref) {
+	ctx->ctype_alias_names = realloc(ctx->ctype_alias_names, (ctx->ctype_alias_count + 1) * sizeof(char *));
+	ctx->ctype_alias_refs = realloc(ctx->ctype_alias_refs, (ctx->ctype_alias_count + 1) * sizeof(TypeRef *));
+	char *n = malloc(strlen(name) + 1);
+	strcpy(n, name);
+	ctx->ctype_alias_names[ctx->ctype_alias_count] = n;
+	ctx->ctype_alias_refs[ctx->ctype_alias_count] = ref;
+	ctx->ctype_alias_count++;
+}
+
+static TypeRef *callable_type_alias_ref(SemanticContext *ctx, const char *name) {
+	if (!ctx || !name)
+		return NULL;
+	for (int i = 0; i < ctx->ctype_alias_count; i++)
+		if (strcmp(ctx->ctype_alias_names[i], name) == 0)
+			return ctx->ctype_alias_refs[i];
+	return NULL;
 }
 
 static int is_static_name(SemanticContext *ctx, const char *name) {
@@ -3098,6 +3123,7 @@ static SourceLoc sem_node_loc(const SyntaxNode *n) {
 
 /* ---- type reconstruction (CST type node -> TypeRef) ---- */
 static TypeRef *cst_build_type(CstView t);
+static CstView sem_type_at(CstView v, int idx);
 static int cv_type_count_sem(CstView v);
 
 /* The archetype name inside `handle<X>` / `handle(X)` (the IDENT that isn't "handle"). */
@@ -3217,6 +3243,30 @@ static TypeRef *cst_build_type(CstView t) {
 			}
 		}
 		tr->data.tuple.field_count = fi;
+		break;
+	}
+	case SN_TYPE_PROC:
+	case SN_TYPE_FUNC: {
+		int is_proc = (cv_kind(t) == SN_TYPE_PROC);
+		tr->kind = is_proc ? TYPE_PROC : TYPE_FUNC;
+		tr->data.callable.is_proc = is_proc;
+		int np = cv_count(t, SN_PARAM);
+		tr->data.callable.param_count = np;
+		tr->data.callable.param_types = malloc((np ? np : 1) * sizeof(TypeRef *));
+		for (int i = 0; i < np; i++)
+			tr->data.callable.param_types[i] = cst_build_type(sem_type_at(cv_child_at(t, SN_PARAM, i), 0));
+		if (is_proc) {
+			int no = cv_count(t, SN_OUT_PARAM);
+			tr->data.callable.result_count = no;
+			tr->data.callable.result_types = malloc((no ? no : 1) * sizeof(TypeRef *));
+			for (int i = 0; i < no; i++)
+				tr->data.callable.result_types[i] = cst_build_type(sem_type_at(cv_child_at(t, SN_OUT_PARAM, i), 0));
+		} else {
+			/* a func's single return is the SN_TYPE_FUNC's direct type-node child (params are in SN_PARAM) */
+			tr->data.callable.result_count = 1;
+			tr->data.callable.result_types = malloc(sizeof(TypeRef *));
+			tr->data.callable.result_types[0] = cst_build_type(sem_type_at(t, 0));
+		}
 		break;
 	}
 	default:
@@ -4305,6 +4355,18 @@ static Decl *cst_build_decl_inner(CstView d) {
 					break;
 				}
 			}
+			/* Bodiless callable RHS `name :: proc()(…)` / `func(…)->T` — a named proc/func TYPE.
+			 * Recorded as a const whose type_value is the callable signature; the classifier
+			 * registers it as a callable-type alias. */
+			if (rk == SN_TYPE_PROC || rk == SN_TYPE_FUNC) {
+				Decl *adc = decl_create(DECL_CONST);
+				ConstDecl *acc = const_decl_create(sem_txt_dup(sem_binding_name(d)), NULL);
+				acc->decl_type = NULL;
+				acc->type_value = cst_build_type(rhs);
+				acc->value = NULL;
+				adc->data.constant = acc;
+				return adc;
+			}
 		}
 		Decl *ad = decl_create(DECL_CONST);
 		char *cname = sem_txt_dup(cv_token(d, TOK_IDENT));
@@ -5116,6 +5178,11 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 
 		/* Type-form RHS (`name : type : T`, or the tuple `name :: (x,y:..)`): a nominal alias. */
 		if (c->type_value) {
+			if (c->type_value->kind == TYPE_PROC || c->type_value->kind == TYPE_FUNC) {
+				/* `name :: proc()(…)` — a named structural callable type. */
+				register_callable_type_alias(ctx, c->name, c->type_value);
+				continue;
+			}
 			if (c->type_value->kind == TYPE_TUPLE) {
 				for (int f = 0; f < c->type_value->data.tuple.field_count; f++) {
 					TypeRef *ft = c->type_value->data.tuple.field_types[f];
@@ -5363,6 +5430,9 @@ static SemanticContext *make_context(void) {
 	ctx->callable_alias_names = NULL;
 	ctx->callable_alias_targets = NULL;
 	ctx->callable_alias_count = 0;
+	ctx->ctype_alias_names = NULL;
+	ctx->ctype_alias_refs = NULL;
+	ctx->ctype_alias_count = 0;
 	ctx->static_names = NULL;
 	ctx->static_name_count = 0;
 	ctx->groups = NULL;
@@ -5587,6 +5657,10 @@ const char *semantic_resolve_callable_alias(SemanticContext *ctx, const char *na
 	if (!ctx || !name)
 		return NULL;
 	return resolve_callable_alias(ctx, name);
+}
+
+TypeRef *semantic_callable_type_alias(SemanticContext *ctx, const char *name) {
+	return callable_type_alias_ref(ctx, name);
 }
 
 int semantic_error_count(const SemanticContext *ctx) {

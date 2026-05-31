@@ -47,6 +47,10 @@ const char *semantic_resolve_type_alias(SemanticContext *ctx, const char *name);
  * else NULL. Lowering rewrites call callees through this and drops the alias binding. */
 const char *semantic_resolve_callable_alias(SemanticContext *ctx, const char *name);
 
+/* If `name` is a named callable-type alias (`handler :: proc()(w:int)`), its callable TypeRef;
+ * else NULL. tycheck resolves the name to the structural signature's TypeId. */
+struct TypeRef *semantic_callable_type_alias(SemanticContext *ctx, const char *name);
+
 /* Error checking */
 int semantic_has_errors(SemanticContext *ctx);
 int semantic_error_count(const SemanticContext *ctx);

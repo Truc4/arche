@@ -201,6 +201,14 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "ARCH_EXPR";
 	case SN_SYS_EXPR:
 		return "SYS_EXPR";
+	case SN_ENUM_EXPR:
+		return "ENUM_EXPR";
+	case SN_ENUM_VARIANT:
+		return "ENUM_VARIANT";
+	case SN_MATCH_STMT:
+		return "MATCH_STMT";
+	case SN_MATCH_ARM:
+		return "MATCH_ARM";
 	case SN_TYPE_REF:
 		return "TYPE_REF";
 	case SN_TYPE_ARRAY:

@@ -238,6 +238,26 @@ static void emit_alloca(CodegenContext *ctx, const char *fmt, ...) {
 	}
 }
 
+/* Size in bytes of an LLVM scalar/pointer type name, for column layout + row-stride math.
+ * Pointer-aware and width-aware (the old `elem_type[0]=='d' ? 8 : 4` heuristic under-sized i64,
+ * i128, and pointers — corrupting columns of those types). */
+static int llvm_type_sizeof(const char *t) {
+	if (!t || !t[0])
+		return 4;
+	size_t n = strlen(t);
+	if (t[n - 1] == '*')
+		return 8; /* any pointer is pointer-width (LP64) */
+	if (strcmp(t, "double") == 0 || strcmp(t, "i64") == 0)
+		return 8;
+	if (strcmp(t, "i128") == 0)
+		return 16;
+	if (strcmp(t, "i16") == 0)
+		return 2;
+	if (strcmp(t, "i8") == 0 || strcmp(t, "i1") == 0)
+		return 1;
+	return 4; /* i32 / float / default */
+}
+
 static const char *llvm_type_from_arche(const char *arche_type) {
 	if (!arche_type)
 		return "i32"; /* default to int */
@@ -2986,7 +3006,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			if (arch->fields[i]->kind == FIELD_COLUMN) {
 				const char *elem_type = llvm_type_from_arche(field_base_type_name(arch->fields[i]->type));
 				int n = field_total_elements(arch->fields[i]->type);
-				int elem_sz = (elem_type[0] == 'd' || strcmp(elem_type, "i64") == 0) ? 8 : 4;
+				int elem_sz = llvm_type_sizeof(elem_type);
 				bytes_per_row += elem_sz * n;
 			}
 		}
@@ -3051,7 +3071,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				buffer_append_fmt(ctx, "  store %s* %s, %s** %s\n", elem_type, col_ptr, elem_type, col_gep);
 
 				int n = field_total_elements(arch->fields[i]->type);
-				int elem_size = ((elem_type[0] == 'd') ? 8 : 4) * n;
+				int elem_size = llvm_type_sizeof(elem_type) * n;
 				col_offset += elem_size;
 			}
 		}
@@ -5873,7 +5893,7 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, HirStaticDecl *alloc) {
 		if (arch->fields[i]->kind == FIELD_COLUMN) {
 			const char *elem_type = llvm_type_from_arche(field_base_type_name(arch->fields[i]->type));
 			int n = field_total_elements(arch->fields[i]->type);
-			bytes_per_row += ((elem_type[0] == 'd') ? 8 : 4) * n;
+			bytes_per_row += llvm_type_sizeof(elem_type) * n;
 		}
 	}
 	int total_bytes_per_row = bytes_per_row + 8;
@@ -5933,7 +5953,7 @@ static void codegen_emit_alloc_init(CodegenContext *ctx, HirStaticDecl *alloc) {
 			buffer_append_fmt(ctx, "  store %s* %s, %s** %s\n", elem_type, col_ptr, elem_type, col_gep);
 
 			int n = field_total_elements(arch->fields[i]->type);
-			int elem_size = ((elem_type[0] == 'd') ? 8 : 4) * n;
+			int elem_size = llvm_type_sizeof(elem_type) * n;
 			col_offset += elem_size;
 		}
 	}

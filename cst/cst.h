@@ -136,6 +136,8 @@ typedef enum {
 	TYPE_OPAQUE,       /* opaque: pointer-width C-owned cell, never read/written/forged by Arche */
 	TYPE_TYPE,         /* `type`: the meta-type (type-of-types). A type alias is a constant of this
 	                      type; compile-time only, erased before lowering. */
+	TYPE_PROC,         /* a proc type (bodiless signature): `proc(in)(out)` — structural */
+	TYPE_FUNC,         /* a func type (bodiless signature): `func(in) -> T` — structural */
 } TypeKind;
 
 struct TypeRef {
@@ -162,6 +164,16 @@ struct TypeRef {
 		struct {
 			char *archetype_name;
 		} handle;
+
+		/* TYPE_PROC / TYPE_FUNC: a callable signature. `results` are a proc's out-params or a
+		 * func's single return. Matched structurally (names ignored). */
+		struct {
+			TypeRef **param_types;
+			int param_count;
+			TypeRef **result_types;
+			int result_count;
+			int is_proc;
+		} callable;
 	} data;
 };
 

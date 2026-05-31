@@ -88,9 +88,18 @@ static int is_width_int_name(const char *s) {
  * `socket :: opaque` becomes the same TypeId as `file :: opaque`). That's a
  * known limitation; the existing semantic.c handles nominal distinctness for
  * the cases it cares about (extern handle params) via separate checks. */
+static TypeId tyid_from_typeref(TypeArena *arena, SemanticContext *ctx, const TypeRef *tr);
+
 static TypeId tyid_from_name(TypeArena *arena, SemanticContext *ctx, const char *n) {
 	if (!n || !n[0])
 		return TYID_UNKNOWN;
+	/* A named callable-type alias resolves to its structural signature TypeId (proc/func types
+	 * are matched by shape, not name). */
+	if (ctx) {
+		TypeRef *ct = semantic_callable_type_alias(ctx, n);
+		if (ct)
+			return tyid_from_typeref(arena, ctx, ct);
+	}
 	/* Normalize title-case aliases (Int/Float/Char/Str/Void) to lowercase before
 	 * alias resolution. Matches semantic.c's normalize_type_name behavior. */
 	if (strcmp(n, "Int") == 0)
@@ -139,6 +148,24 @@ static TypeId tyid_from_typeref(TypeArena *arena, SemanticContext *ctx, const Ty
 	switch (tr->kind) {
 	case TYPE_NAME:
 		return tyid_from_name(arena, ctx, tr->data.name);
+	case TYPE_PROC:
+	case TYPE_FUNC: {
+		/* Callable type → structural func TypeId (interned; name never in the key). */
+		int np = tr->data.callable.param_count, nr = tr->data.callable.result_count;
+		TypeId pbuf[32], rbuf[8];
+		TypeId *params = np > 32 ? malloc((size_t)np * sizeof(TypeId)) : pbuf;
+		TypeId *rets = nr > 8 ? malloc((size_t)nr * sizeof(TypeId)) : rbuf;
+		for (int i = 0; i < np; i++)
+			params[i] = tyid_from_typeref(arena, ctx, tr->data.callable.param_types[i]);
+		for (int i = 0; i < nr; i++)
+			rets[i] = tyid_from_typeref(arena, ctx, tr->data.callable.result_types[i]);
+		TypeId out = tyid_of_func(arena, params, np, rets, nr, tr->data.callable.is_proc);
+		if (params != pbuf)
+			free(params);
+		if (rets != rbuf)
+			free(rets);
+		return out;
+	}
 	default:
 		/* Phase B fills in array/tuple/handle/archetype. */
 		return TYID_UNKNOWN;
@@ -253,6 +280,34 @@ static TypeId synth_call(TyCtx *cx, Expression *e) {
 	return ret_count > 0 ? tyid_from_typeref(cx->arena, cx->ctx, rets[0]) : tyid_of_prim(cx->arena, PRIM_VOID);
 }
 
+/* The structural callable TypeId of a proc/func decl (its signature as a value): params +
+ * (proc out-params | func return), with the is_proc discriminator. */
+static TypeId tyid_of_callee(TyCtx *cx, CalleeRef cr) {
+	TypeId pbuf[32], rbuf[8];
+	int pc = 0, rc = 0, is_proc = 0;
+	if (cr.kind == CALLEE_FUNC) {
+		FuncDecl *f = cr.u.func;
+		pc = f->param_count > 32 ? 32 : f->param_count;
+		rc = f->return_type_count > 8 ? 8 : f->return_type_count;
+		for (int i = 0; i < pc; i++)
+			pbuf[i] = tyid_from_typeref(cx->arena, cx->ctx, f->params[i]->type);
+		for (int i = 0; i < rc; i++)
+			rbuf[i] = tyid_from_typeref(cx->arena, cx->ctx, f->return_types[i]);
+	} else if (cr.kind == CALLEE_PROC) {
+		ProcDecl *p = cr.u.proc;
+		is_proc = 1;
+		pc = p->param_count > 32 ? 32 : p->param_count;
+		rc = p->out_param_count > 8 ? 8 : p->out_param_count;
+		for (int i = 0; i < pc; i++)
+			pbuf[i] = tyid_from_typeref(cx->arena, cx->ctx, p->params[i]->type);
+		for (int i = 0; i < rc; i++)
+			rbuf[i] = tyid_from_typeref(cx->arena, cx->ctx, p->out_params[i]->type);
+	} else {
+		return TYID_UNKNOWN;
+	}
+	return tyid_of_func(cx->arena, pbuf, pc, rbuf, rc, is_proc);
+}
+
 static TypeId synth(TyCtx *cx, Expression *e) {
 	if (!e)
 		return TYID_UNKNOWN;
@@ -333,6 +388,13 @@ static TypeId synth(TyCtx *cx, Expression *e) {
 	}
 	case EXPR_NAME:
 	case EXPR_FIELD: {
+		/* A bare name denoting a proc/func is a first-class callable value: its type is the
+		 * structural signature (so `h: Handler = some_proc` is checked, callbacks type, etc.). */
+		if (e->type == EXPR_NAME) {
+			CalleeRef cr = find_callee(cx->prog, e->data.name.name);
+			if (cr.kind != CALLEE_NONE)
+				return tyid_of_callee(cx, cr);
+		}
 		/* Bridge to semantic.c's resolved types: every expression with a cst_id has
 		 * its type recorded in SemModel during analyze_expression. We map the
 		 * string back to a TypeId. */

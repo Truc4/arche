@@ -293,6 +293,29 @@ static HirType *lower_type_cst(CstView t) {
 			}
 		break;
 	}
+	case SN_TYPE_PROC:
+	case SN_TYPE_FUNC: {
+		int is_proc = (cv_kind(t) == SN_TYPE_PROC);
+		at->tag = HIR_TYPE_FUNC;
+		at->is_proc = is_proc;
+		int np = cv_count(t, SN_PARAM);
+		at->param_count = np;
+		at->params = calloc(np ? np : 1, sizeof(HirType *));
+		for (int i = 0; i < np; i++)
+			at->params[i] = lower_type_cst(cv_type_at(cv_child_at(t, SN_PARAM, i), 0));
+		if (is_proc) {
+			int no = cv_count(t, SN_OUT_PARAM);
+			at->result_count = no;
+			at->results = calloc(no ? no : 1, sizeof(HirType *));
+			for (int i = 0; i < no; i++)
+				at->results[i] = lower_type_cst(cv_type_at(cv_child_at(t, SN_OUT_PARAM, i), 0));
+		} else {
+			at->result_count = 1;
+			at->results = calloc(1, sizeof(HirType *));
+			at->results[0] = lower_type_cst(cv_type_at(t, 0));
+		}
+		break;
+	}
 	default:
 		break;
 	}

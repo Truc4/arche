@@ -58,6 +58,8 @@ typedef enum {
 	SN_MULTI_BIND_STMT,
 	SN_PROC_CALL_STMT, /* `foo(in)(out)` — an action with out-arguments */
 	SN_EACH_FIELD_STMT,
+	SN_MATCH_STMT, /* `match expr { pat : body, … }` — exhaustive dispatch */
+	SN_MATCH_ARM,  /* one arm: a pattern (variant / literal / `_`) + body */
 
 	/* Expressions */
 	SN_LITERAL_EXPR,
@@ -74,11 +76,13 @@ typedef enum {
 	/* Unified-grammar RHS value forms: the name is the binding LHS, so these carry no
 	 * SN_FUNC_DEF_NAME. A bodied (or `extern`) proc/func is a value; a bodiless one is a
 	 * type (SN_TYPE_PROC / SN_TYPE_FUNC below). */
-	SN_PROC_EXPR,  /* proc value literal: `proc(in)(out){body}` or `extern proc(in)(out)` */
-	SN_FUNC_EXPR,  /* func value literal: `func(in)->T{body}` */
-	SN_GROUP_EXPR, /* Odin-style overload group: `proc{a,b}` / `func{a,b}` */
-	SN_ARCH_EXPR,  /* archetype (record type) definition: `archetype{ fields }` */
-	SN_SYS_EXPR,   /* sys definition: `sys(components){body}` */
+	SN_PROC_EXPR,    /* proc value literal: `proc(in)(out){body}` or `extern proc(in)(out)` */
+	SN_FUNC_EXPR,    /* func value literal: `func(in)->T{body}` */
+	SN_GROUP_EXPR,   /* Odin-style overload group: `proc{a,b}` / `func{a,b}` */
+	SN_ARCH_EXPR,    /* archetype (record type) definition: `archetype{ fields }` */
+	SN_SYS_EXPR,     /* sys definition: `sys(components){body}` */
+	SN_ENUM_EXPR,    /* enum type definition: `enum { a, b = 2, c }` */
+	SN_ENUM_VARIANT, /* one enum variant: name + optional `= N` */
 
 	/* Types (children of / refinements within a type position) */
 	SN_TYPE_REF, /* a type position: identifiers within are types */

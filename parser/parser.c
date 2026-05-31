@@ -1084,6 +1084,39 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 		}
 		return parse_block_body(parser);
 	}
+	if (check(parser, TOK_ENUM)) {
+		advance(parser); /* consume 'enum' */
+		*out_kind = SN_ENUM_EXPR;
+		if (!match(parser, TOK_LBRACE)) {
+			error(parser, "Expected '{' after 'enum'");
+			return 0;
+		}
+		if (!check(parser, TOK_RBRACE)) {
+			do {
+				if (check(parser, TOK_RBRACE)) /* trailing comma */
+					break;
+				int v_cp = cst_cp(parser);
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "Expected enum variant name");
+					return 0;
+				}
+				advance(parser); /* variant name */
+				if (match(parser, TOK_EQ)) {
+					if (!check(parser, TOK_NUMBER)) {
+						error(parser, "Expected integer after '=' in enum variant");
+						return 0;
+					}
+					advance(parser); /* explicit value */
+				}
+				cst_wrap(parser, v_cp, SN_ENUM_VARIANT);
+			} while (match(parser, TOK_COMMA));
+		}
+		if (!match(parser, TOK_RBRACE)) {
+			error(parser, "Expected '}' to close enum");
+			return 0;
+		}
+		return 1;
+	}
 
 	if (check(parser, TOK_IDENT)) {
 		int prim_name_cp = cst_cp(parser);
@@ -1572,6 +1605,45 @@ static int parse_statement(Parser *parser) {
 		}
 
 		stmt_kind = SN_RUN_STMT;
+		ok = 1;
+		goto cleanup;
+	}
+
+	if (check(parser, TOK_MATCH)) {
+		advance(parser); /* consume 'match' */
+		if (!parse_expression(parser)) /* scrutinee */
+			goto cleanup;
+		if (!match(parser, TOK_LBRACE)) {
+			error(parser, "Expected '{' after match scrutinee");
+			goto cleanup;
+		}
+		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+			int arm_cp = cst_cp(parser);
+			/* pattern: an enum variant / `_` ident, or an int/string/char literal */
+			if (check(parser, TOK_IDENT) || check(parser, TOK_NUMBER) || check(parser, TOK_STRING) ||
+			    check(parser, TOK_CHAR_LIT)) {
+				advance(parser);
+			} else {
+				error(parser, "Expected match pattern (variant, literal, or '_')");
+				break;
+			}
+			if (!match(parser, TOK_COLON)) {
+				error(parser, "Expected ':' after match pattern");
+				break;
+			}
+			/* body: a `{ … }` block or a single statement */
+			if (check(parser, TOK_LBRACE)) {
+				if (!parse_block_body(parser))
+					break;
+			} else if (!parse_statement(parser)) {
+				synchronize(parser);
+			}
+			cst_wrap(parser, arm_cp, SN_MATCH_ARM);
+			match(parser, TOK_COMMA); /* optional separator between arms */
+		}
+		if (!match(parser, TOK_RBRACE))
+			error(parser, "Expected '}' to close match");
+		stmt_kind = SN_MATCH_STMT;
 		ok = 1;
 		goto cleanup;
 	}
