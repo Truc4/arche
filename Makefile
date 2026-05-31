@@ -1,5 +1,6 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c99 -DARCHE_CORE_DIR=\"$(abspath core)\" -DARCHE_STDLIB_DIR=\"$(abspath stdlib)\" -DARCHE_RUNTIME_DIR=\"$(abspath build/runtime)\" -DARCHE_EXPLAIN_DIR=\"$(abspath docs/explain)\"
+ARCHE_VERSION := $(shell cat VERSION 2>/dev/null || echo 0.0.0-dev)
+CFLAGS = -Wall -Wextra -std=c99 -DARCHE_CORE_DIR=\"$(abspath core)\" -DARCHE_STDLIB_DIR=\"$(abspath stdlib)\" -DARCHE_RUNTIME_DIR=\"$(abspath build/runtime)\" -DARCHE_EXPLAIN_DIR=\"$(abspath docs/explain)\" -DARCHE_VERSION=\"$(ARCHE_VERSION)\"
 BUILD_DIR = build
 TARGET = $(BUILD_DIR)/arche
 VPATH = tests
@@ -39,12 +40,19 @@ RUNTIME_SRCS = runtime/stack_check.c runtime/io.c runtime/net.c runtime/term.c
 RUNTIME_OBJS = $(RUNTIME_SRCS:.c=.o)
 
 OBJS = $(SRCS:.c=.o)
-COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/driver/compile.o $(BUILD_DIR)/doctest/doctest_extract.o $(BUILD_DIR)/doctest/doctest_run.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/main.o
+# CLI multitool: dispatch + table-driven arg parser + one object per subcommand.
+CLI_OBJS = $(BUILD_DIR)/cli/args.o $(BUILD_DIR)/cli/cli.o $(BUILD_DIR)/cli/resource.o $(BUILD_DIR)/cli/cmd_build.o $(BUILD_DIR)/cli/cmd_run.o $(BUILD_DIR)/cli/cmd_check.o $(BUILD_DIR)/cli/cmd_test.o $(BUILD_DIR)/cli/cmd_fmt.o $(BUILD_DIR)/cli/cmd_explain.o $(BUILD_DIR)/cli/cmd_analyze.o $(BUILD_DIR)/cli/cmd_completion.o $(BUILD_DIR)/cli/cmd_version.o
+# Satellite tools folded into the `arche` binary as subcommands (fmt, analyze): their objects join
+# the main link. The standalone arche-fmt / arche-analyzer binaries still build during the migration.
+FOLD_OBJS = $(BUILD_DIR)/cst/format_cst.o $(BUILD_DIR)/cst/token_category.o $(BUILD_DIR)/arche_analyzer.o
+COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/driver/compile.o $(BUILD_DIR)/doctest/doctest_extract.o $(BUILD_DIR)/doctest/doctest_run.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/codegen/codegen.o $(CLI_OBJS) $(FOLD_OBJS) $(BUILD_DIR)/main.o
 LEXER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/lexer/lexer_main.o
 PARSER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/unit/compiler/parser_tests.o
 FMT_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/cst/format_cst.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_fmt.o
 CST_TOKENS_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/cst/token_category.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_cst_tokens.o
-ANALYZER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/cst/token_category.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/arche_analyzer.o
+# Standalone arche-analyzer = the analyzer object + a thin shim main (analyze_main lives in
+# arche_analyzer.o, shared with the folded `arche analyze` subcommand).
+ANALYZER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/cst/token_category.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/arche_analyzer.o $(BUILD_DIR)/arche_analyzer_main.o
 CST_ROUNDTRIP_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_cst_roundtrip.o
 CST_VIEW_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/unit/compiler/cst_view_tests.o
 SEMANTIC_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/unit/compiler/semantic_tests.o
@@ -52,10 +60,12 @@ CODEGEN_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DI
 LOWER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/unit/compiler/lower_tests.o
 
 # Default target
-all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(FMT_BIN) $(CST_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(CST_VIEW_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
+# `arche fmt` replaces the standalone arche-fmt (its target is still defined, buildable on demand).
+# arche-analyzer (LSP) + arche-cst-tokens stay for editor integration.
+all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(CST_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(CST_VIEW_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 
 $(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/cst $(BUILD_DIR)/hir $(BUILD_DIR)/lower $(BUILD_DIR)/parser $(BUILD_DIR)/driver $(BUILD_DIR)/doctest $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/unit/compiler $(BUILD_DIR)/runtime
+	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/cst $(BUILD_DIR)/hir $(BUILD_DIR)/lower $(BUILD_DIR)/parser $(BUILD_DIR)/driver $(BUILD_DIR)/doctest $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/cli $(BUILD_DIR)/unit/compiler $(BUILD_DIR)/runtime
 
 # Build main compiler executable
 $(TARGET): $(COMPILER_OBJS)
@@ -117,7 +127,7 @@ $(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 
 # Run the compiler (produces executable)
 run: $(TARGET)
-	./$(TARGET) examples/stuff.arche
+	./$(TARGET) build examples/stuff.arche
 	@echo
 	@echo "Running generated executable:"
 	@./examples/stuff
@@ -165,13 +175,13 @@ test-folder: $(TARGET) $(BUILD_DIR)
 	@PATTERN="$${PATTERN:=*.arche}"; \
 	for f in $(FOLDER)$$PATTERN; do \
 		echo "Testing $$f..."; \
-		./$(TARGET) -o $(BUILD_DIR)/tests/test_arche "$$f" 2>&1 | tail -1; \
+		./$(TARGET) build -o $(BUILD_DIR)/tests/test_arche "$$f" 2>&1 | tail -1; \
 		$(BUILD_DIR)/tests/test_arche 2>&1 || echo "FAILED: $$f"; \
 	done
 
 # Test code generation
 test-codegen: $(TARGET)
-	./$(TARGET) -o $(BUILD_DIR)/hello_world examples/hello_world/hello_world.arche
+	./$(TARGET) build -o $(BUILD_DIR)/hello_world examples/hello_world/hello_world.arche
 	@test -x $(BUILD_DIR)/hello_world && ./$(BUILD_DIR)/hello_world > /tmp/test_output.txt && grep -q "Hello, World!" /tmp/test_output.txt && echo "✓ Codegen test passed (hello_world)" || echo "✗ Codegen test failed"
 
 # Clean all generated artifacts.
@@ -231,7 +241,7 @@ CLANG_FORMAT := $(shell \
 		echo clang-format; \
 	fi)
 
-format: $(FMT_BIN)
+format: $(TARGET)
 	@if [ -z "$(CLANG_FORMAT_VERSION)" ]; then \
 		echo "error: .clang-format-version missing"; exit 1; \
 	fi
@@ -249,8 +259,8 @@ format: $(FMT_BIN)
 	             -not -path "*/site-packages/*" \
 	             -not -path "*/__pycache__/*"); do \
 		tmp=$$(mktemp --suffix=.arche); \
-		if timeout 5 ./$(FMT_BIN) "$$f" > "$$tmp" 2>/dev/null \
-		   && timeout 5 ./$(FMT_BIN) "$$tmp" > /dev/null 2>&1; then \
+		if timeout 5 ./$(TARGET) fmt "$$f" > "$$tmp" 2>/dev/null \
+		   && timeout 5 ./$(TARGET) fmt "$$tmp" > /dev/null 2>&1; then \
 			mv "$$tmp" "$$f"; \
 			echo "✓ $$f"; \
 		else \
@@ -302,7 +312,7 @@ verify-codegen: $(TARGET)
 	@mkdir -p $(VERIFY_CG_DIR); fail=0; \
 	for f in $(VERIFY_CG_PROGRAMS); do \
 		base=$$(basename $$f .arche); ir=/tmp/cg_$$base.ll; \
-		if ! ./$(TARGET) -emit-llvm -o $$ir $$f >/dev/null 2>&1; then \
+		if ! ./$(TARGET) build --emit=llvm-ir -o $$ir $$f >/dev/null 2>&1; then \
 			echo "verify-codegen: $$f failed to emit IR"; fail=1; continue; fi; \
 		if [ -f $(VERIFY_CG_DIR)/$$base.ll ]; then \
 			if ! diff -q $(VERIFY_CG_DIR)/$$base.ll $$ir >/dev/null; then \
@@ -311,5 +321,34 @@ verify-codegen: $(TARGET)
 	done; \
 	[ $$fail -eq 0 ] && echo "verify-codegen: IR matches golden" || (echo "verify-codegen: FAILED"; exit 1)
 
+# Install a relocatable arche: the binary in $(PREFIX)/bin and its support files in
+# $(PREFIX)/lib/arche/{core,stdlib,runtime,explain}. The installed binary discovers those via the
+# exe-relative path (<bindir>/../lib/arche/...) in cli/resource.c, so it runs from anywhere.
+PREFIX ?= /usr/local
+ARCHE_LIBDIR = $(DESTDIR)$(PREFIX)/lib/arche
+ARCHE_BINDIR = $(DESTDIR)$(PREFIX)/bin
+install: all
+	install -d "$(ARCHE_BINDIR)" "$(ARCHE_LIBDIR)/core" "$(ARCHE_LIBDIR)/stdlib" "$(ARCHE_LIBDIR)/runtime" "$(ARCHE_LIBDIR)/explain"
+	install -m 0755 $(TARGET) "$(ARCHE_BINDIR)/arche"
+	install -m 0755 $(ANALYZER_BIN) "$(ARCHE_BINDIR)/arche-analyzer"
+	install -m 0644 core/core.arche "$(ARCHE_LIBDIR)/core/"
+	cp -R stdlib/. "$(ARCHE_LIBDIR)/stdlib/"
+	install -m 0644 $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o "$(ARCHE_LIBDIR)/runtime/"
+	@[ -d docs/explain ] && cp -R docs/explain/. "$(ARCHE_LIBDIR)/explain/" || true
+	install -d "$(DESTDIR)$(PREFIX)/share/bash-completion/completions" "$(DESTDIR)$(PREFIX)/share/zsh/site-functions" "$(DESTDIR)$(PREFIX)/share/fish/vendor_completions.d"
+	$(TARGET) completion bash > "$(DESTDIR)$(PREFIX)/share/bash-completion/completions/arche"
+	$(TARGET) completion zsh  > "$(DESTDIR)$(PREFIX)/share/zsh/site-functions/_arche"
+	$(TARGET) completion fish > "$(DESTDIR)$(PREFIX)/share/fish/vendor_completions.d/arche.fish"
+	@echo "installed arche $(ARCHE_VERSION) to $(DESTDIR)$(PREFIX)"
+
+# Smoke-test relocatability: install to a throwaway prefix and compile+run from an unrelated cwd,
+# so the binary must resolve core/stdlib/runtime via the exe-relative layout (no in-tree paths).
+test-install: all
+	@root=$$(mktemp -d); $(MAKE) -s install PREFIX=$$root >/dev/null; \
+	printf 'proc main() { printf("install-ok\\n"); }\n' > $$root/t.arche; \
+	out=$$(cd /tmp && $$root/bin/arche run $$root/t.arche); \
+	rm -rf $$root; \
+	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
+
 # Phony targets
-.PHONY: all run run-lexer test test-doc test-lexer test-parser test-semantic test-codegen test-codegen-unit test-lit test-lower clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-cst verify-codegen
+.PHONY: all run run-lexer test test-doc test-lexer test-parser test-semantic test-codegen test-codegen-unit test-lit test-lower clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-cst verify-codegen install test-install

@@ -1,4 +1,5 @@
 #include "compile.h"
+#include "../cli/resource.h"
 #include "../codegen/codegen.h"
 #include "../lexer/lexer.h"
 #include "../lower/lower.h"
@@ -179,9 +180,9 @@ static void load_module(const char *name, const char *source_dir) {
 	}
 	int loaded = try_load_module_dir(name, source_dir, source_dir);
 	if (!loaded)
-		loaded = try_load_module_dir(name, ARCHE_STDLIB_DIR, source_dir);
+		loaded = try_load_module_dir(name, arche_resource_dir(ARCHE_RES_STDLIB), source_dir);
 	if (!loaded)
-		loaded = try_load_module_dir(name, ARCHE_CORE_DIR, source_dir);
+		loaded = try_load_module_dir(name, arche_resource_dir(ARCHE_RES_CORE), source_dir);
 	if (!loaded)
 		fprintf(stderr, "Error: Module not found: %s\n", name);
 }
@@ -210,15 +211,26 @@ static void resolve_uses(const SyntaxNode *cst_root, const char *src, const char
 	free(source_dir);
 }
 
-int compile_source(const char *user_source, const char *source_path, const char *out_path, const CompileOpts *opts) {
-	int emit_llvm = opts ? opts->emit_llvm : 0;
-	int quiet = opts ? opts->quiet : 0;
+/* Front-end products handed from compile_frontend() to its callers. On success the caller owns
+ * `source` (free it) and `sem_ctx` (semantic_context_free); `cst_root` is kept alive for lowering
+ * and follows the same ownership it always had (see compile_source's cleanup — it is not freed). */
+typedef struct {
+	char *source;
+	SyntaxNode *cst_root;
+	SemanticContext *sem_ctx;
+	int core_lines;
+} Frontend;
 
+/* Prepend the core prelude, parse, resolve `#import` modules, and semantically analyze. On success
+ * fills *out and returns 0; on any error prints diagnostics to stderr, releases its own partial
+ * allocations, and returns 1. Shared by `build` (compile_source) and `check` (compile_check) so
+ * both run a byte-identical front-end. */
+static int compile_frontend(const char *user_source, const char *source_path, Frontend *out) {
 	/* Load and prepend core library. Count its newlines so we can subtract them
 	 * from any combined-source line numbers we surface — the user wrote line N of
 	 * their file, not line N + core_lines of the combined stream. */
 	char core_path[512];
-	snprintf(core_path, sizeof(core_path), "%s/core.arche", ARCHE_CORE_DIR);
+	snprintf(core_path, sizeof(core_path), "%s/core.arche", arche_resource_dir(ARCHE_RES_CORE));
 	char *core_src = read_file_optional(core_path);
 
 	int core_lines = 0;
@@ -295,6 +307,34 @@ int compile_source(const char *user_source, const char *source_path, const char 
 		return 1;
 	}
 
+	out->source = source;
+	out->cst_root = cst_root;
+	out->sem_ctx = sem_ctx;
+	out->core_lines = core_lines;
+	return 0;
+}
+
+int compile_check(const char *user_source, const char *source_path, const CompileOpts *opts) {
+	(void)opts; /* lint config is applied globally via semantic_set_lint_* before this call */
+	Frontend fe;
+	if (compile_frontend(user_source, source_path, &fe) != 0)
+		return 1;
+	semantic_context_free(fe.sem_ctx);
+	free(fe.source);
+	return 0;
+}
+
+int compile_source(const char *user_source, const char *source_path, const char *out_path, const CompileOpts *opts) {
+	EmitKind emit = opts ? opts->emit : EMIT_LINK;
+	int quiet = opts ? opts->quiet : 0;
+
+	Frontend fe;
+	if (compile_frontend(user_source, source_path, &fe) != 0)
+		return 1;
+	char *source = fe.source;
+	SyntaxNode *cst_root = fe.cst_root;
+	SemanticContext *sem_ctx = fe.sem_ctx;
+
 	/* Lower the lossless CST → AST (the only lowering path). Resolved types come from the
 	 * semantic side model (keyed by CST node id, globally unique across inlined modules);
 	 * `use` modules are inlined from their registered CSTs (see resolve_uses / lower_add_module). */
@@ -310,15 +350,15 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	 * once. rc stays 1 until a path proves success. */
 	int rc = 1;
 
-	/* Non-emit builds put every intermediate in a private mkdtemp work dir
+	/* Builds past codegen put every intermediate in a private mkdtemp work dir
 	 * (mode 0700, unpredictable name) — so concurrent compiles never collide on
 	 * a shared /tmp/arche_<pid> path and there is no predictable-name symlink
-	 * race. emit-llvm writes straight to the caller's out_path. */
+	 * race. `--emit=llvm-ir` writes straight to the caller's out_path. */
 	const char *ir_file;
 	char temp_ir[512] = "", opt_file[512] = "", asm_file[512] = "";
 	char workdir[] = "/tmp/arche_XXXXXX";
 	int have_workdir = 0;
-	if (emit_llvm) {
+	if (emit == EMIT_LLVM_IR) {
 		ir_file = out_path;
 	} else {
 		if (!mkdtemp(workdir)) {
@@ -342,7 +382,7 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	if (!quiet)
 		printf("Generated LLVM IR: %s\n", ir_file);
 
-	if (emit_llvm) {
+	if (emit == EMIT_LLVM_IR) {
 		rc = 0;
 		goto cleanup;
 	}
@@ -366,11 +406,13 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	}
 
 	/* llc → assembly. -mcpu=x86-64-v3 = portable AVX2 baseline (Haswell+): lets
-	 * `<4 x double>` lower to ymm-wide vmulpd/vfmadd without pinning to this CPU. */
+	 * `<4 x double>` lower to ymm-wide vmulpd/vfmadd without pinning to this CPU.
+	 * For `--emit=asm` the assembly IS the deliverable, so llc writes it straight to out_path. */
+	const char *asm_target = (emit == EMIT_ASM) ? out_path : asm_file;
 	{
 		char llc_cmd[1024];
-		int m =
-		    snprintf(llc_cmd, sizeof(llc_cmd), "llc -code-model=large -mcpu=x86-64-v3 -o %s %s", asm_file, opt_file);
+		int m = snprintf(llc_cmd, sizeof(llc_cmd), "llc -code-model=large -mcpu=x86-64-v3 -o %s %s", asm_target,
+		                 opt_file);
 		if (m < 0 || m >= (int)sizeof(llc_cmd)) {
 			fprintf(stderr, "llc command too long\n");
 			goto cleanup;
@@ -383,14 +425,38 @@ int compile_source(const char *user_source, const char *source_path, const char 
 		}
 	}
 
+	if (emit == EMIT_ASM) {
+		if (!quiet)
+			printf("Generated assembly: %s\n", out_path);
+		rc = 0;
+		goto cleanup;
+	}
+
+	/* `--emit=obj`: assemble to an object file (`cc -c`), no link. */
+	if (emit == EMIT_OBJ) {
+		char obj_cmd[1024];
+		int m = snprintf(obj_cmd, sizeof(obj_cmd), "cc -no-pie -mcmodel=large -c -o %s %s", out_path, asm_file);
+		if (m < 0 || m >= (int)sizeof(obj_cmd)) {
+			fprintf(stderr, "assemble command too long\n");
+			goto cleanup;
+		}
+		if (!quiet)
+			printf("Assembling object: %s\n", out_path);
+		if (system(obj_cmd) != 0) {
+			fprintf(stderr, "Failed to assemble object file\n");
+			goto cleanup;
+		}
+		rc = 0;
+		goto cleanup;
+	}
+
 	/* cc: assemble + link the runtime objects (and any --link inputs). */
 	{
+		const char *rt = arche_resource_dir(ARCHE_RES_RUNTIME);
 		char cc_cmd[8192];
-		int cc_len =
-		    snprintf(cc_cmd, sizeof(cc_cmd),
-		             "cc -no-pie -mcmodel=large -o %s %s " ARCHE_RUNTIME_DIR "/stack_check.o " ARCHE_RUNTIME_DIR
-		             "/io.o " ARCHE_RUNTIME_DIR "/net.o " ARCHE_RUNTIME_DIR "/term.o -lc",
-		             out_path, asm_file);
+		int cc_len = snprintf(cc_cmd, sizeof(cc_cmd),
+		                      "cc -no-pie -mcmodel=large -o %s %s %s/stack_check.o %s/io.o %s/net.o %s/term.o -lc",
+		                      out_path, asm_file, rt, rt, rt, rt);
 		if (cc_len < 0 || cc_len >= (int)sizeof(cc_cmd)) {
 			fprintf(stderr, "link command too long\n");
 			goto cleanup;

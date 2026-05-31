@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "value:"
+// RUN: %arche build -o %t %s && %t | grep "value:"
 arche Matrix {
   data :: float[10],
 }

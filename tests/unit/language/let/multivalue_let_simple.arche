@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t
+// RUN: %arche build -o %t %s && %t
 proc pair()(x: int, y: int) {
   x = 42;
   y = 7;

@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t
+// RUN: %arche build -o %t %s && %t
 proc main() {
   n := strlen("hello");
   printf("strlen returned: %d\n", n);

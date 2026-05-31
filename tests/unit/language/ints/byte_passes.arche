@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "copied=ok commas=2"
+// RUN: %arche build -o %t %s && %t | grep "copied=ok commas=2"
 // Branchless byte-column passes over a buffer (copy + classify). These shapes
 // vectorize (data pointer hoisted once at entry, not reloaded per iteration).
 // The written buffer is moved in by reference and returned; the read-only source

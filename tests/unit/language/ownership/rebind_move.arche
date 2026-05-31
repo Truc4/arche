@@ -1,7 +1,7 @@
 // `buf := foo(move buf)`: `move` kills the old binding; `:=` rebinds a fresh `buf` (a shadow)
 // to the returned buffer. Works for a string fill and for in-place mutation, and the rebound
 // name indexes correctly afterward.
-// RUN: %arche -o %t %s && %t | grep "a=hi b0=11"
+// RUN: %arche build -o %t %s && %t | grep "a=hi b0=11"
 func fill(own buf: char[16]) -> char[16] {
   return strcopy(move buf, "hi");
 }

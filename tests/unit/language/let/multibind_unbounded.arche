@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "result: 99"
+// RUN: %arche build -o %t %s && %t | grep "result: 99"
 // Unbounded char[] buffer filled in place, scalar count returned.
 func fill_buf(own buf: char[]) -> int {
   buf := strcopy(move buf, "hello");

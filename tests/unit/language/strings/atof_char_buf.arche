@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t
+// RUN: %arche build -o %t %s && %t
 proc main() {
   s: char[32];
   s[0] = '1';

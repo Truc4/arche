@@ -1,0 +1,5 @@
+// `arche completion` generates scripts for each shell.
+// RUN: %arche completion bash | grep -q _arche
+// RUN: %arche completion zsh | grep -q "#compdef arche"
+// RUN: %arche completion fish | grep -q "complete -c arche"
+proc main() { printf("x\n"); }

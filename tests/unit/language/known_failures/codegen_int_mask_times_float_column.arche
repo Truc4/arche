@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "ok"
+// RUN: %arche build -o %t %s && %t | grep "ok"
 // BUG: codegen produces malformed LLVM IR for `float_col = float_col * (int_col > <int>)`.
 //      llc rejects the IR with:
 //        'someValue' defined with type 'i32' but expected '<4 x i32>'

@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t
+// RUN: %arche build -o %t %s && %t
 proc main() {
   x := 42;
   assert(x == 42, "with int type failed\n");

@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t
+// RUN: %arche build -o %t %s && %t
 // Step 4: Condition-based for loop (like while in other languages)
 proc main() {
   for (i := 0; i < 3; i += 1) {

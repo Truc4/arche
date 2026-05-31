@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t && test -f /tmp/test_output.txt && grep "hello" /tmp/test_output.txt
+// RUN: %arche build -o %t %s && %t && test -f /tmp/test_output.txt && grep "hello" /tmp/test_output.txt
 #import io;
 proc main() {
   arche_fopen_write("/tmp/test_output.txt")(fd:);

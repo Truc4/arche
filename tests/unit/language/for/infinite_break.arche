@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t
+// RUN: %arche build -o %t %s && %t
 // Step 5: Break statement with infinite for loop
 proc main() {
   i := 0;

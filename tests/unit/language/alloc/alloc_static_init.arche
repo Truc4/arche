@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t
+// RUN: %arche build -o %t %s && %t
 // Task 1: Static alloc with bulk initialization (top-level only)
 arche Counter {
   val :: int,

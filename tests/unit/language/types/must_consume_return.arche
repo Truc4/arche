@@ -2,7 +2,7 @@
 // `make_resource` does not trip the must-consume check. It is a `proc` (it performs an effect —
 // opening the resource — and returns the handle); a func couldn't call the extern. The caller
 // then retires it.
-// RUN: %arche -o %t --link %S/../extern_type/runtime/test_resource.c %s && %t | grep "value=7"
+// RUN: %arche build -o %t --link %S/../extern_type/runtime/test_resource.c %s && %t | grep "value=7"
 resource :: opaque
 extern proc resource_open(initial: int)(ret: resource);
 extern proc resource_get(r: resource)(ret: int);

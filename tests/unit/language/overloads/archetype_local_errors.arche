@@ -1,4 +1,4 @@
-// RUN: ! %arche -o %t %s 2>&1
+// RUN: ! %arche build -o %t %s 2>&1
 proc main() {
   x: archetype = 0;
 }

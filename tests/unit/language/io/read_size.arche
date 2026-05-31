@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t
+// RUN: %arche build -o %t %s && %t
 #import io;
 proc main() {
   arche_fopen_read("../../../../../tests/fixtures/data.csv")(fd:);

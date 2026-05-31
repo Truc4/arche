@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "I=11 F=4 C=99"
+// RUN: %arche build -o %t %s && %t | grep "I=11 F=4 C=99"
 func describe_int(x: int) -> int {
   return x + 1;
 }

@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep -E "test1|test2|test3"
+// RUN: %arche build -o %t %s && %t | grep -E "test1|test2|test3"
 // Buffers moved in (own, consumed) and handed back through fresh out-bindings across several
 // calls — the `f(move x)(x:)` kill-and-rebind form (a killed binding can't be reused bare).
 proc fill_two(own buf1: char[32], own buf2: char[32])(buf1: char[32], buf2: char[32], n: int) {

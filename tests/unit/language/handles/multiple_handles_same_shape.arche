@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t
+// RUN: %arche build -o %t %s && %t
 // Multiple handles to same shape is allowed - they're just names/aliases
 arche Players {
   x :: float,

@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "RESULT=1"
+// RUN: %arche build -o %t %s && %t | grep "RESULT=1"
 proc main() {
   printf("RESULT=%d\n", 8 / 4 / 2);
 }

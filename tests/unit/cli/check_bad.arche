@@ -1,0 +1,3 @@
+// `arche check` rejects a semantic error and exits non-zero.
+// RUN: ! %arche check %s
+proc main() { definitely_not_defined(); }

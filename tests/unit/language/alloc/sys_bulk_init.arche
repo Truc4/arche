@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "system_ran"
+// RUN: %arche build -o %t %s && %t | grep "system_ran"
 arche Task {
   val :: int,
 }

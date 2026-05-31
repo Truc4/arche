@@ -1,7 +1,7 @@
 // `move buf` kills the binding, so you can't assign to it — `buf = foo(move buf)` is an
 // error; you must rebind a fresh binding with `:=`. This keeps "the old binding died, here
 // is a new one" explicit.
-// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "after it was moved" %t.out
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "after it was moved" %t.out
 func ident(buf: char[8]) -> char[8] {
   return buf;
 }

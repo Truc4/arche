@@ -1,0 +1,5 @@
+// Top-level help lists the core subcommands.
+// RUN: %arche --help | grep -q build
+// RUN: %arche --help | grep -q check
+// RUN: %arche help build | grep -q emit
+proc main() { printf("x\n"); }

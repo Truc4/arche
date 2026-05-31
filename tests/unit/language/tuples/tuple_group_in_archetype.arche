@@ -1,7 +1,7 @@
 // A bare archetype component can reference a top-level tuple group; it expands to the
 // group's flat columns — `arche Particle { pos, vel }` == `{ pos_x, pos_y, vel_vx, vel_vy }`.
 // So you define the shape once and reference it by name, instead of spelling out members.
-// RUN: %arche -o %t %s && %t | grep "px=1.5 py=2.1"
+// RUN: %arche build -o %t %s && %t | grep "px=1.5 py=2.1"
 pos(x, y) :: float
 vel(vx, vy) :: float
 arche Particle {

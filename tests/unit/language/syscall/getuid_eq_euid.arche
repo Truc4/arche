@@ -1,5 +1,5 @@
 // getuid (102) == geteuid (107) for a normally-launched process.
-// RUN: %arche -o %t %s && %t | grep "ok"
+// RUN: %arche build -o %t %s && %t | grep "ok"
 proc main() {
   syscall(102, 0, 0, 0, 0, 0, 0)(uid:);
   syscall(107, 0, 0, 0, 0, 0, 0)(euid:);

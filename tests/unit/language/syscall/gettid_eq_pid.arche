@@ -1,6 +1,6 @@
 // A single-threaded process's gettid (186) equals its getpid (39): proves the
 // syscall result register is read correctly across two distinct syscalls.
-// RUN: %arche -o %t %s && %t | grep "ok"
+// RUN: %arche build -o %t %s && %t | grep "ok"
 proc main() {
   syscall(39, 0, 0, 0, 0, 0, 0)(pid:);
   syscall(186, 0, 0, 0, 0, 0, 0)(tid:);

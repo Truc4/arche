@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "slot"
+// RUN: %arche build -o %t %s && %t | grep "slot"
 arche Player {
   pos :: float,
 }

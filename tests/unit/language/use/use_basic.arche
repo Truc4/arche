@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && cd %repo && %t | grep "PASS"
+// RUN: %arche build -o %t %s && cd %repo && %t | grep "PASS"
 #import io;
 
 proc main() {

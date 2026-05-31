@@ -1,7 +1,7 @@
 // `type` is well-formed grammar in a parameter slot — a parameter holding a type value (a generic
 // type parameter, like Jai's `T: Type` / Odin's `$T: typeid`). But monomorphization isn't built
 // yet, so it must fail loud ("not supported yet") rather than silently miscompile to i32.
-// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "type parameters (generics) are not supported yet" %t.out
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "type parameters (generics) are not supported yet" %t.out
 proc foo(bar: type) {
   printf("unreachable\n");
 }

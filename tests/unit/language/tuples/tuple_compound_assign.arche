@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "2"
+// RUN: %arche build -o %t %s && %t | grep "2"
 pos(x, y) :: float
 vel(x, y) :: float
 arche Particle {

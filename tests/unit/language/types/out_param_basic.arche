@@ -1,6 +1,6 @@
 // A function fills a caller buffer in place and returns a scalar. (Arrays are reached by
 // reference; the buffer is the caller's, filled by the callee.)
-// RUN: %arche -o %t %s && %t
+// RUN: %arche build -o %t %s && %t
 func test_fill_buf(buf: char[32]) -> int {
   return 5;
 }

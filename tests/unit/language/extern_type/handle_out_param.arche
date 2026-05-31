@@ -2,7 +2,7 @@
 // side reads the cell and fills the buffer; the resource is a plain param. The buffer is a
 // leading return of the multi-return signature `-> (char[], int)` — filled in place, bound
 // alongside the scalar at the call.
-// RUN: %arche -o %t --link %S/runtime/test_resource.c %s && %t | grep "v=42 b=2"
+// RUN: %arche build -o %t --link %S/runtime/test_resource.c %s && %t | grep "v=42 b=2"
 resource :: opaque
 extern proc resource_open(initial: int)(ret: resource);
 // `buf` is filled by C, so it must be handed back: in-out (its name is also in the out-list).
