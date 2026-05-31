@@ -4,7 +4,7 @@
 // syscall the graphics framebuffer will use.
 // RUN: %arche -o %t %s && %t | grep "ok"
 proc main() {
-  syscall(9, 0, 4096, 3, 34, - 1, 0)(p:);
+  syscall(9, 0, 4096, 3, 34, -1, 0)(p:);
   if (p > 1000000) {
     syscall(11, p, 4096, 0, 0, 0, 0)(un:);
     if (un == 0) {

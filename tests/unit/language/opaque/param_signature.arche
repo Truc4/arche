@@ -2,7 +2,8 @@
 // cell at the ABI). `file` is distinct in the checker, erased to i64 at codegen.
 // RUN: %arche -o %t %s && %t | grep "ok"
 #import io;
-file :: opaque func describe(f: file) -> int {
+file :: opaque
+func describe(f: file) -> int {
   return 0;
 }
 proc main() {

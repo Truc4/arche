@@ -9,25 +9,25 @@ extern proc syscall(n: i64, a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64
 // Raw fd I/O — thin syscall wrappers (x86-64 Linux), no libc. Read-only buffers (`write`/`open`
 // path) are plain borrows; a filled buffer (`read`) is in-out (handed back through the out-list).
 proc open(path: char[], flags: int)(fd: int) {
-  syscall(2, path, flags, 0, 0, 0, 0)(r:);            // SYS_open(path, flags, mode=0)
+  syscall(2, path, flags, 0, 0, 0, 0)(r:); // SYS_open(path, flags, mode=0)
   fd = i32(r);
 }
 proc read(fd: int, buf: char[], len: int)(buf: char[], n: int) {
-  syscall(0, fd, buf, len, 0, 0, 0)(r:);              // SYS_read(fd, buf, len)
+  syscall(0, fd, buf, len, 0, 0, 0)(r:); // SYS_read(fd, buf, len)
   n = i32(r);
 }
 proc write(fd: int, buf: char[], len: int) {
-  syscall(1, fd, buf, len, 0, 0, 0)(_r:);             // SYS_write(fd, buf, len)
+  syscall(1, fd, buf, len, 0, 0, 0)(_r:); // SYS_write(fd, buf, len)
 }
 proc close(fd: int) {
-  syscall(3, fd, 0, 0, 0, 0, 0)(_r:);                 // SYS_close(fd)
+  syscall(3, fd, 0, 0, 0, 0, 0)(_r:); // SYS_close(fd)
 }
 proc lseek(fd: int, off: i64, whence: int)(pos: i64) {
-  syscall(8, fd, off, whence, 0, 0, 0)(r:);           // SYS_lseek(fd, off, whence)
+  syscall(8, fd, off, whence, 0, 0, 0)(r:); // SYS_lseek(fd, off, whence)
   pos = r;
 }
 proc exit(code: int) {
-  syscall(231, code, 0, 0, 0, 0, 0)(_r:);             // SYS_exit_group(code) — does not return
+  syscall(231, code, 0, 0, 0, 0, 0)(_r:); // SYS_exit_group(code) — does not return
 }
 // Primitive opaque handle types (operations live in the io/net modules). They stay in core so the
 // opaque cell resolves globally; only the operations are module-scoped.

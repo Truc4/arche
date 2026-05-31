@@ -16,7 +16,7 @@ sys step(pos, vel) {
 }
 proc main() {
   insert(Body, 0, 0, 1, 2);
-  insert(Body, 10, 10, - 1, - 1);
+  insert(Body, 10, 10, -1, -1);
   run step;
   printf("R %d %d %d %d\n", Body.pos.x[0], Body.pos.y[0], Body.pos.x[1], Body.pos.y[1]);
 }

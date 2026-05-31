@@ -2,7 +2,8 @@
 // slot reused, an old handle to it is stale and any use aborts loudly. Here `alias`
 // outlives the delete+reinsert, so deleting through it aborts.
 // RUN: %arche -o %t --link %S/runtime/test_resource.c %s && ! %t
-cell :: opaque arche Resource {
+cell :: opaque
+arche Resource {
   cell,
 }
 extern proc resource_open(initial: int)(ret: cell);

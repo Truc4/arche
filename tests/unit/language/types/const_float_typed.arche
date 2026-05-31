@@ -2,6 +2,8 @@
 // is a float (type inferred from the literal), identical to the explicit `PI : float : 3.14`.
 // (Regression: const references used to lose their type and miscompile as int.)
 // RUN: %arche -o %t %s && %t | grep "pi: 3.14 tau: 3.14"
-PI :: 3.14 TAU: float: 6.28 proc main() {
+PI :: 3.14
+TAU: float: 6.28
+proc main() {
   printf("pi: %.2f tau: %.2f\n", PI, TAU - PI);
 }

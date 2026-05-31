@@ -4,7 +4,9 @@
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "expects 'socket'" %t.out
 #import io;
 #import net;
-file :: opaque socket :: opaque extern proc open_file()(ret: file);
+file :: opaque
+socket :: opaque
+extern proc open_file()(ret: file);
 extern proc use_socket(s: socket);
 
 proc main() {

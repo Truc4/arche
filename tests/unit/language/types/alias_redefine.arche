@@ -1,5 +1,7 @@
 // A type name may not be redefined with a *different* backing (redefinition must agree).
 // RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "different backing" %t.out
-thing :: int thing :: float proc main() {
+thing :: int
+thing :: float
+proc main() {
   printf("unreachable\n");
 }

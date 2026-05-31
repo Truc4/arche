@@ -1,5 +1,7 @@
 // RUN: %arche -o %t %s && %t
-pos :: float vel :: float arche Particle {
+pos :: float
+vel :: float
+arche Particle {
   pos,
   vel,
 }

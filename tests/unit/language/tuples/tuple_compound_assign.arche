@@ -1,5 +1,7 @@
 // RUN: %arche -o %t %s && %t | grep "2"
-pos(x, y) :: float vel(x, y) :: float arche Particle {
+pos(x, y) :: float
+vel(x, y) :: float
+arche Particle {
   pos_x,
   pos_y,
   vel_x,
