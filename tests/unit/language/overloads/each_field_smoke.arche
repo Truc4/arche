@@ -6,7 +6,6 @@ Pair :: arche {
 static pool<Pair> (3, 3) {
   a: 10, b: 20,
 }
-;
 
 @allow_pure_proc bump :: proc (arch: archetype) {
   #each_field f: int in arch {

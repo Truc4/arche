@@ -7,7 +7,6 @@ Transaction :: arche {
 static pool<Transaction> (3, 3) {
   price: 0.0, quantity: 0,
 }
-;
 
 load_csv :: proc (own path: char[]) {
   arche_fopen_read(move path)(fd:);

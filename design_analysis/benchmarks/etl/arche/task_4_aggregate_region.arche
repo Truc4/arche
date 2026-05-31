@@ -7,7 +7,6 @@ Transaction :: arche {
 static pool<Transaction> (1000, 1000) {
   price: 0.0, quantity: 0, revenue: 0.0,
 }
-;
 
 load_transactions :: proc () {
   arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv")(fd:);

@@ -4,7 +4,7 @@ Counter :: arche {
   val :: int,
 }
 
-static pool<Counter> (5);
+static pool<Counter> (5)
 
 main :: proc () {
   x := Counter.val[0];

@@ -8,7 +8,6 @@ Pair :: arche {
 static pool<Pair> (3, 3) {
   a: 0, b: 0,
 }
-;
 
 main :: proc () {
   csv_load(Pair, "/tmp/csv_fill_smoke.csv");

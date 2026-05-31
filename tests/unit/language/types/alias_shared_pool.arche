@@ -12,7 +12,7 @@ B :: arche {
   mp, hp,
 }
 
-static pool<A> (4);
+static pool<A> (4)
 
 main :: proc () {
   insert(A, 10, 20);

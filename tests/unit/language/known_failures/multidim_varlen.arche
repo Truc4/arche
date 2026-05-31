@@ -3,7 +3,7 @@ Message :: arche {
   text :: char[256], author :: char[64],
 }
 
-static pool<Message> (100);
+static pool<Message> (100)
 
 main :: proc () {
   print("allocations done\n");

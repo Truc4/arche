@@ -9,7 +9,6 @@ Transaction :: arche {
 static pool<Transaction> (10000, 10000) {
   price: 0.0, quantity: 0, revenue: 0.0,
 }
-;
 
 load_transactions :: proc () {
   csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");

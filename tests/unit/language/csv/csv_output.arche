@@ -7,7 +7,6 @@ Task1Data :: arche {
 static pool<Task1Data> (1000, 1000) {
   price: 0.0, quantity: 0,
 }
-;
 
 main :: proc () {
   Task1Data.price[0] = 100.0;

@@ -11,8 +11,8 @@ B :: arche {
   mp, hp,
 }
 
-static pool<A> (4);
-static pool<B> (4);
+static pool<A> (4)
+static pool<B> (4)
 
 main :: proc () {
 }

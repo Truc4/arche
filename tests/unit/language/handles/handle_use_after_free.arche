@@ -3,7 +3,7 @@ Player :: arche {
   pos :: float,
 }
 
-static pool<Player> (10);
+static pool<Player> (10)
 
 main :: proc () {
   h := insert(Player, 1.0);

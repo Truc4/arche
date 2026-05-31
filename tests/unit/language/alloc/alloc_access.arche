@@ -6,7 +6,6 @@ Point :: arche {
 static pool<Point> (5, 5) {
   x: 42,
 }
-;
 
 main :: proc () {
   printf("before access\n");

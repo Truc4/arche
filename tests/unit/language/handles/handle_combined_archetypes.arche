@@ -7,9 +7,9 @@ AliveList :: arche {
   player_ref :: handle<Player>,
 }
 
-static pool<Player> (10);
+static pool<Player> (10)
 
-static pool<AliveList> (10);
+static pool<AliveList> (10)
 
 main :: proc () {
   p1 := insert(Player, 1.0);

@@ -3,7 +3,7 @@ Particle :: arche {
   pos :: float, vel :: float,
 }
 
-static table<Particle> (1000);
+static table<Particle> (1000)
 
 main :: proc () {
   insert(table<Particle>, 1.0, 0.1);

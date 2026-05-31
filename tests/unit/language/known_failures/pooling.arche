@@ -3,7 +3,7 @@ Entity :: arche {
   x :: float, y :: float,
 }
 
-static table<Entity> (100);
+static table<Entity> (100)
 
 main :: proc () {
   insert(table<Entity>, 1.0, 2.0);

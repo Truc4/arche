@@ -7,9 +7,9 @@ Matrix :: arche {
   data :: float[10][10],
 }
 
-static pool<Message> (100);
+static pool<Message> (100)
 
-static pool<Matrix> (50);
+static pool<Matrix> (50)
 
 main :: proc () {
   print("allocations done\n");

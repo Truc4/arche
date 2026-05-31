@@ -7,7 +7,7 @@ Particle :: arche {
   pos,
 }
 
-static pool<Particle> (10);
+static pool<Particle> (10)
 
 bump :: sys (pos) {
   pos = pos + 2.0;

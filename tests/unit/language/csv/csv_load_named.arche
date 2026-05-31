@@ -10,7 +10,6 @@ Row :: arche {
 static pool<Row> (3, 3) {
   price: 0.0, quantity: 0,
 }
-;
 
 main :: proc () {
   csv_load(Row, "/tmp/csv_load_named.csv");

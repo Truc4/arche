@@ -6,7 +6,6 @@ Nums :: arche {
 static pool<Nums> (4, 4) {
   val: 0.0,
 }
-;
 
 main :: proc () {
   Nums.val[0] = 1.0;

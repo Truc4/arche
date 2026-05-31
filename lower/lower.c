@@ -1016,14 +1016,31 @@ static HirStmt *lower_stmt_cst(CstView s) {
 		char tmp[40];
 		snprintf(tmp, sizeof(tmp), "__match_%u", (unsigned)cv_id(s));
 
+		int narm = cv_count(s, SN_MATCH_ARM);
+
+		/* If any arm pattern is a string literal, the scrutinee is a string: type the
+		 * temp as char[] so it isn't inferred as i32 (which would mis-store the i8*). */
+		int has_string_arm = 0;
+		for (int i = 0; i < narm && !has_string_arm; i++) {
+			CstView arm = cv_child_at(s, SN_MATCH_ARM, i);
+			for (int c = 0; c < arm.node->child_count; c++)
+				if (arm.node->children[c].tag == SE_TOKEN && arm.node->children[c].as.token.kind == TOK_STRING) {
+					has_string_arm = 1;
+					break;
+				}
+		}
+
 		HirStmt *bind = hir_stmt_create(HIR_STMT_BIND);
 		bind->data.bind_stmt.names = calloc(1, sizeof(char *));
 		bind->data.bind_stmt.names[0] = dupz(tmp);
 		bind->data.bind_stmt.name_count = 1;
 		bind->data.bind_stmt.type = NULL;
+		if (has_string_arm) {
+			HirType *ct = hir_type_create(HIR_TYPE_ARRAY);
+			ct->elem = hir_type_create(HIR_TYPE_CHAR);
+			bind->data.bind_stmt.type = ct;
+		}
 		bind->data.bind_stmt.value = lower_expr_cst(scrut);
-
-		int narm = cv_count(s, SN_MATCH_ARM);
 		/* wildcard `_` arm becomes the final else */
 		HirStmt **chain = NULL;
 		int chain_count = 0;
@@ -1067,30 +1084,60 @@ static HirStmt *lower_stmt_cst(CstView s) {
 			 * resolved to its int value. (String patterns are handled in a later step.) */
 			char enumbuf[32];
 			const char *litlex = NULL;
+			int is_string = 0;
 			if (pk == TOK_NUMBER || pk == TOK_CHAR_LIT) {
 				litlex = NULL; /* use pt verbatim below */
+			} else if (pk == TOK_STRING) {
+				is_string = 1; /* string pattern → strcmp(scrut, "lit") == 0 */
 			} else if (pk == TOK_IDENT && g_lower_sem) {
 				char *vn = txt_dup(pt);
 				long v = 0;
 				int found = vn && semantic_find_enum_variant(g_lower_sem, vn, &v);
 				free(vn);
 				if (!found)
-					continue; /* unknown bare pattern (e.g. string) — later step */
+					continue; /* unknown bare pattern */
 				snprintf(enumbuf, sizeof(enumbuf), "%ld", v);
 				litlex = enumbuf;
 			} else {
-				continue; /* string patterns: later step */
+				continue; /* unsupported pattern form */
 			}
 
 			HirStmt *iff = hir_stmt_create(HIR_STMT_IF);
-			HirExpr *nm = hir_expr_create(HIR_EXPR_NAME);
-			nm->data.name.name = dupz(tmp);
-			HirExpr *lit = hir_expr_create(HIR_EXPR_LITERAL);
-			lit->data.literal.lexeme = litlex ? dupz(litlex) : txt_dup(pt);
-			HirExpr *cond = hir_expr_create(HIR_EXPR_BINARY);
-			cond->data.binary.op = OP_EQ;
-			cond->data.binary.left = nm;
-			cond->data.binary.right = lit;
+			HirExpr *cond;
+			if (is_string) {
+				/* `streq(__match, "lit") != 0` — streq (pure arche, in core.arche) returns
+				 * 1 when the strings are equal. */
+				HirExpr *call = hir_expr_create(HIR_EXPR_CALL);
+				HirExpr *callee = hir_expr_create(HIR_EXPR_NAME);
+				callee->data.name.name = dupz("streq");
+				call->data.call.callee = callee;
+				call->data.call.args = calloc(2, sizeof(HirExpr *));
+				/* Inline the scrutinee (a string lvalue) per arm rather than a typed temp —
+				 * the char[] temp would be mis-inferred as i32. */
+				HirExpr *sarg = lower_expr_cst(scrut);
+				HirExpr *parg = hir_expr_create(HIR_EXPR_STRING);
+				int slen = 0;
+				parg->data.string.value = cst_decode_string(pt, &slen);
+				parg->data.string.length = slen;
+				call->data.call.args[0] = sarg;
+				call->data.call.args[1] = parg;
+				call->data.call.arg_count = 2;
+				HirExpr *zero = hir_expr_create(HIR_EXPR_LITERAL);
+				zero->data.literal.lexeme = dupz("0");
+				cond = hir_expr_create(HIR_EXPR_BINARY);
+				cond->data.binary.op = OP_NEQ;
+				cond->data.binary.left = call;
+				cond->data.binary.right = zero;
+			} else {
+				HirExpr *nm = hir_expr_create(HIR_EXPR_NAME);
+				nm->data.name.name = dupz(tmp);
+				HirExpr *lit = hir_expr_create(HIR_EXPR_LITERAL);
+				lit->data.literal.lexeme = litlex ? dupz(litlex) : txt_dup(pt);
+				cond = hir_expr_create(HIR_EXPR_BINARY);
+				cond->data.binary.op = OP_EQ;
+				cond->data.binary.left = nm;
+				cond->data.binary.right = lit;
+			}
 			iff->data.if_stmt.cond = cond;
 			iff->data.if_stmt.then_body = cst_lower_body(arm, &iff->data.if_stmt.then_count);
 			iff->data.if_stmt.else_body = chain;
@@ -1102,13 +1149,15 @@ static HirStmt *lower_stmt_cst(CstView s) {
 
 		as->kind = HIR_STMT_BLOCK;
 		as->data.block.stmts = calloc(2, sizeof(HirStmt *));
-		as->data.block.stmts[0] = bind;
-		if (chain_count > 0) {
-			as->data.block.stmts[1] = chain[0];
-			as->data.block.count = 2;
-		} else {
-			as->data.block.count = 1; /* no arms matched the supported forms */
-		}
+		int nstmt = 0;
+		/* String matches inline the scrutinee per arm, so the temp bind is unused. */
+		if (has_string_arm)
+			hir_stmt_free(bind);
+		else
+			as->data.block.stmts[nstmt++] = bind;
+		if (chain_count > 0)
+			as->data.block.stmts[nstmt++] = chain[0];
+		as->data.block.count = nstmt;
 		free(chain);
 		break;
 	}

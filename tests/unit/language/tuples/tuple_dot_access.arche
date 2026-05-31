@@ -6,7 +6,7 @@ Particle :: arche {
   pos_x, pos_y,
 }
 
-static pool<Particle> (5);
+static pool<Particle> (5)
 
 main :: proc () {
   insert(Particle, 1.0, 2.0);

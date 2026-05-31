@@ -7,7 +7,6 @@ Transaction :: arche {
 static pool<Transaction> (5, 5) {
   price: 0.0, quantity: 0,
 }
-;
 
 main :: proc () {
   arche_fopen_read("../../../../../tests/fixtures/transactions.csv")(fd:);

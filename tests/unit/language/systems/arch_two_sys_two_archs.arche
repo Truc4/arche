@@ -8,9 +8,9 @@ Body :: arche {
   pos :: float, vel :: float, mass :: float,
 }
 
-static pool<Particle> (5);
+static pool<Particle> (5)
 
-static pool<Body> (5);
+static pool<Body> (5)
 
 step :: sys (pos, vel) {
   pos = pos + vel;

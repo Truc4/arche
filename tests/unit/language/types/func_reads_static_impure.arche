@@ -1,7 +1,7 @@
 // E0090: a func is pure — it may not read a `static` global (mutable global state). Its inputs are
 // only its parameters and `::` constants. Touching a static is an effect — that belongs in a proc.
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0090 func_not_pure 0 func 'peek' is not pure"
-static buf: char[16];
+static buf: char[16]
 peek :: func () -> int {
   return buf[0];
 }

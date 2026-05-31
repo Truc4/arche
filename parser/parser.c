@@ -854,10 +854,7 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 				return 0;
 			}
 
-			if (!match(parser, TOK_SEMI)) {
-				error(parser, "Expected ';' after static array declaration");
-				return 0;
-			}
+			match(parser, TOK_SEMI); /* recorded; formatter drops it for static decls */
 			return 1;
 		}
 
@@ -900,9 +897,7 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			}
 		}
 
-		if (!match(parser, TOK_SEMI)) {
-			error(parser, "Expected ';' after alloc declaration");
-		}
+		match(parser, TOK_SEMI); /* recorded; formatter drops it for static decls */
 
 		return 1;
 	}

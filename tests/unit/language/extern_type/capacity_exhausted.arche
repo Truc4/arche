@@ -8,7 +8,7 @@ Resource :: arche {
   cell,
 }
 resource_open :: extern proc (initial: int)(ret: cell);
-static pool<Resource> (2);
+static pool<Resource> (2)
 
 main :: proc () {
   resource_open(1)(r1:);

@@ -3,7 +3,7 @@ Entity :: arche {
   next :: handle<Entity>,
 }
 
-static pool<Entity> (10);
+static pool<Entity> (10)
 
 process :: sys (next) {
 }

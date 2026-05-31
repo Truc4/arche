@@ -4,7 +4,7 @@ Body :: arche {
   pos,
 }
 
-static pool<Body> (5);
+static pool<Body> (5)
 
 dummy :: sys (pos) {
   printf("system_ran\n");

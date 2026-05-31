@@ -44,6 +44,23 @@ fflush :: extern proc (stream: int);
 // Pure-arche numeric/string helpers (no FFI). A func may call these; it can't call externs, so
 // libc's atoi/atof/strlen are reimplemented here to keep type-directed CSV cell parsing pure.
 
+/// Byte-compare two NUL-terminated strings: 1 if equal, 0 otherwise. Pure (no
+/// FFI), so the `match` desugar can use it for string-literal patterns.
+///
+/// ```arche
+/// assert(streq("ab", "ab") == 1, "streq equal\n");
+/// assert(streq("ab", "ac") == 0, "streq diff\n");
+/// assert(streq("ab", "abc") == 0, "streq prefix\n");
+/// ```
+streq :: func (a: char[], b: char[]) -> int {
+  i := 0;
+  for (; a[i] == b[i]; i += 1) {
+    if (a[i] == 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
 /// Length of a NUL-terminated string, not counting the terminator.
 ///
 /// ```arche

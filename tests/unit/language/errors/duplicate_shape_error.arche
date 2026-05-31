@@ -10,12 +10,10 @@ Handle2 :: arche {
 static pool<Handle1> (1, 1) {
   val: 5,
 }
-;
 
 static pool<Handle2> (1, 1) {
   val: 10,
 }
-;
 
 @allow_pure_proc main :: proc () {
 }

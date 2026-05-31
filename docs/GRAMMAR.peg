@@ -1,8 +1,9 @@
 # Arche — Grammar (PEG)
 #
 # Unified binding grammar: every top-level declaration is a binding `name : meta : value`.
-# proc / func / sys / arche are RHS value-literal forms (with a body) or type forms (bodiless).
-# `proc`/`func`/`sys`/`arche` are NOT statement keywords — there are no keyword-led declarations.
+# proc / func / sys / arche / enum are RHS value-literal forms (with a body) or type forms (bodiless).
+# `proc`/`func`/`sys`/`arche`/`enum` are NOT statement keywords — there are no keyword-led declarations.
+# A proc/func-typed parameter is a compile-time callback (monomorphized per call site; no fn-pointers).
 
 Program  ← _ (Decl _)* EOF
 
@@ -24,6 +25,8 @@ FuncLit   ← "func" _ ParamList _ "->" _ Type _ Block                   # value
 SysLit    ← "sys" _ SysParams _ Block                                  # data transform over archetypes
 ArcheLit  ← "arche" _ "{" _ (ArchField _)* "}"                         # record (archetype) type def
 GroupLit  ← ("proc" / "func") _ "{" _ Identifier (_ "," _ Identifier)* _ "}"   # overload group (Odin-style)
+EnumLit   ← "enum" _ "{" _ (EnumVariant (_ "," _ EnumVariant)* (_ ",")?)? _ "}"  # distinct int-backed type
+EnumVariant ← Identifier (_ "=" _ Number)?                            # auto-increment, or explicit value
 
 # ---- Type forms (a bodiless callable signature is a TYPE) ------------------------------------
 TypeForm  ← ProcType / FuncType / Type
@@ -49,7 +52,13 @@ ArrayDecl  ← Identifier _ ":" _ Type
 FieldInit  ← Identifier _ ":" _ Expr _ ("," _)?
 
 # ---- Statements -----------------------------------------------------------------------------
-Statement ← Binding / Assignment / ForLoop / IfStmt / RunSystem / ReturnStmt / ProcCall / EachField / ExprStmt / ";"
+Statement ← Binding / Assignment / ForLoop / IfStmt / MatchStmt / RunSystem / ReturnStmt / ProcCall / EachField / ExprStmt / ";"
+
+# `match scrut { pat : body, … }` — exhaustive compile-time dispatch (desugars to an if-chain;
+# `_` is the catch-all). Patterns: int/char literal, enum variant (bare Identifier), or string
+# literal (compared via the pure `streq`). A non-exhaustive enum/int match is an error (E0210).
+MatchStmt ← "match" _ Expr _ "{" _ (MatchArm _)* "}"
+MatchArm  ← (Number / String / CharLit / Identifier) _ ":" _ (Block / Statement)
 
 Assignment ← Path _ AssignOp _ Expr _ ";"
 AssignOp   ← "+=" / "-=" / "*=" / "/=" / "="
@@ -71,7 +80,7 @@ BinaryOp   ← UnaryExpr (_ Operator _ UnaryExpr)*
 UnaryExpr  ← (("-" / "!" / "move" / "copy") _)? Postfix
 Postfix    ← Primary (_ ("." Identifier / "[" _ Expr (_ "," _ Expr)* _ "]" / "(" _ ArgList? _ ")"))*
 Primary    ← Number / String / CharLit / ArrayLit / Alloc
-           / ProcLit / FuncLit / SysLit / ArcheLit / GroupLit / ProcType / FuncType
+           / ProcLit / FuncLit / SysLit / ArcheLit / GroupLit / EnumLit / ProcType / FuncType
            / Path / Identifier / "(" _ Expr _ ")"
 ArgList    ← Expr (_ "," _ Expr)*
 ArrayLit   ← "{" _ (Expr (_ "," _ Expr)*)? _ "}"

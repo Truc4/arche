@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t
 #import io;
 
-static buf: char[65536];
+static buf: char[65536]
 
 main :: proc () {
   printf("about to open file\n");

@@ -6,7 +6,6 @@ Transaction :: arche {
 static pool<Transaction> (100, 100) {
   price: 0.0, quantity: 0,
 }
-;
 
 main :: proc () {
   open("../../../../../tests/fixtures/transactions.csv", 0)(fd:);

@@ -6,7 +6,6 @@ Task :: arche {
 static pool<Task> (1, 1) {
   val: 5,
 }
-;
 
 double_val :: sys (val) {
   printf("system_ran\n");

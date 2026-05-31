@@ -6,7 +6,6 @@ Counter :: arche {
 static pool<Counter> (1, 1) {
   val: 0,
 }
-;
 
 increment :: sys (val) {
   printf("system_ran\n");

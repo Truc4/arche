@@ -4,7 +4,7 @@
 Mover :: arche {
   pos :: float, vel :: float,
 }
-static pool<Mover> (4, 4);
+static pool<Mover> (4, 4)
 
 step :: sys (pos, vel) {
   if (vel < 0.0) {

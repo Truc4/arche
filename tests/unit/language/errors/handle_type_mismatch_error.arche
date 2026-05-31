@@ -7,9 +7,9 @@ Enemy :: arche {
   health :: float,
 }
 
-static pool<Player> (10);
+static pool<Player> (10)
 
-static pool<Enemy> (10);
+static pool<Enemy> (10)
 
 main :: proc () {
   p := insert(Player, 1.0);

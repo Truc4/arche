@@ -4,7 +4,7 @@ Particle :: arche {
   pos,
 }
 
-static pool<Particle> (10);
+static pool<Particle> (10)
 
 dummy :: sys (pos) {
   printf("system_ran\n");

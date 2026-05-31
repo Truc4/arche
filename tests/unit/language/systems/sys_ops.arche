@@ -4,7 +4,7 @@ Body :: arche {
   position :: float, velocity :: float,
 }
 
-static pool<Body> (500);
+static pool<Body> (500)
 
 step :: sys (position, velocity) {
   position = position + velocity;

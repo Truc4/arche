@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep ABC
-static buf: char[128];
+static buf: char[128]
 
 main :: proc () {
   buf[0] = 65;

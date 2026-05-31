@@ -6,7 +6,6 @@ Counter :: arche {
 static pool<Counter> (5, 5) {
   val: 7,
 }
-;
 
 main :: proc () {
   assert(Counter.val[0] == 7, "val[0] not 7\n");

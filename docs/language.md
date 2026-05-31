@@ -17,6 +17,8 @@ for doc comments and doctests see [DOCTESTS.md](DOCTESTS.md).
 - [Systems (`sys`)](#systems-sys)
 - [Functions (`func`)](#functions-func)
 - [`proc` vs `sys` vs `func`](#proc-vs-sys-vs-func)
+- [Enums and `match`](#enums-and-match)
+- [Compile-time callbacks](#compile-time-callbacks)
 - [Ownership: borrow, `move`, `copy`](#ownership-borrow-move-copy)
 - [Foreign resources: `opaque` types](#foreign-resources-opaque-types)
 - [Multiple outputs and mutate-in-place](#multiple-outputs-and-mutate-in-place)
@@ -38,7 +40,7 @@ program startup. This is a core design principle, not a limitation.
 A pool declaration can include field initialization to set all instances' values at allocation time:
 
 ```arche
-static pool<Counter>(5, 5) { val: 7, score: 2.5 };
+static pool<Counter>(5, 5) { val: 7, score: 2.5 }
 ```
 
 This reserves capacity for 5 instances and initializes the `val` and `score` columns. Uninitialized columns are zero-initialized.
@@ -46,11 +48,11 @@ This reserves capacity for 5 instances and initializes the `val` and `score` col
 **Encouraged pattern** - plan memory upfront, allocate what you need, use predictably:
 
 ```arche
-static pool<Particle>(10000, 10000) { active: 0 };
-static pool<Enemy>(5000, 5000);
-static pool<Projectile>(1000, 1000);
+static pool<Particle>(10000, 10000) { active: 0 }
+static pool<Enemy>(5000, 5000)
+static pool<Projectile>(1000, 1000)
 
-proc main() {
+main :: proc() {
   run initialize;
   run update_loop;
   // implicit cleanup at end
@@ -133,7 +135,7 @@ name *is* both the component and how you reach it (`h.mass`).
 ```arche
 mass :: float            // nominal type (lowercase = type)
 
-arche Particle {
+Particle :: arche {
   mass,                  // reference an existing component type
   charge :: float        // inline definition (mints a `charge` component)
 }
@@ -145,7 +147,7 @@ type under two names:
 ```arche
 health :: int
 shield :: int
-arche Unit { health, shield }   // two int columns, reached as h.health / h.shield
+Unit :: arche { health, shield }   // two int columns, reached as h.health / h.shield
 ```
 
 **Set identity - `{a, b}` == `{b, a}`.** Two archetypes with the same component set *are* the
@@ -153,11 +155,11 @@ same shape and share one pool; component order is irrelevant. A component type r
 archetype is a compile error (it would be unreachable):
 
 ```arche
-arche A { health, shield }
-arche B { shield, health }   // same shape as A
+A :: arche { health, shield }
+B :: arche { shield, health }   // same shape as A
 
-static pool<A>(1000);
-static pool<B>(1000);        // ERROR: shape already allocated (B is the same shape as A)
+static pool<A>(1000)
+static pool<B>(1000)            // ERROR: shape already allocated (B is the same shape as A)
 ```
 
 **Tuples** are named flat sugar: `pos (x, y) :: float` mints the flat component types
@@ -167,10 +169,11 @@ only - no nested tuples.) Reached as `h.pos_x` / `h.pos_y`. `pos (x, y) :: float
 
 ```arche
 pos (x, y) :: float
-arche Body { pos_x, pos_y }   // two flat columns
+Body :: arche { pos_x, pos_y }   // two flat columns
 ```
 
-A shape's storage is one fixed-capacity static pool declared with `static pool<Foo>(N)`.
+A shape's storage is one fixed-capacity static pool declared with `static pool<Foo>(N)` (a
+declaration — no trailing `;`).
 There is no `alloc` and no resizing - all capacity is reserved upfront. Allocating the same
 shape twice (under any name) is a compile error.
 
@@ -179,7 +182,7 @@ shape twice (under any name) is a compile error.
 Operations on archetype columns apply across the entire collection without explicit loops:
 
 ```arche
-static pool<Particle>(1000);
+static pool<Particle>(1000)
 // ... insert particles
 Particle.pos_x = Particle.pos_x + Particle.vel_x;
 ```
@@ -188,7 +191,7 @@ This iterates all elements, updating each position by its velocity. Inside a sys
 component type names are available directly:
 
 ```arche
-sys step(pos_x, vel_x) {
+step :: sys(pos_x, vel_x) {
   pos_x = pos_x + vel_x;
 }
 ```
@@ -209,11 +212,12 @@ This keeps the language focused on whole-array transformations.
 ## Procedures (`proc`)
 
 **Procedures DO things; functions ARE things.** This split is fundamental and shows up in the
-*grammar itself* - a `func` and a `proc` have different signatures:
+*signature itself* - a `func` and a `proc` differ in shape (the name is on the binding LHS;
+`proc`/`func` are RHS value forms):
 
 ```arche
-func area(w: int, h: int) -> int               // a value: one return, no side effects
-proc divmod(a: int, b: int)(q: int, r: int)    // an action: inputs (in), outputs (out)
+area   :: func(w: int, h: int) -> int            // a value: one return, no side effects
+divmod :: proc(a: int, b: int)(q: int, r: int)   // an action: inputs (in), outputs (out)
 ```
 
 A procedure performs an **action**. It is **not a value** - it has no return type. Instead it
@@ -221,12 +225,12 @@ declares its results as **out-parameters** in a second parameter list. An out-pa
 caller-provided place the proc writes **in place**:
 
 ```arche
-proc divmod(a: int, b: int)(q: int, r: int) {
+divmod :: proc(a: int, b: int)(q: int, r: int) {
   q = a / b;          // write the out-params; no `return`
   r = a - q * b;
 }
 
-proc main() {
+main :: proc() {
   divmod(17, 5)(q:, r:);          // call mirrors the signature: foo(in)(out)
   printf("%d %d\n", q, r);        // q and r are declared by the out-args, scoped here
 }
@@ -248,9 +252,9 @@ proc main() {
 Procedures are also used for setup, orchestration, and whole-collection array ops:
 
 ```arche
-static pool<Particle>(1000, 1000);
+static pool<Particle>(1000, 1000)
 
-proc main() {
+main :: proc() {
   Particle.pos_x = Particle.pos_x + Particle.vel_x;   // array op over the whole column
 }
 ```
@@ -260,11 +264,11 @@ proc main() {
 Systems perform **data-driven transformations** over all matching archetypes.
 
 ```arche
-sys step(pos_x, vel_x) {
+step :: sys(pos_x, vel_x) {
   pos_x = pos_x + vel_x;
 }
 
-proc update() {
+update :: proc() {
   run step;
 }
 ```
@@ -282,7 +286,7 @@ So a system over `pos` and `vel` applies to any archetype with those components 
 Conditionals can be written as mathematical expressions (comparisons produce 0 or 1):
 
 ```arche
-sys dampen(vel, pos) {
+dampen :: sys(vel, pos) {
   // multiply velocity by 0 if below threshold
   vel = vel * (pos > 10);
 }
@@ -299,7 +303,7 @@ better - it depends on the data, so measure before converting one to the other.
 A function **IS a value**: it computes one result from its inputs, with no side effects.
 
 ```arche
-func drag_factor(x: float) -> float {
+drag_factor :: func(x: float) -> float {
   return x * 0.98;
 }
 ```
@@ -315,15 +319,86 @@ func drag_factor(x: float) -> float {
 
 ## `proc` vs `sys` vs `func`
 
-| Kind   | Signature          | Is it a value? | Purpose                        |
-| ------ | ------------------ | -------------- | ------------------------------ |
-| `func` | `name(in) -> T`    | yes            | pure computation, one return   |
-| `proc` | `name(in)(out)`    | no             | an action; writes out-params   |
-| `sys`  | `name(components)` | no             | data transform over archetypes |
+| Kind   | Binding                   | Is it a value? | Purpose                        |
+| ------ | ------------------------- | -------------- | ------------------------------ |
+| `func` | `name :: func(in) -> T`   | yes            | pure computation, one return   |
+| `proc` | `name :: proc(in)(out)`   | no             | an action; writes out-params   |
+| `sys`  | `name :: sys(components)` | no             | data transform over archetypes |
 
 - `func`: "compute a value" - `r := area(w, h)`
 - `proc`: "do this, writing the results into these places" - `divmod(17, 5)(q:, r:)`
 - `sys`: "run this on _any data shaped like this_" - `run step;`
+
+## Enums and `match`
+
+An `enum` is a **distinct, int-backed type** with named variants. Variants
+auto-increment from 0, or take an explicit `= N`:
+
+```arche
+Method :: enum { get, post, delete }      // get = 0, post = 1, delete = 2
+Status :: enum { ok = 200, not_found = 404 }
+```
+
+`match` dispatches on an enum, integer, or string. It is **exhaustive** for
+enums/integers — list every variant or add a `_` catch-all, else it's a compile
+error ([E0210](explain/E0210.md)). Each arm is `pattern : statement` (or a block):
+
+```arche
+handle :: proc(m: Method)() {
+  match m {
+    get    : printf("GET\n");
+    post   : printf("POST\n");
+    delete : printf("DELETE\n");
+  }
+}
+```
+
+`match` desugars to a direct-dispatch if-chain — no jump-table indirection in the
+source, no function pointers. String patterns compare with the pure `streq` helper:
+
+```arche
+route :: proc(path: char[])() {
+  match path {
+    "/"      : home()();
+    "/about" : about()();
+    _        : not_found()();
+  }
+}
+```
+
+This `enum` + `match` pairing is how Arche does compile-time, exhaustive dispatch —
+the data-oriented alternative to runtime function-pointer tables (see
+[E0211](explain/E0211.md)).
+
+## Compile-time callbacks
+
+A proc/func-typed **parameter** is a callback: the caller passes a known proc/func
+by name, and the callee is **monomorphized** per call site so the call lowers to a
+**direct call** — there are no runtime function pointers (Arche has no runtime proc
+values). The proc/func type may be inline or a named alias:
+
+```arche
+done_handler :: proc()()                         // a proc TYPE (callable, structural)
+
+run_task :: proc(work: int, on_done: done_handler)() {
+  // ... do the work ...
+  on_done()();                                   // direct call to the bound proc
+}
+
+finish  :: proc()() { printf("done\n"); }
+cleanup :: proc()() { printf("cleaned\n"); }
+
+main :: proc() {
+  run_task(5, finish)();     // compiler specializes run_task for on_done = finish
+  run_task(9, cleanup)();    // …and a second specialization for on_done = cleanup
+}
+```
+
+The callback argument is erased from the generated ABI; the chosen behavior is
+encoded in *which* specialization is called. This covers "do X, then do Y when
+done" where Y is fixed at the call site (it can also be forwarded to another
+callback-taking proc). A proc/func type can be a parameter or a named binding, but
+**not** an archetype component ([E0211](explain/E0211.md)) — archetypes are data.
 
 ## Ownership: borrow, `move`, `copy`
 
@@ -350,7 +425,7 @@ parameter (the same name in both the in-list and the out-list). The out occurren
 in-list borrow, so the body writes the buffer in place and the binding is never killed:
 
 ```arche
-proc read_into(fd: int, buf: char[], len: int)(buf: char[], n: int) {
+read_into :: proc(fd: int, buf: char[], len: int)(buf: char[], n: int) {
   read(fd, buf, len)(buf, n);             // the extern fills the in-out buffer in place
 }
 
@@ -374,9 +449,9 @@ Arche never reads, writes, or fabricates. Distinctness comes from the *name*, no
 window :: opaque
 sound  :: opaque
 
-extern proc window_open(own title: char[], w: int, h: int)(w: window);   // out-only w = C return
-extern proc window_present(w: window, fb: int[], width: int, height: int)(fb: int[]);  // fb in-out
-extern proc window_close(own w: window)();
+window_open    :: extern proc(own title: char[], w: int, h: int)(w: window)   // out-only w = C return
+window_present :: extern proc(w: window, fb: int[], width: int, height: int)(fb: int[])  // fb in-out
+window_close   :: extern proc(own w: window)()
 ```
 
 - An `opaque` value is passed to/from C **by value** - the cell *is* an `i64`, ABI-compatible
@@ -388,7 +463,7 @@ extern proc window_close(own w: window)();
   `pool<Foo>` + generation-checked handles for capacity-bounded, use-after-free-safe storage.
 
 ```arche
-proc render() {
+render :: proc() {
   w := window_open("demo", 640, 480);
   window_present(w, fb, 640, 480)(fb);   // in-out: fb lent and handed back, stays live
   window_close(move w);              // `own` param consumes it - w dead afterward
@@ -402,7 +477,7 @@ place, use a `proc` and its out-parameter list `(out)` - the values are written 
 caller-provided places, never returned:
 
 ```arche
-proc sum_diff(a: int, b: int)(s: int, d: int) {
+sum_diff :: proc(a: int, b: int)(s: int, d: int) {
   s = a + b;
   d = a - b;
 }
@@ -415,7 +490,7 @@ is an **in-out** parameter: the caller lends a buffer (no `own`, no `move`, no c
 fills it in place, and the same live binding is handed back through the out-arg:
 
 ```arche
-proc read_chunk(fd: file, buf: char[], size: int)(buf: char[], n: int) {
+read_chunk :: proc(fd: file, buf: char[], size: int)(buf: char[], n: int) {
   arche_csv_read_chunk(fd, buf, size)(buf, n);   // the extern fills the in-out buffer in place
 }
 

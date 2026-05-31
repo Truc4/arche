@@ -3,7 +3,7 @@
 // and scans it with i64 offsets, so files larger than 2 GB work; columns match by header name.
 // (`arche_file_map`/`_size`/`_unmap` are core primitives, so no module import is needed.)
 
-static load_cols: int[64];
+static load_cols: int[64]
 
 // first index of byte `ch` in data[start..end), or end if absent
 find_byte :: func (data: char[], start: i64, end: i64, ch: int) -> i64 {

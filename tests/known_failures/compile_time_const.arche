@@ -18,7 +18,6 @@ Grid :: arche {
 static pool<Grid> (area(3, 4)) {
   cell: 0,
 }
-;
 
 main :: proc () {
   assert(Grid.cell[11] == 0, "last cell should exist (capacity 12)\n");
