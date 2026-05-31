@@ -2,7 +2,7 @@
 // checker but erases to a bare `opaque` cell (an i64 bitcast to the C pointer at the ABI).
 // open/set/get/close round-trips by value through C. The close is a terminal `consume`,
 // so it linearly retires the resource (must-consume satisfied).
-// RUN: %arche -o %t --link %S/../extern_type/runtime/test_resource.c %s && %t | grep "value=42"
+// RUN: %arche build -o %t --link %S/../extern_type/runtime/test_resource.c %s && %t | grep "value=42"
 resource :: opaque
 extern proc resource_open(initial: int)(ret: resource);
 extern proc resource_get(r: resource)(ret: int);

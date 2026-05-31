@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep B
+// RUN: %arche build -o %t %s && %t | grep B
 proc main() {
   printf("A\n");
   printf("B\n");

@@ -1,8 +1,8 @@
 // Local constants round-trip through the formatter: inferred `k :: e`, typed `j : T : e`, and a
 // local type alias `m :: T`.
-// RUN: %build/arche-fmt %s | grep -F "k :: 10"
-// RUN: %build/arche-fmt %s | grep -F "j : int : 7"
-// RUN: %build/arche-fmt %s | grep -F "m :: int"
+// RUN: %arche fmt %s | grep -F "k :: 10"
+// RUN: %arche fmt %s | grep -F "j : int : 7"
+// RUN: %arche fmt %s | grep -F "m :: int"
 proc main() {
   k :: 10;
   j: int: 7;

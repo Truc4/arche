@@ -1,7 +1,8 @@
 // The explicit-type value-const longhand `name : T : value` is preserved by the formatter
 // (the declared type is meaningful and must not be dropped).
-// RUN: %build/arche-fmt %s | grep -F "answer : int : 42"
+// RUN: %arche fmt %s | grep -F "answer : int : 42"
 answer: int: 42
+
 proc main() {
   printf("%d\n", answer);
 }

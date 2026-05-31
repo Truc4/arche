@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "comma=1 first=3"
+// RUN: %arche build -o %t %s && %t | grep "comma=1 first=3"
 
 func find_byte(data: char[], start: int, end: int, ch: int) -> int {
   for (i := start; i < end; i += 1) {

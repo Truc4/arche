@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -q "Shape already allocated" %t.out
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "Shape already allocated" %t.out
 arche Handle1 {
   val :: int,
 }

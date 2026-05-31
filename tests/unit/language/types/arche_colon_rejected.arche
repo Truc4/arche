@@ -1,7 +1,7 @@
 // A component is a type. The old single-colon accessor `name: type` names nothing and is a
 // grammar error — define a component inline with `name :: type`, or reference one by bare
 // name. (This also guards the parser against spinning on a malformed archetype body.)
-// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "components are types" %t.out
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "components are types" %t.out
 arche Foo {
   hp: int
 }

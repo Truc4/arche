@@ -1,7 +1,7 @@
 // `file` and `socket` are distinct nominal types though both back to `opaque`. Passing a
 // `file` where a `socket` is expected is a compile error — nominal identity is checked at
 // substitution boundaries (here, a call argument), even though both erase to `opaque`.
-// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "expects 'socket'" %t.out
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expects 'socket'" %t.out
 #import io;
 #import net;
 file :: opaque

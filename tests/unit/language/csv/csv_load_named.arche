@@ -1,4 +1,4 @@
-// RUN: printf 'quantity,note,price\n10,x,1.5\n20,y,2.5\n5,z,0.75\n' > /tmp/csv_load_named.csv && %arche -o %t %s && %t | grep "p=\[1.5 2.5 0.75\] q=\[10 20 5\]"
+// RUN: printf 'quantity,note,price\n10,x,1.5\n20,y,2.5\n5,z,0.75\n' > /tmp/csv_load_named.csv && %arche build -o %t %s && %t | grep "p=\[1.5 2.5 0.75\] q=\[10 20 5\]"
 // Name-based: columns are reordered (quantity first) and an extra `note` column
 // is present; csv_load must map price/quantity by header name and ignore note.
 #import csv;

@@ -1,6 +1,6 @@
 // A typed value const's explicit declared type now constrains its literal (it is no longer inert):
 // an int-typed constant cannot take a float literal.
-// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "declared .int. but its value is a float literal" %t.out
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "declared .int. but its value is a float literal" %t.out
 bad: int: 3.5
 proc main() {
   printf("unreachable\n");

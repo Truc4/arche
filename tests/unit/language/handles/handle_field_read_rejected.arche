@@ -2,7 +2,7 @@
 // token (produced by insert, stored, passed, null-checked, deleted), not a row view.
 // Column access `Foo.hp[i]` is the way to touch data. The access is rejected cleanly
 // rather than emitting a bare token into the IR.
-// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "handle is a lifetime token" %t.out
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "handle is a lifetime token" %t.out
 arche Foo {
   hp :: int,
 }

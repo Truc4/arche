@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "done 1000"
+// RUN: %arche build -o %t %s && %t | grep "done 1000"
 proc main() {
   i := 0;
   for (; i < 1000; i += 1) {

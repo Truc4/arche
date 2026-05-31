@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t
+// RUN: %arche build -o %t %s && %t
 // Task 1: Derived columns (revenue = price * quantity)
 arche Task1 {
   price :: float,

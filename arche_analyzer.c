@@ -825,7 +825,9 @@ static int run_serve(void) {
 	return 0;
 }
 
-int main(int argc, char *argv[]) {
+/* Entry point for the analyzer, shared by the folded `arche analyze` subcommand (cli/cmd_analyze.c)
+ * and the standalone `arche-analyzer` shim (arche_analyzer_main.c). Declared in arche_analyzer.h. */
+int analyze_main(int argc, char *argv[]) {
 	if (argc >= 2 && strcmp(argv[1], "--dump") == 0)
 		return run_dump(argc >= 3 ? argv[2] : NULL);
 	if (argc >= 2 && strcmp(argv[1], "--serve") == 0)

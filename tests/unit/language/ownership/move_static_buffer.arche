@@ -2,7 +2,7 @@
 // out occurrence shadows the in-list borrow, so the proc writes the caller's buffer in place and
 // hands the same live binding back. The global storage persists the whole time (no leak, no
 // copy). Then the name indexes the filled bytes.
-// RUN: %arche -o %t %s && %t | grep "b0=88 b1=89 n=2"
+// RUN: %arche build -o %t %s && %t | grep "b0=88 b1=89 n=2"
 static sbuf: char[16];
 
 proc fill2(buf: char[16])(buf: char[16], n: int) {

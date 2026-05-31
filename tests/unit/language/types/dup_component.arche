@@ -1,6 +1,6 @@
 // Set semantics: a component type may appear at most once in an archetype. The component
 // type name IS its access path, so a repeat would be unreachable — it's a compile error.
-// RUN: %arche -o %t %s > %t.out 2>&1 ; grep -qi "duplicate component" %t.out
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "duplicate component" %t.out
 hp :: int
 arche Foo {
   hp,

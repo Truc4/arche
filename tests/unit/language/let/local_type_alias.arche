@@ -1,6 +1,6 @@
 // A local type alias `V :: T` inside a proc body — uniform `::` means a type-valued constant is a
 // (nominal) type alias here too. It is compile-time only (erased), usable as a type.
-// RUN: %arche -o %t %s && %t | grep "sum: 10"
+// RUN: %arche build -o %t %s && %t | grep "sum: 10"
 proc main() {
   meters :: int;
   d: meters = 4;

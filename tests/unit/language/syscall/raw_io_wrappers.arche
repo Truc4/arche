@@ -1,7 +1,7 @@
 // Raw fd I/O through the pure-Arche syscall wrappers (open/read/write/close — no libc): a buffer
 // arg decays to its data pointer when handed to `syscall`, exactly like C. Open a file
 // read-only, read some bytes, and echo a marker via raw write (`print`).
-// RUN: printf 'syscall-io\n' > /tmp/arche_raw_io.txt && %arche -o %t %s && %t | grep "read ok"
+// RUN: printf 'syscall-io\n' > /tmp/arche_raw_io.txt && %arche build -o %t %s && %t | grep "read ok"
 proc main() {
   open("/tmp/arche_raw_io.txt", 0)(fd:);
   if (fd > 0) {

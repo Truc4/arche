@@ -3,7 +3,7 @@
 // a `char[]` parameter does. Regression: the general index path only zero-extended when the
 // base was a type-6 char slice, so a local string-literal element stayed i8 and the verifier
 // rejected `i32 %v` ("defined with type 'i8' but expected 'i32'").
-// RUN: %arche -o %t %s && %t | grep "c0=104 c1=105 eq=1"
+// RUN: %arche build -o %t %s && %t | grep "c0=104 c1=105 eq=1"
 proc main() {
   s := "hi";
   eq := 0;

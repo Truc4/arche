@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "Float: 3.14"
+// RUN: %arche build -o %t %s && %t | grep "Float: 3.14"
 proc main() {
   f := 3.14;
   printf("Float: %g\n", f);

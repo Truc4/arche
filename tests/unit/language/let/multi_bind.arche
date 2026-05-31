@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "x=ab y=cd n=42"
+// RUN: %arche build -o %t %s && %t | grep "x=ab y=cd n=42"
 // Two caller buffers lent by reference (in-out), filled in place, and handed back through the
 // out-list. No `own`, no `move`: the out occurrences shadow the in-list borrows, so the buffers
 // stay live and come back through the out-args.

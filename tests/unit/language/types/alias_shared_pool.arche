@@ -2,7 +2,7 @@
 // shape (the set {hp, mp}), so `insert(B, …)` lands in the single pool declared as `pool<A>`
 // — a column read through name A sees both rows. Positional insert uses the shape's
 // canonical (first-declared) component order, so `insert(B, 30, 40)` fills hp then mp.
-// RUN: %arche -o %t %s && %t | grep "hp0=10 mp0=20 hp1=30 mp1=40"
+// RUN: %arche build -o %t %s && %t | grep "hp0=10 mp0=20 hp1=30 mp1=40"
 hp :: int
 mp :: int
 arche A {

@@ -58,16 +58,55 @@ jobs:
         if: success()
         run: echo "✓ All tests passed"
 
+  # Require every PR to bump VERSION: the build bakes it in (-DARCHE_VERSION) and `arche version`
+  # reports it, so master must never carry a stale or duplicate version. We fail (rather than
+  # auto-bump) so the bump stays in the PR diff and the author chooses patch/minor/major — no
+  # bot commits, no push-back token, no CI loops.
+  version-check:
+    runs-on: ubuntu-latest
+    name: Version bump
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require VERSION to increase
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${{ github.base_ref }}"
+          git fetch --depth=1 origin "$base"
+          head_v=$(cat VERSION 2>/dev/null || echo 0.0.0)
+          base_v=$(git show "origin/$base:VERSION" 2>/dev/null || echo 0.0.0)
+          # Compare the X.Y.Z core, ignoring any -prerelease / +build suffix.
+          core() { echo "$1" | sed -E 's/[-+].*$//'; }
+          hv=$(core "$head_v"); bv=$(core "$base_v")
+          echo "base VERSION=$base_v (core $bv) -> head VERSION=$head_v (core $hv)"
+          if [ "$hv" = "$bv" ]; then
+            echo "::error file=VERSION::VERSION must be bumped: still $base_v. Edit the VERSION file (patch/minor/major)."
+            exit 1
+          fi
+          greatest=$(printf '%s\n%s\n' "$bv" "$hv" | sort -V | tail -1)
+          if [ "$greatest" != "$hv" ]; then
+            echo "::error file=VERSION::VERSION went backwards: head $head_v < base $base_v."
+            exit 1
+          fi
+          echo "✓ VERSION increased ($base_v -> $head_v)"
+
   # Require status checks for PR merges
   status-check:
-    needs: format-and-test
+    needs: [format-and-test, version-check]
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Check job status
         run: |
-          if [ "${{ needs.format-and-test.result }}" != "success" ]; then
+          # Treat success AND skipped as OK (version-check is skipped on direct pushes to master);
+          # only an actual failure blocks the merge.
+          if [ "${{ needs.format-and-test.result }}" = "failure" ]; then
             echo "Format and test job failed"
+            exit 1
+          fi
+          if [ "${{ needs.version-check.result }}" = "failure" ]; then
+            echo "Version bump check failed"
             exit 1
           fi
         shell: bash

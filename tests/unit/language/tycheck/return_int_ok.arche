@@ -1,6 +1,6 @@
 // Positive: returning an int literal from a func declared `-> int` is clean.
 // Runs the program end-to-end to prove the typecheck stays out of valid code's way.
-// RUN: %arche -o %t %s && %t | grep -q "42"
+// RUN: %arche build -o %t %s && %t | grep -q "42"
 func answer() -> int {
   return 42;
 }

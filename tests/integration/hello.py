@@ -16,7 +16,7 @@ test_prog = os.path.join(repo_root, 'examples', 'hello_world', 'hello_world.arch
 test_out = os.path.join(repo_root, 'build', 'test-integration-hello')
 
 # Compile
-result = subprocess.run([arche_bin, '-o', test_out, test_prog],
+result = subprocess.run([arche_bin, 'build', '-o', test_out, test_prog],
                        capture_output=True, text=True)
 if result.returncode != 0:
     print(f"FAIL: Compilation failed")

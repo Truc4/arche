@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "result: 99"
+// RUN: %arche build -o %t %s && %t | grep "result: 99"
 // A function fills the caller's buffer in place and returns a scalar count.
 func fill_buf(own buf: char[32]) -> int {
   buf := strcopy(move buf, "hello");

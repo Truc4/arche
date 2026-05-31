@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "ok n=2 first=104"
+// RUN: %arche build -o %t %s && %t | grep "ok n=2 first=104"
 // TCP loopback round-trip in one process: on localhost, connect() completes via
 // the kernel accept-backlog before accept() is called, so listen/connect/accept/
 // send/recv all exercise without threads. Proves the `Socket` extern type links

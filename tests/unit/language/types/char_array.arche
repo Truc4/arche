@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t
+// RUN: %arche build -o %t %s && %t
 // Step 2: Stack-allocated char arrays
 proc main() {
   buf: char[3];

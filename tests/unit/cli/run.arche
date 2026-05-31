@@ -1,0 +1,5 @@
+// `arche run` compiles and executes, forwarding the program's stdout + exit code.
+// RUN: %arche run %s | grep -q hello
+proc main() {
+  printf("hello\n");
+}

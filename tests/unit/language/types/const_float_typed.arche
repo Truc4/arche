@@ -1,7 +1,7 @@
 // A float value const carries its inferred type, so it works in a float context — `PI :: 3.14`
 // is a float (type inferred from the literal), identical to the explicit `PI : float : 3.14`.
 // (Regression: const references used to lose their type and miscompile as int.)
-// RUN: %arche -o %t %s && %t | grep "pi: 3.14 tau: 3.14"
+// RUN: %arche build -o %t %s && %t | grep "pi: 3.14 tau: 3.14"
 PI :: 3.14
 TAU: float: 6.28
 proc main() {

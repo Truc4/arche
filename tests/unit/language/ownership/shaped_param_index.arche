@@ -1,6 +1,6 @@
 // A sized char[N] parameter indexes like an unbounded char[] — readable inside both a
 // func and a proc. (Passed plainly it is copied in; mutations would not leak without `move`.)
-// RUN: %arche -o %t %s && %t | grep "head=72 sum=105"
+// RUN: %arche build -o %t %s && %t | grep "head=72 sum=105"
 func head(buf: char[8]) -> int {
   return buf[0];
 }

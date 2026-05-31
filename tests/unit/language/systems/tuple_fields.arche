@@ -2,7 +2,7 @@
 // flattens them to columns pos_x/pos_y/vel_x/vel_y and rewrites the body's
 // pos.x/vel.x accesses, so `run` updates every row.
 //   pos0 (0,0)+(1,2) -> (1,2);  pos1 (10,10)+(-1,-1) -> (9,9)
-// RUN: %arche -o %t %s && %t | grep "R 1 2 9 9"
+// RUN: %arche build -o %t %s && %t | grep "R 1 2 9 9"
 arche Body {
   pos(x,
   y) :: int,

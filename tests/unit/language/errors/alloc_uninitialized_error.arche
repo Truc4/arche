@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s > /dev/null 2>&1 && ! %t 2>&1
+// RUN: %arche build -o %t %s > /dev/null 2>&1 && ! %t 2>&1
 // Uninitialized alloc has count=0, accessing any row should error
 arche Counter {
   val :: int,

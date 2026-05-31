@@ -1,7 +1,7 @@
 // `foo : type : T` is the explicit meta-type longhand for a nominal type alias — equivalent to
 // the inferred `foo :: T`. Here `weight` backs `int`. The explicit form must survive the
 // formatter (see formatter/meta_alias_preserved), so this file keeps `: type :`.
-// RUN: %arche -o %t %s && %t | grep "ok: 7"
+// RUN: %arche build -o %t %s && %t | grep "ok: 7"
 weight: type: int
 proc main() {
   w: weight = 7;

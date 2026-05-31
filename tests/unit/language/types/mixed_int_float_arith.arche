@@ -4,7 +4,7 @@
 // Regression: `float_expr + d` only converted `d` when its tag was exactly HIR_TYPE_INT, so
 // a char-derived digit slipped through as `fadd double, i32` and the verifier rejected it —
 // which is precisely what blocked a pure-arche `atof`.
-// RUN: %arche -o %t %s && %t | grep "r=23"
+// RUN: %arche build -o %t %s && %t | grep "r=23"
 proc main() {
   s := "23";
   acc := 0.0;

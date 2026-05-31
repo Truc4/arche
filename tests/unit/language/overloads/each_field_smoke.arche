@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "col0=11 col1=21"
+// RUN: %arche build -o %t %s && %t | grep "col0=11 col1=21"
 arche Pair {
   a :: int,
   b :: int,

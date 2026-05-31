@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "p0i"
+// RUN: %arche build -o %t %s && %t | grep "p0i"
 arche Particle {
   pos :: float,
   vel :: float,

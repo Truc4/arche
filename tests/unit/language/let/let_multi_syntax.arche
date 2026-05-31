@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "x=test1 y=test2 n=77"
+// RUN: %arche build -o %t %s && %t | grep "x=test1 y=test2 n=77"
 // Two buffers moved in (own, consumed) and handed back through fresh out-bindings — the
 // `f(move x)(x:)` kill-and-rebind form: `move` kills the in-binding, the `x:` out-arg mints a
 // fresh one (you can't reuse a killed binding, so the out-arg must be `x:`, not bare `x`).

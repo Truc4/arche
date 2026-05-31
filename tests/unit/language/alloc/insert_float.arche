@@ -1,4 +1,4 @@
-// RUN: %arche -o %t %s && %t | grep "done"
+// RUN: %arche build -o %t %s && %t | grep "done"
 arche FloatOps {
   val :: float,
 }
