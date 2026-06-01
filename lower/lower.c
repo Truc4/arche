@@ -2518,12 +2518,16 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 		CstView dv = {root->children[i].as.node, src};
 
 		if (k == SN_USE_DECL) {
-			/* Inline the named module's decls here, auto-prefixing every name it
-			 * declares (and its internal references to them) with `<module>_`. A module is a
-			 * folder, so it may register as several files under the same name — inline them all. */
-			char *mod_name = txt_dup(cv_token(dv, TOK_IDENT));
-			int first = ast->decl_count;
-			int found = 0;
+			/* One IDENT per imported module (bare `#import io`, or block `#import { io net }`).
+			 * Inline each: auto-prefix every name it declares (and internal refs) with `<module>_`.
+			 * A module is a folder, so it may register as several files under one name — inline all. */
+			const SyntaxNode *un = dv.node;
+			for (int t = 0; t < un->child_count; t++) {
+				if (un->children[t].tag != SE_TOKEN || un->children[t].as.token.kind != TOK_IDENT)
+					continue;
+				char *mod_name = txt_dup((CvText){src + un->children[t].as.token.offset, un->children[t].as.token.length});
+				int first = ast->decl_count;
+				int found = 0;
 			/* Two name sets (externs excluded — their bare name is the C ABI symbol):
 			 *   `full`   — ALL module symbols; the module's own decls are prefixed against this so
 			 *              intra-module references (across the folder's files) resolve.
@@ -2594,6 +2598,7 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 				free(expset);
 			}
 			free(mod_name);
+			} /* end per-module-ident loop */
 			continue;
 		}
 

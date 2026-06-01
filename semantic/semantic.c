@@ -5491,9 +5491,16 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 		CstView dv = {root->children[i].as.node, src};
 
 		if (k == SN_USE_DECL) {
-			char *mod_name = sem_txt_dup(cv_token(dv, TOK_IDENT));
-			int first = prog->decl_count;
-			int found = 0;
+			/* One IDENT per imported module: a bare `#import io` has one, a block
+			 * `#import { io net }` has several. Inline each. */
+			const SyntaxNode *un = dv.node;
+			for (int t = 0; t < un->child_count; t++) {
+				if (un->children[t].tag != SE_TOKEN || un->children[t].as.token.kind != TOK_IDENT)
+					continue;
+				CvText tk = {src + un->children[t].as.token.offset, un->children[t].as.token.length};
+				char *mod_name = sem_txt_dup(tk);
+				int first = prog->decl_count;
+				int found = 0;
 			/* full = ALL non-extern symbols (prefix everything → intra-module refs resolve);
 			 * expset = only #export-band symbols (the only ones externally visible). */
 			char **full = NULL;
@@ -5562,6 +5569,7 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 				free(expset);
 			}
 			free(mod_name);
+			} /* end per-module-ident loop */
 			continue;
 		}
 

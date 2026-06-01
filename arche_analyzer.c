@@ -175,20 +175,6 @@ static void deferred_free(DeferredDiags *d) {
  * (which inlines + name-prefixes it). Analysis-only: unlike main.c's resolve_uses
  * we don't touch the lowerer. The module CST + source are borrowed by the registry,
  * so we keep them alive in `holds` until after analysis. */
-/* Module name (first IDENT) of a `#import <name>;` (SN_USE_DECL) node. */
-static int sem_module_name_of(const SyntaxNode *ud, const char *src, char *out, size_t sz) {
-	out[0] = '\0';
-	for (int k = 0; k < ud->child_count; k++)
-		if (ud->children[k].tag == SE_TOKEN && ud->children[k].as.token.kind == TOK_IDENT) {
-			size_t L = ud->children[k].as.token.length;
-			if (L > sz - 1)
-				L = sz - 1;
-			memcpy(out, src + ud->children[k].as.token.offset, L);
-			out[L] = '\0';
-			return 1;
-		}
-	return 0;
-}
 
 /* Dedup set of already-loaded modules (per analyze call; reset in resolve_uses_sem). Marking a
  * name before load also makes transitive `#import` cycle-safe. Mirrors driver/compile.c. */
@@ -220,9 +206,18 @@ static int sem_register_module_file(const char *mod_name, const char *path, cons
 	for (int u = 0; u < root->child_count; u++) {
 		if (root->children[u].tag != SE_NODE || root->children[u].as.node->kind != SN_USE_DECL)
 			continue;
-		char dep[256];
-		if (sem_module_name_of(root->children[u].as.node, src, dep, sizeof(dep)))
+		const SyntaxNode *ud = root->children[u].as.node;
+		for (int k = 0; k < ud->child_count; k++) {
+			if (ud->children[k].tag != SE_TOKEN || ud->children[k].as.token.kind != TOK_IDENT)
+				continue;
+			char dep[256];
+			size_t L = ud->children[k].as.token.length;
+			if (L > sizeof(dep) - 1)
+				L = sizeof(dep) - 1;
+			memcpy(dep, src + ud->children[k].as.token.offset, L);
+			dep[L] = '\0';
 			sem_load_module(dep, source_dir, holds);
+		}
 	}
 	return 1;
 }
@@ -285,23 +280,24 @@ static void resolve_uses_sem(const SyntaxNode *root, const char *src, const char
 		if (root->children[u].tag != SE_NODE || root->children[u].as.node->kind != SN_USE_DECL)
 			continue;
 		const SyntaxNode *ud = root->children[u].as.node;
-		char mod_name[256];
-		SourceLoc use_loc = {0, 0};
-		mod_name[0] = '\0';
-		for (int k = 0; k < ud->child_count; k++)
-			if (ud->children[k].tag == SE_TOKEN && ud->children[k].as.token.kind == TOK_IDENT) {
-				use_loc.line = ud->children[k].as.token.line;
-				use_loc.column = ud->children[k].as.token.column;
-				break;
-			}
-		if (!sem_module_name_of(ud, src, mod_name, sizeof(mod_name)) || !mod_name[0])
-			continue;
-		int before = g_sem_loaded_count;
-		sem_load_module(mod_name, source_dir, holds);
-		/* If the name was newly marked but nothing registered, it wasn't found. (A dedup hit — the
-		 * module already loaded via another import — leaves `before` unchanged and is fine.) */
-		if (g_sem_loaded_count > before && !semantic_has_module(mod_name))
-			deferred_push(diags, SEM_DIAG_module_not_found, use_loc, mod_name);
+		/* One IDENT per module: bare `#import io`, or block `#import { io net }`. Load each. */
+		for (int k = 0; k < ud->child_count; k++) {
+			if (ud->children[k].tag != SE_TOKEN || ud->children[k].as.token.kind != TOK_IDENT)
+				continue;
+			char mod_name[256];
+			size_t L = ud->children[k].as.token.length;
+			if (L > sizeof(mod_name) - 1)
+				L = sizeof(mod_name) - 1;
+			memcpy(mod_name, src + ud->children[k].as.token.offset, L);
+			mod_name[L] = '\0';
+			SourceLoc use_loc = {ud->children[k].as.token.line, ud->children[k].as.token.column};
+			int before = g_sem_loaded_count;
+			sem_load_module(mod_name, source_dir, holds);
+			/* If the name was newly marked but nothing registered, it wasn't found. (A dedup hit — the
+			 * module already loaded via another import — leaves `before` unchanged and is fine.) */
+			if (g_sem_loaded_count > before && !semantic_has_module(mod_name))
+				deferred_push(diags, SEM_DIAG_module_not_found, use_loc, mod_name);
+		}
 	}
 	free(source_dir);
 }

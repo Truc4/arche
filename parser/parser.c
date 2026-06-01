@@ -1033,18 +1033,39 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	 * `extern proc`) are RHS value/type forms (see parse_primary_expr / parse_type_inner), reached
 	 * via the IDENT-led default case below. There are no keyword-led top-level declarations. */
 	case TOK_USE: {
-		advance(parser); /* consume 'use' */
+		/* `#import` is a region in the `#module`/`#file`/`#foreign` family. Two forms:
+		 *   bare   `#import io`            one module (trailing `;` optional)
+		 *   block  `#import { io net … }`  a group of modules (whitespace/`,`/`;` separated)
+		 * Both produce an SN_USE_DECL carrying one IDENT per module; consumers iterate them. */
+		advance(parser); /* consume '#import' */
+		if (check(parser, TOK_LBRACE)) {
+			advance(parser); /* consume '{' */
+			if (check(parser, TOK_RBRACE)) {
+				error(parser, "empty `#import { }` — list one or more module names");
+				return 0;
+			}
+			while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "expected a module name in `#import { ... }`");
+					return 0;
+				}
+				advance(parser);
+				while (match(parser, TOK_COMMA) || match(parser, TOK_SEMI))
+					; /* tolerate optional separators between names */
+			}
+			if (!match(parser, TOK_RBRACE)) {
+				error(parser, "Expected '}' to close `#import { ... }`");
+				return 0;
+			}
+			*out_kind = SN_USE_DECL;
+			return 1;
+		}
 		if (!check(parser, TOK_IDENT)) {
-			error(parser, "Expected module name after 'use'");
+			error(parser, "Expected a module name after `#import`");
 			return 0;
 		}
 		advance(parser);
-
-		if (!match(parser, TOK_SEMI)) {
-			error(parser, "Expected ';' after use declaration");
-			return 0;
-		}
-
+		match(parser, TOK_SEMI); /* trailing `;` optional (region-style) */
 		*out_kind = SN_USE_DECL;
 		return 1;
 	}
