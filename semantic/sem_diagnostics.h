@@ -128,9 +128,9 @@ typedef enum {
 	SEM_DIAG_duplicate_decl,
 
 	/* Opaque destructors / RAII (`@drop`) — E0118+ */
-	SEM_DIAG_drop_invalid,         /* a `@drop` proc with a bad signature (not `proc(own T)()`) */
-	SEM_DIAG_drop_redefined,       /* a second `@drop` for an already-registered opaque type */
-	SEM_DIAG_drop_conditional,     /* a handle consumed on some-but-not-all branch paths */
+	SEM_DIAG_drop_invalid,     /* a `@drop` proc with a bad signature (not `proc(own T)()`) */
+	SEM_DIAG_drop_redefined,   /* a second `@drop` for an already-registered opaque type */
+	SEM_DIAG_drop_conditional, /* a handle consumed on some-but-not-all branch paths */
 
 	/* Tycheck (P3 type-check pass — E0200+) */
 	SEM_DIAG_type_mismatch,

@@ -4,7 +4,27 @@
 // RUN: %arche build -o %t %s && %t | tr '\n' ' ' | grep -q "B C F"
 main :: proc () {
   x := 5;
-  if (x == 1) { print("A\n"); } else { print("B\n"); }
-  if (x == 5) { print("C\n"); } else { print("D\n"); }
-  if (x == 1) { print("E\n"); } else { if (x == 5) { print("F\n"); } else { print("G\n"); } }
+  if (x == 1) {
+    print("A\n");
+  }
+  else {
+    print("B\n");
+  }
+  if (x == 5) {
+    print("C\n");
+  }
+  else {
+    print("D\n");
+  }
+  if (x == 1) {
+    print("E\n");
+  }
+  else {
+    if (x == 5) {
+      print("F\n");
+    }
+    else {
+      print("G\n");
+    }
+  }
 }

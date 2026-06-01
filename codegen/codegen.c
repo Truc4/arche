@@ -183,11 +183,11 @@ struct CodegenContext {
 	 * and are popped; at function/return exit, ALL live entries are dropped (reverse order).
 	 * Consumption (move into an own param / return / insert) flips `consumed`. */
 	struct {
-		char *var_name;  /* the local's source name (for consumption matching) */
-		char *slot;      /* the alloca SSA holding the i64 opaque cell */
-		const char *dtor;/* destructor symbol to call */
-		int scope_depth; /* value-scope depth at which it was declared */
-		int consumed;    /* 1 once moved out / returned / inserted */
+		char *var_name;   /* the local's source name (for consumption matching) */
+		char *slot;       /* the alloca SSA holding the i64 opaque cell */
+		const char *dtor; /* destructor symbol to call */
+		int scope_depth;  /* value-scope depth at which it was declared */
+		int consumed;     /* 1 once moved out / returned / inserted */
 	} *drop_live;
 	int drop_live_count;
 	int drop_live_capacity;

@@ -854,8 +854,8 @@ static HirStmt *lower_stmt_cst(CstView s) {
 				else_tok = i;
 				break;
 			}
-		as->data.if_stmt.then_body = cst_lower_body_split(
-		    s, 0, else_tok >= 0 ? else_tok : s.node->child_count, &as->data.if_stmt.then_count);
+		as->data.if_stmt.then_body =
+		    cst_lower_body_split(s, 0, else_tok >= 0 ? else_tok : s.node->child_count, &as->data.if_stmt.then_count);
 		if (else_tok >= 0)
 			as->data.if_stmt.else_body =
 			    cst_lower_body_split(s, else_tok, s.node->child_count, &as->data.if_stmt.else_count);
@@ -1862,8 +1862,7 @@ static HirDecl *lower_decl_cst(CstView d) {
 					HirDecl *pd = lower_proc_from(rhs, nm);
 					/* Propagate the `@drop` decorator (a direct `@ drop` token pair on the
 					 * decl node) so the RAII pass can register this proc as a destructor. */
-					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc &&
-					    cst_decl_has_drop_decorator(d))
+					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && cst_decl_has_drop_decorator(d))
 						pd->data.proc->is_drop = 1;
 					return pd;
 				}

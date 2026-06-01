@@ -638,22 +638,18 @@ static void analyze_drop_decl(SemanticContext *ctx, ProcDecl *proc, const char *
 	}
 	Parameter *p = proc->params[0];
 	if (!p || !p->is_own) {
-		sem_emit_drop_invalid(ctx, proc->loc,
-		                      "a `@drop` destructor's parameter must be `own`");
+		sem_emit_drop_invalid(ctx, proc->loc, "a `@drop` destructor's parameter must be `own`");
 		return;
 	}
-	if (!p->type || p->type->kind != TYPE_NAME ||
-	    strcmp(resolve_type_alias(ctx, p->type->data.name), "opaque") != 0) {
-		sem_emit_drop_invalid(ctx, proc->loc,
-		                      "a `@drop` destructor's parameter must be of an opaque type");
+	if (!p->type || p->type->kind != TYPE_NAME || strcmp(resolve_type_alias(ctx, p->type->data.name), "opaque") != 0) {
+		sem_emit_drop_invalid(ctx, proc->loc, "a `@drop` destructor's parameter must be of an opaque type");
 		return;
 	}
 	/* The `@drop(<type>)` name must match the parameter's type — the decorator states what is
 	 * dropped; a mismatch is a typo, not silently ignored. */
 	if (declared_type && strcmp(declared_type, p->type->data.name) != 0) {
-		sem_emit_drop_invalid(
-		    ctx, proc->loc,
-		    "`@drop(...)` names a different type than the destructor's parameter — they must match");
+		sem_emit_drop_invalid(ctx, proc->loc,
+		                      "`@drop(...)` names a different type than the destructor's parameter — they must match");
 		return;
 	}
 	register_drop(ctx, p->type->data.name, proc->name, proc->loc);
@@ -4082,8 +4078,8 @@ static Statement *cst_build_stmt(CstView s) {
 				else_tok = i;
 				break;
 			}
-		as->data.if_stmt.then_body = cst_build_body_split(
-		    s, 0, else_tok >= 0 ? else_tok : s.node->child_count, &as->data.if_stmt.then_count);
+		as->data.if_stmt.then_body =
+		    cst_build_body_split(s, 0, else_tok >= 0 ? else_tok : s.node->child_count, &as->data.if_stmt.then_count);
 		as->data.if_stmt.else_body = NULL;
 		as->data.if_stmt.else_count = 0;
 		if (else_tok >= 0)
