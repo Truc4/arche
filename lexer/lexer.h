@@ -25,7 +25,6 @@ typedef enum TokenKind {
 	TOK_ELSE,
 	TOK_IN,
 	TOK_BREAK,
-	TOK_EXTERN,
 	TOK_MOVE,
 	TOK_OWN,
 	TOK_COPY,
@@ -52,8 +51,9 @@ typedef enum TokenKind {
 	TOK_SEMI,        /* ; */
 	TOK_AT,          /* @  (decl-site decorators like @allow_pure_proc) */
 	TOK_HASH,        /* #  bare/unknown directive (error) */
-	TOK_HASH_MODULE, /* #module — narrow visibility to module scope (phase B) */
-	TOK_HASH_FILE,   /* #file   — narrow visibility to file scope (phase B) */
+	TOK_HASH_MODULE,  /* #module  — narrow visibility to module scope (phase B) */
+	TOK_HASH_FILE,    /* #file    — narrow visibility to file scope (phase B) */
+	TOK_HASH_FOREIGN, /* #foreign — region of foreign-bodied (FFI) proc decls */
 
 	/* assignment */
 	TOK_EQ,       /* = */

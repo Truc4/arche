@@ -7,7 +7,9 @@ cell :: opaque
 Resource :: arche {
   cell,
 }
-resource_open :: extern proc(initial: int)(ret: cell);
+#foreign {
+  resource_open :: proc(initial: int)(ret: cell)
+}
 static pool<Resource> (2)
 
 main :: proc() {

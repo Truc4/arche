@@ -400,7 +400,7 @@ void test_call_no_matching_member_errors(void) {
 void test_opaque_passthrough_in_proc_ok(void) {
 	test_start("opaque value may pass through a non-extern proc param");
 	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "window_close :: extern proc(own w: window);\n"
+	                                  "#foreign { window_close :: proc(own w: window) }\n"
 	                                  "wrap_close :: proc(w: window) { window_close(move w); }\n");
 	ASSERT_EQ(semantic_error_count(r.ctx), 0, "should be no errors");
 	semantic_context_free(r.ctx);
@@ -409,7 +409,7 @@ void test_opaque_passthrough_in_proc_ok(void) {
 
 void test_unknown_type_name_still_errors(void) {
 	test_start("unknown type name in extern signature is still an error");
-	AnalysisResult r = analyze_string("bad :: extern proc()(ret: Doesnotexist);\n");
+	AnalysisResult r = analyze_string("#foreign { bad :: proc()(ret: Doesnotexist) }\n");
 	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected unknown-type error");
 	semantic_context_free(r.ctx);
 	test_pass_msg();
@@ -419,8 +419,8 @@ void test_opaque_aliases_distinct(void) {
 	test_start("window and sound opaque aliases are not interchangeable");
 	AnalysisResult r = analyze_string("window :: opaque\n"
 	                                  "sound :: opaque\n"
-	                                  "window_close :: extern proc(own w: window);\n"
-	                                  "sound_open :: extern proc()(ret: sound);\n"
+	                                  "#foreign { window_close :: proc(own w: window) }\n"
+	                                  "#foreign { sound_open :: proc()(ret: sound) }\n"
 	                                  "main :: proc() {\n"
 	                                  "  sound_open()(s:);\n"
 	                                  "  window_close(move s);\n"
@@ -435,9 +435,9 @@ void test_opaque_aliases_distinct(void) {
 void test_use_after_consume_local_error(void) {
 	test_start("use after consume in same scope is a compile error");
 	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "open_ :: extern proc(own t: char[], a: int, b: int)(ret: window);\n"
-	                                  "close_ :: extern proc(own w: window);\n"
-	                                  "poll_ :: extern proc(w: window);\n"
+	                                  "#foreign { open_ :: proc(own t: char[], a: int, b: int)(ret: window) }\n"
+	                                  "#foreign { close_ :: proc(own w: window) }\n"
+	                                  "#foreign { poll_ :: proc(w: window) }\n"
 	                                  "main :: proc() {\n"
 	                                  "  open_(\"\", 1, 1)(w:);\n"
 	                                  "  close_(move w);\n"
@@ -451,9 +451,9 @@ void test_use_after_consume_local_error(void) {
 void test_no_false_positive_when_unconsumed(void) {
 	test_start("normal borrow then consume is fine");
 	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "open_ :: extern proc(own t: char[], a: int, b: int)(ret: window);\n"
-	                                  "close_ :: extern proc(own w: window);\n"
-	                                  "poll_ :: extern proc(w: window);\n"
+	                                  "#foreign { open_ :: proc(own t: char[], a: int, b: int)(ret: window) }\n"
+	                                  "#foreign { close_ :: proc(own w: window) }\n"
+	                                  "#foreign { poll_ :: proc(w: window) }\n"
 	                                  "main :: proc() {\n"
 	                                  "  open_(\"\", 1, 1)(w:);\n"
 	                                  "  poll_(w);\n"
@@ -545,8 +545,8 @@ void test_own_param_bare_arg_error(void) {
 void test_copy_opaque_error(void) {
 	test_start("`copy` of an opaque value is a compile error (move-only)");
 	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "wopen :: extern proc()(ret: window);\n"
-	                                  "wuse :: extern proc(own w: window);\n"
+	                                  "#foreign { wopen :: proc()(ret: window) }\n"
+	                                  "#foreign { wuse :: proc(own w: window) }\n"
 	                                  "main :: proc() {\n"
 	                                  "  wopen()(w:);\n"
 	                                  "  wuse(copy w);\n"

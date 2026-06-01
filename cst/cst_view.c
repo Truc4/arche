@@ -34,6 +34,16 @@ int cv_node_count(CstView v) {
 	return c;
 }
 
+int cv_node_count_deep(CstView v) {
+	int c = 0;
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE) {
+			c++;
+			c += cv_node_count_deep((CstView){v.node->children[i].as.node, v.src});
+		}
+	return c;
+}
+
 CstView cv_node_at(CstView v, int index) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++) {

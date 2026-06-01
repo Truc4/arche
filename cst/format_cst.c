@@ -35,10 +35,11 @@ static void collect(const SyntaxNode *n, const char *src, Leaves *ls) {
 	for (int i = 0; i < n->child_count; i++) {
 		const SyntaxElem *e = &n->children[i];
 		if (e->tag == SE_NODE) {
-			/* A direct child node of SOURCE_FILE is a top-level declaration. Tag its first leaf so
-			 * the printer breaks before it — needed for decls with no `;`/`}` terminator (e.g.
-			 * `file :: opaque`), which would otherwise glue onto the previous declaration. */
-			int top = (n->kind == SN_SOURCE_FILE);
+			/* A direct child node of SOURCE_FILE — or of a `#foreign`/`#module` region block — is a
+			 * declaration. Tag its first leaf so the printer breaks before it: needed for decls with
+			 * no `;`/`}` terminator (e.g. `file :: opaque` or a bodiless foreign proc), which would
+			 * otherwise glue onto the previous declaration. */
+			int top = (n->kind == SN_SOURCE_FILE || n->kind == SN_REGION);
 			int before = ls->count;
 			collect(e->as.node, src, ls);
 			if (top && ls->count > before)
@@ -131,10 +132,12 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 			 * we don't force a break. Instead the author's layout is preserved (like blank lines
 			 * below): an inline header stays inline, a hand-split one keeps its breaks. */
 			int for_header_semi = (prev == TOK_SEMI && prev_parent == SN_FOR_STMT);
-			/* `#module` / `#file` visibility markers are standalone section banners: break onto their
-			 * own line, and break again after them so the following decl starts fresh. */
-			int vis_marker = (l->kind == TOK_HASH_MODULE || l->kind == TOK_HASH_FILE);
-			int after_vis_marker = (prev == TOK_HASH_MODULE || prev == TOK_HASH_FILE);
+			/* `#module` / `#file` / `#foreign` region markers are standalone section banners: break
+			 * onto their own line, and break again after them so the following decl starts fresh —
+			 * except a `{` (block form) stays on the marker's line: `#foreign {`. */
+			int vis_marker = (l->kind == TOK_HASH_MODULE || l->kind == TOK_HASH_FILE || l->kind == TOK_HASH_FOREIGN);
+			int after_vis_marker = (prev == TOK_HASH_MODULE || prev == TOK_HASH_FILE || prev == TOK_HASH_FOREIGN) &&
+			                       l->kind != TOK_LBRACE;
 			int want_nl = force_nl || arch_field_break || list_continuation || l->kind == TOK_RBRACE ||
 			              prev == TOK_LBRACE || (prev == TOK_SEMI && !for_header_semi) || prev == TOK_RBRACE ||
 			              vis_marker || after_vis_marker || l->decl_start;

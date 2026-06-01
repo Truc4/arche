@@ -178,9 +178,6 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 5 && strncmp(start, "break", 5) == 0) {
 		return TOK_BREAK;
 	}
-	if (length == 6 && strncmp(start, "extern", 6) == 0) {
-		return TOK_EXTERN;
-	}
 	if (length == 4 && strncmp(start, "move", 4) == 0) {
 		return TOK_MOVE;
 	}
@@ -452,6 +449,8 @@ Token lexer_next_token(Lexer *lexer) {
 			k = TOK_HASH_MODULE;
 		else if (wlen == 4 && strncmp(word, "file", 4) == 0)
 			k = TOK_HASH_FILE;
+		else if (wlen == 7 && strncmp(word, "foreign", 7) == 0)
+			k = TOK_HASH_FOREIGN;
 		return make_token(lexer, k, start, tlen, line, column);
 	}
 
@@ -572,8 +571,6 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_IN";
 	case TOK_BREAK:
 		return "TOK_BREAK";
-	case TOK_EXTERN:
-		return "TOK_EXTERN";
 	case TOK_MOVE:
 		return "TOK_MOVE";
 	case TOK_OWN:
@@ -617,6 +614,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_HASH_MODULE";
 	case TOK_HASH_FILE:
 		return "TOK_HASH_FILE";
+	case TOK_HASH_FOREIGN:
+		return "TOK_HASH_FOREIGN";
 
 	case TOK_EQ:
 		return "TOK_EQ";

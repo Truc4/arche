@@ -26,6 +26,9 @@ struct Parser {
 	int pending_count;
 	int pending_cap;
 	int recursion_depth;
+	/* Inside a `#foreign` region (banner = rest of file, or a `#foreign { ... }` block). While set,
+	 * a bodiless proc parses as a foreign value-form (SN_PROC_EXPR) rather than a proc type. */
+	int in_foreign;
 	/* Lossless CST builder. Built alongside the AST purely by appending; never
 	 * affects parse control flow, so CST bugs can't change compiler output. */
 	CstBuilder *builder;
@@ -677,6 +680,11 @@ static int parse_func_sig(Parser *parser, int is_extern) {
 static int parse_proc_form(Parser *parser, int is_extern, SyntaxNodeKind *out_kind) {
 	if (!parse_proc_sig(parser, is_extern))
 		return 0;
+	if (is_extern && check(parser, TOK_LBRACE)) {
+		error(parser, "a proc inside a `#foreign` region is an FFI declaration and has no body — "
+		              "remove the `{ ... }` (or move it out of the `#foreign` region)");
+		return 0;
+	}
 	if (!is_extern && check(parser, TOK_LBRACE)) {
 		*out_kind = SN_PROC_EXPR;
 		return parse_block_body(parser);
@@ -906,6 +914,53 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 
 /* `out_kind` receives the CST node kind for the declaration form, from parse
  * context. Pre-set to SN_ERROR; each leaf parser / branch sets the real kind. */
+/* A region marker — `#module` / `#file` / `#foreign` — in one of two forms:
+ *   banner  `#foreign`             applies to every following decl, to end of file
+ *   block   `#foreign { decls }`   applies only to the decls inside the braces
+ * The marker token is current on entry. `#foreign` toggles parser->in_foreign so bodiless
+ * procs in scope parse as foreign value-forms (not proc types); `#module`/`#file` visibility
+ * narrowing is applied later, positionally, by the decl-collection loops. Emits SN_REGION;
+ * for the block form its children are the braced decls (the collection loops recurse in). */
+static int parse_region(Parser *parser, SyntaxNodeKind *out_kind) {
+	int is_foreign = check(parser, TOK_HASH_FOREIGN);
+	advance(parser); /* consume the marker token */
+	*out_kind = SN_REGION;
+
+	if (check(parser, TOK_LBRACE)) {
+		/* Block form: the attribute is scoped to the braced decl list. */
+		advance(parser); /* consume '{' */
+		int saved = parser->in_foreign;
+		if (is_foreign)
+			parser->in_foreign = 1;
+		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+			Trivia *leading = NULL;
+			int leading_count = 0;
+			take_pending_as_leading(parser, &leading, &leading_count);
+			free(leading);
+			(void)leading_count;
+			int child_cp = cst_cp(parser);
+			SyntaxNodeKind child_kind = SN_ERROR;
+			if (!parse_decl(parser, &child_kind)) {
+				synchronize(parser);
+				cst_wrap(parser, child_cp, SN_ERROR);
+				continue;
+			}
+			cst_wrap(parser, child_cp, child_kind);
+		}
+		parser->in_foreign = saved;
+		if (!match(parser, TOK_RBRACE)) {
+			error(parser, "Expected '}' to close the region block");
+			return 0;
+		}
+		return 1;
+	}
+
+	/* Banner form: sticky to end of file. */
+	if (is_foreign)
+		parser->in_foreign = 1;
+	return 1;
+}
+
 static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	*out_kind = SN_ERROR;
 
@@ -995,11 +1050,9 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	}
 	case TOK_HASH_MODULE:
 	case TOK_HASH_FILE:
-		/* Visibility region marker (`#module` / `#file`): a standalone banner that narrows the
-		 * visibility of every following decl in this file. The token itself is the whole marker. */
-		advance(parser);
-		*out_kind = SN_VIS_MARKER;
-		return 1;
+	case TOK_HASH_FOREIGN:
+		/* Region marker (`#module` / `#file` / `#foreign`) — banner or `{ ... }` block. */
+		return parse_region(parser, out_kind);
 	default:
 		/* INFO: Check for top-level const or alloc */
 		if (check(parser, TOK_IDENT) || check(parser, TOK_STATIC)) {
@@ -1060,15 +1113,10 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 		advance(parser); /* consume 'proc' / 'func' */
 		if (check(parser, TOK_LBRACE))
 			return parse_group_form(parser, out_kind);
-		return is_proc ? parse_proc_form(parser, 0, out_kind) : parse_func_form(parser, out_kind);
-	}
-	if (check(parser, TOK_EXTERN)) {
-		advance(parser); /* consume 'extern' — externs are procs */
-		if (!match(parser, TOK_PROC)) {
-			error(parser, "Expected 'proc' after 'extern' (externs are procs)");
-			return 0;
-		}
-		return parse_proc_form(parser, 1, out_kind);
+		/* Inside a `#foreign` region a bodiless proc is a foreign (FFI) value-form, not a proc
+		 * type — drive that off the parser's region state. Funcs are never foreign (FFI bodies
+		 * are procs), so a bodiless func is always a func type. */
+		return is_proc ? parse_proc_form(parser, parser->in_foreign, out_kind) : parse_func_form(parser, out_kind);
 	}
 	if (check(parser, TOK_ARCHETYPE)) {
 		advance(parser); /* consume 'archetype' */

@@ -59,7 +59,7 @@ static int cst_root_has_decl(const SyntaxNode *cst_root) {
 		if (cst_root->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = cst_root->children[i].as.node->kind;
-		if (k >= SN_WORLD_DECL && k <= SN_USE_DECL)
+		if ((k >= SN_WORLD_DECL && k <= SN_USE_DECL) || k == SN_REGION)
 			return 1;
 	}
 	return 0;

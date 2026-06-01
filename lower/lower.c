@@ -1484,7 +1484,9 @@ static HirDecl *lower_proc_from(CstView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_PROC);
 	HirProcDecl *ap = calloc(1, sizeof(HirProcDecl));
 	ap->name = name;
-	ap->is_extern = cv_has_token(f, TOK_EXTERN);
+	/* Foreign (FFI-bodied): a proc value-form with no `{` body block (parser emits a bodiless
+	 * proc value-form only inside a `#foreign` region). Mirrors semantic.c build_proc_from. */
+	ap->is_extern = !cv_has_token(f, TOK_LBRACE);
 	int np = cv_count(f, SN_PARAM);
 	ap->params = calloc(np ? np : 1, sizeof(HirParam *));
 	for (int i = 0; i < np; i++)
@@ -1504,7 +1506,7 @@ static HirDecl *lower_func_from(CstView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_FUNC);
 	HirFuncDecl *af = calloc(1, sizeof(HirFuncDecl));
 	af->name = name;
-	af->is_extern = cv_has_token(f, TOK_EXTERN);
+	af->is_extern = 0; /* funcs are never foreign — FFI bodies are procs */
 	int np = cv_count(f, SN_PARAM);
 	af->params = calloc(np ? np : 1, sizeof(HirParam *));
 	for (int i = 0; i < np; i++)
@@ -1768,7 +1770,7 @@ static HirDecl *lower_decl_cst(CstView d) {
 		HirDecl *ad = hir_decl_create(HIR_DECL_PROC);
 		HirProcDecl *ap = calloc(1, sizeof(HirProcDecl));
 		ap->name = cv_dup(cv_child(d, SN_FUNC_DEF_NAME));
-		ap->is_extern = cv_has_token(d, TOK_EXTERN);
+		ap->is_extern = !cv_has_token(d, TOK_LBRACE);
 		int np = cv_count(d, SN_PARAM);
 		ap->params = calloc(np ? np : 1, sizeof(HirParam *));
 		for (int i = 0; i < np; i++)
@@ -1833,7 +1835,7 @@ static HirDecl *lower_decl_cst(CstView d) {
 		HirDecl *ad = hir_decl_create(HIR_DECL_FUNC);
 		HirFuncDecl *af = calloc(1, sizeof(HirFuncDecl));
 		af->name = cv_dup(cv_child(d, SN_FUNC_DEF_NAME));
-		af->is_extern = cv_has_token(d, TOK_EXTERN);
+		af->is_extern = 0; /* funcs are never foreign */
 		int np = cv_count(d, SN_PARAM);
 		af->params = calloc(np ? np : 1, sizeof(HirParam *));
 		for (int i = 0; i < np; i++)
@@ -2435,6 +2437,38 @@ static void hir_q_decl(HirDecl *d, const QualCtx *q) {
 	}
 }
 
+/* Lower one module decl from `node`, append to ast, and record its name in `full` (intra-module
+ * resolution) and — when `exported` — `expset` (externally visible). Externs are added to neither.
+ * Shared by the module loop and recursion into `#foreign { }` / `#module { }` block regions. */
+static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, HirProgram *ast, char ***full,
+                                int *fulln, int *fullcap, char ***expset, int *expn, int *expcap, int exported) {
+	HirDecl *md = lower_decl_cst((CstView){node, msrc});
+	if (!md)
+		return;
+	ast->decls[ast->decl_count++] = md;
+	int is_ext = (md->kind == HIR_DECL_PROC && md->data.proc->is_extern) ||
+	             (md->kind == HIR_DECL_FUNC && md->data.func->is_extern);
+	const char *nm = hir_decl_name(md);
+	if (nm && !is_ext) {
+		if (*fulln == *fullcap) {
+			*fullcap = *fullcap ? *fullcap * 2 : 8;
+			*full = realloc(*full, (size_t)*fullcap * sizeof(char *));
+		}
+		(*full)[(*fulln)++] = dupz(nm);
+		if (exported) {
+			if (*expn == *expcap) {
+				*expcap = *expcap ? *expcap * 2 : 8;
+				*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
+			}
+			(*expset)[(*expn)++] = dupz(nm);
+		}
+	}
+}
+
+static int hir_is_collectible_decl(SyntaxNodeKind k) {
+	return k >= SN_WORLD_DECL && k <= SN_USE_DECL && k != SN_USE_DECL;
+}
+
 /* CST-driven entry, gated by ARCHE_LOWER_CST (validated against the IR goldens). */
 HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 	if (!root)
@@ -2442,9 +2476,12 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 	HirProgram *ast = hir_program_create();
 	CstView r = cv_root(root, src);
 	build_tgroups(root, src); /* tuple-group consts → archetype-field expansion table */
-	int cap = cv_node_count(r);
+	/* Deep count: decls nested inside `#foreign { }` / `#module { }` block regions are collected
+	 * too (see the region recursion below), so the shallow top-level child count would undersize
+	 * the array and overflow it. cv_node_count_deep is a safe (over-)estimate. */
+	int cap = cv_node_count_deep(r);
 	for (int m = 0; m < g_module_count; m++)
-		cap += cv_node_count(cv_root(g_modules[m].root, g_modules[m].src));
+		cap += cv_node_count_deep(cv_root(g_modules[m].root, g_modules[m].src));
 	ast->decls = calloc(cap ? cap : 1, sizeof(HirDecl *));
 	ast->decl_count = 0;
 
@@ -2459,6 +2496,23 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 		if (root->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = root->children[i].as.node->kind;
+		/* Region marker: banner contributes no decls here (siblings collected normally); a
+		 * `{ ... }` block's child decls are collected inline (no main-file export band). */
+		if (k == SN_REGION) {
+			const SyntaxNode *rn = root->children[i].as.node;
+			if (cv_has_token((CstView){rn, src}, TOK_LBRACE)) {
+				for (int c = 0; c < rn->child_count; c++) {
+					if (rn->children[c].tag != SE_NODE)
+						continue;
+					if (!hir_is_collectible_decl(rn->children[c].as.node->kind))
+						continue;
+					HirDecl *ad = lower_decl_cst((CstView){rn->children[c].as.node, src});
+					if (ad)
+						ast->decls[ast->decl_count++] = ad;
+				}
+			}
+			continue;
+		}
 		if (k < SN_WORLD_DECL || k > SN_USE_DECL)
 			continue;
 		CstView dv = {root->children[i].as.node, src};
@@ -2485,39 +2539,35 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 					continue;
 				found = 1;
 				const SyntaxNode *mr = g_modules[m].root;
+				const char *msrc = g_modules[m].src;
 				int exported = 1; /* band resets per file */
 				for (int j = 0; j < mr->child_count; j++) {
 					if (mr->children[j].tag != SE_NODE)
 						continue;
-					SyntaxNodeKind mk = mr->children[j].as.node->kind;
-					if (mk == SN_VIS_MARKER) {
-						exported = 0;
-						continue;
-					}
-					if (mk < SN_WORLD_DECL || mk > SN_USE_DECL || mk == SN_USE_DECL)
-						continue;
-					CstView mdv = {mr->children[j].as.node, g_modules[m].src};
-					HirDecl *md = lower_decl_cst(mdv);
-					if (!md)
-						continue;
-					ast->decls[ast->decl_count++] = md;
-					int is_ext = (md->kind == HIR_DECL_PROC && md->data.proc->is_extern) ||
-					             (md->kind == HIR_DECL_FUNC && md->data.func->is_extern);
-					const char *nm = hir_decl_name(md);
-					if (nm && !is_ext) {
-						if (fulln == fullcap) {
-							fullcap = fullcap ? fullcap * 2 : 8;
-							full = realloc(full, (size_t)fullcap * sizeof(char *));
-						}
-						full[fulln++] = dupz(nm);
-						if (exported) {
-							if (expn == expcap) {
-								expcap = expcap ? expcap * 2 : 8;
-								expset = realloc(expset, (size_t)expcap * sizeof(char *));
+					const SyntaxNode *cn = mr->children[j].as.node;
+					SyntaxNodeKind mk = cn->kind;
+					if (mk == SN_REGION) {
+						CstView rv = {cn, msrc};
+						int is_block = cv_has_token(rv, TOK_LBRACE);
+						int is_foreign = cv_has_token(rv, TOK_HASH_FOREIGN);
+						if (is_block) {
+							int child_exp = is_foreign ? exported : 0;
+							for (int c = 0; c < cn->child_count; c++) {
+								if (cn->children[c].tag != SE_NODE)
+									continue;
+								if (!hir_is_collectible_decl(cn->children[c].as.node->kind))
+									continue;
+								hir_add_module_decl(cn->children[c].as.node, msrc, ast, &full, &fulln, &fullcap,
+								                    &expset, &expn, &expcap, child_exp);
 							}
-							expset[expn++] = dupz(nm);
+						} else if (!is_foreign) {
+							exported = 0; /* visibility banner: narrows the rest of this file */
 						}
+						continue;
 					}
+					if (!hir_is_collectible_decl(mk))
+						continue;
+					hir_add_module_decl(cn, msrc, ast, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported);
 				}
 			}
 			if (!found) {

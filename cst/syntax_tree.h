@@ -33,7 +33,8 @@ typedef enum {
 	SN_STATIC_DECL,
 	SN_CONST_DECL,
 	SN_USE_DECL,
-	SN_VIS_MARKER, /* `#module` / `#file` — narrows visibility of following decls in this file */
+	SN_REGION, /* `#module`/`#file`/`#foreign` region marker — banner (narrows following decls to
+	            * end-of-file) or, when it carries a `{ ... }` body, a bounded block of child decls */
 
 	/* Structure */
 	SN_PARAM_LIST,

@@ -788,7 +788,7 @@ void test_parser_handle_type_is_typename(void) {
 void test_own_param_modifier(void) {
 	test_start("own parameter modifier");
 	AstProgram *prog = parse_string("window :: opaque\n"
-	                                "window_close :: extern proc(own w: window);\n");
+	                                "#foreign { window_close :: proc(own w: window) }\n");
 	ASSERT_NOT_NULL(prog, "program is null");
 	ASSERT_EQ(prog->decl_count, 2, "expected 2 decls");
 	ASSERT_EQ(prog->decls[1]->kind, DECL_PROC, "expected DECL_PROC");
@@ -802,7 +802,7 @@ void test_own_param_modifier(void) {
 void test_out_keyword_rejected(void) {
 	test_start("removed `out` keyword is rejected");
 	ParseResult result = parse_source("window :: opaque\n"
-	                                  "bad :: extern proc(out w: window);\n");
+	                                  "#foreign { bad :: proc(out w: window) }\n");
 	ASSERT_TRUE(result.error_count >= 1, "expected a parse error for `out` parameter");
 	parse_result_free(&result);
 	test_pass_msg();

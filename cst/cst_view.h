@@ -41,6 +41,7 @@ int cv_text_eq(CstView v, const char *s);
 
 /* Direct-child navigation. */
 int cv_node_count(CstView v);                               /* number of child *nodes* */
+int cv_node_count_deep(CstView v);                          /* count of all descendant nodes (recursive) */
 CstView cv_node_at(CstView v, int index);                   /* nth child node (any kind) */
 CstView cv_child(CstView v, SyntaxNodeKind kind);           /* first child node of `kind` */
 CstView cv_child_at(CstView v, SyntaxNodeKind kind, int n); /* nth child node of `kind` */

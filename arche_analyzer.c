@@ -678,27 +678,35 @@ static void emit_docs(const Analysis *a) {
 	CstView root = cv_root(a->cst_root, a->combined);
 	int nn = cv_node_count(root);
 	for (int i = 0; i < nn; i++) {
-		CstView decl = cv_node_at(root, i);
-		SyntaxNodeKind k = cv_kind(decl);
-		if (k < SN_WORLD_DECL || k > SN_USE_DECL)
-			continue;
+		CstView top = cv_node_at(root, i);
+		/* Descend one level into a `#foreign`/`#module`/`#file` block region so docs on its
+		 * inner decls still surface for hover. */
+		int is_region = cv_kind(top) == SN_REGION;
+		int inner = is_region ? cv_node_count(top) : 1;
+		for (int j = 0; j < inner; j++) {
+			CstView decl = is_region ? cv_node_at(top, j) : top;
+			SyntaxNodeKind k = cv_kind(decl);
+			if (k < SN_WORLD_DECL || k > SN_USE_DECL)
+				continue;
 
-		CvText lines[256];
-		int n = cv_decl_doc_lines(root, decl, lines, NULL, 256);
-		if (n <= 0)
-			continue;
+			CvText lines[256];
+			int n = cv_decl_doc_lines(root, decl, lines, NULL, 256);
+			if (n <= 0)
+				continue;
 
-		CvPos p = cv_first_token_pos(decl);
-		int uline = p.line - g_core_lines;
-		if (uline <= 0)
-			continue; /* core region */
+			CvPos p = cv_first_token_pos(decl);
+			int uline = p.line - g_core_lines;
+			if (uline <= 0)
+				continue; /* core region */
 
-		CvText name = cv_text(cv_child(decl, SN_FUNC_DEF_NAME));
-		if (!name.ptr)
-			name = cv_text(cv_child(decl, SN_TYPE_DEF_NAME));
-		printf("DOC %d %d %.*s %d\n", uline, p.column, name.ptr ? (int)name.len : 4, name.ptr ? name.ptr : "item", n);
-		for (int j = 0; j < n; j++)
-			printf("DOCLINE %.*s\n", (int)lines[j].len, lines[j].ptr);
+			CvText name = cv_text(cv_child(decl, SN_FUNC_DEF_NAME));
+			if (!name.ptr)
+				name = cv_text(cv_child(decl, SN_TYPE_DEF_NAME));
+			printf("DOC %d %d %.*s %d\n", uline, p.column, name.ptr ? (int)name.len : 4,
+			       name.ptr ? name.ptr : "item", n);
+			for (int j2 = 0; j2 < n; j2++)
+				printf("DOCLINE %.*s\n", (int)lines[j2].len, lines[j2].ptr);
+		}
 	}
 }
 
