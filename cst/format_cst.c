@@ -144,8 +144,8 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 			int want_nl = force_nl || arch_field_break || list_continuation ||
 			              (l->kind == TOK_RBRACE && l->parent != SN_USE_DECL) ||
 			              (prev == TOK_LBRACE && prev_parent != SN_USE_DECL) ||
-			              (prev == TOK_SEMI && !for_header_semi) || prev == TOK_RBRACE ||
-			              vis_marker || after_vis_marker || l->decl_start;
+			              (prev == TOK_SEMI && !for_header_semi) || prev == TOK_RBRACE || vis_marker ||
+			              after_vis_marker || l->decl_start;
 			/* A comment on a NEW source line gets its own line; a trailing comment on the SAME line as
 			 * the code it follows stays inline (don't force it down). This override wins over the
 			 * statement-break rules above (e.g. a `// note` after `stmt;` stays put). */
