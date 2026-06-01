@@ -515,6 +515,20 @@ Token lexer_next_token(Lexer *lexer) {
 		}
 		return make_token(lexer, TOK_GT, start, 1, line, column);
 
+	case '&':
+		if (peek(lexer) == '&') {
+			advance(lexer);
+			return make_token(lexer, TOK_AMP_AMP, start, 2, line, column);
+		}
+		return error_token(lexer, "unexpected character (did you mean `&&`?)", line, column);
+
+	case '|':
+		if (peek(lexer) == '|') {
+			advance(lexer);
+			return make_token(lexer, TOK_PIPE_PIPE, start, 2, line, column);
+		}
+		return error_token(lexer, "unexpected character (did you mean `||`?)", line, column);
+
 	default:
 		return error_token(lexer, "unexpected character", line, column);
 	}
@@ -636,6 +650,11 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_LT_EQ";
 	case TOK_GT_EQ:
 		return "TOK_GT_EQ";
+
+	case TOK_AMP_AMP:
+		return "TOK_AMP_AMP";
+	case TOK_PIPE_PIPE:
+		return "TOK_PIPE_PIPE";
 
 	case TOK_ARROW:
 		return "TOK_ARROW";

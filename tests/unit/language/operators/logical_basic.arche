@@ -1,0 +1,11 @@
+// Logical `&&` / `||`: both yield int 0/1 (arche has no bool). Eager — arche expressions have no
+// side effects or traps, so eager evaluation is indistinguishable from short-circuit.
+// Truth table: OR(T,F)=1, OR(F,F)=0, AND(T,T)=1, AND(T,F)=0.
+// RUN: %arche build -o %t %s && %t | grep -q "^1 0 1 0$"
+main :: proc () {
+  printf("%d %d %d %d\n",
+    (1 == 1 || 1 == 0),
+    (1 == 0 || 1 == 0),
+    (1 == 1 && 1 == 1),
+    (1 == 1 && 1 == 0));
+}

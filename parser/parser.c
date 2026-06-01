@@ -1278,16 +1278,20 @@ static int binop_prec(TokenKind k) {
 	switch (k) {
 	case TOK_STAR:
 	case TOK_SLASH:
-		return 3;
+		return 5;
 	case TOK_PLUS:
 	case TOK_MINUS:
-		return 2;
+		return 4;
 	case TOK_LT:
 	case TOK_GT:
 	case TOK_LT_EQ:
 	case TOK_GT_EQ:
 	case TOK_EQ_EQ:
 	case TOK_BANG_EQ:
+		return 3;
+	case TOK_AMP_AMP:
+		return 2;
+	case TOK_PIPE_PIPE:
 		return 1;
 	default:
 		return -1;

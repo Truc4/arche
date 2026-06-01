@@ -401,6 +401,10 @@ static Operator cst_tok_to_op(TokenKind k) {
 		return OP_LTE;
 	case TOK_GT_EQ:
 		return OP_GTE;
+	case TOK_AMP_AMP:
+		return OP_AND;
+	case TOK_PIPE_PIPE:
+		return OP_OR;
 	default:
 		return OP_NONE;
 	}

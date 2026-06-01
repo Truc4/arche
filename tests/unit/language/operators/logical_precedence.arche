@@ -1,0 +1,9 @@
+// Precedence: comparisons bind tighter than `&&`, and `&&` binds tighter than `||`
+// (looser binds last). So `1 || 0 && 0` == `1 || (0 && 0)` == 1 (not `(1||0)&&0` == 0),
+// and `2 > 1 && 3 > 2` == `(2>1) && (3>2)` == 1.
+// RUN: %arche build -o %t %s && %t | grep -q "^1 1$"
+main :: proc () {
+  a := 1 || 0 && 0;
+  b := 2 > 1 && 3 > 2;
+  printf("%d %d\n", a, b);
+}

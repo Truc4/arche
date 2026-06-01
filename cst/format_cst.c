@@ -117,6 +117,13 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 		} else {
 			/* one archetype field per line: a comma directly in the archetype body */
 			int arch_field_break = (prev == TOK_COMMA && prev_parent == SN_ARCHETYPE_DECL);
+			/* The author split a CALL'S argument list across lines — keep the break (like the
+			 * for-header / blank-line preservation below), with a continuation indent. Scoped to
+			 * the call node only (args/commas are its direct children — there is no SN_ARG_LIST
+			 * wrap), so params/archetype/enum/array/index layouts are untouched; and never the
+			 * closing `)` (a trailing comma before it must not indent the closer). */
+			int list_continuation =
+			    (prev == TOK_COMMA && prev_parent == SN_CALL_EXPR && l->line > prev_line && l->kind != TOK_RPAREN);
 			/* `;` ends a statement → newline. The two `;` in a `for (init; cond; incr)` header are
 			 * direct children of the for-statement node; they separate clauses, not statements, so
 			 * we don't force a break. Instead the author's layout is preserved (like blank lines
@@ -126,9 +133,9 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 			 * own line, and break again after them so the following decl starts fresh. */
 			int vis_marker = (l->kind == TOK_HASH_MODULE || l->kind == TOK_HASH_FILE);
 			int after_vis_marker = (prev == TOK_HASH_MODULE || prev == TOK_HASH_FILE);
-			int want_nl = force_nl || arch_field_break || l->kind == TOK_RBRACE || prev == TOK_LBRACE ||
-			              (prev == TOK_SEMI && !for_header_semi) || prev == TOK_RBRACE || vis_marker ||
-			              after_vis_marker || l->decl_start;
+			int want_nl = force_nl || arch_field_break || list_continuation || l->kind == TOK_RBRACE ||
+			              prev == TOK_LBRACE || (prev == TOK_SEMI && !for_header_semi) || prev == TOK_RBRACE ||
+			              vis_marker || after_vis_marker || l->decl_start;
 			/* A comment on a NEW source line gets its own line; a trailing comment on the SAME line as
 			 * the code it follows stays inline (don't force it down). This override wins over the
 			 * statement-break rules above (e.g. a `// note` after `stmt;` stays put). */
@@ -146,7 +153,9 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 				fputc('\n', out);
 				if (l->line - prev_line >= 2) /* preserve one blank line */
 					fputc('\n', out);
-				for (int t = 0; t < indent; t++)
+				/* continued list items get one extra level so they sit under, not beside, the call */
+				int eff_indent = indent + (list_continuation ? 1 : 0);
+				for (int t = 0; t < eff_indent; t++)
 					fputs("  ", out);
 			} else {
 				/* No space after a symbolic unary operator (`-1`, `!flag`): the operator and its

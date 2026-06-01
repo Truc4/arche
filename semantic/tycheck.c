@@ -354,6 +354,8 @@ static TypeId synth(TyCtx *cx, Expression *e) {
 		case OP_GT:
 		case OP_LTE:
 		case OP_GTE:
+		case OP_AND:
+		case OP_OR:
 			return tyid_of_prim(cx->arena, PRIM_INT);
 		default:
 			if (tyid_equal(lt, tyid_of_prim(cx->arena, PRIM_FLOAT)) ||

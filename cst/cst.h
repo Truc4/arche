@@ -316,6 +316,8 @@ typedef enum {
 	OP_GT,
 	OP_LTE,
 	OP_GTE,
+	OP_AND, /* && — logical, eager (arche exprs have no side effects) */
+	OP_OR,  /* || */
 } Operator;
 
 typedef struct {
