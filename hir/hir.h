@@ -115,6 +115,7 @@ typedef struct {
 	HirParam **out_params;
 	int out_param_count;
 	int is_extern;
+	int is_drop; /* 1 if this proc is a `@drop` destructor (own opaque param is the type it destroys) */
 	HirStmt **stmts;
 	int stmt_count;
 	SourceLoc loc;

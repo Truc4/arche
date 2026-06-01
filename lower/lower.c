@@ -217,7 +217,6 @@ static HirType *lower_type_cst(CstView t) {
 		const char *r = g_lower_sem ? semantic_resolve_type_alias(g_lower_sem, raw) : raw;
 		char *name = malloc(strlen(r) + 1);
 		strcpy(name, r);
-		free(raw);
 		if (strcmp(name, "archetype") == 0)
 			at->tag = HIR_TYPE_ARCHETYPE;
 		else if (strcmp(name, "opaque") == 0)
@@ -226,11 +225,20 @@ static HirType *lower_type_cst(CstView t) {
 			; /* meta-type erased; leave UNKNOWN defensively */
 		else
 			*at = map_type_str(name); /* borrows name via HIR_TYPE_NAMED below */
-		/* map_type_str's HIR_TYPE_NAMED .name points at its argument; keep a stable copy. */
-		if (at->tag == HIR_TYPE_NAMED)
+		/* map_type_str's HIR_TYPE_NAMED .name points at its argument; keep a stable copy.
+		 * For an OPAQUE type, preserve the NOMINAL alias name (e.g. "file"/"socket"), NOT the
+		 * resolved backing "opaque", so the RAII pass can match a local against its registered
+		 * `@drop` destructor (the backing alone can't tell `file` from `socket`). */
+		if (at->tag == HIR_TYPE_NAMED) {
 			at->name = name;
-		else
+			free(raw);
+		} else if (at->tag == HIR_TYPE_OPAQUE && strcmp(raw, "opaque") != 0) {
+			at->name = raw; /* the nominal alias name */
 			free(name);
+		} else {
+			free(name);
+			free(raw);
+		}
 		break;
 	}
 	case SN_TYPE_ARRAY: {
@@ -714,6 +722,38 @@ static HirStmt **cst_lower_body(CstView parent, int *out_count) {
 	return out;
 }
 
+static HirStmt *lower_stmt_cst(CstView s);
+
+/* Lower the direct statement children of `parent` whose child index is in [lo, hi). Used to
+ * split an if's flat then/else child list on the `else` token. */
+static HirStmt **cst_lower_body_split(CstView parent, int lo, int hi, int *out_count) {
+	if (lo < 0)
+		lo = 0;
+	if (hi > parent.node->child_count)
+		hi = parent.node->child_count;
+	int n = 0;
+	for (int i = lo; i < hi; i++)
+		if (parent.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = parent.node->children[i].as.node->kind;
+			if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
+				n++;
+		}
+	*out_count = n;
+	if (n == 0)
+		return NULL;
+	HirStmt **out = calloc(n, sizeof(HirStmt *));
+	int j = 0;
+	for (int i = lo; i < hi; i++)
+		if (parent.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = parent.node->children[i].as.node->kind;
+			if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT) {
+				CstView sv = {parent.node->children[i].as.node, parent.src};
+				out[j++] = lower_stmt_cst(sv);
+			}
+		}
+	return out;
+}
+
 static Operator cst_assign_op(TokenKind k) {
 	switch (k) {
 	case TOK_PLUS_EQ:
@@ -806,11 +846,19 @@ static HirStmt *lower_stmt_cst(CstView s) {
 	case SN_IF_STMT: {
 		as->kind = HIR_STMT_IF;
 		as->data.if_stmt.cond = lower_expr_cst(cv_node_at_expr(s, 0));
-		/* then-body = stmt children directly under the IF; else-body under ELSE_CLAUSE. */
-		CstView elsec = cv_child(s, SN_ELSE_CLAUSE);
-		as->data.if_stmt.then_body = cst_lower_body(s, &as->data.if_stmt.then_count);
-		if (cv_present(elsec))
-			as->data.if_stmt.else_body = cst_lower_body(elsec, &as->data.if_stmt.else_count);
+		/* The parser emits then- and else-statements as a FLAT child list separated by the
+		 * `else` token. Split on it: children before → then-body, children after → else-body. */
+		int else_tok = -1;
+		for (int i = 0; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_ELSE) {
+				else_tok = i;
+				break;
+			}
+		as->data.if_stmt.then_body =
+		    cst_lower_body_split(s, 0, else_tok >= 0 ? else_tok : s.node->child_count, &as->data.if_stmt.then_count);
+		if (else_tok >= 0)
+			as->data.if_stmt.else_body =
+			    cst_lower_body_split(s, else_tok, s.node->child_count, &as->data.if_stmt.else_count);
 		break;
 	}
 	case SN_FOR_STMT: {
@@ -1410,6 +1458,24 @@ static void tuple_collapse_decl(HirDecl *d) {
 	}
 }
 
+/* True if this decl node carries a `@drop` decorator (a direct `@ drop` token pair). */
+static int cst_decl_has_drop_decorator(CstView d) {
+	if (!cv_present(d))
+		return 0;
+	int n = d.node->child_count;
+	for (int i = 0; i + 1 < n; i++) {
+		const SyntaxElem *e1 = &d.node->children[i];
+		if (e1->tag != SE_TOKEN || e1->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *e2 = &d.node->children[i + 1];
+		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
+			continue;
+		if (e2->as.token.length == 4 && memcmp(d.src + e2->as.token.offset, "drop", 4) == 0)
+			return 1;
+	}
+	return 0;
+}
+
 /* ===== Unified-grammar RHS value forms (P2) =====
  * Build the HIR decl from an RHS value-form node `f` with the name from the binding LHS.
  * Mirrors the legacy keyword-led cases below (dead once old syntax is removed). `name` owned. */
@@ -1792,8 +1858,14 @@ static HirDecl *lower_decl_cst(CstView d) {
 			    rk == SN_GROUP_EXPR) {
 				char *nm = txt_dup(lower_binding_name(d));
 				switch (rk) {
-				case SN_PROC_EXPR:
-					return lower_proc_from(rhs, nm);
+				case SN_PROC_EXPR: {
+					HirDecl *pd = lower_proc_from(rhs, nm);
+					/* Propagate the `@drop` decorator (a direct `@ drop` token pair on the
+					 * decl node) so the RAII pass can register this proc as a destructor. */
+					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && cst_decl_has_drop_decorator(d))
+						pd->data.proc->is_drop = 1;
+					return pd;
+				}
 				case SN_FUNC_EXPR:
 					return lower_func_from(rhs, nm);
 				case SN_SYS_EXPR:

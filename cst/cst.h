@@ -120,6 +120,11 @@ struct Decl {
 	 * Errors are NEVER suppressible — silently ignored if listed here. */
 	char **allow_slugs;
 	int allow_slug_count;
+	/* 1 if a `@drop(<type>)` decorator was on this decl. Marks the decorated proc as the
+	 * destructor for that opaque type (RAII). `drop_type` is the named type (e.g. "socket"),
+	 * validated in semantic to match the proc's single `own` parameter. */
+	int is_drop;
+	char *drop_type;
 	union {
 		WorldDecl *world;
 		ArchetypeDecl *archetype;

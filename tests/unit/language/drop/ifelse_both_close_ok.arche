@@ -1,0 +1,14 @@
+// Idiomatic if/else where every path closes the handle exactly once: valid (no false "use of
+// consumed handle" in the else, no double-drop). Consumed on all paths → no auto-drop.
+// RUN: %arche build -o %t %s
+#import io;
+main :: proc () {
+  arche_fopen_read("/dev/null")(f:);
+  e := 0;
+  if (e == 1) {
+    arche_fclose(move f);
+  }
+  else {
+    arche_fclose(move f);
+  }
+}

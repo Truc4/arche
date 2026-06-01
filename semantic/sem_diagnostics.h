@@ -127,6 +127,11 @@ typedef enum {
 	SEM_DIAG_break_outside_loop,
 	SEM_DIAG_duplicate_decl,
 
+	/* Opaque destructors / RAII (`@drop`) — E0118+ */
+	SEM_DIAG_drop_invalid,     /* a `@drop` proc with a bad signature (not `proc(own T)()`) */
+	SEM_DIAG_drop_redefined,   /* a second `@drop` for an already-registered opaque type */
+	SEM_DIAG_drop_conditional, /* a handle consumed on some-but-not-all branch paths */
+
 	/* Tycheck (P3 type-check pass — E0200+) */
 	SEM_DIAG_type_mismatch,
 	SEM_DIAG_not_indexable,
@@ -293,6 +298,9 @@ SemDiag *sem_emit_wrong_arity(SemanticContext *ctx, SourceLoc loc, const char *n
 SemDiag *sem_emit_wrong_return_arity(SemanticContext *ctx, SourceLoc loc, const char *fn_name, int expected, int got);
 SemDiag *sem_emit_break_outside_loop(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_duplicate_decl(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name);
+SemDiag *sem_emit_drop_invalid(SemanticContext *ctx, SourceLoc loc, const char *msg);
+SemDiag *sem_emit_drop_redefined(SemanticContext *ctx, SourceLoc loc, const char *type_name);
+SemDiag *sem_emit_drop_conditional(SemanticContext *ctx, SourceLoc loc, const char *name);
 
 /* Lints */
 SemDiag *sem_emit_lint_proc_could_be_func(SemanticContext *ctx, SourceLoc loc, const char *name);
