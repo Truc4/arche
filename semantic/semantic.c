@@ -1461,8 +1461,7 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		}
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
 			Expression *arg = expr->data.call.args[i];
-			if (arg && arg->type == EXPR_NAME && arg->data.name.name &&
-			    strcmp(arg->data.name.name, "_") == 0) {
+			if (arg && arg->type == EXPR_NAME && arg->data.name.name && strcmp(arg->data.name.name, "_") == 0) {
 				/* `_` placeholder: legal only when the matching in-param is in-out. Do not resolve
 				 * it as a symbol and do not require ownership. */
 				if (!call_callee_proc || !proc_param_is_inout(call_callee_proc, i))

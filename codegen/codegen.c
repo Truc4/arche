@@ -4375,8 +4375,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				const char *pn = callee_proc->params[i]->name;
 				const char *bufname = NULL;
 				for (int oi = 0; oi < callee_proc->out_param_count && oi < target_count; oi++) {
-					if (callee_proc->out_params[oi]->name && pn &&
-					    strcmp(callee_proc->out_params[oi]->name, pn) == 0) {
+					if (callee_proc->out_params[oi]->name && pn && strcmp(callee_proc->out_params[oi]->name, pn) == 0) {
 						bufname = targets[oi].name;
 						break;
 					}
@@ -7137,7 +7136,6 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "declare void @abort()\n");
 	/* memcpy intrinsic (`copy x` of a local buffer). Declared lazily at module end only if a real
 	 * memcpy was emitted, so a program with no copy carries no `llvm.memcpy` (see uses_memcpy). */
-
 
 	/* Global error message for bounds check failures */
 	buffer_append(
