@@ -117,10 +117,13 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 		} else {
 			/* one archetype field per line: a comma directly in the archetype body */
 			int arch_field_break = (prev == TOK_COMMA && prev_parent == SN_ARCHETYPE_DECL);
-			/* The author split a comma-separated list across lines (call args, params, array
-			 * elements, …) — keep the break, like the for-header / blank-line preservation below.
-			 * Archetype bodies are handled above (and are already inside `{}`), so exclude them. */
-			int list_continuation = (prev == TOK_COMMA && !arch_field_break && l->line > prev_line);
+			/* The author split a CALL'S argument list across lines — keep the break (like the
+			 * for-header / blank-line preservation below), with a continuation indent. Scoped to
+			 * the call node only (args/commas are its direct children — there is no SN_ARG_LIST
+			 * wrap), so params/archetype/enum/array/index layouts are untouched; and never the
+			 * closing `)` (a trailing comma before it must not indent the closer). */
+			int list_continuation = (prev == TOK_COMMA && prev_parent == SN_CALL_EXPR &&
+			                         l->line > prev_line && l->kind != TOK_RPAREN);
 			/* `;` ends a statement → newline. The two `;` in a `for (init; cond; incr)` header are
 			 * direct children of the for-statement node; they separate clauses, not statements, so
 			 * we don't force a break. Instead the author's layout is preserved (like blank lines
