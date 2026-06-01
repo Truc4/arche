@@ -122,8 +122,8 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 			 * the call node only (args/commas are its direct children — there is no SN_ARG_LIST
 			 * wrap), so params/archetype/enum/array/index layouts are untouched; and never the
 			 * closing `)` (a trailing comma before it must not indent the closer). */
-			int list_continuation = (prev == TOK_COMMA && prev_parent == SN_CALL_EXPR &&
-			                         l->line > prev_line && l->kind != TOK_RPAREN);
+			int list_continuation =
+			    (prev == TOK_COMMA && prev_parent == SN_CALL_EXPR && l->line > prev_line && l->kind != TOK_RPAREN);
 			/* `;` ends a statement → newline. The two `;` in a `for (init; cond; incr)` header are
 			 * direct children of the for-statement node; they separate clauses, not statements, so
 			 * we don't force a break. Instead the author's layout is preserved (like blank lines
