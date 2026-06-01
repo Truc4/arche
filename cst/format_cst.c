@@ -136,8 +136,8 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 			 * onto their own line, and break again after them so the following decl starts fresh —
 			 * except a `{` (block form) stays on the marker's line: `#foreign {`. */
 			int vis_marker = (l->kind == TOK_HASH_MODULE || l->kind == TOK_HASH_FILE || l->kind == TOK_HASH_FOREIGN);
-			int after_vis_marker = (prev == TOK_HASH_MODULE || prev == TOK_HASH_FILE || prev == TOK_HASH_FOREIGN) &&
-			                       l->kind != TOK_LBRACE;
+			int after_vis_marker =
+			    (prev == TOK_HASH_MODULE || prev == TOK_HASH_FILE || prev == TOK_HASH_FOREIGN) && l->kind != TOK_LBRACE;
 			int want_nl = force_nl || arch_field_break || list_continuation || l->kind == TOK_RBRACE ||
 			              prev == TOK_LBRACE || (prev == TOK_SEMI && !for_header_semi) || prev == TOK_RBRACE ||
 			              vis_marker || after_vis_marker || l->decl_start;

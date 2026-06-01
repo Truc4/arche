@@ -2440,8 +2440,8 @@ static void hir_q_decl(HirDecl *d, const QualCtx *q) {
 /* Lower one module decl from `node`, append to ast, and record its name in `full` (intra-module
  * resolution) and — when `exported` — `expset` (externally visible). Externs are added to neither.
  * Shared by the module loop and recursion into `#foreign { }` / `#module { }` block regions. */
-static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, HirProgram *ast, char ***full,
-                                int *fulln, int *fullcap, char ***expset, int *expn, int *expcap, int exported) {
+static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, HirProgram *ast, char ***full, int *fulln,
+                                int *fullcap, char ***expset, int *expn, int *expcap, int exported) {
 	HirDecl *md = lower_decl_cst((CstView){node, msrc});
 	if (!md)
 		return;

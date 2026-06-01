@@ -702,8 +702,8 @@ static void emit_docs(const Analysis *a) {
 			CvText name = cv_text(cv_child(decl, SN_FUNC_DEF_NAME));
 			if (!name.ptr)
 				name = cv_text(cv_child(decl, SN_TYPE_DEF_NAME));
-			printf("DOC %d %d %.*s %d\n", uline, p.column, name.ptr ? (int)name.len : 4,
-			       name.ptr ? name.ptr : "item", n);
+			printf("DOC %d %d %.*s %d\n", uline, p.column, name.ptr ? (int)name.len : 4, name.ptr ? name.ptr : "item",
+			       n);
 			for (int j2 = 0; j2 < n; j2++)
 				printf("DOCLINE %.*s\n", (int)lines[j2].len, lines[j2].ptr);
 		}

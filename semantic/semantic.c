@@ -5413,14 +5413,14 @@ static void sem_expand_tuple_groups(AstProgram *prog) {
  * `full` set (intra-module resolution) and — when `exported` — its `expset` (externally visible).
  * Foreign (extern) decls are never added to either set. Shared by the top-level module loop and
  * the recursion into `#foreign { ... }` / `#module { ... }` block regions. */
-static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, AstProgram *prog, char ***full,
-                                int *fulln, int *fullcap, char ***expset, int *expn, int *expcap, int exported) {
+static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, AstProgram *prog, char ***full, int *fulln,
+                                int *fullcap, char ***expset, int *expn, int *expcap, int exported) {
 	Decl *md = cst_build_decl((CstView){node, msrc});
 	if (!md)
 		return;
 	prog->decls[prog->decl_count++] = md;
-	int is_ext = (md->kind == DECL_PROC && md->data.proc->is_extern) ||
-	             (md->kind == DECL_FUNC && md->data.func->is_extern);
+	int is_ext =
+	    (md->kind == DECL_PROC && md->data.proc->is_extern) || (md->kind == DECL_FUNC && md->data.func->is_extern);
 	const char *nm = sem_decl_name(md);
 	if (nm && !is_ext) {
 		if (*fulln == *fullcap) {
