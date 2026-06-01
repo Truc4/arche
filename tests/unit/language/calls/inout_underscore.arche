@@ -1,0 +1,15 @@
+// `_` in an in-out in-slot denotes the out-binding's place — no value is passed there and no copy
+// happens; it makes explicit that the in-position is shadowed by the out-param. Here `fill` writes
+// the buffer in place; the call names the buffer only once, in the out-list, with `_` standing in
+// for it on the in-side. Prints "X" if `_` correctly resolved to `b`.
+// RUN: %arche build -o %t %s ; %t | grep -q "^X$"
+fill :: proc (buf: char[], n: int)(buf: char[]) {
+  buf[0] = 'X';
+  buf[1] = 10;
+  buf[2] = 0;
+}
+main :: proc () {
+  b: char[4];
+  fill(_, 4)(b);
+  print(b);
+}

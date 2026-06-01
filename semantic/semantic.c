@@ -666,6 +666,7 @@ static void mark_last_const(SemanticContext *ctx) {
 
 static void analyze_expression(SemanticContext *ctx, Expression *expr);
 static void analyze_statement(SemanticContext *ctx, Statement *stmt);
+static int proc_param_is_inout(ProcDecl *proc, int param_idx);
 static const char *resolve_expression_type(SemanticContext *ctx, Expression *expr);
 static const char *lvalue_leftmost_name(Expression *expr);
 
@@ -1442,7 +1443,32 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 			break;
 		}
 		analyze_expression(ctx, expr->data.call.callee);
+		/* Resolve the callee proc (if any) up front so we can validate `_` placeholder args:
+		 * a bare `_` argument is legal ONLY in an in-out in-slot (the in-param is shadowed by an
+		 * out-param). It names no value — the out-binding's place is used. So skip name resolution
+		 * for `_` (it is not a real symbol) and instead check the matching in-param is in-out. */
+		ProcDecl *call_callee_proc = NULL;
+		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME && ctx->prog) {
+			const char *cn = expr->data.call.callee->data.name.name;
+			for (int i = 0; i < ctx->prog->decl_count; i++) {
+				Decl *d = ctx->prog->decls[i];
+				if (d && d->kind == DECL_PROC && d->data.proc && d->data.proc->name &&
+				    strcmp(d->data.proc->name, cn) == 0) {
+					call_callee_proc = d->data.proc;
+					break;
+				}
+			}
+		}
 		for (int i = 0; i < expr->data.call.arg_count; i++) {
+			Expression *arg = expr->data.call.args[i];
+			if (arg && arg->type == EXPR_NAME && arg->data.name.name &&
+			    strcmp(arg->data.name.name, "_") == 0) {
+				/* `_` placeholder: legal only when the matching in-param is in-out. Do not resolve
+				 * it as a symbol and do not require ownership. */
+				if (!call_callee_proc || !proc_param_is_inout(call_callee_proc, i))
+					sem_emit_underscore_not_inout(ctx, arg->loc);
+				continue;
+			}
 			ctx->analyzing_call_arg = 1;
 			analyze_expression(ctx, expr->data.call.args[i]);
 		}

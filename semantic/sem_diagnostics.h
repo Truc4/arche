@@ -63,6 +63,7 @@ typedef enum {
 	SEM_DIAG_move_outside_arg,
 	/* E0113/E0114 retired: arche has zero runtime allocation, no `free` statement.
 	 * Burn-on-delete (codes never reused). */
+	SEM_DIAG_underscore_not_inout,
 
 	/* Field / component access */
 	SEM_DIAG_no_field,
@@ -236,6 +237,7 @@ SemDiag *sem_emit_handle_in_sys_param(SemanticContext *ctx, SourceLoc loc, const
 SemDiag *sem_emit_each_field_filter_type_not_name(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_each_field_filter_type_not_primitive(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_each_field_invalid_rhs(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_underscore_not_inout(SemanticContext *ctx, SourceLoc loc);
 
 SemDiag *sem_emit_alloc_not_at_top(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_alloc_count_not_literal(SemanticContext *ctx, SourceLoc loc);
