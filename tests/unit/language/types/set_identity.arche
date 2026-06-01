@@ -14,5 +14,5 @@ B :: arche {
 static pool<A> (4)
 static pool<B> (4)
 
-main :: proc () {
+main :: proc() {
 }

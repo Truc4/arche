@@ -10,7 +10,7 @@ step :: sys (position, velocity) {
   position = position + velocity;
 }
 
-main :: proc () {
+main :: proc() {
   insert(Body, 10.0, 1.0);
   insert(Body, 20.0, 2.0);
   insert(Body, 30.0, 3.0);

@@ -11,6 +11,6 @@ static pool<Message> (100)
 
 static pool<Matrix> (50)
 
-main :: proc () {
+main :: proc() {
   print("allocations done\n");
 }

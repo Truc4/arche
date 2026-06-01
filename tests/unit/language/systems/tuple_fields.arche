@@ -11,7 +11,7 @@ step :: sys (pos, vel) {
   pos.x = pos.x + vel.x;
   pos.y = pos.y + vel.y;
 }
-main :: proc () {
+main :: proc() {
   insert(Body, 0, 0, 1, 2);
   insert(Body, 10, 10, -1, -1);
   run step;

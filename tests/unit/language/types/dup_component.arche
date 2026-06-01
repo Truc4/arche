@@ -6,5 +6,5 @@ Foo :: arche {
   hp, hp,
 }
 
-main :: proc () {
+main :: proc() {
 }

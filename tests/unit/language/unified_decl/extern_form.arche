@@ -1,9 +1,9 @@
 // Unified grammar: an extern proc declared as a RHS form (`name :: extern proc(...)`).
 // The out-only out-param maps to the C return value (libc abs).
 // RUN: %arche build -o %t %s && %t | grep "abs=5"
-abs :: extern proc (x: int)(r: int);
+abs :: extern proc(x: int)(r: int);
 
-main :: proc () {
+main :: proc() {
   abs(-5)(a:);
   printf("abs=%d\n", a);
 }

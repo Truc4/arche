@@ -1,10 +1,10 @@
 // E0200: passing the wrong argument type fires a type_mismatch via tycheck.
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 argument 1 of 'double': expected 'int', got 'str'"
-double :: func (x: int) -> int {
+double :: func(x: int) -> int {
   return x * 2;
 }
 
-main :: proc () {
+main :: proc() {
   y := double("hello");
   print(y);
 }

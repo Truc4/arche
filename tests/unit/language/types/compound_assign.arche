@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-main :: proc () {
+main :: proc() {
   x := 10;
   x += 5;
   assert(x == 15, "compound assign failed\n");

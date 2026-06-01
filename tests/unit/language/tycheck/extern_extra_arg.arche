@@ -3,7 +3,7 @@
 // Tycheck only skips arity when the extern signature ends with `...` (printf etc.).
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0203 wrong_arity 0 'arche_file_unmap' expects 2 arguments, got 3"
 #import io;
-main :: proc () {
+main :: proc() {
   arche_file_map("/tmp/x.txt")(data: char[]);
   arche_file_size()(size: i64);
   arche_file_unmap(data, size, size);

@@ -5,7 +5,7 @@ static pool<Transaction> (100, 100) {
   price: 0.0, quantity: 0, revenue: 0.0,
 }
 
-main :: proc () {
+main :: proc() {
   arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv")(fd:);
   line: char[128];
   arche_fread_line(fd, line, 128);

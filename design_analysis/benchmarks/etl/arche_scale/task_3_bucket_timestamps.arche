@@ -10,11 +10,11 @@ static pool<Transaction> (100000000, 100000000) {
   price: 0.0, hour_bucket: 0, price_bucket: 0.0,
 }
 
-load_transactions :: proc () {
+load_transactions :: proc() {
   csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_100m.csv");
 }
 
-main :: proc () {
+main :: proc() {
   load_transactions();
   Transaction.price_bucket = Transaction.price / 10.0;
   price_sum := 0.0;

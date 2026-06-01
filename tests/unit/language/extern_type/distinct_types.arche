@@ -4,10 +4,10 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "(type|sound|window|opaque)" %t.out
 sound :: opaque
 window :: opaque
-sound_open :: extern proc ()(ret: sound);
-window_close :: extern proc (own w: window);
+sound_open :: extern proc()(ret: sound);
+window_close :: extern proc(own w: window);
 
-main :: proc () {
+main :: proc() {
   sound_open()(s:);
   window_close(move s);
 }

@@ -1,4 +1,4 @@
 // RUN: %arche build -o %t %s && %t | grep "RESULT=8"
-main :: proc () {
+main :: proc() {
   printf("RESULT=%d\n", 2 + 3 * 2);
 }

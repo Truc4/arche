@@ -2,6 +2,6 @@
 // function that opens a file and never closes it must contain a call to `arche_fclose`.
 // RUN: %arche build --emit llvm-ir -o %t.ll %s ; grep -q "arche_fclose" %t.ll
 #import io;
-main :: proc () {
+main :: proc() {
   arche_fopen_read("/dev/null")(f:);
 }

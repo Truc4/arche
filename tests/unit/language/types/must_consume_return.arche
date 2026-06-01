@@ -4,15 +4,15 @@
 // then retires it.
 // RUN: %arche build -o %t --link %S/../extern_type/runtime/test_resource.c %s && %t | grep "value=7"
 resource :: opaque
-resource_open :: extern proc (initial: int)(ret: resource);
-resource_get :: extern proc (r: resource)(ret: int);
-resource_close :: extern proc (own r: resource);
+resource_open :: extern proc(initial: int)(ret: resource);
+resource_get :: extern proc(r: resource)(ret: int);
+resource_close :: extern proc(own r: resource);
 
-make_resource :: proc (v: int)(r: resource) {
+make_resource :: proc(v: int)(r: resource) {
   resource_open(v)(r);
 }
 
-main :: proc () {
+main :: proc() {
   make_resource(7)(r:);
   resource_get(r)(v:);
   printf("value=%d\n", v);

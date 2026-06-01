@@ -11,7 +11,7 @@ static pool<Particle> (5)
 
 static pool<Body> (5)
 
-main :: proc () {
+main :: proc() {
   insert(Particle, 1.0, 0.1);
   insert(Body, 2.0, 0.2, 10.0);
   pp := Particle.pos[0];

@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "Integer: 42"
-main :: proc () {
+main :: proc() {
   x := 42;
   printf("Integer: %d\n", x);
   printf("Literal: %d\n", 123);

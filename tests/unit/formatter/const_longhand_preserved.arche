@@ -3,6 +3,6 @@
 // RUN: %arche fmt %s | grep -F "answer : int : 42"
 answer: int: 42
 
-main :: proc () {
+main :: proc() {
   printf("%d\n", answer);
 }

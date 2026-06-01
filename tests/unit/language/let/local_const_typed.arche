@@ -1,6 +1,6 @@
 // A local value constant with an explicit type: `k : int : e` (the longhand of `k :: e`).
 // RUN: %arche build -o %t %s && %t | grep "k: 42"
-main :: proc () {
+main :: proc() {
   k: int: 42;
   printf("k: %d\n", k);
 }

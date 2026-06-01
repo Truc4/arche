@@ -3,7 +3,7 @@
 // RUN: %build/arche-analyzer --dump %s | grep -qF "warning W0004 unused_local 0 local 'never_read' is declared but never read"
 // `used` is read by print and `_scratch` is _-prefixed, so neither warns.
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "W0004 unused_local") -eq 1
-main :: proc () {
+main :: proc() {
   used := 1;
   never_read := 2;
   _scratch := 3;

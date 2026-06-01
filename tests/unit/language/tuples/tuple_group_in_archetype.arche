@@ -10,7 +10,7 @@ Particle :: arche {
 
 static pool<Particle> (5)
 
-main :: proc () {
+main :: proc() {
   insert(Particle, 1.0, 2.0, 0.5, 0.1);
   Particle.pos_x = Particle.pos_x + Particle.vel_vx;
   Particle.pos_y = Particle.pos_y + Particle.vel_vy;

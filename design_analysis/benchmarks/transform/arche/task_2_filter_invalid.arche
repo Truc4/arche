@@ -9,11 +9,11 @@ static pool<Transaction> (10000, 10000) {
   quantity: 0,
 }
 
-load_transactions :: proc () {
+load_transactions :: proc() {
   csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");
 }
 
-write_output :: proc (count: i64) {
+write_output :: proc(count: i64) {
   arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_2.csv")(fd:);
   buf: char[64];
   sprintf(buf, "count\n%ld\n", count);
@@ -21,7 +21,7 @@ write_output :: proc (count: i64) {
   arche_fclose(move fd);
 }
 
-main :: proc () {
+main :: proc() {
   load_transactions();
 
   // Up to 2.16e9 across all iters — past i32 but well within i64. An integer accumulator

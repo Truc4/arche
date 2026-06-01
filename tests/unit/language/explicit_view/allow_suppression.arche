@@ -2,10 +2,10 @@
 // Without it, proc_no_effect would fire on `quiet`; here only `loud` warns.
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "W0002 proc_no_effect") -eq 1
 // RUN: %build/arche-analyzer --dump %s | grep -qF "proc 'loud' has an empty or effect-free body"
-@allow(proc_no_effect) quiet :: proc () {
+@allow(proc_no_effect) quiet :: proc() {
 }
-loud :: proc () {
+loud :: proc() {
 }
-main :: proc () {
+main :: proc() {
   print("hi");
 }

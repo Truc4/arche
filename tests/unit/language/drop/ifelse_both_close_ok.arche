@@ -2,7 +2,7 @@
 // consumed handle" in the else, no double-drop). Consumed on all paths → no auto-drop.
 // RUN: %arche build -o %t %s
 #import io;
-main :: proc () {
+main :: proc() {
   arche_fopen_read("/dev/null")(f:);
   e := 0;
   if (e == 1) {

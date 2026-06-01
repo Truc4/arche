@@ -8,7 +8,7 @@ static pool<Task1Data> (1000, 1000) {
   price: 0.0, quantity: 0,
 }
 
-main :: proc () {
+main :: proc() {
   Task1Data.price[0] = 100.0;
   Task1Data.quantity[0] = 5;
   Task1Data.price[1] = 50.0;

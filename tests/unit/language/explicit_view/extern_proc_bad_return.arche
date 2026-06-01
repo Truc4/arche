@@ -1,6 +1,6 @@
 // E0115: an extern proc's out-param type must be a known primitive/alias/archetype.
 // (An out-only out-param maps to the C return value.) Parity with E0062 for extern func.
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0115 extern_proc_bad_return 0 unknown return type 'NoSuchType' in extern proc 'weird' signature"
-weird :: extern proc ()(r: NoSuchType);
-main :: proc () {
+weird :: extern proc()(r: NoSuchType);
+main :: proc() {
 }

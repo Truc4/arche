@@ -3,6 +3,6 @@ Point :: arche {
   x :: int,
 }
 
-main :: proc () {
+main :: proc() {
   printf("allocated\n");
 }

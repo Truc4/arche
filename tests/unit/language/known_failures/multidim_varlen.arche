@@ -5,6 +5,6 @@ Message :: arche {
 
 static pool<Message> (100)
 
-main :: proc () {
+main :: proc() {
   print("allocations done\n");
 }

@@ -8,6 +8,6 @@ OpenFiles :: arche {
   file,
 }
 static pool<OpenFiles> (8)
-main :: proc () {
+main :: proc() {
   printf("ok opaque_domain\n");
 }

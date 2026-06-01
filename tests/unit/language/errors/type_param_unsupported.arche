@@ -2,10 +2,10 @@
 // type parameter, like Jai's `T: Type` / Odin's `$T: typeid`). But monomorphization isn't built
 // yet, so it must fail loud ("not supported yet") rather than silently miscompile to i32.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "type parameters (generics) are not supported yet" %t.out
-foo :: proc (bar: type) {
+foo :: proc(bar: type) {
   printf("unreachable\n");
 }
 
-main :: proc () {
+main :: proc() {
   printf("hi\n");
 }

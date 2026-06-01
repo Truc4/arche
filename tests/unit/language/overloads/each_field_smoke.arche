@@ -7,13 +7,13 @@ static pool<Pair> (3, 3) {
   a: 10, b: 20,
 }
 
-@allow_pure_proc bump :: proc (arch: archetype) {
+@allow_pure_proc bump :: proc(arch: archetype) {
   #each_field f: int in arch {
     f[0] = f[0] + 1;
   }
 }
 
-dump :: proc (arch: archetype) {
+dump :: proc(arch: archetype) {
   #each_field f: int in arch {
     if (f.index == 0) {
       printf("col0=%d ", f[0]);
@@ -24,7 +24,7 @@ dump :: proc (arch: archetype) {
   }
 }
 
-main :: proc () {
+main :: proc() {
   bump(Pair);
   dump(Pair);
 }

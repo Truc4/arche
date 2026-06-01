@@ -1,6 +1,6 @@
 // RUN: ! %arche build -o %t %s 2>&1
 
-a :: func (x: int) -> int {
+a :: func(x: int) -> int {
   return x;
 }
 g :: func {

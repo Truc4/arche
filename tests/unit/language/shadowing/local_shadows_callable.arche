@@ -4,7 +4,7 @@
 // hard error at the declaration. Shadowing a plain variable/param and the `:=` move-rebind idiom
 // stay legal (those names aren't callables).
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "shadows the proc/func" %t.out
-main :: proc () {
+main :: proc() {
   open := 1;
   printf("%d\n", open);
 }

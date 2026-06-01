@@ -5,7 +5,7 @@ Particle :: arche {
 
 static table<Particle> (1000)
 
-main :: proc () {
+main :: proc() {
   insert(table<Particle>, 1.0, 0.1);
   insert(table<Particle>, 2.0, 0.2);
   insert(table<Particle>, 3.0, 0.3);

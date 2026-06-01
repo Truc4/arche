@@ -1,5 +1,5 @@
 // `arche check` accepts a well-formed program (front-end only, no output produced).
 // RUN: %arche check %s
-main :: proc () {
+main :: proc() {
   printf("ok\n");
 }

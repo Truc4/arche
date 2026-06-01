@@ -1,4 +1,4 @@
 // RUN: %arche build -o %t %s && %t | grep test
-main :: proc () {
+main :: proc() {
   print("test\n");
 }

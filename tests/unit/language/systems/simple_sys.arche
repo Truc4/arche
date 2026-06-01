@@ -11,7 +11,7 @@ dummy :: sys (pos) {
   pos = pos;
 }
 
-main :: proc () {
+main :: proc() {
   insert(Body, 1.0);
   insert(Body, 2.0);
   insert(Body, 3.0);

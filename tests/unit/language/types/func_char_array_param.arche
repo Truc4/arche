@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "comma=1 first=3"
 
-find_byte :: func (data: char[], start: int, end: int, ch: int) -> int {
+find_byte :: func(data: char[], start: int, end: int, ch: int) -> int {
   for (i := start; i < end; i += 1) {
     if (data[i] == ch) {
       return i;
@@ -9,7 +9,7 @@ find_byte :: func (data: char[], start: int, end: int, ch: int) -> int {
   return end;
 }
 
-main :: proc () {
+main :: proc() {
   buf: char[8];
   buf[0] = 'a';
   buf[1] = ',';

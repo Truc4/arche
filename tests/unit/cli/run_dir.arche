@@ -1,6 +1,6 @@
 // `arche run`/`build` accept a directory, resolving to main.arche or the sole .arche file.
 // RUN: rm -rf %t.dir && mkdir -p %t.dir && cp %s %t.dir/main.arche && %arche run %t.dir | grep -q dir-entry
 // RUN: rm -rf %t.dir2 && mkdir -p %t.dir2 && cp %s %t.dir2/only.arche && %arche build %t.dir2 -o %t.dirbin && %t.dirbin | grep -q dir-entry
-main :: proc () {
+main :: proc() {
   print("dir-entry\n");
 }

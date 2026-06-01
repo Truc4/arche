@@ -79,8 +79,10 @@ static int no_space_before(TokenKind t, TokenKind prev, TokenKind next) {
 		return prev == TOK_COLON; /* `=` of `:=` glues to the `:` */
 	case TOK_LPAREN:
 	case TOK_LBRACKET:
-		/* call / index: hug an identifier or a closing bracket */
-		return prev == TOK_IDENT || prev == TOK_RPAREN || prev == TOK_RBRACKET;
+		/* call / index: hug an identifier or a closing bracket. A `proc`/`func` keyword
+		 * hugs its param list too (`proc(...)`, `func(...)`, `extern proc(...)`) — the
+		 * keyword reads as the callable, like an identifier before a call's `(`. */
+		return prev == TOK_IDENT || prev == TOK_RPAREN || prev == TOK_RBRACKET || prev == TOK_PROC || prev == TOK_FUNC;
 	default:
 		break;
 	}

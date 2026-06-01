@@ -52,7 +52,7 @@ task4_process :: sys (amount) {
   amount = amount * 2.0;
 }
 
-main :: proc () {
+main :: proc() {
   run task1_compute_revenue;
   run task2_filter_invalid;
   run task3_bucket_timestamps;

@@ -3,9 +3,9 @@
 // RUN: %arche build -o %t %s && %t | grep "ok"
 #import io;
 file :: opaque
-describe :: func (f: file) -> int {
+describe :: func(f: file) -> int {
   return 0;
 }
-main :: proc () {
+main :: proc() {
   printf("ok opaque_param\n");
 }

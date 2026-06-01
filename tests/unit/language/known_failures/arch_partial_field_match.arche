@@ -16,7 +16,7 @@ gravity :: sys (pos, mass) {
   pos = pos + mass;
 }
 
-main :: proc () {
+main :: proc() {
   insert(table<Particle>, 1.0, 0.1);
   insert(table<Body>, 2.0, 0.2, 10.0);
   run gravity;

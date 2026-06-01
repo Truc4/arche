@@ -3,7 +3,7 @@
 method :: enum {
   get, post, delete
 }
-main :: proc () {
+main :: proc() {
   m := method.get;
   match m {
     get: printf("g\n");

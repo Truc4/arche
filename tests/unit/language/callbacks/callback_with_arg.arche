@@ -1,16 +1,16 @@
 // A callback that itself takes arguments: the bound proc is called directly with
 // the supplied args.
 // RUN: %arche build -o %t %s && %t | grep "n=7"
-logger :: proc (n: int)()
+logger :: proc(n: int)()
 
-log_it :: proc (n: int)() {
+log_it :: proc(n: int)() {
   printf("n=%d\n", n);
 }
 
-apply :: proc (cb: logger)() {
+apply :: proc(cb: logger)() {
   cb(7)();
 }
 
-main :: proc () {
+main :: proc() {
   apply(log_it)();
 }

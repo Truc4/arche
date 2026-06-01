@@ -14,6 +14,6 @@ static pool<Players> (2, 2) {
 
 // Only ONE can be allocated
 
-main :: proc () {
+main :: proc() {
   printf("multiple handles ok\n");
 }

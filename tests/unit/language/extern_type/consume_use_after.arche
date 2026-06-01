@@ -2,11 +2,11 @@
 // ends the value's life; the checker rejects the later use.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
 resource :: opaque
-resource_open :: extern proc (initial: int)(ret: resource);
-resource_close :: extern proc (own r: resource);
-resource_get :: extern proc (r: resource)(ret: int);
+resource_open :: extern proc(initial: int)(ret: resource);
+resource_close :: extern proc(own r: resource);
+resource_get :: extern proc(r: resource)(ret: int);
 
-main :: proc () {
+main :: proc() {
   resource_open(10)(r:);
   resource_close(move r);
   // not moving should be an error

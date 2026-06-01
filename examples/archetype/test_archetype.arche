@@ -12,7 +12,7 @@ integrate :: sys (pos, vel) {
 dampen :: sys (vel) {
   vel = vel * 0.99;
 }
-main :: proc () {
+main :: proc() {
   insert(Particle, 1.0, 0.1);
   insert(Particle, 2.0, 0.2);
   insert(Particle, 3.0, 0.3);

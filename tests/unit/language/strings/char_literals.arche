@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 // Step 1: Char literals
-main :: proc () {
+main :: proc() {
   c := 44;
   nl := 10;
   tab := 9;

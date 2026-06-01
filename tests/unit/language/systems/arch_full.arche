@@ -19,7 +19,7 @@ dampen :: sys (vel) {
   vel = vel * 0.99;
 }
 
-main :: proc () {
+main :: proc() {
   insert(Particle, 10.0, 1.0);
   insert(Particle, 20.0, 2.0);
   insert(Particle, 30.0, 3.0);

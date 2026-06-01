@@ -1,12 +1,12 @@
 // Unified grammar: an overload group declared Odin-style as a RHS form (`name :: func{ ... }`).
 // RUN: %arche build -o %t %s && %t | grep "I=11 F=4 C=99"
-describe_int :: func (x: int) -> int {
+describe_int :: func(x: int) -> int {
   return x + 1;
 }
-describe_float :: func (x: float) -> int {
+describe_float :: func(x: float) -> int {
   return 4;
 }
-describe_char :: func (x: char) -> int {
+describe_char :: func(x: char) -> int {
   return 99;
 }
 
@@ -14,7 +14,7 @@ describe :: func {
   describe_int, describe_float, describe_char
 }
 
-main :: proc () {
+main :: proc() {
   a := describe(10);
   b := describe(2.0);
   c := describe('A');

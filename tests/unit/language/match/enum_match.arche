@@ -5,7 +5,7 @@ method :: enum {
   get, post = 5, delete
 }
 
-main :: proc () {
+main :: proc() {
   m := method.post;
   match m {
     get: printf("delete=%d GET\n", method.delete);

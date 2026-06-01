@@ -8,5 +8,5 @@ static pool<Entity> (10)
 process :: sys (next) {
 }
 
-@allow_pure_proc main :: proc () {
+@allow_pure_proc main :: proc() {
 }

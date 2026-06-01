@@ -5,7 +5,7 @@ Body :: arche {
   mass: type: int,
 }
 
-main :: proc () {
+main :: proc() {
   m: mass = 5;
   printf("m: %d\n", m);
 }

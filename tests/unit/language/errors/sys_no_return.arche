@@ -13,6 +13,6 @@ step :: sys (pos, vel) {
   pos = pos + vel;
 }
 
-main :: proc () {
+main :: proc() {
   run step;
 }
