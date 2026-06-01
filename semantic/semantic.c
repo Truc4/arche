@@ -275,6 +275,15 @@ static int find_known_func(SemanticContext *ctx, const char *name) {
 	return 0;
 }
 
+/* A new local binding must not shadow a global proc/func: a variable and a callable share the
+ * value namespace, so the bare name becomes ambiguous (reads resolve to the local, but an
+ * assignment target resolves to the callable — a silent footgun). Shadowing a variable/param and
+ * the `:=` move-rebind idiom stay legal, since those names are not callables. */
+static void check_shadows_callable(SemanticContext *ctx, const char *name, SourceLoc loc) {
+	if (name && strcmp(name, "_") != 0 && find_known_func(ctx, name))
+		sem_emit_local_shadows_callable(ctx, loc, name);
+}
+
 static void register_func(SemanticContext *ctx, const char *name) {
 	if (find_known_func(ctx, name)) {
 		return; /* already registered */
@@ -1739,6 +1748,7 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 			for (int i = 0; i < stmt->data.bind_stmt.name_count; i++) {
 				const char *var_name = stmt->data.bind_stmt.names[i];
 				if (var_name && strcmp(var_name, "_") != 0) {
+					check_shadows_callable(ctx, var_name, stmt->loc);
 					add_variable(ctx, var_name, NULL);
 				}
 			}
@@ -1759,6 +1769,7 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				for (int i = 0; i < stmt->data.bind_stmt.name_count; i++) {
 					const char *var_name = stmt->data.bind_stmt.names[i];
 					if (var_name && strcmp(var_name, "_") != 0) {
+						check_shadows_callable(ctx, var_name, stmt->loc);
 						/* Add variable (no type annotation for multi-value let) */
 						add_variable(ctx, var_name, NULL);
 
@@ -1783,6 +1794,7 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 
 				/* create local variable */
 				VariableInfo *var = NULL;
+				check_shadows_callable(ctx, stmt->data.bind_stmt.name, stmt->loc);
 				if (archetype_name) {
 					add_variable_with_archetype(ctx, stmt->data.bind_stmt.name, stmt->data.bind_stmt.type,
 					                            archetype_name);

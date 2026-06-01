@@ -120,7 +120,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_underscore_not_inout]          = { "E0115", "underscore_not_inout",          CLASS_ERROR, 1 },
 	/* E0113 free_non_opaque, E0114 double_free — retired (zero runtime alloc, no free stmt). */
 	[SEM_DIAG_extern_proc_bad_return]        = { "E0115", "extern_proc_bad_return",        CLASS_ERROR, 1 },
-	/* E0116 retired (out_not_written — flow check dropped; out-params are zero-initialized). */
+	/* E0116 revived: local_shadows_callable (was out_not_written, retired). */
+	[SEM_DIAG_local_shadows_callable]        = { "E0116", "local_shadows_callable",        CLASS_ERROR, 1 },
 	[SEM_DIAG_duplicate_decl]                = { "E0117", "duplicate_decl",                CLASS_ERROR, 1 },
 
 	/* Tycheck (P3 type-check pass — E0200+). All typing-rule violations route through
@@ -722,6 +723,13 @@ SemDiag *sem_emit_move_outside_arg(SemanticContext *ctx, SourceLoc loc, const ch
 SemDiag *sem_emit_underscore_not_inout(SemanticContext *ctx, SourceLoc loc) {
 	return sem_emit_(ctx, SEM_DIAG_underscore_not_inout, loc,
 	                 "`_` is only valid for an in-out parameter (shadowed by an out-param)");
+}
+SemDiag *sem_emit_local_shadows_callable(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_local_shadows_callable, loc,
+	                 "local '%s' shadows the proc/func '%s' — a variable and a callable share the value "
+	                 "namespace, so the name is ambiguous (reads hit the local, assignment hits the "
+	                 "callable); rename the local",
+	                 name, name);
 }
 SemDiag *sem_emit_extern_proc_bad_return(SemanticContext *ctx, SourceLoc loc, const char *type, const char *proc_name) {
 	return sem_emit_(ctx, SEM_DIAG_extern_proc_bad_return, loc,
