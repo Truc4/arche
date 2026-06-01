@@ -1,0 +1,11 @@
+// `copy buf` into an `own` in-out param whose out-binding is that same `buf` needs no actual
+// copy: the caller already consents to `buf` being written (it IS the out place that gets rebound),
+// so the buffer is passed by reference and the memcpy is elided. This keeps the explicit `copy`
+// form as cheap as the `_` shadow form. (Copying into a plain `own` param — no matching out-binding
+// — still copies; that is a different test.)
+// RUN: %arche build --emit llvm-ir -o %t.ll %s ; ! grep -q "llvm.memcpy" %t.ll
+sink :: extern proc (own buf: char[], n: int)(buf: char[], r: int);
+main :: proc () {
+  b: char[64];
+  sink(copy b, 64)(b, _r:);
+}

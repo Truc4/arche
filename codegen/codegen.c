@@ -148,6 +148,11 @@ struct CodegenContext {
 	/* Counter for per-field name globals (@.efield_name_NN). */
 	int efield_name_counter;
 
+	/* Set when an actual `@llvm.memcpy` call is emitted (e.g. a non-elided `copy x`). The intrinsic
+	 * `declare` is then emitted at module end only if used, so a program with no real copy contains
+	 * no `llvm.memcpy` at all. */
+	int uses_memcpy;
+
 	/* Compile-time callback monomorphization. A proc with a proc/func-typed
 	 * (HIR_TYPE_FUNC) param is callback-parametric: it is never emitted directly,
 	 * only specialized per call site where each callback arg is a known proc/func
@@ -465,6 +470,7 @@ static int field_total_elements(HirType *type) {
 /* LLVM type of one return value. char[] returns a raw i8* byte view; everything else maps
  * through the normal type lowering (int→iN, float→double, handle/opaque→i64, …). */
 static int proc_out_param_is_inout(HirProcDecl *proc, int oi);
+static int proc_out_param_is_inout_in(HirProcDecl *proc, int ii);
 static const char *extern_proc_cret(HirProcDecl *proc);
 
 static const char *return_member_llvm(HirType *t) {
@@ -1786,6 +1792,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 					buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", dst_i8, n, dup);
 					buffer_append_fmt(ctx, "  call void @llvm.memcpy.p0.p0.i64(i8* %s, i8* %s, i64 %d, i1 false)\n",
 					                  dst_i8, src_i8, n);
+					ctx->uses_memcpy = 1;
 					strcpy(result_buf, dup);
 					break;
 				}
@@ -4342,12 +4349,71 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		HirFuncDecl *callee_func = fn ? find_func_decl(ctx, fn) : NULL;
 		HirProcDecl *callee_proc = (!callee_func && fn) ? find_proc_decl(ctx, fn) : NULL;
 
+		/* `_` placeholder in an in-out in-slot: it names no value. The buffer lives in the out-list,
+		 * named by the positionally-matching out-target. Rewrite each such `_` arg's NAME to that
+		 * out-target buffer in place for the duration of this call's emission, so the existing
+		 * array-passing logic just passes that buffer by reference (no copy). Restore afterward so
+		 * the HIR is not permanently mutated. */
+		char *saved_uscore_names[16];
+		HirExpr *saved_uscore_args[16];
+		int saved_uscore_count = 0;
+		/* Copy-elision: a `copy <name>` arg into an in-out in-slot whose out-target IS `<name>`
+		 * needs no actual copy (the caller already consents to `<name>` being written — it is the
+		 * out place that gets rebound). Temporarily replace the arg with the copy's operand so the
+		 * buffer is passed by reference (no memcpy). Restored after emission. */
+		HirExpr **saved_copy_slots[16];
+		HirExpr *saved_copy_vals[16];
+		int saved_copy_count = 0;
+		if (callee_proc && rhs && rhs->kind == HIR_EXPR_CALL) {
+			for (int i = 0; i < rhs->data.call.arg_count && i < callee_proc->param_count; i++) {
+				HirExpr *a = rhs->data.call.args[i];
+				if (!a)
+					continue;
+				if (!proc_out_param_is_inout_in(callee_proc, i))
+					continue;
+				/* The out-target (positionally matching out-param) buffer name for this in-out slot. */
+				const char *pn = callee_proc->params[i]->name;
+				const char *bufname = NULL;
+				for (int oi = 0; oi < callee_proc->out_param_count && oi < target_count; oi++) {
+					if (callee_proc->out_params[oi]->name && pn && strcmp(callee_proc->out_params[oi]->name, pn) == 0) {
+						bufname = targets[oi].name;
+						break;
+					}
+				}
+				if (!bufname)
+					continue;
+				/* `_` placeholder: rewrite its NAME to the out-target buffer. */
+				if (a->kind == HIR_EXPR_NAME && a->data.name.name && strcmp(a->data.name.name, "_") == 0) {
+					if (saved_uscore_count < 16) {
+						saved_uscore_args[saved_uscore_count] = a;
+						saved_uscore_names[saved_uscore_count] = a->data.name.name;
+						a->data.name.name = (char *)bufname; /* borrowed; restored below */
+						saved_uscore_count++;
+					}
+					continue;
+				}
+				/* `copy <name>` where <name> == the out-target buffer: elide the copy node. */
+				if (a->kind == HIR_EXPR_UNARY && a->data.unary.op == UNARY_COPY && a->data.unary.operand &&
+				    a->data.unary.operand->kind == HIR_EXPR_NAME && a->data.unary.operand->data.name.name &&
+				    strcmp(a->data.unary.operand->data.name.name, bufname) == 0 && saved_copy_count < 16) {
+					saved_copy_slots[saved_copy_count] = &rhs->data.call.args[i];
+					saved_copy_vals[saved_copy_count] = a;
+					rhs->data.call.args[i] = a->data.unary.operand; /* skip the copy; pass operand directly */
+					saved_copy_count++;
+				}
+			}
+		}
+
 		/* Extern proc call with capture `ext(in)(out)`: C writes in-place buffers through the in-args
 		 * and returns one value. Emit the C call (its result is the out-only out-param), then store
 		 * that result into the out-only target. In-out targets are written in place — skipped here. */
 		if (callee_proc && callee_proc->is_extern) {
 			char res[256];
 			codegen_expression(ctx, rhs, res); /* emits `%res = call <cret> @ext(in-args)` */
+			for (int ui = 0; ui < saved_uscore_count; ui++)
+				saved_uscore_args[ui]->data.name.name = saved_uscore_names[ui]; /* restore `_` */
+			for (int ui = 0; ui < saved_copy_count; ui++)
+				*saved_copy_slots[ui] = saved_copy_vals[ui]; /* restore elided `copy` node */
 			for (int i = 0; i < target_count && i < callee_proc->out_param_count; i++) {
 				if (proc_out_param_is_inout(callee_proc, i))
 					continue;
@@ -4454,6 +4520,10 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			}
 			char tmp[256];
 			codegen_expression(ctx, rhs, tmp); /* emits `call void @proc(in…, out-ptrs…)` */
+			for (int ui = 0; ui < saved_uscore_count; ui++)
+				saved_uscore_args[ui]->data.name.name = saved_uscore_names[ui]; /* restore `_` */
+			for (int ui = 0; ui < saved_copy_count; ui++)
+				*saved_copy_slots[ui] = saved_copy_vals[ui]; /* restore elided `copy` node */
 			for (int i = 0; i < ctx->pending_out_ptr_count; i++)
 				free(ctx->pending_out_ptr_vals[i]);
 			ctx->pending_out_ptr_count = 0;
@@ -6531,6 +6601,20 @@ static int proc_out_param_is_inout(HirProcDecl *proc, int oi) {
 	return 0;
 }
 
+/* True when IN-param `ii` is in-out: its name also appears in the out-list. (Companion to
+ * proc_out_param_is_inout, which indexes the OUT-list.) Used to validate/resolve `_` placeholders. */
+static int proc_out_param_is_inout_in(HirProcDecl *proc, int ii) {
+	if (ii < 0 || ii >= proc->param_count)
+		return 0;
+	const char *in = proc->params[ii]->name;
+	if (!in)
+		return 0;
+	for (int oi = 0; oi < proc->out_param_count; oi++)
+		if (proc->out_params[oi]->name && strcmp(proc->out_params[oi]->name, in) == 0)
+			return 1;
+	return 0;
+}
+
 /* The C return type of an extern proc = its single out-only out-param's LLVM type (an out-param
  * not echoed in the in-list). `void` when there is none. */
 static const char *extern_proc_cret(HirProcDecl *proc) {
@@ -7029,6 +7113,7 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->cb_pending_count = 0;
 	ctx->cb_pending_capacity = 0;
 	ctx->efield_name_counter = 0;
+	ctx->uses_memcpy = 0;
 	return ctx;
 }
 
@@ -7049,9 +7134,8 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "declare i8* @calloc(i64, i64)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
 	buffer_append(ctx, "declare void @abort()\n");
-	/* memcpy intrinsic (string/array initialization, struct copies). Array args are passed by
-	 * reference (read-only borrow); they are no longer copied at the call site. */
-	buffer_append(ctx, "declare void @llvm.memcpy.p0.p0.i64(i8*, i8*, i64, i1)\n\n");
+	/* memcpy intrinsic (`copy x` of a local buffer). Declared lazily at module end only if a real
+	 * memcpy was emitted, so a program with no copy carries no `llvm.memcpy` (see uses_memcpy). */
 
 	/* Global error message for bounds check failures */
 	buffer_append(
@@ -7193,6 +7277,11 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 
 	/* Emit AVX2 function attributes */
 	buffer_append(ctx, "\nattributes #0 = { \"target-features\"=\"+avx2,+avx\" }\n");
+
+	/* Lazily declare the memcpy intrinsic only if a real copy used it (module-scope `declare`
+	 * order is irrelevant in LLVM IR). */
+	if (ctx->uses_memcpy)
+		buffer_append(ctx, "\ndeclare void @llvm.memcpy.p0.p0.i64(i8*, i8*, i64, i1)\n");
 
 	/* Output the generated IR */
 	fprintf(output, "%s", ctx->output_buffer);

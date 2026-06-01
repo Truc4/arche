@@ -117,6 +117,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_binop_type_mismatch]           = { "E0110", "binop_type_mismatch",           CLASS_ERROR, 1 },
 	[SEM_DIAG_field_on_non_archetype]        = { "E0111", "field_on_non_archetype",        CLASS_ERROR, 1 },
 	[SEM_DIAG_move_outside_arg]              = { "E0112", "move_outside_arg",              CLASS_ERROR, 1 },
+	[SEM_DIAG_underscore_not_inout]          = { "E0115", "underscore_not_inout",          CLASS_ERROR, 1 },
 	/* E0113 free_non_opaque, E0114 double_free — retired (zero runtime alloc, no free stmt). */
 	[SEM_DIAG_extern_proc_bad_return]        = { "E0115", "extern_proc_bad_return",        CLASS_ERROR, 1 },
 	/* E0116 retired (out_not_written — flow check dropped; out-params are zero-initialized). */
@@ -717,6 +718,10 @@ SemDiag *sem_emit_field_on_non_archetype(SemanticContext *ctx, SourceLoc loc, co
 SemDiag *sem_emit_move_outside_arg(SemanticContext *ctx, SourceLoc loc, const char *keyword) {
 	return sem_emit_(ctx, SEM_DIAG_move_outside_arg, loc, "`%s` is only valid in a function-call argument position",
 	                 keyword);
+}
+SemDiag *sem_emit_underscore_not_inout(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_DIAG_underscore_not_inout, loc,
+	                 "`_` is only valid for an in-out parameter (shadowed by an out-param)");
 }
 SemDiag *sem_emit_extern_proc_bad_return(SemanticContext *ctx, SourceLoc loc, const char *type, const char *proc_name) {
 	return sem_emit_(ctx, SEM_DIAG_extern_proc_bad_return, loc,

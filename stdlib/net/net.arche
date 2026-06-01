@@ -3,6 +3,9 @@
 net_listen :: extern proc (port: int)(s: socket);
 net_accept :: extern proc (s: socket)(r: socket);
 net_connect :: extern proc (own ip: char[], port: int)(s: socket);
-net_send :: extern proc (s: socket, own buf: char[], n: int)(r: int);
+// `buf` is in-out (the out-param shadows the in-param): zero-copy pass-by-reference into C, which
+// only reads it (`const char *`). At the call, write `_` in the shadowed in-slot to make clear no
+// value is passed there — `net_send(s, _, n)(buf, sent:)`. The C ABI is unchanged.
+net_send :: extern proc (s: socket, buf: char[], n: int)(buf: char[], r: int);
 net_recv :: extern proc (s: socket, buf: char[], n: int)(buf: char[], r: int);
 net_close :: extern proc (own s: socket);
