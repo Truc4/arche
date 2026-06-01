@@ -308,13 +308,15 @@ static void resolve_uses_sem(const SyntaxNode *root, const char *src, const char
 
 /* ---- explicit-view emission ---- */
 
-static int g_core_lines; /* combined→user line translation: user_line = line - g_core_lines */
+static int g_core_lines; /* combined→user line translation: user_line = line - g_core_lines.
+                          * 0 when core is NOT prepended (i.e. the document IS core.arche). */
 
 /* core.arche is invariant across documents and edits, so read + measure it once.
  * This is the main saving that makes the warm server cheap: every analysis reuses
  * the cached prelude instead of re-reading 130+ lines from disk per keystroke. */
 static char *g_core;
 static int g_core_loaded;
+static int g_core_newlines; /* real newline count of g_core; g_core_lines is the per-analysis offset */
 
 static void ensure_core(void) {
 	if (g_core_loaded)
@@ -323,7 +325,22 @@ static void ensure_core(void) {
 	char core_path[512];
 	snprintf(core_path, sizeof(core_path), "%s/core.arche", ARCHE_CORE_DIR);
 	g_core = read_file(core_path);
-	g_core_lines = (g_core && g_core[0]) ? count_newlines(g_core) : 0;
+	g_core_newlines = (g_core && g_core[0]) ? count_newlines(g_core) : 0;
+	g_core_lines = g_core_newlines;
+}
+
+/* True when `path` resolves to core.arche itself, so prepending core would define
+ * every prelude symbol twice. Compare by (device, inode) so absolute/relative/
+ * symlinked editor paths all match the canonical prelude location. */
+static int path_is_core(const char *path) {
+	if (!path || !path[0])
+		return 0;
+	char core_path[512];
+	snprintf(core_path, sizeof(core_path), "%s/core.arche", ARCHE_CORE_DIR);
+	struct stat sp, sc;
+	if (stat(path, &sp) != 0 || stat(core_path, &sc) != 0)
+		return 0;
+	return sp.st_dev == sc.st_dev && sp.st_ino == sc.st_ino;
 }
 
 /* Render an internal type name as it would be written in arche source (longhand). */
@@ -519,7 +536,11 @@ typedef struct {
 static Analysis analyze(char *user, const char *path) {
 	Analysis a = {NULL, NULL, NULL, {NULL, 0, 0}};
 	ensure_core();
-	if (g_core && g_core[0]) {
+	/* Don't prepend core to core itself — that double-defines every prelude symbol.
+	 * When the document IS core.arche, analyze it bare and zero the line offset. */
+	int prepend = g_core && g_core[0] && !path_is_core(path);
+	g_core_lines = prepend ? g_core_newlines : 0;
+	if (prepend) {
 		size_t cl = strlen(g_core), ul = strlen(user);
 		a.combined = malloc(cl + ul + 1);
 		memcpy(a.combined, g_core, cl);

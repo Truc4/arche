@@ -233,6 +233,18 @@ static int compile_frontend(const char *user_source, const char *source_path, Fr
 	snprintf(core_path, sizeof(core_path), "%s/core.arche", arche_resource_dir(ARCHE_RES_CORE));
 	char *core_src = read_file_optional(core_path);
 
+	/* Don't prepend core to core itself (double-defines every prelude symbol). When the
+	 * compiled file IS core.arche, drop the prepend by treating core as empty here.
+	 * Identity by (device, inode) so any path spelling of the prelude matches. */
+	if (core_src && source_path && source_path[0]) {
+		struct stat sp, sc;
+		if (stat(source_path, &sp) == 0 && stat(core_path, &sc) == 0 && sp.st_dev == sc.st_dev &&
+		    sp.st_ino == sc.st_ino) {
+			free(core_src);
+			core_src = NULL;
+		}
+	}
+
 	int core_lines = 0;
 	char *source;
 	if (core_src && strlen(core_src) > 0) {
