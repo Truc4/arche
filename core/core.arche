@@ -1,7 +1,7 @@
 // core — the implicit prelude (always in scope, no `#import`). The universal base only: the raw
 // syscall intrinsic, fd/process primitives, libc print/format, string/number helpers, and basic
 // output. Everything else (file/stdio I/O, sockets, terminal, clock/args, CSV) lives in stdlib
-// modules: `#import io;`, `#import net;`, `#import term;`, `#import sys;`, `#import csv;`.
+// modules, brought in by one region: `#import { io net term sys csv }`.
 
 // Raw Linux/x86-64 syscall intrinsic: emits the `syscall` instruction directly (no libc). A
 // buffer arg decays to its data pointer (like C). Declared first so the fd wrappers below can use it.

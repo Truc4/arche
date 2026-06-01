@@ -293,7 +293,7 @@ static void test_lower_decl_use_skipped(void) {
 	test_start("SN_USE_DECL nodes skipped in AST");
 	/* A `use` of a module that was never registered (no lower_add_module) inlines nothing,
 	 * so the CST's SN_USE_DECL must produce no AST decl — only the proc remains. */
-	LowerFixture *cst = parse_and_analyze("#import fake_mod;\n"
+	LowerFixture *cst = parse_and_analyze("#import { fake_mod }\n"
 	                                      "Foo :: proc() {\n"
 	                                      "}\n");
 	ASSERT(cst, "parse/semantic failed");

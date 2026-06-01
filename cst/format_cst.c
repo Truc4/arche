@@ -138,8 +138,13 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 			int vis_marker = (l->kind == TOK_HASH_MODULE || l->kind == TOK_HASH_FILE || l->kind == TOK_HASH_FOREIGN);
 			int after_vis_marker =
 			    (prev == TOK_HASH_MODULE || prev == TOK_HASH_FILE || prev == TOK_HASH_FOREIGN) && l->kind != TOK_LBRACE;
-			int want_nl = force_nl || arch_field_break || list_continuation || l->kind == TOK_RBRACE ||
-			              prev == TOK_LBRACE || (prev == TOK_SEMI && !for_header_semi) || prev == TOK_RBRACE ||
+			/* `#import { a b c }` formats inline — its braces don't open an indented block. Suppress
+			 * the break-after-`{` and break-before-`}` for tokens inside an SN_USE_DECL so the whole
+			 * import stays on one line (you write `#import` once and list the modules). */
+			int want_nl = force_nl || arch_field_break || list_continuation ||
+			              (l->kind == TOK_RBRACE && l->parent != SN_USE_DECL) ||
+			              (prev == TOK_LBRACE && prev_parent != SN_USE_DECL) ||
+			              (prev == TOK_SEMI && !for_header_semi) || prev == TOK_RBRACE ||
 			              vis_marker || after_vis_marker || l->decl_start;
 			/* A comment on a NEW source line gets its own line; a trailing comment on the SAME line as
 			 * the code it follows stays inline (don't force it down). This override wins over the
@@ -152,7 +157,7 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 			int compact = (l->parent == prev_parent && (l->parent == SN_TYPE_REF || l->parent == SN_TYPE_ARRAY ||
 			                                            l->parent == SN_TYPE_SHAPED_ARRAY ||
 			                                            l->parent == SN_TYPE_HANDLE || l->parent == SN_NAME_EXPR));
-			if (l->kind == TOK_RBRACE && indent > 0)
+			if (l->kind == TOK_RBRACE && l->parent != SN_USE_DECL && indent > 0)
 				indent--;
 			if (want_nl) {
 				fputc('\n', out);
@@ -167,14 +172,20 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 				 * operand are direct children of SN_UNARY_EXPR. `move`/`copy` are keyword unaries and
 				 * keep their space, so only `-` / `!` are special-cased here. */
 				int after_unary_op = (prev_parent == SN_UNARY_EXPR && (prev == TOK_MINUS || prev == TOK_BANG));
-				if (!compact && !after_unary_op && !no_space_before(l->kind, prev, next))
+				/* Inline `#import { ... }`: keep a space just inside the braces (`{ io net }`), which
+				 * the generic call/index brace-hugging rule would otherwise strip. */
+				int use_brace_inner = (prev == TOK_LBRACE && prev_parent == SN_USE_DECL) ||
+				                      (l->kind == TOK_RBRACE && l->parent == SN_USE_DECL);
+				if (use_brace_inner)
+					fputc(' ', out);
+				else if (!compact && !after_unary_op && !no_space_before(l->kind, prev, next))
 					fputc(' ', out);
 			}
 		}
 
 		fwrite(l->text, 1, (size_t)l->len, out);
 
-		if (l->kind == TOK_LBRACE)
+		if (l->kind == TOK_LBRACE && l->parent != SN_USE_DECL)
 			indent++;
 		prev = l->kind;
 		prev_parent = l->parent;

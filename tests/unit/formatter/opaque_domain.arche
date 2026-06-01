@@ -1,7 +1,7 @@
 // The formatter must round-trip a nominal opaque alias and an archetype that carries an
 // opaque component (`make format` rewrites every .arche file).
 // RUN: %arche fmt %s | grep "file :: opaque"
-#import io;
+#import { io }
 file :: opaque
 OpenFiles :: arche {
   file,

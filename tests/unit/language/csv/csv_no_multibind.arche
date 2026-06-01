@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && cd %repo && %t | grep "n="
-#import io;
+#import { io }
 
 main :: proc() {
   io_open("tests/fixtures/data.csv")(fd:);

@@ -1046,12 +1046,10 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			}
 			while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
 				if (!check(parser, TOK_IDENT)) {
-					error(parser, "expected a module name in `#import { ... }`");
+					error(parser, "expected a module name in `#import { ... }` (names are whitespace-separated)");
 					return 0;
 				}
 				advance(parser);
-				while (match(parser, TOK_COMMA) || match(parser, TOK_SEMI))
-					; /* tolerate optional separators between names */
 			}
 			if (!match(parser, TOK_RBRACE)) {
 				error(parser, "Expected '}' to close `#import { ... }`");
@@ -1060,12 +1058,24 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			*out_kind = SN_USE_DECL;
 			return 1;
 		}
-		if (!check(parser, TOK_IDENT)) {
+		/* Bare `#import` is a banner region — like `#foreign`/`#module`/`#file`, it runs to end of
+		 * file: every item below it must be a module name. So importing alongside other code REQUIRES
+		 * the block form `#import { ... }`; a bare `#import` followed by anything but module names
+		 * (to EOF) is an error. No single-module special case. */
+		int n = 0;
+		while (check(parser, TOK_IDENT)) {
+			advance(parser);
+			n++;
+		}
+		if (n == 0) {
 			error(parser, "Expected a module name after `#import`");
 			return 0;
 		}
-		advance(parser);
-		match(parser, TOK_SEMI); /* trailing `;` optional (region-style) */
+		if (!check(parser, TOK_EOF)) {
+			error(parser, "a bare `#import` region runs to end of file — everything below it must be a "
+			              "module name; use `#import { ... }` to import alongside other declarations");
+			return 0;
+		}
 		*out_kind = SN_USE_DECL;
 		return 1;
 	}

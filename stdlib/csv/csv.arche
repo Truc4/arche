@@ -1,4 +1,4 @@
-// The `csv` module — pure-Arche, header-name-matched CSV loader. `#import csv;` then
+// The `csv` module — pure-Arche, header-name-matched CSV loader. `#import { csv }` then
 // `csv.load(Archetype, path)` (bare `csv_load` also resolves). Memory-maps the file (via `io`)
 // and scans it with i64 offsets, so files larger than 2 GB work; columns match by header name.
 // (`arche_file_map`/`_size`/`_unmap` are core primitives, so no module import is needed.)

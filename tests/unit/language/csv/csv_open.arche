@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "fd="
 // Test if csv_open causes segfault
-#import io;
+#import { io }
 
 static buf: char[65536]
 

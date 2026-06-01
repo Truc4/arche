@@ -66,26 +66,25 @@ static void dir_of(const char *path, char *buf, size_t bufsz) {
 	buf[n] = '\0';
 }
 
-/* Build the synthesized program for one example: bring the documented file's
- * API into scope via `#import <module>;`, then the example (wrapped in a `proc main`
- * if it does not declare one). Returns an owned, NUL-terminated string.
+/* Build the synthesized program for one example. In-file model: the example runs with the
+ * documented file's FULL context — every decl in the file, private/file-local included — not
+ * just its public API (a doctest is a unit test, which shouldn't be limited to exports). So we
+ * prepend the file's entire source, then the example (wrapped in a `proc main` if it declares
+ * none). Returns an owned, NUL-terminated string.
  *
- * `core` is special — compile_source already prepends core.arche to every unit,
- * so a doctest in core/core.arche must NOT `#import core;` (that would redeclare the
- * whole prelude). Its functions are in scope implicitly. */
-static char *synthesize(const char *module, const DoctestExample *ex) {
-	char prefix[300] = "";
-	if (strcmp(module, "core") != 0) /* core is auto-prepended; never import it */
-		snprintf(prefix, sizeof(prefix), "#import %s;\n", module);
-
-	size_t need = strlen(prefix) + strlen("main :: proc() {\n}\n") + strlen(ex->code) + 8;
+ * `core` is special — compile_source already prepends core.arche to every unit, so a doctest in
+ * core/core.arche must NOT re-include it (that would redeclare the whole prelude); its decls are
+ * in scope implicitly, so `file_prefix` is empty there. */
+static char *synthesize(const char *file_source, int is_core, const DoctestExample *ex) {
+	const char *prefix = is_core ? "" : file_source;
+	size_t need = strlen(prefix) + strlen("\nmain :: proc() {\n}\n") + strlen(ex->code) + 8;
 	char *out = malloc(need);
 	if (!out)
 		return NULL;
 	if (ex->has_main)
-		snprintf(out, need, "%s%s", prefix, ex->code);
+		snprintf(out, need, "%s\n%s", prefix, ex->code);
 	else
-		snprintf(out, need, "%smain :: proc() {\n%s}\n", prefix, ex->code);
+		snprintf(out, need, "%s\nmain :: proc() {\n%s}\n", prefix, ex->code);
 	return out;
 }
 
@@ -231,25 +230,25 @@ static int run_one(const char *path, int quiet_empty, int verbose, DtTally *t) {
 	if (pr.cst_root)
 		ex = doctest_extract(pr.cst_root, source);
 	parse_result_free(&pr); /* examples own copies of everything they need */
-	free(source);
 
 	if (ex.count == 0) {
 		if (!quiet_empty)
 			printf("?    %s  [no examples]\n", path);
 		doctest_examples_free(&ex);
+		free(source);
 		return 0;
 	}
 	t->files++;
 
-	/* Each example program does `use <module>;`. compile_source resolves `use`
-	 * relative to the directory of the path we hand it — point that at the
-	 * documented file's own directory, so `use <module>;` finds the real file
-	 * (and any modules it transitively uses) without copying anything. The synth
-	 * path itself is never read from disk; only its directory matters. */
+	/* The synthesized program embeds the file's own source (in-file model), and its `#import`s
+	 * resolve relative to the path we hand compile_source — point that at the documented file's
+	 * directory so the file's transitive imports find their modules. The synth path itself is
+	 * never read from disk; only its directory matters. */
 	char module[256], dir[512], synth_path[768];
 	module_name_of(path, module, sizeof(module));
 	dir_of(path, dir, sizeof(dir));
 	snprintf(synth_path, sizeof(synth_path), "%s/__arche_doctest_synth__.arche", dir);
+	int is_core = (strcmp(module, "core") == 0);
 
 	int passed = 0, failed = 0, ignored = 0;
 	for (int i = 0; i < ex.count; i++) {
@@ -263,7 +262,7 @@ static int run_one(const char *path, int quiet_empty, int verbose, DtTally *t) {
 			continue;
 		}
 
-		char *synth = synthesize(module, e);
+		char *synth = synthesize(source, is_core, e);
 		char exe[256];
 		snprintf(exe, sizeof(exe), "/tmp/arche_dt_%d_%d", (int)getpid(), i);
 		int rc = synth ? compile_capturing(synth, synth_path, exe, captured, sizeof(captured)) : 1;
@@ -322,6 +321,7 @@ static int run_one(const char *path, int quiet_empty, int verbose, DtTally *t) {
 	t->failed += failed;
 	t->ignored += ignored;
 	doctest_examples_free(&ex);
+	free(source); /* kept alive through synthesis (in-file model embeds it) */
 	return failed > 0 ? 1 : 0;
 }
 

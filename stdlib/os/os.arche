@@ -1,5 +1,5 @@
 // The `os` module — process/system services (C-backed in runtime/io.c, term.c).
-// `#import os;` then `sys.arche_now_sec`, `sys.arche_argc`, … (bare names also resolve).
+// `#import { os }` then `sys.arche_now_sec`, `sys.arche_argc`, … (bare names also resolve).
 #foreign {
   arche_now_sec :: proc()(t: float)
   arche_sleep_ms :: proc(ms: int)

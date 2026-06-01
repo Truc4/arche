@@ -2,7 +2,7 @@
 // `if` branch but not the implicit else; the programmer must close on every path or none (and let
 // auto-drop handle all).
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "some paths" %t.out
-#import io;
+#import { io }
 main :: proc() {
   arche_fopen_read("/dev/null")(f:);
   e := 0;

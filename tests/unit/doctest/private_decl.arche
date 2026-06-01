@@ -1,0 +1,14 @@
+// A doctest is a unit test: it runs with the documented file's FULL context, not just its
+// public API. `secret_double` is file-private (after `#file`), yet its doctest can call it
+// directly — which only works under the in-file execution model (an export-only/import model
+// would report `secret_double` undefined).
+// RUN: %arche test %s
+#file
+
+/// Doubles its argument.
+/// ```arche
+/// assert(secret_double(21) == 42, "doubling broken\n");
+/// ```
+secret_double :: func(x: int) -> int {
+  return x * 2;
+}

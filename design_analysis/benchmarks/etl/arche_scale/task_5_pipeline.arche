@@ -2,7 +2,7 @@
 // Filter rows where quantity > 0 AND price > 10, compute revenue = price * quantity, sum.
 // Uses arche's natural vectorized form: comparisons produce 0/1 masks multiplied in.
 
-#import csv;
+#import { csv }
 
 Transaction :: arche {
   price :: float, quantity :: int, revenue :: float,

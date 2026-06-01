@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-#import io;
+#import { io }
 
 static buf: char[65536]
 

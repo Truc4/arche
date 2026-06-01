@@ -3,7 +3,7 @@
 // the kernel accept-backlog before accept() is called, so listen/connect/accept/
 // send/recv all exercise without threads. Proves the `Socket` extern type links
 // and a byte survives the round trip ('h' == 104).
-#import net;
+#import { net }
 main :: proc() {
   net_listen(34567)(srv:);
   net_connect("127.0.0.1", 34567)(cli:);

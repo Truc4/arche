@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "ok"
 // Simple test to see if 'use' statement works
-#import csv;
+#import { csv }
 
 main :: proc() {
   printf("ok\n");

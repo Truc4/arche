@@ -1,7 +1,7 @@
 // Task 5 (arche, transform-only): filter q>0 AND p>10, sum(p*q), repeated N=216,000 times.
 // Uses the natural vectorized form: revenue = price * quantity * (quantity > 0) * (price > 10).
 // The int-mask * float-column codegen bug that previously forced a scalar fallback is fixed.
-#import csv;
+#import { csv }
 
 Transaction :: arche {
   price :: float, quantity :: int, revenue :: float,

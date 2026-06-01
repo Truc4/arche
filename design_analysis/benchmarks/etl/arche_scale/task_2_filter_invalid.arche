@@ -1,6 +1,6 @@
 // Task 2: Filter invalid rows
 // Count rows where quantity > 0
-#import csv;
+#import { csv }
 
 Transaction :: arche {
   quantity :: int,

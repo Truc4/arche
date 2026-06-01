@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-#import io;
+#import { io }
 main :: proc() {
   arche_fopen_read("/nonexistent/path/to/file.csv")(fd:);
   printf("open() returned fd=%d\n", fd);

@@ -2286,7 +2286,7 @@ static const char *hir_decl_name(HirDecl *d) {
 }
 
 /* ---- Qualified module access: rewrite `mod.name` → the mangled `mod_name` symbol ----
- * `#import io;` inlines io's decls renamed to `io_<name>`. A use site writes `io.open`, which
+ * `#import io` inlines io's decls renamed to `io_<name>`. A use site writes `io.open`, which
  * parses as a field access NAME(io).open. This pass turns that into NAME(io_open) when `io` is an
  * inlined module and `open` is one of its exports — so qualified access resolves to the real
  * symbol. (The bare `io_open` form keeps working; this just adds the `io.open` spelling.) Field

@@ -1,4 +1,4 @@
-// The `net` module — TCP sockets (C-backed in runtime/net.c). `#import net;` then `net.listen`,
+// The `net` module — TCP sockets (C-backed in runtime/net.c). `#import { net }` then `net.listen`,
 // `net.send`, … (bare names also resolve). The `socket` opaque handle type is a core primitive.
 #foreign {
   net_listen :: proc(port: int)(s: socket)

@@ -186,7 +186,7 @@ static void load_module(const char *name, const char *source_dir) {
 		fprintf(stderr, "Error: Module not found: %s\n", name);
 }
 
-/* Resolve `#import foo;` from the CST: locate each module (folder or file), register it with both
+/* Resolve `#import foo` from the CST: locate each module (folder or file), register it with both
  * back-ends, and recurse into its transitive imports. CST + source are kept alive (borrowed). */
 static void resolve_uses(const SyntaxNode *cst_root, const char *src, const char *source_path) {
 	if (!cst_root)

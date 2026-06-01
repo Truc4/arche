@@ -1,4 +1,4 @@
-// The `io` module — file/stdio I/O. `#import io;` then call `io.fopen_read`, `io.open`, etc.
+// The `io` module — file/stdio I/O. `#import { io }` then call `io.fopen_read`, `io.open`, etc.
 // (bare names also resolve). Built on the core `syscall`/`read`/`write` primitives; a `file` is a
 // raw fd held in the opaque cell (must-consume: open it, then close it). The `file` type is a
 // core primitive; this module provides the operations.

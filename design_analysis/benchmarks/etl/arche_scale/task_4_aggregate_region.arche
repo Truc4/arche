@@ -1,6 +1,6 @@
 // Task 4: Aggregate (sum of revenue)
 // Compute revenue = price * quantity, then sum
-#import csv;
+#import { csv }
 
 Transaction :: arche {
   price :: float, quantity :: int, revenue :: float,

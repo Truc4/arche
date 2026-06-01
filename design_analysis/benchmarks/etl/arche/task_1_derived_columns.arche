@@ -1,6 +1,6 @@
 // Task 1: Compute derived columns
 // Compute revenue = price * quantity for all rows
-#import csv;
+#import { csv }
 
 Transaction :: arche {
   price :: float, quantity :: int, revenue :: float,

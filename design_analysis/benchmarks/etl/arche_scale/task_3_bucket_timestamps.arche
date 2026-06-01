@@ -1,6 +1,6 @@
 // Task 3: Bucket prices and extract hours from timestamps
 // Compute price_bucket = price / 10.0 and hour_bucket from timestamp
-#import csv;
+#import { csv }
 
 Transaction :: arche {
   price :: float, hour_bucket :: int, price_bucket :: float,
