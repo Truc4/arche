@@ -76,6 +76,10 @@ typedef enum TokenKind {
 	TOK_LT_EQ,   /* <= */
 	TOK_GT_EQ,   /* >= */
 
+	/* logical */
+	TOK_AMP_AMP,   /* && */
+	TOK_PIPE_PIPE, /* || */
+
 	/* arrow */
 	TOK_ARROW, /* -> */
 

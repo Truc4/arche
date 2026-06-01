@@ -1708,6 +1708,24 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			right_val = rwconv;
 		}
 
+		if (expr->data.binary.op == OP_AND || expr->data.binary.op == OP_OR) {
+			/* Logical `&&` / `||`. Eager: arche expressions have no side effects and no
+			 * traps, so eager evaluation is indistinguishable from short-circuit. Normalize
+			 * each operand to i1 (`!= 0`), combine with `and`/`or`, zext back to i32 (arche
+			 * has no bool; conditions are int 0/1 like comparisons). Scalar int only. */
+			const char *lt = llvm_int_type(int_width);
+			char *l_i1 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = icmp ne %s %s, 0\n", l_i1, lt, left_val);
+			char *r_i1 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = icmp ne %s %s, 0\n", r_i1, lt, right_val);
+			char *comb = gen_value_name(ctx);
+			const char *logop = (expr->data.binary.op == OP_AND) ? "and" : "or";
+			buffer_append_fmt(ctx, "  %s = %s i1 %s, %s\n", comb, logop, l_i1, r_i1);
+			buffer_append_fmt(ctx, "  %s = zext i1 %s to i32\n", res_name, comb);
+			strcpy(result_buf, res_name);
+			break;
+		}
+
 		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE) {
 			/* Comparison. In scalar context: emit scalar icmp/fcmp -> i1 -> zext to i32.
 			 * In vector context: splat scalar operands to <N x T>, emit vector icmp/fcmp
