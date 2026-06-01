@@ -55,7 +55,9 @@ arche_fread_line :: proc (fd: file, buf: char[], n: int)(buf: char[], r: int) {
   buf[i] = 0;
   r = i;
 }
-arche_fclose :: proc (own fd: file) {
+// RAII: registers arche_fclose as the destructor for `file`. A `file` local that is never
+// explicitly closed is auto-dropped via this proc at scope exit.
+@drop(file) arche_fclose :: proc (own fd: file) {
   syscall(3, fd, 0, 0, 0, 0, 0)(_c:);
 }
 

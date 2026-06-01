@@ -168,6 +168,35 @@ struct CodegenContext {
 	int cb_emitted_count;
 	int cb_emitted_capacity;
 
+	/* RAII auto-drop registry: opaque nominal type name (e.g. "file") -> the (already module-
+	 * prefixed) destructor proc symbol (e.g. "io_arche_fclose"). Built once from `@drop` HIR
+	 * procs. Borrowed string pointers into the HIR. */
+	struct {
+		const char *type_name;
+		const char *dtor;
+	} *drop_reg;
+	int drop_reg_count;
+	int drop_reg_capacity;
+
+	/* Per-function stack of LIVE droppable opaque locals, in declaration order. At each scope
+	 * exit, entries at >= that scope's depth that aren't consumed get a dtor call (reverse order)
+	 * and are popped; at function/return exit, ALL live entries are dropped (reverse order).
+	 * Consumption (move into an own param / return / insert) flips `consumed`. */
+	struct {
+		char *var_name;  /* the local's source name (for consumption matching) */
+		char *slot;      /* the alloca SSA holding the i64 opaque cell */
+		const char *dtor;/* destructor symbol to call */
+		int scope_depth; /* value-scope depth at which it was declared */
+		int consumed;    /* 1 once moved out / returned / inserted */
+	} *drop_live;
+	int drop_live_count;
+	int drop_live_capacity;
+	/* Set right after a `return` emits its terminator + path-local drops; tells the immediately
+	 * following pop_value_scope that the current block is already terminated (its drops were
+	 * emitted by the return), so it pops without re-emitting. Cleared when a new live block opens
+	 * (e.g. an if's exit label), so the fall-through path still auto-drops at function exit. */
+	int block_terminated;
+
 	/* Worklist of callback specializations queued from call sites, drained with
 	 * the archetype worklist. Each carries the bound names per callback param. */
 	struct {
@@ -633,8 +662,18 @@ static void push_value_scope(CodegenContext *ctx) {
 	ctx->scope_count++;
 }
 
+static void drop_exit_scope(CodegenContext *ctx, int depth);
+static void drop_pop_scope_only(CodegenContext *ctx, int depth);
+
 static void pop_value_scope(CodegenContext *ctx) {
 	if (ctx->scope_count > 0) {
+		/* RAII: auto-drop live opaque locals declared at this scope depth (reverse order,
+		 * skipping consumed). Skipped when the current block was just terminated by a `return`
+		 * (it already emitted those drops on its path) — but the entries are still popped. */
+		if (ctx->block_terminated)
+			drop_pop_scope_only(ctx, ctx->scope_count);
+		else
+			drop_exit_scope(ctx, ctx->scope_count);
 		ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
 		for (int i = 0; i < scope->value_count; i++) {
 			free(scope->values[i]->name);
@@ -645,6 +684,91 @@ static void pop_value_scope(CodegenContext *ctx) {
 		free(scope->values);
 		ctx->scope_count--;
 	}
+}
+
+/* ===== RAII auto-drop support ===== */
+
+/* The registered destructor symbol for opaque type `type_name`, or NULL. */
+static const char *drop_dtor_for_type(CodegenContext *ctx, const char *type_name) {
+	if (!type_name)
+		return NULL;
+	for (int i = 0; i < ctx->drop_reg_count; i++)
+		if (strcmp(ctx->drop_reg[i].type_name, type_name) == 0)
+			return ctx->drop_reg[i].dtor;
+	return NULL;
+}
+
+/* Record a live droppable opaque local at the current scope depth. `slot` is the alloca SSA
+ * holding the i64 cell; `dtor` the destructor symbol. */
+static void drop_track(CodegenContext *ctx, const char *var_name, const char *slot, const char *dtor) {
+	if (ctx->drop_live_count >= ctx->drop_live_capacity) {
+		ctx->drop_live_capacity = ctx->drop_live_capacity ? ctx->drop_live_capacity * 2 : 8;
+		ctx->drop_live = realloc(ctx->drop_live, ctx->drop_live_capacity * sizeof(*ctx->drop_live));
+	}
+	int k = ctx->drop_live_count++;
+	ctx->drop_live[k].var_name = strdup(var_name);
+	ctx->drop_live[k].slot = strdup(slot);
+	ctx->drop_live[k].dtor = dtor;
+	ctx->drop_live[k].scope_depth = ctx->scope_count;
+	ctx->drop_live[k].consumed = 0;
+}
+
+/* Mark a tracked droppable local consumed (moved out / returned / inserted) — suppresses its
+ * auto-drop. Matches the innermost live entry of that name. No-op if not tracked. */
+static void drop_mark_consumed(CodegenContext *ctx, const char *var_name) {
+	for (int i = ctx->drop_live_count - 1; i >= 0; i--) {
+		if (!ctx->drop_live[i].consumed && strcmp(ctx->drop_live[i].var_name, var_name) == 0) {
+			ctx->drop_live[i].consumed = 1;
+			return;
+		}
+	}
+}
+
+/* Emit a destructor call for one live entry: load the i64 cell and call dtor(cell). */
+static void drop_emit_one(CodegenContext *ctx, int idx);
+
+/* Drop & pop all live entries declared at value-scope depth >= `depth`, in reverse declaration
+ * order, skipping consumed ones. Called from pop_value_scope (depth = the scope being popped). */
+static void drop_exit_scope(CodegenContext *ctx, int depth) {
+	for (int i = ctx->drop_live_count - 1; i >= 0; i--) {
+		if (ctx->drop_live[i].scope_depth < depth)
+			break; /* entries are pushed in order; lower depths sit below */
+		if (!ctx->drop_live[i].consumed)
+			drop_emit_one(ctx, i);
+	}
+	/* Pop entries at >= depth. */
+	while (ctx->drop_live_count > 0 && ctx->drop_live[ctx->drop_live_count - 1].scope_depth >= depth) {
+		ctx->drop_live_count--;
+		free(ctx->drop_live[ctx->drop_live_count].var_name);
+		free(ctx->drop_live[ctx->drop_live_count].slot);
+	}
+}
+
+/* Pop entries at >= depth WITHOUT emitting drops (the terminating `return` already emitted them
+ * on its path). */
+static void drop_pop_scope_only(CodegenContext *ctx, int depth) {
+	while (ctx->drop_live_count > 0 && ctx->drop_live[ctx->drop_live_count - 1].scope_depth >= depth) {
+		ctx->drop_live_count--;
+		free(ctx->drop_live[ctx->drop_live_count].var_name);
+		free(ctx->drop_live[ctx->drop_live_count].slot);
+	}
+}
+
+/* Drop ALL still-live entries (reverse order) for a `return` exit — PATH-LOCAL: it does NOT
+ * mark them consumed (they remain live on the other control-flow paths, which auto-drop at their
+ * own exits). Sets block_terminated so the immediately-following pop_value_scope (if this return
+ * is the last statement) pops without emitting a second, dead drop. */
+static void drop_exit_all_for_return(CodegenContext *ctx) {
+	for (int i = ctx->drop_live_count - 1; i >= 0; i--)
+		if (!ctx->drop_live[i].consumed)
+			drop_emit_one(ctx, i);
+	ctx->block_terminated = 1;
+}
+
+static void drop_emit_one(CodegenContext *ctx, int idx) {
+	char *cell = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cell, ctx->drop_live[idx].slot);
+	buffer_append_fmt(ctx, "  call void @%s(i64 %s)\n", ctx->drop_live[idx].dtor, cell);
 }
 
 static ValueInfo *find_value(CodegenContext *ctx, const char *name) {
@@ -2401,6 +2525,15 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 
 		/* Special handling for insert builtin */
 		if (func_name && strcmp(func_name, "insert") == 0 && expr->data.call.arg_count > 0) {
+			/* RAII: insert moves its value args into the pool — suppress auto-drop for any
+			 * opaque local handed in (arg 0 is the archetype name; skip it). */
+			for (int ai = 1; ai < expr->data.call.arg_count; ai++) {
+				HirExpr *ia = expr->data.call.args[ai];
+				if (ia && ia->kind == HIR_EXPR_UNARY && ia->data.unary.op == UNARY_MOVE)
+					ia = ia->data.unary.operand;
+				if (ia && ia->kind == HIR_EXPR_NAME)
+					drop_mark_consumed(ctx, ia->data.name.name);
+			}
 			/* args[0] is archetype variable, args[1..] are field values */
 			char arch_buf[256];
 			codegen_expression(ctx, expr->data.call.args[0], arch_buf);
@@ -2579,6 +2712,11 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				if (inner->data.unary.op == UNARY_MOVE)
 					arg_is_move[i] = 1;
 				inner = inner->data.unary.operand;
+				/* RAII: `move x` into an own param transfers ownership — suppress x's auto-drop.
+				 * This covers explicit early close (`arche_fclose(move f)`): the new owner (the
+				 * destructor itself, or any own-param callee) is responsible. */
+				if (arg_is_move[i] && inner->kind == HIR_EXPR_NAME)
+					drop_mark_consumed(ctx, inner->data.name.name);
 			}
 
 			/* Check if this arg is a string literal */
@@ -4477,6 +4615,13 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 							sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
 							sc->values[sc->value_count++] = vi;
 						}
+						/* RAII: track a fresh opaque local with a registered destructor (extern-result
+						 * out path, e.g. `net_listen(port)(s:)`). */
+						if (ot && ot->tag == HIR_TYPE_OPAQUE) {
+							const char *dt = drop_dtor_for_type(ctx, ot->name);
+							if (dt)
+								drop_track(ctx, tgt->name, a, dt);
+						}
 					}
 				} else {
 					ValueInfo *e = find_value(ctx, tgt->name);
@@ -4526,6 +4671,13 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 						ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
 						sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
 						sc->values[sc->value_count++] = vi;
+					}
+					/* RAII: a fresh opaque local of a type with a registered `@drop` destructor is
+					 * tracked for auto-drop at scope exit (unless later consumed). */
+					if (ot && ot->tag == HIR_TYPE_OPAQUE) {
+						const char *dt = drop_dtor_for_type(ctx, ot->name);
+						if (dt)
+							drop_track(ctx, tgt->name, ptr, dt);
 					}
 				} else {
 					ValueInfo *e = find_value(ctx, tgt->name);
@@ -5516,6 +5668,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		                  has_else ? else_label : exit_label);
 
 		buffer_append_fmt(ctx, "%s:\n", then_label + 1);
+		ctx->block_terminated = 0; /* fresh live block */
 		for (int i = 0; i < stmt->data.if_stmt.then_count; i++) {
 			codegen_statement(ctx, stmt->data.if_stmt.then_body[i]);
 		}
@@ -5523,6 +5676,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 
 		if (has_else) {
 			buffer_append_fmt(ctx, "%s:\n", else_label + 1);
+			ctx->block_terminated = 0; /* fresh live block */
 			for (int i = 0; i < stmt->data.if_stmt.else_count; i++) {
 				codegen_statement(ctx, stmt->data.if_stmt.else_body[i]);
 			}
@@ -5530,6 +5684,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		}
 
 		buffer_append_fmt(ctx, "%s:\n", exit_label + 1);
+		ctx->block_terminated = 0; /* exit block is live (control merges here) */
 		break;
 	}
 
@@ -5637,12 +5792,21 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		 * is produced by threading an `own` buffer (`g: T[N]; g := fill(move g)`). */
 		HirReturnStmt *rs = &stmt->data.return_stmt;
 		const char *ret_type = ctx->current_return_type ? ctx->current_return_type : "i32";
+		/* RAII: returning an opaque local moves it out — suppress its auto-drop. */
+		for (int ri = 0; ri < rs->count; ri++)
+			if (rs->values[ri] && rs->values[ri]->kind == HIR_EXPR_NAME)
+				drop_mark_consumed(ctx, rs->values[ri]->data.name.name);
 		if (rs->count == 0) {
 			/* Naked `return;` — early exit from a proc (which is `define void`). Out-params are
-			 * written in place as the body runs, so an early exit just terminates the block. */
+			 * written in place as the body runs, so an early exit just terminates the block.
+			 * RAII: auto-drop all still-live opaque locals before the early `ret`. */
+			drop_exit_all_for_return(ctx);
 			buffer_append(ctx, "  ret void\n");
 			break;
 		}
+		/* RAII: drop still-live opaque locals before the value `ret` (after marking returned
+		 * ones consumed above so we don't drop the value being handed back). */
+		drop_exit_all_for_return(ctx);
 		if (rs->count <= 1) {
 			char value_buf[256];
 			codegen_expression(ctx, rs->values[0], value_buf);
@@ -6747,6 +6911,7 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 
 	FunctionBodyState fbs_proc = begin_function_body(ctx);
 	push_value_scope(ctx);
+	ctx->block_terminated = 0;
 
 	/* Register static arrays in scope */
 	register_static_arrays_in_scope(ctx);
@@ -7132,10 +7297,44 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->cb_pending_capacity = 0;
 	ctx->efield_name_counter = 0;
 	ctx->uses_memcpy = 0;
+	ctx->drop_reg = NULL;
+	ctx->drop_reg_count = 0;
+	ctx->drop_reg_capacity = 0;
+	ctx->drop_live = NULL;
+	ctx->drop_live_count = 0;
+	ctx->drop_live_capacity = 0;
+	ctx->block_terminated = 0;
 	return ctx;
 }
 
+/* Build the RAII auto-drop registry from `@drop` HIR procs: opaque nominal type -> dtor symbol.
+ * The proc name is already module-prefixed (e.g. "io_arche_fclose"); externs keep their bare C
+ * name ("net_close"). Keyed by the `own` opaque param's preserved nominal name (e.g. "file"). */
+static void codegen_build_drop_registry(CodegenContext *ctx) {
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		HirDecl *d = ctx->ast->decls[i];
+		if (!d || d->kind != HIR_DECL_PROC || !d->data.proc || !d->data.proc->is_drop)
+			continue;
+		HirProcDecl *p = d->data.proc;
+		if (p->param_count != 1 || !p->params[0] || !p->params[0]->type)
+			continue;
+		HirType *pt = p->params[0]->type;
+		if (pt->tag != HIR_TYPE_OPAQUE || !pt->name)
+			continue;
+		if (ctx->drop_reg_count >= ctx->drop_reg_capacity) {
+			ctx->drop_reg_capacity = ctx->drop_reg_capacity ? ctx->drop_reg_capacity * 2 : 8;
+			ctx->drop_reg = realloc(ctx->drop_reg, ctx->drop_reg_capacity * sizeof(*ctx->drop_reg));
+		}
+		ctx->drop_reg[ctx->drop_reg_count].type_name = pt->name;
+		ctx->drop_reg[ctx->drop_reg_count].dtor = p->name;
+		ctx->drop_reg_count++;
+	}
+}
+
 void codegen_generate(CodegenContext *ctx, FILE *output) {
+	/* RAII: build the opaque-type -> destructor registry before emitting any body. */
+	codegen_build_drop_registry(ctx);
+
 	/* Preamble: declare external functions */
 	buffer_append(ctx, "; Target datalayout and triple would go here\n");
 	buffer_append(ctx,
@@ -7320,5 +7519,11 @@ void codegen_free(CodegenContext *ctx) {
 	free(ctx->loop_exit_labels);
 	free(ctx->top_level_allocs);
 	free(ctx->static_arrays);
+	for (int i = 0; i < ctx->drop_live_count; i++) {
+		free(ctx->drop_live[i].var_name);
+		free(ctx->drop_live[i].slot);
+	}
+	free(ctx->drop_live);
+	free(ctx->drop_reg);
 	free(ctx);
 }

@@ -1,0 +1,12 @@
+// Consumed on some paths but not all → compile error (all-paths-or-none). Here `f` is closed in the
+// `if` branch but not the implicit else; the programmer must close on every path or none (and let
+// auto-drop handle all).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "some paths" %t.out
+#import io;
+main :: proc () {
+  arche_fopen_read("/dev/null")(f:);
+  e := 0;
+  if (e == 1) {
+    arche_fclose(move f);
+  }
+}

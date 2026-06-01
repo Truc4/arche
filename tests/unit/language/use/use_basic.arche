@@ -6,7 +6,8 @@ main :: proc () {
   if (fd > 0) {
     buf: char[65536];
     io_read_chunk(fd, buf, 65536)(buf, n:);
-    io_close(move fd);
+    // RAII: `fd` is auto-dropped (io_close) at scope exit on every path — no explicit close.
+    // An explicit close only in this `then` branch would be a 'some paths' consumption error.
     if (n > 0) {
       printf("PASS: read %d bytes\n", n);
     }

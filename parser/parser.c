@@ -927,6 +927,29 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser);
 			continue;
 		}
+		if (cur_ident_is(parser, "drop", 4)) {
+			/* `@drop(<OpaqueType>)` decl decorator — marks the decorated proc as the destructor
+			 * for that opaque type (RAII). The type is named explicitly (not inferred) and must
+			 * match the proc's single `own` parameter. Recorded on the decl via a token scan in
+			 * cst_build_decl; validated/registered in semantic. */
+			advance(parser); /* consume 'drop' */
+			if (!check(parser, TOK_LPAREN)) {
+				error(parser, "Expected '(' after @drop — name the opaque type, e.g. @drop(socket)");
+				return 0;
+			}
+			advance(parser); /* consume '(' */
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected an opaque type name inside @drop(...)");
+				return 0;
+			}
+			advance(parser); /* consume the type name */
+			if (!check(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')' to close @drop(...)");
+				return 0;
+			}
+			advance(parser); /* consume ')' */
+			continue;
+		}
 		if (cur_ident_is(parser, "allow", 5)) {
 			advance(parser);
 			if (!check(parser, TOK_LPAREN)) {
@@ -946,7 +969,7 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser); /* consume ')' */
 			continue;
 		}
-		error(parser, "Unknown decorator (recognized: @allow_pure_proc, @allow(<slug>))");
+		error(parser, "Unknown decorator (recognized: @allow_pure_proc, @allow(<slug>), @drop(<type>))");
 		return 0;
 	}
 

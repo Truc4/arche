@@ -118,6 +118,14 @@ struct SemanticContext {
 	SourceLoc *type_alias_locs; /* loc of each alias's declaration, for late diagnostics */
 	int type_alias_count;
 
+	/* Opaque destructor registry (RAII): a `@drop` proc binds its `own` opaque param type to
+	 * itself; any still-live local of that type gets an auto-drop call at scope exit. One per
+	 * type (re-registration is an error). Codegen reads it via semantic_drop_dtor. */
+	char **drop_type_names; /* opaque type name (e.g. "file") */
+	char **drop_proc_names; /* destructor proc name (e.g. "arche_fclose") */
+	SourceLoc *drop_locs;   /* loc of each registration, for the re-registration error */
+	int drop_count;
+
 	Scope *scopes;
 	int scope_count;
 
@@ -571,6 +579,86 @@ static int var_is_opaque(SemanticContext *ctx, VariableInfo *v) {
 	return 0;
 }
 
+/* The nominal opaque type name for a variable (e.g. "file"/"socket"), used to look up its
+ * registered `@drop` destructor. NULL if not an opaque local with a nominal name. */
+static const char *var_opaque_type_name(SemanticContext *ctx, VariableInfo *v) {
+	if (!var_is_opaque(ctx, v))
+		return NULL;
+	if (v->nominal_type)
+		return v->nominal_type;
+	if (v->type && v->type->kind == TYPE_NAME)
+		return v->type->data.name;
+	return NULL;
+}
+
+/* The destructor proc name registered (via `@drop`) for opaque type `type_name`, or NULL if
+ * none. Codegen consults this (via semantic_drop_dtor) to know whether a live opaque local
+ * gets an auto-drop call at scope exit. */
+static const char *drop_dtor_for(SemanticContext *ctx, const char *type_name) {
+	if (!type_name)
+		return NULL;
+	for (int i = 0; i < ctx->drop_count; i++)
+		if (strcmp(ctx->drop_type_names[i], type_name) == 0)
+			return ctx->drop_proc_names[i];
+	return NULL;
+}
+
+/* Register `type_name`'s destructor as `proc_name`. One per type — a second `@drop` for the
+ * same opaque type is E0119. */
+static void register_drop(SemanticContext *ctx, const char *type_name, const char *proc_name, SourceLoc loc) {
+	for (int i = 0; i < ctx->drop_count; i++) {
+		if (strcmp(ctx->drop_type_names[i], type_name) == 0) {
+			sem_emit_drop_redefined(ctx, loc, type_name);
+			return;
+		}
+	}
+	ctx->drop_type_names = realloc(ctx->drop_type_names, (ctx->drop_count + 1) * sizeof(char *));
+	ctx->drop_proc_names = realloc(ctx->drop_proc_names, (ctx->drop_count + 1) * sizeof(char *));
+	ctx->drop_locs = realloc(ctx->drop_locs, (ctx->drop_count + 1) * sizeof(SourceLoc));
+	ctx->drop_type_names[ctx->drop_count] = sem_dupz(type_name);
+	ctx->drop_proc_names[ctx->drop_count] = sem_dupz(proc_name);
+	ctx->drop_locs[ctx->drop_count] = loc;
+	ctx->drop_count++;
+}
+
+/* Validate a `@drop` proc's signature (`proc (own T)()`, T opaque, no out-params) and register
+ * its destructor. Errors (E0118) on a bad signature without registering. */
+static void analyze_drop_decl(SemanticContext *ctx, ProcDecl *proc, const char *declared_type) {
+	if (!proc)
+		return;
+	if (proc->out_param_count != 0) {
+		sem_emit_drop_invalid(ctx, proc->loc,
+		                      "a `@drop` destructor must be `proc (own T)()` — it may not have out-parameters");
+		return;
+	}
+	if (proc->param_count != 1) {
+		sem_emit_drop_invalid(ctx, proc->loc,
+		                      "a `@drop` destructor must take exactly one `own` parameter of an opaque type");
+		return;
+	}
+	Parameter *p = proc->params[0];
+	if (!p || !p->is_own) {
+		sem_emit_drop_invalid(ctx, proc->loc,
+		                      "a `@drop` destructor's parameter must be `own`");
+		return;
+	}
+	if (!p->type || p->type->kind != TYPE_NAME ||
+	    strcmp(resolve_type_alias(ctx, p->type->data.name), "opaque") != 0) {
+		sem_emit_drop_invalid(ctx, proc->loc,
+		                      "a `@drop` destructor's parameter must be of an opaque type");
+		return;
+	}
+	/* The `@drop(<type>)` name must match the parameter's type — the decorator states what is
+	 * dropped; a mismatch is a typo, not silently ignored. */
+	if (declared_type && strcmp(declared_type, p->type->data.name) != 0) {
+		sem_emit_drop_invalid(
+		    ctx, proc->loc,
+		    "`@drop(...)` names a different type than the destructor's parameter — they must match");
+		return;
+	}
+	register_drop(ctx, p->type->data.name, proc->name, proc->loc);
+}
+
 static void push_scope(SemanticContext *ctx) {
 	ctx->scopes = realloc(ctx->scopes, (ctx->scope_count + 1) * sizeof(Scope));
 	ctx->scopes[ctx->scope_count].vars = NULL;
@@ -584,8 +672,12 @@ static void pop_scope(SemanticContext *ctx) {
 		for (int i = 0; i < scope->var_count; i++) {
 			VariableInfo *v = scope->vars[i];
 			/* Linear must-consume: an opaque LOCAL must be consumed (move / close / return /
-			 * insert) before its scope ends. Borrowed params are exempt. */
-			if (var_is_opaque(ctx, v) && !v->is_param && !v->is_consumed) {
+			 * insert) before its scope ends. Borrowed params are exempt. With RAII, an opaque
+			 * type that HAS a registered `@drop` destructor is instead auto-dropped at scope
+			 * exit (codegen emits the call) — not an error. A destructor-less opaque keeps the
+			 * old must-consume rule. */
+			if (var_is_opaque(ctx, v) && !v->is_param && !v->is_consumed &&
+			    !drop_dtor_for(ctx, var_opaque_type_name(ctx, v))) {
 				sem_emit_opaque_not_consumed(ctx, v->loc, v->name);
 			}
 			/* W0004 unused_local: warn for non-param locals never read. Names starting
@@ -2033,23 +2125,70 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		/* analyze condition */
 		analyze_expression(ctx, stmt->data.if_stmt.cond);
 
-		/* push new scope for if body */
-		push_scope(ctx);
-
-		for (int i = 0; i < stmt->data.if_stmt.then_count; i++) {
-			analyze_statement(ctx, stmt->data.if_stmt.then_body[i]);
+		/* RAII all-paths-or-none consumption analysis. Snapshot the consumed-state of every
+		 * opaque local currently in scope (the outer bindings the branches may consume), so the
+		 * then/else paths are analyzed independently rather than branch-insensitively (which both
+		 * leaked a then-consume into the else as a false "use of consumed handle", and missed a
+		 * consume-on-only-one-path leak). After both paths, a handle consumed on some-but-not-all
+		 * paths is an error; consumed on all paths stays consumed; on none stays live. */
+		int snap_count = 0;
+		for (int si = 0; si < ctx->scope_count; si++)
+			for (int vi = 0; vi < ctx->scopes[si].var_count; vi++)
+				if (var_is_opaque(ctx, ctx->scopes[si].vars[vi]))
+					snap_count++;
+		VariableInfo **snap_vars = snap_count ? malloc(snap_count * sizeof(VariableInfo *)) : NULL;
+		int *snap_before = snap_count ? malloc(snap_count * sizeof(int)) : NULL;
+		int *snap_then = snap_count ? malloc(snap_count * sizeof(int)) : NULL;
+		{
+			int k = 0;
+			for (int si = 0; si < ctx->scope_count; si++)
+				for (int vi = 0; vi < ctx->scopes[si].var_count; vi++) {
+					VariableInfo *v = ctx->scopes[si].vars[vi];
+					if (var_is_opaque(ctx, v)) {
+						snap_vars[k] = v;
+						snap_before[k] = v->is_consumed;
+						k++;
+					}
+				}
 		}
 
+		/* push new scope for if body */
+		push_scope(ctx);
+		for (int i = 0; i < stmt->data.if_stmt.then_count; i++)
+			analyze_statement(ctx, stmt->data.if_stmt.then_body[i]);
 		pop_scope(ctx);
+
+		/* Record the then-path consumed-set for the outer handles, then reset to the pre-if state
+		 * so the else path is analyzed independently. */
+		for (int k = 0; k < snap_count; k++) {
+			snap_then[k] = snap_vars[k]->is_consumed;
+			snap_vars[k]->is_consumed = snap_before[k];
+		}
 
 		/* analyze else body in its own scope */
 		push_scope(ctx);
-
-		for (int i = 0; i < stmt->data.if_stmt.else_count; i++) {
+		for (int i = 0; i < stmt->data.if_stmt.else_count; i++)
 			analyze_statement(ctx, stmt->data.if_stmt.else_body[i]);
-		}
-
 		pop_scope(ctx);
+
+		/* Merge: for each outer opaque handle not already consumed before the if, compare the
+		 * then-path vs else-path consume decision. (An empty else consumes nothing.) */
+		for (int k = 0; k < snap_count; k++) {
+			if (snap_before[k])
+				continue; /* already consumed before the if — nothing to reconcile */
+			int then_c = snap_then[k];
+			int else_c = snap_vars[k]->is_consumed; /* state after analyzing else */
+			if (then_c != else_c) {
+				sem_emit_drop_conditional(ctx, snap_vars[k]->loc, snap_vars[k]->name);
+				/* Treat as consumed to avoid a cascading must-consume/auto-drop error. */
+				snap_vars[k]->is_consumed = 1;
+			} else {
+				snap_vars[k]->is_consumed = then_c; /* both paths agree */
+			}
+		}
+		free(snap_vars);
+		free(snap_before);
+		free(snap_then);
 		break;
 	}
 
@@ -3781,6 +3920,34 @@ static Expression *cst_build_expr(CstView e) {
 /* ---- statement reconstruction ---- */
 static Statement *cst_build_stmt(CstView s);
 
+/* Build statements from the direct children of `parent` whose child index is in [lo, hi).
+ * Used to split an if's flat then/else child list on the `else` token. */
+static Statement **cst_build_body_split(CstView parent, int lo, int hi, int *out_count) {
+	if (lo < 0)
+		lo = 0;
+	if (hi > parent.node->child_count)
+		hi = parent.node->child_count;
+	int n = 0;
+	for (int i = lo; i < hi; i++)
+		if (parent.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = parent.node->children[i].as.node->kind;
+			if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
+				n++;
+		}
+	*out_count = n;
+	if (n == 0)
+		return NULL;
+	Statement **out = calloc(n, sizeof(Statement *));
+	int j = 0;
+	for (int i = lo; i < hi; i++)
+		if (parent.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = parent.node->children[i].as.node->kind;
+			if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
+				out[j++] = cst_build_stmt((CstView){parent.node->children[i].as.node, parent.src});
+		}
+	return out;
+}
+
 /* Lower the statement-kind child nodes of `parent` into a Statement array. */
 static Statement **cst_build_body(CstView parent, int *out_count) {
 	int n = 0;
@@ -3906,12 +4073,22 @@ static Statement *cst_build_stmt(CstView s) {
 	case SN_IF_STMT: {
 		as->type = STMT_IF;
 		as->data.if_stmt.cond = cst_build_expr(sem_node_at_expr(s, 0));
-		CstView elsec = cv_child(s, SN_ELSE_CLAUSE);
-		as->data.if_stmt.then_body = cst_build_body(s, &as->data.if_stmt.then_count);
+		/* The parser emits the if's then- and else-statements as a FLAT child list separated by
+		 * the `else` token (no wrapper node). Split on that token: statement children before it
+		 * are the then-body, those after are the else-body. */
+		int else_tok = -1;
+		for (int i = 0; i < s.node->child_count; i++)
+			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_ELSE) {
+				else_tok = i;
+				break;
+			}
+		as->data.if_stmt.then_body = cst_build_body_split(
+		    s, 0, else_tok >= 0 ? else_tok : s.node->child_count, &as->data.if_stmt.then_count);
 		as->data.if_stmt.else_body = NULL;
 		as->data.if_stmt.else_count = 0;
-		if (cv_present(elsec))
-			as->data.if_stmt.else_body = cst_build_body(elsec, &as->data.if_stmt.else_count);
+		if (else_tok >= 0)
+			as->data.if_stmt.else_body =
+			    cst_build_body_split(s, else_tok, s.node->child_count, &as->data.if_stmt.else_count);
 		break;
 	}
 	case SN_FOR_STMT: {
@@ -4173,10 +4350,57 @@ static void cst_extract_allow_slugs(CstView d, char ***out_slugs, int *out_count
 /* ---- declaration reconstruction (CST decl node -> Decl) ---- */
 static Decl *cst_build_decl_inner(CstView d);
 
+/* Scan a CST decl node's direct-child tokens for a `@drop` decorator (the `@ drop`
+ * two-token sequence). Returns 1 if present. */
+static int cst_has_drop_decorator(CstView d) {
+	int n = d.node->child_count;
+	for (int i = 0; i + 1 < n; i++) {
+		const SyntaxElem *e1 = &d.node->children[i];
+		if (e1->tag != SE_TOKEN || e1->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *e2 = &d.node->children[i + 1];
+		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
+			continue;
+		if (e2->as.token.length == 4 && memcmp(d.src + e2->as.token.offset, "drop", 4) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/* The type named in `@drop(<type>)`, e.g. "socket" — the IDENT two tokens after the `drop` IDENT
+ * (skipping `(`). NULL if absent/malformed. Caller owns the returned string. */
+static char *cst_drop_type(CstView d) {
+	int n = d.node->child_count;
+	for (int i = 0; i + 3 < n; i++) {
+		const SyntaxElem *at = &d.node->children[i];
+		if (at->tag != SE_TOKEN || at->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *kw = &d.node->children[i + 1];
+		if (kw->tag != SE_TOKEN || kw->as.token.kind != TOK_IDENT)
+			continue;
+		if (kw->as.token.length != 4 || memcmp(d.src + kw->as.token.offset, "drop", 4) != 0)
+			continue;
+		const SyntaxElem *lp = &d.node->children[i + 2];
+		const SyntaxElem *ty = &d.node->children[i + 3];
+		if (lp->tag == SE_TOKEN && lp->as.token.kind == TOK_LPAREN && ty->tag == SE_TOKEN &&
+		    ty->as.token.kind == TOK_IDENT) {
+			size_t len = ty->as.token.length;
+			char *s = malloc(len + 1);
+			memcpy(s, d.src + ty->as.token.offset, len);
+			s[len] = '\0';
+			return s;
+		}
+	}
+	return NULL;
+}
+
 static Decl *cst_build_decl(CstView d) {
 	Decl *ad = cst_build_decl_inner(d);
-	if (ad)
+	if (ad) {
 		cst_extract_allow_slugs(d, &ad->allow_slugs, &ad->allow_slug_count);
+		ad->is_drop = cst_has_drop_decorator(d);
+		ad->drop_type = cst_drop_type(d);
+	}
 	return ad;
 }
 
@@ -5573,6 +5797,14 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 			register_func(ctx, d->data.func->name);
 	}
 
+	/* pre-pass: register every `@drop` proc's destructor (opaque type -> proc) BEFORE any body
+	 * is analyzed, so pop_scope's auto-drop decision sees the registry regardless of decl order. */
+	for (int i = 0; i < prog->decl_count; i++) {
+		Decl *d = prog->decls[i];
+		if (d->is_drop && d->kind == DECL_PROC && d->data.proc)
+			analyze_drop_decl(ctx, d->data.proc, d->drop_type);
+	}
+
 	/* pass 2: analyze other declarations */
 	for (int i = 0; i < prog->decl_count; i++) {
 		if (prog->decls[i]->kind != DECL_ARCHETYPE && prog->decls[i]->kind != DECL_CONST) {
@@ -5651,6 +5883,10 @@ static SemanticContext *make_context(void) {
 	ctx->type_alias_backings = NULL;
 	ctx->type_alias_locs = NULL;
 	ctx->type_alias_count = 0;
+	ctx->drop_type_names = NULL;
+	ctx->drop_proc_names = NULL;
+	ctx->drop_locs = NULL;
+	ctx->drop_count = 0;
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
 	ctx->error_count = 0;
@@ -5813,6 +6049,15 @@ void semantic_context_free(SemanticContext *ctx) {
 	free(ctx->type_alias_names);
 	free(ctx->type_alias_backings);
 	free(ctx->type_alias_locs);
+
+	/* free opaque-destructor registry (these strings are owned here — sem_dupz'd) */
+	for (int i = 0; i < ctx->drop_count; i++) {
+		free(ctx->drop_type_names[i]);
+		free(ctx->drop_proc_names[i]);
+	}
+	free(ctx->drop_type_names);
+	free(ctx->drop_proc_names);
+	free(ctx->drop_locs);
 
 	/* free shapes (one per unique column structure) */
 	for (int i = 0; i < ctx->archetype_count; i++) {

@@ -123,6 +123,9 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	/* E0116 revived: local_shadows_callable (was out_not_written, retired). */
 	[SEM_DIAG_local_shadows_callable]        = { "E0116", "local_shadows_callable",        CLASS_ERROR, 1 },
 	[SEM_DIAG_duplicate_decl]                = { "E0117", "duplicate_decl",                CLASS_ERROR, 1 },
+	[SEM_DIAG_drop_invalid]                  = { "E0118", "drop_invalid",                  CLASS_ERROR, 1 },
+	[SEM_DIAG_drop_redefined]                = { "E0119", "drop_redefined",                CLASS_ERROR, 1 },
+	[SEM_DIAG_drop_conditional]              = { "E0120", "drop_conditional",              CLASS_ERROR, 1 },
 
 	/* Tycheck (P3 type-check pass — E0200+). All typing-rule violations route through
 	 * E0200; sharper kind/arity constraints get their own codes in Phase B. */
@@ -763,6 +766,18 @@ SemDiag *sem_emit_break_outside_loop(SemanticContext *ctx, SourceLoc loc) {
 
 SemDiag *sem_emit_duplicate_decl(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_duplicate_decl, loc, "%s '%s' is already declared at this scope", kind, name);
+}
+
+SemDiag *sem_emit_drop_invalid(SemanticContext *ctx, SourceLoc loc, const char *msg) {
+	return sem_emit_(ctx, SEM_DIAG_drop_invalid, loc, "%s", msg);
+}
+SemDiag *sem_emit_drop_redefined(SemanticContext *ctx, SourceLoc loc, const char *type_name) {
+	return sem_emit_(ctx, SEM_DIAG_drop_redefined, loc,
+	                 "a destructor is already registered for opaque type '%s' — one `@drop` per type", type_name);
+}
+SemDiag *sem_emit_drop_conditional(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_drop_conditional, loc,
+	                 "handle '%s' is consumed on some paths but not others — consume it on every path or none", name);
 }
 
 SemDiag *sem_emit_lint_unused_local(SemanticContext *ctx, SourceLoc loc, const char *name) {

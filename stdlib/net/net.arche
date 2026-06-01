@@ -8,4 +8,6 @@ net_connect :: extern proc (own ip: char[], port: int)(s: socket);
 // value is passed there — `net_send(s, _, n)(buf, sent:)`. The C ABI is unchanged.
 net_send :: extern proc (s: socket, buf: char[], n: int)(buf: char[], r: int);
 net_recv :: extern proc (s: socket, buf: char[], n: int)(buf: char[], r: int);
-net_close :: extern proc (own s: socket);
+// RAII: registers net_close as the destructor for `socket`. A `socket` local that is never
+// explicitly closed is auto-dropped via this proc at scope exit.
+@drop(socket) net_close :: extern proc (own s: socket);
