@@ -5235,6 +5235,38 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 	}
 
 	case HIR_STMT_ASSIGN: {
+		/* `a = b` / `a = move b` / `a = copy b` where both sides are array/slice VALUES: the target
+		 * binding takes over the source's storage (move — value_buf is the source's own pointer, the
+		 * source is consumed in semantic) or the freshly-cloned buffer (`copy`). Rebind the target's
+		 * ValueInfo to the RHS pointer + array metadata: a compile-time ownership transfer, no store. */
+		if (stmt->data.assign_stmt.target->kind == HIR_EXPR_NAME) {
+			HirExpr *rv = stmt->data.assign_stmt.value;
+			while (rv && rv->kind == HIR_EXPR_UNARY &&
+			       (rv->data.unary.op == UNARY_MOVE || rv->data.unary.op == UNARY_COPY))
+				rv = rv->data.unary.operand;
+			ValueInfo *tgt = find_value(ctx, stmt->data.assign_stmt.target->data.name.name);
+			ValueInfo *src = (rv && rv->kind == HIR_EXPR_NAME) ? find_value(ctx, rv->data.name.name) : NULL;
+			if (tgt && src && (src->type == 6 || src->type == 7) && (tgt->type == 6 || tgt->type == 7)) {
+				char vbuf[256];
+				codegen_expression(ctx, stmt->data.assign_stmt.value, vbuf);
+				free(tgt->llvm_name);
+				tgt->llvm_name = malloc(strlen(vbuf) + 1);
+				strcpy(tgt->llvm_name, vbuf);
+				tgt->type = src->type;
+				tgt->string_len = src->string_len;
+				tgt->field_type = src->field_type;
+				tgt->bit_width = src->bit_width;
+				tgt->is_slice = src->is_slice;
+				free(tgt->len_ssa);
+				tgt->len_ssa = NULL;
+				if (src->len_ssa) {
+					tgt->len_ssa = malloc(strlen(src->len_ssa) + 1);
+					strcpy(tgt->len_ssa, src->len_ssa);
+				}
+				break;
+			}
+		}
+
 		/* Each-field column write: f[i] = expr where f is the current
 		 * each_field binding. */
 		if (ctx->current_each_field_binding && ctx->current_each_field_target && ctx->current_archetype_param &&

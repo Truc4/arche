@@ -2112,6 +2112,9 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		ctx->stmt_call_ok = (stmt->data.assign_stmt.value && stmt->data.assign_stmt.value->type == EXPR_CALL);
 		analyze_expression(ctx, stmt->data.assign_stmt.value);
 		ctx->stmt_call_ok = 0;
+		/* `a = b` takes ownership just like `a := b`: a bare move-only RHS name is an implicit move
+		 * (b is consumed). Scalars copy; an explicit `copy b` keeps the source. */
+		implicit_move_consume(ctx, stmt->data.assign_stmt.value);
 		/* You cannot assign to a binding that was moved (it's dead): `buf = foo(move buf)` must
 		 * be written `buf := foo(move buf)` (a fresh binding). The move in the RHS consumes the
 		 * target above, so check it here. */
