@@ -931,24 +931,7 @@ static HirStmt *lower_stmt_cst(CstView s) {
 			}
 			break;
 		}
-		/* range form `for IDENT in IDENT { body }`, or infinite `for { body }`. */
-		int ni = 0;
-		char *vname = NULL, *iname = NULL;
-		for (int i = 0; i < s.node->child_count; i++)
-			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
-				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
-				if (ni == 0)
-					vname = txt_dup(t);
-				else if (ni == 1)
-					iname = txt_dup(t);
-				ni++;
-			}
-		as->data.for_stmt.var_name = vname;
-		if (iname) {
-			HirExpr *it = hir_expr_create(HIR_EXPR_NAME);
-			it->data.name.name = iname;
-			as->data.for_stmt.iterable = it;
-		}
+		/* infinite form `for { body }` (the range-based `for IDENT in …` is rejected at parse). */
 		as->data.for_stmt.body = cst_lower_body(s, &as->data.for_stmt.body_count);
 		break;
 	}

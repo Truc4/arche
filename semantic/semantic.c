@@ -777,21 +777,6 @@ static int type_is_byref_aggregate(const TypeRef *t) {
 /* Implicit `move` of a bare move-only name in an ownership-taking position (defined below). */
 static void implicit_move_consume(SemanticContext *ctx, Expression *e);
 
-/* A `char[]` / `char[N]` array type — the kind `copy` can currently duplicate (a flat byte
- * buffer with a statically-known size when it's a local). */
-static int type_is_char_array(const TypeRef *t) {
-	const TypeRef *elem = NULL;
-	if (!t)
-		return 0;
-	if (t->kind == TYPE_SHAPED_ARRAY)
-		elem = t->data.shaped_array.element_type;
-	else if (t->kind == TYPE_ARRAY)
-		elem = t->data.array.element_type;
-	else
-		return 0;
-	return elem && elem->kind == TYPE_NAME && elem->data.name && strcmp(elem->data.name, "char") == 0;
-}
-
 /* ========== TYPE RESOLUTION ========== */
 
 static const char *normalize_type_name(const char *type_name) {
@@ -2168,63 +2153,15 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 			break;
 		}
 
-		/* Check for infinite or condition-based for loop (no init/incr, no var_name) */
-		if (!stmt->data.for_stmt.var_name) {
-			/* Infinite or condition-based for loop */
-			if (stmt->data.for_stmt.condition) {
-				/* Condition-based: analyze condition */
-				analyze_expression(ctx, stmt->data.for_stmt.condition);
-			}
-			/* Both infinite and condition-based loops: analyze body in new scope */
-			push_scope(ctx);
-			for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
-				analyze_statement(ctx, stmt->data.for_stmt.body[i]);
-			}
-			pop_scope(ctx);
-			break;
+		/* Infinite or condition-based for loop (no init/incr). The range-based `for IDENT in …`
+		 * form does not exist — it is rejected at parse — so there is no iterable/var_name path. */
+		if (stmt->data.for_stmt.condition) {
+			analyze_expression(ctx, stmt->data.for_stmt.condition);
 		}
-
-		/* check iterable exists (should be archetype) */
-		analyze_expression(ctx, stmt->data.for_stmt.iterable);
-
-		/* push new scope for loop body */
 		push_scope(ctx);
-
-		/* determine what archetype the loop iterates over */
-		const char *archetype_name = NULL;
-		if (stmt->data.for_stmt.iterable->type == EXPR_NAME) {
-			const char *iterable_name = stmt->data.for_stmt.iterable->data.name.name;
-
-			/* check if this is a direct archetype reference */
-			if (find_archetype(ctx, iterable_name)) {
-				archetype_name = iterable_name;
-			}
-			/* check if this is a variable that holds an archetype instance */
-			else if (find_variable(ctx, iterable_name)) {
-				VariableInfo *var = find_variable(ctx, iterable_name);
-				if (var && var->archetype_name) {
-					archetype_name = var->archetype_name;
-				} else {
-					sem_emit_not_archetype_instance(ctx, stmt->loc, iterable_name);
-					archetype_name = NULL;
-				}
-			}
-			/* check if we're in a sys and this is a parameter name (matches current sys archetype) */
-			else if (ctx->current_sys_archetype) {
-				archetype_name = ctx->current_sys_archetype;
-			} else {
-				sem_emit_undefined_archetype_for(ctx, stmt->loc, iterable_name);
-				archetype_name = NULL;
-			}
-		}
-
-		/* loop variable is in scope and refers to the archetype */
-		add_variable_with_archetype(ctx, stmt->data.for_stmt.var_name, NULL, archetype_name);
-
 		for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
 			analyze_statement(ctx, stmt->data.for_stmt.body[i]);
 		}
-
 		pop_scope(ctx);
 		break;
 	}
