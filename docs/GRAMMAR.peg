@@ -76,7 +76,9 @@ MatchArm  ← (Number / String / CharLit / Identifier) _ ":" _ (Block / Statemen
 
 Assignment ← Path _ AssignOp _ Expr _ ";"
 AssignOp   ← "+=" / "-=" / "*=" / "/=" / "="
-ForLoop    ← "for" _ Identifier _ "in" _ Expr _ Block
+# Only C-style and infinite `for` exist. There is NO `for x in <expr>` (range-for): iterate
+# archetypes with a `sys`, and buffers with a C-style `for`. `for { }` loops forever.
+ForLoop    ← "for" (_ "(" _ Statement? _ ";" _ Expr? _ ";" _ Statement? _ ")")? _ Block
 IfStmt     ← "if" _ "(" _ Expr _ ")" _ Block (_ "else" _ (IfStmt / Block))?
 RunSystem  ← "run" _ Identifier _ ";"
 ReturnStmt ← "return" (_ Expr)? _ ";"
@@ -108,6 +110,9 @@ Path       ← Identifier (_ "." _ Identifier)+
 # structural (matched by signature). `int`=i32, `byte`=u8 (transparent `alias`es; see decisions).
 Type       ← ProcType / FuncType / HandleType / ArrayType / Identifier
 HandleType ← "handle" ("<" _ Identifier _ ">" / "(" _ Identifier _ ")")
+# `T[N]` (Number present) is a sized VALUE — owns its storage, moves/copies under the ownership
+# rules. `T[]` (no Number) is a SLICE — a {ptr,len} borrowed view (read-only, or `own` for a
+# mutable/movable handle); `T[N]` decays to `T[]` at a call. See language.md "Arrays and slices".
 ArrayType  ← Identifier ("[" _ (Number)? _ "]")+
 
 # ---- Tokens ---------------------------------------------------------------------------------

@@ -13,6 +13,7 @@ for doc comments and doctests see [DOCTESTS.md](DOCTESTS.md).
 - [Archetypes](#archetypes)
 - [Array-oriented operations](#array-oriented-operations)
 - [Indexing](#indexing)
+- [Arrays and slices: `T[N]` values, `T[]` slices](#arrays-and-slices-tn-values-t-slices)
 - [Procedures (`proc`)](#procedures-proc)
 - [Systems (`sys`)](#systems-sys)
 - [Functions (`func`)](#functions-func)
@@ -225,6 +226,49 @@ matrices.data[i, x, y] // 3D indexing
 
 This keeps the language focused on whole-array transformations.
 
+## Arrays and slices: `T[N]` values, `T[]` slices
+
+Apart from archetype columns, Arche has two array forms — a sized value and a borrowed view.
+
+**`T[N]` — a sized value.** `buf: int[8]` is stack storage of exactly `N` elements. It is a
+**value**: it owns its storage, it is mutable (it's yours), and binding/assigning it transfers or
+duplicates it under the ownership rules below. `.length` / `.cap` are the compile-time count `N`.
+Indexing is bounds-checked; a provably in-range literal/loop index elides the check.
+
+**`T[]` — a slice (fat pointer).** A slice is a `{ptr, len}` view whose length is carried at
+**runtime**, so it appears in signatures without a size. A slice never owns storage — it borrows an
+array's. It exists at the **function boundary** (a parameter, or a return), not as a free-floating
+local you build up. Two modes, set by the ownership keyword:
+
+```arche
+sum  :: func(xs: int[]) -> int { ... }        // borrowed: READ-ONLY view, source stays alive
+fill :: func(own xs: int[]) -> int[] { ... }  // owned: mutable, movable, single writer
+```
+
+- A **borrowed** `xs: T[]` is read-only — writing through it is a compile error. You can hand out
+  as many borrows as you like precisely because none can mutate.
+- An **owned** `own xs: T[]` is the mutable, length-carrying buffer handle: the caller `move`s a
+  buffer in, the callee mutates it and may hand it back. Obtaining a *mutable* slice consumes its
+  source (it's a move), so there is never a second live writer — no mutable aliasing.
+
+**Decay.** A sized `T[N]` **decays** to a `T[]` at a call: the compile-time count becomes the
+slice's runtime length. Sizing flows one way — a `T[]` cannot satisfy a `T[N]` parameter (a slice's
+length isn't statically known), so that is rejected.
+
+```arche
+a: int[8];
+total := sum(a);        // a decays to int[] (a borrow) — a stays alive, .length == 8 at runtime
+a := fill(move a);      // move a in (a consumed), mutate, hand the fat pointer back, rebind
+```
+
+**Lifetime.** Storage lives in the stack frame that declared it and is reclaimed when that frame
+returns; `move` transfers the *right* to a buffer, never the memory. The one rule the compiler
+enforces: a function may not **return a slice that traces to its own local** `T[N]` (it would
+dangle) — a returned slice must trace back to a buffer passed *in*.
+
+There is no `for x in array`. Iterate a buffer with a C-style `for (i := 0; i < xs.length; i = i + 1)`,
+and process archetype columns with a `sys`.
+
 ## Procedures (`proc`)
 
 **Procedures DO things; functions ARE things.** This split is fundamental and shows up in the
@@ -419,22 +463,36 @@ callback-taking proc). A proc/func type can be a parameter or a named binding, b
 ## Ownership: borrow, `move`, `copy`
 
 Functions are **pure by use** - a function never mutates its caller's data as a side effect.
-The default parameter mode is a **read-only borrow**: a plain `buf: T` is passed by reference
-(zero copy), is read-only (mutating it is a compile error), and is not consumed. Scalars are
-passed by value. A foreign `opaque` value is move-only (linear).
+The default parameter mode is a **read-only borrow**: a plain slice `xs: T[]` (or any aggregate
+borrowed by reference) is read-only (mutating it is a compile error) and is not consumed. Scalars
+are passed by value. Arrays/slices and foreign `opaque` values are **move-only** (linear).
 
-To mutate or consume an argument, the function declares the parameter **`own`** - it takes
-ownership. The caller then chooses, **explicitly**, how to satisfy that - there is no implicit
-copy and no implicit move:
+**`move` and `copy` are general value operators** — usable in any value position (a bind/assign
+RHS, a `return`, a call argument), not only as call arguments:
 
-- **`move x`** - donate `x` by reference (zero copy); `x` is consumed - it is **dead**
-  afterward, with no revival. Using it again, including reusing the *same name* as an out-arg, is
-  a compile error; bind a fresh name instead (`f(move x)(x:)`). `move` is for one-way hand-offs.
-- **`copy x`** - hand over a *duplicate* (a memcpy); the caller keeps its original. (`copy` of
-  an `opaque` is rejected - it is non-copyable.)
+- **`move x`** - transfer `x` (zero copy); `x` is consumed - it is **dead** afterward, with no
+  revival. Using it again, including reusing the *same name* as an out-arg, is a compile error;
+  bind a fresh name (`f(move x)(x:)`). `move` is the one-way hand-off.
+- **`copy x`** - produce a *duplicate* (a memcpy); the source stays alive. (`copy` of an `opaque`
+  is rejected - it is non-copyable; a runtime-length slice has no static size to clone.)
 
-A bare name passed to an `own` parameter is a compile error
-(`value 'x' must be moved or copied into 'own' parameter …`).
+**A bare name is an implicit `move` — for move-only types.** Where ownership is *taken* — a bind
+(`a := b`), an assign (`a = b`), a `return`, or an **`own`** parameter argument — a bare move-only
+name (array/slice or opaque) transfers and is **consumed**. This is the default precisely because it
+is the *cheap* operation: a bare hand-off never silently performs an expensive copy; you write
+`copy` when you want the duplicate. Scalars and other `Copy` types are never consumed by a bare
+name — they copy, as before. (The editor surfaces the elided transfer as a ghost **`move`** inlay,
+so a consumed binding is always visible without the keyword.)
+
+```arche
+a := b;          // move: b is consumed (dead), a owns the storage
+a := copy b;     // clone: b stays alive, a is independent
+n := sink(buf);  // own param: buf moved in (consumed); a borrow param (xs: T[]) would NOT consume
+```
+
+A bare name handed to a **borrow** parameter (`xs: T[]`) is *not* consumed — it's a borrow, the
+source stays alive. So borrow-vs-move is read straight off the callee's signature (`T[]` borrows,
+`own T[]` takes ownership); there is no separate borrow keyword at the call site.
 
 To **fill a caller buffer in place** you don't need `own` or `move` at all - use an **in-out**
 parameter (the same name in both the in-list and the out-list). The out occurrence shadows the

@@ -83,6 +83,19 @@ resolve :: proc(path: char[], starts: int[], lens: int[])(starts: int[], lens: i
 or (b) record into module-level state and expose accessors (what `router` does — `cap_start[8]` /
 `cap_len[8]` / `cap_count[1]`, read back via `param(i)` / `param_count()`).
 
+or (c) thread an **owned slice** (`own T[]`): the caller `move`s a bounded buffer in, the func
+fills it and hands the fat pointer back, the caller rebinds it. The runtime length rides in the
+slice, so no size appears in the signature, and there is still no heap — the storage is the caller's
+buffer throughout:
+
+```arche
+fill :: func(own xs: int[], n: int) -> int[] { ... xs[i] = …; return xs; }
+// caller: buf: int[16]; buf := fill(move buf, 16);   // .length flows back with it
+```
+
+A func may return a slice only when it traces to a buffer passed *in* — returning a slice of a
+fresh local would dangle and is rejected. (See language.md, "Arrays and slices".)
+
 **Why:** "bounded" is the load-bearing word — a compile-time-known size is what lets the slot be a
 fixed stack or static reservation instead of a heap allocation. The count is a plain `int` and
 returns normally; only the *array* part needs the reservation. Caller-buffer (reentrant, per-call)
