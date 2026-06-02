@@ -216,6 +216,7 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 	int started = 0;
 	int col = 0; /* current column (for the width decision) */
 	TokenKind prev = TOK_EOF;
+	TokenKind prev_noncomment = TOK_EOF; /* last emitted token that wasn't a line comment */
 	SyntaxNodeKind prev_parent = SN_SOURCE_FILE;
 	int prev_line = 0;
 	int force_nl = 0; /* a line comment forces the next token onto a new line */
@@ -248,7 +249,8 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 				indent--; /* closer dedents to the group's own level */
 				eff_indent = indent;
 				nl = 1;
-				add_trailing_comma = (prev != TOK_COMMA); /* one trailing comma before the closer */
+				add_trailing_comma =
+				    (prev_noncomment != TOK_COMMA); /* one trailing comma before the closer (past any trailing comment) */
 			} else if (f->closer == TOK_RBRACE) {
 				space = 1; /* `{ … }` interior space; `)` hugs */
 			}
@@ -257,7 +259,17 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 			int after_open = (prev == f->opener);
 			int after_comma = (prev == TOK_COMMA);
 			int import_sep = (f->parent == SN_USE_DECL && l->kind == TOK_IDENT && prev == TOK_IDENT);
-			if (after_open) {
+			if (force_nl) {
+				/* Previous token was a line comment — its `//` runs to end of line, so the next
+				 * item MUST start a fresh line or it would be swallowed into the comment. */
+				nl = 1, eff_indent = indent;
+			} else if (l->kind == TOK_COMMENT && l->line == prev_line) {
+				/* A trailing comment hugs the item's line. If that item carries no comma (the
+				 * last item, with no magic trailing comma in source), synthesize one before the
+				 * comment so the exploded list stays one-item-per-line and valid. */
+				space = 1;
+				add_trailing_comma = f->broken && prev_noncomment != TOK_COMMA && prev_noncomment != f->opener;
+			} else if (after_open) {
 				if (f->broken)
 					nl = 1, eff_indent = indent;
 				else if (f->opener == TOK_LBRACE)
@@ -300,6 +312,8 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 				                                            l->parent == SN_TYPE_SHAPED_ARRAY ||
 				                                            l->parent == SN_TYPE_HANDLE || l->parent == SN_NAME_EXPR));
 				space = (!compact && !after_unary && !no_space_before(l->kind, prev, next));
+				if (l->kind == TOK_COMMENT)
+					space = 1; /* always a gap before a same-line trailing comment */
 			}
 		}
 
@@ -350,6 +364,10 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 		}
 
 		prev = l->kind;
+		if (l->kind != TOK_COMMENT)
+			prev_noncomment = l->kind;
+		else if (add_trailing_comma)
+			prev_noncomment = TOK_COMMA; /* synthesized a comma before this trailing comment */
 		prev_parent = l->parent;
 		prev_line = l->line;
 		force_nl = is_line_comment(l);
