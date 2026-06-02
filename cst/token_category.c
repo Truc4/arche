@@ -45,6 +45,8 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_HASH_FILE:
 	case TOK_HASH_FOREIGN:
 	case TOK_RUN:
+	case TOK_ENUM:
+	case TOK_MATCH:
 		return "keyword";
 
 	case TOK_NUMBER:
@@ -76,6 +78,8 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_ARROW:
 	case TOK_BANG:
 	case TOK_AT:
+	case TOK_AMP_AMP:
+	case TOK_PIPE_PIPE:
 		return "operator";
 
 	case TOK_LPAREN:
@@ -86,11 +90,19 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_RBRACKET:
 	case TOK_COMMA:
 	case TOK_DOT:
+	case TOK_DOTDOTDOT:
 	case TOK_COLON:
 	case TOK_SEMI:
 		return "punctuation";
 
-	default:
-		return NULL; /* EOF / ERROR / anything unmapped: skip */
+	/* Genuinely uncategorized — not highlighted. Listed explicitly (NOT a `default`) so this switch
+	 * is EXHAUSTIVE over TokenKind: this file is built with `-Werror=switch`, so adding a new token
+	 * without giving it a category is a compile error, not a silent omission (see the Makefile and
+	 * tests/unit/tooling/keyword_highlight.arche). Make wrong harder than right. */
+	case TOK_EOF:
+	case TOK_ERROR:
+	case TOK_HASH: /* bare/unknown `#` — a parse error, not a highlightable token */
+		return NULL;
 	}
+	return NULL; /* unreachable: the switch above is exhaustive */
 }

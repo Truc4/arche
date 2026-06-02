@@ -122,6 +122,15 @@ $(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
+# token_category.c categorizes EVERY token for syntax highlighting via an EXHAUSTIVE switch (no
+# `default`). Built with -Werror=switch so that adding a new TokenKind without giving it a category
+# is a hard COMPILE ERROR ("enumeration value 'TOK_x' not handled"), not a silent unhighlighted
+# token. The one place a new keyword could be forgotten is made impossible to forget. (A specific
+# target overrides the generic %.o rule above.)
+$(BUILD_DIR)/cst/token_category.o: cst/token_category.c | $(BUILD_DIR)
+	mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Werror=switch -MMD -MP -c -o $@ $<
+
 # Pull in the generated header-dependency files (none on a clean build).
 # Auto-dependency files only — `-type f` so a test artifact directory that happens to end in `.d`
 # (e.g. a `%t.d` lit temp dir) can never be pulled in here and break the build.
