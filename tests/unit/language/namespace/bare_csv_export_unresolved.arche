@@ -1,0 +1,8 @@
+// Negative: a bare call to a `csv` export does not resolve — qualified `csv.load(...)` is required.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "Undefined symbol 'load'" %t.out
+#import { csv }
+Row :: arche { x :: int }
+Row[4](4) { x: 0, }
+main :: proc() {
+  load(Row, "tests/fixtures/data.csv");
+}

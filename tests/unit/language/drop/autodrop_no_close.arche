@@ -1,8 +1,8 @@
-// With a registered destructor (`drop file :: arche_fclose` in stdlib/io), an opaque local that is
+// With a registered destructor (`@drop(file) fclose` in stdlib/io), an opaque local that is
 // never explicitly closed is NOT an error — it is auto-dropped at scope exit. (Old rule: this was
 // `opaque value 'f' not consumed before scope end`.)
 // RUN: %arche build -o %t %s
 #import { io }
 main :: proc() {
-  arche_fopen_read("/dev/null")(f:);
+  io.fopen_read("/dev/null")(f:);
 }

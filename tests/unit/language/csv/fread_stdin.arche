@@ -2,9 +2,9 @@
 #import { io }
 main :: proc() {
   buf: char[256];
-  arche_stdin()(fd:);
-  arche_fread(fd, buf, 256)(n:);
+  io.stdin()(fd:);
+  io.fread(fd, buf, 256)(n:);
   printf("read from stdin returned %d bytes\n", n);
   printf("multi-assignment with read() works\n");
-  arche_fclose(move fd);
+  io.fclose(move fd);
 }

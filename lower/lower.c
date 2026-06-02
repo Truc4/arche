@@ -2432,10 +2432,15 @@ static void hir_q_decl(HirDecl *d, const QualCtx *q) {
 }
 
 /* Lower one module decl from `node`, append to ast, and record its name in `full` (intra-module
- * resolution) and — when `exported` — `expset` (externally visible). Externs are added to neither.
- * Shared by the module loop and recursion into `#foreign { }` / `#module { }` block regions. */
-static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, HirProgram *ast, char ***full, int *fulln,
-                                int *fullcap, char ***expset, int *expn, int *expcap, int exported) {
+ * resolution) and — when `exported` — `expset` (externally visible via qualified `mod.name`).
+ * Non-externs are prefixed to `<mod>_<name>` and recorded under their source name. Externs keep
+ * their unprefixed decl (the C ABI symbol) and are NOT added to `full`; they go into `expset` under
+ * the prefix-stripped visible name, so `mod.<visible>` reconstructs `<mod>_<visible>` == the C
+ * symbol (e.g. `net.listen` → `net_listen`). Shared by the module loop and recursion into
+ * `#foreign { }` / `#module { }` block regions. */
+static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, const char *mod_name, HirProgram *ast,
+                                char ***full, int *fulln, int *fullcap, char ***expset, int *expn, int *expcap,
+                                int exported) {
 	HirDecl *md = lower_decl_cst((CstView){node, msrc});
 	if (!md)
 		return;
@@ -2443,19 +2448,26 @@ static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, HirPro
 	int is_ext = (md->kind == HIR_DECL_PROC && md->data.proc->is_extern) ||
 	             (md->kind == HIR_DECL_FUNC && md->data.func->is_extern);
 	const char *nm = hir_decl_name(md);
-	if (nm && !is_ext) {
+	if (!nm)
+		return;
+	const char *vis = nm;
+	if (is_ext) {
+		size_t pl = strlen(mod_name);
+		if (strncmp(nm, mod_name, pl) == 0 && nm[pl] == '_')
+			vis = nm + pl + 1; /* strip redundant `<mod>_` for the namespaced spelling */
+	} else {
 		if (*fulln == *fullcap) {
 			*fullcap = *fullcap ? *fullcap * 2 : 8;
 			*full = realloc(*full, (size_t)*fullcap * sizeof(char *));
 		}
 		(*full)[(*fulln)++] = dupz(nm);
-		if (exported) {
-			if (*expn == *expcap) {
-				*expcap = *expcap ? *expcap * 2 : 8;
-				*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
-			}
-			(*expset)[(*expn)++] = dupz(nm);
+	}
+	if (exported) {
+		if (*expn == *expcap) {
+			*expcap = *expcap ? *expcap * 2 : 8;
+			*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
 		}
+		(*expset)[(*expn)++] = dupz(vis);
 	}
 }
 
@@ -2523,12 +2535,14 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 				    txt_dup((CvText){src + un->children[t].as.token.offset, un->children[t].as.token.length});
 				int first = ast->decl_count;
 				int found = 0;
-				/* Two name sets (externs excluded — their bare name is the C ABI symbol):
-				 *   `full`   — ALL module symbols; the module's own decls are prefixed against this so
-				 *              intra-module references (across the folder's files) resolve.
-				 *   `expset` — only symbols in the default (#export) band; ONLY these are externally
-				 *              qualify-able (`io.x`) and bare-resolvable. `#module`/`#file` narrow the
-				 *              band, dropping the following decls from `expset` → not visible outside. */
+				/* Two name sets:
+				 *   `full`   — ALL non-extern module symbols; the module's own decls are prefixed
+				 *              against this so intra-module references (across the folder's files) resolve.
+				 *   `expset` — symbols in the default (#export) band, the ONLY ones externally visible via
+				 *              qualified access (`io.x`). Externs are recorded too, under their
+				 *              prefix-stripped visible name (their unprefixed decl stays the C ABI symbol,
+				 *              which `mod.name` reconstructs). `#module`/`#file` narrow the band, dropping
+				 *              the following decls from `expset` → not visible outside. */
 				char **full = NULL;
 				int fulln = 0, fullcap = 0;
 				char **expset = NULL;
@@ -2556,8 +2570,8 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 										continue;
 									if (!hir_is_collectible_decl(cn->children[c].as.node->kind))
 										continue;
-									hir_add_module_decl(cn->children[c].as.node, msrc, ast, &full, &fulln, &fullcap,
-									                    &expset, &expn, &expcap, child_exp);
+									hir_add_module_decl(cn->children[c].as.node, msrc, mod_name, ast, &full, &fulln,
+									                    &fullcap, &expset, &expn, &expcap, child_exp);
 								}
 							} else if (!is_foreign) {
 								exported = 0; /* visibility banner: narrows the rest of this file */
@@ -2566,7 +2580,8 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 						}
 						if (!hir_is_collectible_decl(mk))
 							continue;
-						hir_add_module_decl(cn, msrc, ast, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported);
+						hir_add_module_decl(cn, msrc, mod_name, ast, &full, &fulln, &fullcap, &expset, &expn, &expcap,
+						                    exported);
 					}
 				}
 				if (!found) {
@@ -2581,7 +2596,7 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 				for (int x = 0; x < fulln; x++)
 					free(full[x]);
 				free(full);
-				/* Only the EXPORT set is externally visible (dangling-bare-resolve + qualify). */
+				/* Only the EXPORT set is externally visible (via the qualify pass). */
 				if (inlined < 64) {
 					mod_prefix[inlined] = dupz(mod_name);
 					mod_exports[inlined] = expset;
@@ -2603,38 +2618,18 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 	}
 
 	/* Qualified module access: rewrite `mod.name` → the mangled `mod_name` symbol for every
-	 * inlined module (so `io.open` resolves to io's exported `open`). Runs before the dangling
-	 * pass; both land on the same `mod_name` symbol. */
+	 * inlined module (so `io.open` resolves to io's exported `open`). This is the ONLY way to
+	 * reach a module export — bare `name` no longer resolves. */
 	if (inlined > 0) {
 		QualCtx q = {mod_prefix, mod_exports, mod_export_n, inlined};
 		for (int d = 0; d < ast->decl_count; d++)
 			hir_q_decl(ast->decls[d], &q);
 	}
 
-	/* Cross-module bare references: a module export rewritten to `<mod>_<name>`
-	 * leaves bare references from elsewhere dangling. For each export whose bare
-	 * name has no top-level definition in the final program, rewrite bare refs to
-	 * it into the prefixed name; collisions with an existing top-level name (e.g.
-	 * a core function) are left alone so bare names keep their current meaning. */
-	for (int m = 0; m < inlined; m++) {
-		char *dangling[256];
-		int dn = 0;
-		for (int s = 0; s < mod_export_n[m] && dn < 256; s++) {
-			int defined = 0;
-			for (int d = 0; d < ast->decl_count; d++) {
-				const char *nm = hir_decl_name(ast->decls[d]);
-				if (nm && strcmp(nm, mod_exports[m][s]) == 0) {
-					defined = 1;
-					break;
-				}
-			}
-			if (!defined)
-				dangling[dn++] = mod_exports[m][s];
-		}
-		if (dn > 0)
-			for (int d = 0; d < ast->decl_count; d++)
-				hir_rn_decl(ast->decls[d], mod_prefix[m], dangling, dn);
-	}
+	/* Module exports are reachable ONLY via qualified access (`mod.name`, handled by the qualify
+	 * pass above) — a bare `name` does NOT resolve to a module export. (`core` is prepended, not
+	 * inlined, so its bare names are unaffected; externs keep their C-ABI bare name as top-level
+	 * symbols.) */
 	for (int m = 0; m < inlined; m++) {
 		for (int s = 0; s < mod_export_n[m]; s++)
 			free(mod_exports[m][s]);

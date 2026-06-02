@@ -36,7 +36,7 @@ int term_read_key(void) {
 	return (n == 1) ? (int)c : 0;
 }
 
-void arche_sleep_ms(int ms) {
+void os_sleep_ms(int ms) {
 	if (ms <= 0)
 		return;
 	struct timespec ts;

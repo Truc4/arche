@@ -1,0 +1,10 @@
+// Negative: `#import { router }` does NOT leak the module's exports into the global scope. Neither
+// the new bare name (`init`) nor the old pre-namespace name (`route_init`) resolves — only the
+// qualified `router.init()` form (see router/route_resolve.arche) does.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "Undefined symbol 'init'" %t.out
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "Undefined symbol 'route_init'" %t.out
+#import { router }
+main :: proc() {
+  init();
+  route_init();
+}

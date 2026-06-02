@@ -1,4 +1,4 @@
-// Reading argv is an effect (arche_argv is an extern), so its result is bound first, then passed
+// Reading argv is an effect (os.argv is an extern), so its result is bound first, then passed
 // to the pure callees mylen / atoi. An extern call is an action, not a value — it can't be nested
 // directly inside another call's arguments; binding it names and sequences the effect.
 // RUN: %arche build -o %t %s && %t 42 | grep "len=2"
@@ -8,7 +8,7 @@ mylen :: func(s: char[]) -> int {
   return strlen(s);
 }
 main :: proc() {
-  arche_argv(1)(arg:);
+  os.argv(1)(arg:);
   printf("len=%d\n", mylen(arg));
   printf("n=%d\n", atoi(arg));
 }

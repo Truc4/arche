@@ -3,12 +3,12 @@
 // RUN: %arche build -o %t %s
 #import { io }
 main :: proc() {
-  arche_fopen_read("/dev/null")(f:);
+  io.fopen_read("/dev/null")(f:);
   e := 0;
   if (e == 1) {
-    arche_fclose(move f);
+    io.fclose(move f);
   }
   else {
-    arche_fclose(move f);
+    io.fclose(move f);
   }
 }

@@ -1,0 +1,14 @@
+// Positive: an imported module's exports are reached via qualified `mod.name` access. Exercises a
+// pure-Arche module (io), an extern module (os), and confirms core builtins (printf) stay bare in
+// an importing file. Also a no-false-negative check: importing a module while using ONLY qualified
+// names must build clean.
+// RUN: %arche build -o %t %s && %t | grep "ns ok"
+#import { io os }
+main :: proc() {
+  io.fopen_read("/dev/null")(fd:);
+  buf: char[16];
+  io.fread(fd, buf, 16)(buf, _n:);
+  io.fclose(move fd);
+  os.now_sec()(_t:);     // extern module, qualified
+  printf("ns ok\n");     // core builtin, bare — unaffected by the namespace rule
+}

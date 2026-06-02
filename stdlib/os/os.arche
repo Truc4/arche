@@ -1,8 +1,9 @@
 // The `os` module — process/system services (C-backed in runtime/io.c, term.c).
-// `#import { os }` then `sys.arche_now_sec`, `sys.arche_argc`, … (bare names also resolve).
+// `#import { os }` then call `os.now_sec()`, `os.sleep_ms(...)`, `os.argc()`, `os.argv(i)`.
+// Access is qualified-only: a bare `now_sec()` does not resolve.
 #foreign {
-  arche_now_sec :: proc()(t: float)
-  arche_sleep_ms :: proc(ms: int)
-  arche_argc :: proc()(n: int)
-  arche_argv :: proc(i: int)(s: char[])
+  os_now_sec :: proc()(t: float)
+  os_sleep_ms :: proc(ms: int)
+  os_argc :: proc()(n: int)
+  os_argv :: proc(i: int)(s: char[])
 }

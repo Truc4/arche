@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
 #import { io }
 main :: proc() {
-  stdout_write("hello\n", 6);
+  io.stdout_write("hello\n", 6);
 }

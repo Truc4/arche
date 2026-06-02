@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "home user=42 static=css/app.css notfound"
 // Radix router: static / :param / * catchall, captured as zero-copy spans. Handler ids are a
-// `handler` enum (registered via `route_add`, dispatched via `match`). The miss sentinel (-1) is
+// `handler` enum (registered via `router.add`, dispatched via `match`). The miss sentinel (-1) is
 // remapped to an explicit `not_found` variant, so the `match` is exhaustive with NO `_` arm.
 #import { router }
 
@@ -16,11 +16,11 @@ slice :: func(own buf: char[], path: char[], start: int, len: int) -> char[] {
 }
 
 dispatch :: proc(path: char[]) {
-  route_resolve(path)(h:);
-  // route_param is hoisted out of the `match`: a cross-module out-param call placed *inside* a
+  router.resolve(path)(h:);
+  // router.param is hoisted out of the `match`: a cross-module out-param call placed *inside* a
   // match arm currently loses its out values (zero-init) — see FINDINGS. Reading the span here is
   // harmless for the no-param arms (which ignore it).
-  route_param(0)(st:, ln:);
+  router.param(0)(st:, ln:);
   if (h < 0) {
     h = handler.not_found; // remap miss to an explicit variant — no `_` in the enum match
   }
@@ -41,10 +41,10 @@ dispatch :: proc(path: char[]) {
 }
 
 main :: proc() {
-  route_init();
-  route_add("/", handler.home);
-  route_add("/users/:id", handler.user);
-  route_add("/static/*", handler.static_files);
+  router.init();
+  router.add("/", handler.home);
+  router.add("/users/:id", handler.user);
+  router.add("/static/*", handler.static_files);
 
   dispatch("/");
   dispatch("/users/42");

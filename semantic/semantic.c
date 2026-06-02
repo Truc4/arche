@@ -5414,11 +5414,15 @@ static void sem_expand_tuple_groups(AstProgram *prog) {
 }
 
 /* Build one module decl from `node`, append it to prog, and record its name in the module's
- * `full` set (intra-module resolution) and — when `exported` — its `expset` (externally visible).
- * Foreign (extern) decls are never added to either set. Shared by the top-level module loop and
- * the recursion into `#foreign { ... }` / `#module { ... }` block regions. */
-static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, AstProgram *prog, char ***full, int *fulln,
-                                int *fullcap, char ***expset, int *expn, int *expcap, int exported) {
+ * `full` set (intra-module resolution) and — when `exported` — its `expset` (externally visible via
+ * qualified `mod.name`). Non-externs are prefixed to `<mod>_<name>` and recorded under their source
+ * name. Externs keep their unprefixed decl (the C ABI symbol), are NOT added to `full`, and go into
+ * `expset` under the prefix-stripped visible name so `mod.<visible>` reconstructs the C symbol
+ * (e.g. `net.listen` → `net_listen`). Shared by the top-level module loop and the recursion into
+ * `#foreign { ... }` / `#module { ... }` block regions. */
+static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const char *mod_name, AstProgram *prog,
+                                char ***full, int *fulln, int *fullcap, char ***expset, int *expn, int *expcap,
+                                int exported) {
 	Decl *md = cst_build_decl((CstView){node, msrc});
 	if (!md)
 		return;
@@ -5426,19 +5430,26 @@ static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, AstPro
 	int is_ext =
 	    (md->kind == DECL_PROC && md->data.proc->is_extern) || (md->kind == DECL_FUNC && md->data.func->is_extern);
 	const char *nm = sem_decl_name(md);
-	if (nm && !is_ext) {
+	if (!nm)
+		return;
+	const char *vis = nm;
+	if (is_ext) {
+		size_t pl = strlen(mod_name);
+		if (strncmp(nm, mod_name, pl) == 0 && nm[pl] == '_')
+			vis = nm + pl + 1; /* strip redundant `<mod>_` for the namespaced spelling */
+	} else {
 		if (*fulln == *fullcap) {
 			*fullcap = *fullcap ? *fullcap * 2 : 8;
 			*full = realloc(*full, (size_t)*fullcap * sizeof(char *));
 		}
 		(*full)[(*fulln)++] = sem_dupz(nm);
-		if (exported) {
-			if (*expn == *expcap) {
-				*expcap = *expcap ? *expcap * 2 : 8;
-				*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
-			}
-			(*expset)[(*expn)++] = sem_dupz(nm);
+	}
+	if (exported) {
+		if (*expn == *expcap) {
+			*expcap = *expcap ? *expcap * 2 : 8;
+			*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
 		}
+		(*expset)[(*expn)++] = sem_dupz(vis);
 	}
 }
 
@@ -5506,7 +5517,8 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 				int first = prog->decl_count;
 				int found = 0;
 				/* full = ALL non-extern symbols (prefix everything → intra-module refs resolve);
-				 * expset = only #export-band symbols (the only ones externally visible). */
+				 * expset = #export-band symbols (the only ones externally visible, via qualified
+				 * access). Externs are recorded too, under their prefix-stripped visible name. */
 				char **full = NULL;
 				int fulln = 0, fullcap = 0;
 				char **expset = NULL;
@@ -5536,8 +5548,8 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 										continue;
 									if (!sem_is_collectible_decl(cn->children[c].as.node->kind))
 										continue;
-									sem_add_module_decl(cn->children[c].as.node, msrc, prog, &full, &fulln, &fullcap,
-									                    &expset, &expn, &expcap, child_exp);
+									sem_add_module_decl(cn->children[c].as.node, msrc, mod_name, prog, &full, &fulln,
+									                    &fullcap, &expset, &expn, &expcap, child_exp);
 								}
 							} else if (!is_foreign) {
 								exported = 0; /* visibility banner: narrows the rest of this file */
@@ -5546,7 +5558,8 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 						}
 						if (!sem_is_collectible_decl(mk))
 							continue;
-						sem_add_module_decl(cn, msrc, prog, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported);
+						sem_add_module_decl(cn, msrc, mod_name, prog, &full, &fulln, &fullcap, &expset, &expn, &expcap,
+						                    exported);
 					}
 				}
 				if (!found) {
@@ -5587,27 +5600,8 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 		for (int dd = 0; dd < prog->decl_count; dd++)
 			sem_qualify_decl(prog->decls[dd], acc_prefix, acc_set, acc_count, acc_n);
 
-	/* Cross-module bare-reference resolution: rewrite bare refs to a module export that has
-	 * no top-level definition into the prefixed name (collisions left alone). */
-	for (int m = 0; m < acc_n; m++) {
-		char *dangling[256];
-		int dn = 0;
-		for (int s2 = 0; s2 < acc_count[m] && dn < 256; s2++) {
-			int defined = 0;
-			for (int dd = 0; dd < prog->decl_count; dd++) {
-				const char *nm = sem_decl_name(prog->decls[dd]);
-				if (nm && strcmp(nm, acc_set[m][s2]) == 0) {
-					defined = 1;
-					break;
-				}
-			}
-			if (!defined)
-				dangling[dn++] = acc_set[m][s2];
-		}
-		if (dn > 0)
-			for (int dd = 0; dd < prog->decl_count; dd++)
-				sem_rename_decl(prog->decls[dd], acc_prefix[m], dangling, dn);
-	}
+	/* Module exports are reachable ONLY via qualified access (handled by the qualify pass above);
+	 * a bare `name` does NOT resolve to a module export. */
 	for (int m = 0; m < acc_n; m++) {
 		for (int e = 0; e < acc_count[m]; e++)
 			free(acc_set[m][e]);

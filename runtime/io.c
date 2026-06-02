@@ -9,7 +9,7 @@
 #include <time.h>
 #include <unistd.h>
 
-double arche_now_sec(void) {
+double os_now_sec(void) {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return ts.tv_sec + ts.tv_nsec * 1e-9;
@@ -66,7 +66,7 @@ void arche_file_unmap(char *data, long size) {
    Program command-line args
    =========================
    The codegen-emitted main() forwards (argc, argv) here once at startup; Arche
-   programs read them back via arche_argc()/arche_argv(i). argv[i] is returned
+   programs read them back via os_argc()/os_argv(i). argv[i] is returned
    as a raw char* (Arche char[]); length is found with strlen, as with the file
    APIs above. Out-of-range indices return 0. */
 
@@ -78,10 +78,10 @@ void arche_set_args(int argc, char **argv) {
 	g_arche_argv = argv;
 }
 
-int arche_argc(void) {
+int os_argc(void) {
 	return g_arche_argc;
 }
 
-char *arche_argv(int i) {
+char *os_argv(int i) {
 	return (i >= 0 && i < g_arche_argc) ? g_arche_argv[i] : 0;
 }

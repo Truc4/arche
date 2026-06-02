@@ -1,0 +1,6 @@
+// Support module for bare_cross_module_unresolved.arche (not a standalone test). It tries to call
+// nsmod_a's `ns_helper` by its BARE name — which no longer resolves across modules.
+// RUN: true
+ns_useit :: func(x: int) -> int {
+  return ns_helper(x);
+}

@@ -1,0 +1,11 @@
+// Documented deferral (see Part E of the namespace change): `#foreign` externs keep their C-ABI
+// name as an ordinary top-level symbol, so a bare `net_listen(...)` still resolves today — only
+// pure-Arche module exports are strictly qualified-only. Forbidding bare externs needs link-name
+// support; when that lands, this test should flip to expecting an "Undefined symbol" error. The
+// qualified `net.listen(...)` form also resolves (see extern_type/socket_loopback.arche).
+// RUN: %arche check %s
+#import { net }
+main :: proc() {
+  net_listen(8080)(s:);
+  net.close(move s);
+}
