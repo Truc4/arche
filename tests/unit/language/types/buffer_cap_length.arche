@@ -1,0 +1,10 @@
+// RUN: %arche build -o %t %s && %t | grep "cap=16 capacity=16 length=16 max=16 strlen=5"
+// A fixed char[N] stack buffer exposes its declared size via .cap/.capacity/.length/.max_length
+// (the same bound buf[i] is checked against). A fixed array has no dynamic length, so all four are
+// N; content length is strlen(). Surfaces the size the bounds-checker already tracks.
+main :: proc() {
+  buf: char[16];
+  sprintf(buf, "hello")(buf, _w:);
+  printf("cap=%d capacity=%d length=%d max=%d strlen=%d\n",
+         buf.cap, buf.capacity, buf.length, buf.max_length, strlen(buf));
+}

@@ -6,21 +6,22 @@
 // rest of the path). Resolution prefers static > param > catchall, the standard radix-router
 // precedence (Go httprouter et al.).
 //
-// No heap: nodes live in a fixed `static pool`, variable fan-out is an intrusive
-// first-child/next-sibling index list (no per-node child array), and segment text lives in a flat
-// `char[]` arena addressed by (offset,len) — all scalar columns, no multi-dim storage.
+// No heap: nodes live in a fixed pool (`TrieNode[256]`), variable fan-out is an intrusive
+// first-child/next-sibling index list, and a node's segment text is a `char[32]` column. A node's
+// index is just its pool slot — `i32(insert(...))` hands it back, so there's no hand-rolled counter
+// and no segment arena.
 //
 // Output is REPORTED, not owned: `route_resolve` returns an int `handler_id` (>=0, or -1 on miss)
 // and records each captured :param / *catchall as a zero-copy SPAN (offset+length into the path
 // you passed). The caller slices its own path via `route_param`. No output buffers, no ownership,
-// no copy. The caller dispatches on `handler_id` with `match`. See docs/patterns.md for why this
-// beats filling caller buffers.
+// no copy. The caller dispatches on `handler_id` with `match`. (Doesn't intern segments — the node
+// links are already dense ints and a segment is matched once per request; see docs/patterns.md and
+// design_analysis/key_lookup/DESIGN.md.) Segments are capped at 31 chars + NUL.
 
 NodeKind :: enum { kstatic, kparam, kcatchall }
 
 TrieNode :: arche {
-  seg_off :: int, // start of this node's segment text in seg_bytes
-  seg_len :: int, // length of that segment text
+  seg :: char[32], // segment text (":id"/"*" stored as the name after the marker), "" for root
   kind :: NodeKind, // static / :param / *catchall
   first_child :: int, // pool index of first child, or -1
   next_sibling :: int, // pool index of next sibling, or -1
@@ -28,9 +29,6 @@ TrieNode :: arche {
 }
 
 TrieNode[256]
-seg_bytes: char[8192] // flat segment-text arena
-node_count: int[1] // [0] = number of live nodes (also the next slot index)
-seg_top: int[1] // [0] = bump cursor into seg_bytes
 
 // Captured-param spans from the most recent route_resolve (offsets into that path).
 cap_start: int[8] // up to 8 params per route
@@ -47,42 +45,31 @@ seg_end :: func(p: char[], start: int, n: int) -> int {
   return n;
 }
 
-// Copy p[start..end) into the arena; return its (offset, length).
-store_seg :: proc(p: char[], start: int, end: int)(off: int, len: int) {
-  off = seg_top[0];
-  len = end - start;
-  for (i := 0; i < len; i = i + 1) {
-    seg_bytes[seg_top[0] + i] = p[start + i];
-  }
-  seg_top[0] = seg_top[0] + len;
-}
-
-// 1 if arena[off..off+len) == p[start..end), else 0. The arena is passed in (not read from the
-// static directly) so this stays a pure `func`, usable inline in conditions.
-seg_eq :: func(arena: char[], off: int, len: int, p: char[], start: int, end: int) -> int {
-  if (end - start != len) {
+// 1 if the NUL-terminated stored segment equals p[start..end), else 0. Pure (reads only params),
+// so it's usable inline in conditions.
+seg_eq :: func(stored: char[], p: char[], start: int, end: int) -> int {
+  if (strlen(stored) != end - start) {
     return 0;
   }
-  for (i := 0; i < len; i = i + 1) {
-    if (arena[off + i] != p[start + i]) {
+  for (i := 0; i < end - start; i = i + 1) {
+    if (stored[i] != p[start + i]) {
       return 0;
     }
   }
   return 1;
 }
 
-// Allocate a node; return its index. Columns: terminal handler defaults to -1, no children.
-new_node :: proc(kind: NodeKind, off: int, len: int)(idx: int) {
-  idx = node_count[0];
-  insert(TrieNode, off, len, kind, 0 - 1, 0 - 1, 0 - 1);
-  node_count[0] = node_count[0] + 1;
+// Allocate a node holding `seg`; return its pool slot (the index other nodes link by).
+new_node :: proc(seg: char[], kind: NodeKind)(idx: int) {
+  idx = i32(insert(TrieNode, seg, kind, 0 - 1, 0 - 1, 0 - 1));
 }
 
-// Reset the router and create the root (node 0: empty static segment).
+// Reset the router and create the root (node 0: empty static segment). Init-once: the pool starts
+// empty, so this just inserts the root.
 route_init :: proc() {
-  node_count[0] = 0;
-  seg_top[0] = 0;
-  new_node(NodeKind.kstatic, 0, 0)(_root:);
+  empty: char[32];
+  empty[0] = 0;
+  new_node(empty, NodeKind.kstatic)(_root:);
 }
 
 // Register `pattern` (e.g. "/users/:id", "/static/*") -> handler_id.
@@ -116,14 +103,8 @@ route_add :: proc(pattern: char[], handler_id: int) {
     for (; child >= 0;) {
       if (TrieNode.kind[child] == kind) {
         if (kind == NodeKind.kstatic) {
-          if (seg_eq(
-            seg_bytes,
-            TrieNode.seg_off[child],
-            TrieNode.seg_len[child],
-            pattern,
-            tstart,
-            e,
-          ) == 1) {
+          cs := TrieNode.seg[child];
+          if (seg_eq(cs, pattern, tstart, e) == 1) {
             found = child;
           }
         }
@@ -137,10 +118,17 @@ route_add :: proc(pattern: char[], handler_id: int) {
       child = TrieNode.next_sibling[child];
     }
 
-    // Create + link a new child if none matched.
+    // Create + link a new child if none matched: materialize the segment text into a buffer, then
+    // insert it as the node's `seg` column.
     if (found < 0) {
-      store_seg(pattern, tstart, e)(off:, len:);
-      new_node(kind, off, len)(found:);
+      segbuf: char[32];
+      j := 0;
+      for (i := tstart; i < e; i = i + 1) {
+        segbuf[j] = pattern[i];
+        j = j + 1;
+      }
+      segbuf[j] = 0;
+      new_node(segbuf, kind)(found:);
       TrieNode.next_sibling[found] = TrieNode.first_child[cur];
       TrieNode.first_child[cur] = found;
     }
@@ -175,7 +163,8 @@ route_resolve :: proc(path: char[])(handler_id: int) {
     for (; child >= 0;) {
       k := TrieNode.kind[child];
       if (k == NodeKind.kstatic) {
-        if (seg_eq(seg_bytes, TrieNode.seg_off[child], TrieNode.seg_len[child], path, s, e) == 1) {
+        cs := TrieNode.seg[child];
+        if (seg_eq(cs, path, s, e) == 1) {
           static_hit = child;
         }
       }

@@ -2014,6 +2014,16 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			}
 		}
 
+		/* Fixed char[N]/T[N] stack buffer (type 7): .cap/.capacity/.length/.max_length are the
+		 * declared size (string_len) — the same bound buf[i] is bounds-checked against. A fixed
+		 * array has no dynamic length, so length == capacity == N; content length is strlen(). */
+		if (base_val && base_val->type == 7 &&
+		    (strcmp(field_name, "cap") == 0 || strcmp(field_name, "capacity") == 0 ||
+		     strcmp(field_name, "length") == 0 || strcmp(field_name, "max_length") == 0)) {
+			snprintf(result_buf, 256, "%d", base_val->string_len);
+			break;
+		}
+
 		/* Handle .length property */
 		if (strcmp(field_name, "length") == 0) {
 			/* For archetype columns: load count field */

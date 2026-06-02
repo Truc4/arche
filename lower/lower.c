@@ -195,6 +195,26 @@ static char *cv_dup(CstView v) {
 	return s;
 }
 
+/* Lexeme of a node's first TOKEN leaf — token-precise, so it excludes any trailing trivia
+ * (a comment / blank line) that the node's span may include. A node's `length` runs to the next
+ * token, so `cv_dup` on a literal whose value is the last thing before a comment would swallow the
+ * comment (e.g. `x :: 0` + `// note` → lexeme "0 … note", read as float). Use the token instead. */
+static char *cv_dup_first_token(CstView v) {
+	if (v.node) {
+		for (int i = 0; i < v.node->child_count; i++) {
+			if (v.node->children[i].tag == SE_TOKEN) {
+				uint32_t off = v.node->children[i].as.token.offset;
+				uint32_t len = v.node->children[i].as.token.length;
+				char *s = malloc(len + 1);
+				memcpy(s, v.src + off, len);
+				s[len] = '\0';
+				return s;
+			}
+		}
+	}
+	return cv_dup(v);
+}
+
 /* malloc'd NUL-terminated copy of a borrowed text slice. */
 static char *dupz(const char *s); /* defined with the module helpers below */
 
@@ -450,7 +470,7 @@ static HirExpr *lower_expr_cst(CstView e) {
 		return lower_expr_cst(cst_first_expr(e));
 	case SN_LITERAL_EXPR:
 		ax->kind = HIR_EXPR_LITERAL;
-		ax->data.literal.lexeme = cv_dup(e);
+		ax->data.literal.lexeme = cv_dup_first_token(e);
 		/* Literals are self-describing: if semantic left no resolved type (it doesn't
 		 * key every literal, e.g. assignment RHS), infer it from the lexeme so codegen
 		 * stores the right width. A recorded type wins (it may carry a coercion). */

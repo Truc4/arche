@@ -1048,9 +1048,12 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	}
 
 	case EXPR_FIELD: {
-		/* Handle metadata properties on arrays and archetypes */
+		/* Handle metadata properties on arrays and archetypes (incl. fixed char[N]/T[N] buffers:
+		 * .cap/.capacity/.length/.max_length are the declared size). */
 		if (strcmp(expr->data.field.field_name, "length") == 0 ||
-		    strcmp(expr->data.field.field_name, "max_length") == 0) {
+		    strcmp(expr->data.field.field_name, "max_length") == 0 ||
+		    strcmp(expr->data.field.field_name, "cap") == 0 ||
+		    strcmp(expr->data.field.field_name, "capacity") == 0) {
 			return "int";
 		}
 
@@ -1396,6 +1399,13 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 						arch = find_archetype(ctx, var->type->data.name);
 					}
 					if (!arch && var->type->kind != TYPE_TUPLE && var->type->kind != TYPE_ARCHETYPE) {
+						/* .cap/.capacity/.length/.max_length are valid metadata on a sized array /
+						 * fixed buffer (the declared element count). Allow before the no-field error. */
+						if ((var->type->kind == TYPE_ARRAY || var->type->kind == TYPE_SHAPED_ARRAY) &&
+						    (strcmp(field_name, "cap") == 0 || strcmp(field_name, "capacity") == 0 ||
+						     strcmp(field_name, "length") == 0 || strcmp(field_name, "max_length") == 0)) {
+							break;
+						}
 						const char *kind_name;
 						switch (var->type->kind) {
 						case TYPE_NAME:
@@ -3374,6 +3384,21 @@ static char *sem_txt_dup(CvText t) {
 static char *sem_cv_dup(CstView v) {
 	return sem_txt_dup(cv_text(v));
 }
+/* Like sem_cv_dup but only the node's first TOKEN leaf — token-precise, so it excludes trailing
+ * trivia the node span may include. A const value that is the last token before a comment would
+ * otherwise swallow the comment into its lexeme (read as float, leaked into codegen). Mirrors
+ * lower.c's cv_dup_first_token. */
+static char *sem_cv_dup_first_token(CstView v) {
+	if (v.node) {
+		for (int i = 0; i < v.node->child_count; i++) {
+			if (v.node->children[i].tag == SE_TOKEN) {
+				CvText t = {v.src + v.node->children[i].as.token.offset, v.node->children[i].as.token.length};
+				return sem_txt_dup(t);
+			}
+		}
+	}
+	return sem_cv_dup(v);
+}
 static char *sem_dupz(const char *s) {
 	char *r = malloc(strlen(s) + 1);
 	strcpy(r, s);
@@ -3712,7 +3737,7 @@ static Expression *cst_build_expr(CstView e) {
 	}
 	case SN_LITERAL_EXPR:
 		ax->type = EXPR_LITERAL;
-		ax->data.literal.lexeme = sem_cv_dup(e);
+		ax->data.literal.lexeme = sem_cv_dup_first_token(e);
 		break;
 	case SN_STRING_EXPR: {
 		ax->type = EXPR_STRING;

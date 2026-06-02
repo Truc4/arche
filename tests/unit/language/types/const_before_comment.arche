@@ -1,0 +1,19 @@
+// RUN: %arche build -o %t %s && %t | grep "a=7 b=0 c=42 t=1 f=0"
+// Regression: a top-level const whose value is the last token before a line comment used to have
+// its lexeme over-read into the comment (node span ran to the next token), so e.g. `B :: 0` parsed
+// as a float ("double 0") and leaked the comment text into codegen. Hit in both CST->AST builders
+// (lower.c + semantic.c). Each `::` const below is immediately followed by a comment, then a
+// different declaration kind (const / #foreign / proc), and the values must round-trip exactly.
+// Also exercises core's `true`/`false` (which sit right before a comment in core.arche).
+A :: 7
+// comment between a const and the next const
+B :: 0
+// comment between a const and a #foreign block
+#foreign {
+  myabs :: proc(x: int)(r: int)
+}
+C :: 42
+// comment between a const and a proc
+main :: proc() {
+  printf("a=%d b=%d c=%d t=%d f=%d\n", A, B, C, true, false);
+}

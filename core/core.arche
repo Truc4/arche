@@ -3,6 +3,11 @@
 // output. Everything else (file/stdio I/O, sockets, terminal, clock/args, CSV) lives in stdlib
 // modules, brought in by one region: `#import { io net term sys csv }`.
 
+// Boolean readability constants. Arche has no `bool`; comparisons yield int 0/1, so these are
+// just names for those values (`running := true`, `if (ok == false)`).
+true  :: 1
+false :: 0
+
 // Raw Linux/x86-64 syscall intrinsic: emits the `syscall` instruction directly (no libc). A
 // buffer arg decays to its data pointer (like C). Declared first so the fd wrappers below can use it.
 #foreign {
