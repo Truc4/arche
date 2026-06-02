@@ -61,3 +61,16 @@ pre-existing printf-type-inference gap; float arrays were fully broken before). 
 - Verification: 3 new tests (`arrays/int_array_inout_param`, `arrays/int_array_own_thread`,
   `errors/array_local_return_rejected`); **full lit suite 368/368 green**, no regressions, no tests
   removed. Bench programs live in design_analysis/ (not run by `make test`).
+
+## D6 — In-out shadow is FOREIGN-only; our procs use OUT-only array params
+Feedback: re-listing a buffer in both the in-list and out-list (`(buf)(buf)`) is the FOREIGN-ABI
+idiom (lining up with a C signature like `read(fd, buf, n)`). For procs whose signature we own, a
+filled buffer is a pure **output** — use an out-only array param, named once. Out-only array params
+were broken in codegen (the out-param path used `return_member_llvm` → `i8*`/scalar for arrays).
+Fixed at 3 sites (additive, parallel to the in-param work): out-param signature → `<T>* %outN`;
+out-param body binding → type-6 element pointer; caller out-arg → allocate `[N x T]`, pass element
+pointer, bind type-6 for reading. Now `resolve(path)(starts: int[8], lens: int[8], handler, count)`
+works with the caller writing `resolve(path)(s0:, l0:, h:, c:)` — no shadow. Suite 368/368.
+Also: "functional" router is more precisely **reentrant / out-param** (still in-place mutation, still
+a global trie pool); pure-functional is impossible here (no heap). Wording fixed in COMPARISON.md.
+Handlers use a `route` enum, not raw ints.

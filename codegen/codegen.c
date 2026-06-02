@@ -4795,7 +4795,34 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				HirType *ot = callee_proc->out_params[i]->type;
 				const char *elem = return_member_llvm(ot);
 				char *ptr;
-				if (tgt->is_new) {
+				if (tgt->is_new && ot && ot->tag == HIR_TYPE_SHAPED_ARRAY) {
+					/* sized array out-param: allocate `[N x T]` here, pass the element pointer, and
+					 * bind the target as a type-6 element pointer so `buf[i]` reads it after the call.
+					 * No in-out shadow needed — the buffer is a pure output (caller-allocated). */
+					const char *etn = field_base_type_name(ot);
+					const char *lt = llvm_type_from_arche(etn);
+					int n = ot->rank;
+					elem = lt; /* the call passes `T* <elem0>` */
+					char *arr = gen_value_name(ctx);
+					emit_alloca(ctx, "  %s = alloca [%d x %s]\n", arr, n, lt);
+					ptr = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* %s, i64 0, i64 0\n", ptr, n, lt,
+					                  n, lt, arr);
+					ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+					vi->name = malloc(strlen(tgt->name) + 1);
+					strcpy(vi->name, tgt->name);
+					vi->llvm_name = malloc(strlen(ptr) + 1);
+					strcpy(vi->llvm_name, ptr);
+					vi->type = 6;
+					vi->string_len = n;
+					vi->field_type = etn;
+					vi->bit_width = strcmp(lt, "double") == 0 ? 64 : (strcmp(lt, "i8") == 0 ? 8 : 32);
+					if (ctx->scope_count > 0) {
+						ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+						sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+						sc->values[sc->value_count++] = vi;
+					}
+				} else if (tgt->is_new) {
 					ptr = gen_value_name(ctx);
 					emit_alloca(ctx, "  %s = alloca %s\n", ptr, elem);
 					/* Zero-init the fresh slot so the proc may safely READ an out-param before
@@ -7096,6 +7123,9 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 			buffer_append(ctx, ", ");
 		if (ot && ot->tag == HIR_TYPE_ARRAY)
 			buffer_append_fmt(ctx, "%%struct.arche_array* %%out%d", oi);
+		else if (ot && ot->tag == HIR_TYPE_SHAPED_ARRAY)
+			/* sized array out-param: caller-allocated `[N x T]`, received as an element pointer. */
+			buffer_append_fmt(ctx, "%s* %%out%d", llvm_type_from_arche(otn), oi);
 		else if (ot && find_archetype_decl(ctx, otn))
 			buffer_append_fmt(ctx, "%%struct.%s* %%out%d", otn, oi);
 		else
@@ -7188,6 +7218,24 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 			add_arch_value(ctx, proc->out_params[oi]->name, out_llvm, otn);
 		} else if (ot && ot->tag == HIR_TYPE_ARRAY) {
 			add_array_value(ctx, proc->out_params[oi]->name, out_llvm);
+		} else if (ot && ot->tag == HIR_TYPE_SHAPED_ARRAY) {
+			/* sized array out-param: %outN is the element pointer the caller allocated — bind as
+			 * type-6 so `buf[i] = …` in the body stores through it (field_type drives elem typing). */
+			const char *lt = llvm_type_from_arche(otn);
+			ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+			vi->name = malloc(strlen(proc->out_params[oi]->name) + 1);
+			strcpy(vi->name, proc->out_params[oi]->name);
+			vi->llvm_name = malloc(strlen(out_llvm) + 1);
+			strcpy(vi->llvm_name, out_llvm);
+			vi->type = 6;
+			vi->string_len = ot->rank;
+			vi->field_type = otn;
+			vi->bit_width = strcmp(lt, "double") == 0 ? 64 : (strcmp(lt, "i8") == 0 ? 8 : 32);
+			if (ctx->scope_count > 0) {
+				ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+				scope->values[scope->value_count++] = vi;
+			}
 		} else {
 			/* scalar out: pointer-backed (type 1) so `=` / `:=` in the body store through it */
 			ValueInfo *vi = calloc(1, sizeof(ValueInfo));

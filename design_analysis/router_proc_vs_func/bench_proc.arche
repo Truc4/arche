@@ -4,6 +4,8 @@
 // RUN: %arche build -o %t %s && %t | grep -q "checksum="
 #import { os }
 
+route :: enum { miss, root, user, post, asset }
+
 nodeKind :: enum { kstatic, kparam, kcatchall }
 
 TrieNode :: arche {
@@ -186,10 +188,10 @@ param :: proc(i: int)(start: int, len: int) {
 
 main :: proc() {
   init();
-  add("/", 1);
-  add("/users/:id", 2);
-  add("/users/:id/posts/:pid", 3);
-  add("/static/*", 4);
+  add("/", route.root);
+  add("/users/:id", route.user);
+  add("/users/:id/posts/:pid", route.post);
+  add("/static/*", route.asset);
 
   checksum := 0;
   os.now_sec()(t0:);

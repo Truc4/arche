@@ -1,8 +1,11 @@
-// Functional (ownership-threaded) router — reentrant, no per-request module state.
-// `resolve` takes the caller's capture buffers as in-out params and returns the count + handler;
-// captures live in the CALLER's storage, so concurrent/nested resolves don't clobber each other.
+// Reentrant router via OUT-only capture params — no per-request module state. `resolve` writes the
+// captured spans into caller-allocated out-params (named once, not the foreign in-out shadow), so
+// concurrent/nested resolves don't clobber each other. ("Functional" only loosely — it still
+// mutates in place and shares the global trie pool; pure-functional needs a heap, which Arche lacks.)
 // RUN: %arche build -o %t %s && %t | grep -q "checksum="
 #import { os }
+
+route :: enum { miss, root, user, post, asset }
 
 nodeKind :: enum { kstatic, kparam, kcatchall }
 
@@ -105,8 +108,9 @@ add :: proc(pattern: char[], handler_id: int) {
   TrieNode.handler_id[cur] = handler_id;
 }
 
-// Functional: captures go into the caller's in-out buffers; count + handler returned. No statics.
-resolve :: proc(path: char[], cstart: int[8], clen: int[8])(cstart: int[8], clen: int[8], handler_id: int, count: int) {
+// Reentrant: captures written into the caller-allocated OUT-params; count + handler returned. No
+// module state, and no in-out shadow — the buffers are pure outputs.
+resolve :: proc(path: char[])(cstart: int[8], clen: int[8], handler_id: int, count: int) {
   n := strlen(path);
   cur := 0;
   count = 0;
@@ -172,17 +176,16 @@ resolve :: proc(path: char[], cstart: int[8], clen: int[8])(cstart: int[8], clen
 
 main :: proc() {
   init();
-  add("/", 1);
-  add("/users/:id", 2);
-  add("/users/:id/posts/:pid", 3);
-  add("/static/*", 4);
+  add("/", route.root);
+  add("/users/:id", route.user);
+  add("/users/:id/posts/:pid", route.post);
+  add("/static/*", route.asset);
 
   checksum := 0;
   os.now_sec()(t0:);
-  for (iter := 0; iter < 2000000; iter = iter + 1) {
-    s0: int[8];
-    l0: int[8];
-    resolve("/users/42/posts/99", s0, l0)(s0, l0, h:, c:);
+  for (iter := 0; iter < 2000000; iter += 1) {
+    // captures land in caller-allocated out-params — clean, reentrant, no shadow.
+    resolve("/users/42/posts/99")(s0:, l0:, h:, c:);
     checksum = checksum + h + c + s0[0] + l0[0];
   }
   os.now_sec()(t1:);
