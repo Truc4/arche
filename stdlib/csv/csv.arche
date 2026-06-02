@@ -46,9 +46,7 @@ cell_float :: func(c: float, s: char[]) -> float {
 cell_int :: func(c: int, s: char[]) -> int {
   return atoi(s);
 }
-cell :: func {
-  cell_float, cell_int
-}
+cell :: func { cell_float, cell_int }
 
 load :: proc(arch: archetype, own path: char[]) {
   arche_file_map(move path)(data:);

@@ -1,7 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "allocations done"
-Tensor :: arche {
-  data :: float[5][5],
-}
+Tensor :: arche { data :: float[5][5], }
 
 static pool<Tensor> (5)
 

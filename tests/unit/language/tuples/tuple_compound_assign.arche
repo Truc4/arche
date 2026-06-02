@@ -1,9 +1,7 @@
 // RUN: %arche build -o %t %s && %t | grep "2"
 pos(x, y) :: float
 vel(x, y) :: float
-Particle :: arche {
-  pos_x, pos_y, vel_x, vel_y,
-}
+Particle :: arche { pos_x, pos_y, vel_x, vel_y, }
 
 static pool<Particle> (5)
 

@@ -1,7 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "DEBUG"
-Entity :: arche {
-  x :: float, y :: float,
-}
+Entity :: arche { x :: float, y :: float, }
 
 static table<Entity> (100)
 

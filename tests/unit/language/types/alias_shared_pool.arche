@@ -5,12 +5,8 @@
 // RUN: %arche build -o %t %s && %t | grep "hp0=10 mp0=20 hp1=30 mp1=40"
 hp :: int
 mp :: int
-A :: arche {
-  hp, mp,
-}
-B :: arche {
-  mp, hp,
-}
+A :: arche { hp, mp, }
+B :: arche { mp, hp, }
 
 static pool<A> (4)
 

@@ -2,9 +2,7 @@
 // Load CSV into static archetype once; the timed loop is pure vectorized column op.
 #import { csv }
 
-Transaction :: arche {
-  price :: float, quantity :: int, revenue :: float,
-}
+Transaction :: arche { price :: float, quantity :: int, revenue :: float, }
 
 static pool<Transaction> (10000, 10000) {
   price: 0.0, quantity: 0, revenue: 0.0,

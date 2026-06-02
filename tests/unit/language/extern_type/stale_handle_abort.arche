@@ -3,9 +3,7 @@
 // outlives the delete+reinsert, so deleting through it aborts.
 // RUN: %arche build -o %t --link %S/runtime/test_resource.c %s && ! %t
 cell :: opaque
-Resource :: arche {
-  cell,
-}
+Resource :: arche { cell, }
 #foreign {
   resource_open :: proc(initial: int)(ret: cell)
 }

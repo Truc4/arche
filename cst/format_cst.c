@@ -1,4 +1,5 @@
 #include "format_cst.h"
+#include <limits.h>
 #include <stdlib.h>
 
 /* Flatten the CST's token leaves (in source order) so the printer can make
@@ -81,8 +82,8 @@ static int no_space_before(TokenKind t, TokenKind prev, TokenKind next) {
 	case TOK_LPAREN:
 	case TOK_LBRACKET:
 		/* call / index: hug an identifier or a closing bracket. A `proc`/`func` keyword
-		 * hugs its param list too (`proc(...)`, `func(...)`, `extern proc(...)`) — the
-		 * keyword reads as the callable, like an identifier before a call's `(`. */
+		 * hugs its param list too (`proc(...)`, `func(...)`) — the keyword reads as the
+		 * callable, like an identifier before a call's `(`. */
 		return prev == TOK_IDENT || prev == TOK_RPAREN || prev == TOK_RBRACKET || prev == TOK_PROC || prev == TOK_FUNC;
 	default:
 		break;
@@ -98,6 +99,96 @@ static int no_space_before(TokenKind t, TokenKind prev, TokenKind next) {
 	}
 }
 
+/* ===== Width-aware list layout (fit-or-break, à la Prettier/rustfmt) ===== */
+
+/* Usable width of one pane of a fullscreen 16:9 nvim split down the middle. A bracketed value
+ * list is printed inline if it fits within this column; otherwise it breaks one item per line. */
+#define MAX_WIDTH 98
+
+/* A `{ … }` that holds a *value list* (array literal, `#import` names, overload group, archetype
+ * fields, enum variants) — as opposed to a statement/decl block (proc body, `#foreign`/`#module`
+ * region), which always breaks. Omissions are safe: an unlisted brace keeps the legacy block path. */
+static int is_list_brace_parent(SyntaxNodeKind p) {
+	return p == SN_ARRAY_LIT_EXPR || p == SN_USE_DECL || p == SN_GROUP_EXPR || p == SN_ARCH_EXPR ||
+	       p == SN_ENUM_EXPR;
+}
+
+/* A `( … )` that holds a value list — call args, proc/func/sys params + out-params, alloc args, a
+ * parenthesized expr. Excludes control-flow parens (`if`/`for` headers) so those keep their layout. */
+static int is_list_paren_parent(SyntaxNodeKind p) {
+	switch (p) {
+	case SN_CALL_EXPR:
+	case SN_PROC_CALL_STMT:
+	case SN_PROC_EXPR:
+	case SN_FUNC_EXPR:
+	case SN_SYS_EXPR:
+	case SN_SYS_DECL:
+	case SN_TYPE_PROC:
+	case SN_TYPE_FUNC:
+	case SN_PAREN_EXPR:
+	case SN_ALLOC_EXPR:
+	case SN_PROC_DECL:
+	case SN_FUNC_DECL:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+static int is_list_open(const Leaf *l) {
+	if (l->kind == TOK_LPAREN)
+		return is_list_paren_parent(l->parent);
+	if (l->kind == TOK_LBRACE)
+		return is_list_brace_parent(l->parent);
+	return 0;
+}
+
+/* A brace that opens a statement/decl block (handled by the legacy indent path), i.e. any `{`/`}`
+ * that is not a value-list brace. */
+static int is_block_brace(const Leaf *l) {
+	return (l->kind == TOK_LBRACE || l->kind == TOK_RBRACE) && !is_list_brace_parent(l->parent);
+}
+
+/* Rendered inline width of the bracket group opening at leaf `i`, through its matching closer.
+ * INT_MAX when the group can't be inlined — it contains a line comment or a `;` (a statement, so
+ * it must break). Pure over the token stream (whitespace-independent) → the break decision is
+ * idempotent. */
+static int flat_width(const Leaves *ls, int i) {
+	int depth = 0, w = 0;
+	TokenKind prev = TOK_EOF;
+	for (int k = i; k < ls->count; k++) {
+		const Leaf *l = &ls->items[k];
+		if (l->kind == TOK_COMMENT || l->kind == TOK_SEMI)
+			return INT_MAX;
+		if (k > i) {
+			TokenKind nx = (k + 1 < ls->count) ? ls->items[k + 1].kind : TOK_EOF;
+			if (!no_space_before(l->kind, prev, nx))
+				w += 1;
+		}
+		w += l->len;
+		if (l->kind == TOK_LPAREN || l->kind == TOK_LBRACE || l->kind == TOK_LBRACKET) {
+			depth++;
+		} else if (l->kind == TOK_RPAREN || l->kind == TOK_RBRACE || l->kind == TOK_RBRACKET) {
+			if (--depth == 0) {
+				if (ls->items[i].kind == TOK_LBRACE)
+					w += 2; /* `{ … }` interior spaces */
+				return w;
+			}
+		}
+		prev = l->kind;
+	}
+	return w;
+}
+
+/* One active value-list group while printing. */
+typedef struct {
+	TokenKind opener; /* '(' or '{' */
+	TokenKind closer; /* ')' or '}' */
+	SyntaxNodeKind parent;
+	int broken; /* doesn't fit on one line → one item per line */
+	int depth;  /* bracket depth at which this group's items live */
+} Frame;
+
 void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 	if (!root)
 		return;
@@ -106,87 +197,132 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 
 	int indent = 0;
 	int started = 0;
+	int col = 0; /* current column (for the width decision) */
 	TokenKind prev = TOK_EOF;
 	SyntaxNodeKind prev_parent = SN_SOURCE_FILE;
 	int prev_line = 0;
 	int force_nl = 0; /* a line comment forces the next token onto a new line */
+	Frame fr[128];
+	int frn = 0;   /* active value-list groups */
+	int depth = 0; /* current bracket nesting depth (all bracket kinds) */
 
 	for (int i = 0; i < ls.count; i++) {
 		Leaf *l = &ls.items[i];
 		TokenKind next = (i + 1 < ls.count) ? ls.items[i + 1].kind : TOK_EOF;
 
+		/* Closing the innermost active list group? (matched by kind at its own depth). */
+		int closes_frame = frn > 0 && l->kind == fr[frn - 1].closer && depth == fr[frn - 1].depth;
+		/* Directly inside the innermost list group (its item area)? */
+		int in_frame = frn > 0 && depth == fr[frn - 1].depth && !closes_frame;
+
+		int nl = 0, space = 0, eff_indent = indent; /* layout decision for the gap before `l` */
+
 		if (!started) {
 			started = 1;
+		} else if (closes_frame) {
+			Frame *f = &fr[frn - 1];
+			if (f->broken) {
+				indent--; /* closer dedents to the group's own level */
+				eff_indent = indent;
+				nl = 1;
+			} else if (f->closer == TOK_RBRACE) {
+				space = 1; /* `{ … }` interior space; `)` hugs */
+			}
+		} else if (in_frame) {
+			Frame *f = &fr[frn - 1];
+			int after_open = (prev == f->opener);
+			int after_comma = (prev == TOK_COMMA);
+			int import_sep = (f->parent == SN_USE_DECL && l->kind == TOK_IDENT && prev == TOK_IDENT);
+			if (after_open) {
+				if (f->broken)
+					nl = 1, eff_indent = indent;
+				else if (f->opener == TOK_LBRACE)
+					space = 1; /* first item after `{`; `(` hugs */
+			} else if (after_comma || import_sep) {
+				if (f->broken)
+					nl = 1, eff_indent = indent;
+				else
+					space = 1;
+			} else {
+				/* item-internal token: normal spacing */
+				int after_unary = (prev_parent == SN_UNARY_EXPR && (prev == TOK_MINUS || prev == TOK_BANG));
+				int compact = (l->parent == prev_parent &&
+				               (l->parent == SN_TYPE_REF || l->parent == SN_TYPE_ARRAY ||
+				                l->parent == SN_TYPE_SHAPED_ARRAY || l->parent == SN_TYPE_HANDLE ||
+				                l->parent == SN_NAME_EXPR));
+				space = (!compact && !after_unary && !no_space_before(l->kind, prev, next));
+			}
 		} else {
-			/* one archetype field per line: a comma directly in the archetype body */
-			int arch_field_break = (prev == TOK_COMMA && prev_parent == SN_ARCHETYPE_DECL);
-			/* The author split a CALL'S argument list across lines — keep the break (like the
-			 * for-header / blank-line preservation below), with a continuation indent. Scoped to
-			 * the call node only (args/commas are its direct children — there is no SN_ARG_LIST
-			 * wrap), so params/archetype/enum/array/index layouts are untouched; and never the
-			 * closing `)` (a trailing comma before it must not indent the closer). */
-			int list_continuation =
-			    (prev == TOK_COMMA && prev_parent == SN_CALL_EXPR && l->line > prev_line && l->kind != TOK_RPAREN);
-			/* `;` ends a statement → newline. The two `;` in a `for (init; cond; incr)` header are
-			 * direct children of the for-statement node; they separate clauses, not statements, so
-			 * we don't force a break. Instead the author's layout is preserved (like blank lines
-			 * below): an inline header stays inline, a hand-split one keeps its breaks. */
+			/* ===== legacy block / statement / decl path ===== */
 			int for_header_semi = (prev == TOK_SEMI && prev_parent == SN_FOR_STMT);
-			/* `#module` / `#file` / `#foreign` region markers are standalone section banners: break
-			 * onto their own line, and break again after them so the following decl starts fresh —
-			 * except a `{` (block form) stays on the marker's line: `#foreign {`. */
 			int vis_marker = (l->kind == TOK_HASH_MODULE || l->kind == TOK_HASH_FILE || l->kind == TOK_HASH_FOREIGN);
 			int after_vis_marker =
 			    (prev == TOK_HASH_MODULE || prev == TOK_HASH_FILE || prev == TOK_HASH_FOREIGN) && l->kind != TOK_LBRACE;
-			/* `#import { a b c }` formats inline — its braces don't open an indented block. Suppress
-			 * the break-after-`{` and break-before-`}` for tokens inside an SN_USE_DECL so the whole
-			 * import stays on one line (you write `#import` once and list the modules). */
-			int want_nl = force_nl || arch_field_break || list_continuation ||
-			              (l->kind == TOK_RBRACE && l->parent != SN_USE_DECL) ||
-			              (prev == TOK_LBRACE && prev_parent != SN_USE_DECL) ||
-			              (prev == TOK_SEMI && !for_header_semi) || prev == TOK_RBRACE || vis_marker ||
-			              after_vis_marker || l->decl_start;
-			/* A comment on a NEW source line gets its own line; a trailing comment on the SAME line as
-			 * the code it follows stays inline (don't force it down). This override wins over the
-			 * statement-break rules above (e.g. a `// note` after `stmt;` stays put). */
+			int block_close = (l->kind == TOK_RBRACE && is_block_brace(l));
+			int after_block_open = (prev == TOK_LBRACE);
+			int want_nl = force_nl || block_close || after_block_open || (prev == TOK_SEMI && !for_header_semi) ||
+			              prev == TOK_RBRACE || vis_marker || after_vis_marker || l->decl_start;
 			if (l->kind == TOK_COMMENT)
 				want_nl = (l->line != prev_line);
 			if (for_header_semi && l->line > prev_line)
-				want_nl = 1; /* the author split the header across lines — keep it */
-			/* a type/generic/table reference is compact: handle<X>, float[5], table<P> */
-			int compact = (l->parent == prev_parent && (l->parent == SN_TYPE_REF || l->parent == SN_TYPE_ARRAY ||
-			                                            l->parent == SN_TYPE_SHAPED_ARRAY ||
-			                                            l->parent == SN_TYPE_HANDLE || l->parent == SN_NAME_EXPR));
-			if (l->kind == TOK_RBRACE && l->parent != SN_USE_DECL && indent > 0)
+				want_nl = 1; /* author split the header across lines — keep it */
+			if (block_close && indent > 0)
 				indent--;
 			if (want_nl) {
-				fputc('\n', out);
-				if (l->line - prev_line >= 2) /* preserve one blank line */
-					fputc('\n', out);
-				/* continued list items get one extra level so they sit under, not beside, the call */
-				int eff_indent = indent + (list_continuation ? 1 : 0);
-				for (int t = 0; t < eff_indent; t++)
-					fputs("  ", out);
+				nl = 1;
+				eff_indent = indent;
 			} else {
-				/* No space after a symbolic unary operator (`-1`, `!flag`): the operator and its
-				 * operand are direct children of SN_UNARY_EXPR. `move`/`copy` are keyword unaries and
-				 * keep their space, so only `-` / `!` are special-cased here. */
-				int after_unary_op = (prev_parent == SN_UNARY_EXPR && (prev == TOK_MINUS || prev == TOK_BANG));
-				/* Inline `#import { ... }`: keep a space just inside the braces (`{ io net }`), which
-				 * the generic call/index brace-hugging rule would otherwise strip. */
-				int use_brace_inner = (prev == TOK_LBRACE && prev_parent == SN_USE_DECL) ||
-				                      (l->kind == TOK_RBRACE && l->parent == SN_USE_DECL);
-				if (use_brace_inner)
-					fputc(' ', out);
-				else if (!compact && !after_unary_op && !no_space_before(l->kind, prev, next))
-					fputc(' ', out);
+				int after_unary = (prev_parent == SN_UNARY_EXPR && (prev == TOK_MINUS || prev == TOK_BANG));
+				int compact = (l->parent == prev_parent &&
+				               (l->parent == SN_TYPE_REF || l->parent == SN_TYPE_ARRAY ||
+				                l->parent == SN_TYPE_SHAPED_ARRAY || l->parent == SN_TYPE_HANDLE ||
+				                l->parent == SN_NAME_EXPR));
+				space = (!compact && !after_unary && !no_space_before(l->kind, prev, next));
 			}
 		}
 
-		fwrite(l->text, 1, (size_t)l->len, out);
+		/* Emit the decided gap. */
+		if (nl) {
+			fputc('\n', out);
+			if (l->line - prev_line >= 2) /* preserve one blank line */
+				fputc('\n', out);
+			col = 0;
+			for (int t = 0; t < eff_indent; t++) {
+				fputs("  ", out);
+				col += 2;
+			}
+		} else if (space) {
+			fputc(' ', out);
+			col += 1;
+		}
 
-		if (l->kind == TOK_LBRACE && l->parent != SN_USE_DECL)
-			indent++;
+		fwrite(l->text, 1, (size_t)l->len, out);
+		col += l->len;
+
+		/* Bracket bookkeeping: maintain depth, open value-list frames, and block indent. */
+		if (closes_frame) {
+			frn--;
+			depth--;
+		} else if (l->kind == TOK_RPAREN || l->kind == TOK_RBRACE || l->kind == TOK_RBRACKET) {
+			depth--;
+		} else if (l->kind == TOK_LPAREN || l->kind == TOK_LBRACE || l->kind == TOK_LBRACKET) {
+			depth++;
+			if (is_list_open(l) && frn < 128) {
+				int fw = flat_width(&ls, i);
+				int broken = (fw == INT_MAX) || (col + fw > MAX_WIDTH);
+				fr[frn].opener = l->kind;
+				fr[frn].closer = (l->kind == TOK_LPAREN) ? TOK_RPAREN : TOK_RBRACE;
+				fr[frn].parent = l->parent;
+				fr[frn].broken = broken;
+				fr[frn].depth = depth;
+				frn++;
+				if (broken)
+					indent++;
+			} else if (l->kind == TOK_LBRACE && is_block_brace(l)) {
+				indent++;
+			}
+		}
+
 		prev = l->kind;
 		prev_parent = l->parent;
 		prev_line = l->line;

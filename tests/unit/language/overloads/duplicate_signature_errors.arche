@@ -6,7 +6,5 @@ a :: func(x: int) -> int {
 b :: func(x: int) -> int {
   return x + 1;
 }
-g :: func {
-  a, b
-}
+g :: func { a, b }
 // error: members 'a' and 'b' share a parameter signature

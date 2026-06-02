@@ -3,7 +3,5 @@
 a :: func(x: int) -> int {
   return x;
 }
-g :: func {
-  a, missing
-}
+g :: func { a, missing }
 // error: unknown member 'missing' in group 'g'

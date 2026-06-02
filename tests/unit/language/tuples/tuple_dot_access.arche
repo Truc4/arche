@@ -2,9 +2,7 @@
 // New model: a tuple alias mints flat name-prefixed components (pos_x, pos_y); access is
 // flat (Particle.pos_x), never nested (no Particle.pos.x).
 pos(x, y) :: float
-Particle :: arche {
-  pos_x, pos_y,
-}
+Particle :: arche { pos_x, pos_y, }
 
 static pool<Particle> (5)
 

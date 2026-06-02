@@ -4,9 +4,7 @@
 
 #import { csv }
 
-Transaction :: arche {
-  price :: float, quantity :: int, revenue :: float,
-}
+Transaction :: arche { price :: float, quantity :: int, revenue :: float, }
 
 static pool<Transaction> (100000000, 100000000) {
   price: 0.0, quantity: 0, revenue: 0.0,
@@ -21,7 +19,9 @@ main :: proc() {
 
   // Vectorized compute: filter (quantity > 0) AND (price > 10), then revenue = price * quantity.
   // The comparison masks (0/1) multiply into the float column at vector width.
-  Transaction.revenue = Transaction.price * Transaction.quantity * (Transaction.quantity > 0) * (Transaction.price > 10.0);
+  Transaction.revenue = Transaction.price * Transaction.quantity * (Transaction.quantity > 0) * (
+    Transaction.price > 10.0
+  );
 
   total := 0.0;
   for (m := 0; m < 100000000; m += 1) {

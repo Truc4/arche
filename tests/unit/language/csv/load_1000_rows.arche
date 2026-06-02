@@ -1,8 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "Loaded 1000 rows"
 #import { io }
-Transaction :: arche {
-  price :: float, quantity :: int,
-}
+Transaction :: arche { price :: float, quantity :: int, }
 
 static pool<Transaction> (1000, 1000) {
   price: 0.0, quantity: 0,

@@ -1,7 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-Point :: arche {
-  x :: int,
-}
+Point :: arche { x :: int, }
 
 static pool<Point> (5, 5) {
   x: 42,

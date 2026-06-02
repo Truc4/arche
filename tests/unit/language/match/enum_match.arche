@@ -1,9 +1,7 @@
 // enum = distinct int-backed type with named variants (auto-increment + explicit `= N`).
 // `Enum.variant` folds to its int value; `match` on an enum value dispatches by variant.
 // RUN: %arche build -o %t %s && %t | grep "delete=6 POST"
-method :: enum {
-  get, post = 5, delete
-}
+method :: enum { get, post = 5, delete }
 
 main :: proc() {
   m := method.post;

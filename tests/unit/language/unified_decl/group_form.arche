@@ -10,9 +10,7 @@ describe_char :: func(x: char) -> int {
   return 99;
 }
 
-describe :: func {
-  describe_int, describe_float, describe_char
-}
+describe :: func { describe_int, describe_float, describe_char }
 
 main :: proc() {
   a := describe(10);

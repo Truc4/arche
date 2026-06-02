@@ -2,9 +2,7 @@
 pos(x, y) :: float
 vel(dx, dy) :: float
 acc(i, j) :: float
-Particle :: arche {
-  pos_x, pos_y, vel_dx, vel_dy, acc_i, acc_j,
-}
+Particle :: arche { pos_x, pos_y, vel_dx, vel_dy, acc_i, acc_j, }
 
 static pool<Particle> (5)
 

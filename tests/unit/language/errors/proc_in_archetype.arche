@@ -1,8 +1,6 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "archetype components" %t.out
 // proc/func types cannot be archetype components — archetypes are data.
 h :: proc()(code: int)
-Entity :: arche {
-  on_hit :: h
-}
+Entity :: arche { on_hit :: h }
 main :: proc() {
 }

@@ -1,7 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "pos"
-Particle :: arche {
-  pos :: float, vel :: float,
-}
+Particle :: arche { pos :: float, vel :: float, }
 
 static table<Particle> (1000)
 

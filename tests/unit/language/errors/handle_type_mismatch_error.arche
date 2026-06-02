@@ -1,11 +1,7 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "type mismatch\|error" %t.out
-Player :: arche {
-  pos :: float,
-}
+Player :: arche { pos :: float, }
 
-Enemy :: arche {
-  health :: float,
-}
+Enemy :: arche { health :: float, }
 
 static pool<Player> (10)
 

@@ -1,8 +1,6 @@
 // Task 4: Aggregate total revenue
 // Sum revenue (price * quantity) across all rows
-Transaction :: arche {
-  price :: float, quantity :: int, revenue :: float,
-}
+Transaction :: arche { price :: float, quantity :: int, revenue :: float, }
 
 static pool<Transaction> (1000, 1000) {
   price: 0.0, quantity: 0, revenue: 0.0,

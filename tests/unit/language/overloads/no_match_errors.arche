@@ -5,9 +5,7 @@ pick_int :: func(x: int) -> int {
 pick_float :: func(x: float) -> float {
   return x;
 }
-pick :: func {
-  pick_int, pick_float
-}
+pick :: func { pick_int, pick_float }
 
 main :: proc() {
   c := 'X';

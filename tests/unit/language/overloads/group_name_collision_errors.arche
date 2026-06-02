@@ -6,7 +6,5 @@ a :: func(x: int) -> int {
 b :: func(x: float) -> float {
   return x;
 }
-a :: func {
-  a, b
-}
+a :: func { a, b }
 // error: name 'a' is already declared

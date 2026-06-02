@@ -1,8 +1,6 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "non-exhaustive" %t.out
 // An enum match must cover every variant (or have a `_`); missing one is a compile error.
-method :: enum {
-  get, post, delete
-}
+method :: enum { get, post, delete }
 main :: proc() {
   m := method.get;
   match m {

@@ -1,7 +1,5 @@
 // RUN: %arche build -o %t %s && ! %t
-Player :: arche {
-  pos :: float,
-}
+Player :: arche { pos :: float, }
 
 static pool<Player> (10)
 

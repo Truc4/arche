@@ -1,9 +1,7 @@
 // A `sys` runs to completion over all matching archetypes and supports no `return` at all —
 // neither a naked early exit nor a value. Guard work with `if` instead.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "does not support .return." %t.out
-Mover :: arche {
-  pos :: float, vel :: float,
-}
+Mover :: arche { pos :: float, vel :: float, }
 static pool<Mover> (4, 4)
 
 step :: sys (pos, vel) {

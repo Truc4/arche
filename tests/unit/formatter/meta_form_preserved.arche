@@ -7,9 +7,7 @@
 // RUN: %arche fmt %s | grep -F "short_top :: int"
 alias_top: type: int
 short_top :: int
-Body :: arche {
-  mass: type: int,
-}
+Body :: arche { mass: type: int, }
 
 main :: proc() {
   loc: type: int;
