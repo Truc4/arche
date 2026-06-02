@@ -2594,8 +2594,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 						/* char[N] column: the arg is a string/buffer pointer (memcpy'd whole),
 						 * so pass it as a pointer. Numeric array columns keep scalar element-0
 						 * init (legacy semantics, e.g. float[10] from a single value). */
-						if (field_total_elements(arch->fields[field_idx]->type) > 1 &&
-						    strcmp(field_type, "i8") == 0) {
+						if (field_total_elements(arch->fields[field_idx]->type) > 1 && strcmp(field_type, "i8") == 0) {
 							buffer_append_fmt(ctx, ", %s* %s", field_type, field_bufs[i]);
 						} else {
 							buffer_append_fmt(ctx, ", %s %s", field_type, field_bufs[i]);
@@ -6139,8 +6138,8 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 					buffer_append_fmt(ctx, "  %s = bitcast %s* %%slot%d to i8*\n", dstbuf, base_type, col_idx);
 					buffer_append_fmt(ctx, "  %s = bitcast %s* %%f%d to i8*\n", srcbuf, base_type, i);
 				}
-				buffer_append_fmt(ctx, "  call void @llvm.memcpy.p0.p0.i64(i8* %s, i8* %s, i64 %d, i1 false)\n",
-				                  dstbuf, srcbuf, bytes);
+				buffer_append_fmt(ctx, "  call void @llvm.memcpy.p0.p0.i64(i8* %s, i8* %s, i64 %d, i1 false)\n", dstbuf,
+				                  srcbuf, bytes);
 				ctx->uses_memcpy = 1;
 			} else {
 				buffer_append_fmt(ctx, "  store %s %%f%d, %s* %%slot%d\n", base_type, i, base_type, col_idx);
