@@ -11,7 +11,8 @@ zero :: func(own xs: int[]) -> int {
 
 main :: proc() {
   a: int[2];
-  a[0] = 7; a[1] = 9;
+  a[0] = 7;
+  a[1] = 9;
   n := zero(move a);
   printf("zeroed n=%d\n", n);
 }

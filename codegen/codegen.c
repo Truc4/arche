@@ -19,8 +19,8 @@ typedef struct {
 	const char *field_type; /* for type==4 (column ptr), the Arche type name (e.g. "float") */
 	char *handle_archetype; /* if field_type=="handle", the target archetype name */
 	int bit_width;          /* 32 (default) or 64 for SSA values */
-	int is_slice;           /* type==6: 1 = T[] fat-pointer slice (runtime len in len_ssa), 0 = bounded T[N] (len = string_len) */
-	char *len_ssa;          /* type==6 slice: SSA value (or literal) holding the i64 runtime length; NULL otherwise */
+	int is_slice; /* type==6: 1 = T[] fat-pointer slice (runtime len in len_ssa), 0 = bounded T[N] (len = string_len) */
+	char *len_ssa; /* type==6 slice: SSA value (or literal) holding the i64 runtime length; NULL otherwise */
 } ValueInfo;
 
 typedef struct {
@@ -3283,7 +3283,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 						 * An already-slice arg forwards its runtime len; a bounded `T[N]` arg
 						 * DECAYS — its compile-time count N becomes the len. */
 						strcpy(call_arg_vals[i], arg_bufs[i]);
-						const char *e = arg_values[i]->field_type ? llvm_type_from_arche(arg_values[i]->field_type) : "i8";
+						const char *e =
+						    arg_values[i]->field_type ? llvm_type_from_arche(arg_values[i]->field_type) : "i8";
 						if (strcmp(e, "double") == 0)
 							call_arg_types[i] = "double*";
 						else if (strcmp(e, "i64") == 0)
@@ -3329,7 +3330,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 						 * buffer this is i8*; for a non-char array it is the element pointer
 						 * (double, i64, i32, i16 star) matching the callee's element param. */
 						strcpy(call_arg_vals[i], arg_bufs[i]);
-						const char *e = arg_values[i]->field_type ? llvm_type_from_arche(arg_values[i]->field_type) : "i8";
+						const char *e =
+						    arg_values[i]->field_type ? llvm_type_from_arche(arg_values[i]->field_type) : "i8";
 						if (strcmp(e, "double") == 0)
 							call_arg_types[i] = "double*";
 						else if (strcmp(e, "i64") == 0)
@@ -3381,8 +3383,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 					 * emit_int_convert relabels a constant for free and sext/zext/truncs an SSA
 					 * value; this also fixes a wider/narrower register arg meeting the param. */
 					int want_w = callee_pt->int_width ? callee_pt->int_width : 32;
-					emit_int_convert(ctx, arg_bufs[i], &expr->data.call.args[i]->resolved, want_w,
-					                 call_arg_vals[i]);
+					emit_int_convert(ctx, arg_bufs[i], &expr->data.call.args[i]->resolved, want_w, call_arg_vals[i]);
 					call_arg_types[i] = llvm_int_type(want_w);
 				} else if (expr->data.call.args[i]->resolved.tag == HIR_TYPE_INT &&
 				           expr->data.call.args[i]->resolved.int_width != 32) {
@@ -3445,7 +3446,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		if (is_exit) {
 			/* exit() is a void function that never returns */
 			buffer_append_fmt(ctx, "  call void @%s(", actual_func_name);
-			emit_call_arglist(ctx, expr->data.call.arg_count, arg_is_callback, call_arg_types, call_arg_vals, call_arg_len);
+			emit_call_arglist(ctx, expr->data.call.arg_count, arg_is_callback, call_arg_types, call_arg_vals,
+			                  call_arg_len);
 			buffer_append(ctx, ")\n");
 			buffer_append(ctx, "  unreachable\n");
 			strcpy(result_buf, "0");
@@ -3472,7 +3474,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				buffer_append_fmt(ctx, "  %s = call i32 (i8*, ...)", res_name);
 			}
 			buffer_append_fmt(ctx, " @%s(", actual_func_name);
-			emit_call_arglist(ctx, expr->data.call.arg_count, arg_is_callback, call_arg_types, call_arg_vals, call_arg_len);
+			emit_call_arglist(ctx, expr->data.call.arg_count, arg_is_callback, call_arg_types, call_arg_vals,
+			                  call_arg_len);
 			buffer_append(ctx, ")\n");
 			strcpy(result_buf, res_name);
 		} else {
@@ -3488,7 +3491,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				llvm_return_list_type(mr_types, mr_count, multiret_buf, sizeof(multiret_buf));
 				return_type = multiret_buf;
 				buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type, func_name ? func_name : "unknown");
-				emit_call_arglist(ctx, expr->data.call.arg_count, arg_is_callback, call_arg_types, call_arg_vals, call_arg_len);
+				emit_call_arglist(ctx, expr->data.call.arg_count, arg_is_callback, call_arg_types, call_arg_vals,
+				                  call_arg_len);
 				buffer_append(ctx, ")\n");
 				strcpy(result_buf, res_name);
 				goto call_done;
@@ -3520,8 +3524,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			/* If return type is void, emit void call without assignment */
 			if (strcmp(return_type, "void") == 0) {
 				buffer_append_fmt(ctx, "  call void @%s(", actual_func_name);
-				int n_emitted =
-				    emit_call_arglist(ctx, expr->data.call.arg_count, arg_is_callback, call_arg_types, call_arg_vals, call_arg_len);
+				int n_emitted = emit_call_arglist(ctx, expr->data.call.arg_count, arg_is_callback, call_arg_types,
+				                                  call_arg_vals, call_arg_len);
 				/* Append the proc's out-pointer args (a non-extern proc writes its results through
 				 * them). Set by the enclosing proc-call multi-bind path. */
 				for (int i = 0; i < ctx->pending_out_ptr_count; i++) {
@@ -3533,7 +3537,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				strcpy(result_buf, "0");
 			} else {
 				buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type, actual_func_name);
-				emit_call_arglist(ctx, expr->data.call.arg_count, arg_is_callback, call_arg_types, call_arg_vals, call_arg_len);
+				emit_call_arglist(ctx, expr->data.call.arg_count, arg_is_callback, call_arg_types, call_arg_vals,
+				                  call_arg_len);
 				buffer_append(ctx, ")\n");
 				strcpy(result_buf, res_name);
 			}

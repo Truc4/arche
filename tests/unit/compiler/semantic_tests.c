@@ -474,13 +474,13 @@ void test_own_param_bare_arg_error(void) {
 	/* A bare move-only name handed to an `own` param implicitly moves — no error on the call
 	 * itself. The transfer consumes the source, so a LATER use of it is the error. */
 	AnalysisResult ok = analyze_string("fill :: func(own b: char[8]) -> char[8] {\n"
-	                                    "  b[0] = 'X';\n"
-	                                    "  return b;\n"
-	                                    "}\n"
-	                                    "main :: proc() {\n"
-	                                    "  buf: char[8];\n"
-	                                    "  out := fill(buf);\n"
-	                                    "}\n");
+	                                   "  b[0] = 'X';\n"
+	                                   "  return b;\n"
+	                                   "}\n"
+	                                   "main :: proc() {\n"
+	                                   "  buf: char[8];\n"
+	                                   "  out := fill(buf);\n"
+	                                   "}\n");
 	ASSERT_TRUE(semantic_error_count(ok.ctx) == 0, "a bare arg implicitly moves — no error expected");
 	semantic_context_free(ok.ctx);
 	AnalysisResult reuse = analyze_string("fill :: func(own b: char[8]) -> char[8] {\n"

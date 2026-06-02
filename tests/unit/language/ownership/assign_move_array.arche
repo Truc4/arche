@@ -6,6 +6,6 @@ main :: proc() {
   a: int[3];
   b: int[3];
   b[0] = 7;
-  a = b;            // move: a now owns b's storage, b is consumed
+  a = b; // move: a now owns b's storage, b is consumed
   printf("a0=%d\n", a[0]);
 }

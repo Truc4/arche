@@ -2288,9 +2288,8 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				 * storage is this frame) and needs value copy-out, which is unimplemented — reject
 				 * it cleanly. */
 				if (ctx->current_func && rv && rv->type && type_is_byref_aggregate(rv->type) && !rv->is_param) {
-					fprintf(stderr,
-					        "Error: cannot return a local array by value (array copy-out is not implemented); "
-					        "return an `own` parameter or thread a caller-provided buffer instead\n");
+					fprintf(stderr, "Error: cannot return a local array by value (array copy-out is not implemented); "
+					                "return an `own` parameter or thread a caller-provided buffer instead\n");
 					ctx->error_count++;
 				}
 			}
