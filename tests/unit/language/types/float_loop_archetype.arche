@@ -1,13 +1,11 @@
 // RUN: %arche build -o %t %s && %t
-Nums :: arche {
-  val :: float,
-}
+Nums :: arche { val :: float }
 
 static pool<Nums> (4, 4) {
   val: 0.0,
 }
 
-main :: proc () {
+main :: proc() {
   Nums.val[0] = 1.0;
   Nums.val[1] = 2.0;
   Nums.val[2] = 3.0;

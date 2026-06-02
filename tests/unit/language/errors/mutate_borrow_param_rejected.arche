@@ -2,12 +2,12 @@
 // Functions are pure by use — to mutate, take it `move` and return it (same-name in/out),
 // or copy it into a local. (Replaces the old copy-by-value `copy_no_side_effect` behavior.)
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "read-only parameter" %t.out
-clobber :: func (b: char[8]) -> int {
+clobber :: func(b: char[8]) -> int {
   b[0] = 'X';
   return 0;
 }
 
-main :: proc () {
+main :: proc() {
   buf: char[8];
   buf[0] = 'A';
   clobber(buf);

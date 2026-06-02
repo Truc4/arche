@@ -1,12 +1,8 @@
 // RUN: %arche build -o %t %s && %t | grep "Body"
 // BUG: System operations don't modify fields (see COMPILER_BUG_SYSTEM_OPERATIONS.md)
-Particle :: arche {
-  pos :: float, vel :: float,
-}
+Particle :: arche { pos :: float, vel :: float }
 
-Body :: arche {
-  pos :: float, vel :: float, mass :: float,
-}
+Body :: arche { pos :: float, vel :: float, mass :: float }
 
 static table<Particle> (5)
 
@@ -16,7 +12,7 @@ gravity :: sys (pos, mass) {
   pos = pos + mass;
 }
 
-main :: proc () {
+main :: proc() {
   insert(table<Particle>, 1.0, 0.1);
   insert(table<Body>, 2.0, 0.2, 10.0);
   run gravity;

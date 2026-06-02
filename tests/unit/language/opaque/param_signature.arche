@@ -1,11 +1,11 @@
 // A nominal opaque type in a function signature — a func takes a `file` by value (an i64
 // cell at the ABI). `file` is distinct in the checker, erased to i64 at codegen.
 // RUN: %arche build -o %t %s && %t | grep "ok"
-#import io;
+#import { io }
 file :: opaque
-describe :: func (f: file) -> int {
+describe :: func(f: file) -> int {
   return 0;
 }
-main :: proc () {
+main :: proc() {
   printf("ok opaque_param\n");
 }

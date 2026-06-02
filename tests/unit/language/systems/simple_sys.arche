@@ -1,8 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "system_ran"
 pos :: float
-Body :: arche {
-  pos,
-}
+Body :: arche { pos }
 
 static pool<Body> (5)
 
@@ -11,7 +9,7 @@ dummy :: sys (pos) {
   pos = pos;
 }
 
-main :: proc () {
+main :: proc() {
   insert(Body, 1.0);
   insert(Body, 2.0);
   insert(Body, 3.0);

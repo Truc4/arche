@@ -1,11 +1,11 @@
 // RUN: %arche build -o %t %s && %t | grep "result: 99"
 // Unbounded char[] buffer filled in place, scalar count returned.
-fill_buf :: func (own buf: char[]) -> int {
+fill_buf :: func(own buf: char[]) -> int {
   buf := strcopy(move buf, "hello");
   return 99;
 }
 
-main :: proc () {
+main :: proc() {
   buf: char[32];
   result := fill_buf(move buf);
   printf("result: %d\n", result);

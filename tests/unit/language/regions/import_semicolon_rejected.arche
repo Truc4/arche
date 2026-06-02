@@ -1,0 +1,9 @@
+// `#import` is a region marker, not a statement. Bare `#import` (no block) is a banner region
+// that runs to end of file — every item below it must be a module name. So `#import io;` (a
+// trailing `;`, then code) is an error: the `;`/code aren't module names. Import alongside other
+// declarations with the block form `#import { ... }`.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "must be a module name" %t.out
+#import io;
+
+main :: proc() {
+}

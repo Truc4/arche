@@ -1,0 +1,11 @@
+// `#foreign` banner region: a standalone marker makes every following decl foreign, to
+// end of file. `main` is declared BEFORE the banner (so it keeps its body); `abs` after it
+// is an FFI declaration bound to libc.
+// RUN: %arche build -o %t %s && %t | grep "abs=9"
+main :: proc() {
+  abs(-9)(a:);
+  printf("abs=%d\n", a);
+}
+
+#foreign
+abs :: proc(x: int)(r: int)

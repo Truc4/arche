@@ -2,21 +2,19 @@
 // Filter rows where quantity > 0 AND price > 10, compute revenue = price * quantity, sum.
 // Uses arche's natural vectorized form: comparisons produce 0/1 masks multiplied in.
 
-#import csv;
+#import { csv }
 
-Transaction :: arche {
-  price :: float, quantity :: int, revenue :: float,
-}
+Transaction :: arche { price :: float, quantity :: int, revenue :: float }
 
 static pool<Transaction> (100000000, 100000000) {
   price: 0.0, quantity: 0, revenue: 0.0,
 }
 
-load_transactions :: proc () {
+load_transactions :: proc() {
   csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_100m.csv");
 }
 
-main :: proc () {
+main :: proc() {
   load_transactions();
 
   // Vectorized compute: filter (quantity > 0) AND (price > 10), then revenue = price * quantity.

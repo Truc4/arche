@@ -3,9 +3,7 @@
 // RUN: %arche build -o %t %s && %t | grep "pos0=3"
 pos :: float
 
-Particle :: arche {
-  pos,
-}
+Particle :: arche { pos }
 
 static pool<Particle> (10)
 
@@ -13,7 +11,7 @@ bump :: sys (pos) {
   pos = pos + 2.0;
 }
 
-main :: proc () {
+main :: proc() {
   insert(Particle, 1.0);
   run bump;
   printf("pos0=%f\n", Particle.pos[0]);

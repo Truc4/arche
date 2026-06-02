@@ -6,7 +6,7 @@
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN ") -eq 2
 base :: int
 level :: base
-main :: proc () {
+main :: proc() {
   a: base = 10;
   b: level = 20;
 }

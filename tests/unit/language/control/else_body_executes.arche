@@ -2,7 +2,7 @@
 // looked for a non-existent SN_ELSE_CLAUSE node; the parser emits then/else flat, split on the
 // `else` token). Each else here must actually run: expect B, C, F.
 // RUN: %arche build -o %t %s && %t | tr '\n' ' ' | grep -q "B C F"
-main :: proc () {
+main :: proc() {
   x := 5;
   if (x == 1) {
     print("A\n");

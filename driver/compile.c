@@ -59,7 +59,7 @@ static int cst_root_has_decl(const SyntaxNode *cst_root) {
 		if (cst_root->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = cst_root->children[i].as.node->kind;
-		if (k >= SN_WORLD_DECL && k <= SN_USE_DECL)
+		if ((k >= SN_WORLD_DECL && k <= SN_USE_DECL) || k == SN_REGION)
 			return 1;
 	}
 	return 0;
@@ -93,19 +93,20 @@ static int g_loaded_count;
 
 static void load_module(const char *name, const char *source_dir); /* fwd (mutual recursion) */
 
-/* Extract the module name (first IDENT token) from a `#import <name>;` (SN_USE_DECL) node. */
-static int module_name_of(const SyntaxNode *ud, const char *src, char *out, size_t sz) {
-	out[0] = '\0';
-	for (int k = 0; k < ud->child_count; k++)
-		if (ud->children[k].tag == SE_TOKEN && ud->children[k].as.token.kind == TOK_IDENT) {
-			size_t L = ud->children[k].as.token.length;
-			if (L > sz - 1)
-				L = sz - 1;
-			memcpy(out, src + ud->children[k].as.token.offset, L);
-			out[L] = '\0';
-			return 1;
-		}
-	return 0;
+/* Load every module named by a `#import` node — one IDENT for a bare `#import io`, several for a
+ * block `#import { io net }`. */
+static void load_uses_of(const SyntaxNode *ud, const char *src, const char *source_dir) {
+	for (int k = 0; k < ud->child_count; k++) {
+		if (ud->children[k].tag != SE_TOKEN || ud->children[k].as.token.kind != TOK_IDENT)
+			continue;
+		char name[256];
+		size_t L = ud->children[k].as.token.length;
+		if (L > sizeof(name) - 1)
+			L = sizeof(name) - 1;
+		memcpy(name, src + ud->children[k].as.token.offset, L);
+		name[L] = '\0';
+		load_module(name, source_dir);
+	}
 }
 
 /* Parse one module file, register its lossless CST with both back-ends (which borrow the CST +
@@ -133,9 +134,7 @@ static int register_module_file(const char *mod_name, const char *path, const ch
 	for (int u = 0; u < root->child_count; u++) {
 		if (root->children[u].tag != SE_NODE || root->children[u].as.node->kind != SN_USE_DECL)
 			continue;
-		char dep[256];
-		if (module_name_of(root->children[u].as.node, src, dep, sizeof(dep)))
-			load_module(dep, source_dir);
+		load_uses_of(root->children[u].as.node, src, source_dir);
 	}
 	return 1;
 }
@@ -187,7 +186,7 @@ static void load_module(const char *name, const char *source_dir) {
 		fprintf(stderr, "Error: Module not found: %s\n", name);
 }
 
-/* Resolve `#import foo;` from the CST: locate each module (folder or file), register it with both
+/* Resolve `#import foo` from the CST: locate each module (folder or file), register it with both
  * back-ends, and recurse into its transitive imports. CST + source are kept alive (borrowed). */
 static void resolve_uses(const SyntaxNode *cst_root, const char *src, const char *source_path) {
 	if (!cst_root)
@@ -204,9 +203,7 @@ static void resolve_uses(const SyntaxNode *cst_root, const char *src, const char
 	for (int u = 0; u < cst_root->child_count; u++) {
 		if (cst_root->children[u].tag != SE_NODE || cst_root->children[u].as.node->kind != SN_USE_DECL)
 			continue;
-		char mod_name[256];
-		if (module_name_of(cst_root->children[u].as.node, src, mod_name, sizeof(mod_name)))
-			load_module(mod_name, source_dir);
+		load_uses_of(cst_root->children[u].as.node, src, source_dir);
 	}
 	free(source_dir);
 }
@@ -232,6 +229,18 @@ static int compile_frontend(const char *user_source, const char *source_path, Fr
 	char core_path[512];
 	snprintf(core_path, sizeof(core_path), "%s/core.arche", arche_resource_dir(ARCHE_RES_CORE));
 	char *core_src = read_file_optional(core_path);
+
+	/* Don't prepend core to core itself (double-defines every prelude symbol). When the
+	 * compiled file IS core.arche, drop the prepend by treating core as empty here.
+	 * Identity by (device, inode) so any path spelling of the prelude matches. */
+	if (core_src && source_path && source_path[0]) {
+		struct stat sp, sc;
+		if (stat(source_path, &sp) == 0 && stat(core_path, &sc) == 0 && sp.st_dev == sc.st_dev &&
+		    sp.st_ino == sc.st_ino) {
+			free(core_src);
+			core_src = NULL;
+		}
+	}
 
 	int core_lines = 0;
 	char *source;

@@ -1,5 +1,3 @@
-Test :: arche {
-  name :: char[16],
-}
-@allow_pure_proc main :: proc () {
+Test :: arche { name :: char[16] }
+@allow_pure_proc main :: proc() {
 }

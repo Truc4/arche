@@ -3,7 +3,7 @@
 // RUN: %arche fmt %s | grep -F "k :: 10"
 // RUN: %arche fmt %s | grep -F "j : int : 7"
 // RUN: %arche fmt %s | grep -F "m :: int"
-main :: proc () {
+main :: proc() {
   k :: 10;
   j: int: 7;
   m :: int;

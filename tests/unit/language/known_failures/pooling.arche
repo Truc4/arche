@@ -1,11 +1,9 @@
 // RUN: %arche build -o %t %s && %t | grep "DEBUG"
-Entity :: arche {
-  x :: float, y :: float,
-}
+Entity :: arche { x :: float, y :: float }
 
 static table<Entity> (100)
 
-main :: proc () {
+main :: proc() {
   insert(table<Entity>, 1.0, 2.0);
   insert(table<Entity>, 3.0, 4.0);
   insert(table<Entity>, 5.0, 6.0);

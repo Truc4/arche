@@ -1,32 +1,34 @@
 // core — the implicit prelude (always in scope, no `#import`). The universal base only: the raw
 // syscall intrinsic, fd/process primitives, libc print/format, string/number helpers, and basic
 // output. Everything else (file/stdio I/O, sockets, terminal, clock/args, CSV) lives in stdlib
-// modules: `#import io;`, `#import net;`, `#import term;`, `#import sys;`, `#import csv;`.
+// modules, brought in by one region: `#import { io net term sys csv }`.
 
 // Raw Linux/x86-64 syscall intrinsic: emits the `syscall` instruction directly (no libc). A
 // buffer arg decays to its data pointer (like C). Declared first so the fd wrappers below can use it.
-syscall :: extern proc (n: i64, a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64)(r: i64);
+#foreign {
+  syscall :: proc(n: i64, a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64)(r: i64)
+}
 // Raw fd I/O — thin syscall wrappers (x86-64 Linux), no libc. Read-only buffers (`write`/`open`
 // path) are plain borrows; a filled buffer (`read`) is in-out (handed back through the out-list).
-open :: proc (path: char[], flags: int)(fd: int) {
+open :: proc(path: char[], flags: int)(fd: int) {
   syscall(2, path, flags, 0, 0, 0, 0)(r:); // SYS_open(path, flags, mode=0)
   fd = i32(r);
 }
-read :: proc (fd: int, buf: char[], len: int)(buf: char[], n: int) {
+read :: proc(fd: int, buf: char[], len: int)(buf: char[], n: int) {
   syscall(0, fd, buf, len, 0, 0, 0)(r:); // SYS_read(fd, buf, len)
   n = i32(r);
 }
-write :: proc (fd: int, buf: char[], len: int) {
+write :: proc(fd: int, buf: char[], len: int) {
   syscall(1, fd, buf, len, 0, 0, 0)(_r:); // SYS_write(fd, buf, len)
 }
-close :: proc (fd: int) {
+close :: proc(fd: int) {
   syscall(3, fd, 0, 0, 0, 0, 0)(_r:); // SYS_close(fd)
 }
-lseek :: proc (fd: int, off: i64, whence: int)(pos: i64) {
+lseek :: proc(fd: int, off: i64, whence: int)(pos: i64) {
   syscall(8, fd, off, whence, 0, 0, 0)(r:); // SYS_lseek(fd, off, whence)
   pos = r;
 }
-exit :: proc (code: int) {
+exit :: proc(code: int) {
   syscall(231, code, 0, 0, 0, 0, 0)(_r:); // SYS_exit_group(code) — does not return
 }
 // Primitive opaque handle types (operations live in the io/net modules). They stay in core so the
@@ -35,12 +37,14 @@ file :: opaque
 socket :: opaque
 // Whole-file mmap view (C-runtime externs). Kept in core so any module can map a file without a
 // module-to-module import (e.g. the csv loader).
-arche_file_map :: extern proc (own path: char[])(data: char[]);
-arche_file_size :: extern proc ()(n: i64);
-arche_file_unmap :: extern proc (own data: char[], size: i64);
-sprintf :: extern proc (buf: char[], own fmt: char[], ...)(buf: char[], n: int);
-printf :: extern proc (own fmt: char[], ...)(n: int);
-fflush :: extern proc (stream: int);
+#foreign {
+  arche_file_map :: proc(own path: char[])(data: char[])
+  arche_file_size :: proc()(n: i64)
+  arche_file_unmap :: proc(own data: char[], size: i64)
+  sprintf :: proc(buf: char[], own fmt: char[], ...)(buf: char[], n: int)
+  printf :: proc(own fmt: char[], ...)(n: int)
+  fflush :: proc(stream: int)
+}
 // Pure-arche numeric/string helpers (no FFI). A func may call these; it can't call externs, so
 // libc's atoi/atof/strlen are reimplemented here to keep type-directed CSV cell parsing pure.
 
@@ -52,7 +56,7 @@ fflush :: extern proc (stream: int);
 /// assert(streq("ab", "ac") == 0, "streq diff\n");
 /// assert(streq("ab", "abc") == 0, "streq prefix\n");
 /// ```
-streq :: func (a: char[], b: char[]) -> int {
+streq :: func(a: char[], b: char[]) -> int {
   i := 0;
   for (; a[i] == b[i]; i += 1) {
     if (a[i] == 0) {
@@ -67,7 +71,7 @@ streq :: func (a: char[], b: char[]) -> int {
 /// assert(strlen("hello") == 5, "strlen hello\n");
 /// assert(strlen("") == 0, "strlen empty\n");
 /// ```
-strlen :: func (s: char[]) -> int {
+strlen :: func(s: char[]) -> int {
   i := 0;
   for (; s[i] != 0; i += 1) {
   }
@@ -75,7 +79,7 @@ strlen :: func (s: char[]) -> int {
 }
 // Copy C-string `src` (through its NUL) into `dst`, NUL-terminate, return the filled buffer.
 // Pure; the own/move contract makes the in-place fill explicit: `b := strcopy(move b, s)`.
-strcopy :: func (own dst: char[], src: char[]) -> char[] {
+strcopy :: func(own dst: char[], src: char[]) -> char[] {
   i := 0;
   for (; src[i] != 0; i += 1) {
     dst[i] = src[i];
@@ -90,7 +94,7 @@ strcopy :: func (own dst: char[], src: char[]) -> char[] {
 /// assert(atoi("-7") == -7, "atoi -7\n");
 /// assert(atoi("13abc") == 13, "atoi stops at non-digit\n");
 /// ```
-atoi :: func (s: char[]) -> int {
+atoi :: func(s: char[]) -> int {
   i := 0;
   sign := 1;
   if (s[0] == '-') {
@@ -110,7 +114,7 @@ atoi :: func (s: char[]) -> int {
   return sign * n;
 }
 // Parse a leading (optionally signed) decimal: integer part then optional fraction, like libc atof.
-atof :: func (s: char[]) -> float {
+atof :: func(s: char[]) -> float {
   i := 0;
   sign := 1.0;
   if (s[0] == '-') {
@@ -145,14 +149,14 @@ atof :: func (s: char[]) -> float {
   }
   return sign * (whole + frac / scale);
 }
-print_float :: proc (f: float) {
+print_float :: proc(f: float) {
   printf("%g", f);
   fflush(0);
 }
-print :: proc (msg: char[]) {
+print :: proc(msg: char[]) {
   write(1, msg, strlen(msg));
 }
-assert :: proc (condition: int, message: char[]) {
+assert :: proc(condition: int, message: char[]) {
   if (condition == 0) {
     fflush(0);
     print(message);

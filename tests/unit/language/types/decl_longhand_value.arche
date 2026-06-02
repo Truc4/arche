@@ -1,6 +1,6 @@
 // A value const written with the explicit-type longhand `name : T : value`.
 // RUN: %arche build -o %t %s && %t | grep "v: 42"
 answer: int: 42
-main :: proc () {
+main :: proc() {
   printf("v: %d\n", answer);
 }

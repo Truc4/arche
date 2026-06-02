@@ -1,11 +1,9 @@
 // RUN: %arche build -o %t %s && %t | grep "slot"
-Player :: arche {
-  pos :: float,
-}
+Player :: arche { pos :: float }
 
 static pool<Player> (10)
 
-main :: proc () {
+main :: proc() {
   h := insert(Player, 1.0);
   print("slot 0 handle created");
 }

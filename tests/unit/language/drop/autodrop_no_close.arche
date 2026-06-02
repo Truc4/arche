@@ -2,7 +2,7 @@
 // never explicitly closed is NOT an error — it is auto-dropped at scope exit. (Old rule: this was
 // `opaque value 'f' not consumed before scope end`.)
 // RUN: %arche build -o %t %s
-#import io;
-main :: proc () {
+#import { io }
+main :: proc() {
   arche_fopen_read("/dev/null")(f:);
 }

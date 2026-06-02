@@ -1,11 +1,7 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "Shape already allocated" %t.out
-Handle1 :: arche {
-  val :: int,
-}
+Handle1 :: arche { val :: int }
 
-Handle2 :: arche {
-  val :: int,
-}
+Handle2 :: arche { val :: int }
 
 static pool<Handle1> (1, 1) {
   val: 5,
@@ -15,5 +11,5 @@ static pool<Handle2> (1, 1) {
   val: 10,
 }
 
-@allow_pure_proc main :: proc () {
+@allow_pure_proc main :: proc() {
 }

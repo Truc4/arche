@@ -1,12 +1,10 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "cannot be sys parameter" %t.out
-Entity :: arche {
-  next :: handle<Entity>,
-}
+Entity :: arche { next :: handle<Entity> }
 
 static pool<Entity> (10)
 
 process :: sys (next) {
 }
 
-@allow_pure_proc main :: proc () {
+@allow_pure_proc main :: proc() {
 }

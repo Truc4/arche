@@ -175,20 +175,6 @@ static void deferred_free(DeferredDiags *d) {
  * (which inlines + name-prefixes it). Analysis-only: unlike main.c's resolve_uses
  * we don't touch the lowerer. The module CST + source are borrowed by the registry,
  * so we keep them alive in `holds` until after analysis. */
-/* Module name (first IDENT) of a `#import <name>;` (SN_USE_DECL) node. */
-static int sem_module_name_of(const SyntaxNode *ud, const char *src, char *out, size_t sz) {
-	out[0] = '\0';
-	for (int k = 0; k < ud->child_count; k++)
-		if (ud->children[k].tag == SE_TOKEN && ud->children[k].as.token.kind == TOK_IDENT) {
-			size_t L = ud->children[k].as.token.length;
-			if (L > sz - 1)
-				L = sz - 1;
-			memcpy(out, src + ud->children[k].as.token.offset, L);
-			out[L] = '\0';
-			return 1;
-		}
-	return 0;
-}
 
 /* Dedup set of already-loaded modules (per analyze call; reset in resolve_uses_sem). Marking a
  * name before load also makes transitive `#import` cycle-safe. Mirrors driver/compile.c. */
@@ -220,9 +206,18 @@ static int sem_register_module_file(const char *mod_name, const char *path, cons
 	for (int u = 0; u < root->child_count; u++) {
 		if (root->children[u].tag != SE_NODE || root->children[u].as.node->kind != SN_USE_DECL)
 			continue;
-		char dep[256];
-		if (sem_module_name_of(root->children[u].as.node, src, dep, sizeof(dep)))
+		const SyntaxNode *ud = root->children[u].as.node;
+		for (int k = 0; k < ud->child_count; k++) {
+			if (ud->children[k].tag != SE_TOKEN || ud->children[k].as.token.kind != TOK_IDENT)
+				continue;
+			char dep[256];
+			size_t L = ud->children[k].as.token.length;
+			if (L > sizeof(dep) - 1)
+				L = sizeof(dep) - 1;
+			memcpy(dep, src + ud->children[k].as.token.offset, L);
+			dep[L] = '\0';
 			sem_load_module(dep, source_dir, holds);
+		}
 	}
 	return 1;
 }
@@ -285,36 +280,39 @@ static void resolve_uses_sem(const SyntaxNode *root, const char *src, const char
 		if (root->children[u].tag != SE_NODE || root->children[u].as.node->kind != SN_USE_DECL)
 			continue;
 		const SyntaxNode *ud = root->children[u].as.node;
-		char mod_name[256];
-		SourceLoc use_loc = {0, 0};
-		mod_name[0] = '\0';
-		for (int k = 0; k < ud->child_count; k++)
-			if (ud->children[k].tag == SE_TOKEN && ud->children[k].as.token.kind == TOK_IDENT) {
-				use_loc.line = ud->children[k].as.token.line;
-				use_loc.column = ud->children[k].as.token.column;
-				break;
-			}
-		if (!sem_module_name_of(ud, src, mod_name, sizeof(mod_name)) || !mod_name[0])
-			continue;
-		int before = g_sem_loaded_count;
-		sem_load_module(mod_name, source_dir, holds);
-		/* If the name was newly marked but nothing registered, it wasn't found. (A dedup hit — the
-		 * module already loaded via another import — leaves `before` unchanged and is fine.) */
-		if (g_sem_loaded_count > before && !semantic_has_module(mod_name))
-			deferred_push(diags, SEM_DIAG_module_not_found, use_loc, mod_name);
+		/* One IDENT per module: bare `#import io`, or block `#import { io net }`. Load each. */
+		for (int k = 0; k < ud->child_count; k++) {
+			if (ud->children[k].tag != SE_TOKEN || ud->children[k].as.token.kind != TOK_IDENT)
+				continue;
+			char mod_name[256];
+			size_t L = ud->children[k].as.token.length;
+			if (L > sizeof(mod_name) - 1)
+				L = sizeof(mod_name) - 1;
+			memcpy(mod_name, src + ud->children[k].as.token.offset, L);
+			mod_name[L] = '\0';
+			SourceLoc use_loc = {ud->children[k].as.token.line, ud->children[k].as.token.column};
+			int before = g_sem_loaded_count;
+			sem_load_module(mod_name, source_dir, holds);
+			/* If the name was newly marked but nothing registered, it wasn't found. (A dedup hit — the
+			 * module already loaded via another import — leaves `before` unchanged and is fine.) */
+			if (g_sem_loaded_count > before && !semantic_has_module(mod_name))
+				deferred_push(diags, SEM_DIAG_module_not_found, use_loc, mod_name);
+		}
 	}
 	free(source_dir);
 }
 
 /* ---- explicit-view emission ---- */
 
-static int g_core_lines; /* combined→user line translation: user_line = line - g_core_lines */
+static int g_core_lines; /* combined→user line translation: user_line = line - g_core_lines.
+                          * 0 when core is NOT prepended (i.e. the document IS core.arche). */
 
 /* core.arche is invariant across documents and edits, so read + measure it once.
  * This is the main saving that makes the warm server cheap: every analysis reuses
  * the cached prelude instead of re-reading 130+ lines from disk per keystroke. */
 static char *g_core;
 static int g_core_loaded;
+static int g_core_newlines; /* real newline count of g_core; g_core_lines is the per-analysis offset */
 
 static void ensure_core(void) {
 	if (g_core_loaded)
@@ -323,7 +321,22 @@ static void ensure_core(void) {
 	char core_path[512];
 	snprintf(core_path, sizeof(core_path), "%s/core.arche", ARCHE_CORE_DIR);
 	g_core = read_file(core_path);
-	g_core_lines = (g_core && g_core[0]) ? count_newlines(g_core) : 0;
+	g_core_newlines = (g_core && g_core[0]) ? count_newlines(g_core) : 0;
+	g_core_lines = g_core_newlines;
+}
+
+/* True when `path` resolves to core.arche itself, so prepending core would define
+ * every prelude symbol twice. Compare by (device, inode) so absolute/relative/
+ * symlinked editor paths all match the canonical prelude location. */
+static int path_is_core(const char *path) {
+	if (!path || !path[0])
+		return 0;
+	char core_path[512];
+	snprintf(core_path, sizeof(core_path), "%s/core.arche", ARCHE_CORE_DIR);
+	struct stat sp, sc;
+	if (stat(path, &sp) != 0 || stat(core_path, &sc) != 0)
+		return 0;
+	return sp.st_dev == sc.st_dev && sp.st_ino == sc.st_ino;
 }
 
 /* Render an internal type name as it would be written in arche source (longhand). */
@@ -519,7 +532,11 @@ typedef struct {
 static Analysis analyze(char *user, const char *path) {
 	Analysis a = {NULL, NULL, NULL, {NULL, 0, 0}};
 	ensure_core();
-	if (g_core && g_core[0]) {
+	/* Don't prepend core to core itself — that double-defines every prelude symbol.
+	 * When the document IS core.arche, analyze it bare and zero the line offset. */
+	int prepend = g_core && g_core[0] && !path_is_core(path);
+	g_core_lines = prepend ? g_core_newlines : 0;
+	if (prepend) {
 		size_t cl = strlen(g_core), ul = strlen(user);
 		a.combined = malloc(cl + ul + 1);
 		memcpy(a.combined, g_core, cl);
@@ -657,27 +674,35 @@ static void emit_docs(const Analysis *a) {
 	CstView root = cv_root(a->cst_root, a->combined);
 	int nn = cv_node_count(root);
 	for (int i = 0; i < nn; i++) {
-		CstView decl = cv_node_at(root, i);
-		SyntaxNodeKind k = cv_kind(decl);
-		if (k < SN_WORLD_DECL || k > SN_USE_DECL)
-			continue;
+		CstView top = cv_node_at(root, i);
+		/* Descend one level into a `#foreign`/`#module`/`#file` block region so docs on its
+		 * inner decls still surface for hover. */
+		int is_region = cv_kind(top) == SN_REGION;
+		int inner = is_region ? cv_node_count(top) : 1;
+		for (int j = 0; j < inner; j++) {
+			CstView decl = is_region ? cv_node_at(top, j) : top;
+			SyntaxNodeKind k = cv_kind(decl);
+			if (k < SN_WORLD_DECL || k > SN_USE_DECL)
+				continue;
 
-		CvText lines[256];
-		int n = cv_decl_doc_lines(root, decl, lines, NULL, 256);
-		if (n <= 0)
-			continue;
+			CvText lines[256];
+			int n = cv_decl_doc_lines(root, decl, lines, NULL, 256);
+			if (n <= 0)
+				continue;
 
-		CvPos p = cv_first_token_pos(decl);
-		int uline = p.line - g_core_lines;
-		if (uline <= 0)
-			continue; /* core region */
+			CvPos p = cv_first_token_pos(decl);
+			int uline = p.line - g_core_lines;
+			if (uline <= 0)
+				continue; /* core region */
 
-		CvText name = cv_text(cv_child(decl, SN_FUNC_DEF_NAME));
-		if (!name.ptr)
-			name = cv_text(cv_child(decl, SN_TYPE_DEF_NAME));
-		printf("DOC %d %d %.*s %d\n", uline, p.column, name.ptr ? (int)name.len : 4, name.ptr ? name.ptr : "item", n);
-		for (int j = 0; j < n; j++)
-			printf("DOCLINE %.*s\n", (int)lines[j].len, lines[j].ptr);
+			CvText name = cv_text(cv_child(decl, SN_FUNC_DEF_NAME));
+			if (!name.ptr)
+				name = cv_text(cv_child(decl, SN_TYPE_DEF_NAME));
+			printf("DOC %d %d %.*s %d\n", uline, p.column, name.ptr ? (int)name.len : 4, name.ptr ? name.ptr : "item",
+			       n);
+			for (int j2 = 0; j2 < n; j2++)
+				printf("DOCLINE %.*s\n", (int)lines[j2].len, lines[j2].ptr);
+		}
 	}
 }
 

@@ -1,8 +1,6 @@
 // RUN: %arche build -o %t %s && %t
-Point :: arche {
-  x :: int,
-}
+Point :: arche { x :: int }
 
-main :: proc () {
+main :: proc() {
   printf("allocated\n");
 }

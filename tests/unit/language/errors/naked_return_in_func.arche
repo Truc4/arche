@@ -1,13 +1,13 @@
 // A `func` is a value and must return one — a naked `return;` (an early exit for a proc/sys) is
 // a return-arity error in a func.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "returned 0" %t.out
-g :: func (x: int) -> int {
+g :: func(x: int) -> int {
   if (x < 0) {
     return;
   }
   return x;
 }
 
-main :: proc () {
+main :: proc() {
   printf("%d\n", g(1));
 }

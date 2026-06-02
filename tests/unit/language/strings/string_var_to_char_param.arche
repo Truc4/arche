@@ -1,0 +1,24 @@
+// RUN: %arche build -o %t %s && %t | grep "lit=5 var=5 mid=2"
+// A variable bound to a string literal (`x := "hello"`, a bare i8*) passed to a proc's char[]
+// parameter used to be passed as a raw pointer where the callee expected an arche_array struct —
+// the callee read the string bytes as {ptr,len,cap} and crashed ("stack overflow"). A literal
+// passed directly, and a char[N] buffer variable, both worked; only the literal-bound variable
+// broke. Now the call site wraps it in a stack arche_array. Regression for that fix.
+slen :: proc(s: char[])(r: int) {
+  r = strlen(s);
+}
+
+main :: proc() {
+  slen("hello")(lit:); // literal passed directly (always worked)
+
+  x := "hello";
+  slen(x)(var:); // literal-bound variable — the bug
+
+  buf: char[8];
+  buf[0] = 'h';
+  buf[1] = 'i';
+  buf[2] = 0;
+  slen(buf)(mid:); // char[N] buffer variable (always worked)
+
+  printf("lit=%d var=%d mid=%d\n", lit, var, mid);
+}

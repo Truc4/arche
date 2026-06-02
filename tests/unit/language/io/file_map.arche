@@ -1,7 +1,7 @@
 // RUN: printf 'a,bb,ccc\n' > /tmp/file_map.txt && %arche build -o %t %s && %t | grep "size=9 commas=2"
 // arche_file_map returns a raw byte view (char[]) scanned with i64 offsets.
-#import io;
-main :: proc () {
+#import { io }
+main :: proc() {
   arche_file_map("/tmp/file_map.txt")(data:);
   arche_file_size()(size: i64);
   commas: i64 = 0;

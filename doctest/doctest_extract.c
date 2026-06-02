@@ -185,20 +185,27 @@ DoctestExamples doctest_extract(const SyntaxNode *root, const char *src) {
 
 	int nn = cv_node_count(rv);
 	for (int i = 0; i < nn; i++) {
-		CstView decl = cv_node_at(rv, i);
-		SyntaxNodeKind k = cv_kind(decl);
-		if (k < SN_WORLD_DECL || k > SN_USE_DECL)
-			continue;
+		CstView top = cv_node_at(rv, i);
+		/* A `#foreign`/`#module`/`#file` block region holds its decls as children — descend one
+		 * level so docs on decls inside a block are still extracted. */
+		int is_region = cv_kind(top) == SN_REGION;
+		int inner = is_region ? cv_node_count(top) : 1;
+		for (int j = 0; j < inner; j++) {
+			CstView decl = is_region ? cv_node_at(top, j) : top;
+			SyntaxNodeKind k = cv_kind(decl);
+			if (k < SN_WORLD_DECL || k > SN_USE_DECL)
+				continue;
 
-		CvText lines[MAX_DOC_LINES];
-		int linenos[MAX_DOC_LINES];
-		int n = cv_decl_doc_lines(rv, decl, lines, linenos, MAX_DOC_LINES);
-		if (n <= 0)
-			continue;
+			CvText lines[MAX_DOC_LINES];
+			int linenos[MAX_DOC_LINES];
+			int n = cv_decl_doc_lines(rv, decl, lines, linenos, MAX_DOC_LINES);
+			if (n <= 0)
+				continue;
 
-		char name[256];
-		decl_name_of(decl, name, sizeof(name));
-		scan_fences(lines, linenos, n, name, &ex);
+			char name[256];
+			decl_name_of(decl, name, sizeof(name));
+			scan_fences(lines, linenos, n, name, &ex);
+		}
 	}
 	return ex;
 }

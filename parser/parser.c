@@ -26,6 +26,9 @@ struct Parser {
 	int pending_count;
 	int pending_cap;
 	int recursion_depth;
+	/* Inside a `#foreign` region (banner = rest of file, or a `#foreign { ... }` block). While set,
+	 * a bodiless proc parses as a foreign value-form (SN_PROC_EXPR) rather than a proc type. */
+	int in_foreign;
 	/* Lossless CST builder. Built alongside the AST purely by appending; never
 	 * affects parse control flow, so CST bugs can't change compiler output. */
 	CstBuilder *builder;
@@ -532,7 +535,7 @@ static int parse_param_list_body(Parser *parser, int is_extern) {
 			return 0;
 
 		cst_wrap(parser, param_cp, SN_PARAM);
-	} while (match(parser, TOK_COMMA));
+	} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
 	return 1;
 }
 
@@ -572,7 +575,7 @@ static int parse_proc_out_list(Parser *parser) {
 					return 0;
 
 				cst_wrap(parser, out_param_cp, SN_OUT_PARAM);
-			} while (match(parser, TOK_COMMA));
+			} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
 		}
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' after out-parameters");
@@ -617,7 +620,7 @@ static int parse_sys_param_list_body(Parser *parser) {
 		cst_wrap(parser, param_name_cp, SN_PARAM_NAME);
 
 		cst_wrap(parser, param_cp, SN_PARAM);
-	} while (match(parser, TOK_COMMA));
+	} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
 	return 1;
 }
 
@@ -677,6 +680,11 @@ static int parse_func_sig(Parser *parser, int is_extern) {
 static int parse_proc_form(Parser *parser, int is_extern, SyntaxNodeKind *out_kind) {
 	if (!parse_proc_sig(parser, is_extern))
 		return 0;
+	if (is_extern && check(parser, TOK_LBRACE)) {
+		error(parser, "a proc inside a `#foreign` region is an FFI declaration and has no body — "
+		              "remove the `{ ... }` (or move it out of the `#foreign` region)");
+		return 0;
+	}
 	if (!is_extern && check(parser, TOK_LBRACE)) {
 		*out_kind = SN_PROC_EXPR;
 		return parse_block_body(parser);
@@ -714,11 +722,8 @@ static int parse_group_form(Parser *parser, SyntaxNodeKind *out_kind) {
 		advance(parser);
 		if (!match(parser, TOK_COMMA))
 			break;
-		/* Disallow a trailing comma: after `,` the next token must be a member name. */
-		if (check(parser, TOK_RBRACE)) {
-			error(parser, "trailing comma not allowed in group member list");
-			return 0;
-		}
+		if (check(parser, TOK_RBRACE)) /* optional trailing comma */
+			break;
 	}
 	if (!match(parser, TOK_RBRACE)) {
 		error(parser, "Expected '}' or ',' in group member list");
@@ -906,6 +911,53 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 
 /* `out_kind` receives the CST node kind for the declaration form, from parse
  * context. Pre-set to SN_ERROR; each leaf parser / branch sets the real kind. */
+/* A region marker — `#module` / `#file` / `#foreign` — in one of two forms:
+ *   banner  `#foreign`             applies to every following decl, to end of file
+ *   block   `#foreign { decls }`   applies only to the decls inside the braces
+ * The marker token is current on entry. `#foreign` toggles parser->in_foreign so bodiless
+ * procs in scope parse as foreign value-forms (not proc types); `#module`/`#file` visibility
+ * narrowing is applied later, positionally, by the decl-collection loops. Emits SN_REGION;
+ * for the block form its children are the braced decls (the collection loops recurse in). */
+static int parse_region(Parser *parser, SyntaxNodeKind *out_kind) {
+	int is_foreign = check(parser, TOK_HASH_FOREIGN);
+	advance(parser); /* consume the marker token */
+	*out_kind = SN_REGION;
+
+	if (check(parser, TOK_LBRACE)) {
+		/* Block form: the attribute is scoped to the braced decl list. */
+		advance(parser); /* consume '{' */
+		int saved = parser->in_foreign;
+		if (is_foreign)
+			parser->in_foreign = 1;
+		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+			Trivia *leading = NULL;
+			int leading_count = 0;
+			take_pending_as_leading(parser, &leading, &leading_count);
+			free(leading);
+			(void)leading_count;
+			int child_cp = cst_cp(parser);
+			SyntaxNodeKind child_kind = SN_ERROR;
+			if (!parse_decl(parser, &child_kind)) {
+				synchronize(parser);
+				cst_wrap(parser, child_cp, SN_ERROR);
+				continue;
+			}
+			cst_wrap(parser, child_cp, child_kind);
+		}
+		parser->in_foreign = saved;
+		if (!match(parser, TOK_RBRACE)) {
+			error(parser, "Expected '}' to close the region block");
+			return 0;
+		}
+		return 1;
+	}
+
+	/* Banner form: sticky to end of file. */
+	if (is_foreign)
+		parser->in_foreign = 1;
+	return 1;
+}
+
 static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	*out_kind = SN_ERROR;
 
@@ -978,28 +1030,57 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	 * `extern proc`) are RHS value/type forms (see parse_primary_expr / parse_type_inner), reached
 	 * via the IDENT-led default case below. There are no keyword-led top-level declarations. */
 	case TOK_USE: {
-		advance(parser); /* consume 'use' */
-		if (!check(parser, TOK_IDENT)) {
-			error(parser, "Expected module name after 'use'");
+		/* `#import` is a region in the `#module`/`#file`/`#foreign` family. Two forms:
+		 *   bare   `#import io`            one module (trailing `;` optional)
+		 *   block  `#import { io net … }`  a group of modules (whitespace/`,`/`;` separated)
+		 * Both produce an SN_USE_DECL carrying one IDENT per module; consumers iterate them. */
+		advance(parser); /* consume '#import' */
+		if (check(parser, TOK_LBRACE)) {
+			advance(parser); /* consume '{' */
+			if (check(parser, TOK_RBRACE)) {
+				error(parser, "empty `#import { }` — list one or more module names");
+				return 0;
+			}
+			while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "expected a module name in `#import { ... }` (names are whitespace-separated)");
+					return 0;
+				}
+				advance(parser);
+			}
+			if (!match(parser, TOK_RBRACE)) {
+				error(parser, "Expected '}' to close `#import { ... }`");
+				return 0;
+			}
+			*out_kind = SN_USE_DECL;
+			return 1;
+		}
+		/* Bare `#import` is a banner region — like `#foreign`/`#module`/`#file`, it runs to end of
+		 * file: every item below it must be a module name. So importing alongside other code REQUIRES
+		 * the block form `#import { ... }`; a bare `#import` followed by anything but module names
+		 * (to EOF) is an error. No single-module special case. */
+		int n = 0;
+		while (check(parser, TOK_IDENT)) {
+			advance(parser);
+			n++;
+		}
+		if (n == 0) {
+			error(parser, "Expected a module name after `#import`");
 			return 0;
 		}
-		advance(parser);
-
-		if (!match(parser, TOK_SEMI)) {
-			error(parser, "Expected ';' after use declaration");
+		if (!check(parser, TOK_EOF)) {
+			error(parser, "a bare `#import` region runs to end of file — everything below it must be a "
+			              "module name; use `#import { ... }` to import alongside other declarations");
 			return 0;
 		}
-
 		*out_kind = SN_USE_DECL;
 		return 1;
 	}
 	case TOK_HASH_MODULE:
 	case TOK_HASH_FILE:
-		/* Visibility region marker (`#module` / `#file`): a standalone banner that narrows the
-		 * visibility of every following decl in this file. The token itself is the whole marker. */
-		advance(parser);
-		*out_kind = SN_VIS_MARKER;
-		return 1;
+	case TOK_HASH_FOREIGN:
+		/* Region marker (`#module` / `#file` / `#foreign`) — banner or `{ ... }` block. */
+		return parse_region(parser, out_kind);
 	default:
 		/* INFO: Check for top-level const or alloc */
 		if (check(parser, TOK_IDENT) || check(parser, TOK_STATIC)) {
@@ -1060,15 +1141,10 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 		advance(parser); /* consume 'proc' / 'func' */
 		if (check(parser, TOK_LBRACE))
 			return parse_group_form(parser, out_kind);
-		return is_proc ? parse_proc_form(parser, 0, out_kind) : parse_func_form(parser, out_kind);
-	}
-	if (check(parser, TOK_EXTERN)) {
-		advance(parser); /* consume 'extern' — externs are procs */
-		if (!match(parser, TOK_PROC)) {
-			error(parser, "Expected 'proc' after 'extern' (externs are procs)");
-			return 0;
-		}
-		return parse_proc_form(parser, 1, out_kind);
+		/* Inside a `#foreign` region a bodiless proc is a foreign (FFI) value-form, not a proc
+		 * type — drive that off the parser's region state. Funcs are never foreign (FFI bodies
+		 * are procs), so a bodiless func is always a func type. */
+		return is_proc ? parse_proc_form(parser, parser->in_foreign, out_kind) : parse_func_form(parser, out_kind);
 	}
 	if (check(parser, TOK_ARCHETYPE)) {
 		advance(parser); /* consume 'archetype' */
@@ -1127,7 +1203,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 					advance(parser); /* explicit value */
 				}
 				cst_wrap(parser, v_cp, SN_ENUM_VARIANT);
-			} while (match(parser, TOK_COMMA));
+			} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACE));
 		}
 		if (!match(parser, TOK_RBRACE)) {
 			error(parser, "Expected '}' to close enum");
@@ -1181,7 +1257,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 				do {
 					if (!parse_expression(parser))
 						return 0;
-				} while (match(parser, TOK_COMMA));
+				} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACKET));
 				if (!match(parser, TOK_RBRACKET)) {
 					error(parser, "Expected ']'");
 					return 0;
@@ -1199,7 +1275,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 					do {
 						if (!parse_expression(parser))
 							return 0;
-					} while (match(parser, TOK_COMMA));
+					} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
 				}
 				if (!match(parser, TOK_RPAREN)) {
 					error(parser, "Expected ')' after arguments");
@@ -1218,7 +1294,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			do {
 				if (!parse_expression(parser))
 					return 0;
-			} while (match(parser, TOK_COMMA));
+			} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACKET));
 			if (!match(parser, TOK_RBRACKET)) {
 				error(parser, "Expected ']'");
 				return 0;
@@ -1235,7 +1311,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 				do {
 					if (!parse_expression(parser))
 						return 0;
-				} while (match(parser, TOK_COMMA));
+				} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
 			}
 			if (!match(parser, TOK_RPAREN)) {
 				error(parser, "Expected ')' after arguments");
@@ -1251,6 +1327,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 
 	if (match(parser, TOK_LPAREN)) {
 		parse_expression(parser);
+		match(parser, TOK_COMMA); /* tolerate a trailing comma — trailing commas are valid in every list */
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' after expression");
 		}
@@ -1484,7 +1561,7 @@ static int parse_simple_statement(Parser *parser, SyntaxNodeKind *out_kind) {
 					}
 				}
 				cst_wrap(parser, out_arg_cp, SN_OUT_ARG);
-			} while (match(parser, TOK_COMMA));
+			} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
 		}
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' after out-arguments");
@@ -1594,7 +1671,7 @@ static int parse_statement(Parser *parser) {
 				error(parser, "Expected expression after 'return'");
 				goto cleanup;
 			}
-			while (match(parser, TOK_COMMA)) {
+			while (match(parser, TOK_COMMA) && !check(parser, TOK_SEMI)) {
 				if (!parse_expression(parser)) {
 					error(parser, "Expected expression after ',' in return statement");
 					goto cleanup;

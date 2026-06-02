@@ -1,15 +1,13 @@
 // RUN: ! %arche build -o %t %s 2>&1
-pick_int :: func (x: int) -> int {
+pick_int :: func(x: int) -> int {
   return x;
 }
-pick_float :: func (x: float) -> float {
+pick_float :: func(x: float) -> float {
   return x;
 }
-pick :: func {
-  pick_int, pick_float
-}
+pick :: func { pick_int, pick_float }
 
-main :: proc () {
+main :: proc() {
   c := 'X';
   r := pick(c);
   // error: no member of group 'pick' matches char arg

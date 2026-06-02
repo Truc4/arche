@@ -1,9 +1,7 @@
 // RUN: %arche build -o %t %s && %t
-C :: arche {
-  x :: int,
-}
+C :: arche { x :: int }
 
-main :: proc () {
+main :: proc() {
   i := 0;
   for p in C {
     printf("i = %d\n", i);

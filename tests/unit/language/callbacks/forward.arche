@@ -2,20 +2,20 @@
 // specialization the forwarded param resolves to the concrete bound proc, so the
 // inner call lands directly on it.
 // RUN: %arche build -o %t %s && %t | grep "hello"
-h :: proc ()()
+h :: proc()()
 
-hello :: proc ()() {
+hello :: proc()() {
   printf("hello\n");
 }
 
-inner :: proc (cb: h)() {
+inner :: proc(cb: h)() {
   cb()();
 }
 
-outer :: proc (cb: h)() {
+outer :: proc(cb: h)() {
   inner(cb)();
 }
 
-main :: proc () {
+main :: proc() {
   outer(hello)();
 }

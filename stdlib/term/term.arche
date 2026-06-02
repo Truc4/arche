@@ -1,5 +1,7 @@
 // The `term` module — terminal raw mode + key reads (C-backed in runtime/term.c).
-// `#import term;` then `term.term_raw_enable`, `term.term_read_key`, … (bare names also resolve).
-term_raw_enable :: extern proc ();
-term_raw_restore :: extern proc ();
-term_read_key :: extern proc ()(k: int);
+// `#import { term }` then `term.term_raw_enable`, `term.term_read_key`, … (bare names also resolve).
+#foreign {
+  term_raw_enable :: proc()
+  term_raw_restore :: proc()
+  term_read_key :: proc()(k: int)
+}

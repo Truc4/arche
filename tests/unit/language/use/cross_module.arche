@@ -1,9 +1,8 @@
 // A `use`d module may call another module's function by its bare (unqualified)
 // name: xmod_b.useit calls xmod_a.helper. main also calls useit bare.
 // RUN: %arche build -o %t %s && %t | grep "RESULT=110"
-#import xmod_a;
-#import xmod_b;
+#import { xmod_a xmod_b }
 
-main :: proc () {
+main :: proc() {
   printf("RESULT=%d\n", useit(10));
 }

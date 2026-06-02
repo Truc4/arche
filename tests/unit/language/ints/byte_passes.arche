@@ -3,19 +3,19 @@
 // vectorize (data pointer hoisted once at entry, not reloaded per iteration).
 // The written buffer is moved in by reference and returned; the read-only source
 // is passed by value (copied in, no side effect).
-copy_bytes :: func (own dst: char[], src: char[], n: i64) -> char[] {
+copy_bytes :: func(own dst: char[], src: char[], n: i64) -> char[] {
   for (i: i64 = 0; i < n; i = i + 1) {
     dst[i] = src[i];
   }
   return dst;
 }
-classify_commas :: func (data: char[], own mask: char[], n: i64) -> char[] {
+classify_commas :: func(data: char[], own mask: char[], n: i64) -> char[] {
   for (i: i64 = 0; i < n; i = i + 1) {
     mask[i] = data[i] == 44;
   }
   return mask;
 }
-main :: proc () {
+main :: proc() {
   src: char[8];
   src[0] = 'a';
   src[1] = ',';

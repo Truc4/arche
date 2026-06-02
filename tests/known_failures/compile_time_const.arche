@@ -9,17 +9,15 @@
 // (This directory is excluded from the lit run via tests/lit.cfg. Move this test out once CTFE
 // lands and it passes.)
 // RUN: %arche build -o %t %s && %t | grep "ok"
-area :: func (w: int, h: int) -> int {
+area :: func(w: int, h: int) -> int {
   return w * h;
 }
-Grid :: arche {
-  cell :: int,
-}
+Grid :: arche { cell :: int }
 static pool<Grid> (area(3, 4)) {
   cell: 0,
 }
 
-main :: proc () {
+main :: proc() {
   assert(Grid.cell[11] == 0, "last cell should exist (capacity 12)\n");
   printf("ok\n");
 }

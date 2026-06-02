@@ -4412,7 +4412,9 @@ static Decl *build_proc_from(CstView f, char *name) {
 	ad->loc = sem_node_loc(f.node);
 	ProcDecl *ap = proc_decl_create(name);
 	ap->loc = sem_direct_token_loc(f.node, TOK_LPAREN);
-	ap->is_extern = cv_has_token(f, TOK_EXTERN);
+	/* Foreign (FFI-bodied): a proc value-form with no `{` body block. The parser only emits a
+	 * bodiless proc value-form inside a `#foreign` region (otherwise it's a proc type). */
+	ap->is_extern = !cv_has_token(f, TOK_LBRACE);
 	ap->is_variadic = cv_has_token(f, TOK_DOTDOTDOT);
 	ap->allow_pure_proc = cv_has_token(f, TOK_AT);
 	int np = cv_count(f, SN_PARAM);
@@ -4435,7 +4437,7 @@ static Decl *build_func_from(CstView f, char *name) {
 	ad->loc = sem_node_loc(f.node);
 	FuncDecl *af = func_decl_create(name);
 	af->loc = sem_direct_token_loc(f.node, TOK_LPAREN);
-	af->is_extern = cv_has_token(f, TOK_EXTERN);
+	af->is_extern = 0; /* funcs are never foreign — FFI bodies are procs */
 	af->is_variadic = cv_has_token(f, TOK_DOTDOTDOT);
 	int np = cv_count(f, SN_PARAM);
 	af->params = calloc(np ? np : 1, sizeof(Parameter *));
@@ -4661,7 +4663,7 @@ static Decl *cst_build_decl_inner(CstView d) {
 		ad->loc = sem_node_loc(d.node);
 		ProcDecl *ap = proc_decl_create(sem_cv_dup(cv_child(d, SN_FUNC_DEF_NAME)));
 		ap->loc = sem_direct_token_loc(d.node, TOK_LPAREN); /* lint location: the `(`, like the parser */
-		ap->is_extern = cv_has_token(d, TOK_EXTERN);
+		ap->is_extern = !cv_has_token(d, TOK_LBRACE);
 		ap->is_variadic = cv_has_token(d, TOK_DOTDOTDOT);
 		ap->allow_pure_proc = cv_has_token(d, TOK_AT);
 		int np = cv_count(d, SN_PARAM);
@@ -4697,7 +4699,7 @@ static Decl *cst_build_decl_inner(CstView d) {
 		ad->loc = sem_node_loc(d.node);
 		FuncDecl *af = func_decl_create(sem_cv_dup(cv_child(d, SN_FUNC_DEF_NAME)));
 		af->loc = sem_direct_token_loc(d.node, TOK_LPAREN);
-		af->is_extern = cv_has_token(d, TOK_EXTERN);
+		af->is_extern = 0; /* funcs are never foreign */
 		af->is_variadic = cv_has_token(d, TOK_DOTDOTDOT);
 		int np = cv_count(d, SN_PARAM);
 		af->params = calloc(np ? np : 1, sizeof(Parameter *));
@@ -5407,15 +5409,52 @@ static void sem_expand_tuple_groups(AstProgram *prog) {
 	}
 }
 
+/* Build one module decl from `node`, append it to prog, and record its name in the module's
+ * `full` set (intra-module resolution) and — when `exported` — its `expset` (externally visible).
+ * Foreign (extern) decls are never added to either set. Shared by the top-level module loop and
+ * the recursion into `#foreign { ... }` / `#module { ... }` block regions. */
+static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, AstProgram *prog, char ***full, int *fulln,
+                                int *fullcap, char ***expset, int *expn, int *expcap, int exported) {
+	Decl *md = cst_build_decl((CstView){node, msrc});
+	if (!md)
+		return;
+	prog->decls[prog->decl_count++] = md;
+	int is_ext =
+	    (md->kind == DECL_PROC && md->data.proc->is_extern) || (md->kind == DECL_FUNC && md->data.func->is_extern);
+	const char *nm = sem_decl_name(md);
+	if (nm && !is_ext) {
+		if (*fulln == *fullcap) {
+			*fullcap = *fullcap ? *fullcap * 2 : 8;
+			*full = realloc(*full, (size_t)*fullcap * sizeof(char *));
+		}
+		(*full)[(*fulln)++] = sem_dupz(nm);
+		if (exported) {
+			if (*expn == *expcap) {
+				*expcap = *expcap ? *expcap * 2 : 8;
+				*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
+			}
+			(*expset)[(*expn)++] = sem_dupz(nm);
+		}
+	}
+}
+
+/* True for a declaration node kind eligible for collection (excludes SN_USE_DECL, handled
+ * separately, and SN_REGION, which is a container/marker rather than a decl). */
+static int sem_is_collectible_decl(SyntaxNodeKind k) {
+	return k >= SN_WORLD_DECL && k <= SN_USE_DECL && k != SN_USE_DECL;
+}
+
 /* Build the analyzable AstProgram from the main-file CST plus all registered module CSTs,
  * inlining + name-prefixing modules exactly as main.c's resolve_uses does, then expanding
  * top-level tuple groups. The returned AstProgram owns all its memory (free with ast_program_free). */
 static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 	AstProgram *prog = ast_program_create();
 	CstView r = cv_root(root, src);
-	int cap = cv_node_count(r) + 8;
+	/* Deep count so decls nested in `#foreign { }` / `#module { }` block regions (collected by the
+	 * region recursion below) can't overflow the array; over-estimates are harmless. */
+	int cap = cv_node_count_deep(r) + 8;
 	for (int m = 0; m < g_sem_module_count; m++)
-		cap += cv_node_count(cv_root(g_sem_modules[m].root, g_sem_modules[m].src)) + 1;
+		cap += cv_node_count_deep(cv_root(g_sem_modules[m].root, g_sem_modules[m].src)) + 1;
 	prog->decls = calloc(cap ? cap : 1, sizeof(Decl *));
 	prog->decl_count = 0;
 
@@ -5429,83 +5468,108 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 		if (root->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = root->children[i].as.node->kind;
+		/* A region marker. The banner form contributes no decls here (its following siblings are
+		 * collected normally); a `{ ... }` block's child decls are collected inline. In the main
+		 * file there is no export band to narrow (that's module-only), so the marker kind is moot. */
+		if (k == SN_REGION) {
+			const SyntaxNode *rn = root->children[i].as.node;
+			if (cv_has_token((CstView){rn, src}, TOK_LBRACE)) {
+				for (int c = 0; c < rn->child_count; c++) {
+					if (rn->children[c].tag != SE_NODE)
+						continue;
+					if (!sem_is_collectible_decl(rn->children[c].as.node->kind))
+						continue;
+					Decl *ad = cst_build_decl((CstView){rn->children[c].as.node, src});
+					if (ad)
+						prog->decls[prog->decl_count++] = ad;
+				}
+			}
+			continue;
+		}
 		if (k < SN_WORLD_DECL || k > SN_USE_DECL)
 			continue;
 		CstView dv = {root->children[i].as.node, src};
 
 		if (k == SN_USE_DECL) {
-			char *mod_name = sem_txt_dup(cv_token(dv, TOK_IDENT));
-			int first = prog->decl_count;
-			int found = 0;
-			/* full = ALL non-extern symbols (prefix everything → intra-module refs resolve);
-			 * expset = only #export-band symbols (the only ones externally visible). */
-			char **full = NULL;
-			int fulln = 0, fullcap = 0;
-			char **expset = NULL;
-			int expn = 0, expcap = 0;
-			for (int m = 0; m < g_sem_module_count; m++) {
-				if (strcmp(g_sem_modules[m].name, mod_name) != 0)
+			/* One IDENT per imported module: a bare `#import io` has one, a block
+			 * `#import { io net }` has several. Inline each. */
+			const SyntaxNode *un = dv.node;
+			for (int t = 0; t < un->child_count; t++) {
+				if (un->children[t].tag != SE_TOKEN || un->children[t].as.token.kind != TOK_IDENT)
 					continue;
-				found = 1;
-				const SyntaxNode *mr = g_sem_modules[m].root;
-				int exported = 1; /* band resets per file */
-				for (int j = 0; j < mr->child_count; j++) {
-					if (mr->children[j].tag != SE_NODE)
+				CvText tk = {src + un->children[t].as.token.offset, un->children[t].as.token.length};
+				char *mod_name = sem_txt_dup(tk);
+				int first = prog->decl_count;
+				int found = 0;
+				/* full = ALL non-extern symbols (prefix everything → intra-module refs resolve);
+				 * expset = only #export-band symbols (the only ones externally visible). */
+				char **full = NULL;
+				int fulln = 0, fullcap = 0;
+				char **expset = NULL;
+				int expn = 0, expcap = 0;
+				for (int m = 0; m < g_sem_module_count; m++) {
+					if (strcmp(g_sem_modules[m].name, mod_name) != 0)
 						continue;
-					SyntaxNodeKind mk = mr->children[j].as.node->kind;
-					if (mk == SN_VIS_MARKER) {
-						exported = 0;
-						continue;
-					}
-					if (mk < SN_WORLD_DECL || mk > SN_USE_DECL || mk == SN_USE_DECL)
-						continue;
-					Decl *md = cst_build_decl((CstView){mr->children[j].as.node, g_sem_modules[m].src});
-					if (!md)
-						continue;
-					prog->decls[prog->decl_count++] = md;
-					int is_ext = (md->kind == DECL_PROC && md->data.proc->is_extern) ||
-					             (md->kind == DECL_FUNC && md->data.func->is_extern);
-					const char *nm = sem_decl_name(md);
-					if (nm && !is_ext) {
-						if (fulln == fullcap) {
-							fullcap = fullcap ? fullcap * 2 : 8;
-							full = realloc(full, (size_t)fullcap * sizeof(char *));
-						}
-						full[fulln++] = sem_dupz(nm);
-						if (exported) {
-							if (expn == expcap) {
-								expcap = expcap ? expcap * 2 : 8;
-								expset = realloc(expset, (size_t)expcap * sizeof(char *));
+					found = 1;
+					const SyntaxNode *mr = g_sem_modules[m].root;
+					const char *msrc = g_sem_modules[m].src;
+					int exported = 1; /* band resets per file */
+					for (int j = 0; j < mr->child_count; j++) {
+						if (mr->children[j].tag != SE_NODE)
+							continue;
+						const SyntaxNode *cn = mr->children[j].as.node;
+						SyntaxNodeKind mk = cn->kind;
+						if (mk == SN_REGION) {
+							CstView rv = {cn, msrc};
+							int is_block = cv_has_token(rv, TOK_LBRACE);
+							int is_foreign = cv_has_token(rv, TOK_HASH_FOREIGN);
+							if (is_block) {
+								/* A `#module`/`#file` block narrows only its own decls; a `#foreign` block
+								 * leaves visibility as-is (its decls are extern, never exported). */
+								int child_exp = is_foreign ? exported : 0;
+								for (int c = 0; c < cn->child_count; c++) {
+									if (cn->children[c].tag != SE_NODE)
+										continue;
+									if (!sem_is_collectible_decl(cn->children[c].as.node->kind))
+										continue;
+									sem_add_module_decl(cn->children[c].as.node, msrc, prog, &full, &fulln, &fullcap,
+									                    &expset, &expn, &expcap, child_exp);
+								}
+							} else if (!is_foreign) {
+								exported = 0; /* visibility banner: narrows the rest of this file */
 							}
-							expset[expn++] = sem_dupz(nm);
+							continue;
 						}
+						if (!sem_is_collectible_decl(mk))
+							continue;
+						sem_add_module_decl(cn, msrc, prog, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported);
 					}
 				}
-			}
-			if (!found) {
-				free(mod_name);
+				if (!found) {
+					free(mod_name);
+					free(full);
+					free(expset);
+					continue;
+				}
+				/* Prefix the module's own decls with the FULL set (intra-module refs resolve). */
+				for (int dd = first; dd < prog->decl_count; dd++)
+					sem_rename_decl(prog->decls[dd], mod_name, full, fulln);
+				for (int x = 0; x < fulln; x++)
+					free(full[x]);
 				free(full);
-				free(expset);
-				continue;
-			}
-			/* Prefix the module's own decls with the FULL set (intra-module refs resolve). */
-			for (int dd = first; dd < prog->decl_count; dd++)
-				sem_rename_decl(prog->decls[dd], mod_name, full, fulln);
-			for (int x = 0; x < fulln; x++)
-				free(full[x]);
-			free(full);
-			/* Only the EXPORT set is externally visible. */
-			if (acc_n < 64) {
-				acc_prefix[acc_n] = sem_dupz(mod_name);
-				acc_set[acc_n] = expset;
-				acc_count[acc_n] = expn;
-				acc_n++;
-			} else {
-				for (int x = 0; x < expn; x++)
-					free(expset[x]);
-				free(expset);
-			}
-			free(mod_name);
+				/* Only the EXPORT set is externally visible. */
+				if (acc_n < 64) {
+					acc_prefix[acc_n] = sem_dupz(mod_name);
+					acc_set[acc_n] = expset;
+					acc_count[acc_n] = expn;
+					acc_n++;
+				} else {
+					for (int x = 0; x < expn; x++)
+						free(expset[x]);
+					free(expset);
+				}
+				free(mod_name);
+			} /* end per-module-ident loop */
 			continue;
 		}
 

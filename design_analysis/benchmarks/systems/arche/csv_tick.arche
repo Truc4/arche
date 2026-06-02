@@ -17,7 +17,7 @@
 //     (currently we'd time externally via the runner)
 //   - write the Python/Polars comparison loop (deferred per plan)
 
-#import csv;
+#import { csv }
 
 Transaction :: arche {
   price :: float,

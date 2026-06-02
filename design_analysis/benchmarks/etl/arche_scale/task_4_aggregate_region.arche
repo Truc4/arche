@@ -1,20 +1,18 @@
 // Task 4: Aggregate (sum of revenue)
 // Compute revenue = price * quantity, then sum
-#import csv;
+#import { csv }
 
-Transaction :: arche {
-  price :: float, quantity :: int, revenue :: float,
-}
+Transaction :: arche { price :: float, quantity :: int, revenue :: float }
 
 static pool<Transaction> (100000000, 100000000) {
   price: 0.0, quantity: 0, revenue: 0.0,
 }
 
-load_transactions :: proc () {
+load_transactions :: proc() {
   csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_100m.csv");
 }
 
-main :: proc () {
+main :: proc() {
   load_transactions();
   Transaction.revenue = Transaction.price * Transaction.quantity;
   total_revenue := 0.0;

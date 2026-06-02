@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
 // Test just extern declarations via core.arche
-main :: proc () {
+main :: proc() {
   printf("extern declarations ok\n");
 }

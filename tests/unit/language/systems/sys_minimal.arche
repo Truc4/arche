@@ -1,8 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "system_ran"
 pos :: float
-Particle :: arche {
-  pos,
-}
+Particle :: arche { pos }
 
 static pool<Particle> (10)
 
@@ -11,7 +9,7 @@ dummy :: sys (pos) {
   pos = pos;
 }
 
-main :: proc () {
+main :: proc() {
   insert(Particle, 1.0);
   run dummy;
   printf("pos[0]=%f\n", Particle.pos[0]);

@@ -1,0 +1,11 @@
+// A proc inside a `#foreign` region is an FFI declaration and must be bodiless — a `{ ... }`
+// body is a parse error.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "foreign.*region.*no body" %t.out
+#foreign {
+  bad :: proc(x: int)(r: int) {
+    r = x;
+  }
+}
+
+main :: proc() {
+}
