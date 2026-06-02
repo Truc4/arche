@@ -12,10 +12,10 @@
  * Build: cc -O2 -o bench bench.c
  * Run:   ./bench
  */
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
 #include <time.h>
 
 #define KEYLEN 24
@@ -79,19 +79,22 @@ int main(void) {
 
 		/* --- hash table (open addressing), used by HASH and as INTERN's index --- */
 		int cap = 1;
-		while (cap < N * 2) cap <<= 1;     /* power of two, load factor < 0.5 */
+		while (cap < N * 2)
+			cap <<= 1; /* power of two, load factor < 0.5 */
 		uint64_t mask = (uint64_t)cap - 1;
 		int *slot = malloc((size_t)cap * sizeof(int)); /* slot[b] = key index + 1, 0 = empty */
 		memset(slot, 0, (size_t)cap * sizeof(int));
 		for (int i = 0; i < N; i++) {
 			uint64_t b = fnv1a(keys[i]) & mask;
-			while (slot[b]) b = (b + 1) & mask;
+			while (slot[b])
+				b = (b + 1) & mask;
 			slot[b] = i + 1;
 		}
 
 		/* DENSE: value indexed directly by dense id (== key index here) */
 		int *dense = malloc((size_t)N * sizeof(int));
-		for (int i = 0; i < N; i++) dense[i] = vals[i];
+		for (int i = 0; i < N; i++)
+			dense[i] = vals[i];
 
 		/* --- build the query workload: 75% real keys (hits), 25% fabricated misses --- */
 		char (*queries)[KEYLEN] = malloc((size_t)QUERIES * KEYLEN);
@@ -101,10 +104,10 @@ int main(void) {
 		for (int q = 0; q < QUERIES; q++) {
 			int idx = (int)(xrand() % N);
 			q_id[q] = idx;
-			if (xrand() % 4 == 0) {            /* 25% miss: mangle into a non-key */
+			if (xrand() % 4 == 0) { /* 25% miss: mangle into a non-key */
 				gen_key(queries[q], idx);
 				size_t L = strlen(queries[q]);
-				queries[q][L] = '~';            /* '~' not in alpha -> guaranteed miss */
+				queries[q][L] = '~'; /* '~' not in alpha -> guaranteed miss */
 				queries[q][L + 1] = 0;
 				q_expect[q] = -1;
 			} else {
@@ -121,7 +124,10 @@ int main(void) {
 		for (int q = 0; q < QUERIES; q++) {
 			int found = -1;
 			for (int i = 0; i < N; i++) {
-				if (strcmp(queries[q], keys[i]) == 0) { found = vals[i]; break; }
+				if (strcmp(queries[q], keys[i]) == 0) {
+					found = vals[i];
+					break;
+				}
 			}
 			sink += found;
 		}
@@ -135,7 +141,10 @@ int main(void) {
 			int found = -1;
 			while (slot[b]) {
 				int ki = slot[b] - 1;
-				if (strcmp(keys[ki], queries[q]) == 0) { found = vals[ki]; break; }
+				if (strcmp(keys[ki], queries[q]) == 0) {
+					found = vals[ki];
+					break;
+				}
 				b = (b + 1) & mask;
 			}
 			sink += found;
@@ -152,7 +161,10 @@ int main(void) {
 			int found = -1;
 			while (slot[b]) {
 				int ki = slot[b] - 1;
-				if (strcmp(keys[ki], queries[q]) == 0) { found = dense[ki]; break; }
+				if (strcmp(keys[ki], queries[q]) == 0) {
+					found = dense[ki];
+					break;
+				}
 				b = (b + 1) & mask;
 			}
 			sink += found;
@@ -170,9 +182,15 @@ int main(void) {
 
 		printf("%-6d %10.2f %10.2f %10.2f %10.2f\n", N, scan, hash, intern, denseT);
 
-		if (sink == 0x7fffffff) printf(" ");  /* keep sink live */
-		free(keys); free(vals); free(slot); free(dense);
-		free(queries); free(q_expect); free(q_id);
+		if (sink == 0x7fffffff)
+			printf(" "); /* keep sink live */
+		free(keys);
+		free(vals);
+		free(slot);
+		free(dense);
+		free(queries);
+		free(q_expect);
+		free(q_id);
 	}
 
 	printf("\nDENSE(id) assumes the key is ALREADY a dense int (no string in hand).\n");
