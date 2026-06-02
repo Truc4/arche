@@ -75,7 +75,7 @@ pre-existing printf-type-inference gap; float arrays were fully broken before). 
 - Part 2 (semantic): fresh-local array value-return → clear "copy-out is not implemented" error
   (C, D); returning an `own`/borrowed param stays valid.
 - Part 3 (router): procedural (`bench_proc.arche`) vs reentrant/out-param (`bench_func.arche`);
-  identical checksum (18000000); ns/op a wash (~20.2 vs ~20.8 best-of-5); see COMPARISON.md.
+  identical checksum (20000000); ns/op a wash (~20.2 vs ~20.8 best-of-5); see COMPARISON.md.
 - Verification: 4 new tests (`arrays/int_array_inout_param`, `arrays/int_array_own_thread`,
   `arrays/int_array_out_param`, `errors/array_local_return_rejected`); **full lit suite 369/369
   green**, no regressions, no tests removed. Bench programs live in design_analysis/ (not run by

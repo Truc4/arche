@@ -16,14 +16,19 @@ Handler ids are a `route` enum in both (not raw ints).
   buffers, not purity.)
 
 Both build with the same compiler/flags and were validated to produce an **identical checksum
-(18000000)** over 2,000,000 resolutions of `/users/42/posts/99` against the route set
+(20000000)** over 2,000,000 resolutions of `/users/42/posts/99` against the route set
 `/`, `/users/:id`, `/users/:id/posts/:pid`, `/static/*` — i.e. they resolve identically.
+
+Segment matching uses **sub-slices**: `seg_eq(stored, path[s:e], e - s)` passes the path segment as a
+borrowed `char[]` view (so the body indexes `seg[i]` from 0, no start offset) — `handler_id`/`add`
+are typed with the `route` enum. (The explicit length is passed because `char[].length` is not yet
+wired for the char/arche_array path; once it is, `seg.length` replaces it.)
 
 ## Measured
 
 | Dimension | Procedural | Reentrant (out-param) |
 |---|---|---|
-| Correctness (checksum) | 18000000 | 18000000 (identical) |
+| Correctness (checksum) | 20000000 | 20000000 (identical) |
 | Throughput, ns/op (best of 5) | ~20.4 | ~21.0 |
 | Throughput, ns/op (range) | 20.4–25.4 | 21.0–30.3 |
 | LLVM IR lines | 1662 | 1629 |
