@@ -27,15 +27,15 @@ TrieNode :: arche {
   handler_id :: int, // >=0 if a route terminates here, else -1
 }
 
-static pool<TrieNode> (256)
-static seg_bytes: char[8192] // flat segment-text arena
-static node_count: int[1] // [0] = number of live nodes (also the next slot index)
-static seg_top: int[1] // [0] = bump cursor into seg_bytes
+TrieNode[256]
+seg_bytes: char[8192] // flat segment-text arena
+node_count: int[1] // [0] = number of live nodes (also the next slot index)
+seg_top: int[1] // [0] = bump cursor into seg_bytes
 
 // Captured-param spans from the most recent route_resolve (offsets into that path).
-static cap_start: int[8] // up to 8 params per route
-static cap_len: int[8]
-static cap_count: int[1]
+cap_start: int[8] // up to 8 params per route
+cap_len: int[8]
+cap_count: int[1]
 
 // First index of '/' in p[start..n), or n if none.
 seg_end :: func(p: char[], start: int, n: int) -> int {

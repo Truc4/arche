@@ -3,7 +3,7 @@ pos :: float
 vel :: float
 Particle :: arche { pos, vel }
 
-static pool<Particle> (1000)
+Particle[1000]
 
 main :: proc() {
   insert(Particle, 10.0, 1.0);

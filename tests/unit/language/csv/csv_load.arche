@@ -2,7 +2,7 @@
 #import { io }
 Transaction :: arche { price :: float, quantity :: int }
 
-static pool<Transaction> (3, 3) {
+Transaction[3](3) {
   price: 0.0, quantity: 0,
 }
 

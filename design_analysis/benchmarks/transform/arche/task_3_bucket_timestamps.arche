@@ -3,7 +3,7 @@
 
 Transaction :: arche { price :: float, price_bucket :: float }
 
-static pool<Transaction> (10000, 10000) {
+Transaction[10000](10000) {
   price: 0.0, price_bucket: 0.0,
 }
 

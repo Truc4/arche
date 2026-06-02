@@ -5,7 +5,7 @@
 
 Row :: arche { price :: float, quantity :: int }
 
-static pool<Row> (3, 3) {
+Row[3](3) {
   price: 0.0, quantity: 0,
 }
 

@@ -3,7 +3,7 @@
 
 Transaction :: arche { quantity :: int }
 
-static pool<Transaction> (10000, 10000) {
+Transaction[10000](10000) {
   quantity: 0,
 }
 

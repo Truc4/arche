@@ -2,7 +2,7 @@
 // Mark rows as valid (valid=1) if quantity > 0
 Transaction :: arche { price :: float, quantity :: int, valid :: int }
 
-static pool<Transaction> (1000, 1000) {
+Transaction[1000](1000) {
   price: 0.0, quantity: 0, valid: 0,
 }
 

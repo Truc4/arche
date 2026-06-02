@@ -26,7 +26,7 @@ Transaction :: arche {
 }
 
 
-static table<Transaction>(100000, 100000) {
+Transaction[100000](100000) {
   price: 0.0,
   quantity: 0,
   revenue: 0.0,

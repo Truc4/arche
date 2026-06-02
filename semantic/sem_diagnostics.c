@@ -78,6 +78,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_alloc_count_not_literal]       = { "E0042", "alloc_count_not_literal",       CLASS_ERROR, 1 },
 	[SEM_DIAG_shape_already_allocated]       = { "E0043", "shape_already_allocated",       CLASS_ERROR, 1 },
 	[SEM_DIAG_duplicate_component]           = { "E0044", "duplicate_component",           CLASS_ERROR, 1 },
+	[SEM_DIAG_component_redefined]           = { "E0045", "component_redefined",           CLASS_ERROR, 1 },
 
 	/* Calls / groups */
 	[SEM_DIAG_action_in_expression]          = { "E0050", "action_in_expression",          CLASS_ERROR, 1 },
@@ -583,6 +584,13 @@ SemDiag *sem_emit_shape_already_allocated(SemanticContext *ctx, SourceLoc loc, c
 SemDiag *sem_emit_duplicate_component(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_duplicate_component, loc,
 	                 "duplicate component '%s' in archetype (a component type may appear only once)", name);
+}
+
+SemDiag *sem_emit_component_redefined(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_component_redefined, loc,
+	                 "component '%s' is defined more than once — define each component exactly once "
+	                 "(inline or top-level) and reference it by bare name elsewhere",
+	                 name);
 }
 
 SemDiag *sem_emit_non_exhaustive_match(SemanticContext *ctx, SourceLoc loc, const char *missing) {

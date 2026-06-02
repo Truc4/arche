@@ -6,7 +6,7 @@
 // i8-vs-ptr insert bug + the under-sized column array.
 Node :: arche { seg :: char[32], id :: int }
 
-static pool<Node> (8)
+Node[8]
 
 main :: proc() {
   insert(Node, "users", 7);

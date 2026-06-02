@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t | grep "pos"
 Particle :: arche { pos :: float, vel :: float }
 
-static table<Particle> (1000)
+Particle[1000]
 
 main :: proc() {
   insert(table<Particle>, 1.0, 0.1);

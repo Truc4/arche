@@ -13,9 +13,9 @@ Body :: arche {
 }
 
 
-static table<Particle>(5);
+Particle[5];
 
-static table<Body>(5);
+Body[5];
 
 
 move :: sys(pos, vel) {

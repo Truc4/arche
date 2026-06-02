@@ -5,7 +5,7 @@ Counter :: arche {
   val :: int,
 }
 
-static pool<Counter>(5);
+Counter[5];
 
 main :: proc() {
   alloc Counter(10);

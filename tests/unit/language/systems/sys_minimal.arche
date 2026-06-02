@@ -2,7 +2,7 @@
 pos :: float
 Particle :: arche { pos }
 
-static pool<Particle> (10)
+Particle[10]
 
 dummy :: sys (pos) {
   printf("system_ran\n");

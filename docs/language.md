@@ -31,26 +31,26 @@ for doc comments and doctests see [DOCTESTS.md](DOCTESTS.md).
 **Arche has NO dynamic or heap allocation.** All memory is allocated statically at
 program startup. This is a core design principle, not a limitation.
 
-- **Explicit allocation**: `static pool<Archetype>(N)` declares a fixed-capacity pool for an archetype shape.
+- **Explicit allocation**: `Archetype[N]` declares a fixed-capacity pool for an archetype shape. There is no `static` keyword — every top-level declaration is static-lifetime, so position alone marks the storage.
 - **Static storage**: All pools have program lifetime. They exist from program start to end. No deallocation during execution.
 - **Fixed size**: Each pool is immutable in size. No resizing, no growing vectors. Capacity is permanent once set.
 - **Implicit cleanup**: At program end, all storage is implicitly freed. Explicit deallocation is **not allowed** (and unnecessary).
-- **Free-lists**: `static pool<Archetype>(N, N)` pre-allocates capacity for N entries; deleted slots are tracked in a free-list and reused by later inserts, eliminating fragmentation.
+- **Initial live count**: `Archetype[N](M)` allocates capacity `N` and starts with `M` live rows; deleted slots are tracked in a free-list and reused by later inserts, eliminating fragmentation.
 
-A pool declaration can include field initialization to set all instances' values at allocation time:
+A pool declaration can include field initialization to set the live instances' values at allocation time:
 
 ```arche
-static pool<Counter>(5, 5) { val: 7, score: 2.5 }
+Counter[5](5) { val: 7, score: 2.5 }
 ```
 
-This reserves capacity for 5 instances and initializes the `val` and `score` columns. Uninitialized columns are zero-initialized.
+This reserves capacity for 5 instances, starts all 5 live, and initializes the `val` and `score` columns. Uninitialized columns are zero-initialized.
 
 **Encouraged pattern** - plan memory upfront, allocate what you need, use predictably:
 
 ```arche
-static pool<Particle>(10000, 10000) { active: 0 }
-static pool<Enemy>(5000, 5000)
-static pool<Projectile>(1000, 1000)
+Particle[10000](10000) { active: 0 }
+Enemy[5000](5000)
+Projectile[1000](1000)
 
 main :: proc() {
   run initialize;
@@ -158,8 +158,8 @@ archetype is a compile error (it would be unreachable):
 A :: arche { health, shield }
 B :: arche { shield, health }   // same shape as A
 
-static pool<A>(1000)
-static pool<B>(1000)            // ERROR: shape already allocated (B is the same shape as A)
+A[1000]
+B[1000]            // ERROR: shape already allocated (B is the same shape as A)
 ```
 
 **Tuples** are named flat sugar: `pos (x, y) :: float` mints the flat component types
@@ -172,8 +172,8 @@ pos (x, y) :: float
 Body :: arche { pos_x, pos_y }   // two flat columns
 ```
 
-A shape's storage is one fixed-capacity static pool declared with `static pool<Foo>(N)` (a
-declaration — no trailing `;`).
+A shape's storage is one fixed-capacity static pool declared with `Foo[N]` (a declaration —
+no trailing `;`, no `static` keyword: top-level position implies static storage).
 There is no `alloc` and no resizing - all capacity is reserved upfront. Allocating the same
 shape twice (under any name) is a compile error.
 
@@ -182,7 +182,7 @@ shape twice (under any name) is a compile error.
 Operations on archetype columns apply across the entire collection without explicit loops:
 
 ```arche
-static pool<Particle>(1000)
+Particle[1000]
 // ... insert particles
 Particle.pos_x = Particle.pos_x + Particle.vel_x;
 ```
@@ -252,7 +252,7 @@ main :: proc() {
 Procedures are also used for setup, orchestration, and whole-collection array ops:
 
 ```arche
-static pool<Particle>(1000, 1000)
+Particle[1000](1000)
 
 main :: proc() {
   Particle.pos_x = Particle.pos_x + Particle.vel_x;   // array op over the whole column
@@ -460,7 +460,7 @@ window_close   :: extern proc(own w: window)()
   the other is expected is a compile error.
 - `0` is the null cell; returning `NULL` from C yields `0`, and `if (w)` is a non-null check.
 - A foreign resource can also live in a **pool**: put the type in an `arche` and use
-  `pool<Foo>` + generation-checked handles for capacity-bounded, use-after-free-safe storage.
+  `Foo[N]` + generation-checked handles for capacity-bounded, use-after-free-safe storage.
 
 ```arche
 render :: proc() {

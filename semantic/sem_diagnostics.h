@@ -87,6 +87,7 @@ typedef enum {
 	SEM_DIAG_alloc_count_not_literal,
 	SEM_DIAG_shape_already_allocated,
 	SEM_DIAG_duplicate_component,
+	SEM_DIAG_component_redefined,
 
 	/* Function calls / groups */
 	SEM_DIAG_action_in_expression,
@@ -250,6 +251,7 @@ SemDiag *sem_emit_alloc_not_at_top(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_alloc_count_not_literal(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_shape_already_allocated(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_duplicate_component(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_component_redefined(SemanticContext *ctx, SourceLoc loc, const char *name);
 
 SemDiag *sem_emit_action_in_expression(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name);
 SemDiag *sem_emit_no_group_match(SemanticContext *ctx, SourceLoc loc, const char *name);

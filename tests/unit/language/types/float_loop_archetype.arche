@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t
 Nums :: arche { val :: float }
 
-static pool<Nums> (4, 4) {
+Nums[4](4) {
   val: 0.0,
 }
 

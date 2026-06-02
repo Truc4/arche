@@ -2,11 +2,11 @@
 // BUG: System operations don't modify fields (see COMPILER_BUG_SYSTEM_OPERATIONS.md)
 Particle :: arche { pos :: float, vel :: float }
 
-Body :: arche { pos :: float, vel :: float, mass :: float }
+Body :: arche { pos, vel, mass :: float }
 
-static pool<Particle> (5)
+Particle[5]
 
-static pool<Body> (5)
+Body[5]
 
 step :: sys (pos, vel) {
   pos = pos + vel;

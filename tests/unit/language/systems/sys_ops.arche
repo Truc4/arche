@@ -2,7 +2,7 @@
 // BUG: System operations don't modify fields (see COMPILER_BUG_SYSTEM_OPERATIONS.md)
 Body :: arche { position :: float, velocity :: float }
 
-static pool<Body> (500)
+Body[500]
 
 step :: sys (position, velocity) {
   position = position + velocity;

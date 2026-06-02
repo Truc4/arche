@@ -7,8 +7,8 @@ mp :: int
 A :: arche { hp, mp }
 B :: arche { mp, hp }
 
-static pool<A> (4)
-static pool<B> (4)
+A[4]
+B[4]
 
 main :: proc() {
 }

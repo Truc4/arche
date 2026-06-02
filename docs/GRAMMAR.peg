@@ -7,7 +7,7 @@
 
 Program  ← _ (Decl _)* EOF
 
-Decl     ← Binding / UseDecl / VisMarker / StaticDecl
+Decl     ← Binding / UseDecl / VisMarker / PoolDecl
 
 # ---- The one declaration form ---------------------------------------------------------------
 # x := e        variable, inferred       x :: e        constant, inferred (value / type / callable)
@@ -46,9 +46,10 @@ Block     ← "{" _ (Statement _)* "}"
 # ---- Directives -----------------------------------------------------------------------------
 UseDecl    ← "#import" _ Identifier _ ";"
 VisMarker  ← "#module" / "#file"
-StaticDecl ← "static" _ (PoolDecl / ArrayDecl)
-PoolDecl   ← "pool" _ "<" _ Identifier _ ">" _ "(" _ Expr (_ "," _ Expr)* _ ")" _ ("{" _ (FieldInit _)* "}")?
-ArrayDecl  ← Identifier _ ":" _ Type
+# Pool allocation: archetype singleton storage. Capacity in [], optional initial live-count in (),
+# optional field-init block in {}. Top-level position implies static storage (no keyword). A mutable
+# global buffer is just a Binding with a sized-array Type and no init (`buf : char[N]`).
+PoolDecl   ← Identifier _ "[" _ Expr _ "]" (_ "(" _ Expr _ ")")? (_ "{" _ (FieldInit _)* "}")?
 FieldInit  ← Identifier _ ":" _ Expr _ ("," _)?
 
 # ---- Statements -----------------------------------------------------------------------------

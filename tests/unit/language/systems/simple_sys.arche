@@ -2,7 +2,7 @@
 pos :: float
 Body :: arche { pos }
 
-static pool<Body> (5)
+Body[5]
 
 dummy :: sys (pos) {
   printf("system_ran\n");

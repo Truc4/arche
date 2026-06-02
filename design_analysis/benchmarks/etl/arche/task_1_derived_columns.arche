@@ -4,7 +4,7 @@
 
 Transaction :: arche { price :: float, quantity :: int, revenue :: float }
 
-static pool<Transaction> (1000, 1000) {
+Transaction[1000](1000) {
   price: 0.0, quantity: 0,
 }
 

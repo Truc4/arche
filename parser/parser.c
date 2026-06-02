@@ -742,170 +742,130 @@ static int cur_ident_is(Parser *parser, const char *kw, size_t len) {
 }
 
 static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
-	/* Check for const IDENT : : expr ; first */
-	if (check(parser, TOK_IDENT) && !cur_ident_is(parser, "static", 6)) {
-		*out_kind = SN_CONST_DECL;
-		advance(parser);
-
-		/* Tuple group: `pos (x, y) :: float` — the suffixes are part of the name (minting flat
-		 * `pos_x`, `pos_y`), the type comes after `::`. */
-		if (check(parser, TOK_LPAREN)) {
-			if (!parse_tuple_name_group(parser))
-				return 0;
-			if (check(parser, TOK_SEMI))
-				advance(parser);
-			return 1;
-		}
-
-		/* Universal constant declaration: `name : [type] : value`.
-		 *   `name :: value`        — elided meta/type (inferred): alias if RHS denotes a type,
-		 *                            else a value const.
-		 *   `name : type : value`  — explicit meta-type `type`: a nominal type alias.
-		 *   `name : T : value`     — explicit concrete type T: a typed value const.
-		 * Top level is constants only: the `=` (variable) separator is rejected here — mutable
-		 * global storage is expressed with `static`. */
-		if (check(parser, TOK_COLON)) {
-			advance(parser); /* first ':' */
-			int decl_type_is_meta = 0;
-			int has_decl_type = 0;
-			if (!check(parser, TOK_COLON)) {
-				/* explicit declared type before the second ':' */
-				if (check(parser, TOK_EQ)) {
-					error(parser, "top-level declarations are constants: use `name :: value` or "
-					              "`name : T : value` (`=` makes a mutable variable — use `static` "
-					              "for mutable global storage)");
-					return 0;
-				}
-				TypeForm form;
-				if (!parse_type_form(parser, &form))
-					return 0;
-				has_decl_type = 1;
-				decl_type_is_meta = form.is_type_meta;
-			}
-			if (check(parser, TOK_EQ)) {
-				error(parser, "top-level declarations are constants: write `name : T : value` "
-				              "(`=` makes a mutable variable — use `static` for mutable global "
-				              "storage)");
-				return 0;
-			}
-			if (!match(parser, TOK_COLON)) {
-				error(parser, "expected `:` and a value: write `name :: value` or "
-				              "`name : T : value`");
-				return 0;
-			}
-			(void)has_decl_type;
-			/* When the declared meta-type is `type`, the RHS is a type form (a nominal alias);
-			 * parse it as a type. Otherwise the RHS is a value expression (the elided `::` form
-			 * also lands here — semantic classifies it by what it denotes). */
-			if (decl_type_is_meta) {
-				if (!parse_type(parser))
-					return 0;
-			} else {
-				if (!parse_expression(parser))
-					return 0;
-			}
-			if (check(parser, TOK_SEMI)) {
-				advance(parser); /* consume optional semicolon */
-			}
-			return 1;
-		}
-		/* Not a const. This fallthrough shouldn't happen; fail to let the caller report. */
+	if (!check(parser, TOK_IDENT))
 		return 0;
-	}
+	advance(parser); /* the binding name — a bare leading IDENT for every top-level form */
 
-	if (check(parser, TOK_STATIC)) {
+	/* Pool allocation: `Name[C](N){V}` — capacity in `[]`, optional initial live-count in
+	 * `()`, optional field-init block `{}`. Top-level position implies static storage; the
+	 * name references the archetype shape whose singleton pool to allocate. */
+	if (check(parser, TOK_LBRACKET)) {
 		*out_kind = SN_STATIC_DECL;
-		advance(parser);
-		if (!check(parser, TOK_IDENT) && !check(parser, TOK_POOL)) {
-			error(parser, "Expected name after 'static'");
+		advance(parser); /* '[' */
+		if (!parse_expression(parser))
+			return 0;
+		if (!match(parser, TOK_RBRACKET)) {
+			error(parser, "Expected ']' after pool capacity in `Name[C]`");
 			return 0;
 		}
-		int static_name_cp = cst_cp(parser);
-		int is_table = (cur_ident_is(parser, "table", 5) || check(parser, TOK_POOL));
-		advance(parser);
-
-		/* `static table<Name>(...)` — the table-addressed allocation form. The
-		 * `table<...>` wrapper just names the shape whose singleton table to
-		 * allocate; unwrap it to the archetype name. (Legacy `static Name(...)`
-		 * stays valid: only the array form uses ':'.) */
-		if (is_table && check(parser, TOK_LT)) {
-			advance(parser); /* consume < */
-			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected archetype name in 'static pool<'");
+		if (match(parser, TOK_LPAREN)) {
+			if (!parse_expression(parser))
 				return 0;
-			}
-			advance(parser);
-			if (!match(parser, TOK_GT)) {
-				error(parser, "Expected '>' after archetype name in 'static table<...>'");
-				return 0;
-			}
+			if (!match(parser, TOK_RPAREN))
+				error(parser, "Expected ')' after pool live-count in `Name[C](N)`");
 		}
-		/* The archetype/table reference (`Name` or `table<Name>`) is a type position. */
-		cst_wrap(parser, static_name_cp, SN_TYPE_REF);
-
-		/* Check if this is a static array (static name: type[size];) or archetype (static Name(n);) */
-		if (check(parser, TOK_COLON)) {
-			/* Static array declaration */
-			advance(parser); /* consume ':' */
-			TypeForm form;
-			if (!parse_type_form(parser, &form)) {
-				error(parser, "Expected type in static array declaration");
-				return 0;
+		if (match(parser, TOK_LBRACE)) {
+			if (!check(parser, TOK_RBRACE)) {
+				do {
+					if (!check(parser, TOK_IDENT)) {
+						error(parser, "Expected field name in pool init block");
+						break;
+					}
+					advance(parser);
+					if (!match(parser, TOK_COLON)) {
+						error(parser, "Expected ':' after field name in pool init block");
+						break;
+					}
+					if (!parse_expression(parser)) {
+						error(parser, "Expected expression after ':' in pool init block");
+						break;
+					}
+				} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACE));
 			}
+			if (!match(parser, TOK_RBRACE))
+				error(parser, "Expected '}' after pool init block");
+		}
+		match(parser, TOK_SEMI); /* recorded; formatter drops it for static decls */
+		return 1;
+	}
 
-			/* Validate that type is a shaped array */
+	/* Tuple group: `pos (x, y) :: float` — the parenthesized suffixes mint flat names
+	 * (`pos_x`, `pos_y`); the shared type follows `::`. */
+	if (check(parser, TOK_LPAREN)) {
+		*out_kind = SN_CONST_DECL;
+		if (!parse_tuple_name_group(parser))
+			return 0;
+		if (check(parser, TOK_SEMI))
+			advance(parser);
+		return 1;
+	}
+
+	/* `name : …` binding. The second separator carries mutability (the unified grammar):
+	 *   `name :: value` / `name : T : value`  — const (value or nominal type alias).
+	 *   `name : T`      (no second separator)  — mutable static buffer (a sized array).
+	 *   `name := value` / `name : T = value`   — mutable initialized global (not lowered yet).
+	 * Const stays SN_CONST_DECL; storage forms become SN_STATIC_DECL. */
+	if (check(parser, TOK_COLON)) {
+		advance(parser); /* first ':' */
+
+		/* `name := value` — mutable initialized global. */
+		if (check(parser, TOK_EQ)) {
+			error(parser, "mutable global initializers (`name := value`) are not implemented yet — "
+			              "use a sized buffer `name : T[N]` or a pool `Name[C]`");
+			return 0;
+		}
+
+		int decl_type_is_meta = 0;
+		TypeForm form = {0};
+		int have_type = 0;
+		if (!check(parser, TOK_COLON)) {
+			/* explicit declared type before the second separator */
+			if (!parse_type_form(parser, &form))
+				return 0;
+			have_type = 1;
+			decl_type_is_meta = form.is_type_meta;
+		}
+
+		/* `name : T = value` — mutable initialized typed global. */
+		if (check(parser, TOK_EQ)) {
+			error(parser, "mutable global initializers (`name : T = value`) are not implemented yet — "
+			              "use a sized buffer `name : T[N]` or a pool `Name[C]`");
+			return 0;
+		}
+
+		/* `name : T` with no second separator → mutable static buffer (zero-init storage). */
+		if (have_type && !check(parser, TOK_COLON)) {
+			*out_kind = SN_STATIC_DECL;
 			if (form.cst_kind != SN_TYPE_SHAPED_ARRAY) {
-				error(parser, "Expected sized array type for static array (e.g. char[4194304])");
+				error(parser, "a top-level storage declaration `name : T` needs a sized array type "
+				              "(e.g. `buf : char[4194304]`)");
 				return 0;
 			}
-
 			match(parser, TOK_SEMI); /* recorded; formatter drops it for static decls */
 			return 1;
 		}
 
-		/* Otherwise, treat as static archetype allocation */
-		if (match(parser, TOK_LPAREN)) {
+		/* Const: `name :: value` or `name : T : value`. */
+		*out_kind = SN_CONST_DECL;
+		if (!match(parser, TOK_COLON)) {
+			error(parser, "expected `:` and a value: write `name :: value` or `name : T : value`");
+			return 0;
+		}
+		/* When the declared meta-type is `type`, the RHS is a type form (a nominal alias); parse
+		 * it as a type. Otherwise the RHS is a value expression (the elided `::` form lands here
+		 * too — semantic classifies it by what it denotes). */
+		if (decl_type_is_meta) {
+			if (!parse_type(parser))
+				return 0;
+		} else {
 			if (!parse_expression(parser))
 				return 0;
-			if (match(parser, TOK_COMMA)) {
-				if (!parse_expression(parser))
-					return 0;
-			}
-			if (!match(parser, TOK_RPAREN)) {
-				error(parser, "Expected ')' after alloc count");
-			}
-
-			if (match(parser, TOK_LBRACE)) {
-				if (!check(parser, TOK_RBRACE)) {
-					do {
-						if (!check(parser, TOK_IDENT)) {
-							error(parser, "Expected field name in alloc init");
-							break;
-						}
-						advance(parser);
-
-						if (!match(parser, TOK_COLON)) {
-							error(parser, "Expected ':' after field name in alloc init");
-							break;
-						}
-
-						if (!parse_expression(parser)) {
-							error(parser, "Expected expression after ':' in alloc init");
-							break;
-						}
-					} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACE));
-				}
-
-				if (!match(parser, TOK_RBRACE)) {
-					error(parser, "Expected '}' after alloc init block");
-				}
-			}
 		}
-
-		match(parser, TOK_SEMI); /* recorded; formatter drops it for static decls */
-
+		if (check(parser, TOK_SEMI))
+			advance(parser);
 		return 1;
 	}
+
 	return 0;
 }
 
@@ -1082,8 +1042,9 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		/* Region marker (`#module` / `#file` / `#foreign`) — banner or `{ ... }` block. */
 		return parse_region(parser, out_kind);
 	default:
-		/* INFO: Check for top-level const or alloc */
-		if (check(parser, TOK_IDENT) || check(parser, TOK_STATIC)) {
+		/* Every top-level declaration is an IDENT-led binding (const, pool alloc, or static
+		 * buffer) — see parse_static_decl. */
+		if (check(parser, TOK_IDENT)) {
 			if (parse_static_decl(parser, out_kind))
 				return 1;
 		}

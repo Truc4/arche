@@ -2,9 +2,9 @@
 // Multiple handles to same shape is allowed - they're just names/aliases
 Players :: arche { x :: float, y :: int }
 
-Enemies :: arche { x :: float, y :: int }
+Enemies :: arche { x, y }
 
-static pool<Players> (2, 2) {
+Players[2](2) {
   x: 1.0, y: 10,
 }
 

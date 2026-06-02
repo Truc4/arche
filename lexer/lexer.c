@@ -190,14 +190,9 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 6 && strncmp(start, "return", 6) == 0) {
 		return TOK_RETURN;
 	}
-	/* `use` and `each_field` are retired as bare keywords — they're now the `#import` and
-	 * `#each_field` directives (see lex_hash_directive). Bare `use`/`each_field` are plain idents. */
-	if (length == 6 && strncmp(start, "static", 6) == 0) {
-		return TOK_STATIC;
-	}
-	if (length == 4 && strncmp(start, "pool", 4) == 0) {
-		return TOK_POOL;
-	}
+	/* `use`/`each_field` are retired as bare keywords — they're the `#import`/`#each_field`
+	 * directives (see lex_hash_directive). `static`/`pool` are retired too: top-level position
+	 * implies static storage, and pools are spelled `Name[C](N){V}`. All are plain idents now. */
 	if (length == 3 && strncmp(start, "run", 3) == 0) {
 		return TOK_RUN;
 	}
