@@ -9,6 +9,6 @@ main :: proc() {
   buf: char[16];
   io.fread(fd, buf, 16)(buf, _n:);
   io.fclose(move fd);
-  os.now_sec()(_t:);     // extern module, qualified
-  printf("ns ok\n");     // core builtin, bare — unaffected by the namespace rule
+  os.now_sec()(_t:); // extern module, qualified
+  printf("ns ok\n"); // core builtin, bare — unaffected by the namespace rule
 }
