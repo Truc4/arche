@@ -1,0 +1,228 @@
+// The `router` module — a segment-level radix (compressed-trie) URL router, pure Arche.
+// `#import { router }` then `route_init`, `route_add`, `route_resolve` (bare names resolve too).
+//
+// The tree is built over '/'-split path SEGMENTS, not bytes. Each node is one segment with a
+// kind: static ("users"), param (":id" — matches any one segment), or catchall ("*" — matches the
+// rest of the path). Resolution prefers static > param > catchall, the standard radix-router
+// precedence (Go httprouter et al.).
+//
+// No heap: nodes live in a fixed `static pool`, variable fan-out is an intrusive
+// first-child/next-sibling index list (no per-node child array), and segment text lives in a flat
+// `char[]` arena addressed by (offset,len) — all scalar columns, no multi-dim storage.
+//
+// Output is REPORTED, not owned: `route_resolve` returns an int `handler_id` (>=0, or -1 on miss)
+// and records each captured :param / *catchall as a zero-copy SPAN (offset+length into the path
+// you passed). The caller slices its own path via `route_param`. No output buffers, no ownership,
+// no copy. The caller dispatches on `handler_id` with `match`. See docs/patterns.md for why this
+// beats filling caller buffers.
+
+NodeKind :: enum { kstatic, kparam, kcatchall }
+
+TrieNode :: arche {
+  seg_off      :: int,       // start of this node's segment text in seg_bytes
+  seg_len      :: int,       // length of that segment text
+  kind         :: NodeKind,  // static / :param / *catchall
+  first_child  :: int,       // pool index of first child, or -1
+  next_sibling :: int,       // pool index of next sibling, or -1
+  handler_id   :: int,       // >=0 if a route terminates here, else -1
+}
+
+static pool<TrieNode> (256)
+static seg_bytes: char[8192]   // flat segment-text arena
+static node_count: int[1]      // [0] = number of live nodes (also the next slot index)
+static seg_top: int[1]         // [0] = bump cursor into seg_bytes
+
+// Captured-param spans from the most recent route_resolve (offsets into that path).
+static cap_start: int[8]       // up to 8 params per route
+static cap_len: int[8]
+static cap_count: int[1]
+
+// First index of '/' in p[start..n), or n if none.
+seg_end :: func(p: char[], start: int, n: int) -> int {
+  for (i := start; i < n; i = i + 1) {
+    if (p[i] == '/') {
+      return i;
+    }
+  }
+  return n;
+}
+
+// Copy p[start..end) into the arena; return its (offset, length).
+store_seg :: proc(p: char[], start: int, end: int)(off: int, len: int) {
+  off = seg_top[0];
+  len = end - start;
+  for (i := 0; i < len; i = i + 1) {
+    seg_bytes[seg_top[0] + i] = p[start + i];
+  }
+  seg_top[0] = seg_top[0] + len;
+}
+
+// 1 if arena[off..off+len) == p[start..end), else 0. The arena is passed in (not read from the
+// static directly) so this stays a pure `func`, usable inline in conditions.
+seg_eq :: func(arena: char[], off: int, len: int, p: char[], start: int, end: int) -> int {
+  if (end - start != len) {
+    return 0;
+  }
+  for (i := 0; i < len; i = i + 1) {
+    if (arena[off + i] != p[start + i]) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+// Allocate a node; return its index. Columns: terminal handler defaults to -1, no children.
+new_node :: proc(kind: NodeKind, off: int, len: int)(idx: int) {
+  idx = node_count[0];
+  insert(TrieNode, off, len, kind, 0 - 1, 0 - 1, 0 - 1);
+  node_count[0] = node_count[0] + 1;
+}
+
+// Reset the router and create the root (node 0: empty static segment).
+route_init :: proc() {
+  node_count[0] = 0;
+  seg_top[0] = 0;
+  new_node(NodeKind.kstatic, 0, 0)(_root:);
+}
+
+// Register `pattern` (e.g. "/users/:id", "/static/*") -> handler_id.
+route_add :: proc(pattern: char[], handler_id: int) {
+  n := strlen(pattern);
+  cur := 0;
+  s := 0;
+  if (n > 0) {
+    if (pattern[0] == '/') {
+      s = 1;   // skip leading '/'
+    }
+  }
+  for (; s < n;) {
+    e := seg_end(pattern, s, n);
+
+    // Classify the segment; param/catchall store the name after the marker byte.
+    kind := NodeKind.kstatic;
+    tstart := s;
+    if (pattern[s] == ':') {
+      kind = NodeKind.kparam;
+      tstart = s + 1;
+    }
+    if (pattern[s] == '*') {
+      kind = NodeKind.kcatchall;
+      tstart = s + 1;
+    }
+
+    // Find an existing child of `cur` matching this segment.
+    found := 0 - 1;
+    child := TrieNode.first_child[cur];
+    for (; child >= 0;) {
+      if (TrieNode.kind[child] == kind) {
+        if (kind == NodeKind.kstatic) {
+          if (seg_eq(seg_bytes, TrieNode.seg_off[child], TrieNode.seg_len[child], pattern, tstart, e) == 1) {
+            found = child;
+          }
+        }
+        else {
+          found = child;   // one param/catchall child per node
+        }
+      }
+      if (found >= 0) {
+        break;
+      }
+      child = TrieNode.next_sibling[child];
+    }
+
+    // Create + link a new child if none matched.
+    if (found < 0) {
+      store_seg(pattern, tstart, e)(off:, len:);
+      new_node(kind, off, len)(found:);
+      TrieNode.next_sibling[found] = TrieNode.first_child[cur];
+      TrieNode.first_child[cur] = found;
+    }
+
+    cur = found;
+    s = e + 1;
+  }
+  TrieNode.handler_id[cur] = handler_id;
+}
+
+// Resolve `path`. Returns handler_id (-1 on miss). Captured :param / *catchall segments are
+// recorded as spans into `path` — read them with route_param_count / route_param.
+route_resolve :: proc(path: char[])(handler_id: int) {
+  n := strlen(path);
+  cur := 0;
+  cap_count[0] = 0;
+  handler_id = 0 - 1;
+  s := 0;
+  if (n > 0) {
+    if (path[0] == '/') {
+      s = 1;
+    }
+  }
+  for (; s < n;) {
+    e := seg_end(path, s, n);
+
+    // Scan children: remember a static match, a param child, a catchall child.
+    static_hit := 0 - 1;
+    param_hit := 0 - 1;
+    catchall_hit := 0 - 1;
+    child := TrieNode.first_child[cur];
+    for (; child >= 0;) {
+      k := TrieNode.kind[child];
+      if (k == NodeKind.kstatic) {
+        if (seg_eq(seg_bytes, TrieNode.seg_off[child], TrieNode.seg_len[child], path, s, e) == 1) {
+          static_hit = child;
+        }
+      }
+      if (k == NodeKind.kparam) {
+        param_hit = child;
+      }
+      if (k == NodeKind.kcatchall) {
+        catchall_hit = child;
+      }
+      child = TrieNode.next_sibling[child];
+    }
+
+    // Precedence: static > param > catchall.
+    chosen := static_hit;
+    if (chosen < 0) {
+      chosen = param_hit;
+    }
+    if (chosen < 0) {
+      chosen = catchall_hit;
+    }
+    if (chosen < 0) {
+      handler_id = 0 - 1;
+      return;
+    }
+
+    // param captures one segment; catchall captures the rest of the path. Both just record a
+    // span — no buffers, no per-slot branching (cap arrays are indexed by the count).
+    ck := TrieNode.kind[chosen];
+    if (ck == NodeKind.kstatic) {
+      cur = chosen;
+      s = e + 1;
+    }
+    else {
+      cend := e;
+      if (ck == NodeKind.kcatchall) {
+        cend = n;
+      }
+      cap_start[cap_count[0]] = s;
+      cap_len[cap_count[0]] = cend - s;
+      cap_count[0] = cap_count[0] + 1;
+      cur = chosen;
+      s = cend + 1;   // for catchall cend==n, so the loop exits
+    }
+  }
+  handler_id = TrieNode.handler_id[cur];
+}
+
+// Number of params/catchalls captured by the most recent route_resolve.
+route_param_count :: proc()(n: int) {
+  n = cap_count[0];
+}
+
+// The i-th captured span: (start, len) offsets into the path passed to route_resolve.
+route_param :: proc(i: int)(start: int, len: int) {
+  start = cap_start[i];
+  len = cap_len[i];
+}

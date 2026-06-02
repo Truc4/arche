@@ -2279,9 +2279,13 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 
 		if (expr->data.index.index_count == 2 && shaped_elem) {
 			/* 2D: [entity, elem] → flat = entity * rank + elem */
-			char row_buf[256], elem_buf[256];
-			codegen_expression(ctx, expr->data.index.indices[0], row_buf);
-			codegen_expression(ctx, expr->data.index.indices[1], elem_buf);
+			char row_raw[256], elem_raw[256], row_buf[256], elem_buf[256];
+			codegen_expression(ctx, expr->data.index.indices[0], row_raw);
+			codegen_expression(ctx, expr->data.index.indices[1], elem_raw);
+			/* Coerce both indices to i64 — the flat-index math is i64 (a narrower
+			 * loop var like i32 would otherwise mismatch the `mul i64`). */
+			emit_index_i64(ctx, row_raw, expr->data.index.indices[0], row_buf);
+			emit_index_i64(ctx, elem_raw, expr->data.index.indices[1], elem_buf);
 			char *scaled = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", scaled, row_buf, shaped_rank);
 			char *flat = gen_value_name(ctx);
@@ -2289,8 +2293,9 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			strcpy(idx_buf, flat);
 		} else if (expr->data.index.index_count == 1 && shaped_elem) {
 			/* Single-index on shaped array: entity * rank → returns slice pointer, no load */
-			char row_buf[256];
-			codegen_expression(ctx, expr->data.index.indices[0], row_buf);
+			char row_raw[256], row_buf[256];
+			codegen_expression(ctx, expr->data.index.indices[0], row_raw);
+			emit_index_i64(ctx, row_raw, expr->data.index.indices[0], row_buf);
 			if (shaped_rank > 1) {
 				char *scaled = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", scaled, row_buf, shaped_rank);
@@ -2586,7 +2591,15 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 					if (field_idx < arch->field_count) {
 						const char *field_type =
 						    llvm_type_from_arche(field_base_type_name(arch->fields[field_idx]->type));
-						buffer_append_fmt(ctx, ", %s %s", field_type, field_bufs[i]);
+						/* char[N] column: the arg is a string/buffer pointer (memcpy'd whole),
+						 * so pass it as a pointer. Numeric array columns keep scalar element-0
+						 * init (legacy semantics, e.g. float[10] from a single value). */
+						if (field_total_elements(arch->fields[field_idx]->type) > 1 &&
+						    strcmp(field_type, "i8") == 0) {
+							buffer_append_fmt(ctx, ", %s* %s", field_type, field_bufs[i]);
+						} else {
+							buffer_append_fmt(ctx, ", %s %s", field_type, field_bufs[i]);
+						}
 						field_idx++;
 					}
 				}
@@ -3049,8 +3062,30 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 					strcpy(call_arg_vals[i], dp);
 					call_arg_types[i] = "i8*";
 				} else if (callee_wants_arr) {
-					/* Pass struct ptr for internal Arche calls */
-					strcpy(call_arg_vals[i], arg_bufs[i]);
+					/* String variable stored as a bare i8* (type 2, e.g. `x := "lit"`): a
+					 * non-extern char[] callee expects a %struct.arche_array*, not a raw char
+					 * pointer — wrap it in a stack arche_array. (Passing the bare i8* here was a
+					 * bug: the callee read the string bytes as {ptr,len,cap} and crashed.) len/cap
+					 * use the known literal length, else 0 — arche `strlen` scans to NUL anyway. */
+					int slen = (arg_values[i] && arg_values[i]->string_len >= 0) ? arg_values[i]->string_len : 0;
+					char *arr_alloca = gen_value_name(ctx);
+					emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
+					char *ptr_gep = gen_value_name(ctx);
+					buffer_append_fmt(
+					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+					    ptr_gep, arr_alloca);
+					buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", arg_bufs[i], ptr_gep);
+					char *len_gep = gen_value_name(ctx);
+					buffer_append_fmt(
+					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
+					    len_gep, arr_alloca);
+					buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", slen, len_gep);
+					char *cap_gep = gen_value_name(ctx);
+					buffer_append_fmt(
+					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
+					    cap_gep, arr_alloca);
+					buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", slen, cap_gep);
+					strcpy(call_arg_vals[i], arr_alloca);
 					call_arg_types[i] = "%struct.arche_array*";
 				} else {
 					/* Pass bare pointer */
@@ -4359,7 +4394,26 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				strcpy(vi->llvm_name, value_buf);
 				vi->type = 2; /* i8* string pointer */
 				vi->arch_name = NULL;
+				/* Record the literal's length so a later char[] call can wrap it with a real
+				 * size (not just a NUL-scan placeholder). */
 				vi->string_len = -1;
+				{
+					HirExpr *sv = stmt->data.bind_stmt.value;
+					if (sv->kind == HIR_EXPR_STRING) {
+						vi->string_len = (int)sv->data.string.length;
+					} else if (sv->kind == HIR_EXPR_LITERAL && sv->data.literal.lexeme &&
+					           sv->data.literal.lexeme[0] == '"') {
+						const char *lex = sv->data.literal.lexeme;
+						int sl = 0;
+						for (int j = 1; lex[j] != '"' && lex[j] != '\0'; j++) {
+							if (lex[j] == '\\' && lex[j + 1] != '\0') {
+								j++;
+							}
+							sl++;
+						}
+						vi->string_len = sl;
+					}
+				}
 				vi->field_type = "char";
 				vi->bit_width = 64;
 
@@ -5931,8 +5985,10 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 		const char *base_type = llvm_type_from_arche(field_base_type_name(arch->fields[i]->type));
 
 		if (arch->fields[i]->kind == FIELD_COLUMN) {
+			/* Array columns (char[N], T[N]) need N slots per row, not one. */
+			int per_row = field_total_elements(arch->fields[i]->type);
 			if (static_cap > 0)
-				buffer_append_fmt(ctx, "  [%d x %s]", static_cap, base_type);
+				buffer_append_fmt(ctx, "  [%d x %s]", static_cap * per_row, base_type);
 			else
 				buffer_append_fmt(ctx, "  %s*", base_type);
 		} else {
@@ -5965,7 +6021,13 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	for (int i = 0; i < arch->field_count; i++) {
 		if (arch->fields[i]->kind == FIELD_COLUMN) {
 			const char *base_type = llvm_type_from_arche(field_base_type_name(arch->fields[i]->type));
-			buffer_append_fmt(ctx, ", %s %%f%d", base_type, i);
+			/* char[N] column: receive the source by pointer (memcpy'd into the row below).
+			 * Numeric array columns keep scalar element-0 init. */
+			if (field_total_elements(arch->fields[i]->type) > 1 && strcmp(base_type, "i8") == 0) {
+				buffer_append_fmt(ctx, ", %s* %%f%d", base_type, i);
+			} else {
+				buffer_append_fmt(ctx, ", %s %%f%d", base_type, i);
+			}
 		}
 	}
 	buffer_append(ctx, ") {\n");
@@ -6061,7 +6123,28 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 				buffer_append_fmt(ctx, "  %%slot%d = getelementptr %s, %s* %%col_p2_%d, i64 %s\n", col_idx, base_type,
 				                  base_type, col_idx, flat_slot);
 			}
-			buffer_append_fmt(ctx, "  store %s %%f%d, %s* %%slot%d\n", base_type, i, base_type, col_idx);
+			if (col_n > 1 && strcmp(base_type, "i8") == 0) {
+				/* char[N] column: copy the whole row (col_n bytes) from the source
+				 * pointer %f<i> into the row slot. Numeric array columns fall through
+				 * to the scalar store below (element-0 init, legacy semantics). */
+				int bytes = col_n * llvm_type_sizeof(base_type);
+				char dstbuf[64];
+				char srcbuf[64];
+				if (strcmp(base_type, "i8") == 0) {
+					snprintf(dstbuf, sizeof dstbuf, "%%slot%d", col_idx);
+					snprintf(srcbuf, sizeof srcbuf, "%%f%d", i);
+				} else {
+					snprintf(dstbuf, sizeof dstbuf, "%%mcdst%d", col_idx);
+					snprintf(srcbuf, sizeof srcbuf, "%%mcsrc%d", col_idx);
+					buffer_append_fmt(ctx, "  %s = bitcast %s* %%slot%d to i8*\n", dstbuf, base_type, col_idx);
+					buffer_append_fmt(ctx, "  %s = bitcast %s* %%f%d to i8*\n", srcbuf, base_type, i);
+				}
+				buffer_append_fmt(ctx, "  call void @llvm.memcpy.p0.p0.i64(i8* %s, i8* %s, i64 %d, i1 false)\n",
+				                  dstbuf, srcbuf, bytes);
+				ctx->uses_memcpy = 1;
+			} else {
+				buffer_append_fmt(ctx, "  store %s %%f%d, %s* %%slot%d\n", base_type, i, base_type, col_idx);
+			}
 			col_idx++;
 		}
 	}

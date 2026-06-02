@@ -1,0 +1,16 @@
+// RUN: %arche build -o %t %s && %t | grep "msg=hello by=ada"
+// Previously a known failure (tests/unit/language/known_failures/multidim_varlen):
+// an archetype with char[N] columns compiled only with a no-op main — the column
+// was under-sized and insert mis-lowered the string arg. Now two char[N] columns
+// round-trip. See arch/char_column.arche and
+// docs/superpowers/specs/2026-06-01-array-archetype-columns.md.
+Message :: arche { text :: char[256], author :: char[64] }
+
+static pool<Message> (100)
+
+main :: proc() {
+  insert(Message, "hello", "ada");
+  t := Message.text[0];
+  a := Message.author[0];
+  printf("msg=%s by=%s\n", t, a);
+}
