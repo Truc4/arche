@@ -1,7 +1,7 @@
 // Task 2 (arche, transform-only): count(quantity > 0), repeated N=216,000 times.
 #import { csv }
 
-Transaction :: arche { quantity :: int, }
+Transaction :: arche { quantity :: int }
 
 static pool<Transaction> (10000, 10000) {
   quantity: 0,

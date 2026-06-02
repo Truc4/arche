@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s && %t | grep "ok"
 #import { io }
 file :: opaque
-OpenFiles :: arche { file, }
+OpenFiles :: arche { file }
 static pool<OpenFiles> (8)
 main :: proc() {
   printf("ok opaque_domain\n");

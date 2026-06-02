@@ -1,5 +1,5 @@
-Particle :: arche { pos :: float, vel :: float, mass :: float, }
-Body :: arche { pos :: float, vel :: float, density :: float, }
+Particle :: arche { pos :: float, vel :: float, mass :: float }
+Body :: arche { pos :: float, vel :: float, density :: float }
 static pool<Particle> (1000)
 static pool<Body> (100)
 integrate :: sys (pos, vel) {

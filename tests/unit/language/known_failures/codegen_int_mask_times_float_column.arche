@@ -14,7 +14,7 @@
 // (design_analysis/benchmarks/etl/arche_scale/task_5_pipeline.arche), which had
 // to fall back to a scalar `if`-filter loop instead of the natural vectorized form.
 
-Row :: arche { price :: float, quantity :: int, }
+Row :: arche { price :: float, quantity :: int }
 
 static pool<Row> (10, 10) {
   price: 5.0, quantity: 1,

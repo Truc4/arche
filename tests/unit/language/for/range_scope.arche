@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-C :: arche { x :: int, }
+C :: arche { x :: int }
 
 main :: proc() {
   i := 0;

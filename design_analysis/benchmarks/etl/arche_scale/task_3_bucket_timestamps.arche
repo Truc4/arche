@@ -2,7 +2,7 @@
 // Compute price_bucket = price / 10.0 and hour_bucket from timestamp
 #import { csv }
 
-Transaction :: arche { price :: float, hour_bucket :: int, price_bucket :: float, }
+Transaction :: arche { price :: float, hour_bucket :: int, price_bucket :: float }
 
 static pool<Transaction> (100000000, 100000000) {
   price: 0.0, hour_bucket: 0, price_bucket: 0.0,

@@ -3,7 +3,7 @@
 // is present; csv_load must map price/quantity by header name and ignore note.
 #import { csv }
 
-Row :: arche { price :: float, quantity :: int, }
+Row :: arche { price :: float, quantity :: int }
 
 static pool<Row> (3, 3) {
   price: 0.0, quantity: 0,
@@ -18,6 +18,6 @@ main :: proc() {
     Row.price[2],
     Row.quantity[0],
     Row.quantity[1],
-    Row.quantity[2]
+    Row.quantity[2],
   );
 }

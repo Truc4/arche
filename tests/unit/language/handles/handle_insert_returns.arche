@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "slot"
-Player :: arche { pos :: float, }
+Player :: arche { pos :: float }
 
 static pool<Player> (10)
 

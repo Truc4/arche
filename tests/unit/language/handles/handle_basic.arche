@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t
-Player :: arche { pos :: float, }
+Player :: arche { pos :: float }
 
-AliveList :: arche { player_ref :: handle<Player>, }
+AliveList :: arche { player_ref :: handle<Player> }
 
 static pool<Player> (10)
 

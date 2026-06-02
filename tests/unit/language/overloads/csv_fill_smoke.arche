@@ -1,7 +1,7 @@
 // RUN: printf 'a,b\n1,10\n2,20\n3,30\n' > /tmp/csv_fill_smoke.csv && %arche build -o %t %s && %t | grep "a=\[1 2 3\] b=\[10 20 30\]"
 #import { csv }
 
-Pair :: arche { a :: int, b :: int, }
+Pair :: arche { a :: int, b :: int }
 
 static pool<Pair> (3, 3) {
   a: 0, b: 0,
@@ -16,6 +16,6 @@ main :: proc() {
     Pair.a[2],
     Pair.b[0],
     Pair.b[1],
-    Pair.b[2]
+    Pair.b[2],
   );
 }

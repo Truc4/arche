@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-Counter :: arche { val :: int, }
+Counter :: arche { val :: int }
 
 static pool<Counter> (5, 5) {
   val: 7,

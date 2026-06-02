@@ -1,8 +1,8 @@
 // RUN: %arche build -o %t %s && %t
 // Multiple handles to same shape is allowed - they're just names/aliases
-Players :: arche { x :: float, y :: int, }
+Players :: arche { x :: float, y :: int }
 
-Enemies :: arche { x :: float, y :: int, }
+Enemies :: arche { x :: float, y :: int }
 
 static pool<Players> (2, 2) {
   x: 1.0, y: 10,

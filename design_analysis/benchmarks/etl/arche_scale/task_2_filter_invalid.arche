@@ -2,7 +2,7 @@
 // Count rows where quantity > 0
 #import { csv }
 
-Transaction :: arche { quantity :: int, }
+Transaction :: arche { quantity :: int }
 
 static pool<Transaction> (100000000, 100000000) {
   quantity: 0,

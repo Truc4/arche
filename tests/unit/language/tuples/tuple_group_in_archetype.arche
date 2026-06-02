@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s && %t | grep "px=1.5 py=2.1"
 pos(x, y) :: float
 vel(vx, vy) :: float
-Particle :: arche { pos, vel, }
+Particle :: arche { pos, vel }
 
 static pool<Particle> (5)
 

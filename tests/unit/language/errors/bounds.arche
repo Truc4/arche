@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-Particle :: arche { id :: int, }
+Particle :: arche { id :: int }
 
 static pool<Particle> (5)
 

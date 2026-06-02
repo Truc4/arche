@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "col0=11 col1=21"
-Pair :: arche { a :: int, b :: int, }
+Pair :: arche { a :: int, b :: int }
 
 static pool<Pair> (3, 3) {
   a: 10, b: 20,

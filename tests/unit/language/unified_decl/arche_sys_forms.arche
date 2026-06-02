@@ -3,7 +3,7 @@
 // RUN: %arche build -o %t %s && %t | grep "pos0=3"
 pos :: float
 
-Particle :: arche { pos, }
+Particle :: arche { pos }
 
 static pool<Particle> (10)
 

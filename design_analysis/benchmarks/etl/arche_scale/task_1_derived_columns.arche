@@ -2,7 +2,7 @@
 // Compute revenue = price * quantity for all rows
 #import { csv }
 
-Transaction :: arche { price :: float, quantity :: int, revenue :: float, }
+Transaction :: arche { price :: float, quantity :: int, revenue :: float }
 
 static pool<Transaction> (100000000, 100000000) {
   price: 0.0, quantity: 0, revenue: 0.0,

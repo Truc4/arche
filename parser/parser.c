@@ -535,7 +535,7 @@ static int parse_param_list_body(Parser *parser, int is_extern) {
 			return 0;
 
 		cst_wrap(parser, param_cp, SN_PARAM);
-	} while (match(parser, TOK_COMMA));
+	} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
 	return 1;
 }
 
@@ -575,7 +575,7 @@ static int parse_proc_out_list(Parser *parser) {
 					return 0;
 
 				cst_wrap(parser, out_param_cp, SN_OUT_PARAM);
-			} while (match(parser, TOK_COMMA));
+			} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
 		}
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' after out-parameters");
@@ -620,7 +620,7 @@ static int parse_sys_param_list_body(Parser *parser) {
 		cst_wrap(parser, param_name_cp, SN_PARAM_NAME);
 
 		cst_wrap(parser, param_cp, SN_PARAM);
-	} while (match(parser, TOK_COMMA));
+	} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
 	return 1;
 }
 
@@ -722,11 +722,8 @@ static int parse_group_form(Parser *parser, SyntaxNodeKind *out_kind) {
 		advance(parser);
 		if (!match(parser, TOK_COMMA))
 			break;
-		/* Disallow a trailing comma: after `,` the next token must be a member name. */
-		if (check(parser, TOK_RBRACE)) {
-			error(parser, "trailing comma not allowed in group member list");
-			return 0;
-		}
+		if (check(parser, TOK_RBRACE)) /* optional trailing comma */
+			break;
 	}
 	if (!match(parser, TOK_RBRACE)) {
 		error(parser, "Expected '}' or ',' in group member list");
@@ -1206,7 +1203,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 					advance(parser); /* explicit value */
 				}
 				cst_wrap(parser, v_cp, SN_ENUM_VARIANT);
-			} while (match(parser, TOK_COMMA));
+			} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACE));
 		}
 		if (!match(parser, TOK_RBRACE)) {
 			error(parser, "Expected '}' to close enum");
@@ -1260,7 +1257,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 				do {
 					if (!parse_expression(parser))
 						return 0;
-				} while (match(parser, TOK_COMMA));
+				} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACKET));
 				if (!match(parser, TOK_RBRACKET)) {
 					error(parser, "Expected ']'");
 					return 0;
@@ -1278,7 +1275,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 					do {
 						if (!parse_expression(parser))
 							return 0;
-					} while (match(parser, TOK_COMMA));
+					} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
 				}
 				if (!match(parser, TOK_RPAREN)) {
 					error(parser, "Expected ')' after arguments");
@@ -1297,7 +1294,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			do {
 				if (!parse_expression(parser))
 					return 0;
-			} while (match(parser, TOK_COMMA));
+			} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACKET));
 			if (!match(parser, TOK_RBRACKET)) {
 				error(parser, "Expected ']'");
 				return 0;
@@ -1314,7 +1311,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 				do {
 					if (!parse_expression(parser))
 						return 0;
-				} while (match(parser, TOK_COMMA));
+				} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
 			}
 			if (!match(parser, TOK_RPAREN)) {
 				error(parser, "Expected ')' after arguments");
@@ -1330,6 +1327,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 
 	if (match(parser, TOK_LPAREN)) {
 		parse_expression(parser);
+		match(parser, TOK_COMMA); /* tolerate a trailing comma — trailing commas are valid in every list */
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' after expression");
 		}
@@ -1563,7 +1561,7 @@ static int parse_simple_statement(Parser *parser, SyntaxNodeKind *out_kind) {
 					}
 				}
 				cst_wrap(parser, out_arg_cp, SN_OUT_ARG);
-			} while (match(parser, TOK_COMMA));
+			} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
 		}
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' after out-arguments");
@@ -1673,7 +1671,7 @@ static int parse_statement(Parser *parser) {
 				error(parser, "Expected expression after 'return'");
 				goto cleanup;
 			}
-			while (match(parser, TOK_COMMA)) {
+			while (match(parser, TOK_COMMA) && !check(parser, TOK_SEMI)) {
 				if (!parse_expression(parser)) {
 					error(parser, "Expected expression after ',' in return statement");
 					goto cleanup;

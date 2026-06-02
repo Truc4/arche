@@ -2,4 +2,4 @@
 // every .arche file, so a dropped token silently corrupts source (cf. the
 // earlier `unsafe`-stripping bug).
 // RUN: %arche fmt %s | grep "opaque"
-File :: arche { fd :: opaque, }
+File :: arche { fd :: opaque }

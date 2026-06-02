@@ -1,8 +1,8 @@
 // RUN: %arche build -o %t %s && %t
 // Task 1: Static alloc with bulk initialization (top-level only)
-Counter :: arche { val :: int, score :: float, }
+Counter :: arche { val :: int, score :: float }
 
-Empty :: arche { x :: int, }
+Empty :: arche { x :: int }
 
 static pool<Counter> (5, 5) {
   val: 7, score: 2.5,

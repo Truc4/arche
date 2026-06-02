@@ -113,8 +113,11 @@ static int is_list_brace_parent(SyntaxNodeKind p) {
 	       p == SN_ENUM_EXPR;
 }
 
-/* A `( … )` that holds a value list — call args, proc/func/sys params + out-params, alloc args, a
- * parenthesized expr. Excludes control-flow parens (`if`/`for` headers) so those keep their layout. */
+/* A `( … )` that holds a genuine comma list — call args, proc/func/sys params + out-params — and so
+ * is worth breaking one-per-line. A single-expression paren (`(expr)`), `alloc(...)`, and control-flow
+ * headers (`if`/`for`) are excluded: they aren't lists, so breaking them (and adding a trailing
+ * comma) would just be noise. (Trailing commas parse fine everywhere now — this is a style choice,
+ * not a validity one.) */
 static int is_list_paren_parent(SyntaxNodeKind p) {
 	switch (p) {
 	case SN_CALL_EXPR:
@@ -125,8 +128,6 @@ static int is_list_paren_parent(SyntaxNodeKind p) {
 	case SN_SYS_DECL:
 	case SN_TYPE_PROC:
 	case SN_TYPE_FUNC:
-	case SN_PAREN_EXPR:
-	case SN_ALLOC_EXPR:
 	case SN_PROC_DECL:
 	case SN_FUNC_DECL:
 		return 1;
@@ -180,6 +181,23 @@ static int flat_width(const Leaves *ls, int i) {
 	return w;
 }
 
+/* "Magic trailing comma": the source already ends this bracket group with a comma right before the
+ * closer. That is the author's signal to keep the list exploded one-per-line (Prettier/black), so
+ * we force a break even when it would fit. (Remove the comma to let it collapse inline.) */
+static int has_trailing_comma(const Leaves *ls, int i) {
+	int depth = 0;
+	for (int k = i; k < ls->count; k++) {
+		TokenKind t = ls->items[k].kind;
+		if (t == TOK_LPAREN || t == TOK_LBRACE || t == TOK_LBRACKET) {
+			depth++;
+		} else if (t == TOK_RPAREN || t == TOK_RBRACE || t == TOK_RBRACKET) {
+			if (--depth == 0)
+				return k > i && ls->items[k - 1].kind == TOK_COMMA;
+		}
+	}
+	return 0;
+}
+
 /* One active value-list group while printing. */
 typedef struct {
 	TokenKind opener; /* '(' or '{' */
@@ -215,7 +233,13 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 		/* Directly inside the innermost list group (its item area)? */
 		int in_frame = frn > 0 && depth == fr[frn - 1].depth && !closes_frame;
 
+		/* A trailing comma is a layout artifact: emitted only when a list breaks across lines.
+		 * Drop the source's trailing comma when this group renders inline. */
+		if (l->kind == TOK_COMMA && in_frame && next == fr[frn - 1].closer && !fr[frn - 1].broken)
+			continue;
+
 		int nl = 0, space = 0, eff_indent = indent; /* layout decision for the gap before `l` */
+		int add_trailing_comma = 0;
 
 		if (!started) {
 			started = 1;
@@ -225,6 +249,7 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 				indent--; /* closer dedents to the group's own level */
 				eff_indent = indent;
 				nl = 1;
+				add_trailing_comma = (prev != TOK_COMMA); /* one trailing comma before the closer */
 			} else if (f->closer == TOK_RBRACE) {
 				space = 1; /* `{ … }` interior space; `)` hugs */
 			}
@@ -282,6 +307,10 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 		}
 
 		/* Emit the decided gap. */
+		if (add_trailing_comma) {
+			fputc(',', out); /* attaches to the last item, before the closer's newline */
+			col += 1;
+		}
 		if (nl) {
 			fputc('\n', out);
 			if (l->line - prev_line >= 2) /* preserve one blank line */
@@ -309,7 +338,7 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 			depth++;
 			if (is_list_open(l) && frn < 128) {
 				int fw = flat_width(&ls, i);
-				int broken = (fw == INT_MAX) || (col + fw > MAX_WIDTH);
+				int broken = (fw == INT_MAX) || (col + fw > MAX_WIDTH) || has_trailing_comma(&ls, i);
 				fr[frn].opener = l->kind;
 				fr[frn].closer = (l->kind == TOK_LPAREN) ? TOK_RPAREN : TOK_RBRACE;
 				fr[frn].parent = l->parent;

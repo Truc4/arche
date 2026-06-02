@@ -1,8 +1,9 @@
 // Width-aware list layout: a bracketed list that fits on a line stays inline; one whose inline
-// form would exceed the width threshold (98) breaks one item per line, closer dedented.
+// form would exceed the width threshold (98) breaks one item per line, closer dedented, with a
+// trailing comma on the last item (dropped again when a list collapses inline).
 // RUN: %arche fmt %s | grep -qF "#import { io os }"
 // RUN: %arche fmt %s | grep -qF "g(1, 2, 3)"
-// RUN: %arche fmt %s | grep -qE "^[[:space:]]+omicron$"
+// RUN: %arche fmt %s | grep -qE "^[[:space:]]+omicron,$"
 #import { io os }
 
 g :: proc(a: int, b: int, c: int) {
@@ -26,6 +27,6 @@ main :: proc() {
     mu,
     nu,
     xi,
-    omicron
+    omicron,
   );
 }

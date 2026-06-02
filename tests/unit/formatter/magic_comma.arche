@@ -1,0 +1,21 @@
+// Magic trailing comma: a list the author ends with a trailing comma stays exploded one item per
+// line even though it would fit inline — the comma is the manual "keep this broken" signal. The
+// same list without the trailing comma collapses to one line.
+// RUN: %arche fmt %s | grep -qE "^[[:space:]]+1,$"
+// RUN: %arche fmt %s | grep -qF "h(4, 5, 6)"
+g :: proc(a: int, b: int, c: int) {
+  printf("%d\n", a + b + c);
+}
+
+h :: proc(a: int, b: int, c: int) {
+  printf("%d\n", a + b + c);
+}
+
+main :: proc() {
+  g(
+    1,
+    2,
+    3,
+  );
+  h(4, 5, 6);
+}
