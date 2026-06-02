@@ -39,32 +39,26 @@ helper :: func() -> int { ... }
 you must return to a *wider* band afterward (you can't un-narrow a bare banner). Note that braces
 work for `#foreign` extern groups too, but for `#module`/`#file` they are usually the wrong default.
 
-## Declaration order: globals are declare-before-use; procs/funcs/types are not
+## Declaration order: all top-level names hoist (order is free)
 
-Procs, funcs, archetypes, enums, and archetype **pools** are *hoisted* — you may reference them
-before their definition. Plain global **bindings** (`name: T[N]` buffers / scalars) are **not**:
-they must be declared on an earlier source line than any code that reads them.
+Every top-level name — procs, funcs, archetypes, enums, pools, **and** mutable global bindings
+(`name : T[N]` buffers, `name : T` / `name := v` scalars) — is visible across the whole file
+regardless of source order. A declaration may reference one that appears later.
 
-**Don't** put a public proc above the global state it touches:
-
-```arche
-resolve :: proc()(h: int) { h = cap_count[0]; }   // error: Undefined symbol 'cap_count'
-cap_count: int[1]
-```
-
-**Do** lead with the global state, then the procs that use it:
+**Do** put the public API first and the state/helpers it uses below (e.g. behind a `#module` /
+`#file` banner) — forward references resolve:
 
 ```arche
-cap_count: int[1]
-resolve :: proc()(h: int) { h = cap_count[0]; }    // ok
+resolve :: proc()(h: int) { h = cap_count[0]; }   // ok — cap_count is declared below
+
+#module
+cap_count : int[1]
 ```
 
-**Why:** this interacts with the visibility-band idiom above. Because a bare banner forces the
-exported API to the *top*, and a public proc's globals must precede it, those globals also live in
-the leading (exported) band — even if you'd prefer them private. Hoisted decls (types, pools,
-helper funcs/procs) have no such constraint, so push *those* below a `#module` / `#file` banner and
-keep only the unavoidable leading globals up top. (See `stdlib/router/router.arche`: the `cap_*`
-spans lead with the API; `TrieNode`/`nodeKind` and the parsing helpers trail behind the banners.)
+**Why it matters:** this is what lets the visibility-band idiom (public API on top, internals behind
+a trailing banner) coexist with private state a public proc uses. There is no "declare the global
+first" constraint — locals are still point-of-introduction, but top level is order-free. (Locals,
+inside a proc/func body, must still be declared before use — they have control flow and lifetime.)
 
 ## Returning a variable number of results without a heap
 

@@ -54,6 +54,7 @@ typedef enum {
 typedef enum {
 	STATIC_KIND_ARCHETYPE,
 	STATIC_KIND_ARRAY,
+	STATIC_KIND_SCALAR,
 } StaticKind;
 
 struct AstProgram {
@@ -76,7 +77,13 @@ typedef struct {
 			char *name;
 			TypeRef *element_type;
 			int size;
+			Expression *init; /* constant array initializer, or NULL = zero-init */
 		} array;
+		struct {
+			char *name;
+			TypeRef *type;    /* declared scalar type (inferred forms still carry a resolved type) */
+			Expression *init; /* compile-time-constant initial value; normalized from implicit `= 0` */
+		} scalar;
 	};
 } StaticDecl;
 
@@ -537,6 +544,7 @@ void func_group_free(FuncGroup *group);
 ConstDecl *const_decl_create(char *name, Expression *value);
 StaticDecl *static_decl_archetype_create(char *archetype_name);
 StaticDecl *static_decl_array_create(char *name, TypeRef *element_type, int size);
+StaticDecl *static_decl_scalar_create(char *name, TypeRef *type, Expression *init);
 UseDecl *use_decl_create(char *name);
 Parameter *parameter_create(char *name, TypeRef *type);
 FieldDecl *field_decl_create(FieldKind kind, char *name, TypeRef *type);

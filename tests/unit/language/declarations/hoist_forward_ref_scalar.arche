@@ -1,0 +1,13 @@
+// WANT: top-level names hoist uniformly — a proc may read a global declared BELOW it. Pairs with
+// a scalar global that has an explicit constant initializer.
+// RUN: %arche build -o %t %s && %t | grep -q "g=7"
+read_g :: proc()(v: int) {
+  v = g; // forward reference to a global declared later
+}
+
+g : int = 7
+
+main :: proc() {
+  read_g()(v:);
+  printf("g=%d\n", v);
+}

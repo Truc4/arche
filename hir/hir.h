@@ -80,6 +80,7 @@ typedef enum {
 typedef enum {
 	HIR_STATIC_ARCHETYPE,
 	HIR_STATIC_ARRAY,
+	HIR_STATIC_SCALAR,
 } HirStaticKind;
 
 typedef struct {
@@ -165,7 +166,13 @@ typedef struct {
 			char *name;
 			HirType *element_type;
 			int size;
+			HirExpr *init; /* constant array initializer, or NULL = zero-init */
 		} array;
+		struct {
+			char *name;
+			HirType *type;
+			HirExpr *init; /* compile-time-constant initial value (implicit `= 0` normalized in) */
+		} scalar;
 	};
 } HirStaticDecl;
 

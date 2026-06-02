@@ -1,9 +1,12 @@
-// Mutable global initializers (`name := value`) are a recognized form but not lowered yet, so they
-// are rejected with a clear message. Uninitialized buffers (`name : T[N]`) and pools (`Name[C]`)
-// are the supported mutable-storage forms.
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "not implemented yet" %t.out
+// NOTE: repurposed. This file used to assert that top-level `name := value` was REJECTED ("not
+// implemented yet"). That form is now SUPPORTED — a mutable global whose initial value is a
+// compile-time constant baked into the data section. The variable is reassignable at runtime.
+// (Full spec: tests/unit/language/declarations/.)
+// RUN: %arche build -o %t %s && %t | grep -q "count=0 then 3"
 count := 0
 
 main :: proc() {
-  printf("unreachable\n");
+  printf("count=%d then ", count);
+  count = 3;
+  printf("%d\n", count);
 }

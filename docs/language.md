@@ -83,6 +83,22 @@ MAX :: 100          // value const (literal RHS)
 x := 5              // runtime variable
 ```
 
+The short forms are **elisions of the one canonical form**, not separate rules — `x :: e` is
+`x : ⟨inferred⟩ : e`, `x := e` is `x : ⟨inferred⟩ = e`, and `x : T` is `x : T = 0` (the value
+elided defaults to zero). The value separator is the mutability axis: `:` binds an immutable
+compile-time **definition**, `=` binds mutable **storage**. Implicit and explicit are treated
+identically.
+
+These forms work at **file scope** too: `count := 0`, `limit : int = MAX`, `buf : int[8]` are
+mutable globals. A mutable global's *initial value* must be compile-time-constant (static storage
+is initialized at link time — there is no startup code), but the variable is still reassignable;
+a non-constant initializer is an error. Implicit `flag : int` is exactly `flag : int = 0`.
+
+**Name visibility and order.** All top-level names — definitions *and* mutable-storage bindings —
+are visible across the whole file regardless of order: a proc may read a global declared below it,
+just as it may call a func defined later. (Locals, by contrast, are visible only from their point
+of introduction onward.)
+
 A type alias is **zero-cost** - it erases to its backing after checking. Operators resolve
 on the backing (so `meters + meters -> meters`, and mixed-alias arithmetic over the same
 backing is fine), but **nominal identity is enforced at substitution boundaries**

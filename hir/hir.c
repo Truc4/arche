@@ -279,9 +279,14 @@ static void hir_static_decl_free(HirStaticDecl *s) {
 		free(s->archetype.field_names);
 		free(s->archetype.field_values);
 		hir_expr_free(s->archetype.init_length);
+	} else if (s->kind == HIR_STATIC_SCALAR) {
+		free(s->scalar.name);
+		hir_type_free(s->scalar.type);
+		hir_expr_free(s->scalar.init);
 	} else {
 		free(s->array.name);
 		hir_type_free(s->array.element_type);
+		hir_expr_free(s->array.init);
 	}
 	free(s);
 }

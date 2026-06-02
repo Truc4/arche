@@ -1990,15 +1990,18 @@ static HirDecl *lower_decl_cst(CstView d) {
 				}
 			}
 		} else {
-			/* `name : T[size]` — mutable static buffer. Name is the leading IDENT; the declared
-			 * array type is the single type node. */
-			sd->kind = HIR_STATIC_ARRAY;
-			sd->array.name = txt_dup(cv_token(d, TOK_IDENT));
+			/* Storage form of the unified binding: `name : T` / `name : T = v` / `name := v`. A
+			 * sized-array T (it has an element type) is a buffer; any other (or absent) T is a
+			 * scalar. The `= v` value is the initializer; its absence is the implicit `= 0`. */
+			char *nm = txt_dup(cv_token(d, TOK_IDENT));
 			CstView arr_ty = cv_type_at(d, 0);
-			HirType *full = lower_type_cst(arr_ty);
-			/* unwrap to the element type (codegen wants element + size, not the array) */
-			sd->array.element_type = (full && full->elem) ? full->elem : full;
-			if (cv_present(arr_ty))
+			CstView initv = cv_node_at_expr(d, 0);
+			HirType *full = cv_present(arr_ty) ? lower_type_cst(arr_ty) : NULL;
+			if (full && full->elem) {
+				/* buffer: codegen wants element + size, not the array wrapper */
+				sd->kind = HIR_STATIC_ARRAY;
+				sd->array.name = nm;
+				sd->array.element_type = full->elem;
 				for (int i = 0; i < arr_ty.node->child_count; i++)
 					if (arr_ty.node->children[i].tag == SE_TOKEN &&
 					    arr_ty.node->children[i].as.token.kind == TOK_NUMBER) {
@@ -2011,6 +2014,25 @@ static HirDecl *lower_decl_cst(CstView d) {
 						sd->array.size = atoi(buf);
 						break;
 					}
+				sd->array.init = cv_present(initv) ? lower_expr_cst(initv) : NULL;
+			} else {
+				/* scalar; inferred form `name := v` carries no type node — infer int/float from the
+				 * literal initializer's lexeme. */
+				HirExpr *ie = cv_present(initv) ? lower_expr_cst(initv) : NULL;
+				HirType *sty = full;
+				if (!sty) {
+					sty = hir_type_create(HIR_TYPE_UNKNOWN);
+					const char *tn = (ie && ie->kind == HIR_EXPR_LITERAL && ie->data.literal.lexeme &&
+					                  strpbrk(ie->data.literal.lexeme, ".eE"))
+					                     ? "float"
+					                     : "int";
+					*sty = map_type_str(tn);
+				}
+				sd->kind = HIR_STATIC_SCALAR;
+				sd->scalar.name = nm;
+				sd->scalar.type = sty;
+				sd->scalar.init = ie;
+			}
 		}
 		ad->data.static_decl = sd;
 		return ad;
@@ -2238,6 +2260,10 @@ static void hir_rn_decl(HirDecl *d, const char *prefix, char **set, int count) {
 		if (d->data.static_decl->kind == HIR_STATIC_ARRAY) {
 			rn_owned(&d->data.static_decl->array.name, prefix, set, count);
 			hir_rn_type(d->data.static_decl->array.element_type, prefix, set, count);
+		} else if (d->data.static_decl->kind == HIR_STATIC_SCALAR) {
+			rn_owned(&d->data.static_decl->scalar.name, prefix, set, count);
+			hir_rn_type(d->data.static_decl->scalar.type, prefix, set, count);
+			hir_rn_expr(d->data.static_decl->scalar.init, prefix, set, count);
 		} else {
 			rn_owned(&d->data.static_decl->archetype.archetype_name, prefix, set, count);
 			for (int i = 0; i < d->data.static_decl->archetype.field_count; i++)
@@ -2269,8 +2295,11 @@ static const char *hir_decl_name(HirDecl *d) {
 	case HIR_DECL_FUNC_GROUP:
 		return d->data.func_group->name;
 	case HIR_DECL_STATIC:
-		return d->data.static_decl->kind == HIR_STATIC_ARRAY ? d->data.static_decl->array.name
-		                                                     : d->data.static_decl->archetype.archetype_name;
+		if (d->data.static_decl->kind == HIR_STATIC_ARRAY)
+			return d->data.static_decl->array.name;
+		if (d->data.static_decl->kind == HIR_STATIC_SCALAR)
+			return d->data.static_decl->scalar.name;
+		return d->data.static_decl->archetype.archetype_name;
 	case HIR_DECL_CONST:
 		return d->data.constant->name;
 	case HIR_DECL_WORLD:
@@ -2417,10 +2446,12 @@ static void hir_q_decl(HirDecl *d, const QualCtx *q) {
 			hir_q_stmt(d->data.func->stmts[i], q);
 		break;
 	case HIR_DECL_STATIC:
-		if (d->data.static_decl->kind != HIR_STATIC_ARRAY) {
+		if (d->data.static_decl->kind == HIR_STATIC_ARCHETYPE) {
 			for (int i = 0; i < d->data.static_decl->archetype.field_count; i++)
 				hir_q_expr(d->data.static_decl->archetype.field_values[i], q);
 			hir_q_expr(d->data.static_decl->archetype.init_length, q);
+		} else if (d->data.static_decl->kind == HIR_STATIC_SCALAR) {
+			hir_q_expr(d->data.static_decl->scalar.init, q);
 		}
 		break;
 	case HIR_DECL_CONST:

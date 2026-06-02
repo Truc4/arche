@@ -20,15 +20,9 @@
 // design_analysis/key_lookup/DESIGN.md.) Segments are capped at 31 chars + NUL.
 //
 // Layout follows the visibility-band idiom (see docs/patterns.md): the public API leads (default
-// band = exported), then `#module` for the module-internal data model, then `#file` for the leaf
-// helpers. The capture-span globals sit up top with the API because plain bindings are
-// declare-before-use (unlike procs/types, they are not hoisted), so they must precede `resolve`.
-
-// Capture spans from the most recent router.resolve (offsets into that path). Read via
-// router.param_count / router.param.
-cap_start: int[8] // up to 8 params per route
-cap_len: int[8]
-cap_count: int[1]
+// band = exported), then `#module` for the module-internal data model (the node type, the pool,
+// and the capture-span state), then `#file` for the leaf helpers. All top-level names hoist, so the
+// internals sit below the API that uses them and stay private to the module.
 
 // Reset the router and create the root (node 0: empty static segment). Init-once: the pool starts
 // empty, so this just inserts the root.
@@ -206,6 +200,13 @@ TrieNode :: arche {
 }
 
 TrieNode[256]
+
+// Capture spans from the most recent router.resolve (offsets into that path), read via
+// router.param_count / router.param. Hoisted, so they sit here with the data model even though the
+// public procs above write them.
+cap_start: int[8] // up to 8 params per route
+cap_len: int[8]
+cap_count: int[1]
 
 // ========================= File-local parsing helpers (private) ========================
 // `#file` narrows to file-local: leaf routines used only by this file. Funcs/procs are hoisted,

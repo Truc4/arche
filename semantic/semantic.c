@@ -2432,8 +2432,50 @@ static void analyze_static_array_decl(SemanticContext *ctx, StaticDecl *s) {
 		return;
 	}
 
-	/* Register as a variable in the global scope so find_variable works everywhere */
-	add_variable(ctx, s->array.name, s->array.element_type);
+	/* Constant array initializers (`buf : T[N] = {…}`) are not lowered yet — zero-init only. */
+	if (s->array.init) {
+		fprintf(stderr,
+		        "Error: global '%s' array initializers are not yet implemented; declare it zero-initialized "
+		        "(`%s : T[N]`)\n",
+		        s->array.name, s->array.name);
+		ctx->error_count++;
+		return;
+	}
+
+	/* Registration is hoisted: the name was added to the global scope in the pre-pass so forward
+	 * references to it resolve regardless of declaration order. */
+}
+
+/* A top-level mutable global's initial value must be compile-time-known (static storage is
+ * initialized at compile/link time — there is no startup code). NULL = the implicit `= 0`. */
+static int sem_is_const_init(SemanticContext *ctx, Expression *e) {
+	if (!e)
+		return 1; /* implicit `= 0` */
+	if (e->type == EXPR_LITERAL)
+		return 1;
+	if (e->type == EXPR_NAME)
+		return semantic_get_const_value(ctx, e->data.name.name) != NULL;
+	/* `Enum.variant` folds to a compile-time int constant */
+	if (e->type == EXPR_FIELD && e->data.field.base && e->data.field.base->type == EXPR_NAME)
+		return enum_is_type(ctx, e->data.field.base->data.name.name);
+	return 0;
+}
+
+static void analyze_static_scalar_decl(SemanticContext *ctx, StaticDecl *s) {
+	if (!s)
+		return;
+	if (!s->scalar.type || s->scalar.type->kind != TYPE_NAME) {
+		fprintf(stderr, "Error: global '%s' has an invalid scalar type\n", s->scalar.name);
+		ctx->error_count++;
+		return;
+	}
+	if (!sem_is_const_init(ctx, s->scalar.init)) {
+		fprintf(stderr, "Error: global '%s' initializer must be a compile-time constant (a literal or const)\n",
+		        s->scalar.name);
+		ctx->error_count++;
+		return;
+	}
+	/* Registration is hoisted (see the pre-pass); nothing to add here. */
 }
 
 static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
@@ -3206,11 +3248,12 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 		break;
 	case DECL_STATIC: {
 		StaticDecl *s = decl->data.static_decl;
-		if (s->kind == STATIC_KIND_ARCHETYPE) {
+		if (s->kind == STATIC_KIND_ARCHETYPE)
 			analyze_static_decl(ctx, s);
-		} else {
+		else if (s->kind == STATIC_KIND_SCALAR)
+			analyze_static_scalar_decl(ctx, s);
+		else
 			analyze_static_array_decl(ctx, s);
-		}
 		break;
 	}
 	case DECL_USE:
@@ -3347,6 +3390,8 @@ static void erase_aliases_decl(SemanticContext *ctx, Decl *d) {
 	case DECL_STATIC:
 		if (d->data.static_decl->kind == STATIC_KIND_ARRAY)
 			erase_aliases_typeref(ctx, d->data.static_decl->array.element_type);
+		else if (d->data.static_decl->kind == STATIC_KIND_SCALAR)
+			erase_aliases_typeref(ctx, d->data.static_decl->scalar.type);
 		break;
 	default:
 		break;
@@ -4953,18 +4998,19 @@ static Decl *cst_build_decl_inner(CstView d) {
 			}
 			ad->data.static_decl = sd;
 		} else {
-			/* `name : T[size]` — mutable static buffer. Name is the leading IDENT; the declared
-			 * array type is the single type node. */
+			/* Storage form of the unified binding: `name : T` / `name : T = v` / `name := v`. A
+			 * sized-array T is a buffer; any other (or absent) T is a scalar. The `= v` value is
+			 * captured as the initializer; its absence is the implicit `= 0`. Name is the leading
+			 * IDENT, the declared type (if any) the single type node, the initializer the expr node. */
 			char *aname = sem_txt_dup(cv_token(d, TOK_IDENT));
 			CstView arr_ty = sem_type_at(d, 0);
-			TypeRef *full = cst_build_type(arr_ty);
-			TypeRef *elem = full;
-			if (full && full->kind == TYPE_SHAPED_ARRAY)
-				elem = full->data.shaped_array.element_type;
-			else if (full && full->kind == TYPE_ARRAY)
-				elem = full->data.array.element_type;
-			int size = 0;
-			if (cv_present(arr_ty))
+			CstView initv = sem_node_at_expr(d, 0);
+			TypeRef *full = cv_present(arr_ty) ? cst_build_type(arr_ty) : NULL;
+			int is_array = full && (full->kind == TYPE_SHAPED_ARRAY || full->kind == TYPE_ARRAY);
+			if (is_array) {
+				TypeRef *elem = (full->kind == TYPE_SHAPED_ARRAY) ? full->data.shaped_array.element_type
+				                                                  : full->data.array.element_type;
+				int size = 0;
 				for (int i = 0; i < arr_ty.node->child_count; i++)
 					if (arr_ty.node->children[i].tag == SE_TOKEN &&
 					    arr_ty.node->children[i].as.token.kind == TOK_NUMBER) {
@@ -4977,11 +5023,26 @@ static Decl *cst_build_decl_inner(CstView d) {
 						size = atoi(buf);
 						break;
 					}
-			StaticDecl *sd = static_decl_array_create(aname, elem, size);
-			/* static_decl_array_create takes ownership of `elem`; free the array wrapper only. */
-			if (full && full != elem)
-				free(full); /* shaped/array wrapper node; element ownership moved to sd */
-			ad->data.static_decl = sd;
+				StaticDecl *sd = static_decl_array_create(aname, elem, size);
+				/* static_decl_array_create takes ownership of `elem`; free the array wrapper only. */
+				if (full != elem)
+					free(full); /* shaped/array wrapper node; element ownership moved to sd */
+				sd->array.init = cv_present(initv) ? cst_build_expr(initv) : NULL;
+				ad->data.static_decl = sd;
+			} else {
+				/* Scalar. The inferred form `name := v` carries no type node — infer int/float from
+				 * the literal initializer's lexeme (anything with a '.'/exponent is float). */
+				Expression *ie = cv_present(initv) ? cst_build_expr(initv) : NULL;
+				TypeRef *sty = full;
+				if (!sty) {
+					const char *tn = (ie && ie->type == EXPR_LITERAL && ie->data.literal.lexeme &&
+					                  strpbrk(ie->data.literal.lexeme, ".eE"))
+					                     ? "float"
+					                     : "int";
+					sty = type_name_create(sem_dupz(tn));
+				}
+				ad->data.static_decl = static_decl_scalar_create(aname, sty, ie);
+			}
 		}
 		return ad;
 	}
@@ -5296,8 +5357,11 @@ static const char *sem_decl_name(Decl *d) {
 	case DECL_FUNC_GROUP:
 		return d->data.func_group->name;
 	case DECL_STATIC:
-		return d->data.static_decl->kind == STATIC_KIND_ARRAY ? d->data.static_decl->array.name
-		                                                      : d->data.static_decl->archetype.archetype_name;
+		if (d->data.static_decl->kind == STATIC_KIND_ARRAY)
+			return d->data.static_decl->array.name;
+		if (d->data.static_decl->kind == STATIC_KIND_SCALAR)
+			return d->data.static_decl->scalar.name;
+		return d->data.static_decl->archetype.archetype_name;
 	case DECL_CONST:
 		return d->data.constant->name;
 	case DECL_WORLD:
@@ -5347,6 +5411,10 @@ static void sem_rename_decl(Decl *d, const char *prefix, char **set, int count) 
 		if (d->data.static_decl->kind == STATIC_KIND_ARRAY) {
 			sem_maybe_rename(&d->data.static_decl->array.name, prefix, set, count);
 			sem_rename_typeref(d->data.static_decl->array.element_type, prefix, set, count);
+		} else if (d->data.static_decl->kind == STATIC_KIND_SCALAR) {
+			sem_maybe_rename(&d->data.static_decl->scalar.name, prefix, set, count);
+			sem_rename_typeref(d->data.static_decl->scalar.type, prefix, set, count);
+			sem_rename_expr(d->data.static_decl->scalar.init, prefix, set, count);
 		} else {
 			sem_maybe_rename(&d->data.static_decl->archetype.archetype_name, prefix, set, count);
 			for (int i = 0; i < d->data.static_decl->archetype.field_count; i++)
@@ -5838,12 +5906,22 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 		}
 	}
 
-	/* pre-pass: register every `static` array name so func-purity can reject a func touching one,
-	 * regardless of whether the static is declared before or after the func. */
+	/* pre-pass: hoist every top-level mutable binding (buffer or scalar) — register its name into
+	 * the global scope so forward references resolve regardless of declaration order (top-level
+	 * names hoist, like procs/funcs/types), and register it for func-purity so a func touching a
+	 * mutable global is rejected wherever the global sits. */
 	for (int i = 0; i < prog->decl_count; i++) {
 		Decl *d = prog->decls[i];
-		if (d->kind == DECL_STATIC && d->data.static_decl && d->data.static_decl->kind == STATIC_KIND_ARRAY)
-			register_static_name(ctx, d->data.static_decl->array.name);
+		if (d->kind != DECL_STATIC || !d->data.static_decl)
+			continue;
+		StaticDecl *s = d->data.static_decl;
+		if (s->kind == STATIC_KIND_ARRAY) {
+			register_static_name(ctx, s->array.name);
+			add_variable(ctx, s->array.name, s->array.element_type);
+		} else if (s->kind == STATIC_KIND_SCALAR) {
+			register_static_name(ctx, s->scalar.name);
+			add_variable(ctx, s->scalar.name, s->scalar.type);
+		}
 	}
 
 	/* pre-pass: register every proc/func name so a body may reference any function regardless of

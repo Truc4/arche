@@ -10,9 +10,22 @@ Program  ← _ (Decl _)* EOF
 Decl     ← Binding / UseDecl / VisMarker / PoolDecl
 
 # ---- The one declaration form ---------------------------------------------------------------
-# x := e        variable, inferred       x :: e        constant, inferred (value / type / callable)
-# x : T = e     variable, typed          x : T : e     constant, typed
-# x : T         typed, zero-init (no init)             @decorator may precede the binding name
+# Canonical (explicit) form:   name : type : value     (immutable — a definition)
+#                              name : type = value     (mutable  — storage)
+# The value separator is the mutability axis: `:` binds a compile-time-immutable definition (a
+# value const, a nominal type, or a proc/func/sys/arche/enum literal); `=` binds mutable storage.
+# Every surface "short" form is this one rule with a part ELIDED and defaulted — not a separate
+# rule:
+#   x :: e   ≡  x : ⟨inferred⟩ : e     (type elided)
+#   x := e   ≡  x : ⟨inferred⟩ = e     (type elided)
+#   x : T    ≡  x : T = ⟨zero⟩         (value elided → implicit `= 0`)
+# So implicit and explicit are the same declaration; the compiler normalizes the elisions onto the
+# canonical form (the CST stays lossless so `fmt` round-trips the surface spelling).
+# A mutable global's initial value must be compile-time-constant (static storage is initialized at
+# link time — there is no startup code); the variable is still reassignable. `@decorator` may
+# precede the binding name.
+# Visibility/order: all top-level names are visible file-wide (order-independent — a decl may
+# reference one declared later); locals are point-of-introduction. See docs/patterns.md.
 Binding   ← (Decorator _)* Identifier _ ":" _ Type? _ (BindTail)?
 BindTail  ← (":" / "=") _ RHS
 RHS       ← Expr / TypeForm

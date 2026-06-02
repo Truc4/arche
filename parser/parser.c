@@ -808,11 +808,14 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	if (check(parser, TOK_COLON)) {
 		advance(parser); /* first ':' */
 
-		/* `name := value` — mutable initialized global. */
+		/* `name := value` — mutable initialized global, inferred type. */
 		if (check(parser, TOK_EQ)) {
-			error(parser, "mutable global initializers (`name := value`) are not implemented yet — "
-			              "use a sized buffer `name : T[N]` or a pool `Name[C]`");
-			return 0;
+			*out_kind = SN_STATIC_DECL;
+			advance(parser); /* '=' */
+			if (!parse_expression(parser))
+				return 0;
+			match(parser, TOK_SEMI); /* recorded; formatter drops it for static decls */
+			return 1;
 		}
 
 		int decl_type_is_meta = 0;
@@ -828,19 +831,18 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 
 		/* `name : T = value` — mutable initialized typed global. */
 		if (check(parser, TOK_EQ)) {
-			error(parser, "mutable global initializers (`name : T = value`) are not implemented yet — "
-			              "use a sized buffer `name : T[N]` or a pool `Name[C]`");
-			return 0;
+			*out_kind = SN_STATIC_DECL;
+			advance(parser); /* '=' */
+			if (!parse_expression(parser))
+				return 0;
+			match(parser, TOK_SEMI);
+			return 1;
 		}
 
-		/* `name : T` with no second separator → mutable static buffer (zero-init storage). */
+		/* `name : T` with no second separator → mutable static storage, zero-initialized (the
+		 * implicit `= 0` of the unified form). T may be a sized array (a buffer) or a scalar. */
 		if (have_type && !check(parser, TOK_COLON)) {
 			*out_kind = SN_STATIC_DECL;
-			if (form.cst_kind != SN_TYPE_SHAPED_ARRAY) {
-				error(parser, "a top-level storage declaration `name : T` needs a sized array type "
-				              "(e.g. `buf : char[4194304]`)");
-				return 0;
-			}
 			match(parser, TOK_SEMI); /* recorded; formatter drops it for static decls */
 			return 1;
 		}

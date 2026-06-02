@@ -81,6 +81,11 @@ struct CodegenContext {
 	int static_array_count;
 	int static_array_capacity;
 
+	/* Scalar globals (name -> HirStaticDecl mapping, kind == HIR_STATIC_SCALAR) */
+	HirStaticDecl **scalars;
+	int scalar_count;
+	int scalar_capacity;
+
 	/* Alloca hoisting: collect allocas during function body gen, emit at entry */
 	char *alloca_buffer;
 	size_t alloca_buf_size;
@@ -252,6 +257,52 @@ static HirStaticDecl *codegen_find_static_array(CodegenContext *ctx, const char 
 		}
 	}
 	return NULL;
+}
+
+static int char_literal_value(const char *lex); /* defined below */
+
+static void codegen_register_scalar(CodegenContext *ctx, HirStaticDecl *sc) {
+	if (ctx->scalar_count >= ctx->scalar_capacity) {
+		ctx->scalar_capacity = (ctx->scalar_capacity == 0) ? 16 : ctx->scalar_capacity * 2;
+		ctx->scalars = realloc(ctx->scalars, ctx->scalar_capacity * sizeof(HirStaticDecl *));
+	}
+	ctx->scalars[ctx->scalar_count++] = sc;
+}
+
+static HirStaticDecl *codegen_find_scalar(CodegenContext *ctx, const char *name) {
+	for (int i = 0; i < ctx->scalar_count; i++)
+		if (strcmp(ctx->scalars[i]->scalar.name, name) == 0)
+			return ctx->scalars[i];
+	return NULL;
+}
+
+/* Fold a scalar global's initializer to an LLVM constant string (default "0" for the implicit
+ * `= 0`). Semantic guarantees the initializer is compile-time-constant: a literal, a value const
+ * (inlined via semantic_get_const_value), or an enum variant. */
+static void codegen_scalar_init_const(CodegenContext *ctx, HirExpr *init, char *out, size_t out_sz) {
+	if (!init) {
+		snprintf(out, out_sz, "0");
+		return;
+	}
+	if (init->kind == HIR_EXPR_LITERAL && init->data.literal.lexeme) {
+		const char *lx = init->data.literal.lexeme;
+		if (lx[0] == '\'')
+			snprintf(out, out_sz, "%d", char_literal_value(lx));
+		else
+			snprintf(out, out_sz, "%s", lx);
+		return;
+	}
+	if (init->kind == HIR_EXPR_NAME) {
+		const char *cv = semantic_get_const_value(ctx->sem_ctx, init->data.name.name);
+		if (cv) {
+			if (cv[0] == '\'')
+				snprintf(out, out_sz, "%d", char_literal_value(cv));
+			else
+				snprintf(out, out_sz, "%s", cv);
+			return;
+		}
+	}
+	snprintf(out, out_sz, "0");
 }
 
 /* ========== UTILITY FUNCTIONS ========== */
@@ -1612,6 +1663,13 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			char global_ref[256];
 			snprintf(global_ref, sizeof(global_ref), "@%s", name);
 			strcpy(result_buf, global_ref);
+		} else if (codegen_find_scalar(ctx, name)) {
+			/* Scalar global read: load the current value from @name. */
+			HirStaticDecl *sc = codegen_find_scalar(ctx, name);
+			const char *lt = llvm_type_from_arche(field_base_type_name(sc->scalar.type));
+			char *loaded = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load %s, %s* @%s\n", loaded, lt, lt, name);
+			strcpy(result_buf, loaded);
 		} else if (find_archetype_decl(ctx, name)) {
 			/* Archetype name → its shape's storage. Aliases resolve to the canonical name, so
 			 * every alias references the one struct/global. Static global is @X directly;
@@ -4940,6 +4998,35 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		if (stmt->data.assign_stmt.target->kind == HIR_EXPR_NAME) {
 			const char *var_name = stmt->data.assign_stmt.target->data.name.name;
 			ValueInfo *val = find_value(ctx, var_name);
+			HirStaticDecl *gsc = (!val) ? codegen_find_scalar(ctx, var_name) : NULL;
+			if (gsc) {
+				/* Scalar global store: the global is mutable; write through @name. */
+				const char *llvm_t = llvm_type_from_arche(field_base_type_name(gsc->scalar.type));
+				int is_float = strcmp(llvm_t, "float") == 0 || strcmp(llvm_t, "double") == 0;
+				if (stmt->data.assign_stmt.op == OP_NONE) {
+					buffer_append_fmt(ctx, "  store %s %s, %s* @%s\n", llvm_t, value_buf, llvm_t, var_name);
+				} else {
+					char *loaded = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = load %s, %s* @%s\n", loaded, llvm_t, llvm_t, var_name);
+					const char *op = is_float ? "fadd" : "add";
+					switch (stmt->data.assign_stmt.op) {
+					case OP_SUB:
+						op = is_float ? "fsub" : "sub";
+						break;
+					case OP_MUL:
+						op = is_float ? "fmul" : "mul";
+						break;
+					case OP_DIV:
+						op = is_float ? "fdiv" : "sdiv";
+						break;
+					default:
+						break;
+					}
+					char *result = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", result, op, llvm_t, loaded, value_buf);
+					buffer_append_fmt(ctx, "  store %s %s, %s* @%s\n", llvm_t, result, llvm_t, var_name);
+				}
+			}
 			if (val && val->type == 1) { /* type 1 = scalar pointer */
 				int is_float = val->field_type &&
 				               (strcmp(val->field_type, "float") == 0 || strcmp(val->field_type, "double") == 0);
@@ -7361,6 +7448,9 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->static_arrays = NULL;
 	ctx->static_array_count = 0;
 	ctx->static_array_capacity = 0;
+	ctx->scalars = NULL;
+	ctx->scalar_count = 0;
+	ctx->scalar_capacity = 0;
 	ctx->alloca_buffer = NULL;
 	ctx->alloca_buf_size = 0;
 	ctx->alloca_buf_pos = 0;
@@ -7451,6 +7541,32 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	    ctx,
 	    "@.arche_oob = private unnamed_addr constant [28 x i8] c\"arche: index out of bounds\\0A\\00\", align 1\n\n");
 
+	/* Hoist archetype definitions: emit every archetype's struct type (and its insert/delete
+	 * helpers) BEFORE any function body. A struct type used as a GEP source element must be sized at
+	 * that point in the textual IR, so a proc that touches an archetype declared later in the source
+	 * (e.g. behind a `#module` banner) would otherwise emit a def-after-use forward reference that
+	 * the optimizer rejects ("base element of getelementptr must be sized"). Types hoist, like every
+	 * other top-level name. (Globals may be forward-referenced in LLVM IR, so only the type defs need
+	 * hoisting; the `@pool` storage decls stay in source order below.) */
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		if (ctx->ast->decls[i]->kind == HIR_DECL_ARCHETYPE)
+			codegen_archetype_decl(ctx, ctx->ast->decls[i]->data.archetype);
+	}
+
+	/* Register static arrays and scalar globals up front so a function body may reference one
+	 * declared later in the source (globals may be forward-referenced in LLVM IR; the registries
+	 * just need to know the name when the using function is emitted). Emission of the `@name`
+	 * globals still happens in source order in the main loop below. */
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		HirDecl *dd = ctx->ast->decls[i];
+		if (dd->kind != HIR_DECL_STATIC)
+			continue;
+		if (dd->data.static_decl->kind == HIR_STATIC_ARRAY)
+			codegen_register_static_array(ctx, dd->data.static_decl);
+		else if (dd->data.static_decl->kind == HIR_STATIC_SCALAR)
+			codegen_register_scalar(ctx, dd->data.static_decl);
+	}
+
 	/* Generate code for all declarations (this will populate globals_buffer with string constants) */
 	int has_init_proc = 0;
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
@@ -7458,12 +7574,20 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 
 		switch (decl->kind) {
 		case HIR_DECL_ARCHETYPE:
-			codegen_archetype_decl(ctx, decl->data.archetype);
+			/* Already emitted in the hoist pre-pass above. */
 			break;
 		case HIR_DECL_STATIC: {
 			HirStaticDecl *s = decl->data.static_decl;
 			if (s->kind == HIR_STATIC_ARCHETYPE) {
 				codegen_static_decl(ctx, s);
+			} else if (s->kind == HIR_STATIC_SCALAR) {
+				/* Scalar global: `@name = global <ty> <const>`. The variable is mutable (loaded/
+				 * stored at use sites); only its initial value is a compile-time constant. */
+				const char *lt = llvm_type_from_arche(field_base_type_name(s->scalar.type));
+				char cst[64];
+				codegen_scalar_init_const(ctx, s->scalar.init, cst, sizeof(cst));
+				buffer_append_fmt(ctx, "@%s = global %s %s\n", s->scalar.name, lt, cst);
+				/* registered in the pre-pass above */
 			} else {
 				const char *llvm_type = "i8";
 				const char *elem_name = field_base_type_name(s->array.element_type);
@@ -7487,7 +7611,7 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 					buffer_append_fmt(ctx, "@%s = global [%d x %s] zeroinitializer\n", s->array.name, s->array.size,
 					                  llvm_type);
 				}
-				codegen_register_static_array(ctx, s);
+				/* registered in the pre-pass above */
 			}
 			break;
 		}
