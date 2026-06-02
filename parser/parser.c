@@ -1863,25 +1863,11 @@ static int parse_statement(Parser *parser) {
 				goto cleanup;
 			}
 		} else {
-			/* Range-based for: for var in iterable { } */
-			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected variable name after 'for'");
-				goto cleanup;
-			}
-			advance(parser);
-			if (!match(parser, TOK_IN)) {
-				error(parser, "Expected 'in' in for loop");
-				goto cleanup;
-			}
-			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected iterable after 'in'");
-				goto cleanup;
-			}
-			advance(parser);
-			if (!match(parser, TOK_LBRACE)) {
-				error(parser, "Expected '{'");
-				goto cleanup;
-			}
+			/* `for x in <expr>` does not exist: iteration is a `sys` (over archetypes) or a
+			 * C-style `for (init; cond; incr)`. Reject the range-for form at parse time. */
+			error(parser, "for-in is not supported — iterate with a `sys` (over an archetype) or a "
+			              "C-style `for (init; cond; incr)`");
+			goto cleanup;
 		}
 
 		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
