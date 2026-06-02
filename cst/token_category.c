@@ -96,9 +96,10 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 		return "punctuation";
 
 	/* Genuinely uncategorized — not highlighted. Listed explicitly (NOT a `default`) so this switch
-	 * is EXHAUSTIVE over TokenKind: this file is built with `-Werror=switch`, so adding a new token
-	 * without giving it a category is a compile error, not a silent omission (see the Makefile and
-	 * tests/unit/tooling/keyword_highlight.arche). Make wrong harder than right. */
+	 * is EXHAUSTIVE over TokenKind. The build is `-Werror=switch` project-wide, so a no-`default`
+	 * switch that misses an enum value is a compile error — adding a new token without categorizing
+	 * it here cannot build (and tests/unit/tooling/keyword_highlight.arche backstops it). Make wrong
+	 * harder than right: omit the `default`, list every case. */
 	case TOK_EOF:
 	case TOK_ERROR:
 	case TOK_HASH: /* bare/unknown `#` — a parse error, not a highlightable token */

@@ -1,6 +1,6 @@
 CC = gcc
 ARCHE_VERSION := $(shell cat VERSION 2>/dev/null || echo 0.0.0-dev)
-CFLAGS = -Wall -Wextra -std=c99 -DARCHE_CORE_DIR=\"$(abspath core)\" -DARCHE_STDLIB_DIR=\"$(abspath stdlib)\" -DARCHE_RUNTIME_DIR=\"$(abspath build/runtime)\" -DARCHE_EXPLAIN_DIR=\"$(abspath docs/explain)\" -DARCHE_VERSION=\"$(ARCHE_VERSION)\"
+CFLAGS = -Wall -Wextra -Werror=switch -std=c99 -DARCHE_CORE_DIR=\"$(abspath core)\" -DARCHE_STDLIB_DIR=\"$(abspath stdlib)\" -DARCHE_RUNTIME_DIR=\"$(abspath build/runtime)\" -DARCHE_EXPLAIN_DIR=\"$(abspath docs/explain)\" -DARCHE_VERSION=\"$(ARCHE_VERSION)\"
 BUILD_DIR = build
 TARGET = $(BUILD_DIR)/arche
 VPATH = tests
@@ -121,15 +121,6 @@ $(LIBARCH): $(LIBARCH_OBJS)
 $(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
-
-# token_category.c categorizes EVERY token for syntax highlighting via an EXHAUSTIVE switch (no
-# `default`). Built with -Werror=switch so that adding a new TokenKind without giving it a category
-# is a hard COMPILE ERROR ("enumeration value 'TOK_x' not handled"), not a silent unhighlighted
-# token. The one place a new keyword could be forgotten is made impossible to forget. (A specific
-# target overrides the generic %.o rule above.)
-$(BUILD_DIR)/cst/token_category.o: cst/token_category.c | $(BUILD_DIR)
-	mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Werror=switch -MMD -MP -c -o $@ $<
 
 # Pull in the generated header-dependency files (none on a clean build).
 # Auto-dependency files only — `-type f` so a test artifact directory that happens to end in `.d`

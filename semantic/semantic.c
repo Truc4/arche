@@ -482,6 +482,20 @@ static int type_ref_equal(const TypeRef *a, const TypeRef *b) {
 		return 1; /* bare opaque == bare opaque; nominal distinctness is by alias name */
 	case TYPE_TYPE:
 		return 1; /* the meta-type: any two `type` are equal */
+	case TYPE_PROC:
+	case TYPE_FUNC:
+		/* Callable types match structurally (param/result shape), names ignored. */
+		if (a->data.callable.is_proc != b->data.callable.is_proc ||
+		    a->data.callable.param_count != b->data.callable.param_count ||
+		    a->data.callable.result_count != b->data.callable.result_count)
+			return 0;
+		for (int i = 0; i < a->data.callable.param_count; i++)
+			if (!type_ref_equal(a->data.callable.param_types[i], b->data.callable.param_types[i]))
+				return 0;
+		for (int i = 0; i < a->data.callable.result_count; i++)
+			if (!type_ref_equal(a->data.callable.result_types[i], b->data.callable.result_types[i]))
+				return 0;
+		return 1;
 	}
 	return 0;
 }

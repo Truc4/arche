@@ -456,6 +456,16 @@ void type_ref_free(TypeRef *type) {
 		break;
 	case TYPE_TYPE:
 		break;
+	case TYPE_PROC:
+	case TYPE_FUNC:
+		/* A callable signature owns its param/result TypeRefs and the arrays holding them. */
+		for (int i = 0; i < type->data.callable.param_count; i++)
+			type_ref_free(type->data.callable.param_types[i]);
+		free(type->data.callable.param_types);
+		for (int i = 0; i < type->data.callable.result_count; i++)
+			type_ref_free(type->data.callable.result_types[i]);
+		free(type->data.callable.result_types);
+		break;
 	}
 	free(type);
 }
