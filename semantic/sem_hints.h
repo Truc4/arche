@@ -20,6 +20,7 @@
 typedef struct {
 	const char **param_name; /* indexed by CST node id; the call arg's resolved param name, or NULL */
 	uint8_t *param_is_own;   /* indexed by CST node id; 1 if that parameter is `own` */
+	uint8_t *elided_move;    /* indexed by CST node id; 1 if a bare name was consumed (elided `move`) */
 	int cap;
 } SemHints;
 
@@ -31,5 +32,10 @@ void sem_hints_free(SemHints *h);
 void sem_hints_set_param(SemHints *h, uint32_t node_id, const char *name, int is_own);
 const char *sem_hints_param_name(const SemHints *h, uint32_t node_id);
 int sem_hints_param_is_own(const SemHints *h, uint32_t node_id);
+
+/* Record that the bare name at `node_id` was consumed — the source elided an explicit `move`
+ * (canonical form is `b := move a` / `f(move a)`). The editor renders an inlay "move" hint. */
+void sem_hints_set_elided_move(SemHints *h, uint32_t node_id);
+int sem_hints_is_elided_move(const SemHints *h, uint32_t node_id);
 
 #endif /* SEM_HINTS_H */

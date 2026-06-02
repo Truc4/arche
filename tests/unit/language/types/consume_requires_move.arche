@@ -1,7 +1,7 @@
-// Ownership transfer of an opaque into a `consume` parameter must be explicit. An opaque
-// value cannot copy, so handing a bare binding to a consuming parameter (no `move`) is a
-// compile error — the transfer must be visible as `move r`.
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "must be moved" %t.out
+// An opaque is move-only. Handing a bare opaque binding to a consuming `own` parameter is an IMPLICIT
+// move now (no `move` keyword required) — the transfer consumes the binding, so a second hand-off is
+// a use-after-move error. (The transfer is still visible via the editor's elided-`move` hint.)
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
 resource :: opaque
 #foreign {
   resource_open :: proc(initial: int)(ret: resource)
@@ -10,5 +10,6 @@ resource :: opaque
 
 main :: proc() {
   resource_open(10)(r:);
+  resource_close(r);
   resource_close(r);
 }

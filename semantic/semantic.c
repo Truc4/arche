@@ -774,6 +774,9 @@ static int type_is_byref_aggregate(const TypeRef *t) {
 	return t && (t->kind == TYPE_ARRAY || t->kind == TYPE_SHAPED_ARRAY);
 }
 
+/* Implicit `move` of a bare move-only name in an ownership-taking position (defined below). */
+static void implicit_move_consume(SemanticContext *ctx, Expression *e);
+
 /* A `char[]` / `char[N]` array type — the kind `copy` can currently duplicate (a flat byte
  * buffer with a statically-known size when it's a local). */
 static int type_is_char_array(const TypeRef *t) {
@@ -1524,11 +1527,11 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 
 	case EXPR_UNARY:
 		analyze_expression(ctx, expr->data.unary.operand);
-		/* E0112: `move x` / `copy x` are only valid in a function-call argument
-		 * position. Outside an arg they have no meaningful semantics. */
-		if ((expr->data.unary.op == UNARY_MOVE || expr->data.unary.op == UNARY_COPY) && !was_arg) {
-			sem_emit_move_outside_arg(ctx, expr->loc, expr->data.unary.op == UNARY_MOVE ? "move" : "copy");
-		}
+		/* `move`/`copy` are general value operators — valid in ANY value position (bind/assign RHS,
+		 * `return`, call arg). The typing layer treats them transparently and codegen lowers them
+		 * position-independently, so there is no position restriction. (`was_arg` is still consulted
+		 * below only by the analyses that legitimately depend on call-arg context.) */
+		(void)was_arg;
 		/* `move x` transfers ownership: mark x consumed (use-after-move is an error).
 		 * TODO(implicit-move): infer `move` at a binding's last use / self-rebind so the keyword
 		 * can be omitted (FBIP — Koka/Roc/Hylo do this via uniqueness/last-use analysis). */
@@ -1556,7 +1559,11 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 				if (var_is_opaque(ctx, cv)) {
 					sem_emit_cannot_copy_opaque(ctx, expr->data.unary.operand->loc,
 					                            expr->data.unary.operand->data.name.name);
-				} else if (type_is_byref_aggregate(cv->type) && !(type_is_char_array(cv->type) && !cv->is_param)) {
+				} else if (type_is_byref_aggregate(cv->type) &&
+				           !(cv->type && cv->type->kind == TYPE_SHAPED_ARRAY && !cv->is_param)) {
+					/* Clone is implemented for a LOCAL bounded `T[N]` value (any element). A runtime-
+					 * length slice `T[]` (TYPE_ARRAY) has no compile-time size to clone, and a
+					 * forwarded param's storage isn't ours to duplicate here — both stay unsupported. */
 					sem_emit_copy_unsupported(ctx, expr->data.unary.operand->loc,
 					                          expr->data.unary.operand->data.name.name);
 				}
@@ -1696,12 +1703,37 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 							Parameter *p = params[j];
 							if (!p || !p->is_own || !expr->data.call.args[j])
 								continue;
+							/* A bare move-only name handed to an `own` param is an implicit move —
+							 * consume it and record the elided `move`. (Explicit `move`/`copy` are
+							 * EXPR_UNARY and handled there; a borrowed-param source errors; a `Copy`
+							 * scalar just copies.) */
+							implicit_move_consume(ctx, expr->data.call.args[j]);
+						}
+					}
+
+					/* A `T[]` slice cannot satisfy a sized `T[N]` parameter: a slice's length is only
+					 * known at runtime, and the callee assumes exactly N elements (it could over-read).
+					 * Sizing flows one way — `T[N]` decays to `T[]` — never back. */
+					{
+						int ac = expr->data.call.arg_count;
+						int n = param_count < ac ? param_count : ac;
+						for (int j = 0; j < n; j++) {
+							Parameter *p = params[j];
+							if (!p || !p->type || p->type->kind != TYPE_SHAPED_ARRAY)
+								continue;
 							Expression *a = expr->data.call.args[j];
-							if (a->type == EXPR_NAME) {
-								VariableInfo *cv = find_variable(ctx, a->data.name.name);
-								if (cv) {
-									sem_emit_own_requires_move_or_copy(ctx, a->loc, a->data.name.name,
-									                                   p->name ? p->name : "?", func_name);
+							while (a && a->type == EXPR_UNARY &&
+							       (a->data.unary.op == UNARY_MOVE || a->data.unary.op == UNARY_COPY))
+								a = a->data.unary.operand;
+							if (a && a->type == EXPR_NAME) {
+								VariableInfo *av = find_variable(ctx, a->data.name.name);
+								if (av && av->type && av->type->kind == TYPE_ARRAY) {
+									fprintf(stderr,
+									        "Error: cannot pass a slice `T[]` to a sized `T[N]` parameter '%s' — a "
+									        "slice's length is only known at runtime; sizing flows one way "
+									        "(`T[N]` decays to `T[]`), never back\n",
+									        p->name ? p->name : "?");
+									ctx->error_count++;
 								}
 							}
 						}
@@ -1824,6 +1856,28 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		sem_model_set_expr_type(ctx->model, expr->cst_id - 1, resolved);
 }
 
+/* A bare name in an ownership-TAKING position (bind/assign RHS, `own`-param arg) is an implicit
+ * `move` for move-only types (arrays/slices, opaque): consume the binding and record the elided
+ * `move` for the editor. A read-only borrowed param can't be moved out (error). Scalars and other
+ * `Copy` types are never consumed by a bare name — they copy, as before. Explicit `move`/`copy`
+ * are handled in EXPR_UNARY and never reach here as a bare EXPR_NAME. */
+static void implicit_move_consume(SemanticContext *ctx, Expression *e) {
+	if (!e || e->type != EXPR_NAME)
+		return;
+	VariableInfo *v = find_variable(ctx, e->data.name.name);
+	if (!v)
+		return;
+	if (!(type_is_byref_aggregate(v->type) || var_is_opaque(ctx, v)))
+		return; /* Copy type: a bare name copies, never moves */
+	if (v->is_param && !v->is_own && type_is_byref_aggregate(v->type)) {
+		sem_emit_cannot_move_borrowed(ctx, e->loc, e->data.name.name);
+		return;
+	}
+	v->is_consumed = 1;
+	if (e->cst_id)
+		sem_hints_set_elided_move(ctx->hints, e->cst_id - 1);
+}
+
 /* ========== STATEMENT ANALYSIS ========== */
 
 static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
@@ -1892,6 +1946,9 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 			ctx->stmt_call_ok = (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->type == EXPR_CALL);
 			analyze_expression(ctx, stmt->data.bind_stmt.value);
 			ctx->stmt_call_ok = 0;
+
+			/* `a := b` takes ownership: a bare move-only RHS name is an implicit move (b is consumed). */
+			implicit_move_consume(ctx, stmt->data.bind_stmt.value);
 
 			/* Multi-value let (non-call): add all variables from names array */
 			if (stmt->data.bind_stmt.name_count > 0 && stmt->data.bind_stmt.names) {

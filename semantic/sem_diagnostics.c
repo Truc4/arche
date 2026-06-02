@@ -494,10 +494,10 @@ SemDiag *sem_emit_own_requires_move_or_copy(SemanticContext *ctx, SourceLoc loc,
 }
 SemDiag *sem_emit_cannot_mutate_borrowed(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_cannot_mutate_borrowed, loc,
-	                 "cannot mutate read-only parameter '%s' — array parameters are borrowed "
-	                 "(read-only) by default; to write one, make it in-out (the same name in "
-	                 "both the in-list and out-list, no `own`/`move`), or copy it into a local",
-	                 name);
+	                 "cannot mutate read-only parameter '%s' — an array/slice parameter is a borrowed "
+	                 "(read-only) view by default; to write one, take ownership with `own %s: T[]` and "
+	                 "`move` the buffer in, use an in-out out-param, or copy it into a local",
+	                 name, name);
 }
 SemDiag *sem_emit_extern_array_param_needs_own(SemanticContext *ctx, SourceLoc loc, const char *param_name,
                                                const char *proc_name) {

@@ -1,0 +1,16 @@
+// Threading an owned slice: a sized buffer is moved in (decays to a fat pointer), mutated, and the
+// fat pointer is RETURNED so the caller rebinds it and threads it onward. The runtime length survives
+// the round trip (move-in → return → rebind), and no buffer size appears in the signature. This is
+// the variable-length mutate-and-hand-back idiom, kept single-writer by the linear `move`.
+// RUN: %arche build -o %t %s && %t | grep -q "len=4 a0=100 a1=200"
+step :: func(own xs: int[], i: int, v: int) -> int[] {
+  xs[i] = v;
+  return xs;
+}
+
+main :: proc() {
+  a: int[4];
+  a := step(move a, 0, 100);
+  a := step(move a, 1, 200);
+  printf("len=%d a0=%d a1=%d\n", a.length, a[0], a[1]);
+}

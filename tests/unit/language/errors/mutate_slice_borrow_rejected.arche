@@ -1,0 +1,13 @@
+// A borrowed `T[]` slice is a READ-ONLY view — writing through it is rejected. Mutation of a buffer
+// you don't own requires taking ownership (`own xs: T[]` + `move`), never a casual write through a
+// shared view. This is what keeps slices aliasing-free: no mutable shared borrow exists.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "read-only parameter" %t.out
+poke :: func(xs: int[]) -> int {
+  xs[0] = 99;
+  return xs.length;
+}
+
+main :: proc() {
+  a: int[2];
+  printf("%d\n", poke(a));
+}

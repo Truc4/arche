@@ -1,7 +1,0 @@
-// E0112: `move`/`copy` keyword is only valid in a function-call argument position.
-// `x := move y` outside any call is meaningless and gets caught.
-// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0112 move_outside_arg 0 \`move\` is only valid in a function-call argument position"
-main :: proc() {
-  s := "hi";
-  y := move s;
-}
