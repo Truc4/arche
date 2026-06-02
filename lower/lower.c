@@ -618,6 +618,43 @@ static HirExpr *lower_expr_cst(CstView e) {
 			}
 		break;
 	}
+	case SN_SLICE_EXPR: {
+		/* `base[lo:hi]` — base is IDENT + folded field chain (as for index); the expr child(ren)
+		 * split on the `:` token: before → lo, after → hi (either may be omitted → NULL). */
+		ax->kind = HIR_EXPR_SLICE;
+		HirExpr *base = hir_expr_create(HIR_EXPR_NAME);
+		base->data.name.name = txt_dup(cv_token(e, TOK_IDENT));
+		int nfields = cv_count(e, SN_FIELD_NAME);
+		for (int i = 0; i < nfields; i++) {
+			HirExpr *f = hir_expr_create(HIR_EXPR_FIELD);
+			f->data.field.base = base;
+			f->data.field.field_name = cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+			base = f;
+		}
+		ax->data.slice.base = base;
+		ax->data.slice.lo = NULL;
+		ax->data.slice.hi = NULL;
+		int seen_colon = 0;
+		for (int i = 0; i < e.node->child_count; i++) {
+			SyntaxElem *ch = &e.node->children[i];
+			if (ch->tag == SE_TOKEN && ch->as.token.kind == TOK_COLON) {
+				seen_colon = 1;
+				continue;
+			}
+			if (ch->tag == SE_NODE) {
+				SyntaxNodeKind k = ch->as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
+					CstView iv = {ch->as.node, e.src};
+					HirExpr *ex = lower_expr_cst(iv);
+					if (!seen_colon)
+						ax->data.slice.lo = ex;
+					else
+						ax->data.slice.hi = ex;
+				}
+			}
+		}
+		break;
+	}
 	case SN_BINARY_EXPR: {
 		ax->kind = HIR_EXPR_BINARY;
 		/* operator token */

@@ -103,6 +103,11 @@ void hir_expr_free(HirExpr *expr) {
 			hir_expr_free(expr->data.index.indices[i]);
 		free(expr->data.index.indices);
 		break;
+	case HIR_EXPR_SLICE:
+		hir_expr_free(expr->data.slice.base);
+		hir_expr_free(expr->data.slice.lo);
+		hir_expr_free(expr->data.slice.hi);
+		break;
 	case HIR_EXPR_BINARY:
 		hir_expr_free(expr->data.binary.left);
 		hir_expr_free(expr->data.binary.right);

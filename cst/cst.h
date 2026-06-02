@@ -434,6 +434,7 @@ typedef enum {
 	EXPR_NAME,
 	EXPR_FIELD, /* player.pos */
 	EXPR_INDEX, /* grid[x, y], player.pos[i] */
+	EXPR_SLICE, /* buf[lo:hi] — a read-only borrowed sub-view; lo/hi optional (buf[:hi], buf[lo:], buf[:]) */
 	EXPR_BINARY,
 	EXPR_UNARY,
 	EXPR_CALL,
@@ -468,6 +469,14 @@ typedef struct {
 	Expression **indices;
 	int index_count;
 } IndexExpr;
+
+/* buf[lo:hi] — a read-only borrowed sub-slice. lo/hi are NULL when omitted (`buf[:hi]` lo=NULL,
+ * `buf[lo:]` hi=NULL, `buf[:]` both NULL → defaults 0 and length). */
+typedef struct {
+	Expression *base;
+	Expression *lo;
+	Expression *hi;
+} SliceExpr;
 
 typedef struct {
 	Operator op;
@@ -512,6 +521,7 @@ struct Expression {
 		NameExpr name;
 		FieldExpr field;
 		IndexExpr index;
+		SliceExpr slice;
 		BinaryExpr binary;
 		UnaryExpr unary;
 		CallExpr call;

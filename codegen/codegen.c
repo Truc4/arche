@@ -1593,6 +1593,84 @@ static int try_extract_loop_bound(HirStmt *for_stmt, char **out_var, int *out_bo
 static void push_loop_bound(CodegenContext *ctx, const char *var_name, int bound);
 static void pop_loop_bound(CodegenContext *ctx);
 
+/* Emit a `buf[lo:hi]` sub-slice. Computes the element pointer `base.ptr + lo` and runtime length
+ * `hi - lo`, writing them into ptr_out / len_out (caller char[256]) and the element base name +
+ * bit width into *elem_out / *bitw_out. Returns 1 on success (base is a known array/slice), 0 if the
+ * base isn't sliceable. Omitted bounds default to lo=0, hi=base length. A read-only borrowed view —
+ * no copy, no consume. */
+static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *len_out, const char **elem_out,
+                         int *bitw_out) {
+	HirExpr *base = e->data.slice.base;
+	ValueInfo *bv = (base->kind == HIR_EXPR_NAME) ? find_value(ctx, base->data.name.name) : NULL;
+	if (!bv)
+		return 0;
+	const char *elem_base, *elem_llvm;
+	char base_ptr[256], base_len[64];
+	if (bv->type == 6 && bv->field_type) {
+		elem_base = bv->field_type;
+		elem_llvm = llvm_type_from_arche(elem_base);
+		strcpy(base_ptr, bv->llvm_name);
+		if (bv->is_slice && bv->len_ssa)
+			snprintf(base_len, sizeof(base_len), "%s", bv->len_ssa);
+		else
+			snprintf(base_len, sizeof(base_len), "%d", bv->string_len);
+	} else if (bv->type == 7) {
+		elem_base = "char";
+		elem_llvm = "i8";
+		char *ep = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i64 0, i64 0\n", ep, bv->string_len,
+		                  bv->string_len, bv->llvm_name);
+		strcpy(base_ptr, ep);
+		snprintf(base_len, sizeof(base_len), "%d", bv->string_len);
+	} else {
+		return 0;
+	}
+	char lo64[256] = "0";
+	if (e->data.slice.lo) {
+		char b[256];
+		codegen_expression(ctx, e->data.slice.lo, b);
+		emit_index_i64(ctx, b, e->data.slice.lo, lo64);
+	}
+	char hi64[256];
+	if (e->data.slice.hi) {
+		char b[256];
+		codegen_expression(ctx, e->data.slice.hi, b);
+		emit_index_i64(ctx, b, e->data.slice.hi, hi64);
+	} else {
+		snprintf(hi64, sizeof(hi64), "%s", base_len);
+	}
+	/* Bounds: 0 <= lo <= hi <= len. The unsigned compares also catch a negative lo/hi (sext'd to a
+	 * huge i64). On violation, write the OOB message and abort — never a silent over-read. */
+	{
+		char *c1 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = icmp ule i64 %s, %s\n", c1, lo64, hi64);
+		char *c2 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = icmp ule i64 %s, %s\n", c2, hi64, base_len);
+		char *ok = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = and i1 %s, %s\n", ok, c1, c2);
+		int id = ctx->value_counter++;
+		char okl[64], faill[64];
+		snprintf(okl, sizeof(okl), "slice_ok_%d", id);
+		snprintf(faill, sizeof(faill), "slice_fail_%d", id);
+		buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n\n", ok, okl, faill);
+		buffer_append_fmt(ctx, "%s:\n", faill);
+		buffer_append(ctx, "  call i32 @write(i32 2, i8* getelementptr ([28 x i8], [28 x i8]* @.arche_oob, i32 0, "
+		                   "i32 0), i32 27)\n");
+		buffer_append(ctx, "  call void @abort()\n");
+		buffer_append(ctx, "  unreachable\n\n");
+		buffer_append_fmt(ctx, "%s:\n", okl);
+	}
+	char *ptr2 = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", ptr2, elem_llvm, elem_llvm, base_ptr, lo64);
+	char *len2 = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = sub i64 %s, %s\n", len2, hi64, lo64);
+	snprintf(ptr_out, 256, "%s", ptr2);
+	snprintf(len_out, 256, "%s", len2);
+	*elem_out = elem_base;
+	*bitw_out = strcmp(elem_llvm, "double") == 0 ? 64 : (strcmp(elem_llvm, "i8") == 0 ? 8 : 32);
+	return 1;
+}
+
 /* ========== EXPRESSION CODEGEN ========== */
 
 static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
@@ -2352,6 +2430,21 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		break;
 	}
 
+	case HIR_EXPR_SLICE: {
+		/* `buf[lo:hi]` as a bare expression value: emit the sub-view and yield its element pointer.
+		 * (Call args and binds use codegen_slice directly to also carry the runtime length.) */
+		char sp[256], sl[256];
+		const char *se;
+		int sw;
+		if (codegen_slice(ctx, expr, sp, sl, &se, &sw)) {
+			(void)sl;
+			strcpy(result_buf, sp);
+		} else {
+			strcpy(result_buf, "null");
+		}
+		break;
+	}
+
 	case HIR_EXPR_INDEX: {
 		/* Each-field column read: f[i] where f is the current each_field
 		 * binding. Resolve to a load from the matching archetype column. */
@@ -2863,6 +2956,11 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		 * args are bare proc/func names with no runtime value (monomorphized away),
 		 * so emit no code for them. */
 		int *arg_is_callback = malloc(expr->data.call.arg_count * sizeof(int));
+		/* For a `buf[lo:hi]` slice argument: a temp type-6 slice ValueInfo (ptr + runtime len) so the
+		 * normal slice-arg dispatch handles it like any slice variable. Owned here, freed at cleanup. */
+		ValueInfo **arg_slice_vi = malloc(expr->data.call.arg_count * sizeof(ValueInfo *));
+		for (int i = 0; i < expr->data.call.arg_count; i++)
+			arg_slice_vi[i] = NULL;
 		for (int i = 0; i < expr->data.call.arg_count; i++)
 			arg_is_callback[i] = 0;
 		{
@@ -2919,6 +3017,27 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				strcpy(arg_bufs[i], "null"); /* dead placeholder; selection is the mangled symbol */
 				continue;
 			}
+			/* A `buf[lo:hi]` slice arg: emit the sub-view once and capture (ptr, len) as a temp
+			 * type-6 slice ValueInfo, so the slice-arg dispatch below passes it like a slice var. */
+			if (inner->kind == HIR_EXPR_SLICE) {
+				char sp[256], sl[256];
+				const char *se;
+				int sw;
+				if (codegen_slice(ctx, inner, sp, sl, &se, &sw)) {
+					ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+					vi->name = strdup("");
+					vi->llvm_name = strdup(sp);
+					vi->type = 6;
+					vi->is_slice = 1;
+					vi->len_ssa = strdup(sl);
+					vi->field_type = se;
+					vi->string_len = -1;
+					vi->bit_width = sw;
+					arg_slice_vi[i] = vi;
+					strcpy(arg_bufs[i], sp);
+					continue;
+				}
+			}
 			codegen_expression(ctx, expr->data.call.args[i], arg_bufs[i]);
 		}
 
@@ -2930,7 +3049,9 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			if (inner->kind == HIR_EXPR_UNARY &&
 			    (inner->data.unary.op == UNARY_MOVE || inner->data.unary.op == UNARY_COPY))
 				inner = inner->data.unary.operand;
-			if (!arg_is_string[i] && !arg_is_array_literal[i] && inner->kind == HIR_EXPR_NAME) {
+			if (arg_slice_vi[i]) {
+				arg_values[i] = arg_slice_vi[i]; /* a `buf[lo:hi]` slice arg → dispatch as a slice */
+			} else if (!arg_is_string[i] && !arg_is_array_literal[i] && inner->kind == HIR_EXPR_NAME) {
 				const char *arg_name = inner->data.name.name;
 				ValueInfo *var = find_value(ctx, arg_name);
 				if (var) {
@@ -3550,6 +3671,12 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			free(arg_bufs[i]);
 			free(call_arg_vals[i]);
 			free(call_arg_len[i]);
+			if (arg_slice_vi[i]) {
+				free(arg_slice_vi[i]->name);
+				free(arg_slice_vi[i]->llvm_name);
+				free(arg_slice_vi[i]->len_ssa);
+				free(arg_slice_vi[i]);
+			}
 		}
 		free(arg_bufs);
 		free(arg_is_string);
@@ -3558,6 +3685,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		free(arg_values);
 		free(arg_is_move);
 		free(arg_is_callback);
+		free(arg_slice_vi);
 		free(call_arg_vals);
 		free(call_arg_types);
 		free(call_arg_len);
@@ -4601,6 +4729,34 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			slice_elem_type = get_shaped_field_info(ctx, stmt->data.bind_stmt.value->data.index.base, NULL);
 			if (slice_elem_type)
 				is_multidim_slice = 1;
+		}
+
+		/* `ys := buf[lo:hi]` — bind a read-only slice view: register a type-6 slice (ptr + runtime
+		 * length) so `ys[i]` / `ys.length` work; no copy. */
+		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == HIR_EXPR_SLICE) {
+			char sp[256], sl[256];
+			const char *se;
+			int sw;
+			if (codegen_slice(ctx, stmt->data.bind_stmt.value, sp, sl, &se, &sw)) {
+				ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+				vi->name = malloc(strlen(var_name) + 1);
+				strcpy(vi->name, var_name);
+				vi->llvm_name = malloc(strlen(sp) + 1);
+				strcpy(vi->llvm_name, sp);
+				vi->type = 6;
+				vi->is_slice = 1;
+				vi->len_ssa = malloc(strlen(sl) + 1);
+				strcpy(vi->len_ssa, sl);
+				vi->field_type = se;
+				vi->string_len = -1;
+				vi->bit_width = sw;
+				if (ctx->scope_count > 0) {
+					ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+					scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+					scope->values[scope->value_count++] = vi;
+				}
+			}
+			break;
 		}
 
 		if (stmt->data.bind_stmt.value) {

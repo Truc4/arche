@@ -177,6 +177,8 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "FIELD_EXPR";
 	case SN_INDEX_EXPR:
 		return "INDEX_EXPR";
+	case SN_SLICE_EXPR:
+		return "SLICE_EXPR";
 	case SN_BINARY_EXPR:
 		return "BINARY_EXPR";
 	case SN_UNARY_EXPR:

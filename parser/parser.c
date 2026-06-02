@@ -1057,6 +1057,39 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 
 /* ========== EXPRESSION PARSING ========== */
 
+/* After a postfix `[` is matched, parse either an index list `a, b, …` or a slice `lo:hi` (lo/hi
+ * each optional: `[:hi]`, `[lo:]`, `[:]`). Sets *out_slice=1 for the slice form. Consumes the `]`.
+ * A `:` inside the brackets is what marks a slice. */
+static int parse_bracket_index_or_slice(Parser *parser, int *out_slice) {
+	*out_slice = 0;
+	if (check(parser, TOK_COLON)) { /* [:hi] / [:] — no lo */
+		*out_slice = 1;
+		advance(parser);
+		if (!check(parser, TOK_RBRACKET))
+			if (!parse_expression(parser))
+				return 0;
+	} else {
+		if (!parse_expression(parser))
+			return 0;
+		if (check(parser, TOK_COLON)) { /* [lo:hi] / [lo:] */
+			*out_slice = 1;
+			advance(parser);
+			if (!check(parser, TOK_RBRACKET))
+				if (!parse_expression(parser))
+					return 0;
+		} else { /* index: optional comma list */
+			while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACKET))
+				if (!parse_expression(parser))
+					return 0;
+		}
+	}
+	if (!match(parser, TOK_RBRACKET)) {
+		error(parser, "Expected ']'");
+		return 0;
+	}
+	return 1;
+}
+
 /* `out_kind` receives the SyntaxNodeKind for the primary expression form parsed,
  * derived from parse context (not from a built AST node). The caller wraps the
  * CST node with it. Left untouched when the primary already wrapped itself (paren). */
@@ -1217,15 +1250,10 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			}
 
 			if (match(parser, TOK_LBRACKET)) {
-				do {
-					if (!parse_expression(parser))
-						return 0;
-				} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACKET));
-				if (!match(parser, TOK_RBRACKET)) {
-					error(parser, "Expected ']'");
+				int is_slice;
+				if (!parse_bracket_index_or_slice(parser, &is_slice))
 					return 0;
-				}
-				*out_kind = SN_INDEX_EXPR;
+				*out_kind = is_slice ? SN_SLICE_EXPR : SN_INDEX_EXPR;
 				return 1;
 			}
 
@@ -1252,17 +1280,12 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			return 1;
 		}
 
-		/* indexing: `a[i]` */
+		/* indexing `a[i]` or sub-slice `a[lo:hi]` */
 		if (match(parser, TOK_LBRACKET)) {
-			do {
-				if (!parse_expression(parser))
-					return 0;
-			} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACKET));
-			if (!match(parser, TOK_RBRACKET)) {
-				error(parser, "Expected ']'");
+			int is_slice;
+			if (!parse_bracket_index_or_slice(parser, &is_slice))
 				return 0;
-			}
-			*out_kind = SN_INDEX_EXPR;
+			*out_kind = is_slice ? SN_SLICE_EXPR : SN_INDEX_EXPR;
 			return 1;
 		}
 

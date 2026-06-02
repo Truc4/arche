@@ -94,7 +94,12 @@ ExprStmt   ← Expr _ ";"
 Expr       ← BinaryOp / UnaryExpr
 BinaryOp   ← UnaryExpr (_ Operator _ UnaryExpr)*
 UnaryExpr  ← (("-" / "!" / "move" / "copy") _)? Postfix
-Postfix    ← Primary (_ ("." Identifier / "[" _ Expr (_ "," _ Expr)* _ "]" / "(" _ ArgList? _ ")"))*
+# "[" … "]" is either an index (one or more comma-separated subscripts) or a SLICE `lo:hi` (a `:`
+# marks the slice; lo/hi each optional → buf[:hi], buf[lo:], buf[:]). A slice is a read-only borrowed
+# sub-view `{ptr+lo, hi-lo}`, bounds-checked. See language.md "Arrays and slices".
+Postfix    ← Primary (_ ("." Identifier
+                       / "[" _ (Expr? _ ":" _ Expr? / Expr (_ "," _ Expr)*) _ "]"
+                       / "(" _ ArgList? _ ")"))*
 Primary    ← Number / String / CharLit / ArrayLit / Alloc
            / ProcLit / FuncLit / SysLit / ArcheLit / GroupLit / EnumLit / ProcType / FuncType
            / Path / Identifier / "(" _ Expr _ ")"

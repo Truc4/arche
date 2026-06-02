@@ -568,6 +568,11 @@ void expression_free(Expression *expr) {
 		}
 		free(expr->data.index.indices);
 		break;
+	case EXPR_SLICE:
+		expression_free(expr->data.slice.base);
+		expression_free(expr->data.slice.lo);
+		expression_free(expr->data.slice.hi);
+		break;
 	case EXPR_BINARY:
 		expression_free(expr->data.binary.left);
 		expression_free(expr->data.binary.right);

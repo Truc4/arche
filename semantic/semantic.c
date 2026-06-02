@@ -1108,6 +1108,11 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		return base_type;
 	}
 
+	case EXPR_SLICE:
+		/* `buf[lo:hi]` is a slice of the same element type as its base — it resolves like the base
+		 * array (element name for a non-char array, "char_array" for a char buffer). */
+		return resolve_expression_type(ctx, expr->data.slice.base);
+
 	case EXPR_BINARY: {
 		/* Comparison operators always return int (boolean result) */
 		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE) {
@@ -1512,6 +1517,16 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		for (int i = 0; i < expr->data.index.index_count; i++) {
 			analyze_expression(ctx, expr->data.index.indices[i]);
 		}
+		break;
+
+	case EXPR_SLICE:
+		/* `buf[lo:hi]` is a READ-ONLY borrowed sub-view: it reads its base and bounds but consumes
+		 * nothing (a borrow). The base must be an array/slice; the bounds (when present) are ints. */
+		analyze_expression(ctx, expr->data.slice.base);
+		if (expr->data.slice.lo)
+			analyze_expression(ctx, expr->data.slice.lo);
+		if (expr->data.slice.hi)
+			analyze_expression(ctx, expr->data.slice.hi);
 		break;
 
 	case EXPR_BINARY:
@@ -3941,6 +3956,43 @@ static Expression *cst_build_expr(CstView e) {
 			}
 		break;
 	}
+	case SN_SLICE_EXPR: {
+		/* `base[lo:hi]` — base is IDENT + fields (as for index); the expr child(ren) split on the
+		 * `:` token: before → lo, after → hi (either may be absent). */
+		ax->type = EXPR_SLICE;
+		Expression *base = expression_create(EXPR_NAME);
+		base->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
+		base->data.name.is_table_ref = 0;
+		int nfields = cv_count(e, SN_FIELD_NAME);
+		for (int i = 0; i < nfields; i++) {
+			Expression *f = expression_create(EXPR_FIELD);
+			f->data.field.base = base;
+			f->data.field.field_name = sem_cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+			base = f;
+		}
+		ax->data.slice.base = base;
+		ax->data.slice.lo = NULL;
+		ax->data.slice.hi = NULL;
+		int seen_colon = 0;
+		for (int i = 0; i < e.node->child_count; i++) {
+			SyntaxElem *ch = &e.node->children[i];
+			if (ch->tag == SE_TOKEN && ch->as.token.kind == TOK_COLON) {
+				seen_colon = 1;
+				continue;
+			}
+			if (ch->tag == SE_NODE) {
+				SyntaxNodeKind k = ch->as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
+					Expression *ex = cst_build_expr((CstView){ch->as.node, e.src});
+					if (!seen_colon)
+						ax->data.slice.lo = ex;
+					else
+						ax->data.slice.hi = ex;
+				}
+			}
+		}
+		break;
+	}
 	case SN_BINARY_EXPR: {
 		ax->type = EXPR_BINARY;
 		for (int i = 0; i < e.node->child_count; i++)
@@ -5210,6 +5262,11 @@ static void sem_rename_expr(Expression *e, const char *prefix, char **set, int c
 		sem_rename_expr(e->data.index.base, prefix, set, count);
 		for (int i = 0; i < e->data.index.index_count; i++)
 			sem_rename_expr(e->data.index.indices[i], prefix, set, count);
+		break;
+	case EXPR_SLICE:
+		sem_rename_expr(e->data.slice.base, prefix, set, count);
+		sem_rename_expr(e->data.slice.lo, prefix, set, count);
+		sem_rename_expr(e->data.slice.hi, prefix, set, count);
 		break;
 	case EXPR_BINARY:
 		sem_rename_expr(e->data.binary.left, prefix, set, count);

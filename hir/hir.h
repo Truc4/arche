@@ -318,6 +318,7 @@ typedef enum {
 	HIR_EXPR_NAME,
 	HIR_EXPR_FIELD,
 	HIR_EXPR_INDEX,
+	HIR_EXPR_SLICE,
 	HIR_EXPR_BINARY,
 	HIR_EXPR_UNARY,
 	HIR_EXPR_CALL,
@@ -346,6 +347,11 @@ struct HirExpr {
 			HirExpr **indices;
 			int index_count;
 		} index;
+		struct {
+			HirExpr *base;
+			HirExpr *lo; /* NULL → 0 */
+			HirExpr *hi; /* NULL → base length */
+		} slice;
 		struct {
 			Operator op;
 			HirExpr *left;

@@ -261,6 +261,16 @@ total := sum(a);        // a decays to int[] (a borrow) — a stays alive, .leng
 a := fill(move a);      // move a in (a consumed), mutate, hand the fat pointer back, rebind
 ```
 
+**Sub-slicing.** `buf[lo:hi]` is a read-only borrowed sub-view — `{ptr+lo, hi-lo}`, no copy. `lo`/`hi`
+are optional: `buf[:hi]`, `buf[lo:]`, `buf[:]`. It is bounds-checked (`0 <= lo <= hi <= length`,
+aborts otherwise) and, being a borrow, consumes nothing — the base stays fully alive. Use it to hand
+a sub-range to a reader (`sum(xs[2:5])`) or bind a view (`mid := xs[2:5]`).
+
+```arche
+total := sum(a[2:5]);   // borrow elements 2..4 — a untouched
+mid := a[:n];           // prefix view; mid.length == n
+```
+
 **Lifetime.** Storage lives in the stack frame that declared it and is reclaimed when that frame
 returns; `move` transfers the *right* to a buffer, never the memory. The one rule the compiler
 enforces: a function may not **return a slice that traces to its own local** `T[N]` (it would
