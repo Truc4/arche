@@ -1,0 +1,4 @@
+// i64 out-only array param.
+// RUN: %arche build -o %t %s && %t | grep -q "o=5000000000"
+fill :: proc()(buf: i64[4]) { buf[0] = 5000000000; }
+main :: proc() { fill()(a:); printf("o=%lld\n", a[0]); }

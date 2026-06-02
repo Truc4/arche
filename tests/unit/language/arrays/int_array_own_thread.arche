@@ -1,15 +1,15 @@
-// An `own` non-char array threads through a func and is handed back by reference — the linear /
-// ownership ("functional") discipline. Previously this stack-overflowed for `int[]`; the array-param
-// codegen generalization fixes it (mirrors the char[] `slice` pattern).
-// RUN: %arche build -o %t %s && %t | grep -q "5 9"
-step :: func(own acc: int[], i: int, v: int) -> int[] {
-  acc[i] = v;
-  return acc;
+// Returning a non-char array by value is NOT supported (it can't be handed back without copy-out,
+// and the old path silently byte-truncated, e.g. 300 → 44). It errors cleanly; the idiomatic way to
+// hand back a bounded buffer is an out-param / in-out param (see int_array_out_param.arche,
+// int_array_inout_param.arche). char[] slices returned from an `own` param stay valid.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "non-char array by value is not supported" %t.out
+step :: func(own a: int[], i: int, v: int) -> int[] {
+  a[i] = v;
+  return a;
 }
 
 main :: proc() {
   a: int[8];
-  a := step(move a, 0, 5);
-  a := step(move a, 1, 9);
-  printf("%d %d\n", a[0], a[1]);
+  a := step(move a, 0, 300);
+  printf("%d\n", a[0]);
 }

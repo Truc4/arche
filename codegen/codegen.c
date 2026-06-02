@@ -1550,6 +1550,8 @@ static int resolve_index_arch(CodegenContext *ctx, HirExpr *base_expr, HirExpr *
 static void emit_bounds_check(CodegenContext *ctx, const char *arch_name, const char *arch_ptr, int count_field_idx,
                               const char *idx_buf, int idx_is_i64);
 static int bounds_check_elidable(CodegenContext *ctx, const char *arch_name, HirExpr *idx_expr);
+static void emit_const_bounds_check(CodegenContext *ctx, int n, const char *idx_buf, int idx_is_i64);
+static int const_index_in_range(CodegenContext *ctx, HirExpr *idx_expr, int n);
 static int try_extract_loop_bound(HirStmt *for_stmt, char **out_var, int *out_bound);
 static void push_loop_bound(CodegenContext *ctx, const char *var_name, int bound);
 static void pop_loop_bound(CodegenContext *ctx);
@@ -2082,6 +2084,15 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			break;
 		}
 
+		/* Type-6 bounded array (non-char `int[N]`/`float[N]`/…): .cap/.length/etc. are the declared
+		 * element count N (string_len) — the same constant bound its indexing is checked against. */
+		if (base_val && base_val->type == 6 && base_val->string_len > 0 &&
+		    (strcmp(field_name, "cap") == 0 || strcmp(field_name, "capacity") == 0 ||
+		     strcmp(field_name, "length") == 0 || strcmp(field_name, "max_length") == 0)) {
+			snprintf(result_buf, 256, "%d", base_val->string_len);
+			break;
+		}
+
 		/* Handle .length property */
 		if (strcmp(field_name, "length") == 0) {
 			/* For archetype columns: load count field */
@@ -2333,10 +2344,12 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 
 		/* Check if base is a type-6 slice pointer variable */
 		const char *type6_elem_type = NULL;
+		int type6_bound = 0; /* compile-time element count N for a bounded array (0 = unbounded slice) */
 		if (expr->data.index.base->kind == HIR_EXPR_NAME) {
 			ValueInfo *vi = find_value(ctx, expr->data.index.base->data.name.name);
 			if (vi && vi->type == 6 && vi->field_type) {
 				type6_elem_type = vi->field_type;
+				type6_bound = vi->string_len;
 			}
 		}
 
@@ -2436,6 +2449,10 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			char idx_i64[256];
 			emit_index_i64(ctx, idx_buf, expr->data.index.indices[0], idx_i64);
 
+			if (type7_vi->string_len > 0 &&
+			    !const_index_in_range(ctx, expr->data.index.indices[0], type7_vi->string_len))
+				emit_const_bounds_check(ctx, type7_vi->string_len, idx_i64, 1);
+
 			char *res_name = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i64 0, i64 %s\n", res_name,
 			                  type7_vi->string_len, type7_vi->string_len, base_buf, idx_i64);
@@ -2468,6 +2485,12 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			emit_index_i64(ctx, idx_buf, expr->data.index.indices[0], final_idx_buf);
 			final_idx = final_idx_buf;
 		}
+
+		/* Bounds check a type-6 bounded array read against its compile-time count N (final_idx is
+		 * already i64 here), unless the index is provably in range. */
+		if (type6_bound > 0 && expr->data.index.index_count > 0 &&
+		    !const_index_in_range(ctx, expr->data.index.indices[0], type6_bound))
+			emit_const_bounds_check(ctx, type6_bound, final_idx, 1);
 
 		char *res_name = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", res_name, scalar_type, scalar_type,
@@ -4003,6 +4026,41 @@ static void emit_bounds_check(CodegenContext *ctx, const char *arch_name, const 
 	buffer_append_fmt(ctx, "%s:\n", ok_lbl);
 }
 
+/* Bounds check against a compile-time element count N (for fixed-size arrays whose length is the
+ * declared N, not a runtime count). Same abort idiom as emit_bounds_check; an unsigned compare also
+ * catches a negative index (it becomes a huge u64). */
+static void emit_const_bounds_check(CodegenContext *ctx, int n, const char *idx_buf, int idx_is_i64) {
+	const char *idx64 = idx_buf;
+	if (!idx_is_i64) {
+		char *v = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", v, idx_buf);
+		idx64 = v;
+	}
+	char *cmp = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp ult i64 %s, %d\n", cmp, idx64, n);
+	int chk_id = ctx->value_counter++;
+	char ok_lbl[64], fail_lbl[64];
+	snprintf(ok_lbl, sizeof(ok_lbl), "bounds_ok_%d", chk_id);
+	snprintf(fail_lbl, sizeof(fail_lbl), "bounds_fail_%d", chk_id);
+	buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n\n", cmp, ok_lbl, fail_lbl);
+	buffer_append_fmt(ctx, "%s:\n", fail_lbl);
+	buffer_append(ctx,
+	              "  call i32 @write(i32 2, i8* getelementptr ([28 x i8], [28 x i8]* @.arche_oob, i32 0, i32 0), i32 "
+	              "27)\n");
+	buffer_append(ctx, "  call void @abort()\n");
+	buffer_append(ctx, "  unreachable\n\n");
+	buffer_append_fmt(ctx, "%s:\n", ok_lbl);
+}
+
+/* 1 if `idx_expr` is provably within [0, n): a literal in range, or a loop var bounded <= n. */
+static int const_index_in_range(CodegenContext *ctx, HirExpr *idx_expr, int n) {
+	int lit;
+	if (try_extract_int_literal(idx_expr, &lit))
+		return lit >= 0 && lit < n;
+	int lb = lookup_loop_var_bound(ctx, idx_expr);
+	return lb > 0 && lb <= n;
+}
+
 /* ========== WHOLE-COLUMN LOOP HELPER ========== */
 
 /* Walk expression tree and pre-compute column base pointers to hoist them out of loop */
@@ -5436,6 +5494,11 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				char idx_i64[256];
 				emit_index_i64(ctx, idx_buf, stmt->data.assign_stmt.target->data.index.indices[0], idx_i64);
 
+				if (type7_target->string_len > 0 &&
+				    !const_index_in_range(ctx, stmt->data.assign_stmt.target->data.index.indices[0],
+				                          type7_target->string_len))
+					emit_const_bounds_check(ctx, type7_target->string_len, idx_i64, 1);
+
 				char *target_addr = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i64 0, i64 %s\n", target_addr,
 				                  type7_target->string_len, type7_target->string_len, base_buf, idx_i64);
@@ -5451,7 +5514,12 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				 * directly — the pointer is already `T*`. */
 				char idx_i64[256];
 				emit_index_i64(ctx, idx_buf, stmt->data.assign_stmt.target->data.index.indices[0], idx_i64);
-				const char *et6 = type6_target->field_type ? type6_target->field_type : "char";
+				/* Bounds check a bounded array write against its count N (idx_i64 is i64). */
+					if (type6_target->string_len > 0 &&
+					    !const_index_in_range(ctx, stmt->data.assign_stmt.target->data.index.indices[0],
+					                          type6_target->string_len))
+						emit_const_bounds_check(ctx, type6_target->string_len, idx_i64, 1);
+					const char *et6 = type6_target->field_type ? type6_target->field_type : "char";
 				if (strcmp(et6, "char") == 0) {
 					char *target_addr = gen_value_name(ctx);
 					buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %s\n", target_addr, base_buf, idx_i64);

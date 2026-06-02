@@ -1028,6 +1028,18 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 					return var->type->data.handle.archetype_name;
 				if (var->type->kind == TYPE_NAME)
 					return resolve_type_alias(ctx, normalize_type_name(var->type->data.name));
+				/* An array variable resolves to its ELEMENT base type, so `b[i]` (EXPR_INDEX
+				 * below) and width-sensitive consumers (binary ops, printf) see int/float/i64,
+				 * not a defaulted int. Mirrors the column-unwrap in the EXPR_FIELD case. */
+				if (var->type->kind == TYPE_SHAPED_ARRAY || var->type->kind == TYPE_ARRAY) {
+					TypeRef *et = var->type;
+					while (et && et->kind == TYPE_SHAPED_ARRAY)
+						et = et->data.shaped_array.element_type;
+					while (et && et->kind == TYPE_ARRAY)
+						et = et->data.array.element_type;
+					if (et && et->kind == TYPE_NAME)
+						return resolve_type_alias(ctx, normalize_type_name(et->data.name));
+				}
 			}
 			/* Fallback to inferred type */
 			if (var->inferred_type) {
@@ -1917,8 +1929,19 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 								var->inferred_type = resolve_type_alias(ctx, t->data.name);
 								if (is_type_alias(ctx, t->data.name))
 									var->nominal_type = t->data.name;
+							} else if (t->kind == TYPE_SHAPED_ARRAY || t->kind == TYPE_ARRAY) {
+								/* Array: store the ELEMENT base name (consistent with EXPR_NAME's
+								 * unwrap). The old `t->data.name` here read the wrong union member
+								 * (shaped_array.element_type reinterpreted as char*) — garbage. */
+								TypeRef *et = t;
+								while (et && et->kind == TYPE_SHAPED_ARRAY)
+									et = et->data.shaped_array.element_type;
+								while (et && et->kind == TYPE_ARRAY)
+									et = et->data.array.element_type;
+								var->inferred_type =
+								    (et && et->kind == TYPE_NAME) ? resolve_type_alias(ctx, et->data.name) : NULL;
 							} else
-								var->inferred_type = t->data.name;
+								var->inferred_type = NULL; /* unknown meta-kind: no string type */
 						} else if (stmt->data.bind_stmt.value) {
 							/* No annotation: infer from value expression */
 							const char *inferred = resolve_expression_type(ctx, stmt->data.bind_stmt.value);
@@ -2232,14 +2255,31 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				VariableInfo *rv = find_variable(ctx, rval->data.name.name);
 				if (rv && var_is_opaque(ctx, rv))
 					rv->is_consumed = 1;
-				/* Returning a fresh LOCAL array by value would dangle: its storage is in this
-				 * frame. Array value-return (copy-out) is not implemented — return an `own`/borrowed
-				 * parameter (handed back by reference) or thread a caller-provided buffer instead. */
-				if (ctx->current_func && rv && rv->type && type_is_byref_aggregate(rv->type) && !rv->is_param) {
-					fprintf(stderr,
-					        "Error: cannot return a local array by value (array copy-out is not implemented); "
-					        "return an `own` parameter or thread a caller-provided buffer instead\n");
-					ctx->error_count++;
+				/* Array return rules. A `char[]` may be returned (by reference) when it is an
+				 * `own`/borrowed PARAM — the established slice idiom (e.g. io/router `slice`). Two
+				 * things are NOT supported and error cleanly rather than miscompiling:
+				 *   - returning a fresh LOCAL array (any element): its storage is this frame → dangle
+				 *     (copy-out is unimplemented);
+				 *   - returning a NON-`char` array (param or local): the element pointer can't be
+				 *     handed back as a value without copy-out, and the old path silently byte-stored.
+				 * Non-char buffers are handed back via an in-out / out-param instead. */
+				if (ctx->current_func && rv && rv->type && type_is_byref_aggregate(rv->type)) {
+					TypeRef *et = rv->type;
+					while (et && et->kind == TYPE_SHAPED_ARRAY)
+						et = et->data.shaped_array.element_type;
+					while (et && et->kind == TYPE_ARRAY)
+						et = et->data.array.element_type;
+					int is_char = et && et->kind == TYPE_NAME && et->data.name && strcmp(et->data.name, "char") == 0;
+					if (!is_char) {
+						fprintf(stderr, "Error: returning a non-char array by value is not supported; hand the buffer "
+						                "back via an out-param (or in-out) instead\n");
+						ctx->error_count++;
+					} else if (!rv->is_param) {
+						fprintf(stderr,
+						        "Error: cannot return a local array by value (array copy-out is not implemented); "
+						        "return an `own` parameter or thread a caller-provided buffer instead\n");
+						ctx->error_count++;
+					}
 				}
 			}
 		}

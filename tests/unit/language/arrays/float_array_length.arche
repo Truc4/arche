@@ -1,0 +1,3 @@
+// .length on a float array returns its declared element count.
+// RUN: %arche build -o %t %s && %t | grep -q "flen=4"
+main :: proc() { b: float[4]; printf("flen=%d\n", b.length); }

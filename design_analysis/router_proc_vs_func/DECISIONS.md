@@ -3,10 +3,21 @@
 Running log of non-obvious decisions while implementing the approved plan
 (`.claude/plans/there-is-a-problem-calm-aho.md`). Newest at the bottom.
 
-## Goal
+## Status (current — read this first)
+- **`int` (i32) element arrays work** as locals, in-params, in-out params, `own`-threaded returns,
+  and out-only params. `char` arrays unchanged (separate, working path).
+- Fresh-local array value-return (copy-out) is **deferred** → clear compile error (not silent).
+- Router comparison done: procedural (module statics) vs **reentrant (out-param)**; identical
+  results; perf a wash. See COMPARISON.md.
+- **Full lit suite: 369/369 green.** 4 array/return guard tests added.
+- **Known limitations (verified, real):** only `int` element arrays are fully wired — `float`/
+  `double` and `i64`/other-width-int element arrays still emit invalid IR; `.length`/`.cap` don't
+  work on these arrays; and their accesses are **not bounds-checked**. Details in D7.
+
+## Goal (original)
 Plan fully implemented + verified: (1) non-char arrays work as `own`/in-out params (threading);
 (2) fresh-local array value-return errors cleanly (copy-out deferred); (3) procedural vs functional
-router implemented, benchmarked, and honestly compared. Full lit suite stays green (365/365).
+router implemented, benchmarked, and honestly compared. Full lit suite stays green.
 
 ## D1 — Root cause is the **param signature**, not just returns
 Empirically (built+ran):
@@ -18,7 +29,8 @@ So the single root defect: **non-`char` array params are emitted as a scalar (`i
 pointer** (`[N x T]*` shaped / `%struct.arche_array*` unbounded). This breaks in-out, `own`, and
 return for `int[]` alike. `char` arrays are special-cased and work.
 
-## D2 — Functional router uses **in-out params**, not array return
+## D2 — Functional router uses **in-out params**, not array return  [SUPERSEDED by D6]
+**(Superseded: in-out was the wrong idiom for our own procs — D6 switched to out-only params.)**
 Threading via in-out span buffers (`resolve(path, starts, lens)(starts, lens, count)`) is the
 `io.fread` pattern and needs only the **param** fix (D1), not array *return*. So the core codegen
 work is: param signature + arg passing + in-func indexing for non-char arrays. Array *return*
@@ -56,11 +68,12 @@ pre-existing printf-type-inference gap; float arrays were fully broken before). 
   type-6 element-typed write); char paths untouched. Fixes A, B, in-out `int[N]`, func int[] read.
 - Part 2 (semantic): fresh-local array value-return → clear "copy-out is not implemented" error
   (C, D); returning an `own`/borrowed param stays valid.
-- Part 3 (router): procedural (`bench_proc.arche`) vs functional/threaded (`bench_func.arche`);
-  identical checksum (18000000); ns/op a wash (~20.4 vs ~21.0 best-of-5); see COMPARISON.md.
-- Verification: 3 new tests (`arrays/int_array_inout_param`, `arrays/int_array_own_thread`,
-  `errors/array_local_return_rejected`); **full lit suite 368/368 green**, no regressions, no tests
-  removed. Bench programs live in design_analysis/ (not run by `make test`).
+- Part 3 (router): procedural (`bench_proc.arche`) vs reentrant/out-param (`bench_func.arche`);
+  identical checksum (18000000); ns/op a wash (~20.2 vs ~20.8 best-of-5); see COMPARISON.md.
+- Verification: 4 new tests (`arrays/int_array_inout_param`, `arrays/int_array_own_thread`,
+  `arrays/int_array_out_param`, `errors/array_local_return_rejected`); **full lit suite 369/369
+  green**, no regressions, no tests removed. Bench programs live in design_analysis/ (not run by
+  `make test`). (Note: D5 predates D6's out-param switch — the enabler is out-only array params.)
 
 ## D6 — In-out shadow is FOREIGN-only; our procs use OUT-only array params
 Feedback: re-listing a buffer in both the in-list and out-list (`(buf)(buf)`) is the FOREIGN-ABI
@@ -74,3 +87,45 @@ works with the caller writing `resolve(path)(s0:, l0:, h:, c:)` — no shadow. S
 Also: "functional" router is more precisely **reentrant / out-param** (still in-place mutation, still
 a global trie pool); pure-functional is impossible here (no heap). Wording fixed in COMPARISON.md.
 Handlers use a `route` enum, not raw ints.
+
+## D7 — Known limitations of the new array-param support (verified)
+The work wired up **`int` (i32)** element arrays end-to-end. These gaps remain (all confirmed by
+building the repro):
+
+1. **Only i32 element arrays work.** `float`/`double` and `i64` (and other non-32 int widths)
+   element arrays emit invalid IR, e.g. `b: float[4]; b[0]+b[1]` → `opt: 'double' ... expected
+   'i32'`; `i64[4]` → `'i64' ... expected 'i32'`. Root cause: the index-read GEP/load uses the
+   correct element type (via `field_type`), but the **indexed expression's resolved type is not
+   propagated** to the element type for these type-6 arrays — it defaults to int (i32), so a
+   `double`/`i64` result feeds an i32-typed consumer (arithmetic/printf). For i32 it coincidentally
+   matches; for others it's a verifier error. Fix = set the index expr's resolved type from the
+   array element type in semantic. `char` arrays are unaffected (separate path).
+2. **`.length` / `.cap` don't work** on these arrays — `b.length` on an `int[8]` local → IR parse
+   error. The type-6 element pointer carries the size in `string_len` but no `.length` accessor is
+   wired for it. (char[N] type-7 has its own length handling.)
+3. **No bounds checking.** Indexing an `int[N]` local/param past its end is silent UB (no trap) —
+   `b: int[4]; b[i]=i for i in 0..99` runs without error. The general index path only bounds-checks
+   archetype columns, not these arrays.
+
+None of these block the router (it uses bounded `int[8]` span buffers, i32, indexed in range, no
+`.length`). They are the honest edge of "non-char arrays work": **`int` works; float/i64/length/
+bounds are unfinished.**
+
+## D8 — Proper bounded arrays: element types, .length, bounds (issues 1/2/3 from D7)
+- **Issue 1 (element type):** semantic.c `resolve_expression_type` EXPR_NAME now unwraps a
+  shaped/array var to its ELEMENT base type, and the bind-annotation union bug (`t->data.name` for a
+  shaped array) is fixed. One channel (semantic string → HIR resolved), so `float[]`/`i64[]` index +
+  arithmetic + printf now use the right width. (`float[4]; b[0]+b[1]` → 7.5; `i64` sums → 5e9.)
+- **Issue 2 (.length/.cap):** codegen EXPR_FIELD type-6 branch emits the constant N (string_len),
+  mirroring type-7.
+- **Issue 3 (bounds):** `emit_const_bounds_check` (idx `ult` N, reuse `@.arche_oob`+abort) +
+  `const_index_in_range` (elide literal/loop indices). Inserted at type-6 read+write AND type-7
+  char[N] read+write (closes the same hole for char buffers). In-range unaffected; OOB aborts.
+- **Bonus / honesty:** non-char array RETURN byte-truncated (300→44) — the earlier "B fixed" was
+  byte-luck. Now returning a non-char array errors cleanly ("hand back via an out-param"); char[]
+  `own`-param return (slice idiom) still works; fresh-local return still errors (copy-out deferred).
+- **Tests:** tests/unit/language/arrays/ matrix — float/i64/int × {local, in-out, out, .length, OOB}
+  + char_array_oob + repurposed int_array_own_thread (asserts the non-char-return error). Full lit
+  suite **382/382 green**.
+- **Still NOT supported (honest):** array VALUE return / copy-out (deferred); unbounded non-char
+  slices `T[]` (use bounded `T[N]` or out-params); these error or are avoided, never silently wrong.

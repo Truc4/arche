@@ -1,0 +1,8 @@
+// float[] local — write/read + arithmetic at double width (element type propagated, not i32).
+// RUN: %arche build -o %t %s && %t | grep -q "fsum=7.5"
+main :: proc() {
+  b: float[4];
+  b[0] = 2.5;
+  b[1] = 5.0;
+  printf("fsum=%g\n", b[0] + b[1]);
+}

@@ -1,11 +1,12 @@
 // Returning a FRESH LOCAL array by value would dangle (its storage is the callee's frame). Array
-// value-return / copy-out is not implemented — it must be a clear error, not silent garbage
-// (char[N], which used to return zeros) or invalid IR (int[N]). Thread an `own`/in-out buffer
-// instead. (Returning an `own` parameter, handed back by reference, stays valid.)
+// value-return / copy-out is not implemented — it must be a clear error, not silent garbage (char[N]
+// used to return zeros). A char fresh-local return hits the copy-out-deferred message here; a
+// non-char array return hits its own "use an out-param" message (see arrays/int_array_own_thread).
+// Returning an `own` char[] parameter (by reference) stays valid — the slice idiom.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "copy-out" %t.out
-make :: func() -> int[8] {
-  buf: int[8];
-  buf[0] = 7;
+make :: func() -> char[8] {
+  buf: char[8];
+  buf[0] = 65;
   return buf;
 }
 
