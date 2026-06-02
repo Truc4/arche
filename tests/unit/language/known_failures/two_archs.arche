@@ -12,9 +12,9 @@ Body :: arche {
 }
 
 
-static table<Particle>(100);
+Particle[100];
 
-static table<Body>(50);
+Body[50];
 
 
 move :: sys(pos, vel) {

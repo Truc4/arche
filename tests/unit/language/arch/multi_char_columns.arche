@@ -6,7 +6,7 @@
 // docs/superpowers/specs/2026-06-01-array-archetype-columns.md.
 Message :: arche { text :: char[256], author :: char[64] }
 
-static pool<Message> (100)
+Message[100]
 
 main :: proc() {
   insert(Message, "hello", "ada");

@@ -52,7 +52,7 @@ arche Particle {
   vel :: float,
 }
 
-static pool<Particle>(100);
+Particle[100]
 
 sys integrate(pos, vel) {
   pos = pos + vel;        // runs over the whole column, no explicit loop
@@ -109,7 +109,7 @@ works in place with no configuration.
 
 Each is covered in depth in the [language reference](docs/language.md).
 
-- **Static allocation only (no heap)** - `static pool<T>(N)` with free-lists; zero `malloc` in
+- **Static allocation only (no heap)** - `T[N]` pools with free-lists; zero `malloc` in
   hot loops, no fragmentation, no use-after-free.
 - **Database-style archetypes** - a shape is a _set_ of component types, so `{a, b}` and
   `{b, a}` are the same table and share one pool; columns are reached by type name, not field

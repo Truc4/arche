@@ -8,7 +8,7 @@ Resource :: arche { cell }
 #foreign {
   resource_open :: proc(initial: int)(ret: cell)
 }
-static pool<Resource> (2)
+Resource[2]
 
 main :: proc() {
   resource_open(1)(r1:);

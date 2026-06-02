@@ -1,0 +1,9 @@
+// Define-once: a component (a nominal type) is defined exactly once program-wide. Re-defining `hp`
+// with the same backing — here inline in a second archetype — is E0045 (reference it by bare name
+// instead). A *different* backing is the separate E0010; an intra-archetype repeat is E0044.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "defined more than once" %t.out
+A :: arche { hp :: int }
+B :: arche { hp :: int }
+
+main :: proc() {
+}

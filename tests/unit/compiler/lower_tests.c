@@ -89,7 +89,7 @@ static void fixture_free(LowerFixture *fx) {
 static void test_lower_range_for(void) {
 	test_start("range for: var_name set, iterable set");
 	LowerFixture *cst = parse_and_analyze("Particle :: arche { x :: float, }\n"
-	                                      "static Particle(100);\n"
+	                                      "Particle[100];\n"
 	                                      "Move :: sys() {\n"
 	                                      "  for p in Particle {\n"
 	                                      "  }\n"

@@ -1,5 +1,5 @@
 Message :: arche { id :: int, value :: float }
-static pool<Message> (100)
+Message[100]
 main :: proc() {
   msg := "allocations done\n";
   print(msg);

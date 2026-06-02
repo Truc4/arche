@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t
 Transaction :: arche { price :: float, quantity :: int }
 
-static pool<Transaction> (100, 100) {
+Transaction[100](100) {
   price: 0.0, quantity: 0,
 }
 

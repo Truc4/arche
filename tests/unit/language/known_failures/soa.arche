@@ -5,7 +5,7 @@ Particle :: arche {
 }
 
 
-static table<Particle>(1000);
+Particle[1000];
 
 
 move :: sys(pos, vel) {

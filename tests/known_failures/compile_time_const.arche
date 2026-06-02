@@ -13,7 +13,7 @@ area :: func(w: int, h: int) -> int {
   return w * h;
 }
 Grid :: arche { cell :: int }
-static pool<Grid> (area(3, 4)) {
+Grid[area(3, 4)] {
   cell: 0,
 }
 

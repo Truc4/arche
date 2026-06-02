@@ -612,7 +612,7 @@ void test_task1_structure(void) {
 	                        "  quantity :: int,\n"
 	                        "  revenue :: float,\n"
 	                        "}\n"
-	                        "static Transaction(1000, 1000) {\n"
+	                        "Transaction[1000](1000) {\n"
 	                        "  price: 0.0,\n"
 	                        "  quantity: 0,\n"
 	                        "  revenue: 0.0,\n"

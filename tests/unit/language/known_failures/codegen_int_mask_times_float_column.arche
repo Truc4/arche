@@ -16,7 +16,7 @@
 
 Row :: arche { price :: float, quantity :: int }
 
-static pool<Row> (10, 10) {
+Row[10](10) {
   price: 5.0, quantity: 1,
 }
 

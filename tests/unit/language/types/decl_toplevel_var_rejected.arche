@@ -1,6 +1,7 @@
-// Top level is constants only: the `:=` / `=` variable forms are rejected. Mutable global storage
-// is expressed with `static`.
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "top-level declarations are constants" %t.out
+// Mutable global initializers (`name := value`) are a recognized form but not lowered yet, so they
+// are rejected with a clear message. Uninitialized buffers (`name : T[N]`) and pools (`Name[C]`)
+// are the supported mutable-storage forms.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "not implemented yet" %t.out
 count := 0
 
 main :: proc() {

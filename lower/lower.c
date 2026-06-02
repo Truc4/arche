@@ -1907,64 +1907,42 @@ static HirDecl *lower_decl_cst(CstView d) {
 	case SN_STATIC_DECL: {
 		HirDecl *ad = hir_decl_create(HIR_DECL_STATIC);
 		HirStaticDecl *sd = calloc(1, sizeof(HirStaticDecl));
-		if (cv_has_token(d, TOK_LPAREN)) {
-			/* `static Name(count)` / `static pool<Name>(count)` — archetype allocation */
+		if (cv_has_token(d, TOK_LBRACKET)) {
+			/* Pool allocation `Name[C](N){V}` — archetype name is the leading IDENT. */
 			sd->kind = HIR_STATIC_ARCHETYPE;
-			CstView ty = cv_type_at(d, 0);
-			char *an = NULL;
-			if (cv_present(ty) && cv_has_token(ty, TOK_LT)) {
-				/* `pool<Name>` / legacy `table<Name>`: archetype is the IDENT after `<`.
-				 * `pool` is a keyword token, legacy `table` is an IDENT, so anchor on
-				 * TOK_LT rather than counting leading idents. */
-				int after_lt = 0;
-				for (int i = 0; i < ty.node->child_count; i++) {
-					SyntaxElem *e2 = &ty.node->children[i];
-					if (e2->tag != SE_TOKEN)
-						continue;
-					if (e2->as.token.kind == TOK_LT) {
-						after_lt = 1;
-						continue;
-					}
-					if (after_lt && e2->as.token.kind == TOK_IDENT) {
-						an = txt_dup((CvText){ty.src + e2->as.token.offset, e2->as.token.length});
-						break;
-					}
-				}
-			} else if (cv_present(ty)) {
-				an = txt_dup(cv_token(ty, TOK_IDENT));
-			}
-			sd->archetype.archetype_name = an ? an : txt_dup((CvText){"", 0});
-			/* `(capacity [, init_length]) [{ field: value, ... }]`. Args inside `()` are
-			 * positional: capacity → field_values[0] (field_names[0]=NULL), init_length →
-			 * the known row count (drives bounds-check elision). Each `field: value` in the
-			 * `{}` block appends a named initializer. Expr nodes appear in both bracket
-			 * kinds, so track which we're inside. */
+			sd->archetype.archetype_name = txt_dup(cv_token(d, TOK_IDENT));
+			/* `[capacity] (init_length) { field: value, ... }`. Capacity (the `[…]` expr) →
+			 * field_values[0] (field_names[0]=NULL); the optional `(…)` expr → init_length, the
+			 * known row count (drives bounds-check elision); each `field: value` in `{}` appends
+			 * a named initializer. Expr nodes appear in all three bracket kinds, so track which
+			 * one we're inside. */
 			int cap_alloc = d.node->child_count + 1;
 			sd->archetype.field_names = calloc(cap_alloc, sizeof(char *));
 			sd->archetype.field_values = calloc(cap_alloc, sizeof(HirExpr *));
 			sd->archetype.field_count = 0;
-			int phase = 0; /* 0=outside, 1=in (), 2=in {} */
-			int paren_arg = 0;
+			enum { PH_NONE, PH_CAP, PH_LEN, PH_FIELDS } phase = PH_NONE;
 			const char *pend = NULL;
 			int pend_len = 0;
 			for (int i = 0; i < d.node->child_count; i++) {
 				SyntaxElem *ch = &d.node->children[i];
 				if (ch->tag == SE_TOKEN) {
 					switch (ch->as.token.kind) {
-					case TOK_LPAREN:
-						phase = 1;
+					case TOK_LBRACKET:
+						phase = PH_CAP;
 						break;
-					case TOK_RPAREN:
-						phase = 0;
+					case TOK_LPAREN:
+						phase = PH_LEN;
 						break;
 					case TOK_LBRACE:
-						phase = 2;
+						phase = PH_FIELDS;
 						break;
+					case TOK_RBRACKET:
+					case TOK_RPAREN:
 					case TOK_RBRACE:
-						phase = 0;
+						phase = PH_NONE;
 						break;
 					case TOK_IDENT:
-						if (phase == 2) {
+						if (phase == PH_FIELDS) {
 							pend = d.src + ch->as.token.offset;
 							pend_len = (int)ch->as.token.length;
 						}
@@ -1978,15 +1956,12 @@ static HirDecl *lower_decl_cst(CstView d) {
 				if (k < SN_LITERAL_EXPR || k > SN_PAREN_EXPR)
 					continue;
 				CstView ev = {ch->as.node, d.src};
-				if (phase == 1) {
-					if (paren_arg == 0) {
-						sd->archetype.field_values[0] = lower_expr_cst(ev);
-						sd->archetype.field_count = 1;
-					} else if (paren_arg == 1) {
-						sd->archetype.init_length = lower_expr_cst(ev);
-					}
-					paren_arg++;
-				} else if (phase == 2 && pend) {
+				if (phase == PH_CAP) {
+					sd->archetype.field_values[0] = lower_expr_cst(ev);
+					sd->archetype.field_count = 1;
+				} else if (phase == PH_LEN) {
+					sd->archetype.init_length = lower_expr_cst(ev);
+				} else if (phase == PH_FIELDS && pend) {
 					int fc = sd->archetype.field_count;
 					sd->archetype.field_names[fc] = txt_dup((CvText){pend, pend_len});
 					sd->archetype.field_values[fc] = lower_expr_cst(ev);
@@ -1995,12 +1970,11 @@ static HirDecl *lower_decl_cst(CstView d) {
 				}
 			}
 		} else {
-			/* `static name : T[size]` — static array. The name is wrapped in the first
-			 * type node (TYPE_REF); the declared array type is the second. */
+			/* `name : T[size]` — mutable static buffer. Name is the leading IDENT; the declared
+			 * array type is the single type node. */
 			sd->kind = HIR_STATIC_ARRAY;
-			CstView name_ty = cv_type_at(d, 0);
-			sd->array.name = txt_dup(cv_token(name_ty, TOK_IDENT));
-			CstView arr_ty = cv_type_at(d, 1);
+			sd->array.name = txt_dup(cv_token(d, TOK_IDENT));
+			CstView arr_ty = cv_type_at(d, 0);
 			HirType *full = lower_type_cst(arr_ty);
 			/* unwrap to the element type (codegen wants element + size, not the array) */
 			sd->array.element_type = (full && full->elem) ? full->elem : full;

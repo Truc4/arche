@@ -3,9 +3,9 @@ Message :: arche { text :: char[256], author :: char[64] }
 
 Matrix :: arche { data :: float[10][10] }
 
-static pool<Message> (100)
+Message[100]
 
-static pool<Matrix> (50)
+Matrix[50]
 
 main :: proc() {
   print("allocations done\n");

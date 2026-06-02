@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t | grep "system_ran"
 Task :: arche { val :: int }
 
-static pool<Task> (1, 1) {
+Task[1](1) {
   val: 5,
 }
 

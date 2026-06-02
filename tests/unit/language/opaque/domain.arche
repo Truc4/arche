@@ -1,11 +1,11 @@
-// A foreign resource is a nominal opaque-backed type: `file :: opaque`. Other archetypes
-// can hold one as a component (here `OpenFiles { file }`). No `opaque<File>` phantom tag —
-// `file` is just a distinct nominal type that erases to a pointer-width slot.
+// A foreign resource is a nominal opaque-backed type — here the core builtin `file :: opaque`.
+// Archetypes can hold one as a component (here `OpenFiles { file }`). No `opaque<File>` phantom
+// tag — `file` is a distinct nominal type that erases to a pointer-width slot. Each opaque type is
+// defined exactly once; `file` lives in the core prelude, so reference it by bare name.
 // RUN: %arche build -o %t %s && %t | grep "ok"
 #import { io }
-file :: opaque
 OpenFiles :: arche { file }
-static pool<OpenFiles> (8)
+OpenFiles[8]
 main :: proc() {
   printf("ok opaque_domain\n");
 }

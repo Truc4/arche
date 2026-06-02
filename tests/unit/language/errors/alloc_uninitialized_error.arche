@@ -2,7 +2,7 @@
 // Uninitialized alloc has count=0, accessing any row should error
 Counter :: arche { val :: int }
 
-static pool<Counter> (5)
+Counter[5]
 
 main :: proc() {
   x := Counter.val[0];

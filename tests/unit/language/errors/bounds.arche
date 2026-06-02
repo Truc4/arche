@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t
 Particle :: arche { id :: int }
 
-static pool<Particle> (5)
+Particle[5]
 
 main :: proc() {
   insert(Particle, 1);
