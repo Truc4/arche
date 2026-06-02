@@ -3286,6 +3286,16 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				} else if (expr->data.call.args[i]->resolved.tag == HIR_TYPE_FLOAT) {
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = "double";
+				} else if (callee_pt && callee_pt->tag == HIR_TYPE_INT) {
+					/* Coerce an int arg to the callee's DECLARED int width. A bare literal
+					 * defaults to i32 in its own resolved type, so handing it to an i64 (or
+					 * i16/i8) param would truncate/mismatch — adopt the param's width instead.
+					 * emit_int_convert relabels a constant for free and sext/zext/truncs an SSA
+					 * value; this also fixes a wider/narrower register arg meeting the param. */
+					int want_w = callee_pt->int_width ? callee_pt->int_width : 32;
+					emit_int_convert(ctx, arg_bufs[i], &expr->data.call.args[i]->resolved, want_w,
+					                 call_arg_vals[i]);
+					call_arg_types[i] = llvm_int_type(want_w);
 				} else if (expr->data.call.args[i]->resolved.tag == HIR_TYPE_INT &&
 				           expr->data.call.args[i]->resolved.int_width != 32) {
 					/* Wider/narrower int (e.g. i64): pass at its actual LLVM width. */

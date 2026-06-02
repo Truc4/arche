@@ -14,12 +14,11 @@ Running log of non-obvious decisions while implementing the approved plan
   every element type. An `own`/borrowed PARAM is returned by reference and is valid.
 - Router comparison done: procedural (module statics) vs **reentrant (out-param)**; identical
   results; perf a wash. See COMPARISON.md.
-- **Full lit suite: 384/384 green.** Array matrix (float/i64/int × local/inout/out/own-thread/
-  length/oob) + char_array_oob + return-guard tests.
-- **Known residual (verified, pre-existing, NOT array-specific):** a bare int *literal* passed as a
-  call ARGUMENT to an `i64` param is emitted at i32 width (truncates). Typed locals (`x: i64 = …`)
-  and array-element stores coerce correctly because the target width is known; only the call-arg
-  literal path defaults to i32. Orthogonal to array return — tracked separately.
+- **Int call ARGUMENTS adopt the callee's declared int width** — a bare literal (default i32) handed
+  to an `i64` param no longer truncates; an i32 register widens (sext) and an i64 narrows (trunc) to
+  match. (D10.)
+- **Full lit suite: 385/385 green.** Array matrix (float/i64/int × local/inout/out/own-thread/
+  length/oob) + char_array_oob + return-guard + ints/i64_arg_width tests.
 
 ## Goal (original)
 Plan fully implemented + verified: (1) non-char arrays work as `own`/in-out params (threading);
@@ -155,3 +154,16 @@ back the element pointer is sound. Three precise fixes (no copy-out, no type-7 r
 Verified round-trips with no narrowing: `int` 300→300 (not 44), `float` 9.5/2.25, `i64` sum 1e10;
 `char` slice still works; fresh-local still errors ("copy-out not implemented"). Smoke tests restored
 as POSITIVE: int/float/i64 `*_array_own_thread`. Full lit suite **384/384 green**.
+
+## D10 — Int call arguments adopt the callee's declared width (literal-arg truncation fix)
+Surfaced while testing i64 array return: `step(move a, 0, 5000000000)` to an `i64` param gave
+705032704 (= 5e9 mod 2^32). Root cause was NOT arrays — a bare int literal's resolved type defaults
+to i32, and call-arg passing emitted it at the ARG's width, so a literal (or any i32 register) handed
+to an i64 param truncated/mismatched. Typed locals (`x: i64 = …`) and array-element stores already
+coerced because the target width is known there; only the call-arg path didn't.
+- **Fix (codegen.c arg passing, ~3289):** when the callee's DECLARED param type is `HIR_TYPE_INT`,
+  coerce the arg to that width via the existing `emit_int_convert` (relabels a constant for free,
+  sext/zext for widening, trunc for narrowing). Takes precedence over the old "pass at the arg's own
+  width" branch, which also fixes a wider/narrower *register* arg meeting the param.
+- **Verified:** literal 9000000000 → i64 param intact; i32 reg 5000 → i64 param ×1e6 = 5e9; i64 42 →
+  i32 param truncs to 42; normal int calls unaffected. Test: ints/i64_arg_width. Suite 385/385 green.
