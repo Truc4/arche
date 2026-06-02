@@ -109,8 +109,7 @@ static int no_space_before(TokenKind t, TokenKind prev, TokenKind next) {
  * fields, enum variants) — as opposed to a statement/decl block (proc body, `#foreign`/`#module`
  * region), which always breaks. Omissions are safe: an unlisted brace keeps the legacy block path. */
 static int is_list_brace_parent(SyntaxNodeKind p) {
-	return p == SN_ARRAY_LIT_EXPR || p == SN_USE_DECL || p == SN_GROUP_EXPR || p == SN_ARCH_EXPR ||
-	       p == SN_ENUM_EXPR;
+	return p == SN_ARRAY_LIT_EXPR || p == SN_USE_DECL || p == SN_GROUP_EXPR || p == SN_ARCH_EXPR || p == SN_ENUM_EXPR;
 }
 
 /* A `( … )` that holds a genuine comma list — call args, proc/func/sys params + out-params — and so
@@ -271,10 +270,9 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 			} else {
 				/* item-internal token: normal spacing */
 				int after_unary = (prev_parent == SN_UNARY_EXPR && (prev == TOK_MINUS || prev == TOK_BANG));
-				int compact = (l->parent == prev_parent &&
-				               (l->parent == SN_TYPE_REF || l->parent == SN_TYPE_ARRAY ||
-				                l->parent == SN_TYPE_SHAPED_ARRAY || l->parent == SN_TYPE_HANDLE ||
-				                l->parent == SN_NAME_EXPR));
+				int compact = (l->parent == prev_parent && (l->parent == SN_TYPE_REF || l->parent == SN_TYPE_ARRAY ||
+				                                            l->parent == SN_TYPE_SHAPED_ARRAY ||
+				                                            l->parent == SN_TYPE_HANDLE || l->parent == SN_NAME_EXPR));
 				space = (!compact && !after_unary && !no_space_before(l->kind, prev, next));
 			}
 		} else {
@@ -298,10 +296,9 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 				eff_indent = indent;
 			} else {
 				int after_unary = (prev_parent == SN_UNARY_EXPR && (prev == TOK_MINUS || prev == TOK_BANG));
-				int compact = (l->parent == prev_parent &&
-				               (l->parent == SN_TYPE_REF || l->parent == SN_TYPE_ARRAY ||
-				                l->parent == SN_TYPE_SHAPED_ARRAY || l->parent == SN_TYPE_HANDLE ||
-				                l->parent == SN_NAME_EXPR));
+				int compact = (l->parent == prev_parent && (l->parent == SN_TYPE_REF || l->parent == SN_TYPE_ARRAY ||
+				                                            l->parent == SN_TYPE_SHAPED_ARRAY ||
+				                                            l->parent == SN_TYPE_HANDLE || l->parent == SN_NAME_EXPR));
 				space = (!compact && !after_unary && !no_space_before(l->kind, prev, next));
 			}
 		}
