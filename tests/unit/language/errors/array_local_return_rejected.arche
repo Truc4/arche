@@ -1,0 +1,15 @@
+// Returning a FRESH LOCAL array by value would dangle (its storage is the callee's frame). Array
+// value-return / copy-out is not implemented — it must be a clear error, not silent garbage
+// (char[N], which used to return zeros) or invalid IR (int[N]). Thread an `own`/in-out buffer
+// instead. (Returning an `own` parameter, handed back by reference, stays valid.)
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "copy-out" %t.out
+make :: func() -> int[8] {
+  buf: int[8];
+  buf[0] = 7;
+  return buf;
+}
+
+main :: proc() {
+  r := make();
+  printf("%d\n", r[0]);
+}

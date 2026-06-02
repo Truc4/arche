@@ -2232,6 +2232,15 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				VariableInfo *rv = find_variable(ctx, rval->data.name.name);
 				if (rv && var_is_opaque(ctx, rv))
 					rv->is_consumed = 1;
+				/* Returning a fresh LOCAL array by value would dangle: its storage is in this
+				 * frame. Array value-return (copy-out) is not implemented — return an `own`/borrowed
+				 * parameter (handed back by reference) or thread a caller-provided buffer instead. */
+				if (ctx->current_func && rv && rv->type && type_is_byref_aggregate(rv->type) && !rv->is_param) {
+					fprintf(stderr,
+					        "Error: cannot return a local array by value (array copy-out is not implemented); "
+					        "return an `own` parameter or thread a caller-provided buffer instead\n");
+					ctx->error_count++;
+				}
 			}
 		}
 		break;

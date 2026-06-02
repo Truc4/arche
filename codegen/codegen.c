@@ -4318,6 +4318,36 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
 					scope->values[scope->value_count++] = vi;
 				}
+			} else if (type->tag == HIR_TYPE_SHAPED_ARRAY) {
+				/* Stack-allocated non-char shaped array (`buf: int[8]`, `float[4]`, …): allocate
+				 * `[N x T]` and expose a first-element pointer as a type-6 value. The general index
+				 * read/write paths handle element typing from field_type — mirroring how char[N]
+				 * uses type-7, but kept off the i8-coupled type-7 machinery. */
+				int rank = type->rank;
+				const char *en = field_base_type_name(type); /* "int", "float", … */
+				const char *lt = llvm_type_from_arche(en);   /* "i32", "double", … */
+				char *alloca_name = gen_value_name(ctx);
+				emit_alloca(ctx, "  %s = alloca [%d x %s]\n", alloca_name, rank, lt);
+				char *elem0 = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* %s, i64 0, i64 0\n", elem0, rank, lt,
+				                  rank, lt, alloca_name);
+
+				ValueInfo *vi = malloc(sizeof(ValueInfo));
+				vi->name = malloc(strlen(var_name) + 1);
+				strcpy(vi->name, var_name);
+				vi->llvm_name = malloc(strlen(elem0) + 1);
+				strcpy(vi->llvm_name, elem0);
+				vi->type = 6; /* element pointer; field_type drives element typing */
+				vi->arch_name = NULL;
+				vi->string_len = rank;
+				vi->field_type = en;
+				vi->bit_width = strcmp(lt, "double") == 0 ? 64 : 32;
+
+				if (ctx->scope_count > 0) {
+					ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+					scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+					scope->values[scope->value_count++] = vi;
+				}
 			} else {
 				/* Scalar type: allocate and zero-initialize */
 				const char *alloc_type = "i32";
@@ -5389,17 +5419,26 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				buffer_append_fmt(ctx, "  store i8 %s, i8* %s, align 1\n", trunc_val, target_addr);
 				break;
 			} else if (type6_target && stmt->data.assign_stmt.target->data.index.index_count > 0) {
-				/* Type-6 i8* parameter (char array parameter) assignment */
+				/* Type-6 element-pointer assignment. char[] elements are byte stores (value carried
+				 * as i32, truncated); non-char elements (int[], float[], …) store the element type
+				 * directly — the pointer is already `T*`. */
 				char idx_i64[256];
 				emit_index_i64(ctx, idx_buf, stmt->data.assign_stmt.target->data.index.indices[0], idx_i64);
-
-				char *target_addr = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %s\n", target_addr, base_buf, idx_i64);
-
-				/* Truncate i32 value to i8 for storing */
-				char *trunc_val = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = trunc i32 %s to i8\n", trunc_val, value_buf);
-				buffer_append_fmt(ctx, "  store i8 %s, i8* %s, align 1\n", trunc_val, target_addr);
+				const char *et6 = type6_target->field_type ? type6_target->field_type : "char";
+				if (strcmp(et6, "char") == 0) {
+					char *target_addr = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %s\n", target_addr, base_buf, idx_i64);
+					char *trunc_val = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = trunc i32 %s to i8\n", trunc_val, value_buf);
+					buffer_append_fmt(ctx, "  store i8 %s, i8* %s, align 1\n", trunc_val, target_addr);
+				} else {
+					const char *st = llvm_type_from_arche(et6);
+					int align = strcmp(st, "double") == 0 ? 8 : 4;
+					char *target_addr = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", target_addr, st, st, base_buf,
+					                  idx_i64);
+					buffer_append_fmt(ctx, "  store %s %s, %s* %s, align %d\n", st, value_buf, st, target_addr, align);
+				}
 				break;
 			}
 
@@ -6834,24 +6873,15 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 		const char *type_name = field_base_type_name(param_type);
 		const char *llvm_type = llvm_type_from_arche(type_name);
 
-		/* Check if type is char[] (either HIR_TYPE_ARRAY or HIR_TYPE_SHAPED_ARRAY with char element) */
-		int is_char_array = 0;
-		int is_type_array_char = 0;
 		if (param_type && param_type->tag == HIR_TYPE_ARRAY) {
-			is_char_array = 1;
-			is_type_array_char = 1;
-		} else if (param_type && param_type->tag == HIR_TYPE_SHAPED_ARRAY && param_type->elem &&
-		           param_type->elem->tag == HIR_TYPE_CHAR) {
-			is_char_array = 1;
-		}
-
-		if (is_char_array) {
-			/* For HIR_TYPE_ARRAY char[], non-extern use arche_array struct; otherwise use i8* */
-			if (is_type_array_char && !func->is_extern) {
+			/* unbounded char[]: arche_array struct (non-extern) or raw i8* (extern C ABI). */
+			if (!func->is_extern)
 				buffer_append_fmt(ctx, "%%struct.arche_array* %%arg%d", i);
-			} else {
+			else
 				buffer_append_fmt(ctx, "i8* %%arg%d", i);
-			}
+		} else if (param_type && param_type->tag == HIR_TYPE_SHAPED_ARRAY) {
+			/* sized array param arrives as an element pointer (char[N] → i8*, int[N] → i32*). */
+			buffer_append_fmt(ctx, "%s* %%arg%d", llvm_type, i);
 		} else {
 			buffer_append_fmt(ctx, "%s %%arg%d", llvm_type, i);
 		}
@@ -6873,56 +6903,45 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 		char param_name[32];
 		snprintf(param_name, sizeof(param_name), "%%arg%d", i);
 
-		/* Check if type is char[] */
 		HirType *ptype = func->params[i]->type;
-		int is_char_array = 0;
-		int is_type_array_char = 0;
-		if (ptype && ptype->tag == HIR_TYPE_ARRAY) {
-			is_char_array = 1;
-			is_type_array_char = 1;
-		} else if (ptype && ptype->tag == HIR_TYPE_SHAPED_ARRAY && ptype->elem && ptype->elem->tag == HIR_TYPE_CHAR) {
-			is_char_array = 1;
-		}
-
-		if (is_char_array) {
+		const char *en = field_base_type_name(ptype);    /* element base: "char","int","float",… */
+		const char *elt = llvm_type_from_arche(en);       /* "i8","i32","double",… */
+		if (ptype && ptype->tag == HIR_TYPE_ARRAY && !func->is_extern) {
+			/* Non-extern unbounded char[]: extract data pointer from the arche_array struct once. */
 			ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
-			if (is_type_array_char && !func->is_extern) {
-				/* Non-extern HIR_TYPE_ARRAY char[]: extract data pointer from arche_array struct parameter */
-				char *dp_gep = gen_value_name(ctx);
-				buffer_append_fmt(ctx,
-				                  "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
-				                  dp_gep, param_name);
-				char *dp = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", dp, dp_gep);
-
-				/* Create ValueInfo for char array parameter */
-				ValueInfo *vi = malloc(sizeof(ValueInfo));
-				vi->name = malloc(strlen(func->params[i]->name) + 1);
-				strcpy(vi->name, func->params[i]->name);
-				vi->llvm_name = malloc(strlen(dp) + 1);
-				strcpy(vi->llvm_name, dp);
-				vi->type = 6; /* i8* parameter */
-				vi->arch_name = NULL;
-				vi->string_len = -1;
-				vi->field_type = "char";
-				vi->bit_width = 8;
-				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
-				scope->values[scope->value_count++] = vi;
-			} else {
-				/* All other char arrays (extern or HIR_TYPE_SHAPED_ARRAY) use i8* directly */
-				ValueInfo *vi = malloc(sizeof(ValueInfo));
-				vi->name = malloc(strlen(func->params[i]->name) + 1);
-				strcpy(vi->name, func->params[i]->name);
-				vi->llvm_name = malloc(strlen(param_name) + 1);
-				strcpy(vi->llvm_name, param_name);
-				vi->type = 6; /* i8* parameter */
-				vi->arch_name = NULL;
-				vi->string_len = -1;
-				vi->field_type = "char";
-				vi->bit_width = 8;
-				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
-				scope->values[scope->value_count++] = vi;
-			}
+			char *dp_gep = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+			                  dp_gep, param_name);
+			char *dp = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", dp, dp_gep);
+			ValueInfo *vi = malloc(sizeof(ValueInfo));
+			vi->name = malloc(strlen(func->params[i]->name) + 1);
+			strcpy(vi->name, func->params[i]->name);
+			vi->llvm_name = malloc(strlen(dp) + 1);
+			strcpy(vi->llvm_name, dp);
+			vi->type = 6;
+			vi->arch_name = NULL;
+			vi->string_len = -1;
+			vi->field_type = "char";
+			vi->bit_width = 8;
+			scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+			scope->values[scope->value_count++] = vi;
+		} else if (ptype && (ptype->tag == HIR_TYPE_SHAPED_ARRAY || ptype->tag == HIR_TYPE_ARRAY)) {
+			/* Sized array (any element) or extern char[]: %argN is already the element pointer —
+			 * bind as type-6 so it indexes; field_type drives element typing. */
+			ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+			ValueInfo *vi = malloc(sizeof(ValueInfo));
+			vi->name = malloc(strlen(func->params[i]->name) + 1);
+			strcpy(vi->name, func->params[i]->name);
+			vi->llvm_name = malloc(strlen(param_name) + 1);
+			strcpy(vi->llvm_name, param_name);
+			vi->type = 6;
+			vi->arch_name = NULL;
+			vi->string_len = -1;
+			vi->field_type = en;
+			vi->bit_width = strcmp(elt, "double") == 0 ? 64 : (strcmp(elt, "i8") == 0 ? 8 : 32);
+			scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+			scope->values[scope->value_count++] = vi;
 		} else {
 			add_value(ctx, func->params[i]->name, param_name, 0);
 		}
@@ -7050,10 +7069,9 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 		/* Check if type is char[] (struct*) or an archetype (struct*). */
 		if (param_type && param_type->tag == HIR_TYPE_ARRAY) {
 			buffer_append_fmt(ctx, "%%struct.arche_array* %%arg%d", i);
-		} else if (param_type && param_type->tag == HIR_TYPE_SHAPED_ARRAY && param_type->elem &&
-		           param_type->elem->tag == HIR_TYPE_CHAR) {
-			/* sized char[N] param arrives as a bare i8* (like funcs) */
-			buffer_append_fmt(ctx, "i8* %%arg%d", i);
+		} else if (param_type && param_type->tag == HIR_TYPE_SHAPED_ARRAY) {
+			/* sized array param arrives as a bare element pointer (char[N] → i8*, int[N] → i32*). */
+			buffer_append_fmt(ctx, "%s* %%arg%d", base_type, i);
 		} else if (find_archetype_decl(ctx, type_name)) {
 			buffer_append_fmt(ctx, "%%struct.%s* %%arg%d", type_name, i);
 		} else {
@@ -7130,9 +7148,11 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
 				scope->values[scope->value_count++] = vi;
 			}
-		} else if (param_type && param_type->tag == HIR_TYPE_SHAPED_ARRAY && param_type->elem &&
-		           param_type->elem->tag == HIR_TYPE_CHAR) {
-			/* sized char[N] param: %argN is already the i8* — bind as type-6 so it indexes. */
+		} else if (param_type && param_type->tag == HIR_TYPE_SHAPED_ARRAY) {
+			/* sized array param: %argN is already the element pointer (char[N] → i8*, int[N] →
+			 * i32*) — bind as type-6 so it indexes (field_type drives element typing). */
+			const char *en = type_name; /* element base name: "char", "int", "float", … */
+			const char *lt = llvm_type_from_arche(en);
 			ValueInfo *vi = malloc(sizeof(ValueInfo));
 			vi->name = malloc(strlen(proc->params[i]->name) + 1);
 			strcpy(vi->name, proc->params[i]->name);
@@ -7141,9 +7161,9 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 			vi->type = 6;
 			vi->arch_name = NULL;
 			vi->string_len = -1;
-			vi->field_type = "char";
+			vi->field_type = en;
 			vi->handle_archetype = NULL;
-			vi->bit_width = 8;
+			vi->bit_width = strcmp(lt, "double") == 0 ? 64 : (strcmp(lt, "i8") == 0 ? 8 : 32);
 			if (ctx->scope_count > 0) {
 				ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
 				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));

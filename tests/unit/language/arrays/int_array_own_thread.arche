@@ -1,0 +1,15 @@
+// An `own` non-char array threads through a func and is handed back by reference — the linear /
+// ownership ("functional") discipline. Previously this stack-overflowed for `int[]`; the array-param
+// codegen generalization fixes it (mirrors the char[] `slice` pattern).
+// RUN: %arche build -o %t %s && %t | grep -q "5 9"
+step :: func(own acc: int[], i: int, v: int) -> int[] {
+  acc[i] = v;
+  return acc;
+}
+
+main :: proc() {
+  a: int[8];
+  a := step(move a, 0, 5);
+  a := step(move a, 1, 9);
+  printf("%d %d\n", a[0], a[1]);
+}
