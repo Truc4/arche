@@ -1,8 +1,8 @@
 // Returning a FRESH LOCAL array by value would dangle (its storage is the callee's frame). Array
 // value-return / copy-out is not implemented — it must be a clear error, not silent garbage (char[N]
-// used to return zeros). A char fresh-local return hits the copy-out-deferred message here; a
-// non-char array return hits its own "use an out-param" message (see arrays/int_array_own_thread).
-// Returning an `own` char[] parameter (by reference) stays valid — the slice idiom.
+// used to return zeros). This applies to every element type. Returning an `own`/borrowed array
+// PARAM (by reference) stays valid for any element type — the ownership-threading / slice idiom
+// (see arrays/int_array_own_thread, float_array_own_thread, i64_array_own_thread).
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "copy-out" %t.out
 make :: func() -> char[8] {
   buf: char[8];

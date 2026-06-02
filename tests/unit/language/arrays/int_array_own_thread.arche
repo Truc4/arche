@@ -1,9 +1,9 @@
-// Returning a non-char array by value is NOT supported (it can't be handed back without copy-out,
-// and the old path silently byte-truncated, e.g. 300 → 44). It errors cleanly; the idiomatic way to
-// hand back a bounded buffer is an out-param / in-out param (see int_array_out_param.arche,
-// int_array_inout_param.arche). char[] slices returned from an `own` param stay valid.
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "non-char array by value is not supported" %t.out
-step :: func(own a: int[], i: int, v: int) -> int[] {
+// Threading a bounded buffer through an `own` param and returning it BY REFERENCE — the ownership
+// idiom (the caller's storage flows in via `move`, the same storage flows back out). The non-char
+// element type must NOT byte-truncate: 300 round-trips as 300, not 44. Returning a fresh local array
+// is still rejected (it would dangle / needs copy-out) — see errors/array_local_return_rejected.
+// RUN: %arche build -o %t %s && %t | grep -q "owned 300 9"
+step :: func(own a: int[8], i: int, v: int) -> int[8] {
   a[i] = v;
   return a;
 }
@@ -11,5 +11,6 @@ step :: func(own a: int[], i: int, v: int) -> int[] {
 main :: proc() {
   a: int[8];
   a := step(move a, 0, 300);
-  printf("%d\n", a[0]);
+  a := step(move a, 1, 9);
+  printf("owned %d %d\n", a[0], a[1]);
 }

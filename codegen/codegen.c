@@ -554,8 +554,23 @@ static int proc_out_param_is_inout_in(HirProcDecl *proc, int ii);
 static const char *extern_proc_cret(HirProcDecl *proc);
 
 static const char *return_member_llvm(HirType *t) {
-	if (t && (t->tag == HIR_TYPE_ARRAY || t->tag == HIR_TYPE_SHAPED_ARRAY))
-		return "i8*";
+	if (t && (t->tag == HIR_TYPE_ARRAY || t->tag == HIR_TYPE_SHAPED_ARRAY)) {
+		/* An array is returned as an element pointer (by reference) — char[] → i8* (unchanged),
+		 * int[] → i32*, etc. The callee returns an `own`/borrowed param's buffer; the caller binds
+		 * the result as a bounded type-6 array. (Returning a fresh local is rejected in semantic.) */
+		const char *e = llvm_type_from_arche(field_base_type_name(t));
+		if (strcmp(e, "i8") == 0)
+			return "i8*";
+		if (strcmp(e, "i16") == 0)
+			return "i16*";
+		if (strcmp(e, "i32") == 0)
+			return "i32*";
+		if (strcmp(e, "i64") == 0)
+			return "i64*";
+		if (strcmp(e, "double") == 0)
+			return "double*";
+		return "i8*"; /* fallback */
+	}
 	return llvm_type_from_arche(field_base_type_name(t));
 }
 
@@ -3222,8 +3237,21 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 						strcpy(call_arg_vals[i], arr_alloca);
 						call_arg_types[i] = "%struct.arche_array*";
 					} else {
+						/* Bare element pointer for a non-arche_array callee. For a char[]
+						 * buffer this is i8*; for a non-char array it is the element pointer
+						 * (double, i64, i32, i16 star) matching the callee's element param. */
 						strcpy(call_arg_vals[i], arg_bufs[i]);
-						call_arg_types[i] = "i8*";
+						const char *e = arg_values[i]->field_type ? llvm_type_from_arche(arg_values[i]->field_type) : "i8";
+						if (strcmp(e, "double") == 0)
+							call_arg_types[i] = "double*";
+						else if (strcmp(e, "i64") == 0)
+							call_arg_types[i] = "i64*";
+						else if (strcmp(e, "i32") == 0)
+							call_arg_types[i] = "i32*";
+						else if (strcmp(e, "i16") == 0)
+							call_arg_types[i] = "i16*";
+						else
+							call_arg_types[i] = "i8*";
 					}
 				} else if (expr->data.call.args[i]->resolved.tag == HIR_TYPE_CHAR_ARRAY) {
 					/* Arg is a char[] value with no ValueInfo — e.g. the result of an
@@ -4481,34 +4509,46 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		 * resolved tag, and (since a single `char[N]` return resolves to a shaped type) the
 		 * callee's declared return type directly. */
 		int is_char_array_call = 0;
+		const char *arr_elem = "char"; /* element base name of an array-returning call */
+		int arr_n = -1;                /* N for a shaped (bounded) return, -1 for unbounded */
 		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == HIR_EXPR_CALL) {
 			if (stmt->data.bind_stmt.value->resolved.tag == HIR_TYPE_CHAR_ARRAY) {
 				is_char_array_call = 1;
+				arr_elem = "char";
+				arr_n = -1;
 			} else if (stmt->data.bind_stmt.value->data.call.callee &&
 			           stmt->data.bind_stmt.value->data.call.callee->kind == HIR_EXPR_NAME) {
 				HirFuncDecl *cf = find_func_decl(ctx, stmt->data.bind_stmt.value->data.call.callee->data.name.name);
 				if (cf && cf->return_type_count == 1 && cf->return_types[0]) {
 					HirType *rt = cf->return_types[0];
-					if (rt->tag == HIR_TYPE_ARRAY ||
-					    (rt->tag == HIR_TYPE_SHAPED_ARRAY && rt->elem && rt->elem->tag == HIR_TYPE_CHAR))
+					if (rt->tag == HIR_TYPE_ARRAY) {
 						is_char_array_call = 1;
+						arr_elem = field_base_type_name(rt);
+						arr_n = -1;
+					} else if (rt->tag == HIR_TYPE_SHAPED_ARRAY) {
+						is_char_array_call = 1;
+						arr_elem = field_base_type_name(rt);
+						arr_n = rt->rank; /* bounded → enables .length and bounds checks */
+					}
 				}
 			}
 		}
 
 		if (is_char_array_call) {
-			/* A func returning char[] (e.g. arche_file_map) yields a raw i8* byte
-			 * view. Bind as type-6 (i8* char pointer) so data[i] indexes directly. */
+			/* A func returning an array hands back an element pointer (by reference). Bind the
+			 * result as a type-6 array carrying the element type (so `r[i]` indexes at the right
+			 * width) and, for a bounded `T[N]` return, the count N (so .length / bounds work). */
+			const char *lt = llvm_type_from_arche(arr_elem);
 			ValueInfo *vi = malloc(sizeof(ValueInfo));
 			vi->name = malloc(strlen(var_name) + 1);
 			strcpy(vi->name, var_name);
 			vi->llvm_name = malloc(strlen(value_buf) + 1);
 			strcpy(vi->llvm_name, value_buf);
-			vi->type = 6; /* i8* char pointer */
+			vi->type = 6;
 			vi->arch_name = NULL;
-			vi->string_len = -1;
-			vi->field_type = "char";
-			vi->bit_width = 8;
+			vi->string_len = arr_n;
+			vi->field_type = arr_elem;
+			vi->bit_width = strcmp(lt, "double") == 0 ? 64 : (strcmp(lt, "i8") == 0 ? 8 : 32);
 			if (ctx->scope_count > 0) {
 				ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
 				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));

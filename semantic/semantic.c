@@ -1205,8 +1205,24 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 				return rt->data.handle.archetype_name;
 			if (rt->kind == TYPE_NAME)
 				return resolve_type_alias(ctx, normalize_type_name(rt->data.name));
-			if (rt->kind == TYPE_ARRAY)
-				return "char_array"; /* returning char[] (raw byte view) */
+			if (rt->kind == TYPE_SHAPED_ARRAY || rt->kind == TYPE_ARRAY) {
+				/* An array return resolves to its ELEMENT type — same convention as an
+				 * array NAME (see EXPR_NAME unwrap). A `char[]`/`char[N]` stays "char_array"
+				 * (string-like byte view); a non-char array (float[N], i64[N], …) yields the
+				 * element name so a later `r[i]` resolves to that element, not a default int. */
+				TypeRef *et = rt;
+				while (et && et->kind == TYPE_SHAPED_ARRAY)
+					et = et->data.shaped_array.element_type;
+				while (et && et->kind == TYPE_ARRAY)
+					et = et->data.array.element_type;
+				if (et && et->kind == TYPE_NAME && et->data.name) {
+					const char *en = normalize_type_name(et->data.name);
+					if (strcmp(en, "char") == 0)
+						return "char_array";
+					return resolve_type_alias(ctx, en);
+				}
+				return "char_array";
+			}
 			if (rt->kind == TYPE_OPAQUE)
 				return "opaque"; /* foreign resource value (pointer-width i64) */
 			return NULL;
@@ -2255,31 +2271,16 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				VariableInfo *rv = find_variable(ctx, rval->data.name.name);
 				if (rv && var_is_opaque(ctx, rv))
 					rv->is_consumed = 1;
-				/* Array return rules. A `char[]` may be returned (by reference) when it is an
-				 * `own`/borrowed PARAM — the established slice idiom (e.g. io/router `slice`). Two
-				 * things are NOT supported and error cleanly rather than miscompiling:
-				 *   - returning a fresh LOCAL array (any element): its storage is this frame → dangle
-				 *     (copy-out is unimplemented);
-				 *   - returning a NON-`char` array (param or local): the element pointer can't be
-				 *     handed back as a value without copy-out, and the old path silently byte-stored.
-				 * Non-char buffers are handed back via an in-out / out-param instead. */
-				if (ctx->current_func && rv && rv->type && type_is_byref_aggregate(rv->type)) {
-					TypeRef *et = rv->type;
-					while (et && et->kind == TYPE_SHAPED_ARRAY)
-						et = et->data.shaped_array.element_type;
-					while (et && et->kind == TYPE_ARRAY)
-						et = et->data.array.element_type;
-					int is_char = et && et->kind == TYPE_NAME && et->data.name && strcmp(et->data.name, "char") == 0;
-					if (!is_char) {
-						fprintf(stderr, "Error: returning a non-char array by value is not supported; hand the buffer "
-						                "back via an out-param (or in-out) instead\n");
-						ctx->error_count++;
-					} else if (!rv->is_param) {
-						fprintf(stderr,
-						        "Error: cannot return a local array by value (array copy-out is not implemented); "
-						        "return an `own` parameter or thread a caller-provided buffer instead\n");
-						ctx->error_count++;
-					}
+				/* An array is returned by REFERENCE — only valid when it's an `own`/borrowed
+				 * PARAM (the caller owns that storage; this is the slice / ownership-threading
+				 * idiom, now for any element type). Returning a fresh LOCAL array would dangle (its
+				 * storage is this frame) and needs value copy-out, which is unimplemented — reject
+				 * it cleanly. */
+				if (ctx->current_func && rv && rv->type && type_is_byref_aggregate(rv->type) && !rv->is_param) {
+					fprintf(stderr,
+					        "Error: cannot return a local array by value (array copy-out is not implemented); "
+					        "return an `own` parameter or thread a caller-provided buffer instead\n");
+					ctx->error_count++;
 				}
 			}
 		}

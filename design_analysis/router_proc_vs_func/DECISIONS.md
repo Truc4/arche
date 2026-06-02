@@ -4,15 +4,22 @@ Running log of non-obvious decisions while implementing the approved plan
 (`.claude/plans/there-is-a-problem-calm-aho.md`). Newest at the bottom.
 
 ## Status (current — read this first)
-- **`int` (i32) element arrays work** as locals, in-params, in-out params, `own`-threaded returns,
-  and out-only params. `char` arrays unchanged (separate, working path).
-- Fresh-local array value-return (copy-out) is **deferred** → clear compile error (not silent).
+- **All element types work** — `int`/`i64`/`float`/`double` (and other int widths) — as locals,
+  in-params, in-out params, out-only params, and `own`-threaded returns **by reference**. `char`
+  arrays unchanged (separate type-7 path, the `slice` idiom).
+- **`.length`/`.cap`/`.capacity`/`.max_length`** return the compile-time count N for these arrays.
+- **Bounds-checked** indexing (type-6 and type-7): runtime OOB aborts; provably-in-range
+  literal/loop indices elide the check.
+- Fresh-LOCAL array value-return (copy-out) is **deferred** → clear compile error (not silent), for
+  every element type. An `own`/borrowed PARAM is returned by reference and is valid.
 - Router comparison done: procedural (module statics) vs **reentrant (out-param)**; identical
   results; perf a wash. See COMPARISON.md.
-- **Full lit suite: 369/369 green.** 4 array/return guard tests added.
-- **Known limitations (verified, real):** only `int` element arrays are fully wired — `float`/
-  `double` and `i64`/other-width-int element arrays still emit invalid IR; `.length`/`.cap` don't
-  work on these arrays; and their accesses are **not bounds-checked**. Details in D7.
+- **Full lit suite: 384/384 green.** Array matrix (float/i64/int × local/inout/out/own-thread/
+  length/oob) + char_array_oob + return-guard tests.
+- **Known residual (verified, pre-existing, NOT array-specific):** a bare int *literal* passed as a
+  call ARGUMENT to an `i64` param is emitted at i32 width (truncates). Typed locals (`x: i64 = …`)
+  and array-element stores coerce correctly because the target width is known; only the call-arg
+  literal path defaults to i32. Orthogonal to array return — tracked separately.
 
 ## Goal (original)
 Plan fully implemented + verified: (1) non-char arrays work as `own`/in-out params (threading);
@@ -129,3 +136,22 @@ bounds are unfinished.**
   suite **382/382 green**.
 - **Still NOT supported (honest):** array VALUE return / copy-out (deferred); unbounded non-char
   slices `T[]` (use bounded `T[N]` or out-params); these error or are avoided, never silently wrong.
+
+## D9 — Non-char array RETURN by reference now FIXED (supersedes the D8 "errors cleanly" stance)
+D8 wrongly *rejected* non-char array return instead of fixing it (and inverted the own-thread smoke
+tests into negative ones). Corrected: an `own`/borrowed array PARAM is returned **by reference** for
+ANY element type, the same way `char[]` `slice` always has — the caller owns the storage, so handing
+back the element pointer is sound. Three precise fixes (no copy-out, no type-7 refactor):
+- **`return_member_llvm` (codegen.c ~556):** a func returning a non-char array has LLVM return type
+  = element pointer (`i32*`/`i64*`/`double*`/`i16*`), not `i8*`.
+- **Caller bind (`is_char_array_call`, ~4490):** the call result is bound as a type-6 array carrying
+  the element base name + count, so a later `r[i]` reads at the right width.
+- **Arg passing (~3239):** a type-6 array arg to a non-`arche_array` callee is passed at its element
+  pointer type (`double*`/`i64*`/…), not hardcoded `i8*` — fixes the `move a` forward on re-threading.
+- **EXPR_CALL resolve (semantic.c ~1208):** an array return resolves to its ELEMENT type (matching
+  the array-name convention) so the rebound var's `r[i]` isn't a default int (fixed float→i32 printf).
+- **Return guard (semantic.c ~2258):** errors ONLY a fresh-LOCAL array return (`!is_param`); an
+  `own`/borrowed param return is allowed.
+Verified round-trips with no narrowing: `int` 300→300 (not 44), `float` 9.5/2.25, `i64` sum 1e10;
+`char` slice still works; fresh-local still errors ("copy-out not implemented"). Smoke tests restored
+as POSITIVE: int/float/i64 `*_array_own_thread`. Full lit suite **384/384 green**.

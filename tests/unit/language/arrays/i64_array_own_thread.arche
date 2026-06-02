@@ -1,0 +1,15 @@
+// Ownership-threading idiom with an i64[] element type: the buffer is moved in through an `own`
+// param and returned by reference, holding values beyond the i32 range. Returning by reference does
+// not narrow the element width — 5000000000 round-trips intact (sum = 10000000000).
+// RUN: %arche build -o %t %s && %t | grep -q "owned 10000000000"
+step :: func(own a: i64[4], i: int) -> i64[4] {
+  a[i] = 5000000000;
+  return a;
+}
+
+main :: proc() {
+  a: i64[4];
+  a := step(move a, 0);
+  a := step(move a, 1);
+  printf("owned %lld\n", a[0] + a[1]);
+}
