@@ -18,52 +18,17 @@
 // no copy. The caller dispatches on `handler_id` with `match`. (Doesn't intern segments — the node
 // links are already dense ints and a segment is matched once per request; see docs/patterns.md and
 // design_analysis/key_lookup/DESIGN.md.) Segments are capped at 31 chars + NUL.
+//
+// Layout follows the visibility-band idiom (see docs/patterns.md): the public API leads (default
+// band = exported), then `#module` for the module-internal data model, then `#file` for the leaf
+// helpers. The capture-span globals sit up top with the API because plain bindings are
+// declare-before-use (unlike procs/types, they are not hoisted), so they must precede `resolve`.
 
-nodeKind :: enum { kstatic, kparam, kcatchall }
-
-TrieNode :: arche {
-  seg :: char[32], // segment text (":id"/"*" stored as the name after the marker), "" for root
-  kind :: nodeKind, // static / :param / *catchall
-  first_child :: int, // pool index of first child, or -1
-  next_sibling :: int, // pool index of next sibling, or -1
-  handler_id :: int, // >=0 if a route terminates here, else -1
-}
-
-TrieNode[256]
-
-// Captured-param spans from the most recent route_resolve (offsets into that path).
+// Capture spans from the most recent router.resolve (offsets into that path). Read via
+// router.param_count / router.param.
 cap_start: int[8] // up to 8 params per route
 cap_len: int[8]
 cap_count: int[1]
-
-// First index of '/' in p[start..n), or n if none.
-seg_end :: func(p: char[], start: int, n: int) -> int {
-  for (i := start; i < n; i = i + 1) {
-    if (p[i] == '/') {
-      return i;
-    }
-  }
-  return n;
-}
-
-// 1 if the NUL-terminated stored segment equals p[start..end), else 0. Pure (reads only params),
-// so it's usable inline in conditions.
-seg_eq :: func(stored: char[], p: char[], start: int, end: int) -> int {
-  if (strlen(stored) != end - start) {
-    return 0;
-  }
-  for (i := 0; i < end - start; i = i + 1) {
-    if (stored[i] != p[start + i]) {
-      return 0;
-    }
-  }
-  return 1;
-}
-
-// Allocate a node holding `seg`; return its pool slot (the index other nodes link by).
-new_node :: proc(seg: char[], kind: nodeKind)(idx: int) {
-  idx = i32(insert(TrieNode, seg, kind, 0 - 1, 0 - 1, 0 - 1));
-}
 
 // Reset the router and create the root (node 0: empty static segment). Init-once: the pool starts
 // empty, so this just inserts the root.
@@ -222,4 +187,56 @@ param_count :: proc()(n: int) {
 param :: proc(i: int)(start: int, len: int) {
   start = cap_start[i];
   len = cap_len[i];
+}
+
+// ====================== Module-internal data model (private) =======================
+// Not exported: the trie node type and pool are implementation state. `#module` narrows the rest
+// of the file to module-private (visible across the module's files, invisible to importers — no
+// `router.TrieNode`). Types and pools are hoisted, so they may trail the API that uses them.
+#module
+
+nodeKind :: enum { kstatic, kparam, kcatchall }
+
+TrieNode :: arche {
+  seg :: char[32], // segment text (":id"/"*" stored as the name after the marker), "" for root
+  kind :: nodeKind, // static / :param / *catchall
+  first_child :: int, // pool index of first child, or -1
+  next_sibling :: int, // pool index of next sibling, or -1
+  handler_id :: int, // >=0 if a route terminates here, else -1
+}
+
+TrieNode[256]
+
+// ========================= File-local parsing helpers (private) ========================
+// `#file` narrows to file-local: leaf routines used only by this file. Funcs/procs are hoisted,
+// so they may trail their callers above.
+#file
+
+// First index of '/' in p[start..n), or n if none.
+seg_end :: func(p: char[], start: int, n: int) -> int {
+  for (i := start; i < n; i = i + 1) {
+    if (p[i] == '/') {
+      return i;
+    }
+  }
+  return n;
+}
+
+// 1 if the NUL-terminated stored segment equals p[start..end), else 0. Pure (reads only params),
+// so it's usable inline in conditions.
+seg_eq :: func(stored: char[], p: char[], start: int, end: int) -> int {
+  if (strlen(stored) != end - start) {
+    return 0;
+  }
+  for (i := 0; i < end - start; i = i + 1) {
+    if (stored[i] != p[start + i]) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+// Allocate a node holding `seg`; return its pool slot (the index other nodes link by).
+new_node :: proc(seg: char[], kind: nodeKind)(idx: int) {
+  idx = i32(insert(TrieNode, seg, kind, 0 - 1, 0 - 1, 0 - 1));
 }
