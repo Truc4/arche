@@ -5,6 +5,12 @@
 main :: proc() {
   buf: char[16];
   sprintf(buf, "hello")(buf, _w:);
-  printf("cap=%d capacity=%d length=%d max=%d strlen=%d\n",
-         buf.cap, buf.capacity, buf.length, buf.max_length, strlen(buf));
+  printf(
+    "cap=%d capacity=%d length=%d max=%d strlen=%d\n",
+    buf.cap,
+    buf.capacity,
+    buf.length,
+    buf.max_length,
+    strlen(buf),
+  );
 }

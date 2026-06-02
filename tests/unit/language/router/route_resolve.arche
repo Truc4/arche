@@ -1,8 +1,10 @@
-// RUN: %arche build -o %t %s && %t | grep "root=0 user=1:42 file=2:css/app.css miss=-1 dispatch=user 7"
-// Exercises the radix router: static exact match, :param capture (span), * catchall capture
-// (span), and a miss — then a `match handler_id` dispatch with no function pointers. Captured
-// params come back as zero-copy spans into the path; the caller slices its own path.
+// RUN: %arche build -o %t %s && %t | grep "home user=42 static=css/app.css notfound"
+// Radix router: static / :param / * catchall, captured as zero-copy spans. Handler ids are a
+// `handler` enum (registered via `route_add`, dispatched via `match`). The miss sentinel (-1) is
+// remapped to an explicit `not_found` variant, so the `match` is exhaustive with NO `_` arm.
 #import { router }
+
+handler :: enum { not_found, home, user, static_files }
 
 // Copy path[start..start+len) into buf as a NUL-terminated string (caller-side materialization).
 slice :: func(own buf: char[], path: char[], start: int, len: int) -> char[] {
@@ -13,39 +15,40 @@ slice :: func(own buf: char[], path: char[], start: int, len: int) -> char[] {
   return buf;
 }
 
+dispatch :: proc(path: char[]) {
+  route_resolve(path)(h:);
+  // route_param is hoisted out of the `match`: a cross-module out-param call placed *inside* a
+  // match arm currently loses its out values (zero-init) — see FINDINGS. Reading the span here is
+  // harmless for the no-param arms (which ignore it).
+  route_param(0)(st:, ln:);
+  if (h < 0) {
+    h = handler.not_found; // remap miss to an explicit variant — no `_` in the enum match
+  }
+  match h {
+    not_found: printf("notfound ");
+    home: printf("home ");
+    user: {
+      idbuf: char[32];
+      idbuf := slice(move idbuf, path, st, ln);
+      printf("user=%s ", idbuf);
+    }
+    static_files: {
+      tail: char[64];
+      tail := slice(move tail, path, st, ln);
+      printf("static=%s ", tail);
+    }
+  }
+}
+
 main :: proc() {
   route_init();
-  route_add("/", 0);
-  route_add("/users/:id", 1);
-  route_add("/static/*", 2);
+  route_add("/", handler.home);
+  route_add("/users/:id", handler.user);
+  route_add("/static/*", handler.static_files);
 
-  route_resolve("/")(hroot:);
-
-  up := "/users/42";
-  route_resolve(up)(huser:);
-  route_param(0)(ust:, uln:);
-  ubuf: char[64];
-  ubuf := slice(move ubuf, up, ust, uln);
-
-  sp := "/static/css/app.css";
-  route_resolve(sp)(hfile:);
-  route_param(0)(cst:, cln:);
-  cbuf: char[64];
-  cbuf := slice(move cbuf, sp, cst, cln);
-
-  route_resolve("/nope")(hmiss:);
-
-  printf("root=%d user=%d:%s file=%d:%s miss=%d ", hroot, huser, ubuf, hfile, cbuf, hmiss);
-
-  // Dispatch on the resolved id — the intended caller pattern.
-  route_resolve("/users/7")(h:);
-  route_param(0)(dst:, dln:);
-  dbuf: char[64];
-  dbuf := slice(move dbuf, "/users/7", dst, dln);
-  match h {
-    0: printf("dispatch=home\n");
-    1: printf("dispatch=user %s\n", dbuf);
-    2: printf("dispatch=file\n");
-    _: printf("dispatch=404\n");
-  }
+  dispatch("/");
+  dispatch("/users/42");
+  dispatch("/static/css/app.css");
+  dispatch("/nope");
+  printf("\n");
 }

@@ -1051,8 +1051,7 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		/* Handle metadata properties on arrays and archetypes (incl. fixed char[N]/T[N] buffers:
 		 * .cap/.capacity/.length/.max_length are the declared size). */
 		if (strcmp(expr->data.field.field_name, "length") == 0 ||
-		    strcmp(expr->data.field.field_name, "max_length") == 0 ||
-		    strcmp(expr->data.field.field_name, "cap") == 0 ||
+		    strcmp(expr->data.field.field_name, "max_length") == 0 || strcmp(expr->data.field.field_name, "cap") == 0 ||
 		    strcmp(expr->data.field.field_name, "capacity") == 0) {
 			return "int";
 		}
@@ -6028,8 +6027,10 @@ static void check_one_match(SemanticContext *ctx, const SyntaxNode *m, const cha
 	}
 	SourceLoc loc = sem_direct_token_loc((SyntaxNode *)m, TOK_MATCH);
 	if (en) {
+		/* An enum match is closed: `_` is rejected (it would silently absorb variants added later —
+		 * the caller should name an explicit case, e.g. `not_found`). Every variant must be covered. */
 		if (has_wild)
-			return; /* `_` covers any uncovered variants */
+			sem_emit_wildcard_in_enum_match(ctx, loc);
 		for (int v = 0; v < ctx->enum_var_count; v++) {
 			if (strcmp(ctx->enum_var_enum[v], en) != 0)
 				continue;
