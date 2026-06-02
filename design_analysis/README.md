@@ -340,6 +340,38 @@ These results need more validation before drawing strong conclusions.
 - **Real-world data**: A `data/generate_data_dirty.py` variant exists (quoted regions with embedded commas, occasional null `quantity`, mixed CRLF/LF line endings, irregular numeric widths). Not used by the default benchmark; generate explicitly and pass `--csv` to test parser robustness. The 100M numbers above use the clean generator.
 - **Joins**: Task 5 covers filter→aggregate but not joins. Adding a small dimension table (e.g. region metadata) for a star-schema join would round out the pipeline coverage.
 
+## Key Lookup (string key → value)
+
+**Benchmark**: `key_lookup/bench.c` - four strategies for "given a key, find its value", over
+synthetic route-like string keys, swept across N. Build to `build/key_lookup`
+(`cc -O2 -o build/key_lookup key_lookup/bench.c`).
+
+**Results** (10M lookups, 75% hit / 25% miss, ns per lookup):
+
+| N    | SCAN (strcmp) | HASH (string) | INTERN (str→id→arr) | DENSE (id in hand) |
+|------|--------------:|--------------:|--------------------:|-------------------:|
+| 16   |         27.7  |         14.0  |              14.6   |             0.37   |
+| 100  |        150    |         16.4  |              16.9   |             0.34   |
+| 1000 |       1480    |         21.1  |              20.9   |             0.35   |
+
+**Reading**:
+- **SCAN is O(N)** - fine only at tiny N (2× HASH already at N=16, ~70× at 1000).
+- **HASH is flat** ~14–21 ns (FNV-1a + linear probe + one `strcmp` to confirm); the drift is cache,
+  not algorithm.
+- **INTERN ≈ HASH within noise.** The headline: a **string** query still pays the input hash, so
+  interning to a dense int doesn't dodge it - the `value[id]` indirection is free. **Interning buys
+  nothing for one-shot string lookups.**
+- **DENSE ~0.35 ns** (~40–60× faster) - but only when the key is **already a dense int** (ECS:
+  entity id → component), no string in hand.
+
+**Decision**: string keys → a hash index; don't intern (same cost plus indirection).
+Dense-int / sparse-set wins only for **integer-born** keys. For URL routing the query is a string
+every request, so the hash is unavoidable and DENSE's 0.35 ns is unreachable (turning the request
+string into an id *is* the INTERN column). Keep the router a **radix tree** - its per-node child
+scan is the tiny-N regime (≈ one hash per path segment) and needs no hash infrastructure; add a flat
+hash index only if a large flat keyset ever appears. "First-class hash keys for pools" is **not**
+justified by performance here - string input forces the hash regardless.
+
 ## Future Benchmarks
 
 Remaining ideas (cheaper-first):
