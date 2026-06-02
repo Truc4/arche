@@ -6,7 +6,7 @@ five :: func() -> int {
   return 5;
 }
 
-x : int = five() // not compile-time-known -> error
+x: int = five() // not compile-time-known -> error
 
 main :: proc() {
   printf("%d\n", x);

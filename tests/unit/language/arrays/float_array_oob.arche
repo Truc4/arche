@@ -1,3 +1,7 @@
 // Out-of-bounds float-array access aborts (runtime index, not elided).
 // RUN: %arche build -o %t %s && ! %t
-main :: proc() { b: float[4]; i := 9; printf("%g\n", b[i]); }
+main :: proc() {
+  b: float[4];
+  i := 9;
+  printf("%g\n", b[i]);
+}

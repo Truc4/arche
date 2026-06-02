@@ -1,3 +1,6 @@
 // .length on an i64 array.
 // RUN: %arche build -o %t %s && %t | grep -q "ilen=4"
-main :: proc() { a: i64[4]; printf("ilen=%d\n", a.length); }
+main :: proc() {
+  a: i64[4];
+  printf("ilen=%d\n", a.length);
+}

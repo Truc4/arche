@@ -3,7 +3,7 @@
 // RUN: %arche build -o %t %s && %t | grep -q "limit=100"
 MAX :: 100
 
-limit : int = MAX
+limit: int = MAX
 
 main :: proc() {
   printf("limit=%d\n", limit);

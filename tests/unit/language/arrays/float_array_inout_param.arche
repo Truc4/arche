@@ -1,4 +1,11 @@
 // float in-out array param round-trips through the element pointer.
 // RUN: %arche build -o %t %s && %t | grep -q "f=1.5,2.5"
-fill :: proc(buf: float[4], n: int)(buf: float[4]) { buf[0] = 1.5; buf[1] = 2.5; }
-main :: proc() { b: float[4]; fill(b, 4)(b); printf("f=%g,%g\n", b[0], b[1]); }
+fill :: proc(buf: float[4], n: int)(buf: float[4]) {
+  buf[0] = 1.5;
+  buf[1] = 2.5;
+}
+main :: proc() {
+  b: float[4];
+  fill(b, 4)(b);
+  printf("f=%g,%g\n", b[0], b[1]);
+}

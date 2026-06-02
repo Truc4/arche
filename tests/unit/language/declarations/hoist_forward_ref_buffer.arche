@@ -5,7 +5,7 @@ fill :: proc() {
   buf[0] = 9; // forward reference to a buffer declared later
 }
 
-buf : int[4]
+buf: int[4]
 
 main :: proc() {
   fill();

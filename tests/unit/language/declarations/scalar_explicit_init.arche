@@ -2,7 +2,7 @@
 // variable is still MUTABLE — `=` is the mutability separator, the constant is only the initial
 // value baked into the data section.
 // RUN: %arche build -o %t %s && %t | grep -q "x=5 then 9"
-x : int = 5
+x: int = 5
 
 main :: proc() {
   printf("x=%d then ", x);

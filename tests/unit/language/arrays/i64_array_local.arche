@@ -1,3 +1,8 @@
 // i64[] local — arithmetic at i64 width (values beyond i32 range).
 // RUN: %arche build -o %t %s && %t | grep -q "x=5000000000"
-main :: proc() { a: i64[4]; a[0] = 3000000000; a[1] = 2000000000; printf("x=%lld\n", a[0] + a[1]); }
+main :: proc() {
+  a: i64[4];
+  a[0] = 3000000000;
+  a[1] = 2000000000;
+  printf("x=%lld\n", a[0] + a[1]);
+}

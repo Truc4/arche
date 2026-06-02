@@ -5515,11 +5515,11 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				char idx_i64[256];
 				emit_index_i64(ctx, idx_buf, stmt->data.assign_stmt.target->data.index.indices[0], idx_i64);
 				/* Bounds check a bounded array write against its count N (idx_i64 is i64). */
-					if (type6_target->string_len > 0 &&
-					    !const_index_in_range(ctx, stmt->data.assign_stmt.target->data.index.indices[0],
-					                          type6_target->string_len))
-						emit_const_bounds_check(ctx, type6_target->string_len, idx_i64, 1);
-					const char *et6 = type6_target->field_type ? type6_target->field_type : "char";
+				if (type6_target->string_len > 0 &&
+				    !const_index_in_range(ctx, stmt->data.assign_stmt.target->data.index.indices[0],
+				                          type6_target->string_len))
+					emit_const_bounds_check(ctx, type6_target->string_len, idx_i64, 1);
+				const char *et6 = type6_target->field_type ? type6_target->field_type : "char";
 				if (strcmp(et6, "char") == 0) {
 					char *target_addr = gen_value_name(ctx);
 					buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %s\n", target_addr, base_buf, idx_i64);
@@ -6999,13 +6999,14 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 		snprintf(param_name, sizeof(param_name), "%%arg%d", i);
 
 		HirType *ptype = func->params[i]->type;
-		const char *en = field_base_type_name(ptype);    /* element base: "char","int","float",… */
-		const char *elt = llvm_type_from_arche(en);       /* "i8","i32","double",… */
+		const char *en = field_base_type_name(ptype); /* element base: "char","int","float",… */
+		const char *elt = llvm_type_from_arche(en);   /* "i8","i32","double",… */
 		if (ptype && ptype->tag == HIR_TYPE_ARRAY && !func->is_extern) {
 			/* Non-extern unbounded char[]: extract data pointer from the arche_array struct once. */
 			ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
 			char *dp_gep = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+			buffer_append_fmt(ctx,
+			                  "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
 			                  dp_gep, param_name);
 			char *dp = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", dp, dp_gep);
