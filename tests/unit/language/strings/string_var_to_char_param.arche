@@ -9,14 +9,16 @@ slen :: proc(s: char[])(r: int) {
 }
 
 main :: proc() {
-  slen("hello")(lit:);     // literal passed directly (always worked)
+  slen("hello")(lit:); // literal passed directly (always worked)
 
   x := "hello";
-  slen(x)(var:);           // literal-bound variable — the bug
+  slen(x)(var:); // literal-bound variable — the bug
 
   buf: char[8];
-  buf[0] = 'h'; buf[1] = 'i'; buf[2] = 0;
-  slen(buf)(mid:);         // char[N] buffer variable (always worked)
+  buf[0] = 'h';
+  buf[1] = 'i';
+  buf[2] = 0;
+  slen(buf)(mid:); // char[N] buffer variable (always worked)
 
   printf("lit=%d var=%d mid=%d\n", lit, var, mid);
 }

@@ -19,21 +19,21 @@
 NodeKind :: enum { kstatic, kparam, kcatchall }
 
 TrieNode :: arche {
-  seg_off      :: int,       // start of this node's segment text in seg_bytes
-  seg_len      :: int,       // length of that segment text
-  kind         :: NodeKind,  // static / :param / *catchall
-  first_child  :: int,       // pool index of first child, or -1
-  next_sibling :: int,       // pool index of next sibling, or -1
-  handler_id   :: int,       // >=0 if a route terminates here, else -1
+  seg_off :: int, // start of this node's segment text in seg_bytes
+  seg_len :: int, // length of that segment text
+  kind :: NodeKind, // static / :param / *catchall
+  first_child :: int, // pool index of first child, or -1
+  next_sibling :: int, // pool index of next sibling, or -1
+  handler_id :: int, // >=0 if a route terminates here, else -1
 }
 
 static pool<TrieNode> (256)
-static seg_bytes: char[8192]   // flat segment-text arena
-static node_count: int[1]      // [0] = number of live nodes (also the next slot index)
-static seg_top: int[1]         // [0] = bump cursor into seg_bytes
+static seg_bytes: char[8192] // flat segment-text arena
+static node_count: int[1] // [0] = number of live nodes (also the next slot index)
+static seg_top: int[1] // [0] = bump cursor into seg_bytes
 
 // Captured-param spans from the most recent route_resolve (offsets into that path).
-static cap_start: int[8]       // up to 8 params per route
+static cap_start: int[8] // up to 8 params per route
 static cap_len: int[8]
 static cap_count: int[1]
 
@@ -92,7 +92,7 @@ route_add :: proc(pattern: char[], handler_id: int) {
   s := 0;
   if (n > 0) {
     if (pattern[0] == '/') {
-      s = 1;   // skip leading '/'
+      s = 1; // skip leading '/'
     }
   }
   for (; s < n;) {
@@ -116,12 +116,19 @@ route_add :: proc(pattern: char[], handler_id: int) {
     for (; child >= 0;) {
       if (TrieNode.kind[child] == kind) {
         if (kind == NodeKind.kstatic) {
-          if (seg_eq(seg_bytes, TrieNode.seg_off[child], TrieNode.seg_len[child], pattern, tstart, e) == 1) {
+          if (seg_eq(
+            seg_bytes,
+            TrieNode.seg_off[child],
+            TrieNode.seg_len[child],
+            pattern,
+            tstart,
+            e,
+          ) == 1) {
             found = child;
           }
         }
         else {
-          found = child;   // one param/catchall child per node
+          found = child; // one param/catchall child per node
         }
       }
       if (found >= 0) {
@@ -210,7 +217,7 @@ route_resolve :: proc(path: char[])(handler_id: int) {
       cap_len[cap_count[0]] = cend - s;
       cap_count[0] = cap_count[0] + 1;
       cur = chosen;
-      s = cend + 1;   // for catchall cend==n, so the loop exits
+      s = cend + 1; // for catchall cend==n, so the loop exits
     }
   }
   handler_id = TrieNode.handler_id[cur];

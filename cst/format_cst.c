@@ -249,8 +249,8 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 				indent--; /* closer dedents to the group's own level */
 				eff_indent = indent;
 				nl = 1;
-				add_trailing_comma =
-				    (prev_noncomment != TOK_COMMA); /* one trailing comma before the closer (past any trailing comment) */
+				add_trailing_comma = (prev_noncomment !=
+				                      TOK_COMMA); /* one trailing comma before the closer (past any trailing comment) */
 			} else if (f->closer == TOK_RBRACE) {
 				space = 1; /* `{ … }` interior space; `)` hugs */
 			}

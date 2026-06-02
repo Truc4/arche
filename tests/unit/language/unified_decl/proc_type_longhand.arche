@@ -3,7 +3,7 @@
 // the general `name : meta : value` grammar.
 // RUN: %arche build -o %t %s && %t | grep "code=404 r=-7"
 handler: type: proc()(code: int) // explicit longhand, proc type
-unop: type: func(a: int) -> int// explicit longhand, func type
+unop: type: func(a: int) -> int // explicit longhand, func type
 
 not_found :: proc()(code: int) {
   code = 404;
