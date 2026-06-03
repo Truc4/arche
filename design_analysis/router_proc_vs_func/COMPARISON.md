@@ -19,10 +19,12 @@ Both build with the same compiler/flags and were validated to produce an **ident
 (20000000)** over 2,000,000 resolutions of `/users/42/posts/99` against the route set
 `/`, `/users/:id`, `/users/:id/posts/:pid`, `/static/*` — i.e. they resolve identically.
 
-Segment matching uses **sub-slices**: `seg_eq(stored, path[s:e], e - s)` passes the path segment as a
-borrowed `char[]` view (so the body indexes `seg[i]` from 0, no start offset) — `handler_id`/`add`
-are typed with the `route` enum. (The explicit length is passed because `char[].length` is not yet
-wired for the char/arche_array path; once it is, `seg.length` replaces it.)
+Segment matching uses **sub-slices**: `seg_eq(stored, TrieNode.seg_len[child], path[s:e])` passes the
+path segment as a borrowed `char[]` view (so the body indexes `seg[i]` from 0, no start offset) and
+uses its `seg.length` directly — `char[]` is now a normal `(ptr, len)` array, so no explicit segment
+length is threaded. The *stored* segment lives in a fixed `char[32]` column (no length of its own),
+so its content length travels in a sibling `seg_len :: int` column. `handler_id`/`add` are typed with
+the `route` enum.
 
 ## Measured
 

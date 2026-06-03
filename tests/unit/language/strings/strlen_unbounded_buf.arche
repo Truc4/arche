@@ -1,10 +1,11 @@
 // RUN: %arche build -o %t %s && %t
+#import { str }
 check_buf :: func(buf: char[]) -> int {
-  return strlen(buf);
+  return str.strlen(buf);
 }
 
 main :: proc() {
-  n1 := strlen("hello");
+  n1 := str.strlen("hello");
   printf("direct strlen: %d\n", n1);
   n2 := check_buf("hello");
   printf("function strlen: %d\n", n2);

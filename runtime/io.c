@@ -85,3 +85,10 @@ int os_argc(void) {
 char *os_argv(int i) {
 	return (i >= 0 && i < g_arche_argc) ? g_arche_argv[i] : 0;
 }
+
+/* FFI-boundary length for argv[i]: a char[] crossing IN from C has no carried length, so the os
+ * wrapper materializes one here with strlen — NUL is a C-ABI detail confined to this boundary;
+ * arche-side the result is a normal `(ptr, len)` slice. Index-based so no char[] crosses out. */
+long os_argv_len(int i) {
+	return (i >= 0 && i < g_arche_argc) ? (long)strlen(g_arche_argv[i]) : 0;
+}

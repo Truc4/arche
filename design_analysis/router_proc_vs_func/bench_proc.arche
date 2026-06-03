@@ -10,6 +10,7 @@ nodeKind :: enum { kstatic, kparam, kcatchall }
 
 TrieNode :: arche {
   seg :: char[32],
+  seg_len :: int,
   kind :: nodeKind,
   first_child :: int,
   next_sibling :: int,
@@ -32,14 +33,14 @@ seg_end :: func(p: char[], start: int, n: int) -> int {
   return n;
 }
 
-// `seg` is a sub-slice of the path/pattern (a borrowed view), so it indexes from 0 — no start
-// offset. (`n` is passed explicitly because `char[].length` is not yet wired; with it, `seg.length`
-// would replace `n`.)
-seg_eq :: func(stored: char[], seg: char[], n: int) -> int {
-  if (strlen(stored) != n) {
+// `seg` is a sub-slice of the path/pattern (a borrowed view), so it indexes from 0 and carries its
+// own `.length` — no explicit `n`. The stored segment lives in a fixed char[32] column, which has no
+// length of its own, so its content length travels in the `seg_len` column.
+seg_eq :: func(stored: char[], stored_len: int, seg: char[]) -> int {
+  if (stored_len != seg.length) {
     return 0;
   }
-  for (i := 0; i < n; i = i + 1) {
+  for (i := 0; i < seg.length; i = i + 1) {
     if (stored[i] != seg[i]) {
       return 0;
     }
@@ -47,18 +48,18 @@ seg_eq :: func(stored: char[], seg: char[], n: int) -> int {
   return 1;
 }
 
-new_node :: proc(seg: char[], kind: nodeKind)(idx: int) {
-  idx = i32(insert(TrieNode, seg, kind, -1, -1, route.miss));
+new_node :: proc(seg: char[], seg_len: int, kind: nodeKind)(idx: int) {
+  idx = i32(insert(TrieNode, seg, seg_len, kind, -1, -1, route.miss));
 }
 
 init :: proc() {
   empty: char[32];
   empty[0] = 0;
-  new_node(empty, nodeKind.kstatic)(_root:);
+  new_node(empty, 0, nodeKind.kstatic)(_root:);
 }
 
 add :: proc(pattern: char[], handler_id: route) {
-  n := strlen(pattern);
+  n := pattern.length;
   cur := 0;
   s := 0;
   if (n > 0) {
@@ -84,7 +85,7 @@ add :: proc(pattern: char[], handler_id: route) {
       if (TrieNode.kind[child] == kind) {
         if (kind == nodeKind.kstatic) {
           cs := TrieNode.seg[child];
-          if (seg_eq(cs, pattern[tstart:e], e - tstart) == 1) {
+          if (seg_eq(cs, TrieNode.seg_len[child], pattern[tstart:e]) == 1) {
             found = child;
           }
         }
@@ -105,7 +106,7 @@ add :: proc(pattern: char[], handler_id: route) {
         j = j + 1;
       }
       segbuf[j] = 0;
-      new_node(segbuf, kind)(found:);
+      new_node(segbuf, e - tstart, kind)(found:);
       TrieNode.next_sibling[found] = TrieNode.first_child[cur];
       TrieNode.first_child[cur] = found;
     }
@@ -117,7 +118,7 @@ add :: proc(pattern: char[], handler_id: route) {
 
 // Procedural: captures recorded into module statics; read back via param/param_count.
 resolve :: proc(path: char[])(handler_id: route) {
-  n := strlen(path);
+  n := path.length;
   cur := 0;
   cap_count[0] = 0;
   handler_id = route.miss;
@@ -137,7 +138,7 @@ resolve :: proc(path: char[])(handler_id: route) {
       k := TrieNode.kind[child];
       if (k == nodeKind.kstatic) {
         cs := TrieNode.seg[child];
-        if (seg_eq(cs, path[s:e], e - s) == 1) {
+        if (seg_eq(cs, TrieNode.seg_len[child], path[s:e]) == 1) {
           static_hit = child;
         }
       }

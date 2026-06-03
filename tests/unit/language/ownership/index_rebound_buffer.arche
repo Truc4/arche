@@ -3,7 +3,7 @@
 // RUN: %arche build -o %t %s && %t | grep "c0=72 c1=105 n=2"
 fill :: proc(buf: char[32], s: char[])(buf: char[32], n: int) {
   i := 0;
-  for (; s[i] != 0; i += 1) {
+  for (; i < s.length; i += 1) {
     buf[i] = s[i];
   }
   buf[i] = 0;

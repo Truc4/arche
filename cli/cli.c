@@ -266,6 +266,7 @@ int cli_main(int argc, char **argv) {
 
 	/* Unknown command. A bare source path is the most common mistake (the old implicit-build form),
 	 * so point at `build` explicitly. */
+	// TODO: remove legacy reminder
 	size_t len = strlen(a1);
 	if (len > 6 && strcmp(a1 + len - 6, ".arche") == 0)
 		fprintf(stderr, "%s: '%s' is not a command. Did you mean `%s build %s`?\n", g_prog, a1, g_prog, a1);

@@ -3,10 +3,11 @@
 // output. Everything else (file/stdio I/O, sockets, terminal, clock/args, CSV) lives in stdlib
 // modules, brought in by one region: `#import { io net term sys csv }`.
 
-// Boolean readability constants. Arche has no `bool`; comparisons yield int 0/1, so these are
+// Boolean readability constants. Arche has no `bool` primitive; comparisons yield int 0/1, so these are
 // just names for those values (`running := true`, `if (ok == false)`).
-true :: 1
-false :: 0
+bool :: i8
+true: bool: 1
+false: bool: 0
 
 // Raw Linux/x86-64 syscall intrinsic: emits the `syscall` instruction directly (no libc). A
 // buffer arg decays to its data pointer (like C). Declared first so the fd wrappers below can use it.
@@ -62,104 +63,26 @@ socket :: opaque
 /// assert(streq("ab", "abc") == 0, "streq prefix\n");
 /// ```
 streq :: func(a: char[], b: char[]) -> int {
+  if (a.length != b.length) {
+    return 0;
+  }
   i := 0;
-  for (; a[i] == b[i]; i += 1) {
-    if (a[i] == 0) {
-      return 1;
+  for (; i < a.length; i += 1) {
+    if (a[i] != b[i]) {
+      return 0;
     }
   }
-  return 0;
+  return 1;
 }
-/// Length of a NUL-terminated string, not counting the terminator.
-///
-/// ```arche
-/// assert(strlen("hello") == 5, "strlen hello\n");
-/// assert(strlen("") == 0, "strlen empty\n");
-/// ```
-strlen :: func(s: char[]) -> int {
-  i := 0;
-  for (; s[i] != 0; i += 1) {
-  }
-  return i;
-}
-// Copy C-string `src` (through its NUL) into `dst`, NUL-terminate, return the filled buffer.
-// Pure; the own/move contract makes the in-place fill explicit: `b := strcopy(move b, s)`.
-strcopy :: func(own dst: char[], src: char[]) -> char[] {
-  i := 0;
-  for (; src[i] != 0; i += 1) {
-    dst[i] = src[i];
-  }
-  dst[i] = 0;
-  return dst;
-}
-/// Parse a leading (optionally signed) integer; stops at the first non-digit, like libc atoi.
-///
-/// ```arche
-/// assert(atoi("42") == 42, "atoi 42\n");
-/// assert(atoi("-7") == -7, "atoi -7\n");
-/// assert(atoi("13abc") == 13, "atoi stops at non-digit\n");
-/// ```
-atoi :: func(s: char[]) -> int {
-  i := 0;
-  sign := 1;
-  if (s[0] == '-') {
-    sign = 0 - 1;
-    i = 1;
-  }
-  n := 0;
-  for (; s[i] != 0; i += 1) {
-    if (s[i] < '0') {
-      break;
-    }
-    if (s[i] > '9') {
-      break;
-    }
-    n = n * 10 + (s[i] - '0');
-  }
-  return sign * n;
-}
-// Parse a leading (optionally signed) decimal: integer part then optional fraction, like libc atof.
-atof :: func(s: char[]) -> float {
-  i := 0;
-  sign := 1.0;
-  if (s[0] == '-') {
-    sign = 0.0 - 1.0;
-    i = 1;
-  }
-  whole := 0.0;
-  for (; s[i] != 0; i += 1) {
-    if (s[i] == '.') {
-      i += 1;
-      break;
-    }
-    if (s[i] < '0') {
-      break;
-    }
-    if (s[i] > '9') {
-      break;
-    }
-    whole = whole * 10.0 + (s[i] - '0');
-  }
-  frac := 0.0;
-  scale := 1.0;
-  for (; s[i] != 0; i += 1) {
-    if (s[i] < '0') {
-      break;
-    }
-    if (s[i] > '9') {
-      break;
-    }
-    frac = frac * 10.0 + (s[i] - '0');
-    scale = scale * 10.0;
-  }
-  return sign * (whole + frac / scale);
-}
+// strlen/strcopy moved to the `str` stdlib module (`#import { str }`). (streq stays here — the
+// match string-pattern desugar emits it, so it must resolve without an import.)
+// atoi/atof moved to the `parse` stdlib module (`#import { parse }`; parse.atoi / parse.atof).
 print_float :: proc(f: float) {
   printf("%g", f);
   fflush(0);
 }
 print :: proc(msg: char[]) {
-  write(1, msg, strlen(msg));
+  write(1, msg, msg.length);
 }
 assert :: proc(condition: int, message: char[]) {
   if (condition == 0) {

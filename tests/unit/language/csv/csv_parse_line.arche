@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t
+#import { parse }
 main :: proc() {
   buf: char[256];
   buf[0] = '1';
@@ -30,8 +31,8 @@ main :: proc() {
     i = i + 1;
   }
   qty_str[j] = 0;
-  price := atof(price_str);
-  qty := atoi(qty_str);
+  price := parse.atof(price_str);
+  qty := parse.atoi(qty_str);
   printf("price=%f qty=%d\n", price, qty);
   assert(price == 10.0, "price should be 10.0\n");
   assert(qty == 10, "qty should be 10\n");

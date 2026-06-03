@@ -1,7 +1,8 @@
-// RUN: %arche build -o %t %s && %t | grep "cap=16 capacity=16 length=16 max=16 strlen=5"
-// A fixed char[N] stack buffer exposes its declared size via .cap/.capacity/.length/.max_length
-// (the same bound buf[i] is checked against). A fixed array has no dynamic length, so all four are
-// N; content length is strlen(). Surfaces the size the bounds-checker already tracks.
+// RUN: %arche build -o %t %s && %t | grep "cap=16 capacity=16 length=16 max=16 strlen=16"
+// A fixed char[N] stack buffer is a normal array of N elements: .cap/.capacity/.length/.max_length
+// are all N, and `strlen` is now just `.length` (a normal array carries its length — no NUL scan).
+// Content shorter than N lives in a sub-slice `buf[0:n]`, not in a NUL terminator.
+#import { str }
 main :: proc() {
   buf: char[16];
   sprintf(buf, "hello")(buf, _w:);
@@ -11,6 +12,6 @@ main :: proc() {
     buf.capacity,
     buf.length,
     buf.max_length,
-    strlen(buf),
+    str.strlen(buf),
   );
 }

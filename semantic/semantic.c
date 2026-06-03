@@ -5644,6 +5644,99 @@ static int sem_is_collectible_decl(SyntaxNodeKind k) {
 	return k >= SN_WORLD_DECL && k <= SN_USE_DECL && k != SN_USE_DECL;
 }
 
+/* Inline module `mod_name`'s decls into `prog` (prefixed so intra-module refs resolve), record its
+ * exported names in acc for the `mod.name → mod_name` qualify pass, then RECURSIVELY inline the
+ * module's own `#import`s — so a module may use qualified access to a transitively-imported module
+ * (`csv` calling `parse.atof`). Dedup via the acc set makes import cycles safe. */
+static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc_prefix, char ***acc_set,
+                              int *acc_count, int *acc_n) {
+	for (int a = 0; a < *acc_n; a++)
+		if (strcmp(acc_prefix[a], mod_name) == 0)
+			return; /* already inlined (direct or via another transitive path) */
+	int first = prog->decl_count;
+	int found = 0;
+	char **full = NULL;
+	int fulln = 0, fullcap = 0;
+	char **expset = NULL;
+	int expn = 0, expcap = 0;
+	for (int m = 0; m < g_sem_module_count; m++) {
+		if (strcmp(g_sem_modules[m].name, mod_name) != 0)
+			continue;
+		found = 1;
+		const SyntaxNode *mr = g_sem_modules[m].root;
+		const char *msrc = g_sem_modules[m].src;
+		int exported = 1; /* band resets per file */
+		for (int j = 0; j < mr->child_count; j++) {
+			if (mr->children[j].tag != SE_NODE)
+				continue;
+			const SyntaxNode *cn = mr->children[j].as.node;
+			SyntaxNodeKind mk = cn->kind;
+			if (mk == SN_REGION) {
+				CstView rv = {cn, msrc};
+				int is_block = cv_has_token(rv, TOK_LBRACE);
+				int is_foreign = cv_has_token(rv, TOK_HASH_FOREIGN);
+				if (is_block) {
+					int child_exp = is_foreign ? exported : 0;
+					for (int c = 0; c < cn->child_count; c++) {
+						if (cn->children[c].tag != SE_NODE)
+							continue;
+						if (!sem_is_collectible_decl(cn->children[c].as.node->kind))
+							continue;
+						sem_add_module_decl(cn->children[c].as.node, msrc, mod_name, prog, &full, &fulln, &fullcap,
+						                    &expset, &expn, &expcap, child_exp);
+					}
+				} else if (!is_foreign) {
+					exported = 0;
+				}
+				continue;
+			}
+			if (!sem_is_collectible_decl(mk))
+				continue;
+			sem_add_module_decl(cn, msrc, mod_name, prog, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported);
+		}
+	}
+	if (!found) {
+		free(full);
+		free(expset);
+		return;
+	}
+	for (int dd = first; dd < prog->decl_count; dd++)
+		sem_rename_decl(prog->decls[dd], mod_name, full, fulln);
+	for (int x = 0; x < fulln; x++)
+		free(full[x]);
+	free(full);
+	if (*acc_n < 64) {
+		acc_prefix[*acc_n] = sem_dupz(mod_name);
+		acc_set[*acc_n] = expset;
+		acc_count[*acc_n] = expn;
+		(*acc_n)++;
+	} else {
+		for (int x = 0; x < expn; x++)
+			free(expset[x]);
+		free(expset);
+	}
+	/* Transitive: inline this module's own `#import`s (now that it's in acc → cycle-safe). */
+	for (int m = 0; m < g_sem_module_count; m++) {
+		if (strcmp(g_sem_modules[m].name, mod_name) != 0)
+			continue;
+		const SyntaxNode *mr = g_sem_modules[m].root;
+		const char *msrc = g_sem_modules[m].src;
+		for (int j = 0; j < mr->child_count; j++) {
+			if (mr->children[j].tag != SE_NODE || mr->children[j].as.node->kind != SN_USE_DECL)
+				continue;
+			const SyntaxNode *un = mr->children[j].as.node;
+			for (int t = 0; t < un->child_count; t++) {
+				if (un->children[t].tag != SE_TOKEN || un->children[t].as.token.kind != TOK_IDENT)
+					continue;
+				CvText tk = {msrc + un->children[t].as.token.offset, un->children[t].as.token.length};
+				char *sub = sem_txt_dup(tk);
+				sem_inline_module(sub, prog, acc_prefix, acc_set, acc_count, acc_n);
+				free(sub);
+			}
+		}
+	}
+}
+
 /* Build the analyzable AstProgram from the main-file CST plus all registered module CSTs,
  * inlining + name-prefixing modules exactly as main.c's resolve_uses does, then expanding
  * top-level tuple groups. The returned AstProgram owns all its memory (free with ast_program_free). */
@@ -5691,87 +5784,17 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 		CstView dv = {root->children[i].as.node, src};
 
 		if (k == SN_USE_DECL) {
-			/* One IDENT per imported module: a bare `#import io` has one, a block
-			 * `#import { io net }` has several. Inline each. */
+			/* One IDENT per imported module (`#import io` / `#import { io net }`). Inline each —
+			 * the helper recurses into the module's own transitive imports + dedups. */
 			const SyntaxNode *un = dv.node;
 			for (int t = 0; t < un->child_count; t++) {
 				if (un->children[t].tag != SE_TOKEN || un->children[t].as.token.kind != TOK_IDENT)
 					continue;
 				CvText tk = {src + un->children[t].as.token.offset, un->children[t].as.token.length};
 				char *mod_name = sem_txt_dup(tk);
-				int first = prog->decl_count;
-				int found = 0;
-				/* full = ALL non-extern symbols (prefix everything → intra-module refs resolve);
-				 * expset = #export-band symbols (the only ones externally visible, via qualified
-				 * access). Externs are recorded too, under their prefix-stripped visible name. */
-				char **full = NULL;
-				int fulln = 0, fullcap = 0;
-				char **expset = NULL;
-				int expn = 0, expcap = 0;
-				for (int m = 0; m < g_sem_module_count; m++) {
-					if (strcmp(g_sem_modules[m].name, mod_name) != 0)
-						continue;
-					found = 1;
-					const SyntaxNode *mr = g_sem_modules[m].root;
-					const char *msrc = g_sem_modules[m].src;
-					int exported = 1; /* band resets per file */
-					for (int j = 0; j < mr->child_count; j++) {
-						if (mr->children[j].tag != SE_NODE)
-							continue;
-						const SyntaxNode *cn = mr->children[j].as.node;
-						SyntaxNodeKind mk = cn->kind;
-						if (mk == SN_REGION) {
-							CstView rv = {cn, msrc};
-							int is_block = cv_has_token(rv, TOK_LBRACE);
-							int is_foreign = cv_has_token(rv, TOK_HASH_FOREIGN);
-							if (is_block) {
-								/* A `#module`/`#file` block narrows only its own decls; a `#foreign` block
-								 * leaves visibility as-is (its decls are extern, never exported). */
-								int child_exp = is_foreign ? exported : 0;
-								for (int c = 0; c < cn->child_count; c++) {
-									if (cn->children[c].tag != SE_NODE)
-										continue;
-									if (!sem_is_collectible_decl(cn->children[c].as.node->kind))
-										continue;
-									sem_add_module_decl(cn->children[c].as.node, msrc, mod_name, prog, &full, &fulln,
-									                    &fullcap, &expset, &expn, &expcap, child_exp);
-								}
-							} else if (!is_foreign) {
-								exported = 0; /* visibility banner: narrows the rest of this file */
-							}
-							continue;
-						}
-						if (!sem_is_collectible_decl(mk))
-							continue;
-						sem_add_module_decl(cn, msrc, mod_name, prog, &full, &fulln, &fullcap, &expset, &expn, &expcap,
-						                    exported);
-					}
-				}
-				if (!found) {
-					free(mod_name);
-					free(full);
-					free(expset);
-					continue;
-				}
-				/* Prefix the module's own decls with the FULL set (intra-module refs resolve). */
-				for (int dd = first; dd < prog->decl_count; dd++)
-					sem_rename_decl(prog->decls[dd], mod_name, full, fulln);
-				for (int x = 0; x < fulln; x++)
-					free(full[x]);
-				free(full);
-				/* Only the EXPORT set is externally visible. */
-				if (acc_n < 64) {
-					acc_prefix[acc_n] = sem_dupz(mod_name);
-					acc_set[acc_n] = expset;
-					acc_count[acc_n] = expn;
-					acc_n++;
-				} else {
-					for (int x = 0; x < expn; x++)
-						free(expset[x]);
-					free(expset);
-				}
+				sem_inline_module(mod_name, prog, acc_prefix, acc_set, acc_count, &acc_n);
 				free(mod_name);
-			} /* end per-module-ident loop */
+			}
 			continue;
 		}
 

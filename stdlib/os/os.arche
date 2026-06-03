@@ -1,9 +1,14 @@
 // The `os` module — process/system services (C-backed in runtime/io.c, term.c).
 // `#import { os }` then call `os.now_sec()`, `os.sleep_ms(...)`, `os.argc()`, `os.argv(i)`.
 // Access is qualified-only: a bare `now_sec()` does not resolve.
+// argv[i] comes from C as a raw NUL-terminated pointer with no carried length. `os.argv(i)` gives
+// the raw `(ptr)` and `os.argv_len(i)` the FFI-boundary length (C-side strlen) — slice them
+// together (`raw[0:os.argv_len(i)]`) for a normal `(ptr, len)` array. (A one-call wrapper awaits
+// non-extern char[] out-param support; see char_normal_array/DECISIONS.md D3.)
 #foreign {
   os_now_sec :: proc()(t: float)
   os_sleep_ms :: proc(ms: int)
   os_argc :: proc()(n: int)
   os_argv :: proc(i: int)(s: char[])
+  os_argv_len :: proc(i: int)(n: i64)
 }

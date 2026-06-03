@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-#import { io }
+#import { parse io }
 Transaction :: arche { price :: float, quantity :: int }
 
 Transaction[3](3) {
@@ -58,8 +58,8 @@ load_csv :: proc(own path: char[]) {
       i = i + 1;
     }
     qty_str[j] = 0;
-    Transaction.price[idx] = atof(price_str);
-    Transaction.quantity[idx] = atoi(qty_str);
+    Transaction.price[idx] = parse.atof(price_str);
+    Transaction.quantity[idx] = parse.atoi(qty_str);
     idx = idx + 1;
     line_start = line_end + 1;
   }

@@ -1,9 +1,10 @@
 // RUN: %arche build -o %t %s && %t | grep -E "test1|test2|test3"
 // Buffers moved in (own, consumed) and handed back through fresh out-bindings across several
 // calls — the `f(move x)(x:)` kill-and-rebind form (a killed binding can't be reused bare).
+#import { str }
 fill_two :: proc(own buf1: char[32], own buf2: char[32])(buf1: char[32], buf2: char[32], n: int) {
-  buf1 := strcopy(move buf1, "hello");
-  buf2 := strcopy(move buf2, "world");
+  buf1 := str.strcopy(move buf1, "hello");
+  buf2 := str.strcopy(move buf2, "world");
   n = 99;
 }
 

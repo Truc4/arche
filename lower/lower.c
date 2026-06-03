@@ -2526,6 +2526,96 @@ static int hir_is_collectible_decl(SyntaxNodeKind k) {
 	return k >= SN_WORLD_DECL && k <= SN_USE_DECL && k != SN_USE_DECL;
 }
 
+/* Inline module `mod_name` into `ast` (prefixed so intra-module refs resolve), record its exports
+ * for the qualify pass, then RECURSIVELY inline its own `#import`s — mirror of sem_inline_module so
+ * a module may use qualified access to a transitive import (`csv` → `parse.atof`). Dedup = cycle-safe. */
+static void hir_inline_module(const char *mod_name, HirProgram *ast, char **mod_prefix, char ***mod_exports,
+                              int *mod_export_n, int *inlined) {
+	for (int a = 0; a < *inlined; a++)
+		if (strcmp(mod_prefix[a], mod_name) == 0)
+			return;
+	int first = ast->decl_count;
+	int found = 0;
+	char **full = NULL;
+	int fulln = 0, fullcap = 0;
+	char **expset = NULL;
+	int expn = 0, expcap = 0;
+	for (int m = 0; m < g_module_count; m++) {
+		if (strcmp(g_modules[m].name, mod_name) != 0)
+			continue;
+		found = 1;
+		const SyntaxNode *mr = g_modules[m].root;
+		const char *msrc = g_modules[m].src;
+		int exported = 1;
+		for (int j = 0; j < mr->child_count; j++) {
+			if (mr->children[j].tag != SE_NODE)
+				continue;
+			const SyntaxNode *cn = mr->children[j].as.node;
+			SyntaxNodeKind mk = cn->kind;
+			if (mk == SN_REGION) {
+				CstView rv = {cn, msrc};
+				int is_block = cv_has_token(rv, TOK_LBRACE);
+				int is_foreign = cv_has_token(rv, TOK_HASH_FOREIGN);
+				if (is_block) {
+					int child_exp = is_foreign ? exported : 0;
+					for (int c = 0; c < cn->child_count; c++) {
+						if (cn->children[c].tag != SE_NODE)
+							continue;
+						if (!hir_is_collectible_decl(cn->children[c].as.node->kind))
+							continue;
+						hir_add_module_decl(cn->children[c].as.node, msrc, mod_name, ast, &full, &fulln, &fullcap,
+						                    &expset, &expn, &expcap, child_exp);
+					}
+				} else if (!is_foreign) {
+					exported = 0;
+				}
+				continue;
+			}
+			if (!hir_is_collectible_decl(mk))
+				continue;
+			hir_add_module_decl(cn, msrc, mod_name, ast, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported);
+		}
+	}
+	if (!found) {
+		free(full);
+		free(expset);
+		return;
+	}
+	for (int d = first; d < ast->decl_count; d++)
+		hir_rn_decl(ast->decls[d], mod_name, full, fulln);
+	for (int x = 0; x < fulln; x++)
+		free(full[x]);
+	free(full);
+	if (*inlined < 64) {
+		mod_prefix[*inlined] = dupz(mod_name);
+		mod_exports[*inlined] = expset;
+		mod_export_n[*inlined] = expn;
+		(*inlined)++;
+	} else {
+		for (int x = 0; x < expn; x++)
+			free(expset[x]);
+		free(expset);
+	}
+	for (int m = 0; m < g_module_count; m++) {
+		if (strcmp(g_modules[m].name, mod_name) != 0)
+			continue;
+		const SyntaxNode *mr = g_modules[m].root;
+		const char *msrc = g_modules[m].src;
+		for (int j = 0; j < mr->child_count; j++) {
+			if (mr->children[j].tag != SE_NODE || mr->children[j].as.node->kind != SN_USE_DECL)
+				continue;
+			const SyntaxNode *un = mr->children[j].as.node;
+			for (int t = 0; t < un->child_count; t++) {
+				if (un->children[t].tag != SE_TOKEN || un->children[t].as.token.kind != TOK_IDENT)
+					continue;
+				char *sub = txt_dup((CvText){msrc + un->children[t].as.token.offset, un->children[t].as.token.length});
+				hir_inline_module(sub, ast, mod_prefix, mod_exports, mod_export_n, inlined);
+				free(sub);
+			}
+		}
+	}
+}
+
 /* CST-driven entry, gated by ARCHE_LOWER_CST (validated against the IR goldens). */
 HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 	if (!root)
@@ -2584,80 +2674,7 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 					continue;
 				char *mod_name =
 				    txt_dup((CvText){src + un->children[t].as.token.offset, un->children[t].as.token.length});
-				int first = ast->decl_count;
-				int found = 0;
-				/* Two name sets:
-				 *   `full`   — ALL non-extern module symbols; the module's own decls are prefixed
-				 *              against this so intra-module references (across the folder's files) resolve.
-				 *   `expset` — symbols in the default (#export) band, the ONLY ones externally visible via
-				 *              qualified access (`io.x`). Externs are recorded too, under their
-				 *              prefix-stripped visible name (their unprefixed decl stays the C ABI symbol,
-				 *              which `mod.name` reconstructs). `#module`/`#file` narrow the band, dropping
-				 *              the following decls from `expset` → not visible outside. */
-				char **full = NULL;
-				int fulln = 0, fullcap = 0;
-				char **expset = NULL;
-				int expn = 0, expcap = 0;
-				for (int m = 0; m < g_module_count; m++) {
-					if (strcmp(g_modules[m].name, mod_name) != 0)
-						continue;
-					found = 1;
-					const SyntaxNode *mr = g_modules[m].root;
-					const char *msrc = g_modules[m].src;
-					int exported = 1; /* band resets per file */
-					for (int j = 0; j < mr->child_count; j++) {
-						if (mr->children[j].tag != SE_NODE)
-							continue;
-						const SyntaxNode *cn = mr->children[j].as.node;
-						SyntaxNodeKind mk = cn->kind;
-						if (mk == SN_REGION) {
-							CstView rv = {cn, msrc};
-							int is_block = cv_has_token(rv, TOK_LBRACE);
-							int is_foreign = cv_has_token(rv, TOK_HASH_FOREIGN);
-							if (is_block) {
-								int child_exp = is_foreign ? exported : 0;
-								for (int c = 0; c < cn->child_count; c++) {
-									if (cn->children[c].tag != SE_NODE)
-										continue;
-									if (!hir_is_collectible_decl(cn->children[c].as.node->kind))
-										continue;
-									hir_add_module_decl(cn->children[c].as.node, msrc, mod_name, ast, &full, &fulln,
-									                    &fullcap, &expset, &expn, &expcap, child_exp);
-								}
-							} else if (!is_foreign) {
-								exported = 0; /* visibility banner: narrows the rest of this file */
-							}
-							continue;
-						}
-						if (!hir_is_collectible_decl(mk))
-							continue;
-						hir_add_module_decl(cn, msrc, mod_name, ast, &full, &fulln, &fullcap, &expset, &expn, &expcap,
-						                    exported);
-					}
-				}
-				if (!found) {
-					free(mod_name);
-					free(full);
-					free(expset);
-					continue;
-				}
-				/* Prefix the module's own decls with the FULL set (intra-module refs resolve). */
-				for (int d = first; d < ast->decl_count; d++)
-					hir_rn_decl(ast->decls[d], mod_name, full, fulln);
-				for (int x = 0; x < fulln; x++)
-					free(full[x]);
-				free(full);
-				/* Only the EXPORT set is externally visible (via the qualify pass). */
-				if (inlined < 64) {
-					mod_prefix[inlined] = dupz(mod_name);
-					mod_exports[inlined] = expset;
-					mod_export_n[inlined] = expn;
-					inlined++;
-				} else {
-					for (int x = 0; x < expn; x++)
-						free(expset[x]);
-					free(expset);
-				}
+				hir_inline_module(mod_name, ast, mod_prefix, mod_exports, mod_export_n, &inlined);
 				free(mod_name);
 			} /* end per-module-ident loop */
 			continue;

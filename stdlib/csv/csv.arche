@@ -4,6 +4,7 @@
 // match by header name.
 // (`arche_file_map`/`_size`/`_unmap` are core primitives, so no module import is needed.)
 
+#import { parse str }
 load_cols: int[64]
 
 // first index of byte `ch` in data[start..end), or end if absent
@@ -19,7 +20,7 @@ find_byte :: func(data: char[], start: i64, end: i64, ch: int) -> i64 {
 // 1 if archetype field name `name` equals the CSV header cell data[start..end)
 name_eq :: func(name: char[], data: char[], start: i64, end: i64) -> int {
   len: i64 = end - start;
-  if (strlen(name) != len) {
+  if (str.strlen(name) != len) {
     return 0;
   }
   for (i: i64 = 0; i < len; i = i + 1) {
@@ -42,10 +43,10 @@ field_at :: func(data: char[], row_start: i64, row_end: i64, col: int) -> i64 {
 // Type-directed cell parser: the group dispatches on the static type of the
 // witness `c` (the destination column element).
 cell_float :: func(c: float, s: char[]) -> float {
-  return atof(s);
+  return parse.atof(s);
 }
 cell_int :: func(c: int, s: char[]) -> int {
-  return atoi(s);
+  return parse.atoi(s);
 }
 cell :: func { cell_float, cell_int }
 

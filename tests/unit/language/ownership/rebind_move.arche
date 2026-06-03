@@ -1,9 +1,11 @@
 // `buf := foo(move buf)`: `move` kills the old binding; `:=` rebinds a fresh `buf` (a shadow)
-// to the returned buffer. Works for a string fill and for in-place mutation, and the rebound
-// name indexes correctly afterward.
-// RUN: %arche build -o %t %s && %t | grep "a=hi b0=11"
-fill :: func(own buf: char[16]) -> char[16] {
-  return strcopy(move buf, "hi");
+// to the returned buffer. Works for a string fill (returning the filled prefix as a `char[]` content
+// slice) and for in-place mutation, and the rebound name indexes correctly afterward. `strcopy`
+// hands back a normal `(ptr, len)` array — no NUL — so content is read by index / `.length`.
+// RUN: %arche build -o %t %s && %t | grep "a0=104 a1=105 alen=2 b0=11"
+#import { str }
+fill :: func(own buf: char[16]) -> char[] {
+  return str.strcopy(move buf, "hi");
 }
 bump :: func(own buf: char[16]) -> char[16] {
   buf[0] = buf[0] + 1;
@@ -12,9 +14,9 @@ bump :: func(own buf: char[16]) -> char[16] {
 
 main :: proc() {
   a: char[16];
-  a := fill(move a);
+  a := fill(move a); // a is now a `char[]` slice "hi" (length 2)
   b: char[16];
   b[0] = 10;
   b := bump(move b);
-  printf("a=%s b0=%d\n", a, b[0]);
+  printf("a0=%d a1=%d alen=%d b0=%d\n", a[0], a[1], a.length, b[0]);
 }

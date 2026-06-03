@@ -1,0 +1,10 @@
+// Bear with me as I actually try and program without AI holding my hand.
+// self-hosted/ will stay AI free. And likely never be completed because I can't seem
+// to commit to any projects.
+
+#import { lexer }
+
+main :: proc() {
+  source :: "Hello, World!\n";
+  lexer.lexer_tokenize(source);
+}

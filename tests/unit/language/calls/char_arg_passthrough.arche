@@ -1,14 +1,18 @@
 // Reading argv is an effect (os.argv is an extern), so its result is bound first, then passed
 // to the pure callees mylen / atoi. An extern call is an action, not a value — it can't be nested
 // directly inside another call's arguments; binding it names and sequences the effect.
+// A C-string crosses the FFI boundary as a raw pointer with no carried length, so `os.argv_len`
+// materializes the length (C-side strlen) and `raw[0:n]` is a normal `(ptr, len)` slice — no NUL.
 // RUN: %arche build -o %t %s && %t 42 | grep "len=2"
 // RUN: %t 42 | grep "n=42"
-#import { os }
+#import { str parse os }
 mylen :: func(s: char[]) -> int {
-  return strlen(s);
+  return str.strlen(s);
 }
 main :: proc() {
-  os.argv(1)(arg:);
+  os.argv(1)(raw:);
+  os.argv_len(1)(n: i64);
+  arg := raw[0:n];
   printf("len=%d\n", mylen(arg));
-  printf("n=%d\n", atoi(arg));
+  printf("n=%d\n", parse.atoi(arg));
 }

@@ -1,6 +1,7 @@
 // RUN: %arche build -o %t %s && %t
+#import { str }
 test_strlen :: func(s: char[]) -> int {
-  return strlen(s);
+  return str.strlen(s);
 }
 
 main :: proc() {
