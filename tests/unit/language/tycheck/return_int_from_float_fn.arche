@@ -9,5 +9,5 @@ bar :: func() -> float {
 }
 
 main :: proc() {
-  fmt.print(0);
+  fmt.printf("%d\n", 0);
 }

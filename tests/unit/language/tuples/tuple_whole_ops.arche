@@ -11,12 +11,12 @@ main :: proc() {
   insert(Particle, 3.0, 4.0, 0.2, 0.3);
   Particle.pos_x = Particle.pos_x + Particle.vel_x;
   Particle.pos_y = Particle.pos_y + Particle.vel_y;
-  fmt.print(Particle.pos_x[0]);
+  fmt.print_float(Particle.pos_x[0]);
   fmt.print(" ");
-  fmt.print(Particle.pos_y[0]);
+  fmt.print_float(Particle.pos_y[0]);
   fmt.print(" ");
-  fmt.print(Particle.pos_x[1]);
+  fmt.print_float(Particle.pos_x[1]);
   fmt.print(" ");
-  fmt.print(Particle.pos_y[1]);
+  fmt.print_float(Particle.pos_y[1]);
   fmt.print("\n");
 }

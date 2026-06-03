@@ -3,11 +3,12 @@
 // directly — which only works under the in-file execution model (an export-only/import model
 // would report `secret_double` undefined).
 // RUN: %arche test %s
+#import { fmt }
 #file
 
 /// Doubles its argument.
 /// ```arche
-/// assert(secret_double(21) == 42, "doubling broken\n");
+/// fmt.assert(secret_double(21) == 42, "doubling broken\n");
 /// ```
 secret_double :: func(x: int) -> int {
   return x * 2;

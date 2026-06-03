@@ -3574,6 +3574,28 @@ static char *cst_handle_name(CstView t) {
 	return sem_dupz("");
 }
 
+/* Type name from an SN_TYPE_REF: a qualified `mod.Name` (two IDENTs) folds to `mod_Name` (the
+ * module's mangled type symbol), matching lower.c's type_ref_name; a bare type returns its IDENT. */
+static char *sem_type_ref_name(CstView t) {
+	CvText ids[2];
+	int n = 0;
+	for (int i = 0; i < t.node->child_count && n < 2; i++) {
+		const SyntaxElem *e = &t.node->children[i];
+		if (e->tag == SE_TOKEN && e->as.token.kind == TOK_IDENT) {
+			ids[n].ptr = t.src + e->as.token.offset;
+			ids[n].len = e->as.token.length;
+			n++;
+		}
+	}
+	if (n >= 2) {
+		size_t L = ids[0].len + 1 + ids[1].len + 1;
+		char *r = malloc(L);
+		snprintf(r, L, "%.*s_%.*s", (int)ids[0].len, ids[0].ptr, (int)ids[1].len, ids[1].ptr);
+		return r;
+	}
+	return sem_txt_dup(cv_token(t, TOK_IDENT));
+}
+
 static TypeRef *cst_build_type(CstView t) {
 	if (!cv_present(t))
 		return NULL;
@@ -3582,7 +3604,7 @@ static TypeRef *cst_build_type(CstView t) {
 	tr->loc.column = 0;
 	switch (cv_kind(t)) {
 	case SN_TYPE_REF: {
-		char *raw = sem_txt_dup(cv_token(t, TOK_IDENT));
+		char *raw = sem_type_ref_name(t);
 		if (strcmp(raw, "archetype") == 0) {
 			tr->kind = TYPE_ARCHETYPE;
 			free(raw);
@@ -5347,11 +5369,21 @@ static int sem_qual_lookup(char **prefix, char ***set, int *count, int n, const 
 	for (int m = 0; m < n; m++) {
 		if (strcmp(base, prefix[m]) != 0)
 			continue;
-		for (int s = 0; s < count[m]; s++)
-			if (strcmp(field, set[m][s]) == 0) {
-				snprintf(out, out_sz, "%s_%s", prefix[m], field);
+		for (int s = 0; s < count[m]; s++) {
+			/* Each entry is "<visible>=<target-symbol>": match the visible (qualified) name,
+			 * resolve to its target. A pure-Arche export targets `<mod>_<name>`; a foreign
+			 * export targets its real link name (`fmt.printf` → libc `printf`, `net.listen` →
+			 * `net_listen`). */
+			const char *e = set[m][s];
+			const char *eq = strchr(e, '=');
+			if (!eq)
+				continue;
+			size_t vlen = (size_t)(eq - e);
+			if (strlen(field) == vlen && strncmp(field, e, vlen) == 0) {
+				snprintf(out, out_sz, "%s", eq + 1);
 				return 1;
 			}
+		}
 	}
 	return 0;
 }
@@ -5488,6 +5520,11 @@ static const char *sem_decl_name(Decl *d) {
 	}
 }
 static void sem_rename_decl(Decl *d, const char *prefix, char **set, int count) {
+	/* A `@drop(<T>)` decorator names an opaque type; when that type is a module-local opaque
+	 * (e.g. `socket` inside `net`), it is prefixed like any other module symbol, so the
+	 * decorator's type name must rename in lockstep with the destructor's parameter type. */
+	if (d->is_drop)
+		sem_maybe_rename(&d->drop_type, prefix, set, count);
 	switch (d->kind) {
 	case DECL_ARCHETYPE:
 		sem_maybe_rename(&d->data.archetype->name, prefix, set, count);
@@ -5634,7 +5671,14 @@ static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 			*expcap = *expcap ? *expcap * 2 : 8;
 			*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
 		}
-		(*expset)[(*expn)++] = sem_dupz(vis);
+		/* Store "<visible>=<target>": a foreign decl targets its declared link name (the real
+		 * C symbol, e.g. `printf`); a pure-Arche decl targets the prefixed `<mod>_<name>`. */
+		char entry[512];
+		if (is_ext)
+			snprintf(entry, sizeof(entry), "%s=%s", vis, nm);
+		else
+			snprintf(entry, sizeof(entry), "%s=%s_%s", vis, mod_name, nm);
+		(*expset)[(*expn)++] = sem_dupz(entry);
 	}
 }
 

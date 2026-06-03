@@ -5,5 +5,5 @@
 #import { fmt }
 main :: proc() {
   break;
-  fmt.print(1);
+  fmt.printf("%d\n", 1);
 }

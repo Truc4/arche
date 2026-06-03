@@ -1094,9 +1094,11 @@ static HirSysDecl *find_sys_decl(CodegenContext *ctx, const char *name) {
 }
 
 static HirProcDecl *find_proc_decl(CodegenContext *ctx, const char *name) {
+	if (!name)
+		return NULL;
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		HirDecl *decl = ctx->ast->decls[i];
-		if (decl->kind == HIR_DECL_PROC && strcmp(decl->data.proc->name, name) == 0)
+		if (decl->kind == HIR_DECL_PROC && decl->data.proc->name && strcmp(decl->data.proc->name, name) == 0)
 			return decl->data.proc;
 	}
 	return NULL;
@@ -2724,8 +2726,12 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		/* Raw Linux/x86-64 syscall intrinsic: syscall(n, a0..a5) -> i64.
 		 * Emits the `syscall` instruction directly (no libc, no C shim): number in
 		 * rax, args in rdi/rsi/rdx/r10/r8/r9, result in rax; rcx/r11/memory clobbered.
-		 * Each argument is coerced to i64 (sext/zext from narrower ints). */
-		if (func_name && strcmp(func_name, "syscall") == 0 && expr->data.call.arg_count == 7) {
+		 * Each argument is coerced to i64 (sext/zext from narrower ints). Recognized by the
+		 * resolved callee's `@intrinsic` flag — NOT its (module-mangled) name — so it keeps
+		 * working wherever the decl lives (`os.syscall` → `os_syscall`, etc.). */
+		HirProcDecl *intrinsic_decl =
+		    (func_name && expr->data.call.arg_count == 7) ? find_proc_decl(ctx, func_name) : NULL;
+		if (intrinsic_decl && intrinsic_decl->is_intrinsic) {
 			char a[7][256];
 			for (int i = 0; i < 7; i++) {
 				char ab[256];
@@ -3601,13 +3607,6 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			snprintf(tbuf, sizeof(tbuf), "%%struct.%s*", mono_arch->name);
 			/* call_arg_types is `const char **`; store a stable string. */
 			call_arg_types[mono_arch_pidx] = strdup(tbuf);
-		}
-		if (func_name && strcmp(func_name, "print") == 0 && expr->data.call.arg_count == 1 && call_arg_types[0]) {
-			if (strcmp(call_arg_types[0], "double") == 0) {
-				actual_func_name = "print_double";
-			} else if (strcmp(call_arg_types[0], "i32") == 0) {
-				actual_func_name = "print_int";
-			}
 		}
 
 		/* Emit the call with prepared arguments (skipped when consume_call_done). */
@@ -7953,6 +7952,10 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "declare i8* @calloc(i64, i64)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
 	buffer_append(ctx, "declare void @abort()\n");
+	/* Raw stderr write for bounds-check / panic messages — language runtime (alongside @abort),
+	 * not user-facing I/O. Resolves to libc `write` at link (`-lc`). The fd-I/O `write` the user
+	 * calls is a separate `os.write` symbol now, so there is no clash. */
+	buffer_append(ctx, "declare i32 @write(i32, i8*, i32)\n");
 	/* memcpy intrinsic (`copy x` of a local buffer). Declared lazily at module end only if a real
 	 * memcpy was emitted, so a program with no copy carries no `llvm.memcpy` (see uses_memcpy). */
 
@@ -8102,24 +8105,9 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "  ret i32 0\n");
 	buffer_append(ctx, "}\n");
 
-	/* Print for double values */
-	buffer_append(ctx, "\ndefine i32 @print_double(double %val) {\n");
-	buffer_append(ctx, "entry:\n");
-	buffer_append(ctx, "  %fmt = getelementptr [3 x i8], [3 x i8]* @.print_fmt_double, i32 0, i32 0\n");
-	buffer_append(ctx, "  %res = call i32 (i8*, ...) @printf(i8* %fmt, double %val)\n");
-	buffer_append(ctx, "  ret i32 %res\n");
-	buffer_append(ctx, "}\n");
-
-	buffer_append(ctx, "\ndefine i32 @print_int(i32 %val) {\n");
-	buffer_append(ctx, "entry:\n");
-	buffer_append(ctx, "  %fmt = getelementptr [3 x i8], [3 x i8]* @.print_fmt_int, i32 0, i32 0\n");
-	buffer_append(ctx, "  %res = call i32 (i8*, ...) @printf(i8* %fmt, i32 %val)\n");
-	buffer_append(ctx, "  ret i32 %res\n");
-	buffer_append(ctx, "}\n");
-
-	/* Global format strings for printing */
-	buffer_append(ctx, "\n@.print_fmt_double = private unnamed_addr constant [3 x i8] c\"%g\\00\", align 1\n");
-	buffer_append(ctx, "@.print_fmt_int = private unnamed_addr constant [3 x i8] c\"%d\\00\", align 1\n");
+	/* (No built-in print helpers: printing is NOT a language primitive. Numeric/text printing is
+	 * the `fmt` library's job — `fmt.printf`/`fmt.print_float` bind libc directly. The compiler
+	 * therefore emits no `@printf` reference of its own.) */
 
 	/* Emit AVX2 function attributes */
 	buffer_append(ctx, "\nattributes #0 = { \"target-features\"=\"+avx2,+avx\" }\n");

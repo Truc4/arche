@@ -226,6 +226,29 @@ static char *txt_dup(CvText t) {
 	return s;
 }
 
+/* The type name from an SN_TYPE_REF node. A qualified `mod.Name` (two IDENTs) folds to the
+ * module's mangled type symbol `mod_Name` — same fold as a qualified value reference; a bare type
+ * returns its single identifier. Caller owns the returned string. */
+static char *type_ref_name(CstView t) {
+	CvText ids[2];
+	int n = 0;
+	for (int i = 0; i < t.node->child_count && n < 2; i++) {
+		const SyntaxElem *e = &t.node->children[i];
+		if (e->tag == SE_TOKEN && e->as.token.kind == TOK_IDENT) {
+			ids[n].ptr = t.src + e->as.token.offset;
+			ids[n].len = e->as.token.length;
+			n++;
+		}
+	}
+	if (n >= 2) {
+		size_t L = ids[0].len + 1 + ids[1].len + 1;
+		char *r = malloc(L);
+		snprintf(r, L, "%.*s_%.*s", (int)ids[0].len, ids[0].ptr, (int)ids[1].len, ids[1].ptr);
+		return r;
+	}
+	return txt_dup(cv_token(t, TOK_IDENT));
+}
+
 /* Lower a CST type node (SN_TYPE_*) to an HirType, mirroring lower_type_ref. */
 static HirType *lower_type_cst(CstView t) {
 	if (!cv_present(t))
@@ -233,7 +256,7 @@ static HirType *lower_type_cst(CstView t) {
 	HirType *at = hir_type_create(HIR_TYPE_UNKNOWN);
 	switch (cv_kind(t)) {
 	case SN_TYPE_REF: {
-		char *raw = txt_dup(cv_token(t, TOK_IDENT));
+		char *raw = type_ref_name(t);
 		const char *r = g_lower_sem ? semantic_resolve_type_alias(g_lower_sem, raw) : raw;
 		char *name = malloc(strlen(r) + 1);
 		strcpy(name, r);
@@ -1515,6 +1538,22 @@ static int cst_decl_has_drop_decorator(CstView d) {
 	}
 	return 0;
 }
+static int cst_decl_has_intrinsic_decorator(CstView d) {
+	if (!cv_present(d))
+		return 0;
+	int n = d.node->child_count;
+	for (int i = 0; i + 1 < n; i++) {
+		const SyntaxElem *e1 = &d.node->children[i];
+		if (e1->tag != SE_TOKEN || e1->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *e2 = &d.node->children[i + 1];
+		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
+			continue;
+		if (e2->as.token.length == 9 && memcmp(d.src + e2->as.token.offset, "intrinsic", 9) == 0)
+			return 1;
+	}
+	return 0;
+}
 
 /* ===== Unified-grammar RHS value forms (P2) =====
  * Build the HIR decl from an RHS value-form node `f` with the name from the binding LHS.
@@ -1906,6 +1945,10 @@ static HirDecl *lower_decl_cst(CstView d) {
 					 * decl node) so the RAII pass can register this proc as a destructor. */
 					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && cst_decl_has_drop_decorator(d))
 						pd->data.proc->is_drop = 1;
+					/* `@intrinsic`: calls to this decl lower to a built-in instruction (codegen
+					 * checks the resolved decl's flag, not the symbol name — see codegen syscall). */
+					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && cst_decl_has_intrinsic_decorator(d))
+						pd->data.proc->is_intrinsic = 1;
 					return pd;
 				}
 				case SN_FUNC_EXPR:
@@ -2144,8 +2187,19 @@ static void rn_const(const char **slot, const char *prefix, char **set, int coun
 static void hir_rn_type(HirType *t, const char *prefix, char **set, int count) {
 	if (!t)
 		return;
-	if (t->tag == HIR_TYPE_NAMED)
+	if (t->tag == HIR_TYPE_NAMED) {
 		rn_const(&t->name, prefix, set, count);
+		/* A module-local nominal type (e.g. `socket` inside `net`) was lowered as NAMED before this
+		 * rename ran, so its opaque-ness was missed — the alias is registered only under the prefixed
+		 * key (`net_socket`). Now that the name is prefixed, re-resolve it: if it aliases `opaque`,
+		 * retag so codegen erases it to an i64 cell instead of emitting a `%struct.<name>`. Keep
+		 * `t->name` (the nominal alias) so the RAII `@drop` pass can still match it. */
+		if (g_lower_sem && t->name) {
+			const char *b = semantic_resolve_type_alias(g_lower_sem, t->name);
+			if (b && strcmp(b, "opaque") == 0)
+				t->tag = HIR_TYPE_OPAQUE;
+		}
+	}
 	hir_rn_type(t->elem, prefix, set, count);
 	for (int i = 0; i < t->field_count; i++)
 		hir_rn_type(t->fields[i].type, prefix, set, count);
@@ -2346,11 +2400,21 @@ static int qual_lookup(const QualCtx *q, const char *base, const char *field, ch
 	for (int m = 0; m < q->n; m++) {
 		if (strcmp(base, q->prefix[m]) != 0)
 			continue;
-		for (int s = 0; s < q->export_n[m]; s++)
-			if (strcmp(field, q->exports[m][s]) == 0) {
-				snprintf(out, out_sz, "%s_%s", q->prefix[m], field);
+		for (int s = 0; s < q->export_n[m]; s++) {
+			/* Each export entry is "<visible>=<target-symbol>": match the visible (qualified)
+			 * name, resolve to its target. A pure-Arche export targets the prefixed
+			 * `<mod>_<name>`; a foreign export targets its real declared link name — so
+			 * `fmt.printf` → libc `printf`, `net.listen` → runtime `net_listen`. */
+			const char *e = q->exports[m][s];
+			const char *eq = strchr(e, '=');
+			if (!eq)
+				continue;
+			size_t vlen = (size_t)(eq - e);
+			if (strlen(field) == vlen && strncmp(field, e, vlen) == 0) {
+				snprintf(out, out_sz, "%s", eq + 1);
 				return 1;
 			}
+		}
 	}
 	return 0;
 }
@@ -2518,7 +2582,15 @@ static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 			*expcap = *expcap ? *expcap * 2 : 8;
 			*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
 		}
-		(*expset)[(*expn)++] = dupz(vis);
+		/* Store "<visible>=<target>": the qualified spelling and the symbol it resolves to.
+		 * A foreign decl keeps its declared link name (the real C symbol, e.g. `printf`);
+		 * a pure-Arche decl resolves to the prefixed `<mod>_<name>`. */
+		char entry[512];
+		if (is_ext)
+			snprintf(entry, sizeof(entry), "%s=%s", vis, nm);
+		else
+			snprintf(entry, sizeof(entry), "%s=%s_%s", vis, mod_name, nm);
+		(*expset)[(*expn)++] = dupz(entry);
 	}
 }
 

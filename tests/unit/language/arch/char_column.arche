@@ -20,6 +20,6 @@ main :: proc() {
     row := Node.seg[i];
     total = total + str.strlen(row[0:5]); // content slice → 5 + 5
   }
-  eq := str.streq(r0[0:5], "users");
+  eq := streq(r0[0:5], "users");
   fmt.printf("seg0=%s seg1=%s total=%d eq=%d\n", r0, r1, total, eq);
 }

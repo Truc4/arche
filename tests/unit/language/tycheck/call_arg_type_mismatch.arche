@@ -7,5 +7,5 @@ double :: func(x: int) -> int {
 
 main :: proc() {
   y := double("hello");
-  fmt.print(y);
+  fmt.printf("%d\n", y);
 }

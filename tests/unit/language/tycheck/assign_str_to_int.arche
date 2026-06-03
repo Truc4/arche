@@ -5,5 +5,5 @@
 main :: proc() {
   x: int = 5;
   x = "hello";
-  fmt.print(x);
+  fmt.printf("%d\n", x);
 }

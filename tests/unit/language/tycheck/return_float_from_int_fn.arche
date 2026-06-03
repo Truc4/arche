@@ -9,5 +9,5 @@ foo :: func() -> int {
 
 main :: proc() {
   x := foo();
-  fmt.print(x);
+  fmt.printf("%d\n", x);
 }

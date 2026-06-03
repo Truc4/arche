@@ -1,6 +1,7 @@
+#import { fmt }
 add :: proc(a: int, b: int) {
   result := a + b;
-  print("sum: 15\n");
+  fmt.print("sum: 15\n");
 }
 main :: proc() {
   add(5, 10);

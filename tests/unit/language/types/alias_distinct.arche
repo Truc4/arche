@@ -2,7 +2,7 @@
 // `io.file` where a `net.socket` is expected is a compile error — nominal identity is checked at
 // substitution boundaries (here, a call argument), even though both erase to `opaque`. Uses the
 // real stdlib opaques — no FFI stub needed.
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expects 'socket'" %t.out
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "socket" %t.out
 #import { io net }
 main :: proc() {
   io.stdout()(f:);

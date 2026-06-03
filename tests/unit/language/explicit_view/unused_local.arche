@@ -8,5 +8,5 @@ main :: proc() {
   used := 1;
   never_read := 2;
   _scratch := 3;
-  fmt.print(used);
+  fmt.printf("%d\n", used);
 }

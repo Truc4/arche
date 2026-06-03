@@ -14,12 +14,12 @@ main :: proc() {
   Particle.vel_dy = Particle.acc_j;
   Particle.pos_x = Particle.vel_dx;
   Particle.pos_y = Particle.vel_dy;
-  fmt.print(Particle.pos_x[0]);
+  fmt.print_float(Particle.pos_x[0]);
   fmt.print(" ");
-  fmt.print(Particle.pos_y[0]);
+  fmt.print_float(Particle.pos_y[0]);
   fmt.print(" ");
-  fmt.print(Particle.pos_x[1]);
+  fmt.print_float(Particle.pos_x[1]);
   fmt.print(" ");
-  fmt.print(Particle.pos_y[1]);
+  fmt.print_float(Particle.pos_y[1]);
   fmt.print("\n");
 }

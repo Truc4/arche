@@ -1,3 +1,4 @@
+#import { fmt }
 Particle :: arche { pos :: float, vel :: float, mass :: float }
 Body :: arche { pos, vel, density :: float }
 Particle[1000]
@@ -16,5 +17,5 @@ main :: proc() {
   insert(Body, 6.0, 0.6, 2.0);
   run integrate;
   run dampen;
-  print("simulation completed\n");
+  fmt.print("simulation completed\n");
 }

@@ -27,6 +27,7 @@
 // Reset the router and create the root (node 0: empty static segment). Init-once: the pool starts
 // empty, so this just inserts the root.
 #import { str }
+
 init :: proc() {
   empty: char[32];
   empty[0] = 0;

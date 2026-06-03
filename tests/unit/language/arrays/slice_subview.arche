@@ -2,6 +2,7 @@
 // storage, no copy. Works as a call argument and bound to a local; `.length` is the sub-length.
 // RUN: %arche build -o %t %s && %t | grep -q "full=28 mid=9 midlen=3"
 #import { fmt }
+
 sum :: func(xs: int[]) -> int {
   total := 0;
   i := 0;

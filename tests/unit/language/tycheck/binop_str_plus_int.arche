@@ -7,5 +7,5 @@
 main :: proc() {
   s: str = "a";
   x := s + 1;
-  fmt.print(x);
+  fmt.printf("%d\n", x);
 }

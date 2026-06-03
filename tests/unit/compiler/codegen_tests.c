@@ -62,6 +62,31 @@ static char *read_file(const char *path) {
 	return buf;
 }
 
+/* Register all stdlib modules so example fixtures that `#import { fmt }` (etc.) resolve — mirrors
+ * the real frontend's resolve_uses via the public module-registration API. Module CST + source are
+ * intentionally leaked (the test process is short-lived). Registering unused modules is harmless:
+ * a module is only inlined when actually `#import`ed. */
+static void register_stdlib_modules(void) {
+	lower_reset_modules();
+	semantic_reset_modules();
+	static const char *mods[] = {"os", "io", "fmt", "net", "str", "parse", "csv", "router", "term"};
+	for (size_t i = 0; i < sizeof(mods) / sizeof(mods[0]); i++) {
+		char path[512];
+		snprintf(path, sizeof(path), "%s/%s/%s.arche", ARCHE_STDLIB_DIR, mods[i], mods[i]);
+		char *src = read_file(path);
+		if (!src)
+			continue;
+		ParseResult pr = parse_source(src);
+		if (pr.cst_root) {
+			lower_add_module(mods[i], pr.cst_root, src);
+			semantic_add_module(mods[i], pr.cst_root, src);
+			pr.cst_root = NULL; /* keep the module CST alive past parse_result_free */
+		}
+		parse_result_free(&pr);
+		/* `src` intentionally leaked — the registered module CST points into it. */
+	}
+}
+
 /* Helper: compile source to LLVM IR, check for errors */
 static int compile_source(const char *source, char *ir_buf, int ir_len) {
 	/* Load core library */
@@ -109,6 +134,7 @@ static int compile_source(const char *source, char *ir_buf, int ir_len) {
 	parse_result.cst_root = NULL; /* keep the CST past parse_result_free */
 	parse_result_free(&parse_result);
 
+	register_stdlib_modules();
 	fprintf(stderr, "DEBUG: starting semantic\n");
 	fflush(stderr);
 	SemanticContext *sem_ctx = semantic_analyze_cst(cst_root, combined_src);

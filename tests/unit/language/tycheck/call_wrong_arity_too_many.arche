@@ -8,5 +8,5 @@ add :: func(a: int, b: int) -> int {
 
 main :: proc() {
   x := add(1, 2, 3, 4, 5);
-  fmt.print(x);
+  fmt.printf("%d\n", x);
 }

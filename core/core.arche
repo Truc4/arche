@@ -1,13 +1,33 @@
-// core — the implicit prelude (always in scope, no `#import`). Just the boolean readability
-// constants. Everything else has moved into stdlib modules:
-//   sys — raw syscall + fd I/O (open/read/write/close/lseek/exit)
+// core — the compiler's IMPLICIT RUNTIME (always in scope, no `#import`). This is prepended to
+// every program, so it holds only the symbols the COMPILER ITSELF emits on the user's behalf:
+// the boolean constants the language uses, and `streq` (the `match` string-pattern desugar emits a
+// bare call to it). User-facing library code lives in explicit, qualified stdlib modules:
+//   os  — raw syscall + fd I/O (open/read/write/close/lseek/exit)
 //   io  — `file` handle + file ops + whole-file mmap externs
 //   fmt — printf/sprintf/fflush + print/print_float + assert
 //   net — `socket` handle + TCP ops
-//   str — strlen/strcopy/streq
+//   str — strlen/strcopy
+// (Nothing a user calls by name belongs here; future compiler-emitted helpers — panic/bounds/eq —
+// would join `streq`, never user library code.)
 
 // Boolean readability constants. Arche has no `bool` primitive; comparisons yield int 0/1, so these
 // are just names for those values (`running := true`, `if (ok == false)`).
 bool :: i8
 true: bool: 1
 false: bool: 0
+
+// Byte-compare two strings: 1 if equal, 0 otherwise. Pure (no FFI). Lives in core because the
+// `match` string-pattern desugar emits a bare `streq(...)` call — it is compiler-emitted, not a
+// user-facing library symbol, so it must resolve without an import.
+streq :: func(a: char[], b: char[]) -> int {
+  if (a.length != b.length) {
+    return 0;
+  }
+  i := 0;
+  for (; i < a.length; i += 1) {
+    if (a[i] != b[i]) {
+      return 0;
+    }
+  }
+  return 1;
+}

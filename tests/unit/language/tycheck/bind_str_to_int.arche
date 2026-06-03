@@ -5,5 +5,5 @@
 #import { fmt }
 main :: proc() {
   x: int = "hello";
-  fmt.print(x);
+  fmt.printf("%d\n", x);
 }

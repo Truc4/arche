@@ -325,6 +325,19 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
 	if (is_archetype || is_opaque)
 		return 1;
 
+	/* Qualified type `mod.Name` (e.g. `io.file`, `net.socket`): the leading IDENT is a module, the
+	 * member is the type. "A binding is a binding" — this is the same `mod.name` access used for
+	 * values; it resolves to the module's type symbol in lowering/semantic. A leaf (no array suffix). */
+	if (!is_handle && !is_type_kw && check(parser, TOK_DOT)) {
+		advance(parser); /* '.' */
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected type name after '.' in qualified type (e.g. io.file)");
+			return 0;
+		}
+		advance(parser); /* the member type name */
+		return 1;
+	}
+
 	/* `type`: the meta-type (type-of-types). Appears as the declared type in the alias
 	 * longhand `foo : type : float` and (later) generic params. Compile-time only. */
 	if (is_type_kw) {
@@ -941,6 +954,13 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser);
 			continue;
 		}
+		if (cur_ident_is(parser, "intrinsic", 9)) {
+			/* `@intrinsic` marks a (foreign) decl whose calls the backend lowers to a built-in
+			 * instruction (e.g. the raw `syscall`) instead of an ordinary call. No arguments —
+			 * recognition is by this marker on the decl, not by the symbol's (mangleable) name. */
+			advance(parser);
+			continue;
+		}
 		if (cur_ident_is(parser, "drop", 4)) {
 			/* `@drop(<OpaqueType>)` decl decorator — marks the decorated proc as the destructor
 			 * for that opaque type (RAII). The type is named explicitly (not inferred) and must
@@ -983,7 +1003,7 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser); /* consume ')' */
 			continue;
 		}
-		error(parser, "Unknown decorator (recognized: @allow_pure_proc, @allow(<slug>), @drop(<type>))");
+		error(parser, "Unknown decorator (recognized: @allow_pure_proc, @allow(<slug>), @drop(<type>), @intrinsic)");
 		return 0;
 	}
 

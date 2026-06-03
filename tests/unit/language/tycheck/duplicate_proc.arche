@@ -4,11 +4,11 @@
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0117 duplicate_decl 0 proc 'foo' is already declared at this scope"
 #import { fmt }
 foo :: proc() {
-  fmt.print(1);
+  fmt.printf("%d\n", 1);
 }
 
 foo :: proc() {
-  fmt.print(2);
+  fmt.printf("%d\n", 2);
 }
 
 main :: proc() {

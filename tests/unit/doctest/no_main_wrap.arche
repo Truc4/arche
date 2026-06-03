@@ -1,4 +1,5 @@
 // RUN: %arche test %s
+#import { fmt }
 
 /// Squares a value. The example body is bare statements with no `proc main`;
 /// the runner must wrap them in a main automatically.
@@ -6,7 +7,7 @@
 /// # Example
 /// ```arche
 /// x := sq(4);
-/// assert(x == 16, "sq broken\n");
+/// fmt.assert(x == 16, "sq broken\n");
 /// ```
 sq :: func(a: int) -> int {
   return a * a;
