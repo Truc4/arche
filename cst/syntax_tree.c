@@ -157,6 +157,8 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "ELSE_CLAUSE";
 	case SN_BREAK_STMT:
 		return "BREAK_STMT";
+	case SN_CONTINUE_STMT:
+		return "CONTINUE_STMT";
 	case SN_RUN_STMT:
 		return "RUN_STMT";
 	case SN_EXPR_STMT:

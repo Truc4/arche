@@ -2312,6 +2312,7 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		break;
 
 	case STMT_BREAK:
+	case STMT_CONTINUE:
 		break;
 
 	case STMT_EACH_FIELD: {
@@ -2759,6 +2760,7 @@ static int stmt_has_side_effects(SemanticContext *ctx, Statement *stmt, ProcDecl
 			return 1;
 		return body_has_side_effects(ctx, stmt->data.if_stmt.else_body, stmt->data.if_stmt.else_count, proc);
 	case STMT_BREAK:
+	case STMT_CONTINUE:
 	case STMT_RETURN:
 		return 0;
 	case STMT_RUN:
@@ -4242,6 +4244,9 @@ static Statement *cst_build_stmt(CstView s) {
 		break;
 	case SN_BREAK_STMT:
 		as->type = STMT_BREAK;
+		break;
+	case SN_CONTINUE_STMT:
+		as->type = STMT_CONTINUE;
 		break;
 	case SN_RUN_STMT: {
 		as->type = STMT_RUN;

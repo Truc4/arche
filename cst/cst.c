@@ -518,6 +518,7 @@ void statement_free(Statement *stmt) {
 		expression_free(stmt->data.expr_stmt.expr);
 		break;
 	case STMT_BREAK:
+	case STMT_CONTINUE:
 		break;
 	case STMT_RETURN:
 		for (int i = 0; i < stmt->data.return_stmt.count; i++)

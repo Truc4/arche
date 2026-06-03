@@ -1626,6 +1626,15 @@ static int parse_statement(Parser *parser) {
 		goto cleanup;
 	}
 
+	if (match(parser, TOK_CONTINUE)) {
+		if (!match(parser, TOK_SEMI)) {
+			error(parser, "Expected ';' after continue");
+		}
+		stmt_kind = SN_CONTINUE_STMT;
+		ok = 1;
+		goto cleanup;
+	}
+
 	if (match(parser, TOK_EACH_FIELD)) {
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected binding name after 'each_field'");

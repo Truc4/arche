@@ -71,6 +71,12 @@ struct CodegenContext {
 	int loop_exit_count;
 	int loop_exit_capacity;
 
+	/* Loop continue-target label stack (parallel to loop_exit): the increment latch for a C-style
+	 * `for`, or the condition label for an infinite/condition `for`. `continue` branches here. */
+	char **loop_cont_labels;
+	int loop_cont_count;
+	int loop_cont_capacity;
+
 	/* System function version mapping: (sys_name, arch_name) -> versioned_name */
 	SysVersion *sys_versions;
 	int sys_version_count;
@@ -6027,6 +6033,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			char *loop_label = gen_value_name(ctx);
 			char *body_label = gen_value_name(ctx);
 			char *exit_label = gen_value_name(ctx);
+			char *cont_label = gen_value_name(ctx); /* `continue` latch: runs incr, then re-tests cond */
 
 			push_value_scope(ctx);
 
@@ -6051,6 +6058,12 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			}
 			ctx->loop_exit_labels[ctx->loop_exit_count] = exit_label;
 			ctx->loop_exit_count++;
+			if (ctx->loop_cont_count >= ctx->loop_cont_capacity) {
+				ctx->loop_cont_capacity = (ctx->loop_cont_capacity == 0) ? 8 : ctx->loop_cont_capacity * 2;
+				ctx->loop_cont_labels = realloc(ctx->loop_cont_labels, ctx->loop_cont_capacity * sizeof(char *));
+			}
+			ctx->loop_cont_labels[ctx->loop_cont_count] = cont_label;
+			ctx->loop_cont_count++;
 
 			buffer_append_fmt(ctx, "  br label %s\n", loop_label);
 			buffer_append_fmt(ctx, "%s:\n", loop_label + 1);
@@ -6072,6 +6085,11 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				codegen_statement(ctx, stmt->data.for_stmt.body[i]);
 			}
 
+			/* Latch: `continue` jumps here, so the increment still runs before the next cond test. */
+			buffer_append_fmt(ctx, "  br label %s\n", cont_label);
+			buffer_append_fmt(ctx, "%s:\n", cont_label + 1);
+			ctx->block_terminated = 0;
+
 			if (stmt->data.for_stmt.incr) {
 				codegen_statement(ctx, stmt->data.for_stmt.incr);
 			}
@@ -6080,6 +6098,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			buffer_append_fmt(ctx, "%s:\n", exit_label + 1);
 
 			ctx->loop_exit_count--;
+			ctx->loop_cont_count--;
 			if (pushed_bound)
 				pop_loop_bound(ctx);
 			pop_value_scope(ctx);
@@ -6095,6 +6114,13 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			}
 			ctx->loop_exit_labels[ctx->loop_exit_count] = exit_label;
 			ctx->loop_exit_count++;
+			/* No increment in this loop form, so `continue` just re-tests the condition. */
+			if (ctx->loop_cont_count >= ctx->loop_cont_capacity) {
+				ctx->loop_cont_capacity = (ctx->loop_cont_capacity == 0) ? 8 : ctx->loop_cont_capacity * 2;
+				ctx->loop_cont_labels = realloc(ctx->loop_cont_labels, ctx->loop_cont_capacity * sizeof(char *));
+			}
+			ctx->loop_cont_labels[ctx->loop_cont_count] = loop_label;
+			ctx->loop_cont_count++;
 
 			buffer_append_fmt(ctx, "  br label %s\n", loop_label);
 			buffer_append_fmt(ctx, "%s:\n", loop_label + 1);
@@ -6122,6 +6148,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			buffer_append_fmt(ctx, "%s:\n", exit_label + 1);
 
 			ctx->loop_exit_count--;
+			ctx->loop_cont_count--;
 		}
 		break;
 	}
@@ -6274,6 +6301,20 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			buffer_append(ctx, "  unreachable\n");
 		} else {
 			fprintf(stderr, "Error: break statement outside of loop\n");
+		}
+		break;
+	}
+
+	case HIR_STMT_CONTINUE: {
+		if (ctx->loop_cont_count > 0) {
+			char *cont_label = ctx->loop_cont_labels[ctx->loop_cont_count - 1];
+			buffer_append_fmt(ctx, "  br label %s\n", cont_label);
+			/* Emit an unreachable block label so LLVM doesn't see a fallthrough into dead code. */
+			char *unreachable_label = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "%s:\n", unreachable_label + 1);
+			buffer_append(ctx, "  unreachable\n");
+		} else {
+			fprintf(stderr, "Error: continue statement outside of loop\n");
 		}
 		break;
 	}
@@ -7864,6 +7905,9 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->loop_exit_labels = NULL;
 	ctx->loop_exit_count = 0;
 	ctx->loop_exit_capacity = 0;
+	ctx->loop_cont_labels = NULL;
+	ctx->loop_cont_count = 0;
+	ctx->loop_cont_capacity = 0;
 	ctx->sys_versions = NULL;
 	ctx->sys_version_count = 0;
 	ctx->sys_version_capacity = 0;
@@ -8140,6 +8184,7 @@ void codegen_free(CodegenContext *ctx) {
 	free(ctx->alloca_buffer);
 	free(ctx->sys_versions);
 	free(ctx->loop_exit_labels);
+	free(ctx->loop_cont_labels);
 	free(ctx->top_level_allocs);
 	free(ctx->static_arrays);
 	for (int i = 0; i < ctx->drop_live_count; i++) {

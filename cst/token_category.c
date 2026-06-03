@@ -35,6 +35,7 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_ELSE:
 	case TOK_IN:
 	case TOK_BREAK:
+	case TOK_CONTINUE:
 	case TOK_MOVE:
 	case TOK_OWN:
 	case TOK_COPY:

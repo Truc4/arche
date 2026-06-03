@@ -178,6 +178,7 @@ void hir_stmt_free(HirStmt *stmt) {
 		free(stmt->data.if_stmt.else_body);
 		break;
 	case HIR_STMT_BREAK:
+	case HIR_STMT_CONTINUE:
 		break;
 	case HIR_STMT_RUN:
 		free(stmt->data.run_stmt.system_name);

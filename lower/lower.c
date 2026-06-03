@@ -893,6 +893,9 @@ static HirStmt *lower_stmt_cst(CstView s) {
 	case SN_BREAK_STMT:
 		as->kind = HIR_STMT_BREAK;
 		break;
+	case SN_CONTINUE_STMT:
+		as->kind = HIR_STMT_CONTINUE;
+		break;
 	case SN_RETURN_STMT: {
 		as->kind = HIR_STMT_RETURN;
 		int c = 0;
