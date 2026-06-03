@@ -1,7 +1,6 @@
 // The `io` module — file/stdio I/O. `#import { io }` then call `io.fopen_read`, `io.open`, etc.
 // Access is qualified-only: a bare `fopen_read(...)` does not resolve. Built on the core
-// `syscall`/`read`/`write` primitives; a `file` is a raw fd held in the opaque cell (must-consume:
-// open it, then close it). The `file` type is a core primitive; this module provides the operations.
+// `syscall`/`read`/`write` primitives; a `file` is a raw fd held in the opaque cell.
 @allow(proc_could_be_func) stdin :: proc()(f: file) {
   f = 0;
 }

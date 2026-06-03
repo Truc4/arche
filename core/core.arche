@@ -1,16 +1,16 @@
-// core — the implicit prelude (always in scope, no `#import`). The universal base only: the raw
-// syscall intrinsic, fd/process primitives, libc print/format, string/number helpers, and basic
-// output. Everything else (file/stdio I/O, sockets, terminal, clock/args, CSV) lives in stdlib
-// modules, brought in by one region: `#import { io net term sys csv }`.
+// core — the implicit prelude (always in scope, no `#import`). true/false/bool, the opaque handle
+// types, the raw syscall + libc-stdio C-foreign layer, the `streq` primitive the match desugar
+// needs, and `assert`. Everything else (file/stdio ops, sockets, str/parse helpers) lives in stdlib
+// modules. (str = strlen/strcopy; parse = atoi/atof; the fd wrappers move to `sys` next.)
 
-// Boolean readability constants. Arche has no `bool` primitive; comparisons yield int 0/1, so these are
-// just names for those values (`running := true`, `if (ok == false)`).
+// Boolean readability constants. Arche has no `bool` primitive; comparisons yield int 0/1, so these
+// are just names for those values (`running := true`, `if (ok == false)`).
 bool :: i8
 true: bool: 1
 false: bool: 0
 
-// Raw Linux/x86-64 syscall intrinsic: emits the `syscall` instruction directly (no libc). A
-// buffer arg decays to its data pointer (like C). Declared first so the fd wrappers below can use it.
+// Raw Linux/x86-64 syscall intrinsic: emits the `syscall` instruction directly (no libc). A buffer
+// arg decays to its data pointer (like C). Declared first so the fd wrappers below can use it.
 #foreign {
   syscall :: proc(n: i64, a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64)(r: i64)
 }
@@ -41,8 +41,7 @@ exit :: proc(code: int) {
 // opaque cell resolves globally; only the operations are module-scoped.
 file :: opaque
 socket :: opaque
-// Whole-file mmap view (C-runtime externs). Kept in core so any module can map a file without a
-// module-to-module import (e.g. the csv loader).
+// libc stdio + whole-file mmap (C-runtime externs). C foreign symbols → callable bare everywhere.
 #foreign {
   arche_file_map :: proc(own path: char[])(data: char[])
   arche_file_size :: proc()(n: i64)
@@ -51,11 +50,9 @@ socket :: opaque
   printf :: proc(own fmt: char[], ...)(n: int)
   fflush :: proc(stream: int)
 }
-// Pure-arche numeric/string helpers (no FFI). A func may call these; it can't call externs, so
-// libc's atoi/atof/strlen are reimplemented here to keep type-directed CSV cell parsing pure.
 
-/// Byte-compare two NUL-terminated strings: 1 if equal, 0 otherwise. Pure (no
-/// FFI), so the `match` desugar can use it for string-literal patterns.
+/// Byte-compare two strings: 1 if equal, 0 otherwise. Pure (no FFI), so the `match` desugar can use
+/// it for string-literal patterns — which is why it stays in core. (strlen/strcopy → `str` module.)
 ///
 /// ```arche
 /// assert(streq("ab", "ab") == 1, "streq equal\n");
@@ -74,9 +71,7 @@ streq :: func(a: char[], b: char[]) -> int {
   }
   return 1;
 }
-// strlen/strcopy moved to the `str` stdlib module (`#import { str }`). (streq stays here — the
-// match string-pattern desugar emits it, so it must resolve without an import.)
-// atoi/atof moved to the `parse` stdlib module (`#import { parse }`; parse.atoi / parse.atof).
+// strlen/strcopy → `str` module (`#import { str }`); atoi/atof → `parse` module.
 print_float :: proc(f: float) {
   printf("%g", f);
   fflush(0);

@@ -51,6 +51,7 @@ typedef enum {
 
 	/* Ownership */
 	SEM_DIAG_opaque_not_consumed,
+	SEM_DIAG_opaque_pass_only,
 	SEM_DIAG_cannot_copy_opaque,
 	SEM_DIAG_cannot_move_borrowed,
 	SEM_DIAG_copy_unsupported,
@@ -221,6 +222,7 @@ SemDiag *sem_emit_wildcard_in_enum_match(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_callable_in_archetype(SemanticContext *ctx, SourceLoc loc, const char *name);
 
 SemDiag *sem_emit_opaque_not_consumed(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_opaque_pass_only(SemanticContext *ctx, SourceLoc loc, const char *type_name, const char *verb);
 SemDiag *sem_emit_cannot_copy_opaque(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_cannot_move_borrowed(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_copy_unsupported(SemanticContext *ctx, SourceLoc loc, const char *name);
