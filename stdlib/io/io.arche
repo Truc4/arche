@@ -40,6 +40,15 @@ fread :: proc(fd: file, buf: char[], n: int)(buf: char[], r: int) {
   os.syscall(0, fd, buf, n, 0, 0, 0)(rr:);
   r = i32(rr);
 }
+// Arche-native read: lend `buf` (a borrow = backing store), get back a slice VIEW of the bytes read.
+// Mirrors `net.recv`; the byte count travels on the returned slice's `.length`.
+read :: proc(fd: file, buf: char[])(out: char[]) {
+  fread(fd, buf, buf.cap)(buf, r:);
+  if (r < 0) {
+    r = 0;
+  }
+  out = buf[0: r];
+}
 csv_read_chunk :: proc(fd: file, buf: char[], max_bytes: int)(buf: char[], r: int) {
   os.syscall(0, fd, buf, max_bytes, 0, 0, 0)(rr:);
   r = i32(rr);

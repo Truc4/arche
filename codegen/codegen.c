@@ -20,10 +20,13 @@ typedef struct {
 	char *handle_archetype; /* if field_type=="handle", the target archetype name */
 	int bit_width;          /* 32 (default) or 64 for SSA values */
 	int is_slice; /* type==6: 1 = T[] fat-pointer slice (runtime len in len_ssa), 0 = bounded T[N] (len = string_len) */
-	char *len_ssa; /* type==6 slice: SSA value (or literal) holding the i64 runtime length; NULL otherwise */
-	char *cap_ssa; /* type==6 slice: i64 backing capacity (`.cap`); NULL ⇒ fall back to length. Part of the
-	                * heapless {ptr,len,cap} model. TODO: not yet threaded through the call ABI (a slice
-	                * param's cap falls back to its len); revisit per the plan's cap optimization note. */
+	char *len_ssa;      /* type==6 slice: SSA value (or literal) holding the i64 runtime length; NULL otherwise */
+	char *cap_ssa;      /* type==6 slice: i64 backing capacity (`.cap`); NULL ⇒ fall back to length. Part of the
+	                     * heapless {ptr,len,cap} model. TODO: not yet threaded through the call ABI (a slice
+	                     * param's cap falls back to its len); revisit per the plan's cap optimization note. */
+	char *out_aggr_ptr; /* out-ONLY unbounded `char[]`/`T[]` out-param: the `{T*,i64}*` caller slot (%outN).
+	                     * When set, assigning a slice/array to this name stores the {ptr,len} back through
+	                     * it so the caller recovers the returned view. NULL for ordinary values. */
 } ValueInfo;
 
 typedef struct {
@@ -5267,6 +5270,14 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		 * are not appended). Allocate/bind each out-only target, stash its pointer, emit the call. */
 		if (callee_proc && !callee_proc->is_extern) {
 			ctx->pending_out_ptr_count = 0;
+			/* Out-only unbounded `T[]` out-params return a `{T*,i64}` slice the callee writes through a
+			 * `{T*,i64}*` slot. The slot isn't filled until the call below, so defer binding the target
+			 * as a type-6 slice (load ptr+len from the slot) until AFTER the call is emitted. */
+			char *defer_slot[16];
+			char *defer_name[16];
+			const char *defer_elem[16];
+			const char *defer_etn[16];
+			int defer_count = 0;
 			for (int i = 0; i < target_count && i < callee_proc->out_param_count; i++) {
 				if (proc_out_param_is_inout(callee_proc, i))
 					continue; /* in-out: carried by the in-arg buffer */
@@ -5315,6 +5326,19 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 						buffer_append_fmt(ctx, "  store %s null, %s* %s\n", elem, elem, ptr);
 					else
 						buffer_append_fmt(ctx, "  store %s 0, %s* %s\n", elem, elem, ptr);
+					if (ot && ot->tag == HIR_TYPE_ARRAY && elem[0] == '{') {
+						/* unbounded `T[]` out-only result: bind as a type-6 slice AFTER the call (the slot
+						 * holds the {ptr,len} the callee stored). Stash the slot for the post-call pass. */
+						defer_slot[defer_count] = strdup(ptr);
+						defer_name[defer_count] = tgt->name;
+						defer_elem[defer_count] = llvm_type_from_arche(field_base_type_name(ot));
+						defer_etn[defer_count] = field_base_type_name(ot);
+						defer_count++;
+						int k = ctx->pending_out_ptr_count++;
+						ctx->pending_out_ptr_vals[k] = strdup(ptr);
+						ctx->pending_out_ptr_types[k] = elem;
+						continue;
+					}
 					ValueInfo *vi = calloc(1, sizeof(ValueInfo));
 					vi->name = malloc(strlen(tgt->name) + 1);
 					strcpy(vi->name, tgt->name);
@@ -5354,6 +5378,37 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				saved_uscore_args[ui]->data.name.name = saved_uscore_names[ui]; /* restore `_` */
 			for (int ui = 0; ui < saved_copy_count; ui++)
 				*saved_copy_slots[ui] = saved_copy_vals[ui]; /* restore elided `copy` node */
+			/* Post-call: bind each deferred out-only `T[]` target as a type-6 slice, loading the
+			 * {ptr,len} the callee stored into its slot. */
+			for (int d = 0; d < defer_count; d++) {
+				char agg[24];
+				snprintf(agg, sizeof(agg), "{ %s*, i64 }", defer_elem[d]);
+				char *pgep = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i32 0, i32 0\n", pgep, agg, agg,
+				                  defer_slot[d]);
+				char *p = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", p, defer_elem[d], defer_elem[d], pgep);
+				char *lgep = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i32 0, i32 1\n", lgep, agg, agg,
+				                  defer_slot[d]);
+				char *l = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", l, lgep);
+				ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+				vi->name = strdup(defer_name[d]);
+				vi->llvm_name = strdup(p);
+				vi->type = 6;
+				vi->string_len = -1;
+				vi->field_type = defer_etn[d];
+				vi->bit_width = strcmp(defer_elem[d], "double") == 0 ? 64 : (strcmp(defer_elem[d], "i8") == 0 ? 8 : 32);
+				vi->is_slice = 1;
+				vi->len_ssa = strdup(l);
+				if (ctx->scope_count > 0) {
+					ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+					sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+					sc->values[sc->value_count++] = vi;
+				}
+				free(defer_slot[d]);
+			}
 			for (int i = 0; i < ctx->pending_out_ptr_count; i++)
 				free(ctx->pending_out_ptr_vals[i]);
 			ctx->pending_out_ptr_count = 0;
@@ -5447,6 +5502,53 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 	}
 
 	case HIR_STMT_ASSIGN: {
+		/* Write-back to an out-ONLY unbounded `char[]`/`T[]` out-param (`out = buf[0:r]`): store the
+		 * RHS slice's {ptr,len} through the caller's `{T*,i64}*` slot so the caller recovers the view.
+		 * Without this the slice is computed and dropped (the proc returns void). */
+		if (stmt->data.assign_stmt.target->kind == HIR_EXPR_NAME) {
+			ValueInfo *ot = find_value(ctx, stmt->data.assign_stmt.target->data.name.name);
+			if (ot && ot->out_aggr_ptr) {
+				HirExpr *rv = stmt->data.assign_stmt.value;
+				while (rv && rv->kind == HIR_EXPR_UNARY &&
+				       (rv->data.unary.op == UNARY_MOVE || rv->data.unary.op == UNARY_COPY))
+					rv = rv->data.unary.operand;
+				const char *elem = llvm_type_from_arche(ot->field_type ? ot->field_type : "char");
+				char agg[24];
+				snprintf(agg, sizeof(agg), "{ %s*, i64 }", elem);
+				char ptr[256], len[64];
+				if (rv && rv->kind == HIR_EXPR_SLICE) {
+					char cap[64];
+					const char *se;
+					int sw;
+					codegen_slice(ctx, rv, ptr, len, cap, &se, &sw);
+				} else if (rv && rv->kind == HIR_EXPR_NAME) {
+					ValueInfo *sv = find_value(ctx, rv->data.name.name);
+					strcpy(ptr, sv->llvm_name);
+					if (sv->is_slice && sv->len_ssa)
+						snprintf(len, sizeof(len), "%s", sv->len_ssa);
+					else
+						snprintf(len, sizeof(len), "%d", sv->string_len);
+				} else if (rv && rv->kind == HIR_EXPR_STRING) {
+					codegen_expression(ctx, rv, ptr);
+					snprintf(len, sizeof(len), "%d", rv->data.string.length);
+				} else {
+					codegen_expression(ctx, stmt->data.assign_stmt.value, ptr);
+					snprintf(len, sizeof(len), "0");
+				}
+				char *a1 = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = insertvalue %s undef, %s* %s, 0\n", a1, agg, elem, ptr);
+				char *a2 = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = insertvalue %s %s, i64 %s, 1\n", a2, agg, a1, len);
+				buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", agg, a2, agg, ot->out_aggr_ptr);
+				/* Keep the in-scope view current so later reads in the body see the new ptr/len. */
+				free(ot->llvm_name);
+				ot->llvm_name = strdup(ptr);
+				free(ot->len_ssa);
+				ot->len_ssa = strdup(len);
+				ot->is_slice = 1;
+				break;
+			}
+		}
 		/* `a = b` / `a = move b` / `a = copy b` where both sides are array/slice VALUES: the target
 		 * binding takes over the source's storage (move — value_buf is the source's own pointer, the
 		 * source is consumed in semantic) or the freshly-cloned buffer (`copy`). Rebind the target's
@@ -6093,7 +6195,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				codegen_expression(ctx, stmt->data.for_stmt.cond, cond_buf);
 				char *cond_i1 = gen_value_name(ctx);
 				/* Truthiness: nonzero is true; use the cond value's real width. */
-				buffer_append_fmt(ctx, "  %s = icmp ne %s %s, 0\n", cond_i1, cond_int_type(stmt->data.for_stmt.cond), cond_buf);
+				buffer_append_fmt(ctx, "  %s = icmp ne %s %s, 0\n", cond_i1, cond_int_type(stmt->data.for_stmt.cond),
+				                  cond_buf);
 				buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cond_i1, body_label, exit_label);
 			} else {
 				buffer_append_fmt(ctx, "  br label %s\n", body_label);
@@ -6150,7 +6253,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				codegen_expression(ctx, stmt->data.for_stmt.cond, cond_buf);
 				char *cond_i1 = gen_value_name(ctx);
 				/* Truthiness: nonzero is true; use the cond value's real width. */
-				buffer_append_fmt(ctx, "  %s = icmp ne %s %s, 0\n", cond_i1, cond_int_type(stmt->data.for_stmt.cond), cond_buf);
+				buffer_append_fmt(ctx, "  %s = icmp ne %s %s, 0\n", cond_i1, cond_int_type(stmt->data.for_stmt.cond),
+				                  cond_buf);
 				buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cond_i1, body_label, exit_label);
 			} else {
 				buffer_append_fmt(ctx, "  br label %s\n", body_label);
@@ -7615,9 +7719,10 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 		if (ot && find_archetype_decl(ctx, otn)) {
 			add_arch_value(ctx, proc->out_params[oi]->name, out_llvm, otn);
 		} else if (ot && ot->tag == HIR_TYPE_ARRAY) {
-			/* unbounded `T[]` out-param: the caller allocated a `{T*,i64}` slice slot at %outN. Load
-			 * it and bind a type-6 slice so the body can index it. (Writing a fresh slice back to an
-			 * out-ONLY unbounded array out-param is not wired — use a sized `T[N]` out-param.) */
+			/* unbounded `T[]` out-param: the caller allocated a `{T*,i64}` slice slot at %outN. Load it
+			 * and bind a type-6 slice so the body can READ it (out-params are read-write — the caller
+			 * zero-inits the slot). `out_aggr_ptr` records %outN so assigning a fresh slice (`out = buf[0:r]`)
+			 * stores the {ptr,len} back through it; the caller then recovers the returned view. */
 			const char *en = field_base_type_name(ot);
 			const char *lt = llvm_type_from_arche(en);
 			char agg[24];
@@ -7642,6 +7747,7 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 			vi->is_slice = 1;
 			vi->len_ssa = malloc(strlen(l) + 1);
 			strcpy(vi->len_ssa, l);
+			vi->out_aggr_ptr = strdup(out_llvm);
 			if (ctx->scope_count > 0) {
 				ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
 				sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));

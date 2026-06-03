@@ -1,0 +1,18 @@
+// An out-ONLY unbounded `char[]` out-param returns a slice VIEW into a borrowed buffer: the callee
+// writes the `{ptr,len}` back through the caller's slot, so the caller recovers a slice carrying the
+// real length (not the buffer capacity). `view` lends `buf` and hands back `buf[0:n]`; main checks
+// the length and the viewed bytes. Prints "OK" on success.
+// RUN: %arche build -o %t %s ; %t | grep -q "^OK$"
+#import { fmt }
+@allow_pure_proc view :: proc(buf: char[], n: int)(out: char[]) {
+  out = buf[0: n];
+}
+main :: proc() {
+  b: char[16];
+  b[0] = 'H';
+  b[1] = 'i';
+  view(b, 2)(v:);
+  if (v.length == 2 && v[0] == 'H' && v[1] == 'i') {
+    fmt.print("OK\n");
+  }
+}
