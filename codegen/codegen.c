@@ -2223,7 +2223,11 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			else
 				buffer_append_fmt(ctx, "  %s = sub i32 0, %s\n", res_name, operand_buf);
 		} else if (expr->data.unary.op == UNARY_NOT) {
-			buffer_append_fmt(ctx, "  %s = xor i1 1, %s\n", res_name, operand_buf);
+			/* `!x` ≡ `x == 0`: produces an arche int 0/1 (i32), like a comparison. Truthiness-correct
+			 * on any int operand — the old `xor i1` wrongly assumed the operand was already an i1. */
+			char *eq_i1 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = icmp eq i32 %s, 0\n", eq_i1, operand_buf);
+			buffer_append_fmt(ctx, "  %s = zext i1 %s to i32\n", res_name, eq_i1);
 		}
 		strcpy(result_buf, res_name);
 		break;
@@ -6055,7 +6059,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				char cond_buf[256];
 				codegen_expression(ctx, stmt->data.for_stmt.cond, cond_buf);
 				char *cond_i1 = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = trunc i32 %s to i1\n", cond_i1, cond_buf);
+				/* Truthiness: nonzero is true (`icmp ne …, 0`, not low-bit `trunc`). */
+				buffer_append_fmt(ctx, "  %s = icmp ne i32 %s, 0\n", cond_i1, cond_buf);
 				buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cond_i1, body_label, exit_label);
 			} else {
 				buffer_append_fmt(ctx, "  br label %s\n", body_label);
@@ -6098,7 +6103,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				char cond_buf[256];
 				codegen_expression(ctx, stmt->data.for_stmt.cond, cond_buf);
 				char *cond_i1 = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = trunc i32 %s to i1\n", cond_i1, cond_buf);
+				/* Truthiness: nonzero is true (`icmp ne …, 0`, not low-bit `trunc`). */
+				buffer_append_fmt(ctx, "  %s = icmp ne i32 %s, 0\n", cond_i1, cond_buf);
 				buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cond_i1, body_label, exit_label);
 			} else {
 				buffer_append_fmt(ctx, "  br label %s\n", body_label);
@@ -6130,7 +6136,9 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		char cond_buf[256];
 		codegen_expression(ctx, stmt->data.if_stmt.cond, cond_buf);
 
-		/* Ensure branch condition is i1 by truncating i32 */
+		/* Bridge the arche-int condition to LLVM's i1 (which `br` requires). Truthiness: nonzero is
+		 * true — `icmp ne <val>, 0` (NOT `trunc`, which tests only the low bit, making `if (2)`
+		 * false). Correct for both comparison results (i32 0/1) and any bare int. */
 		const char *branch_cond = cond_buf;
 		if (cond_buf[0] == '%') {
 			char *truncated = gen_value_name(ctx);
@@ -6138,7 +6146,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			                                stmt->data.if_stmt.cond->resolved.tag == HIR_TYPE_HANDLE))
 				buffer_append_fmt(ctx, "  %s = icmp ne i64 %s, 0\n", truncated, cond_buf); /* non-null cell */
 			else
-				buffer_append_fmt(ctx, "  %s = trunc i32 %s to i1\n", truncated, cond_buf);
+				buffer_append_fmt(ctx, "  %s = icmp ne i32 %s, 0\n", truncated, cond_buf);
 			branch_cond = truncated;
 		}
 

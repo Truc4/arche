@@ -1,0 +1,12 @@
+// `!x` means `x == 0`, producing an arche int 0/1 — usable as a value and composable (`!!x`
+// normalizes to truthiness). Works on any int operand.
+// RUN: %arche build -o %t %s && %t | grep "nz=1 nx=0 dn=1"
+#import { fmt }
+main :: proc() {
+  x := 5;
+  z := 0;
+  nz := !z;  // z is zero  -> 1
+  nx := !x;  // x is set   -> 0
+  dn := !!x; // truthiness  -> 1
+  fmt.printf("nz=%d nx=%d dn=%d\n", nz, nx, dn);
+}
