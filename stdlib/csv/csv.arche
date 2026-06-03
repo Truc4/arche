@@ -5,43 +5,10 @@
 // (`arche_file_map`/`_size`/`_unmap` are core primitives, so no module import is needed.)
 
 #import { parse str io }
-load_cols: int[64]
 
-// first index of byte `ch` in data[start..end), or end if absent
-find_byte :: func(data: char[], start: i64, end: i64, ch: int) -> i64 {
-  for (i: i64 = start; i < end; i = i + 1) {
-    if (data[i] == ch) {
-      return i;
-    }
-  }
-  return end;
-}
-
-// 1 if archetype field name `name` equals the CSV header cell data[start..end)
-name_eq :: func(name: char[], data: char[], start: i64, end: i64) -> int {
-  len: i64 = end - start;
-  if (str.strlen(name) != len) {
-    return 0;
-  }
-  for (i: i64 = 0; i < len; i = i + 1) {
-    if (name[i] != data[start + i]) {
-      return 0;
-    }
-  }
-  return 1;
-}
-
-// start offset of the col-th comma-separated field within data[row_start..row_end)
-field_at :: func(data: char[], row_start: i64, row_end: i64, col: int) -> i64 {
-  p: i64 = row_start;
-  for (remaining := col; remaining > 0; remaining -= 1) {
-    p = find_byte(data, p, row_end, ',') + 1;
-  }
-  return p;
-}
-
-// Type-directed cell parser: the group dispatches on the static type of the
-// witness `c` (the destination column element).
+// Type-directed cell parser: the group dispatches on the static type of the witness `c` (the
+// destination column element). A func group does not hoist and its dispatch does not resolve from a
+// `#module`/`#file` band, so it leads the file in the exported band, before `load` uses it.
 cell_float :: func(c: float, s: char[]) -> float {
   return parse.atof(s);
 }
@@ -97,4 +64,47 @@ load :: proc(arch: archetype, own path: char[]) {
     pos = nl + 1;
   }
   io.arche_file_unmap(move data, size);
+}
+
+// ============================ Module-internal state (private) ===========================
+// `#module` narrows to module-private — the header→column map, invisible to importers. Hoisted.
+#module
+
+load_cols: int[64]
+
+// ============================== File-local parse helpers (private) ==============================
+// `#file` narrows to file-local: leaf routines used only by `load`. Hoisted, so they trail it.
+#file
+
+// first index of byte `ch` in data[start..end), or end if absent
+find_byte :: func(data: char[], start: i64, end: i64, ch: int) -> i64 {
+  for (i: i64 = start; i < end; i = i + 1) {
+    if (data[i] == ch) {
+      return i;
+    }
+  }
+  return end;
+}
+
+// 1 if archetype field name `name` equals the CSV header cell data[start..end)
+name_eq :: func(name: char[], data: char[], start: i64, end: i64) -> int {
+  len: i64 = end - start;
+  if (str.strlen(name) != len) {
+    return 0;
+  }
+  for (i: i64 = 0; i < len; i = i + 1) {
+    if (name[i] != data[start + i]) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+// start offset of the col-th comma-separated field within data[row_start..row_end)
+field_at :: func(data: char[], row_start: i64, row_end: i64, col: int) -> i64 {
+  p: i64 = row_start;
+  for (remaining := col; remaining > 0; remaining -= 1) {
+    p = find_byte(data, p, row_end, ',') + 1;
+  }
+  return p;
 }

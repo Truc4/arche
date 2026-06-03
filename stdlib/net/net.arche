@@ -29,9 +29,10 @@ recv :: proc(s: socket, buf: char[])(out: char[]) {
   out = buf[0: r];
 }
 
-// C implementation layer (runtime/net.c). A `char[]` listed in BOTH the in- and out-lists is the
-// in-out idiom — legitimate ONLY here, to align with the C ABI (the call writes into the lent
-// pointer and hands it back). The arche-native wrappers above never duplicate a buffer that way.
+// C implementation layer (runtime/net.c). The slice-native wrappers above are the recommended API;
+// these raw foreigns stay reachable (`net.net_recv` / bare `net_recv`) as a C-interop affordance. A
+// `char[]` in BOTH the in- and out-lists is the in-out idiom — legitimate ONLY here, to align with
+// the C ABI (the call writes the lent pointer and hands it back); the wrappers never duplicate that way.
 #foreign
 net_listen :: proc(port: int)(s: socket)
 net_accept :: proc(s: socket)(r: socket)
