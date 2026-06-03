@@ -2,11 +2,11 @@
 #import { io fmt }
 
 main :: proc() {
-  io_open("tests/fixtures/data.csv")(fd:);
-  io_skip_header(fd);
+  io.open("tests/fixtures/data.csv")(fd:);
+  io.skip_header(fd);
   rows := 0;
   buf: char[65536];
-  io_read_chunk(fd, buf, 65536)(buf, n:);
+  io.read_chunk(fd, buf, 65536)(buf, n:);
   pos := 0;
   for (; pos < n;) {
     if (buf[pos] == 10) {
@@ -14,6 +14,6 @@ main :: proc() {
     }
     pos = pos + 1;
   }
-  io_close(move fd);
+  io.close(move fd);
   fmt.printf("rows: %d\n", rows);
 }

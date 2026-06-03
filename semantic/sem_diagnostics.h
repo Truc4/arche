@@ -127,6 +127,7 @@ typedef enum {
 	/* Control-flow + declaration uniqueness (P3 Phase C — E0030+) */
 	SEM_DIAG_break_outside_loop,
 	SEM_DIAG_continue_outside_loop,
+	SEM_DIAG_module_no_member,
 	SEM_DIAG_duplicate_decl,
 
 	/* Opaque destructors / RAII (`@drop`) — E0118+ */
@@ -303,6 +304,7 @@ SemDiag *sem_emit_wrong_arity(SemanticContext *ctx, SourceLoc loc, const char *n
 SemDiag *sem_emit_wrong_return_arity(SemanticContext *ctx, SourceLoc loc, const char *fn_name, int expected, int got);
 SemDiag *sem_emit_break_outside_loop(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_continue_outside_loop(SemanticContext *ctx, SourceLoc loc);
+SemDiag *sem_emit_module_no_member(SemanticContext *ctx, SourceLoc loc, const char *module, const char *member);
 SemDiag *sem_emit_duplicate_decl(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name);
 SemDiag *sem_emit_drop_invalid(SemanticContext *ctx, SourceLoc loc, const char *msg);
 SemDiag *sem_emit_drop_redefined(SemanticContext *ctx, SourceLoc loc, const char *type_name);

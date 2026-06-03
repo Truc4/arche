@@ -1,11 +1,13 @@
-// Documented deferral (see Part E of the namespace change): `#foreign` externs keep their C-ABI
-// name as an ordinary top-level symbol, so a bare `net_listen(...)` still resolves today — only
-// pure-Arche module exports are strictly qualified-only. Forbidding bare externs needs link-name
-// support; when that lands, this test should flip to expecting an "Undefined symbol" error. The
-// qualified `net.listen(...)` form also resolves (see extern_type/socket_loopback.arche).
+// A `#foreign` decl IS a real C-ABI global, so its symbol stays reachable bare (`net_listen(...)`)
+// as a C-interop affordance, in addition to the idiomatic qualified `net.net_listen(...)`. (By
+// contrast, pure-Arche module members are renamed to their qualified identity `net.<name>` and are
+// strictly qualified-only — a bare reference to one does NOT resolve.) Qualified is the recommended
+// API; this pins that the raw C symbol remains linkable for interop.
 // RUN: %arche check %s
 #import { net }
 main :: proc() {
-  net_listen(8080)(s:);
-  net.close(move s);
+  net.net_listen(8080)(s:); // idiomatic: qualified
+  net_listen(8081)(s2:);    // raw C symbol still resolves (interop affordance)
+  net.net_close(move s);
+  net.net_close(move s2);
 }

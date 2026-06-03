@@ -1,5 +1,5 @@
 // The `net` module — TCP sockets (C-backed in runtime/net.c). `#import { net }` then call
-// `net.listen(...)`, `net.accept(...)`, `net.connect(...)`, `net.send(...)`, `net.recv(...)`.
+// `net.net_listen(...)`, `net.net_accept(...)`, `net.net_connect(...)`, `net.net_send(...)`, `net.net_recv(...)`.
 // Access is qualified-only: a bare `net_listen(...)` does not resolve.
 
 // Primitive opaque handle type for a TCP socket (a raw fd in the opaque cell). You may
@@ -12,9 +12,9 @@ net_accept :: proc(s: socket)(r: socket)
 net_connect :: proc(own ip: char[], port: int)(s: socket)
 // `buf` is in-out (the out-param shadows the in-param): zero-copy pass-by-reference into C, which
 // only reads it (`const char *`). At the call, write `_` in the shadowed in-slot to make clear no
-// value is passed there — `net.send(s, _, n)(buf, sent:)`. The C ABI is unchanged.
+// value is passed there — `net.net_send(s, _, n)(buf, sent:)`. The C ABI is unchanged.
 net_send :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
 net_recv :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
-// RAII: registers net.close as the destructor for `socket`. A `socket` local that is never
+// RAII: registers net.net_close as the destructor for `socket`. A `socket` local that is never
 // explicitly closed is auto-dropped via this proc at scope exit.
 @drop(socket) net_close :: proc(own s: socket)

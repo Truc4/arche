@@ -2,13 +2,13 @@
 #import { io fmt }
 
 main :: proc() {
-  io_open("tests/fixtures/data.csv")(fd:);
+  io.open("tests/fixtures/data.csv")(fd:);
   fmt.printf("fd=%d\n", fd);
   if (fd > 0) {
     fmt.printf("calling csv_read_chunk\n");
     buf: char[65536];
-    io_read_chunk(fd, buf, 65536)(buf, n:);
+    io.read_chunk(fd, buf, 65536)(buf, n:);
     fmt.printf("n=%d\n", n);
   }
-  io_close(move fd);
+  io.close(move fd);
 }

@@ -3592,7 +3592,7 @@ static char *sem_type_ref_name(CstView t) {
 	if (n >= 2) {
 		size_t L = ids[0].len + 1 + ids[1].len + 1;
 		char *r = malloc(L);
-		snprintf(r, L, "%.*s_%.*s", (int)ids[0].len, ids[0].ptr, (int)ids[1].len, ids[1].ptr);
+		snprintf(r, L, "%.*s.%.*s", (int)ids[0].len, ids[0].ptr, (int)ids[1].len, ids[1].ptr);
 		return r;
 	}
 	return sem_txt_dup(cv_token(t, TOK_IDENT));
@@ -5228,11 +5228,14 @@ static int sem_name_in_set(char **set, int count, const char *name) {
 			return 1;
 	return 0;
 }
+/* Qualify a module-local name to its identity `<mod>.<name>` (dotted). The `.` is a legal LLVM
+ * global-identifier character (cf. `@llvm.memcpy`), so this identity needs no emission quoting, and
+ * it reads as a clean qualified name in diagnostics. */
 static char *sem_prefix_name(const char *prefix, const char *name) {
 	int p = (int)strlen(prefix), n = (int)strlen(name);
 	char *r = malloc(p + 1 + n + 1);
 	memcpy(r, prefix, p);
-	r[p] = '_';
+	r[p] = '.';
 	memcpy(r + p + 1, name, n);
 	r[p + 1 + n] = 0;
 	return r;
@@ -5367,8 +5370,20 @@ static void sem_rename_stmt(Statement *s, const char *prefix, char **set, int co
 		break;
 	}
 }
-/* Qualified module access (semantic AST mirror of lower.c's hir_q_*): rewrite `mod.name` →
- * `mod_name` for inlined modules, so `io.open(...)` resolves to io's exported `open`. */
+/* Context for the qualify pass, so it can emit a `module has no member` diagnostic. Set just before
+ * the pass runs (file-static like g_lower_sem; the pass is single-threaded over one program). */
+static SemanticContext *g_sem_qualify_ctx = NULL;
+
+/* True if `base` names an imported module (a qualify prefix). */
+static int sem_base_is_module(char **prefix, int n, const char *base) {
+	for (int m = 0; m < n; m++)
+		if (strcmp(base, prefix[m]) == 0)
+			return 1;
+	return 0;
+}
+
+/* Qualified module access (semantic AST mirror of lower.c's hir_q_*): bind `mod.member` to its
+ * member's identity. Member is looked up by literal name in the module's export set. */
 static int sem_qual_lookup(char **prefix, char ***set, int *count, int n, const char *base, const char *field,
                            char *out, size_t out_sz) {
 	for (int m = 0; m < n; m++) {
@@ -5398,13 +5413,18 @@ static void sem_qualify_expr(Expression *e, char **prefix, char ***set, int *cou
 	if (e->type == EXPR_FIELD && e->data.field.base && e->data.field.base->type == EXPR_NAME &&
 	    e->data.field.field_name) {
 		char mangled[256];
-		if (sem_qual_lookup(prefix, set, count, n, e->data.field.base->data.name.name, e->data.field.field_name,
-		                    mangled, sizeof(mangled))) {
+		const char *base = e->data.field.base->data.name.name;
+		if (sem_qual_lookup(prefix, set, count, n, base, e->data.field.field_name, mangled, sizeof(mangled))) {
 			e->type = EXPR_NAME;
 			e->data.name.name = sem_dupz(mangled);
 			e->data.name.is_table_ref = 0;
 			return;
 		}
+		/* Base IS an imported module but it has no such member → a precise diagnostic (e.g.
+		 * `fmt.nope` → "module 'fmt' has no member 'nope'"), instead of the misleading
+		 * "Undefined variable 'fmt'" the value-field path would later emit. */
+		if (g_sem_qualify_ctx && sem_base_is_module(prefix, n, base))
+			sem_emit_module_no_member(g_sem_qualify_ctx, e->loc, base, e->data.field.field_name);
 	}
 	switch (e->type) {
 	case EXPR_FIELD:
@@ -5659,12 +5679,12 @@ static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 	const char *nm = sem_decl_name(md);
 	if (!nm)
 		return;
-	const char *vis = nm;
-	if (is_ext) {
-		size_t pl = strlen(mod_name);
-		if (strncmp(nm, mod_name, pl) == 0 && nm[pl] == '_')
-			vis = nm + pl + 1; /* strip redundant `<mod>_` for the namespaced spelling */
-	} else {
+	/* A member is accessed by its LITERAL declared name (no `<mod>_`-prefix stripping): a foreign
+	 * decl named `net_send` is `net.net_send`. Foreign decls keep their declared name (the C ABI
+	 * symbol) and are NOT renamed; pure-Arche decls are renamed to the qualified identity
+	 * `<mod>.<name>` so two modules' same-named decls stay distinct AND diagnostics show a clean
+	 * qualified name. (`.` is a legal LLVM global-identifier char, so no emission quoting needed.) */
+	if (!is_ext) {
 		if (*fulln == *fullcap) {
 			*fullcap = *fullcap ? *fullcap * 2 : 8;
 			*full = realloc(*full, (size_t)*fullcap * sizeof(char *));
@@ -5676,13 +5696,13 @@ static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 			*expcap = *expcap ? *expcap * 2 : 8;
 			*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
 		}
-		/* Store "<visible>=<target>": a foreign decl targets its declared link name (the real
-		 * C symbol, e.g. `printf`); a pure-Arche decl targets the prefixed `<mod>_<name>`. */
+		/* "<member>=<identity>": the literal member name and the symbol it resolves to. Foreign →
+		 * its C symbol (its own name); pure-Arche → the qualified identity `<mod>.<name>`. */
 		char entry[512];
 		if (is_ext)
-			snprintf(entry, sizeof(entry), "%s=%s", vis, nm);
+			snprintf(entry, sizeof(entry), "%s=%s", nm, nm);
 		else
-			snprintf(entry, sizeof(entry), "%s=%s_%s", vis, mod_name, nm);
+			snprintf(entry, sizeof(entry), "%s=%s.%s", nm, mod_name, nm);
 		(*expset)[(*expn)++] = sem_dupz(entry);
 	}
 }
@@ -5749,6 +5769,10 @@ static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc
 		free(expset);
 		return;
 	}
+	/* Scope resolution: rename this module's pure-Arche decls + their intra-module references to the
+	 * qualified identity `<mod>.<name>` (foreign decls keep their C-symbol name). `full` is the set
+	 * of this module's pure-Arche names, so a bare reference inside the module binds to its own
+	 * member. */
 	for (int dd = first; dd < prog->decl_count; dd++)
 		sem_rename_decl(prog->decls[dd], mod_name, full, fulln);
 	for (int x = 0; x < fulln; x++)
@@ -5852,7 +5876,10 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 			prog->decls[prog->decl_count++] = ad;
 	}
 
-	/* Qualified module access: rewrite `mod.name` → `mod_name` for every inlined module. */
+	/* Scope resolution: bind every `mod.member` reference to its member's qualified identity. A
+	 * member is looked up by its literal name in the module's export set (no prefix stripping); an
+	 * unknown member emits a precise `module has no member` diagnostic (ctx via g_sem_qualify_ctx,
+	 * set by semantic_analyze_cst — NULL on the unit-test AST-only path, which skips the diag). */
 	if (acc_n > 0)
 		for (int dd = 0; dd < prog->decl_count; dd++)
 			sem_qualify_decl(prog->decls[dd], acc_prefix, acc_set, acc_count, acc_n);
@@ -6330,7 +6357,10 @@ SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src) {
 	/* Reconstruct the analyzable AstProgram from the immutable CST (+ module CSTs), keep it
 	 * alive on the context, and run the SAME analysis core. erase=0: the CST lowerer reads
 	 * aliases from the side model, so the alias-erasure tree mutation is not needed. */
+	/* The qualify pass inside cst_to_program emits `module has no member` via this ctx. */
+	g_sem_qualify_ctx = ctx;
 	ctx->owned_prog = cst_to_program(root, src);
+	g_sem_qualify_ctx = NULL;
 	analyze_program_core(ctx, ctx->owned_prog, /*erase=*/0);
 	walk_matches(ctx, root, src); /* exhaustiveness: enums register during analyze, so check after */
 	return ctx;

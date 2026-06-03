@@ -1,11 +1,11 @@
 // `#import` is a region in the same family as `#module`/`#file`/`#foreign`: a bare
 // `#import name` (no `;`) or a `{ ... }` block grouping several whitespace-separated module
 // names. Here a grouped import of two stdlib modules; the bare names they declare resolve
-// (e.g. os's `os.argc`).
+// (e.g. os's `os.os_argc`).
 // RUN: %arche check %s
 #import { os term fmt }
 
 main :: proc() {
-  os.argc()(n:);
+  os.os_argc()(n:);
   fmt.printf("argc=%d\n", n);
 }

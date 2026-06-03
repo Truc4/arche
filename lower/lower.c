@@ -243,7 +243,7 @@ static char *type_ref_name(CstView t) {
 	if (n >= 2) {
 		size_t L = ids[0].len + 1 + ids[1].len + 1;
 		char *r = malloc(L);
-		snprintf(r, L, "%.*s_%.*s", (int)ids[0].len, ids[0].ptr, (int)ids[1].len, ids[1].ptr);
+		snprintf(r, L, "%.*s.%.*s", (int)ids[0].len, ids[0].ptr, (int)ids[1].len, ids[1].ptr);
 		return r;
 	}
 	return txt_dup(cv_token(t, TOK_IDENT));
@@ -2161,14 +2161,15 @@ void lower_reset_modules(void) {
 	g_module_count = 0;
 }
 
-/* If `name` is in set, return a freshly-allocated `prefix_name`; else NULL. */
+/* If `name` is in set, return a freshly-allocated qualified identity `prefix.name`; else NULL.
+ * (Dotted to match the semantic resolver; `.` is a legal LLVM global-identifier char.) */
 static char *prefixed_dup(const char *name, const char *prefix, char **set, int count) {
 	if (!name)
 		return NULL;
 	for (int i = 0; i < count; i++)
 		if (strcmp(name, set[i]) == 0) {
 			char *r = malloc(strlen(prefix) + 1 + strlen(name) + 1);
-			sprintf(r, "%s_%s", prefix, name);
+			sprintf(r, "%s.%s", prefix, name);
 			return r;
 		}
 	return NULL;
@@ -2568,12 +2569,9 @@ static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 	const char *nm = hir_decl_name(md);
 	if (!nm)
 		return;
-	const char *vis = nm;
-	if (is_ext) {
-		size_t pl = strlen(mod_name);
-		if (strncmp(nm, mod_name, pl) == 0 && nm[pl] == '_')
-			vis = nm + pl + 1; /* strip redundant `<mod>_` for the namespaced spelling */
-	} else {
+	/* Literal member access (no `<mod>_`-prefix stripping): foreign decls keep their C-symbol name
+	 * and are not renamed; pure-Arche decls are renamed to the qualified identity `<mod>.<name>`. */
+	if (!is_ext) {
 		if (*fulln == *fullcap) {
 			*fullcap = *fullcap ? *fullcap * 2 : 8;
 			*full = realloc(*full, (size_t)*fullcap * sizeof(char *));
@@ -2585,14 +2583,12 @@ static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 			*expcap = *expcap ? *expcap * 2 : 8;
 			*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
 		}
-		/* Store "<visible>=<target>": the qualified spelling and the symbol it resolves to.
-		 * A foreign decl keeps its declared link name (the real C symbol, e.g. `printf`);
-		 * a pure-Arche decl resolves to the prefixed `<mod>_<name>`. */
+		/* "<member>=<identity>": foreign → its own C symbol; pure-Arche → `<mod>.<name>`. */
 		char entry[512];
 		if (is_ext)
-			snprintf(entry, sizeof(entry), "%s=%s", vis, nm);
+			snprintf(entry, sizeof(entry), "%s=%s", nm, nm);
 		else
-			snprintf(entry, sizeof(entry), "%s=%s_%s", vis, mod_name, nm);
+			snprintf(entry, sizeof(entry), "%s=%s.%s", nm, mod_name, nm);
 		(*expset)[(*expn)++] = dupz(entry);
 	}
 }
@@ -2656,6 +2652,9 @@ static void hir_inline_module(const char *mod_name, HirProgram *ast, char **mod_
 		free(expset);
 		return;
 	}
+	/* Scope resolution (mirror of sem_inline_module): rename this module's pure-Arche decls + their
+	 * intra-module references to the qualified identity `<mod>.<name>`; foreign decls keep their
+	 * C-symbol name. */
 	for (int d = first; d < ast->decl_count; d++)
 		hir_rn_decl(ast->decls[d], mod_name, full, fulln);
 	for (int x = 0; x < fulln; x++)
@@ -2760,9 +2759,8 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 			ast->decls[ast->decl_count++] = ad;
 	}
 
-	/* Qualified module access: rewrite `mod.name` → the mangled `mod_name` symbol for every
-	 * inlined module (so `io.open` resolves to io's exported `open`). This is the ONLY way to
-	 * reach a module export — bare `name` no longer resolves. */
+	/* Scope resolution: bind every `mod.member` reference to its member's qualified identity (mirror
+	 * of sem_qualify_decl). Lookup is by literal member name in the module's export set. */
 	if (inlined > 0) {
 		QualCtx q = {mod_prefix, mod_exports, mod_export_n, inlined};
 		for (int d = 0; d < ast->decl_count; d++)

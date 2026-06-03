@@ -8,7 +8,7 @@ Pair[3](3) {
 }
 
 main :: proc() {
-  csv_load(Pair, "/tmp/csv_fill_smoke.csv");
+  csv.load(Pair, "/tmp/csv_fill_smoke.csv");
   fmt.printf(
     "a=[%d %d %d] b=[%d %d %d]\n",
     Pair.a[0],

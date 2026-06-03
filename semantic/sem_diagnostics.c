@@ -132,6 +132,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	 * E0200; sharper kind/arity constraints get their own codes in Phase B. */
 	[SEM_DIAG_break_outside_loop]            = { "E0030", "break_outside_loop",            CLASS_ERROR, 1 },
 	[SEM_DIAG_continue_outside_loop]         = { "E0093", "continue_outside_loop",         CLASS_ERROR, 1 },
+	[SEM_DIAG_module_no_member]              = { "E0094", "module_no_member",              CLASS_ERROR, 1 },
 	[SEM_DIAG_type_mismatch]                 = { "E0200", "type_mismatch",                 CLASS_ERROR, 1 },
 	[SEM_DIAG_not_indexable]                 = { "E0201", "not_indexable",                 CLASS_ERROR, 1 },
 	[SEM_DIAG_wrong_arity]                   = { "E0203", "wrong_arity",                   CLASS_ERROR, 1 },
@@ -784,6 +785,10 @@ SemDiag *sem_emit_break_outside_loop(SemanticContext *ctx, SourceLoc loc) {
 
 SemDiag *sem_emit_continue_outside_loop(SemanticContext *ctx, SourceLoc loc) {
 	return sem_emit_(ctx, SEM_DIAG_continue_outside_loop, loc, "`continue` can only appear inside a loop body");
+}
+
+SemDiag *sem_emit_module_no_member(SemanticContext *ctx, SourceLoc loc, const char *module, const char *member) {
+	return sem_emit_(ctx, SEM_DIAG_module_no_member, loc, "module '%s' has no member '%s'", module, member);
 }
 
 SemDiag *sem_emit_duplicate_decl(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name) {

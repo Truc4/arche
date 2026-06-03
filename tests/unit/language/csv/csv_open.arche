@@ -5,7 +5,7 @@
 buf: char[65536]
 
 main :: proc() {
-  io_open("tests/fixtures/data.csv")(fd:);
+  io.open("tests/fixtures/data.csv")(fd:);
   fmt.printf("fd=%d\n", fd);
-  io_close(move fd);
+  io.close(move fd);
 }
