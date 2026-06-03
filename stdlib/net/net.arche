@@ -6,20 +6,15 @@
 // move/borrow/return a `socket` but not write a raw value into it; the operations below are the
 // only way to act on it.
 socket :: opaque
-#foreign {
-  net_listen :: proc(port: int)(s: socket)
-  net_accept :: proc(s: socket)(r: socket)
-  net_connect :: proc(own ip: char[], port: int)(s: socket)
-}
+#foreign
+net_listen :: proc(port: int)(s: socket)
+net_accept :: proc(s: socket)(r: socket)
+net_connect :: proc(own ip: char[], port: int)(s: socket)
 // `buf` is in-out (the out-param shadows the in-param): zero-copy pass-by-reference into C, which
 // only reads it (`const char *`). At the call, write `_` in the shadowed in-slot to make clear no
 // value is passed there — `net.send(s, _, n)(buf, sent:)`. The C ABI is unchanged.
-#foreign {
-  net_send :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
-  net_recv :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
-}
+net_send :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
+net_recv :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
 // RAII: registers net.close as the destructor for `socket`. A `socket` local that is never
 // explicitly closed is auto-dropped via this proc at scope exit.
-#foreign {
-  @drop(socket) net_close :: proc(own s: socket)
-}
+@drop(socket) net_close :: proc(own s: socket)

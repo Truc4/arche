@@ -5,8 +5,8 @@
 main :: proc() {
   x := 5;
   z := 0;
-  nz := !z;  // z is zero  -> 1
-  nx := !x;  // x is set   -> 0
+  nz := !z; // z is zero  -> 1
+  nx := !x; // x is set   -> 0
   dn := !!x; // truthiness  -> 1
   fmt.printf("nz=%d nx=%d dn=%d\n", nz, nx, dn);
 }

@@ -4,12 +4,23 @@
 #import { fmt }
 main :: proc() {
   x := 2;
-  if (x) { fmt.printf("two "); }
+  if (x) {
+    fmt.printf("two ");
+  }
   z := 0;
-  if (z) { fmt.printf("BAD "); } else { fmt.printf("zero "); }
-  if (!z) { fmt.printf("notz "); }
+  if (z) {
+    fmt.printf("BAD ");
+  }
+  else {
+    fmt.printf("zero ");
+  }
+  if (!z) {
+    fmt.printf("notz ");
+  }
   for (i := 0; i < 3; i = i + 1) {
-    if (i) { fmt.printf("loop%d ", i); }
+    if (i) {
+      fmt.printf("loop%d ", i);
+    }
   }
   fmt.printf("\n");
 }
