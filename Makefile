@@ -346,6 +346,11 @@ install: all
 	cp -R stdlib/. "$(ARCHE_LIBDIR)/stdlib/"
 	install -m 0644 $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o "$(ARCHE_LIBDIR)/runtime/"
 	@[ -d docs/explain ] && cp -R docs/explain/. "$(ARCHE_LIBDIR)/explain/" || true
+	@# `cp -R` preserves source-tree modes (and leaves a pre-existing dest file's mode untouched on
+	@# re-install), so a stdlib file that happens to be 0600 in the tree lands unreadable for the
+	@# user who runs `arche`. Normalize: every installed resource MUST be world-readable (dirs
+	@# traversable). a+rX is idempotent and re-asserts this on every install.
+	chmod -R a+rX "$(ARCHE_LIBDIR)"
 	@# Install shell completions into the dirs each installed shell auto-scans, so they "just work"
 	@# in a new shell with no sourcing. Gated on the shell being present so we don't litter.
 	@if command -v bash >/dev/null 2>&1; then \
