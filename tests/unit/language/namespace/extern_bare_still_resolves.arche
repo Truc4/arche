@@ -7,7 +7,7 @@
 #import { net }
 main :: proc() {
   net.net_listen(8080)(s:); // idiomatic: qualified
-  net_listen(8081)(s2:);    // raw C symbol still resolves (interop affordance)
+  net_listen(8081)(s2:); // raw C symbol still resolves (interop affordance)
   net.net_close(move s);
   net.net_close(move s2);
 }
