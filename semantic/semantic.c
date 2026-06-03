@@ -1137,6 +1137,10 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	}
 
 	case EXPR_UNARY: {
+		/* `!x` yields an int 0/1 regardless of the operand's type (it's `x == 0`); `-x`/`move`/`copy`
+		 * keep the operand's type. */
+		if (expr->data.unary.op == UNARY_NOT)
+			return "int";
 		return resolve_expression_type(ctx, expr->data.unary.operand);
 	}
 
@@ -3912,20 +3916,27 @@ static Expression *cst_build_expr(CstView e) {
 		break;
 	}
 	case SN_FIELD_EXPR: {
-		/* `base.f1.f2…[idx]` flat: base IDENT, then (DOT FIELD_NAME)+, optional trailing index. */
+		/* `base.f1.f2…[idx]` flat: base IDENT, then (DOT FIELD_NAME)+, optional trailing index. The
+		 * sub-expr nodes are built directly here (not via cst_build_expr), so propagate the source
+		 * loc onto each one — otherwise diagnostics on them (undefined base, missing member) report
+		 * at line 1,1. */
+		SourceLoc floc = ax->loc;
 		Expression *base = expression_create(EXPR_NAME);
+		base->loc = floc;
 		base->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
 		base->data.name.is_table_ref = 0;
 		Expression *cur = base;
 		int nfields = cv_count(e, SN_FIELD_NAME);
 		for (int i = 0; i < nfields; i++) {
 			Expression *f = expression_create(EXPR_FIELD);
+			f->loc = floc;
 			f->data.field.base = cur;
 			f->data.field.field_name = sem_cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
 			cur = f;
 		}
 		if (cv_has_token(e, TOK_LBRACKET)) {
 			Expression *idx = expression_create(EXPR_INDEX);
+			idx->loc = floc;
 			idx->data.index.base = cur;
 			int ic = 0;
 			for (int i = 0; i < e.node->child_count; i++)
@@ -3952,11 +3963,13 @@ static Expression *cst_build_expr(CstView e) {
 	case SN_INDEX_EXPR: {
 		ax->type = EXPR_INDEX;
 		Expression *base = expression_create(EXPR_NAME);
+		base->loc = ax->loc;
 		base->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
 		base->data.name.is_table_ref = 0;
 		int nfields = cv_count(e, SN_FIELD_NAME);
 		for (int i = 0; i < nfields; i++) {
 			Expression *f = expression_create(EXPR_FIELD);
+			f->loc = ax->loc;
 			f->data.field.base = base;
 			f->data.field.field_name = sem_cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
 			base = f;
@@ -3985,11 +3998,13 @@ static Expression *cst_build_expr(CstView e) {
 		 * `:` token: before → lo, after → hi (either may be absent). */
 		ax->type = EXPR_SLICE;
 		Expression *base = expression_create(EXPR_NAME);
+		base->loc = ax->loc;
 		base->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
 		base->data.name.is_table_ref = 0;
 		int nfields = cv_count(e, SN_FIELD_NAME);
 		for (int i = 0; i < nfields; i++) {
 			Expression *f = expression_create(EXPR_FIELD);
+			f->loc = ax->loc;
 			f->data.field.base = base;
 			f->data.field.field_name = sem_cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
 			base = f;
@@ -4057,14 +4072,16 @@ static Expression *cst_build_expr(CstView e) {
 		Expression *callee;
 		int callee_nfields = cv_count(e, SN_FIELD_NAME);
 		if (callee_nfields > 0) {
-			/* Qualified callee `mod.name` (no SN_CALLEE_NAME): rebuild the field access; the
-			 * qualify pass folds `mod.name` → `mod_name` for imported modules. */
+			/* Qualified callee `mod.name`: rebuild the field access; the qualify pass binds it to the
+			 * member's identity. Propagate loc so a `module has no member` diagnostic locates right. */
 			Expression *base = expression_create(EXPR_NAME);
+			base->loc = ax->loc;
 			base->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
 			base->data.name.is_table_ref = 0;
 			Expression *cur = base;
 			for (int i = 0; i < callee_nfields; i++) {
 				Expression *f = expression_create(EXPR_FIELD);
+				f->loc = ax->loc;
 				f->data.field.base = cur;
 				f->data.field.field_name = sem_cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
 				cur = f;
@@ -4072,6 +4089,7 @@ static Expression *cst_build_expr(CstView e) {
 			callee = cur;
 		} else {
 			callee = expression_create(EXPR_NAME);
+			callee->loc = ax->loc;
 			callee->data.name.name = sem_cv_dup(cv_child(e, SN_CALLEE_NAME));
 			callee->data.name.is_table_ref = 0;
 		}

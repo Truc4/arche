@@ -619,6 +619,25 @@ static const char *extern_member_llvm(HirType *t) {
 	return llvm_type_from_arche(field_base_type_name(t));
 }
 
+/* The LLVM integer type to compare a truthiness condition against 0 (`if`/`for` test). Conditions
+ * are arche ints of various widths — `bool` (i8), `int` (i32), an opaque/handle cell (i64), or any
+ * iN — so the `icmp ne <T>, 0` MUST use the value's real width (a hardcoded i32 mis-types an i8
+ * `bool` condition). Defaults to i32 for anything non-integer (a type error elsewhere). */
+static const char *cond_int_type(const HirExpr *cond) {
+	if (!cond)
+		return "i32";
+	if (cond->resolved.tag == HIR_TYPE_OPAQUE || cond->resolved.tag == HIR_TYPE_HANDLE)
+		return "i64"; /* non-null cell test */
+	const char *a = field_base_type_name((HirType *)&cond->resolved);
+	if (a && strcmp(a, "bool") == 0)
+		return "i8";
+	const char *t = llvm_type_from_arche(a);
+	if (strcmp(t, "i1") == 0 || strcmp(t, "i8") == 0 || strcmp(t, "i16") == 0 || strcmp(t, "i32") == 0 ||
+	    strcmp(t, "i64") == 0 || strcmp(t, "i128") == 0)
+		return t;
+	return "i32";
+}
+
 /* Fill `out` with the LLVM type for a return-type list: `void` for count 0, the single type for
  * count 1, or a literal aggregate `{T1, T2, …}` for a multi-value return. Shared by funcs and procs
  * (both now carry a `return_types`/`return_type_count` list). */
@@ -2229,10 +2248,11 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			else
 				buffer_append_fmt(ctx, "  %s = sub i32 0, %s\n", res_name, operand_buf);
 		} else if (expr->data.unary.op == UNARY_NOT) {
-			/* `!x` ≡ `x == 0`: produces an arche int 0/1 (i32), like a comparison. Truthiness-correct
-			 * on any int operand — the old `xor i1` wrongly assumed the operand was already an i1. */
+			/* `!x` ≡ `x == 0`: produces an arche int 0/1 (i32), like a comparison. Compare against 0
+			 * at the OPERAND's real width (bool=i8, opaque cell=i64, …), not a hardcoded i32. */
 			char *eq_i1 = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = icmp eq i32 %s, 0\n", eq_i1, operand_buf);
+			buffer_append_fmt(ctx, "  %s = icmp eq %s %s, 0\n", eq_i1, cond_int_type(expr->data.unary.operand),
+			                  operand_buf);
 			buffer_append_fmt(ctx, "  %s = zext i1 %s to i32\n", res_name, eq_i1);
 		}
 		strcpy(result_buf, res_name);
@@ -6072,8 +6092,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				char cond_buf[256];
 				codegen_expression(ctx, stmt->data.for_stmt.cond, cond_buf);
 				char *cond_i1 = gen_value_name(ctx);
-				/* Truthiness: nonzero is true (`icmp ne …, 0`, not low-bit `trunc`). */
-				buffer_append_fmt(ctx, "  %s = icmp ne i32 %s, 0\n", cond_i1, cond_buf);
+				/* Truthiness: nonzero is true; use the cond value's real width. */
+				buffer_append_fmt(ctx, "  %s = icmp ne %s %s, 0\n", cond_i1, cond_int_type(stmt->data.for_stmt.cond), cond_buf);
 				buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cond_i1, body_label, exit_label);
 			} else {
 				buffer_append_fmt(ctx, "  br label %s\n", body_label);
@@ -6129,8 +6149,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				char cond_buf[256];
 				codegen_expression(ctx, stmt->data.for_stmt.cond, cond_buf);
 				char *cond_i1 = gen_value_name(ctx);
-				/* Truthiness: nonzero is true (`icmp ne …, 0`, not low-bit `trunc`). */
-				buffer_append_fmt(ctx, "  %s = icmp ne i32 %s, 0\n", cond_i1, cond_buf);
+				/* Truthiness: nonzero is true; use the cond value's real width. */
+				buffer_append_fmt(ctx, "  %s = icmp ne %s %s, 0\n", cond_i1, cond_int_type(stmt->data.for_stmt.cond), cond_buf);
 				buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cond_i1, body_label, exit_label);
 			} else {
 				buffer_append_fmt(ctx, "  br label %s\n", body_label);
@@ -6165,15 +6185,12 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 
 		/* Bridge the arche-int condition to LLVM's i1 (which `br` requires). Truthiness: nonzero is
 		 * true — `icmp ne <val>, 0` (NOT `trunc`, which tests only the low bit, making `if (2)`
-		 * false). Correct for both comparison results (i32 0/1) and any bare int. */
+		 * false). Use the condition's real width (bool=i8, int=i32, opaque/handle cell=i64, …). */
 		const char *branch_cond = cond_buf;
 		if (cond_buf[0] == '%') {
 			char *truncated = gen_value_name(ctx);
-			if (stmt->data.if_stmt.cond && (stmt->data.if_stmt.cond->resolved.tag == HIR_TYPE_OPAQUE ||
-			                                stmt->data.if_stmt.cond->resolved.tag == HIR_TYPE_HANDLE))
-				buffer_append_fmt(ctx, "  %s = icmp ne i64 %s, 0\n", truncated, cond_buf); /* non-null cell */
-			else
-				buffer_append_fmt(ctx, "  %s = icmp ne i32 %s, 0\n", truncated, cond_buf);
+			buffer_append_fmt(ctx, "  %s = icmp ne %s %s, 0\n", truncated, cond_int_type(stmt->data.if_stmt.cond),
+			                  cond_buf);
 			branch_cond = truncated;
 		}
 
@@ -6365,6 +6382,20 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				buffer_append_fmt(ctx, "  %s = insertvalue %s undef, %s %s, 0\n", a1, ret_type, ptrt, sv->llvm_name);
 				char *a2 = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = insertvalue %s %s, i64 %s, 1\n", a2, ret_type, a1, lenbuf);
+				buffer_append_fmt(ctx, "  ret %s %s\n", ret_type, a2);
+				break;
+			}
+			/* Returning a STRING LITERAL as `char[]`: codegen_expression yields the i8* data pointer,
+			 * but the slice return type is `{i8*, i64}` — wrap it with the literal's byte length so we
+			 * hand back a proper (ptr,len) slice (e.g. `return "text/html"`). */
+			if (slice_ret && rv && rv->kind == HIR_EXPR_STRING) {
+				char sbuf[256];
+				codegen_expression(ctx, rs->values[0], sbuf);
+				char *a1 = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = insertvalue %s undef, i8* %s, 0\n", a1, ret_type, sbuf);
+				char *a2 = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = insertvalue %s %s, i64 %d, 1\n", a2, ret_type, a1,
+				                  rv->data.string.length);
 				buffer_append_fmt(ctx, "  ret %s %s\n", ret_type, a2);
 				break;
 			}
