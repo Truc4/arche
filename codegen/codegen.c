@@ -2566,7 +2566,6 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		char base_buf[256], idx_buf[256];
 		codegen_expression(ctx, expr->data.index.base, base_buf);
 
-
 		/* Check if base is a type-6 slice pointer variable */
 		const char *type6_elem_type = NULL;
 		int type6_bound = 0; /* compile-time element count N for a bounded array (0 = unbounded slice) */
@@ -4789,8 +4788,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			                   stmt->data.bind_stmt.value->data.call.callee->kind == HIR_EXPR_NAME)
 			                      ? find_func_decl(ctx, stmt->data.bind_stmt.value->data.call.callee->data.name.name)
 			                      : NULL;
-			if (cf && cf->return_type_count == 1 && cf->return_types[0] &&
-			    cf->return_types[0]->tag == HIR_TYPE_ARRAY) {
+			if (cf && cf->return_type_count == 1 && cf->return_types[0] && cf->return_types[0]->tag == HIR_TYPE_ARRAY) {
 				is_slice_call = 1;
 				arr_elem = field_base_type_name(cf->return_types[0]);
 				arr_n = -1;

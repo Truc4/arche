@@ -17,7 +17,9 @@
 // arg decays to its data pointer (like C). The fd wrappers below build on it. Call qualified as
 // `os.syscall(...)`.
 #foreign {
-  @intrinsic os_syscall :: proc(n: i64, a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64)(r: i64)
+  @intrinsic os_syscall :: proc(n: i64, a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64)(
+    r: i64,
+  )
 }
 // Raw fd I/O — thin syscall wrappers (x86-64 Linux), no libc. Read-only buffers (`write`/`open`
 // path) are plain borrows; a filled buffer (`read`) is in-out (handed back through the out-list).

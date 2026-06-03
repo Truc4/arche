@@ -6,9 +6,16 @@
 #import { fmt }
 main :: proc() {
   buf: char[8];
-  s := buf[2:5]; // length 3, cap 8-2=6
+  s := buf[2: 5]; // length 3, cap 8-2=6
   ib: int[10];
-  t := ib[3:7]; // length 4, cap 10-3=7
-  fmt.printf("slen=%d scap=%d tlen=%d tcap=%d bufcap=%d ibcap=%d\n", s.length, s.cap, t.length, t.cap, buf.cap,
-    ib.cap);
+  t := ib[3: 7]; // length 4, cap 10-3=7
+  fmt.printf(
+    "slen=%d scap=%d tlen=%d tcap=%d bufcap=%d ibcap=%d\n",
+    s.length,
+    s.cap,
+    t.length,
+    t.cap,
+    buf.cap,
+    ib.cap,
+  );
 }

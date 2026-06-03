@@ -12,7 +12,7 @@ mylen :: func(s: char[]) -> int {
 main :: proc() {
   os.argv(1)(raw:);
   os.argv_len(1)(n: i64);
-  arg := raw[0:n];
+  arg := raw[0: n];
   fmt.printf("len=%d\n", mylen(arg));
   fmt.printf("n=%d\n", parse.atoi(arg));
 }

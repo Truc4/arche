@@ -81,7 +81,7 @@ add :: proc(pattern: char[], handler_id: route) {
       if (TrieNode.kind[child] == kind) {
         if (kind == nodeKind.kstatic) {
           cs := TrieNode.seg[child];
-          if (seg_eq(cs, TrieNode.seg_len[child], pattern[tstart:e]) == 1) {
+          if (seg_eq(cs, TrieNode.seg_len[child], pattern[tstart: e]) == 1) {
             found = child;
           }
         }
@@ -135,7 +135,7 @@ resolve :: proc(path: char[])(cstart: int[8], clen: int[8], handler_id: route, c
       k := TrieNode.kind[child];
       if (k == nodeKind.kstatic) {
         cs := TrieNode.seg[child];
-        if (seg_eq(cs, TrieNode.seg_len[child], path[s:e]) == 1) {
+        if (seg_eq(cs, TrieNode.seg_len[child], path[s: e]) == 1) {
           static_hit = child;
         }
       }
