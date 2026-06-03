@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "allocations done"
+#import { fmt }
 Message :: arche { text :: char[256], author :: char[64] }
 
 Matrix :: arche { data :: float[10][10] }
@@ -8,5 +9,5 @@ Message[100]
 Matrix[50]
 
 main :: proc() {
-  print("allocations done\n");
+  fmt.print("allocations done\n");
 }

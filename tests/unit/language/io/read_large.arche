@@ -1,9 +1,9 @@
 // RUN: %arche build -o %t %s && %t
-#import { io }
+#import { io fmt }
 main :: proc() {
   io.fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
   buf: char[10000];
   io.fread(fd, buf, 10000)(n:);
   io.fclose(move fd);
-  printf("requested 10000, got: %d\n", n);
+  fmt.printf("requested 10000, got: %d\n", n);
 }

@@ -2,10 +2,11 @@
 // source's storage — not silently store garbage (it used to print an uninitialized scalar). Mirrors
 // `a := b`: a gets b's data, b is consumed. Consistency between `=` and `:=` for move-only types.
 // RUN: %arche build -o %t %s && %t | grep -q "a0=7"
+#import { fmt }
 main :: proc() {
   a: int[3];
   b: int[3];
   b[0] = 7;
   a = b; // move: a now owns b's storage, b is consumed
-  printf("a0=%d\n", a[0]);
+  fmt.printf("a0=%d\n", a[0]);
 }

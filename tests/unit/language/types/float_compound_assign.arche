@@ -1,6 +1,7 @@
 // RUN: %arche build -o %t %s && %t
+#import { fmt }
 main :: proc() {
   x := 1.5;
   x += 1.0;
-  assert(x == 2.5, "float compound assign failed\n");
+  fmt.assert(x == 2.5, "float compound assign failed\n");
 }

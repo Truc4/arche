@@ -1,12 +1,12 @@
 // RUN: %arche build -o %t %s && cd %repo && %t | grep "n="
-#import { io }
+#import { io fmt }
 
 main :: proc() {
   io_open("tests/fixtures/data.csv")(fd:);
   if (fd > 0) {
     buf: char[65536];
     io_read_chunk(fd, buf, 65536)(buf, n:);
-    printf("n=%d\n", n);
+    fmt.printf("n=%d\n", n);
   }
   io_close(move fd);
 }

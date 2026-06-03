@@ -1,7 +1,11 @@
 // The `net` module — TCP sockets (C-backed in runtime/net.c). `#import { net }` then call
 // `net.listen(...)`, `net.accept(...)`, `net.connect(...)`, `net.send(...)`, `net.recv(...)`.
-// Access is qualified-only: a bare `net_listen(...)` does not resolve. The `socket` opaque handle
-// type is a core primitive.
+// Access is qualified-only: a bare `net_listen(...)` does not resolve.
+
+// Primitive opaque handle type for a TCP socket (a raw fd in the opaque cell). You may
+// move/borrow/return a `socket` but not write a raw value into it; the operations below are the
+// only way to act on it.
+socket :: opaque
 #foreign {
   net_listen :: proc(port: int)(s: socket)
   net_accept :: proc(s: socket)(r: socket)

@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "done"
+#import { fmt }
 FloatOps :: arche { val :: float }
 
 FloatOps[8]
@@ -6,5 +7,5 @@ FloatOps[8]
 main :: proc() {
   insert(FloatOps, 1.0);
   insert(FloatOps, 2.0);
-  print("done\n");
+  fmt.print("done\n");
 }

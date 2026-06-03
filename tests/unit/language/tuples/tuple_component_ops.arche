@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "PASS"
+#import { fmt }
 pos(x, y) :: float
 vel(x, y) :: float
 Particle :: arche { pos_x, pos_y, vel_x, vel_y }
@@ -9,17 +10,17 @@ main :: proc() {
   insert(Particle, 0.0, 1.0, 0.5, 0.1);
   insert(Particle, 2.0, 3.0, 0.2, 0.3);
   insert(Particle, 4.0, 5.0, 0.1, 0.2);
-  printf("Before: pos_x[0]=%g vel_x[0]=%g\n", Particle.pos_x[0], Particle.vel_x[0]);
-  printf("Before: pos_y[2]=%g vel_y[2]=%g\n", Particle.pos_y[2], Particle.vel_y[2]);
+  fmt.printf("Before: pos_x[0]=%g vel_x[0]=%g\n", Particle.pos_x[0], Particle.vel_x[0]);
+  fmt.printf("Before: pos_y[2]=%g vel_y[2]=%g\n", Particle.pos_y[2], Particle.vel_y[2]);
   Particle.pos_x = Particle.pos_x + Particle.vel_x;
   Particle.pos_y = Particle.pos_y + Particle.vel_y;
   x0 := Particle.pos_x[0];
   y2 := Particle.pos_y[2];
-  printf("After: pos_x[0]=%g pos_y[2]=%g\n", x0, y2);
+  fmt.printf("After: pos_x[0]=%g pos_y[2]=%g\n", x0, y2);
   x0i := x0 * 10.0;
   y2i := y2 * 10.0;
-  printf("x0i=%g (expect 5), y2i=%g (expect 52)\n", x0i, y2i);
-  assert(x0i == 5, "FAIL: pos_x[0]\n");
-  assert(y2i == 52, "FAIL: pos_y[2]\n");
-  printf("PASS\n");
+  fmt.printf("x0i=%g (expect 5), y2i=%g (expect 52)\n", x0i, y2i);
+  fmt.assert(x0i == 5, "FAIL: pos_x[0]\n");
+  fmt.assert(y2i == 52, "FAIL: pos_y[2]\n");
+  fmt.printf("PASS\n");
 }

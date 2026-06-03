@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t && test -f /tmp/task1_output.csv && wc -l /tmp/task1_output.csv | grep -q "1000"
-#import { io }
+#import { io fmt }
 Task1Data :: arche { price :: float, quantity :: int, revenue :: float }
 
 Task1Data[1000](1000) {
@@ -31,9 +31,9 @@ main :: proc() {
   io.fopen_write("/tmp/task1_output.csv")(fd:);
   for (i := 0; i < 1000; i = i + 1) {
     buf: char[64];
-    sprintf(buf, "%f\n", Task1Data.revenue[i])(buf, n:);
+    fmt.sprintf(buf, "%f\n", Task1Data.revenue[i])(buf, n:);
     io.fwrite(fd, move buf, n);
   }
   io.fclose(move fd);
-  printf("Task1 output written\n");
+  fmt.printf("Task1 output written\n");
 }

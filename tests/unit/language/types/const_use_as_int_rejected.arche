@@ -2,8 +2,9 @@
 // conversion, so binding the float `PI` to an `int` variable is caught (not silently miscompiled).
 // Tycheck (E0200) reports it as `binding: expected 'int', got 'float'`.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'int', got 'float'" %t.out
+#import { fmt }
 PI :: 3.14
 main :: proc() {
   x: int = PI;
-  printf("%d\n", x);
+  fmt.printf("%d\n", x);
 }

@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-#import { parse io }
+#import { parse io fmt }
 Transaction :: arche { price :: float, quantity :: int }
 
 Transaction[3](3) {
@@ -73,6 +73,6 @@ load_csv :: proc(own path: char[]) {
 
 main :: proc() {
   load_csv("../../../../../tests/fixtures/transactions.csv");
-  assert(Transaction.price[0] == 1.0, "price[0] not 1.0\n");
-  printf("csv ok\n");
+  fmt.assert(Transaction.price[0] == 1.0, "price[0] not 1.0\n");
+  fmt.printf("csv ok\n");
 }

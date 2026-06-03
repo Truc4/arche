@@ -1,10 +1,10 @@
 // RUN: %arche build -o %t %s && %t
-#import { io }
+#import { io fmt }
 main :: proc() {
   io.fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
   buf: char[4096];
   io.fread(fd, buf, 4096)(buf, total_n:);
   io.fclose(move fd);
-  printf("Read %d bytes from CSV file\n", total_n);
-  assert(total_n > 0, "should read CSV file\n");
+  fmt.printf("Read %d bytes from CSV file\n", total_n);
+  fmt.assert(total_n > 0, "should read CSV file\n");
 }

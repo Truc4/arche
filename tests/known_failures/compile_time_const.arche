@@ -9,6 +9,7 @@
 // (This directory is excluded from the lit run via tests/lit.cfg. Move this test out once CTFE
 // lands and it passes.)
 // RUN: %arche build -o %t %s && %t | grep "ok"
+#import { fmt }
 area :: func(w: int, h: int) -> int {
   return w * h;
 }
@@ -18,6 +19,6 @@ Grid[area(3, 4)] {
 }
 
 main :: proc() {
-  assert(Grid.cell[11] == 0, "last cell should exist (capacity 12)\n");
-  printf("ok\n");
+  fmt.assert(Grid.cell[11] == 0, "last cell should exist (capacity 12)\n");
+  fmt.printf("ok\n");
 }

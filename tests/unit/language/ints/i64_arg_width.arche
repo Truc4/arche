@@ -2,6 +2,7 @@
 // An int ARGUMENT adopts the callee's declared int width. A bare literal defaults to i32 in its own
 // resolved type, so before this it truncated when handed to an i64 param (9000000000 -> 410065408).
 // Also covers widening an i32 register to an i64 param (sext) and narrowing an i64 to an i32 param.
+#import { fmt }
 ident64 :: func(v: i64) -> i64 {
   return v;
 }
@@ -17,5 +18,5 @@ narrow32 :: func(v: int) -> int {
 main :: proc() {
   r: int = 5000; // i32 register, widened to the i64 param of times_million
   w: i64 = 42; // i64, narrowed to the i32 param of narrow32
-  printf("lit=%lld reg=%lld small=%d\n", ident64(9000000000), times_million(r), narrow32(w));
+  fmt.printf("lit=%lld reg=%lld small=%d\n", ident64(9000000000), times_million(r), narrow32(w));
 }

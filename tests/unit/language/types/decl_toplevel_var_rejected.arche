@@ -3,10 +3,11 @@
 // compile-time constant baked into the data section. The variable is reassignable at runtime.
 // (Full spec: tests/unit/language/declarations/.)
 // RUN: %arche build -o %t %s && %t | grep -q "count=0 then 3"
+#import { fmt }
 count := 0
 
 main :: proc() {
-  printf("count=%d then ", count);
+  fmt.printf("count=%d then ", count);
   count = 3;
-  printf("%d\n", count);
+  fmt.printf("%d\n", count);
 }

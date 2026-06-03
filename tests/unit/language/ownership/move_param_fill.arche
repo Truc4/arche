@@ -3,17 +3,18 @@
 // `own` and no `move` — the binding is never killed, and the out-arg reuses it. This is the
 // canonical fill-buffer / FFI shape.
 // RUN: %arche build -o %t %s && %t | grep "filled=hello n=5"
+#import { fmt }
 fill :: proc(buf: char[32], s: char[])(buf: char[32], n: int) {
   i := 0;
   for (; i < s.length; i += 1) {
     buf[i] = s[i];
   }
-  buf[i] = 0; // NUL-terminate the filled buffer for the `%s` print (an FFI convenience the user writes)
+  buf[i] = 0; // NUL-terminate the filled buffer for the `%s` fmt.print (an FFI convenience the user writes)
   n = i;
 }
 
 main :: proc() {
   b: char[32];
   fill(b, "hello")(b, n:);
-  printf("filled=%s n=%d\n", b, n);
+  fmt.printf("filled=%s n=%d\n", b, n);
 }

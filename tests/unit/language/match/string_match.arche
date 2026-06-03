@@ -1,11 +1,12 @@
 // match on string literals → if-chain of streq (pure-arche byte compare); `_` is
 // the catch-all. The scrutinee is inlined per arm.
 // RUN: %arche build -o %t %s && %t | grep "about"
+#import { fmt }
 route :: proc(path: char[])() {
   match path {
-    "/": printf("home\n");
-    "/about": printf("about\n");
-    _: printf("404\n");
+    "/": fmt.printf("home\n");
+    "/about": fmt.printf("about\n");
+    _: fmt.printf("404\n");
   }
 }
 

@@ -3,9 +3,9 @@
 // names. Here a grouped import of two stdlib modules; the bare names they declare resolve
 // (e.g. os's `os.argc`).
 // RUN: %arche check %s
-#import { os term }
+#import { os term fmt }
 
 main :: proc() {
   os.argc()(n:);
-  printf("argc=%d\n", n);
+  fmt.printf("argc=%d\n", n);
 }

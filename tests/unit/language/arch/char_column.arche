@@ -4,7 +4,7 @@
 // column stride, and the shaped single-index read returning a slice. The stored words are 5 bytes
 // in a zero-initialized 32-wide column, so content is the sub-slice `row[0:5]` (a normal (ptr,len)
 // array — no NUL); `%s` displays them via the column's zero padding (a C-printf boundary detail).
-#import { str }
+#import { str fmt }
 Node :: arche { seg :: char[32], id :: int }
 
 Node[8]
@@ -20,6 +20,6 @@ main :: proc() {
     row := Node.seg[i];
     total = total + str.strlen(row[0:5]); // content slice → 5 + 5
   }
-  eq := streq(r0[0:5], "users");
-  printf("seg0=%s seg1=%s total=%d eq=%d\n", r0, r1, total, eq);
+  eq := str.streq(r0[0:5], "users");
+  fmt.printf("seg0=%s seg1=%s total=%d eq=%d\n", r0, r1, total, eq);
 }

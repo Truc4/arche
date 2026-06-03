@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "Loaded 1000 rows"
-#import { parse io }
+#import { parse io fmt }
 Transaction :: arche { price :: float, quantity :: int }
 
 Transaction[1000](1000) {
@@ -62,5 +62,5 @@ main :: proc() {
     Transaction.quantity[idx] = parse.atoi(qty_str);
     line_start = line_end + 1;
   }
-  printf("Loaded %d rows\n", idx);
+  fmt.printf("Loaded %d rows\n", idx);
 }

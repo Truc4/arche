@@ -1,6 +1,7 @@
 // RUN: %arche build -o %t %s && %t
+#import { fmt os }
 main :: proc() {
   buf: char[256];
-  read(0, buf, 256)(n:);
-  printf("read returned: %d\n", n);
+  os.read(0, buf, 256)(n:);
+  fmt.printf("read returned: %d\n", n);
 }

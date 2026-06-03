@@ -3,6 +3,7 @@
 // open/set/get/close round-trips by value through C. The close is a terminal `consume`,
 // so it linearly retires the resource (must-consume satisfied).
 // RUN: %arche build -o %t --link %S/../extern_type/runtime/test_resource.c %s && %t | grep "value=42"
+#import { fmt }
 resource :: opaque
 #foreign {
   resource_open :: proc(initial: int)(ret: resource)
@@ -15,6 +16,6 @@ main :: proc() {
   resource_open(10)(r:);
   resource_set(r, 42);
   resource_get(r)(v:);
-  printf("value=%d\n", v);
+  fmt.printf("value=%d\n", v);
   resource_close(move r);
 }

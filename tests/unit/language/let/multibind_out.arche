@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "result: 99"
 // A function fills the caller's buffer in place and returns a scalar count.
-#import { str }
+#import { str fmt }
 fill_buf :: func(own buf: char[32]) -> int {
   buf := str.strcopy(move buf, "hello");
   return 99;
@@ -9,5 +9,5 @@ fill_buf :: func(own buf: char[32]) -> int {
 main :: proc() {
   buf: char[32];
   result := fill_buf(move buf);
-  printf("result: %d\n", result);
+  fmt.printf("result: %d\n", result);
 }

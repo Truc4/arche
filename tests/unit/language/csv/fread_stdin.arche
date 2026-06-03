@@ -1,10 +1,10 @@
 // RUN: %arche build -o %t %s && %t
-#import { io }
+#import { io fmt }
 main :: proc() {
   buf: char[256];
   io.stdin()(fd:);
   io.fread(fd, buf, 256)(n:);
-  printf("read from stdin returned %d bytes\n", n);
-  printf("multi-assignment with read() works\n");
+  fmt.printf("read from stdin returned %d bytes\n", n);
+  fmt.printf("multi-assignment with read() works\n");
   io.fclose(move fd);
 }

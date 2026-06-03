@@ -2,11 +2,11 @@
 // A fixed char[N] stack buffer is a normal array of N elements: .cap/.capacity/.length/.max_length
 // are all N, and `strlen` is now just `.length` (a normal array carries its length — no NUL scan).
 // Content shorter than N lives in a sub-slice `buf[0:n]`, not in a NUL terminator.
-#import { str }
+#import { str fmt }
 main :: proc() {
   buf: char[16];
-  sprintf(buf, "hello")(buf, _w:);
-  printf(
+  fmt.sprintf(buf, "hello")(buf, _w:);
+  fmt.printf(
     "cap=%d capacity=%d length=%d max=%d strlen=%d\n",
     buf.cap,
     buf.capacity,

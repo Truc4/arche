@@ -1,5 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 // Multiple handles to same shape is allowed - they're just names/aliases
+#import { fmt }
 Players :: arche { x :: float, y :: int }
 
 Enemies :: arche { x, y }
@@ -11,5 +12,5 @@ Players[2](2) {
 // Only ONE can be allocated
 
 main :: proc() {
-  printf("multiple handles ok\n");
+  fmt.printf("multiple handles ok\n");
 }

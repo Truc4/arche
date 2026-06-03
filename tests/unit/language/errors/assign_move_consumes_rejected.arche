@@ -1,10 +1,11 @@
 // `a = b` moves b (consumes it), exactly like `a := b`. Using b afterward is a use-after-move error —
 // the move discipline applies to assignment, not just binding.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
+#import { fmt }
 main :: proc() {
   a: int[3];
   b: int[3];
   b[0] = 7;
   a = b;
-  printf("%d\n", b[0]);
+  fmt.printf("%d\n", b[0]);
 }

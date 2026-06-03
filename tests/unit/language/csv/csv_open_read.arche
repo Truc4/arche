@@ -1,11 +1,11 @@
 // RUN: %arche build -o %t %s && %t
-#import { io }
+#import { io fmt }
 
 buf: char[65536]
 
 main :: proc() {
-  printf("about to open file\n");
+  fmt.printf("about to open file\n");
   io_open("tests/fixtures/data.csv")(fd:);
-  printf("fd=%d\n", fd);
+  fmt.printf("fd=%d\n", fd);
   io_close(move fd);
 }

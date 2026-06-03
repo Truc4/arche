@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-#import { str }
+#import { str fmt }
 get_len :: func(s: char[]) -> int {
   return str.strlen(s);
 }
@@ -7,6 +7,6 @@ get_len :: func(s: char[]) -> int {
 main :: proc() {
   len := get_len("hello");
   if (len == 5) {
-    printf("strlen ok\n");
+    fmt.printf("strlen ok\n");
   }
 }

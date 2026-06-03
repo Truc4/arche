@@ -3,6 +3,7 @@
 // pos.x/vel.x accesses, so `run` updates every row.
 //   pos0 (0,0)+(1,2) -> (1,2);  pos1 (10,10)+(-1,-1) -> (9,9)
 // RUN: %arche build -o %t %s && %t | grep "R 1 2 9 9"
+#import { fmt }
 Body :: arche { pos(x, y) :: int, vel(x, y) :: int }
 Body[2]
 step :: sys (pos, vel) {
@@ -13,5 +14,5 @@ main :: proc() {
   insert(Body, 0, 0, 1, 2);
   insert(Body, 10, 10, -1, -1);
   run step;
-  printf("R %d %d %d %d\n", Body.pos.x[0], Body.pos.y[0], Body.pos.x[1], Body.pos.y[1]);
+  fmt.printf("R %d %d %d %d\n", Body.pos.x[0], Body.pos.y[0], Body.pos.x[1], Body.pos.y[1]);
 }

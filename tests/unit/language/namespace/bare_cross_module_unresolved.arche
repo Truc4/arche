@@ -2,7 +2,7 @@
 // references nsmod_a's `ns_helper` bare; that no longer resolves (it would need `nsmod_a.ns_helper`).
 // This locks out the behavior the old cross-module bare-reference pass used to allow.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "Undefined symbol 'ns_helper'" %t.out
-#import { nsmod_a nsmod_b }
+#import { nsmod_a nsmod_b fmt }
 main :: proc() {
-  printf("%d\n", nsmod_b.ns_useit(10));
+  fmt.printf("%d\n", nsmod_b.ns_useit(10));
 }

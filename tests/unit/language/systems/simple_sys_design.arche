@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "system_ran"
+#import { fmt }
 Counter :: arche { val :: int }
 
 Counter[1](1) {
@@ -6,11 +7,11 @@ Counter[1](1) {
 }
 
 increment :: sys (val) {
-  printf("system_ran\n");
+  fmt.printf("system_ran\n");
   val = val + 1;
 }
 
 main :: proc() {
   run increment;
-  assert(Counter.val[0] == 1, "system did not run\n");
+  fmt.assert(Counter.val[0] == 1, "system did not run\n");
 }

@@ -2,7 +2,7 @@
 // Radix router: static / :param / * catchall, captured as zero-copy spans. Handler ids are a
 // `handler` enum (registered via `router.add`, dispatched via `match`). The miss sentinel (-1) is
 // remapped to an explicit `not_found` variant, so the `match` is exhaustive with NO `_` arm.
-#import { router }
+#import { router fmt }
 
 handler :: enum { not_found, home, user, static_files }
 
@@ -25,17 +25,17 @@ dispatch :: proc(path: char[]) {
     h = handler.not_found; // remap miss to an explicit variant — no `_` in the enum match
   }
   match h {
-    not_found: printf("notfound ");
-    home: printf("home ");
+    not_found: fmt.printf("notfound ");
+    home: fmt.printf("home ");
     user: {
       idbuf: char[32];
       idbuf := slice(move idbuf, path, st, ln);
-      printf("user=%s ", idbuf);
+      fmt.printf("user=%s ", idbuf);
     }
     static_files: {
       tail: char[64];
       tail := slice(move tail, path, st, ln);
-      printf("static=%s ", tail);
+      fmt.printf("static=%s ", tail);
     }
   }
 }
@@ -50,5 +50,5 @@ main :: proc() {
   dispatch("/users/42");
   dispatch("/static/css/app.css");
   dispatch("/nope");
-  printf("\n");
+  fmt.printf("\n");
 }

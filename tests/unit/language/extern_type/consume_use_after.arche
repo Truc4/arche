@@ -1,16 +1,11 @@
-// Using a resource after it's been consumed (closed) is a compile error. `consume`
-// ends the value's life; the checker rejects the later use.
+// Using a handle after it's been consumed (closed) is a compile error. `move` into a consuming
+// `own` parameter ends the value's life; the checker rejects the later use. Uses the real
+// `io.file` opaque — no FFI stub needed.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
-resource :: opaque
-#foreign {
-  resource_open :: proc(initial: int)(ret: resource)
-  resource_close :: proc(own r: resource)
-  resource_get :: proc(r: resource)(ret: int)
-}
-
+#import { io }
 main :: proc() {
-  resource_open(10)(r:);
-  resource_close(move r);
-  // not moving should be an error
-  resource_get(r)(v:);
+  io.stdout()(f:);
+  io.fclose(move f);
+  // using f after it was consumed should be an error
+  io.fwrite(f, "x", 1);
 }

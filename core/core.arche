@@ -1,88 +1,13 @@
-// core — the implicit prelude (always in scope, no `#import`). true/false/bool, the opaque handle
-// types, the raw syscall + libc-stdio C-foreign layer, the `streq` primitive the match desugar
-// needs, and `assert`. Everything else (file/stdio ops, sockets, str/parse helpers) lives in stdlib
-// modules. (str = strlen/strcopy; parse = atoi/atof; the fd wrappers move to `sys` next.)
+// core — the implicit prelude (always in scope, no `#import`). Just the boolean readability
+// constants. Everything else has moved into stdlib modules:
+//   sys — raw syscall + fd I/O (open/read/write/close/lseek/exit)
+//   io  — `file` handle + file ops + whole-file mmap externs
+//   fmt — printf/sprintf/fflush + print/print_float + assert
+//   net — `socket` handle + TCP ops
+//   str — strlen/strcopy/streq
 
 // Boolean readability constants. Arche has no `bool` primitive; comparisons yield int 0/1, so these
 // are just names for those values (`running := true`, `if (ok == false)`).
 bool :: i8
 true: bool: 1
 false: bool: 0
-
-// Raw Linux/x86-64 syscall intrinsic: emits the `syscall` instruction directly (no libc). A buffer
-// arg decays to its data pointer (like C). Declared first so the fd wrappers below can use it.
-#foreign {
-  syscall :: proc(n: i64, a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64)(r: i64)
-}
-// Raw fd I/O — thin syscall wrappers (x86-64 Linux), no libc. Read-only buffers (`write`/`open`
-// path) are plain borrows; a filled buffer (`read`) is in-out (handed back through the out-list).
-open :: proc(path: char[], flags: int)(fd: int) {
-  syscall(2, path, flags, 0, 0, 0, 0)(r:); // SYS_open(path, flags, mode=0)
-  fd = i32(r);
-}
-read :: proc(fd: int, buf: char[], len: int)(buf: char[], n: int) {
-  syscall(0, fd, buf, len, 0, 0, 0)(r:); // SYS_read(fd, buf, len)
-  n = i32(r);
-}
-write :: proc(fd: int, buf: char[], len: int) {
-  syscall(1, fd, buf, len, 0, 0, 0)(_r:); // SYS_write(fd, buf, len)
-}
-close :: proc(fd: int) {
-  syscall(3, fd, 0, 0, 0, 0, 0)(_r:); // SYS_close(fd)
-}
-lseek :: proc(fd: int, off: i64, whence: int)(pos: i64) {
-  syscall(8, fd, off, whence, 0, 0, 0)(r:); // SYS_lseek(fd, off, whence)
-  pos = r;
-}
-exit :: proc(code: int) {
-  syscall(231, code, 0, 0, 0, 0, 0)(_r:); // SYS_exit_group(code) — does not return
-}
-// Primitive opaque handle types (operations live in the io/net modules). They stay in core so the
-// opaque cell resolves globally; only the operations are module-scoped.
-file :: opaque
-socket :: opaque
-// libc stdio + whole-file mmap (C-runtime externs). C foreign symbols → callable bare everywhere.
-#foreign {
-  arche_file_map :: proc(own path: char[])(data: char[])
-  arche_file_size :: proc()(n: i64)
-  arche_file_unmap :: proc(own data: char[], size: i64)
-  sprintf :: proc(buf: char[], own fmt: char[], ...)(buf: char[], n: int)
-  printf :: proc(own fmt: char[], ...)(n: int)
-  fflush :: proc(stream: int)
-}
-
-/// Byte-compare two strings: 1 if equal, 0 otherwise. Pure (no FFI), so the `match` desugar can use
-/// it for string-literal patterns — which is why it stays in core. (strlen/strcopy → `str` module.)
-///
-/// ```arche
-/// assert(streq("ab", "ab") == 1, "streq equal\n");
-/// assert(streq("ab", "ac") == 0, "streq diff\n");
-/// assert(streq("ab", "abc") == 0, "streq prefix\n");
-/// ```
-streq :: func(a: char[], b: char[]) -> int {
-  if (a.length != b.length) {
-    return 0;
-  }
-  i := 0;
-  for (; i < a.length; i += 1) {
-    if (a[i] != b[i]) {
-      return 0;
-    }
-  }
-  return 1;
-}
-// strlen/strcopy → `str` module (`#import { str }`); atoi/atof → `parse` module.
-print_float :: proc(f: float) {
-  printf("%g", f);
-  fflush(0);
-}
-print :: proc(msg: char[]) {
-  write(1, msg, msg.length);
-}
-assert :: proc(condition: int, message: char[]) {
-  if (condition == 0) {
-    fflush(0);
-    print(message);
-    exit(1);
-  }
-}

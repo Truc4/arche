@@ -1,10 +1,10 @@
 // RUN: %arche build -o %t %s && %t
-#import { str }
+#import { str fmt }
 test_strlen :: func(s: char[]) -> int {
   return str.strlen(s);
 }
 
 main :: proc() {
   n := test_strlen("hello");
-  printf("strlen returned: %d\n", n);
+  fmt.printf("strlen returned: %d\n", n);
 }

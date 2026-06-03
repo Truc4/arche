@@ -1,5 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "p0i"
 // BUG: System operations don't modify fields (see COMPILER_BUG_SYSTEM_OPERATIONS.md)
+#import { fmt }
 Body :: arche { position :: float, velocity :: float }
 
 Body[500]
@@ -26,11 +27,11 @@ main :: proc() {
   p11 := Body.position[11];
   p0i := p0 * 10.0;
   p11i := p11 * 10.0;
-  print("p0i=");
-  print_float(p0i);
-  print(" p11i=");
-  print_float(p11i);
-  print("\n");
-  assert(p0i == 110.0, "position[0] != 11.0\n");
-  assert(p11i == 1320.0, "position[11] != 132.0\n");
+  fmt.print("p0i=");
+  fmt.print_float(p0i);
+  fmt.print(" p11i=");
+  fmt.print_float(p11i);
+  fmt.print("\n");
+  fmt.assert(p0i == 110.0, "position[0] != 11.0\n");
+  fmt.assert(p11i == 1320.0, "position[11] != 132.0\n");
 }

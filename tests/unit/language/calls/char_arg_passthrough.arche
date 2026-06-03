@@ -5,7 +5,7 @@
 // materializes the length (C-side strlen) and `raw[0:n]` is a normal `(ptr, len)` slice — no NUL.
 // RUN: %arche build -o %t %s && %t 42 | grep "len=2"
 // RUN: %t 42 | grep "n=42"
-#import { str parse os }
+#import { str parse os fmt }
 mylen :: func(s: char[]) -> int {
   return str.strlen(s);
 }
@@ -13,6 +13,6 @@ main :: proc() {
   os.argv(1)(raw:);
   os.argv_len(1)(n: i64);
   arg := raw[0:n];
-  printf("len=%d\n", mylen(arg));
-  printf("n=%d\n", parse.atoi(arg));
+  fmt.printf("len=%d\n", mylen(arg));
+  fmt.printf("n=%d\n", parse.atoi(arg));
 }

@@ -2,6 +2,7 @@
 // slice single-writer and aliasing-free. Using the buffer again after the move is rejected: there is
 // only ever one live owner of a mutable slice.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
+#import { fmt }
 take :: func(own xs: int[]) -> int {
   return xs.length;
 }
@@ -10,5 +11,5 @@ main :: proc() {
   a: int[2];
   n := take(move a);
   m := take(move a);
-  printf("%d %d\n", n, m);
+  fmt.printf("%d %d\n", n, m);
 }

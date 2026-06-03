@@ -2,11 +2,12 @@
 // Today's compiler bumped this to LLVM ("floating point constant invalid for type"); tycheck
 // catches it at the semantic layer with a clean diagnostic.
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 return value: expected 'int', got 'float'"
+#import { fmt }
 foo :: func() -> int {
   return 1.5;
 }
 
 main :: proc() {
   x := foo();
-  print(x);
+  fmt.print(x);
 }

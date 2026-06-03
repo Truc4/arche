@@ -1,6 +1,7 @@
 // `buf[lo:hi]` is a read-only borrowed sub-view: a `{ptr+lo, hi-lo}` fat pointer into the same
 // storage, no copy. Works as a call argument and bound to a local; `.length` is the sub-length.
 // RUN: %arche build -o %t %s && %t | grep -q "full=28 mid=9 midlen=3"
+#import { fmt }
 sum :: func(xs: int[]) -> int {
   total := 0;
   i := 0;
@@ -17,5 +18,5 @@ main :: proc() {
     a[i] = i;
   }
   mid := a[2: 5]; // borrowed sub-view (elements 2,3,4)
-  printf("full=%d mid=%d midlen=%d\n", sum(a), sum(a[2: 5]), mid.length);
+  fmt.printf("full=%d mid=%d midlen=%d\n", sum(a), sum(a[2: 5]), mid.length);
 }

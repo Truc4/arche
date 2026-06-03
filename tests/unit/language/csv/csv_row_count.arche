@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && cd %repo && %t | grep "rows: 1000"
-#import { io }
+#import { io fmt }
 
 main :: proc() {
   io_open("tests/fixtures/data.csv")(fd:);
@@ -15,5 +15,5 @@ main :: proc() {
     pos = pos + 1;
   }
   io_close(move fd);
-  printf("rows: %d\n", rows);
+  fmt.printf("rows: %d\n", rows);
 }

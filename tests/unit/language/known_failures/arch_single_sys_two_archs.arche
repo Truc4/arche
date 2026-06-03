@@ -1,5 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "Particle"
 // BUG: System operations don't modify fields (see COMPILER_BUG_SYSTEM_OPERATIONS.md)
+#import { fmt }
 Particle :: arche {
   pos :: float,
   vel :: float,
@@ -31,6 +32,6 @@ main :: proc() {
   bp := Body.pos[0];
   ppi := pp * 10.0;
   bpi := bp * 10.0;
-  assert(ppi == 11, "Particle.pos != 1.1\n");
-  assert(bpi == 22, "Body.pos != 2.2\n");
+  fmt.assert(ppi == 11, "Particle.pos != 1.1\n");
+  fmt.assert(bpi == 22, "Body.pos != 2.2\n");
 }

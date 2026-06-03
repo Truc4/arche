@@ -1,6 +1,7 @@
 // RUN: %arche build -o %t %s && %t
+#import { fmt }
 Point :: arche { x :: int }
 
 main :: proc() {
-  printf("allocated\n");
+  fmt.printf("allocated\n");
 }

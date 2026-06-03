@@ -12,3 +12,33 @@
   os_argv :: proc(i: int)(s: char[])
   os_argv_len :: proc(i: int)(n: i64)
 }
+
+// Raw Linux/x86-64 syscall intrinsic: emits the `syscall` instruction directly (no libc). A buffer
+// arg decays to its data pointer (like C). The fd wrappers below build on it. Call qualified as
+// `os.syscall(...)`.
+#foreign {
+  os_syscall :: proc(n: i64, a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64)(r: i64)
+}
+// Raw fd I/O — thin syscall wrappers (x86-64 Linux), no libc. Read-only buffers (`write`/`open`
+// path) are plain borrows; a filled buffer (`read`) is in-out (handed back through the out-list).
+open :: proc(path: char[], flags: int)(fd: int) {
+  os_syscall(2, path, flags, 0, 0, 0, 0)(r:); // SYS_open(path, flags, mode=0)
+  fd = i32(r);
+}
+read :: proc(fd: int, buf: char[], len: int)(buf: char[], n: int) {
+  os_syscall(0, fd, buf, len, 0, 0, 0)(r:); // SYS_read(fd, buf, len)
+  n = i32(r);
+}
+write :: proc(fd: int, buf: char[], len: int) {
+  os_syscall(1, fd, buf, len, 0, 0, 0)(_r:); // SYS_write(fd, buf, len)
+}
+close :: proc(fd: int) {
+  os_syscall(3, fd, 0, 0, 0, 0, 0)(_r:); // SYS_close(fd)
+}
+lseek :: proc(fd: int, off: i64, whence: int)(pos: i64) {
+  os_syscall(8, fd, off, whence, 0, 0, 0)(r:); // SYS_lseek(fd, off, whence)
+  pos = r;
+}
+exit :: proc(code: int) {
+  os_syscall(231, code, 0, 0, 0, 0, 0)(_r:); // SYS_exit_group(code) — does not return
+}

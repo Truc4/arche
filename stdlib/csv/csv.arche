@@ -4,7 +4,7 @@
 // match by header name.
 // (`arche_file_map`/`_size`/`_unmap` are core primitives, so no module import is needed.)
 
-#import { parse str }
+#import { parse str io }
 load_cols: int[64]
 
 // first index of byte `ch` in data[start..end), or end if absent
@@ -51,8 +51,8 @@ cell_int :: func(c: int, s: char[]) -> int {
 cell :: func { cell_float, cell_int }
 
 load :: proc(arch: archetype, own path: char[]) {
-  arche_file_map(move path)(data:);
-  arche_file_size()(size: i64);
+  io.arche_file_map(move path)(data:);
+  io.arche_file_size()(size: i64);
 
   hdr_end: i64 = find_byte(data, 0, size, '\n');
 
@@ -96,5 +96,5 @@ load :: proc(arch: archetype, own path: char[]) {
     }
     pos = nl + 1;
   }
-  arche_file_unmap(move data, size);
+  io.arche_file_unmap(move data, size);
 }

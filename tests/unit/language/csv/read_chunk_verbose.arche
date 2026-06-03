@@ -1,14 +1,14 @@
 // RUN: %arche build -o %t %s && %t
-#import { io }
+#import { io fmt }
 
 main :: proc() {
   io_open("tests/fixtures/data.csv")(fd:);
-  printf("fd=%d\n", fd);
+  fmt.printf("fd=%d\n", fd);
   if (fd > 0) {
-    printf("about to call csv_read_chunk\n");
+    fmt.printf("about to call csv_read_chunk\n");
     buf: char[65536];
     io_read_chunk(fd, buf, 65536)(buf, n:);
-    printf("n=%d\n", n);
+    fmt.printf("n=%d\n", n);
   }
   io_close(move fd);
 }

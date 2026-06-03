@@ -1,6 +1,7 @@
 // A sub-slice is bounds-checked: 0 <= lo <= hi <= length. An out-of-range slice (hi past the end)
 // aborts at runtime rather than silently over-reading. Runtime check (the `!` expects nonzero exit).
 // RUN: %arche build -o %t %s && ! %t
+#import { fmt }
 sum :: func(xs: int[]) -> int {
   total := 0;
   i := 0;
@@ -12,5 +13,5 @@ sum :: func(xs: int[]) -> int {
 
 main :: proc() {
   a: int[8];
-  printf("%d\n", sum(a[2: 10])); // hi=10 > length 8 -> abort
+  fmt.printf("%d\n", sum(a[2: 10])); // hi=10 > length 8 -> abort
 }

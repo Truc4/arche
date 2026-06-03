@@ -2,6 +2,7 @@
 // moved in through an `own` param and returned by reference, and the values come back as doubles (no
 // int coercion). Guards the element-type generalization of the array-return path beyond int/char.
 // RUN: %arche build -o %t %s && %t | grep -q "owned 9.5 2.25"
+#import { fmt }
 step :: func(own a: float[4], i: int, v: float) -> float[4] {
   a[i] = v;
   return a;
@@ -11,5 +12,5 @@ main :: proc() {
   a: float[4];
   a := step(move a, 0, 9.5);
   a := step(move a, 1, 2.25);
-  printf("owned %g %g\n", a[0], a[1]);
+  fmt.printf("owned %g %g\n", a[0], a[1]);
 }

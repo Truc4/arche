@@ -1,6 +1,7 @@
 // WANT: the same hoisting applies to buffer globals (`name : T[N]`) — a proc may touch a buffer
 // declared below it. (Today buffers work but only if declared first; hoisting removes that.)
 // RUN: %arche build -o %t %s && %t | grep -q "buf0=9"
+#import { fmt }
 fill :: proc() {
   buf[0] = 9; // forward reference to a buffer declared later
 }
@@ -9,5 +10,5 @@ buf: int[4]
 
 main :: proc() {
   fill();
-  printf("buf0=%d\n", buf[0]);
+  fmt.printf("buf0=%d\n", buf[0]);
 }

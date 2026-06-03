@@ -1,6 +1,7 @@
 // A buffer filled in place through a proc's in-out param (`f(b)(b, n:)`) must be indexable in
 // the caller — the CSV reader fills a buffer then scans it byte by byte.
 // RUN: %arche build -o %t %s && %t | grep "c0=72 c1=105 n=2"
+#import { fmt }
 fill :: proc(buf: char[32], s: char[])(buf: char[32], n: int) {
   i := 0;
   for (; i < s.length; i += 1) {
@@ -15,5 +16,5 @@ main :: proc() {
   fill(b, "Hi")(b, n:);
   c0 := b[0];
   c1 := b[1];
-  printf("c0=%d c1=%d n=%d\n", c0, c1, n);
+  fmt.printf("c0=%d c1=%d n=%d\n", c0, c1, n);
 }

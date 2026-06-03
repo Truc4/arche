@@ -5,10 +5,11 @@
 // where it's GEP'd). This is exactly what breaks stdlib/router once its data model sits behind
 // `#module`. A 2-column pool used before its declaration is the minimal repro.
 // RUN: %arche build -o %t %s && %t | grep -q "ab=5,7"
+#import { fmt }
 main :: proc() {
   T.a[0] = 5;
   T.b[0] = 7;
-  printf("ab=%d,%d\n", T.a[0], T.b[0]);
+  fmt.printf("ab=%d,%d\n", T.a[0], T.b[0]);
 }
 
 #module

@@ -1,11 +1,12 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "may not use" %t.out
 // An enum `match` is closed: `_` is rejected (E0212). A `_` would silently absorb variants added
 // later, defeating exhaustiveness — name an explicit case (e.g. a `not_found`) instead.
+#import { fmt }
 method :: enum { get, post, delete }
 main :: proc() {
   m := method.get;
   match m {
-    get: printf("g\n");
-    _: printf("other\n");
+    get: fmt.printf("g\n");
+    _: fmt.printf("other\n");
   }
 }

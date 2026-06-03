@@ -2,9 +2,10 @@
 // types `pos_x` and `pos_y` (each a normal alias over the field's backing). They behave
 // like their backing among their own kind, so `pos_x + pos_y` is int arithmetic.
 // RUN: %arche build -o %t %s && %t | grep "sum: 7"
+#import { fmt }
 pos(x, y) :: int
 main :: proc() {
   a: pos_x = 3;
   b: pos_y = 4;
-  printf("sum: %d\n", a + b);
+  fmt.printf("sum: %d\n", a + b);
 }

@@ -1,6 +1,7 @@
 // .length on an int array returns N (regression for the bounded-array length).
 // RUN: %arche build -o %t %s && %t | grep -q "len=8"
+#import { fmt }
 main :: proc() {
   b: int[8];
-  printf("len=%d\n", b.length);
+  fmt.printf("len=%d\n", b.length);
 }

@@ -2,6 +2,7 @@
 // using it afterward is a compile error. A moved value comes back only through a
 // return value (`buf, n := f(move buf)`).
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
+#import { fmt }
 take :: func(b: char[8]) -> int {
   return 0;
 }
@@ -10,5 +11,5 @@ main :: proc() {
   buf: char[8];
   buf[0] = 'A';
   n := take(move buf);
-  printf("%d\n", buf[0]);
+  fmt.printf("%d\n", buf[0]);
 }

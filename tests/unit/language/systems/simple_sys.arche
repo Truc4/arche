@@ -1,11 +1,12 @@
 // RUN: %arche build -o %t %s && %t | grep "system_ran"
+#import { fmt }
 pos :: float
 Body :: arche { pos }
 
 Body[5]
 
 dummy :: sys (pos) {
-  printf("system_ran\n");
+  fmt.printf("system_ran\n");
   pos = pos;
 }
 
@@ -18,6 +19,6 @@ main :: proc() {
   p1 := Body.pos[1];
   p0i := p0 * 10.0;
   p1i := p1 * 10.0;
-  assert(p0i == 10, "pos[0] != 1.0\n");
-  assert(p1i == 20, "pos[1] != 2.0\n");
+  fmt.assert(p0i == 10, "pos[0] != 1.0\n");
+  fmt.assert(p1i == 20, "pos[1] != 2.0\n");
 }

@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "RESULT=1"
+#import { fmt }
 main :: proc() {
-  printf("RESULT=%d\n", 8 / 4 / 2);
+  fmt.printf("RESULT=%d\n", 8 / 4 / 2);
 }

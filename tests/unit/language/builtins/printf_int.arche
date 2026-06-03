@@ -1,6 +1,7 @@
 // RUN: %arche build -o %t %s && %t | grep "Integer: 42"
+#import { fmt }
 main :: proc() {
   x := 42;
-  printf("Integer: %d\n", x);
-  printf("Literal: %d\n", 123);
+  fmt.printf("Integer: %d\n", x);
+  fmt.printf("Literal: %d\n", 123);
 }

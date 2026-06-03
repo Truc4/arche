@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
-#import { str }
+#import { str fmt }
 main :: proc() {
   len := str.strlen("hello");
-  printf("strlen returned: %d\n", len);
+  fmt.printf("strlen returned: %d\n", len);
 }

@@ -1,13 +1,14 @@
 // RUN: %arche build -o %t %s && %t
 // Step 5: Break statement with infinite for loop
+#import { fmt }
 main :: proc() {
   i := 0;
   for {
     if (i == 2) {
       break;
     }
-    printf("iteration\n");
+    fmt.printf("iteration\n");
     i = i + 1;
   }
-  printf("break ok\n");
+  fmt.printf("break ok\n");
 }

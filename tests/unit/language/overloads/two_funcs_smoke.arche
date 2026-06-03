@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "INT=7 FLOAT=2.5"
+#import { fmt }
 pick_int :: func(x: int) -> int {
   return x + 5;
 }
@@ -11,5 +12,5 @@ pick :: func { pick_int, pick_float }
 main :: proc() {
   a := pick(2);
   b := pick(1.0);
-  printf("INT=%d FLOAT=%g\n", a, b);
+  fmt.printf("INT=%d FLOAT=%g\n", a, b);
 }

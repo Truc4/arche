@@ -2,6 +2,7 @@
 // — if it didn't, it would mean the `::` shorthand was special-cased rather than flowing through
 // the general `name : meta : value` grammar.
 // RUN: %arche build -o %t %s && %t | grep "code=404 r=-7"
+#import { fmt }
 handler: type: proc()(code: int) // explicit longhand, proc type
 unop: type: func(a: int) -> int // explicit longhand, func type
 
@@ -18,5 +19,5 @@ g: unop: negate
 main :: proc() {
   h()(c:);
   r := g(7);
-  printf("code=%d r=%d\n", c, r);
+  fmt.printf("code=%d r=%d\n", c, r);
 }

@@ -3,9 +3,10 @@
 // normalization to the explicit form happens only inside the compiler, not in fmt output).
 // RUN: %arche fmt %s > %t.1 ; %arche fmt %t.1 > %t.2 ; diff %t.1 %t.2
 // RUN: %arche fmt %s | grep -qE "^x *: *int$"
+#import { fmt }
 x: int
 y: int = 5
 
 main :: proc() {
-  printf("%d %d\n", x, y);
+  fmt.printf("%d %d\n", x, y);
 }

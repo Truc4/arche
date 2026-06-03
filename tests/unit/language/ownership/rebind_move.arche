@@ -3,7 +3,7 @@
 // slice) and for in-place mutation, and the rebound name indexes correctly afterward. `strcopy`
 // hands back a normal `(ptr, len)` array — no NUL — so content is read by index / `.length`.
 // RUN: %arche build -o %t %s && %t | grep "a0=104 a1=105 alen=2 b0=11"
-#import { str }
+#import { str fmt }
 fill :: func(own buf: char[16]) -> char[] {
   return str.strcopy(move buf, "hi");
 }
@@ -18,5 +18,5 @@ main :: proc() {
   b: char[16];
   b[0] = 10;
   b := bump(move b);
-  printf("a0=%d a1=%d alen=%d b0=%d\n", a[0], a[1], a.length, b[0]);
+  fmt.printf("a0=%d a1=%d alen=%d b0=%d\n", a[0], a[1], a.length, b[0]);
 }

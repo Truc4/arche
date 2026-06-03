@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && cd %repo && %t | grep "PASS"
-#import { io }
+#import { io fmt }
 
 main :: proc() {
   io_open("tests/fixtures/data.csv")(fd:);
@@ -9,13 +9,13 @@ main :: proc() {
     // RAII: `fd` is auto-dropped (io_close) at scope exit on every path — no explicit close.
     // An explicit close only in this `then` branch would be a 'some paths' consumption error.
     if (n > 0) {
-      printf("PASS: read %d bytes\n", n);
+      fmt.printf("PASS: read %d bytes\n", n);
     }
     else {
-      printf("FAIL: no bytes read\n");
+      fmt.printf("FAIL: no bytes read\n");
     }
   }
   else {
-    printf("FAIL: could not open file\n");
+    fmt.printf("FAIL: could not open file\n");
   }
 }

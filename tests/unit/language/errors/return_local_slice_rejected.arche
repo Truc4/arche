@@ -2,6 +2,7 @@
 // this frame and is reclaimed when it returns, so the handed-back fat pointer would dangle. A returned
 // slice must trace to a buffer passed IN (an `own`/borrowed param). Caught at compile time, never UB.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "cannot return a local array" %t.out
+#import { fmt }
 mk :: func() -> int[] {
   b: int[4];
   return b;
@@ -9,5 +10,5 @@ mk :: func() -> int[] {
 
 main :: proc() {
   r := mk();
-  printf("%d\n", r[0]);
+  fmt.printf("%d\n", r[0]);
 }

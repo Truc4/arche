@@ -1,8 +1,9 @@
 // RUN: %arche build -o %t %s && %t
+#import { fmt os }
 main :: proc() {
-  open("/dev/null", 0)(fd:);
+  os.open("/dev/null", 0)(fd:);
   if (fd >= 0) {
-    printf("open succeeded: fd=%d\n", fd);
-    close(move fd);
+    fmt.printf("open succeeded: fd=%d\n", fd);
+    os.close(move fd);
   }
 }

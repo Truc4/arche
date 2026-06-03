@@ -1,14 +1,12 @@
-// `file` and `socket` (both core builtins) are distinct nominal types though both back to
-// `opaque`. Passing a `file` where a `socket` is expected is a compile error — nominal identity is
-// checked at substitution boundaries (here, a call argument), even though both erase to `opaque`.
+// `io.file` and `net.socket` are distinct nominal types though both back to `opaque`. Passing an
+// `io.file` where a `net.socket` is expected is a compile error — nominal identity is checked at
+// substitution boundaries (here, a call argument), even though both erase to `opaque`. Uses the
+// real stdlib opaques — no FFI stub needed.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expects 'socket'" %t.out
 #import { io net }
-#foreign {
-  open_file :: proc()(ret: file)
-  use_socket :: proc(s: socket)
-}
-
 main :: proc() {
-  open_file()(f:);
-  use_socket(f);
+  io.stdout()(f:);
+  buf: char[8];
+  // net.send expects a `net.socket`; handing it an `io.file` is the type error.
+  net.send(f, buf, 8)(buf, _r:);
 }

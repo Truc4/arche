@@ -2,6 +2,7 @@
 // signature. The element type flows through the fat pointer so `xs[i]` loads doubles (not the default
 // i32) and the runtime `.length` bounds the read. Guards element-typing of the slice ABI beyond int.
 // RUN: %arche build -o %t %s && %t | grep -q "flen=3 fsum=4"
+#import { fmt }
 fsum :: func(xs: float[]) -> float {
   total := 0.0;
   i := 0;
@@ -16,5 +17,5 @@ main :: proc() {
   a[0] = 1.5;
   a[1] = 2.25;
   a[2] = 0.25;
-  printf("flen=%d fsum=%g\n", a.length, fsum(a));
+  fmt.printf("flen=%d fsum=%g\n", a.length, fsum(a));
 }

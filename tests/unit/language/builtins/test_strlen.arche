@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t
-#import { str }
+#import { str fmt }
 main :: proc() {
   len := str.strlen("hello");
-  assert(len == 5, "str.strlen(hello) should be 5\n");
-  printf("strlen ok\n");
+  fmt.assert(len == 5, "str.strlen(hello) should be 5\n");
+  fmt.printf("strlen ok\n");
 }

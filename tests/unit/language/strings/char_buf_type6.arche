@@ -1,9 +1,10 @@
 // A bounded `char[N]` is a NORMAL type-6 array: indexed i8 writes/reads, and `.length` is the
 // compile-time count N — no type-7 / arche_array special case.
 // RUN: %arche build -o %t %s && %t | grep "c0=72 c1=105 len=8"
+#import { fmt }
 main :: proc() {
   buf: char[8];
   buf[0] = 'H';
   buf[1] = 'i';
-  printf("c0=%d c1=%d len=%d\n", buf[0], buf[1], buf.length);
+  fmt.printf("c0=%d c1=%d len=%d\n", buf[0], buf[1], buf.length);
 }

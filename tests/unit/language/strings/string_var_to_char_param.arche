@@ -3,7 +3,7 @@
 // a literal directly, a literal-bound variable, and a fixed char[N] buffer. `strlen` is `.length`,
 // so the literal forms report content length 5, and the whole `char[8]` buffer reports its size 8
 // (a fixed array is N elements — content shorter than N would be a sub-slice `buf[0:n]`).
-#import { str }
+#import { str fmt }
 slen :: proc(s: char[])(r: int) {
   r = str.strlen(s);
 }
@@ -19,5 +19,5 @@ main :: proc() {
   buf[1] = 'i';
   slen(buf)(mid:); // whole char[8] buffer → length 8
 
-  printf("lit=%d var=%d mid=%d\n", lit, var, mid);
+  fmt.printf("lit=%d var=%d mid=%d\n", lit, var, mid);
 }

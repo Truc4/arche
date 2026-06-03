@@ -5,6 +5,7 @@
 // RUN: %arche fmt %s | grep -F "mass : type : int"
 // RUN: %arche fmt %s | grep -F "loc : type : int"
 // RUN: %arche fmt %s | grep -F "short_top :: int"
+#import { fmt }
 alias_top: type: int
 short_top :: int
 Body :: arche { mass: type: int }
@@ -15,5 +16,5 @@ main :: proc() {
   q: alias_top = 2;
   r: short_top = 3;
   m: mass = 4;
-  printf("%d\n", p + q + r + m);
+  fmt.printf("%d\n", p + q + r + m);
 }

@@ -2,8 +2,9 @@
 // the inferred `foo :: T`. Here `weight` backs `int`. The explicit form must survive the
 // formatter (see formatter/meta_alias_preserved), so this file keeps `: type :`.
 // RUN: %arche build -o %t %s && %t | grep "ok: 7"
+#import { fmt }
 weight: type: int
 main :: proc() {
   w: weight = 7;
-  printf("ok: %d\n", w);
+  fmt.printf("ok: %d\n", w);
 }

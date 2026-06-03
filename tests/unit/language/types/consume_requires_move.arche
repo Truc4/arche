@@ -1,15 +1,11 @@
 // An opaque is move-only. Handing a bare opaque binding to a consuming `own` parameter is an IMPLICIT
 // move now (no `move` keyword required) — the transfer consumes the binding, so a second hand-off is
 // a use-after-move error. (The transfer is still visible via the editor's elided-`move` hint.)
+// Uses the real `io.file` opaque (`io.fclose` consumes `own fd`) — no FFI stub needed.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
-resource :: opaque
-#foreign {
-  resource_open :: proc(initial: int)(ret: resource)
-  resource_close :: proc(own r: resource)
-}
-
+#import { io }
 main :: proc() {
-  resource_open(10)(r:);
-  resource_close(r);
-  resource_close(r);
+  io.stdout()(f:);
+  io.fclose(f);
+  io.fclose(f);
 }

@@ -4,6 +4,7 @@
 // was under-sized and insert mis-lowered the string arg. Now two char[N] columns
 // round-trip. See arch/char_column.arche and
 // docs/superpowers/specs/2026-06-01-array-archetype-columns.md.
+#import { fmt }
 Message :: arche { text :: char[256], author :: char[64] }
 
 Message[100]
@@ -12,5 +13,5 @@ main :: proc() {
   insert(Message, "hello", "ada");
   t := Message.text[0];
   a := Message.author[0];
-  printf("msg=%s by=%s\n", t, a);
+  fmt.printf("msg=%s by=%s\n", t, a);
 }

@@ -1,9 +1,10 @@
 // float out-only array param: caller-allocated buffer filled by the proc.
 // RUN: %arche build -o %t %s && %t | grep -q "fout=3.25"
+#import { fmt }
 fill :: proc()(buf: float[4]) {
   buf[0] = 3.25;
 }
 main :: proc() {
   fill()(f:);
-  printf("fout=%g\n", f[0]);
+  fmt.printf("fout=%g\n", f[0]);
 }

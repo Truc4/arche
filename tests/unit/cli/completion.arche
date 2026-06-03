@@ -2,6 +2,7 @@
 // RUN: %arche completion bash | grep -q _arche
 // RUN: %arche completion zsh | grep -q "#compdef arche"
 // RUN: %arche completion fish | grep -q "complete -c arche"
+#import { fmt }
 main :: proc() {
-  printf("x\n");
+  fmt.printf("x\n");
 }

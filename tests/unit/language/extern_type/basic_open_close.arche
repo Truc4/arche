@@ -3,6 +3,7 @@
 // ABI). No extern-table, no handle, no marshal. `consume` on close ends the value's life.
 // RUN: %arche build -o %t --link %S/runtime/test_resource.c %s && %t | grep "value=42"
 
+#import { fmt }
 resource :: opaque
 #foreign {
   resource_open :: proc(initial: int)(ret: resource)
@@ -15,6 +16,6 @@ main :: proc() {
   resource_open(10)(r:);
   resource_set(r, 42);
   resource_get(r)(v:);
-  printf("value=%d\n", v);
+  fmt.printf("value=%d\n", v);
   resource_close(move r);
 }

@@ -1,6 +1,7 @@
 // RUN: %arche build -o %t %s && %t
+#import { fmt }
 main :: proc() {
   buf: char[256];
   c := ',';
-  printf("ok\n");
+  fmt.printf("ok\n");
 }

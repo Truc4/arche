@@ -1,8 +1,9 @@
 // RUN: %arche build -o %t %s && %t
 // Step 3: Braceless if body (single statement)
+#import { fmt }
 main :: proc() {
   x := 1;
   if (x == 1) {
-    printf("braceless if ok\n");
+    fmt.printf("braceless if ok\n");
   }
 }

@@ -1,7 +1,6 @@
 // The `str` module — string helpers (pure Arche, no FFI). `#import { str }` then call
 // `str.strlen(s)` / `str.strcopy(...)`. Access is qualified-only. Strings are normal `char[]`
-// arrays — length-carried, no NUL terminator. (`streq` stays in core: the `match` string-pattern
-// desugar emits it, so it must resolve without an import.)
+// arrays — length-carried, no NUL terminator.
 
 /// Length of a string — just its array length (a `char[]` carries its length; no NUL scan).
 ///
@@ -23,4 +22,25 @@ strcopy :: func(own dst: char[], src: char[]) -> char[] {
   }
   r := dst[0: src.length];
   return r;
+}
+
+/// Byte-compare two strings: 1 if equal, 0 otherwise. Pure (no FFI). The `match` desugar emits a
+/// call to this for string-literal patterns.
+///
+/// ```arche
+/// assert(streq("ab", "ab") == 1, "streq equal\n");
+/// assert(streq("ab", "ac") == 0, "streq diff\n");
+/// assert(streq("ab", "abc") == 0, "streq prefix\n");
+/// ```
+streq :: func(a: char[], b: char[]) -> int {
+  if (a.length != b.length) {
+    return 0;
+  }
+  i := 0;
+  for (; i < a.length; i += 1) {
+    if (a[i] != b[i]) {
+      return 0;
+    }
+  }
+  return 1;
 }
