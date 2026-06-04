@@ -1,0 +1,23 @@
+// A standalone `{ }` block is a nested scope; name refs inside it must still get their real types.
+// A FLOAT and an OPAQUE (io.file) value passed to a proc from INSIDE a block — both previously
+// defaulted to i32 because semantic didn't analyze block bodies (the block was an empty STMT_EXPR).
+// Regression for the `cst_build_stmt` SN_BLOCK desugar.
+// RUN: %arche build -o %t %s && %t | grep -q "^x=3.5 fd=0$"
+#import { io fmt }
+take :: proc(x: float, f: io.file)(v: int) {
+  if (f) {
+    v = 1;
+  }
+  else {
+    v = 0;
+  }
+  fmt.printf("x=%g ", x);
+}
+main :: proc() {
+  ff := 3.5;
+  io.fopen_read("/no/such/zzz")(fd:); // missing → null cell (0)
+  {
+    take(ff, fd)(v:);
+    fmt.printf("fd=%d\n", v);
+  }
+}

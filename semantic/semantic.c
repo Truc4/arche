@@ -4517,6 +4517,19 @@ static Statement *cst_build_stmt(CstView s) {
 		}
 		break;
 	}
+	case SN_BLOCK: {
+		/* A standalone `{ … }` block is a nested scope. Analyze-only: model it as `if (1) { body }` so
+		 * every semantic pass VISITS the block's statements — without this a block was an empty STMT_EXPR
+		 * and its inner exprs went untyped (a name arg defaulted to i32). Lower handles the real scope. */
+		as->type = STMT_IF;
+		Expression *one = expression_create(EXPR_LITERAL);
+		one->data.literal.lexeme = sem_dupz("1");
+		as->data.if_stmt.cond = one;
+		as->data.if_stmt.then_body = cst_build_body(s, &as->data.if_stmt.then_count);
+		as->data.if_stmt.else_body = NULL;
+		as->data.if_stmt.else_count = 0;
+		break;
+	}
 	case SN_MATCH_STMT: {
 		/* Analyze-only desugar: `match scrut { p0: b0; p1: b1; … }` → an if-chain
 		 *   if (scrut) { b0 } else if (scrut) { b1 } …
