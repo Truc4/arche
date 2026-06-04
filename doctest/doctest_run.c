@@ -2,7 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "doctest_run.h"
-#include "../driver/compile.h"
+#include "../compile/compile.h"
 #include "../parser/parser.h"
 #include "doctest_extract.h"
 #include <dirent.h>

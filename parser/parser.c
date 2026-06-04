@@ -759,6 +759,18 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		return 0;
 	advance(parser); /* the binding name — a bare leading IDENT for every top-level form */
 
+	/* Qualified pool head: `lib.Particle[N]` sizes an imported shape's pool. Consume the
+	 * `.IDENT` chain (reassembled to the dotted canonical name in lowering). Only a pool decl
+	 * has a dotted binding name — no other top-level form does — so this is unambiguous. */
+	while (check(parser, TOK_DOT)) {
+		advance(parser); /* '.' */
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "expected an identifier after `.` in a qualified pool name");
+			return 0;
+		}
+		advance(parser); /* the next name segment */
+	}
+
 	/* Pool allocation: `Name[C](N){V}` — capacity in `[]`, optional initial live-count in
 	 * `()`, optional field-init block `{}`. Top-level position implies static storage; the
 	 * name references the archetype shape whose singleton pool to allocate. */
@@ -1497,15 +1509,27 @@ static int parse_binding_tail(Parser *parser, SyntaxNodeKind *out_kind) {
 	if (match(parser, TOK_COLON)) {
 		if (check(parser, TOK_EQ)) {
 			advance(parser); /* `:=` — inferred variable */
+			int rhs_cp = cst_cp(parser);
 			if (!parse_expression(parser))
 				return 0;
+			if (cst_single_node_kind(parser, rhs_cp) == SN_ARCH_EXPR) {
+				error(parser, "archetypes must be declared at global scope — move this `arche { … }` shape "
+				              "out of the proc/block (anonymous `arche { … }` literals in expressions are fine)");
+				return 0;
+			}
 		} else if (check(parser, TOK_COLON)) {
 			advance(parser); /* `::` — inferred-meta local constant */
 			/* `k :: alias T` — consume the transparent-alias marker; backing parses as the value. */
 			if (parser->current.length == 5 && strncmp(parser->current.start, "alias", 5) == 0)
 				advance(parser);
+			int rhs_cp = cst_cp(parser);
 			if (!parse_expression(parser))
 				return 0;
+			if (cst_single_node_kind(parser, rhs_cp) == SN_ARCH_EXPR) {
+				error(parser, "archetypes must be declared at global scope — move this `arche { … }` shape "
+				              "out of the proc/block (anonymous `arche { … }` literals in expressions are fine)");
+				return 0;
+			}
 		} else {
 			TypeForm tf;
 			if (!parse_type_form(parser, &tf)) /* explicit declared type / meta `T` */
@@ -1720,7 +1744,19 @@ static int parse_statement(Parser *parser) {
 			parser->recursion_depth--;
 			goto cleanup;
 		}
-		advance(parser);
+		advance(parser); /* system name (leading segment) */
+
+		/* Qualified system name: `run device.integrate` — a driver runs an imported device's
+		 * system. Consume the `.IDENT` chain; the dotted name is reassembled in lowering. */
+		while (check(parser, TOK_DOT)) {
+			advance(parser); /* '.' */
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected an identifier after `.` in a qualified system name");
+				parser->recursion_depth--;
+				goto cleanup;
+			}
+			advance(parser);
+		}
 
 		if (!match(parser, TOK_SEMI)) {
 			error(parser, "Expected ';'");

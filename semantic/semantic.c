@@ -4440,17 +4440,21 @@ static Statement *cst_build_stmt(CstView s) {
 		break;
 	case SN_RUN_STMT: {
 		as->type = STMT_RUN;
-		/* `run` and `in` are keywords (TOK_RUN/TOK_IN), so the only IDENTs are
-		 * [sys, world?]. System = IDENT[0]. */
-		char *names[2] = {NULL, NULL};
-		int ni = 0;
-		for (int i = 0; i < s.node->child_count && ni < 2; i++)
+		/* `run sys` / `run device.system`: `run` is a keyword, so the only IDENTs are the
+		 * (possibly qualified) system-name segments — join them with `.` (mirrors lower.c). */
+		char namebuf[256];
+		int nl = 0;
+		for (int i = 0; i < s.node->child_count; i++)
 			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
-				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
-				names[ni++] = sem_txt_dup(t);
+				if (nl > 0 && nl < (int)sizeof(namebuf) - 1)
+					namebuf[nl++] = '.';
+				int seg = (int)s.node->children[i].as.token.length;
+				for (int k = 0; k < seg && nl < (int)sizeof(namebuf) - 1; k++)
+					namebuf[nl++] = s.src[s.node->children[i].as.token.offset + k];
 			}
-		as->data.run_stmt.system_name = names[0] ? names[0] : sem_dupz("");
-		as->data.run_stmt.world_name = names[1];
+		namebuf[nl] = '\0';
+		as->data.run_stmt.system_name = sem_dupz(namebuf);
+		as->data.run_stmt.world_name = NULL;
 		break;
 	}
 	case SN_RETURN_STMT: {
@@ -5318,9 +5322,28 @@ static Decl *cst_build_decl_inner(CstView d) {
 	case SN_STATIC_DECL: {
 		Decl *ad = decl_create(DECL_STATIC);
 		if (cv_has_token(d, TOK_LBRACKET)) {
-			/* Pool allocation `Name[C](N){V}`: archetype name is the leading IDENT; capacity is
-			 * the `[…]` expr; optional initial live-count the `(…)` expr; field inits the `{…}`. */
-			char *an = sem_txt_dup(cv_token(d, TOK_IDENT));
+			/* Pool allocation `Name[C](N){V}`: archetype name is the (possibly qualified) head — the
+			 * `.`-joined IDENT tokens before `[` (so `lib.Particle[N]` names the imported shape's
+			 * canonical identity; mirrors lower.c). Capacity is the `[…]` expr; optional initial
+			 * live-count the `(…)` expr; field inits the `{…}`. */
+			char an_buf[256];
+			int an_len = 0;
+			for (int i = 0; i < d.node->child_count; i++) {
+				SyntaxElem *ch = &d.node->children[i];
+				if (ch->tag != SE_TOKEN)
+					continue;
+				if (ch->as.token.kind == TOK_LBRACKET)
+					break;
+				if (ch->as.token.kind != TOK_IDENT)
+					continue;
+				if (an_len > 0 && an_len < (int)sizeof(an_buf) - 1)
+					an_buf[an_len++] = '.';
+				int seg = (int)ch->as.token.length;
+				for (int k = 0; k < seg && an_len < (int)sizeof(an_buf) - 1; k++)
+					an_buf[an_len++] = d.src[ch->as.token.offset + k];
+			}
+			an_buf[an_len] = '\0';
+			char *an = sem_dupz(an_buf);
 			StaticDecl *sd = static_decl_archetype_create(an ? an : sem_dupz(""));
 			int cap_alloc = d.node->child_count + 1;
 			sd->archetype.field_names = calloc(cap_alloc, sizeof(char *));

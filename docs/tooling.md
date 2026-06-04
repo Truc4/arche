@@ -20,6 +20,8 @@ It drives `build/arche-analyzer` under the hood (see below).
 ```
 arche [flags] input.arche          # compile to an executable
 arche test <path> [-v]             # run doctests (see DOCTESTS.md)
+arche init device <name>           # scaffold a device folder (shape + system + doctest)
+arche init driver <name>           # scaffold a driver file (imports, sizes a pool, runs a system)
 arche --explain <code>             # print the long-form explanation for a diagnostic
 ```
 
@@ -33,6 +35,8 @@ Compile flags:
 
 `arche test` runs the runnable examples in `///` doc comments - see [DOCTESTS.md](DOCTESTS.md).
 `arche --explain E0001` reads the long-form note from `docs/explain/<code>.md`.
+`arche init` scaffolds the device/driver templates - see [devices.md](devices.md). It never
+overwrites an existing file.
 
 ## Diagnostics
 

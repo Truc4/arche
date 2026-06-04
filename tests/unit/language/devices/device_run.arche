@@ -1,0 +1,15 @@
+// A driver runs an imported device's system by qualified name (`run phys.integrate`) over the
+// pool it sized (`phys.Particle[4]`) — the core device/driver capability. The device (phys)
+// provides the `integrate` system (pos = pos + vel); after running it, pos[0] = 10 + 1 = 11.
+// RUN: %arche build -o %t %s && %t | grep "ran_ok"
+#import { phys fmt }
+
+phys.Particle[4]
+
+main :: proc() {
+  insert(phys.Particle, 10.0, 1.0);
+  run phys.integrate;
+  v := phys.Particle.pos[0] * 10.0;
+  fmt.assert(v == 110, "pos[0] != 11.0 after integrate\n");
+  fmt.printf("ran_ok\n");
+}

@@ -1,0 +1,27 @@
+// KNOWN FAILURE (Part 2, the @implements binding — not yet implemented; does not parse today).
+//
+// A driver implements a device's required shape with its OWN type whose component names DIFFER,
+// via an @implements decorator. The device (device_iface) reads a component `foo`; this driver
+// names that component `bar`. Structural unification (Part 1b) CANNOT merge them — `foo` != `bar`
+// is the whole reason name-mapping exists. So @implements must bind by name.
+//
+// Decided lowering (name-substitution): when the device's `integrate` lowers into this driver,
+// rewrite the device's required names to the bound driver names — Particle -> Thing, foo -> bar —
+// extending the existing module rename pass (hir_rn_decl / hir_q_decl). The device's system then
+// compiles directly against Thing's pool; `run device_iface.integrate` runs over Thing.
+//
+// RUN: %arche build -o %t %s && %t | grep "bound_ok"
+#import { device_iface fmt }
+
+@implements(device_iface.Particle)
+Thing :: arche { pos :: float, bar :: float }
+
+Thing[4]
+
+main :: proc() {
+  insert(Thing, 10.0, 1.0);    // pos=10, bar=1
+  run device_iface.integrate;  // device reads `foo` == bound `bar`: pos = 10 + 1 = 11
+  v := Thing.pos[0] * 10.0;
+  fmt.assert(v == 110, "pos[0] != 11.0 — @implements binding did not take effect\n");
+  fmt.printf("bound_ok\n");
+}

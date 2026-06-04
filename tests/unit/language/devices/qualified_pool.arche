@@ -1,0 +1,15 @@
+// A driver sizes an imported device's shape by its qualified name (`phys.Particle[8]`),
+// then inserts and reads it back — the caller picks the storage size. The device (phys)
+// declares the shape but no pool.
+// RUN: %arche build -o %t %s && %t | grep "qualified_pool_ok"
+#import { phys fmt }
+
+phys.Particle[8]
+
+main :: proc() {
+  insert(phys.Particle, 10.0, 1.0);
+  p0 := phys.Particle.pos[0];
+  p0i := p0 * 10.0;
+  fmt.assert(p0i == 100, "expected pos[0]==10.0\n");
+  fmt.printf("qualified_pool_ok\n");
+}

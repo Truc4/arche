@@ -1,0 +1,15 @@
+// An anonymous `arche {…}` literal and a structurally-identical named shape lower to the EXACT
+// same canonical shape — one struct, one pool. Here `insert(arche{x,y}, …)` populates the named
+// Foo's pool (proven by reading it back through `Foo.x`).
+// RUN: %arche build -o %t %s && %t | grep "literal_ok"
+#import { fmt }
+Foo :: arche { x :: float, y :: float }
+
+Foo[4]
+
+main :: proc() {
+  insert(arche { x :: float, y :: float }, 1.0, 2.0);
+  v := Foo.x[0] * 10.0;
+  fmt.assert(v == 10, "x[0] != 1.0 — literal did not unify with Foo's pool\n");
+  fmt.printf("literal_ok\n");
+}

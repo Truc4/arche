@@ -73,6 +73,7 @@ int fmt_run(int argc, char **argv, const GlobalOpts *g);
 int analyze_run(int argc, char **argv, const GlobalOpts *g);
 int completion_run(int argc, char **argv, const GlobalOpts *g);
 int version_run(int argc, char **argv, const GlobalOpts *g);
+int init_run(int argc, char **argv, const GlobalOpts *g);
 
 /* Print the long-form explanation for a diagnostic code (from the explain dir) to stdout; returns
  * ARCHE_OK if found, ARCHE_ERR (with a short note) otherwise. Shared by `explain` and `--explain`. */

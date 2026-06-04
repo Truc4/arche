@@ -177,7 +177,7 @@ static void deferred_free(DeferredDiags *d) {
  * so we keep them alive in `holds` until after analysis. */
 
 /* Dedup set of already-loaded modules (per analyze call; reset in resolve_uses_sem). Marking a
- * name before load also makes transitive `#import` cycle-safe. Mirrors driver/compile.c. */
+ * name before load also makes transitive `#import` cycle-safe. Mirrors compile/compile.c. */
 #define SEM_MAX_LOADED_MODS 256
 static char *g_sem_loaded_mods[SEM_MAX_LOADED_MODS];
 static int g_sem_loaded_count;

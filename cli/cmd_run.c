@@ -1,7 +1,7 @@
 /* `arche run` uses POSIX process + temp-file calls (mkdtemp, fork, execv, waitpid, unlink, rmdir),
  * which glibc hides under -std=c99 without a feature-test macro. */
 #define _POSIX_C_SOURCE 200809L
-#include "../driver/compile.h"
+#include "../compile/compile.h"
 #include "../semantic/semantic.h"
 #include "args.h"
 #include "cli.h"

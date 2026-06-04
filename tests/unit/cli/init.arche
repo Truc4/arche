@@ -1,0 +1,8 @@
+// `arche init device <name>` scaffolds a device folder whose doctest passes; `arche init
+// driver <name>` scaffolds a driver file. The generated device is a real, testable device.
+// RUN: rm -rf %t.dev && mkdir -p %t.dev && cd %t.dev && %arche init device gadget && test -f gadget/gadget.arche && %arche test gadget/gadget.arche | grep -q "ok"
+// RUN: rm -rf %t.drv && mkdir -p %t.drv && cd %t.drv && %arche init driver app && test -f app.arche
+#import { fmt }
+main :: proc() {
+  fmt.printf("init_cli_ok\n");
+}

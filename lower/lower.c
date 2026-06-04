@@ -184,6 +184,11 @@ static void tuple_rewrite_stmt(HirStmt *s, const char *base) {
 
 static HirExpr *lower_expr_cst(CstView e);
 static HirStmt *lower_stmt_cst(CstView s);
+static HirDecl *lower_archetype_from(CstView f, char *name);
+/* An anonymous `arche { … }` literal denotes the shape with those fields: mint a synthetic global
+ * archetype for it and return its (deterministic) name, so codegen's canonical_archetype_decl
+ * unifies it with any structurally-identical named shape. NULL if it can't be registered. */
+static const char *synth_archetype_name(CstView arch_expr);
 
 /* malloc'd NUL-terminated copy of a view's source text. */
 static char *cv_dup(CstView v) {
@@ -752,7 +757,7 @@ static HirExpr *lower_expr_cst(CstView e) {
 		for (int i = 0; i < e.node->child_count; i++)
 			if (e.node->children[i].tag == SE_NODE) {
 				SyntaxNodeKind k = e.node->children[i].as.node->kind;
-				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+				if ((k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) || k == SN_ARCH_EXPR)
 					ac++;
 			}
 		ax->data.call.args = calloc(ac ? ac : 1, sizeof(HirExpr *));
@@ -760,11 +765,27 @@ static HirExpr *lower_expr_cst(CstView e) {
 		for (int i = 0; i < e.node->child_count; i++)
 			if (e.node->children[i].tag == SE_NODE) {
 				SyntaxNodeKind k = e.node->children[i].as.node->kind;
-				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
+				/* SN_ARCH_EXPR (an anonymous `arche {…}` literal) is an expression arg too, but sits
+				 * outside the contiguous expr-kind range — accept it so `insert(arche{…}, …)` works. */
+				if ((k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) || k == SN_ARCH_EXPR) {
 					CstView av = {e.node->children[i].as.node, e.src};
 					ax->data.call.args[ax->data.call.arg_count++] = lower_expr_cst(av);
 				}
 			}
+		break;
+	}
+	case SN_ARCH_EXPR: {
+		/* Anonymous shape literal `arche { … }` in expression position (a binding RHS is handled
+		 * in lower_decl_cst). Lower to a NAME referencing a synthetic global archetype of the same
+		 * shape, so it unifies with a structurally-identical named shape via canonical_archetype_decl. */
+		const char *sn = synth_archetype_name(e);
+		if (sn) {
+			ax->kind = HIR_EXPR_NAME;
+			ax->data.name.name = dupz(sn);
+		} else {
+			ax->kind = HIR_EXPR_LITERAL;
+			ax->data.literal.lexeme = cv_dup(e);
+		}
 		break;
 	}
 	default:
@@ -925,17 +946,22 @@ static HirStmt *lower_stmt_cst(CstView s) {
 	}
 	case SN_RUN_STMT: {
 		as->kind = HIR_STMT_RUN;
-		/* `run sys` / `run sys in world`: `run` and `in` are keywords (TOK_RUN/TOK_IN),
-		 * so the only IDENTs are [sys, world?]. System = IDENT[0]. */
-		char *names[2] = {NULL, NULL};
-		int ni = 0;
-		for (int i = 0; i < s.node->child_count && ni < 2; i++)
+		/* `run sys` / `run device.system`: `run` is a keyword, so the only IDENTs are the
+		 * (possibly qualified) system-name segments — join them with `.` to match the imported
+		 * system's canonical identity. (`run … in world` is not emitted by the parser today.) */
+		char namebuf[256];
+		int nl = 0;
+		for (int i = 0; i < s.node->child_count; i++)
 			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
-				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
-				names[ni++] = txt_dup(t);
+				if (nl > 0 && nl < (int)sizeof(namebuf) - 1)
+					namebuf[nl++] = '.';
+				int seg = (int)s.node->children[i].as.token.length;
+				for (int k = 0; k < seg && nl < (int)sizeof(namebuf) - 1; k++)
+					namebuf[nl++] = s.src[s.node->children[i].as.token.offset + k];
 			}
-		as->data.run_stmt.system_name = names[0] ? names[0] : txt_dup((CvText){"", 0});
-		as->data.run_stmt.world_name = names[1];
+		namebuf[nl] = '\0';
+		as->data.run_stmt.system_name = dupz(namebuf);
+		as->data.run_stmt.world_name = NULL;
 		break;
 	}
 	case SN_IF_STMT: {
@@ -1731,6 +1757,44 @@ static HirDecl *lower_archetype_from(CstView f, char *name) {
 	return ad;
 }
 
+/* Synthetic archetypes minted from anonymous `arche { … }` literals, flushed into the program's
+ * decl list by lower_to_hir (reset per compile). Deterministic naming dedupes identical literals;
+ * canonical_archetype_decl then folds each onto a structurally-identical named shape. */
+static HirDecl *g_synth_arch[64];
+static int g_synth_arch_count = 0;
+
+static const char *synth_archetype_name(CstView arch_expr) {
+	/* Deterministic name from the sorted field-name set, so identical literals reuse one decl. */
+	char *names[64];
+	int n = 0;
+	for (int i = 0; i < arch_expr.node->child_count && n < 64; i++)
+		if (arch_expr.node->children[i].tag == SE_NODE && arch_expr.node->children[i].as.node->kind == SN_FIELD_NAME)
+			names[n++] = cv_dup((CstView){arch_expr.node->children[i].as.node, arch_expr.src});
+	for (int i = 1; i < n; i++) { /* insertion sort */
+		char *key = names[i];
+		int j = i - 1;
+		while (j >= 0 && strcmp(names[j], key) > 0) {
+			names[j + 1] = names[j];
+			j--;
+		}
+		names[j + 1] = key;
+	}
+	char buf[256];
+	int bl = snprintf(buf, sizeof(buf), "__shape");
+	for (int i = 0; i < n && bl < (int)sizeof(buf); i++)
+		bl += snprintf(buf + bl, sizeof(buf) - (size_t)bl, "_%s", names[i]);
+	for (int i = 0; i < n; i++)
+		free(names[i]);
+	for (int i = 0; i < g_synth_arch_count; i++)
+		if (strcmp(g_synth_arch[i]->data.archetype->name, buf) == 0)
+			return g_synth_arch[i]->data.archetype->name; /* dedupe identical literals */
+	if (g_synth_arch_count >= 64)
+		return NULL;
+	HirDecl *d = lower_archetype_from(arch_expr, dupz(buf));
+	g_synth_arch[g_synth_arch_count++] = d;
+	return d->data.archetype->name;
+}
+
 static HirDecl *lower_func_group_from(CstView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_FUNC_GROUP);
 	HirFuncGroupDecl *fg = calloc(1, sizeof(HirFuncGroupDecl));
@@ -2010,9 +2074,28 @@ static HirDecl *lower_decl_cst(CstView d) {
 		HirDecl *ad = hir_decl_create(HIR_DECL_STATIC);
 		HirStaticDecl *sd = calloc(1, sizeof(HirStaticDecl));
 		if (cv_has_token(d, TOK_LBRACKET)) {
-			/* Pool allocation `Name[C](N){V}` — archetype name is the leading IDENT. */
+			/* Pool allocation `Name[C](N){V}` — archetype name is the (possibly qualified) head:
+			 * the `.`-joined IDENT tokens before `[`. A bare `Particle[N]` yields "Particle"; a
+			 * qualified `lib.Particle[N]` yields "lib.Particle" (the imported shape's canonical name). */
 			sd->kind = HIR_STATIC_ARCHETYPE;
-			sd->archetype.archetype_name = txt_dup(cv_token(d, TOK_IDENT));
+			char namebuf[256];
+			int nl = 0;
+			for (int i = 0; i < d.node->child_count; i++) {
+				SyntaxElem *ch = &d.node->children[i];
+				if (ch->tag != SE_TOKEN)
+					continue;
+				if (ch->as.token.kind == TOK_LBRACKET)
+					break;
+				if (ch->as.token.kind != TOK_IDENT)
+					continue;
+				if (nl > 0 && nl < (int)sizeof(namebuf) - 1)
+					namebuf[nl++] = '.';
+				int seg = (int)ch->as.token.length;
+				for (int k = 0; k < seg && nl < (int)sizeof(namebuf) - 1; k++)
+					namebuf[nl++] = d.src[ch->as.token.offset + k];
+			}
+			namebuf[nl] = '\0';
+			sd->archetype.archetype_name = dupz(namebuf);
 			/* `[capacity] (init_length) { field: value, ... }`. Capacity (the `[…]` expr) →
 			 * field_values[0] (field_names[0]=NULL); the optional `(…)` expr → init_length, the
 			 * known row count (drives bounds-check elision); each `field: value` in `{}` appends
@@ -2724,6 +2807,7 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 	HirProgram *ast = hir_program_create();
 	CstView r = cv_root(root, src);
 	build_tgroups(root, src); /* tuple-group consts → archetype-field expansion table */
+	g_synth_arch_count = 0;   /* synthetic archetypes minted from anonymous `arche {…}` literals */
 	/* Deep count: decls nested inside `#foreign { }` / `#module { }` block regions are collected
 	 * too (see the region recursion below), so the shallow top-level child count would undersize
 	 * the array and overflow it. cv_node_count_deep is a safe (over-)estimate. */
@@ -2803,6 +2887,14 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 			free(mod_exports[m][s]);
 		free(mod_exports[m]);
 		free(mod_prefix[m]);
+	}
+	/* Register synthetic archetypes minted from anonymous `arche {…}` literals during expression
+	 * lowering. They carry no module refs (skip the qualify pass); a structurally-identical named
+	 * shape, declared earlier, stays canonical so canonical_archetype_decl folds the literal onto it. */
+	if (g_synth_arch_count > 0) {
+		ast->decls = realloc(ast->decls, (size_t)(ast->decl_count + g_synth_arch_count) * sizeof(HirDecl *));
+		for (int i = 0; i < g_synth_arch_count; i++)
+			ast->decls[ast->decl_count++] = g_synth_arch[i];
 	}
 	/* Collapse nested tuple-field accesses (`arch.pos.x` → `arch.pos_x`) to match the
 	 * flattened archetype columns; no-op when no tuple groups are declared. */

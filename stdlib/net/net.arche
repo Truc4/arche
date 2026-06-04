@@ -41,4 +41,5 @@ net_send :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
 net_recv :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
 // RAII: registers net.net_close as the destructor for `socket`. A `socket` local that is never
 // explicitly closed is auto-dropped via this proc at scope exit.
-@drop(socket) net_close :: proc(own s: socket)
+@drop(socket)
+net_close :: proc(own s: socket)

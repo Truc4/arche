@@ -1,4 +1,4 @@
-#include "../driver/compile.h"
+#include "../compile/compile.h"
 #include "../semantic/semantic.h"
 #include "args.h"
 #include "cli.h"

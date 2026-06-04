@@ -1,5 +1,5 @@
-#ifndef ARCHE_DRIVER_COMPILE_H
-#define ARCHE_DRIVER_COMPILE_H
+#ifndef ARCHE_COMPILE_COMPILE_H
+#define ARCHE_COMPILE_COMPILE_H
 
 /* Maximum number of --link paths accepted on one command line */
 #define ARCHE_MAX_LINK_PATHS 32
@@ -35,4 +35,4 @@ int compile_source(const char *user_source, const char *source_path, const char 
  * program is well-formed, 1 otherwise (diagnostics printed to stderr). */
 int compile_check(const char *user_source, const char *source_path, const CompileOpts *opts);
 
-#endif /* ARCHE_DRIVER_COMPILE_H */
+#endif /* ARCHE_COMPILE_COMPILE_H */
