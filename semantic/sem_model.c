@@ -8,6 +8,7 @@ char *strdup(const char *s);
 SemModel *sem_model_new(void) {
 	SemModel *m = malloc(sizeof(SemModel));
 	m->expr_type = NULL;
+	m->expr_nominal = NULL;
 	m->bind_alias = NULL;
 	m->cap = 0;
 	return m;
@@ -20,7 +21,12 @@ void sem_model_free(SemModel *m) {
 		for (int i = 0; i < m->cap; i++)
 			free((char *)m->expr_type[i]); /* model owns its copies */
 	}
+	if (m->expr_nominal) {
+		for (int i = 0; i < m->cap; i++)
+			free((char *)m->expr_nominal[i]);
+	}
 	free(m->expr_type);
+	free(m->expr_nominal);
 	free(m->bind_alias);
 	free(m);
 }
@@ -32,9 +38,11 @@ static void ensure(SemModel *m, uint32_t node_id) {
 	while (newcap <= (int)node_id)
 		newcap *= 2;
 	m->expr_type = realloc(m->expr_type, (size_t)newcap * sizeof(const char *));
+	m->expr_nominal = realloc(m->expr_nominal, (size_t)newcap * sizeof(const char *));
 	m->bind_alias = realloc(m->bind_alias, (size_t)newcap * sizeof(uint8_t));
 	for (int i = m->cap; i < newcap; i++) {
 		m->expr_type[i] = NULL;
+		m->expr_nominal[i] = NULL;
 		m->bind_alias[i] = 0;
 	}
 	m->cap = newcap;
@@ -52,6 +60,18 @@ const char *sem_model_expr_type(const SemModel *m, uint32_t node_id) {
 	if (!m || (int)node_id >= m->cap)
 		return NULL;
 	return m->expr_type[node_id];
+}
+
+void sem_model_set_expr_nominal(SemModel *m, uint32_t node_id, const char *name) {
+	ensure(m, node_id);
+	free((char *)m->expr_nominal[node_id]);
+	m->expr_nominal[node_id] = name ? strdup(name) : NULL;
+}
+
+const char *sem_model_expr_nominal(const SemModel *m, uint32_t node_id) {
+	if (!m || (int)node_id >= m->cap)
+		return NULL;
+	return m->expr_nominal[node_id];
 }
 
 void sem_model_set_bind_alias(SemModel *m, uint32_t node_id) {

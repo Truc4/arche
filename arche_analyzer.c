@@ -398,6 +398,8 @@ static void emit_typeref_hint(CstView tr, SemanticContext *ctx) {
 	const char *backing = semantic_resolve_type_alias(ctx, name);
 	if (!backing || strcmp(backing, name) == 0)
 		return; /* not an alias (or already its own backing) */
+	if (semantic_alias_is_transparent(ctx, name))
+		return; /* transparent (tier-1) alias — the name IS the backing, no distinction to show */
 	char text[260];
 	snprintf(text, sizeof(text), "(%s)", display_type(backing));
 	/* Annotation after the alias name: pad-left only (space between name and `(`). */

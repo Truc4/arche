@@ -115,7 +115,8 @@ struct SemanticContext {
 	 * lowering, so codegen never sees an alias. */
 	char **type_alias_names;
 	char **type_alias_backings;
-	SourceLoc *type_alias_locs; /* loc of each alias's declaration, for late diagnostics */
+	int *type_alias_transparent; /* per-alias tier: 1 = transparent (tier-1, == backing), 0 = subtype */
+	SourceLoc *type_alias_locs;  /* loc of each alias's declaration, for late diagnostics */
 	int type_alias_count;
 
 	/* Opaque destructor registry (RAII): a `@drop` proc binds its `own` opaque param type to
@@ -858,13 +859,23 @@ static int is_primitive_type_name(const char *type_name) {
 /* If `name` is a nominal type alias, follow the chain to its ultimate backing type
  * name (a primitive or `opaque`); otherwise return `name` unchanged. The guard bounds
  * the walk so an accidental cycle can't loop forever. */
+/* Match a registry alias name against a (possibly module-qualified) reference: an exact match, or
+ * the reference's `mod.tail` matching the registered bare `tail` (so a qualified `io.file` resolves
+ * to the `file :: opaque` registered inside the `io` module). */
+static int alias_name_matches(const char *registered, const char *ref) {
+	if (strcmp(registered, ref) == 0)
+		return 1;
+	const char *dot = strrchr(ref, '.');
+	return dot && strcmp(registered, dot + 1) == 0;
+}
+
 static const char *resolve_type_alias(SemanticContext *ctx, const char *name) {
 	if (!ctx || !name)
 		return name;
 	for (int guard = 0; guard <= ctx->type_alias_count; guard++) {
 		int found = 0;
 		for (int i = 0; i < ctx->type_alias_count; i++) {
-			if (strcmp(ctx->type_alias_names[i], name) == 0) {
+			if (alias_name_matches(ctx->type_alias_names[i], name)) {
 				name = ctx->type_alias_backings[i];
 				found = 1;
 				break;
@@ -876,14 +887,21 @@ static const char *resolve_type_alias(SemanticContext *ctx, const char *name) {
 	return name;
 }
 
-/* 1 if `name` is a registered nominal type alias. */
+/* 1 if `name` is a registered nominal type alias (qualified or bare). */
 static int is_type_alias(SemanticContext *ctx, const char *name) {
 	if (!ctx || !name)
 		return 0;
 	for (int i = 0; i < ctx->type_alias_count; i++)
-		if (strcmp(ctx->type_alias_names[i], name) == 0)
+		if (alias_name_matches(ctx->type_alias_names[i], name))
 			return 1;
 	return 0;
+}
+
+/* 1 if `name(x)` is a TYPE conversion rather than a proc/func call: a primitive/width cast
+ * (`i64(x)`, `float(x)`) or a nominal alias/subtype conversion (`meters(x)`, `mps(x)`). The callee
+ * names a type, so only the argument is analyzed and the expression takes that type. */
+static int is_type_conversion_callee(SemanticContext *ctx, const char *name) {
+	return is_primitive_type_name(name) || is_type_alias(ctx, name);
 }
 
 /* ---- constant / type-alias registration (pass 0 helpers) ----
@@ -895,7 +913,8 @@ static int is_type_alias(SemanticContext *ctx, const char *name) {
 /* Register a nominal alias `name → backing`; redefinition must AGREE (same backing).
  * `loc` is the alias declaration's source position — used for the redefinition error
  * and stored so the late "unknown backing" pass can blame the original site. */
-static void register_type_alias(SemanticContext *ctx, const char *name, const char *backing, SourceLoc loc) {
+static void register_type_alias_tiered(SemanticContext *ctx, const char *name, const char *backing, int transparent,
+                                       SourceLoc loc) {
 	for (int j = 0; j < ctx->type_alias_count; j++) {
 		if (strcmp(ctx->type_alias_names[j], name) == 0) {
 			/* Define-once: a type/component name is declared exactly once program-wide. A second
@@ -910,11 +929,29 @@ static void register_type_alias(SemanticContext *ctx, const char *name, const ch
 	}
 	ctx->type_alias_names = realloc(ctx->type_alias_names, (ctx->type_alias_count + 1) * sizeof(char *));
 	ctx->type_alias_backings = realloc(ctx->type_alias_backings, (ctx->type_alias_count + 1) * sizeof(char *));
+	ctx->type_alias_transparent = realloc(ctx->type_alias_transparent, (ctx->type_alias_count + 1) * sizeof(int));
 	ctx->type_alias_locs = realloc(ctx->type_alias_locs, (ctx->type_alias_count + 1) * sizeof(SourceLoc));
 	ctx->type_alias_names[ctx->type_alias_count] = (char *)name;
 	ctx->type_alias_backings[ctx->type_alias_count] = (char *)backing;
+	ctx->type_alias_transparent[ctx->type_alias_count] = transparent;
 	ctx->type_alias_locs[ctx->type_alias_count] = loc;
 	ctx->type_alias_count++;
+}
+
+/* Back-compat shim: the common case registers a tier-2 subtype (the distinct-by-default). */
+static void register_type_alias(SemanticContext *ctx, const char *name, const char *backing, SourceLoc loc) {
+	register_type_alias_tiered(ctx, name, backing, 0, loc);
+}
+
+/* 1 if `name` is a registered TRANSPARENT (tier-1) alias — same identity as its backing. A tier-2
+ * subtype (the default) returns 0, as does any non-alias name. */
+static int alias_is_transparent(SemanticContext *ctx, const char *name) {
+	if (!ctx || !name)
+		return 0;
+	for (int i = 0; i < ctx->type_alias_count; i++)
+		if (alias_name_matches(ctx->type_alias_names[i], name))
+			return ctx->type_alias_transparent[i];
+	return 0;
 }
 
 /* The stored value lexeme of a value const, or NULL. */
@@ -1041,7 +1078,7 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		if (strchr(lex, '.') || strchr(lex, 'e') || strchr(lex, 'E')) {
 			return "float"; /* Will be converted to double by codegen */
 		}
-		return "int";
+		return "i32"; /* `i32` is the canonical integer; `int` is its transparent alias */
 	}
 
 	case EXPR_NAME: {
@@ -1179,6 +1216,12 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		if (is_width_int_name(func_name))
 			return func_name;
 
+		/* Type conversion `float(x)` / `meters(x)` / `mps(x)`: the RUNTIME result is the target's
+		 * backing (the nominal is cosmetic and erases). Lowering/codegen read this; the typechecker
+		 * tracks the distinct subtype separately via synth_call. */
+		if (is_primitive_type_name(func_name) || is_type_alias(ctx, func_name))
+			return resolve_type_alias(ctx, func_name);
+
 		/* `insert(table<X>, …)` yields a handle into X's table (i64). Resolving it
 		 * lets `let h := insert(...)` carry a handle type, so copies like
 		 * `let alias := h` inherit it instead of defaulting to int. */
@@ -1291,7 +1334,17 @@ static const char *nominal_type_of_expr(SemanticContext *ctx, Expression *e) {
 		return nominal_type_of_expr(ctx, e->data.unary.operand);
 	if (e->type == EXPR_NAME) {
 		VariableInfo *v = find_variable(ctx, e->data.name.name);
-		return v ? v->nominal_type : NULL;
+		if (!v)
+			return NULL;
+		if (v->nominal_type)
+			return v->nominal_type;
+		/* Fall back to the declared type name when it is a non-transparent alias — covers params and
+		 * any var whose nominal_type wasn't recorded at bind time (so an opaque `file` parameter keeps
+		 * its distinct identity through a call, not just a fresh `x: file` local). */
+		if (v->type && v->type->kind == TYPE_NAME && is_type_alias(ctx, v->type->data.name) &&
+		    !alias_is_transparent(ctx, v->type->data.name))
+			return v->type->data.name;
+		return NULL;
 	}
 	if (e->type == EXPR_CALL && e->data.call.callee && e->data.call.callee->type == EXPR_NAME) {
 		FuncDecl *fd = find_func_decl_cst(ctx->prog, e->data.call.callee->data.name.name);
@@ -1618,10 +1671,11 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		 * arguments (and any nested calls) are value positions. */
 		int call_stmt_ok = ctx->stmt_call_ok;
 		ctx->stmt_call_ok = 0;
-		/* Width-type cast: i64(x), u8(x), etc. The callee is a type name, not a
-		 * function — analyze only the argument(s) and stop. */
+		/* Type conversion: i64(x)/u8(x) width casts, float(x), and nominal subtype conversions
+		 * meters(x)/mps(x). The callee is a type name, not a function — analyze only the argument(s)
+		 * and stop (no callee resolution, no undefined-symbol error). */
 		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME &&
-		    is_width_int_name(expr->data.call.callee->data.name.name)) {
+		    is_type_conversion_callee(ctx, expr->data.call.callee->data.name.name)) {
 			for (int i = 0; i < expr->data.call.arg_count; i++) {
 				ctx->analyzing_call_arg = 1; /* enable E0112 'arg-position' check for this arg */
 				analyze_expression(ctx, expr->data.call.args[i]);
@@ -1893,8 +1947,15 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 	 * the model, not Expression.resolved_type). Call resolve unconditionally to keep
 	 * its side effects; parser-built expressions always link to a CST node. */
 	const char *resolved = resolve_expression_type(ctx, expr);
-	if (ctx->model && expr->cst_id)
-		sem_model_set_expr_type(ctx->model, expr->cst_id - 1, resolved);
+	if (ctx->model && expr->cst_id) {
+		sem_model_set_expr_type(ctx->model, expr->cst_id - 1, resolved); /* RESOLVED backing — lowering */
+		/* Distinct-by-default: record the tier-2 subtype name separately (a `meters` variable, an
+		 * opaque handle, …) so the typechecker can enforce sibling/backing distinctness without
+		 * disturbing lowering's resolved view. Transparent (tier-1) aliases carry no nominal. */
+		const char *nom = nominal_type_of_expr(ctx, expr);
+		if (nom && is_type_alias(ctx, nom) && !alias_is_transparent(ctx, nom))
+			sem_model_set_expr_nominal(ctx->model, expr->cst_id - 1, nom);
+	}
 }
 
 /* A bare name in an ownership-TAKING position (bind/assign RHS, `own`-param arg) is an implicit
@@ -1943,7 +2004,8 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				if (!backing) {
 					sem_emit_local_alias_invalid_backing(ctx, stmt->loc);
 				} else {
-					register_type_alias(ctx, b->name, backing, stmt->loc);
+					register_type_alias_tiered(ctx, b->name, backing, b->type_value ? b->type_value->is_transparent : 0,
+					                           stmt->loc);
 					const char *resolved = resolve_type_alias(ctx, b->name);
 					if (!is_primitive_type_name(resolved) && strcmp(resolved, "opaque") != 0) {
 						sem_emit_type_alias_unknown_backing(ctx, stmt->loc, b->name, resolved);
@@ -3626,6 +3688,23 @@ static TypeRef *cst_build_type(CstView t);
 static CstView sem_type_at(CstView v, int idx);
 static int cv_type_count_sem(CstView v);
 
+/* 1 if a `name :: <rhs>` const carries the `alias` transparent-marker: a loose IDENT token `alias`
+ * sitting after the binding name (the backing-name value is an expr node, not a loose token). */
+static int cst_const_alias_marked(CstView d) {
+	int seen_name = 0;
+	for (int i = 0; i < d.node->child_count; i++) {
+		const SyntaxElem *e = &d.node->children[i];
+		if (e->tag != SE_TOKEN || e->as.token.kind != TOK_IDENT)
+			continue;
+		if (!seen_name) {
+			seen_name = 1; /* the binding name */
+			continue;
+		}
+		return e->as.token.length == 5 && memcmp(d.src + e->as.token.offset, "alias", 5) == 0;
+	}
+	return 0;
+}
+
 /* The archetype name inside `handle<X>` / `handle(X)` (the IDENT that isn't "handle"). */
 static char *cst_handle_name(CstView t) {
 	for (int i = 0; i < t.node->child_count; i++)
@@ -3639,6 +3718,31 @@ static char *cst_handle_name(CstView t) {
 
 /* Type name from an SN_TYPE_REF: a qualified `mod.Name` (two IDENTs) folds to `mod_Name` (the
  * module's mangled type symbol), matching lower.c's type_ref_name; a bare type returns its IDENT. */
+/* 1 if this SN_TYPE_REF has a `.` token — a qualified `mod.name`. Distinguishes a real two-IDENT
+ * qualified type from the `alias T` transparent marker (two adjacent IDENTs, no dot). */
+static int sem_type_ref_has_dot(CstView t) {
+	for (int i = 0; i < t.node->child_count; i++)
+		if (t.node->children[i].tag == SE_TOKEN && t.node->children[i].as.token.kind == TOK_DOT)
+			return 1;
+	return 0;
+}
+
+/* 1 if this SN_TYPE_REF carries the leading `alias` transparent-marker (with a real backing name
+ * following): two adjacent IDENTs where the first is `alias`, and no `.` (so it is not `mod.name`). */
+static int sem_type_ref_alias_marked(CstView t) {
+	CvText ids[2];
+	int n = 0;
+	for (int i = 0; i < t.node->child_count && n < 2; i++) {
+		const SyntaxElem *e = &t.node->children[i];
+		if (e->tag == SE_TOKEN && e->as.token.kind == TOK_IDENT) {
+			ids[n].ptr = t.src + e->as.token.offset;
+			ids[n].len = e->as.token.length;
+			n++;
+		}
+	}
+	return n >= 2 && ids[0].len == 5 && memcmp(ids[0].ptr, "alias", 5) == 0 && !sem_type_ref_has_dot(t);
+}
+
 static char *sem_type_ref_name(CstView t) {
 	CvText ids[2];
 	int n = 0;
@@ -3650,6 +3754,9 @@ static char *sem_type_ref_name(CstView t) {
 			n++;
 		}
 	}
+	/* `alias T`: transparent marker — the real type name is the second IDENT, not a `mod.name`. */
+	if (n >= 2 && ids[0].len == 5 && memcmp(ids[0].ptr, "alias", 5) == 0 && !sem_type_ref_has_dot(t))
+		return sem_txt_dup(ids[1]);
 	if (n >= 2) {
 		size_t L = ids[0].len + 1 + ids[1].len + 1;
 		char *r = malloc(L);
@@ -3665,6 +3772,7 @@ static TypeRef *cst_build_type(CstView t) {
 	TypeRef *tr = malloc(sizeof(TypeRef));
 	tr->loc.line = 0;
 	tr->loc.column = 0;
+	tr->is_transparent = 0;
 	switch (cv_kind(t)) {
 	case SN_TYPE_REF: {
 		char *raw = sem_type_ref_name(t);
@@ -3679,7 +3787,8 @@ static TypeRef *cst_build_type(CstView t) {
 			free(raw);
 		} else {
 			tr->kind = TYPE_NAME;
-			tr->data.name = raw; /* owned */
+			tr->data.name = raw;                               /* owned */
+			tr->is_transparent = sem_type_ref_alias_marked(t); /* `:: alias T` → tier-1 transparent */
 		}
 		break;
 	}
@@ -5123,6 +5232,7 @@ static Decl *cst_build_decl_inner(CstView d) {
 		ac->decl_type = NULL;
 		ac->type_value = NULL;
 		ac->value = NULL;
+		ac->is_transparent = cst_const_alias_marked(d); /* `name :: alias T` → tier-1 transparent */
 		if (cv_has_token(d, TOK_LPAREN)) {
 			/* tuple group `name (a, b, …) :: T`: a nominal type alias whose RHS is a TYPE_TUPLE
 			 * built from the parenthesized suffixes, each typed by the shared type after `::`. */
@@ -6044,6 +6154,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 	const char **deferred_name = malloc(sizeof(char *) * deferred_cap);
 	const char **deferred_rhs = malloc(sizeof(char *) * deferred_cap);
 	int *deferred_value_ctx = malloc(sizeof(int) * deferred_cap);
+	int *deferred_transparent = malloc(sizeof(int) * deferred_cap);
 	int *deferred_done = calloc(deferred_cap, sizeof(int));
 	SourceLoc *deferred_loc = malloc(sizeof(SourceLoc) * deferred_cap);
 	int deferred_count = 0;
@@ -6083,7 +6194,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 				if (!backing)
 					sem_emit_alias_backing_invalid(ctx, c->type_value->loc);
 				else
-					register_type_alias(ctx, c->name, backing, cloc);
+					register_type_alias_tiered(ctx, c->name, backing, c->type_value->is_transparent, cloc);
 			}
 			continue;
 		}
@@ -6106,6 +6217,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 			deferred_name[deferred_count] = c->name;
 			deferred_rhs[deferred_count] = c->value->data.name.name;
 			deferred_value_ctx[deferred_count] = (c->decl_type != NULL);
+			deferred_transparent[deferred_count] = c->is_transparent;
 			deferred_loc[deferred_count] = cloc;
 			deferred_count++;
 			continue;
@@ -6126,7 +6238,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 				if (deferred_value_ctx[d]) {
 					sem_emit_const_value_is_type(ctx, deferred_loc[d], deferred_name[d], r);
 				} else {
-					register_type_alias(ctx, deferred_name[d], r, deferred_loc[d]);
+					register_type_alias_tiered(ctx, deferred_name[d], r, deferred_transparent[d], deferred_loc[d]);
 				}
 				deferred_done[d] = 1;
 				progress = 1;
@@ -6156,12 +6268,14 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 		if (deferred_value_ctx[d]) {
 			sem_emit_unknown_const_value(ctx, deferred_loc[d], deferred_rhs[d], deferred_name[d]);
 		} else {
-			register_type_alias(ctx, deferred_name[d], deferred_rhs[d], deferred_loc[d]);
+			register_type_alias_tiered(ctx, deferred_name[d], deferred_rhs[d], deferred_transparent[d],
+			                           deferred_loc[d]);
 		}
 	}
 	free(deferred_name);
 	free(deferred_rhs);
 	free(deferred_value_ctx);
+	free(deferred_transparent);
 	free(deferred_done);
 	free(deferred_loc);
 
@@ -6172,7 +6286,9 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 			continue;
 		EnumDecl *e = prog->decls[i]->data.enum_decl;
 		register_enum_entries(ctx, e);
-		register_type_alias(ctx, sem_dupz(e->name), "int", prog->decls[i]->loc);
+		/* An enum is a transparent (tier-1) int alias: variants are int values and `match`/comparison
+		 * treat the enum as int, so it must interchange with int freely. */
+		register_type_alias_tiered(ctx, sem_dupz(e->name), "int", 1, prog->decls[i]->loc);
 	}
 
 	/* Inline component definitions: `arche Foo { hp :: int, … }` mints the nominal type `hp`
@@ -6214,13 +6330,9 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 			}
 			if (done)
 				continue;
-			ctx->type_alias_names = realloc(ctx->type_alias_names, (ctx->type_alias_count + 1) * sizeof(char *));
-			ctx->type_alias_backings = realloc(ctx->type_alias_backings, (ctx->type_alias_count + 1) * sizeof(char *));
-			ctx->type_alias_locs = realloc(ctx->type_alias_locs, (ctx->type_alias_count + 1) * sizeof(SourceLoc));
-			ctx->type_alias_names[ctx->type_alias_count] = fd->name;
-			ctx->type_alias_backings[ctx->type_alias_count] = (char *)backing;
-			ctx->type_alias_locs[ctx->type_alias_count] = fd->loc;
-			ctx->type_alias_count++;
+			/* A component is a tier-2 subtype (distinct nominal, usable as backing) — same as a
+			 * top-level `name :: T`. Route through the registry helper so the tier array stays in sync. */
+			register_type_alias_tiered(ctx, fd->name, backing, 0, fd->loc);
 		}
 	}
 
@@ -6363,6 +6475,7 @@ static SemanticContext *make_context(void) {
 	ctx->const_count = 0;
 	ctx->type_alias_names = NULL;
 	ctx->type_alias_backings = NULL;
+	ctx->type_alias_transparent = NULL;
 	ctx->type_alias_locs = NULL;
 	ctx->type_alias_count = 0;
 	ctx->drop_type_names = NULL;
@@ -6535,6 +6648,7 @@ void semantic_context_free(SemanticContext *ctx) {
 	/* free type-alias tables (name/backing strings are owned by the CST) */
 	free(ctx->type_alias_names);
 	free(ctx->type_alias_backings);
+	free(ctx->type_alias_transparent);
 	free(ctx->type_alias_locs);
 
 	/* free opaque-destructor registry (these strings are owned here — sem_dupz'd) */
@@ -6668,6 +6782,18 @@ const char *semantic_resolve_type_alias(SemanticContext *ctx, const char *name) 
 	if (!ctx || !name)
 		return name;
 	return resolve_type_alias(ctx, name);
+}
+
+/* 1 if `name` is a registered type alias at all (tier-1 or tier-2). Lets the typechecker tell a
+ * distinct-by-default subtype name apart from a bare primitive/width-int/archetype name. */
+int semantic_is_type_alias(SemanticContext *ctx, const char *name) {
+	return is_type_alias(ctx, name);
+}
+
+/* 1 if `name` is a TRANSPARENT (tier-1) alias — interchangeable with its backing. A tier-2 subtype
+ * (the default) or a non-alias name returns 0. */
+int semantic_alias_is_transparent(SemanticContext *ctx, const char *name) {
+	return alias_is_transparent(ctx, name);
 }
 
 const char *semantic_resolve_callable_alias(SemanticContext *ctx, const char *name) {

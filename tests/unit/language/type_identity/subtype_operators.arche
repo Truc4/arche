@@ -1,0 +1,17 @@
+// Operators are exempt from distinctness: same-subtype, subtype+literal, and same-backing-different-
+// subtype all combine (result takes the LEFT operand's nominal type). Guards that the overhaul does
+// NOT block arithmetic. (GREEN today; must STAY green.)
+// RUN: %arche build -o %t %s && %t | grep "a=30 b=15 c=8"
+#import { fmt }
+meters :: float
+seconds :: float
+main :: proc() {
+  m1: meters = 10.0;
+  m2: meters = 20.0;
+  s: seconds = 3.0;
+  f: float = 5.0;
+  a: meters = m1 + m2; // meters + meters -> meters
+  b: meters = m1 + f; // meters + float (same backing) -> meters
+  c: meters = m1 - s + 1.0; // meters - seconds (same backing) + literal -> meters
+  fmt.printf("a=%g b=%g c=%g\n", a, b, c);
+}

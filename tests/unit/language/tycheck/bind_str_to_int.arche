@@ -1,7 +1,7 @@
 // E0200: a typed bind `x : int = "hello"` is rejected. This was silent under the
 // previous compiler (the int↔float check missed string assignment); tycheck's
 // general STMT_BIND rule catches it.
-// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 binding: expected 'int', got 'str'"
+// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 binding: expected 'i32', got 'str'"
 #import { fmt }
 main :: proc() {
   x: int = "hello";

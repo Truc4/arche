@@ -1,0 +1,16 @@
+// Opaque is just another backing: `handle_a` and `handle_b` are tier-2 subtypes over `opaque`, made
+// distinct by the SAME mechanism that distinguishes `meters`/`seconds` over `float` — no opaque-only
+// special case. Passing a `handle_a` where a `handle_b` is expected is an error reported in the
+// unified `expected 'X'` vocabulary. RED until the bolted-on extern-arg check (semantic.c:1797) is
+// replaced by the general nominal path.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'handle_b'" %t.out
+handle_a :: opaque
+handle_b :: opaque
+#foreign {
+  make_a :: proc()(r: handle_a)
+  use_b :: proc(own h: handle_b)
+}
+main :: proc() {
+  make_a()(a:);
+  use_b(move a); // handle_a where handle_b expected -> ERROR
+}

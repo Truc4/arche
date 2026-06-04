@@ -1,0 +1,17 @@
+// Smoke: a small units program. Distinct subtypes meters/seconds/mps over float; safe arithmetic on
+// same-backing operands; an explicit `mps(...)` conversion tags the result at the unit boundary.
+// Prints speed=4. RED until subtypes + the general `T(x)` conversion land.
+// RUN: %arche build -o %t %s && %t | grep "speed=4"
+#import { fmt }
+meters :: float
+seconds :: float
+mps :: float
+speed :: func(d: meters, t: seconds) -> mps {
+  return mps(d / t); // meters/seconds is a float; tag it mps explicitly
+}
+main :: proc() {
+  d: meters = 20.0;
+  t: seconds = 5.0;
+  v: mps = speed(d, t);
+  fmt.printf("speed=%g\n", v);
+}

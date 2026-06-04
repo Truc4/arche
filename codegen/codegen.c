@@ -2755,6 +2755,40 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			}
 		}
 
+		/* Type conversion to a non-width type: float(x), or a nominal alias/subtype conversion
+		 * meters(x)/mps(x). The callee names a type (no proc/func by that name); convert the single
+		 * arg to the call's resolved backing — a no-op when the backings already match (the common
+		 * same-backing case), else a numeric widen/narrow. */
+		{
+			int is_prim = func_name && (strcmp(func_name, "int") == 0 || strcmp(func_name, "float") == 0 ||
+			                            strcmp(func_name, "char") == 0 || strcmp(func_name, "str") == 0);
+			int is_alias = func_name && ctx->sem_ctx && semantic_is_type_alias(ctx->sem_ctx, func_name);
+			if (func_name && expr->data.call.arg_count == 1 && (is_prim || is_alias) &&
+			    !find_proc_decl(ctx, func_name)) {
+				char arg_buf[256];
+				codegen_expression(ctx, expr->data.call.args[0], arg_buf);
+				HirType *from = &expr->data.call.args[0]->resolved;
+				HirType *to = &expr->resolved;
+				if (to->tag == HIR_TYPE_FLOAT && from->tag != HIR_TYPE_FLOAT) {
+					char *c = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = sitofp i32 %s to double\n", c, arg_buf);
+					strcpy(result_buf, c);
+				} else if (to->tag == HIR_TYPE_INT && from->tag == HIR_TYPE_FLOAT) {
+					char *c = gen_value_name(ctx);
+					int tw = to->int_width ? to->int_width : 32;
+					buffer_append_fmt(ctx, "  %s = fptosi double %s to %s\n", c, arg_buf, llvm_int_type(tw));
+					strcpy(result_buf, c);
+				} else if (to->tag == HIR_TYPE_INT && from->tag == HIR_TYPE_INT) {
+					char converted[256];
+					emit_int_convert(ctx, arg_buf, from, to->int_width ? to->int_width : 32, converted);
+					strcpy(result_buf, converted);
+				} else {
+					strcpy(result_buf, arg_buf); /* same backing (incl. float→float, opaque) — identity */
+				}
+				break;
+			}
+		}
+
 		/* Raw Linux/x86-64 syscall intrinsic: syscall(n, a0..a5) -> i64.
 		 * Emits the `syscall` instruction directly (no libc, no C shim): number in
 		 * rax, args in rdi/rsi/rdx/r10/r8/r9, result in rax; rcx/r11/memory clobbered.

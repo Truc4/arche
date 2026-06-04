@@ -1,0 +1,13 @@
+// Explicit conversions cross the subtype boundary and erase to the backing at runtime: `meters(f)`
+// mints a meters from a float; `float(m)` drops back. Prints 7. RED until the general `T(x)`
+// conversion accepts alias names (today only width-int names like `i32(x)` are accepted as a
+// conversion callee, so `meters(f)` is an unknown-callee error).
+// RUN: %arche build -o %t %s && %t | grep "r=7"
+#import { fmt }
+meters :: float
+main :: proc() {
+  f: float = 7.0;
+  d: meters = meters(f); // float -> meters via conversion
+  back: float = float(d); // meters -> float via conversion
+  fmt.printf("r=%g\n", back);
+}

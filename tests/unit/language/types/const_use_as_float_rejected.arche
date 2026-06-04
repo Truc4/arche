@@ -1,7 +1,7 @@
 // The reverse: an int const used where a float is required is also a compile error (no implicit
 // widening). Binding the int `N` to a `float` variable is caught.
-// Tycheck (E0200) reports it as `binding: expected 'float', got 'int'`.
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'float', got 'int'" %t.out
+// Tycheck (E0200) reports it as `binding: expected 'float', got 'i32'`.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'float', got 'i32'" %t.out
 #import { fmt }
 N :: 42
 main :: proc() {
