@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "I=11 F=4 C=99"
+#import { fmt }
 describe_int :: func(x: int) -> int {
   return x + 1;
 }
@@ -15,5 +16,5 @@ main :: proc() {
   a := describe(10);
   b := describe(2.0);
   c := describe('A');
-  printf("I=%d F=%d C=%d\n", a, b, c);
+  fmt.printf("I=%d F=%d C=%d\n", a, b, c);
 }

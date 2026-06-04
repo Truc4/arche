@@ -1,11 +1,12 @@
 // Unified grammar: a foreign proc declared in a `#foreign` region.
 // The out-only out-param maps to the C return value (libc abs).
 // RUN: %arche build -o %t %s && %t | grep "abs=5"
+#import { fmt }
 #foreign {
   abs :: proc(x: int)(r: int)
 }
 
 main :: proc() {
   abs(-5)(a:);
-  printf("abs=%d\n", a);
+  fmt.printf("abs=%d\n", a);
 }

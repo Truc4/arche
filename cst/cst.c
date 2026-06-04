@@ -132,11 +132,21 @@ StaticDecl *static_decl_archetype_create(char *archetype_name) {
 }
 
 StaticDecl *static_decl_array_create(char *name, TypeRef *element_type, int size) {
-	StaticDecl *s = malloc(sizeof(StaticDecl));
+	StaticDecl *s = calloc(1, sizeof(StaticDecl));
 	s->kind = STATIC_KIND_ARRAY;
 	s->array.name = name;
 	s->array.element_type = element_type;
 	s->array.size = size;
+	s->array.init = NULL;
+	return s;
+}
+
+StaticDecl *static_decl_scalar_create(char *name, TypeRef *type, Expression *init) {
+	StaticDecl *s = calloc(1, sizeof(StaticDecl));
+	s->kind = STATIC_KIND_SCALAR;
+	s->scalar.name = name;
+	s->scalar.type = type;
+	s->scalar.init = init;
 	return s;
 }
 
@@ -398,9 +408,14 @@ void static_decl_free(StaticDecl *s) {
 		free(s->archetype.field_names);
 		free(s->archetype.field_values);
 		expression_free(s->archetype.init_length);
+	} else if (s->kind == STATIC_KIND_SCALAR) {
+		free(s->scalar.name);
+		type_ref_free(s->scalar.type);
+		expression_free(s->scalar.init);
 	} else {
 		free(s->array.name);
 		type_ref_free(s->array.element_type);
+		expression_free(s->array.init);
 	}
 	free(s);
 }
@@ -440,6 +455,16 @@ void type_ref_free(TypeRef *type) {
 	case TYPE_OPAQUE:
 		break;
 	case TYPE_TYPE:
+		break;
+	case TYPE_PROC:
+	case TYPE_FUNC:
+		/* A callable signature owns its param/result TypeRefs and the arrays holding them. */
+		for (int i = 0; i < type->data.callable.param_count; i++)
+			type_ref_free(type->data.callable.param_types[i]);
+		free(type->data.callable.param_types);
+		for (int i = 0; i < type->data.callable.result_count; i++)
+			type_ref_free(type->data.callable.result_types[i]);
+		free(type->data.callable.result_types);
 		break;
 	}
 	free(type);
@@ -493,6 +518,7 @@ void statement_free(Statement *stmt) {
 		expression_free(stmt->data.expr_stmt.expr);
 		break;
 	case STMT_BREAK:
+	case STMT_CONTINUE:
 		break;
 	case STMT_RETURN:
 		for (int i = 0; i < stmt->data.return_stmt.count; i++)
@@ -542,6 +568,11 @@ void expression_free(Expression *expr) {
 			expression_free(expr->data.index.indices[i]);
 		}
 		free(expr->data.index.indices);
+		break;
+	case EXPR_SLICE:
+		expression_free(expr->data.slice.base);
+		expression_free(expr->data.slice.lo);
+		expression_free(expr->data.slice.hi);
 		break;
 	case EXPR_BINARY:
 		expression_free(expr->data.binary.left);

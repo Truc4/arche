@@ -2,6 +2,7 @@
 // (`handler :: not_found`), and calls through the alias dispatch to the target. The binding is
 // compile-time — calls compile to a direct call to the target.
 // RUN: %arche build -o %t %s && %t | grep "code=404 sum=7"
+#import { fmt }
 not_found :: proc()(code: int) {
   code = 404;
 }
@@ -15,5 +16,5 @@ plus :: add // func alias
 main :: proc() {
   handler()(c:);
   s := plus(3, 4);
-  printf("code=%d sum=%d\n", c, s);
+  fmt.printf("code=%d sum=%d\n", c, s);
 }

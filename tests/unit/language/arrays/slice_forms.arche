@@ -1,0 +1,20 @@
+// The slice shorthands: `buf[:hi]` (lo defaults 0), `buf[lo:]` (hi defaults length), `buf[:]` (whole).
+// RUN: %arche build -o %t %s && %t | grep -q "pre=3 suf=18 all=28"
+#import { fmt }
+sum :: func(xs: int[]) -> int {
+  total := 0;
+  i := 0;
+  for (i = 0; i < xs.length; i = i + 1) {
+    total += xs[i];
+  }
+  return total;
+}
+
+main :: proc() {
+  a: int[8];
+  i := 0;
+  for (i = 0; i < 8; i = i + 1) {
+    a[i] = i;
+  }
+  fmt.printf("pre=%d suf=%d all=%d\n", sum(a[: 3]), sum(a[5:]), sum(a[:]));
+}

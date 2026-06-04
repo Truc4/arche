@@ -1,9 +1,10 @@
 // RUN: %arche build -o %t %s && %t | grep ABC
+#import { fmt }
 buf: char[128]
 
 main :: proc() {
   buf[0] = 65;
   buf[1] = 66;
   buf[2] = 67;
-  printf("%c%c%c\n", buf[0], buf[1], buf[2]);
+  fmt.printf("%c%c%c\n", buf[0], buf[1], buf[2]);
 }

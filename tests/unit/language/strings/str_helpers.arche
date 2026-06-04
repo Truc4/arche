@@ -1,0 +1,16 @@
+// The generic byte helpers in `str`: find_char (windowed byte search), ends_with (suffix match),
+// contains (substring search) — all over length-carried char[] slices, no NUL. These back the http
+// module's request parsing and the web server's ".." traversal check.
+// RUN: %arche build -o %t %s && %t | grep -q "^fc=1 miss=3 ew=1 no=0 has=1 clean=0$"
+#import { str fmt }
+main :: proc() {
+  fmt.printf(
+    "fc=%d miss=%d ew=%d no=%d has=%d clean=%d\n",
+    str.find_char("a b", 0, 3, ' '), // first space at index 1
+    str.find_char("abc", 0, 3, 'z'), // absent → end (3)
+    str.ends_with("a.html", ".html"), // suffix match
+    str.ends_with("a.css", ".html"), // no match
+    str.contains("/a/../b", ".."), // substring present
+    str.contains("/a/b", ".."), // absent
+  );
+}

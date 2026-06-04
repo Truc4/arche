@@ -1,0 +1,8 @@
+// E0093: `continue` outside any loop is a hard error, emitted at the proper site with the standard
+// registry format (mirrors break_outside_loop / E0030).
+// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0093 continue_outside_loop 0 \`continue\` can only appear inside a loop body"
+#import { fmt }
+main :: proc() {
+  continue;
+  fmt.printf("%d\n", 1);
+}

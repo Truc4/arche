@@ -1,0 +1,11 @@
+// A local binding must not shadow a global proc/func: a variable and a callable share the value
+// namespace, so the bare name is ambiguous (reads resolve to the local, an assignment target to the
+// callable — the silent footgun this rule kills). Here `open` is a core proc, so `open := 1` is a
+// hard error at the declaration. Shadowing a plain variable/param and the `:=` move-rebind idiom
+// stay legal (those names aren't callables).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "shadows the proc/func" %t.out
+#import { fmt }
+main :: proc() {
+  open := 1;
+  fmt.printf("%d\n", open);
+}

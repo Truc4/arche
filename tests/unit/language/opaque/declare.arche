@@ -2,9 +2,10 @@
 // Arche never reads, writes, or fabricates. It declares and statically allocates like
 // any column (a pointer-width slot); nothing touches the cell here.
 // RUN: %arche build -o %t %s && %t | grep "ok"
+#import { fmt }
 fd :: opaque
 File :: arche { fd }
 File[4]
 main :: proc() {
-  printf("ok opaque_declared\n");
+  fmt.printf("ok opaque_declared\n");
 }

@@ -178,6 +178,9 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 5 && strncmp(start, "break", 5) == 0) {
 		return TOK_BREAK;
 	}
+	if (length == 8 && strncmp(start, "continue", 8) == 0) {
+		return TOK_CONTINUE;
+	}
 	if (length == 4 && strncmp(start, "move", 4) == 0) {
 		return TOK_MOVE;
 	}
@@ -566,6 +569,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_IN";
 	case TOK_BREAK:
 		return "TOK_BREAK";
+	case TOK_CONTINUE:
+		return "TOK_CONTINUE";
 	case TOK_MOVE:
 		return "TOK_MOVE";
 	case TOK_OWN:

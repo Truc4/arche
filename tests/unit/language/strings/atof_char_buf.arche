@@ -1,11 +1,12 @@
 // RUN: %arche build -o %t %s && %t
+#import { parse fmt }
 main :: proc() {
   s: char[32];
   s[0] = '1';
   s[1] = '.';
   s[2] = '5';
   s[3] = 0;
-  v := atof(s);
-  assert(v == 1.5, "atof failed\n");
-  printf("atof ok\n");
+  v := parse.atof(s);
+  fmt.assert(v == 1.5, "atof failed\n");
+  fmt.printf("atof ok\n");
 }

@@ -1,5 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 // Task 1: Derived columns (revenue = price * quantity)
+#import { fmt }
 Task1 :: arche { price :: float, quantity :: int, revenue :: float }
 
 Task1[1](1) {
@@ -43,12 +44,12 @@ task4_aggregate_revenue :: sys (price, qty, total) {
 
 main :: proc() {
   run task1_compute_revenue;
-  assert(Task1.revenue[0] == 6.0, "task1 revenue not 6.0\n");
+  fmt.assert(Task1.revenue[0] == 6.0, "task1 revenue not 6.0\n");
   run task2_filter_invalid;
-  assert(Task2.valid[0] == 1, "task2 valid not 1\n");
+  fmt.assert(Task2.valid[0] == 1, "task2 valid not 1\n");
   run task3_bucket_timestamps;
-  assert(Task3.hour_bucket[0] == 7200, "task3 hour_bucket not 7200\n");
+  fmt.assert(Task3.hour_bucket[0] == 7200, "task3 hour_bucket not 7200\n");
   run task4_aggregate_revenue;
-  assert(Task4.total[0] == 4.0, "task4 total not 4.0\n");
-  printf("design_analysis etl ok\n");
+  fmt.assert(Task4.total[0] == 4.0, "task4 total not 4.0\n");
+  fmt.printf("design_analysis etl ok\n");
 }

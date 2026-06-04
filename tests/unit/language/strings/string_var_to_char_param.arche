@@ -1,24 +1,24 @@
 // RUN: %arche build -o %t %s && %t | grep "lit=5 var=5 mid=2"
-// A variable bound to a string literal (`x := "hello"`, a bare i8*) passed to a proc's char[]
-// parameter used to be passed as a raw pointer where the callee expected an arche_array struct —
-// the callee read the string bytes as {ptr,len,cap} and crashed ("stack overflow"). A literal
-// passed directly, and a char[N] buffer variable, both worked; only the literal-bound variable
-// broke. Now the call site wraps it in a stack arche_array. Regression for that fix.
+// A char[] param is a fat-pointer slice `(ptr, len)`. `str.strlen` is the real C strlen: it scans to
+// the NUL. A string literal is a NUL-terminated global, so the literal forms report content length 5.
+// A fixed `char[8]` buffer holds whatever was written; writing "hi\0" makes strlen report 2 (native
+// code would instead carry the length on a sub-slice `buf[0:n]`).
+#import { str fmt }
 slen :: proc(s: char[])(r: int) {
-  r = strlen(s);
+  r = str.strlen(s);
 }
 
 main :: proc() {
-  slen("hello")(lit:); // literal passed directly (always worked)
+  slen("hello")(lit:); // literal passed directly → length 5
 
   x := "hello";
-  slen(x)(var:); // literal-bound variable — the bug
+  slen(x)(var:); // literal-bound variable → length 5
 
   buf: char[8];
   buf[0] = 'h';
   buf[1] = 'i';
-  buf[2] = 0;
-  slen(buf)(mid:); // char[N] buffer variable (always worked)
+  buf[2] = 0; // NUL-terminate so the C strlen stops at the content
+  slen(buf)(mid:); // "hi\0" → length 2
 
-  printf("lit=%d var=%d mid=%d\n", lit, var, mid);
+  fmt.printf("lit=%d var=%d mid=%d\n", lit, var, mid);
 }

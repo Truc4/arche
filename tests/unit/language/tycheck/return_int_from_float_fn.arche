@@ -3,10 +3,11 @@
 // typed-variable mismatches are rejected. A string literal isn't numeric, so a
 // `func -> float` returning `"x"` is the test.
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 return value: expected 'float', got 'str'"
+#import { fmt }
 bar :: func() -> float {
   return "hello";
 }
 
 main :: proc() {
-  print(0);
+  fmt.printf("%d\n", 0);
 }

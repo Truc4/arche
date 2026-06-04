@@ -1,8 +1,9 @@
 // RUN: %arche build -o %t %s && %t
 // Step 1: Char literals
+#import { fmt }
 main :: proc() {
   c := 44;
   nl := 10;
   tab := 9;
-  printf("char ok\n");
+  fmt.printf("char ok\n");
 }

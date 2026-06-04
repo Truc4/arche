@@ -1,0 +1,67 @@
+// The `parse` module — string→number parsing (pure Arche, no FFI). `#import { parse }` then call
+// `parse.atoi(s)` / `parse.atof(s)`. Access is qualified-only: a bare `atoi(...)` does not resolve.
+// Inputs are normal `char[]` arrays — bounded by `.length`, no NUL terminator.
+
+/// Parse a leading (optionally signed) integer; stops at the first non-digit, like libc atoi.
+///
+/// ```arche
+/// assert(atoi("42") == 42, "atoi 42\n");
+/// assert(atoi("-7") == -7, "atoi -7\n");
+/// assert(atoi("13abc") == 13, "atoi stops at non-digit\n");
+/// ```
+atoi :: func(s: char[]) -> int {
+  i := 0;
+  sign := 1;
+  if (s.length > 0 && s[0] == '-') {
+    sign = 0 - 1;
+    i = 1;
+  }
+  n := 0;
+  for (; i < s.length; i += 1) {
+    if (s[i] < '0') {
+      break;
+    }
+    if (s[i] > '9') {
+      break;
+    }
+    n = n * 10 + (s[i] - '0');
+  }
+  return sign * n;
+}
+
+/// Parse a leading (optionally signed) decimal: integer part then optional fraction, like libc atof.
+atof :: func(s: char[]) -> float {
+  i := 0;
+  sign := 1.0;
+  if (s.length > 0 && s[0] == '-') {
+    sign = 0.0 - 1.0;
+    i = 1;
+  }
+  whole := 0.0;
+  for (; i < s.length; i += 1) {
+    if (s[i] == '.') {
+      i += 1;
+      break;
+    }
+    if (s[i] < '0') {
+      break;
+    }
+    if (s[i] > '9') {
+      break;
+    }
+    whole = whole * 10.0 + (s[i] - '0');
+  }
+  frac := 0.0;
+  scale := 1.0;
+  for (; i < s.length; i += 1) {
+    if (s[i] < '0') {
+      break;
+    }
+    if (s[i] > '9') {
+      break;
+    }
+    frac = frac * 10.0 + (s[i] - '0');
+    scale = scale * 10.0;
+  }
+  return sign * (whole + frac / scale);
+}

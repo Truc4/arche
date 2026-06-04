@@ -2,7 +2,8 @@
 // previous compiler (the int↔float check missed string assignment); tycheck's
 // general STMT_BIND rule catches it.
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 binding: expected 'int', got 'str'"
+#import { fmt }
 main :: proc() {
   x: int = "hello";
-  print(x);
+  fmt.printf("%d\n", x);
 }

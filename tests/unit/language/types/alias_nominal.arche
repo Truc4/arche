@@ -2,9 +2,10 @@
 // own kind it inherits the backing's operators and erases to the backing in codegen,
 // so `count + count` is `int + int` and prints 30.
 // RUN: %arche build -o %t %s && %t | grep "result: 30"
+#import { fmt }
 count :: int
 main :: proc() {
   a: count = 10;
   b: count = 20;
-  printf("result: %d\n", a + b);
+  fmt.printf("result: %d\n", a + b);
 }

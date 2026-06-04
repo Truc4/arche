@@ -2,8 +2,9 @@
 // (looser binds last). So `1 || 0 && 0` == `1 || (0 && 0)` == 1 (not `(1||0)&&0` == 0),
 // and `2 > 1 && 3 > 2` == `(2>1) && (3>2)` == 1.
 // RUN: %arche build -o %t %s && %t | grep -q "^1 1$"
+#import { fmt }
 main :: proc() {
   a := 1 || 0 && 0;
   b := 2 > 1 && 3 > 2;
-  printf("%d %d\n", a, b);
+  fmt.printf("%d %d\n", a, b);
 }

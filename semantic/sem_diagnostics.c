@@ -131,11 +131,14 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	/* Tycheck (P3 type-check pass — E0200+). All typing-rule violations route through
 	 * E0200; sharper kind/arity constraints get their own codes in Phase B. */
 	[SEM_DIAG_break_outside_loop]            = { "E0030", "break_outside_loop",            CLASS_ERROR, 1 },
+	[SEM_DIAG_continue_outside_loop]         = { "E0093", "continue_outside_loop",         CLASS_ERROR, 1 },
+	[SEM_DIAG_module_no_member]              = { "E0094", "module_no_member",              CLASS_ERROR, 1 },
 	[SEM_DIAG_type_mismatch]                 = { "E0200", "type_mismatch",                 CLASS_ERROR, 1 },
 	[SEM_DIAG_not_indexable]                 = { "E0201", "not_indexable",                 CLASS_ERROR, 1 },
 	[SEM_DIAG_wrong_arity]                   = { "E0203", "wrong_arity",                   CLASS_ERROR, 1 },
 	[SEM_DIAG_non_exhaustive_match]          = { "E0210", "non_exhaustive_match",          CLASS_ERROR, 1 },
 	[SEM_DIAG_callable_in_archetype]         = { "E0211", "callable_in_archetype",         CLASS_ERROR, 1 },
+	[SEM_DIAG_wildcard_in_enum_match]        = { "E0212", "wildcard_in_enum_match",        CLASS_ERROR, 1 },
 
 	/* Lints */
 	[SEM_LINT_proc_could_be_func]            = { "W0001", "proc_could_be_func",            CLASS_LINT, 1 },
@@ -493,10 +496,10 @@ SemDiag *sem_emit_own_requires_move_or_copy(SemanticContext *ctx, SourceLoc loc,
 }
 SemDiag *sem_emit_cannot_mutate_borrowed(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_cannot_mutate_borrowed, loc,
-	                 "cannot mutate read-only parameter '%s' — array parameters are borrowed "
-	                 "(read-only) by default; to write one, make it in-out (the same name in "
-	                 "both the in-list and out-list, no `own`/`move`), or copy it into a local",
-	                 name);
+	                 "cannot mutate read-only parameter '%s' — an array/slice parameter is a borrowed "
+	                 "(read-only) view by default; to write one, take ownership with `own %s: T[]` and "
+	                 "`move` the buffer in, use an in-out out-param, or copy it into a local",
+	                 name, name);
 }
 SemDiag *sem_emit_extern_array_param_needs_own(SemanticContext *ctx, SourceLoc loc, const char *param_name,
                                                const char *proc_name) {
@@ -595,7 +598,15 @@ SemDiag *sem_emit_component_redefined(SemanticContext *ctx, SourceLoc loc, const
 
 SemDiag *sem_emit_non_exhaustive_match(SemanticContext *ctx, SourceLoc loc, const char *missing) {
 	return sem_emit_(ctx, SEM_DIAG_non_exhaustive_match, loc,
-	                 "non-exhaustive match: missing '%s' (cover every variant, or add a `_` arm)", missing);
+	                 "non-exhaustive match: missing '%s' (an enum match must cover every variant; an "
+	                 "open-key match needs a `_`)",
+	                 missing);
+}
+
+SemDiag *sem_emit_wildcard_in_enum_match(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_DIAG_wildcard_in_enum_match, loc,
+	                 "an enum `match` may not use `_` — cover every variant explicitly (add a named "
+	                 "case like `not_found` instead of a catch-all)");
 }
 
 SemDiag *sem_emit_callable_in_archetype(SemanticContext *ctx, SourceLoc loc, const char *name) {
@@ -770,6 +781,14 @@ SemDiag *sem_emit_wrong_return_arity(SemanticContext *ctx, SourceLoc loc, const 
 
 SemDiag *sem_emit_break_outside_loop(SemanticContext *ctx, SourceLoc loc) {
 	return sem_emit_(ctx, SEM_DIAG_break_outside_loop, loc, "`break` can only appear inside a loop body");
+}
+
+SemDiag *sem_emit_continue_outside_loop(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_DIAG_continue_outside_loop, loc, "`continue` can only appear inside a loop body");
+}
+
+SemDiag *sem_emit_module_no_member(SemanticContext *ctx, SourceLoc loc, const char *module, const char *member) {
+	return sem_emit_(ctx, SEM_DIAG_module_no_member, loc, "module '%s' has no member '%s'", module, member);
 }
 
 SemDiag *sem_emit_duplicate_decl(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name) {

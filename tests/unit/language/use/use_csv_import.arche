@@ -2,10 +2,10 @@
 #import { io }
 
 main :: proc() {
-  io_open("tests/fixtures/data.csv")(fd:);
+  io.open("tests/fixtures/data.csv")(fd:);
   if (fd) {
     buf: char[65536];
-    io_read_chunk(fd, buf, 65536)(buf, n:);
+    io.read_chunk(fd, buf, 65536)(buf, n:);
   }
-  io_close(move fd);
+  io.close(move fd);
 }

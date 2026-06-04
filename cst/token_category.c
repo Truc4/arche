@@ -35,6 +35,7 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_ELSE:
 	case TOK_IN:
 	case TOK_BREAK:
+	case TOK_CONTINUE:
 	case TOK_MOVE:
 	case TOK_OWN:
 	case TOK_COPY:
@@ -45,6 +46,8 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_HASH_FILE:
 	case TOK_HASH_FOREIGN:
 	case TOK_RUN:
+	case TOK_ENUM:
+	case TOK_MATCH:
 		return "keyword";
 
 	case TOK_NUMBER:
@@ -76,6 +79,8 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_ARROW:
 	case TOK_BANG:
 	case TOK_AT:
+	case TOK_AMP_AMP:
+	case TOK_PIPE_PIPE:
 		return "operator";
 
 	case TOK_LPAREN:
@@ -86,11 +91,20 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_RBRACKET:
 	case TOK_COMMA:
 	case TOK_DOT:
+	case TOK_DOTDOTDOT:
 	case TOK_COLON:
 	case TOK_SEMI:
 		return "punctuation";
 
-	default:
-		return NULL; /* EOF / ERROR / anything unmapped: skip */
+	/* Genuinely uncategorized — not highlighted. Listed explicitly (NOT a `default`) so this switch
+	 * is EXHAUSTIVE over TokenKind. The build is `-Werror=switch` project-wide, so a no-`default`
+	 * switch that misses an enum value is a compile error — adding a new token without categorizing
+	 * it here cannot build (and tests/unit/tooling/keyword_highlight.arche backstops it). Make wrong
+	 * harder than right: omit the `default`, list every case. */
+	case TOK_EOF:
+	case TOK_ERROR:
+	case TOK_HASH: /* bare/unknown `#` — a parse error, not a highlightable token */
+		return NULL;
 	}
+	return NULL; /* unreachable: the switch above is exhaustive */
 }

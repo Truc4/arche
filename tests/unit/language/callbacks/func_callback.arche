@@ -1,6 +1,7 @@
 // A func (value-returning) callback: the bound func is called directly and its
 // result used. Distinct funcs produce distinct specializations of `apply`.
 // RUN: %arche build -o %t %s && %t | grep "20"
+#import { fmt }
 unary :: func(x: int) -> int
 
 dbl :: func(x: int) -> int {
@@ -13,7 +14,7 @@ inc :: func(x: int) -> int {
 
 apply :: proc(v: int, op: unary)() {
   r := op(v);
-  printf("%d\n", r);
+  fmt.printf("%d\n", r);
 }
 
 main :: proc() {

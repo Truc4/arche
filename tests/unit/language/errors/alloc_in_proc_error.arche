@@ -1,6 +1,7 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "Error" %t.out
 // `alloc` (dynamic allocation) is not a valid statement — it errors at parse time.
 
+#import { fmt }
 Counter :: arche {
   val :: int,
 }
@@ -9,6 +10,6 @@ Counter[5];
 
 main :: proc() {
   alloc Counter(10);
-  printf("should not reach\n");
+  fmt.printf("should not reach\n");
 }
 

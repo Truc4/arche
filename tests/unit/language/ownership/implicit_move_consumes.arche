@@ -1,0 +1,16 @@
+// A bare move-only name in an ownership-taking position is an IMPLICIT move — no `move` keyword
+// needed. Handing `buf` to an `own` param transfers ownership and consumes the binding; a second use
+// is a use-after-move error. (The editor shows an inlay `move` hint at the elided transfer.)
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
+#import { fmt }
+sink :: func(own b: char[8]) -> int {
+  b[0] = 'X';
+  return 0;
+}
+
+main :: proc() {
+  buf: char[8];
+  a := sink(buf);
+  c := sink(buf);
+  fmt.printf("%d %d\n", a, c);
+}

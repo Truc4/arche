@@ -1,9 +1,10 @@
 // RUN: %arche build -o %t %s && %t | grep "slot"
+#import { fmt }
 Player :: arche { pos :: float }
 
 Player[10]
 
 main :: proc() {
   h := insert(Player, 1.0);
-  print("slot 0 handle created");
+  fmt.print("slot 0 handle created");
 }

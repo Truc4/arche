@@ -177,9 +177,14 @@ static void load_module(const char *name, const char *source_dir) {
 		strcpy(dup, name);
 		g_loaded_mods[g_loaded_count++] = dup; /* mark before load → cycle-safe */
 	}
-	int loaded = try_load_module_dir(name, source_dir, source_dir);
+	/* STDLIB is authoritative: a stdlib module name (io/net/str/parse/sys/csv/router/…) always
+	 * resolves to stdlib, even if the source tree has a same-named subdir (e.g. the test suite's
+	 * `tests/unit/language/io/`). The prelude imports `io`, so every program triggers this — without
+	 * stdlib-first, a local `io/` dir would shadow it. A user's OWN (non-stdlib) module is still
+	 * found by the source-dir search below. */
+	int loaded = try_load_module_dir(name, arche_resource_dir(ARCHE_RES_STDLIB), source_dir);
 	if (!loaded)
-		loaded = try_load_module_dir(name, arche_resource_dir(ARCHE_RES_STDLIB), source_dir);
+		loaded = try_load_module_dir(name, source_dir, source_dir);
 	if (!loaded)
 		loaded = try_load_module_dir(name, arche_resource_dir(ARCHE_RES_CORE), source_dir);
 	if (!loaded)

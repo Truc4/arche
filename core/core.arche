@@ -1,165 +1,33 @@
-// core — the implicit prelude (always in scope, no `#import`). The universal base only: the raw
-// syscall intrinsic, fd/process primitives, libc print/format, string/number helpers, and basic
-// output. Everything else (file/stdio I/O, sockets, terminal, clock/args, CSV) lives in stdlib
-// modules, brought in by one region: `#import { io net term sys csv }`.
+// core — the compiler's IMPLICIT RUNTIME (always in scope, no `#import`). This is prepended to
+// every program, so it holds only the symbols the COMPILER ITSELF emits on the user's behalf:
+// the boolean constants the language uses, and `streq` (the `match` string-pattern desugar emits a
+// bare call to it). User-facing library code lives in explicit, qualified stdlib modules:
+//   os  — raw syscall + fd I/O (open/read/write/close/lseek/exit)
+//   io  — `file` handle + file ops + whole-file mmap externs
+//   fmt — printf/sprintf/fflush + print/print_float + assert
+//   net — `socket` handle + TCP ops
+//   str — strlen/strcopy
+// (Nothing a user calls by name belongs here; future compiler-emitted helpers — panic/bounds/eq —
+// would join `streq`, never user library code.)
 
-// Raw Linux/x86-64 syscall intrinsic: emits the `syscall` instruction directly (no libc). A
-// buffer arg decays to its data pointer (like C). Declared first so the fd wrappers below can use it.
-#foreign {
-  syscall :: proc(n: i64, a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64)(r: i64)
-}
-// Raw fd I/O — thin syscall wrappers (x86-64 Linux), no libc. Read-only buffers (`write`/`open`
-// path) are plain borrows; a filled buffer (`read`) is in-out (handed back through the out-list).
-open :: proc(path: char[], flags: int)(fd: int) {
-  syscall(2, path, flags, 0, 0, 0, 0)(r:); // SYS_open(path, flags, mode=0)
-  fd = i32(r);
-}
-read :: proc(fd: int, buf: char[], len: int)(buf: char[], n: int) {
-  syscall(0, fd, buf, len, 0, 0, 0)(r:); // SYS_read(fd, buf, len)
-  n = i32(r);
-}
-write :: proc(fd: int, buf: char[], len: int) {
-  syscall(1, fd, buf, len, 0, 0, 0)(_r:); // SYS_write(fd, buf, len)
-}
-close :: proc(fd: int) {
-  syscall(3, fd, 0, 0, 0, 0, 0)(_r:); // SYS_close(fd)
-}
-lseek :: proc(fd: int, off: i64, whence: int)(pos: i64) {
-  syscall(8, fd, off, whence, 0, 0, 0)(r:); // SYS_lseek(fd, off, whence)
-  pos = r;
-}
-exit :: proc(code: int) {
-  syscall(231, code, 0, 0, 0, 0, 0)(_r:); // SYS_exit_group(code) — does not return
-}
-// Primitive opaque handle types (operations live in the io/net modules). They stay in core so the
-// opaque cell resolves globally; only the operations are module-scoped.
-file :: opaque
-socket :: opaque
-// Whole-file mmap view (C-runtime externs). Kept in core so any module can map a file without a
-// module-to-module import (e.g. the csv loader).
-#foreign {
-  arche_file_map :: proc(own path: char[])(data: char[])
-  arche_file_size :: proc()(n: i64)
-  arche_file_unmap :: proc(own data: char[], size: i64)
-  sprintf :: proc(buf: char[], own fmt: char[], ...)(buf: char[], n: int)
-  printf :: proc(own fmt: char[], ...)(n: int)
-  fflush :: proc(stream: int)
-}
-// Pure-arche numeric/string helpers (no FFI). A func may call these; it can't call externs, so
-// libc's atoi/atof/strlen are reimplemented here to keep type-directed CSV cell parsing pure.
+// Boolean readability constants. Arche has no `bool` primitive; comparisons yield int 0/1, so these
+// are just names for those values (`running := true`, `if (ok == false)`).
+bool :: i8
+true: bool: 1
+false: bool: 0
 
-/// Byte-compare two NUL-terminated strings: 1 if equal, 0 otherwise. Pure (no
-/// FFI), so the `match` desugar can use it for string-literal patterns.
-///
-/// ```arche
-/// assert(streq("ab", "ab") == 1, "streq equal\n");
-/// assert(streq("ab", "ac") == 0, "streq diff\n");
-/// assert(streq("ab", "abc") == 0, "streq prefix\n");
-/// ```
+// Byte-compare two strings: 1 if equal, 0 otherwise. Pure (no FFI). Lives in core because the
+// `match` string-pattern desugar emits a bare `streq(...)` call — it is compiler-emitted, not a
+// user-facing library symbol, so it must resolve without an import.
 streq :: func(a: char[], b: char[]) -> int {
+  if (a.length != b.length) {
+    return 0;
+  }
   i := 0;
-  for (; a[i] == b[i]; i += 1) {
-    if (a[i] == 0) {
-      return 1;
+  for (; i < a.length; i += 1) {
+    if (a[i] != b[i]) {
+      return 0;
     }
   }
-  return 0;
-}
-/// Length of a NUL-terminated string, not counting the terminator.
-///
-/// ```arche
-/// assert(strlen("hello") == 5, "strlen hello\n");
-/// assert(strlen("") == 0, "strlen empty\n");
-/// ```
-strlen :: func(s: char[]) -> int {
-  i := 0;
-  for (; s[i] != 0; i += 1) {
-  }
-  return i;
-}
-// Copy C-string `src` (through its NUL) into `dst`, NUL-terminate, return the filled buffer.
-// Pure; the own/move contract makes the in-place fill explicit: `b := strcopy(move b, s)`.
-strcopy :: func(own dst: char[], src: char[]) -> char[] {
-  i := 0;
-  for (; src[i] != 0; i += 1) {
-    dst[i] = src[i];
-  }
-  dst[i] = 0;
-  return dst;
-}
-/// Parse a leading (optionally signed) integer; stops at the first non-digit, like libc atoi.
-///
-/// ```arche
-/// assert(atoi("42") == 42, "atoi 42\n");
-/// assert(atoi("-7") == -7, "atoi -7\n");
-/// assert(atoi("13abc") == 13, "atoi stops at non-digit\n");
-/// ```
-atoi :: func(s: char[]) -> int {
-  i := 0;
-  sign := 1;
-  if (s[0] == '-') {
-    sign = 0 - 1;
-    i = 1;
-  }
-  n := 0;
-  for (; s[i] != 0; i += 1) {
-    if (s[i] < '0') {
-      break;
-    }
-    if (s[i] > '9') {
-      break;
-    }
-    n = n * 10 + (s[i] - '0');
-  }
-  return sign * n;
-}
-// Parse a leading (optionally signed) decimal: integer part then optional fraction, like libc atof.
-atof :: func(s: char[]) -> float {
-  i := 0;
-  sign := 1.0;
-  if (s[0] == '-') {
-    sign = 0.0 - 1.0;
-    i = 1;
-  }
-  whole := 0.0;
-  for (; s[i] != 0; i += 1) {
-    if (s[i] == '.') {
-      i += 1;
-      break;
-    }
-    if (s[i] < '0') {
-      break;
-    }
-    if (s[i] > '9') {
-      break;
-    }
-    whole = whole * 10.0 + (s[i] - '0');
-  }
-  frac := 0.0;
-  scale := 1.0;
-  for (; s[i] != 0; i += 1) {
-    if (s[i] < '0') {
-      break;
-    }
-    if (s[i] > '9') {
-      break;
-    }
-    frac = frac * 10.0 + (s[i] - '0');
-    scale = scale * 10.0;
-  }
-  return sign * (whole + frac / scale);
-}
-print_float :: proc(f: float) {
-  printf("%g", f);
-  fflush(0);
-}
-print :: proc(msg: char[]) {
-  write(1, msg, strlen(msg));
-}
-assert :: proc(condition: int, message: char[]) {
-  if (condition == 0) {
-    fflush(0);
-    print(message);
-    exit(1);
-  }
+  return 1;
 }

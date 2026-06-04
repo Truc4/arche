@@ -1,0 +1,5 @@
+// Support module for bare_cross_module_unresolved.arche (not a standalone test).
+// RUN: true
+ns_helper :: func(x: int) -> int {
+  return x + 1;
+}

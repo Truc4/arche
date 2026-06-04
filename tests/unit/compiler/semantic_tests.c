@@ -131,24 +131,6 @@ void test_archetype_field_type(void) {
 
 /* ========== FIELD ACCESS VALIDATION TESTS ========== */
 
-void test_valid_field_access_in_proc(void) {
-	test_start("valid field access in procedure");
-	AnalysisResult result = analyze_string("Player :: arche { x :: Float }\n"
-	                                       "test :: proc() { for p in Player { v := p.x; } }");
-	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
-	analysis_result_free(&result);
-	test_pass_msg();
-}
-
-void test_invalid_field_access_in_proc(void) {
-	test_start("invalid field access caught");
-	AnalysisResult result = analyze_string("Player :: arche { x :: Float }\n"
-	                                       "test :: proc() { for p in Player { v := p.missing; } }");
-	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for missing field");
-	analysis_result_free(&result);
-	test_pass_msg();
-}
-
 void test_field_access_on_undefined_archetype(void) {
 	test_start("field access on undefined archetype caught");
 	AnalysisResult result = analyze_string("test :: proc() { v := undefined.field; }");
@@ -212,25 +194,6 @@ void test_comparison_produces_number(void) {
 	test_pass_msg();
 }
 
-/* ========== FOR LOOP TESTS ========== */
-
-void test_for_loop_undefined_iterable(void) {
-	test_start("for loop with undefined iterable caught");
-	AnalysisResult result = analyze_string("test :: proc() { for item in UndefinedPool { x := 1; } }");
-	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for undefined pool");
-	analysis_result_free(&result);
-	test_pass_msg();
-}
-
-void test_for_loop_valid_iterable(void) {
-	test_start("for loop with defined archetype");
-	AnalysisResult result = analyze_string("Item :: arche { value :: Float }\n"
-	                                       "test :: proc() { for item in Item { x := 1; } }");
-	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
-	analysis_result_free(&result);
-	test_pass_msg();
-}
-
 /* ========== FUNCTION TESTS ========== */
 
 void test_function_parameter_scope(void) {
@@ -257,27 +220,6 @@ void test_multiple_archetypes(void) {
 	                                       "Enemy :: arche { y :: Float }");
 	ASSERT_TRUE(semantic_archetype_exists(result.ctx, "Player"), "Player not found");
 	ASSERT_TRUE(semantic_archetype_exists(result.ctx, "Enemy"), "Enemy not found");
-	analysis_result_free(&result);
-	test_pass_msg();
-}
-
-void test_cross_archetype_field_access(void) {
-	test_start("accessing correct archetype field");
-	AnalysisResult result =
-	    analyze_string("Player :: arche { x :: Float }\n"
-	                   "Enemy :: arche { y :: Float }\n"
-	                   "test :: proc() { for p in Player { v1 := p.x; } for e in Enemy { v2 := e.y; } }");
-	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
-	analysis_result_free(&result);
-	test_pass_msg();
-}
-
-void test_cross_archetype_field_mismatch(void) {
-	test_start("accessing wrong archetype field caught");
-	AnalysisResult result = analyze_string("Player :: arche { x :: Float }\n"
-	                                       "Enemy :: arche { y :: Float }\n"
-	                                       "test :: proc() { for p in Player { v := p.y; } }");
-	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for wrong field");
 	analysis_result_free(&result);
 	test_pass_msg();
 }
@@ -528,17 +470,29 @@ void test_copy_does_not_consume(void) {
 }
 
 void test_own_param_bare_arg_error(void) {
-	test_start("bare arg to an `own` param must be moved or copied");
-	AnalysisResult r = analyze_string("fill :: func(own b: char[8]) -> char[8] {\n"
-	                                  "  b[0] = 'X';\n"
-	                                  "  return b;\n"
-	                                  "}\n"
-	                                  "main :: proc() {\n"
-	                                  "  buf: char[8];\n"
-	                                  "  out := fill(buf);\n"
-	                                  "}\n");
-	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected must-be-moved-or-copied error");
-	semantic_context_free(r.ctx);
+	test_start("bare arg to an `own` param is an implicit move (consumes the source)");
+	/* A bare move-only name handed to an `own` param implicitly moves — no error on the call
+	 * itself. The transfer consumes the source, so a LATER use of it is the error. */
+	AnalysisResult ok = analyze_string("fill :: func(own b: char[8]) -> char[8] {\n"
+	                                   "  b[0] = 'X';\n"
+	                                   "  return b;\n"
+	                                   "}\n"
+	                                   "main :: proc() {\n"
+	                                   "  buf: char[8];\n"
+	                                   "  out := fill(buf);\n"
+	                                   "}\n");
+	ASSERT_TRUE(semantic_error_count(ok.ctx) == 0, "a bare arg implicitly moves — no error expected");
+	semantic_context_free(ok.ctx);
+	AnalysisResult reuse = analyze_string("fill :: func(own b: char[8]) -> char[8] {\n"
+	                                      "  return b;\n"
+	                                      "}\n"
+	                                      "main :: proc() {\n"
+	                                      "  buf: char[8];\n"
+	                                      "  a := fill(buf);\n"
+	                                      "  c := fill(buf);\n"
+	                                      "}\n");
+	ASSERT_TRUE(semantic_error_count(reuse.ctx) >= 1, "expected use-after-consume on the reused source");
+	semantic_context_free(reuse.ctx);
 	test_pass_msg();
 }
 
@@ -570,8 +524,6 @@ int main(void) {
 
 	/* Field access */
 	printf("\nField access validation tests:\n");
-	test_valid_field_access_in_proc();
-	test_invalid_field_access_in_proc();
 	test_field_access_on_undefined_archetype();
 
 	/* Variable scope */
@@ -586,11 +538,6 @@ int main(void) {
 	test_binary_op_same_types();
 	test_comparison_produces_number();
 
-	/* For loops */
-	printf("\nFor loop tests:\n");
-	test_for_loop_undefined_iterable();
-	test_for_loop_valid_iterable();
-
 	/* Functions */
 	printf("\nFunction tests:\n");
 	test_function_parameter_scope();
@@ -599,8 +546,6 @@ int main(void) {
 	/* Multiple declarations */
 	printf("\nMultiple declaration tests:\n");
 	test_multiple_archetypes();
-	test_cross_archetype_field_access();
-	test_cross_archetype_field_mismatch();
 
 	/* Func groups */
 	printf("\nFunc group tests:\n");

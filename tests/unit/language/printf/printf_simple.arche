@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep 123
+#import { fmt }
 main :: proc() {
-  printf("Value: %d\n", 123);
+  fmt.printf("Value: %d\n", 123);
 }

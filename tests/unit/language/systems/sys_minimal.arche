@@ -1,16 +1,17 @@
 // RUN: %arche build -o %t %s && %t | grep "system_ran"
+#import { fmt }
 pos :: float
 Particle :: arche { pos }
 
 Particle[10]
 
 dummy :: sys (pos) {
-  printf("system_ran\n");
+  fmt.printf("system_ran\n");
   pos = pos;
 }
 
 main :: proc() {
   insert(Particle, 1.0);
   run dummy;
-  printf("pos[0]=%f\n", Particle.pos[0]);
+  fmt.printf("pos[0]=%f\n", Particle.pos[0]);
 }

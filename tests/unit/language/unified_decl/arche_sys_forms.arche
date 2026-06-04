@@ -1,6 +1,7 @@
 // Unified grammar: archetype and sys declared as RHS value forms
 // (`Name :: arche { ... }`, `name :: sys(...) { ... }`).
 // RUN: %arche build -o %t %s && %t | grep "pos0=3"
+#import { fmt }
 pos :: float
 
 Particle :: arche { pos }
@@ -14,5 +15,5 @@ bump :: sys (pos) {
 main :: proc() {
   insert(Particle, 1.0);
   run bump;
-  printf("pos0=%f\n", Particle.pos[0]);
+  fmt.printf("pos0=%f\n", Particle.pos[0]);
 }

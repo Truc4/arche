@@ -1,11 +1,12 @@
 // `#foreign { ... }` block region: every proc inside is an FFI declaration (bodiless),
 // bound to the C symbol of the same name. Here libc's `abs`.
 // RUN: %arche build -o %t %s && %t | grep "abs=7"
+#import { fmt }
 #foreign {
   abs :: proc(x: int)(r: int)
 }
 
 main :: proc() {
   abs(-7)(a:);
-  printf("abs=%d\n", a);
+  fmt.printf("abs=%d\n", a);
 }

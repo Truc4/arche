@@ -24,6 +24,18 @@ way to write code.
 - **No heap, ever** - all storage is static and planned upfront, so memory behavior is fully predictable.
 - **Functional meets procedural** - pure `func` values alongside procedural static operations (`proc` / `sys`).
 
+## Requirements
+
+Building and running Arche programs needs an **LLVM + C toolchain** on your `PATH`:
+
+- `opt` and `llc` — from a full LLVM install (the `llvm-libs` pulled in by `clang` is **not**
+  enough; you need the standalone tools).
+- `cc` — a C compiler/linker (`clang` or `gcc`).
+
+Install the LLVM tools and a C compiler with your package manager — for example, on Arch Linux
+they're in the official `extra` repo (not the AUR): `sudo pacman -S llvm clang`. On Debian/Ubuntu:
+`sudo apt install llvm clang`.
+
 ## Quick start
 
 ```sh
@@ -32,8 +44,8 @@ make                  # builds ./build/arche
 sudo make install     # optional: put `arche` on your PATH (PREFIX=<dir> for a custom location)
 ```
 
-Needs an LLVM + C toolchain (`opt`, `llc`, `cc`) on your `PATH`. The installed `arche` is
-relocatable — it finds its standard library and runtime relative to the binary.
+The installed `arche` is relocatable — it finds its standard library and runtime relative to the
+binary.
 
 ```sh
 echo 'proc main() { print("Hello, World!\n"); }' > hello.arche

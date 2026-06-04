@@ -1,3 +1,4 @@
+#import { fmt }
 main :: proc() {
-  print("Hello, World!\n");
+  fmt.print("Hello, World!\n");
 }

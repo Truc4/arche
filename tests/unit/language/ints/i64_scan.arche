@@ -1,5 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "sum=294 big=6000000000 ok=1"
 // i64 arithmetic past 2^31, comparison, loop counter, and array indexing.
+#import { fmt }
 main :: proc() {
   buf: char[16];
   buf[0] = 'a';
@@ -20,5 +21,5 @@ main :: proc() {
     ok = 1;
   }
 
-  printf("sum=%ld big=%ld ok=%ld\n", sum, big, ok);
+  fmt.printf("sum=%ld big=%ld ok=%ld\n", sum, big, ok);
 }

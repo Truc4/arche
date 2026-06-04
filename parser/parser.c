@@ -325,6 +325,19 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
 	if (is_archetype || is_opaque)
 		return 1;
 
+	/* Qualified type `mod.Name` (e.g. `io.file`, `net.socket`): the leading IDENT is a module, the
+	 * member is the type. "A binding is a binding" — this is the same `mod.name` access used for
+	 * values; it resolves to the module's type symbol in lowering/semantic. A leaf (no array suffix). */
+	if (!is_handle && !is_type_kw && check(parser, TOK_DOT)) {
+		advance(parser); /* '.' */
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected type name after '.' in qualified type (e.g. io.file)");
+			return 0;
+		}
+		advance(parser); /* the member type name */
+		return 1;
+	}
+
 	/* `type`: the meta-type (type-of-types). Appears as the declared type in the alias
 	 * longhand `foo : type : float` and (later) generic params. Compile-time only. */
 	if (is_type_kw) {
@@ -808,11 +821,14 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	if (check(parser, TOK_COLON)) {
 		advance(parser); /* first ':' */
 
-		/* `name := value` — mutable initialized global. */
+		/* `name := value` — mutable initialized global, inferred type. */
 		if (check(parser, TOK_EQ)) {
-			error(parser, "mutable global initializers (`name := value`) are not implemented yet — "
-			              "use a sized buffer `name : T[N]` or a pool `Name[C]`");
-			return 0;
+			*out_kind = SN_STATIC_DECL;
+			advance(parser); /* '=' */
+			if (!parse_expression(parser))
+				return 0;
+			match(parser, TOK_SEMI); /* recorded; formatter drops it for static decls */
+			return 1;
 		}
 
 		int decl_type_is_meta = 0;
@@ -828,19 +844,18 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 
 		/* `name : T = value` — mutable initialized typed global. */
 		if (check(parser, TOK_EQ)) {
-			error(parser, "mutable global initializers (`name : T = value`) are not implemented yet — "
-			              "use a sized buffer `name : T[N]` or a pool `Name[C]`");
-			return 0;
+			*out_kind = SN_STATIC_DECL;
+			advance(parser); /* '=' */
+			if (!parse_expression(parser))
+				return 0;
+			match(parser, TOK_SEMI);
+			return 1;
 		}
 
-		/* `name : T` with no second separator → mutable static buffer (zero-init storage). */
+		/* `name : T` with no second separator → mutable static storage, zero-initialized (the
+		 * implicit `= 0` of the unified form). T may be a sized array (a buffer) or a scalar. */
 		if (have_type && !check(parser, TOK_COLON)) {
 			*out_kind = SN_STATIC_DECL;
-			if (form.cst_kind != SN_TYPE_SHAPED_ARRAY) {
-				error(parser, "a top-level storage declaration `name : T` needs a sized array type "
-				              "(e.g. `buf : char[4194304]`)");
-				return 0;
-			}
 			match(parser, TOK_SEMI); /* recorded; formatter drops it for static decls */
 			return 1;
 		}
@@ -939,6 +954,13 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser);
 			continue;
 		}
+		if (cur_ident_is(parser, "intrinsic", 9)) {
+			/* `@intrinsic` marks a (foreign) decl whose calls the backend lowers to a built-in
+			 * instruction (e.g. the raw `syscall`) instead of an ordinary call. No arguments —
+			 * recognition is by this marker on the decl, not by the symbol's (mangleable) name. */
+			advance(parser);
+			continue;
+		}
 		if (cur_ident_is(parser, "drop", 4)) {
 			/* `@drop(<OpaqueType>)` decl decorator — marks the decorated proc as the destructor
 			 * for that opaque type (RAII). The type is named explicitly (not inferred) and must
@@ -981,7 +1003,7 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser); /* consume ')' */
 			continue;
 		}
-		error(parser, "Unknown decorator (recognized: @allow_pure_proc, @allow(<slug>), @drop(<type>))");
+		error(parser, "Unknown decorator (recognized: @allow_pure_proc, @allow(<slug>), @drop(<type>), @intrinsic)");
 		return 0;
 	}
 
@@ -1054,6 +1076,39 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 }
 
 /* ========== EXPRESSION PARSING ========== */
+
+/* After a postfix `[` is matched, parse either an index list `a, b, …` or a slice `lo:hi` (lo/hi
+ * each optional: `[:hi]`, `[lo:]`, `[:]`). Sets *out_slice=1 for the slice form. Consumes the `]`.
+ * A `:` inside the brackets is what marks a slice. */
+static int parse_bracket_index_or_slice(Parser *parser, int *out_slice) {
+	*out_slice = 0;
+	if (check(parser, TOK_COLON)) { /* [:hi] / [:] — no lo */
+		*out_slice = 1;
+		advance(parser);
+		if (!check(parser, TOK_RBRACKET))
+			if (!parse_expression(parser))
+				return 0;
+	} else {
+		if (!parse_expression(parser))
+			return 0;
+		if (check(parser, TOK_COLON)) { /* [lo:hi] / [lo:] */
+			*out_slice = 1;
+			advance(parser);
+			if (!check(parser, TOK_RBRACKET))
+				if (!parse_expression(parser))
+					return 0;
+		} else { /* index: optional comma list */
+			while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACKET))
+				if (!parse_expression(parser))
+					return 0;
+		}
+	}
+	if (!match(parser, TOK_RBRACKET)) {
+		error(parser, "Expected ']'");
+		return 0;
+	}
+	return 1;
+}
 
 /* `out_kind` receives the SyntaxNodeKind for the primary expression form parsed,
  * derived from parse context (not from a built AST node). The caller wraps the
@@ -1215,15 +1270,10 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			}
 
 			if (match(parser, TOK_LBRACKET)) {
-				do {
-					if (!parse_expression(parser))
-						return 0;
-				} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACKET));
-				if (!match(parser, TOK_RBRACKET)) {
-					error(parser, "Expected ']'");
+				int is_slice;
+				if (!parse_bracket_index_or_slice(parser, &is_slice))
 					return 0;
-				}
-				*out_kind = SN_INDEX_EXPR;
+				*out_kind = is_slice ? SN_SLICE_EXPR : SN_INDEX_EXPR;
 				return 1;
 			}
 
@@ -1250,17 +1300,12 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			return 1;
 		}
 
-		/* indexing: `a[i]` */
+		/* indexing `a[i]` or sub-slice `a[lo:hi]` */
 		if (match(parser, TOK_LBRACKET)) {
-			do {
-				if (!parse_expression(parser))
-					return 0;
-			} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACKET));
-			if (!match(parser, TOK_RBRACKET)) {
-				error(parser, "Expected ']'");
+			int is_slice;
+			if (!parse_bracket_index_or_slice(parser, &is_slice))
 				return 0;
-			}
-			*out_kind = SN_INDEX_EXPR;
+			*out_kind = is_slice ? SN_SLICE_EXPR : SN_INDEX_EXPR;
 			return 1;
 		}
 
@@ -1581,6 +1626,15 @@ static int parse_statement(Parser *parser) {
 		goto cleanup;
 	}
 
+	if (match(parser, TOK_CONTINUE)) {
+		if (!match(parser, TOK_SEMI)) {
+			error(parser, "Expected ';' after continue");
+		}
+		stmt_kind = SN_CONTINUE_STMT;
+		ok = 1;
+		goto cleanup;
+	}
+
 	if (match(parser, TOK_EACH_FIELD)) {
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected binding name after 'each_field'");
@@ -1861,25 +1915,11 @@ static int parse_statement(Parser *parser) {
 				goto cleanup;
 			}
 		} else {
-			/* Range-based for: for var in iterable { } */
-			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected variable name after 'for'");
-				goto cleanup;
-			}
-			advance(parser);
-			if (!match(parser, TOK_IN)) {
-				error(parser, "Expected 'in' in for loop");
-				goto cleanup;
-			}
-			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected iterable after 'in'");
-				goto cleanup;
-			}
-			advance(parser);
-			if (!match(parser, TOK_LBRACE)) {
-				error(parser, "Expected '{'");
-				goto cleanup;
-			}
+			/* `for x in <expr>` does not exist: iteration is a `sys` (over archetypes) or a
+			 * C-style `for (init; cond; incr)`. Reject the range-for form at parse time. */
+			error(parser, "for-in is not supported — iterate with a `sys` (over an archetype) or a "
+			              "C-style `for (init; cond; incr)`");
+			goto cleanup;
 		}
 
 		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {

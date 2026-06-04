@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t
+#import { fmt }
 Particle :: arche { pos :: float, vel :: float }
 
 Body :: arche { pos, vel, mass :: float }
@@ -14,6 +15,6 @@ main :: proc() {
   bm := Body.mass[0];
   ppi := pp * 10.0;
   bmi := bm * 1.0;
-  assert(ppi == 10, "Particle.pos != 1.0\n");
-  assert(bmi == 10, "Body.mass != 10.0\n");
+  fmt.assert(ppi == 10, "Particle.pos != 1.0\n");
+  fmt.assert(bmi == 10, "Body.mass != 10.0\n");
 }

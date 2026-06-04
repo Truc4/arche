@@ -1,9 +1,10 @@
 // kill() on a non-existent pid returns -ESRCH. The raw syscall returns the
 // negative errno directly (no libc errno indirection) — proves error returns.
 // RUN: %arche build -o %t %s && %t | grep "ok"
+#import { fmt os }
 main :: proc() {
-  syscall(62, 2000000000, 0, 0, 0, 0, 0)(r:);
+  os.syscall(62, 2000000000, 0, 0, 0, 0, 0)(r:);
   if (r < 0) {
-    printf("ok\n");
+    fmt.printf("ok\n");
   }
 }

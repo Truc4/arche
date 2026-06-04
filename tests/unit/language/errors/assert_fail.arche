@@ -1,6 +1,7 @@
 // RUN: %arche build -o %t %s && %t; test $? -eq 1
+#import { fmt }
 main :: proc() {
-  printf("before\n");
-  assert(0, "assertion failed\n");
-  printf("after\n");
+  fmt.printf("before\n");
+  fmt.assert(0, "assertion failed\n");
+  fmt.printf("after\n");
 }

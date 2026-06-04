@@ -1,8 +1,9 @@
 // E0200: assigning a string literal to an int-declared variable is a type
 // mismatch. Previously bumped to LLVM ("defined with type 'ptr' but expected 'i32'").
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 assignment: expected 'int', got 'str'"
+#import { fmt }
 main :: proc() {
   x: int = 5;
   x = "hello";
-  print(x);
+  fmt.printf("%d\n", x);
 }

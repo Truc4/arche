@@ -3,12 +3,13 @@
 // same list without the trailing comma collapses to one line.
 // RUN: %arche fmt %s | grep -qE "^[[:space:]]+1,$"
 // RUN: %arche fmt %s | grep -qF "h(4, 5, 6)"
+#import { fmt }
 g :: proc(a: int, b: int, c: int) {
-  printf("%d\n", a + b + c);
+  fmt.printf("%d\n", a + b + c);
 }
 
 h :: proc(a: int, b: int, c: int) {
-  printf("%d\n", a + b + c);
+  fmt.printf("%d\n", a + b + c);
 }
 
 main :: proc() {

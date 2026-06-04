@@ -482,6 +482,20 @@ static int type_ref_equal(const TypeRef *a, const TypeRef *b) {
 		return 1; /* bare opaque == bare opaque; nominal distinctness is by alias name */
 	case TYPE_TYPE:
 		return 1; /* the meta-type: any two `type` are equal */
+	case TYPE_PROC:
+	case TYPE_FUNC:
+		/* Callable types match structurally (param/result shape), names ignored. */
+		if (a->data.callable.is_proc != b->data.callable.is_proc ||
+		    a->data.callable.param_count != b->data.callable.param_count ||
+		    a->data.callable.result_count != b->data.callable.result_count)
+			return 0;
+		for (int i = 0; i < a->data.callable.param_count; i++)
+			if (!type_ref_equal(a->data.callable.param_types[i], b->data.callable.param_types[i]))
+				return 0;
+		for (int i = 0; i < a->data.callable.result_count; i++)
+			if (!type_ref_equal(a->data.callable.result_types[i], b->data.callable.result_types[i]))
+				return 0;
+		return 1;
 	}
 	return 0;
 }
@@ -774,20 +788,8 @@ static int type_is_byref_aggregate(const TypeRef *t) {
 	return t && (t->kind == TYPE_ARRAY || t->kind == TYPE_SHAPED_ARRAY);
 }
 
-/* A `char[]` / `char[N]` array type — the kind `copy` can currently duplicate (a flat byte
- * buffer with a statically-known size when it's a local). */
-static int type_is_char_array(const TypeRef *t) {
-	const TypeRef *elem = NULL;
-	if (!t)
-		return 0;
-	if (t->kind == TYPE_SHAPED_ARRAY)
-		elem = t->data.shaped_array.element_type;
-	else if (t->kind == TYPE_ARRAY)
-		elem = t->data.array.element_type;
-	else
-		return 0;
-	return elem && elem->kind == TYPE_NAME && elem->data.name && strcmp(elem->data.name, "char") == 0;
-}
+/* Implicit `move` of a bare move-only name in an ownership-taking position (defined below). */
+static void implicit_move_consume(SemanticContext *ctx, Expression *e);
 
 /* ========== TYPE RESOLUTION ========== */
 
@@ -1028,6 +1030,18 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 					return var->type->data.handle.archetype_name;
 				if (var->type->kind == TYPE_NAME)
 					return resolve_type_alias(ctx, normalize_type_name(var->type->data.name));
+				/* An array variable resolves to its ELEMENT base type, so `b[i]` (EXPR_INDEX
+				 * below) and width-sensitive consumers (binary ops, printf) see int/float/i64,
+				 * not a defaulted int. Mirrors the column-unwrap in the EXPR_FIELD case. */
+				if (var->type->kind == TYPE_SHAPED_ARRAY || var->type->kind == TYPE_ARRAY) {
+					TypeRef *et = var->type;
+					while (et && et->kind == TYPE_SHAPED_ARRAY)
+						et = et->data.shaped_array.element_type;
+					while (et && et->kind == TYPE_ARRAY)
+						et = et->data.array.element_type;
+					if (et && et->kind == TYPE_NAME)
+						return resolve_type_alias(ctx, normalize_type_name(et->data.name));
+				}
 			}
 			/* Fallback to inferred type */
 			if (var->inferred_type) {
@@ -1048,9 +1062,11 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	}
 
 	case EXPR_FIELD: {
-		/* Handle metadata properties on arrays and archetypes */
+		/* Handle metadata properties on arrays and archetypes (incl. fixed char[N]/T[N] buffers:
+		 * .cap/.capacity/.length/.max_length are the declared size). */
 		if (strcmp(expr->data.field.field_name, "length") == 0 ||
-		    strcmp(expr->data.field.field_name, "max_length") == 0) {
+		    strcmp(expr->data.field.field_name, "max_length") == 0 || strcmp(expr->data.field.field_name, "cap") == 0 ||
+		    strcmp(expr->data.field.field_name, "capacity") == 0) {
 			return "int";
 		}
 
@@ -1092,6 +1108,11 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		return base_type;
 	}
 
+	case EXPR_SLICE:
+		/* `buf[lo:hi]` is a slice of the same element type as its base — it resolves like the base
+		 * array (element name for a non-char array, "char_array" for a char buffer). */
+		return resolve_expression_type(ctx, expr->data.slice.base);
+
 	case EXPR_BINARY: {
 		/* Comparison operators always return int (boolean result) */
 		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE) {
@@ -1116,6 +1137,10 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 	}
 
 	case EXPR_UNARY: {
+		/* `!x` yields an int 0/1 regardless of the operand's type (it's `x == 0`); `-x`/`move`/`copy`
+		 * keep the operand's type. */
+		if (expr->data.unary.op == UNARY_NOT)
+			return "int";
 		return resolve_expression_type(ctx, expr->data.unary.operand);
 	}
 
@@ -1191,8 +1216,24 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 				return rt->data.handle.archetype_name;
 			if (rt->kind == TYPE_NAME)
 				return resolve_type_alias(ctx, normalize_type_name(rt->data.name));
-			if (rt->kind == TYPE_ARRAY)
-				return "char_array"; /* returning char[] (raw byte view) */
+			if (rt->kind == TYPE_SHAPED_ARRAY || rt->kind == TYPE_ARRAY) {
+				/* An array return resolves to its ELEMENT type — same convention as an
+				 * array NAME (see EXPR_NAME unwrap). A `char[]`/`char[N]` stays "char_array"
+				 * (string-like byte view); a non-char array (float[N], i64[N], …) yields the
+				 * element name so a later `r[i]` resolves to that element, not a default int. */
+				TypeRef *et = rt;
+				while (et && et->kind == TYPE_SHAPED_ARRAY)
+					et = et->data.shaped_array.element_type;
+				while (et && et->kind == TYPE_ARRAY)
+					et = et->data.array.element_type;
+				if (et && et->kind == TYPE_NAME && et->data.name) {
+					const char *en = normalize_type_name(et->data.name);
+					if (strcmp(en, "char") == 0)
+						return "char_array";
+					return resolve_type_alias(ctx, en);
+				}
+				return "char_array";
+			}
 			if (rt->kind == TYPE_OPAQUE)
 				return "opaque"; /* foreign resource value (pointer-width i64) */
 			return NULL;
@@ -1396,6 +1437,13 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 						arch = find_archetype(ctx, var->type->data.name);
 					}
 					if (!arch && var->type->kind != TYPE_TUPLE && var->type->kind != TYPE_ARCHETYPE) {
+						/* .cap/.capacity/.length/.max_length are valid metadata on a sized array /
+						 * fixed buffer (the declared element count). Allow before the no-field error. */
+						if ((var->type->kind == TYPE_ARRAY || var->type->kind == TYPE_SHAPED_ARRAY) &&
+						    (strcmp(field_name, "cap") == 0 || strcmp(field_name, "capacity") == 0 ||
+						     strcmp(field_name, "length") == 0 || strcmp(field_name, "max_length") == 0)) {
+							break;
+						}
 						const char *kind_name;
 						switch (var->type->kind) {
 						case TYPE_NAME:
@@ -1475,6 +1523,16 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		}
 		break;
 
+	case EXPR_SLICE:
+		/* `buf[lo:hi]` is a READ-ONLY borrowed sub-view: it reads its base and bounds but consumes
+		 * nothing (a borrow). The base must be an array/slice; the bounds (when present) are ints. */
+		analyze_expression(ctx, expr->data.slice.base);
+		if (expr->data.slice.lo)
+			analyze_expression(ctx, expr->data.slice.lo);
+		if (expr->data.slice.hi)
+			analyze_expression(ctx, expr->data.slice.hi);
+		break;
+
 	case EXPR_BINARY:
 		analyze_expression(ctx, expr->data.binary.left);
 		analyze_expression(ctx, expr->data.binary.right);
@@ -1487,11 +1545,11 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 
 	case EXPR_UNARY:
 		analyze_expression(ctx, expr->data.unary.operand);
-		/* E0112: `move x` / `copy x` are only valid in a function-call argument
-		 * position. Outside an arg they have no meaningful semantics. */
-		if ((expr->data.unary.op == UNARY_MOVE || expr->data.unary.op == UNARY_COPY) && !was_arg) {
-			sem_emit_move_outside_arg(ctx, expr->loc, expr->data.unary.op == UNARY_MOVE ? "move" : "copy");
-		}
+		/* `move`/`copy` are general value operators — valid in ANY value position (bind/assign RHS,
+		 * `return`, call arg). The typing layer treats them transparently and codegen lowers them
+		 * position-independently, so there is no position restriction. (`was_arg` is still consulted
+		 * below only by the analyses that legitimately depend on call-arg context.) */
+		(void)was_arg;
 		/* `move x` transfers ownership: mark x consumed (use-after-move is an error).
 		 * TODO(implicit-move): infer `move` at a binding's last use / self-rebind so the keyword
 		 * can be omitted (FBIP — Koka/Roc/Hylo do this via uniqueness/last-use analysis). */
@@ -1519,7 +1577,11 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 				if (var_is_opaque(ctx, cv)) {
 					sem_emit_cannot_copy_opaque(ctx, expr->data.unary.operand->loc,
 					                            expr->data.unary.operand->data.name.name);
-				} else if (type_is_byref_aggregate(cv->type) && !(type_is_char_array(cv->type) && !cv->is_param)) {
+				} else if (type_is_byref_aggregate(cv->type) &&
+				           !(cv->type && cv->type->kind == TYPE_SHAPED_ARRAY && !cv->is_param)) {
+					/* Clone is implemented for a LOCAL bounded `T[N]` value (any element). A runtime-
+					 * length slice `T[]` (TYPE_ARRAY) has no compile-time size to clone, and a
+					 * forwarded param's storage isn't ours to duplicate here — both stay unsupported. */
 					sem_emit_copy_unsupported(ctx, expr->data.unary.operand->loc,
 					                          expr->data.unary.operand->data.name.name);
 				}
@@ -1659,12 +1721,37 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 							Parameter *p = params[j];
 							if (!p || !p->is_own || !expr->data.call.args[j])
 								continue;
+							/* A bare move-only name handed to an `own` param is an implicit move —
+							 * consume it and record the elided `move`. (Explicit `move`/`copy` are
+							 * EXPR_UNARY and handled there; a borrowed-param source errors; a `Copy`
+							 * scalar just copies.) */
+							implicit_move_consume(ctx, expr->data.call.args[j]);
+						}
+					}
+
+					/* A `T[]` slice cannot satisfy a sized `T[N]` parameter: a slice's length is only
+					 * known at runtime, and the callee assumes exactly N elements (it could over-read).
+					 * Sizing flows one way — `T[N]` decays to `T[]` — never back. */
+					{
+						int ac = expr->data.call.arg_count;
+						int n = param_count < ac ? param_count : ac;
+						for (int j = 0; j < n; j++) {
+							Parameter *p = params[j];
+							if (!p || !p->type || p->type->kind != TYPE_SHAPED_ARRAY)
+								continue;
 							Expression *a = expr->data.call.args[j];
-							if (a->type == EXPR_NAME) {
-								VariableInfo *cv = find_variable(ctx, a->data.name.name);
-								if (cv) {
-									sem_emit_own_requires_move_or_copy(ctx, a->loc, a->data.name.name,
-									                                   p->name ? p->name : "?", func_name);
+							while (a && a->type == EXPR_UNARY &&
+							       (a->data.unary.op == UNARY_MOVE || a->data.unary.op == UNARY_COPY))
+								a = a->data.unary.operand;
+							if (a && a->type == EXPR_NAME) {
+								VariableInfo *av = find_variable(ctx, a->data.name.name);
+								if (av && av->type && av->type->kind == TYPE_ARRAY) {
+									fprintf(stderr,
+									        "Error: cannot pass a slice `T[]` to a sized `T[N]` parameter '%s' — a "
+									        "slice's length is only known at runtime; sizing flows one way "
+									        "(`T[N]` decays to `T[]`), never back\n",
+									        p->name ? p->name : "?");
+									ctx->error_count++;
 								}
 							}
 						}
@@ -1787,6 +1874,28 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 		sem_model_set_expr_type(ctx->model, expr->cst_id - 1, resolved);
 }
 
+/* A bare name in an ownership-TAKING position (bind/assign RHS, `own`-param arg) is an implicit
+ * `move` for move-only types (arrays/slices, opaque): consume the binding and record the elided
+ * `move` for the editor. A read-only borrowed param can't be moved out (error). Scalars and other
+ * `Copy` types are never consumed by a bare name — they copy, as before. Explicit `move`/`copy`
+ * are handled in EXPR_UNARY and never reach here as a bare EXPR_NAME. */
+static void implicit_move_consume(SemanticContext *ctx, Expression *e) {
+	if (!e || e->type != EXPR_NAME)
+		return;
+	VariableInfo *v = find_variable(ctx, e->data.name.name);
+	if (!v)
+		return;
+	if (!(type_is_byref_aggregate(v->type) || var_is_opaque(ctx, v)))
+		return; /* Copy type: a bare name copies, never moves */
+	if (v->is_param && !v->is_own && type_is_byref_aggregate(v->type)) {
+		sem_emit_cannot_move_borrowed(ctx, e->loc, e->data.name.name);
+		return;
+	}
+	v->is_consumed = 1;
+	if (e->cst_id)
+		sem_hints_set_elided_move(ctx->hints, e->cst_id - 1);
+}
+
 /* ========== STATEMENT ANALYSIS ========== */
 
 static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
@@ -1856,6 +1965,9 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 			analyze_expression(ctx, stmt->data.bind_stmt.value);
 			ctx->stmt_call_ok = 0;
 
+			/* `a := b` takes ownership: a bare move-only RHS name is an implicit move (b is consumed). */
+			implicit_move_consume(ctx, stmt->data.bind_stmt.value);
+
 			/* Multi-value let (non-call): add all variables from names array */
 			if (stmt->data.bind_stmt.name_count > 0 && stmt->data.bind_stmt.names) {
 				for (int i = 0; i < stmt->data.bind_stmt.name_count; i++) {
@@ -1908,8 +2020,19 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 								var->inferred_type = resolve_type_alias(ctx, t->data.name);
 								if (is_type_alias(ctx, t->data.name))
 									var->nominal_type = t->data.name;
+							} else if (t->kind == TYPE_SHAPED_ARRAY || t->kind == TYPE_ARRAY) {
+								/* Array: store the ELEMENT base name (consistent with EXPR_NAME's
+								 * unwrap). The old `t->data.name` here read the wrong union member
+								 * (shaped_array.element_type reinterpreted as char*) — garbage. */
+								TypeRef *et = t;
+								while (et && et->kind == TYPE_SHAPED_ARRAY)
+									et = et->data.shaped_array.element_type;
+								while (et && et->kind == TYPE_ARRAY)
+									et = et->data.array.element_type;
+								var->inferred_type =
+								    (et && et->kind == TYPE_NAME) ? resolve_type_alias(ctx, et->data.name) : NULL;
 							} else
-								var->inferred_type = t->data.name;
+								var->inferred_type = NULL; /* unknown meta-kind: no string type */
 						} else if (stmt->data.bind_stmt.value) {
 							/* No annotation: infer from value expression */
 							const char *inferred = resolve_expression_type(ctx, stmt->data.bind_stmt.value);
@@ -2007,6 +2130,9 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		ctx->stmt_call_ok = (stmt->data.assign_stmt.value && stmt->data.assign_stmt.value->type == EXPR_CALL);
 		analyze_expression(ctx, stmt->data.assign_stmt.value);
 		ctx->stmt_call_ok = 0;
+		/* `a = b` takes ownership just like `a := b`: a bare move-only RHS name is an implicit move
+		 * (b is consumed). Scalars copy; an explicit `copy b` keeps the source. */
+		implicit_move_consume(ctx, stmt->data.assign_stmt.value);
 		/* You cannot assign to a binding that was moved (it's dead): `buf = foo(move buf)` must
 		 * be written `buf := foo(move buf)` (a fresh binding). The move in the RHS consumes the
 		 * target above, so check it here. */
@@ -2060,63 +2186,15 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 			break;
 		}
 
-		/* Check for infinite or condition-based for loop (no init/incr, no var_name) */
-		if (!stmt->data.for_stmt.var_name) {
-			/* Infinite or condition-based for loop */
-			if (stmt->data.for_stmt.condition) {
-				/* Condition-based: analyze condition */
-				analyze_expression(ctx, stmt->data.for_stmt.condition);
-			}
-			/* Both infinite and condition-based loops: analyze body in new scope */
-			push_scope(ctx);
-			for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
-				analyze_statement(ctx, stmt->data.for_stmt.body[i]);
-			}
-			pop_scope(ctx);
-			break;
+		/* Infinite or condition-based for loop (no init/incr). The range-based `for IDENT in …`
+		 * form does not exist — it is rejected at parse — so there is no iterable/var_name path. */
+		if (stmt->data.for_stmt.condition) {
+			analyze_expression(ctx, stmt->data.for_stmt.condition);
 		}
-
-		/* check iterable exists (should be archetype) */
-		analyze_expression(ctx, stmt->data.for_stmt.iterable);
-
-		/* push new scope for loop body */
 		push_scope(ctx);
-
-		/* determine what archetype the loop iterates over */
-		const char *archetype_name = NULL;
-		if (stmt->data.for_stmt.iterable->type == EXPR_NAME) {
-			const char *iterable_name = stmt->data.for_stmt.iterable->data.name.name;
-
-			/* check if this is a direct archetype reference */
-			if (find_archetype(ctx, iterable_name)) {
-				archetype_name = iterable_name;
-			}
-			/* check if this is a variable that holds an archetype instance */
-			else if (find_variable(ctx, iterable_name)) {
-				VariableInfo *var = find_variable(ctx, iterable_name);
-				if (var && var->archetype_name) {
-					archetype_name = var->archetype_name;
-				} else {
-					sem_emit_not_archetype_instance(ctx, stmt->loc, iterable_name);
-					archetype_name = NULL;
-				}
-			}
-			/* check if we're in a sys and this is a parameter name (matches current sys archetype) */
-			else if (ctx->current_sys_archetype) {
-				archetype_name = ctx->current_sys_archetype;
-			} else {
-				sem_emit_undefined_archetype_for(ctx, stmt->loc, iterable_name);
-				archetype_name = NULL;
-			}
-		}
-
-		/* loop variable is in scope and refers to the archetype */
-		add_variable_with_archetype(ctx, stmt->data.for_stmt.var_name, NULL, archetype_name);
-
 		for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
 			analyze_statement(ctx, stmt->data.for_stmt.body[i]);
 		}
-
 		pop_scope(ctx);
 		break;
 	}
@@ -2223,11 +2301,22 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 				VariableInfo *rv = find_variable(ctx, rval->data.name.name);
 				if (rv && var_is_opaque(ctx, rv))
 					rv->is_consumed = 1;
+				/* An array is returned by REFERENCE — only valid when it's an `own`/borrowed
+				 * PARAM (the caller owns that storage; this is the slice / ownership-threading
+				 * idiom, now for any element type). Returning a fresh LOCAL array would dangle (its
+				 * storage is this frame) and needs value copy-out, which is unimplemented — reject
+				 * it cleanly. */
+				if (ctx->current_func && rv && rv->type && type_is_byref_aggregate(rv->type) && !rv->is_param) {
+					fprintf(stderr, "Error: cannot return a local array by value (array copy-out is not implemented); "
+					                "return an `own` parameter or thread a caller-provided buffer instead\n");
+					ctx->error_count++;
+				}
 			}
 		}
 		break;
 
 	case STMT_BREAK:
+	case STMT_CONTINUE:
 		break;
 
 	case STMT_EACH_FIELD: {
@@ -2423,8 +2512,50 @@ static void analyze_static_array_decl(SemanticContext *ctx, StaticDecl *s) {
 		return;
 	}
 
-	/* Register as a variable in the global scope so find_variable works everywhere */
-	add_variable(ctx, s->array.name, s->array.element_type);
+	/* Constant array initializers (`buf : T[N] = {…}`) are not lowered yet — zero-init only. */
+	if (s->array.init) {
+		fprintf(stderr,
+		        "Error: global '%s' array initializers are not yet implemented; declare it zero-initialized "
+		        "(`%s : T[N]`)\n",
+		        s->array.name, s->array.name);
+		ctx->error_count++;
+		return;
+	}
+
+	/* Registration is hoisted: the name was added to the global scope in the pre-pass so forward
+	 * references to it resolve regardless of declaration order. */
+}
+
+/* A top-level mutable global's initial value must be compile-time-known (static storage is
+ * initialized at compile/link time — there is no startup code). NULL = the implicit `= 0`. */
+static int sem_is_const_init(SemanticContext *ctx, Expression *e) {
+	if (!e)
+		return 1; /* implicit `= 0` */
+	if (e->type == EXPR_LITERAL)
+		return 1;
+	if (e->type == EXPR_NAME)
+		return semantic_get_const_value(ctx, e->data.name.name) != NULL;
+	/* `Enum.variant` folds to a compile-time int constant */
+	if (e->type == EXPR_FIELD && e->data.field.base && e->data.field.base->type == EXPR_NAME)
+		return enum_is_type(ctx, e->data.field.base->data.name.name);
+	return 0;
+}
+
+static void analyze_static_scalar_decl(SemanticContext *ctx, StaticDecl *s) {
+	if (!s)
+		return;
+	if (!s->scalar.type || s->scalar.type->kind != TYPE_NAME) {
+		fprintf(stderr, "Error: global '%s' has an invalid scalar type\n", s->scalar.name);
+		ctx->error_count++;
+		return;
+	}
+	if (!sem_is_const_init(ctx, s->scalar.init)) {
+		fprintf(stderr, "Error: global '%s' initializer must be a compile-time constant (a literal or const)\n",
+		        s->scalar.name);
+		ctx->error_count++;
+		return;
+	}
+	/* Registration is hoisted (see the pre-pass); nothing to add here. */
 }
 
 static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
@@ -2633,6 +2764,7 @@ static int stmt_has_side_effects(SemanticContext *ctx, Statement *stmt, ProcDecl
 			return 1;
 		return body_has_side_effects(ctx, stmt->data.if_stmt.else_body, stmt->data.if_stmt.else_count, proc);
 	case STMT_BREAK:
+	case STMT_CONTINUE:
 	case STMT_RETURN:
 		return 0;
 	case STMT_RUN:
@@ -3197,11 +3329,12 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 		break;
 	case DECL_STATIC: {
 		StaticDecl *s = decl->data.static_decl;
-		if (s->kind == STATIC_KIND_ARCHETYPE) {
+		if (s->kind == STATIC_KIND_ARCHETYPE)
 			analyze_static_decl(ctx, s);
-		} else {
+		else if (s->kind == STATIC_KIND_SCALAR)
+			analyze_static_scalar_decl(ctx, s);
+		else
 			analyze_static_array_decl(ctx, s);
-		}
 		break;
 	}
 	case DECL_USE:
@@ -3338,6 +3471,8 @@ static void erase_aliases_decl(SemanticContext *ctx, Decl *d) {
 	case DECL_STATIC:
 		if (d->data.static_decl->kind == STATIC_KIND_ARRAY)
 			erase_aliases_typeref(ctx, d->data.static_decl->array.element_type);
+		else if (d->data.static_decl->kind == STATIC_KIND_SCALAR)
+			erase_aliases_typeref(ctx, d->data.static_decl->scalar.type);
 		break;
 	default:
 		break;
@@ -3373,6 +3508,21 @@ static char *sem_txt_dup(CvText t) {
 }
 static char *sem_cv_dup(CstView v) {
 	return sem_txt_dup(cv_text(v));
+}
+/* Like sem_cv_dup but only the node's first TOKEN leaf — token-precise, so it excludes trailing
+ * trivia the node span may include. A const value that is the last token before a comment would
+ * otherwise swallow the comment into its lexeme (read as float, leaked into codegen). Mirrors
+ * lower.c's cv_dup_first_token. */
+static char *sem_cv_dup_first_token(CstView v) {
+	if (v.node) {
+		for (int i = 0; i < v.node->child_count; i++) {
+			if (v.node->children[i].tag == SE_TOKEN) {
+				CvText t = {v.src + v.node->children[i].as.token.offset, v.node->children[i].as.token.length};
+				return sem_txt_dup(t);
+			}
+		}
+	}
+	return sem_cv_dup(v);
 }
 static char *sem_dupz(const char *s) {
 	char *r = malloc(strlen(s) + 1);
@@ -3430,6 +3580,28 @@ static char *cst_handle_name(CstView t) {
 	return sem_dupz("");
 }
 
+/* Type name from an SN_TYPE_REF: a qualified `mod.Name` (two IDENTs) folds to `mod_Name` (the
+ * module's mangled type symbol), matching lower.c's type_ref_name; a bare type returns its IDENT. */
+static char *sem_type_ref_name(CstView t) {
+	CvText ids[2];
+	int n = 0;
+	for (int i = 0; i < t.node->child_count && n < 2; i++) {
+		const SyntaxElem *e = &t.node->children[i];
+		if (e->tag == SE_TOKEN && e->as.token.kind == TOK_IDENT) {
+			ids[n].ptr = t.src + e->as.token.offset;
+			ids[n].len = e->as.token.length;
+			n++;
+		}
+	}
+	if (n >= 2) {
+		size_t L = ids[0].len + 1 + ids[1].len + 1;
+		char *r = malloc(L);
+		snprintf(r, L, "%.*s.%.*s", (int)ids[0].len, ids[0].ptr, (int)ids[1].len, ids[1].ptr);
+		return r;
+	}
+	return sem_txt_dup(cv_token(t, TOK_IDENT));
+}
+
 static TypeRef *cst_build_type(CstView t) {
 	if (!cv_present(t))
 		return NULL;
@@ -3438,7 +3610,7 @@ static TypeRef *cst_build_type(CstView t) {
 	tr->loc.column = 0;
 	switch (cv_kind(t)) {
 	case SN_TYPE_REF: {
-		char *raw = sem_txt_dup(cv_token(t, TOK_IDENT));
+		char *raw = sem_type_ref_name(t);
 		if (strcmp(raw, "archetype") == 0) {
 			tr->kind = TYPE_ARCHETYPE;
 			free(raw);
@@ -3712,7 +3884,7 @@ static Expression *cst_build_expr(CstView e) {
 	}
 	case SN_LITERAL_EXPR:
 		ax->type = EXPR_LITERAL;
-		ax->data.literal.lexeme = sem_cv_dup(e);
+		ax->data.literal.lexeme = sem_cv_dup_first_token(e);
 		break;
 	case SN_STRING_EXPR: {
 		ax->type = EXPR_STRING;
@@ -3744,20 +3916,27 @@ static Expression *cst_build_expr(CstView e) {
 		break;
 	}
 	case SN_FIELD_EXPR: {
-		/* `base.f1.f2…[idx]` flat: base IDENT, then (DOT FIELD_NAME)+, optional trailing index. */
+		/* `base.f1.f2…[idx]` flat: base IDENT, then (DOT FIELD_NAME)+, optional trailing index. The
+		 * sub-expr nodes are built directly here (not via cst_build_expr), so propagate the source
+		 * loc onto each one — otherwise diagnostics on them (undefined base, missing member) report
+		 * at line 1,1. */
+		SourceLoc floc = ax->loc;
 		Expression *base = expression_create(EXPR_NAME);
+		base->loc = floc;
 		base->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
 		base->data.name.is_table_ref = 0;
 		Expression *cur = base;
 		int nfields = cv_count(e, SN_FIELD_NAME);
 		for (int i = 0; i < nfields; i++) {
 			Expression *f = expression_create(EXPR_FIELD);
+			f->loc = floc;
 			f->data.field.base = cur;
 			f->data.field.field_name = sem_cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
 			cur = f;
 		}
 		if (cv_has_token(e, TOK_LBRACKET)) {
 			Expression *idx = expression_create(EXPR_INDEX);
+			idx->loc = floc;
 			idx->data.index.base = cur;
 			int ic = 0;
 			for (int i = 0; i < e.node->child_count; i++)
@@ -3784,11 +3963,13 @@ static Expression *cst_build_expr(CstView e) {
 	case SN_INDEX_EXPR: {
 		ax->type = EXPR_INDEX;
 		Expression *base = expression_create(EXPR_NAME);
+		base->loc = ax->loc;
 		base->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
 		base->data.name.is_table_ref = 0;
 		int nfields = cv_count(e, SN_FIELD_NAME);
 		for (int i = 0; i < nfields; i++) {
 			Expression *f = expression_create(EXPR_FIELD);
+			f->loc = ax->loc;
 			f->data.field.base = base;
 			f->data.field.field_name = sem_cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
 			base = f;
@@ -3810,6 +3991,45 @@ static Expression *cst_build_expr(CstView e) {
 					ax->data.index.indices[ax->data.index.index_count++] =
 					    cst_build_expr((CstView){e.node->children[i].as.node, e.src});
 			}
+		break;
+	}
+	case SN_SLICE_EXPR: {
+		/* `base[lo:hi]` — base is IDENT + fields (as for index); the expr child(ren) split on the
+		 * `:` token: before → lo, after → hi (either may be absent). */
+		ax->type = EXPR_SLICE;
+		Expression *base = expression_create(EXPR_NAME);
+		base->loc = ax->loc;
+		base->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
+		base->data.name.is_table_ref = 0;
+		int nfields = cv_count(e, SN_FIELD_NAME);
+		for (int i = 0; i < nfields; i++) {
+			Expression *f = expression_create(EXPR_FIELD);
+			f->loc = ax->loc;
+			f->data.field.base = base;
+			f->data.field.field_name = sem_cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+			base = f;
+		}
+		ax->data.slice.base = base;
+		ax->data.slice.lo = NULL;
+		ax->data.slice.hi = NULL;
+		int seen_colon = 0;
+		for (int i = 0; i < e.node->child_count; i++) {
+			SyntaxElem *ch = &e.node->children[i];
+			if (ch->tag == SE_TOKEN && ch->as.token.kind == TOK_COLON) {
+				seen_colon = 1;
+				continue;
+			}
+			if (ch->tag == SE_NODE) {
+				SyntaxNodeKind k = ch->as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
+					Expression *ex = cst_build_expr((CstView){ch->as.node, e.src});
+					if (!seen_colon)
+						ax->data.slice.lo = ex;
+					else
+						ax->data.slice.hi = ex;
+				}
+			}
+		}
 		break;
 	}
 	case SN_BINARY_EXPR: {
@@ -3852,14 +4072,16 @@ static Expression *cst_build_expr(CstView e) {
 		Expression *callee;
 		int callee_nfields = cv_count(e, SN_FIELD_NAME);
 		if (callee_nfields > 0) {
-			/* Qualified callee `mod.name` (no SN_CALLEE_NAME): rebuild the field access; the
-			 * qualify pass folds `mod.name` → `mod_name` for imported modules. */
+			/* Qualified callee `mod.name`: rebuild the field access; the qualify pass binds it to the
+			 * member's identity. Propagate loc so a `module has no member` diagnostic locates right. */
 			Expression *base = expression_create(EXPR_NAME);
+			base->loc = ax->loc;
 			base->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
 			base->data.name.is_table_ref = 0;
 			Expression *cur = base;
 			for (int i = 0; i < callee_nfields; i++) {
 				Expression *f = expression_create(EXPR_FIELD);
+				f->loc = ax->loc;
 				f->data.field.base = cur;
 				f->data.field.field_name = sem_cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
 				cur = f;
@@ -3867,6 +4089,7 @@ static Expression *cst_build_expr(CstView e) {
 			callee = cur;
 		} else {
 			callee = expression_create(EXPR_NAME);
+			callee->loc = ax->loc;
 			callee->data.name.name = sem_cv_dup(cv_child(e, SN_CALLEE_NAME));
 			callee->data.name.is_table_ref = 0;
 		}
@@ -4039,6 +4262,9 @@ static Statement *cst_build_stmt(CstView s) {
 		break;
 	case SN_BREAK_STMT:
 		as->type = STMT_BREAK;
+		break;
+	case SN_CONTINUE_STMT:
+		as->type = STMT_CONTINUE;
 		break;
 	case SN_RUN_STMT: {
 		as->type = STMT_RUN;
@@ -4288,6 +4514,57 @@ static Statement *cst_build_stmt(CstView s) {
 				as->data.multi_bind.targets[ti].type =
 				    cv_type_count_sem(cnv) > 0 ? cst_build_type(sem_type_at(cnv, 0)) : NULL;
 			}
+		}
+		break;
+	}
+	case SN_BLOCK: {
+		/* A standalone `{ … }` block is a nested scope. Analyze-only: model it as `if (1) { body }` so
+		 * every semantic pass VISITS the block's statements — without this a block was an empty STMT_EXPR
+		 * and its inner exprs went untyped (a name arg defaulted to i32). Lower handles the real scope. */
+		as->type = STMT_IF;
+		Expression *one = expression_create(EXPR_LITERAL);
+		one->data.literal.lexeme = sem_dupz("1");
+		as->data.if_stmt.cond = one;
+		as->data.if_stmt.then_body = cst_build_body(s, &as->data.if_stmt.then_count);
+		as->data.if_stmt.else_body = NULL;
+		as->data.if_stmt.else_count = 0;
+		break;
+	}
+	case SN_MATCH_STMT: {
+		/* Analyze-only desugar: `match scrut { p0: b0; p1: b1; … }` → an if-chain
+		 *   if (scrut) { b0 } else if (scrut) { b1 } …
+		 * The condition is the scrutinee itself, NOT a real pattern comparison — this exists purely so
+		 * every semantic pass (type annotation, tycheck, RAII, name resolution) VISITS the scrutinee and
+		 * each arm's body. Pattern matching + exhaustiveness live elsewhere (lower desugars for codegen;
+		 * walk_matches checks exhaustiveness on the CST). Without this a match was an empty STMT_EXPR, so
+		 * arm-body exprs were never typed (opaque/float args defaulted to i32) and a local used only in
+		 * an arm drew a false unused-local lint. */
+		CstView scrut = sem_node_at_expr(s, 0);
+		int narm = cv_count(s, SN_MATCH_ARM);
+		if (narm == 0) {
+			as->type = STMT_EXPR;
+			as->data.expr_stmt.expr = cst_build_expr(scrut);
+			break;
+		}
+		Statement *chain = NULL; /* the else-body built so far (one nested if) */
+		for (int i = narm - 1; i >= 0; i--) {
+			CstView arm = cv_child_at(s, SN_MATCH_ARM, i);
+			int bc = 0;
+			Statement **body = cst_build_body(arm, &bc);
+			Statement *iff = (i == 0) ? as : statement_create(STMT_IF);
+			iff->type = STMT_IF;
+			iff->data.if_stmt.cond = cst_build_expr(scrut);
+			iff->data.if_stmt.then_body = body;
+			iff->data.if_stmt.then_count = bc;
+			if (chain) {
+				iff->data.if_stmt.else_body = calloc(1, sizeof(Statement *));
+				iff->data.if_stmt.else_body[0] = chain;
+				iff->data.if_stmt.else_count = 1;
+			} else {
+				iff->data.if_stmt.else_body = NULL;
+				iff->data.if_stmt.else_count = 0;
+			}
+			chain = iff;
 		}
 		break;
 	}
@@ -4929,18 +5206,19 @@ static Decl *cst_build_decl_inner(CstView d) {
 			}
 			ad->data.static_decl = sd;
 		} else {
-			/* `name : T[size]` — mutable static buffer. Name is the leading IDENT; the declared
-			 * array type is the single type node. */
+			/* Storage form of the unified binding: `name : T` / `name : T = v` / `name := v`. A
+			 * sized-array T is a buffer; any other (or absent) T is a scalar. The `= v` value is
+			 * captured as the initializer; its absence is the implicit `= 0`. Name is the leading
+			 * IDENT, the declared type (if any) the single type node, the initializer the expr node. */
 			char *aname = sem_txt_dup(cv_token(d, TOK_IDENT));
 			CstView arr_ty = sem_type_at(d, 0);
-			TypeRef *full = cst_build_type(arr_ty);
-			TypeRef *elem = full;
-			if (full && full->kind == TYPE_SHAPED_ARRAY)
-				elem = full->data.shaped_array.element_type;
-			else if (full && full->kind == TYPE_ARRAY)
-				elem = full->data.array.element_type;
-			int size = 0;
-			if (cv_present(arr_ty))
+			CstView initv = sem_node_at_expr(d, 0);
+			TypeRef *full = cv_present(arr_ty) ? cst_build_type(arr_ty) : NULL;
+			int is_array = full && (full->kind == TYPE_SHAPED_ARRAY || full->kind == TYPE_ARRAY);
+			if (is_array) {
+				TypeRef *elem = (full->kind == TYPE_SHAPED_ARRAY) ? full->data.shaped_array.element_type
+				                                                  : full->data.array.element_type;
+				int size = 0;
 				for (int i = 0; i < arr_ty.node->child_count; i++)
 					if (arr_ty.node->children[i].tag == SE_TOKEN &&
 					    arr_ty.node->children[i].as.token.kind == TOK_NUMBER) {
@@ -4953,11 +5231,26 @@ static Decl *cst_build_decl_inner(CstView d) {
 						size = atoi(buf);
 						break;
 					}
-			StaticDecl *sd = static_decl_array_create(aname, elem, size);
-			/* static_decl_array_create takes ownership of `elem`; free the array wrapper only. */
-			if (full && full != elem)
-				free(full); /* shaped/array wrapper node; element ownership moved to sd */
-			ad->data.static_decl = sd;
+				StaticDecl *sd = static_decl_array_create(aname, elem, size);
+				/* static_decl_array_create takes ownership of `elem`; free the array wrapper only. */
+				if (full != elem)
+					free(full); /* shaped/array wrapper node; element ownership moved to sd */
+				sd->array.init = cv_present(initv) ? cst_build_expr(initv) : NULL;
+				ad->data.static_decl = sd;
+			} else {
+				/* Scalar. The inferred form `name := v` carries no type node — infer int/float from
+				 * the literal initializer's lexeme (anything with a '.'/exponent is float). */
+				Expression *ie = cv_present(initv) ? cst_build_expr(initv) : NULL;
+				TypeRef *sty = full;
+				if (!sty) {
+					const char *tn = (ie && ie->type == EXPR_LITERAL && ie->data.literal.lexeme &&
+					                  strpbrk(ie->data.literal.lexeme, ".eE"))
+					                     ? "float"
+					                     : "int";
+					sty = type_name_create(sem_dupz(tn));
+				}
+				ad->data.static_decl = static_decl_scalar_create(aname, sty, ie);
+			}
 		}
 		return ad;
 	}
@@ -5004,11 +5297,14 @@ static int sem_name_in_set(char **set, int count, const char *name) {
 			return 1;
 	return 0;
 }
+/* Qualify a module-local name to its identity `<mod>.<name>` (dotted). The `.` is a legal LLVM
+ * global-identifier character (cf. `@llvm.memcpy`), so this identity needs no emission quoting, and
+ * it reads as a clean qualified name in diagnostics. */
 static char *sem_prefix_name(const char *prefix, const char *name) {
 	int p = (int)strlen(prefix), n = (int)strlen(name);
 	char *r = malloc(p + 1 + n + 1);
 	memcpy(r, prefix, p);
-	r[p] = '_';
+	r[p] = '.';
 	memcpy(r + p + 1, name, n);
 	r[p + 1 + n] = 0;
 	return r;
@@ -5065,6 +5361,11 @@ static void sem_rename_expr(Expression *e, const char *prefix, char **set, int c
 		sem_rename_expr(e->data.index.base, prefix, set, count);
 		for (int i = 0; i < e->data.index.index_count; i++)
 			sem_rename_expr(e->data.index.indices[i], prefix, set, count);
+		break;
+	case EXPR_SLICE:
+		sem_rename_expr(e->data.slice.base, prefix, set, count);
+		sem_rename_expr(e->data.slice.lo, prefix, set, count);
+		sem_rename_expr(e->data.slice.hi, prefix, set, count);
 		break;
 	case EXPR_BINARY:
 		sem_rename_expr(e->data.binary.left, prefix, set, count);
@@ -5138,18 +5439,40 @@ static void sem_rename_stmt(Statement *s, const char *prefix, char **set, int co
 		break;
 	}
 }
-/* Qualified module access (semantic AST mirror of lower.c's hir_q_*): rewrite `mod.name` →
- * `mod_name` for inlined modules, so `io.open(...)` resolves to io's exported `open`. */
+/* Context for the qualify pass, so it can emit a `module has no member` diagnostic. Set just before
+ * the pass runs (file-static like g_lower_sem; the pass is single-threaded over one program). */
+static SemanticContext *g_sem_qualify_ctx = NULL;
+
+/* True if `base` names an imported module (a qualify prefix). */
+static int sem_base_is_module(char **prefix, int n, const char *base) {
+	for (int m = 0; m < n; m++)
+		if (strcmp(base, prefix[m]) == 0)
+			return 1;
+	return 0;
+}
+
+/* Qualified module access (semantic AST mirror of lower.c's hir_q_*): bind `mod.member` to its
+ * member's identity. Member is looked up by literal name in the module's export set. */
 static int sem_qual_lookup(char **prefix, char ***set, int *count, int n, const char *base, const char *field,
                            char *out, size_t out_sz) {
 	for (int m = 0; m < n; m++) {
 		if (strcmp(base, prefix[m]) != 0)
 			continue;
-		for (int s = 0; s < count[m]; s++)
-			if (strcmp(field, set[m][s]) == 0) {
-				snprintf(out, out_sz, "%s_%s", prefix[m], field);
+		for (int s = 0; s < count[m]; s++) {
+			/* Each entry is "<visible>=<target-symbol>": match the visible (qualified) name,
+			 * resolve to its target. A pure-Arche export targets `<mod>_<name>`; a foreign
+			 * export targets its real link name (`fmt.printf` → libc `printf`, `net.listen` →
+			 * `net_listen`). */
+			const char *e = set[m][s];
+			const char *eq = strchr(e, '=');
+			if (!eq)
+				continue;
+			size_t vlen = (size_t)(eq - e);
+			if (strlen(field) == vlen && strncmp(field, e, vlen) == 0) {
+				snprintf(out, out_sz, "%s", eq + 1);
 				return 1;
 			}
+		}
 	}
 	return 0;
 }
@@ -5159,13 +5482,18 @@ static void sem_qualify_expr(Expression *e, char **prefix, char ***set, int *cou
 	if (e->type == EXPR_FIELD && e->data.field.base && e->data.field.base->type == EXPR_NAME &&
 	    e->data.field.field_name) {
 		char mangled[256];
-		if (sem_qual_lookup(prefix, set, count, n, e->data.field.base->data.name.name, e->data.field.field_name,
-		                    mangled, sizeof(mangled))) {
+		const char *base = e->data.field.base->data.name.name;
+		if (sem_qual_lookup(prefix, set, count, n, base, e->data.field.field_name, mangled, sizeof(mangled))) {
 			e->type = EXPR_NAME;
 			e->data.name.name = sem_dupz(mangled);
 			e->data.name.is_table_ref = 0;
 			return;
 		}
+		/* Base IS an imported module but it has no such member → a precise diagnostic (e.g.
+		 * `fmt.nope` → "module 'fmt' has no member 'nope'"), instead of the misleading
+		 * "Undefined variable 'fmt'" the value-field path would later emit. */
+		if (g_sem_qualify_ctx && sem_base_is_module(prefix, n, base))
+			sem_emit_module_no_member(g_sem_qualify_ctx, e->loc, base, e->data.field.field_name);
 	}
 	switch (e->type) {
 	case EXPR_FIELD:
@@ -5272,8 +5600,11 @@ static const char *sem_decl_name(Decl *d) {
 	case DECL_FUNC_GROUP:
 		return d->data.func_group->name;
 	case DECL_STATIC:
-		return d->data.static_decl->kind == STATIC_KIND_ARRAY ? d->data.static_decl->array.name
-		                                                      : d->data.static_decl->archetype.archetype_name;
+		if (d->data.static_decl->kind == STATIC_KIND_ARRAY)
+			return d->data.static_decl->array.name;
+		if (d->data.static_decl->kind == STATIC_KIND_SCALAR)
+			return d->data.static_decl->scalar.name;
+		return d->data.static_decl->archetype.archetype_name;
 	case DECL_CONST:
 		return d->data.constant->name;
 	case DECL_WORLD:
@@ -5283,6 +5614,11 @@ static const char *sem_decl_name(Decl *d) {
 	}
 }
 static void sem_rename_decl(Decl *d, const char *prefix, char **set, int count) {
+	/* A `@drop(<T>)` decorator names an opaque type; when that type is a module-local opaque
+	 * (e.g. `socket` inside `net`), it is prefixed like any other module symbol, so the
+	 * decorator's type name must rename in lockstep with the destructor's parameter type. */
+	if (d->is_drop)
+		sem_maybe_rename(&d->drop_type, prefix, set, count);
 	switch (d->kind) {
 	case DECL_ARCHETYPE:
 		sem_maybe_rename(&d->data.archetype->name, prefix, set, count);
@@ -5323,6 +5659,10 @@ static void sem_rename_decl(Decl *d, const char *prefix, char **set, int count) 
 		if (d->data.static_decl->kind == STATIC_KIND_ARRAY) {
 			sem_maybe_rename(&d->data.static_decl->array.name, prefix, set, count);
 			sem_rename_typeref(d->data.static_decl->array.element_type, prefix, set, count);
+		} else if (d->data.static_decl->kind == STATIC_KIND_SCALAR) {
+			sem_maybe_rename(&d->data.static_decl->scalar.name, prefix, set, count);
+			sem_rename_typeref(d->data.static_decl->scalar.type, prefix, set, count);
+			sem_rename_expr(d->data.static_decl->scalar.init, prefix, set, count);
 		} else {
 			sem_maybe_rename(&d->data.static_decl->archetype.archetype_name, prefix, set, count);
 			for (int i = 0; i < d->data.static_decl->archetype.field_count; i++)
@@ -5390,11 +5730,15 @@ static void sem_expand_tuple_groups(AstProgram *prog) {
 }
 
 /* Build one module decl from `node`, append it to prog, and record its name in the module's
- * `full` set (intra-module resolution) and — when `exported` — its `expset` (externally visible).
- * Foreign (extern) decls are never added to either set. Shared by the top-level module loop and
- * the recursion into `#foreign { ... }` / `#module { ... }` block regions. */
-static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, AstProgram *prog, char ***full, int *fulln,
-                                int *fullcap, char ***expset, int *expn, int *expcap, int exported) {
+ * `full` set (intra-module resolution) and — when `exported` — its `expset` (externally visible via
+ * qualified `mod.name`). Non-externs are prefixed to `<mod>_<name>` and recorded under their source
+ * name. Externs keep their unprefixed decl (the C ABI symbol), are NOT added to `full`, and go into
+ * `expset` under the prefix-stripped visible name so `mod.<visible>` reconstructs the C symbol
+ * (e.g. `net.listen` → `net_listen`). Shared by the top-level module loop and the recursion into
+ * `#foreign { ... }` / `#module { ... }` block regions. */
+static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const char *mod_name, AstProgram *prog,
+                                char ***full, int *fulln, int *fullcap, char ***expset, int *expn, int *expcap,
+                                int exported) {
 	Decl *md = cst_build_decl((CstView){node, msrc});
 	if (!md)
 		return;
@@ -5402,19 +5746,33 @@ static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, AstPro
 	int is_ext =
 	    (md->kind == DECL_PROC && md->data.proc->is_extern) || (md->kind == DECL_FUNC && md->data.func->is_extern);
 	const char *nm = sem_decl_name(md);
-	if (nm && !is_ext) {
+	if (!nm)
+		return;
+	/* A member is accessed by its LITERAL declared name (no `<mod>_`-prefix stripping): a foreign
+	 * decl named `net_send` is `net.net_send`. Foreign decls keep their declared name (the C ABI
+	 * symbol) and are NOT renamed; pure-Arche decls are renamed to the qualified identity
+	 * `<mod>.<name>` so two modules' same-named decls stay distinct AND diagnostics show a clean
+	 * qualified name. (`.` is a legal LLVM global-identifier char, so no emission quoting needed.) */
+	if (!is_ext) {
 		if (*fulln == *fullcap) {
 			*fullcap = *fullcap ? *fullcap * 2 : 8;
 			*full = realloc(*full, (size_t)*fullcap * sizeof(char *));
 		}
 		(*full)[(*fulln)++] = sem_dupz(nm);
-		if (exported) {
-			if (*expn == *expcap) {
-				*expcap = *expcap ? *expcap * 2 : 8;
-				*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
-			}
-			(*expset)[(*expn)++] = sem_dupz(nm);
+	}
+	if (exported) {
+		if (*expn == *expcap) {
+			*expcap = *expcap ? *expcap * 2 : 8;
+			*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
 		}
+		/* "<member>=<identity>": the literal member name and the symbol it resolves to. Foreign →
+		 * its C symbol (its own name); pure-Arche → the qualified identity `<mod>.<name>`. */
+		char entry[512];
+		if (is_ext)
+			snprintf(entry, sizeof(entry), "%s=%s", nm, nm);
+		else
+			snprintf(entry, sizeof(entry), "%s=%s.%s", nm, mod_name, nm);
+		(*expset)[(*expn)++] = sem_dupz(entry);
 	}
 }
 
@@ -5422,6 +5780,103 @@ static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, AstPro
  * separately, and SN_REGION, which is a container/marker rather than a decl). */
 static int sem_is_collectible_decl(SyntaxNodeKind k) {
 	return k >= SN_WORLD_DECL && k <= SN_USE_DECL && k != SN_USE_DECL;
+}
+
+/* Inline module `mod_name`'s decls into `prog` (prefixed so intra-module refs resolve), record its
+ * exported names in acc for the `mod.name → mod_name` qualify pass, then RECURSIVELY inline the
+ * module's own `#import`s — so a module may use qualified access to a transitively-imported module
+ * (`csv` calling `parse.atof`). Dedup via the acc set makes import cycles safe. */
+static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc_prefix, char ***acc_set,
+                              int *acc_count, int *acc_n) {
+	for (int a = 0; a < *acc_n; a++)
+		if (strcmp(acc_prefix[a], mod_name) == 0)
+			return; /* already inlined (direct or via another transitive path) */
+	int first = prog->decl_count;
+	int found = 0;
+	char **full = NULL;
+	int fulln = 0, fullcap = 0;
+	char **expset = NULL;
+	int expn = 0, expcap = 0;
+	for (int m = 0; m < g_sem_module_count; m++) {
+		if (strcmp(g_sem_modules[m].name, mod_name) != 0)
+			continue;
+		found = 1;
+		const SyntaxNode *mr = g_sem_modules[m].root;
+		const char *msrc = g_sem_modules[m].src;
+		int exported = 1; /* band resets per file */
+		for (int j = 0; j < mr->child_count; j++) {
+			if (mr->children[j].tag != SE_NODE)
+				continue;
+			const SyntaxNode *cn = mr->children[j].as.node;
+			SyntaxNodeKind mk = cn->kind;
+			if (mk == SN_REGION) {
+				CstView rv = {cn, msrc};
+				int is_block = cv_has_token(rv, TOK_LBRACE);
+				int is_foreign = cv_has_token(rv, TOK_HASH_FOREIGN);
+				if (is_block) {
+					int child_exp = is_foreign ? exported : 0;
+					for (int c = 0; c < cn->child_count; c++) {
+						if (cn->children[c].tag != SE_NODE)
+							continue;
+						if (!sem_is_collectible_decl(cn->children[c].as.node->kind))
+							continue;
+						sem_add_module_decl(cn->children[c].as.node, msrc, mod_name, prog, &full, &fulln, &fullcap,
+						                    &expset, &expn, &expcap, child_exp);
+					}
+				} else if (!is_foreign) {
+					exported = 0;
+				}
+				continue;
+			}
+			if (!sem_is_collectible_decl(mk))
+				continue;
+			sem_add_module_decl(cn, msrc, mod_name, prog, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported);
+		}
+	}
+	if (!found) {
+		free(full);
+		free(expset);
+		return;
+	}
+	/* Scope resolution: rename this module's pure-Arche decls + their intra-module references to the
+	 * qualified identity `<mod>.<name>` (foreign decls keep their C-symbol name). `full` is the set
+	 * of this module's pure-Arche names, so a bare reference inside the module binds to its own
+	 * member. */
+	for (int dd = first; dd < prog->decl_count; dd++)
+		sem_rename_decl(prog->decls[dd], mod_name, full, fulln);
+	for (int x = 0; x < fulln; x++)
+		free(full[x]);
+	free(full);
+	if (*acc_n < 64) {
+		acc_prefix[*acc_n] = sem_dupz(mod_name);
+		acc_set[*acc_n] = expset;
+		acc_count[*acc_n] = expn;
+		(*acc_n)++;
+	} else {
+		for (int x = 0; x < expn; x++)
+			free(expset[x]);
+		free(expset);
+	}
+	/* Transitive: inline this module's own `#import`s (now that it's in acc → cycle-safe). */
+	for (int m = 0; m < g_sem_module_count; m++) {
+		if (strcmp(g_sem_modules[m].name, mod_name) != 0)
+			continue;
+		const SyntaxNode *mr = g_sem_modules[m].root;
+		const char *msrc = g_sem_modules[m].src;
+		for (int j = 0; j < mr->child_count; j++) {
+			if (mr->children[j].tag != SE_NODE || mr->children[j].as.node->kind != SN_USE_DECL)
+				continue;
+			const SyntaxNode *un = mr->children[j].as.node;
+			for (int t = 0; t < un->child_count; t++) {
+				if (un->children[t].tag != SE_TOKEN || un->children[t].as.token.kind != TOK_IDENT)
+					continue;
+				CvText tk = {msrc + un->children[t].as.token.offset, un->children[t].as.token.length};
+				char *sub = sem_txt_dup(tk);
+				sem_inline_module(sub, prog, acc_prefix, acc_set, acc_count, acc_n);
+				free(sub);
+			}
+		}
+	}
 }
 
 /* Build the analyzable AstProgram from the main-file CST plus all registered module CSTs,
@@ -5471,85 +5926,17 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 		CstView dv = {root->children[i].as.node, src};
 
 		if (k == SN_USE_DECL) {
-			/* One IDENT per imported module: a bare `#import io` has one, a block
-			 * `#import { io net }` has several. Inline each. */
+			/* One IDENT per imported module (`#import io` / `#import { io net }`). Inline each —
+			 * the helper recurses into the module's own transitive imports + dedups. */
 			const SyntaxNode *un = dv.node;
 			for (int t = 0; t < un->child_count; t++) {
 				if (un->children[t].tag != SE_TOKEN || un->children[t].as.token.kind != TOK_IDENT)
 					continue;
 				CvText tk = {src + un->children[t].as.token.offset, un->children[t].as.token.length};
 				char *mod_name = sem_txt_dup(tk);
-				int first = prog->decl_count;
-				int found = 0;
-				/* full = ALL non-extern symbols (prefix everything → intra-module refs resolve);
-				 * expset = only #export-band symbols (the only ones externally visible). */
-				char **full = NULL;
-				int fulln = 0, fullcap = 0;
-				char **expset = NULL;
-				int expn = 0, expcap = 0;
-				for (int m = 0; m < g_sem_module_count; m++) {
-					if (strcmp(g_sem_modules[m].name, mod_name) != 0)
-						continue;
-					found = 1;
-					const SyntaxNode *mr = g_sem_modules[m].root;
-					const char *msrc = g_sem_modules[m].src;
-					int exported = 1; /* band resets per file */
-					for (int j = 0; j < mr->child_count; j++) {
-						if (mr->children[j].tag != SE_NODE)
-							continue;
-						const SyntaxNode *cn = mr->children[j].as.node;
-						SyntaxNodeKind mk = cn->kind;
-						if (mk == SN_REGION) {
-							CstView rv = {cn, msrc};
-							int is_block = cv_has_token(rv, TOK_LBRACE);
-							int is_foreign = cv_has_token(rv, TOK_HASH_FOREIGN);
-							if (is_block) {
-								/* A `#module`/`#file` block narrows only its own decls; a `#foreign` block
-								 * leaves visibility as-is (its decls are extern, never exported). */
-								int child_exp = is_foreign ? exported : 0;
-								for (int c = 0; c < cn->child_count; c++) {
-									if (cn->children[c].tag != SE_NODE)
-										continue;
-									if (!sem_is_collectible_decl(cn->children[c].as.node->kind))
-										continue;
-									sem_add_module_decl(cn->children[c].as.node, msrc, prog, &full, &fulln, &fullcap,
-									                    &expset, &expn, &expcap, child_exp);
-								}
-							} else if (!is_foreign) {
-								exported = 0; /* visibility banner: narrows the rest of this file */
-							}
-							continue;
-						}
-						if (!sem_is_collectible_decl(mk))
-							continue;
-						sem_add_module_decl(cn, msrc, prog, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported);
-					}
-				}
-				if (!found) {
-					free(mod_name);
-					free(full);
-					free(expset);
-					continue;
-				}
-				/* Prefix the module's own decls with the FULL set (intra-module refs resolve). */
-				for (int dd = first; dd < prog->decl_count; dd++)
-					sem_rename_decl(prog->decls[dd], mod_name, full, fulln);
-				for (int x = 0; x < fulln; x++)
-					free(full[x]);
-				free(full);
-				/* Only the EXPORT set is externally visible. */
-				if (acc_n < 64) {
-					acc_prefix[acc_n] = sem_dupz(mod_name);
-					acc_set[acc_n] = expset;
-					acc_count[acc_n] = expn;
-					acc_n++;
-				} else {
-					for (int x = 0; x < expn; x++)
-						free(expset[x]);
-					free(expset);
-				}
+				sem_inline_module(mod_name, prog, acc_prefix, acc_set, acc_count, &acc_n);
 				free(mod_name);
-			} /* end per-module-ident loop */
+			}
 			continue;
 		}
 
@@ -5558,32 +5945,16 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 			prog->decls[prog->decl_count++] = ad;
 	}
 
-	/* Qualified module access: rewrite `mod.name` → `mod_name` for every inlined module. */
+	/* Scope resolution: bind every `mod.member` reference to its member's qualified identity. A
+	 * member is looked up by its literal name in the module's export set (no prefix stripping); an
+	 * unknown member emits a precise `module has no member` diagnostic (ctx via g_sem_qualify_ctx,
+	 * set by semantic_analyze_cst — NULL on the unit-test AST-only path, which skips the diag). */
 	if (acc_n > 0)
 		for (int dd = 0; dd < prog->decl_count; dd++)
 			sem_qualify_decl(prog->decls[dd], acc_prefix, acc_set, acc_count, acc_n);
 
-	/* Cross-module bare-reference resolution: rewrite bare refs to a module export that has
-	 * no top-level definition into the prefixed name (collisions left alone). */
-	for (int m = 0; m < acc_n; m++) {
-		char *dangling[256];
-		int dn = 0;
-		for (int s2 = 0; s2 < acc_count[m] && dn < 256; s2++) {
-			int defined = 0;
-			for (int dd = 0; dd < prog->decl_count; dd++) {
-				const char *nm = sem_decl_name(prog->decls[dd]);
-				if (nm && strcmp(nm, acc_set[m][s2]) == 0) {
-					defined = 1;
-					break;
-				}
-			}
-			if (!defined)
-				dangling[dn++] = acc_set[m][s2];
-		}
-		if (dn > 0)
-			for (int dd = 0; dd < prog->decl_count; dd++)
-				sem_rename_decl(prog->decls[dd], acc_prefix[m], dangling, dn);
-	}
+	/* Module exports are reachable ONLY via qualified access (handled by the qualify pass above);
+	 * a bare `name` does NOT resolve to a module export. */
 	for (int m = 0; m < acc_n; m++) {
 		for (int e = 0; e < acc_count[m]; e++)
 			free(acc_set[m][e]);
@@ -5820,12 +6191,22 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 		}
 	}
 
-	/* pre-pass: register every `static` array name so func-purity can reject a func touching one,
-	 * regardless of whether the static is declared before or after the func. */
+	/* pre-pass: hoist every top-level mutable binding (buffer or scalar) — register its name into
+	 * the global scope so forward references resolve regardless of declaration order (top-level
+	 * names hoist, like procs/funcs/types), and register it for func-purity so a func touching a
+	 * mutable global is rejected wherever the global sits. */
 	for (int i = 0; i < prog->decl_count; i++) {
 		Decl *d = prog->decls[i];
-		if (d->kind == DECL_STATIC && d->data.static_decl && d->data.static_decl->kind == STATIC_KIND_ARRAY)
-			register_static_name(ctx, d->data.static_decl->array.name);
+		if (d->kind != DECL_STATIC || !d->data.static_decl)
+			continue;
+		StaticDecl *s = d->data.static_decl;
+		if (s->kind == STATIC_KIND_ARRAY) {
+			register_static_name(ctx, s->array.name);
+			add_variable(ctx, s->array.name, s->array.element_type);
+		} else if (s->kind == STATIC_KIND_SCALAR) {
+			register_static_name(ctx, s->scalar.name);
+			add_variable(ctx, s->scalar.name, s->scalar.type);
+		}
 	}
 
 	/* pre-pass: register every proc/func name so a body may reference any function regardless of
@@ -6003,8 +6384,10 @@ static void check_one_match(SemanticContext *ctx, const SyntaxNode *m, const cha
 	}
 	SourceLoc loc = sem_direct_token_loc((SyntaxNode *)m, TOK_MATCH);
 	if (en) {
+		/* An enum match is closed: `_` is rejected (it would silently absorb variants added later —
+		 * the caller should name an explicit case, e.g. `not_found`). Every variant must be covered. */
 		if (has_wild)
-			return; /* `_` covers any uncovered variants */
+			sem_emit_wildcard_in_enum_match(ctx, loc);
 		for (int v = 0; v < ctx->enum_var_count; v++) {
 			if (strcmp(ctx->enum_var_enum[v], en) != 0)
 				continue;
@@ -6043,7 +6426,10 @@ SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src) {
 	/* Reconstruct the analyzable AstProgram from the immutable CST (+ module CSTs), keep it
 	 * alive on the context, and run the SAME analysis core. erase=0: the CST lowerer reads
 	 * aliases from the side model, so the alias-erasure tree mutation is not needed. */
+	/* The qualify pass inside cst_to_program emits `module has no member` via this ctx. */
+	g_sem_qualify_ctx = ctx;
 	ctx->owned_prog = cst_to_program(root, src);
+	g_sem_qualify_ctx = NULL;
 	analyze_program_core(ctx, ctx->owned_prog, /*erase=*/0);
 	walk_matches(ctx, root, src); /* exhaustiveness: enums register during analyze, so check after */
 	return ctx;

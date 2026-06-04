@@ -2,14 +2,15 @@
 // arg decays to its data pointer when handed to `syscall`, exactly like C. Open a file
 // read-only, read some bytes, and echo a marker via raw write (`print`).
 // RUN: printf 'syscall-io\n' > /tmp/arche_raw_io.txt && %arche build -o %t %s && %t | grep "read ok"
+#import { fmt os }
 main :: proc() {
-  open("/tmp/arche_raw_io.txt", 0)(fd:);
+  os.open("/tmp/arche_raw_io.txt", 0)(fd:);
   if (fd > 0) {
     buf: char[64];
-    read(fd, buf, 64)(buf, n:);
-    close(fd);
+    os.read(fd, buf, 64)(buf, n:);
+    os.close(fd);
     if (n > 0) {
-      print("read ok\n");
+      fmt.print("read ok\n");
     }
   }
 }

@@ -3,6 +3,7 @@
 // vectorize (data pointer hoisted once at entry, not reloaded per iteration).
 // The written buffer is moved in by reference and returned; the read-only source
 // is passed by value (copied in, no side effect).
+#import { fmt }
 copy_bytes :: func(own dst: char[], src: char[], n: i64) -> char[] {
   for (i: i64 = 0; i < n; i = i + 1) {
     dst[i] = src[i];
@@ -40,9 +41,9 @@ main :: proc() {
     }
   }
   if (ok == 1) {
-    printf("copied=ok commas=%ld\n", commas);
+    fmt.printf("copied=ok commas=%ld\n", commas);
   }
   else {
-    printf("copied=FAIL\n");
+    fmt.printf("copied=FAIL\n");
   }
 }

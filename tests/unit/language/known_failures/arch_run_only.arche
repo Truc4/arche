@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "move"
+#import { fmt }
 Particle :: arche {
   pos :: float,
   vel :: float,
@@ -18,5 +19,5 @@ main :: proc() {
   run move;
   p := Particle.pos[0];
   pi := p * 10.0;
-  assert(pi == 11, "move failed\n");
+  fmt.assert(pi == 11, "move failed\n");
 }

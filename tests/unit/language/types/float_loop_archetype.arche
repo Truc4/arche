@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t
+#import { fmt }
 Nums :: arche { val :: float }
 
 Nums[4](4) {
@@ -17,5 +18,5 @@ main :: proc() {
     total = total + v;
     i = i + 1;
   }
-  assert(total == 10.0, "float loop archetype failed\n");
+  fmt.assert(total == 10.0, "float loop archetype failed\n");
 }

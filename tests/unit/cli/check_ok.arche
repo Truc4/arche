@@ -1,5 +1,6 @@
 // `arche check` accepts a well-formed program (front-end only, no output produced).
 // RUN: %arche check %s
+#import { fmt }
 main :: proc() {
-  printf("ok\n");
+  fmt.printf("ok\n");
 }

@@ -1,0 +1,7 @@
+// Accessing a member a module does not export is a precise error — "module 'm' has no member 'x'"
+// — not the misleading "Undefined variable 'm'" that a value-field access would give.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qF "module 'fmt' has no member 'nope'" %t.out
+#import { fmt }
+main :: proc() {
+  fmt.nope(1);
+}

@@ -1,0 +1,7 @@
+lexer_tokenize :: proc(source: char[]) {
+  // TODO: reset archetype stdlib?
+
+  print(source);
+}
+
+#file

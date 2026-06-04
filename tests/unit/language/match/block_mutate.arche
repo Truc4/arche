@@ -1,10 +1,11 @@
 // A `{ }` block scopes the *declaration* `y`, but `=` mutates the outer `x` — so it sticks.
 // RUN: %arche build -o %t %s && %t | grep "x=15"
+#import { fmt }
 main :: proc() {
   x := 5;
   {
     y := 10;
     x = x + y;
   }
-  printf("x=%d\n", x);
+  fmt.printf("x=%d\n", x);
 }

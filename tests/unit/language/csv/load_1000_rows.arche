@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "Loaded 1000 rows"
-#import { io }
+#import { parse io fmt }
 Transaction :: arche { price :: float, quantity :: int }
 
 Transaction[1000](1000) {
@@ -7,12 +7,12 @@ Transaction[1000](1000) {
 }
 
 main :: proc() {
-  arche_fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
+  io.fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
   buf: char[50000];
   price_str: char[32];
   qty_str: char[32];
-  arche_fread(fd, buf, 50000)(buf, total_n:);
-  arche_fclose(move fd);
+  io.fread(fd, buf, 50000)(buf, total_n:);
+  io.fclose(move fd);
   idx := 0;
   pos := 0;
   line_start := 0;
@@ -58,9 +58,9 @@ main :: proc() {
       j = j + 1;
     }
     qty_str[j] = 0;
-    Transaction.price[idx] = atof(price_str);
-    Transaction.quantity[idx] = atoi(qty_str);
+    Transaction.price[idx] = parse.atof(price_str);
+    Transaction.quantity[idx] = parse.atoi(qty_str);
     line_start = line_end + 1;
   }
-  printf("Loaded %d rows\n", idx);
+  fmt.printf("Loaded %d rows\n", idx);
 }

@@ -1,19 +1,44 @@
-// The `net` module — TCP sockets (C-backed in runtime/net.c). `#import { net }` then `net.listen`,
-// `net.send`, … (bare names also resolve). The `socket` opaque handle type is a core primitive.
-#foreign {
-  net_listen :: proc(port: int)(s: socket)
-  net_accept :: proc(s: socket)(r: socket)
-  net_connect :: proc(own ip: char[], port: int)(s: socket)
+// The `net` module — TCP sockets. `#import { net }` then call `net.listen/accept/recv/send`.
+// Access is qualified-only: a bare `listen(...)` does not resolve. The arche-native API speaks
+// length-carried slices; the `#foreign` C layer (runtime/net.c) at the bottom is the implementation.
+
+// Primitive opaque handle type for a TCP socket (a raw fd in the opaque cell). You may
+// move/borrow/return a `socket` but not write a raw value into it; the operations below are the
+// only way to act on it.
+socket :: opaque
+
+listen :: proc(port: int)(s: socket) {
+  net_listen(port)(s);
 }
-// `buf` is in-out (the out-param shadows the in-param): zero-copy pass-by-reference into C, which
-// only reads it (`const char *`). At the call, write `_` in the shadowed in-slot to make clear no
-// value is passed there — `net_send(s, _, n)(buf, sent:)`. The C ABI is unchanged.
-#foreign {
-  net_send :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
-  net_recv :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
+accept :: proc(s: socket)(c: socket) {
+  net_accept(s)(c);
 }
-// RAII: registers net_close as the destructor for `socket`. A `socket` local that is never
+
+// Send a slice: the byte count IS the slice's own length — no manual `n`. `data` is a borrow.
+send :: proc(s: socket, data: char[]) {
+  net_send(s, data, data.length)(data, _r:);
+}
+
+// Lend `buf` (a borrow = backing store) and get back `out`, a slice VIEW of exactly the bytes read.
+// One allocation, two roles: the caller owns the storage, the view carries the true length.
+recv :: proc(s: socket, buf: char[])(out: char[]) {
+  net_recv(s, buf, buf.cap)(buf, r:);
+  if (r < 0) {
+    r = 0;
+  }
+  out = buf[0: r];
+}
+
+// C implementation layer (runtime/net.c). The slice-native wrappers above are the recommended API;
+// these raw foreigns stay reachable (`net.net_recv` / bare `net_recv`) as a C-interop affordance. A
+// `char[]` in BOTH the in- and out-lists is the in-out idiom — legitimate ONLY here, to align with
+// the C ABI (the call writes the lent pointer and hands it back); the wrappers never duplicate that way.
+#foreign
+net_listen :: proc(port: int)(s: socket)
+net_accept :: proc(s: socket)(r: socket)
+net_connect :: proc(own ip: char[], port: int)(s: socket)
+net_send :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
+net_recv :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
+// RAII: registers net.net_close as the destructor for `socket`. A `socket` local that is never
 // explicitly closed is auto-dropped via this proc at scope exit.
-#foreign {
-  @drop(socket) net_close :: proc(own s: socket)
-}
+@drop(socket) net_close :: proc(own s: socket)

@@ -2,9 +2,10 @@
 // end of file. `main` is declared BEFORE the banner (so it keeps its body); `abs` after it
 // is an FFI declaration bound to libc.
 // RUN: %arche build -o %t %s && %t | grep "abs=9"
+#import { fmt }
 main :: proc() {
   abs(-9)(a:);
-  printf("abs=%d\n", a);
+  fmt.printf("abs=%d\n", a);
 }
 
 #foreign

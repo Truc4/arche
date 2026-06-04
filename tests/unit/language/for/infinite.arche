@@ -1,8 +1,9 @@
 // RUN: %arche build -o %t %s && %t
 // Minimal infinite for loop test
+#import { fmt }
 main :: proc() {
   for {
     break;
   }
-  printf("ok\n");
+  fmt.printf("ok\n");
 }

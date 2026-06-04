@@ -3,16 +3,17 @@
 // the kernel accept-backlog before accept() is called, so listen/connect/accept/
 // send/recv all exercise without threads. Proves the `Socket` extern type links
 // and a byte survives the round trip ('h' == 104).
-#import { net }
+#import { net fmt }
+
 main :: proc() {
-  net_listen(34567)(srv:);
-  net_connect("127.0.0.1", 34567)(cli:);
-  net_accept(srv)(conn:);
-  net_send(cli, "hi", 2)(sent:);
+  net.net_listen(34567)(srv:);
+  net.net_connect("127.0.0.1", 34567)(cli:);
+  net.net_accept(srv)(conn:);
+  net.net_send(cli, "hi", 2)(sent:);
   buf: char[64];
-  net_recv(conn, buf, 64)(buf, n:);
-  printf("ok n=%d first=%d\n", n, buf[0]);
-  net_close(move cli);
-  net_close(move conn);
-  net_close(move srv);
+  net.net_recv(conn, buf, 64)(buf, n:);
+  fmt.printf("ok n=%d first=%d\n", n, buf[0]);
+  net.net_close(move cli);
+  net.net_close(move conn);
+  net.net_close(move srv);
 }

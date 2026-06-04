@@ -1,0 +1,19 @@
+// An `own T[]` slice is the writable, single-owner buffer handle: the caller `move`s a sized buffer
+// in (it decays to a fat pointer, the source binding dies), the callee mutates through it, and the
+// runtime length is carried — no buffer size in the signature. The mutation path, aliasing-free
+// because obtaining a mutable slice consumes the source.
+// RUN: %arche build -o %t %s && %t | grep -q "zeroed n=2"
+#import { fmt }
+zero :: func(own xs: int[]) -> int {
+  xs[0] = 0;
+  xs[1] = 0;
+  return xs.length;
+}
+
+main :: proc() {
+  a: int[2];
+  a[0] = 7;
+  a[1] = 9;
+  n := zero(move a);
+  fmt.printf("zeroed n=%d\n", n);
+}

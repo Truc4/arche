@@ -1,6 +1,7 @@
 // RUN: %arche build -o %t %s && %t
+#import { fmt }
 main :: proc() {
   for (i := 0; i < 3; i = i + 1) {
-    printf("loop\n");
+    fmt.printf("loop\n");
   }
 }

@@ -1,10 +1,11 @@
 // RUN: %arche build -o %t %s && %t
+#import { fmt }
 main :: proc() {
   for (i := 0; i < 3; i += 1) {
-    printf("before if\n");
+    fmt.printf("before if\n");
     if (1) {
-      printf("in if\n");
+      fmt.printf("in if\n");
     }
   }
-  printf("ok\n");
+  fmt.printf("ok\n");
 }

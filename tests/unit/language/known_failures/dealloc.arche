@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "p0i"
+#import { fmt }
 Particle :: arche {
   pos :: float,
   vel :: float,
@@ -22,12 +23,12 @@ main :: proc() {
   p1 := Particle.pos[1];
   p0i := p0 * 10.0;
   p1i := p1 * 10.0;
-  print("p0i=");
-  print_float(p0i);
-  print(" p1i=");
-  print_float(p1i);
-  print("\n");
-  assert(p0i == 11, "pos[0] != 1.1\n");
-  assert(p1i == 22, "pos[1] != 2.2\n");
+  fmt.print("p0i=");
+  fmt.print_float(p0i);
+  fmt.print(" p1i=");
+  fmt.print_float(p1i);
+  fmt.print("\n");
+  fmt.assert(p0i == 11, "pos[0] != 1.1\n");
+  fmt.assert(p1i == 22, "pos[1] != 2.2\n");
   dealloc(Particle);
 }

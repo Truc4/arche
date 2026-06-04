@@ -1,0 +1,14 @@
+// `move` and `copy` are GENERAL value operators, valid in any value position — not just call args.
+// `b := copy a` clones a local buffer (a stays alive, independently mutable); `c := move b` transfers
+// (b dies, so it's read before the move). Proves explicit copy/move work as bind RHS expressions.
+// RUN: %arche build -o %t %s && %t | grep -q "a0=5 b0=9 c0=9"
+#import { fmt }
+main :: proc() {
+  a: int[3];
+  a[0] = 5;
+  b := copy a; // explicit clone — a stays alive
+  b[0] = 9;
+  fmt.printf("a0=%d b0=%d ", a[0], b[0]);
+  c := move b; // explicit move — b consumed, c owns it
+  fmt.printf("c0=%d\n", c[0]);
+}

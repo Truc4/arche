@@ -1,0 +1,199 @@
+// Reentrant router via OUT-only capture params — no per-request module state. `resolve` writes the
+// captured spans into caller-allocated out-params (named once, not the foreign in-out shadow), so
+// concurrent/nested resolves don't clobber each other. ("Functional" only loosely — it still
+// mutates in place and shares the global trie pool; pure-functional needs a heap, which Arche lacks.)
+// RUN: %arche build -o %t %s && %t | grep -q "checksum="
+#import { os }
+
+route :: enum { miss, root, user, post, asset }
+
+nodeKind :: enum { kstatic, kparam, kcatchall }
+
+TrieNode :: arche {
+  seg :: char[32],
+  seg_len :: int,
+  kind :: nodeKind,
+  first_child :: int,
+  next_sibling :: int,
+  handler_id :: route,
+}
+
+TrieNode[256]
+
+seg_end :: func(p: char[], start: int, n: int) -> int {
+  for (i := start; i < n; i = i + 1) {
+    if (p[i] == '/') {
+      return i;
+    }
+  }
+  return n;
+}
+
+// `seg` is a sub-slice of the path/pattern (a borrowed view), so it indexes from 0 and carries its
+// own `.length` — no explicit `n`. The stored segment lives in a fixed char[32] column, which has no
+// length of its own, so its content length travels in the `seg_len` column.
+seg_eq :: func(stored: char[], stored_len: int, seg: char[]) -> int {
+  if (stored_len != seg.length) {
+    return 0;
+  }
+  for (i := 0; i < seg.length; i = i + 1) {
+    if (stored[i] != seg[i]) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+new_node :: proc(seg: char[], seg_len: int, kind: nodeKind)(idx: int) {
+  idx = i32(insert(TrieNode, seg, seg_len, kind, -1, -1, route.miss));
+}
+
+init :: proc() {
+  empty: char[32];
+  empty[0] = 0;
+  new_node(empty, 0, nodeKind.kstatic)(_root:);
+}
+
+add :: proc(pattern: char[], handler_id: route) {
+  n := pattern.length;
+  cur := 0;
+  s := 0;
+  if (n > 0) {
+    if (pattern[0] == '/') {
+      s = 1;
+    }
+  }
+  for (; s < n;) {
+    e := seg_end(pattern, s, n);
+    kind := nodeKind.kstatic;
+    tstart := s;
+    if (pattern[s] == ':') {
+      kind = nodeKind.kparam;
+      tstart = s + 1;
+    }
+    if (pattern[s] == '*') {
+      kind = nodeKind.kcatchall;
+      tstart = s + 1;
+    }
+    found := -1;
+    child := TrieNode.first_child[cur];
+    for (; child >= 0;) {
+      if (TrieNode.kind[child] == kind) {
+        if (kind == nodeKind.kstatic) {
+          cs := TrieNode.seg[child];
+          if (seg_eq(cs, TrieNode.seg_len[child], pattern[tstart: e]) == 1) {
+            found = child;
+          }
+        }
+        else {
+          found = child;
+        }
+      }
+      if (found >= 0) {
+        break;
+      }
+      child = TrieNode.next_sibling[child];
+    }
+    if (found < 0) {
+      segbuf: char[32];
+      j := 0;
+      for (i := tstart; i < e; i = i + 1) {
+        segbuf[j] = pattern[i];
+        j = j + 1;
+      }
+      segbuf[j] = 0;
+      new_node(segbuf, e - tstart, kind)(found:);
+      TrieNode.next_sibling[found] = TrieNode.first_child[cur];
+      TrieNode.first_child[cur] = found;
+    }
+    cur = found;
+    s = e + 1;
+  }
+  TrieNode.handler_id[cur] = handler_id;
+}
+
+// Reentrant: captures written into the caller-allocated OUT-params; count + handler returned. No
+// module state, and no in-out shadow — the buffers are pure outputs.
+resolve :: proc(path: char[])(cstart: int[8], clen: int[8], handler_id: route, count: int) {
+  n := path.length;
+  cur := 0;
+  count = 0;
+  handler_id = route.miss;
+  s := 0;
+  if (n > 0) {
+    if (path[0] == '/') {
+      s = 1;
+    }
+  }
+  for (; s < n;) {
+    e := seg_end(path, s, n);
+    static_hit := -1;
+    param_hit := -1;
+    catchall_hit := -1;
+    child := TrieNode.first_child[cur];
+    for (; child >= 0;) {
+      k := TrieNode.kind[child];
+      if (k == nodeKind.kstatic) {
+        cs := TrieNode.seg[child];
+        if (seg_eq(cs, TrieNode.seg_len[child], path[s: e]) == 1) {
+          static_hit = child;
+        }
+      }
+      if (k == nodeKind.kparam) {
+        param_hit = child;
+      }
+      if (k == nodeKind.kcatchall) {
+        catchall_hit = child;
+      }
+      child = TrieNode.next_sibling[child];
+    }
+    chosen := static_hit;
+    if (chosen < 0) {
+      chosen = param_hit;
+    }
+    if (chosen < 0) {
+      chosen = catchall_hit;
+    }
+    if (chosen < 0) {
+      handler_id = route.miss;
+      return;
+    }
+    ck := TrieNode.kind[chosen];
+    if (ck == nodeKind.kstatic) {
+      cur = chosen;
+      s = e + 1;
+    }
+    else {
+      cend := e;
+      if (ck == nodeKind.kcatchall) {
+        cend = n;
+      }
+      cstart[count] = s;
+      clen[count] = cend - s;
+      count += 1;
+      cur = chosen;
+      s = cend + 1;
+    }
+  }
+  handler_id = TrieNode.handler_id[cur];
+}
+
+main :: proc() {
+  init();
+  add("/", route.root);
+  add("/users/:id", route.user);
+  add("/users/:id/posts/:pid", route.post);
+  add("/static/*", route.asset);
+
+  checksum := 0;
+  os.now_sec()(t0:);
+  for (iter := 0; iter < 2000000; iter += 1) {
+    // captures land in caller-allocated out-params — clean, reentrant, no shadow.
+    resolve("/users/42/posts/99")(s0:, l0:, h:, c:);
+    checksum = checksum + h + c + s0[0] + l0[0];
+  }
+  os.now_sec()(t1:);
+  elapsed := t1 - t0;
+  printf("functional checksum=%d\n", checksum);
+  printf("functional ns/op=%g\n", elapsed * 1000000000.0 / 2000000.0);
+}

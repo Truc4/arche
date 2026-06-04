@@ -2,18 +2,19 @@
 // a direct call (no fn-pointer). The same `run_task` skeleton specializes for each
 // continuation; the callback arg is erased from the ABI.
 // RUN: %arche build -o %t %s && %t | grep -A1 "work=9" | grep "cleanup"
+#import { fmt }
 done_handler :: proc()()
 
 finish :: proc()() {
-  printf("finish\n");
+  fmt.printf("finish\n");
 }
 
 cleanup :: proc()() {
-  printf("cleanup\n");
+  fmt.printf("cleanup\n");
 }
 
 run_task :: proc(work: int, on_done: done_handler)() {
-  printf("work=%d\n", work);
+  fmt.printf("work=%d\n", work);
   on_done()();
 }
 

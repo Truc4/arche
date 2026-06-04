@@ -1,9 +1,9 @@
 // RUN: %arche build -o %t %s && %t
-#import { io }
+#import { io fmt }
 main :: proc() {
-  arche_fopen_read("/nonexistent/path/to/file.csv")(fd:);
-  printf("open() returned fd=%d\n", fd);
-  assert(fd == 0, "should fail to open nonexistent file\n");
-  printf("Invalid path error test PASSED\n");
-  arche_fclose(move fd);
+  io.fopen_read("/nonexistent/path/to/file.csv")(fd:);
+  fmt.printf("open() returned fd=%d\n", fd);
+  fmt.assert(fd == 0, "should fail to open nonexistent file\n");
+  fmt.printf("Invalid path error test PASSED\n");
+  io.fclose(move fd);
 }

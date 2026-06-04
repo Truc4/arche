@@ -170,6 +170,10 @@ static void tuple_rewrite_stmt(HirStmt *s, const char *base) {
 		for (int i = 0; i < s->data.return_stmt.count; i++)
 			tuple_rewrite_expr(s->data.return_stmt.values[i], base);
 		break;
+	case HIR_STMT_BLOCK: /* match / surface `{ }` desugar */
+		for (int i = 0; i < s->data.block.count; i++)
+			tuple_rewrite_stmt(s->data.block.stmts[i], base);
+		break;
 	default:
 		break;
 	}
@@ -195,6 +199,26 @@ static char *cv_dup(CstView v) {
 	return s;
 }
 
+/* Lexeme of a node's first TOKEN leaf — token-precise, so it excludes any trailing trivia
+ * (a comment / blank line) that the node's span may include. A node's `length` runs to the next
+ * token, so `cv_dup` on a literal whose value is the last thing before a comment would swallow the
+ * comment (e.g. `x :: 0` + `// note` → lexeme "0 … note", read as float). Use the token instead. */
+static char *cv_dup_first_token(CstView v) {
+	if (v.node) {
+		for (int i = 0; i < v.node->child_count; i++) {
+			if (v.node->children[i].tag == SE_TOKEN) {
+				uint32_t off = v.node->children[i].as.token.offset;
+				uint32_t len = v.node->children[i].as.token.length;
+				char *s = malloc(len + 1);
+				memcpy(s, v.src + off, len);
+				s[len] = '\0';
+				return s;
+			}
+		}
+	}
+	return cv_dup(v);
+}
+
 /* malloc'd NUL-terminated copy of a borrowed text slice. */
 static char *dupz(const char *s); /* defined with the module helpers below */
 
@@ -206,6 +230,29 @@ static char *txt_dup(CvText t) {
 	return s;
 }
 
+/* The type name from an SN_TYPE_REF node. A qualified `mod.Name` (two IDENTs) folds to the
+ * module's mangled type symbol `mod_Name` — same fold as a qualified value reference; a bare type
+ * returns its single identifier. Caller owns the returned string. */
+static char *type_ref_name(CstView t) {
+	CvText ids[2];
+	int n = 0;
+	for (int i = 0; i < t.node->child_count && n < 2; i++) {
+		const SyntaxElem *e = &t.node->children[i];
+		if (e->tag == SE_TOKEN && e->as.token.kind == TOK_IDENT) {
+			ids[n].ptr = t.src + e->as.token.offset;
+			ids[n].len = e->as.token.length;
+			n++;
+		}
+	}
+	if (n >= 2) {
+		size_t L = ids[0].len + 1 + ids[1].len + 1;
+		char *r = malloc(L);
+		snprintf(r, L, "%.*s.%.*s", (int)ids[0].len, ids[0].ptr, (int)ids[1].len, ids[1].ptr);
+		return r;
+	}
+	return txt_dup(cv_token(t, TOK_IDENT));
+}
+
 /* Lower a CST type node (SN_TYPE_*) to an HirType, mirroring lower_type_ref. */
 static HirType *lower_type_cst(CstView t) {
 	if (!cv_present(t))
@@ -213,7 +260,7 @@ static HirType *lower_type_cst(CstView t) {
 	HirType *at = hir_type_create(HIR_TYPE_UNKNOWN);
 	switch (cv_kind(t)) {
 	case SN_TYPE_REF: {
-		char *raw = txt_dup(cv_token(t, TOK_IDENT));
+		char *raw = type_ref_name(t);
 		const char *r = g_lower_sem ? semantic_resolve_type_alias(g_lower_sem, raw) : raw;
 		char *name = malloc(strlen(r) + 1);
 		strcpy(name, r);
@@ -450,7 +497,7 @@ static HirExpr *lower_expr_cst(CstView e) {
 		return lower_expr_cst(cst_first_expr(e));
 	case SN_LITERAL_EXPR:
 		ax->kind = HIR_EXPR_LITERAL;
-		ax->data.literal.lexeme = cv_dup(e);
+		ax->data.literal.lexeme = cv_dup_first_token(e);
 		/* Literals are self-describing: if semantic left no resolved type (it doesn't
 		 * key every literal, e.g. assignment RHS), infer it from the lexeme so codegen
 		 * stores the right width. A recorded type wins (it may carry a coercion). */
@@ -596,6 +643,43 @@ static HirExpr *lower_expr_cst(CstView e) {
 					ax->data.index.indices[ax->data.index.index_count++] = lower_expr_cst(iv);
 				}
 			}
+		break;
+	}
+	case SN_SLICE_EXPR: {
+		/* `base[lo:hi]` — base is IDENT + folded field chain (as for index); the expr child(ren)
+		 * split on the `:` token: before → lo, after → hi (either may be omitted → NULL). */
+		ax->kind = HIR_EXPR_SLICE;
+		HirExpr *base = hir_expr_create(HIR_EXPR_NAME);
+		base->data.name.name = txt_dup(cv_token(e, TOK_IDENT));
+		int nfields = cv_count(e, SN_FIELD_NAME);
+		for (int i = 0; i < nfields; i++) {
+			HirExpr *f = hir_expr_create(HIR_EXPR_FIELD);
+			f->data.field.base = base;
+			f->data.field.field_name = cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+			base = f;
+		}
+		ax->data.slice.base = base;
+		ax->data.slice.lo = NULL;
+		ax->data.slice.hi = NULL;
+		int seen_colon = 0;
+		for (int i = 0; i < e.node->child_count; i++) {
+			SyntaxElem *ch = &e.node->children[i];
+			if (ch->tag == SE_TOKEN && ch->as.token.kind == TOK_COLON) {
+				seen_colon = 1;
+				continue;
+			}
+			if (ch->tag == SE_NODE) {
+				SyntaxNodeKind k = ch->as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
+					CstView iv = {ch->as.node, e.src};
+					HirExpr *ex = lower_expr_cst(iv);
+					if (!seen_colon)
+						ax->data.slice.lo = ex;
+					else
+						ax->data.slice.hi = ex;
+				}
+			}
+		}
 		break;
 	}
 	case SN_BINARY_EXPR: {
@@ -813,6 +897,9 @@ static HirStmt *lower_stmt_cst(CstView s) {
 	case SN_BREAK_STMT:
 		as->kind = HIR_STMT_BREAK;
 		break;
+	case SN_CONTINUE_STMT:
+		as->kind = HIR_STMT_CONTINUE;
+		break;
 	case SN_RETURN_STMT: {
 		as->kind = HIR_STMT_RETURN;
 		int c = 0;
@@ -911,24 +998,7 @@ static HirStmt *lower_stmt_cst(CstView s) {
 			}
 			break;
 		}
-		/* range form `for IDENT in IDENT { body }`, or infinite `for { body }`. */
-		int ni = 0;
-		char *vname = NULL, *iname = NULL;
-		for (int i = 0; i < s.node->child_count; i++)
-			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
-				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
-				if (ni == 0)
-					vname = txt_dup(t);
-				else if (ni == 1)
-					iname = txt_dup(t);
-				ni++;
-			}
-		as->data.for_stmt.var_name = vname;
-		if (iname) {
-			HirExpr *it = hir_expr_create(HIR_EXPR_NAME);
-			it->data.name.name = iname;
-			as->data.for_stmt.iterable = it;
-		}
+		/* infinite form `for { body }` (the range-based `for IDENT in …` is rejected at parse). */
 		as->data.for_stmt.body = cst_lower_body(s, &as->data.for_stmt.body_count);
 		break;
 	}
@@ -1435,6 +1505,10 @@ static void tuple_collapse_stmt(HirStmt *s) {
 		for (int i = 0; i < s->data.each_field.body_count; i++)
 			tuple_collapse_stmt(s->data.each_field.body[i]);
 		break;
+	case HIR_STMT_BLOCK: /* match / surface `{ }` desugar */
+		for (int i = 0; i < s->data.block.count; i++)
+			tuple_collapse_stmt(s->data.block.stmts[i]);
+		break;
 	default:
 		break;
 	}
@@ -1471,6 +1545,22 @@ static int cst_decl_has_drop_decorator(CstView d) {
 		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
 			continue;
 		if (e2->as.token.length == 4 && memcmp(d.src + e2->as.token.offset, "drop", 4) == 0)
+			return 1;
+	}
+	return 0;
+}
+static int cst_decl_has_intrinsic_decorator(CstView d) {
+	if (!cv_present(d))
+		return 0;
+	int n = d.node->child_count;
+	for (int i = 0; i + 1 < n; i++) {
+		const SyntaxElem *e1 = &d.node->children[i];
+		if (e1->tag != SE_TOKEN || e1->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *e2 = &d.node->children[i + 1];
+		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
+			continue;
+		if (e2->as.token.length == 9 && memcmp(d.src + e2->as.token.offset, "intrinsic", 9) == 0)
 			return 1;
 	}
 	return 0;
@@ -1866,6 +1956,10 @@ static HirDecl *lower_decl_cst(CstView d) {
 					 * decl node) so the RAII pass can register this proc as a destructor. */
 					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && cst_decl_has_drop_decorator(d))
 						pd->data.proc->is_drop = 1;
+					/* `@intrinsic`: calls to this decl lower to a built-in instruction (codegen
+					 * checks the resolved decl's flag, not the symbol name — see codegen syscall). */
+					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && cst_decl_has_intrinsic_decorator(d))
+						pd->data.proc->is_intrinsic = 1;
 					return pd;
 				}
 				case SN_FUNC_EXPR:
@@ -1970,15 +2064,18 @@ static HirDecl *lower_decl_cst(CstView d) {
 				}
 			}
 		} else {
-			/* `name : T[size]` — mutable static buffer. Name is the leading IDENT; the declared
-			 * array type is the single type node. */
-			sd->kind = HIR_STATIC_ARRAY;
-			sd->array.name = txt_dup(cv_token(d, TOK_IDENT));
+			/* Storage form of the unified binding: `name : T` / `name : T = v` / `name := v`. A
+			 * sized-array T (it has an element type) is a buffer; any other (or absent) T is a
+			 * scalar. The `= v` value is the initializer; its absence is the implicit `= 0`. */
+			char *nm = txt_dup(cv_token(d, TOK_IDENT));
 			CstView arr_ty = cv_type_at(d, 0);
-			HirType *full = lower_type_cst(arr_ty);
-			/* unwrap to the element type (codegen wants element + size, not the array) */
-			sd->array.element_type = (full && full->elem) ? full->elem : full;
-			if (cv_present(arr_ty))
+			CstView initv = cv_node_at_expr(d, 0);
+			HirType *full = cv_present(arr_ty) ? lower_type_cst(arr_ty) : NULL;
+			if (full && full->elem) {
+				/* buffer: codegen wants element + size, not the array wrapper */
+				sd->kind = HIR_STATIC_ARRAY;
+				sd->array.name = nm;
+				sd->array.element_type = full->elem;
 				for (int i = 0; i < arr_ty.node->child_count; i++)
 					if (arr_ty.node->children[i].tag == SE_TOKEN &&
 					    arr_ty.node->children[i].as.token.kind == TOK_NUMBER) {
@@ -1991,6 +2088,25 @@ static HirDecl *lower_decl_cst(CstView d) {
 						sd->array.size = atoi(buf);
 						break;
 					}
+				sd->array.init = cv_present(initv) ? lower_expr_cst(initv) : NULL;
+			} else {
+				/* scalar; inferred form `name := v` carries no type node — infer int/float from the
+				 * literal initializer's lexeme. */
+				HirExpr *ie = cv_present(initv) ? lower_expr_cst(initv) : NULL;
+				HirType *sty = full;
+				if (!sty) {
+					sty = hir_type_create(HIR_TYPE_UNKNOWN);
+					const char *tn = (ie && ie->kind == HIR_EXPR_LITERAL && ie->data.literal.lexeme &&
+					                  strpbrk(ie->data.literal.lexeme, ".eE"))
+					                     ? "float"
+					                     : "int";
+					*sty = map_type_str(tn);
+				}
+				sd->kind = HIR_STATIC_SCALAR;
+				sd->scalar.name = nm;
+				sd->scalar.type = sty;
+				sd->scalar.init = ie;
+			}
 		}
 		ad->data.static_decl = sd;
 		return ad;
@@ -2053,14 +2169,15 @@ void lower_reset_modules(void) {
 	g_module_count = 0;
 }
 
-/* If `name` is in set, return a freshly-allocated `prefix_name`; else NULL. */
+/* If `name` is in set, return a freshly-allocated qualified identity `prefix.name`; else NULL.
+ * (Dotted to match the semantic resolver; `.` is a legal LLVM global-identifier char.) */
 static char *prefixed_dup(const char *name, const char *prefix, char **set, int count) {
 	if (!name)
 		return NULL;
 	for (int i = 0; i < count; i++)
 		if (strcmp(name, set[i]) == 0) {
 			char *r = malloc(strlen(prefix) + 1 + strlen(name) + 1);
-			sprintf(r, "%s_%s", prefix, name);
+			sprintf(r, "%s.%s", prefix, name);
 			return r;
 		}
 	return NULL;
@@ -2082,8 +2199,19 @@ static void rn_const(const char **slot, const char *prefix, char **set, int coun
 static void hir_rn_type(HirType *t, const char *prefix, char **set, int count) {
 	if (!t)
 		return;
-	if (t->tag == HIR_TYPE_NAMED)
+	if (t->tag == HIR_TYPE_NAMED) {
 		rn_const(&t->name, prefix, set, count);
+		/* A module-local nominal type (e.g. `socket` inside `net`) was lowered as NAMED before this
+		 * rename ran, so its opaque-ness was missed — the alias is registered only under the prefixed
+		 * key (`net_socket`). Now that the name is prefixed, re-resolve it: if it aliases `opaque`,
+		 * retag so codegen erases it to an i64 cell instead of emitting a `%struct.<name>`. Keep
+		 * `t->name` (the nominal alias) so the RAII `@drop` pass can still match it. */
+		if (g_lower_sem && t->name) {
+			const char *b = semantic_resolve_type_alias(g_lower_sem, t->name);
+			if (b && strcmp(b, "opaque") == 0)
+				t->tag = HIR_TYPE_OPAQUE;
+		}
+	}
 	hir_rn_type(t->elem, prefix, set, count);
 	for (int i = 0; i < t->field_count; i++)
 		hir_rn_type(t->fields[i].type, prefix, set, count);
@@ -2173,6 +2301,10 @@ static void hir_rn_stmt(HirStmt *s, const char *prefix, char **set, int count) {
 		for (int i = 0; i < s->data.each_field.body_count; i++)
 			hir_rn_stmt(s->data.each_field.body[i], prefix, set, count);
 		break;
+	case HIR_STMT_BLOCK: /* `match` / surface `{ }` desugar — descend so intra-module names get renamed */
+		for (int i = 0; i < s->data.block.count; i++)
+			hir_rn_stmt(s->data.block.stmts[i], prefix, set, count);
+		break;
 	default: /* BREAK, RUN — no embedded names (run is world/system, not module-local) */
 		break;
 	}
@@ -2218,6 +2350,10 @@ static void hir_rn_decl(HirDecl *d, const char *prefix, char **set, int count) {
 		if (d->data.static_decl->kind == HIR_STATIC_ARRAY) {
 			rn_owned(&d->data.static_decl->array.name, prefix, set, count);
 			hir_rn_type(d->data.static_decl->array.element_type, prefix, set, count);
+		} else if (d->data.static_decl->kind == HIR_STATIC_SCALAR) {
+			rn_owned(&d->data.static_decl->scalar.name, prefix, set, count);
+			hir_rn_type(d->data.static_decl->scalar.type, prefix, set, count);
+			hir_rn_expr(d->data.static_decl->scalar.init, prefix, set, count);
 		} else {
 			rn_owned(&d->data.static_decl->archetype.archetype_name, prefix, set, count);
 			for (int i = 0; i < d->data.static_decl->archetype.field_count; i++)
@@ -2249,8 +2385,11 @@ static const char *hir_decl_name(HirDecl *d) {
 	case HIR_DECL_FUNC_GROUP:
 		return d->data.func_group->name;
 	case HIR_DECL_STATIC:
-		return d->data.static_decl->kind == HIR_STATIC_ARRAY ? d->data.static_decl->array.name
-		                                                     : d->data.static_decl->archetype.archetype_name;
+		if (d->data.static_decl->kind == HIR_STATIC_ARRAY)
+			return d->data.static_decl->array.name;
+		if (d->data.static_decl->kind == HIR_STATIC_SCALAR)
+			return d->data.static_decl->scalar.name;
+		return d->data.static_decl->archetype.archetype_name;
 	case HIR_DECL_CONST:
 		return d->data.constant->name;
 	case HIR_DECL_WORLD:
@@ -2277,11 +2416,21 @@ static int qual_lookup(const QualCtx *q, const char *base, const char *field, ch
 	for (int m = 0; m < q->n; m++) {
 		if (strcmp(base, q->prefix[m]) != 0)
 			continue;
-		for (int s = 0; s < q->export_n[m]; s++)
-			if (strcmp(field, q->exports[m][s]) == 0) {
-				snprintf(out, out_sz, "%s_%s", q->prefix[m], field);
+		for (int s = 0; s < q->export_n[m]; s++) {
+			/* Each export entry is "<visible>=<target-symbol>": match the visible (qualified)
+			 * name, resolve to its target. A pure-Arche export targets the prefixed
+			 * `<mod>_<name>`; a foreign export targets its real declared link name — so
+			 * `fmt.printf` → libc `printf`, `net.listen` → runtime `net_listen`. */
+			const char *e = q->exports[m][s];
+			const char *eq = strchr(e, '=');
+			if (!eq)
+				continue;
+			size_t vlen = (size_t)(eq - e);
+			if (strlen(field) == vlen && strncmp(field, e, vlen) == 0) {
+				snprintf(out, out_sz, "%s", eq + 1);
 				return 1;
 			}
+		}
 	}
 	return 0;
 }
@@ -2375,6 +2524,13 @@ static void hir_q_stmt(HirStmt *s, const QualCtx *q) {
 		for (int i = 0; i < s->data.each_field.body_count; i++)
 			hir_q_stmt(s->data.each_field.body[i], q);
 		break;
+	case HIR_STMT_BLOCK:
+		/* `match` desugars to a BLOCK { __match := scrut; if-chain }. Without descending into it, a
+		 * qualified call (`fmt.print(...)`) in a match arm keeps its FIELD callee unresolved → codegen
+		 * sees a NULL func_name. */
+		for (int i = 0; i < s->data.block.count; i++)
+			hir_q_stmt(s->data.block.stmts[i], q);
+		break;
 	default:
 		break;
 	}
@@ -2397,10 +2553,12 @@ static void hir_q_decl(HirDecl *d, const QualCtx *q) {
 			hir_q_stmt(d->data.func->stmts[i], q);
 		break;
 	case HIR_DECL_STATIC:
-		if (d->data.static_decl->kind != HIR_STATIC_ARRAY) {
+		if (d->data.static_decl->kind == HIR_STATIC_ARCHETYPE) {
 			for (int i = 0; i < d->data.static_decl->archetype.field_count; i++)
 				hir_q_expr(d->data.static_decl->archetype.field_values[i], q);
 			hir_q_expr(d->data.static_decl->archetype.init_length, q);
+		} else if (d->data.static_decl->kind == HIR_STATIC_SCALAR) {
+			hir_q_expr(d->data.static_decl->scalar.init, q);
 		}
 		break;
 	case HIR_DECL_CONST:
@@ -2412,10 +2570,15 @@ static void hir_q_decl(HirDecl *d, const QualCtx *q) {
 }
 
 /* Lower one module decl from `node`, append to ast, and record its name in `full` (intra-module
- * resolution) and — when `exported` — `expset` (externally visible). Externs are added to neither.
- * Shared by the module loop and recursion into `#foreign { }` / `#module { }` block regions. */
-static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, HirProgram *ast, char ***full, int *fulln,
-                                int *fullcap, char ***expset, int *expn, int *expcap, int exported) {
+ * resolution) and — when `exported` — `expset` (externally visible via qualified `mod.name`).
+ * Non-externs are prefixed to `<mod>_<name>` and recorded under their source name. Externs keep
+ * their unprefixed decl (the C ABI symbol) and are NOT added to `full`; they go into `expset` under
+ * the prefix-stripped visible name, so `mod.<visible>` reconstructs `<mod>_<visible>` == the C
+ * symbol (e.g. `net.listen` → `net_listen`). Shared by the module loop and recursion into
+ * `#foreign { }` / `#module { }` block regions. */
+static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, const char *mod_name, HirProgram *ast,
+                                char ***full, int *fulln, int *fullcap, char ***expset, int *expn, int *expcap,
+                                int exported) {
 	HirDecl *md = lower_decl_cst((CstView){node, msrc});
 	if (!md)
 		return;
@@ -2423,24 +2586,127 @@ static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, HirPro
 	int is_ext = (md->kind == HIR_DECL_PROC && md->data.proc->is_extern) ||
 	             (md->kind == HIR_DECL_FUNC && md->data.func->is_extern);
 	const char *nm = hir_decl_name(md);
-	if (nm && !is_ext) {
+	if (!nm)
+		return;
+	/* Literal member access (no `<mod>_`-prefix stripping): foreign decls keep their C-symbol name
+	 * and are not renamed; pure-Arche decls are renamed to the qualified identity `<mod>.<name>`. */
+	if (!is_ext) {
 		if (*fulln == *fullcap) {
 			*fullcap = *fullcap ? *fullcap * 2 : 8;
 			*full = realloc(*full, (size_t)*fullcap * sizeof(char *));
 		}
 		(*full)[(*fulln)++] = dupz(nm);
-		if (exported) {
-			if (*expn == *expcap) {
-				*expcap = *expcap ? *expcap * 2 : 8;
-				*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
-			}
-			(*expset)[(*expn)++] = dupz(nm);
+	}
+	if (exported) {
+		if (*expn == *expcap) {
+			*expcap = *expcap ? *expcap * 2 : 8;
+			*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
 		}
+		/* "<member>=<identity>": foreign → its own C symbol; pure-Arche → `<mod>.<name>`. */
+		char entry[512];
+		if (is_ext)
+			snprintf(entry, sizeof(entry), "%s=%s", nm, nm);
+		else
+			snprintf(entry, sizeof(entry), "%s=%s.%s", nm, mod_name, nm);
+		(*expset)[(*expn)++] = dupz(entry);
 	}
 }
 
 static int hir_is_collectible_decl(SyntaxNodeKind k) {
 	return k >= SN_WORLD_DECL && k <= SN_USE_DECL && k != SN_USE_DECL;
+}
+
+/* Inline module `mod_name` into `ast` (prefixed so intra-module refs resolve), record its exports
+ * for the qualify pass, then RECURSIVELY inline its own `#import`s — mirror of sem_inline_module so
+ * a module may use qualified access to a transitive import (`csv` → `parse.atof`). Dedup = cycle-safe. */
+static void hir_inline_module(const char *mod_name, HirProgram *ast, char **mod_prefix, char ***mod_exports,
+                              int *mod_export_n, int *inlined) {
+	for (int a = 0; a < *inlined; a++)
+		if (strcmp(mod_prefix[a], mod_name) == 0)
+			return;
+	int first = ast->decl_count;
+	int found = 0;
+	char **full = NULL;
+	int fulln = 0, fullcap = 0;
+	char **expset = NULL;
+	int expn = 0, expcap = 0;
+	for (int m = 0; m < g_module_count; m++) {
+		if (strcmp(g_modules[m].name, mod_name) != 0)
+			continue;
+		found = 1;
+		const SyntaxNode *mr = g_modules[m].root;
+		const char *msrc = g_modules[m].src;
+		int exported = 1;
+		for (int j = 0; j < mr->child_count; j++) {
+			if (mr->children[j].tag != SE_NODE)
+				continue;
+			const SyntaxNode *cn = mr->children[j].as.node;
+			SyntaxNodeKind mk = cn->kind;
+			if (mk == SN_REGION) {
+				CstView rv = {cn, msrc};
+				int is_block = cv_has_token(rv, TOK_LBRACE);
+				int is_foreign = cv_has_token(rv, TOK_HASH_FOREIGN);
+				if (is_block) {
+					int child_exp = is_foreign ? exported : 0;
+					for (int c = 0; c < cn->child_count; c++) {
+						if (cn->children[c].tag != SE_NODE)
+							continue;
+						if (!hir_is_collectible_decl(cn->children[c].as.node->kind))
+							continue;
+						hir_add_module_decl(cn->children[c].as.node, msrc, mod_name, ast, &full, &fulln, &fullcap,
+						                    &expset, &expn, &expcap, child_exp);
+					}
+				} else if (!is_foreign) {
+					exported = 0;
+				}
+				continue;
+			}
+			if (!hir_is_collectible_decl(mk))
+				continue;
+			hir_add_module_decl(cn, msrc, mod_name, ast, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported);
+		}
+	}
+	if (!found) {
+		free(full);
+		free(expset);
+		return;
+	}
+	/* Scope resolution (mirror of sem_inline_module): rename this module's pure-Arche decls + their
+	 * intra-module references to the qualified identity `<mod>.<name>`; foreign decls keep their
+	 * C-symbol name. */
+	for (int d = first; d < ast->decl_count; d++)
+		hir_rn_decl(ast->decls[d], mod_name, full, fulln);
+	for (int x = 0; x < fulln; x++)
+		free(full[x]);
+	free(full);
+	if (*inlined < 64) {
+		mod_prefix[*inlined] = dupz(mod_name);
+		mod_exports[*inlined] = expset;
+		mod_export_n[*inlined] = expn;
+		(*inlined)++;
+	} else {
+		for (int x = 0; x < expn; x++)
+			free(expset[x]);
+		free(expset);
+	}
+	for (int m = 0; m < g_module_count; m++) {
+		if (strcmp(g_modules[m].name, mod_name) != 0)
+			continue;
+		const SyntaxNode *mr = g_modules[m].root;
+		const char *msrc = g_modules[m].src;
+		for (int j = 0; j < mr->child_count; j++) {
+			if (mr->children[j].tag != SE_NODE || mr->children[j].as.node->kind != SN_USE_DECL)
+				continue;
+			const SyntaxNode *un = mr->children[j].as.node;
+			for (int t = 0; t < un->child_count; t++) {
+				if (un->children[t].tag != SE_TOKEN || un->children[t].as.token.kind != TOK_IDENT)
+					continue;
+				char *sub = txt_dup((CvText){msrc + un->children[t].as.token.offset, un->children[t].as.token.length});
+				hir_inline_module(sub, ast, mod_prefix, mod_exports, mod_export_n, inlined);
+				free(sub);
+			}
+		}
+	}
 }
 
 /* CST-driven entry, gated by ARCHE_LOWER_CST (validated against the IR goldens). */
@@ -2501,77 +2767,7 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 					continue;
 				char *mod_name =
 				    txt_dup((CvText){src + un->children[t].as.token.offset, un->children[t].as.token.length});
-				int first = ast->decl_count;
-				int found = 0;
-				/* Two name sets (externs excluded — their bare name is the C ABI symbol):
-				 *   `full`   — ALL module symbols; the module's own decls are prefixed against this so
-				 *              intra-module references (across the folder's files) resolve.
-				 *   `expset` — only symbols in the default (#export) band; ONLY these are externally
-				 *              qualify-able (`io.x`) and bare-resolvable. `#module`/`#file` narrow the
-				 *              band, dropping the following decls from `expset` → not visible outside. */
-				char **full = NULL;
-				int fulln = 0, fullcap = 0;
-				char **expset = NULL;
-				int expn = 0, expcap = 0;
-				for (int m = 0; m < g_module_count; m++) {
-					if (strcmp(g_modules[m].name, mod_name) != 0)
-						continue;
-					found = 1;
-					const SyntaxNode *mr = g_modules[m].root;
-					const char *msrc = g_modules[m].src;
-					int exported = 1; /* band resets per file */
-					for (int j = 0; j < mr->child_count; j++) {
-						if (mr->children[j].tag != SE_NODE)
-							continue;
-						const SyntaxNode *cn = mr->children[j].as.node;
-						SyntaxNodeKind mk = cn->kind;
-						if (mk == SN_REGION) {
-							CstView rv = {cn, msrc};
-							int is_block = cv_has_token(rv, TOK_LBRACE);
-							int is_foreign = cv_has_token(rv, TOK_HASH_FOREIGN);
-							if (is_block) {
-								int child_exp = is_foreign ? exported : 0;
-								for (int c = 0; c < cn->child_count; c++) {
-									if (cn->children[c].tag != SE_NODE)
-										continue;
-									if (!hir_is_collectible_decl(cn->children[c].as.node->kind))
-										continue;
-									hir_add_module_decl(cn->children[c].as.node, msrc, ast, &full, &fulln, &fullcap,
-									                    &expset, &expn, &expcap, child_exp);
-								}
-							} else if (!is_foreign) {
-								exported = 0; /* visibility banner: narrows the rest of this file */
-							}
-							continue;
-						}
-						if (!hir_is_collectible_decl(mk))
-							continue;
-						hir_add_module_decl(cn, msrc, ast, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported);
-					}
-				}
-				if (!found) {
-					free(mod_name);
-					free(full);
-					free(expset);
-					continue;
-				}
-				/* Prefix the module's own decls with the FULL set (intra-module refs resolve). */
-				for (int d = first; d < ast->decl_count; d++)
-					hir_rn_decl(ast->decls[d], mod_name, full, fulln);
-				for (int x = 0; x < fulln; x++)
-					free(full[x]);
-				free(full);
-				/* Only the EXPORT set is externally visible (dangling-bare-resolve + qualify). */
-				if (inlined < 64) {
-					mod_prefix[inlined] = dupz(mod_name);
-					mod_exports[inlined] = expset;
-					mod_export_n[inlined] = expn;
-					inlined++;
-				} else {
-					for (int x = 0; x < expn; x++)
-						free(expset[x]);
-					free(expset);
-				}
+				hir_inline_module(mod_name, ast, mod_prefix, mod_exports, mod_export_n, &inlined);
 				free(mod_name);
 			} /* end per-module-ident loop */
 			continue;
@@ -2582,39 +2778,18 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 			ast->decls[ast->decl_count++] = ad;
 	}
 
-	/* Qualified module access: rewrite `mod.name` → the mangled `mod_name` symbol for every
-	 * inlined module (so `io.open` resolves to io's exported `open`). Runs before the dangling
-	 * pass; both land on the same `mod_name` symbol. */
+	/* Scope resolution: bind every `mod.member` reference to its member's qualified identity (mirror
+	 * of sem_qualify_decl). Lookup is by literal member name in the module's export set. */
 	if (inlined > 0) {
 		QualCtx q = {mod_prefix, mod_exports, mod_export_n, inlined};
 		for (int d = 0; d < ast->decl_count; d++)
 			hir_q_decl(ast->decls[d], &q);
 	}
 
-	/* Cross-module bare references: a module export rewritten to `<mod>_<name>`
-	 * leaves bare references from elsewhere dangling. For each export whose bare
-	 * name has no top-level definition in the final program, rewrite bare refs to
-	 * it into the prefixed name; collisions with an existing top-level name (e.g.
-	 * a core function) are left alone so bare names keep their current meaning. */
-	for (int m = 0; m < inlined; m++) {
-		char *dangling[256];
-		int dn = 0;
-		for (int s = 0; s < mod_export_n[m] && dn < 256; s++) {
-			int defined = 0;
-			for (int d = 0; d < ast->decl_count; d++) {
-				const char *nm = hir_decl_name(ast->decls[d]);
-				if (nm && strcmp(nm, mod_exports[m][s]) == 0) {
-					defined = 1;
-					break;
-				}
-			}
-			if (!defined)
-				dangling[dn++] = mod_exports[m][s];
-		}
-		if (dn > 0)
-			for (int d = 0; d < ast->decl_count; d++)
-				hir_rn_decl(ast->decls[d], mod_prefix[m], dangling, dn);
-	}
+	/* Module exports are reachable ONLY via qualified access (`mod.name`, handled by the qualify
+	 * pass above) — a bare `name` does NOT resolve to a module export. (`core` is prepended, not
+	 * inlined, so its bare names are unaffected; externs keep their C-ABI bare name as top-level
+	 * symbols.) */
 	for (int m = 0; m < inlined; m++) {
 		for (int s = 0; s < mod_export_n[m]; s++)
 			free(mod_exports[m][s]);

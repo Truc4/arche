@@ -1,0 +1,14 @@
+// Regression: `os.argv(i)` with an OUT-OF-RANGE index must return a safe empty slice (length 0),
+// never a NULL pointer. The Arche wrapper slices the result (`raw[0:len]`), and a getelementptr off a
+// NULL base is UB the optimizer weaponized into a crash — mislabeled "stack overflow" by the generic
+// SIGSEGV handler — but only once `net` was linked (which changed the surrounding code shape). This
+// mirrors that exact shape: argv(oob) → atoi → net.listen, then proves we reached the end alive.
+// (The web server hit this when run with no port/root args.)
+// RUN: %arche build -o %t %s && %t | grep -q "survived len=0"
+#import { os net parse fmt }
+main :: proc() {
+  os.argv(99)(p:); // far out of range — no such argument
+  port := parse.atoi(p); // atoi over an empty slice → 0 (must not deref a NULL base)
+  net.listen(port)(srv:); // port 0 → OS-assigned; `net` linked is what triggered the old crash
+  fmt.printf("survived len=%d\n", p.length);
+}

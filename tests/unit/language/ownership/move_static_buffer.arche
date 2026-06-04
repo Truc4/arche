@@ -3,6 +3,7 @@
 // hands the same live binding back. The global storage persists the whole time (no leak, no
 // copy). Then the name indexes the filled bytes.
 // RUN: %arche build -o %t %s && %t | grep "b0=88 b1=89 n=2"
+#import { fmt }
 sbuf: char[16]
 
 fill2 :: proc(buf: char[16])(buf: char[16], n: int) {
@@ -13,5 +14,5 @@ fill2 :: proc(buf: char[16])(buf: char[16], n: int) {
 
 main :: proc() {
   fill2(sbuf)(sbuf, n:);
-  printf("b0=%d b1=%d n=%d\n", sbuf[0], sbuf[1], n);
+  fmt.printf("b0=%d b1=%d n=%d\n", sbuf[0], sbuf[1], n);
 }

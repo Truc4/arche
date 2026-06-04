@@ -1,0 +1,14 @@
+// `move`/`copy` are general operators (no longer arg-only), and a bare move-only name in an
+// ownership-taking position is an IMPLICIT move. The analyzer surfaces the elided transfer as a ghost
+// `move` inlay on the consumed argument, so the ownership hand-off stays visible without the keyword.
+// RUN: %build/arche-analyzer --dump %s | grep -qF "move move"
+#import { fmt }
+sink :: func(own b: int[3]) -> int {
+  return b[0];
+}
+
+main :: proc() {
+  a: int[3];
+  n := sink(a);
+  fmt.printf("%d\n", n);
+}

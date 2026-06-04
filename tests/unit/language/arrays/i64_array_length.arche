@@ -1,0 +1,7 @@
+// .length on an i64 array.
+// RUN: %arche build -o %t %s && %t | grep -q "ilen=4"
+#import { fmt }
+main :: proc() {
+  a: i64[4];
+  fmt.printf("ilen=%d\n", a.length);
+}

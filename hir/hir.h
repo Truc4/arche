@@ -80,6 +80,7 @@ typedef enum {
 typedef enum {
 	HIR_STATIC_ARCHETYPE,
 	HIR_STATIC_ARRAY,
+	HIR_STATIC_SCALAR,
 } HirStaticKind;
 
 typedef struct {
@@ -115,7 +116,8 @@ typedef struct {
 	HirParam **out_params;
 	int out_param_count;
 	int is_extern;
-	int is_drop; /* 1 if this proc is a `@drop` destructor (own opaque param is the type it destroys) */
+	int is_drop;      /* 1 if this proc is a `@drop` destructor (own opaque param is the type it destroys) */
+	int is_intrinsic; /* 1 if `@intrinsic`: calls lower to a built-in instruction (e.g. raw syscall) */
 	HirStmt **stmts;
 	int stmt_count;
 	SourceLoc loc;
@@ -165,7 +167,13 @@ typedef struct {
 			char *name;
 			HirType *element_type;
 			int size;
+			HirExpr *init; /* constant array initializer, or NULL = zero-init */
 		} array;
+		struct {
+			char *name;
+			HirType *type;
+			HirExpr *init; /* compile-time-constant initial value (implicit `= 0` normalized in) */
+		} scalar;
 	};
 } HirStaticDecl;
 
@@ -206,6 +214,7 @@ typedef enum {
 	HIR_STMT_FOR,
 	HIR_STMT_IF,
 	HIR_STMT_BREAK,
+	HIR_STMT_CONTINUE,
 	HIR_STMT_RUN,
 	HIR_STMT_EXPR,
 	HIR_STMT_RETURN,
@@ -311,6 +320,7 @@ typedef enum {
 	HIR_EXPR_NAME,
 	HIR_EXPR_FIELD,
 	HIR_EXPR_INDEX,
+	HIR_EXPR_SLICE,
 	HIR_EXPR_BINARY,
 	HIR_EXPR_UNARY,
 	HIR_EXPR_CALL,
@@ -339,6 +349,11 @@ struct HirExpr {
 			HirExpr **indices;
 			int index_count;
 		} index;
+		struct {
+			HirExpr *base;
+			HirExpr *lo; /* NULL → 0 */
+			HirExpr *hi; /* NULL → base length */
+		} slice;
 		struct {
 			Operator op;
 			HirExpr *left;

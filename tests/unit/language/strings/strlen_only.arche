@@ -1,10 +1,11 @@
 // RUN: %arche build -o %t %s && %t
+#import { str fmt }
 test_strlen :: func(s: char[]) -> int {
-  return strlen(s);
+  return str.strlen(s);
 }
 
 main :: proc() {
   n := test_strlen("hello");
-  assert(n == 5, "strlen failed\n");
-  printf("ok\n");
+  fmt.assert(n == 5, "strlen failed\n");
+  fmt.printf("ok\n");
 }

@@ -1,11 +1,11 @@
 // RUN: %arche build -o %t %s && %t | grep "fd="
 // Test if csv_open causes segfault
-#import { io }
+#import { io fmt }
 
 buf: char[65536]
 
 main :: proc() {
-  io_open("tests/fixtures/data.csv")(fd:);
-  printf("fd=%d\n", fd);
-  io_close(move fd);
+  io.open("tests/fixtures/data.csv")(fd:);
+  fmt.printf("fd=%d\n", fd);
+  io.close(move fd);
 }

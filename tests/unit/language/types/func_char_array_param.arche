@@ -1,5 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "comma=1 first=3"
 
+#import { fmt }
 find_byte :: func(data: char[], start: int, end: int, ch: int) -> int {
   for (i := start; i < end; i += 1) {
     if (data[i] == ch) {
@@ -17,5 +18,5 @@ main :: proc() {
   buf[3] = 'c';
   comma := find_byte(buf, 0, 8, ',');
   first := find_byte(buf, 2, 8, 'b') + 1;
-  printf("comma=%d first=%d\n", comma, first);
+  fmt.printf("comma=%d first=%d\n", comma, first);
 }

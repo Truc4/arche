@@ -4,7 +4,7 @@
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0203 wrong_arity 0 'arche_file_unmap' expects 2 arguments, got 3"
 #import { io }
 main :: proc() {
-  arche_file_map("/tmp/x.txt")(data: char[]);
-  arche_file_size()(size: i64);
-  arche_file_unmap(data, size, size);
+  io.arche_file_map("/tmp/x.txt")(data: char[]);
+  io.arche_file_size()(size: i64);
+  io.arche_file_unmap(data, size, size);
 }

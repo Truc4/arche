@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "col0=11 col1=21"
+#import { fmt }
 Pair :: arche { a :: int, b :: int }
 
 Pair[3](3) {
@@ -14,10 +15,10 @@ Pair[3](3) {
 dump :: proc(arch: archetype) {
   #each_field f: int in arch {
     if (f.index == 0) {
-      printf("col0=%d ", f[0]);
+      fmt.printf("col0=%d ", f[0]);
     }
     if (f.index == 1) {
-      printf("col1=%d\n", f[0]);
+      fmt.printf("col1=%d\n", f[0]);
     }
   }
 }

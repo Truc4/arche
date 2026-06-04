@@ -1,11 +1,12 @@
 // E0203: passing extra arguments to a non-extern call is a tycheck error.
 // Phase-2 audit found this gap: today's compiler accepts add(1,2,3,4,5) silently.
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0203 wrong_arity 0 'add' expects 2 arguments, got 5"
+#import { fmt }
 add :: func(a: int, b: int) -> int {
   return a + b;
 }
 
 main :: proc() {
   x := add(1, 2, 3, 4, 5);
-  print(x);
+  fmt.printf("%d\n", x);
 }

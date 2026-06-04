@@ -1,7 +1,7 @@
-// Support module for cross_module.arche (loaded via `use xmod_b;`), not a
-// standalone test. It calls xmod_a's `helper` by its BARE name — the thing
-// cross-module resolution makes work.
+// Support module for cross_module.arche (loaded via `#import { xmod_b }`), not a
+// standalone test. It calls xmod_a's `helper` via qualified access (`xmod_a.helper`) —
+// bare cross-module names no longer resolve.
 // RUN: true
 useit :: func(x: int) -> int {
-  return helper(x);
+  return xmod_a.helper(x);
 }

@@ -1,0 +1,13 @@
+// `a = copy b` on array values clones into the target — both stay alive and independently mutable.
+// Companion to assign_move_array (bare `a = b` moves; explicit `copy` duplicates). Guards the assign
+// path's copy branch.
+// RUN: %arche build -o %t %s && %t | grep -q "a0=7 b0=9"
+#import { fmt }
+main :: proc() {
+  a: int[3];
+  b: int[3];
+  b[0] = 7;
+  a = copy b; // clone: a and b are independent
+  b[0] = 9;
+  fmt.printf("a0=%d b0=%d\n", a[0], b[0]);
+}

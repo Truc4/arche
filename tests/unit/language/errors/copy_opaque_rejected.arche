@@ -1,12 +1,8 @@
-// Opaque values are non-copyable (move-only): `copy` of one is a compile error.
+// Opaque values are non-copyable (move-only): `copy` of one is a compile error. `io.file` is a
+// real opaque handle — no FFI stub needed.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "move-only" %t.out
-window :: opaque
-#foreign {
-  window_open :: proc(own t: char[], w: int, h: int)(ret: window)
-  window_use :: proc(own w: window)
-}
-
+#import { io }
 main :: proc() {
-  window_open("", 1, 1)(w:);
-  window_use(copy w);
+  io.stdout()(f:);
+  io.fclose(copy f);
 }

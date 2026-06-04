@@ -1,0 +1,13 @@
+// A `#foreign` decl IS a real C-ABI global, so its symbol stays reachable bare (`net_listen(...)`)
+// as a C-interop affordance, in addition to the idiomatic qualified `net.net_listen(...)`. (By
+// contrast, pure-Arche module members are renamed to their qualified identity `net.<name>` and are
+// strictly qualified-only — a bare reference to one does NOT resolve.) Qualified is the recommended
+// API; this pins that the raw C symbol remains linkable for interop.
+// RUN: %arche check %s
+#import { net }
+main :: proc() {
+  net.net_listen(8080)(s:); // idiomatic: qualified
+  net_listen(8081)(s2:); // raw C symbol still resolves (interop affordance)
+  net.net_close(move s);
+  net.net_close(move s2);
+}

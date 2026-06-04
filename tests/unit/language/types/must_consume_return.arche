@@ -3,6 +3,7 @@
 // opening the resource — and returns the handle); a func couldn't call the extern. The caller
 // then retires it.
 // RUN: %arche build -o %t --link %S/../extern_type/runtime/test_resource.c %s && %t | grep "value=7"
+#import { fmt }
 resource :: opaque
 #foreign {
   resource_open :: proc(initial: int)(ret: resource)
@@ -17,6 +18,6 @@ make_resource :: proc(v: int)(r: resource) {
 main :: proc() {
   make_resource(7)(r:);
   resource_get(r)(v:);
-  printf("value=%d\n", v);
+  fmt.printf("value=%d\n", v);
   resource_close(move r);
 }

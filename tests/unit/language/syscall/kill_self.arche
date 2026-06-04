@@ -1,10 +1,11 @@
 // kill(getpid(), 0) returns 0 — signal 0 just probes existence. Proves two args
 // reach rdi and rsi correctly and a 0/success return is read.
 // RUN: %arche build -o %t %s && %t | grep "ok"
+#import { fmt os }
 main :: proc() {
-  syscall(39, 0, 0, 0, 0, 0, 0)(pid:);
-  syscall(62, pid, 0, 0, 0, 0, 0)(r:);
+  os.syscall(39, 0, 0, 0, 0, 0, 0)(pid:);
+  os.syscall(62, pid, 0, 0, 0, 0, 0)(r:);
   if (r == 0) {
-    printf("ok\n");
+    fmt.printf("ok\n");
   }
 }

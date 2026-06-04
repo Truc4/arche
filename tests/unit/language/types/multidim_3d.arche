@@ -1,8 +1,9 @@
 // RUN: %arche build -o %t %s && %t | grep "allocations done"
+#import { fmt }
 Tensor :: arche { data :: float[5][5] }
 
 Tensor[5]
 
 main :: proc() {
-  print("allocations done\n");
+  fmt.print("allocations done\n");
 }

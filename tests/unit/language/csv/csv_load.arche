@@ -1,5 +1,5 @@
 // RUN: %arche build -o %t %s && %t
-#import { io }
+#import { parse io fmt }
 Transaction :: arche { price :: float, quantity :: int }
 
 Transaction[3](3) {
@@ -7,12 +7,12 @@ Transaction[3](3) {
 }
 
 load_csv :: proc(own path: char[]) {
-  arche_fopen_read(move path)(fd:);
+  io.fopen_read(move path)(fd:);
   buf: char[256];
   price_str: char[32];
   qty_str: char[32];
-  arche_fread(fd, buf, 256)(buf, total_n:);
-  arche_fclose(move fd);
+  io.fread(fd, buf, 256)(buf, total_n:);
+  io.fclose(move fd);
   idx := 0;
   pos := 0;
   line_start := 0;
@@ -58,8 +58,8 @@ load_csv :: proc(own path: char[]) {
       i = i + 1;
     }
     qty_str[j] = 0;
-    Transaction.price[idx] = atof(price_str);
-    Transaction.quantity[idx] = atoi(qty_str);
+    Transaction.price[idx] = parse.atof(price_str);
+    Transaction.quantity[idx] = parse.atoi(qty_str);
     idx = idx + 1;
     line_start = line_end + 1;
   }
@@ -73,6 +73,6 @@ load_csv :: proc(own path: char[]) {
 
 main :: proc() {
   load_csv("../../../../../tests/fixtures/transactions.csv");
-  assert(Transaction.price[0] == 1.0, "price[0] not 1.0\n");
-  printf("csv ok\n");
+  fmt.assert(Transaction.price[0] == 1.0, "price[0] not 1.0\n");
+  fmt.printf("csv ok\n");
 }

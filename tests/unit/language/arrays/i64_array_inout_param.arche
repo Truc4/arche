@@ -1,0 +1,11 @@
+// i64 in-out array param round-trip.
+// RUN: %arche build -o %t %s && %t | grep -q "v=5000000000"
+#import { fmt }
+fill :: proc(buf: i64[4])(buf: i64[4]) {
+  buf[0] = 5000000000;
+}
+main :: proc() {
+  a: i64[4];
+  fill(a)(a);
+  fmt.printf("v=%lld\n", a[0]);
+}

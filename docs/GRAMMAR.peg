@@ -10,9 +10,22 @@ Program  ← _ (Decl _)* EOF
 Decl     ← Binding / UseDecl / VisMarker / PoolDecl
 
 # ---- The one declaration form ---------------------------------------------------------------
-# x := e        variable, inferred       x :: e        constant, inferred (value / type / callable)
-# x : T = e     variable, typed          x : T : e     constant, typed
-# x : T         typed, zero-init (no init)             @decorator may precede the binding name
+# Canonical (explicit) form:   name : type : value     (immutable — a definition)
+#                              name : type = value     (mutable  — storage)
+# The value separator is the mutability axis: `:` binds a compile-time-immutable definition (a
+# value const, a nominal type, or a proc/func/sys/arche/enum literal); `=` binds mutable storage.
+# Every surface "short" form is this one rule with a part ELIDED and defaulted — not a separate
+# rule:
+#   x :: e   ≡  x : ⟨inferred⟩ : e     (type elided)
+#   x := e   ≡  x : ⟨inferred⟩ = e     (type elided)
+#   x : T    ≡  x : T = ⟨zero⟩         (value elided → implicit `= 0`)
+# So implicit and explicit are the same declaration; the compiler normalizes the elisions onto the
+# canonical form (the CST stays lossless so `fmt` round-trips the surface spelling).
+# A mutable global's initial value must be compile-time-constant (static storage is initialized at
+# link time — there is no startup code); the variable is still reassignable. `@decorator` may
+# precede the binding name.
+# Visibility/order: all top-level names are visible file-wide (order-independent — a decl may
+# reference one declared later); locals are point-of-introduction. See docs/patterns.md.
 Binding   ← (Decorator _)* Identifier _ ":" _ Type? _ (BindTail)?
 BindTail  ← (":" / "=") _ RHS
 RHS       ← Expr / TypeForm
@@ -63,7 +76,9 @@ MatchArm  ← (Number / String / CharLit / Identifier) _ ":" _ (Block / Statemen
 
 Assignment ← Path _ AssignOp _ Expr _ ";"
 AssignOp   ← "+=" / "-=" / "*=" / "/=" / "="
-ForLoop    ← "for" _ Identifier _ "in" _ Expr _ Block
+# Only C-style and infinite `for` exist. There is NO `for x in <expr>` (range-for): iterate
+# archetypes with a `sys`, and buffers with a C-style `for`. `for { }` loops forever.
+ForLoop    ← "for" (_ "(" _ Statement? _ ";" _ Expr? _ ";" _ Statement? _ ")")? _ Block
 IfStmt     ← "if" _ "(" _ Expr _ ")" _ Block (_ "else" _ (IfStmt / Block))?
 RunSystem  ← "run" _ Identifier _ ";"
 ReturnStmt ← "return" (_ Expr)? _ ";"
@@ -79,7 +94,12 @@ ExprStmt   ← Expr _ ";"
 Expr       ← BinaryOp / UnaryExpr
 BinaryOp   ← UnaryExpr (_ Operator _ UnaryExpr)*
 UnaryExpr  ← (("-" / "!" / "move" / "copy") _)? Postfix
-Postfix    ← Primary (_ ("." Identifier / "[" _ Expr (_ "," _ Expr)* _ "]" / "(" _ ArgList? _ ")"))*
+# "[" … "]" is either an index (one or more comma-separated subscripts) or a SLICE `lo:hi` (a `:`
+# marks the slice; lo/hi each optional → buf[:hi], buf[lo:], buf[:]). A slice is a read-only borrowed
+# sub-view `{ptr+lo, hi-lo}`, bounds-checked. See language.md "Arrays and slices".
+Postfix    ← Primary (_ ("." Identifier
+                       / "[" _ (Expr? _ ":" _ Expr? / Expr (_ "," _ Expr)*) _ "]"
+                       / "(" _ ArgList? _ ")"))*
 Primary    ← Number / String / CharLit / ArrayLit / Alloc
            / ProcLit / FuncLit / SysLit / ArcheLit / GroupLit / EnumLit / ProcType / FuncType
            / Path / Identifier / "(" _ Expr _ ")"
@@ -95,6 +115,9 @@ Path       ← Identifier (_ "." _ Identifier)+
 # structural (matched by signature). `int`=i32, `byte`=u8 (transparent `alias`es; see decisions).
 Type       ← ProcType / FuncType / HandleType / ArrayType / Identifier
 HandleType ← "handle" ("<" _ Identifier _ ">" / "(" _ Identifier _ ")")
+# `T[N]` (Number present) is a sized VALUE — owns its storage, moves/copies under the ownership
+# rules. `T[]` (no Number) is a SLICE — a {ptr,len} borrowed view (read-only, or `own` for a
+# mutable/movable handle); `T[N]` decays to `T[]` at a call. See language.md "Arrays and slices".
 ArrayType  ← Identifier ("[" _ (Number)? _ "]")+
 
 # ---- Tokens ---------------------------------------------------------------------------------

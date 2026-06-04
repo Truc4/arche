@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t
+#import { fmt }
 Particle :: arche { pos :: float, vel :: float }
 
 Particle[5]
@@ -7,5 +8,5 @@ main :: proc() {
   insert(Particle, 1.0, 0.1);
   p := Particle.pos[0];
   pi := p * 10.0;
-  assert(pi == 10, "pos != 1.0\n");
+  fmt.assert(pi == 10, "pos != 1.0\n");
 }

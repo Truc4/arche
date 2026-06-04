@@ -1,0 +1,22 @@
+// A sized `int[N]` DECAYS to a `T[]` slice at the call boundary: the compile-time count N becomes the
+// fat pointer's runtime length. The reader takes a borrowed `int[]`, reads `.length` (== N), and sums.
+// One reader works for any buffer size — no per-size overloads.
+// RUN: %arche build -o %t %s && %t | grep -q "n=8 sum=28"
+#import { fmt }
+sum :: func(xs: int[]) -> int {
+  total := 0;
+  i := 0;
+  for (i = 0; i < xs.length; i = i + 1) {
+    total = total + xs[i];
+  }
+  return total;
+}
+
+main :: proc() {
+  a: int[8];
+  i := 0;
+  for (i = 0; i < 8; i = i + 1) {
+    a[i] = i;
+  }
+  fmt.printf("n=%d sum=%d\n", a.length, sum(a));
+}

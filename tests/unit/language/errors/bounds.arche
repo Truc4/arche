@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t
+#import { fmt }
 Particle :: arche { id :: int }
 
 Particle[5]
@@ -8,6 +9,6 @@ main :: proc() {
   insert(Particle, 2);
   a := Particle.id[0];
   b := Particle.id[1];
-  assert(a == 1, "bounds check failed: a != 1\n");
-  assert(b == 2, "bounds check failed: b != 2\n");
+  fmt.assert(a == 1, "bounds check failed: a != 1\n");
+  fmt.assert(b == 2, "bounds check failed: b != 2\n");
 }

@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep 0.05
+#import { fmt }
 pos(x, y) :: float
 vel(dx, dy) :: float
 acc(i, j) :: float
@@ -13,12 +14,12 @@ main :: proc() {
   Particle.vel_dy = Particle.acc_j;
   Particle.pos_x = Particle.vel_dx;
   Particle.pos_y = Particle.vel_dy;
-  print(Particle.pos_x[0]);
-  print(" ");
-  print(Particle.pos_y[0]);
-  print(" ");
-  print(Particle.pos_x[1]);
-  print(" ");
-  print(Particle.pos_y[1]);
-  print("\n");
+  fmt.print_float(Particle.pos_x[0]);
+  fmt.print(" ");
+  fmt.print_float(Particle.pos_y[0]);
+  fmt.print(" ");
+  fmt.print_float(Particle.pos_x[1]);
+  fmt.print(" ");
+  fmt.print_float(Particle.pos_y[1]);
+  fmt.print("\n");
 }

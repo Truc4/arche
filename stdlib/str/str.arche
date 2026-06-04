@@ -1,0 +1,96 @@
+// The `str` module — string helpers (pure Arche, no FFI). `#import { str }` then call `str.strlen(s)`
+// / `str.strcopy(...)`. Access is qualified-only. Strings are normal `char[]` arrays — length-carried
+// slices; the length IS the content, so there is no NUL inside it. Native code carries the length on
+// the slice; `strlen` exists only to recover a length at the C boundary (a NUL-terminated pointer).
+
+/// Length of a C string: scan to the NUL terminator (bounded by capacity). This is the real C
+/// `strlen` — distinct from `.length` (the array's own length). Use it only for a NUL-terminated
+/// foreign buffer (e.g. a raw `argv` pointer); for native arche slices, `.length` already carries it.
+///
+/// ```arche
+/// assert(strlen("hello") == 5, "strlen hello\n");
+/// assert(strlen("") == 0, "strlen empty\n");
+/// ```
+strlen :: func(s: char[]) -> int {
+  i := 0;
+  for (; i < s.cap; i += 1) {
+    if (s[i] == 0) {
+      return i;
+    }
+  }
+  return s.cap;
+}
+
+// Copy `src`'s bytes into `dst` and return the filled prefix `dst[0:src.length]` as a slice. No NUL
+// terminator — a char[] is a normal array; its length travels with the slice. The own/move contract
+// makes the in-place fill explicit: `b := str.strcopy(move b, s)`.
+strcopy :: func(own dst: char[], src: char[]) -> char[] {
+  i := 0;
+  for (; i < src.length; i += 1) {
+    dst[i] = src[i];
+  }
+  r := dst[0: src.length];
+  return r;
+}
+
+/// First index of byte `ch` in `s[start..end)`, or `end` if absent. The explicit window lets callers
+/// scan a sub-range (e.g. a request target between two spaces) without allocating a sub-slice.
+///
+/// ```arche
+/// assert(find_char("a b", 0, 3, ' ') == 1, "find space\n");
+/// assert(find_char("abc", 0, 3, 'z') == 3, "absent → end\n");
+/// ```
+find_char :: func(s: char[], start: int, end: int, ch: int) -> int {
+  for (i := start; i < end; i += 1) {
+    if (s[i] == ch) {
+      return i;
+    }
+  }
+  return end;
+}
+
+/// true if slice `s` ends with slice `suf` (both length-carried — no NUL scan).
+///
+/// ```arche
+/// assert(ends_with("a.html", ".html"), "html\n");
+/// assert(!ends_with("a.css", ".html"), "no match\n");
+/// ```
+ends_with :: func(s: char[], suf: char[]) -> bool {
+  ls := s.length;
+  lf := suf.length;
+  if (lf > ls) {
+    return false;
+  }
+  for (i := 0; i < lf; i += 1) {
+    if (s[ls - lf + i] != suf[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// true if `s` contains `needle` (substring search over length-carried slices).
+///
+/// ```arche
+/// assert(contains("/a/../b", ".."), "has dotdot\n");
+/// assert(!contains("/a/b", ".."), "clean path\n");
+/// ```
+contains :: func(s: char[], needle: char[]) -> bool {
+  ln := needle.length;
+  if (ln == 0) {
+    return true;
+  }
+  last := s.length - ln;
+  for (i := 0; i <= last; i += 1) {
+    j := 0;
+    for (; j < ln; j += 1) {
+      if (s[i + j] != needle[j]) {
+        break;
+      }
+    }
+    if (j == ln) {
+      return true;
+    }
+  }
+  return false;
+}

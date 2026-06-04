@@ -603,6 +603,10 @@ static void visit_stmt(TyCtx *cx, Statement *stmt, FuncDecl *fn) {
 		if (cx->loop_depth == 0)
 			sem_emit_break_outside_loop(cx->ctx, stmt->loc);
 		break;
+	case STMT_CONTINUE:
+		if (cx->loop_depth == 0)
+			sem_emit_continue_outside_loop(cx->ctx, stmt->loc);
+		break;
 	case STMT_EACH_FIELD:
 		visit_stmts(cx, stmt->data.each_field.body, stmt->data.each_field.body_count, fn);
 		break;

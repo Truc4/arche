@@ -1,6 +1,7 @@
 // RUN: %arche build -o %t %s && %t | grep "b3=7 b5=9 sum=16"
 // Storing into a char[] / buffer at an i64 index (write-path index coercion).
 // The buffer is moved in by reference (so the store reaches the caller) and returned.
+#import { fmt }
 setb :: func(own buf: char[], i: i64, v: int) -> char[] {
   buf[i] = v;
   return buf;
@@ -17,5 +18,5 @@ main :: proc() {
   for (i: i64 = 0; i < 16; i = i + 1) {
     sum = sum + b[i];
   }
-  printf("b3=%d b5=%d sum=%ld\n", b[3], b[5], sum);
+  fmt.printf("b3=%d b5=%d sum=%ld\n", b[3], b[5], sum);
 }

@@ -424,6 +424,19 @@ static void emit_param_hint(CstView arg, SemanticContext *ctx) {
 	emit_syn(start.line, start.column, 0, 1, "param", text);
 }
 
+/* Elided-`move` hint: a bare move-only name (array/slice or opaque) in an ownership-taking position
+ * (bind/assign RHS, `own`-param arg) is an implicit move. Show a ghost `move` before it so the
+ * consumed-here transfer is visible. Recorded by semantic analysis, keyed by the name node. */
+static void emit_move_hint(CstView node, SemanticContext *ctx) {
+	const SemHints *h = sem_context_hints(ctx);
+	if (!sem_hints_is_elided_move(h, cv_id(node)))
+		return;
+	CvPos start = cv_first_token_pos(node);
+	if (!start.line)
+		return;
+	emit_syn(start.line, start.column, 0, 1, "move", "move");
+}
+
 /* Proc names gathered from the CST (combined core+user). A proc is an SN_PROC_DECL node, so this is
  * a purely syntactic fact — no whole-program query needed. Borrowed slices into the analysis source,
  * which outlives the walk. Reset per emit_hints; the buffer is reused (grows once). */
@@ -505,6 +518,7 @@ static void walk(CstView v, SemanticContext *ctx) {
 	if (!v.node)
 		return;
 	emit_param_hint(v, ctx); /* any node may be a resolved call argument */
+	emit_move_hint(v, ctx);  /* any name may be an implicitly-moved (consumed) bare binding */
 	if (cv_kind(v) == SN_BIND_STMT)
 		emit_bind_hint(v, ctx);
 	else if (cv_kind(v) == SN_TYPE_REF)

@@ -1,0 +1,14 @@
+// WANT: a non-constant global initializer is a clean error, not a hack. Static storage is
+// initialized at compile/link time — there is no code running before main — so the initial value
+// must be compile-time-known. A runtime expression (here a func call) is rejected with E0213.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "E0213|compile-time constant" %t.out
+#import { fmt }
+five :: func() -> int {
+  return 5;
+}
+
+x: int = five() // not compile-time-known -> error
+
+main :: proc() {
+  fmt.printf("%d\n", x);
+}

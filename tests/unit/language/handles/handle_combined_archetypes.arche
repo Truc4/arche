@@ -1,4 +1,5 @@
 // RUN: %arche build -o %t %s && %t | grep "alive"
+#import { fmt }
 Player :: arche { pos :: float }
 
 AliveList :: arche { player_ref :: handle<Player> }
@@ -12,5 +13,5 @@ main :: proc() {
   p2 := insert(Player, 2.0);
   insert(AliveList, p1);
   insert(AliveList, p2);
-  print("alive list created");
+  fmt.print("alive list created");
 }

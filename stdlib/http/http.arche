@@ -1,0 +1,125 @@
+// The `http` module — procedural HTTP/1.1 building blocks (parse + respond). `#import { http }`.
+// Everything is a length-carried char[] slice. Arche has no by-value record type, so there is no
+// Request/Response value: the request line is handed back as MULTIPLE RETURN VALUES (Odin-style), and
+// responses are free procedures over a connection + caller buffer. C (libc sprintf) is an
+// implementation detail; `%s` only ever formats NUL-terminated literals (mime/reason), never a slice.
+#import { net str fmt }
+
+/// Parse a request line "METHOD SP TARGET SP VERSION" into VIEWS of `req` plus an `ok` flag. The
+/// target's query string (`?...`) is trimmed. `ok` is 0 on a malformed line (method/target are then
+/// empty). Zero-copy: `method`/`target` are slices into `req`, not copies.
+///
+/// ```arche
+/// parse_request_line("GET /a?b=1 HTTP/1.1\r\n")(m:, t:, ok:);
+/// assert(ok == 1, "ok\n");
+/// assert(streq(m, "GET"), "method\n");
+/// assert(streq(t, "/a"), "target query-trimmed\n");
+/// ```
+// Pure, but returns three values (two slices + ok) — a func returns only one, so it must be a proc.
+@allow_pure_proc parse_request_line :: proc(req: char[])(method: char[], target: char[], ok: int) {
+  ok = 0;
+  if (req.length < 5) {
+    return;
+  }
+  sp1 := str.find_char(req, 0, req.length, ' ');
+  sp2 := str.find_char(req, sp1 + 1, req.length, ' ');
+  if (sp1 >= req.length || sp2 >= req.length) {
+    return; // no two spaces → not a valid request line
+  }
+  method = req[0: sp1];
+  tstart := sp1 + 1;
+  tend := sp2;
+  q := str.find_char(req, tstart, tend, '?');
+  if (q < tend) {
+    tend = q; // drop the query string
+  }
+  target = req[tstart: tend];
+  ok = 1;
+}
+
+/// Content-Type for a path, chosen by file extension. Returns a NUL-terminated string literal — safe
+/// to hand to `%s`. Unknown extensions fall back to `application/octet-stream`.
+mime_by_ext :: func(path: char[]) -> char[] {
+  if (str.ends_with(path, ".html")) {
+    return "text/html; charset=utf-8";
+  }
+  if (str.ends_with(path, ".htm")) {
+    return "text/html; charset=utf-8";
+  }
+  if (str.ends_with(path, ".css")) {
+    return "text/css; charset=utf-8";
+  }
+  if (str.ends_with(path, ".js")) {
+    return "application/javascript";
+  }
+  if (str.ends_with(path, ".json")) {
+    return "application/json";
+  }
+  if (str.ends_with(path, ".png")) {
+    return "image/png";
+  }
+  if (str.ends_with(path, ".jpg")) {
+    return "image/jpeg";
+  }
+  if (str.ends_with(path, ".svg")) {
+    return "image/svg+xml";
+  }
+  if (str.ends_with(path, ".txt")) {
+    return "text/plain; charset=utf-8";
+  }
+  return "application/octet-stream";
+}
+
+/// Reason phrase for a status code. Returns a NUL-terminated literal — safe for `%s`.
+reason :: func(status: int) -> char[] {
+  if (status == 200) {
+    return "OK";
+  }
+  if (status == 400) {
+    return "Bad Request";
+  }
+  if (status == 403) {
+    return "Forbidden";
+  }
+  if (status == 404) {
+    return "Not Found";
+  }
+  if (status == 405) {
+    return "Method Not Allowed";
+  }
+  return "OK";
+}
+
+/// Write the status line + headers into the caller's `hdr` buffer, send them, then the body iff
+/// `send_body` is 1 (0 for HEAD). `%d` formats the status + Content-Length; `%s` formats only the
+/// NUL-terminated `reason`/`ctype` literals — never a body slice (the body is sent raw).
+respond :: proc(
+  conn: net.socket,
+  hdr: char[],
+  status: int,
+  ctype: char[],
+  body: char[],
+  send_body: int,
+) {
+  // Bind the reason phrase to a local: an inline func-call result is a `{ptr,len}` slice, but a `%s`
+  // vararg needs a bare NUL-terminated pointer — a NAME is passed as its `.ptr`, an inline call is not.
+  rs := reason(status);
+  fmt.sprintf(
+    hdr,
+    "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+    status,
+    rs,
+    ctype,
+    body.length,
+  )(hdr, n:);
+  net.send(conn, hdr[0: n]);
+  if (send_body == 1) {
+    net.send(conn, body);
+  }
+}
+
+/// Plain-text response (error pages). `msg` is the body AND its own Content-Length (a length-carried
+/// slice). Always sends the body.
+respond_text :: proc(conn: net.socket, hdr: char[], status: int, msg: char[]) {
+  respond(conn, hdr, status, "text/plain; charset=utf-8", msg, 1);
+}
