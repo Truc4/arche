@@ -5,11 +5,11 @@ main :: proc() {
   io.open("tests/fixtures/data.csv")(fd:);
   if (fd > 0) {
     buf: char[65536];
-    io.read_chunk(fd, buf, 65536)(buf, n:);
+    io.read_chunk(fd, buf, 65536)(v:);
     // RAII: `fd` is auto-dropped (io.close) at scope exit on every path — no explicit close.
     // An explicit close only in this `then` branch would be a 'some paths' consumption error.
-    if (n > 0) {
-      fmt.printf("PASS: read %d bytes\n", n);
+    if (v.length > 0) {
+      fmt.printf("PASS: read %d bytes\n", v.length);
     }
     else {
       fmt.printf("FAIL: no bytes read\n");

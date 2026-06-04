@@ -9,13 +9,13 @@ Transaction[100](100) {
 main :: proc() {
   os.open("../../../../../tests/fixtures/transactions.csv", 0)(fd:);
   buf: char[256];
-  os.read(fd, buf, 256)(buf, total_n:);
+  os.read(fd, buf, 256)(data:);
   os.close(move fd);
-  fmt.printf("total_n=%d\n", total_n);
+  fmt.printf("data.length=%d\n", data.length);
   idx := 0;
   pos := 0;
   line_start := 0;
-  for (; pos < total_n;) {
+  for (; pos < data.length;) {
     if (buf[pos] == '\n') {
       line_start = pos + 1;
       pos = pos + 1;
@@ -26,11 +26,11 @@ main :: proc() {
   price_str: char[32];
   qty_str: char[32];
   for (; idx < 100;) {
-    if (line_start >= total_n) {
+    if (line_start >= data.length) {
       break;
     }
     line_end := line_start;
-    for (; line_end < total_n;) {
+    for (; line_end < data.length;) {
       if (buf[line_end] == '\n') {
         break;
       }

@@ -3,8 +3,8 @@
 main :: proc() {
   io.fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
   buf: char[256];
-  io.fread(fd, buf, 256)(buf, n:);
+  io.fread(fd, buf, 256)(v:);
   io.fclose(move fd);
-  fmt.printf("read 256 returned: %d\n", n);
-  fmt.assert(n == 256, "should read 256 bytes\n");
+  fmt.printf("read 256 returned: %d\n", v.length);
+  fmt.assert(v.length == 256, "should read 256 bytes\n");
 }

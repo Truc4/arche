@@ -16,13 +16,13 @@ accept :: proc(s: socket)(c: socket) {
 
 // Send a slice: the byte count IS the slice's own length — no manual `n`. `data` is a borrow.
 send :: proc(s: socket, data: char[]) {
-  net_send(s, data, data.length)(data, _r:);
+  net_send(s, _, data.length)(data, _r:);
 }
 
 // Lend `buf` (a borrow = backing store) and get back `out`, a slice VIEW of exactly the bytes read.
 // One allocation, two roles: the caller owns the storage, the view carries the true length.
 recv :: proc(s: socket, buf: char[])(out: char[]) {
-  net_recv(s, buf, buf.cap)(buf, r:);
+  net_recv(s, _, buf.cap)(buf, r:);
   if (r < 0) {
     r = 0;
   }

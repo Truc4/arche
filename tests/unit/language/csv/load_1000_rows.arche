@@ -11,23 +11,23 @@ main :: proc() {
   buf: char[50000];
   price_str: char[32];
   qty_str: char[32];
-  io.fread(fd, buf, 50000)(buf, total_n:);
+  io.fread(fd, buf, 50000)(data:);
   io.fclose(move fd);
   idx := 0;
   pos := 0;
   line_start := 0;
-  for (; pos < total_n; pos = pos + 1) {
+  for (; pos < data.length; pos = pos + 1) {
     if (buf[pos] == '\n') {
       line_start = pos + 1;
       break;
     }
   }
   for (; idx < 1000; idx = idx + 1) {
-    if (line_start >= total_n) {
+    if (line_start >= data.length) {
       break;
     }
     line_end := line_start;
-    for (; line_end < total_n; line_end = line_end + 1) {
+    for (; line_end < data.length; line_end = line_end + 1) {
       if (buf[line_end] == '\n') {
         break;
       }

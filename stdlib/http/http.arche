@@ -105,7 +105,7 @@ respond :: proc(
   // vararg needs a bare NUL-terminated pointer — a NAME is passed as its `.ptr`, an inline call is not.
   rs := reason(status);
   fmt.sprintf(
-    hdr,
+    _,
     "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
     status,
     rs,

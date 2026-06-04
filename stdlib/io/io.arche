@@ -36,24 +36,32 @@ fopen_write :: proc(path: char[])(f: file) {
 fwrite :: proc(fd: file, buf: char[], n: int) {
   os.syscall(1, fd, buf, n, 0, 0, 0)(_w:);
 }
-fread :: proc(fd: file, buf: char[], n: int)(buf: char[], r: int) {
+// Lend `buf` (a borrow = backing store), get back a slice VIEW of the `n` bytes read. Out-only — the
+// byte count travels on the returned slice's `.length` (mirrors `net.recv`).
+fread :: proc(fd: file, buf: char[], n: int)(out: char[]) {
   os.syscall(0, fd, buf, n, 0, 0, 0)(rr:);
-  r = i32(rr);
-}
-// Arche-native read: lend `buf` (a borrow = backing store), get back a slice VIEW of the bytes read.
-// Mirrors `net.recv`; the byte count travels on the returned slice's `.length`.
-read :: proc(fd: file, buf: char[])(out: char[]) {
-  fread(fd, buf, buf.cap)(buf, r:);
-  if (r < 0) {
-    r = 0;
+  k := i32(rr);
+  if (k < 0) {
+    k = 0;
   }
-  out = buf[0: r];
+  out = buf[0: k];
 }
-csv_read_chunk :: proc(fd: file, buf: char[], max_bytes: int)(buf: char[], r: int) {
+// Read up to the buffer's capacity. Thin alias for `fread(fd, buf, buf.cap)`.
+read :: proc(fd: file, buf: char[])(out: char[]) {
+  fread(fd, buf, buf.cap)(r:);
+  out = r;
+}
+csv_read_chunk :: proc(fd: file, buf: char[], max_bytes: int)(out: char[]) {
   os.syscall(0, fd, buf, max_bytes, 0, 0, 0)(rr:);
-  r = i32(rr);
+  k := i32(rr);
+  if (k < 0) {
+    k = 0;
+  }
+  out = buf[0: k];
 }
-fread_line :: proc(fd: file, buf: char[], n: int)(buf: char[], r: int) {
+// `own buf` — this fills the buffer byte-by-byte in arche code (not via a single FFI write), so it
+// must own a writable buffer; `move` it in and take back the line view.
+fread_line :: proc(fd: file, own buf: char[], n: int)(out: char[]) {
   i := 0;
   ch: char[1];
   for (; i < n - 1;) {
@@ -68,7 +76,7 @@ fread_line :: proc(fd: file, buf: char[], n: int)(buf: char[], r: int) {
     i = i + 1;
   }
   buf[i] = 0;
-  r = i;
+  out = buf[0: i];
 }
 // RAII: registers io.fclose as the destructor for `file`. A `file` local that is never
 // explicitly closed is auto-dropped via this proc at scope exit.
@@ -82,8 +90,9 @@ stdout_write :: proc(buf: char[], n: int) {
 stderr_write :: proc(buf: char[], n: int) {
   os.write(2, buf, n);
 }
-stdin_read :: proc(buf: char[], n: int)(buf: char[]) {
-  os.read(0, buf, n)(buf, _cnt:);
+stdin_read :: proc(buf: char[], n: int)(out: char[]) {
+  os.read(0, buf, n)(r:);
+  out = r;
 }
 
 // File-handle convenience wrappers (`io.open`, `io.read_chunk`, …).
@@ -95,10 +104,11 @@ close :: proc(own fd: file) {
 }
 skip_header :: proc(fd: file) {
   line: char[256];
-  fread_line(fd, line, 256)(line, _r:);
+  fread_line(fd, move line, 256)(_discard:);
 }
-read_chunk :: proc(fd: file, buf: char[], size: int)(buf: char[], n: int) {
-  csv_read_chunk(fd, buf, size)(buf, n);
+read_chunk :: proc(fd: file, buf: char[], size: int)(out: char[]) {
+  csv_read_chunk(fd, buf, size)(r:);
+  out = r;
 }
 
 // Whole-file mmap (C-runtime externs). C foreign symbols → callable bare within this module;

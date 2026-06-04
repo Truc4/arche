@@ -146,6 +146,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_func_impure]                   = { "W0003", "func_impure",                   CLASS_LINT, 1 },
 	[SEM_LINT_unused_local]                  = { "W0004", "unused_local",                  CLASS_LINT, 1 },
 	[SEM_LINT_unused_use]                    = { "W0010", "unused_use",                    CLASS_LINT, 1 },
+	[SEM_LINT_inout_redundant_arg]           = { "W0011", "inout_redundant_arg",           CLASS_LINT, 1 },
+	[SEM_LINT_inout_param_shadow]            = { "W0012", "inout_param_shadow",            CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -814,4 +816,16 @@ SemDiag *sem_emit_lint_unused_local(SemanticContext *ctx, SourceLoc loc, const c
 }
 SemDiag *sem_emit_lint_unused_use(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_LINT_unused_use, loc, "module '%s' is imported but none of its symbols are used", name);
+}
+SemDiag *sem_emit_lint_inout_redundant_arg(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_LINT_inout_redundant_arg, loc,
+	                 "in-out call repeats '%s' in the in-slot; write `_` to mark the shadowed in-position: "
+	                 "`f(_)(%s)`",
+	                 name, name);
+}
+SemDiag *sem_emit_lint_inout_param_shadow(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_LINT_inout_param_shadow, loc,
+	                 "out-param '%s' shadows the in-param of the same name (in-out): legitimate only for a "
+	                 "`#foreign` proc (C-ABI alignment). Return a fresh out-only result instead",
+	                 name);
 }
