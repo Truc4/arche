@@ -4517,6 +4517,44 @@ static Statement *cst_build_stmt(CstView s) {
 		}
 		break;
 	}
+	case SN_MATCH_STMT: {
+		/* Analyze-only desugar: `match scrut { p0: b0; p1: b1; … }` → an if-chain
+		 *   if (scrut) { b0 } else if (scrut) { b1 } …
+		 * The condition is the scrutinee itself, NOT a real pattern comparison — this exists purely so
+		 * every semantic pass (type annotation, tycheck, RAII, name resolution) VISITS the scrutinee and
+		 * each arm's body. Pattern matching + exhaustiveness live elsewhere (lower desugars for codegen;
+		 * walk_matches checks exhaustiveness on the CST). Without this a match was an empty STMT_EXPR, so
+		 * arm-body exprs were never typed (opaque/float args defaulted to i32) and a local used only in
+		 * an arm drew a false unused-local lint. */
+		CstView scrut = sem_node_at_expr(s, 0);
+		int narm = cv_count(s, SN_MATCH_ARM);
+		if (narm == 0) {
+			as->type = STMT_EXPR;
+			as->data.expr_stmt.expr = cst_build_expr(scrut);
+			break;
+		}
+		Statement *chain = NULL; /* the else-body built so far (one nested if) */
+		for (int i = narm - 1; i >= 0; i--) {
+			CstView arm = cv_child_at(s, SN_MATCH_ARM, i);
+			int bc = 0;
+			Statement **body = cst_build_body(arm, &bc);
+			Statement *iff = (i == 0) ? as : statement_create(STMT_IF);
+			iff->type = STMT_IF;
+			iff->data.if_stmt.cond = cst_build_expr(scrut);
+			iff->data.if_stmt.then_body = body;
+			iff->data.if_stmt.then_count = bc;
+			if (chain) {
+				iff->data.if_stmt.else_body = calloc(1, sizeof(Statement *));
+				iff->data.if_stmt.else_body[0] = chain;
+				iff->data.if_stmt.else_count = 1;
+			} else {
+				iff->data.if_stmt.else_body = NULL;
+				iff->data.if_stmt.else_count = 0;
+			}
+			chain = iff;
+		}
+		break;
+	}
 	default:
 		as->type = STMT_EXPR;
 		as->data.expr_stmt.expr = NULL;

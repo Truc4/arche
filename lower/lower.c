@@ -170,6 +170,10 @@ static void tuple_rewrite_stmt(HirStmt *s, const char *base) {
 		for (int i = 0; i < s->data.return_stmt.count; i++)
 			tuple_rewrite_expr(s->data.return_stmt.values[i], base);
 		break;
+	case HIR_STMT_BLOCK: /* match / surface `{ }` desugar */
+		for (int i = 0; i < s->data.block.count; i++)
+			tuple_rewrite_stmt(s->data.block.stmts[i], base);
+		break;
 	default:
 		break;
 	}
@@ -1501,6 +1505,10 @@ static void tuple_collapse_stmt(HirStmt *s) {
 		for (int i = 0; i < s->data.each_field.body_count; i++)
 			tuple_collapse_stmt(s->data.each_field.body[i]);
 		break;
+	case HIR_STMT_BLOCK: /* match / surface `{ }` desugar */
+		for (int i = 0; i < s->data.block.count; i++)
+			tuple_collapse_stmt(s->data.block.stmts[i]);
+		break;
 	default:
 		break;
 	}
@@ -2293,6 +2301,10 @@ static void hir_rn_stmt(HirStmt *s, const char *prefix, char **set, int count) {
 		for (int i = 0; i < s->data.each_field.body_count; i++)
 			hir_rn_stmt(s->data.each_field.body[i], prefix, set, count);
 		break;
+	case HIR_STMT_BLOCK: /* `match` / surface `{ }` desugar — descend so intra-module names get renamed */
+		for (int i = 0; i < s->data.block.count; i++)
+			hir_rn_stmt(s->data.block.stmts[i], prefix, set, count);
+		break;
 	default: /* BREAK, RUN — no embedded names (run is world/system, not module-local) */
 		break;
 	}
@@ -2511,6 +2523,13 @@ static void hir_q_stmt(HirStmt *s, const QualCtx *q) {
 	case HIR_STMT_EACH_FIELD:
 		for (int i = 0; i < s->data.each_field.body_count; i++)
 			hir_q_stmt(s->data.each_field.body[i], q);
+		break;
+	case HIR_STMT_BLOCK:
+		/* `match` desugars to a BLOCK { __match := scrut; if-chain }. Without descending into it, a
+		 * qualified call (`fmt.print(...)`) in a match arm keeps its FIELD callee unresolved → codegen
+		 * sees a NULL func_name. */
+		for (int i = 0; i < s->data.block.count; i++)
+			hir_q_stmt(s->data.block.stmts[i], q);
 		break;
 	default:
 		break;

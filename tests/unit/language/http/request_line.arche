@@ -1,0 +1,10 @@
+// http.parse_request_line returns the method and target as zero-copy VIEWS into the request buffer,
+// with the query string (?...) trimmed, plus an `ok` flag. A malformed line (no two spaces) → ok=0.
+// This exercises the out-only char[] out-param feature (two slice views + an int from one proc).
+// RUN: %arche build -o %t %s && %t | grep -q "^ok=1 getm=1 tm=1 bad=0$"
+#import { http fmt }
+main :: proc() {
+  http.parse_request_line("GET /a?b=1 HTTP/1.1\r\n")(m:, t:, ok:);
+  http.parse_request_line("garbage")(_m2:, _t2:, bad:); // no spaces → ok=0
+  fmt.printf("ok=%d getm=%d tm=%d bad=%d\n", ok, streq(m, "GET"), streq(t, "/a"), bad);
+}

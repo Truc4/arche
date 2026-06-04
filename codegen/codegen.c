@@ -3116,7 +3116,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				callee_func = find_func_decl(ctx, callee_group->member_names[0]);
 			}
 		} else {
-			callee_func = find_func_decl(ctx, func_name);
+			callee_func = func_name ? find_func_decl(ctx, func_name) : NULL;
 		}
 
 		/* Archetype-parametric call site detection. The arg in the archetype
@@ -3603,8 +3603,13 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 					/* Wider/narrower int (e.g. i64): pass at its actual LLVM width. */
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = llvm_int_type(expr->data.call.args[i]->resolved.int_width);
-				} else if (expr->data.call.args[i]->resolved.tag == HIR_TYPE_OPAQUE) {
-					/* An opaque cell (a nominal `:: opaque` value) is pointer-width i64. */
+				} else if (expr->data.call.args[i]->resolved.tag == HIR_TYPE_OPAQUE ||
+				           (callee_pt && (callee_pt->tag == HIR_TYPE_OPAQUE || callee_pt->tag == HIR_TYPE_HANDLE))) {
+					/* An opaque/handle cell (a nominal `:: opaque` value or an archetype handle) is
+					 * pointer-width i64. The callee's DECLARED param type is authoritative even when the
+					 * arg's own resolved type wasn't annotated — e.g. a name used inside a `{ }` block or
+					 * a `match` arm, which semantic's type pass does not descend into, so the arg defaults
+					 * to UNKNOWN and would otherwise be mis-emitted as i32. */
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = "i64";
 				} else {

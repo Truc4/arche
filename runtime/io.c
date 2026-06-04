@@ -83,7 +83,10 @@ int os_argc(void) {
 }
 
 char *os_argv(int i) {
-	return (i >= 0 && i < g_arche_argc) ? g_arche_argv[i] : 0;
+	/* Out of range → a valid empty string, NEVER NULL: the Arche side slices the result
+	 * (`raw[0:len]`), and a GEP off a NULL base is UB the optimizer can turn into a crash. */
+	static char empty[1] = "";
+	return (i >= 0 && i < g_arche_argc) ? g_arche_argv[i] : empty;
 }
 
 /* FFI-boundary length for argv[i]: a char[] crossing IN from C has no carried length, so the os

@@ -32,3 +32,65 @@ strcopy :: func(own dst: char[], src: char[]) -> char[] {
   r := dst[0: src.length];
   return r;
 }
+
+/// First index of byte `ch` in `s[start..end)`, or `end` if absent. The explicit window lets callers
+/// scan a sub-range (e.g. a request target between two spaces) without allocating a sub-slice.
+///
+/// ```arche
+/// assert(find_char("a b", 0, 3, ' ') == 1, "find space\n");
+/// assert(find_char("abc", 0, 3, 'z') == 3, "absent → end\n");
+/// ```
+find_char :: func(s: char[], start: int, end: int, ch: int) -> int {
+  for (i := start; i < end; i += 1) {
+    if (s[i] == ch) {
+      return i;
+    }
+  }
+  return end;
+}
+
+/// true if slice `s` ends with slice `suf` (both length-carried — no NUL scan).
+///
+/// ```arche
+/// assert(ends_with("a.html", ".html"), "html\n");
+/// assert(!ends_with("a.css", ".html"), "no match\n");
+/// ```
+ends_with :: func(s: char[], suf: char[]) -> bool {
+  ls := s.length;
+  lf := suf.length;
+  if (lf > ls) {
+    return false;
+  }
+  for (i := 0; i < lf; i += 1) {
+    if (s[ls - lf + i] != suf[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// true if `s` contains `needle` (substring search over length-carried slices).
+///
+/// ```arche
+/// assert(contains("/a/../b", ".."), "has dotdot\n");
+/// assert(!contains("/a/b", ".."), "clean path\n");
+/// ```
+contains :: func(s: char[], needle: char[]) -> bool {
+  ln := needle.length;
+  if (ln == 0) {
+    return true;
+  }
+  last := s.length - ln;
+  for (i := 0; i <= last; i += 1) {
+    j := 0;
+    for (; j < ln; j += 1) {
+      if (s[i + j] != needle[j]) {
+        break;
+      }
+    }
+    if (j == ln) {
+      return true;
+    }
+  }
+  return false;
+}
