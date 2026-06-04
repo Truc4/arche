@@ -1414,6 +1414,15 @@ static const SyntaxNode *arch_expr_child(const SyntaxNode *d) {
 	return NULL;
 }
 
+/* True if the decl is decorated (its first token is `@`). A decorator with args — `@allow(x)`,
+ * `@implements(dev.foo)` — has a `(` that must NOT be mistaken for a tuple-group paren. */
+static int decl_is_decorated(const SyntaxNode *d) {
+	for (int i = 0; i < d->child_count; i++)
+		if (d->children[i].tag == SE_TOKEN)
+			return d->children[i].as.token.kind == TOK_AT;
+	return 0;
+}
+
 static void build_tgroups(const SyntaxNode *root, const char *src) {
 	g_tgroup_count = 0;
 	for (int i = 0; i < root->child_count; i++) {
@@ -1424,8 +1433,8 @@ static void build_tgroups(const SyntaxNode *root, const char *src) {
 		/* unified archetype form `Name :: arche { … }` — scan its body for inline tuple fields */
 		if (d->kind == SN_CONST_DECL && (ae = arch_expr_child(d)) != NULL)
 			register_arch_tgroups(ae, src);
-		/* top-level tuple group: `pos (x, y) :: T` (a const-decl with a direct `(`) */
-		else if (d->kind == SN_CONST_DECL && cv_has_token((CstView){d, src}, TOK_LPAREN))
+		/* top-level tuple group: `pos (x, y) :: T` (a const-decl with a direct `(`, not decorated). */
+		else if (d->kind == SN_CONST_DECL && !decl_is_decorated(d) && cv_has_token((CstView){d, src}, TOK_LPAREN))
 			register_tgroup(d, src, 0, d->child_count, NULL);
 		/* legacy inline archetype tuple field: `pos (x, y) :: T` inside `arche { … }` */
 		else if (d->kind == SN_ARCHETYPE_DECL)
@@ -2235,6 +2244,7 @@ typedef struct {
 	char *name;
 	const SyntaxNode *root;
 	const char *src;
+	char *filename; /* source path; a `*.i.arche` file is a device datasheet (decls stay global) */
 } LowerModule;
 static LowerModule g_modules[64];
 static int g_module_count = 0;
@@ -2245,26 +2255,66 @@ static char *dupz(const char *s) {
 	return r;
 }
 
-void lower_add_module(const char *name, const SyntaxNode *root, const char *src) {
+/* A device datasheet file: its decls are shared global vocabulary, registered UNPREFIXED so a
+ * driver references them by bare name and a device's systems bind to the driver's shape. */
+static int is_datasheet_file(const char *fn) {
+	if (!fn)
+		return 0;
+	size_t L = strlen(fn);
+	return L >= 8 && strcmp(fn + L - 8, ".i.arche") == 0;
+}
+
+void lower_add_module(const char *name, const SyntaxNode *root, const char *src, const char *filename) {
 	if (g_module_count >= 64 || !name || !root)
 		return;
 	g_modules[g_module_count].name = dupz(name);
 	g_modules[g_module_count].root = root;
 	g_modules[g_module_count].src = src;
+	g_modules[g_module_count].filename = filename ? dupz(filename) : NULL;
 	g_module_count++;
 }
 
 void lower_reset_modules(void) {
-	for (int i = 0; i < g_module_count; i++)
+	for (int i = 0; i < g_module_count; i++) {
 		free(g_modules[i].name);
+		free(g_modules[i].filename);
+	}
 	g_module_count = 0;
 }
 
+/* `@implements` bindings: rename a device requirement `old` → the driver's name `new_` everywhere.
+ * Applied as a post-inlining pass that reuses the rename traversal (via prefixed_dup, set-independent
+ * so it fires even though datasheet decls aren't in any module rename set). Empty during inlining. */
+typedef struct {
+	char *old;
+	char *new_;
+} ImplBind;
+static ImplBind g_impl[64];
+static int g_impl_count = 0;
+
+/* Apply an active `@implements` binding to an owned name slot (e.g. a sys param or archetype field
+ * name). The normal rename traversal skips these — but column binding is by name, so a device
+ * requirement used as a column must be substituted to the driver's name here. */
+static void subst_name(char **slot) {
+	if (!slot || !*slot)
+		return;
+	for (int i = 0; i < g_impl_count; i++)
+		if (strcmp(*slot, g_impl[i].old) == 0) {
+			free(*slot);
+			*slot = dupz(g_impl[i].new_);
+			return;
+		}
+}
+
 /* If `name` is in set, return a freshly-allocated qualified identity `prefix.name`; else NULL.
- * (Dotted to match the semantic resolver; `.` is a legal LLVM global-identifier char.) */
+ * (Dotted to match the semantic resolver; `.` is a legal LLVM global-identifier char.) An active
+ * `@implements` binding `old → new_` matches first and substitutes regardless of `set`. */
 static char *prefixed_dup(const char *name, const char *prefix, char **set, int count) {
 	if (!name)
 		return NULL;
+	for (int i = 0; i < g_impl_count; i++)
+		if (strcmp(name, g_impl[i].old) == 0)
+			return dupz(g_impl[i].new_);
 	for (int i = 0; i < count; i++)
 		if (strcmp(name, set[i]) == 0) {
 			char *r = malloc(strlen(prefix) + 1 + strlen(name) + 1);
@@ -2669,7 +2719,7 @@ static void hir_q_decl(HirDecl *d, const QualCtx *q) {
  * `#foreign { }` / `#module { }` block regions. */
 static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, const char *mod_name, HirProgram *ast,
                                 char ***full, int *fulln, int *fullcap, char ***expset, int *expn, int *expcap,
-                                int exported) {
+                                int exported, int is_datasheet) {
 	HirDecl *md = lower_decl_cst((CstView){node, msrc});
 	if (!md)
 		return;
@@ -2680,8 +2730,10 @@ static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 	if (!nm)
 		return;
 	/* Literal member access (no `<mod>_`-prefix stripping): foreign decls keep their C-symbol name
-	 * and are not renamed; pure-Arche decls are renamed to the qualified identity `<mod>.<name>`. */
-	if (!is_ext) {
+	 * and are not renamed; pure-Arche decls are renamed to the qualified identity `<mod>.<name>`.
+	 * Datasheet (`.i.arche`) decls are shared global vocabulary — NOT renamed (skip the rename set),
+	 * so a driver and the device's systems reference them by the one bare name. */
+	if (!is_ext && !is_datasheet) {
 		if (*fulln == *fullcap) {
 			*fullcap = *fullcap ? *fullcap * 2 : 8;
 			*full = realloc(*full, (size_t)*fullcap * sizeof(char *));
@@ -2693,9 +2745,10 @@ static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 			*expcap = *expcap ? *expcap * 2 : 8;
 			*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
 		}
-		/* "<member>=<identity>": foreign → its own C symbol; pure-Arche → `<mod>.<name>`. */
+		/* "<member>=<identity>": foreign / datasheet → the bare name (global); pure-Arche → `<mod>.<name>`.
+		 * (A datasheet decl is global, so qualified `mod.name` resolves to the same bare name too.) */
 		char entry[512];
-		if (is_ext)
+		if (is_ext || is_datasheet)
 			snprintf(entry, sizeof(entry), "%s=%s", nm, nm);
 		else
 			snprintf(entry, sizeof(entry), "%s=%s.%s", nm, mod_name, nm);
@@ -2727,6 +2780,7 @@ static void hir_inline_module(const char *mod_name, HirProgram *ast, char **mod_
 		found = 1;
 		const SyntaxNode *mr = g_modules[m].root;
 		const char *msrc = g_modules[m].src;
+		int ds = is_datasheet_file(g_modules[m].filename); /* `.i.arche` → decls stay global */
 		int exported = 1;
 		for (int j = 0; j < mr->child_count; j++) {
 			if (mr->children[j].tag != SE_NODE)
@@ -2745,7 +2799,7 @@ static void hir_inline_module(const char *mod_name, HirProgram *ast, char **mod_
 						if (!hir_is_collectible_decl(cn->children[c].as.node->kind))
 							continue;
 						hir_add_module_decl(cn->children[c].as.node, msrc, mod_name, ast, &full, &fulln, &fullcap,
-						                    &expset, &expn, &expcap, child_exp);
+						                    &expset, &expn, &expcap, child_exp, ds);
 					}
 				} else if (!is_foreign) {
 					exported = 0;
@@ -2754,7 +2808,8 @@ static void hir_inline_module(const char *mod_name, HirProgram *ast, char **mod_
 			}
 			if (!hir_is_collectible_decl(mk))
 				continue;
-			hir_add_module_decl(cn, msrc, mod_name, ast, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported);
+			hir_add_module_decl(cn, msrc, mod_name, ast, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported,
+			                    ds);
 		}
 	}
 	if (!found) {
@@ -2798,6 +2853,54 @@ static void hir_inline_module(const char *mod_name, HirProgram *ast, char **mod_
 			}
 		}
 	}
+}
+
+/* Collect `@implements(<device>.<req>, …)` bindings from one driver decl into g_impl: each
+ * requirement's tail name (`foo` in `physics.foo`) maps to this decl's own name (`bar`). The device's
+ * uses of `foo` are then substituted to `bar`, so its systems bind to the driver's shape. */
+static void collect_impl_binds(const SyntaxNode *decl, const char *src) {
+	CvText bn = lower_binding_name((CstView){decl, src});
+	if (!bn.ptr)
+		return;
+	char *local = txt_dup(bn);
+	int n = decl->child_count;
+	for (int i = 0; i + 1 < n; i++) {
+		SyntaxElem *a = &decl->children[i], *b = &decl->children[i + 1];
+		if (a->tag != SE_TOKEN || a->as.token.kind != TOK_AT)
+			continue;
+		if (b->tag != SE_TOKEN || b->as.token.kind != TOK_IDENT)
+			continue;
+		if (b->as.token.length != 10 || strncmp(src + b->as.token.offset, "implements", 10) != 0)
+			continue;
+		int j = i + 2;
+		if (j >= n || decl->children[j].tag != SE_TOKEN || decl->children[j].as.token.kind != TOK_LPAREN)
+			continue;
+		const char *tail = NULL;
+		int tail_len = 0;
+		for (j++; j < n; j++) {
+			SyntaxElem *t = &decl->children[j];
+			if (t->tag != SE_TOKEN)
+				continue;
+			TokenKind k = t->as.token.kind;
+			if (k == TOK_IDENT) {
+				tail = src + t->as.token.offset; /* keep the LAST segment of a qualified `dev.foo` */
+				tail_len = (int)t->as.token.length;
+			} else if (k == TOK_COMMA || k == TOK_RPAREN) {
+				if (tail && g_impl_count < 64) {
+					char *old = malloc((size_t)tail_len + 1);
+					memcpy(old, tail, (size_t)tail_len);
+					old[tail_len] = '\0';
+					g_impl[g_impl_count].old = old;
+					g_impl[g_impl_count].new_ = dupz(local);
+					g_impl_count++;
+				}
+				tail = NULL;
+				if (k == TOK_RPAREN)
+					break;
+			}
+		}
+	}
+	free(local);
 }
 
 /* CST-driven entry, gated by ARCHE_LOWER_CST (validated against the IR goldens). */
@@ -2876,6 +2979,48 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 		QualCtx q = {mod_prefix, mod_exports, mod_export_n, inlined};
 		for (int d = 0; d < ast->decl_count; d++)
 			hir_q_decl(ast->decls[d], &q);
+	}
+
+	/* `@implements` bindings (driver decls). Collect `<req-tail> → <decl-name>`, drop the device's
+	 * datasheet requirement decl (the driver's decl is the real definition), then substitute the
+	 * requirement name → the driver's name everywhere so the device's systems bind to the driver's
+	 * shape (the substitution fires via g_impl inside the reused rename traversal). */
+	g_impl_count = 0;
+	for (int i = 0; i < root->child_count; i++)
+		if (root->children[i].tag == SE_NODE && root->children[i].as.node->kind >= SN_WORLD_DECL &&
+		    root->children[i].as.node->kind <= SN_USE_DECL)
+			collect_impl_binds(root->children[i].as.node, src);
+	if (g_impl_count > 0) {
+		int w = 0;
+		for (int d = 0; d < ast->decl_count; d++) {
+			const char *nm = hir_decl_name(ast->decls[d]);
+			int drop = 0;
+			if (nm)
+				for (int b = 0; b < g_impl_count; b++)
+					if (strcmp(nm, g_impl[b].old) == 0) {
+						drop = 1;
+						break;
+					}
+			if (!drop)
+				ast->decls[w++] = ast->decls[d]; /* dropped decl left to the arena */
+		}
+		ast->decl_count = w;
+		for (int d = 0; d < ast->decl_count; d++) {
+			HirDecl *dd = ast->decls[d];
+			hir_rn_decl(dd, "", NULL, 0); /* count=0 → only g_impl substitutions fire (names + body refs) */
+			/* Column-binding names that the traversal skips: sys params, archetype fields. */
+			if (dd->kind == HIR_DECL_SYS)
+				for (int p = 0; p < dd->data.sys->param_count; p++)
+					subst_name(&dd->data.sys->params[p]->name);
+			else if (dd->kind == HIR_DECL_ARCHETYPE)
+				for (int f = 0; f < dd->data.archetype->field_count; f++)
+					subst_name(&dd->data.archetype->fields[f]->name);
+		}
+		for (int b = 0; b < g_impl_count; b++) {
+			free(g_impl[b].old);
+			free(g_impl[b].new_);
+		}
+		g_impl_count = 0;
 	}
 
 	/* Module exports are reachable ONLY via qualified access (`mod.name`, handled by the qualify

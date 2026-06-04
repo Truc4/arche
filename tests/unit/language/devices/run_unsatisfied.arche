@@ -1,0 +1,11 @@
+// A `run <system>` must error when no shape provides the system's components — otherwise it is a
+// silent no-op (the device/driver footgun: a driver runs a device's system but never defined an
+// archetype with the device's required components). Negative test for the driver-side diagnostic.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "no shape provides the components" %t.out
+integrate :: sys (pos, vel) {
+  pos = pos + vel;
+}
+
+main :: proc() {
+  run integrate;
+}

@@ -5041,6 +5041,16 @@ static CvText sem_binding_name(CstView d) {
 	return last;
 }
 
+/* True if the decl is decorated (its first token is `@`). A decorator with args — `@allow(x)`,
+ * `@implements(dev.foo)` — has a `(` that must NOT be mistaken for a tuple-group paren, and a first
+ * IDENT that is the decorator, not the binding name (mirror of lower.c's decl_is_decorated). */
+static int sem_decl_is_decorated(const SyntaxNode *n) {
+	for (int i = 0; i < n->child_count; i++)
+		if (n->children[i].tag == SE_TOKEN)
+			return n->children[i].as.token.kind == TOK_AT;
+	return 0;
+}
+
 /* Find the unified-grammar RHS value/type form among a binding's children, if any. */
 static CstView sem_rhs_form(CstView d) {
 	for (int i = 0; i < d.node->child_count; i++) {
@@ -5237,13 +5247,17 @@ static Decl *cst_build_decl_inner(CstView d) {
 			}
 		}
 		Decl *ad = decl_create(DECL_CONST);
-		char *cname = sem_txt_dup(cv_token(d, TOK_IDENT));
+		/* A decorated decl's first IDENT is the decorator (`@implements`), not the binding — use the
+		 * binding-name helper; and its `(` is a decorator paren, not a tuple group. (For a plain
+		 * tuple group `pos (x,y) :: T` the binding name IS the first IDENT, so keep cv_token there.) */
+		int decorated = sem_decl_is_decorated(d.node);
+		char *cname = sem_txt_dup(decorated ? sem_binding_name(d) : cv_token(d, TOK_IDENT));
 		ConstDecl *ac = const_decl_create(cname, NULL);
 		ac->decl_type = NULL;
 		ac->type_value = NULL;
 		ac->value = NULL;
 		ac->is_transparent = cst_const_alias_marked(d); /* `name :: alias T` → tier-1 transparent */
-		if (cv_has_token(d, TOK_LPAREN)) {
+		if (!decorated && cv_has_token(d, TOK_LPAREN)) {
 			/* tuple group `name (a, b, …) :: T`: a nominal type alias whose RHS is a TYPE_TUPLE
 			 * built from the parenthesized suffixes, each typed by the shared type after `::`. */
 			CstView memberty = sem_type_at(d, 0);
@@ -5460,22 +5474,35 @@ typedef struct {
 	char *name;
 	const SyntaxNode *root;
 	const char *src;
+	char *filename; /* source path; a `*.i.arche` file is a device datasheet (decls stay global) */
 } SemModule;
 static SemModule g_sem_modules[64];
 static int g_sem_module_count = 0;
 
-void semantic_add_module(const char *name, const SyntaxNode *root, const char *src) {
+/* A device datasheet file: its decls are shared global vocabulary, registered UNPREFIXED (mirror
+ * of lower.c's is_datasheet_file). */
+static int sem_is_datasheet_file(const char *fn) {
+	if (!fn)
+		return 0;
+	size_t L = strlen(fn);
+	return L >= 8 && strcmp(fn + L - 8, ".i.arche") == 0;
+}
+
+void semantic_add_module(const char *name, const SyntaxNode *root, const char *src, const char *filename) {
 	if (g_sem_module_count >= 64 || !name || !root)
 		return;
 	g_sem_modules[g_sem_module_count].name = sem_dupz(name);
 	g_sem_modules[g_sem_module_count].root = root;
 	g_sem_modules[g_sem_module_count].src = src;
+	g_sem_modules[g_sem_module_count].filename = filename ? sem_dupz(filename) : NULL;
 	g_sem_module_count++;
 }
 
 void semantic_reset_modules(void) {
-	for (int i = 0; i < g_sem_module_count; i++)
+	for (int i = 0; i < g_sem_module_count; i++) {
 		free(g_sem_modules[i].name);
+		free(g_sem_modules[i].filename);
+	}
 	g_sem_module_count = 0;
 }
 
@@ -5934,7 +5961,7 @@ static void sem_expand_tuple_groups(AstProgram *prog) {
  * `#foreign { ... }` / `#module { ... }` block regions. */
 static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const char *mod_name, AstProgram *prog,
                                 char ***full, int *fulln, int *fullcap, char ***expset, int *expn, int *expcap,
-                                int exported) {
+                                int exported, int is_datasheet) {
 	Decl *md = cst_build_decl((CstView){node, msrc});
 	if (!md)
 		return;
@@ -5948,8 +5975,9 @@ static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 	 * decl named `net_send` is `net.net_send`. Foreign decls keep their declared name (the C ABI
 	 * symbol) and are NOT renamed; pure-Arche decls are renamed to the qualified identity
 	 * `<mod>.<name>` so two modules' same-named decls stay distinct AND diagnostics show a clean
-	 * qualified name. (`.` is a legal LLVM global-identifier char, so no emission quoting needed.) */
-	if (!is_ext) {
+	 * qualified name. Datasheet (`.i.arche`) decls are shared global vocabulary — NOT renamed, so a
+	 * driver and the device's systems reference them by the one bare name (mirror of lower.c). */
+	if (!is_ext && !is_datasheet) {
 		if (*fulln == *fullcap) {
 			*fullcap = *fullcap ? *fullcap * 2 : 8;
 			*full = realloc(*full, (size_t)*fullcap * sizeof(char *));
@@ -5961,10 +5989,10 @@ static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 			*expcap = *expcap ? *expcap * 2 : 8;
 			*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
 		}
-		/* "<member>=<identity>": the literal member name and the symbol it resolves to. Foreign →
-		 * its C symbol (its own name); pure-Arche → the qualified identity `<mod>.<name>`. */
+		/* "<member>=<identity>": the literal member name and the symbol it resolves to. Foreign /
+		 * datasheet → the bare name (global); pure-Arche → the qualified identity `<mod>.<name>`. */
 		char entry[512];
-		if (is_ext)
+		if (is_ext || is_datasheet)
 			snprintf(entry, sizeof(entry), "%s=%s", nm, nm);
 		else
 			snprintf(entry, sizeof(entry), "%s=%s.%s", nm, mod_name, nm);
@@ -5999,7 +6027,8 @@ static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc
 		found = 1;
 		const SyntaxNode *mr = g_sem_modules[m].root;
 		const char *msrc = g_sem_modules[m].src;
-		int exported = 1; /* band resets per file */
+		int ds = sem_is_datasheet_file(g_sem_modules[m].filename); /* `.i.arche` → decls stay global */
+		int exported = 1;                                          /* band resets per file */
 		for (int j = 0; j < mr->child_count; j++) {
 			if (mr->children[j].tag != SE_NODE)
 				continue;
@@ -6017,7 +6046,7 @@ static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc
 						if (!sem_is_collectible_decl(cn->children[c].as.node->kind))
 							continue;
 						sem_add_module_decl(cn->children[c].as.node, msrc, mod_name, prog, &full, &fulln, &fullcap,
-						                    &expset, &expn, &expcap, child_exp);
+						                    &expset, &expn, &expcap, child_exp, ds);
 					}
 				} else if (!is_foreign) {
 					exported = 0;
@@ -6026,7 +6055,8 @@ static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc
 			}
 			if (!sem_is_collectible_decl(mk))
 				continue;
-			sem_add_module_decl(cn, msrc, mod_name, prog, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported);
+			sem_add_module_decl(cn, msrc, mod_name, prog, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported,
+			                    ds);
 		}
 	}
 	if (!found) {

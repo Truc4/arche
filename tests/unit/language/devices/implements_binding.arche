@@ -1,0 +1,21 @@
+// `@implements` name-mapping: the device `dev2`'s datasheet requires a component `foo`, but this
+// driver wants to call it `bar`. `@implements(dev2.foo)` on the driver's `bar` binds them — the
+// device's `bump` system (which reads `foo`) is rewritten to read `bar`, so it runs over the
+// driver's `Thing { bar }` pool. Structural unification can't do this (foo != bar); only the
+// explicit binding can.
+// RUN: %arche build -o %t %s && %t | grep "implements_ok"
+#import { dev2 fmt }
+
+@implements(dev2.foo)
+bar :: float
+
+Thing :: arche { bar }
+
+Thing[4]
+
+main :: proc() {
+  insert(Thing, 10.0);
+  run dev2.bump; // bump reads `foo` == bound `bar`: 10 + 1 = 11
+  fmt.assert(Thing.bar[0] == 11.0, "@implements binding did not rebind foo -> bar\n");
+  fmt.printf("implements_ok\n");
+}

@@ -197,7 +197,7 @@ static int sem_register_module_file(const char *mod_name, const char *path, cons
 		free(mod_src);
 		return 0;
 	}
-	semantic_add_module(mod_name, mp.cst_root, mod_src);
+	semantic_add_module(mod_name, mp.cst_root, mod_src, path);
 	const SyntaxNode *root = mp.cst_root;
 	const char *src = mod_src;
 	holds_push(holds, mp.cst_root, mod_src); /* keep alive; registry borrows */

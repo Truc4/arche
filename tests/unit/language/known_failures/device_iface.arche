@@ -1,8 +1,0 @@
-// Support device for implements_binding.arche: its system reads a component named `foo`. The
-// driver will name that same component `bar` and bind it via @implements. Not a standalone test.
-// RUN: true
-Particle :: arche { pos :: float, foo :: float }
-
-integrate :: sys (pos, foo) {
-  pos = pos + foo;
-}

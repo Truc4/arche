@@ -1020,7 +1020,41 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser); /* consume ')' */
 			continue;
 		}
-		error(parser, "Unknown decorator (recognized: @allow_pure_proc, @allow(<slug>), @drop(<type>), @intrinsic)");
+		if (cur_ident_is(parser, "implements", 10)) {
+			/* `@implements(<device>.<req>, …)` — driver-side binding: the decorated decl is this
+			 * driver's implementation of each named device requirement. Recorded on the decl as
+			 * tokens; lowering renames each requirement to this decl's name (`foo` → `bar`). */
+			advance(parser); /* consume 'implements' */
+			if (!check(parser, TOK_LPAREN)) {
+				error(parser,
+				      "Expected '(' after @implements — name a device requirement, e.g. @implements(physics.foo)");
+				return 0;
+			}
+			advance(parser); /* consume '(' */
+			do {
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "Expected a device requirement name inside @implements(...)");
+					return 0;
+				}
+				advance(parser); /* requirement leading segment */
+				while (check(parser, TOK_DOT)) {
+					advance(parser); /* '.' */
+					if (!check(parser, TOK_IDENT)) {
+						error(parser, "Expected an identifier after `.` in @implements(...)");
+						return 0;
+					}
+					advance(parser);
+				}
+			} while (match(parser, TOK_COMMA));
+			if (!check(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')' to close @implements(...)");
+				return 0;
+			}
+			advance(parser); /* consume ')' */
+			continue;
+		}
+		error(parser, "Unknown decorator (recognized: @allow_pure_proc, @allow(<slug>), @drop(<type>), @intrinsic, "
+		              "@implements(<device>.<req>, …))");
 		return 0;
 	}
 

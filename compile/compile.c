@@ -124,8 +124,8 @@ static int register_module_file(const char *mod_name, const char *path, const ch
 		free(mod_src);
 		return 0;
 	}
-	lower_add_module(mod_name, mp.cst_root, mod_src);
-	semantic_add_module(mod_name, mp.cst_root, mod_src);
+	lower_add_module(mod_name, mp.cst_root, mod_src, path);
+	semantic_add_module(mod_name, mp.cst_root, mod_src, path);
 	const SyntaxNode *root = mp.cst_root;
 	const char *src = mod_src;
 	mp.cst_root = NULL;
@@ -393,6 +393,11 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	}
 	codegen_generate(codegen_ctx, ir_output);
 	fclose(ir_output);
+	if (codegen_had_error(codegen_ctx)) {
+		/* Codegen already printed the diagnostic; fail the build, don't run the emitted IR. */
+		rc = 1;
+		goto cleanup;
+	}
 	if (!quiet)
 		printf("Generated LLVM IR: %s\n", ir_file);
 

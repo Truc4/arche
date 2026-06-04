@@ -57,8 +57,38 @@ Components are **program-global** and defined exactly once; reference a componen
 
 A device is tested by writing a **driver for it**, inline as a doctest: the doctest sizes the device's shapes, drives its systems, and asserts results. Doctests run under `arche test` and never reach a real driver's build.
 
-## Status / roadmap
+## The datasheet (`.i.arche`) and `@implements`
 
-Implemented and tested (`tests/unit/language/devices/`): qualified pool decls, anonymous-literal unification, cross-module `run device.system`, `#plugin`.
+A device can declare the **components it requires** in a `<name>.i.arche` *datasheet* — these are shared **global** vocabulary (registered unprefixed), so the driver references them by bare name and builds its own shape from them. The device's systems then bind to the driver's shape by column name:
 
-Designed, not yet implemented (see `docs/DEVICE_DRIVER_DECISIONS.md` and `tests/unit/language/known_failures/implements_binding.arche`): the **`.i.arche` datasheet** (a device declaring required components with no owned shape) and the **`@implements` decorator** (a driver binding its *own* differently-named type to a device requirement). These require global cross-module component identity and are a deliberate follow-up.
+```arche
+// physics/physics.i.arche   — datasheet: the components physics requires
+pos :: float
+vel :: float
+```
+
+```arche
+// physics/systems.arche      — physics owns no shape, no storage
+integrate :: sys (pos, vel) { pos = pos + vel; }
+```
+
+```arche
+// main.arche                  — the driver owns the shape, built from physics's components
+#import { physics }
+Thing :: arche { pos, vel, mass :: float }   // references the datasheet's pos/vel + its own mass
+Thing[1000]
+// run physics.integrate over Thing
+```
+
+If the driver wants to call a required component by a **different name**, it binds with `@implements`:
+
+```arche
+@implements(physics.foo)
+bar :: float                  // bar IS physics's foo; physics's systems are rewritten foo -> bar
+```
+
+A `run device.system` where no shape provides the system's components is a build error (not a silent no-op).
+
+## Status
+
+Fully implemented and tested (`tests/unit/language/devices/`): qualified pool decls, anonymous-literal unification, cross-module `run device.system`, `#plugin`, the `.i.arche` datasheet, `@implements` name-mapping, and the unsatisfied-`run` diagnostic. See `docs/DEVICE_DRIVER_DECISIONS.md` for the design decisions.

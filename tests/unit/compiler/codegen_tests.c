@@ -78,8 +78,8 @@ static void register_stdlib_modules(void) {
 			continue;
 		ParseResult pr = parse_source(src);
 		if (pr.cst_root) {
-			lower_add_module(mods[i], pr.cst_root, src);
-			semantic_add_module(mods[i], pr.cst_root, src);
+			lower_add_module(mods[i], pr.cst_root, src, NULL);
+			semantic_add_module(mods[i], pr.cst_root, src, NULL);
 			pr.cst_root = NULL; /* keep the module CST alive past parse_result_free */
 		}
 		parse_result_free(&pr);

@@ -39,6 +39,20 @@ Empirically probing the device/driver model surfaced two distinct shapes it can 
 ## Part 4 — docs (shipped)
 - `docs/devices.md` (the model + what's shipped vs deferred), `docs/tooling.md` (`arche init`), README pointer, this decision log. `WORLDS_PLAN.md` was already removed from the tree (nothing to retire). `docs/GRAMMAR.peg` / `language.md` deeper sections: remaining, low-risk follow-up.
 
+## Model B — Phase A: `.i.arche` datasheet (SHIPPED, green)
+- **Decls in a `*.i.arche` file register global/unprefixed.** Threaded the source filename into `LowerModule`/`SemModule` (was dropped); `hir_add_module_decl`/`sem_add_module_decl` skip the rename `full`-set for datasheet decls so they stay bare, and export them as `name=name` (bare) so both `pos` and `physics.pos` resolve to the one global. Confirmed empirically: a device's `sys(pos,vel)` binds to the driver's `Thing{pos,vel,mass}` by column name with **no binding-logic change** — exactly as the Phase-A research predicted. Test: `devices/device_datasheet.arche` + `devices/libdev/` (datasheet + systems). (autonomous, per approved plan)
+- **Key realization (logged):** Model B's same-named-component case needs *only* global components — no `@implements`. `@implements` (Phase C) is purely the differently-named (`foo`→`bar`) layer.
+
+## Model B — Phase B: diagnostics (SHIPPED, green)
+- **`run <system>` with no shape providing its components is now a hard build error** (was a silent no-op). The matcher already lives in codegen `HIR_STMT_RUN` (`codegen.c:6396`); turned the `; WARNING` into a real stderr error + a `CodegenContext.had_error` flag that `compile.c` checks after `codegen_generate` (codegen returns void, so a flag + `codegen_had_error()` accessor was the minimal propagation). Unknown-system `run` also errors now. Done in codegen (not semantic) because semantic has no system registry and a definition-side check would wrongly fire on imported-but-unused device systems. Tests: `devices/run_unsatisfied.arche`, `devices/datasheet_redefine.arche`.
+
+## Model B — Phase C: `@implements` name-mapping (SHIPPED, green)
+- **`@implements(<device>.<req>, …)` on a driver decl rebinds the device's `req` → the decl's name.** Implemented as a post-inlining substitution that *reuses the rename traversal*: a global `g_impl` map checked first inside `prefixed_dup` (set-independent, so it fires even though datasheet decls aren't in any rename set). The apply pass drops the datasheet requirement decl (the driver's decl is the real definition) and substitutes `req → driver-name` everywhere; sys param names + archetype field names (which the traversal skips, but column binding needs) are substituted explicitly via `subst_name`. **HIR-only** — semantic tolerates the un-substituted device sys (no matching archetype → untyped, no error), and codegen uses the substituted HIR. (autonomous)
+- **Tuple-group vs decorator collision (found + fixed):** `@implements(dev.foo)` looks like a tuple group `implements(dev,foo)` to `build_tgroups` and semantic's const-decl builder. Added a `decl_is_decorated` / `sem_decl_is_decorated` guard (skip tuple-group detection for decorated decls) and switched the semantic const-name to `sem_binding_name` for decorated decls (the first IDENT is the decorator, not the name). This also hardened `@allow`/`@drop` against the same latent confusion. Test: `devices/implements_binding.arche` (promoted from `known_failures/`).
+
+## Model B status: COMPLETE
+The full device/driver system is shipped and green (439 tests). Both models work: Model A (driver uses the device's shape by qualified name) and Model B (driver owns the shape; datasheet shares components globally; `@implements` maps differing names).
+
 ## Remaining (documented, not shipped)
 - **Model B** (datasheet `.i.arche` + `@implements` + global cross-module components) — the deep item; see the scope decision above. Smoke test: `known_failures/implements_binding.arche`.
 - **Archetype in a `#foreign`/`#module` block region** — not yet rejected by the global-only guard (the proc-local case is). Edge case.

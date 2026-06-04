@@ -43,6 +43,7 @@ typedef struct {
 struct CodegenContext {
 	HirProgram *ast;
 	SemanticContext *sem_ctx;
+	int had_error; /* set when codegen hits a hard error (e.g. a `run` no shape can satisfy) */
 
 	/* For tracking allocated values */
 	ValueScope *scopes;
@@ -6375,6 +6376,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		/* Find the system definition */
 		HirSysDecl *sys = find_sys_decl(ctx, system_name);
 		if (!sys) {
+			fprintf(stderr, "Error: `run %s` — unknown system '%s'\n", system_name, system_name);
+			ctx->had_error = 1;
 			buffer_append_fmt(ctx, "  ; ERROR: undefined system '%s'\n", system_name);
 			break;
 		}
@@ -6394,7 +6397,16 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		}
 
 		if (matching_count == 0) {
-			buffer_append_fmt(ctx, "  ; WARNING: no matching archetypes for system '%s'\n", system_name);
+			/* The system reads/writes component columns, but no shape in the program provides all of
+			 * them — running it would be a silent no-op. In the device/driver model a driver must
+			 * define an archetype with the device's required components. Hard error. */
+			fprintf(stderr, "Error: `run %s` — no shape provides the components system '%s' operates on { ",
+			        system_name, system_name);
+			for (int p = 0; p < sys->param_count; p++)
+				fprintf(stderr, "%s%s", p ? ", " : "", sys->params[p] ? sys->params[p]->name : "?");
+			fprintf(stderr, " }; a driver must define an archetype with these components\n");
+			ctx->had_error = 1;
+			buffer_append_fmt(ctx, "  ; ERROR: no matching archetypes for system '%s'\n", system_name);
 			break;
 		}
 
@@ -8061,10 +8073,15 @@ static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys) {
 
 /* ========== PUBLIC API ========== */
 
+int codegen_had_error(const CodegenContext *ctx) {
+	return ctx && ctx->had_error;
+}
+
 CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	CodegenContext *ctx = malloc(sizeof(CodegenContext));
 	ctx->ast = ast;
 	ctx->sem_ctx = sem_ctx;
+	ctx->had_error = 0;
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
 	ctx->value_counter = 0;
