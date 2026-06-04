@@ -10,6 +10,7 @@ SemModel *sem_model_new(void) {
 	m->expr_type = NULL;
 	m->expr_nominal = NULL;
 	m->bind_alias = NULL;
+	m->implicit_move = NULL;
 	m->cap = 0;
 	return m;
 }
@@ -28,6 +29,7 @@ void sem_model_free(SemModel *m) {
 	free(m->expr_type);
 	free(m->expr_nominal);
 	free(m->bind_alias);
+	free(m->implicit_move);
 	free(m);
 }
 
@@ -40,10 +42,12 @@ static void ensure(SemModel *m, uint32_t node_id) {
 	m->expr_type = realloc(m->expr_type, (size_t)newcap * sizeof(const char *));
 	m->expr_nominal = realloc(m->expr_nominal, (size_t)newcap * sizeof(const char *));
 	m->bind_alias = realloc(m->bind_alias, (size_t)newcap * sizeof(uint8_t));
+	m->implicit_move = realloc(m->implicit_move, (size_t)newcap * sizeof(uint8_t));
 	for (int i = m->cap; i < newcap; i++) {
 		m->expr_type[i] = NULL;
 		m->expr_nominal[i] = NULL;
 		m->bind_alias[i] = 0;
+		m->implicit_move[i] = 0;
 	}
 	m->cap = newcap;
 }
@@ -83,4 +87,15 @@ int sem_model_bind_alias(const SemModel *m, uint32_t node_id) {
 	if (!m || (int)node_id >= m->cap)
 		return 0;
 	return m->bind_alias[node_id];
+}
+
+void sem_model_set_implicit_move(SemModel *m, uint32_t node_id) {
+	ensure(m, node_id);
+	m->implicit_move[node_id] = 1;
+}
+
+int sem_model_implicit_move(const SemModel *m, uint32_t node_id) {
+	if (!m || (int)node_id >= m->cap)
+		return 0;
+	return m->implicit_move[node_id];
 }

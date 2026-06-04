@@ -774,6 +774,18 @@ static HirExpr *lower_expr_cst(CstView e) {
 		ax->data.literal.lexeme = cv_dup(e);
 		break;
 	}
+	/* Implicit move: semantic flagged this node (a bare move-only name in an ownership-taking
+	 * position) as an elided `move`. Materialize it as an explicit `move` HIR node so the transfer
+	 * lives in the program, not in codegen's reading of the syntax — codegen then has ONE move path
+	 * (consume the source, suppress its RAII drop). Semantic only flags bare names, so `ax` is never
+	 * already a move/copy; guard anyway. */
+	if (g_lower_model && sem_model_implicit_move(g_lower_model, cv_id(e)) && ax->kind != HIR_EXPR_UNARY) {
+		HirExpr *mv = hir_expr_create(HIR_EXPR_UNARY);
+		mv->data.unary.op = UNARY_MOVE;
+		mv->data.unary.operand = ax;
+		mv->resolved = ax->resolved; /* `move` is transparent — same type as its operand */
+		return mv;
+	}
 	return ax;
 }
 

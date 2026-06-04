@@ -1976,8 +1976,14 @@ static void implicit_move_consume(SemanticContext *ctx, Expression *e) {
 		return;
 	}
 	v->is_consumed = 1;
-	if (e->cst_id)
+	if (e->cst_id) {
 		sem_hints_set_elided_move(ctx->hints, e->cst_id - 1);
+		/* Record the elided move in the lowering model too: lowering materializes an explicit
+		 * `move` HIR node here so codegen sees the transfer in the program (HIR), not by
+		 * re-deriving the rule from syntax. This is what suppresses the source's RAII auto-drop. */
+		if (ctx->model)
+			sem_model_set_implicit_move(ctx->model, e->cst_id - 1);
+	}
 }
 
 /* ========== STATEMENT ANALYSIS ========== */
