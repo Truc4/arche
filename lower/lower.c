@@ -29,11 +29,7 @@ void lower_set_model(const SemModel *m) {
 int hir_parse_int_width(const char *s, int *width, int *is_signed) {
 	if (!s)
 		return 0;
-	if (strcmp(s, "byte") == 0) {
-		*width = 8;
-		*is_signed = 0;
-		return 1;
-	}
+	/* `byte` is a core alias for `u8` (core.arche) — erased to `u8` before here, so no special case. */
 	if (s[0] != 'i' && s[0] != 'u')
 		return 0;
 	int sign = (s[0] == 'i') ? 1 : 0;

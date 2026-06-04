@@ -10,6 +10,9 @@
 // (Nothing a user calls by name belongs here; future compiler-emitted helpers — panic/bounds/eq —
 // would join `streq`, never user library code.)
 
+// `byte` is a raw unsigned 8-bit value — a core alias over the canonical `u8` primitive.
+byte :: u8
+
 // Boolean readability constants. Arche has no `bool` primitive; comparisons yield int 0/1, so these
 // are just names for those values (`running := true`, `if (ok == false)`).
 bool :: i8
