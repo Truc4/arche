@@ -1,7 +1,7 @@
 // A float const used where an int is required is a compile error — arche has no implicit numeric
 // conversion, so binding the float `PI` to an `int` variable is caught (not silently miscompiled).
-// Tycheck (E0200) reports it as `binding: expected 'int', got 'float'`.
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'int', got 'float'" %t.out
+// Tycheck (E0200) reports it as `binding: expected 'i32', got 'float'`.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'i32', got 'float'" %t.out
 #import { fmt }
 PI :: 3.14
 main :: proc() {

@@ -121,6 +121,7 @@ ConstDecl *const_decl_create(char *name, Expression *value) {
 	constant->value = value;
 	constant->type_value = NULL;
 	constant->decl_type = NULL;
+	constant->is_transparent = 0;
 	return constant;
 }
 

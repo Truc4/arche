@@ -1,7 +1,7 @@
 // E0200: a TYPED variable (declared `: str`) passed where the function expects
 // `int` is rejected. Distinct from the literal case — literals are flexible
 // (Rust/Go untyped-constant model); typed variables are strict.
-// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 argument 1 of 'add': expected 'int', got 'str'"
+// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 argument 1 of 'add': expected 'i32', got 'str'"
 #import { fmt }
 add :: func(a: int, b: int) -> int {
   return a + b;

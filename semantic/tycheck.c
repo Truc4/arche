@@ -112,6 +112,11 @@ static TypeId tyid_from_name(TypeArena *arena, SemanticContext *ctx, const char 
 		n = "str";
 	else if (strcmp(n, "Void") == 0)
 		n = "void";
+	/* Distinct-by-default: a tier-2 subtype alias interns by its OWN name — a distinct TypeId, NOT
+	 * collapsed to its backing. Transparent (tier-1) aliases fall through to resolve-and-intern, so
+	 * `int`/`byte`/`bool`/enums stay identical to their backing. */
+	if (ctx && semantic_is_type_alias(ctx, n) && !semantic_alias_is_transparent(ctx, n))
+		return tyid_of_nominal(arena, n);
 	const char *r = ctx ? semantic_resolve_type_alias(ctx, n) : n;
 	if (!r || !r[0])
 		return TYID_UNKNOWN;
@@ -178,7 +183,7 @@ static TypeId tyid_from_typeref(TypeArena *arena, SemanticContext *ctx, const Ty
  *   - char literal `'x'` flows into char and any integer (codepoint as int)
  *   - float literal `1.5` flows into float (only)
  * For named-type expected (an archetype, alias, or nominal), no relaxation. */
-static int check_literal_fits(const TypeArena *arena, Expression *e, TypeId expected) {
+static int check_literal_fits(const TypeArena *arena, SemanticContext *ctx, Expression *e, TypeId expected) {
 	if (!e || e->type != EXPR_LITERAL)
 		return 0;
 	const char *lex = e->data.literal.lexeme;
@@ -216,6 +221,21 @@ static int check_literal_fits(const TypeArena *arena, Expression *e, TypeId expe
 		tyid_display(arena, expected, want, sizeof(want));
 		if (is_width_int_name(want) && (is_int_lit || is_char_lit))
 			return 1;
+		/* A tier-2 subtype is created from a same-backing literal without a cast (`d: meters = 5.0`,
+		 * `c: count = 10`): a literal carries no nominal identity, so it adopts the subtype directly.
+		 * Check the literal against the subtype's ultimate backing. */
+		if (ctx && semantic_is_type_alias(ctx, want)) {
+			const char *b = semantic_resolve_type_alias(ctx, want);
+			if (b) {
+				if (is_int_lit && (strcmp(b, "int") == 0 || strcmp(b, "float") == 0 || strcmp(b, "char") == 0 ||
+				                   is_width_int_name(b)))
+					return 1;
+				if (is_char_lit && (strcmp(b, "char") == 0 || strcmp(b, "int") == 0 || is_width_int_name(b)))
+					return 1;
+				if (is_float_lit && strcmp(b, "float") == 0)
+					return 1;
+			}
+		}
 	}
 	return 0;
 }
@@ -233,8 +253,16 @@ static TypeId synth_call(TyCtx *cx, Expression *e) {
 		return TYID_UNKNOWN;
 	const char *name = e->data.call.callee->data.name.name;
 	CalleeRef cr = find_callee(cx->prog, name);
-	if (cr.kind == CALLEE_NONE)
+	if (cr.kind == CALLEE_NONE) {
+		/* `T(x)` type conversion (`meters(f)`, `float(d)`, `i64(n)`): the callee names a type, so the
+		 * expression's type IS that type. The argument's convertibility isn't re-checked here (the
+		 * value erases to a shared backing at codegen). */
+		int is_prim = strcmp(name, "int") == 0 || strcmp(name, "float") == 0 || strcmp(name, "char") == 0 ||
+		              strcmp(name, "str") == 0 || strcmp(name, "void") == 0 || is_width_int_name(name);
+		if (is_prim || (cx->ctx && semantic_is_type_alias(cx->ctx, name)))
+			return tyid_from_name(cx->arena, cx->ctx, name);
 		return TYID_UNKNOWN; /* builtin or undefined — quiet here */
+	}
 
 	Parameter **params;
 	int param_count;
@@ -308,6 +336,17 @@ static TypeId tyid_of_callee(TyCtx *cx, CalleeRef cr) {
 	return tyid_of_func(cx->arena, pbuf, pc, rbuf, rc, is_proc);
 }
 
+/* The model type recorded for an expression, preferring its distinct tier-2 subtype name (so the
+ * typechecker enforces distinctness) over the resolved backing that lowering reads. */
+static const char *model_type_of(TyCtx *cx, const Expression *e) {
+	if (!cx->model || !e->cst_id)
+		return NULL;
+	const char *nom = sem_model_expr_nominal(cx->model, e->cst_id - 1);
+	if (nom)
+		return nom;
+	return sem_model_expr_type(cx->model, e->cst_id - 1);
+}
+
 static TypeId synth(TyCtx *cx, Expression *e) {
 	if (!e)
 		return TYID_UNKNOWN;
@@ -357,11 +396,28 @@ static TypeId synth(TyCtx *cx, Expression *e) {
 		case OP_AND:
 		case OP_OR:
 			return tyid_of_prim(cx->arena, PRIM_INT);
-		default:
+		default: {
+			/* A same-backing operator is exempt from distinctness and takes the LEFT operand's
+			 * nominal type — so `meters + seconds` and `meters + plainFloat` are both `meters`,
+			 * and the result is rejected only where a DIFFERENT subtype is later expected. A literal
+			 * operand carries no nominal, so the non-literal side wins. */
+			if (cx->ctx) {
+				char ln[64];
+				char rn[64];
+				tyid_display(cx->arena, lt, ln, sizeof(ln));
+				tyid_display(cx->arena, rt, rn, sizeof(rn));
+				if (tyid_kind(cx->arena, lt) == TYK_NOMINAL && semantic_is_type_alias(cx->ctx, ln) &&
+				    !semantic_alias_is_transparent(cx->ctx, ln))
+					return lt;
+				if (tyid_kind(cx->arena, rt) == TYK_NOMINAL && semantic_is_type_alias(cx->ctx, rn) &&
+				    !semantic_alias_is_transparent(cx->ctx, rn))
+					return rt;
+			}
 			if (tyid_equal(lt, tyid_of_prim(cx->arena, PRIM_FLOAT)) ||
 			    tyid_equal(rt, tyid_of_prim(cx->arena, PRIM_FLOAT)))
 				return tyid_of_prim(cx->arena, PRIM_FLOAT);
 			return lt;
+		}
 		}
 	}
 	case EXPR_INDEX: {
@@ -381,8 +437,8 @@ static TypeId synth(TyCtx *cx, Expression *e) {
 					sem_emit_not_indexable(cx->ctx, e->loc, bn);
 			}
 		}
-		if (cx->model && e->cst_id) {
-			const char *s = sem_model_expr_type(cx->model, e->cst_id - 1);
+		{
+			const char *s = model_type_of(cx, e);
 			if (s)
 				return tyid_from_name(cx->arena, cx->ctx, s);
 		}
@@ -397,16 +453,19 @@ static TypeId synth(TyCtx *cx, Expression *e) {
 			if (cr.kind != CALLEE_NONE)
 				return tyid_of_callee(cx, cr);
 		}
-		/* Bridge to semantic.c's resolved types: every expression with a cst_id has
-		 * its type recorded in SemModel during analyze_expression. We map the
-		 * string back to a TypeId. */
-		if (cx->model && e->cst_id) {
-			const char *s = sem_model_expr_type(cx->model, e->cst_id - 1);
+		/* Bridge to semantic.c's resolved types: every expression with a cst_id has its type recorded
+		 * in SemModel during analyze_expression — preferring its distinct tier-2 subtype name. */
+		{
+			const char *s = model_type_of(cx, e);
 			if (s)
 				return tyid_from_name(cx->arena, cx->ctx, s);
 		}
 		return TYID_UNKNOWN;
 	}
+	case EXPR_UNARY:
+		/* `move x` / `copy x` / borrow are type-transparent — the value's type is the operand's.
+		 * Lets a `move a` argument carry `a`'s distinct subtype to the call-arg check. */
+		return synth(cx, e->data.unary.operand);
 	default:
 		/* Phase B continues: encode the rest of the rulebook (EXPR_NAME via
 		 * symbol-table bridge, EXPR_FIELD, EXPR_INDEX, EXPR_BINARY, …). Until then,
@@ -454,20 +513,65 @@ static int prim_binop_compatible(const TypeArena *arena, TypeId a, TypeId b) {
 	return 1;
 }
 
+/* Distinct-by-default subtype compatibility at an assignment/param/return boundary. `got` and
+ * `expected` are known unequal. Returns:
+ *   1  → assignable: a tier-2 subtype value flows into its own backing slot (N is-a B).
+ *   0  → reject: anything into a tier-2 subtype slot that is not the same subtype — a bare backing
+ *        (B→N) or a sibling (M→N) needs an explicit `N(x)` conversion.
+ *  -1  → not a subtype case; defer to the primitive coercion rules. */
+static int subtype_check(TyCtx *cx, TypeId got, TypeId expected) {
+	if (!cx->ctx)
+		return -1;
+	char gname[64];
+	char ename[64];
+	tyid_display(cx->arena, got, gname, sizeof(gname));
+	tyid_display(cx->arena, expected, ename, sizeof(ename));
+	int e_sub = semantic_is_type_alias(cx->ctx, ename) && !semantic_alias_is_transparent(cx->ctx, ename);
+	int g_sub = semantic_is_type_alias(cx->ctx, gname) && !semantic_alias_is_transparent(cx->ctx, gname);
+	if (e_sub) {
+		const char *eb = semantic_resolve_type_alias(cx->ctx, ename);
+		if (eb && strcmp(eb, "opaque") == 0) {
+			/* An opaque cell is unforgeable from Arche — the ONLY way to obtain one is a foreign call
+			 * that hands back a raw opaque/int. So a bare opaque (or its int representation) flows into
+			 * an opaque-backed subtype slot freely; only a DISTINCT opaque sibling (file vs socket) is
+			 * rejected, keeping handles non-interchangeable. */
+			if (g_sub)
+				return 0; /* a different opaque handle — distinct, reject */
+			return 1;     /* bare opaque / int forge — allow */
+		}
+		return 0; /* primitive-backed subtype: B→N and sibling→N need an explicit `N(x)` conversion */
+	}
+	if (g_sub) {
+		const char *gb = semantic_resolve_type_alias(cx->ctx, gname);
+		if (gb && strcmp(gb, ename) == 0)
+			return 1; /* N -> B : a subtype is usable as its backing */
+		/* An opaque handle is usable as its raw int/pointer representation — passed to a syscall i64
+		 * arg, compared against 0, etc. (mirrors the bare-opaque↔int leniency below). */
+		if (gb && strcmp(gb, "opaque") == 0 &&
+		    (strcmp(ename, "opaque") == 0 || strcmp(ename, "int") == 0 || strcmp(ename, "char") == 0 ||
+		     is_width_int_name(ename)))
+			return 1;
+	}
+	return -1;
+}
+
 static void check(TyCtx *cx, Expression *e, TypeId expected, const char *where) {
 	if (!e || tyid_is_unknown(expected))
 		return;
 	/* Untyped-literal flexibility: an integer literal fits any int-family type,
 	 * a char literal fits char or int, a float literal fits float. Bypass the
 	 * stricter equality check below. */
-	if (check_literal_fits(cx->arena, e, expected))
+	if (check_literal_fits(cx->arena, cx->ctx, e, expected))
 		return;
 	TypeId got = synth(cx, e);
 	if (tyid_is_unknown(got))
 		return; /* fail-open: rule not encoded yet for this shape */
 	if (tyid_equal(got, expected))
 		return;
-	if (prim_silently_compatible(cx->arena, got, expected))
+	int sub = subtype_check(cx, got, expected);
+	if (sub == 1)
+		return;
+	if (sub != 0 && prim_silently_compatible(cx->arena, got, expected))
 		return;
 	char want[128];
 	char have[128];

@@ -10,9 +10,18 @@
 // (Nothing a user calls by name belongs here; future compiler-emitted helpers — panic/bounds/eq —
 // would join `streq`, never user library code.)
 
-// Boolean readability constants. Arche has no `bool` primitive; comparisons yield int 0/1, so these
-// are just names for those values (`running := true`, `if (ok == false)`).
-bool :: i8
+// `i32` is the canonical 32-bit integer; `int` is a TRANSPARENT (tier-1) alias of it — the same
+// type, freely interchangeable. Diagnostics read `i32` (the primary name).
+int :: alias i32
+
+// `byte` is a raw unsigned 8-bit value — a TRANSPARENT (tier-1) alias over the canonical `u8`
+// primitive: `byte` and `u8` are the same type, freely interchangeable.
+byte :: alias u8
+
+// Boolean readability constants. Arche has no `bool` primitive; comparisons yield int 0/1, so `bool`
+// is a TRANSPARENT (tier-1) alias of `i8` — interchangeable with the int family (`running := true`,
+// `if (ok == false)`). Distinct-by-default would otherwise split it from its backing.
+bool :: alias i8
 true: bool: 1
 false: bool: 0
 

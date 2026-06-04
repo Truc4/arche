@@ -107,6 +107,8 @@ typedef struct {
 	TypeRef *type_value; /* set when the RHS is a type form (e.g. a tuple) — a nominal type alias */
 	TypeRef *decl_type;  /* the explicit `T` in `name : T : value` (the declared meta/type); NULL
 	                        for the elided `name :: value` form. `T == TYPE_TYPE` marks an alias. */
+	int is_transparent;  /* `name :: alias T` — tier-1 transparent alias (same type as backing).
+	                        0 (default) is the tier-2 distinct subtype. */
 } ConstDecl;
 
 struct Decl {
@@ -167,6 +169,10 @@ typedef enum {
 struct TypeRef {
 	TypeKind kind;
 	SourceLoc loc;
+	/* TYPE_NAME only: 1 if the alias declaration was marked `:: alias T` (tier-1, transparent —
+	 * same identity as the backing). 0 (default) is the tier-2 subtype: a distinct nominal type
+	 * usable as its backing. Ignored for non-name kinds. */
+	int is_transparent;
 	union {
 		char *name;
 
@@ -342,6 +348,7 @@ typedef struct {
 	int is_const;        /* 1 = an immutable local constant (`k :: e` / `k : T : e`) */
 	TypeRef *type_value; /* the type RHS of a `k : type : T` local type alias, else NULL */
 	int is_type_alias;   /* set by semantic: this const's RHS denotes a type → erased, no runtime */
+	int is_transparent;  /* `k :: alias T` — tier-1 transparent local alias; 0 = tier-2 subtype */
 } BindStmt;
 
 typedef struct {

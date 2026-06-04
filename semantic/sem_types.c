@@ -263,7 +263,7 @@ static const char *prim_name(PrimKind p) {
 	case PRIM_BOOL:
 		return "bool";
 	case PRIM_INT:
-		return "int";
+		return "i32"; /* `i32` is the canonical 32-bit integer; `int` is a transparent alias of it */
 	case PRIM_FLOAT:
 		return "float";
 	case PRIM_CHAR:

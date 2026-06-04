@@ -1,0 +1,14 @@
+// Core's `int`/`byte`/`bool` are tier-1 transparent aliases (`int :: alias i32`, `byte :: alias u8`,
+// `bool :: alias i8`), so they interchange with their backing freely AND keep the int<->i32<->i64
+// width-coercion pool. Prints v=5. Guards that making USER aliases distinct does NOT make the core
+// numeric names distinct. (GREEN today; must STAY green.)
+// RUN: %arche build -o %t %s && %t | grep "v=5"
+#import { fmt }
+main :: proc() {
+  x: int = 5;
+  y: i32 = x; // int <-> i32 transparent
+  z: byte = 200;
+  w: u8 = z; // byte <-> u8 transparent
+  ok: bool = true;
+  fmt.printf("v=%d wb=%d ok=%d\n", y, w, ok);
+}
