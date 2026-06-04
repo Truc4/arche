@@ -7,9 +7,9 @@ main :: proc() {
   os.open("/tmp/arche_raw_io.txt", 0)(fd:);
   if (fd > 0) {
     buf: char[64];
-    os.read(fd, buf, 64)(buf, n:);
+    os.read(fd, buf, 64)(v:);
     os.close(fd);
-    if (n > 0) {
+    if (v.length > 0) {
       fmt.print("read ok\n");
     }
   }

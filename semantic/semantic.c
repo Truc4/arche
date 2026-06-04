@@ -2083,6 +2083,27 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 			}
 		}
 
+		/* W0011 inout_redundant_arg: `f(buf)(buf)` repeats the buffer in an in-out in-slot. The `_`
+		 * form makes the shadow explicit — `f(_)(buf)`. Fire only when an in-arg NAME equals an
+		 * out-target NAME at an in-out param position (same buffer in both lists). */
+		if (mb_callee_proc && stmt->data.multi_bind.value && stmt->data.multi_bind.value->type == EXPR_CALL) {
+			Expression *callx = stmt->data.multi_bind.value;
+			for (int i = 0; i < callx->data.call.arg_count; i++) {
+				Expression *a = callx->data.call.args[i];
+				if (!a || a->type != EXPR_NAME || !a->data.name.name || strcmp(a->data.name.name, "_") == 0)
+					continue;
+				if (!proc_param_is_inout(mb_callee_proc, i))
+					continue;
+				for (int t = 0; t < stmt->data.multi_bind.target_count; t++) {
+					if (stmt->data.multi_bind.targets[t].name &&
+					    strcmp(stmt->data.multi_bind.targets[t].name, a->data.name.name) == 0) {
+						sem_emit_lint_inout_redundant_arg(ctx, a->loc, a->data.name.name);
+						break;
+					}
+				}
+			}
+		}
+
 		/* Then bind the targets. A new target (`x` / `x:`) introduces a FRESH binding that
 		 * shadows any same-named one — so `buf := f(move buf)` rebinds the moved buffer with
 		 * no special-casing. An existing target (assignment-style) must be declared and live;
@@ -2800,7 +2821,18 @@ static int body_has_side_effects(SemanticContext *ctx, Statement **stmts, int co
 static const char *func_purity_body(SemanticContext *ctx, Statement **stmts, int count);
 
 static void lint_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
-	if (!proc || proc->is_extern || proc->allow_pure_proc)
+	if (!proc || proc->is_extern)
+		return; /* #foreign procs are exempt — in-out IS the C-ABI idiom there. */
+
+	/* W0012 inout_param_shadow: a non-foreign proc with an in-out param (an out-param shadowing the
+	 * in-param of the same name). The in-out idiom is legitimate ONLY for `#foreign` procs (C-ABI
+	 * alignment); a pure-arche proc should hand back a fresh out-only result instead. */
+	for (int i = 0; i < proc->param_count; i++)
+		if (proc_param_is_inout(proc, i))
+			sem_emit_lint_inout_param_shadow(
+			    ctx, proc->loc, proc->params[i] && proc->params[i]->name ? proc->params[i]->name : "<param>");
+
+	if (proc->allow_pure_proc)
 		return;
 
 	/* A proc taking a proc-typed callback param is inherently action-shaped: it
@@ -2814,13 +2846,15 @@ static void lint_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	if (func_purity_body(ctx, proc->statements, proc->statement_count) != NULL)
 		return;
 
-	/* Pure body. If it produces outputs it computes something — it should be a `func` (procs are
-	 * for effects). If it has no outputs, it's a no-op proc (does nothing observable) — flag for
-	 * removal. The purity test is the SAME predicate `enforce_func_purity` uses, so "could be a
-	 * func" means exactly "would compile as a func". */
-	if (proc->out_param_count > 0) {
+	/* Pure body. A `func` returns EXACTLY ONE value, so only a SINGLE-out pure proc could be a func;
+	 * a multi-out pure proc is legitimately a (multi-return) proc — no lint. `main` is the entry point,
+	 * never nudged toward `func`. A zero-out pure proc does nothing observable — flag for removal. The
+	 * purity test is the SAME predicate enforce_func_purity uses, so "could be a func" means exactly
+	 * "would compile as a func". */
+	int is_main = proc->name && strcmp(proc->name, "main") == 0;
+	if (proc->out_param_count == 1 && !is_main) {
 		sem_emit_lint_proc_could_be_func(ctx, proc->loc, proc->name ? proc->name : "<unknown>");
-	} else {
+	} else if (proc->out_param_count == 0) {
 		sem_emit_lint_proc_no_effect(ctx, proc->loc, proc->name ? proc->name : "<unknown>");
 	}
 }

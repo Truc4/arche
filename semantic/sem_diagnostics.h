@@ -149,6 +149,8 @@ typedef enum {
 	SEM_LINT_func_impure,
 	SEM_LINT_unused_local,
 	SEM_LINT_unused_use,
+	SEM_LINT_inout_redundant_arg,
+	SEM_LINT_inout_param_shadow,
 
 	SEM_DIAG_KIND_COUNT
 } SemDiagKind;
@@ -316,5 +318,7 @@ SemDiag *sem_emit_lint_proc_no_effect(SemanticContext *ctx, SourceLoc loc, const
 SemDiag *sem_emit_lint_func_impure(SemanticContext *ctx, SourceLoc loc, const char *name, const char *reason);
 SemDiag *sem_emit_lint_unused_local(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_unused_use(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_lint_inout_redundant_arg(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_lint_inout_param_shadow(SemanticContext *ctx, SourceLoc loc, const char *name);
 
 #endif /* SEM_DIAGNOSTICS_H */

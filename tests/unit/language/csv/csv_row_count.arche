@@ -6,10 +6,10 @@ main :: proc() {
   io.skip_header(fd);
   rows := 0;
   buf: char[65536];
-  io.read_chunk(fd, buf, 65536)(buf, n:);
+  io.read_chunk(fd, buf, 65536)(v:);
   pos := 0;
-  for (; pos < n;) {
-    if (buf[pos] == 10) {
+  for (; pos < v.length;) {
+    if (v[pos] == 10) {
       rows = rows + 1;
     }
     pos = pos + 1;

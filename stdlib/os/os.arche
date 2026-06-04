@@ -28,14 +28,19 @@ argv :: proc(i: int)(out: char[]) {
   )
 }
 // Raw fd I/O — thin syscall wrappers (x86-64 Linux), no libc. Read-only buffers (`write`/`open`
-// path) are plain borrows; a filled buffer (`read`) is in-out (handed back through the out-list).
+// path) are plain borrows; `read` lends `buf` and hands back a slice VIEW of the bytes read (the
+// count travels on `.length`) — out-only, no in-out shadow.
 open :: proc(path: char[], flags: int)(fd: int) {
   syscall(2, path, flags, 0, 0, 0, 0)(r:); // SYS_open(path, flags, mode=0)
   fd = i32(r);
 }
-read :: proc(fd: int, buf: char[], len: int)(buf: char[], n: int) {
+read :: proc(fd: int, buf: char[], len: int)(out: char[]) {
   syscall(0, fd, buf, len, 0, 0, 0)(r:); // SYS_read(fd, buf, len)
-  n = i32(r);
+  n := i32(r);
+  if (n < 0) {
+    n = 0;
+  }
+  out = buf[0: n];
 }
 write :: proc(fd: int, buf: char[], len: int) {
   syscall(1, fd, buf, len, 0, 0, 0)(_r:); // SYS_write(fd, buf, len)

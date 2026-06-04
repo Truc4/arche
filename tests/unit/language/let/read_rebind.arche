@@ -3,11 +3,11 @@
 main :: proc() {
   io.fopen_read("../../../../../tests/fixtures/transactions.csv")(fd:);
   buf: char[256];
-  io.fread(fd, buf, 256)(n1:);
-  fmt.printf("first read: %d bytes\n", n1);
-  io.fread(fd, buf, 256)(n2:);
-  fmt.printf("second read: %d bytes\n", n2);
-  if (n2 > 0) {
+  io.fread(fd, buf, 256)(v1:);
+  fmt.printf("first read: %d bytes\n", v1.length);
+  io.fread(fd, buf, 256)(v2:);
+  fmt.printf("second read: %d bytes\n", v2.length);
+  if (v2.length > 0) {
     fmt.printf("rebind ok\n");
   }
   io.fclose(move fd);

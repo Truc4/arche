@@ -11,12 +11,12 @@ load_csv :: proc(own path: char[]) {
   buf: char[256];
   price_str: char[32];
   qty_str: char[32];
-  io.fread(fd, buf, 256)(buf, total_n:);
+  io.fread(fd, buf, 256)(data:);
   io.fclose(move fd);
   idx := 0;
   pos := 0;
   line_start := 0;
-  for (; pos < total_n;) {
+  for (; pos < data.length;) {
     if (buf[pos] == '\n') {
       line_start = pos + 1;
       pos = pos + 1;
@@ -25,11 +25,11 @@ load_csv :: proc(own path: char[]) {
     pos = pos + 1;
   }
   for (; idx < 3;) {
-    if (line_start >= total_n) {
+    if (line_start >= data.length) {
       break;
     }
     line_end := line_start;
-    for (; line_end < total_n;) {
+    for (; line_end < data.length;) {
       if (buf[line_end] == '\n') {
         break;
       }
