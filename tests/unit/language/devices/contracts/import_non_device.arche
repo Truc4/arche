@@ -1,0 +1,11 @@
+// RULE (NOT yet enforced — this test is EXPECTED TO FAIL until it is):
+//   You can only `#import` a DEVICE. A device is a module with a declared interface (a `.i.arche`
+//   datasheet). `plainmod` has no datasheet, so it is not a device, so importing it must be an error.
+//
+// Today the import succeeds, no error is emitted, so the grep below finds nothing and the test FAILS.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "not a device|only devices|no datasheet|no interface|is not a device" %t.out
+#import { plainmod }
+
+main :: proc() {
+  _v := plainmod.greet();
+}

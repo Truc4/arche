@@ -1,0 +1,18 @@
+// RULE (NOT yet enforced — EXPECTED TO FAIL until it is):
+//   A device must stick to its contract. Every PUBLIC decl in a device's implementation must be
+//   declared in its `.i.arche` interface. `leakdev` exposes `handle :: opaque` (public) which is not
+//   in leakdev.i.arche, so a build that imports leakdev must error on the undeclared public surface.
+//
+// Today the program builds with no such check, so the grep finds no error and the test FAILS.
+// (grep requires an `Error:` line so it can't be fooled by the output path containing "contract".)
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "error.*(contract|interface|datasheet|undeclared|leak|exposes|outside)" %t.out
+#import { leakdev }
+
+Thing :: arche { val }    // references the datasheet's global `val`
+
+Thing[2]
+
+main :: proc() {
+  insert(Thing, 1.0);
+  run leakdev.bump;
+}

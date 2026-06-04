@@ -1,0 +1,10 @@
+// leakdev's implementation. `bump` is its behavior (over the contract's `val`). BUT `handle :: opaque`
+// is a top-level PUBLIC type that is NOT in leakdev's contract (leakdev.i.arche) — a contract
+// violation: the device exposes public surface it never declared. (This mirrors net.arche's
+// top-level public `socket :: opaque`.) Support file.
+// RUN: true
+bump :: sys (val) {
+  val = val + 1.0;
+}
+
+handle :: opaque
