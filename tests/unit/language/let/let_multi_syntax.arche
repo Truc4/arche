@@ -3,6 +3,7 @@
 // `f(move x)(x:)` kill-and-rebind form: `move` kills the in-binding, the `x:` out-arg mints a
 // fresh one (you can't reuse a killed binding, so the out-arg must be `x:`, not bare `x`).
 #import { str fmt }
+
 fill_two :: proc(own buf1: char[32], own buf2: char[32])(buf1: char[32], buf2: char[32], n: int) {
   buf1 := str.strcopy(move buf1, "test1");
   buf2 := str.strcopy(move buf2, "test2");
@@ -13,5 +14,10 @@ main :: proc() {
   x: char[32];
   y: char[32];
   fill_two(move x, move y)(x:, y:, n:);
+  // `strcopy` is length-carried — it writes the 5 content bytes but no NUL, and the fixed `char[32]`
+  // buffers are otherwise uninitialized. Terminate at the content length before the libc `%s` (which
+  // scans to a NUL); without this, `%s` reads past "test1"/"test2" into stack garbage (CI-dependent).
+  x[5] = 0;
+  y[5] = 0;
   fmt.printf("x=%s y=%s n=%d\n", x, y, n);
 }
