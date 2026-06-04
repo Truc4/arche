@@ -690,10 +690,33 @@ static void pop_scope(SemanticContext *ctx) {
 			    !drop_dtor_for(ctx, var_opaque_type_name(ctx, v))) {
 				sem_emit_opaque_not_consumed(ctx, v->loc, v->name);
 			}
-			/* W0004 unused_local: warn for non-param locals never read. Names starting
-			 * with '_' opt out (rust convention). Opaque locals can be unused (the
-			 * must-consume above catches them); we suppress to avoid double-firing. */
-			if (!v->is_param && !v->is_referenced && v->name && v->name[0] != '_' && !var_is_opaque(ctx, v)) {
+			/* W0004 unused_local: warn for non-param locals never read. Exemptions: names starting
+			 * with '_' (rust convention); a `move`d/consumed binding (handing it off IS a use); a
+			 * binding whose name is an OUT-PARAM of the enclosing proc (the kill-and-rebind form
+			 * `buf := f(move buf)` produces such a local that is the proc's OUTPUT, not dead); and a
+			 * binding SHADOWED by a later same-named one in this scope — the original of a kill-and-
+			 * rebind `f(move x)(x:)` is replaced, not unused. Opaque locals are handled by the
+			 * must-consume rule above (suppress to avoid double-firing). */
+			int is_outparam_name = 0;
+			if (ctx->current_proc && v->name) {
+				for (int op = 0; op < ctx->current_proc->out_param_count; op++) {
+					const char *opn = ctx->current_proc->out_params[op]->name;
+					if (opn && strcmp(opn, v->name) == 0) {
+						is_outparam_name = 1;
+						break;
+					}
+				}
+			}
+			int is_shadowed = 0;
+			if (v->name) {
+				for (int j = i + 1; j < scope->var_count; j++)
+					if (scope->vars[j]->name && strcmp(scope->vars[j]->name, v->name) == 0) {
+						is_shadowed = 1;
+						break;
+					}
+			}
+			if (!v->is_param && !v->is_referenced && !v->is_consumed && !is_outparam_name && !is_shadowed && v->name &&
+			    v->name[0] != '_' && !var_is_opaque(ctx, v)) {
 				sem_emit_lint_unused_local(ctx, v->loc, v->name);
 			}
 		}
@@ -3123,9 +3146,9 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 		analyze_statement(ctx, proc->statements[i]);
 	}
 	ctx->in_body = 0;
-	ctx->current_proc = prev_proc;
 
-	pop_scope(ctx);
+	pop_scope(ctx); /* with current_proc still = proc, so the unused-local lint can see its out-params */
+	ctx->current_proc = prev_proc;
 
 	/* No flow check: an unwritten out-param is fine — out slots are zero-initialized before the
 	 * call (a fresh `name:` is zero-stored; an existing place is already initialized), so a proc
