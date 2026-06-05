@@ -89,18 +89,18 @@ const char *arche_resource_dir(ArcheResource which) {
 		return cache[i];
 	}
 
-	/* 3. exe-relative install layout: <bindir>/../lib/arche/<subdir>, if present */
-	char exe[1024];
+	/* 3. exe-relative install layout: <bindir>/../lib/arche/<subdir>, if present. The bindir is
+	 * bounded well under a cache slot so the joined path provably fits (no truncation); probing
+	 * writes straight into cache[i], which step 4 overwrites if this candidate doesn't resolve. */
+	char exe[640];
 	ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
 	if (n > 0) {
 		exe[n] = '\0';
 		char *slash = strrchr(exe, '/');
 		if (slash) {
-			*slash = '\0'; /* exe now = bindir */
-			char cand[1024];
-			snprintf(cand, sizeof(cand), "%s/../lib/arche/%s", exe, res_subdir(which));
-			if (dir_exists(cand)) {
-				snprintf(cache[i], sizeof(cache[i]), "%s", cand);
+			*slash = '\0'; /* exe now = bindir (≤639) + "/../lib/arche/" (14) + subdir (≤7) ≪ 1024 */
+			snprintf(cache[i], sizeof(cache[i]), "%s/../lib/arche/%s", exe, res_subdir(which));
+			if (dir_exists(cache[i])) {
 				cached[i] = 1;
 				return cache[i];
 			}

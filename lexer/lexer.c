@@ -34,7 +34,7 @@ static char advance(Lexer *lexer) {
 	return c;
 }
 
-static Token make_token(Lexer *lexer, TokenKind kind, const char *start, size_t length, int line, int column) {
+static Token make_token(TokenKind kind, const char *start, size_t length, int line, int column) {
 	Token tok;
 	tok.kind = kind;
 	tok.start = start;
@@ -91,7 +91,7 @@ static Token lex_comment(Lexer *lexer) {
 		advance(lexer);
 	}
 
-	return make_token(lexer, TOK_COMMENT, start, (size_t)(lexer->cur - start), line, column);
+	return make_token(TOK_COMMENT, start, (size_t)(lexer->cur - start), line, column);
 }
 
 /* Doc-comment classifiers — see lexer.h. Pure text predicates over a comment
@@ -130,7 +130,7 @@ static Token lex_block_comment(Lexer *lexer) {
 		advance(lexer);
 	}
 
-	return make_token(lexer, TOK_COMMENT, start, (size_t)(lexer->cur - start), line, column);
+	return make_token(TOK_COMMENT, start, (size_t)(lexer->cur - start), line, column);
 }
 
 static int is_ident_start(char c) {
@@ -213,7 +213,7 @@ static Token lex_identifier(Lexer *lexer) {
 
 	size_t length = (size_t)(lexer->cur - start);
 	TokenKind kind = keyword_kind(start, length);
-	return make_token(lexer, kind, start, length, line, column);
+	return make_token(kind, start, length, line, column);
 }
 
 static Token lex_number(Lexer *lexer) {
@@ -234,7 +234,7 @@ static Token lex_number(Lexer *lexer) {
 		}
 	}
 
-	return make_token(lexer, TOK_NUMBER, start, (size_t)(lexer->cur - start), line, column);
+	return make_token(TOK_NUMBER, start, (size_t)(lexer->cur - start), line, column);
 }
 
 static Token lex_char_lit(Lexer *lexer) {
@@ -284,7 +284,7 @@ static Token lex_char_lit(Lexer *lexer) {
 
 	advance(lexer); /* consume closing '\'' */
 
-	Token token = make_token(lexer, TOK_CHAR_LIT, start, lexer->cur - start, line, column);
+	Token token = make_token(TOK_CHAR_LIT, start, lexer->cur - start, line, column);
 	token.int_val = char_value;
 	return token;
 }
@@ -315,7 +315,7 @@ static Token lex_string(Lexer *lexer) {
 
 	/* Token spans entire quoted string: "hello" */
 	size_t length = lexer->cur - start;
-	return make_token(lexer, TOK_STRING, start, length, line, column);
+	return make_token(TOK_STRING, start, length, line, column);
 }
 
 void lexer_init(Lexer *lexer, const char *src) {
@@ -361,7 +361,7 @@ Token lexer_next_token(Lexer *lexer) {
 	int column = lexer->column;
 
 	if (is_at_end(lexer)) {
-		return make_token(lexer, TOK_EOF, start, 0, line, column);
+		return make_token(TOK_EOF, start, 0, line, column);
 	}
 
 	/* check for comments */
@@ -400,34 +400,34 @@ Token lexer_next_token(Lexer *lexer) {
 
 	switch (c) {
 	case '(':
-		return make_token(lexer, TOK_LPAREN, start, 1, line, column);
+		return make_token(TOK_LPAREN, start, 1, line, column);
 	case ')':
-		return make_token(lexer, TOK_RPAREN, start, 1, line, column);
+		return make_token(TOK_RPAREN, start, 1, line, column);
 	case '{':
-		return make_token(lexer, TOK_LBRACE, start, 1, line, column);
+		return make_token(TOK_LBRACE, start, 1, line, column);
 	case '}':
-		return make_token(lexer, TOK_RBRACE, start, 1, line, column);
+		return make_token(TOK_RBRACE, start, 1, line, column);
 	case '[':
-		return make_token(lexer, TOK_LBRACKET, start, 1, line, column);
+		return make_token(TOK_LBRACKET, start, 1, line, column);
 	case ']':
-		return make_token(lexer, TOK_RBRACKET, start, 1, line, column);
+		return make_token(TOK_RBRACKET, start, 1, line, column);
 	case ',':
-		return make_token(lexer, TOK_COMMA, start, 1, line, column);
+		return make_token(TOK_COMMA, start, 1, line, column);
 	case '.':
 		/* `...` is the variadic marker (only meaningful in extern signatures); a
 		 * single `.` stays a field accessor. */
 		if (lexer->cur[0] == '.' && lexer->cur[1] == '.') {
 			lexer->cur += 2;
 			lexer->column += 2;
-			return make_token(lexer, TOK_DOTDOTDOT, start, 3, line, column);
+			return make_token(TOK_DOTDOTDOT, start, 3, line, column);
 		}
-		return make_token(lexer, TOK_DOT, start, 1, line, column);
+		return make_token(TOK_DOT, start, 1, line, column);
 	case ':':
-		return make_token(lexer, TOK_COLON, start, 1, line, column);
+		return make_token(TOK_COLON, start, 1, line, column);
 	case ';':
-		return make_token(lexer, TOK_SEMI, start, 1, line, column);
+		return make_token(TOK_SEMI, start, 1, line, column);
 	case '@':
-		return make_token(lexer, TOK_AT, start, 1, line, column);
+		return make_token(TOK_AT, start, 1, line, column);
 	case '#': {
 		/* `#`-directive: read the directive word and map it. `#import`/`#each_field` reuse the
 		 * existing TOK_USE/TOK_EACH_FIELD tokens so the parser + CST consumers are unchanged;
@@ -449,80 +449,80 @@ Token lexer_next_token(Lexer *lexer) {
 			k = TOK_HASH_FILE;
 		else if (wlen == 7 && strncmp(word, "foreign", 7) == 0)
 			k = TOK_HASH_FOREIGN;
-		return make_token(lexer, k, start, tlen, line, column);
+		return make_token(k, start, tlen, line, column);
 	}
 
 	case '+':
 		if (peek(lexer) == '=') {
 			advance(lexer);
-			return make_token(lexer, TOK_PLUS_EQ, start, 2, line, column);
+			return make_token(TOK_PLUS_EQ, start, 2, line, column);
 		}
-		return make_token(lexer, TOK_PLUS, start, 1, line, column);
+		return make_token(TOK_PLUS, start, 1, line, column);
 
 	case '-':
 		if (peek(lexer) == '>') {
 			advance(lexer);
-			return make_token(lexer, TOK_ARROW, start, 2, line, column);
+			return make_token(TOK_ARROW, start, 2, line, column);
 		}
 		if (peek(lexer) == '=') {
 			advance(lexer);
-			return make_token(lexer, TOK_MINUS_EQ, start, 2, line, column);
+			return make_token(TOK_MINUS_EQ, start, 2, line, column);
 		}
-		return make_token(lexer, TOK_MINUS, start, 1, line, column);
+		return make_token(TOK_MINUS, start, 1, line, column);
 
 	case '*':
 		if (peek(lexer) == '=') {
 			advance(lexer);
-			return make_token(lexer, TOK_STAR_EQ, start, 2, line, column);
+			return make_token(TOK_STAR_EQ, start, 2, line, column);
 		}
-		return make_token(lexer, TOK_STAR, start, 1, line, column);
+		return make_token(TOK_STAR, start, 1, line, column);
 
 	case '/':
 		if (peek(lexer) == '=') {
 			advance(lexer);
-			return make_token(lexer, TOK_SLASH_EQ, start, 2, line, column);
+			return make_token(TOK_SLASH_EQ, start, 2, line, column);
 		}
-		return make_token(lexer, TOK_SLASH, start, 1, line, column);
+		return make_token(TOK_SLASH, start, 1, line, column);
 
 	case '=':
 		if (peek(lexer) == '=') {
 			advance(lexer);
-			return make_token(lexer, TOK_EQ_EQ, start, 2, line, column);
+			return make_token(TOK_EQ_EQ, start, 2, line, column);
 		}
-		return make_token(lexer, TOK_EQ, start, 1, line, column);
+		return make_token(TOK_EQ, start, 1, line, column);
 
 	case '!':
 		if (peek(lexer) == '=') {
 			advance(lexer);
-			return make_token(lexer, TOK_BANG_EQ, start, 2, line, column);
+			return make_token(TOK_BANG_EQ, start, 2, line, column);
 		}
-		return make_token(lexer, TOK_BANG, start, 1, line, column);
+		return make_token(TOK_BANG, start, 1, line, column);
 
 	case '<':
 		if (peek(lexer) == '=') {
 			advance(lexer);
-			return make_token(lexer, TOK_LT_EQ, start, 2, line, column);
+			return make_token(TOK_LT_EQ, start, 2, line, column);
 		}
-		return make_token(lexer, TOK_LT, start, 1, line, column);
+		return make_token(TOK_LT, start, 1, line, column);
 
 	case '>':
 		if (peek(lexer) == '=') {
 			advance(lexer);
-			return make_token(lexer, TOK_GT_EQ, start, 2, line, column);
+			return make_token(TOK_GT_EQ, start, 2, line, column);
 		}
-		return make_token(lexer, TOK_GT, start, 1, line, column);
+		return make_token(TOK_GT, start, 1, line, column);
 
 	case '&':
 		if (peek(lexer) == '&') {
 			advance(lexer);
-			return make_token(lexer, TOK_AMP_AMP, start, 2, line, column);
+			return make_token(TOK_AMP_AMP, start, 2, line, column);
 		}
 		return error_token(lexer, "unexpected character (did you mean `&&`?)", line, column);
 
 	case '|':
 		if (peek(lexer) == '|') {
 			advance(lexer);
-			return make_token(lexer, TOK_PIPE_PIPE, start, 2, line, column);
+			return make_token(TOK_PIPE_PIPE, start, 2, line, column);
 		}
 		return error_token(lexer, "unexpected character (did you mean `||`?)", line, column);
 

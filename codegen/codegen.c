@@ -12,13 +12,13 @@ char *strdup(const char *s);
 
 typedef struct {
 	char *name;
-	char *llvm_name;        /* allocated SSA value name */
-	int type;               /* 0=i32, 1=i32*, 2=i8* (string), 3=arch*, 4=column ptr, 5=%struct.arche_array* */
-	char *arch_name;        /* for type==3 or 4, nullable otherwise */
-	int string_len;         /* for type==2 (string), the compile-time length (-1 if unknown) */
-	const char *field_type; /* for type==4 (column ptr), the Arche type name (e.g. "float") */
-	char *handle_archetype; /* if field_type=="handle", the target archetype name */
-	int bit_width;          /* 32 (default) or 64 for SSA values */
+	char *llvm_name;              /* allocated SSA value name */
+	int type;                     /* 0=i32, 1=i32*, 2=i8* (string), 3=arch*, 4=column ptr, 5=%struct.arche_array* */
+	char *arch_name;              /* for type==3 or 4, nullable otherwise */
+	int string_len;               /* for type==2 (string), the compile-time length (-1 if unknown) */
+	const char *field_type;       /* for type==4 (column ptr), the Arche type name (e.g. "float") */
+	const char *handle_archetype; /* if field_type=="handle", the target archetype name (borrowed, like field_type) */
+	int bit_width;                /* 32 (default) or 64 for SSA values */
 	int is_slice; /* type==6: 1 = T[] fat-pointer slice (runtime len in len_ssa), 0 = bounded T[N] (len = string_len) */
 	char *len_ssa;      /* type==6 slice: SSA value (or literal) holding the i64 runtime length; NULL otherwise */
 	char *cap_ssa;      /* type==6 slice: i64 backing capacity (`.cap`); NULL ⇒ fall back to length. Part of the
@@ -243,16 +243,6 @@ static void codegen_register_sys_version(CodegenContext *ctx, const char *sys_na
 	entry->arch_name[sizeof(entry->arch_name) - 1] = '\0';
 	snprintf(entry->versioned_name, sizeof(entry->versioned_name), "%s_%s", sys_name, arch_name);
 	ctx->sys_version_count++;
-}
-
-static const char *codegen_get_sys_version(CodegenContext *ctx, const char *sys_name, const char *arch_name) {
-	for (int i = 0; i < ctx->sys_version_count; i++) {
-		if (strcmp(ctx->sys_versions[i].sys_name, sys_name) == 0 &&
-		    strcmp(ctx->sys_versions[i].arch_name, arch_name) == 0) {
-			return ctx->sys_versions[i].versioned_name;
-		}
-	}
-	return NULL;
 }
 
 /* ========== STATIC ARRAY TRACKING ========== */
@@ -999,8 +989,7 @@ static void register_static_arrays_in_scope(CodegenContext *ctx) {
 			vi->type = 6; /* element pointer; field_type drives element typing */
 			vi->arch_name = NULL;
 			vi->string_len = sa->array.size;
-			vi->field_type = malloc(5);
-			strcpy(vi->field_type, "char");
+			vi->field_type = "char"; /* borrowed literal, like every other field_type assignment */
 			vi->bit_width = 8;
 			scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
 			scope->values[scope->value_count++] = vi;
@@ -4035,7 +4024,6 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 
 			/* Get field's element type */
 			const char *elem_type = llvm_type_from_arche(field_base_type_name(field->type));
-			int n = field_total_elements(field->type);
 
 			/* Load column pointer from struct */
 			char *field_col_ptr_ref = gen_value_name(ctx);
@@ -5140,8 +5128,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			vi->field_type = resolved_type ? resolved_type : "int";
 			vi->handle_archetype = NULL;
 			if (insert_archetype) {
-				vi->handle_archetype = malloc(strlen(insert_archetype) + 1);
-				strcpy(vi->handle_archetype, insert_archetype);
+				vi->handle_archetype = insert_archetype; /* borrowed HIR name */
 			}
 			/* Propagate the handle's archetype through a copy (let alias := h) so
 			 * delete(alias) can infer the pool. */
@@ -5149,8 +5136,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			    stmt->data.bind_stmt.value->kind == HIR_EXPR_NAME) {
 				ValueInfo *src = find_value(ctx, stmt->data.bind_stmt.value->data.name.name);
 				if (src && src->handle_archetype) {
-					vi->handle_archetype = malloc(strlen(src->handle_archetype) + 1);
-					strcpy(vi->handle_archetype, src->handle_archetype);
+					vi->handle_archetype = src->handle_archetype; /* borrowed from the source value */
 				}
 			}
 			vi->bit_width = bit_width;
@@ -6022,7 +6008,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 
 										if (t < rhs_tuple_count) {
 											/* Use RHS component at same position */
-											const char *rhs_comp_name = rhs_tuple_components[t]->name;
+											char *rhs_comp_name = rhs_tuple_components[t]->name;
 
 											/* Create temporary field expression with component field name */
 											HirExpr temp_rhs = *rhs_expr;
@@ -7856,91 +7842,6 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 	/* A proc returns void — its results were written through the out-param pointers. */
 	buffer_append(ctx, "  ret void\n");
 	end_function_body(ctx, fbs_proc);
-	buffer_append(ctx, "}\n\n");
-}
-
-static void codegen_sys_version(CodegenContext *ctx, HirSysDecl *sys, const char *arch_name) {
-	/* Generate a single versioned system function for a specific archetype */
-	char versioned_name[512];
-	snprintf(versioned_name, sizeof(versioned_name), "%s_%s", sys->name, arch_name);
-
-	/* Register this version in the mapping */
-	codegen_register_sys_version(ctx, sys->name, arch_name);
-
-	/* Generate function signature */
-	buffer_append_fmt(ctx, "define void @%s(%%struct.%s* %%archetype) #0 {\n", versioned_name, arch_name);
-	buffer_append(ctx, "entry:\n");
-
-	FunctionBodyState fbs_sys = begin_function_body(ctx);
-	push_value_scope(ctx);
-
-	/* Bind field parameters to their column pointers */
-	HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
-	if (arch) {
-		for (int p = 0; p < sys->param_count; p++) {
-			const char *param_name = sys->params[p]->name;
-
-			/* Find this field in the archetype */
-			for (int f = 0; f < arch->field_count; f++) {
-				if (strcmp(arch->fields[f]->name, param_name) == 0) {
-					const char *elem_type = llvm_type_from_arche(field_base_type_name(arch->fields[f]->type));
-
-					if (arch->fields[f]->kind == FIELD_COLUMN) {
-						/* Column pointer: for static use 3-index GEP to [0], for dynamic load pointer */
-						int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
-						char *field_ptr = gen_value_name(ctx);
-						if (is_static) {
-							buffer_append_fmt(
-							    ctx,
-							    "  %s = getelementptr %%struct.%s, %%struct.%s* %%archetype, i32 0, i32 %d, i64 0\n",
-							    field_ptr, arch_name, arch_name, f);
-						} else {
-							char *field_gep = gen_value_name(ctx);
-							buffer_append_fmt(
-							    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %%archetype, i32 0, i32 %d\n",
-							    field_gep, arch_name, arch_name, f);
-							buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", field_ptr, elem_type, elem_type,
-							                  field_gep);
-						}
-
-						/* Add to scope as a column pointer (type 4) */
-						add_value(ctx, param_name, field_ptr, 4); /* type 4 = column pointer */
-						/* Also track the archetype and element type for vectorization detection */
-						ValueInfo *col_val = find_value(ctx, param_name);
-						if (col_val) {
-							col_val->arch_name = malloc(strlen(arch_name) + 1);
-							strcpy(col_val->arch_name, arch_name);
-							col_val->field_type = field_base_type_name(arch->fields[f]->type);
-						}
-					} else {
-						/* Meta field: load the scalar value */
-						char *field_gep = gen_value_name(ctx);
-						buffer_append_fmt(ctx,
-						                  "  %s = getelementptr %%struct.%s, %%struct.%s* %%archetype, i32 0, i32 %d\n",
-						                  field_gep, arch_name, arch_name, f);
-
-						char *field_val = gen_value_name(ctx);
-						buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", field_val, elem_type, elem_type, field_gep);
-
-						/* Add to scope */
-						add_value(ctx, param_name, field_val, 0); /* type 0 = scalar */
-					}
-					break;
-				}
-			}
-		}
-	}
-
-	ctx->in_sys = 1;
-	for (int i = 0; i < sys->stmt_count; i++) {
-		codegen_statement(ctx, sys->stmts[i]);
-	}
-	ctx->in_sys = 0;
-
-	pop_value_scope(ctx);
-
-	buffer_append(ctx, "  ret void\n");
-	end_function_body(ctx, fbs_sys);
 	buffer_append(ctx, "}\n\n");
 }
 
