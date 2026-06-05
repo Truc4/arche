@@ -168,7 +168,7 @@ test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(CS
 # (some are intentional failures wrapped in `not`); this sweeps the production
 # sources so any documented example is CI-gated. Skips files with no examples.
 test-doc: $(TARGET) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
-	./$(TARGET) test core/... examples/...
+	./$(TARGET) test core/... stdlib/... examples/...
 
 # Test folder with pattern: make test-folder FOLDER=path PATTERN="*.arche"
 test-folder: $(TARGET) $(BUILD_DIR)

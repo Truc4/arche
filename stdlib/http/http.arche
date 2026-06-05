@@ -11,11 +11,12 @@
 ///
 /// ```arche
 /// parse_request_line("GET /a?b=1 HTTP/1.1\r\n")(m:, t:, ok:);
-/// assert(ok == 1, "ok\n");
-/// assert(streq(m, "GET"), "method\n");
-/// assert(streq(t, "/a"), "target query-trimmed\n");
+/// fmt.assert(ok == 1, "ok\n");
+/// fmt.assert(streq(m, "GET"), "method\n");
+/// fmt.assert(streq(t, "/a"), "target query-trimmed\n");
 /// ```
-// Pure, but returns three values (two slices + ok) — a func returns only one, so it must be a proc.
+///
+/// Pure, but returns three values (two slices + ok) — a func returns only one, so it must be a proc.
 @allow_pure_proc
 parse_request_line :: proc(req: char[])(method: char[], target: char[], ok: int) {
   ok = 0;

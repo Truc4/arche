@@ -135,17 +135,22 @@ static char *read_device_context(const char *dir) {
  *
  * `core` is special — compile_source already prepends core.arche to every unit, so a doctest in
  * core/core.arche must NOT re-include it (that would redeclare the whole prelude); its decls are
- * in scope implicitly, so `file_prefix` is empty there. */
+ * in scope implicitly, so `file_prefix` is empty there.
+ *
+ * `fmt` (the assertion library) is always made available to examples via an injected `#import { fmt }`
+ * — `fmt.assert` is the doctest assertion idiom, and a module shouldn't have to depend on fmt just to
+ * be doctestable. The import dedups if the file already imports fmt. */
 static char *synthesize(const char *file_source, int is_core, const DoctestExample *ex) {
 	const char *prefix = is_core ? "" : file_source;
-	size_t need = strlen(prefix) + strlen("\nmain :: proc() {\n}\n") + strlen(ex->code) + 8;
+	const char *fmt_import = is_core ? "" : "#import { fmt }\n";
+	size_t need = strlen(fmt_import) + strlen(prefix) + strlen("\nmain :: proc() {\n}\n") + strlen(ex->code) + 8;
 	char *out = malloc(need);
 	if (!out)
 		return NULL;
 	if (ex->has_main)
-		snprintf(out, need, "%s\n%s", prefix, ex->code);
+		snprintf(out, need, "%s%s\n%s", fmt_import, prefix, ex->code);
 	else
-		snprintf(out, need, "%s\nmain :: proc() {\n%s}\n", prefix, ex->code);
+		snprintf(out, need, "%s%s\nmain :: proc() {\n%s}\n", fmt_import, prefix, ex->code);
 	return out;
 }
 
