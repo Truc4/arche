@@ -1,7 +1,7 @@
 // `#module` is the module-private visibility banner: it hides the device's `secret` from
 // importers, while `pub` (above the banner) stays callable.
 // RUN: %arche build -o %t %s && %t | grep "plugin_ok"
-#import { plugin_dev fmt }
+#import { "./plugin_dev" fmt }
 
 main :: proc() {
   r := plugin_dev.pub(20); // pub calls private secret(20)=40, returns 41

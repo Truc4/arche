@@ -1,6 +1,6 @@
 // Using a handle after it's been consumed (closed) is a compile error. `move` into a consuming
 // `own` parameter ends the value's life; the checker rejects the later use. Uses the real
-// `io.file` opaque — no FFI stub needed.
+// `file` opaque — no FFI stub needed.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
 #import { io }
 main :: proc() {

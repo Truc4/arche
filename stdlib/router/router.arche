@@ -186,23 +186,11 @@ param :: proc(i: int)(start: int, len: int) {
 }
 
 // ====================== Module-internal data model (private) =======================
-// Not exported: the trie node type and pool are implementation state. `#module` narrows the rest
-// of the file to module-private (visible across the module's files, invisible to importers — no
-// `router.TrieNode`). Types and pools are hoisted, so they may trail the API that uses them.
+// The trie node type (`TrieNode`) + its `nodeKind` enum live in router.ds.arche (a device's types
+// live in its datasheet); the driver provides the `TrieNode` pool. `#module` narrows the rest of the
+// file to module-private (visible across the module's files, invisible to importers). The procs above
+// reference `TrieNode`/`nodeKind` by bare name (datasheet types are global vocabulary).
 #module
-
-nodeKind :: enum { kstatic, kparam, kcatchall }
-
-TrieNode :: arche {
-  seg :: char[32], // segment text (":id"/"*" stored as the name after the marker), "" for root
-  seg_len :: int, // content length of `seg` (a fixed char[32] column carries no length itself)
-  kind :: nodeKind, // static / :param / *catchall
-  first_child :: int, // pool index of first child, or -1
-  next_sibling :: int, // pool index of next sibling, or -1
-  handler_id :: int, // >=0 if a route terminates here, else -1
-}
-
-TrieNode[256]
 
 // Capture spans from the most recent router.resolve (offsets into that path), read via
 // router.param_count / router.param. Hoisted, so they sit here with the data model even though the

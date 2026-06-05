@@ -3,10 +3,8 @@
 // syscall layer; a `file` is a raw fd held in the opaque cell.
 #import { os }
 
-// Primitive opaque handle type for an open file (a raw fd in the opaque cell). The operations
-// below are the only way to act on it; you may move/borrow/return a `file` but not write a raw
-// value into it.
-file :: opaque
+// The `file` opaque type is declared in io.ds.arche (a device's types live in its datasheet, not its
+// impl); the procs below operate on it by bare name (datasheet types are global vocabulary).
 
 @allow(proc_could_be_func)
 stdin :: proc()(f: file) {

@@ -91,21 +91,73 @@ static char *read_file_optional(const char *path) {
 static char *g_loaded_mods[MAX_LOADED_MODS];
 static int g_loaded_count;
 
-static void load_module(const char *name, const char *source_dir); /* fwd (mutual recursion) */
+/* Names of loaded modules that are DEVICES (their folder has a `.ds.arche` datasheet). A bare-name
+ * `#import { x }` must resolve to a device; a plain module is imported by path. Reset in resolve_uses. */
+static char *g_device_mods[MAX_LOADED_MODS];
+static int g_device_count;
 
-/* Load every module named by a `#import` node — one IDENT for a bare `#import io`, several for a
- * block `#import { io net }`. */
+/* Import-resolution errors (rule 1: bare-name import of a non-device). Reset per compilation in
+ * resolve_uses; checked by compile_frontend so a violation fails the build. */
+static int g_resolve_errors;
+
+static void mark_device_module(const char *name) {
+	for (int i = 0; i < g_device_count; i++)
+		if (strcmp(g_device_mods[i], name) == 0)
+			return;
+	if (g_device_count < MAX_LOADED_MODS)
+		g_device_mods[g_device_count++] = strcpy(malloc(strlen(name) + 1), name);
+}
+
+static int module_is_device(const char *name) {
+	for (int i = 0; i < g_device_count; i++)
+		if (strcmp(g_device_mods[i], name) == 0)
+			return 1;
+	return 0;
+}
+
+static int file_is_datasheet(const char *name) {
+	size_t L = strlen(name);
+	return L >= 9 && strcmp(name + L - 9, ".ds.arche") == 0;
+}
+
+static void load_module(const char *name, const char *source_dir);           /* fwd (mutual recursion) */
+static void load_module_from_path(const char *path, const char *source_dir); /* fwd */
+
+/* Load every import named by a `#import` node. An IDENT child is a DEVICE imported by name
+ * (`#import io`); a STRING child is a plain MODULE imported by path (`#import { "./util" }`). */
 static void load_uses_of(const SyntaxNode *ud, const char *src, const char *source_dir) {
 	for (int k = 0; k < ud->child_count; k++) {
-		if (ud->children[k].tag != SE_TOKEN || ud->children[k].as.token.kind != TOK_IDENT)
+		if (ud->children[k].tag != SE_TOKEN)
 			continue;
-		char name[256];
+		TokenKind tk = ud->children[k].as.token.kind;
+		if (tk != TOK_IDENT && tk != TOK_STRING)
+			continue;
+		char buf[512];
 		size_t L = ud->children[k].as.token.length;
-		if (L > sizeof(name) - 1)
-			L = sizeof(name) - 1;
-		memcpy(name, src + ud->children[k].as.token.offset, L);
-		name[L] = '\0';
-		load_module(name, source_dir);
+		size_t off = ud->children[k].as.token.offset;
+		/* A STRING token spans its quotes — strip them. */
+		if (tk == TOK_STRING && L >= 2) {
+			off += 1;
+			L -= 2;
+		}
+		if (L > sizeof(buf) - 1)
+			L = sizeof(buf) - 1;
+		memcpy(buf, src + off, L);
+		buf[L] = '\0';
+		if (tk == TOK_STRING) {
+			load_module_from_path(buf, source_dir);
+		} else {
+			load_module(buf, source_dir);
+			/* Rule 1: a bare name must resolve to a DEVICE (a unit with a `.ds.arche`). A plain module
+			 * must be imported by path. `core` is exempt (prepended prelude, never a device). */
+			if (strcmp(buf, "core") != 0 && !module_is_device(buf)) {
+				fprintf(stderr,
+				        "Error: imported '%s' by name but it is not a device (no .ds.arche datasheet) — "
+				        "import a plain module by path: #import { \"./%s\" }\n",
+				        buf, buf);
+				g_resolve_errors++;
+			}
+		}
 	}
 }
 
@@ -154,6 +206,8 @@ static int try_load_module_dir(const char *mod_name, const char *dir, const char
 				char fp[1300];
 				snprintf(fp, sizeof(fp), "%s/%s", folder, ent->d_name);
 				n += register_module_file(mod_name, fp, source_dir);
+				if (file_is_datasheet(ent->d_name))
+					mark_device_module(mod_name); /* a `.ds.arche` in the folder makes it a device */
 			}
 		}
 		closedir(d);
@@ -165,6 +219,49 @@ static int try_load_module_dir(const char *mod_name, const char *dir, const char
 	if (file_exists(fp))
 		return register_module_file(mod_name, fp, source_dir);
 	return 0;
+}
+
+/* Load a plain MODULE imported by PATH (`#import { "./util" }`): resolve `path` relative to the
+ * importing file's dir, derive the module name from the path's basename (sans `.arche`), and load the
+ * file/folder there. Unlike a bare-name import, no stdlib/core search and no device requirement —
+ * importing a `.ds.arche` by path is legal (just not useful). */
+static void load_module_from_path(const char *path, const char *source_dir) {
+	/* Split `path` into its directory part and basename. */
+	const char *slash = strrchr(path, '/');
+	const char *base = slash ? slash + 1 : path;
+	char subdir[512];
+	if (slash) {
+		size_t dl = (size_t)(slash - path);
+		if (dl > sizeof(subdir) - 1)
+			dl = sizeof(subdir) - 1;
+		memcpy(subdir, path, dl);
+		subdir[dl] = '\0';
+	} else {
+		subdir[0] = '\0';
+	}
+	/* Module name = basename without a trailing `.arche`. */
+	char mod_name[256];
+	snprintf(mod_name, sizeof(mod_name), "%s", base);
+	size_t ml = strlen(mod_name);
+	if (ml > 6 && strcmp(mod_name + ml - 6, ".arche") == 0)
+		mod_name[ml - 6] = '\0';
+	if (mod_name[0] == '\0')
+		return;
+	/* Dedup by module name (the registry namespace is flat). */
+	for (int i = 0; i < g_loaded_count; i++)
+		if (strcmp(g_loaded_mods[i], mod_name) == 0)
+			return;
+	if (g_loaded_count < MAX_LOADED_MODS)
+		g_loaded_mods[g_loaded_count++] = strcpy(malloc(strlen(mod_name) + 1), mod_name);
+	/* Resolve the directory to search relative to the importing file's dir. Transitive imports from
+	 * the loaded module resolve relative to that same dir. */
+	char dir[800];
+	if (subdir[0])
+		snprintf(dir, sizeof(dir), "%s/%s", source_dir, subdir);
+	else
+		snprintf(dir, sizeof(dir), "%s", source_dir);
+	if (!try_load_module_dir(mod_name, dir, dir))
+		fprintf(stderr, "Error: module path not found: %s\n", path);
 }
 
 /* Load module `name` (dedup'd) by searching the source dir, then stdlib, then core. */
@@ -203,6 +300,10 @@ static void resolve_uses(const SyntaxNode *cst_root, const char *src, const char
 	for (int i = 0; i < g_loaded_count; i++)
 		free(g_loaded_mods[i]);
 	g_loaded_count = 0;
+	for (int i = 0; i < g_device_count; i++)
+		free(g_device_mods[i]);
+	g_device_count = 0;
+	g_resolve_errors = 0;
 
 	char *source_dir = source_dir_of(source_path);
 	for (int u = 0; u < cst_root->child_count; u++) {
@@ -306,6 +407,11 @@ static int compile_frontend(const char *user_source, const char *source_path, Fr
 	 * analyzer + lowerer, which inline + name-prefix it. Tuple-group flattening for archetype
 	 * fields happens inside those CST passes too, so no AstProgram pre-pass is needed. */
 	resolve_uses(cst_root, source, source_path);
+	if (g_resolve_errors > 0) { /* rule 1: a bare name imported a non-device */
+		fflush(stderr);
+		free(source);
+		return 1;
+	}
 
 	/* Semantic analysis: reconstruct the abstract AST from the lossless CST (+ registered
 	 * module CSTs) and analyze that (rustc/Go-style: CST → AST → check). The parser-built

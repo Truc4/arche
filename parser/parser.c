@@ -1066,7 +1066,9 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		/* `#import` is a region in the `#module`/`#file`/`#foreign` family. Two forms:
 		 *   bare   `#import io`            one module (trailing `;` optional)
 		 *   block  `#import { io net … }`  a group of modules (whitespace/`,`/`;` separated)
-		 * Both produce an SN_USE_DECL carrying one IDENT per module; consumers iterate them. */
+		 * An element is either a bare IDENT (a DEVICE, by name) or a STRING literal (a plain MODULE,
+		 * by path: `#import { router "./util" }`). Both produce an SN_USE_DECL carrying one IDENT or
+		 * STRING token per import; consumers iterate them. */
 		advance(parser); /* consume '#import' */
 		if (check(parser, TOK_LBRACE)) {
 			advance(parser); /* consume '{' */
@@ -1075,8 +1077,8 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 				return 0;
 			}
 			while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-				if (!check(parser, TOK_IDENT)) {
-					error(parser, "expected a module name in `#import { ... }` (names are whitespace-separated)");
+				if (!check(parser, TOK_IDENT) && !check(parser, TOK_STRING)) {
+					error(parser, "expected a device name or a \"path\" string in `#import { ... }`");
 					return 0;
 				}
 				advance(parser);
@@ -1093,7 +1095,7 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		 * the block form `#import { ... }`; a bare `#import` followed by anything but module names
 		 * (to EOF) is an error. No single-module special case. */
 		int n = 0;
-		while (check(parser, TOK_IDENT)) {
+		while (check(parser, TOK_IDENT) || check(parser, TOK_STRING)) {
 			advance(parser);
 			n++;
 		}

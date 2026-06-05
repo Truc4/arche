@@ -7,6 +7,31 @@ Arche's library model is built on a hardware metaphor: **everything is a device 
 
 Groups all the way up: **files → device → driver.**
 
+## Importing: a device by name, a module by path
+
+You **import a device by name** and a **plain module by path**. A bare name in `#import { … }` must
+resolve to a *device* — a folder unit that ships a `.ds.arche` datasheet. A plain module (no datasheet)
+is imported by a string path:
+
+```arche
+#import { router net "./util" }   // router, net = devices (by name); ./util = a plain module (by path)
+```
+
+Importing a non-device by bare name is an error that points you at the path form. A path import derives
+the module name from the path's basename (`"./util"` → `util`), so qualified access is unchanged
+(`util.helper()`). `core` (the prelude) is exempt — it is prepended, never imported.
+
+**Every stdlib module is a device** (`net io http str router csv fmt parse os term`) — each ships a
+`.ds.arche`, so all are imported by name.
+
+## A device's impl is behavior-only (rule 3)
+
+A device's impl (`.arche`) holds **behavior** — procs, funcs, systems. Its **types** (opaque, enums,
+aliases, archetype shapes) and **storage requirements** live in its `.ds.arche` datasheet; the device
+**may not allocate a pool** (the driver owns storage). Defining a type/archetype or allocating in a
+device impl is an error. (Types are global shared vocabulary — `net`'s `socket` is the type `socket`,
+written bare, not `net.socket`.)
+
 ## Caller-sized pools (qualified pool decls)
 
 A device defines a shape but leaves the pool to the caller. The driver sizes the device's shape by its **qualified name**:

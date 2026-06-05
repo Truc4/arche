@@ -2,10 +2,8 @@
 // Access is qualified-only: a bare `listen(...)` does not resolve. The arche-native API speaks
 // length-carried slices; the `#foreign` C layer (runtime/net.c) at the bottom is the implementation.
 
-// Primitive opaque handle type for a TCP socket (a raw fd in the opaque cell). You may
-// move/borrow/return a `socket` but not write a raw value into it; the operations below are the
-// only way to act on it.
-socket :: opaque
+// The `socket` opaque type is declared in net.ds.arche (a device's types live in its datasheet, not
+// its impl); the procs below operate on it by bare name (datasheet types are global vocabulary).
 
 listen :: proc(port: int)(s: socket) {
   net_listen(port)(s);

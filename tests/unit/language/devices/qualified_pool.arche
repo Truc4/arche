@@ -2,7 +2,7 @@
 // then inserts and reads it back — the caller picks the storage size. The device (phys)
 // declares the shape but no pool.
 // RUN: %arche build -o %t %s && %t | grep "qualified_pool_ok"
-#import { phys fmt }
+#import { "./phys" fmt }
 
 phys.Particle[8]
 

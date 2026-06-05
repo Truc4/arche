@@ -2796,6 +2796,40 @@ static void sem_check_storage_requirements(SemanticContext *ctx) {
 	}
 }
 
+/* Rule 3: a device's impl (`.arche` of a unit with a `.ds.arche`) is BEHAVIOR-ONLY. It may not define
+ * a type/enum/archetype or allocate a pool — types/archetypes belong in the datasheet, and allocation
+ * is the driver's alone. Decls from a device impl were tagged `from_device_impl` at module collection.
+ * (Value consts + buffers/scalars are allowed; only type/archetype definitions + archetype pools are
+ * rejected.) */
+static const char *sem_decl_name(Decl *d); /* fwd (defined with the module-collection helpers) */
+static void sem_check_device_impl_decls(SemanticContext *ctx) {
+	if (!ctx->prog)
+		return;
+	for (int i = 0; i < ctx->prog->decl_count; i++) {
+		Decl *d = ctx->prog->decls[i];
+		if (!d || !d->from_device_impl)
+			continue;
+		const char *nm0 = sem_decl_name(d);
+		const char *what = NULL;
+		if (d->kind == DECL_ARCHETYPE)
+			what = "define an archetype";
+		else if (d->kind == DECL_ENUM)
+			what = "define a type";
+		else if (d->kind == DECL_CONST && nm0 && is_type_alias(ctx, nm0)) /* type alias / opaque (not a value const) */
+			what = "define a type";
+		else if (d->kind == DECL_STATIC && d->data.static_decl && d->data.static_decl->kind == STATIC_KIND_ARCHETYPE)
+			what = "allocate a pool";
+		if (!what)
+			continue;
+		const char *nm = sem_decl_name(d);
+		fprintf(stderr,
+		        "Error: a device's impl cannot %s ('%s') — types/archetypes belong in its .ds.arche "
+		        "datasheet, and allocation is the driver's\n",
+		        what, nm ? nm : "?");
+		ctx->error_count++;
+	}
+}
+
 /* ========== PROC LINT HELPERS ========== */
 
 /* Builtins that mutate archetype state (registered in semantic_analyze). */
@@ -6035,13 +6069,16 @@ static void sem_expand_tuple_groups(AstProgram *prog) {
  * `#foreign { ... }` / `#module { ... }` block regions. */
 static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const char *mod_name, AstProgram *prog,
                                 char ***full, int *fulln, int *fullcap, char ***expset, int *expn, int *expcap,
-                                int exported, int is_datasheet) {
+                                int exported, int is_datasheet, int module_is_device) {
 	Decl *md = cst_build_decl((CstView){node, msrc});
 	if (!md)
 		return;
 	/* Datasheet decls are shared global vocabulary: mark them so identical component/type redefs
 	 * across two datasheets dedup (devices sharing a shape) instead of tripping define-once. */
 	md->is_datasheet = is_datasheet;
+	/* A decl from a device's IMPL (`.arche` of a unit that also has a `.ds.arche`) — the rule-3 sweep
+	 * rejects type/archetype/allocation definitions here (a device's impl is behavior-only). */
+	md->from_device_impl = module_is_device && !is_datasheet;
 	/* A pool decl in a datasheet (`.ds.arche`) is a storage REQUIREMENT (min rows), not an allocation. */
 	if (is_datasheet && md->kind == DECL_STATIC && md->data.static_decl &&
 	    md->data.static_decl->kind == STATIC_KIND_ARCHETYPE)
@@ -6087,6 +6124,33 @@ static int sem_is_collectible_decl(SyntaxNodeKind k) {
 	return k >= SN_WORLD_DECL && k <= SN_USE_DECL && k != SN_USE_DECL;
 }
 
+/* The module name an `#import` element resolves to: IDENT = the name verbatim (device by name);
+ * STRING = a path (module by path) whose name is the basename minus a trailing `.arche`. Returns a
+ * malloc'd name (caller frees), or NULL for any other token. Mirror of lower.c's helper. */
+static char *sem_import_token_module_name(const char *src, const SyntaxElem *tok) {
+	if (tok->tag != SE_TOKEN)
+		return NULL;
+	TokenKind k = tok->as.token.kind;
+	if (k != TOK_IDENT && k != TOK_STRING)
+		return NULL;
+	size_t off = tok->as.token.offset, len = tok->as.token.length;
+	if (k == TOK_STRING && len >= 2) { /* strip the quotes */
+		off += 1;
+		len -= 2;
+	}
+	char *s = sem_txt_dup((CvText){src + off, len});
+	if (k == TOK_STRING) {
+		char *slash = strrchr(s, '/');
+		char *base = slash ? slash + 1 : s;
+		size_t bl = strlen(base);
+		if (bl > 6 && strcmp(base + bl - 6, ".arche") == 0)
+			base[bl - 6] = '\0';
+		if (base != s)
+			memmove(s, base, strlen(base) + 1);
+	}
+	return s;
+}
+
 /* Inline module `mod_name`'s decls into `prog` (prefixed so intra-module refs resolve), record its
  * exported names in acc for the `mod.name → mod_name` qualify pass, then RECURSIVELY inline the
  * module's own `#import`s — so a module may use qualified access to a transitively-imported module
@@ -6102,6 +6166,13 @@ static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc
 	int fulln = 0, fullcap = 0;
 	char **expset = NULL;
 	int expn = 0, expcap = 0;
+	/* A module is a DEVICE if ANY of its files is a `.ds.arche` datasheet. A device's impl (`.arche`)
+	 * is behavior-only — decls collected from it are tagged so the rule-3 sweep can reject type/
+	 * archetype/allocation definitions there. */
+	int module_is_device = 0;
+	for (int m = 0; m < g_sem_module_count; m++)
+		if (strcmp(g_sem_modules[m].name, mod_name) == 0 && sem_is_datasheet_file(g_sem_modules[m].filename))
+			module_is_device = 1;
 	for (int m = 0; m < g_sem_module_count; m++) {
 		if (strcmp(g_sem_modules[m].name, mod_name) != 0)
 			continue;
@@ -6127,7 +6198,7 @@ static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc
 						if (!sem_is_collectible_decl(cn->children[c].as.node->kind))
 							continue;
 						sem_add_module_decl(cn->children[c].as.node, msrc, mod_name, prog, &full, &fulln, &fullcap,
-						                    &expset, &expn, &expcap, child_exp, ds);
+						                    &expset, &expn, &expcap, child_exp, ds, module_is_device);
 					}
 				} else if (!is_foreign) {
 					exported = 0;
@@ -6137,7 +6208,7 @@ static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc
 			if (!sem_is_collectible_decl(mk))
 				continue;
 			sem_add_module_decl(cn, msrc, mod_name, prog, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported,
-			                    ds);
+			                    ds, module_is_device);
 		}
 	}
 	if (!found) {
@@ -6175,10 +6246,9 @@ static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc
 				continue;
 			const SyntaxNode *un = mr->children[j].as.node;
 			for (int t = 0; t < un->child_count; t++) {
-				if (un->children[t].tag != SE_TOKEN || un->children[t].as.token.kind != TOK_IDENT)
+				char *sub = sem_import_token_module_name(msrc, &un->children[t]);
+				if (!sub)
 					continue;
-				CvText tk = {msrc + un->children[t].as.token.offset, un->children[t].as.token.length};
-				char *sub = sem_txt_dup(tk);
 				sem_inline_module(sub, prog, acc_prefix, acc_set, acc_count, acc_n);
 				free(sub);
 			}
@@ -6233,14 +6303,13 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 		CstView dv = {root->children[i].as.node, src};
 
 		if (k == SN_USE_DECL) {
-			/* One IDENT per imported module (`#import io` / `#import { io net }`). Inline each —
+			/* One element per import: IDENT = device by name, STRING = module by path. Inline each —
 			 * the helper recurses into the module's own transitive imports + dedups. */
 			const SyntaxNode *un = dv.node;
 			for (int t = 0; t < un->child_count; t++) {
-				if (un->children[t].tag != SE_TOKEN || un->children[t].as.token.kind != TOK_IDENT)
+				char *mod_name = sem_import_token_module_name(src, &un->children[t]);
+				if (!mod_name)
 					continue;
-				CvText tk = {src + un->children[t].as.token.offset, un->children[t].as.token.length};
-				char *mod_name = sem_txt_dup(tk);
 				sem_inline_module(mod_name, prog, acc_prefix, acc_set, acc_count, &acc_n);
 				free(mod_name);
 			}
@@ -6556,6 +6625,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 
 	/* pass 2.5: device datasheet storage requirements vs the driver's pools (min met, none missing). */
 	sem_check_storage_requirements(ctx);
+	sem_check_device_impl_decls(ctx);
 
 	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The
 	 * two kinds are still distinct (keyword, `-> T` vs out-list, call form), but the name namespace

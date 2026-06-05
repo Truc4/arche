@@ -1,0 +1,5 @@
+// Datasheet for the `widget` device: its shape + storage requirement. The doctest in widget.arche
+// drives this shape with the pool auto-provided (device doctests compile as generated drivers).
+// RUN: true
+Particle :: arche { pos :: float, vel :: float }
+Particle[4]

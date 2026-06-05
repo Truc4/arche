@@ -16,10 +16,14 @@
  * matches a driver pool `Node[...]` or `dev.Node[...]`. Shared requirements compose by `max`. */
 
 #define FILL_MAX 256
+#define FILL_CONTRIB 32 /* devices recorded per shape (for the contributor comment) */
 
 typedef struct {
 	char name[128]; /* shape's own (last-segment) name */
-	int min;        /* composed minimum (max across datasheets) */
+	int min;        /* GENERATED size = SUM of contributors' minimums (devices coexist in one pool) */
+	char contrib_dev[FILL_CONTRIB][128]; /* contributing device names */
+	int contrib_min[FILL_CONTRIB];       /* each device's own minimum */
+	int contrib_n;
 } ReqEntry;
 
 /* Copy a token's source text into `out` (truncating to cap-1). */
@@ -86,24 +90,36 @@ static int find_datasheet(const char *dev, const char *source_dir, char *out, si
 	return 0;
 }
 
-/* Record a requirement (shape, min) into `reqs`, composing by `max` if the shape is already present. */
-static void req_add(ReqEntry *reqs, int *n, const char *name, int min) {
+/* Record a requirement (shape, min) from device `dev` into `reqs`. The GENERATED size SUMS each
+ * device's minimum (devices that share a shape coexist in the one pool), and records the contributor
+ * so fill can write a `// dev: n, …` comment. (The compiler's enforcement floor stays `max` — that's
+ * separate from this generated convenience size.) */
+static void req_add(ReqEntry *reqs, int *n, const char *name, int min, const char *dev) {
+	ReqEntry *e = NULL;
 	for (int i = 0; i < *n; i++) {
 		if (strcmp(reqs[i].name, name) == 0) {
-			if (min > reqs[i].min)
-				reqs[i].min = min;
-			return;
+			e = &reqs[i];
+			break;
 		}
 	}
-	if (*n < FILL_MAX) {
-		snprintf(reqs[*n].name, sizeof(reqs[*n].name), "%s", name);
-		reqs[*n].min = min;
-		(*n)++;
+	if (!e) {
+		if (*n >= FILL_MAX)
+			return;
+		e = &reqs[(*n)++];
+		snprintf(e->name, sizeof(e->name), "%s", name);
+		e->min = 0;
+		e->contrib_n = 0;
+	}
+	e->min += min; /* SUM across devices */
+	if (e->contrib_n < FILL_CONTRIB) {
+		snprintf(e->contrib_dev[e->contrib_n], 128, "%s", dev ? dev : "?");
+		e->contrib_min[e->contrib_n] = min;
+		e->contrib_n++;
 	}
 }
 
-/* Collect the storage requirements (pool decls) from one datasheet file into `reqs`. */
-static void collect_datasheet_reqs(const char *path, ReqEntry *reqs, int *n) {
+/* Collect the storage requirements (pool decls) device `dev` declares in its datasheet `path`. */
+static void collect_datasheet_reqs(const char *path, const char *dev, ReqEntry *reqs, int *n) {
 	char *src = cli_read_file(path);
 	if (!src)
 		return;
@@ -118,7 +134,7 @@ static void collect_datasheet_reqs(const char *path, ReqEntry *reqs, int *n) {
 			char shape[128];
 			int capn = static_decl_shape(cn, src, shape, sizeof(shape));
 			if (shape[0] && capn > 0)
-				req_add(reqs, n, shape, capn);
+				req_add(reqs, n, shape, capn, dev);
 		}
 	}
 	parse_result_free(&pr);
@@ -179,13 +195,13 @@ int arche_fill_driver(const char *driver_path) {
 		}
 	}
 
-	/* Gather requirements from every imported device's datasheet (composed by max). */
+	/* Gather requirements from every imported device's datasheet (generated size = SUM per shape). */
 	ReqEntry reqs[FILL_MAX];
 	int req_n = 0;
 	for (int d = 0; d < dev_n; d++) {
 		char ds[800];
 		if (find_datasheet(devs[d], source_dir, ds, sizeof(ds)))
-			collect_datasheet_reqs(ds, reqs, &req_n);
+			collect_datasheet_reqs(ds, devs[d], reqs, &req_n);
 	}
 
 	parse_result_free(&pr);
@@ -211,7 +227,16 @@ int arche_fill_driver(const char *driver_path) {
 			}
 			fputs("\n// storage filled by `arche fill` from device datasheets (edit sizes as needed)\n", out);
 		}
-		fprintf(out, "%s[%d]\n", reqs[r].name, reqs[r].min);
+		/* Comment naming each contributing device + its own minimum (the sum is the pool size). */
+		char comment[1024];
+		int cn = 0;
+		for (int c = 0; c < reqs[r].contrib_n; c++)
+			cn += snprintf(comment + cn, sizeof(comment) - (size_t)cn, "%s%s: %d", c ? ", " : "",
+			               reqs[r].contrib_dev[c], reqs[r].contrib_min[c]);
+		if (reqs[r].contrib_n > 1)
+			fprintf(out, "%s[%d] // %s\n", reqs[r].name, reqs[r].min, comment);
+		else
+			fprintf(out, "%s[%d]\n", reqs[r].name, reqs[r].min);
 		printf("filled %s[%d]\n", reqs[r].name, reqs[r].min);
 		written++;
 	}

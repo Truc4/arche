@@ -95,7 +95,7 @@ reason :: func(status: int) -> char[] {
 /// `send_body` is 1 (0 for HEAD). `%d` formats the status + Content-Length; `%s` formats only the
 /// NUL-terminated `reason`/`ctype` literals — never a body slice (the body is sent raw).
 respond :: proc(
-  conn: net.socket,
+  conn: socket,
   hdr: char[],
   status: int,
   ctype: char[],
@@ -121,6 +121,6 @@ respond :: proc(
 
 /// Plain-text response (error pages). `msg` is the body AND its own Content-Length (a length-carried
 /// slice). Always sends the body.
-respond_text :: proc(conn: net.socket, hdr: char[], status: int, msg: char[]) {
+respond_text :: proc(conn: socket, hdr: char[], status: int, msg: char[]) {
   respond(conn, hdr, status, "text/plain; charset=utf-8", msg, 1);
 }

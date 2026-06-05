@@ -2777,6 +2777,33 @@ static int hir_is_collectible_decl(SyntaxNodeKind k) {
 	return k >= SN_WORLD_DECL && k <= SN_USE_DECL && k != SN_USE_DECL;
 }
 
+/* The module name an `#import` element resolves to: an IDENT is the name verbatim (device by name);
+ * a STRING is a path (module by path) whose name is the basename minus a trailing `.arche`. Returns a
+ * malloc'd name (caller frees), or NULL for any other token. Mirror of compile.c's path handling. */
+static char *import_token_module_name(const char *src, const SyntaxElem *tok) {
+	if (tok->tag != SE_TOKEN)
+		return NULL;
+	TokenKind k = tok->as.token.kind;
+	if (k != TOK_IDENT && k != TOK_STRING)
+		return NULL;
+	size_t off = tok->as.token.offset, len = tok->as.token.length;
+	if (k == TOK_STRING && len >= 2) { /* strip the quotes */
+		off += 1;
+		len -= 2;
+	}
+	char *s = txt_dup((CvText){src + off, len});
+	if (k == TOK_STRING) {
+		char *slash = strrchr(s, '/');
+		char *base = slash ? slash + 1 : s; /* basename */
+		size_t bl = strlen(base);
+		if (bl > 6 && strcmp(base + bl - 6, ".arche") == 0)
+			base[bl - 6] = '\0';
+		if (base != s)
+			memmove(s, base, strlen(base) + 1);
+	}
+	return s;
+}
+
 /* Inline module `mod_name` into `ast` (prefixed so intra-module refs resolve), record its exports
  * for the qualify pass, then RECURSIVELY inline its own `#import`s — mirror of sem_inline_module so
  * a module may use qualified access to a transitive import (`csv` → `parse.atof`). Dedup = cycle-safe. */
@@ -2862,9 +2889,11 @@ static void hir_inline_module(const char *mod_name, HirProgram *ast, char **mod_
 				continue;
 			const SyntaxNode *un = mr->children[j].as.node;
 			for (int t = 0; t < un->child_count; t++) {
-				if (un->children[t].tag != SE_TOKEN || un->children[t].as.token.kind != TOK_IDENT)
+				if (un->children[t].tag != SE_TOKEN)
 					continue;
-				char *sub = txt_dup((CvText){msrc + un->children[t].as.token.offset, un->children[t].as.token.length});
+				char *sub = import_token_module_name(msrc, &un->children[t]);
+				if (!sub)
+					continue;
 				hir_inline_module(sub, ast, mod_prefix, mod_exports, mod_export_n, inlined);
 				free(sub);
 			}
@@ -2970,18 +2999,17 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 		CstView dv = {root->children[i].as.node, src};
 
 		if (k == SN_USE_DECL) {
-			/* One IDENT per imported module (bare `#import io`, or block `#import { io net }`).
-			 * Inline each: auto-prefix every name it declares (and internal refs) with `<module>_`.
-			 * A module is a folder, so it may register as several files under one name — inline all. */
+			/* One element per import: IDENT = device by name, STRING = module by path. Inline each:
+			 * auto-prefix every name it declares (and internal refs) with `<module>_`. A module is a
+			 * folder, so it may register as several files under one name — inline all. */
 			const SyntaxNode *un = dv.node;
 			for (int t = 0; t < un->child_count; t++) {
-				if (un->children[t].tag != SE_TOKEN || un->children[t].as.token.kind != TOK_IDENT)
+				char *mod_name = import_token_module_name(src, &un->children[t]);
+				if (!mod_name)
 					continue;
-				char *mod_name =
-				    txt_dup((CvText){src + un->children[t].as.token.offset, un->children[t].as.token.length});
 				hir_inline_module(mod_name, ast, mod_prefix, mod_exports, mod_export_n, &inlined);
 				free(mod_name);
-			} /* end per-module-ident loop */
+			} /* end per-import loop */
 			continue;
 		}
 

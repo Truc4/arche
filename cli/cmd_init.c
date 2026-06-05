@@ -33,32 +33,40 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 	char path[600];
 
 	if (strcmp(kind, "device") == 0) {
-		/* A device is a folder of files; scaffold <name>/<name>.arche. */
+		/* A device is a folder: its TYPES + storage requirements live in <name>.ds.arche (the
+		 * datasheet); its BEHAVIOR (systems/procs) lives in <name>.arche. A driver provides the pool
+		 * (the datasheet states the minimum). The doctest in the impl drives the device's own shape —
+		 * `arche test` compiles it as a generated driver over the whole device folder. */
 		mkdir(name, 0755);
+
+		char ds_path[600];
+		snprintf(ds_path, sizeof(ds_path), "%s/%s.ds.arche", name, name);
+		const char *ds = "// Datasheet: the device's shared type vocabulary + storage requirements (NOT its impl).\n"
+		                 "// A driver provides the `Particle` pool; `Particle[4]` is the minimum it must size.\n"
+		                 "Particle :: arche { pos :: float, vel :: float }\n"
+		                 "Particle[4]\n";
+		if (write_new_file(ds_path, ds) != ARCHE_OK)
+			return ARCHE_ERR;
+
 		snprintf(path, sizeof(path), "%s/%s.arche", name, name);
-		char content[2048];
-		snprintf(content, sizeof(content),
-		         "// %s — a device: it defines shapes + systems but does not size the pool.\n"
-		         "// A driver sizes the shape (`%s.Particle[N]`) and runs the systems (`run %s.integrate`).\n"
-		         "#import { fmt }\n"
-		         "\n"
-		         "Particle :: arche { pos :: float, vel :: float }\n"
-		         "\n"
-		         "/// A device is tested by writing a driver for it. This doctest (a tiny driver) sizes\n"
-		         "/// the shape, inserts, drives the system, and checks the result.\n"
-		         "/// ```arche\n"
-		         "/// Particle[4]\n"
-		         "/// main :: proc() {\n"
-		         "///   insert(Particle, 10.0, 1.0);\n"
-		         "///   run integrate;\n"
-		         "///   fmt.assert(Particle.pos[0] * 10 == 110, \"integrate did not run\\n\");\n"
-		         "/// }\n"
-		         "/// ```\n"
-		         "integrate :: sys (pos, vel) {\n"
-		         "  pos = pos + vel;\n"
-		         "}\n",
-		         name, name, name);
-		return write_new_file(path, content);
+		const char *impl =
+		    "// A device: BEHAVIOR only (systems/procs). Its `Particle` shape + storage requirement live\n"
+		    "// in the datasheet (.ds.arche). The doctest below drives the device's own shape — `arche\n"
+		    "// test` compiles it as a generated driver, so the datasheet's `Particle[4]` provides the\n"
+		    "// pool with no manual sizing.\n"
+		    "#import { fmt }\n"
+		    "\n"
+		    "/// ```arche\n"
+		    "/// main :: proc() {\n"
+		    "///   insert(Particle, 10.0, 1.0);\n"
+		    "///   run integrate;\n"
+		    "///   fmt.assert(Particle.pos[0] * 10 == 110, \"integrate did not run\\n\");\n"
+		    "/// }\n"
+		    "/// ```\n"
+		    "integrate :: sys (pos, vel) {\n"
+		    "  pos = pos + vel;\n"
+		    "}\n";
+		return write_new_file(path, impl);
 	}
 
 	if (strcmp(kind, "driver") == 0) {

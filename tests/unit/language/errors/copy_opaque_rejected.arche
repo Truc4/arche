@@ -1,4 +1,4 @@
-// Opaque values are non-copyable (move-only): `copy` of one is a compile error. `io.file` is a
+// Opaque values are non-copyable (move-only): `copy` of one is a compile error. `file` is a
 // real opaque handle — no FFI stub needed.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "move-only" %t.out
 #import { io }

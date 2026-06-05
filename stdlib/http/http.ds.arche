@@ -1,0 +1,3 @@
+// Datasheet for the `http` device. http is a thin request/response layer over net+str+fmt: no storage
+// requirements, no exposed types (it uses net's `socket` type). Its API lives in http.arche, reached
+// via exports. The datasheet's presence marks http as a device (importable by name).

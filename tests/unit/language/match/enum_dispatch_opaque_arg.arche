@@ -1,5 +1,5 @@
 // Regression: a `match` arm that (a) makes a QUALIFIED call (`fmt.printf`) and (b) passes an OPAQUE
-// value (an `io.file` handle) to a proc. `match` desugars to a HIR_STMT_BLOCK; several lowering passes
+// value (an `file` handle) to a proc. `match` desugars to a HIR_STMT_BLOCK; several lowering passes
 // (qualify, intra-module rename) skipped BLOCK, so the qualified call kept an unresolved callee, and
 // codegen mis-typed the opaque arg as i32 (callee param type is now authoritative). All three fixes
 // are exercised here. `fd` is 0 (the path does not exist) — a valid opaque cell; the test checks the
@@ -7,7 +7,7 @@
 // RUN: %arche build -o %t %s && %t | grep -q "^health fd=0$"
 #import { io fmt }
 Route :: enum { files, health }
-fd_val :: proc(f: io.file)(v: int) {
+fd_val :: proc(f: file)(v: int) {
   if (f) {
     v = 1;
   }
