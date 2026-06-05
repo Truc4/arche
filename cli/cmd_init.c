@@ -64,6 +64,25 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 	if (strcmp(kind, "driver") == 0) {
 		/* A driver is the top-level program; scaffold <name>.arche. */
 		snprintf(path, sizeof(path), "%s.arche", name);
+
+		/* `arche init driver <name> <dev>...` — scaffold a driver that imports the named devices and
+		 * pre-fills a pool for each shape they require, at the datasheet minimum (editable). */
+		if (argc > 3) {
+			char content[2048];
+			int n =
+			    snprintf(content, sizeof(content), "// %s — a driver importing the named device(s).\n#import { ", name);
+			for (int i = 3; i < argc; i++)
+				n += snprintf(content + n, sizeof(content) - (size_t)n, "%s ", argv[i]);
+			n += snprintf(content + n, sizeof(content) - (size_t)n,
+			              "fmt }\n\nmain :: proc() {\n  // call the imported devices' systems here\n  "
+			              "fmt.printf(\"ran\\n\");\n}\n");
+			if (write_new_file(path, content) != ARCHE_OK)
+				return ARCHE_ERR;
+			/* Pull each device's required pools from its datasheet into the driver source. */
+			arche_fill_driver(path);
+			return ARCHE_OK;
+		}
+
 		char content[2048];
 		snprintf(content, sizeof(content),
 		         "// %s — a driver: it imports devices, sizes their shapes, and runs their systems.\n"

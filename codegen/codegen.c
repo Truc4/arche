@@ -1067,6 +1067,10 @@ static int get_arch_static_capacity(CodegenContext *ctx, const char *arch_name) 
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		if (ctx->ast->decls[i]->kind == HIR_DECL_STATIC) {
 			HirStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
+			/* A datasheet requirement is a minimum, not an allocation — it emits no storage; the
+			 * driver's own pool for the shape carries the real capacity. Skip requirements. */
+			if (s->is_requirement)
+				continue;
 			if (s->kind == HIR_STATIC_ARCHETYPE &&
 			    strcmp(canonical_arch_name(ctx, s->archetype.archetype_name), canonical_arch_name(ctx, arch_name)) ==
 			        0 &&
@@ -1091,6 +1095,8 @@ static int get_arch_static_count(CodegenContext *ctx, const char *arch_name) {
 			continue;
 		HirStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
 		if (s->kind != HIR_STATIC_ARCHETYPE)
+			continue;
+		if (s->is_requirement) /* datasheet minimum, not an allocation — emits no storage */
 			continue;
 		if (strcmp(canonical_arch_name(ctx, s->archetype.archetype_name), canonical_arch_name(ctx, arch_name)) != 0)
 			continue;
@@ -8244,6 +8250,11 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			break;
 		case HIR_DECL_STATIC: {
 			HirStaticDecl *s = decl->data.static_decl;
+			if (s->kind == HIR_STATIC_ARCHETYPE && s->is_requirement) {
+				/* A datasheet storage requirement (minimum rows) — emits no storage; the driver's
+				 * own pool for the shape is the real allocation. */
+				break;
+			}
 			if (s->kind == HIR_STATIC_ARCHETYPE) {
 				codegen_static_decl(ctx, s);
 			} else if (s->kind == HIR_STATIC_SCALAR) {

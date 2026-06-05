@@ -1,5 +1,5 @@
 // Datasheet for the `libdev` device: the components it requires the driver to provide. These are
-// shared GLOBAL vocabulary (`.i.arche` decls are registered unprefixed), so the driver references
+// shared GLOBAL vocabulary (`.ds.arche` decls are registered unprefixed), so the driver references
 // `pos`/`vel` by bare name and libdev's systems bind to the driver's shape. Not a standalone test.
 // RUN: true
 pos :: float

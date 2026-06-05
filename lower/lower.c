@@ -2244,7 +2244,7 @@ typedef struct {
 	char *name;
 	const SyntaxNode *root;
 	const char *src;
-	char *filename; /* source path; a `*.i.arche` file is a device datasheet (decls stay global) */
+	char *filename; /* source path; a `*.ds.arche` file is a device datasheet (decls stay global) */
 } LowerModule;
 static LowerModule g_modules[64];
 static int g_module_count = 0;
@@ -2261,7 +2261,7 @@ static int is_datasheet_file(const char *fn) {
 	if (!fn)
 		return 0;
 	size_t L = strlen(fn);
-	return L >= 8 && strcmp(fn + L - 8, ".i.arche") == 0;
+	return L >= 9 && strcmp(fn + L - 9, ".ds.arche") == 0;
 }
 
 void lower_add_module(const char *name, const SyntaxNode *root, const char *src, const char *filename) {
@@ -2723,6 +2723,23 @@ static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 	HirDecl *md = lower_decl_cst((CstView){node, msrc});
 	if (!md)
 		return;
+	/* A pool decl in a datasheet (`.ds.arche`) is a storage REQUIREMENT (min rows), not an allocation. */
+	if (is_datasheet && md->kind == HIR_DECL_STATIC && md->data.static_decl &&
+	    md->data.static_decl->kind == HIR_STATIC_ARCHETYPE)
+		md->data.static_decl->is_requirement = 1;
+	/* Datasheet shapes are shared global vocabulary: two devices may declare the SAME archetype.
+	 * Dedup it here — a second identical-named datasheet archetype would otherwise emit duplicate
+	 * codegen (one shape = one struct + one set of accessor funcs). Keep the first; drop the rest. */
+	if (is_datasheet && md->kind == HIR_DECL_ARCHETYPE && md->data.archetype && md->data.archetype->name) {
+		for (int e = 0; e < ast->decl_count; e++) {
+			if (ast->decls[e]->kind == HIR_DECL_ARCHETYPE && ast->decls[e]->data.archetype &&
+			    ast->decls[e]->data.archetype->name &&
+			    strcmp(ast->decls[e]->data.archetype->name, md->data.archetype->name) == 0) {
+				hir_decl_free(md);
+				return;
+			}
+		}
+	}
 	ast->decls[ast->decl_count++] = md;
 	int is_ext = (md->kind == HIR_DECL_PROC && md->data.proc->is_extern) ||
 	             (md->kind == HIR_DECL_FUNC && md->data.func->is_extern);
@@ -2731,7 +2748,7 @@ static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 		return;
 	/* Literal member access (no `<mod>_`-prefix stripping): foreign decls keep their C-symbol name
 	 * and are not renamed; pure-Arche decls are renamed to the qualified identity `<mod>.<name>`.
-	 * Datasheet (`.i.arche`) decls are shared global vocabulary — NOT renamed (skip the rename set),
+	 * Datasheet (`.ds.arche`) decls are shared global vocabulary — NOT renamed (skip the rename set),
 	 * so a driver and the device's systems reference them by the one bare name. */
 	if (!is_ext && !is_datasheet) {
 		if (*fulln == *fullcap) {
@@ -2780,7 +2797,7 @@ static void hir_inline_module(const char *mod_name, HirProgram *ast, char **mod_
 		found = 1;
 		const SyntaxNode *mr = g_modules[m].root;
 		const char *msrc = g_modules[m].src;
-		int ds = is_datasheet_file(g_modules[m].filename); /* `.i.arche` → decls stay global */
+		int ds = is_datasheet_file(g_modules[m].filename); /* `.ds.arche` → decls stay global */
 		int exported = 1;
 		for (int j = 0; j < mr->child_count; j++) {
 			if (mr->children[j].tag != SE_NODE)

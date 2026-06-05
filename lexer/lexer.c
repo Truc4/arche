@@ -445,8 +445,6 @@ Token lexer_next_token(Lexer *lexer) {
 			k = TOK_EACH_FIELD;
 		else if (wlen == 6 && strncmp(word, "module", 6) == 0)
 			k = TOK_HASH_MODULE;
-		else if (wlen == 6 && strncmp(word, "plugin", 6) == 0)
-			k = TOK_HASH_MODULE; /* `#plugin` — the device/driver spelling of the module-private banner */
 		else if (wlen == 4 && strncmp(word, "file", 4) == 0)
 			k = TOK_HASH_FILE;
 		else if (wlen == 7 && strncmp(word, "foreign", 7) == 0)

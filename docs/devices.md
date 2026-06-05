@@ -51,18 +51,18 @@ Components are **program-global** and defined exactly once; reference a componen
 
 ## Visibility
 
-`#plugin` (the device/driver spelling of `#module`) is a banner region marking the decls below it as **device-private** — visible across the device's files, hidden from importers. `#file` narrows to file-local.
+`#module` is a banner region marking the decls below it as **device-private** — visible across the device's files, hidden from importers. `#file` narrows to file-local.
 
 ## Testing a device
 
 A device is tested by writing a **driver for it**, inline as a doctest: the doctest sizes the device's shapes, drives its systems, and asserts results. Doctests run under `arche test` and never reach a real driver's build.
 
-## The datasheet (`.i.arche`) and `@implements`
+## The datasheet (`.ds.arche`) and `@implements`
 
-A device can declare the **components it requires** in a `<name>.i.arche` *datasheet* — these are shared **global** vocabulary (registered unprefixed), so the driver references them by bare name and builds its own shape from them. The device's systems then bind to the driver's shape by column name:
+A device can declare the **components it requires** in a `<name>.ds.arche` *datasheet* — these are shared **global** vocabulary (registered unprefixed), so the driver references them by bare name and builds its own shape from them. The device's systems then bind to the driver's shape by column name:
 
 ```arche
-// physics/physics.i.arche   — datasheet: the components physics requires
+// physics/physics.ds.arche   — datasheet: the components physics requires
 pos :: float
 vel :: float
 ```
@@ -89,6 +89,44 @@ bar :: float                  // bar IS physics's foo; physics's systems are rew
 
 A `run device.system` where no shape provides the system's components is a build error (not a silent no-op).
 
+## Storage requirements (datasheet minimums) and `arche fill`
+
+A datasheet may also state a **storage requirement** — the minimum number of rows the driver must
+provide for one of the device's shapes. A pool decl inside a `.ds.arche` is a *requirement*, not an
+allocation: it emits no storage; it records a minimum the driver's own pool must meet.
+
+```arche
+// store/store.ds.arche   — datasheet: store's shape + its minimum storage
+Node :: arche { key :: float, val :: float }
+Node[4]                    // REQUIREMENT: the driver must size Node to at least 4 rows
+```
+
+```arche
+// main.arche             — the driver owns the pool and sizes it (>= the minimum)
+#import { store }
+Node[8]                    // sized above the minimum; the device's systems run over this pool
+```
+
+Rules (the driver owns all storage; the datasheet only states minimums):
+
+- A driver pool smaller than the datasheet minimum is an error (`… requires >=N rows …`).
+- A required shape with **no** driver pool is a hard error (`no storage for … — run \`arche fill\` …`).
+- When two devices require the **same shape** (shapes are shared by structure), the minimums compose
+  by `max` and the build notes the shared pool. Identical datasheet vocabulary (components/shapes)
+  across devices dedups silently — declaring it twice is sharing, not a redefinition.
+- The shape may be written inline (`Node :: arche { key :: float, val :: float }`) or with the
+  components pre-defined first (`key :: float` / `val :: float` then `Node :: arche { key, val }`).
+  Both forms work.
+
+**`arche fill <driver>`** reads the datasheets of the devices a driver imports and writes a pool decl
+for each required shape the driver doesn't already size, at the minimum — into *your* source, where
+you edit it. It is idempotent (a shape already sized is left untouched). `arche init driver <name>
+<device>...` scaffolds a driver importing the devices and runs the same fill.
+
+Note: a device that declares its shape in its datasheet can't drive that shape from its **own**
+doctest — doctests run in single-file context and don't merge the sibling `.ds.arche`. A device is
+exercised by a driver (or the doctest declares its own local shape).
+
 ## Status
 
-Fully implemented and tested (`tests/unit/language/devices/`): qualified pool decls, anonymous-literal unification, cross-module `run device.system`, `#plugin`, the `.i.arche` datasheet, `@implements` name-mapping, and the unsatisfied-`run` diagnostic. See `docs/DEVICE_DRIVER_DECISIONS.md` for the design decisions.
+Fully implemented and tested (`tests/unit/language/devices/`): qualified pool decls, anonymous-literal unification, cross-module `run device.system`, `#module` visibility, the `.ds.arche` datasheet, `@implements` name-mapping, the unsatisfied-`run` diagnostic, datasheet storage requirements (minimums + composition + enforcement, `tests/unit/language/devices/storage/`), and `arche fill`. See `docs/DEVICE_DRIVER_DECISIONS.md` for the design decisions.

@@ -1,0 +1,14 @@
+// Pre-defined-component datasheet style: `vstore`'s datasheet defines components `a`/`b` separately,
+// then its `Cell` shape references them. The driver provides the pool (>= the minimum of 4) and runs
+// the device's system. Proves the pre-defined style works (companion to requirement_met.arche's inline style).
+// RUN: %arche build -o %t %s && %t | grep "predef_ok"
+#import { vstore fmt }
+
+Cell[8] // driver pool >= the datasheet minimum of 4
+
+main :: proc() {
+  insert(Cell, 1.0, 2.0);
+  run vstore.vbump; // b: 2 -> 3
+  fmt.assert(Cell.b[0] == 3.0, "vstore.vbump did not run\n");
+  fmt.printf("predef_ok\n");
+}

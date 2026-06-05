@@ -74,6 +74,12 @@ int analyze_run(int argc, char **argv, const GlobalOpts *g);
 int completion_run(int argc, char **argv, const GlobalOpts *g);
 int version_run(int argc, char **argv, const GlobalOpts *g);
 int init_run(int argc, char **argv, const GlobalOpts *g);
+int fill_run(int argc, char **argv, const GlobalOpts *g);
+
+/* Append a pool decl to driver `path` for each imported device's required shape it does not already
+ * size, at the datasheet minimum (composed by max). Idempotent. Returns pools written, or -1 on
+ * error. Shared by `arche fill` and `arche init driver`. */
+int arche_fill_driver(const char *path);
 
 /* Print the long-form explanation for a diagnostic code (from the explain dir) to stdout; returns
  * ARCHE_OK if found, ARCHE_ERR (with a short note) otherwise. Shared by `explain` and `--explain`. */

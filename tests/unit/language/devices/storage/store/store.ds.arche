@@ -1,0 +1,7 @@
+// Datasheet for the `store` device: it requires the driver to provide storage for its `Node` shape,
+// at least 4 rows. `Node` is the shared GLOBAL shape (`.ds.arche` decls register unprefixed);
+// `Node[4]` in a datasheet is a storage REQUIREMENT (minimum), never an allocation. The driver owns
+// the real pool and may size it larger. Support file.
+// RUN: true
+Node :: arche { key :: float, val :: float }
+Node[4]

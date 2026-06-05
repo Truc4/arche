@@ -1,0 +1,9 @@
+// Datasheet for `vstore`, declared in the PRE-DEFINED style: components `a`/`b` are defined as
+// top-level component types first, then the `Cell` shape references them by bare name (vs the inline
+// `Cell :: arche { a :: float, b :: float }` style). Both styles must work. `Cell[4]` is the storage
+// requirement (minimum). Support file.
+// RUN: true
+a :: float
+b :: float
+Cell :: arche { a, b }
+Cell[4]

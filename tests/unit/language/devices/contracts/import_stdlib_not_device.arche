@@ -1,5 +1,5 @@
 // RULE (NOT yet enforced — EXPECTED TO FAIL until it is):
-//   The stdlib modules are proc/func libraries with no `.i.arche` contract, so they are NOT devices.
+//   The stdlib modules are proc/func libraries with no `.ds.arche` contract, so they are NOT devices.
 //   A driver must not be able to `#import { net }` (or fmt, io, str, …) until they are restructured
 //   as devices with declared interfaces. `net` in particular exposes a top-level public
 //   `socket :: opaque` from its implementation file with no contract — exactly what this forbids.

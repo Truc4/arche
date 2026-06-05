@@ -1,0 +1,5 @@
+// `vstore` implementation: a system over the datasheet's `Cell` shape (pre-defined components). Support file.
+// RUN: true
+vbump :: sys (b) {
+  b = b + 1.0;
+}

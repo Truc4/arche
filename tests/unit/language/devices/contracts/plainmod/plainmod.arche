@@ -1,4 +1,4 @@
-// A plain module: just a proc, NO `.i.arche` datasheet — so it is NOT a device. Support file for
+// A plain module: just a proc, NO `.ds.arche` datasheet — so it is NOT a device. Support file for
 // import_non_device.arche (not a standalone test).
 // RUN: true
 greet :: func() -> int {

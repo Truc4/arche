@@ -26,7 +26,11 @@ typedef struct {
 	char *signature; /* deterministic key: "field:type:kind;" per field in order */
 	FieldInfo **fields;
 	int field_count;
-	int is_allocated; /* 1 once any alias for this shape has been alloc'd */
+	int is_allocated;   /* 1 once any alias for this shape has been alloc'd */
+	int alloc_capacity; /* the driver pool's capacity (rows), 0 if not allocated by the driver */
+	int min_rows;       /* max storage REQUIREMENT from device datasheets; the driver pool must meet it */
+	int req_count;      /* how many distinct datasheets posted a requirement on this shape (shared-shape) */
+	char *req_first;    /* name in the first requirement's decl (for the shared-shape build note) */
 } ArchetypeInfo;
 
 typedef struct {
@@ -914,15 +918,17 @@ static int is_type_conversion_callee(SemanticContext *ctx, const char *name) {
  * `loc` is the alias declaration's source position — used for the redefinition error
  * and stored so the late "unknown backing" pass can blame the original site. */
 static void register_type_alias_tiered(SemanticContext *ctx, const char *name, const char *backing, int transparent,
-                                       SourceLoc loc) {
+                                       SourceLoc loc, int from_datasheet) {
 	for (int j = 0; j < ctx->type_alias_count; j++) {
 		if (strcmp(ctx->type_alias_names[j], name) == 0) {
 			/* Define-once: a type/component name is declared exactly once program-wide. A second
 			 * definition with a different backing is E0010; with the same backing it's still a
-			 * redefinition (E0045) — reference the name instead of redeclaring it. */
+			 * redefinition (E0045) — reference the name instead of redeclaring it.
+			 * EXCEPTION: a datasheet decl that AGREES with an existing definition is shared global
+			 * vocabulary (two devices using the same shape) — dedup silently, do not trip E0045. */
 			if (strcmp(ctx->type_alias_backings[j], backing) != 0)
 				sem_emit_type_alias_redefined(ctx, loc, name);
-			else
+			else if (!from_datasheet)
 				sem_emit_component_redefined(ctx, loc, name);
 			return;
 		}
@@ -939,8 +945,9 @@ static void register_type_alias_tiered(SemanticContext *ctx, const char *name, c
 }
 
 /* Back-compat shim: the common case registers a tier-2 subtype (the distinct-by-default). */
-static void register_type_alias(SemanticContext *ctx, const char *name, const char *backing, SourceLoc loc) {
-	register_type_alias_tiered(ctx, name, backing, 0, loc);
+static void register_type_alias(SemanticContext *ctx, const char *name, const char *backing, SourceLoc loc,
+                                int from_datasheet) {
+	register_type_alias_tiered(ctx, name, backing, 0, loc, from_datasheet);
 }
 
 /* 1 if `name` is a registered TRANSPARENT (tier-1) alias — same identity as its backing. A tier-2
@@ -2011,7 +2018,7 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 					sem_emit_local_alias_invalid_backing(ctx, stmt->loc);
 				} else {
 					register_type_alias_tiered(ctx, b->name, backing, b->type_value ? b->type_value->is_transparent : 0,
-					                           stmt->loc);
+					                           stmt->loc, 0);
 					const char *resolved = resolve_type_alias(ctx, b->name);
 					if (!is_primitive_type_name(resolved) && strcmp(resolved, "opaque") != 0) {
 						sem_emit_type_alias_unknown_backing(ctx, stmt->loc, b->name, resolved);
@@ -2518,6 +2525,10 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 		shape = malloc(sizeof(ArchetypeInfo));
 		shape->signature = sig;
 		shape->is_allocated = 0;
+		shape->alloc_capacity = 0;
+		shape->min_rows = 0;
+		shape->req_count = 0;
+		shape->req_first = NULL;
 
 		/* Count total fields after expanding tuples */
 		int expanded_field_count = 0;
@@ -2682,6 +2693,24 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 		return;
 	}
 
+	/* A pool decl from a device datasheet is a storage REQUIREMENT, not an allocation: it records a
+	 * minimum the driver's own pool must meet (composed by `max` across datasheets), never allocates.
+	 * The driver-pool-meets-minimum and missing-pool checks happen in the final sweep (sem_check_storage
+	 * _requirements), so the order of requirement vs allocation decls does not matter. */
+	if (alloc->is_requirement) {
+		if (alloc->archetype.field_count > 0 && alloc->archetype.field_values[0] &&
+		    alloc->archetype.field_values[0]->type == EXPR_LITERAL &&
+		    alloc->archetype.field_values[0]->data.literal.lexeme) {
+			int min = atoi(alloc->archetype.field_values[0]->data.literal.lexeme);
+			if (min > arch->min_rows)
+				arch->min_rows = min;
+		}
+		arch->req_count++;
+		if (!arch->req_first)
+			arch->req_first = sem_dupz(alloc->archetype.archetype_name);
+		return;
+	}
+
 	/* Check if this shape has already been allocated. Each shape (field structure)
 	   can have multiple archetype handles/names pointing to it, but only one can
 	   allocate/initialize it. Once allocated, the shape is live in the world. */
@@ -2706,6 +2735,9 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 		ctx->error_count++;
 		return;
 	}
+	/* Record the driver pool's capacity so the final sweep can check it against datasheet minimums. */
+	if (count_expr->data.literal.lexeme)
+		arch->alloc_capacity = atoi(count_expr->data.literal.lexeme);
 
 	/* Validate: init block requires explicit init_size parameter */
 	if (alloc->archetype.field_count > 1 && !alloc->archetype.init_length) {
@@ -2719,6 +2751,48 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 	/* Analyze field initialization expressions */
 	for (int i = 1; i < alloc->archetype.field_count; i++) {
 		analyze_expression(ctx, alloc->archetype.field_values[i]);
+	}
+}
+
+/* Format a shape's component names as "{a, b, c}" into `out` (for diagnostics). */
+static void sem_format_shape_fields(ArchetypeInfo *arch, char *out, size_t cap) {
+	size_t n = 0;
+	n += (size_t)snprintf(out + n, n < cap ? cap - n : 0, "{");
+	for (int i = 0; i < arch->field_count && n < cap; i++)
+		n += (size_t)snprintf(out + n, n < cap ? cap - n : 0, "%s%s", i ? ", " : "",
+		                      arch->fields[i]->name ? arch->fields[i]->name : "?");
+	if (n < cap)
+		snprintf(out + n, cap - n, "}");
+}
+
+/* Final sweep (after all decls analyzed): a device datasheet posts a storage REQUIREMENT (min rows)
+ * on a shape; the driver owns the actual pool. Enforce: a required shape with no driver pool is a
+ * hard error; a driver pool smaller than the composed minimum is an error. Also emit a non-fatal note
+ * when two+ datasheets require the same shape (shared pool). Sizing is keyed off the shape, so order
+ * of requirement vs allocation decls does not matter. */
+static void sem_check_storage_requirements(SemanticContext *ctx) {
+	for (int a = 0; a < ctx->archetype_count; a++) {
+		ArchetypeInfo *arch = ctx->archetypes[a];
+		if (!arch || arch->min_rows <= 0)
+			continue;
+		char fields[512];
+		sem_format_shape_fields(arch, fields, sizeof(fields));
+		const char *nm = arch->req_first ? arch->req_first : "shape";
+		if (!arch->is_allocated) {
+			fprintf(stderr,
+			        "Error: no storage for %s required by a device datasheet — run `arche fill` or add %s[%d]\n",
+			        fields, nm, arch->min_rows);
+			ctx->error_count++;
+			continue;
+		}
+		if (arch->alloc_capacity < arch->min_rows) {
+			fprintf(stderr, "Error: a device requires >=%d rows of %s; the driver sized %d\n", arch->min_rows, fields,
+			        arch->alloc_capacity);
+			ctx->error_count++;
+		}
+		if (arch->req_count >= 2)
+			fprintf(stderr, "note: %d device datasheets require %s -> one shared pool, size = %d\n", arch->req_count,
+			        fields, arch->alloc_capacity);
 	}
 }
 
@@ -5474,7 +5548,7 @@ typedef struct {
 	char *name;
 	const SyntaxNode *root;
 	const char *src;
-	char *filename; /* source path; a `*.i.arche` file is a device datasheet (decls stay global) */
+	char *filename; /* source path; a `*.ds.arche` file is a device datasheet (decls stay global) */
 } SemModule;
 static SemModule g_sem_modules[64];
 static int g_sem_module_count = 0;
@@ -5485,7 +5559,7 @@ static int sem_is_datasheet_file(const char *fn) {
 	if (!fn)
 		return 0;
 	size_t L = strlen(fn);
-	return L >= 8 && strcmp(fn + L - 8, ".i.arche") == 0;
+	return L >= 9 && strcmp(fn + L - 9, ".ds.arche") == 0;
 }
 
 void semantic_add_module(const char *name, const SyntaxNode *root, const char *src, const char *filename) {
@@ -5965,6 +6039,13 @@ static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 	Decl *md = cst_build_decl((CstView){node, msrc});
 	if (!md)
 		return;
+	/* Datasheet decls are shared global vocabulary: mark them so identical component/type redefs
+	 * across two datasheets dedup (devices sharing a shape) instead of tripping define-once. */
+	md->is_datasheet = is_datasheet;
+	/* A pool decl in a datasheet (`.ds.arche`) is a storage REQUIREMENT (min rows), not an allocation. */
+	if (is_datasheet && md->kind == DECL_STATIC && md->data.static_decl &&
+	    md->data.static_decl->kind == STATIC_KIND_ARCHETYPE)
+		md->data.static_decl->is_requirement = 1;
 	prog->decls[prog->decl_count++] = md;
 	int is_ext =
 	    (md->kind == DECL_PROC && md->data.proc->is_extern) || (md->kind == DECL_FUNC && md->data.func->is_extern);
@@ -5975,7 +6056,7 @@ static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 	 * decl named `net_send` is `net.net_send`. Foreign decls keep their declared name (the C ABI
 	 * symbol) and are NOT renamed; pure-Arche decls are renamed to the qualified identity
 	 * `<mod>.<name>` so two modules' same-named decls stay distinct AND diagnostics show a clean
-	 * qualified name. Datasheet (`.i.arche`) decls are shared global vocabulary — NOT renamed, so a
+	 * qualified name. Datasheet (`.ds.arche`) decls are shared global vocabulary — NOT renamed, so a
 	 * driver and the device's systems reference them by the one bare name (mirror of lower.c). */
 	if (!is_ext && !is_datasheet) {
 		if (*fulln == *fullcap) {
@@ -6027,7 +6108,7 @@ static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc
 		found = 1;
 		const SyntaxNode *mr = g_sem_modules[m].root;
 		const char *msrc = g_sem_modules[m].src;
-		int ds = sem_is_datasheet_file(g_sem_modules[m].filename); /* `.i.arche` → decls stay global */
+		int ds = sem_is_datasheet_file(g_sem_modules[m].filename); /* `.ds.arche` → decls stay global */
 		int exported = 1;                                          /* band resets per file */
 		for (int j = 0; j < mr->child_count; j++) {
 			if (mr->children[j].tag != SE_NODE)
@@ -6215,6 +6296,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 	int *deferred_value_ctx = malloc(sizeof(int) * deferred_cap);
 	int *deferred_transparent = malloc(sizeof(int) * deferred_cap);
 	int *deferred_done = calloc(deferred_cap, sizeof(int));
+	int *deferred_datasheet = calloc(deferred_cap, sizeof(int)); /* shared datasheet vocab dedups on agreement */
 	SourceLoc *deferred_loc = malloc(sizeof(SourceLoc) * deferred_cap);
 	int deferred_count = 0;
 
@@ -6222,6 +6304,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 		if (prog->decls[i]->kind != DECL_CONST)
 			continue;
 		ConstDecl *c = prog->decls[i]->data.constant;
+		int ds = prog->decls[i]->is_datasheet; /* shared datasheet vocabulary dedups on agreement */
 
 		/* Loc for diagnostics + registry storage: prefer the value/type-form's own loc
 		 * (the offending sub-node) over the wrapping Decl's; falls back to decl loc. */
@@ -6246,14 +6329,14 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 					size_t L = strlen(c->name) + 1 + strlen(fn) + 1;
 					char *aname = malloc(L);
 					snprintf(aname, L, "%s_%s", c->name, fn);
-					register_type_alias(ctx, aname, fbacking, ft->loc); /* aname leaks like the old path */
+					register_type_alias(ctx, aname, fbacking, ft->loc, ds); /* aname leaks like the old path */
 				}
 			} else {
 				const char *backing = type_backing_name(c->type_value);
 				if (!backing)
 					sem_emit_alias_backing_invalid(ctx, c->type_value->loc);
 				else
-					register_type_alias_tiered(ctx, c->name, backing, c->type_value->is_transparent, cloc);
+					register_type_alias_tiered(ctx, c->name, backing, c->type_value->is_transparent, cloc, ds);
 			}
 			continue;
 		}
@@ -6277,6 +6360,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 			deferred_rhs[deferred_count] = c->value->data.name.name;
 			deferred_value_ctx[deferred_count] = (c->decl_type != NULL);
 			deferred_transparent[deferred_count] = c->is_transparent;
+			deferred_datasheet[deferred_count] = ds;
 			deferred_loc[deferred_count] = cloc;
 			deferred_count++;
 			continue;
@@ -6297,7 +6381,8 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 				if (deferred_value_ctx[d]) {
 					sem_emit_const_value_is_type(ctx, deferred_loc[d], deferred_name[d], r);
 				} else {
-					register_type_alias_tiered(ctx, deferred_name[d], r, deferred_transparent[d], deferred_loc[d]);
+					register_type_alias_tiered(ctx, deferred_name[d], r, deferred_transparent[d], deferred_loc[d],
+					                           deferred_datasheet[d]);
 				}
 				deferred_done[d] = 1;
 				progress = 1;
@@ -6327,8 +6412,8 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 		if (deferred_value_ctx[d]) {
 			sem_emit_unknown_const_value(ctx, deferred_loc[d], deferred_rhs[d], deferred_name[d]);
 		} else {
-			register_type_alias_tiered(ctx, deferred_name[d], deferred_rhs[d], deferred_transparent[d],
-			                           deferred_loc[d]);
+			register_type_alias_tiered(ctx, deferred_name[d], deferred_rhs[d], deferred_transparent[d], deferred_loc[d],
+			                           deferred_datasheet[d]);
 		}
 	}
 	free(deferred_name);
@@ -6336,6 +6421,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 	free(deferred_value_ctx);
 	free(deferred_transparent);
 	free(deferred_done);
+	free(deferred_datasheet);
 	free(deferred_loc);
 
 	/* Enums: register the type (as an int-backed alias so `m: method` resolves) and its variants
@@ -6347,7 +6433,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 		register_enum_entries(ctx, e);
 		/* An enum is a transparent (tier-1) int alias: variants are int values and `match`/comparison
 		 * treat the enum as int, so it must interchange with int freely. */
-		register_type_alias_tiered(ctx, sem_dupz(e->name), "int", 1, prog->decls[i]->loc);
+		register_type_alias_tiered(ctx, sem_dupz(e->name), "int", 1, prog->decls[i]->loc, prog->decls[i]->is_datasheet);
 	}
 
 	/* Inline component definitions: `arche Foo { hp :: int, … }` mints the nominal type `hp`
@@ -6358,6 +6444,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 	for (int i = 0; i < prog->decl_count; i++) {
 		if (prog->decls[i]->kind != DECL_ARCHETYPE)
 			continue;
+		int ds = prog->decls[i]->is_datasheet; /* datasheet shapes share vocabulary — dedup on agreement */
 		ArchetypeDecl *a = prog->decls[i]->data.archetype;
 		for (int f = 0; f < a->field_count; f++) {
 			FieldDecl *fd = a->fields[f];
@@ -6378,10 +6465,12 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 				if (strcmp(ctx->type_alias_names[j], fd->name) == 0) {
 					/* Define-once (E0045 on agreement, E0010 on a different backing): an inline
 					 * component that re-defines a name already minted elsewhere — by another
-					 * archetype or a top-level alias — is a redefinition, not a shared reference. */
+					 * archetype or a top-level alias — is a redefinition, not a shared reference.
+					 * EXCEPTION: a datasheet shape that AGREES is shared vocabulary (two devices using
+					 * the same shape) — dedup silently. */
 					if (strcmp(ctx->type_alias_backings[j], backing) != 0)
 						sem_emit_type_alias_redefined(ctx, fd->loc, fd->name);
-					else
+					else if (!ds)
 						sem_emit_component_redefined(ctx, fd->loc, fd->name);
 					done = 1;
 					break;
@@ -6391,7 +6480,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 				continue;
 			/* A component is a tier-2 subtype (distinct nominal, usable as backing) — same as a
 			 * top-level `name :: T`. Route through the registry helper so the tier array stays in sync. */
-			register_type_alias_tiered(ctx, fd->name, backing, 0, fd->loc);
+			register_type_alias_tiered(ctx, fd->name, backing, 0, fd->loc, ds);
 		}
 	}
 
@@ -6464,6 +6553,9 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 			analyze_decl(ctx, prog->decls[i]);
 		}
 	}
+
+	/* pass 2.5: device datasheet storage requirements vs the driver's pools (min met, none missing). */
+	sem_check_storage_requirements(ctx);
 
 	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The
 	 * two kinds are still distinct (keyword, `-> T` vs out-list, call form), but the name namespace
@@ -6723,6 +6815,7 @@ void semantic_context_free(SemanticContext *ctx) {
 	for (int i = 0; i < ctx->archetype_count; i++) {
 		ArchetypeInfo *arch = ctx->archetypes[i];
 		free(arch->signature);
+		free(arch->req_first);
 		for (int j = 0; j < arch->field_count; j++) {
 			free(arch->fields[j]->name);
 			/* don't free arch->fields[j]->type - owned by AST */
