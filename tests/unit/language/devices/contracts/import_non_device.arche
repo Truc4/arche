@@ -1,9 +1,11 @@
-// RULE (NOT yet enforced — this test is EXPECTED TO FAIL until it is):
-//   You can only `#import` a DEVICE. A device is a module with a declared interface (a `.ds.arche`
-//   datasheet). `plainmod` has no datasheet, so it is not a device, so importing it must be an error.
+// RULE (NOT yet enforced — EXPECTED TO FAIL until it is):
+//   You import a DEVICE by name and a plain MODULE by path. A bare name in `#import { … }` must
+//   resolve to a device (a unit with a `.ds.arche` datasheet); a non-device imported by bare name is
+//   an error telling you to import it by path instead (`#import { "./plainmod" }`).
+//   `plainmod` has no datasheet, so importing it by name must error.
 //
-// Today the import succeeds, no error is emitted, so the grep below finds nothing and the test FAILS.
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "not a device|only devices|no datasheet|no interface|is not a device" %t.out
+// Today `#import { plainmod }` succeeds, so the grep finds no error and the test FAILS.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "by path|not a device|import .* by path|only devices.*by name" %t.out
 #import { plainmod }
 
 main :: proc() {

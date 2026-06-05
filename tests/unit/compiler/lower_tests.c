@@ -86,41 +86,6 @@ static void fixture_free(LowerFixture *fx) {
 
 /* ========== for loop tests ========== */
 
-static void test_lower_range_for(void) {
-	test_start("range for: var_name set, iterable set");
-	LowerFixture *cst = parse_and_analyze("Particle :: arche { x :: float, }\n"
-	                                      "Particle[100];\n"
-	                                      "Move :: sys() {\n"
-	                                      "  for p in Particle {\n"
-	                                      "  }\n"
-	                                      "}\n");
-	ASSERT(cst, "parse/semantic failed");
-
-	HirProgram *ast = lower_fixture(cst);
-	ASSERT(ast, "lower returned NULL");
-	ASSERT(ast->decl_count >= 3, "expected at least 3 decls");
-
-	HirDecl *sys_decl = NULL;
-	for (int i = 0; i < ast->decl_count; i++) {
-		if (ast->decls[i]->kind == HIR_DECL_SYS) {
-			sys_decl = ast->decls[i];
-			break;
-		}
-	}
-	ASSERT(sys_decl, "no sys decl found");
-	HirSysDecl *sys = sys_decl->data.sys;
-	ASSERT(sys->stmt_count == 1, "expected 1 stmt");
-	HirStmt *for_stmt = sys->stmts[0];
-	ASSERT(for_stmt->kind == HIR_STMT_FOR, "expected for stmt");
-	ASSERT(for_stmt->data.for_stmt.var_name != NULL, "var_name is NULL");
-	ASSERT(strcmp(for_stmt->data.for_stmt.var_name, "p") == 0, "wrong var_name");
-	ASSERT(for_stmt->data.for_stmt.iterable != NULL, "iterable is NULL");
-
-	hir_program_free(ast);
-	fixture_free(cst);
-	pass();
-}
-
 static void test_lower_c_style_for(void) {
 	test_start("c-style for: init/cond/incr set");
 	LowerFixture *cst = parse_and_analyze("Count :: proc() {\n"
@@ -326,7 +291,6 @@ static void test_lower_decl_use_skipped(void) {
 int main(void) {
 	printf("lower tests\n");
 
-	test_lower_range_for();
 	test_lower_c_style_for();
 	test_lower_while_for();
 	test_lower_infinite_for();

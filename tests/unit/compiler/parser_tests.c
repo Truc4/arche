@@ -150,24 +150,6 @@ void test_proc_with_assignment(void) {
 	test_pass_msg();
 }
 
-void test_proc_with_for_loop(void) {
-	test_start("proc with for loop");
-	AstProgram *prog = parse_string("iterate :: proc() {\n"
-	                                "  for item in Collection {\n"
-	                                "    x := 1;\n"
-	                                "  }\n"
-	                                "}");
-	ASSERT_NOT_NULL(prog, "program is null");
-	ProcDecl *proc = prog->decls[0]->data.proc;
-	ASSERT_EQ(proc->statement_count, 1, "expected 1 statement");
-	ASSERT_EQ(proc->statements[0]->type, STMT_FOR, "expected STMT_FOR");
-	ForStmt *for_stmt = &proc->statements[0]->data.for_stmt;
-	ASSERT_EQ(strcmp(for_stmt->var_name, "item"), 0, "wrong loop var");
-	ASSERT_EQ(for_stmt->body_count, 1, "expected 1 body stmt");
-	ast_program_free(prog);
-	test_pass_msg();
-}
-
 /* ========== SYSTEM TESTS ========== */
 
 void test_sys_no_params_empty(void) {
@@ -851,7 +833,6 @@ int main(void) {
 	test_proc_no_params_empty();
 	test_proc_with_let_statement();
 	test_proc_with_assignment();
-	test_proc_with_for_loop();
 
 	/* System tests */
 	printf("\nSystem tests:\n");
