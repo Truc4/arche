@@ -1,6 +1,7 @@
 #include "semantic.h"
 #include "../parser/parser.h"
 #include "../syntax/syntax_view.h"
+#include "sem_decls.h"
 #include "sem_diag_internal.h"
 #include "sem_diagnostics.h"
 #include "sem_hints.h"
@@ -65,6 +66,9 @@ typedef struct {
 	int member_count;
 	SourceLoc loc;
 } GroupInfo;
+
+/* ParamSummary / FieldSummary / DeclSummary — the resolved per-decl signature side-table that
+ * supersedes walking AstProgram. Defined in sem_decls.h (shared with tycheck.c). */
 
 struct SemanticContext {
 	ArchetypeInfo **archetypes; /* one per unique shape */
@@ -141,11 +145,11 @@ struct SemanticContext {
 
 	/* Track the proc currently being analyzed (NULL if not in a proc body).
 	 * Used by each_field to verify its RHS is an `archetype` parameter of this proc. */
-	ProcDecl *current_proc;
+	DeclSummary *current_proc;
 
 	/* Track the func currently being analyzed (NULL if not in a func body). Used by STMT_RETURN
 	 * to require a value in a func and forbid one in a proc/sys (which use out-params). */
-	FuncDecl *current_func;
+	DeclSummary *current_func;
 
 	/* Track if inside proc/sys body (for alloc enforcement) */
 	int in_body;
@@ -167,6 +171,12 @@ struct SemanticContext {
 	 * context). The side model borrows type-name strings that live in it, so it must
 	 * outlive lowering+codegen — exactly like main.c keeps the parser-built `prog` alive. */
 	AstProgram *owned_prog;
+
+	/* AST-kill: the resolved decl-signature table that supersedes `owned_prog` for analysis.
+	 * Built once (post rename/qualify) and read by the decl analyzers, the cross-decl scans, and
+	 * tycheck. Owned here; freed at context teardown. */
+	DeclSummary **decls;
+	int decl_count;
 
 	/* AST-kill (transitional): TypeRefs built on demand by view-driven analysis (via cst_build_type)
 	 * are owned here and freed at context teardown — so a VariableInfo can borrow a type (and its
@@ -216,11 +226,11 @@ static int sig_part_cmp(const void *a, const void *b) {
  * "name:type:kind;" part per field and **sort** them, so `{a,b}` and `{b,a}` produce the
  * same signature and share a shape. (Codegen is keyed by archetype name + per-decl column
  * order, so the sort only affects shape dedup, not memory layout.) */
-static char *compute_shape_signature(FieldDecl **fields, int field_count) {
+static char *compute_shape_signature(FieldSummary *fields, int field_count) {
 	char **parts = field_count > 0 ? malloc(field_count * sizeof(char *)) : NULL;
 	size_t total = 1;
 	for (int i = 0; i < field_count; i++) {
-		FieldDecl *f = fields[i];
+		FieldSummary *f = &fields[i];
 		const char *type_name = "unknown";
 		if (f->type) {
 			if (f->type->kind == TYPE_NAME)
@@ -316,19 +326,13 @@ static void register_func(SemanticContext *ctx, const char *name) {
 
 /* 1 if `name` is the name of a proc / func / overload-group declared anywhere in the program
  * (order-independent — the whole AST exists). Backs callable-alias classification. */
-static int prog_has_callable(AstProgram *prog, const char *name) {
-	if (!prog || !name)
+static int prog_has_callable(SemanticContext *ctx, const char *name) {
+	if (!name)
 		return 0;
-	for (int i = 0; i < prog->decl_count; i++) {
-		Decl *d = prog->decls[i];
-		if (!d)
-			continue;
-		if (d->kind == DECL_PROC && d->data.proc && d->data.proc->name && strcmp(d->data.proc->name, name) == 0)
-			return 1;
-		if (d->kind == DECL_FUNC && d->data.func && d->data.func->name && strcmp(d->data.func->name, name) == 0)
-			return 1;
-		if (d->kind == DECL_FUNC_GROUP && d->data.func_group && d->data.func_group->name &&
-		    strcmp(d->data.func_group->name, name) == 0)
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if ((d->kind == DECL_PROC || d->kind == DECL_FUNC || d->kind == DECL_FUNC_GROUP) && d->name &&
+		    strcmp(d->name, name) == 0)
 			return 1;
 	}
 	return 0;
@@ -389,17 +393,17 @@ static char *sem_dupz(const char *s);
 
 /* Record an enum's type name + its (variant → value) entries. The type-alias-to-int registration
  * is done by the caller (register_type_alias is defined later). */
-static void register_enum_entries(SemanticContext *ctx, EnumDecl *e) {
+static void register_enum_entries(SemanticContext *ctx, DeclSummary *e) {
 	ctx->enum_type_names = realloc(ctx->enum_type_names, (ctx->enum_type_count + 1) * sizeof(char *));
 	ctx->enum_type_names[ctx->enum_type_count++] = sem_dupz(e->name);
-	for (int i = 0; i < e->variant_count; i++) {
+	for (int i = 0; i < e->enum_variant_count; i++) {
 		int n = ctx->enum_var_count;
 		ctx->enum_var_enum = realloc(ctx->enum_var_enum, (n + 1) * sizeof(char *));
 		ctx->enum_var_name = realloc(ctx->enum_var_name, (n + 1) * sizeof(char *));
 		ctx->enum_var_value = realloc(ctx->enum_var_value, (n + 1) * sizeof(long));
 		ctx->enum_var_enum[n] = sem_dupz(e->name);
-		ctx->enum_var_name[n] = sem_dupz(e->variant_names[i]);
-		ctx->enum_var_value[n] = e->variant_values[i];
+		ctx->enum_var_name[n] = sem_dupz(e->enum_variant_names[i]);
+		ctx->enum_var_value[n] = e->enum_variant_values[i];
 		ctx->enum_var_count++;
 	}
 }
@@ -452,6 +456,39 @@ static GroupInfo *find_group(SemanticContext *ctx, const char *name) {
 		if (strcmp(ctx->groups[i].name, name) == 0)
 			return &ctx->groups[i];
 	}
+	return NULL;
+}
+
+/* AST-kill: resolved decl-signature lookups (supersede the AstProgram `decls` scans).
+ * The summary of a proc or func named `name` (call-signature resolution), or NULL. */
+static DeclSummary *find_callable_sig(SemanticContext *ctx, const char *name) {
+	if (!name)
+		return NULL;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if ((d->kind == DECL_PROC || d->kind == DECL_FUNC) && d->name && strcmp(d->name, name) == 0)
+			return d;
+	}
+	return NULL;
+}
+
+/* The summary of a func named `name`, or NULL. */
+static DeclSummary *find_func_sig(SemanticContext *ctx, const char *name) {
+	if (!name)
+		return NULL;
+	for (int i = 0; i < ctx->decl_count; i++)
+		if (ctx->decls[i]->kind == DECL_FUNC && ctx->decls[i]->name && strcmp(ctx->decls[i]->name, name) == 0)
+			return ctx->decls[i];
+	return NULL;
+}
+
+/* The summary of a proc named `name`, or NULL. */
+static DeclSummary *find_proc_sig(SemanticContext *ctx, const char *name) {
+	if (!name)
+		return NULL;
+	for (int i = 0; i < ctx->decl_count; i++)
+		if (ctx->decls[i]->kind == DECL_PROC && ctx->decls[i]->name && strcmp(ctx->decls[i]->name, name) == 0)
+			return ctx->decls[i];
 	return NULL;
 }
 
@@ -510,23 +547,6 @@ static int type_ref_equal(const TypeRef *a, const TypeRef *b) {
 		return 1;
 	}
 	return 0;
-}
-
-static FuncDecl *find_func_decl_cst(AstProgram *prog, const char *name) {
-	if (!prog)
-		return NULL;
-	for (int i = 0; i < prog->decl_count; i++) {
-		Decl *d = prog->decls[i];
-		if (d->kind == DECL_FUNC && strcmp(d->data.func->name, name) == 0)
-			return d->data.func;
-	}
-	return NULL;
-}
-
-/* The first declared return type, or NULL. Single-return funcs have exactly one; this is
- * what scalar-position type inference uses (a multi-return func is only valid in a multi-bind). */
-static TypeRef *func_first_return_type(const FuncDecl *f) {
-	return (f && f->return_type_count > 0) ? f->return_types[0] : NULL;
 }
 
 static VariableInfo *find_variable(SemanticContext *ctx, const char *name) {
@@ -649,7 +669,7 @@ static void register_drop(SemanticContext *ctx, const char *type_name, const cha
 
 /* Validate a `@drop` proc's signature (`proc (own T)()`, T opaque, no out-params) and register
  * its destructor. Errors (E0118) on a bad signature without registering. */
-static void analyze_drop_decl(SemanticContext *ctx, ProcDecl *proc, const char *declared_type) {
+static void analyze_drop_decl(SemanticContext *ctx, DeclSummary *proc, const char *declared_type) {
 	if (!proc)
 		return;
 	if (proc->out_param_count != 0) {
@@ -662,8 +682,8 @@ static void analyze_drop_decl(SemanticContext *ctx, ProcDecl *proc, const char *
 		                      "a `@drop` destructor must take exactly one `own` parameter of an opaque type");
 		return;
 	}
-	Parameter *p = proc->params[0];
-	if (!p || !p->is_own) {
+	ParamSummary *p = &proc->params[0];
+	if (!p->is_own) {
 		sem_emit_drop_invalid(ctx, proc->loc, "a `@drop` destructor's parameter must be `own`");
 		return;
 	}
@@ -712,7 +732,7 @@ static void pop_scope(SemanticContext *ctx) {
 			int is_outparam_name = 0;
 			if (ctx->current_proc && v->name) {
 				for (int op = 0; op < ctx->current_proc->out_param_count; op++) {
-					const char *opn = ctx->current_proc->out_params[op]->name;
+					const char *opn = ctx->current_proc->out_params[op].name;
 					if (opn && strcmp(opn, v->name) == 0) {
 						is_outparam_name = 1;
 						break;
@@ -812,7 +832,7 @@ static void mark_last_const(SemanticContext *ctx) {
 
 static void analyze_expression(SemanticContext *ctx, SyntaxView v);
 static void analyze_statement(SemanticContext *ctx, SyntaxView v);
-static int proc_param_is_inout(ProcDecl *proc, int param_idx);
+static int proc_param_is_inout(DeclSummary *proc, int param_idx);
 static const char *resolve_expression_type(SemanticContext *ctx, SyntaxView v);
 static const char *lvalue_leftmost_name(Expression *expr);
 
@@ -837,18 +857,18 @@ static void implicit_move_consume(SemanticContext *ctx, SyntaxView v);
 static TypeRef *analysis_own_type(SemanticContext *ctx, TypeRef *t);
 
 /* Syntax-tree helpers used by the converted analysis, defined alongside cst_to_program below. */
-static SyntaxView sem_first_expr(SyntaxView v);
-static SyntaxView sem_node_at_expr(SyntaxView v, int idx);
-static SyntaxView sem_type_at(SyntaxView v, int idx);
+SyntaxView sem_first_expr(SyntaxView v);
+SyntaxView sem_node_at_expr(SyntaxView v, int idx);
+SyntaxView sem_type_at(SyntaxView v, int idx);
 static TypeRef *cst_build_type(SyntaxView t);
 static Statement *cst_build_stmt(SyntaxView s);
 static char *sem_cv_dup(SyntaxView v);
 static char *sem_txt_dup(SynText t);
-static char *sem_cv_dup_first_token(SyntaxView v);
-static SourceLoc sem_node_loc(const SyntaxNode *n);
+char *sem_cv_dup_first_token(SyntaxView v);
+SourceLoc sem_node_loc(const SyntaxNode *n);
 static Operator sem_tok_to_op(TokenKind k);
-static Operator sem_binary_op(SyntaxView v);
-static int sem_expr_count(SyntaxView v);
+Operator sem_binary_op(SyntaxView v);
+int sem_expr_count(SyntaxView v);
 /* Name string of an SN_NAME_EXPR view (mirrors cst_build_expr's SN_NAME_EXPR case, incl.
  * table<Name> → bare archetype). Caller frees. */
 static char *sv_name_expr_dup(SyntaxView e);
@@ -1044,15 +1064,15 @@ static int name_denotes_type(SemanticContext *ctx, const char *r) {
 /* For a typed value const `name : T : <literal>`, check the literal is compatible with the declared
  * type T. Only concrete primitive types are checked; a clear category mismatch (a float literal for
  * an int, a string for a number) is an error. So an explicit annotation is no longer inert. */
-static void check_const_literal_type(SemanticContext *ctx, ConstDecl *c) {
-	if (!c || !c->decl_type || c->decl_type->kind != TYPE_NAME)
+static void check_const_literal_type(SemanticContext *ctx, DeclSummary *c) {
+	if (!c || !c->const_decl_type || c->const_decl_type->kind != TYPE_NAME)
 		return; /* only concrete named declared types */
-	if (!c->value || c->value->type != EXPR_LITERAL)
+	if (c->const_value_kind != EXPR_LITERAL)
 		return; /* only literal RHS (a name RHS is a value-const chain, checked elsewhere) */
-	const char *want = resolve_type_alias(ctx, normalize_type_name(c->decl_type->data.name));
+	const char *want = resolve_type_alias(ctx, normalize_type_name(c->const_decl_type->data.name));
 	if (!is_primitive_type_name(want))
 		return; /* non-primitive declared type: out of scope for the literal check */
-	const char *got = resolve_expression_type(ctx, AST_SV(c->value)); /* "int" / "float" / "char" / "char_array" */
+	const char *got = resolve_expression_type(ctx, c->const_value); /* "int" / "float" / "char" / "char_array" */
 	if (!got)
 		return;
 	/* A value const is substituted as its raw literal lexeme, so the literal's category must match
@@ -1067,7 +1087,7 @@ static void check_const_literal_type(SemanticContext *ctx, ConstDecl *c) {
 	else if (strcmp(got, "float") == 0)
 		ok = 0;
 	if (!ok) {
-		sem_emit_const_type_mismatch(ctx, c->value->loc, c->name, want,
+		sem_emit_const_type_mismatch(ctx, c->const_value_loc, c->name, want,
 		                             strcmp(got, "char_array") == 0 ? "string" : got);
 	}
 }
@@ -1206,11 +1226,9 @@ static const char *resolve_base_chain_type(SemanticContext *ctx, SyntaxView v) {
 
 /* Return type of a plain func named `func_name` (the non-group func path of a call). */
 static const char *resolve_func_return(SemanticContext *ctx, const char *func_name) {
-	for (int i = 0; i < ctx->prog->decl_count; i++) {
-		Decl *decl = ctx->prog->decls[i];
-		if (decl->kind != DECL_FUNC || !decl->data.func->name || strcmp(decl->data.func->name, func_name) != 0)
-			continue;
-		TypeRef *rt = func_first_return_type(decl->data.func);
+	DeclSummary *fs = find_func_sig(ctx, func_name);
+	if (fs) {
+		TypeRef *rt = fs->return_type_count > 0 ? fs->return_types[0] : NULL;
 		if (!rt)
 			return NULL;
 		if (rt->kind == TYPE_HANDLE)
@@ -1348,7 +1366,7 @@ static const char *resolve_expression_type(SemanticContext *ctx, SyntaxView v) {
 				result = (r == func_name) ? canonical_cast_type(func_name) : r;
 			} else if (strcmp(func_name, "insert") == 0) {
 				result = "handle"; /* `insert(table<X>, …)` yields a handle (i64) */
-			} else if (ctx->prog) {
+			} else {
 				GroupInfo *gi = find_group(ctx, func_name);
 				if (gi) {
 					/* a group: pick the matching member by static arg types */
@@ -1356,13 +1374,13 @@ static const char *resolve_expression_type(SemanticContext *ctx, SyntaxView v) {
 					while (sv_present(sem_node_at_expr(v, argc)))
 						argc++;
 					for (int m = 0; m < gi->member_count && !result; m++) {
-						FuncDecl *fd = find_func_decl_cst(ctx->prog, gi->members[m]);
+						DeclSummary *fd = find_func_sig(ctx, gi->members[m]);
 						if (!fd || fd->param_count != argc)
 							continue;
 						int ok = 1;
 						for (int j = 0; j < argc; j++) {
 							const char *rt = resolve_expression_type(ctx, sem_node_at_expr(v, j));
-							TypeRef *pt = fd->params[j]->type;
+							TypeRef *pt = fd->params[j].type;
 							if (!rt || !pt || pt->kind != TYPE_NAME) {
 								ok = 0;
 								break;
@@ -1372,7 +1390,7 @@ static const char *resolve_expression_type(SemanticContext *ctx, SyntaxView v) {
 								break;
 							}
 						}
-						TypeRef *frt = func_first_return_type(fd);
+						TypeRef *frt = fd->return_type_count > 0 ? fd->return_types[0] : NULL;
 						if (ok && frt && frt->kind == TYPE_NAME)
 							result = normalize_type_name(frt->data.name);
 					}
@@ -1423,9 +1441,9 @@ static const char *nominal_type_of_expr(SemanticContext *ctx, SyntaxView v) {
 	/* simple (unqualified) callee only — a qualified `mod.f` has SN_FIELD_NAME children */
 	if (k == SN_CALL_EXPR && sv_count(v, SN_FIELD_NAME) == 0) {
 		char *cn = sem_cv_dup(sv_child(v, SN_CALLEE_NAME));
-		FuncDecl *fd = find_func_decl_cst(ctx->prog, cn);
+		DeclSummary *fd = find_func_sig(ctx, cn);
 		free(cn);
-		TypeRef *frt = func_first_return_type(fd);
+		TypeRef *frt = (fd && fd->return_type_count > 0) ? fd->return_types[0] : NULL;
 		if (frt && frt->kind == TYPE_NAME && is_type_alias(ctx, frt->data.name))
 			return frt->data.name;
 	}
@@ -1713,17 +1731,7 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 			int is_arch = find_archetype(ctx, func_name) != NULL;
 			int is_const = semantic_get_const_value(ctx, func_name) != NULL;
 			/* a user func/proc decl is a valid callee even if not in the known-func table */
-			int is_decl = 0;
-			if (ctx->prog)
-				for (int di = 0; di < ctx->prog->decl_count && !is_decl; di++) {
-					Decl *d = ctx->prog->decls[di];
-					if (!d)
-						continue;
-					if (d->kind == DECL_FUNC && d->data.func->name && strcmp(d->data.func->name, func_name) == 0)
-						is_decl = 1;
-					else if (d->kind == DECL_PROC && d->data.proc->name && strcmp(d->data.proc->name, func_name) == 0)
-						is_decl = 1;
-				}
+			int is_decl = find_callable_sig(ctx, func_name) != NULL;
 			if (cv)
 				cv->is_referenced = 1;
 			if (!is_known_func && !is_group && !is_decl && !cv && !is_arch && !is_const)
@@ -1734,17 +1742,7 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 
 		/* Resolve a callee proc up front to validate `_` placeholder args (legal only in an
 		 * in-out in-slot). */
-		ProcDecl *call_callee_proc = NULL;
-		if (func_name && ctx->prog) {
-			for (int i = 0; i < ctx->prog->decl_count; i++) {
-				Decl *d = ctx->prog->decls[i];
-				if (d && d->kind == DECL_PROC && d->data.proc && d->data.proc->name &&
-				    strcmp(d->data.proc->name, func_name) == 0) {
-					call_callee_proc = d->data.proc;
-					break;
-				}
-			}
-		}
+		DeclSummary *call_callee_proc = func_name ? find_proc_sig(ctx, func_name) : NULL;
 		for (int i = 0; i < argc; i++) {
 			SyntaxView arg = sem_node_at_expr(v, i);
 			if (sv_kind(arg) == SN_NAME_EXPR && sv_count(arg, SN_FIELD_NAME) == 0 && sv_text_eq(arg, "_")) {
@@ -1774,76 +1772,57 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 
 		GroupInfo *gi = find_group(ctx, func_name);
 		if (!gi) {
-			if (ctx->prog) {
-				for (int di = 0; di < ctx->prog->decl_count; di++) {
-					Decl *d = ctx->prog->decls[di];
-					if (!d)
+			DeclSummary *cs = find_callable_sig(ctx, func_name);
+			if (cs) {
+				int param_count = cs->param_count;
+				ParamSummary *params = cs->params;
+				int is_extern = cs->is_extern;
+				int is_proc = cs->kind == DECL_PROC;
+				/* value/action boundary: a proc/extern is an action — not nestable in an expr. */
+				if ((is_proc || is_extern) && !call_stmt_ok)
+					sem_emit_action_in_expression(ctx, loc, is_extern ? "extern" : "proc", func_name);
+				int n = param_count < argc ? param_count : argc;
+				/* explicit-view: record the resolved param (name + own) per argument node id */
+				for (int j = 0; j < n; j++) {
+					ParamSummary *p = &params[j];
+					SyntaxView a = sem_node_at_expr(v, j);
+					if (p->name && sv_present(a))
+						sem_hints_set_param(ctx->hints, sv_id(a), p->name, p->is_own);
+				}
+				/* own param: a bare move-only name is an implicit move */
+				for (int j = 0; j < n; j++) {
+					if (!params[j].is_own)
 						continue;
-					int param_count = 0;
-					Parameter **params = NULL;
-					int is_extern = 0;
-					if (d->kind == DECL_FUNC && d->data.func && d->data.func->name &&
-					    strcmp(d->data.func->name, func_name) == 0) {
-						param_count = d->data.func->param_count;
-						params = d->data.func->params;
-						is_extern = d->data.func->is_extern;
-					} else if (d->kind == DECL_PROC && d->data.proc && d->data.proc->name &&
-					           strcmp(d->data.proc->name, func_name) == 0) {
-						param_count = d->data.proc->param_count;
-						params = d->data.proc->params;
-						is_extern = d->data.proc->is_extern;
-					} else {
+					implicit_move_consume(ctx, sem_node_at_expr(v, j));
+				}
+				/* a `T[]` slice cannot satisfy a sized `T[N]` parameter */
+				for (int j = 0; j < n; j++) {
+					ParamSummary *p = &params[j];
+					if (!p->type || p->type->kind != TYPE_SHAPED_ARRAY)
 						continue;
-					}
-					/* value/action boundary: a proc/extern is an action — not nestable in an expr. */
-					if ((d->kind == DECL_PROC || is_extern) && !call_stmt_ok)
-						sem_emit_action_in_expression(ctx, loc, is_extern ? "extern" : "proc", func_name);
-					int n = param_count < argc ? param_count : argc;
-					/* explicit-view: record the resolved param (name + own) per argument node id */
-					for (int j = 0; j < n; j++) {
-						Parameter *p = params[j];
-						SyntaxView a = sem_node_at_expr(v, j);
-						if (p && p->name && sv_present(a))
-							sem_hints_set_param(ctx->hints, sv_id(a), p->name, p->is_own);
-					}
-					/* own param: a bare move-only name is an implicit move */
-					for (int j = 0; j < n; j++) {
-						Parameter *p = params[j];
-						if (!p || !p->is_own)
-							continue;
-						implicit_move_consume(ctx, sem_node_at_expr(v, j));
-					}
-					/* a `T[]` slice cannot satisfy a sized `T[N]` parameter */
-					for (int j = 0; j < n; j++) {
-						Parameter *p = params[j];
-						if (!p || !p->type || p->type->kind != TYPE_SHAPED_ARRAY)
-							continue;
-						SyntaxView a = sem_node_at_expr(v, j);
-						while (sv_present(a) && sv_kind(a) == SN_UNARY_EXPR &&
-						       (sv_has_token(a, TOK_MOVE) || sv_has_token(a, TOK_COPY)))
-							a = sem_first_expr(a);
-						if (sv_present(a) && sv_kind(a) == SN_NAME_EXPR && sv_count(a, SN_FIELD_NAME) == 0) {
-							char *nm = sv_name_expr_dup(a);
-							VariableInfo *av = find_variable(ctx, nm);
-							if (av && av->type && av->type->kind == TYPE_ARRAY) {
-								fprintf(stderr,
-								        "Error: cannot pass a slice `T[]` to a sized `T[N]` parameter '%s' — a "
-								        "slice's length is only known at runtime; sizing flows one way "
-								        "(`T[N]` decays to `T[]`), never back\n",
-								        p->name ? p->name : "?");
-								ctx->error_count++;
-							}
-							free(nm);
+					SyntaxView a = sem_node_at_expr(v, j);
+					while (sv_present(a) && sv_kind(a) == SN_UNARY_EXPR &&
+					       (sv_has_token(a, TOK_MOVE) || sv_has_token(a, TOK_COPY)))
+						a = sem_first_expr(a);
+					if (sv_present(a) && sv_kind(a) == SN_NAME_EXPR && sv_count(a, SN_FIELD_NAME) == 0) {
+						char *nm = sv_name_expr_dup(a);
+						VariableInfo *av = find_variable(ctx, nm);
+						if (av && av->type && av->type->kind == TYPE_ARRAY) {
+							fprintf(stderr,
+							        "Error: cannot pass a slice `T[]` to a sized `T[N]` parameter '%s' — a "
+							        "slice's length is only known at runtime; sizing flows one way "
+							        "(`T[N]` decays to `T[]`), never back\n",
+							        p->name ? p->name : "?");
+							ctx->error_count++;
 						}
+						free(nm);
 					}
-					if (!is_extern)
-						break;
-					/* extern-type nominal distinctness per argument */
+				}
+				/* extern-type nominal distinctness per argument */
+				if (is_extern) {
 					int check_count = param_count < argc ? param_count : argc;
 					for (int j = 0; j < check_count; j++) {
-						Parameter *p = params[j];
-						if (!p)
-							continue;
+						ParamSummary *p = &params[j];
 						if (p->type && p->type->kind == TYPE_NAME && is_type_alias(ctx, p->type->data.name)) {
 							const char *arg_nominal = nominal_type_of_expr(ctx, sem_node_at_expr(v, j));
 							if (arg_nominal && strcmp(arg_nominal, p->type->data.name) != 0)
@@ -1851,7 +1830,6 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 								                              p->name ? p->name : "?", p->type->data.name, arg_nominal);
 						}
 					}
-					break;
 				}
 			}
 			free(func_name);
@@ -1875,13 +1853,13 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 		if (can_diagnose) {
 			int match_count = 0;
 			for (int m = 0; m < gi->member_count; m++) {
-				FuncDecl *fd = find_func_decl_cst(ctx->prog, gi->members[m]);
+				DeclSummary *fd = find_func_sig(ctx, gi->members[m]);
 				if (!fd || fd->param_count != argc)
 					continue;
 				int ok = 1;
 				for (int j = 0; j < argc; j++) {
 					const char *rt = resolve_expression_type(ctx, sem_node_at_expr(v, j));
-					TypeRef *pt = fd->params[j]->type;
+					TypeRef *pt = fd->params[j].type;
 					if (!pt || pt->kind != TYPE_NAME) {
 						ok = 0;
 						break;
@@ -1950,7 +1928,7 @@ static void implicit_move_consume(SemanticContext *ctx, SyntaxView v) {
 
 /* ========== STATEMENT ANALYSIS ========== */
 
-static int sem_stmt_count(SyntaxView v) {
+int sem_stmt_count(SyntaxView v) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
@@ -1960,7 +1938,7 @@ static int sem_stmt_count(SyntaxView v) {
 		}
 	return c;
 }
-static SyntaxView sem_stmt_at(SyntaxView v, int idx) {
+SyntaxView sem_stmt_at(SyntaxView v, int idx) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
@@ -2327,8 +2305,8 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		int arch_param_ok = 0;
 		if (ctx->current_proc) {
 			for (int i = 0; i < ctx->current_proc->param_count; i++) {
-				Parameter *p = ctx->current_proc->params[i];
-				if (p && p->name && strcmp(p->name, arch_param) == 0 && p->type && p->type->kind == TYPE_ARCHETYPE) {
+				ParamSummary *p = &ctx->current_proc->params[i];
+				if (p->name && strcmp(p->name, arch_param) == 0 && p->type && p->type->kind == TYPE_ARCHETYPE) {
 					arch_param_ok = 1;
 					break;
 				}
@@ -2355,7 +2333,7 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		if (!mb) {
 			break;
 		}
-		ProcDecl *mb_callee_proc = NULL;
+		DeclSummary *mb_callee_proc = NULL;
 		SyntaxView mb_value = {NULL, v.src};
 		/* the value is the sole call/expr child */
 		for (int i = 0; i < v.node->child_count; i++)
@@ -2373,18 +2351,10 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		ctx->stmt_call_ok = 0;
 
 		/* resolve callee proc for the inout-redundant lint + out-param typing */
-		if (sv_present(mb_value) && sv_kind(mb_value) == SN_CALL_EXPR && ctx->prog) {
+		if (sv_present(mb_value) && sv_kind(mb_value) == SN_CALL_EXPR) {
 			const char *cn = ctx->model ? sem_model_callee_name(ctx->model, sv_id(mb_value)) : NULL;
 			char *cnf = cn ? sem_dupz(cn) : sem_cv_dup(sv_child(mb_value, SN_CALLEE_NAME));
-			if (cnf)
-				for (int i = 0; i < ctx->prog->decl_count; i++) {
-					Decl *d = ctx->prog->decls[i];
-					if (d && d->kind == DECL_PROC && d->data.proc && d->data.proc->name &&
-					    strcmp(d->data.proc->name, cnf) == 0) {
-						mb_callee_proc = d->data.proc;
-						break;
-					}
-				}
+			mb_callee_proc = find_proc_sig(ctx, cnf);
 			free(cnf);
 		}
 
@@ -2410,8 +2380,8 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		for (int i = 0; i < mb->data.multi_bind.target_count; i++) {
 			BindingTarget *t = &mb->data.multi_bind.targets[i];
 			TypeRef *bind_type = t->type;
-			if (!bind_type && mb_callee_proc && i < mb_callee_proc->out_param_count && mb_callee_proc->out_params[i])
-				bind_type = mb_callee_proc->out_params[i]->type;
+			if (!bind_type && mb_callee_proc && i < mb_callee_proc->out_param_count)
+				bind_type = mb_callee_proc->out_params[i].type;
 			if (t->is_new) {
 				/* already added above for "_"-filtered new targets; re-add to capture type/nominal */
 				if (t->name && strcmp(t->name, "_") != 0) {
@@ -2477,34 +2447,34 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 
 /* ========== DECLARATION ANALYSIS ========== */
 
-static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
+static void analyze_archetype_decl(SemanticContext *ctx, DeclSummary *arch) {
 	if (!arch)
 		return;
 
 	/* A `type`-typed component (`arche A { f :: type }`) is a generic component — not supported. */
 	for (int i = 0; i < arch->field_count; i++)
-		reject_meta_type(ctx, arch->fields[i]->type, "archetype component type");
+		reject_meta_type(ctx, arch->fields[i].type, "archetype component type");
 
 	/* proc/func types can't be archetype components — archetypes are data; per-row behavior
 	 * dispatch is the anti-pattern (Stage D dropped). Use `match` or a system instead. */
 	for (int i = 0; i < arch->field_count; i++) {
-		TypeRef *t = arch->fields[i]->type;
+		TypeRef *t = arch->fields[i].type;
 		if (!t)
 			continue;
 		/* inline `on_hit :: proc()()`, or a named callable-type alias `on_hit :: handler`. */
 		int callable = (t->kind == TYPE_PROC || t->kind == TYPE_FUNC) ||
 		               (t->kind == TYPE_NAME && callable_type_alias_ref(ctx, t->data.name) != NULL);
 		if (callable)
-			sem_emit_callable_in_archetype(ctx, arch->fields[i]->loc, arch->fields[i]->name);
+			sem_emit_callable_in_archetype(ctx, arch->fields[i].loc, arch->fields[i].name);
 	}
 
 	/* Set semantics: a component type may appear at most once in an archetype. The
 	 * component's type name IS its access path, so a repeat would be unreachable. */
 	for (int i = 0; i < arch->field_count; i++) {
 		for (int j = i + 1; j < arch->field_count; j++) {
-			if (arch->fields[i]->name && arch->fields[j]->name &&
-			    strcmp(arch->fields[i]->name, arch->fields[j]->name) == 0) {
-				sem_emit_duplicate_component(ctx, arch->fields[i]->loc, arch->fields[i]->name);
+			if (arch->fields[i].name && arch->fields[j].name &&
+			    strcmp(arch->fields[i].name, arch->fields[j].name) == 0) {
+				sem_emit_duplicate_component(ctx, arch->fields[i].loc, arch->fields[i].name);
 			}
 		}
 	}
@@ -2525,8 +2495,8 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 		/* Count total fields after expanding tuples */
 		int expanded_field_count = 0;
 		for (int i = 0; i < arch->field_count; i++) {
-			if (arch->fields[i]->type->kind == TYPE_TUPLE) {
-				expanded_field_count += arch->fields[i]->type->data.tuple.field_count;
+			if (arch->fields[i].type->kind == TYPE_TUPLE) {
+				expanded_field_count += arch->fields[i].type->data.tuple.field_count;
 			} else {
 				expanded_field_count++;
 			}
@@ -2538,7 +2508,7 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 		/* Populate fields, expanding tuples into virtual fields */
 		int field_idx = 0;
 		for (int i = 0; i < arch->field_count; i++) {
-			FieldDecl *field = arch->fields[i];
+			FieldSummary *field = &arch->fields[i];
 			if (field->type->kind == TYPE_TUPLE) {
 				/* Expand tuple into component fields */
 				for (int j = 0; j < field->type->data.tuple.field_count; j++) {
@@ -2574,13 +2544,13 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 
 	/* Validate handle types: must reference a known archetype. */
 	for (int i = 0; i < arch->field_count; i++) {
-		TypeRef *ft = arch->fields[i]->type;
+		TypeRef *ft = arch->fields[i].type;
 		if (ft->kind != TYPE_HANDLE)
 			continue;
 		const char *target = ft->data.handle.archetype_name;
 		if (!find_archetype(ctx, target)) {
 			fprintf(stderr, "Error: unknown archetype '%s' in handle type for field '%s'\n", target,
-			        arch->fields[i]->name);
+			        arch->fields[i].name);
 			ctx->error_count++;
 		}
 	}
@@ -2594,45 +2564,44 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 	ctx->aliases[ctx->alias_count++] = entry;
 }
 
-static void analyze_static_array_decl(SemanticContext *ctx, StaticDecl *s) {
+static void analyze_static_array_decl(SemanticContext *ctx, DeclSummary *s) {
 	if (!s)
 		return;
 
 	/* Validate element type is a scalar */
-	if (!s->array.element_type) {
-		fprintf(stderr, "Error: static array '%s' missing element type\n", s->array.name);
+	if (!s->static_type) {
+		fprintf(stderr, "Error: static array '%s' missing element type\n", s->name);
 		ctx->error_count++;
 		return;
 	}
 
-	if (s->array.element_type->kind != TYPE_NAME) {
-		fprintf(stderr, "Error: static array '%s' element type must be scalar (int, float, char, etc.)\n",
-		        s->array.name);
+	if (s->static_type->kind != TYPE_NAME) {
+		fprintf(stderr, "Error: static array '%s' element type must be scalar (int, float, char, etc.)\n", s->name);
 		ctx->error_count++;
 		return;
 	}
 
-	const char *type_name = s->array.element_type->data.name;
+	const char *type_name = s->static_type->data.name;
 	if (strcmp(type_name, "int") != 0 && strcmp(type_name, "float") != 0 && strcmp(type_name, "char") != 0 &&
 	    strcmp(type_name, "double") != 0) {
-		fprintf(stderr, "Error: static array '%s' has unsupported element type '%s'\n", s->array.name, type_name);
+		fprintf(stderr, "Error: static array '%s' has unsupported element type '%s'\n", s->name, type_name);
 		ctx->error_count++;
 		return;
 	}
 
 	/* Validate size is positive */
-	if (s->array.size <= 0) {
-		fprintf(stderr, "Error: static array '%s' has invalid size %d\n", s->array.name, s->array.size);
+	if (s->static_size <= 0) {
+		fprintf(stderr, "Error: static array '%s' has invalid size %d\n", s->name, s->static_size);
 		ctx->error_count++;
 		return;
 	}
 
 	/* Constant array initializers (`buf : T[N] = {…}`) are not lowered yet — zero-init only. */
-	if (s->array.init) {
+	if (s->static_has_init) {
 		fprintf(stderr,
 		        "Error: global '%s' array initializers are not yet implemented; declare it zero-initialized "
 		        "(`%s : T[N]`)\n",
-		        s->array.name, s->array.name);
+		        s->name, s->name);
 		ctx->error_count++;
 		return;
 	}
@@ -2642,45 +2611,55 @@ static void analyze_static_array_decl(SemanticContext *ctx, StaticDecl *s) {
 }
 
 /* A top-level mutable global's initial value must be compile-time-known (static storage is
- * initialized at compile/link time — there is no startup code). NULL = the implicit `= 0`. */
-static int sem_is_const_init(SemanticContext *ctx, Expression *e) {
-	if (!e)
+ * initialized at compile/link time — there is no startup code). An absent view = the implicit
+ * `= 0`. View form of the old sem_is_const_init (reads the tree, not the AST). */
+static int sem_is_const_init(SemanticContext *ctx, SyntaxView e) {
+	if (!sv_present(e))
 		return 1; /* implicit `= 0` */
-	if (e->type == EXPR_LITERAL)
+	SyntaxNodeKind k = sv_kind(e);
+	if (k == SN_LITERAL_EXPR || k == SN_STRING_EXPR)
 		return 1;
-	if (e->type == EXPR_NAME)
-		return semantic_get_const_value(ctx, e->data.name.name) != NULL;
-	/* `Enum.variant` folds to a compile-time int constant */
-	if (e->type == EXPR_FIELD && e->data.field.base && e->data.field.base->type == EXPR_NAME)
-		return enum_is_type(ctx, e->data.field.base->data.name.name);
+	if (k == SN_NAME_EXPR) {
+		char *nm = sv_name_expr_dup(e);
+		int r = semantic_get_const_value(ctx, nm) != NULL;
+		free(nm);
+		return r;
+	}
+	/* `Enum.variant` folds to a compile-time int constant — the leftmost name is an enum type. */
+	if (k == SN_FIELD_EXPR) {
+		char *nm = sv_resolved_name(ctx, e);
+		int r = nm && enum_is_type(ctx, nm);
+		free(nm);
+		return r;
+	}
 	return 0;
 }
 
-static void analyze_static_scalar_decl(SemanticContext *ctx, StaticDecl *s) {
+static void analyze_static_scalar_decl(SemanticContext *ctx, DeclSummary *s) {
 	if (!s)
 		return;
-	if (!s->scalar.type || s->scalar.type->kind != TYPE_NAME) {
-		fprintf(stderr, "Error: global '%s' has an invalid scalar type\n", s->scalar.name);
+	if (!s->static_type || s->static_type->kind != TYPE_NAME) {
+		fprintf(stderr, "Error: global '%s' has an invalid scalar type\n", s->name);
 		ctx->error_count++;
 		return;
 	}
-	if (!sem_is_const_init(ctx, s->scalar.init)) {
+	if (!sem_is_const_init(ctx, s->static_init)) {
 		fprintf(stderr, "Error: global '%s' initializer must be a compile-time constant (a literal or const)\n",
-		        s->scalar.name);
+		        s->name);
 		ctx->error_count++;
 		return;
 	}
 	/* Registration is hoisted (see the pre-pass); nothing to add here. */
 }
 
-static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
+static void analyze_static_decl(SemanticContext *ctx, DeclSummary *alloc) {
 	if (!alloc)
 		return;
 
 	/* Validate archetype exists */
-	ArchetypeInfo *arch = find_archetype(ctx, alloc->archetype.archetype_name);
+	ArchetypeInfo *arch = find_archetype(ctx, alloc->name);
 	if (!arch) {
-		fprintf(stderr, "Error: unknown archetype '%s' in alloc\n", alloc->archetype.archetype_name);
+		fprintf(stderr, "Error: unknown archetype '%s' in alloc\n", alloc->name);
 		ctx->error_count++;
 		return;
 	}
@@ -2690,16 +2669,11 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 	 * The driver-pool-meets-minimum and missing-pool checks happen in the final sweep (sem_check_storage
 	 * _requirements), so the order of requirement vs allocation decls does not matter. */
 	if (alloc->is_requirement) {
-		if (alloc->archetype.field_count > 0 && alloc->archetype.field_values[0] &&
-		    alloc->archetype.field_values[0]->type == EXPR_LITERAL &&
-		    alloc->archetype.field_values[0]->data.literal.lexeme) {
-			int min = atoi(alloc->archetype.field_values[0]->data.literal.lexeme);
-			if (min > arch->min_rows)
-				arch->min_rows = min;
-		}
+		if (alloc->static_pool_count >= 0 && alloc->static_pool_count > arch->min_rows)
+			arch->min_rows = alloc->static_pool_count;
 		arch->req_count++;
 		if (!arch->req_first)
-			arch->req_first = sem_dupz(alloc->archetype.archetype_name);
+			arch->req_first = sem_dupz(alloc->name);
 		return;
 	}
 
@@ -2708,41 +2682,39 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 	   allocate/initialize it. Once allocated, the shape is live in the world. */
 	if (arch->is_allocated) {
 		fprintf(stderr, "Error: Shape already allocated (archetype '%s' shares shape with an earlier allocation)\n",
-		        alloc->archetype.archetype_name);
+		        alloc->name);
 		ctx->error_count++;
 		return;
 	}
 	arch->is_allocated = 1;
 
 	/* Validate count is provided and is a literal */
-	if (alloc->archetype.field_count == 0 || !alloc->archetype.field_values[0]) {
+	if (alloc->static_field_count == 0 || !sv_present(alloc->static_fields[0])) {
 		fprintf(stderr, "Error: alloc missing count expression\n");
 		ctx->error_count++;
 		return;
 	}
 
-	Expression *count_expr = alloc->archetype.field_values[0];
-	if (count_expr->type != EXPR_LITERAL) {
+	if (alloc->static_pool_count < 0) {
 		fprintf(stderr, "Error: alloc count must be a literal; dynamic counts not yet supported\n");
 		ctx->error_count++;
 		return;
 	}
 	/* Record the driver pool's capacity so the final sweep can check it against datasheet minimums. */
-	if (count_expr->data.literal.lexeme)
-		arch->alloc_capacity = atoi(count_expr->data.literal.lexeme);
+	arch->alloc_capacity = alloc->static_pool_count;
 
 	/* Validate: init block requires explicit init_size parameter */
-	if (alloc->archetype.field_count > 1 && !alloc->archetype.init_length) {
+	if (alloc->static_field_count > 1 && !alloc->static_init_length_present) {
 		fprintf(stderr,
 		        "Error: init block requires explicit init_size parameter: static %s(capacity, init_size) { ... }\n",
-		        alloc->archetype.archetype_name);
+		        alloc->name);
 		ctx->error_count++;
 		return;
 	}
 
 	/* Analyze field initialization expressions */
-	for (int i = 1; i < alloc->archetype.field_count; i++) {
-		analyze_expression(ctx, AST_SV(alloc->archetype.field_values[i]));
+	for (int i = 1; i < alloc->static_field_count; i++) {
+		analyze_expression(ctx, alloc->static_fields[i]);
 	}
 }
 
@@ -2795,13 +2767,11 @@ static void sem_check_storage_requirements(SemanticContext *ctx) {
  * rejected.) */
 static const char *sem_decl_name(Decl *d); /* fwd (defined with the module-collection helpers) */
 static void sem_check_device_impl_decls(SemanticContext *ctx) {
-	if (!ctx->prog)
-		return;
-	for (int i = 0; i < ctx->prog->decl_count; i++) {
-		Decl *d = ctx->prog->decls[i];
-		if (!d || !d->from_device_impl)
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (!d->from_device_impl)
 			continue;
-		const char *nm0 = sem_decl_name(d);
+		const char *nm0 = d->name;
 		const char *what = NULL;
 		if (d->kind == DECL_ARCHETYPE)
 			what = "define an archetype";
@@ -2809,15 +2779,14 @@ static void sem_check_device_impl_decls(SemanticContext *ctx) {
 			what = "define a type";
 		else if (d->kind == DECL_CONST && nm0 && is_type_alias(ctx, nm0)) /* type alias / opaque (not a value const) */
 			what = "define a type";
-		else if (d->kind == DECL_STATIC && d->data.static_decl && d->data.static_decl->kind == STATIC_KIND_ARCHETYPE)
+		else if (d->kind == DECL_STATIC && d->static_kind == STATIC_KIND_ARCHETYPE)
 			what = "allocate a pool";
 		if (!what)
 			continue;
-		const char *nm = sem_decl_name(d);
 		fprintf(stderr,
 		        "Error: a device's impl cannot %s ('%s') — types/archetypes belong in its .ds.arche "
 		        "datasheet, and allocation is the driver's\n",
-		        what, nm ? nm : "?");
+		        what, nm0 ? nm0 : "?");
 		ctx->error_count++;
 	}
 }
@@ -2831,42 +2800,15 @@ static int name_is_archetype_mutating_builtin(const char *name) {
 	return strcmp(name, "insert") == 0 || strcmp(name, "delete") == 0 || strcmp(name, "dealloc") == 0;
 }
 
-/* Returns 1 if a call to `name` is a potential side effect. True when the
- * callee is (a) a proc / extern proc, (b) an extern func (anything could
- * happen in C), (c) a regular func with at least one `out` parameter, or
- * (d) an archetype-mutating builtin (insert / delete / dealloc). */
-static int name_is_effectful_callee(SemanticContext *ctx, const char *name) {
-	if (!ctx || !ctx->prog || !name)
-		return 0;
-	if (name_is_archetype_mutating_builtin(name))
-		return 1;
-	for (int i = 0; i < ctx->prog->decl_count; i++) {
-		Decl *d = ctx->prog->decls[i];
-		if (!d)
-			continue;
-		if (d->kind == DECL_PROC && d->data.proc && d->data.proc->name && strcmp(d->data.proc->name, name) == 0) {
-			return 1; /* any proc is effectful */
-		}
-		if (d->kind == DECL_FUNC && d->data.func && d->data.func->name && strcmp(d->data.func->name, name) == 0) {
-			if (d->data.func->is_extern)
-				return 1; /* extern func: opaque C side effects */
-			if (d->data.func->return_type_count > 1)
-				return 1; /* multi-return func fills caller-passed buffers in place */
-			return 0;     /* pure-ish func */
-		}
-	}
-	return 0;
-}
-
 /* A call to a proc-typed parameter (a compile-time callback) is an action, so it
  * counts as an effect — same as calling a named proc. A func-typed callback call
  * is pure. The param type may be an inline `proc(...)` or a named alias to one. */
-static int name_is_proc_typed_param(SemanticContext *ctx, ProcDecl *proc, const char *name) {
+static int name_is_proc_typed_param(SemanticContext *ctx, DeclSummary *proc, const char *name) {
 	if (!proc || !name)
 		return 0;
 	for (int i = 0; i < proc->param_count; i++) {
-		Parameter *p = proc->params[i];
-		if (!p || !p->name || strcmp(p->name, name) != 0)
+		ParamSummary *p = &proc->params[i];
+		if (!p->name || strcmp(p->name, name) != 0)
 			continue;
 		TypeRef *t = p->type;
 		if (!t)
@@ -2905,113 +2847,12 @@ static const char *lvalue_leftmost_name(Expression *expr) {
 	return NULL;
 }
 
-/* Forward declarations for mutual recursion */
-static int expr_has_side_effects(SemanticContext *ctx, Expression *expr, ProcDecl *proc);
-static int body_has_side_effects(SemanticContext *ctx, Statement **stmts, int count, ProcDecl *proc);
-
-static int expr_has_side_effects(SemanticContext *ctx, Expression *expr, ProcDecl *proc) {
-	if (!expr)
-		return 0;
-	switch (expr->type) {
-	case EXPR_CALL:
-		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME &&
-		    (name_is_effectful_callee(ctx, expr->data.call.callee->data.name.name) ||
-		     name_is_proc_typed_param(ctx, proc, expr->data.call.callee->data.name.name))) {
-			return 1;
-		}
-		for (int i = 0; i < expr->data.call.arg_count; i++) {
-			if (expr_has_side_effects(ctx, expr->data.call.args[i], proc))
-				return 1;
-		}
-		return 0;
-	case EXPR_BINARY:
-		return expr_has_side_effects(ctx, expr->data.binary.left, proc) ||
-		       expr_has_side_effects(ctx, expr->data.binary.right, proc);
-	case EXPR_UNARY:
-		return expr_has_side_effects(ctx, expr->data.unary.operand, proc);
-	case EXPR_FIELD:
-		return expr_has_side_effects(ctx, expr->data.field.base, proc);
-	case EXPR_INDEX:
-		if (expr_has_side_effects(ctx, expr->data.index.base, proc))
-			return 1;
-		for (int i = 0; i < expr->data.index.index_count; i++) {
-			if (expr_has_side_effects(ctx, expr->data.index.indices[i], proc))
-				return 1;
-		}
-		return 0;
-	case EXPR_ALLOC:
-		return 1; /* allocation = side effect */
-	default:
-		return 0;
-	}
-}
-
-static int stmt_has_side_effects(SemanticContext *ctx, Statement *stmt, ProcDecl *proc) {
-	if (!stmt)
-		return 0;
-	switch (stmt->type) {
-	case STMT_BIND:
-		return stmt->data.bind_stmt.value ? expr_has_side_effects(ctx, stmt->data.bind_stmt.value, proc) : 0;
-	case STMT_ASSIGN: {
-		const char *target_name = lvalue_leftmost_name(stmt->data.assign_stmt.target);
-		if (target_name) {
-			if (find_archetype(ctx, target_name))
-				return 1; /* writing through an archetype = column write */
-		}
-		return expr_has_side_effects(ctx, stmt->data.assign_stmt.value, proc) ||
-		       expr_has_side_effects(ctx, stmt->data.assign_stmt.target, proc);
-	}
-	case STMT_FOR:
-		if (stmt->data.for_stmt.init && stmt_has_side_effects(ctx, stmt->data.for_stmt.init, proc))
-			return 1;
-		if (stmt->data.for_stmt.condition && expr_has_side_effects(ctx, stmt->data.for_stmt.condition, proc))
-			return 1;
-		if (stmt->data.for_stmt.increment && stmt_has_side_effects(ctx, stmt->data.for_stmt.increment, proc))
-			return 1;
-		return body_has_side_effects(ctx, stmt->data.for_stmt.body, stmt->data.for_stmt.body_count, proc);
-	case STMT_IF:
-		if (stmt->data.if_stmt.cond && expr_has_side_effects(ctx, stmt->data.if_stmt.cond, proc))
-			return 1;
-		if (body_has_side_effects(ctx, stmt->data.if_stmt.then_body, stmt->data.if_stmt.then_count, proc))
-			return 1;
-		return body_has_side_effects(ctx, stmt->data.if_stmt.else_body, stmt->data.if_stmt.else_count, proc);
-	case STMT_BREAK:
-	case STMT_CONTINUE:
-	case STMT_RETURN:
-		return 0;
-	case STMT_RUN:
-		return 1; /* running a system mutates archetype state */
-	case STMT_EXPR:
-		return expr_has_side_effects(ctx, stmt->data.expr_stmt.expr, proc);
-	case STMT_MULTI_BIND:
-		return stmt->data.multi_bind.value ? expr_has_side_effects(ctx, stmt->data.multi_bind.value, proc) : 0;
-	case STMT_EACH_FIELD: {
-		for (int i = 0; i < stmt->data.each_field.body_count; i++) {
-			if (stmt_has_side_effects(ctx, stmt->data.each_field.body[i], proc))
-				return 1;
-		}
-		return 0;
-	}
-	}
-	return 0;
-}
-
-static int body_has_side_effects(SemanticContext *ctx, Statement **stmts, int count, ProcDecl *proc) {
-	if (!stmts)
-		return 0;
-	for (int i = 0; i < count; i++) {
-		if (stmt_has_side_effects(ctx, stmts[i], proc))
-			return 1;
-	}
-	return 0;
-}
-
 /* Run the proc-could-be-func and proc-no-effect lints on a non-extern proc. */
 /* A proc "could be a func" iff its body would pass func-purity — the SAME predicate
  * `enforce_func_purity` uses — so the lint and the hard error agree on what "pure" means. */
-static const char *func_purity_body(SemanticContext *ctx, Statement **stmts, int count);
+static const char *func_purity_body_view(SemanticContext *ctx, SyntaxView declnode);
 
-static void lint_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
+static void lint_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 	if (!proc || proc->is_extern)
 		return; /* #foreign procs are exempt — in-out IS the C-ABI idiom there. */
 
@@ -3020,8 +2861,7 @@ static void lint_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	 * alignment); a pure-arche proc should hand back a fresh out-only result instead. */
 	for (int i = 0; i < proc->param_count; i++)
 		if (proc_param_is_inout(proc, i))
-			sem_emit_lint_inout_param_shadow(
-			    ctx, proc->loc, proc->params[i] && proc->params[i]->name ? proc->params[i]->name : "<param>");
+			sem_emit_lint_inout_param_shadow(ctx, proc->loc, proc->params[i].name ? proc->params[i].name : "<param>");
 
 	if (proc->allow_pure_proc)
 		return;
@@ -3030,11 +2870,11 @@ static void lint_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	 * exists to invoke that callback (an effect the purity walk can't see, since
 	 * the callee is a param, not a named proc). Don't nudge it toward `func`. */
 	for (int i = 0; i < proc->param_count; i++)
-		if (proc->params[i] && name_is_proc_typed_param(ctx, proc, proc->params[i]->name))
+		if (name_is_proc_typed_param(ctx, proc, proc->params[i].name))
 			return;
 
 	/* A proc whose body has effects is legitimately a proc — nothing to lint. */
-	if (func_purity_body(ctx, proc->statements, proc->statement_count) != NULL)
+	if (func_purity_body_view(ctx, proc->body_node) != NULL)
 		return;
 
 	/* Pure body. A `func` returns EXACTLY ONE value, so only a SINGLE-out pure proc could be a func;
@@ -3056,22 +2896,20 @@ static void lint_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
  * A call is an effect iff the callee is a proc, an extern, or an archetype-mutating builtin. */
 static const char *func_call_effect_reason(SemanticContext *ctx, const char *name) {
 	static char buf[160];
-	if (!ctx || !ctx->prog || !name)
+	if (!ctx || !name)
 		return NULL;
 	if (name_is_archetype_mutating_builtin(name)) {
 		snprintf(buf, sizeof(buf), "calls archetype-mutating builtin '%s'", name);
 		return buf;
 	}
-	for (int i = 0; i < ctx->prog->decl_count; i++) {
-		Decl *d = ctx->prog->decls[i];
-		if (!d)
-			continue;
-		if (d->kind == DECL_PROC && d->data.proc && d->data.proc->name && strcmp(d->data.proc->name, name) == 0) {
-			snprintf(buf, sizeof(buf), d->data.proc->is_extern ? "calls extern '%s'" : "calls proc '%s'", name);
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->kind == DECL_PROC && d->name && strcmp(d->name, name) == 0) {
+			snprintf(buf, sizeof(buf), d->is_extern ? "calls extern '%s'" : "calls proc '%s'", name);
 			return buf;
 		}
-		if (d->kind == DECL_FUNC && d->data.func && d->data.func->name && strcmp(d->data.func->name, name) == 0) {
-			if (d->data.func->is_extern) {
+		if (d->kind == DECL_FUNC && d->name && strcmp(d->name, name) == 0) {
+			if (d->is_extern) {
 				snprintf(buf, sizeof(buf), "calls extern '%s'", name);
 				return buf;
 			}
@@ -3081,115 +2919,71 @@ static const char *func_call_effect_reason(SemanticContext *ctx, const char *nam
 	return NULL;
 }
 
-static const char *func_purity_body(SemanticContext *ctx, Statement **stmts, int count);
-
-static const char *func_purity_expr(SemanticContext *ctx, Expression *e) {
+/* AST-kill: func-purity walk over the syntax tree. Returns the first impurity reason found in the
+ * subtree rooted at `v` (a statement or expression view), or NULL if pure. Mirrors the old AST
+ * walker: a `run`, an effectful call, or a read/write of archetype/global state is an effect. A
+ * func's only inputs are its params + `::` constants, so any static/global touch makes it impure. */
+static const char *purity_walk(SemanticContext *ctx, SyntaxView v) {
+	if (!sv_present(v))
+		return NULL;
 	const char *r;
-	if (!e)
-		return NULL;
-	switch (e->type) {
-	case EXPR_CALL:
-		if (e->data.call.callee && e->data.call.callee->type == EXPR_NAME &&
-		    (r = func_call_effect_reason(ctx, e->data.call.callee->data.name.name)))
-			return r;
-		for (int i = 0; i < e->data.call.arg_count; i++)
-			if ((r = func_purity_expr(ctx, e->data.call.args[i])))
-				return r;
-		return NULL;
-	case EXPR_BINARY:
-		if ((r = func_purity_expr(ctx, e->data.binary.left)))
-			return r;
-		return func_purity_expr(ctx, e->data.binary.right);
-	case EXPR_UNARY:
-		return func_purity_expr(ctx, e->data.unary.operand);
-	case EXPR_FIELD:
-		return func_purity_expr(ctx, e->data.field.base);
-	case EXPR_INDEX:
-		if ((r = func_purity_expr(ctx, e->data.index.base)))
-			return r;
-		for (int i = 0; i < e->data.index.index_count; i++)
-			if ((r = func_purity_expr(ctx, e->data.index.indices[i])))
-				return r;
-		return NULL;
-	case EXPR_ALLOC:
-		return "allocates (`alloc`)";
-	case EXPR_NAME:
-		/* Reading mutable global state — an archetype column or a mutable global buffer — is impure.
-		 * A func's inputs are only its parameters and `::` constants, so its output depends solely on
-		 * them. (Reaches `Player`/`sbuf`, and `Player.x` / `sbuf[i]` via the field/index base recursion.) */
-		if (find_archetype(ctx, e->data.name.name))
-			return "reads static memory (an archetype column)";
-		if (is_static_name(ctx, e->data.name.name))
-			return "reads a mutable global";
-		return NULL;
-	default:
-		return NULL;
-	}
-}
-
-static const char *func_purity_stmt(SemanticContext *ctx, Statement *s) {
-	const char *r;
-	if (!s)
-		return NULL;
-	switch (s->type) {
-	case STMT_BIND:
-		return s->data.bind_stmt.value ? func_purity_expr(ctx, s->data.bind_stmt.value) : NULL;
-	case STMT_MULTI_BIND:
-		return s->data.multi_bind.value ? func_purity_expr(ctx, s->data.multi_bind.value) : NULL;
-	case STMT_ASSIGN: {
-		const char *tn = lvalue_leftmost_name(s->data.assign_stmt.target);
-		if (tn && find_archetype(ctx, tn))
-			return "writes static memory (an archetype column)";
-		if (tn && is_static_name(ctx, tn))
-			return "writes a mutable global";
-		if ((r = func_purity_expr(ctx, s->data.assign_stmt.value)))
-			return r;
-		return func_purity_expr(ctx, s->data.assign_stmt.target);
-	}
-	case STMT_FOR:
-		if (s->data.for_stmt.init && (r = func_purity_stmt(ctx, s->data.for_stmt.init)))
-			return r;
-		if (s->data.for_stmt.condition && (r = func_purity_expr(ctx, s->data.for_stmt.condition)))
-			return r;
-		if (s->data.for_stmt.increment && (r = func_purity_stmt(ctx, s->data.for_stmt.increment)))
-			return r;
-		return func_purity_body(ctx, s->data.for_stmt.body, s->data.for_stmt.body_count);
-	case STMT_IF:
-		if (s->data.if_stmt.cond && (r = func_purity_expr(ctx, s->data.if_stmt.cond)))
-			return r;
-		if ((r = func_purity_body(ctx, s->data.if_stmt.then_body, s->data.if_stmt.then_count)))
-			return r;
-		return func_purity_body(ctx, s->data.if_stmt.else_body, s->data.if_stmt.else_count);
-	case STMT_EXPR:
-		return func_purity_expr(ctx, s->data.expr_stmt.expr);
-	case STMT_RETURN:
-		for (int i = 0; i < s->data.return_stmt.count; i++)
-			if ((r = func_purity_expr(ctx, s->data.return_stmt.values[i])))
-				return r;
-		return NULL;
-	case STMT_RUN:
+	SyntaxNodeKind k = sv_kind(v);
+	if (k == SN_RUN_STMT)
 		return "runs a system (`run`)";
-	case STMT_EACH_FIELD:
-		return func_purity_body(ctx, s->data.each_field.body, s->data.each_field.body_count);
-	default:
-		return NULL;
+	if (k == SN_CALL_EXPR) {
+		const char *cn = ctx->model ? sem_model_callee_name(ctx->model, sv_id(v)) : NULL;
+		char *fb = (!cn && sv_count(v, SN_FIELD_NAME) == 0) ? sem_cv_dup(sv_child(v, SN_CALLEE_NAME)) : NULL;
+		const char *name = cn ? cn : fb;
+		if (name && (r = func_call_effect_reason(ctx, name))) {
+			free(fb);
+			return r;
+		}
+		free(fb);
+	} else if (k == SN_ASSIGN_STMT) {
+		char *tn = sv_resolved_name(ctx, sem_node_at_expr(v, 0));
+		const char *rr = NULL;
+		if (tn && find_archetype(ctx, tn))
+			rr = "writes static memory (an archetype column)";
+		else if (tn && is_static_name(ctx, tn))
+			rr = "writes a mutable global";
+		free(tn);
+		if (rr)
+			return rr;
+	} else if (k == SN_NAME_EXPR || k == SN_FIELD_EXPR || k == SN_INDEX_EXPR || k == SN_SLICE_EXPR) {
+		char *nm = sv_resolved_name(ctx, v);
+		const char *rr = NULL;
+		if (nm) {
+			if (find_archetype(ctx, nm))
+				rr = "reads static memory (an archetype column)";
+			else if (is_static_name(ctx, nm))
+				rr = "reads a mutable global";
+		}
+		free(nm);
+		if (rr)
+			return rr;
 	}
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE)
+			if ((r = purity_walk(ctx, (SyntaxView){v.node->children[i].as.node, v.src})))
+				return r;
+	return NULL;
 }
 
-static const char *func_purity_body(SemanticContext *ctx, Statement **stmts, int count) {
+/* Pure iff every statement in the decl's body (its `node` view) is pure. */
+static const char *func_purity_body_view(SemanticContext *ctx, SyntaxView declnode) {
 	const char *r;
-	for (int i = 0; i < count; i++)
-		if ((r = func_purity_stmt(ctx, stmts[i])))
+	for (int i = 0, n = sem_stmt_count(declnode); i < n; i++)
+		if ((r = purity_walk(ctx, sem_stmt_at(declnode, i))))
 			return r;
 	return NULL;
 }
 
 /* Enforce func purity: a non-extern `func` body must be pure (no effects). This is a RULE, not a
  * lint — a violation is a hard compile error. Effects belong in a proc. */
-static void enforce_func_purity(SemanticContext *ctx, FuncDecl *func) {
+static void enforce_func_purity(SemanticContext *ctx, DeclSummary *func) {
 	if (!func || func->is_extern)
 		return;
-	const char *reason = func_purity_body(ctx, func->statements, func->statement_count);
+	const char *reason = func_purity_body_view(ctx, func->body_node);
 	if (reason) {
 		sem_emit_func_not_pure(ctx, func->loc, func->name ? func->name : "<unknown>", reason);
 	}
@@ -3197,19 +2991,19 @@ static void enforce_func_purity(SemanticContext *ctx, FuncDecl *func) {
 
 /* True if in-param `param_idx` is an in-out param: its name also appears in the out-list.
  * Mirrors codegen's proc_out_param_is_inout (codegen.c). An in-out's out-param shadows it. */
-static int proc_param_is_inout(ProcDecl *proc, int param_idx) {
+static int proc_param_is_inout(DeclSummary *proc, int param_idx) {
 	if (!proc || param_idx < 0 || param_idx >= proc->param_count)
 		return 0;
-	const char *pn = proc->params[param_idx]->name;
+	const char *pn = proc->params[param_idx].name;
 	if (!pn)
 		return 0;
 	for (int i = 0; i < proc->out_param_count; i++)
-		if (proc->out_params[i]->name && strcmp(proc->out_params[i]->name, pn) == 0)
+		if (proc->out_params[i].name && strcmp(proc->out_params[i].name, pn) == 0)
 			return 1;
 	return 0;
 }
 
-static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
+static void analyze_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 	if (!proc)
 		return;
 
@@ -3218,9 +3012,7 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 
 	/* Validate parameters for extern vs non-extern rules. */
 	for (int i = 0; i < proc->param_count; i++) {
-		Parameter *p = proc->params[i];
-		if (!p)
-			continue;
+		ParamSummary *p = &proc->params[i];
 		TypeRef *pt = p->type;
 		reject_meta_type(ctx, pt, "parameter type");
 		if (proc->is_extern) {
@@ -3244,7 +3036,7 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	 * out-only out-param maps to the C return value; an in-out one to an in-place pointer write. */
 	if (proc->is_extern) {
 		for (int i = 0; i < proc->out_param_count; i++) {
-			TypeRef *rt = proc->out_params[i] ? proc->out_params[i]->type : NULL;
+			TypeRef *rt = proc->out_params[i].type;
 			if (rt && rt->kind == TYPE_NAME) {
 				const char *tname = rt->data.name;
 				if (!is_primitive_type_name(tname) && !find_archetype(ctx, tname) && !is_type_alias(ctx, tname)) {
@@ -3258,7 +3050,7 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	/* Validate `archetype` parameter constraints: at most one per proc. */
 	int archetype_param_count = 0;
 	for (int i = 0; i < proc->param_count; i++) {
-		if (proc->params[i]->type && proc->params[i]->type->kind == TYPE_ARCHETYPE) {
+		if (proc->params[i].type && proc->params[i].type->kind == TYPE_ARCHETYPE) {
 			archetype_param_count++;
 		}
 	}
@@ -3270,8 +3062,8 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 
 	/* Add parameters as variables in proc scope */
 	for (int i = 0; i < proc->param_count; i++) {
-		const char *param_name = proc->params[i]->name;
-		TypeRef *param_type = proc->params[i]->type;
+		const char *param_name = proc->params[i].name;
+		TypeRef *param_type = proc->params[i].type;
 
 		/* Check if param type is an archetype */
 		const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : NULL;
@@ -3285,7 +3077,7 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 		} else {
 			add_variable(ctx, param_name, param_type);
 		}
-		mark_last_param(ctx, proc->params[i]->is_own);
+		mark_last_param(ctx, proc->params[i].is_own);
 	}
 
 	/* Out-params are writable places the body fills. An OUT-ONLY param is a fresh owned slot.
@@ -3295,24 +3087,23 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	 * `is_own`, so a borrowed in-out stays non-movable (only mutable in place) while an `own`
 	 * in-out stays movable. `name = …` in the body resolves to this place. */
 	for (int i = 0; i < proc->out_param_count; i++) {
-		const char *on = proc->out_params[i]->name;
+		const char *on = proc->out_params[i].name;
 		int in_idx = -1;
 		for (int j = 0; j < proc->param_count; j++)
-			if (proc->params[j]->name && on && strcmp(proc->params[j]->name, on) == 0) {
+			if (proc->params[j].name && on && strcmp(proc->params[j].name, on) == 0) {
 				in_idx = j;
 				break;
 			}
-		add_variable(ctx, on, proc->out_params[i]->type);
-		mark_last_param(ctx, in_idx >= 0 ? proc->params[in_idx]->is_own : 1);
+		add_variable(ctx, on, proc->out_params[i].type);
+		mark_last_param(ctx, in_idx >= 0 ? proc->params[in_idx].is_own : 1);
 		mark_last_out_place(ctx);
 	}
 
-	ProcDecl *prev_proc = ctx->current_proc;
+	DeclSummary *prev_proc = ctx->current_proc;
 	ctx->current_proc = proc;
 	ctx->in_body = 1;
-	for (int i = 0; i < proc->statement_count; i++) {
-		analyze_statement(ctx, AST_SV(proc->statements[i]));
-	}
+	for (int i = 0, n = sem_stmt_count(proc->body_node); i < n; i++)
+		analyze_statement(ctx, sem_stmt_at(proc->body_node, i));
 	ctx->in_body = 0;
 
 	pop_scope(ctx); /* with current_proc still = proc, so the unused-local lint can see its out-params */
@@ -3326,7 +3117,7 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	lint_proc_decl(ctx, proc);
 }
 
-static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
+static void analyze_sys_decl(SemanticContext *ctx, DeclSummary *sys) {
 	if (!sys)
 		return;
 
@@ -3338,7 +3129,7 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 	for (int a = 0; a < ctx->archetype_count; a++) {
 		int matches = 0;
 		for (int p = 0; p < sys->param_count; p++) {
-			if (find_field(ctx->archetypes[a], sys->params[p]->name)) {
+			if (find_field(ctx->archetypes[a], sys->params[p].name)) {
 				matches++;
 			}
 		}
@@ -3353,26 +3144,26 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 	/* Check that no parameter is a handle column */
 	if (arch_info) {
 		for (int p = 0; p < sys->param_count; p++) {
-			FieldInfo *field = find_field(arch_info, sys->params[p]->name);
+			FieldInfo *field = find_field(arch_info, sys->params[p].name);
 			if (field && field->type && field->type->kind == TYPE_HANDLE) {
-				sem_emit_handle_in_sys_param(ctx, sys->params[p]->loc, sys->params[p]->name);
+				sem_emit_handle_in_sys_param(ctx, sys->params[p].loc, sys->params[p].name);
 			}
 		}
 	}
 
 	/* add parameters as variables, using field types from archetype if available */
 	for (int i = 0; i < sys->param_count; i++) {
-		TypeRef *param_type = sys->params[i]->type;
+		TypeRef *param_type = sys->params[i].type;
 		reject_meta_type(ctx, param_type, "sys parameter type");
 		/* If no explicit type and we found the archetype, use the field's type */
 		if (!param_type && arch_info) {
-			FieldInfo *field = find_field(arch_info, sys->params[i]->name);
+			FieldInfo *field = find_field(arch_info, sys->params[i].name);
 			if (field) {
 				param_type = field->type;
 			}
 		}
-		add_variable(ctx, sys->params[i]->name, param_type);
-		mark_last_param(ctx, sys->params[i]->is_own);
+		add_variable(ctx, sys->params[i].name, param_type);
+		mark_last_param(ctx, sys->params[i].is_own);
 	}
 
 	const char *old_sys_archetype = ctx->current_sys_archetype;
@@ -3381,9 +3172,8 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 	int prev_in_sys = ctx->in_sys;
 	ctx->in_sys = 1;
 	ctx->in_body = 1;
-	for (int i = 0; i < sys->statement_count; i++) {
-		analyze_statement(ctx, AST_SV(sys->statements[i]));
-	}
+	for (int i = 0, n = sem_stmt_count(sys->body_node); i < n; i++)
+		analyze_statement(ctx, sem_stmt_at(sys->body_node, i));
 	ctx->in_body = 0;
 	ctx->in_sys = prev_in_sys;
 
@@ -3391,7 +3181,7 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 	pop_scope(ctx);
 }
 
-static void analyze_func_group(SemanticContext *ctx, FuncGroup *group) {
+static void analyze_func_group(SemanticContext *ctx, DeclSummary *group) {
 	if (!group)
 		return;
 
@@ -3406,9 +3196,9 @@ static void analyze_func_group(SemanticContext *ctx, FuncGroup *group) {
 		return;
 	}
 
-	FuncDecl **resolved = calloc(group->member_count, sizeof(FuncDecl *));
+	DeclSummary **resolved = calloc(group->member_count, sizeof(DeclSummary *));
 	for (int i = 0; i < group->member_count; i++) {
-		FuncDecl *fd = find_func_decl_cst(ctx->prog, group->member_names[i]);
+		DeclSummary *fd = find_func_sig(ctx, group->member_names[i]);
 		if (!fd) {
 			sem_emit_unknown_group_member(ctx, group->loc, group->member_names[i], group->name);
 			continue;
@@ -3434,7 +3224,7 @@ static void analyze_func_group(SemanticContext *ctx, FuncGroup *group) {
 				continue;
 			int all_eq = 1;
 			for (int k = 0; k < resolved[i]->param_count; k++) {
-				if (!type_ref_equal(resolved[i]->params[k]->type, resolved[j]->params[k]->type)) {
+				if (!type_ref_equal(resolved[i]->params[k].type, resolved[j]->params[k].type)) {
 					all_eq = 0;
 					break;
 				}
@@ -3458,7 +3248,7 @@ static void analyze_func_group(SemanticContext *ctx, FuncGroup *group) {
 	register_func(ctx, group->name);
 }
 
-static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
+static void analyze_func_decl(SemanticContext *ctx, DeclSummary *func) {
 	if (!func)
 		return;
 
@@ -3467,9 +3257,9 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 
 	/* `archetype` is a proc-only parameter type in v1; funcs cannot have one. */
 	for (int i = 0; i < func->param_count; i++) {
-		reject_meta_type(ctx, func->params[i]->type, "parameter type");
-		if (func->params[i]->type && func->params[i]->type->kind == TYPE_ARCHETYPE) {
-			sem_emit_archetype_funcs_only(ctx, func->params[i]->type->loc, func->name);
+		reject_meta_type(ctx, func->params[i].type, "parameter type");
+		if (func->params[i].type && func->params[i].type->kind == TYPE_ARCHETYPE) {
+			sem_emit_archetype_funcs_only(ctx, func->params[i].type->loc, func->name);
 			break;
 		}
 	}
@@ -3482,9 +3272,7 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 	}
 	/* Validate parameters and return type for extern vs non-extern rules. */
 	for (int i = 0; i < func->param_count; i++) {
-		Parameter *p = func->params[i];
-		if (!p)
-			continue;
+		ParamSummary *p = &func->params[i];
 		TypeRef *pt = p->type;
 		if (func->is_extern) {
 			if (pt && pt->kind == TYPE_NAME) {
@@ -3519,15 +3307,14 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 
 	/* add parameters as variables */
 	for (int i = 0; i < func->param_count; i++) {
-		add_variable(ctx, func->params[i]->name, func->params[i]->type);
-		mark_last_param(ctx, func->params[i]->is_own);
+		add_variable(ctx, func->params[i].name, func->params[i].type);
+		mark_last_param(ctx, func->params[i].is_own);
 	}
 
-	FuncDecl *prev_func = ctx->current_func;
+	DeclSummary *prev_func = ctx->current_func;
 	ctx->current_func = func;
-	for (int i = 0; i < func->statement_count; i++) {
-		analyze_statement(ctx, AST_SV(func->statements[i]));
-	}
+	for (int i = 0, n = sem_stmt_count(func->body_node); i < n; i++)
+		analyze_statement(ctx, sem_stmt_at(func->body_node, i));
 	ctx->current_func = prev_func;
 
 	enforce_func_purity(ctx, func); /* a `func` must be pure — hard error if not */
@@ -3535,8 +3322,8 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 	pop_scope(ctx);
 }
 
-static void analyze_decl(SemanticContext *ctx, Decl *decl) {
-	if (!decl)
+static void analyze_decl(SemanticContext *ctx, DeclSummary *ds) {
+	if (!ds)
 		return;
 
 	/* Push the decl's `@allow(<slug>)` suppression set so lints fired during this
@@ -3545,37 +3332,35 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 	 * consult this list (errors are not suppressible). */
 	char **prev_slugs = ctx->active_allow_slugs;
 	int prev_count = ctx->active_allow_slug_count;
-	ctx->active_allow_slugs = decl->allow_slugs;
-	ctx->active_allow_slug_count = decl->allow_slug_count;
+	ctx->active_allow_slugs = ds->allow_slugs;
+	ctx->active_allow_slug_count = ds->allow_slug_count;
 
-	switch (decl->kind) {
+	switch (ds->kind) {
 	case DECL_ARCHETYPE:
-		analyze_archetype_decl(ctx, decl->data.archetype);
+		analyze_archetype_decl(ctx, ds);
 		break;
-	case DECL_STATIC: {
-		StaticDecl *s = decl->data.static_decl;
-		if (s->kind == STATIC_KIND_ARCHETYPE)
-			analyze_static_decl(ctx, s);
-		else if (s->kind == STATIC_KIND_SCALAR)
-			analyze_static_scalar_decl(ctx, s);
+	case DECL_STATIC:
+		if (ds->static_kind == STATIC_KIND_ARCHETYPE)
+			analyze_static_decl(ctx, ds);
+		else if (ds->static_kind == STATIC_KIND_SCALAR)
+			analyze_static_scalar_decl(ctx, ds);
 		else
-			analyze_static_array_decl(ctx, s);
+			analyze_static_array_decl(ctx, ds);
 		break;
-	}
 	case DECL_USE:
 		/* Module use — resolved before semantic analysis */
 		break;
 	case DECL_PROC:
-		analyze_proc_decl(ctx, decl->data.proc);
+		analyze_proc_decl(ctx, ds);
 		break;
 	case DECL_SYS:
-		analyze_sys_decl(ctx, decl->data.sys);
+		analyze_sys_decl(ctx, ds);
 		break;
 	case DECL_FUNC:
-		analyze_func_decl(ctx, decl->data.func);
+		analyze_func_decl(ctx, ds);
 		break;
 	case DECL_FUNC_GROUP:
-		analyze_func_group(ctx, decl->data.func_group);
+		analyze_func_group(ctx, ds);
 		break;
 	case DECL_CONST:
 		/* Value consts and nominal type aliases are collected in pass 0 (and aliases erased before
@@ -3620,7 +3405,7 @@ static char *sem_cv_dup(SyntaxView v) {
  * trivia the node span may include. A const value that is the last token before a comment would
  * otherwise swallow the comment into its lexeme (read as float, leaked into codegen). Mirrors
  * lower.c's sv_dup_first_token. */
-static char *sem_cv_dup_first_token(SyntaxView v) {
+char *sem_cv_dup_first_token(SyntaxView v) {
 	if (v.node) {
 		for (int i = 0; i < v.node->child_count; i++) {
 			if (v.node->children[i].tag == SE_TOKEN) {
@@ -3653,7 +3438,7 @@ static SourceLoc sem_direct_token_loc(const SyntaxNode *n, TokenKind kind) {
 
 /* The 1-based line/column of the first token leaf in a node's subtree (the node's start),
  * so reconstructed decls/statements carry source locations for diagnostics. */
-static SourceLoc sem_node_loc(const SyntaxNode *n) {
+SourceLoc sem_node_loc(const SyntaxNode *n) {
 	SourceLoc loc = {0, 0};
 	if (!n)
 		return loc;
@@ -3673,7 +3458,7 @@ static SourceLoc sem_node_loc(const SyntaxNode *n) {
 
 /* ---- type reconstruction (syntax tree type node -> TypeRef) ---- */
 static TypeRef *cst_build_type(SyntaxView t);
-static SyntaxView sem_type_at(SyntaxView v, int idx);
+SyntaxView sem_type_at(SyntaxView v, int idx);
 static int sv_type_count_sem(SyntaxView v);
 
 /* 1 if a `name :: <rhs>` const carries the `alias` transparent-marker: a loose IDENT token `alias`
@@ -3897,7 +3682,7 @@ static TypeRef *cst_build_type(SyntaxView t) {
 }
 
 /* ---- syntax tree navigation (same shapes as lower/lower.c) ---- */
-static SyntaxView sem_first_expr(SyntaxView v) {
+SyntaxView sem_first_expr(SyntaxView v) {
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = v.node->children[i].as.node->kind;
@@ -3906,7 +3691,7 @@ static SyntaxView sem_first_expr(SyntaxView v) {
 		}
 	return (SyntaxView){NULL, v.src};
 }
-static SyntaxView sem_type_at(SyntaxView v, int idx) {
+SyntaxView sem_type_at(SyntaxView v, int idx) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
@@ -3929,7 +3714,7 @@ static int sv_type_count_sem(SyntaxView v) {
 		}
 	return c;
 }
-static SyntaxView sem_node_at_expr(SyntaxView v, int idx) {
+SyntaxView sem_node_at_expr(SyntaxView v, int idx) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
@@ -3942,7 +3727,7 @@ static SyntaxView sem_node_at_expr(SyntaxView v, int idx) {
 		}
 	return (SyntaxView){NULL, v.src};
 }
-static Operator sem_binary_op(SyntaxView v) {
+Operator sem_binary_op(SyntaxView v) {
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_TOKEN) {
 			Operator op = sem_tok_to_op(v.node->children[i].as.token.kind);
@@ -3951,7 +3736,7 @@ static Operator sem_binary_op(SyntaxView v) {
 		}
 	return OP_NONE;
 }
-static int sem_expr_count(SyntaxView v) {
+int sem_expr_count(SyntaxView v) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
@@ -5867,6 +5652,8 @@ static const char *sem_decl_name(Decl *d) {
 		return d->data.constant->name;
 	case DECL_WORLD:
 		return d->data.world->name;
+	case DECL_ENUM:
+		return d->data.enum_decl->name;
 	default:
 		return NULL;
 	}
@@ -6347,17 +6134,15 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 
 /* The shared analysis core: all passes that read the (already-prepared) AstProgram tree.
  * Run by semantic_analyze_cst on an AstProgram reconstructed from the syntax tree. */
-static void analyze_program_core(SemanticContext *ctx, AstProgram *prog) {
-	if (!prog)
-		return;
-	ctx->prog = prog;
-
+/* Runs purely on the resolved DeclTable (ctx->decls) + SyntaxView + SemModel — the reconstructed
+ * AstProgram has already been consumed by build_decl_table and freed before this is called. */
+static void analyze_program_core(SemanticContext *ctx) {
 	/* pass 0: collect constants and nominal type aliases. A `name : [meta] : value` decl is a
 	 * value const when its RHS denotes a value, or a type alias when its RHS denotes a type.
 	 * Unambiguous forms (type-form RHS, literal RHS) are classified directly; a bare-name RHS is
 	 * deferred and resolved by a small fixpoint below — so `tau :: pi` is a value const (not an
 	 * alias), and chains / forward refs resolve regardless of declaration order. */
-	int deferred_cap = prog->decl_count > 0 ? prog->decl_count : 1;
+	int deferred_cap = ctx->decl_count > 0 ? ctx->decl_count : 1;
 	const char **deferred_name = malloc(sizeof(char *) * deferred_cap);
 	const char **deferred_rhs = malloc(sizeof(char *) * deferred_cap);
 	int *deferred_value_ctx = malloc(sizeof(int) * deferred_cap);
@@ -6367,67 +6152,65 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog) {
 	SourceLoc *deferred_loc = malloc(sizeof(SourceLoc) * deferred_cap);
 	int deferred_count = 0;
 
-	for (int i = 0; i < prog->decl_count; i++) {
-		if (prog->decls[i]->kind != DECL_CONST)
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *c = ctx->decls[i];
+		if (c->kind != DECL_CONST)
 			continue;
-		ConstDecl *c = prog->decls[i]->data.constant;
-		int ds = prog->decls[i]->is_datasheet; /* shared datasheet vocabulary dedups on agreement */
-
-		/* Loc for diagnostics + registry storage: prefer the value/type-form's own loc
-		 * (the offending sub-node) over the wrapping Decl's; falls back to decl loc. */
-		SourceLoc cloc = c->value ? c->value->loc : (c->type_value ? c->type_value->loc : prog->decls[i]->loc);
+		int dsheet = c->is_datasheet; /* shared datasheet vocabulary dedups on agreement */
+		SourceLoc cloc = c->const_value_loc;
 
 		/* Type-form RHS (`name : type : T`, or the tuple `name :: (x,y:..)`): a nominal alias. */
-		if (c->type_value) {
-			if (c->type_value->kind == TYPE_PROC || c->type_value->kind == TYPE_FUNC) {
+		if (c->const_type_value) {
+			TypeRef *tv = c->const_type_value;
+			if (tv->kind == TYPE_PROC || tv->kind == TYPE_FUNC) {
 				/* `name :: proc()(…)` — a named structural callable type. */
-				register_callable_type_alias(ctx, c->name, c->type_value);
+				register_callable_type_alias(ctx, c->name, tv);
 				continue;
 			}
-			if (c->type_value->kind == TYPE_TUPLE) {
-				for (int f = 0; f < c->type_value->data.tuple.field_count; f++) {
-					TypeRef *ft = c->type_value->data.tuple.field_types[f];
+			if (tv->kind == TYPE_TUPLE) {
+				for (int f = 0; f < tv->data.tuple.field_count; f++) {
+					TypeRef *ft = tv->data.tuple.field_types[f];
 					const char *fbacking = type_backing_name(ft);
 					if (!fbacking) {
 						sem_emit_tuple_field_not_simple(ctx, ft->loc);
 						continue;
 					}
-					const char *fn = c->type_value->data.tuple.field_names[f];
+					const char *fn = tv->data.tuple.field_names[f];
 					size_t L = strlen(c->name) + 1 + strlen(fn) + 1;
 					char *aname = malloc(L);
 					snprintf(aname, L, "%s_%s", c->name, fn);
-					register_type_alias(ctx, aname, fbacking, ft->loc, ds); /* aname leaks like the old path */
+					register_type_alias(ctx, aname, fbacking, ft->loc, dsheet); /* aname leaks like the old path */
 				}
 			} else {
-				const char *backing = type_backing_name(c->type_value);
+				const char *backing = type_backing_name(tv);
 				if (!backing)
-					sem_emit_alias_backing_invalid(ctx, c->type_value->loc);
+					sem_emit_alias_backing_invalid(ctx, tv->loc);
 				else
-					register_type_alias_tiered(ctx, c->name, backing, c->type_value->is_transparent, cloc, ds);
+					register_type_alias_tiered(ctx, c->name, backing, tv->is_transparent, cloc, dsheet);
 			}
 			continue;
 		}
 
 		/* Literal RHS: a value const. Its type is the explicit declared type if present, else the
 		 * literal's own type (`3.14`→float, `42`→int) — so the const resolves to its real type. */
-		if (c->value && c->value->type == EXPR_LITERAL) {
+		if (c->const_value_kind == EXPR_LITERAL) {
 			const char *vt = NULL;
-			if (c->decl_type && c->decl_type->kind == TYPE_NAME)
-				vt = resolve_type_alias(ctx, normalize_type_name(c->decl_type->data.name));
+			if (c->const_decl_type && c->const_decl_type->kind == TYPE_NAME)
+				vt = resolve_type_alias(ctx, normalize_type_name(c->const_decl_type->data.name));
 			if (!vt)
-				vt = resolve_expression_type(ctx, AST_SV(c->value));
-			register_value_const(ctx, c->name, c->value->data.literal.lexeme, vt, cloc);
+				vt = resolve_expression_type(ctx, c->const_value);
+			register_value_const(ctx, c->name, c->const_value_lexeme, vt, cloc);
 			continue;
 		}
 
 		/* Bare-name RHS: ambiguous (type or value) — defer for the fixpoint. An explicit concrete
 		 * declared type (`PI : float : x`) forces value context. */
-		if (c->value && c->value->type == EXPR_NAME) {
+		if (c->const_value_kind == EXPR_NAME) {
 			deferred_name[deferred_count] = c->name;
-			deferred_rhs[deferred_count] = c->value->data.name.name;
-			deferred_value_ctx[deferred_count] = (c->decl_type != NULL);
+			deferred_rhs[deferred_count] = c->const_value_name;
+			deferred_value_ctx[deferred_count] = (c->const_decl_type != NULL);
 			deferred_transparent[deferred_count] = c->is_transparent;
-			deferred_datasheet[deferred_count] = ds;
+			deferred_datasheet[deferred_count] = dsheet;
 			deferred_loc[deferred_count] = cloc;
 			deferred_count++;
 			continue;
@@ -6464,7 +6247,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog) {
 				continue;
 			}
 			/* `handler :: some_proc` — a callable alias (Stage A of proc/func types). */
-			if (prog_has_callable(prog, r)) {
+			if (prog_has_callable(ctx, r)) {
 				register_callable_alias(ctx, deferred_name[d], r);
 				deferred_done[d] = 1;
 				progress = 1;
@@ -6493,14 +6276,14 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog) {
 
 	/* Enums: register the type (as an int-backed alias so `m: method` resolves) and its variants
 	 * (so `method.get` and bare variants in `match` resolve to their int values). Compile-time only. */
-	for (int i = 0; i < prog->decl_count; i++) {
-		if (prog->decls[i]->kind != DECL_ENUM)
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *e = ctx->decls[i];
+		if (e->kind != DECL_ENUM)
 			continue;
-		EnumDecl *e = prog->decls[i]->data.enum_decl;
 		register_enum_entries(ctx, e);
 		/* An enum is a transparent (tier-1) int alias: variants are int values and `match`/comparison
 		 * treat the enum as int, so it must interchange with int freely. */
-		register_type_alias_tiered(ctx, sem_dupz(e->name), "int", 1, prog->decls[i]->loc, prog->decls[i]->is_datasheet);
+		register_type_alias_tiered(ctx, sem_dupz(e->name), "int", 1, e->loc, e->is_datasheet);
 	}
 
 	/* Inline component definitions: `arche Foo { hp :: int, … }` mints the nominal type `hp`
@@ -6508,13 +6291,13 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog) {
 	 * type, not a bare field label. A bare reference (`arche Foo { hp }`) has field type == its
 	 * own name and is skipped here. Array/tuple components are the column's own type, not a
 	 * registerable alias. Redefinition must agree, exactly as for top-level aliases. */
-	for (int i = 0; i < prog->decl_count; i++) {
-		if (prog->decls[i]->kind != DECL_ARCHETYPE)
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *a = ctx->decls[i];
+		if (a->kind != DECL_ARCHETYPE)
 			continue;
-		int ds = prog->decls[i]->is_datasheet; /* datasheet shapes share vocabulary — dedup on agreement */
-		ArchetypeDecl *a = prog->decls[i]->data.archetype;
+		int ds = a->is_datasheet; /* datasheet shapes share vocabulary — dedup on agreement */
 		for (int f = 0; f < a->field_count; f++) {
-			FieldDecl *fd = a->fields[f];
+			FieldSummary *fd = &a->fields[f];
 			if (!fd->type || !fd->name)
 				continue;
 			const char *backing = NULL;
@@ -6560,18 +6343,18 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog) {
 	}
 
 	/* Typed value consts: the explicit declared type now constrains the literal (no longer inert). */
-	for (int i = 0; i < prog->decl_count; i++) {
-		if (prog->decls[i]->kind == DECL_CONST)
-			check_const_literal_type(ctx, prog->decls[i]->data.constant);
+	for (int i = 0; i < ctx->decl_count; i++) {
+		if (ctx->decls[i]->kind == DECL_CONST)
+			check_const_literal_type(ctx, ctx->decls[i]);
 	}
 
 	/* global scope: holds module-level variables (static arrays, etc.) */
 	push_scope(ctx);
 
 	/* pass 1: collect all archetypes */
-	for (int i = 0; i < prog->decl_count; i++) {
-		if (prog->decls[i]->kind == DECL_ARCHETYPE) {
-			analyze_decl(ctx, prog->decls[i]);
+	for (int i = 0; i < ctx->decl_count; i++) {
+		if (ctx->decls[i]->kind == DECL_ARCHETYPE) {
+			analyze_decl(ctx, ctx->decls[i]);
 		}
 	}
 
@@ -6579,17 +6362,13 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog) {
 	 * the global scope so forward references resolve regardless of declaration order (top-level
 	 * names hoist, like procs/funcs/types), and register it for func-purity so a func touching a
 	 * mutable global is rejected wherever the global sits. */
-	for (int i = 0; i < prog->decl_count; i++) {
-		Decl *d = prog->decls[i];
-		if (d->kind != DECL_STATIC || !d->data.static_decl)
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->kind != DECL_STATIC)
 			continue;
-		StaticDecl *s = d->data.static_decl;
-		if (s->kind == STATIC_KIND_ARRAY) {
-			register_static_name(ctx, s->array.name);
-			add_variable(ctx, s->array.name, s->array.element_type);
-		} else if (s->kind == STATIC_KIND_SCALAR) {
-			register_static_name(ctx, s->scalar.name);
-			add_variable(ctx, s->scalar.name, s->scalar.type);
+		if (d->static_kind == STATIC_KIND_ARRAY || d->static_kind == STATIC_KIND_SCALAR) {
+			register_static_name(ctx, d->name);
+			add_variable(ctx, d->name, d->static_type);
 		}
 	}
 
@@ -6598,26 +6377,24 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog) {
 	 * later in the same file/folder). register_func dedups, so the later per-decl registration in
 	 * analyze_{proc,func}_decl is a no-op. Func GROUPS are excluded: analyze_func_group_decl checks
 	 * find_known_func to detect a clashing name, so pre-registering the group would self-trip E0031. */
-	for (int i = 0; i < prog->decl_count; i++) {
-		Decl *d = prog->decls[i];
-		if (d->kind == DECL_PROC && d->data.proc)
-			register_func(ctx, d->data.proc->name);
-		else if (d->kind == DECL_FUNC && d->data.func)
-			register_func(ctx, d->data.func->name);
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->kind == DECL_PROC || d->kind == DECL_FUNC)
+			register_func(ctx, d->name);
 	}
 
 	/* pre-pass: register every `@drop` proc's destructor (opaque type -> proc) BEFORE any body
 	 * is analyzed, so pop_scope's auto-drop decision sees the registry regardless of decl order. */
-	for (int i = 0; i < prog->decl_count; i++) {
-		Decl *d = prog->decls[i];
-		if (d->is_drop && d->kind == DECL_PROC && d->data.proc)
-			analyze_drop_decl(ctx, d->data.proc, d->drop_type);
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->is_drop && d->kind == DECL_PROC)
+			analyze_drop_decl(ctx, d, d->drop_type);
 	}
 
 	/* pass 2: analyze other declarations */
-	for (int i = 0; i < prog->decl_count; i++) {
-		if (prog->decls[i]->kind != DECL_ARCHETYPE && prog->decls[i]->kind != DECL_CONST) {
-			analyze_decl(ctx, prog->decls[i]);
+	for (int i = 0; i < ctx->decl_count; i++) {
+		if (ctx->decls[i]->kind != DECL_ARCHETYPE && ctx->decls[i]->kind != DECL_CONST) {
+			analyze_decl(ctx, ctx->decls[i]);
 		}
 	}
 
@@ -6628,22 +6405,20 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog) {
 	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The
 	 * two kinds are still distinct (keyword, `-> T` vs out-list, call form), but the name namespace
 	 * is single, so a clash is E0031. Scans real decls only (not builtins). */
-	for (int i = 0; i < prog->decl_count; i++) {
-		Decl *di = prog->decls[i];
-		const char *ni = (di->kind == DECL_FUNC)   ? di->data.func->name
-		                 : (di->kind == DECL_PROC) ? di->data.proc->name
-		                                           : NULL;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *di = ctx->decls[i];
+		if (di->kind != DECL_FUNC && di->kind != DECL_PROC)
+			continue;
+		const char *ni = di->name;
 		if (!ni)
 			continue;
-		SourceLoc li = (di->kind == DECL_FUNC) ? di->data.func->loc : di->data.proc->loc;
 		const char *ki = (di->kind == DECL_FUNC) ? "func" : "proc";
 		for (int j = 0; j < i; j++) {
-			Decl *dj = prog->decls[j];
-			const char *nj = (dj->kind == DECL_FUNC)   ? dj->data.func->name
-			                 : (dj->kind == DECL_PROC) ? dj->data.proc->name
-			                                           : NULL;
-			if (nj && strcmp(nj, ni) == 0) {
-				sem_emit_duplicate_decl(ctx, li, ki, ni);
+			DeclSummary *dj = ctx->decls[j];
+			if (dj->kind != DECL_FUNC && dj->kind != DECL_PROC)
+				continue;
+			if (dj->name && strcmp(dj->name, ni) == 0) {
+				sem_emit_duplicate_decl(ctx, di->loc, ki, ni);
 				break;
 			}
 		}
@@ -6661,6 +6436,8 @@ static SemanticContext *make_context(void) {
 	SemanticContext *ctx = malloc(sizeof(SemanticContext));
 	ctx->archetypes = NULL;
 	ctx->archetype_count = 0;
+	ctx->decls = NULL;
+	ctx->decl_count = 0;
 	ctx->owned_types = NULL;
 	ctx->owned_type_count = 0;
 	ctx->owned_type_cap = 0;
@@ -6816,6 +6593,306 @@ static void walk_matches(SemanticContext *ctx, const SyntaxNode *n, const char *
 			walk_matches(ctx, n->children[i].as.node, src);
 }
 
+/* Pure deep-copy of a TypeRef (no pooling). Mirrors type_ref_free's ownership: TYPE_HANDLE's
+ * archetype_name is dup'd (type_ref_free never frees it — a pre-existing upstream leak we match). */
+static TypeRef *sem_type_deep_copy(const TypeRef *t) {
+	if (!t)
+		return NULL;
+	TypeRef *c = calloc(1, sizeof(TypeRef));
+	c->kind = t->kind;
+	c->loc = t->loc;
+	c->is_transparent = t->is_transparent;
+	switch (t->kind) {
+	case TYPE_NAME:
+		c->data.name = t->data.name ? sem_dupz(t->data.name) : NULL;
+		break;
+	case TYPE_ARRAY:
+		c->data.array.element_type = sem_type_deep_copy(t->data.array.element_type);
+		break;
+	case TYPE_SHAPED_ARRAY:
+		c->data.shaped_array.element_type = sem_type_deep_copy(t->data.shaped_array.element_type);
+		c->data.shaped_array.rank = t->data.shaped_array.rank;
+		break;
+	case TYPE_TUPLE: {
+		int n = t->data.tuple.field_count;
+		c->data.tuple.field_count = n;
+		c->data.tuple.field_names = calloc(n ? n : 1, sizeof(char *));
+		c->data.tuple.field_types = calloc(n ? n : 1, sizeof(TypeRef *));
+		for (int i = 0; i < n; i++) {
+			c->data.tuple.field_names[i] = sem_dupz(t->data.tuple.field_names[i]);
+			c->data.tuple.field_types[i] = sem_type_deep_copy(t->data.tuple.field_types[i]);
+		}
+		break;
+	}
+	case TYPE_HANDLE:
+		c->data.handle.archetype_name = t->data.handle.archetype_name ? sem_dupz(t->data.handle.archetype_name) : NULL;
+		break;
+	case TYPE_PROC:
+	case TYPE_FUNC: {
+		int pn = t->data.callable.param_count, rn = t->data.callable.result_count;
+		c->data.callable.param_count = pn;
+		c->data.callable.result_count = rn;
+		c->data.callable.is_proc = t->data.callable.is_proc;
+		c->data.callable.param_types = calloc(pn ? pn : 1, sizeof(TypeRef *));
+		c->data.callable.result_types = calloc(rn ? rn : 1, sizeof(TypeRef *));
+		for (int i = 0; i < pn; i++)
+			c->data.callable.param_types[i] = sem_type_deep_copy(t->data.callable.param_types[i]);
+		for (int i = 0; i < rn; i++)
+			c->data.callable.result_types[i] = sem_type_deep_copy(t->data.callable.result_types[i]);
+		break;
+	}
+	default:
+		break;
+	}
+	return c;
+}
+
+/* Deep-copy `t` into the context type pool (one pool root; type_ref_free frees the whole tree at
+ * teardown). NULL-safe. */
+static TypeRef *sem_pool_type_copy(SemanticContext *ctx, const TypeRef *t) {
+	return t ? analysis_own_type(ctx, sem_type_deep_copy(t)) : NULL;
+}
+
+/* The node whose direct children are a proc/func/sys body's statements. In the unified grammar a
+ * `name :: proc(){…}` decl node carries the body under its SN_PROC_EXPR/SN_FUNC_EXPR/SN_SYS_EXPR
+ * value-form child; the legacy SN_*_DECL form holds the statements directly. */
+static SyntaxView sem_decl_body_node(SyntaxView dn) {
+	if (!sv_present(dn))
+		return dn;
+	for (int i = 0; i < dn.node->child_count; i++)
+		if (dn.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = dn.node->children[i].as.node->kind;
+			if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
+				return dn; /* statements are direct children */
+		}
+	for (int i = 0; i < dn.node->child_count; i++)
+		if (dn.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = dn.node->children[i].as.node->kind;
+			if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_SYS_EXPR)
+				return (SyntaxView){dn.node->children[i].as.node, dn.src};
+		}
+	return dn;
+}
+
+static ParamSummary sem_param_summary(SemanticContext *ctx, const Parameter *p) {
+	ParamSummary s = {0};
+	if (!p)
+		return s;
+	s.name = p->name ? sem_dupz(p->name) : NULL;
+	s.type = sem_pool_type_copy(ctx, p->type);
+	s.is_own = p->is_own;
+	s.loc = p->loc;
+	return s;
+}
+
+/* Build one resolved DeclSummary from a (post rename/qualify) AstProgram Decl. */
+static DeclSummary *decl_summary_from(SemanticContext *ctx, const Decl *d) {
+	DeclSummary *ds = calloc(1, sizeof(DeclSummary));
+	ds->kind = d->kind;
+	ds->loc = d->loc;
+	ds->node = (SyntaxView){d->sn, d->sn_src};
+	ds->body_node = sem_decl_body_node(ds->node);
+	ds->static_kind = -1;
+	ds->from_device_impl = d->from_device_impl;
+	ds->is_datasheet = d->is_datasheet;
+	ds->is_drop = d->is_drop;
+	ds->drop_type = d->drop_type ? sem_dupz(d->drop_type) : NULL;
+	const char *nm = sem_decl_name((Decl *)d);
+	ds->name = nm ? sem_dupz(nm) : NULL;
+	if (d->allow_slug_count > 0) {
+		ds->allow_slug_count = d->allow_slug_count;
+		ds->allow_slugs = calloc(d->allow_slug_count, sizeof(char *));
+		for (int i = 0; i < d->allow_slug_count; i++)
+			ds->allow_slugs[i] = sem_dupz(d->allow_slugs[i]);
+	}
+	switch (d->kind) {
+	case DECL_PROC: {
+		ProcDecl *p = d->data.proc;
+		ds->is_extern = p->is_extern;
+		ds->is_variadic = p->is_variadic;
+		ds->allow_pure_proc = p->allow_pure_proc;
+		ds->param_count = p->param_count;
+		ds->params = calloc(p->param_count ? p->param_count : 1, sizeof(ParamSummary));
+		for (int i = 0; i < p->param_count; i++)
+			ds->params[i] = sem_param_summary(ctx, p->params[i]);
+		ds->out_param_count = p->out_param_count;
+		ds->out_params = calloc(p->out_param_count ? p->out_param_count : 1, sizeof(ParamSummary));
+		for (int i = 0; i < p->out_param_count; i++)
+			ds->out_params[i] = sem_param_summary(ctx, p->out_params[i]);
+		break;
+	}
+	case DECL_FUNC: {
+		FuncDecl *f = d->data.func;
+		ds->is_extern = f->is_extern;
+		ds->param_count = f->param_count;
+		ds->params = calloc(f->param_count ? f->param_count : 1, sizeof(ParamSummary));
+		for (int i = 0; i < f->param_count; i++)
+			ds->params[i] = sem_param_summary(ctx, f->params[i]);
+		ds->return_type_count = f->return_type_count;
+		ds->return_types = calloc(f->return_type_count ? f->return_type_count : 1, sizeof(TypeRef *));
+		for (int i = 0; i < f->return_type_count; i++)
+			ds->return_types[i] = sem_pool_type_copy(ctx, f->return_types[i]);
+		break;
+	}
+	case DECL_SYS: {
+		SysDecl *s = d->data.sys;
+		ds->param_count = s->param_count;
+		ds->params = calloc(s->param_count ? s->param_count : 1, sizeof(ParamSummary));
+		for (int i = 0; i < s->param_count; i++)
+			ds->params[i] = sem_param_summary(ctx, s->params[i]);
+		break;
+	}
+	case DECL_FUNC_GROUP: {
+		FuncGroup *g = d->data.func_group;
+		ds->member_count = g->member_count;
+		ds->member_names = calloc(g->member_count ? g->member_count : 1, sizeof(char *));
+		for (int i = 0; i < g->member_count; i++)
+			ds->member_names[i] = sem_dupz(g->member_names[i]);
+		break;
+	}
+	case DECL_ARCHETYPE: {
+		ArchetypeDecl *a = d->data.archetype;
+		ds->field_count = a->field_count;
+		ds->fields = calloc(a->field_count ? a->field_count : 1, sizeof(FieldSummary));
+		for (int i = 0; i < a->field_count; i++) {
+			ds->fields[i].name = a->fields[i]->name ? sem_dupz(a->fields[i]->name) : NULL;
+			ds->fields[i].type = sem_pool_type_copy(ctx, a->fields[i]->type);
+			ds->fields[i].kind = a->fields[i]->kind;
+			ds->fields[i].meta_explicit = a->fields[i]->meta_explicit;
+			ds->fields[i].loc = a->fields[i]->loc;
+		}
+		break;
+	}
+	case DECL_ENUM: {
+		EnumDecl *e = d->data.enum_decl;
+		ds->enum_variant_count = e->variant_count;
+		ds->enum_variant_names = calloc(e->variant_count ? e->variant_count : 1, sizeof(char *));
+		ds->enum_variant_values = calloc(e->variant_count ? e->variant_count : 1, sizeof(long));
+		for (int i = 0; i < e->variant_count; i++) {
+			ds->enum_variant_names[i] = sem_dupz(e->variant_names[i]);
+			ds->enum_variant_values[i] = e->variant_values[i];
+		}
+		break;
+	}
+	case DECL_STATIC: {
+		StaticDecl *s = d->data.static_decl;
+		ds->static_kind = s->kind;
+		ds->is_requirement = s->is_requirement;
+		ds->static_pool_count = -1;
+		if (s->kind == STATIC_KIND_ARRAY) {
+			ds->static_type = sem_pool_type_copy(ctx, s->array.element_type);
+			ds->static_size = s->array.size;
+			ds->static_has_init = s->array.init != NULL;
+		} else if (s->kind == STATIC_KIND_SCALAR) {
+			ds->static_type = sem_pool_type_copy(ctx, s->scalar.type);
+			ds->static_init =
+			    s->scalar.init ? (SyntaxView){s->scalar.init->sn, s->scalar.init->sn_src} : (SyntaxView){NULL, NULL};
+		} else { /* STATIC_KIND_ARCHETYPE — a pool */
+			ds->static_field_count = s->archetype.field_count;
+			ds->static_init_length_present = s->archetype.init_length != NULL;
+			ds->static_fields = calloc(s->archetype.field_count ? s->archetype.field_count : 1, sizeof(SyntaxView));
+			for (int i = 0; i < s->archetype.field_count; i++) {
+				Expression *fv = s->archetype.field_values[i];
+				ds->static_fields[i] = fv ? (SyntaxView){fv->sn, fv->sn_src} : (SyntaxView){NULL, NULL};
+			}
+			Expression *cnt = s->archetype.field_count > 0 ? s->archetype.field_values[0] : NULL;
+			if (cnt && cnt->type == EXPR_LITERAL && cnt->data.literal.lexeme)
+				ds->static_pool_count = atoi(cnt->data.literal.lexeme);
+		}
+		break;
+	}
+	case DECL_CONST: {
+		ConstDecl *c = d->data.constant;
+		ds->const_value_kind = c->value ? (int)c->value->type : -1;
+		ds->const_value = c->value ? (SyntaxView){c->value->sn, c->value->sn_src} : (SyntaxView){NULL, NULL};
+		ds->const_value_loc = c->value ? c->value->loc : (c->type_value ? c->type_value->loc : d->loc);
+		if (c->value && c->value->type == EXPR_LITERAL && c->value->data.literal.lexeme)
+			ds->const_value_lexeme = sem_dupz(c->value->data.literal.lexeme);
+		if (c->value && c->value->type == EXPR_NAME && c->value->data.name.name)
+			ds->const_value_name = sem_dupz(c->value->data.name.name);
+		ds->const_type_value = sem_pool_type_copy(ctx, c->type_value);
+		ds->const_decl_type = sem_pool_type_copy(ctx, c->decl_type);
+		ds->is_transparent = c->is_transparent;
+		break;
+	}
+	default:
+		break;
+	}
+	return ds;
+}
+
+/* AST-kill step A: build the resolved decl-signature table from the fully resolved owned_prog
+ * (post rename/qualify/tuple-expand). Additive — readers migrate onto it incrementally. */
+static void build_decl_table(SemanticContext *ctx) {
+	AstProgram *prog = ctx->owned_prog;
+	if (!prog)
+		return;
+	ctx->decls = calloc(prog->decl_count ? prog->decl_count : 1, sizeof(DeclSummary *));
+	ctx->decl_count = 0;
+	for (int i = 0; i < prog->decl_count; i++)
+		if (prog->decls[i])
+			ctx->decls[ctx->decl_count++] = decl_summary_from(ctx, prog->decls[i]);
+}
+
+static void free_decl_table(SemanticContext *ctx) {
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *ds = ctx->decls[i];
+		if (!ds)
+			continue;
+		free(ds->name);
+		free(ds->drop_type);
+		for (int p = 0; p < ds->param_count; p++)
+			free(ds->params[p].name);
+		free(ds->params);
+		for (int p = 0; p < ds->out_param_count; p++)
+			free(ds->out_params[p].name);
+		free(ds->out_params);
+		free(ds->return_types);
+		for (int m = 0; m < ds->member_count; m++)
+			free(ds->member_names[m]);
+		free(ds->member_names);
+		for (int f = 0; f < ds->field_count; f++)
+			free(ds->fields[f].name);
+		free(ds->fields);
+		for (int e = 0; e < ds->enum_variant_count; e++)
+			free(ds->enum_variant_names[e]);
+		free(ds->enum_variant_names);
+		free(ds->enum_variant_values);
+		free(ds->const_value_lexeme);
+		free(ds->const_value_name);
+		free(ds->static_fields);
+		for (int a = 0; a < ds->allow_slug_count; a++)
+			free(ds->allow_slugs[a]);
+		free(ds->allow_slugs);
+		free(ds);
+	}
+	free(ctx->decls);
+	ctx->decls = NULL;
+	ctx->decl_count = 0;
+}
+
+/* DeclTable accessors for out-of-file readers (tycheck). */
+int semantic_decl_count(const SemanticContext *ctx) {
+	return ctx ? ctx->decl_count : 0;
+}
+const DeclSummary *semantic_decl_at(const SemanticContext *ctx, int i) {
+	return (ctx && i >= 0 && i < ctx->decl_count) ? ctx->decls[i] : NULL;
+}
+const DeclSummary *semantic_find_callable_sig(const SemanticContext *ctx, const char *name) {
+	return find_callable_sig((SemanticContext *)ctx, name);
+}
+char *semantic_call_callee_name(SemanticContext *ctx, SyntaxView call) {
+	const char *resolved = ctx->model ? sem_model_callee_name(ctx->model, sv_id(call)) : NULL;
+	if (resolved)
+		return sem_dupz(resolved);
+	if (sv_count(call, SN_FIELD_NAME) != 0)
+		return NULL; /* qualified, non-module field call — unresolved */
+	return sem_cv_dup(sv_child(call, SN_CALLEE_NAME));
+}
+TypeRef *semantic_type_from_view(SemanticContext *ctx, SyntaxView t) {
+	return sem_view_type(ctx, t);
+}
+
 SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src) {
 	SemanticContext *ctx = make_context();
 	if (!root)
@@ -6826,7 +6903,17 @@ SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src) {
 	g_sem_qualify_ctx = ctx;
 	ctx->owned_prog = cst_to_program(root, src);
 	g_sem_qualify_ctx = NULL;
-	analyze_program_core(ctx, ctx->owned_prog);
+	build_decl_table(ctx);
+	/* AST-kill: the DeclTable holds only pooled types + dup'd names + TREE views — no pointers into
+	 * the reconstructed AstProgram — and the SemModel channels were copied during qualify. So the
+	 * AST is now dead weight; free it BEFORE analysis runs. Analysis + tycheck read only the table,
+	 * the tree, and the side model. (Passing tests with the AST already gone proves the conversion.) */
+	if (ctx->owned_prog) {
+		ast_program_free(ctx->owned_prog);
+		ctx->owned_prog = NULL;
+	}
+	ctx->prog = NULL;
+	analyze_program_core(ctx);
 	walk_matches(ctx, root, src); /* exhaustiveness: enums register during analyze, so check after */
 	return ctx;
 }
@@ -6937,6 +7024,9 @@ void semantic_context_free(SemanticContext *ctx) {
 		free(scope->vars);
 	}
 	free(ctx->scopes);
+
+	/* AST-kill: free the resolved decl-signature table (its TypeRefs live in owned_types, freed below). */
+	free_decl_table(ctx);
 
 	/* syntax tree path: free the AstProgram we reconstructed (and kept alive for the side model). */
 	if (ctx->owned_prog)
