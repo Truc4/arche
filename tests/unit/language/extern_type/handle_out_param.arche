@@ -5,11 +5,10 @@
 // RUN: %arche build -o %t --link %S/runtime/test_resource.c %s && %t | grep "v=42 b=2"
 #import { fmt }
 resource :: opaque
+// A file carries one `#foreign` region; all FFI decls live together here. `resource_fill`'s `buf`
+// is filled by C, so it must be handed back: in-out (its name is also in the out-list).
 #foreign {
   resource_open :: proc(initial: int)(ret: resource)
-}
-// `buf` is filled by C, so it must be handed back: in-out (its name is also in the out-list).
-#foreign {
   resource_fill :: proc(r: resource, buf: char[], n: int)(buf: char[], ret: int)
   resource_close :: proc(own r: resource)
 }

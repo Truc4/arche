@@ -1,0 +1,10 @@
+// A file may carry at most one `#file` region. A `#file` banner runs to end of file, so a second
+// `#file` marker is a redundant region — rejected (E0121).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "at most one .#file. region" %t.out
+#file
+helper :: 1
+#file
+other :: 2
+
+main :: proc() {
+}

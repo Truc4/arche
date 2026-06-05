@@ -1,0 +1,12 @@
+// A file may carry at most one `#foreign` region. A second `#foreign` block (or a block plus a
+// later banner) is rejected (E0121) — merge all FFI declarations under one region.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "at most one .#foreign. region" %t.out
+#foreign {
+  a :: proc()(x: int)
+}
+#foreign {
+  b :: proc()(y: int)
+}
+
+main :: proc() {
+}

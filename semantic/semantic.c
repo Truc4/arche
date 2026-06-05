@@ -6162,6 +6162,45 @@ static char *sem_import_token_module_name(const char *src, const SyntaxElem *tok
 	return s;
 }
 
+/* A file may carry at most one region of each kind — one `#module`, one `#file`, one `#foreign`, one
+ * `#import`. The forms are unions (`#import io` and `#import { … }` are both the `#import` kind), so a
+ * second occurrence of any kind is rejected; collect into the single region instead. Scans a file's
+ * top-level CST children and emits E0121 on each redundant region. Diagnostics route through the
+ * pass-wide ctx (NULL on the AST-only unit-test path, which then skips — mirrors the qualify pass). */
+static void sem_check_one_region_per_file(const SyntaxNode *root, const char *src) {
+	if (!g_sem_qualify_ctx || !root)
+		return;
+	int seen_module = 0, seen_file = 0, seen_foreign = 0, seen_import = 0;
+	for (int i = 0; i < root->child_count; i++) {
+		if (root->children[i].tag != SE_NODE)
+			continue;
+		const SyntaxNode *cn = root->children[i].as.node;
+		const char *name = NULL;
+		int *seen = NULL;
+		if (cn->kind == SN_REGION) {
+			CstView rv = {cn, src};
+			if (cv_has_token(rv, TOK_HASH_FOREIGN)) {
+				name = "#foreign";
+				seen = &seen_foreign;
+			} else if (cv_has_token(rv, TOK_HASH_FILE)) {
+				name = "#file";
+				seen = &seen_file;
+			} else {
+				name = "#module";
+				seen = &seen_module;
+			}
+		} else if (cn->kind == SN_USE_DECL) {
+			name = "#import";
+			seen = &seen_import;
+		} else {
+			continue;
+		}
+		if (*seen)
+			sem_emit_duplicate_region(g_sem_qualify_ctx, sem_node_loc(cn), name);
+		*seen = 1;
+	}
+}
+
 /* Inline module `mod_name`'s decls into `prog` (prefixed so intra-module refs resolve), record its
  * exported names in acc for the `mod.name → mod_name` qualify pass, then RECURSIVELY inline the
  * module's own `#import`s — so a module may use qualified access to a transitively-imported module
@@ -6190,6 +6229,7 @@ static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc
 		found = 1;
 		const SyntaxNode *mr = g_sem_modules[m].root;
 		const char *msrc = g_sem_modules[m].src;
+		sem_check_one_region_per_file(mr, msrc);
 		int ds = sem_is_datasheet_file(g_sem_modules[m].filename); /* `.ds.arche` → decls stay global */
 		int exported = 1;                                          /* band resets per file */
 		int file_local = 0;                                        /* sticky once a `#file` banner is seen */
@@ -6307,6 +6347,8 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 	char **acc_set[64];
 	int acc_count[64];
 	int acc_n = 0;
+
+	sem_check_one_region_per_file(root, src);
 
 	for (int i = 0; i < root->child_count; i++) {
 		if (root->children[i].tag != SE_NODE)

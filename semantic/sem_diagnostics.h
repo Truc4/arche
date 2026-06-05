@@ -135,6 +135,10 @@ typedef enum {
 	SEM_DIAG_drop_redefined,   /* a second `@drop` for an already-registered opaque type */
 	SEM_DIAG_drop_conditional, /* a handle consumed on some-but-not-all branch paths */
 
+	/* Region uniqueness — E0121 */
+	SEM_DIAG_duplicate_region, /* a second region of the same kind (`#module`/`#file`/`#foreign`/`#import`) in one file
+	                            */
+
 	/* Tycheck (P3 type-check pass — E0200+) */
 	SEM_DIAG_type_mismatch,
 	SEM_DIAG_not_indexable,
@@ -311,6 +315,7 @@ SemDiag *sem_emit_duplicate_decl(SemanticContext *ctx, SourceLoc loc, const char
 SemDiag *sem_emit_drop_invalid(SemanticContext *ctx, SourceLoc loc, const char *msg);
 SemDiag *sem_emit_drop_redefined(SemanticContext *ctx, SourceLoc loc, const char *type_name);
 SemDiag *sem_emit_drop_conditional(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_duplicate_region(SemanticContext *ctx, SourceLoc loc, const char *region);
 
 /* Lints */
 SemDiag *sem_emit_lint_proc_could_be_func(SemanticContext *ctx, SourceLoc loc, const char *name);
