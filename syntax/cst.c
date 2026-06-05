@@ -449,6 +449,7 @@ void type_ref_free(TypeRef *type) {
 		free(type->data.tuple.field_types);
 		break;
 	case TYPE_HANDLE:
+		free(type->data.handle.archetype_name);
 		break;
 	case TYPE_ARCHETYPE:
 		break;

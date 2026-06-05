@@ -1,0 +1,8 @@
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "not indexable\|E0201" %t.out
+// A bare scalar variable cannot be subscripted (E0201 not_indexable). `x` is a declared `int`,
+// so `x[0]` is a static error — only arrays/strings/archetype columns are indexable.
+@allow_pure_proc
+main :: proc() {
+  x: int = 5;
+  y := x[0];
+}

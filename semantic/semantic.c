@@ -439,6 +439,21 @@ static int is_static_name(SemanticContext *ctx, const char *name) {
 	return 0;
 }
 
+/* 1 if `name` is a top-level static ARRAY (a global buffer `name : T[N]`). A global buffer is
+ * registered as a scope variable with its ELEMENT type (a scalar TypeRef), so `var->type` alone
+ * can't tell a buffer from a scalar — the DeclTable's static_kind is the distinguishing signal.
+ * Used by the not-indexable check so `buf[i]` on a global buffer is never mis-flagged. */
+static int name_is_static_array(SemanticContext *ctx, const char *name) {
+	if (!name)
+		return 0;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->kind == DECL_STATIC && d->static_kind == STATIC_KIND_ARRAY && d->name && strcmp(d->name, name) == 0)
+			return 1;
+	}
+	return 0;
+}
+
 static void register_static_name(SemanticContext *ctx, const char *name) {
 	if (!name || is_static_name(ctx, name))
 		return;
@@ -1649,6 +1664,21 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 
 	case SN_INDEX_EXPR:
 		analyze_base_chain(ctx, v, loc);
+		/* not-indexable (E0201): a bare scalar variable cannot be subscripted. Fire ONLY when the
+		 * base is a DIRECT variable (no field chain) with an explicit scalar declared type. This is
+		 * the only false-positive-free signal: `resolve_base_chain_type` returns an array's ELEMENT
+		 * type (so `b: int[N]; b[i]` would look like a scalar `int` base), and inferred/unknown bases
+		 * are ambiguous — leave arrays, strings, handles, opaques, and inferred bases alone. */
+		if (sv_count(v, SN_FIELD_NAME) == 0) {
+			char *bn = sv_resolved_name(ctx, v);
+			VariableInfo *bv = bn ? find_variable(ctx, bn) : NULL;
+			if (bv && bv->type && bv->type->kind == TYPE_NAME && !name_is_static_array(ctx, bn)) {
+				const char *rn = resolve_type_alias(ctx, normalize_type_name(bv->type->data.name));
+				if (rn && is_primitive_type_name(rn) && strcmp(rn, "str") != 0 && strcmp(rn, "void") != 0)
+					sem_emit_not_indexable(ctx, loc, rn);
+			}
+			free(bn);
+		}
 		for (int i = 0; sv_present(sem_node_at_expr(v, i)); i++)
 			analyze_expression(ctx, sem_node_at_expr(v, i));
 		break;
@@ -1955,6 +1985,96 @@ SyntaxView sem_stmt_at(SyntaxView v, int idx) {
  * VariableInfo that borrows it). Absent view → NULL. */
 static TypeRef *sem_view_type(SemanticContext *ctx, SyntaxView tv) {
 	return sv_present(tv) ? analysis_own_type(ctx, cst_build_type(tv)) : NULL;
+}
+
+/* One out-target of a multi-bind (`a, b := f()`) or proc-call (`f(in)(out)`). */
+typedef struct {
+	char *name;    /* owned by the array; caller frees */
+	int is_new;    /* a fresh binding (`:`) vs an assignment to an existing place */
+	TypeRef *type; /* explicit target type, pooled on ctx (or NULL) */
+} MbTarget;
+
+/* Read the out-targets directly from the view, replacing the transient `cst_build_stmt` whose only
+ * use was reaching `.data.multi_bind.targets`. Mirrors the two AST builders' target walks exactly;
+ * types are pooled on ctx (no detach dance needed), names are owned by the returned array. Returns
+ * the count and sets `*out` to a calloc'd array the caller frees (each name + the array). */
+static int sem_read_mb_targets(SemanticContext *ctx, SyntaxView v, MbTarget **out) {
+	int cap = v.node->child_count > 0 ? v.node->child_count : 1;
+	MbTarget *ts = calloc(cap, sizeof(MbTarget));
+	int n = 0;
+	if (sv_kind(v) == SN_PROC_CALL_STMT) {
+		for (int i = 0; i < v.node->child_count; i++) {
+			if (v.node->children[i].tag != SE_NODE || v.node->children[i].as.node->kind != SN_OUT_ARG)
+				continue;
+			SyntaxView cnv = {v.node->children[i].as.node, v.src};
+			ts[n].name = sem_txt_dup(sv_token(cnv, TOK_IDENT));
+			ts[n].is_new = sv_has_token(cnv, TOK_COLON);
+			ts[n].type = sem_view_type(ctx, sem_type_at(cnv, 0));
+			n++;
+		}
+		*out = ts;
+		return n;
+	}
+	/* SN_MULTI_BIND_STMT: walk the pre-`=` children. `paren` form keeps per-target `:` newness; the
+	 * shorthand form makes every target new. */
+	int eq_idx = -1, lparen_idx = -1;
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_TOKEN) {
+			TokenKind tk = v.node->children[i].as.token.kind;
+			if (tk == TOK_LPAREN && lparen_idx < 0)
+				lparen_idx = i;
+			if (tk == TOK_EQ) {
+				eq_idx = i;
+				break;
+			}
+		}
+	int paren = (lparen_idx >= 0 && lparen_idx < eq_idx);
+	const char *pend = NULL;
+	int pend_len = 0, pend_active = 0, pend_new = 0;
+	TypeRef *pend_type = NULL;
+#define SEM_MB_FLUSH()                                                                                                 \
+	do {                                                                                                               \
+		if (pend_active) {                                                                                             \
+			ts[n].name = sem_txt_dup((SynText){pend, (size_t)pend_len});                                               \
+			ts[n].is_new = paren ? pend_new : 1;                                                                       \
+			ts[n].type = pend_type;                                                                                    \
+			n++;                                                                                                       \
+			pend_active = 0;                                                                                           \
+			pend_new = 0;                                                                                              \
+			pend_type = NULL;                                                                                          \
+		}                                                                                                              \
+	} while (0)
+	for (int i = 0; i < eq_idx; i++) {
+		SyntaxElem *ch = &v.node->children[i];
+		if (ch->tag == SE_NODE) {
+			SyntaxNodeKind k = ch->as.node->kind;
+			if (k == SN_NAME_EXPR) {
+				SEM_MB_FLUSH();
+				SynText t = sv_token((SyntaxView){ch->as.node, v.src}, TOK_IDENT);
+				pend = t.ptr;
+				pend_len = (int)t.len;
+				pend_active = 1;
+			} else if (k >= SN_TYPE_REF && k <= SN_TYPE_FUNC && pend_active) {
+				pend_type = sem_view_type(ctx, (SyntaxView){ch->as.node, v.src});
+			}
+			continue;
+		}
+		TokenKind tk = ch->as.token.kind;
+		if (tk == TOK_IDENT) {
+			SEM_MB_FLUSH();
+			pend = v.src + ch->as.token.offset;
+			pend_len = (int)ch->as.token.length;
+			pend_active = 1;
+		} else if (tk == TOK_COLON && pend_active) {
+			pend_new = 1;
+		} else if (tk == TOK_COMMA) {
+			SEM_MB_FLUSH();
+		}
+	}
+	SEM_MB_FLUSH();
+#undef SEM_MB_FLUSH
+	*out = ts;
+	return n;
 }
 
 static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
@@ -2329,10 +2449,8 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		/* Build a transient Statement only to read its multi-bind targets (the SEM_MB_FLUSH token
 		 * walk is intricate); analyze the value expression and the bodies via views. The transient
 		 * is freed at the end — targets are read into local state first, none escape. */
-		Statement *mb = cst_build_stmt(v);
-		if (!mb) {
-			break;
-		}
+		MbTarget *mbt = NULL;
+		int mbt_count = sem_read_mb_targets(ctx, v, &mbt);
 		DeclSummary *mb_callee_proc = NULL;
 		SyntaxView mb_value = {NULL, v.src};
 		/* the value is the sole call/expr child */
@@ -2367,8 +2485,8 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 				if (!proc_param_is_inout(mb_callee_proc, i))
 					continue;
 				char *an = sv_resolved_name(ctx, a);
-				for (int t = 0; t < mb->data.multi_bind.target_count; t++)
-					if (mb->data.multi_bind.targets[t].name && strcmp(mb->data.multi_bind.targets[t].name, an) == 0) {
+				for (int t = 0; t < mbt_count; t++)
+					if (mbt[t].name && strcmp(mbt[t].name, an) == 0) {
 						sem_emit_lint_inout_redundant_arg(ctx, sem_node_loc(a.node), an);
 						break;
 					}
@@ -2377,8 +2495,8 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		}
 
 		/* bind the targets (new shadows; existing must be live) */
-		for (int i = 0; i < mb->data.multi_bind.target_count; i++) {
-			BindingTarget *t = &mb->data.multi_bind.targets[i];
+		for (int i = 0; i < mbt_count; i++) {
+			MbTarget *t = &mbt[i];
 			TypeRef *bind_type = t->type;
 			if (!bind_type && mb_callee_proc && i < mb_callee_proc->out_param_count)
 				bind_type = mb_callee_proc->out_params[i].type;
@@ -2404,15 +2522,11 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 					sem_emit_assign_after_move(ctx, loc, t->name);
 			}
 		}
-		/* bind_type may borrow from mb's targets or the proc out-params; the proc out-param types are
-		 * AST-owned (stable), and target types are freed with mb — but add_variable already consumed
-		 * what it needed (var->type points at it). To avoid a UAF, own any target type on the ctx. */
-		for (int i = 0; i < mb->data.multi_bind.target_count; i++)
-			if (mb->data.multi_bind.targets[i].type) {
-				analysis_own_type(ctx, mb->data.multi_bind.targets[i].type);
-				mb->data.multi_bind.targets[i].type = NULL; /* detach so statement_free won't free it */
-			}
-		statement_free(mb);
+		/* target types are pooled on ctx (sem_read_mb_targets), so a borrowing var->type stays valid;
+		 * only the owned names + the array itself need freeing here. */
+		for (int i = 0; i < mbt_count; i++)
+			free(mbt[i].name);
+		free(mbt);
 		break;
 	}
 
@@ -6593,8 +6707,8 @@ static void walk_matches(SemanticContext *ctx, const SyntaxNode *n, const char *
 			walk_matches(ctx, n->children[i].as.node, src);
 }
 
-/* Pure deep-copy of a TypeRef (no pooling). Mirrors type_ref_free's ownership: TYPE_HANDLE's
- * archetype_name is dup'd (type_ref_free never frees it — a pre-existing upstream leak we match). */
+/* Pure deep-copy of a TypeRef (no pooling). Mirrors type_ref_free's ownership: every owned field
+ * (incl. TYPE_HANDLE's archetype_name) is dup'd and is released by type_ref_free at teardown. */
 static TypeRef *sem_type_deep_copy(const TypeRef *t) {
 	if (!t)
 		return NULL;

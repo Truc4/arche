@@ -170,6 +170,20 @@ test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SY
 test-doc: $(TARGET) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 	./$(TARGET) test core/... stdlib/... examples/...
 
+# Memory-safety regression gate (AddressSanitizer + UndefinedBehaviorSanitizer). Rebuilds the
+# context-freeing unit-test binaries in an ISOLATED object tree (build-asan/) — so the normal
+# build/ stays usable — and runs them, FAILING on the first leak / use-after-free / UB. Scoped to
+# the two binaries that free the SemanticContext and are sanitizer-clean (semantic-test, lower-test).
+# codegen-test (pre-existing gen_value_name leak) and parser-test (pre-existing removed-syntax
+# failure) are excluded until separately addressed — a gate is only honest if it is green.
+# CFLAGS is APPENDED so the -DARCHE_*_DIR resource defines survive.
+test-asan memcheck:
+	$(MAKE) BUILD_DIR=build-asan \
+		CFLAGS='$(CFLAGS) -fsanitize=address,undefined -fno-sanitize-recover=all -g' \
+		build-asan/semantic-test build-asan/lower-test
+	ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 ./build-asan/semantic-test
+	ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 ./build-asan/lower-test
+
 # Test folder with pattern: make test-folder FOLDER=path PATTERN="*.arche"
 test-folder: $(TARGET) $(BUILD_DIR)
 	@if [ -z "$(FOLDER)" ]; then echo "Usage: make test-folder FOLDER=path [PATTERN='*.arche']"; exit 1; fi
@@ -190,7 +204,7 @@ test-codegen: $(TARGET)
 # Does NOT delete benchmark CSVs — those are expensive to regenerate (15-20 min for 100M rows).
 # Use `make clean-data` separately when you want to free disk space.
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_DIR) build-asan
 	find examples/ -type f ! -name "*.c" ! -name "*.arche" ! -name "*.sh" -delete
 	find design_analysis/ -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
@@ -374,4 +388,4 @@ test-install: all
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
 
 # Phony targets
-.PHONY: all run run-lexer test test-doc test-lexer test-parser test-semantic test-codegen test-codegen-unit test-lit test-lower clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install
+.PHONY: all run run-lexer test test-doc test-lexer test-parser test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install

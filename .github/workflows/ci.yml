@@ -54,6 +54,11 @@ jobs:
         env:
           ARCHE_CORE_DIR: ${{ github.workspace }}/core
 
+      - name: Memory-safety gate (ASan/UBSan)
+        run: make test-asan
+        env:
+          ARCHE_CORE_DIR: ${{ github.workspace }}/core
+
       - name: Check test results
         if: success()
         run: echo "✓ All tests passed"
