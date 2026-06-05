@@ -1,6 +1,6 @@
 CC = gcc
 ARCHE_VERSION := $(shell cat VERSION 2>/dev/null || echo 0.0.0-dev)
-CFLAGS = -Wall -Wextra -Werror=switch -std=c99 -DARCHE_CORE_DIR=\"$(abspath core)\" -DARCHE_STDLIB_DIR=\"$(abspath stdlib)\" -DARCHE_RUNTIME_DIR=\"$(abspath build/runtime)\" -DARCHE_EXPLAIN_DIR=\"$(abspath docs/explain)\" -DARCHE_VERSION=\"$(ARCHE_VERSION)\"
+CFLAGS = -Wall -Wextra -Werror -std=c99 -DARCHE_CORE_DIR=\"$(abspath core)\" -DARCHE_STDLIB_DIR=\"$(abspath stdlib)\" -DARCHE_RUNTIME_DIR=\"$(abspath build/runtime)\" -DARCHE_EXPLAIN_DIR=\"$(abspath docs/explain)\" -DARCHE_VERSION=\"$(ARCHE_VERSION)\"
 BUILD_DIR = build
 TARGET = $(BUILD_DIR)/arche
 VPATH = tests
@@ -202,22 +202,22 @@ clean-data:
 # Design analysis benchmarks (data-driven design decisions, not language perf)
 bench-physics: design_analysis/array_ops/physics_update.c
 	@mkdir -p design_analysis/array_ops/results
-	$(CC) -Wall -Wextra -std=c99 -O3 -march=native -o $(BUILD_DIR)/bench-physics design_analysis/array_ops/physics_update.c -lm
+	$(CC) -Wall -Wextra -Werror -std=c99 -O3 -march=native -o $(BUILD_DIR)/bench-physics design_analysis/array_ops/physics_update.c -lm
 	./$(BUILD_DIR)/bench-physics
 
 bench-strings: design_analysis/string_ops/fixed_length.c
 	@mkdir -p design_analysis/string_ops/results
-	$(CC) -Wall -Wextra -std=c99 -O3 -o $(BUILD_DIR)/bench-strings design_analysis/string_ops/fixed_length.c
+	$(CC) -Wall -Wextra -Werror -std=c99 -O3 -o $(BUILD_DIR)/bench-strings design_analysis/string_ops/fixed_length.c
 	./$(BUILD_DIR)/bench-strings
 
 bench-lifecycle: design_analysis/array_ops/lifecycle_operations.c
 	@mkdir -p design_analysis/array_ops/results
-	$(CC) -Wall -Wextra -std=c99 -O3 -march=native -o $(BUILD_DIR)/bench-lifecycle design_analysis/array_ops/lifecycle_operations.c -lm
+	$(CC) -Wall -Wextra -Werror -std=c99 -O3 -march=native -o $(BUILD_DIR)/bench-lifecycle design_analysis/array_ops/lifecycle_operations.c -lm
 	./$(BUILD_DIR)/bench-lifecycle
 
 bench-mixed: design_analysis/array_ops/mixed_workload.c
 	@mkdir -p design_analysis/array_ops/results
-	$(CC) -Wall -Wextra -std=c99 -O3 -march=native -o $(BUILD_DIR)/bench-mixed design_analysis/array_ops/mixed_workload.c -lm
+	$(CC) -Wall -Wextra -Werror -std=c99 -O3 -march=native -o $(BUILD_DIR)/bench-mixed design_analysis/array_ops/mixed_workload.c -lm
 	./$(BUILD_DIR)/bench-mixed
 
 # Format all Arche source files and the compiler's C/H sources.
