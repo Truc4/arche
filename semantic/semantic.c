@@ -7028,11 +7028,13 @@ void semantic_context_free(SemanticContext *ctx) {
 	/* AST-kill: free the resolved decl-signature table (its TypeRefs live in owned_types, freed below). */
 	free_decl_table(ctx);
 
-	/* syntax tree path: free the AstProgram we reconstructed (and kept alive for the side model). */
-	if (ctx->owned_prog)
-		for (int i = 0; i < ctx->owned_type_count; i++)
-			type_ref_free(ctx->owned_types[i]);
+	/* The analysis type pool is independent of the (now eagerly-freed) AstProgram — always release
+	 * it. The DeclTable + view-driven analysis borrowed these for the context's lifetime. */
+	for (int i = 0; i < ctx->owned_type_count; i++)
+		type_ref_free(ctx->owned_types[i]);
 	free(ctx->owned_types);
+	/* owned_prog is normally freed right after build_decl_table (see semantic_analyze_cst); this
+	 * guards the cst_to_program_from_source unit-test path where no context owns one. */
 	if (ctx->owned_prog)
 		ast_program_free(ctx->owned_prog);
 
