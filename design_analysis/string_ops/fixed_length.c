@@ -237,7 +237,12 @@ int main() {
 	       (double)(time1 - time4) / time1 * 100);
 
 	// Output JSON results
-	FILE *out = fopen("benchmarks/string_ops/results/fixed_length_results.json", "w");
+	FILE *out = fopen("design_analysis/string_ops/results/fixed_length_results.json", "w");
+	if (!out) {
+		perror("could not open results file");
+		free_string_array(original, NUM_STRINGS);
+		return 1;
+	}
 	fprintf(out, "{\n");
 	fprintf(out, "  \"benchmark\": \"fixed_length\",\n");
 	fprintf(out, "  \"num_strings\": %d,\n", NUM_STRINGS);
