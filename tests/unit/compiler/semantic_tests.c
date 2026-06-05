@@ -361,8 +361,10 @@ void test_opaque_aliases_distinct(void) {
 	test_start("window and sound opaque aliases are not interchangeable");
 	AnalysisResult r = analyze_string("window :: opaque\n"
 	                                  "sound :: opaque\n"
-	                                  "#foreign { window_close :: proc(own w: window) }\n"
-	                                  "#foreign { sound_open :: proc()(ret: sound) }\n"
+	                                  "#foreign {\n"
+	                                  "  window_close :: proc(own w: window)\n"
+	                                  "  sound_open :: proc()(ret: sound)\n"
+	                                  "}\n"
 	                                  "main :: proc() {\n"
 	                                  "  sound_open()(s:);\n"
 	                                  "  window_close(move s);\n"
@@ -377,9 +379,11 @@ void test_opaque_aliases_distinct(void) {
 void test_use_after_consume_local_error(void) {
 	test_start("use after consume in same scope is a compile error");
 	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "#foreign { open_ :: proc(own t: char[], a: int, b: int)(ret: window) }\n"
-	                                  "#foreign { close_ :: proc(own w: window) }\n"
-	                                  "#foreign { poll_ :: proc(w: window) }\n"
+	                                  "#foreign {\n"
+	                                  "  open_ :: proc(own t: char[], a: int, b: int)(ret: window)\n"
+	                                  "  close_ :: proc(own w: window)\n"
+	                                  "  poll_ :: proc(w: window)\n"
+	                                  "}\n"
 	                                  "main :: proc() {\n"
 	                                  "  open_(\"\", 1, 1)(w:);\n"
 	                                  "  close_(move w);\n"
@@ -393,9 +397,11 @@ void test_use_after_consume_local_error(void) {
 void test_no_false_positive_when_unconsumed(void) {
 	test_start("normal borrow then consume is fine");
 	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "#foreign { open_ :: proc(own t: char[], a: int, b: int)(ret: window) }\n"
-	                                  "#foreign { close_ :: proc(own w: window) }\n"
-	                                  "#foreign { poll_ :: proc(w: window) }\n"
+	                                  "#foreign {\n"
+	                                  "  open_ :: proc(own t: char[], a: int, b: int)(ret: window)\n"
+	                                  "  close_ :: proc(own w: window)\n"
+	                                  "  poll_ :: proc(w: window)\n"
+	                                  "}\n"
 	                                  "main :: proc() {\n"
 	                                  "  open_(\"\", 1, 1)(w:);\n"
 	                                  "  poll_(w);\n"
@@ -499,8 +505,10 @@ void test_own_param_bare_arg_error(void) {
 void test_copy_opaque_error(void) {
 	test_start("`copy` of an opaque value is a compile error (move-only)");
 	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "#foreign { wopen :: proc()(ret: window) }\n"
-	                                  "#foreign { wuse :: proc(own w: window) }\n"
+	                                  "#foreign {\n"
+	                                  "  wopen :: proc()(ret: window)\n"
+	                                  "  wuse :: proc(own w: window)\n"
+	                                  "}\n"
 	                                  "main :: proc() {\n"
 	                                  "  wopen()(w:);\n"
 	                                  "  wuse(copy w);\n"

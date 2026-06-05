@@ -1,0 +1,8 @@
+// A file may carry at most one region of each kind. Two `#import { ... }` blocks are two
+// `#import` regions — rejected (E0121). Collect every import into a single block instead.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "at most one .#import. region" %t.out
+#import { os }
+#import { term }
+
+main :: proc() {
+}

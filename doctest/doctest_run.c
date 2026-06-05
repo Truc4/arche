@@ -127,6 +127,63 @@ static char *read_device_context(const char *dir) {
 	return buf;
 }
 
+/* Does region text [start, end) contain `fmt` as a standalone identifier token? */
+static int dt_region_has_fmt(const char *start, const char *end) {
+	for (const char *p = start; p + 3 <= end; p++) {
+		if (strncmp(p, "fmt", 3) != 0)
+			continue;
+		char before = (p == start) ? ' ' : p[-1];
+		char after = p[3];
+		int bw = (before >= 'a' && before <= 'z') || (before >= 'A' && before <= 'Z') ||
+		         (before >= '0' && before <= '9') || before == '_';
+		int aw = (after >= 'a' && after <= 'z') || (after >= 'A' && after <= 'Z') || (after >= '0' && after <= '9') ||
+		         after == '_';
+		if (!bw && !aw)
+			return 1;
+	}
+	return 0;
+}
+
+/* Locate the file's single top-level `#import` region. On success sets *insert_at to the byte
+ * offset where ` fmt` should be spliced to add fmt to the existing region (just inside a `{ … }`
+ * block, or at end-of-line for a bare banner) and *already to whether fmt is already listed.
+ * Returns 1 if an `#import` region was found, 0 otherwise. A line whose first non-blank chars are
+ * `//` is skipped, so a `#import` inside a comment is not matched. */
+static int dt_find_import(const char *src, size_t *insert_at, int *already) {
+	const char *p = src;
+	while (*p) {
+		const char *q = p;
+		while (*q == ' ' || *q == '\t')
+			q++;
+		if (strncmp(q, "#import", 7) == 0) {
+			const char *eol = strchr(q, '\n');
+			if (!eol)
+				eol = q + strlen(q);
+			const char *lbrace = NULL;
+			for (const char *r = q + 7; r < eol; r++)
+				if (*r == '{') {
+					lbrace = r;
+					break;
+				}
+			if (lbrace) {
+				const char *rbrace = strchr(lbrace, '}');
+				const char *rend = rbrace ? rbrace : eol;
+				*already = dt_region_has_fmt(lbrace + 1, rend);
+				*insert_at = (size_t)(lbrace + 1 - src);
+			} else {
+				*already = dt_region_has_fmt(q + 7, eol);
+				*insert_at = (size_t)(eol - src);
+			}
+			return 1;
+		}
+		const char *nl = strchr(p, '\n');
+		if (!nl)
+			break;
+		p = nl + 1;
+	}
+	return 0;
+}
+
 /* Build the synthesized program for one example. In-file model: the example runs with the
  * documented file's FULL context — every decl in the file, private/file-local included — not
  * just its public API (a doctest is a unit test, which shouldn't be limited to exports). So we
@@ -137,20 +194,54 @@ static char *read_device_context(const char *dir) {
  * core/core.arche must NOT re-include it (that would redeclare the whole prelude); its decls are
  * in scope implicitly, so `file_prefix` is empty there.
  *
- * `fmt` (the assertion library) is always made available to examples via an injected `#import { fmt }`
- * — `fmt.assert` is the doctest assertion idiom, and a module shouldn't have to depend on fmt just to
- * be doctestable. The import dedups if the file already imports fmt. */
+ * `fmt` (the assertion library) is always made available to examples — `fmt.assert` is the doctest
+ * assertion idiom, and a module shouldn't have to depend on fmt just to be doctestable. A file
+ * carries at most one `#import` region (E0121), so fmt is MERGED into the file's existing `#import`
+ * when it has one (or skipped if already listed); only a file with no imports gets a fresh
+ * `#import { fmt }` prepended. */
 static char *synthesize(const char *file_source, int is_core, const DoctestExample *ex) {
-	const char *prefix = is_core ? "" : file_source;
-	const char *fmt_import = is_core ? "" : "#import { fmt }\n";
-	size_t need = strlen(fmt_import) + strlen(prefix) + strlen("\nmain :: proc() {\n}\n") + strlen(ex->code) + 8;
+	if (is_core) {
+		size_t need = strlen("\nmain :: proc() {\n}\n") + strlen(ex->code) + 8;
+		char *out = malloc(need);
+		if (!out)
+			return NULL;
+		if (ex->has_main)
+			snprintf(out, need, "\n%s", ex->code);
+		else
+			snprintf(out, need, "\nmain :: proc() {\n%s}\n", ex->code);
+		return out;
+	}
+
+	/* Splice fmt into the file's own `#import` region if present; else prepend a fresh one. */
+	char *prefix = NULL;
+	const char *fmt_import = "";
+	size_t insert_at = 0;
+	int already = 0;
+	if (dt_find_import(file_source, &insert_at, &already)) {
+		size_t slen = strlen(file_source);
+		const char *add = already ? "" : " fmt";
+		prefix = malloc(slen + strlen(add) + 1);
+		if (!prefix)
+			return NULL;
+		memcpy(prefix, file_source, insert_at);
+		memcpy(prefix + insert_at, add, strlen(add));
+		memcpy(prefix + insert_at + strlen(add), file_source + insert_at, slen - insert_at + 1);
+	} else {
+		fmt_import = "#import { fmt }\n";
+	}
+	const char *body = prefix ? prefix : file_source;
+
+	size_t need = strlen(fmt_import) + strlen(body) + strlen("\nmain :: proc() {\n}\n") + strlen(ex->code) + 8;
 	char *out = malloc(need);
-	if (!out)
+	if (!out) {
+		free(prefix);
 		return NULL;
+	}
 	if (ex->has_main)
-		snprintf(out, need, "%s%s\n%s", fmt_import, prefix, ex->code);
+		snprintf(out, need, "%s%s\n%s", fmt_import, body, ex->code);
 	else
-		snprintf(out, need, "%s%s\nmain :: proc() {\n%s}\n", fmt_import, prefix, ex->code);
+		snprintf(out, need, "%s%s\nmain :: proc() {\n%s}\n", fmt_import, body, ex->code);
+	free(prefix);
 	return out;
 }
 
