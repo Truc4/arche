@@ -39,35 +39,40 @@ aliases, archetype shapes) and **storage requirements** live in its `.ds.arche` 
 device impl is an error. (Types are global shared vocabulary — `net`'s `socket` is the type `socket`,
 written bare, not `net.socket`.)
 
-## Caller-sized pools (qualified pool decls)
+## Caller-sized pools
 
-A device defines a shape but leaves the pool to the caller. The driver sizes the device's shape by its **qualified name**:
+A device declares its **shape** (and an optional storage requirement) in its datasheet — shapes are
+shared **global vocabulary**, so the driver references them by **bare name**. The device's impl is
+behavior only; the driver owns the pool and picks the size. The device's *system* is run by its
+**qualified device name** (behavior is namespaced; the shape is not):
 
 ```arche
-// physics/physics.arche  — the device: a shape + a system, no pool
+// physics/physics.ds.arche  — datasheet: the shape (global vocabulary) + storage requirement
 Particle :: arche { pos :: float, vel :: float }
+Particle[256]                       // minimum rows the driver must provide
 
-integrate :: sys (pos, vel) {
-  pos = pos + vel;
-}
+// physics/physics.arche  — impl: behavior only (no shape/alloc here — that's rule 3)
+integrate :: sys (pos, vel) { pos = pos + vel; }
 ```
 
 ```arche
-// main.arche  — the driver: sizes the device's shape and runs its system
+// main.arche  — the driver: owns the pool, runs the device's system
 #import { physics fmt }
 
-physics.Particle[1000]              // the driver picks the size
+Particle[1000]                      // bare name — the datasheet shape is global vocabulary
 
 main :: proc() {
-  insert(physics.Particle, 10.0, 1.0);
+  insert(Particle, 10.0, 1.0);
   run physics.integrate;            // run the device's system by qualified name
-  fmt.printf("pos0 = %d\n", physics.Particle.pos[0] * 10);  // 110
+  fmt.printf("pos0 = %d\n", Particle.pos[0] * 10);  // 110
 }
 ```
 
-- `physics.Particle[N]` — a **qualified pool decl** sizes an imported device's shape. Different drivers can size the same device's shape differently.
-- `run physics.integrate;` — a driver runs an imported device's system by **qualified name**.
-- A shape may have **at most one pool** program-wide; two pool decls for the same canonical shape are a compile error ("Shape already allocated").
+- `Particle[N]` — the driver sizes the shape (bare name). The datasheet's `Particle[N]` is a minimum
+  *requirement*, not an allocation; the driver's pool must meet it (`arche fill` can write it for you).
+- `run physics.integrate;` — a driver runs an imported device's *system* by **qualified name**.
+- A shape may have **at most one pool** program-wide; two driver pool decls for the same canonical
+  shape are a compile error ("Shape already allocated").
 
 ## Shapes are structural; names are aliases
 
@@ -87,7 +92,12 @@ Three bands (file ⊂ unit ⊂ exported): `#module` is a banner marking the decl
 
 ## Testing a device
 
-A device is tested by writing a **driver for it**, inline as a doctest: the doctest sizes the device's shapes, drives its systems, and asserts results. Doctests run under `arche test` and never reach a real driver's build.
+A device is tested by a **doctest in its impl**: under `arche test`, a doctest in a device folder
+compiles as a **generated driver over the whole device** (its datasheet + all impl files), so the
+example can `insert`/`run` over the device's datasheet-declared shapes with the pool auto-provided from
+the datasheet's requirement — no manual sizing. (`fmt` is auto-available, so use `fmt.assert`.) Doctests
+run only under `arche test` and never reach a real driver's build. `arche init device <name>` scaffolds
+exactly this shape: the shape in `<name>.ds.arche`, behavior + the driving doctest in `<name>.arche`.
 
 ## The datasheet (`.ds.arche`) and `@implements`
 
@@ -161,4 +171,4 @@ exercised by a driver (or the doctest declares its own local shape).
 
 ## Status
 
-Fully implemented and tested (`tests/unit/language/devices/`): qualified pool decls, anonymous-literal unification, cross-module `run device.system`, `#module` visibility, the `.ds.arche` datasheet, `@implements` name-mapping, the unsatisfied-`run` diagnostic, datasheet storage requirements (minimums + composition + enforcement, `tests/unit/language/devices/storage/`), and `arche fill`. See `docs/DEVICE_DRIVER_DECISIONS.md` for the design decisions.
+Fully implemented and tested (`tests/unit/language/devices/`): caller-sized pools, anonymous-literal unification, cross-module `run device.system`, device-by-name / plain-module-by-path imports (plain modules merge flat, namespacing is device-only), `#module` (unit-private) + `#file` (file-local) visibility, the `.ds.arche` datasheet, `@implements` name-mapping, the unsatisfied-`run` diagnostic, rule-3 (device impl is behavior-only), datasheet storage requirements (minimums + composition + enforcement, `tests/unit/language/devices/storage/`), and `arche fill`. See `docs/DEVICE_DRIVER_DECISIONS.md` for the design decisions.
