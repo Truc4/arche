@@ -49,16 +49,16 @@ static char *source_dir_of(const char *path) {
 	return dir;
 }
 
-/* The program is non-empty iff the CST root carries at least one declaration node
+/* The program is non-empty iff the syntax tree root carries at least one declaration node
  * (any SN_*_DECL). A malformed top-level form is wrapped SN_ERROR (parse errors are
  * reported earlier), so it doesn't count as a declaration. */
-static int cst_root_has_decl(const SyntaxNode *cst_root) {
-	if (!cst_root)
+static int syntax_root_has_decl(const SyntaxNode *syntax_root) {
+	if (!syntax_root)
 		return 0;
-	for (int i = 0; i < cst_root->child_count; i++) {
-		if (cst_root->children[i].tag != SE_NODE)
+	for (int i = 0; i < syntax_root->child_count; i++) {
+		if (syntax_root->children[i].tag != SE_NODE)
 			continue;
-		SyntaxNodeKind k = cst_root->children[i].as.node->kind;
+		SyntaxNodeKind k = syntax_root->children[i].as.node->kind;
 		if ((k >= SN_WORLD_DECL && k <= SN_USE_DECL) || k == SN_REGION)
 			return 1;
 	}
@@ -161,14 +161,14 @@ static void load_uses_of(const SyntaxNode *ud, const char *src, const char *sour
 	}
 }
 
-/* Parse one module file, register its lossless CST with both back-ends (which borrow the CST +
+/* Parse one module file, register its lossless syntax tree with both back-ends (which borrow the syntax tree +
  * source), then recurse into the module's own `#import`s. Returns 1 on success. */
 static int register_module_file(const char *mod_name, const char *path, const char *source_dir) {
 	char *mod_src = read_file_optional(path);
 	if (!mod_src)
 		return 0;
 	ParseResult mp = parse_source(mod_src);
-	if (mp.error_count > 0 || !mp.cst_root) {
+	if (mp.error_count > 0 || !mp.syntax_root) {
 		fprintf(stderr, "Error: Failed to parse module file %s\n", path);
 		for (size_t j = 0; j < mp.error_count; j++)
 			fprintf(stderr, "  [Line %d] %s\n", mp.errors[j].line, mp.errors[j].message);
@@ -176,12 +176,12 @@ static int register_module_file(const char *mod_name, const char *path, const ch
 		free(mod_src);
 		return 0;
 	}
-	lower_add_module(mod_name, mp.cst_root, mod_src, path);
-	semantic_add_module(mod_name, mp.cst_root, mod_src, path);
-	const SyntaxNode *root = mp.cst_root;
+	lower_add_module(mod_name, mp.syntax_root, mod_src, path);
+	semantic_add_module(mod_name, mp.syntax_root, mod_src, path);
+	const SyntaxNode *root = mp.syntax_root;
 	const char *src = mod_src;
-	mp.cst_root = NULL;
-	parse_result_free(&mp); /* mod_src + CST kept alive (borrowed by the registries) */
+	mp.syntax_root = NULL;
+	parse_result_free(&mp); /* mod_src + syntax tree kept alive (borrowed by the registries) */
 	/* Transitive imports: a module may `#import` other modules (e.g. csv → io). */
 	for (int u = 0; u < root->child_count; u++) {
 		if (root->children[u].tag != SE_NODE || root->children[u].as.node->kind != SN_USE_DECL)
@@ -288,10 +288,10 @@ static void load_module(const char *name, const char *source_dir) {
 		fprintf(stderr, "Error: Module not found: %s\n", name);
 }
 
-/* Resolve `#import foo` from the CST: locate each module (folder or file), register it with both
- * back-ends, and recurse into its transitive imports. CST + source are kept alive (borrowed). */
-static void resolve_uses(const SyntaxNode *cst_root, const char *src, const char *source_path) {
-	if (!cst_root)
+/* Resolve `#import foo` from the syntax tree: locate each module (folder or file), register it with both
+ * back-ends, and recurse into its transitive imports. syntax tree + source are kept alive (borrowed). */
+static void resolve_uses(const SyntaxNode *syntax_root, const char *src, const char *source_path) {
+	if (!syntax_root)
 		return;
 	/* Static registries — clear leftovers from a prior compilation (the doctest runner compiles
 	 * many examples in one process) so modules aren't inlined twice. */
@@ -306,20 +306,20 @@ static void resolve_uses(const SyntaxNode *cst_root, const char *src, const char
 	g_resolve_errors = 0;
 
 	char *source_dir = source_dir_of(source_path);
-	for (int u = 0; u < cst_root->child_count; u++) {
-		if (cst_root->children[u].tag != SE_NODE || cst_root->children[u].as.node->kind != SN_USE_DECL)
+	for (int u = 0; u < syntax_root->child_count; u++) {
+		if (syntax_root->children[u].tag != SE_NODE || syntax_root->children[u].as.node->kind != SN_USE_DECL)
 			continue;
-		load_uses_of(cst_root->children[u].as.node, src, source_dir);
+		load_uses_of(syntax_root->children[u].as.node, src, source_dir);
 	}
 	free(source_dir);
 }
 
 /* Front-end products handed from compile_frontend() to its callers. On success the caller owns
- * `source` (free it) and `sem_ctx` (semantic_context_free); `cst_root` is kept alive for lowering
+ * `source` (free it) and `sem_ctx` (semantic_context_free); `syntax_root` is kept alive for lowering
  * and follows the same ownership it always had (see compile_source's cleanup — it is not freed). */
 typedef struct {
 	char *source;
-	SyntaxNode *cst_root;
+	SyntaxNode *syntax_root;
 	SemanticContext *sem_ctx;
 	int core_lines;
 } Frontend;
@@ -387,36 +387,36 @@ static int compile_frontend(const char *user_source, const char *source_path, Fr
 		return 1;
 	}
 
-	/* The parser produces ONLY the lossless CST now (no abstract AstProgram); the
+	/* The parser produces ONLY the lossless syntax tree now (no abstract AstProgram); the
 	 * abstract AST is built solely by cst_to_program inside semantic analysis.
-	 * Keep the CST alive through lowering (CST-driven lowering reads it); the rest
+	 * Keep the syntax tree alive through lowering (syntax-tree-driven lowering reads it); the rest
 	 * of the parse result is freed now. */
-	SyntaxNode *cst_root = parse_result.cst_root;
-	parse_result.cst_root = NULL;
+	SyntaxNode *syntax_root = parse_result.syntax_root;
+	parse_result.syntax_root = NULL;
 	parse_result_free(&parse_result);
 
-	/* Empty-program check is now CST-based: the program is empty unless the CST
+	/* Empty-program check is now syntax-tree-based: the program is empty unless the syntax tree
 	 * root carries at least one (non-error) declaration node. */
-	if (!cst_root_has_decl(cst_root)) {
+	if (!syntax_root_has_decl(syntax_root)) {
 		fprintf(stderr, "Error: Empty program\n");
 		free(source);
 		return 1;
 	}
 
-	/* Resolve use declarations (module loading): register each module's CST with the CST
+	/* Resolve use declarations (module loading): register each module's syntax tree with the syntax tree
 	 * analyzer + lowerer, which inline + name-prefix it. Tuple-group flattening for archetype
-	 * fields happens inside those CST passes too, so no AstProgram pre-pass is needed. */
-	resolve_uses(cst_root, source, source_path);
+	 * fields happens inside those syntax tree passes too, so no AstProgram pre-pass is needed. */
+	resolve_uses(syntax_root, source, source_path);
 	if (g_resolve_errors > 0) { /* rule 1: a bare name imported a non-device */
 		fflush(stderr);
 		free(source);
 		return 1;
 	}
 
-	/* Semantic analysis: reconstruct the abstract AST from the lossless CST (+ registered
-	 * module CSTs) and analyze that (rustc/Go-style: CST → AST → check). The parser-built
-	 * AstProgram is not consulted. The side model (keyed by CST node id) feeds lowering. */
-	SemanticContext *sem_ctx = semantic_analyze_cst(cst_root, source);
+	/* Semantic analysis: reconstruct the abstract AST from the lossless syntax tree (+ registered
+	 * module syntax trees) and analyze that (rustc/Go-style: syntax tree → AST → check). The parser-built
+	 * AstProgram is not consulted. The side model (keyed by syntax tree node id) feeds lowering. */
+	SemanticContext *sem_ctx = semantic_analyze_cst(syntax_root, source);
 
 	if (!sem_ctx || semantic_has_errors(sem_ctx)) {
 		fprintf(stderr, "Semantic analysis failed\n");
@@ -428,7 +428,7 @@ static int compile_frontend(const char *user_source, const char *source_path, Fr
 	}
 
 	out->source = source;
-	out->cst_root = cst_root;
+	out->syntax_root = syntax_root;
 	out->sem_ctx = sem_ctx;
 	out->core_lines = core_lines;
 	return 0;
@@ -452,21 +452,21 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	if (compile_frontend(user_source, source_path, &fe) != 0)
 		return 1;
 	char *source = fe.source;
-	SyntaxNode *cst_root = fe.cst_root;
+	SyntaxNode *syntax_root = fe.syntax_root;
 	SemanticContext *sem_ctx = fe.sem_ctx;
 
-	/* Lower the lossless CST → AST (the only lowering path). Resolved types come from the
-	 * semantic side model (keyed by CST node id, globally unique across inlined modules);
-	 * `use` modules are inlined from their registered CSTs (see resolve_uses / lower_add_module). */
+	/* Lower the lossless syntax tree → AST (the only lowering path). Resolved types come from the
+	 * semantic side model (keyed by syntax tree node id, globally unique across inlined modules);
+	 * `use` modules are inlined from their registered syntax trees (see resolve_uses / lower_add_module). */
 	lower_set_model(sem_context_model(sem_ctx));
 	lower_set_sem(sem_ctx);
-	HirProgram *ast = lower_to_hir(cst_root, source);
+	HirProgram *ast = lower_to_hir(syntax_root, source);
 
 	/* Code generation */
 	CodegenContext *codegen_ctx = codegen_create(ast, sem_ctx);
 
 	/* All exits past this point flow through `cleanup:` so the toolchain temp
-	 * files, the work dir, and the IR/AST/CST allocations are released exactly
+	 * files, the work dir, and the IR/AST/syntax tree allocations are released exactly
 	 * once. rc stays 1 until a path proves success. */
 	int rc = 1;
 
@@ -619,7 +619,7 @@ cleanup:
 			unlink(asm_file);
 		rmdir(workdir);
 	}
-	/* AST must be freed before CST (HIR_TYPE_NAMED ptrs reference into the CST). */
+	/* AST must be freed before syntax tree (HIR_TYPE_NAMED ptrs reference into the syntax tree). */
 	codegen_free(codegen_ctx);
 	semantic_context_free(sem_ctx);
 	hir_program_free(ast);

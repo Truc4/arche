@@ -430,7 +430,7 @@ Token lexer_next_token(Lexer *lexer) {
 		return make_token(TOK_AT, start, 1, line, column);
 	case '#': {
 		/* `#`-directive: read the directive word and map it. `#import`/`#each_field` reuse the
-		 * existing TOK_USE/TOK_EACH_FIELD tokens so the parser + CST consumers are unchanged;
+		 * existing TOK_USE/TOK_EACH_FIELD tokens so the parser + syntax tree consumers are unchanged;
 		 * `#module`/`#file` are visibility markers. Unknown `#word` → TOK_HASH (parser errors). */
 		const char *word = lexer->cur; /* first char after '#' */
 		while (is_ident_char(peek(lexer))) {

@@ -1,7 +1,7 @@
 #ifndef HIR_H
 #define HIR_H
 
-#include "../cst/cst.h" /* SourceLoc, Operator, UnaryOperator */
+#include "../syntax/cst.h" /* SourceLoc, Operator, UnaryOperator */
 #include <stddef.h>
 
 /* =========================
@@ -16,7 +16,7 @@ typedef enum {
 	HIR_TYPE_VOID,
 	HIR_TYPE_CHAR_ARRAY,
 	HIR_TYPE_HANDLE,
-	HIR_TYPE_NAMED, /* archetype or user-defined; .name points into CST */
+	HIR_TYPE_NAMED, /* archetype or user-defined; .name points into syntax tree */
 	HIR_TYPE_ARRAY, /* element array */
 	HIR_TYPE_SHAPED_ARRAY,
 	HIR_TYPE_TUPLE,
@@ -35,7 +35,7 @@ struct HirTupleField {
 
 struct HirType {
 	HirTypeTag tag;
-	const char *name;      /* HIR_TYPE_NAMED: archetype name (ptr into CST) */
+	const char *name;      /* HIR_TYPE_NAMED: archetype name (ptr into syntax tree) */
 	struct HirType *elem;  /* HIR_TYPE_ARRAY / HIR_TYPE_SHAPED_ARRAY */
 	int rank;              /* HIR_TYPE_SHAPED_ARRAY */
 	HirTupleField *fields; /* HIR_TYPE_TUPLE */

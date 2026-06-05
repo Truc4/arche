@@ -6,7 +6,7 @@
  * Modelled on rust-analyzer's rowan GreenNodeBuilder. Every syntactic token and
  * comment is a leaf carrying an exact byte span; nodes group children and carry
  * the span covering them. Whitespace is not stored — it is the gap between
- * adjacent leaves and is recoverable from the source buffer (see docs/LOSSLESS_CST.md).
+ * adjacent leaves and is recoverable from the source buffer.
  *
  * The builder is "checkpoint/wrap": tokens are appended as they are consumed, and
  * a range of already-appended children can be retroactively wrapped into a node.
@@ -18,7 +18,7 @@
 #include <stdint.h>
 
 /* Node kinds. Token leaves reuse the lexer's TokenKind; these name the interior
- * nodes the parser wraps. The set mirrors the grammar so the CST is structurally
+ * nodes the parser wraps. The set mirrors the grammar so the syntax tree is structurally
  * complete: every construct is a node, not just identifier roles. */
 typedef enum {
 	SN_SOURCE_FILE,
@@ -149,24 +149,24 @@ typedef struct CstBuilder {
 	int cap;
 } CstBuilder;
 
-CstBuilder *cst_builder_new(void);
-void cst_builder_free(CstBuilder *b); /* frees the builder; not a finished tree */
+CstBuilder *syntax_builder_new(void);
+void syntax_builder_free(CstBuilder *b); /* frees the builder; not a finished tree */
 
 /* Append a consumed token / comment as a leaf at the current root level. */
-void cst_builder_token(CstBuilder *b, TokenKind kind, uint32_t offset, uint32_t length, int line, int column);
+void syntax_builder_token(CstBuilder *b, TokenKind kind, uint32_t offset, uint32_t length, int line, int column);
 
 /* Record the current position so a later wrap() can group children added after it. */
-int cst_builder_checkpoint(CstBuilder *b);
+int syntax_builder_checkpoint(CstBuilder *b);
 
 /* Group items[checkpoint .. count) into a single node of `kind`, in place.
  * Returns the created node (whose pointer is stable for the tree's lifetime, so
- * callers may stash it to correlate other structures with this CST node), or
+ * callers may stash it to correlate other structures with this syntax tree node), or
  * NULL if there was nothing to wrap. */
-SyntaxNode *cst_builder_wrap(CstBuilder *b, int checkpoint, SyntaxNodeKind kind);
+SyntaxNode *syntax_builder_wrap(CstBuilder *b, int checkpoint, SyntaxNodeKind kind);
 
 /* Wrap everything into a SOURCE_FILE node and return it. The builder is consumed
- * (free it with cst_builder_free). The returned tree is owned by the caller. */
-SyntaxNode *cst_builder_finish(CstBuilder *b);
+ * (free it with syntax_builder_free). The returned tree is owned by the caller. */
+SyntaxNode *syntax_builder_finish(CstBuilder *b);
 
 void syntax_node_free(SyntaxNode *n);
 

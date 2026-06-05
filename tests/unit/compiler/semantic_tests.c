@@ -1,7 +1,7 @@
-#include "../../../cst/cst.h"
 #include "../../../lexer/lexer.h"
 #include "../../../parser/parser.h"
 #include "../../../semantic/semantic.h"
+#include "../../../syntax/cst.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,10 +53,10 @@ void test_fail_msg(const char *reason) {
 	}
 
 /* Helper to parse and analyze a string.
- * The parser produces only the lossless CST; analysis runs via semantic_analyze_cst, which
- * reconstructs its analyzable AstProgram from that CST (owned by the context). cst_to_program
- * copies every string out of the source, so the CST + source can be freed once analysis
- * returns. These tests therefore validate the CST-driven semantic path end to end. */
+ * The parser produces only the lossless syntax tree; analysis runs via semantic_analyze_cst, which
+ * reconstructs its analyzable AstProgram from that syntax tree (owned by the context). cst_to_program
+ * copies every string out of the source, so the syntax tree + source can be freed once analysis
+ * returns. These tests therefore validate the syntax-tree-driven semantic path end to end. */
 typedef struct {
 	SemanticContext *ctx;
 } AnalysisResult;
@@ -65,12 +65,12 @@ AnalysisResult analyze_string(const char *src) {
 	AnalysisResult result = {NULL};
 
 	ParseResult parse_result = parse_source(src);
-	if (parse_result.error_count > 0 || !parse_result.cst_root) {
+	if (parse_result.error_count > 0 || !parse_result.syntax_root) {
 		parse_result_free(&parse_result);
 		return result;
 	}
 
-	result.ctx = semantic_analyze_cst(parse_result.cst_root, src);
+	result.ctx = semantic_analyze_cst(parse_result.syntax_root, src);
 	parse_result_free(&parse_result);
 	return result;
 }
@@ -237,7 +237,7 @@ void test_group_with_distinct_members_ok(void) {
 		test_fail_msg("Parse errors");
 		return;
 	}
-	SemanticContext *sem = semantic_analyze_cst(pr.cst_root, src);
+	SemanticContext *sem = semantic_analyze_cst(pr.syntax_root, src);
 	if (semantic_has_errors(sem)) {
 		test_fail_msg("Unexpected semantic errors");
 		semantic_context_free(sem);
@@ -258,7 +258,7 @@ void test_group_member_unknown_errors(void) {
 		test_fail_msg("Parse errors");
 		return;
 	}
-	SemanticContext *sem = semantic_analyze_cst(pr.cst_root, src);
+	SemanticContext *sem = semantic_analyze_cst(pr.syntax_root, src);
 	if (!semantic_has_errors(sem)) {
 		test_fail_msg("Expected error for unknown member");
 		semantic_context_free(sem);
@@ -280,7 +280,7 @@ void test_group_duplicate_signature_errors(void) {
 		test_fail_msg("Parse errors");
 		return;
 	}
-	SemanticContext *sem = semantic_analyze_cst(pr.cst_root, src);
+	SemanticContext *sem = semantic_analyze_cst(pr.syntax_root, src);
 	if (!semantic_has_errors(sem)) {
 		test_fail_msg("Expected duplicate-signature error");
 		semantic_context_free(sem);
@@ -302,7 +302,7 @@ void test_group_name_collision_errors(void) {
 		test_fail_msg("Parse errors");
 		return;
 	}
-	SemanticContext *sem = semantic_analyze_cst(pr.cst_root, src);
+	SemanticContext *sem = semantic_analyze_cst(pr.syntax_root, src);
 	if (!semantic_has_errors(sem)) {
 		test_fail_msg("Expected name-collision error");
 		semantic_context_free(sem);
@@ -325,7 +325,7 @@ void test_call_no_matching_member_errors(void) {
 		test_fail_msg("Parse errors");
 		return;
 	}
-	SemanticContext *sem = semantic_analyze_cst(pr.cst_root, src);
+	SemanticContext *sem = semantic_analyze_cst(pr.syntax_root, src);
 	if (!semantic_has_errors(sem)) {
 		test_fail_msg("Expected no-matching-member error");
 		semantic_context_free(sem);

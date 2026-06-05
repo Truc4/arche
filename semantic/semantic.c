@@ -1,6 +1,6 @@
 #include "semantic.h"
-#include "../cst/cst_view.h"
 #include "../parser/parser.h"
+#include "../syntax/syntax_view.h"
 #include "sem_diag_internal.h"
 #include "sem_diagnostics.h"
 #include "sem_hints.h"
@@ -61,7 +61,7 @@ typedef struct {
 
 typedef struct {
 	char *name;     /* group name (owned) */
-	char **members; /* member func names (borrowed; pointers into CST FuncGroup) */
+	char **members; /* member func names (borrowed; pointers into syntax tree FuncGroup) */
 	int member_count;
 	SourceLoc loc;
 } GroupInfo;
@@ -163,16 +163,23 @@ struct SemanticContext {
 	/* AstProgram for looking up declarations */
 	AstProgram *prog;
 
-	/* CST path only: the AstProgram reconstructed from the CST (owned here; freed with the
+	/* syntax tree path only: the AstProgram reconstructed from the syntax tree (owned here; freed with the
 	 * context). The side model borrows type-name strings that live in it, so it must
 	 * outlive lowering+codegen — exactly like main.c keeps the parser-built `prog` alive. */
 	AstProgram *owned_prog;
 
-	/* MIGRATION: resolved types keyed by CST node id, kept out of the tree.
-	 * Populated alongside Expression.resolved_type; lowering reads it from here. */
+	/* AST-kill (transitional): TypeRefs built on demand by view-driven analysis (via cst_build_type)
+	 * are owned here and freed at context teardown — so a VariableInfo can borrow a type (and its
+	 * name strings) for its whole lifetime without a use-after-free, exactly as it borrowed the
+	 * AstProgram's TypeRefs before. */
+	TypeRef **owned_types;
+	int owned_type_count, owned_type_cap;
+
+	/* Resolved types keyed by syntax tree node id, kept out of the tree.
+	 * Populated during analysis; lowering reads it from here. */
 	SemModel *model;
 
-	/* Editor-facing inferred facts keyed by CST node id (call-site param resolution).
+	/* Editor-facing inferred facts keyed by syntax tree node id (call-site param resolution).
 	 * Populated during analysis; read by the analyzer's explicit view, not by lowering. */
 	SemHints *hints;
 
@@ -803,10 +810,10 @@ static void mark_last_const(SemanticContext *ctx) {
 
 /* ========== FORWARD DECLARATIONS ========== */
 
-static void analyze_expression(SemanticContext *ctx, Expression *expr);
-static void analyze_statement(SemanticContext *ctx, Statement *stmt);
+static void analyze_expression(SemanticContext *ctx, SyntaxView v);
+static void analyze_statement(SemanticContext *ctx, SyntaxView v);
 static int proc_param_is_inout(ProcDecl *proc, int param_idx);
-static const char *resolve_expression_type(SemanticContext *ctx, Expression *expr);
+static const char *resolve_expression_type(SemanticContext *ctx, SyntaxView v);
 static const char *lvalue_leftmost_name(Expression *expr);
 
 /* By-reference aggregate param types: arrays are passed by reference (borrowed read-only by
@@ -817,7 +824,37 @@ static int type_is_byref_aggregate(const TypeRef *t) {
 }
 
 /* Implicit `move` of a bare move-only name in an ownership-taking position (defined below). */
-static void implicit_move_consume(SemanticContext *ctx, Expression *e);
+static void implicit_move_consume(SemanticContext *ctx, SyntaxView v);
+
+/* AST-kill (transitional): recover the SyntaxView an AstProgram node was reconstructed from.
+ * Lets analysis read the immutable syntax tree directly while the AstProgram readers are
+ * converted to views leaf-up. NULL-safe (an absent node yields an absent view), since AST
+ * pointers handed to converted readers are frequently optional (e.g. a bind with no value).
+ * Removed with AstProgram once nothing reads these structs. */
+#define AST_SV(n) ((n) ? ((SyntaxView){(n)->sn, (n)->sn_src}) : ((SyntaxView){NULL, NULL}))
+
+/* Own a transient analysis-built TypeRef on the context (freed at teardown); returns it. */
+static TypeRef *analysis_own_type(SemanticContext *ctx, TypeRef *t);
+
+/* Syntax-tree helpers used by the converted analysis, defined alongside cst_to_program below. */
+static SyntaxView sem_first_expr(SyntaxView v);
+static SyntaxView sem_node_at_expr(SyntaxView v, int idx);
+static SyntaxView sem_type_at(SyntaxView v, int idx);
+static TypeRef *cst_build_type(SyntaxView t);
+static Statement *cst_build_stmt(SyntaxView s);
+static char *sem_cv_dup(SyntaxView v);
+static char *sem_txt_dup(SynText t);
+static char *sem_cv_dup_first_token(SyntaxView v);
+static SourceLoc sem_node_loc(const SyntaxNode *n);
+static Operator sem_tok_to_op(TokenKind k);
+static Operator sem_binary_op(SyntaxView v);
+static int sem_expr_count(SyntaxView v);
+/* Name string of an SN_NAME_EXPR view (mirrors cst_build_expr's SN_NAME_EXPR case, incl.
+ * table<Name> → bare archetype). Caller frees. */
+static char *sv_name_expr_dup(SyntaxView e);
+/* Resolved leftmost name of a NAME/FIELD/INDEX/SLICE view: the AST-resolved name (module-inlined
+ * names are prefixed) from the ref_name channel, else the bare token. Caller frees. */
+static char *sv_resolved_name(SemanticContext *ctx, SyntaxView v);
 
 /* ========== TYPE RESOLUTION ========== */
 
@@ -912,7 +949,7 @@ static int is_type_conversion_callee(SemanticContext *ctx, const char *name) {
  * A `name : [meta] : value` declaration is a *type alias* when its RHS denotes a type, or a
  * *value const* when its RHS denotes a value. The classification is by denotation (what the RHS
  * names), not by syntactic node kind — so `tau :: pi` (pi a value) is a value const, not an alias.
- * `name`/`backing`/`lexeme` are stored by pointer and must outlive ctx (CST or static strings). */
+ * `name`/`backing`/`lexeme` are stored by pointer and must outlive ctx (syntax tree or static strings). */
 
 /* Register a nominal alias `name → backing`; redefinition must AGREE (same backing).
  * `loc` is the alias declaration's source position — used for the redefinition error
@@ -1015,7 +1052,7 @@ static void check_const_literal_type(SemanticContext *ctx, ConstDecl *c) {
 	const char *want = resolve_type_alias(ctx, normalize_type_name(c->decl_type->data.name));
 	if (!is_primitive_type_name(want))
 		return; /* non-primitive declared type: out of scope for the literal check */
-	const char *got = resolve_expression_type(ctx, c->value); /* "int" / "float" / "char" / "char_array" */
+	const char *got = resolve_expression_type(ctx, AST_SV(c->value)); /* "int" / "float" / "char" / "char_array" */
 	if (!got)
 		return;
 	/* A value const is substituted as its raw literal lexeme, so the literal's category must match
@@ -1060,142 +1097,224 @@ static int reject_meta_type(SemanticContext *ctx, TypeRef *t, const char *where)
 	return 0;
 }
 
-static const char *resolve_expression_type(SemanticContext *ctx, Expression *expr) {
-	if (!expr)
-		return NULL;
+/* Type of a bare name (the EXPR_NAME resolution, factored out). Returns a STABLE pointer
+ * (a variable/const/archetype name owned elsewhere), never the caller's transient `name`
+ * buffer — `name` is used only for lookups here. */
+/* Type of a bare name (the EXPR_NAME resolution, factored out). Returns a STABLE pointer
+ * (a variable/const/archetype name owned elsewhere), never the caller's transient `name`
+ * buffer — `name` is used only for lookups here. */
+/* Type of a bare name (the EXPR_NAME resolution, factored out). Returns a STABLE pointer
+ * (a variable/const/archetype name owned elsewhere), never the caller's transient `name`
+ * buffer — `name` is used only for lookups here. */
+static const char *resolve_name_type(SemanticContext *ctx, const char *name) {
+	VariableInfo *var = find_variable(ctx, name);
+	if (var) {
+		if (var->type) {
+			if (var->type->kind == TYPE_HANDLE)
+				return var->type->data.handle.archetype_name;
+			if (var->type->kind == TYPE_NAME)
+				return resolve_type_alias(ctx, normalize_type_name(var->type->data.name));
+			/* An array variable resolves to its ELEMENT base type, so `b[i]` and width-sensitive
+			 * consumers see int/float/i64, not a defaulted int. */
+			if (var->type->kind == TYPE_SHAPED_ARRAY || var->type->kind == TYPE_ARRAY) {
+				TypeRef *et = var->type;
+				while (et && et->kind == TYPE_SHAPED_ARRAY)
+					et = et->data.shaped_array.element_type;
+				while (et && et->kind == TYPE_ARRAY)
+					et = et->data.array.element_type;
+				if (et && et->kind == TYPE_NAME)
+					return resolve_type_alias(ctx, normalize_type_name(et->data.name));
+			}
+		}
+		if (var->inferred_type)
+			return resolve_type_alias(ctx, normalize_type_name(var->inferred_type));
+	}
+	/* A reference to a top-level value const resolves to that const's type. */
+	const char *ct = value_const_type(ctx, name);
+	if (ct)
+		return ct;
+	/* An archetype reference resolves to its (stable) alias name — the stored name with the same
+	 * value as `name` (the alias the user wrote), not the transient lookup buffer. */
+	if (find_archetype(ctx, name)) {
+		for (int i = 0; i < ctx->alias_count; i++)
+			if (strcmp(ctx->aliases[i]->name, name) == 0)
+				return ctx->aliases[i]->name;
+	}
+	return NULL;
+}
 
-	switch (expr->type) {
-	case EXPR_LITERAL: {
-		/* Infer type from lexeme format */
-		const char *lex = expr->data.literal.lexeme;
+/* Type of `base_name.field_name` (the EXPR_FIELD resolution, factored out). Stable returns. */
+static const char *resolve_field_type(SemanticContext *ctx, const char *base_name, const char *field_name) {
+	if (strcmp(field_name, "length") == 0 || strcmp(field_name, "max_length") == 0 || strcmp(field_name, "cap") == 0 ||
+	    strcmp(field_name, "capacity") == 0)
+		return "int";
+	ArchetypeInfo *arch = find_archetype(ctx, base_name);
+	if (!arch) {
+		VariableInfo *var = find_variable(ctx, base_name);
+		if (var && var->archetype_name)
+			arch = find_archetype(ctx, var->archetype_name);
+	}
+	if (arch) {
+		FieldInfo *field = find_field(arch, field_name);
+		if (field && field->type) {
+			TypeRef *ft = field->type;
+			while (ft->kind == TYPE_SHAPED_ARRAY)
+				ft = ft->data.shaped_array.element_type;
+			if (ft->kind == TYPE_NAME)
+				return resolve_type_alias(ctx, normalize_type_name(ft->data.name));
+		}
+	}
+	return NULL;
+}
 
-		/* String literal: char array */
-		if (lex[0] == '"') {
-			/* Type is char array - store length in a way semantic can track */
-			/* For now, return a marker that codegen can recognize */
+/* Stable canonical literal for a primitive/width type name (the result of a `T(x)` cast), so
+ * the resolved type outlives the transient callee buffer. NULL if not a known primitive. */
+static const char *canonical_cast_type(const char *s) {
+	const char *n = normalize_type_name(s);
+	static const char *const prims[] = {"int", "float", "char", "str", "void", "byte", "i8",  "i16",
+	                                    "i32", "i64",   "i128", "u8",  "u16",  "u32",  "u64", "u128"};
+	for (size_t i = 0; i < sizeof(prims) / sizeof(prims[0]); i++)
+		if (strcmp(n, prims[i]) == 0)
+			return prims[i];
+	return NULL;
+}
+
+/* Type of a base = leading IDENT + optional SN_FIELD_NAME chain (the base shape inside
+ * SN_FIELD_EXPR / SN_INDEX_EXPR / SN_SLICE_EXPR). nf==0 → bare name; nf==1 → single field
+ * access; nf>=2 → the old AST's nested-FIELD base isn't a NAME, so only the metadata props
+ * on the LAST field resolve (matching the old EXPR_FIELD path), else NULL. */
+static const char *resolve_base_chain_type(SemanticContext *ctx, SyntaxView v) {
+	int nf = sv_count(v, SN_FIELD_NAME);
+	char *idnt = sv_resolved_name(ctx, v);
+	const char *r;
+	if (nf == 0) {
+		r = resolve_name_type(ctx, idnt);
+	} else {
+		char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 1));
+		if (nf == 1)
+			r = resolve_field_type(ctx, idnt, fld);
+		else
+			r = (strcmp(fld, "length") == 0 || strcmp(fld, "max_length") == 0 || strcmp(fld, "cap") == 0 ||
+			     strcmp(fld, "capacity") == 0)
+			        ? "int"
+			        : NULL;
+		free(fld);
+	}
+	free(idnt);
+	return r;
+}
+
+/* Return type of a plain func named `func_name` (the non-group func path of a call). */
+static const char *resolve_func_return(SemanticContext *ctx, const char *func_name) {
+	for (int i = 0; i < ctx->prog->decl_count; i++) {
+		Decl *decl = ctx->prog->decls[i];
+		if (decl->kind != DECL_FUNC || !decl->data.func->name || strcmp(decl->data.func->name, func_name) != 0)
+			continue;
+		TypeRef *rt = func_first_return_type(decl->data.func);
+		if (!rt)
+			return NULL;
+		if (rt->kind == TYPE_HANDLE)
+			return rt->data.handle.archetype_name;
+		if (rt->kind == TYPE_NAME)
+			return resolve_type_alias(ctx, normalize_type_name(rt->data.name));
+		if (rt->kind == TYPE_SHAPED_ARRAY || rt->kind == TYPE_ARRAY) {
+			/* An array return resolves to its ELEMENT type; a char array stays "char_array". */
+			TypeRef *et = rt;
+			while (et && et->kind == TYPE_SHAPED_ARRAY)
+				et = et->data.shaped_array.element_type;
+			while (et && et->kind == TYPE_ARRAY)
+				et = et->data.array.element_type;
+			if (et && et->kind == TYPE_NAME && et->data.name) {
+				const char *en = normalize_type_name(et->data.name);
+				return (strcmp(en, "char") == 0) ? "char_array" : resolve_type_alias(ctx, en);
+			}
 			return "char_array";
 		}
-
-		/* Char literal: single-quoted character */
-		if (lex[0] == '\'') {
-			return "char";
-		}
-
-		/* Numeric literal */
-		if (strchr(lex, '.') || strchr(lex, 'e') || strchr(lex, 'E')) {
-			return "float"; /* Will be converted to double by codegen */
-		}
-		return "i32"; /* `i32` is the canonical integer; `int` is its transparent alias */
-	}
-
-	case EXPR_NAME: {
-		const char *name = expr->data.name.name;
-		VariableInfo *var = find_variable(ctx, name);
-		if (var) {
-			if (var->type) {
-				if (var->type->kind == TYPE_HANDLE)
-					return var->type->data.handle.archetype_name;
-				if (var->type->kind == TYPE_NAME)
-					return resolve_type_alias(ctx, normalize_type_name(var->type->data.name));
-				/* An array variable resolves to its ELEMENT base type, so `b[i]` (EXPR_INDEX
-				 * below) and width-sensitive consumers (binary ops, printf) see int/float/i64,
-				 * not a defaulted int. Mirrors the column-unwrap in the EXPR_FIELD case. */
-				if (var->type->kind == TYPE_SHAPED_ARRAY || var->type->kind == TYPE_ARRAY) {
-					TypeRef *et = var->type;
-					while (et && et->kind == TYPE_SHAPED_ARRAY)
-						et = et->data.shaped_array.element_type;
-					while (et && et->kind == TYPE_ARRAY)
-						et = et->data.array.element_type;
-					if (et && et->kind == TYPE_NAME)
-						return resolve_type_alias(ctx, normalize_type_name(et->data.name));
-				}
-			}
-			/* Fallback to inferred type */
-			if (var->inferred_type) {
-				return resolve_type_alias(ctx, normalize_type_name(var->inferred_type));
-			}
-		}
-		/* A reference to a top-level value const resolves to that const's type — so a float const
-		 * is a float, not a defaulted int. (A local var of the same name shadows it, handled above.) */
-		const char *ct = value_const_type(ctx, name);
-		if (ct)
-			return ct;
-		/* Check if it's an archetype being referenced */
-		ArchetypeInfo *arch = find_archetype(ctx, name);
-		if (arch) {
-			return name; /* Type is the archetype name */
-		}
+		if (rt->kind == TYPE_OPAQUE)
+			return "opaque"; /* foreign resource value (pointer-width i64) */
 		return NULL;
 	}
+	return NULL;
+}
 
-	case EXPR_FIELD: {
-		/* Handle metadata properties on arrays and archetypes (incl. fixed char[N]/T[N] buffers:
-		 * .cap/.capacity/.length/.max_length are the declared size). */
-		if (strcmp(expr->data.field.field_name, "length") == 0 ||
-		    strcmp(expr->data.field.field_name, "max_length") == 0 || strcmp(expr->data.field.field_name, "cap") == 0 ||
-		    strcmp(expr->data.field.field_name, "capacity") == 0) {
-			return "int";
-		}
-
-		/* Field access type is the field's type */
-		if (expr->data.field.base->type == EXPR_NAME) {
-			const char *base_name = expr->data.field.base->data.name.name;
-			const char *field_name = expr->data.field.field_name;
-
-			ArchetypeInfo *arch = find_archetype(ctx, base_name);
-			if (!arch) {
-				VariableInfo *var = find_variable(ctx, base_name);
-				if (var && var->archetype_name) {
-					arch = find_archetype(ctx, var->archetype_name);
-				}
-			}
-
-			if (arch) {
-				FieldInfo *field = find_field(arch, field_name);
-				if (field && field->type) {
-					TypeRef *ft = field->type;
-					while (ft->kind == TYPE_SHAPED_ARRAY)
-						ft = ft->data.shaped_array.element_type;
-					if (ft->kind == TYPE_NAME)
-						return resolve_type_alias(ctx, normalize_type_name(ft->data.name));
-				}
-			}
-		}
+/* Resolved (backing) type name of an expression, read from the immutable syntax tree.
+ * Returns a STABLE pointer (a string literal, or a name owned by a variable/field/alias
+ * table) so callers may store it. `alloc` is not a keyword in arche, so there is no case
+ * for it (the EXPR_ALLOC node kind is dead). */
+static const char *resolve_expression_type(SemanticContext *ctx, SyntaxView v) {
+	if (!sv_present(v))
 		return NULL;
+	switch (sv_kind(v)) {
+	case SN_PAREN_EXPR:
+		return resolve_expression_type(ctx, sem_first_expr(v));
+
+	case SN_LITERAL_EXPR: {
+		char *lex = sem_cv_dup_first_token(v);
+		const char *r;
+		if (lex[0] == '"')
+			r = "char_array";
+		else if (lex[0] == '\'')
+			r = "char";
+		else if (strchr(lex, '.') || strchr(lex, 'e') || strchr(lex, 'E'))
+			r = "float";
+		else
+			r = "i32"; /* `i32` is the canonical integer; `int` is its transparent alias */
+		free(lex);
+		return r;
 	}
 
-	case EXPR_INDEX: {
-		/* An index yields the base's ELEMENT type. A char buffer resolves to "char_array"
-		 * (unbounded) or "char" (sized); indexing either gives a single `char`. Without this
-		 * reduction an unbounded `char[]` index would inherit "char_array" and be treated as a
-		 * string (i8*) at call sites (e.g. printf). */
-		const char *base_type = resolve_expression_type(ctx, expr->data.index.base);
+	case SN_STRING_EXPR:
+		return "char_array";
+
+	case SN_NAME_EXPR: {
+		char *nm = sv_resolved_name(ctx, v);
+		const char *r = resolve_name_type(ctx, nm);
+		free(nm);
+		return r;
+	}
+
+	case SN_FIELD_EXPR: {
+		/* `Enum.variant` is a compile-time int constant (enums are i32-backed), the same value the
+		 * old analysis folded the field access into. Handle it before the archetype/field path. */
+		if (sv_count(v, SN_FIELD_NAME) == 1) {
+			char *idnt = sv_resolved_name(ctx, v);
+			if (enum_is_type(ctx, idnt)) {
+				char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, 0));
+				long ev = 0;
+				int is_variant = enum_variant_lookup(ctx, idnt, fld, &ev);
+				free(idnt);
+				free(fld);
+				if (is_variant)
+					return "i32";
+			} else {
+				free(idnt);
+			}
+		}
+		return resolve_base_chain_type(ctx, v);
+	}
+
+	case SN_INDEX_EXPR: {
+		/* An index yields the base's ELEMENT type; a char buffer ("char_array") indexes to "char". */
+		const char *base_type = resolve_base_chain_type(ctx, v);
 		if (base_type && strcmp(base_type, "char_array") == 0)
 			return "char";
 		return base_type;
 	}
 
-	case EXPR_SLICE:
-		/* `buf[lo:hi]` is a slice of the same element type as its base — it resolves like the base
-		 * array (element name for a non-char array, "char_array" for a char buffer). */
-		return resolve_expression_type(ctx, expr->data.slice.base);
+	case SN_SLICE_EXPR:
+		/* a slice has the same element type as its base array */
+		return resolve_base_chain_type(ctx, v);
 
-	case EXPR_BINARY: {
-		/* Comparison operators always return int (boolean result) */
-		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE) {
-			return "int";
-		}
-
-		/* Infer from operands - for now, promote to float if either side is float */
-		const char *left_type = resolve_expression_type(ctx, expr->data.binary.left);
-		const char *right_type = resolve_expression_type(ctx, expr->data.binary.right);
-
-		/* Promote to double if either operand is double */
+	case SN_BINARY_EXPR: {
+		Operator op = sem_binary_op(v);
+		if (op >= OP_EQ && op <= OP_GTE)
+			return "int"; /* comparisons are boolean */
+		const char *left_type = resolve_expression_type(ctx, sem_node_at_expr(v, 0));
+		const char *right_type = resolve_expression_type(ctx, sem_node_at_expr(v, 1));
 		if (left_type && strcmp(left_type, "double") == 0)
 			return "double";
 		if (right_type && strcmp(right_type, "double") == 0)
 			return "double";
-		/* Fall back to float if either is float */
 		if (left_type && strcmp(left_type, "float") == 0)
 			return "float";
 		if (right_type && strcmp(right_type, "float") == 0)
@@ -1203,125 +1322,67 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
 		return left_type ? left_type : right_type;
 	}
 
-	case EXPR_UNARY: {
-		/* `!x` yields an int 0/1 regardless of the operand's type (it's `x == 0`); `-x`/`move`/`copy`
-		 * keep the operand's type. */
-		if (expr->data.unary.op == UNARY_NOT)
+	case SN_UNARY_EXPR:
+		/* `!x` is an int 0/1; `-x`/`move`/`copy` keep the operand's type */
+		if (sv_has_token(v, TOK_BANG))
 			return "int";
-		return resolve_expression_type(ctx, expr->data.unary.operand);
-	}
+		return resolve_expression_type(ctx, sem_first_expr(v));
 
-	case EXPR_CALL: {
-		const char *func_name = NULL;
-		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME) {
-			func_name = expr->data.call.callee->data.name.name;
-		}
-		if (!func_name)
-			return NULL;
-
-		/* Width-type cast i64(x): result type is the target width name. */
-		if (is_width_int_name(func_name))
-			return func_name;
-
-		/* Type conversion `float(x)` / `meters(x)` / `mps(x)`: the RUNTIME result is the target's
-		 * backing (the nominal is cosmetic and erases). Lowering/codegen read this; the typechecker
-		 * tracks the distinct subtype separately via synth_call. */
-		if (is_primitive_type_name(func_name) || is_type_alias(ctx, func_name))
-			return resolve_type_alias(ctx, func_name);
-
-		/* `insert(table<X>, …)` yields a handle into X's table (i64). Resolving it
-		 * lets `let h := insert(...)` carry a handle type, so copies like
-		 * `let alias := h` inherit it instead of defaulting to int. */
-		if (strcmp(func_name, "insert") == 0)
-			return "handle";
-
-		if (!ctx->prog)
-			return NULL;
-
-		/* If this name is a group, pick the matching member by static arg types. */
-		GroupInfo *gi = find_group(ctx, func_name);
-		if (gi) {
-			for (int m = 0; m < gi->member_count; m++) {
-				FuncDecl *fd = find_func_decl_cst(ctx->prog, gi->members[m]);
-				if (!fd)
-					continue;
-				if (fd->param_count != expr->data.call.arg_count)
-					continue;
-				int ok = 1;
-				for (int j = 0; j < expr->data.call.arg_count; j++) {
-					const char *rt = resolve_expression_type(ctx, expr->data.call.args[j]);
-					if (!rt) {
-						ok = 0;
-						break;
-					}
-					TypeRef *pt = fd->params[j]->type;
-					if (!pt || pt->kind != TYPE_NAME) {
-						ok = 0;
-						break;
-					}
-					const char *pn = normalize_type_name(pt->data.name);
-					if (strcmp(pn, normalize_type_name(rt)) != 0) {
-						ok = 0;
-						break;
-					}
-				}
-				TypeRef *frt = func_first_return_type(fd);
-				if (ok && frt && frt->kind == TYPE_NAME) {
-					return normalize_type_name(frt->data.name);
-				}
-			}
-			return NULL;
-		}
-
-		/* Plain func path: a func yields its return type. A proc is not a value — it has no
-		 * result type here (its outputs are written into caller-provided out-params). */
-		for (int i = 0; i < ctx->prog->decl_count; i++) {
-			Decl *decl = ctx->prog->decls[i];
-			TypeRef *rt = NULL;
-			if (decl->kind == DECL_FUNC && decl->data.func->name && strcmp(decl->data.func->name, func_name) == 0) {
-				rt = func_first_return_type(decl->data.func);
-			} else {
-				continue;
-			}
-			if (!rt)
+	case SN_CALL_EXPR: {
+		/* Callee name: the qualify pass recorded the resolved (mangled for `mod.f`) name in the
+		 * side model. Fall back to the bare SN_CALLEE_NAME for an unqualified call not recorded;
+		 * a qualified call with no recorded name is a non-module field call → unresolved. */
+		const char *resolved = ctx->model ? sem_model_callee_name(ctx->model, sv_id(v)) : NULL;
+		char *fallback = NULL;
+		if (!resolved) {
+			if (sv_count(v, SN_FIELD_NAME) != 0)
 				return NULL;
-			if (rt->kind == TYPE_HANDLE)
-				return rt->data.handle.archetype_name;
-			if (rt->kind == TYPE_NAME)
-				return resolve_type_alias(ctx, normalize_type_name(rt->data.name));
-			if (rt->kind == TYPE_SHAPED_ARRAY || rt->kind == TYPE_ARRAY) {
-				/* An array return resolves to its ELEMENT type — same convention as an
-				 * array NAME (see EXPR_NAME unwrap). A `char[]`/`char[N]` stays "char_array"
-				 * (string-like byte view); a non-char array (float[N], i64[N], …) yields the
-				 * element name so a later `r[i]` resolves to that element, not a default int. */
-				TypeRef *et = rt;
-				while (et && et->kind == TYPE_SHAPED_ARRAY)
-					et = et->data.shaped_array.element_type;
-				while (et && et->kind == TYPE_ARRAY)
-					et = et->data.array.element_type;
-				if (et && et->kind == TYPE_NAME && et->data.name) {
-					const char *en = normalize_type_name(et->data.name);
-					if (strcmp(en, "char") == 0)
-						return "char_array";
-					return resolve_type_alias(ctx, en);
-				}
-				return "char_array";
-			}
-			if (rt->kind == TYPE_OPAQUE)
-				return "opaque"; /* foreign resource value (pointer-width i64) */
-			return NULL;
+			fallback = sem_cv_dup(sv_child(v, SN_CALLEE_NAME));
 		}
-		return NULL;
-	}
-
-	case EXPR_ALLOC: {
-		/* Type is the archetype being allocated */
-		return expr->data.alloc.archetype_name;
-	}
-
-	case EXPR_STRING: {
-		/* String literal: char array */
-		return "char_array";
+		const char *func_name = resolved ? resolved : fallback;
+		const char *result = NULL;
+		if (func_name) {
+			if (is_width_int_name(func_name) || is_primitive_type_name(func_name) || is_type_alias(ctx, func_name)) {
+				/* `T(x)` cast: result is the (stable canonical) target type, or an alias backing. */
+				const char *r = resolve_type_alias(ctx, func_name);
+				result = (r == func_name) ? canonical_cast_type(func_name) : r;
+			} else if (strcmp(func_name, "insert") == 0) {
+				result = "handle"; /* `insert(table<X>, …)` yields a handle (i64) */
+			} else if (ctx->prog) {
+				GroupInfo *gi = find_group(ctx, func_name);
+				if (gi) {
+					/* a group: pick the matching member by static arg types */
+					int argc = 0;
+					while (sv_present(sem_node_at_expr(v, argc)))
+						argc++;
+					for (int m = 0; m < gi->member_count && !result; m++) {
+						FuncDecl *fd = find_func_decl_cst(ctx->prog, gi->members[m]);
+						if (!fd || fd->param_count != argc)
+							continue;
+						int ok = 1;
+						for (int j = 0; j < argc; j++) {
+							const char *rt = resolve_expression_type(ctx, sem_node_at_expr(v, j));
+							TypeRef *pt = fd->params[j]->type;
+							if (!rt || !pt || pt->kind != TYPE_NAME) {
+								ok = 0;
+								break;
+							}
+							if (strcmp(normalize_type_name(pt->data.name), normalize_type_name(rt)) != 0) {
+								ok = 0;
+								break;
+							}
+						}
+						TypeRef *frt = func_first_return_type(fd);
+						if (ok && frt && frt->kind == TYPE_NAME)
+							result = normalize_type_name(frt->data.name);
+					}
+				} else {
+					result = resolve_func_return(ctx, func_name);
+				}
+			}
+		}
+		free(fallback);
+		return result;
 	}
 
 	default:
@@ -1333,28 +1394,37 @@ static const char *resolve_expression_type(SemanticContext *ctx, Expression *exp
  * (e.g. "file"), NOT the backing. NULL when the expression has no known nominal alias
  * (a literal, a raw primitive, an unknown). Distinct from resolve_expression_type, which
  * resolves through to the backing for ops/codegen. */
-static const char *nominal_type_of_expr(SemanticContext *ctx, Expression *e) {
-	if (!e)
+static const char *nominal_type_of_expr(SemanticContext *ctx, SyntaxView v) {
+	if (!sv_present(v))
 		return NULL;
+	SyntaxNodeKind k = sv_kind(v);
 	/* `move x` / `copy x` are transparent markers — their nominal type is the operand's. */
-	if (e->type == EXPR_UNARY && (e->data.unary.op == UNARY_MOVE || e->data.unary.op == UNARY_COPY))
-		return nominal_type_of_expr(ctx, e->data.unary.operand);
-	if (e->type == EXPR_NAME) {
-		VariableInfo *v = find_variable(ctx, e->data.name.name);
-		if (!v)
+	if (k == SN_UNARY_EXPR) {
+		if (sv_has_token(v, TOK_MOVE) || sv_has_token(v, TOK_COPY))
+			return nominal_type_of_expr(ctx, sem_first_expr(v));
+		return NULL;
+	}
+	if (k == SN_NAME_EXPR) {
+		char *nm = sv_resolved_name(ctx, v);
+		VariableInfo *var = find_variable(ctx, nm);
+		free(nm);
+		if (!var)
 			return NULL;
-		if (v->nominal_type)
-			return v->nominal_type;
+		if (var->nominal_type)
+			return var->nominal_type;
 		/* Fall back to the declared type name when it is a non-transparent alias — covers params and
 		 * any var whose nominal_type wasn't recorded at bind time (so an opaque `file` parameter keeps
 		 * its distinct identity through a call, not just a fresh `x: file` local). */
-		if (v->type && v->type->kind == TYPE_NAME && is_type_alias(ctx, v->type->data.name) &&
-		    !alias_is_transparent(ctx, v->type->data.name))
-			return v->type->data.name;
+		if (var->type && var->type->kind == TYPE_NAME && is_type_alias(ctx, var->type->data.name) &&
+		    !alias_is_transparent(ctx, var->type->data.name))
+			return var->type->data.name;
 		return NULL;
 	}
-	if (e->type == EXPR_CALL && e->data.call.callee && e->data.call.callee->type == EXPR_NAME) {
-		FuncDecl *fd = find_func_decl_cst(ctx->prog, e->data.call.callee->data.name.name);
+	/* simple (unqualified) callee only — a qualified `mod.f` has SN_FIELD_NAME children */
+	if (k == SN_CALL_EXPR && sv_count(v, SN_FIELD_NAME) == 0) {
+		char *cn = sem_cv_dup(sv_child(v, SN_CALLEE_NAME));
+		FuncDecl *fd = find_func_decl_cst(ctx->prog, cn);
+		free(cn);
 		TypeRef *frt = func_first_return_type(fd);
 		if (frt && frt->kind == TYPE_NAME && is_type_alias(ctx, frt->data.name))
 			return frt->data.name;
@@ -1364,395 +1434,354 @@ static const char *nominal_type_of_expr(SemanticContext *ctx, Expression *e) {
 
 /* ========== EXPRESSION ANALYSIS ========== */
 
-static void analyze_expression(SemanticContext *ctx, Expression *expr) {
-	if (!expr)
+/* Analyze a FIELD/INDEX/SLICE base = leading IDENT + optional SN_FIELD_NAME chain. Replicates the
+ * old recursion's diagnostics: base-name resolution (undefined symbol), and archetype/tuple field
+ * checks. The old AST flattened `a.b.c` into nested FIELDs; here we read the flat node directly.
+ * `field_loc` is the location used for field diagnostics (the whole expr). */
+static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc field_loc) {
+	char *idnt = sv_resolved_name(ctx, v);
+	int nf = sv_count(v, SN_FIELD_NAME);
+
+	/* `Enum.variant` is a compile-time constant — the old code folded it before any symbol/field
+	 * check. No diagnostics; its i32 type is recorded by resolve_expression_type. */
+	if (nf == 1 && enum_is_type(ctx, idnt)) {
+		char *f0 = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, 0));
+		long ev = 0;
+		int variant = enum_variant_lookup(ctx, idnt, f0, &ev);
+		free(f0);
+		if (variant) {
+			free(idnt);
+			return;
+		}
+	}
+
+	/* Base name resolution (old recursion into the base NAME). The leftmost IDENT names a variable,
+	 * archetype, const, or known func; mark a referenced variable so W0004 doesn't fire. */
+	VariableInfo *base_var = find_variable(ctx, idnt);
+	if (base_var)
+		base_var->is_referenced = 1;
+
+	if (nf == 0) {
+		/* a bare name used as an index/slice base — same checks as EXPR_NAME */
+		int is_known_func = find_known_func(ctx, idnt);
+		int is_arch = find_archetype(ctx, idnt) != NULL;
+		int is_const = semantic_get_const_value(ctx, idnt) != NULL;
+		if (!is_known_func && !base_var && !is_arch && !is_const)
+			sem_emit_undefined_symbol(ctx, field_loc, idnt);
+		else if (base_var && base_var->is_consumed)
+			sem_emit_use_after_consume(ctx, field_loc, idnt);
+		free(idnt);
+		return;
+	}
+
+	/* Field access. The field of interest is the LAST name in the chain; for nf>=2 the old code's
+	 * base is itself a FIELD (not a NAME), so only the nested-tuple expansion `arch.tuple.comp`
+	 * fires — replicate that for nf==2 — and otherwise the simple base-NAME field checks apply. */
+	char *field_name = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 1));
+
+	/* nf>=2: nested `arch.tuple.comp` → arch must have a `tuple_comp` field. Old code only handled a
+	 * single level of nesting (base FIELD whose base is a NAME), i.e. nf==2. */
+	if (nf == 2) {
+		char *tuple_base = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, 0));
+		ArchetypeInfo *arch = find_archetype(ctx, idnt);
+		if (!arch && base_var && base_var->archetype_name)
+			arch = find_archetype(ctx, base_var->archetype_name);
+		if (arch) {
+			char expanded[256];
+			snprintf(expanded, sizeof(expanded), "%s_%s", tuple_base, field_name);
+			if (find_field(arch, expanded)) {
+				free(tuple_base);
+				free(field_name);
+				free(idnt);
+				return; /* resolved as a tuple component */
+			}
+		}
+		free(tuple_base);
+		/* fall through to simple checks below (base treated as the IDENT) */
+	}
+
+	/* Simple `name.field` checks (the old `base->type == EXPR_NAME` path). */
+	if (nf == 1) {
+		ArchetypeInfo *arch = find_archetype(ctx, idnt);
+		if (!arch) {
+			if (!base_var) {
+				sem_emit_undefined_field_base(ctx, field_loc, idnt);
+				goto done;
+			}
+			/* reading a component through a HANDLE value is unsupported */
+			int base_is_handle = (base_var->type && base_var->type->kind == TYPE_HANDLE) ||
+			                     (base_var->inferred_type && strcmp(base_var->inferred_type, "handle") == 0);
+			if (base_is_handle) {
+				const char *an = (base_var->type && base_var->type->kind == TYPE_HANDLE)
+				                     ? base_var->type->data.handle.archetype_name
+				                     : NULL;
+				sem_emit_cannot_read_through_handle(ctx, field_loc, field_name, idnt, an ? an : "the archetype");
+				goto done;
+			}
+			if (base_var->archetype_name)
+				arch = find_archetype(ctx, base_var->archetype_name);
+			/* E0111: a typed variable with no field-access shape (skip tuples, archetype params,
+			 * sys-column access, and array metadata props). */
+			int sys_column_access = 0;
+			if (base_var->is_param && ctx->current_sys_archetype) {
+				ArchetypeInfo *sa = find_archetype(ctx, ctx->current_sys_archetype);
+				if (sa && find_field(sa, idnt))
+					sys_column_access = 1;
+			}
+			if (!arch && base_var->type && !sys_column_access) {
+				if (base_var->type->kind == TYPE_NAME)
+					arch = find_archetype(ctx, base_var->type->data.name);
+				if (!arch && base_var->type->kind != TYPE_TUPLE && base_var->type->kind != TYPE_ARCHETYPE) {
+					if ((base_var->type->kind == TYPE_ARRAY || base_var->type->kind == TYPE_SHAPED_ARRAY) &&
+					    (strcmp(field_name, "cap") == 0 || strcmp(field_name, "capacity") == 0 ||
+					     strcmp(field_name, "length") == 0 || strcmp(field_name, "max_length") == 0))
+						goto done;
+					const char *kind_name;
+					switch (base_var->type->kind) {
+					case TYPE_NAME:
+						kind_name = base_var->type->data.name;
+						break;
+					case TYPE_ARRAY:
+						kind_name = "array";
+						break;
+					case TYPE_SHAPED_ARRAY:
+						kind_name = "shaped array";
+						break;
+					case TYPE_OPAQUE:
+						kind_name = "opaque";
+						break;
+					case TYPE_TYPE:
+						kind_name = "type";
+						break;
+					default:
+						kind_name = "value";
+						break;
+					}
+					sem_emit_field_on_non_archetype(ctx, field_loc, kind_name, field_name);
+					goto done;
+				}
+			}
+		}
+		/* check the field exists on this archetype */
+		if (arch) {
+			FieldInfo *found_field = find_field(arch, field_name);
+			if (!found_field) {
+				int is_tuple_base = 0;
+				size_t fl = strlen(field_name);
+				for (int i = 0; i < arch->field_count; i++)
+					if (strncmp(arch->fields[i]->name, field_name, fl) == 0 && arch->fields[i]->name[fl] == '_') {
+						is_tuple_base = 1;
+						break;
+					}
+				if (is_tuple_base) {
+					/* tuple field access — codegen expands it */
+				} else {
+					char expanded2[256];
+					snprintf(expanded2, sizeof(expanded2), "%s_%s", idnt, field_name);
+					if (!find_field(arch, expanded2))
+						sem_emit_no_field(ctx, field_loc, archetype_any_alias(ctx, arch), field_name);
+				}
+			}
+		}
+	}
+done:
+	free(field_name);
+	free(idnt);
+}
+
+static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
+	if (!sv_present(v))
 		return;
 
-	/* Capture-and-clear the call-arg flag: this expression "consumes" the flag
-	 * set by an enclosing EXPR_CALL arg-loop. Any sub-expressions we recurse
-	 * into see was_arg=0 unless THIS branch resets the flag (only EXPR_CALL
-	 * does, per-argument). EXPR_UNARY MOVE/COPY consults was_arg to detect
-	 * E0112 (`move x` outside a call argument). */
+	/* Capture-and-clear the call-arg flag (see the old comment): only EXPR_CALL re-sets it per arg. */
 	int was_arg = ctx->analyzing_call_arg;
 	ctx->analyzing_call_arg = 0;
+	SourceLoc loc = sem_node_loc(v.node);
 
-	switch (expr->type) {
-	case EXPR_LITERAL:
-		/* literals are always valid */
+	switch (sv_kind(v)) {
+	case SN_LITERAL_EXPR:
+	case SN_STRING_EXPR:
+	case SN_ARRAY_LIT_EXPR:
 		break;
 
-	case EXPR_STRING:
-		/* string literals are always valid */
+	case SN_PAREN_EXPR:
+		analyze_expression(ctx, sem_first_expr(v));
 		break;
 
-	case EXPR_ARRAY_LITERAL:
-		/* Array literals have no name to resolve here; their elements are handled where the
-		 * literal is consumed (binding / call / store). */
-		break;
-
-	case EXPR_NAME: {
-		const char *name = expr->data.name.name;
-
-		/* Check if it's a known function, variable, archetype, or constant */
+	case SN_NAME_EXPR: {
+		char *name = sv_resolved_name(ctx, v);
 		int is_known_func = find_known_func(ctx, name);
 		VariableInfo *name_var = find_variable(ctx, name);
 		int is_var = name_var != NULL;
 		int is_arch = find_archetype(ctx, name) != NULL;
 		int is_const = semantic_get_const_value(ctx, name) != NULL;
 		if (is_var)
-			name_var->is_referenced = 1; /* W0004: any EXPR_NAME read clears the unused flag */
-
-		if (!is_known_func && !is_var && !is_arch && !is_const) {
-			sem_emit_undefined_symbol(ctx, expr->loc, name);
-		} else if (is_var && name_var->is_consumed) {
-			/* Use-after-consume: this binding was passed to a consume parameter earlier.
-			 * NOTE: v1 limitation — tracking is function-scope only (not branch-sensitive).
-			 * A consume inside an if-branch marks the binding consumed for the entire rest
-			 * of the proc body, which may over-reject some valid code. Revisit if needed. */
-			sem_emit_use_after_consume(ctx, expr->loc, name);
-		}
+			name_var->is_referenced = 1;
+		if (!is_known_func && !is_var && !is_arch && !is_const)
+			sem_emit_undefined_symbol(ctx, loc, name);
+		else if (is_var && name_var->is_consumed)
+			sem_emit_use_after_consume(ctx, loc, name);
+		free(name);
 		break;
 	}
 
-	case EXPR_FIELD: {
-		/* Enum variant access `Enum.variant` → fold to its int value (enums are compile-time).
-		 * Done before analyzing the base, since `Enum` is a type, not a variable. */
-		if (expr->data.field.base->type == EXPR_NAME && enum_is_type(ctx, expr->data.field.base->data.name.name)) {
-			long v = 0;
-			if (enum_variant_lookup(ctx, expr->data.field.base->data.name.name, expr->data.field.field_name, &v)) {
-				char buf[32];
-				snprintf(buf, sizeof(buf), "%ld", v);
-				expression_free(expr->data.field.base);
-				free(expr->data.field.field_name);
-				expr->type = EXPR_LITERAL;
-				expr->data.literal.lexeme = sem_dupz(buf);
-				break;
-			}
-		}
-		/* expr.field - need to know what expr resolves to */
-		analyze_expression(ctx, expr->data.field.base);
-
-		/* Handle nested field access: archetype.tuple_field.component → archetype.tuple_field_component */
-		if (expr->data.field.base->type == EXPR_FIELD) {
-			Expression *inner_field = expr->data.field.base;
-			const char *component_name = expr->data.field.field_name;
-			const char *tuple_base_name = inner_field->data.field.field_name;
-
-			if (inner_field->data.field.base->type == EXPR_NAME) {
-				const char *arch_var_name = inner_field->data.field.base->data.name.name;
-
-				/* Find the archetype */
-				ArchetypeInfo *arch = find_archetype(ctx, arch_var_name);
-				VariableInfo *var = NULL;
-				if (!arch) {
-					var = find_variable(ctx, arch_var_name);
-					if (var && var->archetype_name) {
-						arch = find_archetype(ctx, var->archetype_name);
-					}
-				}
-
-				if (arch) {
-					/* Check if tuple_base exists and has component */
-					char expanded_name[256];
-					snprintf(expanded_name, sizeof(expanded_name), "%s_%s", tuple_base_name, component_name);
-
-					if (find_field(arch, expanded_name)) {
-						/* Replace nested field access with direct access to expanded name */
-						expr->data.field.base = inner_field->data.field.base;
-						expr->data.field.field_name = malloc(strlen(expanded_name) + 1);
-						strcpy(expr->data.field.field_name, expanded_name);
-						/* Don't analyze the old nested structure further */
-						break;
-					}
-				}
-			}
-		}
-
-		/* if base is a simple name, check if it's an archetype or a variable referring to one */
-		if (expr->data.field.base->type == EXPR_NAME) {
-			const char *base_name = expr->data.field.base->data.name.name;
-			const char *field_name = expr->data.field.field_name;
-
-			/* first check if it's directly an archetype */
-			ArchetypeInfo *arch = find_archetype(ctx, base_name);
-
-			if (!arch) {
-				/* try to find it as a variable */
-				VariableInfo *var = find_variable(ctx, base_name);
-				if (!var) {
-					sem_emit_undefined_field_base(ctx, expr->data.field.base->loc, base_name);
-					break;
-				}
-				/* `h.comp` — reading a component through a HANDLE value is not supported
-				 * (a handle is a lifetime token, not a row view); use column access
-				 * `Foo.comp[i]`. An archetype-struct parameter (`p: Player`) is a different
-				 * thing and stays valid. Handles arrive two ways: an annotated `handle<Foo>`
-				 * (TYPE_HANDLE) or an inferred `:= insert(...)` (inferred_type "handle").
-				 * Reject cleanly here (else codegen emits a bare token). */
-				int base_is_handle = (var->type && var->type->kind == TYPE_HANDLE) ||
-				                     (var->inferred_type && strcmp(var->inferred_type, "handle") == 0);
-				if (base_is_handle) {
-					const char *an =
-					    (var->type && var->type->kind == TYPE_HANDLE) ? var->type->data.handle.archetype_name : NULL;
-					sem_emit_cannot_read_through_handle(ctx, expr->loc, field_name, base_name,
-					                                    an ? an : "the archetype");
-					break;
-				}
-				/* check if variable refers to an archetype entry */
-				if (var->archetype_name) {
-					arch = find_archetype(ctx, var->archetype_name);
-				}
-				/* E0111: variable has a known type that provides no field-access shape.
-				 * Skip tuples (`.x .y`) and archetype-param category; TYPE_NAME may still
-				 * resolve to an archetype that wasn't recorded as archetype_name.
-				 * Also skip sys-param column-access: in `sys s(pos, ...)`, `pos` is a column of
-				 * the current archetype. Field access on a column (`pos.x`) is tuple-component
-				 * access resolved at lower-stage, not at this layer. */
-				int sys_column_access = 0;
-				if (var->is_param && ctx->current_sys_archetype) {
-					ArchetypeInfo *sa = find_archetype(ctx, ctx->current_sys_archetype);
-					if (sa && find_field(sa, base_name)) {
-						sys_column_access = 1;
-					}
-				}
-				if (!arch && var->type && !sys_column_access) {
-					if (var->type->kind == TYPE_NAME) {
-						arch = find_archetype(ctx, var->type->data.name);
-					}
-					if (!arch && var->type->kind != TYPE_TUPLE && var->type->kind != TYPE_ARCHETYPE) {
-						/* .cap/.capacity/.length/.max_length are valid metadata on a sized array /
-						 * fixed buffer (the declared element count). Allow before the no-field error. */
-						if ((var->type->kind == TYPE_ARRAY || var->type->kind == TYPE_SHAPED_ARRAY) &&
-						    (strcmp(field_name, "cap") == 0 || strcmp(field_name, "capacity") == 0 ||
-						     strcmp(field_name, "length") == 0 || strcmp(field_name, "max_length") == 0)) {
-							break;
-						}
-						const char *kind_name;
-						switch (var->type->kind) {
-						case TYPE_NAME:
-							kind_name = var->type->data.name;
-							break;
-						case TYPE_ARRAY:
-							kind_name = "array";
-							break;
-						case TYPE_SHAPED_ARRAY:
-							kind_name = "shaped array";
-							break;
-						case TYPE_OPAQUE:
-							kind_name = "opaque";
-							break;
-						case TYPE_TYPE:
-							kind_name = "type";
-							break;
-						default:
-							kind_name = "value";
-							break;
-						}
-						sem_emit_field_on_non_archetype(ctx, expr->loc, kind_name, field_name);
-						break;
-					}
-				}
-			}
-
-			/* now check if field exists on this archetype */
-			if (arch) {
-				/* First try direct field access */
-				FieldInfo *found_field = find_field(arch, field_name);
-				if (!found_field) {
-					/* Try tuple component access: pos.x → pos_x */
-					char expanded_name[256];
-					snprintf(expanded_name, sizeof(expanded_name), "%s_%s", field_name, field_name);
-					/* Actually this was wrong - let me try a different approach */
-
-					/* Check if this is a tuple base: look for fields named field_name_* */
-					int is_tuple_base = 0;
-					for (int i = 0; i < arch->field_count; i++) {
-						if (strncmp(arch->fields[i]->name, field_name, strlen(field_name)) == 0 &&
-						    arch->fields[i]->name[strlen(field_name)] == '_') {
-							is_tuple_base = 1;
-							break;
-						}
-					}
-
-					if (is_tuple_base) {
-						/* Mark this expression as a tuple field access (no substitution needed yet) */
-						/* The codegen will handle expanding tuple operations */
-					} else if (expr->data.field.base->type == EXPR_NAME) {
-						/* Try tuple component access with base_name: p.pos where p is archetype → pos_x, pos_y */
-						char expanded_name2[256];
-						snprintf(expanded_name2, sizeof(expanded_name2), "%s_%s", base_name, field_name);
-						found_field = find_field(arch, expanded_name2);
-
-						if (found_field) {
-							/* Replace the field expression with expanded name */
-							expr->data.field.field_name = malloc(strlen(expanded_name2) + 1);
-							strcpy(expr->data.field.field_name, expanded_name2);
-						} else {
-							sem_emit_no_field(ctx, expr->loc, archetype_any_alias(ctx, arch), field_name);
-						}
-					} else {
-						sem_emit_no_field(ctx, expr->loc, archetype_any_alias(ctx, arch), field_name);
-					}
-				}
-			}
-		}
-		break;
-	}
-
-	case EXPR_INDEX:
-		analyze_expression(ctx, expr->data.index.base);
-		for (int i = 0; i < expr->data.index.index_count; i++) {
-			analyze_expression(ctx, expr->data.index.indices[i]);
-		}
+	case SN_FIELD_EXPR:
+		analyze_base_chain(ctx, v, loc);
 		break;
 
-	case EXPR_SLICE:
-		/* `buf[lo:hi]` is a READ-ONLY borrowed sub-view: it reads its base and bounds but consumes
-		 * nothing (a borrow). The base must be an array/slice; the bounds (when present) are ints. */
-		analyze_expression(ctx, expr->data.slice.base);
-		if (expr->data.slice.lo)
-			analyze_expression(ctx, expr->data.slice.lo);
-		if (expr->data.slice.hi)
-			analyze_expression(ctx, expr->data.slice.hi);
+	case SN_INDEX_EXPR:
+		analyze_base_chain(ctx, v, loc);
+		for (int i = 0; sv_present(sem_node_at_expr(v, i)); i++)
+			analyze_expression(ctx, sem_node_at_expr(v, i));
 		break;
 
-	case EXPR_BINARY:
-		analyze_expression(ctx, expr->data.binary.left);
-		analyze_expression(ctx, expr->data.binary.right);
-		/* E0110 is reserved but not currently emitted: arche's existing semantics
-		 * ALLOW widening in arithmetic (`float * int → float`), and the language
-		 * hasn't committed to strict no-implicit-conversion at the op level.
-		 * The wrapper sem_emit_binop_type_mismatch and registry row stay in
-		 * place — enable a check here when the coercion rules tighten. */
+	case SN_SLICE_EXPR:
+		/* a read-only borrowed sub-view: base + optional bounds, consumes nothing */
+		analyze_base_chain(ctx, v, loc);
+		for (int i = 0; sv_present(sem_node_at_expr(v, i)); i++)
+			analyze_expression(ctx, sem_node_at_expr(v, i));
 		break;
 
-	case EXPR_UNARY:
-		analyze_expression(ctx, expr->data.unary.operand);
-		/* `move`/`copy` are general value operators — valid in ANY value position (bind/assign RHS,
-		 * `return`, call arg). The typing layer treats them transparently and codegen lowers them
-		 * position-independently, so there is no position restriction. (`was_arg` is still consulted
-		 * below only by the analyses that legitimately depend on call-arg context.) */
+	case SN_BINARY_EXPR:
+		analyze_expression(ctx, sem_node_at_expr(v, 0));
+		analyze_expression(ctx, sem_node_at_expr(v, 1));
+		break;
+
+	case SN_UNARY_EXPR: {
+		SyntaxView operand = sem_first_expr(v);
+		analyze_expression(ctx, operand);
 		(void)was_arg;
-		/* `move x` transfers ownership: mark x consumed (use-after-move is an error).
-		 * TODO(implicit-move): infer `move` at a binding's last use / self-rebind so the keyword
-		 * can be omitted (FBIP — Koka/Roc/Hylo do this via uniqueness/last-use analysis). */
-		if (expr->data.unary.op == UNARY_MOVE && expr->data.unary.operand->type == EXPR_NAME) {
-			VariableInfo *mv = find_variable(ctx, expr->data.unary.operand->data.name.name);
+		/* `move x` transfers ownership: mark x consumed; can't move out of a borrowed param. */
+		if (sv_has_token(v, TOK_MOVE) && sv_present(operand) && sv_kind(operand) == SN_NAME_EXPR) {
+			char *nm = sv_name_expr_dup(operand);
+			VariableInfo *mv = find_variable(ctx, nm);
 			if (mv) {
-				/* Can't move out of a borrow: a read-only (non-`move`) array parameter is
-				 * borrowed by reference, not owned. Moving it would hand the caller's buffer to a
-				 * callee that may mutate it — a purity leak. Owned bindings (locals, `move` params)
-				 * move freely. */
-				if (mv->is_param && !mv->is_own && type_is_byref_aggregate(mv->type)) {
-					sem_emit_cannot_move_borrowed(ctx, expr->data.unary.operand->loc,
-					                              expr->data.unary.operand->data.name.name);
-				}
+				if (mv->is_param && !mv->is_own && type_is_byref_aggregate(mv->type))
+					sem_emit_cannot_move_borrowed(ctx, sem_node_loc(operand.node), nm);
 				mv->is_consumed = 1;
 			}
+			free(nm);
 		}
-		/* `copy x` duplicates x into a fresh owned buffer; x is NOT consumed (caller keeps it).
-		 * Opaque is non-copyable (move-only). Duplication is currently implemented only for local
-		 * `char[N]` buffers; other array kinds (forwarded params, non-char arrays) are not yet
-		 * supported — error rather than silently aliasing (which would break copy semantics). */
-		if (expr->data.unary.op == UNARY_COPY && expr->data.unary.operand->type == EXPR_NAME) {
-			VariableInfo *cv = find_variable(ctx, expr->data.unary.operand->data.name.name);
+		/* `copy x` duplicates x (x kept); opaque is non-copyable; clone only for local `T[N]`. */
+		if (sv_has_token(v, TOK_COPY) && sv_present(operand) && sv_kind(operand) == SN_NAME_EXPR) {
+			char *nm = sv_name_expr_dup(operand);
+			VariableInfo *cv = find_variable(ctx, nm);
 			if (cv) {
-				if (var_is_opaque(ctx, cv)) {
-					sem_emit_cannot_copy_opaque(ctx, expr->data.unary.operand->loc,
-					                            expr->data.unary.operand->data.name.name);
-				} else if (type_is_byref_aggregate(cv->type) &&
-				           !(cv->type && cv->type->kind == TYPE_SHAPED_ARRAY && !cv->is_param)) {
-					/* Clone is implemented for a LOCAL bounded `T[N]` value (any element). A runtime-
-					 * length slice `T[]` (TYPE_ARRAY) has no compile-time size to clone, and a
-					 * forwarded param's storage isn't ours to duplicate here — both stay unsupported. */
-					sem_emit_copy_unsupported(ctx, expr->data.unary.operand->loc,
-					                          expr->data.unary.operand->data.name.name);
-				}
+				if (var_is_opaque(ctx, cv))
+					sem_emit_cannot_copy_opaque(ctx, sem_node_loc(operand.node), nm);
+				else if (type_is_byref_aggregate(cv->type) &&
+				         !(cv->type && cv->type->kind == TYPE_SHAPED_ARRAY && !cv->is_param))
+					sem_emit_copy_unsupported(ctx, sem_node_loc(operand.node), nm);
 			}
+			free(nm);
 		}
 		break;
+	}
 
-	case EXPR_CALL: {
-		/* A proc/extern call is an action, allowed only as a statement or a whole bind/assign RHS.
-		 * Capture whether THIS call is in such a position, then clear the flag so the call's own
-		 * arguments (and any nested calls) are value positions. */
+	case SN_CALL_EXPR: {
 		int call_stmt_ok = ctx->stmt_call_ok;
 		ctx->stmt_call_ok = 0;
-		/* Type conversion: i64(x)/u8(x) width casts, float(x), and nominal subtype conversions
-		 * meters(x)/mps(x). The callee is a type name, not a function — analyze only the argument(s)
-		 * and stop (no callee resolution, no undefined-symbol error). */
-		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME &&
-		    is_type_conversion_callee(ctx, expr->data.call.callee->data.name.name)) {
-			for (int i = 0; i < expr->data.call.arg_count; i++) {
-				ctx->analyzing_call_arg = 1; /* enable E0112 'arg-position' check for this arg */
-				analyze_expression(ctx, expr->data.call.args[i]);
+
+		/* resolved callee name (qualify-mangled for `mod.f`) from the side model; NULL for a
+		 * non-module qualified field call. */
+		const char *resolved_callee = ctx->model ? sem_model_callee_name(ctx->model, sv_id(v)) : NULL;
+		char *func_name = NULL;
+		if (resolved_callee)
+			func_name = sem_dupz(resolved_callee);
+		else if (sv_count(v, SN_FIELD_NAME) == 0)
+			func_name = sem_cv_dup(sv_child(v, SN_CALLEE_NAME));
+
+		int argc = sem_expr_count(v);
+
+		/* Type conversion `T(x)`: callee is a type name; analyze the args and stop. */
+		if (func_name && is_type_conversion_callee(ctx, func_name)) {
+			for (int i = 0; i < argc; i++) {
+				ctx->analyzing_call_arg = 1;
+				analyze_expression(ctx, sem_node_at_expr(v, i));
 			}
+			free(func_name);
 			break;
 		}
-		analyze_expression(ctx, expr->data.call.callee);
-		/* Resolve the callee proc (if any) up front so we can validate `_` placeholder args:
-		 * a bare `_` argument is legal ONLY in an in-out in-slot (the in-param is shadowed by an
-		 * out-param). It names no value — the out-binding's place is used. So skip name resolution
-		 * for `_` (it is not a real symbol) and instead check the matching in-param is in-out. */
+
+		/* Analyze the callee name (the old recursion into the callee EXPR_NAME): a bare reference
+		 * that is not a known func / variable / archetype / const is an undefined symbol — e.g. an
+		 * unqualified module export `fread` or a typo `definitely_not_defined`. */
+		if (func_name) {
+			int is_known_func = find_known_func(ctx, func_name);
+			int is_group = find_group(ctx, func_name) != NULL;
+			VariableInfo *cv = find_variable(ctx, func_name);
+			int is_arch = find_archetype(ctx, func_name) != NULL;
+			int is_const = semantic_get_const_value(ctx, func_name) != NULL;
+			/* a user func/proc decl is a valid callee even if not in the known-func table */
+			int is_decl = 0;
+			if (ctx->prog)
+				for (int di = 0; di < ctx->prog->decl_count && !is_decl; di++) {
+					Decl *d = ctx->prog->decls[di];
+					if (!d)
+						continue;
+					if (d->kind == DECL_FUNC && d->data.func->name && strcmp(d->data.func->name, func_name) == 0)
+						is_decl = 1;
+					else if (d->kind == DECL_PROC && d->data.proc->name && strcmp(d->data.proc->name, func_name) == 0)
+						is_decl = 1;
+				}
+			if (cv)
+				cv->is_referenced = 1;
+			if (!is_known_func && !is_group && !is_decl && !cv && !is_arch && !is_const)
+				sem_emit_undefined_symbol(ctx, loc, func_name);
+			else if (cv && cv->is_consumed)
+				sem_emit_use_after_consume(ctx, loc, func_name);
+		}
+
+		/* Resolve a callee proc up front to validate `_` placeholder args (legal only in an
+		 * in-out in-slot). */
 		ProcDecl *call_callee_proc = NULL;
-		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME && ctx->prog) {
-			const char *cn = expr->data.call.callee->data.name.name;
+		if (func_name && ctx->prog) {
 			for (int i = 0; i < ctx->prog->decl_count; i++) {
 				Decl *d = ctx->prog->decls[i];
 				if (d && d->kind == DECL_PROC && d->data.proc && d->data.proc->name &&
-				    strcmp(d->data.proc->name, cn) == 0) {
+				    strcmp(d->data.proc->name, func_name) == 0) {
 					call_callee_proc = d->data.proc;
 					break;
 				}
 			}
 		}
-		for (int i = 0; i < expr->data.call.arg_count; i++) {
-			Expression *arg = expr->data.call.args[i];
-			if (arg && arg->type == EXPR_NAME && arg->data.name.name && strcmp(arg->data.name.name, "_") == 0) {
-				/* `_` placeholder: legal only when the matching in-param is in-out. Do not resolve
-				 * it as a symbol and do not require ownership. */
+		for (int i = 0; i < argc; i++) {
+			SyntaxView arg = sem_node_at_expr(v, i);
+			if (sv_kind(arg) == SN_NAME_EXPR && sv_count(arg, SN_FIELD_NAME) == 0 && sv_text_eq(arg, "_")) {
 				if (!call_callee_proc || !proc_param_is_inout(call_callee_proc, i))
-					sem_emit_underscore_not_inout(ctx, arg->loc);
+					sem_emit_underscore_not_inout(ctx, sem_node_loc(arg.node));
 				continue;
 			}
 			ctx->analyzing_call_arg = 1;
-			analyze_expression(ctx, expr->data.call.args[i]);
-		}
-		const char *func_name = NULL;
-		if (expr->data.call.callee && expr->data.call.callee->type == EXPR_NAME) {
-			func_name = expr->data.call.callee->data.name.name;
+			analyze_expression(ctx, arg);
 		}
 		if (!func_name)
 			break;
 
-		/* insert(Foo, v1, …) moves its value args into the pool — counts as consumption
-		 * for any opaque-backed value argument. Arg 0 is the archetype name, skip it. */
+		/* insert(Foo, v…) consumes any opaque-backed value args (arg 0 is the archetype). */
 		if (strcmp(func_name, "insert") == 0) {
-			for (int i = 1; i < expr->data.call.arg_count; i++) {
-				if (expr->data.call.args[i] && expr->data.call.args[i]->type == EXPR_NAME) {
-					VariableInfo *iv = find_variable(ctx, expr->data.call.args[i]->data.name.name);
+			for (int i = 1; i < argc; i++) {
+				SyntaxView a = sem_node_at_expr(v, i);
+				if (sv_kind(a) == SN_NAME_EXPR && sv_count(a, SN_FIELD_NAME) == 0) {
+					char *nm = sv_name_expr_dup(a);
+					VariableInfo *iv = find_variable(ctx, nm);
 					if (iv && var_is_opaque(ctx, iv))
 						iv->is_consumed = 1;
+					free(nm);
 				}
 			}
 		}
 
 		GroupInfo *gi = find_group(ctx, func_name);
 		if (!gi) {
-			/* Not a group: check extern-type argument distinctness at call sites.
-			 * Only applies when the callee is an extern proc or extern func with
-			 * extern-type parameters. */
 			if (ctx->prog) {
-				for (int i = 0; i < ctx->prog->decl_count; i++) {
-					Decl *d = ctx->prog->decls[i];
+				for (int di = 0; di < ctx->prog->decl_count; di++) {
+					Decl *d = ctx->prog->decls[di];
 					if (!d)
 						continue;
-
-					/* Collect param list from DECL_FUNC or DECL_PROC */
 					int param_count = 0;
 					Parameter **params = NULL;
 					int is_extern = 0;
-
 					if (d->kind == DECL_FUNC && d->data.func && d->data.func->name &&
 					    strcmp(d->data.func->name, func_name) == 0) {
 						param_count = d->data.func->param_count;
@@ -1766,116 +1795,73 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 					} else {
 						continue;
 					}
-
-					/* Value/action boundary: a `proc`, or an `extern` (a foreign-bodied proc), is an
-					 * action — usable only as a standalone statement or the whole RHS of a bind/assign,
-					 * never nested inside another expression. A `func` is a value and may appear
-					 * anywhere. */
-					if ((d->kind == DECL_PROC || is_extern) && !call_stmt_ok) {
-						sem_emit_action_in_expression(ctx, expr->loc, is_extern ? "extern" : "proc", func_name);
+					/* value/action boundary: a proc/extern is an action — not nestable in an expr. */
+					if ((d->kind == DECL_PROC || is_extern) && !call_stmt_ok)
+						sem_emit_action_in_expression(ctx, loc, is_extern ? "extern" : "proc", func_name);
+					int n = param_count < argc ? param_count : argc;
+					/* explicit-view: record the resolved param (name + own) per argument node id */
+					for (int j = 0; j < n; j++) {
+						Parameter *p = params[j];
+						SyntaxView a = sem_node_at_expr(v, j);
+						if (p && p->name && sv_present(a))
+							sem_hints_set_param(ctx->hints, sv_id(a), p->name, p->is_own);
 					}
-
-					/* Editor explicit view: record the resolved parameter (name + `own`) each
-					 * argument binds to, keyed by the argument's CST node. This needs the call
-					 * resolved to a signature, so it can't be a syntactic lens. (Overloaded-group
-					 * calls resolve elsewhere — see the group branch — and are a follow-up.) */
-					{
-						int ac = expr->data.call.arg_count;
-						int n = param_count < ac ? param_count : ac;
-						for (int j = 0; j < n; j++) {
-							Parameter *p = params[j];
-							Expression *a = expr->data.call.args[j];
-							if (p && p->name && a && a->cst_id)
-								sem_hints_set_param(ctx->hints, a->cst_id - 1, p->name, p->is_own);
-						}
+					/* own param: a bare move-only name is an implicit move */
+					for (int j = 0; j < n; j++) {
+						Parameter *p = params[j];
+						if (!p || !p->is_own)
+							continue;
+						implicit_move_consume(ctx, sem_node_at_expr(v, j));
 					}
-
-					/* An `own` parameter takes ownership: a named binding handed to it must be
-					 * passed `move x` (donate — consumed) or `copy x` (duplicate — kept); no silent
-					 * copy. `move`/`copy` are UNARY exprs (handled in analyze_expression), so a bare
-					 * name reaching here is the error. (Rvalues — e.g. a call result — have no binding
-					 * to provide, so neither is required there.) For opaque, only `move` works (it is
-					 * non-copyable). Runs for BOTH extern and non-extern callees.
-					 * TODO(implicit-move): when the bare binding is provably dead at this call (its
-					 * last use), infer `move` instead of erroring (FBIP). */
-					{
-						int ac = expr->data.call.arg_count;
-						int n = param_count < ac ? param_count : ac;
-						for (int j = 0; j < n; j++) {
-							Parameter *p = params[j];
-							if (!p || !p->is_own || !expr->data.call.args[j])
-								continue;
-							/* A bare move-only name handed to an `own` param is an implicit move —
-							 * consume it and record the elided `move`. (Explicit `move`/`copy` are
-							 * EXPR_UNARY and handled there; a borrowed-param source errors; a `Copy`
-							 * scalar just copies.) */
-							implicit_move_consume(ctx, expr->data.call.args[j]);
-						}
-					}
-
-					/* A `T[]` slice cannot satisfy a sized `T[N]` parameter: a slice's length is only
-					 * known at runtime, and the callee assumes exactly N elements (it could over-read).
-					 * Sizing flows one way — `T[N]` decays to `T[]` — never back. */
-					{
-						int ac = expr->data.call.arg_count;
-						int n = param_count < ac ? param_count : ac;
-						for (int j = 0; j < n; j++) {
-							Parameter *p = params[j];
-							if (!p || !p->type || p->type->kind != TYPE_SHAPED_ARRAY)
-								continue;
-							Expression *a = expr->data.call.args[j];
-							while (a && a->type == EXPR_UNARY &&
-							       (a->data.unary.op == UNARY_MOVE || a->data.unary.op == UNARY_COPY))
-								a = a->data.unary.operand;
-							if (a && a->type == EXPR_NAME) {
-								VariableInfo *av = find_variable(ctx, a->data.name.name);
-								if (av && av->type && av->type->kind == TYPE_ARRAY) {
-									fprintf(stderr,
-									        "Error: cannot pass a slice `T[]` to a sized `T[N]` parameter '%s' — a "
-									        "slice's length is only known at runtime; sizing flows one way "
-									        "(`T[N]` decays to `T[]`), never back\n",
-									        p->name ? p->name : "?");
-									ctx->error_count++;
-								}
+					/* a `T[]` slice cannot satisfy a sized `T[N]` parameter */
+					for (int j = 0; j < n; j++) {
+						Parameter *p = params[j];
+						if (!p || !p->type || p->type->kind != TYPE_SHAPED_ARRAY)
+							continue;
+						SyntaxView a = sem_node_at_expr(v, j);
+						while (sv_present(a) && sv_kind(a) == SN_UNARY_EXPR &&
+						       (sv_has_token(a, TOK_MOVE) || sv_has_token(a, TOK_COPY)))
+							a = sem_first_expr(a);
+						if (sv_present(a) && sv_kind(a) == SN_NAME_EXPR && sv_count(a, SN_FIELD_NAME) == 0) {
+							char *nm = sv_name_expr_dup(a);
+							VariableInfo *av = find_variable(ctx, nm);
+							if (av && av->type && av->type->kind == TYPE_ARRAY) {
+								fprintf(stderr,
+								        "Error: cannot pass a slice `T[]` to a sized `T[N]` parameter '%s' — a "
+								        "slice's length is only known at runtime; sizing flows one way "
+								        "(`T[N]` decays to `T[]`), never back\n",
+								        p->name ? p->name : "?");
+								ctx->error_count++;
 							}
+							free(nm);
 						}
 					}
-
 					if (!is_extern)
-						break; /* non-extern: no extern-type distinctness to check */
-
-					/* For each argument, if the formal param is a foreign handle
-					 * (handle(X) where X is an extern table), the argument's resolved
-					 * type must be exactly the same extern handle. Integer literal 0
-					 * is accepted as a null handle. */
-					int arg_count = expr->data.call.arg_count;
-					int check_count = param_count < arg_count ? param_count : arg_count;
+						break;
+					/* extern-type nominal distinctness per argument */
+					int check_count = param_count < argc ? param_count : argc;
 					for (int j = 0; j < check_count; j++) {
 						Parameter *p = params[j];
 						if (!p)
 							continue;
-
-						/* Nominal distinctness: an alias-typed formal rejects an argument whose
-						 * nominal type is a *different* alias (file vs socket), even though both
-						 * back to opaque. Untyped/unknown args (nominal NULL) are lenient. */
 						if (p->type && p->type->kind == TYPE_NAME && is_type_alias(ctx, p->type->data.name)) {
-							const char *arg_nominal = nominal_type_of_expr(ctx, expr->data.call.args[j]);
-							if (arg_nominal && strcmp(arg_nominal, p->type->data.name) != 0) {
-								sem_emit_extern_type_mismatch(ctx, expr->data.call.args[j]->loc, func_name,
+							const char *arg_nominal = nominal_type_of_expr(ctx, sem_node_at_expr(v, j));
+							if (arg_nominal && strcmp(arg_nominal, p->type->data.name) != 0)
+								sem_emit_extern_type_mismatch(ctx, sem_node_loc(sem_node_at_expr(v, j).node), func_name,
 								                              p->name ? p->name : "?", p->type->data.name, arg_nominal);
-							}
 						}
 					}
-					break; /* found the callee decl */
+					break;
 				}
 			}
-			break; /* not a group; nothing further to diagnose here */
+			free(func_name);
+			break;
 		}
 
-		/* Only diagnose when every arg has a concrete primitive type. */
+		/* group: overload resolution by static arg types (only when every arg is a concrete prim) */
 		int can_diagnose = 1;
-		for (int j = 0; j < expr->data.call.arg_count; j++) {
-			const char *rt = resolve_expression_type(ctx, expr->data.call.args[j]);
+		for (int j = 0; j < argc; j++) {
+			const char *rt = resolve_expression_type(ctx, sem_node_at_expr(v, j));
 			if (!rt) {
 				can_diagnose = 0;
 				break;
@@ -1886,82 +1872,49 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
 				break;
 			}
 		}
-		if (!can_diagnose)
-			break;
-
-		int match_count = 0;
-		for (int m = 0; m < gi->member_count; m++) {
-			FuncDecl *fd = find_func_decl_cst(ctx->prog, gi->members[m]);
-			if (!fd || fd->param_count != expr->data.call.arg_count)
-				continue;
-			int ok = 1;
-			for (int j = 0; j < expr->data.call.arg_count; j++) {
-				const char *rt = resolve_expression_type(ctx, expr->data.call.args[j]);
-				TypeRef *pt = fd->params[j]->type;
-				if (!pt || pt->kind != TYPE_NAME) {
-					ok = 0;
-					break;
+		if (can_diagnose) {
+			int match_count = 0;
+			for (int m = 0; m < gi->member_count; m++) {
+				FuncDecl *fd = find_func_decl_cst(ctx->prog, gi->members[m]);
+				if (!fd || fd->param_count != argc)
+					continue;
+				int ok = 1;
+				for (int j = 0; j < argc; j++) {
+					const char *rt = resolve_expression_type(ctx, sem_node_at_expr(v, j));
+					TypeRef *pt = fd->params[j]->type;
+					if (!pt || pt->kind != TYPE_NAME) {
+						ok = 0;
+						break;
+					}
+					if (strcmp(normalize_type_name(pt->data.name), normalize_type_name(rt)) != 0) {
+						ok = 0;
+						break;
+					}
 				}
-				if (strcmp(normalize_type_name(pt->data.name), normalize_type_name(rt)) != 0) {
-					ok = 0;
-					break;
-				}
+				if (ok)
+					match_count++;
 			}
-			if (ok)
-				match_count++;
+			if (match_count == 0)
+				sem_emit_no_group_match(ctx, loc, func_name);
+			else if (match_count > 1)
+				sem_emit_ambiguous_group_call(ctx, loc, func_name);
 		}
-		if (match_count == 0) {
-			sem_emit_no_group_match(ctx, expr->loc, func_name);
-		} else if (match_count > 1) {
-			sem_emit_ambiguous_group_call(ctx, expr->loc, func_name);
-		}
+		free(func_name);
 		break;
 	}
 
-	case EXPR_ALLOC: {
-		/* alloc only allowed at top-level, not inside proc/sys */
-		if (ctx->in_body) {
-			sem_emit_alloc_not_at_top(ctx, expr->loc);
-			break;
-		}
-
-		/* alloc count must be a literal for static allocation (dynamic not yet supported) */
-		if (expr->data.alloc.field_count > 0 && expr->data.alloc.field_values[0]) {
-			Expression *count_expr = expr->data.alloc.field_values[0];
-			if (count_expr->type != EXPR_LITERAL) {
-				sem_emit_alloc_count_not_literal(ctx, expr->loc);
-				break;
-			}
-		}
-
-		ArchetypeInfo *alloc_shape = find_archetype(ctx, expr->data.alloc.archetype_name);
-		if (!alloc_shape) {
-			sem_emit_undefined_archetype_alloc(ctx, expr->loc, expr->data.alloc.archetype_name);
-		} else if (alloc_shape->is_allocated) {
-			sem_emit_shape_already_allocated(ctx, expr->loc, expr->data.alloc.archetype_name);
-		} else {
-			alloc_shape->is_allocated = 1;
-		}
-		for (int i = 0; i < expr->data.alloc.field_count; i++) {
-			analyze_expression(ctx, expr->data.alloc.field_values[i]);
-		}
+	default:
 		break;
 	}
-	}
 
-	/* Resolve the type of this expression and record it in the side model, keyed by
-	 * the CST node. The model owns its copy; the tree is not mutated (lowering reads
-	 * the model, not Expression.resolved_type). Call resolve unconditionally to keep
-	 * its side effects; parser-built expressions always link to a CST node. */
-	const char *resolved = resolve_expression_type(ctx, expr);
-	if (ctx->model && expr->cst_id) {
-		sem_model_set_expr_type(ctx->model, expr->cst_id - 1, resolved); /* RESOLVED backing — lowering */
-		/* Distinct-by-default: record the tier-2 subtype name separately (a `meters` variable, an
-		 * opaque handle, …) so the typechecker can enforce sibling/backing distinctness without
-		 * disturbing lowering's resolved view. Transparent (tier-1) aliases carry no nominal. */
-		const char *nom = nominal_type_of_expr(ctx, expr);
+	/* Resolve + record this expression's type (and nominal) in the side model, keyed by node id. */
+	const char *resolved = resolve_expression_type(ctx, v);
+	if (ctx->model) {
+		uint32_t nid = sv_id(v);
+		sem_model_set_expr_type(ctx->model, nid, resolved);
+		const char *nom = nominal_type_of_expr(ctx, v);
 		if (nom && is_type_alias(ctx, nom) && !alias_is_transparent(ctx, nom))
-			sem_model_set_expr_nominal(ctx->model, expr->cst_id - 1, nom);
+			sem_model_set_expr_nominal(ctx->model, nid, nom);
 	}
 }
 
@@ -1970,364 +1923,265 @@ static void analyze_expression(SemanticContext *ctx, Expression *expr) {
  * `move` for the editor. A read-only borrowed param can't be moved out (error). Scalars and other
  * `Copy` types are never consumed by a bare name — they copy, as before. Explicit `move`/`copy`
  * are handled in EXPR_UNARY and never reach here as a bare EXPR_NAME. */
-static void implicit_move_consume(SemanticContext *ctx, Expression *e) {
-	if (!e || e->type != EXPR_NAME)
+static void implicit_move_consume(SemanticContext *ctx, SyntaxView v) {
+	if (!sv_present(v) || sv_kind(v) != SN_NAME_EXPR)
 		return;
-	VariableInfo *v = find_variable(ctx, e->data.name.name);
-	if (!v)
-		return;
-	if (!(type_is_byref_aggregate(v->type) || var_is_opaque(ctx, v)))
-		return; /* Copy type: a bare name copies, never moves */
-	if (v->is_param && !v->is_own && type_is_byref_aggregate(v->type)) {
-		sem_emit_cannot_move_borrowed(ctx, e->loc, e->data.name.name);
+	char *nm = sv_resolved_name(ctx, v);
+	VariableInfo *var = find_variable(ctx, nm);
+	if (!var || !(type_is_byref_aggregate(var->type) || var_is_opaque(ctx, var))) {
+		free(nm); /* no var, or a Copy type: a bare name copies, never moves */
 		return;
 	}
-	v->is_consumed = 1;
-	if (e->cst_id) {
-		sem_hints_set_elided_move(ctx->hints, e->cst_id - 1);
-		/* Record the elided move in the lowering model too: lowering materializes an explicit
-		 * `move` HIR node here so codegen sees the transfer in the program (HIR), not by
-		 * re-deriving the rule from syntax. This is what suppresses the source's RAII auto-drop. */
-		if (ctx->model)
-			sem_model_set_implicit_move(ctx->model, e->cst_id - 1);
+	if (var->is_param && !var->is_own && type_is_byref_aggregate(var->type)) {
+		sem_emit_cannot_move_borrowed(ctx, sem_node_loc(v.node), nm);
+		free(nm);
+		return;
 	}
+	free(nm);
+	var->is_consumed = 1;
+	uint32_t nid = sv_id(v);
+	sem_hints_set_elided_move(ctx->hints, nid);
+	/* Record the elided move in the lowering model too: lowering materializes an explicit
+	 * `move` HIR node here so codegen sees the transfer in the program (HIR), not by
+	 * re-deriving the rule from syntax. This is what suppresses the source's RAII auto-drop. */
+	if (ctx->model)
+		sem_model_set_implicit_move(ctx->model, nid);
 }
 
 /* ========== STATEMENT ANALYSIS ========== */
 
-static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
-	if (!stmt)
-		return;
-
-	switch (stmt->type) {
-	case STMT_BIND: {
-		/* A local constant (`k :: e` / `k : T : e`) whose RHS denotes a TYPE is a local nominal
-		 * type alias: register it (globally, by nominal name — nominal identity is global) and
-		 * erase it (no runtime value). A constant whose RHS is a value falls through to the normal
-		 * binding path below and is marked immutable. */
-		if (stmt->data.bind_stmt.is_const) {
-			BindStmt *b = &stmt->data.bind_stmt;
-			const char *backing = NULL;
-			if (b->type_value)
-				backing = type_backing_name(b->type_value);
-			else if (b->value && b->value->type == EXPR_NAME && name_denotes_type(ctx, b->value->data.name.name))
-				backing = b->value->data.name.name;
-			if (backing || b->type_value) {
-				/* This constant's RHS is a type — a local nominal type alias. */
-				if (!backing) {
-					sem_emit_local_alias_invalid_backing(ctx, stmt->loc);
-				} else {
-					register_type_alias_tiered(ctx, b->name, backing, b->type_value ? b->type_value->is_transparent : 0,
-					                           stmt->loc, 0);
-					const char *resolved = resolve_type_alias(ctx, b->name);
-					if (!is_primitive_type_name(resolved) && strcmp(resolved, "opaque") != 0) {
-						sem_emit_type_alias_unknown_backing(ctx, stmt->loc, b->name, resolved);
-					}
-				}
-				b->is_type_alias = 1;
-				if (ctx->model && stmt->cst_id)
-					sem_model_set_bind_alias(ctx->model, stmt->cst_id - 1);
-				break; /* compile-time only: no runtime binding */
+static int sem_stmt_count(SyntaxView v) {
+	int c = 0;
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = v.node->children[i].as.node->kind;
+			if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
+				c++;
+		}
+	return c;
+}
+static SyntaxView sem_stmt_at(SyntaxView v, int idx) {
+	int c = 0;
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = v.node->children[i].as.node->kind;
+			if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT) {
+				if (c == idx)
+					return (SyntaxView){v.node->children[i].as.node, v.src};
+				c++;
 			}
-			/* else: a value const — fall through to the normal binding path (marked const below). */
+		}
+	return (SyntaxView){NULL, v.src};
+}
+/* Build a TypeRef from a type-node view, owned by the context (stable for the lifetime of any
+ * VariableInfo that borrows it). Absent view → NULL. */
+static TypeRef *sem_view_type(SemanticContext *ctx, SyntaxView tv) {
+	return sv_present(tv) ? analysis_own_type(ctx, cst_build_type(tv)) : NULL;
+}
+
+static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
+	if (!sv_present(v))
+		return;
+	SourceLoc loc = sem_node_loc(v.node);
+
+	switch (sv_kind(v)) {
+	case SN_BIND_STMT: {
+		/* `:` introduces the value ⇒ constant; `=` ⇒ variable (mirror cst_build_stmt). */
+		int n_colon = 0, has_eq = 0;
+		for (int i = 0; i < v.node->child_count; i++)
+			if (v.node->children[i].tag == SE_TOKEN) {
+				TokenKind tk = v.node->children[i].as.token.kind;
+				if (tk == TOK_COLON)
+					n_colon++;
+				else if (tk == TOK_EQ)
+					has_eq = 1;
+			}
+		int is_const = (!has_eq && n_colon >= 2);
+		SyntaxView t0 = sem_type_at(v, 0), t1 = sem_type_at(v, 1);
+		SynText t0name = sv_present(t0) ? sv_token(t0, TOK_IDENT) : (SynText){NULL, 0};
+		int t0_is_meta = t0name.ptr && t0name.len == 4 && memcmp(t0name.ptr, "type", 4) == 0;
+
+		char *bind_name = sem_cv_dup(sem_node_at_expr(v, 0));
+		TypeRef *btype = NULL, *btype_value = NULL;
+		SyntaxView value_view = {NULL, v.src};
+		if (is_const && t0_is_meta && sv_present(t1)) {
+			btype_value = sem_view_type(ctx, t1); /* `x : type : <T>` — local type alias */
+		} else {
+			btype = sem_view_type(ctx, t0);
+			value_view = sem_node_at_expr(v, 1);
+		}
+
+		/* A local constant whose RHS denotes a TYPE is a local nominal type alias. */
+		if (is_const) {
+			const char *backing = NULL;
+			if (btype_value)
+				backing = type_backing_name(btype_value);
+			else if (sv_present(value_view) && sv_kind(value_view) == SN_NAME_EXPR) {
+				char *vn = sv_resolved_name(ctx, value_view);
+				if (name_denotes_type(ctx, vn))
+					backing = vn; /* leaked-with-alias-table lifetime; matches old AST-owned name */
+				else
+					free(vn);
+			}
+			if (backing || btype_value) {
+				if (!backing) {
+					sem_emit_local_alias_invalid_backing(ctx, loc);
+					free(bind_name);
+				} else {
+					/* The alias registry BORROWS the name (and backing) by pointer — they must outlive
+					 * the context, so bind_name is NOT freed here (it is intentionally handed off). */
+					register_type_alias_tiered(ctx, bind_name, backing, btype_value ? btype_value->is_transparent : 0,
+					                           loc, 0);
+					const char *resolved = resolve_type_alias(ctx, bind_name);
+					if (!is_primitive_type_name(resolved) && strcmp(resolved, "opaque") != 0)
+						sem_emit_type_alias_unknown_backing(ctx, loc, bind_name, resolved);
+				}
+				if (ctx->model)
+					sem_model_set_bind_alias(ctx->model, sv_id(v));
+				break; /* compile-time only */
+			}
 		}
 		/* `archetype` is only valid as a parameter type. */
-		if (stmt->data.bind_stmt.type && stmt->data.bind_stmt.type->kind == TYPE_ARCHETYPE) {
-			sem_emit_archetype_only_as_param(ctx, stmt->loc);
+		if (btype && btype->kind == TYPE_ARCHETYPE) {
+			sem_emit_archetype_only_as_param(ctx, loc);
+			free(bind_name);
 			break;
 		}
-		if (reject_meta_type(ctx, stmt->data.bind_stmt.type, "variable type"))
+		if (reject_meta_type(ctx, btype, "variable type")) {
+			free(bind_name);
 			break;
-		/* For multivalue let with function calls, add out param variables BEFORE analyzing the call */
-		int is_multivalue_call = (stmt->data.bind_stmt.name_count > 0 && stmt->data.bind_stmt.names &&
-		                          stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->type == EXPR_CALL);
+		}
+		/* Single-value bind: analyze value, implicit move, declare. */
+		ctx->stmt_call_ok = (sv_present(value_view) && sv_kind(value_view) == SN_CALL_EXPR);
+		analyze_expression(ctx, value_view);
+		ctx->stmt_call_ok = 0;
+		implicit_move_consume(ctx, value_view);
 
-		if (is_multivalue_call) {
-			/* Add all variables first so out parameters can reference them */
-			for (int i = 0; i < stmt->data.bind_stmt.name_count; i++) {
-				const char *var_name = stmt->data.bind_stmt.names[i];
-				if (var_name && strcmp(var_name, "_") != 0) {
-					check_shadows_callable(ctx, var_name, stmt->loc);
-					add_variable(ctx, var_name, NULL);
-				}
-			}
-			/* Now analyze the call expression after variables are defined. A multi-bind RHS IS the
-			 * whole call, so a proc/extern there is allowed (it's an action whose result is bound). */
-			ctx->stmt_call_ok = 1;
-			analyze_expression(ctx, stmt->data.bind_stmt.value);
-			ctx->stmt_call_ok = 0;
-		} else {
-			/* Single-value let or non-call multivalue expressions: analyze value first. A proc/extern
-			 * call is allowed only when it is the whole RHS (`x := p(...)`), not nested in it. */
-			ctx->stmt_call_ok = (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->type == EXPR_CALL);
-			analyze_expression(ctx, stmt->data.bind_stmt.value);
-			ctx->stmt_call_ok = 0;
+		check_shadows_callable(ctx, bind_name, loc);
+		add_variable(ctx, bind_name, btype);
 
-			/* `a := b` takes ownership: a bare move-only RHS name is an implicit move (b is consumed). */
-			implicit_move_consume(ctx, stmt->data.bind_stmt.value);
-
-			/* Multi-value let (non-call): add all variables from names array */
-			if (stmt->data.bind_stmt.name_count > 0 && stmt->data.bind_stmt.names) {
-				for (int i = 0; i < stmt->data.bind_stmt.name_count; i++) {
-					const char *var_name = stmt->data.bind_stmt.names[i];
-					if (var_name && strcmp(var_name, "_") != 0) {
-						check_shadows_callable(ctx, var_name, stmt->loc);
-						/* Add variable (no type annotation for multi-value let) */
-						add_variable(ctx, var_name, NULL);
-
-						/* Try to infer type from expression if it's callable with multiple returns */
-						if (stmt->data.bind_stmt.value && i < 10) { /* arbitrary limit */
-							/* For now, just skip type inference for multi-value let */
-							/* This would require analyzing the function's return signature */
-						}
+		/* Type annotation → inferred/nominal type. */
+		if (ctx->scope_count > 0) {
+			Scope *scope = &ctx->scopes[ctx->scope_count - 1];
+			if (scope->var_count > 0) {
+				VariableInfo *var = scope->vars[scope->var_count - 1];
+				if (btype) {
+					TypeRef *t = btype;
+					if (t->kind == TYPE_HANDLE)
+						var->inferred_type = t->data.handle.archetype_name;
+					else if (t->kind == TYPE_NAME) {
+						var->inferred_type = resolve_type_alias(ctx, t->data.name);
+						if (is_type_alias(ctx, t->data.name))
+							var->nominal_type = t->data.name;
+					} else if (t->kind == TYPE_SHAPED_ARRAY || t->kind == TYPE_ARRAY) {
+						TypeRef *et = t;
+						while (et && et->kind == TYPE_SHAPED_ARRAY)
+							et = et->data.shaped_array.element_type;
+						while (et && et->kind == TYPE_ARRAY)
+							et = et->data.array.element_type;
+						var->inferred_type =
+						    (et && et->kind == TYPE_NAME) ? resolve_type_alias(ctx, et->data.name) : NULL;
 					}
-				}
-			} else if (stmt->data.bind_stmt.name) {
-				/* Single-value let */
-				/* Check if value is an alloc expression */
-				const char *archetype_name = NULL;
-				if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->type == EXPR_ALLOC) {
-					archetype_name = stmt->data.bind_stmt.value->data.alloc.archetype_name;
-					if (!find_archetype(ctx, archetype_name)) {
-						sem_emit_undefined_archetype_bind(ctx, stmt->loc, archetype_name);
-						archetype_name = NULL;
-					}
-				}
-
-				/* create local variable */
-				VariableInfo *var = NULL;
-				check_shadows_callable(ctx, stmt->data.bind_stmt.name, stmt->loc);
-				if (archetype_name) {
-					add_variable_with_archetype(ctx, stmt->data.bind_stmt.name, stmt->data.bind_stmt.type,
-					                            archetype_name);
-				} else {
-					add_variable(ctx, stmt->data.bind_stmt.name, stmt->data.bind_stmt.type);
-				}
-
-				/* Handle type annotations and type inference */
-				if (ctx->scope_count > 0) {
-					Scope *scope = &ctx->scopes[ctx->scope_count - 1];
-					if (scope->var_count > 0) {
-						var = scope->vars[scope->var_count - 1];
-						if (stmt->data.bind_stmt.type) {
-							/* Type annotation: convert TypeRef to string type name */
-							TypeRef *t = stmt->data.bind_stmt.type;
-							if (t->kind == TYPE_HANDLE)
-								var->inferred_type = t->data.handle.archetype_name;
-							else if (t->kind == TYPE_NAME) {
-								var->inferred_type = resolve_type_alias(ctx, t->data.name);
-								if (is_type_alias(ctx, t->data.name))
-									var->nominal_type = t->data.name;
-							} else if (t->kind == TYPE_SHAPED_ARRAY || t->kind == TYPE_ARRAY) {
-								/* Array: store the ELEMENT base name (consistent with EXPR_NAME's
-								 * unwrap). The old `t->data.name` here read the wrong union member
-								 * (shaped_array.element_type reinterpreted as char*) — garbage. */
-								TypeRef *et = t;
-								while (et && et->kind == TYPE_SHAPED_ARRAY)
-									et = et->data.shaped_array.element_type;
-								while (et && et->kind == TYPE_ARRAY)
-									et = et->data.array.element_type;
-								var->inferred_type =
-								    (et && et->kind == TYPE_NAME) ? resolve_type_alias(ctx, et->data.name) : NULL;
-							} else
-								var->inferred_type = NULL; /* unknown meta-kind: no string type */
-						} else if (stmt->data.bind_stmt.value) {
-							/* No annotation: infer from value expression */
-							const char *inferred = resolve_expression_type(ctx, stmt->data.bind_stmt.value);
-							if (inferred) {
-								var->inferred_type = inferred;
-							}
-							/* keep the nominal alias name (if any) for distinctness checks */
-							var->nominal_type = nominal_type_of_expr(ctx, stmt->data.bind_stmt.value);
-						}
-					}
+				} else if (sv_present(value_view)) {
+					/* Untyped bind: infer the variable's type from its value (stable resolved name). */
+					var->inferred_type = resolve_expression_type(ctx, value_view);
 				}
 			}
 		}
-		/* The narrow int↔float check that used to live here is subsumed by tycheck's
-		 * STMT_BIND rule (E0200 'binding: expected T, got U'). Kept the
-		 * sem_emit_no_implicit_conversion wrapper in place for any remaining caller. */
-		if (stmt->data.bind_stmt.is_const)
-			mark_last_const(ctx); /* immutable: reject later assignment */
+		/* A value const (`k :: 5`) reaching here — not a type alias — is immutable. */
+		if (is_const)
+			mark_last_const(ctx);
+		free(bind_name);
 		break;
 	}
 
-	case STMT_MULTI_BIND: {
-		/* Multi-bind: `x, y, n := expr`. Analyze the RHS FIRST so a `move x` inside it
-		 * refers to the existing binding (e.g. a buffer being passed by reference and
-		 * returned), not a target we are about to introduce. The RHS is the whole (multi-return)
-		 * call, so a proc/extern there is allowed — an action whose results are bound. */
-		ctx->stmt_call_ok = (stmt->data.multi_bind.value && stmt->data.multi_bind.value->type == EXPR_CALL);
-		analyze_expression(ctx, stmt->data.multi_bind.value);
+	case SN_ASSIGN_STMT: {
+		SyntaxView target = sem_node_at_expr(v, 0);
+		SyntaxView value = sem_node_at_expr(v, 1);
+		analyze_expression(ctx, target);
+		ctx->stmt_call_ok = (sv_present(value) && sv_kind(value) == SN_CALL_EXPR);
+		analyze_expression(ctx, value);
 		ctx->stmt_call_ok = 0;
-
-		/* If the RHS is a proc call (`foo(in)(out)`), each out-arg target corresponds positionally
-		 * to one of the proc's out-params. Infer a new target's type from that out-param when it
-		 * wasn't written explicitly (`name:`), so e.g. an opaque `file` out resolves as opaque, not
-		 * a default int. */
-		ProcDecl *mb_callee_proc = NULL;
+		implicit_move_consume(ctx, value);
+		if (sv_kind(target) == SN_NAME_EXPR) {
+			char *tn = sv_resolved_name(ctx, target);
+			VariableInfo *t = find_variable(ctx, tn);
+			if (t && t->is_const)
+				sem_emit_assign_to_const(ctx, sem_node_loc(target.node), tn);
+			else if (t && t->is_consumed)
+				sem_emit_assign_after_move(ctx, sem_node_loc(target.node), tn);
+			free(tn);
+		}
+		/* Purity: a borrowed (non-`move`) array parameter is read-only. Uses the leftmost name. */
 		{
-			Expression *cv = stmt->data.multi_bind.value;
-			if (cv && cv->type == EXPR_CALL && cv->data.call.callee && cv->data.call.callee->type == EXPR_NAME) {
-				const char *cn = cv->data.call.callee->data.name.name;
-				for (int i = 0; i < ctx->prog->decl_count; i++) {
-					Decl *d = ctx->prog->decls[i];
-					if (d->kind == DECL_PROC && d->data.proc && d->data.proc->name &&
-					    strcmp(d->data.proc->name, cn) == 0) {
-						mb_callee_proc = d->data.proc;
-						break;
-					}
-				}
-			}
-		}
-
-		/* W0011 inout_redundant_arg: `f(buf)(buf)` repeats the buffer in an in-out in-slot. The `_`
-		 * form makes the shadow explicit — `f(_)(buf)`. Fire only when an in-arg NAME equals an
-		 * out-target NAME at an in-out param position (same buffer in both lists). */
-		if (mb_callee_proc && stmt->data.multi_bind.value && stmt->data.multi_bind.value->type == EXPR_CALL) {
-			Expression *callx = stmt->data.multi_bind.value;
-			for (int i = 0; i < callx->data.call.arg_count; i++) {
-				Expression *a = callx->data.call.args[i];
-				if (!a || a->type != EXPR_NAME || !a->data.name.name || strcmp(a->data.name.name, "_") == 0)
-					continue;
-				if (!proc_param_is_inout(mb_callee_proc, i))
-					continue;
-				for (int t = 0; t < stmt->data.multi_bind.target_count; t++) {
-					if (stmt->data.multi_bind.targets[t].name &&
-					    strcmp(stmt->data.multi_bind.targets[t].name, a->data.name.name) == 0) {
-						sem_emit_lint_inout_redundant_arg(ctx, a->loc, a->data.name.name);
-						break;
-					}
-				}
-			}
-		}
-
-		/* Then bind the targets. A new target (`x` / `x:`) introduces a FRESH binding that
-		 * shadows any same-named one — so `buf := f(move buf)` rebinds the moved buffer with
-		 * no special-casing. An existing target (assignment-style) must be declared and live;
-		 * assigning to a moved (dead) binding is an error — use `:=`. */
-		for (int i = 0; i < stmt->data.multi_bind.target_count; i++) {
-			BindingTarget *target = &stmt->data.multi_bind.targets[i];
-			/* Bind with the explicit target type, or the inferred out-param type. Pass the inferred
-			 * type by reference only (the AST owns it) — do NOT store it into target->type, which the
-			 * statement frees, to avoid a double free with the proc decl. */
-			TypeRef *bind_type = target->type;
-			if (!bind_type && mb_callee_proc && i < mb_callee_proc->out_param_count && mb_callee_proc->out_params[i])
-				bind_type = mb_callee_proc->out_params[i]->type;
-			if (target->is_new) {
-				add_variable(ctx, target->name, bind_type);
-				/* Record the nominal alias name (file/socket/window/…) so opaque-distinctness checks
-				 * see it — mirrors the `x: T` single-bind path. add_variable alone leaves it NULL. */
-				if (bind_type && bind_type->kind == TYPE_NAME && ctx->scope_count > 0) {
-					Scope *sc = &ctx->scopes[ctx->scope_count - 1];
-					if (sc->var_count > 0) {
-						VariableInfo *v = sc->vars[sc->var_count - 1];
-						v->inferred_type = resolve_type_alias(ctx, bind_type->data.name);
-						if (is_type_alias(ctx, bind_type->data.name))
-							v->nominal_type = bind_type->data.name;
-					}
-				}
-			} else {
-				VariableInfo *existing = find_variable(ctx, target->name);
-				if (!existing) {
-					sem_emit_assign_to_undeclared(ctx, stmt->loc, target->name);
-				} else if (existing->is_consumed) {
-					/* The binding was `move`d (killed). A killed binding can't be reused as an
-					 * out-arg — there is no revival. The canonical in-place fill never moves
-					 * (`foo(buf)(buf)`); a consuming hand-off must bind a FRESH out name
-					 * (`foo(move buf)(buf:)`). So `foo(move buf)(buf)` is rejected here. */
-					sem_emit_assign_after_move(ctx, stmt->loc, target->name);
-				}
-			}
-		}
-		break;
-	}
-
-	case STMT_ASSIGN:
-		analyze_expression(ctx, stmt->data.assign_stmt.target);
-		/* A proc/extern call is allowed only as the whole RHS of the assign (`x = p(...)`). */
-		ctx->stmt_call_ok = (stmt->data.assign_stmt.value && stmt->data.assign_stmt.value->type == EXPR_CALL);
-		analyze_expression(ctx, stmt->data.assign_stmt.value);
-		ctx->stmt_call_ok = 0;
-		/* `a = b` takes ownership just like `a := b`: a bare move-only RHS name is an implicit move
-		 * (b is consumed). Scalars copy; an explicit `copy b` keeps the source. */
-		implicit_move_consume(ctx, stmt->data.assign_stmt.value);
-		/* You cannot assign to a binding that was moved (it's dead): `buf = foo(move buf)` must
-		 * be written `buf := foo(move buf)` (a fresh binding). The move in the RHS consumes the
-		 * target above, so check it here. */
-		if (stmt->data.assign_stmt.target->type == EXPR_NAME) {
-			VariableInfo *t = find_variable(ctx, stmt->data.assign_stmt.target->data.name.name);
-			if (t && t->is_const) {
-				sem_emit_assign_to_const(ctx, stmt->data.assign_stmt.target->loc,
-				                         stmt->data.assign_stmt.target->data.name.name);
-			} else if (t && t->is_consumed) {
-				sem_emit_assign_after_move(ctx, stmt->data.assign_stmt.target->loc,
-				                           stmt->data.assign_stmt.target->data.name.name);
-			}
-		}
-		/* Purity: a borrowed (non-`move`) array parameter is read-only — `p = …`, `p[i] = …`,
-		 * `p.f = …` are all rejected. To write one, make it in-out (same name in both lists, no
-		 * `own`/`move`) so the out place shadows the borrow, or copy it into a local. An out place
-		 * (`is_out_place`) is writable, as is an `own` param. Uses the leftmost name so index and
-		 * field writes are caught, not just bare `p`. */
-		{
-			const char *ln = lvalue_leftmost_name(stmt->data.assign_stmt.target);
+			const char *rn = ctx->model ? sem_model_ref_name(ctx->model, sv_id(target)) : NULL;
+			char *ln = rn ? sem_dupz(rn) : sv_name_expr_dup(target);
 			VariableInfo *pv = ln ? find_variable(ctx, ln) : NULL;
-			if (pv && pv->is_param && !pv->is_own && !pv->is_out_place && type_is_byref_aggregate(pv->type)) {
-				sem_emit_cannot_mutate_borrowed(ctx, stmt->loc, ln);
-			}
+			if (pv && pv->is_param && !pv->is_own && !pv->is_out_place && type_is_byref_aggregate(pv->type))
+				sem_emit_cannot_mutate_borrowed(ctx, loc, ln);
+			free(ln);
 		}
 		break;
+	}
 
-	case STMT_FOR: {
-		/* Check for parenthesized or range-based for loop */
-		if (stmt->data.for_stmt.init || stmt->data.for_stmt.increment) {
-			/* Parenthesized for loop: for (init; cond; incr) */
+	case SN_FOR_STMT: {
+		/* C-style `for ( init ; cond ; incr ) { body }` vs infinite/conditional `for [cond] { body }`. */
+		if (sv_has_token(v, TOK_LPAREN)) {
 			push_scope(ctx);
-
-			if (stmt->data.for_stmt.init) {
-				analyze_statement(ctx, stmt->data.for_stmt.init);
+			int seen_brace = 0, seg = 0;
+			for (int i = 0; i < v.node->child_count; i++) {
+				SyntaxElem *ch = &v.node->children[i];
+				if (ch->tag == SE_TOKEN) {
+					if (ch->as.token.kind == TOK_LBRACE)
+						seen_brace = 1;
+					else if (ch->as.token.kind == TOK_SEMI && !seen_brace && seg < 2)
+						seg++;
+					continue;
+				}
+				if (seen_brace)
+					continue;
+				SyntaxNodeKind k = ch->as.node->kind;
+				SyntaxView cv = {ch->as.node, v.src};
+				if (seg == 0 && k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
+					analyze_statement(ctx, cv);
+				else if (seg == 1 && k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+					analyze_expression(ctx, cv);
+				else if (seg == 2 && k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
+					analyze_statement(ctx, cv);
 			}
-
-			if (stmt->data.for_stmt.condition) {
-				analyze_expression(ctx, stmt->data.for_stmt.condition);
+			/* body (statements after `{`) */
+			seen_brace = 0;
+			for (int i = 0; i < v.node->child_count; i++) {
+				SyntaxElem *ch = &v.node->children[i];
+				if (ch->tag == SE_TOKEN) {
+					if (ch->as.token.kind == TOK_LBRACE)
+						seen_brace = 1;
+					continue;
+				}
+				if (!seen_brace)
+					continue;
+				SyntaxNodeKind k = ch->as.node->kind;
+				if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
+					analyze_statement(ctx, (SyntaxView){ch->as.node, v.src});
 			}
-
-			for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
-				analyze_statement(ctx, stmt->data.for_stmt.body[i]);
-			}
-
-			if (stmt->data.for_stmt.increment) {
-				analyze_statement(ctx, stmt->data.for_stmt.increment);
-			}
-
 			pop_scope(ctx);
 			break;
 		}
-
-		/* Infinite or condition-based for loop (no init/incr). The range-based `for IDENT in …`
-		 * form does not exist — it is rejected at parse — so there is no iterable/var_name path. */
-		if (stmt->data.for_stmt.condition) {
-			analyze_expression(ctx, stmt->data.for_stmt.condition);
-		}
+		/* infinite/conditional: an expr child (if present) is the condition, statement children the body */
+		SyntaxView cond = sem_node_at_expr(v, 0);
+		if (sv_present(cond))
+			analyze_expression(ctx, cond);
 		push_scope(ctx);
-		for (int i = 0; i < stmt->data.for_stmt.body_count; i++) {
-			analyze_statement(ctx, stmt->data.for_stmt.body[i]);
-		}
+		for (int i = 0, n = sem_stmt_count(v); i < n; i++)
+			analyze_statement(ctx, sem_stmt_at(v, i));
 		pop_scope(ctx);
 		break;
 	}
 
-	case STMT_IF: {
-		/* analyze condition */
-		analyze_expression(ctx, stmt->data.if_stmt.cond);
+	case SN_IF_STMT: {
+		analyze_expression(ctx, sem_node_at_expr(v, 0));
 
-		/* RAII all-paths-or-none consumption analysis. Snapshot the consumed-state of every
-		 * opaque local currently in scope (the outer bindings the branches may consume), so the
-		 * then/else paths are analyzed independently rather than branch-insensitively (which both
-		 * leaked a then-consume into the else as a false "use of consumed handle", and missed a
-		 * consume-on-only-one-path leak). After both paths, a handle consumed on some-but-not-all
-		 * paths is an error; consumed on all paths stays consumed; on none stays live. */
+		/* RAII all-paths-or-none consumption analysis (verbatim, operates on ctx scopes). */
 		int snap_count = 0;
 		for (int si = 0; si < ctx->scope_count; si++)
 			for (int vi = 0; vi < ctx->scopes[si].var_count; vi++)
@@ -2340,47 +2194,63 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 			int k = 0;
 			for (int si = 0; si < ctx->scope_count; si++)
 				for (int vi = 0; vi < ctx->scopes[si].var_count; vi++) {
-					VariableInfo *v = ctx->scopes[si].vars[vi];
-					if (var_is_opaque(ctx, v)) {
-						snap_vars[k] = v;
-						snap_before[k] = v->is_consumed;
+					VariableInfo *vv = ctx->scopes[si].vars[vi];
+					if (var_is_opaque(ctx, vv)) {
+						snap_vars[k] = vv;
+						snap_before[k] = vv->is_consumed;
 						k++;
 					}
 				}
 		}
 
-		/* push new scope for if body */
+		/* then-body = statement children before TOK_ELSE; else-body = after. */
+		int else_seen = 0;
 		push_scope(ctx);
-		for (int i = 0; i < stmt->data.if_stmt.then_count; i++)
-			analyze_statement(ctx, stmt->data.if_stmt.then_body[i]);
+		for (int i = 0; i < v.node->child_count; i++) {
+			SyntaxElem *ch = &v.node->children[i];
+			if (ch->tag == SE_TOKEN && ch->as.token.kind == TOK_ELSE) {
+				else_seen = 1;
+				continue;
+			}
+			if (else_seen || ch->tag != SE_NODE)
+				continue;
+			SyntaxNodeKind k = ch->as.node->kind;
+			if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
+				analyze_statement(ctx, (SyntaxView){ch->as.node, v.src});
+		}
 		pop_scope(ctx);
 
-		/* Record the then-path consumed-set for the outer handles, then reset to the pre-if state
-		 * so the else path is analyzed independently. */
 		for (int k = 0; k < snap_count; k++) {
 			snap_then[k] = snap_vars[k]->is_consumed;
 			snap_vars[k]->is_consumed = snap_before[k];
 		}
 
-		/* analyze else body in its own scope */
 		push_scope(ctx);
-		for (int i = 0; i < stmt->data.if_stmt.else_count; i++)
-			analyze_statement(ctx, stmt->data.if_stmt.else_body[i]);
+		else_seen = 0;
+		for (int i = 0; i < v.node->child_count; i++) {
+			SyntaxElem *ch = &v.node->children[i];
+			if (ch->tag == SE_TOKEN && ch->as.token.kind == TOK_ELSE) {
+				else_seen = 1;
+				continue;
+			}
+			if (!else_seen || ch->tag != SE_NODE)
+				continue;
+			SyntaxNodeKind k = ch->as.node->kind;
+			if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
+				analyze_statement(ctx, (SyntaxView){ch->as.node, v.src});
+		}
 		pop_scope(ctx);
 
-		/* Merge: for each outer opaque handle not already consumed before the if, compare the
-		 * then-path vs else-path consume decision. (An empty else consumes nothing.) */
 		for (int k = 0; k < snap_count; k++) {
 			if (snap_before[k])
-				continue; /* already consumed before the if — nothing to reconcile */
+				continue;
 			int then_c = snap_then[k];
-			int else_c = snap_vars[k]->is_consumed; /* state after analyzing else */
+			int else_c = snap_vars[k]->is_consumed;
 			if (then_c != else_c) {
 				sem_emit_drop_conditional(ctx, snap_vars[k]->loc, snap_vars[k]->name);
-				/* Treat as consumed to avoid a cascading must-consume/auto-drop error. */
 				snap_vars[k]->is_consumed = 1;
 			} else {
-				snap_vars[k]->is_consumed = then_c; /* both paths agree */
+				snap_vars[k]->is_consumed = then_c;
 			}
 		}
 		free(snap_vars);
@@ -2389,97 +2259,219 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 		break;
 	}
 
-	case STMT_RUN:
-		/* no world validation needed - worlds are planned but not yet implemented */
+	case SN_RUN_STMT:
 		break;
 
-	case STMT_EXPR:
-		/* A standalone expression statement: a proc/extern call here is allowed — it's an action
-		 * performed for its effect (its return value, if any, is discarded). */
+	case SN_EXPR_STMT:
 		ctx->stmt_call_ok = 1;
-		analyze_expression(ctx, stmt->data.expr_stmt.expr);
+		analyze_expression(ctx, sem_node_at_expr(v, 0));
 		ctx->stmt_call_ok = 0;
 		break;
 
-	case STMT_RETURN:
-		/* A `sys` supports no `return` at all — reject any. A `proc` is an action with no return
-		 * value: a naked `return;` is an early exit, but a valued `return e;` is an error (results
-		 * go through out-params). A `func` is a value and must return one — that arity is checked
-		 * in tycheck (wrong_return_arity), which also rejects a naked `return;` in a func. */
-		if (ctx->in_sys) {
-			sem_emit_sys_no_return(ctx, stmt->loc);
-		} else if (stmt->data.return_stmt.count > 0 && !ctx->current_func) {
-			sem_emit_proc_return_has_value(ctx, stmt->loc);
-		}
-		/* Returning an opaque binding moves it out — counts as consumption. (Data and
-		 * handles copy, so returning them must NOT kill the binding.) */
-		for (int i = 0; i < stmt->data.return_stmt.count; i++) {
-			Expression *rval = stmt->data.return_stmt.values[i];
-			analyze_expression(ctx, rval);
-			if (rval && rval->type == EXPR_NAME) {
-				VariableInfo *rv = find_variable(ctx, rval->data.name.name);
-				if (rv && var_is_opaque(ctx, rv))
-					rv->is_consumed = 1;
-				/* An array is returned by REFERENCE — only valid when it's an `own`/borrowed
-				 * PARAM (the caller owns that storage; this is the slice / ownership-threading
-				 * idiom, now for any element type). Returning a fresh LOCAL array would dangle (its
-				 * storage is this frame) and needs value copy-out, which is unimplemented — reject
-				 * it cleanly. */
-				if (ctx->current_func && rv && rv->type && type_is_byref_aggregate(rv->type) && !rv->is_param) {
+	case SN_RETURN_STMT: {
+		int rcount = sem_expr_count(v);
+		if (ctx->in_sys)
+			sem_emit_sys_no_return(ctx, loc);
+		else if (rcount > 0 && !ctx->current_func)
+			sem_emit_proc_return_has_value(ctx, loc);
+		for (int i = 0; i < rcount; i++) {
+			SyntaxView rv = sem_node_at_expr(v, i);
+			analyze_expression(ctx, rv);
+			if (sv_kind(rv) == SN_NAME_EXPR) {
+				char *nm = sv_resolved_name(ctx, rv);
+				VariableInfo *rvar = find_variable(ctx, nm);
+				if (rvar && var_is_opaque(ctx, rvar))
+					rvar->is_consumed = 1;
+				if (ctx->current_func && rvar && rvar->type && type_is_byref_aggregate(rvar->type) && !rvar->is_param) {
 					fprintf(stderr, "Error: cannot return a local array by value (array copy-out is not implemented); "
 					                "return an `own` parameter or thread a caller-provided buffer instead\n");
 					ctx->error_count++;
 				}
+				free(nm);
 			}
 		}
 		break;
+	}
 
-	case STMT_BREAK:
-	case STMT_CONTINUE:
+	case SN_BREAK_STMT:
+	case SN_CONTINUE_STMT:
 		break;
 
-	case STMT_EACH_FIELD: {
-		EachFieldStmt *ef = &stmt->data.each_field;
-
-		/* Filter type, if present, must be a primitive (int/float/char). */
-		if (ef->filter_type) {
-			if (ef->filter_type->kind != TYPE_NAME) {
-				sem_emit_each_field_filter_type_not_name(ctx, stmt->loc);
+	case SN_EACH_FIELD_STMT: {
+		/* 1st IDENT = binding name, 2nd IDENT = archetype param name; first type node = filter. */
+		char *binding_name = NULL, *arch_param = NULL;
+		int ni = 0;
+		for (int i = 0; i < v.node->child_count; i++)
+			if (v.node->children[i].tag == SE_TOKEN && v.node->children[i].as.token.kind == TOK_IDENT) {
+				SynText t = {v.src + v.node->children[i].as.token.offset, v.node->children[i].as.token.length};
+				if (ni == 0)
+					binding_name = sem_txt_dup(t);
+				else if (ni == 1)
+					arch_param = sem_txt_dup(t);
+				ni++;
+			}
+		if (!binding_name)
+			binding_name = sem_dupz("");
+		if (!arch_param)
+			arch_param = sem_dupz("");
+		TypeRef *filter = sem_view_type(ctx, sem_type_at(v, 0));
+		if (filter) {
+			if (filter->kind != TYPE_NAME) {
+				sem_emit_each_field_filter_type_not_name(ctx, loc);
 			} else {
-				const char *fn = normalize_type_name(ef->filter_type->data.name);
-				if (!fn || (strcmp(fn, "int") != 0 && strcmp(fn, "float") != 0 && strcmp(fn, "char") != 0)) {
-					sem_emit_each_field_filter_type_not_primitive(ctx, stmt->loc);
-				}
+				const char *fn = normalize_type_name(filter->data.name);
+				if (!fn || (strcmp(fn, "int") != 0 && strcmp(fn, "float") != 0 && strcmp(fn, "char") != 0))
+					sem_emit_each_field_filter_type_not_primitive(ctx, loc);
 			}
 		}
-
-		/* RHS must name an `archetype` parameter of the current proc. */
 		int arch_param_ok = 0;
 		if (ctx->current_proc) {
 			for (int i = 0; i < ctx->current_proc->param_count; i++) {
 				Parameter *p = ctx->current_proc->params[i];
-				if (p && p->name && strcmp(p->name, ef->arch_param_name) == 0 && p->type &&
-				    p->type->kind == TYPE_ARCHETYPE) {
+				if (p && p->name && strcmp(p->name, arch_param) == 0 && p->type && p->type->kind == TYPE_ARCHETYPE) {
 					arch_param_ok = 1;
 					break;
 				}
 			}
 		}
-		if (!arch_param_ok) {
-			sem_emit_each_field_invalid_rhs(ctx, stmt->loc, ef->arch_param_name);
-		}
-
-		/* Analyze body in a pushed scope where the binding is declared opaquely.
-		 * `f`'s real type varies per expansion; codegen substitutes the concrete
-		 * column reference per emitted copy. */
+		if (!arch_param_ok)
+			sem_emit_each_field_invalid_rhs(ctx, loc, arch_param);
 		push_scope(ctx);
-		add_variable(ctx, ef->binding_name, NULL);
-		for (int i = 0; i < ef->body_count; i++) {
-			analyze_statement(ctx, ef->body[i]);
-		}
+		add_variable(ctx, binding_name, NULL);
+		for (int i = 0, n = sem_stmt_count(v); i < n; i++)
+			analyze_statement(ctx, sem_stmt_at(v, i));
 		pop_scope(ctx);
+		free(binding_name);
+		free(arch_param);
 		break;
 	}
+
+	case SN_MULTI_BIND_STMT:
+	case SN_PROC_CALL_STMT: {
+		/* Build a transient Statement only to read its multi-bind targets (the SEM_MB_FLUSH token
+		 * walk is intricate); analyze the value expression and the bodies via views. The transient
+		 * is freed at the end — targets are read into local state first, none escape. */
+		Statement *mb = cst_build_stmt(v);
+		if (!mb) {
+			break;
+		}
+		ProcDecl *mb_callee_proc = NULL;
+		SyntaxView mb_value = {NULL, v.src};
+		/* the value is the sole call/expr child */
+		for (int i = 0; i < v.node->child_count; i++)
+			if (v.node->children[i].tag == SE_NODE) {
+				SyntaxNodeKind k = v.node->children[i].as.node->kind;
+				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
+					mb_value = (SyntaxView){v.node->children[i].as.node, v.src};
+					break;
+				}
+			}
+		/* analyze the value (whole multi-return RHS) first, then bind targets */
+		ctx->stmt_call_ok = (sv_present(mb_value) && sv_kind(mb_value) == SN_CALL_EXPR);
+		if (sv_present(mb_value))
+			analyze_expression(ctx, mb_value);
+		ctx->stmt_call_ok = 0;
+
+		/* resolve callee proc for the inout-redundant lint + out-param typing */
+		if (sv_present(mb_value) && sv_kind(mb_value) == SN_CALL_EXPR && ctx->prog) {
+			const char *cn = ctx->model ? sem_model_callee_name(ctx->model, sv_id(mb_value)) : NULL;
+			char *cnf = cn ? sem_dupz(cn) : sem_cv_dup(sv_child(mb_value, SN_CALLEE_NAME));
+			if (cnf)
+				for (int i = 0; i < ctx->prog->decl_count; i++) {
+					Decl *d = ctx->prog->decls[i];
+					if (d && d->kind == DECL_PROC && d->data.proc && d->data.proc->name &&
+					    strcmp(d->data.proc->name, cnf) == 0) {
+						mb_callee_proc = d->data.proc;
+						break;
+					}
+				}
+			free(cnf);
+		}
+
+		/* W0011 inout_redundant: an in-arg NAME equal to an out-target NAME at an in-out position. */
+		if (mb_callee_proc && sv_present(mb_value) && sv_kind(mb_value) == SN_CALL_EXPR) {
+			for (int i = 0, ac = sem_expr_count(mb_value); i < ac; i++) {
+				SyntaxView a = sem_node_at_expr(mb_value, i);
+				if (sv_kind(a) != SN_NAME_EXPR || sv_text_eq(a, "_"))
+					continue;
+				if (!proc_param_is_inout(mb_callee_proc, i))
+					continue;
+				char *an = sv_resolved_name(ctx, a);
+				for (int t = 0; t < mb->data.multi_bind.target_count; t++)
+					if (mb->data.multi_bind.targets[t].name && strcmp(mb->data.multi_bind.targets[t].name, an) == 0) {
+						sem_emit_lint_inout_redundant_arg(ctx, sem_node_loc(a.node), an);
+						break;
+					}
+				free(an);
+			}
+		}
+
+		/* bind the targets (new shadows; existing must be live) */
+		for (int i = 0; i < mb->data.multi_bind.target_count; i++) {
+			BindingTarget *t = &mb->data.multi_bind.targets[i];
+			TypeRef *bind_type = t->type;
+			if (!bind_type && mb_callee_proc && i < mb_callee_proc->out_param_count && mb_callee_proc->out_params[i])
+				bind_type = mb_callee_proc->out_params[i]->type;
+			if (t->is_new) {
+				/* already added above for "_"-filtered new targets; re-add to capture type/nominal */
+				if (t->name && strcmp(t->name, "_") != 0) {
+					add_variable(ctx, t->name, bind_type);
+					if (bind_type && bind_type->kind == TYPE_NAME && ctx->scope_count > 0) {
+						Scope *sc = &ctx->scopes[ctx->scope_count - 1];
+						if (sc->var_count > 0) {
+							VariableInfo *vv = sc->vars[sc->var_count - 1];
+							vv->inferred_type = resolve_type_alias(ctx, bind_type->data.name);
+							if (is_type_alias(ctx, bind_type->data.name))
+								vv->nominal_type = bind_type->data.name;
+						}
+					}
+				}
+			} else {
+				VariableInfo *existing = find_variable(ctx, t->name);
+				if (!existing)
+					sem_emit_assign_to_undeclared(ctx, loc, t->name);
+				else if (existing->is_consumed)
+					sem_emit_assign_after_move(ctx, loc, t->name);
+			}
+		}
+		/* bind_type may borrow from mb's targets or the proc out-params; the proc out-param types are
+		 * AST-owned (stable), and target types are freed with mb — but add_variable already consumed
+		 * what it needed (var->type points at it). To avoid a UAF, own any target type on the ctx. */
+		for (int i = 0; i < mb->data.multi_bind.target_count; i++)
+			if (mb->data.multi_bind.targets[i].type) {
+				analysis_own_type(ctx, mb->data.multi_bind.targets[i].type);
+				mb->data.multi_bind.targets[i].type = NULL; /* detach so statement_free won't free it */
+			}
+		statement_free(mb);
+		break;
+	}
+
+	case SN_BLOCK:
+		/* a standalone `{ … }` nested scope — visit its statements so their exprs get typed */
+		push_scope(ctx);
+		for (int i = 0, n = sem_stmt_count(v); i < n; i++)
+			analyze_statement(ctx, sem_stmt_at(v, i));
+		pop_scope(ctx);
+		break;
+
+	case SN_MATCH_STMT: {
+		/* analyze-only: visit the scrutinee and each arm's body (real dispatch is lowered elsewhere) */
+		SyntaxView scrut = sem_node_at_expr(v, 0);
+		if (sv_present(scrut))
+			analyze_expression(ctx, scrut);
+		int narm = sv_count(v, SN_MATCH_ARM);
+		for (int i = 0; i < narm; i++) {
+			SyntaxView arm = sv_child_at(v, SN_MATCH_ARM, i);
+			push_scope(ctx);
+			for (int j = 0, n = sem_stmt_count(arm); j < n; j++)
+				analyze_statement(ctx, sem_stmt_at(arm, j));
+			pop_scope(ctx);
+		}
+		break;
+	}
+
+	default:
+		break;
 	}
 }
 
@@ -2576,8 +2568,8 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 		free(sig); /* duplicate signature; existing shape already owns one */
 	}
 
-	/* Tuple fields are flattened to scalar columns in lowering (CST->AST), not
-	   here: the AST is tuple-free, the CST keeps tuples. The flat `shape` above
+	/* Tuple fields are flattened to scalar columns in lowering (syntax tree->AST), not
+	   here: the AST is tuple-free, the syntax tree keeps tuples. The flat `shape` above
 	   is still built from the tuple fields for type checking. */
 
 	/* Validate handle types: must reference a known archetype. */
@@ -2750,7 +2742,7 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 
 	/* Analyze field initialization expressions */
 	for (int i = 1; i < alloc->archetype.field_count; i++) {
-		analyze_expression(ctx, alloc->archetype.field_values[i]);
+		analyze_expression(ctx, AST_SV(alloc->archetype.field_values[i]));
 	}
 }
 
@@ -3319,7 +3311,7 @@ static void analyze_proc_decl(SemanticContext *ctx, ProcDecl *proc) {
 	ctx->current_proc = proc;
 	ctx->in_body = 1;
 	for (int i = 0; i < proc->statement_count; i++) {
-		analyze_statement(ctx, proc->statements[i]);
+		analyze_statement(ctx, AST_SV(proc->statements[i]));
 	}
 	ctx->in_body = 0;
 
@@ -3390,7 +3382,7 @@ static void analyze_sys_decl(SemanticContext *ctx, SysDecl *sys) {
 	ctx->in_sys = 1;
 	ctx->in_body = 1;
 	for (int i = 0; i < sys->statement_count; i++) {
-		analyze_statement(ctx, sys->statements[i]);
+		analyze_statement(ctx, AST_SV(sys->statements[i]));
 	}
 	ctx->in_body = 0;
 	ctx->in_sys = prev_in_sys;
@@ -3534,7 +3526,7 @@ static void analyze_func_decl(SemanticContext *ctx, FuncDecl *func) {
 	FuncDecl *prev_func = ctx->current_func;
 	ctx->current_func = func;
 	for (int i = 0; i < func->statement_count; i++) {
-		analyze_statement(ctx, func->statements[i]);
+		analyze_statement(ctx, AST_SV(func->statements[i]));
 	}
 	ctx->current_func = prev_func;
 
@@ -3601,156 +3593,38 @@ static void analyze_decl(SemanticContext *ctx, Decl *decl) {
 	ctx->active_allow_slug_count = prev_count;
 }
 
-/* ========== TYPE-ALIAS ERASURE ========== */
-/* After all checks pass, nominal aliases have done their job (distinctness was enforced
- * at substitution boundaries). Rewrite every alias type-name in the CST to its backing
- * so lowering/codegen never see an alias — the alias is zero-cost. */
-
-static void erase_aliases_typeref(SemanticContext *ctx, TypeRef *t) {
-	if (!t)
-		return;
-	switch (t->kind) {
-	case TYPE_NAME: {
-		const char *b = resolve_type_alias(ctx, t->data.name);
-		if (b != t->data.name) {
-			/* Became its backing. `opaque` is its own TypeRef kind (not a named type),
-			 * so rewrite the kind to match a native `opaque`; other backings are named. */
-			if (strcmp(b, "opaque") == 0) {
-				t->kind = TYPE_OPAQUE;
-			} else {
-				char *dup = malloc(strlen(b) + 1);
-				strcpy(dup, b);
-				t->data.name = dup;
-			}
-		}
-		break;
-	}
-	case TYPE_ARRAY:
-		erase_aliases_typeref(ctx, t->data.array.element_type);
-		break;
-	case TYPE_SHAPED_ARRAY:
-		erase_aliases_typeref(ctx, t->data.shaped_array.element_type);
-		break;
-	case TYPE_TUPLE:
-		for (int i = 0; i < t->data.tuple.field_count; i++)
-			erase_aliases_typeref(ctx, t->data.tuple.field_types[i]);
-		break;
-	default:
-		break;
-	}
-}
-
-static void erase_aliases_stmt(SemanticContext *ctx, Statement *s) {
-	if (!s)
-		return;
-	switch (s->type) {
-	case STMT_BIND:
-		erase_aliases_typeref(ctx, s->data.bind_stmt.type);
-		break;
-	case STMT_FOR:
-		erase_aliases_stmt(ctx, s->data.for_stmt.init);
-		erase_aliases_stmt(ctx, s->data.for_stmt.increment);
-		for (int i = 0; i < s->data.for_stmt.body_count; i++)
-			erase_aliases_stmt(ctx, s->data.for_stmt.body[i]);
-		break;
-	case STMT_IF:
-		for (int i = 0; i < s->data.if_stmt.then_count; i++)
-			erase_aliases_stmt(ctx, s->data.if_stmt.then_body[i]);
-		for (int i = 0; i < s->data.if_stmt.else_count; i++)
-			erase_aliases_stmt(ctx, s->data.if_stmt.else_body[i]);
-		break;
-	case STMT_MULTI_BIND:
-		for (int i = 0; i < s->data.multi_bind.target_count; i++)
-			erase_aliases_typeref(ctx, s->data.multi_bind.targets[i].type);
-		break;
-	case STMT_EACH_FIELD:
-		erase_aliases_typeref(ctx, s->data.each_field.filter_type);
-		for (int i = 0; i < s->data.each_field.body_count; i++)
-			erase_aliases_stmt(ctx, s->data.each_field.body[i]);
-		break;
-	default:
-		break;
-	}
-}
-
-static void erase_aliases_decl(SemanticContext *ctx, Decl *d) {
-	if (!d)
-		return;
-	switch (d->kind) {
-	case DECL_ARCHETYPE:
-		for (int i = 0; i < d->data.archetype->field_count; i++)
-			erase_aliases_typeref(ctx, d->data.archetype->fields[i]->type);
-		break;
-	case DECL_PROC:
-		for (int i = 0; i < d->data.proc->param_count; i++)
-			erase_aliases_typeref(ctx, d->data.proc->params[i]->type);
-		for (int i = 0; i < d->data.proc->statement_count; i++)
-			erase_aliases_stmt(ctx, d->data.proc->statements[i]);
-		break;
-	case DECL_SYS:
-		for (int i = 0; i < d->data.sys->param_count; i++)
-			erase_aliases_typeref(ctx, d->data.sys->params[i]->type);
-		for (int i = 0; i < d->data.sys->statement_count; i++)
-			erase_aliases_stmt(ctx, d->data.sys->statements[i]);
-		break;
-	case DECL_FUNC:
-		for (int i = 0; i < d->data.func->return_type_count; i++)
-			erase_aliases_typeref(ctx, d->data.func->return_types[i]);
-		for (int i = 0; i < d->data.func->param_count; i++)
-			erase_aliases_typeref(ctx, d->data.func->params[i]->type);
-		for (int i = 0; i < d->data.func->statement_count; i++)
-			erase_aliases_stmt(ctx, d->data.func->statements[i]);
-		break;
-	case DECL_STATIC:
-		if (d->data.static_decl->kind == STATIC_KIND_ARRAY)
-			erase_aliases_typeref(ctx, d->data.static_decl->array.element_type);
-		else if (d->data.static_decl->kind == STATIC_KIND_SCALAR)
-			erase_aliases_typeref(ctx, d->data.static_decl->scalar.type);
-		break;
-	default:
-		break;
-	}
-}
-
-static void erase_type_aliases(SemanticContext *ctx, AstProgram *prog) {
-	if (ctx->type_alias_count == 0)
-		return;
-	for (int i = 0; i < prog->decl_count; i++)
-		erase_aliases_decl(ctx, prog->decls[i]);
-}
-
-/* ========== CST -> AstProgram reconstruction (semantic_analyze_cst) ==========
+/* ========== syntax tree -> AstProgram reconstruction (semantic_analyze_cst) ==========
  *
- * Rather than rewrite the ~3000-line analysis traversal onto views, the CST path
- * reconstructs an analyzable `AstProgram` directly from the immutable lossless CST
+ * Rather than rewrite the ~3000-line analysis traversal onto views, the syntax tree path
+ * reconstructs an analyzable `AstProgram` directly from the immutable lossless syntax tree
  * (mirroring lower/lower.c's lower_*_cst walk), then runs the SAME analysis core.
  * This guarantees the side-model + error contract is byte-identical to the
- * AstProgram path: each Expression/Statement carries cst_id = (CST node id + 1), so
- * the side model — keyed by `cst_id - 1` — is keyed by the exact node id the CST
- * lowerer reads back. Module CSTs are inlined + name-prefixed exactly as main.c's
+ * AstProgram path: each Expression/Statement carries cst_id = (syntax tree node id + 1), so
+ * the side model — keyed by `cst_id - 1` — is keyed by the exact node id the syntax tree
+ * lowerer reads back. Module syntax trees are inlined + name-prefixed exactly as main.c's
  * resolve_uses does, and top-level tuple groups are expanded into archetype fields
  * exactly as main.c's expand_archetype_tuple_groups does. */
 
 /* ---- small text helpers ---- */
-static char *sem_txt_dup(CvText t) {
+static char *sem_txt_dup(SynText t) {
 	char *s = malloc(t.len + 1);
 	if (t.ptr)
 		memcpy(s, t.ptr, t.len);
 	s[t.len] = '\0';
 	return s;
 }
-static char *sem_cv_dup(CstView v) {
-	return sem_txt_dup(cv_text(v));
+static char *sem_cv_dup(SyntaxView v) {
+	return sem_txt_dup(sv_text(v));
 }
 /* Like sem_cv_dup but only the node's first TOKEN leaf — token-precise, so it excludes trailing
  * trivia the node span may include. A const value that is the last token before a comment would
  * otherwise swallow the comment into its lexeme (read as float, leaked into codegen). Mirrors
- * lower.c's cv_dup_first_token. */
-static char *sem_cv_dup_first_token(CstView v) {
+ * lower.c's sv_dup_first_token. */
+static char *sem_cv_dup_first_token(SyntaxView v) {
 	if (v.node) {
 		for (int i = 0; i < v.node->child_count; i++) {
 			if (v.node->children[i].tag == SE_TOKEN) {
-				CvText t = {v.src + v.node->children[i].as.token.offset, v.node->children[i].as.token.length};
+				SynText t = {v.src + v.node->children[i].as.token.offset, v.node->children[i].as.token.length};
 				return sem_txt_dup(t);
 			}
 		}
@@ -3797,14 +3671,14 @@ static SourceLoc sem_node_loc(const SyntaxNode *n) {
 	return loc;
 }
 
-/* ---- type reconstruction (CST type node -> TypeRef) ---- */
-static TypeRef *cst_build_type(CstView t);
-static CstView sem_type_at(CstView v, int idx);
-static int cv_type_count_sem(CstView v);
+/* ---- type reconstruction (syntax tree type node -> TypeRef) ---- */
+static TypeRef *cst_build_type(SyntaxView t);
+static SyntaxView sem_type_at(SyntaxView v, int idx);
+static int sv_type_count_sem(SyntaxView v);
 
 /* 1 if a `name :: <rhs>` const carries the `alias` transparent-marker: a loose IDENT token `alias`
  * sitting after the binding name (the backing-name value is an expr node, not a loose token). */
-static int cst_const_alias_marked(CstView d) {
+static int syntax_const_alias_marked(SyntaxView d) {
 	int seen_name = 0;
 	for (int i = 0; i < d.node->child_count; i++) {
 		const SyntaxElem *e = &d.node->children[i];
@@ -3820,10 +3694,10 @@ static int cst_const_alias_marked(CstView d) {
 }
 
 /* The archetype name inside `handle<X>` / `handle(X)` (the IDENT that isn't "handle"). */
-static char *cst_handle_name(CstView t) {
+static char *syntax_handle_name(SyntaxView t) {
 	for (int i = 0; i < t.node->child_count; i++)
 		if (t.node->children[i].tag == SE_TOKEN && t.node->children[i].as.token.kind == TOK_IDENT) {
-			CvText nm = {t.src + t.node->children[i].as.token.offset, t.node->children[i].as.token.length};
+			SynText nm = {t.src + t.node->children[i].as.token.offset, t.node->children[i].as.token.length};
 			if (!(nm.len == 6 && memcmp(nm.ptr, "handle", 6) == 0))
 				return sem_txt_dup(nm);
 		}
@@ -3834,7 +3708,7 @@ static char *cst_handle_name(CstView t) {
  * module's mangled type symbol), matching lower.c's type_ref_name; a bare type returns its IDENT. */
 /* 1 if this SN_TYPE_REF has a `.` token — a qualified `mod.name`. Distinguishes a real two-IDENT
  * qualified type from the `alias T` transparent marker (two adjacent IDENTs, no dot). */
-static int sem_type_ref_has_dot(CstView t) {
+static int sem_type_ref_has_dot(SyntaxView t) {
 	for (int i = 0; i < t.node->child_count; i++)
 		if (t.node->children[i].tag == SE_TOKEN && t.node->children[i].as.token.kind == TOK_DOT)
 			return 1;
@@ -3843,8 +3717,8 @@ static int sem_type_ref_has_dot(CstView t) {
 
 /* 1 if this SN_TYPE_REF carries the leading `alias` transparent-marker (with a real backing name
  * following): two adjacent IDENTs where the first is `alias`, and no `.` (so it is not `mod.name`). */
-static int sem_type_ref_alias_marked(CstView t) {
-	CvText ids[2];
+static int sem_type_ref_alias_marked(SyntaxView t) {
+	SynText ids[2];
 	int n = 0;
 	for (int i = 0; i < t.node->child_count && n < 2; i++) {
 		const SyntaxElem *e = &t.node->children[i];
@@ -3857,8 +3731,8 @@ static int sem_type_ref_alias_marked(CstView t) {
 	return n >= 2 && ids[0].len == 5 && memcmp(ids[0].ptr, "alias", 5) == 0 && !sem_type_ref_has_dot(t);
 }
 
-static char *sem_type_ref_name(CstView t) {
-	CvText ids[2];
+static char *sem_type_ref_name(SyntaxView t) {
+	SynText ids[2];
 	int n = 0;
 	for (int i = 0; i < t.node->child_count && n < 2; i++) {
 		const SyntaxElem *e = &t.node->children[i];
@@ -3877,17 +3751,17 @@ static char *sem_type_ref_name(CstView t) {
 		snprintf(r, L, "%.*s.%.*s", (int)ids[0].len, ids[0].ptr, (int)ids[1].len, ids[1].ptr);
 		return r;
 	}
-	return sem_txt_dup(cv_token(t, TOK_IDENT));
+	return sem_txt_dup(sv_token(t, TOK_IDENT));
 }
 
-static TypeRef *cst_build_type(CstView t) {
-	if (!cv_present(t))
+static TypeRef *cst_build_type(SyntaxView t) {
+	if (!sv_present(t))
 		return NULL;
 	TypeRef *tr = malloc(sizeof(TypeRef));
 	tr->loc.line = 0;
 	tr->loc.column = 0;
 	tr->is_transparent = 0;
-	switch (cv_kind(t)) {
+	switch (sv_kind(t)) {
 	case SN_TYPE_REF: {
 		char *raw = sem_type_ref_name(t);
 		if (strcmp(raw, "archetype") == 0) {
@@ -3910,7 +3784,7 @@ static TypeRef *cst_build_type(CstView t) {
 		tr->kind = TYPE_ARRAY;
 		TypeRef *elem = malloc(sizeof(TypeRef));
 		elem->loc = tr->loc;
-		char *en = sem_txt_dup(cv_token(t, TOK_IDENT));
+		char *en = sem_txt_dup(sv_token(t, TOK_IDENT));
 		if (strcmp(en, "opaque") == 0) {
 			elem->kind = TYPE_OPAQUE;
 			free(en);
@@ -3923,7 +3797,7 @@ static TypeRef *cst_build_type(CstView t) {
 	}
 	case SN_TYPE_SHAPED_ARRAY: {
 		/* `T[a][b]…` — innermost element is the named type; each `[n]` adds a rank. */
-		char *en = sem_txt_dup(cv_token(t, TOK_IDENT));
+		char *en = sem_txt_dup(sv_token(t, TOK_IDENT));
 		TypeRef *elem = malloc(sizeof(TypeRef));
 		elem->loc = tr->loc;
 		if (strcmp(en, "opaque") == 0) {
@@ -3958,13 +3832,13 @@ static TypeRef *cst_build_type(CstView t) {
 	}
 	case SN_TYPE_HANDLE: {
 		tr->kind = TYPE_HANDLE;
-		tr->data.handle.archetype_name = cst_handle_name(t);
+		tr->data.handle.archetype_name = syntax_handle_name(t);
 		break;
 	}
 	case SN_TYPE_TUPLE: {
 		/* `(x: T, y: U)` — field names are IDENTs, field types are the SN_TYPE_* children. */
 		tr->kind = TYPE_TUPLE;
-		int n = cv_type_count_sem(t);
+		int n = sv_type_count_sem(t);
 		tr->data.tuple.field_count = n;
 		tr->data.tuple.field_names = malloc((n > 0 ? n : 1) * sizeof(char *));
 		tr->data.tuple.field_types = malloc((n > 0 ? n : 1) * sizeof(TypeRef *));
@@ -3980,8 +3854,8 @@ static TypeRef *cst_build_type(CstView t) {
 			} else if (ch->tag == SE_NODE) {
 				SyntaxNodeKind k = ch->as.node->kind;
 				if (k >= SN_TYPE_REF && k <= SN_TYPE_FUNC) {
-					tr->data.tuple.field_names[fi] = sem_txt_dup((CvText){pend, pend ? pend_len : 0});
-					tr->data.tuple.field_types[fi] = cst_build_type((CstView){ch->as.node, t.src});
+					tr->data.tuple.field_names[fi] = sem_txt_dup((SynText){pend, pend ? pend_len : 0});
+					tr->data.tuple.field_types[fi] = cst_build_type((SyntaxView){ch->as.node, t.src});
 					fi++;
 					pend = NULL;
 				}
@@ -3992,20 +3866,20 @@ static TypeRef *cst_build_type(CstView t) {
 	}
 	case SN_TYPE_PROC:
 	case SN_TYPE_FUNC: {
-		int is_proc = (cv_kind(t) == SN_TYPE_PROC);
+		int is_proc = (sv_kind(t) == SN_TYPE_PROC);
 		tr->kind = is_proc ? TYPE_PROC : TYPE_FUNC;
 		tr->data.callable.is_proc = is_proc;
-		int np = cv_count(t, SN_PARAM);
+		int np = sv_count(t, SN_PARAM);
 		tr->data.callable.param_count = np;
 		tr->data.callable.param_types = malloc((np ? np : 1) * sizeof(TypeRef *));
 		for (int i = 0; i < np; i++)
-			tr->data.callable.param_types[i] = cst_build_type(sem_type_at(cv_child_at(t, SN_PARAM, i), 0));
+			tr->data.callable.param_types[i] = cst_build_type(sem_type_at(sv_child_at(t, SN_PARAM, i), 0));
 		if (is_proc) {
-			int no = cv_count(t, SN_OUT_PARAM);
+			int no = sv_count(t, SN_OUT_PARAM);
 			tr->data.callable.result_count = no;
 			tr->data.callable.result_types = malloc((no ? no : 1) * sizeof(TypeRef *));
 			for (int i = 0; i < no; i++)
-				tr->data.callable.result_types[i] = cst_build_type(sem_type_at(cv_child_at(t, SN_OUT_PARAM, i), 0));
+				tr->data.callable.result_types[i] = cst_build_type(sem_type_at(sv_child_at(t, SN_OUT_PARAM, i), 0));
 		} else {
 			/* a func's single return is the SN_TYPE_FUNC's direct type-node child (params are in SN_PARAM) */
 			tr->data.callable.result_count = 1;
@@ -4022,30 +3896,30 @@ static TypeRef *cst_build_type(CstView t) {
 	return tr;
 }
 
-/* ---- CST navigation (same shapes as lower/lower.c) ---- */
-static CstView sem_first_expr(CstView v) {
+/* ---- syntax tree navigation (same shapes as lower/lower.c) ---- */
+static SyntaxView sem_first_expr(SyntaxView v) {
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = v.node->children[i].as.node->kind;
 			if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
-				return (CstView){v.node->children[i].as.node, v.src};
+				return (SyntaxView){v.node->children[i].as.node, v.src};
 		}
-	return (CstView){NULL, v.src};
+	return (SyntaxView){NULL, v.src};
 }
-static CstView sem_type_at(CstView v, int idx) {
+static SyntaxView sem_type_at(SyntaxView v, int idx) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = v.node->children[i].as.node->kind;
 			if (k >= SN_TYPE_REF && k <= SN_TYPE_FUNC) {
 				if (c == idx)
-					return (CstView){v.node->children[i].as.node, v.src};
+					return (SyntaxView){v.node->children[i].as.node, v.src};
 				c++;
 			}
 		}
-	return (CstView){NULL, v.src};
+	return (SyntaxView){NULL, v.src};
 }
-static int cv_type_count_sem(CstView v) {
+static int sv_type_count_sem(SyntaxView v) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
@@ -4055,18 +3929,37 @@ static int cv_type_count_sem(CstView v) {
 		}
 	return c;
 }
-static CstView sem_node_at_expr(CstView v, int idx) {
+static SyntaxView sem_node_at_expr(SyntaxView v, int idx) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = v.node->children[i].as.node->kind;
 			if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
 				if (c == idx)
-					return (CstView){v.node->children[i].as.node, v.src};
+					return (SyntaxView){v.node->children[i].as.node, v.src};
 				c++;
 			}
 		}
-	return (CstView){NULL, v.src};
+	return (SyntaxView){NULL, v.src};
+}
+static Operator sem_binary_op(SyntaxView v) {
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_TOKEN) {
+			Operator op = sem_tok_to_op(v.node->children[i].as.token.kind);
+			if (op != OP_NONE)
+				return op;
+		}
+	return OP_NONE;
+}
+static int sem_expr_count(SyntaxView v) {
+	int c = 0;
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE) {
+			SyntaxNodeKind k = v.node->children[i].as.node->kind;
+			if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
+				c++;
+		}
+	return c;
 }
 
 static Operator sem_tok_to_op(TokenKind k) {
@@ -4111,7 +4004,7 @@ static Operator sem_assign_op(TokenKind k) {
 }
 
 /* Decode a string literal's content (quotes + escapes), like parse_primary_expr. */
-static char *cst_decode_str(CvText raw, int *out_len) {
+static char *syntax_decode_str(SynText raw, int *out_len) {
 	const char *s = raw.ptr;
 	size_t len = raw.len;
 	char *value = malloc(len + 1);
@@ -4148,15 +4041,44 @@ static char *cst_decode_str(CvText raw, int *out_len) {
 	return value;
 }
 
+/* Name string of an SN_NAME_EXPR view. `table<Name>` in value position resolves to the bare
+ * archetype name (the 2nd IDENT); otherwise the sole IDENT. Caller frees. Shared by
+ * cst_build_expr and the view-driven analysis so the two never disagree. */
+static char *sv_name_expr_dup(SyntaxView e) {
+	if (sv_has_token(e, TOK_LT)) {
+		char *nm = NULL;
+		int seen = 0;
+		for (int i = 0; i < e.node->child_count; i++)
+			if (e.node->children[i].tag == SE_TOKEN && e.node->children[i].as.token.kind == TOK_IDENT) {
+				SynText t = {e.src + e.node->children[i].as.token.offset, e.node->children[i].as.token.length};
+				if (seen++) {
+					nm = sem_txt_dup(t);
+					break;
+				}
+			}
+		return nm ? nm : sem_cv_dup(e);
+	}
+	return sem_txt_dup(sv_token(e, TOK_IDENT));
+}
+
+static char *sv_resolved_name(SemanticContext *ctx, SyntaxView v) {
+	const char *r = (ctx && ctx->model && sv_present(v)) ? sem_model_ref_name(ctx->model, sv_id(v)) : NULL;
+	if (r)
+		return sem_dupz(r);
+	return sv_name_expr_dup(v);
+}
+
 /* ---- expression reconstruction ---- */
-static Expression *cst_build_expr(CstView e) {
-	if (!cv_present(e))
+static Expression *cst_build_expr(SyntaxView e) {
+	if (!sv_present(e))
 		return NULL;
 	Expression *ax = expression_create(EXPR_LITERAL);
-	ax->cst_id = cv_id(e) + 1;
+	ax->cst_id = sv_id(e) + 1;
+	ax->sn = e.node;
+	ax->sn_src = e.src;
 	ax->loc = sem_node_loc(e.node);
 
-	switch (cv_kind(e)) {
+	switch (sv_kind(e)) {
 	case SN_PAREN_EXPR: {
 		Expression *inner = cst_build_expr(sem_first_expr(e));
 		expression_free(ax);
@@ -4169,30 +4091,14 @@ static Expression *cst_build_expr(CstView e) {
 	case SN_STRING_EXPR: {
 		ax->type = EXPR_STRING;
 		int n = 0;
-		ax->data.string.value = cst_decode_str(cv_text(e), &n);
+		ax->data.string.value = syntax_decode_str(sv_text(e), &n);
 		ax->data.string.length = n;
 		break;
 	}
 	case SN_NAME_EXPR: {
 		ax->type = EXPR_NAME;
-		ax->data.name.is_table_ref = 0;
-		if (cv_has_token(e, TOK_LT)) {
-			/* table<Name> in value position resolves to the bare archetype name */
-			char *nm = NULL;
-			int seen = 0;
-			for (int i = 0; i < e.node->child_count; i++)
-				if (e.node->children[i].tag == SE_TOKEN && e.node->children[i].as.token.kind == TOK_IDENT) {
-					CvText t = {e.src + e.node->children[i].as.token.offset, e.node->children[i].as.token.length};
-					if (seen++) {
-						nm = sem_txt_dup(t);
-						break;
-					}
-				}
-			ax->data.name.name = nm ? nm : sem_cv_dup(e);
-			ax->data.name.is_table_ref = 1;
-		} else {
-			ax->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
-		}
+		ax->data.name.is_table_ref = sv_has_token(e, TOK_LT);
+		ax->data.name.name = sv_name_expr_dup(e);
 		break;
 	}
 	case SN_FIELD_EXPR: {
@@ -4203,18 +4109,18 @@ static Expression *cst_build_expr(CstView e) {
 		SourceLoc floc = ax->loc;
 		Expression *base = expression_create(EXPR_NAME);
 		base->loc = floc;
-		base->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
+		base->data.name.name = sem_txt_dup(sv_token(e, TOK_IDENT));
 		base->data.name.is_table_ref = 0;
 		Expression *cur = base;
-		int nfields = cv_count(e, SN_FIELD_NAME);
+		int nfields = sv_count(e, SN_FIELD_NAME);
 		for (int i = 0; i < nfields; i++) {
 			Expression *f = expression_create(EXPR_FIELD);
 			f->loc = floc;
 			f->data.field.base = cur;
-			f->data.field.field_name = sem_cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+			f->data.field.field_name = sem_cv_dup(sv_child_at(e, SN_FIELD_NAME, i));
 			cur = f;
 		}
-		if (cv_has_token(e, TOK_LBRACKET)) {
+		if (sv_has_token(e, TOK_LBRACKET)) {
 			Expression *idx = expression_create(EXPR_INDEX);
 			idx->loc = floc;
 			idx->data.index.base = cur;
@@ -4232,11 +4138,13 @@ static Expression *cst_build_expr(CstView e) {
 					SyntaxNodeKind k = e.node->children[i].as.node->kind;
 					if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
 						idx->data.index.indices[idx->data.index.index_count++] =
-						    cst_build_expr((CstView){e.node->children[i].as.node, e.src});
+						    cst_build_expr((SyntaxView){e.node->children[i].as.node, e.src});
 				}
 			cur = idx;
 		}
-		cur->cst_id = cv_id(e) + 1;
+		cur->cst_id = sv_id(e) + 1;
+		cur->sn = e.node; /* AST-kill bridge: the returned field node is `cur`, not `ax` */
+		cur->sn_src = e.src;
 		expression_free(ax);
 		return cur;
 	}
@@ -4244,14 +4152,14 @@ static Expression *cst_build_expr(CstView e) {
 		ax->type = EXPR_INDEX;
 		Expression *base = expression_create(EXPR_NAME);
 		base->loc = ax->loc;
-		base->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
+		base->data.name.name = sem_txt_dup(sv_token(e, TOK_IDENT));
 		base->data.name.is_table_ref = 0;
-		int nfields = cv_count(e, SN_FIELD_NAME);
+		int nfields = sv_count(e, SN_FIELD_NAME);
 		for (int i = 0; i < nfields; i++) {
 			Expression *f = expression_create(EXPR_FIELD);
 			f->loc = ax->loc;
 			f->data.field.base = base;
-			f->data.field.field_name = sem_cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+			f->data.field.field_name = sem_cv_dup(sv_child_at(e, SN_FIELD_NAME, i));
 			base = f;
 		}
 		ax->data.index.base = base;
@@ -4269,7 +4177,7 @@ static Expression *cst_build_expr(CstView e) {
 				SyntaxNodeKind k = e.node->children[i].as.node->kind;
 				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
 					ax->data.index.indices[ax->data.index.index_count++] =
-					    cst_build_expr((CstView){e.node->children[i].as.node, e.src});
+					    cst_build_expr((SyntaxView){e.node->children[i].as.node, e.src});
 			}
 		break;
 	}
@@ -4279,14 +4187,14 @@ static Expression *cst_build_expr(CstView e) {
 		ax->type = EXPR_SLICE;
 		Expression *base = expression_create(EXPR_NAME);
 		base->loc = ax->loc;
-		base->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
+		base->data.name.name = sem_txt_dup(sv_token(e, TOK_IDENT));
 		base->data.name.is_table_ref = 0;
-		int nfields = cv_count(e, SN_FIELD_NAME);
+		int nfields = sv_count(e, SN_FIELD_NAME);
 		for (int i = 0; i < nfields; i++) {
 			Expression *f = expression_create(EXPR_FIELD);
 			f->loc = ax->loc;
 			f->data.field.base = base;
-			f->data.field.field_name = sem_cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+			f->data.field.field_name = sem_cv_dup(sv_child_at(e, SN_FIELD_NAME, i));
 			base = f;
 		}
 		ax->data.slice.base = base;
@@ -4302,7 +4210,7 @@ static Expression *cst_build_expr(CstView e) {
 			if (ch->tag == SE_NODE) {
 				SyntaxNodeKind k = ch->as.node->kind;
 				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
-					Expression *ex = cst_build_expr((CstView){ch->as.node, e.src});
+					Expression *ex = cst_build_expr((SyntaxView){ch->as.node, e.src});
 					if (!seen_colon)
 						ax->data.slice.lo = ex;
 					else
@@ -4350,27 +4258,27 @@ static Expression *cst_build_expr(CstView e) {
 	case SN_CALL_EXPR: {
 		ax->type = EXPR_CALL;
 		Expression *callee;
-		int callee_nfields = cv_count(e, SN_FIELD_NAME);
+		int callee_nfields = sv_count(e, SN_FIELD_NAME);
 		if (callee_nfields > 0) {
 			/* Qualified callee `mod.name`: rebuild the field access; the qualify pass binds it to the
 			 * member's identity. Propagate loc so a `module has no member` diagnostic locates right. */
 			Expression *base = expression_create(EXPR_NAME);
 			base->loc = ax->loc;
-			base->data.name.name = sem_txt_dup(cv_token(e, TOK_IDENT));
+			base->data.name.name = sem_txt_dup(sv_token(e, TOK_IDENT));
 			base->data.name.is_table_ref = 0;
 			Expression *cur = base;
 			for (int i = 0; i < callee_nfields; i++) {
 				Expression *f = expression_create(EXPR_FIELD);
 				f->loc = ax->loc;
 				f->data.field.base = cur;
-				f->data.field.field_name = sem_cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+				f->data.field.field_name = sem_cv_dup(sv_child_at(e, SN_FIELD_NAME, i));
 				cur = f;
 			}
 			callee = cur;
 		} else {
 			callee = expression_create(EXPR_NAME);
 			callee->loc = ax->loc;
-			callee->data.name.name = sem_cv_dup(cv_child(e, SN_CALLEE_NAME));
+			callee->data.name.name = sem_cv_dup(sv_child(e, SN_CALLEE_NAME));
 			callee->data.name.is_table_ref = 0;
 		}
 		ax->data.call.callee = callee;
@@ -4388,7 +4296,7 @@ static Expression *cst_build_expr(CstView e) {
 				SyntaxNodeKind k = e.node->children[i].as.node->kind;
 				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
 					ax->data.call.args[ax->data.call.arg_count++] =
-					    cst_build_expr((CstView){e.node->children[i].as.node, e.src});
+					    cst_build_expr((SyntaxView){e.node->children[i].as.node, e.src});
 			}
 		break;
 	}
@@ -4408,7 +4316,7 @@ static Expression *cst_build_expr(CstView e) {
 				SyntaxNodeKind k = e.node->children[i].as.node->kind;
 				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
 					ax->data.array_literal.elements[ax->data.array_literal.element_count++] =
-					    cst_build_expr((CstView){e.node->children[i].as.node, e.src});
+					    cst_build_expr((SyntaxView){e.node->children[i].as.node, e.src});
 			}
 		break;
 	}
@@ -4421,11 +4329,11 @@ static Expression *cst_build_expr(CstView e) {
 }
 
 /* ---- statement reconstruction ---- */
-static Statement *cst_build_stmt(CstView s);
+static Statement *cst_build_stmt(SyntaxView s);
 
 /* Build statements from the direct children of `parent` whose child index is in [lo, hi).
  * Used to split an if's flat then/else child list on the `else` token. */
-static Statement **cst_build_body_split(CstView parent, int lo, int hi, int *out_count) {
+static Statement **cst_build_body_split(SyntaxView parent, int lo, int hi, int *out_count) {
 	if (lo < 0)
 		lo = 0;
 	if (hi > parent.node->child_count)
@@ -4446,13 +4354,13 @@ static Statement **cst_build_body_split(CstView parent, int lo, int hi, int *out
 		if (parent.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = parent.node->children[i].as.node->kind;
 			if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
-				out[j++] = cst_build_stmt((CstView){parent.node->children[i].as.node, parent.src});
+				out[j++] = cst_build_stmt((SyntaxView){parent.node->children[i].as.node, parent.src});
 		}
 	return out;
 }
 
 /* Lower the statement-kind child nodes of `parent` into a Statement array. */
-static Statement **cst_build_body(CstView parent, int *out_count) {
+static Statement **cst_build_body(SyntaxView parent, int *out_count) {
 	int n = 0;
 	for (int i = 0; i < parent.node->child_count; i++)
 		if (parent.node->children[i].tag == SE_NODE) {
@@ -4469,20 +4377,22 @@ static Statement **cst_build_body(CstView parent, int *out_count) {
 		if (parent.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = parent.node->children[i].as.node->kind;
 			if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
-				out[j++] = cst_build_stmt((CstView){parent.node->children[i].as.node, parent.src});
+				out[j++] = cst_build_stmt((SyntaxView){parent.node->children[i].as.node, parent.src});
 		}
 	return out;
 }
 
-static Statement *cst_build_stmt(CstView s) {
+static Statement *cst_build_stmt(SyntaxView s) {
 	Statement *as = statement_create(STMT_EXPR);
-	as->cst_id = cv_id(s) + 1;
+	as->cst_id = sv_id(s) + 1;
+	as->sn = s.node;
+	as->sn_src = s.src;
 	as->loc = sem_node_loc(s.node);
 
-	switch (cv_kind(s)) {
+	switch (sv_kind(s)) {
 	case SN_BIND_STMT: {
 		as->type = STMT_BIND;
-		CstView target = sem_node_at_expr(s, 0);
+		SyntaxView target = sem_node_at_expr(s, 0);
 		as->data.bind_stmt.name = sem_cv_dup(target);
 		as->data.bind_stmt.names = NULL;
 		as->data.bind_stmt.name_count = 0;
@@ -4507,11 +4417,11 @@ static Statement *cst_build_stmt(CstView s) {
 		/* The first type node (if any) is the declared type T. For `x : type : <T>` the parser
 		 * keeps type=NULL, type_value=<T>; detect that via the meta-type `type` as the first
 		 * type node, with a second type node as the alias backing. */
-		CstView t0 = sem_type_at(s, 0);
-		CstView t1 = sem_type_at(s, 1);
-		CvText t0name = cv_present(t0) ? cv_token(t0, TOK_IDENT) : (CvText){NULL, 0};
+		SyntaxView t0 = sem_type_at(s, 0);
+		SyntaxView t1 = sem_type_at(s, 1);
+		SynText t0name = sv_present(t0) ? sv_token(t0, TOK_IDENT) : (SynText){NULL, 0};
 		int t0_is_meta = t0name.ptr && t0name.len == 4 && memcmp(t0name.ptr, "type", 4) == 0;
-		if (is_const && t0_is_meta && cv_present(t1)) {
+		if (is_const && t0_is_meta && sv_present(t1)) {
 			/* `x : type : <T>` — local type alias; RHS is a type. */
 			as->data.bind_stmt.type_value = cst_build_type(t1);
 		} else {
@@ -4610,7 +4520,7 @@ static Statement *cst_build_stmt(CstView s) {
 		as->data.for_stmt.increment = NULL;
 		as->data.for_stmt.body = NULL;
 		as->data.for_stmt.body_count = 0;
-		if (cv_has_token(s, TOK_LPAREN)) {
+		if (sv_has_token(s, TOK_LPAREN)) {
 			/* C-style: `for ( init ; cond ; incr ) { body }` */
 			int seen_brace = 0, seg = 0, nbody = 0;
 			for (int i = 0; i < s.node->child_count; i++) {
@@ -4623,7 +4533,7 @@ static Statement *cst_build_stmt(CstView s) {
 					continue;
 				}
 				SyntaxNodeKind k = ch->as.node->kind;
-				CstView cv = {ch->as.node, s.src};
+				SyntaxView cv = {ch->as.node, s.src};
 				if (seen_brace) {
 					if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
 						nbody++;
@@ -4650,7 +4560,7 @@ static Statement *cst_build_stmt(CstView s) {
 				SyntaxNodeKind k = ch->as.node->kind;
 				if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
 					as->data.for_stmt.body[as->data.for_stmt.body_count++] =
-					    cst_build_stmt((CstView){ch->as.node, s.src});
+					    cst_build_stmt((SyntaxView){ch->as.node, s.src});
 			}
 			break;
 		}
@@ -4659,7 +4569,7 @@ static Statement *cst_build_stmt(CstView s) {
 		char *vname = NULL, *iname = NULL;
 		for (int i = 0; i < s.node->child_count; i++)
 			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
-				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
+				SynText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
 				if (ni == 0)
 					vname = sem_txt_dup(t);
 				else if (ni == 1)
@@ -4683,7 +4593,7 @@ static Statement *cst_build_stmt(CstView s) {
 		int ni = 0;
 		for (int i = 0; i < s.node->child_count; i++)
 			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
-				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
+				SynText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
 				if (ni == 0)
 					as->data.each_field.binding_name = sem_txt_dup(t);
 				else if (ni == 1)
@@ -4723,7 +4633,7 @@ static Statement *cst_build_stmt(CstView s) {
 	do {                                                                                                               \
 		if (pend_active) {                                                                                             \
 			int ti = as->data.multi_bind.target_count++;                                                               \
-			as->data.multi_bind.targets[ti].name = sem_txt_dup((CvText){pend, pend_len});                              \
+			as->data.multi_bind.targets[ti].name = sem_txt_dup((SynText){pend, pend_len});                             \
 			as->data.multi_bind.targets[ti].is_new = paren ? pend_new : 1;                                             \
 			as->data.multi_bind.targets[ti].type = pend_type;                                                          \
 			pend_active = 0;                                                                                           \
@@ -4737,12 +4647,12 @@ static Statement *cst_build_stmt(CstView s) {
 				SyntaxNodeKind k = ch->as.node->kind;
 				if (k == SN_NAME_EXPR) {
 					SEM_MB_FLUSH();
-					CvText t = cv_token((CstView){ch->as.node, s.src}, TOK_IDENT);
+					SynText t = sv_token((SyntaxView){ch->as.node, s.src}, TOK_IDENT);
 					pend = t.ptr;
 					pend_len = (int)t.len;
 					pend_active = 1;
 				} else if (k >= SN_TYPE_REF && k <= SN_TYPE_FUNC && pend_active) {
-					pend_type = cst_build_type((CstView){ch->as.node, s.src});
+					pend_type = cst_build_type((SyntaxView){ch->as.node, s.src});
 				}
 				continue;
 			}
@@ -4764,7 +4674,7 @@ static Statement *cst_build_stmt(CstView s) {
 			if (s.node->children[i].tag == SE_NODE) {
 				SyntaxNodeKind k = s.node->children[i].as.node->kind;
 				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
-					as->data.multi_bind.value = cst_build_expr((CstView){s.node->children[i].as.node, s.src});
+					as->data.multi_bind.value = cst_build_expr((SyntaxView){s.node->children[i].as.node, s.src});
 					break;
 				}
 			}
@@ -4788,15 +4698,15 @@ static Statement *cst_build_stmt(CstView s) {
 			if (s.node->children[i].tag != SE_NODE)
 				continue;
 			SyntaxNode *cn = s.node->children[i].as.node;
-			CstView cnv = (CstView){cn, s.src};
+			SyntaxView cnv = (SyntaxView){cn, s.src};
 			if (cn->kind == SN_CALL_EXPR) {
 				as->data.multi_bind.value = cst_build_expr(cnv);
 			} else if (cn->kind == SN_OUT_ARG) {
 				int ti = as->data.multi_bind.target_count++;
-				as->data.multi_bind.targets[ti].name = sem_txt_dup(cv_token(cnv, TOK_IDENT));
-				as->data.multi_bind.targets[ti].is_new = cv_has_token(cnv, TOK_COLON);
+				as->data.multi_bind.targets[ti].name = sem_txt_dup(sv_token(cnv, TOK_IDENT));
+				as->data.multi_bind.targets[ti].is_new = sv_has_token(cnv, TOK_COLON);
 				as->data.multi_bind.targets[ti].type =
-				    cv_type_count_sem(cnv) > 0 ? cst_build_type(sem_type_at(cnv, 0)) : NULL;
+				    sv_type_count_sem(cnv) > 0 ? cst_build_type(sem_type_at(cnv, 0)) : NULL;
 			}
 		}
 		break;
@@ -4820,11 +4730,11 @@ static Statement *cst_build_stmt(CstView s) {
 		 * The condition is the scrutinee itself, NOT a real pattern comparison — this exists purely so
 		 * every semantic pass (type annotation, tycheck, RAII, name resolution) VISITS the scrutinee and
 		 * each arm's body. Pattern matching + exhaustiveness live elsewhere (lower desugars for codegen;
-		 * walk_matches checks exhaustiveness on the CST). Without this a match was an empty STMT_EXPR, so
+		 * walk_matches checks exhaustiveness on the syntax tree). Without this a match was an empty STMT_EXPR, so
 		 * arm-body exprs were never typed (opaque/float args defaulted to i32) and a local used only in
 		 * an arm drew a false unused-local lint. */
-		CstView scrut = sem_node_at_expr(s, 0);
-		int narm = cv_count(s, SN_MATCH_ARM);
+		SyntaxView scrut = sem_node_at_expr(s, 0);
+		int narm = sv_count(s, SN_MATCH_ARM);
 		if (narm == 0) {
 			as->type = STMT_EXPR;
 			as->data.expr_stmt.expr = cst_build_expr(scrut);
@@ -4832,7 +4742,7 @@ static Statement *cst_build_stmt(CstView s) {
 		}
 		Statement *chain = NULL; /* the else-body built so far (one nested if) */
 		for (int i = narm - 1; i >= 0; i--) {
-			CstView arm = cv_child_at(s, SN_MATCH_ARM, i);
+			SyntaxView arm = sv_child_at(s, SN_MATCH_ARM, i);
 			int bc = 0;
 			Statement **body = cst_build_body(arm, &bc);
 			Statement *iff = (i == 0) ? as : statement_create(STMT_IF);
@@ -4861,20 +4771,20 @@ static Statement *cst_build_stmt(CstView s) {
 }
 
 /* ---- parameter reconstruction ---- */
-static Parameter *cst_build_param(CstView p) {
-	Parameter *ap = parameter_create(sem_cv_dup(cv_child(p, SN_PARAM_NAME)), NULL);
+static Parameter *cst_build_param(SyntaxView p) {
+	Parameter *ap = parameter_create(sem_cv_dup(sv_child(p, SN_PARAM_NAME)), NULL);
 	ap->type = cst_build_type(sem_type_at(p, 0)); /* NULL for sys params */
-	ap->is_own = cv_has_token(p, TOK_OWN);
+	ap->is_own = sv_has_token(p, TOK_OWN);
 	ap->loc.line = 0;
 	ap->loc.column = 0;
 	return ap;
 }
 
-/* Scan a CST decl node's direct-child tokens for `@allow(<slug>)` decorators and
+/* Scan a syntax tree decl node's direct-child tokens for `@allow(<slug>)` decorators and
  * return the captured slugs as a freshly allocated array (caller takes ownership;
  * decl_free releases). Multiple decorators are accepted; the search advances past
  * each `@ allow ( IDENT )` 5-token sequence to find the next one. */
-static void cst_extract_allow_slugs(CstView d, char ***out_slugs, int *out_count) {
+static void syntax_extract_allow_slugs(SyntaxView d, char ***out_slugs, int *out_count) {
 	int count = 0;
 	char **slugs = NULL;
 	int n = d.node->child_count;
@@ -4908,12 +4818,12 @@ static void cst_extract_allow_slugs(CstView d, char ***out_slugs, int *out_count
 	*out_count = count;
 }
 
-/* ---- declaration reconstruction (CST decl node -> Decl) ---- */
-static Decl *cst_build_decl_inner(CstView d);
+/* ---- declaration reconstruction (syntax tree decl node -> Decl) ---- */
+static Decl *cst_build_decl_inner(SyntaxView d);
 
-/* Scan a CST decl node's direct-child tokens for a `@drop` decorator (the `@ drop`
+/* Scan a syntax tree decl node's direct-child tokens for a `@drop` decorator (the `@ drop`
  * two-token sequence). Returns 1 if present. */
-static int cst_has_drop_decorator(CstView d) {
+static int syntax_has_drop_decorator(SyntaxView d) {
 	int n = d.node->child_count;
 	for (int i = 0; i + 1 < n; i++) {
 		const SyntaxElem *e1 = &d.node->children[i];
@@ -4930,7 +4840,7 @@ static int cst_has_drop_decorator(CstView d) {
 
 /* The type named in `@drop(<type>)`, e.g. "socket" — the IDENT two tokens after the `drop` IDENT
  * (skipping `(`). NULL if absent/malformed. Caller owns the returned string. */
-static char *cst_drop_type(CstView d) {
+static char *syntax_drop_type(SyntaxView d) {
 	int n = d.node->child_count;
 	for (int i = 0; i + 3 < n; i++) {
 		const SyntaxElem *at = &d.node->children[i];
@@ -4955,12 +4865,14 @@ static char *cst_drop_type(CstView d) {
 	return NULL;
 }
 
-static Decl *cst_build_decl(CstView d) {
+static Decl *cst_build_decl(SyntaxView d) {
 	Decl *ad = cst_build_decl_inner(d);
 	if (ad) {
-		cst_extract_allow_slugs(d, &ad->allow_slugs, &ad->allow_slug_count);
-		ad->is_drop = cst_has_drop_decorator(d);
-		ad->drop_type = cst_drop_type(d);
+		ad->sn = d.node;
+		ad->sn_src = d.src;
+		syntax_extract_allow_slugs(d, &ad->allow_slugs, &ad->allow_slug_count);
+		ad->is_drop = syntax_has_drop_decorator(d);
+		ad->drop_type = syntax_drop_type(d);
 	}
 	return ad;
 }
@@ -4972,44 +4884,44 @@ static Decl *cst_build_decl(CstView d) {
  * below (which become dead code once old syntax is removed); the only differences are the name
  * source and that children are read from `f` rather than the decl node. `name` is owned. */
 
-static Decl *build_proc_from(CstView f, char *name) {
+static Decl *build_proc_from(SyntaxView f, char *name) {
 	Decl *ad = decl_create(DECL_PROC);
 	ad->loc = sem_node_loc(f.node);
 	ProcDecl *ap = proc_decl_create(name);
 	ap->loc = sem_direct_token_loc(f.node, TOK_LPAREN);
 	/* Foreign (FFI-bodied): a proc value-form with no `{` body block. The parser only emits a
 	 * bodiless proc value-form inside a `#foreign` region (otherwise it's a proc type). */
-	ap->is_extern = !cv_has_token(f, TOK_LBRACE);
-	ap->is_variadic = cv_has_token(f, TOK_DOTDOTDOT);
-	ap->allow_pure_proc = cv_has_token(f, TOK_AT);
-	int np = cv_count(f, SN_PARAM);
+	ap->is_extern = !sv_has_token(f, TOK_LBRACE);
+	ap->is_variadic = sv_has_token(f, TOK_DOTDOTDOT);
+	ap->allow_pure_proc = sv_has_token(f, TOK_AT);
+	int np = sv_count(f, SN_PARAM);
 	ap->params = calloc(np ? np : 1, sizeof(Parameter *));
 	for (int i = 0; i < np; i++)
-		ap->params[i] = cst_build_param(cv_child_at(f, SN_PARAM, i));
+		ap->params[i] = cst_build_param(sv_child_at(f, SN_PARAM, i));
 	ap->param_count = np;
-	int nout = cv_count(f, SN_OUT_PARAM);
+	int nout = sv_count(f, SN_OUT_PARAM);
 	ap->out_params = calloc(nout ? nout : 1, sizeof(Parameter *));
 	for (int i = 0; i < nout; i++)
-		ap->out_params[i] = cst_build_param(cv_child_at(f, SN_OUT_PARAM, i));
+		ap->out_params[i] = cst_build_param(sv_child_at(f, SN_OUT_PARAM, i));
 	ap->out_param_count = nout;
 	ap->statements = cst_build_body(f, &ap->statement_count);
 	ad->data.proc = ap;
 	return ad;
 }
 
-static Decl *build_func_from(CstView f, char *name) {
+static Decl *build_func_from(SyntaxView f, char *name) {
 	Decl *ad = decl_create(DECL_FUNC);
 	ad->loc = sem_node_loc(f.node);
 	FuncDecl *af = func_decl_create(name);
 	af->loc = sem_direct_token_loc(f.node, TOK_LPAREN);
 	af->is_extern = 0; /* funcs are never foreign — FFI bodies are procs */
-	af->is_variadic = cv_has_token(f, TOK_DOTDOTDOT);
-	int np = cv_count(f, SN_PARAM);
+	af->is_variadic = sv_has_token(f, TOK_DOTDOTDOT);
+	int np = sv_count(f, SN_PARAM);
 	af->params = calloc(np ? np : 1, sizeof(Parameter *));
 	for (int i = 0; i < np; i++)
-		af->params[i] = cst_build_param(cv_child_at(f, SN_PARAM, i));
+		af->params[i] = cst_build_param(sv_child_at(f, SN_PARAM, i));
 	af->param_count = np;
-	int nt = cv_type_count_sem(f);
+	int nt = sv_type_count_sem(f);
 	af->return_types = calloc(nt ? nt : 1, sizeof(TypeRef *));
 	af->return_type_count = 0;
 	for (int i = 0; i < nt; i++)
@@ -5019,22 +4931,22 @@ static Decl *build_func_from(CstView f, char *name) {
 	return ad;
 }
 
-static Decl *build_sys_from(CstView f, char *name) {
+static Decl *build_sys_from(SyntaxView f, char *name) {
 	Decl *ad = decl_create(DECL_SYS);
 	ad->loc = sem_node_loc(f.node);
 	SysDecl *as = sys_decl_create(name);
 	as->loc = sem_direct_token_loc(f.node, TOK_LPAREN);
-	int np = cv_count(f, SN_PARAM);
+	int np = sv_count(f, SN_PARAM);
 	as->params = calloc(np ? np : 1, sizeof(Parameter *));
 	for (int i = 0; i < np; i++)
-		as->params[i] = cst_build_param(cv_child_at(f, SN_PARAM, i));
+		as->params[i] = cst_build_param(sv_child_at(f, SN_PARAM, i));
 	as->param_count = np;
 	as->statements = cst_build_body(f, &as->statement_count);
 	ad->data.sys = as;
 	return ad;
 }
 
-static Decl *build_func_group_from(CstView f, char *name) {
+static Decl *build_func_group_from(SyntaxView f, char *name) {
 	Decl *ad = decl_create(DECL_FUNC_GROUP);
 	ad->loc = sem_node_loc(f.node);
 	FuncGroup *fg = func_group_create(name);
@@ -5047,25 +4959,25 @@ static Decl *build_func_group_from(CstView f, char *name) {
 	fg->member_count = 0;
 	for (int i = 0; i < f.node->child_count; i++)
 		if (f.node->children[i].tag == SE_TOKEN && f.node->children[i].as.token.kind == TOK_IDENT) {
-			CvText t = {f.src + f.node->children[i].as.token.offset, f.node->children[i].as.token.length};
+			SynText t = {f.src + f.node->children[i].as.token.offset, f.node->children[i].as.token.length};
 			fg->member_names[fg->member_count++] = sem_txt_dup(t);
 		}
 	ad->data.func_group = fg;
 	return ad;
 }
 
-static Decl *build_enum_from(CstView f, char *name) {
+static Decl *build_enum_from(SyntaxView f, char *name) {
 	Decl *ad = decl_create(DECL_ENUM);
 	ad->loc = sem_node_loc(f.node);
 	EnumDecl *e = calloc(1, sizeof(EnumDecl));
 	e->name = name;
-	int nv = cv_count(f, SN_ENUM_VARIANT);
+	int nv = sv_count(f, SN_ENUM_VARIANT);
 	e->variant_names = calloc(nv ? nv : 1, sizeof(char *));
 	e->variant_values = calloc(nv ? nv : 1, sizeof(long));
 	e->variant_count = 0;
 	long next = 0;
 	for (int i = 0; i < nv; i++) {
-		CstView v = cv_child_at(f, SN_ENUM_VARIANT, i);
+		SyntaxView v = sv_child_at(f, SN_ENUM_VARIANT, i);
 		long val = next;
 		for (int c = 0; c < v.node->child_count; c++)
 			if (v.node->children[c].tag == SE_TOKEN && v.node->children[c].as.token.kind == TOK_NUMBER) {
@@ -5078,7 +4990,7 @@ static Decl *build_enum_from(CstView f, char *name) {
 				val = atol(buf);
 				break;
 			}
-		e->variant_names[e->variant_count] = sem_txt_dup(cv_token(v, TOK_IDENT));
+		e->variant_names[e->variant_count] = sem_txt_dup(sv_token(v, TOK_IDENT));
 		e->variant_values[e->variant_count] = val;
 		e->variant_count++;
 		next = val + 1;
@@ -5087,17 +4999,17 @@ static Decl *build_enum_from(CstView f, char *name) {
 	return ad;
 }
 
-static Decl *build_archetype_from(CstView f, char *name) {
+static Decl *build_archetype_from(SyntaxView f, char *name) {
 	Decl *ad = decl_create(DECL_ARCHETYPE);
 	ArchetypeDecl *aa = archetype_decl_create(name);
-	int nf = cv_count(f, SN_FIELD_NAME);
+	int nf = sv_count(f, SN_FIELD_NAME);
 	aa->fields = calloc(nf > 0 ? nf : 1, sizeof(FieldDecl *));
 	aa->field_count = 0;
 	for (int i = 0; i < f.node->child_count; i++) {
 		if (f.node->children[i].tag != SE_NODE || f.node->children[i].as.node->kind != SN_FIELD_NAME)
 			continue;
-		CstView fn = {f.node->children[i].as.node, f.src};
-		CstView ty = {NULL, f.src};
+		SyntaxView fn = {f.node->children[i].as.node, f.src};
+		SyntaxView ty = {NULL, f.src};
 		int meta_explicit = 0;
 		for (int k = i + 1; k < f.node->child_count; k++) {
 			if (f.node->children[k].tag == SE_TOKEN) {
@@ -5116,7 +5028,7 @@ static Decl *build_archetype_from(CstView f, char *name) {
 		}
 		char *fname = sem_cv_dup(fn);
 		TypeRef *ft;
-		if (cv_present(ty)) {
+		if (sv_present(ty)) {
 			ft = cst_build_type(ty);
 		} else {
 			ft = malloc(sizeof(TypeRef));
@@ -5135,8 +5047,8 @@ static Decl *build_archetype_from(CstView f, char *name) {
 
 /* The binding LHS name: the IDENT immediately before the first top-level `:` of the decl.
  * Skips any leading `@decorator` / `@allow(slug)` idents (which precede the name). */
-static CvText sem_binding_name(CstView d) {
-	CvText last = {NULL, 0};
+static SynText sem_binding_name(SyntaxView d) {
+	SynText last = {NULL, 0};
 	for (int i = 0; i < d.node->child_count; i++) {
 		SyntaxElem *e = &d.node->children[i];
 		if (e->tag != SE_TOKEN)
@@ -5144,7 +5056,7 @@ static CvText sem_binding_name(CstView d) {
 		if (e->as.token.kind == TOK_COLON)
 			break;
 		if (e->as.token.kind == TOK_IDENT)
-			last = (CvText){d.src + e->as.token.offset, e->as.token.length};
+			last = (SynText){d.src + e->as.token.offset, e->as.token.length};
 	}
 	return last;
 }
@@ -5160,45 +5072,45 @@ static int sem_decl_is_decorated(const SyntaxNode *n) {
 }
 
 /* Find the unified-grammar RHS value/type form among a binding's children, if any. */
-static CstView sem_rhs_form(CstView d) {
+static SyntaxView sem_rhs_form(SyntaxView d) {
 	for (int i = 0; i < d.node->child_count; i++) {
 		if (d.node->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
 		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR || k == SN_GROUP_EXPR ||
 		    k == SN_ENUM_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
-			CstView v = {d.node->children[i].as.node, d.src};
+			SyntaxView v = {d.node->children[i].as.node, d.src};
 			return v;
 		}
 	}
-	CstView none = {NULL, d.src};
+	SyntaxView none = {NULL, d.src};
 	return none;
 }
 
-static Decl *cst_build_decl_inner(CstView d) {
-	switch (cv_kind(d)) {
+static Decl *cst_build_decl_inner(SyntaxView d) {
+	switch (sv_kind(d)) {
 	case SN_USE_DECL:
 		return NULL; /* modules are inlined separately */
 	case SN_WORLD_DECL: {
 		Decl *ad = decl_create(DECL_WORLD);
-		ad->data.world = world_decl_create(sem_txt_dup(cv_token(d, TOK_IDENT)));
+		ad->data.world = world_decl_create(sem_txt_dup(sv_token(d, TOK_IDENT)));
 		return ad;
 	}
 	case SN_ARCHETYPE_DECL: {
 		Decl *ad = decl_create(DECL_ARCHETYPE);
-		ArchetypeDecl *aa = archetype_decl_create(sem_cv_dup(cv_child(d, SN_TYPE_DEF_NAME)));
-		int nf = cv_count(d, SN_FIELD_NAME);
+		ArchetypeDecl *aa = archetype_decl_create(sem_cv_dup(sv_child(d, SN_TYPE_DEF_NAME)));
+		int nf = sv_count(d, SN_FIELD_NAME);
 		aa->fields = calloc(nf > 0 ? nf : 1, sizeof(FieldDecl *));
 		aa->field_count = 0;
 		for (int i = 0; i < d.node->child_count; i++) {
 			if (d.node->children[i].tag != SE_NODE || d.node->children[i].as.node->kind != SN_FIELD_NAME)
 				continue;
-			CstView fn = {d.node->children[i].as.node, d.src};
+			SyntaxView fn = {d.node->children[i].as.node, d.src};
 			/* the inline component type is a type node before the next FIELD_NAME; else a bare
 			 * field whose component type is the field's own name. Between the name and the type,
 			 * a `type` keyword token marks the explicit meta longhand `name : type : T` (vs the
 			 * inferred `name :: T`); preserve it so the formatter round-trips concrete syntax. */
-			CstView ty = {NULL, d.src};
+			SyntaxView ty = {NULL, d.src};
 			int meta_explicit = 0;
 			for (int k = i + 1; k < d.node->child_count; k++) {
 				if (d.node->children[k].tag == SE_TOKEN) {
@@ -5217,7 +5129,7 @@ static Decl *cst_build_decl_inner(CstView d) {
 			}
 			char *fname = sem_cv_dup(fn);
 			TypeRef *ft;
-			if (cv_present(ty)) {
+			if (sv_present(ty)) {
 				ft = cst_build_type(ty);
 			} else {
 				ft = malloc(sizeof(TypeRef));
@@ -5236,20 +5148,20 @@ static Decl *cst_build_decl_inner(CstView d) {
 	case SN_PROC_DECL: {
 		Decl *ad = decl_create(DECL_PROC);
 		ad->loc = sem_node_loc(d.node);
-		ProcDecl *ap = proc_decl_create(sem_cv_dup(cv_child(d, SN_FUNC_DEF_NAME)));
+		ProcDecl *ap = proc_decl_create(sem_cv_dup(sv_child(d, SN_FUNC_DEF_NAME)));
 		ap->loc = sem_direct_token_loc(d.node, TOK_LPAREN); /* lint location: the `(`, like the parser */
-		ap->is_extern = !cv_has_token(d, TOK_LBRACE);
-		ap->is_variadic = cv_has_token(d, TOK_DOTDOTDOT);
-		ap->allow_pure_proc = cv_has_token(d, TOK_AT);
-		int np = cv_count(d, SN_PARAM);
+		ap->is_extern = !sv_has_token(d, TOK_LBRACE);
+		ap->is_variadic = sv_has_token(d, TOK_DOTDOTDOT);
+		ap->allow_pure_proc = sv_has_token(d, TOK_AT);
+		int np = sv_count(d, SN_PARAM);
 		ap->params = calloc(np ? np : 1, sizeof(Parameter *));
 		for (int i = 0; i < np; i++)
-			ap->params[i] = cst_build_param(cv_child_at(d, SN_PARAM, i));
+			ap->params[i] = cst_build_param(sv_child_at(d, SN_PARAM, i));
 		ap->param_count = np;
-		int nout = cv_count(d, SN_OUT_PARAM); /* the `(out)` list: results written in place (0 = no outputs) */
+		int nout = sv_count(d, SN_OUT_PARAM); /* the `(out)` list: results written in place (0 = no outputs) */
 		ap->out_params = calloc(nout ? nout : 1, sizeof(Parameter *));
 		for (int i = 0; i < nout; i++)
-			ap->out_params[i] = cst_build_param(cv_child_at(d, SN_OUT_PARAM, i));
+			ap->out_params[i] = cst_build_param(sv_child_at(d, SN_OUT_PARAM, i));
 		ap->out_param_count = nout;
 		ap->statements = cst_build_body(d, &ap->statement_count);
 		ad->data.proc = ap;
@@ -5258,12 +5170,12 @@ static Decl *cst_build_decl_inner(CstView d) {
 	case SN_SYS_DECL: {
 		Decl *ad = decl_create(DECL_SYS);
 		ad->loc = sem_node_loc(d.node);
-		SysDecl *as = sys_decl_create(sem_cv_dup(cv_child(d, SN_FUNC_DEF_NAME)));
+		SysDecl *as = sys_decl_create(sem_cv_dup(sv_child(d, SN_FUNC_DEF_NAME)));
 		as->loc = sem_direct_token_loc(d.node, TOK_LPAREN);
-		int np = cv_count(d, SN_PARAM);
+		int np = sv_count(d, SN_PARAM);
 		as->params = calloc(np ? np : 1, sizeof(Parameter *));
 		for (int i = 0; i < np; i++)
-			as->params[i] = cst_build_param(cv_child_at(d, SN_PARAM, i));
+			as->params[i] = cst_build_param(sv_child_at(d, SN_PARAM, i));
 		as->param_count = np;
 		as->statements = cst_build_body(d, &as->statement_count);
 		ad->data.sys = as;
@@ -5272,16 +5184,16 @@ static Decl *cst_build_decl_inner(CstView d) {
 	case SN_FUNC_DECL: {
 		Decl *ad = decl_create(DECL_FUNC);
 		ad->loc = sem_node_loc(d.node);
-		FuncDecl *af = func_decl_create(sem_cv_dup(cv_child(d, SN_FUNC_DEF_NAME)));
+		FuncDecl *af = func_decl_create(sem_cv_dup(sv_child(d, SN_FUNC_DEF_NAME)));
 		af->loc = sem_direct_token_loc(d.node, TOK_LPAREN);
 		af->is_extern = 0; /* funcs are never foreign */
-		af->is_variadic = cv_has_token(d, TOK_DOTDOTDOT);
-		int np = cv_count(d, SN_PARAM);
+		af->is_variadic = sv_has_token(d, TOK_DOTDOTDOT);
+		int np = sv_count(d, SN_PARAM);
 		af->params = calloc(np ? np : 1, sizeof(Parameter *));
 		for (int i = 0; i < np; i++)
-			af->params[i] = cst_build_param(cv_child_at(d, SN_PARAM, i));
+			af->params[i] = cst_build_param(sv_child_at(d, SN_PARAM, i));
 		af->param_count = np;
-		int nt = cv_type_count_sem(d); /* return types are the direct type-node children */
+		int nt = sv_type_count_sem(d); /* return types are the direct type-node children */
 		af->return_types = calloc(nt ? nt : 1, sizeof(TypeRef *));
 		af->return_type_count = 0;
 		for (int i = 0; i < nt; i++)
@@ -5293,7 +5205,7 @@ static Decl *cst_build_decl_inner(CstView d) {
 	case SN_FUNC_GROUP_DECL: {
 		Decl *ad = decl_create(DECL_FUNC_GROUP);
 		ad->loc = sem_node_loc(d.node);
-		FuncGroup *fg = func_group_create(sem_cv_dup(cv_child(d, SN_FUNC_DEF_NAME)));
+		FuncGroup *fg = func_group_create(sem_cv_dup(sv_child(d, SN_FUNC_DEF_NAME)));
 		fg->loc = sem_direct_token_loc(d.node, TOK_LBRACE);
 		int nmem = 0;
 		for (int i = 0; i < d.node->child_count; i++)
@@ -5303,7 +5215,7 @@ static Decl *cst_build_decl_inner(CstView d) {
 		fg->member_count = 0;
 		for (int i = 0; i < d.node->child_count; i++)
 			if (d.node->children[i].tag == SE_TOKEN && d.node->children[i].as.token.kind == TOK_IDENT) {
-				CvText t = {d.src + d.node->children[i].as.token.offset, d.node->children[i].as.token.length};
+				SynText t = {d.src + d.node->children[i].as.token.offset, d.node->children[i].as.token.length};
 				fg->member_names[fg->member_count++] = sem_txt_dup(t);
 			}
 		ad->data.func_group = fg;
@@ -5313,9 +5225,9 @@ static Decl *cst_build_decl_inner(CstView d) {
 		/* Unified grammar: a binding `name :: <value form>` declares that kind, named by the LHS.
 		 * Bodiless proc/func type forms (SN_TYPE_PROC/SN_TYPE_FUNC) fall through to the type-alias
 		 * path below (handled by the type system in a later phase). */
-		CstView rhs = sem_rhs_form(d);
-		if (cv_present(rhs)) {
-			SyntaxNodeKind rk = cv_kind(rhs);
+		SyntaxView rhs = sem_rhs_form(d);
+		if (sv_present(rhs)) {
+			SyntaxNodeKind rk = sv_kind(rhs);
 			if (rk == SN_PROC_EXPR || rk == SN_FUNC_EXPR || rk == SN_SYS_EXPR || rk == SN_ARCH_EXPR ||
 			    rk == SN_GROUP_EXPR || rk == SN_ENUM_EXPR) {
 				char *nm = sem_txt_dup(sem_binding_name(d));
@@ -5325,7 +5237,7 @@ static Decl *cst_build_decl_inner(CstView d) {
 				case SN_PROC_EXPR: {
 					Decl *ad = build_proc_from(rhs, nm);
 					/* decorators live at the binding level (`@allow_pure_proc name :: proc…`) */
-					if (cv_has_token(d, TOK_AT))
+					if (sv_has_token(d, TOK_AT))
 						ad->data.proc->allow_pure_proc = 1;
 					return ad;
 				}
@@ -5357,19 +5269,19 @@ static Decl *cst_build_decl_inner(CstView d) {
 		Decl *ad = decl_create(DECL_CONST);
 		/* A decorated decl's first IDENT is the decorator (`@implements`), not the binding — use the
 		 * binding-name helper; and its `(` is a decorator paren, not a tuple group. (For a plain
-		 * tuple group `pos (x,y) :: T` the binding name IS the first IDENT, so keep cv_token there.) */
+		 * tuple group `pos (x,y) :: T` the binding name IS the first IDENT, so keep sv_token there.) */
 		int decorated = sem_decl_is_decorated(d.node);
-		char *cname = sem_txt_dup(decorated ? sem_binding_name(d) : cv_token(d, TOK_IDENT));
+		char *cname = sem_txt_dup(decorated ? sem_binding_name(d) : sv_token(d, TOK_IDENT));
 		ConstDecl *ac = const_decl_create(cname, NULL);
 		ac->decl_type = NULL;
 		ac->type_value = NULL;
 		ac->value = NULL;
-		ac->is_transparent = cst_const_alias_marked(d); /* `name :: alias T` → tier-1 transparent */
-		if (!decorated && cv_has_token(d, TOK_LPAREN)) {
+		ac->is_transparent = syntax_const_alias_marked(d); /* `name :: alias T` → tier-1 transparent */
+		if (!decorated && sv_has_token(d, TOK_LPAREN)) {
 			/* tuple group `name (a, b, …) :: T`: a nominal type alias whose RHS is a TYPE_TUPLE
 			 * built from the parenthesized suffixes, each typed by the shared type after `::`. */
-			CstView memberty = sem_type_at(d, 0);
-			TypeRef *shared = cv_present(memberty) ? cst_build_type(memberty) : NULL;
+			SyntaxView memberty = sem_type_at(d, 0);
+			TypeRef *shared = sv_present(memberty) ? cst_build_type(memberty) : NULL;
 			/* collect suffix names inside the parens */
 			int in_paren = 0, n = 0;
 			for (int i = 0; i < d.node->child_count; i++)
@@ -5399,7 +5311,7 @@ static Decl *cst_build_decl_inner(CstView d) {
 					else if (tk == TOK_RPAREN)
 						in_paren = 0;
 					else if (tk == TOK_IDENT && in_paren) {
-						CvText t = {d.src + d.node->children[i].as.token.offset, d.node->children[i].as.token.length};
+						SynText t = {d.src + d.node->children[i].as.token.offset, d.node->children[i].as.token.length};
 						tt->data.tuple.field_names[fi] = sem_txt_dup(t);
 						TypeRef *ct = malloc(sizeof(TypeRef));
 						if (shared) {
@@ -5426,15 +5338,15 @@ static Decl *cst_build_decl_inner(CstView d) {
 		 *   `name :: value`       — value (or simple alias); value = expr.
 		 *   `name : T : value`    — typed value const; decl_type = T, value = expr.
 		 *   `name : type : <T>`   — nominal type alias; decl_type = TYPE_TYPE, type_value = T. */
-		CstView t0 = sem_type_at(d, 0);
-		CstView t1 = sem_type_at(d, 1);
-		CvText t0name = cv_present(t0) ? cv_token(t0, TOK_IDENT) : (CvText){NULL, 0};
+		SyntaxView t0 = sem_type_at(d, 0);
+		SyntaxView t1 = sem_type_at(d, 1);
+		SynText t0name = sv_present(t0) ? sv_token(t0, TOK_IDENT) : (SynText){NULL, 0};
 		int t0_is_meta = t0name.ptr && t0name.len == 4 && memcmp(t0name.ptr, "type", 4) == 0;
-		if (t0_is_meta && cv_present(t1)) {
+		if (t0_is_meta && sv_present(t1)) {
 			ac->decl_type = cst_build_type(t0); /* TYPE_TYPE */
 			ac->type_value = cst_build_type(t1);
 		} else {
-			if (cv_present(t0))
+			if (sv_present(t0))
 				ac->decl_type = cst_build_type(t0);
 			ac->value = cst_build_expr(sem_node_at_expr(d, 0));
 		}
@@ -5443,7 +5355,7 @@ static Decl *cst_build_decl_inner(CstView d) {
 	}
 	case SN_STATIC_DECL: {
 		Decl *ad = decl_create(DECL_STATIC);
-		if (cv_has_token(d, TOK_LBRACKET)) {
+		if (sv_has_token(d, TOK_LBRACKET)) {
 			/* Pool allocation `Name[C](N){V}`: archetype name is the (possibly qualified) head — the
 			 * `.`-joined IDENT tokens before `[` (so `lib.Particle[N]` names the imported shape's
 			 * canonical identity; mirrors lower.c). Capacity is the `[…]` expr; optional initial
@@ -5507,7 +5419,7 @@ static Decl *cst_build_decl_inner(CstView d) {
 				SyntaxNodeKind k = ch->as.node->kind;
 				if (k < SN_LITERAL_EXPR || k > SN_PAREN_EXPR)
 					continue;
-				CstView ev = {ch->as.node, d.src};
+				SyntaxView ev = {ch->as.node, d.src};
 				if (phase == PH_CAP) {
 					sd->archetype.field_values[0] = cst_build_expr(ev);
 					sd->archetype.field_names[0] = NULL;
@@ -5516,7 +5428,7 @@ static Decl *cst_build_decl_inner(CstView d) {
 					sd->archetype.init_length = cst_build_expr(ev);
 				} else if (phase == PH_FIELDS && pend) {
 					int fc = sd->archetype.field_count;
-					sd->archetype.field_names[fc] = sem_txt_dup((CvText){pend, pend_len});
+					sd->archetype.field_names[fc] = sem_txt_dup((SynText){pend, pend_len});
 					sd->archetype.field_values[fc] = cst_build_expr(ev);
 					sd->archetype.field_count++;
 					pend = NULL;
@@ -5528,10 +5440,10 @@ static Decl *cst_build_decl_inner(CstView d) {
 			 * sized-array T is a buffer; any other (or absent) T is a scalar. The `= v` value is
 			 * captured as the initializer; its absence is the implicit `= 0`. Name is the leading
 			 * IDENT, the declared type (if any) the single type node, the initializer the expr node. */
-			char *aname = sem_txt_dup(cv_token(d, TOK_IDENT));
-			CstView arr_ty = sem_type_at(d, 0);
-			CstView initv = sem_node_at_expr(d, 0);
-			TypeRef *full = cv_present(arr_ty) ? cst_build_type(arr_ty) : NULL;
+			char *aname = sem_txt_dup(sv_token(d, TOK_IDENT));
+			SyntaxView arr_ty = sem_type_at(d, 0);
+			SyntaxView initv = sem_node_at_expr(d, 0);
+			TypeRef *full = sv_present(arr_ty) ? cst_build_type(arr_ty) : NULL;
 			int is_array = full && (full->kind == TYPE_SHAPED_ARRAY || full->kind == TYPE_ARRAY);
 			if (is_array) {
 				TypeRef *elem = (full->kind == TYPE_SHAPED_ARRAY) ? full->data.shaped_array.element_type
@@ -5553,12 +5465,12 @@ static Decl *cst_build_decl_inner(CstView d) {
 				/* static_decl_array_create takes ownership of `elem`; free the array wrapper only. */
 				if (full != elem)
 					free(full); /* shaped/array wrapper node; element ownership moved to sd */
-				sd->array.init = cv_present(initv) ? cst_build_expr(initv) : NULL;
+				sd->array.init = sv_present(initv) ? cst_build_expr(initv) : NULL;
 				ad->data.static_decl = sd;
 			} else {
 				/* Scalar. The inferred form `name := v` carries no type node — infer int/float from
 				 * the literal initializer's lexeme (anything with a '.'/exponent is float). */
-				Expression *ie = cv_present(initv) ? cst_build_expr(initv) : NULL;
+				Expression *ie = sv_present(initv) ? cst_build_expr(initv) : NULL;
 				TypeRef *sty = full;
 				if (!sty) {
 					const char *tn = (ie && ie->type == EXPR_LITERAL && ie->data.literal.lexeme &&
@@ -5577,7 +5489,7 @@ static Decl *cst_build_decl_inner(CstView d) {
 	}
 }
 
-/* ---- module CST registry (parallel to lower_add_module) ---- */
+/* ---- module syntax tree registry (parallel to lower_add_module) ---- */
 typedef struct {
 	char *name;
 	const SyntaxNode *root;
@@ -5844,6 +5756,12 @@ static void sem_qualify_expr(Expression *e, char **prefix, char ***set, int *cou
 		break;
 	case EXPR_CALL:
 		sem_qualify_expr(e->data.call.callee, prefix, set, count, n);
+		/* Record the resolved callee name (qualify-mangled for `mod.f`, else the bare name) in the
+		 * side model, keyed by the call's node id, so the syntax-tree-driven type resolver can read
+		 * it without re-doing the module export lookup. */
+		if (g_sem_qualify_ctx && g_sem_qualify_ctx->model && e->cst_id && e->data.call.callee &&
+		    e->data.call.callee->type == EXPR_NAME)
+			sem_model_set_callee_name(g_sem_qualify_ctx->model, e->cst_id - 1, e->data.call.callee->data.name.name);
 		for (int i = 0; i < e->data.call.arg_count; i++)
 			sem_qualify_expr(e->data.call.args[i], prefix, set, count, n);
 		break;
@@ -5858,6 +5776,15 @@ static void sem_qualify_expr(Expression *e, char **prefix, char ***set, int *cou
 		break;
 	default:
 		break;
+	}
+	/* Record this reference's resolved leftmost name (module-inlined names are prefixed by the
+	 * rename pass that already ran, e.g. `csv.load_cols`), keyed by node id, so the view-driven
+	 * analysis looks names up under the identity the AST resolved them to, not the bare token. */
+	if (g_sem_qualify_ctx && g_sem_qualify_ctx->model && e->cst_id &&
+	    (e->type == EXPR_NAME || e->type == EXPR_FIELD || e->type == EXPR_INDEX || e->type == EXPR_SLICE)) {
+		const char *ln = lvalue_leftmost_name(e);
+		if (ln)
+			sem_model_set_ref_name(g_sem_qualify_ctx->model, e->cst_id - 1, ln);
 	}
 }
 static void sem_qualify_stmt(Statement *s, char **prefix, char ***set, int *count, int n) {
@@ -6071,7 +5998,7 @@ static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const 
                                 char ***full, int *fulln, int *fullcap, char ***expset, int *expn, int *expcap,
                                 int exported, int is_datasheet, int module_is_device, int file_local, char ***fileset,
                                 int *filesetn, int *filesetcap) {
-	Decl *md = cst_build_decl((CstView){node, msrc});
+	Decl *md = cst_build_decl((SyntaxView){node, msrc});
 	if (!md)
 		return;
 	/* Datasheet decls are shared global vocabulary: mark them so identical component/type redefs
@@ -6149,7 +6076,7 @@ static char *sem_import_token_module_name(const char *src, const SyntaxElem *tok
 		off += 1;
 		len -= 2;
 	}
-	char *s = sem_txt_dup((CvText){src + off, len});
+	char *s = sem_txt_dup((SynText){src + off, len});
 	if (k == TOK_STRING) {
 		char *slash = strrchr(s, '/');
 		char *base = slash ? slash + 1 : s;
@@ -6165,7 +6092,7 @@ static char *sem_import_token_module_name(const char *src, const SyntaxElem *tok
 /* A file may carry at most one region of each kind — one `#module`, one `#file`, one `#foreign`, one
  * `#import`. The forms are unions (`#import io` and `#import { … }` are both the `#import` kind), so a
  * second occurrence of any kind is rejected; collect into the single region instead. Scans a file's
- * top-level CST children and emits E0121 on each redundant region. Diagnostics route through the
+ * top-level syntax tree children and emits E0121 on each redundant region. Diagnostics route through the
  * pass-wide ctx (NULL on the AST-only unit-test path, which then skips — mirrors the qualify pass). */
 static void sem_check_one_region_per_file(const SyntaxNode *root, const char *src) {
 	if (!g_sem_qualify_ctx || !root)
@@ -6178,11 +6105,11 @@ static void sem_check_one_region_per_file(const SyntaxNode *root, const char *sr
 		const char *name = NULL;
 		int *seen = NULL;
 		if (cn->kind == SN_REGION) {
-			CstView rv = {cn, src};
-			if (cv_has_token(rv, TOK_HASH_FOREIGN)) {
+			SyntaxView rv = {cn, src};
+			if (sv_has_token(rv, TOK_HASH_FOREIGN)) {
 				name = "#foreign";
 				seen = &seen_foreign;
-			} else if (cv_has_token(rv, TOK_HASH_FILE)) {
+			} else if (sv_has_token(rv, TOK_HASH_FILE)) {
 				name = "#file";
 				seen = &seen_file;
 			} else {
@@ -6242,10 +6169,10 @@ static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc
 			const SyntaxNode *cn = mr->children[j].as.node;
 			SyntaxNodeKind mk = cn->kind;
 			if (mk == SN_REGION) {
-				CstView rv = {cn, msrc};
-				int is_block = cv_has_token(rv, TOK_LBRACE);
-				int is_foreign = cv_has_token(rv, TOK_HASH_FOREIGN);
-				int is_file = cv_has_token(rv, TOK_HASH_FILE);
+				SyntaxView rv = {cn, msrc};
+				int is_block = sv_has_token(rv, TOK_LBRACE);
+				int is_foreign = sv_has_token(rv, TOK_HASH_FOREIGN);
+				int is_file = sv_has_token(rv, TOK_HASH_FILE);
 				if (is_block) {
 					int child_exp = is_foreign ? exported : 0;
 					int child_fl = is_file ? 1 : file_local;
@@ -6328,17 +6255,17 @@ static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc
 	}
 }
 
-/* Build the analyzable AstProgram from the main-file CST plus all registered module CSTs,
+/* Build the analyzable AstProgram from the main-file syntax tree plus all registered module syntax trees,
  * inlining + name-prefixing modules exactly as main.c's resolve_uses does, then expanding
  * top-level tuple groups. The returned AstProgram owns all its memory (free with ast_program_free). */
 static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 	AstProgram *prog = ast_program_create();
-	CstView r = cv_root(root, src);
+	SyntaxView r = sv_root(root, src);
 	/* Deep count so decls nested in `#foreign { }` / `#module { }` block regions (collected by the
 	 * region recursion below) can't overflow the array; over-estimates are harmless. */
-	int cap = cv_node_count_deep(r) + 8;
+	int cap = sv_node_count_deep(r) + 8;
 	for (int m = 0; m < g_sem_module_count; m++)
-		cap += cv_node_count_deep(cv_root(g_sem_modules[m].root, g_sem_modules[m].src)) + 1;
+		cap += sv_node_count_deep(sv_root(g_sem_modules[m].root, g_sem_modules[m].src)) + 1;
 	prog->decls = calloc(cap ? cap : 1, sizeof(Decl *));
 	prog->decl_count = 0;
 
@@ -6359,13 +6286,13 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 		 * file there is no export band to narrow (that's module-only), so the marker kind is moot. */
 		if (k == SN_REGION) {
 			const SyntaxNode *rn = root->children[i].as.node;
-			if (cv_has_token((CstView){rn, src}, TOK_LBRACE)) {
+			if (sv_has_token((SyntaxView){rn, src}, TOK_LBRACE)) {
 				for (int c = 0; c < rn->child_count; c++) {
 					if (rn->children[c].tag != SE_NODE)
 						continue;
 					if (!sem_is_collectible_decl(rn->children[c].as.node->kind))
 						continue;
-					Decl *ad = cst_build_decl((CstView){rn->children[c].as.node, src});
+					Decl *ad = cst_build_decl((SyntaxView){rn->children[c].as.node, src});
 					if (ad)
 						prog->decls[prog->decl_count++] = ad;
 				}
@@ -6374,7 +6301,7 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 		}
 		if (k < SN_WORLD_DECL || k > SN_USE_DECL)
 			continue;
-		CstView dv = {root->children[i].as.node, src};
+		SyntaxView dv = {root->children[i].as.node, src};
 
 		if (k == SN_USE_DECL) {
 			/* One element per import: IDENT = device by name, STRING = module by path. Inline each —
@@ -6419,11 +6346,8 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 /* ========== PUBLIC API ========== */
 
 /* The shared analysis core: all passes that read the (already-prepared) AstProgram tree.
- * Both entry points run this — semantic_analyze on the parser-built AstProgram, and
- * semantic_analyze_cst on a AstProgram reconstructed from the CST. `erase` controls the
- * final alias-erasure pass: the AstProgram lowerer needs it; the CST lowerer does not
- * (it reads aliases from the side model), so the CST path passes erase=0. */
-static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int erase) {
+ * Run by semantic_analyze_cst on an AstProgram reconstructed from the syntax tree. */
+static void analyze_program_core(SemanticContext *ctx, AstProgram *prog) {
 	if (!prog)
 		return;
 	ctx->prog = prog;
@@ -6491,7 +6415,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 			if (c->decl_type && c->decl_type->kind == TYPE_NAME)
 				vt = resolve_type_alias(ctx, normalize_type_name(c->decl_type->data.name));
 			if (!vt)
-				vt = resolve_expression_type(ctx, c->value);
+				vt = resolve_expression_type(ctx, AST_SV(c->value));
 			register_value_const(ctx, c->name, c->value->data.literal.lexeme, vt, cloc);
 			continue;
 		}
@@ -6725,12 +6649,6 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 		}
 	}
 
-	/* pass 3: erase nominal aliases to their backing (zero-cost; codegen never sees them).
-	 * Only the legacy AstProgram lowerer needs this tree mutation; the CST lowerer reads
-	 * aliases from the side model, so the CST path skips erasure (erase=0). */
-	if (erase)
-		erase_type_aliases(ctx, prog);
-
 	/* pass 4: tycheck — bidirectional type checker. Phase A encodes one rule
 	 * (return-value types). Diagnostics flow through the same registry as
 	 * everything else. Fail-open: unencoded shapes synth to TYID_UNKNOWN. */
@@ -6743,6 +6661,9 @@ static SemanticContext *make_context(void) {
 	SemanticContext *ctx = malloc(sizeof(SemanticContext));
 	ctx->archetypes = NULL;
 	ctx->archetype_count = 0;
+	ctx->owned_types = NULL;
+	ctx->owned_type_count = 0;
+	ctx->owned_type_cap = 0;
 	ctx->aliases = NULL;
 	ctx->alias_count = 0;
 	ctx->known_funcs = NULL;
@@ -6801,6 +6722,17 @@ static SemanticContext *make_context(void) {
 	register_func(ctx, "delete");
 	register_func(ctx, "dealloc");
 	return ctx;
+}
+
+static TypeRef *analysis_own_type(SemanticContext *ctx, TypeRef *t) {
+	if (!t)
+		return NULL;
+	if (ctx->owned_type_count >= ctx->owned_type_cap) {
+		ctx->owned_type_cap = ctx->owned_type_cap ? ctx->owned_type_cap * 2 : 16;
+		ctx->owned_types = realloc(ctx->owned_types, (size_t)ctx->owned_type_cap * sizeof(TypeRef *));
+	}
+	ctx->owned_types[ctx->owned_type_count++] = t;
+	return t;
 }
 
 /* The first pattern token of a match arm (variant / literal / `_`), or NULL. */
@@ -6888,31 +6820,30 @@ SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src) {
 	SemanticContext *ctx = make_context();
 	if (!root)
 		return ctx;
-	/* Reconstruct the analyzable AstProgram from the immutable CST (+ module CSTs), keep it
-	 * alive on the context, and run the SAME analysis core. erase=0: the CST lowerer reads
-	 * aliases from the side model, so the alias-erasure tree mutation is not needed. */
+	/* Reconstruct the analyzable AstProgram from the immutable syntax tree (+ module syntax
+	 * trees), keep it alive on the context, and run the analysis core. */
 	/* The qualify pass inside cst_to_program emits `module has no member` via this ctx. */
 	g_sem_qualify_ctx = ctx;
 	ctx->owned_prog = cst_to_program(root, src);
 	g_sem_qualify_ctx = NULL;
-	analyze_program_core(ctx, ctx->owned_prog, /*erase=*/0);
+	analyze_program_core(ctx, ctx->owned_prog);
 	walk_matches(ctx, root, src); /* exhaustiveness: enums register during analyze, so check after */
 	return ctx;
 }
 
 /* Test/helper entry: parse `src`, build the abstract `AstProgram` from the resulting lossless
- * CST (via cst_to_program), then free the parse result + CST. The reconstructed AstProgram owns
- * all its memory (every string is copied out of the source), so it outlives the CST and can
+ * syntax tree (via cst_to_program), then free the parse result + syntax tree. The reconstructed AstProgram owns
+ * all its memory (every string is copied out of the source), so it outlives the syntax tree and can
  * be freed with ast_program_free. This is the only sanctioned way to obtain a `AstProgram` now that
- * the parser produces just the CST — unit tests use it to validate cst_to_program faithfully
+ * the parser produces just the syntax tree — unit tests use it to validate cst_to_program faithfully
  * reconstructs each construct. Returns NULL on parse error. */
 AstProgram *cst_to_program_from_source(const char *src) {
 	ParseResult pr = parse_source(src);
-	if (pr.error_count > 0 || !pr.cst_root) {
+	if (pr.error_count > 0 || !pr.syntax_root) {
 		parse_result_free(&pr);
 		return NULL;
 	}
-	AstProgram *prog = cst_to_program(pr.cst_root, src);
+	AstProgram *prog = cst_to_program(pr.syntax_root, src);
 	parse_result_free(&pr);
 	return prog;
 }
@@ -6940,7 +6871,7 @@ void semantic_context_free(SemanticContext *ctx) {
 	free(ctx->const_value_types);
 	free(ctx->const_locs);
 
-	/* free type-alias tables (name/backing strings are owned by the CST) */
+	/* free type-alias tables (name/backing strings are owned by the syntax tree) */
 	free(ctx->type_alias_names);
 	free(ctx->type_alias_backings);
 	free(ctx->type_alias_transparent);
@@ -6988,7 +6919,7 @@ void semantic_context_free(SemanticContext *ctx) {
 		free(ctx->static_names[i]);
 	free(ctx->static_names);
 
-	/* free group table (members are borrowed from CST) */
+	/* free group table (members are borrowed from syntax tree) */
 	for (int i = 0; i < ctx->group_count; i++) {
 		free(ctx->groups[i].name);
 	}
@@ -7007,7 +6938,11 @@ void semantic_context_free(SemanticContext *ctx) {
 	}
 	free(ctx->scopes);
 
-	/* CST path: free the AstProgram we reconstructed (and kept alive for the side model). */
+	/* syntax tree path: free the AstProgram we reconstructed (and kept alive for the side model). */
+	if (ctx->owned_prog)
+		for (int i = 0; i < ctx->owned_type_count; i++)
+			type_ref_free(ctx->owned_types[i]);
+	free(ctx->owned_types);
 	if (ctx->owned_prog)
 		ast_program_free(ctx->owned_prog);
 

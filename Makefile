@@ -7,23 +7,23 @@ VPATH = tests
 LEXER_BIN = $(BUILD_DIR)/lexer-bin
 PARSER_TEST_BIN = $(BUILD_DIR)/parser-test
 FMT_BIN = $(BUILD_DIR)/arche-fmt
-CST_TOKENS_BIN = $(BUILD_DIR)/arche-cst-tokens
+SYNTAX_TOKENS_BIN = $(BUILD_DIR)/arche-syntax-tokens
 ANALYZER_BIN = $(BUILD_DIR)/arche-analyzer
-CST_ROUNDTRIP_BIN = $(BUILD_DIR)/arche-cst-roundtrip
-CST_VIEW_TEST_BIN = $(BUILD_DIR)/cst-view-test
+SYNTAX_ROUNDTRIP_BIN = $(BUILD_DIR)/arche-syntax-roundtrip
+SYNTAX_VIEW_TEST_BIN = $(BUILD_DIR)/syntax-view-test
 SEMANTIC_TEST_BIN = $(BUILD_DIR)/semantic-test
 CODEGEN_TEST_BIN = $(BUILD_DIR)/codegen-test
 LOWER_TEST_BIN = $(BUILD_DIR)/lower-test
 LIBARCH = $(BUILD_DIR)/libarch.a
-LIBARCH_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/parser/parser.o
+LIBARCH_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/cst.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/parser/parser.o
 
 # Source files
 SRCS = lexer/lexer.c \
-       cst/cst.c \
-       cst/syntax_tree.c \
-       cst/cst_view.c \
-       cst/token_category.c \
-       cst/format_cst.c \
+       syntax/cst.c \
+       syntax/syntax_tree.c \
+       syntax/syntax_view.c \
+       syntax/token_category.c \
+       syntax/format_syntax.c \
        parser/parser.c \
        compile/compile.c \
        doctest/doctest_extract.c \
@@ -44,28 +44,28 @@ OBJS = $(SRCS:.c=.o)
 CLI_OBJS = $(BUILD_DIR)/cli/args.o $(BUILD_DIR)/cli/cli.o $(BUILD_DIR)/cli/resource.o $(BUILD_DIR)/cli/cmd_build.o $(BUILD_DIR)/cli/cmd_run.o $(BUILD_DIR)/cli/cmd_check.o $(BUILD_DIR)/cli/cmd_test.o $(BUILD_DIR)/cli/cmd_fmt.o $(BUILD_DIR)/cli/cmd_explain.o $(BUILD_DIR)/cli/cmd_analyze.o $(BUILD_DIR)/cli/cmd_completion.o $(BUILD_DIR)/cli/cmd_version.o $(BUILD_DIR)/cli/cmd_init.o $(BUILD_DIR)/cli/cmd_fill.o
 # Satellite tools folded into the `arche` binary as subcommands (fmt, analyze): their objects join
 # the main link. The standalone arche-fmt / arche-analyzer binaries still build during the migration.
-FOLD_OBJS = $(BUILD_DIR)/cst/format_cst.o $(BUILD_DIR)/cst/token_category.o $(BUILD_DIR)/arche_analyzer.o
-COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/compile/compile.o $(BUILD_DIR)/doctest/doctest_extract.o $(BUILD_DIR)/doctest/doctest_run.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/codegen/codegen.o $(CLI_OBJS) $(FOLD_OBJS) $(BUILD_DIR)/main.o
+FOLD_OBJS = $(BUILD_DIR)/syntax/format_syntax.o $(BUILD_DIR)/syntax/token_category.o $(BUILD_DIR)/arche_analyzer.o
+COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/cst.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/compile/compile.o $(BUILD_DIR)/doctest/doctest_extract.o $(BUILD_DIR)/doctest/doctest_run.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/codegen/codegen.o $(CLI_OBJS) $(FOLD_OBJS) $(BUILD_DIR)/main.o
 LEXER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/lexer/lexer_main.o
-PARSER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/unit/compiler/parser_tests.o
-FMT_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/cst/format_cst.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_fmt.o
-CST_TOKENS_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/cst/token_category.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_cst_tokens.o
+PARSER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/cst.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/unit/compiler/parser_tests.o
+FMT_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/cst.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/syntax/format_syntax.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_fmt.o
+SYNTAX_TOKENS_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/cst.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/syntax/token_category.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_syntax_tokens.o
 # Standalone arche-analyzer = the analyzer object + a thin shim main (analyze_main lives in
 # arche_analyzer.o, shared with the folded `arche analyze` subcommand).
-ANALYZER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/cst/token_category.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/arche_analyzer.o $(BUILD_DIR)/arche_analyzer_main.o
-CST_ROUNDTRIP_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_cst_roundtrip.o
-CST_VIEW_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/unit/compiler/cst_view_tests.o
-SEMANTIC_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/unit/compiler/semantic_tests.o
-CODEGEN_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/unit/compiler/codegen_tests.o
-LOWER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/cst/cst.o $(BUILD_DIR)/cst/syntax_tree.o $(BUILD_DIR)/cst/cst_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/unit/compiler/lower_tests.o
+ANALYZER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/cst.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/syntax/token_category.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/arche_analyzer.o $(BUILD_DIR)/arche_analyzer_main.o
+SYNTAX_ROUNDTRIP_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/cst.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_syntax_roundtrip.o
+SYNTAX_VIEW_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/cst.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/unit/compiler/syntax_view_tests.o
+SEMANTIC_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/cst.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/unit/compiler/semantic_tests.o
+CODEGEN_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/cst.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/unit/compiler/codegen_tests.o
+LOWER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/cst.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/unit/compiler/lower_tests.o
 
 # Default target
 # `arche fmt` replaces the standalone arche-fmt (its target is still defined, buildable on demand).
-# arche-analyzer (LSP) + arche-cst-tokens stay for editor integration.
-all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(CST_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(CST_VIEW_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
+# arche-analyzer (LSP) + arche-syntax-tokens stay for editor integration.
+all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(SYNTAX_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 
 $(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/cst $(BUILD_DIR)/hir $(BUILD_DIR)/lower $(BUILD_DIR)/parser $(BUILD_DIR)/compile $(BUILD_DIR)/doctest $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/cli $(BUILD_DIR)/unit/compiler $(BUILD_DIR)/runtime
+	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/syntax $(BUILD_DIR)/hir $(BUILD_DIR)/lower $(BUILD_DIR)/parser $(BUILD_DIR)/compile $(BUILD_DIR)/doctest $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/cli $(BUILD_DIR)/unit/compiler $(BUILD_DIR)/runtime
 
 # Build main compiler executable
 $(TARGET): $(COMPILER_OBJS)
@@ -83,20 +83,20 @@ $(PARSER_TEST_BIN): $(PARSER_TEST_OBJS)
 $(FMT_BIN): $(FMT_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
-# Build CST token dumper (powers editor syntax highlighting)
-$(CST_TOKENS_BIN): $(CST_TOKENS_OBJS)
+# Build syntax tree token dumper (powers editor syntax highlighting)
+$(SYNTAX_TOKENS_BIN): $(SYNTAX_TOKENS_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
 # Build the editor analysis service (powers inlay hints + diagnostics)
 $(ANALYZER_BIN): $(ANALYZER_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
-# Build CST round-trip verifier (proves the CST is lossless)
-$(CST_ROUNDTRIP_BIN): $(CST_ROUNDTRIP_OBJS)
+# Build syntax tree round-trip verifier (proves the syntax tree is lossless)
+$(SYNTAX_ROUNDTRIP_BIN): $(SYNTAX_ROUNDTRIP_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
-# Build CST view-layer unit tests
-$(CST_VIEW_TEST_BIN): $(CST_VIEW_TEST_OBJS)
+# Build syntax tree view-layer unit tests
+$(SYNTAX_VIEW_TEST_BIN): $(SYNTAX_VIEW_TEST_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
 # Build semantic tests executable
@@ -159,7 +159,7 @@ test-lower: $(LOWER_TEST_BIN)
 	./$(LOWER_TEST_BIN)
 
 # Run all tests with LIT
-test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(CST_VIEW_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
+test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 	lit -v tests/
 	$(MAKE) test-doc
 
@@ -282,17 +282,17 @@ format: $(TARGET)
 
 .PHONY: build
 
-# Verify the CST is lossless: every .arche file reconstructs byte-for-byte from the CST.
+# Verify the syntax tree is lossless: every .arche file reconstructs byte-for-byte from the syntax tree.
 CORPUS = $(shell find . -name "*.arche" -type f \
 	-not -path "./build/*" -not -path "*/.venv/*" -not -path "*/site-packages/*" \
 	-not -path "*/__pycache__/*" -not -path "./tests/known_failures/*")
-verify-cst: $(CST_ROUNDTRIP_BIN)
-	@./$(CST_ROUNDTRIP_BIN) $(CORPUS) \
-		&& echo "verify-cst: all $(words $(CORPUS)) files round-trip losslessly"
+verify-syntax: $(SYNTAX_ROUNDTRIP_BIN)
+	@./$(SYNTAX_ROUNDTRIP_BIN) $(CORPUS) \
+		&& echo "verify-syntax: all $(words $(CORPUS)) files round-trip losslessly"
 
-# CST view-layer unit tests
-test-cst-view: $(CST_VIEW_TEST_BIN)
-	@./$(CST_VIEW_TEST_BIN)
+# syntax tree view-layer unit tests
+test-syntax-view: $(SYNTAX_VIEW_TEST_BIN)
+	@./$(SYNTAX_VIEW_TEST_BIN)
 
 # Guard against silent codegen changes: emit LLVM IR for representative programs and
 # diff against checked-in goldens (first run captures them). VERIFY_CG_PROGRAMS is the
@@ -374,4 +374,4 @@ test-install: all
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
 
 # Phony targets
-.PHONY: all run run-lexer test test-doc test-lexer test-parser test-semantic test-codegen test-codegen-unit test-lit test-lower clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-cst verify-codegen install test-install
+.PHONY: all run run-lexer test test-doc test-lexer test-parser test-semantic test-codegen test-codegen-unit test-lit test-lower clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install

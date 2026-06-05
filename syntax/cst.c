@@ -227,7 +227,6 @@ Expression *expression_create(ExpressionType type) {
 	expr->type = type;
 	expr->loc.line = 1;
 	expr->loc.column = 1;
-	expr->resolved_type = NULL;
 	return expr;
 }
 

@@ -1,15 +1,15 @@
-/* arche-cst-roundtrip — prove the CST is lossless.
+/* arche-syntax-roundtrip — prove the syntax tree is lossless.
  *
- * Parses a file, walks the CST in source order, and reconstructs the source by
+ * Parses a file, walks the syntax tree in source order, and reconstructs the source by
  * emitting each token leaf's bytes plus the inter-leaf gaps (whitespace) taken
  * from the original buffer. If the reconstruction does not equal the input
- * byte-for-byte, the CST has lost information — exit non-zero and report.
+ * byte-for-byte, the syntax tree has lost information — exit non-zero and report.
  *
  * This is a permanent gate: every stage of the front-end re-architecture must
- * keep `make verify-cst` green.
+ * keep `make verify-syntax` green.
  */
-#include "cst/syntax_tree.h"
 #include "parser/parser.h"
+#include "syntax/syntax_tree.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,10 +45,10 @@ static int roundtrip(const char *path, const char *src) {
 	ParseResult result = parse_source(src);
 	int ok = 0;
 
-	if (result.cst_root) {
+	if (result.syntax_root) {
 		char *out = malloc(srclen + 1);
 		long outlen = 0;
-		long pos = emit(result.cst_root, src, out, &outlen, 0);
+		long pos = emit(result.syntax_root, src, out, &outlen, 0);
 		if (pos >= 0) {
 			/* trailing bytes after the last leaf (e.g. final newline) */
 			memcpy(out + outlen, src + pos, srclen - (size_t)pos);
@@ -64,12 +64,10 @@ static int roundtrip(const char *path, const char *src) {
 		}
 		free(out);
 	} else {
-		fprintf(stderr, "MISMATCH %s: no CST produced\n", path);
+		fprintf(stderr, "MISMATCH %s: no syntax tree produced\n", path);
 	}
 
-	AstProgram *prog = result.ast;
 	parse_result_free(&result);
-	ast_program_free(prog);
 	return ok;
 }
 
@@ -113,11 +111,9 @@ int main(int argc, char *argv[]) {
 		if (!src)
 			return 2;
 		ParseResult r = parse_source(src);
-		if (r.cst_root)
-			print_tree(r.cst_root, src, 0);
-		AstProgram *prog = r.ast;
+		if (r.syntax_root)
+			print_tree(r.syntax_root, src, 0);
 		parse_result_free(&r);
-		ast_program_free(prog);
 		free(src);
 		return 0;
 	}

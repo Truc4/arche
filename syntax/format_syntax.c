@@ -1,8 +1,8 @@
-#include "format_cst.h"
+#include "format_syntax.h"
 #include <limits.h>
 #include <stdlib.h>
 
-/* Flatten the CST's token leaves (in source order) so the printer can make
+/* Flatten the syntax tree's token leaves (in source order) so the printer can make
  * spacing decisions from adjacent token kinds. */
 typedef struct {
 	TokenKind kind;
@@ -206,7 +206,7 @@ typedef struct {
 	int depth;  /* bracket depth at which this group's items live */
 } Frame;
 
-void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
+void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 	if (!root)
 		return;
 	Leaves ls = {NULL, 0, 0};

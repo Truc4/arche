@@ -1,19 +1,19 @@
 #ifndef SEMANTIC_H
 #define SEMANTIC_H
 
-#include "../cst/cst.h"
+#include "../syntax/cst.h"
 #include "sem_hints.h"
 #include "sem_model.h"
 
 /* Semantic analysis context */
 typedef struct SemanticContext SemanticContext;
 
-/* Create and analyze a program. Reconstructs the abstract `AstProgram` from the lossless CST
- * (+ registered module CSTs) via cst_to_program, analyzes it, and keys the side model by
- * CST node id (read by lowering). This is the only analysis entry. */
+/* Create and analyze a program. Reconstructs the abstract `AstProgram` from the lossless syntax tree
+ * (+ registered module syntax trees) via cst_to_program, analyzes it, and keys the side model by
+ * syntax tree node id (read by lowering). This is the only analysis entry. */
 SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src);
 
-/* Register a `use`-module's CST so semantic_analyze_cst can inline it (parallel to
+/* Register a `use`-module's syntax tree so semantic_analyze_cst can inline it (parallel to
  * lower_add_module). Call once per module before semantic_analyze_cst. */
 void semantic_add_module(const char *name, const SyntaxNode *root, const char *src, const char *filename);
 /* Clear registered modules (static registry; reset at the start of each compilation). */
@@ -21,22 +21,22 @@ void semantic_reset_modules(void);
 /* 1 if a module of this name is currently registered (used to detect import-not-found). */
 int semantic_has_module(const char *name);
 
-/* Test/helper: parse `src` and reconstruct the abstract `AstProgram` from the lossless CST
+/* Test/helper: parse `src` and reconstruct the abstract `AstProgram` from the lossless syntax tree
  * (parse -> cst_to_program). The returned AstProgram is self-contained (owns all its strings)
- * and outlives the CST, so free it with ast_program_free. Returns NULL on parse error. This is
- * how callers obtain a `AstProgram` now that the parser builds only the CST. */
+ * and outlives the syntax tree, so free it with ast_program_free. Returns NULL on parse error. This is
+ * how callers obtain a `AstProgram` now that the parser builds only the syntax tree. */
 AstProgram *cst_to_program_from_source(const char *src);
 
 void semantic_context_free(SemanticContext *ctx);
 
-/* The resolved-type side model (keyed by CST node id); read by lowering. */
+/* The resolved-type side model (keyed by syntax tree node id); read by lowering. */
 SemModel *sem_context_model(SemanticContext *ctx);
 
 /* The reconstructed AstProgram (read-only); used by passes that need to walk
  * decls. tycheck uses this to traverse function bodies. */
 AstProgram *semantic_context_program(SemanticContext *ctx);
 
-/* Editor-facing inferred facts (keyed by CST node id); read by the analyzer. */
+/* Editor-facing inferred facts (keyed by syntax tree node id); read by the analyzer. */
 SemHints *sem_context_hints(SemanticContext *ctx);
 
 /* Resolve a (possibly nominal-alias) type name through the alias chain to its

@@ -1,6 +1,6 @@
-#include "../cst/syntax_tree.h"
 #include "../lexer/lexer.h"
 #include "../parser/parser.h"
+#include "../syntax/syntax_tree.h"
 #include "cli.h"
 #include "resource.h"
 #include <stdio.h>
@@ -124,11 +124,11 @@ static void collect_datasheet_reqs(const char *path, const char *dev, ReqEntry *
 	if (!src)
 		return;
 	ParseResult pr = parse_source(src);
-	if (pr.cst_root) {
-		for (int i = 0; i < pr.cst_root->child_count; i++) {
-			if (pr.cst_root->children[i].tag != SE_NODE)
+	if (pr.syntax_root) {
+		for (int i = 0; i < pr.syntax_root->child_count; i++) {
+			if (pr.syntax_root->children[i].tag != SE_NODE)
 				continue;
-			const SyntaxNode *cn = pr.cst_root->children[i].as.node;
+			const SyntaxNode *cn = pr.syntax_root->children[i].as.node;
 			if (cn->kind != SN_STATIC_DECL)
 				continue;
 			char shape[128];
@@ -162,7 +162,7 @@ int arche_fill_driver(const char *driver_path) {
 	if (!src)
 		return -1;
 	ParseResult pr = parse_source(src);
-	if (!pr.cst_root) {
+	if (!pr.syntax_root) {
 		fprintf(stderr, "arche fill: cannot parse '%s'\n", driver_path);
 		parse_result_free(&pr);
 		free(src);
@@ -178,10 +178,10 @@ int arche_fill_driver(const char *driver_path) {
 	/* Devices the driver imports. */
 	char devs[FILL_MAX][128];
 	int dev_n = 0;
-	for (int i = 0; i < pr.cst_root->child_count; i++) {
-		if (pr.cst_root->children[i].tag != SE_NODE)
+	for (int i = 0; i < pr.syntax_root->child_count; i++) {
+		if (pr.syntax_root->children[i].tag != SE_NODE)
 			continue;
-		const SyntaxNode *cn = pr.cst_root->children[i].as.node;
+		const SyntaxNode *cn = pr.syntax_root->children[i].as.node;
 		if (cn->kind == SN_STATIC_DECL) {
 			char shape[128];
 			static_decl_shape(cn, src, shape, sizeof(shape));

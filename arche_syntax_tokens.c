@@ -1,21 +1,21 @@
-/* arche-cst-tokens — emit classified syntax tokens for editor highlighting.
+/* arche-syntax-tokens — emit classified syntax tokens for editor highlighting.
  *
- * Parses the input, walks the lossless CST, and prints one line per token leaf:
+ * Parses the input, walks the lossless syntax tree, and prints one line per token leaf:
  *
  *     <offset> <length> <line> <col> <CATEGORY>
  *
  * Non-identifier tokens are classified by token kind. Identifiers are classified
- * by their enclosing CST node (type / property / function / parameter / variable),
- * which is the whole point of building a real CST. This is the single source of
+ * by their enclosing syntax tree node (type / property / function / parameter / variable),
+ * which is the whole point of building a real syntax tree. This is the single source of
  * truth for syntax highlighting and tracks the language as the front-end evolves.
  *
  * Reads a file argument, or stdin when none is given (the LSP pipes the current,
  * possibly-unsaved buffer this way).
  */
-#include "cst/syntax_tree.h"
-#include "cst/token_category.h"
 #include "lexer/lexer.h"
 #include "parser/parser.h"
+#include "syntax/syntax_tree.h"
+#include "syntax/token_category.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -61,7 +61,7 @@ int main(int argc, char *argv[]) {
 	if (argc >= 2) {
 		FILE *file = fopen(argv[1], "r");
 		if (!file) {
-			fprintf(stderr, "arche-cst-tokens: could not open '%s'\n", argv[1]);
+			fprintf(stderr, "arche-syntax-tokens: could not open '%s'\n", argv[1]);
 			return 1;
 		}
 		src = read_all(file);
@@ -70,18 +70,16 @@ int main(int argc, char *argv[]) {
 		src = read_all(stdin);
 	}
 	if (!src) {
-		fprintf(stderr, "arche-cst-tokens: out of memory reading input\n");
+		fprintf(stderr, "arche-syntax-tokens: out of memory reading input\n");
 		return 1;
 	}
 
 	ParseResult result = parse_source(src);
-	if (result.cst_root) {
-		walk(result.cst_root);
+	if (result.syntax_root) {
+		walk(result.syntax_root);
 	}
 
-	AstProgram *prog = result.ast;
 	parse_result_free(&result);
-	ast_program_free(prog);
 	free(src);
 	return 0;
 }

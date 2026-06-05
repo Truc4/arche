@@ -1,7 +1,7 @@
-#include "cst/cst.h"
-#include "cst/format_cst.h"
 #include "lexer/lexer.h"
 #include "parser/parser.h"
+#include "syntax/cst.h"
+#include "syntax/format_syntax.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,7 +47,7 @@ int main(int argc, char *argv[]) {
 	src[bytes_read] = '\0';
 	fclose(file);
 
-	/* Lex + parse. The formatter is driven entirely by the lossless CST, so it preserves
+	/* Lex + parse. The formatter is driven entirely by the lossless syntax tree, so it preserves
 	 * comments and needs no abstract-AST reconstruction. */
 	ParseResult parse_result = parse_source(src);
 
@@ -71,8 +71,8 @@ int main(int argc, char *argv[]) {
 		free(src);
 		return 1;
 	}
-	/* Format directly from the lossless CST (comment- and structure-preserving). */
-	format_cst(stdout, parse_result.cst_root, src);
+	/* Format directly from the lossless syntax tree (comment- and structure-preserving). */
+	format_syntax(stdout, parse_result.syntax_root, src);
 
 	parse_result_free(&parse_result);
 	free(src);

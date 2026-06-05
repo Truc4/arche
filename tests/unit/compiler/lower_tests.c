@@ -1,9 +1,9 @@
-#include "../../../cst/cst.h"
 #include "../../../hir/hir.h"
 #include "../../../lexer/lexer.h"
 #include "../../../lower/lower.h"
 #include "../../../parser/parser.h"
 #include "../../../semantic/semantic.h"
+#include "../../../syntax/cst.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,23 +35,23 @@ static void fail(const char *reason) {
 		return;                                                                                                        \
 	}
 
-/* Lowering fixture: lowering now reads the lossless CST + the semantic side model directly
- * (lower_to_hir), so the test must keep the CST, its source text, and the semantic
- * context alive together. parse_and_analyze parses + analyzes (via the CST-driven path) and
+/* Lowering fixture: lowering now reads the lossless syntax tree + the semantic side model directly
+ * (lower_to_hir), so the test must keep the syntax tree, its source text, and the semantic
+ * context alive together. parse_and_analyze parses + analyzes (via the syntax-tree-driven path) and
  * returns a handle; lower_fixture lowers it; fixture_free tears it all down. */
 typedef struct {
-	SyntaxNode *cst_root;
+	SyntaxNode *syntax_root;
 	char *src;
 	SemanticContext *sem;
 } LowerFixture;
 
 static LowerFixture *parse_and_analyze(const char *src) {
 	ParseResult result = parse_source(src);
-	if (result.error_count > 0 || !result.cst_root) {
+	if (result.error_count > 0 || !result.syntax_root) {
 		parse_result_free(&result);
 		return NULL;
 	}
-	SemanticContext *sem = semantic_analyze_cst(result.cst_root, src);
+	SemanticContext *sem = semantic_analyze_cst(result.syntax_root, src);
 	if (!sem || semantic_has_errors(sem)) {
 		if (sem)
 			semantic_context_free(sem);
@@ -59,9 +59,9 @@ static LowerFixture *parse_and_analyze(const char *src) {
 		return NULL;
 	}
 	LowerFixture *fx = malloc(sizeof(LowerFixture));
-	/* Own the CST + a private copy of the source so leaf spans stay valid through lowering. */
-	fx->cst_root = result.cst_root;
-	result.cst_root = NULL; /* ownership transferred to the fixture */
+	/* Own the syntax tree + a private copy of the source so leaf spans stay valid through lowering. */
+	fx->syntax_root = result.syntax_root;
+	result.syntax_root = NULL; /* ownership transferred to the fixture */
 	fx->src = malloc(strlen(src) + 1);
 	strcpy(fx->src, src);
 	fx->sem = sem;
@@ -72,14 +72,14 @@ static LowerFixture *parse_and_analyze(const char *src) {
 static HirProgram *lower_fixture(LowerFixture *fx) {
 	lower_set_model(sem_context_model(fx->sem));
 	lower_set_sem(fx->sem);
-	return lower_to_hir(fx->cst_root, fx->src);
+	return lower_to_hir(fx->syntax_root, fx->src);
 }
 
 static void fixture_free(LowerFixture *fx) {
 	if (!fx)
 		return;
 	semantic_context_free(fx->sem);
-	syntax_node_free(fx->cst_root);
+	syntax_node_free(fx->syntax_root);
 	free(fx->src);
 	free(fx);
 }
@@ -257,7 +257,7 @@ static void test_lower_type_int(void) {
 static void test_lower_decl_use_skipped(void) {
 	test_start("SN_USE_DECL nodes skipped in AST");
 	/* A `use` of a module that was never registered (no lower_add_module) inlines nothing,
-	 * so the CST's SN_USE_DECL must produce no AST decl — only the proc remains. */
+	 * so the syntax tree's SN_USE_DECL must produce no AST decl — only the proc remains. */
 	LowerFixture *cst = parse_and_analyze("#import { fake_mod }\n"
 	                                      "Foo :: proc() {\n"
 	                                      "}\n");

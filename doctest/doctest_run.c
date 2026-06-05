@@ -378,14 +378,14 @@ static int run_one(const char *path, int quiet_empty, int verbose, DtTally *t) {
 		return 1;
 	}
 
-	/* Parse the file and extract doctests from the (error-recovering) CST. A file
+	/* Parse the file and extract doctests from the (error-recovering) syntax tree. A file
 	 * with no extractable examples is NOT a doctest target — skip it silently,
 	 * even if it has parse errors (e.g. intentional negative-test fixtures). We
 	 * only surface failures for files that actually carry doctests. */
 	ParseResult pr = parse_source(source);
 	DoctestExamples ex = {NULL, 0};
-	if (pr.cst_root)
-		ex = doctest_extract(pr.cst_root, source);
+	if (pr.syntax_root)
+		ex = doctest_extract(pr.syntax_root, source);
 	parse_result_free(&pr); /* examples own copies of everything they need */
 
 	if (ex.count == 0) {

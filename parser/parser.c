@@ -1,5 +1,5 @@
 #include "parser.h"
-#include "../cst/syntax_tree.h"
+#include "../syntax/syntax_tree.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,7 +19,7 @@ struct Parser {
 	 * Each TOK_COMMENT seen during advance() lands here; blank-line gaps detected
 	 * between the previous-syntactic-token's line and the next syntactic token's
 	 * line also land here as TRIVIA_BLANK_LINES entries. The pending list is
-	 * drained into the next CST node's leading_trivia at the start of its parse,
+	 * drained into the next syntax tree node's leading_trivia at the start of its parse,
 	 * and any same-line entries are stolen back as the just-finished node's
 	 * trailing_trivia after parse. */
 	Trivia *pending_trivia;
@@ -29,8 +29,8 @@ struct Parser {
 	/* Inside a `#foreign` region (banner = rest of file, or a `#foreign { ... }` block). While set,
 	 * a bodiless proc parses as a foreign value-form (SN_PROC_EXPR) rather than a proc type. */
 	int in_foreign;
-	/* Lossless CST builder. Built alongside the AST purely by appending; never
-	 * affects parse control flow, so CST bugs can't change compiler output. */
+	/* Lossless syntax tree builder. Built alongside the AST purely by appending; never
+	 * affects parse control flow, so syntax tree bugs can't change compiler output. */
 	CstBuilder *builder;
 };
 
@@ -74,14 +74,14 @@ static void maybe_append_blank_trivia(Parser *parser, int anchor_line, int next_
 }
 
 static void advance(Parser *parser) {
-	/* CST: emit the token being consumed (the current lookahead) as a leaf, in
+	/* syntax tree: emit the token being consumed (the current lookahead) as a leaf, in
 	 * source order. Skips the priming/end sentinel (EOF) and error tokens (whose
 	 * `start` points at a message literal, not into source). */
 	if (parser->builder && parser->current.kind != TOK_EOF && parser->current.kind != TOK_ERROR &&
 	    parser->current.start != NULL) {
 		uint32_t off = (uint32_t)(parser->current.start - parser->lexer->src);
-		cst_builder_token(parser->builder, parser->current.kind, off, (uint32_t)parser->current.length,
-		                  parser->current.line, parser->current.column);
+		syntax_builder_token(parser->builder, parser->current.kind, off, (uint32_t)parser->current.length,
+		                     parser->current.line, parser->current.column);
 	}
 
 	parser->previous = parser->current;
@@ -96,11 +96,11 @@ static void advance(Parser *parser) {
 			parser->current.kind = TOK_EOF;
 			break;
 		}
-		/* CST: comments are real leaves too, keeping the tree lossless. */
+		/* syntax tree: comments are real leaves too, keeping the tree lossless. */
 		if (parser->builder && parser->current.start != NULL) {
 			uint32_t coff = (uint32_t)(parser->current.start - parser->lexer->src);
-			cst_builder_token(parser->builder, TOK_COMMENT, coff, (uint32_t)parser->current.length,
-			                  parser->current.line, parser->current.column);
+			syntax_builder_token(parser->builder, TOK_COMMENT, coff, (uint32_t)parser->current.length,
+			                     parser->current.line, parser->current.column);
 		}
 		maybe_append_blank_trivia(parser, trivia_anchor_line(parser, prev_line), parser->current.line);
 		Trivia ctr;
@@ -123,10 +123,10 @@ static void advance(Parser *parser) {
 	}
 }
 
-/* Discard accumulated pending trivia. Comments are already emitted as CST leaves
+/* Discard accumulated pending trivia. Comments are already emitted as syntax tree leaves
  * in advance(); the pending list only tracked comments/blank-lines for the old
  * AST-node trivia (consumed by the legacy formatter). Draining keeps the list
- * bounded during a parse without affecting the CST. */
+ * bounded during a parse without affecting the syntax tree. */
 static void drain_pending_trivia(Parser *parser) {
 	parser->pending_count = 0;
 }
@@ -215,28 +215,28 @@ static void synchronize(Parser *parser) {
 	}
 }
 
-/* ===== CST builder helpers (no-ops when no builder is attached) ===== */
-static int cst_cp(Parser *parser) {
-	return parser->builder ? cst_builder_checkpoint(parser->builder) : 0;
+/* ===== syntax tree builder helpers (no-ops when no builder is attached) ===== */
+static int syntax_cp(Parser *parser) {
+	return parser->builder ? syntax_builder_checkpoint(parser->builder) : 0;
 }
-static SyntaxNode *cst_wrap(Parser *parser, int checkpoint, SyntaxNodeKind kind) {
+static SyntaxNode *syntax_wrap(Parser *parser, int checkpoint, SyntaxNodeKind kind) {
 	if (parser->builder)
-		return cst_builder_wrap(parser->builder, checkpoint, kind);
+		return syntax_builder_wrap(parser->builder, checkpoint, kind);
 	return NULL;
 }
 
 /* True if everything emitted since `checkpoint` already collapsed to a single
  * node (e.g. a parenthesised expression wrapped itself), so the caller should
  * not wrap it again. */
-static int cst_single_node(Parser *parser, int checkpoint) {
+static int syntax_single_node(Parser *parser, int checkpoint) {
 	CstBuilder *b = parser->builder;
 	return b && b->count == checkpoint + 1 && b->items[checkpoint].tag == SE_NODE;
 }
 
-/* Kind of the single CST node emitted since `checkpoint`, or SN_ERROR if the region
+/* Kind of the single syntax tree node emitted since `checkpoint`, or SN_ERROR if the region
  * isn't exactly one node. Lets statement parsing tell a bare-name target (SN_NAME_EXPR)
  * from a field/index/call lvalue without an AST. */
-static SyntaxNodeKind cst_single_node_kind(Parser *parser, int checkpoint) {
+static SyntaxNodeKind syntax_single_node_kind(Parser *parser, int checkpoint) {
 	CstBuilder *b = parser->builder;
 	if (b && b->count == checkpoint + 1 && b->items[checkpoint].tag == SE_NODE)
 		return b->items[checkpoint].as.node->kind;
@@ -245,18 +245,18 @@ static SyntaxNodeKind cst_single_node_kind(Parser *parser, int checkpoint) {
 
 /* ========== FORWARD DECLARATIONS ========== */
 
-/* The parser builds ONLY the lossless CST: every parse_* function consumes tokens,
- * emits CST node wraps, and returns success (1) / failure (0). It builds no abstract
- * AST — that is reconstructed from the CST by cst_to_program. A few parse decisions
+/* The parser builds ONLY the lossless syntax tree: every parse_* function consumes tokens,
+ * emits syntax tree node wraps, and returns success (1) / failure (0). It builds no abstract
+ * AST — that is reconstructed from the syntax tree by cst_to_program. A few parse decisions
  * still depend on the *form* of a just-parsed sub-construct (a bare-name LHS, a `type`
  * meta-type, a shaped-array element type); those are threaded back through small
  * out-params instead of inspecting a built node. */
 
-/* Form of a parsed type, for the few callers that branch on it. `cst_kind` is the
- * CST wrap kind; `is_type_meta` marks the bare `type` meta-keyword (which shares
+/* Form of a parsed type, for the few callers that branch on it. `syntax_kind` is the
+ * syntax tree wrap kind; `is_type_meta` marks the bare `type` meta-keyword (which shares
  * SN_TYPE_REF with ordinary names but drives const/bind RHS parsing). */
 typedef struct {
-	SyntaxNodeKind cst_kind;
+	SyntaxNodeKind syntax_kind;
 	int is_type_meta;
 } TypeForm;
 
@@ -273,7 +273,7 @@ static int parse_func_sig(Parser *parser, int is_extern);
 
 /* ========== TYPE PARSING ========== */
 
-/* Wrapper: every type position becomes a type node in the CST, tagged by the
+/* Wrapper: every type position becomes a type node in the syntax tree, tagged by the
  * specific form so identifiers within are classified as types and consumers can
  * tell arrays/tuples/handles apart. All call sites go through here. */
 static int parse_type(Parser *parser) {
@@ -282,29 +282,29 @@ static int parse_type(Parser *parser) {
 }
 
 static int parse_type_form(Parser *parser, TypeForm *out) {
-	int cp = cst_cp(parser);
+	int cp = syntax_cp(parser);
 	int ok = parse_type_inner(parser, out);
-	cst_wrap(parser, cp, out->cst_kind);
+	syntax_wrap(parser, cp, out->syntax_kind);
 	return ok;
 }
 
-/* `out->cst_kind` receives the CST type-node kind for the form parsed, from parse
+/* `out->syntax_kind` receives the syntax tree type-node kind for the form parsed, from parse
  * context. Pre-set to SN_TYPE_REF; overridden for array/shaped/handle forms. */
 static int parse_type_inner(Parser *parser, TypeForm *out) {
-	out->cst_kind = SN_TYPE_REF;
+	out->syntax_kind = SN_TYPE_REF;
 	out->is_type_meta = 0;
 
 	/* A proc/func type in annotation position: `h: proc(in)(out)`, `f: func(in) -> T`. The
 	 * `type` meta is implied (a callable signature denotes a type). Bodiless — no `{...}` here. */
 	if (check(parser, TOK_PROC)) {
 		advance(parser);
-		out->cst_kind = SN_TYPE_PROC;
+		out->syntax_kind = SN_TYPE_PROC;
 		out->is_type_meta = 1;
 		return parse_proc_sig(parser, 0);
 	}
 	if (check(parser, TOK_FUNC)) {
 		advance(parser);
-		out->cst_kind = SN_TYPE_FUNC;
+		out->syntax_kind = SN_TYPE_FUNC;
 		out->is_type_meta = 1;
 		return parse_func_sig(parser, 0);
 	}
@@ -345,38 +345,31 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
 		return 1;
 	}
 
-	/* handle<ArchetypeName> — a generation-checked reference to a row in a table.
-	 * Legacy handle(ArchetypeName) is still accepted during migration. */
-	if (is_handle && (check(parser, TOK_LT) || check(parser, TOK_LPAREN))) {
-		int angle = check(parser, TOK_LT);
-		advance(parser); /* consume < or ( */
+	/* handle<ArchetypeName> — a generation-checked reference to a row in a table. */
+	if (is_handle && check(parser, TOK_LT)) {
+		advance(parser); /* consume < */
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected archetype name after 'handle<'");
 			return 0;
 		}
 		advance(parser);
-		if (angle) {
-			if (!match(parser, TOK_GT)) {
-				error(parser, "Expected '>' after archetype name in handle type");
-				return 0;
-			}
-		} else if (!match(parser, TOK_RPAREN)) {
-			error(parser, "Expected ')' after archetype name in handle type");
+		if (!match(parser, TOK_GT)) {
+			error(parser, "Expected '>' after archetype name in handle type");
 			return 0;
 		}
-		out->cst_kind = SN_TYPE_HANDLE;
+		out->syntax_kind = SN_TYPE_HANDLE;
 		return 1;
 	}
 
 	/* `archetype` / `opaque` bare-category names parse like an ordinary type name (the
-	 * CST records the keyword token; semantic interprets it). */
+	 * syntax tree records the keyword token; semantic interprets it). */
 
 	if (check(parser, TOK_LBRACKET)) {
 		advance(parser); /* consume [ */
 		if (check(parser, TOK_RBRACKET)) {
 			/* float[] → TYPE_ARRAY */
 			advance(parser);
-			out->cst_kind = SN_TYPE_ARRAY;
+			out->syntax_kind = SN_TYPE_ARRAY;
 			return 1;
 		}
 		if (!check(parser, TOK_NUMBER)) {
@@ -394,7 +387,7 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
 			error(parser, "Expected ']' after array size");
 			return 1;
 		}
-		out->cst_kind = SN_TYPE_SHAPED_ARRAY;
+		out->syntax_kind = SN_TYPE_SHAPED_ARRAY;
 		/* chain: float[5][5] */
 		while (check(parser, TOK_LBRACKET)) {
 			advance(parser);
@@ -448,16 +441,16 @@ static int parse_tuple_name_group(Parser *parser) {
 
 /* ========== ARCHETYPE PARSING ========== */
 
-/* Parse one archetype field/component, wrapping its CST. Returns 1 on success,
+/* Parse one archetype field/component, wrapping its syntax tree. Returns 1 on success,
  * 0 on a malformed component (so the body loop stops). */
 static int parse_arch_field(Parser *parser) {
 	if (!check(parser, TOK_IDENT)) {
 		error(parser, "Expected field name");
 		return 0;
 	}
-	int field_decl_name_cp = cst_cp(parser);
+	int field_decl_name_cp = syntax_cp(parser);
 	advance(parser);
-	cst_wrap(parser, field_decl_name_cp, SN_FIELD_NAME);
+	syntax_wrap(parser, field_decl_name_cp, SN_FIELD_NAME);
 
 	/* Tuple group component: `pos (x, y) :: float` — the suffixes mint flat `pos_x`/`pos_y`
 	 * of the shared type. */
@@ -527,17 +520,17 @@ static int parse_param_list_body(Parser *parser, int is_extern) {
 			break;
 		}
 
-		int param_cp = cst_cp(parser);
+		int param_cp = syntax_cp(parser);
 
-		match(parser, TOK_OWN); /* optional `own` qualifier (CST records the token) */
+		match(parser, TOK_OWN); /* optional `own` qualifier (syntax tree records the token) */
 
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected parameter name");
 			return 0;
 		}
-		int param_name_cp = cst_cp(parser);
+		int param_name_cp = syntax_cp(parser);
 		advance(parser);
-		cst_wrap(parser, param_name_cp, SN_PARAM_NAME);
+		syntax_wrap(parser, param_name_cp, SN_PARAM_NAME);
 
 		if (!match(parser, TOK_COLON)) {
 			error(parser, "Expected ':' after parameter name");
@@ -547,7 +540,7 @@ static int parse_param_list_body(Parser *parser, int is_extern) {
 		if (!parse_type(parser))
 			return 0;
 
-		cst_wrap(parser, param_cp, SN_PARAM);
+		syntax_wrap(parser, param_cp, SN_PARAM);
 	} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
 	return 1;
 }
@@ -564,7 +557,7 @@ static int parse_proc_out_list(Parser *parser) {
 	if (match(parser, TOK_LPAREN)) {
 		if (!check(parser, TOK_RPAREN)) {
 			do {
-				int out_param_cp = cst_cp(parser);
+				int out_param_cp = syntax_cp(parser);
 
 				if (check(parser, TOK_OWN)) {
 					error(parser, "an out-parameter is owned by definition — drop `own`");
@@ -575,9 +568,9 @@ static int parse_proc_out_list(Parser *parser) {
 					error(parser, "Expected out-parameter name");
 					return 0;
 				}
-				int out_param_name_cp = cst_cp(parser);
+				int out_param_name_cp = syntax_cp(parser);
 				advance(parser);
-				cst_wrap(parser, out_param_name_cp, SN_PARAM_NAME);
+				syntax_wrap(parser, out_param_name_cp, SN_PARAM_NAME);
 
 				if (!match(parser, TOK_COLON)) {
 					error(parser, "Expected ':' after out-parameter name");
@@ -587,7 +580,7 @@ static int parse_proc_out_list(Parser *parser) {
 				if (!parse_type(parser))
 					return 0;
 
-				cst_wrap(parser, out_param_cp, SN_OUT_PARAM);
+				syntax_wrap(parser, out_param_cp, SN_OUT_PARAM);
 			} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
 		}
 		if (!match(parser, TOK_RPAREN)) {
@@ -622,17 +615,17 @@ static int parse_sys_param_list_body(Parser *parser) {
 	if (check(parser, TOK_RPAREN))
 		return 1;
 	do {
-		int param_cp = cst_cp(parser);
+		int param_cp = syntax_cp(parser);
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected parameter name");
 			return 0;
 		}
 
-		int param_name_cp = cst_cp(parser);
+		int param_name_cp = syntax_cp(parser);
 		advance(parser);
-		cst_wrap(parser, param_name_cp, SN_PARAM_NAME);
+		syntax_wrap(parser, param_name_cp, SN_PARAM_NAME);
 
-		cst_wrap(parser, param_cp, SN_PARAM);
+		syntax_wrap(parser, param_cp, SN_PARAM);
 	} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
 	return 1;
 }
@@ -901,7 +894,7 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	return 0;
 }
 
-/* `out_kind` receives the CST node kind for the declaration form, from parse
+/* `out_kind` receives the syntax tree node kind for the declaration form, from parse
  * context. Pre-set to SN_ERROR; each leaf parser / branch sets the real kind. */
 /* A region marker — `#module` / `#file` / `#foreign` — in one of two forms:
  *   banner  `#foreign`             applies to every following decl, to end of file
@@ -927,14 +920,14 @@ static int parse_region(Parser *parser, SyntaxNodeKind *out_kind) {
 			take_pending_as_leading(parser, &leading, &leading_count);
 			free(leading);
 			(void)leading_count;
-			int child_cp = cst_cp(parser);
+			int child_cp = syntax_cp(parser);
 			SyntaxNodeKind child_kind = SN_ERROR;
 			if (!parse_decl(parser, &child_kind)) {
 				synchronize(parser);
-				cst_wrap(parser, child_cp, SN_ERROR);
+				syntax_wrap(parser, child_cp, SN_ERROR);
 				continue;
 			}
-			cst_wrap(parser, child_cp, child_kind);
+			syntax_wrap(parser, child_cp, child_kind);
 		}
 		parser->in_foreign = saved;
 		if (!match(parser, TOK_RBRACE)) {
@@ -958,8 +951,8 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	 *   @allow_pure_proc           — legacy, proc-only: suppresses proc-could-be-func.
 	 *   @allow(<diagnostic-slug>)  — general lint suppression, any decl kind.
 	 *
-	 * Multiple decorators may be stacked. Tokens are stored in the CST at decl
-	 * level; `cst_to_program` reads them — `cv_has_token(d, TOK_AT)` for the
+	 * Multiple decorators may be stacked. Tokens are stored in the syntax tree at decl
+	 * level; `cst_to_program` reads them — `sv_has_token(d, TOK_AT)` for the
 	 * legacy flag and a slug scan for `@allow(...)` entries. */
 	while (parser->current.kind == TOK_AT) {
 		advance(parser); /* consume '@' */
@@ -1165,9 +1158,9 @@ static int parse_bracket_index_or_slice(Parser *parser, int *out_slice) {
 
 /* `out_kind` receives the SyntaxNodeKind for the primary expression form parsed,
  * derived from parse context (not from a built AST node). The caller wraps the
- * CST node with it. Left untouched when the primary already wrapped itself (paren). */
+ * syntax tree node with it. Left untouched when the primary already wrapped itself (paren). */
 static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
-	int prim_start = cst_cp(parser);
+	int prim_start = syntax_cp(parser);
 	if (check(parser, TOK_NUMBER)) {
 		advance(parser);
 		*out_kind = SN_LITERAL_EXPR;
@@ -1258,7 +1251,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			do {
 				if (check(parser, TOK_RBRACE)) /* trailing comma */
 					break;
-				int v_cp = cst_cp(parser);
+				int v_cp = syntax_cp(parser);
 				if (!check(parser, TOK_IDENT)) {
 					error(parser, "Expected enum variant name");
 					return 0;
@@ -1271,7 +1264,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 					}
 					advance(parser); /* explicit value */
 				}
-				cst_wrap(parser, v_cp, SN_ENUM_VARIANT);
+				syntax_wrap(parser, v_cp, SN_ENUM_VARIANT);
 			} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACE));
 		}
 		if (!match(parser, TOK_RBRACE)) {
@@ -1282,7 +1275,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 	}
 
 	if (check(parser, TOK_IDENT)) {
-		int prim_name_cp = cst_cp(parser);
+		int prim_name_cp = syntax_cp(parser);
 		int is_table = cur_ident_is(parser, "table", 5);
 		advance(parser);
 
@@ -1308,18 +1301,18 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 				error(parser, "Expected field name after '.'");
 				return 0;
 			}
-			int field_name_cp = cst_cp(parser);
+			int field_name_cp = syntax_cp(parser);
 			advance(parser);
-			cst_wrap(parser, field_name_cp, SN_FIELD_NAME);
+			syntax_wrap(parser, field_name_cp, SN_FIELD_NAME);
 
 			while (match(parser, TOK_DOT)) {
 				if (!check(parser, TOK_IDENT)) {
 					error(parser, "Expected field name after '.'");
 					return 0;
 				}
-				int chained_field_cp = cst_cp(parser);
+				int chained_field_cp = syntax_cp(parser);
 				advance(parser);
-				cst_wrap(parser, chained_field_cp, SN_FIELD_NAME);
+				syntax_wrap(parser, chained_field_cp, SN_FIELD_NAME);
 			}
 
 			if (match(parser, TOK_LBRACKET)) {
@@ -1364,7 +1357,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 
 		/* function call: `f(args)` — wrap the callee name, then consume '(' as a sibling. */
 		if (check(parser, TOK_LPAREN)) {
-			cst_wrap(parser, prim_name_cp, SN_CALLEE_NAME);
+			syntax_wrap(parser, prim_name_cp, SN_CALLEE_NAME);
 			advance(parser); /* consume '(' */
 			if (!check(parser, TOK_RPAREN)) {
 				do {
@@ -1390,7 +1383,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' after expression");
 		}
-		cst_wrap(parser, prim_start, SN_PAREN_EXPR);
+		syntax_wrap(parser, prim_start, SN_PAREN_EXPR);
 		return 1;
 	}
 
@@ -1401,32 +1394,32 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 /* Prefix unary operators: `-x` (negate) and `!x` (logical not). Binds tighter
  * than binary operators, looser than postfix (calls/indexing in primary). */
 static int parse_unary_expr(Parser *parser) {
-	int u_cp = cst_cp(parser);
+	int u_cp = syntax_cp(parser);
 	/* `move <expr>` / `copy <expr>` — call-site ownership markers; transparent to the
-	 * grammar (the CST records the keyword token, read back by cst_to_program). */
+	 * grammar (the syntax tree records the keyword token, read back by cst_to_program). */
 	if (check(parser, TOK_MOVE) || check(parser, TOK_COPY)) {
 		advance(parser);
 		if (!parse_unary_expr(parser))
 			return 0;
-		cst_wrap(parser, u_cp, SN_UNARY_EXPR);
+		syntax_wrap(parser, u_cp, SN_UNARY_EXPR);
 		return 1;
 	}
 	if (check(parser, TOK_MINUS) || check(parser, TOK_BANG)) {
 		advance(parser);
 		if (!parse_unary_expr(parser)) /* allow -(-x), !!x */
 			return 0;
-		cst_wrap(parser, u_cp, SN_UNARY_EXPR);
+		syntax_wrap(parser, u_cp, SN_UNARY_EXPR);
 		return 1;
 	}
 	/* Primary expression: wrap it by the kind it parsed into (tracked by parse
 	 * context in `prim_kind`), unless it already collapsed to a single node (a
 	 * parenthesised expr wraps itself). */
-	int p_cp = cst_cp(parser);
+	int p_cp = syntax_cp(parser);
 	SyntaxNodeKind prim_kind = SN_NAME_EXPR;
 	if (!parse_primary_expr(parser, &prim_kind))
 		return 0;
-	if (!cst_single_node(parser, p_cp))
-		cst_wrap(parser, p_cp, prim_kind);
+	if (!syntax_single_node(parser, p_cp))
+		syntax_wrap(parser, p_cp, prim_kind);
 	return 1;
 }
 
@@ -1459,7 +1452,7 @@ static int binop_prec(TokenKind k) {
 
 /* Precedence climbing: extend `left` with binary operators whose precedence is
    >= min_prec, so e.g. `2 + 3 * 2` builds (2 + (3 * 2)) rather than a flat fold. */
-/* `left_cp` is the CST checkpoint taken before `left` was parsed, so each fold can
+/* `left_cp` is the syntax tree checkpoint taken before `left` was parsed, so each fold can
  * retroactively wrap [left_cp .. end-of-right] into a SN_BINARY_EXPR — left-assoc
  * nesting falls out because the previous fold collapses to one node at left_cp. */
 static int parse_binary_rhs(Parser *parser, int ok_left, int left_cp, int min_prec) {
@@ -1473,7 +1466,7 @@ static int parse_binary_rhs(Parser *parser, int ok_left, int left_cp, int min_pr
 
 		advance(parser); /* consume the operator token */
 
-		int right_cp = cst_cp(parser);
+		int right_cp = syntax_cp(parser);
 		if (!parse_unary_expr(parser))
 			return 0;
 
@@ -1485,12 +1478,12 @@ static int parse_binary_rhs(Parser *parser, int ok_left, int left_cp, int min_pr
 
 		/* Retroactively wrap [left_cp .. end-of-right] into a binary node; the next
 		 * fold reuses left_cp so left-assoc nesting falls out. */
-		cst_wrap(parser, left_cp, SN_BINARY_EXPR);
+		syntax_wrap(parser, left_cp, SN_BINARY_EXPR);
 	}
 }
 
 static int parse_binary_expr(Parser *parser) {
-	int left_cp = cst_cp(parser);
+	int left_cp = syntax_cp(parser);
 	int ok = parse_unary_expr(parser);
 	return parse_binary_rhs(parser, ok, left_cp, 1);
 }
@@ -1507,7 +1500,7 @@ static int parse_expression(Parser *parser) {
  * or NULL on error. There is no `let` keyword — bindings are recognized by this shape. */
 static int parse_binding_tail(Parser *parser, SyntaxNodeKind *out_kind) {
 	/* Multi-value binding: `a, b, c := expr` (or legacy `= expr`). The first name was
-	 * already consumed by the caller and is recorded in the CST. */
+	 * already consumed by the caller and is recorded in the syntax tree. */
 	if (match(parser, TOK_COMMA)) {
 		*out_kind = SN_MULTI_BIND_STMT;
 		while (!check(parser, TOK_COLON) && !check(parser, TOK_EQ) && !check(parser, TOK_EOF)) {
@@ -1541,14 +1534,14 @@ static int parse_binding_tail(Parser *parser, SyntaxNodeKind *out_kind) {
 	 *   `x : T : e`     — constant, explicit type/meta (`x : type : T` is a local type alias)
 	 *   `x = e`         — legacy assignment-style binding
 	 * `:` separator ⇒ constant; `=` ⇒ variable. cst_to_program re-derives all of this
-	 * from the CST tokens; here we only consume + drive the CST. */
+	 * from the syntax tree tokens; here we only consume + drive the syntax tree. */
 	if (match(parser, TOK_COLON)) {
 		if (check(parser, TOK_EQ)) {
 			advance(parser); /* `:=` — inferred variable */
-			int rhs_cp = cst_cp(parser);
+			int rhs_cp = syntax_cp(parser);
 			if (!parse_expression(parser))
 				return 0;
-			if (cst_single_node_kind(parser, rhs_cp) == SN_ARCH_EXPR) {
+			if (syntax_single_node_kind(parser, rhs_cp) == SN_ARCH_EXPR) {
 				error(parser, "archetypes must be declared at global scope — move this `arche { … }` shape "
 				              "out of the proc/block (anonymous `arche { … }` literals in expressions are fine)");
 				return 0;
@@ -1558,10 +1551,10 @@ static int parse_binding_tail(Parser *parser, SyntaxNodeKind *out_kind) {
 			/* `k :: alias T` — consume the transparent-alias marker; backing parses as the value. */
 			if (parser->current.length == 5 && strncmp(parser->current.start, "alias", 5) == 0)
 				advance(parser);
-			int rhs_cp = cst_cp(parser);
+			int rhs_cp = syntax_cp(parser);
 			if (!parse_expression(parser))
 				return 0;
-			if (cst_single_node_kind(parser, rhs_cp) == SN_ARCH_EXPR) {
+			if (syntax_single_node_kind(parser, rhs_cp) == SN_ARCH_EXPR) {
 				error(parser, "archetypes must be declared at global scope — move this `arche { … }` shape "
 				              "out of the proc/block (anonymous `arche { … }` literals in expressions are fine)");
 				return 0;
@@ -1602,13 +1595,13 @@ static int parse_binding_tail(Parser *parser, SyntaxNodeKind *out_kind) {
  * whatever terminates it (`;` for a statement, `;`/`)` for the parts of a `for` header). This
  * is the one place these forms are parsed; `for` no longer hand-rolls its own. */
 static int parse_simple_statement(Parser *parser, SyntaxNodeKind *out_kind) {
-	int target_cp = cst_cp(parser);
+	int target_cp = syntax_cp(parser);
 	if (!parse_expression(parser))
 		return 0;
 
 	/* Bare binding: a plain name (the target collapsed to a single SN_NAME_EXPR) then `:`
-	 * (`x := e` / `x: T [= e]`) or `,` (`a, b := e`). The name token is already in the CST. */
-	if (cst_single_node_kind(parser, target_cp) == SN_NAME_EXPR &&
+	 * (`x := e` / `x: T [= e]`) or `,` (`a, b := e`). The name token is already in the syntax tree. */
+	if (syntax_single_node_kind(parser, target_cp) == SN_NAME_EXPR &&
 	    (check(parser, TOK_COLON) || check(parser, TOK_COMMA))) {
 		return parse_binding_tail(parser, out_kind);
 	}
@@ -1617,11 +1610,11 @@ static int parse_simple_statement(Parser *parser, SyntaxNodeKind *out_kind) {
 	 * following `(` opens the out-argument list — caller-provided places written in place. Each
 	 * out-arg is `name` (existing place), `name:` (declare, type from the out-param), or `name: T`
 	 * (declare, typed). A proc is an action, so this is a statement, never a value. */
-	if (cst_single_node_kind(parser, target_cp) == SN_CALL_EXPR && check(parser, TOK_LPAREN)) {
+	if (syntax_single_node_kind(parser, target_cp) == SN_CALL_EXPR && check(parser, TOK_LPAREN)) {
 		advance(parser); /* consume out-list `(` */
 		if (!check(parser, TOK_RPAREN)) {
 			do {
-				int out_arg_cp = cst_cp(parser);
+				int out_arg_cp = syntax_cp(parser);
 				if (!check(parser, TOK_IDENT)) {
 					error(parser, "Expected out-argument name");
 					return 0;
@@ -1634,7 +1627,7 @@ static int parse_simple_statement(Parser *parser, SyntaxNodeKind *out_kind) {
 							return 0;
 					}
 				}
-				cst_wrap(parser, out_arg_cp, SN_OUT_ARG);
+				syntax_wrap(parser, out_arg_cp, SN_OUT_ARG);
 			} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
 		}
 		if (!match(parser, TOK_RPAREN)) {
@@ -1661,9 +1654,9 @@ static int parse_simple_statement(Parser *parser, SyntaxNodeKind *out_kind) {
 }
 
 static int parse_statement(Parser *parser) {
-	int stmt_cp = cst_cp(parser);
+	int stmt_cp = syntax_cp(parser);
 	int ok = 0; /* 1 once a statement has been parsed (drives the cleanup wrap) */
-	/* CST wrap kind for the statement, tracked by parse context (not a built AST node).
+	/* syntax tree wrap kind for the statement, tracked by parse context (not a built AST node).
 	 * Each branch that produces a statement sets it before `goto cleanup`. */
 	SyntaxNodeKind stmt_kind = SN_ERROR;
 	Trivia *leading = NULL;
@@ -1678,7 +1671,7 @@ static int parse_statement(Parser *parser) {
 
 	/* Drain pending trivia (comments/blank lines) to keep comment association tidy; the
 	 * parser no longer builds an AST to attach it to, so the drained trivia is freed at
-	 * cleanup. Comments survive in the CST as their own leaves regardless. */
+	 * cleanup. Comments survive in the syntax tree as their own leaves regardless. */
 	take_pending_as_leading(parser, &leading, &leading_count);
 
 	if (match(parser, TOK_SEMI)) {
@@ -1812,7 +1805,7 @@ static int parse_statement(Parser *parser) {
 			goto cleanup;
 		}
 		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-			int arm_cp = cst_cp(parser);
+			int arm_cp = syntax_cp(parser);
 			/* pattern: an enum variant / `_` ident, or an int/string/char literal */
 			if (check(parser, TOK_IDENT) || check(parser, TOK_NUMBER) || check(parser, TOK_STRING) ||
 			    check(parser, TOK_CHAR_LIT)) {
@@ -1832,7 +1825,7 @@ static int parse_statement(Parser *parser) {
 			} else if (!parse_statement(parser)) {
 				synchronize(parser);
 			}
-			cst_wrap(parser, arm_cp, SN_MATCH_ARM);
+			syntax_wrap(parser, arm_cp, SN_MATCH_ARM);
 			match(parser, TOK_COMMA); /* optional separator between arms */
 		}
 		if (!match(parser, TOK_RBRACE))
@@ -1959,13 +1952,13 @@ static int parse_statement(Parser *parser) {
 			/* infinite loop — no header */
 		} else if (match(parser, TOK_LPAREN)) {
 			/* for (init; cond; incr) { } — all three optional. init/incr are wrapped as
-			 * their own statement nodes so the CST header is structured (not flat). */
+			 * their own statement nodes so the syntax tree header is structured (not flat). */
 			if (!check(parser, TOK_SEMI)) {
-				int init_cp = cst_cp(parser);
+				int init_cp = syntax_cp(parser);
 				SyntaxNodeKind init_kind = SN_EXPR_STMT;
 				if (!parse_simple_statement(parser, &init_kind))
 					goto cleanup;
-				cst_wrap(parser, init_cp, init_kind);
+				syntax_wrap(parser, init_cp, init_kind);
 			}
 			if (!match(parser, TOK_SEMI)) {
 				error(parser, "Expected ';' in for loop");
@@ -1980,11 +1973,11 @@ static int parse_statement(Parser *parser) {
 				goto cleanup;
 			}
 			if (!check(parser, TOK_RPAREN)) {
-				int incr_cp = cst_cp(parser);
+				int incr_cp = syntax_cp(parser);
 				SyntaxNodeKind incr_kind = SN_EXPR_STMT;
 				if (!parse_simple_statement(parser, &incr_kind))
 					goto cleanup;
-				cst_wrap(parser, incr_cp, incr_kind);
+				syntax_wrap(parser, incr_cp, incr_kind);
 			}
 			if (!match(parser, TOK_RPAREN)) {
 				error(parser, "Expected ')' after for clause");
@@ -2026,7 +2019,7 @@ cleanup:
 	parser->recursion_depth--;
 	free(leading);
 	if (ok)
-		cst_wrap(parser, stmt_cp, stmt_kind);
+		syntax_wrap(parser, stmt_cp, stmt_kind);
 	return ok;
 }
 
@@ -2045,7 +2038,7 @@ static void parser_init(Parser *parser, Lexer *lexer) {
 	parser->recursion_depth = 0;
 	memset(&parser->previous, 0, sizeof(Token));
 	parser->current.line = 0;
-	parser->builder = cst_builder_new();
+	parser->builder = syntax_builder_new();
 	advance(parser);
 }
 
@@ -2058,7 +2051,7 @@ ParseResult parse_program(Parser *parser) {
 			parser->had_error = 1;
 			break;
 		}
-		/* Drain pending trivia (comments/blank lines). The parser builds only the CST now,
+		/* Drain pending trivia (comments/blank lines). The parser builds only the syntax tree now,
 		 * where comments live as their own leaves, so there's no AST node to attach it to. */
 		Trivia *leading = NULL;
 		int leading_count = 0;
@@ -2066,24 +2059,23 @@ ParseResult parse_program(Parser *parser) {
 		free(leading);
 		(void)leading_count;
 
-		int decl_cp = cst_cp(parser);
+		int decl_cp = syntax_cp(parser);
 		SyntaxNodeKind decl_kind = SN_ERROR;
 		if (!parse_decl(parser, &decl_kind)) {
 			synchronize(parser);
-			cst_wrap(parser, decl_cp, SN_ERROR);
+			syntax_wrap(parser, decl_cp, SN_ERROR);
 			continue;
 		}
-		cst_wrap(parser, decl_cp, decl_kind);
+		syntax_wrap(parser, decl_cp, decl_kind);
 	}
 
 	ParseResult result;
-	result.ast = NULL; /* the parser produces only the lossless CST; cst_to_program builds the AST */
 	result.errors = parser->errors;
 	result.error_count = parser->error_count;
 	result.comments = NULL;
 	result.comment_count = 0;
-	/* Close out the lossless CST and hand ownership to the caller. */
-	result.cst_root = parser->builder ? cst_builder_finish(parser->builder) : NULL;
+	/* Close out the lossless syntax tree and hand ownership to the caller. */
+	result.syntax_root = parser->builder ? syntax_builder_finish(parser->builder) : NULL;
 	parser->builder = NULL;
 	parser->errors = NULL;
 	parser->error_count = 0;
@@ -2104,7 +2096,7 @@ void parser_free(Parser *parser) {
 		free(parser->errors);
 		free(parser->pending_trivia);
 		/* Non-NULL only if parse_program never ran to claim the tree. */
-		cst_builder_free(parser->builder);
+		syntax_builder_free(parser->builder);
 		free(parser);
 	}
 }
@@ -2126,11 +2118,11 @@ void parse_result_free(ParseResult *result) {
 		}
 		free(result->errors);
 		free(result->comments);
-		syntax_node_free(result->cst_root);
+		syntax_node_free(result->syntax_root);
 		result->errors = NULL;
 		result->error_count = 0;
 		result->comments = NULL;
 		result->comment_count = 0;
-		result->cst_root = NULL;
+		result->syntax_root = NULL;
 	}
 }

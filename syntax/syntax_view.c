@@ -1,18 +1,18 @@
-#include "cst_view.h"
+#include "syntax_view.h"
 #include <string.h>
 
-static CstView none(void) {
-	CstView v = {NULL, NULL};
+static SyntaxView none(void) {
+	SyntaxView v = {NULL, NULL};
 	return v;
 }
 
-CstView cv_root(const SyntaxNode *root, const char *src) {
-	CstView v = {root, src};
+SyntaxView sv_root(const SyntaxNode *root, const char *src) {
+	SyntaxView v = {root, src};
 	return v;
 }
 
-CvText cv_text(CstView v) {
-	CvText t = {NULL, 0};
+SynText sv_text(SyntaxView v) {
+	SynText t = {NULL, 0};
 	if (v.node) {
 		t.ptr = v.src + v.node->offset;
 		t.len = v.node->length;
@@ -20,13 +20,13 @@ CvText cv_text(CstView v) {
 	return t;
 }
 
-int cv_text_eq(CstView v, const char *s) {
-	CvText t = cv_text(v);
+int sv_text_eq(SyntaxView v, const char *s) {
+	SynText t = sv_text(v);
 	size_t n = strlen(s);
 	return t.ptr && t.len == n && memcmp(t.ptr, s, n) == 0;
 }
 
-int cv_node_count(CstView v) {
+int sv_node_count(SyntaxView v) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE)
@@ -34,23 +34,23 @@ int cv_node_count(CstView v) {
 	return c;
 }
 
-int cv_node_count_deep(CstView v) {
+int sv_node_count_deep(SyntaxView v) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
 			c++;
-			c += cv_node_count_deep((CstView){v.node->children[i].as.node, v.src});
+			c += sv_node_count_deep((SyntaxView){v.node->children[i].as.node, v.src});
 		}
 	return c;
 }
 
-CstView cv_node_at(CstView v, int index) {
+SyntaxView sv_node_at(SyntaxView v, int index) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++) {
 		if (v.node->children[i].tag != SE_NODE)
 			continue;
 		if (c == index) {
-			CstView r = {v.node->children[i].as.node, v.src};
+			SyntaxView r = {v.node->children[i].as.node, v.src};
 			return r;
 		}
 		c++;
@@ -58,13 +58,13 @@ CstView cv_node_at(CstView v, int index) {
 	return none();
 }
 
-CstView cv_child_at(CstView v, SyntaxNodeKind kind, int n) {
+SyntaxView sv_child_at(SyntaxView v, SyntaxNodeKind kind, int n) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++) {
 		if (v.node->children[i].tag != SE_NODE || v.node->children[i].as.node->kind != kind)
 			continue;
 		if (c == n) {
-			CstView r = {v.node->children[i].as.node, v.src};
+			SyntaxView r = {v.node->children[i].as.node, v.src};
 			return r;
 		}
 		c++;
@@ -72,11 +72,11 @@ CstView cv_child_at(CstView v, SyntaxNodeKind kind, int n) {
 	return none();
 }
 
-CstView cv_child(CstView v, SyntaxNodeKind kind) {
-	return cv_child_at(v, kind, 0);
+SyntaxView sv_child(SyntaxView v, SyntaxNodeKind kind) {
+	return sv_child_at(v, kind, 0);
 }
 
-int cv_count(CstView v, SyntaxNodeKind kind) {
+int sv_count(SyntaxView v, SyntaxNodeKind kind) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE && v.node->children[i].as.node->kind == kind)
@@ -84,8 +84,8 @@ int cv_count(CstView v, SyntaxNodeKind kind) {
 	return c;
 }
 
-CvText cv_token(CstView v, TokenKind kind) {
-	CvText t = {NULL, 0};
+SynText sv_token(SyntaxView v, TokenKind kind) {
+	SynText t = {NULL, 0};
 	for (int i = 0; i < v.node->child_count; i++) {
 		if (v.node->children[i].tag == SE_TOKEN && v.node->children[i].as.token.kind == kind) {
 			t.ptr = v.src + v.node->children[i].as.token.offset;
@@ -96,8 +96,8 @@ CvText cv_token(CstView v, TokenKind kind) {
 	return t;
 }
 
-int cv_has_token(CstView v, TokenKind kind) {
-	return cv_token(v, kind).ptr != NULL;
+int sv_has_token(SyntaxView v, TokenKind kind) {
+	return sv_token(v, kind).ptr != NULL;
 }
 
 static int is_expr_kind(SyntaxNodeKind k) {
@@ -107,14 +107,14 @@ static int is_type_kind(SyntaxNodeKind k) {
 	return k >= SN_TYPE_REF && k <= SN_TYPE_FUNC;
 }
 
-CstView cv_expr_at(CstView v, int idx) {
+SyntaxView sv_expr_at(SyntaxView v, int idx) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++) {
 		if (v.node->children[i].tag != SE_NODE)
 			continue;
 		if (is_expr_kind(v.node->children[i].as.node->kind)) {
 			if (c == idx) {
-				CstView r = {v.node->children[i].as.node, v.src};
+				SyntaxView r = {v.node->children[i].as.node, v.src};
 				return r;
 			}
 			c++;
@@ -123,14 +123,14 @@ CstView cv_expr_at(CstView v, int idx) {
 	return none();
 }
 
-CstView cv_type_at(CstView v, int idx) {
+SyntaxView sv_type_at(SyntaxView v, int idx) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++) {
 		if (v.node->children[i].tag != SE_NODE)
 			continue;
 		if (is_type_kind(v.node->children[i].as.node->kind)) {
 			if (c == idx) {
-				CstView r = {v.node->children[i].as.node, v.src};
+				SyntaxView r = {v.node->children[i].as.node, v.src};
 				return r;
 			}
 			c++;
@@ -139,7 +139,7 @@ CstView cv_type_at(CstView v, int idx) {
 	return none();
 }
 
-int cv_type_count(CstView v) {
+int sv_type_count(SyntaxView v) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE && is_type_kind(v.node->children[i].as.node->kind))
@@ -148,14 +148,14 @@ int cv_type_count(CstView v) {
 }
 
 /* Walk leaves in source order; keep the first (or, when want_last, the last) token. */
-static CvPos token_pos_edge(CstView v, int want_last) {
+static CvPos token_pos_edge(SyntaxView v, int want_last) {
 	CvPos best = {0, 0, 0, 0};
 	if (!v.node)
 		return best;
 	for (int i = 0; i < v.node->child_count; i++) {
 		const SyntaxElem *e = &v.node->children[i];
 		if (e->tag == SE_NODE) {
-			CstView c = {e->as.node, v.src};
+			SyntaxView c = {e->as.node, v.src};
 			CvPos sub = token_pos_edge(c, want_last);
 			if (sub.line) {
 				best = sub;
@@ -172,14 +172,14 @@ static CvPos token_pos_edge(CstView v, int want_last) {
 	return best;
 }
 
-CvPos cv_first_token_pos(CstView v) {
+CvPos sv_first_token_pos(SyntaxView v) {
 	return token_pos_edge(v, 0);
 }
-CvPos cv_last_token_pos(CstView v) {
+CvPos sv_last_token_pos(SyntaxView v) {
 	return token_pos_edge(v, 1);
 }
 
-CvPos cv_token_pos_at(CstView v, TokenKind kind, int n) {
+CvPos sv_token_pos_at(SyntaxView v, TokenKind kind, int n) {
 	CvPos none = {0, 0, 0, 0};
 	if (!v.node)
 		return none;
@@ -197,19 +197,19 @@ CvPos cv_token_pos_at(CstView v, TokenKind kind, int n) {
 	return none;
 }
 
-CvPos cv_token_pos(CstView v, TokenKind kind) {
-	return cv_token_pos_at(v, kind, 0);
+CvPos sv_token_pos(SyntaxView v, TokenKind kind) {
+	return sv_token_pos_at(v, kind, 0);
 }
 
-int cv_has_error(CstView v) {
+int sv_has_error(SyntaxView v) {
 	if (!v.node)
 		return 0;
 	if (v.node->kind == SN_ERROR)
 		return 1;
 	for (int i = 0; i < v.node->child_count; i++) {
 		if (v.node->children[i].tag == SE_NODE) {
-			CstView c = {v.node->children[i].as.node, v.src};
-			if (cv_has_error(c))
+			SyntaxView c = {v.node->children[i].as.node, v.src};
+			if (sv_has_error(c))
 				return 1;
 		}
 	}
@@ -218,8 +218,8 @@ int cv_has_error(CstView v) {
 
 /* Strip a doc marker (`marker_len` bytes) and one optional leading space from a
  * comment leaf's source span; return the borrowed remainder slice. */
-static CvText doc_strip(const char *text, size_t len, size_t marker_len) {
-	CvText t = {NULL, 0};
+static SynText doc_strip(const char *text, size_t len, size_t marker_len) {
+	SynText t = {NULL, 0};
 	if (len < marker_len)
 		return t;
 	const char *p = text + marker_len;
@@ -273,11 +273,11 @@ static void gather_comments_before(const SyntaxNode *node, const char *src, uint
 	}
 }
 
-int cv_decl_doc_lines(CstView root, CstView decl, CvText *out, int *out_lines, int max) {
+int sv_decl_doc_lines(SyntaxView root, SyntaxView decl, SynText *out, int *out_lines, int max) {
 	if (!root.node || !decl.node || !out || max <= 0)
 		return 0;
 
-	CvPos dp = cv_first_token_pos(decl);
+	CvPos dp = sv_first_token_pos(decl);
 	if (dp.line == 0)
 		return 0;
 
@@ -310,7 +310,7 @@ int cv_decl_doc_lines(CstView root, CstView decl, CvText *out, int *out_lines, i
 #undef CV_DOC_GATHER_CAP
 }
 
-int cv_module_doc_lines(CstView root, CvText *out, int max) {
+int sv_module_doc_lines(SyntaxView root, SynText *out, int max) {
 	if (!root.node || !out || max <= 0)
 		return 0;
 	int count = 0;

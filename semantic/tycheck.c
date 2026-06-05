@@ -4,7 +4,7 @@
 #include "sem_model.h"
 #include "sem_types.h"
 
-#include "../cst/cst.h"
+#include "../syntax/cst.h"
 
 #include <stdio.h>
 #include <stdlib.h>

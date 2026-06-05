@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unit test: CST view layer (navigation, node ids, doc-comment queries)
+Unit test: syntax tree view layer (navigation, node ids, doc-comment queries)
 RUN: python3 %s
 """
 
@@ -12,7 +12,7 @@ import sys
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     repo_root = os.path.join(script_dir, '../../..')
-    binary = os.path.join(repo_root, 'build', 'cst-view-test')
+    binary = os.path.join(repo_root, 'build', 'syntax-view-test')
 
     if not os.path.exists(binary):
         print(f"FAIL: Binary not found: {binary}")

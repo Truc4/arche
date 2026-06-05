@@ -1,7 +1,7 @@
-#include "../../../cst/cst.h"
 #include "../../../lexer/lexer.h"
 #include "../../../parser/parser.h"
 #include "../../../semantic/semantic.h"
+#include "../../../syntax/cst.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,7 +46,7 @@ void test_fail_msg(const char *reason) {
 		return;                                                                                                        \
 	}
 
-/* Helper to parse a string. The parser now produces only the lossless CST; the abstract
+/* Helper to parse a string. The parser now produces only the lossless syntax tree; the abstract
  * AstProgram is reconstructed from it via cst_to_program_from_source. These assertions therefore
  * validate that cst_to_program faithfully rebuilds each construct (the parser's old output). */
 AstProgram *parse_string(const char *src) {

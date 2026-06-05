@@ -20,7 +20,7 @@ Decl     ← Binding / UseDecl / VisMarker / PoolDecl
 #   x := e   ≡  x : ⟨inferred⟩ = e     (type elided)
 #   x : T    ≡  x : T = ⟨zero⟩         (value elided → implicit `= 0`)
 # So implicit and explicit are the same declaration; the compiler normalizes the elisions onto the
-# canonical form (the CST stays lossless so `fmt` round-trips the surface spelling).
+# canonical form (the syntax tree stays lossless so `fmt` round-trips the surface spelling).
 # A mutable global's initial value must be compile-time-constant (static storage is initialized at
 # link time — there is no startup code); the variable is still reassignable. `@decorator` may
 # precede the binding name.

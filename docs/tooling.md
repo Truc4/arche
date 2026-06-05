@@ -83,10 +83,10 @@ The build uses `make`:
 | `make test-doc` | doctests over real sources (`arche test core/... examples/...`) |
 | `make test-parser` / `make test-semantic` / `make test-codegen-unit` / `make test-lower` | C unit tests |
 | `make format` | format all `.arche` and `.c`/`.h` files (pinned clang-format) |
-| `make verify-cst` | verify the CST round-trips losslessly |
+| `make verify-syntax` | verify the syntax tree round-trips losslessly |
 | `make verify-codegen` | diff emitted LLVM IR against golden files |
 | `make clean` | remove build artifacts |
 
 Tools built by `make all`: `build/arche` (compiler), `build/arche-fmt` (formatter),
-`build/arche-analyzer` (editor analysis), `build/arche-cst-tokens` (syntax-highlight token
+`build/arche-analyzer` (editor analysis), `build/arche-syntax-tokens` (syntax-highlight token
 dumper), plus the unit-test binaries.

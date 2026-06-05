@@ -7,7 +7,7 @@
  * collides across modules. Never reset; ids only grow. */
 static uint32_t g_node_id = 0;
 
-CstBuilder *cst_builder_new(void) {
+CstBuilder *syntax_builder_new(void) {
 	CstBuilder *b = malloc(sizeof(CstBuilder));
 	b->items = NULL;
 	b->count = 0;
@@ -15,7 +15,7 @@ CstBuilder *cst_builder_new(void) {
 	return b;
 }
 
-void cst_builder_free(CstBuilder *b) {
+void syntax_builder_free(CstBuilder *b) {
 	if (!b)
 		return;
 	/* Free any nodes still sitting in the flat list (e.g. if finish() wasn't
@@ -36,7 +36,7 @@ static void builder_push(CstBuilder *b, SyntaxElem elem) {
 	b->items[b->count++] = elem;
 }
 
-void cst_builder_token(CstBuilder *b, TokenKind kind, uint32_t offset, uint32_t length, int line, int column) {
+void syntax_builder_token(CstBuilder *b, TokenKind kind, uint32_t offset, uint32_t length, int line, int column) {
 	SyntaxElem e;
 	e.tag = SE_TOKEN;
 	e.as.token.kind = kind;
@@ -47,7 +47,7 @@ void cst_builder_token(CstBuilder *b, TokenKind kind, uint32_t offset, uint32_t 
 	builder_push(b, e);
 }
 
-int cst_builder_checkpoint(CstBuilder *b) {
+int syntax_builder_checkpoint(CstBuilder *b) {
 	return b->count;
 }
 
@@ -80,7 +80,7 @@ static SyntaxNode *make_node(SyntaxElem *items, int from, int to, SyntaxNodeKind
 	return n;
 }
 
-SyntaxNode *cst_builder_wrap(CstBuilder *b, int checkpoint, SyntaxNodeKind kind) {
+SyntaxNode *syntax_builder_wrap(CstBuilder *b, int checkpoint, SyntaxNodeKind kind) {
 	if (checkpoint < 0)
 		checkpoint = 0;
 	if (checkpoint >= b->count)
@@ -97,7 +97,7 @@ SyntaxNode *cst_builder_wrap(CstBuilder *b, int checkpoint, SyntaxNodeKind kind)
 	return node;
 }
 
-SyntaxNode *cst_builder_finish(CstBuilder *b) {
+SyntaxNode *syntax_builder_finish(CstBuilder *b) {
 	SyntaxNode *root = make_node(b->items, 0, b->count, SN_SOURCE_FILE);
 	root->id = g_node_id++;
 	free(b->items);

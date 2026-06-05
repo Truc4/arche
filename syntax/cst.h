@@ -145,6 +145,11 @@ struct Decl {
 	/* 1 if this decl came from a DEVICE's impl file (`.arche` of a unit that also has a `.ds.arche`).
 	 * A device's impl is behavior-only: the rule-3 sweep rejects type/archetype/pool defs here. */
 	int from_device_impl;
+	/* Transitional (AST-kill): the syntax node + source this decl was reconstructed
+	 * from. Lets analysis recover a SyntaxView while AstProgram readers are converted
+	 * to walk views; removed with AstProgram once nothing reads these structs. */
+	const SyntaxNode *sn;
+	const char *sn_src;
 	union {
 		WorldDecl *world;
 		ArchetypeDecl *archetype;
@@ -430,7 +435,11 @@ struct Statement {
 	Trivia *trailing_trivia;
 	int trailing_count;
 	int last_line;   /* line of this statement's last syntactic token */
-	uint32_t cst_id; /* TRANSIENT: CST node id (+1; 0 = unlinked) — see Expression.cst_id */
+	uint32_t cst_id; /* bridges AstProgram <-> SyntaxNode; removed in the AST-kill (Phase 2). node id (+1; 0 = unlinked)
+	                    — see Expression.cst_id */
+	/* Transitional (AST-kill): syntax node + source this stmt was built from. */
+	const SyntaxNode *sn;
+	const char *sn_src;
 	union {
 		BindStmt bind_stmt;
 		AssignStmt assign_stmt;
@@ -548,12 +557,14 @@ struct Expression {
 		ArrayLiteralExpr array_literal;
 		StringExpr string;
 	} data;
-	char *resolved_type; /* Semantic analysis populates: "int", "double", "Vec3", etc. NULL if not yet analyzed */
-	/* TRANSIENT migration scaffolding (removed in the final stage): id of the CST
-	 * node this expression was parsed from (stored +1, so 0 means "not linked").
-	 * Stored as a value, not a pointer, so it survives the CST being freed. Lets
-	 * semantic/lower key a side model instead of mutating resolved_type. */
+	/* Bridges AstProgram <-> SyntaxNode; removed in the AST-kill (Phase 2).
+	 * Id of the syntax-tree node this expression was parsed from (stored +1, so
+	 * 0 means "not linked"). Stored as a value, not a pointer, so it survives the
+	 * tree being freed. Lets semantic/lower key a side model by node id. */
 	uint32_t cst_id;
+	/* Transitional (AST-kill): syntax node + source this expr was built from. */
+	const SyntaxNode *sn;
+	const char *sn_src;
 };
 
 /* =========================

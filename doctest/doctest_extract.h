@@ -1,7 +1,7 @@
 #ifndef ARCHE_DOCTEST_EXTRACT_H
 #define ARCHE_DOCTEST_EXTRACT_H
 
-#include "../cst/syntax_tree.h"
+#include "../syntax/syntax_tree.h"
 
 /* Fence info-string flags (```arche,<flag>,...), Rust-style. */
 typedef enum {
@@ -26,7 +26,7 @@ typedef struct {
 	int count;
 } DoctestExamples;
 
-/* Walk every declaration in `root`, collect its doc comments (via the cst_view
+/* Walk every declaration in `root`, collect its doc comments (via the syntax_view
  * doc query), and extract each ```arche fenced block as one example. An
  * unterminated fence is skipped (its decl yields no example) rather than
  * aborting. Caller frees with doctest_examples_free. */
