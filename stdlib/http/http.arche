@@ -11,12 +11,14 @@
 ///
 /// ```arche
 /// parse_request_line("GET /a?b=1 HTTP/1.1\r\n")(m:, t:, ok:);
-/// assert(ok == 1, "ok\n");
-/// assert(streq(m, "GET"), "method\n");
-/// assert(streq(t, "/a"), "target query-trimmed\n");
+/// fmt.assert(ok == 1, "ok\n");
+/// fmt.assert(streq(m, "GET"), "method\n");
+/// fmt.assert(streq(t, "/a"), "target query-trimmed\n");
 /// ```
-// Pure, but returns three values (two slices + ok) — a func returns only one, so it must be a proc.
-@allow_pure_proc parse_request_line :: proc(req: char[])(method: char[], target: char[], ok: int) {
+///
+/// Pure, but returns three values (two slices + ok) — a func returns only one, so it must be a proc.
+@allow_pure_proc
+parse_request_line :: proc(req: char[])(method: char[], target: char[], ok: int) {
   ok = 0;
   if (req.length < 5) {
     return;
@@ -94,7 +96,7 @@ reason :: func(status: int) -> char[] {
 /// `send_body` is 1 (0 for HEAD). `%d` formats the status + Content-Length; `%s` formats only the
 /// NUL-terminated `reason`/`ctype` literals — never a body slice (the body is sent raw).
 respond :: proc(
-  conn: net.socket,
+  conn: socket,
   hdr: char[],
   status: int,
   ctype: char[],
@@ -120,6 +122,6 @@ respond :: proc(
 
 /// Plain-text response (error pages). `msg` is the body AND its own Content-Length (a length-carried
 /// slice). Always sends the body.
-respond_text :: proc(conn: net.socket, hdr: char[], status: int, msg: char[]) {
+respond_text :: proc(conn: socket, hdr: char[], status: int, msg: char[]) {
   respond(conn, hdr, status, "text/plain; charset=utf-8", msg, 1);
 }

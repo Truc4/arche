@@ -212,6 +212,28 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 	Leaves ls = {NULL, 0, 0};
 	collect(root, src, &ls);
 
+	/* Mark the last token of each decl-level decorator (`@name` or `@name( … )`) so the layout
+	 * can break after it — every decorator sits on its own line above the decl it annotates,
+	 * rather than inline. `@` is only ever a decorator marker in Arche source. */
+	int *deco_end = ls.count ? calloc((size_t)ls.count, sizeof(int)) : NULL;
+	for (int i = 0; deco_end && i < ls.count; i++) {
+		if (ls.items[i].kind != TOK_AT || i + 1 >= ls.count || ls.items[i + 1].kind != TOK_IDENT)
+			continue;
+		int last = i + 1; /* `@name` with no argument list ends at the name */
+		if (i + 2 < ls.count && ls.items[i + 2].kind == TOK_LPAREN) {
+			int d = 0;
+			for (int k = i + 2; k < ls.count; k++) {
+				if (ls.items[k].kind == TOK_LPAREN)
+					d++;
+				else if (ls.items[k].kind == TOK_RPAREN && --d == 0) {
+					last = k;
+					break;
+				}
+			}
+		}
+		deco_end[last] = 1;
+	}
+
 	int indent = 0;
 	int started = 0;
 	int col = 0; /* current column (for the width decision) */
@@ -295,8 +317,9 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 			    (prev == TOK_HASH_MODULE || prev == TOK_HASH_FILE || prev == TOK_HASH_FOREIGN) && l->kind != TOK_LBRACE;
 			int block_close = (l->kind == TOK_RBRACE && is_block_brace(l));
 			int after_block_open = (prev == TOK_LBRACE);
+			int after_deco = (deco_end && i > 0 && deco_end[i - 1]); /* break after each decl-level decorator */
 			int want_nl = force_nl || block_close || after_block_open || (prev == TOK_SEMI && !for_header_semi) ||
-			              prev == TOK_RBRACE || vis_marker || after_vis_marker || l->decl_start;
+			              prev == TOK_RBRACE || vis_marker || after_vis_marker || l->decl_start || after_deco;
 			if (l->kind == TOK_COMMENT)
 				want_nl = (l->line != prev_line);
 			if (for_header_semi && l->line > prev_line)
@@ -373,5 +396,6 @@ void format_cst(FILE *out, const SyntaxNode *root, const char *src) {
 		force_nl = is_line_comment(l);
 	}
 	fputc('\n', out);
+	free(deco_end);
 	free(ls.items);
 }

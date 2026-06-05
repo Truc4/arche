@@ -26,7 +26,11 @@ typedef struct {
 	char *signature; /* deterministic key: "field:type:kind;" per field in order */
 	FieldInfo **fields;
 	int field_count;
-	int is_allocated; /* 1 once any alias for this shape has been alloc'd */
+	int is_allocated;   /* 1 once any alias for this shape has been alloc'd */
+	int alloc_capacity; /* the driver pool's capacity (rows), 0 if not allocated by the driver */
+	int min_rows;       /* max storage REQUIREMENT from device datasheets; the driver pool must meet it */
+	int req_count;      /* how many distinct datasheets posted a requirement on this shape (shared-shape) */
+	char *req_first;    /* name in the first requirement's decl (for the shared-shape build note) */
 } ArchetypeInfo;
 
 typedef struct {
@@ -914,15 +918,17 @@ static int is_type_conversion_callee(SemanticContext *ctx, const char *name) {
  * `loc` is the alias declaration's source position — used for the redefinition error
  * and stored so the late "unknown backing" pass can blame the original site. */
 static void register_type_alias_tiered(SemanticContext *ctx, const char *name, const char *backing, int transparent,
-                                       SourceLoc loc) {
+                                       SourceLoc loc, int from_datasheet) {
 	for (int j = 0; j < ctx->type_alias_count; j++) {
 		if (strcmp(ctx->type_alias_names[j], name) == 0) {
 			/* Define-once: a type/component name is declared exactly once program-wide. A second
 			 * definition with a different backing is E0010; with the same backing it's still a
-			 * redefinition (E0045) — reference the name instead of redeclaring it. */
+			 * redefinition (E0045) — reference the name instead of redeclaring it.
+			 * EXCEPTION: a datasheet decl that AGREES with an existing definition is shared global
+			 * vocabulary (two devices using the same shape) — dedup silently, do not trip E0045. */
 			if (strcmp(ctx->type_alias_backings[j], backing) != 0)
 				sem_emit_type_alias_redefined(ctx, loc, name);
-			else
+			else if (!from_datasheet)
 				sem_emit_component_redefined(ctx, loc, name);
 			return;
 		}
@@ -939,8 +945,9 @@ static void register_type_alias_tiered(SemanticContext *ctx, const char *name, c
 }
 
 /* Back-compat shim: the common case registers a tier-2 subtype (the distinct-by-default). */
-static void register_type_alias(SemanticContext *ctx, const char *name, const char *backing, SourceLoc loc) {
-	register_type_alias_tiered(ctx, name, backing, 0, loc);
+static void register_type_alias(SemanticContext *ctx, const char *name, const char *backing, SourceLoc loc,
+                                int from_datasheet) {
+	register_type_alias_tiered(ctx, name, backing, 0, loc, from_datasheet);
 }
 
 /* 1 if `name` is a registered TRANSPARENT (tier-1) alias — same identity as its backing. A tier-2
@@ -2011,7 +2018,7 @@ static void analyze_statement(SemanticContext *ctx, Statement *stmt) {
 					sem_emit_local_alias_invalid_backing(ctx, stmt->loc);
 				} else {
 					register_type_alias_tiered(ctx, b->name, backing, b->type_value ? b->type_value->is_transparent : 0,
-					                           stmt->loc);
+					                           stmt->loc, 0);
 					const char *resolved = resolve_type_alias(ctx, b->name);
 					if (!is_primitive_type_name(resolved) && strcmp(resolved, "opaque") != 0) {
 						sem_emit_type_alias_unknown_backing(ctx, stmt->loc, b->name, resolved);
@@ -2518,6 +2525,10 @@ static void analyze_archetype_decl(SemanticContext *ctx, ArchetypeDecl *arch) {
 		shape = malloc(sizeof(ArchetypeInfo));
 		shape->signature = sig;
 		shape->is_allocated = 0;
+		shape->alloc_capacity = 0;
+		shape->min_rows = 0;
+		shape->req_count = 0;
+		shape->req_first = NULL;
 
 		/* Count total fields after expanding tuples */
 		int expanded_field_count = 0;
@@ -2682,6 +2693,24 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 		return;
 	}
 
+	/* A pool decl from a device datasheet is a storage REQUIREMENT, not an allocation: it records a
+	 * minimum the driver's own pool must meet (composed by `max` across datasheets), never allocates.
+	 * The driver-pool-meets-minimum and missing-pool checks happen in the final sweep (sem_check_storage
+	 * _requirements), so the order of requirement vs allocation decls does not matter. */
+	if (alloc->is_requirement) {
+		if (alloc->archetype.field_count > 0 && alloc->archetype.field_values[0] &&
+		    alloc->archetype.field_values[0]->type == EXPR_LITERAL &&
+		    alloc->archetype.field_values[0]->data.literal.lexeme) {
+			int min = atoi(alloc->archetype.field_values[0]->data.literal.lexeme);
+			if (min > arch->min_rows)
+				arch->min_rows = min;
+		}
+		arch->req_count++;
+		if (!arch->req_first)
+			arch->req_first = sem_dupz(alloc->archetype.archetype_name);
+		return;
+	}
+
 	/* Check if this shape has already been allocated. Each shape (field structure)
 	   can have multiple archetype handles/names pointing to it, but only one can
 	   allocate/initialize it. Once allocated, the shape is live in the world. */
@@ -2706,6 +2735,9 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 		ctx->error_count++;
 		return;
 	}
+	/* Record the driver pool's capacity so the final sweep can check it against datasheet minimums. */
+	if (count_expr->data.literal.lexeme)
+		arch->alloc_capacity = atoi(count_expr->data.literal.lexeme);
 
 	/* Validate: init block requires explicit init_size parameter */
 	if (alloc->archetype.field_count > 1 && !alloc->archetype.init_length) {
@@ -2719,6 +2751,82 @@ static void analyze_static_decl(SemanticContext *ctx, StaticDecl *alloc) {
 	/* Analyze field initialization expressions */
 	for (int i = 1; i < alloc->archetype.field_count; i++) {
 		analyze_expression(ctx, alloc->archetype.field_values[i]);
+	}
+}
+
+/* Format a shape's component names as "{a, b, c}" into `out` (for diagnostics). */
+static void sem_format_shape_fields(ArchetypeInfo *arch, char *out, size_t cap) {
+	size_t n = 0;
+	n += (size_t)snprintf(out + n, n < cap ? cap - n : 0, "{");
+	for (int i = 0; i < arch->field_count && n < cap; i++)
+		n += (size_t)snprintf(out + n, n < cap ? cap - n : 0, "%s%s", i ? ", " : "",
+		                      arch->fields[i]->name ? arch->fields[i]->name : "?");
+	if (n < cap)
+		snprintf(out + n, cap - n, "}");
+}
+
+/* Final sweep (after all decls analyzed): a device datasheet posts a storage REQUIREMENT (min rows)
+ * on a shape; the driver owns the actual pool. Enforce: a required shape with no driver pool is a
+ * hard error; a driver pool smaller than the composed minimum is an error. Also emit a non-fatal note
+ * when two+ datasheets require the same shape (shared pool). Sizing is keyed off the shape, so order
+ * of requirement vs allocation decls does not matter. */
+static void sem_check_storage_requirements(SemanticContext *ctx) {
+	for (int a = 0; a < ctx->archetype_count; a++) {
+		ArchetypeInfo *arch = ctx->archetypes[a];
+		if (!arch || arch->min_rows <= 0)
+			continue;
+		char fields[512];
+		sem_format_shape_fields(arch, fields, sizeof(fields));
+		const char *nm = arch->req_first ? arch->req_first : "shape";
+		if (!arch->is_allocated) {
+			fprintf(stderr,
+			        "Error: no storage for %s required by a device datasheet — run `arche fill` or add %s[%d]\n",
+			        fields, nm, arch->min_rows);
+			ctx->error_count++;
+			continue;
+		}
+		if (arch->alloc_capacity < arch->min_rows) {
+			fprintf(stderr, "Error: a device requires >=%d rows of %s; the driver sized %d\n", arch->min_rows, fields,
+			        arch->alloc_capacity);
+			ctx->error_count++;
+		}
+		if (arch->req_count >= 2)
+			fprintf(stderr, "note: %d device datasheets require %s -> one shared pool, size = %d\n", arch->req_count,
+			        fields, arch->alloc_capacity);
+	}
+}
+
+/* Rule 3: a device's impl (`.arche` of a unit with a `.ds.arche`) is BEHAVIOR-ONLY. It may not define
+ * a type/enum/archetype or allocate a pool — types/archetypes belong in the datasheet, and allocation
+ * is the driver's alone. Decls from a device impl were tagged `from_device_impl` at module collection.
+ * (Value consts + buffers/scalars are allowed; only type/archetype definitions + archetype pools are
+ * rejected.) */
+static const char *sem_decl_name(Decl *d); /* fwd (defined with the module-collection helpers) */
+static void sem_check_device_impl_decls(SemanticContext *ctx) {
+	if (!ctx->prog)
+		return;
+	for (int i = 0; i < ctx->prog->decl_count; i++) {
+		Decl *d = ctx->prog->decls[i];
+		if (!d || !d->from_device_impl)
+			continue;
+		const char *nm0 = sem_decl_name(d);
+		const char *what = NULL;
+		if (d->kind == DECL_ARCHETYPE)
+			what = "define an archetype";
+		else if (d->kind == DECL_ENUM)
+			what = "define a type";
+		else if (d->kind == DECL_CONST && nm0 && is_type_alias(ctx, nm0)) /* type alias / opaque (not a value const) */
+			what = "define a type";
+		else if (d->kind == DECL_STATIC && d->data.static_decl && d->data.static_decl->kind == STATIC_KIND_ARCHETYPE)
+			what = "allocate a pool";
+		if (!what)
+			continue;
+		const char *nm = sem_decl_name(d);
+		fprintf(stderr,
+		        "Error: a device's impl cannot %s ('%s') — types/archetypes belong in its .ds.arche "
+		        "datasheet, and allocation is the driver's\n",
+		        what, nm ? nm : "?");
+		ctx->error_count++;
 	}
 }
 
@@ -4440,17 +4548,21 @@ static Statement *cst_build_stmt(CstView s) {
 		break;
 	case SN_RUN_STMT: {
 		as->type = STMT_RUN;
-		/* `run` and `in` are keywords (TOK_RUN/TOK_IN), so the only IDENTs are
-		 * [sys, world?]. System = IDENT[0]. */
-		char *names[2] = {NULL, NULL};
-		int ni = 0;
-		for (int i = 0; i < s.node->child_count && ni < 2; i++)
+		/* `run sys` / `run device.system`: `run` is a keyword, so the only IDENTs are the
+		 * (possibly qualified) system-name segments — join them with `.` (mirrors lower.c). */
+		char namebuf[256];
+		int nl = 0;
+		for (int i = 0; i < s.node->child_count; i++)
 			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
-				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
-				names[ni++] = sem_txt_dup(t);
+				if (nl > 0 && nl < (int)sizeof(namebuf) - 1)
+					namebuf[nl++] = '.';
+				int seg = (int)s.node->children[i].as.token.length;
+				for (int k = 0; k < seg && nl < (int)sizeof(namebuf) - 1; k++)
+					namebuf[nl++] = s.src[s.node->children[i].as.token.offset + k];
 			}
-		as->data.run_stmt.system_name = names[0] ? names[0] : sem_dupz("");
-		as->data.run_stmt.world_name = names[1];
+		namebuf[nl] = '\0';
+		as->data.run_stmt.system_name = sem_dupz(namebuf);
+		as->data.run_stmt.world_name = NULL;
 		break;
 	}
 	case SN_RETURN_STMT: {
@@ -5037,6 +5149,16 @@ static CvText sem_binding_name(CstView d) {
 	return last;
 }
 
+/* True if the decl is decorated (its first token is `@`). A decorator with args — `@allow(x)`,
+ * `@implements(dev.foo)` — has a `(` that must NOT be mistaken for a tuple-group paren, and a first
+ * IDENT that is the decorator, not the binding name (mirror of lower.c's decl_is_decorated). */
+static int sem_decl_is_decorated(const SyntaxNode *n) {
+	for (int i = 0; i < n->child_count; i++)
+		if (n->children[i].tag == SE_TOKEN)
+			return n->children[i].as.token.kind == TOK_AT;
+	return 0;
+}
+
 /* Find the unified-grammar RHS value/type form among a binding's children, if any. */
 static CstView sem_rhs_form(CstView d) {
 	for (int i = 0; i < d.node->child_count; i++) {
@@ -5233,13 +5355,17 @@ static Decl *cst_build_decl_inner(CstView d) {
 			}
 		}
 		Decl *ad = decl_create(DECL_CONST);
-		char *cname = sem_txt_dup(cv_token(d, TOK_IDENT));
+		/* A decorated decl's first IDENT is the decorator (`@implements`), not the binding — use the
+		 * binding-name helper; and its `(` is a decorator paren, not a tuple group. (For a plain
+		 * tuple group `pos (x,y) :: T` the binding name IS the first IDENT, so keep cv_token there.) */
+		int decorated = sem_decl_is_decorated(d.node);
+		char *cname = sem_txt_dup(decorated ? sem_binding_name(d) : cv_token(d, TOK_IDENT));
 		ConstDecl *ac = const_decl_create(cname, NULL);
 		ac->decl_type = NULL;
 		ac->type_value = NULL;
 		ac->value = NULL;
 		ac->is_transparent = cst_const_alias_marked(d); /* `name :: alias T` → tier-1 transparent */
-		if (cv_has_token(d, TOK_LPAREN)) {
+		if (!decorated && cv_has_token(d, TOK_LPAREN)) {
 			/* tuple group `name (a, b, …) :: T`: a nominal type alias whose RHS is a TYPE_TUPLE
 			 * built from the parenthesized suffixes, each typed by the shared type after `::`. */
 			CstView memberty = sem_type_at(d, 0);
@@ -5318,9 +5444,28 @@ static Decl *cst_build_decl_inner(CstView d) {
 	case SN_STATIC_DECL: {
 		Decl *ad = decl_create(DECL_STATIC);
 		if (cv_has_token(d, TOK_LBRACKET)) {
-			/* Pool allocation `Name[C](N){V}`: archetype name is the leading IDENT; capacity is
-			 * the `[…]` expr; optional initial live-count the `(…)` expr; field inits the `{…}`. */
-			char *an = sem_txt_dup(cv_token(d, TOK_IDENT));
+			/* Pool allocation `Name[C](N){V}`: archetype name is the (possibly qualified) head — the
+			 * `.`-joined IDENT tokens before `[` (so `lib.Particle[N]` names the imported shape's
+			 * canonical identity; mirrors lower.c). Capacity is the `[…]` expr; optional initial
+			 * live-count the `(…)` expr; field inits the `{…}`. */
+			char an_buf[256];
+			int an_len = 0;
+			for (int i = 0; i < d.node->child_count; i++) {
+				SyntaxElem *ch = &d.node->children[i];
+				if (ch->tag != SE_TOKEN)
+					continue;
+				if (ch->as.token.kind == TOK_LBRACKET)
+					break;
+				if (ch->as.token.kind != TOK_IDENT)
+					continue;
+				if (an_len > 0 && an_len < (int)sizeof(an_buf) - 1)
+					an_buf[an_len++] = '.';
+				int seg = (int)ch->as.token.length;
+				for (int k = 0; k < seg && an_len < (int)sizeof(an_buf) - 1; k++)
+					an_buf[an_len++] = d.src[ch->as.token.offset + k];
+			}
+			an_buf[an_len] = '\0';
+			char *an = sem_dupz(an_buf);
 			StaticDecl *sd = static_decl_archetype_create(an ? an : sem_dupz(""));
 			int cap_alloc = d.node->child_count + 1;
 			sd->archetype.field_names = calloc(cap_alloc, sizeof(char *));
@@ -5437,22 +5582,35 @@ typedef struct {
 	char *name;
 	const SyntaxNode *root;
 	const char *src;
+	char *filename; /* source path; a `*.ds.arche` file is a device datasheet (decls stay global) */
 } SemModule;
 static SemModule g_sem_modules[64];
 static int g_sem_module_count = 0;
 
-void semantic_add_module(const char *name, const SyntaxNode *root, const char *src) {
+/* A device datasheet file: its decls are shared global vocabulary, registered UNPREFIXED (mirror
+ * of lower.c's is_datasheet_file). */
+static int sem_is_datasheet_file(const char *fn) {
+	if (!fn)
+		return 0;
+	size_t L = strlen(fn);
+	return L >= 9 && strcmp(fn + L - 9, ".ds.arche") == 0;
+}
+
+void semantic_add_module(const char *name, const SyntaxNode *root, const char *src, const char *filename) {
 	if (g_sem_module_count >= 64 || !name || !root)
 		return;
 	g_sem_modules[g_sem_module_count].name = sem_dupz(name);
 	g_sem_modules[g_sem_module_count].root = root;
 	g_sem_modules[g_sem_module_count].src = src;
+	g_sem_modules[g_sem_module_count].filename = filename ? sem_dupz(filename) : NULL;
 	g_sem_module_count++;
 }
 
 void semantic_reset_modules(void) {
-	for (int i = 0; i < g_sem_module_count; i++)
+	for (int i = 0; i < g_sem_module_count; i++) {
 		free(g_sem_modules[i].name);
+		free(g_sem_modules[i].filename);
+	}
 	g_sem_module_count = 0;
 }
 
@@ -5911,22 +6069,45 @@ static void sem_expand_tuple_groups(AstProgram *prog) {
  * `#foreign { ... }` / `#module { ... }` block regions. */
 static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const char *mod_name, AstProgram *prog,
                                 char ***full, int *fulln, int *fullcap, char ***expset, int *expn, int *expcap,
-                                int exported) {
+                                int exported, int is_datasheet, int module_is_device, int file_local, char ***fileset,
+                                int *filesetn, int *filesetcap) {
 	Decl *md = cst_build_decl((CstView){node, msrc});
 	if (!md)
 		return;
+	/* Datasheet decls are shared global vocabulary: mark them so identical component/type redefs
+	 * across two datasheets dedup (devices sharing a shape) instead of tripping define-once. */
+	md->is_datasheet = is_datasheet;
+	/* A decl from a device's IMPL (`.arche` of a unit that also has a `.ds.arche`) — the rule-3 sweep
+	 * rejects type/archetype/allocation definitions here (a device's impl is behavior-only). */
+	md->from_device_impl = module_is_device && !is_datasheet;
+	/* A pool decl in a datasheet (`.ds.arche`) is a storage REQUIREMENT (min rows), not an allocation. */
+	if (is_datasheet && md->kind == DECL_STATIC && md->data.static_decl &&
+	    md->data.static_decl->kind == STATIC_KIND_ARCHETYPE)
+		md->data.static_decl->is_requirement = 1;
 	prog->decls[prog->decl_count++] = md;
 	int is_ext =
 	    (md->kind == DECL_PROC && md->data.proc->is_extern) || (md->kind == DECL_FUNC && md->data.func->is_extern);
 	const char *nm = sem_decl_name(md);
 	if (!nm)
 		return;
-	/* A member is accessed by its LITERAL declared name (no `<mod>_`-prefix stripping): a foreign
-	 * decl named `net_send` is `net.net_send`. Foreign decls keep their declared name (the C ABI
-	 * symbol) and are NOT renamed; pure-Arche decls are renamed to the qualified identity
-	 * `<mod>.<name>` so two modules' same-named decls stay distinct AND diagnostics show a clean
-	 * qualified name. (`.` is a legal LLVM global-identifier char, so no emission quoting needed.) */
-	if (!is_ext) {
+	/* A member is accessed by its LITERAL declared name. A decl is registered FLAT (unprefixed, bare
+	 * export) when it's foreign (C ABI symbol), a datasheet decl (shared global vocabulary), OR from a
+	 * PLAIN module (no `.ds.arche`) — a plain/path module merges flat into the importer (Jai `#load`),
+	 * so `helper()` not `mod.helper()`. Only a DEVICE's pure-Arche impl decls are prefixed to the
+	 * qualified identity `<device>.<name>` (the device's namespaced contract). */
+	int flat = is_ext || is_datasheet || !module_is_device;
+	/* A `#file` decl is file-local: it must NOT join the cross-file `full` set (so sibling files can't
+	 * bind to it) and is never exported. It goes into the per-file `fileset` instead; sem_inline_module
+	 * then renames it (+ its intra-file references) to a file-unique identity. */
+	if (file_local) {
+		if (*filesetn == *filesetcap) {
+			*filesetcap = *filesetcap ? *filesetcap * 2 : 8;
+			*fileset = realloc(*fileset, (size_t)*filesetcap * sizeof(char *));
+		}
+		(*fileset)[(*filesetn)++] = sem_dupz(nm);
+		return;
+	}
+	if (!flat) {
 		if (*fulln == *fullcap) {
 			*fullcap = *fullcap ? *fullcap * 2 : 8;
 			*full = realloc(*full, (size_t)*fullcap * sizeof(char *));
@@ -5938,10 +6119,9 @@ static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 			*expcap = *expcap ? *expcap * 2 : 8;
 			*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
 		}
-		/* "<member>=<identity>": the literal member name and the symbol it resolves to. Foreign →
-		 * its C symbol (its own name); pure-Arche → the qualified identity `<mod>.<name>`. */
+		/* "<member>=<identity>": flat → the bare name; a device's pure-Arche decl → `<device>.<name>`. */
 		char entry[512];
-		if (is_ext)
+		if (flat)
 			snprintf(entry, sizeof(entry), "%s=%s", nm, nm);
 		else
 			snprintf(entry, sizeof(entry), "%s=%s.%s", nm, mod_name, nm);
@@ -5953,6 +6133,33 @@ static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const 
  * separately, and SN_REGION, which is a container/marker rather than a decl). */
 static int sem_is_collectible_decl(SyntaxNodeKind k) {
 	return k >= SN_WORLD_DECL && k <= SN_USE_DECL && k != SN_USE_DECL;
+}
+
+/* The module name an `#import` element resolves to: IDENT = the name verbatim (device by name);
+ * STRING = a path (module by path) whose name is the basename minus a trailing `.arche`. Returns a
+ * malloc'd name (caller frees), or NULL for any other token. Mirror of lower.c's helper. */
+static char *sem_import_token_module_name(const char *src, const SyntaxElem *tok) {
+	if (tok->tag != SE_TOKEN)
+		return NULL;
+	TokenKind k = tok->as.token.kind;
+	if (k != TOK_IDENT && k != TOK_STRING)
+		return NULL;
+	size_t off = tok->as.token.offset, len = tok->as.token.length;
+	if (k == TOK_STRING && len >= 2) { /* strip the quotes */
+		off += 1;
+		len -= 2;
+	}
+	char *s = sem_txt_dup((CvText){src + off, len});
+	if (k == TOK_STRING) {
+		char *slash = strrchr(s, '/');
+		char *base = slash ? slash + 1 : s;
+		size_t bl = strlen(base);
+		if (bl > 6 && strcmp(base + bl - 6, ".arche") == 0)
+			base[bl - 6] = '\0';
+		if (base != s)
+			memmove(s, base, strlen(base) + 1);
+	}
+	return s;
 }
 
 /* Inline module `mod_name`'s decls into `prog` (prefixed so intra-module refs resolve), record its
@@ -5970,13 +6177,25 @@ static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc
 	int fulln = 0, fullcap = 0;
 	char **expset = NULL;
 	int expn = 0, expcap = 0;
+	/* A module is a DEVICE if ANY of its files is a `.ds.arche` datasheet. A device's impl (`.arche`)
+	 * is behavior-only — decls collected from it are tagged so the rule-3 sweep can reject type/
+	 * archetype/allocation definitions there. */
+	int module_is_device = 0;
+	for (int m = 0; m < g_sem_module_count; m++)
+		if (strcmp(g_sem_modules[m].name, mod_name) == 0 && sem_is_datasheet_file(g_sem_modules[m].filename))
+			module_is_device = 1;
 	for (int m = 0; m < g_sem_module_count; m++) {
 		if (strcmp(g_sem_modules[m].name, mod_name) != 0)
 			continue;
 		found = 1;
 		const SyntaxNode *mr = g_sem_modules[m].root;
 		const char *msrc = g_sem_modules[m].src;
-		int exported = 1; /* band resets per file */
+		int ds = sem_is_datasheet_file(g_sem_modules[m].filename); /* `.ds.arche` → decls stay global */
+		int exported = 1;                                          /* band resets per file */
+		int file_local = 0;                                        /* sticky once a `#file` banner is seen */
+		int file_first = prog->decl_count;                         /* this file's decl range, for the #file rename */
+		char **fileset = NULL;                                     /* this file's `#file` decl names */
+		int filesetn = 0, filesetcap = 0;
 		for (int j = 0; j < mr->child_count; j++) {
 			if (mr->children[j].tag != SE_NODE)
 				continue;
@@ -5986,25 +6205,43 @@ static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc
 				CstView rv = {cn, msrc};
 				int is_block = cv_has_token(rv, TOK_LBRACE);
 				int is_foreign = cv_has_token(rv, TOK_HASH_FOREIGN);
+				int is_file = cv_has_token(rv, TOK_HASH_FILE);
 				if (is_block) {
 					int child_exp = is_foreign ? exported : 0;
+					int child_fl = is_file ? 1 : file_local;
 					for (int c = 0; c < cn->child_count; c++) {
 						if (cn->children[c].tag != SE_NODE)
 							continue;
 						if (!sem_is_collectible_decl(cn->children[c].as.node->kind))
 							continue;
 						sem_add_module_decl(cn->children[c].as.node, msrc, mod_name, prog, &full, &fulln, &fullcap,
-						                    &expset, &expn, &expcap, child_exp);
+						                    &expset, &expn, &expcap, child_exp, ds, module_is_device, child_fl,
+						                    &fileset, &filesetn, &filesetcap);
 					}
 				} else if (!is_foreign) {
 					exported = 0;
+					if (is_file)
+						file_local = 1; /* `#file` banner → rest of this file is file-local */
 				}
 				continue;
 			}
 			if (!sem_is_collectible_decl(mk))
 				continue;
-			sem_add_module_decl(cn, msrc, mod_name, prog, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported);
+			sem_add_module_decl(cn, msrc, mod_name, prog, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported,
+			                    ds, module_is_device, file_local, &fileset, &filesetn, &filesetcap);
 		}
+		/* Rename this file's `#file` decls (+ their intra-file references) to a file-unique identity
+		 * `<mod>.__f<m>.<name>` so a sibling file's bare reference to the same name does NOT bind to
+		 * them — `#file` = visible only within its own file. (`m` is unique per file.) */
+		if (filesetn > 0) {
+			char fprefix[300];
+			snprintf(fprefix, sizeof(fprefix), "%s.__f%d", mod_name, m);
+			for (int dd = file_first; dd < prog->decl_count; dd++)
+				sem_rename_decl(prog->decls[dd], fprefix, fileset, filesetn);
+			for (int x = 0; x < filesetn; x++)
+				free(fileset[x]);
+		}
+		free(fileset);
 	}
 	if (!found) {
 		free(full);
@@ -6041,10 +6278,9 @@ static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc
 				continue;
 			const SyntaxNode *un = mr->children[j].as.node;
 			for (int t = 0; t < un->child_count; t++) {
-				if (un->children[t].tag != SE_TOKEN || un->children[t].as.token.kind != TOK_IDENT)
+				char *sub = sem_import_token_module_name(msrc, &un->children[t]);
+				if (!sub)
 					continue;
-				CvText tk = {msrc + un->children[t].as.token.offset, un->children[t].as.token.length};
-				char *sub = sem_txt_dup(tk);
 				sem_inline_module(sub, prog, acc_prefix, acc_set, acc_count, acc_n);
 				free(sub);
 			}
@@ -6099,14 +6335,13 @@ static AstProgram *cst_to_program(const SyntaxNode *root, const char *src) {
 		CstView dv = {root->children[i].as.node, src};
 
 		if (k == SN_USE_DECL) {
-			/* One IDENT per imported module (`#import io` / `#import { io net }`). Inline each —
+			/* One element per import: IDENT = device by name, STRING = module by path. Inline each —
 			 * the helper recurses into the module's own transitive imports + dedups. */
 			const SyntaxNode *un = dv.node;
 			for (int t = 0; t < un->child_count; t++) {
-				if (un->children[t].tag != SE_TOKEN || un->children[t].as.token.kind != TOK_IDENT)
+				char *mod_name = sem_import_token_module_name(src, &un->children[t]);
+				if (!mod_name)
 					continue;
-				CvText tk = {src + un->children[t].as.token.offset, un->children[t].as.token.length};
-				char *mod_name = sem_txt_dup(tk);
 				sem_inline_module(mod_name, prog, acc_prefix, acc_set, acc_count, &acc_n);
 				free(mod_name);
 			}
@@ -6162,6 +6397,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 	int *deferred_value_ctx = malloc(sizeof(int) * deferred_cap);
 	int *deferred_transparent = malloc(sizeof(int) * deferred_cap);
 	int *deferred_done = calloc(deferred_cap, sizeof(int));
+	int *deferred_datasheet = calloc(deferred_cap, sizeof(int)); /* shared datasheet vocab dedups on agreement */
 	SourceLoc *deferred_loc = malloc(sizeof(SourceLoc) * deferred_cap);
 	int deferred_count = 0;
 
@@ -6169,6 +6405,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 		if (prog->decls[i]->kind != DECL_CONST)
 			continue;
 		ConstDecl *c = prog->decls[i]->data.constant;
+		int ds = prog->decls[i]->is_datasheet; /* shared datasheet vocabulary dedups on agreement */
 
 		/* Loc for diagnostics + registry storage: prefer the value/type-form's own loc
 		 * (the offending sub-node) over the wrapping Decl's; falls back to decl loc. */
@@ -6193,14 +6430,14 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 					size_t L = strlen(c->name) + 1 + strlen(fn) + 1;
 					char *aname = malloc(L);
 					snprintf(aname, L, "%s_%s", c->name, fn);
-					register_type_alias(ctx, aname, fbacking, ft->loc); /* aname leaks like the old path */
+					register_type_alias(ctx, aname, fbacking, ft->loc, ds); /* aname leaks like the old path */
 				}
 			} else {
 				const char *backing = type_backing_name(c->type_value);
 				if (!backing)
 					sem_emit_alias_backing_invalid(ctx, c->type_value->loc);
 				else
-					register_type_alias_tiered(ctx, c->name, backing, c->type_value->is_transparent, cloc);
+					register_type_alias_tiered(ctx, c->name, backing, c->type_value->is_transparent, cloc, ds);
 			}
 			continue;
 		}
@@ -6224,6 +6461,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 			deferred_rhs[deferred_count] = c->value->data.name.name;
 			deferred_value_ctx[deferred_count] = (c->decl_type != NULL);
 			deferred_transparent[deferred_count] = c->is_transparent;
+			deferred_datasheet[deferred_count] = ds;
 			deferred_loc[deferred_count] = cloc;
 			deferred_count++;
 			continue;
@@ -6244,7 +6482,8 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 				if (deferred_value_ctx[d]) {
 					sem_emit_const_value_is_type(ctx, deferred_loc[d], deferred_name[d], r);
 				} else {
-					register_type_alias_tiered(ctx, deferred_name[d], r, deferred_transparent[d], deferred_loc[d]);
+					register_type_alias_tiered(ctx, deferred_name[d], r, deferred_transparent[d], deferred_loc[d],
+					                           deferred_datasheet[d]);
 				}
 				deferred_done[d] = 1;
 				progress = 1;
@@ -6274,8 +6513,8 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 		if (deferred_value_ctx[d]) {
 			sem_emit_unknown_const_value(ctx, deferred_loc[d], deferred_rhs[d], deferred_name[d]);
 		} else {
-			register_type_alias_tiered(ctx, deferred_name[d], deferred_rhs[d], deferred_transparent[d],
-			                           deferred_loc[d]);
+			register_type_alias_tiered(ctx, deferred_name[d], deferred_rhs[d], deferred_transparent[d], deferred_loc[d],
+			                           deferred_datasheet[d]);
 		}
 	}
 	free(deferred_name);
@@ -6283,6 +6522,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 	free(deferred_value_ctx);
 	free(deferred_transparent);
 	free(deferred_done);
+	free(deferred_datasheet);
 	free(deferred_loc);
 
 	/* Enums: register the type (as an int-backed alias so `m: method` resolves) and its variants
@@ -6294,7 +6534,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 		register_enum_entries(ctx, e);
 		/* An enum is a transparent (tier-1) int alias: variants are int values and `match`/comparison
 		 * treat the enum as int, so it must interchange with int freely. */
-		register_type_alias_tiered(ctx, sem_dupz(e->name), "int", 1, prog->decls[i]->loc);
+		register_type_alias_tiered(ctx, sem_dupz(e->name), "int", 1, prog->decls[i]->loc, prog->decls[i]->is_datasheet);
 	}
 
 	/* Inline component definitions: `arche Foo { hp :: int, … }` mints the nominal type `hp`
@@ -6305,6 +6545,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 	for (int i = 0; i < prog->decl_count; i++) {
 		if (prog->decls[i]->kind != DECL_ARCHETYPE)
 			continue;
+		int ds = prog->decls[i]->is_datasheet; /* datasheet shapes share vocabulary — dedup on agreement */
 		ArchetypeDecl *a = prog->decls[i]->data.archetype;
 		for (int f = 0; f < a->field_count; f++) {
 			FieldDecl *fd = a->fields[f];
@@ -6325,10 +6566,12 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 				if (strcmp(ctx->type_alias_names[j], fd->name) == 0) {
 					/* Define-once (E0045 on agreement, E0010 on a different backing): an inline
 					 * component that re-defines a name already minted elsewhere — by another
-					 * archetype or a top-level alias — is a redefinition, not a shared reference. */
+					 * archetype or a top-level alias — is a redefinition, not a shared reference.
+					 * EXCEPTION: a datasheet shape that AGREES is shared vocabulary (two devices using
+					 * the same shape) — dedup silently. */
 					if (strcmp(ctx->type_alias_backings[j], backing) != 0)
 						sem_emit_type_alias_redefined(ctx, fd->loc, fd->name);
-					else
+					else if (!ds)
 						sem_emit_component_redefined(ctx, fd->loc, fd->name);
 					done = 1;
 					break;
@@ -6338,7 +6581,7 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 				continue;
 			/* A component is a tier-2 subtype (distinct nominal, usable as backing) — same as a
 			 * top-level `name :: T`. Route through the registry helper so the tier array stays in sync. */
-			register_type_alias_tiered(ctx, fd->name, backing, 0, fd->loc);
+			register_type_alias_tiered(ctx, fd->name, backing, 0, fd->loc, ds);
 		}
 	}
 
@@ -6411,6 +6654,10 @@ static void analyze_program_core(SemanticContext *ctx, AstProgram *prog, int era
 			analyze_decl(ctx, prog->decls[i]);
 		}
 	}
+
+	/* pass 2.5: device datasheet storage requirements vs the driver's pools (min met, none missing). */
+	sem_check_storage_requirements(ctx);
+	sem_check_device_impl_decls(ctx);
 
 	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The
 	 * two kinds are still distinct (keyword, `-> T` vs out-list, call form), but the name namespace
@@ -6670,6 +6917,7 @@ void semantic_context_free(SemanticContext *ctx) {
 	for (int i = 0; i < ctx->archetype_count; i++) {
 		ArchetypeInfo *arch = ctx->archetypes[i];
 		free(arch->signature);
+		free(arch->req_first);
 		for (int j = 0; j < arch->field_count; j++) {
 			free(arch->fields[j]->name);
 			/* don't free arch->fields[j]->type - owned by AST */

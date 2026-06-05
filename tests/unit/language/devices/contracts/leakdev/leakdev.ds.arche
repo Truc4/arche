@@ -1,0 +1,4 @@
+// leakdev's CONTRACT (datasheet): the only thing this device shares is the component `val`. Support
+// file (not a standalone test). Its implementation file leaks a public type NOT listed here.
+// RUN: true
+val :: float

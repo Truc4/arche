@@ -2,7 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "doctest_run.h"
-#include "../driver/compile.h"
+#include "../compile/compile.h"
 #include "../parser/parser.h"
 #include "doctest_extract.h"
 #include <dirent.h>
@@ -66,6 +66,67 @@ static void dir_of(const char *path, char *buf, size_t bufsz) {
 	buf[n] = '\0';
 }
 
+static int dt_has_suffix(const char *name, const char *suf) {
+	size_t L = strlen(name), S = strlen(suf);
+	return L >= S && strcmp(name + L - S, suf) == 0;
+}
+
+/* Append `s` to a growable buffer. */
+static void dt_str_append(char **buf, size_t *len, size_t *cap, const char *s) {
+	size_t sl = strlen(s);
+	if (*len + sl + 1 > *cap) {
+		*cap = (*len + sl + 1) * 2;
+		*buf = realloc(*buf, *cap);
+	}
+	memcpy(*buf + *len, s, sl);
+	*len += sl;
+	(*buf)[*len] = '\0';
+}
+
+/* If `dir` is a DEVICE folder (contains a `*.ds.arche` datasheet), return the concatenation of ALL
+ * its `.arche` files — datasheets first, then impl — so a doctest in the device compiles as a
+ * generated DRIVER of it: the datasheet's types + storage requirements (which become real allocations
+ * in this single combined unit, not module-inlined) + the impl behavior are all in scope. The doctest
+ * can then drive the device's shapes with no manual pool sizing. Returns an owned string, or NULL if
+ * `dir` is not a device (caller falls back to the single-file source). */
+static char *read_device_context(const char *dir) {
+	DIR *d = opendir(dir);
+	if (!d)
+		return NULL;
+	int is_device = 0;
+	struct dirent *ent;
+	while ((ent = readdir(d)) != NULL)
+		if (dt_has_suffix(ent->d_name, ".ds.arche")) {
+			is_device = 1;
+			break;
+		}
+	if (!is_device) {
+		closedir(d);
+		return NULL;
+	}
+	char *buf = NULL;
+	size_t len = 0, cap = 0;
+	/* Phase 0: datasheets (types + requirements first); phase 1: impl `.arche` files. */
+	for (int phase = 0; phase < 2; phase++) {
+		rewinddir(d);
+		while ((ent = readdir(d)) != NULL) {
+			int ds = dt_has_suffix(ent->d_name, ".ds.arche");
+			if (!dt_has_suffix(ent->d_name, ".arche") || (phase == 0) != ds)
+				continue;
+			char fp[1300];
+			snprintf(fp, sizeof(fp), "%s/%s", dir, ent->d_name);
+			char *fc = read_file(fp);
+			if (fc) {
+				dt_str_append(&buf, &len, &cap, fc);
+				dt_str_append(&buf, &len, &cap, "\n");
+				free(fc);
+			}
+		}
+	}
+	closedir(d);
+	return buf;
+}
+
 /* Build the synthesized program for one example. In-file model: the example runs with the
  * documented file's FULL context — every decl in the file, private/file-local included — not
  * just its public API (a doctest is a unit test, which shouldn't be limited to exports). So we
@@ -74,17 +135,22 @@ static void dir_of(const char *path, char *buf, size_t bufsz) {
  *
  * `core` is special — compile_source already prepends core.arche to every unit, so a doctest in
  * core/core.arche must NOT re-include it (that would redeclare the whole prelude); its decls are
- * in scope implicitly, so `file_prefix` is empty there. */
+ * in scope implicitly, so `file_prefix` is empty there.
+ *
+ * `fmt` (the assertion library) is always made available to examples via an injected `#import { fmt }`
+ * — `fmt.assert` is the doctest assertion idiom, and a module shouldn't have to depend on fmt just to
+ * be doctestable. The import dedups if the file already imports fmt. */
 static char *synthesize(const char *file_source, int is_core, const DoctestExample *ex) {
 	const char *prefix = is_core ? "" : file_source;
-	size_t need = strlen(prefix) + strlen("\nmain :: proc() {\n}\n") + strlen(ex->code) + 8;
+	const char *fmt_import = is_core ? "" : "#import { fmt }\n";
+	size_t need = strlen(fmt_import) + strlen(prefix) + strlen("\nmain :: proc() {\n}\n") + strlen(ex->code) + 8;
 	char *out = malloc(need);
 	if (!out)
 		return NULL;
 	if (ex->has_main)
-		snprintf(out, need, "%s\n%s", prefix, ex->code);
+		snprintf(out, need, "%s%s\n%s", fmt_import, prefix, ex->code);
 	else
-		snprintf(out, need, "%s\nmain :: proc() {\n%s}\n", prefix, ex->code);
+		snprintf(out, need, "%s%s\nmain :: proc() {\n%s}\n", fmt_import, prefix, ex->code);
 	return out;
 }
 
@@ -250,6 +316,11 @@ static int run_one(const char *path, int quiet_empty, int verbose, DtTally *t) {
 	snprintf(synth_path, sizeof(synth_path), "%s/__arche_doctest_synth__.arche", dir);
 	int is_core = (strcmp(module, "core") == 0);
 
+	/* If this file lives in a DEVICE folder, compile the example as a generated driver over the whole
+	 * device (datasheet + all impl files), so it can drive the device's datasheet-declared shapes. */
+	char *device_ctx = is_core ? NULL : read_device_context(dir);
+	const char *ctx_source = device_ctx ? device_ctx : source;
+
 	int passed = 0, failed = 0, ignored = 0;
 	for (int i = 0; i < ex.count; i++) {
 		DoctestExample *e = &ex.items[i];
@@ -262,7 +333,7 @@ static int run_one(const char *path, int quiet_empty, int verbose, DtTally *t) {
 			continue;
 		}
 
-		char *synth = synthesize(source, is_core, e);
+		char *synth = synthesize(ctx_source, is_core, e);
 		char exe[256];
 		snprintf(exe, sizeof(exe), "/tmp/arche_dt_%d_%d", (int)getpid(), i);
 		int rc = synth ? compile_capturing(synth, synth_path, exe, captured, sizeof(captured)) : 1;
@@ -322,6 +393,7 @@ static int run_one(const char *path, int quiet_empty, int verbose, DtTally *t) {
 	t->ignored += ignored;
 	doctest_examples_free(&ex);
 	free(source); /* kept alive through synthesis (in-file model embeds it) */
+	free(device_ctx);
 	return failed > 0 ? 1 : 0;
 }
 

@@ -1,0 +1,5 @@
+// A plain module (no datasheet) imported BY PATH from path_import.arche. Support file.
+// RUN: true
+greet :: func() -> int {
+  return 42;
+}

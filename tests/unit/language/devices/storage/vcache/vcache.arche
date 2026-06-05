@@ -1,0 +1,5 @@
+// `vcache` implementation: a system over the shared `Cell` shape (pre-defined components). Support file.
+// RUN: true
+vtouch :: sys (a) {
+  a = a + 1.0;
+}

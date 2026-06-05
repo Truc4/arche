@@ -1,0 +1,10 @@
+// RULE (the #file privacy fix): `#file` makes a decl visible ONLY within its own file. sib_filepriv's
+// parta.arche marks `helper` as #file; its sibling partb.arche references `helper` — which must be an
+// ERROR (helper is invisible across files). Today #file == #module, so helper leaks to the sibling and
+// this WRONGLY builds — so this test fails until #file is truly file-local.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "undefined.*helper|helper.*undefined" %t.out
+#import { sib_filepriv fmt }
+
+main :: proc() {
+  fmt.printf("%d\n", sib_filepriv.useit());
+}

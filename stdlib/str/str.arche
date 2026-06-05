@@ -8,8 +8,8 @@
 /// foreign buffer (e.g. a raw `argv` pointer); for native arche slices, `.length` already carries it.
 ///
 /// ```arche
-/// assert(strlen("hello") == 5, "strlen hello\n");
-/// assert(strlen("") == 0, "strlen empty\n");
+/// fmt.assert(strlen("hello") == 5, "strlen hello\n");
+/// fmt.assert(strlen("") == 0, "strlen empty\n");
 /// ```
 strlen :: func(s: char[]) -> int {
   i := 0;
@@ -37,8 +37,8 @@ strcopy :: func(own dst: char[], src: char[]) -> char[] {
 /// scan a sub-range (e.g. a request target between two spaces) without allocating a sub-slice.
 ///
 /// ```arche
-/// assert(find_char("a b", 0, 3, ' ') == 1, "find space\n");
-/// assert(find_char("abc", 0, 3, 'z') == 3, "absent → end\n");
+/// fmt.assert(find_char("a b", 0, 3, ' ') == 1, "find space\n");
+/// fmt.assert(find_char("abc", 0, 3, 'z') == 3, "absent → end\n");
 /// ```
 find_char :: func(s: char[], start: int, end: int, ch: int) -> int {
   for (i := start; i < end; i += 1) {
@@ -52,8 +52,8 @@ find_char :: func(s: char[], start: int, end: int, ch: int) -> int {
 /// true if slice `s` ends with slice `suf` (both length-carried — no NUL scan).
 ///
 /// ```arche
-/// assert(ends_with("a.html", ".html"), "html\n");
-/// assert(!ends_with("a.css", ".html"), "no match\n");
+/// fmt.assert(ends_with("a.html", ".html"), "html\n");
+/// fmt.assert(!ends_with("a.css", ".html"), "no match\n");
 /// ```
 ends_with :: func(s: char[], suf: char[]) -> bool {
   ls := s.length;
@@ -72,8 +72,8 @@ ends_with :: func(s: char[], suf: char[]) -> bool {
 /// true if `s` contains `needle` (substring search over length-carried slices).
 ///
 /// ```arche
-/// assert(contains("/a/../b", ".."), "has dotdot\n");
-/// assert(!contains("/a/b", ".."), "clean path\n");
+/// fmt.assert(contains("/a/../b", ".."), "has dotdot\n");
+/// fmt.assert(!contains("/a/b", ".."), "clean path\n");
 /// ```
 contains :: func(s: char[], needle: char[]) -> bool {
   ln := needle.length;

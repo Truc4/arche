@@ -1,0 +1,12 @@
+// `arche init device <name>` scaffolds a device folder (datasheet + impl) whose doctest passes;
+// `arche init driver <name>` scaffolds a driver file. The generated device is a real, testable device:
+// its shape lives in the datasheet (.ds.arche) and the doctest drives it via the generated-driver path.
+// RUN: rm -rf %t.dev && mkdir -p %t.dev && cd %t.dev && %arche init device gadget && test -f gadget/gadget.ds.arche && test -f gadget/gadget.arche && %arche test gadget/gadget.arche | grep -q "ok"
+// RUN: rm -rf %t.drv && mkdir -p %t.drv && cd %t.drv && %arche init driver app && test -f app.arche
+// `arche init driver <name> <device>...` scaffolds a driver importing the devices and pre-fills a
+// pool for each shape they require, at the datasheet minimum — then it builds.
+// RUN: rm -rf %t.dd && mkdir -p %t.dd/store && cp %repo/tests/unit/language/devices/storage/store/store.arche %repo/tests/unit/language/devices/storage/store/store.ds.arche %t.dd/store/ && cd %t.dd && %arche init driver app store && grep -q "Node\[4\]" app.arche && %arche build -o app app.arche && ./app | grep -q "ran"
+#import { fmt }
+main :: proc() {
+  fmt.printf("init_cli_ok\n");
+}

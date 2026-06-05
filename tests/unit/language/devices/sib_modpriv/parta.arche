@@ -1,0 +1,7 @@
+// `helper` is `#module` — visible across ALL of sib_modpriv's files (incl. the sibling partb.arche),
+// but not exported to importers. Support file.
+// RUN: true
+#module
+helper :: func() -> int {
+  return 7;
+}

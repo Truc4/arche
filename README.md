@@ -12,6 +12,10 @@ data-oriented-design / ECS exploration - basically a playground for the idea.
 
 **Editor support:** [Truc4/arche.nvim](https://github.com/Truc4/arche.nvim) - a Neovim plugin / LSP client.
 
+**Libraries — devices & drivers:** Arche organizes reusable code as *devices* (a group of files
+defining shapes + systems) and *drivers* (programs that size the storage and run them). See
+[docs/devices.md](docs/devices.md).
+
 ## Why Arche?
 
 Arche is a playground for **data-oriented design (DOD)** as a language, not a pattern you

@@ -1,0 +1,11 @@
+// Support device for plugin_visibility.arche: `pub` is exported; `#module` marks `secret`
+// device-private (visible here, hidden from importers). Not a standalone test.
+// RUN: true
+pub :: func(x: int) -> int {
+  return secret(x) + 1;
+}
+
+#module
+secret :: func(x: int) -> int {
+  return x * 2;
+}

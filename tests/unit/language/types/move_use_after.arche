@@ -1,6 +1,6 @@
 // `move f` transfers ownership at the call site; using f afterward is a compile error —
 // even when the callee does not itself consume (the `move` marks the hand-off explicitly).
-// Uses the real `io.file` opaque (`io.fwrite` borrows `fd`, but the explicit `move` still
+// Uses the real `file` opaque (`io.fwrite` borrows `fd`, but the explicit `move` still
 // consumes the binding) — no FFI stub needed.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
 #import { io }

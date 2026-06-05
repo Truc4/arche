@@ -1,0 +1,16 @@
+// Pre-defined-component style + sharing: `vstore` and `vcache` both declare the same pre-defined
+// components (`a`/`b`) and shape (`Cell`), with minimums 4 and 16. They dedup to one shared shape and
+// one driver pool sized to the max (16). The build notes the shared shape; both devices' systems run.
+// RUN: %arche build -o %t %s 2> %t.err && %t | grep "predef_shared_ok" && grep -qiE "shared pool|datasheets require" %t.err
+#import { vstore vcache fmt }
+
+Cell[16] // one pool, sized to max(4, 16)
+
+main :: proc() {
+  insert(Cell, 1.0, 2.0);
+  run vstore.vbump; // b: 2 -> 3
+  run vcache.vtouch; // a: 1 -> 2
+  fmt.assert(Cell.b[0] == 3.0, "vstore.vbump did not run\n");
+  fmt.assert(Cell.a[0] == 2.0, "vcache.vtouch did not run\n");
+  fmt.printf("predef_shared_ok\n");
+}

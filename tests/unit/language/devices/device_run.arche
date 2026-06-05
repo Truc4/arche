@@ -1,0 +1,15 @@
+// A driver runs a plain (path-imported) module's system over the pool it sized. `phys` is a plain
+// module (no datasheet) → it merges FLAT: its `Particle` shape and `integrate` system are bare (no
+// `phys.` prefix). After `run integrate`, pos[0] = 10 + 1 = 11.
+// RUN: %arche build -o %t %s && %t | grep "ran_ok"
+#import { "./phys" fmt }
+
+Particle[4]
+
+main :: proc() {
+  insert(Particle, 10.0, 1.0);
+  run integrate;
+  v := Particle.pos[0] * 10.0;
+  fmt.assert(v == 110, "pos[0] != 11.0 after integrate\n");
+  fmt.printf("ran_ok\n");
+}

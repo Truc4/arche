@@ -1,0 +1,5 @@
+// The `cache` device's implementation: a system over the shared `Node` shape. Support file.
+// RUN: true
+touch :: sys (key) {
+  key = key + 1.0;
+}

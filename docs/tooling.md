@@ -20,6 +20,9 @@ It drives `build/arche-analyzer` under the hood (see below).
 ```
 arche [flags] input.arche          # compile to an executable
 arche test <path> [-v]             # run doctests (see DOCTESTS.md)
+arche init device <name>           # scaffold a device folder (shape + system + doctest)
+arche init driver <name> [dev...]  # scaffold a driver file; with devices, fill their required pools
+arche fill <driver>                # size a driver's pools from its imported devices' datasheets
 arche --explain <code>             # print the long-form explanation for a diagnostic
 ```
 
@@ -33,6 +36,10 @@ Compile flags:
 
 `arche test` runs the runnable examples in `///` doc comments - see [DOCTESTS.md](DOCTESTS.md).
 `arche --explain E0001` reads the long-form note from `docs/explain/<code>.md`.
+`arche init` scaffolds the device/driver templates - see [devices.md](devices.md). It never
+overwrites an existing file. `arche fill` writes a pool decl into a driver for each shape its imported
+devices require (at the datasheet minimum) that the driver doesn't already size - idempotent, and
+also run by `arche init driver <name> <device>...`. See [devices.md](devices.md#storage-requirements-datasheet-minimums-and-arche-fill).
 
 ## Diagnostics
 

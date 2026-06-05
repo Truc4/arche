@@ -1,0 +1,7 @@
+// Two pool decls resolving to one (imported) canonical shape must error, not silently
+// take the first — the driver owns at most one pool per shape.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "already allocated" %t.out
+#import { "./phys" }
+
+Particle[8]
+Particle[4]

@@ -759,6 +759,18 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		return 0;
 	advance(parser); /* the binding name — a bare leading IDENT for every top-level form */
 
+	/* Qualified pool head: `lib.Particle[N]` sizes an imported shape's pool. Consume the
+	 * `.IDENT` chain (reassembled to the dotted canonical name in lowering). Only a pool decl
+	 * has a dotted binding name — no other top-level form does — so this is unambiguous. */
+	while (check(parser, TOK_DOT)) {
+		advance(parser); /* '.' */
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "expected an identifier after `.` in a qualified pool name");
+			return 0;
+		}
+		advance(parser); /* the next name segment */
+	}
+
 	/* Pool allocation: `Name[C](N){V}` — capacity in `[]`, optional initial live-count in
 	 * `()`, optional field-init block `{}`. Top-level position implies static storage; the
 	 * name references the archetype shape whose singleton pool to allocate. */
@@ -1008,7 +1020,41 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser); /* consume ')' */
 			continue;
 		}
-		error(parser, "Unknown decorator (recognized: @allow_pure_proc, @allow(<slug>), @drop(<type>), @intrinsic)");
+		if (cur_ident_is(parser, "implements", 10)) {
+			/* `@implements(<device>.<req>, …)` — driver-side binding: the decorated decl is this
+			 * driver's implementation of each named device requirement. Recorded on the decl as
+			 * tokens; lowering renames each requirement to this decl's name (`foo` → `bar`). */
+			advance(parser); /* consume 'implements' */
+			if (!check(parser, TOK_LPAREN)) {
+				error(parser,
+				      "Expected '(' after @implements — name a device requirement, e.g. @implements(physics.foo)");
+				return 0;
+			}
+			advance(parser); /* consume '(' */
+			do {
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "Expected a device requirement name inside @implements(...)");
+					return 0;
+				}
+				advance(parser); /* requirement leading segment */
+				while (check(parser, TOK_DOT)) {
+					advance(parser); /* '.' */
+					if (!check(parser, TOK_IDENT)) {
+						error(parser, "Expected an identifier after `.` in @implements(...)");
+						return 0;
+					}
+					advance(parser);
+				}
+			} while (match(parser, TOK_COMMA));
+			if (!check(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')' to close @implements(...)");
+				return 0;
+			}
+			advance(parser); /* consume ')' */
+			continue;
+		}
+		error(parser, "Unknown decorator (recognized: @allow_pure_proc, @allow(<slug>), @drop(<type>), @intrinsic, "
+		              "@implements(<device>.<req>, …))");
 		return 0;
 	}
 
@@ -1020,7 +1066,9 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		/* `#import` is a region in the `#module`/`#file`/`#foreign` family. Two forms:
 		 *   bare   `#import io`            one module (trailing `;` optional)
 		 *   block  `#import { io net … }`  a group of modules (whitespace/`,`/`;` separated)
-		 * Both produce an SN_USE_DECL carrying one IDENT per module; consumers iterate them. */
+		 * An element is either a bare IDENT (a DEVICE, by name) or a STRING literal (a plain MODULE,
+		 * by path: `#import { router "./util" }`). Both produce an SN_USE_DECL carrying one IDENT or
+		 * STRING token per import; consumers iterate them. */
 		advance(parser); /* consume '#import' */
 		if (check(parser, TOK_LBRACE)) {
 			advance(parser); /* consume '{' */
@@ -1029,8 +1077,8 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 				return 0;
 			}
 			while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-				if (!check(parser, TOK_IDENT)) {
-					error(parser, "expected a module name in `#import { ... }` (names are whitespace-separated)");
+				if (!check(parser, TOK_IDENT) && !check(parser, TOK_STRING)) {
+					error(parser, "expected a device name or a \"path\" string in `#import { ... }`");
 					return 0;
 				}
 				advance(parser);
@@ -1047,7 +1095,7 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		 * the block form `#import { ... }`; a bare `#import` followed by anything but module names
 		 * (to EOF) is an error. No single-module special case. */
 		int n = 0;
-		while (check(parser, TOK_IDENT)) {
+		while (check(parser, TOK_IDENT) || check(parser, TOK_STRING)) {
 			advance(parser);
 			n++;
 		}
@@ -1497,15 +1545,27 @@ static int parse_binding_tail(Parser *parser, SyntaxNodeKind *out_kind) {
 	if (match(parser, TOK_COLON)) {
 		if (check(parser, TOK_EQ)) {
 			advance(parser); /* `:=` — inferred variable */
+			int rhs_cp = cst_cp(parser);
 			if (!parse_expression(parser))
 				return 0;
+			if (cst_single_node_kind(parser, rhs_cp) == SN_ARCH_EXPR) {
+				error(parser, "archetypes must be declared at global scope — move this `arche { … }` shape "
+				              "out of the proc/block (anonymous `arche { … }` literals in expressions are fine)");
+				return 0;
+			}
 		} else if (check(parser, TOK_COLON)) {
 			advance(parser); /* `::` — inferred-meta local constant */
 			/* `k :: alias T` — consume the transparent-alias marker; backing parses as the value. */
 			if (parser->current.length == 5 && strncmp(parser->current.start, "alias", 5) == 0)
 				advance(parser);
+			int rhs_cp = cst_cp(parser);
 			if (!parse_expression(parser))
 				return 0;
+			if (cst_single_node_kind(parser, rhs_cp) == SN_ARCH_EXPR) {
+				error(parser, "archetypes must be declared at global scope — move this `arche { … }` shape "
+				              "out of the proc/block (anonymous `arche { … }` literals in expressions are fine)");
+				return 0;
+			}
 		} else {
 			TypeForm tf;
 			if (!parse_type_form(parser, &tf)) /* explicit declared type / meta `T` */
@@ -1720,7 +1780,19 @@ static int parse_statement(Parser *parser) {
 			parser->recursion_depth--;
 			goto cleanup;
 		}
-		advance(parser);
+		advance(parser); /* system name (leading segment) */
+
+		/* Qualified system name: `run device.integrate` — a driver runs an imported device's
+		 * system. Consume the `.IDENT` chain; the dotted name is reassembled in lowering. */
+		while (check(parser, TOK_DOT)) {
+			advance(parser); /* '.' */
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected an identifier after `.` in a qualified system name");
+				parser->recursion_depth--;
+				goto cleanup;
+			}
+			advance(parser);
+		}
 
 		if (!match(parser, TOK_SEMI)) {
 			error(parser, "Expected ';'");

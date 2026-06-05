@@ -1,8 +1,9 @@
-// Negative: one module may NOT call another module's export by its bare name. nsmod_b's `ns_useit`
-// references nsmod_a's `ns_helper` bare; that no longer resolves (it would need `nsmod_a.ns_helper`).
-// This locks out the behavior the old cross-module bare-reference pass used to allow.
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "Undefined symbol 'ns_helper'" %t.out
-#import { nsmod_a nsmod_b fmt }
+// Negative: a DEVICE's pure-Arche export is namespaced — you must call `device.name`, not the bare
+// name. `assert` is an arche proc in the `fmt` device, so bare `assert` does not resolve (only
+// `fmt.assert` does). (Plain/path modules, by contrast, merge FLAT and ARE callable bare — see
+// use/cross_module.arche. `#foreign` externs like `fmt.printf` keep their bare C name and are exempt.)
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "Undefined symbol 'assert'" %t.out
+#import { fmt }
 main :: proc() {
-  fmt.printf("%d\n", nsmod_b.ns_useit(10));
+  assert(1, "x\n"); // bare — assert is a device's arche proc, so this must NOT resolve (needs fmt.assert)
 }

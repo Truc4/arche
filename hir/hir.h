@@ -155,6 +155,10 @@ typedef struct {
 
 typedef struct {
 	HirStaticKind kind;
+	/* A pool decl lowered from a device datasheet (`.ds.arche`) is a storage REQUIREMENT (minimum
+	 * rows the driver must provide), not an allocation: it never emits storage; the driver's own pool
+	 * for the same shape must meet the minimum. Set only for HIR_STATIC_ARCHETYPE from a datasheet. */
+	int is_requirement;
 	union {
 		struct {
 			char *archetype_name;

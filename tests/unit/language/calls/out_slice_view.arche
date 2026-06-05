@@ -4,7 +4,8 @@
 // the length and the viewed bytes. Prints "OK" on success.
 // RUN: %arche build -o %t %s ; %t | grep -q "^OK$"
 #import { fmt }
-@allow_pure_proc view :: proc(buf: char[], n: int)(out: char[]) {
+@allow_pure_proc
+view :: proc(buf: char[], n: int)(out: char[]) {
   out = buf[0: n];
 }
 main :: proc() {

@@ -1,0 +1,8 @@
+// Datasheet for `vcache`, PRE-DEFINED style, requiring the SAME shared `Cell {a, b}` shape, minimum
+// 16. Two devices declaring the same pre-defined components + shape must dedup (shared vocabulary).
+// Support file.
+// RUN: true
+a :: float
+b :: float
+Cell :: arche { a, b }
+Cell[16]

@@ -1,0 +1,18 @@
+// A DEVICE doctest: `widget` declares its `Particle` shape + `Particle[4]` storage requirement in
+// widget.ds.arche; its impl is behavior-only (`integrate`). The doctest below drives the device's OWN
+// datasheet-declared shape — `arche test` compiles it as a generated driver over the whole device
+// folder, so the datasheet's `Particle[4]` provides the pool with no manual sizing in the example.
+// RUN: %arche test %s | grep -q "ok"
+#import { fmt }
+
+/// ```arche
+/// main :: proc() {
+///   insert(Particle, 10.0, 1.0);
+///   run integrate;
+///   fmt.assert(Particle.pos[0] * 10 == 110, "device doctest did not drive its shape\n");
+///   fmt.printf("widget_doctest_ok\n");
+/// }
+/// ```
+integrate :: sys (pos, vel) {
+  pos = pos + vel;
+}

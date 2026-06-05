@@ -4,10 +4,11 @@
 // (`h` is consumed via `sink` so the ONLY error is the illegal write, not the must-consume check.)
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "pass-only" %t.out
 #import { io }
-@allow(proc_could_be_func) make_fd :: proc()(f: io.file) {
+@allow(proc_could_be_func)
+make_fd :: proc()(f: file) {
   f = 0;
 }
-sink :: proc(own f: io.file) {
+sink :: proc(own f: file) {
 }
 
 main :: proc() {

@@ -1,0 +1,9 @@
+// Positive companion to file_private_sibling: a `#module` decl IS visible to sibling files of the same
+// unit. sib_modpriv's parta.arche marks `helper` #module; its sibling partb.arche calls it; the build
+// succeeds and `useit` returns 8. (Stays green before and after the #file fix.)
+// RUN: %arche build -o %t %s && %t | grep -q "modshared=8"
+#import { sib_modpriv fmt }
+
+main :: proc() {
+  fmt.printf("modshared=%d\n", sib_modpriv.useit());
+}

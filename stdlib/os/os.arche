@@ -23,7 +23,8 @@ argv :: proc(i: int)(out: char[]) {
 // arg decays to its data pointer (like C). The fd wrappers below build on it. Call qualified as
 // `os.syscall(...)`.
 #foreign {
-  @intrinsic syscall :: proc(n: i64, a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64)(
+  @intrinsic
+  syscall :: proc(n: i64, a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64)(
     r: i64,
   )
 }

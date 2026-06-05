@@ -1,0 +1,12 @@
+// The driver imports the `store` device (which requires storage for its `Node` shape) but provides
+// NO pool for it. Since the driver owns all storage, a required-but-unprovided shape is a hard error
+// pointing the user at `arche fill`.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "no storage" %t.out
+#import { store fmt }
+
+// no `Node[N]` pool — the store device's requirement is unmet
+
+main :: proc() {
+  run store.bump;
+  fmt.printf("should_not_build\n");
+}

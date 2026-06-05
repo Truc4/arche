@@ -1,0 +1,10 @@
+// A driver must not redefine a component the device's datasheet already provides — datasheet
+// components are global and defined exactly once. Here `libdev`'s datasheet declares `pos`, so the
+// driver redeclaring it is an error. Negative test (reuses the component-uniqueness check).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "defined more than once" %t.out
+#import { libdev }
+
+pos :: float
+
+main :: proc() {
+}

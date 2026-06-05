@@ -1,0 +1,8 @@
+// Support device for qualified_pool.arche: a shape + a system, but NO pool — the driver
+// supplies the storage. Not a standalone test; the no-op RUN keeps lit from running it.
+// RUN: true
+Particle :: arche { pos :: float, vel :: float }
+
+integrate :: sys (pos, vel) {
+  pos = pos + vel;
+}

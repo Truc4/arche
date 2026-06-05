@@ -65,6 +65,10 @@ struct AstProgram {
 
 typedef struct {
 	StaticKind kind;
+	/* A pool decl from a device datasheet (`.ds.arche`) is a storage REQUIREMENT (minimum rows),
+	 * not an allocation: it records a minimum the driver's own pool must meet, never emits storage.
+	 * Set only for STATIC_KIND_ARCHETYPE decls collected from a datasheet file. */
+	int is_requirement;
 	union {
 		struct {
 			char *archetype_name;
@@ -134,6 +138,13 @@ struct Decl {
 	 * validated in semantic to match the proc's single `own` parameter. */
 	int is_drop;
 	char *drop_type;
+	/* 1 if this decl was collected from a device datasheet (`.ds.arche`). Datasheet decls are shared
+	 * GLOBAL vocabulary, so an identical component/type redefinition across two datasheets DEDUPS
+	 * (devices sharing a shape) instead of tripping the driver's define-once rule (E0045). */
+	int is_datasheet;
+	/* 1 if this decl came from a DEVICE's impl file (`.arche` of a unit that also has a `.ds.arche`).
+	 * A device's impl is behavior-only: the rule-3 sweep rejects type/archetype/pool defs here. */
+	int from_device_impl;
 	union {
 		WorldDecl *world;
 		ArchetypeDecl *archetype;

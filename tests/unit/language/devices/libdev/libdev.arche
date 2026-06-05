@@ -1,0 +1,7 @@
+// The `libdev` device's behavior: a system over the datasheet's `pos`/`vel` components. It owns no
+// shape and no storage — the driver provides a shape with these components and sizes it. Not a
+// standalone test (it references the datasheet's global components).
+// RUN: true
+integrate :: sys (pos, vel) {
+  pos = pos + vel;
+}

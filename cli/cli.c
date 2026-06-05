@@ -170,6 +170,8 @@ static const SubCmd k_cmds[] = {
     {"analyze", "language-server analysis (one-shot or --serve)", 0, analyze_run, analyze_specs},
     {"completion", "print a shell completion script (bash|zsh|fish)", 0, completion_run, NULL},
     {"version", "print the arche version", 0, version_run, NULL},
+    {"init", "scaffold a device or driver (arche init <device|driver> <name>)", 0, init_run, NULL},
+    {"fill", "size a driver's pools from its imported devices' datasheets", 0, fill_run, NULL},
 };
 static const int k_cmd_count = (int)(sizeof(k_cmds) / sizeof(k_cmds[0]));
 

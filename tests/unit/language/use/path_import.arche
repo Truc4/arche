@@ -1,0 +1,10 @@
+// A plain MODULE (no datasheet) is imported BY PATH: a string literal in the `#import` block resolves
+// relative to this file's directory (basename minus `.arche` = the module name). Devices import by
+// name; plain modules import by path. `fmt` is still imported by name.
+// RUN: %arche build -o %t %s && %t | grep "path_import_ok"
+#import { "./pathmod" fmt }
+
+main :: proc() {
+  fmt.assert(pathmod.greet() == 42, "path-imported module did not resolve\n");
+  fmt.printf("path_import_ok\n");
+}

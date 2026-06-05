@@ -3,18 +3,19 @@
 // syscall layer; a `file` is a raw fd held in the opaque cell.
 #import { os }
 
-// Primitive opaque handle type for an open file (a raw fd in the opaque cell). The operations
-// below are the only way to act on it; you may move/borrow/return a `file` but not write a raw
-// value into it.
-file :: opaque
+// The `file` opaque type is declared in io.ds.arche (a device's types live in its datasheet, not its
+// impl); the procs below operate on it by bare name (datasheet types are global vocabulary).
 
-@allow(proc_could_be_func) stdin :: proc()(f: file) {
+@allow(proc_could_be_func)
+stdin :: proc()(f: file) {
   f = 0;
 }
-@allow(proc_could_be_func) stdout :: proc()(f: file) {
+@allow(proc_could_be_func)
+stdout :: proc()(f: file) {
   f = 1;
 }
-@allow(proc_could_be_func) stderr :: proc()(f: file) {
+@allow(proc_could_be_func)
+stderr :: proc()(f: file) {
   f = 2;
 }
 // open returns a negative errno on failure; map that to the null cell (0) so callers keep the
@@ -80,7 +81,8 @@ fread_line :: proc(fd: file, own buf: char[], n: int)(out: char[]) {
 }
 // RAII: registers io.fclose as the destructor for `file`. A `file` local that is never
 // explicitly closed is auto-dropped via this proc at scope exit.
-@drop(file) fclose :: proc(own fd: file) {
+@drop(file)
+fclose :: proc(own fd: file) {
   os.syscall(3, fd, 0, 0, 0, 0, 0)(_c:);
 }
 

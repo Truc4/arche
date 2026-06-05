@@ -17,7 +17,7 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src);
 /* Register a `use`d module's CST so lower_to_hir can inline+prefix it
  * (the CST-path equivalent of main.c's resolve_uses). The CST + src must outlive
  * lowering. Call once per `use` before lower_to_hir. */
-void lower_add_module(const char *name, const SyntaxNode *root, const char *src);
+void lower_add_module(const char *name, const SyntaxNode *root, const char *src, const char *filename);
 /* Clear registered modules. The registry is a static global; reset it at the start of each
  * compilation or stale entries accumulate and get inlined again (modules can be folders with
  * multiple files, all inlined). */

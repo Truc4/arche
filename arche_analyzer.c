@@ -177,12 +177,44 @@ static void deferred_free(DeferredDiags *d) {
  * so we keep them alive in `holds` until after analysis. */
 
 /* Dedup set of already-loaded modules (per analyze call; reset in resolve_uses_sem). Marking a
- * name before load also makes transitive `#import` cycle-safe. Mirrors driver/compile.c. */
+ * name before load also makes transitive `#import` cycle-safe. Mirrors compile/compile.c. */
 #define SEM_MAX_LOADED_MODS 256
 static char *g_sem_loaded_mods[SEM_MAX_LOADED_MODS];
 static int g_sem_loaded_count;
 
 static void sem_load_module(const char *name, const char *source_dir, ModuleHolds *holds);
+static void sem_load_module_from_path(const char *pathstr, const char *source_dir, ModuleHolds *holds);
+
+/* Derive the module name an `#import` element resolves to: IDENT = the name verbatim (device by name);
+ * STRING = a path (module by path), name = basename minus a trailing `.arche`. Returns 1 if it was a
+ * STRING path, 0 if IDENT, -1 for any other token. `raw` (caller buf) gets the path text for STRING. */
+static int sem_import_token(const char *src, const SyntaxElem *tok, char *name, size_t ncap, char *raw, size_t rcap) {
+	if (tok->tag != SE_TOKEN)
+		return -1;
+	TokenKind k = tok->as.token.kind;
+	if (k != TOK_IDENT && k != TOK_STRING)
+		return -1;
+	size_t off = tok->as.token.offset, len = tok->as.token.length;
+	if (k == TOK_STRING && len >= 2) {
+		off += 1;
+		len -= 2;
+	}
+	if (len > rcap - 1)
+		len = rcap - 1;
+	memcpy(raw, src + off, len);
+	raw[len] = '\0';
+	if (k == TOK_IDENT) {
+		snprintf(name, ncap, "%s", raw);
+		return 0;
+	}
+	const char *slash = strrchr(raw, '/');
+	const char *base = slash ? slash + 1 : raw;
+	snprintf(name, ncap, "%s", base);
+	size_t bl = strlen(name);
+	if (bl > 6 && strcmp(name + bl - 6, ".arche") == 0)
+		name[bl - 6] = '\0';
+	return 1;
+}
 
 /* Parse one module file, register its CST with the semantic registry (which borrows the CST +
  * source — kept alive in `holds`), then recurse into the module's own `#import`s. */
@@ -197,7 +229,7 @@ static int sem_register_module_file(const char *mod_name, const char *path, cons
 		free(mod_src);
 		return 0;
 	}
-	semantic_add_module(mod_name, mp.cst_root, mod_src);
+	semantic_add_module(mod_name, mp.cst_root, mod_src, path);
 	const SyntaxNode *root = mp.cst_root;
 	const char *src = mod_src;
 	holds_push(holds, mp.cst_root, mod_src); /* keep alive; registry borrows */
@@ -208,15 +240,14 @@ static int sem_register_module_file(const char *mod_name, const char *path, cons
 			continue;
 		const SyntaxNode *ud = root->children[u].as.node;
 		for (int k = 0; k < ud->child_count; k++) {
-			if (ud->children[k].tag != SE_TOKEN || ud->children[k].as.token.kind != TOK_IDENT)
+			char dep[256], raw[512];
+			int kind = sem_import_token(src, &ud->children[k], dep, sizeof(dep), raw, sizeof(raw));
+			if (kind < 0)
 				continue;
-			char dep[256];
-			size_t L = ud->children[k].as.token.length;
-			if (L > sizeof(dep) - 1)
-				L = sizeof(dep) - 1;
-			memcpy(dep, src + ud->children[k].as.token.offset, L);
-			dep[L] = '\0';
-			sem_load_module(dep, source_dir, holds);
+			if (kind == 1)
+				sem_load_module_from_path(raw, source_dir, holds); /* STRING = path import */
+			else
+				sem_load_module(dep, source_dir, holds); /* IDENT = device by name */
 		}
 	}
 	return 1;
@@ -265,6 +296,41 @@ static void sem_load_module(const char *name, const char *source_dir, ModuleHold
 	(void)loaded; /* not-found is reported per import-site by the caller below */
 }
 
+/* Load a plain MODULE imported by PATH (`#import { "./util" }`): resolve relative to the importer's
+ * dir; module name = basename sans `.arche`. Mirror of compile.c's load_module_from_path. */
+static void sem_load_module_from_path(const char *pathstr, const char *source_dir, ModuleHolds *holds) {
+	const char *slash = strrchr(pathstr, '/');
+	const char *base = slash ? slash + 1 : pathstr;
+	char subdir[512];
+	if (slash) {
+		size_t dl = (size_t)(slash - pathstr);
+		if (dl > sizeof(subdir) - 1)
+			dl = sizeof(subdir) - 1;
+		memcpy(subdir, pathstr, dl);
+		subdir[dl] = '\0';
+	} else {
+		subdir[0] = '\0';
+	}
+	char mod_name[256];
+	snprintf(mod_name, sizeof(mod_name), "%s", base);
+	size_t ml = strlen(mod_name);
+	if (ml > 6 && strcmp(mod_name + ml - 6, ".arche") == 0)
+		mod_name[ml - 6] = '\0';
+	if (mod_name[0] == '\0')
+		return;
+	for (int i = 0; i < g_sem_loaded_count; i++)
+		if (strcmp(g_sem_loaded_mods[i], mod_name) == 0)
+			return;
+	if (g_sem_loaded_count < SEM_MAX_LOADED_MODS)
+		g_sem_loaded_mods[g_sem_loaded_count++] = strdup(mod_name);
+	char dir[800];
+	if (subdir[0])
+		snprintf(dir, sizeof(dir), "%s/%s", source_dir, subdir);
+	else
+		snprintf(dir, sizeof(dir), "%s", source_dir);
+	sem_try_load_module_dir(mod_name, dir, dir, holds);
+}
+
 static void resolve_uses_sem(const SyntaxNode *root, const char *src, const char *path, ModuleHolds *holds,
                              DeferredDiags *diags) {
 	if (!root)
@@ -280,19 +346,18 @@ static void resolve_uses_sem(const SyntaxNode *root, const char *src, const char
 		if (root->children[u].tag != SE_NODE || root->children[u].as.node->kind != SN_USE_DECL)
 			continue;
 		const SyntaxNode *ud = root->children[u].as.node;
-		/* One IDENT per module: bare `#import io`, or block `#import { io net }`. Load each. */
+		/* One element per import: IDENT = device by name, STRING = plain module by path. Load each. */
 		for (int k = 0; k < ud->child_count; k++) {
-			if (ud->children[k].tag != SE_TOKEN || ud->children[k].as.token.kind != TOK_IDENT)
+			char mod_name[256], raw[512];
+			int kind = sem_import_token(src, &ud->children[k], mod_name, sizeof(mod_name), raw, sizeof(raw));
+			if (kind < 0)
 				continue;
-			char mod_name[256];
-			size_t L = ud->children[k].as.token.length;
-			if (L > sizeof(mod_name) - 1)
-				L = sizeof(mod_name) - 1;
-			memcpy(mod_name, src + ud->children[k].as.token.offset, L);
-			mod_name[L] = '\0';
 			SourceLoc use_loc = {ud->children[k].as.token.line, ud->children[k].as.token.column};
 			int before = g_sem_loaded_count;
-			sem_load_module(mod_name, source_dir, holds);
+			if (kind == 1)
+				sem_load_module_from_path(raw, source_dir, holds); /* STRING = path import */
+			else
+				sem_load_module(mod_name, source_dir, holds); /* IDENT = device by name */
 			/* If the name was newly marked but nothing registered, it wasn't found. (A dedup hit — the
 			 * module already loaded via another import — leaves `before` unchanged and is fine.) */
 			if (g_sem_loaded_count > before && !semantic_has_module(mod_name))
