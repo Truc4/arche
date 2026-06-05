@@ -6069,7 +6069,8 @@ static void sem_expand_tuple_groups(AstProgram *prog) {
  * `#foreign { ... }` / `#module { ... }` block regions. */
 static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const char *mod_name, AstProgram *prog,
                                 char ***full, int *fulln, int *fullcap, char ***expset, int *expn, int *expcap,
-                                int exported, int is_datasheet, int module_is_device) {
+                                int exported, int is_datasheet, int module_is_device, int file_local, char ***fileset,
+                                int *filesetn, int *filesetcap) {
 	Decl *md = cst_build_decl((CstView){node, msrc});
 	if (!md)
 		return;
@@ -6089,13 +6090,24 @@ static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 	const char *nm = sem_decl_name(md);
 	if (!nm)
 		return;
-	/* A member is accessed by its LITERAL declared name (no `<mod>_`-prefix stripping): a foreign
-	 * decl named `net_send` is `net.net_send`. Foreign decls keep their declared name (the C ABI
-	 * symbol) and are NOT renamed; pure-Arche decls are renamed to the qualified identity
-	 * `<mod>.<name>` so two modules' same-named decls stay distinct AND diagnostics show a clean
-	 * qualified name. Datasheet (`.ds.arche`) decls are shared global vocabulary — NOT renamed, so a
-	 * driver and the device's systems reference them by the one bare name (mirror of lower.c). */
-	if (!is_ext && !is_datasheet) {
+	/* A member is accessed by its LITERAL declared name. A decl is registered FLAT (unprefixed, bare
+	 * export) when it's foreign (C ABI symbol), a datasheet decl (shared global vocabulary), OR from a
+	 * PLAIN module (no `.ds.arche`) — a plain/path module merges flat into the importer (Jai `#load`),
+	 * so `helper()` not `mod.helper()`. Only a DEVICE's pure-Arche impl decls are prefixed to the
+	 * qualified identity `<device>.<name>` (the device's namespaced contract). */
+	int flat = is_ext || is_datasheet || !module_is_device;
+	/* A `#file` decl is file-local: it must NOT join the cross-file `full` set (so sibling files can't
+	 * bind to it) and is never exported. It goes into the per-file `fileset` instead; sem_inline_module
+	 * then renames it (+ its intra-file references) to a file-unique identity. */
+	if (file_local) {
+		if (*filesetn == *filesetcap) {
+			*filesetcap = *filesetcap ? *filesetcap * 2 : 8;
+			*fileset = realloc(*fileset, (size_t)*filesetcap * sizeof(char *));
+		}
+		(*fileset)[(*filesetn)++] = sem_dupz(nm);
+		return;
+	}
+	if (!flat) {
 		if (*fulln == *fullcap) {
 			*fullcap = *fullcap ? *fullcap * 2 : 8;
 			*full = realloc(*full, (size_t)*fullcap * sizeof(char *));
@@ -6107,10 +6119,9 @@ static void sem_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 			*expcap = *expcap ? *expcap * 2 : 8;
 			*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
 		}
-		/* "<member>=<identity>": the literal member name and the symbol it resolves to. Foreign /
-		 * datasheet → the bare name (global); pure-Arche → the qualified identity `<mod>.<name>`. */
+		/* "<member>=<identity>": flat → the bare name; a device's pure-Arche decl → `<device>.<name>`. */
 		char entry[512];
-		if (is_ext || is_datasheet)
+		if (flat)
 			snprintf(entry, sizeof(entry), "%s=%s", nm, nm);
 		else
 			snprintf(entry, sizeof(entry), "%s=%s.%s", nm, mod_name, nm);
@@ -6181,6 +6192,10 @@ static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc
 		const char *msrc = g_sem_modules[m].src;
 		int ds = sem_is_datasheet_file(g_sem_modules[m].filename); /* `.ds.arche` → decls stay global */
 		int exported = 1;                                          /* band resets per file */
+		int file_local = 0;                                        /* sticky once a `#file` banner is seen */
+		int file_first = prog->decl_count;                         /* this file's decl range, for the #file rename */
+		char **fileset = NULL;                                     /* this file's `#file` decl names */
+		int filesetn = 0, filesetcap = 0;
 		for (int j = 0; j < mr->child_count; j++) {
 			if (mr->children[j].tag != SE_NODE)
 				continue;
@@ -6190,26 +6205,43 @@ static void sem_inline_module(const char *mod_name, AstProgram *prog, char **acc
 				CstView rv = {cn, msrc};
 				int is_block = cv_has_token(rv, TOK_LBRACE);
 				int is_foreign = cv_has_token(rv, TOK_HASH_FOREIGN);
+				int is_file = cv_has_token(rv, TOK_HASH_FILE);
 				if (is_block) {
 					int child_exp = is_foreign ? exported : 0;
+					int child_fl = is_file ? 1 : file_local;
 					for (int c = 0; c < cn->child_count; c++) {
 						if (cn->children[c].tag != SE_NODE)
 							continue;
 						if (!sem_is_collectible_decl(cn->children[c].as.node->kind))
 							continue;
 						sem_add_module_decl(cn->children[c].as.node, msrc, mod_name, prog, &full, &fulln, &fullcap,
-						                    &expset, &expn, &expcap, child_exp, ds, module_is_device);
+						                    &expset, &expn, &expcap, child_exp, ds, module_is_device, child_fl,
+						                    &fileset, &filesetn, &filesetcap);
 					}
 				} else if (!is_foreign) {
 					exported = 0;
+					if (is_file)
+						file_local = 1; /* `#file` banner → rest of this file is file-local */
 				}
 				continue;
 			}
 			if (!sem_is_collectible_decl(mk))
 				continue;
 			sem_add_module_decl(cn, msrc, mod_name, prog, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported,
-			                    ds, module_is_device);
+			                    ds, module_is_device, file_local, &fileset, &filesetn, &filesetcap);
 		}
+		/* Rename this file's `#file` decls (+ their intra-file references) to a file-unique identity
+		 * `<mod>.__f<m>.<name>` so a sibling file's bare reference to the same name does NOT bind to
+		 * them — `#file` = visible only within its own file. (`m` is unique per file.) */
+		if (filesetn > 0) {
+			char fprefix[300];
+			snprintf(fprefix, sizeof(fprefix), "%s.__f%d", mod_name, m);
+			for (int dd = file_first; dd < prog->decl_count; dd++)
+				sem_rename_decl(prog->decls[dd], fprefix, fileset, filesetn);
+			for (int x = 0; x < filesetn; x++)
+				free(fileset[x]);
+		}
+		free(fileset);
 	}
 	if (!found) {
 		free(full);

@@ -1,0 +1,3 @@
+// Marker datasheet: makes sib_modpriv a device. Tests that a `#module` decl in one file IS visible to
+// the sibling file (module-wide, just not exported). No types/storage. Support file.
+// RUN: true

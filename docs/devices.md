@@ -17,9 +17,16 @@ is imported by a string path:
 #import { router net "./util" }   // router, net = devices (by name); ./util = a plain module (by path)
 ```
 
-Importing a non-device by bare name is an error that points you at the path form. A path import derives
-the module name from the path's basename (`"./util"` → `util`), so qualified access is unchanged
-(`util.helper()`). `core` (the prelude) is exempt — it is prepended, never imported.
+Importing a non-device by bare name is an error that points you at the path form. `core` (the prelude)
+is exempt — it is prepended, never imported.
+
+**Namespacing is device-only.** A device's pure-Arche exports are namespaced — you call `net.listen`,
+`fmt.assert` (a dot at a call site means you crossed a contract boundary). A **plain module merges
+flat** (Jai `#load` style): its decls land *unprefixed* in the importer, so `#import { "./util" }`
+then `helper()`, not `util.helper()`. Rationale: a plain module is structurally dev-internal (path
+import + no datasheet = not a publishable lib), so it has no contract to namespace — it's just your
+own program split across files. Name collisions across flat-merged files are a hard error (E0117).
+(A device's `#foreign` externs keep their bare C name; only a device's pure-Arche decls get the `device.` prefix.)
 
 **Every stdlib module is a device** (`net io http str router csv fmt parse os term`) — each ships a
 `.ds.arche`, so all are imported by name.
@@ -76,7 +83,7 @@ Components are **program-global** and defined exactly once; reference a componen
 
 ## Visibility
 
-`#module` is a banner region marking the decls below it as **device-private** — visible across the device's files, hidden from importers. `#file` narrows to file-local.
+Three bands (file ⊂ unit ⊂ exported): `#module` is a banner marking the decls below it **unit-private** — visible across the unit's files but hidden from importers. `#file` is strictly narrower: **file-local** — visible only within its own file, NOT to sibling files of the same unit (each file's `#file` decls are renamed to a file-unique identity, so a sibling's bare reference can't bind to them). Default (no banner) is exported.
 
 ## Testing a device
 

@@ -1,0 +1,6 @@
+// partb.arche references `helper`, which is `#module` in the sibling parta.arche — this MUST resolve
+// (a `#module` decl is visible across the unit's files). `useit` is the device's exported behavior.
+// RUN: true
+useit :: func() -> int {
+  return helper() + 1;
+}

@@ -1,0 +1,6 @@
+// `helper` is `#file` — visible ONLY within parta.arche, NOT to the sibling partb.arche. Support file.
+// RUN: true
+#file
+helper :: func() -> int {
+  return 7;
+}

@@ -1,0 +1,6 @@
+// partb.arche references `helper`, which is `#file`-private to the sibling parta.arche — so this must
+// NOT resolve once `#file` is enforced (today it wrongly does, because #file == #module). Support file.
+// RUN: true
+useit :: func() -> int {
+  return helper() + 1;
+}

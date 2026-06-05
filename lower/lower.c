@@ -2719,7 +2719,8 @@ static void hir_q_decl(HirDecl *d, const QualCtx *q) {
  * `#foreign { }` / `#module { }` block regions. */
 static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, const char *mod_name, HirProgram *ast,
                                 char ***full, int *fulln, int *fullcap, char ***expset, int *expn, int *expcap,
-                                int exported, int is_datasheet) {
+                                int exported, int is_datasheet, int module_is_device, int file_local, char ***fileset,
+                                int *filesetn, int *filesetcap) {
 	HirDecl *md = lower_decl_cst((CstView){node, msrc});
 	if (!md)
 		return;
@@ -2746,11 +2747,23 @@ static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 	const char *nm = hir_decl_name(md);
 	if (!nm)
 		return;
-	/* Literal member access (no `<mod>_`-prefix stripping): foreign decls keep their C-symbol name
-	 * and are not renamed; pure-Arche decls are renamed to the qualified identity `<mod>.<name>`.
-	 * Datasheet (`.ds.arche`) decls are shared global vocabulary — NOT renamed (skip the rename set),
-	 * so a driver and the device's systems reference them by the one bare name. */
-	if (!is_ext && !is_datasheet) {
+	/* A decl is registered FLAT (unprefixed, bare export) when foreign (C ABI symbol), a datasheet decl
+	 * (shared global vocabulary), OR from a PLAIN module (no `.ds.arche`) — a plain/path module merges
+	 * flat into the importer (Jai `#load`), so `helper()` not `mod.helper()`. Only a DEVICE's pure-Arche
+	 * impl decls are renamed to the qualified identity `<device>.<name>` (the namespaced contract). */
+	int flat = is_ext || is_datasheet || !module_is_device;
+	/* A `#file` decl is file-local: excluded from the cross-file `full` set + never exported; collected
+	 * into the per-file `fileset` and renamed to a file-unique identity by hir_inline_module (mirror of
+	 * semantic). This also prevents two sibling files' same-named `#file` decls colliding at codegen. */
+	if (file_local) {
+		if (*filesetn == *filesetcap) {
+			*filesetcap = *filesetcap ? *filesetcap * 2 : 8;
+			*fileset = realloc(*fileset, (size_t)*filesetcap * sizeof(char *));
+		}
+		(*fileset)[(*filesetn)++] = dupz(nm);
+		return;
+	}
+	if (!flat) {
 		if (*fulln == *fullcap) {
 			*fullcap = *fullcap ? *fullcap * 2 : 8;
 			*full = realloc(*full, (size_t)*fullcap * sizeof(char *));
@@ -2762,10 +2775,9 @@ static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 			*expcap = *expcap ? *expcap * 2 : 8;
 			*expset = realloc(*expset, (size_t)*expcap * sizeof(char *));
 		}
-		/* "<member>=<identity>": foreign / datasheet → the bare name (global); pure-Arche → `<mod>.<name>`.
-		 * (A datasheet decl is global, so qualified `mod.name` resolves to the same bare name too.) */
+		/* "<member>=<identity>": flat → the bare name; a device's pure-Arche decl → `<device>.<name>`. */
 		char entry[512];
-		if (is_ext || is_datasheet)
+		if (flat)
 			snprintf(entry, sizeof(entry), "%s=%s", nm, nm);
 		else
 			snprintf(entry, sizeof(entry), "%s=%s.%s", nm, mod_name, nm);
@@ -2818,6 +2830,12 @@ static void hir_inline_module(const char *mod_name, HirProgram *ast, char **mod_
 	int fulln = 0, fullcap = 0;
 	char **expset = NULL;
 	int expn = 0, expcap = 0;
+	/* A module is a DEVICE if ANY of its files is a `.ds.arche` datasheet. A device's pure-Arche impl
+	 * decls are namespaced (`device.name`); a plain module's decls merge flat (mirror of semantic). */
+	int module_is_device = 0;
+	for (int m = 0; m < g_module_count; m++)
+		if (strcmp(g_modules[m].name, mod_name) == 0 && is_datasheet_file(g_modules[m].filename))
+			module_is_device = 1;
 	for (int m = 0; m < g_module_count; m++) {
 		if (strcmp(g_modules[m].name, mod_name) != 0)
 			continue;
@@ -2826,6 +2844,10 @@ static void hir_inline_module(const char *mod_name, HirProgram *ast, char **mod_
 		const char *msrc = g_modules[m].src;
 		int ds = is_datasheet_file(g_modules[m].filename); /* `.ds.arche` → decls stay global */
 		int exported = 1;
+		int file_local = 0;               /* sticky once a `#file` banner is seen */
+		int file_first = ast->decl_count; /* this file's decl range, for the #file rename */
+		char **fileset = NULL;            /* this file's `#file` decl names */
+		int filesetn = 0, filesetcap = 0;
 		for (int j = 0; j < mr->child_count; j++) {
 			if (mr->children[j].tag != SE_NODE)
 				continue;
@@ -2835,26 +2857,43 @@ static void hir_inline_module(const char *mod_name, HirProgram *ast, char **mod_
 				CstView rv = {cn, msrc};
 				int is_block = cv_has_token(rv, TOK_LBRACE);
 				int is_foreign = cv_has_token(rv, TOK_HASH_FOREIGN);
+				int is_file = cv_has_token(rv, TOK_HASH_FILE);
 				if (is_block) {
 					int child_exp = is_foreign ? exported : 0;
+					int child_fl = is_file ? 1 : file_local;
 					for (int c = 0; c < cn->child_count; c++) {
 						if (cn->children[c].tag != SE_NODE)
 							continue;
 						if (!hir_is_collectible_decl(cn->children[c].as.node->kind))
 							continue;
 						hir_add_module_decl(cn->children[c].as.node, msrc, mod_name, ast, &full, &fulln, &fullcap,
-						                    &expset, &expn, &expcap, child_exp, ds);
+						                    &expset, &expn, &expcap, child_exp, ds, module_is_device, child_fl,
+						                    &fileset, &filesetn, &filesetcap);
 					}
 				} else if (!is_foreign) {
 					exported = 0;
+					if (is_file)
+						file_local = 1; /* `#file` banner → rest of this file is file-local */
 				}
 				continue;
 			}
 			if (!hir_is_collectible_decl(mk))
 				continue;
-			hir_add_module_decl(cn, msrc, mod_name, ast, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported,
-			                    ds);
+			hir_add_module_decl(cn, msrc, mod_name, ast, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported, ds,
+			                    module_is_device, file_local, &fileset, &filesetn, &filesetcap);
 		}
+		/* Rename this file's `#file` decls (+ intra-file refs) to a file-unique identity `<mod>.__f<m>`
+		 * (mirror of semantic): file-local visibility, and no codegen collision between two sibling
+		 * files' same-named `#file` decls. */
+		if (filesetn > 0) {
+			char fprefix[300];
+			snprintf(fprefix, sizeof(fprefix), "%s.__f%d", mod_name, m);
+			for (int d = file_first; d < ast->decl_count; d++)
+				hir_rn_decl(ast->decls[d], fprefix, fileset, filesetn);
+			for (int x = 0; x < filesetn; x++)
+				free(fileset[x]);
+		}
+		free(fileset);
 	}
 	if (!found) {
 		free(full);
