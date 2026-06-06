@@ -1,5 +1,7 @@
 # Build directory - all artifacts go here
 build/
+# move to build/asan
+build-asan/
 
 # Local tools (act, etc)
 bin/

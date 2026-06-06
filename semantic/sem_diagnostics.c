@@ -149,6 +149,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_unused_use]                    = { "W0010", "unused_use",                    CLASS_LINT, 1 },
 	[SEM_LINT_inout_redundant_arg]           = { "W0011", "inout_redundant_arg",           CLASS_LINT, 1 },
 	[SEM_LINT_inout_param_shadow]            = { "W0012", "inout_param_shadow",            CLASS_LINT, 1 },
+	[SEM_LINT_unused_function]               = { "W0013", "unused_function",               CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -206,6 +207,9 @@ static int g_print_line_offset = 0;
 
 void semantic_set_print_line_offset(int offset) {
 	g_print_line_offset = offset;
+}
+int semantic_print_line_offset(void) {
+	return g_print_line_offset;
 }
 
 int semantic_diag_werror(SemDiagKind kind) {
@@ -832,5 +836,11 @@ SemDiag *sem_emit_lint_inout_param_shadow(SemanticContext *ctx, SourceLoc loc, c
 	return sem_emit_(ctx, SEM_LINT_inout_param_shadow, loc,
 	                 "out-param '%s' shadows the in-param of the same name (in-out): legitimate only for a "
 	                 "`#foreign` proc (C-ABI alignment). Return a fresh out-only result instead",
+	                 name);
+}
+SemDiag *sem_emit_lint_unused_function(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_LINT_unused_function, loc,
+	                 "function '%s' is declared but never called (prefix with '_' to silence, or "
+	                 "@allow(unused_function))",
 	                 name);
 }

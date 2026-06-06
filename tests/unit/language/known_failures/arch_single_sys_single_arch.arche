@@ -1,23 +1,21 @@
 // RUN: %arche build -o %t %s && %t | grep "move"
 // BUG: System operations don't modify fields (see COMPILER_BUG_SYSTEM_OPERATIONS.md)
 #import { fmt }
+
 Particle :: arche {
   pos :: float,
   vel :: float,
 }
 
+Particle[10]
 
-Particle[10];
-
-
-move :: sys(pos, vel) {
-  pos = pos + vel;
+mv :: sys (pos, vel) {
+  pos += vel;
 }
 
-
 main :: proc() {
-  insert(table<Particle>, 1.0, 0.1);
-  run move;
+  insert(Particle, 1.0, 0.1);
+  run mv;
   p := Particle.pos[0];
   pi := p * 10.0;
   fmt.assert(pi == 11, "move failed\n");

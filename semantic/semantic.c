@@ -4569,6 +4569,126 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 	}
 }
 
+/* W0013 unused_function (Rust `dead_code`): warn on a top-level func/proc that is never reachable
+ * from a root. Roots = `main`, externs (C-ABI surface), module/`#file` decls (qualified name carries
+ * a `.` — not the user's main file, an imported API surface), `_`-prefixed names, and `@allow`'d
+ * decls. arche has no `pub` keyword for main-file decls, so "exported" collapses into "is a module
+ * decl". The lint runs on the resolved DeclTable + SemModel call/ref channels — no new tree walk of
+ * the kind analysis already did, just a reachability sweep. */
+
+/* Resolve a call/name node's recorded identity to the index of the matching func/proc/group decl, or
+ * -1. The channels hold the SAME renamed identity as ds->name (see sem_tree_qualify_node), so a plain
+ * string match is the edge. */
+static int dead_decl_index_for(SemanticContext *ctx, const char *name) {
+	if (!name)
+		return -1;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->kind != DECL_FUNC && d->kind != DECL_PROC && d->kind != DECL_FUNC_GROUP)
+			continue;
+		if (d->name && strcmp(d->name, name) == 0)
+			return i;
+	}
+	return -1;
+}
+
+/* Mark decl `idx` reachable; if it is a func GROUP, mark every member too (overload resolution is not
+ * re-run here, so marking the whole group is the conservative no-false-positive choice). New marks are
+ * pushed to the worklist. */
+static void dead_mark(SemanticContext *ctx, int idx, char *reachable, int *work, int *work_n) {
+	if (idx < 0 || reachable[idx])
+		return;
+	reachable[idx] = 1;
+	work[(*work_n)++] = idx;
+	DeclSummary *d = ctx->decls[idx];
+	if (d->kind == DECL_FUNC_GROUP)
+		for (int m = 0; m < d->member_count; m++)
+			dead_mark(ctx, dead_decl_index_for(ctx, d->member_names[m]), reachable, work, work_n);
+}
+
+/* Walk a body subtree, marking the target of every call (callee_name channel) and every bare name
+ * reference (ref_name channel — covers a proc/func handed by name as a compile-time callback arg). */
+static void dead_walk(SemanticContext *ctx, const SyntaxNode *n, const char *src, char *reachable, int *work,
+                      int *work_n) {
+	if (!n)
+		return;
+	SyntaxView v = (SyntaxView){n, src};
+	SyntaxNodeKind k = sv_kind(v);
+	if (k == SN_CALL_EXPR)
+		dead_mark(ctx, dead_decl_index_for(ctx, sem_model_callee_name(ctx->model, sv_id(v))), reachable, work, work_n);
+	else if (k == SN_NAME_EXPR)
+		dead_mark(ctx, dead_decl_index_for(ctx, sem_model_ref_name(ctx->model, sv_id(v))), reachable, work, work_n);
+	for (int i = 0; i < n->child_count; i++)
+		if (n->children[i].tag == SE_NODE)
+			dead_walk(ctx, n->children[i].as.node, src, reachable, work, work_n);
+}
+
+/* A func/proc that is always kept regardless of reachability. */
+static int dead_is_root(const DeclSummary *d) {
+	if (!d->name)
+		return 1;
+	if (strcmp(d->name, "main") == 0)
+		return 1;
+	if (d->is_extern)
+		return 1;
+	if (strchr(d->name, '.')) /* module / `#file` decl — not the user's main file */
+		return 1;
+	if (d->name[0] == '_') /* Rust `_`-prefix silence */
+		return 1;
+	return 0;
+}
+
+static void sem_check_dead_code(SemanticContext *ctx) {
+	if (!ctx->model || ctx->decl_count <= 0)
+		return;
+	char *reachable = calloc((size_t)ctx->decl_count, 1);
+	int *work = malloc((size_t)ctx->decl_count * sizeof(int));
+	if (!reachable || !work) {
+		free(reachable);
+		free(work);
+		return;
+	}
+	/* The core prelude is prepended (lines 1..core_off of the combined stream); its decls — e.g. the
+	 * compiler-emitted `streq` — are not user-owned and must never be flagged. core_off = 0 when core
+	 * is NOT prepended (compiling core.arche itself), so the guard is inert there. */
+	int core_off = semantic_print_line_offset();
+	int work_n = 0;
+	/* seed roots */
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if ((d->kind == DECL_FUNC || d->kind == DECL_PROC || d->kind == DECL_FUNC_GROUP) && dead_is_root(d))
+			dead_mark(ctx, i, reachable, work, &work_n);
+	}
+	/* transitive marking — reachable[] doubles as the visited set, so self/mutual recursion among
+	 * live funcs terminates and a cycle unreachable from any root is never seeded (both warn). */
+	while (work_n > 0) {
+		DeclSummary *d = ctx->decls[work[--work_n]];
+		if (d->body_node.node)
+			dead_walk(ctx, d->body_node.node, d->body_node.src, reachable, work, &work_n);
+	}
+	/* emit for every unreachable, non-root func/proc */
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->kind != DECL_FUNC && d->kind != DECL_PROC)
+			continue;
+		if (reachable[i] || dead_is_root(d))
+			continue;
+		if (core_off > 0 && d->loc.line <= core_off) /* prepended core prelude — not user code */
+			continue;
+		/* the pass runs after analyze cleared active_allow_slugs, so re-arm @allow suppression for
+		 * this decl around the emit (sem_emit_v matches the `unused_function` slug). `dead_code` is
+		 * honored as a Rust-compatible alias. */
+		ctx->active_allow_slugs = d->allow_slugs;
+		ctx->active_allow_slug_count = d->allow_slug_count;
+		if (!sem_diag_slug_suppressed(ctx, "dead_code"))
+			sem_emit_lint_unused_function(ctx, d->loc, d->name);
+		ctx->active_allow_slugs = NULL;
+		ctx->active_allow_slug_count = 0;
+	}
+	free(reachable);
+	free(work);
+}
+
 /* ========== PUBLIC API ========== */
 
 /* The shared analysis core: all passes that read the (already-prepared) AstProgram tree.
@@ -4884,6 +5004,9 @@ static void analyze_program_core(SemanticContext *ctx) {
 	 * (return-value types). Diagnostics flow through the same registry as
 	 * everything else. Fail-open: unencoded shapes synth to TYID_UNKNOWN. */
 	tycheck_run(ctx);
+
+	/* pass 5: dead-code lint (W0013) — reachability sweep over the resolved DeclTable. */
+	sem_check_dead_code(ctx);
 }
 
 /* Allocate + zero-initialize a SemanticContext and register builtins. Shared by both
