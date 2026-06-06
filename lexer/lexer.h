@@ -143,7 +143,7 @@ const char *token_kind_name(TokenKind kind);
 /* Doc-comment classification. A doc comment is just a TOK_COMMENT whose text
  * begins with the doc marker — there is no separate token kind (so doc comments
  * round-trip through the formatter for free). These are the ONE place that
- * decides "is this a doc comment"; every consumer (cst_view doc query, doctest
+ * decides "is this a doc comment"; every consumer (syntax_view doc query, doctest
  * extractor, hover) must call them rather than re-checking the prefix inline, so
  * the marker can evolve from a single definition.
  *

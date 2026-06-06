@@ -1,4 +1,4 @@
-// The formatter must PRESERVE what was written — a CST is faithful to concrete syntax. The explicit
+// The formatter must PRESERVE what was written — a syntax tree is faithful to concrete syntax. The explicit
 // meta-type longhand `name : type : T` round-trips as itself (it is NOT canonicalized to `::`), at
 // top level, in an archetype component, and as a local. The inferred `::` forms round-trip too.
 // RUN: %arche fmt %s | grep -F "alias_top : type : int"

@@ -1,8 +1,8 @@
 // Syntax highlighting is derived from the compiler's token->category map (cst/token_category.c),
-// surfaced by `arche-cst-tokens` as `offset len line col category`. `enum` and `match` are keyword
+// surfaced by `arche-syntax-tokens` as `offset len line col category`. `enum` and `match` are keyword
 // tokens and must categorize as "keyword" — they were once omitted from the map and silently went
 // unhighlighted (every other keyword was listed). Regression guard so a new keyword can't be dropped.
-// RUN: %build/arche-cst-tokens %s | grep -qE "^[0-9]+ 4 [0-9]+ 8 keyword"
-// RUN: %build/arche-cst-tokens %s | grep -qE "^[0-9]+ 5 [0-9]+ [0-9]+ keyword"
+// RUN: %build/arche-syntax-tokens %s | grep -qE "^[0-9]+ 4 [0-9]+ 8 keyword"
+// RUN: %build/arche-syntax-tokens %s | grep -qE "^[0-9]+ 5 [0-9]+ [0-9]+ keyword"
 col :: enum { a, b }
 pick :: proc()(k: col) { k = match (col.a) { col.a: col.a, col.b: col.b }; }

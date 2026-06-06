@@ -1,19 +1,19 @@
 #ifndef SEMANTIC_H
 #define SEMANTIC_H
 
-#include "../cst/cst.h"
+#include "../syntax/type_ref.h"
 #include "sem_hints.h"
 #include "sem_model.h"
 
 /* Semantic analysis context */
 typedef struct SemanticContext SemanticContext;
 
-/* Create and analyze a program. Reconstructs the abstract `AstProgram` from the lossless CST
- * (+ registered module CSTs) via cst_to_program, analyzes it, and keys the side model by
- * CST node id (read by lowering). This is the only analysis entry. */
+/* Create and analyze a program. Collects the resolved DeclSummary table directly from the lossless
+ * syntax tree (+ registered module syntax trees) via sem_collect_decls, analyzes it, and keys the
+ * side model by syntax tree node id (read by lowering). This is the only analysis entry. */
 SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src);
 
-/* Register a `use`-module's CST so semantic_analyze_cst can inline it (parallel to
+/* Register a `use`-module's syntax tree so semantic_analyze_cst can inline it (parallel to
  * lower_add_module). Call once per module before semantic_analyze_cst. */
 void semantic_add_module(const char *name, const SyntaxNode *root, const char *src, const char *filename);
 /* Clear registered modules (static registry; reset at the start of each compilation). */
@@ -21,22 +21,15 @@ void semantic_reset_modules(void);
 /* 1 if a module of this name is currently registered (used to detect import-not-found). */
 int semantic_has_module(const char *name);
 
-/* Test/helper: parse `src` and reconstruct the abstract `AstProgram` from the lossless CST
- * (parse -> cst_to_program). The returned AstProgram is self-contained (owns all its strings)
- * and outlives the CST, so free it with ast_program_free. Returns NULL on parse error. This is
- * how callers obtain a `AstProgram` now that the parser builds only the CST. */
-AstProgram *cst_to_program_from_source(const char *src);
-
 void semantic_context_free(SemanticContext *ctx);
 
-/* The resolved-type side model (keyed by CST node id); read by lowering. */
+/* The resolved-type side model (keyed by syntax tree node id); read by lowering. */
 SemModel *sem_context_model(SemanticContext *ctx);
 
-/* The reconstructed AstProgram (read-only); used by passes that need to walk
- * decls. tycheck uses this to traverse function bodies. */
-AstProgram *semantic_context_program(SemanticContext *ctx);
+/* The interned TypeId arena (Phase 3); read by lowering's map_type_id. */
+TypeArena *sem_context_arena(SemanticContext *ctx);
 
-/* Editor-facing inferred facts (keyed by CST node id); read by the analyzer. */
+/* Editor-facing inferred facts (keyed by syntax tree node id); read by the analyzer. */
 SemHints *sem_context_hints(SemanticContext *ctx);
 
 /* Resolve a (possibly nominal-alias) type name through the alias chain to its
@@ -54,9 +47,9 @@ int semantic_alias_is_transparent(SemanticContext *ctx, const char *name);
  * else NULL. Lowering rewrites call callees through this and drops the alias binding. */
 const char *semantic_resolve_callable_alias(SemanticContext *ctx, const char *name);
 
-/* If `name` is a named callable-type alias (`handler :: proc()(w:int)`), its callable TypeRef;
- * else NULL. tycheck resolves the name to the structural signature's TypeId. */
-struct TypeRef *semantic_callable_type_alias(SemanticContext *ctx, const char *name);
+/* If `name` is a named callable-type alias (`handler :: proc()(w:int)`), its callable TypeId (the
+ * structural signature); else TYID_UNKNOWN. tycheck resolves the name through this. */
+TypeId semantic_callable_type_alias(SemanticContext *ctx, const char *name);
 
 /* Enum support (used by lowering to resolve `Enum.variant` and bare variant patterns to int values). */
 int semantic_is_enum_type(SemanticContext *ctx, const char *name);

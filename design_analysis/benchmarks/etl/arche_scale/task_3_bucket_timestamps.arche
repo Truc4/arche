@@ -1,15 +1,19 @@
 // Task 3: Bucket prices and extract hours from timestamps
 // Compute price_bucket = price / 10.0 and hour_bucket from timestamp
-#import { csv }
+#import { csv fmt }
 
-Transaction :: arche { price :: float, hour_bucket :: int, price_bucket :: float }
+Transaction :: arche {
+  price :: float,
+  hour_bucket :: int,
+  price_bucket :: float,
+}
 
 Transaction[100000000](100000000) {
   price: 0.0, hour_bucket: 0, price_bucket: 0.0,
 }
 
 load_transactions :: proc() {
-  csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_100m.csv");
+  csv.load(Transaction, "design_analysis/benchmarks/etl/data/data_100m.csv");
 }
 
 main :: proc() {
@@ -19,5 +23,5 @@ main :: proc() {
   for (m := 0; m < 100000000; m += 1) {
     price_sum = price_sum + Transaction.price_bucket[m];
   }
-  printf("task3_checksum: %g\n", price_sum);
+  fmt.printf("task3_checksum: %g\n", price_sum);
 }

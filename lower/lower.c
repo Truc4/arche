@@ -1,18 +1,18 @@
 #include "lower.h"
-#include "../cst/cst_view.h"
 #include "../semantic/sem_model.h"
 #include "../semantic/semantic.h"
+#include "../syntax/syntax_view.h"
 #include <stdlib.h>
 #include <string.h>
 
-/* Semantic context for CST-driven lowering: resolves nominal type aliases (e.g.
- * `file` -> `opaque`), which the AstProgram path got via in-place erasure. */
+/* Semantic context for syntax-tree-driven lowering: resolves nominal type aliases (e.g.
+ * `file` -> `opaque`) at lowering time. */
 static SemanticContext *g_lower_sem = NULL;
 void lower_set_sem(struct SemanticContext *ctx) {
 	g_lower_sem = ctx;
 }
 
-/* Resolved types live in the semantic side model (keyed by CST node id), set by
+/* Resolved types live in the semantic side model (keyed by syntax tree node id), set by
  * the driver before lowering. When unset (e.g. unit tests that lower directly),
  * we fall back to the type still carried on the expression. */
 static const SemModel *g_lower_model = NULL;
@@ -80,7 +80,7 @@ static HirType map_type_str(const char *resolved_type) {
 	} else if (strcmp(resolved_type, "opaque") == 0) {
 		t.tag = HIR_TYPE_OPAQUE;
 	} else {
-		/* archetype or other named type — pointer into CST, safe since CST outlives AST */
+		/* archetype or other named type — pointer into syntax tree, safe since syntax tree outlives AST */
 		t.tag = HIR_TYPE_NAMED;
 		t.name = resolved_type;
 	}
@@ -88,12 +88,12 @@ static HirType map_type_str(const char *resolved_type) {
 }
 
 /* =========================
-   Tuple desugaring (CST -> AST)
+   Tuple desugaring (syntax tree -> AST)
    =========================
-   Tuples exist only in the CST. Lowering flattens every tuple field
+   Tuples exist only in the syntax tree. Lowering flattens every tuple field
    `pos: (x, y)` into scalar columns `pos_x`, `pos_y`, and rewrites system
    parameters and bodies accordingly (tuple_rewrite_*), so the AST (and every
-   later pass) never sees a tuple. The CST-path tuple group registry
+   later pass) never sees a tuple. The syntax-tree-path tuple group registry
    (build_tgroups / tgroup_lookup, below) drives this. */
 
 /* Rewrite `base.comp` (HIR_EXPR_FIELD over NAME base) into NAME `base_comp`. */
@@ -176,23 +176,22 @@ static void tuple_rewrite_stmt(HirStmt *s, const char *base) {
 }
 
 /* =========================================================================
-   CST-driven lowering (alternative to the AstProgram-based path above). Reads the
-   lossless CST via cst_view + the semantic side model. Gated by ARCHE_LOWER_CST
-   until validated IR-identical; the AstProgram path remains the default. Reuses the
-   AST-level helpers above (map_type_str, tuple registry, tuple_rewrite_*).
+   syntax-tree-driven lowering — the lowering path. Reads the lossless syntax tree via
+   syntax_view + the semantic side model. Reuses the helpers above (map_type_str, tuple
+   registry, tuple_rewrite_*).
    ========================================================================= */
 
-static HirExpr *lower_expr_cst(CstView e);
-static HirStmt *lower_stmt_cst(CstView s);
-static HirDecl *lower_archetype_from(CstView f, char *name);
+static HirExpr *lower_expr_cst(SyntaxView e);
+static HirStmt *lower_stmt_cst(SyntaxView s);
+static HirDecl *lower_archetype_from(SyntaxView f, char *name);
 /* An anonymous `arche { … }` literal denotes the shape with those fields: mint a synthetic global
  * archetype for it and return its (deterministic) name, so codegen's canonical_archetype_decl
  * unifies it with any structurally-identical named shape. NULL if it can't be registered. */
-static const char *synth_archetype_name(CstView arch_expr);
+static const char *synth_archetype_name(SyntaxView arch_expr);
 
 /* malloc'd NUL-terminated copy of a view's source text. */
-static char *cv_dup(CstView v) {
-	CvText t = cv_text(v);
+static char *sv_dup(SyntaxView v) {
+	SynText t = sv_text(v);
 	char *s = malloc(t.len + 1);
 	if (t.ptr)
 		memcpy(s, t.ptr, t.len);
@@ -202,9 +201,9 @@ static char *cv_dup(CstView v) {
 
 /* Lexeme of a node's first TOKEN leaf — token-precise, so it excludes any trailing trivia
  * (a comment / blank line) that the node's span may include. A node's `length` runs to the next
- * token, so `cv_dup` on a literal whose value is the last thing before a comment would swallow the
+ * token, so `sv_dup` on a literal whose value is the last thing before a comment would swallow the
  * comment (e.g. `x :: 0` + `// note` → lexeme "0 … note", read as float). Use the token instead. */
-static char *cv_dup_first_token(CstView v) {
+static char *sv_dup_first_token(SyntaxView v) {
 	if (v.node) {
 		for (int i = 0; i < v.node->child_count; i++) {
 			if (v.node->children[i].tag == SE_TOKEN) {
@@ -217,13 +216,13 @@ static char *cv_dup_first_token(CstView v) {
 			}
 		}
 	}
-	return cv_dup(v);
+	return sv_dup(v);
 }
 
 /* malloc'd NUL-terminated copy of a borrowed text slice. */
 static char *dupz(const char *s); /* defined with the module helpers below */
 
-static char *txt_dup(CvText t) {
+static char *txt_dup(SynText t) {
 	char *s = malloc(t.len + 1);
 	if (t.ptr)
 		memcpy(s, t.ptr, t.len);
@@ -234,8 +233,8 @@ static char *txt_dup(CvText t) {
 /* The type name from an SN_TYPE_REF node. A qualified `mod.Name` (two IDENTs) folds to the
  * module's mangled type symbol `mod_Name` — same fold as a qualified value reference; a bare type
  * returns its single identifier. Caller owns the returned string. */
-static char *type_ref_name(CstView t) {
-	CvText ids[2];
+static char *type_ref_name(SyntaxView t) {
+	SynText ids[2];
 	int n = 0;
 	for (int i = 0; i < t.node->child_count && n < 2; i++) {
 		const SyntaxElem *e = &t.node->children[i];
@@ -251,15 +250,15 @@ static char *type_ref_name(CstView t) {
 		snprintf(r, L, "%.*s.%.*s", (int)ids[0].len, ids[0].ptr, (int)ids[1].len, ids[1].ptr);
 		return r;
 	}
-	return txt_dup(cv_token(t, TOK_IDENT));
+	return txt_dup(sv_token(t, TOK_IDENT));
 }
 
-/* Lower a CST type node (SN_TYPE_*) to an HirType, mirroring lower_type_ref. */
-static HirType *lower_type_cst(CstView t) {
-	if (!cv_present(t))
+/* Lower a syntax tree type node (SN_TYPE_*) to an HirType, mirroring lower_type_ref. */
+static HirType *lower_type_cst(SyntaxView t) {
+	if (!sv_present(t))
 		return NULL;
 	HirType *at = hir_type_create(HIR_TYPE_UNKNOWN);
-	switch (cv_kind(t)) {
+	switch (sv_kind(t)) {
 	case SN_TYPE_REF: {
 		char *raw = type_ref_name(t);
 		const char *r = g_lower_sem ? semantic_resolve_type_alias(g_lower_sem, raw) : raw;
@@ -292,7 +291,7 @@ static HirType *lower_type_cst(CstView t) {
 	case SN_TYPE_ARRAY: {
 		at->tag = HIR_TYPE_ARRAY;
 		HirType *elem = hir_type_create(HIR_TYPE_UNKNOWN);
-		char *en = txt_dup(cv_token(t, TOK_IDENT));
+		char *en = txt_dup(sv_token(t, TOK_IDENT));
 		*elem = map_type_str(en);
 		if (elem->tag == HIR_TYPE_NAMED)
 			elem->name = en;
@@ -304,7 +303,7 @@ static HirType *lower_type_cst(CstView t) {
 	case SN_TYPE_SHAPED_ARRAY: {
 		/* `T[a][b]...` — innermost element is the named type; each `[n]` adds a rank.
 		 * Reconstruct nested shaped arrays from the NUMBER tokens. */
-		char *en = txt_dup(cv_token(t, TOK_IDENT));
+		char *en = txt_dup(sv_token(t, TOK_IDENT));
 		HirType *elem = hir_type_create(HIR_TYPE_UNKNOWN);
 		*elem = map_type_str(en);
 		if (elem->tag == HIR_TYPE_NAMED)
@@ -336,12 +335,12 @@ static HirType *lower_type_cst(CstView t) {
 	case SN_TYPE_HANDLE: {
 		at->tag = HIR_TYPE_HANDLE;
 		/* handle<Name> / handle(Name): the archetype name is the second IDENT */
-		CvText h = cv_token(t, TOK_IDENT); /* "handle" */
+		SynText h = sv_token(t, TOK_IDENT); /* "handle" */
 		(void)h;
 		/* find the IDENT that isn't "handle" */
 		for (int i = 0; i < t.node->child_count; i++)
 			if (t.node->children[i].tag == SE_TOKEN && t.node->children[i].as.token.kind == TOK_IDENT) {
-				CvText nm = {t.src + t.node->children[i].as.token.offset, t.node->children[i].as.token.length};
+				SynText nm = {t.src + t.node->children[i].as.token.offset, t.node->children[i].as.token.length};
 				if (!(nm.len == 6 && memcmp(nm.ptr, "handle", 6) == 0)) {
 					at->name = txt_dup(nm);
 					break;
@@ -351,24 +350,24 @@ static HirType *lower_type_cst(CstView t) {
 	}
 	case SN_TYPE_PROC:
 	case SN_TYPE_FUNC: {
-		int is_proc = (cv_kind(t) == SN_TYPE_PROC);
+		int is_proc = (sv_kind(t) == SN_TYPE_PROC);
 		at->tag = HIR_TYPE_FUNC;
 		at->is_proc = is_proc;
-		int np = cv_count(t, SN_PARAM);
+		int np = sv_count(t, SN_PARAM);
 		at->param_count = np;
 		at->params = calloc(np ? np : 1, sizeof(HirType *));
 		for (int i = 0; i < np; i++)
-			at->params[i] = lower_type_cst(cv_type_at(cv_child_at(t, SN_PARAM, i), 0));
+			at->params[i] = lower_type_cst(sv_type_at(sv_child_at(t, SN_PARAM, i), 0));
 		if (is_proc) {
-			int no = cv_count(t, SN_OUT_PARAM);
+			int no = sv_count(t, SN_OUT_PARAM);
 			at->result_count = no;
 			at->results = calloc(no ? no : 1, sizeof(HirType *));
 			for (int i = 0; i < no; i++)
-				at->results[i] = lower_type_cst(cv_type_at(cv_child_at(t, SN_OUT_PARAM, i), 0));
+				at->results[i] = lower_type_cst(sv_type_at(sv_child_at(t, SN_OUT_PARAM, i), 0));
 		} else {
 			at->result_count = 1;
 			at->results = calloc(1, sizeof(HirType *));
-			at->results[0] = lower_type_cst(cv_type_at(t, 0));
+			at->results[0] = lower_type_cst(sv_type_at(t, 0));
 		}
 		break;
 	}
@@ -378,13 +377,61 @@ static HirType *lower_type_cst(CstView t) {
 	return at;
 }
 
-/* Resolved type of a CST expression node, from the side model (keyed by node id). */
-static HirType cst_expr_type(CstView e) {
-	return map_type_str(g_lower_model ? sem_model_expr_type(g_lower_model, cv_id(e)) : NULL);
+/* Resolved type of a syntax tree expression node, from the side model (keyed by node id). */
+/* Decode an interned TypeId to a HirType (Phase 3) — the back-end twin of map_type_str. A tier-2
+ * distinct subtype lowers as its backing; a nominal's spelling (width-int / char_array / handle /
+ * opaque / archetype) is parsed exactly as map_type_str does, so the result matches the old
+ * string-driven path. */
+static HirType map_type_id(const TypeArena *a, TypeId t) {
+	while (tyid_kind(a, t) == TYK_NOMINAL && tyid_backing(a, t) != TYID_UNKNOWN)
+		t = tyid_backing(a, t);
+	HirType ht = {0};
+	switch (tyid_kind(a, t)) {
+	case TYK_PRIM:
+		switch (tyid_prim(a, t)) {
+		case PRIM_INT:
+			ht.tag = HIR_TYPE_INT;
+			ht.int_width = 32;
+			ht.int_signed = 1;
+			break;
+		case PRIM_FLOAT:
+			ht.tag = HIR_TYPE_FLOAT;
+			break;
+		case PRIM_CHAR:
+			ht.tag = HIR_TYPE_CHAR;
+			break;
+		case PRIM_VOID:
+			ht.tag = HIR_TYPE_VOID;
+			break;
+		case PRIM_STR:
+			ht.tag = HIR_TYPE_CHAR_ARRAY;
+			break;
+		case PRIM_BOOL:
+			ht.tag = HIR_TYPE_NAMED; /* matches map_type_str("bool") -> NAMED */
+			ht.name = "bool";
+			break;
+		default:
+			ht.tag = HIR_TYPE_UNKNOWN;
+			break;
+		}
+		return ht;
+	case TYK_NOMINAL:
+		/* width-int / char_array / handle / opaque / archetype name — same parse as map_type_str. */
+		return map_type_str(tyid_nominal_name(a, t));
+	default:
+		ht.tag = HIR_TYPE_UNKNOWN;
+		return ht;
+	}
+}
+
+static HirType syntax_expr_type(SyntaxView e) {
+	if (!g_lower_model || !g_lower_sem)
+		return map_type_str(NULL);
+	return map_type_id(sem_context_arena(g_lower_sem), sem_model_expr_type_id(g_lower_model, sv_id(e)));
 }
 
 /* Decode a string token's content (quotes + escapes) like parse_primary_expr does. */
-static char *cst_decode_string(CvText raw, int *out_len) {
+static char *syntax_decode_string(SynText raw, int *out_len) {
 	const char *s = raw.ptr;
 	size_t len = raw.len;
 	char *value = malloc(len + 1);
@@ -422,20 +469,20 @@ static char *cst_decode_string(CvText raw, int *out_len) {
 }
 
 /* The "innermost value expression" child of a node (skips role-only name wrappers). */
-static CstView cst_first_expr(CstView v) {
+static SyntaxView syntax_first_expr(SyntaxView v) {
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = v.node->children[i].as.node->kind;
 			if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
-				CstView r = {v.node->children[i].as.node, v.src};
+				SyntaxView r = {v.node->children[i].as.node, v.src};
 				return r;
 			}
 		}
-	CstView none = {NULL, v.src};
+	SyntaxView none = {NULL, v.src};
 	return none;
 }
 
-static Operator cst_tok_to_op(TokenKind k) {
+static Operator syntax_tok_to_op(TokenKind k) {
 	switch (k) {
 	case TOK_PLUS:
 		return OP_ADD;
@@ -466,39 +513,39 @@ static Operator cst_tok_to_op(TokenKind k) {
 	}
 }
 
-/* cv_type_at / cv_type_count now live in cst_view.h (shared with the analyzer). */
+/* sv_type_at / sv_type_count now live in syntax_view.h (shared with the analyzer). */
 
 /* nth child node that is an expression kind (skips role/name/type wrappers). */
-static CstView cv_node_at_expr(CstView v, int idx) {
+static SyntaxView sv_node_at_expr(SyntaxView v, int idx) {
 	int c = 0;
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = v.node->children[i].as.node->kind;
 			if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
 				if (c == idx) {
-					CstView r = {v.node->children[i].as.node, v.src};
+					SyntaxView r = {v.node->children[i].as.node, v.src};
 					return r;
 				}
 				c++;
 			}
 		}
-	CstView none = {NULL, v.src};
+	SyntaxView none = {NULL, v.src};
 	return none;
 }
 
-static HirExpr *lower_expr_cst(CstView e) {
-	if (!cv_present(e))
+static HirExpr *lower_expr_cst(SyntaxView e) {
+	if (!sv_present(e))
 		return NULL;
 	HirExpr *ax = hir_expr_create(HIR_EXPR_LITERAL);
-	ax->resolved = cst_expr_type(e);
+	ax->resolved = syntax_expr_type(e);
 
-	switch (cv_kind(e)) {
+	switch (sv_kind(e)) {
 	case SN_PAREN_EXPR:
 		/* transparent: lower the inner expression */
-		return lower_expr_cst(cst_first_expr(e));
+		return lower_expr_cst(syntax_first_expr(e));
 	case SN_LITERAL_EXPR:
 		ax->kind = HIR_EXPR_LITERAL;
-		ax->data.literal.lexeme = cv_dup_first_token(e);
+		ax->data.literal.lexeme = sv_dup_first_token(e);
 		/* Literals are self-describing: if semantic left no resolved type (it doesn't
 		 * key every literal, e.g. assignment RHS), infer it from the lexeme so codegen
 		 * stores the right width. A recorded type wins (it may carry a coercion). */
@@ -518,37 +565,37 @@ static HirExpr *lower_expr_cst(CstView e) {
 	case SN_STRING_EXPR: {
 		ax->kind = HIR_EXPR_STRING;
 		int n = 0;
-		ax->data.string.value = cst_decode_string(cv_text(e), &n);
+		ax->data.string.value = syntax_decode_string(sv_text(e), &n);
 		ax->data.string.length = n;
 		break;
 	}
 	case SN_NAME_EXPR: {
 		ax->kind = HIR_EXPR_NAME;
 		/* table<Name> in value position resolves to the bare archetype name */
-		if (cv_has_token(e, TOK_LT)) {
+		if (sv_has_token(e, TOK_LT)) {
 			/* second IDENT is the archetype name */
 			char *nm = NULL;
 			int seen = 0;
 			for (int i = 0; i < e.node->child_count; i++)
 				if (e.node->children[i].tag == SE_TOKEN && e.node->children[i].as.token.kind == TOK_IDENT) {
-					CvText t = {e.src + e.node->children[i].as.token.offset, e.node->children[i].as.token.length};
+					SynText t = {e.src + e.node->children[i].as.token.offset, e.node->children[i].as.token.length};
 					if (seen++) {
 						nm = txt_dup(t);
 						break;
 					}
 				}
-			ax->data.name.name = nm ? nm : cv_dup(e);
+			ax->data.name.name = nm ? nm : sv_dup(e);
 		} else {
-			ax->data.name.name = txt_dup(cv_token(e, TOK_IDENT));
+			ax->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
 		}
 		break;
 	}
 	case SN_FIELD_EXPR: {
 		/* Enum variant access `Enum.variant` → its int value (enums are compile-time, erased). */
-		if (g_lower_sem && cv_count(e, SN_FIELD_NAME) == 1) {
-			char *bn = txt_dup(cv_token(e, TOK_IDENT));
+		if (g_lower_sem && sv_count(e, SN_FIELD_NAME) == 1) {
+			char *bn = txt_dup(sv_token(e, TOK_IDENT));
 			if (bn && semantic_is_enum_type(g_lower_sem, bn)) {
-				char *vn = cv_dup(cv_child_at(e, SN_FIELD_NAME, 0));
+				char *vn = sv_dup(sv_child_at(e, SN_FIELD_NAME, 0));
 				long val = 0;
 				if (vn && semantic_enum_variant_value(g_lower_sem, bn, vn, &val)) {
 					char buf[32];
@@ -569,22 +616,22 @@ static HirExpr *lower_expr_cst(CstView e) {
 		/* `base.f1.f2…[idx]` is flat under one node: base IDENT, then (DOT FIELD_NAME)+,
 		 * optionally a trailing `[indices]`. Rebuild the left-assoc AST. */
 		HirExpr *base = hir_expr_create(HIR_EXPR_NAME);
-		base->data.name.name = txt_dup(cv_token(e, TOK_IDENT));
+		base->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
 		HirExpr *cur = base;
-		int nfields = cv_count(e, SN_FIELD_NAME);
+		int nfields = sv_count(e, SN_FIELD_NAME);
 		for (int i = 0; i < nfields; i++) {
 			HirExpr *f = hir_expr_create(HIR_EXPR_FIELD);
 			f->data.field.base = cur;
-			f->data.field.field_name = cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+			f->data.field.field_name = sv_dup(sv_child_at(e, SN_FIELD_NAME, i));
 			cur = f;
 		}
 		/* trailing index over the final field */
-		if (cv_has_token(e, TOK_LBRACKET)) {
+		if (sv_has_token(e, TOK_LBRACKET)) {
 			HirExpr *idx = hir_expr_create(HIR_EXPR_INDEX);
 			/* the column's element type is this expr's resolved type; codegen reads it
 			 * off the base field to size the store/GEP. */
 			if (cur->kind == HIR_EXPR_FIELD)
-				cur->resolved = cst_expr_type(e);
+				cur->resolved = syntax_expr_type(e);
 			idx->data.index.base = cur;
 			int ic = 0;
 			for (int i = 0; i < e.node->child_count; i++)
@@ -599,14 +646,14 @@ static HirExpr *lower_expr_cst(CstView e) {
 				if (e.node->children[i].tag == SE_NODE) {
 					SyntaxNodeKind k = e.node->children[i].as.node->kind;
 					if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
-						CstView iv = {e.node->children[i].as.node, e.src};
+						SyntaxView iv = {e.node->children[i].as.node, e.src};
 						idx->data.index.indices[idx->data.index.index_count++] = lower_expr_cst(iv);
 					}
 				}
 			cur = idx;
 		}
 		free(ax);
-		cur->resolved = cst_expr_type(e);
+		cur->resolved = syntax_expr_type(e);
 		return cur;
 	}
 	case SN_INDEX_EXPR: {
@@ -614,12 +661,12 @@ static HirExpr *lower_expr_cst(CstView e) {
 		/* base may be a `name.f1.f2…` member chain folded into this node
 		 * (e.g. `Particle.pos_x[0]`); rebuild the FIELD chain over the IDENT. */
 		HirExpr *base = hir_expr_create(HIR_EXPR_NAME);
-		base->data.name.name = txt_dup(cv_token(e, TOK_IDENT));
-		int nfields = cv_count(e, SN_FIELD_NAME);
+		base->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
+		int nfields = sv_count(e, SN_FIELD_NAME);
 		for (int i = 0; i < nfields; i++) {
 			HirExpr *f = hir_expr_create(HIR_EXPR_FIELD);
 			f->data.field.base = base;
-			f->data.field.field_name = cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+			f->data.field.field_name = sv_dup(sv_child_at(e, SN_FIELD_NAME, i));
 			base = f;
 		}
 		/* The indexed column's element type equals this index expr's resolved type;
@@ -640,7 +687,7 @@ static HirExpr *lower_expr_cst(CstView e) {
 			if (e.node->children[i].tag == SE_NODE) {
 				SyntaxNodeKind k = e.node->children[i].as.node->kind;
 				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
-					CstView iv = {e.node->children[i].as.node, e.src};
+					SyntaxView iv = {e.node->children[i].as.node, e.src};
 					ax->data.index.indices[ax->data.index.index_count++] = lower_expr_cst(iv);
 				}
 			}
@@ -651,12 +698,12 @@ static HirExpr *lower_expr_cst(CstView e) {
 		 * split on the `:` token: before → lo, after → hi (either may be omitted → NULL). */
 		ax->kind = HIR_EXPR_SLICE;
 		HirExpr *base = hir_expr_create(HIR_EXPR_NAME);
-		base->data.name.name = txt_dup(cv_token(e, TOK_IDENT));
-		int nfields = cv_count(e, SN_FIELD_NAME);
+		base->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
+		int nfields = sv_count(e, SN_FIELD_NAME);
 		for (int i = 0; i < nfields; i++) {
 			HirExpr *f = hir_expr_create(HIR_EXPR_FIELD);
 			f->data.field.base = base;
-			f->data.field.field_name = cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+			f->data.field.field_name = sv_dup(sv_child_at(e, SN_FIELD_NAME, i));
 			base = f;
 		}
 		ax->data.slice.base = base;
@@ -672,7 +719,7 @@ static HirExpr *lower_expr_cst(CstView e) {
 			if (ch->tag == SE_NODE) {
 				SyntaxNodeKind k = ch->as.node->kind;
 				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
-					CstView iv = {ch->as.node, e.src};
+					SyntaxView iv = {ch->as.node, e.src};
 					HirExpr *ex = lower_expr_cst(iv);
 					if (!seen_colon)
 						ax->data.slice.lo = ex;
@@ -688,19 +735,19 @@ static HirExpr *lower_expr_cst(CstView e) {
 		/* operator token */
 		for (int i = 0; i < e.node->child_count; i++)
 			if (e.node->children[i].tag == SE_TOKEN) {
-				Operator op = cst_tok_to_op(e.node->children[i].as.token.kind);
+				Operator op = syntax_tok_to_op(e.node->children[i].as.token.kind);
 				if (op != OP_NONE) {
 					ax->data.binary.op = op;
 					break;
 				}
 			}
-		ax->data.binary.left = lower_expr_cst(cv_node_at_expr(e, 0));
-		ax->data.binary.right = lower_expr_cst(cv_node_at_expr(e, 1));
+		ax->data.binary.left = lower_expr_cst(sv_node_at_expr(e, 0));
+		ax->data.binary.right = lower_expr_cst(sv_node_at_expr(e, 1));
 		break;
 	}
 	case SN_UNARY_EXPR: {
 		ax->kind = HIR_EXPR_UNARY;
-		CvText op = {NULL, 0};
+		SynText op = {NULL, 0};
 		for (int i = 0; i < e.node->child_count; i++)
 			if (e.node->children[i].tag == SE_TOKEN) {
 				TokenKind tk = e.node->children[i].as.token.kind;
@@ -717,30 +764,30 @@ static HirExpr *lower_expr_cst(CstView e) {
 				break;
 			}
 		(void)op;
-		ax->data.unary.operand = lower_expr_cst(cst_first_expr(e));
+		ax->data.unary.operand = lower_expr_cst(syntax_first_expr(e));
 		break;
 	}
 	case SN_CALL_EXPR: {
 		ax->kind = HIR_EXPR_CALL;
 		HirExpr *callee;
-		int nfields = cv_count(e, SN_FIELD_NAME);
+		int nfields = sv_count(e, SN_FIELD_NAME);
 		if (nfields > 0) {
 			/* Qualified callee `mod.name` (no SN_CALLEE_NAME): rebuild the field access from the
 			 * base IDENT + SN_FIELD_NAME children. The qualify pass later folds `mod.name` →
 			 * `mod_name` for imported modules. */
 			HirExpr *base = hir_expr_create(HIR_EXPR_NAME);
-			base->data.name.name = txt_dup(cv_token(e, TOK_IDENT));
+			base->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
 			HirExpr *cur = base;
 			for (int i = 0; i < nfields; i++) {
 				HirExpr *f = hir_expr_create(HIR_EXPR_FIELD);
 				f->data.field.base = cur;
-				f->data.field.field_name = cv_dup(cv_child_at(e, SN_FIELD_NAME, i));
+				f->data.field.field_name = sv_dup(sv_child_at(e, SN_FIELD_NAME, i));
 				cur = f;
 			}
 			callee = cur;
 		} else {
 			callee = hir_expr_create(HIR_EXPR_NAME);
-			callee->data.name.name = cv_dup(cv_child(e, SN_CALLEE_NAME));
+			callee->data.name.name = sv_dup(sv_child(e, SN_CALLEE_NAME));
 			/* Callable alias (`handler :: some_proc`): rewrite the callee to the real target so
 			 * codegen emits a direct call. */
 			if (g_lower_sem) {
@@ -768,7 +815,7 @@ static HirExpr *lower_expr_cst(CstView e) {
 				/* SN_ARCH_EXPR (an anonymous `arche {…}` literal) is an expression arg too, but sits
 				 * outside the contiguous expr-kind range — accept it so `insert(arche{…}, …)` works. */
 				if ((k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) || k == SN_ARCH_EXPR) {
-					CstView av = {e.node->children[i].as.node, e.src};
+					SyntaxView av = {e.node->children[i].as.node, e.src};
 					ax->data.call.args[ax->data.call.arg_count++] = lower_expr_cst(av);
 				}
 			}
@@ -784,7 +831,7 @@ static HirExpr *lower_expr_cst(CstView e) {
 			ax->data.name.name = dupz(sn);
 		} else {
 			ax->kind = HIR_EXPR_LITERAL;
-			ax->data.literal.lexeme = cv_dup(e);
+			ax->data.literal.lexeme = sv_dup(e);
 		}
 		break;
 	}
@@ -792,7 +839,7 @@ static HirExpr *lower_expr_cst(CstView e) {
 		/* SN_ALLOC_EXPR / SN_ARRAY_LIT_EXPR and any unhandled: leave as a placeholder
 		 * literal for now (these surface in verify-codegen if exercised). */
 		ax->kind = HIR_EXPR_LITERAL;
-		ax->data.literal.lexeme = cv_dup(e);
+		ax->data.literal.lexeme = sv_dup(e);
 		break;
 	}
 	/* Implicit move: semantic flagged this node (a bare move-only name in an ownership-taking
@@ -800,7 +847,7 @@ static HirExpr *lower_expr_cst(CstView e) {
 	 * lives in the program, not in codegen's reading of the syntax — codegen then has ONE move path
 	 * (consume the source, suppress its RAII drop). Semantic only flags bare names, so `ax` is never
 	 * already a move/copy; guard anyway. */
-	if (g_lower_model && sem_model_implicit_move(g_lower_model, cv_id(e)) && ax->kind != HIR_EXPR_UNARY) {
+	if (g_lower_model && sem_model_implicit_move(g_lower_model, sv_id(e)) && ax->kind != HIR_EXPR_UNARY) {
 		HirExpr *mv = hir_expr_create(HIR_EXPR_UNARY);
 		mv->data.unary.op = UNARY_MOVE;
 		mv->data.unary.operand = ax;
@@ -811,7 +858,7 @@ static HirExpr *lower_expr_cst(CstView e) {
 }
 
 /* Lower the statement-kind child nodes of `parent` into an HirStmt array. */
-static HirStmt **cst_lower_body(CstView parent, int *out_count) {
+static HirStmt **syntax_lower_body(SyntaxView parent, int *out_count) {
 	int n = 0;
 	for (int i = 0; i < parent.node->child_count; i++)
 		if (parent.node->children[i].tag == SE_NODE) {
@@ -828,18 +875,18 @@ static HirStmt **cst_lower_body(CstView parent, int *out_count) {
 		if (parent.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = parent.node->children[i].as.node->kind;
 			if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT) {
-				CstView sv = {parent.node->children[i].as.node, parent.src};
+				SyntaxView sv = {parent.node->children[i].as.node, parent.src};
 				out[j++] = lower_stmt_cst(sv);
 			}
 		}
 	return out;
 }
 
-static HirStmt *lower_stmt_cst(CstView s);
+static HirStmt *lower_stmt_cst(SyntaxView s);
 
 /* Lower the direct statement children of `parent` whose child index is in [lo, hi). Used to
  * split an if's flat then/else child list on the `else` token. */
-static HirStmt **cst_lower_body_split(CstView parent, int lo, int hi, int *out_count) {
+static HirStmt **syntax_lower_body_split(SyntaxView parent, int lo, int hi, int *out_count) {
 	if (lo < 0)
 		lo = 0;
 	if (hi > parent.node->child_count)
@@ -860,14 +907,14 @@ static HirStmt **cst_lower_body_split(CstView parent, int lo, int hi, int *out_c
 		if (parent.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = parent.node->children[i].as.node->kind;
 			if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT) {
-				CstView sv = {parent.node->children[i].as.node, parent.src};
+				SyntaxView sv = {parent.node->children[i].as.node, parent.src};
 				out[j++] = lower_stmt_cst(sv);
 			}
 		}
 	return out;
 }
 
-static Operator cst_assign_op(TokenKind k) {
+static Operator syntax_assign_op(TokenKind k) {
 	switch (k) {
 	case TOK_PLUS_EQ:
 		return OP_ADD;
@@ -882,12 +929,12 @@ static Operator cst_assign_op(TokenKind k) {
 	}
 }
 
-static HirStmt *lower_stmt_cst(CstView s) {
+static HirStmt *lower_stmt_cst(SyntaxView s) {
 	HirStmt *as = hir_stmt_create(HIR_STMT_EXPR);
 
-	switch (cv_kind(s)) {
+	switch (sv_kind(s)) {
 	case SN_BIND_STMT: {
-		if (g_lower_model && sem_model_bind_alias(g_lower_model, cv_id(s))) {
+		if (g_lower_model && sem_model_bind_alias(g_lower_model, sv_id(s))) {
 			as->kind = HIR_STMT_EXPR;
 			HirExpr *zero = hir_expr_create(HIR_EXPR_LITERAL);
 			zero->data.literal.lexeme = malloc(2);
@@ -896,12 +943,12 @@ static HirStmt *lower_stmt_cst(CstView s) {
 			break;
 		}
 		as->kind = HIR_STMT_BIND;
-		CstView target = cv_node_at_expr(s, 0);
+		SyntaxView target = sv_node_at_expr(s, 0);
 		as->data.bind_stmt.name_count = 1;
 		as->data.bind_stmt.names = calloc(1, sizeof(char *));
-		as->data.bind_stmt.names[0] = cv_dup(target);
-		as->data.bind_stmt.type = lower_type_cst(cv_type_at(s, 0));
-		as->data.bind_stmt.value = lower_expr_cst(cv_node_at_expr(s, 1));
+		as->data.bind_stmt.names[0] = sv_dup(target);
+		as->data.bind_stmt.type = lower_type_cst(sv_type_at(s, 0));
+		as->data.bind_stmt.value = lower_expr_cst(sv_node_at_expr(s, 1));
 		break;
 	}
 	case SN_ASSIGN_STMT: {
@@ -911,17 +958,17 @@ static HirStmt *lower_stmt_cst(CstView s) {
 				TokenKind tk = s.node->children[i].as.token.kind;
 				if (tk == TOK_EQ || tk == TOK_PLUS_EQ || tk == TOK_MINUS_EQ || tk == TOK_STAR_EQ ||
 				    tk == TOK_SLASH_EQ) {
-					as->data.assign_stmt.op = cst_assign_op(tk);
+					as->data.assign_stmt.op = syntax_assign_op(tk);
 					break;
 				}
 			}
-		as->data.assign_stmt.target = lower_expr_cst(cv_node_at_expr(s, 0));
-		as->data.assign_stmt.value = lower_expr_cst(cv_node_at_expr(s, 1));
+		as->data.assign_stmt.target = lower_expr_cst(sv_node_at_expr(s, 0));
+		as->data.assign_stmt.value = lower_expr_cst(sv_node_at_expr(s, 1));
 		break;
 	}
 	case SN_EXPR_STMT:
 		as->kind = HIR_STMT_EXPR;
-		as->data.expr_stmt.expr = lower_expr_cst(cv_node_at_expr(s, 0));
+		as->data.expr_stmt.expr = lower_expr_cst(sv_node_at_expr(s, 0));
 		break;
 	case SN_BREAK_STMT:
 		as->kind = HIR_STMT_BREAK;
@@ -941,7 +988,7 @@ static HirStmt *lower_stmt_cst(CstView s) {
 		as->data.return_stmt.count = c;
 		as->data.return_stmt.values = calloc(c ? c : 1, sizeof(HirExpr *));
 		for (int i = 0; i < c; i++)
-			as->data.return_stmt.values[i] = lower_expr_cst(cv_node_at_expr(s, i));
+			as->data.return_stmt.values[i] = lower_expr_cst(sv_node_at_expr(s, i));
 		break;
 	}
 	case SN_RUN_STMT: {
@@ -966,7 +1013,7 @@ static HirStmt *lower_stmt_cst(CstView s) {
 	}
 	case SN_IF_STMT: {
 		as->kind = HIR_STMT_IF;
-		as->data.if_stmt.cond = lower_expr_cst(cv_node_at_expr(s, 0));
+		as->data.if_stmt.cond = lower_expr_cst(sv_node_at_expr(s, 0));
 		/* The parser emits then- and else-statements as a FLAT child list separated by the
 		 * `else` token. Split on it: children before → then-body, children after → else-body. */
 		int else_tok = -1;
@@ -976,15 +1023,15 @@ static HirStmt *lower_stmt_cst(CstView s) {
 				break;
 			}
 		as->data.if_stmt.then_body =
-		    cst_lower_body_split(s, 0, else_tok >= 0 ? else_tok : s.node->child_count, &as->data.if_stmt.then_count);
+		    syntax_lower_body_split(s, 0, else_tok >= 0 ? else_tok : s.node->child_count, &as->data.if_stmt.then_count);
 		if (else_tok >= 0)
 			as->data.if_stmt.else_body =
-			    cst_lower_body_split(s, else_tok, s.node->child_count, &as->data.if_stmt.else_count);
+			    syntax_lower_body_split(s, else_tok, s.node->child_count, &as->data.if_stmt.else_count);
 		break;
 	}
 	case SN_FOR_STMT: {
 		as->kind = HIR_STMT_FOR;
-		if (cv_has_token(s, TOK_LPAREN)) {
+		if (sv_has_token(s, TOK_LPAREN)) {
 			/* C-style: `for ( init ; cond ; incr ) { body }`. The two header `;` split
 			 * the clauses into segments 0/1/2 (any may be empty); init/incr are statement
 			 * nodes, cond a bare expr node. Body statements follow the `{`. */
@@ -999,7 +1046,7 @@ static HirStmt *lower_stmt_cst(CstView s) {
 					continue;
 				}
 				SyntaxNodeKind k = ch->as.node->kind;
-				CstView cv = {ch->as.node, s.src};
+				SyntaxView cv = {ch->as.node, s.src};
 				if (seen_brace) {
 					if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT)
 						nbody++;
@@ -1026,14 +1073,14 @@ static HirStmt *lower_stmt_cst(CstView s) {
 					continue;
 				SyntaxNodeKind k = ch->as.node->kind;
 				if (k >= SN_BIND_STMT && k <= SN_MATCH_STMT) {
-					CstView cv = {ch->as.node, s.src};
+					SyntaxView cv = {ch->as.node, s.src};
 					as->data.for_stmt.body[as->data.for_stmt.body_count++] = lower_stmt_cst(cv);
 				}
 			}
 			break;
 		}
 		/* infinite form `for { body }` (the range-based `for IDENT in …` is rejected at parse). */
-		as->data.for_stmt.body = cst_lower_body(s, &as->data.for_stmt.body_count);
+		as->data.for_stmt.body = syntax_lower_body(s, &as->data.for_stmt.body_count);
 		break;
 	}
 	case SN_EACH_FIELD_STMT: {
@@ -1041,15 +1088,15 @@ static HirStmt *lower_stmt_cst(CstView s) {
 		int ni = 0;
 		for (int i = 0; i < s.node->child_count; i++)
 			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
-				CvText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
+				SynText t = {s.src + s.node->children[i].as.token.offset, s.node->children[i].as.token.length};
 				if (ni == 0)
 					as->data.each_field.binding_name = txt_dup(t);
 				else if (ni == 1)
 					as->data.each_field.arch_param_name = txt_dup(t);
 				ni++;
 			}
-		as->data.each_field.filter_type = lower_type_cst(cv_type_at(s, 0));
-		as->data.each_field.body = cst_lower_body(s, &as->data.each_field.body_count);
+		as->data.each_field.filter_type = lower_type_cst(sv_type_at(s, 0));
+		as->data.each_field.body = syntax_lower_body(s, &as->data.each_field.body_count);
 		break;
 	}
 	case SN_MULTI_BIND_STMT: {
@@ -1079,7 +1126,7 @@ static HirStmt *lower_stmt_cst(CstView s) {
 	do {                                                                                                               \
 		if (pend_active) {                                                                                             \
 			int ti = as->data.multi_bind.target_count++;                                                               \
-			as->data.multi_bind.targets[ti].name = txt_dup((CvText){pend, pend_len});                                  \
+			as->data.multi_bind.targets[ti].name = txt_dup((SynText){pend, pend_len});                                 \
 			as->data.multi_bind.targets[ti].is_new = paren ? pend_new : 1;                                             \
 			as->data.multi_bind.targets[ti].type = pend_type;                                                          \
 			pend_active = 0;                                                                                           \
@@ -1093,12 +1140,12 @@ static HirStmt *lower_stmt_cst(CstView s) {
 				SyntaxNodeKind k = ch->as.node->kind;
 				if (k == SN_NAME_EXPR) { /* the first shorthand target is a NAME_EXPR */
 					MB_FLUSH();
-					CvText t = cv_token((CstView){ch->as.node, s.src}, TOK_IDENT);
+					SynText t = sv_token((SyntaxView){ch->as.node, s.src}, TOK_IDENT);
 					pend = t.ptr;
 					pend_len = (int)t.len;
 					pend_active = 1;
 				} else if (k >= SN_TYPE_REF && k <= SN_TYPE_FUNC && pend_active) {
-					pend_type = lower_type_cst((CstView){ch->as.node, s.src});
+					pend_type = lower_type_cst((SyntaxView){ch->as.node, s.src});
 				}
 				continue;
 			}
@@ -1121,7 +1168,7 @@ static HirStmt *lower_stmt_cst(CstView s) {
 			if (s.node->children[i].tag == SE_NODE) {
 				SyntaxNodeKind k = s.node->children[i].as.node->kind;
 				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
-					as->data.multi_bind.value = lower_expr_cst((CstView){s.node->children[i].as.node, s.src});
+					as->data.multi_bind.value = lower_expr_cst((SyntaxView){s.node->children[i].as.node, s.src});
 					break;
 				}
 			}
@@ -1143,15 +1190,15 @@ static HirStmt *lower_stmt_cst(CstView s) {
 			if (s.node->children[i].tag != SE_NODE)
 				continue;
 			SyntaxNode *cn = s.node->children[i].as.node;
-			CstView cnv = (CstView){cn, s.src};
+			SyntaxView cnv = (SyntaxView){cn, s.src};
 			if (cn->kind == SN_CALL_EXPR) {
 				as->data.multi_bind.value = lower_expr_cst(cnv);
 			} else if (cn->kind == SN_OUT_ARG) {
 				int ti = as->data.multi_bind.target_count++;
-				as->data.multi_bind.targets[ti].name = txt_dup(cv_token(cnv, TOK_IDENT));
-				as->data.multi_bind.targets[ti].is_new = cv_has_token(cnv, TOK_COLON);
+				as->data.multi_bind.targets[ti].name = txt_dup(sv_token(cnv, TOK_IDENT));
+				as->data.multi_bind.targets[ti].is_new = sv_has_token(cnv, TOK_COLON);
 				as->data.multi_bind.targets[ti].type =
-				    cv_type_count(cnv) > 0 ? lower_type_cst(cv_type_at(cnv, 0)) : NULL;
+				    sv_type_count(cnv) > 0 ? lower_type_cst(sv_type_at(cnv, 0)) : NULL;
 			}
 		}
 		break;
@@ -1159,7 +1206,7 @@ static HirStmt *lower_stmt_cst(CstView s) {
 	case SN_BLOCK: {
 		/* a surface `{ … }` block statement */
 		as->kind = HIR_STMT_BLOCK;
-		as->data.block.stmts = cst_lower_body(s, &as->data.block.count);
+		as->data.block.stmts = syntax_lower_body(s, &as->data.block.count);
 		break;
 	}
 	case SN_MATCH_STMT: {
@@ -1168,17 +1215,17 @@ static HirStmt *lower_stmt_cst(CstView s) {
 		 *   if (__match == p0) { b0 } else if (__match == p1) { b1 } … else { bdef }
 		 * Int/char-literal patterns and `_` are handled here; string/enum patterns are
 		 * lowered in their own steps (str_eq chain / enum tag). */
-		CstView scrut = cv_node_at_expr(s, 0);
+		SyntaxView scrut = sv_node_at_expr(s, 0);
 		char tmp[40];
-		snprintf(tmp, sizeof(tmp), "__match_%u", (unsigned)cv_id(s));
+		snprintf(tmp, sizeof(tmp), "__match_%u", (unsigned)sv_id(s));
 
-		int narm = cv_count(s, SN_MATCH_ARM);
+		int narm = sv_count(s, SN_MATCH_ARM);
 
 		/* If any arm pattern is a string literal, the scrutinee is a string: type the
 		 * temp as char[] so it isn't inferred as i32 (which would mis-store the i8*). */
 		int has_string_arm = 0;
 		for (int i = 0; i < narm && !has_string_arm; i++) {
-			CstView arm = cv_child_at(s, SN_MATCH_ARM, i);
+			SyntaxView arm = sv_child_at(s, SN_MATCH_ARM, i);
 			for (int c = 0; c < arm.node->child_count; c++)
 				if (arm.node->children[c].tag == SE_TOKEN && arm.node->children[c].as.token.kind == TOK_STRING) {
 					has_string_arm = 1;
@@ -1201,36 +1248,36 @@ static HirStmt *lower_stmt_cst(CstView s) {
 		HirStmt **chain = NULL;
 		int chain_count = 0;
 		for (int i = 0; i < narm; i++) {
-			CstView arm = cv_child_at(s, SN_MATCH_ARM, i);
-			CvText pt = {NULL, 0};
+			SyntaxView arm = sv_child_at(s, SN_MATCH_ARM, i);
+			SynText pt = {NULL, 0};
 			TokenKind pk = TOK_EOF;
 			for (int c = 0; c < arm.node->child_count; c++)
 				if (arm.node->children[c].tag == SE_TOKEN) {
 					TokenKind k = arm.node->children[c].as.token.kind;
 					if (k == TOK_NUMBER || k == TOK_STRING || k == TOK_CHAR_LIT || k == TOK_IDENT) {
 						pk = k;
-						pt = (CvText){arm.src + arm.node->children[c].as.token.offset,
-						              arm.node->children[c].as.token.length};
+						pt = (SynText){arm.src + arm.node->children[c].as.token.offset,
+						               arm.node->children[c].as.token.length};
 						break;
 					}
 				}
 			if (pk == TOK_IDENT && pt.len == 1 && pt.ptr[0] == '_') {
-				chain = cst_lower_body(arm, &chain_count); /* wildcard → default else */
+				chain = syntax_lower_body(arm, &chain_count); /* wildcard → default else */
 				break;
 			}
 		}
 		/* build the if-chain from last arm to first (non-wildcard arms only) */
 		for (int i = narm - 1; i >= 0; i--) {
-			CstView arm = cv_child_at(s, SN_MATCH_ARM, i);
-			CvText pt = {NULL, 0};
+			SyntaxView arm = sv_child_at(s, SN_MATCH_ARM, i);
+			SynText pt = {NULL, 0};
 			TokenKind pk = TOK_EOF;
 			for (int c = 0; c < arm.node->child_count; c++)
 				if (arm.node->children[c].tag == SE_TOKEN) {
 					TokenKind k = arm.node->children[c].as.token.kind;
 					if (k == TOK_NUMBER || k == TOK_STRING || k == TOK_CHAR_LIT || k == TOK_IDENT) {
 						pk = k;
-						pt = (CvText){arm.src + arm.node->children[c].as.token.offset,
-						              arm.node->children[c].as.token.length};
+						pt = (SynText){arm.src + arm.node->children[c].as.token.offset,
+						               arm.node->children[c].as.token.length};
 						break;
 					}
 				}
@@ -1273,7 +1320,7 @@ static HirStmt *lower_stmt_cst(CstView s) {
 				HirExpr *sarg = lower_expr_cst(scrut);
 				HirExpr *parg = hir_expr_create(HIR_EXPR_STRING);
 				int slen = 0;
-				parg->data.string.value = cst_decode_string(pt, &slen);
+				parg->data.string.value = syntax_decode_string(pt, &slen);
 				parg->data.string.length = slen;
 				call->data.call.args[0] = sarg;
 				call->data.call.args[1] = parg;
@@ -1295,7 +1342,7 @@ static HirStmt *lower_stmt_cst(CstView s) {
 				cond->data.binary.right = lit;
 			}
 			iff->data.if_stmt.cond = cond;
-			iff->data.if_stmt.then_body = cst_lower_body(arm, &iff->data.if_stmt.then_count);
+			iff->data.if_stmt.then_body = syntax_lower_body(arm, &iff->data.if_stmt.then_count);
 			iff->data.if_stmt.else_body = chain;
 			iff->data.if_stmt.else_count = chain_count;
 			chain = calloc(1, sizeof(HirStmt *));
@@ -1326,15 +1373,15 @@ static HirStmt *lower_stmt_cst(CstView s) {
 	return as;
 }
 
-static HirParam *lower_param_cst(CstView p) {
+static HirParam *lower_param_cst(SyntaxView p) {
 	HirParam *ap = hir_param_create(NULL, NULL);
-	ap->name = cv_dup(cv_child(p, SN_PARAM_NAME));
-	ap->type = lower_type_cst(cv_type_at(p, 0)); /* NULL for sys params */
-	ap->is_own = cv_has_token(p, TOK_OWN);
+	ap->name = sv_dup(sv_child(p, SN_PARAM_NAME));
+	ap->type = lower_type_cst(sv_type_at(p, 0)); /* NULL for sys params */
+	ap->is_own = sv_has_token(p, TOK_OWN);
 	return ap;
 }
 
-/* ---- tuple-group registry (CST equivalent of main.c expand_archetype_tuple_groups) ----
+/* ---- tuple-group registry (syntax tree equivalent of main.c expand_archetype_tuple_groups) ----
  * A top-level `pos (x, y) :: T` declares a tuple group: a bare archetype field `pos`
  * expands to flat columns `pos_x`, `pos_y` (each of type T). */
 typedef struct {
@@ -1366,7 +1413,7 @@ static void register_tgroup(const SyntaxNode *parent, const char *src, int start
 			else if (ch->as.token.kind == TOK_RPAREN)
 				in_paren = 0;
 			else if (ch->as.token.kind == TOK_IDENT) {
-				CvText t = {src + ch->as.token.offset, ch->as.token.length};
+				SynText t = {src + ch->as.token.offset, ch->as.token.length};
 				if (!in_paren && !g->name)
 					g->name = txt_dup(t);
 				else if (in_paren)
@@ -1375,7 +1422,7 @@ static void register_tgroup(const SyntaxNode *parent, const char *src, int start
 		} else {
 			SyntaxNodeKind kk = ch->as.node->kind;
 			if (kk >= SN_TYPE_REF && kk <= SN_TYPE_FUNC && g->member.tag == HIR_TYPE_UNKNOWN) {
-				HirType *mt = lower_type_cst((CstView){ch->as.node, src});
+				HirType *mt = lower_type_cst((SyntaxView){ch->as.node, src});
 				if (mt)
 					g->member = *mt;
 			}
@@ -1399,7 +1446,7 @@ static void register_arch_tgroups(const SyntaxNode *arch, const char *src) {
 			while (e < arch->child_count &&
 			       !(arch->children[e].tag == SE_NODE && arch->children[e].as.node->kind == SN_FIELD_NAME && e != k))
 				e++;
-			char *nm = cv_dup((CstView){arch->children[k].as.node, src});
+			char *nm = sv_dup((SyntaxView){arch->children[k].as.node, src});
 			register_tgroup(arch, src, j, e, nm);
 			free(nm);
 		}
@@ -1434,7 +1481,7 @@ static void build_tgroups(const SyntaxNode *root, const char *src) {
 		if (d->kind == SN_CONST_DECL && (ae = arch_expr_child(d)) != NULL)
 			register_arch_tgroups(ae, src);
 		/* top-level tuple group: `pos (x, y) :: T` (a const-decl with a direct `(`, not decorated). */
-		else if (d->kind == SN_CONST_DECL && !decl_is_decorated(d) && cv_has_token((CstView){d, src}, TOK_LPAREN))
+		else if (d->kind == SN_CONST_DECL && !decl_is_decorated(d) && sv_has_token((SyntaxView){d, src}, TOK_LPAREN))
 			register_tgroup(d, src, 0, d->child_count, NULL);
 		/* legacy inline archetype tuple field: `pos (x, y) :: T` inside `arche { … }` */
 		else if (d->kind == SN_ARCHETYPE_DECL)
@@ -1576,8 +1623,8 @@ static void tuple_collapse_decl(HirDecl *d) {
 }
 
 /* True if this decl node carries a `@drop` decorator (a direct `@ drop` token pair). */
-static int cst_decl_has_drop_decorator(CstView d) {
-	if (!cv_present(d))
+static int syntax_decl_has_drop_decorator(SyntaxView d) {
+	if (!sv_present(d))
 		return 0;
 	int n = d.node->child_count;
 	for (int i = 0; i + 1 < n; i++) {
@@ -1592,8 +1639,8 @@ static int cst_decl_has_drop_decorator(CstView d) {
 	}
 	return 0;
 }
-static int cst_decl_has_intrinsic_decorator(CstView d) {
-	if (!cv_present(d))
+static int syntax_decl_has_intrinsic_decorator(SyntaxView d) {
+	if (!sv_present(d))
 		return 0;
 	int n = d.node->child_count;
 	for (int i = 0; i + 1 < n; i++) {
@@ -1613,57 +1660,57 @@ static int cst_decl_has_intrinsic_decorator(CstView d) {
  * Build the HIR decl from an RHS value-form node `f` with the name from the binding LHS.
  * Mirrors the legacy keyword-led cases below (dead once old syntax is removed). `name` owned. */
 
-static HirDecl *lower_proc_from(CstView f, char *name) {
+static HirDecl *lower_proc_from(SyntaxView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_PROC);
 	HirProcDecl *ap = calloc(1, sizeof(HirProcDecl));
 	ap->name = name;
 	/* Foreign (FFI-bodied): a proc value-form with no `{` body block (parser emits a bodiless
 	 * proc value-form only inside a `#foreign` region). Mirrors semantic.c build_proc_from. */
-	ap->is_extern = !cv_has_token(f, TOK_LBRACE);
-	int np = cv_count(f, SN_PARAM);
+	ap->is_extern = !sv_has_token(f, TOK_LBRACE);
+	int np = sv_count(f, SN_PARAM);
 	ap->params = calloc(np ? np : 1, sizeof(HirParam *));
 	for (int i = 0; i < np; i++)
-		ap->params[i] = lower_param_cst(cv_child_at(f, SN_PARAM, i));
+		ap->params[i] = lower_param_cst(sv_child_at(f, SN_PARAM, i));
 	ap->param_count = np;
-	int nout = cv_count(f, SN_OUT_PARAM);
+	int nout = sv_count(f, SN_OUT_PARAM);
 	ap->out_params = calloc(nout ? nout : 1, sizeof(HirParam *));
 	for (int i = 0; i < nout; i++)
-		ap->out_params[i] = lower_param_cst(cv_child_at(f, SN_OUT_PARAM, i));
+		ap->out_params[i] = lower_param_cst(sv_child_at(f, SN_OUT_PARAM, i));
 	ap->out_param_count = nout;
-	ap->stmts = cst_lower_body(f, &ap->stmt_count);
+	ap->stmts = syntax_lower_body(f, &ap->stmt_count);
 	ad->data.proc = ap;
 	return ad;
 }
 
-static HirDecl *lower_func_from(CstView f, char *name) {
+static HirDecl *lower_func_from(SyntaxView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_FUNC);
 	HirFuncDecl *af = calloc(1, sizeof(HirFuncDecl));
 	af->name = name;
 	af->is_extern = 0; /* funcs are never foreign — FFI bodies are procs */
-	int np = cv_count(f, SN_PARAM);
+	int np = sv_count(f, SN_PARAM);
 	af->params = calloc(np ? np : 1, sizeof(HirParam *));
 	for (int i = 0; i < np; i++)
-		af->params[i] = lower_param_cst(cv_child_at(f, SN_PARAM, i));
+		af->params[i] = lower_param_cst(sv_child_at(f, SN_PARAM, i));
 	af->param_count = np;
-	int nt = cv_type_count(f);
+	int nt = sv_type_count(f);
 	af->return_types = calloc(nt ? nt : 1, sizeof(HirType *));
 	af->return_type_count = 0;
 	for (int i = 0; i < nt; i++)
-		af->return_types[af->return_type_count++] = lower_type_cst(cv_type_at(f, i));
-	af->stmts = cst_lower_body(f, &af->stmt_count);
+		af->return_types[af->return_type_count++] = lower_type_cst(sv_type_at(f, i));
+	af->stmts = syntax_lower_body(f, &af->stmt_count);
 	ad->data.func = af;
 	return ad;
 }
 
-static HirDecl *lower_sys_from(CstView f, char *name) {
+static HirDecl *lower_sys_from(SyntaxView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_SYS);
 	HirSysDecl *as = calloc(1, sizeof(HirSysDecl));
 	as->name = name;
-	as->stmts = cst_lower_body(f, &as->stmt_count);
-	int np = cv_count(f, SN_PARAM);
+	as->stmts = syntax_lower_body(f, &as->stmt_count);
+	int np = sv_count(f, SN_PARAM);
 	int pcount = 0;
 	for (int i = 0; i < np; i++) {
-		char *pn = cv_dup(cv_child(cv_child_at(f, SN_PARAM, i), SN_PARAM_NAME));
+		char *pn = sv_dup(sv_child(sv_child_at(f, SN_PARAM, i), SN_PARAM_NAME));
 		CstTupleGroup *g = tgroup_lookup(pn);
 		pcount += g ? g->nsuf : 1;
 		free(pn);
@@ -1671,8 +1718,8 @@ static HirDecl *lower_sys_from(CstView f, char *name) {
 	as->params = calloc(pcount ? pcount : 1, sizeof(HirParam *));
 	as->param_count = 0;
 	for (int i = 0; i < np; i++) {
-		CstView p = cv_child_at(f, SN_PARAM, i);
-		char *pn = cv_dup(cv_child(p, SN_PARAM_NAME));
+		SyntaxView p = sv_child_at(f, SN_PARAM, i);
+		char *pn = sv_dup(sv_child(p, SN_PARAM_NAME));
 		CstTupleGroup *g = tgroup_lookup(pn);
 		if (!g) {
 			as->params[as->param_count++] = lower_param_cst(p);
@@ -1681,7 +1728,7 @@ static HirDecl *lower_sys_from(CstView f, char *name) {
 		}
 		for (int sx = 0; sx < as->stmt_count; sx++)
 			tuple_rewrite_stmt(as->stmts[sx], pn);
-		int is_own = cv_has_token(p, TOK_OWN);
+		int is_own = sv_has_token(p, TOK_OWN);
 		for (int j = 0; j < g->nsuf; j++) {
 			HirParam *ap = hir_param_create(NULL, NULL);
 			ap->name = malloc(strlen(pn) + 1 + strlen(g->suffix[j]) + 1);
@@ -1698,19 +1745,19 @@ static HirDecl *lower_sys_from(CstView f, char *name) {
 	return ad;
 }
 
-static HirDecl *lower_archetype_from(CstView f, char *name) {
+static HirDecl *lower_archetype_from(SyntaxView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_ARCHETYPE);
 	HirArchetypeDecl *aa = calloc(1, sizeof(HirArchetypeDecl));
 	aa->name = name;
-	int nf = cv_count(f, SN_FIELD_NAME);
+	int nf = sv_count(f, SN_FIELD_NAME);
 	int cap = nf > 0 ? nf : 1;
 	aa->fields = calloc(cap, sizeof(HirField *));
 	aa->field_count = 0;
 	for (int i = 0; i < f.node->child_count; i++) {
 		if (f.node->children[i].tag != SE_NODE || f.node->children[i].as.node->kind != SN_FIELD_NAME)
 			continue;
-		CstView fn = {f.node->children[i].as.node, f.src};
-		CstView ty = {NULL, f.src};
+		SyntaxView fn = {f.node->children[i].as.node, f.src};
+		SyntaxView ty = {NULL, f.src};
 		for (int k = i + 1; k < f.node->child_count; k++)
 			if (f.node->children[k].tag == SE_NODE) {
 				SyntaxNodeKind kk = f.node->children[k].as.node->kind;
@@ -1721,7 +1768,7 @@ static HirDecl *lower_archetype_from(CstView f, char *name) {
 					break;
 				}
 			}
-		char *raw = cv_dup(fn);
+		char *raw = sv_dup(fn);
 		if (aa->field_count >= cap) {
 			cap *= 2;
 			aa->fields = realloc(aa->fields, cap * sizeof(HirField *));
@@ -1745,8 +1792,8 @@ static HirDecl *lower_archetype_from(CstView f, char *name) {
 			continue;
 		}
 		HirField *af = hir_field_create(FIELD_COLUMN, NULL, NULL);
-		af->name = cv_dup(fn);
-		if (cv_present(ty)) {
+		af->name = sv_dup(fn);
+		if (sv_present(ty)) {
 			af->type = lower_type_cst(ty);
 		} else {
 			const char *r = g_lower_sem ? semantic_resolve_type_alias(g_lower_sem, raw) : raw;
@@ -1772,13 +1819,13 @@ static HirDecl *lower_archetype_from(CstView f, char *name) {
 static HirDecl *g_synth_arch[64];
 static int g_synth_arch_count = 0;
 
-static const char *synth_archetype_name(CstView arch_expr) {
+static const char *synth_archetype_name(SyntaxView arch_expr) {
 	/* Deterministic name from the sorted field-name set, so identical literals reuse one decl. */
 	char *names[64];
 	int n = 0;
 	for (int i = 0; i < arch_expr.node->child_count && n < 64; i++)
 		if (arch_expr.node->children[i].tag == SE_NODE && arch_expr.node->children[i].as.node->kind == SN_FIELD_NAME)
-			names[n++] = cv_dup((CstView){arch_expr.node->children[i].as.node, arch_expr.src});
+			names[n++] = sv_dup((SyntaxView){arch_expr.node->children[i].as.node, arch_expr.src});
 	for (int i = 1; i < n; i++) { /* insertion sort */
 		char *key = names[i];
 		int j = i - 1;
@@ -1804,7 +1851,7 @@ static const char *synth_archetype_name(CstView arch_expr) {
 	return d->data.archetype->name;
 }
 
-static HirDecl *lower_func_group_from(CstView f, char *name) {
+static HirDecl *lower_func_group_from(SyntaxView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_FUNC_GROUP);
 	HirFuncGroupDecl *fg = calloc(1, sizeof(HirFuncGroupDecl));
 	fg->name = name;
@@ -1816,7 +1863,7 @@ static HirDecl *lower_func_group_from(CstView f, char *name) {
 	fg->member_count = 0;
 	for (int i = 0; i < f.node->child_count; i++)
 		if (f.node->children[i].tag == SE_TOKEN && f.node->children[i].as.token.kind == TOK_IDENT) {
-			CvText t = {f.src + f.node->children[i].as.token.offset, f.node->children[i].as.token.length};
+			SynText t = {f.src + f.node->children[i].as.token.offset, f.node->children[i].as.token.length};
 			fg->member_names[fg->member_count++] = txt_dup(t);
 		}
 	ad->data.func_group = fg;
@@ -1824,8 +1871,8 @@ static HirDecl *lower_func_group_from(CstView f, char *name) {
 }
 
 /* Binding LHS name: the IDENT immediately before the first top-level `:` (skips `@decorator`). */
-static CvText lower_binding_name(CstView d) {
-	CvText last = {NULL, 0};
+static SynText lower_binding_name(SyntaxView d) {
+	SynText last = {NULL, 0};
 	for (int i = 0; i < d.node->child_count; i++) {
 		SyntaxElem *e = &d.node->children[i];
 		if (e->tag != SE_TOKEN)
@@ -1833,51 +1880,51 @@ static CvText lower_binding_name(CstView d) {
 		if (e->as.token.kind == TOK_COLON)
 			break;
 		if (e->as.token.kind == TOK_IDENT)
-			last = (CvText){d.src + e->as.token.offset, e->as.token.length};
+			last = (SynText){d.src + e->as.token.offset, e->as.token.length};
 	}
 	return last;
 }
 
-static CstView lower_rhs_form(CstView d) {
+static SyntaxView lower_rhs_form(SyntaxView d) {
 	for (int i = 0; i < d.node->child_count; i++) {
 		if (d.node->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
 		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR || k == SN_GROUP_EXPR ||
 		    k == SN_ENUM_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
-			CstView v = {d.node->children[i].as.node, d.src};
+			SyntaxView v = {d.node->children[i].as.node, d.src};
 			return v;
 		}
 	}
-	CstView none = {NULL, d.src};
+	SyntaxView none = {NULL, d.src};
 	return none;
 }
 
-static HirDecl *lower_decl_cst(CstView d) {
-	switch (cv_kind(d)) {
+static HirDecl *lower_decl_cst(SyntaxView d) {
+	switch (sv_kind(d)) {
 	case SN_USE_DECL:
 		return NULL;
 	case SN_WORLD_DECL: {
 		HirDecl *ad = hir_decl_create(HIR_DECL_WORLD);
 		ad->data.world = calloc(1, sizeof(HirWorldDecl));
-		ad->data.world->name = txt_dup(cv_token(d, TOK_IDENT));
+		ad->data.world->name = txt_dup(sv_token(d, TOK_IDENT));
 		return ad;
 	}
 	case SN_ARCHETYPE_DECL: {
 		HirDecl *ad = hir_decl_create(HIR_DECL_ARCHETYPE);
 		HirArchetypeDecl *aa = calloc(1, sizeof(HirArchetypeDecl));
-		aa->name = cv_dup(cv_child(d, SN_TYPE_DEF_NAME));
-		int nf = cv_count(d, SN_FIELD_NAME);
+		aa->name = sv_dup(sv_child(d, SN_TYPE_DEF_NAME));
+		int nf = sv_count(d, SN_FIELD_NAME);
 		int cap = nf > 0 ? nf : 1;
 		aa->fields = calloc(cap, sizeof(HirField *));
 		aa->field_count = 0;
 		for (int i = 0; i < d.node->child_count; i++) {
 			if (d.node->children[i].tag != SE_NODE || d.node->children[i].as.node->kind != SN_FIELD_NAME)
 				continue;
-			CstView fn = {d.node->children[i].as.node, d.src};
+			SyntaxView fn = {d.node->children[i].as.node, d.src};
 			/* type = a type node before the next field; else a bare field (`arche { a, b }`)
 			 * whose component type is the field name itself (resolved through aliases). */
-			CstView ty = {NULL, d.src};
+			SyntaxView ty = {NULL, d.src};
 			for (int k = i + 1; k < d.node->child_count; k++)
 				if (d.node->children[k].tag == SE_NODE) {
 					SyntaxNodeKind kk = d.node->children[k].as.node->kind;
@@ -1888,7 +1935,7 @@ static HirDecl *lower_decl_cst(CstView d) {
 						break;
 					}
 				}
-			char *raw = cv_dup(fn);
+			char *raw = sv_dup(fn);
 			/* bare field matching a top-level group, or an inline `pos (x,y) :: T` field
 			 * (both registered in the tuple-group table) → one tuple-typed column. */
 			if (aa->field_count >= cap) {
@@ -1897,9 +1944,8 @@ static HirDecl *lower_decl_cst(CstView d) {
 			}
 			CstTupleGroup *g = tgroup_lookup(raw);
 			if (g) {
-				/* tuple group: flatten to scalar columns `pos_x`, `pos_y` (mirrors the
-				 * AstProgram path; codegen has no tuple type). `pos.x`/`Body.pos.x` accesses
-				 * are collapsed to the combined column name during statement lowering. */
+				/* tuple group: flatten to scalar columns `pos_x`, `pos_y` (codegen has no tuple type).
+				 * `pos.x`/`Body.pos.x` accesses are collapsed to the combined column name during statement lowering. */
 				for (int sx = 0; sx < g->nsuf; sx++) {
 					if (aa->field_count >= cap) {
 						cap *= 2;
@@ -1917,8 +1963,8 @@ static HirDecl *lower_decl_cst(CstView d) {
 				continue;
 			}
 			HirField *af = hir_field_create(FIELD_COLUMN, NULL, NULL);
-			af->name = cv_dup(fn);
-			if (cv_present(ty)) {
+			af->name = sv_dup(fn);
+			if (sv_present(ty)) {
 				af->type = lower_type_cst(ty);
 			} else {
 				const char *r = g_lower_sem ? semantic_resolve_type_alias(g_lower_sem, raw) : raw;
@@ -1940,35 +1986,35 @@ static HirDecl *lower_decl_cst(CstView d) {
 	case SN_PROC_DECL: {
 		HirDecl *ad = hir_decl_create(HIR_DECL_PROC);
 		HirProcDecl *ap = calloc(1, sizeof(HirProcDecl));
-		ap->name = cv_dup(cv_child(d, SN_FUNC_DEF_NAME));
-		ap->is_extern = !cv_has_token(d, TOK_LBRACE);
-		int np = cv_count(d, SN_PARAM);
+		ap->name = sv_dup(sv_child(d, SN_FUNC_DEF_NAME));
+		ap->is_extern = !sv_has_token(d, TOK_LBRACE);
+		int np = sv_count(d, SN_PARAM);
 		ap->params = calloc(np ? np : 1, sizeof(HirParam *));
 		for (int i = 0; i < np; i++)
-			ap->params[i] = lower_param_cst(cv_child_at(d, SN_PARAM, i));
+			ap->params[i] = lower_param_cst(sv_child_at(d, SN_PARAM, i));
 		ap->param_count = np;
 		/* out-params: the `(out)` list, written in place (0 = no outputs) */
-		int nout = cv_count(d, SN_OUT_PARAM);
+		int nout = sv_count(d, SN_OUT_PARAM);
 		ap->out_params = calloc(nout ? nout : 1, sizeof(HirParam *));
 		for (int i = 0; i < nout; i++)
-			ap->out_params[i] = lower_param_cst(cv_child_at(d, SN_OUT_PARAM, i));
+			ap->out_params[i] = lower_param_cst(sv_child_at(d, SN_OUT_PARAM, i));
 		ap->out_param_count = nout;
-		ap->stmts = cst_lower_body(d, &ap->stmt_count);
+		ap->stmts = syntax_lower_body(d, &ap->stmt_count);
 		ad->data.proc = ap;
 		return ad;
 	}
 	case SN_SYS_DECL: {
 		HirDecl *ad = hir_decl_create(HIR_DECL_SYS);
 		HirSysDecl *as = calloc(1, sizeof(HirSysDecl));
-		as->name = cv_dup(cv_child(d, SN_FUNC_DEF_NAME));
+		as->name = sv_dup(sv_child(d, SN_FUNC_DEF_NAME));
 		/* Lower the body first; a tuple-group param then expands into one scalar param
 		 * per component (`pos` → `pos_x`, `pos_y`) and its `pos.x` body accesses are
-		 * rewritten to the flattened names (mirrors the AstProgram-path sys lowering). */
-		as->stmts = cst_lower_body(d, &as->stmt_count);
-		int np = cv_count(d, SN_PARAM);
+		 * rewritten to the flattened names (flattened sys lowering). */
+		as->stmts = syntax_lower_body(d, &as->stmt_count);
+		int np = sv_count(d, SN_PARAM);
 		int pcount = 0;
 		for (int i = 0; i < np; i++) {
-			char *pn = cv_dup(cv_child(cv_child_at(d, SN_PARAM, i), SN_PARAM_NAME));
+			char *pn = sv_dup(sv_child(sv_child_at(d, SN_PARAM, i), SN_PARAM_NAME));
 			CstTupleGroup *g = tgroup_lookup(pn);
 			pcount += g ? g->nsuf : 1;
 			free(pn);
@@ -1976,8 +2022,8 @@ static HirDecl *lower_decl_cst(CstView d) {
 		as->params = calloc(pcount ? pcount : 1, sizeof(HirParam *));
 		as->param_count = 0;
 		for (int i = 0; i < np; i++) {
-			CstView p = cv_child_at(d, SN_PARAM, i);
-			char *pn = cv_dup(cv_child(p, SN_PARAM_NAME));
+			SyntaxView p = sv_child_at(d, SN_PARAM, i);
+			char *pn = sv_dup(sv_child(p, SN_PARAM_NAME));
 			CstTupleGroup *g = tgroup_lookup(pn);
 			if (!g) {
 				as->params[as->param_count++] = lower_param_cst(p);
@@ -1986,7 +2032,7 @@ static HirDecl *lower_decl_cst(CstView d) {
 			}
 			for (int sx = 0; sx < as->stmt_count; sx++)
 				tuple_rewrite_stmt(as->stmts[sx], pn);
-			int is_own = cv_has_token(p, TOK_OWN);
+			int is_own = sv_has_token(p, TOK_OWN);
 			for (int j = 0; j < g->nsuf; j++) {
 				HirParam *ap = hir_param_create(NULL, NULL);
 				ap->name = malloc(strlen(pn) + 1 + strlen(g->suffix[j]) + 1);
@@ -2005,28 +2051,28 @@ static HirDecl *lower_decl_cst(CstView d) {
 	case SN_FUNC_DECL: {
 		HirDecl *ad = hir_decl_create(HIR_DECL_FUNC);
 		HirFuncDecl *af = calloc(1, sizeof(HirFuncDecl));
-		af->name = cv_dup(cv_child(d, SN_FUNC_DEF_NAME));
+		af->name = sv_dup(sv_child(d, SN_FUNC_DEF_NAME));
 		af->is_extern = 0; /* funcs are never foreign */
-		int np = cv_count(d, SN_PARAM);
+		int np = sv_count(d, SN_PARAM);
 		af->params = calloc(np ? np : 1, sizeof(HirParam *));
 		for (int i = 0; i < np; i++)
-			af->params[i] = lower_param_cst(cv_child_at(d, SN_PARAM, i));
+			af->params[i] = lower_param_cst(sv_child_at(d, SN_PARAM, i));
 		af->param_count = np;
 		/* return types: TYPE_REF nodes that are NOT inside params (params are wrapped in SN_PARAM) */
-		int nt = cv_type_count(d);
+		int nt = sv_type_count(d);
 		af->return_types = calloc(nt ? nt : 1, sizeof(HirType *));
 		af->return_type_count = 0;
 		for (int i = 0; i < nt; i++)
-			af->return_types[af->return_type_count++] = lower_type_cst(cv_type_at(d, i));
-		af->stmts = cst_lower_body(d, &af->stmt_count);
+			af->return_types[af->return_type_count++] = lower_type_cst(sv_type_at(d, i));
+		af->stmts = syntax_lower_body(d, &af->stmt_count);
 		ad->data.func = af;
 		return ad;
 	}
 	case SN_CONST_DECL: {
 		/* Unified grammar: a binding `name :: <value form>` declares that kind, named by the LHS. */
-		CstView rhs = lower_rhs_form(d);
-		if (cv_present(rhs)) {
-			SyntaxNodeKind rk = cv_kind(rhs);
+		SyntaxView rhs = lower_rhs_form(d);
+		if (sv_present(rhs)) {
+			SyntaxNodeKind rk = sv_kind(rhs);
 			if (rk == SN_PROC_EXPR || rk == SN_FUNC_EXPR || rk == SN_SYS_EXPR || rk == SN_ARCH_EXPR ||
 			    rk == SN_GROUP_EXPR) {
 				char *nm = txt_dup(lower_binding_name(d));
@@ -2035,11 +2081,11 @@ static HirDecl *lower_decl_cst(CstView d) {
 					HirDecl *pd = lower_proc_from(rhs, nm);
 					/* Propagate the `@drop` decorator (a direct `@ drop` token pair on the
 					 * decl node) so the RAII pass can register this proc as a destructor. */
-					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && cst_decl_has_drop_decorator(d))
+					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && syntax_decl_has_drop_decorator(d))
 						pd->data.proc->is_drop = 1;
 					/* `@intrinsic`: calls to this decl lower to a built-in instruction (codegen
 					 * checks the resolved decl's flag, not the symbol name — see codegen syscall). */
-					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && cst_decl_has_intrinsic_decorator(d))
+					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && syntax_decl_has_intrinsic_decorator(d))
 						pd->data.proc->is_intrinsic = 1;
 					return pd;
 				}
@@ -2070,19 +2116,19 @@ static HirDecl *lower_decl_cst(CstView d) {
 		}
 		/* Tuple-group type definition `pos (x, y) :: T` mints nominal component types
 		 * (pos_x, pos_y); it's compile-time only and erased before codegen. */
-		if (cv_has_token(d, TOK_LPAREN))
+		if (sv_has_token(d, TOK_LPAREN))
 			return NULL;
 		HirDecl *ad = hir_decl_create(HIR_DECL_CONST);
 		HirConstDecl *ac = calloc(1, sizeof(HirConstDecl));
-		ac->name = txt_dup(cv_token(d, TOK_IDENT));
-		ac->value = lower_expr_cst(cv_node_at_expr(d, 0));
+		ac->name = txt_dup(sv_token(d, TOK_IDENT));
+		ac->value = lower_expr_cst(sv_node_at_expr(d, 0));
 		ad->data.constant = ac;
 		return ad;
 	}
 	case SN_STATIC_DECL: {
 		HirDecl *ad = hir_decl_create(HIR_DECL_STATIC);
 		HirStaticDecl *sd = calloc(1, sizeof(HirStaticDecl));
-		if (cv_has_token(d, TOK_LBRACKET)) {
+		if (sv_has_token(d, TOK_LBRACKET)) {
 			/* Pool allocation `Name[C](N){V}` — archetype name is the (possibly qualified) head:
 			 * the `.`-joined IDENT tokens before `[`. A bare `Particle[N]` yields "Particle"; a
 			 * qualified `lib.Particle[N]` yields "lib.Particle" (the imported shape's canonical name). */
@@ -2149,7 +2195,7 @@ static HirDecl *lower_decl_cst(CstView d) {
 				SyntaxNodeKind k = ch->as.node->kind;
 				if (k < SN_LITERAL_EXPR || k > SN_PAREN_EXPR)
 					continue;
-				CstView ev = {ch->as.node, d.src};
+				SyntaxView ev = {ch->as.node, d.src};
 				if (phase == PH_CAP) {
 					sd->archetype.field_values[0] = lower_expr_cst(ev);
 					sd->archetype.field_count = 1;
@@ -2157,7 +2203,7 @@ static HirDecl *lower_decl_cst(CstView d) {
 					sd->archetype.init_length = lower_expr_cst(ev);
 				} else if (phase == PH_FIELDS && pend) {
 					int fc = sd->archetype.field_count;
-					sd->archetype.field_names[fc] = txt_dup((CvText){pend, pend_len});
+					sd->archetype.field_names[fc] = txt_dup((SynText){pend, pend_len});
 					sd->archetype.field_values[fc] = lower_expr_cst(ev);
 					sd->archetype.field_count++;
 					pend = NULL;
@@ -2167,10 +2213,10 @@ static HirDecl *lower_decl_cst(CstView d) {
 			/* Storage form of the unified binding: `name : T` / `name : T = v` / `name := v`. A
 			 * sized-array T (it has an element type) is a buffer; any other (or absent) T is a
 			 * scalar. The `= v` value is the initializer; its absence is the implicit `= 0`. */
-			char *nm = txt_dup(cv_token(d, TOK_IDENT));
-			CstView arr_ty = cv_type_at(d, 0);
-			CstView initv = cv_node_at_expr(d, 0);
-			HirType *full = cv_present(arr_ty) ? lower_type_cst(arr_ty) : NULL;
+			char *nm = txt_dup(sv_token(d, TOK_IDENT));
+			SyntaxView arr_ty = sv_type_at(d, 0);
+			SyntaxView initv = sv_node_at_expr(d, 0);
+			HirType *full = sv_present(arr_ty) ? lower_type_cst(arr_ty) : NULL;
 			if (full && full->elem) {
 				/* buffer: codegen wants element + size, not the array wrapper */
 				sd->kind = HIR_STATIC_ARRAY;
@@ -2188,11 +2234,11 @@ static HirDecl *lower_decl_cst(CstView d) {
 						sd->array.size = atoi(buf);
 						break;
 					}
-				sd->array.init = cv_present(initv) ? lower_expr_cst(initv) : NULL;
+				sd->array.init = sv_present(initv) ? lower_expr_cst(initv) : NULL;
 			} else {
 				/* scalar; inferred form `name := v` carries no type node — infer int/float from the
 				 * literal initializer's lexeme. */
-				HirExpr *ie = cv_present(initv) ? lower_expr_cst(initv) : NULL;
+				HirExpr *ie = sv_present(initv) ? lower_expr_cst(initv) : NULL;
 				HirType *sty = full;
 				if (!sty) {
 					sty = hir_type_create(HIR_TYPE_UNKNOWN);
@@ -2215,7 +2261,7 @@ static HirDecl *lower_decl_cst(CstView d) {
 		/* `func g = { a, b };` — name in FUNC_DEF_NAME, members are the bare IDENTs. */
 		HirDecl *ad = hir_decl_create(HIR_DECL_FUNC_GROUP);
 		HirFuncGroupDecl *fg = calloc(1, sizeof(HirFuncGroupDecl));
-		fg->name = cv_dup(cv_child(d, SN_FUNC_DEF_NAME));
+		fg->name = sv_dup(sv_child(d, SN_FUNC_DEF_NAME));
 		int nmem = 0;
 		for (int i = 0; i < d.node->child_count; i++)
 			if (d.node->children[i].tag == SE_TOKEN && d.node->children[i].as.token.kind == TOK_IDENT)
@@ -2224,7 +2270,7 @@ static HirDecl *lower_decl_cst(CstView d) {
 		fg->member_count = 0;
 		for (int i = 0; i < d.node->child_count; i++)
 			if (d.node->children[i].tag == SE_TOKEN && d.node->children[i].as.token.kind == TOK_IDENT) {
-				CvText t = {d.src + d.node->children[i].as.token.offset, d.node->children[i].as.token.length};
+				SynText t = {d.src + d.node->children[i].as.token.offset, d.node->children[i].as.token.length};
 				fg->member_names[fg->member_count++] = txt_dup(t);
 			}
 		ad->data.func_group = fg;
@@ -2236,10 +2282,10 @@ static HirDecl *lower_decl_cst(CstView d) {
 	}
 }
 
-/* ---- module inlining: CST-path equivalent of main.c's resolve_uses ----
+/* ---- module inlining: syntax-tree-path equivalent of main.c's resolve_uses ----
  * `use foo;` inlines foo.arche's decls at the use site, auto-prefixing every
  * name foo declares (and foo-internal references to them) with `foo_`. main.c
- * registers each used module's CST here before calling lower_to_hir. */
+ * registers each used module's syntax tree here before calling lower_to_hir. */
 typedef struct {
 	char *name;
 	const SyntaxNode *root;
@@ -2330,7 +2376,7 @@ static void rn_owned(char **slot, const char *prefix, char **set, int count) {
 		*slot = p;
 	}
 }
-/* HirType.name points into the CST (not owned) — swap the pointer, never free it. */
+/* HirType.name points into the syntax tree (not owned) — swap the pointer, never free it. */
 static void rn_const(const char **slot, const char *prefix, char **set, int count) {
 	char *p = prefixed_dup(*slot, prefix, set, count);
 	if (p)
@@ -2721,7 +2767,7 @@ static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, const 
                                 char ***full, int *fulln, int *fullcap, char ***expset, int *expn, int *expcap,
                                 int exported, int is_datasheet, int module_is_device, int file_local, char ***fileset,
                                 int *filesetn, int *filesetcap) {
-	HirDecl *md = lower_decl_cst((CstView){node, msrc});
+	HirDecl *md = lower_decl_cst((SyntaxView){node, msrc});
 	if (!md)
 		return;
 	/* A pool decl in a datasheet (`.ds.arche`) is a storage REQUIREMENT (min rows), not an allocation. */
@@ -2803,7 +2849,7 @@ static char *import_token_module_name(const char *src, const SyntaxElem *tok) {
 		off += 1;
 		len -= 2;
 	}
-	char *s = txt_dup((CvText){src + off, len});
+	char *s = txt_dup((SynText){src + off, len});
 	if (k == TOK_STRING) {
 		char *slash = strrchr(s, '/');
 		char *base = slash ? slash + 1 : s; /* basename */
@@ -2854,10 +2900,10 @@ static void hir_inline_module(const char *mod_name, HirProgram *ast, char **mod_
 			const SyntaxNode *cn = mr->children[j].as.node;
 			SyntaxNodeKind mk = cn->kind;
 			if (mk == SN_REGION) {
-				CstView rv = {cn, msrc};
-				int is_block = cv_has_token(rv, TOK_LBRACE);
-				int is_foreign = cv_has_token(rv, TOK_HASH_FOREIGN);
-				int is_file = cv_has_token(rv, TOK_HASH_FILE);
+				SyntaxView rv = {cn, msrc};
+				int is_block = sv_has_token(rv, TOK_LBRACE);
+				int is_foreign = sv_has_token(rv, TOK_HASH_FOREIGN);
+				int is_file = sv_has_token(rv, TOK_HASH_FILE);
 				if (is_block) {
 					int child_exp = is_foreign ? exported : 0;
 					int child_fl = is_file ? 1 : file_local;
@@ -2944,7 +2990,7 @@ static void hir_inline_module(const char *mod_name, HirProgram *ast, char **mod_
  * requirement's tail name (`foo` in `physics.foo`) maps to this decl's own name (`bar`). The device's
  * uses of `foo` are then substituted to `bar`, so its systems bind to the driver's shape. */
 static void collect_impl_binds(const SyntaxNode *decl, const char *src) {
-	CvText bn = lower_binding_name((CstView){decl, src});
+	SynText bn = lower_binding_name((SyntaxView){decl, src});
 	if (!bn.ptr)
 		return;
 	char *local = txt_dup(bn);
@@ -2988,20 +3034,20 @@ static void collect_impl_binds(const SyntaxNode *decl, const char *src) {
 	free(local);
 }
 
-/* CST-driven entry, gated by ARCHE_LOWER_CST (validated against the IR goldens). */
+/* The lowering entry: syntax tree + semantic side model -> HIR. */
 HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 	if (!root)
 		return NULL;
 	HirProgram *ast = hir_program_create();
-	CstView r = cv_root(root, src);
+	SyntaxView r = sv_root(root, src);
 	build_tgroups(root, src); /* tuple-group consts → archetype-field expansion table */
 	g_synth_arch_count = 0;   /* synthetic archetypes minted from anonymous `arche {…}` literals */
 	/* Deep count: decls nested inside `#foreign { }` / `#module { }` block regions are collected
 	 * too (see the region recursion below), so the shallow top-level child count would undersize
-	 * the array and overflow it. cv_node_count_deep is a safe (over-)estimate. */
-	int cap = cv_node_count_deep(r);
+	 * the array and overflow it. sv_node_count_deep is a safe (over-)estimate. */
+	int cap = sv_node_count_deep(r);
 	for (int m = 0; m < g_module_count; m++)
-		cap += cv_node_count_deep(cv_root(g_modules[m].root, g_modules[m].src));
+		cap += sv_node_count_deep(sv_root(g_modules[m].root, g_modules[m].src));
 	ast->decls = calloc(cap ? cap : 1, sizeof(HirDecl *));
 	ast->decl_count = 0;
 
@@ -3020,13 +3066,13 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 		 * `{ ... }` block's child decls are collected inline (no main-file export band). */
 		if (k == SN_REGION) {
 			const SyntaxNode *rn = root->children[i].as.node;
-			if (cv_has_token((CstView){rn, src}, TOK_LBRACE)) {
+			if (sv_has_token((SyntaxView){rn, src}, TOK_LBRACE)) {
 				for (int c = 0; c < rn->child_count; c++) {
 					if (rn->children[c].tag != SE_NODE)
 						continue;
 					if (!hir_is_collectible_decl(rn->children[c].as.node->kind))
 						continue;
-					HirDecl *ad = lower_decl_cst((CstView){rn->children[c].as.node, src});
+					HirDecl *ad = lower_decl_cst((SyntaxView){rn->children[c].as.node, src});
 					if (ad)
 						ast->decls[ast->decl_count++] = ad;
 				}
@@ -3035,7 +3081,7 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 		}
 		if (k < SN_WORLD_DECL || k > SN_USE_DECL)
 			continue;
-		CstView dv = {root->children[i].as.node, src};
+		SyntaxView dv = {root->children[i].as.node, src};
 
 		if (k == SN_USE_DECL) {
 			/* One element per import: IDENT = device by name, STRING = module by path. Inline each:

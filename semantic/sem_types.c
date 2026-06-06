@@ -14,7 +14,15 @@ typedef struct {
 	TyKind kind;
 	union {
 		PrimKind prim;
-		const char *nominal; /* interned in str pool */
+		/* A nominal type: an interned name + an optional backing TypeId. `backing == 0` is a
+		 * standalone nominal (opaque tag, archetype name, enum, unresolved name). `backing != 0`
+		 * is a tier-2 DISTINCT subtype — its own identity (so `meters != float` under tyid_equal)
+		 * that is one-way usable AS its backing (tyid_usable_as). A tier-1 TRANSPARENT alias never
+		 * reaches here: the caller interns it directly as its backing's TypeId (so `int == i32`). */
+		struct {
+			const char *name; /* interned in str pool */
+			TypeId backing;
+		} nominal;
 		struct {
 			TypeId elem;
 		} array;
@@ -121,17 +129,40 @@ TypeId tyid_of_prim(TypeArena *a, PrimKind p) {
 	return push_node(a, node);
 }
 
-TypeId tyid_of_nominal(TypeArena *a, const char *name) {
+TypeId tyid_of_nominal_sub(TypeArena *a, const char *name, TypeId backing) {
 	const char *interned = intern_str(a, name);
 	for (int i = 1; i < a->node_count; i++) {
 		TypeNode *n = &a->nodes[i];
-		if (n->kind == TYK_NOMINAL && n->data.nominal == interned)
+		if (n->kind == TYK_NOMINAL && n->data.nominal.name == interned && n->data.nominal.backing == backing)
 			return (TypeId)i;
 	}
 	TypeNode node = {0};
 	node.kind = TYK_NOMINAL;
-	node.data.nominal = interned;
+	node.data.nominal.name = interned;
+	node.data.nominal.backing = backing;
 	return push_node(a, node);
+}
+
+TypeId tyid_of_nominal(TypeArena *a, const char *name) {
+	return tyid_of_nominal_sub(a, name, TYID_UNKNOWN);
+}
+
+/* The backing TypeId of a tier-2 distinct subtype, or TYID_UNKNOWN for a prim / standalone nominal /
+ * non-nominal. */
+TypeId tyid_backing(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count)
+		return TYID_UNKNOWN;
+	const TypeNode *n = &a->nodes[t];
+	return n->kind == TYK_NOMINAL ? n->data.nominal.backing : TYID_UNKNOWN;
+}
+
+/* Is a value of type `from` usable where `to` is expected? `from == to`, or `from` is a distinct
+ * subtype whose backing chain reaches `to` (one-way: `meters` usable as `float`, not vice versa). */
+int tyid_usable_as(const TypeArena *a, TypeId from, TypeId to) {
+	for (TypeId t = from; t != TYID_UNKNOWN; t = tyid_backing(a, t))
+		if (t == to)
+			return 1;
+	return 0;
 }
 
 TypeId tyid_of_array(TypeArena *a, TypeId elem) {
@@ -248,6 +279,61 @@ TyKind tyid_kind(const TypeArena *a, TypeId t) {
 	return a->nodes[t].kind;
 }
 
+int tyid_is_proc(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_FUNC)
+		return 0;
+	return a->nodes[t].data.func.is_proc;
+}
+
+PrimKind tyid_prim(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_PRIM)
+		return PRIM_COUNT;
+	return a->nodes[t].data.prim;
+}
+
+const char *tyid_nominal_name(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_NOMINAL)
+		return NULL;
+	return a->nodes[t].data.nominal.name;
+}
+
+const char *tyid_handle_name(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_HANDLE)
+		return NULL;
+	return a->nodes[t].data.handle.archetype_name;
+}
+
+TypeId tyid_elem(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count)
+		return TYID_UNKNOWN;
+	const TypeNode *n = &a->nodes[t];
+	if (n->kind == TYK_ARRAY)
+		return n->data.array.elem;
+	if (n->kind == TYK_SHAPED_ARRAY)
+		return n->data.shaped.elem;
+	return TYID_UNKNOWN;
+}
+
+int tyid_tuple_count(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_TUPLE)
+		return 0;
+	return a->nodes[t].data.tuple.count;
+}
+
+const char *tyid_tuple_field_name(const TypeArena *a, TypeId t, int i) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_TUPLE || i < 0 ||
+	    i >= a->nodes[t].data.tuple.count)
+		return NULL;
+	return a->nodes[t].data.tuple.names[i];
+}
+
+TypeId tyid_tuple_field_type(const TypeArena *a, TypeId t, int i) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_TUPLE || i < 0 ||
+	    i >= a->nodes[t].data.tuple.count)
+		return TYID_UNKNOWN;
+	return a->nodes[t].data.tuple.types[i];
+}
+
 int tyid_equal(TypeId a, TypeId b) {
 	return a == b;
 }
@@ -289,7 +375,7 @@ const char *tyid_display(const TypeArena *a, TypeId t, char *buf, int buflen) {
 		snprintf(buf, buflen, "%s", prim_name(n->data.prim));
 		break;
 	case TYK_NOMINAL:
-		snprintf(buf, buflen, "%s", n->data.nominal ? n->data.nominal : "?");
+		snprintf(buf, buflen, "%s", n->data.nominal.name ? n->data.nominal.name : "?");
 		break;
 	case TYK_ARRAY: {
 		char inner[128];

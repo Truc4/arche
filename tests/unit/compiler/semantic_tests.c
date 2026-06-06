@@ -1,7 +1,8 @@
-#include "../../../cst/cst.h"
 #include "../../../lexer/lexer.h"
 #include "../../../parser/parser.h"
+#include "../../../semantic/sem_types.h"
 #include "../../../semantic/semantic.h"
+#include "../../../syntax/type_ref.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,10 +54,10 @@ void test_fail_msg(const char *reason) {
 	}
 
 /* Helper to parse and analyze a string.
- * The parser produces only the lossless CST; analysis runs via semantic_analyze_cst, which
- * reconstructs its analyzable AstProgram from that CST (owned by the context). cst_to_program
- * copies every string out of the source, so the CST + source can be freed once analysis
- * returns. These tests therefore validate the CST-driven semantic path end to end. */
+ * The parser produces only the lossless syntax tree; analysis runs via semantic_analyze_cst, which
+ * collects its resolved DeclSummary table directly from that syntax tree (owned by the context) and
+ * copies every string out of the source, so the syntax tree + source can be freed once analysis
+ * returns. These tests therefore validate the syntax-tree-driven semantic path end to end. */
 typedef struct {
 	SemanticContext *ctx;
 } AnalysisResult;
@@ -65,12 +66,12 @@ AnalysisResult analyze_string(const char *src) {
 	AnalysisResult result = {NULL};
 
 	ParseResult parse_result = parse_source(src);
-	if (parse_result.error_count > 0 || !parse_result.cst_root) {
+	if (parse_result.error_count > 0 || !parse_result.syntax_root) {
 		parse_result_free(&parse_result);
 		return result;
 	}
 
-	result.ctx = semantic_analyze_cst(parse_result.cst_root, src);
+	result.ctx = semantic_analyze_cst(parse_result.syntax_root, src);
 	parse_result_free(&parse_result);
 	return result;
 }
@@ -124,7 +125,8 @@ void test_archetype_field_type(void) {
 	ASSERT_TRUE(pos_type != NULL, "pos type is null");
 	ASSERT_TRUE(health_type != NULL, "health type is null");
 	ASSERT_TRUE(strcmp(pos_type, "Vec3") == 0, "pos should be Vec3");
-	ASSERT_TRUE(strcmp(health_type, "Float") == 0, "health should be Float");
+	/* Phase 3: the field-type API reports the canonical interned name ("Float" → "float"). */
+	ASSERT_TRUE(strcmp(health_type, "float") == 0, "health should be float");
 	analysis_result_free(&result);
 	test_pass_msg();
 }
@@ -237,7 +239,7 @@ void test_group_with_distinct_members_ok(void) {
 		test_fail_msg("Parse errors");
 		return;
 	}
-	SemanticContext *sem = semantic_analyze_cst(pr.cst_root, src);
+	SemanticContext *sem = semantic_analyze_cst(pr.syntax_root, src);
 	if (semantic_has_errors(sem)) {
 		test_fail_msg("Unexpected semantic errors");
 		semantic_context_free(sem);
@@ -258,7 +260,7 @@ void test_group_member_unknown_errors(void) {
 		test_fail_msg("Parse errors");
 		return;
 	}
-	SemanticContext *sem = semantic_analyze_cst(pr.cst_root, src);
+	SemanticContext *sem = semantic_analyze_cst(pr.syntax_root, src);
 	if (!semantic_has_errors(sem)) {
 		test_fail_msg("Expected error for unknown member");
 		semantic_context_free(sem);
@@ -280,7 +282,7 @@ void test_group_duplicate_signature_errors(void) {
 		test_fail_msg("Parse errors");
 		return;
 	}
-	SemanticContext *sem = semantic_analyze_cst(pr.cst_root, src);
+	SemanticContext *sem = semantic_analyze_cst(pr.syntax_root, src);
 	if (!semantic_has_errors(sem)) {
 		test_fail_msg("Expected duplicate-signature error");
 		semantic_context_free(sem);
@@ -302,7 +304,7 @@ void test_group_name_collision_errors(void) {
 		test_fail_msg("Parse errors");
 		return;
 	}
-	SemanticContext *sem = semantic_analyze_cst(pr.cst_root, src);
+	SemanticContext *sem = semantic_analyze_cst(pr.syntax_root, src);
 	if (!semantic_has_errors(sem)) {
 		test_fail_msg("Expected name-collision error");
 		semantic_context_free(sem);
@@ -325,7 +327,7 @@ void test_call_no_matching_member_errors(void) {
 		test_fail_msg("Parse errors");
 		return;
 	}
-	SemanticContext *sem = semantic_analyze_cst(pr.cst_root, src);
+	SemanticContext *sem = semantic_analyze_cst(pr.syntax_root, src);
 	if (!semantic_has_errors(sem)) {
 		test_fail_msg("Expected no-matching-member error");
 		semantic_context_free(sem);
@@ -518,10 +520,49 @@ void test_copy_opaque_error(void) {
 	test_pass_msg();
 }
 
+/* ========== TypeId arena: alias-tier encoding (Stage 0) ========== */
+
+void test_tyid_distinct_subtype(void) {
+	test_start("tyid: distinct subtype != backing, usable-as one-way");
+	TypeArena *a = ty_arena_new();
+	TypeId f = tyid_of_prim(a, PRIM_FLOAT);
+	TypeId meters = tyid_of_nominal_sub(a, "meters", f);
+	ASSERT_FALSE(tyid_equal(meters, f), "meters must be a distinct id from float");
+	ASSERT_TRUE(tyid_usable_as(a, meters, f), "meters usable as float (one-way)");
+	ASSERT_FALSE(tyid_usable_as(a, f, meters), "float NOT usable as meters");
+	ASSERT_TRUE(tyid_backing(a, meters) == f, "meters backing is float");
+	ASSERT_TRUE(tyid_backing(a, f) == TYID_UNKNOWN, "prim has no backing");
+	ty_arena_free(a);
+	test_pass_msg();
+}
+
+void test_tyid_subtype_chain_and_intern(void) {
+	test_start("tyid: backing chain + hash-cons");
+	TypeArena *a = ty_arena_new();
+	TypeId f = tyid_of_prim(a, PRIM_FLOAT);
+	TypeId meters = tyid_of_nominal_sub(a, "meters", f);
+	TypeId mm = tyid_of_nominal_sub(a, "mm", meters);
+	ASSERT_TRUE(tyid_usable_as(a, mm, f), "mm usable as float through the backing chain");
+	ASSERT_FALSE(tyid_equal(mm, meters), "mm distinct from meters");
+	/* hash-consing: same (name, backing) interns once */
+	ASSERT_TRUE(tyid_equal(meters, tyid_of_nominal_sub(a, "meters", f)), "identical subtype interns once");
+	/* a standalone nominal (opaque tag) has no backing and is usable only as itself */
+	TypeId op = tyid_of_nominal(a, "socket");
+	ASSERT_TRUE(tyid_backing(a, op) == TYID_UNKNOWN, "standalone nominal has no backing");
+	ASSERT_FALSE(tyid_usable_as(a, op, f), "opaque not usable as float");
+	ty_arena_free(a);
+	test_pass_msg();
+}
+
 /* ========== MAIN TEST RUNNER ========== */
 
 int main(void) {
 	printf("Running semantic analysis tests...\n\n");
+
+	/* TypeId arena: alias-tier encoding (Stage 0) */
+	printf("TypeId arena tests:\n");
+	test_tyid_distinct_subtype();
+	test_tyid_subtype_chain_and_intern();
 
 	/* Archetype validation */
 	printf("Archetype validation tests:\n");

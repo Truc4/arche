@@ -1,5 +1,5 @@
 #include "doctest_extract.h"
-#include "../cst/cst_view.h"
+#include "../syntax/syntax_view.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -118,7 +118,7 @@ static int code_has_main(const char *code) {
 /* Scan a sequence of doc-text lines for ```arche fences, pushing each fenced
  * block as an example. Lines are borrowed slices (NOT NUL-terminated); linenos[i]
  * is the 1-based source line of lines[i], used to report the exact fence line. */
-static void scan_fences(const CvText *lines, const int *linenos, int nlines, const char *name, DoctestExamples *out) {
+static void scan_fences(const SynText *lines, const int *linenos, int nlines, const char *name, DoctestExamples *out) {
 	int i = 0;
 	while (i < nlines) {
 		int flags = 0;
@@ -158,15 +158,15 @@ static void scan_fences(const CvText *lines, const int *linenos, int nlines, con
 	}
 }
 
-static void decl_name_of(CstView decl, char *buf, size_t bufsz) {
-	CstView n = cv_child(decl, SN_FUNC_DEF_NAME);
-	if (!cv_present(n))
-		n = cv_child(decl, SN_TYPE_DEF_NAME);
-	CvText t = {NULL, 0};
-	if (cv_present(n))
-		t = cv_text(n);
+static void decl_name_of(SyntaxView decl, char *buf, size_t bufsz) {
+	SyntaxView n = sv_child(decl, SN_FUNC_DEF_NAME);
+	if (!sv_present(n))
+		n = sv_child(decl, SN_TYPE_DEF_NAME);
+	SynText t = {NULL, 0};
+	if (sv_present(n))
+		t = sv_text(n);
 	if (!t.ptr)
-		t = cv_token(decl, TOK_IDENT);
+		t = sv_token(decl, TOK_IDENT);
 	size_t k = 0;
 	if (t.ptr) {
 		k = t.len < bufsz - 1 ? t.len : bufsz - 1;
@@ -181,24 +181,24 @@ DoctestExamples doctest_extract(const SyntaxNode *root, const char *src) {
 	DoctestExamples ex = {NULL, 0};
 	if (!root)
 		return ex;
-	CstView rv = cv_root(root, src);
+	SyntaxView rv = sv_root(root, src);
 
-	int nn = cv_node_count(rv);
+	int nn = sv_node_count(rv);
 	for (int i = 0; i < nn; i++) {
-		CstView top = cv_node_at(rv, i);
+		SyntaxView top = sv_node_at(rv, i);
 		/* A `#foreign`/`#module`/`#file` block region holds its decls as children — descend one
 		 * level so docs on decls inside a block are still extracted. */
-		int is_region = cv_kind(top) == SN_REGION;
-		int inner = is_region ? cv_node_count(top) : 1;
+		int is_region = sv_kind(top) == SN_REGION;
+		int inner = is_region ? sv_node_count(top) : 1;
 		for (int j = 0; j < inner; j++) {
-			CstView decl = is_region ? cv_node_at(top, j) : top;
-			SyntaxNodeKind k = cv_kind(decl);
+			SyntaxView decl = is_region ? sv_node_at(top, j) : top;
+			SyntaxNodeKind k = sv_kind(decl);
 			if (k < SN_WORLD_DECL || k > SN_USE_DECL)
 				continue;
 
-			CvText lines[MAX_DOC_LINES];
+			SynText lines[MAX_DOC_LINES];
 			int linenos[MAX_DOC_LINES];
-			int n = cv_decl_doc_lines(rv, decl, lines, linenos, MAX_DOC_LINES);
+			int n = sv_decl_doc_lines(rv, decl, lines, linenos, MAX_DOC_LINES);
 			if (n <= 0)
 				continue;
 

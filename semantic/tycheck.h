@@ -1,8 +1,8 @@
 #ifndef TYCHECK_H
 #define TYCHECK_H
 
-/* Bidirectional type checker. Runs after symbol resolution; reads the
- * reconstructed AstProgram + ctx (symbol tables, archetype registry) and emits
+/* Bidirectional type checker. Runs after symbol resolution; reads the syntax tree +
+ * the resolved DeclSummary table + ctx (symbol tables, archetype registry) and emits
  * diagnostics through the existing sem_emit_* registry. The pass is
  * fail-open during build-out: any rule not yet encoded `synth`'s to
  * TYID_UNKNOWN and `check` accepts unknown against any expected type, so

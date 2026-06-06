@@ -1,5 +1,5 @@
-#include "../cst/format_cst.h"
 #include "../parser/parser.h"
+#include "../syntax/format_syntax.h"
 #include "args.h"
 #include "cli.h"
 #include <stdio.h>
@@ -14,7 +14,7 @@ static const ArgSpec k_fmt_specs[] = {
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
-/* Format `src` through the lossless CST into a freshly malloc'd buffer (caller frees), via a
+/* Format `src` through the lossless syntax tree into a freshly malloc'd buffer (caller frees), via a
  * tmpfile() so we stay within C99 (no open_memstream). Returns NULL on parse error, after printing
  * the first few diagnostics for `path`. */
 static char *format_to_buffer(const char *path, const char *src, long *out_len) {
@@ -32,7 +32,7 @@ static char *format_to_buffer(const char *path, const char *src, long *out_len) 
 		parse_result_free(&pr);
 		return NULL;
 	}
-	format_cst(tmp, pr.cst_root, src);
+	format_syntax(tmp, pr.syntax_root, src);
 	parse_result_free(&pr);
 	fflush(tmp);
 	long n = ftell(tmp);

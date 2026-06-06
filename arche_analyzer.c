@@ -4,7 +4,7 @@
  * modules, semantic analysis — exactly as main.c does) and emits an "explicit
  * view" of the program: the implicit information the compiler infers, anchored
  * to source positions, for the editor to render as inlay hints (and, later,
- * diagnostics). The analyzer is the single source of truth — the CST drives
+ * diagnostics). The analyzer is the single source of truth — the syntax tree drives
  * syntactic facts via typed views, the node-id-keyed SemModel drives inferred
  * facts — so the output tracks the language as it evolves.
  *
@@ -24,13 +24,13 @@
  * combined (core+user) coordinates; we subtract the core line count and drop
  * anything inside the core region so the editor sees its own buffer's lines.
  */
-#include "cst/cst_view.h"
-#include "cst/syntax_tree.h"
-#include "cst/token_category.h"
 #include "lexer/lexer.h"
 #include "parser/parser.h"
 #include "semantic/sem_diagnostics.h"
 #include "semantic/semantic.h"
+#include "syntax/syntax_tree.h"
+#include "syntax/syntax_view.h"
+#include "syntax/token_category.h"
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -171,9 +171,9 @@ static void deferred_free(DeferredDiags *d) {
 	d->count = d->cap = 0;
 }
 
-/* Parse each `use <name>;` module and register its CST with the semantic analyzer
+/* Parse each `use <name>;` module and register its syntax tree with the semantic analyzer
  * (which inlines + name-prefixes it). Analysis-only: unlike main.c's resolve_uses
- * we don't touch the lowerer. The module CST + source are borrowed by the registry,
+ * we don't touch the lowerer. The module syntax tree + source are borrowed by the registry,
  * so we keep them alive in `holds` until after analysis. */
 
 /* Dedup set of already-loaded modules (per analyze call; reset in resolve_uses_sem). Marking a
@@ -216,7 +216,7 @@ static int sem_import_token(const char *src, const SyntaxElem *tok, char *name, 
 	return 1;
 }
 
-/* Parse one module file, register its CST with the semantic registry (which borrows the CST +
+/* Parse one module file, register its syntax tree with the semantic registry (which borrows the syntax tree +
  * source — kept alive in `holds`), then recurse into the module's own `#import`s. */
 static int sem_register_module_file(const char *mod_name, const char *path, const char *source_dir,
                                     ModuleHolds *holds) {
@@ -224,16 +224,16 @@ static int sem_register_module_file(const char *mod_name, const char *path, cons
 	if (!mod_src)
 		return 0;
 	ParseResult mp = parse_source(mod_src);
-	if (mp.error_count > 0 || !mp.cst_root) {
+	if (mp.error_count > 0 || !mp.syntax_root) {
 		parse_result_free(&mp);
 		free(mod_src);
 		return 0;
 	}
-	semantic_add_module(mod_name, mp.cst_root, mod_src, path);
-	const SyntaxNode *root = mp.cst_root;
+	semantic_add_module(mod_name, mp.syntax_root, mod_src, path);
+	const SyntaxNode *root = mp.syntax_root;
 	const char *src = mod_src;
-	holds_push(holds, mp.cst_root, mod_src); /* keep alive; registry borrows */
-	mp.cst_root = NULL;
+	holds_push(holds, mp.syntax_root, mod_src); /* keep alive; registry borrows */
+	mp.syntax_root = NULL;
 	parse_result_free(&mp);
 	for (int u = 0; u < root->child_count; u++) {
 		if (root->children[u].tag != SE_NODE || root->children[u].as.node->kind != SN_USE_DECL)
@@ -406,8 +406,8 @@ static int path_is_core(const char *path) {
 
 /* Render an internal type name as it would be written in arche source (longhand). */
 static const char *display_type(const char *ty) {
-	if (strcmp(ty, "char_array") == 0)
-		return "char[]";
+	if (strcmp(ty, "char_array") == 0 || strcmp(ty, "str") == 0)
+		return "char[]"; /* the interned string prim displays as "str"; the inlay hint shows char[] */
 	return ty;
 }
 
@@ -427,33 +427,37 @@ static void emit_syn(int line, int col, int padL, int padR, const char *kind, co
  *   `r := e`  →  `r : int = e`     (anchor before the `=`, pad both sides)
  *   `x :: e`  →  `x : int : e`     (anchor before the 2nd `:`, pad both sides)
  * Skips type-alias declarations and any bind that already states its type. */
-static void emit_bind_hint(CstView bind, SemanticContext *ctx) {
+static void emit_bind_hint(SyntaxView bind, SemanticContext *ctx) {
 	const SemModel *model = sem_context_model(ctx);
-	if (sem_model_bind_alias(model, cv_id(bind)))
+	if (sem_model_bind_alias(model, sv_id(bind)))
 		return;
-	if (cv_type_count(bind) > 0)
+	if (sv_type_count(bind) > 0)
 		return;
-	CstView target = cv_expr_at(bind, 0);
-	CstView value = cv_expr_at(bind, 1);
-	if (!cv_present(target) || !cv_present(value) || cv_kind(target) != SN_NAME_EXPR)
+	SyntaxView target = sv_expr_at(bind, 0);
+	SyntaxView value = sv_expr_at(bind, 1);
+	if (!sv_present(target) || !sv_present(value) || sv_kind(target) != SN_NAME_EXPR)
 		return;
-	const char *ty = sem_model_expr_type(model, cv_id(value));
-	if (!ty)
+	TypeId tid = sem_model_expr_type_id(model, sv_id(value));
+	if (tid == TYID_UNKNOWN)
+		return;
+	char tybuf[128];
+	const char *ty = tyid_display(sem_context_arena(ctx), tid, tybuf, sizeof(tybuf));
+	if (!ty || !ty[0])
 		return;
 	/* Anchor at the 2nd separator token of the bind operator: the `=` of `:=`, or
 	 * (when there is no `=`) the 2nd `:` of `::`. The type then renders between
 	 * the two real tokens that the bind operator is made of. */
-	CvPos anchor = cv_token_pos(bind, TOK_EQ);
+	CvPos anchor = sv_token_pos(bind, TOK_EQ);
 	if (!anchor.line)
-		anchor = cv_token_pos_at(bind, TOK_COLON, 1);
+		anchor = sv_token_pos_at(bind, TOK_COLON, 1);
 	if (!anchor.line)
 		return;
 	emit_syn(anchor.line, anchor.column, 1, 1, "type", display_type(ty));
 }
 
 /* A type position naming an alias shows its backing type, e.g. `count (int)`. */
-static void emit_typeref_hint(CstView tr, SemanticContext *ctx) {
-	CvText id = cv_token(tr, TOK_IDENT);
+static void emit_typeref_hint(SyntaxView tr, SemanticContext *ctx) {
+	SynText id = sv_token(tr, TOK_IDENT);
 	if (!id.ptr)
 		return;
 	char name[256];
@@ -468,7 +472,7 @@ static void emit_typeref_hint(CstView tr, SemanticContext *ctx) {
 	char text[260];
 	snprintf(text, sizeof(text), "(%s)", display_type(backing));
 	/* Annotation after the alias name: pad-left only (space between name and `(`). */
-	CvPos end = cv_last_token_pos(tr);
+	CvPos end = sv_last_token_pos(tr);
 	if (!end.line)
 		return;
 	emit_syn(end.line, end.column + (int)end.length, 1, 0, "alias", text);
@@ -477,15 +481,15 @@ static void emit_typeref_hint(CstView tr, SemanticContext *ctx) {
 /* Call-site parameter hint (gopls-style): show the resolved parameter's name
  * before the argument, prefixed `own ` when it takes ownership. Recorded by
  * semantic analysis (needs call resolution), keyed by the argument's node. */
-static void emit_param_hint(CstView arg, SemanticContext *ctx) {
+static void emit_param_hint(SyntaxView arg, SemanticContext *ctx) {
 	const SemHints *h = sem_context_hints(ctx);
-	const char *name = sem_hints_param_name(h, cv_id(arg));
+	const char *name = sem_hints_param_name(h, sv_id(arg));
 	if (!name)
 		return;
 	char text[300];
-	snprintf(text, sizeof(text), "%s%s:", sem_hints_param_is_own(h, cv_id(arg)) ? "own " : "", name);
+	snprintf(text, sizeof(text), "%s%s:", sem_hints_param_is_own(h, sv_id(arg)) ? "own " : "", name);
 	/* Anchor at the argument's start: pad-right only (space between `name:` and arg). */
-	CvPos start = cv_first_token_pos(arg);
+	CvPos start = sv_first_token_pos(arg);
 	if (!start.line)
 		return;
 	emit_syn(start.line, start.column, 0, 1, "param", text);
@@ -494,29 +498,29 @@ static void emit_param_hint(CstView arg, SemanticContext *ctx) {
 /* Elided-`move` hint: a bare move-only name (array/slice or opaque) in an ownership-taking position
  * (bind/assign RHS, `own`-param arg) is an implicit move. Show a ghost `move` before it so the
  * consumed-here transfer is visible. Recorded by semantic analysis, keyed by the name node. */
-static void emit_move_hint(CstView node, SemanticContext *ctx) {
+static void emit_move_hint(SyntaxView node, SemanticContext *ctx) {
 	const SemHints *h = sem_context_hints(ctx);
-	if (!sem_hints_is_elided_move(h, cv_id(node)))
+	if (!sem_hints_is_elided_move(h, sv_id(node)))
 		return;
-	CvPos start = cv_first_token_pos(node);
+	CvPos start = sv_first_token_pos(node);
 	if (!start.line)
 		return;
 	emit_syn(start.line, start.column, 0, 1, "move", "move");
 }
 
-/* Proc names gathered from the CST (combined core+user). A proc is an SN_PROC_DECL node, so this is
+/* Proc names gathered from the syntax tree (combined core+user). A proc is an SN_PROC_DECL node, so this is
  * a purely syntactic fact — no whole-program query needed. Borrowed slices into the analysis source,
  * which outlives the walk. Reset per emit_hints; the buffer is reused (grows once). */
-static CvText *g_proc_names;
+static SynText *g_proc_names;
 static int g_proc_name_count, g_proc_name_cap;
 
-static void collect_proc_names(CstView v) {
+static void collect_proc_names(SyntaxView v) {
 	if (!v.node)
 		return;
 	/* Unified grammar: a proc is `name :: proc(...)…` — an SN_CONST_DECL with an SN_PROC_EXPR RHS.
 	 * The name is the IDENT immediately before the first top-level `:` (skips `@decorator` idents). */
 	int is_unified_proc = 0;
-	if (cv_kind(v) == SN_CONST_DECL) {
+	if (sv_kind(v) == SN_CONST_DECL) {
 		for (int i = 0; i < v.node->child_count; i++)
 			if (v.node->children[i].tag == SE_NODE && v.node->children[i].as.node->kind == SN_PROC_EXPR) {
 				is_unified_proc = 1;
@@ -524,7 +528,7 @@ static void collect_proc_names(CstView v) {
 			}
 	}
 	if (is_unified_proc) {
-		CvText nm = {NULL, 0};
+		SynText nm = {NULL, 0};
 		for (int i = 0; i < v.node->child_count; i++) {
 			SyntaxElem *e = &v.node->children[i];
 			if (e->tag != SE_TOKEN)
@@ -532,32 +536,32 @@ static void collect_proc_names(CstView v) {
 			if (e->as.token.kind == TOK_COLON)
 				break;
 			if (e->as.token.kind == TOK_IDENT)
-				nm = (CvText){v.src + e->as.token.offset, e->as.token.length};
+				nm = (SynText){v.src + e->as.token.offset, e->as.token.length};
 		}
 		if (nm.ptr) {
 			if (g_proc_name_count == g_proc_name_cap) {
 				g_proc_name_cap = g_proc_name_cap ? g_proc_name_cap * 2 : 32;
-				g_proc_names = realloc(g_proc_names, (size_t)g_proc_name_cap * sizeof(CvText));
+				g_proc_names = realloc(g_proc_names, (size_t)g_proc_name_cap * sizeof(SynText));
 			}
 			g_proc_names[g_proc_name_count++] = nm;
 		}
 	}
-	if (cv_kind(v) == SN_PROC_DECL) {
-		CvText nm = cv_text(cv_child(v, SN_FUNC_DEF_NAME));
+	if (sv_kind(v) == SN_PROC_DECL) {
+		SynText nm = sv_text(sv_child(v, SN_FUNC_DEF_NAME));
 		if (nm.ptr) {
 			if (g_proc_name_count == g_proc_name_cap) {
 				g_proc_name_cap = g_proc_name_cap ? g_proc_name_cap * 2 : 32;
-				g_proc_names = realloc(g_proc_names, (size_t)g_proc_name_cap * sizeof(CvText));
+				g_proc_names = realloc(g_proc_names, (size_t)g_proc_name_cap * sizeof(SynText));
 			}
 			g_proc_names[g_proc_name_count++] = nm;
 		}
 	}
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE)
-			collect_proc_names((CstView){v.node->children[i].as.node, v.src});
+			collect_proc_names((SyntaxView){v.node->children[i].as.node, v.src});
 }
 
-static int name_is_proc(CvText n) {
+static int name_is_proc(SynText n) {
 	for (int i = 0; i < g_proc_name_count; i++)
 		if (g_proc_names[i].len == n.len && memcmp(g_proc_names[i].ptr, n.ptr, n.len) == 0)
 			return 1;
@@ -568,33 +572,33 @@ static int name_is_proc(CvText n) {
  * captured results", but the call is still an ACTION. Render a ghost `()` right after it so a reader
  * sees it may have effects. The capture form `f(x)(out)` is an SN_PROC_CALL_STMT (not an
  * SN_EXPR_STMT, so not reached here) and already shows its out-list. */
-static void emit_effect_hint(CstView expr_stmt) {
-	CstView call = cv_child(expr_stmt, SN_CALL_EXPR);
+static void emit_effect_hint(SyntaxView expr_stmt) {
+	SyntaxView call = sv_child(expr_stmt, SN_CALL_EXPR);
 	if (!call.node)
 		return;
-	CvText callee = cv_text(cv_child(call, SN_CALLEE_NAME));
+	SynText callee = sv_text(sv_child(call, SN_CALLEE_NAME));
 	if (!callee.ptr || !name_is_proc(callee))
 		return;
-	CvPos end = cv_last_token_pos(call);
+	CvPos end = sv_last_token_pos(call);
 	if (!end.line)
 		return;
 	emit_syn(end.line, end.column + (int)end.length, 0, 0, "effect", "()");
 }
 
-static void walk(CstView v, SemanticContext *ctx) {
+static void walk(SyntaxView v, SemanticContext *ctx) {
 	if (!v.node)
 		return;
 	emit_param_hint(v, ctx); /* any node may be a resolved call argument */
 	emit_move_hint(v, ctx);  /* any name may be an implicitly-moved (consumed) bare binding */
-	if (cv_kind(v) == SN_BIND_STMT)
+	if (sv_kind(v) == SN_BIND_STMT)
 		emit_bind_hint(v, ctx);
-	else if (cv_kind(v) == SN_TYPE_REF)
+	else if (sv_kind(v) == SN_TYPE_REF)
 		emit_typeref_hint(v, ctx);
-	else if (cv_kind(v) == SN_EXPR_STMT)
+	else if (sv_kind(v) == SN_EXPR_STMT)
 		emit_effect_hint(v); /* bare proc call → ghost `()` */
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
-			CstView c = {v.node->children[i].as.node, v.src};
+			SyntaxView c = {v.node->children[i].as.node, v.src};
 			walk(c, ctx);
 		}
 }
@@ -602,10 +606,10 @@ static void walk(CstView v, SemanticContext *ctx) {
 /* ---- analysis unit (shared by --dump and --serve) ---- */
 
 typedef struct {
-	char *combined;       /* core + user buffer; owned */
-	SyntaxNode *cst_root; /* owned */
-	SemanticContext *ctx; /* owned; NULL on failure */
-	ModuleHolds holds;    /* owned module CSTs + sources */
+	char *combined;          /* core + user buffer; owned */
+	SyntaxNode *syntax_root; /* owned */
+	SemanticContext *ctx;    /* owned; NULL on failure */
+	ModuleHolds holds;       /* owned module syntax trees + sources */
 } Analysis;
 
 /* Analyze a user buffer (takes ownership of `user`), mirroring main.c's front-end:
@@ -627,8 +631,8 @@ static Analysis analyze(char *user, const char *path) {
 		a.combined = user; /* ownership moved */
 	}
 	ParseResult pr = parse_source(a.combined);
-	a.cst_root = pr.cst_root;
-	pr.cst_root = NULL;
+	a.syntax_root = pr.syntax_root;
+	pr.syntax_root = NULL;
 
 	/* Capture parse errors before freeing pr — they get pushed into ctx below so
 	 * the editor sees them through the same channel as semantic errors. This is
@@ -641,21 +645,21 @@ static Analysis analyze(char *user, const char *path) {
 	}
 	parse_result_free(&pr);
 
-	if (!a.cst_root) {
-		/* No CST → no semantic analysis; parse errors are all we have. The caller
+	if (!a.syntax_root) {
+		/* No syntax tree → no semantic analysis; parse errors are all we have. The caller
 		 * gets an analysis with ctx=NULL, but we created it for the deferred-emit
 		 * path: emit parse errors before returning so they're not lost. */
 		if (deferred.count) {
 			/* We need a ctx to push into; analyze() returns ctx=NULL when there's
-			 * no CST. For now drop these parse errors when CST is null — the user
+			 * no syntax tree. For now drop these parse errors when syntax tree is null — the user
 			 * sees stderr from the parser already. Future: build a fallback ctx. */
 		}
 		deferred_free(&deferred);
 		return a;
 	}
 
-	resolve_uses_sem(a.cst_root, a.combined, path && path[0] ? path : ".", &a.holds, &deferred);
-	a.ctx = semantic_analyze_cst(a.cst_root, a.combined);
+	resolve_uses_sem(a.syntax_root, a.combined, path && path[0] ? path : ".", &a.holds, &deferred);
+	a.ctx = semantic_analyze_cst(a.syntax_root, a.combined);
 
 	/* Flush deferred diagnostics now that the ctx exists. The typed wrappers do
 	 * the byte-stable stderr print + diag_push, so editors and CLI both see them. */
@@ -685,10 +689,10 @@ static void analysis_free(Analysis *a) {
 	if (a->ctx)
 		semantic_context_free(a->ctx);
 	holds_free(&a->holds);
-	syntax_node_free(a->cst_root);
+	syntax_node_free(a->syntax_root);
 	free(a->combined);
 	a->combined = NULL;
-	a->cst_root = NULL;
+	a->syntax_root = NULL;
 	a->ctx = NULL;
 	a->holds = (ModuleHolds){NULL, 0, 0};
 }
@@ -696,7 +700,7 @@ static void analysis_free(Analysis *a) {
 static void emit_hints(const Analysis *a) {
 	if (!a->ctx)
 		return;
-	CstView root = cv_root(a->cst_root, a->combined);
+	SyntaxView root = sv_root(a->syntax_root, a->combined);
 	g_proc_name_count = 0;
 	collect_proc_names(root); /* gather proc names first (a call may precede its decl) */
 	walk(root, a->ctx);
@@ -747,38 +751,38 @@ static void emit_diags(const Analysis *a) {
  *   DOCLINE <text…>                     × linecount
  * <line>/<col> point at the documented declaration's first token (user coords);
  * <name> is its identifier. Each DOCLINE is one `///` line with the marker and a
- * leading space stripped (see cv_decl_doc_lines). The editor joins them as the
- * hover body. Needs only the CST, so it works even when analysis is partial. */
+ * leading space stripped (see sv_decl_doc_lines). The editor joins them as the
+ * hover body. Needs only the syntax tree, so it works even when analysis is partial. */
 static void emit_docs(const Analysis *a) {
-	if (!a->cst_root)
+	if (!a->syntax_root)
 		return;
-	CstView root = cv_root(a->cst_root, a->combined);
-	int nn = cv_node_count(root);
+	SyntaxView root = sv_root(a->syntax_root, a->combined);
+	int nn = sv_node_count(root);
 	for (int i = 0; i < nn; i++) {
-		CstView top = cv_node_at(root, i);
+		SyntaxView top = sv_node_at(root, i);
 		/* Descend one level into a `#foreign`/`#module`/`#file` block region so docs on its
 		 * inner decls still surface for hover. */
-		int is_region = cv_kind(top) == SN_REGION;
-		int inner = is_region ? cv_node_count(top) : 1;
+		int is_region = sv_kind(top) == SN_REGION;
+		int inner = is_region ? sv_node_count(top) : 1;
 		for (int j = 0; j < inner; j++) {
-			CstView decl = is_region ? cv_node_at(top, j) : top;
-			SyntaxNodeKind k = cv_kind(decl);
+			SyntaxView decl = is_region ? sv_node_at(top, j) : top;
+			SyntaxNodeKind k = sv_kind(decl);
 			if (k < SN_WORLD_DECL || k > SN_USE_DECL)
 				continue;
 
-			CvText lines[256];
-			int n = cv_decl_doc_lines(root, decl, lines, NULL, 256);
+			SynText lines[256];
+			int n = sv_decl_doc_lines(root, decl, lines, NULL, 256);
 			if (n <= 0)
 				continue;
 
-			CvPos p = cv_first_token_pos(decl);
+			CvPos p = sv_first_token_pos(decl);
 			int uline = p.line - g_core_lines;
 			if (uline <= 0)
 				continue; /* core region */
 
-			CvText name = cv_text(cv_child(decl, SN_FUNC_DEF_NAME));
+			SynText name = sv_text(sv_child(decl, SN_FUNC_DEF_NAME));
 			if (!name.ptr)
-				name = cv_text(cv_child(decl, SN_TYPE_DEF_NAME));
+				name = sv_text(sv_child(decl, SN_TYPE_DEF_NAME));
 			printf("DOC %d %d %.*s %d\n", uline, p.column, name.ptr ? (int)name.len : 4, name.ptr ? name.ptr : "item",
 			       n);
 			for (int j2 = 0; j2 < n; j2++)
@@ -789,7 +793,7 @@ static void emit_docs(const Analysis *a) {
 
 /* Syntax-highlighting tokens, same `offset length line col CATEGORY` format the
  * editor already consumes — but served from the warm parse and translated to user
- * coordinates (core-region tokens dropped). Needs only the CST, not analysis. */
+ * coordinates (core-region tokens dropped). Needs only the syntax tree, not analysis. */
 static void walk_tokens(const SyntaxNode *node) {
 	for (int i = 0; i < node->child_count; i++) {
 		const SyntaxElem *e = &node->children[i];
@@ -808,8 +812,8 @@ static void walk_tokens(const SyntaxNode *node) {
 }
 
 static void emit_tokens(const Analysis *a) {
-	if (a->cst_root)
-		walk_tokens(a->cst_root);
+	if (a->syntax_root)
+		walk_tokens(a->syntax_root);
 }
 
 /* ---- one-shot dump ---- */
@@ -821,8 +825,8 @@ static int run_dump(const char *path) {
 		return 1;
 	}
 	Analysis a = analyze(user, path);
-	if (!a.cst_root) {
-		fprintf(stderr, "arche-analyzer: parse produced no CST\n");
+	if (!a.syntax_root) {
+		fprintf(stderr, "arche-analyzer: parse produced no syntax tree\n");
 		analysis_free(&a);
 		return 1;
 	}

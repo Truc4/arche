@@ -47,7 +47,10 @@ void ty_arena_free(TypeArena *a);
 
 /* Constructors. All deterministic / hash-consed. */
 TypeId tyid_of_prim(TypeArena *a, PrimKind p);
-TypeId tyid_of_nominal(TypeArena *a, const char *name);
+TypeId tyid_of_nominal(TypeArena *a, const char *name); /* standalone nominal (backing = unknown) */
+/* A tier-2 DISTINCT subtype: its own identity, one-way usable AS `backing`. A tier-1 transparent
+ * alias must NOT use this — intern it directly as its backing's TypeId so tyid_equal collapses. */
+TypeId tyid_of_nominal_sub(TypeArena *a, const char *name, TypeId backing);
 TypeId tyid_of_array(TypeArena *a, TypeId elem);
 TypeId tyid_of_shaped(TypeArena *a, TypeId elem, int rank);
 TypeId tyid_of_tuple(TypeArena *a, const char *const *field_names, const TypeId *field_types, int field_count);
@@ -58,8 +61,20 @@ TypeId tyid_of_func(TypeArena *a, const TypeId *params, int param_count, const T
 
 /* Inspection. */
 TyKind tyid_kind(const TypeArena *a, TypeId t);
+int tyid_is_proc(const TypeArena *a, TypeId t);              /* 1 if a TYK_FUNC callable is a proc */
+PrimKind tyid_prim(const TypeArena *a, TypeId t);            /* the PrimKind of a TYK_PRIM, else PRIM_COUNT */
+const char *tyid_nominal_name(const TypeArena *a, TypeId t); /* a TYK_NOMINAL's interned name, else NULL */
+const char *tyid_handle_name(const TypeArena *a, TypeId t);  /* a TYK_HANDLE's archetype name, else NULL */
+TypeId tyid_elem(const TypeArena *a, TypeId t);              /* an array/shaped element type, else UNKNOWN */
+int tyid_tuple_count(const TypeArena *a, TypeId t);
+const char *tyid_tuple_field_name(const TypeArena *a, TypeId t, int i);
+TypeId tyid_tuple_field_type(const TypeArena *a, TypeId t, int i);
 int tyid_equal(TypeId a, TypeId b); /* same interned id */
 int tyid_is_unknown(TypeId t);
+/* The backing of a tier-2 distinct subtype (else TYID_UNKNOWN). */
+TypeId tyid_backing(const TypeArena *a, TypeId t);
+/* Is `from` usable where `to` is expected? `from == to`, or `from`'s backing chain reaches `to`. */
+int tyid_usable_as(const TypeArena *a, TypeId from, TypeId to);
 
 /* Display: writes a human-friendly type string into buf (truncates safely).
  * Returns buf for chaining. Used by E0200 type_mismatch and friends. */
