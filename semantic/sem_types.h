@@ -61,8 +61,14 @@ TypeId tyid_of_func(TypeArena *a, const TypeId *params, int param_count, const T
 
 /* Inspection. */
 TyKind tyid_kind(const TypeArena *a, TypeId t);
-PrimKind tyid_prim(const TypeArena *a, TypeId t); /* the PrimKind of a TYK_PRIM, else PRIM_COUNT */
+int tyid_is_proc(const TypeArena *a, TypeId t);              /* 1 if a TYK_FUNC callable is a proc */
+PrimKind tyid_prim(const TypeArena *a, TypeId t);            /* the PrimKind of a TYK_PRIM, else PRIM_COUNT */
 const char *tyid_nominal_name(const TypeArena *a, TypeId t); /* a TYK_NOMINAL's interned name, else NULL */
+const char *tyid_handle_name(const TypeArena *a, TypeId t);  /* a TYK_HANDLE's archetype name, else NULL */
+TypeId tyid_elem(const TypeArena *a, TypeId t);              /* an array/shaped element type, else UNKNOWN */
+int tyid_tuple_count(const TypeArena *a, TypeId t);
+const char *tyid_tuple_field_name(const TypeArena *a, TypeId t, int i);
+TypeId tyid_tuple_field_type(const TypeArena *a, TypeId t, int i);
 int tyid_equal(TypeId a, TypeId b); /* same interned id */
 int tyid_is_unknown(TypeId t);
 /* The backing of a tier-2 distinct subtype (else TYID_UNKNOWN). */

@@ -47,9 +47,9 @@ int semantic_alias_is_transparent(SemanticContext *ctx, const char *name);
  * else NULL. Lowering rewrites call callees through this and drops the alias binding. */
 const char *semantic_resolve_callable_alias(SemanticContext *ctx, const char *name);
 
-/* If `name` is a named callable-type alias (`handler :: proc()(w:int)`), its callable TypeRef;
- * else NULL. tycheck resolves the name to the structural signature's TypeId. */
-struct TypeRef *semantic_callable_type_alias(SemanticContext *ctx, const char *name);
+/* If `name` is a named callable-type alias (`handler :: proc()(w:int)`), its callable TypeId (the
+ * structural signature); else TYID_UNKNOWN. tycheck resolves the name through this. */
+TypeId semantic_callable_type_alias(SemanticContext *ctx, const char *name);
 
 /* Enum support (used by lowering to resolve `Enum.variant` and bare variant patterns to int values). */
 int semantic_is_enum_type(SemanticContext *ctx, const char *name);

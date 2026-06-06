@@ -20,7 +20,7 @@ char *strdup(const char *s);
 
 typedef struct {
 	char *name;
-	TypeRef *type;
+	TypeId type_id;
 	FieldKind kind;
 } FieldInfo;
 
@@ -42,7 +42,7 @@ typedef struct {
 
 typedef struct {
 	char *name;
-	TypeRef *type;
+	TypeId type_id;
 	char *archetype_name;      /* for variables that refer to archetype entries */
 	const char *inferred_type; /* for variables without explicit type, stores inferred type name (backing) */
 	const char *nominal_type;  /* unresolved nominal alias name (e.g. "file"), or NULL — for distinctness */
@@ -91,7 +91,7 @@ struct SemanticContext {
 	/* Named callable-type aliases: `Handler :: proc()(w:int)` binds a name to a structural
 	 * callable type. tyid_from_name resolves the name to the signature's TypeId. */
 	char **ctype_alias_names;
-	struct TypeRef **ctype_alias_refs; /* owned by the AST */
+	TypeId *ctype_alias_ids;
 	int ctype_alias_count;
 
 	/* Enums: a distinct int-backed type with named variants. enum_type_names lists the enum type
@@ -172,16 +172,17 @@ struct SemanticContext {
 	DeclSummary **decls;
 	int decl_count;
 
-	/* AST-kill (transitional): TypeRefs built on demand by view-driven analysis (via cst_build_type)
-	 * are owned here and freed at context teardown — so a VariableInfo can borrow a type (and its
-	 * name strings) for its whole lifetime without a use-after-free, exactly as it borrowed the
-	 * AstProgram's TypeRefs before. */
-	TypeRef **owned_types;
-	int owned_type_count, owned_type_cap;
+	/* Analysis-allocated strings handed BY POINTER to the type-alias registry (alias names + backings
+	 * built on the fly during analysis). The registry borrows them for the context's lifetime, so they
+	 * are owned here and freed at teardown. (Replaces the transitive ownership the old type pool gave
+	 * these strings before Phase 3.) */
+	char **owned_strs;
+	int owned_str_count, owned_str_cap;
 
-	/* The interned TypeId arena — the type representation (Phase 3). Lives for the whole context so
-	 * analysis can intern types; tycheck shares it. Freed LAST at teardown (HirType borrows its
-	 * interned name strings, so it must outlive lowering+codegen). Supersedes owned_types/TypeRef. */
+	/* The interned TypeId arena — the type representation (Phase 3), the sole type identity in the
+	 * middle of the compiler. Lives for the whole context so analysis can intern types; tycheck shares
+	 * it. Freed LAST at teardown (HirType borrows its interned name strings, so it must outlive
+	 * lowering+codegen). */
 	TypeArena *ty_arena;
 
 	/* Resolved types keyed by syntax tree node id, kept out of the tree.
@@ -225,21 +226,22 @@ static int sig_part_cmp(const void *a, const void *b) {
  * "name:type:kind;" part per field and **sort** them, so `{a,b}` and `{b,a}` produce the
  * same signature and share a shape. (Codegen is keyed by archetype name + per-decl column
  * order, so the sort only affects shape dedup, not memory layout.) */
-static char *compute_shape_signature(FieldSummary *fields, int field_count) {
+static const char *sem_tyid_name(SemanticContext *ctx, TypeId t); /* fwd */
+static char *compute_shape_signature(SemanticContext *ctx, FieldSummary *fields, int field_count) {
 	char **parts = field_count > 0 ? malloc(field_count * sizeof(char *)) : NULL;
 	size_t total = 1;
 	for (int i = 0; i < field_count; i++) {
 		FieldSummary *f = &fields[i];
 		const char *type_name = "unknown";
-		if (f->type) {
-			if (f->type->kind == TYPE_NAME)
-				type_name = f->type->data.name;
-			else if (f->type->kind == TYPE_ARRAY)
-				type_name = "array";
-			else if (f->type->kind == TYPE_SHAPED_ARRAY)
-				type_name = "shaped_array";
-			else if (f->type->kind == TYPE_OPAQUE)
-				type_name = "opaque";
+		TyKind k = tyid_kind(ctx->ty_arena, f->type_id);
+		if (k == TYK_ARRAY)
+			type_name = "array";
+		else if (k == TYK_SHAPED_ARRAY)
+			type_name = "shaped_array";
+		else {
+			const char *n = sem_tyid_name(ctx, f->type_id);
+			if (n)
+				type_name = n;
 		}
 		const char *kind_str = (f->kind == FIELD_META) ? "meta" : "col";
 		char part[256];
@@ -369,23 +371,23 @@ static const char *resolve_callable_alias(SemanticContext *ctx, const char *name
 	return cur;
 }
 
-static void register_callable_type_alias(SemanticContext *ctx, const char *name, TypeRef *ref) {
+static void register_callable_type_alias(SemanticContext *ctx, const char *name, TypeId id) {
 	ctx->ctype_alias_names = realloc(ctx->ctype_alias_names, (ctx->ctype_alias_count + 1) * sizeof(char *));
-	ctx->ctype_alias_refs = realloc(ctx->ctype_alias_refs, (ctx->ctype_alias_count + 1) * sizeof(TypeRef *));
+	ctx->ctype_alias_ids = realloc(ctx->ctype_alias_ids, (ctx->ctype_alias_count + 1) * sizeof(TypeId));
 	char *n = malloc(strlen(name) + 1);
 	strcpy(n, name);
 	ctx->ctype_alias_names[ctx->ctype_alias_count] = n;
-	ctx->ctype_alias_refs[ctx->ctype_alias_count] = ref;
+	ctx->ctype_alias_ids[ctx->ctype_alias_count] = id;
 	ctx->ctype_alias_count++;
 }
 
-static TypeRef *callable_type_alias_ref(SemanticContext *ctx, const char *name) {
+static TypeId callable_type_alias_id(SemanticContext *ctx, const char *name) {
 	if (!ctx || !name)
-		return NULL;
+		return TYID_UNKNOWN;
 	for (int i = 0; i < ctx->ctype_alias_count; i++)
 		if (strcmp(ctx->ctype_alias_names[i], name) == 0)
-			return ctx->ctype_alias_refs[i];
-	return NULL;
+			return ctx->ctype_alias_ids[i];
+	return TYID_UNKNOWN;
 }
 
 static char *sem_dupz(const char *s);
@@ -439,7 +441,7 @@ static int is_static_name(SemanticContext *ctx, const char *name) {
 }
 
 /* 1 if `name` is a top-level static ARRAY (a global buffer `name : T[N]`). A global buffer is
- * registered as a scope variable with its ELEMENT type (a scalar TypeRef), so `var->type` alone
+ * registered as a scope variable with its ELEMENT type (a scalar TypeId), so its type alone
  * can't tell a buffer from a scalar — the DeclTable's static_kind is the distinguishing signal.
  * Used by the not-indexable check so `buf[i]` on a global buffer is never mis-flagged. */
 static int name_is_static_array(SemanticContext *ctx, const char *name) {
@@ -506,63 +508,6 @@ static DeclSummary *find_proc_sig(SemanticContext *ctx, const char *name) {
 	return NULL;
 }
 
-/* TypeRef structural equality. Used for member-signature distinctness. */
-static int type_ref_equal(const TypeRef *a, const TypeRef *b) {
-	if (a == NULL && b == NULL)
-		return 1;
-	if (a == NULL || b == NULL)
-		return 0;
-	if (a->kind != b->kind)
-		return 0;
-	switch (a->kind) {
-	case TYPE_NAME: {
-		const char *an = normalize_type_name(a->data.name);
-		const char *bn = normalize_type_name(b->data.name);
-		return an && bn && strcmp(an, bn) == 0;
-	}
-	case TYPE_ARRAY:
-		return type_ref_equal(a->data.array.element_type, b->data.array.element_type);
-	case TYPE_SHAPED_ARRAY:
-		return a->data.shaped_array.rank == b->data.shaped_array.rank &&
-		       type_ref_equal(a->data.shaped_array.element_type, b->data.shaped_array.element_type);
-	case TYPE_HANDLE: {
-		const char *an = a->data.handle.archetype_name;
-		const char *bn = b->data.handle.archetype_name;
-		return an && bn && strcmp(an, bn) == 0;
-	}
-	case TYPE_TUPLE: {
-		if (a->data.tuple.field_count != b->data.tuple.field_count)
-			return 0;
-		for (int i = 0; i < a->data.tuple.field_count; i++) {
-			if (!type_ref_equal(a->data.tuple.field_types[i], b->data.tuple.field_types[i]))
-				return 0;
-		}
-		return 1;
-	}
-	case TYPE_ARCHETYPE:
-		return 1; /* `archetype` parameter type: any two are equal */
-	case TYPE_OPAQUE:
-		return 1; /* bare opaque == bare opaque; nominal distinctness is by alias name */
-	case TYPE_TYPE:
-		return 1; /* the meta-type: any two `type` are equal */
-	case TYPE_PROC:
-	case TYPE_FUNC:
-		/* Callable types match structurally (param/result shape), names ignored. */
-		if (a->data.callable.is_proc != b->data.callable.is_proc ||
-		    a->data.callable.param_count != b->data.callable.param_count ||
-		    a->data.callable.result_count != b->data.callable.result_count)
-			return 0;
-		for (int i = 0; i < a->data.callable.param_count; i++)
-			if (!type_ref_equal(a->data.callable.param_types[i], b->data.callable.param_types[i]))
-				return 0;
-		for (int i = 0; i < a->data.callable.result_count; i++)
-			if (!type_ref_equal(a->data.callable.result_types[i], b->data.callable.result_types[i]))
-				return 0;
-		return 1;
-	}
-	return 0;
-}
-
 static VariableInfo *find_variable(SemanticContext *ctx, const char *name) {
 	/* Search innermost to outermost scope; within a scope prefer the NEWEST binding so a
 	 * shadow wins. This is what makes `:=` rebinding work: `buf := foo(move buf)` consumes the
@@ -621,6 +566,7 @@ SemDiag *diag_push(SemanticContext *ctx, int severity, int has_loc, SourceLoc lo
  * the same stderr line `lint_emit` used to. */
 
 static const char *resolve_type_alias(SemanticContext *ctx, const char *name);
+static const char *sem_tyid_name(SemanticContext *ctx, TypeId t);
 
 /* True if a binding is opaque-backed (the linear, move-only kind). Used both by the
  * must-consume check and by return/insert auto-marking (only opaque is consumed by
@@ -630,12 +576,9 @@ static int var_is_opaque(SemanticContext *ctx, VariableInfo *v) {
 		return 0;
 	if (v->inferred_type && strcmp(v->inferred_type, "opaque") == 0)
 		return 1;
-	if (v->type) {
-		if (v->type->kind == TYPE_OPAQUE)
-			return 1;
-		if (v->type->kind == TYPE_NAME && strcmp(resolve_type_alias(ctx, v->type->data.name), "opaque") == 0)
-			return 1;
-	}
+	const char *tn = sem_tyid_name(ctx, v->type_id);
+	if (tn && strcmp(tn, "opaque") == 0)
+		return 1;
 	return 0;
 }
 
@@ -646,9 +589,7 @@ static const char *var_opaque_type_name(SemanticContext *ctx, VariableInfo *v) {
 		return NULL;
 	if (v->nominal_type)
 		return v->nominal_type;
-	if (v->type && v->type->kind == TYPE_NAME)
-		return v->type->data.name;
-	return NULL;
+	return tyid_nominal_name(ctx->ty_arena, v->type_id);
 }
 
 /* The destructor proc name registered (via `@drop`) for opaque type `type_name`, or NULL if
@@ -701,18 +642,21 @@ static void analyze_drop_decl(SemanticContext *ctx, DeclSummary *proc, const cha
 		sem_emit_drop_invalid(ctx, proc->loc, "a `@drop` destructor's parameter must be `own`");
 		return;
 	}
-	if (!p->type || p->type->kind != TYPE_NAME || strcmp(resolve_type_alias(ctx, p->type->data.name), "opaque") != 0) {
+	TypeId p_tid = p->type_id;
+	const char *p_resolved = sem_tyid_name(ctx, p_tid);              /* "opaque" */
+	const char *p_nominal = tyid_nominal_name(ctx->ty_arena, p_tid); /* the written opaque name */
+	if (!p_resolved || strcmp(p_resolved, "opaque") != 0) {
 		sem_emit_drop_invalid(ctx, proc->loc, "a `@drop` destructor's parameter must be of an opaque type");
 		return;
 	}
 	/* The `@drop(<type>)` name must match the parameter's type — the decorator states what is
 	 * dropped; a mismatch is a typo, not silently ignored. */
-	if (declared_type && strcmp(declared_type, p->type->data.name) != 0) {
+	if (declared_type && (!p_nominal || strcmp(declared_type, p_nominal) != 0)) {
 		sem_emit_drop_invalid(ctx, proc->loc,
 		                      "`@drop(...)` names a different type than the destructor's parameter — they must match");
 		return;
 	}
-	register_drop(ctx, p->type->data.name, proc->name, proc->loc);
+	register_drop(ctx, p_nominal, proc->name, proc->loc);
 }
 
 static void push_scope(SemanticContext *ctx) {
@@ -775,11 +719,11 @@ static void pop_scope(SemanticContext *ctx) {
 	}
 }
 
-static void add_variable_with_archetype(SemanticContext *ctx, const char *name, TypeRef *type,
+static void add_variable_with_archetype(SemanticContext *ctx, const char *name, TypeId type_id,
                                         const char *archetype_name);
 
-static void add_variable(SemanticContext *ctx, const char *name, TypeRef *type) {
-	add_variable_with_archetype(ctx, name, type, NULL);
+static void add_variable(SemanticContext *ctx, const char *name, TypeId type_id) {
+	add_variable_with_archetype(ctx, name, type_id, NULL);
 }
 
 /* Flag the most-recently-added variable as a parameter — exempt from the opaque must-consume
@@ -795,7 +739,7 @@ static void mark_last_param(SemanticContext *ctx, int is_own) {
 	}
 }
 
-static void add_variable_with_archetype(SemanticContext *ctx, const char *name, TypeRef *type,
+static void add_variable_with_archetype(SemanticContext *ctx, const char *name, TypeId type_id,
                                         const char *archetype_name) {
 	if (ctx->scope_count == 0)
 		return;
@@ -804,7 +748,7 @@ static void add_variable_with_archetype(SemanticContext *ctx, const char *name, 
 	VariableInfo *var = malloc(sizeof(VariableInfo));
 	var->name = malloc(strlen(name) + 1);
 	strcpy(var->name, name);
-	var->type = type;
+	var->type_id = type_id;
 	var->archetype_name = archetype_name ? malloc(strlen(archetype_name) + 1) : NULL;
 	if (var->archetype_name)
 		strcpy(var->archetype_name, archetype_name);
@@ -852,8 +796,9 @@ static const char *resolve_expression_type(SemanticContext *ctx, SyntaxView v);
 /* By-reference aggregate param types: arrays are passed by reference (borrowed read-only by
  * default), so mutating one through a non-`move` param is a purity violation. Scalars are by
  * value (a freely-mutable local copy); opaque can't be indexed/assigned at all. */
-static int type_is_byref_aggregate(const TypeRef *t) {
-	return t && (t->kind == TYPE_ARRAY || t->kind == TYPE_SHAPED_ARRAY);
+static int type_is_byref_aggregate(const TypeArena *a, TypeId t) {
+	TyKind k = tyid_kind(a, t);
+	return k == TYK_ARRAY || k == TYK_SHAPED_ARRAY;
 }
 
 /* Implicit `move` of a bare move-only name in an ownership-taking position (defined below). */
@@ -866,32 +811,18 @@ static void implicit_move_consume(SemanticContext *ctx, SyntaxView v);
  * Removed with AstProgram once nothing reads these structs. */
 #define AST_SV(n) ((n) ? ((SyntaxView){(n)->sn, (n)->sn_src}) : ((SyntaxView){NULL, NULL}))
 
-/* Own a transient analysis-built TypeRef on the context (freed at teardown); returns it. */
-static TypeRef *analysis_own_type(SemanticContext *ctx, TypeRef *t);
-
-/* Syntax-tree helpers used by the converted analysis, defined alongside cst_to_program below. */
-SyntaxView sem_first_expr(SyntaxView v);
-SyntaxView sem_node_at_expr(SyntaxView v, int idx);
-SyntaxView sem_type_at(SyntaxView v, int idx);
-static TypeRef *cst_build_type(SyntaxView t);
-static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv);
-static void sem_fill_decl_type_ids(SemanticContext *ctx, DeclSummary *ds);
-static char *sem_cv_dup(SyntaxView v);
+/* Forward declarations for view/decl helpers defined further down but used by earlier analysis. */
 static char *sem_txt_dup(SynText t);
-char *sem_cv_dup_first_token(SyntaxView v);
-SourceLoc sem_node_loc(const SyntaxNode *n);
-static Operator sem_tok_to_op(TokenKind k);
-Operator sem_binary_op(SyntaxView v);
-int sem_expr_count(SyntaxView v);
-/* Name string of an SN_NAME_EXPR view (mirrors cst_build_expr's SN_NAME_EXPR case, incl.
- * table<Name> → bare archetype). Caller frees. */
+static char *sem_cv_dup(SyntaxView v);
 static char *sv_name_expr_dup(SyntaxView e);
-/* Resolved leftmost name of a NAME/FIELD/INDEX/SLICE view: the AST-resolved name (module-inlined
- * names are prefixed) from the ref_name channel, else the bare token. Caller frees. */
 static char *sv_resolved_name(SemanticContext *ctx, SyntaxView v);
+static Operator sem_tok_to_op(TokenKind k);
+static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv);
+static void sem_expand_tuple_groups_table(SemanticContext *ctx);
+static void sem_fill_decl_type_ids(SemanticContext *ctx, DeclSummary *ds);
+static char *sem_own_str(SemanticContext *ctx, char *s);
 
-/* ========== TYPE RESOLUTION ========== */
-
+/* Canonicalize the capitalized primitive spellings (`Int`/`Float`/…) to their lowercase keywords. */
 static const char *normalize_type_name(const char *type_name) {
 	if (!type_name)
 		return type_name;
@@ -1079,11 +1010,16 @@ static int name_denotes_type(SemanticContext *ctx, const char *r) {
  * type T. Only concrete primitive types are checked; a clear category mismatch (a float literal for
  * an int, a string for a number) is an error. So an explicit annotation is no longer inert. */
 static void check_const_literal_type(SemanticContext *ctx, DeclSummary *c) {
-	if (!c || !c->const_decl_type || c->const_decl_type->kind != TYPE_NAME)
+	if (!c)
+		return;
+	TyKind dk = tyid_kind(ctx->ty_arena, c->const_decl_type_id);
+	if (dk != TYK_NOMINAL && dk != TYK_PRIM)
 		return; /* only concrete named declared types */
 	if (c->const_value_kind != EXPR_LITERAL)
 		return; /* only literal RHS (a name RHS is a value-const chain, checked elsewhere) */
-	const char *want = resolve_type_alias(ctx, normalize_type_name(c->const_decl_type->data.name));
+	const char *want = sem_tyid_name(ctx, c->const_decl_type_id);
+	if (!want)
+		return;
 	if (!is_primitive_type_name(want))
 		return; /* non-primitive declared type: out of scope for the literal check */
 	const char *got = resolve_expression_type(ctx, c->const_value); /* "int" / "float" / "char" / "char_array" */
@@ -1108,24 +1044,15 @@ static void check_const_literal_type(SemanticContext *ctx, DeclSummary *c) {
 
 /* The backing-type name for a type-form RHS (`name : type : T` or a tuple field), or NULL if the
  * form can't back a nominal alias (e.g. array/handle/shaped — unsupported as alias backings). */
-static const char *type_backing_name(TypeRef *t) {
-	if (!t)
-		return NULL;
-	if (t->kind == TYPE_NAME)
-		return t->data.name;
-	if (t->kind == TYPE_OPAQUE)
-		return "opaque";
-	return NULL;
-}
-
 /* The meta-type `type` is legal ONLY as a declaration's declared type (`name : type : T`). It is
  * not a storable value type, so it must not reach a parameter / return / field / variable slot —
  * a parameter of type `type` would be a generic type parameter, and generics (monomorphization)
  * are not implemented yet. Reject it there with a clear "not supported yet" message (the grammar
  * admits the form; the feature behind it just doesn't exist). Returns 1 if it errored. */
-static int reject_meta_type(SemanticContext *ctx, TypeRef *t, const char *where) {
-	if (t && t->kind == TYPE_TYPE) {
-		sem_emit_meta_type_invalid_position(ctx, t->loc, where);
+static int reject_meta_type(SemanticContext *ctx, TypeId t, SourceLoc loc, const char *where) {
+	const char *n = tyid_nominal_name(ctx->ty_arena, t);
+	if (n && strcmp(n, "type") == 0) {
+		sem_emit_meta_type_invalid_position(ctx, loc, where);
 		return 1;
 	}
 	return 0;
@@ -1143,23 +1070,11 @@ static int reject_meta_type(SemanticContext *ctx, TypeRef *t, const char *where)
 static const char *resolve_name_type(SemanticContext *ctx, const char *name) {
 	VariableInfo *var = find_variable(ctx, name);
 	if (var) {
-		if (var->type) {
-			if (var->type->kind == TYPE_HANDLE)
-				return var->type->data.handle.archetype_name;
-			if (var->type->kind == TYPE_NAME)
-				return resolve_type_alias(ctx, normalize_type_name(var->type->data.name));
-			/* An array variable resolves to its ELEMENT base type, so `b[i]` and width-sensitive
-			 * consumers see int/float/i64, not a defaulted int. */
-			if (var->type->kind == TYPE_SHAPED_ARRAY || var->type->kind == TYPE_ARRAY) {
-				TypeRef *et = var->type;
-				while (et && et->kind == TYPE_SHAPED_ARRAY)
-					et = et->data.shaped_array.element_type;
-				while (et && et->kind == TYPE_ARRAY)
-					et = et->data.array.element_type;
-				if (et && et->kind == TYPE_NAME)
-					return resolve_type_alias(ctx, normalize_type_name(et->data.name));
-			}
-		}
+		/* The resolved base type of the var's declared type (handle → archetype name; array → element
+		 * base; nominal → backing chain → prim/name). */
+		const char *r = sem_tyid_name(ctx, var->type_id);
+		if (r)
+			return r;
 		if (var->inferred_type)
 			return resolve_type_alias(ctx, normalize_type_name(var->inferred_type));
 	}
@@ -1190,13 +1105,8 @@ static const char *resolve_field_type(SemanticContext *ctx, const char *base_nam
 	}
 	if (arch) {
 		FieldInfo *field = find_field(arch, field_name);
-		if (field && field->type) {
-			TypeRef *ft = field->type;
-			while (ft->kind == TYPE_SHAPED_ARRAY)
-				ft = ft->data.shaped_array.element_type;
-			if (ft->kind == TYPE_NAME)
-				return resolve_type_alias(ctx, normalize_type_name(ft->data.name));
-		}
+		if (field && field->type_id != TYID_UNKNOWN)
+			return sem_tyid_name(ctx, field->type_id);
 	}
 	return NULL;
 }
@@ -1241,32 +1151,16 @@ static const char *resolve_base_chain_type(SemanticContext *ctx, SyntaxView v) {
 /* Return type of a plain func named `func_name` (the non-group func path of a call). */
 static const char *resolve_func_return(SemanticContext *ctx, const char *func_name) {
 	DeclSummary *fs = find_func_sig(ctx, func_name);
-	if (fs) {
-		TypeRef *rt = fs->return_type_count > 0 ? fs->return_types[0] : NULL;
-		if (!rt)
-			return NULL;
-		if (rt->kind == TYPE_HANDLE)
-			return rt->data.handle.archetype_name;
-		if (rt->kind == TYPE_NAME)
-			return resolve_type_alias(ctx, normalize_type_name(rt->data.name));
-		if (rt->kind == TYPE_SHAPED_ARRAY || rt->kind == TYPE_ARRAY) {
-			/* An array return resolves to its ELEMENT type; a char array stays "char_array". */
-			TypeRef *et = rt;
-			while (et && et->kind == TYPE_SHAPED_ARRAY)
-				et = et->data.shaped_array.element_type;
-			while (et && et->kind == TYPE_ARRAY)
-				et = et->data.array.element_type;
-			if (et && et->kind == TYPE_NAME && et->data.name) {
-				const char *en = normalize_type_name(et->data.name);
-				return (strcmp(en, "char") == 0) ? "char_array" : resolve_type_alias(ctx, en);
-			}
-			return "char_array";
-		}
-		if (rt->kind == TYPE_OPAQUE)
-			return "opaque"; /* foreign resource value (pointer-width i64) */
+	if (!fs || fs->return_type_count == 0)
 		return NULL;
+	TypeId rid = fs->return_type_ids[0];
+	TyKind rk = tyid_kind(ctx->ty_arena, rid);
+	/* An array return resolves to its ELEMENT base; a char array stays "char_array". */
+	if (rk == TYK_ARRAY || rk == TYK_SHAPED_ARRAY) {
+		const char *en = sem_tyid_name(ctx, rid); /* resolves through to the element base */
+		return (en && strcmp(en, "char") == 0) ? "char_array" : en;
 	}
-	return NULL;
+	return sem_tyid_name(ctx, rid); /* handle → archetype name; nominal/prim → resolved name */
 }
 
 /* Resolved (backing) type name of an expression, read from the immutable syntax tree.
@@ -1394,19 +1288,22 @@ static const char *resolve_expression_type(SemanticContext *ctx, SyntaxView v) {
 						int ok = 1;
 						for (int j = 0; j < argc; j++) {
 							const char *rt = resolve_expression_type(ctx, sem_node_at_expr(v, j));
-							TypeRef *pt = fd->params[j].type;
-							if (!rt || !pt || pt->kind != TYPE_NAME) {
+							TypeId pid = fd->params[j].type_id;
+							TyKind pk = tyid_kind(ctx->ty_arena, pid);
+							if (!rt || (pk != TYK_NOMINAL && pk != TYK_PRIM)) {
 								ok = 0;
 								break;
 							}
-							if (strcmp(normalize_type_name(pt->data.name), normalize_type_name(rt)) != 0) {
+							if (!tyid_equal(sem_tyid_of_name(ctx, rt), pid)) {
 								ok = 0;
 								break;
 							}
 						}
-						TypeRef *frt = fd->return_type_count > 0 ? fd->return_types[0] : NULL;
-						if (ok && frt && frt->kind == TYPE_NAME)
-							result = normalize_type_name(frt->data.name);
+						if (ok && fd->return_type_count > 0) {
+							TyKind rk = tyid_kind(ctx->ty_arena, fd->return_type_ids[0]);
+							if (rk == TYK_NOMINAL || rk == TYK_PRIM)
+								result = sem_tyid_name(ctx, fd->return_type_ids[0]);
+						}
 					}
 				} else {
 					result = resolve_func_return(ctx, func_name);
@@ -1447,9 +1344,11 @@ static const char *nominal_type_of_expr(SemanticContext *ctx, SyntaxView v) {
 		/* Fall back to the declared type name when it is a non-transparent alias — covers params and
 		 * any var whose nominal_type wasn't recorded at bind time (so an opaque `file` parameter keeps
 		 * its distinct identity through a call, not just a fresh `x: file` local). */
-		if (var->type && var->type->kind == TYPE_NAME && is_type_alias(ctx, var->type->data.name) &&
-		    !alias_is_transparent(ctx, var->type->data.name))
-			return var->type->data.name;
+		/* A tier-2 distinct subtype value carries its own identity (so `x: file` keeps `file` through a
+		 * call). Tier-2 == a nominal with a backing; its name is the distinct alias. */
+		if (tyid_kind(ctx->ty_arena, var->type_id) == TYK_NOMINAL &&
+		    tyid_backing(ctx->ty_arena, var->type_id) != TYID_UNKNOWN)
+			return tyid_nominal_name(ctx->ty_arena, var->type_id);
 		return NULL;
 	}
 	/* simple (unqualified) callee only — a qualified `mod.f` has SN_FIELD_NAME children */
@@ -1457,9 +1356,11 @@ static const char *nominal_type_of_expr(SemanticContext *ctx, SyntaxView v) {
 		char *cn = sem_cv_dup(sv_child(v, SN_CALLEE_NAME));
 		DeclSummary *fd = find_func_sig(ctx, cn);
 		free(cn);
-		TypeRef *frt = (fd && fd->return_type_count > 0) ? fd->return_types[0] : NULL;
-		if (frt && frt->kind == TYPE_NAME && is_type_alias(ctx, frt->data.name))
-			return frt->data.name;
+		/* On the fly: the DeclSummary's return_type_ids are filled post-analysis,
+		 * but this runs DURING analysis. */
+		TypeId frt = (fd && fd->return_type_count > 0) ? fd->return_type_ids[0] : TYID_UNKNOWN;
+		if (tyid_kind(ctx->ty_arena, frt) == TYK_NOMINAL && tyid_backing(ctx->ty_arena, frt) != TYID_UNKNOWN)
+			return tyid_nominal_name(ctx->ty_arena, frt);
 	}
 	return NULL;
 }
@@ -1540,13 +1441,14 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 				sem_emit_undefined_field_base(ctx, field_loc, idnt);
 				goto done;
 			}
+			TypeArena *A = ctx->ty_arena;
+			TypeId bt = base_var->type_id;
+			TyKind btk = tyid_kind(A, bt);
 			/* reading a component through a HANDLE value is unsupported */
-			int base_is_handle = (base_var->type && base_var->type->kind == TYPE_HANDLE) ||
-			                     (base_var->inferred_type && strcmp(base_var->inferred_type, "handle") == 0);
+			int base_is_handle =
+			    btk == TYK_HANDLE || (base_var->inferred_type && strcmp(base_var->inferred_type, "handle") == 0);
 			if (base_is_handle) {
-				const char *an = (base_var->type && base_var->type->kind == TYPE_HANDLE)
-				                     ? base_var->type->data.handle.archetype_name
-				                     : NULL;
+				const char *an = btk == TYK_HANDLE ? tyid_handle_name(A, bt) : NULL;
 				sem_emit_cannot_read_through_handle(ctx, field_loc, field_name, idnt, an ? an : "the archetype");
 				goto done;
 			}
@@ -1560,30 +1462,24 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 				if (sa && find_field(sa, idnt))
 					sys_column_access = 1;
 			}
-			if (!arch && base_var->type && !sys_column_access) {
-				if (base_var->type->kind == TYPE_NAME)
-					arch = find_archetype(ctx, base_var->type->data.name);
-				if (!arch && base_var->type->kind != TYPE_TUPLE && base_var->type->kind != TYPE_ARCHETYPE) {
-					if ((base_var->type->kind == TYPE_ARRAY || base_var->type->kind == TYPE_SHAPED_ARRAY) &&
+			if (!arch && bt != TYID_UNKNOWN && !sys_column_access) {
+				if (btk == TYK_NOMINAL)
+					arch = find_archetype(ctx, tyid_nominal_name(A, bt));
+				if (!arch && btk != TYK_TUPLE && btk != TYK_ARCHETYPE_CATEGORY) {
+					if ((btk == TYK_ARRAY || btk == TYK_SHAPED_ARRAY) &&
 					    (strcmp(field_name, "cap") == 0 || strcmp(field_name, "capacity") == 0 ||
 					     strcmp(field_name, "length") == 0 || strcmp(field_name, "max_length") == 0))
 						goto done;
 					const char *kind_name;
-					switch (base_var->type->kind) {
-					case TYPE_NAME:
-						kind_name = base_var->type->data.name;
+					switch (btk) {
+					case TYK_NOMINAL:
+						kind_name = tyid_nominal_name(A, bt); /* archetype/opaque/scalar name */
 						break;
-					case TYPE_ARRAY:
+					case TYK_ARRAY:
 						kind_name = "array";
 						break;
-					case TYPE_SHAPED_ARRAY:
+					case TYK_SHAPED_ARRAY:
 						kind_name = "shaped array";
-						break;
-					case TYPE_OPAQUE:
-						kind_name = "opaque";
-						break;
-					case TYPE_TYPE:
-						kind_name = "type";
 						break;
 					default:
 						kind_name = "value";
@@ -1671,8 +1567,9 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 		if (sv_count(v, SN_FIELD_NAME) == 0) {
 			char *bn = sv_resolved_name(ctx, v);
 			VariableInfo *bv = bn ? find_variable(ctx, bn) : NULL;
-			if (bv && bv->type && bv->type->kind == TYPE_NAME && !name_is_static_array(ctx, bn)) {
-				const char *rn = resolve_type_alias(ctx, normalize_type_name(bv->type->data.name));
+			TyKind bvk = bv ? tyid_kind(ctx->ty_arena, bv->type_id) : TYK_UNKNOWN;
+			if (bv && (bvk == TYK_PRIM || bvk == TYK_NOMINAL) && !name_is_static_array(ctx, bn)) {
+				const char *rn = sem_tyid_name(ctx, bv->type_id);
 				if (rn && is_primitive_type_name(rn) && strcmp(rn, "str") != 0 && strcmp(rn, "void") != 0)
 					sem_emit_not_indexable(ctx, loc, rn);
 			}
@@ -1703,7 +1600,7 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 			char *nm = sv_name_expr_dup(operand);
 			VariableInfo *mv = find_variable(ctx, nm);
 			if (mv) {
-				if (mv->is_param && !mv->is_own && type_is_byref_aggregate(mv->type))
+				if (mv->is_param && !mv->is_own && type_is_byref_aggregate(ctx->ty_arena, mv->type_id))
 					sem_emit_cannot_move_borrowed(ctx, sem_node_loc(operand.node), nm);
 				mv->is_consumed = 1;
 			}
@@ -1716,8 +1613,8 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 			if (cv) {
 				if (var_is_opaque(ctx, cv))
 					sem_emit_cannot_copy_opaque(ctx, sem_node_loc(operand.node), nm);
-				else if (type_is_byref_aggregate(cv->type) &&
-				         !(cv->type && cv->type->kind == TYPE_SHAPED_ARRAY && !cv->is_param))
+				else if (type_is_byref_aggregate(ctx->ty_arena, cv->type_id) &&
+				         !(tyid_kind(ctx->ty_arena, cv->type_id) == TYK_SHAPED_ARRAY && !cv->is_param))
 					sem_emit_copy_unsupported(ctx, sem_node_loc(operand.node), nm);
 			}
 			free(nm);
@@ -1827,7 +1724,7 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 				/* a `T[]` slice cannot satisfy a sized `T[N]` parameter */
 				for (int j = 0; j < n; j++) {
 					ParamSummary *p = &params[j];
-					if (!p->type || p->type->kind != TYPE_SHAPED_ARRAY)
+					if (tyid_kind(ctx->ty_arena, p->type_id) != TYK_SHAPED_ARRAY)
 						continue;
 					SyntaxView a = sem_node_at_expr(v, j);
 					while (sv_present(a) && sv_kind(a) == SN_UNARY_EXPR &&
@@ -1836,7 +1733,7 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 					if (sv_present(a) && sv_kind(a) == SN_NAME_EXPR && sv_count(a, SN_FIELD_NAME) == 0) {
 						char *nm = sv_name_expr_dup(a);
 						VariableInfo *av = find_variable(ctx, nm);
-						if (av && av->type && av->type->kind == TYPE_ARRAY) {
+						if (av && tyid_kind(ctx->ty_arena, av->type_id) == TYK_ARRAY) {
 							fprintf(stderr,
 							        "Error: cannot pass a slice `T[]` to a sized `T[N]` parameter '%s' — a "
 							        "slice's length is only known at runtime; sizing flows one way "
@@ -1852,11 +1749,12 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 					int check_count = param_count < argc ? param_count : argc;
 					for (int j = 0; j < check_count; j++) {
 						ParamSummary *p = &params[j];
-						if (p->type && p->type->kind == TYPE_NAME && is_type_alias(ctx, p->type->data.name)) {
+						const char *pn = tyid_nominal_name(ctx->ty_arena, p->type_id);
+						if (pn && is_type_alias(ctx, pn) && !alias_is_transparent(ctx, pn)) {
 							const char *arg_nominal = nominal_type_of_expr(ctx, sem_node_at_expr(v, j));
-							if (arg_nominal && strcmp(arg_nominal, p->type->data.name) != 0)
+							if (arg_nominal && strcmp(arg_nominal, pn) != 0)
 								sem_emit_extern_type_mismatch(ctx, sem_node_loc(sem_node_at_expr(v, j).node), func_name,
-								                              p->name ? p->name : "?", p->type->data.name, arg_nominal);
+								                              p->name ? p->name : "?", pn, arg_nominal);
 						}
 					}
 				}
@@ -1888,12 +1786,13 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 				int ok = 1;
 				for (int j = 0; j < argc; j++) {
 					const char *rt = resolve_expression_type(ctx, sem_node_at_expr(v, j));
-					TypeRef *pt = fd->params[j].type;
-					if (!pt || pt->kind != TYPE_NAME) {
+					TypeId pid = fd->params[j].type_id;
+					TyKind pk = tyid_kind(ctx->ty_arena, pid);
+					if (!rt || (pk != TYK_NOMINAL && pk != TYK_PRIM)) {
 						ok = 0;
 						break;
 					}
-					if (strcmp(normalize_type_name(pt->data.name), normalize_type_name(rt)) != 0) {
+					if (!tyid_equal(sem_tyid_of_name(ctx, rt), pid)) {
 						ok = 0;
 						break;
 					}
@@ -1914,14 +1813,15 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 		break;
 	}
 
-	/* Resolve + record this expression's type (and nominal) in the side model, keyed by node id. */
+	/* Resolve + record this expression's type in the side model, keyed by node id. The interned id
+	 * prefers the distinct tier-2 nominal (so a `meters` value keeps its identity); else the resolved
+	 * backing. This is the single home for an expression's type — read by tycheck + lowering. */
 	const char *resolved = resolve_expression_type(ctx, v);
 	if (ctx->model) {
 		uint32_t nid = sv_id(v);
-		sem_model_set_expr_type(ctx->model, nid, resolved);
 		const char *nom = nominal_type_of_expr(ctx, v);
-		if (nom && is_type_alias(ctx, nom) && !alias_is_transparent(ctx, nom))
-			sem_model_set_expr_nominal(ctx->model, nid, nom);
+		int nomset = nom && is_type_alias(ctx, nom) && !alias_is_transparent(ctx, nom);
+		sem_model_set_expr_type_id(ctx->model, nid, sem_tyid_of_name(ctx, nomset ? nom : resolved));
 	}
 }
 
@@ -1935,11 +1835,11 @@ static void implicit_move_consume(SemanticContext *ctx, SyntaxView v) {
 		return;
 	char *nm = sv_resolved_name(ctx, v);
 	VariableInfo *var = find_variable(ctx, nm);
-	if (!var || !(type_is_byref_aggregate(var->type) || var_is_opaque(ctx, var))) {
+	if (!var || !(type_is_byref_aggregate(ctx->ty_arena, var->type_id) || var_is_opaque(ctx, var))) {
 		free(nm); /* no var, or a Copy type: a bare name copies, never moves */
 		return;
 	}
-	if (var->is_param && !var->is_own && type_is_byref_aggregate(var->type)) {
+	if (var->is_param && !var->is_own && type_is_byref_aggregate(ctx->ty_arena, var->type_id)) {
 		sem_emit_cannot_move_borrowed(ctx, sem_node_loc(v.node), nm);
 		free(nm);
 		return;
@@ -1980,17 +1880,14 @@ SyntaxView sem_stmt_at(SyntaxView v, int idx) {
 		}
 	return (SyntaxView){NULL, v.src};
 }
-/* Build a TypeRef from a type-node view, owned by the context (stable for the lifetime of any
- * VariableInfo that borrows it). Absent view → NULL. */
-static TypeRef *sem_view_type(SemanticContext *ctx, SyntaxView tv) {
-	return sv_present(tv) ? analysis_own_type(ctx, cst_build_type(tv)) : NULL;
-}
+static char *sem_type_ref_name(SyntaxView t);
+static int sem_type_ref_alias_marked(SyntaxView t);
 
 /* One out-target of a multi-bind (`a, b := f()`) or proc-call (`f(in)(out)`). */
 typedef struct {
-	char *name;    /* owned by the array; caller frees */
-	int is_new;    /* a fresh binding (`:`) vs an assignment to an existing place */
-	TypeRef *type; /* explicit target type, pooled on ctx (or NULL) */
+	char *name;     /* owned by the array; caller frees */
+	int is_new;     /* a fresh binding (`:`) vs an assignment to an existing place */
+	TypeId type_id; /* interned explicit target type (TYID_UNKNOWN if none) */
 } MbTarget;
 
 /* Read the out-targets directly from the view, replacing the transient `cst_build_stmt` whose only
@@ -2008,7 +1905,7 @@ static int sem_read_mb_targets(SemanticContext *ctx, SyntaxView v, MbTarget **ou
 			SyntaxView cnv = {v.node->children[i].as.node, v.src};
 			ts[n].name = sem_txt_dup(sv_token(cnv, TOK_IDENT));
 			ts[n].is_new = sv_has_token(cnv, TOK_COLON);
-			ts[n].type = sem_view_type(ctx, sem_type_at(cnv, 0));
+			ts[n].type_id = sem_intern_view(ctx, sem_type_at(cnv, 0));
 			n++;
 		}
 		*out = ts;
@@ -2030,17 +1927,17 @@ static int sem_read_mb_targets(SemanticContext *ctx, SyntaxView v, MbTarget **ou
 	int paren = (lparen_idx >= 0 && lparen_idx < eq_idx);
 	const char *pend = NULL;
 	int pend_len = 0, pend_active = 0, pend_new = 0;
-	TypeRef *pend_type = NULL;
+	TypeId pend_type_id = TYID_UNKNOWN;
 #define SEM_MB_FLUSH()                                                                                                 \
 	do {                                                                                                               \
 		if (pend_active) {                                                                                             \
 			ts[n].name = sem_txt_dup((SynText){pend, (size_t)pend_len});                                               \
 			ts[n].is_new = paren ? pend_new : 1;                                                                       \
-			ts[n].type = pend_type;                                                                                    \
+			ts[n].type_id = pend_type_id;                                                                              \
 			n++;                                                                                                       \
 			pend_active = 0;                                                                                           \
 			pend_new = 0;                                                                                              \
-			pend_type = NULL;                                                                                          \
+			pend_type_id = TYID_UNKNOWN;                                                                               \
 		}                                                                                                              \
 	} while (0)
 	for (int i = 0; i < eq_idx; i++) {
@@ -2054,7 +1951,7 @@ static int sem_read_mb_targets(SemanticContext *ctx, SyntaxView v, MbTarget **ou
 				pend_len = (int)t.len;
 				pend_active = 1;
 			} else if (k >= SN_TYPE_REF && k <= SN_TYPE_FUNC && pend_active) {
-				pend_type = sem_view_type(ctx, (SyntaxView){ch->as.node, v.src});
+				pend_type_id = sem_intern_view(ctx, (SyntaxView){ch->as.node, v.src});
 			}
 			continue;
 		}
@@ -2099,36 +1996,51 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		int t0_is_meta = t0name.ptr && t0name.len == 4 && memcmp(t0name.ptr, "type", 4) == 0;
 
 		char *bind_name = sem_cv_dup(sem_node_at_expr(v, 0));
-		TypeRef *btype = NULL, *btype_value = NULL;
+		int has_btype = 0; /* an explicit non-type-form type was written (`x : T = …`) */
+		TypeId btype_id = TYID_UNKNOWN;
+		int has_type_form = 0;         /* `x : type : <T>` — a local type alias */
+		const char *tf_backing = NULL; /* type-form backing name (leaked to the alias registry) */
+		int tf_transparent = 0;
 		SyntaxView value_view = {NULL, v.src};
 		if (is_const && t0_is_meta && sv_present(t1)) {
-			btype_value = sem_view_type(ctx, t1); /* `x : type : <T>` — local type alias */
+			has_type_form = 1;
+			if (sv_kind(t1) == SN_TYPE_REF) {
+				char *raw = sem_type_ref_name(t1); /* alias-marker stripped, qualified folded */
+				if (strcmp(raw, "archetype") == 0 || strcmp(raw, "type") == 0)
+					free(raw);
+				else {
+					tf_backing = sem_own_str(ctx, raw); /* registry borrows; pool frees at teardown */
+					tf_transparent = sem_type_ref_alias_marked(t1);
+				}
+			}
 		} else {
-			btype = sem_view_type(ctx, t0);
+			if (sv_present(t0)) {
+				has_btype = 1;
+				btype_id = sem_intern_view(ctx, t0);
+			}
 			value_view = sem_node_at_expr(v, 1);
 		}
 
 		/* A local constant whose RHS denotes a TYPE is a local nominal type alias. */
 		if (is_const) {
 			const char *backing = NULL;
-			if (btype_value)
-				backing = type_backing_name(btype_value);
+			if (has_type_form)
+				backing = tf_backing;
 			else if (sv_present(value_view) && sv_kind(value_view) == SN_NAME_EXPR) {
 				char *vn = sv_resolved_name(ctx, value_view);
 				if (name_denotes_type(ctx, vn))
-					backing = vn; /* leaked-with-alias-table lifetime; matches old AST-owned name */
+					backing = sem_own_str(ctx, vn); /* registry borrows; pool frees at teardown */
 				else
 					free(vn);
 			}
-			if (backing || btype_value) {
+			if (backing || has_type_form) {
 				if (!backing) {
 					sem_emit_local_alias_invalid_backing(ctx, loc);
 					free(bind_name);
 				} else {
-					/* The alias registry BORROWS the name (and backing) by pointer — they must outlive
-					 * the context, so bind_name is NOT freed here (it is intentionally handed off). */
-					register_type_alias_tiered(ctx, bind_name, backing, btype_value ? btype_value->is_transparent : 0,
-					                           loc, 0);
+					/* The alias registry BORROWS the name (and backing) by pointer; both are owned by the
+					 * context string pool (freed at teardown), so bind_name is handed to the pool here. */
+					register_type_alias_tiered(ctx, sem_own_str(ctx, bind_name), backing, tf_transparent, loc, 0);
 					const char *resolved = resolve_type_alias(ctx, bind_name);
 					if (!is_primitive_type_name(resolved) && strcmp(resolved, "opaque") != 0)
 						sem_emit_type_alias_unknown_backing(ctx, loc, bind_name, resolved);
@@ -2139,12 +2051,12 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 			}
 		}
 		/* `archetype` is only valid as a parameter type. */
-		if (btype && btype->kind == TYPE_ARCHETYPE) {
+		if (has_btype && tyid_kind(ctx->ty_arena, btype_id) == TYK_ARCHETYPE_CATEGORY) {
 			sem_emit_archetype_only_as_param(ctx, loc);
 			free(bind_name);
 			break;
 		}
-		if (reject_meta_type(ctx, btype, "variable type")) {
+		if (reject_meta_type(ctx, btype_id, loc, "variable type")) {
 			free(bind_name);
 			break;
 		}
@@ -2155,29 +2067,29 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		implicit_move_consume(ctx, value_view);
 
 		check_shadows_callable(ctx, bind_name, loc);
-		add_variable(ctx, bind_name, btype);
+		add_variable(ctx, bind_name, btype_id);
 
 		/* Type annotation → inferred/nominal type. */
 		if (ctx->scope_count > 0) {
 			Scope *scope = &ctx->scopes[ctx->scope_count - 1];
 			if (scope->var_count > 0) {
 				VariableInfo *var = scope->vars[scope->var_count - 1];
-				if (btype) {
-					TypeRef *t = btype;
-					if (t->kind == TYPE_HANDLE)
-						var->inferred_type = t->data.handle.archetype_name;
-					else if (t->kind == TYPE_NAME) {
-						var->inferred_type = resolve_type_alias(ctx, t->data.name);
-						if (is_type_alias(ctx, t->data.name))
-							var->nominal_type = t->data.name;
-					} else if (t->kind == TYPE_SHAPED_ARRAY || t->kind == TYPE_ARRAY) {
-						TypeRef *et = t;
-						while (et && et->kind == TYPE_SHAPED_ARRAY)
-							et = et->data.shaped_array.element_type;
-						while (et && et->kind == TYPE_ARRAY)
-							et = et->data.array.element_type;
-						var->inferred_type =
-						    (et && et->kind == TYPE_NAME) ? resolve_type_alias(ctx, et->data.name) : NULL;
+				if (has_btype) {
+					TyKind bk = tyid_kind(ctx->ty_arena, btype_id);
+					if (bk == TYK_HANDLE) {
+						var->inferred_type = tyid_handle_name(ctx->ty_arena, btype_id);
+					} else if (bk == TYK_NOMINAL || bk == TYK_PRIM) {
+						var->inferred_type = sem_tyid_name(ctx, btype_id);
+						const char *nn = tyid_nominal_name(ctx->ty_arena, btype_id);
+						if (nn && is_type_alias(ctx, nn) && !alias_is_transparent(ctx, nn))
+							var->nominal_type = nn;
+					} else if (bk == TYK_SHAPED_ARRAY || bk == TYK_ARRAY) {
+						TypeId et = btype_id;
+						TyKind ek;
+						while ((ek = tyid_kind(ctx->ty_arena, et)) == TYK_SHAPED_ARRAY || ek == TYK_ARRAY)
+							et = tyid_elem(ctx->ty_arena, et);
+						ek = tyid_kind(ctx->ty_arena, et);
+						var->inferred_type = (ek == TYK_PRIM || ek == TYK_NOMINAL) ? sem_tyid_name(ctx, et) : NULL;
 					}
 				} else if (sv_present(value_view)) {
 					/* Untyped bind: infer the variable's type from its value (stable resolved name). */
@@ -2214,7 +2126,8 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 			const char *rn = ctx->model ? sem_model_ref_name(ctx->model, sv_id(target)) : NULL;
 			char *ln = rn ? sem_dupz(rn) : sv_name_expr_dup(target);
 			VariableInfo *pv = ln ? find_variable(ctx, ln) : NULL;
-			if (pv && pv->is_param && !pv->is_own && !pv->is_out_place && type_is_byref_aggregate(pv->type))
+			if (pv && pv->is_param && !pv->is_own && !pv->is_out_place &&
+			    type_is_byref_aggregate(ctx->ty_arena, pv->type_id))
 				sem_emit_cannot_mutate_borrowed(ctx, loc, ln);
 			free(ln);
 		}
@@ -2379,7 +2292,8 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 				VariableInfo *rvar = find_variable(ctx, nm);
 				if (rvar && var_is_opaque(ctx, rvar))
 					rvar->is_consumed = 1;
-				if (ctx->current_func && rvar && rvar->type && type_is_byref_aggregate(rvar->type) && !rvar->is_param) {
+				if (ctx->current_func && rvar && type_is_byref_aggregate(ctx->ty_arena, rvar->type_id) &&
+				    !rvar->is_param) {
 					fprintf(stderr, "Error: cannot return a local array by value (array copy-out is not implemented); "
 					                "return an `own` parameter or thread a caller-provided buffer instead\n");
 					ctx->error_count++;
@@ -2411,13 +2325,15 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 			binding_name = sem_dupz("");
 		if (!arch_param)
 			arch_param = sem_dupz("");
-		TypeRef *filter = sem_view_type(ctx, sem_type_at(v, 0));
-		if (filter) {
-			if (filter->kind != TYPE_NAME) {
+		SyntaxView filter_tv = sem_type_at(v, 0);
+		if (sv_present(filter_tv)) {
+			TypeId fid = sem_intern_view(ctx, filter_tv);
+			TyKind fk = tyid_kind(ctx->ty_arena, fid);
+			if (fk != TYK_PRIM && fk != TYK_NOMINAL) {
 				sem_emit_each_field_filter_type_not_name(ctx, loc);
 			} else {
-				const char *fn = normalize_type_name(filter->data.name);
-				if (!fn || (strcmp(fn, "int") != 0 && strcmp(fn, "float") != 0 && strcmp(fn, "char") != 0))
+				const char *fn = sem_tyid_name(ctx, fid); /* `int` resolves to `i32` */
+				if (!fn || (!is_width_int_name(fn) && strcmp(fn, "float") != 0 && strcmp(fn, "char") != 0))
 					sem_emit_each_field_filter_type_not_primitive(ctx, loc);
 			}
 		}
@@ -2425,7 +2341,8 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		if (ctx->current_proc) {
 			for (int i = 0; i < ctx->current_proc->param_count; i++) {
 				ParamSummary *p = &ctx->current_proc->params[i];
-				if (p->name && strcmp(p->name, arch_param) == 0 && p->type && p->type->kind == TYPE_ARCHETYPE) {
+				if (p->name && strcmp(p->name, arch_param) == 0 &&
+				    tyid_kind(ctx->ty_arena, p->type_id) == TYK_ARCHETYPE_CATEGORY) {
 					arch_param_ok = 1;
 					break;
 				}
@@ -2434,7 +2351,7 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		if (!arch_param_ok)
 			sem_emit_each_field_invalid_rhs(ctx, loc, arch_param);
 		push_scope(ctx);
-		add_variable(ctx, binding_name, NULL);
+		add_variable(ctx, binding_name, TYID_UNKNOWN);
 		for (int i = 0, n = sem_stmt_count(v); i < n; i++)
 			analyze_statement(ctx, sem_stmt_at(v, i));
 		pop_scope(ctx);
@@ -2496,20 +2413,22 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		/* bind the targets (new shadows; existing must be live) */
 		for (int i = 0; i < mbt_count; i++) {
 			MbTarget *t = &mbt[i];
-			TypeRef *bind_type = t->type;
-			if (!bind_type && mb_callee_proc && i < mb_callee_proc->out_param_count)
-				bind_type = mb_callee_proc->out_params[i].type;
+			TypeId bind_type = t->type_id;
+			if (bind_type == TYID_UNKNOWN && mb_callee_proc && i < mb_callee_proc->out_param_count)
+				bind_type = mb_callee_proc->out_params[i].type_id;
 			if (t->is_new) {
 				/* already added above for "_"-filtered new targets; re-add to capture type/nominal */
 				if (t->name && strcmp(t->name, "_") != 0) {
 					add_variable(ctx, t->name, bind_type);
-					if (bind_type && bind_type->kind == TYPE_NAME && ctx->scope_count > 0) {
+					TyKind bk = tyid_kind(ctx->ty_arena, bind_type);
+					if ((bk == TYK_NOMINAL || bk == TYK_PRIM) && ctx->scope_count > 0) {
 						Scope *sc = &ctx->scopes[ctx->scope_count - 1];
 						if (sc->var_count > 0) {
 							VariableInfo *vv = sc->vars[sc->var_count - 1];
-							vv->inferred_type = resolve_type_alias(ctx, bind_type->data.name);
-							if (is_type_alias(ctx, bind_type->data.name))
-								vv->nominal_type = bind_type->data.name;
+							vv->inferred_type = sem_tyid_name(ctx, bind_type);
+							const char *nn = tyid_nominal_name(ctx->ty_arena, bind_type);
+							if (nn && is_type_alias(ctx, nn) && !alias_is_transparent(ctx, nn))
+								vv->nominal_type = nn;
 						}
 					}
 				}
@@ -2566,17 +2485,16 @@ static void analyze_archetype_decl(SemanticContext *ctx, DeclSummary *arch) {
 
 	/* A `type`-typed component (`arche A { f :: type }`) is a generic component — not supported. */
 	for (int i = 0; i < arch->field_count; i++)
-		reject_meta_type(ctx, arch->fields[i].type, "archetype component type");
+		reject_meta_type(ctx, arch->fields[i].type_id, arch->fields[i].loc, "archetype component type");
 
 	/* proc/func types can't be archetype components — archetypes are data; per-row behavior
 	 * dispatch is the anti-pattern (Stage D dropped). Use `match` or a system instead. */
 	for (int i = 0; i < arch->field_count; i++) {
-		TypeRef *t = arch->fields[i].type;
-		if (!t)
-			continue;
-		/* inline `on_hit :: proc()()`, or a named callable-type alias `on_hit :: handler`. */
-		int callable = (t->kind == TYPE_PROC || t->kind == TYPE_FUNC) ||
-		               (t->kind == TYPE_NAME && callable_type_alias_ref(ctx, t->data.name) != NULL);
+		TypeId t = arch->fields[i].type_id;
+		const char *tn = tyid_nominal_name(ctx->ty_arena, t);
+		/* inline `on_hit :: proc()()`/`func`, or a named callable-type alias `on_hit :: handler`. */
+		int callable =
+		    tyid_kind(ctx->ty_arena, t) == TYK_FUNC || (tn && callable_type_alias_id(ctx, tn) != TYID_UNKNOWN);
 		if (callable)
 			sem_emit_callable_in_archetype(ctx, arch->fields[i].loc, arch->fields[i].name);
 	}
@@ -2592,7 +2510,7 @@ static void analyze_archetype_decl(SemanticContext *ctx, DeclSummary *arch) {
 		}
 	}
 
-	char *sig = compute_shape_signature(arch->fields, arch->field_count);
+	char *sig = compute_shape_signature(ctx, arch->fields, arch->field_count);
 	ArchetypeInfo *shape = find_archetype_by_signature(ctx, sig);
 
 	if (!shape) {
@@ -2608,8 +2526,8 @@ static void analyze_archetype_decl(SemanticContext *ctx, DeclSummary *arch) {
 		/* Count total fields after expanding tuples */
 		int expanded_field_count = 0;
 		for (int i = 0; i < arch->field_count; i++) {
-			if (arch->fields[i].type->kind == TYPE_TUPLE) {
-				expanded_field_count += arch->fields[i].type->data.tuple.field_count;
+			if (tyid_kind(ctx->ty_arena, arch->fields[i].type_id) == TYK_TUPLE) {
+				expanded_field_count += tyid_tuple_count(ctx->ty_arena, arch->fields[i].type_id);
 			} else {
 				expanded_field_count++;
 			}
@@ -2622,16 +2540,17 @@ static void analyze_archetype_decl(SemanticContext *ctx, DeclSummary *arch) {
 		int field_idx = 0;
 		for (int i = 0; i < arch->field_count; i++) {
 			FieldSummary *field = &arch->fields[i];
-			if (field->type->kind == TYPE_TUPLE) {
+			TypeArena *A = ctx->ty_arena;
+			if (tyid_kind(A, field->type_id) == TYK_TUPLE) {
 				/* Expand tuple into component fields */
-				for (int j = 0; j < field->type->data.tuple.field_count; j++) {
+				for (int j = 0; j < tyid_tuple_count(A, field->type_id); j++) {
 					FieldInfo *fi = malloc(sizeof(FieldInfo));
 					char expanded_name[512];
 					snprintf(expanded_name, sizeof(expanded_name), "%s_%s", field->name,
-					         field->type->data.tuple.field_names[j]);
+					         tyid_tuple_field_name(A, field->type_id, j));
 					fi->name = malloc(strlen(expanded_name) + 1);
 					strcpy(fi->name, expanded_name);
-					fi->type = field->type->data.tuple.field_types[j];
+					fi->type_id = tyid_tuple_field_type(A, field->type_id, j);
 					fi->kind = field->kind;
 					shape->fields[field_idx++] = fi;
 				}
@@ -2639,7 +2558,7 @@ static void analyze_archetype_decl(SemanticContext *ctx, DeclSummary *arch) {
 				FieldInfo *fi = malloc(sizeof(FieldInfo));
 				fi->name = malloc(strlen(field->name) + 1);
 				strcpy(fi->name, field->name);
-				fi->type = field->type;
+				fi->type_id = field->type_id;
 				fi->kind = field->kind;
 				shape->fields[field_idx++] = fi;
 			}
@@ -2657,10 +2576,10 @@ static void analyze_archetype_decl(SemanticContext *ctx, DeclSummary *arch) {
 
 	/* Validate handle types: must reference a known archetype. */
 	for (int i = 0; i < arch->field_count; i++) {
-		TypeRef *ft = arch->fields[i].type;
-		if (ft->kind != TYPE_HANDLE)
+		TypeId ft = arch->fields[i].type_id;
+		if (tyid_kind(ctx->ty_arena, ft) != TYK_HANDLE)
 			continue;
-		const char *target = ft->data.handle.archetype_name;
+		const char *target = tyid_handle_name(ctx->ty_arena, ft);
 		if (!find_archetype(ctx, target)) {
 			fprintf(stderr, "Error: unknown archetype '%s' in handle type for field '%s'\n", target,
 			        arch->fields[i].name);
@@ -2682,21 +2601,24 @@ static void analyze_static_array_decl(SemanticContext *ctx, DeclSummary *s) {
 		return;
 
 	/* Validate element type is a scalar */
-	if (!s->static_type) {
+	TyKind sk = tyid_kind(ctx->ty_arena, s->static_type_id);
+	if (s->static_type_id == TYID_UNKNOWN) {
 		fprintf(stderr, "Error: static array '%s' missing element type\n", s->name);
 		ctx->error_count++;
 		return;
 	}
 
-	if (s->static_type->kind != TYPE_NAME) {
+	if (sk != TYK_NOMINAL && sk != TYK_PRIM) {
 		fprintf(stderr, "Error: static array '%s' element type must be scalar (int, float, char, etc.)\n", s->name);
 		ctx->error_count++;
 		return;
 	}
 
-	const char *type_name = s->static_type->data.name;
-	if (strcmp(type_name, "int") != 0 && strcmp(type_name, "float") != 0 && strcmp(type_name, "char") != 0 &&
-	    strcmp(type_name, "double") != 0) {
+	const char *type_name = sem_tyid_name(ctx, s->static_type_id);
+	if (!type_name)
+		type_name = "?";
+	if (strcmp(type_name, "int") != 0 && strcmp(type_name, "i32") != 0 && strcmp(type_name, "float") != 0 &&
+	    strcmp(type_name, "char") != 0 && strcmp(type_name, "double") != 0) {
 		fprintf(stderr, "Error: static array '%s' has unsupported element type '%s'\n", s->name, type_name);
 		ctx->error_count++;
 		return;
@@ -2751,7 +2673,8 @@ static int sem_is_const_init(SemanticContext *ctx, SyntaxView e) {
 static void analyze_static_scalar_decl(SemanticContext *ctx, DeclSummary *s) {
 	if (!s)
 		return;
-	if (!s->static_type || s->static_type->kind != TYPE_NAME) {
+	TyKind sk = tyid_kind(ctx->ty_arena, s->static_type_id);
+	if (sk != TYK_NOMINAL && sk != TYK_PRIM) {
 		fprintf(stderr, "Error: global '%s' has an invalid scalar type\n", s->name);
 		ctx->error_count++;
 		return;
@@ -2917,18 +2840,12 @@ static int name_is_proc_typed_param(SemanticContext *ctx, DeclSummary *proc, con
 		ParamSummary *p = &proc->params[i];
 		if (!p->name || strcmp(p->name, name) != 0)
 			continue;
-		TypeRef *t = p->type;
-		if (!t)
-			return 0;
-		if (t->kind == TYPE_PROC)
+		TypeId t = p->type_id;
+		if (tyid_kind(ctx->ty_arena, t) == TYK_FUNC)
+			return tyid_is_proc(ctx->ty_arena, t) ? 1 : 0;
+		const char *tn = tyid_nominal_name(ctx->ty_arena, t);
+		if (tn && tyid_is_proc(ctx->ty_arena, callable_type_alias_id(ctx, tn)))
 			return 1;
-		if (t->kind == TYPE_FUNC)
-			return 0;
-		if (t->kind == TYPE_NAME && t->data.name) {
-			TypeRef *al = semantic_callable_type_alias(ctx, t->data.name);
-			if (al && al->kind == TYPE_PROC)
-				return 1;
-		}
 		return 0;
 	}
 	return 0;
@@ -3102,19 +3019,16 @@ static void analyze_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 	/* Validate parameters for extern vs non-extern rules. */
 	for (int i = 0; i < proc->param_count; i++) {
 		ParamSummary *p = &proc->params[i];
-		TypeRef *pt = p->type;
-		reject_meta_type(ctx, pt, "parameter type");
+		reject_meta_type(ctx, p->type_id, p->loc, "parameter type");
 		if (proc->is_extern) {
-			if (pt && pt->kind == TYPE_NAME) {
-				const char *tname = pt->data.name;
-				if (!is_primitive_type_name(tname) && !find_archetype(ctx, tname) && !is_type_alias(ctx, tname)) {
-					sem_emit_extern_proc_bad_type(ctx, pt->loc, tname, proc->name);
-				}
+			const char *tname = tyid_nominal_name(ctx->ty_arena, p->type_id);
+			if (tname && !is_primitive_type_name(tname) && !find_archetype(ctx, tname) && !is_type_alias(ctx, tname)) {
+				sem_emit_extern_proc_bad_type(ctx, p->loc, tname, proc->name);
 			}
 			/* An extern is assumed to mutate every in-param (no body to verify). A mutated borrow
 			 * breaks the read-only contract, so a by-ref array in-param must be `own` — UNLESS an
 			 * out-param shadows it (in-out), in which case the write targets the out place. */
-			if (type_is_byref_aggregate(pt) && !p->is_own && !proc_param_is_inout(proc, i)) {
+			if (type_is_byref_aggregate(ctx->ty_arena, p->type_id) && !p->is_own && !proc_param_is_inout(proc, i)) {
 				sem_emit_extern_array_param_needs_own(ctx, p->loc, p->name ? p->name : "?", proc->name);
 			}
 			/* `consume` is valid on any param type (consume consumes — not opaque-special). */
@@ -3125,12 +3039,9 @@ static void analyze_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 	 * out-only out-param maps to the C return value; an in-out one to an in-place pointer write. */
 	if (proc->is_extern) {
 		for (int i = 0; i < proc->out_param_count; i++) {
-			TypeRef *rt = proc->out_params[i].type;
-			if (rt && rt->kind == TYPE_NAME) {
-				const char *tname = rt->data.name;
-				if (!is_primitive_type_name(tname) && !find_archetype(ctx, tname) && !is_type_alias(ctx, tname)) {
-					sem_emit_extern_proc_bad_return(ctx, rt->loc, tname, proc->name);
-				}
+			const char *tname = tyid_nominal_name(ctx->ty_arena, proc->out_params[i].type_id);
+			if (tname && !is_primitive_type_name(tname) && !find_archetype(ctx, tname) && !is_type_alias(ctx, tname)) {
+				sem_emit_extern_proc_bad_return(ctx, proc->out_params[i].loc, tname, proc->name);
 			}
 		}
 		return;
@@ -3139,7 +3050,7 @@ static void analyze_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 	/* Validate `archetype` parameter constraints: at most one per proc. */
 	int archetype_param_count = 0;
 	for (int i = 0; i < proc->param_count; i++) {
-		if (proc->params[i].type && proc->params[i].type->kind == TYPE_ARCHETYPE) {
+		if (tyid_kind(ctx->ty_arena, proc->params[i].type_id) == TYK_ARCHETYPE_CATEGORY) {
 			archetype_param_count++;
 		}
 	}
@@ -3152,20 +3063,16 @@ static void analyze_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 	/* Add parameters as variables in proc scope */
 	for (int i = 0; i < proc->param_count; i++) {
 		const char *param_name = proc->params[i].name;
-		TypeRef *param_type = proc->params[i].type;
+		TypeId pid = proc->params[i].type_id;
 
-		/* Check if param type is an archetype */
-		const char *type_name = (param_type && param_type->kind == TYPE_NAME) ? param_type->data.name : NULL;
-		const char *arch_name = NULL;
-		if (type_name && find_archetype(ctx, type_name)) {
-			arch_name = type_name;
-		}
+		/* Check if param type is an archetype (a bare nominal naming a known shape) */
+		const char *type_name = tyid_nominal_name(ctx->ty_arena, pid);
+		const char *arch_name = (type_name && find_archetype(ctx, type_name)) ? type_name : NULL;
 
-		if (arch_name) {
-			add_variable_with_archetype(ctx, param_name, param_type, arch_name);
-		} else {
-			add_variable(ctx, param_name, param_type);
-		}
+		if (arch_name)
+			add_variable_with_archetype(ctx, param_name, pid, arch_name);
+		else
+			add_variable(ctx, param_name, pid);
 		mark_last_param(ctx, proc->params[i].is_own);
 	}
 
@@ -3183,7 +3090,7 @@ static void analyze_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 				in_idx = j;
 				break;
 			}
-		add_variable(ctx, on, proc->out_params[i].type);
+		add_variable(ctx, on, proc->out_params[i].type_id);
 		mark_last_param(ctx, in_idx >= 0 ? proc->params[in_idx].is_own : 1);
 		mark_last_out_place(ctx);
 	}
@@ -3234,7 +3141,7 @@ static void analyze_sys_decl(SemanticContext *ctx, DeclSummary *sys) {
 	if (arch_info) {
 		for (int p = 0; p < sys->param_count; p++) {
 			FieldInfo *field = find_field(arch_info, sys->params[p].name);
-			if (field && field->type && field->type->kind == TYPE_HANDLE) {
+			if (field && tyid_kind(ctx->ty_arena, field->type_id) == TYK_HANDLE) {
 				sem_emit_handle_in_sys_param(ctx, sys->params[p].loc, sys->params[p].name);
 			}
 		}
@@ -3242,14 +3149,13 @@ static void analyze_sys_decl(SemanticContext *ctx, DeclSummary *sys) {
 
 	/* add parameters as variables, using field types from archetype if available */
 	for (int i = 0; i < sys->param_count; i++) {
-		TypeRef *param_type = sys->params[i].type;
-		reject_meta_type(ctx, param_type, "sys parameter type");
+		reject_meta_type(ctx, sys->params[i].type_id, sys->params[i].loc, "sys parameter type");
+		TypeId param_type = sys->params[i].type_id;
 		/* If no explicit type and we found the archetype, use the field's type */
-		if (!param_type && arch_info) {
+		if (param_type == TYID_UNKNOWN && arch_info) {
 			FieldInfo *field = find_field(arch_info, sys->params[i].name);
-			if (field) {
-				param_type = field->type;
-			}
+			if (field)
+				param_type = field->type_id;
 		}
 		add_variable(ctx, sys->params[i].name, param_type);
 		mark_last_param(ctx, sys->params[i].is_own);
@@ -3313,7 +3219,7 @@ static void analyze_func_group(SemanticContext *ctx, DeclSummary *group) {
 				continue;
 			int all_eq = 1;
 			for (int k = 0; k < resolved[i]->param_count; k++) {
-				if (!type_ref_equal(resolved[i]->params[k].type, resolved[j]->params[k].type)) {
+				if (!tyid_equal(resolved[i]->params[k].type_id, resolved[j]->params[k].type_id)) {
 					all_eq = 0;
 					break;
 				}
@@ -3346,29 +3252,26 @@ static void analyze_func_decl(SemanticContext *ctx, DeclSummary *func) {
 
 	/* `archetype` is a proc-only parameter type in v1; funcs cannot have one. */
 	for (int i = 0; i < func->param_count; i++) {
-		reject_meta_type(ctx, func->params[i].type, "parameter type");
-		if (func->params[i].type && func->params[i].type->kind == TYPE_ARCHETYPE) {
-			sem_emit_archetype_funcs_only(ctx, func->params[i].type->loc, func->name);
+		reject_meta_type(ctx, func->params[i].type_id, func->params[i].loc, "parameter type");
+		if (tyid_kind(ctx->ty_arena, func->params[i].type_id) == TYK_ARCHETYPE_CATEGORY) {
+			sem_emit_archetype_funcs_only(ctx, func->params[i].loc, func->name);
 			break;
 		}
 	}
 	for (int i = 0; i < func->return_type_count; i++) {
-		reject_meta_type(ctx, func->return_types[i], "return type");
-		if (func->return_types[i] && func->return_types[i]->kind == TYPE_ARCHETYPE) {
-			sem_emit_archetype_not_return_type(ctx, func->return_types[i]->loc, func->name);
+		reject_meta_type(ctx, func->return_type_ids[i], func->loc, "return type");
+		if (tyid_kind(ctx->ty_arena, func->return_type_ids[i]) == TYK_ARCHETYPE_CATEGORY) {
+			sem_emit_archetype_not_return_type(ctx, func->loc, func->name);
 			break;
 		}
 	}
 	/* Validate parameters and return type for extern vs non-extern rules. */
 	for (int i = 0; i < func->param_count; i++) {
 		ParamSummary *p = &func->params[i];
-		TypeRef *pt = p->type;
 		if (func->is_extern) {
-			if (pt && pt->kind == TYPE_NAME) {
-				const char *tname = pt->data.name;
-				if (!is_primitive_type_name(tname) && !is_type_alias(ctx, tname)) {
-					sem_emit_extern_func_bad_type(ctx, pt->loc, tname, func->name);
-				}
+			const char *tname = tyid_nominal_name(ctx->ty_arena, p->type_id);
+			if (tname && !is_primitive_type_name(tname) && !is_type_alias(ctx, tname)) {
+				sem_emit_extern_func_bad_type(ctx, p->loc, tname, func->name);
 			}
 			/* `consume` is valid on any param type (consume consumes — not opaque-special). */
 		}
@@ -3377,12 +3280,9 @@ static void analyze_func_decl(SemanticContext *ctx, DeclSummary *func) {
 	/* Validate return types: extern funcs must use known types. */
 	if (func->is_extern) {
 		for (int i = 0; i < func->return_type_count; i++) {
-			TypeRef *rt = func->return_types[i];
-			if (rt && rt->kind == TYPE_NAME) {
-				const char *tname = rt->data.name;
-				if (!is_primitive_type_name(tname) && !is_type_alias(ctx, tname)) {
-					sem_emit_extern_func_bad_return(ctx, rt->loc, tname, func->name);
-				}
+			const char *tname = tyid_nominal_name(ctx->ty_arena, func->return_type_ids[i]);
+			if (tname && !is_primitive_type_name(tname) && !is_type_alias(ctx, tname)) {
+				sem_emit_extern_func_bad_return(ctx, func->loc, tname, func->name);
 			}
 		}
 	}
@@ -3396,7 +3296,7 @@ static void analyze_func_decl(SemanticContext *ctx, DeclSummary *func) {
 
 	/* add parameters as variables */
 	for (int i = 0; i < func->param_count; i++) {
-		add_variable(ctx, func->params[i].name, func->params[i].type);
+		add_variable(ctx, func->params[i].name, func->params[i].type_id);
 		mark_last_param(ctx, func->params[i].is_own);
 	}
 
@@ -3545,8 +3445,7 @@ SourceLoc sem_node_loc(const SyntaxNode *n) {
 	return loc;
 }
 
-/* ---- type reconstruction (syntax tree type node -> TypeRef) ---- */
-static TypeRef *cst_build_type(SyntaxView t);
+/* ---- type interning (syntax tree type node -> TypeId) ---- */
 SyntaxView sem_type_at(SyntaxView v, int idx);
 static int sv_type_count_sem(SyntaxView v);
 
@@ -3628,148 +3527,6 @@ static char *sem_type_ref_name(SyntaxView t) {
 	return sem_txt_dup(sv_token(t, TOK_IDENT));
 }
 
-static TypeRef *cst_build_type(SyntaxView t) {
-	if (!sv_present(t))
-		return NULL;
-	TypeRef *tr = malloc(sizeof(TypeRef));
-	tr->loc.line = 0;
-	tr->loc.column = 0;
-	tr->is_transparent = 0;
-	switch (sv_kind(t)) {
-	case SN_TYPE_REF: {
-		char *raw = sem_type_ref_name(t);
-		if (strcmp(raw, "archetype") == 0) {
-			tr->kind = TYPE_ARCHETYPE;
-			free(raw);
-		} else if (strcmp(raw, "opaque") == 0) {
-			tr->kind = TYPE_OPAQUE;
-			free(raw);
-		} else if (strcmp(raw, "type") == 0) {
-			tr->kind = TYPE_TYPE;
-			free(raw);
-		} else {
-			tr->kind = TYPE_NAME;
-			tr->data.name = raw;                               /* owned */
-			tr->is_transparent = sem_type_ref_alias_marked(t); /* `:: alias T` → tier-1 transparent */
-		}
-		break;
-	}
-	case SN_TYPE_ARRAY: {
-		tr->kind = TYPE_ARRAY;
-		TypeRef *elem = malloc(sizeof(TypeRef));
-		elem->loc = tr->loc;
-		char *en = sem_txt_dup(sv_token(t, TOK_IDENT));
-		if (strcmp(en, "opaque") == 0) {
-			elem->kind = TYPE_OPAQUE;
-			free(en);
-		} else {
-			elem->kind = TYPE_NAME;
-			elem->data.name = en;
-		}
-		tr->data.array.element_type = elem;
-		break;
-	}
-	case SN_TYPE_SHAPED_ARRAY: {
-		/* `T[a][b]…` — innermost element is the named type; each `[n]` adds a rank. */
-		char *en = sem_txt_dup(sv_token(t, TOK_IDENT));
-		TypeRef *elem = malloc(sizeof(TypeRef));
-		elem->loc = tr->loc;
-		if (strcmp(en, "opaque") == 0) {
-			elem->kind = TYPE_OPAQUE;
-			free(en);
-		} else {
-			elem->kind = TYPE_NAME;
-			elem->data.name = en;
-		}
-		int ranks[16], nr = 0;
-		for (int i = 0; i < t.node->child_count && nr < 16; i++)
-			if (t.node->children[i].tag == SE_TOKEN && t.node->children[i].as.token.kind == TOK_NUMBER) {
-				char buf[32];
-				int l = (int)t.node->children[i].as.token.length;
-				if (l > 31)
-					l = 31;
-				memcpy(buf, t.src + t.node->children[i].as.token.offset, l);
-				buf[l] = '\0';
-				ranks[nr++] = atoi(buf);
-			}
-		TypeRef *cur = elem;
-		for (int i = nr - 1; i >= 0; i--) {
-			TypeRef *sh = malloc(sizeof(TypeRef));
-			sh->loc = tr->loc;
-			sh->kind = TYPE_SHAPED_ARRAY;
-			sh->data.shaped_array.element_type = cur;
-			sh->data.shaped_array.rank = ranks[i];
-			cur = sh;
-		}
-		free(tr);
-		return cur;
-	}
-	case SN_TYPE_HANDLE: {
-		tr->kind = TYPE_HANDLE;
-		tr->data.handle.archetype_name = syntax_handle_name(t);
-		break;
-	}
-	case SN_TYPE_TUPLE: {
-		/* `(x: T, y: U)` — field names are IDENTs, field types are the SN_TYPE_* children. */
-		tr->kind = TYPE_TUPLE;
-		int n = sv_type_count_sem(t);
-		tr->data.tuple.field_count = n;
-		tr->data.tuple.field_names = malloc((n > 0 ? n : 1) * sizeof(char *));
-		tr->data.tuple.field_types = malloc((n > 0 ? n : 1) * sizeof(TypeRef *));
-		/* field names: IDENT tokens preceding each `:`; collect in order */
-		int fi = 0;
-		const char *pend = NULL;
-		int pend_len = 0;
-		for (int i = 0; i < t.node->child_count && fi < n; i++) {
-			SyntaxElem *ch = &t.node->children[i];
-			if (ch->tag == SE_TOKEN && ch->as.token.kind == TOK_IDENT) {
-				pend = t.src + ch->as.token.offset;
-				pend_len = (int)ch->as.token.length;
-			} else if (ch->tag == SE_NODE) {
-				SyntaxNodeKind k = ch->as.node->kind;
-				if (k >= SN_TYPE_REF && k <= SN_TYPE_FUNC) {
-					tr->data.tuple.field_names[fi] = sem_txt_dup((SynText){pend, pend ? pend_len : 0});
-					tr->data.tuple.field_types[fi] = cst_build_type((SyntaxView){ch->as.node, t.src});
-					fi++;
-					pend = NULL;
-				}
-			}
-		}
-		tr->data.tuple.field_count = fi;
-		break;
-	}
-	case SN_TYPE_PROC:
-	case SN_TYPE_FUNC: {
-		int is_proc = (sv_kind(t) == SN_TYPE_PROC);
-		tr->kind = is_proc ? TYPE_PROC : TYPE_FUNC;
-		tr->data.callable.is_proc = is_proc;
-		int np = sv_count(t, SN_PARAM);
-		tr->data.callable.param_count = np;
-		tr->data.callable.param_types = malloc((np ? np : 1) * sizeof(TypeRef *));
-		for (int i = 0; i < np; i++)
-			tr->data.callable.param_types[i] = cst_build_type(sem_type_at(sv_child_at(t, SN_PARAM, i), 0));
-		if (is_proc) {
-			int no = sv_count(t, SN_OUT_PARAM);
-			tr->data.callable.result_count = no;
-			tr->data.callable.result_types = malloc((no ? no : 1) * sizeof(TypeRef *));
-			for (int i = 0; i < no; i++)
-				tr->data.callable.result_types[i] = cst_build_type(sem_type_at(sv_child_at(t, SN_OUT_PARAM, i), 0));
-		} else {
-			/* a func's single return is the SN_TYPE_FUNC's direct type-node child (params are in SN_PARAM) */
-			tr->data.callable.result_count = 1;
-			tr->data.callable.result_types = malloc(sizeof(TypeRef *));
-			tr->data.callable.result_types[0] = cst_build_type(sem_type_at(t, 0));
-		}
-		break;
-	}
-	default:
-		tr->kind = TYPE_NAME;
-		tr->data.name = sem_dupz("");
-		break;
-	}
-	return tr;
-}
-
 /* ---- TypeId interning (Phase 3): the SHARED resolvers used by both the DeclSummary builder and
  * tycheck, so a given type interns to the SAME TypeId everywhere. Ported from tycheck's
  * tyid_from_name/tyid_from_typeref; all arena ops go through ctx->ty_arena. ---- */
@@ -3778,9 +3535,9 @@ TypeId sem_tyid_of_name(SemanticContext *ctx, const char *n) {
 	if (!ctx || !n || !n[0])
 		return TYID_UNKNOWN;
 	TypeArena *arena = ctx->ty_arena;
-	TypeRef *ct = callable_type_alias_ref(ctx, n);
-	if (ct)
-		return sem_tyid_of_typeref(ctx, ct);
+	TypeId ct = callable_type_alias_id(ctx, n);
+	if (ct != TYID_UNKNOWN)
+		return ct;
 	if (strcmp(n, "Int") == 0)
 		n = "int";
 	else if (strcmp(n, "Float") == 0)
@@ -3791,6 +3548,13 @@ TypeId sem_tyid_of_name(SemanticContext *ctx, const char *n) {
 		n = "str";
 	else if (strcmp(n, "Void") == 0)
 		n = "void";
+	/* `int` is the default integer width = `i32`. Canonicalize it HERE, deterministically — NOT via
+	 * the alias registry — so it interns identically whether or not core.arche's `int :: alias i32`
+	 * has been registered yet (the registry's population order otherwise makes `int` flip between
+	 * `i32` and a bare prim depending on the pass, breaking type identity). Nothing downstream needs
+	 * `int`: it is `i32` everywhere in the compiler. */
+	if (strcmp(n, "int") == 0)
+		n = "i32";
 	/* A tier-2 distinct subtype interns by its OWN name (so `meters` != `float`) while carrying its
 	 * backing TypeId — its own identity for tyid_equal, one-way usable-as / lowerable-through backing. */
 	if (is_type_alias(ctx, n) && !alias_is_transparent(ctx, n)) {
@@ -3801,8 +3565,6 @@ TypeId sem_tyid_of_name(SemanticContext *ctx, const char *n) {
 	const char *r = resolve_type_alias(ctx, n);
 	if (!r || !r[0])
 		return TYID_UNKNOWN;
-	if (strcmp(r, "int") == 0)
-		return tyid_of_prim(arena, PRIM_INT);
 	if (strcmp(r, "float") == 0)
 		return tyid_of_prim(arena, PRIM_FLOAT);
 	if (strcmp(r, "char") == 0)
@@ -3815,34 +3577,123 @@ TypeId sem_tyid_of_name(SemanticContext *ctx, const char *n) {
 		return tyid_of_prim(arena, PRIM_VOID);
 	if (strcmp(r, "opaque") == 0)
 		return tyid_of_nominal(arena, "opaque");
-	if (strcmp(r, "char_array") == 0)
-		return tyid_of_prim(arena, PRIM_STR);
+	/* `char_array` stays a distinct nominal (NOT collapsed to PRIM_STR) so it round-trips back to
+	 * "char_array" for the resolvers + lowering's CHAR_ARRAY, distinct from the `str` keyword. */
 	return tyid_of_nominal(arena, r);
 }
 
-TypeId sem_tyid_of_typeref(SemanticContext *ctx, const TypeRef *tr) {
-	if (!ctx || !tr)
+/* Intern a type straight from a syntax type-node view — the sole type-node→TypeId builder (mirrors
+ * the SN_TYPE_* shapes the parser produces, routing names through sem_tyid_of_name's alias tiering).
+ * No intermediate TypeRef. */
+TypeId sem_intern_view(SemanticContext *ctx, SyntaxView t) {
+	if (!ctx || !sv_present(t))
 		return TYID_UNKNOWN;
 	TypeArena *arena = ctx->ty_arena;
-	switch (tr->kind) {
-	case TYPE_NAME:
-		return sem_tyid_of_name(ctx, tr->data.name);
-	/* NOTE (Phase 3, Stage 2): array/shaped/handle/tuple/archetype/opaque deliberately fall through to
-	 * TYID_UNKNOWN — that mirrors the pre-migration tyid_from_typeref coverage (which only built
-	 * NAME + PROC/FUNC ids, leaving the typechecker fail-open on the rest). Interning these richer
-	 * kinds would add NEW checks; that is a deliberate follow-up with golden updates, not a silent
-	 * side effect of the repr migration. */
-	case TYPE_PROC:
-	case TYPE_FUNC: {
-		int np = tr->data.callable.param_count, nr = tr->data.callable.result_count;
-		TypeId pbuf[32], rbuf[8];
+	switch (sv_kind(t)) {
+	case SN_TYPE_REF: {
+		char *raw = sem_type_ref_name(t);
+		TypeId id;
+		if (strcmp(raw, "archetype") == 0)
+			id = tyid_of_archetype_category(arena);
+		else if (strcmp(raw, "opaque") == 0)
+			id = tyid_of_nominal(arena, "opaque");
+		else if (strcmp(raw, "type") == 0)
+			id = tyid_of_nominal(arena, "type"); /* meta-type, so reject_meta_type can see it */
+		else
+			id = sem_tyid_of_name(ctx, raw); /* alias tiering (transparent collapse / tier-2 sub) inside */
+		free(raw);
+		return id;
+	}
+	case SN_TYPE_ARRAY: {
+		char *en = sem_txt_dup(sv_token(t, TOK_IDENT));
+		TypeId elem = (strcmp(en, "opaque") == 0) ? tyid_of_nominal(arena, "opaque") : sem_tyid_of_name(ctx, en);
+		free(en);
+		return tyid_of_array(arena, elem);
+	}
+	case SN_TYPE_SHAPED_ARRAY: {
+		/* `T[a][b]…` — innermost element is the named type; each `[n]` adds a rank. */
+		char *en = sem_txt_dup(sv_token(t, TOK_IDENT));
+		TypeId elem = (strcmp(en, "opaque") == 0) ? tyid_of_nominal(arena, "opaque") : sem_tyid_of_name(ctx, en);
+		free(en);
+		int ranks[16], nr = 0;
+		for (int i = 0; i < t.node->child_count && nr < 16; i++)
+			if (t.node->children[i].tag == SE_TOKEN && t.node->children[i].as.token.kind == TOK_NUMBER) {
+				char buf[32];
+				int l = (int)t.node->children[i].as.token.length;
+				if (l > 31)
+					l = 31;
+				memcpy(buf, t.src + t.node->children[i].as.token.offset, l);
+				buf[l] = '\0';
+				ranks[nr++] = atoi(buf);
+			}
+		TypeId cur = elem;
+		for (int i = nr - 1; i >= 0; i--)
+			cur = tyid_of_shaped(arena, cur, ranks[i]);
+		return cur;
+	}
+	case SN_TYPE_HANDLE: {
+		char *hn = syntax_handle_name(t);
+		TypeId id = tyid_of_handle(arena, hn);
+		free(hn);
+		return id;
+	}
+	case SN_TYPE_TUPLE: {
+		/* `(x: T, y: U)` — field names are IDENTs preceding each `:`, types the SN_TYPE_* children. */
+		int n = sv_type_count_sem(t);
+		char *nbuf[32];
+		TypeId tbuf[32];
+		char **names = n > 32 ? malloc((size_t)n * sizeof(char *)) : nbuf;
+		TypeId *types = n > 32 ? malloc((size_t)n * sizeof(TypeId)) : tbuf;
+		int fi = 0;
+		const char *pend = NULL;
+		int pend_len = 0;
+		for (int i = 0; i < t.node->child_count && fi < n; i++) {
+			SyntaxElem *ch = &t.node->children[i];
+			if (ch->tag == SE_TOKEN && ch->as.token.kind == TOK_IDENT) {
+				pend = t.src + ch->as.token.offset;
+				pend_len = (int)ch->as.token.length;
+			} else if (ch->tag == SE_NODE) {
+				SyntaxNodeKind k = ch->as.node->kind;
+				if (k >= SN_TYPE_REF && k <= SN_TYPE_FUNC) {
+					names[fi] = sem_txt_dup((SynText){pend, pend ? (size_t)pend_len : 0});
+					types[fi] = sem_intern_view(ctx, (SyntaxView){ch->as.node, t.src});
+					fi++;
+					pend = NULL;
+				}
+			}
+		}
+		TypeId out = tyid_of_tuple(arena, (const char *const *)names, types, fi);
+		for (int i = 0; i < fi; i++)
+			free(names[i]);
+		if (names != nbuf)
+			free(names);
+		if (types != tbuf)
+			free(types);
+		return out;
+	}
+	case SN_TYPE_PROC:
+	case SN_TYPE_FUNC: {
+		int is_proc = (sv_kind(t) == SN_TYPE_PROC);
+		int np = sv_count(t, SN_PARAM);
+		TypeId pbuf[32];
 		TypeId *params = np > 32 ? malloc((size_t)np * sizeof(TypeId)) : pbuf;
-		TypeId *rets = nr > 8 ? malloc((size_t)nr * sizeof(TypeId)) : rbuf;
 		for (int i = 0; i < np; i++)
-			params[i] = sem_tyid_of_typeref(ctx, tr->data.callable.param_types[i]);
-		for (int i = 0; i < nr; i++)
-			rets[i] = sem_tyid_of_typeref(ctx, tr->data.callable.result_types[i]);
-		TypeId out = tyid_of_func(arena, params, np, rets, nr, tr->data.callable.is_proc);
+			params[i] = sem_intern_view(ctx, sem_type_at(sv_child_at(t, SN_PARAM, i), 0));
+		TypeId rbuf[8];
+		int nr;
+		TypeId *rets;
+		if (is_proc) {
+			nr = sv_count(t, SN_OUT_PARAM);
+			rets = nr > 8 ? malloc((size_t)nr * sizeof(TypeId)) : rbuf;
+			for (int i = 0; i < nr; i++)
+				rets[i] = sem_intern_view(ctx, sem_type_at(sv_child_at(t, SN_OUT_PARAM, i), 0));
+		} else {
+			/* a func's single return is the SN_TYPE_FUNC's direct type-node child */
+			nr = 1;
+			rets = rbuf;
+			rets[0] = sem_intern_view(ctx, sem_type_at(t, 0));
+		}
+		TypeId out = tyid_of_func(arena, params, np, rets, nr, is_proc);
 		if (params != pbuf)
 			free(params);
 		if (rets != rbuf)
@@ -3854,15 +3705,45 @@ TypeId sem_tyid_of_typeref(SemanticContext *ctx, const TypeRef *tr) {
 	}
 }
 
-/* Intern a type straight from a syntax type-node view (the eventual cst_build_type replacement).
- * For now it builds a transient TypeRef, interns it, and frees it — no pooling. */
-TypeId sem_intern_view(SemanticContext *ctx, SyntaxView t) {
-	if (!ctx || !sv_present(t))
-		return TYID_UNKNOWN;
-	TypeRef *tr = cst_build_type(t);
-	TypeId id = sem_tyid_of_typeref(ctx, tr);
-	type_ref_free(tr);
-	return id;
+/* A stable, resolved base type-NAME for a TypeId (arrays → element; nominal → backing chain →
+ * prim/name; handle → its archetype name). Returns a static literal or an arena-interned string
+ * (both outlive the context), so callers may store the result. NULL if unknown. Mirrors what the old
+ * resolve_name_type/resolve_field_type returned from a TypeRef. */
+static const char *sem_tyid_name(SemanticContext *ctx, TypeId t) {
+	if (!ctx)
+		return NULL;
+	TypeArena *a = ctx->ty_arena;
+	while (tyid_kind(a, t) == TYK_ARRAY || tyid_kind(a, t) == TYK_SHAPED_ARRAY)
+		t = tyid_elem(a, t);
+	if (tyid_kind(a, t) == TYK_HANDLE)
+		return tyid_handle_name(a, t);
+	while (tyid_kind(a, t) == TYK_NOMINAL && tyid_backing(a, t) != TYID_UNKNOWN)
+		t = tyid_backing(a, t);
+	switch (tyid_kind(a, t)) {
+	case TYK_PRIM:
+		switch (tyid_prim(a, t)) {
+		case PRIM_INT:
+			return "i32";
+		case PRIM_FLOAT:
+			return "float";
+		case PRIM_CHAR:
+			return "char";
+		case PRIM_STR:
+			return "str";
+		case PRIM_VOID:
+			return "void";
+		case PRIM_BOOL:
+			return "bool";
+		default:
+			return NULL;
+		}
+	case TYK_NOMINAL:
+		return tyid_nominal_name(a, t);
+	case TYK_ARCHETYPE_CATEGORY:
+		return "archetype";
+	default:
+		return NULL;
+	}
 }
 
 /* ---- syntax tree navigation (same shapes as lower/lower.c) ---- */
@@ -4186,32 +4067,6 @@ static void sem_maybe_rename(char **slot, const char *prefix, char **set, int co
 	*slot = sem_prefix_name(prefix, old);
 	free(old);
 }
-static void sem_rename_typeref(TypeRef *t, const char *prefix, char **set, int count);
-
-static void sem_rename_typeref(TypeRef *t, const char *prefix, char **set, int count) {
-	if (!t)
-		return;
-	switch (t->kind) {
-	case TYPE_NAME:
-		sem_maybe_rename(&t->data.name, prefix, set, count);
-		break;
-	case TYPE_ARRAY:
-		sem_rename_typeref(t->data.array.element_type, prefix, set, count);
-		break;
-	case TYPE_SHAPED_ARRAY:
-		sem_rename_typeref(t->data.shaped_array.element_type, prefix, set, count);
-		break;
-	case TYPE_TUPLE:
-		for (int i = 0; i < t->data.tuple.field_count; i++)
-			sem_rename_typeref(t->data.tuple.field_types[i], prefix, set, count);
-		break;
-	case TYPE_HANDLE:
-		sem_maybe_rename(&t->data.handle.archetype_name, prefix, set, count);
-		break;
-	default:
-		break;
-	}
-}
 /* Context for the qualify pass, so it can emit a `module has no member` diagnostic. Set just before
  * the pass runs (file-static like g_lower_sem; the pass is single-threaded over one program). */
 static SemanticContext *g_sem_qualify_ctx = NULL;
@@ -4257,43 +4112,23 @@ static int sem_qual_lookup(char **prefix, char ***set, int *count, int n, const 
 static void sem_rename_decl_summary(DeclSummary *ds, const char *prefix, char **set, int count) {
 	if (ds->is_drop)
 		sem_maybe_rename(&ds->drop_type, prefix, set, count);
+	/* Only NAMES are prefixed. Type references are NOT renamed: a type's identity is the interned
+	 * TypeId of its bare name, and both a module decl's signature and any use of that type intern the
+	 * same bare name, so they match without a prefix. (DECL_ENUM names are not renamed.) */
 	switch (ds->kind) {
 	case DECL_ARCHETYPE:
-		sem_maybe_rename(&ds->name, prefix, set, count);
-		for (int i = 0; i < ds->field_count; i++)
-			sem_rename_typeref(ds->fields[i].type, prefix, set, count);
-		break;
 	case DECL_PROC:
-		sem_maybe_rename(&ds->name, prefix, set, count);
-		for (int i = 0; i < ds->param_count; i++)
-			sem_rename_typeref(ds->params[i].type, prefix, set, count);
-		for (int i = 0; i < ds->out_param_count; i++)
-			sem_rename_typeref(ds->out_params[i].type, prefix, set, count);
-		break;
 	case DECL_SYS:
-		sem_maybe_rename(&ds->name, prefix, set, count);
-		for (int i = 0; i < ds->param_count; i++)
-			sem_rename_typeref(ds->params[i].type, prefix, set, count);
-		break;
 	case DECL_FUNC:
+	case DECL_STATIC:
+	case DECL_CONST:
+	case DECL_WORLD:
 		sem_maybe_rename(&ds->name, prefix, set, count);
-		for (int i = 0; i < ds->return_type_count; i++)
-			sem_rename_typeref(ds->return_types[i], prefix, set, count);
-		for (int i = 0; i < ds->param_count; i++)
-			sem_rename_typeref(ds->params[i].type, prefix, set, count);
 		break;
 	case DECL_FUNC_GROUP:
 		sem_maybe_rename(&ds->name, prefix, set, count);
 		for (int i = 0; i < ds->member_count; i++)
 			sem_maybe_rename(&ds->member_names[i], prefix, set, count);
-		break;
-	case DECL_STATIC:
-		sem_maybe_rename(&ds->name, prefix, set, count);
-		sem_rename_typeref(ds->static_type, prefix, set, count); /* NULL for pool — handled */
-		break;
-	case DECL_CONST:
-	case DECL_WORLD:
-		sem_maybe_rename(&ds->name, prefix, set, count);
 		break;
 	default:
 		break;
@@ -4764,33 +4599,34 @@ static void analyze_program_core(SemanticContext *ctx) {
 		SourceLoc cloc = c->const_value_loc;
 
 		/* Type-form RHS (`name : type : T`, or the tuple `name :: (x,y:..)`): a nominal alias. */
-		if (c->const_type_value) {
-			TypeRef *tv = c->const_type_value;
-			if (tv->kind == TYPE_PROC || tv->kind == TYPE_FUNC) {
+		if (c->const_type_value_id != TYID_UNKNOWN) {
+			TypeId tv = c->const_type_value_id;
+			TyKind tvk = tyid_kind(ctx->ty_arena, tv);
+			if (tvk == TYK_FUNC) {
 				/* `name :: proc()(…)` — a named structural callable type. */
 				register_callable_type_alias(ctx, c->name, tv);
 				continue;
 			}
-			if (tv->kind == TYPE_TUPLE) {
-				for (int f = 0; f < tv->data.tuple.field_count; f++) {
-					TypeRef *ft = tv->data.tuple.field_types[f];
-					const char *fbacking = type_backing_name(ft);
+			if (tvk == TYK_TUPLE) {
+				for (int f = 0; f < tyid_tuple_count(ctx->ty_arena, tv); f++) {
+					TypeId ft = tyid_tuple_field_type(ctx->ty_arena, tv, f);
+					const char *fbacking = sem_tyid_name(ctx, ft);
 					if (!fbacking) {
-						sem_emit_tuple_field_not_simple(ctx, ft->loc);
+						sem_emit_tuple_field_not_simple(ctx, cloc);
 						continue;
 					}
-					const char *fn = tv->data.tuple.field_names[f];
+					const char *fn = tyid_tuple_field_name(ctx->ty_arena, tv, f);
 					size_t L = strlen(c->name) + 1 + strlen(fn) + 1;
 					char *aname = malloc(L);
 					snprintf(aname, L, "%s_%s", c->name, fn);
-					register_type_alias(ctx, aname, fbacking, ft->loc, dsheet); /* aname leaks like the old path */
+					register_type_alias(ctx, aname, fbacking, cloc, dsheet); /* aname leaks like the old path */
 				}
 			} else {
-				const char *backing = type_backing_name(tv);
+				const char *backing = sem_tyid_name(ctx, tv);
 				if (!backing)
-					sem_emit_alias_backing_invalid(ctx, tv->loc);
+					sem_emit_alias_backing_invalid(ctx, cloc);
 				else
-					register_type_alias_tiered(ctx, c->name, backing, tv->is_transparent, cloc, dsheet);
+					register_type_alias_tiered(ctx, c->name, backing, c->is_transparent, cloc, dsheet);
 			}
 			continue;
 		}
@@ -4799,8 +4635,9 @@ static void analyze_program_core(SemanticContext *ctx) {
 		 * literal's own type (`3.14`→float, `42`→int) — so the const resolves to its real type. */
 		if (c->const_value_kind == EXPR_LITERAL) {
 			const char *vt = NULL;
-			if (c->const_decl_type && c->const_decl_type->kind == TYPE_NAME)
-				vt = resolve_type_alias(ctx, normalize_type_name(c->const_decl_type->data.name));
+			TyKind ddk = tyid_kind(ctx->ty_arena, c->const_decl_type_id);
+			if (ddk == TYK_NOMINAL || ddk == TYK_PRIM)
+				vt = sem_tyid_name(ctx, c->const_decl_type_id);
 			if (!vt)
 				vt = resolve_expression_type(ctx, c->const_value);
 			register_value_const(ctx, c->name, c->const_value_lexeme, vt, cloc);
@@ -4812,7 +4649,7 @@ static void analyze_program_core(SemanticContext *ctx) {
 		if (c->const_value_kind == EXPR_NAME) {
 			deferred_name[deferred_count] = c->name;
 			deferred_rhs[deferred_count] = c->const_value_name;
-			deferred_value_ctx[deferred_count] = (c->const_decl_type != NULL);
+			deferred_value_ctx[deferred_count] = (c->const_decl_type_id != TYID_UNKNOWN);
 			deferred_transparent[deferred_count] = c->is_transparent;
 			deferred_datasheet[deferred_count] = dsheet;
 			deferred_loc[deferred_count] = cloc;
@@ -4902,18 +4739,21 @@ static void analyze_program_core(SemanticContext *ctx) {
 		int ds = a->is_datasheet; /* datasheet shapes share vocabulary — dedup on agreement */
 		for (int f = 0; f < a->field_count; f++) {
 			FieldSummary *fd = &a->fields[f];
-			if (!fd->type || !fd->name)
+			if (!sv_present(fd->type_node) || !fd->name)
 				continue;
+			/* This runs in pass 0 (before the TypeId fill), so read the raw written type name straight
+			 * from the node (an array/tuple/handle component is column-only — no backing). */
 			const char *backing = NULL;
-			if (fd->type->kind == TYPE_NAME) {
-				if (strcmp(fd->type->data.name, fd->name) == 0)
-					continue; /* bare reference, not an inline definition */
-				backing = fd->type->data.name;
-			} else if (fd->type->kind == TYPE_OPAQUE) {
-				backing = "opaque";
-			} else {
-				continue; /* array/tuple component: column-only, no nominal alias */
+			if (sv_kind(fd->type_node) == SN_TYPE_REF) {
+				char *raw = sem_type_ref_name(fd->type_node);
+				if (strcmp(raw, "opaque") == 0)
+					backing = "opaque";
+				else if (strcmp(raw, "archetype") != 0 && strcmp(raw, "type") != 0 && strcmp(raw, fd->name) != 0)
+					backing = sem_own_str(ctx, sem_dupz(raw)); /* registry borrows; pool frees at teardown */
+				free(raw);
 			}
+			if (!backing)
+				continue; /* bare reference, or an array/tuple component (column-only) */
 			int done = 0;
 			for (int j = 0; j < ctx->type_alias_count; j++) {
 				if (strcmp(ctx->type_alias_names[j], fd->name) == 0) {
@@ -4955,6 +4795,18 @@ static void analyze_program_core(SemanticContext *ctx) {
 	/* global scope: holds module-level variables (static arrays, etc.) */
 	push_scope(ctx);
 
+	/* Intern each decl's type nodes into parallel TypeIds NOW — pass 0 has registered every top-level
+	 * type alias (decl signatures only reference those; local body aliases come later and don't appear
+	 * in signatures), so the ids are final. Filling here (not post-everything) lets the archetype +
+	 * body passes read the STORED ids directly. */
+	for (int i = 0; i < ctx->decl_count; i++)
+		if (ctx->decls[i])
+			sem_fill_decl_type_ids(ctx, ctx->decls[i]);
+
+	/* Tuple-group field expansion: now that field type_ids are interned, rewrite any field whose type
+	 * names a tuple-group const to that tuple's id (the column flattens to `field_<member>`). */
+	sem_expand_tuple_groups_table(ctx);
+
 	/* pass 1: collect all archetypes */
 	for (int i = 0; i < ctx->decl_count; i++) {
 		if (ctx->decls[i]->kind == DECL_ARCHETYPE) {
@@ -4972,7 +4824,7 @@ static void analyze_program_core(SemanticContext *ctx) {
 			continue;
 		if (d->static_kind == STATIC_KIND_ARRAY || d->static_kind == STATIC_KIND_SCALAR) {
 			register_static_name(ctx, d->name);
-			add_variable(ctx, d->name, d->static_type);
+			add_variable(ctx, d->name, d->static_type_id);
 		}
 	}
 
@@ -5028,27 +4880,6 @@ static void analyze_program_core(SemanticContext *ctx) {
 		}
 	}
 
-	/* Intern each decl's resolved TypeRefs into parallel TypeIds NOW — after the analysis passes have
-	 * registered every type alias, so sem_tyid_of_name resolves the alias chains correctly (the same
-	 * state tycheck sees). Must run before tycheck_run. */
-	for (int i = 0; i < ctx->decl_count; i++)
-		if (ctx->decls[i])
-			sem_fill_decl_type_ids(ctx, ctx->decls[i]);
-
-	/* Fill the SemModel TypeId channel from the resolved string channels (nominal-preferring, the same
-	 * `model_type_of` the typechecker used). Done post-analysis so alias resolution is final — the id
-	 * matches what tyid_from_name produced before, for both tycheck and lowering. */
-	if (ctx->model) {
-		int mcap = sem_model_cap(ctx->model);
-		for (int nid = 0; nid < mcap; nid++) {
-			const char *nom = sem_model_expr_nominal(ctx->model, (uint32_t)nid);
-			const char *ty = sem_model_expr_type(ctx->model, (uint32_t)nid);
-			const char *for_id = nom ? nom : ty;
-			if (for_id)
-				sem_model_set_expr_type_id(ctx->model, (uint32_t)nid, sem_tyid_of_name(ctx, for_id));
-		}
-	}
-
 	/* pass 4: tycheck — bidirectional type checker. Phase A encodes one rule
 	 * (return-value types). Diagnostics flow through the same registry as
 	 * everything else. Fail-open: unencoded shapes synth to TYID_UNKNOWN. */
@@ -5063,9 +4894,6 @@ static SemanticContext *make_context(void) {
 	ctx->archetype_count = 0;
 	ctx->decls = NULL;
 	ctx->decl_count = 0;
-	ctx->owned_types = NULL;
-	ctx->owned_type_count = 0;
-	ctx->owned_type_cap = 0;
 	ctx->ty_arena = ty_arena_new(); /* must exist before any decl/expr typing */
 	ctx->aliases = NULL;
 	ctx->alias_count = 0;
@@ -5075,7 +4903,7 @@ static SemanticContext *make_context(void) {
 	ctx->callable_alias_targets = NULL;
 	ctx->callable_alias_count = 0;
 	ctx->ctype_alias_names = NULL;
-	ctx->ctype_alias_refs = NULL;
+	ctx->ctype_alias_ids = NULL;
 	ctx->ctype_alias_count = 0;
 	ctx->enum_type_names = NULL;
 	ctx->enum_type_count = 0;
@@ -5097,6 +4925,9 @@ static SemanticContext *make_context(void) {
 	ctx->type_alias_transparent = NULL;
 	ctx->type_alias_locs = NULL;
 	ctx->type_alias_count = 0;
+	ctx->owned_strs = NULL;
+	ctx->owned_str_count = 0;
+	ctx->owned_str_cap = 0;
 	ctx->drop_type_names = NULL;
 	ctx->drop_proc_names = NULL;
 	ctx->drop_locs = NULL;
@@ -5125,15 +4956,17 @@ static SemanticContext *make_context(void) {
 	return ctx;
 }
 
-static TypeRef *analysis_own_type(SemanticContext *ctx, TypeRef *t) {
-	if (!t)
+/* Take ownership of an analysis-allocated string handed by pointer to the type-alias registry, so it
+ * lives for the context and is freed at teardown. Returns `s` for inline use. NULL-safe. */
+static char *sem_own_str(SemanticContext *ctx, char *s) {
+	if (!s)
 		return NULL;
-	if (ctx->owned_type_count >= ctx->owned_type_cap) {
-		ctx->owned_type_cap = ctx->owned_type_cap ? ctx->owned_type_cap * 2 : 16;
-		ctx->owned_types = realloc(ctx->owned_types, (size_t)ctx->owned_type_cap * sizeof(TypeRef *));
+	if (ctx->owned_str_count >= ctx->owned_str_cap) {
+		ctx->owned_str_cap = ctx->owned_str_cap ? ctx->owned_str_cap * 2 : 16;
+		ctx->owned_strs = realloc(ctx->owned_strs, (size_t)ctx->owned_str_cap * sizeof(char *));
 	}
-	ctx->owned_types[ctx->owned_type_count++] = t;
-	return t;
+	ctx->owned_strs[ctx->owned_str_count++] = s;
+	return s;
 }
 
 /* The first pattern token of a match arm (variant / literal / `_`), or NULL. */
@@ -5217,66 +5050,6 @@ static void walk_matches(SemanticContext *ctx, const SyntaxNode *n, const char *
 			walk_matches(ctx, n->children[i].as.node, src);
 }
 
-/* Pure deep-copy of a TypeRef (no pooling). Mirrors type_ref_free's ownership: every owned field
- * (incl. TYPE_HANDLE's archetype_name) is dup'd and is released by type_ref_free at teardown. */
-static TypeRef *sem_type_deep_copy(const TypeRef *t) {
-	if (!t)
-		return NULL;
-	TypeRef *c = calloc(1, sizeof(TypeRef));
-	c->kind = t->kind;
-	c->loc = t->loc;
-	c->is_transparent = t->is_transparent;
-	switch (t->kind) {
-	case TYPE_NAME:
-		c->data.name = t->data.name ? sem_dupz(t->data.name) : NULL;
-		break;
-	case TYPE_ARRAY:
-		c->data.array.element_type = sem_type_deep_copy(t->data.array.element_type);
-		break;
-	case TYPE_SHAPED_ARRAY:
-		c->data.shaped_array.element_type = sem_type_deep_copy(t->data.shaped_array.element_type);
-		c->data.shaped_array.rank = t->data.shaped_array.rank;
-		break;
-	case TYPE_TUPLE: {
-		int n = t->data.tuple.field_count;
-		c->data.tuple.field_count = n;
-		c->data.tuple.field_names = calloc(n ? n : 1, sizeof(char *));
-		c->data.tuple.field_types = calloc(n ? n : 1, sizeof(TypeRef *));
-		for (int i = 0; i < n; i++) {
-			c->data.tuple.field_names[i] = sem_dupz(t->data.tuple.field_names[i]);
-			c->data.tuple.field_types[i] = sem_type_deep_copy(t->data.tuple.field_types[i]);
-		}
-		break;
-	}
-	case TYPE_HANDLE:
-		c->data.handle.archetype_name = t->data.handle.archetype_name ? sem_dupz(t->data.handle.archetype_name) : NULL;
-		break;
-	case TYPE_PROC:
-	case TYPE_FUNC: {
-		int pn = t->data.callable.param_count, rn = t->data.callable.result_count;
-		c->data.callable.param_count = pn;
-		c->data.callable.result_count = rn;
-		c->data.callable.is_proc = t->data.callable.is_proc;
-		c->data.callable.param_types = calloc(pn ? pn : 1, sizeof(TypeRef *));
-		c->data.callable.result_types = calloc(rn ? rn : 1, sizeof(TypeRef *));
-		for (int i = 0; i < pn; i++)
-			c->data.callable.param_types[i] = sem_type_deep_copy(t->data.callable.param_types[i]);
-		for (int i = 0; i < rn; i++)
-			c->data.callable.result_types[i] = sem_type_deep_copy(t->data.callable.result_types[i]);
-		break;
-	}
-	default:
-		break;
-	}
-	return c;
-}
-
-/* Deep-copy `t` into the context type pool (one pool root; type_ref_free frees the whole tree at
- * teardown). NULL-safe. */
-static TypeRef *sem_pool_type_copy(SemanticContext *ctx, const TypeRef *t) {
-	return t ? analysis_own_type(ctx, sem_type_deep_copy(t)) : NULL;
-}
-
 /* The node whose direct children are a proc/func/sys body's statements. In the unified grammar a
  * `name :: proc(){…}` decl node carries the body under its SN_PROC_EXPR/SN_FUNC_EXPR/SN_SYS_EXPR
  * value-form child; the legacy SN_*_DECL form holds the statements directly. */
@@ -5302,10 +5075,10 @@ static SyntaxView sem_decl_body_node(SyntaxView dn) {
  * (post rename/qualify/tuple-expand). Additive — readers migrate onto it incrementally. */
 /* Tree-direct twin of sem_param_summary (which copies a cst_build_param'd AST Parameter): a
  * ParamSummary straight from an SN_PARAM node. Type pooled on ctx; name owned. */
-static ParamSummary sem_param_summary_node(SemanticContext *ctx, SyntaxView p) {
+static ParamSummary sem_param_summary_node(SyntaxView p) {
 	ParamSummary s = {0};
 	s.name = sem_cv_dup(sv_child(p, SN_PARAM_NAME));
-	s.type = sem_view_type(ctx, sem_type_at(p, 0));
+	s.type_node = sem_type_at(p, 0);
 	s.is_own = sv_has_token(p, TOK_OWN);
 	return s;
 }
@@ -5367,15 +5140,15 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 
 	SyntaxView form = sem_rhs_form(dv);
 	if (sv_present(form) && (sv_kind(form) == SN_TYPE_PROC || sv_kind(form) == SN_TYPE_FUNC)) {
-		ds->const_type_value = sem_view_type(ctx, form); /* named callable-type alias */
+		ds->const_type_value_id = sem_intern_view(ctx, form); /* callable-type alias */
 		ds->const_value_loc = sem_node_loc(form.node);
 		return ds;
 	}
 	if (!decorated && sv_has_token(dv, TOK_LPAREN)) {
-		/* tuple group: type_value = TYPE_TUPLE from the parenthesized suffix names, each typed by the
-		 * shared type after `::`. */
+		/* tuple group: type_value = a tuple of the parenthesized suffix names, each typed by the shared
+		 * type after `::`. */
 		SyntaxView memberty = sem_type_at(dv, 0);
-		TypeRef *shared = sv_present(memberty) ? cst_build_type(memberty) : NULL;
+		TypeId shared_id = sv_present(memberty) ? sem_intern_view(ctx, memberty) : TYID_UNKNOWN;
 		int in_paren = 0, n = 0;
 		for (int i = 0; i < dv.node->child_count; i++)
 			if (dv.node->children[i].tag == SE_TOKEN) {
@@ -5387,11 +5160,8 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 				else if (tk == TOK_IDENT && in_paren)
 					n++;
 			}
-		TypeRef *tt = calloc(1, sizeof(TypeRef));
-		tt->kind = TYPE_TUPLE;
-		tt->data.tuple.field_count = n;
-		tt->data.tuple.field_names = calloc(n > 0 ? n : 1, sizeof(char *));
-		tt->data.tuple.field_types = calloc(n > 0 ? n : 1, sizeof(TypeRef *));
+		char **names = calloc(n > 0 ? n : 1, sizeof(char *));
+		TypeId *types = calloc(n > 0 ? n : 1, sizeof(TypeId));
 		int fi = 0;
 		in_paren = 0;
 		for (int i = 0; i < dv.node->child_count && fi < n; i++)
@@ -5403,35 +5173,29 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 					in_paren = 0;
 				else if (tk == TOK_IDENT && in_paren) {
 					SynText t = {dv.src + dv.node->children[i].as.token.offset, dv.node->children[i].as.token.length};
-					tt->data.tuple.field_names[fi] = sem_txt_dup(t);
-					TypeRef *ct = calloc(1, sizeof(TypeRef));
-					if (shared) {
-						*ct = *shared;
-						if (shared->kind == TYPE_NAME && shared->data.name)
-							ct->data.name = sem_dupz(shared->data.name);
-					} else {
-						ct->kind = TYPE_NAME;
-						ct->data.name = sem_dupz("");
-					}
-					tt->data.tuple.field_types[fi] = ct;
+					names[fi] = sem_txt_dup(t);
+					types[fi] = shared_id;
 					fi++;
 				}
 			}
-		if (shared)
-			type_ref_free(shared);
-		ds->const_type_value = analysis_own_type(ctx, tt);
+		ds->const_type_value_id = tyid_of_tuple(ctx->ty_arena, (const char *const *)names, types, fi);
+		for (int i = 0; i < fi; i++)
+			free(names[i]);
+		free(names);
+		free(types);
 		return ds;
 	}
 	SyntaxView t0 = sem_type_at(dv, 0), t1 = sem_type_at(dv, 1);
 	SynText t0name = sv_present(t0) ? sv_token(t0, TOK_IDENT) : (SynText){NULL, 0};
 	int t0_is_meta = t0name.ptr && t0name.len == 4 && memcmp(t0name.ptr, "type", 4) == 0;
 	if (t0_is_meta && sv_present(t1)) {
-		ds->const_decl_type = sem_view_type(ctx, t0); /* TYPE_TYPE */
-		ds->const_type_value = sem_view_type(ctx, t1);
+		ds->const_decl_type_id = sem_intern_view(ctx, t0); /* TYPE_TYPE */
+		ds->const_type_value_id = sem_intern_view(ctx, t1);
 		ds->const_value_loc = sem_node_loc(t1.node);
 	} else {
-		if (sv_present(t0))
-			ds->const_decl_type = sem_view_type(ctx, t0);
+		if (sv_present(t0)) {
+			ds->const_decl_type_id = sem_intern_view(ctx, t0);
+		}
 		SyntaxView val = sem_node_at_expr(dv, 0);
 		if (sv_present(val)) {
 			ds->const_value = val;
@@ -5531,14 +5295,13 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 			char *aname = sem_txt_dup(sv_token(dv, TOK_IDENT));
 			SyntaxView arr_ty = sem_type_at(dv, 0);
 			SyntaxView initv = sem_node_at_expr(dv, 0);
-			TypeRef *full = sem_view_type(ctx, arr_ty);
-			int is_array = full && (full->kind == TYPE_SHAPED_ARRAY || full->kind == TYPE_ARRAY);
+			TypeId full_id = sem_intern_view(ctx, arr_ty);
+			TyKind fullk = tyid_kind(ctx->ty_arena, full_id);
+			int is_array = (fullk == TYK_SHAPED_ARRAY || fullk == TYK_ARRAY);
 			ds->name = aname;
 			if (is_array) {
 				ds->static_kind = STATIC_KIND_ARRAY;
-				TypeRef *elem = (full->kind == TYPE_SHAPED_ARRAY) ? full->data.shaped_array.element_type
-				                                                  : full->data.array.element_type;
-				ds->static_type = sem_pool_type_copy(ctx, elem);
+				ds->static_type_id = tyid_elem(ctx->ty_arena, full_id);
 				for (int i = 0; i < arr_ty.node->child_count; i++)
 					if (arr_ty.node->children[i].tag == SE_TOKEN &&
 					    arr_ty.node->children[i].as.token.kind == TOK_NUMBER) {
@@ -5554,15 +5317,15 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 				ds->static_has_init = sv_present(initv);
 			} else {
 				ds->static_kind = STATIC_KIND_SCALAR;
-				ds->static_type = full; /* already pooled, or NULL → inferred below */
-				if (!ds->static_type) {
+				ds->static_type_id = full_id; /* UNKNOWN → inferred below */
+				if (ds->static_type_id == TYID_UNKNOWN) {
 					int isf = 0;
 					if (sv_present(initv) && sv_kind(initv) == SN_LITERAL_EXPR) {
 						char *lx = sem_cv_dup_first_token(initv);
 						isf = lx && strpbrk(lx, ".eE") != NULL;
 						free(lx);
 					}
-					ds->static_type = analysis_own_type(ctx, type_name_create(sem_dupz(isf ? "float" : "int")));
+					ds->static_type_id = sem_tyid_of_name(ctx, isf ? "float" : "i32");
 				}
 				ds->static_init = initv;
 			}
@@ -5663,17 +5426,8 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 				}
 			}
 			char *fname = sem_cv_dup(fn);
-			TypeRef *ft;
-			if (sv_present(ty)) {
-				ft = sem_view_type(ctx, ty);
-			} else {
-				ft = calloc(1, sizeof(TypeRef));
-				ft->kind = TYPE_NAME;
-				ft->data.name = sem_dupz(fname);
-				analysis_own_type(ctx, ft);
-			}
 			ds->fields[ds->field_count].name = fname;
-			ds->fields[ds->field_count].type = ft;
+			ds->fields[ds->field_count].type_node = ty; /* absent → the field NAME is its type */
 			ds->fields[ds->field_count].kind = FIELD_COLUMN;
 			ds->fields[ds->field_count].meta_explicit = meta_explicit;
 			ds->fields[ds->field_count].loc = sem_node_loc(fn.node);
@@ -5685,7 +5439,7 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 	ds->param_count = np;
 	ds->params = calloc(np ? np : 1, sizeof(ParamSummary));
 	for (int i = 0; i < np; i++)
-		ds->params[i] = sem_param_summary_node(ctx, sv_child_at(form, SN_PARAM, i));
+		ds->params[i] = sem_param_summary_node(sv_child_at(form, SN_PARAM, i));
 	if (kind == DECL_PROC) {
 		ds->is_extern = !sv_has_token(form, TOK_LBRACE);
 		ds->is_variadic = sv_has_token(form, TOK_DOTDOTDOT);
@@ -5694,13 +5448,13 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 		ds->out_param_count = no;
 		ds->out_params = calloc(no ? no : 1, sizeof(ParamSummary));
 		for (int i = 0; i < no; i++)
-			ds->out_params[i] = sem_param_summary_node(ctx, sv_child_at(form, SN_OUT_PARAM, i));
+			ds->out_params[i] = sem_param_summary_node(sv_child_at(form, SN_OUT_PARAM, i));
 	} else if (kind == DECL_FUNC) {
 		int nt = sv_type_count_sem(form);
 		ds->return_type_count = nt;
-		ds->return_types = calloc(nt ? nt : 1, sizeof(TypeRef *));
+		ds->return_type_nodes = calloc(nt ? (size_t)nt : 1, sizeof(SyntaxView));
 		for (int i = 0; i < nt; i++)
-			ds->return_types[i] = sem_view_type(ctx, sem_type_at(form, i));
+			ds->return_type_nodes[i] = sem_type_at(form, i);
 	}
 	return ds;
 }
@@ -5712,18 +5466,18 @@ static void free_decl_summary(DeclSummary *ds); /* fwd */
  * TYPE_TUPLE), replace the field type with a pooled copy of that tuple (so the column flattens to
  * `field_<member>`). Runs after the table is built + renamed. */
 static void sem_maybe_expand_tuple(SemanticContext *ctx, FieldSummary *fd) {
-	if (!fd->type || fd->type->kind != TYPE_NAME || !fd->type->data.name)
+	/* The field's interned type is a bare nominal naming a tuple-group const → become that tuple.
+	 * Runs AFTER sem_fill_decl_type_ids, so fd->type_id and the const's tuple id are both populated. */
+	const char *ref = tyid_nominal_name(ctx->ty_arena, fd->type_id);
+	if (!ref)
 		return;
-	const char *ref = fd->type->data.name;
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *c = ctx->decls[i];
-		if (c->kind != DECL_CONST || !c->name || !c->const_type_value || c->const_type_value->kind != TYPE_TUPLE)
+		if (c->kind != DECL_CONST || !c->name || tyid_kind(ctx->ty_arena, c->const_type_value_id) != TYK_TUPLE)
 			continue;
 		if (strcmp(c->name, ref) != 0)
 			continue;
-		TypeRef *tt = analysis_own_type(ctx, sem_type_deep_copy(c->const_type_value));
-		tt->loc = fd->type->loc;
-		fd->type = tt; /* old bare type stays in the pool (freed at teardown) */
+		fd->type_id = c->const_type_value_id;
 		return;
 	}
 }
@@ -5794,24 +5548,22 @@ static void sem_tree_qualify_walk(SemanticContext *ctx, const SyntaxNode *n, con
 /* Finalize the DeclSummary table that sem_collect_decls populated (bare names): apply each decl's
  * recorded module/file rename ops, record the callee_name/ref_name channels by walking its body +
  * value exprs on the tree (the tree-qualify pass), then expand top-level tuple groups. */
-/* Phase 3: intern every TypeRef this DeclSummary carries into a parallel TypeId. Called after rename
+/* Phase 3: intern every type node this DeclSummary carries into a parallel TypeId. Called after rename
  * + tuple-expansion, so the names/shapes are final — the ids match what tycheck computes on the same
- * (renamed) TypeRefs. */
+ * (renamed) type nodes. */
 static void sem_fill_decl_type_ids(SemanticContext *ctx, DeclSummary *ds) {
 	for (int p = 0; p < ds->param_count; p++)
-		ds->params[p].type_id = sem_tyid_of_typeref(ctx, ds->params[p].type);
+		ds->params[p].type_id = sem_intern_view(ctx, ds->params[p].type_node);
 	for (int p = 0; p < ds->out_param_count; p++)
-		ds->out_params[p].type_id = sem_tyid_of_typeref(ctx, ds->out_params[p].type);
+		ds->out_params[p].type_id = sem_intern_view(ctx, ds->out_params[p].type_node);
 	if (ds->return_type_count > 0) {
 		ds->return_type_ids = calloc((size_t)ds->return_type_count, sizeof(TypeId));
 		for (int r = 0; r < ds->return_type_count; r++)
-			ds->return_type_ids[r] = sem_tyid_of_typeref(ctx, ds->return_types[r]);
+			ds->return_type_ids[r] = sem_intern_view(ctx, ds->return_type_nodes[r]);
 	}
 	for (int f = 0; f < ds->field_count; f++)
-		ds->fields[f].type_id = sem_tyid_of_typeref(ctx, ds->fields[f].type);
-	ds->static_type_id = sem_tyid_of_typeref(ctx, ds->static_type);
-	ds->const_type_value_id = sem_tyid_of_typeref(ctx, ds->const_type_value);
-	ds->const_decl_type_id = sem_tyid_of_typeref(ctx, ds->const_decl_type);
+		ds->fields[f].type_id = sv_present(ds->fields[f].type_node) ? sem_intern_view(ctx, ds->fields[f].type_node)
+		                                                            : sem_tyid_of_name(ctx, ds->fields[f].name);
 }
 
 static void build_decl_table(SemanticContext *ctx) {
@@ -5833,13 +5585,12 @@ static void build_decl_table(SemanticContext *ctx) {
 			if (ds->static_fields[s].node)
 				sem_tree_qualify_walk(ctx, ds->static_fields[s].node, ds->static_fields[s].src, dn);
 	}
-	sem_expand_tuple_groups_table(ctx);
 	sem_free_rnops();
 	sem_free_exports();
 }
 
-/* Free one DeclSummary (its owned names + arrays). Pooled TypeRefs live in ctx->owned_types and are
- * NOT freed here. Unused fields are NULL/0, so this is correct for every decl kind. */
+/* Free one DeclSummary (its owned names + arrays). Types are interned TypeIds in the arena, not owned
+ * here. Unused fields are NULL/0, so this is correct for every decl kind. */
 static void free_decl_summary(DeclSummary *ds) {
 	if (!ds)
 		return;
@@ -5851,7 +5602,7 @@ static void free_decl_summary(DeclSummary *ds) {
 	for (int p = 0; p < ds->out_param_count; p++)
 		free(ds->out_params[p].name);
 	free(ds->out_params);
-	free(ds->return_types);
+	free(ds->return_type_nodes);
 	free(ds->return_type_ids);
 	for (int m = 0; m < ds->member_count; m++)
 		free(ds->member_names[m]);
@@ -5898,9 +5649,6 @@ char *semantic_call_callee_name(SemanticContext *ctx, SyntaxView call) {
 		return NULL; /* qualified, non-module field call — unresolved */
 	return sem_cv_dup(sv_child(call, SN_CALLEE_NAME));
 }
-TypeRef *semantic_type_from_view(SemanticContext *ctx, SyntaxView t) {
-	return sem_view_type(ctx, t);
-}
 
 SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src) {
 	SemanticContext *ctx = make_context();
@@ -5944,6 +5692,9 @@ void semantic_context_free(SemanticContext *ctx) {
 	free(ctx->const_locs);
 
 	/* free type-alias tables (name/backing strings are owned by the syntax tree) */
+	for (int i = 0; i < ctx->owned_str_count; i++)
+		free(ctx->owned_strs[i]);
+	free(ctx->owned_strs);
 	free(ctx->type_alias_names);
 	free(ctx->type_alias_backings);
 	free(ctx->type_alias_transparent);
@@ -5997,7 +5748,7 @@ void semantic_context_free(SemanticContext *ctx) {
 	}
 	free(ctx->groups);
 
-	/* free scopes and variables (but not TypeRef) */
+	/* free scopes and variables */
 	for (int i = 0; i < ctx->scope_count; i++) {
 		Scope *scope = &ctx->scopes[i];
 		for (int j = 0; j < scope->var_count; j++) {
@@ -6010,14 +5761,8 @@ void semantic_context_free(SemanticContext *ctx) {
 	}
 	free(ctx->scopes);
 
-	/* AST-kill: free the resolved decl-signature table (its TypeRefs live in owned_types, freed below). */
+	/* AST-kill: free the resolved decl-signature table (TypeId-only now; no per-decl TypeRefs). */
 	free_decl_table(ctx);
-
-	/* The analysis type pool is independent of the (now eagerly-freed) AstProgram — always release
-	 * it. The DeclTable + view-driven analysis borrowed these for the context's lifetime. */
-	for (int i = 0; i < ctx->owned_type_count; i++)
-		type_ref_free(ctx->owned_types[i]);
-	free(ctx->owned_types);
 
 	/* Freed LAST: HirType borrows the arena's interned name strings through lowering+codegen, and
 	 * this is the compiler's final teardown. */
@@ -6110,8 +5855,8 @@ const char *semantic_resolve_callable_alias(SemanticContext *ctx, const char *na
 	return resolve_callable_alias(ctx, name);
 }
 
-TypeRef *semantic_callable_type_alias(SemanticContext *ctx, const char *name) {
-	return callable_type_alias_ref(ctx, name);
+TypeId semantic_callable_type_alias(SemanticContext *ctx, const char *name) {
+	return callable_type_alias_id(ctx, name);
 }
 
 int semantic_is_enum_type(SemanticContext *ctx, const char *name) {
@@ -6150,11 +5895,12 @@ FieldKind semantic_field_kind(SemanticContext *ctx, const char *archetype_name, 
 const char *semantic_field_type_name(SemanticContext *ctx, const char *archetype_name, const char *field_name) {
 	ArchetypeInfo *arch = find_archetype(ctx, archetype_name);
 	FieldInfo *field = find_field(arch, field_name);
-	if (!field || !field->type)
+	if (!field)
 		return NULL;
-	if (field->type->kind != TYPE_NAME)
+	TyKind k = tyid_kind(ctx->ty_arena, field->type_id);
+	if (k != TYK_PRIM && k != TYK_NOMINAL)
 		return NULL;
-	return field->type->data.name;
+	return sem_tyid_name(ctx, field->type_id);
 }
 
 const char *semantic_get_const_value(SemanticContext *ctx, const char *const_name) {

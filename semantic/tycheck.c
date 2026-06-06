@@ -324,6 +324,20 @@ static int subtype_check(TyCtx *cx, TypeId got, TypeId expected) {
 static void check(TyCtx *cx, SyntaxView e, TypeId expected, const char *where) {
 	if (!sv_present(e) || tyid_is_unknown(expected))
 		return;
+	/* Fail-open on structural kinds (array / shaped / handle / tuple / archetype): the DeclSummary now
+	 * carries rich TypeIds for the analysis readers, but expression synthesis does not yet produce
+	 * matching rich ids, so checking them would be spurious. This preserves the pre-Phase-3 coverage
+	 * (NAME + callable only). Encoding these checks is a deliberate follow-up with golden updates. */
+	switch (tyid_kind(cx->arena, expected)) {
+	case TYK_ARRAY:
+	case TYK_SHAPED_ARRAY:
+	case TYK_HANDLE:
+	case TYK_TUPLE:
+	case TYK_ARCHETYPE_CATEGORY:
+		return;
+	default:
+		break;
+	}
 	if (check_literal_fits(cx->arena, cx->ctx, e, expected))
 		return;
 	TypeId got = synth(cx, e);

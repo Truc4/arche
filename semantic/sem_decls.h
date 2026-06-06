@@ -12,17 +12,17 @@
 typedef struct SemanticContext SemanticContext;
 
 typedef struct {
-	char *name;     /* owned, resolved; may be NULL for unnamed positions */
-	TypeRef *type;  /* pooled root, may be NULL */
-	TypeId type_id; /* Phase 3: interned identity of `type` (supersedes it) */
+	char *name;           /* owned, resolved; may be NULL for unnamed positions */
+	SyntaxView type_node; /* the param's type syntax node (interned into type_id post-analysis) */
+	TypeId type_id;       /* interned identity of the param type */
 	int is_own;
 	SourceLoc loc;
 } ParamSummary;
 
 typedef struct {
-	char *name;     /* owned, resolved */
-	TypeRef *type;  /* pooled root */
-	TypeId type_id; /* Phase 3: interned identity of `type` */
+	char *name;           /* owned, resolved */
+	SyntaxView type_node; /* explicit type syntax node, or absent (then the field NAME is its type) */
+	TypeId type_id;       /* interned field type */
 	FieldKind kind;
 	int meta_explicit;
 	SourceLoc loc;
@@ -40,8 +40,8 @@ typedef struct {
 	int param_count;
 	ParamSummary *out_params; /* proc out-params */
 	int out_param_count;
-	TypeRef **return_types;  /* func returns (pooled roots) */
-	TypeId *return_type_ids; /* Phase 3: interned identities, parallel to return_types */
+	SyntaxView *return_type_nodes; /* func return type syntax nodes */
+	TypeId *return_type_ids;       /* interned return identities */
 	int return_type_count;
 	int is_extern;
 	int is_variadic;
@@ -62,15 +62,12 @@ typedef struct {
 	char *const_value_lexeme;   /* owned; the literal lexeme if the RHS is a literal, else NULL */
 	char *const_value_name;     /* owned; the bare-name RHS (for the value/alias fixpoint), else NULL */
 	SourceLoc const_value_loc;  /* diagnostics + registry loc */
-	TypeRef *const_type_value;  /* pooled; the `: type :` RHS type-form (alias/tuple/callable), else NULL */
-	TypeId const_type_value_id; /* Phase 3: interned identity of const_type_value */
-	TypeRef *const_decl_type;   /* pooled; the explicit declared type (`PI : float : x`), else NULL */
-	TypeId const_decl_type_id;  /* Phase 3: interned identity of const_decl_type */
+	TypeId const_type_value_id; /* interned `: type :` RHS type-form (alias/tuple/callable), else UNKNOWN */
+	TypeId const_decl_type_id;  /* interned explicit declared type (`PI : float : x`), else UNKNOWN */
 	int is_transparent;         /* `k :: alias T` tier-1 transparent */
 	/* static */
 	int static_kind;       /* STATIC_KIND_* or -1 if not a static decl */
-	TypeRef *static_type;  /* ARRAY: element type; SCALAR: scalar type (pooled); else NULL */
-	TypeId static_type_id; /* Phase 3: interned identity of static_type */
+	TypeId static_type_id; /* ARRAY: element type; SCALAR: scalar type; interned */
 	int is_requirement;
 	int static_size;                /* ARRAY: declared element count */
 	int static_has_init;            /* ARRAY: 1 if an initializer was written */
@@ -93,10 +90,9 @@ TypeArena *sem_context_arena(SemanticContext *ctx);
 
 /* Intern a type into the context arena (Phase 3). The shared resolvers used by BOTH the DeclSummary
  * builder and tycheck, so a given type interns to the SAME TypeId everywhere. `sem_tyid_of_name`
- * resolves a type-NAME through the alias chain (tier-2 subtype interns by its own name); the others
- * build from a TypeRef / a syntax type-node view. */
+ * resolves a type-NAME through the alias chain (tier-2 subtype interns by its own name);
+ * `sem_intern_view` builds straight from a syntax type-node view. */
 TypeId sem_tyid_of_name(SemanticContext *ctx, const char *name);
-TypeId sem_tyid_of_typeref(SemanticContext *ctx, const TypeRef *tr);
 TypeId sem_intern_view(SemanticContext *ctx, SyntaxView t);
 
 /* DeclTable accessors (defined in semantic.c) for out-of-file readers like tycheck. */
@@ -107,9 +103,6 @@ const DeclSummary *semantic_find_callable_sig(const SemanticContext *ctx, const 
 /* The resolved callee name of an SN_CALL_EXPR view (qualify-mangled for `mod.f`, else the bare
  * SN_CALLEE_NAME), or NULL for a non-module qualified field call. Caller frees. */
 char *semantic_call_callee_name(SemanticContext *ctx, SyntaxView call);
-
-/* A pooled TypeRef built from a type-node view (lives in the context type pool). NULL if absent. */
-TypeRef *semantic_type_from_view(SemanticContext *ctx, SyntaxView t);
 
 /* Shared syntax-view navigation (defined in semantic.c) so semantic + tycheck read the tree the
  * same way. Indices count only expression / statement children. */

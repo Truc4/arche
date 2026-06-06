@@ -279,6 +279,12 @@ TyKind tyid_kind(const TypeArena *a, TypeId t) {
 	return a->nodes[t].kind;
 }
 
+int tyid_is_proc(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_FUNC)
+		return 0;
+	return a->nodes[t].data.func.is_proc;
+}
+
 PrimKind tyid_prim(const TypeArena *a, TypeId t) {
 	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_PRIM)
 		return PRIM_COUNT;
@@ -289,6 +295,43 @@ const char *tyid_nominal_name(const TypeArena *a, TypeId t) {
 	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_NOMINAL)
 		return NULL;
 	return a->nodes[t].data.nominal.name;
+}
+
+const char *tyid_handle_name(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_HANDLE)
+		return NULL;
+	return a->nodes[t].data.handle.archetype_name;
+}
+
+TypeId tyid_elem(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count)
+		return TYID_UNKNOWN;
+	const TypeNode *n = &a->nodes[t];
+	if (n->kind == TYK_ARRAY)
+		return n->data.array.elem;
+	if (n->kind == TYK_SHAPED_ARRAY)
+		return n->data.shaped.elem;
+	return TYID_UNKNOWN;
+}
+
+int tyid_tuple_count(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_TUPLE)
+		return 0;
+	return a->nodes[t].data.tuple.count;
+}
+
+const char *tyid_tuple_field_name(const TypeArena *a, TypeId t, int i) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_TUPLE || i < 0 ||
+	    i >= a->nodes[t].data.tuple.count)
+		return NULL;
+	return a->nodes[t].data.tuple.names[i];
+}
+
+TypeId tyid_tuple_field_type(const TypeArena *a, TypeId t, int i) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_TUPLE || i < 0 ||
+	    i >= a->nodes[t].data.tuple.count)
+		return TYID_UNKNOWN;
+	return a->nodes[t].data.tuple.types[i];
 }
 
 int tyid_equal(TypeId a, TypeId b) {

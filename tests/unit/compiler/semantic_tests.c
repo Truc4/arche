@@ -125,7 +125,8 @@ void test_archetype_field_type(void) {
 	ASSERT_TRUE(pos_type != NULL, "pos type is null");
 	ASSERT_TRUE(health_type != NULL, "health type is null");
 	ASSERT_TRUE(strcmp(pos_type, "Vec3") == 0, "pos should be Vec3");
-	ASSERT_TRUE(strcmp(health_type, "Float") == 0, "health should be Float");
+	/* Phase 3: the field-type API reports the canonical interned name ("Float" → "float"). */
+	ASSERT_TRUE(strcmp(health_type, "float") == 0, "health should be float");
 	analysis_result_free(&result);
 	test_pass_msg();
 }

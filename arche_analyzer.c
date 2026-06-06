@@ -406,8 +406,8 @@ static int path_is_core(const char *path) {
 
 /* Render an internal type name as it would be written in arche source (longhand). */
 static const char *display_type(const char *ty) {
-	if (strcmp(ty, "char_array") == 0)
-		return "char[]";
+	if (strcmp(ty, "char_array") == 0 || strcmp(ty, "str") == 0)
+		return "char[]"; /* the interned string prim displays as "str"; the inlay hint shows char[] */
 	return ty;
 }
 
@@ -437,8 +437,12 @@ static void emit_bind_hint(SyntaxView bind, SemanticContext *ctx) {
 	SyntaxView value = sv_expr_at(bind, 1);
 	if (!sv_present(target) || !sv_present(value) || sv_kind(target) != SN_NAME_EXPR)
 		return;
-	const char *ty = sem_model_expr_type(model, sv_id(value));
-	if (!ty)
+	TypeId tid = sem_model_expr_type_id(model, sv_id(value));
+	if (tid == TYID_UNKNOWN)
+		return;
+	char tybuf[128];
+	const char *ty = tyid_display(sem_context_arena(ctx), tid, tybuf, sizeof(tybuf));
+	if (!ty || !ty[0])
 		return;
 	/* Anchor at the 2nd separator token of the bind operator: the `=` of `:=`, or
 	 * (when there is no `=`) the 2nd `:` of `::`. The type then renders between

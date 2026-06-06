@@ -4,7 +4,7 @@ Living record of non-obvious decisions while migrating the type representation o
 `TypeId` arena (`semantic/sem_types.{h,c}`) and retiring `TypeRef` + middle-of-compiler type strings.
 Plan: `~/.claude/plans/i-need-an-honest-humming-kahn.md`. Mirrors `docs/AST_KILL_DECISIONS.md`.
 
-## Status: Stages 0–4 DONE + green (478 LIT, semantic 33/33, codegen 8/8, lower 6/6, ASan clean). Stage 5 (deletions) remaining.
+## Status: COMPLETE — Stages 0–5 DONE + green (478 LIT, semantic 33/33, codegen 8/8, lower 6/6, ASan 0 leaks). `TypeRef` struct DELETED; TypeId is the sole type identity in the middle of the compiler.
 
 ## Stage 0 — alias-tier encoding in the arena (DONE)
 Extended `TYK_NOMINAL` payload to `{name, backing}`. A **transparent** tier-1 alias never makes a
@@ -64,3 +64,103 @@ string consumers); delete expr_type/expr_nominal channels + the fill + nominal_t
 cst_build_type/type_ref_equal/owned_types/sem_view_type/analysis_own_type; DeclSummary TypeRef fields
 (decl builder → `sem_intern_view`); group-match/cast → tyid_equal; shrink `syntax/type_ref.{h,c}` to
 the six enums + SourceLoc, rename to `syntax/decl_enums.h`, update includes + Makefile.
+
+## Stage 5 — IN PROGRESS (478 green at each checkpoint)
+
+Done so far:
+- **SemModel string channels DELETED.** `expr_type`/`expr_nominal` gone; `expr_type_id` computed at
+  the analyze_expression writer (mid-analysis timing verified fine — top-level aliases register in
+  pass 0 before bodies). LSP hover renders via `tyid_display` (+ `display_type` maps `str`→`char[]`).
+- **Rich `sem_tyid_of_typeref` coverage** (array/shaped/handle/tuple/archetype) re-enabled; tycheck
+  stays fail-open on those structural kinds (a `check()` guard) so it's byte-identical — encoding
+  array/handle arg checks is a deliberate later follow-up. `char_array` kept a distinct nominal (not
+  collapsed to PRIM_STR) for a clean round-trip.
+- **`VariableInfo.type` + `FieldInfo.type` → TypeId.** ~36 structural-inspection sites converted via
+  new accessors `tyid_handle_name`/`tyid_elem`/`tyid_tuple_*`/`tyid_prim`/`tyid_nominal_name` + the
+  `sem_tyid_name(ctx,id)` stable-resolved-name helper. `type_is_byref_aggregate` takes `(arena,id)`.
+- **KEY TRAP (cost ~100 test fails + a segfault):** DeclSummary `*_id` fields (params/out_params/
+  return_type_ids/static_type_id/fields) are filled POST-analysis (for tycheck), so reading them
+  DURING analysis gives UNKNOWN / NULL-deref. EVERY analysis-time type read must convert ON THE FLY
+  from the still-present TypeRef: `sem_tyid_of_typeref(ctx, <the TypeRef>)`. Fixed in
+  nominal_type_of_expr, analyze_drop_decl, the proc/func/sys param-add, static-register, handle
+  validation, FieldInfo build, extern byref check.
+- semantic-test golden: field-type API now returns canonical `float` (was raw `Float`).
+
+REMAINING: DeclSummary TypeRef fields are still the analysis-time type SOURCE (via on-the-fly
+sem_tyid_of_typeref). To delete them: store each param/field's TYPE NODE (SyntaxView) on the summary,
+intern on the fly via sem_intern_view from the node, then delete the TypeRef fields +
+cst_build_type/type_ref_equal/sem_view_type/owned_types; group-match/cast → tyid_equal; int-hardcodes;
+shrink+rename type_ref.{h,c} → decl_enums.h. NOTE the alias-timing rule above for any new conversion.
+
+## Stage 5 — further progress (478 green + ASan throughout)
+- `type_ref_equal` DELETED (its one caller → `tyid_equal` on stored param ids).
+- Moved `sem_fill_decl_type_ids` to run after pass-0 alias registration (before the archetype/body
+  passes) — decl signatures only reference top-level aliases (registered in pass 0), so the ids are
+  final there. This lets the archetype + body passes read the STORED decl `type_id`s directly.
+- Converted the body/archetype-pass DeclSummary readers (proc/func/sys params, out-params, statics,
+  FieldInfo build, handle validation, dup-param check, nominal return) from on-the-fly
+  `sem_tyid_of_typeref(ctx, X.type)` to the STORED `X.type_id`. Analysis no longer reads DeclSummary
+  TypeRefs except in `sem_fill_decl_type_ids` (which produces the ids).
+
+### REMAINING obstacle (genuine, newly surfaced)
+The DeclSummary TypeRefs now serve ONE purpose: they carry the MODULE-RENAMED type names
+(`socket`→`net.socket`) applied by `sem_rename_decl_summary` (it calls `sem_rename_typeref` on the
+param/return/field TypeRefs). `sem_fill_decl_type_ids` interns those renamed TypeRefs. The bare syntax
+type-nodes do NOT have the module prefix, so interning straight from the node would lose it. So fully
+deleting the TypeRef fields requires RE-HOMING the module-type rename onto the interning path (intern
+bare → apply the recorded module prefix → intern the qualified name), OR storing the renamed type as a
+string/TypeId on the summary at rename time. That is a real additional layer beyond "delete the
+fields". `cst_build_type` (used by `sem_intern_view`) and the `type_ref.{h,c}`→`decl_enums.h` rename
+follow once the fields are gone.
+
+**State: TypeId is the type representation everywhere it matters (identity, comparison, tycheck,
+lowering, VariableInfo/FieldInfo, SemModel). TypeRef survives ONLY as the per-decl build-time carrier
+of module-renamed type names (decl_summary_from_node → sem_rename_decl_summary → sem_fill → TypeId) —
+a transient builder, exactly as the AST was before its own final deletion.**
+
+## Stage 5 — further deletions + the genuine wall (478 green throughout)
+Deleted: the module type-rename (`sem_rename_typeref` + its calls — empirically proven unnecessary:
+type identity is the interned bare name, both decl signature and use intern it). Converted most const
+readers (check_const_literal, the alias-registry tuple/scalar branches, the deferred-value flag, the
+tuple-group check) to the interned const `*_id`.
+
+### GENUINE BLOCKER (root-cause needed before the const/callable subsystem can go TypeId-native)
+Converting the callable-type-alias registry (`register_callable_type_alias`/`callable_type_alias_ref`)
+from `TypeRef*` to `TypeId` broke 2 callback tests with `expected 'func(1)->(1)', got 'func(1)->(1)'`
+— STRUCTURALLY IDENTICAL func types that `tyid_equal` reports as different ids. The same callable
+interned via the alias path (interned at pass-0 registration) vs the direct-func path
+(`tyid_of_callee`, built post-fill) produce different interned ids despite identical
+`tyid_of_func([i32],[i32],is_proc=0)` inputs. Hash-consing should make them equal; it doesn't, which
+points to a subtle arena/timing interaction I could not root-cause without leaving tests red. REVERTED
+to keep `TypeRef` for the callable registry (478 green). This is the blocker: until that interning
+divergence is understood, `const_type_value`/`const_decl_type` (read at the callable-alias branch +
+the tuple-group func-return expansion `sem_type_deep_copy`) must stay `TypeRef`, so the struct stands.
+
+### Net state
+`TypeRef` survives as: (1) the decl-type build representation that `sem_fill_decl_type_ids` interns
+into the per-decl `type_id`s (params/out_params/fields/returns/static — analysis reads the ids, only
+`sem_fill` reads the TypeRefs; deletable once `sem_fill` is sourced from stored type NODES), and (2)
+the const/callable-alias subsystem (blocked above). TypeId is the type identity everywhere it matters;
+478 LIT + semantic 33 + codegen 8 + lower 6 + ASan all green.
+
+## Stage 5 — `TypeRef` deleted (DONE)
+All `DeclSummary`/`ParamSummary`/`FieldSummary` type fields are interned `TypeId`s
+(`return_type_ids`, `static_type_id`, `const_type_value_id`, `const_decl_type_id`, `params[].type_id`,
+`fields[].type_id`); the syntax `type_node` views are interned post-pass-0 by `sem_fill_decl_type_ids`.
+
+- **`sem_intern_view` is now the sole type-node→TypeId builder** — it walks the `SN_TYPE_*` shapes
+  directly (REF/ARRAY/SHAPED/HANDLE/TUPLE/PROC/FUNC), routing names through `sem_tyid_of_name`'s alias
+  tiering. The transient `cst_build_type`→`sem_tyid_of_typeref` two-step is gone.
+- **Analysis-time structural reads converted to `tyid_*` accessors**: the `BIND_STMT`
+  inferred/nominal-type derivation, the multi-bind `MbTarget` (`type_id` not `TypeRef*`), the
+  `#each_field` filter check (resolved-name vs `is_width_int_name`/`float`/`char` — `int` now resolves
+  to `i32`), and the static array/scalar element typing all read TypeIds.
+- **Deleted**: `cst_build_type`, `sem_tyid_of_typeref`, `analysis_own_type`, `sem_view_type`,
+  `type_backing_name`, `sem_type_deep_copy`/`sem_pool_type_copy`, the `ctx->owned_types` pool,
+  `semantic_type_from_view`; the `TypeRef` struct + `TypeKind` enum + `type_*_create`/`type_ref_free`
+  from `syntax/type_ref.h`/`.c` (header keeps only the shared enums + `SourceLoc`; the `.c` is now an
+  intentionally empty TU).
+- **New owner for registry-borrowed strings**: the old `owned_types` TypeRef pool transitively owned
+  the alias name/backing strings handed by pointer to the type-alias registry. Deleting it orphaned
+  them (ASan leak). Replaced by a focused `ctx->owned_strs` string pool (`sem_own_str`) freed at
+  teardown — the alias names/backings built on the fly during analysis route through it.

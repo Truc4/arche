@@ -6,53 +6,39 @@
  * here. The model is the single home for resolved type info — the tree is
  * never mutated by analysis.
  *
- * Type strings are OWNED by the model: sem_model_set_expr_type copies them in
- * and sem_model_free releases them. Consumers (lowering -> HIR) borrow these
- * pointers, so the model must outlive them (in the compiler, until codegen). */
+ * The callee_name/ref_name string channels are OWNED by the model (copied in, freed at teardown). */
 
 #include "../syntax/syntax_tree.h"
 #include "sem_types.h"
 #include <stdint.h>
 
 typedef struct {
-	const char **expr_type;    /* indexed by syntax tree node id; NULL where unresolved (RESOLVED backing) */
-	const char **expr_nominal; /* indexed by syntax tree node id; the distinct tier-2 subtype name, else NULL.
-	                              Lowering reads expr_type (resolved); the typechecker prefers this. */
-	TypeId *expr_type_id;      /* Phase 3: interned identity of an expression (the nominal-preferring
-	                              `model_type_of`), keyed by node id. Filled post-analysis; supersedes
-	                              the expr_type/expr_nominal string pair. */
-	uint8_t *bind_alias;       /* indexed by syntax tree node id; 1 if a bind is a compile-time type alias */
-	uint8_t *implicit_move;    /* indexed by syntax tree node id; 1 if a bare move-only name in an ownership-
-	                              taking position is an IMPLICIT move. Semantic decides this (it has the
-	                              types); lowering materializes an explicit `move` HIR node so codegen
-	                              has a single move path (no syntax re-derivation downstream). */
-	const char **callee_name;  /* indexed by an SN_CALL_EXPR node id; the call's resolved callee name —
-	                              for `mod.f` the qualify pass's mangled/foreign link name, else the bare
-	                              name. Lets a syntax-tree-driven resolver read what the qualify pass
-	                              resolved, instead of re-deriving module export lookups. */
-	const char **ref_name;     /* indexed by a NAME/FIELD/INDEX/SLICE node id; the resolved leftmost
-	                              name (module-inlined references are prefixed in the AST, e.g.
-	                              `csv.load_cols`). Lets view-driven analysis look names up under the
-	                              identity the AST resolved them to, not the bare token. */
+	TypeId *expr_type_id;     /* Phase 3: interned identity of an expression (the nominal-preferring type),
+	                             keyed by node id. The home for an expression's type — read by tycheck +
+	                             lowering; rendered via tyid_display at the LSP hover edge. */
+	uint8_t *bind_alias;      /* indexed by syntax tree node id; 1 if a bind is a compile-time type alias */
+	uint8_t *implicit_move;   /* indexed by syntax tree node id; 1 if a bare move-only name in an ownership-
+	                             taking position is an IMPLICIT move. Semantic decides this (it has the
+	                             types); lowering materializes an explicit `move` HIR node so codegen
+	                             has a single move path (no syntax re-derivation downstream). */
+	const char **callee_name; /* indexed by an SN_CALL_EXPR node id; the call's resolved callee name —
+	                             for `mod.f` the qualify pass's mangled/foreign link name, else the bare
+	                             name. Lets a syntax-tree-driven resolver read what the qualify pass
+	                             resolved, instead of re-deriving module export lookups. */
+	const char **ref_name;    /* indexed by a NAME/FIELD/INDEX/SLICE node id; the resolved leftmost
+	                             name (module-inlined references are prefixed in the AST, e.g.
+	                             `csv.load_cols`). Lets view-driven analysis look names up under the
+	                             identity the AST resolved them to, not the bare token. */
 	int cap;
 } SemModel;
 
 SemModel *sem_model_new(void);
 void sem_model_free(SemModel *m); /* frees the tables, not the borrowed strings */
 
-void sem_model_set_expr_type(SemModel *m, uint32_t node_id, const char *type);
-const char *sem_model_expr_type(const SemModel *m, uint32_t node_id);
-
-/* Phase 3 interned-type channel (keyed by node id). The capacity lets a post-analysis pass iterate
- * every populated node to fill expr_type_id from the string channels. */
+/* Phase 3 interned-type channel (keyed by node id). */
 void sem_model_set_expr_type_id(SemModel *m, uint32_t node_id, TypeId t);
 TypeId sem_model_expr_type_id(const SemModel *m, uint32_t node_id);
 int sem_model_cap(const SemModel *m);
-
-/* The distinct tier-2 subtype name recorded for an expression (e.g. "meters"), or NULL. The
- * typechecker prefers this over expr_type to enforce distinct-by-default; lowering ignores it. */
-void sem_model_set_expr_nominal(SemModel *m, uint32_t node_id, const char *name);
-const char *sem_model_expr_nominal(const SemModel *m, uint32_t node_id);
 
 void sem_model_set_bind_alias(SemModel *m, uint32_t node_id);
 int sem_model_bind_alias(const SemModel *m, uint32_t node_id);
