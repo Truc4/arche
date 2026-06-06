@@ -6,6 +6,7 @@
 #include "sem_diagnostics.h"
 #include "sem_hints.h"
 #include "sem_model.h"
+#include "sem_types.h"
 #include "tycheck.h"
 #include <stdarg.h>
 #include <stdio.h>
@@ -177,6 +178,11 @@ struct SemanticContext {
 	 * AstProgram's TypeRefs before. */
 	TypeRef **owned_types;
 	int owned_type_count, owned_type_cap;
+
+	/* The interned TypeId arena — the type representation (Phase 3). Lives for the whole context so
+	 * analysis can intern types; tycheck shares it. Freed LAST at teardown (HirType borrows its
+	 * interned name strings, so it must outlive lowering+codegen). Supersedes owned_types/TypeRef. */
+	TypeArena *ty_arena;
 
 	/* Resolved types keyed by syntax tree node id, kept out of the tree.
 	 * Populated during analysis; lowering reads it from here. */
@@ -869,6 +875,7 @@ SyntaxView sem_node_at_expr(SyntaxView v, int idx);
 SyntaxView sem_type_at(SyntaxView v, int idx);
 static TypeRef *cst_build_type(SyntaxView t);
 static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv);
+static void sem_fill_decl_type_ids(SemanticContext *ctx, DeclSummary *ds);
 static char *sem_cv_dup(SyntaxView v);
 static char *sem_txt_dup(SynText t);
 char *sem_cv_dup_first_token(SyntaxView v);
@@ -3763,6 +3770,101 @@ static TypeRef *cst_build_type(SyntaxView t) {
 	return tr;
 }
 
+/* ---- TypeId interning (Phase 3): the SHARED resolvers used by both the DeclSummary builder and
+ * tycheck, so a given type interns to the SAME TypeId everywhere. Ported from tycheck's
+ * tyid_from_name/tyid_from_typeref; all arena ops go through ctx->ty_arena. ---- */
+
+TypeId sem_tyid_of_name(SemanticContext *ctx, const char *n) {
+	if (!ctx || !n || !n[0])
+		return TYID_UNKNOWN;
+	TypeArena *arena = ctx->ty_arena;
+	TypeRef *ct = callable_type_alias_ref(ctx, n);
+	if (ct)
+		return sem_tyid_of_typeref(ctx, ct);
+	if (strcmp(n, "Int") == 0)
+		n = "int";
+	else if (strcmp(n, "Float") == 0)
+		n = "float";
+	else if (strcmp(n, "Char") == 0)
+		n = "char";
+	else if (strcmp(n, "Str") == 0)
+		n = "str";
+	else if (strcmp(n, "Void") == 0)
+		n = "void";
+	/* A tier-2 distinct subtype interns by its OWN name (so `meters` != `float`) while carrying its
+	 * backing TypeId — its own identity for tyid_equal, one-way usable-as / lowerable-through backing. */
+	if (is_type_alias(ctx, n) && !alias_is_transparent(ctx, n)) {
+		const char *b = resolve_type_alias(ctx, n);
+		TypeId backing = (b && b[0] && strcmp(b, n) != 0) ? sem_tyid_of_name(ctx, b) : TYID_UNKNOWN;
+		return tyid_of_nominal_sub(arena, n, backing);
+	}
+	const char *r = resolve_type_alias(ctx, n);
+	if (!r || !r[0])
+		return TYID_UNKNOWN;
+	if (strcmp(r, "int") == 0)
+		return tyid_of_prim(arena, PRIM_INT);
+	if (strcmp(r, "float") == 0)
+		return tyid_of_prim(arena, PRIM_FLOAT);
+	if (strcmp(r, "char") == 0)
+		return tyid_of_prim(arena, PRIM_CHAR);
+	if (strcmp(r, "str") == 0)
+		return tyid_of_prim(arena, PRIM_STR);
+	if (strcmp(r, "bool") == 0)
+		return tyid_of_prim(arena, PRIM_BOOL);
+	if (strcmp(r, "void") == 0)
+		return tyid_of_prim(arena, PRIM_VOID);
+	if (strcmp(r, "opaque") == 0)
+		return tyid_of_nominal(arena, "opaque");
+	if (strcmp(r, "char_array") == 0)
+		return tyid_of_prim(arena, PRIM_STR);
+	return tyid_of_nominal(arena, r);
+}
+
+TypeId sem_tyid_of_typeref(SemanticContext *ctx, const TypeRef *tr) {
+	if (!ctx || !tr)
+		return TYID_UNKNOWN;
+	TypeArena *arena = ctx->ty_arena;
+	switch (tr->kind) {
+	case TYPE_NAME:
+		return sem_tyid_of_name(ctx, tr->data.name);
+	/* NOTE (Phase 3, Stage 2): array/shaped/handle/tuple/archetype/opaque deliberately fall through to
+	 * TYID_UNKNOWN — that mirrors the pre-migration tyid_from_typeref coverage (which only built
+	 * NAME + PROC/FUNC ids, leaving the typechecker fail-open on the rest). Interning these richer
+	 * kinds would add NEW checks; that is a deliberate follow-up with golden updates, not a silent
+	 * side effect of the repr migration. */
+	case TYPE_PROC:
+	case TYPE_FUNC: {
+		int np = tr->data.callable.param_count, nr = tr->data.callable.result_count;
+		TypeId pbuf[32], rbuf[8];
+		TypeId *params = np > 32 ? malloc((size_t)np * sizeof(TypeId)) : pbuf;
+		TypeId *rets = nr > 8 ? malloc((size_t)nr * sizeof(TypeId)) : rbuf;
+		for (int i = 0; i < np; i++)
+			params[i] = sem_tyid_of_typeref(ctx, tr->data.callable.param_types[i]);
+		for (int i = 0; i < nr; i++)
+			rets[i] = sem_tyid_of_typeref(ctx, tr->data.callable.result_types[i]);
+		TypeId out = tyid_of_func(arena, params, np, rets, nr, tr->data.callable.is_proc);
+		if (params != pbuf)
+			free(params);
+		if (rets != rbuf)
+			free(rets);
+		return out;
+	}
+	default:
+		return TYID_UNKNOWN;
+	}
+}
+
+/* Intern a type straight from a syntax type-node view (the eventual cst_build_type replacement).
+ * For now it builds a transient TypeRef, interns it, and frees it — no pooling. */
+TypeId sem_intern_view(SemanticContext *ctx, SyntaxView t) {
+	if (!ctx || !sv_present(t))
+		return TYID_UNKNOWN;
+	TypeRef *tr = cst_build_type(t);
+	TypeId id = sem_tyid_of_typeref(ctx, tr);
+	type_ref_free(tr);
+	return id;
+}
+
 /* ---- syntax tree navigation (same shapes as lower/lower.c) ---- */
 SyntaxView sem_first_expr(SyntaxView v) {
 	for (int i = 0; i < v.node->child_count; i++)
@@ -4926,6 +5028,27 @@ static void analyze_program_core(SemanticContext *ctx) {
 		}
 	}
 
+	/* Intern each decl's resolved TypeRefs into parallel TypeIds NOW — after the analysis passes have
+	 * registered every type alias, so sem_tyid_of_name resolves the alias chains correctly (the same
+	 * state tycheck sees). Must run before tycheck_run. */
+	for (int i = 0; i < ctx->decl_count; i++)
+		if (ctx->decls[i])
+			sem_fill_decl_type_ids(ctx, ctx->decls[i]);
+
+	/* Fill the SemModel TypeId channel from the resolved string channels (nominal-preferring, the same
+	 * `model_type_of` the typechecker used). Done post-analysis so alias resolution is final — the id
+	 * matches what tyid_from_name produced before, for both tycheck and lowering. */
+	if (ctx->model) {
+		int mcap = sem_model_cap(ctx->model);
+		for (int nid = 0; nid < mcap; nid++) {
+			const char *nom = sem_model_expr_nominal(ctx->model, (uint32_t)nid);
+			const char *ty = sem_model_expr_type(ctx->model, (uint32_t)nid);
+			const char *for_id = nom ? nom : ty;
+			if (for_id)
+				sem_model_set_expr_type_id(ctx->model, (uint32_t)nid, sem_tyid_of_name(ctx, for_id));
+		}
+	}
+
 	/* pass 4: tycheck — bidirectional type checker. Phase A encodes one rule
 	 * (return-value types). Diagnostics flow through the same registry as
 	 * everything else. Fail-open: unencoded shapes synth to TYID_UNKNOWN. */
@@ -4943,6 +5066,7 @@ static SemanticContext *make_context(void) {
 	ctx->owned_types = NULL;
 	ctx->owned_type_count = 0;
 	ctx->owned_type_cap = 0;
+	ctx->ty_arena = ty_arena_new(); /* must exist before any decl/expr typing */
 	ctx->aliases = NULL;
 	ctx->alias_count = 0;
 	ctx->known_funcs = NULL;
@@ -5670,6 +5794,26 @@ static void sem_tree_qualify_walk(SemanticContext *ctx, const SyntaxNode *n, con
 /* Finalize the DeclSummary table that sem_collect_decls populated (bare names): apply each decl's
  * recorded module/file rename ops, record the callee_name/ref_name channels by walking its body +
  * value exprs on the tree (the tree-qualify pass), then expand top-level tuple groups. */
+/* Phase 3: intern every TypeRef this DeclSummary carries into a parallel TypeId. Called after rename
+ * + tuple-expansion, so the names/shapes are final — the ids match what tycheck computes on the same
+ * (renamed) TypeRefs. */
+static void sem_fill_decl_type_ids(SemanticContext *ctx, DeclSummary *ds) {
+	for (int p = 0; p < ds->param_count; p++)
+		ds->params[p].type_id = sem_tyid_of_typeref(ctx, ds->params[p].type);
+	for (int p = 0; p < ds->out_param_count; p++)
+		ds->out_params[p].type_id = sem_tyid_of_typeref(ctx, ds->out_params[p].type);
+	if (ds->return_type_count > 0) {
+		ds->return_type_ids = calloc((size_t)ds->return_type_count, sizeof(TypeId));
+		for (int r = 0; r < ds->return_type_count; r++)
+			ds->return_type_ids[r] = sem_tyid_of_typeref(ctx, ds->return_types[r]);
+	}
+	for (int f = 0; f < ds->field_count; f++)
+		ds->fields[f].type_id = sem_tyid_of_typeref(ctx, ds->fields[f].type);
+	ds->static_type_id = sem_tyid_of_typeref(ctx, ds->static_type);
+	ds->const_type_value_id = sem_tyid_of_typeref(ctx, ds->const_type_value);
+	ds->const_decl_type_id = sem_tyid_of_typeref(ctx, ds->const_decl_type);
+}
+
 static void build_decl_table(SemanticContext *ctx) {
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *ds = ctx->decls[i];
@@ -5708,6 +5852,7 @@ static void free_decl_summary(DeclSummary *ds) {
 		free(ds->out_params[p].name);
 	free(ds->out_params);
 	free(ds->return_types);
+	free(ds->return_type_ids);
 	for (int m = 0; m < ds->member_count; m++)
 		free(ds->member_names[m]);
 	free(ds->member_names);
@@ -5874,6 +6019,10 @@ void semantic_context_free(SemanticContext *ctx) {
 		type_ref_free(ctx->owned_types[i]);
 	free(ctx->owned_types);
 
+	/* Freed LAST: HirType borrows the arena's interned name strings through lowering+codegen, and
+	 * this is the compiler's final teardown. */
+	ty_arena_free(ctx->ty_arena);
+
 	free(ctx);
 }
 
@@ -5883,6 +6032,10 @@ int semantic_has_errors(SemanticContext *ctx) {
 
 SemModel *sem_context_model(SemanticContext *ctx) {
 	return ctx ? ctx->model : NULL;
+}
+
+TypeArena *sem_context_arena(SemanticContext *ctx) {
+	return ctx ? ctx->ty_arena : NULL;
 }
 
 SemHints *sem_context_hints(SemanticContext *ctx) {

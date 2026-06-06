@@ -378,8 +378,56 @@ static HirType *lower_type_cst(SyntaxView t) {
 }
 
 /* Resolved type of a syntax tree expression node, from the side model (keyed by node id). */
+/* Decode an interned TypeId to a HirType (Phase 3) — the back-end twin of map_type_str. A tier-2
+ * distinct subtype lowers as its backing; a nominal's spelling (width-int / char_array / handle /
+ * opaque / archetype) is parsed exactly as map_type_str does, so the result matches the old
+ * string-driven path. */
+static HirType map_type_id(const TypeArena *a, TypeId t) {
+	while (tyid_kind(a, t) == TYK_NOMINAL && tyid_backing(a, t) != TYID_UNKNOWN)
+		t = tyid_backing(a, t);
+	HirType ht = {0};
+	switch (tyid_kind(a, t)) {
+	case TYK_PRIM:
+		switch (tyid_prim(a, t)) {
+		case PRIM_INT:
+			ht.tag = HIR_TYPE_INT;
+			ht.int_width = 32;
+			ht.int_signed = 1;
+			break;
+		case PRIM_FLOAT:
+			ht.tag = HIR_TYPE_FLOAT;
+			break;
+		case PRIM_CHAR:
+			ht.tag = HIR_TYPE_CHAR;
+			break;
+		case PRIM_VOID:
+			ht.tag = HIR_TYPE_VOID;
+			break;
+		case PRIM_STR:
+			ht.tag = HIR_TYPE_CHAR_ARRAY;
+			break;
+		case PRIM_BOOL:
+			ht.tag = HIR_TYPE_NAMED; /* matches map_type_str("bool") -> NAMED */
+			ht.name = "bool";
+			break;
+		default:
+			ht.tag = HIR_TYPE_UNKNOWN;
+			break;
+		}
+		return ht;
+	case TYK_NOMINAL:
+		/* width-int / char_array / handle / opaque / archetype name — same parse as map_type_str. */
+		return map_type_str(tyid_nominal_name(a, t));
+	default:
+		ht.tag = HIR_TYPE_UNKNOWN;
+		return ht;
+	}
+}
+
 static HirType syntax_expr_type(SyntaxView e) {
-	return map_type_str(g_lower_model ? sem_model_expr_type(g_lower_model, sv_id(e)) : NULL);
+	if (!g_lower_model || !g_lower_sem)
+		return map_type_str(NULL);
+	return map_type_id(sem_context_arena(g_lower_sem), sem_model_expr_type_id(g_lower_model, sv_id(e)));
 }
 
 /* Decode a string token's content (quotes + escapes) like parse_primary_expr does. */

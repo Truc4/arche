@@ -1,5 +1,6 @@
 #include "../../../lexer/lexer.h"
 #include "../../../parser/parser.h"
+#include "../../../semantic/sem_types.h"
 #include "../../../semantic/semantic.h"
 #include "../../../syntax/type_ref.h"
 #include <assert.h>
@@ -518,10 +519,49 @@ void test_copy_opaque_error(void) {
 	test_pass_msg();
 }
 
+/* ========== TypeId arena: alias-tier encoding (Stage 0) ========== */
+
+void test_tyid_distinct_subtype(void) {
+	test_start("tyid: distinct subtype != backing, usable-as one-way");
+	TypeArena *a = ty_arena_new();
+	TypeId f = tyid_of_prim(a, PRIM_FLOAT);
+	TypeId meters = tyid_of_nominal_sub(a, "meters", f);
+	ASSERT_FALSE(tyid_equal(meters, f), "meters must be a distinct id from float");
+	ASSERT_TRUE(tyid_usable_as(a, meters, f), "meters usable as float (one-way)");
+	ASSERT_FALSE(tyid_usable_as(a, f, meters), "float NOT usable as meters");
+	ASSERT_TRUE(tyid_backing(a, meters) == f, "meters backing is float");
+	ASSERT_TRUE(tyid_backing(a, f) == TYID_UNKNOWN, "prim has no backing");
+	ty_arena_free(a);
+	test_pass_msg();
+}
+
+void test_tyid_subtype_chain_and_intern(void) {
+	test_start("tyid: backing chain + hash-cons");
+	TypeArena *a = ty_arena_new();
+	TypeId f = tyid_of_prim(a, PRIM_FLOAT);
+	TypeId meters = tyid_of_nominal_sub(a, "meters", f);
+	TypeId mm = tyid_of_nominal_sub(a, "mm", meters);
+	ASSERT_TRUE(tyid_usable_as(a, mm, f), "mm usable as float through the backing chain");
+	ASSERT_FALSE(tyid_equal(mm, meters), "mm distinct from meters");
+	/* hash-consing: same (name, backing) interns once */
+	ASSERT_TRUE(tyid_equal(meters, tyid_of_nominal_sub(a, "meters", f)), "identical subtype interns once");
+	/* a standalone nominal (opaque tag) has no backing and is usable only as itself */
+	TypeId op = tyid_of_nominal(a, "socket");
+	ASSERT_TRUE(tyid_backing(a, op) == TYID_UNKNOWN, "standalone nominal has no backing");
+	ASSERT_FALSE(tyid_usable_as(a, op, f), "opaque not usable as float");
+	ty_arena_free(a);
+	test_pass_msg();
+}
+
 /* ========== MAIN TEST RUNNER ========== */
 
 int main(void) {
 	printf("Running semantic analysis tests...\n\n");
+
+	/* TypeId arena: alias-tier encoding (Stage 0) */
+	printf("TypeId arena tests:\n");
+	test_tyid_distinct_subtype();
+	test_tyid_subtype_chain_and_intern();
 
 	/* Archetype validation */
 	printf("Archetype validation tests:\n");

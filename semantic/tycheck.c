@@ -44,81 +44,6 @@ static int is_width_int_name(const char *s) {
 	       strcmp(n, "128") == 0;
 }
 
-static TypeId tyid_from_typeref(TypeArena *arena, SemanticContext *ctx, const TypeRef *tr);
-
-/* Map a type-name string (as resolved by semantic.c into SemModel.expr_type) to a TypeId. Nominal
- * aliases (`file :: opaque`) resolve through their chain before interning; a tier-2 subtype interns
- * by its own name (distinct). */
-static TypeId tyid_from_name(TypeArena *arena, SemanticContext *ctx, const char *n) {
-	if (!n || !n[0])
-		return TYID_UNKNOWN;
-	if (ctx) {
-		TypeRef *ct = semantic_callable_type_alias(ctx, n);
-		if (ct)
-			return tyid_from_typeref(arena, ctx, ct);
-	}
-	if (strcmp(n, "Int") == 0)
-		n = "int";
-	else if (strcmp(n, "Float") == 0)
-		n = "float";
-	else if (strcmp(n, "Char") == 0)
-		n = "char";
-	else if (strcmp(n, "Str") == 0)
-		n = "str";
-	else if (strcmp(n, "Void") == 0)
-		n = "void";
-	if (ctx && semantic_is_type_alias(ctx, n) && !semantic_alias_is_transparent(ctx, n))
-		return tyid_of_nominal(arena, n);
-	const char *r = ctx ? semantic_resolve_type_alias(ctx, n) : n;
-	if (!r || !r[0])
-		return TYID_UNKNOWN;
-	if (strcmp(r, "int") == 0)
-		return tyid_of_prim(arena, PRIM_INT);
-	if (strcmp(r, "float") == 0)
-		return tyid_of_prim(arena, PRIM_FLOAT);
-	if (strcmp(r, "char") == 0)
-		return tyid_of_prim(arena, PRIM_CHAR);
-	if (strcmp(r, "str") == 0)
-		return tyid_of_prim(arena, PRIM_STR);
-	if (strcmp(r, "bool") == 0)
-		return tyid_of_prim(arena, PRIM_BOOL);
-	if (strcmp(r, "void") == 0)
-		return tyid_of_prim(arena, PRIM_VOID);
-	if (strcmp(r, "opaque") == 0)
-		return tyid_of_nominal(arena, "opaque");
-	if (strcmp(r, "char_array") == 0)
-		return tyid_of_prim(arena, PRIM_STR);
-	return tyid_of_nominal(arena, r);
-}
-
-static TypeId tyid_from_typeref(TypeArena *arena, SemanticContext *ctx, const TypeRef *tr) {
-	if (!tr)
-		return TYID_UNKNOWN;
-	switch (tr->kind) {
-	case TYPE_NAME:
-		return tyid_from_name(arena, ctx, tr->data.name);
-	case TYPE_PROC:
-	case TYPE_FUNC: {
-		int np = tr->data.callable.param_count, nr = tr->data.callable.result_count;
-		TypeId pbuf[32], rbuf[8];
-		TypeId *params = np > 32 ? malloc((size_t)np * sizeof(TypeId)) : pbuf;
-		TypeId *rets = nr > 8 ? malloc((size_t)nr * sizeof(TypeId)) : rbuf;
-		for (int i = 0; i < np; i++)
-			params[i] = tyid_from_typeref(arena, ctx, tr->data.callable.param_types[i]);
-		for (int i = 0; i < nr; i++)
-			rets[i] = tyid_from_typeref(arena, ctx, tr->data.callable.result_types[i]);
-		TypeId out = tyid_of_func(arena, params, np, rets, nr, tr->data.callable.is_proc);
-		if (params != pbuf)
-			free(params);
-		if (rets != rbuf)
-			free(rets);
-		return out;
-	}
-	default:
-		return TYID_UNKNOWN;
-	}
-}
-
 /* The literal lexeme of an SN_LITERAL_EXPR view (caller frees), or NULL for any other shape. */
 static char *literal_lexeme(SyntaxView e) {
 	if (!sv_present(e) || sv_kind(e) != SN_LITERAL_EXPR)
@@ -181,15 +106,15 @@ static TypeId tyid_of_callee(TyCtx *cx, const DeclSummary *d) {
 	int is_proc = (d->kind == DECL_PROC);
 	int rc;
 	for (int i = 0; i < pc; i++)
-		pbuf[i] = tyid_from_typeref(cx->arena, cx->ctx, d->params[i].type);
+		pbuf[i] = d->params[i].type_id;
 	if (is_proc) {
 		rc = d->out_param_count > 8 ? 8 : d->out_param_count;
 		for (int i = 0; i < rc; i++)
-			rbuf[i] = tyid_from_typeref(cx->arena, cx->ctx, d->out_params[i].type);
+			rbuf[i] = d->out_params[i].type_id;
 	} else {
 		rc = d->return_type_count > 8 ? 8 : d->return_type_count;
 		for (int i = 0; i < rc; i++)
-			rbuf[i] = tyid_from_typeref(cx->arena, cx->ctx, d->return_types[i]);
+			rbuf[i] = d->return_type_ids[i];
 	}
 	return tyid_of_func(cx->arena, pbuf, pc, rbuf, rc, is_proc);
 }
@@ -205,9 +130,8 @@ static TypeId synth_call(TyCtx *cx, SyntaxView e) {
 		/* `T(x)` conversion: the callee names a type, so the expression's type IS that type. */
 		int is_prim = strcmp(name, "int") == 0 || strcmp(name, "float") == 0 || strcmp(name, "char") == 0 ||
 		              strcmp(name, "str") == 0 || strcmp(name, "void") == 0 || is_width_int_name(name);
-		TypeId r = (is_prim || (cx->ctx && semantic_is_type_alias(cx->ctx, name)))
-		               ? tyid_from_name(cx->arena, cx->ctx, name)
-		               : TYID_UNKNOWN;
+		TypeId r = (is_prim || (cx->ctx && semantic_is_type_alias(cx->ctx, name))) ? sem_tyid_of_name(cx->ctx, name)
+		                                                                           : TYID_UNKNOWN;
 		free(name);
 		return r;
 	}
@@ -221,39 +145,27 @@ static TypeId synth_call(TyCtx *cx, SyntaxView e) {
 	if (is_variadic) {
 		if (arg_count < param_count) {
 			sem_emit_wrong_arity(cx->ctx, loc, name, param_count, arg_count);
-			TypeId r = ret_count > 0 ? tyid_from_typeref(cx->arena, cx->ctx, cr->return_types[0]) : TYID_UNKNOWN;
+			TypeId r = ret_count > 0 ? cr->return_type_ids[0] : TYID_UNKNOWN;
 			free(name);
 			return r;
 		}
 	} else if (param_count != arg_count) {
 		sem_emit_wrong_arity(cx->ctx, loc, name, param_count, arg_count);
-		TypeId r = ret_count > 0 ? tyid_from_typeref(cx->arena, cx->ctx, cr->return_types[0]) : TYID_UNKNOWN;
+		TypeId r = ret_count > 0 ? cr->return_type_ids[0] : TYID_UNKNOWN;
 		free(name);
 		return r;
 	}
 
 	for (int i = 0; i < arg_count && i < param_count; i++) {
-		TypeId expected = tyid_from_typeref(cx->arena, cx->ctx, cr->params[i].type);
+		TypeId expected = cr->params[i].type_id;
 		char where[64];
 		snprintf(where, sizeof(where), "argument %d of '%s'", i + 1, name);
 		check(cx, sem_node_at_expr(e, i), expected, where);
 	}
 
-	TypeId r =
-	    ret_count > 0 ? tyid_from_typeref(cx->arena, cx->ctx, cr->return_types[0]) : tyid_of_prim(cx->arena, PRIM_VOID);
+	TypeId r = ret_count > 0 ? cr->return_type_ids[0] : tyid_of_prim(cx->arena, PRIM_VOID);
 	free(name);
 	return r;
-}
-
-/* The model type recorded for an expression node, preferring its distinct tier-2 subtype name. */
-static const char *model_type_of(TyCtx *cx, SyntaxView e) {
-	if (!cx->model || !sv_present(e))
-		return NULL;
-	uint32_t id = sv_id(e);
-	const char *nom = sem_model_expr_nominal(cx->model, id);
-	if (nom)
-		return nom;
-	return sem_model_expr_type(cx->model, id);
 }
 
 /* The resolved leftmost name of a NAME view: the ref_name channel, else the leading token text. */
@@ -329,12 +241,9 @@ static TypeId synth(TyCtx *cx, SyntaxView e) {
 		return lt;
 	}
 	case SN_INDEX_EXPR:
-	case SN_SLICE_EXPR: {
-		const char *s = model_type_of(cx, e);
-		if (s)
-			return tyid_from_name(cx->arena, cx->ctx, s);
-		return TYID_UNKNOWN;
-	}
+	case SN_SLICE_EXPR:
+		/* The interned identity (filled post-analysis from the model's nominal-preferring string). */
+		return sem_model_expr_type_id(cx->model, sv_id(e));
 	case SN_NAME_EXPR:
 	case SN_FIELD_EXPR: {
 		if (sv_kind(e) == SN_NAME_EXPR) {
@@ -344,10 +253,7 @@ static TypeId synth(TyCtx *cx, SyntaxView e) {
 			if (cr)
 				return tyid_of_callee(cx, cr);
 		}
-		const char *s = model_type_of(cx, e);
-		if (s)
-			return tyid_from_name(cx->arena, cx->ctx, s);
-		return TYID_UNKNOWN;
+		return sem_model_expr_type_id(cx->model, sv_id(e));
 	}
 	case SN_UNARY_EXPR:
 		return synth(cx, sem_first_expr(e));
@@ -484,10 +390,8 @@ static void visit_stmt(TyCtx *cx, SyntaxView s, const DeclSummary *fn) {
 		if (sv_present(value))
 			visit_expr(cx, value);
 		/* typed bind `x : T = e` / `x : T : e`: check the RHS against T (untyped `x := e` has none). */
-		if (sv_present(value) && sv_present(type_view)) {
-			TypeRef *t = semantic_type_from_view(cx->ctx, type_view);
-			check(cx, value, tyid_from_typeref(cx->arena, cx->ctx, t), "binding");
-		}
+		if (sv_present(value) && sv_present(type_view))
+			check(cx, value, sem_intern_view(cx->ctx, type_view), "binding");
 		break;
 	}
 	case SN_ASSIGN_STMT: {
@@ -528,8 +432,7 @@ static void visit_stmt(TyCtx *cx, SyntaxView s, const DeclSummary *fn) {
 			                            got_count);
 		int n = decl_count < got_count ? decl_count : got_count;
 		for (int i = 0; i < n; i++)
-			check(cx, sem_node_at_expr(s, i), tyid_from_typeref(cx->arena, cx->ctx, fn->return_types[i]),
-			      "return value");
+			check(cx, sem_node_at_expr(s, i), fn->return_type_ids[i], "return value");
 		break;
 	}
 	case SN_IF_STMT:
@@ -569,7 +472,7 @@ void tycheck_run(SemanticContext *ctx) {
 
 	TyCtx cx;
 	cx.ctx = ctx;
-	cx.arena = ty_arena_new();
+	cx.arena = sem_context_arena(ctx); /* shared, context-lived arena (owned by SemanticContext) */
 	cx.model = sem_context_model(ctx);
 	cx.loop_depth = 0;
 
@@ -595,6 +498,5 @@ void tycheck_run(SemanticContext *ctx) {
 				visit_stmt(&cx, sem_stmt_at(d->body_node, k), fn);
 		}
 	}
-
-	ty_arena_free(cx.arena);
+	/* The arena is owned by the SemanticContext (freed at its teardown), not here. */
 }

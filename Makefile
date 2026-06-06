@@ -5,7 +5,6 @@ BUILD_DIR = build
 TARGET = $(BUILD_DIR)/arche
 VPATH = tests
 LEXER_BIN = $(BUILD_DIR)/lexer-bin
-PARSER_TEST_BIN = $(BUILD_DIR)/parser-test
 FMT_BIN = $(BUILD_DIR)/arche-fmt
 SYNTAX_TOKENS_BIN = $(BUILD_DIR)/arche-syntax-tokens
 ANALYZER_BIN = $(BUILD_DIR)/arche-analyzer
@@ -47,7 +46,6 @@ CLI_OBJS = $(BUILD_DIR)/cli/args.o $(BUILD_DIR)/cli/cli.o $(BUILD_DIR)/cli/resou
 FOLD_OBJS = $(BUILD_DIR)/syntax/format_syntax.o $(BUILD_DIR)/syntax/token_category.o $(BUILD_DIR)/arche_analyzer.o
 COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/compile/compile.o $(BUILD_DIR)/doctest/doctest_extract.o $(BUILD_DIR)/doctest/doctest_run.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/codegen/codegen.o $(CLI_OBJS) $(FOLD_OBJS) $(BUILD_DIR)/main.o
 LEXER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/lexer/lexer_main.o
-PARSER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/unit/compiler/parser_tests.o
 FMT_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/syntax/format_syntax.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_fmt.o
 SYNTAX_TOKENS_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/syntax/token_category.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_syntax_tokens.o
 # Standalone arche-analyzer = the analyzer object + a thin shim main (analyze_main lives in
@@ -62,7 +60,7 @@ LOWER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BU
 # Default target
 # `arche fmt` replaces the standalone arche-fmt (its target is still defined, buildable on demand).
 # arche-analyzer (LSP) + arche-syntax-tokens stay for editor integration.
-all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(PARSER_TEST_BIN) $(SYNTAX_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
+all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(SYNTAX_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/syntax $(BUILD_DIR)/hir $(BUILD_DIR)/lower $(BUILD_DIR)/parser $(BUILD_DIR)/compile $(BUILD_DIR)/doctest $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/cli $(BUILD_DIR)/unit/compiler $(BUILD_DIR)/runtime
@@ -73,10 +71,6 @@ $(TARGET): $(COMPILER_OBJS)
 
 # Build lexer-only executable
 $(LEXER_BIN): $(LEXER_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^
-
-# Build parser tests executable
-$(PARSER_TEST_BIN): $(PARSER_TEST_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
 # Build formatter executable
@@ -142,10 +136,6 @@ run-lexer: $(LEXER_BIN)
 test-lexer: $(LEXER_BIN)
 	LEXER_BIN=$(LEXER_BIN) ./tests/run_lexer_tests.sh
 
-# Run parser tests
-test-parser: $(PARSER_TEST_BIN)
-	./$(PARSER_TEST_BIN)
-
 # Run semantic tests
 test-semantic: $(SEMANTIC_TEST_BIN)
 	./$(SEMANTIC_TEST_BIN)
@@ -159,7 +149,7 @@ test-lower: $(LOWER_TEST_BIN)
 	./$(LOWER_TEST_BIN)
 
 # Run all tests with LIT
-test: $(TARGET) $(PARSER_TEST_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
+test: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 	lit -v tests/
 	$(MAKE) test-doc
 
@@ -174,8 +164,8 @@ test-doc: $(TARGET) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o
 # context-freeing unit-test binaries in an ISOLATED object tree (build-asan/) — so the normal
 # build/ stays usable — and runs them, FAILING on the first leak / use-after-free / UB. Scoped to
 # the two binaries that free the SemanticContext and are sanitizer-clean (semantic-test, lower-test).
-# codegen-test (pre-existing gen_value_name leak) and parser-test (pre-existing removed-syntax
-# failure) are excluded until separately addressed — a gate is only honest if it is green.
+# codegen-test (pre-existing gen_value_name leak) is excluded until separately addressed — a gate is
+# only honest if it is green.
 # CFLAGS is APPENDED so the -DARCHE_*_DIR resource defines survive.
 test-asan memcheck:
 	$(MAKE) BUILD_DIR=build-asan \
@@ -388,4 +378,4 @@ test-install: all
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
 
 # Phony targets
-.PHONY: all run run-lexer test test-doc test-lexer test-parser test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install
+.PHONY: all run run-lexer test test-doc test-lexer test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install

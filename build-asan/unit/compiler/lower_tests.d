@@ -8,6 +8,7 @@ build-asan/unit/compiler/lower_tests.o: tests/unit/compiler/lower_tests.c \
  tests/unit/compiler/../../../lower/../semantic/sem_model.h \
  tests/unit/compiler/../../../lower/../semantic/../syntax/syntax_tree.h \
  tests/unit/compiler/../../../lower/../semantic/../syntax/../lexer/lexer.h \
+ tests/unit/compiler/../../../lower/../semantic/sem_types.h \
  tests/unit/compiler/../../../lower/../syntax/type_ref.h \
  tests/unit/compiler/../../../parser/parser.h \
  tests/unit/compiler/../../../parser/../lexer/lexer.h \
@@ -28,6 +29,7 @@ tests/unit/compiler/../../../lower/../hir/hir.h:
 tests/unit/compiler/../../../lower/../semantic/sem_model.h:
 tests/unit/compiler/../../../lower/../semantic/../syntax/syntax_tree.h:
 tests/unit/compiler/../../../lower/../semantic/../syntax/../lexer/lexer.h:
+tests/unit/compiler/../../../lower/../semantic/sem_types.h:
 tests/unit/compiler/../../../lower/../syntax/type_ref.h:
 tests/unit/compiler/../../../parser/parser.h:
 tests/unit/compiler/../../../parser/../lexer/lexer.h:

@@ -11,12 +11,16 @@
  * pointers, so the model must outlive them (in the compiler, until codegen). */
 
 #include "../syntax/syntax_tree.h"
+#include "sem_types.h"
 #include <stdint.h>
 
 typedef struct {
 	const char **expr_type;    /* indexed by syntax tree node id; NULL where unresolved (RESOLVED backing) */
 	const char **expr_nominal; /* indexed by syntax tree node id; the distinct tier-2 subtype name, else NULL.
 	                              Lowering reads expr_type (resolved); the typechecker prefers this. */
+	TypeId *expr_type_id;      /* Phase 3: interned identity of an expression (the nominal-preferring
+	                              `model_type_of`), keyed by node id. Filled post-analysis; supersedes
+	                              the expr_type/expr_nominal string pair. */
 	uint8_t *bind_alias;       /* indexed by syntax tree node id; 1 if a bind is a compile-time type alias */
 	uint8_t *implicit_move;    /* indexed by syntax tree node id; 1 if a bare move-only name in an ownership-
 	                              taking position is an IMPLICIT move. Semantic decides this (it has the
@@ -38,6 +42,12 @@ void sem_model_free(SemModel *m); /* frees the tables, not the borrowed strings 
 
 void sem_model_set_expr_type(SemModel *m, uint32_t node_id, const char *type);
 const char *sem_model_expr_type(const SemModel *m, uint32_t node_id);
+
+/* Phase 3 interned-type channel (keyed by node id). The capacity lets a post-analysis pass iterate
+ * every populated node to fill expr_type_id from the string channels. */
+void sem_model_set_expr_type_id(SemModel *m, uint32_t node_id, TypeId t);
+TypeId sem_model_expr_type_id(const SemModel *m, uint32_t node_id);
+int sem_model_cap(const SemModel *m);
 
 /* The distinct tier-2 subtype name recorded for an expression (e.g. "meters"), or NULL. The
  * typechecker prefers this over expr_type to enforce distinct-by-default; lowering ignores it. */

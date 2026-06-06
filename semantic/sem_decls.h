@@ -7,19 +7,22 @@
 
 #include "../syntax/syntax_view.h"
 #include "../syntax/type_ref.h"
+#include "sem_types.h"
 
 typedef struct SemanticContext SemanticContext;
 
 typedef struct {
-	char *name;    /* owned, resolved; may be NULL for unnamed positions */
-	TypeRef *type; /* pooled root, may be NULL */
+	char *name;     /* owned, resolved; may be NULL for unnamed positions */
+	TypeRef *type;  /* pooled root, may be NULL */
+	TypeId type_id; /* Phase 3: interned identity of `type` (supersedes it) */
 	int is_own;
 	SourceLoc loc;
 } ParamSummary;
 
 typedef struct {
-	char *name;    /* owned, resolved */
-	TypeRef *type; /* pooled root */
+	char *name;     /* owned, resolved */
+	TypeRef *type;  /* pooled root */
+	TypeId type_id; /* Phase 3: interned identity of `type` */
 	FieldKind kind;
 	int meta_explicit;
 	SourceLoc loc;
@@ -37,7 +40,8 @@ typedef struct {
 	int param_count;
 	ParamSummary *out_params; /* proc out-params */
 	int out_param_count;
-	TypeRef **return_types; /* func returns (pooled roots) */
+	TypeRef **return_types;  /* func returns (pooled roots) */
+	TypeId *return_type_ids; /* Phase 3: interned identities, parallel to return_types */
 	int return_type_count;
 	int is_extern;
 	int is_variadic;
@@ -53,17 +57,20 @@ typedef struct {
 	long *enum_variant_values;
 	int enum_variant_count;
 	/* const (`name :: value` / `name : [type] : value`) */
-	SyntaxView const_value;    /* the RHS value node view (for resolve + loc), NULL node if none */
-	int const_value_kind;      /* ExpressionType of the RHS value (EXPR_LITERAL/EXPR_NAME/…), or -1 */
-	char *const_value_lexeme;  /* owned; the literal lexeme if the RHS is a literal, else NULL */
-	char *const_value_name;    /* owned; the bare-name RHS (for the value/alias fixpoint), else NULL */
-	SourceLoc const_value_loc; /* diagnostics + registry loc */
-	TypeRef *const_type_value; /* pooled; the `: type :` RHS type-form (alias/tuple/callable), else NULL */
-	TypeRef *const_decl_type;  /* pooled; the explicit declared type (`PI : float : x`), else NULL */
-	int is_transparent;        /* `k :: alias T` tier-1 transparent */
+	SyntaxView const_value;     /* the RHS value node view (for resolve + loc), NULL node if none */
+	int const_value_kind;       /* ExpressionType of the RHS value (EXPR_LITERAL/EXPR_NAME/…), or -1 */
+	char *const_value_lexeme;   /* owned; the literal lexeme if the RHS is a literal, else NULL */
+	char *const_value_name;     /* owned; the bare-name RHS (for the value/alias fixpoint), else NULL */
+	SourceLoc const_value_loc;  /* diagnostics + registry loc */
+	TypeRef *const_type_value;  /* pooled; the `: type :` RHS type-form (alias/tuple/callable), else NULL */
+	TypeId const_type_value_id; /* Phase 3: interned identity of const_type_value */
+	TypeRef *const_decl_type;   /* pooled; the explicit declared type (`PI : float : x`), else NULL */
+	TypeId const_decl_type_id;  /* Phase 3: interned identity of const_decl_type */
+	int is_transparent;         /* `k :: alias T` tier-1 transparent */
 	/* static */
-	int static_kind;      /* STATIC_KIND_* or -1 if not a static decl */
-	TypeRef *static_type; /* ARRAY: element type; SCALAR: scalar type (pooled); else NULL */
+	int static_kind;       /* STATIC_KIND_* or -1 if not a static decl */
+	TypeRef *static_type;  /* ARRAY: element type; SCALAR: scalar type (pooled); else NULL */
+	TypeId static_type_id; /* Phase 3: interned identity of static_type */
 	int is_requirement;
 	int static_size;                /* ARRAY: declared element count */
 	int static_has_init;            /* ARRAY: 1 if an initializer was written */
@@ -80,6 +87,17 @@ typedef struct {
 	char **allow_slugs;
 	int allow_slug_count;
 } DeclSummary;
+
+/* The context's interned TypeId arena (Phase 3), shared by analysis + tycheck. */
+TypeArena *sem_context_arena(SemanticContext *ctx);
+
+/* Intern a type into the context arena (Phase 3). The shared resolvers used by BOTH the DeclSummary
+ * builder and tycheck, so a given type interns to the SAME TypeId everywhere. `sem_tyid_of_name`
+ * resolves a type-NAME through the alias chain (tier-2 subtype interns by its own name); the others
+ * build from a TypeRef / a syntax type-node view. */
+TypeId sem_tyid_of_name(SemanticContext *ctx, const char *name);
+TypeId sem_tyid_of_typeref(SemanticContext *ctx, const TypeRef *tr);
+TypeId sem_intern_view(SemanticContext *ctx, SyntaxView t);
 
 /* DeclTable accessors (defined in semantic.c) for out-of-file readers like tycheck. */
 int semantic_decl_count(const SemanticContext *ctx);
