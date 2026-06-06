@@ -387,10 +387,10 @@ static int compile_frontend(const char *user_source, const char *source_path, Fr
 		return 1;
 	}
 
-	/* The parser produces ONLY the lossless syntax tree now (no abstract AstProgram); the
-	 * abstract AST is built solely by cst_to_program inside semantic analysis.
-	 * Keep the syntax tree alive through lowering (syntax-tree-driven lowering reads it); the rest
-	 * of the parse result is freed now. */
+	/* The parser produces ONLY the lossless syntax tree; semantic analysis collects its resolved
+	 * DeclSummary table directly from it (no abstract AST is built anywhere). Keep the syntax tree
+	 * alive through lowering (syntax-tree-driven lowering reads it); the rest of the parse result
+	 * is freed now. */
 	SyntaxNode *syntax_root = parse_result.syntax_root;
 	parse_result.syntax_root = NULL;
 	parse_result_free(&parse_result);

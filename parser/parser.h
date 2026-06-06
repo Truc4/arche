@@ -2,8 +2,8 @@
 #define PARSER_H
 
 #include "../lexer/lexer.h"
-#include "../syntax/cst.h"
 #include "../syntax/syntax_tree.h"
+#include "../syntax/type_ref.h"
 #include <stddef.h>
 
 /* A single parse error */

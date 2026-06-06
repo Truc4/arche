@@ -3,7 +3,7 @@
 
 #include "../hir/hir.h"
 #include "../semantic/sem_model.h"
-#include "../syntax/cst.h"
+#include "../syntax/type_ref.h"
 
 /* Provide the resolved-type side model lowering should read (keyed by syntax tree node
  * id). Call before lower_to_hir. */

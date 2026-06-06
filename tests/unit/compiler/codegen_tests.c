@@ -4,7 +4,7 @@
 #include "../../../lower/lower.h"
 #include "../../../parser/parser.h"
 #include "../../../semantic/semantic.h"
-#include "../../../syntax/cst.h"
+#include "../../../syntax/type_ref.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>

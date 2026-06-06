@@ -1,7 +1,7 @@
 #ifndef HIR_H
 #define HIR_H
 
-#include "../syntax/cst.h" /* SourceLoc, Operator, UnaryOperator */
+#include "../syntax/type_ref.h" /* SourceLoc, Operator, UnaryOperator */
 #include <stddef.h>
 
 /* =========================

@@ -5,8 +5,8 @@
  * legacy `AstProgram` during analysis and typechecking. Shared by semantic.c (which builds it) and
  * tycheck.c (which reads it). Bodies are navigated via the `body_node` SyntaxView, never stored. */
 
-#include "../syntax/cst.h"
 #include "../syntax/syntax_view.h"
+#include "../syntax/type_ref.h"
 
 typedef struct SemanticContext SemanticContext;
 

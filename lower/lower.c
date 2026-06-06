@@ -6,7 +6,7 @@
 #include <string.h>
 
 /* Semantic context for syntax-tree-driven lowering: resolves nominal type aliases (e.g.
- * `file` -> `opaque`), which the AstProgram path got via in-place erasure. */
+ * `file` -> `opaque`) at lowering time. */
 static SemanticContext *g_lower_sem = NULL;
 void lower_set_sem(struct SemanticContext *ctx) {
 	g_lower_sem = ctx;
@@ -176,10 +176,9 @@ static void tuple_rewrite_stmt(HirStmt *s, const char *base) {
 }
 
 /* =========================================================================
-   syntax-tree-driven lowering (alternative to the AstProgram-based path above). Reads the
-   lossless syntax tree via syntax_view + the semantic side model. Gated by ARCHE_LOWER_CST
-   until validated IR-identical; the AstProgram path remains the default. Reuses the
-   AST-level helpers above (map_type_str, tuple registry, tuple_rewrite_*).
+   syntax-tree-driven lowering — the lowering path. Reads the lossless syntax tree via
+   syntax_view + the semantic side model. Reuses the helpers above (map_type_str, tuple
+   registry, tuple_rewrite_*).
    ========================================================================= */
 
 static HirExpr *lower_expr_cst(SyntaxView e);
@@ -1897,9 +1896,8 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 			}
 			CstTupleGroup *g = tgroup_lookup(raw);
 			if (g) {
-				/* tuple group: flatten to scalar columns `pos_x`, `pos_y` (mirrors the
-				 * AstProgram path; codegen has no tuple type). `pos.x`/`Body.pos.x` accesses
-				 * are collapsed to the combined column name during statement lowering. */
+				/* tuple group: flatten to scalar columns `pos_x`, `pos_y` (codegen has no tuple type).
+				 * `pos.x`/`Body.pos.x` accesses are collapsed to the combined column name during statement lowering. */
 				for (int sx = 0; sx < g->nsuf; sx++) {
 					if (aa->field_count >= cap) {
 						cap *= 2;
@@ -1963,7 +1961,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		as->name = sv_dup(sv_child(d, SN_FUNC_DEF_NAME));
 		/* Lower the body first; a tuple-group param then expands into one scalar param
 		 * per component (`pos` → `pos_x`, `pos_y`) and its `pos.x` body accesses are
-		 * rewritten to the flattened names (mirrors the AstProgram-path sys lowering). */
+		 * rewritten to the flattened names (flattened sys lowering). */
 		as->stmts = syntax_lower_body(d, &as->stmt_count);
 		int np = sv_count(d, SN_PARAM);
 		int pcount = 0;
@@ -2988,7 +2986,7 @@ static void collect_impl_binds(const SyntaxNode *decl, const char *src) {
 	free(local);
 }
 
-/* syntax-tree-driven entry, gated by ARCHE_LOWER_CST (validated against the IR goldens). */
+/* The lowering entry: syntax tree + semantic side model -> HIR. */
 HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 	if (!root)
 		return NULL;

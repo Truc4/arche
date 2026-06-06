@@ -1,7 +1,7 @@
 #include "lexer/lexer.h"
 #include "parser/parser.h"
-#include "syntax/cst.h"
 #include "syntax/format_syntax.h"
+#include "syntax/type_ref.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

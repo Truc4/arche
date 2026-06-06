@@ -5,9 +5,9 @@
 #include "sem_model.h"
 #include "sem_types.h"
 
-#include "../syntax/cst.h"
 #include "../syntax/syntax_tree.h"
 #include "../syntax/syntax_view.h"
+#include "../syntax/type_ref.h"
 
 #include <stdio.h>
 #include <stdlib.h>

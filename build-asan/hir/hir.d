@@ -1,6 +1,5 @@
-build-asan/hir/hir.o: hir/hir.c hir/hir.h hir/../syntax/cst.h \
- hir/../syntax/../lexer/lexer.h hir/../syntax/syntax_tree.h
+build-asan/hir/hir.o: hir/hir.c hir/hir.h hir/../syntax/type_ref.h \
+ hir/../syntax/../lexer/lexer.h
 hir/hir.h:
-hir/../syntax/cst.h:
+hir/../syntax/type_ref.h:
 hir/../syntax/../lexer/lexer.h:
-hir/../syntax/syntax_tree.h:

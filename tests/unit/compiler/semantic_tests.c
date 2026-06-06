@@ -1,7 +1,7 @@
 #include "../../../lexer/lexer.h"
 #include "../../../parser/parser.h"
 #include "../../../semantic/semantic.h"
-#include "../../../syntax/cst.h"
+#include "../../../syntax/type_ref.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,7 +54,7 @@ void test_fail_msg(const char *reason) {
 
 /* Helper to parse and analyze a string.
  * The parser produces only the lossless syntax tree; analysis runs via semantic_analyze_cst, which
- * reconstructs its analyzable AstProgram from that syntax tree (owned by the context). cst_to_program
+ * collects its resolved DeclSummary table directly from that syntax tree (owned by the context) and
  * copies every string out of the source, so the syntax tree + source can be freed once analysis
  * returns. These tests therefore validate the syntax-tree-driven semantic path end to end. */
 typedef struct {
