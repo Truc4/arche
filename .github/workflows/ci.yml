@@ -59,17 +59,14 @@ jobs:
         env:
           ARCHE_CORE_DIR: ${{ github.workspace }}/core
 
-      # NB: per-unit codegen (`make test-per-unit`) is intentionally NOT gated here — the mode is DORMANT
-      # (default-off, no current consumer). Run it manually if reviving separate compilation; the
-      # always-on ODR verifier catches divergence whenever it IS run.
-
-      # IR-level drift gate: diff emitted LLVM IR for a fixed representative set against checked-in
-      # goldens. Catches codegen changes that behavioral tests can't see (same output, different IR).
-      # An intended codegen change must regenerate the goldens (see the Makefile target comment).
-      - name: Codegen IR drift gate
-        run: make verify-codegen
-        env:
-          ARCHE_CORE_DIR: ${{ github.workspace }}/core
+      # NB: two codegen checks are intentionally NOT gated here, both manual-only (`make test-per-unit`,
+      # `make verify-codegen`):
+      #  - per-unit codegen is DORMANT (default-off, no current consumer); the always-on ODR verifier
+      #    catches divergence whenever it IS run.
+      #  - verify-codegen diffs RAW (pre-opt) IR against goldens — machine-independent (so it CAN'T be
+      #    post-opt: optimized IR is LLVM-version-dependent and would flake on the runner) but it churns
+      #    on cosmetic codegen changes. Behavioral tests + ASan are the correctness gates here; run
+      #    verify-codegen by hand to review a change's IR impact or chase a suspected silent regression.
 
       - name: Check test results
         if: success()

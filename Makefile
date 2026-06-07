@@ -308,13 +308,15 @@ verify-syntax: $(SYNTAX_ROUNDTRIP_BIN)
 test-syntax-view: $(SYNTAX_VIEW_TEST_BIN)
 	@./$(SYNTAX_VIEW_TEST_BIN)
 
-# Guard against silent codegen changes: emit LLVM IR for representative programs and
-# diff against checked-in goldens (first run captures them). VERIFY_CG_PROGRAMS is the
-# fixed representative set; see tests/codegen_golden/.
-# This is LIVE IR-level protection (run in CI). The goldens are raw codegen output, so an
-# INTENDED codegen change must regenerate them: `rm tests/codegen_golden/*.ll && make
-# verify-codegen` (re-captures), then review the diff before committing. Not in `make test`
-# (it has its own CI step) — `make test` is behavioral, this catches IR drift behavior can't see.
+# MANUAL dev tool (NOT in `make test`, NOT in CI): emit LLVM IR for representative programs and diff
+# against checked-in goldens (first run captures them). VERIFY_CG_PROGRAMS is the fixed representative
+# set; see tests/codegen_golden/. Catches silent IR drift that behavioral tests can't see (same output,
+# different IR). Run it to review a change's IR impact or chase a suspected codegen regression; on an
+# INTENDED codegen change regenerate the goldens: `rm tests/codegen_golden/*.ll && make verify-codegen`,
+# then review the diff before committing. Goldens are RAW (pre-opt) codegen on purpose — that is pure
+# arche output (hardcoded triple/datalayout), hence machine-independent and reproducible; post-opt IR
+# would be LLVM-version-dependent. It is manual rather than CI-gated because raw IR churns on cosmetic
+# codegen changes, which would tax every codegen PR for protection the behavioral suite mostly provides.
 VERIFY_CG_DIR = tests/codegen_golden
 VERIFY_CG_PROGRAMS = \
 	examples/simple/simple.arche \
