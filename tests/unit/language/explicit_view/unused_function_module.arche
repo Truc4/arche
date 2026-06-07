@@ -1,0 +1,9 @@
+// Cross-unit dead code (Go unexported / Rust private): a user module's PRIVATE (`#module`) unreachable
+// proc IS dead and warns; its EXPORTED proc is API and is kept; a reachable private proc is kept; and
+// stdlib internals are never linted. Exercises the visibility + origin + crate-kind reachability.
+// RUN: %arche check %s 2>&1 | grep -qF "function 'dead_priv' is declared but never called"
+// RUN: test $(%arche check %s 2>&1 | grep -c "unused_function") -eq 1
+#import { "./deadmod_lib" }
+main :: proc() {
+  deadmod_lib.make()();
+}

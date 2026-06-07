@@ -45,6 +45,14 @@ struct CodegenContext {
 	SemanticContext *sem_ctx;
 	int had_error; /* set when codegen hits a hard error (e.g. a `run` no shape can satisfy) */
 
+	/* Per-unit codegen (P3, experimental, behind ARCHE_PER_UNIT). When `per_unit` is set, codegen emits
+	 * one module per compilation unit (for separate/incremental object compilation) instead of one
+	 * whole-program module; `emit_only_unit` >= 0 restricts func/proc/sys emission to that unit (shared
+	 * decls — archetype struct types, pool storage, string constants — still emit in unit 0's module).
+	 * Default off → the whole-program path is unchanged. Built incrementally; see the compilation plan. */
+	int per_unit;
+	int emit_only_unit; /* -1 = emit all units (whole-program / default) */
+
 	/* For tracking allocated values */
 	ValueScope *scopes;
 	int scope_count;
@@ -908,10 +916,31 @@ static void drop_exit_all_for_return(CodegenContext *ctx) {
 	ctx->block_terminated = 1;
 }
 
+/* Per-unit symbol/linkage helpers (defined below, near monomorph_mangle). */
+static const char *cg_fnsym(CodegenContext *ctx, const char *name, int is_extern, char *buf, size_t n);
+
+/* Is the proc/func named `name` an extern (#foreign, C-ABI)? A `@drop` destructor may be either an
+ * arche proc (mangled under per-unit) or an extern (keeps its C name) — the dtor call must match. */
+static int decl_name_is_extern(CodegenContext *ctx, const char *name) {
+	if (!name)
+		return 0;
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		HirDecl *d = ctx->ast->decls[i];
+		if (d->kind == HIR_DECL_PROC && d->data.proc->name && strcmp(d->data.proc->name, name) == 0)
+			return d->data.proc->is_extern;
+		if (d->kind == HIR_DECL_FUNC && d->data.func->name && strcmp(d->data.func->name, name) == 0)
+			return d->data.func->is_extern;
+	}
+	return 0;
+}
+
 static void drop_emit_one(CodegenContext *ctx, int idx) {
 	char *cell = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cell, ctx->drop_live[idx].slot);
-	buffer_append_fmt(ctx, "  call void @%s(i64 %s)\n", ctx->drop_live[idx].dtor, cell);
+	char dtor_sym[512];
+	const char *dtor = ctx->drop_live[idx].dtor;
+	buffer_append_fmt(ctx, "  call void @%s(i64 %s)\n",
+	                  cg_fnsym(ctx, dtor, decl_name_is_extern(ctx, dtor), dtor_sym, sizeof(dtor_sym)), cell);
 }
 
 static ValueInfo *find_value(CodegenContext *ctx, const char *name) {
@@ -1277,6 +1306,28 @@ static void monomorph_mangle(const char *proc_name, const char *arch_name, char 
 	snprintf(out, out_sz, "__%s_%s", proc_name, arch_name);
 }
 
+/* Per-unit symbol name for an arche-owned function/proc/sys. Under per-unit codegen these get EXTERNAL
+ * linkage (cross-object references), so their names must not collide with libc — a dot-bearing prefix
+ * is C-incompatible (no C symbol contains a `.`), making collisions impossible and retiring the
+ * `internal`-everything workaround. Externs keep their C-ABI name; `main`/`main_user` stay bare (the
+ * entry). Inert (returns `name` unchanged) when per_unit is off, so the whole-program path is unaffected. */
+static const char *cg_fnsym(CodegenContext *ctx, const char *name, int is_extern, char *buf, size_t n) {
+	if (!ctx->per_unit || !name || is_extern || strcmp(name, "main") == 0 || strcmp(name, "main_user") == 0)
+		return name;
+	snprintf(buf, n, "arche.%s", name);
+	return buf;
+}
+/* Linkage keyword for an arche-owned def: external under per-unit (cross-object), else internal. */
+static const char *cg_linkage(CodegenContext *ctx) {
+	return ctx->per_unit ? "" : "internal ";
+}
+/* Linkage keyword for a SHARED definition (global storage, archetype helpers, monomorph instances) that
+ * each per-unit module emits identically: `linkonce_odr` lets the linker fold the duplicate definitions
+ * to one (ODR holds — same codegen over the same program). Empty (plain external/global) when off. */
+static const char *cg_shared(CodegenContext *ctx) {
+	return ctx->per_unit ? "linkonce_odr " : "";
+}
+
 /* Queue a (proc, arch) pair for emission later, if not already pending or
  * emitted. Returns 1 if newly queued, 0 if already known. */
 static int monomorph_enqueue(CodegenContext *ctx, HirProcDecl *proc, HirArchetypeDecl *arch) {
@@ -1349,7 +1400,7 @@ static void emit_monomorphized_proc(CodegenContext *ctx, HirProcDecl *proc, HirA
 	char mangled[256];
 	monomorph_mangle(proc->name, arch->name, mangled, sizeof(mangled));
 
-	buffer_append_fmt(ctx, "define void @%s(", mangled);
+	buffer_append_fmt(ctx, "define %svoid @%s(", cg_shared(ctx), mangled);
 	for (int i = 0; i < proc->param_count; i++) {
 		HirType *param_type = proc->params[i]->type;
 		if (i == arch_pidx) {
@@ -1472,7 +1523,7 @@ static void emit_callback_monomorphized_proc(CodegenContext *ctx, HirProcDecl *p
 		return;
 	cb_mark_emitted(ctx, mangled);
 
-	buffer_append_fmt(ctx, "define void @%s(", mangled);
+	buffer_append_fmt(ctx, "define %svoid @%s(", cg_shared(ctx), mangled);
 	int emitted = 0;
 	for (int i = 0; i < proc->param_count; i++) {
 		HirType *param_type = proc->params[i]->type;
@@ -3657,12 +3708,19 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 
 		/* Special handling for print function with double arguments */
 		const char *actual_func_name;
+		char actual_sym_buf[512];
 		if (mono_arch || cb_mono) {
-			actual_func_name = mono_call_name; /* route to monomorphized symbol */
+			actual_func_name = mono_call_name; /* route to monomorphized symbol (already a unique global) */
 		} else if (callee_group && callee_func) {
 			actual_func_name = callee_func->name; /* route to matched member */
 		} else {
 			actual_func_name = func_name ? func_name : "unknown";
+		}
+		/* Per-unit: route arche-owned (non-extern) callees to their mangled external symbol so the call
+		 * matches the (mangled) definition. Externs + monomorph instances keep their names. */
+		if (!(mono_arch || cb_mono)) {
+			int callee_extern = (callee_func && callee_func->is_extern) || (callee_proc && callee_proc->is_extern);
+			actual_func_name = cg_fnsym(ctx, actual_func_name, callee_extern, actual_sym_buf, sizeof(actual_sym_buf));
 		}
 
 		/* Rewrite the archetype-typed argument so it carries the @<arch> global
@@ -3731,7 +3789,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			if (mr_count > 1) {
 				llvm_return_list_type(mr_types, mr_count, multiret_buf, sizeof(multiret_buf));
 				return_type = multiret_buf;
-				buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type, func_name ? func_name : "unknown");
+				buffer_append_fmt(ctx, "  %s = call %s @%s(", res_name, return_type, actual_func_name);
 				emit_call_arglist(ctx, expr->data.call.arg_count, arg_is_callback, call_arg_types, call_arg_vals,
 				                  call_arg_len);
 				buffer_append(ctx, ")\n");
@@ -6417,7 +6475,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		}
 
 		/* Build: call void @system_name(%struct.A* @A, %struct.B* @B, ...) */
-		buffer_append_fmt(ctx, "  call void @%s(", system_name);
+		char sys_call_buf[512];
+		buffer_append_fmt(ctx, "  call void @%s(", cg_fnsym(ctx, system_name, 0, sys_call_buf, sizeof(sys_call_buf)));
 		for (int i = 0; i < matching_count; i++) {
 			if (i > 0)
 				buffer_append(ctx, ", ");
@@ -6701,7 +6760,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	buffer_append(ctx, "}\n\n");
 
 	/* Emit insert helper function */
-	buffer_append_fmt(ctx, "define i64 @arche_insert_%s(%%struct.%s* %%arch", arch->name, arch->name);
+	buffer_append_fmt(ctx, "define %si64 @arche_insert_%s(%%struct.%s* %%arch", cg_shared(ctx), arch->name, arch->name);
 	for (int i = 0; i < arch->field_count; i++) {
 		if (arch->fields[i]->kind == FIELD_COLUMN) {
 			const char *base_type = llvm_type_from_arche(field_base_type_name(arch->fields[i]->type));
@@ -6867,8 +6926,8 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	buffer_append(ctx, "}\n\n");
 
 	/* Emit delete helper function */
-	buffer_append_fmt(ctx, "define void @arche_delete_%s(%%struct.%s* %%arch, i64 %%handle) {\n", arch->name,
-	                  arch->name);
+	buffer_append_fmt(ctx, "define %svoid @arche_delete_%s(%%struct.%s* %%arch, i64 %%handle) {\n", cg_shared(ctx),
+	                  arch->name, arch->name);
 	buffer_append(ctx, "entry:\n");
 
 	/* Unpack slot and generation from handle */
@@ -6950,8 +7009,8 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 			}
 		}
 		if (opaque_col >= 0) {
-			buffer_append_fmt(ctx, "define i64 @arche_cell_%s(%%struct.%s* %%arch, i64 %%handle) {\n", arch->name,
-			                  arch->name);
+			buffer_append_fmt(ctx, "define %si64 @arche_cell_%s(%%struct.%s* %%arch, i64 %%handle) {\n", cg_shared(ctx),
+			                  arch->name, arch->name);
 			buffer_append(ctx, "entry:\n");
 			buffer_append(ctx, "  %slot_i32 = trunc i64 %handle to i32\n");
 			buffer_append(ctx, "  %slot = zext i32 %slot_i32 to i64\n");
@@ -6992,7 +7051,8 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	}
 
 	/* Emit dealloc helper function */
-	buffer_append_fmt(ctx, "define void @arche_dealloc_%s(%%struct.%s* %%arch) {\n", arch->name, arch->name);
+	buffer_append_fmt(ctx, "define %svoid @arche_dealloc_%s(%%struct.%s* %%arch) {\n", cg_shared(ctx), arch->name,
+	                  arch->name);
 	buffer_append(ctx, "entry:\n");
 	if (static_cap > 0) {
 		/* Static global — nothing to free */
@@ -7004,11 +7064,14 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	buffer_append(ctx, "  ret void\n");
 	buffer_append(ctx, "}\n\n");
 
-	/* Emit global variable for this archetype (after struct type is defined) */
+	/* Emit global variable for this archetype (after struct type is defined). Shared across per-unit
+	 * modules → linkonce_odr so the linker folds the identical duplicates to one pool. */
 	if (static_cap > 0) {
-		buffer_append_fmt(ctx, "@%s = global %%struct.%s zeroinitializer\n\n", arch->name, arch->name);
+		buffer_append_fmt(ctx, "@%s = %sglobal %%struct.%s zeroinitializer\n\n", arch->name, cg_shared(ctx),
+		                  arch->name);
 	} else {
-		buffer_append_fmt(ctx, "@archetype_%s = global %%struct.%s* null\n\n", arch->name, arch->name);
+		buffer_append_fmt(ctx, "@archetype_%s = %sglobal %%struct.%s* null\n\n", arch->name, cg_shared(ctx),
+		                  arch->name);
 	}
 }
 
@@ -7367,6 +7430,26 @@ static void end_function_body(CodegenContext *ctx, FunctionBodyState state) {
 	free(body_buf);
 }
 
+/* Emit a func's LLVM param list (the text inside the parens), shared by the `define` and the per-unit
+ * cross-unit `declare`. Slices lower to a `(ptr, len)` pair; sized/extern arrays to an element ptr. */
+static void emit_func_params(CodegenContext *ctx, HirFuncDecl *func) {
+	for (int i = 0; i < func->param_count; i++) {
+		HirType *param_type = func->params[i]->type;
+		const char *type_name = field_base_type_name(param_type);
+		const char *llvm_type = llvm_type_from_arche(type_name);
+		if (param_type && param_type->tag == HIR_TYPE_ARRAY && !func->is_extern)
+			buffer_append_fmt(ctx, "%s* %%arg%d.ptr, i64 %%arg%d.len", llvm_type, i, i);
+		else if (param_type && param_type->tag == HIR_TYPE_ARRAY)
+			buffer_append_fmt(ctx, "%s* %%arg%d", llvm_type, i);
+		else if (param_type && param_type->tag == HIR_TYPE_SHAPED_ARRAY)
+			buffer_append_fmt(ctx, "%s* %%arg%d", llvm_type, i);
+		else
+			buffer_append_fmt(ctx, "%s %%arg%d", llvm_type, i);
+		if (i < func->param_count - 1)
+			buffer_append(ctx, ", ");
+	}
+}
+
 static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 	/* For extern funcs, emit declare stub */
 	if (func->is_extern) {
@@ -7415,29 +7498,10 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 	 * funcs/procs need no external symbols. Keeping them out of the global namespace prevents a
 	 * user/stdlib name (e.g. the `open`/`read`/`write` syscall wrappers) from overriding the
 	 * identically-named libc symbol that the C runtime (io.c's arche_file_map, etc.) links against. */
-	buffer_append_fmt(ctx, "define internal %s @%s(", return_type, func->name);
-
-	for (int i = 0; i < func->param_count; i++) {
-		HirType *param_type = func->params[i]->type;
-		const char *type_name = field_base_type_name(param_type);
-		const char *llvm_type = llvm_type_from_arche(type_name);
-
-		if (param_type && param_type->tag == HIR_TYPE_ARRAY && !func->is_extern) {
-			/* `T[]` slice (any element, incl. char): a two-arg fat pointer `(T* ptr, i64 len)`. */
-			buffer_append_fmt(ctx, "%s* %%arg%d.ptr, i64 %%arg%d.len", llvm_type, i, i);
-		} else if (param_type && param_type->tag == HIR_TYPE_ARRAY) {
-			/* extern C ABI: raw i8* / element pointer (NUL-terminated by the caller at the boundary). */
-			buffer_append_fmt(ctx, "%s* %%arg%d", llvm_type, i);
-		} else if (param_type && param_type->tag == HIR_TYPE_SHAPED_ARRAY) {
-			/* sized array param arrives as an element pointer (char[N] → i8*, int[N] → i32*). */
-			buffer_append_fmt(ctx, "%s* %%arg%d", llvm_type, i);
-		} else {
-			buffer_append_fmt(ctx, "%s %%arg%d", llvm_type, i);
-		}
-		if (i < func->param_count - 1) {
-			buffer_append(ctx, ", ");
-		}
-	}
+	char func_sym_buf[512];
+	buffer_append_fmt(ctx, "define %s%s @%s(", cg_linkage(ctx), return_type,
+	                  cg_fnsym(ctx, func->name, func->is_extern, func_sym_buf, sizeof(func_sym_buf)));
+	emit_func_params(ctx, func);
 	buffer_append(ctx, ") {\n");
 	buffer_append(ctx, "entry:\n");
 
@@ -7576,6 +7640,42 @@ static const char *extern_proc_cret(HirProcDecl *proc) {
 	return "void";
 }
 
+/* Emit a non-extern proc's LLVM param list (in-params + out-only-param pointers), shared by `define`
+ * and the per-unit cross-unit `declare`. */
+static void emit_proc_params(CodegenContext *ctx, HirProcDecl *proc) {
+	for (int i = 0; i < proc->param_count; i++) {
+		HirType *param_type = proc->params[i]->type;
+		const char *type_name = field_base_type_name(param_type);
+		const char *base_type = llvm_type_from_arche(type_name);
+		if (param_type && param_type->tag == HIR_TYPE_ARRAY)
+			buffer_append_fmt(ctx, "%s* %%arg%d.ptr, i64 %%arg%d.len", base_type, i, i);
+		else if (param_type && param_type->tag == HIR_TYPE_SHAPED_ARRAY)
+			buffer_append_fmt(ctx, "%s* %%arg%d", base_type, i);
+		else if (find_archetype_decl(ctx, type_name))
+			buffer_append_fmt(ctx, "%%struct.%s* %%arg%d", type_name, i);
+		else
+			buffer_append_fmt(ctx, "%s %%arg%d", base_type, i);
+		if (i < proc->param_count - 1)
+			buffer_append(ctx, ", ");
+	}
+	int emitted_params = proc->param_count;
+	for (int oi = 0; oi < proc->out_param_count; oi++) {
+		if (proc_out_param_is_inout(proc, oi))
+			continue;
+		HirType *ot = proc->out_params[oi]->type;
+		const char *otn = field_base_type_name(ot);
+		if (emitted_params > 0)
+			buffer_append(ctx, ", ");
+		if (ot && ot->tag == HIR_TYPE_SHAPED_ARRAY)
+			buffer_append_fmt(ctx, "%s* %%out%d", llvm_type_from_arche(otn), oi);
+		else if (ot && find_archetype_decl(ctx, otn))
+			buffer_append_fmt(ctx, "%%struct.%s* %%out%d", otn, oi);
+		else
+			buffer_append_fmt(ctx, "%s* %%out%d", return_member_llvm(ot), oi);
+		emitted_params++;
+	}
+}
+
 static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 	/* For extern procs, emit declare stub */
 	if (proc->is_extern) {
@@ -7630,52 +7730,12 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 	/* `internal` linkage (see func emission): keeps `main_user` and the syscall-wrapper procs
 	 * (`open`/`read`/`write`/…) out of the link-time global namespace, so they don't shadow the
 	 * libc symbols the C runtime depends on. The real `@main` entry wrapper stays external. */
-	buffer_append_fmt(ctx, "define internal void @%s(", proc_name);
+	char proc_sym_buf[512];
+	buffer_append_fmt(ctx, "define %svoid @%s(", cg_linkage(ctx),
+	                  cg_fnsym(ctx, proc_name, 0, proc_sym_buf, sizeof(proc_sym_buf)));
 
 	/* Emit parameter types and names */
-	for (int i = 0; i < proc->param_count; i++) {
-		HirType *param_type = proc->params[i]->type;
-		const char *type_name = field_base_type_name(param_type);
-		const char *base_type = llvm_type_from_arche(type_name);
-
-		/* `T[]` slice param (any element, incl. char): two-arg fat pointer `(T* ptr, i64 len)`. */
-		if (param_type && param_type->tag == HIR_TYPE_ARRAY) {
-			buffer_append_fmt(ctx, "%s* %%arg%d.ptr, i64 %%arg%d.len", base_type, i, i);
-		} else if (param_type && param_type->tag == HIR_TYPE_SHAPED_ARRAY) {
-			/* sized array param arrives as a bare element pointer (char[N] → i8*, int[N] → i32*). */
-			buffer_append_fmt(ctx, "%s* %%arg%d", base_type, i);
-		} else if (find_archetype_decl(ctx, type_name)) {
-			buffer_append_fmt(ctx, "%%struct.%s* %%arg%d", type_name, i);
-		} else {
-			buffer_append_fmt(ctx, "%s %%arg%d", base_type, i);
-		}
-
-		if (i < proc->param_count - 1) {
-			buffer_append(ctx, ", ");
-		}
-	}
-
-	/* Append out-only out-params (a name NOT in the in-list) as caller-provided pointers; the
-	 * proc writes its result through them. In-out out-params reuse the in-list pointer and are
-	 * not re-emitted. Scalars pass as T*, arrays/archetypes as their struct ptr (already a place). */
-	int emitted_params = proc->param_count;
-	for (int oi = 0; oi < proc->out_param_count; oi++) {
-		if (proc_out_param_is_inout(proc, oi))
-			continue;
-		HirType *ot = proc->out_params[oi]->type;
-		const char *otn = field_base_type_name(ot);
-		if (emitted_params > 0)
-			buffer_append(ctx, ", ");
-		if (ot && ot->tag == HIR_TYPE_SHAPED_ARRAY)
-			/* sized array out-param: caller-allocated `[N x T]`, received as an element pointer. */
-			buffer_append_fmt(ctx, "%s* %%out%d", llvm_type_from_arche(otn), oi);
-		else if (ot && find_archetype_decl(ctx, otn))
-			buffer_append_fmt(ctx, "%%struct.%s* %%out%d", otn, oi);
-		else
-			/* scalar, or an unbounded `T[]` (a `{T*,i64}` slice fat pointer — caller-allocated). */
-			buffer_append_fmt(ctx, "%s* %%out%d", return_member_llvm(ot), oi);
-		emitted_params++;
-	}
+	emit_proc_params(ctx, proc);
 
 	buffer_append(ctx, ") {\n");
 	buffer_append(ctx, "entry:\n");
@@ -7885,8 +7945,11 @@ static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys) {
 		return;
 	}
 
-	/* Generate ONE function taking all matching archetypes as params (internal linkage, see above) */
-	buffer_append_fmt(ctx, "define internal void @%s(", sys->name);
+	/* Generate ONE function taking all matching archetypes as params. Emitted in every per-unit module
+	 * (linkonce_odr → linker folds) so a cross-unit `run` resolves locally. */
+	char sys_sym_buf[512];
+	buffer_append_fmt(ctx, "define %svoid @%s(", cg_shared(ctx),
+	                  cg_fnsym(ctx, sys->name, 0, sys_sym_buf, sizeof(sys_sym_buf)));
 	for (int i = 0; i < matching_count; i++) {
 		if (i > 0)
 			buffer_append(ctx, ", ");
@@ -7984,11 +8047,21 @@ int codegen_had_error(const CodegenContext *ctx) {
 	return ctx && ctx->had_error;
 }
 
+void codegen_set_emit_unit(CodegenContext *ctx, int unit) {
+	ctx->per_unit = 1;
+	ctx->emit_only_unit = unit;
+}
+int codegen_per_unit_enabled(void) {
+	return getenv("ARCHE_PER_UNIT") != NULL;
+}
+
 CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	CodegenContext *ctx = malloc(sizeof(CodegenContext));
 	ctx->ast = ast;
 	ctx->sem_ctx = sem_ctx;
 	ctx->had_error = 0;
+	ctx->per_unit = getenv("ARCHE_PER_UNIT") != NULL;
+	ctx->emit_only_unit = -1;
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
 	ctx->value_counter = 0;
@@ -8082,6 +8155,38 @@ static void codegen_build_drop_registry(CodegenContext *ctx) {
 	}
 }
 
+/* Per-unit: emit `declare`s for every arche func/proc defined in a DIFFERENT unit, so this unit's
+ * module is self-contained and the linker resolves the references. Parametric procs (archetype/
+ * callback) have no real symbol (only their monomorphized instances do), so they're skipped. Inert
+ * unless emitting one specific unit. */
+static void emit_cross_unit_declares(CodegenContext *ctx) {
+	if (!ctx->per_unit || ctx->emit_only_unit < 0)
+		return;
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		HirDecl *d = ctx->ast->decls[i];
+		if (d->unit == ctx->emit_only_unit)
+			continue;
+		char sym[512];
+		if (d->kind == HIR_DECL_FUNC && !d->data.func->is_extern) {
+			HirFuncDecl *f = d->data.func;
+			char ret[512];
+			if (f->return_type_count == 0)
+				snprintf(ret, sizeof(ret), "void");
+			else
+				func_llvm_return_type(f, ret, sizeof(ret));
+			buffer_append_fmt(ctx, "declare %s @%s(", ret, cg_fnsym(ctx, f->name, 0, sym, sizeof(sym)));
+			emit_func_params(ctx, f);
+			buffer_append(ctx, ")\n");
+		} else if (d->kind == HIR_DECL_PROC && !d->data.proc->is_extern && !is_archetype_parametric(d->data.proc) &&
+		           !has_callback_param(ctx, d->data.proc)) {
+			HirProcDecl *p = d->data.proc;
+			buffer_append_fmt(ctx, "declare void @%s(", cg_fnsym(ctx, p->name, 0, sym, sizeof(sym)));
+			emit_proc_params(ctx, p);
+			buffer_append(ctx, ")\n");
+		}
+	}
+}
+
 void codegen_generate(CodegenContext *ctx, FILE *output) {
 	/* RAII: build the opaque-type -> destructor registry before emitting any body. */
 	codegen_build_drop_registry(ctx);
@@ -8114,6 +8219,9 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	    ctx,
 	    "@.arche_oob = private unnamed_addr constant [28 x i8] c\"arche: index out of bounds\\0A\\00\", align 1\n\n");
 
+	/* Per-unit: declare cross-unit funcs/procs up front (inert in whole-program mode). */
+	emit_cross_unit_declares(ctx);
+
 	/* Hoist archetype definitions: emit every archetype's struct type (and its insert/delete
 	 * helpers) BEFORE any function body. A struct type used as a GEP source element must be sized at
 	 * that point in the textual IR, so a proc that touches an archetype declared later in the source
@@ -8145,6 +8253,18 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		HirDecl *decl = ctx->ast->decls[i];
 
+		/* Per-unit codegen: when restricted to one unit, emit only THIS unit's non-extern func/proc
+		 * BODIES (cross-unit callees are `declare`d up front; externs are `declare`d in every module so
+		 * they stay visible). Systems are NOT filtered — they emit in every module as linkonce_odr (the
+		 * linker folds them), so a cross-unit `run <sys>` resolves locally. Inert by default. */
+		if (ctx->per_unit && ctx->emit_only_unit >= 0 && decl->unit != ctx->emit_only_unit) {
+			int is_ext = (decl->kind == HIR_DECL_FUNC && decl->data.func->is_extern) ||
+			             (decl->kind == HIR_DECL_PROC && decl->data.proc->is_extern);
+			if (!is_ext &&
+			    (decl->kind == HIR_DECL_FUNC || decl->kind == HIR_DECL_PROC || decl->kind == HIR_DECL_FUNC_GROUP))
+				continue;
+		}
+
 		switch (decl->kind) {
 		case HIR_DECL_ARCHETYPE:
 			/* Already emitted in the hoist pre-pass above. */
@@ -8164,7 +8284,7 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 				const char *lt = llvm_type_from_arche(field_base_type_name(s->scalar.type));
 				char cst[64];
 				codegen_scalar_init_const(ctx, s->scalar.init, cst, sizeof(cst));
-				buffer_append_fmt(ctx, "@%s = global %s %s\n", s->scalar.name, lt, cst);
+				buffer_append_fmt(ctx, "@%s = %sglobal %s %s\n", s->scalar.name, cg_shared(ctx), lt, cst);
 				/* registered in the pre-pass above */
 			} else {
 				const char *llvm_type = "i8";
@@ -8180,8 +8300,8 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 				/* char and non-char static arrays alike: a plain `[N x T]` global. char is just i8 —
 				 * a normal array, no arche_array struct wrapper. (`is_char` only selects the element.) */
 				(void)is_char;
-				buffer_append_fmt(ctx, "@%s = global [%d x %s] zeroinitializer\n", s->array.name, s->array.size,
-				                  llvm_type);
+				buffer_append_fmt(ctx, "@%s = %sglobal [%d x %s] zeroinitializer\n", s->array.name, cg_shared(ctx),
+				                  s->array.size, llvm_type);
 				/* registered in the pre-pass above */
 			}
 			break;
@@ -8239,26 +8359,29 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		}
 	}
 
-	buffer_append(ctx, "\ndeclare void @arche_set_args(i32, i8**)\n");
-	buffer_append(ctx, "\ndefine i32 @main(i32 %argc, i8** %argv) {\n");
-	buffer_append(ctx, "entry:\n");
-	buffer_append(ctx, "  call void @arche_set_args(i32 %argc, i8** %argv)\n");
+	/* The process entry wrapper is program-global: emit it only in the entry unit (0) — never in a
+	 * per-unit module for an imported unit. (emit_only_unit -1 = whole-program, also emits it.) */
+	if (!(ctx->per_unit && ctx->emit_only_unit >= 1)) {
+		char init_sym[512], mainu_sym[512];
+		buffer_append(ctx, "\ndeclare void @arche_set_args(i32, i8**)\n");
+		buffer_append(ctx, "\ndefine i32 @main(i32 %argc, i8** %argv) {\n");
+		buffer_append(ctx, "entry:\n");
+		buffer_append(ctx, "  call void @arche_set_args(i32 %argc, i8** %argv)\n");
 
-	/* Emit allocation initialization code (always, regardless of user main) */
-	for (int i = 0; i < ctx->alloc_count; i++) {
-		codegen_emit_alloc_init(ctx, ctx->top_level_allocs[i]);
+		/* Emit allocation initialization code (always, regardless of user main) */
+		for (int i = 0; i < ctx->alloc_count; i++) {
+			codegen_emit_alloc_init(ctx, ctx->top_level_allocs[i]);
+		}
+
+		if (has_init_proc)
+			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, "init", 0, init_sym, sizeof(init_sym)));
+
+		if (has_main_proc)
+			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, "main_user", 0, mainu_sym, sizeof(mainu_sym)));
+
+		buffer_append(ctx, "  ret i32 0\n");
+		buffer_append(ctx, "}\n");
 	}
-
-	if (has_init_proc) {
-		buffer_append(ctx, "  call void @init()\n");
-	}
-
-	if (has_main_proc) {
-		buffer_append(ctx, "  call void @main_user()\n");
-	}
-
-	buffer_append(ctx, "  ret i32 0\n");
-	buffer_append(ctx, "}\n");
 
 	/* (No built-in print helpers: printing is NOT a language primitive. Numeric/text printing is
 	 * the `fmt` library's job — `fmt.printf`/`fmt.print_float` bind libc directly. The compiler

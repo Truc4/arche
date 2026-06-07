@@ -12,6 +12,8 @@ SemModel *sem_model_new(void) {
 	m->implicit_move = NULL;
 	m->callee_name = NULL;
 	m->ref_name = NULL;
+	m->callee_def = NULL;
+	m->ref_def = NULL;
 	m->cap = 0;
 	return m;
 }
@@ -32,6 +34,8 @@ void sem_model_free(SemModel *m) {
 	free(m->implicit_move);
 	free(m->callee_name);
 	free(m->ref_name);
+	free(m->callee_def);
+	free(m->ref_def);
 	free(m);
 }
 
@@ -46,12 +50,16 @@ static void ensure(SemModel *m, uint32_t node_id) {
 	m->implicit_move = realloc(m->implicit_move, (size_t)newcap * sizeof(uint8_t));
 	m->callee_name = realloc(m->callee_name, (size_t)newcap * sizeof(const char *));
 	m->ref_name = realloc(m->ref_name, (size_t)newcap * sizeof(const char *));
+	m->callee_def = realloc(m->callee_def, (size_t)newcap * sizeof(DefId));
+	m->ref_def = realloc(m->ref_def, (size_t)newcap * sizeof(DefId));
 	for (int i = m->cap; i < newcap; i++) {
 		m->expr_type_id[i] = TYID_UNKNOWN;
 		m->bind_alias[i] = 0;
 		m->implicit_move[i] = 0;
 		m->callee_name[i] = NULL;
 		m->ref_name[i] = NULL;
+		m->callee_def[i] = defid_none();
+		m->ref_def[i] = defid_none();
 	}
 	m->cap = newcap;
 }
@@ -115,4 +123,26 @@ const char *sem_model_ref_name(const SemModel *m, uint32_t node_id) {
 	if (!m || (int)node_id >= m->cap)
 		return NULL;
 	return m->ref_name[node_id];
+}
+
+void sem_model_set_callee_def(SemModel *m, uint32_t node_id, DefId d) {
+	ensure(m, node_id);
+	m->callee_def[node_id] = d;
+}
+
+DefId sem_model_callee_def(const SemModel *m, uint32_t node_id) {
+	if (!m || (int)node_id >= m->cap)
+		return defid_none();
+	return m->callee_def[node_id];
+}
+
+void sem_model_set_ref_def(SemModel *m, uint32_t node_id, DefId d) {
+	ensure(m, node_id);
+	m->ref_def[node_id] = d;
+}
+
+DefId sem_model_ref_def(const SemModel *m, uint32_t node_id) {
+	if (!m || (int)node_id >= m->cap)
+		return defid_none();
+	return m->ref_def[node_id];
 }

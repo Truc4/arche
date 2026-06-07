@@ -190,6 +190,8 @@ typedef struct {
 struct HirDecl {
 	HirDeclKind kind;
 	SourceLoc loc;
+	int unit; /* owning compilation unit: 0 = entry/root program, >0 = an inlined module. Lets codegen
+	           * group/emit per unit (per-unit objects + linkonce_odr shared monomorph instances). */
 	union {
 		HirWorldDecl *world;
 		HirArchetypeDecl *archetype;

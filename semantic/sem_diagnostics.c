@@ -150,6 +150,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_inout_redundant_arg]           = { "W0011", "inout_redundant_arg",           CLASS_LINT, 1 },
 	[SEM_LINT_inout_param_shadow]            = { "W0012", "inout_param_shadow",            CLASS_LINT, 1 },
 	[SEM_LINT_unused_function]               = { "W0013", "unused_function",               CLASS_LINT, 1 },
+	[SEM_LINT_unused_static_const]           = { "W0014", "unused_static_const",           CLASS_LINT, 1 },
+	[SEM_LINT_unused_enum]                   = { "W0015", "unused_enum",                   CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -842,5 +844,17 @@ SemDiag *sem_emit_lint_unused_function(SemanticContext *ctx, SourceLoc loc, cons
 	return sem_emit_(ctx, SEM_LINT_unused_function, loc,
 	                 "function '%s' is declared but never called (prefix with '_' to silence, or "
 	                 "@allow(unused_function))",
+	                 name);
+}
+SemDiag *sem_emit_lint_unused_static_const(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name) {
+	return sem_emit_(ctx, SEM_LINT_unused_static_const, loc,
+	                 "%s '%s' is declared but never used (prefix with '_' to silence, or "
+	                 "@allow(unused_static_const))",
+	                 kind, name);
+}
+SemDiag *sem_emit_lint_unused_enum(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_LINT_unused_enum, loc,
+	                 "enum '%s' is declared but never used (prefix with '_' to silence, or "
+	                 "@allow(unused_enum))",
 	                 name);
 }

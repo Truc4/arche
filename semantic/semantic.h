@@ -15,7 +15,8 @@ SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src);
 
 /* Register a `use`-module's syntax tree so semantic_analyze_cst can inline it (parallel to
  * lower_add_module). Call once per module before semantic_analyze_cst. */
-void semantic_add_module(const char *name, const SyntaxNode *root, const char *src, const char *filename);
+void semantic_add_module(const char *name, const SyntaxNode *root, const char *src, const char *filename,
+                         DeclOrigin origin);
 /* Clear registered modules (static registry; reset at the start of each compilation). */
 void semantic_reset_modules(void);
 /* 1 if a module of this name is currently registered (used to detect import-not-found). */

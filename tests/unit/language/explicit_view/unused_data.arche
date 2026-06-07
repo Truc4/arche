@@ -1,0 +1,15 @@
+// W0014 unused_static_const + W0015 unused_enum (Rust dead_code for data): a static/enum referenced
+// nowhere is dead; a referenced one is kept. `Color` is used via `Color.Red`, `used_g` via printf;
+// `Unused` and `dead_g` are referenced nowhere → exactly those two warn.
+// RUN: %build/arche-analyzer --dump %s | grep -qF "W0014 unused_static_const 0 static 'dead_g'"
+// RUN: %build/arche-analyzer --dump %s | grep -qF "W0015 unused_enum 0 enum 'Unused'"
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -cE "unused_static_const|unused_enum") -eq 2
+#import { fmt }
+Color :: enum { Red, Green, Blue }
+Unused :: enum { A, B }
+used_g: int = 7
+dead_g: int = 9
+main :: proc() {
+  c := Color.Red;
+  fmt.printf("%d %d\n", c, used_g);
+}

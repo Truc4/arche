@@ -33,6 +33,26 @@ static int file_exists(const char *path) {
 	return stat(path, &sb) == 0;
 }
 
+/* FNV-1a content hash of a file as a 16-hex-digit string in `out` (>=17 bytes). Per-unit object
+ * caching keys on this: identical emitted IR → identical object, so an unchanged unit's `.o` is reused
+ * across builds (incremental compilation). Returns 0 if the file can't be read. */
+static int file_content_hash(const char *path, char out[17]) {
+	FILE *f = fopen(path, "rb");
+	if (!f)
+		return 0;
+	unsigned long long h = 1469598103934665603ULL; /* FNV offset basis */
+	char buf[8192];
+	size_t n;
+	while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+		for (size_t i = 0; i < n; i++) {
+			h ^= (unsigned char)buf[i];
+			h *= 1099511628211ULL; /* FNV prime */
+		}
+	fclose(f);
+	snprintf(out, 17, "%016llx", h);
+	return 1;
+}
+
 static char *source_dir_of(const char *path) {
 	/* Return directory part of path. If no /, return "." */
 	char *last_slash = strrchr(path, '/');
@@ -163,7 +183,7 @@ static void load_uses_of(const SyntaxNode *ud, const char *src, const char *sour
 
 /* Parse one module file, register its lossless syntax tree with both back-ends (which borrow the syntax tree +
  * source), then recurse into the module's own `#import`s. Returns 1 on success. */
-static int register_module_file(const char *mod_name, const char *path, const char *source_dir) {
+static int register_module_file(const char *mod_name, const char *path, const char *source_dir, DeclOrigin origin) {
 	char *mod_src = read_file_optional(path);
 	if (!mod_src)
 		return 0;
@@ -177,7 +197,7 @@ static int register_module_file(const char *mod_name, const char *path, const ch
 		return 0;
 	}
 	lower_add_module(mod_name, mp.syntax_root, mod_src, path);
-	semantic_add_module(mod_name, mp.syntax_root, mod_src, path);
+	semantic_add_module(mod_name, mp.syntax_root, mod_src, path, origin);
 	const SyntaxNode *root = mp.syntax_root;
 	const char *src = mod_src;
 	mp.syntax_root = NULL;
@@ -193,7 +213,7 @@ static int register_module_file(const char *mod_name, const char *path, const ch
 
 /* A module is a FOLDER: `<dir>/<name>/` with one or more `.arche` files, all merged into one
  * module namespace. Falls back to a single file `<dir>/<name>.arche`. Returns files registered. */
-static int try_load_module_dir(const char *mod_name, const char *dir, const char *source_dir) {
+static int try_load_module_dir(const char *mod_name, const char *dir, const char *source_dir, DeclOrigin origin) {
 	char folder[640];
 	snprintf(folder, sizeof(folder), "%s/%s", dir, mod_name);
 	DIR *d = opendir(folder);
@@ -205,7 +225,7 @@ static int try_load_module_dir(const char *mod_name, const char *dir, const char
 			if (L > 6 && strcmp(ent->d_name + L - 6, ".arche") == 0) {
 				char fp[1300];
 				snprintf(fp, sizeof(fp), "%s/%s", folder, ent->d_name);
-				n += register_module_file(mod_name, fp, source_dir);
+				n += register_module_file(mod_name, fp, source_dir, origin);
 				if (file_is_datasheet(ent->d_name))
 					mark_device_module(mod_name); /* a `.ds.arche` in the folder makes it a device */
 			}
@@ -217,7 +237,7 @@ static int try_load_module_dir(const char *mod_name, const char *dir, const char
 	char fp[640];
 	snprintf(fp, sizeof(fp), "%s/%s.arche", dir, mod_name);
 	if (file_exists(fp))
-		return register_module_file(mod_name, fp, source_dir);
+		return register_module_file(mod_name, fp, source_dir, origin);
 	return 0;
 }
 
@@ -260,7 +280,7 @@ static void load_module_from_path(const char *path, const char *source_dir) {
 		snprintf(dir, sizeof(dir), "%s/%s", source_dir, subdir);
 	else
 		snprintf(dir, sizeof(dir), "%s", source_dir);
-	if (!try_load_module_dir(mod_name, dir, dir))
+	if (!try_load_module_dir(mod_name, dir, dir, DECL_ORIGIN_USER_MODULE)) /* path import = user's tree */
 		fprintf(stderr, "Error: module path not found: %s\n", path);
 }
 
@@ -279,11 +299,11 @@ static void load_module(const char *name, const char *source_dir) {
 	 * `tests/unit/language/io/`). The prelude imports `io`, so every program triggers this — without
 	 * stdlib-first, a local `io/` dir would shadow it. A user's OWN (non-stdlib) module is still
 	 * found by the source-dir search below. */
-	int loaded = try_load_module_dir(name, arche_resource_dir(ARCHE_RES_STDLIB), source_dir);
+	int loaded = try_load_module_dir(name, arche_resource_dir(ARCHE_RES_STDLIB), source_dir, DECL_ORIGIN_STDLIB);
 	if (!loaded)
-		loaded = try_load_module_dir(name, source_dir, source_dir);
+		loaded = try_load_module_dir(name, source_dir, source_dir, DECL_ORIGIN_USER_MODULE);
 	if (!loaded)
-		loaded = try_load_module_dir(name, arche_resource_dir(ARCHE_RES_CORE), source_dir);
+		loaded = try_load_module_dir(name, arche_resource_dir(ARCHE_RES_CORE), source_dir, DECL_ORIGIN_CORE);
 	if (!loaded)
 		fprintf(stderr, "Error: Module not found: %s\n", name);
 }
@@ -478,7 +498,10 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	char temp_ir[512] = "", opt_file[512] = "", asm_file[512] = "";
 	char workdir[] = "/tmp/arche_XXXXXX";
 	int have_workdir = 0;
-	if (emit == EMIT_LLVM_IR) {
+	/* Per-unit codegen needs a work dir for the per-unit `.ll` modules even when the final deliverable
+	 * is raw IR (it llvm-links them into out_path). */
+	int per_unit_build = codegen_per_unit_enabled();
+	if (emit == EMIT_LLVM_IR && !per_unit_build) {
 		ir_file = out_path;
 	} else {
 		if (!mkdtemp(workdir)) {
@@ -489,20 +512,135 @@ int compile_source(const char *user_source, const char *source_path, const char 
 		snprintf(temp_ir, sizeof(temp_ir), "%s/out.ll", workdir);
 		snprintf(opt_file, sizeof(opt_file), "%s/out_opt.ll", workdir);
 		snprintf(asm_file, sizeof(asm_file), "%s/out.s", workdir);
-		ir_file = temp_ir;
+		ir_file = (emit == EMIT_LLVM_IR) ? out_path : temp_ir;
 	}
 
-	FILE *ir_output = fopen(ir_file, "w");
-	if (!ir_output) {
-		perror("Failed to open IR output file");
-		goto cleanup;
-	}
-	codegen_generate(codegen_ctx, ir_output);
-	fclose(ir_output);
-	if (codegen_had_error(codegen_ctx)) {
-		/* Codegen already printed the diagnostic; fail the build, don't run the emitted IR. */
-		rc = 1;
-		goto cleanup;
+	if (per_unit_build) {
+		/* Per-unit codegen: emit one LLVM module per compilation unit, then llvm-link them into the
+		 * combined IR the rest of the pipeline consumes. Cross-unit references resolve via the declares
+		 * each unit module emits + external/mangled symbols. (Per-object caching is the next step; this
+		 * proves per-unit emission + linkage produce a correct program.) */
+		int max_unit = 0;
+		for (int i = 0; i < ast->decl_count; i++)
+			if (ast->decls[i]->unit > max_unit)
+				max_unit = ast->decls[i]->unit;
+		/* 1) Emit one LLVM module per compilation unit. */
+		int unit_err = 0;
+		for (int u = 0; u <= max_unit; u++) {
+			char uf[600];
+			snprintf(uf, sizeof(uf), "%s/unit_%d.ll", workdir, u);
+			CodegenContext *uctx = codegen_create(ast, sem_ctx);
+			codegen_set_emit_unit(uctx, u);
+			FILE *ufp = fopen(uf, "w");
+			if (!ufp) {
+				perror("Failed to open per-unit IR file");
+				codegen_free(uctx);
+				unit_err = 1;
+				break;
+			}
+			codegen_generate(uctx, ufp);
+			fclose(ufp);
+			if (codegen_had_error(uctx))
+				unit_err = 1;
+			codegen_free(uctx);
+			if (unit_err)
+				break;
+		}
+		if (unit_err) {
+			rc = 1;
+			goto cleanup;
+		}
+		if (emit == EMIT_LINK) {
+			/* 2a) Incremental link: compile each unit to an object CACHED by its IR content hash (an
+			 * unchanged unit — e.g. the stdlib — reuses its `.o` across builds), then link the objects.
+			 * This is the separate-compilation payoff: editing one unit recompiles only that unit. */
+			const char *rt = arche_resource_dir(ARCHE_RES_RUNTIME);
+			const char *home = getenv("HOME");
+			char cachedir[700];
+			snprintf(cachedir, sizeof(cachedir), "%s/.cache/arche/obj", home ? home : "/tmp");
+			char mk[760];
+			snprintf(mk, sizeof(mk), "mkdir -p '%s'", cachedir);
+			if (system(mk) != 0) {
+				fprintf(stderr, "Failed to create object cache dir\n");
+				goto cleanup;
+			}
+			char objs[16384];
+			int oj = 0, obj_err = 0;
+			for (int u = 0; u <= max_unit; u++) {
+				char uf[640], key[17];
+				snprintf(uf, sizeof(uf), "%s/unit_%d.ll", workdir, u);
+				if (!file_content_hash(uf, key)) {
+					obj_err = 1;
+					break;
+				}
+				char ocache[800];
+				snprintf(ocache, sizeof(ocache), "%s/%s.o", cachedir, key);
+				if (!file_exists(ocache)) {
+					char uopt[680], us[680], cmd[2400];
+					snprintf(uopt, sizeof(uopt), "%s/unit_%d_opt.ll", workdir, u);
+					snprintf(us, sizeof(us), "%s/unit_%d.s", workdir, u);
+					snprintf(cmd, sizeof(cmd), "opt -O2 -mcpu=x86-64-v3 -S -o %s %s", uopt, uf);
+					if (system(cmd) != 0) {
+						obj_err = 1;
+						break;
+					}
+					snprintf(cmd, sizeof(cmd),
+					         "llc -function-sections -data-sections -code-model=large -mcpu=x86-64-v3 -o %s %s", us,
+					         uopt);
+					if (system(cmd) != 0) {
+						obj_err = 1;
+						break;
+					}
+					snprintf(cmd, sizeof(cmd), "cc -no-pie -mcmodel=large -c -o '%s' %s", ocache, us);
+					if (system(cmd) != 0) {
+						obj_err = 1;
+						break;
+					}
+				}
+				oj += snprintf(objs + oj, sizeof(objs) - (size_t)oj, " '%s'", ocache);
+			}
+			if (obj_err) {
+				rc = 1;
+				goto cleanup;
+			}
+			char cc_cmd[20000];
+			int cl = snprintf(
+			    cc_cmd, sizeof(cc_cmd),
+			    "cc -no-pie -mcmodel=large -Wl,--gc-sections -o %s%s %s/stack_check.o %s/io.o %s/net.o %s/term.o -lc",
+			    out_path, objs, rt, rt, rt, rt);
+			int link_count = opts ? opts->link_count : 0;
+			for (int li = 0; li < link_count && cl > 0 && cl < (int)sizeof(cc_cmd); li++)
+				cl += snprintf(cc_cmd + cl, sizeof(cc_cmd) - (size_t)cl, " %s", opts->link_paths[li]);
+			if (system(cc_cmd) != 0) {
+				fprintf(stderr, "Failed to link per-unit objects\n");
+				goto cleanup;
+			}
+			rc = 0;
+			goto cleanup;
+		}
+		/* 2b) Other emit modes (IR/asm/obj): llvm-link the unit modules into the combined IR the shared
+		 * opt/llc/cc pipeline below consumes. */
+		char link_cmd[16384];
+		int lp = snprintf(link_cmd, sizeof(link_cmd), "llvm-link -S -o %s", ir_file);
+		for (int u = 0; u <= max_unit; u++)
+			lp += snprintf(link_cmd + lp, sizeof(link_cmd) - (size_t)lp, " %s/unit_%d.ll", workdir, u);
+		if (system(link_cmd) != 0) {
+			fprintf(stderr, "Failed to llvm-link per-unit modules\n");
+			goto cleanup;
+		}
+	} else {
+		FILE *ir_output = fopen(ir_file, "w");
+		if (!ir_output) {
+			perror("Failed to open IR output file");
+			goto cleanup;
+		}
+		codegen_generate(codegen_ctx, ir_output);
+		fclose(ir_output);
+		if (codegen_had_error(codegen_ctx)) {
+			/* Codegen already printed the diagnostic; fail the build, don't run the emitted IR. */
+			rc = 1;
+			goto cleanup;
+		}
 	}
 	if (!quiet)
 		printf("Generated LLVM IR: %s\n", ir_file);
@@ -536,8 +674,12 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	const char *asm_target = (emit == EMIT_ASM) ? out_path : asm_file;
 	{
 		char llc_cmd[1024];
-		int m =
-		    snprintf(llc_cmd, sizeof(llc_cmd), "llc -code-model=large -mcpu=x86-64-v3 -o %s %s", asm_target, opt_file);
+		/* Per-unit codegen gives arche funcs external linkage (cross-object refs), so the optimizer no
+		 * longer DCEs unreferenced ones. `-function-sections`/`-data-sections` + the linker's
+		 * `--gc-sections` (below) restore dead-symbol stripping at link time. */
+		const char *sections = getenv("ARCHE_PER_UNIT") ? "-function-sections -data-sections " : "";
+		int m = snprintf(llc_cmd, sizeof(llc_cmd), "llc %s-code-model=large -mcpu=x86-64-v3 -o %s %s", sections,
+		                 asm_target, opt_file);
 		if (m < 0 || m >= (int)sizeof(llc_cmd)) {
 			fprintf(stderr, "llc command too long\n");
 			goto cleanup;
@@ -579,9 +721,10 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	{
 		const char *rt = arche_resource_dir(ARCHE_RES_RUNTIME);
 		char cc_cmd[8192];
+		const char *gc = getenv("ARCHE_PER_UNIT") ? "-Wl,--gc-sections " : "";
 		int cc_len = snprintf(cc_cmd, sizeof(cc_cmd),
-		                      "cc -no-pie -mcmodel=large -o %s %s %s/stack_check.o %s/io.o %s/net.o %s/term.o -lc",
-		                      out_path, asm_file, rt, rt, rt, rt);
+		                      "cc %s-no-pie -mcmodel=large -o %s %s %s/stack_check.o %s/io.o %s/net.o %s/term.o -lc",
+		                      gc, out_path, asm_file, rt, rt, rt, rt);
 		if (cc_len < 0 || cc_len >= (int)sizeof(cc_cmd)) {
 			fprintf(stderr, "link command too long\n");
 			goto cleanup;

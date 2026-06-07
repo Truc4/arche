@@ -16,4 +16,10 @@ void codegen_generate(CodegenContext *ctx, FILE *output);
 int codegen_had_error(const CodegenContext *ctx);
 void codegen_free(CodegenContext *ctx);
 
+/* Per-unit codegen: restrict this context to emit only `unit`'s bodies (cross-unit callees are
+ * declared). Implies per-unit mode. Used by the per-unit driver in compile.c. */
+void codegen_set_emit_unit(CodegenContext *ctx, int unit);
+/* 1 if per-unit codegen is requested (ARCHE_PER_UNIT set) — the driver consults this. */
+int codegen_per_unit_enabled(void);
+
 #endif /* CODEGEN_H */
