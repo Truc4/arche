@@ -1,15 +1,7 @@
-// `diska` behavior: hands out its `file1` handle (forged in-device), inspects it, and releases it.
-// The forge (`file1(11)`) is legal here because this is the declaring device's impl. Not a
-// standalone test.
+// `diska` behavior: a pure func that inspects a `file1` handle by borrow (reads nothing — opaque
+// cells are not readable in arche; it just returns a constant). No handle is ever created here.
+// Not a standalone test.
 // RUN: true
-@allow(proc_could_be_func)
-acquire :: proc()(h: file1) {
-  h = file1(11);
-}
 tag :: func(h: file1) -> int {
   return 1;
-}
-@allow(proc_no_effect)
-release :: proc(own h: file1) {
-  h = file1(0);
 }

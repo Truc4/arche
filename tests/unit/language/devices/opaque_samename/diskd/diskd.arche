@@ -1,4 +1,4 @@
-// `diskd` behavior: inspects a `file` handle. Not a standalone test.
+// `diskd` behavior: a pure func borrowing its `file` handle, returning a constant. Not standalone.
 // RUN: true
 stash :: func(h: file) -> int {
   return 2;

@@ -1,10 +1,12 @@
-// Writing a raw value into an opaque cell from OUTSIDE the declaring device must NOT compile.
-// `file :: opaque` (io.ds.arche) is a sealed handle: an importer may move/borrow/return it, but
-// assigning a raw int into it (`f = 5`) bypasses the device's constructors and is rejected.
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "raw value into opaque" %t.out
-#import { io }
-main :: proc() {
-  io.stdout()(f:);
+// An opaque is create-once: you may bind it (`:=`), move/borrow/return it, but you may NEVER
+// overwrite an existing opaque binding with `=`. `f = 5` over the opaque param `f` is illegal.
+// `f` is a borrow param (no handle is ever created — opaques only come from FFI), so the ONLY thing
+// under test is the `=` overwrite. RED until the ban lands (today it compiles).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "assign over opaque" %t.out
+res :: opaque
+@allow(unused_function)
+clobber :: proc(f: res) {
   f = 5;
-  io.fwrite(f, "x", 1);
+}
+main :: proc() {
 }

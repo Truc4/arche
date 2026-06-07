@@ -1,18 +1,19 @@
 // END GOAL: one opaque type implements TWO devices' handle types. `file` is declared to implement
-// both `diska.file1` and `diskb.file2`, so a single value acquired as a `file1` is also accepted
-// where a `file2` is expected — the same handle is usable for BOTH devices. Without the
-// cross-device `@implements` bridge, opaque siblings are distinct and `diskb.stash(f)` is a type
-// error (`expected 'file2', got 'file1'`). This is the desired end state, RED until implemented.
-// RUN: %arche build -o %t %s && %t | grep -q "both=3"
-#import { diska diskb fmt }
+// both `diska.file1` and `diskb.file2`, so a single borrowed `file` is accepted by `diska.tag`
+// (wants file1) AND `diskb.stash` (wants file2) — the same handle is usable for BOTH devices.
+// Without the cross-device `@implements` unification, file1/file2 are distinct opaque siblings and
+// `diskb.stash(h)` is a type error (`expected 'file2', got 'file1'`). Compile-success = the types
+// unified. No handle is ever created (opaques only come from FFI); `h` is a borrow param.
+// RUN: %arche build -o %t %s && %t
+#import { diska diskb }
 
 @implements(diska.file1, diskb.file2)
 file :: opaque
 
+@allow(unused_function)
+relay :: func(h: file) -> int {
+  return diska.tag(h) + diskb.stash(h);
+}
+
 main :: proc() {
-  diska.acquire()(f:);    // f is a file1 handle...
-  a := diska.tag(f);      // ...usable as file1
-  b := diskb.stash(f);    // ...and ALSO usable as file2, via the shared `file` type
-  diska.release(move f);  // consume the handle (no destructor on a bare opaque)
-  fmt.printf("both=%d\n", a + b);
 }

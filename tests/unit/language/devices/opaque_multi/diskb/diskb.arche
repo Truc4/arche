@@ -1,4 +1,5 @@
-// `diskb` behavior: inspects a `file2` handle. Not a standalone test.
+// `diskb` behavior: a pure func that borrows a `file2` handle and returns a constant. Not a
+// standalone test.
 // RUN: true
 stash :: func(h: file2) -> int {
   return 2;
