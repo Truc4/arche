@@ -153,11 +153,13 @@ test: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN)
 	lit -v tests/
 	$(MAKE) test-doc
 
-# EXPERIMENTAL per-unit codegen regression gate: runs the full lit suite emitting one LLVM module per
+# DORMANT, manual-only per-unit codegen check: runs the full lit suite emitting one LLVM module per
 # compilation unit (mangled/external symbols + linkonce_odr shared defs), llvm-link-merged, with the
 # ODR folding verifier ALWAYS on (intrinsic to per-unit mode — no env toggle). A correctness/readiness
-# mode, NOT a build-speed mode (no object cache). NOT in the default `test` — whole-program is what
-# ships — but it is a required CI check (alongside test / test-asan) so the mode can't silently rot.
+# mode, NOT a build-speed mode (no object cache) — default-off with no current consumer, so it is NOT
+# in `make test` NOR in CI (it would ~2x the suite for an unused mode). Run this by hand if reviving
+# separate compilation. The codegen determinism fix that makes it sound (per-body SSA reset +
+# content-addressed linkonce_odr globals) is exercised by `make test`/`verify-codegen` regardless.
 test-per-unit: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 	ARCHE_PER_UNIT=1 lit -v tests/
 
@@ -325,7 +327,10 @@ VERIFY_CG_PROGRAMS = \
 	tests/unit/language/use/use_simple.arche \
 	tests/unit/language/csv/csv_load_named.arche \
 	tests/unit/language/tuples/tuple_array_ops.arche \
-	tests/unit/language/tuples/tuple_compound_assign.arche
+	tests/unit/language/tuples/tuple_compound_assign.arche \
+	tests/unit/language/callbacks/proc_callback.arche \
+	tests/unit/language/systems/sys_minimal.arche \
+	tests/unit/language/strings/string_literals.arche
 verify-codegen: $(TARGET)
 	@mkdir -p $(VERIFY_CG_DIR); fail=0; \
 	for f in $(VERIFY_CG_PROGRAMS); do \

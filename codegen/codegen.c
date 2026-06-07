@@ -45,9 +45,12 @@ struct CodegenContext {
 	SemanticContext *sem_ctx;
 	int had_error; /* set when codegen hits a hard error (e.g. a `run` no shape can satisfy) */
 
-	/* Per-unit codegen (EXPERIMENTAL, behind ARCHE_PER_UNIT) — a correctness/READINESS mode, NOT a
-	 * build-speed mode: it proves codegen can split into one LLVM module per compilation unit (with
-	 * mangled/external symbols + linkonce_odr shared defs) that llvm-link merges back losslessly. There
+	/* Per-unit codegen (EXPERIMENTAL + DORMANT, behind ARCHE_PER_UNIT; not in CI — see Makefile
+	 * test-per-unit) — a correctness/READINESS mode, NOT a build-speed mode: it proves codegen can split
+	 * into one LLVM module per compilation unit (with mangled/external symbols + linkonce_odr shared
+	 * defs) that llvm-link merges back losslessly. The determinism it relies on (per-body SSA reset +
+	 * content-addressed linkonce_odr constant globals) is always on, so the default whole-program path
+	 * benefits too (constant dedup). There
 	 * is NO per-object cache (removed as speculative), and the front end always analyzes the whole program
 	 * every build, so per-unit gives no incremental-build win. It is also behaviorally- but NOT
 	 * bit-equivalent to whole-program: per-unit runs `opt -O2` over each isolated module (no cross-module
@@ -75,6 +78,14 @@ struct CodegenContext {
 	char *globals_buffer;
 	size_t globals_size;
 	size_t globals_pos;
+
+	/* Content-addressed constant-global interning (see intern_global): an open-addressed hash set of
+	 * emitted global names → their rhs, giving O(1) amortized dedup + collision detection instead of
+	 * scanning the whole globals buffer per constant. NULL name slot = empty; cap is a power of two. */
+	char **interned_names;
+	char **interned_rhs;
+	int interned_cap;
+	int interned_count;
 
 	/* SIMD vectorization context */
 	int vector_lanes; /* 0 = scalar mode, 4 = AVX2 double (256-bit / 64-bit = 4 lanes) */
@@ -731,6 +742,16 @@ static void cg_content_hash(const char *data, size_t n, char out[17]) {
 	snprintf(out, 17, "%016llx", h);
 }
 
+/* FNV-1a of a NUL-terminated string → 64-bit (for hash-table bucketing). */
+static unsigned long long fnv_cstr(const char *s) {
+	unsigned long long h = 1469598103934665603ULL;
+	for (; *s; s++) {
+		h ^= (unsigned char)*s;
+		h *= 1099511628211ULL;
+	}
+	return h;
+}
+
 /* Intern a read-only constant global by CONTENT. `rhs` is the text after `<name> = ` (the type +
  * initializer, e.g. `[6 x i8] c"hi\0A\00"`). The global is named `@.<prefix>.<hash-of-rhs>` and emitted
  * `linkonce_odr unnamed_addr` so (a) identical constants within a module collapse to one definition and
@@ -743,30 +764,60 @@ static char *intern_global(CodegenContext *ctx, const char *prefix, const char *
 	char name[64];
 	snprintf(name, sizeof(name), "@.%s.%s", prefix, hash);
 
+	/* Grow/init the open-addressed table at >= 70% load (keeps probe chains short). */
+	if (ctx->interned_count * 10 >= ctx->interned_cap * 7) {
+		int newcap = ctx->interned_cap ? ctx->interned_cap * 2 : 64;
+		char **nn = calloc((size_t)newcap, sizeof(char *));
+		char **nr = calloc((size_t)newcap, sizeof(char *));
+		for (int i = 0; i < ctx->interned_cap; i++) {
+			if (!ctx->interned_names[i])
+				continue;
+			int k = (int)(fnv_cstr(ctx->interned_names[i]) & (unsigned long long)(newcap - 1));
+			while (nn[k])
+				k = (k + 1) & (newcap - 1);
+			nn[k] = ctx->interned_names[i];
+			nr[k] = ctx->interned_rhs[i];
+		}
+		free(ctx->interned_names);
+		free(ctx->interned_rhs);
+		ctx->interned_names = nn;
+		ctx->interned_rhs = nr;
+		ctx->interned_cap = newcap;
+	}
+
+	int j = (int)(fnv_cstr(name) & (unsigned long long)(ctx->interned_cap - 1));
+	while (ctx->interned_names[j]) {
+		if (strcmp(ctx->interned_names[j], name) == 0) {
+			/* Name already emitted (names are a pure function of content). Same rhs → dedup (skip the
+			 * redefinition); different rhs → a 64-bit FNV-1a collision that would silently alias two
+			 * distinct constants — fail loudly instead of miscompiling. */
+			if (strcmp(ctx->interned_rhs[j], rhs) != 0) {
+				fprintf(stderr, "codegen: constant-global hash collision on %s\n", name);
+				ctx->had_error = 1;
+			}
+			char *dup = malloc(64);
+			strcpy(dup, name);
+			return dup;
+		}
+		j = (j + 1) & (ctx->interned_cap - 1);
+	}
+
+	/* New constant: record it, then emit its definition into the globals buffer. */
+	ctx->interned_names[j] = strdup(name);
+	ctx->interned_rhs[j] = strdup(rhs);
+	ctx->interned_count++;
+
 	size_t need = strlen(rhs) + 128;
 	char *decl = malloc(need);
 	size_t decl_len = (size_t)snprintf(decl, need, "%s = linkonce_odr unnamed_addr constant %s\n", name, rhs);
-
-	/* Dedup within this module by FULL definition: names are a pure function of content, so an exact
-	 * match is the same constant (emitting it twice is an LLVM redefinition error). */
-	if (!strstr(ctx->globals_buffer, decl)) {
-		/* Guard the (vanishingly unlikely) 64-bit FNV-1a collision: same name, DIFFERENT definition would
-		 * silently alias two distinct constants. Fail loudly instead of miscompiling. */
-		char probe[72];
-		snprintf(probe, sizeof(probe), "%s = ", name);
-		if (strstr(ctx->globals_buffer, probe)) {
-			fprintf(stderr, "codegen: constant-global hash collision on %s\n", name);
-			ctx->had_error = 1;
-		} else {
-			if (ctx->globals_pos + decl_len >= ctx->globals_size) {
-				ctx->globals_size = (ctx->globals_size + decl_len) * 2;
-				ctx->globals_buffer = realloc(ctx->globals_buffer, ctx->globals_size);
-			}
-			strcpy(ctx->globals_buffer + ctx->globals_pos, decl);
-			ctx->globals_pos += decl_len;
-		}
+	if (ctx->globals_pos + decl_len >= ctx->globals_size) {
+		ctx->globals_size = (ctx->globals_size + decl_len) * 2;
+		ctx->globals_buffer = realloc(ctx->globals_buffer, ctx->globals_size);
 	}
+	strcpy(ctx->globals_buffer + ctx->globals_pos, decl);
+	ctx->globals_pos += decl_len;
 	free(decl);
+
 	char *ret = malloc(64);
 	strcpy(ret, name);
 	return ret;
@@ -8075,8 +8126,12 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->buffer_pos = 0;
 	ctx->globals_size = 4096;
 	ctx->globals_buffer = malloc(ctx->globals_size);
-	ctx->globals_buffer[0] = '\0'; /* NUL-terminate: intern_global strstr-scans this before the first write */
+	ctx->globals_buffer[0] = '\0';
 	ctx->globals_pos = 0;
+	ctx->interned_names = NULL;
+	ctx->interned_rhs = NULL;
+	ctx->interned_cap = 0;
+	ctx->interned_count = 0;
 	ctx->vector_lanes = 0;
 	ctx->in_sys = 0;
 	ctx->implicit_loop_index[0] = '\0'; /* Initialize to empty (not in loop) */
@@ -8458,6 +8513,12 @@ void codegen_free(CodegenContext *ctx) {
 	free(ctx->scopes);
 	free(ctx->output_buffer);
 	free(ctx->globals_buffer);
+	for (int i = 0; i < ctx->interned_cap; i++) {
+		free(ctx->interned_names[i]);
+		free(ctx->interned_rhs[i]);
+	}
+	free(ctx->interned_names);
+	free(ctx->interned_rhs);
 	free(ctx->alloca_buffer);
 	free(ctx->sys_versions);
 	free(ctx->loop_exit_labels);

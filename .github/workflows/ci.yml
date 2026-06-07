@@ -59,13 +59,9 @@ jobs:
         env:
           ARCHE_CORE_DIR: ${{ github.workspace }}/core
 
-      # Per-unit codegen (experimental, default-off) regression gate: the full lit suite emitting one
-      # LLVM module per compilation unit, llvm-link-merged, with the ODR folding verifier intrinsically
-      # on. Keeps the mode from silently rotting (it is NOT in the default `make test`).
-      - name: Per-unit codegen gate
-        run: make test-per-unit
-        env:
-          ARCHE_CORE_DIR: ${{ github.workspace }}/core
+      # NB: per-unit codegen (`make test-per-unit`) is intentionally NOT gated here — the mode is DORMANT
+      # (default-off, no current consumer). Run it manually if reviving separate compilation; the
+      # always-on ODR verifier catches divergence whenever it IS run.
 
       # IR-level drift gate: diff emitted LLVM IR for a fixed representative set against checked-in
       # goldens. Catches codegen changes that behavioral tests can't see (same output, different IR).
