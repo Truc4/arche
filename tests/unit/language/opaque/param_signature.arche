@@ -1,8 +1,11 @@
-// A nominal opaque type in a function signature — a func takes an `file` by value (an i64 cell
-// at the ABI). `file` is distinct in the checker, erased to i64 at codegen.
+// A nominal opaque type in a function signature — a func takes an opaque handle by value (erased to
+// a pointer-width cell at the ABI). `res` is distinct in the checker. No handle is ever created
+// (opaque values come only from FFI); a param type needs no producer.
 // RUN: %arche build -o %t %s && %t | grep "ok"
-#import { io fmt }
-describe :: func(f: file) -> int {
+#import { fmt }
+res :: opaque
+@allow(unused_function)
+describe :: func(f: res) -> int {
   return 0;
 }
 main :: proc() {

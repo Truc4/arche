@@ -79,7 +79,10 @@ static int check_literal_fits(const TypeArena *arena, SemanticContext *ctx, Synt
 		tyid_display(arena, expected, want, sizeof(want));
 		if (is_width_int_name(want) && (is_int_lit || is_char_lit))
 			ok = 1;
-		if (!ok && ctx && semantic_is_type_alias(ctx, want)) {
+		/* An enum is a closed NAMED set, not a numeric continuum: a bare int literal does not inhabit it
+		 * (you must name a case — `color.red` — or convert explicitly). Other int-backed subtypes still
+		 * take untyped literals (`x: meters = 5`). */
+		if (!ok && ctx && semantic_is_type_alias(ctx, want) && !semantic_is_enum_type(ctx, want)) {
 			const char *b = semantic_resolve_type_alias(ctx, want);
 			if (b) {
 				if (is_int_lit && (strcmp(b, "int") == 0 || strcmp(b, "float") == 0 || strcmp(b, "char") == 0 ||
@@ -318,6 +321,12 @@ static int subtype_check(TyCtx *cx, TypeId got, TypeId expected) {
 			return 0;
 		}
 		if (gb && strcmp(gb, ename) == 0)
+			return 1;
+		/* An int-backed distinct subtype (incl. an enum) is usable AS any integer width — `fd` flows
+		 * into the `i64` syscall, `count` into an `int`, etc. (one-way; the reverse needs `T(x)`). */
+		int gb_int = gb && (strcmp(gb, "int") == 0 || strcmp(gb, "char") == 0 || is_width_int_name(gb));
+		int en_int = strcmp(ename, "int") == 0 || strcmp(ename, "char") == 0 || is_width_int_name(ename);
+		if (gb_int && en_int)
 			return 1;
 	}
 	return -1;

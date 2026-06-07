@@ -1,14 +1,21 @@
 // Idiomatic if/else where every path closes the handle exactly once: valid (no false "use of
-// consumed handle" in the else, no double-drop). Consumed on all paths → no auto-drop.
+// consumed handle" in the else, no double-drop). Consumed on all paths → no auto-drop. `f` is an
+// `own` param of an opaque with a `@drop` destructor; the proc is never called (no producer needed).
 // RUN: %arche build -o %t %s
-#import { io }
-main :: proc() {
-  io.fopen_read("/dev/null")(f:);
+res :: opaque
+#foreign {
+  @drop(res)
+  res_close :: proc(own r: res)
+}
+@allow(unused_function)
+both :: proc(own f: res) {
   e := 0;
   if (e == 1) {
-    io.fclose(move f);
+    res_close(move f);
   }
   else {
-    io.fclose(move f);
+    res_close(move f);
   }
+}
+main :: proc() {
 }

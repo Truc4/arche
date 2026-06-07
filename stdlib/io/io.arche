@@ -1,59 +1,57 @@
-// The `io` module — file/stdio I/O. `#import { io }` then call `io.fopen_read`, `io.open`, etc.
-// Access is qualified-only: a bare `fopen_read(...)` does not resolve. Built on the `os`
-// syscall layer; a `file` is a raw fd held in the opaque cell.
+// The `io` module — file-descriptor I/O over raw syscalls. `#import { io }` then call
+// `io.fopen_read`, `io.fwrite`, etc. Access is qualified-only. Built on the `os` syscall layer; a
+// `fd` is just the kernel's integer descriptor (declared in io.ds.arche), so it flows straight into
+// the syscalls as a number — there is no opaque cell and no auto-close.
 #import { os }
 
-// The `file` opaque type is declared in io.ds.arche (a device's types live in its datasheet, not its
-// impl); the procs below operate on it by bare name (datasheet types are global vocabulary).
-
 @allow(proc_could_be_func)
-stdin :: proc()(f: file) {
-  f = 0;
+stdin :: proc()(f: fd) {
+  f = fd.stdin;
 }
 @allow(proc_could_be_func)
-stdout :: proc()(f: file) {
-  f = 1;
+stdout :: proc()(f: fd) {
+  f = fd.stdout;
 }
 @allow(proc_could_be_func)
-stderr :: proc()(f: file) {
-  f = 2;
+stderr :: proc()(f: fd) {
+  f = fd.stderr;
 }
-// open returns a negative errno on failure; map that to the null cell (0) so callers keep the
+// open returns a negative errno on failure; map that to descriptor 0 so callers keep the
 // `fd == 0`-is-failure convention. open flags (x86-64 Linux): O_RDONLY=0; O_WRONLY|O_CREAT|O_TRUNC=577, mode 0644=420.
-fopen_read :: proc(path: char[])(f: file) {
+fopen_read :: proc(path: char[])(f: fd) {
   os.syscall(2, path, 0, 0, 0, 0, 0)(r:);
   if (r < 0) {
     r = 0;
   }
-  f = r;
+  f = fd(r);
 }
-fopen_write :: proc(path: char[])(f: file) {
+fopen_write :: proc(path: char[])(f: fd) {
   os.syscall(2, path, 577, 420, 0, 0, 0)(r:);
   if (r < 0) {
     r = 0;
   }
-  f = r;
+  f = fd(r);
 }
-fwrite :: proc(fd: file, buf: char[], n: int) {
-  os.syscall(1, fd, buf, n, 0, 0, 0)(_w:);
+fwrite :: proc(f: fd, buf: char[], n: int) {
+  os.syscall(1, f, buf, n, 0, 0, 0)(_w:);
 }
 // Lend `buf` (a borrow = backing store), get back a slice VIEW of the `n` bytes read. Out-only — the
 // byte count travels on the returned slice's `.length` (mirrors `net.recv`).
-fread :: proc(fd: file, buf: char[], n: int)(out: char[]) {
-  os.syscall(0, fd, buf, n, 0, 0, 0)(rr:);
+fread :: proc(f: fd, buf: char[], n: int)(out: char[]) {
+  os.syscall(0, f, buf, n, 0, 0, 0)(rr:);
   k := i32(rr);
   if (k < 0) {
     k = 0;
   }
   out = buf[0: k];
 }
-// Read up to the buffer's capacity. Thin alias for `fread(fd, buf, buf.cap)`.
-read :: proc(fd: file, buf: char[])(out: char[]) {
-  fread(fd, buf, buf.cap)(r:);
+// Read up to the buffer's capacity. Thin alias for `fread(f, buf, buf.cap)`.
+read :: proc(f: fd, buf: char[])(out: char[]) {
+  fread(f, buf, buf.cap)(r:);
   out = r;
 }
-csv_read_chunk :: proc(fd: file, buf: char[], max_bytes: int)(out: char[]) {
-  os.syscall(0, fd, buf, max_bytes, 0, 0, 0)(rr:);
+csv_read_chunk :: proc(f: fd, buf: char[], max_bytes: int)(out: char[]) {
+  os.syscall(0, f, buf, max_bytes, 0, 0, 0)(rr:);
   k := i32(rr);
   if (k < 0) {
     k = 0;
@@ -62,11 +60,11 @@ csv_read_chunk :: proc(fd: file, buf: char[], max_bytes: int)(out: char[]) {
 }
 // `own buf` — this fills the buffer byte-by-byte in arche code (not via a single FFI write), so it
 // must own a writable buffer; `move` it in and take back the line view.
-fread_line :: proc(fd: file, own buf: char[], n: int)(out: char[]) {
+fread_line :: proc(f: fd, own buf: char[], n: int)(out: char[]) {
   i := 0;
   ch: char[1];
   for (; i < n - 1;) {
-    os.syscall(0, fd, ch, 1, 0, 0, 0)(k:);
+    os.syscall(0, f, ch, 1, 0, 0, 0)(k:);
     if (k <= 0) {
       break;
     }
@@ -79,11 +77,9 @@ fread_line :: proc(fd: file, own buf: char[], n: int)(out: char[]) {
   buf[i] = 0;
   out = buf[0: i];
 }
-// RAII: registers io.fclose as the destructor for `file`. A `file` local that is never
-// explicitly closed is auto-dropped via this proc at scope exit.
-@drop(file)
-fclose :: proc(own fd: file) {
-  os.syscall(3, fd, 0, 0, 0, 0, 0)(_c:);
+// A descriptor is a plain value — close it explicitly (no RAII auto-drop).
+fclose :: proc(f: fd) {
+  os.syscall(3, f, 0, 0, 0, 0, 0)(_c:);
 }
 
 stdout_write :: proc(buf: char[], n: int) {
@@ -98,18 +94,18 @@ stdin_read :: proc(buf: char[], n: int)(out: char[]) {
 }
 
 // File-handle convenience wrappers (`io.open`, `io.read_chunk`, …).
-open :: proc(own path: char[])(fd: file) {
-  fopen_read(move path)(fd);
+open :: proc(own path: char[])(f: fd) {
+  fopen_read(move path)(f);
 }
-close :: proc(own fd: file) {
-  fclose(move fd);
+close :: proc(f: fd) {
+  fclose(f);
 }
-skip_header :: proc(fd: file) {
+skip_header :: proc(f: fd) {
   line: char[256];
-  fread_line(fd, move line, 256)(_discard:);
+  fread_line(f, move line, 256)(_discard:);
 }
-read_chunk :: proc(fd: file, buf: char[], size: int)(out: char[]) {
-  csv_read_chunk(fd, buf, size)(r:);
+read_chunk :: proc(f: fd, buf: char[], size: int)(out: char[]) {
+  csv_read_chunk(f, buf, size)(r:);
   out = r;
 }
 

@@ -1232,21 +1232,20 @@ static const char *resolve_expression_type(SemanticContext *ctx, SyntaxView v) {
 	}
 
 	case SN_FIELD_EXPR: {
-		/* `Enum.variant` is a compile-time int constant (enums are i32-backed), the same value the
-		 * old analysis folded the field access into. Handle it before the archetype/field path. */
+		/* `Enum.variant` is a value of the ENUM type (distinct, i32-backed). It folds to its int value
+		 * at codegen, but its TYPE is the enum — so `f : fd = fd.stdin` type-checks and a raw int can't
+		 * masquerade as a case. */
 		if (sv_count(v, SN_FIELD_NAME) == 1) {
 			char *idnt = sv_resolved_name(ctx, v);
 			if (enum_is_type(ctx, idnt)) {
 				char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, 0));
 				long ev = 0;
 				int is_variant = enum_variant_lookup(ctx, idnt, fld, &ev);
-				free(idnt);
 				free(fld);
 				if (is_variant)
-					return "i32";
-			} else {
-				free(idnt);
+					return sem_own_str(ctx, idnt); /* the enum type name (pool-owned, stable) */
 			}
+			free(idnt);
 		}
 		return resolve_base_chain_type(ctx, v);
 	}
@@ -1381,6 +1380,11 @@ static const char *nominal_type_of_expr(SemanticContext *ctx, SyntaxView v) {
 		if (tyid_kind(ctx->ty_arena, var->type_id) == TYK_NOMINAL &&
 		    tyid_backing(ctx->ty_arena, var->type_id) != TYID_UNKNOWN)
 			return tyid_nominal_name(ctx->ty_arena, var->type_id);
+		/* Untyped `k := Enum.case` records the distinct alias in inferred_type but no type_id — keep the
+		 * nominal so `k` stays the enum (not its int backing) through a call. */
+		if (var->inferred_type && is_type_alias(ctx, var->inferred_type) &&
+		    !alias_is_transparent(ctx, var->inferred_type))
+			return var->inferred_type;
 		return NULL;
 	}
 	/* simple (unqualified) callee only — a qualified `mod.f` has SN_FIELD_NAME children */
@@ -5154,9 +5158,10 @@ static void analyze_program_core(SemanticContext *ctx) {
 		if (e->kind != DECL_ENUM)
 			continue;
 		register_enum_entries(ctx, e);
-		/* An enum is a transparent (tier-1) int alias: variants are int values and `match`/comparison
-		 * treat the enum as int, so it must interchange with int freely. */
-		register_type_alias_tiered(ctx, sem_dupz(e->name), "int", 1, e->loc, e->is_datasheet);
+		/* An enum is a DISTINCT (tier-2) int-backed type: an enum value is usable AS its int backing
+		 * (so `match`/comparison and `printf("%d", …)` work), but a raw int is NOT usable as the enum —
+		 * you must name a case (`color.red`) or convert explicitly (`color(0)`). */
+		register_type_alias_tiered(ctx, sem_dupz(e->name), "int", 0, e->loc, e->is_datasheet);
 	}
 
 	/* Inline component definitions: `arche Foo { hp :: int, … }` mints the nominal type `hp`

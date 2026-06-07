@@ -1,5 +1,7 @@
-// Datasheet for the `io` device — its exposed TYPE (a device's types live in its datasheet, not its
-// impl). `file` is a primitive opaque handle for an open file (a raw fd in the opaque cell). The
-// operations in io.arche are the only way to act on it; you may move/borrow/return a `file` but not
-// write a raw value into it. No storage requirements.
-file :: opaque
+// Datasheet for the `io` device. `fd` is a file DESCRIPTOR — the small integer the kernel hands back
+// (an index into the process's open-file table; stdin/stdout/stderr = 0/1/2). It is a plain value,
+// NOT opaque: our syscall layer returns a number, never a pointer, so there is nothing to seal. The
+// enum names the three standard descriptors; an opened file is just an unnamed `fd` value. A `fd` is
+// copyable and closed manually (no RAII) — losing one only leaks a kernel slot the OS reclaims on
+// exit. No storage requirements.
+fd :: enum { stdin, stdout, stderr }
