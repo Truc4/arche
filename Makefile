@@ -153,13 +153,13 @@ test: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN)
 	lit -v tests/
 	$(MAKE) test-doc
 
-# EXPERIMENTAL per-unit (separate-compilation backend) regression gate: runs the full lit suite under
-# per-unit object codegen, with the ODR folding verifier on (ARCHE_VERIFY_ODR) and a hermetic object
-# cache (lit.cfg points ARCHE_OBJ_CACHE under the build tree). NOT in the default `test` — it roughly
-# doubles build time and whole-program is what ships — but it is a required CI check (alongside test /
-# test-asan) so the experimental mode can't silently rot.
+# EXPERIMENTAL per-unit codegen regression gate: runs the full lit suite emitting one LLVM module per
+# compilation unit (mangled/external symbols + linkonce_odr shared defs), llvm-link-merged, with the
+# ODR folding verifier ALWAYS on (intrinsic to per-unit mode — no env toggle). A correctness/readiness
+# mode, NOT a build-speed mode (no object cache). NOT in the default `test` — whole-program is what
+# ships — but it is a required CI check (alongside test / test-asan) so the mode can't silently rot.
 test-per-unit: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
-	ARCHE_PER_UNIT=1 ARCHE_VERIFY_ODR=1 lit -v tests/
+	ARCHE_PER_UNIT=1 lit -v tests/
 
 # Run doctests (```arche examples in /// doc comments) over the real source tree.
 # The synthetic runner fixtures in tests/unit/doctest/ are exercised by lit above
@@ -309,6 +309,10 @@ test-syntax-view: $(SYNTAX_VIEW_TEST_BIN)
 # Guard against silent codegen changes: emit LLVM IR for representative programs and
 # diff against checked-in goldens (first run captures them). VERIFY_CG_PROGRAMS is the
 # fixed representative set; see tests/codegen_golden/.
+# NOTE: the checked-in goldens are STALE (they predate the slice-native rework and still
+# reference the deleted %struct.arche_array type), so this target FAILS if run today. It is
+# deliberately NOT wired into `make test` — it is not live IR protection. Regenerate the
+# goldens (delete tests/codegen_golden/*.ll, re-run) before relying on it again.
 VERIFY_CG_DIR = tests/codegen_golden
 VERIFY_CG_PROGRAMS = \
 	examples/simple/simple.arche \

@@ -1,0 +1,10 @@
+// Regression: a `run <sys>` inside a proc in an IMPORTED module (a non-entry compilation unit) must
+// resolve the system symbol across units. Under per-unit codegen the system body emits once in unit 0
+// and this entry unit references the module proc, which itself references `@arche.bump` from its own
+// (non-entry) unit — the cross-unit SYS declare path. Asserts the system actually mutated pool state, so
+// it fails loudly if the declare ever regresses. Passes in BOTH whole-program and per-unit modes.
+// RUN: %arche build -o %t %s && %t | grep -qF "n=1"
+#import { "./run_helper_lib" }
+main :: proc() {
+  run_helper_lib.step()();
+}

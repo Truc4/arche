@@ -45,12 +45,17 @@ struct CodegenContext {
 	SemanticContext *sem_ctx;
 	int had_error; /* set when codegen hits a hard error (e.g. a `run` no shape can satisfy) */
 
-	/* Per-unit codegen (EXPERIMENTAL, behind ARCHE_PER_UNIT) — backend per-object caching, NOT front-end
-	 * incremental compilation (the front end still analyzes the whole program every build). When set,
-	 * codegen emits one module per compilation unit (for separate, cacheable object compilation) instead
-	 * of one whole-program module; `emit_only_unit` >= 0 restricts func/proc emission to that unit (systems
-	 * emit once in unit 0; shared decls — archetype types/helpers, pool storage — emit in every module as
-	 * linkonce_odr). Default off → the whole-program path is unchanged. See the compilation plan. */
+	/* Per-unit codegen (EXPERIMENTAL, behind ARCHE_PER_UNIT) — a correctness/READINESS mode, NOT a
+	 * build-speed mode: it proves codegen can split into one LLVM module per compilation unit (with
+	 * mangled/external symbols + linkonce_odr shared defs) that llvm-link merges back losslessly. There
+	 * is NO per-object cache (removed as speculative), and the front end always analyzes the whole program
+	 * every build, so per-unit gives no incremental-build win. It is also behaviorally- but NOT
+	 * bit-equivalent to whole-program: per-unit runs `opt -O2` over each isolated module (no cross-module
+	 * IPO), whole-program opts the merged module — same semantics, different binary (an opt-sensitive bug
+	 * could surface in only one mode; the suite runs in BOTH). When set, `emit_only_unit` >= 0 restricts
+	 * func/proc emission to that unit (systems emit once in unit 0; shared decls — archetype types/helpers,
+	 * pool storage — emit in every module as linkonce_odr, gated by the always-on ODR verifier in
+	 * compile.c). Default off → the whole-program path is unchanged. See the compilation plan. */
 	int per_unit;
 	int emit_only_unit; /* -1 = emit all units (whole-program / default) */
 

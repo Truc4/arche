@@ -33,79 +33,7 @@ static int file_exists(const char *path) {
 	return stat(path, &sb) == 0;
 }
 
-/* FNV-1a content hash of a file as a 16-hex-digit string in `out` (>=17 bytes). Per-unit object
- * caching keys on this: identical emitted IR → identical object, so an unchanged unit's `.o` is reused
- * across builds (per-object caching — NB: only object codegen is cached; the front end still runs
- * whole-program every build). Returns 0 if the file can't be read. */
-static int file_content_hash(const char *path, char out[17]) {
-	FILE *f = fopen(path, "rb");
-	if (!f)
-		return 0;
-	unsigned long long h = 1469598103934665603ULL; /* FNV offset basis */
-	char buf[8192];
-	size_t n;
-	while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
-		for (size_t i = 0; i < n; i++) {
-			h ^= (unsigned char)buf[i];
-			h *= 1099511628211ULL; /* FNV prime */
-		}
-	fclose(f);
-	snprintf(out, 17, "%016llx", h);
-	return 1;
-}
-
-/* C99 doesn't expose popen/pclose; declare them (as we do for mkdtemp). */
-FILE *popen(const char *command, const char *type);
-int pclose(FILE *stream);
-
-static unsigned long long fnv_str(unsigned long long h, const char *s) {
-	for (; *s; s++) {
-		h ^= (unsigned char)*s;
-		h *= 1099511628211ULL;
-	}
-	return h;
-}
-static unsigned long long fnv_cmd(unsigned long long h, const char *cmd) {
-	FILE *p = popen(cmd, "r");
-	if (!p)
-		return h;
-	int c;
-	while ((c = fgetc(p)) != EOF) {
-		h ^= (unsigned char)c;
-		h *= 1099511628211ULL;
-	}
-	pclose(p);
-	return h;
-}
-
-/* 8-hex toolchain identity mixed into every cached object's name: opt/llc/cc versions + the hardcoded
- * compile/link flags + the runtime objects' content. A toolchain or flag change therefore changes the
- * key, so a stale `.o` from a different toolchain can never be reused (the silent-miscompile vector).
- * Computed once per process. */
-static const char *toolchain_tag(void) {
-	static char tag[17] = "";
-	if (tag[0])
-		return tag;
-	unsigned long long h = 1469598103934665603ULL;
-	h = fnv_cmd(h, "cc --version 2>/dev/null");
-	h = fnv_cmd(h, "opt --version 2>/dev/null");
-	h = fnv_cmd(h, "llc --version 2>/dev/null");
-	h = fnv_str(h, "opt -O2 -mcpu=x86-64-v3 | "
-	               "llc -function-sections -data-sections -code-model=large -mcpu=x86-64-v3 | "
-	               "cc -no-pie -mcmodel=large -Wl,--gc-sections");
-	const char *rt = arche_resource_dir(ARCHE_RES_RUNTIME);
-	const char *robj[] = {"stack_check.o", "io.o", "net.o", "term.o"};
-	for (int i = 0; i < 4; i++) {
-		char p[760], hk[17];
-		snprintf(p, sizeof(p), "%s/%s", rt, robj[i]);
-		if (file_content_hash(p, hk))
-			h = fnv_str(h, hk);
-	}
-	snprintf(tag, sizeof(tag), "%016llx", h);
-	return tag;
-}
-
-/* ODR verification (gated by ARCHE_VERIFY_ODR; on in the per-unit CI target). Every `define
+/* ODR verification (unconditional in per-unit mode). Every `define
  * linkonce_odr` symbol emitted in more than one unit module MUST have a byte-identical body — that is
  * the invariant the linker's duplicate-folding relies on. A divergence would be a SILENT miscompile
  * (the linker keeps one arbitrary copy), so this turns the assumption into a checked, loud failure.
@@ -648,8 +576,9 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	if (per_unit_build) {
 		/* Per-unit codegen: emit one LLVM module per compilation unit, then llvm-link them into the
 		 * combined IR the rest of the pipeline consumes. Cross-unit references resolve via the declares
-		 * each unit module emits + external/mangled symbols. (Per-object caching is the next step; this
-		 * proves per-unit emission + linkage produce a correct program.) */
+		 * each unit module emits + external/mangled symbols. A correctness/readiness mode that proves
+		 * per-unit emission + linkage produce a correct program — NOT a build-speed mode (there is no
+		 * per-object cache; see the always-on ODR verifier below and the doc comment on CodegenContext). */
 		int max_unit = 0;
 		for (int i = 0; i < ast->decl_count; i++)
 			if (ast->decls[i]->unit > max_unit)
@@ -680,112 +609,18 @@ int compile_source(const char *user_source, const char *source_path, const char 
 			rc = 1;
 			goto cleanup;
 		}
-		/* Tripwire for the linkonce_odr folding assumption (opt-in; on in `make test-per-unit`). */
-		if (getenv("ARCHE_VERIFY_ODR") && verify_odr(workdir, max_unit)) {
+		/* ODR tripwire — ALWAYS run in per-unit mode (not opt-in): `llvm-link` folds `linkonce_odr`
+		 * duplicates, so a divergent shared body would be silently merged to one arbitrary copy. This
+		 * makes that a loud, deterministic build failure instead. Cheap: string work over files on disk. */
+		if (verify_odr(workdir, max_unit)) {
 			fprintf(stderr, "Per-unit ODR verification failed (shared definitions diverge across units)\n");
 			rc = 1;
 			goto cleanup;
 		}
-		if (emit == EMIT_LINK) {
-			/* 2a) Per-object cached link: compile each unit to an object CACHED by its IR content hash (an
-			 * unchanged unit — e.g. the stdlib — reuses its `.o` across builds), then link the objects.
-			 * This is the separate-compilation payoff: editing one unit recompiles only that unit. */
-			const char *rt = arche_resource_dir(ARCHE_RES_RUNTIME);
-			/* Cache dir: ARCHE_OBJ_CACHE override (the test suite points this at a hermetic temp dir) →
-			 * else ~/.cache/arche/obj. */
-			const char *cache_env = getenv("ARCHE_OBJ_CACHE");
-			const char *home = getenv("HOME");
-			char cachedir[700];
-			if (cache_env && cache_env[0])
-				snprintf(cachedir, sizeof(cachedir), "%s", cache_env);
-			else
-				snprintf(cachedir, sizeof(cachedir), "%s/.cache/arche/obj", home ? home : "/tmp");
-			/* cachedir is interpolated into single-quoted `system()` commands; a `'` in it would break
-			 * out of the quoting. Reject rather than risk a malformed/maliciously-crafted shell command. */
-			if (strchr(cachedir, '\'')) {
-				fprintf(stderr, "ARCHE_OBJ_CACHE path may not contain a single quote\n");
-				goto cleanup;
-			}
-			char mk[760];
-			snprintf(mk, sizeof(mk), "mkdir -p '%s'", cachedir);
-			if (system(mk) != 0) {
-				fprintf(stderr, "Failed to create object cache dir\n");
-				goto cleanup;
-			}
-			char objs[16384];
-			int oj = 0, obj_err = 0;
-			for (int u = 0; u <= max_unit; u++) {
-				char uf[640], key[17];
-				snprintf(uf, sizeof(uf), "%s/unit_%d.ll", workdir, u);
-				if (!file_content_hash(uf, key)) {
-					obj_err = 1;
-					break;
-				}
-				char ocache[800];
-				snprintf(ocache, sizeof(ocache), "%s/%s-%s.o", cachedir, toolchain_tag(), key);
-				if (!file_exists(ocache)) {
-					char uopt[680], us[680], cmd[2400];
-					snprintf(uopt, sizeof(uopt), "%s/unit_%d_opt.ll", workdir, u);
-					snprintf(us, sizeof(us), "%s/unit_%d.s", workdir, u);
-					snprintf(cmd, sizeof(cmd), "opt -O2 -mcpu=x86-64-v3 -S -o %s %s", uopt, uf);
-					if (system(cmd) != 0) {
-						obj_err = 1;
-						break;
-					}
-					snprintf(cmd, sizeof(cmd),
-					         "llc -function-sections -data-sections -code-model=large -mcpu=x86-64-v3 -o %s %s", us,
-					         uopt);
-					if (system(cmd) != 0) {
-						obj_err = 1;
-						break;
-					}
-					/* Atomic publish: compile to a pid-scoped temp, then rename() into the cache. An
-					 * interrupted/failed `cc` can never leave a truncated object that file_exists() trusts. */
-					char otmp[840];
-					snprintf(otmp, sizeof(otmp), "%s.tmp.%d", ocache, (int)getpid());
-					snprintf(cmd, sizeof(cmd), "cc -no-pie -mcmodel=large -c -o '%s' %s", otmp, us);
-					if (system(cmd) != 0 || rename(otmp, ocache) != 0) {
-						remove(otmp);
-						obj_err = 1;
-						break;
-					}
-				}
-				/* Bounds-checked append: snprintf returns the INTENDED length on truncation, so blindly
-				 * accumulating `oj` would run past `objs` (and underflow the remaining size) on overflow —
-				 * a stack smash. Refuse to silently drop an object (that would miscompile the link). */
-				int m = snprintf(objs + oj, sizeof(objs) - (size_t)oj, " '%s'", ocache);
-				if (m < 0 || m >= (int)sizeof(objs) - oj) {
-					fprintf(stderr, "per-unit object list too long\n");
-					obj_err = 1;
-					break;
-				}
-				oj += m;
-			}
-			if (obj_err) {
-				rc = 1;
-				goto cleanup;
-			}
-			char cc_cmd[20000];
-			int cl = snprintf(
-			    cc_cmd, sizeof(cc_cmd),
-			    "cc -no-pie -mcmodel=large -Wl,--gc-sections -o %s%s %s/stack_check.o %s/io.o %s/net.o %s/term.o -lc",
-			    out_path, objs, rt, rt, rt, rt);
-			if (cl < 0 || cl >= (int)sizeof(cc_cmd)) {
-				fprintf(stderr, "per-unit link command too long\n");
-				goto cleanup;
-			}
-			int link_count = opts ? opts->link_count : 0;
-			for (int li = 0; li < link_count && cl > 0 && cl < (int)sizeof(cc_cmd); li++)
-				cl += snprintf(cc_cmd + cl, sizeof(cc_cmd) - (size_t)cl, " %s", opts->link_paths[li]);
-			if (system(cc_cmd) != 0) {
-				fprintf(stderr, "Failed to link per-unit objects\n");
-				goto cleanup;
-			}
-			rc = 0;
-			goto cleanup;
-		}
-		/* 2b) Other emit modes (IR/asm/obj): llvm-link the unit modules into the combined IR the shared
-		 * opt/llc/cc pipeline below consumes. */
+		/* llvm-link the per-unit modules into the combined IR the shared opt/llc/cc pipeline below
+		 * consumes. Per-unit is an EXPERIMENTAL correctness/readiness mode — it proves codegen can split
+		 * and exercises the mangled/external symbol model — NOT a build-speed mode; there is no
+		 * per-object caching (that was removed as speculative; see the plan). */
 		char link_cmd[16384];
 		int lp = snprintf(link_cmd, sizeof(link_cmd), "llvm-link -S -o %s", ir_file);
 		for (int u = 0; u <= max_unit; u++)
