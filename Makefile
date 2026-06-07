@@ -309,10 +309,10 @@ test-syntax-view: $(SYNTAX_VIEW_TEST_BIN)
 # Guard against silent codegen changes: emit LLVM IR for representative programs and
 # diff against checked-in goldens (first run captures them). VERIFY_CG_PROGRAMS is the
 # fixed representative set; see tests/codegen_golden/.
-# NOTE: the checked-in goldens are STALE (they predate the slice-native rework and still
-# reference the deleted %struct.arche_array type), so this target FAILS if run today. It is
-# deliberately NOT wired into `make test` — it is not live IR protection. Regenerate the
-# goldens (delete tests/codegen_golden/*.ll, re-run) before relying on it again.
+# This is LIVE IR-level protection (run in CI). The goldens are raw codegen output, so an
+# INTENDED codegen change must regenerate them: `rm tests/codegen_golden/*.ll && make
+# verify-codegen` (re-captures), then review the diff before committing. Not in `make test`
+# (it has its own CI step) — `make test` is behavioral, this catches IR drift behavior can't see.
 VERIFY_CG_DIR = tests/codegen_golden
 VERIFY_CG_PROGRAMS = \
 	examples/simple/simple.arche \

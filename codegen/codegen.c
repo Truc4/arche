@@ -63,9 +63,8 @@ struct CodegenContext {
 	ValueScope *scopes;
 	int scope_count;
 
-	/* SSA counter for generating unique names */
+	/* SSA counter for generating unique names (function-local; reset per body, see begin_function_body) */
 	int value_counter;
-	int string_counter;
 
 	/* Buffered output */
 	char *output_buffer;
@@ -722,14 +721,62 @@ static char *gen_value_name(CodegenContext *ctx) {
 	return name;
 }
 
+/* FNV-1a hash of a byte range → 16 hex digits in out[17]. Content-addresses constant globals. */
+static void cg_content_hash(const char *data, size_t n, char out[17]) {
+	unsigned long long h = 1469598103934665603ULL;
+	for (size_t i = 0; i < n; i++) {
+		h ^= (unsigned char)data[i];
+		h *= 1099511628211ULL;
+	}
+	snprintf(out, 17, "%016llx", h);
+}
+
+/* Intern a read-only constant global by CONTENT. `rhs` is the text after `<name> = ` (the type +
+ * initializer, e.g. `[6 x i8] c"hi\0A\00"`). The global is named `@.<prefix>.<hash-of-rhs>` and emitted
+ * `linkonce_odr unnamed_addr` so (a) identical constants within a module collapse to one definition and
+ * (b) the same constant emitted from two compilation units folds to one symbol at link time (per-unit
+ * mode) — which is also what makes `linkonce_odr` function bodies that reference these globals
+ * byte-identical across units. Returns a malloc'd copy of the name (caller owns). */
+static char *intern_global(CodegenContext *ctx, const char *prefix, const char *rhs) {
+	char hash[17];
+	cg_content_hash(rhs, strlen(rhs), hash);
+	char name[64];
+	snprintf(name, sizeof(name), "@.%s.%s", prefix, hash);
+
+	size_t need = strlen(rhs) + 128;
+	char *decl = malloc(need);
+	size_t decl_len = (size_t)snprintf(decl, need, "%s = linkonce_odr unnamed_addr constant %s\n", name, rhs);
+
+	/* Dedup within this module by FULL definition: names are a pure function of content, so an exact
+	 * match is the same constant (emitting it twice is an LLVM redefinition error). */
+	if (!strstr(ctx->globals_buffer, decl)) {
+		/* Guard the (vanishingly unlikely) 64-bit FNV-1a collision: same name, DIFFERENT definition would
+		 * silently alias two distinct constants. Fail loudly instead of miscompiling. */
+		char probe[72];
+		snprintf(probe, sizeof(probe), "%s = ", name);
+		if (strstr(ctx->globals_buffer, probe)) {
+			fprintf(stderr, "codegen: constant-global hash collision on %s\n", name);
+			ctx->had_error = 1;
+		} else {
+			if (ctx->globals_pos + decl_len >= ctx->globals_size) {
+				ctx->globals_size = (ctx->globals_size + decl_len) * 2;
+				ctx->globals_buffer = realloc(ctx->globals_buffer, ctx->globals_size);
+			}
+			strcpy(ctx->globals_buffer + ctx->globals_pos, decl);
+			ctx->globals_pos += decl_len;
+		}
+	}
+	free(decl);
+	char *ret = malloc(64);
+	strcpy(ret, name);
+	return ret;
+}
+
 /* Emit a string constant global and return its name. `with_nul` appends a trailing `\00` — used
  * ONLY at the FFI boundary (a literal handed to a C function that wants a NUL-terminated `char*`:
  * printf/sprintf, extern char* params). Internally a literal is a bare `[N x i8]` array; its length
  * travels with the value, never via a NUL. */
 static char *emit_string_global_impl(CodegenContext *ctx, const char *quoted_str, int with_nul, size_t *out_len) {
-	char global_name[64];
-	snprintf(global_name, sizeof(global_name), "@.str%d", ctx->string_counter++);
-
 	/* quoted_str is "..." with quotes. Process escape sequences and build LLVM constant */
 	char escaped[2048];
 	size_t escaped_pos = 0;
@@ -764,8 +811,7 @@ static char *emit_string_global_impl(CodegenContext *ctx, const char *quoted_str
 		}
 	}
 
-	/* Build LLVM global constant declaration */
-	char global_decl[4096];
+	/* Build the constant RHS (type + initializer) and content-intern it. */
 	char llvm_escaped[2048] = "";
 	size_t llvm_pos = 0;
 
@@ -778,28 +824,15 @@ static char *emit_string_global_impl(CodegenContext *ctx, const char *quoted_str
 		}
 	}
 
+	char rhs[2200];
 	if (with_nul)
-		snprintf(global_decl, sizeof(global_decl), "%s = private unnamed_addr constant [%zu x i8] c\"%s\\00\"\n",
-		         global_name, escaped_pos + 1, llvm_escaped);
+		snprintf(rhs, sizeof(rhs), "[%zu x i8] c\"%s\\00\"", escaped_pos + 1, llvm_escaped);
 	else
-		snprintf(global_decl, sizeof(global_decl), "%s = private unnamed_addr constant [%zu x i8] c\"%s\"\n",
-		         global_name, escaped_pos, llvm_escaped);
+		snprintf(rhs, sizeof(rhs), "[%zu x i8] c\"%s\"", escaped_pos, llvm_escaped);
 
-	/* Append to globals buffer */
-	size_t decl_len = strlen(global_decl);
-	if (ctx->globals_pos + decl_len >= ctx->globals_size) {
-		ctx->globals_size = (ctx->globals_size + decl_len) * 2;
-		ctx->globals_buffer = realloc(ctx->globals_buffer, ctx->globals_size);
-	}
-	strcpy(ctx->globals_buffer + ctx->globals_pos, global_decl);
-	ctx->globals_pos += decl_len;
-
-	/* Return allocated name */
 	if (out_len)
 		*out_len = escaped_pos;
-	char *ret = malloc(64);
-	strcpy(ret, global_name);
-	return ret;
+	return intern_global(ctx, "str", rhs);
 }
 
 /* String-literal global: NUL-terminated `[N+1 x i8]`. The trailing NUL is the FFI/C-string
@@ -1360,6 +1393,7 @@ typedef struct {
 	char *saved_output_buffer;
 	size_t saved_buffer_size;
 	size_t saved_buffer_pos;
+	int saved_value_counter;
 } FunctionBodyState;
 static void codegen_statement(CodegenContext *ctx, HirStmt *stmt);
 static FunctionBodyState begin_function_body(CodegenContext *ctx);
@@ -3889,44 +3923,34 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			break;
 		}
 
-		/* Create global constant array */
-		char global_name[64];
-		snprintf(global_name, sizeof(global_name), "@.arr%d", ctx->string_counter++);
+		/* Build the constant RHS (type + initializer) and content-intern it. */
+		char rhs[4096];
+		char *decl_pos = rhs;
+		size_t decl_space = sizeof(rhs);
 
-		/* Build array constant declaration and add to globals */
-		char global_decl[4096];
-		char *decl_pos = global_decl;
-		size_t decl_space = sizeof(global_decl);
-
-		decl_pos += snprintf(decl_pos, decl_space, "%s = private constant [%d x i8] [", global_name, elem_count + 1);
-		decl_space = sizeof(global_decl) - (decl_pos - global_decl);
+		decl_pos += snprintf(decl_pos, decl_space, "[%d x i8] [", elem_count + 1);
+		decl_space = sizeof(rhs) - (decl_pos - rhs);
 
 		for (int i = 0; i < elem_count; i++) {
 			char elem_buf[256];
 			codegen_expression(ctx, elems[i], elem_buf);
 			decl_pos += snprintf(decl_pos, decl_space, "i8 %s", elem_buf);
-			decl_space = sizeof(global_decl) - (decl_pos - global_decl);
+			decl_space = sizeof(rhs) - (decl_pos - rhs);
 			if (i < elem_count - 1) {
 				decl_pos += snprintf(decl_pos, decl_space, ", ");
-				decl_space = sizeof(global_decl) - (decl_pos - global_decl);
+				decl_space = sizeof(rhs) - (decl_pos - rhs);
 			}
 		}
-		snprintf(decl_pos, decl_space, ", i8 0]\n");
+		snprintf(decl_pos, decl_space, ", i8 0]");
 
-		/* Append to globals buffer */
-		size_t decl_len = strlen(global_decl);
-		if (ctx->globals_pos + decl_len >= ctx->globals_size) {
-			ctx->globals_size = (ctx->globals_size + decl_len) * 2;
-			ctx->globals_buffer = realloc(ctx->globals_buffer, ctx->globals_size);
-		}
-		strcpy(ctx->globals_buffer + ctx->globals_pos, global_decl);
-		ctx->globals_pos += decl_len;
+		char *global_name = intern_global(ctx, "arr", rhs);
 
 		/* Return the element pointer into the global `[N x i8]` — a normal type-6 char array (the
 		 * bind site records the count). No arche_array struct. */
 		char *arr_ptr = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i32 0, i32 0\n", arr_ptr, elem_count + 1,
 		                  elem_count + 1, global_name);
+		free(global_name);
 		strcpy(result_buf, arr_ptr);
 		break;
 	}
@@ -4182,11 +4206,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 	}
 
 	case HIR_EXPR_STRING: {
-		/* Create global constant for string literal */
-		char global_name[64];
-		snprintf(global_name, sizeof(global_name), "@.str%d", ctx->string_counter++);
-
-		/* Build LLVM global constant declaration (similar to emit_string_global) */
+		/* Build LLVM global constant for the string literal (similar to emit_string_global) */
 		char llvm_escaped[2048] = "";
 		size_t llvm_pos = 0;
 
@@ -4200,24 +4220,16 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		}
 
 		/* NUL-terminated `[N+1 x i8]` (the `\00` is the FFI provision past the content length N;
-		 * the bind/arg records N as the array length). See emit_string_global. */
-		char global_decl[4096];
-		snprintf(global_decl, sizeof(global_decl), "%s = private unnamed_addr constant [%d x i8] c\"%s\\00\"\n",
-		         global_name, expr->data.string.length + 1, llvm_escaped);
-
-		/* Append to globals buffer */
-		size_t decl_len = strlen(global_decl);
-		if (ctx->globals_pos + decl_len >= ctx->globals_size) {
-			ctx->globals_size = (ctx->globals_size + decl_len) * 2;
-			ctx->globals_buffer = realloc(ctx->globals_buffer, ctx->globals_size);
-		}
-		strcpy(ctx->globals_buffer + ctx->globals_pos, global_decl);
-		ctx->globals_pos += decl_len;
+		 * the bind/arg records N as the array length). See emit_string_global. Content-interned. */
+		char rhs[2200];
+		snprintf(rhs, sizeof(rhs), "[%d x i8] c\"%s\\00\"", expr->data.string.length + 1, llvm_escaped);
+		char *global_name = intern_global(ctx, "str", rhs);
 
 		/* Get pointer to first element */
 		char *res_name = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8], [%d x i8]* %s, i32 0, i32 0\n", res_name,
 		                  expr->data.string.length + 1, expr->data.string.length + 1, global_name);
+		free(global_name);
 		strcpy(result_buf, res_name);
 		break;
 	}
@@ -7408,11 +7420,17 @@ static FunctionBodyState begin_function_body(CodegenContext *ctx) {
 	    .saved_output_buffer = ctx->output_buffer,
 	    .saved_buffer_size = ctx->buffer_size,
 	    .saved_buffer_pos = ctx->buffer_pos,
+	    .saved_value_counter = ctx->value_counter,
 	};
 	ctx->output_buffer = malloc(4096);
 	ctx->buffer_size = 4096;
 	ctx->buffer_pos = 0;
 	ctx->output_buffer[0] = '\0';
+	/* SSA names (`%vN`) and block labels are FUNCTION-local in LLVM, so number every body from a fixed
+	 * base. This makes a function's emitted text position-independent — two units emitting the same
+	 * `linkonce_odr` mono/callback body produce byte-identical IR (so the linker's duplicate-folding is
+	 * correct, not just verified). Restored in end_function_body so any outer numbering is unaffected. */
+	ctx->value_counter = 0;
 
 	if (!ctx->alloca_buffer) {
 		ctx->alloca_buf_size = 1024;
@@ -7431,6 +7449,7 @@ static void end_function_body(CodegenContext *ctx, FunctionBodyState state) {
 	ctx->output_buffer = state.saved_output_buffer;
 	ctx->buffer_size = state.saved_buffer_size;
 	ctx->buffer_pos = state.saved_buffer_pos;
+	ctx->value_counter = state.saved_value_counter;
 
 	if (ctx->alloca_buf_pos > 0)
 		buffer_append(ctx, ctx->alloca_buffer);
@@ -8051,12 +8070,12 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
 	ctx->value_counter = 0;
-	ctx->string_counter = 0;
 	ctx->buffer_size = 8192;
 	ctx->output_buffer = malloc(ctx->buffer_size);
 	ctx->buffer_pos = 0;
 	ctx->globals_size = 4096;
 	ctx->globals_buffer = malloc(ctx->globals_size);
+	ctx->globals_buffer[0] = '\0'; /* NUL-terminate: intern_global strstr-scans this before the first write */
 	ctx->globals_pos = 0;
 	ctx->vector_lanes = 0;
 	ctx->in_sys = 0;
