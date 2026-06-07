@@ -1,0 +1,13 @@
+// `diskc` behavior: hands out and releases its `file` handle. Not a standalone test.
+// RUN: true
+@allow(proc_could_be_func)
+acquire :: proc()(h: file) {
+  h = file(11);
+}
+tag :: func(h: file) -> int {
+  return 1;
+}
+@allow(proc_no_effect)
+release :: proc(own h: file) {
+  h = file(0);
+}

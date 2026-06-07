@@ -1,0 +1,13 @@
+// `dconf` behavior: hands out, inspects, and releases its `handle`. Not a standalone test.
+// RUN: true
+@allow(proc_could_be_func)
+open :: proc()(h: handle) {
+  h = handle(5);
+}
+use :: func(h: handle) -> int {
+  return 7;
+}
+@allow(proc_no_effect)
+shut :: proc(own h: handle) {
+  h = handle(0);
+}

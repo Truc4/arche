@@ -1,0 +1,13 @@
+// Both `diskc` and `diskd` declare the SAME opaque type name, `file`. Because datasheet types are
+// shared global vocabulary, the two `file`s ARE the same type — no `@implements` bridge is needed.
+// A handle acquired from diskc is accepted by diskd's `stash` directly. This should just work.
+// RUN: %arche build -o %t %s && %t | grep -q "both=3"
+#import { diskc diskd fmt }
+
+main :: proc() {
+  diskc.acquire()(f:);    // f : file (diskc's == diskd's, same global type)
+  a := diskc.tag(f);      // usable by diskc
+  b := diskd.stash(f);    // usable by diskd, no @implements
+  diskc.release(move f);  // consume the handle
+  fmt.printf("both=%d\n", a + b);
+}

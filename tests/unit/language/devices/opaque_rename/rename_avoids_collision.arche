@@ -1,0 +1,21 @@
+// `dconf` exposes a type named `handle`, but this importer ALREADY has its own, unrelated `handle`.
+// Pulling dconf in unrenamed would collide (define-once: two `handle :: opaque` is E0045). Instead
+// `@implements(dconf.handle)` binds dconf's `handle` to a local name `dh`, so the device's API is
+// usable as `dh` while the importer's own `handle` stays a separate, distinct type. End goal: both
+// types coexist and the program runs.
+// RUN: %arche build -o %t %s && %t | grep -q "renamed=7"
+#import { dconf fmt }
+
+// our own, unrelated `handle` — same spelling, different concept
+handle :: opaque
+
+// rename dconf's `handle` to `dh` so it does not clash with the `handle` above
+@implements(dconf.handle)
+dh :: opaque
+
+main :: proc() {
+  dconf.open()(h:);    // h : dh (dconf's renamed handle, NOT our `handle`)
+  v := dconf.use(h);
+  dconf.shut(move h);
+  fmt.printf("renamed=%d\n", v);
+}

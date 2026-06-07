@@ -1,0 +1,5 @@
+// `diskd` behavior: inspects a `file` handle. Not a standalone test.
+// RUN: true
+stash :: func(h: file) -> int {
+  return 2;
+}

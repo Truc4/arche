@@ -1,0 +1,10 @@
+// Writing a raw value into an opaque cell from OUTSIDE the declaring device must NOT compile.
+// `file :: opaque` (io.ds.arche) is a sealed handle: an importer may move/borrow/return it, but
+// assigning a raw int into it (`f = 5`) bypasses the device's constructors and is rejected.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "raw value into opaque" %t.out
+#import { io }
+main :: proc() {
+  io.stdout()(f:);
+  f = 5;
+  io.fwrite(f, "x", 1);
+}
