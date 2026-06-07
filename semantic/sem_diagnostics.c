@@ -840,21 +840,24 @@ SemDiag *sem_emit_lint_inout_param_shadow(SemanticContext *ctx, SourceLoc loc, c
 	                 "`#foreign` proc (C-ABI alignment). Return a fresh out-only result instead",
 	                 name);
 }
-SemDiag *sem_emit_lint_unused_function(SemanticContext *ctx, SourceLoc loc, const char *name) {
+/* `module_path` (or NULL): the source file of the decl's owning module, appended so a cross-file
+ * dead-code warning names a file the user can open (the bare `loc` line is module-local). The
+ * conditional `%s` triplet keeps the format a single literal for -Wformat checking. */
+SemDiag *sem_emit_lint_unused_function(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path) {
 	return sem_emit_(ctx, SEM_LINT_unused_function, loc,
 	                 "function '%s' is declared but never called (prefix with '_' to silence, or "
-	                 "@allow(unused_function))",
-	                 name);
+	                 "@allow(unused_function))%s%s%s",
+	                 name, module_path ? " [in " : "", module_path ? module_path : "", module_path ? "]" : "");
 }
-SemDiag *sem_emit_lint_unused_static_const(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name) {
+SemDiag *sem_emit_lint_unused_static_const(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
+                                           const char *module_path) {
 	return sem_emit_(ctx, SEM_LINT_unused_static_const, loc,
 	                 "%s '%s' is declared but never used (prefix with '_' to silence, or "
-	                 "@allow(unused_static_const))",
-	                 kind, name);
+	                 "@allow(unused_static_const))%s%s%s",
+	                 kind, name, module_path ? " [in " : "", module_path ? module_path : "", module_path ? "]" : "");
 }
-SemDiag *sem_emit_lint_unused_enum(SemanticContext *ctx, SourceLoc loc, const char *name) {
+SemDiag *sem_emit_lint_unused_enum(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path) {
 	return sem_emit_(ctx, SEM_LINT_unused_enum, loc,
-	                 "enum '%s' is declared but never used (prefix with '_' to silence, or "
-	                 "@allow(unused_enum))",
-	                 name);
+	                 "enum '%s' is declared but never used (prefix with '_' to silence, or @allow(unused_enum))%s%s%s",
+	                 name, module_path ? " [in " : "", module_path ? module_path : "", module_path ? "]" : "");
 }

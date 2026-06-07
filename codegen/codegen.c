@@ -45,11 +45,12 @@ struct CodegenContext {
 	SemanticContext *sem_ctx;
 	int had_error; /* set when codegen hits a hard error (e.g. a `run` no shape can satisfy) */
 
-	/* Per-unit codegen (P3, experimental, behind ARCHE_PER_UNIT). When `per_unit` is set, codegen emits
-	 * one module per compilation unit (for separate/incremental object compilation) instead of one
-	 * whole-program module; `emit_only_unit` >= 0 restricts func/proc/sys emission to that unit (shared
-	 * decls — archetype struct types, pool storage, string constants — still emit in unit 0's module).
-	 * Default off → the whole-program path is unchanged. Built incrementally; see the compilation plan. */
+	/* Per-unit codegen (EXPERIMENTAL, behind ARCHE_PER_UNIT) — backend per-object caching, NOT front-end
+	 * incremental compilation (the front end still analyzes the whole program every build). When set,
+	 * codegen emits one module per compilation unit (for separate, cacheable object compilation) instead
+	 * of one whole-program module; `emit_only_unit` >= 0 restricts func/proc emission to that unit (systems
+	 * emit once in unit 0; shared decls — archetype types/helpers, pool storage — emit in every module as
+	 * linkonce_odr). Default off → the whole-program path is unchanged. See the compilation plan. */
 	int per_unit;
 	int emit_only_unit; /* -1 = emit all units (whole-program / default) */
 
@@ -918,6 +919,8 @@ static void drop_exit_all_for_return(CodegenContext *ctx) {
 
 /* Per-unit symbol/linkage helpers (defined below, near monomorph_mangle). */
 static const char *cg_fnsym(CodegenContext *ctx, const char *name, int is_extern, char *buf, size_t n);
+/* Archetypes covering a system's params (system ABI param list) — defined near emit_cross_unit_declares. */
+static int collect_sys_matching_archs(CodegenContext *ctx, HirSysDecl *sys, const char **out, int max);
 
 /* Is the proc/func named `name` an extern (#foreign, C-ABI)? A `@drop` destructor may be either an
  * arche proc (mangled under per-unit) or an extern (keeps its C name) — the dtor call must match. */
@@ -7906,49 +7909,27 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 }
 
 static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys) {
+	/* Per-unit: a system is emitted exactly once, in the ENTRY unit (0) — regardless of which unit it
+	 * was declared in (a device system lives in the device's unit but is `run` only from the entry).
+	 * Emitting it in unit 0 (where the archetype types/pools are also present via the hoist + linkonce_odr
+	 * globals) gives a single external definition that the entry's `run` dispatch resolves — no
+	 * linkonce_odr duplication, so nothing to keep byte-identical. Skip in any non-entry per-unit module. */
+	if (ctx->per_unit && ctx->emit_only_unit >= 1)
+		return;
 
 	/* Collect all archetypes that have the required fields */
 	const char *matching_archs[256];
-	int matching_count = 0;
-
-	if (sys->param_count > 0 && sys->params[0] && sys->params[0]->name) {
-		/* Find all archetypes that have ALL required fields */
-		for (int d = 0; d < ctx->ast->decl_count; d++) {
-			HirDecl *decl = ctx->ast->decls[d];
-			if (decl->kind == HIR_DECL_ARCHETYPE) {
-				HirArchetypeDecl *arch = decl->data.archetype;
-
-				/* Check if archetype has ALL required fields */
-				int has_all_fields = 1;
-				for (int p = 0; p < sys->param_count; p++) {
-					int found_field = 0;
-					for (int f = 0; f < arch->field_count; f++) {
-						if (strcmp(arch->fields[f]->name, sys->params[p]->name) == 0) {
-							found_field = 1;
-							break;
-						}
-					}
-					if (!found_field) {
-						has_all_fields = 0;
-						break;
-					}
-				}
-
-				if (has_all_fields && matching_count < 256) {
-					matching_archs[matching_count++] = arch->name;
-				}
-			}
-		}
-	}
+	int matching_count = collect_sys_matching_archs(ctx, sys, matching_archs, 256);
 
 	if (matching_count == 0) {
 		return;
 	}
 
-	/* Generate ONE function taking all matching archetypes as params. Emitted in every per-unit module
-	 * (linkonce_odr → linker folds) so a cross-unit `run` resolves locally. */
+	/* Generate ONE function taking all matching archetypes as params. Emitted once in the entry unit
+	 * (the per-unit filter keeps it to unit 0) with normal linkage — internal whole-program, external
+	 * under per-unit — so there is no `linkonce_odr` duplication to keep byte-identical. */
 	char sys_sym_buf[512];
-	buffer_append_fmt(ctx, "define %svoid @%s(", cg_shared(ctx),
+	buffer_append_fmt(ctx, "define %svoid @%s(", cg_linkage(ctx),
 	                  cg_fnsym(ctx, sys->name, 0, sys_sym_buf, sizeof(sys_sym_buf)));
 	for (int i = 0; i < matching_count; i++) {
 		if (i > 0)
@@ -8155,18 +8136,61 @@ static void codegen_build_drop_registry(CodegenContext *ctx) {
 	}
 }
 
+/* Archetypes whose fields cover all of a system's params (the system's ABI param list). Shared by the
+ * system definition (codegen_sys_decl) and its cross-unit declare so they agree exactly. */
+static int collect_sys_matching_archs(CodegenContext *ctx, HirSysDecl *sys, const char **out, int max) {
+	int n = 0;
+	if (!(sys->param_count > 0 && sys->params[0] && sys->params[0]->name))
+		return 0;
+	for (int d = 0; d < ctx->ast->decl_count; d++) {
+		if (ctx->ast->decls[d]->kind != HIR_DECL_ARCHETYPE)
+			continue;
+		HirArchetypeDecl *arch = ctx->ast->decls[d]->data.archetype;
+		int has_all = 1;
+		for (int p = 0; p < sys->param_count && has_all; p++) {
+			int found = 0;
+			for (int f = 0; f < arch->field_count; f++)
+				if (strcmp(arch->fields[f]->name, sys->params[p]->name) == 0) {
+					found = 1;
+					break;
+				}
+			has_all = found;
+		}
+		if (has_all && n < max)
+			out[n++] = arch->name;
+	}
+	return n;
+}
+
 /* Per-unit: emit `declare`s for every arche func/proc defined in a DIFFERENT unit, so this unit's
  * module is self-contained and the linker resolves the references. Parametric procs (archetype/
- * callback) have no real symbol (only their monomorphized instances do), so they're skipped. Inert
- * unless emitting one specific unit. */
+ * callback) have no real symbol (only their monomorphized instances do), so they're skipped. Systems
+ * are defined only in the entry unit (unit 0), so any non-entry unit that `run`s one needs a declare —
+ * over-declare all matching systems there (harmless if unused). Inert unless emitting one unit. */
 static void emit_cross_unit_declares(CodegenContext *ctx) {
 	if (!ctx->per_unit || ctx->emit_only_unit < 0)
 		return;
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		HirDecl *d = ctx->ast->decls[i];
+		char sym[512];
+		if (d->kind == HIR_DECL_SYS) {
+			if (ctx->emit_only_unit < 1)
+				continue; /* unit 0 defines systems; no declare needed there */
+			const char *archs[256];
+			int na = collect_sys_matching_archs(ctx, d->data.sys, archs, 256);
+			if (na == 0)
+				continue; /* no matching shape → no definition emitted → nothing to declare */
+			buffer_append_fmt(ctx, "declare void @%s(", cg_fnsym(ctx, d->data.sys->name, 0, sym, sizeof(sym)));
+			for (int a = 0; a < na; a++) {
+				if (a > 0)
+					buffer_append(ctx, ", ");
+				buffer_append_fmt(ctx, "%%struct.%s*", archs[a]);
+			}
+			buffer_append(ctx, ")\n");
+			continue;
+		}
 		if (d->unit == ctx->emit_only_unit)
 			continue;
-		char sym[512];
 		if (d->kind == HIR_DECL_FUNC && !d->data.func->is_extern) {
 			HirFuncDecl *f = d->data.func;
 			char ret[512];
@@ -8255,8 +8279,9 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 
 		/* Per-unit codegen: when restricted to one unit, emit only THIS unit's non-extern func/proc
 		 * BODIES (cross-unit callees are `declare`d up front; externs are `declare`d in every module so
-		 * they stay visible). Systems are NOT filtered — they emit in every module as linkonce_odr (the
-		 * linker folds them), so a cross-unit `run <sys>` resolves locally. Inert by default. */
+		 * they stay visible). Systems are NOT filtered by `decl->unit` — a device system lives in the
+		 * device's unit but is `run` from the entry, so it is emitted once in unit 0 (the guard in
+		 * codegen_sys_decl), not in its source unit. Inert by default (emit_only_unit == -1). */
 		if (ctx->per_unit && ctx->emit_only_unit >= 0 && decl->unit != ctx->emit_only_unit) {
 			int is_ext = (decl->kind == HIR_DECL_FUNC && decl->data.func->is_extern) ||
 			             (decl->kind == HIR_DECL_PROC && decl->data.proc->is_extern);

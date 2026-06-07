@@ -329,8 +329,9 @@ SemDiag *sem_emit_lint_unused_local(SemanticContext *ctx, SourceLoc loc, const c
 SemDiag *sem_emit_lint_unused_use(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_inout_redundant_arg(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_inout_param_shadow(SemanticContext *ctx, SourceLoc loc, const char *name);
-SemDiag *sem_emit_lint_unused_function(SemanticContext *ctx, SourceLoc loc, const char *name);
-SemDiag *sem_emit_lint_unused_static_const(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name);
-SemDiag *sem_emit_lint_unused_enum(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_lint_unused_function(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path);
+SemDiag *sem_emit_lint_unused_static_const(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
+                                           const char *module_path);
+SemDiag *sem_emit_lint_unused_enum(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path);
 
 #endif /* SEM_DIAGNOSTICS_H */

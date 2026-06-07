@@ -35,7 +35,8 @@ static int file_exists(const char *path) {
 
 /* FNV-1a content hash of a file as a 16-hex-digit string in `out` (>=17 bytes). Per-unit object
  * caching keys on this: identical emitted IR → identical object, so an unchanged unit's `.o` is reused
- * across builds (incremental compilation). Returns 0 if the file can't be read. */
+ * across builds (per-object caching — NB: only object codegen is cached; the front end still runs
+ * whole-program every build). Returns 0 if the file can't be read. */
 static int file_content_hash(const char *path, char out[17]) {
 	FILE *f = fopen(path, "rb");
 	if (!f)
@@ -51,6 +52,135 @@ static int file_content_hash(const char *path, char out[17]) {
 	fclose(f);
 	snprintf(out, 17, "%016llx", h);
 	return 1;
+}
+
+/* C99 doesn't expose popen/pclose; declare them (as we do for mkdtemp). */
+FILE *popen(const char *command, const char *type);
+int pclose(FILE *stream);
+
+static unsigned long long fnv_str(unsigned long long h, const char *s) {
+	for (; *s; s++) {
+		h ^= (unsigned char)*s;
+		h *= 1099511628211ULL;
+	}
+	return h;
+}
+static unsigned long long fnv_cmd(unsigned long long h, const char *cmd) {
+	FILE *p = popen(cmd, "r");
+	if (!p)
+		return h;
+	int c;
+	while ((c = fgetc(p)) != EOF) {
+		h ^= (unsigned char)c;
+		h *= 1099511628211ULL;
+	}
+	pclose(p);
+	return h;
+}
+
+/* 8-hex toolchain identity mixed into every cached object's name: opt/llc/cc versions + the hardcoded
+ * compile/link flags + the runtime objects' content. A toolchain or flag change therefore changes the
+ * key, so a stale `.o` from a different toolchain can never be reused (the silent-miscompile vector).
+ * Computed once per process. */
+static const char *toolchain_tag(void) {
+	static char tag[17] = "";
+	if (tag[0])
+		return tag;
+	unsigned long long h = 1469598103934665603ULL;
+	h = fnv_cmd(h, "cc --version 2>/dev/null");
+	h = fnv_cmd(h, "opt --version 2>/dev/null");
+	h = fnv_cmd(h, "llc --version 2>/dev/null");
+	h = fnv_str(h, "opt -O2 -mcpu=x86-64-v3 | "
+	               "llc -function-sections -data-sections -code-model=large -mcpu=x86-64-v3 | "
+	               "cc -no-pie -mcmodel=large -Wl,--gc-sections");
+	const char *rt = arche_resource_dir(ARCHE_RES_RUNTIME);
+	const char *robj[] = {"stack_check.o", "io.o", "net.o", "term.o"};
+	for (int i = 0; i < 4; i++) {
+		char p[760], hk[17];
+		snprintf(p, sizeof(p), "%s/%s", rt, robj[i]);
+		if (file_content_hash(p, hk))
+			h = fnv_str(h, hk);
+	}
+	snprintf(tag, sizeof(tag), "%016llx", h);
+	return tag;
+}
+
+/* ODR verification (gated by ARCHE_VERIFY_ODR; on in the per-unit CI target). Every `define
+ * linkonce_odr` symbol emitted in more than one unit module MUST have a byte-identical body — that is
+ * the invariant the linker's duplicate-folding relies on. A divergence would be a SILENT miscompile
+ * (the linker keeps one arbitrary copy), so this turns the assumption into a checked, loud failure.
+ * Returns 1 on any divergence (reported to stderr), 0 if all consistent. */
+static int verify_odr(const char *workdir, int max_unit) {
+	char **syms = NULL, **bodies = NULL;
+	int n = 0, cap = 0, bad = 0;
+	for (int u = 0; u <= max_unit; u++) {
+		char uf[640];
+		snprintf(uf, sizeof(uf), "%s/unit_%d.ll", workdir, u);
+		FILE *f = fopen(uf, "r");
+		if (!f)
+			continue;
+		char line[8192];
+		while (fgets(line, sizeof(line), f)) {
+			if (strncmp(line, "define linkonce_odr ", 20) != 0)
+				continue;
+			char *at = strchr(line, '@');
+			char *lp = at ? strchr(at, '(') : NULL;
+			if (!at || !lp)
+				continue;
+			size_t sl = (size_t)(lp - (at + 1));
+			char *sym = malloc(sl + 1);
+			memcpy(sym, at + 1, sl);
+			sym[sl] = '\0';
+			/* Accumulate the whole definition: the `define` line through the closing `}` line. */
+			size_t bcap = 16384, blen = 0;
+			char *body = malloc(bcap);
+			for (;;) {
+				size_t ln = strlen(line);
+				if (blen + ln + 1 > bcap) {
+					bcap = (blen + ln + 1) * 2;
+					body = realloc(body, bcap);
+				}
+				memcpy(body + blen, line, ln + 1);
+				blen += ln;
+				if (line[0] == '}')
+					break;
+				if (!fgets(line, sizeof(line), f))
+					break;
+			}
+			int found = -1;
+			for (int i = 0; i < n; i++)
+				if (strcmp(syms[i], sym) == 0) {
+					found = i;
+					break;
+				}
+			if (found >= 0) {
+				if (strcmp(bodies[found], body) != 0) {
+					fprintf(stderr, "ODR VIOLATION: linkonce_odr symbol @%s differs across units (unit_%d.ll)\n", sym,
+					        u);
+					bad = 1;
+				}
+				free(sym);
+				free(body);
+			} else {
+				if (n == cap) {
+					cap = cap ? cap * 2 : 64;
+					syms = realloc(syms, (size_t)cap * sizeof(char *));
+					bodies = realloc(bodies, (size_t)cap * sizeof(char *));
+				}
+				syms[n] = sym;
+				bodies[n] = body;
+				n++;
+			}
+		}
+		fclose(f);
+	}
+	for (int i = 0; i < n; i++) {
+		free(syms[i]);
+		free(bodies[i]);
+	}
+	free(syms);
+	free(bodies);
+	return bad;
 }
 
 static char *source_dir_of(const char *path) {
@@ -550,14 +680,32 @@ int compile_source(const char *user_source, const char *source_path, const char 
 			rc = 1;
 			goto cleanup;
 		}
+		/* Tripwire for the linkonce_odr folding assumption (opt-in; on in `make test-per-unit`). */
+		if (getenv("ARCHE_VERIFY_ODR") && verify_odr(workdir, max_unit)) {
+			fprintf(stderr, "Per-unit ODR verification failed (shared definitions diverge across units)\n");
+			rc = 1;
+			goto cleanup;
+		}
 		if (emit == EMIT_LINK) {
-			/* 2a) Incremental link: compile each unit to an object CACHED by its IR content hash (an
+			/* 2a) Per-object cached link: compile each unit to an object CACHED by its IR content hash (an
 			 * unchanged unit — e.g. the stdlib — reuses its `.o` across builds), then link the objects.
 			 * This is the separate-compilation payoff: editing one unit recompiles only that unit. */
 			const char *rt = arche_resource_dir(ARCHE_RES_RUNTIME);
+			/* Cache dir: ARCHE_OBJ_CACHE override (the test suite points this at a hermetic temp dir) →
+			 * else ~/.cache/arche/obj. */
+			const char *cache_env = getenv("ARCHE_OBJ_CACHE");
 			const char *home = getenv("HOME");
 			char cachedir[700];
-			snprintf(cachedir, sizeof(cachedir), "%s/.cache/arche/obj", home ? home : "/tmp");
+			if (cache_env && cache_env[0])
+				snprintf(cachedir, sizeof(cachedir), "%s", cache_env);
+			else
+				snprintf(cachedir, sizeof(cachedir), "%s/.cache/arche/obj", home ? home : "/tmp");
+			/* cachedir is interpolated into single-quoted `system()` commands; a `'` in it would break
+			 * out of the quoting. Reject rather than risk a malformed/maliciously-crafted shell command. */
+			if (strchr(cachedir, '\'')) {
+				fprintf(stderr, "ARCHE_OBJ_CACHE path may not contain a single quote\n");
+				goto cleanup;
+			}
 			char mk[760];
 			snprintf(mk, sizeof(mk), "mkdir -p '%s'", cachedir);
 			if (system(mk) != 0) {
@@ -574,7 +722,7 @@ int compile_source(const char *user_source, const char *source_path, const char 
 					break;
 				}
 				char ocache[800];
-				snprintf(ocache, sizeof(ocache), "%s/%s.o", cachedir, key);
+				snprintf(ocache, sizeof(ocache), "%s/%s-%s.o", cachedir, toolchain_tag(), key);
 				if (!file_exists(ocache)) {
 					char uopt[680], us[680], cmd[2400];
 					snprintf(uopt, sizeof(uopt), "%s/unit_%d_opt.ll", workdir, u);
@@ -591,13 +739,27 @@ int compile_source(const char *user_source, const char *source_path, const char 
 						obj_err = 1;
 						break;
 					}
-					snprintf(cmd, sizeof(cmd), "cc -no-pie -mcmodel=large -c -o '%s' %s", ocache, us);
-					if (system(cmd) != 0) {
+					/* Atomic publish: compile to a pid-scoped temp, then rename() into the cache. An
+					 * interrupted/failed `cc` can never leave a truncated object that file_exists() trusts. */
+					char otmp[840];
+					snprintf(otmp, sizeof(otmp), "%s.tmp.%d", ocache, (int)getpid());
+					snprintf(cmd, sizeof(cmd), "cc -no-pie -mcmodel=large -c -o '%s' %s", otmp, us);
+					if (system(cmd) != 0 || rename(otmp, ocache) != 0) {
+						remove(otmp);
 						obj_err = 1;
 						break;
 					}
 				}
-				oj += snprintf(objs + oj, sizeof(objs) - (size_t)oj, " '%s'", ocache);
+				/* Bounds-checked append: snprintf returns the INTENDED length on truncation, so blindly
+				 * accumulating `oj` would run past `objs` (and underflow the remaining size) on overflow —
+				 * a stack smash. Refuse to silently drop an object (that would miscompile the link). */
+				int m = snprintf(objs + oj, sizeof(objs) - (size_t)oj, " '%s'", ocache);
+				if (m < 0 || m >= (int)sizeof(objs) - oj) {
+					fprintf(stderr, "per-unit object list too long\n");
+					obj_err = 1;
+					break;
+				}
+				oj += m;
 			}
 			if (obj_err) {
 				rc = 1;
@@ -608,6 +770,10 @@ int compile_source(const char *user_source, const char *source_path, const char 
 			    cc_cmd, sizeof(cc_cmd),
 			    "cc -no-pie -mcmodel=large -Wl,--gc-sections -o %s%s %s/stack_check.o %s/io.o %s/net.o %s/term.o -lc",
 			    out_path, objs, rt, rt, rt, rt);
+			if (cl < 0 || cl >= (int)sizeof(cc_cmd)) {
+				fprintf(stderr, "per-unit link command too long\n");
+				goto cleanup;
+			}
 			int link_count = opts ? opts->link_count : 0;
 			for (int li = 0; li < link_count && cl > 0 && cl < (int)sizeof(cc_cmd); li++)
 				cl += snprintf(cc_cmd + cl, sizeof(cc_cmd) - (size_t)cl, " %s", opts->link_paths[li]);

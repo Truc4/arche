@@ -153,6 +153,14 @@ test: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN)
 	lit -v tests/
 	$(MAKE) test-doc
 
+# EXPERIMENTAL per-unit (separate-compilation backend) regression gate: runs the full lit suite under
+# per-unit object codegen, with the ODR folding verifier on (ARCHE_VERIFY_ODR) and a hermetic object
+# cache (lit.cfg points ARCHE_OBJ_CACHE under the build tree). NOT in the default `test` — it roughly
+# doubles build time and whole-program is what ships — but it is a required CI check (alongside test /
+# test-asan) so the experimental mode can't silently rot.
+test-per-unit: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
+	ARCHE_PER_UNIT=1 ARCHE_VERIFY_ODR=1 lit -v tests/
+
 # Run doctests (```arche examples in /// doc comments) over the real source tree.
 # The synthetic runner fixtures in tests/unit/doctest/ are exercised by lit above
 # (some are intentional failures wrapped in `not`); this sweeps the production
@@ -378,4 +386,4 @@ test-install: all
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
 
 # Phony targets
-.PHONY: all run run-lexer test test-doc test-lexer test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install
+.PHONY: all run run-lexer test test-per-unit test-doc test-lexer test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install

@@ -4742,6 +4742,25 @@ static int dead_is_root(const DeclSummary *d) {
 	return 0;
 }
 
+/* The source path of a decl's owning module (NULL for entry-unit decls or if unknown). Used to give
+ * cross-file dead-code diagnostics a file the user can open — a W-code on an imported module's private
+ * decl otherwise prints a bare module-local line number with no file. Maps decl.unit → UnitInterface
+ * (unit_name) → the registered module's filename. */
+static const char *sem_decl_module_path(SemanticContext *ctx, const DeclSummary *d) {
+	if (d->origin == DECL_ORIGIN_ENTRY)
+		return NULL;
+	for (int i = 0; i < ctx->interface_count; i++) {
+		if (ctx->interfaces[i]->unit_id != d->unit)
+			continue;
+		const char *modname = ctx->interfaces[i]->unit_name;
+		for (int m = 0; m < g_sem_module_count; m++)
+			if (g_sem_modules[m].name && modname && strcmp(g_sem_modules[m].name, modname) == 0)
+				return g_sem_modules[m].filename;
+		return NULL;
+	}
+	return NULL;
+}
+
 static void sem_check_dead_code(SemanticContext *ctx) {
 	if (!ctx->model || ctx->decl_count <= 0)
 		return;
@@ -4806,7 +4825,7 @@ static void sem_check_dead_code(SemanticContext *ctx) {
 		ctx->active_allow_slugs = d->allow_slugs;
 		ctx->active_allow_slug_count = d->allow_slug_count;
 		if (!sem_diag_slug_suppressed(ctx, "dead_code"))
-			sem_emit_lint_unused_function(ctx, d->loc, d->name);
+			sem_emit_lint_unused_function(ctx, d->loc, d->name, sem_decl_module_path(ctx, d));
 		ctx->active_allow_slugs = NULL;
 		ctx->active_allow_slug_count = 0;
 	}
@@ -4847,11 +4866,12 @@ static void sem_check_dead_code(SemanticContext *ctx) {
 			ctx->active_allow_slugs = d->allow_slugs;
 			ctx->active_allow_slug_count = d->allow_slug_count;
 			if (!sem_diag_slug_suppressed(ctx, "dead_code")) {
+				const char *mp = sem_decl_module_path(ctx, d);
 				if (is_enum)
-					sem_emit_lint_unused_enum(ctx, d->loc, d->name);
+					sem_emit_lint_unused_enum(ctx, d->loc, d->name, mp);
 				else
 					sem_emit_lint_unused_static_const(
-					    ctx, d->loc, d->static_kind == STATIC_KIND_SCALAR ? "static" : "static array", d->name);
+					    ctx, d->loc, d->static_kind == STATIC_KIND_SCALAR ? "static" : "static array", d->name, mp);
 			}
 			ctx->active_allow_slugs = NULL;
 			ctx->active_allow_slug_count = 0;
