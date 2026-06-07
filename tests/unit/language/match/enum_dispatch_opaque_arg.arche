@@ -19,11 +19,11 @@ main :: proc() {
   io.fopen_read("/no/such/path/zzz")(fd:); // missing → fd is the null cell (0)
   id := Route.health;
   match id {
-    files: {
+    Route.files: {
       fd_val(fd)(v:);
       fmt.printf("files fd=%d\n", v);
     }
-    health: {
+    Route.health: {
       fd_val(fd)(v:);
       fmt.printf("health fd=%d\n", v);
     }

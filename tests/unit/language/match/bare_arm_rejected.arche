@@ -1,0 +1,17 @@
+// A match arm names an enum VALUE, and a value is always written qualified (`Enum.case`). A bare
+// case name (`foo:`) is not a value and is rejected — this is the consistency that makes enum
+// descriptor vs value unambiguous everywhere.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "qualify it" %t.out
+#import { fmt }
+bar :: enum { foo, qux }
+main :: proc() {
+  baz := bar.foo;
+  match baz {
+    foo: {
+      fmt.printf("f\n");
+    }
+    qux: {
+      fmt.printf("q\n");
+    }
+  }
+}

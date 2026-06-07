@@ -27,14 +27,14 @@ dispatch :: proc(path: char[]) {
     h = handler.not_found; // remap miss to an explicit variant — no `_` in the enum match
   }
   match h {
-    not_found: fmt.printf("notfound ");
-    home: fmt.printf("home ");
-    user: {
+    handler.not_found: fmt.printf("notfound ");
+    handler.home: fmt.printf("home ");
+    handler.user: {
       idbuf: char[32];
       idbuf := slice(move idbuf, path, st, ln);
       fmt.printf("user=%s ", idbuf);
     }
-    static_files: {
+    handler.static_files: {
       tail: char[64];
       tail := slice(move tail, path, st, ln);
       fmt.printf("static=%s ", tail);

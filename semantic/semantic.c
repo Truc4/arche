@@ -5413,17 +5413,20 @@ static char *sem_own_str(SemanticContext *ctx, char *s) {
 	return s;
 }
 
-/* The first pattern token of a match arm (variant / literal / `_`), or NULL. */
+/* The pattern's VALUE token of a match arm — the literal, the `_`, or the case of a qualified
+ * `Enum.case` (the LAST identifier before the arm `:`). NULL if none. */
 static const SyntaxElem *match_arm_pattern_tok(const SyntaxNode *arm) {
+	const SyntaxElem *last = NULL;
 	for (int c = 0; c < arm->child_count; c++) {
 		if (arm->children[c].tag != SE_TOKEN)
 			continue;
 		TokenKind k = arm->children[c].as.token.kind;
+		if (k == TOK_COLON)
+			break; /* the pattern ends at the arm `:` */
 		if (k == TOK_IDENT || k == TOK_NUMBER || k == TOK_STRING || k == TOK_CHAR_LIT)
-			return &arm->children[c];
-		return NULL; /* something else came first */
+			last = &arm->children[c]; /* keep last → the case in a qualified `Enum.case` */
 	}
-	return NULL;
+	return last;
 }
 
 /* The enum a bare variant name belongs to, or NULL. */

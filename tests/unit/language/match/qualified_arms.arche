@@ -1,0 +1,21 @@
+// A `match` arm names an enum VALUE, so it must be written the same way an enum value is written
+// everywhere else: qualified by its descriptor (`bar.qux`), exactly like `baz := bar.qux`. Bare arms
+// (`qux:`) are the lone spot where a bare case name stands in for a value — the inconsistency being
+// removed. Selecting `bar.qux` must run the `bar.qux` arm.
+// RUN: %arche build -o %t %s && %t | grep -q "got qux"
+#import { fmt }
+bar :: enum { foo, qux, zap }
+main :: proc() {
+  baz := bar.qux;
+  match baz {
+    bar.foo: {
+      fmt.printf("got foo\n");
+    }
+    bar.qux: {
+      fmt.printf("got qux\n");
+    }
+    bar.zap: {
+      fmt.printf("got zap\n");
+    }
+  }
+}
