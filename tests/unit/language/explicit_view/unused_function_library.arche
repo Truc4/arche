@@ -1,0 +1,11 @@
+// Crate-kind by signal, not file position: a file with NO `main` is a LIBRARY unit, so its top-level
+// (public) decls are API surface, not dead code — nothing is flagged even when nothing calls them.
+// This guards the LSP-opens-a-module-standalone case against false positives while typing.
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "W0013 unused_function") -eq 0
+#import { fmt }
+api_one :: proc() {
+  fmt.print("one\n");
+}
+api_two :: func(a: int) -> int {
+  return a + 1;
+}

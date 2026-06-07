@@ -79,7 +79,7 @@ static void register_stdlib_modules(void) {
 		ParseResult pr = parse_source(src);
 		if (pr.syntax_root) {
 			lower_add_module(mods[i], pr.syntax_root, src, NULL);
-			semantic_add_module(mods[i], pr.syntax_root, src, NULL);
+			semantic_add_module(mods[i], pr.syntax_root, src, NULL, DECL_ORIGIN_STDLIB);
 			pr.syntax_root = NULL; /* keep the module syntax tree alive past parse_result_free */
 		}
 		parse_result_free(&pr);

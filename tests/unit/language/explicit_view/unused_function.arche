@@ -1,0 +1,62 @@
+// W0013: warn on a top-level func/proc never reachable from a root (Rust `dead_code`).
+// Roots: main, externs/#foreign, module decls, `_`-prefixed, @allow'd. Reachability is transitive
+// and handles mutual recursion (an unreachable cycle still warns for every member).
+//
+// Exactly these warn: `dead_proc`, `c_only` (c↔d unreachable cycle), `d_only`. That's 3.
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "W0013 unused_function") -eq 3
+// RUN: %build/arche-analyzer --dump %s | grep -qF "W0013 unused_function 0 function 'dead_proc'"
+// RUN: %build/arche-analyzer --dump %s | grep -qF "W0013 unused_function 0 function 'c_only'"
+// RUN: %build/arche-analyzer --dump %s | grep -qF "W0013 unused_function 0 function 'd_only'"
+// These must NOT warn (reached from main, _-prefix, @allow, callback-by-name, entry point):
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "unused_function 0 function 'reached_func'") -eq 0
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "unused_function 0 function 'reached_proc'") -eq 0
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "unused_function 0 function 'used_cb'") -eq 0
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "unused_function 0 function '_scratch'") -eq 0
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "unused_function 0 function 'quiet'") -eq 0
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "unused_function 0 function 'hush'") -eq 0
+#import { fmt }
+
+cb :: proc()()
+run_task :: proc(on_done: cb)() {
+  on_done()();
+}
+
+reached_func :: func(a: int) -> int {
+  return a + 1;
+}
+reached_proc :: proc() {
+  fmt.print("reached");
+}
+used_cb :: proc() {
+  fmt.print("cb");
+}
+
+dead_proc :: proc() {
+  fmt.print("dead");
+}
+_scratch :: proc() {
+  fmt.print("scratch");
+}
+@allow(unused_function)
+quiet :: proc() {
+  fmt.print("quiet");
+}
+@allow(dead_code)
+hush :: proc() {
+  fmt.print("hush");
+}
+
+// mutually-recursive but unreachable from main — both must warn.
+c_only :: proc() {
+  d_only()();
+}
+d_only :: proc() {
+  c_only()();
+}
+
+main :: proc() {
+  r := reached_func(2);
+  reached_proc()();
+  run_task(used_cb)();
+  fmt.printf("%d\n", r);
+}

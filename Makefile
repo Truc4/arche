@@ -153,6 +153,16 @@ test: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN)
 	lit -v tests/
 	$(MAKE) test-doc
 
+# DORMANT, manual-only per-unit codegen check: runs the full lit suite emitting one LLVM module per
+# compilation unit (mangled/external symbols + linkonce_odr shared defs), llvm-link-merged, with the
+# ODR folding verifier ALWAYS on (intrinsic to per-unit mode — no env toggle). A correctness/readiness
+# mode, NOT a build-speed mode (no object cache) — default-off with no current consumer, so it is NOT
+# in `make test` NOR in CI (it would ~2x the suite for an unused mode). Run this by hand if reviving
+# separate compilation. The codegen determinism fix that makes it sound (per-body SSA reset +
+# content-addressed linkonce_odr globals) is exercised by `make test`/`verify-codegen` regardless.
+test-per-unit: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
+	ARCHE_PER_UNIT=1 lit -v tests/
+
 # Run doctests (```arche examples in /// doc comments) over the real source tree.
 # The synthetic runner fixtures in tests/unit/doctest/ are exercised by lit above
 # (some are intentional failures wrapped in `not`); this sweeps the production
@@ -298,9 +308,15 @@ verify-syntax: $(SYNTAX_ROUNDTRIP_BIN)
 test-syntax-view: $(SYNTAX_VIEW_TEST_BIN)
 	@./$(SYNTAX_VIEW_TEST_BIN)
 
-# Guard against silent codegen changes: emit LLVM IR for representative programs and
-# diff against checked-in goldens (first run captures them). VERIFY_CG_PROGRAMS is the
-# fixed representative set; see tests/codegen_golden/.
+# MANUAL dev tool (NOT in `make test`, NOT in CI): emit LLVM IR for representative programs and diff
+# against checked-in goldens (first run captures them). VERIFY_CG_PROGRAMS is the fixed representative
+# set; see tests/codegen_golden/. Catches silent IR drift that behavioral tests can't see (same output,
+# different IR). Run it to review a change's IR impact or chase a suspected codegen regression; on an
+# INTENDED codegen change regenerate the goldens: `rm tests/codegen_golden/*.ll && make verify-codegen`,
+# then review the diff before committing. Goldens are RAW (pre-opt) codegen on purpose — that is pure
+# arche output (hardcoded triple/datalayout), hence machine-independent and reproducible; post-opt IR
+# would be LLVM-version-dependent. It is manual rather than CI-gated because raw IR churns on cosmetic
+# codegen changes, which would tax every codegen PR for protection the behavioral suite mostly provides.
 VERIFY_CG_DIR = tests/codegen_golden
 VERIFY_CG_PROGRAMS = \
 	examples/simple/simple.arche \
@@ -313,7 +329,10 @@ VERIFY_CG_PROGRAMS = \
 	tests/unit/language/use/use_simple.arche \
 	tests/unit/language/csv/csv_load_named.arche \
 	tests/unit/language/tuples/tuple_array_ops.arche \
-	tests/unit/language/tuples/tuple_compound_assign.arche
+	tests/unit/language/tuples/tuple_compound_assign.arche \
+	tests/unit/language/callbacks/proc_callback.arche \
+	tests/unit/language/systems/sys_minimal.arche \
+	tests/unit/language/strings/string_literals.arche
 verify-codegen: $(TARGET)
 	@mkdir -p $(VERIFY_CG_DIR); fail=0; \
 	for f in $(VERIFY_CG_PROGRAMS); do \
@@ -378,4 +397,4 @@ test-install: all
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
 
 # Phony targets
-.PHONY: all run run-lexer test test-doc test-lexer test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install
+.PHONY: all run run-lexer test test-per-unit test-doc test-lexer test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install

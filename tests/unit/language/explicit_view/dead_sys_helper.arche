@@ -1,0 +1,18 @@
+// Regression: a func/proc called ONLY from a system body must NOT be flagged W0013. Systems are
+// entry points (invoked by `run`, which records no call edge), so the reachability pass seeds every
+// `sys` and walks its body. Before the id-keyed rewrite, `log_step` here was a false positive.
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "W0013 unused_function") -eq 0
+#import { fmt }
+Particle :: arche { pos :: float, vel :: float }
+Particle[10]
+log_step :: proc() {
+  fmt.print("step\n");
+}
+move_sys :: sys (pos, vel) {
+  pos = pos + vel;
+  log_step()();
+}
+main :: proc() {
+  insert(Particle, 1.0, 2.0);
+  run move_sys;
+}

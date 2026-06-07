@@ -2766,10 +2766,11 @@ static void hir_q_decl(HirDecl *d, const QualCtx *q) {
 static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, const char *mod_name, HirProgram *ast,
                                 char ***full, int *fulln, int *fullcap, char ***expset, int *expn, int *expcap,
                                 int exported, int is_datasheet, int module_is_device, int file_local, char ***fileset,
-                                int *filesetn, int *filesetcap) {
+                                int *filesetn, int *filesetcap, int unit) {
 	HirDecl *md = lower_decl_cst((SyntaxView){node, msrc});
 	if (!md)
 		return;
+	md->unit = unit; /* per-unit codegen grouping (mirror of DeclSummary.unit) */
 	/* A pool decl in a datasheet (`.ds.arche`) is a storage REQUIREMENT (min rows), not an allocation. */
 	if (is_datasheet && md->kind == HIR_DECL_STATIC && md->data.static_decl &&
 	    md->data.static_decl->kind == HIR_STATIC_ARCHETYPE)
@@ -2870,6 +2871,7 @@ static void hir_inline_module(const char *mod_name, HirProgram *ast, char **mod_
 	for (int a = 0; a < *inlined; a++)
 		if (strcmp(mod_prefix[a], mod_name) == 0)
 			return;
+	int uid = *inlined + 1; /* this module's unit id (it is registered at mod_prefix[*inlined] below) */
 	int first = ast->decl_count;
 	int found = 0;
 	char **full = NULL;
@@ -2914,7 +2916,7 @@ static void hir_inline_module(const char *mod_name, HirProgram *ast, char **mod_
 							continue;
 						hir_add_module_decl(cn->children[c].as.node, msrc, mod_name, ast, &full, &fulln, &fullcap,
 						                    &expset, &expn, &expcap, child_exp, ds, module_is_device, child_fl,
-						                    &fileset, &filesetn, &filesetcap);
+						                    &fileset, &filesetn, &filesetcap, uid);
 					}
 				} else if (!is_foreign) {
 					exported = 0;
@@ -2926,7 +2928,7 @@ static void hir_inline_module(const char *mod_name, HirProgram *ast, char **mod_
 			if (!hir_is_collectible_decl(mk))
 				continue;
 			hir_add_module_decl(cn, msrc, mod_name, ast, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported, ds,
-			                    module_is_device, file_local, &fileset, &filesetn, &filesetcap);
+			                    module_is_device, file_local, &fileset, &filesetn, &filesetcap, uid);
 		}
 		/* Rename this file's `#file` decls (+ intra-file refs) to a file-unique identity `<mod>.__f<m>`
 		 * (mirror of semantic): file-local visibility, and no codegen collision between two sibling

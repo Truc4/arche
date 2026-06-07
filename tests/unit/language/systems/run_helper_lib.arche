@@ -1,0 +1,21 @@
+// Support module for module_body_run.arche (not a standalone test). Defines a pool + system and a proc
+// that `run`s it. The `run` lives in THIS imported (non-entry) compilation unit, so under per-unit
+// codegen the system body emits in unit 0 while this unit must resolve `@arche.bump` via the cross-unit
+// SYS declare (emit_cross_unit_declares). Mutates + prints pool state so a regressed declare (an
+// unresolved symbol / a system that never ran) is caught.
+// RUN: true
+#import { fmt }
+hp :: int
+Mob :: arche { hp }
+
+Mob[10]
+
+bump :: sys (hp) {
+  hp = hp + 1;
+}
+
+step :: proc() {
+  insert(Mob, 0);
+  run bump;
+  fmt.printf("n=%d\n", Mob.hp[0]);
+}

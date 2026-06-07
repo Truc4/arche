@@ -149,6 +149,9 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_unused_use]                    = { "W0010", "unused_use",                    CLASS_LINT, 1 },
 	[SEM_LINT_inout_redundant_arg]           = { "W0011", "inout_redundant_arg",           CLASS_LINT, 1 },
 	[SEM_LINT_inout_param_shadow]            = { "W0012", "inout_param_shadow",            CLASS_LINT, 1 },
+	[SEM_LINT_unused_function]               = { "W0013", "unused_function",               CLASS_LINT, 1 },
+	[SEM_LINT_unused_static_const]           = { "W0014", "unused_static_const",           CLASS_LINT, 1 },
+	[SEM_LINT_unused_enum]                   = { "W0015", "unused_enum",                   CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -206,6 +209,9 @@ static int g_print_line_offset = 0;
 
 void semantic_set_print_line_offset(int offset) {
 	g_print_line_offset = offset;
+}
+int semantic_print_line_offset(void) {
+	return g_print_line_offset;
 }
 
 int semantic_diag_werror(SemDiagKind kind) {
@@ -833,4 +839,25 @@ SemDiag *sem_emit_lint_inout_param_shadow(SemanticContext *ctx, SourceLoc loc, c
 	                 "out-param '%s' shadows the in-param of the same name (in-out): legitimate only for a "
 	                 "`#foreign` proc (C-ABI alignment). Return a fresh out-only result instead",
 	                 name);
+}
+/* `module_path` (or NULL): the source file of the decl's owning module, appended so a cross-file
+ * dead-code warning names a file the user can open (the bare `loc` line is module-local). The
+ * conditional `%s` triplet keeps the format a single literal for -Wformat checking. */
+SemDiag *sem_emit_lint_unused_function(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path) {
+	return sem_emit_(ctx, SEM_LINT_unused_function, loc,
+	                 "function '%s' is declared but never called (prefix with '_' to silence, or "
+	                 "@allow(unused_function))%s%s%s",
+	                 name, module_path ? " [in " : "", module_path ? module_path : "", module_path ? "]" : "");
+}
+SemDiag *sem_emit_lint_unused_static_const(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
+                                           const char *module_path) {
+	return sem_emit_(ctx, SEM_LINT_unused_static_const, loc,
+	                 "%s '%s' is declared but never used (prefix with '_' to silence, or "
+	                 "@allow(unused_static_const))%s%s%s",
+	                 kind, name, module_path ? " [in " : "", module_path ? module_path : "", module_path ? "]" : "");
+}
+SemDiag *sem_emit_lint_unused_enum(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path) {
+	return sem_emit_(ctx, SEM_LINT_unused_enum, loc,
+	                 "enum '%s' is declared but never used (prefix with '_' to silence, or @allow(unused_enum))%s%s%s",
+	                 name, module_path ? " [in " : "", module_path ? module_path : "", module_path ? "]" : "");
 }

@@ -172,6 +172,12 @@ struct SemanticContext {
 	DeclSummary **decls;
 	int decl_count;
 
+	/* Per-unit exported interfaces (one per inlined module), persisted + owned here. Cross-unit
+	 * resolution and the qualify pass read these; the registry is dynamic (no module-count cap). */
+	UnitInterface **interfaces;
+	int interface_count;
+	int interface_cap;
+
 	/* Analysis-allocated strings handed BY POINTER to the type-alias registry (alias names + backings
 	 * built on the fly during analysis). The registry borrows them for the context's lifetime, so they
 	 * are owned here and freed at teardown. (Replaces the transitive ownership the old type pool gave
@@ -4002,7 +4008,8 @@ typedef struct {
 	char *name;
 	const SyntaxNode *root;
 	const char *src;
-	char *filename; /* source path; a `*.ds.arche` file is a device datasheet (decls stay global) */
+	char *filename;    /* source path; a `*.ds.arche` file is a device datasheet (decls stay global) */
+	DeclOrigin origin; /* search root the loader matched: user tree / stdlib / core */
 } SemModule;
 static SemModule g_sem_modules[64];
 static int g_sem_module_count = 0;
@@ -4016,13 +4023,15 @@ static int sem_is_datasheet_file(const char *fn) {
 	return L >= 9 && strcmp(fn + L - 9, ".ds.arche") == 0;
 }
 
-void semantic_add_module(const char *name, const SyntaxNode *root, const char *src, const char *filename) {
+void semantic_add_module(const char *name, const SyntaxNode *root, const char *src, const char *filename,
+                         DeclOrigin origin) {
 	if (g_sem_module_count >= 64 || !name || !root)
 		return;
 	g_sem_modules[g_sem_module_count].name = sem_dupz(name);
 	g_sem_modules[g_sem_module_count].root = root;
 	g_sem_modules[g_sem_module_count].src = src;
 	g_sem_modules[g_sem_module_count].filename = filename ? sem_dupz(filename) : NULL;
+	g_sem_modules[g_sem_module_count].origin = origin;
 	g_sem_module_count++;
 }
 
@@ -4174,23 +4183,26 @@ static void sem_free_rnops(void) {
 	g_rnop_cap = 0;
 }
 
-/* Snapshot of the accumulated cross-module export sets (acc_prefix/acc_set/acc_count), kept after
- * cst_to_program frees them so the tree-qualify channel pass can resolve `mod.f` references. */
+/* Transient snapshot of the persisted per-unit interfaces (ctx->interfaces), in the flat array form the
+ * tree-qualify channel pass consults to resolve `mod.f` references. Rebuilt each analysis from the
+ * registry; freed by sem_free_exports after qualification (the interfaces themselves live on the ctx). */
 static char **g_exp_prefix = NULL;
 static char ***g_exp_set = NULL;
 static int *g_exp_count = NULL;
 static int g_exp_n = 0;
-static void sem_snapshot_exports(char **prefix, char ***set, int *count, int n) {
+static void sem_snapshot_exports(SemanticContext *ctx) {
+	int n = ctx->interface_count;
 	g_exp_n = n;
 	g_exp_prefix = calloc(n ? n : 1, sizeof(char *));
 	g_exp_set = calloc(n ? n : 1, sizeof(char **));
 	g_exp_count = calloc(n ? n : 1, sizeof(int));
 	for (int m = 0; m < n; m++) {
-		g_exp_prefix[m] = sem_dupz(prefix[m]);
-		g_exp_count[m] = count[m];
-		g_exp_set[m] = calloc(count[m] ? count[m] : 1, sizeof(char *));
-		for (int s = 0; s < count[m]; s++)
-			g_exp_set[m][s] = sem_dupz(set[m][s]);
+		UnitInterface *u = ctx->interfaces[m];
+		g_exp_prefix[m] = sem_dupz(u->unit_name);
+		g_exp_count[m] = u->export_count;
+		g_exp_set[m] = calloc(u->export_count ? u->export_count : 1, sizeof(char *));
+		for (int s = 0; s < u->export_count; s++)
+			g_exp_set[m][s] = sem_dupz(u->exports[s]);
 	}
 }
 static void sem_free_exports(void) {
@@ -4227,7 +4239,7 @@ static void sem_apply_rnops(char **slot, const SyntaxNode *declnode) {
 static void sem_add_module_decl(SemanticContext *ctx, const SyntaxNode *node, const char *msrc, const char *mod_name,
                                 char ***full, int *fulln, int *fullcap, char ***expset, int *expn, int *expcap,
                                 int exported, int is_datasheet, int module_is_device, int file_local, char ***fileset,
-                                int *filesetn, int *filesetcap) {
+                                int *filesetn, int *filesetcap, int unit, DeclOrigin origin) {
 	/* AST-kill: build the resolved DeclSummary straight from the tree node and store it in the table
 	 * (bare names; build_decl_table applies this module's recorded rename ops). Provenance flags are
 	 * loader context (not tree-derivable), so they are set here. */
@@ -4237,6 +4249,12 @@ static void sem_add_module_decl(SemanticContext *ctx, const SyntaxNode *node, co
 	/* Datasheet decls are shared global vocabulary: mark them so identical component/type redefs
 	 * across two datasheets dedup (devices sharing a shape) instead of tripping define-once. */
 	md->is_datasheet = is_datasheet;
+	/* Region-band visibility, from the loader's bands: `#file` ⇒ file-local, else `#module` (not
+	 * exported) ⇒ unit-private, else exported. The id-keyed reachability + future cross-unit resolution
+	 * read this instead of sniffing `.` in the renamed name. */
+	md->visibility = file_local ? VIS_FILE : (exported ? VIS_EXPORTED : VIS_UNIT);
+	md->unit = unit;
+	md->origin = origin;
 	/* A decl from a device's IMPL (`.arche` of a unit that also has a `.ds.arche`) — the rule-3 sweep
 	 * rejects type/archetype/allocation definitions there (a device's impl is behavior-only). */
 	md->from_device_impl = module_is_device && !is_datasheet;
@@ -4363,11 +4381,31 @@ static void sem_check_one_region_per_file(const SyntaxNode *root, const char *sr
  * exported names in acc for the `mod.name → mod_name` qualify pass, then RECURSIVELY inline the
  * module's own `#import`s — so a module may use qualified access to a transitively-imported module
  * (`csv` calling `parse.atof`). Dedup via the acc set makes import cycles safe. */
-static void sem_inline_module(SemanticContext *ctx, const char *mod_name, char **acc_prefix, char ***acc_set,
-                              int *acc_count, int *acc_n) {
-	for (int a = 0; a < *acc_n; a++)
-		if (strcmp(acc_prefix[a], mod_name) == 0)
-			return; /* already inlined (direct or via another transitive path) */
+static UnitInterface *sem_iface_find(SemanticContext *ctx, const char *unit_name) {
+	for (int i = 0; i < ctx->interface_count; i++)
+		if (strcmp(ctx->interfaces[i]->unit_name, unit_name) == 0)
+			return ctx->interfaces[i];
+	return NULL;
+}
+static UnitInterface *sem_iface_add(SemanticContext *ctx, const char *unit_name) {
+	if (ctx->interface_count == ctx->interface_cap) {
+		ctx->interface_cap = ctx->interface_cap ? ctx->interface_cap * 2 : 8;
+		ctx->interfaces = realloc(ctx->interfaces, (size_t)ctx->interface_cap * sizeof(UnitInterface *));
+	}
+	UnitInterface *u = calloc(1, sizeof(UnitInterface));
+	u->unit_id = ctx->interface_count + 1; /* >0; 0 is reserved for the entry/root unit */
+	u->unit_name = sem_dupz(unit_name);
+	ctx->interfaces[ctx->interface_count++] = u;
+	return u;
+}
+
+static void sem_inline_module(SemanticContext *ctx, const char *mod_name) {
+	if (sem_iface_find(ctx, mod_name))
+		return; /* already inlined (direct or via another transitive path) — registry makes it cycle-safe */
+	/* Register the unit up front (cycle-safe: a transitive re-import finds it) and stamp every decl
+	 * with this unit id. Rolled back below if the module turns out to have no files. */
+	UnitInterface *iface = sem_iface_add(ctx, mod_name);
+	int uid = iface->unit_id;
 	int first = ctx->decl_count;
 	int found = 0;
 	char **full = NULL;
@@ -4414,7 +4452,7 @@ static void sem_inline_module(SemanticContext *ctx, const char *mod_name, char *
 							continue;
 						sem_add_module_decl(ctx, cn->children[c].as.node, msrc, mod_name, &full, &fulln, &fullcap,
 						                    &expset, &expn, &expcap, child_exp, ds, module_is_device, child_fl,
-						                    &fileset, &filesetn, &filesetcap);
+						                    &fileset, &filesetn, &filesetcap, uid, g_sem_modules[m].origin);
 					}
 				} else if (!is_foreign) {
 					exported = 0;
@@ -4426,7 +4464,8 @@ static void sem_inline_module(SemanticContext *ctx, const char *mod_name, char *
 			if (!sem_is_collectible_decl(mk))
 				continue;
 			sem_add_module_decl(ctx, cn, msrc, mod_name, &full, &fulln, &fullcap, &expset, &expn, &expcap, exported, ds,
-			                    module_is_device, file_local, &fileset, &filesetn, &filesetcap);
+			                    module_is_device, file_local, &fileset, &filesetn, &filesetcap, uid,
+			                    g_sem_modules[m].origin);
 		}
 		/* Rename this file's `#file` decls (+ their intra-file references) to a file-unique identity
 		 * `<mod>.__f<m>.<name>` so a sibling file's bare reference to the same name does NOT bind to
@@ -4444,6 +4483,10 @@ static void sem_inline_module(SemanticContext *ctx, const char *mod_name, char *
 	if (!found) {
 		free(full);
 		free(expset);
+		/* roll back the speculatively-registered interface (module had no files) */
+		free(iface->unit_name);
+		free(iface);
+		ctx->interface_count--;
 		return;
 	}
 	/* Scope resolution: rename this module's pure-Arche decls + their intra-module references to the
@@ -4455,17 +4498,9 @@ static void sem_inline_module(SemanticContext *ctx, const char *mod_name, char *
 	for (int x = 0; x < fulln; x++)
 		free(full[x]);
 	free(full);
-	if (*acc_n < 64) {
-		acc_prefix[*acc_n] = sem_dupz(mod_name);
-		acc_set[*acc_n] = expset;
-		acc_count[*acc_n] = expn;
-		(*acc_n)++;
-	} else {
-		for (int x = 0; x < expn; x++)
-			free(expset[x]);
-		free(expset);
-	}
-	/* Transitive: inline this module's own `#import`s (now that it's in acc → cycle-safe). */
+	iface->exports = expset; /* transfer ownership; iface was registered up front */
+	iface->export_count = expn;
+	/* Transitive: inline this module's own `#import`s (registry entry exists → cycle-safe). */
 	for (int m = 0; m < g_sem_module_count; m++) {
 		if (strcmp(g_sem_modules[m].name, mod_name) != 0)
 			continue;
@@ -4479,7 +4514,7 @@ static void sem_inline_module(SemanticContext *ctx, const char *mod_name, char *
 				char *sub = sem_import_token_module_name(msrc, &un->children[t]);
 				if (!sub)
 					continue;
-				sem_inline_module(ctx, sub, acc_prefix, acc_set, acc_count, acc_n);
+				sem_inline_module(ctx, sub);
 				free(sub);
 			}
 		}
@@ -4500,12 +4535,6 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 		cap += sv_node_count_deep(sv_root(g_sem_modules[m].root, g_sem_modules[m].src)) + 1;
 	ctx->decls = calloc(cap ? (size_t)cap : 1, sizeof(DeclSummary *));
 	ctx->decl_count = 0;
-
-	/* Per-module: prefix + exported (still-bare) names, for cross-module resolution. */
-	char *acc_prefix[64];
-	char **acc_set[64];
-	int acc_count[64];
-	int acc_n = 0;
 
 	sem_check_one_region_per_file(root, src);
 
@@ -4543,7 +4572,7 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 				char *mod_name = sem_import_token_module_name(src, &un->children[t]);
 				if (!mod_name)
 					continue;
-				sem_inline_module(ctx, mod_name, acc_prefix, acc_set, acc_count, &acc_n);
+				sem_inline_module(ctx, mod_name);
 				free(mod_name);
 			}
 			continue;
@@ -4558,15 +4587,299 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 	 * reference/call to its member's qualified identity (looked up by literal name in the module's
 	 * export set, no prefix stripping), records it in the callee_name/ref_name channels, and emits a
 	 * precise `module has no member` diagnostic for an unknown member — straight from the SN tree. */
-	sem_snapshot_exports(acc_prefix, acc_set, acc_count, acc_n);
-	/* Module exports are reachable ONLY via qualified access (handled by the tree-qualify pass);
-	 * a bare `name` does NOT resolve to a module export. */
-	for (int m = 0; m < acc_n; m++) {
-		for (int e = 0; e < acc_count[m]; e++)
-			free(acc_set[m][e]);
-		free(acc_set[m]);
-		free(acc_prefix[m]);
+	sem_snapshot_exports(ctx);
+	/* Module exports are reachable ONLY via qualified access (handled by the tree-qualify pass); a bare
+	 * `name` does NOT resolve to a module export. The persisted interfaces are owned by ctx (freed at
+	 * teardown), so nothing transient to release here. */
+}
+
+/* W0013 unused_function (Rust `dead_code`): warn on a top-level func/proc that is never reachable
+ * from a root. Roots = `main`, externs (C-ABI surface), module/`#file` decls (qualified name carries
+ * a `.` — not the user's main file, an imported API surface), `_`-prefixed names, and `@allow`'d
+ * decls. arche has no `pub` keyword for main-file decls, so "exported" collapses into "is a module
+ * decl". The lint runs on the resolved DeclTable + SemModel call/ref channels — no new tree walk of
+ * the kind analysis already did, just a reachability sweep. */
+
+/* === Reachability (id-keyed) ===
+ * Edges are read from the SemModel's DefId channels (callee_def / ref_def), populated by
+ * sem_bind_defs after name resolution. Identity is a DefId, never a per-edge string scan. */
+
+/* A callable decl: the kinds reachability tracks as call/seed targets and roots. */
+static int decl_is_callable(DeclKind k) {
+	return k == DECL_FUNC || k == DECL_PROC || k == DECL_FUNC_GROUP || k == DECL_SYS;
+}
+
+/* A reference TARGET: any top-level decl a name/call can resolve to. Broader than callable so the
+ * id-keyed channels bind references to data decls (static/const/enum) too — the basis for the
+ * unused-static/const (W0014) and unused-enum (W0015) lints. */
+static int decl_is_ref_target(DeclKind k) {
+	return decl_is_callable(k) || k == DECL_STATIC || k == DECL_CONST || k == DECL_ENUM;
+}
+
+/* name -> decl index over reference-target decls, built once (sorted + bsearch). E0031 keeps func/proc
+ * names unique, and names don't collide across the other kinds in a valid program. */
+typedef struct {
+	const char *name;
+	int idx;
+} NameIdx;
+static int nameidx_cmp(const void *a, const void *b) {
+	return strcmp(((const NameIdx *)a)->name, ((const NameIdx *)b)->name);
+}
+static int build_name_index(SemanticContext *ctx, NameIdx **out) {
+	NameIdx *arr = malloc((size_t)(ctx->decl_count > 0 ? ctx->decl_count : 1) * sizeof(NameIdx));
+	int n = 0;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (decl_is_ref_target(d->kind) && d->name)
+			arr[n++] = (NameIdx){d->name, i};
 	}
+	qsort(arr, (size_t)n, sizeof(NameIdx), nameidx_cmp);
+	*out = arr;
+	return n;
+}
+static int name_index_lookup(const NameIdx *arr, int n, const char *name) {
+	if (!name)
+		return -1;
+	NameIdx key = {name, -1};
+	const NameIdx *hit = bsearch(&key, arr, (size_t)n, sizeof(NameIdx), nameidx_cmp);
+	return hit ? hit->idx : -1;
+}
+
+/* Populate the DefId channels from the resolved name channels (their id-keyed twins). Runs once after
+ * build_decl_table, when every decl carries its final renamed name. A name with no callable match
+ * (extern/libc/builtin) stays DEFID_NONE. */
+static void sem_bind_defs(SemanticContext *ctx) {
+	if (!ctx->model)
+		return;
+	NameIdx *arr = NULL;
+	int n = build_name_index(ctx, &arr);
+	int cap = sem_model_cap(ctx->model);
+	for (uint32_t id = 0; id < (uint32_t)cap; id++) {
+		const char *cn = sem_model_callee_name(ctx->model, id);
+		if (cn) {
+			int idx = name_index_lookup(arr, n, cn);
+			if (idx >= 0)
+				sem_model_set_callee_def(ctx->model, id, defid_make(ctx->decls[idx]->unit, idx));
+		}
+		const char *rn = sem_model_ref_name(ctx->model, id);
+		if (rn) {
+			int idx = name_index_lookup(arr, n, rn);
+			if (idx >= 0)
+				sem_model_set_ref_def(ctx->model, id, defid_make(ctx->decls[idx]->unit, idx));
+		}
+	}
+	free(arr);
+}
+
+/* Resolve a name to a callable decl index, or -1. Cold path only — overload-group members are names,
+ * not nodes; the hot call/ref edges use the DefId channels directly. */
+static int dead_decl_index_for(SemanticContext *ctx, const char *name) {
+	if (!name)
+		return -1;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (!decl_is_callable(d->kind))
+			continue;
+		if (d->name && strcmp(d->name, name) == 0)
+			return i;
+	}
+	return -1;
+}
+
+/* Mark decl `idx` reachable; a func GROUP marks every member too (overload resolution is not re-run
+ * here, so marking the whole group is the conservative no-false-positive choice). New marks enqueue. */
+static void dead_mark(SemanticContext *ctx, int idx, char *reachable, int *work, int *work_n) {
+	if (idx < 0 || reachable[idx])
+		return;
+	reachable[idx] = 1;
+	work[(*work_n)++] = idx;
+	DeclSummary *d = ctx->decls[idx];
+	if (d->kind == DECL_FUNC_GROUP)
+		for (int m = 0; m < d->member_count; m++)
+			dead_mark(ctx, dead_decl_index_for(ctx, d->member_names[m]), reachable, work, work_n);
+}
+
+static void dead_mark_def(SemanticContext *ctx, DefId d, char *reachable, int *work, int *work_n) {
+	if (!defid_is_none(d))
+		dead_mark(ctx, d.index, reachable, work, work_n); /* one unit today; d.unit == 0 */
+}
+
+/* Walk a body subtree, marking the DefId target of every call (callee_def) and every bare name
+ * reference (ref_def — a func/proc/sys handed by name, e.g. a compile-time callback arg). */
+static void dead_walk(SemanticContext *ctx, const SyntaxNode *n, const char *src, char *reachable, int *work,
+                      int *work_n) {
+	if (!n)
+		return;
+	SyntaxView v = (SyntaxView){n, src};
+	SyntaxNodeKind k = sv_kind(v);
+	if (k == SN_CALL_EXPR)
+		dead_mark_def(ctx, sem_model_callee_def(ctx->model, sv_id(v)), reachable, work, work_n);
+	else if (k == SN_NAME_EXPR)
+		dead_mark_def(ctx, sem_model_ref_def(ctx->model, sv_id(v)), reachable, work, work_n);
+	for (int i = 0; i < n->child_count; i++)
+		if (n->children[i].tag == SE_NODE)
+			dead_walk(ctx, n->children[i].as.node, src, reachable, work, work_n);
+}
+
+/* A func/proc/sys that is always kept regardless of reachability — visibility/origin-aware (Go
+ * capitals / Rust `pub`), replacing the old `.`-in-name heuristic. Entry-unit decls are NOT roots here;
+ * the crate-kind gate in sem_check_dead_code decides whether to flag them (binary = closed world). */
+static int dead_is_root(const DeclSummary *d) {
+	if (!d->name)
+		return 1;
+	if (strcmp(d->name, "main") == 0)
+		return 1;
+	if (d->is_extern) /* C-ABI surface, called from outside */
+		return 1;
+	if (d->is_drop) /* opaque destructor — invoked by the compiler's RAII path, never syntactically */
+		return 1;
+	if (d->name[0] == '_') /* Rust `_`-prefix silence */
+		return 1;
+	if (d->origin == DECL_ORIGIN_STDLIB || d->origin == DECL_ORIGIN_CORE)
+		return 1; /* a dependency — Go/Rust don't dead-code-lint deps */
+	if (d->origin == DECL_ORIGIN_USER_MODULE && d->visibility == VIS_EXPORTED)
+		return 1; /* public library API — an importer may call it */
+	return 0;
+}
+
+/* The source path of a decl's owning module (NULL for entry-unit decls or if unknown). Used to give
+ * cross-file dead-code diagnostics a file the user can open — a W-code on an imported module's private
+ * decl otherwise prints a bare module-local line number with no file. Maps decl.unit → UnitInterface
+ * (unit_name) → the registered module's filename. */
+static const char *sem_decl_module_path(SemanticContext *ctx, const DeclSummary *d) {
+	if (d->origin == DECL_ORIGIN_ENTRY)
+		return NULL;
+	for (int i = 0; i < ctx->interface_count; i++) {
+		if (ctx->interfaces[i]->unit_id != d->unit)
+			continue;
+		const char *modname = ctx->interfaces[i]->unit_name;
+		for (int m = 0; m < g_sem_module_count; m++)
+			if (g_sem_modules[m].name && modname && strcmp(g_sem_modules[m].name, modname) == 0)
+				return g_sem_modules[m].filename;
+		return NULL;
+	}
+	return NULL;
+}
+
+static void sem_check_dead_code(SemanticContext *ctx) {
+	if (!ctx->model || ctx->decl_count <= 0)
+		return;
+	char *reachable = calloc((size_t)ctx->decl_count, 1);
+	int *work = malloc((size_t)ctx->decl_count * sizeof(int));
+	if (!reachable || !work) {
+		free(reachable);
+		free(work);
+		return;
+	}
+	/* The core prelude is prepended (lines 1..core_off of the combined stream); its decls — e.g. the
+	 * compiler-emitted `streq` — are not user-owned and must never be flagged. core_off = 0 when core
+	 * is NOT prepended (compiling core.arche itself), so the guard is inert there. */
+	int core_off = semantic_print_line_offset();
+	/* Crate-kind by signal, not file position (Go: a `main` proc ⇒ binary). The entry unit is a BINARY
+	 * iff it defines `main` — then it is a closed world and any unreachable entry decl is dead. With no
+	 * `main` (e.g. the LSP opened a library module on its own), flag NOTHING in the entry unit, so a
+	 * library's public API is never reported dead while you type. */
+	int entry_is_binary = 0;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->origin == DECL_ORIGIN_ENTRY && d->name && strcmp(d->name, "main") == 0) {
+			entry_is_binary = 1;
+			break;
+		}
+	}
+	int work_n = 0;
+	/* seed roots. Systems are entry points — invoked by `run`, which records no call edge — so seed
+	 * every `sys` and walk its body; a func/proc reachable only from a system is thus kept alive
+	 * (systems themselves are never flagged). Other callables seed only when they are roots. */
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->kind == DECL_SYS)
+			dead_mark(ctx, i, reachable, work, &work_n);
+		else if ((d->kind == DECL_FUNC || d->kind == DECL_PROC || d->kind == DECL_FUNC_GROUP) && dead_is_root(d))
+			dead_mark(ctx, i, reachable, work, &work_n);
+	}
+	/* transitive marking — reachable[] doubles as the visited set, so self/mutual recursion among
+	 * live funcs terminates and a cycle unreachable from any root is never seeded (both warn). */
+	while (work_n > 0) {
+		DeclSummary *d = ctx->decls[work[--work_n]];
+		if (d->body_node.node)
+			dead_walk(ctx, d->body_node.node, d->body_node.src, reachable, work, &work_n);
+	}
+	/* emit for every unreachable, non-root func/proc */
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->kind != DECL_FUNC && d->kind != DECL_PROC)
+			continue;
+		if (reachable[i] || dead_is_root(d))
+			continue;
+		/* The prepended-core guard is an ENTRY-unit concern: core.arche occupies lines 1..core_off of the
+		 * combined entry source. Module decls carry their OWN file's (small) line numbers, so this guard
+		 * must NOT apply to them — gate it on entry origin. */
+		if (d->origin == DECL_ORIGIN_ENTRY && core_off > 0 && d->loc.line <= core_off)
+			continue; /* prepended core prelude — not user code */
+		if (d->origin == DECL_ORIGIN_ENTRY && !entry_is_binary)
+			continue; /* library checked standalone — its surface is API, not dead code */
+		/* the pass runs after analyze cleared active_allow_slugs, so re-arm @allow suppression for
+		 * this decl around the emit (sem_emit_v matches the `unused_function` slug). `dead_code` is
+		 * honored as a Rust-compatible alias. */
+		ctx->active_allow_slugs = d->allow_slugs;
+		ctx->active_allow_slug_count = d->allow_slug_count;
+		if (!sem_diag_slug_suppressed(ctx, "dead_code"))
+			sem_emit_lint_unused_function(ctx, d->loc, d->name, sem_decl_module_path(ctx, d));
+		ctx->active_allow_slugs = NULL;
+		ctx->active_allow_slug_count = 0;
+	}
+
+	/* W0014 unused_static_const / W0015 unused_enum — data decls. "Used" = referenced ANYWHERE (any
+	 * incoming id-keyed ref), which the qualify pass records for uses in code, initializers, and sizes.
+	 * Same visibility/origin/crate-kind roots as functions; a static referenced only by dead code is
+	 * conservatively treated as used (no false positive). */
+	{
+		char *referenced = calloc((size_t)ctx->decl_count, 1);
+		int cap = sem_model_cap(ctx->model);
+		for (int id = 0; id < cap; id++) {
+			DefId cd = sem_model_callee_def(ctx->model, (uint32_t)id);
+			if (!defid_is_none(cd) && cd.index < ctx->decl_count)
+				referenced[cd.index] = 1;
+			DefId rd = sem_model_ref_def(ctx->model, (uint32_t)id);
+			if (!defid_is_none(rd) && rd.index < ctx->decl_count)
+				referenced[rd.index] = 1;
+		}
+		for (int i = 0; i < ctx->decl_count; i++) {
+			DeclSummary *d = ctx->decls[i];
+			int is_static_data = d->kind == DECL_STATIC &&
+			                     (d->static_kind == STATIC_KIND_SCALAR || d->static_kind == STATIC_KIND_ARRAY) &&
+			                     !d->is_requirement;
+			int is_enum = d->kind == DECL_ENUM;
+			if ((!is_static_data && !is_enum) || referenced[i])
+				continue;
+			if (!d->name || d->name[0] == '_')
+				continue;
+			if (d->origin == DECL_ORIGIN_STDLIB || d->origin == DECL_ORIGIN_CORE)
+				continue; /* dependency — not linted */
+			if (d->origin == DECL_ORIGIN_USER_MODULE && d->visibility == VIS_EXPORTED)
+				continue; /* public module API */
+			if (d->origin == DECL_ORIGIN_ENTRY && core_off > 0 && d->loc.line <= core_off)
+				continue; /* prepended core prelude */
+			if (d->origin == DECL_ORIGIN_ENTRY && !entry_is_binary)
+				continue; /* library checked standalone */
+			ctx->active_allow_slugs = d->allow_slugs;
+			ctx->active_allow_slug_count = d->allow_slug_count;
+			if (!sem_diag_slug_suppressed(ctx, "dead_code")) {
+				const char *mp = sem_decl_module_path(ctx, d);
+				if (is_enum)
+					sem_emit_lint_unused_enum(ctx, d->loc, d->name, mp);
+				else
+					sem_emit_lint_unused_static_const(
+					    ctx, d->loc, d->static_kind == STATIC_KIND_SCALAR ? "static" : "static array", d->name, mp);
+			}
+			ctx->active_allow_slugs = NULL;
+			ctx->active_allow_slug_count = 0;
+		}
+		free(referenced);
+	}
+	free(reachable);
+	free(work);
 }
 
 /* ========== PUBLIC API ========== */
@@ -4884,6 +5197,9 @@ static void analyze_program_core(SemanticContext *ctx) {
 	 * (return-value types). Diagnostics flow through the same registry as
 	 * everything else. Fail-open: unencoded shapes synth to TYID_UNKNOWN. */
 	tycheck_run(ctx);
+
+	/* pass 5: dead-code lint (W0013) — reachability sweep over the resolved DeclTable. */
+	sem_check_dead_code(ctx);
 }
 
 /* Allocate + zero-initialize a SemanticContext and register builtins. Shared by both
@@ -4894,6 +5210,9 @@ static SemanticContext *make_context(void) {
 	ctx->archetype_count = 0;
 	ctx->decls = NULL;
 	ctx->decl_count = 0;
+	ctx->interfaces = NULL;
+	ctx->interface_count = 0;
+	ctx->interface_cap = 0;
 	ctx->ty_arena = ty_arena_new(); /* must exist before any decl/expr typing */
 	ctx->aliases = NULL;
 	ctx->alias_count = 0;
@@ -5629,6 +5948,17 @@ static void free_decl_table(SemanticContext *ctx) {
 	free(ctx->decls);
 	ctx->decls = NULL;
 	ctx->decl_count = 0;
+	for (int i = 0; i < ctx->interface_count; i++) {
+		for (int e = 0; e < ctx->interfaces[i]->export_count; e++)
+			free(ctx->interfaces[i]->exports[e]);
+		free(ctx->interfaces[i]->exports);
+		free(ctx->interfaces[i]->unit_name);
+		free(ctx->interfaces[i]);
+	}
+	free(ctx->interfaces);
+	ctx->interfaces = NULL;
+	ctx->interface_count = 0;
+	ctx->interface_cap = 0;
 }
 
 /* DeclTable accessors for out-of-file readers (tycheck). */
@@ -5663,6 +5993,7 @@ SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src) {
 	sem_collect_decls(ctx, root, src);
 	g_sem_qualify_ctx = NULL;
 	build_decl_table(ctx);
+	sem_bind_defs(ctx); /* id-keyed channels: resolve callee_name/ref_name → DefId once names are final */
 	analyze_program_core(ctx);
 	walk_matches(ctx, root, src); /* exhaustiveness: enums register during analyze, so check after */
 	return ctx;

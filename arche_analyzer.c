@@ -218,8 +218,8 @@ static int sem_import_token(const char *src, const SyntaxElem *tok, char *name, 
 
 /* Parse one module file, register its syntax tree with the semantic registry (which borrows the syntax tree +
  * source — kept alive in `holds`), then recurse into the module's own `#import`s. */
-static int sem_register_module_file(const char *mod_name, const char *path, const char *source_dir,
-                                    ModuleHolds *holds) {
+static int sem_register_module_file(const char *mod_name, const char *path, const char *source_dir, ModuleHolds *holds,
+                                    DeclOrigin origin) {
 	char *mod_src = read_file(path);
 	if (!mod_src)
 		return 0;
@@ -229,7 +229,7 @@ static int sem_register_module_file(const char *mod_name, const char *path, cons
 		free(mod_src);
 		return 0;
 	}
-	semantic_add_module(mod_name, mp.syntax_root, mod_src, path);
+	semantic_add_module(mod_name, mp.syntax_root, mod_src, path, origin);
 	const SyntaxNode *root = mp.syntax_root;
 	const char *src = mod_src;
 	holds_push(holds, mp.syntax_root, mod_src); /* keep alive; registry borrows */
@@ -255,7 +255,8 @@ static int sem_register_module_file(const char *mod_name, const char *path, cons
 
 /* A module is a FOLDER `<dir>/<name>/` of `.arche` files merged into one namespace; falls back to a
  * single file `<dir>/<name>.arche`. Returns files registered. */
-static int sem_try_load_module_dir(const char *mod_name, const char *dir, const char *source_dir, ModuleHolds *holds) {
+static int sem_try_load_module_dir(const char *mod_name, const char *dir, const char *source_dir, ModuleHolds *holds,
+                                   DeclOrigin origin) {
 	char folder[640];
 	snprintf(folder, sizeof(folder), "%s/%s", dir, mod_name);
 	DIR *d = opendir(folder);
@@ -267,7 +268,7 @@ static int sem_try_load_module_dir(const char *mod_name, const char *dir, const 
 			if (L > 6 && strcmp(ent->d_name + L - 6, ".arche") == 0) {
 				char fp[1300];
 				snprintf(fp, sizeof(fp), "%s/%s", folder, ent->d_name);
-				n += sem_register_module_file(mod_name, fp, source_dir, holds);
+				n += sem_register_module_file(mod_name, fp, source_dir, holds, origin);
 			}
 		}
 		closedir(d);
@@ -277,22 +278,23 @@ static int sem_try_load_module_dir(const char *mod_name, const char *dir, const 
 	char fp[640];
 	snprintf(fp, sizeof(fp), "%s/%s.arche", dir, mod_name);
 	if (file_exists(fp))
-		return sem_register_module_file(mod_name, fp, source_dir, holds);
+		return sem_register_module_file(mod_name, fp, source_dir, holds, origin);
 	return 0;
 }
 
-/* Load module `name` (dedup'd) by searching the source dir, then stdlib, then core. */
+/* Load module `name` (dedup'd) by searching the source dir, then stdlib, then core. The matched search
+ * root determines the unit's provenance (DeclOrigin) — correct by construction, no path-sniffing. */
 static void sem_load_module(const char *name, const char *source_dir, ModuleHolds *holds) {
 	for (int i = 0; i < g_sem_loaded_count; i++)
 		if (strcmp(g_sem_loaded_mods[i], name) == 0)
 			return;
 	if (g_sem_loaded_count < SEM_MAX_LOADED_MODS)
 		g_sem_loaded_mods[g_sem_loaded_count++] = strdup(name); /* mark before load → cycle-safe */
-	int loaded = sem_try_load_module_dir(name, source_dir, source_dir, holds);
+	int loaded = sem_try_load_module_dir(name, source_dir, source_dir, holds, DECL_ORIGIN_USER_MODULE);
 	if (!loaded)
-		loaded = sem_try_load_module_dir(name, ARCHE_STDLIB_DIR, source_dir, holds);
+		loaded = sem_try_load_module_dir(name, ARCHE_STDLIB_DIR, source_dir, holds, DECL_ORIGIN_STDLIB);
 	if (!loaded)
-		loaded = sem_try_load_module_dir(name, ARCHE_CORE_DIR, source_dir, holds);
+		loaded = sem_try_load_module_dir(name, ARCHE_CORE_DIR, source_dir, holds, DECL_ORIGIN_CORE);
 	(void)loaded; /* not-found is reported per import-site by the caller below */
 }
 
@@ -328,7 +330,7 @@ static void sem_load_module_from_path(const char *pathstr, const char *source_di
 		snprintf(dir, sizeof(dir), "%s/%s", source_dir, subdir);
 	else
 		snprintf(dir, sizeof(dir), "%s", source_dir);
-	sem_try_load_module_dir(mod_name, dir, dir, holds);
+	sem_try_load_module_dir(mod_name, dir, dir, holds, DECL_ORIGIN_USER_MODULE); /* path import = user's tree */
 }
 
 static void resolve_uses_sem(const SyntaxNode *root, const char *src, const char *path, ModuleHolds *holds,

@@ -3,7 +3,9 @@
 // once by the explicit `io.fclose(f)` call and again by the scope-exit auto-drop. The transfer is
 // made explicit in the HIR during lowering (semantic flags it, lowering materializes `move`), so
 // codegen has a single move path — the user's `main` must emit EXACTLY ONE `io.fclose` call.
-// RUN: %arche build --emit llvm-ir -o %t.ll %s ; test $(awk '/define .*@main_user/{f=1} f&&/call void @io.fclose/{c++} f&&/^}/{print c+0;exit}' %t.ll) -eq 1
+// (The dtor symbol is `@io.fclose` whole-program, or `@arche.io.fclose` under per-unit mangling — the
+// regex matches either; what matters is EXACTLY ONE call.)
+// RUN: %arche build --emit llvm-ir -o %t.ll %s ; test $(awk '/define .*@main_user/{f=1} f&&/call void @(arche\.)?io\.fclose\(/{c++} f&&/^}/{print c+0;exit}' %t.ll) -eq 1
 #import { io }
 main :: proc() {
   io.fopen_read("/dev/null")(f:);

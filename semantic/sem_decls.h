@@ -7,9 +7,20 @@
 
 #include "../syntax/syntax_view.h"
 #include "../syntax/type_ref.h"
+#include "sem_ids.h"
 #include "sem_types.h"
 
 typedef struct SemanticContext SemanticContext;
+
+/* Resolved visibility of a decl — the region-band model made first-class (docs/devices.md:89).
+ * VIS_EXPORTED is the zero value so calloc'd (entry-file) decls default to public, which is correct:
+ * a decl with no `#module`/`#file` banner is the exported surface. Module decls are stamped explicitly
+ * in sem_add_module_decl from the loader's `exported`/`file_local` bands. */
+typedef enum {
+	VIS_EXPORTED, /* no banner — public/exported surface */
+	VIS_UNIT,     /* `#module` — visible across the unit's files, hidden from importers */
+	VIS_FILE,     /* `#file` — visible only within its own file */
+} Visibility;
 
 typedef struct {
 	char *name;           /* owned, resolved; may be NULL for unnamed positions */
@@ -79,11 +90,26 @@ typedef struct {
 	/* device / datasheet provenance + suppressions (cross-decl sweeps read these) */
 	int from_device_impl;
 	int is_datasheet;
+	Visibility visibility; /* region-band visibility; VIS_EXPORTED (0) for entry-file decls */
+	int unit;              /* owning compilation unit: 0 = entry/root program, >0 = a module (UnitInterface.unit_id) */
+	DeclOrigin origin;     /* provenance of the owning unit; DECL_ORIGIN_ENTRY (0) for entry-file decls */
 	int is_drop;
 	char *drop_type;
 	char **allow_slugs;
 	int allow_slug_count;
 } DeclSummary;
+
+/* The exported surface of one compilation unit (module) — a first-class, persisted interface. Today
+ * arche resolves cross-unit `mod.member` references against these (the inlining of bodies is for
+ * codegen/monomorphization, NOT resolution). Each `exports` entry is a `"member=identity"` pair: the
+ * member name as written at the use site, and the qualified/foreign link identity it resolves to.
+ * Owned by the SemanticContext; the registry replaces the old transient, 64-capped `acc` arrays. */
+typedef struct {
+	int unit_id;     /* >0; stable identity of this unit (decls carry it in DeclSummary.unit) */
+	char *unit_name; /* module name */
+	char **exports;  /* owned; "member=identity" entries (qualify-pass format) */
+	int export_count;
+} UnitInterface;
 
 /* The context's interned TypeId arena (Phase 3), shared by analysis + tycheck. */
 TypeArena *sem_context_arena(SemanticContext *ctx);

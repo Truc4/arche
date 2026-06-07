@@ -9,6 +9,7 @@
  * The callee_name/ref_name string channels are OWNED by the model (copied in, freed at teardown). */
 
 #include "../syntax/syntax_tree.h"
+#include "sem_ids.h"
 #include "sem_types.h"
 #include <stdint.h>
 
@@ -29,6 +30,12 @@ typedef struct {
 	                             name (module-inlined references are prefixed in the AST, e.g.
 	                             `csv.load_cols`). Lets view-driven analysis look names up under the
 	                             identity the AST resolved them to, not the bare token. */
+	DefId *callee_def;        /* indexed by an SN_CALL_EXPR node id; the DefId the callee_name resolves
+	                             to in the decl table, or DEFID_NONE (extern/libc/builtin/unresolved).
+	                             The id-keyed twin of callee_name — analysis traverses this, not the
+	                             string. Populated post-resolution (sem_bind_defs). */
+	DefId *ref_def;           /* indexed by a NAME node id; the DefId ref_name resolves to (a func/proc
+	                             named as a value, e.g. a callback arg), or DEFID_NONE. */
 	int cap;
 } SemModel;
 
@@ -55,5 +62,12 @@ const char *sem_model_callee_name(const SemModel *m, uint32_t node_id);
 
 void sem_model_set_ref_name(SemModel *m, uint32_t node_id, const char *name);
 const char *sem_model_ref_name(const SemModel *m, uint32_t node_id);
+
+/* Id-keyed resolution channels (the twins of callee_name/ref_name). Get returns DEFID_NONE when
+ * unset or out of range. */
+void sem_model_set_callee_def(SemModel *m, uint32_t node_id, DefId d);
+DefId sem_model_callee_def(const SemModel *m, uint32_t node_id);
+void sem_model_set_ref_def(SemModel *m, uint32_t node_id, DefId d);
+DefId sem_model_ref_def(const SemModel *m, uint32_t node_id);
 
 #endif /* SEM_MODEL_H */

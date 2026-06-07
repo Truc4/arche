@@ -155,6 +155,9 @@ typedef enum {
 	SEM_LINT_unused_use,
 	SEM_LINT_inout_redundant_arg,
 	SEM_LINT_inout_param_shadow,
+	SEM_LINT_unused_function,
+	SEM_LINT_unused_static_const,
+	SEM_LINT_unused_enum,
 
 	SEM_DIAG_KIND_COUNT
 } SemDiagKind;
@@ -173,6 +176,7 @@ int semantic_diag_werror(SemDiagKind kind);
 /* CLI sets this after prepending core.arche so user-typed diagnostic lines show
  * the user's file line, not the combined-source line. 0 = no translation. */
 void semantic_set_print_line_offset(int offset);
+int semantic_print_line_offset(void);
 
 /* Escape-hatch builder for diagnostics that need rich multi-span structure
  * (two-span type-mismatch, did-you-mean suggestions). Reserved for the ~20% of
@@ -325,5 +329,9 @@ SemDiag *sem_emit_lint_unused_local(SemanticContext *ctx, SourceLoc loc, const c
 SemDiag *sem_emit_lint_unused_use(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_inout_redundant_arg(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_inout_param_shadow(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_lint_unused_function(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path);
+SemDiag *sem_emit_lint_unused_static_const(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
+                                           const char *module_path);
+SemDiag *sem_emit_lint_unused_enum(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path);
 
 #endif /* SEM_DIAGNOSTICS_H */
