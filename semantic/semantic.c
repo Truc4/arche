@@ -2924,13 +2924,16 @@ static void lint_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 	if (func_purity_body_view(ctx, proc->body_node) != NULL)
 		return;
 
-	/* Pure body. A `func` returns EXACTLY ONE value, so only a SINGLE-out pure proc could be a func;
-	 * a multi-out pure proc is legitimately a (multi-return) proc — no lint. `main` is the entry point,
-	 * never nudged toward `func`. A zero-out pure proc does nothing observable — flag for removal. The
-	 * purity test is the SAME predicate enforce_func_purity uses, so "could be a func" means exactly
-	 * "would compile as a func". */
+	/* Pure body. `main` is the entry point: it can't be removed and can't be a func, and an empty/
+	 * effect-free main is a normal mid-edit state — never lint it (neither could-be-func nor no-effect).
+	 * A `func` returns EXACTLY ONE value, so only a SINGLE-out pure proc could be a func; a multi-out
+	 * pure proc is legitimately a (multi-return) proc — no lint. A zero-out pure proc does nothing
+	 * observable — flag for removal. The purity test is the SAME predicate enforce_func_purity uses, so
+	 * "could be a func" means exactly "would compile as a func". */
 	int is_main = proc->name && strcmp(proc->name, "main") == 0;
-	if (proc->out_param_count == 1 && !is_main) {
+	if (is_main) {
+		return;
+	} else if (proc->out_param_count == 1) {
 		sem_emit_lint_proc_could_be_func(ctx, proc->loc, proc->name ? proc->name : "<unknown>");
 	} else if (proc->out_param_count == 0) {
 		sem_emit_lint_proc_no_effect(ctx, proc->loc, proc->name ? proc->name : "<unknown>");
