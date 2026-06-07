@@ -333,6 +333,40 @@ static void sem_load_module_from_path(const char *pathstr, const char *source_di
 	sem_try_load_module_dir(mod_name, dir, dir, holds, DECL_ORIGIN_USER_MODULE); /* path import = user's tree */
 }
 
+/* The open document may be a member file of a DEVICE folder (`<dir>/<name>/…` with a `.ds.arche`
+ * datasheet). The compiler only ever sees such a file as part of the whole device (loaded via an
+ * `#import`), so its datasheet's global type vocabulary is in scope; but the editor analyzes one file
+ * in isolation, where nothing pulls the datasheet in. Register the sibling datasheet(s) under the
+ * folder's module name and ask semantic to inline that module into the root, so the open impl file's
+ * bare references to device types (`fd`, …) resolve exactly as they do in a full build. Skips when the
+ * open file IS the datasheet (it already defines those types) or the folder has no datasheet. */
+static void register_self_device(const char *path, const char *source_dir, ModuleHolds *holds) {
+	const char *slash = strrchr(source_dir, '/');
+	const char *mod_name = slash ? slash + 1 : source_dir;
+	if (!mod_name[0] || strcmp(mod_name, ".") == 0)
+		return;
+	const char *base = strrchr(path, '/');
+	base = base ? base + 1 : path;
+	DIR *d = opendir(source_dir);
+	if (!d)
+		return;
+	int registered = 0;
+	struct dirent *ent;
+	while ((ent = readdir(d)) != NULL) {
+		size_t L = strlen(ent->d_name);
+		if (L < 9 || strcmp(ent->d_name + L - 9, ".ds.arche") != 0)
+			continue;
+		if (strcmp(ent->d_name, base) == 0) /* the open file itself — its decls are already in the root */
+			continue;
+		char fp[1300];
+		snprintf(fp, sizeof(fp), "%s/%s", source_dir, ent->d_name);
+		registered += sem_register_module_file(mod_name, fp, source_dir, holds, DECL_ORIGIN_USER_MODULE);
+	}
+	closedir(d);
+	if (registered)
+		semantic_set_extra_inline_module(mod_name);
+}
+
 static void resolve_uses_sem(const SyntaxNode *root, const char *src, const char *path, ModuleHolds *holds,
                              DeferredDiags *diags) {
 	if (!root)
@@ -366,6 +400,7 @@ static void resolve_uses_sem(const SyntaxNode *root, const char *src, const char
 				deferred_push(diags, SEM_DIAG_module_not_found, use_loc, mod_name);
 		}
 	}
+	register_self_device(path, source_dir, holds);
 	free(source_dir);
 }
 

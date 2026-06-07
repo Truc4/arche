@@ -4134,6 +4134,13 @@ typedef struct {
 static SemModule g_sem_modules[64];
 static int g_sem_module_count = 0;
 
+/* Editor-only: a module to inline into the ROOT namespace even though the root has no `#import` for
+ * it. Set when the open document is a member file of a device folder — its sibling datasheet defines
+ * the device's types as global vocabulary (decls stay flat/unprefixed), so the open impl file's bare
+ * references resolve. Compilation never sets this (a device is only ever loaded whole, via import), so
+ * the compiler's behavior is unchanged. Reset per analysis in semantic_reset_modules. */
+static char *g_sem_extra_inline;
+
 /* A device datasheet file: its decls are shared global vocabulary, registered UNPREFIXED (mirror
  * of lower.c's is_datasheet_file). */
 static int sem_is_datasheet_file(const char *fn) {
@@ -4161,6 +4168,13 @@ void semantic_reset_modules(void) {
 		free(g_sem_modules[i].filename);
 	}
 	g_sem_module_count = 0;
+	free(g_sem_extra_inline);
+	g_sem_extra_inline = NULL;
+}
+
+void semantic_set_extra_inline_module(const char *name) {
+	free(g_sem_extra_inline);
+	g_sem_extra_inline = name ? sem_dupz(name) : NULL;
 }
 
 int semantic_has_module(const char *name) {
@@ -4702,6 +4716,13 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 		if (ad)
 			ctx->decls[ctx->decl_count++] = ad;
 	}
+
+	/* Editor-only: inline the open document's own device module (its sibling datasheet) even though the
+	 * root has no `#import` for it. A device's datasheet decls stay flat/global, so the open impl file's
+	 * bare type references (`fd`, …) resolve — matching how the file behaves when the device is imported
+	 * whole. sem_inline_module dedups, so a real import of the same name above is harmless. */
+	if (g_sem_extra_inline)
+		sem_inline_module(ctx, g_sem_extra_inline);
 
 	/* Scope resolution snapshot: the tree-qualify pass in build_decl_table binds every `mod.member`
 	 * reference/call to its member's qualified identity (looked up by literal name in the module's
