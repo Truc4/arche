@@ -1,0 +1,209 @@
+PLAN: failure policies (`!policy`) — replace `proc!` / contagion
+================================================================
+
+CONTEXT
+-------
+The `proc!` + whole-program `can_panic` contagion model (already built) is heavier than arche needs.
+After making most things total by construction (proven indexing, ok-valued insert, soon-clamped
+slices), the residual set of operations that can fail at runtime is tiny (~30 sites). So instead of a
+propagation marker + call-graph effect analysis + (proposed) recover/unwinding, we resolve each
+failure LOCALLY, at the operation, by a policy: `expr !policy`. No unwinding, no contagion, and a
+SHARPER guarantee than `proc!`: a `func` provably never crashes; a `proc` crashes only at a visible
+`!abort` site (marked at the line, not smeared over the whole proc).
+
+`!` is unified to mean "failure-handling policy" (generalizing `proc!`), reusing the pool
+overload-policy idea from the original design discussion (`Particle[100] !evict`).
+
+LOCKED DECISIONS
+- Replace `proc!` and the `can_panic` contagion pass entirely. Keep the bounds prover (`sem_bounds*`
+  in semantic.c) and the `(h:, ok:)` report form. No recover / no stack unwinding.
+- Every fallible op has a sensible DEFAULT policy (unannotated code compiles); `!policy` overrides.
+  LSP/analyzer hints surfacing the implicit policy are MANDATORY.
+- `func` = total policies only (can never crash). `proc` may also `!abort`.
+- Slices default to `!clamp`; a PROVABLY-out-of-bounds constant slice/index is a COMPILE ERROR
+  (don't silently clamp a statically-wrong access).
+
+
+THE MODEL
+---------
+`expr !policy` attaches a deterministic failure resolution at the site. Policies are total (the op
+cannot crash) except `!abort` (explicit, site-marked crash) and the `(ok:)` report form.
+
+  op              policies                                          default (proc / func)
+  --------------  ------------------------------------------------  -------------------------------
+  index a[i]      !clamp, !wrap, !zero, !abort, <user policy>       !abort / !clamp (OOB const => err)
+  slice a[x:y]    !clamp, !abort, <user policy>                     !abort / !clamp (OOB const => err)
+  insert(P,x)     !reject, !evict, !abort, (h:,ok:) report, <user> pool's declared policy, else !abort
+  delete(h)       !abort, (ok:) report                              !abort
+  a / b           !zero, !wrap, !abort                              !abort / !zero
+
+THE GUARANTEE IS ABOUT THE POLICY, NOT THE DEFAULT: `!abort` — whether implicit default or
+explicitly written — is the ONLY thing that can crash. ANY non-`!abort` policy (default or explicit)
+never crashes, in theory, ever. Defaulting a `proc` op to `!abort` is fine (unannotated code crashes
+on the failure, exactly like today; the LSP hint surfaces the implicit `!abort`). A `func` can't use
+`!abort` (stays crash-proof), so its default is the relevant TOTAL policy (`!clamp` for index/slice,
+`!zero` for divide) — still no compile error, just a total default. Writing any explicit total policy
+guarantees no crash.
+
+CORE GUARANTEE: an op using anything other than `!abort` (a total policy, or the report `(ok:)` form)
+can NEVER abort at runtime — period. This includes `delete(h)(ok:)`: a STALE handle there returns
+`ok=0` (total), it does NOT abort. Only `!abort` (delete's default) aborts on a stale handle. (This
+refines the earlier "stale always aborts" decision: stale aborts ONLY under `!abort`.)
+
+- Proven safe (bounds prover) => raw access, no policy code at all.
+- func + `!abort` (explicit or as the would-be default) for a non-provable op => the func uses the
+  relevant TOTAL default instead (funcs never crash).
+- Pool layering: a pool decl sets the default (`Particle[100] !evict`); a per-op `!policy` overrides.
+
+
+POLICIES ARE USER-DEFINABLE; `core` SHIPS THE COMMON ONES (they are NOT built-ins)
+---------------------------------------------------------------------------------
+A policy is an ordinary `policy` decl invoked on the failure path (in the unified `name :: <form>`
+grammar), with a signature fixed by the op category. `clamp`/`wrap`/`evict`/`reject` are just policy
+decls IN `core`, with NO special compiler status — identical to anything a user writes. `!name`
+resolves to a policy decl wherever it's visible (core or user). The mechanism is fully general and
+core dogfoods it.
+
+- Index/slice policy: `policy(len: int, i: int) -> int` => the index to use. The compiler CLAMPS the
+  returned index into [0, len) as a final net (and resolves len==0 to read->zero / write->skip), so
+  NO policy (even a buggy user one) can cause an OOB — that's what makes "never abort unless `!abort`"
+  hold for arbitrary policies. core: `clamp`, `wrap`.
+- Pool-full policy: two hooks — optional `on_insert(slot)` (bookkeeping) and
+  `select_victim(cap) -> slot | -1` (victim, or -1 = reject). core: `evict` (ring; victim hook +
+  `uses { head }`), `reject`. User policies = custom selectors (`evict_oldest`, lowest-priority,
+  random); `evict_oldest` is therefore a LIBRARY policy, not anything special.
+- COMPILER INTRINSICS (the only non-policy parts — can't be written as a `policy`): `!abort` (aborts
+  / opts out of the net), the report `(h:, ok:)` form (routes failure to an out-param), the
+  final-clamp net, and `!zero` (value-returning `-> elem`, ambiguous with the index-remap shape =>
+  intrinsic, unless we add an explicit policy category to make it user-definable — OPEN).
+- Constraints: a policy must itself be total (no `!abort` inside) — composes with func-total; the net
+  covers correctness. A policy may declare per-pool metadata via `uses { ... }`, compiled into the
+  pool struct ONLY for pools that use it (pay-per-policy).
+- Phasing: v1 can hardcode `clamp`/`wrap`/`evict`/`reject` while the general `policy` decl + `!name`
+  resolution + signature/category checking + `uses` metadata land; the end state is that those four
+  are JUST core policies with no compiler special-casing.
+
+PROPOSED POLICY SYNTAX
+  clamp :: policy(len: int, i: int) -> int {          // index/slice: return index, net-clamped to [0,len)
+    if (i < 0) { return 0; }  if (i >= len) { return len - 1; }  return i;
+  }
+  wrap  :: policy(len: int, i: int) -> int { return ((i % len) + len) % len; }
+  v := samples[k] !wrap;   grid[x] !clamp = c;
+
+  reject :: policy(cap: int) -> int { return 0 - 1; } // pool-full: victim slot, or -1 = reject
+  evict  :: policy(cap: int) -> int  uses { head: i64 } { v := head; head = (head+1) % cap; return v; }
+  Particle[1000] !evict;   insert(Particle, p);   insert(Particle, p) !abort;
+
+  zero :: policy(a: int, b: int) -> int { return 0; } // divide-by-zero: result when b==0
+  r := n / d !zero;
+
+- `uses { ... }` = per-pool metadata, compiled in only for pools using the policy (pay-per-policy).
+- Empty-array edge (len==0, no valid index): the final net resolves read->zero / write->skip, no abort.
+- Stateful pool policies (e.g. `evict_oldest`) need an `on_insert(slot)` hook AND a
+  `select_victim(cap)->slot|-1` hook — so the pool-policy interface is TWO hooks; the ring `evict`
+  uses only the victim hook. Spec the two-hook interface in the framework milestone.
+- Structural (not policies): `!abort` (opt out of the net => crash) and the report `(h:,ok:)` form.
+
+
+CRASH-FREE ENFORCEMENT (flags / attribute)
+------------------------------------------
+Because `!abort` is the ONLY crash source, crash-freedom is ASSERTABLE — the clean inverse of the old
+`proc!` (assert it can't crash, instead of marking that it may):
+
+- `--no-abort` (whole binary): any op resolving to `!abort` — implicit OR explicit — is a compile
+  error => the binary provably cannot abort from a policy site. For safety-critical builds.
+- `--no-implicit-abort`: only the IMPLICIT/default `!abort` errors => every fallible op must be
+  explicitly annotated (`!abort` or a total policy). Closes the "didn't realize this could crash"
+  gap (-Werror-style) while still allowing a deliberate, visible `!abort`.
+- (Option) per-proc / region attribute — e.g. a `@total` proc or a `#total { ... }` region that
+  scopes the no-abort guarantee to a critical section while the rest may `!abort`. Precise inverse of
+  `proc!`.
+
+Implementation: the policy-resolution pass (P3) already knows each op's resolved policy and whether
+it was explicit, so the flags/attribute just promote `[implicit-]abort` to an error within scope —
+reusing the diagnostic infra. LSP still surfaces every implicit policy regardless of the flags.
+
+
+PHASES
+------
+P1 — Parser: `expr !policy`
+  Postfix `!ident` on index / slice / call expressions. `!` already lexes as TOK_BANG. The policy
+  ident becomes a leaf/child on the op node. Touch: parser/parser.c (postfix-expr parsing for
+  SN_INDEX_EXPR / SN_SLICE_EXPR / SN_CALL / SN_PROC_CALL_STMT). Remove the `proc!` marker parse.
+
+P2 — Remove `proc!` / contagion
+  Delete: `can_panic`/`can_panic_marked` fields (hir.h, sem_decls.h), `sem_check_panic_contagion` +
+  `panic_walk`/`decl_body_panicky_callee`, E0095 `panic_in_total`, and the analyzer `proc!` hint.
+  KEEP `sem_bounds*` (the prover) + `bnd_*` facts — repurposed: proven => no policy; unprovable =>
+  apply policy.
+
+P3 — Policy resolution (semantic)
+  Per fallible op: resolve policy = explicit `!policy` else default(op-kind, pool-policy). Validate
+  func-total. Provable-OOB constant => error (reuse bnd_lit_int + sized/min-len facts). Attach the
+  resolved policy to the op via a cst_id-keyed side table (like the sem_model side-model) for codegen.
+
+P4 — Codegen per policy
+  At each op, emit by resolved policy (replacing today's unconditional check+abort):
+  - index/slice !abort -> current emit_bounds_check/emit_slice_bounds_check; !clamp -> min/max clamp
+    (slice) or clamped index; !zero -> in-bounds ? load : zero (skip on write); !wrap -> i % len.
+  - insert -> !abort (overflow-abort), !reject (no-op + sentinel), report (h:,ok:) (mandatory-ok
+    helper). !evict = RING CURSOR: pool gains one `i64 head`; on full insert do
+    `victim = head; head = (head+1) % cap; bump gen[victim]` (same gen-exhaustion check as delete —
+    stales the evicted handle), overwrite columns[victim], return (victim | gen<<32); count stays at
+    cap, free-list untouched. O(1). => an `!evict` pool is for anonymous streamed collectives, NOT
+    rows you hold stable handles to. Implementation DEFERRED (adds `head` to the pool struct + the
+    full-path branch in the insert helper), mechanism fixed.
+  - delete -> !abort (stale-abort), report (ok:).
+  - divide policies -> DEFER (!abort only in v1).
+  Touch: codegen/codegen.c (emit_bounds_check ~4485, emit_slice_bounds_check ~1855, insert helper
+  ~6859/overflow, delete helper ~7026; index/slice/insert/delete call lowering). Optional: elide
+  policy code when the prover proved the op safe (perf; deferrable).
+
+P5 — LSP hints (mandatory)
+  Analyzer emits the implicit/explicit policy as an inlay at each fallible op site. Reuse
+  emit_effect_hint / emit_panic_hint in arche_analyzer.c — render e.g. ghost `!abort` / `!clamp`.
+
+P6 — Migration
+  - Remove the 3 `proc!` panic tests; convert panic_in_total / insert_delete_outlist tests.
+  - *_array_oob tests -> default `!abort` => revert to runtime-abort assertions (or explicit `!abort`).
+  - slice_oob_rejected -> `!clamp` default (no abort) + a provable-OOB-const compile-error test.
+  - Keep the ~150 (h:, ok:) insert sites (report policy) and delete(h)(ok:).
+  - Defensive guards added in stdlib (str/csv/router/io) can simplify to proofs/policies over time.
+
+
+SCOPE / OPEN ITEMS
+------------------
+- v1 policies: !abort, !clamp, !zero (index/slice); !abort/!reject/report (insert); !abort/report
+  (delete). DEFER (mechanisms fixed): !evict (ring cursor — adds `head` to the pool struct), !wrap,
+  divide policies, check elision.
+- PAY-PER-POLICY METADATA PRINCIPLE: policy-specific per-pool metadata is added to the pool struct
+  ONLY when that pool actually uses the policy — `!evict` adds the `head` cursor only to `!evict`
+  pools; ordinary pools pay nothing. Generalize: each policy declares the metadata it needs
+  (`uses { ... }`), compiled in per-pool on demand.
+- TODO — `!evict_oldest` (exact LRU-by-age): a future eviction policy that removes the truly oldest
+  row (not ring round-robin) via a per-row born-sequence column. It MAY add that column — but ONLY
+  for pools compiled with this specific policy; pools using plain `!evict` or no eviction never carry
+  it. Evaluate min-via-scan vs a min-heap when built.
+- OPEN DECISIONS:
+  - Fate of `zero` (structural intrinsic vs drop) — doesn't fit the index-remap func shape.
+  - Single-index `!clamp` read/write semantics (read = a[clamp(i)]; write = clamp target).
+  - User-policy framework: exact per-category signatures + how a policy declares per-pool metadata.
+  - RESOLVED: defaults are `!abort` for procs / the matching total policy for funcs; only `!abort`
+    can crash.
+
+
+VERIFICATION
+------------
+- Clean `make all` (no -Werror warnings); `make test` (535+), doctests, `make verify-syntax`.
+- New tests under tests/unit/language/policy/: each v1 policy on index + slice + insert; func
+  rejecting `!abort`; provable-OOB constant => compile error; default-policy behavior; analyzer dump
+  shows the implicit-policy inlay.
+- NO-UNEXPECTED-ABORT GUARANTEE TESTS (required): a tests/unit/language/policy/no_abort/ set —
+  programs that contain NO `!abort` and deliberately trigger every failure condition through a TOTAL
+  policy, asserting the program runs to completion / exits 0 (RUN `... && %t`, not `... && ! %t`). At
+  minimum: a[oob] !clamp, a[oob] !zero, a[lo:huge] !clamp, insert into a full pool with !reject (and
+  !evict once built), and delete(stale)(ok:) returning ok=0. If any aborts, the test fails — that's
+  the guarantee.
+- ENFORCEMENT-FLAG TESTS: `--no-abort` rejects a program containing `!abort` (explicit or implicit)
+  and accepts an all-total one; `--no-implicit-abort` rejects an unannotated fallible op and accepts
+  the same op once annotated (`!abort` or total).
