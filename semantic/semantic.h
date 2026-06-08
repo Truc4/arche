@@ -63,6 +63,13 @@ int semantic_is_enum_type(SemanticContext *ctx, const char *name);
 int semantic_enum_variant_value(SemanticContext *ctx, const char *enum_name, const char *variant, long *out);
 int semantic_find_enum_variant(SemanticContext *ctx, const char *variant, long *out);
 
+/* LSP goto navigation: turn a resolved decl index (from a DefId, a type name, or a @drop registry)
+ * into a source location. `semantic_decl_src_file` gives the decl's file (NULL = entry buffer, caller
+ * splits core vs user by line); `semantic_decl_at(ctx, i)->loc` gives line/col in that file. */
+const char *semantic_decl_src_file(const SemanticContext *ctx, int index);
+int semantic_find_type_decl_index(const SemanticContext *ctx, const char *name);
+int semantic_drop_proc_decl_index(const SemanticContext *ctx, const char *type_name);
+
 /* Error checking */
 int semantic_has_errors(SemanticContext *ctx);
 int semantic_error_count(const SemanticContext *ctx);

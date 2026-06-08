@@ -26,6 +26,7 @@
  */
 #include "lexer/lexer.h"
 #include "parser/parser.h"
+#include "semantic/sem_decls.h"
 #include "semantic/sem_diagnostics.h"
 #include "semantic/semantic.h"
 #include "syntax/syntax_tree.h"
@@ -853,6 +854,264 @@ static void emit_tokens(const Analysis *a) {
 		walk_tokens(a->syntax_root);
 }
 
+/* ---- goto navigation (definition / type / implementation / declaration) ----
+ *
+ * The editor sends a cursor (USER line/col) and a kind; we run the SAME resolution the compiler
+ * does — node-id-keyed SemModel DefId channels (callee_def/ref_def), the interned TypeId of an
+ * expression, and the @drop registry — and emit the target site(s):
+ *   LOC <line> <col> <path>      target location, 1-based, in the TARGET file's own coordinates
+ * Zero LOC lines = unresolved. Multiple = several implementation sites. The blank-line terminator
+ * is written by the caller (run_serve / run_goto). Cross-file by construction: a module/datasheet
+ * decl reports its own file; a core decl reports core.arche; an entry decl reports the open path. */
+
+typedef enum { GREF_NONE, GREF_CALL, GREF_REF, GREF_TYPE } GotoRefKind;
+
+/* Byte offset of 1-based (line, col) in src; -1 if the line doesn't exist. col counts bytes, matching
+ * the lexer's token columns. */
+static long offset_of_linecol(const char *src, int line, int col) {
+	int ln = 1;
+	long i = 0;
+	for (; src[i] && ln < line; i++)
+		if (src[i] == '\n')
+			ln++;
+	if (ln != line)
+		return -1;
+	return i + (col > 0 ? col - 1 : 0);
+}
+
+/* Descend to the deepest node whose span contains byte offset `off`, recording the ancestor chain
+ * (chain[0]=root … chain[n-1]=deepest). Returns the chain depth (capped at maxd). */
+static int descend_to_offset(SyntaxView root, uint32_t off, SyntaxView *chain, int maxd) {
+	int n = 0;
+	SyntaxView cur = root;
+	while (n < maxd) {
+		chain[n++] = cur;
+		SyntaxNode *next = NULL;
+		for (int i = 0; i < cur.node->child_count; i++) {
+			if (cur.node->children[i].tag != SE_NODE)
+				continue;
+			SyntaxNode *c = cur.node->children[i].as.node;
+			if (off >= c->offset && off < c->offset + c->length) {
+				next = c;
+				break;
+			}
+		}
+		if (!next)
+			break;
+		cur = (SyntaxView){next, cur.src};
+	}
+	return n;
+}
+
+/* The reference node the cursor is on: the nearest enclosing call / value-ref / type node, walking
+ * the chain deepest-first so a call ARGUMENT (a ref) wins over its enclosing call, while a cursor on
+ * the callee identifier (an SN_CALLEE_NAME leaf, which carries no resolution) falls through to the call. */
+static SyntaxView pick_ref_node(SyntaxView *chain, int n, GotoRefKind *which) {
+	for (int i = n - 1; i >= 0; i--) {
+		SyntaxNodeKind k = sv_kind(chain[i]);
+		if (k == SN_CALL_EXPR) {
+			*which = GREF_CALL;
+			return chain[i];
+		}
+		if (k == SN_NAME_EXPR || k == SN_FIELD_EXPR || k == SN_INDEX_EXPR || k == SN_SLICE_EXPR) {
+			*which = GREF_REF;
+			return chain[i];
+		}
+		if (k >= SN_TYPE_REF && k <= SN_TYPE_FUNC) {
+			*which = GREF_TYPE;
+			return chain[i];
+		}
+	}
+	*which = GREF_NONE;
+	return (SyntaxView){NULL, NULL};
+}
+
+/* Emit one LOC for resolved decl `idx`, mapping its file + line into TARGET-file coordinates:
+ *   module/datasheet decl → its own file, line as-is (parsed bare, no core prepend);
+ *   core decl (entry buffer, in the prepended region) → core.arche, line as-is;
+ *   entry decl → the open document, line shifted down past the core region. */
+static void goto_emit_decl(const Analysis *a, const char *path, int idx) {
+	const DeclSummary *d = semantic_decl_at(a->ctx, idx);
+	if (!d || d->loc.line <= 0)
+		return;
+	int line = d->loc.line, col = d->loc.column;
+	const char *file = semantic_decl_src_file(a->ctx, idx);
+	if (file) {
+		printf("LOC %d %d %s\n", line, col, file);
+	} else if (line <= g_core_lines) {
+		char core_path[512];
+		snprintf(core_path, sizeof(core_path), "%s/core.arche", ARCHE_CORE_DIR);
+		printf("LOC %d %d %s\n", line, col, core_path);
+	} else {
+		printf("LOC %d %d %s\n", line - g_core_lines, col, path);
+	}
+}
+
+/* Index of a decl named `name` matching `kind_is_datasheet` (the .ds.arche declaration site), else -1. */
+static int datasheet_decl_named(const Analysis *a, const char *name) {
+	if (!name)
+		return -1;
+	for (int i = 0; i < semantic_decl_count(a->ctx); i++) {
+		const DeclSummary *d = semantic_decl_at(a->ctx, i);
+		if (d->is_datasheet && d->name && strcmp(d->name, name) == 0)
+			return i;
+	}
+	return -1;
+}
+
+/* The interned TypeId at the reference: the type node itself (GREF_TYPE) or an expression's type. */
+static TypeId goto_ref_type(const Analysis *a, SyntaxView ref, GotoRefKind which) {
+	if (which == GREF_TYPE)
+		return sem_intern_view(a->ctx, ref);
+	return sem_model_expr_type_id(sem_context_model(a->ctx), sv_id(ref));
+}
+
+/* The type NAME a TypeId denotes (nominal / handle archetype / backing of a distinct subtype), else NULL. */
+static const char *goto_type_name(const Analysis *a, TypeId t) {
+	if (t == TYID_UNKNOWN)
+		return NULL;
+	TypeArena *arena = sem_context_arena(a->ctx);
+	const char *tn = tyid_nominal_name(arena, t);
+	if (!tn)
+		tn = tyid_handle_name(arena, t);
+	if (!tn) {
+		TypeId b = tyid_backing(arena, t);
+		if (b != TYID_UNKNOWN)
+			tn = tyid_nominal_name(arena, b);
+	}
+	return tn;
+}
+
+/* The entry-buffer (open-file) decl whose span tightest-contains byte offset `off`, else -1. Used to
+ * scope local-variable lookups to the enclosing proc/func. */
+static int enclosing_decl_index(const Analysis *a, uint32_t off) {
+	int best = -1;
+	uint32_t best_len = 0xffffffffu;
+	for (int i = 0; i < semantic_decl_count(a->ctx); i++) {
+		const DeclSummary *d = semantic_decl_at(a->ctx, i);
+		if (!d->node.node || d->node.src != a->combined)
+			continue; /* only the open file's own decls hold its locals */
+		uint32_t o = d->node.node->offset, l = d->node.node->length;
+		if (off >= o && off < o + l && l < best_len) {
+			best = i;
+			best_len = l;
+		}
+	}
+	return best;
+}
+
+/* Recursively find, within `v`, the binding of `name` whose target sits NEAREST before `ref_off`
+ * (shadowing-correct enough for goto: the closest preceding `:=`/`::` wins). Writes into *best. */
+static void scope_find_bind(SyntaxView v, const char *name, size_t nlen, uint32_t ref_off, CvPos *best) {
+	if (!v.node)
+		return;
+	if (sv_kind(v) == SN_BIND_STMT) {
+		SyntaxView tgt = sv_expr_at(v, 0);
+		if (sv_present(tgt) && sv_kind(tgt) == SN_NAME_EXPR) {
+			SynText t = sv_token(tgt, TOK_IDENT);
+			CvPos p = sv_first_token_pos(tgt);
+			if (t.ptr && t.len == nlen && memcmp(t.ptr, name, nlen) == 0 && p.line && p.offset <= ref_off &&
+			    (!best->line || p.offset > best->offset))
+				*best = p;
+		}
+	}
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE)
+			scope_find_bind((SyntaxView){v.node->children[i].as.node, v.src}, name, nlen, ref_off, best);
+}
+
+/* Fallback when DefId resolution misses: the cursor is on a local or a parameter (the compiler keeps
+ * no node→local edge). Walk the enclosing decl's params, then its body bindings. Returns 1 if emitted. */
+static int goto_scope_walk(const Analysis *a, const char *path, SyntaxView ref, uint32_t ref_off) {
+	SynText id = sv_token(ref, TOK_IDENT);
+	if (!id.ptr)
+		return 0;
+	int di = enclosing_decl_index(a, ref_off);
+	if (di < 0)
+		return 0;
+	const DeclSummary *d = semantic_decl_at(a->ctx, di);
+	for (int i = 0; i < d->param_count; i++) {
+		const char *pn = d->params[i].name;
+		if (pn && strlen(pn) == id.len && memcmp(pn, id.ptr, id.len) == 0 && d->params[i].loc.line > g_core_lines) {
+			printf("LOC %d %d %s\n", d->params[i].loc.line - g_core_lines, d->params[i].loc.column, path);
+			return 1;
+		}
+	}
+	CvPos best = {0, 0, 0, 0};
+	scope_find_bind(d->body_node, id.ptr, id.len, ref_off, &best);
+	if (best.line && best.line > g_core_lines) {
+		printf("LOC %d %d %s\n", best.line - g_core_lines, best.column, path);
+		return 1;
+	}
+	return 0;
+}
+
+static void emit_goto(const Analysis *a, const char *kind, int uline, int col, const char *path) {
+	if (!a->ctx || !a->syntax_root)
+		return;
+	long off = offset_of_linecol(a->combined, uline + g_core_lines, col);
+	if (off < 0)
+		return;
+	SyntaxView root = sv_root(a->syntax_root, a->combined);
+	SyntaxView chain[64];
+	int n = descend_to_offset(root, (uint32_t)off, chain, 64);
+	GotoRefKind which;
+	SyntaxView ref = pick_ref_node(chain, n, &which);
+	if (which == GREF_NONE)
+		return;
+
+	/* type / impl resolve through the reference's TypeId. */
+	if (strcmp(kind, "type") == 0) {
+		int ti = semantic_find_type_decl_index(a->ctx, goto_type_name(a, goto_ref_type(a, ref, which)));
+		if (ti >= 0)
+			goto_emit_decl(a, path, ti);
+		return;
+	}
+	if (strcmp(kind, "impl") == 0) {
+		const char *tn = goto_type_name(a, goto_ref_type(a, ref, which));
+		int dp = tn ? semantic_drop_proc_decl_index(a->ctx, tn) : -1;
+		if (dp >= 0) {
+			goto_emit_decl(a, path, dp);
+			return;
+		}
+		int ti = tn ? semantic_find_type_decl_index(a->ctx, tn) : -1;
+		if (ti >= 0)
+			goto_emit_decl(a, path, ti);
+		return;
+	}
+
+	int want_decl = strcmp(kind, "decl") == 0;
+
+	/* A cursor on a type name (in any of def/decl) goes to that type's decl, preferring a datasheet
+	 * declaration for `decl`. */
+	if (which == GREF_TYPE) {
+		int ti = semantic_find_type_decl_index(a->ctx, goto_type_name(a, goto_ref_type(a, ref, which)));
+		if (ti < 0)
+			return;
+		const DeclSummary *d = semantic_decl_at(a->ctx, ti);
+		int ds = want_decl ? datasheet_decl_named(a, d ? d->name : NULL) : -1;
+		goto_emit_decl(a, path, ds >= 0 ? ds : ti);
+		return;
+	}
+
+	/* def / decl on a value reference: the authoritative DefId channel, else scope-walk for a local. */
+	const SemModel *model = sem_context_model(a->ctx);
+	DefId d = (which == GREF_CALL) ? sem_model_callee_def(model, sv_id(ref)) : sem_model_ref_def(model, sv_id(ref));
+	if (!defid_is_none(d)) {
+		if (want_decl) {
+			const DeclSummary *dd = semantic_decl_at(a->ctx, d.index);
+			int ds = datasheet_decl_named(a, dd ? dd->name : NULL);
+			if (ds >= 0) {
+				goto_emit_decl(a, path, ds);
+				return;
+			}
+		}
+		goto_emit_decl(a, path, d.index);
+		return;
+	}
+	goto_scope_walk(a, path, ref, (uint32_t)off);
+}
+
 /* ---- one-shot dump ---- */
 
 static int run_dump(const char *path) {
@@ -870,6 +1129,25 @@ static int run_dump(const char *path) {
 	emit_hints(&a);
 	emit_diags(&a);
 	emit_docs(&a);
+	analysis_free(&a);
+	return 0;
+}
+
+/* One-shot goto query (testing parity with --dump): analyze `path` and print LOC lines for the
+ * cursor at 1-based (line, col). `kind` ∈ def|type|impl|decl. */
+static int run_goto(const char *kind, int line, int col, const char *path) {
+	char *user = read_file(path);
+	if (!user) {
+		fprintf(stderr, "arche-analyzer: could not read %s\n", path);
+		return 1;
+	}
+	Analysis a = analyze(user, path);
+	if (!a.syntax_root) {
+		fprintf(stderr, "arche-analyzer: parse produced no syntax tree\n");
+		analysis_free(&a);
+		return 1;
+	}
+	emit_goto(&a, kind, line, col, path);
 	analysis_free(&a);
 	return 0;
 }
@@ -990,6 +1268,18 @@ static int run_serve(void) {
 				emit_diags(&doc->a);
 			printf("\n");
 			fflush(stdout);
+		} else if (strncmp(line, "GOTO ", 5) == 0) {
+			/* GOTO <kind> <line> <col> <path> — emit LOC lines for the resolved target(s). */
+			char kind[8];
+			int ln = 0, col = 0, used = 0;
+			if (sscanf(line + 5, "%7s %d %d %n", kind, &ln, &col, &used) >= 3) {
+				const char *path = line + 5 + used;
+				Doc *doc = docs_find(&docs, path);
+				if (doc)
+					emit_goto(&doc->a, kind, ln, col, path);
+			}
+			printf("\n"); /* blank line terminates the response */
+			fflush(stdout);
 		} else if (strncmp(line, "CLOSE ", 6) == 0) {
 			docs_remove(&docs, line + 6);
 			printf("OK\n\n");
@@ -1008,6 +1298,8 @@ int analyze_main(int argc, char *argv[]) {
 		return run_dump(argc >= 3 ? argv[2] : NULL);
 	if (argc >= 2 && strcmp(argv[1], "--serve") == 0)
 		return run_serve();
-	fprintf(stderr, "usage: %s (--dump [file] | --serve)\n", argv[0]);
+	if (argc >= 6 && strcmp(argv[1], "--goto") == 0)
+		return run_goto(argv[2], atoi(argv[3]), atoi(argv[4]), argv[5]);
+	fprintf(stderr, "usage: %s (--dump [file] | --serve | --goto <kind> <line> <col> <file>)\n", argv[0]);
 	return 2;
 }

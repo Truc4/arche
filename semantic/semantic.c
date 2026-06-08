@@ -5672,6 +5672,7 @@ static ParamSummary sem_param_summary_node(SyntaxView p) {
 	s.name = sem_cv_dup(sv_child(p, SN_PARAM_NAME));
 	s.type_node = sem_type_at(p, 0);
 	s.is_own = sv_has_token(p, TOK_OWN);
+	s.loc = sem_node_loc(p.node); /* param-name site, for LSP goto + diagnostics */
 	return s;
 }
 
@@ -6251,6 +6252,49 @@ char *semantic_call_callee_name(SemanticContext *ctx, SyntaxView call) {
 	if (sv_count(call, SN_FIELD_NAME) != 0)
 		return NULL; /* qualified, non-module field call — unresolved */
 	return sem_cv_dup(sv_child(call, SN_CALLEE_NAME));
+}
+
+/* The source FILE a decl was parsed from, or NULL when it lives in the entry buffer (the root program,
+ * which the analyzer prepends core into — the caller splits core vs user by line). Matched by the decl
+ * node's source-buffer pointer against the module registry, so multi-file folder modules and `.ds.arche`
+ * datasheets resolve to the exact member file (not just the module name). For LSP goto navigation. */
+const char *semantic_decl_src_file(const SemanticContext *ctx, int index) {
+	const DeclSummary *d = semantic_decl_at(ctx, index);
+	if (!d || !d->node.src)
+		return NULL;
+	for (int m = 0; m < g_sem_module_count; m++)
+		if (g_sem_modules[m].src == d->node.src)
+			return g_sem_modules[m].filename;
+	return NULL;
+}
+
+/* Index of the first TYPE-defining decl named `name` (archetype / enum / a const that binds a type),
+ * else -1. Drives LSP goto-type-definition. Small N → linear scan. */
+int semantic_find_type_decl_index(const SemanticContext *ctx, const char *name) {
+	if (!ctx || !name)
+		return -1;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		const DeclSummary *d = ctx->decls[i];
+		if (!d->name || strcmp(d->name, name) != 0)
+			continue;
+		if (d->kind == DECL_ARCHETYPE || d->kind == DECL_ENUM || d->kind == DECL_CONST)
+			return i;
+	}
+	return -1;
+}
+
+/* Index of the `@drop` destructor proc registered for opaque type `type_name` (its implementation),
+ * else -1. Drives LSP goto-implementation for opaque types. */
+int semantic_drop_proc_decl_index(const SemanticContext *ctx, const char *type_name) {
+	const char *proc = drop_dtor_for((SemanticContext *)ctx, type_name);
+	if (!proc)
+		return -1;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		const DeclSummary *d = ctx->decls[i];
+		if (decl_is_callable(d->kind) && d->name && strcmp(d->name, proc) == 0)
+			return i;
+	}
+	return -1;
 }
 
 SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src) {
