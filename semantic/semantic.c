@@ -4915,11 +4915,11 @@ static int dead_is_root(const DeclSummary *d) {
 	if (strcmp(d->name, "main") == 0)
 		return 1;
 	if (d->is_extern && d->visibility == VIS_EXPORTED)
-		return 1; /* EXPORTED C-ABI surface — may be linked/called from outside the unit. A private
-		           * (`#module`/`#file`) extern has no arche body either, but it is a device-internal
-		           * import: dead exactly when no in-unit caller (a wrapper) reaches it. Visibility
-		           * decides root-ness uniformly — the exported surface IS the root set, foreign or not.
-		           * (Stdlib/core externs still fall through to the dependency rule below and stay kept.) */
+		return 1;   /* EXPORTED C-ABI surface — may be linked/called from outside the unit. A private
+		             * (`#module`/`#file`) extern has no arche body either, but it is a device-internal
+		             * import: dead exactly when no in-unit caller (a wrapper) reaches it. Visibility
+		             * decides root-ness uniformly — the exported surface IS the root set, foreign or not.
+		             * (Stdlib/core externs still fall through to the dependency rule below and stay kept.) */
 	if (d->is_drop) /* opaque destructor — invoked by the compiler's RAII path, never syntactically */
 		return 1;
 	if (d->name[0] == '_') /* Rust `_`-prefix silence */
