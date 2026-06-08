@@ -1,0 +1,8 @@
+// Two devices declare the same datasheet enum `mode` with DIFFERENT variant sets ({off, on} vs
+// {off, fast}). Datasheet vocabulary coalesces only when it AGREES; a conflicting enum must error
+// (the int backing alone agrees, so this is caught by comparing the variants).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "redefined" %t.out
+#import { econf_a econf_b }
+
+main :: proc() {
+}

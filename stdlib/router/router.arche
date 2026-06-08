@@ -28,6 +28,18 @@
 // empty, so this just inserts the root.
 #import { str }
 
+// The radix-trie node SHAPE. A shape is global vocabulary, so it is defined here (the impl that uses
+// it), not in the datasheet (which only states the `nodeKind` type + the `TrieNode[256]` storage
+// requirement). The driver provides the pool; the device owns no storage.
+TrieNode :: arche {
+  seg          :: char[32], // segment text (":id"/"*" stored as the name after the marker), "" for root
+  seg_len      :: int, // content length of `seg` (a fixed char[32] column carries no length itself)
+  kind         :: nodeKind, // static / :param / *catchall
+  first_child  :: int, // pool index of first child, or -1
+  next_sibling :: int, // pool index of next sibling, or -1
+  handler_id   :: int, // >=0 if a route terminates here, else -1
+}
+
 init :: proc() {
   empty: char[32];
   empty[0] = 0;
@@ -186,10 +198,10 @@ param :: proc(i: int)(start: int, len: int) {
 }
 
 // ====================== Module-internal data model (private) =======================
-// The trie node type (`TrieNode`) + its `nodeKind` enum live in router.ds.arche (a device's types
-// live in its datasheet); the driver provides the `TrieNode` pool. `#module` narrows the rest of the
-// file to module-private (visible across the module's files, invisible to importers). The procs above
-// reference `TrieNode`/`nodeKind` by bare name (datasheet types are global vocabulary).
+// `#module` narrows the rest of the file to module-private (visible across the module's files,
+// invisible to importers). The `TrieNode` SHAPE is NOT here — a shape is global vocabulary (its name
+// is public no matter where it's defined), so it leads at the top of the file with the public API; the
+// driver references `TrieNode` by bare name to size its pool.
 #module
 
 // Capture spans from the most recent router.resolve (offsets into that path), read via

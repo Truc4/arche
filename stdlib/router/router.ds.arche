@@ -1,16 +1,7 @@
-// Datasheet for the `router` device — its data model + storage requirement (a device's types live in
-// its datasheet, not its impl). The radix-trie node shape and its kind enum are the router's
-// vocabulary; the DRIVER provides the `TrieNode` pool (the device owns no storage). `TrieNode[256]`
-// is a storage REQUIREMENT: the minimum the driver must size (override with a larger `TrieNode[N]`).
+// Datasheet for the `router` device — its TYPE requirements + a storage requirement. A datasheet
+// DESCRIBES REQUIREMENTS, never definitions: it states the `nodeKind` type (a device's types are its
+// shared vocabulary) and that the driver must provide a `TrieNode` pool of at least 256 rows. The
+// `TrieNode` SHAPE is defined in the impl (router.arche), which uses it; the driver owns the pool.
 nodeKind :: enum { kstatic, kparam, kcatchall }
-
-TrieNode :: arche {
-  seg          :: char[32], // segment text (":id"/"*" stored as the name after the marker), "" for root
-  seg_len      :: int, // content length of `seg` (a fixed char[32] column carries no length itself)
-  kind         :: nodeKind, // static / :param / *catchall
-  first_child  :: int, // pool index of first child, or -1
-  next_sibling :: int, // pool index of next sibling, or -1
-  handler_id   :: int, // >=0 if a route terminates here, else -1
-}
 
 TrieNode[256] // storage requirement: the driver allocates at least this many nodes

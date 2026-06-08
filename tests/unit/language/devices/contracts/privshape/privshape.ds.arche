@@ -1,0 +1,6 @@
+// privshape's datasheet states a `Hidden[4]` storage requirement, but the `Hidden` shape is defined
+// only in the impl's `#module` (private) band. A storage requirement is a contract for the DRIVER, and
+// a driver can only size a PUBLIC shape — so this requirement is unsatisfiable. Support file.
+// RUN: true
+z :: float
+Hidden[4]

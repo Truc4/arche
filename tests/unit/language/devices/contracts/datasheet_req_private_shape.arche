@@ -1,0 +1,9 @@
+// The `privshape` device's datasheet states a `Hidden[4]` storage requirement, but `Hidden` is defined
+// only in the impl's `#module` (private) band. A driver can only size a PUBLIC shape, so the
+// requirement names no public shape and must error (pointing the user to make the shape public).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "no public shape" %t.out
+#import { privshape }
+
+main :: proc() {
+  run privshape.tick;
+}

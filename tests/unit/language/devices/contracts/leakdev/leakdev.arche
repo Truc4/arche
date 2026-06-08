@@ -1,7 +1,7 @@
 // leakdev's implementation. `bump` is its behavior (legal). BUT `handle :: opaque` defines a TYPE in
-// a device's impl — a rule violation: a device's `.arche` is behavior only; types/archetypes belong
-// in its `.ds.arche` datasheet. (This mirrors net.arche's top-level public `socket :: opaque`.)
-// Support file for device_no_types_or_alloc.arche.
+// a device's impl — a rule violation: a device's `.arche` may define the shapes it uses, but TYPES are
+// shared vocabulary and belong in its `.ds.arche` datasheet. (This mirrors net.arche's top-level
+// public `socket :: opaque`.) Support file for device_no_types_or_alloc.arche.
 // RUN: true
 bump :: sys (val) {
   val = val + 1.0;

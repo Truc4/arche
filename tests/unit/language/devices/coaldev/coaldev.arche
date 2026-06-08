@@ -1,0 +1,8 @@
+// coaldev's impl defines the `Pt` shape it uses and a system over it. A shape is global vocabulary, so
+// the same `Pt` may also be defined by the driver — they are the same canonical shape. Support file.
+// RUN: true
+Pt :: arche { px, py }
+
+step :: sys (px, py) {
+  px = px + py;
+}

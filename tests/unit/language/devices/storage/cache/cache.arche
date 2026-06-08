@@ -1,5 +1,8 @@
-// The `cache` device's implementation: a system over the shared `Node` shape. Support file.
+// The `cache` device's implementation: it defines the shared `Node` shape (the same `{key, val}` shape
+// `store` defines — they coalesce to one canonical shape) and a system over it. Support file.
 // RUN: true
+Node :: arche { key, val }
+
 touch :: sys (key) {
   key = key + 1.0;
 }

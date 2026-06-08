@@ -1,10 +1,10 @@
-// Pre-defined-component datasheet style: `vstore`'s datasheet defines components `a`/`b` separately,
-// then its `Cell` shape references them. The driver provides the pool (>= the minimum of 4) and runs
-// the device's system. Proves the pre-defined style works (companion to requirement_met.arche's inline style).
+// `vstore`'s datasheet states the components `a`/`b` + a `Cell[4]` storage requirement, and `vstore`
+// defines the `Cell` shape (it comes in via the import). The driver provides the pool (>= the minimum
+// of 4) and runs the device's system. (Companion to requirement_met.arche.)
 // RUN: %arche build -o %t %s && %t | grep "predef_ok"
 #import { vstore fmt }
 
-Cell[8] // driver pool >= the datasheet minimum of 4
+Cell[8] // driver pool (the shape comes from vstore), >= the datasheet minimum of 4
 
 main :: proc() {
   insert(Cell, 1.0, 2.0);

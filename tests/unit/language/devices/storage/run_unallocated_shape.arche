@@ -1,0 +1,13 @@
+// A shape is defined but no pool is ever sized for it. `run` must not bind a system to an unallocated
+// shape — all storage is static, so a shape with no pool is a phantom (a null pool); binding it would
+// silently corrupt. The compiler must reject the `run`.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "no storage for the shape" %t.out
+Foo :: arche { x :: float }
+
+s :: sys (x) {
+  x = x + 1.0;
+}
+
+main :: proc() {
+  run s;
+}

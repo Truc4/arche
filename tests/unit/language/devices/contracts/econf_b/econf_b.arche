@@ -1,0 +1,5 @@
+// econf_b's behavior. Support file for datasheet_enum_conflict.arche.
+// RUN: true
+use_b :: sys (py) {
+  py = py + 1.0;
+}

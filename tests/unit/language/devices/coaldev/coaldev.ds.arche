@@ -1,0 +1,7 @@
+// coaldev's datasheet: the components it requires (`px`/`py`) + a `Pt[4]` storage requirement. It
+// defines no shape — the `Pt` shape is defined in the impl (coaldev.arche) AND, in the test driver,
+// the driver too; both definitions coalesce to one canonical shape. Support file.
+// RUN: true
+px :: float
+py :: float
+Pt[4]

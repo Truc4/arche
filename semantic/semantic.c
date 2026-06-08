@@ -33,6 +33,8 @@ typedef struct {
 	int min_rows;       /* max storage REQUIREMENT from device datasheets; the driver pool must meet it */
 	int req_count;      /* how many distinct datasheets posted a requirement on this shape (shared-shape) */
 	char *req_first;    /* name in the first requirement's decl (for the shared-shape build note) */
+	int has_public_def; /* 1 if any EXPORTED definition names this shape — a storage requirement needs one
+	                     * (a driver can only size a shape it can see; a `#module` shape is private) */
 } ArchetypeInfo;
 
 typedef struct {
@@ -401,6 +403,35 @@ static char *sem_dupz(const char *s);
 /* Record an enum's type name + its (variant → value) entries. The type-alias-to-int registration
  * is done by the caller (register_type_alias is defined later). */
 static void register_enum_entries(SemanticContext *ctx, DeclSummary *e) {
+	/* Define-once + datasheet coalescing for the enum's variant table. (The type-alias side — `name`
+	 * backed by `int` — is registered by the caller via register_type_alias_tiered, which dedups a
+	 * datasheet alias on backing agreement but cannot see variants: two enums both back `int`, so a
+	 * differing variant set would slip past it.) If this enum name is already registered, the variants
+	 * must AGREE — a datasheet re-declaring the same enum is shared vocabulary, so dedup silently; a
+	 * different variant set or value is a redefinition the alias path cannot detect. */
+	for (int t = 0; t < ctx->enum_type_count; t++) {
+		if (strcmp(ctx->enum_type_names[t], e->name) != 0)
+			continue;
+		int existing = 0;
+		for (int i = 0; i < ctx->enum_var_count; i++)
+			if (strcmp(ctx->enum_var_enum[i], e->name) == 0)
+				existing++;
+		int agree = (existing == e->enum_variant_count);
+		for (int i = 0; agree && i < e->enum_variant_count; i++) {
+			int found = 0;
+			for (int j = 0; j < ctx->enum_var_count; j++)
+				if (strcmp(ctx->enum_var_enum[j], e->name) == 0 &&
+				    strcmp(ctx->enum_var_name[j], e->enum_variant_names[i]) == 0) {
+					found = (ctx->enum_var_value[j] == e->enum_variant_values[i]);
+					break;
+				}
+			if (!found)
+				agree = 0;
+		}
+		if (!agree)
+			sem_emit_type_alias_redefined(ctx, e->loc, e->name);
+		return; /* already registered — never duplicate the type name or its variants */
+	}
 	ctx->enum_type_names = realloc(ctx->enum_type_names, (ctx->enum_type_count + 1) * sizeof(char *));
 	ctx->enum_type_names[ctx->enum_type_count++] = sem_dupz(e->name);
 	for (int i = 0; i < e->enum_variant_count; i++) {
@@ -2604,6 +2635,7 @@ static void analyze_archetype_decl(SemanticContext *ctx, DeclSummary *arch) {
 		shape->min_rows = 0;
 		shape->req_count = 0;
 		shape->req_first = NULL;
+		shape->has_public_def = 0;
 
 		/* Count total fields after expanding tuples */
 		int expanded_field_count = 0;
@@ -2668,6 +2700,12 @@ static void analyze_archetype_decl(SemanticContext *ctx, DeclSummary *arch) {
 			ctx->error_count++;
 		}
 	}
+
+	/* A shape is global vocabulary: if ANY definition of it is exported (a driver decl, or a device's
+	 * public-band shape), the shape is public and a datasheet storage requirement can name it. A shape
+	 * seen only via a `#module` (unit-private) definition is NOT public. */
+	if (arch->visibility == VIS_EXPORTED)
+		shape->has_public_def = 1;
 
 	/* Register alias */
 	AliasEntry *entry = malloc(sizeof(AliasEntry));
@@ -2860,6 +2898,17 @@ static void sem_check_storage_requirements(SemanticContext *ctx) {
 		char fields[512];
 		sem_format_shape_fields(arch, fields, sizeof(fields));
 		const char *nm = arch->req_first ? arch->req_first : "shape";
+		if (!arch->has_public_def) {
+			/* The datasheet states a storage requirement for a shape no PUBLIC definition names. A driver
+			 * can only size a shape it can see, so the requirement is unsatisfiable — the shape must be
+			 * defined publicly (a shape in `#module` is private to its device). */
+			fprintf(stderr,
+			        "Error: storage requirement %s[%d] names no public shape %s — define %s publicly "
+			        "(a `#module` shape is private to its device)\n",
+			        nm, arch->min_rows, fields, nm);
+			ctx->error_count++;
+			continue;
+		}
 		if (!arch->is_allocated) {
 			fprintf(stderr,
 			        "Error: no storage for %s required by a device datasheet — run `arche fill` or add %s[%d]\n",
@@ -2885,9 +2934,11 @@ static void sem_check_device_impl_decls(SemanticContext *ctx) {
 			continue;
 		const char *nm0 = d->name;
 		const char *what = NULL;
-		if (d->kind == DECL_ARCHETYPE)
-			what = "define an archetype";
-		else if (d->kind == DECL_ENUM)
+		/* An archetype (shape) MAY be defined in a device's impl: a shape is a set of components, and a
+		 * device that uses a shape must define it where it uses it (so it resolves locally) — every
+		 * definition of the same shape coalesces by its canonical component types. Only TYPES (the
+		 * shared vocabulary, which belong in the datasheet) and STORAGE (the driver's) are forbidden. */
+		if (d->kind == DECL_ENUM)
 			what = "define a type";
 		else if (d->kind == DECL_CONST && nm0 && is_type_alias(ctx, nm0)) /* type alias / opaque (not a value const) */
 			what = "define a type";
@@ -2896,9 +2947,26 @@ static void sem_check_device_impl_decls(SemanticContext *ctx) {
 		if (!what)
 			continue;
 		fprintf(stderr,
-		        "Error: a device's impl cannot %s ('%s') — types/archetypes belong in its .ds.arche "
+		        "Error: a device's impl cannot %s ('%s') — types belong in its .ds.arche "
 		        "datasheet, and allocation is the driver's\n",
 		        what, nm0 ? nm0 : "?");
+		ctx->error_count++;
+	}
+}
+
+/* A datasheet (`.ds.arche`) DESCRIBES REQUIREMENTS for the driver — it defines nothing real. A shape
+ * (archetype) is a definition, not a requirement: it must live in the device's impl or the driver,
+ * where it coalesces to one canonical shape. The datasheet may state the components a shape needs and a
+ * pool-size requirement (`Node[N]`, kept as a requirement elsewhere), but never the shape itself. */
+static void sem_check_datasheet_decls(SemanticContext *ctx) {
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (!d->is_datasheet || d->kind != DECL_ARCHETYPE)
+			continue;
+		fprintf(stderr,
+		        "Error: a datasheet describes requirements, not shapes ('%s') — define the shape in the "
+		        "device or driver\n",
+		        d->name ? d->name : "?");
 		ctx->error_count++;
 	}
 }
@@ -4445,11 +4513,13 @@ static void sem_add_module_decl(SemanticContext *ctx, const SyntaxNode *node, co
 	if (!nm)
 		return;
 	/* A member is accessed by its LITERAL declared name. A decl is registered FLAT (unprefixed, bare
-	 * export) when it's foreign (C ABI symbol), a datasheet decl (shared global vocabulary), OR from a
-	 * PLAIN module (no `.ds.arche`) — a plain/path module merges flat into the importer (Jai `#load`),
-	 * so `helper()` not `mod.helper()`. Only a DEVICE's pure-Arche impl decls are prefixed to the
-	 * qualified identity `<device>.<name>` (the device's namespaced contract). */
-	int flat = is_ext || is_datasheet || !module_is_device;
+	 * export) when it's foreign (C ABI symbol), a datasheet decl (shared global vocabulary), an EXPORTED
+	 * ARCHETYPE (a public shape is global vocabulary — its name is bare, never `<device>.Name`; a shape
+	 * in `#module` stays unit-private, so a datasheet storage requirement that names it can't resolve a
+	 * public shape and errors), OR from a PLAIN module (no `.ds.arche`) — a plain/path module merges flat
+	 * into the importer (Jai `#load`), so `helper()` not `mod.helper()`. Only a DEVICE's pure-Arche impl
+	 * behavior decls (procs/systems/funcs) are prefixed to `<device>.<name>` (the namespaced contract). */
+	int flat = is_ext || is_datasheet || !module_is_device || (md->kind == DECL_ARCHETYPE && exported);
 	/* A `#file` decl is file-local: it must NOT join the cross-file `full` set (so sibling files can't
 	 * bind to it) and is never exported. It goes into the per-file `fileset` instead; sem_inline_module
 	 * then renames it (+ its intra-file references) to a file-unique identity. */
@@ -5369,6 +5439,7 @@ static void analyze_program_core(SemanticContext *ctx) {
 	/* pass 2.5: device datasheet storage requirements vs the driver's pools (min met, none missing). */
 	sem_check_storage_requirements(ctx);
 	sem_check_device_impl_decls(ctx);
+	sem_check_datasheet_decls(ctx);
 
 	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The
 	 * two kinds are still distinct (keyword, `-> T` vs out-list, call form), but the name namespace
