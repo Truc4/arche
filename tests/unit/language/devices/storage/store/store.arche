@@ -1,6 +1,9 @@
-// The `store` device's implementation: a system over its datasheet's `Node` shape. The device owns
-// no storage — the driver sizes the pool (>= the datasheet minimum) and runs this system. Support file.
+// The `store` device's implementation: it defines the shared `Node` shape (a shape is global
+// vocabulary, defined here, not in the datasheet) and a system over it. The device owns NO storage —
+// the driver sizes the pool (>= the datasheet minimum) and runs this system. Support file.
 // RUN: true
+Node :: arche { key, val }
+
 bump :: sys (val) {
   val = val + 1.0;
 }

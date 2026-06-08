@@ -1,9 +1,8 @@
-// Datasheet for `vstore`, declared in the PRE-DEFINED style: components `a`/`b` are defined as
-// top-level component types first, then the `Cell` shape references them by bare name (vs the inline
-// `Cell :: arche { a :: float, b :: float }` style). Both styles must work. `Cell[4]` is the storage
-// requirement (minimum). Support file.
+// Datasheet for `vstore`: it requires the components `a`/`b` and storage for the `Cell` shape. A
+// datasheet describes requirements only — it lists the component types the driver must provide and a
+// storage requirement (`Cell[4]`, the minimum), but never defines the `Cell` shape itself (the driver
+// does that). Support file.
 // RUN: true
 a    :: float
 b    :: float
-Cell :: arche { a, b }
 Cell[4]

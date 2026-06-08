@@ -1,0 +1,15 @@
+// A shape defined in BOTH a device impl (`coaldev`) and the driver is the SAME canonical shape — the
+// two definitions coalesce to one struct + one pool (no duplicate emission). The driver sizes the pool
+// (>= the datasheet minimum) and the device's system runs over it.
+// RUN: %arche build -o %t %s && %t | grep "coalesce_ok"
+#import { coaldev fmt }
+
+Pt :: arche { px, py } // the same shape coaldev defines — coalesces, does not duplicate
+Pt[8]
+
+main :: proc() {
+  insert(Pt, 10.0, 1.0);
+  run coaldev.step;
+  fmt.assert(Pt.px[0] == 11.0, "coaldev.step did not run over the driver's pool\n");
+  fmt.printf("coalesce_ok\n");
+}

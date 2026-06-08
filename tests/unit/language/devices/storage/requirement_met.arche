@@ -1,11 +1,11 @@
-// A driver provides a pool for the `store` device's required `Node` shape, sized >= the datasheet
-// minimum (4). `Node` is the device's shared GLOBAL shape (declared in store.ds.arche), so the driver
-// references it by bare name. The datasheet requirement emits NO storage; the driver's pool is the
-// real allocation, and the device's system drives it.
+// A driver provides a pool for the `store` device's `Node` shape, sized >= the datasheet minimum (4).
+// `store` defines the shape (it comes in via the import); the datasheet states the components + the
+// storage requirement (no definition); the driver owns the real allocation and the device's system
+// drives it.
 // RUN: %arche build -o %t %s && %t | grep "req_ok"
 #import { store fmt }
 
-Node[8] // driver owns the pool, sized above the datasheet minimum of 4
+Node[8] // driver owns the pool (the shape comes from store), sized above the minimum of 4
 
 main :: proc() {
   insert(Node, 2.0, 3.0);

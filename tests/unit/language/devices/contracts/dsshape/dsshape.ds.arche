@@ -1,0 +1,7 @@
+// dsshape's datasheet ILLEGALLY defines a shape. A datasheet DESCRIBES REQUIREMENTS — it states the
+// components a driver must provide (`v`) and storage requirements, but never defines a shape. The
+// `Box :: arche { v }` line is the violation. Support file (the error fires when a driver imports it).
+// RUN: true
+v :: float
+Box :: arche { v }
+Box[4]

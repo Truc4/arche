@@ -1,0 +1,4 @@
+// econf_b's datasheet declares `mode` with a variant set that DISAGREES with econf_a's (`fast` vs
+// `on`). Same-named datasheet enums must agree to coalesce; this conflict must error. Support file.
+// RUN: true
+mode :: enum { off, fast }

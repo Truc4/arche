@@ -1,0 +1,11 @@
+// privshape's behavior. `Hidden` is defined here in the `#module` band — a shape MAY live in #module
+// (it is private to its device), but then no public shape backs the datasheet's `Hidden[4]`
+// requirement. Support file for datasheet_req_private_shape.arche.
+// RUN: true
+#module
+
+Hidden :: arche { z }
+
+tick :: sys (z) {
+  z = z + 1.0;
+}

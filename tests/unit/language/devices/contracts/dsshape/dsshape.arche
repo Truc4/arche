@@ -1,0 +1,5 @@
+// dsshape's behavior. Support file for datasheet_defines_shape.arche.
+// RUN: true
+poke :: sys (v) {
+  v = v + 1.0;
+}

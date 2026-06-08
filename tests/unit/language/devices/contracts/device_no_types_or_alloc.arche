@@ -1,11 +1,8 @@
-// RULE (NOT yet enforced — EXPECTED TO FAIL until it is):
-//   A device's implementation (`.arche`) is BEHAVIOR only: it may not define archetypes or types,
-//   and may not allocate a pool. Types/archetypes belong in the device's `.ds.arche` datasheet, and
-//   allocation is the driver's alone. `leakdev`'s impl defines `handle :: opaque` (a type) — a
-//   violation — so a build that imports leakdev must error.
-//
-// Today the program builds with no such check, so the grep finds no error and the test FAILS.
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "error.*(device.*(type|archetype|alloc)|defined in a device|datasheet)" %t.out
+// RULE: a device's implementation (`.arche`) may not define a TYPE or allocate a pool — types are the
+// device's shared vocabulary (they belong in its `.ds.arche` datasheet) and allocation is the driver's
+// alone. (A SHAPE, by contrast, MAY be defined in the impl that uses it.) `leakdev`'s impl defines
+// `handle :: opaque` — a type in a device impl — so a build that imports leakdev must error.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "error.*(device.*(type|alloc)|defined in a device|datasheet)" %t.out
 #import { leakdev }
 
 Thing :: arche { val } // references the datasheet's global `val`

@@ -2779,19 +2779,11 @@ static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 	if (is_datasheet && md->kind == HIR_DECL_STATIC && md->data.static_decl &&
 	    md->data.static_decl->kind == HIR_STATIC_ARCHETYPE)
 		md->data.static_decl->is_requirement = 1;
-	/* Datasheet shapes are shared global vocabulary: two devices may declare the SAME archetype.
-	 * Dedup it here — a second identical-named datasheet archetype would otherwise emit duplicate
-	 * codegen (one shape = one struct + one set of accessor funcs). Keep the first; drop the rest. */
-	if (is_datasheet && md->kind == HIR_DECL_ARCHETYPE && md->data.archetype && md->data.archetype->name) {
-		for (int e = 0; e < ast->decl_count; e++) {
-			if (ast->decls[e]->kind == HIR_DECL_ARCHETYPE && ast->decls[e]->data.archetype &&
-			    ast->decls[e]->data.archetype->name &&
-			    strcmp(ast->decls[e]->data.archetype->name, md->data.archetype->name) == 0) {
-				hir_decl_free(md);
-				return;
-			}
-		}
-	}
+	/* A shape may be DEFINED in more than one place — a device impl that uses it AND the driver, say —
+	 * and every definition is the same canonical shape. Duplicates are NOT stripped here: codegen folds
+	 * them onto one canonical decl (canonical_archetype_decl), so one shape still emits one struct + one
+	 * set of helpers. (A datasheet never reaches this with an archetype — defining a shape in a
+	 * `.ds.arche` is a semantic error.) */
 	ast->decls[ast->decl_count++] = md;
 	int is_ext = (md->kind == HIR_DECL_PROC && md->data.proc->is_extern) ||
 	             (md->kind == HIR_DECL_FUNC && md->data.func->is_extern);
@@ -2799,10 +2791,11 @@ static void hir_add_module_decl(const SyntaxNode *node, const char *msrc, const 
 	if (!nm)
 		return;
 	/* A decl is registered FLAT (unprefixed, bare export) when foreign (C ABI symbol), a datasheet decl
-	 * (shared global vocabulary), OR from a PLAIN module (no `.ds.arche`) — a plain/path module merges
-	 * flat into the importer (Jai `#load`), so `helper()` not `mod.helper()`. Only a DEVICE's pure-Arche
-	 * impl decls are renamed to the qualified identity `<device>.<name>` (the namespaced contract). */
-	int flat = is_ext || is_datasheet || !module_is_device;
+	 * (shared global vocabulary), an EXPORTED ARCHETYPE (a public shape is global vocabulary — its name
+	 * is bare, never `<device>.Name`; a `#module` shape stays unit-private), OR from a PLAIN module (no
+	 * `.ds.arche`) — a plain/path module merges flat into the importer (Jai `#load`), so `helper()` not
+	 * `mod.helper()`. Only a DEVICE's pure-Arche behavior decls are renamed to `<device>.<name>`. */
+	int flat = is_ext || is_datasheet || !module_is_device || (md->kind == HIR_DECL_ARCHETYPE && exported);
 	/* A `#file` decl is file-local: excluded from the cross-file `full` set + never exported; collected
 	 * into the per-file `fileset` and renamed to a file-unique identity by hir_inline_module (mirror of
 	 * semantic). This also prevents two sibling files' same-named `#file` decls colliding at codegen. */
@@ -3176,6 +3169,32 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 		ast->decls = realloc(ast->decls, (size_t)(ast->decl_count + g_synth_arch_count) * sizeof(HirDecl *));
 		for (int i = 0; i < g_synth_arch_count; i++)
 			ast->decls[ast->decl_count++] = g_synth_arch[i];
+	}
+	/* A shape may be DEFINED in several places — a device impl that uses it AND the driver, say — and
+	 * every definition is the same canonical shape. Collapse duplicate same-named archetype decls to ONE
+	 * here: codegen folds the struct via canonical_archetype_decl, but a per-system call site enumerates
+	 * matching archetype DECLS, so two `Pt` decls would emit `f(%struct.Pt*, %struct.Pt*)` (a duplicate
+	 * parameter). Keep the first decl for each name; free the rest. */
+	{
+		int w = 0;
+		for (int r = 0; r < ast->decl_count; r++) {
+			HirDecl *d = ast->decls[r];
+			int dup = 0;
+			if (d->kind == HIR_DECL_ARCHETYPE && d->data.archetype && d->data.archetype->name) {
+				for (int e = 0; e < w; e++)
+					if (ast->decls[e]->kind == HIR_DECL_ARCHETYPE && ast->decls[e]->data.archetype &&
+					    ast->decls[e]->data.archetype->name &&
+					    strcmp(ast->decls[e]->data.archetype->name, d->data.archetype->name) == 0) {
+						dup = 1;
+						break;
+					}
+			}
+			if (dup)
+				hir_decl_free(d);
+			else
+				ast->decls[w++] = d;
+		}
+		ast->decl_count = w;
 	}
 	/* Collapse nested tuple-field accesses (`arch.pos.x` → `arch.pos_x`) to match the
 	 * flattened archetype columns; no-op when no tuple groups are declared. */

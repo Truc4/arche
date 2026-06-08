@@ -1,5 +1,8 @@
-// `vcache` implementation: a system over the shared `Cell` shape (pre-defined components). Support file.
+// `vcache` implementation: it defines the same shared `Cell` shape `vstore` defines (they coalesce)
+// and a system over it. Support file.
 // RUN: true
+Cell :: arche { a, b }
+
 vtouch :: sys (a) {
   a = a + 1.0;
 }

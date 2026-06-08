@@ -1,6 +1,8 @@
-// Datasheet for the `cache` device: it also requires storage for a `Node` shape, minimum 16 rows.
-// This is the SAME shared shape the `store` device uses — devices share shapes by structure. A driver
-// importing both must provide ONE pool that meets the max of the two minimums. Support file.
+// Datasheet for the `cache` device: it also requires the `key`/`val` components and storage for a
+// `Node` shape, minimum 16 rows. This is the SAME shared shape the `store` device uses — devices share
+// shapes by structure. A datasheet defines no shape; the driver defines `Node` and must provide ONE
+// pool that meets the max of the two minimums. Support file.
 // RUN: true
-Node :: arche { key :: float, val :: float }
+key :: float
+val :: float
 Node[16]
