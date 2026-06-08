@@ -7,7 +7,7 @@
 Cell[16] // one pool (the shape comes from the devices), sized to max(4, 16)
 
 main :: proc() {
-  insert(Cell, 1.0, 2.0);
+  insert(Cell, 1.0, 2.0)(_:, _:);
   run vstore.vbump; // b: 2 -> 3
   run vcache.vtouch; // a: 1 -> 2
   fmt.assert(Cell.b[0] == 3.0, "vstore.vbump did not run\n");

@@ -3,7 +3,9 @@
 // The buffer is moved in by reference (so the store reaches the caller) and returned.
 #import { fmt }
 setb :: func(own buf: char[], i: i64, v: int) -> char[] {
-  buf[i] = v;
+  if (i >= 0 && i < buf.length) {
+    buf[i] = v;
+  }
   return buf;
 }
 main :: proc() {

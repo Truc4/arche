@@ -116,8 +116,10 @@ typedef struct {
 	HirParam **out_params;
 	int out_param_count;
 	int is_extern;
-	int is_drop;      /* 1 if this proc is a `@drop` destructor (own opaque param is the type it destroys) */
-	int is_intrinsic; /* 1 if `@intrinsic`: calls lower to a built-in instruction (e.g. raw syscall) */
+	int is_drop;          /* 1 if this proc is a `@drop` destructor (own opaque param is the type it destroys) */
+	int is_intrinsic;     /* 1 if `@intrinsic`: calls lower to a built-in instruction (e.g. raw syscall) */
+	int can_panic_marked; /* 1 if declared `proc!` — the author opted into may-panic */
+	int can_panic;        /* computed: 1 if this proc actually contains/propagates an abort site */
 	HirStmt **stmts;
 	int stmt_count;
 	SourceLoc loc;

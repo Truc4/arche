@@ -32,8 +32,10 @@ streq :: func(a: char[], b: char[]) -> int {
   if (a.length != b.length) {
     return 0;
   }
-  i := 0;
-  for (; i < a.length; i += 1) {
+  for (i := 0; i < a.length; i = i + 1) {
+    if (i >= b.length) {
+      return 0; // guard: makes b[i] provably in-bounds (a.length == b.length here anyway)
+    }
     if (a[i] != b[i]) {
       return 0;
     }

@@ -4,7 +4,9 @@
 // RUN: %arche build -o %t %s && %t | grep -q "owned 9.5 2.25"
 #import { fmt }
 step :: func(own a: float[4], i: int, v: float) -> float[4] {
-  a[i] = v;
+  if (i >= 0 && i < a.length) {
+    a[i] = v;
+  }
   return a;
 }
 

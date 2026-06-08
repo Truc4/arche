@@ -11,7 +11,7 @@ dummy :: sys (pos) {
 }
 
 main :: proc() {
-  insert(Particle, 1.0);
+  insert(Particle, 1.0)(_:, _:);
   run dummy;
   fmt.printf("pos[0]=%f\n", Particle.pos[0]);
 }

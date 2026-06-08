@@ -166,6 +166,10 @@ struct SemanticContext {
 	 * STMT_ASSIGN, captured-and-cleared at the top of EXPR_CALL so the call's own args are
 	 * value positions. */
 	int stmt_call_ok;
+	/* Like stmt_call_ok but set ONLY for the value of an out-list statement (`f(in)(out)` /
+	 * multi-bind), NOT a plain `x := f(…)` bind. The mandatory-ok builtins insert/delete are valid
+	 * only here, so this distinguishes `insert(P,…)(h:,ok:)` from an illegal `h := insert(…)`. */
+	int proc_call_stmt_ok;
 
 	/* AstProgram for looking up declarations */
 	/* The resolved decl-signature table — the single source of truth for analysis (with the syntax
@@ -1726,7 +1730,9 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 
 	case SN_CALL_EXPR: {
 		int call_stmt_ok = ctx->stmt_call_ok;
+		int outlist_call_ok = ctx->proc_call_stmt_ok;
 		ctx->stmt_call_ok = 0;
+		ctx->proc_call_stmt_ok = 0;
 
 		/* resolved callee name (qualify-mangled for `mod.f`) from the side model; NULL for a
 		 * non-module qualified field call. */
@@ -1808,6 +1814,15 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 				}
 			}
 		}
+
+		/* Mandatory-ok: insert/delete report success as a value, so they are statement-only — they must
+		 * be the value of a proc-call statement carrying an out-list. A bare `insert(…)`, an `x := insert(…)`
+		 * bind, or a nested `i32(insert(…))` (any context with !call_stmt_ok) is rejected here. The valid
+		 * `insert(P,…)(h:, ok:)` / `delete(h)(ok:)` form analyzes its call with call_stmt_ok set. */
+		if (strcmp(func_name, "insert") == 0 && !outlist_call_ok)
+			sem_emit_insert_delete_outlist(ctx, loc, "insert", "insert(P, …)(handle:, ok:)");
+		if (strcmp(func_name, "delete") == 0 && !outlist_call_ok)
+			sem_emit_insert_delete_outlist(ctx, loc, "delete", "delete(h)(ok:)");
 
 		GroupInfo *gi = find_group(ctx, func_name);
 		if (!gi) {
@@ -2493,17 +2508,30 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 			}
 		/* analyze the value (whole multi-return RHS) first, then bind targets */
 		ctx->stmt_call_ok = (sv_present(mb_value) && sv_kind(mb_value) == SN_CALL_EXPR);
+		ctx->proc_call_stmt_ok = ctx->stmt_call_ok; /* out-list statement: insert/delete are valid here */
 		if (sv_present(mb_value))
 			analyze_expression(ctx, mb_value);
 		ctx->stmt_call_ok = 0;
+		ctx->proc_call_stmt_ok = 0;
 
-		/* resolve callee proc for the inout-redundant lint + out-param typing */
+		/* resolve callee proc for the inout-redundant lint + out-param typing; also detect the
+		 * mandatory-ok builtins insert/delete, whose out-slots are typed explicitly below. */
+		const char *mb_builtin = NULL; /* "insert" | "delete" | NULL */
 		if (sv_present(mb_value) && sv_kind(mb_value) == SN_CALL_EXPR) {
 			const char *cn = ctx->model ? sem_model_callee_name(ctx->model, sv_id(mb_value)) : NULL;
 			char *cnf = cn ? sem_dupz(cn) : sem_cv_dup(sv_child(mb_value, SN_CALLEE_NAME));
 			mb_callee_proc = find_proc_sig(ctx, cnf);
+			if (cnf && strcmp(cnf, "insert") == 0)
+				mb_builtin = "insert";
+			else if (cnf && strcmp(cnf, "delete") == 0)
+				mb_builtin = "delete";
 			free(cnf);
 		}
+		/* Validate the mandatory out-list arity: insert → (handle:, ok:), delete → (ok:). */
+		if (mb_builtin && strcmp(mb_builtin, "insert") == 0 && mbt_count != 2)
+			sem_emit_insert_delete_outlist(ctx, loc, "insert", "insert(P, …)(handle:, ok:)");
+		if (mb_builtin && strcmp(mb_builtin, "delete") == 0 && mbt_count != 1)
+			sem_emit_insert_delete_outlist(ctx, loc, "delete", "delete(h)(ok:)");
 
 		/* W0011 inout_redundant: an in-arg NAME equal to an out-target NAME at an in-out position. */
 		if (mb_callee_proc && sv_present(mb_value) && sv_kind(mb_value) == SN_CALL_EXPR) {
@@ -2529,12 +2557,26 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 			TypeId bind_type = t->type_id;
 			if (bind_type == TYID_UNKNOWN && mb_callee_proc && i < mb_callee_proc->out_param_count)
 				bind_type = mb_callee_proc->out_params[i].type_id;
+			/* mandatory-ok builtins: insert → (handle, int), delete → (int). */
+			int is_handle_slot = 0;
+			if (bind_type == TYID_UNKNOWN && mb_builtin) {
+				if (strcmp(mb_builtin, "insert") == 0 && i == 0)
+					is_handle_slot = 1;
+				else
+					bind_type = sem_tyid_of_name(ctx, "int");
+			}
 			if (t->is_new) {
 				/* already added above for "_"-filtered new targets; re-add to capture type/nominal */
 				if (t->name && strcmp(t->name, "_") != 0) {
 					add_variable(ctx, t->name, bind_type);
 					TyKind bk = tyid_kind(ctx->ty_arena, bind_type);
-					if ((bk == TYK_NOMINAL || bk == TYK_PRIM) && ctx->scope_count > 0) {
+					if (is_handle_slot && ctx->scope_count > 0) {
+						/* insert's handle out-slot: an opaque generation-checked handle (i64). It carries
+						 * no TypeId, but `delete(h)` and handle equality rely on inferred_type "handle". */
+						Scope *sc = &ctx->scopes[ctx->scope_count - 1];
+						if (sc->var_count > 0)
+							sc->vars[sc->var_count - 1]->inferred_type = "handle";
+					} else if ((bk == TYK_NOMINAL || bk == TYK_PRIM) && ctx->scope_count > 0) {
 						Scope *sc = &ctx->scopes[ctx->scope_count - 1];
 						if (sc->var_count > 0) {
 							VariableInfo *vv = sc->vars[sc->var_count - 1];
@@ -3145,6 +3187,718 @@ static void enforce_func_purity(SemanticContext *ctx, DeclSummary *func) {
 	const char *reason = func_purity_body_view(ctx, func->body_node);
 	if (reason) {
 		sem_emit_func_not_pure(ctx, func->loc, func->name ? func->name : "<unknown>", reason);
+	}
+}
+
+/* ===== panic contagion (`proc!` totality) =====
+ * A proc is "can_panic" iff it is declared `proc!` OR it (transitively) calls a can_panic proc. A
+ * plain `proc`/`func` that turns out can_panic is a hard error (E0095): panic-capability must be
+ * opted into with `proc!`. This is the Phase-B core; insert/delete (Phase C) and unprovable
+ * indexing (Phase D) add further local abort sites. `extern` procs are deliberately OUTSIDE the
+ * system — a foreign C boundary is trusted, not panic-tracked, so calling one stays total. */
+
+/* The first abort site reached in the subtree rooted at `v`, as a human-readable reason, else NULL.
+ * Two sources today: a call to `delete` (a stale handle aborts — gen-exhaustion is the only ok=0
+ * case), and a call to a currently-can_panic proc. Resolves the model-qualified callee name first
+ * (cross-unit `mod.f`), else the bare name. The returned string is stable (a literal or a decl
+ * name owned by the DeclTable). insert is NOT a source — overflow is reported via its `ok`. */
+static const char *panic_walk(SemanticContext *ctx, SyntaxView v) {
+	if (!sv_present(v))
+		return NULL;
+	if (sv_kind(v) == SN_CALL_EXPR) {
+		const char *cn = ctx->model ? sem_model_callee_name(ctx->model, sv_id(v)) : NULL;
+		char *fb = (!cn && sv_count(v, SN_FIELD_NAME) == 0) ? sem_cv_dup(sv_child(v, SN_CALLEE_NAME)) : NULL;
+		const char *name = cn ? cn : fb;
+		const char *reason = NULL;
+		if (name && strcmp(name, "delete") == 0) {
+			reason = "delete"; /* the delete builtin: a stale handle aborts */
+		} else if (name) {
+			DeclSummary *t = find_callable_sig(ctx, name);
+			if (t && t->kind == DECL_PROC && t->can_panic)
+				reason = t->name;
+		}
+		free(fb);
+		if (reason)
+			return reason;
+	}
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE) {
+			const char *r = panic_walk(ctx, (SyntaxView){v.node->children[i].as.node, v.src});
+			if (r)
+				return r;
+		}
+	return NULL;
+}
+
+/* The first abort-site reason in the decl's body, or NULL. */
+static const char *decl_body_panicky_callee(SemanticContext *ctx, DeclSummary *d) {
+	if (!sv_present(d->body_node))
+		return NULL;
+	for (int i = 0, n = sem_stmt_count(d->body_node); i < n; i++) {
+		const char *r = panic_walk(ctx, sem_stmt_at(d->body_node, i));
+		if (r)
+			return r;
+	}
+	return NULL;
+}
+
+/* ===== value-array / slice bounds analysis (Phase D: OOB totality) =====
+ * A plain proc/func must prove every VALUE-array / slice index in-bounds; an unprovable one is an
+ * abort site (func → error, proc → must be `proc!`). Scope: indexing of array/slice PARAMETERS
+ * (`s[i]`, `buf[i]`). Pool COLUMNS (`Arch.field[i]`) and locals are the trusted data-oriented model
+ * and are exempt — so this targets exactly the string/buffer code where OOB bugs bite. Provable:
+ * a literal index into a sized `T[N]` param (0<=k<N); an index var proven `0 <= v < base.length/.cap`
+ * (or `< N` for a sized base) by an enclosing `for v:=K>=0; v<bound; v+=+>0` loop or by guard-exits
+ * (`if (v<0){ret/break/continue} … if (v>=bound){…}`). `&&` conjunctions and guards compose.
+ * Intentionally conservative: anything else is reported unprovable. */
+
+#define BND_MAX_FACTS 64
+typedef struct {
+	char *var;  /* index variable name (owned); NULL for a pure min-length fact */
+	char *base; /* upper-bound base name (owned), or NULL when only nonneg is known */
+	int nonneg; /* 1 once v>=0 is established */
+	int minlen; /* if var==NULL && base!=NULL: `base.length >= minlen` (proves literal idx < minlen) */
+	int litub;  /* if var!=NULL: `var < litub` (a literal upper bound; 0 = none) — proves idx into a
+	             * sized T[N] when litub <= N */
+} BndFact;
+
+/* A local array/slice declaration seen in the body, so `name[i]` on a local is checked like a
+ * param. kind: 1 = sized `T[N]` (size = N), 2 = slice `T[]`. Persists for the whole decl walk
+ * (not snapshot-scoped); last declaration of a name wins (conservative). */
+typedef struct {
+	char *name;
+	int kind;
+	int size;
+} BndLocal;
+
+typedef struct {
+	BndFact facts[BND_MAX_FACTS];
+	int count;
+	BndLocal locals[BND_MAX_FACTS];
+	int local_count;
+} BndEnv;
+
+/* int value of a literal node, or -1 if not a nonneg int literal. */
+static int bnd_lit_int(SyntaxView v) {
+	if (!sv_present(v) || sv_kind(v) != SN_LITERAL_EXPR)
+		return -1;
+	char *t = sem_cv_dup(v);
+	if (!t)
+		return -1;
+	int neg = (t[0] == '-');
+	const char *p = neg ? t + 1 : t;
+	for (const char *q = p; *q; q++)
+		if (*q < '0' || *q > '9') {
+			free(t);
+			return -1;
+		}
+	int val = atoi(p);
+	free(t);
+	return neg ? -1 : val; /* a negative literal is never a valid index */
+}
+
+/* If `v` is a plain NAME expr (no field chain), its name (owned), else NULL. */
+static char *bnd_plain_name(SemanticContext *ctx, SyntaxView v) {
+	if (!sv_present(v) || sv_kind(v) != SN_NAME_EXPR || sv_count(v, SN_FIELD_NAME) != 0)
+		return NULL;
+	return sv_resolved_name(ctx, v);
+}
+
+/* If `v` is a `X.length` / `X.cap` extent expr, the base name X (owned), else NULL. */
+static char *bnd_extent_base(SemanticContext *ctx, SyntaxView v) {
+	if (!sv_present(v) || sv_kind(v) != SN_FIELD_EXPR)
+		return NULL;
+	int nf = sv_count(v, SN_FIELD_NAME);
+	if (nf != 1)
+		return NULL;
+	char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, 0));
+	int is_extent = fld && (strcmp(fld, "length") == 0 || strcmp(fld, "cap") == 0 || strcmp(fld, "capacity") == 0 ||
+	                        strcmp(fld, "max_length") == 0);
+	free(fld);
+	if (!is_extent)
+		return NULL;
+	return sv_resolved_name(ctx, v); /* the root X */
+}
+
+/* param kind of `name`: 1 = sized `T[N]` (out_n=N), 2 = slice `T[]`, 0 = not a checked array base. */
+static int bnd_param_kind(SemanticContext *ctx, DeclSummary *d, const char *name, int *out_n) {
+	for (int pass = 0; pass < 2; pass++) {
+		ParamSummary *ps = pass ? d->out_params : d->params;
+		int n = pass ? d->out_param_count : d->param_count;
+		for (int i = 0; i < n; i++) {
+			if (!ps[i].name || strcmp(ps[i].name, name) != 0)
+				continue;
+			TyKind k = tyid_kind(ctx->ty_arena, ps[i].type_id);
+			if (k == TYK_SHAPED_ARRAY) {
+				if (out_n)
+					*out_n = tyid_shaped_rank(ctx->ty_arena, ps[i].type_id);
+				return 1;
+			}
+			if (k == TYK_ARRAY)
+				return 2;
+			return 0;
+		}
+	}
+	return 0;
+}
+
+static void bnd_local_add(BndEnv *e, const char *name, int kind, int size) {
+	if (!name || e->local_count >= BND_MAX_FACTS)
+		return;
+	e->locals[e->local_count].name = sem_dupz(name);
+	e->locals[e->local_count].kind = kind;
+	e->locals[e->local_count].size = size;
+	e->local_count++;
+}
+
+/* Kind of an indexed plain-name base: a param/out-param array, a tracked local array, or — for an
+ * unknown name that is neither a module static nor an archetype — a conservatively-checked
+ * slice-like local. Module statics and archetype columns stay exempt (kind 0). */
+static int bnd_base_kind(SemanticContext *ctx, DeclSummary *d, BndEnv *e, const char *name, int *out_n) {
+	int k = bnd_param_kind(ctx, d, name, out_n);
+	if (k != 0)
+		return k;
+	for (int i = e->local_count - 1; i >= 0; i--) /* last decl wins */
+		if (e->locals[i].name && strcmp(e->locals[i].name, name) == 0) {
+			if (out_n)
+				*out_n = e->locals[i].size;
+			return e->locals[i].kind;
+		}
+	/* Only PARAMs and explicitly-typed local arrays are gated. An unknown plain name (module static,
+	 * archetype column, inferred-type local, tuple, …) stays exempt to avoid false positives. */
+	return 0;
+}
+
+/* Facts are append-only within a scope; a var may carry several (one per upper base, plus a nonneg
+ * marker). proven(v, base) needs BOTH a nonneg marker and an upper-bound fact naming `base`. */
+static void bnd_env_add(BndEnv *e, const char *var, const char *base, int nonneg) {
+	if (!var || e->count >= BND_MAX_FACTS)
+		return;
+	e->facts[e->count].var = sem_dupz(var);
+	e->facts[e->count].base = base ? sem_dupz(base) : NULL;
+	e->facts[e->count].nonneg = nonneg;
+	e->facts[e->count].minlen = 0;
+	e->facts[e->count].litub = 0;
+	e->count++;
+}
+
+/* Record `base.length >= n` (so a literal index k < n into `base` is in-bounds). */
+static void bnd_env_add_min(BndEnv *e, const char *base, int n) {
+	if (!base || n <= 0 || e->count >= BND_MAX_FACTS)
+		return;
+	e->facts[e->count].var = NULL;
+	e->facts[e->count].base = sem_dupz(base);
+	e->facts[e->count].nonneg = 0;
+	e->facts[e->count].minlen = n;
+	e->facts[e->count].litub = 0;
+	e->count++;
+}
+
+/* Record `var < k` (a literal upper bound; proves a var index into a sized T[N] when k <= N). */
+static void bnd_env_add_litub(BndEnv *e, const char *var, int k) {
+	if (!var || k <= 0 || e->count >= BND_MAX_FACTS)
+		return;
+	e->facts[e->count].var = sem_dupz(var);
+	e->facts[e->count].base = NULL;
+	e->facts[e->count].nonneg = 0;
+	e->facts[e->count].minlen = 0;
+	e->facts[e->count].litub = k;
+	e->count++;
+}
+
+/* Smallest literal upper bound known for `var` (INT_MAX if none). */
+static int bnd_litub(BndEnv *e, const char *var) {
+	int best = 2147483647;
+	for (int i = 0; i < e->count; i++)
+		if (e->facts[i].litub > 0 && e->facts[i].var && strcmp(e->facts[i].var, var) == 0 &&
+		    e->facts[i].litub < best)
+			best = e->facts[i].litub;
+	return best;
+}
+
+/* True if `base.length >= k+1` is known (proves literal index k). */
+static int bnd_minlen_ok(BndEnv *e, const char *base, int k) {
+	for (int i = 0; i < e->count; i++)
+		if (!e->facts[i].var && e->facts[i].base && base && strcmp(e->facts[i].base, base) == 0 &&
+		    e->facts[i].minlen > k)
+			return 1;
+	return 0;
+}
+
+static void bnd_env_truncate(BndEnv *e, int to) {
+	if (to >= e->count)
+		return; /* never GROW the count — a mid-block kill may have shrunk it below `to` */
+	for (int i = to; i < e->count; i++) {
+		free(e->facts[i].var);
+		free(e->facts[i].base);
+	}
+	e->count = to;
+}
+
+/* Snapshot/restore the whole fact set so a nested block scopes BOTH its additions and its kills
+ * (a conditional `i = 1` inside an `if` must not destroy the outer `i >= 0` fact). The snapshot
+ * deep-copies; restore frees the current facts and transfers the snapshot's ownership back. */
+static BndFact *bnd_snapshot(BndEnv *e, int *out_n) {
+	*out_n = e->count;
+	if (e->count == 0)
+		return NULL;
+	BndFact *s = malloc((size_t)e->count * sizeof(BndFact));
+	for (int i = 0; i < e->count; i++) {
+		s[i].var = e->facts[i].var ? sem_dupz(e->facts[i].var) : NULL;
+		s[i].base = e->facts[i].base ? sem_dupz(e->facts[i].base) : NULL;
+		s[i].nonneg = e->facts[i].nonneg;
+		s[i].minlen = e->facts[i].minlen;
+		s[i].litub = e->facts[i].litub;
+	}
+	return s;
+}
+static void bnd_restore(BndEnv *e, BndFact *snap, int n) {
+	for (int i = 0; i < e->count; i++) {
+		free(e->facts[i].var);
+		free(e->facts[i].base);
+	}
+	for (int i = 0; i < n; i++)
+		e->facts[i] = snap[i]; /* transfer ownership */
+	e->count = n;
+	free(snap);
+}
+
+/* Drop every fact about `var` (used when `var` is reassigned to an unknown value). */
+static void bnd_env_kill(BndEnv *e, const char *var) {
+	int w = 0;
+	for (int i = 0; i < e->count; i++) {
+		if (e->facts[i].var && strcmp(e->facts[i].var, var) == 0) {
+			free(e->facts[i].var);
+			free(e->facts[i].base);
+		} else
+			e->facts[w++] = e->facts[i];
+	}
+	e->count = w;
+}
+
+static int bnd_is_nonneg(BndEnv *e, const char *var) {
+	for (int i = 0; i < e->count; i++)
+		if (e->facts[i].nonneg && e->facts[i].var && strcmp(e->facts[i].var, var) == 0)
+			return 1;
+	return 0;
+}
+
+/* Is the value expression provably >= 0? Nonneg literal, a known-nonneg name, or a sum of two
+ * nonneg sub-expressions (so `k := i + j` with i,j >= 0 is nonneg without a dead guard). */
+static int bnd_expr_nonneg(SemanticContext *ctx, BndEnv *e, SyntaxView v) {
+	if (!sv_present(v))
+		return 0;
+	if (sv_kind(v) == SN_LITERAL_EXPR)
+		return bnd_lit_int(v) >= 0;
+	if (sv_kind(v) == SN_NAME_EXPR && sv_count(v, SN_FIELD_NAME) == 0) {
+		char *n = sv_resolved_name(ctx, v);
+		int r = n ? bnd_is_nonneg(e, n) : 0;
+		free(n);
+		return r;
+	}
+	if (sv_kind(v) == SN_BINARY_EXPR && sem_binary_op(v) == OP_ADD)
+		return bnd_expr_nonneg(ctx, e, sem_node_at_expr(v, 0)) && bnd_expr_nonneg(ctx, e, sem_node_at_expr(v, 1));
+	return 0;
+}
+
+/* True if `var` is proven in [0, base): a nonneg marker AND an upper-bound fact naming `base`. */
+static int bnd_proven(BndEnv *e, const char *var, const char *base) {
+	if (!bnd_is_nonneg(e, var))
+		return 0;
+	for (int i = 0; i < e->count; i++)
+		if (e->facts[i].var && e->facts[i].base && base && strcmp(e->facts[i].var, var) == 0 &&
+		    strcmp(e->facts[i].base, base) == 0)
+			return 1;
+	return 0;
+}
+
+/* Extract bound facts from a (possibly `&&`-conjoined) condition into env:
+ *   `v < X.length`        ⇒ upper(v, X)
+ *   `X.length > k`        ⇒ minlen(X, k+1)   (and `k < X.length`)
+ *   `X.length >= k`       ⇒ minlen(X, k)
+ * so guards like `if (s.length > 0)` validate the literal index `s[0]`. */
+static void bnd_collect_facts(SemanticContext *ctx, SyntaxView cond, BndEnv *e) {
+	if (!sv_present(cond) || sv_kind(cond) != SN_BINARY_EXPR)
+		return;
+	Operator op = sem_binary_op(cond);
+	if (op == OP_AND) {
+		bnd_collect_facts(ctx, sem_node_at_expr(cond, 0), e);
+		bnd_collect_facts(ctx, sem_node_at_expr(cond, 1), e);
+		return;
+	}
+	SyntaxView l = sem_node_at_expr(cond, 0), r = sem_node_at_expr(cond, 1);
+	if (op == OP_LT) {
+		/* v < X.length  → upper(v, X) */
+		char *v = bnd_plain_name(ctx, l);
+		char *b = bnd_extent_base(ctx, r);
+		if (v && b)
+			bnd_env_add(e, v, b, 0);
+		/* v < K (literal) → litub(v, K) — proves v into a sized T[N] with K <= N */
+		int rlit = bnd_lit_int(r);
+		if (v && rlit >= 0)
+			bnd_env_add_litub(e, v, rlit);
+		free(v);
+		free(b);
+		/* k < X.length → minlen(X, k+1) */
+		int k = bnd_lit_int(l);
+		char *xb = bnd_extent_base(ctx, r);
+		if (k >= 0 && xb)
+			bnd_env_add_min(e, xb, k + 1);
+		free(xb);
+	} else if (op == OP_GT) {
+		/* X.length > k → minlen(X, k+1) */
+		char *xb = bnd_extent_base(ctx, l);
+		int k = bnd_lit_int(r);
+		if (xb && k >= 0)
+			bnd_env_add_min(e, xb, k + 1);
+		free(xb);
+		/* v > k (k >= 0 literal) → v >= 0 */
+		char *v = bnd_plain_name(ctx, l);
+		if (v && bnd_lit_int(r) >= 0)
+			bnd_env_add(e, v, NULL, 1);
+		free(v);
+	} else if (op == OP_GTE) {
+		/* X.length >= k → minlen(X, k) */
+		char *xb = bnd_extent_base(ctx, l);
+		int k = bnd_lit_int(r);
+		if (xb && k > 0)
+			bnd_env_add_min(e, xb, k);
+		free(xb);
+		/* v >= k (k >= 0 literal) → v >= 0 */
+		char *v = bnd_plain_name(ctx, l);
+		if (v && bnd_lit_int(r) >= 0)
+			bnd_env_add(e, v, NULL, 1);
+		free(v);
+	}
+}
+
+/* Does the if-then body unconditionally exit the enclosing flow (return/break/continue)? */
+static int bnd_body_exits(SyntaxView ifv, int else_part) {
+	/* then-statements are the stmt children before any TOK_ELSE; else-statements after. We only
+	 * need a coarse check: any return/break/continue among the relevant statements. */
+	(void)else_part;
+	for (int i = 0, n = sem_stmt_count(ifv); i < n; i++) {
+		SyntaxNodeKind k = sv_kind(sem_stmt_at(ifv, i));
+		if (k == SN_RETURN_STMT || k == SN_BREAK_STMT || k == SN_CONTINUE_STMT)
+			return 1;
+	}
+	return 0;
+}
+
+/* Add the facts implied by the NEGATION of one comparison `cond` (used for guard-exits, where the
+ * if-body exits so the rest of the block runs only when `cond` was false). Recognizes:
+ *   v < 0          ⇒ v >= 0           (nonneg)
+ *   v >= X.length  ⇒ v <  X.length    (upper)
+ *   v > X.length / v >= X.length      (upper, conservative)
+ *   X.length < K   ⇒ X.length >= K    (minlen)
+ *   X.length <= K  ⇒ X.length >  K    (minlen K+1)
+ * Returns 1 if it recognized the form. */
+static int bnd_guard_neg(SemanticContext *ctx, SyntaxView cond, BndEnv *e) {
+	if (!sv_present(cond) || sv_kind(cond) != SN_BINARY_EXPR)
+		return 0;
+	Operator op = sem_binary_op(cond);
+	if (op == OP_OR) { /* !(A || B) = !A && !B */
+		int a = bnd_guard_neg(ctx, sem_node_at_expr(cond, 0), e);
+		int b = bnd_guard_neg(ctx, sem_node_at_expr(cond, 1), e);
+		return a || b;
+	}
+	SyntaxView l = sem_node_at_expr(cond, 0), r = sem_node_at_expr(cond, 1);
+	/* X.length < K  /  X.length <= K  ⇒ minlen */
+	if (op == OP_LT || op == OP_LTE) {
+		char *xb = bnd_extent_base(ctx, l);
+		int k = bnd_lit_int(r);
+		if (xb && k >= 0) {
+			bnd_env_add_min(e, xb, op == OP_LTE ? k + 1 : k);
+			free(xb);
+			return 1;
+		}
+		free(xb);
+	}
+	char *v = bnd_plain_name(ctx, l);
+	int handled = 0;
+	if (v && op == OP_LT && bnd_lit_int(r) == 0) {
+		bnd_env_add(e, v, NULL, 1); /* v < 0 exit ⇒ v >= 0 */
+		handled = 1;
+	} else if (v && (op == OP_GTE || op == OP_GT)) {
+		char *b = bnd_extent_base(ctx, r);
+		int klit = bnd_lit_int(r);
+		if (b) {
+			bnd_env_add(e, v, b, 0); /* v >= X.length exit ⇒ v < X.length */
+			handled = 1;
+		} else if (klit >= 0) {
+			bnd_env_add_litub(e, v, op == OP_GT ? klit + 1 : klit); /* v >= K exit ⇒ v < K */
+			handled = 1;
+		}
+		free(b);
+	}
+	free(v);
+	return handled;
+}
+
+/* A guard-exit `if (COND) { return/break/continue }` establishes COND's negation for the rest of
+ * the enclosing block. Returns 1 if recognized. */
+static int bnd_guard_exit(SemanticContext *ctx, SyntaxView ifv, BndEnv *e) {
+	if (!bnd_body_exits(ifv, 0))
+		return 0;
+	return bnd_guard_neg(ctx, sem_node_at_expr(ifv, 0), e);
+}
+
+static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxView v, BndEnv *e);
+
+/* Recurse into every expression/child of a node, checking each value-array index. Statement-shaped
+ * children that introduce their own scope (for/if/block) are handled by bnd_check_stmt; here we just
+ * descend generic expression trees. */
+static const char *bnd_check_expr(SemanticContext *ctx, DeclSummary *d, SyntaxView v, BndEnv *e) {
+	if (!sv_present(v))
+		return NULL;
+	/* `A && B`: B is evaluated only when A holds, so check B under the facts A implies (this validates
+	 * `s.length > 0 && s[0] == '-'`). */
+	if (sv_kind(v) == SN_BINARY_EXPR && sem_binary_op(v) == OP_AND) {
+		const char *r = bnd_check_expr(ctx, d, sem_node_at_expr(v, 0), e);
+		if (r)
+			return r;
+		int saved = e->count;
+		bnd_collect_facts(ctx, sem_node_at_expr(v, 0), e);
+		r = bnd_check_expr(ctx, d, sem_node_at_expr(v, 1), e);
+		bnd_env_truncate(e, saved);
+		return r;
+	}
+	if (sv_kind(v) == SN_INDEX_EXPR && sv_count(v, SN_FIELD_NAME) == 0) {
+		char *base = sv_resolved_name(ctx, v);
+		int n = -1;
+		int kind = base ? bnd_base_kind(ctx, d, e, base, &n) : 0;
+		if (kind != 0) { /* a checked array/slice parameter */
+			SyntaxView idx = sem_node_at_expr(v, 0);
+			int lit = bnd_lit_int(idx);
+			int ok = 0;
+			if (lit >= 0) {
+				if (kind == 1 && n >= 0)
+					ok = (lit < n); /* literal into sized T[N] */
+				else
+					ok = bnd_minlen_ok(e, base, lit); /* slice (or unknown N): need a length guard */
+			} else {
+				char *iv = bnd_plain_name(ctx, idx);
+				if (iv) {
+					ok = bnd_proven(e, iv, base);
+					/* sized T[N]: a literal upper bound `iv < K` with K <= N also proves it */
+					if (!ok && kind == 1 && n >= 0 && bnd_is_nonneg(e, iv) && bnd_litub(e, iv) <= n)
+						ok = 1;
+				}
+				free(iv);
+			}
+			if (!ok) {
+				static char buf[160];
+				snprintf(buf, sizeof buf, "indexes '%s' with an unproven bound", base);
+				free(base);
+				return buf;
+			}
+		}
+		free(base);
+	}
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE) {
+			const char *r = bnd_check_expr(ctx, d, (SyntaxView){v.node->children[i].as.node, v.src}, e);
+			if (r)
+				return r;
+		}
+	return NULL;
+}
+
+/* Walk statements in order with a fact env; returns the first unprovable index reason or NULL.
+ * Facts mutated inside the block (adds AND kills) are scoped to it via snapshot/restore. */
+static const char *bnd_check_block(SemanticContext *ctx, DeclSummary *d, SyntaxView block, BndEnv *e) {
+	int snn;
+	BndFact *snap = bnd_snapshot(e, &snn);
+	const char *r = NULL;
+	for (int i = 0, n = sem_stmt_count(block); i < n && !r; i++)
+		r = bnd_check_stmt(ctx, d, sem_stmt_at(block, i), e);
+	bnd_restore(e, snap, snn);
+	return r;
+}
+
+static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxView v, BndEnv *e) {
+	if (!sv_present(v))
+		return NULL;
+	SyntaxNodeKind k = sv_kind(v);
+	if (k == SN_FOR_STMT) {
+		/* extract the loop var's init (>=0?) and the cond's `v < bound` facts for the body */
+		int snn;
+		BndFact *snap = bnd_snapshot(e, &snn);
+		/* find init/cond among header segments: init is a bind/assign, cond is a bare expr before `{` */
+		SyntaxView cond = {NULL, v.src};
+		int init_nonneg_var_seen = 0;
+		char *init_var = NULL;
+		int seen_brace = 0, seg = 0;
+		for (int i = 0; i < v.node->child_count; i++) {
+			SyntaxElem *ch = &v.node->children[i];
+			if (ch->tag == SE_TOKEN) {
+				if (ch->as.token.kind == TOK_LBRACE)
+					seen_brace = 1;
+				else if (ch->as.token.kind == TOK_SEMI && !seen_brace && seg < 2)
+					seg++;
+				continue;
+			}
+			if (seen_brace)
+				continue;
+			SyntaxView cv = {ch->as.node, v.src};
+			SyntaxNodeKind ck = sv_kind(cv);
+			if (seg == 0 && (ck == SN_BIND_STMT || ck == SN_ASSIGN_STMT)) {
+				/* init `var := K` with K provably nonneg ⇒ var is nonneg at loop entry */
+				char *iv = sv_resolved_name(ctx, sem_node_at_expr(cv, 0));
+				int nn = bnd_expr_nonneg(ctx, e, sem_node_at_expr(cv, 1));
+				if (iv && nn) {
+					init_var = iv;
+					init_nonneg_var_seen = 1;
+				} else {
+					free(iv);
+				}
+			} else if (seg == 1 && ck >= SN_LITERAL_EXPR && ck <= SN_PAREN_EXPR) {
+				cond = cv;
+			}
+		}
+		/* push cond upper-bound facts; mark the init var nonneg */
+		bnd_collect_facts(ctx, cond, e);
+		if (init_var)
+			bnd_env_add(e, init_var, NULL, 1);
+		(void)init_nonneg_var_seen;
+		/* Check ONLY the post-`{` body statements (NOT the header init/incr — the incr `i=i+1` would
+		 * otherwise kill the loop var's facts before the body is checked). */
+		const char *r = NULL;
+		seen_brace = 0;
+		for (int i = 0; i < v.node->child_count && !r; i++) {
+			SyntaxElem *ch = &v.node->children[i];
+			if (ch->tag == SE_TOKEN) {
+				if (ch->as.token.kind == TOK_LBRACE)
+					seen_brace = 1;
+				continue;
+			}
+			if (!seen_brace)
+				continue;
+			r = bnd_check_stmt(ctx, d, (SyntaxView){ch->as.node, v.src}, e);
+		}
+		bnd_restore(e, snap, snn);
+		free(init_var);
+		return r;
+	}
+	if (k == SN_IF_STMT) {
+		/* guard-exit: establish negated facts for statements AFTER this if (same block); these must
+		 * PERSIST in the enclosing block (the enclosing bnd_check_block scopes them). */
+		if (bnd_guard_exit(ctx, v, e))
+			return bnd_check_expr(ctx, d, sem_node_at_expr(v, 0), e);
+		/* plain if: within the then-body, the cond's `v < X.length` / minlen facts hold */
+		SyntaxView cond = sem_node_at_expr(v, 0);
+		const char *r = bnd_check_expr(ctx, d, cond, e);
+		if (r)
+			return r;
+		int snn;
+		BndFact *snap = bnd_snapshot(e, &snn);
+		bnd_collect_facts(ctx, cond, e);
+		r = bnd_check_block(ctx, d, v, e);
+		bnd_restore(e, snap, snn);
+		return r;
+	}
+	if (k == SN_BLOCK)
+		return bnd_check_block(ctx, d, v, e);
+	if (k == SN_MATCH_STMT) {
+		int narm = sv_count(v, SN_MATCH_ARM);
+		for (int i = 0; i < narm; i++) {
+			const char *r = bnd_check_block(ctx, d, sv_child_at(v, SN_MATCH_ARM, i), e);
+			if (r)
+				return r;
+		}
+		return bnd_check_expr(ctx, d, sem_node_at_expr(v, 0), e);
+	}
+	if (k == SN_BIND_STMT || k == SN_ASSIGN_STMT) {
+		/* track counter nonneg: `v := K>=0` / `v = K>=0` marks v nonneg; any other reassignment of a
+		 * plain name invalidates what we knew about it. The value expr is still scanned for indices. */
+		const char *r = bnd_check_expr(ctx, d, sem_node_at_expr(v, 1), e);
+		if (r)
+			return r;
+		char *tgt = bnd_plain_name(ctx, sem_node_at_expr(v, 0));
+		if (tgt) {
+			int nn = bnd_expr_nonneg(ctx, e, sem_node_at_expr(v, 1));
+			if (k == SN_ASSIGN_STMT)
+				bnd_env_kill(e, tgt);
+			if (nn)
+				bnd_env_add(e, tgt, NULL, 1);
+		}
+		/* Track a typed local array/slice decl so `tgt[i]` is checked like a param. */
+		if (k == SN_BIND_STMT && tgt) {
+			SyntaxView t0 = sem_type_at(v, 0);
+			if (sv_present(t0)) {
+				TypeId tid = sem_intern_view(ctx, t0);
+				TyKind tk = tyid_kind(ctx->ty_arena, tid);
+				if (tk == TYK_SHAPED_ARRAY)
+					bnd_local_add(e, tgt, 1, tyid_shaped_rank(ctx->ty_arena, tid));
+				else if (tk == TYK_ARRAY)
+					bnd_local_add(e, tgt, 2, 0);
+			}
+		}
+		free(tgt);
+		return bnd_check_expr(ctx, d, sem_node_at_expr(v, 0), e);
+	}
+	/* ordinary statement: scan its expressions for indices */
+	return bnd_check_expr(ctx, d, v, e);
+}
+
+/* The first unprovable value-array/slice index in the decl's body, or NULL. */
+static const char *bnd_decl_first_unprovable(SemanticContext *ctx, DeclSummary *d) {
+	if (!sv_present(d->body_node))
+		return NULL;
+	BndEnv e;
+	e.count = 0;
+	e.local_count = 0;
+	const char *r = NULL;
+	for (int i = 0, n = sem_stmt_count(d->body_node); i < n && !r; i++)
+		r = bnd_check_stmt(ctx, d, sem_stmt_at(d->body_node, i), &e);
+	bnd_env_truncate(&e, 0);
+	for (int i = 0; i < e.local_count; i++)
+		free(e.locals[i].name);
+	return r;
+}
+
+/* Whole-program contagion: seed from `proc!` markers, propagate to a fixpoint over the call graph
+ * (handles recursion/cycles since can_panic only grows), then enforce. Runs after every decl is
+ * analyzed (decls hoist, so call targets may be defined either side of a caller). */
+static void sem_check_panic_contagion(SemanticContext *ctx) {
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->kind == DECL_PROC && d->can_panic_marked)
+			d->can_panic = 1;
+	}
+	int changed = 1;
+	while (changed) {
+		changed = 0;
+		for (int i = 0; i < ctx->decl_count; i++) {
+			DeclSummary *d = ctx->decls[i];
+			if ((d->kind != DECL_PROC && d->kind != DECL_FUNC) || d->can_panic || d->is_extern)
+				continue;
+			if (decl_body_panicky_callee(ctx, d) || bnd_decl_first_unprovable(ctx, d)) {
+				d->can_panic = 1;
+				changed = 1;
+			}
+		}
+	}
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (!d->can_panic || d->is_extern)
+			continue;
+		int is_func = (d->kind == DECL_FUNC);
+		int is_unmarked_proc = (d->kind == DECL_PROC && !d->can_panic_marked);
+		if (!is_func && !is_unmarked_proc)
+			continue;
+		const char *c = decl_body_panicky_callee(ctx, d);
+		const char *bnd = c ? NULL : bnd_decl_first_unprovable(ctx, d);
+		char reason[200];
+		if (c && strcmp(c, "delete") == 0)
+			snprintf(reason, sizeof reason, "calls `delete` (a stale handle aborts)");
+		else if (c)
+			snprintf(reason, sizeof reason, "calls panic-capable proc '%s'", c);
+		else if (bnd)
+			snprintf(reason, sizeof reason, "%s", bnd);
+		else
+			snprintf(reason, sizeof reason, "may abort");
+		sem_emit_panic_in_total(ctx, d->loc, is_func ? "func" : "proc", d->name ? d->name : "<unknown>", reason);
 	}
 }
 
@@ -3987,6 +4741,10 @@ static Operator sem_tok_to_op(TokenKind k) {
 		return OP_LTE;
 	case TOK_GT_EQ:
 		return OP_GTE;
+	case TOK_AMP_AMP:
+		return OP_AND;
+	case TOK_PIPE_PIPE:
+		return OP_OR;
 	default:
 		return OP_NONE;
 	}
@@ -5440,6 +6198,7 @@ static void analyze_program_core(SemanticContext *ctx) {
 	sem_check_storage_requirements(ctx);
 	sem_check_device_impl_decls(ctx);
 	sem_check_datasheet_decls(ctx);
+	sem_check_panic_contagion(ctx); /* `proc!` totality: propagate + enforce panic-capability */
 
 	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The
 	 * two kinds are still distinct (keyword, `-> T` vs out-list, call form), but the name namespace
@@ -5529,6 +6288,8 @@ static SemanticContext *make_context(void) {
 	ctx->current_func = NULL;
 	ctx->in_sys = 0;
 	ctx->in_body = 0;
+	ctx->stmt_call_ok = 0;
+	ctx->proc_call_stmt_ok = 0; /* only the out-list statement sets this; cleared in every EXPR_CALL */
 	ctx->model = sem_model_new();
 	ctx->hints = sem_hints_new();
 	ctx->diags = NULL;
@@ -6036,6 +6797,7 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 		ds->is_extern = !sv_has_token(form, TOK_LBRACE);
 		ds->is_variadic = sv_has_token(form, TOK_DOTDOTDOT);
 		ds->allow_pure_proc = sv_has_token(form, TOK_AT);
+		ds->can_panic_marked = sv_has_token(form, TOK_BANG); /* declared `proc!` */
 		int no = sv_count(form, SN_OUT_PARAM);
 		ds->out_param_count = no;
 		ds->out_params = calloc(no ? no : 1, sizeof(ParamSummary));

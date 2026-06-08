@@ -399,6 +399,38 @@ drag_factor :: func(x: float) -> float {
 - `proc`: "do this, writing the results into these places" - `divmod(17, 5)(q:, r:)`
 - `sys`: "run this on _any data shaped like this_" - `run step;`
 
+## Totality and panics (`proc!`)
+
+A plain `proc` and every `func` are **total**: a call cannot panic (abort). The one way to opt into
+panic-capability is the **`proc!`** form:
+
+```arche
+risky :: proc!(…)(…) { … }   // may panic (hit an unhandled abort site)
+safe  :: proc (…)(…) { … }   // total — proven not to panic
+```
+
+Panic-capability is **contagious and statically enforced**: a plain `proc`/`func` that calls a
+`proc!` is a compile error (`E0095`) — mark it `proc!` too, or remove the panicking call. `func` is
+always total, so there is no `func!`. (`extern`/FFI procs are outside the system — a foreign C
+boundary is trusted, not panic-tracked.)
+
+### Errors as values: `insert` / `delete`
+
+A fixed-capacity pool can fill up. Rather than abort, `insert`/`delete` report the recoverable
+failure **as a value** through a mandatory `ok` out-param — so they are **statement-only**, never a
+value or nested in an expression:
+
+```arche
+insert(Particle, 1.0, 0.1)(h:, ok:);   // h: the generation-checked handle, ok: 0 if the pool was full
+if (!ok) { … }                          // handle the full-pool case at the call site
+delete(h)(ok:);                          // ok: 0 on generation exhaustion
+```
+
+Use `_` to discard either out (`insert(P, …)(_:, _:)`). The legacy value form (`h := insert(…)`,
+`i32(insert(…))`) is gone (`E0096`). `insert` is **total** (overflow → `ok = 0`). `delete` is
+inherently **`proc!`**: a *stale* handle (use-after-free) is a bug and still aborts — only generation
+exhaustion (a resource limit) is reported via `ok` — so any `delete` makes its caller `proc!`.
+
 ## Enums and `match`
 
 An `enum` is a **distinct, int-backed type** with named variants. Variants

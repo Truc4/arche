@@ -1,5 +1,5 @@
-// Out-of-bounds i64-array write aborts.
-// RUN: %arche build -o %t %s && ! %t
+// Out-of-bounds i64-array write is rejected at compile time: full totality requires the index be provable (guard it or mark `proc!`).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "may panic" %t.out
 main :: proc() {
   a: i64[4];
   i    := 7;

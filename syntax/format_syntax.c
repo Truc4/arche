@@ -80,12 +80,20 @@ static int no_space_before(TokenKind t, TokenKind prev, TokenKind next) {
 		return 1;     /* type-annotation colon: `a: int` */
 	case TOK_EQ:
 		return prev == TOK_COLON; /* `=` of `:=` glues to the `:` */
+	case TOK_BANG:
+		/* The `proc!` panic marker hugs its keyword (`proc!`); a unary `!` falls through to the
+		 * prev-based defaults below so `(!x)` / `= !x` are unchanged. */
+		if (prev == TOK_PROC)
+			return 1;
+		break;
 	case TOK_LPAREN:
 	case TOK_LBRACKET:
 		/* call / index: hug an identifier or a closing bracket. A `proc`/`func` keyword
 		 * hugs its param list too (`proc(...)`, `func(...)`) — the keyword reads as the
-		 * callable, like an identifier before a call's `(`. */
-		return prev == TOK_IDENT || prev == TOK_RPAREN || prev == TOK_RBRACKET || prev == TOK_PROC || prev == TOK_FUNC;
+		 * callable, like an identifier before a call's `(`. A `proc!` marker hugs the param
+		 * list the same way (`proc!(...)`); this also tightens unary `!(expr)`. */
+		return prev == TOK_IDENT || prev == TOK_RPAREN || prev == TOK_RBRACKET || prev == TOK_PROC ||
+		       prev == TOK_FUNC || prev == TOK_BANG;
 	default:
 		break;
 	}

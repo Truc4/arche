@@ -298,6 +298,10 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
 	 * `type` meta is implied (a callable signature denotes a type). Bodiless — no `{...}` here. */
 	if (check(parser, TOK_PROC)) {
 		advance(parser);
+		/* A proc TYPE may carry the `!` marker too: `h: proc!(in)(out)` denotes a panic-capable
+		 * callable, so a call through such a param is treated as panic-capable (contagion). */
+		if (check(parser, TOK_BANG))
+			advance(parser);
 		out->syntax_kind = SN_TYPE_PROC;
 		out->is_type_meta = 1;
 		return parse_proc_sig(parser, 0);
@@ -1201,8 +1205,23 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 	if (check(parser, TOK_PROC) || check(parser, TOK_FUNC)) {
 		int is_proc = check(parser, TOK_PROC);
 		advance(parser); /* consume 'proc' / 'func' */
-		if (check(parser, TOK_LBRACE))
+		/* Optional `!` panic marker: `proc!(in)(out){…}` declares a proc that MAY panic. The `!`
+		 * is emitted as a leaf of the form node; lowering recovers it via sv_has_token(TOK_BANG).
+		 * `func` is always total — `func!` is rejected. */
+		int is_bang = check(parser, TOK_BANG);
+		if (is_bang && !is_proc) {
+			error(parser, "only `proc` may be marked `!`; a `func` is always total and cannot panic");
+			return 0;
+		}
+		if (is_bang)
+			advance(parser); /* consume '!' */
+		if (check(parser, TOK_LBRACE)) {
+			if (is_bang) {
+				error(parser, "`proc!` cannot mark an overload group — put the marker on each member proc");
+				return 0;
+			}
 			return parse_group_form(parser, out_kind);
+		}
 		/* Inside a `#foreign` region a bodiless proc is a foreign (FFI) value-form, not a proc
 		 * type — drive that off the parser's region state. Funcs are never foreign (FFI bodies
 		 * are procs), so a bodiless func is always a func type. */

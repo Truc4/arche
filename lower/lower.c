@@ -1671,6 +1671,8 @@ static HirDecl *lower_proc_from(SyntaxView f, char *name) {
 	/* Foreign (FFI-bodied): a proc value-form with no `{` body block (parser emits a bodiless
 	 * proc value-form only inside a `#foreign` region). Mirrors semantic.c build_proc_from. */
 	ap->is_extern = !sv_has_token(f, TOK_LBRACE);
+	/* `proc!` marker: a direct `!` leaf on the form node (see parse_primary_expr). */
+	ap->can_panic_marked = sv_has_token(f, TOK_BANG);
 	int np = sv_count(f, SN_PARAM);
 	ap->params = calloc(np ? np : 1, sizeof(HirParam *));
 	for (int i = 0; i < np; i++)
@@ -1992,6 +1994,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		HirProcDecl *ap = calloc(1, sizeof(HirProcDecl));
 		ap->name = sv_dup(sv_child(d, SN_FUNC_DEF_NAME));
 		ap->is_extern = !sv_has_token(d, TOK_LBRACE);
+		ap->can_panic_marked = sv_has_token(d, TOK_BANG);
 		int np = sv_count(d, SN_PARAM);
 		ap->params = calloc(np ? np : 1, sizeof(HirParam *));
 		for (int i = 0; i < np; i++)

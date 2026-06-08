@@ -56,6 +56,9 @@ fread_line :: proc(f: fd, own buf: char[], n: int)(out: char[]) {
   i := 0;
   ch: char[1];
   for (; i < n - 1;) {
+    if (i >= buf.length) {
+      break; // guard buf[i] below
+    }
     os.syscall(0, f, ch, 1, 0, 0, 0)(k:);
     if (k <= 0) {
       break;
@@ -65,6 +68,10 @@ fread_line :: proc(f: fd, own buf: char[], n: int)(out: char[]) {
     }
     buf[i] = ch[0];
     i      = i + 1;
+  }
+  if (i >= buf.length) {
+    out = buf[0: buf.length]; // buf full: no room for the NUL sentinel
+    return;
   }
   buf[i] = 0;
   out    = buf[0: i];

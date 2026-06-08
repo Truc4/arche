@@ -6,7 +6,7 @@ Transaction[1000](1000) {
   price: 0.0, quantity: 0,
 }
 
-main :: proc() {
+main :: proc!() {
   io.fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
   buf       : char[50000];
   price_str : char[32];

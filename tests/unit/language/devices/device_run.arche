@@ -7,7 +7,7 @@
 Particle[4]
 
 main :: proc() {
-  insert(Particle, 10.0, 1.0);
+  insert(Particle, 10.0, 1.0)(_:, _:);
   run integrate;
   v := Particle.pos[0] * 10.0;
   fmt.assert(v == 110, "pos[0] != 11.0 after integrate\n");

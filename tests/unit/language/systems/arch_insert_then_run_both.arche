@@ -18,11 +18,11 @@ dampen :: sys (vel) {
 }
 
 main :: proc() {
-  insert(Particle, 10.0, 1.0);
-  insert(Particle, 20.0, 2.0);
-  insert(Particle, 30.0, 3.0);
-  insert(Body, 50.0, 5.0, 10.0);
-  insert(Body, 60.0, 6.0, 20.0);
+  insert(Particle, 10.0, 1.0)(_:, _:);
+  insert(Particle, 20.0, 2.0)(_:, _:);
+  insert(Particle, 30.0, 3.0)(_:, _:);
+  insert(Body, 50.0, 5.0, 10.0)(_:, _:);
+  insert(Body, 60.0, 6.0, 20.0)(_:, _:);
   run step;
   run dampen;
   pp  := Particle.pos[0];

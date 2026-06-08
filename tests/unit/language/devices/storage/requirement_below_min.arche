@@ -6,7 +6,7 @@
 Node[2] // below the datasheet minimum of 4 — must error (the shape comes from store)
 
 main :: proc() {
-  insert(Node, 2.0, 3.0);
+  insert(Node, 2.0, 3.0)(_:, _:);
   run store.bump;
   fmt.printf("should_not_build\n");
 }

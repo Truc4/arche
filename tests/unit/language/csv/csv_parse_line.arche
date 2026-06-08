@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { parse fmt }
-main :: proc() {
+main :: proc!() {
   buf: char[256];
   buf[0]     = '1';
   buf[1]     = '0';

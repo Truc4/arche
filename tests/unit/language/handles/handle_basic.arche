@@ -8,6 +8,6 @@ Player[10]
 AliveList[10]
 
 main :: proc() {
-  p_handle := insert(Player, 1.0);
-  insert(AliveList, p_handle);
+  insert(Player, 1.0)(p_handle:, _:);
+  insert(AliveList, p_handle)(_:, _:);
 }

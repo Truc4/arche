@@ -1,0 +1,15 @@
+// Mandatory-ok: insert reports success as a value. A successful insert sets ok=1; an insert into a
+// full fixed-capacity pool sets ok=0 instead of aborting. delete is panic-capable (a stale handle
+// aborts), so main is `proc!`.
+// RUN: %arche build -o %t %s && %t | grep "ok1=1 ok3=0"
+#import { fmt }
+Particle :: arche { pos :: float }
+Particle[2]
+
+main :: proc!() {
+  insert(Particle, 1.0)(h:, ok1:);
+  insert(Particle, 2.0)(_:, _:);
+  insert(Particle, 3.0)(_:, ok3:); // pool full -> ok3 == 0
+  fmt.printf("ok1=%d ok3=%d\n", ok1, ok3);
+  delete(h)(_:);
+}

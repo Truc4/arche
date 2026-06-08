@@ -9,8 +9,8 @@ Particle[5]
 Body[5]
 
 main :: proc() {
-  insert(Particle, 1.0, 0.1);
-  insert(Body, 2.0, 0.2, 10.0);
+  insert(Particle, 1.0, 0.1)(_:, _:);
+  insert(Body, 2.0, 0.2, 10.0)(_:, _:);
   pp  := Particle.pos[0];
   bm  := Body.mass[0];
   ppi := pp * 10.0;

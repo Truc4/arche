@@ -97,6 +97,12 @@ typedef struct {
 	char *drop_type;
 	char **allow_slugs;
 	int allow_slug_count;
+	/* panic/totality (see the proc!/totality design): `can_panic_marked` is the declared `proc!`
+	 * opt-in; `can_panic` is the computed transitive result (set by the contagion pass);
+	 * `can_panic_computed` guards the fixpoint so a decl is finalized once. */
+	int can_panic_marked;
+	int can_panic;
+	int can_panic_computed;
 } DeclSummary;
 
 /* The exported surface of one compilation unit (module) — a first-class, persisted interface. Today

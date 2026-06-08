@@ -550,6 +550,19 @@ static void emit_move_hint(SyntaxView node, SemanticContext *ctx) {
  * which outlives the walk. Reset per emit_hints; the buffer is reused (grows once). */
 static SynText *g_proc_names;
 static int g_proc_name_count, g_proc_name_cap;
+/* Names of `proc!` (panic-capable) declarations — drives the call-site panic inlay hint. */
+static SynText *g_panic_proc_names;
+static int g_panic_proc_count, g_panic_proc_cap;
+
+static void record_panic_proc(SynText nm) {
+	if (!nm.ptr)
+		return;
+	if (g_panic_proc_count == g_panic_proc_cap) {
+		g_panic_proc_cap = g_panic_proc_cap ? g_panic_proc_cap * 2 : 16;
+		g_panic_proc_names = realloc(g_panic_proc_names, (size_t)g_panic_proc_cap * sizeof(SynText));
+	}
+	g_panic_proc_names[g_panic_proc_count++] = nm;
+}
 
 static void collect_proc_names(SyntaxView v) {
 	if (!v.node)
@@ -581,6 +594,11 @@ static void collect_proc_names(SyntaxView v) {
 				g_proc_names = realloc(g_proc_names, (size_t)g_proc_name_cap * sizeof(SynText));
 			}
 			g_proc_names[g_proc_name_count++] = nm;
+			/* `proc!` — a direct `!` leaf on the SN_PROC_EXPR RHS marks it panic-capable. */
+			for (int i = 0; i < v.node->child_count; i++)
+				if (v.node->children[i].tag == SE_NODE && v.node->children[i].as.node->kind == SN_PROC_EXPR &&
+				    sv_has_token((SyntaxView){v.node->children[i].as.node, v.src}, TOK_BANG))
+					record_panic_proc(nm);
 		}
 	}
 	if (sv_kind(v) == SN_PROC_DECL) {
@@ -603,6 +621,27 @@ static int name_is_proc(SynText n) {
 		if (g_proc_names[i].len == n.len && memcmp(g_proc_names[i].ptr, n.ptr, n.len) == 0)
 			return 1;
 	return 0;
+}
+
+static int name_is_panic_proc(SynText n) {
+	for (int i = 0; i < g_panic_proc_count; i++)
+		if (g_panic_proc_names[i].len == n.len && memcmp(g_panic_proc_names[i].ptr, n.ptr, n.len) == 0)
+			return 1;
+	return 0;
+}
+
+/* Inlay hint at any call to a `proc!`: this call may panic, so the enclosing proc must be `proc!`
+ * too (panic-capability is contagious). Surfaces the abort risk the call grammar doesn't show. */
+static void emit_panic_hint(SyntaxView call) {
+	if (sv_kind(call) != SN_CALL_EXPR)
+		return;
+	SynText callee = sv_text(sv_child(call, SN_CALLEE_NAME));
+	if (!callee.ptr || !name_is_panic_proc(callee))
+		return;
+	CvPos end = sv_last_token_pos(call);
+	if (!end.line)
+		return;
+	emit_syn(end.line, end.column + (int)end.length, 0, 0, "panic", "!");
 }
 
 /* A bare proc/extern call statement (`printf(x);`) omits its out-list — that omission means "no
@@ -633,6 +672,8 @@ static void walk(SyntaxView v, SemanticContext *ctx) {
 		emit_typeref_hint(v, ctx);
 	else if (sv_kind(v) == SN_EXPR_STMT)
 		emit_effect_hint(v); /* bare proc call → ghost `()` */
+	if (sv_kind(v) == SN_CALL_EXPR)
+		emit_panic_hint(v); /* call to a `proc!` → `!` panic inlay */
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
 			SyntaxView c = {v.node->children[i].as.node, v.src};

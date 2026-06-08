@@ -4801,6 +4801,160 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 	free(compute_result);
 }
 
+/* ===== mandatory-ok insert/delete (statement-only, errors-as-values) =====
+ * `insert(P, fields…)(handle:, ok:)` and `delete(h)(ok:)` are statement-only builtins: the pool
+ * helper writes the handle/ok through out-pointers instead of returning a value or aborting on a
+ * full pool (the legacy value-form `h := insert(…)` is gone). These are dispatched from the
+ * HIR_STMT_MULTI_BIND path. */
+
+/* Allocate (or reuse) the write-through slot for one out-target and register it as a readable
+ * local (type==1: an alloca pointer read via load). `_`/unnamed discards into a throwaway alloca.
+ * Returns the LLVM out-pointer to pass to the helper. `handle_arch` is borrowed (stable). */
+static char *cg_outparam_slot(CodegenContext *ctx, HirBindingTarget *tgt, const char *elem, const char *field_type,
+                              int bit_width, const char *handle_arch) {
+	int discard = !tgt->name || strcmp(tgt->name, "_") == 0;
+	if (!tgt->is_new && !discard) {
+		ValueInfo *e = find_value(ctx, tgt->name);
+		if (e && e->type == 1)
+			return e->llvm_name; /* reuse the existing local's alloca */
+	}
+	char *a = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca %s\n", a, elem);
+	if (discard)
+		return a;
+	ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+	vi->name = strdup(tgt->name);
+	vi->llvm_name = strdup(a);
+	vi->type = 1;
+	vi->string_len = -1;
+	vi->field_type = field_type;
+	vi->bit_width = bit_width;
+	vi->handle_archetype = handle_arch;
+	if (ctx->scope_count > 0) {
+		ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+		sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+		sc->values[sc->value_count++] = vi;
+	}
+	return a;
+}
+
+/* Emit `insert(P, fields…)(handle:, ok:)`: resolve the pool, evaluate column args, allocate the
+ * handle/ok out-slots, and call the void `@arche_insert_<arch>` helper (writes both out-pointers). */
+static void cg_emit_insert_mb(CodegenContext *ctx, HirExpr *rhs, HirBindingTarget *targets, int target_count) {
+	/* RAII: insert moves its value args into the pool — suppress auto-drop for any opaque local. */
+	for (int ai = 1; ai < rhs->data.call.arg_count; ai++) {
+		HirExpr *ia = rhs->data.call.args[ai];
+		if (ia && ia->kind == HIR_EXPR_UNARY && ia->data.unary.op == UNARY_MOVE)
+			ia = ia->data.unary.operand;
+		if (ia && ia->kind == HIR_EXPR_NAME)
+			drop_mark_consumed(ctx, ia->data.name.name);
+	}
+	char arch_buf[256];
+	codegen_expression(ctx, rhs->data.call.args[0], arch_buf);
+	const char *arch_name = NULL;
+	HirArchetypeDecl *arch = NULL;
+	if (rhs->data.call.args[0]->kind == HIR_EXPR_NAME) {
+		const char *name = rhs->data.call.args[0]->data.name.name;
+		ValueInfo *av = find_value(ctx, name);
+		if (av && av->arch_name) {
+			arch_name = av->arch_name;
+			arch = find_archetype_decl(ctx, arch_name);
+		} else if (find_archetype_decl(ctx, name)) {
+			arch_name = name;
+			arch = find_archetype_decl(ctx, arch_name);
+		}
+	}
+	if (arch)
+		arch_name = arch->name;
+	if (!arch || !arch_name)
+		return;
+
+	/* Evaluate column-field arguments (skip non-column fields). */
+	char field_bufs[32][256];
+	int arg_count = 0, field_idx = 0;
+	for (int i = 1; i < rhs->data.call.arg_count && arg_count < 32; i++) {
+		while (field_idx < arch->field_count && arch->fields[field_idx]->kind != FIELD_COLUMN)
+			field_idx++;
+		if (field_idx < arch->field_count) {
+			codegen_expression(ctx, rhs->data.call.args[i], field_bufs[arg_count]);
+			arg_count++;
+			field_idx++;
+		}
+	}
+
+	/* Out-slots: targets[0] = handle (i64), targets[1] = ok (i32). */
+	char *h_ptr = (target_count > 0) ? cg_outparam_slot(ctx, &targets[0], "i64", "handle", 64, arch_name) : NULL;
+	char *ok_ptr = (target_count > 1) ? cg_outparam_slot(ctx, &targets[1], "i32", "int", 32, NULL) : NULL;
+	if (!h_ptr) {
+		h_ptr = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca i64\n", h_ptr);
+	}
+	if (!ok_ptr) {
+		ok_ptr = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca i32\n", ok_ptr);
+	}
+
+	buffer_append_fmt(ctx, "  call void @arche_insert_%s(%%struct.%s* %s", arch_name, arch_name, arch_buf);
+	field_idx = 0;
+	for (int i = 0; i < arg_count; i++) {
+		while (field_idx < arch->field_count && arch->fields[field_idx]->kind != FIELD_COLUMN)
+			field_idx++;
+		if (field_idx < arch->field_count) {
+			const char *ft = llvm_type_from_arche(field_base_type_name(arch->fields[field_idx]->type));
+			if (field_total_elements(arch->fields[field_idx]->type) > 1 && strcmp(ft, "i8") == 0)
+				buffer_append_fmt(ctx, ", %s* %s", ft, field_bufs[i]);
+			else
+				buffer_append_fmt(ctx, ", %s %s", ft, field_bufs[i]);
+			field_idx++;
+		}
+	}
+	buffer_append_fmt(ctx, ", i64* %s, i32* %s)\n", h_ptr, ok_ptr);
+}
+
+/* Emit `delete(h)(ok:)` (or legacy `delete(P, h)(ok:)`): resolve the pool from the handle, allocate
+ * the ok out-slot, and call the void `@arche_delete_<arch>` helper. */
+static void cg_emit_delete_mb(CodegenContext *ctx, HirExpr *rhs, HirBindingTarget *targets, int target_count) {
+	char arch_buf[256];
+	char idx_buf[256];
+	arch_buf[0] = '\0';
+	idx_buf[0] = '\0';
+	const char *arch_name = NULL;
+	int argc = rhs->data.call.arg_count;
+	if (argc >= 2) {
+		codegen_expression(ctx, rhs->data.call.args[0], arch_buf);
+		codegen_expression(ctx, rhs->data.call.args[1], idx_buf);
+		if (rhs->data.call.args[0]->kind == HIR_EXPR_NAME) {
+			const char *name = rhs->data.call.args[0]->data.name.name;
+			ValueInfo *av = find_value(ctx, name);
+			if (av && av->arch_name)
+				arch_name = av->arch_name;
+			else if (find_archetype_decl(ctx, name))
+				arch_name = name;
+		}
+	} else if (argc >= 1) {
+		codegen_expression(ctx, rhs->data.call.args[0], idx_buf);
+		if (rhs->data.call.args[0]->kind == HIR_EXPR_NAME) {
+			ValueInfo *hv = find_value(ctx, rhs->data.call.args[0]->data.name.name);
+			if (hv && hv->handle_archetype)
+				arch_name = hv->handle_archetype;
+		}
+		if (arch_name) {
+			arch_name = canonical_arch_name(ctx, arch_name);
+			snprintf(arch_buf, sizeof(arch_buf), "@%s", arch_name);
+		}
+	}
+	if (!arch_name)
+		return;
+	const char *cn = canonical_arch_name(ctx, arch_name);
+	char *ok_ptr = (target_count > 0) ? cg_outparam_slot(ctx, &targets[0], "i32", "int", 32, NULL) : NULL;
+	if (!ok_ptr) {
+		ok_ptr = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca i32\n", ok_ptr);
+	}
+	buffer_append_fmt(ctx, "  call void @arche_delete_%s(%%struct.%s* %s, i64 %s, i32* %s)\n", cn, cn, arch_buf, idx_buf,
+	                  ok_ptr);
+}
+
 /* ========== STATEMENT CODEGEN ========== */
 
 static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
@@ -5296,6 +5450,16 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		/* Inside a callback specialization, a call to a callback param resolves to
 		 * its bound proc (matches the EXPR_CALL path). */
 		fn = cb_resolve(ctx, fn);
+		/* Mandatory-ok builtins: `insert(P,…)(handle:, ok:)` / `delete(h)(ok:)` write their out-slots
+		 * directly — they are not user procs, so intercept before the callee_proc machinery. */
+		if (fn && rhs && rhs->kind == HIR_EXPR_CALL && strcmp(fn, "insert") == 0) {
+			cg_emit_insert_mb(ctx, rhs, targets, target_count);
+			break;
+		}
+		if (fn && rhs && rhs->kind == HIR_EXPR_CALL && strcmp(fn, "delete") == 0) {
+			cg_emit_delete_mb(ctx, rhs, targets, target_count);
+			break;
+		}
 		HirFuncDecl *callee_func = fn ? find_func_decl(ctx, fn) : NULL;
 		HirProcDecl *callee_proc = (!callee_func && fn) ? find_proc_decl(ctx, fn) : NULL;
 
@@ -6856,8 +7020,11 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 
 	buffer_append(ctx, "}\n\n");
 
-	/* Emit insert helper function */
-	buffer_append_fmt(ctx, "define %si64 @arche_insert_%s(%%struct.%s* %%arch", cg_shared(ctx), arch->name, arch->name);
+	/* Emit insert helper function. Mandatory-ok contract: the helper never aborts on a full pool —
+	 * it writes the generation-checked handle through `%h_out` and a success flag through `%ok_out`
+	 * (1 = inserted, 0 = pool full / handle is 0). Callers MUST supply `(handle:, ok:)`. */
+	buffer_append_fmt(ctx, "define %svoid @arche_insert_%s(%%struct.%s* %%arch", cg_shared(ctx), arch->name,
+	                  arch->name);
 	for (int i = 0; i < arch->field_count; i++) {
 		if (arch->fields[i]->kind == FIELD_COLUMN) {
 			const char *base_type = llvm_type_from_arche(field_base_type_name(arch->fields[i]->type));
@@ -6870,7 +7037,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 			}
 		}
 	}
-	buffer_append(ctx, ") {\n");
+	buffer_append(ctx, ", i64* %h_out, i32* %ok_out) {\n");
 	buffer_append(ctx, "entry:\n");
 
 	/* Setup allocas for slot and increment flag */
@@ -6924,10 +7091,11 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	}
 	buffer_append(ctx, "  br i1 %at_capacity, label %overflow, label %use_count\n\n");
 
-	/* Overflow: abort (fixed budget exceeded) */
+	/* Overflow: fixed budget exceeded — report failure as a value (ok=0, handle=0), do NOT abort. */
 	buffer_append(ctx, "overflow:\n");
-	buffer_append(ctx, "  call void @abort()\n");
-	buffer_append(ctx, "  unreachable\n\n");
+	buffer_append(ctx, "  store i64 0, i64* %h_out\n");
+	buffer_append(ctx, "  store i32 0, i32* %ok_out\n");
+	buffer_append(ctx, "  ret void\n\n");
 
 	/* Use count as slot */
 	buffer_append(ctx, "use_count:\n");
@@ -7019,12 +7187,15 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	buffer_append(ctx, "  %slot_i32 = trunc i64 %final_slot to i32\n");
 	buffer_append(ctx, "  %slot_i64 = zext i32 %slot_i32 to i64\n");
 	buffer_append(ctx, "  %handle = or i64 %slot_i64, %gen_shifted\n");
-	buffer_append(ctx, "  ret i64 %handle\n");
+	buffer_append(ctx, "  store i64 %handle, i64* %h_out\n");
+	buffer_append(ctx, "  store i32 1, i32* %ok_out\n");
+	buffer_append(ctx, "  ret void\n");
 	buffer_append(ctx, "}\n\n");
 
-	/* Emit delete helper function */
-	buffer_append_fmt(ctx, "define %svoid @arche_delete_%s(%%struct.%s* %%arch, i64 %%handle) {\n", cg_shared(ctx),
-	                  arch->name, arch->name);
+	/* Emit delete helper function. Mandatory-ok: gen-exhaustion (a resource limit) reports ok=0; a
+	 * STALE handle is a use-after-free BUG and still aborts (so `delete` is inherently a `proc!` op). */
+	buffer_append_fmt(ctx, "define %svoid @arche_delete_%s(%%struct.%s* %%arch, i64 %%handle, i32* %%ok_out) {\n",
+	                  cg_shared(ctx), arch->name, arch->name);
 	buffer_append(ctx, "entry:\n");
 
 	/* Unpack slot and generation from handle */
@@ -7060,9 +7231,10 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	 * handle could alias a fresh entity. Abort like a stack overflow would. */
 	buffer_append(ctx, "  %gen_maxed = icmp eq i32 %stored_gen, -1\n");
 	buffer_append(ctx, "  br i1 %gen_maxed, label %gen_exhausted, label %do_free\n\n");
+	/* Generation exhausted: a resource limit, reported as a value (ok=0) rather than aborting. */
 	buffer_append(ctx, "gen_exhausted:\n");
-	buffer_append(ctx, "  call void @abort()\n");
-	buffer_append(ctx, "  unreachable\n\n");
+	buffer_append(ctx, "  store i32 0, i32* %ok_out\n");
+	buffer_append(ctx, "  ret void\n\n");
 	buffer_append(ctx, "do_free:\n");
 	/* Increment generation */
 	buffer_append(ctx, "  %new_gen = add i32 %stored_gen, 1\n");
@@ -7090,6 +7262,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	buffer_append(ctx, "  %new_fc = add i64 %free_count, 1\n");
 	buffer_append(ctx, "  store i64 %new_fc, i64* %fc_ptr\n");
 
+	buffer_append(ctx, "  store i32 1, i32* %ok_out\n");
 	buffer_append(ctx, "  ret void\n");
 	buffer_append(ctx, "}\n\n");
 
@@ -7668,7 +7841,9 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 			scope->values[scope->value_count++] = vi;
 		} else if (ptype && (ptype->tag == HIR_TYPE_SHAPED_ARRAY || ptype->tag == HIR_TYPE_ARRAY)) {
 			/* Sized array (any element) or extern char[]: %argN is already the element pointer —
-			 * bind as type-6 so it indexes; field_type drives element typing. */
+			 * bind as type-6 so it indexes; field_type drives element typing. A sized `T[N]` carries
+			 * its static length N (so `.length` resolves and it forwards into a slice with that len);
+			 * an unbounded `T[]` has no static length (-1). */
 			ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
 			ValueInfo *vi = calloc(1, sizeof(ValueInfo));
 			vi->name = malloc(strlen(func->params[i]->name) + 1);
@@ -7677,7 +7852,7 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 			strcpy(vi->llvm_name, param_name);
 			vi->type = 6;
 			vi->arch_name = NULL;
-			vi->string_len = -1;
+			vi->string_len = (ptype->tag == HIR_TYPE_SHAPED_ARRAY && ptype->rank > 0) ? ptype->rank : -1;
 			vi->field_type = en;
 			vi->bit_width = strcmp(elt, "double") == 0 ? 64 : (strcmp(elt, "i8") == 0 ? 8 : 32);
 			scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));

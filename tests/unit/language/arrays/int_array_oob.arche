@@ -1,5 +1,5 @@
-// Out-of-bounds int-array write aborts (regression for bounds checking).
-// RUN: %arche build -o %t %s && ! %t
+// Out-of-bounds int-array write is rejected at compile time (full totality: the index must be provable).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "may panic" %t.out
 main :: proc() {
   b: int[4];
   i    := 4;

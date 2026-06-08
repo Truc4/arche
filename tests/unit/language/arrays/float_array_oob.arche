@@ -1,5 +1,5 @@
-// Out-of-bounds float-array access aborts (runtime index, not elided).
-// RUN: %arche build -o %t %s && ! %t
+// Out-of-bounds float-array access is rejected at compile time (full totality: the index must be provable).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "may panic" %t.out
 #import { fmt }
 main :: proc() {
   b: float[4];

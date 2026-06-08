@@ -104,6 +104,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 
 	/* Purity */
 	[SEM_DIAG_func_not_pure]                 = { "E0090", "func_not_pure",                 CLASS_ERROR, 1 },
+	[SEM_DIAG_panic_in_total]                = { "E0095", "panic_in_total",                CLASS_ERROR, 1 },
+	[SEM_DIAG_insert_delete_outlist]         = { "E0096", "insert_delete_outlist",         CLASS_ERROR, 1 },
 
 	/* Assignment targets */
 	[SEM_DIAG_assign_to_const]               = { "E0091", "assign_to_const",               CLASS_ERROR, 1 },
@@ -698,6 +700,16 @@ SemDiag *sem_emit_const_rhs_invalid(SemanticContext *ctx, SourceLoc loc) {
 SemDiag *sem_emit_func_not_pure(SemanticContext *ctx, SourceLoc loc, const char *name, const char *reason) {
 	return sem_emit_(ctx, SEM_DIAG_func_not_pure, loc, "func '%s' is not pure — %s (effects belong in a proc)", name,
 	                 reason);
+}
+SemDiag *sem_emit_panic_in_total(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
+                                 const char *reason) {
+	return sem_emit_(ctx, SEM_DIAG_panic_in_total, loc, "%s '%s' may panic — %s; mark it `proc!` or handle the abort",
+	                 kind, name, reason);
+}
+SemDiag *sem_emit_insert_delete_outlist(SemanticContext *ctx, SourceLoc loc, const char *name, const char *form) {
+	return sem_emit_(ctx, SEM_DIAG_insert_delete_outlist, loc,
+	                 "`%s` reports success as a value — it must be called as a statement with an out-list: `%s`", name,
+	                 form);
 }
 
 /* --- Assignment targets --- */

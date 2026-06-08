@@ -5,8 +5,8 @@ Particle :: arche { id :: int }
 Particle[5]
 
 main :: proc() {
-  insert(Particle, 1);
-  insert(Particle, 2);
+  insert(Particle, 1)(_:, _:);
+  insert(Particle, 2)(_:, _:);
   a := Particle.id[0];
   b := Particle.id[1];
   fmt.assert(a == 1, "a != 1\n");

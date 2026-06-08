@@ -5,7 +5,7 @@ Matrix :: arche { data :: float[10] }
 Matrix[5]
 
 main :: proc() {
-  insert(Matrix, 1.5);
+  insert(Matrix, 1.5)(_:, _:);
   val := Matrix.data[0, 0];
   vi  := val * 10.0;
   fmt.print("value: 15\n");

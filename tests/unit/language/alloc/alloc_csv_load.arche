@@ -6,7 +6,7 @@ Transaction[5](5) {
   price: 0.0, quantity: 0,
 }
 
-main :: proc() {
+main :: proc!() {
   io.fopen_read("../../../../../tests/fixtures/transactions.csv")(fd:);
   buf       : char[256];
   price_str : char[32];

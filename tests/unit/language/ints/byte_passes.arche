@@ -6,12 +6,24 @@
 #import { fmt }
 copy_bytes :: func(own dst: char[], src: char[], n: i64) -> char[] {
   for (i: i64 = 0; i < n; i = i + 1) {
+    if (i >= dst.length) {
+      break;
+    }
+    if (i >= src.length) {
+      break;
+    }
     dst[i] = src[i];
   }
   return dst;
 }
 classify_commas :: func(data: char[], own mask: char[], n: i64) -> char[] {
   for (i: i64 = 0; i < n; i = i + 1) {
+    if (i >= mask.length) {
+      break;
+    }
+    if (i >= data.length) {
+      break;
+    }
     mask[i] = data[i] == 44;
   }
   return mask;

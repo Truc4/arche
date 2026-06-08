@@ -15,7 +15,7 @@ bump :: sys (hp) {
 }
 
 step :: proc() {
-  insert(Mob, 0);
+  insert(Mob, 0)(_:, _:);
   run bump;
   fmt.printf("n=%d\n", Mob.hp[0]);
 }

@@ -5,7 +5,9 @@
 // RUN: %arche build -o %t %s && %t | grep -q "len=4 a0=100 a1=200"
 #import { fmt }
 step :: func(own xs: int[], i: int, v: int) -> int[] {
-  xs[i] = v;
+  if (i >= 0 && i < xs.length) {
+    xs[i] = v;
+  }
   return xs;
 }
 

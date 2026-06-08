@@ -8,7 +8,7 @@
 Node[16] // one pool (the shape comes from the devices), sized to the max of store's 4 and cache's 16
 
 main :: proc() {
-  insert(Node, 2.0, 3.0);
+  insert(Node, 2.0, 3.0)(_:, _:);
   run store.bump; // val: 3 -> 4
   run cache.touch; // key: 2 -> 3
   fmt.assert(Node.val[0] == 4.0, "store.bump did not run\n");

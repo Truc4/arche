@@ -5,6 +5,9 @@
 // RUN: %arche build -o %t %s && %t | grep -q "zeroed n=2"
 #import { fmt }
 zero :: func(own xs: int[]) -> int {
+  if (xs.length < 2) {
+    return xs.length;
+  }
   xs[0] = 0;
   xs[1] = 0;
   return xs.length;
