@@ -1,6 +1,8 @@
 // The `net` module — TCP sockets. `#import { net }` then call `net.listen/accept/recv/send`.
 // Access is qualified-only: a bare `listen(...)` does not resolve. The arche-native API speaks
-// length-carried slices; the `#foreign` C layer (runtime/net.c) at the bottom is the implementation.
+// length-carried slices; the `#foreign` C layer (runtime/net.c) is the implementation, hidden behind
+// a `#module` band so the raw externs are NOT part of the device's public surface — importers see
+// only the slice-native wrappers, never `net.net_recv`.
 
 // The `socket` opaque type is declared in net.ds.arche (a device's types live in its datasheet, not
 // its impl); the procs below operate on it by bare name (datasheet types are global vocabulary).
@@ -10,6 +12,16 @@ listen :: proc(port: int)(s: socket) {
 }
 accept :: proc(s: socket)(c: socket) {
   net_accept(s)(c);
+}
+
+// Connect to `ip`:`port`; the returned `socket` auto-closes at scope exit (RAII) unless `move`d.
+connect :: proc(own ip: char[], port: int)(s: socket) {
+  net_connect(move ip, port)(s);
+}
+
+// Close a socket explicitly. `move` consumes it, so the RAII auto-drop does not also fire.
+close :: proc(own s: socket) {
+  net_close(move s);
 }
 
 // Send a slice: the byte count IS the slice's own length — no manual `n`. `data` is a borrow.
@@ -27,10 +39,12 @@ recv :: proc(s: socket, buf: char[])(out: char[]) {
   out = buf[0: r];
 }
 
-// C implementation layer (runtime/net.c). The slice-native wrappers above are the recommended API;
-// these raw foreigns stay reachable (`net.net_recv` / bare `net_recv`) as a C-interop affordance. A
-// `char[]` in BOTH the in- and out-lists is the in-out idiom — legitimate ONLY here, to align with
-// the C ABI (the call writes the lent pointer and hands it back); the wrappers never duplicate that way.
+// C implementation layer (runtime/net.c) — module-private. The `#module` band drops these externs
+// from the device's export set, so `net.net_recv` does not resolve for importers; only the wrappers
+// above are public (the bare C symbol stays linkable, an unavoidable C-ABI fact). A `char[]` in BOTH
+// the in- and out-lists is the in-out idiom — legitimate ONLY here, to align with the C ABI (the call
+// writes the lent pointer and hands it back); the wrappers never duplicate that way.
+#module
 #foreign
 net_listen :: proc(port: int)(s: socket)
 net_accept :: proc(s: socket)(r: socket)

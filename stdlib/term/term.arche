@@ -1,6 +1,20 @@
 // The `term` module — terminal raw mode + key reads (C-backed in runtime/term.c).
 // `#import { term }` then call `term.raw_enable()`, `term.raw_restore()`, `term.read_key()`.
-// Access is qualified-only: a bare `term_raw_enable()` does not resolve.
+// These arche wrappers are the public API; the raw `term_*` C externs are module-private (behind the
+// `#module` band) and are not reachable from importers — qualified or bare.
+
+raw_enable :: proc() {
+  term_raw_enable();
+}
+raw_restore :: proc() {
+  term_raw_restore();
+}
+read_key :: proc()(k: int) {
+  term_read_key()(k);
+}
+
+// C implementation layer (runtime/term.c) — module-private.
+#module
 #foreign {
   term_raw_enable :: proc()
   term_raw_restore :: proc()

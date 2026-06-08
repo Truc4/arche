@@ -7,6 +7,6 @@
 main :: proc() {
   io.stdout()(f:);
   buf: char[8];
-  // net.net_send expects a `socket`; handing it an `file` is the type error.
-  net.net_send(f, buf, 8)(buf, _r:);
+  // net.send expects a `socket`; handing it an `fd` is the type error.
+  net.send(f, buf);
 }

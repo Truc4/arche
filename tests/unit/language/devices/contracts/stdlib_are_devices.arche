@@ -1,9 +1,10 @@
-// RULE (NOT yet enforced — EXPECTED TO FAIL until the stdlib is migrated):
+// RULE (enforced — the stdlib migration is complete, this PASSES):
 //   Everything you import is a DEVICE, so every stdlib module must ship a `.ds.arche` datasheet
 //   (its types + any requirements). A stdlib module that is still a bare proc/func module (no
 //   datasheet) is not a device. This structural test checks every stdlib module has a datasheet.
 //
-// Today no stdlib module has a `.ds.arche`, so the check fails and the test FAILS until migration.
+// Every stdlib module now ships a `.ds.arche`, so the check passes; it guards against regression
+// (adding a new stdlib module without a datasheet would fail here).
 // RUN: for m in csv fmt http io net os parse router str term; do test -f %repo/stdlib/$m/$m.ds.arche || { echo "stdlib '$m' is not a device: missing $m.ds.arche"; exit 1; }; done
 #import { fmt }
 main :: proc() {
