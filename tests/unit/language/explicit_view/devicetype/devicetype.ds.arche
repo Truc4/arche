@@ -1,0 +1,5 @@
+// Datasheet for the `devicetype` device: defines the device's type vocabulary. A datasheet decl is
+// global (unprefixed), so the device's own impl files reference `color` by bare name. Not a
+// standalone test — it is loaded as part of the device.
+// RUN: true
+color :: enum { red, green, blue }

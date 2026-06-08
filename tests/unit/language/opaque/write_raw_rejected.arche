@@ -1,0 +1,12 @@
+// An opaque is create-once: you may bind it (`:=`), move/borrow/return it, but you may NEVER
+// overwrite an existing opaque binding with `=`. `f = 5` over the opaque param `f` is illegal.
+// `f` is a borrow param (no handle is ever created — opaques only come from FFI), so the ONLY thing
+// under test is the `=` overwrite. RED until the ban lands (today it compiles).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "assign over opaque" %t.out
+res :: opaque
+@allow(unused_function)
+clobber :: proc(f: res) {
+  f = 5;
+}
+main :: proc() {
+}

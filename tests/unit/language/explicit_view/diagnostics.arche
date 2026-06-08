@@ -5,9 +5,11 @@
 // The code (E0001/W0002) is stable forever; the slug ("undefined_symbol") is
 // the diagnostic's human-readable identity; the message can evolve.
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0001 undefined_symbol 0 Undefined symbol 'unknown_thing'"
-// RUN: %build/arche-analyzer --dump %s | grep -qF "warning W0002 proc_no_effect 0 proc 'main'"
+// RUN: %build/arche-analyzer --dump %s | grep -qF "warning W0002 proc_no_effect 0 proc 'noop'"
 // Error carries the offending expression's position (the name token).
 // RUN: %build/arche-analyzer --dump %s 2>/dev/null | grep -qxE "^DIAG 12 [0-9]+ error E0001 undefined_symbol 0 Undefined symbol 'unknown_thing'"
 main :: proc() {
   x := unknown_thing;
+}
+noop :: proc() {
 }

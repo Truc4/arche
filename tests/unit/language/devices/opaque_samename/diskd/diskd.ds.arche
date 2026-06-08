@@ -1,0 +1,4 @@
+// Datasheet: device `diskd` ALSO exposes opaque handle `file` — same name, same shape. Two
+// datasheets agreeing on `file :: opaque` is shared vocabulary, not a redefinition. Not standalone.
+// RUN: true
+file :: opaque

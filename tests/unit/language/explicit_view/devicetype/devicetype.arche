@@ -1,0 +1,12 @@
+// Regression: a device IMPL file references a type defined in its sibling `.ds.arche` datasheet
+// (`color`) by bare name. The editor analyzes one file in isolation — nothing `#import`s the device,
+// so without loading the sibling datasheet the bare `color` is "Undefined". The analyzer must pull in
+// the open file's own device module so device types resolve exactly as they do in a full build.
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "Undefined") -eq 0
+// No diagnostics at all — the impl file is clean once its datasheet is in scope.
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^DIAG") -eq 0
+// The return-type `color` resolves: its inferred-type view shows the enum's transparent backing.
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 10 24 1 0 alias (i32)"
+pick :: func() -> color {
+  return color.red;
+}

@@ -19,6 +19,12 @@ void semantic_add_module(const char *name, const SyntaxNode *root, const char *s
                          DeclOrigin origin);
 /* Clear registered modules (static registry; reset at the start of each compilation). */
 void semantic_reset_modules(void);
+
+/* Editor-only: also inline module `name` into the root namespace even when the root has no `#import`
+ * for it (NULL clears). Set by the analyzer when the open document is a member of a device folder, so
+ * its sibling datasheet's global type vocabulary resolves; the compiler never sets it. Call after
+ * registering the module's files, before semantic_analyze_cst. Reset by semantic_reset_modules. */
+void semantic_set_extra_inline_module(const char *name);
 /* 1 if a module of this name is currently registered (used to detect import-not-found). */
 int semantic_has_module(const char *name);
 

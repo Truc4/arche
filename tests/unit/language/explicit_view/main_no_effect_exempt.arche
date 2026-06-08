@@ -1,0 +1,9 @@
+// `main` is the entry point: it can't be removed and can't become a func, so an empty/effect-free
+// main (a normal mid-edit state) must NEVER trigger W0002 proc_no_effect (nor proc_could_be_func).
+// A sibling empty proc still fires the lint, proving the exemption is main-specific, not lint-off.
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "proc 'main'") -eq 0
+// RUN: %build/arche-analyzer --dump %s | grep -qF "warning W0002 proc_no_effect 0 proc 'other'"
+main :: proc() {
+}
+other :: proc() {
+}

@@ -1254,11 +1254,13 @@ static HirStmt *lower_stmt_cst(SyntaxView s) {
 			for (int c = 0; c < arm.node->child_count; c++)
 				if (arm.node->children[c].tag == SE_TOKEN) {
 					TokenKind k = arm.node->children[c].as.token.kind;
+					if (k == TOK_COLON)
+						break; /* the pattern ends at the arm `:` */
 					if (k == TOK_NUMBER || k == TOK_STRING || k == TOK_CHAR_LIT || k == TOK_IDENT) {
 						pk = k;
 						pt = (SynText){arm.src + arm.node->children[c].as.token.offset,
 						               arm.node->children[c].as.token.length};
-						break;
+						/* keep scanning: in a qualified `Enum.case` the LAST ident before `:` is the case */
 					}
 				}
 			if (pk == TOK_IDENT && pt.len == 1 && pt.ptr[0] == '_') {
@@ -1274,11 +1276,13 @@ static HirStmt *lower_stmt_cst(SyntaxView s) {
 			for (int c = 0; c < arm.node->child_count; c++)
 				if (arm.node->children[c].tag == SE_TOKEN) {
 					TokenKind k = arm.node->children[c].as.token.kind;
+					if (k == TOK_COLON)
+						break; /* the pattern ends at the arm `:` */
 					if (k == TOK_NUMBER || k == TOK_STRING || k == TOK_CHAR_LIT || k == TOK_IDENT) {
 						pk = k;
 						pt = (SynText){arm.src + arm.node->children[c].as.token.offset,
 						               arm.node->children[c].as.token.length};
-						break;
+						/* keep scanning: in a qualified `Enum.case` the LAST ident before `:` is the case */
 					}
 				}
 			if (pk == TOK_IDENT && pt.len == 1 && pt.ptr[0] == '_')

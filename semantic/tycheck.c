@@ -79,7 +79,10 @@ static int check_literal_fits(const TypeArena *arena, SemanticContext *ctx, Synt
 		tyid_display(arena, expected, want, sizeof(want));
 		if (is_width_int_name(want) && (is_int_lit || is_char_lit))
 			ok = 1;
-		if (!ok && ctx && semantic_is_type_alias(ctx, want)) {
+		/* An enum is a closed NAMED set, not a numeric continuum: a bare int literal does not inhabit it
+		 * (you must name a case — `color.red` — or convert explicitly). Other int-backed subtypes still
+		 * take untyped literals (`x: meters = 5`). */
+		if (!ok && ctx && semantic_is_type_alias(ctx, want) && !semantic_is_enum_type(ctx, want)) {
 			const char *b = semantic_resolve_type_alias(ctx, want);
 			if (b) {
 				if (is_int_lit && (strcmp(b, "int") == 0 || strcmp(b, "float") == 0 || strcmp(b, "char") == 0 ||
@@ -262,8 +265,9 @@ static TypeId synth(TyCtx *cx, SyntaxView e) {
 	}
 }
 
-/* Compatibility for ASSIGNMENT contexts: int/char/width-ints coerce; int↔float rejected; opaque
- * flows with int-shaped values. */
+/* Compatibility for ASSIGNMENT contexts: int/char/width-ints coerce; int↔float rejected. An opaque
+ * NEVER coerces to/from an int — opaque handles are sealed (born only at the FFI boundary, read/
+ * written only in C); the only same-opaque case is exact identity, handled by `tyid_equal`. */
 static int prim_silently_compatible(const TypeArena *arena, TypeId a, TypeId b) {
 	char an[32];
 	char bn[32];
@@ -272,9 +276,6 @@ static int prim_silently_compatible(const TypeArena *arena, TypeId a, TypeId b) 
 	int a_intish = (strcmp(an, "int") == 0 || strcmp(an, "char") == 0 || is_width_int_name(an));
 	int b_intish = (strcmp(bn, "int") == 0 || strcmp(bn, "char") == 0 || is_width_int_name(bn));
 	if (a_intish && b_intish)
-		return 1;
-	if ((strcmp(an, "opaque") == 0 && (b_intish || strcmp(bn, "opaque") == 0)) ||
-	    (strcmp(bn, "opaque") == 0 && (a_intish || strcmp(an, "opaque") == 0)))
 		return 1;
 	return 0;
 }
@@ -303,22 +304,46 @@ static int subtype_check(TyCtx *cx, TypeId got, TypeId expected) {
 	if (e_sub) {
 		const char *eb = semantic_resolve_type_alias(cx->ctx, ename);
 		if (eb && strcmp(eb, "opaque") == 0) {
-			if (g_sub)
-				return 0;
-			return 1;
+			/* expected is an opaque handle: only the SAME opaque is acceptable (exact identity is caught
+			 * by `tyid_equal` before this). A different opaque sibling, or any int, is incompatible — no
+			 * minting an opaque from an int. */
+			return 0;
 		}
 		return 0;
 	}
 	if (g_sub) {
 		const char *gb = semantic_resolve_type_alias(cx->ctx, gname);
+		if (gb && strcmp(gb, "opaque") == 0) {
+			/* an opaque handle is usable only as the SAME opaque (exact, handled earlier) or as the bare
+			 * `opaque` backing at the FFI seam — never read out as an int. */
+			if (strcmp(ename, "opaque") == 0)
+				return 1;
+			return 0;
+		}
 		if (gb && strcmp(gb, ename) == 0)
 			return 1;
-		if (gb && strcmp(gb, "opaque") == 0 &&
-		    (strcmp(ename, "opaque") == 0 || strcmp(ename, "int") == 0 || strcmp(ename, "char") == 0 ||
-		     is_width_int_name(ename)))
+		/* An int-backed distinct subtype (incl. an enum) is usable AS any integer width — `fd` flows
+		 * into the `i64` syscall, `count` into an `int`, etc. (one-way; the reverse needs `T(x)`). */
+		int gb_int = gb && (strcmp(gb, "int") == 0 || strcmp(gb, "char") == 0 || is_width_int_name(gb));
+		int en_int = strcmp(ename, "int") == 0 || strcmp(ename, "char") == 0 || is_width_int_name(ename);
+		if (gb_int && en_int)
 			return 1;
 	}
 	return -1;
+}
+
+/* True if `t` is a distinct (non-transparent) nominal whose backing is `opaque` — a sealed handle
+ * type like `file`/`res`. Such a value's cell can never be written from arche (it is create-once and
+ * only flows), so `=`-assigning over it is illegal. */
+static int target_is_opaque_nominal(TyCtx *cx, TypeId t) {
+	if (!cx->ctx || tyid_kind(cx->arena, t) != TYK_NOMINAL)
+		return 0;
+	char name[64];
+	tyid_display(cx->arena, t, name, sizeof(name));
+	if (!semantic_is_type_alias(cx->ctx, name) || semantic_alias_is_transparent(cx->ctx, name))
+		return 0;
+	const char *b = semantic_resolve_type_alias(cx->ctx, name);
+	return b && strcmp(b, "opaque") == 0;
 }
 
 static void check(TyCtx *cx, SyntaxView e, TypeId expected, const char *where) {
@@ -415,8 +440,17 @@ static void visit_stmt(TyCtx *cx, SyntaxView s, const DeclSummary *fn) {
 			visit_expr(cx, target);
 		if (sv_present(value))
 			visit_expr(cx, value);
-		if (sv_present(target) && sv_present(value))
-			check(cx, value, synth(cx, target), "assignment");
+		if (sv_present(target) && sv_present(value)) {
+			TypeId tt = synth(cx, target);
+			/* An opaque handle is create-once — you may never overwrite an existing one with `=`. */
+			if (target_is_opaque_nominal(cx, tt)) {
+				char on[64];
+				tyid_display(cx->arena, tt, on, sizeof(on));
+				sem_emit_opaque_overwrite(cx->ctx, sem_node_loc(target.node), on);
+				break;
+			}
+			check(cx, value, tt, "assignment");
+		}
 		break;
 	}
 	case SN_MULTI_BIND_STMT:

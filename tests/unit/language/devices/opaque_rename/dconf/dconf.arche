@@ -1,0 +1,5 @@
+// `dconf` behavior: a pure func borrowing its `handle`, returning a constant. Not a standalone test.
+// RUN: true
+use :: func(h: handle) -> int {
+  return 7;
+}

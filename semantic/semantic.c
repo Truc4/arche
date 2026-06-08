@@ -922,11 +922,37 @@ static int is_type_conversion_callee(SemanticContext *ctx, const char *name) {
  * names), not by syntactic node kind — so `tau :: pi` (pi a value) is a value const, not an alias.
  * `name`/`backing`/`lexeme` are stored by pointer and must outlive ctx (syntax tree or static strings). */
 
+/* `@implements(<device>.<req>, …)` map (driver-side): each device requirement TYPE name (e.g.
+ * `file1`, `handle`) maps to the driver's own type name (e.g. `file`, `dh`). Built once at the start
+ * of pass 0 from the entry decls' decorators (sem_build_impl_map), consulted while registering
+ * datasheet types and interning device param/return types so the device's opaque is UNIFIED with /
+ * RENAMED to the driver's — the semantic mirror of lowering's g_impl pass. Cleared at pass end. */
+#define SEM_IMPL_CAP 64
+static char *g_sem_impl_req[SEM_IMPL_CAP];
+static char *g_sem_impl_driver[SEM_IMPL_CAP];
+static int g_sem_impl_n = 0;
+
+static const char *impl_driver_for(const char *name) {
+	if (!name)
+		return NULL;
+	for (int i = 0; i < g_sem_impl_n; i++)
+		if (strcmp(g_sem_impl_req[i], name) == 0)
+			return g_sem_impl_driver[i];
+	return NULL;
+}
+
 /* Register a nominal alias `name → backing`; redefinition must AGREE (same backing).
  * `loc` is the alias declaration's source position — used for the redefinition error
  * and stored so the late "unknown backing" pass can blame the original site. */
 static void register_type_alias_tiered(SemanticContext *ctx, const char *name, const char *backing, int transparent,
                                        SourceLoc loc, int from_datasheet) {
+	/* A datasheet type that a driver `@implements` is renamed out of existence: the driver's own type
+	 * (registered separately) is the identity. Skipping it both UNIFIES (test: file1/file2 → file) and
+	 * avoids the define-once collision when the driver reuses a colliding name (test: dconf.handle → dh
+	 * frees `handle` for the importer's own). `name` is borrowed from the decl (freed at decl teardown),
+	 * so skipping does not leak. */
+	if (from_datasheet && impl_driver_for(name))
+		return;
 	for (int j = 0; j < ctx->type_alias_count; j++) {
 		if (strcmp(ctx->type_alias_names[j], name) == 0) {
 			/* Define-once: a type/component name is declared exactly once program-wide. A second
@@ -1206,21 +1232,20 @@ static const char *resolve_expression_type(SemanticContext *ctx, SyntaxView v) {
 	}
 
 	case SN_FIELD_EXPR: {
-		/* `Enum.variant` is a compile-time int constant (enums are i32-backed), the same value the
-		 * old analysis folded the field access into. Handle it before the archetype/field path. */
+		/* `Enum.variant` is a value of the ENUM type (distinct, i32-backed). It folds to its int value
+		 * at codegen, but its TYPE is the enum — so `f : fd = fd.stdin` type-checks and a raw int can't
+		 * masquerade as a case. */
 		if (sv_count(v, SN_FIELD_NAME) == 1) {
 			char *idnt = sv_resolved_name(ctx, v);
 			if (enum_is_type(ctx, idnt)) {
 				char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, 0));
 				long ev = 0;
 				int is_variant = enum_variant_lookup(ctx, idnt, fld, &ev);
-				free(idnt);
 				free(fld);
 				if (is_variant)
-					return "i32";
-			} else {
-				free(idnt);
+					return sem_own_str(ctx, idnt); /* the enum type name (pool-owned, stable) */
 			}
+			free(idnt);
 		}
 		return resolve_base_chain_type(ctx, v);
 	}
@@ -1355,6 +1380,11 @@ static const char *nominal_type_of_expr(SemanticContext *ctx, SyntaxView v) {
 		if (tyid_kind(ctx->ty_arena, var->type_id) == TYK_NOMINAL &&
 		    tyid_backing(ctx->ty_arena, var->type_id) != TYID_UNKNOWN)
 			return tyid_nominal_name(ctx->ty_arena, var->type_id);
+		/* Untyped `k := Enum.case` records the distinct alias in inferred_type but no type_id — keep the
+		 * nominal so `k` stays the enum (not its int backing) through a call. */
+		if (var->inferred_type && is_type_alias(ctx, var->inferred_type) &&
+		    !alias_is_transparent(ctx, var->inferred_type))
+			return var->inferred_type;
 		return NULL;
 	}
 	/* simple (unqualified) callee only — a qualified `mod.f` has SN_FIELD_NAME children */
@@ -1643,8 +1673,13 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 
 		int argc = sem_expr_count(v);
 
-		/* Type conversion `T(x)`: callee is a type name; analyze the args and stop. */
+		/* Type conversion `T(x)`: callee is a type name; analyze the args and stop. But constructing an
+		 * opaque this way is illegal — opaque handles are born only at the FFI boundary, never minted in
+		 * arche, so `res(5)` for an opaque `res` is rejected. */
 		if (func_name && is_type_conversion_callee(ctx, func_name)) {
+			const char *cb = resolve_type_alias(ctx, func_name);
+			if (cb && strcmp(cb, "opaque") == 0)
+				sem_emit_opaque_construct(ctx, sem_node_loc(v.node), func_name);
 			for (int i = 0; i < argc; i++) {
 				ctx->analyzing_call_arg = 1;
 				analyze_expression(ctx, sem_node_at_expr(v, i));
@@ -2889,13 +2924,16 @@ static void lint_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 	if (func_purity_body_view(ctx, proc->body_node) != NULL)
 		return;
 
-	/* Pure body. A `func` returns EXACTLY ONE value, so only a SINGLE-out pure proc could be a func;
-	 * a multi-out pure proc is legitimately a (multi-return) proc — no lint. `main` is the entry point,
-	 * never nudged toward `func`. A zero-out pure proc does nothing observable — flag for removal. The
-	 * purity test is the SAME predicate enforce_func_purity uses, so "could be a func" means exactly
-	 * "would compile as a func". */
+	/* Pure body. `main` is the entry point: it can't be removed and can't be a func, and an empty/
+	 * effect-free main is a normal mid-edit state — never lint it (neither could-be-func nor no-effect).
+	 * A `func` returns EXACTLY ONE value, so only a SINGLE-out pure proc could be a func; a multi-out
+	 * pure proc is legitimately a (multi-return) proc — no lint. A zero-out pure proc does nothing
+	 * observable — flag for removal. The purity test is the SAME predicate enforce_func_purity uses, so
+	 * "could be a func" means exactly "would compile as a func". */
 	int is_main = proc->name && strcmp(proc->name, "main") == 0;
-	if (proc->out_param_count == 1 && !is_main) {
+	if (is_main) {
+		return;
+	} else if (proc->out_param_count == 1) {
 		sem_emit_lint_proc_could_be_func(ctx, proc->loc, proc->name ? proc->name : "<unknown>");
 	} else if (proc->out_param_count == 0) {
 		sem_emit_lint_proc_no_effect(ctx, proc->loc, proc->name ? proc->name : "<unknown>");
@@ -3954,6 +3992,91 @@ static char *syntax_drop_type(SyntaxView d) {
 	return NULL;
 }
 
+/* Build the `@implements` map from every decl's `@implements(<dev>.<req>, …)` decorator: each
+ * requirement tail maps to the decorated decl's own name. Mirrors lower.c collect_impl_binds but
+ * keyed for semantic use (datasheet-type skip + device param rename). */
+static void sem_build_impl_map(SemanticContext *ctx) {
+	g_sem_impl_n = 0;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *c = ctx->decls[i];
+		if (!c || !c->name || !c->node.node)
+			continue;
+		const SyntaxNode *decl = c->node.node;
+		const char *src = c->node.src;
+		int n = decl->child_count;
+		for (int a = 0; a + 1 < n; a++) {
+			const SyntaxElem *ea = &decl->children[a];
+			const SyntaxElem *eb = &decl->children[a + 1];
+			if (ea->tag != SE_TOKEN || ea->as.token.kind != TOK_AT)
+				continue;
+			if (eb->tag != SE_TOKEN || eb->as.token.kind != TOK_IDENT)
+				continue;
+			if (eb->as.token.length != 10 || memcmp(src + eb->as.token.offset, "implements", 10) != 0)
+				continue;
+			int j = a + 2;
+			if (j >= n || decl->children[j].tag != SE_TOKEN || decl->children[j].as.token.kind != TOK_LPAREN)
+				continue;
+			const char *tail = NULL;
+			int tail_len = 0;
+			for (j++; j < n; j++) {
+				const SyntaxElem *t = &decl->children[j];
+				if (t->tag != SE_TOKEN)
+					continue;
+				int k = t->as.token.kind;
+				if (k == TOK_IDENT) {
+					tail = src + t->as.token.offset; /* keep the LAST segment of a qualified `dev.req` */
+					tail_len = (int)t->as.token.length;
+				} else if (k == TOK_COMMA || k == TOK_RPAREN) {
+					if (tail && g_sem_impl_n < SEM_IMPL_CAP) {
+						char *req = malloc((size_t)tail_len + 1);
+						memcpy(req, tail, (size_t)tail_len);
+						req[tail_len] = '\0';
+						g_sem_impl_req[g_sem_impl_n] = req;
+						g_sem_impl_driver[g_sem_impl_n] = sem_dupz(c->name);
+						g_sem_impl_n++;
+					}
+					tail = NULL;
+					if (k == TOK_RPAREN)
+						break;
+				}
+			}
+		}
+	}
+}
+
+static void sem_clear_impl_map(void) {
+	for (int i = 0; i < g_sem_impl_n; i++) {
+		free(g_sem_impl_req[i]);
+		free(g_sem_impl_driver[i]);
+	}
+	g_sem_impl_n = 0;
+}
+
+/* Re-intern a param/return TypeId through the @implements map: if its nominal name is a device
+ * requirement, give it the driver's type identity instead. */
+static TypeId impl_rename_tid(SemanticContext *ctx, TypeId t) {
+	const char *drv = impl_driver_for(tyid_nominal_name(ctx->ty_arena, t));
+	return drv ? sem_tyid_of_name(ctx, drv) : t;
+}
+
+/* Apply the @implements renames to every device-impl decl's param/return TypeIds, after the fill.
+ * Entry/user decls are untouched (so the importer's own same-named type is preserved). */
+static void sem_apply_impl_renames(SemanticContext *ctx) {
+	if (g_sem_impl_n == 0)
+		return;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (!d || !d->from_device_impl)
+			continue;
+		for (int p = 0; p < d->param_count; p++)
+			d->params[p].type_id = impl_rename_tid(ctx, d->params[p].type_id);
+		for (int p = 0; p < d->out_param_count; p++)
+			d->out_params[p].type_id = impl_rename_tid(ctx, d->out_params[p].type_id);
+		for (int r = 0; r < d->return_type_count; r++)
+			d->return_type_ids[r] = impl_rename_tid(ctx, d->return_type_ids[r]);
+	}
+}
+
 /* ===== Unified-grammar RHS value forms (P2 classification) =====
  * In the unified grammar a declaration is a binding `name :: <form>`. These helpers build the
  * abstract decl from the RHS value-form node `f` (an SN_PROC_EXPR / SN_FUNC_EXPR / …) with the
@@ -4014,6 +4137,13 @@ typedef struct {
 static SemModule g_sem_modules[64];
 static int g_sem_module_count = 0;
 
+/* Editor-only: a module to inline into the ROOT namespace even though the root has no `#import` for
+ * it. Set when the open document is a member file of a device folder — its sibling datasheet defines
+ * the device's types as global vocabulary (decls stay flat/unprefixed), so the open impl file's bare
+ * references resolve. Compilation never sets this (a device is only ever loaded whole, via import), so
+ * the compiler's behavior is unchanged. Reset per analysis in semantic_reset_modules. */
+static char *g_sem_extra_inline;
+
 /* A device datasheet file: its decls are shared global vocabulary, registered UNPREFIXED (mirror
  * of lower.c's is_datasheet_file). */
 static int sem_is_datasheet_file(const char *fn) {
@@ -4041,6 +4171,13 @@ void semantic_reset_modules(void) {
 		free(g_sem_modules[i].filename);
 	}
 	g_sem_module_count = 0;
+	free(g_sem_extra_inline);
+	g_sem_extra_inline = NULL;
+}
+
+void semantic_set_extra_inline_module(const char *name) {
+	free(g_sem_extra_inline);
+	g_sem_extra_inline = name ? sem_dupz(name) : NULL;
 }
 
 int semantic_has_module(const char *name) {
@@ -4583,6 +4720,13 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 			ctx->decls[ctx->decl_count++] = ad;
 	}
 
+	/* Editor-only: inline the open document's own device module (its sibling datasheet) even though the
+	 * root has no `#import` for it. A device's datasheet decls stay flat/global, so the open impl file's
+	 * bare type references (`fd`, …) resolve — matching how the file behaves when the device is imported
+	 * whole. sem_inline_module dedups, so a real import of the same name above is harmless. */
+	if (g_sem_extra_inline)
+		sem_inline_module(ctx, g_sem_extra_inline);
+
 	/* Scope resolution snapshot: the tree-qualify pass in build_decl_table binds every `mod.member`
 	 * reference/call to its member's qualified identity (looked up by literal name in the module's
 	 * export set, no prefix stripping), records it in the callee_name/ref_name channels, and emits a
@@ -4894,6 +5038,9 @@ static void analyze_program_core(SemanticContext *ctx) {
 	 * Unambiguous forms (type-form RHS, literal RHS) are classified directly; a bare-name RHS is
 	 * deferred and resolved by a small fixpoint below — so `tau :: pi` is a value const (not an
 	 * alias), and chains / forward refs resolve regardless of declaration order. */
+	/* `@implements` opaque unification/rename: build the driver→requirement map up front so datasheet
+	 * registration can skip renamed device types and the post-fill rename can rewrite device params. */
+	sem_build_impl_map(ctx);
 	int deferred_cap = ctx->decl_count > 0 ? ctx->decl_count : 1;
 	const char **deferred_name = malloc(sizeof(char *) * deferred_cap);
 	const char **deferred_rhs = malloc(sizeof(char *) * deferred_cap);
@@ -5035,9 +5182,10 @@ static void analyze_program_core(SemanticContext *ctx) {
 		if (e->kind != DECL_ENUM)
 			continue;
 		register_enum_entries(ctx, e);
-		/* An enum is a transparent (tier-1) int alias: variants are int values and `match`/comparison
-		 * treat the enum as int, so it must interchange with int freely. */
-		register_type_alias_tiered(ctx, sem_dupz(e->name), "int", 1, e->loc, e->is_datasheet);
+		/* An enum is a DISTINCT (tier-2) int-backed type: an enum value is usable AS its int backing
+		 * (so `match`/comparison and `printf("%d", …)` work), but a raw int is NOT usable as the enum —
+		 * you must name a case (`color.red`) or convert explicitly (`color(0)`). */
+		register_type_alias_tiered(ctx, sem_dupz(e->name), "int", 0, e->loc, e->is_datasheet);
 	}
 
 	/* Inline component definitions: `arche Foo { hp :: int, … }` mints the nominal type `hp`
@@ -5115,6 +5263,12 @@ static void analyze_program_core(SemanticContext *ctx) {
 	for (int i = 0; i < ctx->decl_count; i++)
 		if (ctx->decls[i])
 			sem_fill_decl_type_ids(ctx, ctx->decls[i]);
+
+	/* `@implements`: rewrite device-impl param/return TypeIds from each requirement to the driver's
+	 * type, so tycheck sees the unified/renamed identity (file1/file2 → file; dconf.handle → dh). The
+	 * map is no longer needed afterward. */
+	sem_apply_impl_renames(ctx);
+	sem_clear_impl_map();
 
 	/* Tuple-group field expansion: now that field type_ids are interned, rewrite any field whose type
 	 * names a tuple-group const to that tuple's id (the column flattens to `field_<member>`). */
@@ -5288,17 +5442,20 @@ static char *sem_own_str(SemanticContext *ctx, char *s) {
 	return s;
 }
 
-/* The first pattern token of a match arm (variant / literal / `_`), or NULL. */
+/* The pattern's VALUE token of a match arm — the literal, the `_`, or the case of a qualified
+ * `Enum.case` (the LAST identifier before the arm `:`). NULL if none. */
 static const SyntaxElem *match_arm_pattern_tok(const SyntaxNode *arm) {
+	const SyntaxElem *last = NULL;
 	for (int c = 0; c < arm->child_count; c++) {
 		if (arm->children[c].tag != SE_TOKEN)
 			continue;
 		TokenKind k = arm->children[c].as.token.kind;
+		if (k == TOK_COLON)
+			break; /* the pattern ends at the arm `:` */
 		if (k == TOK_IDENT || k == TOK_NUMBER || k == TOK_STRING || k == TOK_CHAR_LIT)
-			return &arm->children[c];
-		return NULL; /* something else came first */
+			last = &arm->children[c]; /* keep last → the case in a qualified `Enum.case` */
 	}
-	return NULL;
+	return last;
 }
 
 /* The enum a bare variant name belongs to, or NULL. */

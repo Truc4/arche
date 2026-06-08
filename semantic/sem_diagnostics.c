@@ -128,6 +128,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_drop_redefined]                = { "E0119", "drop_redefined",                CLASS_ERROR, 1 },
 	[SEM_DIAG_drop_conditional]              = { "E0120", "drop_conditional",              CLASS_ERROR, 1 },
 	[SEM_DIAG_duplicate_region]              = { "E0121", "duplicate_region",              CLASS_ERROR, 1 },
+	[SEM_DIAG_opaque_overwrite]              = { "E0122", "opaque_overwrite",              CLASS_ERROR, 1 },
+	[SEM_DIAG_opaque_construct]              = { "E0123", "opaque_construct",              CLASS_ERROR, 1 },
 
 	/* Tycheck (P3 type-check pass — E0200+). All typing-rule violations route through
 	 * E0200; sharper kind/arity constraints get their own codes in Phase B. */
@@ -818,6 +820,20 @@ SemDiag *sem_emit_drop_conditional(SemanticContext *ctx, SourceLoc loc, const ch
 SemDiag *sem_emit_duplicate_region(SemanticContext *ctx, SourceLoc loc, const char *region) {
 	return sem_emit_(ctx, SEM_DIAG_duplicate_region, loc,
 	                 "a file may contain at most one `%s` region — merge it with the earlier one", region);
+}
+
+SemDiag *sem_emit_opaque_overwrite(SemanticContext *ctx, SourceLoc loc, const char *opaque_type) {
+	return sem_emit_(ctx, SEM_DIAG_opaque_overwrite, loc,
+	                 "cannot assign over opaque '%s' with `=` — an opaque handle is created once and only flows "
+	                 "(move/borrow/return), it is never overwritten",
+	                 opaque_type);
+}
+
+SemDiag *sem_emit_opaque_construct(SemanticContext *ctx, SourceLoc loc, const char *opaque_type) {
+	return sem_emit_(ctx, SEM_DIAG_opaque_construct, loc,
+	                 "cannot construct opaque '%s' — opaque handles originate only at the FFI boundary, never minted "
+	                 "in arche",
+	                 opaque_type);
 }
 
 SemDiag *sem_emit_lint_unused_local(SemanticContext *ctx, SourceLoc loc, const char *name) {

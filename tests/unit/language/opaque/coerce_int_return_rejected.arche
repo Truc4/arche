@@ -1,0 +1,11 @@
+// Returning a raw int as an opaque is the same illegal int->opaque coercion. `mk` claims to return a
+// `res` but hands back `5`; an opaque cannot be born from an int in arche. RED until the coercion
+// hole is removed (today this compiles).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'res'" %t.out
+res :: opaque
+@allow(unused_function)
+mk :: func() -> res {
+  return 5;
+}
+main :: proc() {
+}

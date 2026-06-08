@@ -1806,12 +1806,28 @@ static int parse_statement(Parser *parser) {
 		}
 		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
 			int arm_cp = syntax_cp(parser);
-			/* pattern: an enum variant / `_` ident, or an int/string/char literal */
-			if (check(parser, TOK_IDENT) || check(parser, TOK_NUMBER) || check(parser, TOK_STRING) ||
-			    check(parser, TOK_CHAR_LIT)) {
-				advance(parser);
+			/* pattern: a QUALIFIED enum case `Enum.case` (a value is always written the same way —
+			 * qualified by its descriptor), the `_` wildcard, or an int/string/char literal. A bare case
+			 * name is NOT a value and is rejected — match it `Enum.case`. */
+			if (check(parser, TOK_NUMBER) || check(parser, TOK_STRING) || check(parser, TOK_CHAR_LIT)) {
+				advance(parser); /* literal value pattern */
+			} else if (check(parser, TOK_IDENT)) {
+				int is_wild = (parser->current.length == 1 && parser->current.start[0] == '_');
+				advance(parser); /* the descriptor name (or `_`) */
+				if (check(parser, TOK_DOT)) {
+					advance(parser); /* `.` */
+					if (!check(parser, TOK_IDENT)) {
+						error(parser, "Expected an enum case after '.' in a match pattern");
+						break;
+					}
+					advance(parser); /* the case */
+				} else if (!is_wild) {
+					error(parser,
+					      "a match arm names an enum value — qualify it `Enum.case` (a bare case name is not a value)");
+					break;
+				}
 			} else {
-				error(parser, "Expected match pattern (variant, literal, or '_')");
+				error(parser, "Expected match pattern (`Enum.case`, literal, or '_')");
 				break;
 			}
 			if (!match(parser, TOK_COLON)) {

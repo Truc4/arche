@@ -1,0 +1,3 @@
+// Datasheet: device `diskb` exposes the opaque handle type `file2`. Not a standalone test.
+// RUN: true
+file2 :: opaque
