@@ -4,4 +4,5 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "redefined" %t.out
 #import { econf_a econf_b }
 
-main :: proc() {}
+main :: proc() {
+}

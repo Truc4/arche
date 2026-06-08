@@ -6538,8 +6538,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				/* A shape provides the components, but no driver allocated a pool for it. All storage is
 				 * the driver's, so an unallocated shape is unimplemented — running it would bind a null
 				 * pool. Hard error. */
-				fprintf(stderr, "Error: `run %s` — no storage for the shape system '%s' operates on { ",
-				        system_name, system_name);
+				fprintf(stderr, "Error: `run %s` — no storage for the shape system '%s' operates on { ", system_name,
+				        system_name);
 				for (int p = 0; p < sys->param_count; p++)
 					fprintf(stderr, "%s%s", p ? ", " : "", sys->params[p] ? sys->params[p]->name : "?");
 				fprintf(stderr, " }; a driver must allocate a pool for it\n");
