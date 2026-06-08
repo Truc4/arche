@@ -1,0 +1,13 @@
+// A device's `#foreign` externs are its IMPLEMENTATION, private to the device (they sit behind net's
+// `#module` band). They are NOT part of net's public API: an importer can reach neither the qualified
+// `net.net_listen` (not in net's export set) NOR the bare `net_listen` — the visibility gate rejects a
+// bare reference that binds only to another unit's non-exported decl. Only net's arche wrappers
+// (net.listen/connect/send/recv/close) are public. The raw C symbol stays LINKABLE at the ABI level
+// (unavoidable), but arche name resolution no longer reaches it across the device boundary. This pins
+// that a device's raw implementation does not leak past its contract — visibility is enforced for a
+// `#foreign` extern exactly as for a pure-Arche `#module` decl.
+// RUN: %arche check %s > %t.out 2>&1 ; grep -qi "Undefined symbol 'net_listen'" %t.out
+#import { net }
+main :: proc() {
+  net_listen(8081)(s:); // raw extern is private to `net` — not visible here
+}

@@ -1,10 +1,12 @@
-// E0203: a fixed-arity extern (no `...` in its signature) is arity-checked
-// just like any other call. arche_file_unmap takes 2 args; passing 3 fires.
-// Tycheck only skips arity when the extern signature ends with `...` (printf etc.).
-// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0203 wrong_arity 0 'arche_file_unmap' expects 2 arguments, got 3"
-#import { io }
+// E0203: a fixed-arity extern (no `...` in its signature) is arity-checked just like any other call.
+// A locally-declared extern `unmap2` takes 2 args; passing 3 fires. Tycheck only skips arity when the
+// extern signature ends with `...` (printf etc.). Uses a same-file extern (a device's `#foreign` is
+// private to it, so this no longer leans on a stdlib internal).
+// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0203 wrong_arity 0 'unmap2' expects 2 arguments, got 3"
+#foreign {
+  unmap2 :: proc(data: char[], size: i64)
+}
 main :: proc() {
-  io.arche_file_map("/tmp/x.txt")(data: char[]);
-  io.arche_file_size()(size: i64);
-  io.arche_file_unmap(data, size, size);
+  buf: char[8];
+  unmap2(buf, 8, 8);
 }

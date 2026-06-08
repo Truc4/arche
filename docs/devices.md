@@ -90,6 +90,26 @@ Components are **program-global** and defined exactly once; reference a componen
 
 Three bands (file ⊂ unit ⊂ exported): `#module` is a banner marking the decls below it **unit-private** — visible across the unit's files but hidden from importers. `#file` is strictly narrower: **file-local** — visible only within its own file, NOT to sibling files of the same unit (each file's `#file` decls are renamed to a file-unique identity, so a sibling's bare reference can't bind to them). Default (no banner) is exported.
 
+**Bands apply to `#foreign` externs too — a device's raw C implementation is private.** Put a device's
+`#foreign` block behind `#module` and its externs are NOT part of the device's public surface: an
+importer can reach neither `device.the_extern` (it's dropped from the export set) NOR the bare
+`the_extern` (a bare reference that would bind only to another unit's non-exported decl is an undefined
+symbol). Only the device's pure-Arche **wrappers** are public; the device's own files still call the
+externs (same unit). The raw C symbol stays *linkable* at the ABI level — unavoidable — but arche name
+resolution no longer reaches it across the device boundary. This makes the band a real visibility rule
+rather than a side effect of name mangling: a pure decl is hidden by being renamed to `mod.name`; a
+`#foreign` extern keeps its C link name, so it is hidden by the visibility gate instead. The stdlib
+follows this — `net`/`io`/`term` expose slice-native wrappers and keep their `net_*`/`arche_file_*`/
+`term_*` externs `#module`-private. (Two devices that genuinely share a raw C primitive as public API —
+`fmt`'s variadic `printf`/`sprintf`, `os`'s `syscall` intrinsic — are the deliberate exceptions and
+stay in the exported band.)
+
+**Visibility and reachability share one root set.** The dead-code sweep (W0013) treats the *exported
+surface* as its roots — `main`, public/exported decls, and the **exported** C-ABI surface. A `#module`
+private extern is therefore not an unconditional root: like any private decl it is alive only if an
+in-unit caller (a wrapper) reaches it. One invariant, stated once: **the exported surface is the root
+set — for resolution and for reachability alike, foreign or pure.**
+
 ## Testing a device
 
 A device is tested by a **doctest in its impl**: under `arche test`, a doctest in a device folder

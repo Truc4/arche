@@ -494,6 +494,41 @@ static DeclSummary *find_callable_sig(SemanticContext *ctx, const char *name) {
 	return NULL;
 }
 
+/* The compilation unit a reference originates in: the enclosing proc/func's owning unit (0 = entry). */
+static int sem_ref_unit(SemanticContext *ctx) {
+	if (ctx->current_proc)
+		return ctx->current_proc->unit;
+	if (ctx->current_func)
+		return ctx->current_func->unit;
+	return 0;
+}
+
+/* Visibility gate for a bare callable reference. Returns 1 if some proc/func named `name` is visible
+ * from `ref_unit` (same unit — any band — OR exported), 0 if the only matches are NON-exported decls
+ * owned by other units, -1 if no callable named `name` exists at all.
+ *
+ * This makes the region band a real visibility rule rather than a side effect of name mangling: a
+ * pure-Arche private decl is renamed to `mod.name`, so a bare `name` never matches it here; a
+ * `#foreign` extern keeps its raw C link name (it can't be mangled), so WITHOUT this gate its symbol
+ * would stay callable across a device boundary — the device's implementation leaking past its public
+ * API. A `#module`/`#file` extern is in scope only inside its own unit's files; from any importer it
+ * is simply not defined. (The C symbol stays linkable — that's an unavoidable ABI fact — but arche
+ * name resolution no longer reaches it.) */
+static int sem_callable_visible(SemanticContext *ctx, const char *name, int ref_unit) {
+	if (!name)
+		return -1;
+	int saw_hidden = 0;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC) || !d->name || strcmp(d->name, name) != 0)
+			continue;
+		if (d->unit == ref_unit || d->visibility == VIS_EXPORTED)
+			return 1;
+		saw_hidden = 1;
+	}
+	return saw_hidden ? 0 : -1;
+}
+
 /* The summary of a func named `name`, or NULL. */
 static DeclSummary *find_func_sig(SemanticContext *ctx, const char *name) {
 	if (!name)
@@ -1692,13 +1727,19 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 		 * that is not a known func / variable / archetype / const is an undefined symbol — e.g. an
 		 * unqualified module export `fread` or a typo `definitely_not_defined`. */
 		if (func_name) {
-			int is_known_func = find_known_func(ctx, func_name);
+			/* Visibility gate: a callee resolving ONLY to a `#module`/`#file` private extern of another
+			 * unit is out of scope — binding to it would leak that device's raw implementation past its
+			 * public API. Suppress BOTH callable paths (known-func table + decl table) when the name is
+			 * hidden-cross-unit, so it falls through to the undefined-symbol error. sem_callable_visible
+			 * returns 1 visible, 0 hidden-only-cross-unit, -1 none. (Pure private decls are renamed to
+			 * `mod.name`, so a bare name never reaches them; only un-mangled `#foreign` externs need this.) */
+			int hidden = sem_callable_visible(ctx, func_name, sem_ref_unit(ctx)) == 0;
+			int is_known_func = !hidden && find_known_func(ctx, func_name);
 			int is_group = find_group(ctx, func_name) != NULL;
 			VariableInfo *cv = find_variable(ctx, func_name);
 			int is_arch = find_archetype(ctx, func_name) != NULL;
 			int is_const = semantic_get_const_value(ctx, func_name) != NULL;
-			/* a user func/proc decl is a valid callee even if not in the known-func table */
-			int is_decl = find_callable_sig(ctx, func_name) != NULL;
+			int is_decl = !hidden && find_callable_sig(ctx, func_name) != NULL;
 			if (cv)
 				cv->is_referenced = 1;
 			if (!is_known_func && !is_group && !is_decl && !cv && !is_arch && !is_const)
@@ -4873,8 +4914,12 @@ static int dead_is_root(const DeclSummary *d) {
 		return 1;
 	if (strcmp(d->name, "main") == 0)
 		return 1;
-	if (d->is_extern) /* C-ABI surface, called from outside */
-		return 1;
+	if (d->is_extern && d->visibility == VIS_EXPORTED)
+		return 1; /* EXPORTED C-ABI surface — may be linked/called from outside the unit. A private
+		           * (`#module`/`#file`) extern has no arche body either, but it is a device-internal
+		           * import: dead exactly when no in-unit caller (a wrapper) reaches it. Visibility
+		           * decides root-ness uniformly — the exported surface IS the root set, foreign or not.
+		           * (Stdlib/core externs still fall through to the dependency rule below and stay kept.) */
 	if (d->is_drop) /* opaque destructor — invoked by the compiler's RAII path, never syntactically */
 		return 1;
 	if (d->name[0] == '_') /* Rust `_`-prefix silence */

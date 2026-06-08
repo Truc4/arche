@@ -50,14 +50,6 @@ read :: proc(f: fd, buf: char[])(out: char[]) {
   fread(f, buf, buf.cap)(r:);
   out = r;
 }
-csv_read_chunk :: proc(f: fd, buf: char[], max_bytes: int)(out: char[]) {
-  os.syscall(0, f, buf, max_bytes, 0, 0, 0)(rr:);
-  k := i32(rr);
-  if (k < 0) {
-    k = 0;
-  }
-  out = buf[0: k];
-}
 // `own buf` — this fills the buffer byte-by-byte in arche code (not via a single FFI write), so it
 // must own a writable buffer; `move` it in and take back the line view.
 fread_line :: proc(f: fd, own buf: char[], n: int)(out: char[]) {
@@ -105,12 +97,31 @@ skip_header :: proc(f: fd) {
   fread_line(f, move line, 256)(_discard:);
 }
 read_chunk :: proc(f: fd, buf: char[], size: int)(out: char[]) {
-  csv_read_chunk(f, buf, size)(r:);
+  fread(f, buf, size)(r:);
   out = r;
 }
 
-// Whole-file mmap (C-runtime externs). C foreign symbols → callable bare within this module;
-// qualified `io.arche_file_map` / … from importers.
+// Whole-file mmap. Public arche wrappers over the C-runtime externs; importers call these, never the
+// raw `arche_file_*` symbols (which are module-private, below the `#module` band).
+// Returns the mapped file as a length-carried slice VIEW (mirrors net.recv / io.fread: the slice op
+// is what propagates the C-side pointer back out through this wrapper). The byte count rides on
+// `data.length`, and `io.file_size` still reports it as i64 for >2 GB files.
+file_map :: proc(own path: char[])(data: char[]) {
+  arche_file_map(move path)(raw:);
+  arche_file_size()(n: i64);
+  data = raw[0: n];
+}
+file_size :: proc()(n: i64) {
+  arche_file_size()(n);
+}
+file_unmap :: proc(own data: char[], size: i64) {
+  arche_file_unmap(move data, size);
+}
+
+// C implementation layer (runtime/io.c) — module-private. The `#module` band drops these externs from
+// io's export set, and the visibility gate keeps their bare C names unresolvable to importers; only the
+// wrappers above are public (the C symbols stay linkable, an unavoidable ABI fact).
+#module
 #foreign {
   arche_file_map :: proc(own path: char[])(data: char[])
   arche_file_size :: proc()(n: i64)
