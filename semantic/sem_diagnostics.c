@@ -156,6 +156,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_unused_function]               = { "W0013", "unused_function",               CLASS_LINT, 1 },
 	[SEM_LINT_unused_static_const]           = { "W0014", "unused_static_const",           CLASS_LINT, 1 },
 	[SEM_LINT_unused_enum]                   = { "W0015", "unused_enum",                   CLASS_LINT, 1 },
+	[SEM_LINT_discarded_ok]                  = { "W0016", "discarded_ok",                  CLASS_LINT, 1 },
+	[SEM_LINT_raw_pool_index]                = { "W0017", "raw_pool_index",                CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -888,4 +890,17 @@ SemDiag *sem_emit_lint_unused_enum(SemanticContext *ctx, SourceLoc loc, const ch
 	return sem_emit_(ctx, SEM_LINT_unused_enum, loc,
 	                 "enum '%s' is declared but never used (prefix with '_' to silence, or @allow(unused_enum))%s%s%s",
 	                 name, module_path ? " [in " : "", module_path ? module_path : "", module_path ? "]" : "");
+}
+SemDiag *sem_emit_lint_discarded_ok(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_LINT_discarded_ok, loc,
+	                 "`%s`'s `ok` result is discarded with `_` — a capacity/handle failure is silently "
+	                 "ignored; capture and check `ok`, or @allow(discarded_ok) if it genuinely cannot fail",
+	                 name);
+}
+SemDiag *sem_emit_lint_raw_pool_index(SemanticContext *ctx, SourceLoc loc, const char *arch) {
+	return sem_emit_(ctx, SEM_LINT_raw_pool_index, loc,
+	                 "pool column '%s' indexed by an unproven raw slot — bounds aren't statically "
+	                 "guaranteed; prefer a generation-checked handle (insert/delete), bound the index by "
+	                 "`%s.length`, or @allow(raw_pool_index)",
+	                 arch, arch);
 }

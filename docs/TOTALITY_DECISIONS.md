@@ -101,15 +101,51 @@ New diagnostics: `E0095 panic_in_total`, `E0096 insert_delete_outlist`.
   "total" proc is guaranteed not to OOB-*corrupt*, and is compile-checked free of unprovable indices
   in the gated categories — but the binary still contains (provably-unreached) abort paths.
 - **Exempt categories can still abort in a "total" proc** (decision #3): pool columns, module
-  statics, inferred-type locals, and slice-creation. The most consequential is **pool columns** —
-  e.g. router's `cap_start[cap_count[0]]` over-8-captures write is still only a runtime abort.
-  Gating columns was judged impractical (dynamic liveness ⇒ ~everything becomes `proc!`); flag if you
-  want it anyway.
+  statics, inferred-type locals, and slice-creation. Pool columns are now **surfaced by a lint**
+  (W0017 `raw_pool_index`, see below) rather than silently exempt, but are still not *gated* (no
+  forced `proc!`). Measurement showed dynamic column indexing is rare (~28 sites, concentrated in the
+  router trie + csv fills), and constant / `.length`/`.count`-bounded column access is memory-safe
+  against the static pool capacity — so gating columns would be far less viral than first thought and
+  is a reasonable future step if you want a complete guarantee.
+
+## Raw pool-column indexing lint (W0017)
+
+`raw_pool_index` warns when a pool column `Arch.field[i]` is indexed by a slot that isn't proven
+in-bounds (not a constant, not `i < Arch.length/.count`): "prefer a generation-checked handle
+(insert/delete), bound the index by `Arch.length`, or `@allow(raw_pool_index)`". It fires once per
+site (a separate pass from the can_panic fixpoint). Constant and count-bounded column access do not
+warn. The router's intrusive trie-slot links legitimately trip it (16 sites) — guard, switch to
+handles, or `@allow` there.
+
+## Design direction: recover + reservations (not yet built)
+
+A **recover** boundary should absorb a panic so the recovering proc is **total** (no `proc!`) —
+contagion propagates `can_panic` UP until it hits either a `proc!` marker (propagate) or a recover
+block (handle). Intended split by failure kind:
+- **OOB / stale-handle** (bugs) → a `recover` boundary (needs a runtime unwind mechanism). A handler
+  that recovers makes its proc total.
+- **Capacity** (a predictable resource) → **reservations that err cleanly** at a boundary (or the
+  `ok` value), not recover — you plan capacity, so a single fallible `reserve` beats catching a panic.
+Design `recover` to catch only the bug-class aborts, not swallow logic errors.
 - The bounds prover is **conservative, not fully flow-sensitive** (e.g. it won't relate
   `a.length == b.length`); provable code that doesn't match a recognized pattern must be guarded or
   marked `proc!`. Soundness is hand-verified against the test suite, not proven.
 - Sized-array params in **proc/monomorph** contexts don't carry their length (only the func path was
-  fixed, decision #6), so a few proc tests guard sized-array params with the literal size.
+  fixed, decision #6), so a few proc tests guard sized-array params with the literal size. This
+  inconsistency is **left as-is by choice**: `.length` on a fixed `T[N]` is redundant with the static
+  size `N`, and removing `.length` from arrays entirely (use the literal size, or `.cap`) is on the
+  table. If `.length` stays, the proc/monomorph param ABI needs the same fix as the func path; if it
+  goes, the func-path fix and the array-test `.length` guards revert to literal sizes. Decision
+  pending — do not invest in the proc-ABI fix until `.length`'s fate is settled.
+
+## Discarded-`ok` lint (W0016)
+
+`insert`/`delete` discarding their `ok` with `_` now triggers **W0016 `discarded_ok`** — a
+silently-ignored capacity/handle failure. (Distinct from `unused_local`, which only catches a
+*bound-but-unused* `ok`; `_` is otherwise an intentional discard, so it needed its own lint.)
+Suppress with `@allow(discarded_ok)` where the failure genuinely cannot happen. The codemod-migrated
+sites that discard `ok` will surface this lint — that is intentional (they do ignore capacity
+failures); clean them up by capturing and checking `ok`, or `@allow` them.
 
 ## Cheap follow-ups done this round
 

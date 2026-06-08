@@ -2532,6 +2532,13 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 			sem_emit_insert_delete_outlist(ctx, loc, "insert", "insert(P, …)(handle:, ok:)");
 		if (mb_builtin && strcmp(mb_builtin, "delete") == 0 && mbt_count != 1)
 			sem_emit_insert_delete_outlist(ctx, loc, "delete", "delete(h)(ok:)");
+		/* W0016 discarded_ok: the capacity/handle `ok` (insert's 2nd out, delete's only out) was
+		 * discarded with `_` — a silently-ignored failure. */
+		if (mb_builtin) {
+			int ok_idx = (strcmp(mb_builtin, "insert") == 0) ? 1 : 0;
+			if (ok_idx < mbt_count && mbt[ok_idx].name && strcmp(mbt[ok_idx].name, "_") == 0)
+				sem_emit_lint_discarded_ok(ctx, loc, mb_builtin);
+		}
 
 		/* W0011 inout_redundant: an in-arg NAME equal to an out-target NAME at an in-out position. */
 		if (mb_callee_proc && sv_present(mb_value) && sv_kind(mb_value) == SN_CALL_EXPR) {
@@ -3276,6 +3283,7 @@ typedef struct {
 	int count;
 	BndLocal locals[BND_MAX_FACTS];
 	int local_count;
+	int lint_columns; /* 1 = also emit W0017 for unprovable pool-column (`Arch.field[i]`) indexing */
 } BndEnv;
 
 /* int value of a literal node, or -1 if not a nonneg int literal. */
@@ -3313,7 +3321,7 @@ static char *bnd_extent_base(SemanticContext *ctx, SyntaxView v) {
 		return NULL;
 	char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, 0));
 	int is_extent = fld && (strcmp(fld, "length") == 0 || strcmp(fld, "cap") == 0 || strcmp(fld, "capacity") == 0 ||
-	                        strcmp(fld, "max_length") == 0);
+	                        strcmp(fld, "max_length") == 0 || strcmp(fld, "count") == 0);
 	free(fld);
 	if (!is_extent)
 		return NULL;
@@ -3663,6 +3671,25 @@ static const char *bnd_check_expr(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 		bnd_env_truncate(e, saved);
 		return r;
 	}
+	/* W0017 (lint mode only): a pool-column index `Arch.field[i]` whose `i` isn't proven in-bounds
+	 * (constant, or `i < Arch.length/.count`). Advisory — prefer handles. Not gated (columns are the
+	 * trusted bulk model), so this only warns, never forces `proc!`. */
+	if (e->lint_columns && sv_kind(v) == SN_INDEX_EXPR && sv_count(v, SN_FIELD_NAME) > 0) {
+		char *root = sv_resolved_name(ctx, v);
+		if (root && find_archetype(ctx, root)) {
+			SyntaxView idx = sem_node_at_expr(v, 0);
+			int ok = (bnd_lit_int(idx) >= 0); /* constant slot: assume within capacity */
+			if (!ok) {
+				char *iv = bnd_plain_name(ctx, idx);
+				if (iv)
+					ok = bnd_proven(e, iv, root); /* i < Arch.length/.count, i >= 0 */
+				free(iv);
+			}
+			if (!ok)
+				sem_emit_lint_raw_pool_index(ctx, sem_node_loc(v.node), root);
+		}
+		free(root);
+	}
 	if (sv_kind(v) == SN_INDEX_EXPR && sv_count(v, SN_FIELD_NAME) == 0) {
 		char *base = sv_resolved_name(ctx, v);
 		int n = -1;
@@ -3848,6 +3875,7 @@ static const char *bnd_decl_first_unprovable(SemanticContext *ctx, DeclSummary *
 	BndEnv e;
 	e.count = 0;
 	e.local_count = 0;
+	e.lint_columns = 0;
 	const char *r = NULL;
 	for (int i = 0, n = sem_stmt_count(d->body_node); i < n && !r; i++)
 		r = bnd_check_stmt(ctx, d, sem_stmt_at(d->body_node, i), &e);
@@ -3855,6 +3883,27 @@ static const char *bnd_decl_first_unprovable(SemanticContext *ctx, DeclSummary *
 	for (int i = 0; i < e.local_count; i++)
 		free(e.locals[i].name);
 	return r;
+}
+
+/* One-time pass: emit W0017 (raw_pool_index) for unprovable pool-column indexing in each proc/func/
+ * sys body. Separate from the can_panic fixpoint (which re-walks bodies) so each site warns once. */
+static void sem_check_raw_pool_lint(SemanticContext *ctx) {
+	for (int di = 0; di < ctx->decl_count; di++) {
+		DeclSummary *d = ctx->decls[di];
+		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYS) || d->is_extern)
+			continue;
+		if (!sv_present(d->body_node))
+			continue;
+		BndEnv e;
+		e.count = 0;
+		e.local_count = 0;
+		e.lint_columns = 1;
+		for (int i = 0, n = sem_stmt_count(d->body_node); i < n; i++)
+			bnd_check_stmt(ctx, d, sem_stmt_at(d->body_node, i), &e); /* return ignored; emits lints */
+		bnd_env_truncate(&e, 0);
+		for (int i = 0; i < e.local_count; i++)
+			free(e.locals[i].name);
+	}
 }
 
 /* Whole-program contagion: seed from `proc!` markers, propagate to a fixpoint over the call graph
@@ -6199,6 +6248,7 @@ static void analyze_program_core(SemanticContext *ctx) {
 	sem_check_device_impl_decls(ctx);
 	sem_check_datasheet_decls(ctx);
 	sem_check_panic_contagion(ctx); /* `proc!` totality: propagate + enforce panic-capability */
+	sem_check_raw_pool_lint(ctx);   /* W0017: advise handles for unprovable pool-column indexing */
 
 	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The
 	 * two kinds are still distinct (keyword, `-> T` vs out-list, call form), but the name namespace

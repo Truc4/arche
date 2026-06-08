@@ -167,6 +167,8 @@ typedef enum {
 	SEM_LINT_unused_function,
 	SEM_LINT_unused_static_const,
 	SEM_LINT_unused_enum,
+	SEM_LINT_discarded_ok,
+	SEM_LINT_raw_pool_index,
 
 	SEM_DIAG_KIND_COUNT
 } SemDiagKind;
@@ -347,5 +349,7 @@ SemDiag *sem_emit_lint_unused_function(SemanticContext *ctx, SourceLoc loc, cons
 SemDiag *sem_emit_lint_unused_static_const(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
                                            const char *module_path);
 SemDiag *sem_emit_lint_unused_enum(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path);
+SemDiag *sem_emit_lint_discarded_ok(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_lint_raw_pool_index(SemanticContext *ctx, SourceLoc loc, const char *arch);
 
 #endif /* SEM_DIAGNOSTICS_H */
