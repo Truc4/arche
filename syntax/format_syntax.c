@@ -149,6 +149,13 @@ static int is_block_brace(const Leaf *l) {
 	return (l->kind == TOK_LBRACE || l->kind == TOK_RBRACE) && !is_list_brace_parent(l->parent);
 }
 
+/* The `{ … }` wrapping a `match` body. It breaks one-arm-per-line like a block brace, but — Go's
+ * `switch`-style — does NOT add an indent level: arm patterns align with `match`, and only each arm's
+ * own body block indents under it. So it's a block brace for line-breaking but skipped for indent. */
+static int is_match_brace(const Leaf *l) {
+	return (l->kind == TOK_LBRACE || l->kind == TOK_RBRACE) && l->parent == SN_MATCH_STMT;
+}
+
 /* Rendered inline width of the bracket group opening at leaf `i`, through its matching closer.
  * INT_MAX when the group can't be inlined — it contains a line comment or a `;` (a statement, so
  * it must break). Pure over the token stream (whitespace-independent) → the break decision is
@@ -324,7 +331,7 @@ void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 				want_nl = (l->line != prev_line);
 			if (for_header_semi && l->line > prev_line)
 				want_nl = 1; /* author split the header across lines — keep it */
-			if (block_close && indent > 0)
+			if (block_close && !is_match_brace(l) && indent > 0)
 				indent--;
 			if (want_nl) {
 				nl = 1;
@@ -381,7 +388,7 @@ void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 				frn++;
 				if (broken)
 					indent++;
-			} else if (l->kind == TOK_LBRACE && is_block_brace(l)) {
+			} else if (l->kind == TOK_LBRACE && is_block_brace(l) && !is_match_brace(l)) {
 				indent++;
 			}
 		}

@@ -8,14 +8,14 @@ bar :: enum { foo, qux, zap }
 main :: proc() {
   baz := bar.qux;
   match baz {
-    bar.foo: {
-      fmt.printf("got foo\n");
-    }
-    bar.qux: {
-      fmt.printf("got qux\n");
-    }
-    bar.zap: {
-      fmt.printf("got zap\n");
-    }
+  bar.foo: {
+    fmt.printf("got foo\n");
+  }
+  bar.qux: {
+    fmt.printf("got qux\n");
+  }
+  bar.zap: {
+    fmt.printf("got zap\n");
+  }
   }
 }

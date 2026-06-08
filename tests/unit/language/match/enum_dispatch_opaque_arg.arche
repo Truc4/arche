@@ -20,14 +20,14 @@ main :: proc() {
   resource_open(42)(h:);
   id := Route.health;
   match id {
-    Route.files: {
-      rval(h)(v:);
-      fmt.printf("files r=%d\n", v);
-    }
-    Route.health: {
-      rval(h)(v:);
-      fmt.printf("health r=%d\n", v);
-    }
+  Route.files: {
+    rval(h)(v:);
+    fmt.printf("files r=%d\n", v);
+  }
+  Route.health: {
+    rval(h)(v:);
+    fmt.printf("health r=%d\n", v);
+  }
   }
   resource_close(move h);
 }

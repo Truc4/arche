@@ -5,7 +5,7 @@ method :: enum { get, post, delete }
 main :: proc() {
   m := method.get;
   match m {
-    method.get: fmt.printf("g\n");
-    method.post: fmt.printf("p\n");
+  method.get: fmt.printf("g\n");
+  method.post: fmt.printf("p\n");
   }
 }

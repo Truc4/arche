@@ -1,0 +1,23 @@
+// `match` lays out Go's `switch`-style: arm patterns align with the `match` keyword (no extra
+// nesting under the match `{ }`), and only an arm's own `{ }` body indents one level beneath it.
+// Here `match` sits at 2-space proc-body indent, so its arms sit at 2 spaces too (not 4), the
+// closing brace aligns with `match`, and a block-body statement indents to 4.
+// RUN: %arche fmt %s | grep -qE "^  match m \{$"
+// RUN: %arche fmt %s | grep -qE "^  method.get: "
+// RUN: %arche fmt %s | grep -qE "^  method.delete: \{$"
+// RUN: %arche fmt %s | grep -qE "^    fmt.printf\(\"DEL"
+// arms must NOT be nested to 4 spaces under the match brace:
+// RUN: ! %arche fmt %s | grep -qE "^    method\."
+#import { fmt }
+method :: enum { get, post, delete }
+
+main :: proc() {
+  m := method.get;
+  match m {
+  method.get: fmt.printf("GET\n");
+  method.post: fmt.printf("POST\n");
+  method.delete: {
+    fmt.printf("DEL\n");
+  }
+  }
+}
