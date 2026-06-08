@@ -1,0 +1,23 @@
+// The formatter lines up `:`/`::`/`:=`/`=` separators across a run of consecutive, equally
+// indented lines (gofmt-style). A blank line, an indent change, or a separator-free line ends
+// the run and starts a fresh alignment group. Separators are found by re-lexing, so a `:`/`=`
+// inside a string or a `==` operator is never treated as a column.
+//
+// The two `:=`/`=` binds below align into one column; the blank line resets, so the second
+// pair aligns independently of the first.
+// RUN: %arche fmt %s | grep -qE "^  short +:= 1;$"
+// RUN: %arche fmt %s | grep -qE "^  muchlonger := 2;$"
+// RUN: %arche fmt %s | grep -qE "^  a    := 10;$"
+// RUN: %arche fmt %s | grep -qE "^  bbbb := 20;$"
+// A `:` inside the printf string must NOT create a column (line stays unaligned-by-string):
+// RUN: %arche fmt %s | grep -qF "fmt.printf(\"x: %d\\n\", short);"
+#import { fmt }
+
+main :: proc() {
+  short      := 1;
+  muchlonger := 2;
+
+  a    := 10;
+  bbbb := 20;
+  fmt.printf("x: %d\n", short);
+}

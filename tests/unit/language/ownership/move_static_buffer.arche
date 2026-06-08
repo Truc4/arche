@@ -9,7 +9,7 @@ sbuf: char[16]
 fill2 :: proc(buf: char[16])(buf: char[16], n: int) {
   buf[0] = 88;
   buf[1] = 89;
-  n = 2;
+  n      = 2;
 }
 
 main :: proc() {

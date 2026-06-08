@@ -7,7 +7,7 @@ Particle :: arche { mass :: float, charge :: float }
 Particle[4](4)
 main :: proc() {
   Particle.mass[0] = 10.0;
-  m := Particle.mass[0]; // m : mass
+  m                := Particle.mass[0]; // m : mass
   bad: charge = m; // mass -> charge sibling : ERROR
   fmt.printf("%g\n", bad);
 }

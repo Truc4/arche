@@ -2,6 +2,6 @@
 // RUN: %arche build -o %t %s && ! %t
 main :: proc() {
   b: int[4];
-  i := 4;
+  i    := 4;
   b[i] = 1;
 }

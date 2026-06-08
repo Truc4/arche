@@ -1,6 +1,6 @@
 #import { fmt }
 Particle :: arche { pos :: float, vel :: float, mass :: float }
-Body :: arche { pos, vel, density :: float }
+Body     :: arche { pos, vel, density :: float }
 Particle[1000]
 Body[100]
 integrate :: sys (pos, vel) {

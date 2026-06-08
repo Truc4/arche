@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "system_ran"
 #import { fmt }
-pos :: float
+pos  :: float
 Body :: arche { pos }
 
 Body[5]
@@ -15,8 +15,8 @@ main :: proc() {
   insert(Body, 2.0);
   insert(Body, 3.0);
   run dummy;
-  p0 := Body.pos[0];
-  p1 := Body.pos[1];
+  p0  := Body.pos[0];
+  p1  := Body.pos[1];
   p0i := p0 * 10.0;
   p1i := p1 * 10.0;
   fmt.assert(p0i == 10, "pos[0] != 1.0\n");

@@ -16,7 +16,7 @@ mv :: sys (pos, vel) {
 main :: proc() {
   insert(Particle, 1.0, 0.1);
   run mv;
-  p := Particle.pos[0];
+  p  := Particle.pos[0];
   pi := p * 10.0;
   fmt.assert(pi == 11, "move failed\n");
 }

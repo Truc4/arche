@@ -3,6 +3,6 @@
 #import { fmt }
 thing :: int
 thing :: float
-main :: proc() {
+main  :: proc() {
   fmt.printf("unreachable\n");
 }

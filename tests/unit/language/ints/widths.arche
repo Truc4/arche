@@ -2,10 +2,10 @@
 // Unsigned + small fixed-width integer types.
 #import { fmt }
 main :: proc() {
-  a: u32 = 4000000000;
-  b: u8 = 200;
-  c: i16 = 1000;
-  d: byte = 255;
-  e: u64 = 18000000000;
+  a : u32  = 4000000000;
+  b : u8   = 200;
+  c : i16  = 1000;
+  d : byte = 255;
+  e : u64  = 18000000000;
   fmt.printf("u32big=%d u64big=%d b=%d c=%d d=%d\n", a > 2000000000, e > 17000000000, b, c, d);
 }

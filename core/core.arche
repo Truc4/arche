@@ -22,8 +22,8 @@ byte :: alias u8
 // is a TRANSPARENT (tier-1) alias of `i8` — interchangeable with the int family (`running := true`,
 // `if (ok == false)`). Distinct-by-default would otherwise split it from its backing.
 bool :: alias i8
-true: bool: 1
-false: bool: 0
+true  : bool : 1
+false : bool : 0
 
 // Byte-compare two strings: 1 if equal, 0 otherwise. Pure (no FFI). Lives in core because the
 // `match` string-pattern desugar emits a bare `streq(...)` call — it is compiler-emitted, not a

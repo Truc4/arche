@@ -8,18 +8,18 @@ Transaction[1000](1000) {
 
 load_transactions :: proc() {
   arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv")(fd:);
-  buf: char[65536];
-  price_str: char[32];
-  qty_str: char[32];
+  buf       : char[65536];
+  price_str : char[32];
+  qty_str   : char[32];
   arche_fread(fd, buf, 65536)(total_n:);
   arche_fclose(fd);
-  idx := 0;
-  pos := 0;
+  idx        := 0;
+  pos        := 0;
   line_start := 0;
   for (; pos < total_n;) {
     if (buf[pos] == '\n') {
       line_start = pos + 1;
-      pos = pos + 1;
+      pos        = pos + 1;
       break;
     }
     pos = pos + 1;
@@ -53,22 +53,22 @@ load_transactions :: proc() {
     i := c1 + 1;
     for (; i < c2;) {
       price_str[j] = buf[i];
-      j = j + 1;
-      i = i + 1;
+      j            = j + 1;
+      i            = i + 1;
     }
     price_str[j] = 0;
-    j = 0;
-    i = c2 + 1;
+    j            = 0;
+    i            = c2 + 1;
     for (; i < line_end;) {
       qty_str[j] = buf[i];
-      j = j + 1;
-      i = i + 1;
+      j          = j + 1;
+      i          = i + 1;
     }
-    qty_str[j] = 0;
-    Transaction.price[idx] = atof(price_str);
+    qty_str[j]                = 0;
+    Transaction.price[idx]    = atof(price_str);
     Transaction.quantity[idx] = atoi(qty_str);
-    idx = idx + 1;
-    line_start = line_end + 1;
+    idx                       = idx + 1;
+    line_start                = line_end + 1;
   }
 }
 
@@ -79,7 +79,7 @@ main :: proc() {
   idx := 0;
   for (; idx < 1000;) {
     total_revenue = total_revenue + Transaction.revenue[idx];
-    idx = idx + 1;
+    idx           = idx + 1;
   }
   arche_fopen_write("build/benchmarks/etl/task4/arche_output.txt")(fd_out:);
   out_buf: char[256];

@@ -5,7 +5,7 @@
 // unresolved symbol / a system that never ran) is caught.
 // RUN: true
 #import { fmt }
-hp :: int
+hp  :: int
 Mob :: arche { hp }
 
 Mob[10]

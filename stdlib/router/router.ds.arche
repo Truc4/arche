@@ -5,12 +5,12 @@
 nodeKind :: enum { kstatic, kparam, kcatchall }
 
 TrieNode :: arche {
-  seg :: char[32], // segment text (":id"/"*" stored as the name after the marker), "" for root
-  seg_len :: int, // content length of `seg` (a fixed char[32] column carries no length itself)
-  kind :: nodeKind, // static / :param / *catchall
-  first_child :: int, // pool index of first child, or -1
+  seg          :: char[32], // segment text (":id"/"*" stored as the name after the marker), "" for root
+  seg_len      :: int, // content length of `seg` (a fixed char[32] column carries no length itself)
+  kind         :: nodeKind, // static / :param / *catchall
+  first_child  :: int, // pool index of first child, or -1
   next_sibling :: int, // pool index of next sibling, or -1
-  handler_id :: int, // >=0 if a route terminates here, else -1
+  handler_id   :: int, // >=0 if a route terminates here, else -1
 }
 
 TrieNode[256] // storage requirement: the driver allocates at least this many nodes

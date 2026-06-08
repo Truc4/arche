@@ -3,7 +3,7 @@
 // `Cell :: arche { a :: float, b :: float }` style). Both styles must work. `Cell[4]` is the storage
 // requirement (minimum). Support file.
 // RUN: true
-a :: float
-b :: float
+a    :: float
+b    :: float
 Cell :: arche { a, b }
 Cell[4]

@@ -18,14 +18,14 @@ main :: proc() {
   insert(FloatOps, 1.0);
   insert(FloatOps, 1.0);
   run float_multiply;
-  v0 := FloatOps.val[0];
-  v1 := FloatOps.val[1];
-  v2 := FloatOps.val[2];
-  v3 := FloatOps.val[3];
-  v4 := FloatOps.val[4];
-  v5 := FloatOps.val[5];
-  v6 := FloatOps.val[6];
-  v7 := FloatOps.val[7];
+  v0          := FloatOps.val[0];
+  v1          := FloatOps.val[1];
+  v2          := FloatOps.val[2];
+  v3          := FloatOps.val[3];
+  v4          := FloatOps.val[4];
+  v5          := FloatOps.val[5];
+  v6          := FloatOps.val[6];
+  v7          := FloatOps.val[7];
   all_correct := 1;
   if (v0 != 2.0) {
     all_correct = 0;

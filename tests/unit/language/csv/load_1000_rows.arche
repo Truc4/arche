@@ -8,13 +8,13 @@ Transaction[1000](1000) {
 
 main :: proc() {
   io.fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
-  buf: char[50000];
-  price_str: char[32];
-  qty_str: char[32];
+  buf       : char[50000];
+  price_str : char[32];
+  qty_str   : char[32];
   io.fread(fd, buf, 50000)(data:);
   io.fclose(move fd);
-  idx := 0;
-  pos := 0;
+  idx        := 0;
+  pos        := 0;
   line_start := 0;
   for (; pos < data.length; pos = pos + 1) {
     if (buf[pos] == '\n') {
@@ -48,19 +48,19 @@ main :: proc() {
     i := c1 + 1;
     for (; i < c2; i = i + 1) {
       price_str[j] = buf[i];
-      j = j + 1;
+      j            = j + 1;
     }
     price_str[j] = 0;
-    j = 0;
-    i = c2 + 1;
+    j            = 0;
+    i            = c2 + 1;
     for (; i < line_end; i = i + 1) {
       qty_str[j] = buf[i];
-      j = j + 1;
+      j          = j + 1;
     }
-    qty_str[j] = 0;
-    Transaction.price[idx] = parse.atof(price_str);
+    qty_str[j]                = 0;
+    Transaction.price[idx]    = parse.atof(price_str);
     Transaction.quantity[idx] = parse.atoi(qty_str);
-    line_start = line_end + 1;
+    line_start                = line_end + 1;
   }
   fmt.printf("Loaded %d rows\n", idx);
 }

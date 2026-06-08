@@ -7,11 +7,11 @@ Matrix[5]
 main :: proc() {
   insert(Matrix, 1.5);
   val := Matrix.data[0, 0];
-  vi := val * 10.0;
+  vi  := val * 10.0;
   fmt.print("value: 15\n");
   fmt.assert(vi == 15, "data[0,0] != 1.5\n");
-  row := Matrix.data[0];
-  vrow := row[0];
+  row   := Matrix.data[0];
+  vrow  := row[0];
   virow := vrow * 10.0;
   fmt.assert(virow == 15, "row[0] != 1.5\n");
 }

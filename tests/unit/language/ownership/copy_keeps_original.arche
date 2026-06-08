@@ -11,7 +11,7 @@ main :: proc() {
   src: char[8];
   src[0] = 'h';
   src[1] = 'i';
-  out := fill(copy src, "yo"); // copy: src untouched; out is the filled duplicate "yo"
+  out    := fill(copy src, "yo"); // copy: src untouched; out is the filled duplicate "yo"
   fmt.printf(
     "src0=%d src1=%d out0=%d out1=%d outlen=%d\n",
     src[0],

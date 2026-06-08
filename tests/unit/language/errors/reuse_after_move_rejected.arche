@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "after it was moved" %t.out
 fill :: proc(own buf: char[8])(buf: char[8], n: int) {
   buf[0] = 65;
-  n = 1;
+  n      = 1;
 }
 
 main :: proc() {

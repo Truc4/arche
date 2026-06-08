@@ -6,9 +6,9 @@
 #import { fmt }
 resource :: opaque
 #foreign {
-  resource_open :: proc(initial: int)(ret: resource)
-  resource_get :: proc(r: resource)(ret: int)
-  resource_set :: proc(r: resource, v: int)
+  resource_open  :: proc(initial: int)(ret: resource)
+  resource_get   :: proc(r: resource)(ret: int)
+  resource_set   :: proc(r: resource, v: int)
   resource_close :: proc(own r: resource)
 }
 

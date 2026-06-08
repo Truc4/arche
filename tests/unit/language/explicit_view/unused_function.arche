@@ -16,7 +16,7 @@
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "unused_function 0 function 'hush'") -eq 0
 #import { fmt }
 
-cb :: proc()()
+cb       :: proc()()
 run_task :: proc(on_done: cb)() {
   on_done()();
 }

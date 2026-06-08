@@ -64,10 +64,10 @@ fread_line :: proc(f: fd, own buf: char[], n: int)(out: char[]) {
       break;
     }
     buf[i] = ch[0];
-    i = i + 1;
+    i      = i + 1;
   }
   buf[i] = 0;
-  out = buf[0: i];
+  out    = buf[0: i];
 }
 // A descriptor is a plain value — close it explicitly (no RAII auto-drop).
 fclose :: proc(f: fd) {
@@ -123,7 +123,7 @@ file_unmap :: proc(own data: char[], size: i64) {
 // wrappers above are public (the C symbols stay linkable, an unavoidable ABI fact).
 #module
 #foreign {
-  arche_file_map :: proc(own path: char[])(data: char[])
-  arche_file_size :: proc()(n: i64)
+  arche_file_map   :: proc(own path: char[])(data: char[])
+  arche_file_size  :: proc()(n: i64)
   arche_file_unmap :: proc(own data: char[], size: i64)
 }

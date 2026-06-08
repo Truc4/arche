@@ -16,7 +16,7 @@ read_key :: proc()(k: int) {
 // C implementation layer (runtime/term.c) — module-private.
 #module
 #foreign {
-  term_raw_enable :: proc()
+  term_raw_enable  :: proc()
   term_raw_restore :: proc()
-  term_read_key :: proc()(k: int)
+  term_read_key    :: proc()(k: int)
 }

@@ -4,9 +4,9 @@
 #import { fmt }
 route :: proc(path: char[])() {
   match path {
-  "/": fmt.printf("home\n");
-  "/about": fmt.printf("about\n");
-  _: fmt.printf("404\n");
+  "/"      : fmt.printf("home\n");
+  "/about" : fmt.printf("about\n");
+  _        : fmt.printf("404\n");
   }
 }
 

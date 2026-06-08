@@ -10,11 +10,11 @@
 /// fmt.assert(atoi("13abc") == 13, "atoi stops at non-digit\n");
 /// ```
 atoi :: func(s: char[]) -> int {
-  i := 0;
+  i    := 0;
   sign := 1;
   if (s.length > 0 && s[0] == '-') {
     sign = 0 - 1;
-    i = 1;
+    i    = 1;
   }
   n := 0;
   for (; i < s.length; i += 1) {
@@ -31,11 +31,11 @@ atoi :: func(s: char[]) -> int {
 
 /// Parse a leading (optionally signed) decimal: integer part then optional fraction, like libc atof.
 atof :: func(s: char[]) -> float {
-  i := 0;
+  i    := 0;
   sign := 1.0;
   if (s.length > 0 && s[0] == '-') {
     sign = 0.0 - 1.0;
-    i = 1;
+    i    = 1;
   }
   whole := 0.0;
   for (; i < s.length; i += 1) {
@@ -51,7 +51,7 @@ atof :: func(s: char[]) -> float {
     }
     whole = whole * 10.0 + (s[i] - '0');
   }
-  frac := 0.0;
+  frac  := 0.0;
   scale := 1.0;
   for (; i < s.length; i += 1) {
     if (s[i] < '0') {
@@ -60,7 +60,7 @@ atof :: func(s: char[]) -> float {
     if (s[i] > '9') {
       break;
     }
-    frac = frac * 10.0 + (s[i] - '0');
+    frac  = frac * 10.0 + (s[i] - '0');
     scale = scale * 10.0;
   }
   return sign * (whole + frac / scale);

@@ -7,10 +7,10 @@
 Particle :: arche { mass :: float, charge :: float }
 Particle[4](4)
 main :: proc() {
-  Particle.mass[0] = 10.0;
+  Particle.mass[0]   = 10.0;
   Particle.charge[0] = 5.0;
-  m := Particle.mass[0]; // type: mass
-  c := Particle.charge[0]; // type: charge
+  m                  := Particle.mass[0]; // type: mass
+  c                  := Particle.charge[0]; // type: charge
   e: float = m * c; // mass * charge (same backing) -> allowed -> 50
   fmt.printf("e=%g\n", e);
 }

@@ -7,12 +7,12 @@
 resource :: opaque
 #foreign {
   resource_open :: proc(initial: int)(r: resource)
-  resource_get :: proc(r: resource)(v: int)
+  resource_get  :: proc(r: resource)(v: int)
   @drop(resource)
   resource_close :: proc(own r: resource)
 }
 Route :: enum { files, health }
-rval :: proc(r: resource)(v: int) {
+rval  :: proc(r: resource)(v: int) {
   resource_get(r)(x:);
   v = x;
 }

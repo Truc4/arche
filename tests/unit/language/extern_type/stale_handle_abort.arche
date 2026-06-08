@@ -2,7 +2,7 @@
 // slot reused, an old handle to it is stale and any use aborts loudly. Here `alias`
 // outlives the delete+reinsert, so deleting through it aborts.
 // RUN: %arche build -o %t --link %S/runtime/test_resource.c %s && ! %t
-cell :: opaque
+cell     :: opaque
 Resource :: arche { cell }
 #foreign {
   resource_open :: proc(initial: int)(ret: cell)
@@ -11,7 +11,7 @@ Resource[8]
 
 main :: proc() {
   resource_open(10)(r1:);
-  h := insert(Resource, r1);
+  h     := insert(Resource, r1);
   alias := h;
   delete(h);
   resource_open(99)(r2:);

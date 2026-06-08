@@ -1,6 +1,6 @@
 // Explicit view: gopls-style call-site parameter-name hints, with `own` marked.
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 17 12 0 1 param a:"
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 17 15 0 1 param b:"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 17 14 0 1 param a:"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 17 17 0 1 param b:"
 // RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 19 9 0 1 param own dst:"
 // RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 19 19 0 1 param src:"
 // A bare proc call carries an implied empty out-list — shown as a ghost `()` so the reader sees the
@@ -14,7 +14,7 @@ store :: proc(own dst: char[], src: char[]) {
   dst[0] = src[0];
 }
 main :: proc() {
-  r := add(1, 2);
+  r   := add(1, 2);
   buf := "xx";
   store(copy buf, buf);
 }

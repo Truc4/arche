@@ -10,7 +10,7 @@ fill :: proc(buf: char[32], s: char[])(buf: char[32], n: int) {
     buf[i] = s[i];
   }
   buf[i] = 0; // NUL-terminate the filled buffer for the `%s` fmt.print (an FFI convenience the user writes)
-  n = i;
+  n      = i;
 }
 
 main :: proc() {

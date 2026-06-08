@@ -3,9 +3,9 @@
 // So you define the shape once and reference it by name, instead of spelling out members.
 // RUN: %arche build -o %t %s && %t | grep "px=1.5 py=2.1"
 #import { fmt }
-pos(x, y) :: float
+pos(x, y)   :: float
 vel(vx, vy) :: float
-Particle :: arche { pos, vel }
+Particle    :: arche { pos, vel }
 
 Particle[5]
 

@@ -1,7 +1,7 @@
 #import { fmt }
 main :: proc() {
-  x := 10;
-  y := 20;
+  x      := 10;
+  y      := 20;
   result := x + y;
   fmt.print("result: 30\n");
 }

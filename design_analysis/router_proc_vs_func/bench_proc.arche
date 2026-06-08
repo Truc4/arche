@@ -9,20 +9,20 @@ route :: enum { miss, root, user, post, asset }
 nodeKind :: enum { kstatic, kparam, kcatchall }
 
 TrieNode :: arche {
-  seg :: char[32],
-  seg_len :: int,
-  kind :: nodeKind,
-  first_child :: int,
+  seg          :: char[32],
+  seg_len      :: int,
+  kind         :: nodeKind,
+  first_child  :: int,
   next_sibling :: int,
-  handler_id :: route,
+  handler_id   :: route,
 }
 
 TrieNode[256]
 
 // Per-request capture state — MODULE GLOBALS (overwritten by the next resolve).
-cap_start: int[8]
-cap_len: int[8]
-cap_count: int[1]
+cap_start : int[8]
+cap_len   : int[8]
+cap_count : int[1]
 
 seg_end :: func(p: char[], start: int, n: int) -> int {
   for (i := start; i < n; i = i + 1) {
@@ -59,24 +59,24 @@ init :: proc() {
 }
 
 add :: proc(pattern: char[], handler_id: route) {
-  n := pattern.length;
+  n   := pattern.length;
   cur := 0;
-  s := 0;
+  s   := 0;
   if (n > 0) {
     if (pattern[0] == '/') {
       s = 1;
     }
   }
   for (; s < n;) {
-    e := seg_end(pattern, s, n);
-    kind := nodeKind.kstatic;
+    e      := seg_end(pattern, s, n);
+    kind   := nodeKind.kstatic;
     tstart := s;
     if (pattern[s] == ':') {
-      kind = nodeKind.kparam;
+      kind   = nodeKind.kparam;
       tstart = s + 1;
     }
     if (pattern[s] == '*') {
-      kind = nodeKind.kcatchall;
+      kind   = nodeKind.kcatchall;
       tstart = s + 1;
     }
     found := -1;
@@ -103,37 +103,37 @@ add :: proc(pattern: char[], handler_id: route) {
       j := 0;
       for (i := tstart; i < e; i = i + 1) {
         segbuf[j] = pattern[i];
-        j = j + 1;
+        j         = j + 1;
       }
       segbuf[j] = 0;
       new_node(segbuf, e - tstart, kind)(found:);
       TrieNode.next_sibling[found] = TrieNode.first_child[cur];
-      TrieNode.first_child[cur] = found;
+      TrieNode.first_child[cur]    = found;
     }
     cur = found;
-    s = e + 1;
+    s   = e + 1;
   }
   TrieNode.handler_id[cur] = handler_id;
 }
 
 // Procedural: captures recorded into module statics; read back via param/param_count.
 resolve :: proc(path: char[])(handler_id: route) {
-  n := path.length;
-  cur := 0;
+  n            := path.length;
+  cur          := 0;
   cap_count[0] = 0;
-  handler_id = route.miss;
-  s := 0;
+  handler_id   = route.miss;
+  s            := 0;
   if (n > 0) {
     if (path[0] == '/') {
       s = 1;
     }
   }
   for (; s < n;) {
-    e := seg_end(path, s, n);
-    static_hit := -1;
-    param_hit := -1;
+    e            := seg_end(path, s, n);
+    static_hit   := -1;
+    param_hit    := -1;
     catchall_hit := -1;
-    child := TrieNode.first_child[cur];
+    child        := TrieNode.first_child[cur];
     for (; child >= 0;) {
       k := TrieNode.kind[child];
       if (k == nodeKind.kstatic) {
@@ -164,7 +164,7 @@ resolve :: proc(path: char[])(handler_id: route) {
     ck := TrieNode.kind[chosen];
     if (ck == nodeKind.kstatic) {
       cur = chosen;
-      s = e + 1;
+      s   = e + 1;
     }
     else {
       cend := e;
@@ -172,10 +172,10 @@ resolve :: proc(path: char[])(handler_id: route) {
         cend = n;
       }
       cap_start[cap_count[0]] = s;
-      cap_len[cap_count[0]] = cend - s;
-      cap_count[0] = cap_count[0] + 1;
-      cur = chosen;
-      s = cend + 1;
+      cap_len[cap_count[0]]   = cend - s;
+      cap_count[0]            = cap_count[0] + 1;
+      cur                     = chosen;
+      s                       = cend + 1;
     }
   }
   handler_id = TrieNode.handler_id[cur];
@@ -187,7 +187,7 @@ param_count :: proc()(n: int) {
 
 param :: proc(i: int)(start: int, len: int) {
   start = cap_start[i];
-  len = cap_len[i];
+  len   = cap_len[i];
 }
 
 main :: proc() {

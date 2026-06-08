@@ -1,6 +1,7 @@
 #include "format_syntax.h"
 #include <limits.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* Flatten the syntax tree's token leaves (in source order) so the printer can make
  * spacing decisions from adjacent token kinds. */
@@ -213,6 +214,262 @@ typedef struct {
 	int depth;  /* bracket depth at which this group's items live */
 } Frame;
 
+/* ===== Separator-alignment pass (gofmt-style `:` / `::` / `:=` / `=` columns) =====
+ *
+ * The token printer above streams into a memory buffer; this second pass then lines up
+ * separators across a run of consecutive, equally-indented lines — like gofmt aligns the
+ * `=` in a `var ( … )` block or the types in a struct. A blank line, an indent change, or a
+ * separator-free line ends the run. The run is re-lexed (not text-scanned) so a `:`/`=`
+ * inside a string, a comment, or a `==`/`<=`/`+=` operator is never mistaken for a column;
+ * only separators at the line's own bracket depth count (a call-internal `foo(a: 1)` colon
+ * is left alone). */
+
+typedef struct {
+	char *data;
+	size_t len, cap;
+} Buf;
+
+static void buf_reserve(Buf *b, size_t extra) {
+	if (b->len + extra <= b->cap)
+		return;
+	size_t need = b->len + extra;
+	b->cap = b->cap ? b->cap : 1024;
+	while (b->cap < need)
+		b->cap *= 2;
+	b->data = realloc(b->data, b->cap);
+}
+static void bputc(Buf *b, char c) {
+	buf_reserve(b, 1);
+	b->data[b->len++] = c;
+}
+static void bwrite(Buf *b, const char *s, size_t n) {
+	if (!n)
+		return;
+	buf_reserve(b, n);
+	memcpy(b->data + b->len, s, n);
+	b->len += n;
+}
+static void bpad(Buf *b, size_t n) {
+	if (!n)
+		return;
+	buf_reserve(b, n);
+	memset(b->data + b->len, ' ', n);
+	b->len += n;
+}
+
+/* One source line with its two alignment columns. The separators split a declaration into fixed
+ * semantic slots, NOT by ordinal position: a `name = value` aligns its `=` under another line's
+ * `=`/`:=`/`::`, never under a `name : type` colon — because `:` is the type (first column) and the
+ * binding is always the second. So each line has at most a TYPE colon and a BIND separator; either
+ * may be absent (`x := 1` has only a bind; a struct field `a: int` has only a type). */
+typedef struct {
+	const char *text; /* start of line in the formatted buffer (no trailing '\n') */
+	size_t len;
+	int leading; /* leading-space count — the group key */
+	int has_type, type_start, type_end;
+	int has_bind, bind_start, bind_end;
+} AlignLine;
+
+static int alignable(const AlignLine *L) {
+	return L->has_type || L->has_bind;
+}
+
+/* Lines align only with same-shaped neighbours: a `x := 1` (bind-only) does not align with a
+ * `y : int = 2` (typed bind), so an absent slot never opens a gap. A shape change ends the run,
+ * just like a blank line — the gofmt rule. */
+static int same_shape(const AlignLine *a, const AlignLine *b) {
+	return a->has_type == b->has_type && a->has_bind == b->has_bind;
+}
+
+/* Route a separator unit into the line's TYPE or BIND column. A leading single `:` is a type
+ * annotation; everything else (`=`, `:=`, `::`, or a `:` that follows a type colon — a value colon)
+ * is the binding. Separators past the bind fold into its trailing cell. */
+static void line_add_sep(AlignLine *L, int single_colon, int s, int e) {
+	if (!L->has_type && !L->has_bind && single_colon) {
+		L->has_type = 1, L->type_start = s, L->type_end = e;
+	} else if (!L->has_bind) {
+		L->has_bind = 1, L->bind_start = s, L->bind_end = e;
+	}
+}
+
+/* Slot `si` (0 = TYPE, 1 = BIND) of line L: its separator span [*sep_start,*sep_end) and the byte
+ * column where its cell begins (just past the prior present slot). Returns 0 if L lacks the slot. */
+static int line_slot(const AlignLine *L, int si, int *sep_start, int *sep_end, int *cell_from) {
+	if (si == 0) {
+		if (!L->has_type)
+			return 0;
+		*sep_start = L->type_start, *sep_end = L->type_end, *cell_from = L->leading;
+	} else {
+		if (!L->has_bind)
+			return 0;
+		*sep_start = L->bind_start, *sep_end = L->bind_end;
+		*cell_from = L->has_type ? L->type_end : L->leading;
+	}
+	return 1;
+}
+
+/* Trim spaces off both ends of [from,to) in L's text. */
+static void trim_slice(const AlignLine *L, int from, int to, int *os, int *oe) {
+	while (from < to && L->text[from] == ' ')
+		from++;
+	while (to > from && L->text[to - 1] == ' ')
+		to--;
+	*os = from, *oe = to;
+}
+
+static void align_and_write(FILE *out, Buf *b) {
+	if (b->len == 0)
+		return;
+	int line_count = 0;
+	for (size_t i = 0; i < b->len; i++)
+		if (b->data[i] == '\n')
+			line_count++;
+	if (line_count == 0) {
+		fwrite(b->data, 1, b->len, out);
+		return;
+	}
+
+	AlignLine *lines = calloc((size_t)line_count, sizeof(AlignLine));
+	int li = 0;
+	size_t start = 0;
+	for (size_t i = 0; i < b->len; i++) {
+		if (b->data[i] != '\n')
+			continue;
+		AlignLine *L = &lines[li++];
+		L->text = b->data + start;
+		L->len = i - start;
+		int lead = 0;
+		while ((size_t)lead < L->len && L->text[lead] == ' ')
+			lead++;
+		L->leading = lead;
+		start = i + 1;
+	}
+
+	/* Re-lex the formatted text to locate genuine separators. */
+	buf_reserve(b, 1);
+	b->data[b->len] = '\0'; /* NUL terminator past len, not counted */
+	TokenBuffer tb = lexer_tokenize(b->data);
+	int *start_depth = malloc((size_t)line_count * sizeof(int));
+	for (int i = 0; i < line_count; i++)
+		start_depth[i] = -1;
+	int depth = 0;
+	for (size_t ti = 0; ti < tb.count; ti++) {
+		Token *t = &tb.tokens[ti];
+		if (t->kind == TOK_EOF)
+			break;
+		int ln = t->line - 1;
+		if (ln < 0 || ln >= line_count)
+			continue;
+		if (start_depth[ln] < 0)
+			start_depth[ln] = depth; /* this line's structural level */
+		int is_sep = 0, single_colon = 0, s = t->column - 1, e = s + (int)t->length;
+		if (t->kind == TOK_COLON) {
+			is_sep = 1;
+			single_colon = 1;
+			/* fold a contiguous `::` or `:=` into a single separator unit (not a single colon) */
+			if (ti + 1 < tb.count) {
+				Token *n = &tb.tokens[ti + 1];
+				if ((n->kind == TOK_COLON || n->kind == TOK_EQ) && n->line == t->line &&
+				    n->column == t->column + (int)t->length) {
+					e = (n->column - 1) + (int)n->length;
+					single_colon = 0;
+					ti++;
+				}
+			}
+		} else if (t->kind == TOK_EQ) {
+			is_sep = 1; /* a bare `=`; `==`/`<=`/`+=` are distinct token kinds */
+		}
+		if (is_sep && depth == start_depth[ln])
+			line_add_sep(&lines[ln], single_colon, s, e);
+		switch (t->kind) {
+		case TOK_LPAREN:
+		case TOK_LBRACE:
+		case TOK_LBRACKET:
+			depth++;
+			break;
+		case TOK_RPAREN:
+		case TOK_RBRACE:
+		case TOK_RBRACKET:
+			if (depth > 0)
+				depth--;
+			break;
+		default:
+			break;
+		}
+	}
+	token_buffer_free(&tb);
+
+	Buf *rebuilt = calloc((size_t)line_count, sizeof(Buf));
+	int *has_rebuild = calloc((size_t)line_count, sizeof(int));
+
+	int g = 0;
+	while (g < line_count) {
+		if (!alignable(&lines[g])) {
+			g++;
+			continue;
+		}
+		int h = g + 1;
+		while (h < line_count && alignable(&lines[h]) && lines[h].leading == lines[g].leading &&
+		       same_shape(&lines[h], &lines[g]))
+			h++;
+		if (h - g >= 2) {
+			for (int k = g; k < h; k++) {
+				bpad(&rebuilt[k], (size_t)lines[k].leading);
+				has_rebuild[k] = 1;
+			}
+			/* Two fixed columns, left to right: TYPE then BIND. A line lacking a column is
+			 * skipped for it but still pads its cell to reach the next column it does have. */
+			for (int si = 0; si < 2; si++) {
+				size_t target = 0;
+				for (int k = g; k < h; k++) {
+					int ss, se, cf;
+					if (!line_slot(&lines[k], si, &ss, &se, &cf))
+						continue;
+					int cs, ce;
+					trim_slice(&lines[k], cf, ss, &cs, &ce);
+					size_t cur = rebuilt[k].len + (size_t)(ce - cs) + 1; /* +1 = min one space */
+					if (cur > target)
+						target = cur;
+				}
+				for (int k = g; k < h; k++) {
+					int ss, se, cf;
+					if (!line_slot(&lines[k], si, &ss, &se, &cf))
+						continue;
+					int cs, ce;
+					trim_slice(&lines[k], cf, ss, &cs, &ce);
+					bwrite(&rebuilt[k], lines[k].text + cs, (size_t)(ce - cs));
+					bpad(&rebuilt[k], target - rebuilt[k].len);
+					bwrite(&rebuilt[k], lines[k].text + ss, (size_t)(se - ss));
+					bputc(&rebuilt[k], ' ');
+				}
+			}
+			for (int k = g; k < h; k++) {
+				AlignLine *L = &lines[k];
+				int ts = L->has_bind ? L->bind_end : L->type_end;
+				while ((size_t)ts < L->len && L->text[ts] == ' ')
+					ts++;
+				bwrite(&rebuilt[k], L->text + ts, L->len - (size_t)ts);
+				while (rebuilt[k].len > 0 && rebuilt[k].data[rebuilt[k].len - 1] == ' ')
+					rebuilt[k].len--; /* drop trailing pad (e.g. empty tail) */
+			}
+		}
+		g = h;
+	}
+
+	for (int k = 0; k < line_count; k++) {
+		if (has_rebuild[k])
+			fwrite(rebuilt[k].data, 1, rebuilt[k].len, out);
+		else
+			fwrite(lines[k].text, 1, lines[k].len, out);
+		fputc('\n', out);
+		free(rebuilt[k].data);
+	}
+	free(rebuilt);
+	free(has_rebuild);
+	free(start_depth);
+	free(lines);
+}
+
 void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 	if (!root)
 		return;
@@ -241,6 +498,7 @@ void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 		deco_end[last] = 1;
 	}
 
+	Buf ob = {NULL, 0, 0}; /* printer streams here; align_and_write() flushes it to `out` */
 	int indent = 0;
 	int started = 0;
 	int col = 0; /* current column (for the width decision) */
@@ -349,24 +607,24 @@ void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 
 		/* Emit the decided gap. */
 		if (add_trailing_comma) {
-			fputc(',', out); /* attaches to the last item, before the closer's newline */
+			bputc(&ob, ','); /* attaches to the last item, before the closer's newline */
 			col += 1;
 		}
 		if (nl) {
-			fputc('\n', out);
+			bputc(&ob, '\n');
 			if (l->line - prev_line >= 2) /* preserve one blank line */
-				fputc('\n', out);
+				bputc(&ob, '\n');
 			col = 0;
 			for (int t = 0; t < eff_indent; t++) {
-				fputs("  ", out);
+				bpad(&ob, 2);
 				col += 2;
 			}
 		} else if (space) {
-			fputc(' ', out);
+			bputc(&ob, ' ');
 			col += 1;
 		}
 
-		fwrite(l->text, 1, (size_t)l->len, out);
+		bwrite(&ob, l->text, (size_t)l->len);
 		col += l->len;
 
 		/* Bracket bookkeeping: maintain depth, open value-list frames, and block indent. */
@@ -402,7 +660,9 @@ void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 		prev_line = l->line;
 		force_nl = is_line_comment(l);
 	}
-	fputc('\n', out);
+	bputc(&ob, '\n');
+	align_and_write(out, &ob);
+	free(ob.data);
 	free(deco_end);
 	free(ls.items);
 }

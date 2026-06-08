@@ -30,13 +30,13 @@ parse_request_line :: proc(req: char[])(method: char[], target: char[], ok: int)
   }
   method = req[0: sp1];
   tstart := sp1 + 1;
-  tend := sp2;
-  q := str.find_char(req, tstart, tend, '?');
+  tend   := sp2;
+  q      := str.find_char(req, tstart, tend, '?');
   if (q < tend) {
     tend = q; // drop the query string
   }
   target = req[tstart: tend];
-  ok = 1;
+  ok     = 1;
 }
 
 /// Content-Type for a path, chosen by file extension. Returns a NUL-terminated string literal — safe
@@ -96,12 +96,12 @@ reason :: func(status: int) -> char[] {
 /// `send_body` is 1 (0 for HEAD). `%d` formats the status + Content-Length; `%s` formats only the
 /// NUL-terminated `reason`/`ctype` literals — never a body slice (the body is sent raw).
 respond :: proc(
-  conn: socket,
-  hdr: char[],
-  status: int,
-  ctype: char[],
-  body: char[],
-  send_body: int,
+  conn      : socket,
+  hdr       : char[],
+  status    : int,
+  ctype     : char[],
+  body      : char[],
+  send_body : int,
 ) {
   // Bind the reason phrase to a local: an inline func-call result is a `{ptr,len}` slice, but a `%s`
   // vararg needs a bare NUL-terminated pointer — a NAME is passed as its `.ptr`, an inline call is not.

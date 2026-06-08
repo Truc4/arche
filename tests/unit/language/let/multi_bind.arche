@@ -10,12 +10,12 @@ fill_two :: proc(buf1: char[32], buf2: char[32])(buf1: char[32], buf2: char[32],
   buf2[0] = 'c';
   buf2[1] = 'd';
   buf2[2] = 0;
-  n = 42;
+  n       = 42;
 }
 
 main :: proc() {
-  x: char[32];
-  y: char[32];
+  x : char[32];
+  y : char[32];
   fill_two(x, y)(x, y, n:);
   fmt.printf("x=%s y=%s n=%d\n", x, y, n);
 }

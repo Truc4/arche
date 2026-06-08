@@ -5,8 +5,8 @@
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "W0004 unused_local") -eq 1
 #import { fmt }
 main :: proc() {
-  used := 1;
+  used       := 1;
   never_read := 2;
-  _scratch := 3;
+  _scratch   := 3;
   fmt.printf("%d\n", used);
 }
