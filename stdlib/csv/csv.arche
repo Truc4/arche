@@ -27,7 +27,7 @@ load :: proc(arch: archetype, own path: char[]) {
   // header pass: map each archetype field to its file column by name
   #each_field f in arch {
     load_cols[f.index] = -1;
-    col := 0;
+    col                := 0;
     cstart: i64 = 0;
     for (; cstart < hdr_end;) {
       cend: i64 = find_byte(data, cstart, hdr_end, ',');
@@ -50,8 +50,8 @@ load :: proc(arch: archetype, own path: char[]) {
     #each_field f in arch {
       c := load_cols[f.index];
       if (c >= 0) {
-        fstart: i64 = field_at(data, pos, nl, c);
-        fend: i64 = find_byte(data, fstart, nl, ',');
+        fstart : i64 = field_at(data, pos, nl, c);
+        fend   : i64 = find_byte(data, fstart, nl, ',');
         scratch: char[64];
         j := 0;
         for (i: i64 = fstart; i < fend; i = i + 1) {
@@ -59,7 +59,7 @@ load :: proc(arch: archetype, own path: char[]) {
           j += 1;
         }
         scratch[j] = 0;
-        f[row] = cell(f[row], scratch);
+        f[row]     = cell(f[row], scratch);
       }
     }
     pos = nl + 1;

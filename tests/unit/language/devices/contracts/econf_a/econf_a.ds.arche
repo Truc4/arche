@@ -1,0 +1,5 @@
+// econf_a's datasheet declares the `mode` enum. Two devices may share the SAME enum (it coalesces as
+// shared vocabulary) — but only if the variant sets AGREE. econf_b declares `mode` with a DIFFERENT
+// variant set, so importing both must error. Support file.
+// RUN: true
+mode :: enum { off, on }

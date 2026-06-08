@@ -7,10 +7,10 @@
 // it emits the `syscall` instruction directly (no libc). A buffer arg decays to its data pointer
 // (like C). The fd wrappers below build on it. Call qualified as `os.syscall(...)`.
 #foreign {
-  os_now_sec :: proc()(t: float)
+  os_now_sec  :: proc()(t: float)
   os_sleep_ms :: proc(ms: int)
-  os_argc :: proc()(n: int)
-  os_argv :: proc(i: int)(s: char[])
+  os_argc     :: proc()(n: int)
+  os_argv     :: proc(i: int)(s: char[])
   os_argv_len :: proc(i: int)(n: i64)
 
   @intrinsic

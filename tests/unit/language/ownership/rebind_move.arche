@@ -17,6 +17,6 @@ main :: proc() {
   a := fill(move a); // a is now a `char[]` slice "hi" (length 2)
   b: char[16];
   b[0] = 10;
-  b := bump(move b);
+  b    := bump(move b);
   fmt.printf("a0=%d a1=%d alen=%d b0=%d\n", a[0], a[1], a.length, b[0]);
 }

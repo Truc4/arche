@@ -11,7 +11,7 @@ add :: func(a: int, b: int) -> int {
 }
 
 handler :: not_found // proc alias
-plus :: add // func alias
+plus    :: add // func alias
 
 main :: proc() {
   handler()(c:);

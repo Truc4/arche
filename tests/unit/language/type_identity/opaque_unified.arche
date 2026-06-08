@@ -8,7 +8,7 @@ handle_a :: opaque
 handle_b :: opaque
 #foreign {
   make_a :: proc()(r: handle_a)
-  use_b :: proc(own h: handle_b)
+  use_b  :: proc(own h: handle_b)
 }
 main :: proc() {
   make_a()(a:);

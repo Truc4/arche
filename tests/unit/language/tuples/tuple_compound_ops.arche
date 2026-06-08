@@ -1,9 +1,9 @@
 // RUN: %arche build -o %t %s && %t | grep 0.05
 #import { fmt }
-pos(x, y) :: float
+pos(x, y)   :: float
 vel(dx, dy) :: float
-acc(i, j) :: float
-Particle :: arche { pos_x, pos_y, vel_dx, vel_dy, acc_i, acc_j }
+acc(i, j)   :: float
+Particle    :: arche { pos_x, pos_y, vel_dx, vel_dy, acc_i, acc_j }
 
 Particle[5]
 
@@ -12,8 +12,8 @@ main :: proc() {
   insert(Particle, 5.0, 5.0, 0.5, 0.5, 0.05, 0.05);
   Particle.vel_dx = Particle.acc_i;
   Particle.vel_dy = Particle.acc_j;
-  Particle.pos_x = Particle.vel_dx;
-  Particle.pos_y = Particle.vel_dy;
+  Particle.pos_x  = Particle.vel_dx;
+  Particle.pos_y  = Particle.vel_dy;
   fmt.print_float(Particle.pos_x[0]);
   fmt.print(" ");
   fmt.print_float(Particle.pos_y[0]);

@@ -2,8 +2,8 @@
 // Step 1: Char literals
 #import { fmt }
 main :: proc() {
-  c := 44;
-  nl := 10;
+  c   := 44;
+  nl  := 10;
   tab := 9;
   fmt.printf("char ok\n");
 }

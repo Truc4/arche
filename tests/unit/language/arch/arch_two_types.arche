@@ -11,8 +11,8 @@ Body[5]
 main :: proc() {
   insert(Particle, 1.0, 0.1);
   insert(Body, 2.0, 0.2, 10.0);
-  pp := Particle.pos[0];
-  bm := Body.mass[0];
+  pp  := Particle.pos[0];
+  bm  := Body.mass[0];
   ppi := pp * 10.0;
   bmi := bm * 1.0;
   fmt.assert(ppi == 10, "Particle.pos != 1.0\n");

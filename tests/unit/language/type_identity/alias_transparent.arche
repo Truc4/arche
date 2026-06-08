@@ -3,13 +3,13 @@
 // as an ordinary identifier, so the RHS `alias float` is a malformed backing).
 // RUN: %arche build -o %t %s && %t | grep "r=3"
 #import { fmt }
-dist :: alias float
+dist        :: alias float
 takes_float :: proc(x: float) {
   fmt.printf("r=%g\n", x);
 }
 main :: proc() {
-  d: dist = 3.0;
-  f: float = d; // dist -> float, transparent
-  d2: dist = f; // float -> dist, transparent (both ways, no conversion)
+  d  : dist  = 3.0;
+  f  : float = d; // dist -> float, transparent
+  d2 : dist  = f; // float -> dist, transparent (both ways, no conversion)
   takes_float(d2);
 }

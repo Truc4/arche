@@ -1,5 +1,8 @@
-// `vstore` implementation: a system over the datasheet's `Cell` shape (pre-defined components). Support file.
+// `vstore` implementation: it defines the shared `Cell` shape from its components and a system over
+// it. Support file.
 // RUN: true
+Cell :: arche { a, b }
+
 vbump :: sys (b) {
   b = b + 1.0;
 }

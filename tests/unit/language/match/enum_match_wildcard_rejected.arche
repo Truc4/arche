@@ -3,10 +3,10 @@
 // later, defeating exhaustiveness — name an explicit case (e.g. a `not_found`) instead.
 #import { fmt }
 method :: enum { get, post, delete }
-main :: proc() {
+main   :: proc() {
   m := method.get;
   match m {
-    method.get: fmt.printf("g\n");
-    _: fmt.printf("other\n");
+  method.get : fmt.printf("g\n");
+  _          : fmt.printf("other\n");
   }
 }

@@ -2,37 +2,37 @@
 #import { parse fmt }
 main :: proc() {
   buf: char[256];
-  buf[0] = '1';
-  buf[1] = '0';
-  buf[2] = '.';
-  buf[3] = '0';
-  buf[4] = ',';
-  buf[5] = '1';
-  buf[6] = '0';
-  buf[7] = '\n';
+  buf[0]     = '1';
+  buf[1]     = '0';
+  buf[2]     = '.';
+  buf[3]     = '0';
+  buf[4]     = ',';
+  buf[5]     = '1';
+  buf[6]     = '0';
+  buf[7]     = '\n';
   line_start := 0;
-  line_end := 8;
-  comma_pos := 4;
-  price_str: char[32];
-  qty_str: char[32];
+  line_end   := 8;
+  comma_pos  := 4;
+  price_str : char[32];
+  qty_str   : char[32];
   j := 0;
   i := line_start;
   for (; i < comma_pos;) {
     price_str[j] = buf[i];
-    j = j + 1;
-    i = i + 1;
+    j            = j + 1;
+    i            = i + 1;
   }
   price_str[j] = 0;
-  j = 0;
-  i = comma_pos + 1;
+  j            = 0;
+  i            = comma_pos + 1;
   for (; i < line_end;) {
     qty_str[j] = buf[i];
-    j = j + 1;
-    i = i + 1;
+    j          = j + 1;
+    i          = i + 1;
   }
   qty_str[j] = 0;
-  price := parse.atof(price_str);
-  qty := parse.atoi(qty_str);
+  price      := parse.atof(price_str);
+  qty        := parse.atoi(qty_str);
   fmt.printf("price=%f qty=%d\n", price, qty);
   fmt.assert(price == 10.0, "price should be 10.0\n");
   fmt.assert(qty == 10, "qty should be 10\n");

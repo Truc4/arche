@@ -5,22 +5,22 @@
 fill_two :: proc(own buf1: char[32], own buf2: char[32])(buf1: char[32], buf2: char[32], n: int) {
   buf1 := str.strcopy(move buf1, "hello");
   buf2 := str.strcopy(move buf2, "world");
-  n = 99;
+  n    = 99;
 }
 
 main :: proc() {
-  x: char[32];
-  y: char[32];
+  x : char[32];
+  y : char[32];
   fill_two(move x, move y)(x:, y:, n:);
   fmt.printf("test1: x=%s y=%s n=%d\n", x, y, n);
 
-  a: char[32];
-  z: char[32];
+  a : char[32];
+  z : char[32];
   fill_two(move a, move z)(a:, z:, m:);
   fmt.printf("test2: a=%s z=%s m=%d\n", a, z, m);
 
-  p: char[32];
-  q: char[32];
+  p : char[32];
+  q : char[32];
   fill_two(move p, move q)(p:, q:, k:);
   fmt.printf("test3: p=%s q=%s k=%d\n", p, q, k);
 }

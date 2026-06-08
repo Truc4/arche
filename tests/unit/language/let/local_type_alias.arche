@@ -4,7 +4,7 @@
 #import { fmt }
 main :: proc() {
   meters :: int;
-  d: meters = 4;
-  e: meters = 6;
+  d : meters = 4;
+  e : meters = 6;
   fmt.printf("sum: %d\n", d + e);
 }

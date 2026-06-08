@@ -2,7 +2,7 @@
 // archetype column is reading mutable global state, so it's rejected (effects belong in a proc).
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0090 func_not_pure 0 func 'peek' is not pure — reads static memory (an archetype column)"
 Player :: arche { x :: int }
-peek :: func() -> int {
+peek   :: func() -> int {
   return Player.x[0];
 }
 main :: proc() {

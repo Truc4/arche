@@ -2,6 +2,6 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "unknown backing type" %t.out
 #import { fmt }
 gadget :: bogus
-main :: proc() {
+main   :: proc() {
   fmt.printf("unreachable\n");
 }

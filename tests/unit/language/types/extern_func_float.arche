@@ -6,7 +6,7 @@ main :: proc() {
   buf[1] = '.';
   buf[2] = '5';
   buf[3] = 0;
-  f := parse.atof(buf);
+  f      := parse.atof(buf);
   fmt.printf("atof: %g\n", f);
   fmt.assert(f == 1.5, "atof failed\n");
 }

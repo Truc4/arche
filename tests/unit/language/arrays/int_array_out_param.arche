@@ -7,7 +7,7 @@
 fill :: proc(n: int)(buf: int[8], count: int) {
   buf[0] = 9;
   buf[1] = 7;
-  count = 2;
+  count  = 2;
 }
 
 main :: proc() {

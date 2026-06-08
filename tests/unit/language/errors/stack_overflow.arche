@@ -13,7 +13,7 @@ recurse :: proc(depth: int)(r: int) {
   else {
     recurse(depth + 1)(inner:);
     sink[0] = inner;
-    r = inner;
+    r       = inner;
   }
 }
 

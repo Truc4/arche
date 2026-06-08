@@ -4,18 +4,18 @@
 // removed. Selecting `bar.qux` must run the `bar.qux` arm.
 // RUN: %arche build -o %t %s && %t | grep -q "got qux"
 #import { fmt }
-bar :: enum { foo, qux, zap }
+bar  :: enum { foo, qux, zap }
 main :: proc() {
   baz := bar.qux;
   match baz {
-    bar.foo: {
-      fmt.printf("got foo\n");
-    }
-    bar.qux: {
-      fmt.printf("got qux\n");
-    }
-    bar.zap: {
-      fmt.printf("got zap\n");
-    }
+  bar.foo: {
+    fmt.printf("got foo\n");
+  }
+  bar.qux: {
+    fmt.printf("got qux\n");
+  }
+  bar.zap: {
+    fmt.printf("got zap\n");
+  }
   }
 }

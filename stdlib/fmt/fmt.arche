@@ -7,8 +7,8 @@
 // `fmt.printf` / `fmt.sprintf` from importers.
 #foreign {
   sprintf :: proc(buf: char[], own fmt: char[], ...)(buf: char[], n: int)
-  printf :: proc(own fmt: char[], ...)(n: int)
-  fflush :: proc(stream: int)
+  printf  :: proc(own fmt: char[], ...)(n: int)
+  fflush  :: proc(stream: int)
 }
 
 print_float :: proc(f: float) {

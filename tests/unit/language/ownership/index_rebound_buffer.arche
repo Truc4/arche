@@ -8,7 +8,7 @@ fill :: proc(buf: char[32], s: char[])(buf: char[32], n: int) {
     buf[i] = s[i];
   }
   buf[i] = 0;
-  n = i;
+  n      = i;
 }
 
 main :: proc() {

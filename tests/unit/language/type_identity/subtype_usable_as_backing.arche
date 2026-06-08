@@ -3,7 +3,7 @@
 // lands. (GREEN today since `meters` is just `float`; must STAY green.)
 // RUN: %arche build -o %t %s && %t | grep "got 5"
 #import { fmt }
-meters :: float
+meters      :: float
 takes_float :: proc(x: float) {
   fmt.printf("got %g\n", x);
 }

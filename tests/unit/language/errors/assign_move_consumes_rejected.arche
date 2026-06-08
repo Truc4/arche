@@ -3,9 +3,9 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
 #import { fmt }
 main :: proc() {
-  a: int[3];
-  b: int[3];
+  a : int[3];
+  b : int[3];
   b[0] = 7;
-  a = b;
+  a    = b;
   fmt.printf("%d\n", b[0]);
 }

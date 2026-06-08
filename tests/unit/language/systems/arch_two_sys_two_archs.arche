@@ -22,8 +22,8 @@ main :: proc() {
   insert(Body, 20.0, 2.0, 10.0);
   run step;
   run dampen;
-  pp := Particle.pos[0];
-  bp := Body.vel[0];
+  pp  := Particle.pos[0];
+  bp  := Body.vel[0];
   ppi := pp * 10.0;
   bpi := bp * 100.0;
   fmt.assert(ppi == 110.0, "Particle.pos != 11.0\n");

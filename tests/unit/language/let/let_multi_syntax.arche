@@ -7,12 +7,12 @@
 fill_two :: proc()(buf1: char[32], buf2: char[32], n: int) {
   buf1 := str.strcopy(move buf1, "test1");
   buf2 := str.strcopy(move buf2, "test2");
-  n = 77;
+  n    = 77;
 }
 
 main :: proc() {
-  x: char[32];
-  y: char[32];
+  x : char[32];
+  y : char[32];
   fill_two()(x:, y:, n:);
   // `strcopy` is length-carried — it writes the 5 content bytes but no NUL, and the fixed `char[32]`
   // buffers are otherwise uninitialized. Terminate at the content length before the libc `%s` (which

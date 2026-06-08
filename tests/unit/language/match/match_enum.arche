@@ -7,8 +7,8 @@ method :: enum { get, post = 5, delete }
 main :: proc() {
   m := method.post;
   match m {
-    method.get: fmt.printf("delete=%d GET\n", method.delete);
-    method.post: fmt.printf("delete=%d POST\n", method.delete);
-    method.delete: fmt.printf("delete=%d DEL\n", method.delete);
+  method.get    : fmt.printf("delete=%d GET\n", method.delete);
+  method.post   : fmt.printf("delete=%d POST\n", method.delete);
+  method.delete : fmt.printf("delete=%d DEL\n", method.delete);
   }
 }

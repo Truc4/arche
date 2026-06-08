@@ -5,7 +5,7 @@
 #import { fmt }
 resource :: opaque
 #foreign {
-  resource_open :: proc(initial: int)(ret: resource)
+  resource_open  :: proc(initial: int)(ret: resource)
   resource_close :: proc(own r: resource)
 }
 

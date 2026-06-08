@@ -6503,29 +6503,55 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			break;
 		}
 
-		/* Collect matching archetypes */
+		/* Collect the shapes this system runs over. A shape may be defined in several places (a device
+		 * impl that uses it AND the driver) — all the same canonical shape — so dedup by canonical name.
+		 * A shape is a valid target only if a driver actually allocated storage for it: all storage is
+		 * static, so a shape with no static pool (capacity 0) is an unallocated phantom and is skipped
+		 * rather than bound to a null pool. */
 		const char *matching_archs[256];
 		int matching_count = 0;
+		int matched_components = 0; /* a shape provides the components, even if no pool backs it */
 
 		for (int d = 0; d < ctx->ast->decl_count; d++) {
 			HirDecl *decl = ctx->ast->decls[d];
-			if (decl->kind == HIR_DECL_ARCHETYPE) {
-				HirArchetypeDecl *arch = decl->data.archetype;
-				if (archetype_matches_system(arch, sys) && matching_count < 256) {
-					matching_archs[matching_count++] = arch->name;
+			if (decl->kind != HIR_DECL_ARCHETYPE)
+				continue;
+			HirArchetypeDecl *arch = decl->data.archetype;
+			if (!archetype_matches_system(arch, sys))
+				continue;
+			matched_components = 1;
+			const char *cn = canonical_arch_name(ctx, arch->name);
+			if (get_arch_static_capacity(ctx, cn) <= 0)
+				continue; /* shape defined but no driver pool — not a runnable shape */
+			int seen = 0;
+			for (int m = 0; m < matching_count; m++)
+				if (strcmp(matching_archs[m], cn) == 0) {
+					seen = 1;
+					break;
 				}
-			}
+			if (!seen && matching_count < 256)
+				matching_archs[matching_count++] = cn;
 		}
 
 		if (matching_count == 0) {
-			/* The system reads/writes component columns, but no shape in the program provides all of
-			 * them — running it would be a silent no-op. In the device/driver model a driver must
-			 * define an archetype with the device's required components. Hard error. */
-			fprintf(stderr, "Error: `run %s` — no shape provides the components system '%s' operates on { ",
-			        system_name, system_name);
-			for (int p = 0; p < sys->param_count; p++)
-				fprintf(stderr, "%s%s", p ? ", " : "", sys->params[p] ? sys->params[p]->name : "?");
-			fprintf(stderr, " }; a driver must define an archetype with these components\n");
+			if (matched_components) {
+				/* A shape provides the components, but no driver allocated a pool for it. All storage is
+				 * the driver's, so an unallocated shape is unimplemented — running it would bind a null
+				 * pool. Hard error. */
+				fprintf(stderr, "Error: `run %s` — no storage for the shape system '%s' operates on { ", system_name,
+				        system_name);
+				for (int p = 0; p < sys->param_count; p++)
+					fprintf(stderr, "%s%s", p ? ", " : "", sys->params[p] ? sys->params[p]->name : "?");
+				fprintf(stderr, " }; a driver must allocate a pool for it\n");
+			} else {
+				/* No shape in the program provides the components — running it would be a silent no-op.
+				 * A driver must define an archetype with the device's required components. */
+				fprintf(stderr, "Error: `run %s` — no shape provides the components system '%s' operates on { ",
+				        system_name, system_name);
+				for (int p = 0; p < sys->param_count; p++)
+					fprintf(stderr, "%s%s", p ? ", " : "", sys->params[p] ? sys->params[p]->name : "?");
+				fprintf(stderr, " }; a driver must define an archetype with these components\n");
+			}
 			ctx->had_error = 1;
 			buffer_append_fmt(ctx, "  ; ERROR: no matching archetypes for system '%s'\n", system_name);
 			break;

@@ -6,7 +6,7 @@
 // RUN: %arche build -o %t %s && %t | grep "c0=104 c1=105 eq=1"
 #import { fmt }
 main :: proc() {
-  s := "hi";
+  s  := "hi";
   eq := 0;
   if (s[0] == 104) {
     eq = 1;

@@ -689,6 +689,7 @@ TokenBuffer lexer_tokenize(const char *src) {
 			break;
 	}
 
+	lexer_free(&lexer); /* tokens carry copies / point into `src`; the lexer's own buffers are ours to drop */
 	return (TokenBuffer){tokens, count};
 }
 

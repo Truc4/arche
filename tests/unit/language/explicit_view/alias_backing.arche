@@ -1,12 +1,12 @@
 // Explicit view: a type-alias name in a type position shows its backing type.
 // The alias declaration itself gets no inferred-type hint (it mints a type, not a value).
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 10 10 1 0 alias (i32)"
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 11 11 1 0 alias (i32)"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 10 11 1 0 alias (i32)"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 11 12 1 0 alias (i32)"
 // Exactly two alias hints, nothing else (no `: int` on the alias decls).
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN ") -eq 2
-base :: int
+base  :: int
 level :: base
-main :: proc() {
-  a: base = 10;
-  b: level = 20;
+main  :: proc() {
+  a : base  = 10;
+  b : level = 20;
 }

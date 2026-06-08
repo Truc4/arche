@@ -8,13 +8,13 @@
 #import { fmt }
 alias_top: type: int
 short_top :: int
-Body :: arche { mass: type: int }
+Body      :: arche { mass: type: int }
 
 main :: proc() {
-  loc: type: int;
-  p: loc = 1;
-  q: alias_top = 2;
-  r: short_top = 3;
-  m: mass = 4;
+  loc : type      : int;
+  p   : loc       = 1;
+  q   : alias_top = 2;
+  r   : short_top = 3;
+  m   : mass      = 4;
   fmt.printf("%d\n", p + q + r + m);
 }

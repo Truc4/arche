@@ -2,10 +2,10 @@
 // so `level` arithmetic is int arithmetic and prints 10.
 // RUN: %arche build -o %t %s && %t | grep "result: 10"
 #import { fmt }
-base :: int
+base  :: int
 level :: base
-main :: proc() {
-  x: level = 4;
-  y: level = 6;
+main  :: proc() {
+  x : level = 4;
+  y : level = 6;
   fmt.printf("result: %d\n", x + y);
 }

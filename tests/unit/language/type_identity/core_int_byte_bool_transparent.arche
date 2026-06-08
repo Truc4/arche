@@ -5,10 +5,10 @@
 // RUN: %arche build -o %t %s && %t | grep "v=5"
 #import { fmt }
 main :: proc() {
-  x: int = 5;
-  y: i32 = x; // int <-> i32 transparent
-  z: byte = 200;
-  w: u8 = z; // byte <-> u8 transparent
-  ok: bool = true;
+  x  : int  = 5;
+  y  : i32  = x; // int <-> i32 transparent
+  z  : byte = 200;
+  w  : u8   = z; // byte <-> u8 transparent
+  ok : bool = true;
   fmt.printf("v=%d wb=%d ok=%d\n", y, w, ok);
 }

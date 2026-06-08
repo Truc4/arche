@@ -5,9 +5,9 @@ Transaction[100](100) {
 
 main :: proc() {
   arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv")(fd:);
-  line: char[128];
-  price_str: char[32];
-  qty_str: char[32];
+  line      : char[128];
+  price_str : char[32];
+  qty_str   : char[32];
   arche_fread_line(fd, line, 128);
   idx := 0;
   for (; idx < 100;) {
@@ -15,11 +15,11 @@ main :: proc() {
     if (n <= 0) {
       break;
     }
-    line_pos := 0;
+    line_pos  := 0;
     field_idx := 0;
-    c1 := 0;
-    c2 := 0;
-    c3 := 0;
+    c1        := 0;
+    c2        := 0;
+    c3        := 0;
     for (; line_pos < n;) {
       if (line[line_pos] == ',') {
         field_idx = field_idx + 1;

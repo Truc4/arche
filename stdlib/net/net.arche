@@ -46,11 +46,11 @@ recv :: proc(s: socket, buf: char[])(out: char[]) {
 // writes the lent pointer and hands it back); the wrappers never duplicate that way.
 #module
 #foreign
-net_listen :: proc(port: int)(s: socket)
-net_accept :: proc(s: socket)(r: socket)
+net_listen  :: proc(port: int)(s: socket)
+net_accept  :: proc(s: socket)(r: socket)
 net_connect :: proc(own ip: char[], port: int)(s: socket)
-net_send :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
-net_recv :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
+net_send    :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
+net_recv    :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
 // RAII: registers net.net_close as the destructor for `socket`. A `socket` local that is never
 // explicitly closed is auto-dropped via this proc at scope exit.
 @drop(socket)

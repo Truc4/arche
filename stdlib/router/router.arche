@@ -28,6 +28,18 @@
 // empty, so this just inserts the root.
 #import { str }
 
+// The radix-trie node SHAPE. A shape is global vocabulary, so it is defined here (the impl that uses
+// it), not in the datasheet (which only states the `nodeKind` type + the `TrieNode[256]` storage
+// requirement). The driver provides the pool; the device owns no storage.
+TrieNode :: arche {
+  seg          :: char[32], // segment text (":id"/"*" stored as the name after the marker), "" for root
+  seg_len      :: int, // content length of `seg` (a fixed char[32] column carries no length itself)
+  kind         :: nodeKind, // static / :param / *catchall
+  first_child  :: int, // pool index of first child, or -1
+  next_sibling :: int, // pool index of next sibling, or -1
+  handler_id   :: int, // >=0 if a route terminates here, else -1
+}
+
 init :: proc() {
   empty: char[32];
   empty[0] = 0;
@@ -36,9 +48,9 @@ init :: proc() {
 
 // Register `pattern` (e.g. "/users/:id", "/static/*") -> handler_id.
 add :: proc(pattern: char[], handler_id: int) {
-  n := str.strlen(pattern);
+  n   := str.strlen(pattern);
   cur := 0;
-  s := 0;
+  s   := 0;
   if (n > 0) {
     if (pattern[0] == '/') {
       s = 1; // skip leading '/'
@@ -48,14 +60,14 @@ add :: proc(pattern: char[], handler_id: int) {
     e := seg_end(pattern, s, n);
 
     // Classify the segment; param/catchall store the name after the marker byte.
-    kind := nodeKind.kstatic;
+    kind   := nodeKind.kstatic;
     tstart := s;
     if (pattern[s] == ':') {
-      kind = nodeKind.kparam;
+      kind   = nodeKind.kparam;
       tstart = s + 1;
     }
     if (pattern[s] == '*') {
-      kind = nodeKind.kcatchall;
+      kind   = nodeKind.kcatchall;
       tstart = s + 1;
     }
 
@@ -87,16 +99,16 @@ add :: proc(pattern: char[], handler_id: int) {
       j := 0;
       for (i := tstart; i < e; i = i + 1) {
         segbuf[j] = pattern[i];
-        j = j + 1;
+        j         = j + 1;
       }
       segbuf[j] = 0;
       new_node(segbuf, e - tstart, kind)(found:);
       TrieNode.next_sibling[found] = TrieNode.first_child[cur];
-      TrieNode.first_child[cur] = found;
+      TrieNode.first_child[cur]    = found;
     }
 
     cur = found;
-    s = e + 1;
+    s   = e + 1;
   }
   TrieNode.handler_id[cur] = handler_id;
 }
@@ -104,11 +116,11 @@ add :: proc(pattern: char[], handler_id: int) {
 // Resolve `path`. Returns handler_id (-1 on miss). Captured :param / *catchall segments are
 // recorded as spans into `path` — read them with router.param_count / router.param.
 resolve :: proc(path: char[])(handler_id: int) {
-  n := str.strlen(path);
-  cur := 0;
+  n            := str.strlen(path);
+  cur          := 0;
   cap_count[0] = 0;
-  handler_id = 0 - 1;
-  s := 0;
+  handler_id   = 0 - 1;
+  s            := 0;
   if (n > 0) {
     if (path[0] == '/') {
       s = 1;
@@ -118,10 +130,10 @@ resolve :: proc(path: char[])(handler_id: int) {
     e := seg_end(path, s, n);
 
     // Scan children: remember a static match, a param child, a catchall child.
-    static_hit := 0 - 1;
-    param_hit := 0 - 1;
+    static_hit   := 0 - 1;
+    param_hit    := 0 - 1;
     catchall_hit := 0 - 1;
-    child := TrieNode.first_child[cur];
+    child        := TrieNode.first_child[cur];
     for (; child >= 0;) {
       k := TrieNode.kind[child];
       if (k == nodeKind.kstatic) {
@@ -157,7 +169,7 @@ resolve :: proc(path: char[])(handler_id: int) {
     ck := TrieNode.kind[chosen];
     if (ck == nodeKind.kstatic) {
       cur = chosen;
-      s = e + 1;
+      s   = e + 1;
     }
     else {
       cend := e;
@@ -165,10 +177,10 @@ resolve :: proc(path: char[])(handler_id: int) {
         cend = n;
       }
       cap_start[cap_count[0]] = s;
-      cap_len[cap_count[0]] = cend - s;
-      cap_count[0] = cap_count[0] + 1;
-      cur = chosen;
-      s = cend + 1; // for catchall cend==n, so the loop exits
+      cap_len[cap_count[0]]   = cend - s;
+      cap_count[0]            = cap_count[0] + 1;
+      cur                     = chosen;
+      s                       = cend + 1; // for catchall cend==n, so the loop exits
     }
   }
   handler_id = TrieNode.handler_id[cur];
@@ -182,22 +194,22 @@ param_count :: proc()(n: int) {
 // The i-th captured span: (start, len) offsets into the path passed to router.resolve.
 param :: proc(i: int)(start: int, len: int) {
   start = cap_start[i];
-  len = cap_len[i];
+  len   = cap_len[i];
 }
 
 // ====================== Module-internal data model (private) =======================
-// The trie node type (`TrieNode`) + its `nodeKind` enum live in router.ds.arche (a device's types
-// live in its datasheet); the driver provides the `TrieNode` pool. `#module` narrows the rest of the
-// file to module-private (visible across the module's files, invisible to importers). The procs above
-// reference `TrieNode`/`nodeKind` by bare name (datasheet types are global vocabulary).
+// `#module` narrows the rest of the file to module-private (visible across the module's files,
+// invisible to importers). The `TrieNode` SHAPE is NOT here — a shape is global vocabulary (its name
+// is public no matter where it's defined), so it leads at the top of the file with the public API; the
+// driver references `TrieNode` by bare name to size its pool.
 #module
 
 // Capture spans from the most recent router.resolve (offsets into that path), read via
 // router.param_count / router.param. Hoisted, so they sit here with the data model even though the
 // public procs above write them.
-cap_start: int[8] // up to 8 params per route
-cap_len: int[8]
-cap_count: int[1]
+cap_start : int[8] // up to 8 params per route
+cap_len   : int[8]
+cap_count : int[1]
 
 // ========================= File-local parsing helpers (private) ========================
 // `#file` narrows to file-local: leaf routines used only by this file. Funcs/procs are hoisted,

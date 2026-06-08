@@ -1,5 +1,9 @@
-// Datasheet for the `widget` device: its shape + storage requirement. The doctest in widget.arche
-// drives this shape with the pool auto-provided (device doctests compile as generated drivers).
+// Datasheet for the `widget` device: the components it requires + a storage requirement. A datasheet
+// describes requirements only — it never defines a shape. The `Particle` shape is defined in the
+// device's impl (widget.arche), which uses it; `Particle[4]` is the storage requirement (minimum).
+// The doctest drives the shape with the pool auto-provided (device doctests compile as generated
+// drivers, where the requirement becomes the real allocation).
 // RUN: true
-Particle :: arche { pos :: float, vel :: float }
+pos :: float
+vel :: float
 Particle[4]

@@ -2,7 +2,7 @@
 #import { fmt }
 pos(x, y) :: float
 vel(x, y) :: float
-Particle :: arche { pos_x, pos_y, vel_x, vel_y }
+Particle  :: arche { pos_x, pos_y, vel_x, vel_y }
 
 Particle[5]
 
@@ -14,8 +14,8 @@ main :: proc() {
   fmt.printf("Before: pos_y[2]=%g vel_y[2]=%g\n", Particle.pos_y[2], Particle.vel_y[2]);
   Particle.pos_x = Particle.pos_x + Particle.vel_x;
   Particle.pos_y = Particle.pos_y + Particle.vel_y;
-  x0 := Particle.pos_x[0];
-  y2 := Particle.pos_y[2];
+  x0             := Particle.pos_x[0];
+  y2             := Particle.pos_y[2];
   fmt.printf("After: pos_x[0]=%g pos_y[2]=%g\n", x0, y2);
   x0i := x0 * 10.0;
   y2i := y2 * 10.0;

@@ -6,8 +6,8 @@
 #import { fmt }
 hp :: int
 mp :: int
-A :: arche { hp, mp }
-B :: arche { mp, hp }
+A  :: arche { hp, mp }
+B  :: arche { mp, hp }
 
 A[4]
 

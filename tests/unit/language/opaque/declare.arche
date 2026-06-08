@@ -3,7 +3,7 @@
 // any column (a pointer-width slot); nothing touches the cell here.
 // RUN: %arche build -o %t %s && %t | grep "ok"
 #import { fmt }
-fd :: opaque
+fd   :: opaque
 File :: arche { fd }
 File[4]
 main :: proc() {
