@@ -67,6 +67,7 @@ int semantic_find_enum_variant(SemanticContext *ctx, const char *variant, long *
  * into a source location. `semantic_decl_src_file` gives the decl's file (NULL = entry buffer, caller
  * splits core vs user by line); `semantic_decl_at(ctx, i)->loc` gives line/col in that file. */
 const char *semantic_decl_src_file(const SemanticContext *ctx, int index);
+const char *semantic_module_file(const char *name);
 int semantic_find_type_decl_index(const SemanticContext *ctx, const char *name);
 int semantic_drop_proc_decl_index(const SemanticContext *ctx, const char *type_name);
 

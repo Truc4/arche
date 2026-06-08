@@ -1094,6 +1094,26 @@ static void emit_goto(const Analysis *a, const char *kind, int uline, int col, c
 		return;
 	}
 
+	/* Qualified reference (`foo.bar` / `foo.bar(x)`): the node's DefId resolves the WHOLE chain to its
+	 * tail (`bar`), but the cursor may be on the leading segment `foo`. When it is, resolve `foo` itself —
+	 * a module qualifier → the module's file; otherwise a local/var base → its binding. */
+	if (sv_count(ref, SN_FIELD_NAME) >= 1) {
+		CvPos base = sv_token_pos(ref, TOK_IDENT); /* the leftmost segment (the base), a direct token of ref */
+		if (base.line && (uint32_t)off >= base.offset && (uint32_t)off < base.offset + base.length) {
+			char bname[256];
+			size_t bl = base.length < sizeof(bname) - 1 ? base.length : sizeof(bname) - 1;
+			memcpy(bname, a->combined + base.offset, bl);
+			bname[bl] = '\0';
+			const char *mf = semantic_module_file(bname);
+			if (mf) {
+				printf("LOC 1 1 %s\n", mf); /* a module: jump to its file */
+				return;
+			}
+			goto_scope_walk(a, path, ref, (uint32_t)off); /* a local struct/handle base → its binding */
+			return;
+		}
+	}
+
 	/* def / decl on a value reference: the authoritative DefId channel, else scope-walk for a local. */
 	const SemModel *model = sem_context_model(a->ctx);
 	DefId d = (which == GREF_CALL) ? sem_model_callee_def(model, sv_id(ref)) : sem_model_ref_def(model, sv_id(ref));

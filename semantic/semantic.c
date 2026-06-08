@@ -6268,6 +6268,18 @@ const char *semantic_decl_src_file(const SemanticContext *ctx, int index) {
 	return NULL;
 }
 
+/* The source file a registered module `name` was loaded from (NULL if not a module). For LSP goto on a
+ * module qualifier (`foo` in `foo.bar`) — jump to the module's own file. Folder modules report their
+ * first member file. */
+const char *semantic_module_file(const char *name) {
+	if (!name)
+		return NULL;
+	for (int m = 0; m < g_sem_module_count; m++)
+		if (g_sem_modules[m].name && strcmp(g_sem_modules[m].name, name) == 0)
+			return g_sem_modules[m].filename;
+	return NULL;
+}
+
 /* Index of the first TYPE-defining decl named `name` (archetype / enum / a const that binds a type),
  * else -1. Drives LSP goto-type-definition. Small N → linear scan. */
 int semantic_find_type_decl_index(const SemanticContext *ctx, const char *name) {
