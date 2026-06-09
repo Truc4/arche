@@ -1,11 +1,6 @@
 // THE GUARANTEE: a slice with NO `!abort`, sliced wildly out of range through `!clamp`, runs to
 // completion (exit 0) — the clamp nets lo,hi into [0, len], never aborting.
 // RUN: %arche build -o %t %s && %t
-@policy(bounds) clamp :: policy(len: int, i: int) -> int {
-  if (i < 0) { return 0; }
-  if (i >= len) { return len - 1; }
-  return i;
-}
 main :: proc() {
   a: int[4];
   a[0] = 1;

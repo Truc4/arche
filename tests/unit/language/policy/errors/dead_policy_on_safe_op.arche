@@ -3,11 +3,6 @@
 // Here `a[2]` on int[4] is provably in bounds, so `!clamp` is dead.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "is dead\|policy_on_safe_op\|W0018" %t.out
 #import { fmt }
-@policy(bounds) clamp :: policy(len: int, i: int) -> int {
-  if (i < 0) { return 0; }
-  if (i >= len) { return len - 1; }
-  return i;
-}
 main :: proc() {
   a: int[4];
   a[0] = 1;

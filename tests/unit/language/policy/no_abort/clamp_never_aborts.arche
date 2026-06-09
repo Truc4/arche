@@ -3,12 +3,6 @@
 // of the *_array_oob tests (which assert the default !abort DOES abort). Several wild OOB indices
 // (runtime values — literals would be provably-OOB compile errors, E0097), all clamped, exits cleanly.
 // RUN: %arche build -o %t %s && %t
-@policy(bounds) clamp :: policy(len: int, i: int) -> int {
-  if (i < 0) { return 0; }
-  if (i >= len) { return len - 1; }
-  return i;
-}
-
 main :: proc() {
   a: int[4];
   a[0] = 1;

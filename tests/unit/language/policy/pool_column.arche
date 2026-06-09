@@ -4,11 +4,6 @@
 // An explicit policy also silences the (now default-off) raw_pool_index lint — it IS the acknowledgment.
 // RUN: %arche build -o %t %s && %t | grep -qF "undef=20 clamp=20 zero=0 w1=99 w_drop=10"
 #import { fmt }
-@policy(bounds) clamp :: policy(len: int, i: int) -> int {
-  if (i < 0) { return 0; }
-  if (i >= len) { return len - 1; }
-  return i;
-}
 P :: arche { v :: int }
 P[8]
 main :: proc() {

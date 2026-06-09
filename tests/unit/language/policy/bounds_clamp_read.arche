@@ -5,12 +5,6 @@
 // RUN: %arche build -o %t %s && %t | grep -qF "clamped=13"
 #import { fmt }
 
-@policy(bounds) clamp :: policy(len: int, i: int) -> int {
-  if (i < 0) { return 0; }
-  if (i >= len) { return len - 1; }
-  return i;
-}
-
 main :: proc() {
   a: int[4];
   a[0] = 10;

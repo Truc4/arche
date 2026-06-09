@@ -4,11 +4,6 @@
 // a read-only borrow by default).
 // RUN: %arche build -o %t %s && %t | grep -qF "read=13 wrote=77"
 #import { fmt }
-@policy(bounds) clamp :: policy(len: int, i: int) -> int {
-  if (i < 0) { return 0; }
-  if (i >= len) { return len - 1; }
-  return i;
-}
 rd :: func(s: int[], i: int) -> int { return s[i] !clamp; }   // OOB read -> clamp
 wr :: proc(own s: int[], i: int, v: int) { s[i] !clamp = v; } // OOB write -> clamp
 
