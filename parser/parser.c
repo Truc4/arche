@@ -1488,6 +1488,7 @@ static int binop_prec(TokenKind k) {
 	switch (k) {
 	case TOK_STAR:
 	case TOK_SLASH:
+	case TOK_PERCENT:
 		return 5;
 	case TOK_PLUS:
 	case TOK_MINUS:
@@ -1522,7 +1523,8 @@ static int parse_binary_rhs(Parser *parser, int ok_left, int left_cp, int min_pr
 		if (prec < min_prec)
 			return 1;
 
-		advance(parser); /* consume the operator token */
+		TokenKind op = parser->current.kind; /* remembered for the `/ !policy` check below */
+		advance(parser);                     /* consume the operator token */
 
 		int right_cp = syntax_cp(parser);
 		if (!parse_unary_expr(parser))
@@ -1532,6 +1534,20 @@ static int parse_binary_rhs(Parser *parser, int ok_left, int left_cp, int min_pr
 		while (binop_prec(parser->current.kind) > prec) {
 			if (!parse_binary_rhs(parser, 1, right_cp, prec + 1))
 				return 0;
+		}
+
+		/* Division failure policy: `a / b !policy` (div-by-zero). Parsed at the division level (not
+		 * the postfix level, where it would wrongly attach to `b`); the SN_POLICY_REF is wrapped before
+		 * the binary node closes, so it becomes a child of the `/` op. Only `/` is fallible this way. */
+		if (op == TOK_SLASH && check(parser, TOK_BANG)) {
+			int pol_cp = syntax_cp(parser);
+			advance(parser); /* consume '!' */
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected a policy name after '!' (e.g. `a / b !zero`)");
+				return 0;
+			}
+			advance(parser); /* consume the policy ident */
+			syntax_wrap(parser, pol_cp, SN_POLICY_REF);
 		}
 
 		/* Retroactively wrap [left_cp .. end-of-right] into a binary node; the next
@@ -1696,9 +1712,9 @@ static int parse_simple_statement(Parser *parser, SyntaxNodeKind *out_kind) {
 		return 1;
 	}
 
-	/* Assignment: `lvalue = / += / -= / *= / /= expr`. */
+	/* Assignment: `lvalue = / += / -= / *= / /= / %= expr`. */
 	if (check(parser, TOK_EQ) || check(parser, TOK_PLUS_EQ) || check(parser, TOK_MINUS_EQ) ||
-	    check(parser, TOK_STAR_EQ) || check(parser, TOK_SLASH_EQ)) {
+	    check(parser, TOK_STAR_EQ) || check(parser, TOK_SLASH_EQ) || check(parser, TOK_PERCENT_EQ)) {
 		advance(parser);
 		if (!parse_expression(parser))
 			return 0;

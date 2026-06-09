@@ -57,16 +57,18 @@ typedef enum TokenKind {
 
 	/* assignment */
 	TOK_EQ,       /* = */
-	TOK_PLUS_EQ,  /* += */
-	TOK_MINUS_EQ, /* -= */
-	TOK_STAR_EQ,  /* *= */
-	TOK_SLASH_EQ, /* /= */
+	TOK_PLUS_EQ,    /* += */
+	TOK_MINUS_EQ,   /* -= */
+	TOK_STAR_EQ,    /* *= */
+	TOK_SLASH_EQ,   /* /= */
+	TOK_PERCENT_EQ, /* %= */
 
 	/* arithmetic */
-	TOK_PLUS,  /* + */
-	TOK_MINUS, /* - */
-	TOK_STAR,  /* * */
-	TOK_SLASH, /* / */
+	TOK_PLUS,    /* + */
+	TOK_MINUS,   /* - */
+	TOK_STAR,    /* * */
+	TOK_SLASH,   /* / */
+	TOK_PERCENT, /* % */
 
 	/* comparisons */
 	TOK_EQ_EQ,   /* == */

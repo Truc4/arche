@@ -67,10 +67,12 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_MINUS_EQ:
 	case TOK_STAR_EQ:
 	case TOK_SLASH_EQ:
+	case TOK_PERCENT_EQ:
 	case TOK_PLUS:
 	case TOK_MINUS:
 	case TOK_STAR:
 	case TOK_SLASH:
+	case TOK_PERCENT:
 	case TOK_EQ_EQ:
 	case TOK_BANG_EQ:
 	case TOK_LT:

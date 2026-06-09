@@ -366,6 +366,7 @@ struct HirExpr {
 			Operator op;
 			HirExpr *left;
 			HirExpr *right;
+			char *policy; /* `!name` div-by-zero failure policy (divide category), or NULL → default */
 		} binary;
 		struct {
 			UnaryOperator op;

@@ -492,6 +492,8 @@ static Operator syntax_tok_to_op(TokenKind k) {
 		return OP_MUL;
 	case TOK_SLASH:
 		return OP_DIV;
+	case TOK_PERCENT:
+		return OP_MOD;
 	case TOK_EQ_EQ:
 		return OP_EQ;
 	case TOK_BANG_EQ:
@@ -754,6 +756,12 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 			}
 		ax->data.binary.left = lower_expr_cst(sv_node_at_expr(e, 0));
 		ax->data.binary.right = lower_expr_cst(sv_node_at_expr(e, 1));
+		/* `a / b !policy`: the SN_POLICY_REF child carries the div-by-zero policy ident. */
+		{
+			SyntaxView pol = sv_child(e, SN_POLICY_REF);
+			if (sv_present(pol))
+				ax->data.binary.policy = txt_dup(sv_token(pol, TOK_IDENT));
+		}
 		break;
 	}
 	case SN_UNARY_EXPR: {
@@ -935,6 +943,8 @@ static Operator syntax_assign_op(TokenKind k) {
 		return OP_MUL;
 	case TOK_SLASH_EQ:
 		return OP_DIV;
+	case TOK_PERCENT_EQ:
+		return OP_MOD;
 	default:
 		return OP_NONE; /* plain `=` */
 	}
@@ -968,7 +978,7 @@ static HirStmt *lower_stmt_cst(SyntaxView s) {
 			if (s.node->children[i].tag == SE_TOKEN) {
 				TokenKind tk = s.node->children[i].as.token.kind;
 				if (tk == TOK_EQ || tk == TOK_PLUS_EQ || tk == TOK_MINUS_EQ || tk == TOK_STAR_EQ ||
-				    tk == TOK_SLASH_EQ) {
+				    tk == TOK_SLASH_EQ || tk == TOK_PERCENT_EQ) {
 					as->data.assign_stmt.op = syntax_assign_op(tk);
 					break;
 				}

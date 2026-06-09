@@ -42,3 +42,20 @@ streq :: func(a: char[], b: char[]) -> int {
   }
   return 1;
 }
+
+// `clamp` — the common BOUNDS failure policy, shipped so `a[i] !clamp` works out of the box (no
+// per-program redefinition). A `@policy(bounds)` returns the index to actually use; the compiler then
+// clamps the result into [0, len) as a final net, so no policy — core or user — can cause an OOB.
+// (`!abort`, `!undefined`, `!zero` are compiler intrinsics and need no decl; the func index/slice
+// default is an intrinsic clamp, so it doesn't call this either.)
+@policy(bounds) clamp :: policy(len: int, i: int) -> int {
+  if (i < 0) { return 0; }
+  if (i >= len) { return len - 1; }
+  return i;
+}
+
+// `!wrap`: a modulo (ring/toroidal) index — out-of-range wraps around. The double-mod keeps a
+// negative `i` positive. (`len >= 1` for any real indexing; the compiler's final net covers len==0.)
+@policy(bounds) wrap :: policy(len: int, i: int) -> int {
+  return ((i % len) + len) % len;
+}

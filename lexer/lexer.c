@@ -487,6 +487,13 @@ Token lexer_next_token(Lexer *lexer) {
 		}
 		return make_token(TOK_SLASH, start, 1, line, column);
 
+	case '%':
+		if (peek(lexer) == '=') {
+			advance(lexer);
+			return make_token(TOK_PERCENT_EQ, start, 2, line, column);
+		}
+		return make_token(TOK_PERCENT, start, 1, line, column);
+
 	case '=':
 		if (peek(lexer) == '=') {
 			advance(lexer);
@@ -632,6 +639,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_STAR_EQ";
 	case TOK_SLASH_EQ:
 		return "TOK_SLASH_EQ";
+	case TOK_PERCENT_EQ:
+		return "TOK_PERCENT_EQ";
 
 	case TOK_PLUS:
 		return "TOK_PLUS";
@@ -641,6 +650,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_STAR";
 	case TOK_SLASH:
 		return "TOK_SLASH";
+	case TOK_PERCENT:
+		return "TOK_PERCENT";
 
 	case TOK_EQ_EQ:
 		return "TOK_EQ_EQ";

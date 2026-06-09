@@ -2143,6 +2143,9 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		case OP_DIV:
 			op = is_float ? "fdiv" : (int_signed ? "sdiv" : "udiv");
 			break;
+		case OP_MOD:
+			op = is_float ? "frem" : (int_signed ? "srem" : "urem");
+			break;
 		case OP_EQ:
 			op = is_float ? "oeq" : "eq";
 			break;
@@ -4906,6 +4909,9 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 		case OP_DIV:
 			op_str = "fdiv";
 			break;
+		case OP_MOD:
+			op_str = "frem";
+			break;
 		default:
 			op_str = "fadd";
 			break;
@@ -4981,6 +4987,9 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 			break;
 		case OP_DIV:
 			op_str = "fdiv";
+			break;
+		case OP_MOD:
+			op_str = "frem";
 			break;
 		default:
 			op_str = "fadd";
@@ -6227,6 +6236,9 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					case OP_DIV:
 						op = is_float ? "fdiv" : "sdiv";
 						break;
+					case OP_MOD:
+						op = is_float ? "frem" : "srem";
+						break;
 					default:
 						break;
 					}
@@ -6274,6 +6286,9 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 						break;
 					case OP_DIV:
 						op = is_float ? "fdiv" : (unsigned_int ? "udiv" : "sdiv");
+						break;
+					case OP_MOD:
+						op = is_float ? "frem" : (unsigned_int ? "urem" : "srem");
 						break;
 					default:
 						op = is_float ? "fadd" : "add";
@@ -6563,10 +6578,10 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				/* Bounds check a bounded array write against its count N (idx_i64 is i64). A `!name`
 				 * bounds policy replaces the abort with a deterministic remap into [0, N). */
 				char zero_wskip[64] = ""; /* `!zero` write: SSA i1 — in range? (else redirect store to scratch) */
+				const char *wpol = stmt->data.assign_stmt.target->data.index.policy;
 				if (type6_target->string_len > 0 &&
 				    !const_index_in_range(ctx, stmt->data.assign_stmt.target->data.index.indices[0],
 				                          type6_target->string_len)) {
-					const char *wpol = stmt->data.assign_stmt.target->data.index.policy;
 					char lenbuf[32];
 					snprintf(lenbuf, sizeof lenbuf, "%d", type6_target->string_len);
 					switch (cg_resolve_bounds_policy(ctx, wpol)) {
@@ -6597,6 +6612,11 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					case CGP_UNDEFINED:
 						break; /* raw store, no check */
 					}
+				} else if (type6_target->is_slice && type6_target->len_ssa) {
+					/* Slice-param write (`s[i] = v`): policy against the fat-pointer's runtime `.len`. */
+					char sl_idx[256];
+					emit_runtime_index_policy(ctx, type6_target->len_ssa, idx_i64, wpol, sl_idx, zero_wskip);
+					strcpy(idx_i64, sl_idx);
 				}
 				const char *et6 = type6_target->field_type ? type6_target->field_type : "char";
 				if (strcmp(et6, "char") == 0) {
@@ -6722,6 +6742,9 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					break;
 				case OP_DIV:
 					op = is_float ? "fdiv" : "sdiv";
+					break;
+				case OP_MOD:
+					op = is_float ? "frem" : "srem";
 					break;
 				default:
 					op = "add";
