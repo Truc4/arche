@@ -9,7 +9,7 @@ Resource :: arche { cell }
 }
 Resource[8]
 
-main :: proc!() {
+main :: proc() {
   resource_open(10)(r1:);
   insert(Resource, r1)(h:, _:);
   alias := h;

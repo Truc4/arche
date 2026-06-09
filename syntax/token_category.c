@@ -48,6 +48,7 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_RUN:
 	case TOK_ENUM:
 	case TOK_MATCH:
+	case TOK_POLICY:
 		return "keyword";
 
 	case TOK_NUMBER:

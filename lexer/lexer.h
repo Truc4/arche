@@ -35,6 +35,7 @@ typedef enum TokenKind {
 	TOK_RUN,
 	TOK_ENUM,
 	TOK_MATCH,
+	TOK_POLICY,
 
 	/* punctuation */
 	TOK_LPAREN,       /* ( */

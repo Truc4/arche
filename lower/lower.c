@@ -691,6 +691,12 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 					ax->data.index.indices[ax->data.index.index_count++] = lower_expr_cst(iv);
 				}
 			}
+		/* `!name` failure policy: the SN_POLICY_REF child carries the policy ident. */
+		{
+			SyntaxView pol = sv_child(e, SN_POLICY_REF);
+			if (sv_present(pol))
+				ax->data.index.policy = txt_dup(sv_token(pol, TOK_IDENT));
+		}
 		break;
 	}
 	case SN_SLICE_EXPR: {
@@ -727,6 +733,11 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 						ax->data.slice.hi = ex;
 				}
 			}
+		}
+		{
+			SyntaxView pol = sv_child(e, SN_POLICY_REF);
+			if (sv_present(pol))
+				ax->data.slice.policy = txt_dup(sv_token(pol, TOK_IDENT));
 		}
 		break;
 	}
@@ -1671,8 +1682,6 @@ static HirDecl *lower_proc_from(SyntaxView f, char *name) {
 	/* Foreign (FFI-bodied): a proc value-form with no `{` body block (parser emits a bodiless
 	 * proc value-form only inside a `#foreign` region). Mirrors semantic.c build_proc_from. */
 	ap->is_extern = !sv_has_token(f, TOK_LBRACE);
-	/* `proc!` marker: a direct `!` leaf on the form node (see parse_primary_expr). */
-	ap->can_panic_marked = sv_has_token(f, TOK_BANG);
 	int np = sv_count(f, SN_PARAM);
 	ap->params = calloc(np ? np : 1, sizeof(HirParam *));
 	for (int i = 0; i < np; i++)
@@ -1896,8 +1905,8 @@ static SyntaxView lower_rhs_form(SyntaxView d) {
 		if (d.node->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
-		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR || k == SN_GROUP_EXPR ||
-		    k == SN_ENUM_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
+		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR ||
+		    k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
 			SyntaxView v = {d.node->children[i].as.node, d.src};
 			return v;
 		}
@@ -1994,7 +2003,6 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		HirProcDecl *ap = calloc(1, sizeof(HirProcDecl));
 		ap->name = sv_dup(sv_child(d, SN_FUNC_DEF_NAME));
 		ap->is_extern = !sv_has_token(d, TOK_LBRACE);
-		ap->can_panic_marked = sv_has_token(d, TOK_BANG);
 		int np = sv_count(d, SN_PARAM);
 		ap->params = calloc(np ? np : 1, sizeof(HirParam *));
 		for (int i = 0; i < np; i++)
@@ -2080,8 +2088,8 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		SyntaxView rhs = lower_rhs_form(d);
 		if (sv_present(rhs)) {
 			SyntaxNodeKind rk = sv_kind(rhs);
-			if (rk == SN_PROC_EXPR || rk == SN_FUNC_EXPR || rk == SN_SYS_EXPR || rk == SN_ARCH_EXPR ||
-			    rk == SN_GROUP_EXPR) {
+			if (rk == SN_PROC_EXPR || rk == SN_FUNC_EXPR || rk == SN_POLICY_EXPR || rk == SN_SYS_EXPR ||
+			    rk == SN_ARCH_EXPR || rk == SN_GROUP_EXPR) {
 				char *nm = txt_dup(lower_binding_name(d));
 				switch (rk) {
 				case SN_PROC_EXPR: {
@@ -2097,6 +2105,10 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					return pd;
 				}
 				case SN_FUNC_EXPR:
+				case SN_POLICY_EXPR:
+					/* A policy lowers to a func: structurally a pure callable. Its category tag
+					 * (@policy(...)) and its `!name` invocation are handled at the op site; for
+					 * codegen it is an ordinary function. */
 					return lower_func_from(rhs, nm);
 				case SN_SYS_EXPR:
 					return lower_sys_from(rhs, nm);

@@ -154,6 +154,9 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 4 && strncmp(start, "func", 4) == 0) {
 		return TOK_FUNC;
 	}
+	if (length == 6 && strncmp(start, "policy", 6) == 0) {
+		return TOK_POLICY;
+	}
 	if (length == 4 && strncmp(start, "enum", 4) == 0) {
 		return TOK_ENUM;
 	}
@@ -555,6 +558,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_SYS";
 	case TOK_FUNC:
 		return "TOK_FUNC";
+	case TOK_POLICY:
+		return "TOK_POLICY";
 	case TOK_ENUM:
 		return "TOK_ENUM";
 	case TOK_MATCH:

@@ -199,6 +199,8 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "PROC_EXPR";
 	case SN_FUNC_EXPR:
 		return "FUNC_EXPR";
+	case SN_POLICY_EXPR:
+		return "POLICY_EXPR";
 	case SN_GROUP_EXPR:
 		return "GROUP_EXPR";
 	case SN_ARCH_EXPR:
@@ -241,6 +243,8 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "ALLOC_TYPE";
 	case SN_NAME_REF:
 		return "NAME_REF";
+	case SN_POLICY_REF:
+		return "POLICY_REF";
 	case SN_ERROR:
 		return "ERROR";
 	}

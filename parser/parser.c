@@ -298,10 +298,6 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
 	 * `type` meta is implied (a callable signature denotes a type). Bodiless — no `{...}` here. */
 	if (check(parser, TOK_PROC)) {
 		advance(parser);
-		/* A proc TYPE may carry the `!` marker too: `h: proc!(in)(out)` denotes a panic-capable
-		 * callable, so a call through such a param is treated as panic-capable (contagion). */
-		if (check(parser, TOK_BANG))
-			advance(parser);
 		out->syntax_kind = SN_TYPE_PROC;
 		out->is_type_meta = 1;
 		return parse_proc_sig(parser, 0);
@@ -716,6 +712,20 @@ static int parse_func_form(Parser *parser, SyntaxNodeKind *out_kind) {
 	return 1;
 }
 
+/* A policy form `(in) -> T { body }` (the `policy` keyword already consumed). Structurally a
+ * pure func; tagged as a failure-policy decl, its category supplied by an `@policy(...)`
+ * decorator on the binding. Always bodied — there is no bodiless policy type. */
+static int parse_policy_form(Parser *parser, SyntaxNodeKind *out_kind) {
+	if (!parse_func_sig(parser, 0))
+		return 0;
+	if (!check(parser, TOK_LBRACE)) {
+		error(parser, "a `policy` must have a body `{ ... }`");
+		return 0;
+	}
+	*out_kind = SN_POLICY_EXPR;
+	return parse_block_body(parser);
+}
+
 /* An Odin-style overload group `{ a, b, c }` (the `proc`/`func` keyword already consumed). */
 static int parse_group_form(Parser *parser, SyntaxNodeKind *out_kind) {
 	*out_kind = SN_GROUP_EXPR;
@@ -960,6 +970,30 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	 * legacy flag and a slug scan for `@allow(...)` entries. */
 	while (parser->current.kind == TOK_AT) {
 		advance(parser); /* consume '@' */
+		/* `@policy(<category>)` — role tag on a `policy` decl, naming the op category it serves:
+		 * `bounds` (index/slice), `pool` (insert), or `divide`. The category — not the signature —
+		 * disambiguates the (int,int)->int collision between bounds and divide. `policy` lexes as
+		 * the TOK_POLICY keyword (not TOK_IDENT), so it is matched before the ident guard.
+		 * Recorded on the decl as tokens; lowering reads the category ident. */
+		if (check(parser, TOK_POLICY)) {
+			advance(parser); /* consume 'policy' */
+			if (!check(parser, TOK_LPAREN)) {
+				error(parser, "Expected '(' after @policy — name the category, e.g. @policy(bounds)");
+				return 0;
+			}
+			advance(parser); /* consume '(' */
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected a category (bounds, pool, or divide) inside @policy(...)");
+				return 0;
+			}
+			advance(parser); /* consume the category name */
+			if (!check(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')' to close @policy(...)");
+				return 0;
+			}
+			advance(parser); /* consume ')' */
+			continue;
+		}
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected decorator name after '@'");
 			return 0;
@@ -1051,7 +1085,7 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			continue;
 		}
 		error(parser, "Unknown decorator (recognized: @allow_pure_proc, @allow(<slug>), @drop(<type>), @intrinsic, "
-		              "@implements(<device>.<req>, …))");
+		              "@implements(<device>.<req>, …), @policy(<category>))");
 		return 0;
 	}
 
@@ -1205,27 +1239,17 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 	if (check(parser, TOK_PROC) || check(parser, TOK_FUNC)) {
 		int is_proc = check(parser, TOK_PROC);
 		advance(parser); /* consume 'proc' / 'func' */
-		/* Optional `!` panic marker: `proc!(in)(out){…}` declares a proc that MAY panic. The `!`
-		 * is emitted as a leaf of the form node; lowering recovers it via sv_has_token(TOK_BANG).
-		 * `func` is always total — `func!` is rejected. */
-		int is_bang = check(parser, TOK_BANG);
-		if (is_bang && !is_proc) {
-			error(parser, "only `proc` may be marked `!`; a `func` is always total and cannot panic");
-			return 0;
-		}
-		if (is_bang)
-			advance(parser); /* consume '!' */
 		if (check(parser, TOK_LBRACE)) {
-			if (is_bang) {
-				error(parser, "`proc!` cannot mark an overload group — put the marker on each member proc");
-				return 0;
-			}
 			return parse_group_form(parser, out_kind);
 		}
 		/* Inside a `#foreign` region a bodiless proc is a foreign (FFI) value-form, not a proc
 		 * type — drive that off the parser's region state. Funcs are never foreign (FFI bodies
 		 * are procs), so a bodiless func is always a func type. */
 		return is_proc ? parse_proc_form(parser, parser->in_foreign, out_kind) : parse_func_form(parser, out_kind);
+	}
+	if (check(parser, TOK_POLICY)) {
+		advance(parser); /* consume 'policy' */
+		return parse_policy_form(parser, out_kind);
 	}
 	if (check(parser, TOK_ARCHETYPE)) {
 		advance(parser); /* consume 'archetype' */
@@ -1437,6 +1461,21 @@ static int parse_unary_expr(Parser *parser) {
 	SyntaxNodeKind prim_kind = SN_NAME_EXPR;
 	if (!parse_primary_expr(parser, &prim_kind))
 		return 0;
+	/* Postfix failure-policy: `expr !policy` on a fallible op (index / slice / call). A bare
+	 * `!` here is unambiguous — `!=` lexes as TOK_BANG_EQ and there is no infix `!`, so the
+	 * only thing a TOK_BANG can be directly after a completed postfix op is a policy marker.
+	 * The `!name` is wrapped into an SN_POLICY_REF leaf-node that becomes a child of the op. */
+	if ((prim_kind == SN_INDEX_EXPR || prim_kind == SN_SLICE_EXPR || prim_kind == SN_CALL_EXPR) &&
+	    check(parser, TOK_BANG)) {
+		int pol_cp = syntax_cp(parser);
+		advance(parser); /* consume '!' */
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected a policy name after '!' (e.g. `a[i] !clamp`)");
+			return 0;
+		}
+		advance(parser); /* consume the policy ident */
+		syntax_wrap(parser, pol_cp, SN_POLICY_REF);
+	}
 	if (!syntax_single_node(parser, p_cp))
 		syntax_wrap(parser, p_cp, prim_kind);
 	return 1;

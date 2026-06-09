@@ -1,3 +1,0 @@
-// `func` is always total — there is no `func!`. The marker is rejected at parse time.
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "only .proc. may be marked" %t.out
-f :: func!(x: int) -> int { return x; }

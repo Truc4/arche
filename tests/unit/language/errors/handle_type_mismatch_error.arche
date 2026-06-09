@@ -7,7 +7,7 @@ Player[10]
 
 Enemy[10]
 
-main :: proc!() {
+main :: proc() {
   insert(Player, 1.0)(p:, _:);
   delete(table<Enemy>, p)(_:);
 }

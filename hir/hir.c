@@ -102,11 +102,13 @@ void hir_expr_free(HirExpr *expr) {
 		for (int i = 0; i < expr->data.index.index_count; i++)
 			hir_expr_free(expr->data.index.indices[i]);
 		free(expr->data.index.indices);
+		free(expr->data.index.policy);
 		break;
 	case HIR_EXPR_SLICE:
 		hir_expr_free(expr->data.slice.base);
 		hir_expr_free(expr->data.slice.lo);
 		hir_expr_free(expr->data.slice.hi);
+		free(expr->data.slice.policy);
 		break;
 	case HIR_EXPR_BINARY:
 		hir_expr_free(expr->data.binary.left);

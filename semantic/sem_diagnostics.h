@@ -115,8 +115,7 @@ typedef enum {
 	/* Purity */
 	SEM_DIAG_func_not_pure,
 
-	/* Totality (proc! panic discipline) */
-	SEM_DIAG_panic_in_total,
+	/* Totality */
 	SEM_DIAG_insert_delete_outlist,
 
 	/* Assignment targets */
@@ -299,8 +298,6 @@ SemDiag *sem_emit_unknown_const_value(SemanticContext *ctx, SourceLoc loc, const
 SemDiag *sem_emit_const_rhs_invalid(SemanticContext *ctx, SourceLoc loc);
 
 SemDiag *sem_emit_func_not_pure(SemanticContext *ctx, SourceLoc loc, const char *name, const char *reason);
-SemDiag *sem_emit_panic_in_total(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
-                                 const char *reason);
 SemDiag *sem_emit_insert_delete_outlist(SemanticContext *ctx, SourceLoc loc, const char *name, const char *form);
 
 SemDiag *sem_emit_assign_to_const(SemanticContext *ctx, SourceLoc loc, const char *name);

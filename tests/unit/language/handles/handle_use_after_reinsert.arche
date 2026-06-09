@@ -3,7 +3,7 @@ Player :: arche { pos :: float }
 
 Player[10]
 
-main :: proc!() {
+main :: proc() {
   insert(Player, 1.0)(h1:, _:);
   delete(h1)(_:);
   insert(Player, 2.0)(h2:, _:);

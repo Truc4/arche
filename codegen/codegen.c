@@ -1814,6 +1814,8 @@ static void emit_bounds_check(CodegenContext *ctx, const char *arch_name, const 
                               const char *idx_buf, int idx_is_i64);
 static int bounds_check_elidable(CodegenContext *ctx, const char *arch_name, HirExpr *idx_expr);
 static void emit_const_bounds_check(CodegenContext *ctx, int n, const char *idx_buf, int idx_is_i64);
+static void emit_bounds_policy(CodegenContext *ctx, const char *policy, const char *len_i32, const char *idx_i64,
+                              char *out);
 static int const_index_in_range(CodegenContext *ctx, HirExpr *idx_expr, int n);
 static int try_extract_loop_bound(HirStmt *for_stmt, char **out_var, int *out_bound);
 static void push_loop_bound(CodegenContext *ctx, const char *var_name, int bound);
@@ -2827,10 +2829,19 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		}
 
 		/* Bounds check a type-6 bounded array read against its compile-time count N (final_idx is
-		 * already i64 here), unless the index is provably in range. */
+		 * already i64 here), unless the index is provably in range. A `!name` bounds policy replaces
+		 * the abort with a deterministic remap into [0, N). */
 		if (type6_bound > 0 && expr->data.index.index_count > 0 &&
-		    !const_index_in_range(ctx, expr->data.index.indices[0], type6_bound))
-			emit_const_bounds_check(ctx, type6_bound, final_idx, 1);
+		    !const_index_in_range(ctx, expr->data.index.indices[0], type6_bound)) {
+			if (expr->data.index.policy) {
+				char lenbuf[32];
+				snprintf(lenbuf, sizeof lenbuf, "%d", type6_bound);
+				emit_bounds_policy(ctx, expr->data.index.policy, lenbuf, final_idx, final_idx_buf);
+				final_idx = final_idx_buf;
+			} else {
+				emit_const_bounds_check(ctx, type6_bound, final_idx, 1);
+			}
+		}
 
 		char *res_name = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", res_name, scalar_type, scalar_type,
@@ -4536,6 +4547,33 @@ static void emit_const_bounds_check(CodegenContext *ctx, int n, const char *idx_
 	buffer_append(ctx, "  call void @abort()\n");
 	buffer_append(ctx, "  unreachable\n\n");
 	buffer_append_fmt(ctx, "%s:\n", ok_lbl);
+}
+
+/* Bounds-policy remap (the `!name` total alternative to abort): call the user policy function
+ * `@<policy>(i32 len, i32 idx)` — a `@policy(bounds)` decl lowered as a func — then apply the
+ * compiler's final net, clamping the returned index into [0, len). No branch can abort: an OOB
+ * input is mapped to an in-bounds slot deterministically. `len_i32` is an i32 immediate/SSA value
+ * for the length; `idx_i64` is the raw i64 index. Writes the clamped i64 index name into `out`. */
+static void emit_bounds_policy(CodegenContext *ctx, const char *policy, const char *len_i32, const char *idx_i64,
+                              char *out) {
+	char *i32idx = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", i32idx, idx_i64);
+	char *remapped = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = call i32 @%s(i32 %s, i32 %s)\n", remapped, policy, len_i32, i32idx);
+	/* final net: clamp remapped into [0, len) = max(0, min(remapped, len-1)). */
+	char *lenm1 = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = sub i32 %s, 1\n", lenm1, len_i32);
+	char *gt = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp sgt i32 %s, %s\n", gt, remapped, lenm1);
+	char *hi = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = select i1 %s, i32 %s, i32 %s\n", hi, gt, lenm1, remapped);
+	char *lt = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp slt i32 %s, 0\n", lt, hi);
+	char *clamped = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = select i1 %s, i32 0, i32 %s\n", clamped, lt, hi);
+	char *clamped64 = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", clamped64, clamped);
+	strcpy(out, clamped64);
 }
 
 /* 1 if `idx_expr` is provably within [0, n): a literal in range, or a loop var bounded <= n. */
@@ -6350,11 +6388,22 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				 * directly — the pointer is already `T*`. */
 				char idx_i64[256];
 				emit_index_i64(ctx, idx_buf, stmt->data.assign_stmt.target->data.index.indices[0], idx_i64);
-				/* Bounds check a bounded array write against its count N (idx_i64 is i64). */
+				/* Bounds check a bounded array write against its count N (idx_i64 is i64). A `!name`
+				 * bounds policy replaces the abort with a deterministic remap into [0, N). */
 				if (type6_target->string_len > 0 &&
 				    !const_index_in_range(ctx, stmt->data.assign_stmt.target->data.index.indices[0],
-				                          type6_target->string_len))
-					emit_const_bounds_check(ctx, type6_target->string_len, idx_i64, 1);
+				                          type6_target->string_len)) {
+					if (stmt->data.assign_stmt.target->data.index.policy) {
+						char lenbuf[32];
+						snprintf(lenbuf, sizeof lenbuf, "%d", type6_target->string_len);
+						char clamped[256];
+						emit_bounds_policy(ctx, stmt->data.assign_stmt.target->data.index.policy, lenbuf, idx_i64,
+						                   clamped);
+						strcpy(idx_i64, clamped);
+					} else {
+						emit_const_bounds_check(ctx, type6_target->string_len, idx_i64, 1);
+					}
+				}
 				const char *et6 = type6_target->field_type ? type6_target->field_type : "char";
 				if (strcmp(et6, "char") == 0) {
 					char *target_addr = gen_value_name(ctx);

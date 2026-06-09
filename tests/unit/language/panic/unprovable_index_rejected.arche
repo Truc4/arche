@@ -1,8 +1,0 @@
-// Full totality: a `func`/plain `proc` may only index an array/slice parameter where the bound is
-// provable. An unguarded dynamic index into a slice parameter is rejected (E0095) — guard it
-// (`if (i < 0 || i >= xs.length) ...`) or, for a proc, mark it `proc!`.
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "may panic" %t.out
-poke :: func(own xs: int[], i: int, v: int) -> int[] {
-  xs[i] = v; // i has no proven bound → totality rejects this
-  return xs;
-}

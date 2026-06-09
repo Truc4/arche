@@ -1,5 +1,0 @@
-// Contagion: a plain `proc` that calls a `proc!` is panic-capable, which a plain proc may not be.
-// It must itself be marked `proc!` (E0095). Build must fail with a "may panic" diagnostic.
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "may panic" %t.out
-leaf :: proc!(n: int)(o: int) { o = n + 1; }
-caller :: proc(n: int)(o: int) { leaf(n)(o:); }

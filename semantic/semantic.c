@@ -3197,58 +3197,6 @@ static void enforce_func_purity(SemanticContext *ctx, DeclSummary *func) {
 	}
 }
 
-/* ===== panic contagion (`proc!` totality) =====
- * A proc is "can_panic" iff it is declared `proc!` OR it (transitively) calls a can_panic proc. A
- * plain `proc`/`func` that turns out can_panic is a hard error (E0095): panic-capability must be
- * opted into with `proc!`. This is the Phase-B core; insert/delete (Phase C) and unprovable
- * indexing (Phase D) add further local abort sites. `extern` procs are deliberately OUTSIDE the
- * system — a foreign C boundary is trusted, not panic-tracked, so calling one stays total. */
-
-/* The first abort site reached in the subtree rooted at `v`, as a human-readable reason, else NULL.
- * Two sources today: a call to `delete` (a stale handle aborts — gen-exhaustion is the only ok=0
- * case), and a call to a currently-can_panic proc. Resolves the model-qualified callee name first
- * (cross-unit `mod.f`), else the bare name. The returned string is stable (a literal or a decl
- * name owned by the DeclTable). insert is NOT a source — overflow is reported via its `ok`. */
-static const char *panic_walk(SemanticContext *ctx, SyntaxView v) {
-	if (!sv_present(v))
-		return NULL;
-	if (sv_kind(v) == SN_CALL_EXPR) {
-		const char *cn = ctx->model ? sem_model_callee_name(ctx->model, sv_id(v)) : NULL;
-		char *fb = (!cn && sv_count(v, SN_FIELD_NAME) == 0) ? sem_cv_dup(sv_child(v, SN_CALLEE_NAME)) : NULL;
-		const char *name = cn ? cn : fb;
-		const char *reason = NULL;
-		if (name && strcmp(name, "delete") == 0) {
-			reason = "delete"; /* the delete builtin: a stale handle aborts */
-		} else if (name) {
-			DeclSummary *t = find_callable_sig(ctx, name);
-			if (t && t->kind == DECL_PROC && t->can_panic)
-				reason = t->name;
-		}
-		free(fb);
-		if (reason)
-			return reason;
-	}
-	for (int i = 0; i < v.node->child_count; i++)
-		if (v.node->children[i].tag == SE_NODE) {
-			const char *r = panic_walk(ctx, (SyntaxView){v.node->children[i].as.node, v.src});
-			if (r)
-				return r;
-		}
-	return NULL;
-}
-
-/* The first abort-site reason in the decl's body, or NULL. */
-static const char *decl_body_panicky_callee(SemanticContext *ctx, DeclSummary *d) {
-	if (!sv_present(d->body_node))
-		return NULL;
-	for (int i = 0, n = sem_stmt_count(d->body_node); i < n; i++) {
-		const char *r = panic_walk(ctx, sem_stmt_at(d->body_node, i));
-		if (r)
-			return r;
-	}
-	return NULL;
-}
-
 /* ===== value-array / slice bounds analysis (Phase D: OOB totality) =====
  * A plain proc/func must prove every VALUE-array / slice index in-bounds; an unprovable one is an
  * abort site (func → error, proc → must be `proc!`). Scope: indexing of array/slice PARAMETERS
@@ -3868,25 +3816,8 @@ static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 	return bnd_check_expr(ctx, d, v, e);
 }
 
-/* The first unprovable value-array/slice index in the decl's body, or NULL. */
-static const char *bnd_decl_first_unprovable(SemanticContext *ctx, DeclSummary *d) {
-	if (!sv_present(d->body_node))
-		return NULL;
-	BndEnv e;
-	e.count = 0;
-	e.local_count = 0;
-	e.lint_columns = 0;
-	const char *r = NULL;
-	for (int i = 0, n = sem_stmt_count(d->body_node); i < n && !r; i++)
-		r = bnd_check_stmt(ctx, d, sem_stmt_at(d->body_node, i), &e);
-	bnd_env_truncate(&e, 0);
-	for (int i = 0; i < e.local_count; i++)
-		free(e.locals[i].name);
-	return r;
-}
-
 /* One-time pass: emit W0017 (raw_pool_index) for unprovable pool-column indexing in each proc/func/
- * sys body. Separate from the can_panic fixpoint (which re-walks bodies) so each site warns once. */
+ * sys body. Each site warns once. */
 static void sem_check_raw_pool_lint(SemanticContext *ctx) {
 	for (int di = 0; di < ctx->decl_count; di++) {
 		DeclSummary *d = ctx->decls[di];
@@ -3903,51 +3834,6 @@ static void sem_check_raw_pool_lint(SemanticContext *ctx) {
 		bnd_env_truncate(&e, 0);
 		for (int i = 0; i < e.local_count; i++)
 			free(e.locals[i].name);
-	}
-}
-
-/* Whole-program contagion: seed from `proc!` markers, propagate to a fixpoint over the call graph
- * (handles recursion/cycles since can_panic only grows), then enforce. Runs after every decl is
- * analyzed (decls hoist, so call targets may be defined either side of a caller). */
-static void sem_check_panic_contagion(SemanticContext *ctx) {
-	for (int i = 0; i < ctx->decl_count; i++) {
-		DeclSummary *d = ctx->decls[i];
-		if (d->kind == DECL_PROC && d->can_panic_marked)
-			d->can_panic = 1;
-	}
-	int changed = 1;
-	while (changed) {
-		changed = 0;
-		for (int i = 0; i < ctx->decl_count; i++) {
-			DeclSummary *d = ctx->decls[i];
-			if ((d->kind != DECL_PROC && d->kind != DECL_FUNC) || d->can_panic || d->is_extern)
-				continue;
-			if (decl_body_panicky_callee(ctx, d) || bnd_decl_first_unprovable(ctx, d)) {
-				d->can_panic = 1;
-				changed = 1;
-			}
-		}
-	}
-	for (int i = 0; i < ctx->decl_count; i++) {
-		DeclSummary *d = ctx->decls[i];
-		if (!d->can_panic || d->is_extern)
-			continue;
-		int is_func = (d->kind == DECL_FUNC);
-		int is_unmarked_proc = (d->kind == DECL_PROC && !d->can_panic_marked);
-		if (!is_func && !is_unmarked_proc)
-			continue;
-		const char *c = decl_body_panicky_callee(ctx, d);
-		const char *bnd = c ? NULL : bnd_decl_first_unprovable(ctx, d);
-		char reason[200];
-		if (c && strcmp(c, "delete") == 0)
-			snprintf(reason, sizeof reason, "calls `delete` (a stale handle aborts)");
-		else if (c)
-			snprintf(reason, sizeof reason, "calls panic-capable proc '%s'", c);
-		else if (bnd)
-			snprintf(reason, sizeof reason, "%s", bnd);
-		else
-			snprintf(reason, sizeof reason, "may abort");
-		sem_emit_panic_in_total(ctx, d->loc, is_func ? "func" : "proc", d->name ? d->name : "<unknown>", reason);
 	}
 }
 
@@ -5032,8 +4918,8 @@ static SyntaxView sem_rhs_form(SyntaxView d) {
 		if (d.node->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
-		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR || k == SN_GROUP_EXPR ||
-		    k == SN_ENUM_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
+		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR ||
+		    k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
 			SyntaxView v = {d.node->children[i].as.node, d.src};
 			return v;
 		}
@@ -5799,6 +5685,8 @@ static int dead_is_root(const DeclSummary *d) {
 		             * (Stdlib/core externs still fall through to the dependency rule below and stay kept.) */
 	if (d->is_drop) /* opaque destructor — invoked by the compiler's RAII path, never syntactically */
 		return 1;
+	if (d->is_policy) /* a failure policy — invoked by the compiler at fallible op sites via `!name` */
+		return 1;
 	if (d->name[0] == '_') /* Rust `_`-prefix silence */
 		return 1;
 	if (d->origin == DECL_ORIGIN_STDLIB || d->origin == DECL_ORIGIN_CORE)
@@ -6247,7 +6135,6 @@ static void analyze_program_core(SemanticContext *ctx) {
 	sem_check_storage_requirements(ctx);
 	sem_check_device_impl_decls(ctx);
 	sem_check_datasheet_decls(ctx);
-	sem_check_panic_contagion(ctx); /* `proc!` totality: propagate + enforce panic-capability */
 	sem_check_raw_pool_lint(ctx);   /* W0017: advise handles for unprovable pool-column indexing */
 
 	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The
@@ -6468,7 +6355,7 @@ static SyntaxView sem_decl_body_node(SyntaxView dn) {
 	for (int i = 0; i < dn.node->child_count; i++)
 		if (dn.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = dn.node->children[i].as.node->kind;
-			if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_SYS_EXPR)
+			if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR)
 				return (SyntaxView){dn.node->children[i].as.node, dn.src};
 		}
 	return dn;
@@ -6743,8 +6630,8 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 	DeclKind kind;
 	if (fk == SN_PROC_EXPR)
 		kind = DECL_PROC;
-	else if (fk == SN_FUNC_EXPR)
-		kind = DECL_FUNC;
+	else if (fk == SN_FUNC_EXPR || fk == SN_POLICY_EXPR)
+		kind = DECL_FUNC; /* a policy is a func for typing/codegen; category handled at op site */
 	else if (fk == SN_SYS_EXPR)
 		kind = DECL_SYS;
 	else if (fk == SN_GROUP_EXPR)
@@ -6757,6 +6644,7 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 		return decl_summary_const_node(ctx, dv); /* SN_TYPE_PROC/FUNC RHS — a named callable-type alias */
 	DeclSummary *ds = calloc(1, sizeof(DeclSummary));
 	ds->kind = kind;
+	ds->is_policy = (fk == SN_POLICY_EXPR); /* a `policy` form — invoked via `!name`, never called */
 	ds->static_kind = -1; /* mirror decl_summary_from: static_kind=-1 for all; pool_count/value_kind stay 0 */
 	ds->loc = sem_node_loc(dv.node);
 	ds->node = dv;
@@ -6848,7 +6736,6 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 		ds->is_extern = !sv_has_token(form, TOK_LBRACE);
 		ds->is_variadic = sv_has_token(form, TOK_DOTDOTDOT);
 		ds->allow_pure_proc = sv_has_token(form, TOK_AT);
-		ds->can_panic_marked = sv_has_token(form, TOK_BANG); /* declared `proc!` */
 		int no = sv_count(form, SN_OUT_PARAM);
 		ds->out_param_count = no;
 		ds->out_params = calloc(no ? no : 1, sizeof(ParamSummary));
