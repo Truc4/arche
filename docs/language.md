@@ -415,35 +415,44 @@ that failure **locally, at the site**, with a *failure policy* written `expr !po
 ```arche
 v := samples[k] !clamp;   // out-of-range index → clamped into [0, len)
 grid[x] !clamp = c;       // the write form attaches the policy to the indexed lvalue
-n := total[i] !zero;      // out-of-range read → 0; an out-of-range write is dropped
+n := count / d !zero;     // divide-by-zero → 0
 raw := buf[j] !undefined; // opt out of all runtime safety: raw access, no check (UB if OOB)
-crash := buf[j] !abort;   // the ONLY policy that can crash — a visible, deliberate abort site
+crash := buf[j] !abort;   // the only policy that terminates — a visible, deliberate crash site
 ```
 
-**Only `!abort` can ever abort at runtime.** Every other policy (`!clamp`, `!zero`, `!undefined`, a
-user policy, or the `(ok:)` report form) is *total* — it can never crash. This makes the guarantee
-sharp and per-site rather than smeared over a whole proc:
+**A policy is a MACRO** — the compiler inlines its body at the op, with the op's operands bound as
+mutable locals, then runs the *raw* op on whatever they now are. Nothing is built in: `abort`,
+`clamp`, `wrap`, `undefined`, `zero` are all ordinary `policy` decls in `core`, and you write your own.
+The only irreducible primitive is `_exit` (a libc extern); `abort` is just a policy that calls it.
+`!undefined` is the *empty* policy — no mutation ⇒ the raw op.
 
-- A **`func` is total by construction** — it can never crash. An explicit `!abort` inside a func is a
-  compile error (`E0098`); an unannotated fallible op in a func defaults to a total policy (`!clamp`).
-- A **`proc`** may crash, but only at an `!abort` — implicit (the proc default for an unannotated
-  fallible op) or explicit. The implicit default is surfaced as an editor inlay so it's never a surprise.
+Only `!abort` (or a user policy that calls `_exit`) can terminate. This makes the guarantee sharp and
+per-site rather than smeared over a whole proc:
+
+- A **`func` is total by construction** — its baseline default is `clamp`. An unannotated fallible op
+  in a func clamps; it can't crash.
+- A **`proc`'s** baseline default is `abort`. Either default is overridable per-decl with
+  `@default(<policy>)` (e.g. `@default(clamp) hot :: proc(){…}`), or globally with `--unchecked`
+  (→ `undefined`). The implicit default is surfaced as an editor inlay so it's never a surprise.
 
 The bounds prover decides the rest: a **provably-safe** access needs no policy (an explicit one is
 the dead-policy lint `W0018`); a **provably out-of-bounds** constant access is a compile error
 (`E0097`) regardless of any policy — a statically-wrong index is a bug, not a runtime case. So a
 policy attaches only to the ops whose safety the compiler can't decide.
 
-Policies are ordinary, user-definable `policy` decls tagged by category; `core` ships the common ones
-(`clamp`, `wrap`). `clamp`/`wrap`/`zero`/`abort`/`undefined` carry no special compiler status beyond
-the three intrinsics (`abort`, `undefined`, `zero`):
+Policies are ordinary `policy` decls, tagged by op category, living in a namespace separate from
+funcs/procs (so a `zero` policy and a `zero` func coexist). `core` ships the common ones; you add more.
+A bounds policy binds `(len, i)` and **mutates `i`** (a divide policy binds and mutates `a, b`):
 
 ```arche
-@policy(bounds) clamp :: policy(len: int, i: int) -> int {   // returns the index to use; the
-  if (i < 0) { return 0; }                                   // compiler clamps the result into
-  if (i >= len) { return len - 1; }                          // [0, len) as a final net, so no
-  return i;                                                  // policy can ever cause an OOB
+@policy(bounds) clamp :: policy(len: int, i: int) {   // mutate i into range, then `base[i]` runs raw
+  if (i < 0)    { i = 0; }
+  if (i >= len) { i = len - 1; }
 }
+@policy(bounds) abort :: policy(len: int, i: int) {   // terminate on a bad index — `abort` is a policy
+  if (i < 0 || i >= len) { _exit(134); }
+}
+@policy(divide) zero :: policy(a: int, b: int) { if (b == 0) { a = 0; b = 1; } }  // n/d → 0 when d==0
 ```
 
 ### Crash-free builds

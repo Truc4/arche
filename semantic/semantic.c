@@ -523,7 +523,20 @@ static DeclSummary *find_callable_sig(SemanticContext *ctx, const char *name) {
 		return NULL;
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *d = ctx->decls[i];
-		if ((d->kind == DECL_PROC || d->kind == DECL_FUNC) && d->name && strcmp(d->name, name) == 0)
+		if ((d->kind == DECL_PROC || d->kind == DECL_FUNC) && !d->is_policy && d->name && strcmp(d->name, name) == 0)
+			return d; /* a policy is NOT callable — it's invoked via `!name` (see find_policy_sig) */
+	}
+	return NULL;
+}
+
+/* A failure-policy decl by name (the `!name` namespace), or NULL. Separate from find_callable_sig so a
+ * policy and a func/proc may share a name (`zero` the divide policy and `zero` a user func coexist). */
+static DeclSummary *find_policy_sig(SemanticContext *ctx, const char *name) {
+	if (!name)
+		return NULL;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->is_policy && d->name && strcmp(d->name, name) == 0)
 			return d;
 	}
 	return NULL;
@@ -3189,8 +3202,8 @@ static const char *func_purity_body_view(SemanticContext *ctx, SyntaxView declno
 /* Enforce func purity: a non-extern `func` body must be pure (no effects). This is a RULE, not a
  * lint — a violation is a hard compile error. Effects belong in a proc. */
 static void enforce_func_purity(SemanticContext *ctx, DeclSummary *func) {
-	if (!func || func->is_extern)
-		return;
+	if (!func || func->is_extern || func->is_policy)
+		return; /* a policy is a macro, not a pure func — it may mutate operands and call `exit()` */
 	const char *reason = func_purity_body_view(ctx, func->body_node);
 	if (reason) {
 		sem_emit_func_not_pure(ctx, func->loc, func->name ? func->name : "<unknown>", reason);
@@ -3746,8 +3759,8 @@ static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, Sy
 				sem_emit_policy_undefined_forbidden(ctx, loc);
 			}
 		} else {
-			DeclSummary *p = find_callable_sig(ctx, explicit_pol);
-			if (!p || !p->is_policy)
+			DeclSummary *p = find_policy_sig(ctx, explicit_pol);
+			if (!p)
 				sem_emit_policy_unknown(ctx, loc, explicit_pol);
 			else if (p->policy_category != POLICY_CAT_NONE && p->policy_category != POLICY_CAT_BOUNDS)
 				sem_emit_policy_wrong_category(ctx, loc, explicit_pol, "bounds", policy_cat_name(p->policy_category));
@@ -5544,10 +5557,13 @@ static void sem_check_one_region_per_file(const SyntaxNode *root, const char *sr
 	if (!g_sem_qualify_ctx || !root)
 		return;
 	int seen_module = 0, seen_file = 0, seen_foreign = 0, seen_import = 0;
+	int core_off = semantic_print_line_offset(); /* prepended-core lines; its own regions don't count */
 	for (int i = 0; i < root->child_count; i++) {
 		if (root->children[i].tag != SE_NODE)
 			continue;
 		const SyntaxNode *cn = root->children[i].as.node;
+		if (core_off > 0 && sem_node_loc(cn).line <= core_off)
+			continue; /* core (the prelude) is prepended text — its `#foreign`/region is not the user's */
 		const char *name = NULL;
 		int *seen = NULL;
 		if (cn->kind == SN_REGION) {
@@ -6400,15 +6416,15 @@ static void analyze_program_core(SemanticContext *ctx) {
 	 * is single, so a clash is E0031. Scans real decls only (not builtins). */
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *di = ctx->decls[i];
-		if (di->kind != DECL_FUNC && di->kind != DECL_PROC)
-			continue;
+		if ((di->kind != DECL_FUNC && di->kind != DECL_PROC) || di->is_policy)
+			continue; /* a policy is a separate namespace (invoked via `!name`, never called) */
 		const char *ni = di->name;
 		if (!ni)
 			continue;
 		const char *ki = (di->kind == DECL_FUNC) ? "func" : "proc";
 		for (int j = 0; j < i; j++) {
 			DeclSummary *dj = ctx->decls[j];
-			if (dj->kind != DECL_FUNC && dj->kind != DECL_PROC)
+			if ((dj->kind != DECL_FUNC && dj->kind != DECL_PROC) || dj->is_policy)
 				continue;
 			if (dj->name && strcmp(dj->name, ni) == 0) {
 				sem_emit_duplicate_decl(ctx, di->loc, ki, ni);

@@ -1,0 +1,28 @@
+// Multiple policies in one expression compose independently — each is a macro inlined over a LOCAL
+// copy of its operand, so a shared index `i` is clamped separately per array (against that array's own
+// length), and the source `i` is never mutated. Mix-and-match of policy types in one line works too.
+// RUN: %arche build -o %t %s && %t | grep -qF "a=36 b=36 c=0 d=35 e=5"
+#import { fmt }
+
+read2 :: func(small: int[], big: int[], i: int) -> int {
+  // `small` has length 2, `big` length 8 — the SAME `i` clamps to small[1] and big[7] respectively.
+  return small[i] !clamp + big[i] !clamp;
+}
+
+main :: proc() {
+  foo: int[4]; bar: int[4]; baz: int[4];
+  foo[0]=10; foo[1]=11; foo[2]=12; foo[3]=13;
+  bar[0]=20; bar[1]=21; bar[2]=22; bar[3]=23;
+  i := 9; j := 7;
+
+  baz[i] !clamp = foo[i] !clamp + bar[i] !clamp;       // all clamp to [3]: 13 + 23 = 36
+  r := foo[i] !clamp + bar[j] !wrap;                    // foo[3]=13 + bar[7%4=3]=23 = 36
+  q := foo[i] !clamp / (i - i) !zero;                   // 13 / 0 !zero -> 0
+  u := foo[2] !undefined + bar[i] !clamp;               // 12 + 23 = 35
+
+  s: int[2]; b: int[8];
+  s[0]=1; s[1]=2; b[7]=3;
+  e := read2(s[0:2], b[0:8], 99);                       // small[1]=2 + big[7]=3 = 5 (different lengths!)
+
+  fmt.printf("a=%d b=%d c=%d d=%d e=%d\n", baz[3], r, q, u, e);
+}

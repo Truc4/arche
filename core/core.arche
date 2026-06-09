@@ -43,19 +43,43 @@ streq :: func(a: char[], b: char[]) -> int {
   return 1;
 }
 
-// `clamp` — the common BOUNDS failure policy, shipped so `a[i] !clamp` works out of the box (no
-// per-program redefinition). A `@policy(bounds)` returns the index to actually use; the compiler then
-// clamps the result into [0, len) as a final net, so no policy — core or user — can cause an OOB.
-// (`!abort`, `!undefined`, `!zero` are compiler intrinsics and need no decl; the func index/slice
-// default is an intrinsic clamp, so it doesn't call this either.)
-@policy(bounds) clamp :: policy(len: int, i: int) -> int {
-  if (i < 0) { return 0; }
-  if (i >= len) { return len - 1; }
-  return i;
+// Terminate the program with `code` — libc `_exit`, the one irreducible primitive a failure policy
+// needs (to crash). `_exit` (not `exit`) keeps the global name distinct from a device's `os.exit`.
+#foreign {
+  _exit :: proc(code: int)
 }
 
-// `!wrap`: a modulo (ring/toroidal) index — out-of-range wraps around. The double-mod keeps a
-// negative `i` positive. (`len >= 1` for any real indexing; the compiler's final net covers len==0.)
-@policy(bounds) wrap :: policy(len: int, i: int) -> int {
-  return ((i % len) + len) % len;
+// ===== failure policies =====
+// A `policy` is a MACRO: the compiler inlines its body at a fallible op, with the op's operands bound
+// as mutable locals (`len`,`i` for a bounds index/slice; `a`,`b` for a divide), then runs the RAW op
+// on whatever they now are. So a policy mutates its operands and/or terminates — nothing is built in,
+// not even `abort`. An EMPTY body leaves the operands untouched ⇒ the raw op ⇒ that's `undefined`.
+// These are the common ones; users write their own (`@policy(bounds) my_clamp :: policy(len,i){…}`).
+
+@policy(bounds) abort :: policy(len: int, i: int) {
+  if (i < 0) { _exit(134); }
+  if (i >= len) { _exit(134); }
+}
+
+@policy(bounds) clamp :: policy(len: int, i: int) {
+  if (i < 0) { i = 0; }
+  if (i >= len) { i = len - 1; }
+}
+
+// Modulo (ring/toroidal) index — out of range wraps around. The double-mod keeps a negative `i` positive.
+@policy(bounds) wrap :: policy(len: int, i: int) {
+  i = ((i % len) + len) % len;
+}
+
+// The empty policy: no mutation ⇒ the raw, unchecked access. `a[i] !undefined`.
+@policy(bounds) undefined :: policy(len: int, i: int) {
+}
+
+// Divide-by-zero policy: `n / d !zero` yields 0 when d==0 (set the operands so `n/d` = 0/1 = 0).
+// A different category (`divide`), so it binds (a, b) — the dividend and divisor.
+@policy(divide) zero :: policy(a: int, b: int) {
+  if (b == 0) {
+    a = 0;
+    b = 1;
+  }
 }

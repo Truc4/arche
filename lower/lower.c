@@ -1681,6 +1681,32 @@ static int syntax_decl_has_intrinsic_decorator(SyntaxView d) {
 	return 0;
 }
 
+/* The policy named in `@default(<policy>)` on a decl (the IDENT inside the parens), owned, or NULL. */
+static char *syntax_decl_default_policy(SyntaxView d) {
+	if (!sv_present(d))
+		return NULL;
+	int n = d.node->child_count;
+	for (int i = 0; i + 3 < n; i++) {
+		const SyntaxElem *at = &d.node->children[i];
+		const SyntaxElem *kw = &d.node->children[i + 1];
+		const SyntaxElem *lp = &d.node->children[i + 2];
+		const SyntaxElem *nm = &d.node->children[i + 3];
+		if (at->tag != SE_TOKEN || at->as.token.kind != TOK_AT)
+			continue;
+		if (kw->tag != SE_TOKEN || kw->as.token.kind != TOK_IDENT || kw->as.token.length != 7 ||
+		    memcmp(d.src + kw->as.token.offset, "default", 7) != 0)
+			continue;
+		if (lp->tag != SE_TOKEN || lp->as.token.kind != TOK_LPAREN || nm->tag != SE_TOKEN ||
+		    nm->as.token.kind != TOK_IDENT)
+			continue;
+		char *s = malloc(nm->as.token.length + 1);
+		memcpy(s, d.src + nm->as.token.offset, nm->as.token.length);
+		s[nm->as.token.length] = '\0';
+		return s;
+	}
+	return NULL;
+}
+
 /* ===== Unified-grammar RHS value forms (P2) =====
  * Build the HIR decl from an RHS value-form node `f` with the name from the binding LHS.
  * Mirrors the legacy keyword-led cases below (dead once old syntax is removed). `name` owned. */
@@ -2112,14 +2138,25 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					 * checks the resolved decl's flag, not the symbol name — see codegen syscall). */
 					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && syntax_decl_has_intrinsic_decorator(d))
 						pd->data.proc->is_intrinsic = 1;
+					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc)
+						pd->data.proc->default_policy = syntax_decl_default_policy(d); /* `@default(name)` */
 					return pd;
 				}
-				case SN_FUNC_EXPR:
-				case SN_POLICY_EXPR:
-					/* A policy lowers to a func: structurally a pure callable. Its category tag
-					 * (@policy(...)) and its `!name` invocation are handled at the op site; for
-					 * codegen it is an ordinary function. */
-					return lower_func_from(rhs, nm);
+				case SN_FUNC_EXPR: {
+					HirDecl *fd = lower_func_from(rhs, nm);
+					if (fd && fd->kind == HIR_DECL_FUNC && fd->data.func)
+						fd->data.func->default_policy = syntax_decl_default_policy(d); /* `@default(name)` */
+					return fd;
+				}
+				case SN_POLICY_EXPR: {
+					/* A policy lowers to a func body, but it's a MACRO: codegen inlines its statements
+					 * at each fallible op site (operands bound as mutable locals), so it is never emitted
+					 * as its own LLVM function. Marked so codegen can find it and skip its emission. */
+					HirDecl *pf = lower_func_from(rhs, nm);
+					if (pf && pf->kind == HIR_DECL_FUNC && pf->data.func)
+						pf->data.func->is_policy = 1;
+					return pf;
+				}
 				case SN_SYS_EXPR:
 					return lower_sys_from(rhs, nm);
 				case SN_ARCH_EXPR:

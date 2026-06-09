@@ -716,8 +716,23 @@ static int parse_func_form(Parser *parser, SyntaxNodeKind *out_kind) {
  * pure func; tagged as a failure-policy decl, its category supplied by an `@policy(...)`
  * decorator on the binding. Always bodied — there is no bodiless policy type. */
 static int parse_policy_form(Parser *parser, SyntaxNodeKind *out_kind) {
-	if (!parse_func_sig(parser, 0))
+	/* A policy is a MACRO: it mutates its operands in place, so the return type is OPTIONAL (a
+	 * mutate-form policy has none). `(len, i)` / `(a, b)` then a body. */
+	if (!match(parser, TOK_LPAREN)) {
+		error(parser, "Expected '(' after 'policy'");
 		return 0;
+	}
+	if (!parse_param_list_body(parser, 0))
+		return 0;
+	if (!match(parser, TOK_RPAREN)) {
+		error(parser, "Expected ')' after policy parameters");
+		return 0;
+	}
+	if (check(parser, TOK_ARROW)) { /* optional explicit return type */
+		advance(parser);
+		if (!parse_type(parser))
+			return 0;
+	}
 	if (!check(parser, TOK_LBRACE)) {
 		error(parser, "a `policy` must have a body `{ ... }`");
 		return 0;
@@ -1006,6 +1021,27 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			/* `@intrinsic` marks a (foreign) decl whose calls the backend lowers to a built-in
 			 * instruction (e.g. the raw `syscall`) instead of an ordinary call. No arguments —
 			 * recognition is by this marker on the decl, not by the symbol's (mangleable) name. */
+			advance(parser);
+			continue;
+		}
+		if (cur_ident_is(parser, "default", 7)) {
+			/* `@default(<policy>)` on a proc/func: the failure policy its unannotated fallible ops take,
+			 * instead of the baseline (proc→abort, func→clamp). Recorded as tokens; lowering reads it. */
+			advance(parser); /* consume 'default' */
+			if (!check(parser, TOK_LPAREN)) {
+				error(parser, "Expected '(' after @default — name a policy, e.g. @default(clamp)");
+				return 0;
+			}
+			advance(parser);
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected a policy name inside @default(...)");
+				return 0;
+			}
+			advance(parser);
+			if (!check(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')' to close @default(...)");
+				return 0;
+			}
 			advance(parser);
 			continue;
 		}
@@ -1536,10 +1572,10 @@ static int parse_binary_rhs(Parser *parser, int ok_left, int left_cp, int min_pr
 				return 0;
 		}
 
-		/* Division failure policy: `a / b !policy` (div-by-zero). Parsed at the division level (not
-		 * the postfix level, where it would wrongly attach to `b`); the SN_POLICY_REF is wrapped before
-		 * the binary node closes, so it becomes a child of the `/` op. Only `/` is fallible this way. */
-		if (op == TOK_SLASH && check(parser, TOK_BANG)) {
+		/* Divide/mod failure policy: `a / b !policy` / `a % b !policy` (div-by-zero). Parsed at the
+		 * operator level (not the postfix level, where it would wrongly attach to `b`); the SN_POLICY_REF
+		 * is wrapped before the binary node closes, so it becomes a child of the op. */
+		if ((op == TOK_SLASH || op == TOK_PERCENT) && check(parser, TOK_BANG)) {
 			int pol_cp = syntax_cp(parser);
 			advance(parser); /* consume '!' */
 			if (!check(parser, TOK_IDENT)) {

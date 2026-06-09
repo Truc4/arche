@@ -118,6 +118,7 @@ typedef struct {
 	int is_extern;
 	int is_drop;          /* 1 if this proc is a `@drop` destructor (own opaque param is the type it destroys) */
 	int is_intrinsic;     /* 1 if `@intrinsic`: calls lower to a built-in instruction (e.g. raw syscall) */
+	char *default_policy; /* `@default(name)`: the failure policy this proc's unannotated ops take, else NULL */
 	HirStmt **stmts;
 	int stmt_count;
 	SourceLoc loc;
@@ -148,6 +149,9 @@ typedef struct {
 	HirType **return_types;
 	int return_type_count;
 	int is_extern;
+	int is_policy; /* lowered from a `policy` form: a failure-policy MACRO, inlined at fallible op sites
+	                * (operands bound as mutable locals), never emitted as its own LLVM function. */
+	char *default_policy; /* `@default(name)`: the failure policy this func's unannotated ops take, else NULL */
 	HirStmt **stmts;
 	int stmt_count;
 	SourceLoc loc;
