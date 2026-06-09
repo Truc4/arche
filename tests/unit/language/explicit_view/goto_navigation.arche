@@ -1,0 +1,39 @@
+// Goto navigation resolves through the compiler's own resolution (the node-id-keyed SemModel DefId
+// channels + interned TypeIds + the @drop registry), NOT editor keyword text-search: definition,
+// type-definition and implementation, spanning top-level decls, locals, params, opaque types, the
+// @drop implementation, and the prepended core prelude.
+//
+// def on a call → the callee's decl
+// RUN: %build/arche-analyzer --goto def 36 8 %s 2>/dev/null | grep -qE "^LOC 30 1 "
+// def on a local → its binding (scope-walk fallback; locals are not in the decl table)
+// RUN: %build/arche-analyzer --goto def 37 8 %s 2>/dev/null | grep -qE "^LOC 36 3 "
+// def on a parameter use → the parameter site
+// RUN: %build/arche-analyzer --goto def 31 10 %s 2>/dev/null | grep -qE "^LOC 30 13 "
+// def on a name bound earlier in the body → that binding
+// RUN: %build/arche-analyzer --goto def 32 10 %s 2>/dev/null | grep -qE "^LOC 31 3 "
+// def on a type name in a type position → the type decl
+// RUN: %build/arche-analyzer --goto def 27 22 %s 2>/dev/null | grep -qE "^LOC 24 1 "
+// impl on an opaque type → its @drop destructor proc
+// RUN: %build/arche-analyzer --goto impl 27 22 %s 2>/dev/null | grep -qE "^LOC 26 1 "
+// def on a core symbol → core.arche (cross-file, into the prepended prelude)
+// RUN: %build/arche-analyzer --goto def 38 13 %s 2>/dev/null | grep -qE "^LOC [0-9]+ [0-9]+ .*/core/core.arche$"
+// negative: a cursor on an operator resolves to nothing (no spurious match)
+// RUN: test $(%build/arche-analyzer --goto def 31 12 %s 2>/dev/null | grep -c "^LOC ") -eq 0
+Point :: arche { x :: int, y :: int }
+
+widget :: opaque
+
+@drop(widget)
+wfree :: proc(own w: widget) {
+}
+
+add :: func(a: int, b: int) -> int {
+  sum := a + b;
+  return sum;
+}
+
+main :: proc() {
+  p := add(2, 3);
+  q := p;
+  r := streq("a", "a");
+}
