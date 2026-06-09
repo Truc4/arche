@@ -1,0 +1,10 @@
+// `!abort` (the proc default here) writes a diagnostic to stderr before `_exit(134)` — a crash is
+// not silent. Guards the bounds `abort` policy's `dprintf(2, "arche: index out of bounds\n")`.
+// RUN: %arche build -o %t %s && { %t 2>%t.err ; test $? -eq 134 ; } && grep -qF "arche: index out of bounds" %t.err
+main :: proc(argc: int) {
+  a: int[4];
+  a[0] = 1;
+  i := argc + 100;   // unprovable OOB -> default !abort
+  x := a[i];
+  y := x + 0;
+}
