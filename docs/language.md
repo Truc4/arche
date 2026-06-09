@@ -65,6 +65,13 @@ allocation overhead in hot loops, a fixed budget that forces clear thinking abou
 capacity, cache-friendly columnar layout, and no use-after-free / dangling pointers /
 fragmentation.
 
+> **"No dynamic allocation" ≠ "no dynamic archetypes."** This is a property of the *core
+> language*: it bakes in no implicit heap. It is **not** a ceiling on the data model.
+> **Dynamic (resizable) archetypes — the backbone of a full ECS — are planned as a later
+> library layer** built on the same columnar pools, once the core matures. The core staying
+> allocation-free is what lets such a layer be an explicit, opt-in library rather than a
+> hidden cost in every program.
+
 ## Types and declarations
 
 Types are **nominal** - identity is the name, not the structure. The binding form is
