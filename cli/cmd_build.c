@@ -17,6 +17,9 @@ enum {
 	B_WERR_PCBF,
 	B_WERR_PNE,
 	B_WERR,
+	B_NO_ABORT,
+	B_NO_IMPLICIT_ABORT,
+	B_NO_UNDEFINED,
 };
 
 /* Flag table = parsing + `--help`, one source of truth. The `-Wno-*` / `-Werror[=...]` spellings are
@@ -33,6 +36,12 @@ static const ArgSpec k_build_specs[] = {
      "promote the proc-could-be-func lint to an error"},
     {B_WERR_PNE, "-Werror=proc-no-effect", ARG_FLAG, 0, 0, NULL, "promote the proc-no-effect lint to an error"},
     {B_WERR, "-Werror", ARG_FLAG, 0, 0, NULL, "promote all lints to errors"},
+    {B_NO_ABORT, "--no-abort", ARG_FLAG, 0, 0, NULL,
+     "crash-free build: reject any op resolving to `!abort` (implicit or explicit)"},
+    {B_NO_IMPLICIT_ABORT, "--no-implicit-abort", ARG_FLAG, 0, 0, NULL,
+     "reject only the implicit/default `!abort` — every fallible op must be annotated"},
+    {B_NO_UNDEFINED, "--no-undefined", ARG_FLAG, 0, 0, NULL,
+     "reject `!undefined` (the raw, runtime-unsafe opt-out)"},
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
@@ -79,6 +88,11 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 	}
 	semantic_set_lint_proc_could_be_func(pcbf_en, pcbf_we);
 	semantic_set_lint_proc_no_effect(pne_en, pne_we);
+
+	/* Crash-free enforcement (failure policies). */
+	semantic_set_no_abort(args_has(&p, B_NO_ABORT));
+	semantic_set_no_implicit_abort(args_has(&p, B_NO_IMPLICIT_ABORT));
+	semantic_set_no_undefined(args_has(&p, B_NO_UNDEFINED));
 
 	if (p.pos_count == 0) {
 		fprintf(stderr, "%s: no input file\n", g_prog);

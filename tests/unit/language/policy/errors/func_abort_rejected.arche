@@ -1,0 +1,7 @@
+// A `func` is total: an explicit `!abort` inside one is a hard error (E0098). Use a total policy
+// (`!clamp`, `!zero`) or `!undefined` instead. (Replaces the old `func!`-rejected test.)
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "abort.*not allowed in func\|E0098" %t.out
+f :: func(s: int[], i: int) -> int {
+  return s[i] !abort;
+}
+main :: proc() {}

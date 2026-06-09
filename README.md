@@ -27,6 +27,7 @@ way to write code.
 - **Database-style data model** - archetypes are tables defined by a set of component types; a system is a query that runs over every matching table.
 - **No heap, ever** - all storage is static and planned upfront, so memory behavior is fully predictable.
 - **Functional meets procedural** - pure `func` values alongside procedural static operations (`proc` / `sys`).
+- **Crashes are opt-in and visible** - the rare op that can still fail at runtime (an out-of-bounds index, a full pool) carries a *failure policy* right at the site: `a[i] !clamp`, `n / d !zero`, `a[i] !undefined`. A `func` is total by construction — it can **never** crash — and a `proc` crashes only at an explicit `!abort`; only `!abort` can ever abort, so `--no-abort` proves a whole build crash-free.
 
 ## Requirements
 

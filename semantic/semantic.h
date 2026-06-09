@@ -128,4 +128,11 @@ const char *semantic_get_const_value(SemanticContext *ctx, const char *const_nam
 void semantic_set_lint_proc_could_be_func(int enabled, int werror);
 void semantic_set_lint_proc_no_effect(int enabled, int werror);
 
+/* Crash-free enforcement (failure policies). Set from the CLI before analysis; consulted by the
+ * failure-policy pass. --no-abort: any op resolving to `!abort` (implicit or explicit) is an error;
+ * --no-implicit-abort: only the default/implicit `!abort` errors; --no-undefined: `!undefined` errors. */
+void semantic_set_no_abort(int on);
+void semantic_set_no_implicit_abort(int on);
+void semantic_set_no_undefined(int on);
+
 #endif /* SEMANTIC_H */

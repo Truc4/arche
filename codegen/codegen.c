@@ -90,6 +90,8 @@ struct CodegenContext {
 	/* SIMD vectorization context */
 	int vector_lanes; /* 0 = scalar mode, 4 = AVX2 double (256-bit / 64-bit = 4 lanes) */
 	int in_sys;       /* 1 when generating inside a sys function body */
+	int in_func;      /* 1 when generating inside a `func` body — an unannotated fallible op defaults to a
+	                   * TOTAL policy (intrinsic clamp) instead of `!abort`, so a func never crashes */
 
 	/* Implicit loop context */
 	char implicit_loop_index[64]; /* SSA reg name for current implicit loop ("" = not in loop) */
@@ -1816,6 +1818,10 @@ static int bounds_check_elidable(CodegenContext *ctx, const char *arch_name, Hir
 static void emit_const_bounds_check(CodegenContext *ctx, int n, const char *idx_buf, int idx_is_i64);
 static void emit_bounds_policy(CodegenContext *ctx, const char *policy, const char *len_i32, const char *idx_i64,
                               char *out);
+static void emit_clamp_intrinsic(CodegenContext *ctx, const char *len_i32, const char *idx_i64, char *out);
+static void emit_slice_clamp(CodegenContext *ctx, const char *val_i64, const char *len_i64, char *out);
+typedef enum { CGP_ABORT, CGP_CLAMP, CGP_ZERO, CGP_UNDEFINED, CGP_USER } CgBoundsPolicy;
+static CgBoundsPolicy cg_resolve_bounds_policy(CodegenContext *ctx, const char *pol);
 static int const_index_in_range(CodegenContext *ctx, HirExpr *idx_expr, int n);
 static int try_extract_loop_bound(HirStmt *for_stmt, char **out_var, int *out_bound);
 static void push_loop_bound(CodegenContext *ctx, const char *var_name, int bound);
@@ -1874,9 +1880,13 @@ static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *l
 	} else {
 		snprintf(hi64, sizeof(hi64), "%s", base_len);
 	}
-	/* Bounds: 0 <= lo <= hi <= len. The unsigned compares also catch a negative lo/hi (sext'd to a
-	 * huge i64). On violation, write the OOB message and abort — never a silent over-read. */
-	{
+	/* Bounds: 0 <= lo <= hi <= len. The slice's failure policy decides what an out-of-range view does:
+	 * `!abort` (proc default) aborts; a total policy (`!clamp`, the func default, or a user/`!zero`
+	 * bounds policy) clamps lo,hi into [0, len] with lo<=hi; `!undefined` opts out of the check. */
+	switch (cg_resolve_bounds_policy(ctx, e->data.slice.policy)) {
+	case CGP_UNDEFINED:
+		break; /* raw view, no check — opt out of runtime safety */
+	case CGP_ABORT: {
 		char *c1 = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = icmp ule i64 %s, %s\n", c1, lo64, hi64);
 		char *c2 = gen_value_name(ctx);
@@ -1894,6 +1904,20 @@ static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *l
 		buffer_append(ctx, "  call void @abort()\n");
 		buffer_append(ctx, "  unreachable\n\n");
 		buffer_append_fmt(ctx, "%s:\n", okl);
+		break;
+	}
+	default: { /* CGP_CLAMP / CGP_ZERO / CGP_USER — total clamp (the net guarantees safety) */
+		char loc[256], hic[256];
+		emit_slice_clamp(ctx, lo64, base_len, loc);
+		emit_slice_clamp(ctx, hi64, base_len, hic);
+		char *ge = gen_value_name(ctx); /* keep lo <= hi so the sub-view length is non-negative */
+		buffer_append_fmt(ctx, "  %s = icmp sge i64 %s, %s\n", ge, hic, loc);
+		char *hifix = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = select i1 %s, i64 %s, i64 %s\n", hifix, ge, hic, loc);
+		snprintf(lo64, sizeof(lo64), "%s", loc);
+		snprintf(hi64, sizeof(hi64), "%s", hifix);
+		break;
+	}
 	}
 	char *ptr2 = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", ptr2, elem_llvm, elem_llvm, base_ptr, lo64);
@@ -2831,15 +2855,35 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		/* Bounds check a type-6 bounded array read against its compile-time count N (final_idx is
 		 * already i64 here), unless the index is provably in range. A `!name` bounds policy replaces
 		 * the abort with a deterministic remap into [0, N). */
+		char zero_inbounds[64] = ""; /* `!zero` read: SSA i1 — was the original index in range? (else result→0) */
 		if (type6_bound > 0 && expr->data.index.index_count > 0 &&
 		    !const_index_in_range(ctx, expr->data.index.indices[0], type6_bound)) {
-			if (expr->data.index.policy) {
-				char lenbuf[32];
-				snprintf(lenbuf, sizeof lenbuf, "%d", type6_bound);
+			char lenbuf[32];
+			snprintf(lenbuf, sizeof lenbuf, "%d", type6_bound);
+			switch (cg_resolve_bounds_policy(ctx, expr->data.index.policy)) {
+			case CGP_ABORT:
+				emit_const_bounds_check(ctx, type6_bound, final_idx, 1);
+				break;
+			case CGP_CLAMP:
+				emit_clamp_intrinsic(ctx, lenbuf, final_idx, final_idx_buf);
+				final_idx = final_idx_buf;
+				break;
+			case CGP_USER:
 				emit_bounds_policy(ctx, expr->data.index.policy, lenbuf, final_idx, final_idx_buf);
 				final_idx = final_idx_buf;
-			} else {
-				emit_const_bounds_check(ctx, type6_bound, final_idx, 1);
+				break;
+			case CGP_ZERO: {
+				/* in-bounds? (unsigned compare catches a negative idx); load from a clamped (safe) slot
+				 * so we never read OOB, then select 0 on the out-of-range edge below. */
+				char *ib = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = icmp ult i64 %s, %d\n", ib, final_idx, type6_bound);
+				snprintf(zero_inbounds, sizeof zero_inbounds, "%s", ib);
+				emit_clamp_intrinsic(ctx, lenbuf, final_idx, final_idx_buf);
+				final_idx = final_idx_buf;
+				break;
+			}
+			case CGP_UNDEFINED:
+				break; /* raw access, no check — opt out of runtime safety */
 			}
 		}
 
@@ -2877,6 +2921,15 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				strcpy(result_buf, extended);
 			} else {
 				strcpy(result_buf, loaded);
+			}
+			/* `!zero`: out-of-range read yields the element zero (the load above used a clamped slot). */
+			if (zero_inbounds[0]) {
+				const char *zt = (scalar_type && strcmp(scalar_type, "i8") == 0) ? "i32" : scalar_type;
+				const char *zl = (zt && (zt[0] == 'd' || zt[0] == 'f')) ? "0.0" : "0";
+				char *sel = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = select i1 %s, %s %s, %s %s\n", sel, zero_inbounds, zt, result_buf, zt,
+				                  zl);
+				strcpy(result_buf, sel);
 			}
 		}
 		break;
@@ -4549,6 +4602,26 @@ static void emit_const_bounds_check(CodegenContext *ctx, int n, const char *idx_
 	buffer_append_fmt(ctx, "%s:\n", ok_lbl);
 }
 
+/* The compiler's final clamp net: clamp an i32 index `val_i32` into [0, len) = max(0, min(val, len-1)),
+ * then sext to i64 into `out`. This is what makes "never abort unless `!abort`" hold for ANY policy —
+ * even a buggy user one can't produce an OOB. (Also the intrinsic `!clamp` itself, applied to the raw
+ * index.) For len==0 the result is the saturated `-1→0`, a harmless slot the caller still guards. */
+static void emit_clamp_net(CodegenContext *ctx, const char *len_i32, const char *val_i32, char *out) {
+	char *lenm1 = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = sub i32 %s, 1\n", lenm1, len_i32);
+	char *gt = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp sgt i32 %s, %s\n", gt, val_i32, lenm1);
+	char *hi = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = select i1 %s, i32 %s, i32 %s\n", hi, gt, lenm1, val_i32);
+	char *lt = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp slt i32 %s, 0\n", lt, hi);
+	char *clamped = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = select i1 %s, i32 0, i32 %s\n", clamped, lt, hi);
+	char *clamped64 = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", clamped64, clamped);
+	strcpy(out, clamped64);
+}
+
 /* Bounds-policy remap (the `!name` total alternative to abort): call the user policy function
  * `@<policy>(i32 len, i32 idx)` — a `@policy(bounds)` decl lowered as a func — then apply the
  * compiler's final net, clamping the returned index into [0, len). No branch can abort: an OOB
@@ -4560,20 +4633,59 @@ static void emit_bounds_policy(CodegenContext *ctx, const char *policy, const ch
 	buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", i32idx, idx_i64);
 	char *remapped = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = call i32 @%s(i32 %s, i32 %s)\n", remapped, policy, len_i32, i32idx);
-	/* final net: clamp remapped into [0, len) = max(0, min(remapped, len-1)). */
-	char *lenm1 = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = sub i32 %s, 1\n", lenm1, len_i32);
+	emit_clamp_net(ctx, len_i32, remapped, out);
+}
+
+/* The intrinsic `!clamp` (and the func default for an unannotated index): the final net applied to the
+ * raw index, no user policy call. Total — clamps an OOB index into [0, len). */
+static void emit_clamp_intrinsic(CodegenContext *ctx, const char *len_i32, const char *idx_i64, char *out) {
+	char *i32idx = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", i32idx, idx_i64);
+	emit_clamp_net(ctx, len_i32, i32idx, out);
+}
+
+/* Clamp an i64 slice bound `val_i64` into [0, len] (slices admit `hi == len`, unlike an index's
+ * [0, len)). Writes the clamped i64 into `out`. Total — the basis of `!clamp` on a slice. */
+static void emit_slice_clamp(CodegenContext *ctx, const char *val_i64, const char *len_i64, char *out) {
+	char *lt0 = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, 0\n", lt0, val_i64);
+	char *lo = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = select i1 %s, i64 0, i64 %s\n", lo, lt0, val_i64);
 	char *gt = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = icmp sgt i32 %s, %s\n", gt, remapped, lenm1);
-	char *hi = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = select i1 %s, i32 %s, i32 %s\n", hi, gt, lenm1, remapped);
-	char *lt = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = icmp slt i32 %s, 0\n", lt, hi);
+	buffer_append_fmt(ctx, "  %s = icmp sgt i64 %s, %s\n", gt, lo, len_i64);
 	char *clamped = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = select i1 %s, i32 0, i32 %s\n", clamped, lt, hi);
-	char *clamped64 = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", clamped64, clamped);
-	strcpy(out, clamped64);
+	buffer_append_fmt(ctx, "  %s = select i1 %s, i64 %s, i64 %s\n", clamped, gt, len_i64, lo);
+	strcpy(out, clamped);
+}
+
+/* `!zero` write: an out-of-range store is silently dropped. Branchlessly redirect it — when
+ * `in_bounds` (an i1) is false, store through a throwaway scratch slot instead of the real (clamped)
+ * element pointer `addr`. `elt` is the element LLVM type. Writes the address to store through to
+ * `out` and returns it. */
+static const char *emit_zero_write_addr(CodegenContext *ctx, const char *in_bounds, const char *elt, const char *addr,
+                                        char *out) {
+	char *scratch = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca %s\n", scratch, elt);
+	char *sel = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = select i1 %s, %s* %s, %s* %s\n", sel, in_bounds, elt, addr, elt, scratch);
+	strcpy(out, sel);
+	return out;
+}
+
+/* The resolved codegen behavior of a `!policy` on an index/slice op. The three intrinsics
+ * (abort/undefined/zero) and the intrinsic clamp are compiler-emitted; any other name is a user
+ * `@policy(bounds)` func (CGP_USER). A NULL (unannotated) op takes the proc/func default: proc → abort
+ * (the only crash), func → intrinsic clamp (total — a func never crashes). */
+static CgBoundsPolicy cg_resolve_bounds_policy(CodegenContext *ctx, const char *pol) {
+	if (!pol)
+		return ctx->in_func ? CGP_CLAMP : CGP_ABORT;
+	if (strcmp(pol, "abort") == 0)
+		return CGP_ABORT;
+	if (strcmp(pol, "undefined") == 0)
+		return CGP_UNDEFINED;
+	if (strcmp(pol, "zero") == 0)
+		return CGP_ZERO;
+	return CGP_USER;
 }
 
 /* 1 if `idx_expr` is provably within [0, n): a literal in range, or a loop var bounded <= n. */
@@ -6390,34 +6502,64 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				emit_index_i64(ctx, idx_buf, stmt->data.assign_stmt.target->data.index.indices[0], idx_i64);
 				/* Bounds check a bounded array write against its count N (idx_i64 is i64). A `!name`
 				 * bounds policy replaces the abort with a deterministic remap into [0, N). */
+				char zero_wskip[64] = ""; /* `!zero` write: SSA i1 — in range? (else redirect store to scratch) */
 				if (type6_target->string_len > 0 &&
 				    !const_index_in_range(ctx, stmt->data.assign_stmt.target->data.index.indices[0],
 				                          type6_target->string_len)) {
-					if (stmt->data.assign_stmt.target->data.index.policy) {
-						char lenbuf[32];
-						snprintf(lenbuf, sizeof lenbuf, "%d", type6_target->string_len);
-						char clamped[256];
-						emit_bounds_policy(ctx, stmt->data.assign_stmt.target->data.index.policy, lenbuf, idx_i64,
-						                   clamped);
-						strcpy(idx_i64, clamped);
-					} else {
+					const char *wpol = stmt->data.assign_stmt.target->data.index.policy;
+					char lenbuf[32];
+					snprintf(lenbuf, sizeof lenbuf, "%d", type6_target->string_len);
+					switch (cg_resolve_bounds_policy(ctx, wpol)) {
+					case CGP_ABORT:
 						emit_const_bounds_check(ctx, type6_target->string_len, idx_i64, 1);
+						break;
+					case CGP_CLAMP: {
+						char clamped[256];
+						emit_clamp_intrinsic(ctx, lenbuf, idx_i64, clamped);
+						strcpy(idx_i64, clamped);
+						break;
+					}
+					case CGP_USER: {
+						char clamped[256];
+						emit_bounds_policy(ctx, wpol, lenbuf, idx_i64, clamped);
+						strcpy(idx_i64, clamped);
+						break;
+					}
+					case CGP_ZERO: {
+						char *ib = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = icmp ult i64 %s, %d\n", ib, idx_i64, type6_target->string_len);
+						snprintf(zero_wskip, sizeof zero_wskip, "%s", ib);
+						char clamped[256];
+						emit_clamp_intrinsic(ctx, lenbuf, idx_i64, clamped);
+						strcpy(idx_i64, clamped);
+						break;
+					}
+					case CGP_UNDEFINED:
+						break; /* raw store, no check */
 					}
 				}
 				const char *et6 = type6_target->field_type ? type6_target->field_type : "char";
 				if (strcmp(et6, "char") == 0) {
 					char *target_addr = gen_value_name(ctx);
 					buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %s\n", target_addr, base_buf, idx_i64);
+					const char *store_addr = target_addr;
+					char redir[64];
+					if (zero_wskip[0])
+						store_addr = emit_zero_write_addr(ctx, zero_wskip, "i8", target_addr, redir);
 					char *trunc_val = gen_value_name(ctx);
 					buffer_append_fmt(ctx, "  %s = trunc i32 %s to i8\n", trunc_val, value_buf);
-					buffer_append_fmt(ctx, "  store i8 %s, i8* %s, align 1\n", trunc_val, target_addr);
+					buffer_append_fmt(ctx, "  store i8 %s, i8* %s, align 1\n", trunc_val, store_addr);
 				} else {
 					const char *st = llvm_type_from_arche(et6);
 					int align = strcmp(st, "double") == 0 ? 8 : 4;
 					char *target_addr = gen_value_name(ctx);
 					buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", target_addr, st, st, base_buf,
 					                  idx_i64);
-					buffer_append_fmt(ctx, "  store %s %s, %s* %s, align %d\n", st, value_buf, st, target_addr, align);
+					const char *store_addr = target_addr;
+					char redir[64];
+					if (zero_wskip[0])
+						store_addr = emit_zero_write_addr(ctx, zero_wskip, st, target_addr, redir);
+					buffer_append_fmt(ctx, "  store %s %s, %s* %s, align %d\n", st, value_buf, st, store_addr, align);
 				}
 				break;
 			}
@@ -7832,6 +7974,7 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 	buffer_append(ctx, "entry:\n");
 
 	FunctionBodyState fbs_func = begin_function_body(ctx);
+	ctx->in_func = 1; /* a func is total: an unannotated fallible op clamps, never aborts */
 	push_value_scope(ctx);
 
 	/* Register static arrays in scope */
@@ -7929,6 +8072,7 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 	}
 	buffer_append_fmt(ctx, "  ret %s %s\n", return_type, ret_value);
 	end_function_body(ctx, fbs_func);
+	ctx->in_func = 0;
 	buffer_append(ctx, "}\n\n");
 }
 
@@ -8384,6 +8528,7 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->interned_count = 0;
 	ctx->vector_lanes = 0;
 	ctx->in_sys = 0;
+	ctx->in_func = 0;
 	ctx->implicit_loop_index[0] = '\0'; /* Initialize to empty (not in loop) */
 	ctx->loop_exit_labels = NULL;
 	ctx->loop_exit_count = 0;

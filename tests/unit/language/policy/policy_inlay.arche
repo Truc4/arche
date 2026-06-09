@@ -1,0 +1,14 @@
+// The analyzer surfaces each fallible op's IMPLICIT failure policy as an inlay: a ghost `!abort` in a
+// proc, `!clamp` in a func. Constant indices (resolved at compile time) and explicit policies (already
+// in source) get none.
+// RUN: %build/arche-analyzer --dump %s | grep -qF "policy !abort"
+// RUN: %build/arche-analyzer --dump %s | grep -qF "policy !clamp"
+get :: func(s: int[], i: int) -> int {
+  return s[i];
+}
+main :: proc() {
+  a: int[4];
+  a[0] = 1;
+  i := 9;
+  x := a[i];
+}

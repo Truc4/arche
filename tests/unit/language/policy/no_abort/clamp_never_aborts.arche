@@ -1,7 +1,7 @@
 // THE GUARANTEE: a program that contains NO `!abort` and deliberately triggers OOB reads through a
 // total policy must run to completion (exit 0) — a total policy can never abort. This is the inverse
-// of the *_array_oob tests (which assert the default !abort DOES abort). Several wild OOB indices,
-// all clamped, program exits cleanly.
+// of the *_array_oob tests (which assert the default !abort DOES abort). Several wild OOB indices
+// (runtime values — literals would be provably-OOB compile errors, E0097), all clamped, exits cleanly.
 // RUN: %arche build -o %t %s && %t
 @policy(bounds) clamp :: policy(len: int, i: int) -> int {
   if (i < 0) { return 0; }
@@ -14,7 +14,10 @@ main :: proc() {
   a[0] = 1;
   a[3] = 4;
   s := 0;
-  s = s + a[99] !clamp;  // -> a[3]
-  s = s + a[0 - 7] !clamp; // negative -> a[0]
-  s = s + a[4] !clamp;   // just past end -> a[3]
+  i := 99;
+  j := 0 - 7;
+  k := 4;
+  s = s + a[i] !clamp;  // -> a[3]
+  s = s + a[j] !clamp; // negative -> a[0]
+  s = s + a[k] !clamp;   // just past end -> a[3]
 }

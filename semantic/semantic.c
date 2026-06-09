@@ -3231,7 +3231,8 @@ typedef struct {
 	int count;
 	BndLocal locals[BND_MAX_FACTS];
 	int local_count;
-	int lint_columns; /* 1 = also emit W0017 for unprovable pool-column (`Arch.field[i]`) indexing */
+	int lint_columns;   /* 1 = also emit W0017 for unprovable pool-column (`Arch.field[i]`) indexing */
+	int check_policies; /* 1 = the failure-policy validation pass (E0097-99/E0124/W0018); see sem_check_policies */
 } BndEnv;
 
 /* int value of a literal node, or -1 if not a nonneg int literal. */
@@ -3601,6 +3602,162 @@ static int bnd_guard_exit(SemanticContext *ctx, SyntaxView ifv, BndEnv *e) {
 
 static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxView v, BndEnv *e);
 
+/* If `v` is a compile-time integer constant (a literal, or unary-minus on one), set *out and return
+ * 1; else 0. (bnd_lit_int collapses a negative literal to -1, losing the value — the failure-policy
+ * pass needs the signed value to tell a provably-OOB negative index apart from a non-literal. A
+ * negative index `a[-7]` parses as SN_UNARY_EXPR(`-`, 7), so the negate case must be folded here;
+ * `a[0 - 7]` is a binary expr, deliberately left as a runtime value — no constant folding.) */
+static int bnd_lit_int_signed(SyntaxView v, int *out) {
+	if (!sv_present(v))
+		return 0;
+	if (sv_kind(v) == SN_UNARY_EXPR && sv_has_token(v, TOK_MINUS)) {
+		int inner;
+		if (bnd_lit_int_signed(sem_node_at_expr(v, 0), &inner)) {
+			*out = -inner;
+			return 1;
+		}
+		return 0;
+	}
+	if (sv_kind(v) != SN_LITERAL_EXPR)
+		return 0;
+	char *t = sem_cv_dup(v);
+	if (!t)
+		return 0;
+	int neg = (t[0] == '-');
+	const char *p = neg ? t + 1 : t;
+	int ok = (*p != '\0');
+	for (const char *q = p; *q; q++)
+		if (*q < '0' || *q > '9')
+			ok = 0;
+	int val = atoi(p);
+	free(t);
+	if (!ok)
+		return 0;
+	*out = neg ? -val : val;
+	return 1;
+}
+
+/* The three built-in (intrinsic) bounds policies — not user `policy` decls: `abort` (the only crash
+ * source), `undefined` (raw access, no check — opt out of runtime safety), `zero` (read→0/skip-write). */
+static int policy_name_is_intrinsic(const char *name) {
+	return name && (strcmp(name, "abort") == 0 || strcmp(name, "undefined") == 0 || strcmp(name, "zero") == 0);
+}
+
+static const char *policy_cat_name(PolicyCategory c) {
+	switch (c) {
+	case POLICY_CAT_BOUNDS:
+		return "bounds";
+	case POLICY_CAT_POOL:
+		return "pool";
+	case POLICY_CAT_DIVIDE:
+		return "divide";
+	default:
+		return "?";
+	}
+}
+
+/* Crash-free enforcement flags — set by the CLI (cmd_build), consulted by the failure-policy pass.
+ * `--no-abort` rejects any op resolving to `!abort` (implicit OR explicit); `--no-implicit-abort`
+ * rejects only the default/implicit `!abort` (a deliberate, visible `!abort` is still allowed);
+ * `--no-undefined` rejects any `!undefined` site. */
+static int g_no_abort = 0;
+static int g_no_implicit_abort = 0;
+static int g_no_undefined = 0;
+void semantic_set_no_abort(int on) { g_no_abort = on; }
+void semantic_set_no_implicit_abort(int on) { g_no_implicit_abort = on; }
+void semantic_set_no_undefined(int on) { g_no_undefined = on; }
+
+/* The crash-free flags assert the USER's code is total — they don't fire on the bundled core/stdlib
+ * (which aren't policy-annotated) nor on the prepended prelude text (origin ENTRY, but above the
+ * user's first line). Mirrors the origin/line-offset gate the dead-code passes use. */
+static int decl_is_user_code(DeclSummary *d) {
+	if (d->origin == DECL_ORIGIN_STDLIB || d->origin == DECL_ORIGIN_CORE)
+		return 0;
+	int core_off = semantic_print_line_offset();
+	if (d->origin == DECL_ORIGIN_ENTRY && core_off > 0 && d->loc.line <= core_off)
+		return 0; /* prepended prelude */
+	return 1;
+}
+
+/* Validate the failure policy on a single index/slice op. `kind`/`n` are as bnd_base_kind reports
+ * for `base` (kind 0 = base isn't a tracked value-array ⇒ provability unknown). The prover's verdict
+ * is authoritative — a policy attaches ONLY to ops it can't decide:
+ *   provably OOB const  → E0097 (even with a policy: a statically-wrong access, not a runtime case);
+ *   provably safe       → W0018 if an explicit policy is present (dead — the op can never fail);
+ *   unprovable          → an explicit `!name` is validated: E0098 `!abort` in a func/policy (must be
+ *                         total), E0099 unknown policy, E0124 wrong @policy(category).
+ * Slices skip provability (the prover doesn't bound them) — only their explicit policy is validated. */
+static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, SyntaxView v, int is_slice,
+                             const char *base, int kind, int n) {
+	char *explicit_pol = NULL;
+	SyntaxView pol = sv_child(v, SN_POLICY_REF);
+	if (sv_present(pol)) {
+		SynText t = sv_token(pol, TOK_IDENT);
+		if (t.ptr)
+			explicit_pol = sem_txt_dup(t);
+	}
+	SourceLoc loc = sem_node_loc(v.node);
+
+	int provably_oob = 0, provably_safe = 0, oob_lit = 0;
+	if (!is_slice && kind != 0) {
+		SyntaxView idx = sem_node_at_expr(v, 0);
+		int lit;
+		if (bnd_lit_int_signed(idx, &lit)) {
+			if (lit < 0) {
+				provably_oob = 1;
+				oob_lit = lit;
+			} else if (kind == 1 && n >= 0) {
+				if (lit >= n) {
+					provably_oob = 1;
+					oob_lit = lit;
+				} else {
+					provably_safe = 1;
+				}
+			} else if (bnd_minlen_ok(e, base, lit)) {
+				provably_safe = 1;
+			}
+		} else {
+			char *iv = bnd_plain_name(ctx, idx);
+			if (iv) {
+				if (bnd_proven(e, iv, base))
+					provably_safe = 1;
+				else if (kind == 1 && n >= 0 && bnd_is_nonneg(e, iv) && bnd_litub(e, iv) > 0 && bnd_litub(e, iv) <= n)
+					provably_safe = 1;
+			}
+			free(iv);
+		}
+	}
+
+	if (provably_oob) {
+		sem_emit_policy_provable_oob(ctx, loc, base ? base : "?", oob_lit, n);
+	} else if (provably_safe) {
+		if (explicit_pol)
+			sem_emit_lint_policy_on_safe_op(ctx, loc, explicit_pol, base ? base : "?");
+	} else if (explicit_pol) { /* unprovable: an explicit policy governs the op — validate it */
+		if (policy_name_is_intrinsic(explicit_pol)) {
+			if (strcmp(explicit_pol, "abort") == 0) {
+				if (d->kind == DECL_FUNC)
+					sem_emit_policy_func_aborts(ctx, loc, d->name ? d->name : "<anon>");
+				else if (g_no_abort && decl_is_user_code(d))
+					sem_emit_policy_abort_forbidden(ctx, loc, "this `!abort`", "--no-abort");
+			} else if (strcmp(explicit_pol, "undefined") == 0 && g_no_undefined && decl_is_user_code(d)) {
+				sem_emit_policy_undefined_forbidden(ctx, loc);
+			}
+		} else {
+			DeclSummary *p = find_callable_sig(ctx, explicit_pol);
+			if (!p || !p->is_policy)
+				sem_emit_policy_unknown(ctx, loc, explicit_pol);
+			else if (p->policy_category != POLICY_CAT_NONE && p->policy_category != POLICY_CAT_BOUNDS)
+				sem_emit_policy_wrong_category(ctx, loc, explicit_pol, "bounds", policy_cat_name(p->policy_category));
+		}
+	} else if (d->kind != DECL_FUNC && (g_no_abort || g_no_implicit_abort) && decl_is_user_code(d)) {
+		/* unprovable, unannotated, in a proc/sys → the implicit default is `!abort`. */
+		sem_emit_policy_abort_forbidden(ctx, loc, "this op's implicit `!abort`",
+		                                g_no_abort ? "--no-abort" : "--no-implicit-abort");
+	}
+	free(explicit_pol);
+}
+
 /* Recurse into every expression/child of a node, checking each value-array index. Statement-shaped
  * children that introduce their own scope (for/if/block) are handled by bnd_check_stmt; here we just
  * descend generic expression trees. */
@@ -3642,7 +3799,9 @@ static const char *bnd_check_expr(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 		char *base = sv_resolved_name(ctx, v);
 		int n = -1;
 		int kind = base ? bnd_base_kind(ctx, d, e, base, &n) : 0;
-		if (kind != 0) { /* a checked array/slice parameter */
+		if (e->check_policies) { /* failure-policy validation pass (emits; never short-circuits) */
+			bnd_policy_check(ctx, d, e, v, 0, base, kind, n);
+		} else if (kind != 0) { /* a checked array/slice parameter */
 			SyntaxView idx = sem_node_at_expr(v, 0);
 			int lit = bnd_lit_int(idx);
 			int ok = 0;
@@ -3668,6 +3827,13 @@ static const char *bnd_check_expr(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 				return buf;
 			}
 		}
+		free(base);
+	}
+	if (e->check_policies && sv_kind(v) == SN_SLICE_EXPR) {
+		char *base = sv_resolved_name(ctx, v);
+		int n = -1;
+		int kind = base ? bnd_base_kind(ctx, d, e, base, &n) : 0;
+		bnd_policy_check(ctx, d, e, v, 1, base, kind, n);
 		free(base);
 	}
 	for (int i = 0; i < v.node->child_count; i++)
@@ -3829,8 +3995,32 @@ static void sem_check_raw_pool_lint(SemanticContext *ctx) {
 		e.count = 0;
 		e.local_count = 0;
 		e.lint_columns = 1;
+		e.check_policies = 0;
 		for (int i = 0, n = sem_stmt_count(d->body_node); i < n; i++)
 			bnd_check_stmt(ctx, d, sem_stmt_at(d->body_node, i), &e); /* return ignored; emits lints */
+		bnd_env_truncate(&e, 0);
+		for (int i = 0; i < e.local_count; i++)
+			free(e.locals[i].name);
+	}
+}
+
+/* Failure-policy validation: walk every proc/func/policy body and check each index/slice op's policy
+ * against the prover's verdict (proven-safe ⇒ no policy; provably-OOB ⇒ error; unprovable ⇒ validate
+ * the explicit `!name`). See bnd_policy_check for the emitted diagnostics (E0097-99/E0124/W0018). */
+static void sem_check_policies(SemanticContext *ctx) {
+	for (int di = 0; di < ctx->decl_count; di++) {
+		DeclSummary *d = ctx->decls[di];
+		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYS) || d->is_extern)
+			continue;
+		if (!sv_present(d->body_node))
+			continue;
+		BndEnv e;
+		e.count = 0;
+		e.local_count = 0;
+		e.lint_columns = 0;
+		e.check_policies = 1;
+		for (int i = 0, n = sem_stmt_count(d->body_node); i < n; i++)
+			bnd_check_stmt(ctx, d, sem_stmt_at(d->body_node, i), &e);
 		bnd_env_truncate(&e, 0);
 		for (int i = 0; i < e.local_count; i++)
 			free(e.locals[i].name);
@@ -4792,6 +4982,37 @@ static char *syntax_drop_type(SyntaxView d) {
 		}
 	}
 	return NULL;
+}
+
+/* The op category a `policy` decl serves, from its `@policy(<category>)` decorator: the IDENT inside
+ * the parens. `policy` lexes as TOK_POLICY (a keyword), so the sequence is `@ policy ( <cat> )`.
+ * POLICY_CAT_NONE if absent/malformed/unrecognized. */
+static PolicyCategory syntax_policy_category(SyntaxView d) {
+	int n = d.node->child_count;
+	for (int i = 0; i + 4 < n; i++) {
+		const SyntaxElem *at = &d.node->children[i];
+		if (at->tag != SE_TOKEN || at->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *kw = &d.node->children[i + 1];
+		if (kw->tag != SE_TOKEN || kw->as.token.kind != TOK_POLICY)
+			continue;
+		const SyntaxElem *lp = &d.node->children[i + 2];
+		const SyntaxElem *cat = &d.node->children[i + 3];
+		const SyntaxElem *rp = &d.node->children[i + 4];
+		if (lp->tag != SE_TOKEN || lp->as.token.kind != TOK_LPAREN || cat->tag != SE_TOKEN ||
+		    cat->as.token.kind != TOK_IDENT || rp->tag != SE_TOKEN || rp->as.token.kind != TOK_RPAREN)
+			continue;
+		const char *p = d.src + cat->as.token.offset;
+		size_t len = cat->as.token.length;
+		if (len == 6 && memcmp(p, "bounds", 6) == 0)
+			return POLICY_CAT_BOUNDS;
+		if (len == 4 && memcmp(p, "pool", 4) == 0)
+			return POLICY_CAT_POOL;
+		if (len == 6 && memcmp(p, "divide", 6) == 0)
+			return POLICY_CAT_DIVIDE;
+		return POLICY_CAT_NONE;
+	}
+	return POLICY_CAT_NONE;
 }
 
 /* Build the `@implements` map from every decl's `@implements(<dev>.<req>, …)` decorator: each
@@ -6136,6 +6357,7 @@ static void analyze_program_core(SemanticContext *ctx) {
 	sem_check_device_impl_decls(ctx);
 	sem_check_datasheet_decls(ctx);
 	sem_check_raw_pool_lint(ctx);   /* W0017: advise handles for unprovable pool-column indexing */
+	sem_check_policies(ctx);        /* E0097-99/E0124/W0018: failure-policy validation at index/slice ops */
 
 	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The
 	 * two kinds are still distinct (keyword, `-> T` vs out-list, call form), but the name namespace
@@ -6645,6 +6867,7 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 	DeclSummary *ds = calloc(1, sizeof(DeclSummary));
 	ds->kind = kind;
 	ds->is_policy = (fk == SN_POLICY_EXPR); /* a `policy` form — invoked via `!name`, never called */
+	ds->policy_category = ds->is_policy ? syntax_policy_category(dv) : POLICY_CAT_NONE;
 	ds->static_kind = -1; /* mirror decl_summary_from: static_kind=-1 for all; pool_count/value_kind stay 0 */
 	ds->loc = sem_node_loc(dv.node);
 	ds->node = dv;

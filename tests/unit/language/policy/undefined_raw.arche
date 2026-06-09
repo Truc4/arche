@@ -1,0 +1,15 @@
+// `!undefined` opts out of all runtime safety: a raw access, no bounds code emitted (UB if actually
+// out of range — the escape hatch, forbidden under --no-undefined). Here the indices are in range,
+// so the raw reads/writes are well-defined and observable.
+// RUN: %arche build -o %t %s && %t | grep -qF "u=12 after=55"
+#import { fmt }
+
+main :: proc() {
+  a: int[4];
+  a[0] = 10; a[2] = 12;
+  i := 2;
+  u := a[i] !undefined;   // raw read (in range)
+  j := 3;
+  a[j] !undefined = 55;   // raw write (in range)
+  fmt.printf("u=%d after=%d\n", u, a[3]);
+}

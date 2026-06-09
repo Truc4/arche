@@ -1,0 +1,14 @@
+// `--no-abort` accepts a program where every fallible op is total: it builds AND runs to completion.
+// RUN: %arche build --no-abort -o %t %s && %t | grep -qF "ok=13"
+#import { fmt }
+@policy(bounds) clamp :: policy(len: int, i: int) -> int {
+  if (i < 0) { return 0; }
+  if (i >= len) { return len - 1; }
+  return i;
+}
+main :: proc() {
+  a: int[4];
+  a[3] = 13;
+  i := 99;
+  fmt.printf("ok=%d\n", a[i] !clamp);   // total -> accepted, clamps to a[3]
+}

@@ -105,6 +105,12 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	/* Purity */
 	[SEM_DIAG_func_not_pure]                 = { "E0090", "func_not_pure",                 CLASS_ERROR, 1 },
 	[SEM_DIAG_insert_delete_outlist]         = { "E0096", "insert_delete_outlist",         CLASS_ERROR, 1 },
+	[SEM_DIAG_policy_provable_oob]           = { "E0097", "policy_provable_oob",           CLASS_ERROR, 1 },
+	[SEM_DIAG_policy_func_aborts]            = { "E0098", "policy_func_aborts",            CLASS_ERROR, 1 },
+	[SEM_DIAG_policy_unknown]                = { "E0099", "policy_unknown",                CLASS_ERROR, 1 },
+	[SEM_DIAG_policy_wrong_category]         = { "E0124", "policy_wrong_category",         CLASS_ERROR, 1 },
+	[SEM_DIAG_policy_abort_forbidden]        = { "E0125", "policy_abort_forbidden",        CLASS_ERROR, 1 },
+	[SEM_DIAG_policy_undefined_forbidden]    = { "E0126", "policy_undefined_forbidden",    CLASS_ERROR, 1 },
 
 	/* Assignment targets */
 	[SEM_DIAG_assign_to_const]               = { "E0091", "assign_to_const",               CLASS_ERROR, 1 },
@@ -157,6 +163,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_unused_enum]                   = { "W0015", "unused_enum",                   CLASS_LINT, 1 },
 	[SEM_LINT_discarded_ok]                  = { "W0016", "discarded_ok",                  CLASS_LINT, 1 },
 	[SEM_LINT_raw_pool_index]                = { "W0017", "raw_pool_index",                CLASS_LINT, 1 },
+	[SEM_LINT_policy_on_safe_op]             = { "W0018", "policy_on_safe_op",             CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -708,6 +715,39 @@ SemDiag *sem_emit_insert_delete_outlist(SemanticContext *ctx, SourceLoc loc, con
 	                 form);
 }
 
+/* --- Failure policies --- */
+SemDiag *sem_emit_policy_provable_oob(SemanticContext *ctx, SourceLoc loc, const char *base, int idx, int len) {
+	return sem_emit_(ctx, SEM_DIAG_policy_provable_oob, loc,
+	                 "'%s[%d]' is provably out of bounds (length %d) — a statically-wrong access, not something a "
+	                 "policy can fix; fix the index",
+	                 base, idx, len);
+}
+SemDiag *sem_emit_policy_func_aborts(SemanticContext *ctx, SourceLoc loc, const char *func) {
+	return sem_emit_(ctx, SEM_DIAG_policy_func_aborts, loc,
+	                 "`!abort` is not allowed in func '%s' — a func can never crash; use a total policy "
+	                 "(e.g. `!clamp`, `!zero`) or `!undefined`",
+	                 func);
+}
+SemDiag *sem_emit_policy_unknown(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_policy_unknown, loc,
+	                 "unknown policy `!%s` — not a built-in (abort, undefined, zero) nor a visible `policy` decl", name);
+}
+SemDiag *sem_emit_policy_wrong_category(SemanticContext *ctx, SourceLoc loc, const char *name, const char *want,
+                                        const char *got) {
+	return sem_emit_(ctx, SEM_DIAG_policy_wrong_category, loc,
+	                 "policy `!%s` is a @policy(%s) — this site needs a @policy(%s) policy", name, got, want);
+}
+SemDiag *sem_emit_policy_abort_forbidden(SemanticContext *ctx, SourceLoc loc, const char *which, const char *flag) {
+	return sem_emit_(ctx, SEM_DIAG_policy_abort_forbidden, loc,
+	                 "%s can abort, but %s forbids it — annotate a total policy (`!clamp`, `!zero`) or `!undefined`",
+	                 which, flag);
+}
+SemDiag *sem_emit_policy_undefined_forbidden(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_DIAG_policy_undefined_forbidden, loc,
+	                 "`!undefined` opts out of all runtime safety, but --no-undefined forbids it — use a checked "
+	                 "total policy (`!clamp`, `!zero`) instead");
+}
+
 /* --- Assignment targets --- */
 
 SemDiag *sem_emit_assign_to_const(SemanticContext *ctx, SourceLoc loc, const char *name) {
@@ -897,4 +937,10 @@ SemDiag *sem_emit_lint_raw_pool_index(SemanticContext *ctx, SourceLoc loc, const
 	                 "guaranteed; prefer a generation-checked handle (insert/delete), bound the index by "
 	                 "`%s.length`, or @allow(raw_pool_index)",
 	                 arch, arch);
+}
+SemDiag *sem_emit_lint_policy_on_safe_op(SemanticContext *ctx, SourceLoc loc, const char *name, const char *base) {
+	return sem_emit_(ctx, SEM_LINT_policy_on_safe_op, loc,
+	                 "policy `!%s` on '%s' is dead — the access is provably in bounds, so it can never fail; "
+	                 "drop the policy or @allow(policy_on_safe_op)",
+	                 name, base);
 }

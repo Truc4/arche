@@ -399,20 +399,58 @@ drag_factor :: func(x: float) -> float {
 - `proc`: "do this, writing the results into these places" - `divmod(17, 5)(q:, r:)`
 - `sys`: "run this on _any data shaped like this_" - `run step;`
 
-## Totality and panics (`proc!`)
+## Totality and failure policies (`!policy`)
 
-A plain `proc` and every `func` are **total**: a call cannot panic (abort). The one way to opt into
-panic-capability is the **`proc!`** form:
+Most arche operations are total by construction (proven indexing, ok-valued insert). The few that
+can still fail at runtime — an out-of-bounds index, a slice past the end, a divide-by-zero — resolve
+that failure **locally, at the site**, with a *failure policy* written `expr !policy`:
 
 ```arche
-risky :: proc!(…)(…) { … }   // may panic (hit an unhandled abort site)
-safe  :: proc (…)(…) { … }   // total — proven not to panic
+v := samples[k] !clamp;   // out-of-range index → clamped into [0, len)
+grid[x] !clamp = c;       // the write form attaches the policy to the indexed lvalue
+n := total[i] !zero;      // out-of-range read → 0; an out-of-range write is dropped
+raw := buf[j] !undefined; // opt out of all runtime safety: raw access, no check (UB if OOB)
+crash := buf[j] !abort;   // the ONLY policy that can crash — a visible, deliberate abort site
 ```
 
-Panic-capability is **contagious and statically enforced**: a plain `proc`/`func` that calls a
-`proc!` is a compile error (`E0095`) — mark it `proc!` too, or remove the panicking call. `func` is
-always total, so there is no `func!`. (`extern`/FFI procs are outside the system — a foreign C
-boundary is trusted, not panic-tracked.)
+**Only `!abort` can ever abort at runtime.** Every other policy (`!clamp`, `!zero`, `!undefined`, a
+user policy, or the `(ok:)` report form) is *total* — it can never crash. This makes the guarantee
+sharp and per-site rather than smeared over a whole proc:
+
+- A **`func` is total by construction** — it can never crash. An explicit `!abort` inside a func is a
+  compile error (`E0098`); an unannotated fallible op in a func defaults to a total policy (`!clamp`).
+- A **`proc`** may crash, but only at an `!abort` — implicit (the proc default for an unannotated
+  fallible op) or explicit. The implicit default is surfaced as an editor inlay so it's never a surprise.
+
+The bounds prover decides the rest: a **provably-safe** access needs no policy (an explicit one is
+the dead-policy lint `W0018`); a **provably out-of-bounds** constant access is a compile error
+(`E0097`) regardless of any policy — a statically-wrong index is a bug, not a runtime case. So a
+policy attaches only to the ops whose safety the compiler can't decide.
+
+Policies are ordinary, user-definable `policy` decls tagged by category; `core` ships the common ones
+(`clamp`, `wrap`). `clamp`/`wrap`/`zero`/`abort`/`undefined` carry no special compiler status beyond
+the three intrinsics (`abort`, `undefined`, `zero`):
+
+```arche
+@policy(bounds) clamp :: policy(len: int, i: int) -> int {   // returns the index to use; the
+  if (i < 0) { return 0; }                                   // compiler clamps the result into
+  if (i >= len) { return len - 1; }                          // [0, len) as a final net, so no
+  return i;                                                  // policy can ever cause an OOB
+}
+```
+
+### Crash-free builds
+
+Because `!abort` is the only crash source, crash-freedom is assertable for a whole build:
+
+- `--no-abort` — any op resolving to `!abort` (implicit **or** explicit) is a compile error: the
+  binary provably cannot abort from a policy site.
+- `--no-implicit-abort` — only the *implicit/default* `!abort` errors, so every fallible op must be
+  explicitly annotated (a deliberate, visible `!abort` is still allowed).
+- `--no-undefined` — rejects the unsafe `!undefined` opt-out, for safety-critical builds.
+
+(These apply to your code; the bundled core/stdlib are exempt. `extern`/FFI procs are outside the
+system — a foreign C boundary is trusted, not policy-tracked.)
 
 ### Errors as values: `insert` / `delete`
 
@@ -427,9 +465,9 @@ delete(h)(ok:);                          // ok: 0 on generation exhaustion
 ```
 
 Use `_` to discard either out (`insert(P, …)(_:, _:)`). The legacy value form (`h := insert(…)`,
-`i32(insert(…))`) is gone (`E0096`). `insert` is **total** (overflow → `ok = 0`). `delete` is
-inherently **`proc!`**: a *stale* handle (use-after-free) is a bug and still aborts — only generation
-exhaustion (a resource limit) is reported via `ok` — so any `delete` makes its caller `proc!`.
+`i32(insert(…))`) is gone (`E0096`). `insert` is **total** (overflow → `ok = 0`). `delete`'s default
+is `!abort`: a *stale* handle (use-after-free) is a bug and aborts. `delete(h)(ok:)` reports
+generation exhaustion (a resource limit) via `ok` instead.
 
 ## Enums and `match`
 

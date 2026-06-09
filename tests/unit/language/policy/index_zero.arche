@@ -1,0 +1,20 @@
+// `!zero` (an intrinsic bounds policy): a read of an out-of-range index yields the element zero; a
+// write to an out-of-range index is silently dropped. In range, both behave normally. Indices are
+// runtime values (a literal OOB would be a compile error, E0097).
+// RUN: %arche build -o %t %s && %t | grep -qF "zoob=0 zin=12 w_oob=13 w_in=77"
+#import { fmt }
+
+main :: proc() {
+  a: int[4];
+  a[0] = 10; a[1] = 11; a[2] = 12; a[3] = 13;
+  oob := 9;
+  ix := 2;
+  zoob := a[oob] !zero;   // OOB read -> 0
+  zin := a[ix] !zero;     // in range -> 12
+
+  wo := 9;
+  a[wo] !zero = 999;      // OOB write dropped (a[3] stays 13)
+  wi := 1;
+  a[wi] !zero = 77;       // in-range write applied
+  fmt.printf("zoob=%d zin=%d w_oob=%d w_in=%d\n", zoob, zin, a[3], a[1]);
+}

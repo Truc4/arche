@@ -1,0 +1,8 @@
+// A negative literal index is just as provably out of bounds as a too-large one — E0097. `a[-7]`
+// parses as unary-minus on the literal 7; the prover folds it to the constant -7 and rejects it.
+// (`a[0 - 7]` is a real binary expr — no constant folding — so it stays a runtime index, not this.)
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "provably out of bounds\|E0097" %t.out
+main :: proc() {
+  a: int[4];
+  a[-7] = 1;   // negative literal -> provably OOB, E0097
+}

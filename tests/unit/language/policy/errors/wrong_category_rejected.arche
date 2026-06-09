@@ -1,0 +1,9 @@
+// A policy's `@policy(category)` must match the op it's used on: a @policy(divide) policy on an index
+// (a bounds site) is E0124. The category — not the (int,int)->int signature — disambiguates.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "needs a @policy(bounds)\|E0124" %t.out
+@policy(divide) dz :: policy(a: int, b: int) -> int { return 0; }
+main :: proc() {
+  a: int[4];
+  i := 9;
+  x := a[i] !dz;   // divide policy on a bounds site -> E0124
+}

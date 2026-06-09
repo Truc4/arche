@@ -1,0 +1,14 @@
+// THE GUARANTEE (inverse of *_array_oob): a program with NO `!abort` that triggers OOB reads AND
+// writes through `!zero` runs to completion (exit 0) — `!zero` is total. OOB reads yield 0, OOB
+// writes are dropped; the program exits cleanly.
+// RUN: %arche build -o %t %s && %t
+main :: proc() {
+  a: int[4];
+  a[0] = 1;
+  s := 0;
+  i := 99;
+  j := 0 - 7;
+  s = s + a[i] !zero;   // OOB read -> 0
+  s = s + a[j] !zero;   // negative runtime index -> 0
+  a[i] !zero = 5;       // OOB write -> dropped
+}
