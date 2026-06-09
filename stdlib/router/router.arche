@@ -79,7 +79,11 @@ add :: proc(pattern: char[], handler_id: int) {
       tstart = s + 1;
     }
 
-    // Find an existing child of `cur` matching this segment.
+    // Find an existing child of `cur` matching this segment. Registration is the COLD path, and
+    // `new_node` can fail on a full pool (returning an invalid slot), so these accesses keep the
+    // implicit `!abort` default — a bad slot is a clean, visible crash, never a raw out-of-bounds
+    // write. (The check is free here and never fires for a slot from a good insert; no annotation
+    // needed since `!abort` is the proc default.)
     found := 0 - 1;
     child := TrieNode.first_child[cur];
     for (; child >= 0;) {
@@ -150,16 +154,19 @@ resolve :: proc(path: char[])(handler_id: int) {
   for (; s < n;) {
     e := seg_end(path, s, n);
 
-    // Scan children: remember a static match, a param child, a catchall child.
+    // Scan children: remember a static match, a param child, a catchall child. Resolution is the HOT
+    // path (per request) and every slot here is a link that `add` already validated at build time —
+    // the trie is append-only and consistent — so these reads carry `!undefined`: a deliberate,
+    // visible opt-out of the bounds check (the slot is in-bounds by construction; trust it for speed).
     static_hit   := 0 - 1;
     param_hit    := 0 - 1;
     catchall_hit := 0 - 1;
-    child        := TrieNode.first_child[cur];
+    child        := TrieNode.first_child[cur] !undefined;
     for (; child >= 0;) {
-      k := TrieNode.kind[child];
+      k := TrieNode.kind[child] !undefined;
       if (k == nodeKind.kstatic) {
-        cs := TrieNode.seg[child];
-        if (seg_eq(cs, TrieNode.seg_len[child], path, s, e) == 1) {
+        cs := TrieNode.seg[child] !undefined;
+        if (seg_eq(cs, TrieNode.seg_len[child] !undefined, path, s, e) == 1) {
           static_hit = child;
         }
       }
@@ -169,7 +176,7 @@ resolve :: proc(path: char[])(handler_id: int) {
       if (k == nodeKind.kcatchall) {
         catchall_hit = child;
       }
-      child = TrieNode.next_sibling[child];
+      child = TrieNode.next_sibling[child] !undefined;
     }
 
     // Precedence: static > param > catchall.
@@ -187,7 +194,7 @@ resolve :: proc(path: char[])(handler_id: int) {
 
     // param captures one segment; catchall captures the rest of the path. Both just record a
     // span — no buffers, no per-slot branching (cap arrays are indexed by the count).
-    ck := TrieNode.kind[chosen];
+    ck := TrieNode.kind[chosen] !undefined;
     if (ck == nodeKind.kstatic) {
       cur = chosen;
       s   = e + 1;

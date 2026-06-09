@@ -135,4 +135,9 @@ void semantic_set_no_abort(int on);
 void semantic_set_no_implicit_abort(int on);
 void semantic_set_no_undefined(int on);
 
+/* `-Werror` (bare): promote every enabled lint to a hard error. */
+void semantic_set_all_lints_werror(int werror);
+/* `--forbid-allow`: any `@allow(...)` in user code is a hard error (no lint escape hatches). */
+void semantic_set_forbid_allow(int on);
+
 #endif /* SEMANTIC_H */

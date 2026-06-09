@@ -3663,9 +3663,11 @@ static const char *policy_cat_name(PolicyCategory c) {
 static int g_no_abort = 0;
 static int g_no_implicit_abort = 0;
 static int g_no_undefined = 0;
+static int g_forbid_allow = 0;
 void semantic_set_no_abort(int on) { g_no_abort = on; }
 void semantic_set_no_implicit_abort(int on) { g_no_implicit_abort = on; }
 void semantic_set_no_undefined(int on) { g_no_undefined = on; }
+void semantic_set_forbid_allow(int on) { g_forbid_allow = on; }
 
 /* The crash-free flags assert the USER's code is total — they don't fire on the bundled core/stdlib
  * (which aren't policy-annotated) nor on the prepended prelude text (origin ENTRY, but above the
@@ -3779,7 +3781,10 @@ static const char *bnd_check_expr(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 	/* W0017 (lint mode only): a pool-column index `Arch.field[i]` whose `i` isn't proven in-bounds
 	 * (constant, or `i < Arch.length/.count`). Advisory — prefer handles. Not gated (columns are the
 	 * trusted bulk model), so this only warns, never forces `proc!`. */
-	if (e->lint_columns && sv_kind(v) == SN_INDEX_EXPR && sv_count(v, SN_FIELD_NAME) > 0) {
+	if (e->lint_columns && sv_kind(v) == SN_INDEX_EXPR && sv_count(v, SN_FIELD_NAME) > 0 &&
+	    !sv_present(sv_child(v, SN_POLICY_REF))) {
+		/* An explicit `!policy` (e.g. `Arch.f[i] !undefined`) IS the acknowledgment W0017 asks for —
+		 * the failure behavior is declared at the site, so don't also warn about the raw slot. */
 		char *root = sv_resolved_name(ctx, v);
 		if (root && find_archetype(ctx, root)) {
 			SyntaxView idx = sem_node_at_expr(v, 0);
@@ -3793,6 +3798,14 @@ static const char *bnd_check_expr(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 			if (!ok)
 				sem_emit_lint_raw_pool_index(ctx, sem_node_loc(v.node), root);
 		}
+		free(root);
+	}
+	/* Failure-policy validation on a pool-column index (`Arch.f[i] !policy`): no static count, so just
+	 * validate the explicit policy name (intrinsic / bounds policy / func-`!abort` / flag enforcement). */
+	if (e->check_policies && sv_kind(v) == SN_INDEX_EXPR && sv_count(v, SN_FIELD_NAME) > 0) {
+		char *root = sv_resolved_name(ctx, v);
+		if (root && find_archetype(ctx, root))
+			bnd_policy_check(ctx, d, e, v, 0, root, 0, -1);
 		free(root);
 	}
 	if (sv_kind(v) == SN_INDEX_EXPR && sv_count(v, SN_FIELD_NAME) == 0) {
@@ -3996,11 +4009,33 @@ static void sem_check_raw_pool_lint(SemanticContext *ctx) {
 		e.local_count = 0;
 		e.lint_columns = 1;
 		e.check_policies = 0;
+		/* This pass runs after analyze cleared active_allow_slugs, so re-arm the decl's @allow set
+		 * around the walk — otherwise a `@allow(raw_pool_index)` on the decl is silently ignored (the
+		 * lint's documented escape hatch). Mirrors the dead-code pass above. */
+		ctx->active_allow_slugs = d->allow_slugs;
+		ctx->active_allow_slug_count = d->allow_slug_count;
 		for (int i = 0, n = sem_stmt_count(d->body_node); i < n; i++)
 			bnd_check_stmt(ctx, d, sem_stmt_at(d->body_node, i), &e); /* return ignored; emits lints */
+		ctx->active_allow_slugs = NULL;
+		ctx->active_allow_slug_count = 0;
 		bnd_env_truncate(&e, 0);
 		for (int i = 0; i < e.local_count; i++)
 			free(e.locals[i].name);
+	}
+}
+
+/* `--forbid-allow`: a strict build that tolerates no lint escape hatches in the user's own code —
+ * every `@allow(<slug>)` is a hard error (E0127). Scoped to user code (not the bundled core/stdlib),
+ * like the crash-free flags. Fix the underlying lint, don't suppress it. */
+static void sem_check_forbid_allow(SemanticContext *ctx) {
+	if (!g_forbid_allow)
+		return;
+	for (int di = 0; di < ctx->decl_count; di++) {
+		DeclSummary *d = ctx->decls[di];
+		if (!decl_is_user_code(d))
+			continue;
+		for (int i = 0; i < d->allow_slug_count; i++)
+			sem_emit_allow_forbidden(ctx, d->loc, d->allow_slugs[i]);
 	}
 }
 
@@ -6358,6 +6393,7 @@ static void analyze_program_core(SemanticContext *ctx) {
 	sem_check_datasheet_decls(ctx);
 	sem_check_raw_pool_lint(ctx);   /* W0017: advise handles for unprovable pool-column indexing */
 	sem_check_policies(ctx);        /* E0097-99/E0124/W0018: failure-policy validation at index/slice ops */
+	sem_check_forbid_allow(ctx);    /* E0127: --forbid-allow rejects @allow(...) in user code */
 
 	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The
 	 * two kinds are still distinct (keyword, `-> T` vs out-list, call form), but the name namespace

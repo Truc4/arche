@@ -1,0 +1,6 @@
+// `--forbid-allow`: a strict build rejects any `@allow(...)` lint escape hatch in your own code
+// (E0127). Fix the underlying lint instead of suppressing it — no escape hatches.
+// RUN: %arche build --forbid-allow -o %t %s > %t.out 2>&1 ; grep -qi "forbidden under --forbid-allow\|E0127" %t.out
+@allow(unused_function)
+helper :: func(x: int) -> int { return x; }
+main :: proc() {}

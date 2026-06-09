@@ -1,0 +1,13 @@
+// `--unchecked`: a trusted/embedded build strips the IMPLICIT bounds checks — an unannotated OOB
+// index that would `!abort` instead runs raw (`!undefined`). The program reaches completion (exit 0)
+// where a normal build would abort. (Explicit policies are still honored; this only drops the
+// implicit default checks.)
+// RUN: %arche build --unchecked -o %t %s && %t | grep -qF "ran=1"
+#import { fmt }
+main :: proc() {
+  a: int[4];
+  a[0] = 11;
+  i := 9;
+  x := a[i] + 1;   // would abort on a normal build; --unchecked -> raw, no abort
+  fmt.printf("ran=1\n");
+}

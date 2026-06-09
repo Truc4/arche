@@ -643,13 +643,10 @@ static int policy_idx_is_const(SyntaxView n) {
 /* Inlay the IMPLICIT failure policy at a fallible index/slice op: render the ghost default
  * (`!abort` in a proc, `!clamp` in a func) right after the op. Only the implicit case — an explicit
  * `!name` is already in the source. Skipped for a constant index (resolved at compile time, no
- * runtime policy) and for pool-column indexing (`Arch.field[i]`, field_count>0). */
+ * runtime policy). Applies to value arrays, slices, AND pool-column indexing (`Arch.field[i]`). */
 static void emit_policy_hint(SyntaxView op, int in_func) {
 	if (sv_present(sv_child(op, SN_POLICY_REF)))
 		return; /* explicit policy already visible in source */
-	int is_slice = (sv_kind(op) == SN_SLICE_EXPR);
-	if (!is_slice && sv_count(op, SN_FIELD_NAME) > 0)
-		return; /* pool column — not in the value-array policy model */
 	/* fallible only: at least one bound (index, or a slice lo/hi) is a non-constant expression */
 	int fallible = 0;
 	for (int i = 0; i < op.node->child_count; i++) {

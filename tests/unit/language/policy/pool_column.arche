@@ -1,0 +1,25 @@
+// Failure policies apply to POOL-COLUMN indexing (`Arch.field[i]`), not just value arrays/slices.
+// `!undefined` reads raw (no check), `!abort` (the proc default) bounds-checks against the live count,
+// `!clamp` remaps an OOB index into [0, count), `!zero` returns 0 on an OOB read / drops an OOB write.
+// An explicit policy also silences the (now default-off) raw_pool_index lint — it IS the acknowledgment.
+// RUN: %arche build -o %t %s && %t | grep -qF "undef=20 clamp=20 zero=0 w1=99 w_drop=10"
+#import { fmt }
+@policy(bounds) clamp :: policy(len: int, i: int) -> int {
+  if (i < 0) { return 0; }
+  if (i >= len) { return len - 1; }
+  return i;
+}
+P :: arche { v :: int }
+P[8]
+main :: proc() {
+  insert(P, 10)(h0:, ok0:);
+  insert(P, 20)(h1:, ok1:);   // live count is 2: slots 0,1
+  ix := 1;
+  oob := 5;
+  u := P.v[ix] !undefined;    // raw, in range -> 20
+  c := P.v[oob] !clamp;       // OOB -> clamp into [0,2) -> slot 1 -> 20
+  z := P.v[oob] !zero;        // OOB -> 0
+  P.v[ix] !clamp = 99;        // in range -> slot 1 = 99
+  P.v[oob] !zero = 777;       // OOB write -> dropped
+  fmt.printf("undef=%d clamp=%d zero=%d w1=%d w_drop=%d\n", u, c, z, P.v[1] !undefined, P.v[0] !undefined);
+}

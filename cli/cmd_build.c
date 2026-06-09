@@ -1,3 +1,4 @@
+#include "../codegen/codegen.h"
 #include "../compile/compile.h"
 #include "../semantic/semantic.h"
 #include "args.h"
@@ -20,6 +21,8 @@ enum {
 	B_NO_ABORT,
 	B_NO_IMPLICIT_ABORT,
 	B_NO_UNDEFINED,
+	B_FORBID_ALLOW,
+	B_UNCHECKED,
 };
 
 /* Flag table = parsing + `--help`, one source of truth. The `-Wno-*` / `-Werror[=...]` spellings are
@@ -35,7 +38,11 @@ static const ArgSpec k_build_specs[] = {
     {B_WERR_PCBF, "-Werror=proc-could-be-func", ARG_FLAG, 0, 0, NULL,
      "promote the proc-could-be-func lint to an error"},
     {B_WERR_PNE, "-Werror=proc-no-effect", ARG_FLAG, 0, 0, NULL, "promote the proc-no-effect lint to an error"},
-    {B_WERR, "-Werror", ARG_FLAG, 0, 0, NULL, "promote all lints to errors"},
+    {B_WERR, "-Werror", ARG_FLAG, 0, 0, NULL, "promote all (enabled) lints to errors"},
+    {B_FORBID_ALLOW, "--forbid-allow", ARG_FLAG, 0, 0, NULL,
+     "reject any `@allow(...)` lint escape hatch in your code"},
+    {B_UNCHECKED, "--unchecked", ARG_FLAG, 0, 0, NULL,
+     "trusted/embedded build: strip implicit bounds checks (unannotated fallible ops become !undefined)"},
     {B_NO_ABORT, "--no-abort", ARG_FLAG, 0, 0, NULL,
      "crash-free build: reject any op resolving to `!abort` (implicit or explicit)"},
     {B_NO_IMPLICIT_ABORT, "--no-implicit-abort", ARG_FLAG, 0, 0, NULL,
@@ -88,11 +95,16 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 	}
 	semantic_set_lint_proc_could_be_func(pcbf_en, pcbf_we);
 	semantic_set_lint_proc_no_effect(pne_en, pne_we);
+	/* Bare `-Werror`: promote EVERY enabled lint to an error (not just the two named above). */
+	if (args_has(&p, B_WERR))
+		semantic_set_all_lints_werror(1);
 
-	/* Crash-free enforcement (failure policies). */
+	/* Crash-free enforcement (failure policies) + escape-hatch ban. */
 	semantic_set_no_abort(args_has(&p, B_NO_ABORT));
 	semantic_set_no_implicit_abort(args_has(&p, B_NO_IMPLICIT_ABORT));
 	semantic_set_no_undefined(args_has(&p, B_NO_UNDEFINED));
+	semantic_set_forbid_allow(args_has(&p, B_FORBID_ALLOW));
+	codegen_set_unchecked(args_has(&p, B_UNCHECKED));
 
 	if (p.pos_count == 0) {
 		fprintf(stderr, "%s: no input file\n", g_prog);

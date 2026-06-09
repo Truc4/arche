@@ -111,6 +111,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_policy_wrong_category]         = { "E0124", "policy_wrong_category",         CLASS_ERROR, 1 },
 	[SEM_DIAG_policy_abort_forbidden]        = { "E0125", "policy_abort_forbidden",        CLASS_ERROR, 1 },
 	[SEM_DIAG_policy_undefined_forbidden]    = { "E0126", "policy_undefined_forbidden",    CLASS_ERROR, 1 },
+	[SEM_DIAG_allow_forbidden]               = { "E0127", "allow_forbidden",               CLASS_ERROR, 1 },
 
 	/* Assignment targets */
 	[SEM_DIAG_assign_to_const]               = { "E0091", "assign_to_const",               CLASS_ERROR, 1 },
@@ -162,7 +163,11 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_unused_static_const]           = { "W0014", "unused_static_const",           CLASS_LINT, 1 },
 	[SEM_LINT_unused_enum]                   = { "W0015", "unused_enum",                   CLASS_LINT, 1 },
 	[SEM_LINT_discarded_ok]                  = { "W0016", "discarded_ok",                  CLASS_LINT, 1 },
-	[SEM_LINT_raw_pool_index]                = { "W0017", "raw_pool_index",                CLASS_LINT, 1 },
+	/* W0017 default-OFF: superseded by the failure-policy model. Every fallible pool-column index now
+	 * resolves to a policy — the implicit `!abort` proc default (a clean, bounds-checked crash, not raw
+	 * corruption) or an explicit `!undefined`/`!clamp`/`!zero`/`!name`. "raw, unguarded slot" is no
+	 * longer the default, so the blanket warning was noise. Opt back in with -Wraw-pool-index. */
+	[SEM_LINT_raw_pool_index]                = { "W0017", "raw_pool_index",                CLASS_LINT, 0 },
 	[SEM_LINT_policy_on_safe_op]             = { "W0018", "policy_on_safe_op",             CLASS_LINT, 1 },
 };
 /* clang-format on */
@@ -406,6 +411,15 @@ void semantic_set_lint_proc_no_effect(int enabled, int werror) {
 }
 void semantic_set_lint_func_impure(int enabled, int werror) {
 	semantic_set_diag(SEM_LINT_func_impure, enabled, werror);
+}
+
+/* `-Werror` (no `=slug`): promote EVERY currently-enabled lint to a hard error. Does NOT re-enable a
+ * default-off lint (a disabled lint never fires, so there's nothing to promote) — matches gcc/clang. */
+void semantic_set_all_lints_werror(int werror) {
+	ensure_init();
+	for (int i = 0; i < SEM_DIAG_KIND_COUNT; i++)
+		if (g_table[i].class == CLASS_LINT)
+			g_werror[i] = werror ? 1 : 0;
 }
 
 /* ========== Typed wrappers ==========
@@ -746,6 +760,12 @@ SemDiag *sem_emit_policy_undefined_forbidden(SemanticContext *ctx, SourceLoc loc
 	return sem_emit_(ctx, SEM_DIAG_policy_undefined_forbidden, loc,
 	                 "`!undefined` opts out of all runtime safety, but --no-undefined forbids it — use a checked "
 	                 "total policy (`!clamp`, `!zero`) instead");
+}
+SemDiag *sem_emit_allow_forbidden(SemanticContext *ctx, SourceLoc loc, const char *slug) {
+	return sem_emit_(ctx, SEM_DIAG_allow_forbidden, loc,
+	                 "`@allow(%s)` is forbidden under --forbid-allow — fix the underlying issue instead of "
+	                 "suppressing the lint",
+	                 slug);
 }
 
 /* --- Assignment targets --- */

@@ -125,6 +125,7 @@ typedef enum {
 	SEM_DIAG_policy_wrong_category, /* `!name` resolves to a policy of the wrong @policy(category) */
 	SEM_DIAG_policy_abort_forbidden,     /* an op resolves to `!abort` under --no-abort / --no-implicit-abort */
 	SEM_DIAG_policy_undefined_forbidden, /* an `!undefined` site under --no-undefined */
+	SEM_DIAG_allow_forbidden,            /* an `@allow(...)` decorator under --forbid-allow */
 
 	/* Assignment targets */
 	SEM_DIAG_assign_to_const,
@@ -316,6 +317,7 @@ SemDiag *sem_emit_policy_wrong_category(SemanticContext *ctx, SourceLoc loc, con
                                         const char *got);
 SemDiag *sem_emit_policy_abort_forbidden(SemanticContext *ctx, SourceLoc loc, const char *which, const char *flag);
 SemDiag *sem_emit_policy_undefined_forbidden(SemanticContext *ctx, SourceLoc loc);
+SemDiag *sem_emit_allow_forbidden(SemanticContext *ctx, SourceLoc loc, const char *slug);
 
 SemDiag *sem_emit_assign_to_const(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_assign_to_undeclared(SemanticContext *ctx, SourceLoc loc, const char *name);
