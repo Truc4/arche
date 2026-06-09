@@ -1,14 +1,13 @@
-// THE GUARANTEE (inverse of *_array_oob): a program with NO `!abort` that triggers OOB reads AND
-// writes through `!zero` runs to completion (exit 0) — `!zero` is total. OOB reads yield 0, OOB
-// writes are dropped; the program exits cleanly.
+// THE GUARANTEE (divide side): a program with NO `!abort` that deliberately divides by zero through
+// the total `!zero` policy runs to completion (exit 0). `n / d !zero` and `n % d !zero` substitute
+// (a=0, b=1) when the divisor is 0, so the raw op yields 0 and never traps. Inverse of a `!abort`
+// divide (which would crash on d==0). Runtime divisor — a literal 0 divisor would fold away.
 // RUN: %arche build -o %t %s && %t
-main :: proc() {
-  a: int[4];
-  a[0] = 1;
+main :: proc(argc: int) {
+  d := argc - argc;     // 0 at runtime, opaque to the constant folder
   s := 0;
-  i := 99;
-  j := 0 - 7;
-  s = s + a[i] !zero;   // OOB read -> 0
-  s = s + a[j] !zero;   // negative runtime index -> 0
-  a[i] !zero = 5;       // OOB write -> dropped
+  s = s + 10 / d !zero; // divide by zero -> 0
+  s = s + 10 % d !zero; // modulo by zero -> 0
+  n := 7;
+  s = s + n / d !zero;  // -> 0
 }

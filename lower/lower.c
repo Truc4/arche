@@ -1681,6 +1681,37 @@ static int syntax_decl_has_intrinsic_decorator(SyntaxView d) {
 	return 0;
 }
 
+/* The op category a `policy` decl serves, from `@policy(<category>)`: 1=bounds, 2=pool, 3=divide, 0=none.
+ * `policy` lexes as TOK_POLICY (a keyword), so the sequence is `@ policy ( <cat> )`. */
+static int syntax_decl_policy_category(SyntaxView d) {
+	if (!sv_present(d))
+		return 0;
+	int n = d.node->child_count;
+	for (int i = 0; i + 4 < n; i++) {
+		const SyntaxElem *at = &d.node->children[i];
+		const SyntaxElem *kw = &d.node->children[i + 1];
+		const SyntaxElem *lp = &d.node->children[i + 2];
+		const SyntaxElem *cat = &d.node->children[i + 3];
+		const SyntaxElem *rp = &d.node->children[i + 4];
+		if (at->tag != SE_TOKEN || at->as.token.kind != TOK_AT || kw->tag != SE_TOKEN ||
+		    kw->as.token.kind != TOK_POLICY)
+			continue;
+		if (lp->tag != SE_TOKEN || lp->as.token.kind != TOK_LPAREN || cat->tag != SE_TOKEN ||
+		    cat->as.token.kind != TOK_IDENT || rp->tag != SE_TOKEN || rp->as.token.kind != TOK_RPAREN)
+			continue;
+		const char *p = d.src + cat->as.token.offset;
+		size_t len = cat->as.token.length;
+		if (len == 6 && memcmp(p, "bounds", 6) == 0)
+			return 1;
+		if (len == 4 && memcmp(p, "pool", 4) == 0)
+			return 2;
+		if (len == 6 && memcmp(p, "divide", 6) == 0)
+			return 3;
+		return 0;
+	}
+	return 0;
+}
+
 /* The policy named in `@default(<policy>)` on a decl (the IDENT inside the parens), owned, or NULL. */
 static char *syntax_decl_default_policy(SyntaxView d) {
 	if (!sv_present(d))
@@ -2153,8 +2184,10 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					 * at each fallible op site (operands bound as mutable locals), so it is never emitted
 					 * as its own LLVM function. Marked so codegen can find it and skip its emission. */
 					HirDecl *pf = lower_func_from(rhs, nm);
-					if (pf && pf->kind == HIR_DECL_FUNC && pf->data.func)
+					if (pf && pf->kind == HIR_DECL_FUNC && pf->data.func) {
 						pf->data.func->is_policy = 1;
+						pf->data.func->policy_category = syntax_decl_policy_category(d);
+					}
 					return pf;
 				}
 				case SN_SYS_EXPR:

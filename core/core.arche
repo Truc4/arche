@@ -43,10 +43,13 @@ streq :: func(a: char[], b: char[]) -> int {
   return 1;
 }
 
-// Terminate the program with `code` — libc `_exit`, the one irreducible primitive a failure policy
-// needs (to crash). `_exit` (not `exit`) keeps the global name distinct from a device's `os.exit`.
+// The primitives a failure policy needs to crash: libc `_exit` (terminate; `_exit` not `exit` keeps the
+// global name distinct from a device's `os.exit`) and `dprintf` (emit a diagnostic to a fd first —
+// `dprintf` over `write` so the symbol can't collide with `os.write` in the all-stdlib test harness;
+// the messages carry no `%`, so it is a plain fd-write). The `own` is the FFI rule for array params.
 #foreign {
   _exit :: proc(code: int)
+  dprintf :: proc(fd: int, own fmt: char[])(r: int)
 }
 
 // ===== failure policies =====
@@ -57,8 +60,10 @@ streq :: func(a: char[], b: char[]) -> int {
 // These are the common ones; users write their own (`@policy(bounds) my_clamp :: policy(len,i){…}`).
 
 @policy(bounds) abort :: policy(len: int, i: int) {
-  if (i < 0) { _exit(134); }
-  if (i >= len) { _exit(134); }
+  if (i < 0 || i >= len) {
+    dprintf(2, "arche: index out of bounds\n")(_:);
+    _exit(134);
+  }
 }
 
 @policy(bounds) clamp :: policy(len: int, i: int) {
@@ -75,11 +80,19 @@ streq :: func(a: char[], b: char[]) -> int {
 @policy(bounds) undefined :: policy(len: int, i: int) {
 }
 
-// Divide-by-zero policy: `n / d !zero` yields 0 when d==0 (set the operands so `n/d` = 0/1 = 0).
-// A different category (`divide`), so it binds (a, b) — the dividend and divisor.
+// Divide-by-zero policies — category `divide`, so they bind (a, b) = dividend, divisor. `abort` and
+// `undefined` share their names with the bounds policies above; the op's category selects which.
 @policy(divide) zero :: policy(a: int, b: int) {
   if (b == 0) {
     a = 0;
     b = 1;
   }
+}
+@policy(divide) abort :: policy(a: int, b: int) {
+  if (b == 0) {
+    dprintf(2, "arche: divide by zero\n")(_:);
+    _exit(134);
+  }
+}
+@policy(divide) undefined :: policy(a: int, b: int) {
 }

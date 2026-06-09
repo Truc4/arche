@@ -542,6 +542,19 @@ static DeclSummary *find_policy_sig(SemanticContext *ctx, const char *name) {
 	return NULL;
 }
 
+/* As find_policy_sig, but matching a specific op category — `abort`/`undefined` exist as both a bounds
+ * and a divide policy, so the category disambiguates which decl `!name` resolves to. */
+static DeclSummary *find_policy_sig_cat(SemanticContext *ctx, const char *name, PolicyCategory cat) {
+	if (!name)
+		return NULL;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->is_policy && d->policy_category == (int)cat && d->name && strcmp(d->name, name) == 0)
+			return d;
+	}
+	return NULL;
+}
+
 /* The compilation unit a reference originates in: the enclosing proc/func's owning unit (0 = entry). */
 static int sem_ref_unit(SemanticContext *ctx) {
 	if (ctx->current_proc)
@@ -3650,11 +3663,6 @@ static int bnd_lit_int_signed(SyntaxView v, int *out) {
 	return 1;
 }
 
-/* The three built-in (intrinsic) bounds policies — not user `policy` decls: `abort` (the only crash
- * source), `undefined` (raw access, no check — opt out of runtime safety), `zero` (read→0/skip-write). */
-static int policy_name_is_intrinsic(const char *name) {
-	return name && (strcmp(name, "abort") == 0 || strcmp(name, "undefined") == 0 || strcmp(name, "zero") == 0);
-}
 
 static const char *policy_cat_name(PolicyCategory c) {
 	switch (c) {
@@ -3692,6 +3700,33 @@ static int decl_is_user_code(DeclSummary *d) {
 	if (d->origin == DECL_ORIGIN_ENTRY && core_off > 0 && d->loc.line <= core_off)
 		return 0; /* prepended prelude */
 	return 1;
+}
+
+/* Validate an explicit `!name` against the op's category `want` (and the func-total / `--no-abort` /
+ * `--no-undefined` rules). `d` is the enclosing decl; `loc` the op site. Emits at most one diagnostic.
+ * Category, not signature, disambiguates: `abort`/`undefined` exist for both bounds and divide. */
+static void validate_explicit_policy(SemanticContext *ctx, DeclSummary *d, SourceLoc loc, const char *name,
+                                     PolicyCategory want) {
+	if (strcmp(name, "abort") == 0) {
+		if (d->kind == DECL_FUNC) {
+			sem_emit_policy_func_aborts(ctx, loc, d->name ? d->name : "<anon>");
+			return;
+		}
+		if (g_no_abort && decl_is_user_code(d)) {
+			sem_emit_policy_abort_forbidden(ctx, loc, "this `!abort`", "--no-abort");
+			return;
+		}
+	} else if (strcmp(name, "undefined") == 0 && g_no_undefined && decl_is_user_code(d)) {
+		sem_emit_policy_undefined_forbidden(ctx, loc);
+		return;
+	}
+	if (find_policy_sig_cat(ctx, name, want))
+		return; /* a policy of this name AND category exists — valid */
+	DeclSummary *any = find_policy_sig(ctx, name);
+	if (!any)
+		sem_emit_policy_unknown(ctx, loc, name);
+	else
+		sem_emit_policy_wrong_category(ctx, loc, name, policy_cat_name(want), policy_cat_name(any->policy_category));
 }
 
 /* Validate the failure policy on a single index/slice op. `kind`/`n` are as bnd_base_kind reports
@@ -3749,22 +3784,7 @@ static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, Sy
 		if (explicit_pol)
 			sem_emit_lint_policy_on_safe_op(ctx, loc, explicit_pol, base ? base : "?");
 	} else if (explicit_pol) { /* unprovable: an explicit policy governs the op — validate it */
-		if (policy_name_is_intrinsic(explicit_pol)) {
-			if (strcmp(explicit_pol, "abort") == 0) {
-				if (d->kind == DECL_FUNC)
-					sem_emit_policy_func_aborts(ctx, loc, d->name ? d->name : "<anon>");
-				else if (g_no_abort && decl_is_user_code(d))
-					sem_emit_policy_abort_forbidden(ctx, loc, "this `!abort`", "--no-abort");
-			} else if (strcmp(explicit_pol, "undefined") == 0 && g_no_undefined && decl_is_user_code(d)) {
-				sem_emit_policy_undefined_forbidden(ctx, loc);
-			}
-		} else {
-			DeclSummary *p = find_policy_sig(ctx, explicit_pol);
-			if (!p)
-				sem_emit_policy_unknown(ctx, loc, explicit_pol);
-			else if (p->policy_category != POLICY_CAT_NONE && p->policy_category != POLICY_CAT_BOUNDS)
-				sem_emit_policy_wrong_category(ctx, loc, explicit_pol, "bounds", policy_cat_name(p->policy_category));
-		}
+		validate_explicit_policy(ctx, d, loc, explicit_pol, POLICY_CAT_BOUNDS);
 	} else if (d->kind != DECL_FUNC && (g_no_abort || g_no_implicit_abort) && decl_is_user_code(d)) {
 		/* unprovable, unannotated, in a proc/sys → the implicit default is `!abort`. */
 		sem_emit_policy_abort_forbidden(ctx, loc, "this op's implicit `!abort`",
@@ -3790,6 +3810,22 @@ static const char *bnd_check_expr(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 		r = bnd_check_expr(ctx, d, sem_node_at_expr(v, 1), e);
 		bnd_env_truncate(e, saved);
 		return r;
+	}
+	/* Divide-by-zero policy validation: `a / b !name` / `a % b !name` — the policy must be @policy(divide).
+	 * (A divide is never statically OOB the way an index is, so there's only the category check.) */
+	if (e->check_policies && sv_kind(v) == SN_BINARY_EXPR) {
+		int bop = sem_binary_op(v);
+		if (bop == OP_DIV || bop == OP_MOD) {
+			SyntaxView pol = sv_child(v, SN_POLICY_REF);
+			if (sv_present(pol)) {
+				SynText t = sv_token(pol, TOK_IDENT);
+				if (t.ptr) {
+					char *nm = sem_txt_dup(t);
+					validate_explicit_policy(ctx, d, sem_node_loc(v.node), nm, POLICY_CAT_DIVIDE);
+					free(nm);
+				}
+			}
+		}
 	}
 	/* W0017 (lint mode only): a pool-column index `Arch.field[i]` whose `i` isn't proven in-bounds
 	 * (constant, or `i < Arch.length/.count`). Advisory — prefer handles. Not gated (columns are the
@@ -6425,6 +6461,11 @@ static void analyze_program_core(SemanticContext *ctx) {
 		for (int j = 0; j < i; j++) {
 			DeclSummary *dj = ctx->decls[j];
 			if ((dj->kind != DECL_FUNC && dj->kind != DECL_PROC) || dj->is_policy)
+				continue;
+			/* A stdlib symbol is module-qualified (`os.write`) — it never duplicates a global/core/user
+			 * name (core `write`, a user `write`) in real resolution; the two only appear flat together in
+			 * the all-stdlib codegen-test harness. Skip any pair involving a stdlib decl. */
+			if (di->origin == DECL_ORIGIN_STDLIB || dj->origin == DECL_ORIGIN_STDLIB)
 				continue;
 			if (dj->name && strcmp(dj->name, ni) == 0) {
 				sem_emit_duplicate_decl(ctx, di->loc, ki, ni);

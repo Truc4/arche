@@ -1262,12 +1262,13 @@ static HirFuncDecl *find_func_decl(CodegenContext *ctx, const char *name) {
 	return NULL;
 }
 
-/* A failure-policy decl by name (the `!name` namespace) — used by the inliner. Separate from
- * find_func_decl so a policy and a func may share a name. */
-static HirFuncDecl *find_policy_decl(CodegenContext *ctx, const char *name) {
+/* A failure-policy decl by name AND op category (1=bounds, 3=divide) — the `!name` namespace. Separate
+ * from find_func_decl so a policy and a func may share a name; category-keyed so `abort`/`undefined`
+ * can exist for both bounds and divide. */
+static HirFuncDecl *find_policy_decl(CodegenContext *ctx, const char *name, int category) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		HirDecl *decl = ctx->ast->decls[i];
-		if (decl->kind == HIR_DECL_FUNC && decl->data.func->is_policy &&
+		if (decl->kind == HIR_DECL_FUNC && decl->data.func->is_policy && decl->data.func->policy_category == category &&
 		    strcmp(decl->data.func->name, name) == 0)
 			return decl->data.func;
 	}
@@ -1830,9 +1831,11 @@ static int bounds_check_elidable(CodegenContext *ctx, const char *arch_name, Hir
 /* Failure-policy MACRO inliner: bind a policy's params to the op's operand SSAs as mutable locals,
  * inline its body (it mutates them / may exit()), read the operands back into `out`. A NULL/empty
  * policy leaves them unchanged ⇒ the raw op. Operands are i32 (`int`), per the policy signatures. */
-static void emit_policy_inline(CodegenContext *ctx, const char *name, const char **ops, int n, char out[][256]);
-/* The policy name to inline at an unannotated bounds op: explicit › --unchecked › func/proc baseline. */
-static const char *cg_policy_for(CodegenContext *ctx, const char *explicit_pol);
+static void emit_policy_inline(CodegenContext *ctx, const char *name, int category, const char **ops, int n,
+                               char out[][256]);
+/* The policy name to inline at an unannotated op (category 1=bounds, 3=divide): explicit › --unchecked
+ * › @default › func/proc baseline. */
+static const char *cg_policy_for(CodegenContext *ctx, const char *explicit_pol, int category);
 /* Apply an index op's failure policy in place. Determines the base length (compile-time N / pool live
  * count / slice runtime .len), and if the index is fallible-and-unprovable, inlines the resolved policy
  * over (len, i) — writing the resulting i64 index into `idx_buf` and pointing `*final_idx` at it. */
@@ -1902,7 +1905,7 @@ static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *l
 	 * bound into [0, N] and `abort` aborts when it exceeds N, exactly the slice semantics. lo<=hi is
 	 * then enforced (a sub-view can't have negative length). */
 	if (strcmp(base_len, "-1") != 0) { /* a `-1` base length = unknown (foreign raw pointer) → trust it, raw view */
-		const char *pol = cg_policy_for(ctx, e->data.slice.policy);
+		const char *pol = cg_policy_for(ctx, e->data.slice.policy, 1);
 		char *np1_64 = gen_value_name(ctx); /* boundary count = base_len + 1, as i32 */
 		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", np1_64, base_len);
 		char *np1 = gen_value_name(ctx);
@@ -1913,8 +1916,8 @@ static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *l
 		const char *lo_ops[2] = {np1, lo32};
 		const char *hi_ops[2] = {np1, hi32};
 		char lo_out[2][256], hi_out[2][256];
-		emit_policy_inline(ctx, pol, lo_ops, 2, lo_out); /* clamp/abort/raw each bound into [0, N] */
-		emit_policy_inline(ctx, pol, hi_ops, 2, hi_out);
+		emit_policy_inline(ctx, pol, 1, lo_ops, 2, lo_out); /* clamp/abort/raw each bound into [0, N] */
+		emit_policy_inline(ctx, pol, 1, hi_ops, 2, hi_out);
 		char *lo_c = gen_value_name(ctx), *hi_c = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", lo_c, lo_out[1]);
 		buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", hi_c, hi_out[1]);
@@ -2081,6 +2084,58 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 
 	case HIR_EXPR_BINARY: {
 		char left_buf[256], right_buf[256];
+
+		/* Logical `&&` / `||` MUST short-circuit. With failure policies an operand can abort (`_exit`) or
+		 * mutate state, so the RHS may run ONLY when the LHS doesn't already decide the result — eager
+		 * evaluation would fire a short-circuited-out `!abort`. Lower exactly like every modern compiler
+		 * (clang's `land.rhs`/`lor.rhs`, Rust, GCC): branch on the LHS, evaluate the RHS in its own block,
+		 * and merge the result through a stack slot — arche's value model is memory-backed (alloca/load),
+		 * so no phi is needed. The RHS block's policy preludes then live only on the taken path. */
+		if (expr->data.binary.op == OP_AND || expr->data.binary.op == OP_OR) {
+			int is_and = expr->data.binary.op == OP_AND;
+			int saved_lanes = ctx->vector_lanes;
+			ctx->vector_lanes = 0; /* logical ops are scalar */
+
+			codegen_expression(ctx, expr->data.binary.left, left_buf);
+			char *l_i1 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = icmp ne %s %s, 0\n", l_i1, cond_int_type(expr->data.binary.left),
+			                  left_buf);
+
+			char *slot = gen_value_name(ctx);
+			emit_alloca(ctx, "  %s = alloca i32\n", slot); /* hoisted: the merged i1-as-i32 result */
+			char *rhs_label = gen_value_name(ctx);
+			char *short_label = gen_value_name(ctx);
+			char *end_label = gen_value_name(ctx);
+
+			/* &&: LHS true → eval RHS, false → result 0. ||: LHS true → result 1, false → eval RHS. */
+			buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", l_i1, is_and ? rhs_label : short_label,
+			                  is_and ? short_label : rhs_label);
+
+			buffer_append_fmt(ctx, "%s:\n", short_label + 1); /* LHS decided it */
+			ctx->block_terminated = 0;
+			buffer_append_fmt(ctx, "  store i32 %d, i32* %s\n", is_and ? 0 : 1, slot);
+			buffer_append_fmt(ctx, "  br label %s\n", end_label);
+
+			buffer_append_fmt(ctx, "%s:\n", rhs_label + 1); /* RHS (and any policy it carries) runs here only */
+			ctx->block_terminated = 0;
+			codegen_expression(ctx, expr->data.binary.right, right_buf);
+			char *r_i1 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = icmp ne %s %s, 0\n", r_i1, cond_int_type(expr->data.binary.right),
+			                  right_buf);
+			char *r_z = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = zext i1 %s to i32\n", r_z, r_i1);
+			buffer_append_fmt(ctx, "  store i32 %s, i32* %s\n", r_z, slot);
+			buffer_append_fmt(ctx, "  br label %s\n", end_label);
+
+			buffer_append_fmt(ctx, "%s:\n", end_label + 1); /* merge */
+			ctx->block_terminated = 0;
+			char *res = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", res, slot);
+			strcpy(result_buf, res);
+
+			ctx->vector_lanes = saved_lanes;
+			break; /* value names leak per-function like every other gen_value_name site (bounded pass) */
+		}
 
 		/* For comparisons in scalar context, evaluate operands as scalars
 		 * (C-style: comparison returns scalar int 0/1). In vector context,
@@ -2281,23 +2336,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			right_val = rwconv;
 		}
 
-		if (expr->data.binary.op == OP_AND || expr->data.binary.op == OP_OR) {
-			/* Logical `&&` / `||`. Eager: arche expressions have no side effects and no
-			 * traps, so eager evaluation is indistinguishable from short-circuit. Normalize
-			 * each operand to i1 (`!= 0`), combine with `and`/`or`, zext back to i32 (arche
-			 * has no bool; conditions are int 0/1 like comparisons). Scalar int only. */
-			const char *lt = llvm_int_type(int_width);
-			char *l_i1 = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = icmp ne %s %s, 0\n", l_i1, lt, left_val);
-			char *r_i1 = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = icmp ne %s %s, 0\n", r_i1, lt, right_val);
-			char *comb = gen_value_name(ctx);
-			const char *logop = (expr->data.binary.op == OP_AND) ? "and" : "or";
-			buffer_append_fmt(ctx, "  %s = %s i1 %s, %s\n", comb, logop, l_i1, r_i1);
-			buffer_append_fmt(ctx, "  %s = zext i1 %s to i32\n", res_name, comb);
-			strcpy(result_buf, res_name);
-			break;
-		}
+		/* `&&` / `||` were handled up front (short-circuit lowering, before operand eval). */
 
 		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE) {
 			/* Comparison. In scalar context: emit scalar icmp/fcmp -> i1 -> zext to i32.
@@ -2357,7 +2396,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			 * policy mutates them (e.g. `zero`: b==0 ⇒ a=0, b=1) — then the raw op runs on the result. */
 			const char *ops[2] = {left_val, right_val};
 			char out[2][256];
-			emit_policy_inline(ctx, expr->data.binary.policy, ops, 2, out);
+			emit_policy_inline(ctx, expr->data.binary.policy, 3, ops, 2, out); /* divide category */
 			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", res_name, op, type, out[0], out[1]);
 		} else {
 			/* arithmetic: vectorized if ctx->vector_lanes > 0 */
@@ -4510,14 +4549,16 @@ void codegen_set_unchecked(int on) { g_codegen_unchecked = on; }
  * `--unchecked` strips to the empty `undefined` policy; else the enclosing decl's `@default` (threaded
  * via ctx->current_default_policy); else the baseline (func → clamp, total; proc → abort). All four
  * just name a core/user policy — nothing is hardcoded in codegen. */
-static const char *cg_policy_for(CodegenContext *ctx, const char *explicit_pol) {
+static const char *cg_policy_for(CodegenContext *ctx, const char *explicit_pol, int category) {
 	if (explicit_pol)
 		return explicit_pol;
 	if (g_codegen_unchecked)
 		return "undefined";
 	if (ctx->current_default_policy)
 		return ctx->current_default_policy;
-	return ctx->in_func ? "clamp" : "abort";
+	if (category == 3) /* divide: func → zero (total), proc → abort */
+		return ctx->in_func ? "zero" : "abort";
+	return ctx->in_func ? "clamp" : "abort"; /* bounds */
 }
 
 /* Inline a failure policy at a fallible op: bind its params to the op's operand SSAs (i32, per the
@@ -4525,12 +4566,13 @@ static const char *cg_policy_for(CodegenContext *ctx, const char *explicit_pol) 
  * and/or calls `exit()` — then read the (possibly-mutated) operands back into `out`. A name that isn't
  * a policy, or a policy with an empty body, leaves the operands unchanged ⇒ the raw op (that's
  * `!undefined`). This is the ONLY policy mechanism: no intrinsics, no net. */
-static void emit_policy_inline(CodegenContext *ctx, const char *name, const char **ops, int n, char out[][256]) {
+static void emit_policy_inline(CodegenContext *ctx, const char *name, int category, const char **ops, int n,
+                               char out[][256]) {
 	for (int k = 0; k < n; k++)
 		snprintf(out[k], 256, "%s", ops[k]); /* default: operands unchanged → raw op */
 	if (!name)
 		return;
-	HirFuncDecl *p = find_policy_decl(ctx, name);
+	HirFuncDecl *p = find_policy_decl(ctx, name, category);
 	if (!p)
 		return;
 	int np = (n < p->param_count) ? n : p->param_count;
@@ -4608,7 +4650,7 @@ static void emit_index_policy(CodegenContext *ctx, HirExpr *base, HirExpr *idx_e
 	buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", i32idx, *final_idx);
 	const char *ops[2] = {len_i32, i32idx};
 	char out[2][256];
-	emit_policy_inline(ctx, cg_policy_for(ctx, policy), ops, 2, out);
+	emit_policy_inline(ctx, cg_policy_for(ctx, policy, 1), 1, ops, 2, out);
 	char *clamped64 = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", clamped64, out[1]);
 	snprintf(idx_buf, 256, "%s", clamped64);
@@ -8607,17 +8649,8 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "declare i8* @calloc(i64, i64)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
 	buffer_append(ctx, "declare void @abort()\n");
-	/* Raw stderr write for bounds-check / panic messages — language runtime (alongside @abort),
-	 * not user-facing I/O. Resolves to libc `write` at link (`-lc`). The fd-I/O `write` the user
-	 * calls is a separate `os.write` symbol now, so there is no clash. */
-	buffer_append(ctx, "declare i32 @write(i32, i8*, i32)\n");
-	/* memcpy intrinsic (`copy x` of a local buffer). Declared lazily at module end only if a real
-	 * memcpy was emitted, so a program with no copy carries no `llvm.memcpy` (see uses_memcpy). */
-
-	/* Global error message for bounds check failures */
-	buffer_append(
-	    ctx,
-	    "@.arche_oob = private unnamed_addr constant [28 x i8] c\"arche: index out of bounds\\0A\\00\", align 1\n\n");
+	/* `write` (libc, for a policy's stderr diagnostic) is declared by core's `#foreign` block, which is
+	 * prepended to every program — no codegen-side declare, so no redefinition clash. */
 
 	/* Per-unit: declare cross-unit funcs/procs up front (inert in whole-program mode). */
 	emit_cross_unit_declares(ctx);

@@ -151,6 +151,8 @@ typedef struct {
 	int is_extern;
 	int is_policy; /* lowered from a `policy` form: a failure-policy MACRO, inlined at fallible op sites
 	                * (operands bound as mutable locals), never emitted as its own LLVM function. */
+	int policy_category; /* for a policy: 1=bounds (index/slice), 2=pool (insert), 3=divide. So a `clamp`
+	                      * (bounds) and an `abort` (both) resolve by name AND category. 0 = unset. */
 	char *default_policy; /* `@default(name)`: the failure policy this func's unannotated ops take, else NULL */
 	HirStmt **stmts;
 	int stmt_count;

@@ -15,8 +15,9 @@ bound as **mutable locals**, then runs the **raw** op on whatever they now are:
 
 Consequences that "fall out" of the model (no special-casing):
 - **`undefined`** = a policy with an **empty body**: no mutation ⇒ the raw op. Not a keyword.
-- **`abort`** = a policy that **terminates** on a bad operand. Termination is `exit(134)` via the
-  `syscall` intrinsic — there is **no `abort()` primitive**; "crash" is just write+exit, pure arche.
+- **`abort`** = a policy that **terminates** on a bad operand: it writes a diagnostic to stderr
+  (`dprintf(2, …)`) then `_exit(134)`. Both are libc externs in `core`'s `#foreign` block — there is
+  **no `abort()` primitive**; "crash" is just write+exit, pure arche.
 - **`clamp` / `wrap`** = policies that mutate `i` into range.
 - The old compiler **net-clamp is gone** — a policy owns its own correctness (it's a macro; a buggy
   user policy can produce an OOB, exactly like buggy hand-written code would).
@@ -31,10 +32,10 @@ An unannotated fallible op resolves its policy by precedence:
 
 A **proven-safe** op (the bounds prover discharged it) carries no policy at all — nothing is inlined.
 
-## The one primitive
+## The primitives
 
-`syscall` (the raw instruction) is hosted in `core` exactly like `os` hosts it. `exit` is a normal
-`proc` over it. Nothing else in the policy system is compiler-special.
+`core`'s `#foreign` block declares two libc externs the policy system needs: `_exit(code)` (terminate)
+and `dprintf(fd, fmt)` (the stderr diagnostic). Nothing else in the policy system is compiler-special.
 
 ## Autonomous decisions (this rewrite)
 
@@ -42,9 +43,10 @@ A **proven-safe** op (the bounds prover discharged it) carries no policy at all 
   mutate *both* `a` and `b`. Inlining reuses normal statement codegen + scopes (arche scalars are
   SSA-rebind and already phi-correct across branches/loops, verified). Policy decls emit **no** LLVM
   function — they're templates read at each op site.
-- **D2. No `abort()` primitive.** `abort` is a policy that calls `exit(134)`; `exit` is `syscall(231,…)`.
-  Avoids the libc `@abort` name clash and keeps "crash" in pure arche. 134 mirrors the old SIGABRT exit
-  code so the `*_array_oob` `! %t` tests still pass.
+- **D2. No `abort()` primitive.** `abort` is a policy that calls `dprintf(2, "arche: …\n")` then
+  `_exit(134)` — both libc externs in core. Keeps "crash" in pure arche; 134 mirrors the old SIGABRT
+  exit code so the `*_array_oob` `! %t` tests still pass. The stderr line names the failure
+  (`index out of bounds` / `divide by zero`) so a crash isn't silent.
 - **D3. `undefined` is a real empty policy in core**, not a recognized keyword. `!undefined` inlines
   nothing ⇒ raw op.
 - **D4. Net-clamp removed.** Policies own correctness. The bounds prover still rejects provably-OOB
@@ -63,8 +65,13 @@ A **proven-safe** op (the bounds prover discharged it) carries no policy at all 
   `zero` func and core's `zero` divide policy coexist): `name(...)` resolves to the callable
   (`find_callable_sig`/`find_func_decl` skip policies), `!name` resolves to the policy
   (`find_policy_sig`/`find_policy_decl`). Duplicate-decl checks exempt policies.
-- **D9. `_exit`, not `exit`.** The terminate primitive is libc `_exit` (also real) so its global name
-  doesn't clash with a device's `os.exit` in the all-stdlib codegen-test harness.
+- **D9. `_exit`/`dprintf`, not `exit`/`write`.** The terminate + diagnostic primitives are libc `_exit`
+  and `dprintf` — chosen so neither global name clashes with a stdlib symbol (`os.exit`, `os.write`) when
+  the codegen-test harness registers every stdlib module flat in one scope. (`dprintf`'s format carries
+  no `%`, so it is a plain fd-write; the messages have no varargs.) Separately, the duplicate-decl check
+  now skips any pair involving a `DECL_ORIGIN_STDLIB` decl: a stdlib symbol is module-qualified
+  (`os.write`) and never duplicates a global/core/user name — they only appear flat together in that
+  harness, never in real resolution.
 - **D10. Slices: the policy's `len` is `base_len + 1`.** A length-N slice has N+1 boundary positions
   (0..N); inlining the index policy on each of `lo`/`hi` with `len = N+1` yields exact slice semantics
   (`clamp`→[0,N], `abort`→aborts past N). An unknown base length (`-1`, a foreign raw pointer) is
@@ -73,3 +80,25 @@ A **proven-safe** op (the bounds prover discharged it) carries no policy at all 
   prepended-prelude region (by line offset) so a user file may still have its own.
 - **D12. `%` (modulo) added** as a real operator (`srem`/`urem`/`frem`, prec 5, `%=` compound) — `wrap`
   needs it and it was simply missing.
+- **D13. Category check (`@policy(bounds|divide)`).** A policy decl carries its op category, threaded
+  through HIR (`policy_category`), lowering, and codegen. Resolution is keyed by **name AND category**,
+  so `abort` and `undefined` exist as *both* a bounds policy and a divide policy and the op site selects
+  which (`find_policy_decl(name, category)` / `find_policy_sig_cat`). Validation (`validate_explicit_policy`)
+  errors on a category mismatch: `a / b !clamp` (E0124, bounds policy on a divide) and `a[i] !zero`
+  (divide policy on a bounds site) are both rejected instead of silently degrading to the raw op. The
+  former "intrinsic name" whitelist is gone — `abort`/`undefined`/`zero`/`clamp`/`wrap` are all ordinary
+  categorized core decls; only the name-based rules (`abort` forbidden in a `func`; `--no-abort` /
+  `--no-undefined` flags) remain special. Codegen's divide site inlines with the `divide` category;
+  index/slice sites with `bounds`.
+- **D14. Divide default left explicit.** A `/` or `%` only inlines a policy when one is written
+  (`a / b !zero`); an unannotated divide is the raw op, unchanged. `cg_policy_for` *can* supply a divide
+  default (func→`zero`, proc→`abort`) but isn't yet wired to every division — deferred to avoid the broad
+  behavioral change of checking every divide. Bounds defaults (func→`clamp`, proc→`abort`) are active.
+- **D15. `&&` / `||` now genuinely short-circuit.** The old codegen evaluated *both* operands then
+  bitwise-combined them — sound only while "arche expressions have no side effects and no traps." Failure
+  policies broke that: a `!abort` (or any policy prelude) in a short-circuited-out operand fired anyway,
+  aborting at a logically-unreachable site. Fixed with the standard branch lowering every modern compiler
+  uses (clang's `land.rhs`/`lor.rhs`, Rust, GCC): branch on the LHS, evaluate the RHS — and the inlined
+  policy prelude it carries — in its own block entered only on the taken path, merging the result through
+  a stack slot (arche's value model is memory-backed, so no phi). Not a workaround: it *is* the canonical
+  short-circuit lowering. Covered by `policy/midexpr/{and,or,divide_and}_shortcircuit.arche`.

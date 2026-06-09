@@ -744,7 +744,9 @@ SemDiag *sem_emit_policy_func_aborts(SemanticContext *ctx, SourceLoc loc, const 
 }
 SemDiag *sem_emit_policy_unknown(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_policy_unknown, loc,
-	                 "unknown policy `!%s` — not a built-in (abort, undefined, zero) nor a visible `policy` decl", name);
+	                 "unknown policy `!%s` — no visible `policy` decl by that name (core defines abort, "
+	                 "clamp, wrap, undefined, zero)",
+	                 name);
 }
 SemDiag *sem_emit_policy_wrong_category(SemanticContext *ctx, SourceLoc loc, const char *name, const char *want,
                                         const char *got) {
