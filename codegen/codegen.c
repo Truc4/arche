@@ -1195,6 +1195,29 @@ static int get_arch_static_capacity(CodegenContext *ctx, const char *arch_name) 
 	return 0;
 }
 
+/* The pool's declared overflow handler (`Foo[N] ?handler`), or NULL if the pool declared none. */
+static const char *pool_overflow_policy(CodegenContext *ctx, const char *arch_name) {
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		if (ctx->ast->decls[i]->kind != HIR_DECL_STATIC)
+			continue;
+		HirStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
+		if (s->is_requirement || s->kind != HIR_STATIC_ARCHETYPE)
+			continue;
+		if (strcmp(canonical_arch_name(ctx, s->archetype.archetype_name), canonical_arch_name(ctx, arch_name)) == 0 &&
+		    s->archetype.overflow_policy)
+			return s->archetype.overflow_policy;
+	}
+	return NULL;
+}
+
+/* The overflow handler an `insert` resolves to: per-call `?name` › the pool's `?name` › `reject`. */
+static const char *cg_insert_handler(CodegenContext *ctx, HirExpr *rhs, const char *arch_name) {
+	if (rhs->data.call.policy && rhs->data.call.policy_is_handler)
+		return rhs->data.call.policy;
+	const char *pool = pool_overflow_policy(ctx, arch_name);
+	return pool ? pool : "reject";
+}
+
 /* Compile-time initialized count for a static archetype. Mirrors the
  * count computation in codegen_alloc_expr:
  *   - explicit `static T(cap, N)` second arg → N
@@ -1902,8 +1925,9 @@ static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *l
 	/* Bounds: 0 <= lo <= hi <= len. The slice's failure policy is a MACRO inlined over (len, i) — the
 	 * same `clamp`/`abort`/`undefined` as an index — applied to each bound `lo`/`hi`. A length-N slice
 	 * has N+1 valid boundary positions (0..N), so the policy's `len` here is N+1: `clamp` then maps a
-	 * bound into [0, N] and `abort` aborts when it exceeds N, exactly the slice semantics. lo<=hi is
-	 * then enforced (a sub-view can't have negative length). */
+	 * bound into [0, N] and `abort` aborts when it exceeds N, exactly the slice semantics. The reversed
+	 * case (lo > hi) is governed by the SAME policy applied a third time — to the length `hi - lo` — so
+	 * there is no hidden net-clamp: clamp -> empty (0), abort -> aborts on reversed, undefined -> raw. */
 	if (strcmp(base_len, "-1") != 0) { /* a `-1` base length = unknown (foreign raw pointer) → trust it, raw view */
 		const char *pol = cg_policy_for(ctx, e->data.slice.policy, 1);
 		char *np1_64 = gen_value_name(ctx); /* boundary count = base_len + 1, as i32 */
@@ -1921,12 +1945,21 @@ static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *l
 		char *lo_c = gen_value_name(ctx), *hi_c = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", lo_c, lo_out[1]);
 		buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", hi_c, hi_out[1]);
-		char *ge = gen_value_name(ctx); /* keep lo <= hi so the sub-view length is non-negative */
-		buffer_append_fmt(ctx, "  %s = icmp sge i64 %s, %s\n", ge, hi_c, lo_c);
-		char *hifix = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = select i1 %s, i64 %s, i64 %s\n", hifix, ge, hi_c, lo_c);
+		/* Apply the policy to the length `hi - lo` (bounded into [0, N] via np1). This replaces the old
+		 * silent `hi = max(hi, lo)` select: the policy now owns the reversed/negative-length outcome. */
+		char *rawlen = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = sub i64 %s, %s\n", rawlen, hi_c, lo_c);
+		char *rawlen32 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", rawlen32, rawlen);
+		const char *len_ops[2] = {np1, rawlen32};
+		char len_out_p[2][256];
+		emit_policy_inline(ctx, pol, 1, len_ops, 2, len_out_p);
+		char *len_c = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", len_c, len_out_p[1]);
+		char *newhi = gen_value_name(ctx); /* hi = lo + bounded length, so downstream len = hi - lo holds */
+		buffer_append_fmt(ctx, "  %s = add i64 %s, %s\n", newhi, lo_c, len_c);
 		snprintf(lo64, sizeof(lo64), "%s", lo_c);
-		snprintf(hi64, sizeof(hi64), "%s", hifix);
+		snprintf(hi64, sizeof(hi64), "%s", newhi);
 	}
 	char *ptr2 = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", ptr2, elem_llvm, elem_llvm, base_ptr, lo64);
@@ -5019,6 +5052,52 @@ static void cg_emit_insert_mb(CodegenContext *ctx, HirExpr *rhs, HirBindingTarge
 		emit_alloca(ctx, "  %s = alloca i32\n", ok_ptr);
 	}
 
+	/* Resolve the overflow handler (per-call `?name` › pool `?name` › `reject`). `reject` is exactly the
+	 * helper's built-in ok=0-on-full, so it needs no code (pass evict_slot = -1). Any other handler is
+	 * inlined HERE over `(count, cap, ok, slot)` (ok init 1, slot init = the would-be append slot); if it
+	 * leaves ok≠0 and redirects slot to a victim, that victim is passed as `evict_slot` and the helper
+	 * overwrites it (a full-pool eviction). Emitted before the call text so its instructions precede it. */
+	char evict_slot_val[256] = "-1";
+	const char *handler = cg_insert_handler(ctx, rhs, arch_name);
+	if (strcmp(handler, "reject") != 0) {
+		int static_cap = get_arch_static_capacity(ctx, arch_name);
+		int count_idx = arch->field_count;
+		char *cnt_ptr = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cnt_ptr, arch_name,
+		                  arch_name, arch_buf, count_idx);
+		char *cnt = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cnt, cnt_ptr);
+		char *cnt32 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", cnt32, cnt);
+		char cap32[256];
+		if (static_cap > 0) {
+			snprintf(cap32, sizeof cap32, "%d", static_cap);
+		} else {
+			char *cap_ptr = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cap_ptr,
+			                  arch_name, arch_name, arch_buf, arch->field_count + 1);
+			char *capv = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", capv, cap_ptr);
+			char *cap32s = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", cap32s, capv);
+			snprintf(cap32, sizeof cap32, "%s", cap32s);
+		}
+		const char *ops[4] = {cnt32, cap32, "1", cnt32};
+		char out[4][256];
+		emit_policy_inline(ctx, handler, 2 /* POLICY_CAT_POOL */, ops, 4, out);
+		char *okv = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = icmp ne i32 %s, 0\n", okv, out[2]); /* handler kept ok≠0 (didn't reject) */
+		char *redir = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = icmp ne i32 %s, %s\n", redir, out[3], cnt32); /* slot redirected → evict */
+		char *doev = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = and i1 %s, %s\n", doev, okv, redir);
+		char *slot64 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", slot64, out[3]);
+		char *evs = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = select i1 %s, i64 %s, i64 -1\n", evs, doev, slot64);
+		snprintf(evict_slot_val, sizeof evict_slot_val, "%s", evs);
+	}
+
 	buffer_append_fmt(ctx, "  call void @arche_insert_%s(%%struct.%s* %s", arch_name, arch_name, arch_buf);
 	field_idx = 0;
 	for (int i = 0; i < arg_count; i++) {
@@ -5033,7 +5112,7 @@ static void cg_emit_insert_mb(CodegenContext *ctx, HirExpr *rhs, HirBindingTarge
 			field_idx++;
 		}
 	}
-	buffer_append_fmt(ctx, ", i64* %s, i32* %s)\n", h_ptr, ok_ptr);
+	buffer_append_fmt(ctx, ", i64 %s, i64* %s, i32* %s)\n", evict_slot_val, h_ptr, ok_ptr);
 }
 
 /* Emit `delete(h)(ok:)` (or legacy `delete(P, h)(ok:)`): resolve the pool from the handle, allocate
@@ -7167,12 +7246,16 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 			}
 		}
 	}
-	buffer_append(ctx, ", i64* %h_out, i32* %ok_out) {\n");
+	/* `%evict_slot`: an overflow handler's victim slot to overwrite when the pool is full (-1 = none →
+	 * report ok=0). The caller's resolved `?handler` computes it; the default `reject` passes -1. */
+	buffer_append(ctx, ", i64 %evict_slot, i64* %h_out, i32* %ok_out) {\n");
 	buffer_append(ctx, "entry:\n");
 
 	/* Setup allocas for slot and increment flag */
 	buffer_append(ctx, "  %slot_var = alloca i64\n");
 	buffer_append(ctx, "  %do_incr = alloca i1\n");
+	buffer_append(ctx, "  %is_evict = alloca i1\n");
+	buffer_append(ctx, "  store i1 0, i1* %is_evict\n");
 
 	int count_idx = arch->field_count;
 	int fl_idx = static_cap > 0 ? arch->field_count + 1 : arch->field_count + 2;
@@ -7221,8 +7304,18 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	}
 	buffer_append(ctx, "  br i1 %at_capacity, label %overflow, label %use_count\n\n");
 
-	/* Overflow: fixed budget exceeded — report failure as a value (ok=0, handle=0), do NOT abort. */
+	/* Overflow: fixed budget exceeded. If the handler supplied a victim (`%evict_slot >= 0`), overwrite
+	 * that slot (its generation is bumped at `done`, so the evicted entity's handle goes stale); else
+	 * report failure as a value (ok=0, handle=0), never abort. */
 	buffer_append(ctx, "overflow:\n");
+	buffer_append(ctx, "  %has_evict = icmp sge i64 %evict_slot, 0\n");
+	buffer_append(ctx, "  br i1 %has_evict, label %do_evict, label %really_full\n\n");
+	buffer_append(ctx, "do_evict:\n");
+	buffer_append(ctx, "  store i64 %evict_slot, i64* %slot_var\n");
+	buffer_append(ctx, "  store i1 0, i1* %do_incr\n"); /* overwrite a live slot — count is unchanged */
+	buffer_append(ctx, "  store i1 1, i1* %is_evict\n"); /* bump its generation at `done` */
+	buffer_append(ctx, "  br label %write_fields\n\n");
+	buffer_append(ctx, "really_full:\n");
 	buffer_append(ctx, "  store i64 0, i64* %h_out\n");
 	buffer_append(ctx, "  store i32 0, i32* %ok_out\n");
 	buffer_append(ctx, "  ret void\n\n");
@@ -7311,6 +7404,16 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 		buffer_append(ctx, "  %gc_arr = load i32*, i32** %gc_ptr_field\n");
 		buffer_append(ctx, "  %gc_elem = getelementptr i32, i32* %gc_arr, i64 %final_slot\n");
 	}
+	/* Eviction overwrote a live slot: bump its generation first so the evicted entity's handle is now
+	 * stale (any later use/delete aborts, exactly like a normal delete). A normal insert skips this. */
+	buffer_append(ctx, "  %was_evict = load i1, i1* %is_evict\n");
+	buffer_append(ctx, "  br i1 %was_evict, label %evict_bump, label %gen_load\n\n");
+	buffer_append(ctx, "evict_bump:\n");
+	buffer_append(ctx, "  %gprev = load i32, i32* %gc_elem\n");
+	buffer_append(ctx, "  %gnext = add i32 %gprev, 1\n");
+	buffer_append(ctx, "  store i32 %gnext, i32* %gc_elem\n");
+	buffer_append(ctx, "  br label %gen_load\n\n");
+	buffer_append(ctx, "gen_load:\n");
 	buffer_append(ctx, "  %gen_i32 = load i32, i32* %gc_elem\n");
 	buffer_append(ctx, "  %gen_i64 = zext i32 %gen_i32 to i64\n");
 	buffer_append(ctx, "  %gen_shifted = shl i64 %gen_i64, 32\n");

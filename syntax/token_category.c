@@ -81,6 +81,7 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_GT_EQ:
 	case TOK_ARROW:
 	case TOK_BANG:
+	case TOK_QUESTION:
 	case TOK_AT:
 	case TOK_AMP_AMP:
 	case TOK_PIPE_PIPE:

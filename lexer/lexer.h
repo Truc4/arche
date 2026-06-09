@@ -86,7 +86,8 @@ typedef enum TokenKind {
 	TOK_ARROW, /* -> */
 
 	/* unary */
-	TOK_BANG /* ! */
+	TOK_BANG, /* ! */
+	TOK_QUESTION /* ? — handler-policy sigil on a pool insert (`insert(P,x) ?reject`) */
 } TokenKind;
 
 /* Trivia = anything between syntactic tokens that the parser doesn't structurally

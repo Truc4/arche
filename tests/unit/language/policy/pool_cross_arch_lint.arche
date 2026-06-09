@@ -1,0 +1,20 @@
+// W0019: a pool overflow handler whose body reads a DIFFERENT archetype's columns than the insert
+// target is a likely copy-paste mismatch — a lint (warns, compiles). Here `evict_bar` scans `Bar` but
+// is used on `insert(Foo, …)`.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "handler_foreign_arch\|different pool" %t.out
+Foo :: arche { v :: int, ts :: int }
+Bar :: arche { w :: int, ts :: int }
+Foo[2]
+Bar[2]
+@policy(pool) evict_bar :: policy(count: int, cap: int, ok: int, slot: int) {
+  if (count >= cap) {
+    oldest := 0;
+    for (j := 1; j < count; j = j + 1) {
+      if (Bar.ts[j] < Bar.ts[oldest]) { oldest = j; }   // reads Bar, not the insert target
+    }
+    slot = oldest;
+  }
+}
+main :: proc() {
+  insert(Foo, 1, 5) ?evict_bar (h:, ok:);   // handler reads Bar, target Foo -> W0019
+}

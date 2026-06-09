@@ -169,6 +169,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	 * longer the default, so the blanket warning was noise. Opt back in with -Wraw-pool-index. */
 	[SEM_LINT_raw_pool_index]                = { "W0017", "raw_pool_index",                CLASS_LINT, 0 },
 	[SEM_LINT_policy_on_safe_op]             = { "W0018", "policy_on_safe_op",             CLASS_LINT, 1 },
+	[SEM_LINT_handler_foreign_arch]          = { "W0019", "handler_foreign_arch",          CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -744,14 +745,25 @@ SemDiag *sem_emit_policy_func_aborts(SemanticContext *ctx, SourceLoc loc, const 
 }
 SemDiag *sem_emit_policy_unknown(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_policy_unknown, loc,
-	                 "unknown policy `!%s` — no visible `policy` decl by that name (core defines abort, "
-	                 "clamp, wrap, undefined, zero)",
+	                 "unknown policy `%s` — no visible `policy` decl by that name (core defines abort, "
+	                 "clamp, wrap, undefined, zero, reject)",
 	                 name);
 }
 SemDiag *sem_emit_policy_wrong_category(SemanticContext *ctx, SourceLoc loc, const char *name, const char *want,
                                         const char *got) {
 	return sem_emit_(ctx, SEM_DIAG_policy_wrong_category, loc,
-	                 "policy `!%s` is a @policy(%s) — this site needs a @policy(%s) policy", name, got, want);
+	                 "policy `%s` is a @policy(%s) — this site needs a @policy(%s) policy", name, got, want);
+}
+SemDiag *sem_emit_policy_wrong_sigil(SemanticContext *ctx, SourceLoc loc, const char *name, int want_handler) {
+	if (want_handler)
+		return sem_emit_(ctx, SEM_DIAG_policy_wrong_sigil, loc,
+		                 "`!%s` on an insert — a pool overflow handler is invoked with `?` (`insert(P, x) ?%s`); "
+		                 "`!` marks a panic policy on a channel-less op",
+		                 name, name);
+	return sem_emit_(ctx, SEM_DIAG_policy_wrong_sigil, loc,
+	                 "`?%s` here — `?` marks a pool insert handler; this op takes a panic policy with `!` "
+	                 "(`a[i] !%s`)",
+	                 name, name);
 }
 SemDiag *sem_emit_policy_abort_forbidden(SemanticContext *ctx, SourceLoc loc, const char *which, const char *flag) {
 	return sem_emit_(ctx, SEM_DIAG_policy_abort_forbidden, loc,
@@ -965,4 +977,11 @@ SemDiag *sem_emit_lint_policy_on_safe_op(SemanticContext *ctx, SourceLoc loc, co
 	                 "policy `!%s` on '%s' is dead — the access is provably in bounds, so it can never fail; "
 	                 "drop the policy or @allow(policy_on_safe_op)",
 	                 name, base);
+}
+SemDiag *sem_emit_lint_handler_foreign_arch(SemanticContext *ctx, SourceLoc loc, const char *handler,
+                                            const char *foreign, const char *target) {
+	return sem_emit_(ctx, SEM_LINT_handler_foreign_arch, loc,
+	                 "overflow handler `?%s` on `insert(%s, …)` reads a different pool's columns (`%s.…`) — "
+	                 "likely a copy-paste mismatch; scan `%s`'s columns or @allow(handler_foreign_arch)",
+	                 handler, target, foreign, target);
 }

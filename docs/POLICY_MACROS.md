@@ -8,10 +8,16 @@ principled, no workarounds.
 ## The model
 
 A `policy` is a **macro**. The compiler inlines its body at a fallible op, with the op's operands
-bound as **mutable locals**, then runs the **raw** op on whatever they now are:
+bound as **mutable locals**, then runs the **raw** op on whatever they now are. There are two kinds,
+split by whether the op has a way to *report* failure (see D17):
 
-- bounds index/slice → operands `len, i` ; the policy mutates `i` (or terminates), then `base[i]` raw.
-- divide → operands `a, b` ; the policy mutates them, then `a / b` raw.
+- **panic policies** (`@policy(bounds|divide)`, invoked `expr !name`) — for channel-less ops:
+  - bounds index/slice → operands `len, i` ; the policy mutates `i` (or terminates), then `base[i]` raw.
+  - divide → operands `a, b` ; the policy mutates them, then `a / b` raw.
+- **handler policies** (`@policy(pool)`, invoked `insert(P,x) ?name (h:, ok:)`, or declared on the pool
+  `Foo[N] ?name`) — for a pool insert, whose full-pool condition is an *expected* result reported via
+  `ok`. Operands `count, cap, ok, slot` (the prefix the handler declares); the insert writes iff `ok`
+  stays nonzero, into `slot` (redirect it to evict). See D18.
 
 Consequences that "fall out" of the model (no special-casing):
 - **`undefined`** = a policy with an **empty body**: no mutation ⇒ the raw op. Not a keyword.
@@ -102,3 +108,35 @@ and `dprintf(fd, fmt)` (the stderr diagnostic). Nothing else in the policy syste
   policy prelude it carries — in its own block entered only on the taken path, merging the result through
   a stack slot (arche's value model is memory-backed, so no phi). Not a workaround: it *is* the canonical
   short-circuit lowering. Covered by `policy/midexpr/{and,or,divide_and}_shortcircuit.arche`.
+- **D16. Slice reversed = the policy applied to the length.** The slice codegen used to emit a hidden
+  `hi = max(hi, lo)` net-clamp so the length couldn't go negative — invisible to the policy, so
+  `a[3:1] !abort` (reversed but in-range) silently became an empty slice and `!undefined` got the guard
+  anyway. Removed: after applying the policy to `lo` and `hi` (each into `[0,N]`), the policy is applied
+  a **third time to the length `hi - lo`** against `[0,N]`. So `clamp`→empty, `abort`→aborts on a
+  reversed slice, `undefined`→raw negative length — all visible policy decisions, no special-casing.
+  The last compiler-owned net-clamp is gone. (`policy/slice_reversed_{abort,clamp}.arche`.)
+- **D17. The response shape follows the failure channel; that's what a policy is *for*.** A policy
+  answers "what happens when an operand/condition leaves the valid domain?" — and the shape depends on
+  whether the op has a way to *report* it. **No channel** (`a[i]`, `a[lo:hi]`, `a/b` return one value) →
+  a **panic policy** (`@policy(bounds|divide)`, sigil `!`): crash / total-result / UB. **Has a channel**
+  (`insert(P,x)(h:, ok:)` reports a full pool via `ok`, an `int`) → a **handler policy**
+  (`@policy(pool)`, sigil `?`) shapes the *result*; the channel reports it, no crash. Don't police what a
+  return value already reports: `delete` already splits this with no policy (stale handle = use-after-free
+  *bug* → abort; generation-exhausted = expected → `ok=0`). `ok` stays an `int` and can widen to an error
+  code later without a signature change.
+- **D18. Pool overflow handlers (`?`): generic OR pool-specific, owned by the *pool* (storage), not the
+  *archetype* (schema).** `Foo :: arche {…}` is the schema; `Foo[N]` is the pool; the handler attaches at
+  `Foo[N] ?handler` because overflow is a storage concern. A handler is a macro the compiler specializes
+  per insert site — arche's only way to write a *generic* overflow rule (one rule, any pool), since it has
+  no archetype generics. Operands `(count, cap, ok, slot)` (the prefix a handler declares): `ok` init 1
+  (the insert writes iff it stays nonzero), `slot` the write target (declare it to **redirect** → an
+  eviction overwrites that slot; codegen bumps its generation so the evicted entity's handle goes stale,
+  for free). A handler touching only operands is generic (`reject`, the default); one naming a pool's
+  columns is pool-specific (`evict_oldest` scans `Foo.ts`). The capacity check lives in the handler (empty
+  body = raw write). Resolution: per-call `?name` › pool-decl `?name` › `reject`. Sigil must match kind
+  (`a[i] ?clamp` / `insert !reject` error). A handler reading a *different* archetype's columns than the
+  insert target is W0019 (lint). Codegen: `reject` is the helper's built-in ok=0-on-full (zero overhead,
+  passes `evict_slot = -1`); any other handler is inlined at the call site to compute `evict_slot`, which
+  the shared `@arche_insert_<arch>` helper overwrites (reusing its write/gen-bump blocks).
+  (`policy/pool_{reject,evict,evict_stale,override,cross_arch_lint}.arche`,
+  `policy/errors/{handler_sigil_mismatch,insert_panic_sigil,pool_wrong_category}.arche`.)

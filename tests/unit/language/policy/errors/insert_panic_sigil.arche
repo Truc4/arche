@@ -1,0 +1,8 @@
+// The dual of handler_sigil_mismatch: a pool `insert` takes the handler sigil `?`, not the panic `!`.
+// `insert(Foo, x) !reject` uses the panic sigil on a handler op -> error.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "invoked with .?\|handler" %t.out
+Foo :: arche { v :: int }
+Foo[2]
+main :: proc() {
+  insert(Foo, 1) !reject (h:, ok:);   // panic sigil on an insert -> wrong sigil
+}

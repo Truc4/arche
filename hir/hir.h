@@ -172,6 +172,7 @@ typedef struct {
 			HirExpr **field_values;
 			int field_count;
 			HirExpr *init_length;
+			char *overflow_policy; /* `Foo[N] ?handler`: the pool's default insert overflow handler, or NULL */
 		} archetype;
 		struct {
 			char *name;
@@ -382,6 +383,8 @@ struct HirExpr {
 			HirExpr *callee;
 			HirExpr **args;
 			int arg_count;
+			char *policy;        /* `?name` overflow handler on a pool `insert(...)`, or NULL → default */
+			int policy_is_handler; /* 1 if the policy was written with `?` (handler), 0 if `!` (panic) */
 		} call;
 		struct {
 			char *archetype_name;

@@ -555,6 +555,78 @@ static DeclSummary *find_policy_sig_cat(SemanticContext *ctx, const char *name, 
 	return NULL;
 }
 
+static const char *policy_cat_name(PolicyCategory c); /* defined below, near the bounds-policy checks */
+static char *sem_txt_dup(SynText t);                  /* defined below */
+static char *sv_name_expr_dup(SyntaxView v);          /* defined below */
+
+/* Scan a handler body for an archetype-column reference (`Arch.field`) to an archetype other than
+ * `target` — a likely copy-paste mismatch. Returns the foreign name (static buffer) or NULL. */
+static const char *handler_body_foreign_arch(SemanticContext *ctx, SyntaxView v, const char *target) {
+	static char foreign[128];
+	if (!sv_present(v))
+		return NULL;
+	const SyntaxNode *n = v.node;
+	for (int i = 0; i < n->child_count; i++) {
+		const SyntaxElem *ch = &n->children[i];
+		if (ch->tag == SE_TOKEN && ch->as.token.kind == TOK_IDENT) {
+			int len = (int)ch->as.token.length;
+			if (len > 0 && len < (int)sizeof foreign) {
+				char buf[128];
+				memcpy(buf, v.src + ch->as.token.offset, (size_t)len);
+				buf[len] = '\0';
+				if (find_archetype(ctx, buf) && (!target || strcmp(buf, target) != 0)) {
+					snprintf(foreign, sizeof foreign, "%s", buf);
+					return foreign;
+				}
+			}
+		} else if (ch->tag == SE_NODE) {
+			SyntaxView cv = {ch->as.node, v.src};
+			const char *r = handler_body_foreign_arch(ctx, cv, target);
+			if (r)
+				return r;
+		}
+	}
+	return NULL;
+}
+
+/* Validate the `?handler` on a pool `insert(...)` call (operates on the call syntax `v`). The sigil
+ * must be `?` (handler), the name must resolve to a @policy(pool), and a handler whose body reads a
+ * different archetype's columns than the insert target is a lint. Emits at most one diagnostic. */
+static void sem_check_insert_handler(SemanticContext *ctx, SyntaxView v, SourceLoc loc) {
+	SyntaxView pol = sv_child(v, SN_POLICY_REF);
+	if (!sv_present(pol))
+		return; /* unannotated → the pool's declared handler or the `reject` default (resolved in codegen) */
+	SynText nt = sv_token(pol, TOK_IDENT);
+	if (!nt.ptr)
+		return;
+	char *nm = sem_txt_dup(nt);
+	int is_handler = sv_token(pol, TOK_QUESTION).ptr != NULL;
+	if (!is_handler) {
+		sem_emit_policy_wrong_sigil(ctx, loc, nm, 1); /* `!` on an insert → needs `?` */
+		free(nm);
+		return;
+	}
+	DeclSummary *p = find_policy_sig_cat(ctx, nm, POLICY_CAT_POOL);
+	if (!p) {
+		DeclSummary *any = find_policy_sig(ctx, nm);
+		if (!any)
+			sem_emit_policy_unknown(ctx, loc, nm);
+		else
+			sem_emit_policy_wrong_category(ctx, loc, nm, "pool", policy_cat_name(any->policy_category));
+		free(nm);
+		return;
+	}
+	/* W0019: the handler reads a foreign pool's columns. */
+	char *target = sv_name_expr_dup(sem_node_at_expr(v, 0));
+	if (target) {
+		const char *foreign = handler_body_foreign_arch(ctx, p->body_node, target);
+		if (foreign)
+			sem_emit_lint_handler_foreign_arch(ctx, loc, nm, foreign, target);
+		free(target);
+	}
+	free(nm);
+}
+
 /* The compilation unit a reference originates in: the enclosing proc/func's owning unit (0 = entry). */
 static int sem_ref_unit(SemanticContext *ctx) {
 	if (ctx->current_proc)
@@ -1849,6 +1921,8 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 			sem_emit_insert_delete_outlist(ctx, loc, "insert", "insert(P, …)(handle:, ok:)");
 		if (strcmp(func_name, "delete") == 0 && !outlist_call_ok)
 			sem_emit_insert_delete_outlist(ctx, loc, "delete", "delete(h)(ok:)");
+		if (strcmp(func_name, "insert") == 0)
+			sem_check_insert_handler(ctx, v, loc); /* validate the `?handler` (sigil + @policy(pool)) */
 
 		GroupInfo *gi = find_group(ctx, func_name);
 		if (!gi) {
@@ -3748,6 +3822,13 @@ static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, Sy
 	}
 	SourceLoc loc = sem_node_loc(v.node);
 
+	/* An index/slice is a panic op (no failure channel) — it takes `!`, not the `?` handler sigil. */
+	if (explicit_pol && sv_token(pol, TOK_QUESTION).ptr != NULL) {
+		sem_emit_policy_wrong_sigil(ctx, loc, explicit_pol, 0);
+		free(explicit_pol);
+		return;
+	}
+
 	int provably_oob = 0, provably_safe = 0, oob_lit = 0;
 	if (!is_slice && kind != 0) {
 		SyntaxView idx = sem_node_at_expr(v, 0);
@@ -3821,7 +3902,10 @@ static const char *bnd_check_expr(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 				SynText t = sv_token(pol, TOK_IDENT);
 				if (t.ptr) {
 					char *nm = sem_txt_dup(t);
-					validate_explicit_policy(ctx, d, sem_node_loc(v.node), nm, POLICY_CAT_DIVIDE);
+					if (sv_token(pol, TOK_QUESTION).ptr != NULL) /* divide is a panic op: `!`, not `?` */
+						sem_emit_policy_wrong_sigil(ctx, sem_node_loc(v.node), nm, 0);
+					else
+						validate_explicit_policy(ctx, d, sem_node_loc(v.node), nm, POLICY_CAT_DIVIDE);
 					free(nm);
 				}
 			}

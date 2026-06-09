@@ -40,7 +40,7 @@ streq :: func(a: char[], b: char[]) -> int {
       return 0;
     }
   }
-  return 1;
+  return true;
 }
 
 // The primitives a failure policy needs to crash: libc `_exit` (terminate; `_exit` not `exit` keeps the
@@ -95,4 +95,16 @@ streq :: func(a: char[], b: char[]) -> int {
   }
 }
 @policy(divide) undefined :: policy(a: int, b: int) {
+}
+
+// Pool overflow HANDLER policies — category `pool`, invoked with `?` (`insert(P,x) ?reject`), not `!`.
+// A full pool is an EXPECTED condition (reported via `ok`), not a bug, so a handler shapes the result
+// rather than crashing. Operands are the prefix of `(count, cap, ok, slot)` the handler uses: `count` =
+// live entities, `cap` = capacity (read-only); `ok` starts 1 (the insert writes iff it stays nonzero);
+// `slot` is the write target (declare it to redirect the write — eviction). The capacity check lives
+// HERE, so an empty handler is a raw write. `reject` is the default applied to every pool.
+@policy(pool) reject :: policy(count: int, cap: int, ok: int) {
+  if (count >= cap) {
+    ok = 0;
+  }
 }

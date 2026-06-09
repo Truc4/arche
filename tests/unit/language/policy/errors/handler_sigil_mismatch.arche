@@ -1,0 +1,8 @@
+// The sigil must match the policy kind: `!` is a panic policy (channel-less op: index/slice/divide),
+// `?` is a pool overflow handler. `a[i] ?clamp` uses the handler sigil on a panic op -> error.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "panic policy\|? marks a pool" %t.out
+main :: proc(k: int) {
+  a: int[4];
+  x := a[k] ?clamp;   // handler sigil on a bounds op -> wrong sigil
+  y := x + 0;
+}

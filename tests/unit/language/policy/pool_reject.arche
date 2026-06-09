@@ -1,0 +1,13 @@
+// A pool insert reports a full pool through `ok` (the expected-error channel) and never aborts. The
+// `reject` handler — `@policy(pool)`, the default applied to every pool — sets ok=0 when full. It's
+// generic (touches only count/cap/ok), so `?reject` applies to any pool, with or without the sigil.
+// RUN: %arche build -o %t %s && %t | grep -qF "ok0=1 ok1=1 ok2=0"
+#import { fmt }
+Foo :: arche { v :: int }
+Foo[2]
+main :: proc() {
+  insert(Foo, 1)(h0:, ok0:);            // unannotated -> default ?reject
+  insert(Foo, 2) ?reject (h1:, ok1:);   // explicit, identical
+  insert(Foo, 3) ?reject (h2:, ok2:);   // pool full -> ok2 = 0, no abort
+  fmt.printf("ok0=%d ok1=%d ok2=%d\n", ok0, ok1, ok2);
+}

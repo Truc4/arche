@@ -838,6 +838,15 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 					ax->data.call.args[ax->data.call.arg_count++] = lower_expr_cst(av);
 				}
 			}
+		/* `insert(P,x) ?handler` / `… !panic`: the SN_POLICY_REF child carries the policy ident and
+		 * the sigil (`?` ⇒ handler, `!` ⇒ panic). Semantic enforces sigil↔kind. */
+		{
+			SyntaxView pol = sv_child(e, SN_POLICY_REF);
+			if (sv_present(pol)) {
+				ax->data.call.policy = txt_dup(sv_token(pol, TOK_IDENT));
+				ax->data.call.policy_is_handler = sv_token(pol, TOK_QUESTION).ptr != NULL;
+			}
+		}
 		break;
 	}
 	case SN_ARCH_EXPR: {
@@ -2250,6 +2259,12 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 			}
 			namebuf[nl] = '\0';
 			sd->archetype.archetype_name = dupz(namebuf);
+			/* `Foo[N] ?handler`: the pool's default insert overflow handler. */
+			{
+				SyntaxView pol = sv_child(d, SN_POLICY_REF);
+				if (sv_present(pol))
+					sd->archetype.overflow_policy = txt_dup(sv_token(pol, TOK_IDENT));
+			}
 			/* `[capacity] (init_length) { field: value, ... }`. Capacity (the `[…]` expr) →
 			 * field_values[0] (field_names[0]=NULL); the optional `(…)` expr → init_length, the
 			 * known row count (drives bounds-check elision); each `field: value` in `{}` appends

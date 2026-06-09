@@ -1,0 +1,13 @@
+// A reversed slice (lo > hi) is governed by the slice's policy, not a hidden net-clamp. With `!abort`,
+// `a[3:1]` — both bounds in range but reversed — must ABORT (previously it silently became an empty
+// slice). The policy is applied a third time to the length `hi-lo`, which is negative here, so abort
+// fires. Runtime bounds so nothing folds away.
+// RUN: %arche build -o %t %s && ! %t
+main :: proc(argc: int) {
+  a: int[4];
+  a[0] = 1;
+  hi := argc;          // 1 at runtime
+  lo := argc + 2;      // 3 at runtime -> lo > hi, reversed
+  s := a[lo:hi] !abort; // reversed -> abort
+  x := s.length;
+}

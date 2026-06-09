@@ -431,6 +431,8 @@ Token lexer_next_token(Lexer *lexer) {
 		return make_token(TOK_SEMI, start, 1, line, column);
 	case '@':
 		return make_token(TOK_AT, start, 1, line, column);
+	case '?':
+		return make_token(TOK_QUESTION, start, 1, line, column);
 	case '#': {
 		/* `#`-directive: read the directive word and map it. `#import`/`#each_field` reuse the
 		 * existing TOK_USE/TOK_EACH_FIELD tokens so the parser + syntax tree consumers are unchanged;
@@ -676,6 +678,8 @@ const char *token_kind_name(TokenKind kind) {
 
 	case TOK_BANG:
 		return "TOK_BANG";
+	case TOK_QUESTION:
+		return "TOK_QUESTION";
 
 	default:
 		return "TOK_UNKNOWN";

@@ -832,6 +832,19 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			if (!match(parser, TOK_RBRACE))
 				error(parser, "Expected '}' after pool init block");
 		}
+		/* `Name[C] ?handler` — the pool's overflow handler policy (storage-level, not the archetype
+		 * schema). Wrapped in SN_POLICY_REF; every `insert(Name,…)` defaults to it. `?` (handler), not
+		 * `!` (panic) — a full pool is an expected condition. */
+		if (check(parser, TOK_QUESTION)) {
+			int pol_cp = syntax_cp(parser);
+			advance(parser); /* '?' */
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected a handler name after '?' on a pool decl (e.g. `Foo[8] ?evict_oldest`)");
+				return 0;
+			}
+			advance(parser); /* the handler ident */
+			syntax_wrap(parser, pol_cp, SN_POLICY_REF);
+		}
 		match(parser, TOK_SEMI); /* recorded; formatter drops it for static decls */
 		return 1;
 	}
@@ -1497,16 +1510,17 @@ static int parse_unary_expr(Parser *parser) {
 	SyntaxNodeKind prim_kind = SN_NAME_EXPR;
 	if (!parse_primary_expr(parser, &prim_kind))
 		return 0;
-	/* Postfix failure-policy: `expr !policy` on a fallible op (index / slice / call). A bare
-	 * `!` here is unambiguous — `!=` lexes as TOK_BANG_EQ and there is no infix `!`, so the
-	 * only thing a TOK_BANG can be directly after a completed postfix op is a policy marker.
-	 * The `!name` is wrapped into an SN_POLICY_REF leaf-node that becomes a child of the op. */
+	/* Postfix failure-policy: `expr !policy` (panic, on a channel-less fallible op: index / slice /
+	 * call) or `expr ?policy` (handler, on a pool `insert(...)` call). A bare `!`/`?` here is
+	 * unambiguous — `!=` lexes as TOK_BANG_EQ, there is no infix `!`/`?` — so right after a completed
+	 * postfix op it can only be a policy marker. The sigil (`!` vs `?`) is kept inside the wrapped
+	 * SN_POLICY_REF node; lowering reads it to enforce sigil↔kind (panic vs handler). */
 	if ((prim_kind == SN_INDEX_EXPR || prim_kind == SN_SLICE_EXPR || prim_kind == SN_CALL_EXPR) &&
-	    check(parser, TOK_BANG)) {
+	    (check(parser, TOK_BANG) || check(parser, TOK_QUESTION))) {
 		int pol_cp = syntax_cp(parser);
-		advance(parser); /* consume '!' */
+		advance(parser); /* consume '!' or '?' */
 		if (!check(parser, TOK_IDENT)) {
-			error(parser, "Expected a policy name after '!' (e.g. `a[i] !clamp`)");
+			error(parser, "Expected a policy name after the sigil (e.g. `a[i] !clamp`, `insert(P,x) ?reject`)");
 			return 0;
 		}
 		advance(parser); /* consume the policy ident */

@@ -103,6 +103,9 @@ static int no_space_before(TokenKind t, TokenKind prev, TokenKind next) {
 	case TOK_LBRACKET:
 	case TOK_AT:
 		return 1;
+	case TOK_BANG:
+	case TOK_QUESTION:
+		return 1; /* a policy name hugs its sigil: `!clamp`, `?reject` (and unary `!x`) */
 	default:
 		return 0;
 	}
