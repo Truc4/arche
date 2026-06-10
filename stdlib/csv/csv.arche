@@ -93,28 +93,28 @@ find_byte :: func(data: char[], start: i64, end: i64, ch: int) -> i64 {
   return end;
 }
 
-// 1 if archetype field name `name` equals the CSV header cell data[start..end)
-name_eq :: func(name: char[], data: char[], start: i64, end: i64) -> int {
+// true if archetype field name `name` equals the CSV header cell data[start..end)
+name_eq :: func(name: char[], data: char[], start: i64, end: i64) -> bool {
   len: i64 = end - start;
   if (str.strlen(name) != len) {
-    return 0;
+    return false;
   }
   for (i: i64 = 0; i < len; i = i + 1) {
     if (i >= name.length) {
-      return 0; // guard name[i]
+      return false; // guard name[i]
     }
     k: i64 = start + i;
     if (k < 0) {
-      return 0;
+      return false;
     }
     if (k >= data.length) {
-      return 0; // guard data[k]
+      return false; // guard data[k]
     }
     if (name[i] != data[k]) {
-      return 0;
+      return false;
     }
   }
-  return 1;
+  return true;
 }
 
 // start offset of the col-th comma-separated field within data[row_start..row_end)

@@ -18,26 +18,27 @@ int :: alias i32
 // primitive: `byte` and `u8` are the same type, freely interchangeable.
 byte :: alias u8
 
-// Boolean readability constants. Arche has no `bool` primitive; comparisons yield int 0/1, so `bool`
-// is a TRANSPARENT (tier-1) alias of `i8` — interchangeable with the int family (`running := true`,
-// `if (ok == false)`). Distinct-by-default would otherwise split it from its backing.
-bool :: alias i8
+// Boolean type. Arche has no `bool` primitive; comparisons yield 0/1, so `bool` is a DISTINCT
+// (tier-2) subtype of `i8`. Comparison operands stay lenient (`1 == true` ok), int literals flex in
+// (`ok : bool : 1`), and a bool flows back out AS an int one-way (`bool`→`i8`). What it blocks: a
+// named int silently becoming a bool (`int n := 1; bool b := n` needs `bool(n)`).
+bool :: i8
 true  : bool : 1
 false : bool : 0
 
 // Byte-compare two strings: 1 if equal, 0 otherwise. Pure (no FFI). Lives in core because the
 // `match` string-pattern desugar emits a bare `streq(...)` call — it is compiler-emitted, not a
 // user-facing library symbol, so it must resolve without an import.
-streq :: func(a: char[], b: char[]) -> int {
+streq :: func(a: char[], b: char[]) -> bool {
   if (a.length != b.length) {
-    return 0;
+    return false;
   }
   for (i := 0; i < a.length; i = i + 1) {
     if (i >= b.length) {
-      return 0; // guard: makes b[i] provably in-bounds (a.length == b.length here anyway)
+      return false; // guard: makes b[i] provably in-bounds (a.length == b.length here anyway)
     }
     if (a[i] != b[i]) {
-      return 0;
+      return false;
     }
   }
   return true;

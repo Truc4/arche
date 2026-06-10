@@ -6,20 +6,20 @@
 #import { net str fmt }
 
 /// Parse a request line "METHOD SP TARGET SP VERSION" into VIEWS of `req` plus an `ok` flag. The
-/// target's query string (`?...`) is trimmed. `ok` is 0 on a malformed line (method/target are then
-/// empty). Zero-copy: `method`/`target` are slices into `req`, not copies.
+/// target's query string (`?...`) is trimmed. `ok` is false on a malformed line (method/target are
+/// then empty). Zero-copy: `method`/`target` are slices into `req`, not copies.
 ///
 /// ```arche
 /// parse_request_line("GET /a?b=1 HTTP/1.1\r\n")(m:, t:, ok:);
-/// fmt.assert(ok == 1, "ok\n");
+/// fmt.assert(ok, "ok\n");
 /// fmt.assert(streq(m, "GET"), "method\n");
 /// fmt.assert(streq(t, "/a"), "target query-trimmed\n");
 /// ```
 ///
 /// Pure, but returns three values (two slices + ok) — a func returns only one, so it must be a proc.
 @allow_pure_proc
-parse_request_line :: proc(req: char[])(method: char[], target: char[], ok: int) {
-  ok = 0;
+parse_request_line :: proc(req: char[])(method: char[], target: char[], ok: bool) {
+  ok = false;
   if (req.length < 5) {
     return;
   }
@@ -36,7 +36,7 @@ parse_request_line :: proc(req: char[])(method: char[], target: char[], ok: int)
     tend = q; // drop the query string
   }
   target = req[tstart: tend];
-  ok     = 1;
+  ok     = true;
 }
 
 /// Content-Type for a path, chosen by file extension. Returns a NUL-terminated string literal — safe
@@ -93,15 +93,15 @@ reason :: func(status: int) -> char[] {
 }
 
 /// Write the status line + headers into the caller's `hdr` buffer, send them, then the body iff
-/// `send_body` is 1 (0 for HEAD). `%d` formats the status + Content-Length; `%s` formats only the
-/// NUL-terminated `reason`/`ctype` literals — never a body slice (the body is sent raw).
+/// `send_body` is true (false for HEAD). `%d` formats the status + Content-Length; `%s` formats only
+/// the NUL-terminated `reason`/`ctype` literals — never a body slice (the body is sent raw).
 respond :: proc(
   conn      : socket,
   hdr       : char[],
   status    : int,
   ctype     : char[],
   body      : char[],
-  send_body : int,
+  send_body : bool,
 ) {
   // Bind the reason phrase to a local: an inline func-call result is a `{ptr,len}` slice, but a `%s`
   // vararg needs a bare NUL-terminated pointer — a NAME is passed as its `.ptr`, an inline call is not.
@@ -115,7 +115,7 @@ respond :: proc(
     body.length,
   )(hdr, n:);
   net.send(conn, hdr[0: n]);
-  if (send_body == 1) {
+  if (send_body) {
     net.send(conn, body);
   }
 }
@@ -123,5 +123,5 @@ respond :: proc(
 /// Plain-text response (error pages). `msg` is the body AND its own Content-Length (a length-carried
 /// slice). Always sends the body.
 respond_text :: proc(conn: socket, hdr: char[], status: int, msg: char[]) {
-  respond(conn, hdr, status, "text/plain; charset=utf-8", msg, 1);
+  respond(conn, hdr, status, "text/plain; charset=utf-8", msg, true);
 }

@@ -90,7 +90,7 @@ add :: proc(pattern: char[], handler_id: int) {
       if (TrieNode.kind[child] == kind) {
         if (kind == nodeKind.kstatic) {
           cs := TrieNode.seg[child];
-          if (seg_eq(cs, TrieNode.seg_len[child], pattern, tstart, e) == 1) {
+          if (seg_eq(cs, TrieNode.seg_len[child], pattern, tstart, e)) {
             found = child;
           }
         }
@@ -166,7 +166,7 @@ resolve :: proc(path: char[])(handler_id: int) {
       k := TrieNode.kind[child] !undefined;
       if (k == nodeKind.kstatic) {
         cs := TrieNode.seg[child] !undefined;
-        if (seg_eq(cs, TrieNode.seg_len[child] !undefined, path, s, e) == 1) {
+        if (seg_eq(cs, TrieNode.seg_len[child] !undefined, path, s, e)) {
           static_hit = child;
         }
       }
@@ -260,28 +260,28 @@ seg_end :: func(p: char[], start: int, n: int) -> int {
   return n;
 }
 
-// 1 if the NUL-terminated stored segment equals p[start..end), else 0. Pure (reads only params),
-// so it's usable inline in conditions.
-seg_eq :: func(stored: char[32], stored_len: int, p: char[], start: int, end: int) -> int {
+// true if the NUL-terminated stored segment equals p[start..end), else false. Pure (reads only
+// params), so it's usable inline in conditions.
+seg_eq :: func(stored: char[32], stored_len: int, p: char[], start: int, end: int) -> bool {
   if (stored_len != end - start) {
-    return 0;
+    return false;
   }
   for (i := 0; i < end - start; i = i + 1) {
     if (i >= stored.length) {
-      return 0; // guard stored[i]
+      return false; // guard stored[i]
     }
     k := start + i;
     if (k < 0) {
-      return 0;
+      return false;
     }
     if (k >= p.length) {
-      return 0; // guard p[k]
+      return false; // guard p[k]
     }
     if (stored[i] != p[k]) {
-      return 0;
+      return false;
     }
   }
-  return 1;
+  return true;
 }
 
 // Allocate a node holding `seg` (content length `seg_len`); return its pool slot. `ok` reports

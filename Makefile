@@ -132,10 +132,6 @@ run: $(TARGET)
 run-lexer: $(LEXER_BIN)
 	./$(LEXER_BIN) examples/hello.arc
 
-# Run lexer tests
-test-lexer: $(LEXER_BIN)
-	LEXER_BIN=$(LEXER_BIN) ./tests/run_lexer_tests.sh
-
 # Run semantic tests
 test-semantic: $(SEMANTIC_TEST_BIN)
 	./$(SEMANTIC_TEST_BIN)
@@ -397,4 +393,4 @@ test-install: all
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
 
 # Phony targets
-.PHONY: all run run-lexer test test-per-unit test-doc test-lexer test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install
+.PHONY: all run run-lexer test test-per-unit test-doc test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install

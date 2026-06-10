@@ -1,9 +1,11 @@
 // Task 2: Filter invalid rows
-// Mark rows as valid (valid=1) if quantity > 0
-Transaction :: arche { price :: float, quantity :: int, valid :: int }
+// A row is valid iff quantity > 0. That is a pure function of `quantity` — an IMPLICIT boolean — so
+// it is NOT a stored column (a per-row 0/1 flag column would duplicate derivable data). It is
+// computed at the point of use, when writing each row.
+Transaction :: arche { price :: float, quantity :: int }
 
 Transaction[1000](1000) {
-  price: 0.0, quantity: 0, valid: 0,
+  price: 0.0, quantity: 0,
 }
 
 load_transactions :: proc() {
@@ -82,7 +84,7 @@ write_transactions :: proc() {
       "%f,%d,%d\n",
       Transaction.price[i],
       Transaction.quantity[i],
-      Transaction.valid[i],
+      Transaction.quantity[i] > 0,
     )(n:);
     arche_fwrite(fd, buf, n);
     i = i + 1;
@@ -92,7 +94,6 @@ write_transactions :: proc() {
 
 main :: proc() {
   load_transactions();
-  Transaction.valid = Transaction.quantity > 0;
   write_transactions();
   printf("Task2 complete: 1000 rows written to build/benchmarks/etl/task2/arche_output.csv\n");
 }
