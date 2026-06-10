@@ -6,8 +6,8 @@
 main :: proc(argc: int) {
   a: int[4];
   a[0] = 1;
-  lo := argc + 2;       // 3
-  hi := argc;           // 1  -> reversed
-  s := a[lo:hi] !clamp;  // reversed -> empty
+  lo   := argc + 2; // 3
+  hi   := argc; // 1  -> reversed
+  s    := a[lo: hi] !clamp; // reversed -> empty
   fmt.printf("rev_len=%d\n", s.length);
 }

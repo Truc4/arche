@@ -125,6 +125,8 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "STATIC_DECL";
 	case SN_CONST_DECL:
 		return "CONST_DECL";
+	case SN_DEFAULT_DECL:
+		return "DEFAULT_DECL";
 	case SN_REGION:
 		return "REGION";
 	case SN_USE_DECL:

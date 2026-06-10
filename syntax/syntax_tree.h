@@ -32,6 +32,8 @@ typedef enum {
 	SN_FUNC_GROUP_DECL,
 	SN_STATIC_DECL,
 	SN_CONST_DECL,
+	SN_DEFAULT_DECL, /* `@default(<kind>, <category>, <policy>)` — standalone directive setting the
+	                  * program's failure-policy default for one (effect-kind, op-category) cell */
 	SN_USE_DECL,
 	SN_REGION, /* `#module`/`#file`/`#foreign` region marker — banner (narrows following decls to
 	            * end-of-file) or, when it carries a `{ ... }` body, a bounded block of child decls */

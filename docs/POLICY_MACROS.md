@@ -31,10 +31,23 @@ Consequences that "fall out" of the model (no special-casing):
 ## Defaults are declared, not hardcoded
 
 An unannotated fallible op resolves its policy by precedence:
-1. explicit `!policy` at the site;
-2. `@default(<policy>)` on the enclosing proc/func (per-decl);
-3. build flag (`--unchecked` ⇒ `undefined`; `--no-abort` forbids an `abort` resolution);
-4. baseline: `func` → `clamp` (stays total), `proc` → `abort` — these just *name* core policies.
+1. explicit `!policy` / `?policy` at the site;
+2. build flag (`--unchecked` ⇒ `undefined`; `--no-abort` forbids an `abort` resolution);
+3. the program's `@default(<kind>, <category>, <policy>)` directive for this op's `(kind, category)` cell;
+4. baseline: bounds `func` → `clamp` / `proc` → `abort`; divide `func` → `zero` / `proc` → `abort`;
+   pool → `reject` — these just *name* core policies.
+
+A `@default` is a **standalone top-level directive**, not a per-decl decorator, so there can never be a
+pile of defaults that shadow each other and go dead. It names a policy (core or user) for one
+`(effect-kind, op-category)` cell, and a program may declare **at most one per cell** (a second is
+**E0128 `duplicate_default`**). The named policy must belong to the stated category (else **E0124**); a
+`func` cell cannot name `abort` (a func stays total — **E0129 `default_invalid`**); `pool` is `proc`-only.
+
+```
+@default(proc, bounds, clamp)   // a proc's unannotated index/slice clamps instead of aborting
+@default(func, divide, zero)    // (already the baseline) — names it explicitly
+@default(proc, pool,   evict_oldest)
+```
 
 A **proven-safe** op (the bounds prover discharged it) carries no policy at all — nothing is inlined.
 
@@ -60,8 +73,11 @@ and `dprintf(fd, fmt)` (the stderr diagnostic). Nothing else in the policy syste
 - **D5. bounds-read-`zero` dropped.** "Return 0 from an OOB array *read*" isn't operand mutation (no
   slot is guaranteed 0) — it can't be a prelude macro and nobody needs it (use clamp/wrap). Divide
   `zero` *is* operand mutation (`b=1; a=0`) and stays.
-- **D6. Defaults via `@default(name)` decorator + baseline.** The baseline (proc→abort, func→clamp)
-  names core policies; nothing hardcoded in codegen. `@default(clamp) p :: proc(){…}` overrides.
+- **D6. Defaults via a program `@default` directive + baseline.** The baseline names core policies;
+  nothing hardcoded in codegen but the last-resort baseline mapping. A program may override a
+  `(kind, category)` cell with a standalone `@default(<kind>, <category>, <policy>)` directive — see
+  D20. (Superseded the old per-proc `@default(name)` decorator, which let many shadowing defaults
+  coexist and go dead.)
 - **D7. Inliner uses alloca-backed operands.** The policy's params are bound as `type==1` mutable
   scalars (alloca + store), exactly like a normal `i := …` local, so branch reassignments (`if(i<0){i=0}`)
   store/load correctly. A plain-SSA binding silently dropped a reassignment made inside an `if` (the
@@ -96,10 +112,13 @@ and `dprintf(fd, fmt)` (the stderr diagnostic). Nothing else in the policy syste
   categorized core decls; only the name-based rules (`abort` forbidden in a `func`; `--no-abort` /
   `--no-undefined` flags) remain special. Codegen's divide site inlines with the `divide` category;
   index/slice sites with `bounds`.
-- **D14. Divide default left explicit.** A `/` or `%` only inlines a policy when one is written
-  (`a / b !zero`); an unannotated divide is the raw op, unchanged. `cg_policy_for` *can* supply a divide
-  default (func→`zero`, proc→`abort`) but isn't yet wired to every division — deferred to avoid the broad
-  behavioral change of checking every divide. Bounds defaults (func→`clamp`, proc→`abort`) are active.
+- **D14. Divide default now wired.** Every integer `/` or `%` resolves a policy through `cg_policy_for`
+  (category `divide`): explicit `a / b !zero` wins; else the program `@default(_, divide, _)`; else the
+  baseline (`func`→`zero` total, `proc`→`abort`). So an unannotated div-by-zero is a visible policy
+  decision — a proc aborts, a func yields 0 — never silent UB. Covers the compound-assignment path
+  (`a /= 0`) too. Float and vector divides stay raw; a non-i32 integer divide also stays raw (a failure
+  policy operates on `int`/i32 operands — widening the macro is future work). The shared helper is
+  `emit_int_divmod`. (`policy/divide_default_{abort,func_zero,compound}*.arche`.)
 - **D15. `&&` / `||` now genuinely short-circuit.** The old codegen evaluated *both* operands then
   bitwise-combined them — sound only while "arche expressions have no side effects and no traps." Failure
   policies broke that: a `!abort` (or any policy prelude) in a short-circuited-out operand fired anyway,
@@ -140,3 +159,23 @@ and `dprintf(fd, fmt)` (the stderr diagnostic). Nothing else in the policy syste
   the shared `@arche_insert_<arch>` helper overwrites (reusing its write/gen-bump blocks).
   (`policy/pool_{reject,evict,evict_stale,override,cross_arch_lint}.arche`,
   `policy/errors/{handler_sigil_mismatch,insert_panic_sigil,pool_wrong_category}.arche`.)
+- **D19. A live pool handle is never 0 — and handles compare at full width.** A handle is `slot |
+  gen<<32`. Two fixes make `h == 0` an unambiguous overflow/failure sentinel even for a caller that
+  checks `h` instead of `ok`: (1) the insert helper forces the *issued* generation to be ≥ 1 (`gen ==
+  0 ? 1 : gen`, stored back so `delete`'s gen check matches), so even slot 0 yields a nonzero handle;
+  and (2) a comparison with a handle operand is done at i64 (like opaque cells), not truncated to the
+  i32 slot — which also fixes a latent bug where two handles to the same slot but different generations
+  compared *equal*. `gen == 0` is never a free-slot marker (free slots live in the free_list), so
+  promoting it is safe. (`policy/pool_handle_nonzero.arche`.)
+- **D20. Program defaults: a standalone `@default(<kind>, <category>, <policy>)` directive, one per
+  `(kind, category)` cell.** A failure-policy default is set by a *directive*, not a per-decl decorator
+  (the old `@default(name)` on a proc/func let many shadowing defaults coexist and silently go dead).
+  It is keyed by effect kind (`func` stays total — can't name `abort`; `proc` can) and op category, and
+  references a policy *by name* so a core policy (`clamp`/`abort`/…) works without editing core. A
+  program declares at most one per cell: a second is **E0128 `duplicate_default`**; a named policy of
+  the wrong category is **E0124**; a `func`+`abort` or `func`+`pool` cell is **E0129 `default_invalid`**.
+  Resolution (codegen `cg_policy_for` / `cg_insert_handler`): site `!name`/`?name` › the one `@default`
+  for the cell › baseline. The directive emits no code — it only feeds the resolution table. Parsed as
+  `SN_DEFAULT_DECL` → `HIR_DECL_DEFAULT`; validated in `sem_check_default_directives`.
+  (`policy/default_decorator.arche`,
+  `policy/errors/{duplicate_default,default_func_abort,default_category_mismatch}.arche`.)

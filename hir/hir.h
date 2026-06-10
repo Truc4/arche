@@ -75,6 +75,7 @@ typedef enum {
 	HIR_DECL_FUNC_GROUP,
 	HIR_DECL_STATIC,
 	HIR_DECL_CONST,
+	HIR_DECL_DEFAULT, /* `@default(<kind>, <category>, <policy>)` program default directive */
 } HirDeclKind;
 
 typedef enum {
@@ -116,9 +117,8 @@ typedef struct {
 	HirParam **out_params;
 	int out_param_count;
 	int is_extern;
-	int is_drop;          /* 1 if this proc is a `@drop` destructor (own opaque param is the type it destroys) */
-	int is_intrinsic;     /* 1 if `@intrinsic`: calls lower to a built-in instruction (e.g. raw syscall) */
-	char *default_policy; /* `@default(name)`: the failure policy this proc's unannotated ops take, else NULL */
+	int is_drop;      /* 1 if this proc is a `@drop` destructor (own opaque param is the type it destroys) */
+	int is_intrinsic; /* 1 if `@intrinsic`: calls lower to a built-in instruction (e.g. raw syscall) */
 	HirStmt **stmts;
 	int stmt_count;
 	SourceLoc loc;
@@ -149,11 +149,10 @@ typedef struct {
 	HirType **return_types;
 	int return_type_count;
 	int is_extern;
-	int is_policy; /* lowered from a `policy` form: a failure-policy MACRO, inlined at fallible op sites
-	                * (operands bound as mutable locals), never emitted as its own LLVM function. */
+	int is_policy;       /* lowered from a `policy` form: a failure-policy MACRO, inlined at fallible op sites
+	                      * (operands bound as mutable locals), never emitted as its own LLVM function. */
 	int policy_category; /* for a policy: 1=bounds (index/slice), 2=pool (insert), 3=divide. So a `clamp`
 	                      * (bounds) and an `abort` (both) resolve by name AND category. 0 = unset. */
-	char *default_policy; /* `@default(name)`: the failure policy this func's unannotated ops take, else NULL */
 	HirStmt **stmts;
 	int stmt_count;
 	SourceLoc loc;
@@ -194,6 +193,15 @@ typedef struct {
 	HirType *type; /* explicit declared type from `name : T : value` (concrete T); NULL if inferred */
 } HirConstDecl;
 
+/* `@default(<kind>, <category>, <policy>)`: the program's failure-policy default for one
+ * (effect-kind, op-category) cell. At most one per cell program-wide. */
+typedef struct {
+	int effect_kind; /* 0 = proc, 1 = func */
+	int category;    /* 1 = bounds, 2 = pool, 3 = divide */
+	char *policy;    /* the named policy (resolved in core or user code) */
+	SourceLoc loc;
+} HirDefaultDecl;
+
 struct HirDecl {
 	HirDeclKind kind;
 	SourceLoc loc;
@@ -208,6 +216,7 @@ struct HirDecl {
 		HirFuncGroupDecl *func_group;
 		HirStaticDecl *static_decl;
 		HirConstDecl *constant;
+		HirDefaultDecl *default_decl;
 	} data;
 };
 
@@ -383,7 +392,7 @@ struct HirExpr {
 			HirExpr *callee;
 			HirExpr **args;
 			int arg_count;
-			char *policy;        /* `?name` overflow handler on a pool `insert(...)`, or NULL → default */
+			char *policy;          /* `?name` overflow handler on a pool `insert(...)`, or NULL → default */
 			int policy_is_handler; /* 1 if the policy was written with `?` (handler), 0 if `!` (panic) */
 		} call;
 		struct {

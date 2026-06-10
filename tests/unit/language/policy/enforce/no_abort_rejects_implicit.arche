@@ -4,5 +4,5 @@
 main :: proc() {
   a: int[4];
   i := 9;
-  x := a[i];   // implicit !abort -> rejected under --no-abort
+  x := a[i]; // implicit !abort -> rejected under --no-abort
 }

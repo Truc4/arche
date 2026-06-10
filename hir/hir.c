@@ -343,6 +343,12 @@ void hir_decl_free(HirDecl *decl) {
 			free(decl->data.constant);
 		}
 		break;
+	case HIR_DECL_DEFAULT:
+		if (decl->data.default_decl) {
+			free(decl->data.default_decl->policy);
+			free(decl->data.default_decl);
+		}
+		break;
 	}
 	free(decl);
 }

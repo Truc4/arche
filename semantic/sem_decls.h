@@ -97,7 +97,7 @@ typedef struct {
 	char *drop_type;
 	char **allow_slugs;
 	int allow_slug_count;
-	int is_policy; /* 1 if declared as a `policy` form (a failure policy; invoked via `!name`, not called) */
+	int is_policy;       /* 1 if declared as a `policy` form (a failure policy; invoked via `!name`, not called) */
 	int policy_category; /* PolicyCategory: which op kind this policy serves (from `@policy(...)`); 0 = unspecified */
 } DeclSummary;
 
@@ -106,9 +106,9 @@ typedef struct {
  * POLICY_CAT_NONE (0) is the calloc default: a `policy` decl with no `@policy(...)` decorator. */
 typedef enum {
 	POLICY_CAT_NONE = 0,
-	POLICY_CAT_BOUNDS,  /* index / slice */
-	POLICY_CAT_POOL,    /* insert */
-	POLICY_CAT_DIVIDE,  /* `/` */
+	POLICY_CAT_BOUNDS, /* index / slice */
+	POLICY_CAT_POOL,   /* insert */
+	POLICY_CAT_DIVIDE, /* `/` */
 } PolicyCategory;
 
 /* The exported surface of one compilation unit (module) — a first-class, persisted interface. Today

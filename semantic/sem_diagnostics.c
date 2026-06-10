@@ -112,6 +112,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_policy_abort_forbidden]        = { "E0125", "policy_abort_forbidden",        CLASS_ERROR, 1 },
 	[SEM_DIAG_policy_undefined_forbidden]    = { "E0126", "policy_undefined_forbidden",    CLASS_ERROR, 1 },
 	[SEM_DIAG_allow_forbidden]               = { "E0127", "allow_forbidden",               CLASS_ERROR, 1 },
+	[SEM_DIAG_duplicate_default]             = { "E0128", "duplicate_default",             CLASS_ERROR, 1 },
+	[SEM_DIAG_default_invalid]               = { "E0129", "default_invalid",               CLASS_ERROR, 1 },
 
 	/* Assignment targets */
 	[SEM_DIAG_assign_to_const]               = { "E0091", "assign_to_const",               CLASS_ERROR, 1 },
@@ -742,6 +744,15 @@ SemDiag *sem_emit_policy_func_aborts(SemanticContext *ctx, SourceLoc loc, const 
 	                 "`!abort` is not allowed in func '%s' — a func can never crash; use a total policy "
 	                 "(e.g. `!clamp`, `!zero`) or `!undefined`",
 	                 func);
+}
+SemDiag *sem_emit_duplicate_default(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *category) {
+	return sem_emit_(ctx, SEM_DIAG_duplicate_default, loc,
+	                 "duplicate `@default(%s, %s, …)` — a program sets at most one failure-policy default per "
+	                 "(effect-kind, category) cell",
+	                 kind, category);
+}
+SemDiag *sem_emit_default_invalid(SemanticContext *ctx, SourceLoc loc, const char *msg) {
+	return sem_emit_(ctx, SEM_DIAG_default_invalid, loc, "invalid `@default` directive — %s", msg);
 }
 SemDiag *sem_emit_policy_unknown(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_policy_unknown, loc,

@@ -1038,25 +1038,47 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			continue;
 		}
 		if (cur_ident_is(parser, "default", 7)) {
-			/* `@default(<policy>)` on a proc/func: the failure policy its unannotated fallible ops take,
-			 * instead of the baseline (proc→abort, func→clamp). Recorded as tokens; lowering reads it. */
+			/* `@default(<kind>, <category>, <policy>)` — a STANDALONE top-level directive setting the
+			 * program's failure-policy default for one (effect-kind, op-category) cell. <kind> is the
+			 * `proc`/`func` keyword; <category> (bounds/divide/pool) and <policy> are idents. Not a
+			 * decorator on a following decl: it wraps as its own SN_DEFAULT_DECL node. Lowering reads
+			 * the three argument tokens. */
 			advance(parser); /* consume 'default' */
 			if (!check(parser, TOK_LPAREN)) {
-				error(parser, "Expected '(' after @default — name a policy, e.g. @default(clamp)");
+				error(parser, "Expected '(' after @default — e.g. @default(proc, bounds, abort)");
 				return 0;
 			}
-			advance(parser);
+			advance(parser); /* '(' */
+			if (!check(parser, TOK_PROC) && !check(parser, TOK_FUNC)) {
+				error(parser, "Expected an effect kind (proc or func) as the first @default argument");
+				return 0;
+			}
+			advance(parser); /* kind */
+			if (!match(parser, TOK_COMMA)) {
+				error(parser, "Expected ',' after the effect kind in @default(...)");
+				return 0;
+			}
 			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected a policy name inside @default(...)");
+				error(parser, "Expected a category (bounds, divide, or pool) in @default(...)");
 				return 0;
 			}
-			advance(parser);
+			advance(parser); /* category */
+			if (!match(parser, TOK_COMMA)) {
+				error(parser, "Expected ',' after the category in @default(...)");
+				return 0;
+			}
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected a policy name in @default(...)");
+				return 0;
+			}
+			advance(parser); /* policy */
 			if (!check(parser, TOK_RPAREN)) {
 				error(parser, "Expected ')' to close @default(...)");
 				return 0;
 			}
-			advance(parser);
-			continue;
+			advance(parser); /* ')' */
+			*out_kind = SN_DEFAULT_DECL;
+			return 1;
 		}
 		if (cur_ident_is(parser, "drop", 4)) {
 			/* `@drop(<OpaqueType>)` decl decorator — marks the decorated proc as the destructor

@@ -3,6 +3,8 @@
 // RUN: %arche build -o %t %s && %t | grep -qF "z=0 ok=3 m=0 mok=1"
 #import { fmt }
 main :: proc() {
-  n := 10; d := 0; d2 := 3;
+  n  := 10;
+  d  := 0;
+  d2 := 3;
   fmt.printf("z=%d ok=%d m=%d mok=%d\n", n / d !zero, n / d2 !zero, n % d !zero, n % d2 !zero);
 }

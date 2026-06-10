@@ -1721,30 +1721,52 @@ static int syntax_decl_policy_category(SyntaxView d) {
 	return 0;
 }
 
-/* The policy named in `@default(<policy>)` on a decl (the IDENT inside the parens), owned, or NULL. */
-static char *syntax_decl_default_policy(SyntaxView d) {
-	if (!sv_present(d))
-		return NULL;
-	int n = d.node->child_count;
-	for (int i = 0; i + 3 < n; i++) {
-		const SyntaxElem *at = &d.node->children[i];
-		const SyntaxElem *kw = &d.node->children[i + 1];
-		const SyntaxElem *lp = &d.node->children[i + 2];
-		const SyntaxElem *nm = &d.node->children[i + 3];
-		if (at->tag != SE_TOKEN || at->as.token.kind != TOK_AT)
+/* Map a category ident (`bounds`/`pool`/`divide`) to its int code (1/2/3), or 0 if unknown. */
+static int default_category_code(const char *p, size_t len) {
+	if (len == 6 && memcmp(p, "bounds", 6) == 0)
+		return 1;
+	if (len == 4 && memcmp(p, "pool", 4) == 0)
+		return 2;
+	if (len == 6 && memcmp(p, "divide", 6) == 0)
+		return 3;
+	return 0;
+}
+
+/* Lower a `@default(<kind>, <category>, <policy>)` directive node into a HIR_DECL_DEFAULT. The node's
+ * tokens are `@ default ( <kind-kw> , <category> , <policy> )`; read the three argument tokens by
+ * position. `category`/`policy` are left raw here (validated in semantic). */
+static HirDecl *lower_default_directive(SyntaxView d) {
+	HirDecl *dd = hir_decl_create(HIR_DECL_DEFAULT);
+	HirDefaultDecl *df = calloc(1, sizeof(HirDefaultDecl));
+	df->effect_kind = -1;
+	df->category = 0;
+	df->policy = NULL;
+	int n = d.node ? d.node->child_count : 0;
+	int seen = 0; /* argument position: 0=kind, 1=category, 2=policy */
+	for (int i = 0; i < n && seen < 3; i++) {
+		if (d.node->children[i].tag != SE_TOKEN)
 			continue;
-		if (kw->tag != SE_TOKEN || kw->as.token.kind != TOK_IDENT || kw->as.token.length != 7 ||
-		    memcmp(d.src + kw->as.token.offset, "default", 7) != 0)
+		TokenKind tk = d.node->children[i].as.token.kind;
+		uint32_t off = d.node->children[i].as.token.offset;
+		uint32_t tlen = d.node->children[i].as.token.length;
+		if (tk == TOK_AT || tk == TOK_LPAREN || tk == TOK_RPAREN || tk == TOK_COMMA)
 			continue;
-		if (lp->tag != SE_TOKEN || lp->as.token.kind != TOK_LPAREN || nm->tag != SE_TOKEN ||
-		    nm->as.token.kind != TOK_IDENT)
+		/* The leading `default` ident is consumed before the first real arg: skip it once. */
+		if (seen == 0 && tk == TOK_IDENT && tlen == 7 && memcmp(d.src + off, "default", 7) == 0)
 			continue;
-		char *s = malloc(nm->as.token.length + 1);
-		memcpy(s, d.src + nm->as.token.offset, nm->as.token.length);
-		s[nm->as.token.length] = '\0';
-		return s;
+		if (seen == 0) {
+			df->effect_kind = (tk == TOK_FUNC) ? 1 : 0; /* proc default */
+		} else if (seen == 1) {
+			df->category = default_category_code(d.src + off, tlen);
+		} else {
+			df->policy = malloc(tlen + 1);
+			memcpy(df->policy, d.src + off, tlen);
+			df->policy[tlen] = '\0';
+		}
+		seen++;
 	}
-	return NULL;
+	dd->data.default_decl = df;
+	return dd;
 }
 
 /* ===== Unified-grammar RHS value forms (P2) =====
@@ -1995,6 +2017,8 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 	switch (sv_kind(d)) {
 	case SN_USE_DECL:
 		return NULL;
+	case SN_DEFAULT_DECL:
+		return lower_default_directive(d);
 	case SN_WORLD_DECL: {
 		HirDecl *ad = hir_decl_create(HIR_DECL_WORLD);
 		ad->data.world = calloc(1, sizeof(HirWorldDecl));
@@ -2178,14 +2202,10 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					 * checks the resolved decl's flag, not the symbol name — see codegen syscall). */
 					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && syntax_decl_has_intrinsic_decorator(d))
 						pd->data.proc->is_intrinsic = 1;
-					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc)
-						pd->data.proc->default_policy = syntax_decl_default_policy(d); /* `@default(name)` */
 					return pd;
 				}
 				case SN_FUNC_EXPR: {
 					HirDecl *fd = lower_func_from(rhs, nm);
-					if (fd && fd->kind == HIR_DECL_FUNC && fd->data.func)
-						fd->data.func->default_policy = syntax_decl_default_policy(d); /* `@default(name)` */
 					return fd;
 				}
 				case SN_POLICY_EXPR: {
@@ -2669,6 +2689,9 @@ static void hir_rn_decl(HirDecl *d, const char *prefix, char **set, int count) {
 	case HIR_DECL_WORLD:
 		rn_owned(&d->data.world->name, prefix, set, count);
 		break;
+	case HIR_DECL_DEFAULT:
+		/* A program default directive references a policy by name globally; no module-local rename. */
+		break;
 	}
 }
 
@@ -2695,6 +2718,8 @@ static const char *hir_decl_name(HirDecl *d) {
 		return d->data.constant->name;
 	case HIR_DECL_WORLD:
 		return d->data.world->name;
+	case HIR_DECL_DEFAULT:
+		return NULL; /* a directive, not a named decl */
 	}
 	return NULL;
 }

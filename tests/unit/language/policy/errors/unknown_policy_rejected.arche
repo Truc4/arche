@@ -4,5 +4,5 @@
 main :: proc() {
   a: int[4];
   i := 9;
-  x := a[i] !bogus;   // no such policy -> E0099
+  x := a[i] !bogus; // no such policy -> E0099
 }

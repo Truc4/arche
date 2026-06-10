@@ -4,5 +4,5 @@
 Foo :: arche { v :: int }
 Foo[2]
 main :: proc() {
-  insert(Foo, 1) !reject (h:, ok:);   // panic sigil on an insert -> wrong sigil
+  insert(Foo, 1) !reject(h:, ok:); // panic sigil on an insert -> wrong sigil
 }

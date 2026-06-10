@@ -56,7 +56,7 @@ typedef enum TokenKind {
 	TOK_HASH_FOREIGN, /* #foreign — region of foreign-bodied (FFI) proc decls */
 
 	/* assignment */
-	TOK_EQ,       /* = */
+	TOK_EQ,         /* = */
 	TOK_PLUS_EQ,    /* += */
 	TOK_MINUS_EQ,   /* -= */
 	TOK_STAR_EQ,    /* *= */
@@ -86,7 +86,7 @@ typedef enum TokenKind {
 	TOK_ARROW, /* -> */
 
 	/* unary */
-	TOK_BANG, /* ! */
+	TOK_BANG,    /* ! */
 	TOK_QUESTION /* ? — handler-policy sigil on a pool insert (`insert(P,x) ?reject`) */
 } TokenKind;
 

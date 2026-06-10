@@ -606,7 +606,6 @@ static int name_is_proc(SynText n) {
 	return 0;
 }
 
-
 /* A bare proc/extern call statement (`printf(x);`) omits its out-list — that omission means "no
  * captured results", but the call is still an ACTION. Render a ghost `()` right after it so a reader
  * sees it may have effects. The capture form `f(x)(out)` is an SN_PROC_CALL_STMT (not an

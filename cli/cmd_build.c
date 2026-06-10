@@ -39,16 +39,14 @@ static const ArgSpec k_build_specs[] = {
      "promote the proc-could-be-func lint to an error"},
     {B_WERR_PNE, "-Werror=proc-no-effect", ARG_FLAG, 0, 0, NULL, "promote the proc-no-effect lint to an error"},
     {B_WERR, "-Werror", ARG_FLAG, 0, 0, NULL, "promote all (enabled) lints to errors"},
-    {B_FORBID_ALLOW, "--forbid-allow", ARG_FLAG, 0, 0, NULL,
-     "reject any `@allow(...)` lint escape hatch in your code"},
+    {B_FORBID_ALLOW, "--forbid-allow", ARG_FLAG, 0, 0, NULL, "reject any `@allow(...)` lint escape hatch in your code"},
     {B_UNCHECKED, "--unchecked", ARG_FLAG, 0, 0, NULL,
      "trusted/embedded build: strip implicit bounds checks (unannotated fallible ops become !undefined)"},
     {B_NO_ABORT, "--no-abort", ARG_FLAG, 0, 0, NULL,
      "crash-free build: reject any op resolving to `!abort` (implicit or explicit)"},
     {B_NO_IMPLICIT_ABORT, "--no-implicit-abort", ARG_FLAG, 0, 0, NULL,
      "reject only the implicit/default `!abort` — every fallible op must be annotated"},
-    {B_NO_UNDEFINED, "--no-undefined", ARG_FLAG, 0, 0, NULL,
-     "reject `!undefined` (the raw, runtime-unsafe opt-out)"},
+    {B_NO_UNDEFINED, "--no-undefined", ARG_FLAG, 0, 0, NULL, "reject `!undefined` (the raw, runtime-unsafe opt-out)"},
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 

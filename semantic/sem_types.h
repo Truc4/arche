@@ -66,7 +66,7 @@ PrimKind tyid_prim(const TypeArena *a, TypeId t);            /* the PrimKind of 
 const char *tyid_nominal_name(const TypeArena *a, TypeId t); /* a TYK_NOMINAL's interned name, else NULL */
 const char *tyid_handle_name(const TypeArena *a, TypeId t);  /* a TYK_HANDLE's archetype name, else NULL */
 TypeId tyid_elem(const TypeArena *a, TypeId t);              /* an array/shaped element type, else UNKNOWN */
-int tyid_shaped_rank(const TypeArena *a, TypeId t);         /* a shaped array's static length, else -1 */
+int tyid_shaped_rank(const TypeArena *a, TypeId t);          /* a shaped array's static length, else -1 */
 int tyid_tuple_count(const TypeArena *a, TypeId t);
 const char *tyid_tuple_field_name(const TypeArena *a, TypeId t, int i);
 TypeId tyid_tuple_field_type(const TypeArena *a, TypeId t, int i);

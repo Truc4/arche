@@ -3,6 +3,6 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "panic policy\|? marks a pool" %t.out
 main :: proc(k: int) {
   a: int[4];
-  x := a[k] ?clamp;   // handler sigil on a bounds op -> wrong sigil
+  x := a[k] ?clamp; // handler sigil on a bounds op -> wrong sigil
   y := x + 0;
 }

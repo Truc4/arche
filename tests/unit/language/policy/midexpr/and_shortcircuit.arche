@@ -6,6 +6,7 @@
 main :: proc(argc: int) {
   a: int[4];
   a[0] = 1;
-  i := argc + 100;                        // OOB at runtime
-  if (argc < 0 && a[i] !abort == 1) { }   // LHS false -> RHS (and its policy) must not run
+  i    := argc + 100; // OOB at runtime
+  if (argc < 0 && a[i] !abort == 1) {
+  } // LHS false -> RHS (and its policy) must not run
 }

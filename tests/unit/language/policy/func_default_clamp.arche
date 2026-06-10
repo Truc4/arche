@@ -6,9 +6,12 @@
 
 fdef :: func() -> int {
   a: int[4];
-  a[0] = 10; a[3] = 13;
-  i := 100;     // runtime, unprovable, unannotated -> func default = clamp -> a[3]
+  a[0] = 10;
+  a[3] = 13;
+  i    := 100; // runtime, unprovable, unannotated -> func default = clamp -> a[3]
   return a[i];
 }
 
-main :: proc() { fmt.printf("fdef=%d\n", fdef()); }
+main :: proc() {
+  fmt.printf("fdef=%d\n", fdef());
+}

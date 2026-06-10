@@ -4,6 +4,7 @@
 // RHS block, so it runs only when the LHS is true.
 // RUN: %arche build -o %t %s && %t
 main :: proc(argc: int) {
-  d := argc - argc;                              // 0 at runtime, opaque to the folder
-  if (argc < 0 && (10 / d !abort) == 0) { }      // LHS false -> RHS divide must not run
+  d := argc - argc; // 0 at runtime, opaque to the folder
+  if (argc < 0 && (10 / d !abort) == 0) {
+  } // LHS false -> RHS divide must not run
 }

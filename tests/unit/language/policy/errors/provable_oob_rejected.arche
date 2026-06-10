@@ -5,6 +5,6 @@
 #import { fmt }
 main :: proc() {
   a: int[4];
-  x := a[9] !clamp;   // literal 9 on int[4] -> provably OOB, E0097 even with !clamp
+  x := a[9] !clamp; // literal 9 on int[4] -> provably OOB, E0097 even with !clamp
   fmt.printf("%d\n", x);
 }

@@ -4,4 +4,5 @@
 f :: func(s: int[], i: int) -> int {
   return s[i] !abort;
 }
-main :: proc() {}
+main :: proc() {
+}

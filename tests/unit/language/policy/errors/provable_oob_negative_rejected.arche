@@ -4,5 +4,5 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "provably out of bounds\|E0097" %t.out
 main :: proc() {
   a: int[4];
-  a[-7] = 1;   // negative literal -> provably OOB, E0097
+  a[-7] = 1; // negative literal -> provably OOB, E0097
 }

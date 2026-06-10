@@ -3467,8 +3467,7 @@ static void bnd_env_add_litub(BndEnv *e, const char *var, int k) {
 static int bnd_litub(BndEnv *e, const char *var) {
 	int best = 2147483647;
 	for (int i = 0; i < e->count; i++)
-		if (e->facts[i].litub > 0 && e->facts[i].var && strcmp(e->facts[i].var, var) == 0 &&
-		    e->facts[i].litub < best)
+		if (e->facts[i].litub > 0 && e->facts[i].var && strcmp(e->facts[i].var, var) == 0 && e->facts[i].litub < best)
 			best = e->facts[i].litub;
 	return best;
 }
@@ -3737,7 +3736,6 @@ static int bnd_lit_int_signed(SyntaxView v, int *out) {
 	return 1;
 }
 
-
 static const char *policy_cat_name(PolicyCategory c) {
 	switch (c) {
 	case POLICY_CAT_BOUNDS:
@@ -3759,10 +3757,18 @@ static int g_no_abort = 0;
 static int g_no_implicit_abort = 0;
 static int g_no_undefined = 0;
 static int g_forbid_allow = 0;
-void semantic_set_no_abort(int on) { g_no_abort = on; }
-void semantic_set_no_implicit_abort(int on) { g_no_implicit_abort = on; }
-void semantic_set_no_undefined(int on) { g_no_undefined = on; }
-void semantic_set_forbid_allow(int on) { g_forbid_allow = on; }
+void semantic_set_no_abort(int on) {
+	g_no_abort = on;
+}
+void semantic_set_no_implicit_abort(int on) {
+	g_no_implicit_abort = on;
+}
+void semantic_set_no_undefined(int on) {
+	g_no_undefined = on;
+}
+void semantic_set_forbid_allow(int on) {
+	g_forbid_allow = on;
+}
 
 /* The crash-free flags assert the USER's code is total — they don't fire on the bundled core/stdlib
  * (which aren't policy-annotated) nor on the prepended prelude text (origin ENTRY, but above the
@@ -5638,7 +5644,7 @@ static void sem_add_module_decl(SemanticContext *ctx, const SyntaxNode *node, co
 /* True for a declaration node kind eligible for collection (excludes SN_USE_DECL, handled
  * separately, and SN_REGION, which is a container/marker rather than a decl). */
 static int sem_is_collectible_decl(SyntaxNodeKind k) {
-	return k >= SN_WORLD_DECL && k <= SN_USE_DECL && k != SN_USE_DECL;
+	return k >= SN_WORLD_DECL && k <= SN_USE_DECL && k != SN_USE_DECL && k != SN_DEFAULT_DECL;
 }
 
 /* The module name an `#import` element resolves to: IDENT = the name verbatim (device by name);
@@ -5854,6 +5860,66 @@ static void sem_inline_module(SemanticContext *ctx, const char *mod_name) {
 	}
 }
 
+/* Validate the program's `@default(<kind>, <category>, <policy>)` directives (run after the decl table
+ * is collected, so policies — incl. core's — are visible). Each names a core/user policy by name and
+ * targets one (effect-kind, op-category) cell; rules: the category must be recognized; `pool` is
+ * proc-only and a `func` cell cannot name `abort` (a func stays total); the policy must exist in that
+ * category; and at most one directive per cell (E0128). */
+static void sem_check_default_directives(SemanticContext *ctx, const SyntaxNode *root, const char *src) {
+	int seen[2][4] = {{0, 0, 0, 0}, {0, 0, 0, 0}}; /* [effect_kind 0=proc/1=func][category 1/2/3] */
+	for (int i = 0; i < root->child_count; i++) {
+		if (root->children[i].tag != SE_NODE)
+			continue;
+		const SyntaxNode *n = root->children[i].as.node;
+		if (n->kind != SN_DEFAULT_DECL)
+			continue;
+		SourceLoc loc = sem_node_loc(n);
+		int effect = 0, cat = 0, seenarg = 0;
+		char *policy = NULL;
+		for (int c = 0; c < n->child_count && seenarg < 3; c++) {
+			if (n->children[c].tag != SE_TOKEN)
+				continue;
+			TokenKind tk = n->children[c].as.token.kind;
+			uint32_t off = n->children[c].as.token.offset, len = n->children[c].as.token.length;
+			if (tk == TOK_AT || tk == TOK_LPAREN || tk == TOK_RPAREN || tk == TOK_COMMA)
+				continue;
+			if (seenarg == 0 && tk == TOK_IDENT && len == 7 && memcmp(src + off, "default", 7) == 0)
+				continue;
+			if (seenarg == 0)
+				effect = (tk == TOK_FUNC) ? 1 : 0;
+			else if (seenarg == 1)
+				cat = (len == 6 && memcmp(src + off, "bounds", 6) == 0)   ? 1
+				      : (len == 4 && memcmp(src + off, "pool", 4) == 0)   ? 2
+				      : (len == 6 && memcmp(src + off, "divide", 6) == 0) ? 3
+				                                                          : 0;
+			else
+				policy = sem_txt_dup((SynText){src + off, len});
+			seenarg++;
+		}
+		const char *kindname = effect == 1 ? "func" : "proc";
+		const char *catname = cat == 1 ? "bounds" : cat == 2 ? "pool" : cat == 3 ? "divide" : "?";
+		if (cat == 0) {
+			sem_emit_default_invalid(ctx, loc, "unknown category — use bounds, divide, or pool");
+		} else if (effect == 1 && cat == 2) {
+			sem_emit_default_invalid(ctx, loc, "pool is proc-only — an insert is an action, not a func value");
+		} else if (effect == 1 && policy && strcmp(policy, "abort") == 0) {
+			sem_emit_default_invalid(ctx, loc, "a func must stay total — it cannot default to `abort`");
+		} else if (policy && !find_policy_sig_cat(ctx, policy, (PolicyCategory)cat)) {
+			DeclSummary *any = find_policy_sig(ctx, policy);
+			if (!any)
+				sem_emit_policy_unknown(ctx, loc, policy);
+			else
+				sem_emit_policy_wrong_category(ctx, loc, policy, policy_cat_name((PolicyCategory)cat),
+				                               policy_cat_name(any->policy_category));
+		} else if (seen[effect][cat]) {
+			sem_emit_duplicate_default(ctx, loc, kindname, catname);
+		} else {
+			seen[effect][cat] = 1;
+		}
+		free(policy);
+	}
+}
+
 /* Collect the resolved DeclSummary table from the main-file syntax tree plus all registered module
  * syntax trees, inlining + name-prefixing modules exactly as main.c's resolve_uses does. Summaries
  * are built directly from the tree (bare names) into ctx->decls; the loader records each module's
@@ -5897,6 +5963,9 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 			continue;
 		SyntaxView dv = {root->children[i].as.node, src};
 
+		if (k == SN_DEFAULT_DECL)
+			continue; /* a program-default directive: validated in sem_check_default_directives */
+
 		if (k == SN_USE_DECL) {
 			/* One element per import: IDENT = device by name, STRING = module by path. Inline each —
 			 * the helper recurses into the module's own transitive imports + dedups. */
@@ -5931,6 +6000,9 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 	/* Module exports are reachable ONLY via qualified access (handled by the tree-qualify pass); a bare
 	 * `name` does NOT resolve to a module export. The persisted interfaces are owned by ctx (freed at
 	 * teardown), so nothing transient to release here. */
+
+	/* Now that all policies (incl. core's) are in the decl table, validate the `@default` directives. */
+	sem_check_default_directives(ctx, root, src);
 }
 
 /* W0013 unused_function (Rust `dead_code`): warn on a top-level func/proc that is never reachable
@@ -6527,9 +6599,9 @@ static void analyze_program_core(SemanticContext *ctx) {
 	sem_check_storage_requirements(ctx);
 	sem_check_device_impl_decls(ctx);
 	sem_check_datasheet_decls(ctx);
-	sem_check_raw_pool_lint(ctx);   /* W0017: advise handles for unprovable pool-column indexing */
-	sem_check_policies(ctx);        /* E0097-99/E0124/W0018: failure-policy validation at index/slice ops */
-	sem_check_forbid_allow(ctx);    /* E0127: --forbid-allow rejects @allow(...) in user code */
+	sem_check_raw_pool_lint(ctx); /* W0017: advise handles for unprovable pool-column indexing */
+	sem_check_policies(ctx);      /* E0097-99/E0124/W0018: failure-policy validation at index/slice ops */
+	sem_check_forbid_allow(ctx);  /* E0127: --forbid-allow rejects @allow(...) in user code */
 
 	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The
 	 * two kinds are still distinct (keyword, `-> T` vs out-list, call form), but the name namespace

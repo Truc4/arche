@@ -1,0 +1,10 @@
+// An unannotated integer divide in a proc takes the divide baseline (proc -> abort), so dividing by
+// zero is a visible policy decision (crash with a diagnostic), never silent UB. exit 134 + stderr line.
+// RUN: %arche build -o %t %s && { %t 2>%t.err ; test $? -eq 134 ; } && grep -qF "arche: divide by zero" %t.err
+main :: proc() {
+  a := 10;
+  b := 0;
+  c := a / b; // unannotated -> proc baseline -> abort
+  d: int[1];
+  d[0] = c; // keep `c` live so the divide isn't elided
+}

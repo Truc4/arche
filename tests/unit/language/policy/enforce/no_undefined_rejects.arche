@@ -4,5 +4,5 @@
 main :: proc() {
   a: int[4];
   i := 9;
-  x := a[i] !undefined;   // rejected under --no-undefined
+  x := a[i] !undefined; // rejected under --no-undefined
 }

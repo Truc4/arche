@@ -6,10 +6,11 @@
 
 main :: proc() {
   a: int[4];
-  a[0] = 10; a[2] = 12;
-  i := 2;
-  u := a[i] !undefined;   // raw read (in range)
-  j := 3;
-  a[j] !undefined = 55;   // raw write (in range)
+  a[0]            = 10;
+  a[2]            = 12;
+  i               := 2;
+  u               := a[i] !undefined; // raw read (in range)
+  j               := 3;
+  a[j] !undefined = 55; // raw write (in range)
   fmt.printf("u=%d after=%d\n", u, a[3]);
 }

@@ -1,0 +1,11 @@
+// A live pool handle is never 0: the issued generation is forced >= 1, and a handle compares at full
+// 64-bit width (slot | gen<<32), so the FIRST insert (slot 0) still yields a nonzero handle. This keeps
+// `h == 0` an unambiguous overflow/failure sentinel even for a caller that checks `h` instead of `ok`.
+// RUN: %arche build -o %t %s && %t | grep -qF "ok=1 h_nonzero=1"
+#import { fmt }
+Foo :: arche { v :: int }
+Foo[4]
+main :: proc() {
+  insert(Foo, 7)(h:, ok:); // lands at slot 0
+  fmt.printf("ok=%d h_nonzero=%d\n", ok, h != 0); // h != 0 must be true despite slot 0
+}

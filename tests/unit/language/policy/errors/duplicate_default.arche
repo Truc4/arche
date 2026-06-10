@@ -1,0 +1,7 @@
+// A program sets at most one failure-policy default per (effect-kind, op-category) cell. Two
+// `@default(proc, bounds, ...)` directives both claim the (proc, bounds) cell -> E0128.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "duplicate .@default\|E0128" %t.out
+@default(proc, bounds, clamp)
+@default(proc, bounds, wrap)
+main :: proc() {
+}

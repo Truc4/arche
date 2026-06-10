@@ -4,10 +4,10 @@
 // divide (which would crash on d==0). Runtime divisor — a literal 0 divisor would fold away.
 // RUN: %arche build -o %t %s && %t
 main :: proc(argc: int) {
-  d := argc - argc;     // 0 at runtime, opaque to the constant folder
+  d := argc - argc; // 0 at runtime, opaque to the constant folder
   s := 0;
   s = s + 10 / d !zero; // divide by zero -> 0
   s = s + 10 % d !zero; // modulo by zero -> 0
   n := 7;
-  s = s + n / d !zero;  // -> 0
+  s = s + n / d !zero; // -> 0
 }

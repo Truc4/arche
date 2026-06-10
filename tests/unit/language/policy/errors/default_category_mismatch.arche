@@ -1,0 +1,6 @@
+// A `@default`'s named policy must belong to the stated category. `clamp` is a @policy(bounds), so
+// `@default(proc, divide, clamp)` is the wrong category for a divide cell -> E0124.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "needs a @policy(divide)\|E0124" %t.out
+@default(proc, divide, clamp)
+main :: proc() {
+}

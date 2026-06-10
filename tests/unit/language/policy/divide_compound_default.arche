@@ -1,0 +1,10 @@
+// The divide default also covers the compound-assignment path: an unannotated `a /= 0` in a proc
+// takes the proc baseline (abort), exactly like `a = a / 0`. exit 134 + stderr line.
+// RUN: %arche build -o %t %s && { %t 2>%t.err ; test $? -eq 134 ; } && grep -qF "arche: divide by zero" %t.err
+main :: proc() {
+  a := 10;
+  b := 0;
+  a /= b; // compound divide, unannotated -> proc baseline -> abort
+  d: int[1];
+  d[0] = a; // keep `a` live
+}
