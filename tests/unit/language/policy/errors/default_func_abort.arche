@@ -1,0 +1,6 @@
+// A `func` is total by construction — it can never crash. So a `func` cell cannot default to `abort`:
+// `@default(func, bounds, abort)` is rejected (E0129). Use a total policy (clamp/zero) for func cells.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "func must stay total\|E0129" %t.out
+@default(func, bounds, abort)
+main :: proc() {
+}

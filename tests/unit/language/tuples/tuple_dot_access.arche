@@ -8,7 +8,7 @@ Particle  :: arche { pos_x, pos_y }
 Particle[5]
 
 main :: proc() {
-  insert(Particle, 1.0, 2.0);
+  insert(Particle, 1.0, 2.0)(_:, _:);
   x  := Particle.pos_x[0];
   y  := Particle.pos_y[0];
   xi := x * 10.0;

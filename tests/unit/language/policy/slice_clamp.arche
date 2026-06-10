@@ -1,0 +1,15 @@
+// `arr[lo:hi] !clamp` clamps an out-of-range slice bound into [0, len] (with lo<=hi) instead of
+// aborting — a total view. Here hi=99 (a runtime value) clamps to 4, yielding the full length-4 view.
+// RUN: %arche build -o %t %s && %t | grep -qF "vlen=4 v0=1 v3=4"
+#import { fmt }
+
+main :: proc() {
+  a: int[4];
+  a[0] = 1;
+  a[1] = 2;
+  a[2] = 3;
+  a[3] = 4;
+  hi   := 99; // runtime, unprovable
+  v    := a[0: hi] !clamp; // clamp hi to 4 -> view length 4
+  fmt.printf("vlen=%d v0=%d v3=%d\n", v.length, v[0], v[3]);
+}

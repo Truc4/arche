@@ -1,0 +1,13 @@
+// A reversed slice (lo > hi) under `!clamp` yields an EMPTY slice (length 0) and never aborts — the
+// policy owns the reversed case (it's applied to the length `hi-lo`, which clamps to 0), not a hidden
+// compiler net-clamp. Runtime bounds so nothing folds away.
+// RUN: %arche build -o %t %s && %t | grep -qF "rev_len=0"
+#import { fmt }
+main :: proc(argc: int) {
+  a: int[4];
+  a[0] = 1;
+  lo   := argc + 2; // 3
+  hi   := argc; // 1  -> reversed
+  s    := a[lo: hi] !clamp; // reversed -> empty
+  fmt.printf("rev_len=%d\n", s.length);
+}

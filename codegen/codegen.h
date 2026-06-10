@@ -19,6 +19,9 @@ void codegen_free(CodegenContext *ctx);
 /* Per-unit codegen: restrict this context to emit only `unit`'s bodies (cross-unit callees are
  * declared). Implies per-unit mode. Used by the per-unit driver in compile.c. */
 void codegen_set_emit_unit(CodegenContext *ctx, int unit);
+/* `--unchecked`: strip implicit runtime bounds checks (unannotated fallible ops become `!undefined`).
+ * Explicit policies are still honored. Set before codegen runs. */
+void codegen_set_unchecked(int on);
 /* 1 if per-unit codegen is requested (ARCHE_PER_UNIT set) — the driver consults this. */
 int codegen_per_unit_enabled(void);
 

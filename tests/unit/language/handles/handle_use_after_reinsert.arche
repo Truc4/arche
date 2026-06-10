@@ -4,8 +4,8 @@ Player :: arche { pos :: float }
 Player[10]
 
 main :: proc() {
-  h1 := insert(Player, 1.0);
-  delete(h1);
-  h2 := insert(Player, 2.0);
-  delete(h1);
+  insert(Player, 1.0)(h1:, _:);
+  delete(h1)(_:);
+  insert(Player, 2.0)(h2:, _:);
+  delete(h1)(_:);
 }

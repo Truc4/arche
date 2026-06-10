@@ -8,7 +8,7 @@ Pt :: arche { px, py } // the same shape coaldev defines — coalesces, does not
 Pt[8]
 
 main :: proc() {
-  insert(Pt, 10.0, 1.0);
+  insert(Pt, 10.0, 1.0)(_:, _:);
   run coaldev.step;
   fmt.assert(Pt.px[0] == 11.0, "coaldev.step did not run over the driver's pool\n");
   fmt.printf("coalesce_ok\n");

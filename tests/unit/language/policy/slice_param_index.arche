@@ -1,0 +1,25 @@
+// Indexing a SLICE PARAMETER (`s[i]` where `s: T[]`) is now policy-covered against the fat-pointer's
+// runtime `.len` — previously this path emitted NO check (a raw over-read). `!clamp` remaps an OOB
+// index into [0, len); the implicit `!abort` default would crash. Writes need `own` (a slice param is
+// a read-only borrow by default).
+// RUN: %arche build -o %t %s && %t | grep -qF "read=13 wrote=77"
+#import { fmt }
+rd :: func(s: int[], i: int) -> int {
+  return s[i] !clamp;
+} // OOB read -> clamp
+wr :: proc(own s: int[], i: int, v: int) {
+  s[i] !clamp = v;
+} // OOB write -> clamp
+
+main :: proc() {
+  a: int[4];
+  a[0] = 10;
+  a[1] = 11;
+  a[2] = 12;
+  a[3] = 13;
+  v    := a[0: 4];
+  big  := 99;
+  r    := rd(v, big); // clamps 99 -> slot 3 -> 13
+  wr(a[0: 4], big, 77); // clamps 99 -> slot 3 = 77
+  fmt.printf("read=%d wrote=%d\n", r, a[3]);
+}

@@ -5,7 +5,7 @@ Particle :: arche { pos :: float, vel :: float }
 Particle[5]
 
 main :: proc() {
-  insert(Particle, 1.0, 0.1);
+  insert(Particle, 1.0, 0.1)(_:, _:);
   p  := Particle.pos[0];
   pi := p * 10.0;
   fmt.assert(pi == 10, "pos != 1.0\n");

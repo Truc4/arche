@@ -314,6 +314,13 @@ TypeId tyid_elem(const TypeArena *a, TypeId t) {
 	return TYID_UNKNOWN;
 }
 
+int tyid_shaped_rank(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count)
+		return -1;
+	const TypeNode *n = &a->nodes[t];
+	return n->kind == TYK_SHAPED_ARRAY ? n->data.shaped.rank : -1;
+}
+
 int tyid_tuple_count(const TypeArena *a, TypeId t) {
 	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_TUPLE)
 		return 0;

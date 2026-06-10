@@ -5,7 +5,9 @@
 // RUN: %arche build -o %t %s && %t | grep -q "owned 300 9"
 #import { fmt }
 step :: func(own a: int[8], i: int, v: int) -> int[8] {
-  a[i] = v;
+  if (i >= 0 && i < a.length) {
+    a[i] = v;
+  }
   return a;
 }
 

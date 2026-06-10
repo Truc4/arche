@@ -1,0 +1,10 @@
+// An unannotated integer divide in a func takes the divide baseline (func -> zero, total): a func can
+// never crash, so dividing by zero yields 0 (the `zero` policy sets a=0, b=1) rather than aborting.
+// RUN: %arche build -o %t %s && %t | grep -qF "r=0"
+#import { fmt }
+divf :: func(a: int, b: int) -> int {
+  return a / b;
+}
+main :: proc() {
+  fmt.printf("r=%d\n", divf(10, 0)); // unannotated divide in a func -> zero -> 0
+}

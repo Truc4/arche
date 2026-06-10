@@ -13,7 +13,7 @@ bump :: sys (pos) {
 }
 
 main :: proc() {
-  insert(Particle, 1.0);
+  insert(Particle, 1.0)(_:, _:);
   run bump;
   fmt.printf("pos0=%f\n", Particle.pos[0]);
 }

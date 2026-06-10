@@ -492,6 +492,8 @@ static Operator syntax_tok_to_op(TokenKind k) {
 		return OP_MUL;
 	case TOK_SLASH:
 		return OP_DIV;
+	case TOK_PERCENT:
+		return OP_MOD;
 	case TOK_EQ_EQ:
 		return OP_EQ;
 	case TOK_BANG_EQ:
@@ -691,6 +693,12 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 					ax->data.index.indices[ax->data.index.index_count++] = lower_expr_cst(iv);
 				}
 			}
+		/* `!name` failure policy: the SN_POLICY_REF child carries the policy ident. */
+		{
+			SyntaxView pol = sv_child(e, SN_POLICY_REF);
+			if (sv_present(pol))
+				ax->data.index.policy = txt_dup(sv_token(pol, TOK_IDENT));
+		}
 		break;
 	}
 	case SN_SLICE_EXPR: {
@@ -728,6 +736,11 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 				}
 			}
 		}
+		{
+			SyntaxView pol = sv_child(e, SN_POLICY_REF);
+			if (sv_present(pol))
+				ax->data.slice.policy = txt_dup(sv_token(pol, TOK_IDENT));
+		}
 		break;
 	}
 	case SN_BINARY_EXPR: {
@@ -743,6 +756,12 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 			}
 		ax->data.binary.left = lower_expr_cst(sv_node_at_expr(e, 0));
 		ax->data.binary.right = lower_expr_cst(sv_node_at_expr(e, 1));
+		/* `a / b !policy`: the SN_POLICY_REF child carries the div-by-zero policy ident. */
+		{
+			SyntaxView pol = sv_child(e, SN_POLICY_REF);
+			if (sv_present(pol))
+				ax->data.binary.policy = txt_dup(sv_token(pol, TOK_IDENT));
+		}
 		break;
 	}
 	case SN_UNARY_EXPR: {
@@ -819,6 +838,15 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 					ax->data.call.args[ax->data.call.arg_count++] = lower_expr_cst(av);
 				}
 			}
+		/* `insert(P,x) ?handler` / `… !panic`: the SN_POLICY_REF child carries the policy ident and
+		 * the sigil (`?` ⇒ handler, `!` ⇒ panic). Semantic enforces sigil↔kind. */
+		{
+			SyntaxView pol = sv_child(e, SN_POLICY_REF);
+			if (sv_present(pol)) {
+				ax->data.call.policy = txt_dup(sv_token(pol, TOK_IDENT));
+				ax->data.call.policy_is_handler = sv_token(pol, TOK_QUESTION).ptr != NULL;
+			}
+		}
 		break;
 	}
 	case SN_ARCH_EXPR: {
@@ -924,6 +952,8 @@ static Operator syntax_assign_op(TokenKind k) {
 		return OP_MUL;
 	case TOK_SLASH_EQ:
 		return OP_DIV;
+	case TOK_PERCENT_EQ:
+		return OP_MOD;
 	default:
 		return OP_NONE; /* plain `=` */
 	}
@@ -957,7 +987,7 @@ static HirStmt *lower_stmt_cst(SyntaxView s) {
 			if (s.node->children[i].tag == SE_TOKEN) {
 				TokenKind tk = s.node->children[i].as.token.kind;
 				if (tk == TOK_EQ || tk == TOK_PLUS_EQ || tk == TOK_MINUS_EQ || tk == TOK_STAR_EQ ||
-				    tk == TOK_SLASH_EQ) {
+				    tk == TOK_SLASH_EQ || tk == TOK_PERCENT_EQ) {
 					as->data.assign_stmt.op = syntax_assign_op(tk);
 					break;
 				}
@@ -1660,6 +1690,85 @@ static int syntax_decl_has_intrinsic_decorator(SyntaxView d) {
 	return 0;
 }
 
+/* The op category a `policy` decl serves, from `@policy(<category>)`: 1=bounds, 2=pool, 3=divide, 0=none.
+ * `policy` lexes as TOK_POLICY (a keyword), so the sequence is `@ policy ( <cat> )`. */
+static int syntax_decl_policy_category(SyntaxView d) {
+	if (!sv_present(d))
+		return 0;
+	int n = d.node->child_count;
+	for (int i = 0; i + 4 < n; i++) {
+		const SyntaxElem *at = &d.node->children[i];
+		const SyntaxElem *kw = &d.node->children[i + 1];
+		const SyntaxElem *lp = &d.node->children[i + 2];
+		const SyntaxElem *cat = &d.node->children[i + 3];
+		const SyntaxElem *rp = &d.node->children[i + 4];
+		if (at->tag != SE_TOKEN || at->as.token.kind != TOK_AT || kw->tag != SE_TOKEN ||
+		    kw->as.token.kind != TOK_POLICY)
+			continue;
+		if (lp->tag != SE_TOKEN || lp->as.token.kind != TOK_LPAREN || cat->tag != SE_TOKEN ||
+		    cat->as.token.kind != TOK_IDENT || rp->tag != SE_TOKEN || rp->as.token.kind != TOK_RPAREN)
+			continue;
+		const char *p = d.src + cat->as.token.offset;
+		size_t len = cat->as.token.length;
+		if (len == 6 && memcmp(p, "bounds", 6) == 0)
+			return 1;
+		if (len == 4 && memcmp(p, "pool", 4) == 0)
+			return 2;
+		if (len == 6 && memcmp(p, "divide", 6) == 0)
+			return 3;
+		return 0;
+	}
+	return 0;
+}
+
+/* Map a category ident (`bounds`/`pool`/`divide`) to its int code (1/2/3), or 0 if unknown. */
+static int default_category_code(const char *p, size_t len) {
+	if (len == 6 && memcmp(p, "bounds", 6) == 0)
+		return 1;
+	if (len == 4 && memcmp(p, "pool", 4) == 0)
+		return 2;
+	if (len == 6 && memcmp(p, "divide", 6) == 0)
+		return 3;
+	return 0;
+}
+
+/* Lower a `@default(<kind>, <category>, <policy>)` directive node into a HIR_DECL_DEFAULT. The node's
+ * tokens are `@ default ( <kind-kw> , <category> , <policy> )`; read the three argument tokens by
+ * position. `category`/`policy` are left raw here (validated in semantic). */
+static HirDecl *lower_default_directive(SyntaxView d) {
+	HirDecl *dd = hir_decl_create(HIR_DECL_DEFAULT);
+	HirDefaultDecl *df = calloc(1, sizeof(HirDefaultDecl));
+	df->effect_kind = -1;
+	df->category = 0;
+	df->policy = NULL;
+	int n = d.node ? d.node->child_count : 0;
+	int seen = 0; /* argument position: 0=kind, 1=category, 2=policy */
+	for (int i = 0; i < n && seen < 3; i++) {
+		if (d.node->children[i].tag != SE_TOKEN)
+			continue;
+		TokenKind tk = d.node->children[i].as.token.kind;
+		uint32_t off = d.node->children[i].as.token.offset;
+		uint32_t tlen = d.node->children[i].as.token.length;
+		if (tk == TOK_AT || tk == TOK_LPAREN || tk == TOK_RPAREN || tk == TOK_COMMA)
+			continue;
+		/* The leading `default` ident is consumed before the first real arg: skip it once. */
+		if (seen == 0 && tk == TOK_IDENT && tlen == 7 && memcmp(d.src + off, "default", 7) == 0)
+			continue;
+		if (seen == 0) {
+			df->effect_kind = (tk == TOK_FUNC) ? 1 : 0; /* proc default */
+		} else if (seen == 1) {
+			df->category = default_category_code(d.src + off, tlen);
+		} else {
+			df->policy = malloc(tlen + 1);
+			memcpy(df->policy, d.src + off, tlen);
+			df->policy[tlen] = '\0';
+		}
+		seen++;
+	}
+	dd->data.default_decl = df;
+	return dd;
+}
+
 /* ===== Unified-grammar RHS value forms (P2) =====
  * Build the HIR decl from an RHS value-form node `f` with the name from the binding LHS.
  * Mirrors the legacy keyword-led cases below (dead once old syntax is removed). `name` owned. */
@@ -1894,8 +2003,8 @@ static SyntaxView lower_rhs_form(SyntaxView d) {
 		if (d.node->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
-		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR || k == SN_GROUP_EXPR ||
-		    k == SN_ENUM_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
+		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR ||
+		    k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
 			SyntaxView v = {d.node->children[i].as.node, d.src};
 			return v;
 		}
@@ -1908,6 +2017,8 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 	switch (sv_kind(d)) {
 	case SN_USE_DECL:
 		return NULL;
+	case SN_DEFAULT_DECL:
+		return lower_default_directive(d);
 	case SN_WORLD_DECL: {
 		HirDecl *ad = hir_decl_create(HIR_DECL_WORLD);
 		ad->data.world = calloc(1, sizeof(HirWorldDecl));
@@ -2077,8 +2188,8 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		SyntaxView rhs = lower_rhs_form(d);
 		if (sv_present(rhs)) {
 			SyntaxNodeKind rk = sv_kind(rhs);
-			if (rk == SN_PROC_EXPR || rk == SN_FUNC_EXPR || rk == SN_SYS_EXPR || rk == SN_ARCH_EXPR ||
-			    rk == SN_GROUP_EXPR) {
+			if (rk == SN_PROC_EXPR || rk == SN_FUNC_EXPR || rk == SN_POLICY_EXPR || rk == SN_SYS_EXPR ||
+			    rk == SN_ARCH_EXPR || rk == SN_GROUP_EXPR) {
 				char *nm = txt_dup(lower_binding_name(d));
 				switch (rk) {
 				case SN_PROC_EXPR: {
@@ -2093,8 +2204,21 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 						pd->data.proc->is_intrinsic = 1;
 					return pd;
 				}
-				case SN_FUNC_EXPR:
-					return lower_func_from(rhs, nm);
+				case SN_FUNC_EXPR: {
+					HirDecl *fd = lower_func_from(rhs, nm);
+					return fd;
+				}
+				case SN_POLICY_EXPR: {
+					/* A policy lowers to a func body, but it's a MACRO: codegen inlines its statements
+					 * at each fallible op site (operands bound as mutable locals), so it is never emitted
+					 * as its own LLVM function. Marked so codegen can find it and skip its emission. */
+					HirDecl *pf = lower_func_from(rhs, nm);
+					if (pf && pf->kind == HIR_DECL_FUNC && pf->data.func) {
+						pf->data.func->is_policy = 1;
+						pf->data.func->policy_category = syntax_decl_policy_category(d);
+					}
+					return pf;
+				}
 				case SN_SYS_EXPR:
 					return lower_sys_from(rhs, nm);
 				case SN_ARCH_EXPR:
@@ -2155,6 +2279,12 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 			}
 			namebuf[nl] = '\0';
 			sd->archetype.archetype_name = dupz(namebuf);
+			/* `Foo[N] ?handler`: the pool's default insert overflow handler. */
+			{
+				SyntaxView pol = sv_child(d, SN_POLICY_REF);
+				if (sv_present(pol))
+					sd->archetype.overflow_policy = txt_dup(sv_token(pol, TOK_IDENT));
+			}
 			/* `[capacity] (init_length) { field: value, ... }`. Capacity (the `[…]` expr) →
 			 * field_values[0] (field_names[0]=NULL); the optional `(…)` expr → init_length, the
 			 * known row count (drives bounds-check elision); each `field: value` in `{}` appends
@@ -2559,6 +2689,9 @@ static void hir_rn_decl(HirDecl *d, const char *prefix, char **set, int count) {
 	case HIR_DECL_WORLD:
 		rn_owned(&d->data.world->name, prefix, set, count);
 		break;
+	case HIR_DECL_DEFAULT:
+		/* A program default directive references a policy by name globally; no module-local rename. */
+		break;
 	}
 }
 
@@ -2585,6 +2718,8 @@ static const char *hir_decl_name(HirDecl *d) {
 		return d->data.constant->name;
 	case HIR_DECL_WORLD:
 		return d->data.world->name;
+	case HIR_DECL_DEFAULT:
+		return NULL; /* a directive, not a named decl */
 	}
 	return NULL;
 }

@@ -1,0 +1,8 @@
+// `--no-implicit-abort`: only the DEFAULT/implicit `!abort` is rejected (E0125). An unannotated
+// fallible op fails to compile — every fallible op must be explicitly annotated.
+// RUN: %arche build --no-implicit-abort -o %t %s > %t.out 2>&1 ; grep -qi "no-implicit-abort forbids\|implicit .abort\|E0125" %t.out
+main :: proc() {
+  a: int[4];
+  i := 9;
+  x := a[i]; // unannotated -> implicit !abort -> rejected under --no-implicit-abort
+}

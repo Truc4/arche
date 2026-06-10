@@ -8,7 +8,7 @@ Foo :: arche { x :: float, y :: float }
 Foo[4]
 
 main :: proc() {
-  insert(arche { x :: float, y :: float }, 1.0, 2.0);
+  insert(arche { x :: float, y :: float }, 1.0, 2.0)(_:, _:);
   v := Foo.x[0] * 10.0;
   fmt.assert(v == 10, "x[0] != 1.0 — literal did not unify with Foo's pool\n");
   fmt.printf("literal_ok\n");

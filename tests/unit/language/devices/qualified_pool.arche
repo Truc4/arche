@@ -7,7 +7,7 @@
 Particle[8]
 
 main :: proc() {
-  insert(Particle, 10.0, 1.0);
+  insert(Particle, 10.0, 1.0)(_:, _:);
   p0  := Particle.pos[0];
   p0i := p0 * 10.0;
   fmt.assert(p0i == 100, "expected pos[0]==10.0\n");

@@ -1,0 +1,11 @@
+// MID-EXPRESSION CONTROL FLOW: a policy in the RHS of `||` must stay inside the short-circuit path.
+// `argc >= 0` is true, so `a[i] !abort` must never evaluate and the program must exit 0 — the `||`
+// lowers to a branch (clang-style `lor.rhs`), so the RHS policy prelude runs only on the taken path.
+// RUN: %arche build -o %t %s && %t
+main :: proc(argc: int) {
+  a: int[4];
+  a[0] = 1;
+  i    := argc + 100; // OOB at runtime
+  if (argc >= 0 || a[i] !abort == 1) {
+  } // LHS true -> RHS (and its policy) must not run
+}

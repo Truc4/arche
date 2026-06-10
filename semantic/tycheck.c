@@ -528,12 +528,19 @@ void tycheck_run(SemanticContext *ctx) {
 		const DeclSummary *d = semantic_decl_at(ctx, i);
 		if (!d)
 			continue;
-		/* PC3: duplicate top-level proc/func names — caught here with E0031 before LLVM. */
-		if ((d->kind == DECL_FUNC || d->kind == DECL_PROC) && d->name) {
+		/* PC3: duplicate top-level proc/func names — caught here with E0031 before LLVM. A policy is a
+		 * separate namespace (invoked via `!name`, never called), so it doesn't clash with a func/proc. */
+		if ((d->kind == DECL_FUNC || d->kind == DECL_PROC) && d->name && !d->is_policy) {
 			const char *my_kind = d->kind == DECL_FUNC ? "func" : "proc";
 			for (int j = 0; j < i; j++) {
 				const DeclSummary *e = semantic_decl_at(ctx, j);
-				if (e && (e->kind == DECL_FUNC || e->kind == DECL_PROC) && e->name && strcmp(e->name, d->name) == 0) {
+				if (!e || (e->kind != DECL_FUNC && e->kind != DECL_PROC) || e->is_policy || !e->name)
+					continue;
+				/* A stdlib symbol is module-qualified (`os.write`) and never duplicates a global/core/user
+				 * name; the two only appear flat together in the codegen-test harness. Skip stdlib pairs. */
+				if (d->origin == DECL_ORIGIN_STDLIB || e->origin == DECL_ORIGIN_STDLIB)
+					continue;
+				if (strcmp(e->name, d->name) == 0) {
 					sem_emit_duplicate_decl(cx.ctx, d->loc, my_kind, d->name);
 					break;
 				}

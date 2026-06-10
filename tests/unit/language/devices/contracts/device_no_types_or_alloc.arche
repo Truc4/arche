@@ -10,6 +10,6 @@ Thing :: arche { val } // references the datasheet's global `val`
 Thing[2]
 
 main :: proc() {
-  insert(Thing, 1.0);
+  insert(Thing, 1.0)(_:, _:);
   run leakdev.bump;
 }

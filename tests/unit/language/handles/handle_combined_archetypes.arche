@@ -9,9 +9,9 @@ Player[10]
 AliveList[10]
 
 main :: proc() {
-  p1 := insert(Player, 1.0);
-  p2 := insert(Player, 2.0);
-  insert(AliveList, p1);
-  insert(AliveList, p2);
+  insert(Player, 1.0)(p1:, _:);
+  insert(Player, 2.0)(p2:, _:);
+  insert(AliveList, p1)(_:, _:);
+  insert(AliveList, p2)(_:, _:);
   fmt.print("alive list created");
 }

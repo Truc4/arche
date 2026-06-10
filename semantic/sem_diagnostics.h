@@ -115,6 +115,21 @@ typedef enum {
 	/* Purity */
 	SEM_DIAG_func_not_pure,
 
+	/* Totality */
+	SEM_DIAG_insert_delete_outlist,
+
+	/* Failure policies (`expr !policy`) — E0097/E0098/E0099/E0124 */
+	SEM_DIAG_policy_provable_oob,        /* a constant index/slice provably outside [0,N) — even with a policy */
+	SEM_DIAG_policy_func_aborts,         /* explicit `!abort` inside a func/policy (must be total) */
+	SEM_DIAG_policy_unknown,             /* `!name` is neither an intrinsic nor a visible `policy` decl */
+	SEM_DIAG_policy_wrong_category,      /* `!name` resolves to a policy of the wrong @policy(category) */
+	SEM_DIAG_policy_wrong_sigil,         /* `?` (handler) used on a panic op, or `!` (panic) used on an insert */
+	SEM_DIAG_policy_abort_forbidden,     /* an op resolves to `!abort` under --no-abort / --no-implicit-abort */
+	SEM_DIAG_policy_undefined_forbidden, /* an `!undefined` site under --no-undefined */
+	SEM_DIAG_allow_forbidden,            /* an `@allow(...)` decorator under --forbid-allow */
+	SEM_DIAG_duplicate_default,          /* a second `@default(kind, category, ...)` for the same cell */
+	SEM_DIAG_default_invalid,            /* `@default` shape error: func+abort, func+pool, bad category */
+
 	/* Assignment targets */
 	SEM_DIAG_assign_to_const,
 	SEM_DIAG_assign_to_undeclared,
@@ -163,6 +178,10 @@ typedef enum {
 	SEM_LINT_unused_function,
 	SEM_LINT_unused_static_const,
 	SEM_LINT_unused_enum,
+	SEM_LINT_discarded_ok,
+	SEM_LINT_raw_pool_index,
+	SEM_LINT_policy_on_safe_op,    /* an explicit `!policy` on an op the prover already proved safe (dead policy) */
+	SEM_LINT_handler_foreign_arch, /* a pool `?handler` body references a DIFFERENT archetype's columns */
 
 	SEM_DIAG_KIND_COUNT
 } SemDiagKind;
@@ -293,6 +312,19 @@ SemDiag *sem_emit_unknown_const_value(SemanticContext *ctx, SourceLoc loc, const
 SemDiag *sem_emit_const_rhs_invalid(SemanticContext *ctx, SourceLoc loc);
 
 SemDiag *sem_emit_func_not_pure(SemanticContext *ctx, SourceLoc loc, const char *name, const char *reason);
+SemDiag *sem_emit_insert_delete_outlist(SemanticContext *ctx, SourceLoc loc, const char *name, const char *form);
+
+SemDiag *sem_emit_policy_provable_oob(SemanticContext *ctx, SourceLoc loc, const char *base, int idx, int len);
+SemDiag *sem_emit_policy_func_aborts(SemanticContext *ctx, SourceLoc loc, const char *func);
+SemDiag *sem_emit_duplicate_default(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *category);
+SemDiag *sem_emit_default_invalid(SemanticContext *ctx, SourceLoc loc, const char *msg);
+SemDiag *sem_emit_policy_unknown(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_policy_wrong_sigil(SemanticContext *ctx, SourceLoc loc, const char *name, int want_handler);
+SemDiag *sem_emit_policy_wrong_category(SemanticContext *ctx, SourceLoc loc, const char *name, const char *want,
+                                        const char *got);
+SemDiag *sem_emit_policy_abort_forbidden(SemanticContext *ctx, SourceLoc loc, const char *which, const char *flag);
+SemDiag *sem_emit_policy_undefined_forbidden(SemanticContext *ctx, SourceLoc loc);
+SemDiag *sem_emit_allow_forbidden(SemanticContext *ctx, SourceLoc loc, const char *slug);
 
 SemDiag *sem_emit_assign_to_const(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_assign_to_undeclared(SemanticContext *ctx, SourceLoc loc, const char *name);
@@ -340,5 +372,10 @@ SemDiag *sem_emit_lint_unused_function(SemanticContext *ctx, SourceLoc loc, cons
 SemDiag *sem_emit_lint_unused_static_const(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
                                            const char *module_path);
 SemDiag *sem_emit_lint_unused_enum(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path);
+SemDiag *sem_emit_lint_discarded_ok(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_lint_raw_pool_index(SemanticContext *ctx, SourceLoc loc, const char *arch);
+SemDiag *sem_emit_lint_policy_on_safe_op(SemanticContext *ctx, SourceLoc loc, const char *name, const char *base);
+SemDiag *sem_emit_lint_handler_foreign_arch(SemanticContext *ctx, SourceLoc loc, const char *handler,
+                                            const char *foreign, const char *target);
 
 #endif /* SEM_DIAGNOSTICS_H */

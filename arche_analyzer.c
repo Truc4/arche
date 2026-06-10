@@ -623,7 +623,51 @@ static void emit_effect_hint(SyntaxView expr_stmt) {
 	emit_syn(end.line, end.column + (int)end.length, 0, 0, "effect", "()");
 }
 
-static void walk(SyntaxView v, SemanticContext *ctx) {
+/* True if `n` is a compile-time-constant index (a non-negative or `-K` integer literal). Such an
+ * index is resolved at compile time (proven safe → no policy, or provably-OOB → E0097), so it never
+ * carries a runtime policy and gets no implicit-policy inlay. */
+static int policy_idx_is_const(SyntaxView n) {
+	if (!n.node)
+		return 0;
+	if (sv_kind(n) == SN_LITERAL_EXPR)
+		return 1;
+	if (sv_kind(n) == SN_UNARY_EXPR && sv_has_token(n, TOK_MINUS)) {
+		for (int i = 0; i < n.node->child_count; i++)
+			if (n.node->children[i].tag == SE_NODE)
+				return policy_idx_is_const((SyntaxView){n.node->children[i].as.node, n.src});
+	}
+	return 0;
+}
+
+/* Inlay the IMPLICIT failure policy at a fallible index/slice op: render the ghost default
+ * (`!abort` in a proc, `!clamp` in a func) right after the op. Only the implicit case — an explicit
+ * `!name` is already in the source. Skipped for a constant index (resolved at compile time, no
+ * runtime policy). Applies to value arrays, slices, AND pool-column indexing (`Arch.field[i]`). */
+static void emit_policy_hint(SyntaxView op, int in_func) {
+	if (sv_present(sv_child(op, SN_POLICY_REF)))
+		return; /* explicit policy already visible in source */
+	/* fallible only: at least one bound (index, or a slice lo/hi) is a non-constant expression */
+	int fallible = 0;
+	for (int i = 0; i < op.node->child_count; i++) {
+		if (op.node->children[i].tag != SE_NODE)
+			continue;
+		SyntaxView c = {op.node->children[i].as.node, op.src};
+		if (sv_kind(c) == SN_FIELD_NAME || sv_kind(c) == SN_POLICY_REF)
+			continue;
+		if (!policy_idx_is_const(c)) {
+			fallible = 1;
+			break;
+		}
+	}
+	if (!fallible)
+		return;
+	CvPos end = sv_last_token_pos(op);
+	if (!end.line)
+		return;
+	emit_syn(end.line, end.column + (int)end.length, 0, 0, "policy", in_func ? "!clamp" : "!abort");
+}
+
+static void walk(SyntaxView v, SemanticContext *ctx, int in_func) {
 	if (!v.node)
 		return;
 	emit_param_hint(v, ctx); /* any node may be a resolved call argument */
@@ -634,10 +678,19 @@ static void walk(SyntaxView v, SemanticContext *ctx) {
 		emit_typeref_hint(v, ctx);
 	else if (sv_kind(v) == SN_EXPR_STMT)
 		emit_effect_hint(v); /* bare proc call → ghost `()` */
+	else if (sv_kind(v) == SN_INDEX_EXPR || sv_kind(v) == SN_SLICE_EXPR)
+		emit_policy_hint(v, in_func); /* implicit failure policy → ghost `!abort`/`!clamp` */
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
 			SyntaxView c = {v.node->children[i].as.node, v.src};
-			walk(c, ctx);
+			/* a func/policy body is total (default !clamp); a proc/sys body defaults to !abort */
+			SyntaxNodeKind ck = sv_kind(c);
+			int child_in_func = in_func;
+			if (ck == SN_FUNC_EXPR || ck == SN_POLICY_EXPR)
+				child_in_func = 1;
+			else if (ck == SN_PROC_EXPR || ck == SN_SYS_EXPR)
+				child_in_func = 0;
+			walk(c, ctx, child_in_func);
 		}
 }
 
@@ -741,7 +794,7 @@ static void emit_hints(const Analysis *a) {
 	SyntaxView root = sv_root(a->syntax_root, a->combined);
 	g_proc_name_count = 0;
 	collect_proc_names(root); /* gather proc names first (a call may precede its decl) */
-	walk(root, a->ctx);
+	walk(root, a->ctx, 0);
 }
 
 /* Emit diagnostics collected during semantic analysis, translated to user coords.

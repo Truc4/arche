@@ -97,7 +97,19 @@ typedef struct {
 	char *drop_type;
 	char **allow_slugs;
 	int allow_slug_count;
+	int is_policy;       /* 1 if declared as a `policy` form (a failure policy; invoked via `!name`, not called) */
+	int policy_category; /* PolicyCategory: which op kind this policy serves (from `@policy(...)`); 0 = unspecified */
 } DeclSummary;
+
+/* The op category a failure policy serves, named by `@policy(<category>)`. The category — not the
+ * signature — disambiguates the `(int,int)->int` collision between a bounds and a divide policy.
+ * POLICY_CAT_NONE (0) is the calloc default: a `policy` decl with no `@policy(...)` decorator. */
+typedef enum {
+	POLICY_CAT_NONE = 0,
+	POLICY_CAT_BOUNDS, /* index / slice */
+	POLICY_CAT_POOL,   /* insert */
+	POLICY_CAT_DIVIDE, /* `/` */
+} PolicyCategory;
 
 /* The exported surface of one compilation unit (module) — a first-class, persisted interface. Today
  * arche resolves cross-unit `mod.member` references against these (the inlining of bodies is for

@@ -15,7 +15,7 @@ move :: sys(pos, vel) {
 
 
 main :: proc() {
-  insert(table<Particle>, 1.0, 0.1);
+  insert(table<Particle>, 1.0, 0.1)(_:, _:);
   run move;
   p := Particle.pos[0];
   pi := p * 10.0;

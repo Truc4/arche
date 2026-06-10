@@ -8,7 +8,7 @@
 Node[8] // driver owns the pool (the shape comes from store), sized above the minimum of 4
 
 main :: proc() {
-  insert(Node, 2.0, 3.0);
+  insert(Node, 2.0, 3.0)(_:, _:);
   run store.bump;
   fmt.assert(Node.val[0] == 4.0, "store.bump did not run over the driver's pool\n");
   fmt.printf("req_ok\n");

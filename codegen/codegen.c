@@ -90,6 +90,8 @@ struct CodegenContext {
 	/* SIMD vectorization context */
 	int vector_lanes; /* 0 = scalar mode, 4 = AVX2 double (256-bit / 64-bit = 4 lanes) */
 	int in_sys;       /* 1 when generating inside a sys function body */
+	int in_func;      /* 1 when generating inside a `func` body — an unannotated fallible op's baseline
+	                   * default is the total `clamp` policy instead of `abort`, so a func never crashes */
 
 	/* Implicit loop context */
 	char implicit_loop_index[64]; /* SSA reg name for current implicit loop ("" = not in loop) */
@@ -1192,6 +1194,35 @@ static int get_arch_static_capacity(CodegenContext *ctx, const char *arch_name) 
 	return 0;
 }
 
+/* The program `@default` policy for a (effect_kind 0=proc/1=func, category 1/2/3) cell, or NULL. */
+static const char *cg_program_default(CodegenContext *ctx, int effect_kind, int category);
+
+/* The pool's declared overflow handler (`Foo[N] ?handler`), or NULL if the pool declared none. */
+static const char *pool_overflow_policy(CodegenContext *ctx, const char *arch_name) {
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		if (ctx->ast->decls[i]->kind != HIR_DECL_STATIC)
+			continue;
+		HirStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
+		if (s->is_requirement || s->kind != HIR_STATIC_ARCHETYPE)
+			continue;
+		if (strcmp(canonical_arch_name(ctx, s->archetype.archetype_name), canonical_arch_name(ctx, arch_name)) == 0 &&
+		    s->archetype.overflow_policy)
+			return s->archetype.overflow_policy;
+	}
+	return NULL;
+}
+
+/* The overflow handler an `insert` resolves to: per-call `?name` › the pool's `?name` › `reject`. */
+static const char *cg_insert_handler(CodegenContext *ctx, HirExpr *rhs, const char *arch_name) {
+	if (rhs->data.call.policy && rhs->data.call.policy_is_handler)
+		return rhs->data.call.policy;
+	const char *pool = pool_overflow_policy(ctx, arch_name);
+	if (pool)
+		return pool;
+	const char *prog = cg_program_default(ctx, 0 /*proc*/, 2 /*pool*/);
+	return prog ? prog : "reject";
+}
+
 /* Compile-time initialized count for a static archetype. Mirrors the
  * count computation in codegen_alloc_expr:
  *   - explicit `static T(cap, N)` second arg → N
@@ -1252,7 +1283,20 @@ static HirProcDecl *find_proc_decl(CodegenContext *ctx, const char *name) {
 static HirFuncDecl *find_func_decl(CodegenContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		HirDecl *decl = ctx->ast->decls[i];
-		if (decl->kind == HIR_DECL_FUNC && strcmp(decl->data.func->name, name) == 0)
+		if (decl->kind == HIR_DECL_FUNC && !decl->data.func->is_policy && strcmp(decl->data.func->name, name) == 0)
+			return decl->data.func; /* skip policies — they're inlined, not called (find_policy_decl) */
+	}
+	return NULL;
+}
+
+/* A failure-policy decl by name AND op category (1=bounds, 3=divide) — the `!name` namespace. Separate
+ * from find_func_decl so a policy and a func may share a name; category-keyed so `abort`/`undefined`
+ * can exist for both bounds and divide. */
+static HirFuncDecl *find_policy_decl(CodegenContext *ctx, const char *name, int category) {
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		HirDecl *decl = ctx->ast->decls[i];
+		if (decl->kind == HIR_DECL_FUNC && decl->data.func->is_policy && decl->data.func->policy_category == category &&
+		    strcmp(decl->data.func->name, name) == 0)
 			return decl->data.func;
 	}
 	return NULL;
@@ -1810,10 +1854,24 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 static void codegen_statement(CodegenContext *ctx, HirStmt *stmt);
 static int resolve_index_arch(CodegenContext *ctx, HirExpr *base_expr, HirExpr *idx_expr, const char **out_arch_name,
                               const char **out_arch_ptr, int *out_count_idx, int *out_idx_is_i64);
-static void emit_bounds_check(CodegenContext *ctx, const char *arch_name, const char *arch_ptr, int count_field_idx,
-                              const char *idx_buf, int idx_is_i64);
 static int bounds_check_elidable(CodegenContext *ctx, const char *arch_name, HirExpr *idx_expr);
-static void emit_const_bounds_check(CodegenContext *ctx, int n, const char *idx_buf, int idx_is_i64);
+/* Failure-policy MACRO inliner: bind a policy's params to the op's operand SSAs as mutable locals,
+ * inline its body (it mutates them / may exit()), read the operands back into `out`. A NULL/empty
+ * policy leaves them unchanged ⇒ the raw op. Operands are i32 (`int`), per the policy signatures. */
+static void emit_policy_inline(CodegenContext *ctx, const char *name, int category, const char **ops, int n,
+                               char out[][256]);
+/* The policy name to inline at an unannotated op (category 1=bounds, 3=divide): explicit › --unchecked
+ * › @default › func/proc baseline. */
+static const char *cg_policy_for(CodegenContext *ctx, const char *explicit_pol, int category);
+/* Emit an integer divide/mod (`op` = sdiv/udiv/srem/urem) with its failure policy inlined over the
+ * operands, then the raw op into `res_name`. The policy resolves explicit › @default › baseline. */
+static void emit_int_divmod(CodegenContext *ctx, const char *op, const char *type, const char *left, const char *right,
+                            const char *explicit_pol, const char *res_name);
+/* Apply an index op's failure policy in place. Determines the base length (compile-time N / pool live
+ * count / slice runtime .len), and if the index is fallible-and-unprovable, inlines the resolved policy
+ * over (len, i) — writing the resulting i64 index into `idx_buf` and pointing `*final_idx` at it. */
+static void emit_index_policy(CodegenContext *ctx, HirExpr *base, HirExpr *idx_expr, int applies, int type6_bound,
+                              const char *slice_len, const char *policy, char *idx_buf, const char **final_idx);
 static int const_index_in_range(CodegenContext *ctx, HirExpr *idx_expr, int n);
 static int try_extract_loop_bound(HirStmt *for_stmt, char **out_var, int *out_bound);
 static void push_loop_bound(CodegenContext *ctx, const char *var_name, int bound);
@@ -1872,26 +1930,44 @@ static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *l
 	} else {
 		snprintf(hi64, sizeof(hi64), "%s", base_len);
 	}
-	/* Bounds: 0 <= lo <= hi <= len. The unsigned compares also catch a negative lo/hi (sext'd to a
-	 * huge i64). On violation, write the OOB message and abort — never a silent over-read. */
-	{
-		char *c1 = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = icmp ule i64 %s, %s\n", c1, lo64, hi64);
-		char *c2 = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = icmp ule i64 %s, %s\n", c2, hi64, base_len);
-		char *ok = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = and i1 %s, %s\n", ok, c1, c2);
-		int id = ctx->value_counter++;
-		char okl[64], faill[64];
-		snprintf(okl, sizeof(okl), "slice_ok_%d", id);
-		snprintf(faill, sizeof(faill), "slice_fail_%d", id);
-		buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n\n", ok, okl, faill);
-		buffer_append_fmt(ctx, "%s:\n", faill);
-		buffer_append(ctx, "  call i32 @write(i32 2, i8* getelementptr ([28 x i8], [28 x i8]* @.arche_oob, i32 0, "
-		                   "i32 0), i32 27)\n");
-		buffer_append(ctx, "  call void @abort()\n");
-		buffer_append(ctx, "  unreachable\n\n");
-		buffer_append_fmt(ctx, "%s:\n", okl);
+	/* Bounds: 0 <= lo <= hi <= len. The slice's failure policy is a MACRO inlined over (len, i) — the
+	 * same `clamp`/`abort`/`undefined` as an index — applied to each bound `lo`/`hi`. A length-N slice
+	 * has N+1 valid boundary positions (0..N), so the policy's `len` here is N+1: `clamp` then maps a
+	 * bound into [0, N] and `abort` aborts when it exceeds N, exactly the slice semantics. The reversed
+	 * case (lo > hi) is governed by the SAME policy applied a third time — to the length `hi - lo` — so
+	 * there is no hidden net-clamp: clamp -> empty (0), abort -> aborts on reversed, undefined -> raw. */
+	if (strcmp(base_len, "-1") != 0) { /* a `-1` base length = unknown (foreign raw pointer) → trust it, raw view */
+		const char *pol = cg_policy_for(ctx, e->data.slice.policy, 1);
+		char *np1_64 = gen_value_name(ctx); /* boundary count = base_len + 1, as i32 */
+		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", np1_64, base_len);
+		char *np1 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", np1, np1_64);
+		char *lo32 = gen_value_name(ctx), *hi32 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", lo32, lo64);
+		buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", hi32, hi64);
+		const char *lo_ops[2] = {np1, lo32};
+		const char *hi_ops[2] = {np1, hi32};
+		char lo_out[2][256], hi_out[2][256];
+		emit_policy_inline(ctx, pol, 1, lo_ops, 2, lo_out); /* clamp/abort/raw each bound into [0, N] */
+		emit_policy_inline(ctx, pol, 1, hi_ops, 2, hi_out);
+		char *lo_c = gen_value_name(ctx), *hi_c = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", lo_c, lo_out[1]);
+		buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", hi_c, hi_out[1]);
+		/* Apply the policy to the length `hi - lo` (bounded into [0, N] via np1). This replaces the old
+		 * silent `hi = max(hi, lo)` select: the policy now owns the reversed/negative-length outcome. */
+		char *rawlen = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = sub i64 %s, %s\n", rawlen, hi_c, lo_c);
+		char *rawlen32 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", rawlen32, rawlen);
+		const char *len_ops[2] = {np1, rawlen32};
+		char len_out_p[2][256];
+		emit_policy_inline(ctx, pol, 1, len_ops, 2, len_out_p);
+		char *len_c = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", len_c, len_out_p[1]);
+		char *newhi = gen_value_name(ctx); /* hi = lo + bounded length, so downstream len = hi - lo holds */
+		buffer_append_fmt(ctx, "  %s = add i64 %s, %s\n", newhi, lo_c, len_c);
+		snprintf(lo64, sizeof(lo64), "%s", lo_c);
+		snprintf(hi64, sizeof(hi64), "%s", newhi);
 	}
 	char *ptr2 = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", ptr2, elem_llvm, elem_llvm, base_ptr, lo64);
@@ -2050,6 +2126,57 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 	case HIR_EXPR_BINARY: {
 		char left_buf[256], right_buf[256];
 
+		/* Logical `&&` / `||` MUST short-circuit. With failure policies an operand can abort (`_exit`) or
+		 * mutate state, so the RHS may run ONLY when the LHS doesn't already decide the result — eager
+		 * evaluation would fire a short-circuited-out `!abort`. Lower exactly like every modern compiler
+		 * (clang's `land.rhs`/`lor.rhs`, Rust, GCC): branch on the LHS, evaluate the RHS in its own block,
+		 * and merge the result through a stack slot — arche's value model is memory-backed (alloca/load),
+		 * so no phi is needed. The RHS block's policy preludes then live only on the taken path. */
+		if (expr->data.binary.op == OP_AND || expr->data.binary.op == OP_OR) {
+			int is_and = expr->data.binary.op == OP_AND;
+			int saved_lanes = ctx->vector_lanes;
+			ctx->vector_lanes = 0; /* logical ops are scalar */
+
+			codegen_expression(ctx, expr->data.binary.left, left_buf);
+			char *l_i1 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = icmp ne %s %s, 0\n", l_i1, cond_int_type(expr->data.binary.left), left_buf);
+
+			char *slot = gen_value_name(ctx);
+			emit_alloca(ctx, "  %s = alloca i32\n", slot); /* hoisted: the merged i1-as-i32 result */
+			char *rhs_label = gen_value_name(ctx);
+			char *short_label = gen_value_name(ctx);
+			char *end_label = gen_value_name(ctx);
+
+			/* &&: LHS true → eval RHS, false → result 0. ||: LHS true → result 1, false → eval RHS. */
+			buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", l_i1, is_and ? rhs_label : short_label,
+			                  is_and ? short_label : rhs_label);
+
+			buffer_append_fmt(ctx, "%s:\n", short_label + 1); /* LHS decided it */
+			ctx->block_terminated = 0;
+			buffer_append_fmt(ctx, "  store i32 %d, i32* %s\n", is_and ? 0 : 1, slot);
+			buffer_append_fmt(ctx, "  br label %s\n", end_label);
+
+			buffer_append_fmt(ctx, "%s:\n", rhs_label + 1); /* RHS (and any policy it carries) runs here only */
+			ctx->block_terminated = 0;
+			codegen_expression(ctx, expr->data.binary.right, right_buf);
+			char *r_i1 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = icmp ne %s %s, 0\n", r_i1, cond_int_type(expr->data.binary.right),
+			                  right_buf);
+			char *r_z = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = zext i1 %s to i32\n", r_z, r_i1);
+			buffer_append_fmt(ctx, "  store i32 %s, i32* %s\n", r_z, slot);
+			buffer_append_fmt(ctx, "  br label %s\n", end_label);
+
+			buffer_append_fmt(ctx, "%s:\n", end_label + 1); /* merge */
+			ctx->block_terminated = 0;
+			char *res = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", res, slot);
+			strcpy(result_buf, res);
+
+			ctx->vector_lanes = saved_lanes;
+			break; /* value names leak per-function like every other gen_value_name site (bounded pass) */
+		}
+
 		/* For comparisons in scalar context, evaluate operands as scalars
 		 * (C-style: comparison returns scalar int 0/1). In vector context,
 		 * preserve vector lanes so operands load as <N x T> and the
@@ -2095,6 +2222,10 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			if (expr->data.binary.left->resolved.tag == HIR_TYPE_OPAQUE ||
 			    expr->data.binary.right->resolved.tag == HIR_TYPE_OPAQUE)
 				int_width = 64; /* opaque cells are pointer-width i64 (e.g. `r == 0`) */
+			if (expr->data.binary.left->resolved.tag == HIR_TYPE_HANDLE ||
+			    expr->data.binary.right->resolved.tag == HIR_TYPE_HANDLE)
+				int_width = 64; /* a pool handle is a 64-bit slot|gen<<32 — compare full width, not the
+				                 * truncated slot, so `h == 0` and handle equality see the generation too */
 			if (lt->tag == HIR_TYPE_INT)
 				int_signed = lt->int_signed;
 			else if (rt->tag == HIR_TYPE_INT)
@@ -2113,6 +2244,9 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			break;
 		case OP_DIV:
 			op = is_float ? "fdiv" : (int_signed ? "sdiv" : "udiv");
+			break;
+		case OP_MOD:
+			op = is_float ? "frem" : (int_signed ? "srem" : "urem");
 			break;
 		case OP_EQ:
 			op = is_float ? "oeq" : "eq";
@@ -2246,23 +2380,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			right_val = rwconv;
 		}
 
-		if (expr->data.binary.op == OP_AND || expr->data.binary.op == OP_OR) {
-			/* Logical `&&` / `||`. Eager: arche expressions have no side effects and no
-			 * traps, so eager evaluation is indistinguishable from short-circuit. Normalize
-			 * each operand to i1 (`!= 0`), combine with `and`/`or`, zext back to i32 (arche
-			 * has no bool; conditions are int 0/1 like comparisons). Scalar int only. */
-			const char *lt = llvm_int_type(int_width);
-			char *l_i1 = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = icmp ne %s %s, 0\n", l_i1, lt, left_val);
-			char *r_i1 = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = icmp ne %s %s, 0\n", r_i1, lt, right_val);
-			char *comb = gen_value_name(ctx);
-			const char *logop = (expr->data.binary.op == OP_AND) ? "and" : "or";
-			buffer_append_fmt(ctx, "  %s = %s i1 %s, %s\n", comb, logop, l_i1, r_i1);
-			buffer_append_fmt(ctx, "  %s = zext i1 %s to i32\n", res_name, comb);
-			strcpy(result_buf, res_name);
-			break;
-		}
+		/* `&&` / `||` were handled up front (short-circuit lowering, before operand eval). */
 
 		if (expr->data.binary.op >= OP_EQ && expr->data.binary.op <= OP_GTE) {
 			/* Comparison. In scalar context: emit scalar icmp/fcmp -> i1 -> zext to i32.
@@ -2316,6 +2434,12 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				}
 				buffer_append_fmt(ctx, "  %s = zext i1 %s to i32\n", res_name, cmp_i1);
 			}
+		} else if ((expr->data.binary.op == OP_DIV || expr->data.binary.op == OP_MOD) && !is_float &&
+		           ctx->vector_lanes == 0) {
+			/* Integer divide/mod: inline its failure policy over (a, b) then the raw op. Explicit
+			 * `a / b !zero` wins; an unannotated op takes the program @default / baseline (proc→abort,
+			 * func→zero) — so div-by-zero is a visible policy decision, never silent UB. */
+			emit_int_divmod(ctx, op, type, left_val, right_val, expr->data.binary.policy, res_name);
 		} else {
 			/* arithmetic: vectorized if ctx->vector_lanes > 0 */
 			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", res_name, op, type, left_val, right_val);
@@ -2741,12 +2865,15 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 
 		/* Check if base is a type-6 slice pointer variable */
 		const char *type6_elem_type = NULL;
-		int type6_bound = 0; /* compile-time element count N for a bounded array (0 = unbounded slice) */
+		int type6_bound = 0;          /* compile-time element count N for a bounded array (0 = unbounded slice) */
+		const char *slice_len = NULL; /* runtime i64 length of a `T[]` slice base (fat-pointer .len), else NULL */
 		if (expr->data.index.base->kind == HIR_EXPR_NAME) {
 			ValueInfo *vi = find_value(ctx, expr->data.index.base->data.name.name);
 			if (vi && vi->type == 6 && vi->field_type) {
 				type6_elem_type = vi->field_type;
 				type6_bound = vi->string_len;
+				if (vi->is_slice && vi->len_ssa)
+					slice_len = vi->len_ssa;
 			}
 		}
 
@@ -2807,17 +2934,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		/* In vector mode, load uses vector type; GEP uses scalar pointer */
 		const char *load_type = arche_type ? elem_llvm_type(ctx, arche_type) : scalar_type;
 
-		/* Bounds check for archetype column accesses (elided when statically provable). */
-		const char *bc_arch_name = NULL, *bc_arch_ptr = NULL;
-		int bc_count_idx = -1, bc_idx_is_i64 = 0;
-		if (expr->data.index.index_count > 0 && !shaped_elem &&
-		    resolve_index_arch(ctx, expr->data.index.base, expr->data.index.indices[0], &bc_arch_name, &bc_arch_ptr,
-		                       &bc_count_idx, &bc_idx_is_i64) &&
-		    !bounds_check_elidable(ctx, bc_arch_name, expr->data.index.indices[0])) {
-			emit_bounds_check(ctx, bc_arch_name, bc_arch_ptr, bc_count_idx, idx_buf, bc_idx_is_i64);
-		}
-
-		/* Ensure index is i64 for getelementptr, respecting the index's width. */
+		/* Ensure index is i64 for getelementptr, respecting the index's width. The pool/type6 policy
+		 * logic below operates on this i64 index. */
 		const char *final_idx = idx_buf;
 		char final_idx_buf[256];
 
@@ -2826,11 +2944,13 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			final_idx = final_idx_buf;
 		}
 
-		/* Bounds check a type-6 bounded array read against its compile-time count N (final_idx is
-		 * already i64 here), unless the index is provably in range. */
-		if (type6_bound > 0 && expr->data.index.index_count > 0 &&
-		    !const_index_in_range(ctx, expr->data.index.indices[0], type6_bound))
-			emit_const_bounds_check(ctx, type6_bound, final_idx, 1);
+		/* Apply the index's failure policy — a MACRO inlined here over (len, i) — against the base's
+		 * length: the compile-time N (fixed `T[N]`), the live `count` (pool column), or the runtime
+		 * `.len` (slice param). Proven-safe indices are elided (no policy). Operands are i32 (`int`):
+		 * trunc the index in, inline the policy (it mutates `i` / `exit()`s), sext the result back. */
+		emit_index_policy(ctx, expr->data.index.base, expr->data.index.indices[0],
+		                  expr->data.index.index_count > 0 && !shaped_elem, type6_bound, slice_len,
+		                  expr->data.index.policy, final_idx_buf, &final_idx);
 
 		char *res_name = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", res_name, scalar_type, scalar_type,
@@ -4460,82 +4580,160 @@ static int bounds_check_elidable(CodegenContext *ctx, const char *arch_name, Hir
 	return 0;
 }
 
-static void emit_bounds_check(CodegenContext *ctx, const char *arch_name, const char *arch_ptr, int count_field_idx,
-                              const char *idx_buf, int idx_is_i64) {
-	/* If arch_ptr is a dynamic global (pointer-to-pointer), load the struct ptr first.
-	   Static globals (@ArchName) are already %struct.X* — no load needed. */
-	const char *struct_ptr = arch_ptr;
-	char *loaded_ptr = NULL;
-	if (strncmp(arch_ptr, "@archetype_", 11) == 0) {
-		loaded_ptr = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** %s\n", loaded_ptr, arch_name, arch_name,
-		                  arch_ptr);
-		struct_ptr = loaded_ptr;
-	}
-
-	/* Load count from archetype struct */
-	char *count_gep = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", count_gep, arch_name,
-	                  arch_name, struct_ptr, count_field_idx);
-	char *count = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, count_gep);
-
-	/* Extend index to i64 if needed */
-	const char *idx64 = idx_buf;
-	if (!idx_is_i64) {
-		char *idx64_val = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", idx64_val, idx_buf);
-		idx64 = idx64_val;
-	}
-
-	/* Compare index < count */
-	char *cmp = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = icmp ult i64 %s, %s\n", cmp, idx64, count);
-
-	/* Generate branch labels */
-	int chk_id = ctx->value_counter++;
-	char ok_lbl[64], fail_lbl[64];
-	snprintf(ok_lbl, sizeof(ok_lbl), "bounds_ok_%d", chk_id);
-	snprintf(fail_lbl, sizeof(fail_lbl), "bounds_fail_%d", chk_id);
-
-	buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n\n", cmp, ok_lbl, fail_lbl);
-
-	/* Emit error block */
-	buffer_append_fmt(ctx, "%s:\n", fail_lbl);
-	buffer_append(ctx,
-	              "  call i32 @write(i32 2, i8* getelementptr ([28 x i8], [28 x i8]* @.arche_oob, i32 0, i32 0), i32 "
-	              "27)\n");
-	buffer_append(ctx, "  call void @abort()\n");
-	buffer_append(ctx, "  unreachable\n\n");
-
-	/* Emit ok block label (execution continues here) */
-	buffer_append_fmt(ctx, "%s:\n", ok_lbl);
+/* `--unchecked`: a trusted/embedded build that strips the IMPLICIT runtime checks — an unannotated
+ * fallible op resolves to `!undefined` (raw) instead of its `!abort`/`!clamp` default. Explicit
+ * policies are still honored (a written `!clamp`/`!zero` may be load-bearing logic, not just a safety
+ * net). Voids the "func never crashes" guarantee — that's the opt-in. Set by the CLI before codegen. */
+static int g_codegen_unchecked = 0;
+void codegen_set_unchecked(int on) {
+	g_codegen_unchecked = on;
 }
 
-/* Bounds check against a compile-time element count N (for fixed-size arrays whose length is the
- * declared N, not a runtime count). Same abort idiom as emit_bounds_check; an unsigned compare also
- * catches a negative index (it becomes a huge u64). */
-static void emit_const_bounds_check(CodegenContext *ctx, int n, const char *idx_buf, int idx_is_i64) {
-	const char *idx64 = idx_buf;
-	if (!idx_is_i64) {
-		char *v = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", v, idx_buf);
-		idx64 = v;
+/* The program `@default(<kind>, <category>, <policy>)` directive for an (effect-kind, category) cell,
+ * or NULL if none. effect_kind: 0 = proc, 1 = func. category: 1 = bounds, 2 = pool, 3 = divide. One
+ * per cell (enforced in semantic), so the first match is THE default. */
+static const char *cg_program_default(CodegenContext *ctx, int effect_kind, int category) {
+	if (!ctx->ast)
+		return NULL;
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		HirDecl *d = ctx->ast->decls[i];
+		if (d->kind != HIR_DECL_DEFAULT || !d->data.default_decl)
+			continue;
+		HirDefaultDecl *df = d->data.default_decl;
+		if (df->effect_kind == effect_kind && df->category == category)
+			return df->policy;
 	}
-	char *cmp = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = icmp ult i64 %s, %d\n", cmp, idx64, n);
-	int chk_id = ctx->value_counter++;
-	char ok_lbl[64], fail_lbl[64];
-	snprintf(ok_lbl, sizeof(ok_lbl), "bounds_ok_%d", chk_id);
-	snprintf(fail_lbl, sizeof(fail_lbl), "bounds_fail_%d", chk_id);
-	buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n\n", cmp, ok_lbl, fail_lbl);
-	buffer_append_fmt(ctx, "%s:\n", fail_lbl);
-	buffer_append(ctx,
-	              "  call i32 @write(i32 2, i8* getelementptr ([28 x i8], [28 x i8]* @.arche_oob, i32 0, i32 0), i32 "
-	              "27)\n");
-	buffer_append(ctx, "  call void @abort()\n");
-	buffer_append(ctx, "  unreachable\n\n");
-	buffer_append_fmt(ctx, "%s:\n", ok_lbl);
+	return NULL;
+}
+
+/* The policy NAME to inline at an unannotated fallible bounds/divide op. Explicit `!policy` wins; else
+ * `--unchecked` strips to the empty `undefined` policy; else the one program `@default` for this op's
+ * (kind, category) cell; else the baseline (func → clamp/zero, total; proc → abort). All just name a
+ * core/user policy — nothing is hardcoded except the last-resort baseline. */
+static const char *cg_policy_for(CodegenContext *ctx, const char *explicit_pol, int category) {
+	if (explicit_pol)
+		return explicit_pol;
+	if (g_codegen_unchecked)
+		return "undefined";
+	const char *prog = cg_program_default(ctx, ctx->in_func ? 1 : 0, category);
+	if (prog)
+		return prog;
+	if (category == 3) /* divide: func → zero (total), proc → abort */
+		return ctx->in_func ? "zero" : "abort";
+	return ctx->in_func ? "clamp" : "abort"; /* bounds */
+}
+
+/* Inline a failure policy at a fallible op: bind its params to the op's operand SSAs (i32, per the
+ * `policy(len,i)` / `policy(a,b)` signatures) as mutable locals, codegen its body — which mutates them
+ * and/or calls `exit()` — then read the (possibly-mutated) operands back into `out`. A name that isn't
+ * a policy, or a policy with an empty body, leaves the operands unchanged ⇒ the raw op (that's
+ * `!undefined`). This is the ONLY policy mechanism: no intrinsics, no net. */
+static void emit_policy_inline(CodegenContext *ctx, const char *name, int category, const char **ops, int n,
+                               char out[][256]) {
+	for (int k = 0; k < n; k++)
+		snprintf(out[k], 256, "%s", ops[k]); /* default: operands unchanged → raw op */
+	if (!name)
+		return;
+	HirFuncDecl *p = find_policy_decl(ctx, name, category);
+	if (!p)
+		return;
+	int np = (n < p->param_count) ? n : p->param_count;
+	push_value_scope(ctx);
+	/* Bind each operand as an alloca-backed mutable scalar (type==1) — exactly how a normal `i := …`
+	 * local is set up — so the policy body's branch reassignments (`i = …`) store/load correctly. A
+	 * plain SSA binding would lose a reassignment made inside an `if`. */
+	char addrs[8][256];
+	for (int k = 0; k < np && k < 8; k++) {
+		char *a = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca i32\n", a);
+		buffer_append_fmt(ctx, "  store i32 %s, i32* %s\n", ops[k], a);
+		snprintf(addrs[k], sizeof addrs[k], "%s", a);
+		ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+		vi->name = strdup(p->params[k]->name);
+		vi->llvm_name = strdup(a);
+		vi->type = 1; /* alloca-backed scalar: read via load, assign via store */
+		vi->string_len = -1;
+		vi->field_type = "int";
+		vi->bit_width = 32;
+		ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+		sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+		sc->values[sc->value_count++] = vi;
+	}
+	for (int s = 0; s < p->stmt_count; s++)
+		codegen_statement(ctx, p->stmts[s]);
+	for (int k = 0; k < np && k < 8; k++) { /* read the (possibly-mutated) operands back */
+		char *ld = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", ld, addrs[k]);
+		snprintf(out[k], 256, "%s", ld);
+	}
+	pop_value_scope(ctx);
+}
+
+/* Integer divide/mod with its failure policy: inline the resolved policy over (a, b) — it mutates them
+ * (e.g. `zero`: b==0 ⇒ a=0, b=1) or aborts — then the raw `op` runs on the result. An unannotated op
+ * resolves the program @default / baseline (so `proc` aborts and `func` zeroes on div-by-zero).
+ * A failure policy operates on `int` (i32) operands, so it only applies to an i32 op; a wider/narrower
+ * integer divide emits the raw op (unchanged — its default policy is a future widening of the macro). */
+static void emit_int_divmod(CodegenContext *ctx, const char *op, const char *type, const char *left, const char *right,
+                            const char *explicit_pol, const char *res_name) {
+	if (strcmp(type, "i32") != 0) {
+		buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", res_name, op, type, left, right);
+		return;
+	}
+	const char *ops[2] = {left, right};
+	char out[2][256];
+	emit_policy_inline(ctx, cg_policy_for(ctx, explicit_pol, 3), 3, ops, 2, out);
+	buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", res_name, op, type, out[0], out[1]);
+}
+
+static void emit_index_policy(CodegenContext *ctx, HirExpr *base, HirExpr *idx_expr, int applies, int type6_bound,
+                              const char *slice_len, const char *policy, char *idx_buf, const char **final_idx) {
+	if (!applies)
+		return;
+	/* The base length as an i32 (`int`, matching the policy signature). One of: a fixed `T[N]`'s N, a
+	 * pool column's live count, or a slice's runtime .len. A proven-safe index is elided (no policy). */
+	char len_i32[256] = "";
+	if (type6_bound > 0) {
+		if (const_index_in_range(ctx, idx_expr, type6_bound))
+			return; /* proven in range */
+		snprintf(len_i32, sizeof len_i32, "%d", type6_bound);
+	} else {
+		const char *an = NULL, *ap = NULL;
+		int ci = -1, ii = 0;
+		if (resolve_index_arch(ctx, base, idx_expr, &an, &ap, &ci, &ii)) {
+			if (bounds_check_elidable(ctx, an, idx_expr))
+				return;          /* proven in range */
+			const char *sp = ap; /* load the live count from the archetype struct, trunc to i32 */
+			if (strncmp(ap, "@archetype_", 11) == 0) {
+				char *lp = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** %s\n", lp, an, an, ap);
+				sp = lp;
+			}
+			char *cg = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cg, an, an, sp,
+			                  ci);
+			char *cnt = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cnt, cg);
+			char *c32 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", c32, cnt);
+			snprintf(len_i32, sizeof len_i32, "%s", c32);
+		} else if (slice_len) {
+			char *c32 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", c32, slice_len);
+			snprintf(len_i32, sizeof len_i32, "%s", c32);
+		} else {
+			return; /* not a length-bearing array index */
+		}
+	}
+	char *i32idx = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", i32idx, *final_idx);
+	const char *ops[2] = {len_i32, i32idx};
+	char out[2][256];
+	emit_policy_inline(ctx, cg_policy_for(ctx, policy, 1), 1, ops, 2, out);
+	char *clamped64 = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", clamped64, out[1]);
+	snprintf(idx_buf, 256, "%s", clamped64);
+	*final_idx = idx_buf;
 }
 
 /* 1 if `idx_expr` is provably within [0, n): a literal in range, or a loop var bounded <= n. */
@@ -4696,6 +4894,9 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 		case OP_DIV:
 			op_str = "fdiv";
 			break;
+		case OP_MOD:
+			op_str = "frem";
+			break;
 		default:
 			op_str = "fadd";
 			break;
@@ -4772,6 +4973,9 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 		case OP_DIV:
 			op_str = "fdiv";
 			break;
+		case OP_MOD:
+			op_str = "frem";
+			break;
 		default:
 			op_str = "fadd";
 			break;
@@ -4799,6 +5003,206 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 	ctx->vector_lanes = 0;
 
 	free(compute_result);
+}
+
+/* ===== mandatory-ok insert/delete (statement-only, errors-as-values) =====
+ * `insert(P, fields…)(handle:, ok:)` and `delete(h)(ok:)` are statement-only builtins: the pool
+ * helper writes the handle/ok through out-pointers instead of returning a value or aborting on a
+ * full pool (the legacy value-form `h := insert(…)` is gone). These are dispatched from the
+ * HIR_STMT_MULTI_BIND path. */
+
+/* Allocate (or reuse) the write-through slot for one out-target and register it as a readable
+ * local (type==1: an alloca pointer read via load). `_`/unnamed discards into a throwaway alloca.
+ * Returns the LLVM out-pointer to pass to the helper. `handle_arch` is borrowed (stable). */
+static char *cg_outparam_slot(CodegenContext *ctx, HirBindingTarget *tgt, const char *elem, const char *field_type,
+                              int bit_width, const char *handle_arch) {
+	int discard = !tgt->name || strcmp(tgt->name, "_") == 0;
+	if (!tgt->is_new && !discard) {
+		ValueInfo *e = find_value(ctx, tgt->name);
+		if (e && e->type == 1)
+			return e->llvm_name; /* reuse the existing local's alloca */
+	}
+	char *a = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca %s\n", a, elem);
+	if (discard)
+		return a;
+	ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+	vi->name = strdup(tgt->name);
+	vi->llvm_name = strdup(a);
+	vi->type = 1;
+	vi->string_len = -1;
+	vi->field_type = field_type;
+	vi->bit_width = bit_width;
+	vi->handle_archetype = handle_arch;
+	if (ctx->scope_count > 0) {
+		ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+		sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+		sc->values[sc->value_count++] = vi;
+	}
+	return a;
+}
+
+/* Emit `insert(P, fields…)(handle:, ok:)`: resolve the pool, evaluate column args, allocate the
+ * handle/ok out-slots, and call the void `@arche_insert_<arch>` helper (writes both out-pointers). */
+static void cg_emit_insert_mb(CodegenContext *ctx, HirExpr *rhs, HirBindingTarget *targets, int target_count) {
+	/* RAII: insert moves its value args into the pool — suppress auto-drop for any opaque local. */
+	for (int ai = 1; ai < rhs->data.call.arg_count; ai++) {
+		HirExpr *ia = rhs->data.call.args[ai];
+		if (ia && ia->kind == HIR_EXPR_UNARY && ia->data.unary.op == UNARY_MOVE)
+			ia = ia->data.unary.operand;
+		if (ia && ia->kind == HIR_EXPR_NAME)
+			drop_mark_consumed(ctx, ia->data.name.name);
+	}
+	char arch_buf[256];
+	codegen_expression(ctx, rhs->data.call.args[0], arch_buf);
+	const char *arch_name = NULL;
+	HirArchetypeDecl *arch = NULL;
+	if (rhs->data.call.args[0]->kind == HIR_EXPR_NAME) {
+		const char *name = rhs->data.call.args[0]->data.name.name;
+		ValueInfo *av = find_value(ctx, name);
+		if (av && av->arch_name) {
+			arch_name = av->arch_name;
+			arch = find_archetype_decl(ctx, arch_name);
+		} else if (find_archetype_decl(ctx, name)) {
+			arch_name = name;
+			arch = find_archetype_decl(ctx, arch_name);
+		}
+	}
+	if (arch)
+		arch_name = arch->name;
+	if (!arch || !arch_name)
+		return;
+
+	/* Evaluate column-field arguments (skip non-column fields). */
+	char field_bufs[32][256];
+	int arg_count = 0, field_idx = 0;
+	for (int i = 1; i < rhs->data.call.arg_count && arg_count < 32; i++) {
+		while (field_idx < arch->field_count && arch->fields[field_idx]->kind != FIELD_COLUMN)
+			field_idx++;
+		if (field_idx < arch->field_count) {
+			codegen_expression(ctx, rhs->data.call.args[i], field_bufs[arg_count]);
+			arg_count++;
+			field_idx++;
+		}
+	}
+
+	/* Out-slots: targets[0] = handle (i64), targets[1] = ok (i32). */
+	char *h_ptr = (target_count > 0) ? cg_outparam_slot(ctx, &targets[0], "i64", "handle", 64, arch_name) : NULL;
+	char *ok_ptr = (target_count > 1) ? cg_outparam_slot(ctx, &targets[1], "i32", "int", 32, NULL) : NULL;
+	if (!h_ptr) {
+		h_ptr = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca i64\n", h_ptr);
+	}
+	if (!ok_ptr) {
+		ok_ptr = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca i32\n", ok_ptr);
+	}
+
+	/* Resolve the overflow handler (per-call `?name` › pool `?name` › `reject`). `reject` is exactly the
+	 * helper's built-in ok=0-on-full, so it needs no code (pass evict_slot = -1). Any other handler is
+	 * inlined HERE over `(count, cap, ok, slot)` (ok init 1, slot init = the would-be append slot); if it
+	 * leaves ok≠0 and redirects slot to a victim, that victim is passed as `evict_slot` and the helper
+	 * overwrites it (a full-pool eviction). Emitted before the call text so its instructions precede it. */
+	char evict_slot_val[256] = "-1";
+	const char *handler = cg_insert_handler(ctx, rhs, arch_name);
+	if (strcmp(handler, "reject") != 0) {
+		int static_cap = get_arch_static_capacity(ctx, arch_name);
+		int count_idx = arch->field_count;
+		char *cnt_ptr = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cnt_ptr, arch_name,
+		                  arch_name, arch_buf, count_idx);
+		char *cnt = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cnt, cnt_ptr);
+		char *cnt32 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", cnt32, cnt);
+		char cap32[256];
+		if (static_cap > 0) {
+			snprintf(cap32, sizeof cap32, "%d", static_cap);
+		} else {
+			char *cap_ptr = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cap_ptr,
+			                  arch_name, arch_name, arch_buf, arch->field_count + 1);
+			char *capv = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", capv, cap_ptr);
+			char *cap32s = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", cap32s, capv);
+			snprintf(cap32, sizeof cap32, "%s", cap32s);
+		}
+		const char *ops[4] = {cnt32, cap32, "1", cnt32};
+		char out[4][256];
+		emit_policy_inline(ctx, handler, 2 /* POLICY_CAT_POOL */, ops, 4, out);
+		char *okv = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = icmp ne i32 %s, 0\n", okv, out[2]); /* handler kept ok≠0 (didn't reject) */
+		char *redir = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = icmp ne i32 %s, %s\n", redir, out[3], cnt32); /* slot redirected → evict */
+		char *doev = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = and i1 %s, %s\n", doev, okv, redir);
+		char *slot64 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", slot64, out[3]);
+		char *evs = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = select i1 %s, i64 %s, i64 -1\n", evs, doev, slot64);
+		snprintf(evict_slot_val, sizeof evict_slot_val, "%s", evs);
+	}
+
+	buffer_append_fmt(ctx, "  call void @arche_insert_%s(%%struct.%s* %s", arch_name, arch_name, arch_buf);
+	field_idx = 0;
+	for (int i = 0; i < arg_count; i++) {
+		while (field_idx < arch->field_count && arch->fields[field_idx]->kind != FIELD_COLUMN)
+			field_idx++;
+		if (field_idx < arch->field_count) {
+			const char *ft = llvm_type_from_arche(field_base_type_name(arch->fields[field_idx]->type));
+			if (field_total_elements(arch->fields[field_idx]->type) > 1 && strcmp(ft, "i8") == 0)
+				buffer_append_fmt(ctx, ", %s* %s", ft, field_bufs[i]);
+			else
+				buffer_append_fmt(ctx, ", %s %s", ft, field_bufs[i]);
+			field_idx++;
+		}
+	}
+	buffer_append_fmt(ctx, ", i64 %s, i64* %s, i32* %s)\n", evict_slot_val, h_ptr, ok_ptr);
+}
+
+/* Emit `delete(h)(ok:)` (or legacy `delete(P, h)(ok:)`): resolve the pool from the handle, allocate
+ * the ok out-slot, and call the void `@arche_delete_<arch>` helper. */
+static void cg_emit_delete_mb(CodegenContext *ctx, HirExpr *rhs, HirBindingTarget *targets, int target_count) {
+	char arch_buf[256];
+	char idx_buf[256];
+	arch_buf[0] = '\0';
+	idx_buf[0] = '\0';
+	const char *arch_name = NULL;
+	int argc = rhs->data.call.arg_count;
+	if (argc >= 2) {
+		codegen_expression(ctx, rhs->data.call.args[0], arch_buf);
+		codegen_expression(ctx, rhs->data.call.args[1], idx_buf);
+		if (rhs->data.call.args[0]->kind == HIR_EXPR_NAME) {
+			const char *name = rhs->data.call.args[0]->data.name.name;
+			ValueInfo *av = find_value(ctx, name);
+			if (av && av->arch_name)
+				arch_name = av->arch_name;
+			else if (find_archetype_decl(ctx, name))
+				arch_name = name;
+		}
+	} else if (argc >= 1) {
+		codegen_expression(ctx, rhs->data.call.args[0], idx_buf);
+		if (rhs->data.call.args[0]->kind == HIR_EXPR_NAME) {
+			ValueInfo *hv = find_value(ctx, rhs->data.call.args[0]->data.name.name);
+			if (hv && hv->handle_archetype)
+				arch_name = hv->handle_archetype;
+		}
+		if (arch_name) {
+			arch_name = canonical_arch_name(ctx, arch_name);
+			snprintf(arch_buf, sizeof(arch_buf), "@%s", arch_name);
+		}
+	}
+	if (!arch_name)
+		return;
+	const char *cn = canonical_arch_name(ctx, arch_name);
+	char *ok_ptr = (target_count > 0) ? cg_outparam_slot(ctx, &targets[0], "i32", "int", 32, NULL) : NULL;
+	if (!ok_ptr) {
+		ok_ptr = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca i32\n", ok_ptr);
+	}
+	buffer_append_fmt(ctx, "  call void @arche_delete_%s(%%struct.%s* %s, i64 %s, i32* %s)\n", cn, cn, arch_buf,
+	                  idx_buf, ok_ptr);
 }
 
 /* ========== STATEMENT CODEGEN ========== */
@@ -5296,6 +5700,16 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		/* Inside a callback specialization, a call to a callback param resolves to
 		 * its bound proc (matches the EXPR_CALL path). */
 		fn = cb_resolve(ctx, fn);
+		/* Mandatory-ok builtins: `insert(P,…)(handle:, ok:)` / `delete(h)(ok:)` write their out-slots
+		 * directly — they are not user procs, so intercept before the callee_proc machinery. */
+		if (fn && rhs && rhs->kind == HIR_EXPR_CALL && strcmp(fn, "insert") == 0) {
+			cg_emit_insert_mb(ctx, rhs, targets, target_count);
+			break;
+		}
+		if (fn && rhs && rhs->kind == HIR_EXPR_CALL && strcmp(fn, "delete") == 0) {
+			cg_emit_delete_mb(ctx, rhs, targets, target_count);
+			break;
+		}
 		HirFuncDecl *callee_func = fn ? find_func_decl(ctx, fn) : NULL;
 		HirProcDecl *callee_proc = (!callee_func && fn) ? find_proc_decl(ctx, fn) : NULL;
 
@@ -5853,11 +6267,17 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					case OP_DIV:
 						op = is_float ? "fdiv" : "sdiv";
 						break;
+					case OP_MOD:
+						op = is_float ? "frem" : "srem";
+						break;
 					default:
 						break;
 					}
 					char *result = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", result, op, llvm_t, loaded, value_buf);
+					if (!is_float && (stmt->data.assign_stmt.op == OP_DIV || stmt->data.assign_stmt.op == OP_MOD))
+						emit_int_divmod(ctx, op, llvm_t, loaded, value_buf, NULL, result);
+					else
+						buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", result, op, llvm_t, loaded, value_buf);
 					buffer_append_fmt(ctx, "  store %s %s, %s* @%s\n", llvm_t, result, llvm_t, var_name);
 				}
 			}
@@ -5901,13 +6321,19 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					case OP_DIV:
 						op = is_float ? "fdiv" : (unsigned_int ? "udiv" : "sdiv");
 						break;
+					case OP_MOD:
+						op = is_float ? "frem" : (unsigned_int ? "urem" : "srem");
+						break;
 					default:
 						op = is_float ? "fadd" : "add";
 						break;
 					}
 
 					char *result = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", result, op, llvm_t, loaded, value_buf);
+					if (!is_float && (stmt->data.assign_stmt.op == OP_DIV || stmt->data.assign_stmt.op == OP_MOD))
+						emit_int_divmod(ctx, op, llvm_t, loaded, value_buf, NULL, result);
+					else
+						buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", result, op, llvm_t, loaded, value_buf);
 					buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", llvm_t, result, llvm_t, val->llvm_name);
 				}
 			}
@@ -6186,15 +6612,17 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				 * directly — the pointer is already `T*`. */
 				char idx_i64[256];
 				emit_index_i64(ctx, idx_buf, stmt->data.assign_stmt.target->data.index.indices[0], idx_i64);
-				/* Bounds check a bounded array write against its count N (idx_i64 is i64). */
-				if (type6_target->string_len > 0 &&
-				    !const_index_in_range(ctx, stmt->data.assign_stmt.target->data.index.indices[0],
-				                          type6_target->string_len))
-					emit_const_bounds_check(ctx, type6_target->string_len, idx_i64, 1);
+				/* Apply the index's failure policy (a macro inlined over (len, i)) to the write index,
+				 * against the fixed count N / pool live count / slice .len. Proven-safe indices elide. */
+				const char *wfidx = idx_i64;
+				emit_index_policy(ctx, stmt->data.assign_stmt.target->data.index.base,
+				                  stmt->data.assign_stmt.target->data.index.indices[0], 1, type6_target->string_len,
+				                  type6_target->is_slice ? type6_target->len_ssa : NULL,
+				                  stmt->data.assign_stmt.target->data.index.policy, idx_i64, &wfidx);
 				const char *et6 = type6_target->field_type ? type6_target->field_type : "char";
 				if (strcmp(et6, "char") == 0) {
 					char *target_addr = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %s\n", target_addr, base_buf, idx_i64);
+					buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %s\n", target_addr, base_buf, wfidx);
 					char *trunc_val = gen_value_name(ctx);
 					buffer_append_fmt(ctx, "  %s = trunc i32 %s to i8\n", trunc_val, value_buf);
 					buffer_append_fmt(ctx, "  store i8 %s, i8* %s, align 1\n", trunc_val, target_addr);
@@ -6203,7 +6631,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					int align = strcmp(st, "double") == 0 ? 8 : 4;
 					char *target_addr = gen_value_name(ctx);
 					buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", target_addr, st, st, base_buf,
-					                  idx_i64);
+					                  wfidx);
 					buffer_append_fmt(ctx, "  store %s %s, %s* %s, align %d\n", st, value_buf, st, target_addr, align);
 				}
 				break;
@@ -6244,24 +6672,18 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			/* In vector mode, load/store use vector type; GEP uses scalar pointer */
 			const char *load_type = arche_type ? elem_llvm_type(ctx, arche_type) : scalar_type;
 
-			/* Bounds check for archetype column accesses (elided when statically provable). */
-			const char *bc_arch_name = NULL, *bc_arch_ptr = NULL;
-			int bc_count_idx = -1, bc_idx_is_i64 = 0;
-			HirExpr *bc_idx_expr = stmt->data.assign_stmt.target->data.index.indices[0];
-			if (stmt->data.assign_stmt.target->data.index.index_count > 0 &&
-			    resolve_index_arch(ctx, base_expr, bc_idx_expr, &bc_arch_name, &bc_arch_ptr, &bc_count_idx,
-			                       &bc_idx_is_i64) &&
-			    !bounds_check_elidable(ctx, bc_arch_name, bc_idx_expr)) {
-				emit_bounds_check(ctx, bc_arch_name, bc_arch_ptr, bc_count_idx, idx_buf, bc_idx_is_i64);
-			}
-
-			/* Ensure index is i64 for getelementptr, respecting the index's width. */
+			/* Ensure index is i64 for getelementptr; the pool policy below operates on this i64 index. */
 			const char *final_idx = idx_buf;
 			char final_idx_buf[256];
 			if (stmt->data.assign_stmt.target->data.index.index_count > 0) {
 				emit_index_i64(ctx, idx_buf, stmt->data.assign_stmt.target->data.index.indices[0], final_idx_buf);
 				final_idx = final_idx_buf;
 			}
+
+			/* Pool-column write (`Arch.field[i] = v`): apply the index's failure policy (a macro
+			 * inlined over (len, i)) against the live count. Proven-safe indices elide. */
+			emit_index_policy(ctx, base_expr, stmt->data.assign_stmt.target->data.index.indices[0], 1, 0, NULL,
+			                  stmt->data.assign_stmt.target->data.index.policy, final_idx_buf, &final_idx);
 
 			/* Compute target address (always uses scalar pointer) */
 			char *target_addr = gen_value_name(ctx);
@@ -6296,13 +6718,19 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				case OP_DIV:
 					op = is_float ? "fdiv" : "sdiv";
 					break;
+				case OP_MOD:
+					op = is_float ? "frem" : "srem";
+					break;
 				default:
 					op = "add";
 					break;
 				}
 
 				char *result = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", result, op, load_type, loaded, value_buf);
+				if (!is_float && (stmt->data.assign_stmt.op == OP_DIV || stmt->data.assign_stmt.op == OP_MOD))
+					emit_int_divmod(ctx, op, load_type, loaded, value_buf, NULL, result);
+				else
+					buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", result, op, load_type, loaded, value_buf);
 				buffer_append_fmt(ctx, "  store %s %s, %s* %s, align %d\n", load_type, result, scalar_type, target_addr,
 				                  align);
 			}
@@ -6856,8 +7284,11 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 
 	buffer_append(ctx, "}\n\n");
 
-	/* Emit insert helper function */
-	buffer_append_fmt(ctx, "define %si64 @arche_insert_%s(%%struct.%s* %%arch", cg_shared(ctx), arch->name, arch->name);
+	/* Emit insert helper function. Mandatory-ok contract: the helper never aborts on a full pool —
+	 * it writes the generation-checked handle through `%h_out` and a success flag through `%ok_out`
+	 * (1 = inserted, 0 = pool full / handle is 0). Callers MUST supply `(handle:, ok:)`. */
+	buffer_append_fmt(ctx, "define %svoid @arche_insert_%s(%%struct.%s* %%arch", cg_shared(ctx), arch->name,
+	                  arch->name);
 	for (int i = 0; i < arch->field_count; i++) {
 		if (arch->fields[i]->kind == FIELD_COLUMN) {
 			const char *base_type = llvm_type_from_arche(field_base_type_name(arch->fields[i]->type));
@@ -6870,12 +7301,16 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 			}
 		}
 	}
-	buffer_append(ctx, ") {\n");
+	/* `%evict_slot`: an overflow handler's victim slot to overwrite when the pool is full (-1 = none →
+	 * report ok=0). The caller's resolved `?handler` computes it; the default `reject` passes -1. */
+	buffer_append(ctx, ", i64 %evict_slot, i64* %h_out, i32* %ok_out) {\n");
 	buffer_append(ctx, "entry:\n");
 
 	/* Setup allocas for slot and increment flag */
 	buffer_append(ctx, "  %slot_var = alloca i64\n");
 	buffer_append(ctx, "  %do_incr = alloca i1\n");
+	buffer_append(ctx, "  %is_evict = alloca i1\n");
+	buffer_append(ctx, "  store i1 0, i1* %is_evict\n");
 
 	int count_idx = arch->field_count;
 	int fl_idx = static_cap > 0 ? arch->field_count + 1 : arch->field_count + 2;
@@ -6924,10 +7359,21 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	}
 	buffer_append(ctx, "  br i1 %at_capacity, label %overflow, label %use_count\n\n");
 
-	/* Overflow: abort (fixed budget exceeded) */
+	/* Overflow: fixed budget exceeded. If the handler supplied a victim (`%evict_slot >= 0`), overwrite
+	 * that slot (its generation is bumped at `done`, so the evicted entity's handle goes stale); else
+	 * report failure as a value (ok=0, handle=0), never abort. */
 	buffer_append(ctx, "overflow:\n");
-	buffer_append(ctx, "  call void @abort()\n");
-	buffer_append(ctx, "  unreachable\n\n");
+	buffer_append(ctx, "  %has_evict = icmp sge i64 %evict_slot, 0\n");
+	buffer_append(ctx, "  br i1 %has_evict, label %do_evict, label %really_full\n\n");
+	buffer_append(ctx, "do_evict:\n");
+	buffer_append(ctx, "  store i64 %evict_slot, i64* %slot_var\n");
+	buffer_append(ctx, "  store i1 0, i1* %do_incr\n");  /* overwrite a live slot — count is unchanged */
+	buffer_append(ctx, "  store i1 1, i1* %is_evict\n"); /* bump its generation at `done` */
+	buffer_append(ctx, "  br label %write_fields\n\n");
+	buffer_append(ctx, "really_full:\n");
+	buffer_append(ctx, "  store i64 0, i64* %h_out\n");
+	buffer_append(ctx, "  store i32 0, i32* %ok_out\n");
+	buffer_append(ctx, "  ret void\n\n");
 
 	/* Use count as slot */
 	buffer_append(ctx, "use_count:\n");
@@ -7013,18 +7459,38 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 		buffer_append(ctx, "  %gc_arr = load i32*, i32** %gc_ptr_field\n");
 		buffer_append(ctx, "  %gc_elem = getelementptr i32, i32* %gc_arr, i64 %final_slot\n");
 	}
-	buffer_append(ctx, "  %gen_i32 = load i32, i32* %gc_elem\n");
+	/* Eviction overwrote a live slot: bump its generation first so the evicted entity's handle is now
+	 * stale (any later use/delete aborts, exactly like a normal delete). A normal insert skips this. */
+	buffer_append(ctx, "  %was_evict = load i1, i1* %is_evict\n");
+	buffer_append(ctx, "  br i1 %was_evict, label %evict_bump, label %gen_load\n\n");
+	buffer_append(ctx, "evict_bump:\n");
+	buffer_append(ctx, "  %gprev = load i32, i32* %gc_elem\n");
+	buffer_append(ctx, "  %gnext = add i32 %gprev, 1\n");
+	buffer_append(ctx, "  store i32 %gnext, i32* %gc_elem\n");
+	buffer_append(ctx, "  br label %gen_load\n\n");
+	buffer_append(ctx, "gen_load:\n");
+	buffer_append(ctx, "  %gen_raw = load i32, i32* %gc_elem\n");
+	/* Force the issued generation to be >= 1, so a live handle (slot|gen<<32) is never 0 — keeping
+	 * h == 0 an unambiguous overflow/failure sentinel even if a caller ignores `ok`. Store it back so
+	 * `delete`'s generation check matches what was issued. gen == 0 is never a free-slot marker (free
+	 * slots live in the free_list), so promoting it to 1 is safe. */
+	buffer_append(ctx, "  %gen_is0 = icmp eq i32 %gen_raw, 0\n");
+	buffer_append(ctx, "  %gen_i32 = select i1 %gen_is0, i32 1, i32 %gen_raw\n");
+	buffer_append(ctx, "  store i32 %gen_i32, i32* %gc_elem\n");
 	buffer_append(ctx, "  %gen_i64 = zext i32 %gen_i32 to i64\n");
 	buffer_append(ctx, "  %gen_shifted = shl i64 %gen_i64, 32\n");
 	buffer_append(ctx, "  %slot_i32 = trunc i64 %final_slot to i32\n");
 	buffer_append(ctx, "  %slot_i64 = zext i32 %slot_i32 to i64\n");
 	buffer_append(ctx, "  %handle = or i64 %slot_i64, %gen_shifted\n");
-	buffer_append(ctx, "  ret i64 %handle\n");
+	buffer_append(ctx, "  store i64 %handle, i64* %h_out\n");
+	buffer_append(ctx, "  store i32 1, i32* %ok_out\n");
+	buffer_append(ctx, "  ret void\n");
 	buffer_append(ctx, "}\n\n");
 
-	/* Emit delete helper function */
-	buffer_append_fmt(ctx, "define %svoid @arche_delete_%s(%%struct.%s* %%arch, i64 %%handle) {\n", cg_shared(ctx),
-	                  arch->name, arch->name);
+	/* Emit delete helper function. Mandatory-ok: gen-exhaustion (a resource limit) reports ok=0; a
+	 * STALE handle is a use-after-free BUG and still aborts (so `delete` is inherently a `proc!` op). */
+	buffer_append_fmt(ctx, "define %svoid @arche_delete_%s(%%struct.%s* %%arch, i64 %%handle, i32* %%ok_out) {\n",
+	                  cg_shared(ctx), arch->name, arch->name);
 	buffer_append(ctx, "entry:\n");
 
 	/* Unpack slot and generation from handle */
@@ -7060,9 +7526,10 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	 * handle could alias a fresh entity. Abort like a stack overflow would. */
 	buffer_append(ctx, "  %gen_maxed = icmp eq i32 %stored_gen, -1\n");
 	buffer_append(ctx, "  br i1 %gen_maxed, label %gen_exhausted, label %do_free\n\n");
+	/* Generation exhausted: a resource limit, reported as a value (ok=0) rather than aborting. */
 	buffer_append(ctx, "gen_exhausted:\n");
-	buffer_append(ctx, "  call void @abort()\n");
-	buffer_append(ctx, "  unreachable\n\n");
+	buffer_append(ctx, "  store i32 0, i32* %ok_out\n");
+	buffer_append(ctx, "  ret void\n\n");
 	buffer_append(ctx, "do_free:\n");
 	/* Increment generation */
 	buffer_append(ctx, "  %new_gen = add i32 %stored_gen, 1\n");
@@ -7090,6 +7557,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	buffer_append(ctx, "  %new_fc = add i64 %free_count, 1\n");
 	buffer_append(ctx, "  store i64 %new_fc, i64* %fc_ptr\n");
 
+	buffer_append(ctx, "  store i32 1, i32* %ok_out\n");
 	buffer_append(ctx, "  ret void\n");
 	buffer_append(ctx, "}\n\n");
 
@@ -7610,6 +8078,7 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 	buffer_append(ctx, "entry:\n");
 
 	FunctionBodyState fbs_func = begin_function_body(ctx);
+	ctx->in_func = 1; /* a func is total: an unannotated fallible op clamps, never aborts */
 	push_value_scope(ctx);
 
 	/* Register static arrays in scope */
@@ -7668,7 +8137,9 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 			scope->values[scope->value_count++] = vi;
 		} else if (ptype && (ptype->tag == HIR_TYPE_SHAPED_ARRAY || ptype->tag == HIR_TYPE_ARRAY)) {
 			/* Sized array (any element) or extern char[]: %argN is already the element pointer —
-			 * bind as type-6 so it indexes; field_type drives element typing. */
+			 * bind as type-6 so it indexes; field_type drives element typing. A sized `T[N]` carries
+			 * its static length N (so `.length` resolves and it forwards into a slice with that len);
+			 * an unbounded `T[]` has no static length (-1). */
 			ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
 			ValueInfo *vi = calloc(1, sizeof(ValueInfo));
 			vi->name = malloc(strlen(func->params[i]->name) + 1);
@@ -7677,7 +8148,7 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 			strcpy(vi->llvm_name, param_name);
 			vi->type = 6;
 			vi->arch_name = NULL;
-			vi->string_len = -1;
+			vi->string_len = (ptype->tag == HIR_TYPE_SHAPED_ARRAY && ptype->rank > 0) ? ptype->rank : -1;
 			vi->field_type = en;
 			vi->bit_width = strcmp(elt, "double") == 0 ? 64 : (strcmp(elt, "i8") == 0 ? 8 : 32);
 			scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
@@ -7705,6 +8176,7 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 	}
 	buffer_append_fmt(ctx, "  ret %s %s\n", return_type, ret_value);
 	end_function_body(ctx, fbs_func);
+	ctx->in_func = 0;
 	buffer_append(ctx, "}\n\n");
 }
 
@@ -8160,6 +8632,7 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->interned_count = 0;
 	ctx->vector_lanes = 0;
 	ctx->in_sys = 0;
+	ctx->in_func = 0;
 	ctx->implicit_loop_index[0] = '\0'; /* Initialize to empty (not in loop) */
 	ctx->loop_exit_labels = NULL;
 	ctx->loop_exit_count = 0;
@@ -8336,17 +8809,8 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "declare i8* @calloc(i64, i64)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
 	buffer_append(ctx, "declare void @abort()\n");
-	/* Raw stderr write for bounds-check / panic messages — language runtime (alongside @abort),
-	 * not user-facing I/O. Resolves to libc `write` at link (`-lc`). The fd-I/O `write` the user
-	 * calls is a separate `os.write` symbol now, so there is no clash. */
-	buffer_append(ctx, "declare i32 @write(i32, i8*, i32)\n");
-	/* memcpy intrinsic (`copy x` of a local buffer). Declared lazily at module end only if a real
-	 * memcpy was emitted, so a program with no copy carries no `llvm.memcpy` (see uses_memcpy). */
-
-	/* Global error message for bounds check failures */
-	buffer_append(
-	    ctx,
-	    "@.arche_oob = private unnamed_addr constant [28 x i8] c\"arche: index out of bounds\\0A\\00\", align 1\n\n");
+	/* `write` (libc, for a policy's stderr diagnostic) is declared by core's `#foreign` block, which is
+	 * prepended to every program — no codegen-side declare, so no redefinition clash. */
 
 	/* Per-unit: declare cross-unit funcs/procs up front (inert in whole-program mode). */
 	emit_cross_unit_declares(ctx);
@@ -8437,6 +8901,8 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			break;
 		}
 		case HIR_DECL_FUNC:
+			if (decl->data.func->is_policy)
+				break; /* a policy is a MACRO — inlined at op sites, never emitted as a function */
 			codegen_func_decl(ctx, decl->data.func);
 			break;
 		case HIR_DECL_FUNC_GROUP:
@@ -8463,6 +8929,10 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			break;
 		case HIR_DECL_WORLD:
 			/* No codegen for worlds. */
+			break;
+		case HIR_DECL_DEFAULT:
+			/* A `@default` directive only sets a resolution table (read by cg_policy_for /
+			 * cg_insert_handler); it emits no code. */
 			break;
 		}
 	}

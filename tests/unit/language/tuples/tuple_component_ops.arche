@@ -7,9 +7,9 @@ Particle  :: arche { pos_x, pos_y, vel_x, vel_y }
 Particle[5]
 
 main :: proc() {
-  insert(Particle, 0.0, 1.0, 0.5, 0.1);
-  insert(Particle, 2.0, 3.0, 0.2, 0.3);
-  insert(Particle, 4.0, 5.0, 0.1, 0.2);
+  insert(Particle, 0.0, 1.0, 0.5, 0.1)(_:, _:);
+  insert(Particle, 2.0, 3.0, 0.2, 0.3)(_:, _:);
+  insert(Particle, 4.0, 5.0, 0.1, 0.2)(_:, _:);
   fmt.printf("Before: pos_x[0]=%g vel_x[0]=%g\n", Particle.pos_x[0], Particle.vel_x[0]);
   fmt.printf("Before: pos_y[2]=%g vel_y[2]=%g\n", Particle.pos_y[2], Particle.vel_y[2]);
   Particle.pos_x = Particle.pos_x + Particle.vel_x;

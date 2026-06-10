@@ -75,6 +75,7 @@ typedef enum {
 	HIR_DECL_FUNC_GROUP,
 	HIR_DECL_STATIC,
 	HIR_DECL_CONST,
+	HIR_DECL_DEFAULT, /* `@default(<kind>, <category>, <policy>)` program default directive */
 } HirDeclKind;
 
 typedef enum {
@@ -148,6 +149,10 @@ typedef struct {
 	HirType **return_types;
 	int return_type_count;
 	int is_extern;
+	int is_policy;       /* lowered from a `policy` form: a failure-policy MACRO, inlined at fallible op sites
+	                      * (operands bound as mutable locals), never emitted as its own LLVM function. */
+	int policy_category; /* for a policy: 1=bounds (index/slice), 2=pool (insert), 3=divide. So a `clamp`
+	                      * (bounds) and an `abort` (both) resolve by name AND category. 0 = unset. */
 	HirStmt **stmts;
 	int stmt_count;
 	SourceLoc loc;
@@ -166,6 +171,7 @@ typedef struct {
 			HirExpr **field_values;
 			int field_count;
 			HirExpr *init_length;
+			char *overflow_policy; /* `Foo[N] ?handler`: the pool's default insert overflow handler, or NULL */
 		} archetype;
 		struct {
 			char *name;
@@ -187,6 +193,15 @@ typedef struct {
 	HirType *type; /* explicit declared type from `name : T : value` (concrete T); NULL if inferred */
 } HirConstDecl;
 
+/* `@default(<kind>, <category>, <policy>)`: the program's failure-policy default for one
+ * (effect-kind, op-category) cell. At most one per cell program-wide. */
+typedef struct {
+	int effect_kind; /* 0 = proc, 1 = func */
+	int category;    /* 1 = bounds, 2 = pool, 3 = divide */
+	char *policy;    /* the named policy (resolved in core or user code) */
+	SourceLoc loc;
+} HirDefaultDecl;
+
 struct HirDecl {
 	HirDeclKind kind;
 	SourceLoc loc;
@@ -201,6 +216,7 @@ struct HirDecl {
 		HirFuncGroupDecl *func_group;
 		HirStaticDecl *static_decl;
 		HirConstDecl *constant;
+		HirDefaultDecl *default_decl;
 	} data;
 };
 
@@ -354,16 +370,19 @@ struct HirExpr {
 			HirExpr *base;
 			HirExpr **indices;
 			int index_count;
+			char *policy; /* `!name` failure policy (bounds category), or NULL → default (!abort) */
 		} index;
 		struct {
 			HirExpr *base;
-			HirExpr *lo; /* NULL → 0 */
-			HirExpr *hi; /* NULL → base length */
+			HirExpr *lo;  /* NULL → 0 */
+			HirExpr *hi;  /* NULL → base length */
+			char *policy; /* `!name` failure policy (bounds category), or NULL → default */
 		} slice;
 		struct {
 			Operator op;
 			HirExpr *left;
 			HirExpr *right;
+			char *policy; /* `!name` div-by-zero failure policy (divide category), or NULL → default */
 		} binary;
 		struct {
 			UnaryOperator op;
@@ -373,6 +392,8 @@ struct HirExpr {
 			HirExpr *callee;
 			HirExpr **args;
 			int arg_count;
+			char *policy;          /* `?name` overflow handler on a pool `insert(...)`, or NULL → default */
+			int policy_is_handler; /* 1 if the policy was written with `?` (handler), 0 if `!` (panic) */
 		} call;
 		struct {
 			char *archetype_name;

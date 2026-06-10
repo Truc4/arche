@@ -1,0 +1,24 @@
+// Handler resolution precedence: per-call `?name` › the pool's declared `?name` › `reject`. Here the
+// pool declares `?evict_oldest`, but a call site overrides with `?reject`, so that insert rejects
+// (ok=0) instead of evicting — the oldest slot is left untouched.
+// RUN: %arche build -o %t %s && %t | grep -qF "ok2=0 v0=10"
+#import { fmt }
+Foo :: arche { v :: int, ts :: int }
+Foo[2] ?evict_oldest
+@policy (pool) evict_oldest :: policy (count: int, cap: int, ok: int, slot: int) {
+  if (count >= cap) {
+    oldest := 0;
+    for (j := 1; j < count; j = j + 1) {
+      if (Foo.ts[j] < Foo.ts[oldest]) {
+        oldest = j;
+      }
+    }
+    slot = oldest;
+  }
+}
+main :: proc() {
+  insert(Foo, 10, 5)(h0:, ok0:);
+  insert(Foo, 20, 9)(h1:, ok1:);
+  insert(Foo, 30, 7) ?reject(h2:, ok2:); // per-call override: reject, not evict
+  fmt.printf("ok2=%d v0=%d\n", ok2, Foo.v[0] !undefined); // slot 0 unchanged
+}

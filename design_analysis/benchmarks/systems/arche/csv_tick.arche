@@ -20,35 +20,28 @@
 #import { csv }
 
 Transaction :: arche {
-  price :: float,
+  price    :: float,
   quantity :: int,
-  revenue :: float,
+  revenue  :: float,
 }
 
-
 Transaction[100000](100000) {
-  price: 0.0,
-  quantity: 0,
-  revenue: 0.0,
-};
-
+  price: 0.0, quantity: 0, revenue: 0.0,
+}
 
 load_once :: proc() {
   csv_load(Transaction, "design_analysis/benchmarks/systems/data/data_100k.csv");
 }
 
-
 // Per-tick compute: revenue = price * quantity, then dampen.
 // Two sys calls so we exercise dispatch overhead, not just one big op.
-compute_revenue :: sys(price, quantity, revenue) {
+compute_revenue :: sys (price, quantity, revenue) {
   revenue = price * quantity;
 }
 
-
-dampen :: sys(revenue) {
+dampen :: sys (revenue) {
   revenue = revenue * 0.999;
 }
-
 
 // TODO: write revenue column to build/benchmarks/systems/snapshot_<iter>.bin
 // For now this is a no-op so the loop structure is visible.
@@ -60,14 +53,13 @@ snapshot :: proc(iter: int) {
   // arche_fclose(fd);
 }
 
-
 main :: proc() {
   load_once();
 
-  ITERS := 100000;
+  ITERS          := 100000;
   SNAPSHOT_EVERY := 10000;
 
-  for (i :=  0; i < ITERS; i += 1) {
+  for (i := 0; i < ITERS; i += 1) {
     run compute_revenue;
     run dampen;
     if (i % SNAPSHOT_EVERY == 0) {
@@ -78,7 +70,7 @@ main :: proc() {
   // Final checksum: sum of revenue column after ITERS iterations of dampen.
   // Used to verify correctness across runs / engines.
   sum := 0.0;
-  for (m :=  0; m < 100000; m += 1) {
+  for (m := 0; m < 100000; m += 1) {
     sum = sum + Transaction.revenue[m];
   }
   printf("systems_checksum: %g\n", sum);

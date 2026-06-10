@@ -43,7 +43,7 @@ TrieNode :: arche {
 init :: proc() {
   empty: char[32];
   empty[0] = 0;
-  new_node(empty, 0, nodeKind.kstatic)(_root:);
+  new_node(empty, 0, nodeKind.kstatic)(_root:, _:);
 }
 
 // Register `pattern` (e.g. "/users/:id", "/static/*") -> handler_id.
@@ -52,11 +52,19 @@ add :: proc(pattern: char[], handler_id: int) {
   cur := 0;
   s   := 0;
   if (n > 0) {
-    if (pattern[0] == '/') {
-      s = 1; // skip leading '/'
+    if (pattern.length > 0) {
+      if (pattern[0] == '/') {
+        s = 1; // skip leading '/'
+      }
     }
   }
   for (; s < n;) {
+    if (s < 0) {
+      break;
+    }
+    if (s >= pattern.length) {
+      break; // guard pattern[s] below (s < n = strlen(pattern) <= pattern.length)
+    }
     e := seg_end(pattern, s, n);
 
     // Classify the segment; param/catchall store the name after the marker byte.
@@ -71,7 +79,11 @@ add :: proc(pattern: char[], handler_id: int) {
       tstart = s + 1;
     }
 
-    // Find an existing child of `cur` matching this segment.
+    // Find an existing child of `cur` matching this segment. Registration is the COLD path, and
+    // `new_node` can fail on a full pool (returning an invalid slot), so these accesses keep the
+    // implicit `!abort` default — a bad slot is a clean, visible crash, never a raw out-of-bounds
+    // write. (The check is free here and never fires for a slot from a good insert; no annotation
+    // needed since `!abort` is the proc default.)
     found := 0 - 1;
     child := TrieNode.first_child[cur];
     for (; child >= 0;) {
@@ -98,11 +110,22 @@ add :: proc(pattern: char[], handler_id: int) {
       segbuf: char[32];
       j := 0;
       for (i := tstart; i < e; i = i + 1) {
+        if (i < 0) {
+          break;
+        }
+        if (i >= pattern.length) {
+          break; // guard pattern[i]
+        }
+        if (j >= segbuf.length) {
+          break; // guard segbuf[j] (32-byte segment cap)
+        }
         segbuf[j] = pattern[i];
         j         = j + 1;
       }
-      segbuf[j] = 0;
-      new_node(segbuf, e - tstart, kind)(found:);
+      if (j >= 0 && j < segbuf.length) {
+        segbuf[j] = 0;
+      }
+      new_node(segbuf, e - tstart, kind)(found:, _:);
       TrieNode.next_sibling[found] = TrieNode.first_child[cur];
       TrieNode.first_child[cur]    = found;
     }
@@ -122,23 +145,28 @@ resolve :: proc(path: char[])(handler_id: int) {
   handler_id   = 0 - 1;
   s            := 0;
   if (n > 0) {
-    if (path[0] == '/') {
-      s = 1;
+    if (path.length > 0) {
+      if (path[0] == '/') {
+        s = 1;
+      }
     }
   }
   for (; s < n;) {
     e := seg_end(path, s, n);
 
-    // Scan children: remember a static match, a param child, a catchall child.
+    // Scan children: remember a static match, a param child, a catchall child. Resolution is the HOT
+    // path (per request) and every slot here is a link that `add` already validated at build time —
+    // the trie is append-only and consistent — so these reads carry `!undefined`: a deliberate,
+    // visible opt-out of the bounds check (the slot is in-bounds by construction; trust it for speed).
     static_hit   := 0 - 1;
     param_hit    := 0 - 1;
     catchall_hit := 0 - 1;
-    child        := TrieNode.first_child[cur];
+    child        := TrieNode.first_child[cur] !undefined;
     for (; child >= 0;) {
-      k := TrieNode.kind[child];
+      k := TrieNode.kind[child] !undefined;
       if (k == nodeKind.kstatic) {
-        cs := TrieNode.seg[child];
-        if (seg_eq(cs, TrieNode.seg_len[child], path, s, e) == 1) {
+        cs := TrieNode.seg[child] !undefined;
+        if (seg_eq(cs, TrieNode.seg_len[child] !undefined, path, s, e) == 1) {
           static_hit = child;
         }
       }
@@ -148,7 +176,7 @@ resolve :: proc(path: char[])(handler_id: int) {
       if (k == nodeKind.kcatchall) {
         catchall_hit = child;
       }
-      child = TrieNode.next_sibling[child];
+      child = TrieNode.next_sibling[child] !undefined;
     }
 
     // Precedence: static > param > catchall.
@@ -166,7 +194,7 @@ resolve :: proc(path: char[])(handler_id: int) {
 
     // param captures one segment; catchall captures the rest of the path. Both just record a
     // span — no buffers, no per-slot branching (cap arrays are indexed by the count).
-    ck := TrieNode.kind[chosen];
+    ck := TrieNode.kind[chosen] !undefined;
     if (ck == nodeKind.kstatic) {
       cur = chosen;
       s   = e + 1;
@@ -219,6 +247,12 @@ cap_count : int[1]
 // First index of '/' in p[start..n), or n if none.
 seg_end :: func(p: char[], start: int, n: int) -> int {
   for (i := start; i < n; i = i + 1) {
+    if (i < 0) {
+      return n;
+    }
+    if (i >= p.length) {
+      return n; // guard: makes p[i] provably in-bounds
+    }
     if (p[i] == '/') {
       return i;
     }
@@ -228,19 +262,31 @@ seg_end :: func(p: char[], start: int, n: int) -> int {
 
 // 1 if the NUL-terminated stored segment equals p[start..end), else 0. Pure (reads only params),
 // so it's usable inline in conditions.
-seg_eq :: func(stored: char[], stored_len: int, p: char[], start: int, end: int) -> int {
+seg_eq :: func(stored: char[32], stored_len: int, p: char[], start: int, end: int) -> int {
   if (stored_len != end - start) {
     return 0;
   }
   for (i := 0; i < end - start; i = i + 1) {
-    if (stored[i] != p[start + i]) {
+    if (i >= stored.length) {
+      return 0; // guard stored[i]
+    }
+    k := start + i;
+    if (k < 0) {
+      return 0;
+    }
+    if (k >= p.length) {
+      return 0; // guard p[k]
+    }
+    if (stored[i] != p[k]) {
       return 0;
     }
   }
   return 1;
 }
 
-// Allocate a node holding `seg` (content length `seg_len`); return its pool slot.
-new_node :: proc(seg: char[], seg_len: int, kind: nodeKind)(idx: int) {
-  idx = i32(insert(TrieNode, seg, seg_len, kind, 0 - 1, 0 - 1, 0 - 1));
+// Allocate a node holding `seg` (content length `seg_len`); return its pool slot. `ok` reports
+// whether the fixed TrieNode pool had room (insert no longer aborts on a full pool).
+new_node :: proc(seg: char[], seg_len: int, kind: nodeKind)(idx: int, ok: int) {
+  insert(TrieNode, seg, seg_len, kind, 0 - 1, 0 - 1, 0 - 1)(slot:, ok:);
+  idx = i32(slot);
 }

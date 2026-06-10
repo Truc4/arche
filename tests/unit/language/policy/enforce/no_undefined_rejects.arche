@@ -1,0 +1,8 @@
+// `--no-undefined`: the raw, runtime-unsafe `!undefined` opt-out is rejected (E0126) for
+// safety-critical builds. Use a checked total policy instead.
+// RUN: %arche build --no-undefined -o %t %s > %t.out 2>&1 ; grep -qi "no-undefined forbids\|E0126" %t.out
+main :: proc() {
+  a: int[4];
+  i := 9;
+  x := a[i] !undefined; // rejected under --no-undefined
+}

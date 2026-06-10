@@ -25,8 +25,10 @@ way to write code.
 
 - **Data-oriented by default** - think in columns and whole-collection transforms, not objects and element loops.
 - **Database-style data model** - archetypes are tables defined by a set of component types; a system is a query that runs over every matching table.
-- **No heap, ever** - all storage is static and planned upfront, so memory behavior is fully predictable.
+- **No implicit heap** - all storage is static and planned upfront, so memory behavior is fully predictable. That's a property of the *language core*, **not** a ceiling on the data model: "no dynamic allocation" does **not** mean "no dynamic archetypes". **Dynamic (resizable) archetypes — the backbone of a full ECS — are on the roadmap as a library** built on the same columnar model, once the core language matures; the core just doesn't bake in implicit allocation.
+- **Libraries as devices & drivers** - a *device* is a library that declares shapes + systems but owns no storage; the *driver* (your program) picks the pool sizes and runs the device's systems. A hardware metaphor for dependency injection: the storage owner is always the caller, never the library.
 - **Functional meets procedural** - pure `func` values alongside procedural static operations (`proc` / `sys`).
+- **Crashes are opt-in and visible** - the rare op that can still fail at runtime (an out-of-bounds index, a full pool) carries a *failure policy* right at the site: `a[i] !clamp`, `n / d !zero`, `a[i] !undefined`. A `func` is total by construction — it can **never** crash — and a `proc` crashes only at an explicit `!abort`; only `!abort` can ever abort, so `--no-abort` proves a whole build crash-free.
 
 ## Requirements
 
@@ -126,7 +128,9 @@ works in place with no configuration.
 Each is covered in depth in the [language reference](docs/language.md).
 
 - **Static allocation only (no heap)** - `T[N]` pools with free-lists; zero `malloc` in
-  hot loops, no fragmentation, no use-after-free.
+  hot loops, no fragmentation, no use-after-free. (Scope note: this is the *core* language —
+  *dynamic, resizable* archetypes for a full ECS are planned as a later library layer, not a
+  language built-in. No implicit allocation ≠ no growth.)
 - **Database-style archetypes** - a shape is a _set_ of component types, so `{a, b}` and
   `{b, a}` are the same table and share one pool; columns are reached by type name, not field
   name.

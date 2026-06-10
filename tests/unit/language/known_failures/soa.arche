@@ -15,16 +15,16 @@ move :: sys(pos, vel) {
 
 
 main :: proc() {
-  insert(table<Particle>, 1.0, 0.1);
-  insert(table<Particle>, 2.0, 0.2);
-  insert(table<Particle>, 3.0, 0.3);
-  insert(table<Particle>, 4.0, 0.4);
-  insert(table<Particle>, 5.0, 0.5);
-  insert(table<Particle>, 6.0, 0.6);
-  insert(table<Particle>, 7.0, 0.7);
-  insert(table<Particle>, 8.0, 0.8);
-  insert(table<Particle>, 9.0, 0.9);
-  insert(table<Particle>, 10.0, 1.0);
+  insert(table<Particle>, 1.0, 0.1)(_:, _:);
+  insert(table<Particle>, 2.0, 0.2)(_:, _:);
+  insert(table<Particle>, 3.0, 0.3)(_:, _:);
+  insert(table<Particle>, 4.0, 0.4)(_:, _:);
+  insert(table<Particle>, 5.0, 0.5)(_:, _:);
+  insert(table<Particle>, 6.0, 0.6)(_:, _:);
+  insert(table<Particle>, 7.0, 0.7)(_:, _:);
+  insert(table<Particle>, 8.0, 0.8)(_:, _:);
+  insert(table<Particle>, 9.0, 0.9)(_:, _:);
+  insert(table<Particle>, 10.0, 1.0)(_:, _:);
   Particle.pos = Particle.pos + Particle.vel;
   p0 := Particle.pos[0];
   p9 := Particle.pos[9];

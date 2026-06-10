@@ -1,0 +1,25 @@
+// Truth-value regression guard for the branch-lowered `&&` / `||` (D15). The short-circuit tests
+// assert only that an abort doesn't fire; this asserts the RESULT is still correct — a regression
+// that branched correctly but stored the wrong slot value (e.g. always 0/1) would pass those and
+// fail here. Covers both ops, both outcomes, and nested chains.
+// RUN: %arche build -o %t %s && %t | grep -qF "and_t=1 and_f=0 or_t=1 or_f=0 nest_t=1 nest_f=0"
+#import { fmt }
+main :: proc(argc: int) {
+  z      := argc - argc; // 0, opaque to the folder
+  one    := z + 1; // 1
+  and_t  := (one == 1) && (z == 0); // 1
+  and_f  := (one == 1) && (z == 9); // 0  (RHS false)
+  or_t   := (z == 9) || (one == 1); // 1  (RHS true)
+  or_f   := (z == 9) || (one == 2); // 0
+  nest_t := (one == 1) && (z == 0) && (one > z); // 1
+  nest_f := (one == 1) && (z == 9) && (one > z); // 0  (middle false)
+  fmt.printf(
+    "and_t=%d and_f=%d or_t=%d or_f=%d nest_t=%d nest_f=%d\n",
+    and_t,
+    and_f,
+    or_t,
+    or_f,
+    nest_t,
+    nest_f,
+  );
+}

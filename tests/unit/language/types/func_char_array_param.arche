@@ -3,6 +3,12 @@
 #import { fmt }
 find_byte :: func(data: char[], start: int, end: int, ch: int) -> int {
   for (i := start; i < end; i += 1) {
+    if (i < 0) {
+      return end;
+    }
+    if (i >= data.length) {
+      return end;
+    }
     if (data[i] == ch) {
       return i;
     }

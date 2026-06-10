@@ -1,0 +1,17 @@
+// A `func` is total by construction: an unannotated fallible index defaults to a total policy
+// (intrinsic clamp), never `!abort`. So an out-of-range index in a func clamps into range — the func
+// can never crash — whereas the same unannotated index in a proc would default to `!abort`.
+// RUN: %arche build -o %t %s && %t | grep -qF "fdef=13"
+#import { fmt }
+
+fdef :: func() -> int {
+  a: int[4];
+  a[0] = 10;
+  a[3] = 13;
+  i    := 100; // runtime, unprovable, unannotated -> func default = clamp -> a[3]
+  return a[i];
+}
+
+main :: proc() {
+  fmt.printf("fdef=%d\n", fdef());
+}

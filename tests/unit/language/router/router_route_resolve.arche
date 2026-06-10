@@ -11,9 +11,21 @@ TrieNode[256] // the driver owns router's storage (router is a device; it declar
 // Copy path[start..start+len) into buf as a NUL-terminated string (caller-side materialization).
 slice :: func(own buf: char[], path: char[], start: int, len: int) -> char[] {
   for (i := 0; i < len; i = i + 1) {
-    buf[i] = path[start + i];
+    if (i >= buf.length) {
+      break;
+    }
+    k := start + i;
+    if (k < 0) {
+      break;
+    }
+    if (k >= path.length) {
+      break;
+    }
+    buf[i] = path[k];
   }
-  buf[len] = 0;
+  if (len >= 0 && len < buf.length) {
+    buf[len] = 0;
+  }
   return buf;
 }
 

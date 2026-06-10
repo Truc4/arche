@@ -7,10 +7,15 @@
 fill :: proc(buf: char[32], s: char[])(buf: char[32], n: int) {
   i := 0;
   for (; i < s.length; i += 1) {
+    if (i >= 32) {
+      break;
+    }
     buf[i] = s[i];
   }
-  buf[i] = 0; // NUL-terminate the filled buffer for the `%s` fmt.print (an FFI convenience the user writes)
-  n      = i;
+  if (i >= 0 && i < 32) {
+    buf[i] = 0; // NUL-terminate the filled buffer for the `%s` fmt.print (an FFI convenience the user writes)
+  }
+  n = i;
 }
 
 main :: proc() {

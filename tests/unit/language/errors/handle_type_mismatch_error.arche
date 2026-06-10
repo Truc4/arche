@@ -8,6 +8,6 @@ Player[10]
 Enemy[10]
 
 main :: proc() {
-  p := insert(Player, 1.0);
-  delete(table<Enemy>, p);
+  insert(Player, 1.0)(p:, _:);
+  delete(table<Enemy>, p)(_:);
 }

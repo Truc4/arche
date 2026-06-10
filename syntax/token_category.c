@@ -48,6 +48,7 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_RUN:
 	case TOK_ENUM:
 	case TOK_MATCH:
+	case TOK_POLICY:
 		return "keyword";
 
 	case TOK_NUMBER:
@@ -66,10 +67,12 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_MINUS_EQ:
 	case TOK_STAR_EQ:
 	case TOK_SLASH_EQ:
+	case TOK_PERCENT_EQ:
 	case TOK_PLUS:
 	case TOK_MINUS:
 	case TOK_STAR:
 	case TOK_SLASH:
+	case TOK_PERCENT:
 	case TOK_EQ_EQ:
 	case TOK_BANG_EQ:
 	case TOK_LT:
@@ -78,6 +81,7 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_GT_EQ:
 	case TOK_ARROW:
 	case TOK_BANG:
+	case TOK_QUESTION:
 	case TOK_AT:
 	case TOK_AMP_AMP:
 	case TOK_PIPE_PIPE:

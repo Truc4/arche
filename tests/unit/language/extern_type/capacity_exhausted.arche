@@ -1,8 +1,9 @@
-// Foreign resources can be POOLED: an archetype with an opaque `cell` component, stored
-// in a fixed-capacity pool with generation-checked handles. A full pool aborts when
-// overrun — here capacity 2, the third insert aborts. (Pooled is the opt-in gen-checked
-// path; the by-value `resource :: opaque` path is separate.)
-// RUN: %arche build -o %t --link %S/runtime/test_resource.c %s && ! %t
+// Foreign resources can be POOLED: an archetype with an opaque `cell` component, stored in a
+// fixed-capacity pool with generation-checked handles. Under mandatory-ok, a full pool no longer
+// aborts on overrun — `insert` reports `ok = 0` (errors as values). Here capacity 2; the third
+// insert into the full pool yields ok==0.
+// RUN: %arche build -o %t --link %S/runtime/test_resource.c %s && %t | grep "full"
+#import { fmt }
 cell     :: opaque
 Resource :: arche { cell }
 #foreign {
@@ -12,9 +13,12 @@ Resource[2]
 
 main :: proc() {
   resource_open(1)(r1:);
-  a := insert(Resource, r1);
+  insert(Resource, r1)(_:, _:);
   resource_open(2)(r2:);
-  b := insert(Resource, r2);
+  insert(Resource, r2)(_:, _:);
   resource_open(3)(r3:);
-  c := insert(Resource, r3);
+  insert(Resource, r3)(_:, ok3:);
+  if (!ok3) {
+    fmt.print("full\n");
+  }
 }

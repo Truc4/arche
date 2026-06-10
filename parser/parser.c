@@ -712,6 +712,35 @@ static int parse_func_form(Parser *parser, SyntaxNodeKind *out_kind) {
 	return 1;
 }
 
+/* A policy form `(in) -> T { body }` (the `policy` keyword already consumed). Structurally a
+ * pure func; tagged as a failure-policy decl, its category supplied by an `@policy(...)`
+ * decorator on the binding. Always bodied — there is no bodiless policy type. */
+static int parse_policy_form(Parser *parser, SyntaxNodeKind *out_kind) {
+	/* A policy is a MACRO: it mutates its operands in place, so the return type is OPTIONAL (a
+	 * mutate-form policy has none). `(len, i)` / `(a, b)` then a body. */
+	if (!match(parser, TOK_LPAREN)) {
+		error(parser, "Expected '(' after 'policy'");
+		return 0;
+	}
+	if (!parse_param_list_body(parser, 0))
+		return 0;
+	if (!match(parser, TOK_RPAREN)) {
+		error(parser, "Expected ')' after policy parameters");
+		return 0;
+	}
+	if (check(parser, TOK_ARROW)) { /* optional explicit return type */
+		advance(parser);
+		if (!parse_type(parser))
+			return 0;
+	}
+	if (!check(parser, TOK_LBRACE)) {
+		error(parser, "a `policy` must have a body `{ ... }`");
+		return 0;
+	}
+	*out_kind = SN_POLICY_EXPR;
+	return parse_block_body(parser);
+}
+
 /* An Odin-style overload group `{ a, b, c }` (the `proc`/`func` keyword already consumed). */
 static int parse_group_form(Parser *parser, SyntaxNodeKind *out_kind) {
 	*out_kind = SN_GROUP_EXPR;
@@ -802,6 +831,19 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			}
 			if (!match(parser, TOK_RBRACE))
 				error(parser, "Expected '}' after pool init block");
+		}
+		/* `Name[C] ?handler` — the pool's overflow handler policy (storage-level, not the archetype
+		 * schema). Wrapped in SN_POLICY_REF; every `insert(Name,…)` defaults to it. `?` (handler), not
+		 * `!` (panic) — a full pool is an expected condition. */
+		if (check(parser, TOK_QUESTION)) {
+			int pol_cp = syntax_cp(parser);
+			advance(parser); /* '?' */
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected a handler name after '?' on a pool decl (e.g. `Foo[8] ?evict_oldest`)");
+				return 0;
+			}
+			advance(parser); /* the handler ident */
+			syntax_wrap(parser, pol_cp, SN_POLICY_REF);
 		}
 		match(parser, TOK_SEMI); /* recorded; formatter drops it for static decls */
 		return 1;
@@ -956,6 +998,30 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	 * legacy flag and a slug scan for `@allow(...)` entries. */
 	while (parser->current.kind == TOK_AT) {
 		advance(parser); /* consume '@' */
+		/* `@policy(<category>)` — role tag on a `policy` decl, naming the op category it serves:
+		 * `bounds` (index/slice), `pool` (insert), or `divide`. The category — not the signature —
+		 * disambiguates the (int,int)->int collision between bounds and divide. `policy` lexes as
+		 * the TOK_POLICY keyword (not TOK_IDENT), so it is matched before the ident guard.
+		 * Recorded on the decl as tokens; lowering reads the category ident. */
+		if (check(parser, TOK_POLICY)) {
+			advance(parser); /* consume 'policy' */
+			if (!check(parser, TOK_LPAREN)) {
+				error(parser, "Expected '(' after @policy — name the category, e.g. @policy(bounds)");
+				return 0;
+			}
+			advance(parser); /* consume '(' */
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected a category (bounds, pool, or divide) inside @policy(...)");
+				return 0;
+			}
+			advance(parser); /* consume the category name */
+			if (!check(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')' to close @policy(...)");
+				return 0;
+			}
+			advance(parser); /* consume ')' */
+			continue;
+		}
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected decorator name after '@'");
 			return 0;
@@ -970,6 +1036,49 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			 * recognition is by this marker on the decl, not by the symbol's (mangleable) name. */
 			advance(parser);
 			continue;
+		}
+		if (cur_ident_is(parser, "default", 7)) {
+			/* `@default(<kind>, <category>, <policy>)` — a STANDALONE top-level directive setting the
+			 * program's failure-policy default for one (effect-kind, op-category) cell. <kind> is the
+			 * `proc`/`func` keyword; <category> (bounds/divide/pool) and <policy> are idents. Not a
+			 * decorator on a following decl: it wraps as its own SN_DEFAULT_DECL node. Lowering reads
+			 * the three argument tokens. */
+			advance(parser); /* consume 'default' */
+			if (!check(parser, TOK_LPAREN)) {
+				error(parser, "Expected '(' after @default — e.g. @default(proc, bounds, abort)");
+				return 0;
+			}
+			advance(parser); /* '(' */
+			if (!check(parser, TOK_PROC) && !check(parser, TOK_FUNC)) {
+				error(parser, "Expected an effect kind (proc or func) as the first @default argument");
+				return 0;
+			}
+			advance(parser); /* kind */
+			if (!match(parser, TOK_COMMA)) {
+				error(parser, "Expected ',' after the effect kind in @default(...)");
+				return 0;
+			}
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected a category (bounds, divide, or pool) in @default(...)");
+				return 0;
+			}
+			advance(parser); /* category */
+			if (!match(parser, TOK_COMMA)) {
+				error(parser, "Expected ',' after the category in @default(...)");
+				return 0;
+			}
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected a policy name in @default(...)");
+				return 0;
+			}
+			advance(parser); /* policy */
+			if (!check(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')' to close @default(...)");
+				return 0;
+			}
+			advance(parser); /* ')' */
+			*out_kind = SN_DEFAULT_DECL;
+			return 1;
 		}
 		if (cur_ident_is(parser, "drop", 4)) {
 			/* `@drop(<OpaqueType>)` decl decorator — marks the decorated proc as the destructor
@@ -1047,7 +1156,7 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			continue;
 		}
 		error(parser, "Unknown decorator (recognized: @allow_pure_proc, @allow(<slug>), @drop(<type>), @intrinsic, "
-		              "@implements(<device>.<req>, …))");
+		              "@implements(<device>.<req>, …), @policy(<category>))");
 		return 0;
 	}
 
@@ -1201,12 +1310,17 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 	if (check(parser, TOK_PROC) || check(parser, TOK_FUNC)) {
 		int is_proc = check(parser, TOK_PROC);
 		advance(parser); /* consume 'proc' / 'func' */
-		if (check(parser, TOK_LBRACE))
+		if (check(parser, TOK_LBRACE)) {
 			return parse_group_form(parser, out_kind);
+		}
 		/* Inside a `#foreign` region a bodiless proc is a foreign (FFI) value-form, not a proc
 		 * type — drive that off the parser's region state. Funcs are never foreign (FFI bodies
 		 * are procs), so a bodiless func is always a func type. */
 		return is_proc ? parse_proc_form(parser, parser->in_foreign, out_kind) : parse_func_form(parser, out_kind);
+	}
+	if (check(parser, TOK_POLICY)) {
+		advance(parser); /* consume 'policy' */
+		return parse_policy_form(parser, out_kind);
 	}
 	if (check(parser, TOK_ARCHETYPE)) {
 		advance(parser); /* consume 'archetype' */
@@ -1418,6 +1532,22 @@ static int parse_unary_expr(Parser *parser) {
 	SyntaxNodeKind prim_kind = SN_NAME_EXPR;
 	if (!parse_primary_expr(parser, &prim_kind))
 		return 0;
+	/* Postfix failure-policy: `expr !policy` (panic, on a channel-less fallible op: index / slice /
+	 * call) or `expr ?policy` (handler, on a pool `insert(...)` call). A bare `!`/`?` here is
+	 * unambiguous — `!=` lexes as TOK_BANG_EQ, there is no infix `!`/`?` — so right after a completed
+	 * postfix op it can only be a policy marker. The sigil (`!` vs `?`) is kept inside the wrapped
+	 * SN_POLICY_REF node; lowering reads it to enforce sigil↔kind (panic vs handler). */
+	if ((prim_kind == SN_INDEX_EXPR || prim_kind == SN_SLICE_EXPR || prim_kind == SN_CALL_EXPR) &&
+	    (check(parser, TOK_BANG) || check(parser, TOK_QUESTION))) {
+		int pol_cp = syntax_cp(parser);
+		advance(parser); /* consume '!' or '?' */
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected a policy name after the sigil (e.g. `a[i] !clamp`, `insert(P,x) ?reject`)");
+			return 0;
+		}
+		advance(parser); /* consume the policy ident */
+		syntax_wrap(parser, pol_cp, SN_POLICY_REF);
+	}
 	if (!syntax_single_node(parser, p_cp))
 		syntax_wrap(parser, p_cp, prim_kind);
 	return 1;
@@ -1430,6 +1560,7 @@ static int binop_prec(TokenKind k) {
 	switch (k) {
 	case TOK_STAR:
 	case TOK_SLASH:
+	case TOK_PERCENT:
 		return 5;
 	case TOK_PLUS:
 	case TOK_MINUS:
@@ -1464,7 +1595,8 @@ static int parse_binary_rhs(Parser *parser, int ok_left, int left_cp, int min_pr
 		if (prec < min_prec)
 			return 1;
 
-		advance(parser); /* consume the operator token */
+		TokenKind op = parser->current.kind; /* remembered for the `/ !policy` check below */
+		advance(parser);                     /* consume the operator token */
 
 		int right_cp = syntax_cp(parser);
 		if (!parse_unary_expr(parser))
@@ -1474,6 +1606,20 @@ static int parse_binary_rhs(Parser *parser, int ok_left, int left_cp, int min_pr
 		while (binop_prec(parser->current.kind) > prec) {
 			if (!parse_binary_rhs(parser, 1, right_cp, prec + 1))
 				return 0;
+		}
+
+		/* Divide/mod failure policy: `a / b !policy` / `a % b !policy` (div-by-zero). Parsed at the
+		 * operator level (not the postfix level, where it would wrongly attach to `b`); the SN_POLICY_REF
+		 * is wrapped before the binary node closes, so it becomes a child of the op. */
+		if ((op == TOK_SLASH || op == TOK_PERCENT) && check(parser, TOK_BANG)) {
+			int pol_cp = syntax_cp(parser);
+			advance(parser); /* consume '!' */
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected a policy name after '!' (e.g. `a / b !zero`)");
+				return 0;
+			}
+			advance(parser); /* consume the policy ident */
+			syntax_wrap(parser, pol_cp, SN_POLICY_REF);
 		}
 
 		/* Retroactively wrap [left_cp .. end-of-right] into a binary node; the next
@@ -1638,9 +1784,9 @@ static int parse_simple_statement(Parser *parser, SyntaxNodeKind *out_kind) {
 		return 1;
 	}
 
-	/* Assignment: `lvalue = / += / -= / *= / /= expr`. */
+	/* Assignment: `lvalue = / += / -= / *= / /= / %= expr`. */
 	if (check(parser, TOK_EQ) || check(parser, TOK_PLUS_EQ) || check(parser, TOK_MINUS_EQ) ||
-	    check(parser, TOK_STAR_EQ) || check(parser, TOK_SLASH_EQ)) {
+	    check(parser, TOK_STAR_EQ) || check(parser, TOK_SLASH_EQ) || check(parser, TOK_PERCENT_EQ)) {
 		advance(parser);
 		if (!parse_expression(parser))
 			return 0;

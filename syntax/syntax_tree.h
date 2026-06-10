@@ -32,6 +32,8 @@ typedef enum {
 	SN_FUNC_GROUP_DECL,
 	SN_STATIC_DECL,
 	SN_CONST_DECL,
+	SN_DEFAULT_DECL, /* `@default(<kind>, <category>, <policy>)` — standalone directive setting the
+	                  * program's failure-policy default for one (effect-kind, op-category) cell */
 	SN_USE_DECL,
 	SN_REGION, /* `#module`/`#file`/`#foreign` region marker — banner (narrows following decls to
 	            * end-of-file) or, when it carries a `{ ... }` body, a bounded block of child decls */
@@ -81,6 +83,7 @@ typedef enum {
 	 * type (SN_TYPE_PROC / SN_TYPE_FUNC below). */
 	SN_PROC_EXPR,    /* proc value literal: `proc(in)(out){body}` or `extern proc(in)(out)` */
 	SN_FUNC_EXPR,    /* func value literal: `func(in)->T{body}` */
+	SN_POLICY_EXPR,  /* policy value literal: `policy(in)->T{body}` — a failure-policy decl */
 	SN_GROUP_EXPR,   /* Odin-style overload group: `proc{a,b}` / `func{a,b}` */
 	SN_ARCH_EXPR,    /* archetype (record type) definition: `archetype{ fields }` */
 	SN_SYS_EXPR,     /* sys definition: `sys(components){body}` */
@@ -105,6 +108,7 @@ typedef enum {
 	SN_CALLEE_NAME,   /* the callee identifier of a call expression */
 	SN_ALLOC_TYPE,    /* the archetype name in `alloc Name(...)` */
 	SN_NAME_REF,      /* any other identifier reference (a variable) */
+	SN_POLICY_REF,    /* `!name` failure-policy marker trailing a fallible op (index/slice/call/pool-cap) */
 
 	/* Error recovery: tokens consumed during synchronize() */
 	SN_ERROR,

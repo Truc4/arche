@@ -154,6 +154,9 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 4 && strncmp(start, "func", 4) == 0) {
 		return TOK_FUNC;
 	}
+	if (length == 6 && strncmp(start, "policy", 6) == 0) {
+		return TOK_POLICY;
+	}
 	if (length == 4 && strncmp(start, "enum", 4) == 0) {
 		return TOK_ENUM;
 	}
@@ -428,6 +431,8 @@ Token lexer_next_token(Lexer *lexer) {
 		return make_token(TOK_SEMI, start, 1, line, column);
 	case '@':
 		return make_token(TOK_AT, start, 1, line, column);
+	case '?':
+		return make_token(TOK_QUESTION, start, 1, line, column);
 	case '#': {
 		/* `#`-directive: read the directive word and map it. `#import`/`#each_field` reuse the
 		 * existing TOK_USE/TOK_EACH_FIELD tokens so the parser + syntax tree consumers are unchanged;
@@ -483,6 +488,13 @@ Token lexer_next_token(Lexer *lexer) {
 			return make_token(TOK_SLASH_EQ, start, 2, line, column);
 		}
 		return make_token(TOK_SLASH, start, 1, line, column);
+
+	case '%':
+		if (peek(lexer) == '=') {
+			advance(lexer);
+			return make_token(TOK_PERCENT_EQ, start, 2, line, column);
+		}
+		return make_token(TOK_PERCENT, start, 1, line, column);
 
 	case '=':
 		if (peek(lexer) == '=') {
@@ -555,6 +567,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_SYS";
 	case TOK_FUNC:
 		return "TOK_FUNC";
+	case TOK_POLICY:
+		return "TOK_POLICY";
 	case TOK_ENUM:
 		return "TOK_ENUM";
 	case TOK_MATCH:
@@ -627,6 +641,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_STAR_EQ";
 	case TOK_SLASH_EQ:
 		return "TOK_SLASH_EQ";
+	case TOK_PERCENT_EQ:
+		return "TOK_PERCENT_EQ";
 
 	case TOK_PLUS:
 		return "TOK_PLUS";
@@ -636,6 +652,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_STAR";
 	case TOK_SLASH:
 		return "TOK_SLASH";
+	case TOK_PERCENT:
+		return "TOK_PERCENT";
 
 	case TOK_EQ_EQ:
 		return "TOK_EQ_EQ";
@@ -660,6 +678,8 @@ const char *token_kind_name(TokenKind kind) {
 
 	case TOK_BANG:
 		return "TOK_BANG";
+	case TOK_QUESTION:
+		return "TOK_QUESTION";
 
 	default:
 		return "TOK_UNKNOWN";

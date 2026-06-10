@@ -1,0 +1,14 @@
+// Dual of wrong_category_rejected: the DIVIDE site validates too. A @policy(bounds) policy on a
+// `/` or `%` is E0124 — the op's category (divide), not the (int,int)->int signature, disambiguates.
+// Guards the divide-side validation (bnd_check_expr's OP_DIV/OP_MOD branch).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "needs a @policy(divide)\|E0124" %t.out
+@policy (bounds) bx :: policy (len: int, i: int) {
+  if (i < 0) {
+    i = 0;
+  }
+}
+main :: proc(k: int) {
+  n := 10;
+  x := n / k !bx; // bounds policy on a divide site -> E0124
+  y := x + 0;
+}

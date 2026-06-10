@@ -8,8 +8,8 @@ Particle    :: arche { pos_x, pos_y, vel_dx, vel_dy, acc_i, acc_j }
 Particle[5]
 
 main :: proc() {
-  insert(Particle, 0.0, 0.0, 1.0, 2.0, 0.1, 0.2);
-  insert(Particle, 5.0, 5.0, 0.5, 0.5, 0.05, 0.05);
+  insert(Particle, 0.0, 0.0, 1.0, 2.0, 0.1, 0.2)(_:, _:);
+  insert(Particle, 5.0, 5.0, 0.5, 0.5, 0.05, 0.05)(_:, _:);
   Particle.vel_dx = Particle.acc_i;
   Particle.vel_dy = Particle.acc_j;
   Particle.pos_x  = Particle.vel_dx;

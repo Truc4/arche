@@ -13,6 +13,6 @@ move_sys :: sys (pos, vel) {
   log_step()();
 }
 main :: proc() {
-  insert(Particle, 1.0, 2.0);
+  insert(Particle, 1.0, 2.0)(_:, _:);
   run move_sys;
 }

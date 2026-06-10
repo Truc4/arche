@@ -11,9 +11,9 @@ dummy :: sys (pos) {
 }
 
 main :: proc() {
-  insert(Body, 1.0);
-  insert(Body, 2.0);
-  insert(Body, 3.0);
+  insert(Body, 1.0)(_:, _:);
+  insert(Body, 2.0)(_:, _:);
+  insert(Body, 3.0)(_:, _:);
   run dummy;
   p0  := Body.pos[0];
   p1  := Body.pos[1];

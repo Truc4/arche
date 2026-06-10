@@ -65,6 +65,13 @@ allocation overhead in hot loops, a fixed budget that forces clear thinking abou
 capacity, cache-friendly columnar layout, and no use-after-free / dangling pointers /
 fragmentation.
 
+> **"No dynamic allocation" ≠ "no dynamic archetypes."** This is a property of the *core
+> language*: it bakes in no implicit heap. It is **not** a ceiling on the data model.
+> **Dynamic (resizable) archetypes — the backbone of a full ECS — are planned as a later
+> library layer** built on the same columnar pools, once the core matures. The core staying
+> allocation-free is what lets such a layer be an explicit, opt-in library rather than a
+> hidden cost in every program.
+
 ## Types and declarations
 
 Types are **nominal** - identity is the name, not the structure. The binding form is
@@ -398,6 +405,85 @@ drag_factor :: func(x: float) -> float {
 - `func`: "compute a value" - `r := area(w, h)`
 - `proc`: "do this, writing the results into these places" - `divmod(17, 5)(q:, r:)`
 - `sys`: "run this on _any data shaped like this_" - `run step;`
+
+## Totality and failure policies (`!policy`)
+
+Most arche operations are total by construction (proven indexing, ok-valued insert). The few that
+can still fail at runtime — an out-of-bounds index, a slice past the end, a divide-by-zero — resolve
+that failure **locally, at the site**, with a *failure policy* written `expr !policy`:
+
+```arche
+v := samples[k] !clamp;   // out-of-range index → clamped into [0, len)
+grid[x] !clamp = c;       // the write form attaches the policy to the indexed lvalue
+n := count / d !zero;     // divide-by-zero → 0
+raw := buf[j] !undefined; // opt out of all runtime safety: raw access, no check (UB if OOB)
+crash := buf[j] !abort;   // the only policy that terminates — a visible, deliberate crash site
+```
+
+**A policy is a MACRO** — the compiler inlines its body at the op, with the op's operands bound as
+mutable locals, then runs the *raw* op on whatever they now are. Nothing is built in: `abort`,
+`clamp`, `wrap`, `undefined`, `zero` are all ordinary `policy` decls in `core`, and you write your own.
+The only irreducible primitive is `_exit` (a libc extern); `abort` is just a policy that calls it.
+`!undefined` is the *empty* policy — no mutation ⇒ the raw op.
+
+Only `!abort` (or a user policy that calls `_exit`) can terminate. This makes the guarantee sharp and
+per-site rather than smeared over a whole proc:
+
+- A **`func` is total by construction** — its baseline default is `clamp`. An unannotated fallible op
+  in a func clamps; it can't crash.
+- A **`proc`'s** baseline default is `abort`. Either default is overridable per-decl with
+  `@default(<policy>)` (e.g. `@default(clamp) hot :: proc(){…}`), or globally with `--unchecked`
+  (→ `undefined`). The implicit default is surfaced as an editor inlay so it's never a surprise.
+
+The bounds prover decides the rest: a **provably-safe** access needs no policy (an explicit one is
+the dead-policy lint `W0018`); a **provably out-of-bounds** constant access is a compile error
+(`E0097`) regardless of any policy — a statically-wrong index is a bug, not a runtime case. So a
+policy attaches only to the ops whose safety the compiler can't decide.
+
+Policies are ordinary `policy` decls, tagged by op category, living in a namespace separate from
+funcs/procs (so a `zero` policy and a `zero` func coexist). `core` ships the common ones; you add more.
+A bounds policy binds `(len, i)` and **mutates `i`** (a divide policy binds and mutates `a, b`):
+
+```arche
+@policy(bounds) clamp :: policy(len: int, i: int) {   // mutate i into range, then `base[i]` runs raw
+  if (i < 0)    { i = 0; }
+  if (i >= len) { i = len - 1; }
+}
+@policy(bounds) abort :: policy(len: int, i: int) {   // terminate on a bad index — `abort` is a policy
+  if (i < 0 || i >= len) { _exit(134); }
+}
+@policy(divide) zero :: policy(a: int, b: int) { if (b == 0) { a = 0; b = 1; } }  // n/d → 0 when d==0
+```
+
+### Crash-free builds
+
+Because `!abort` is the only crash source, crash-freedom is assertable for a whole build:
+
+- `--no-abort` — any op resolving to `!abort` (implicit **or** explicit) is a compile error: the
+  binary provably cannot abort from a policy site.
+- `--no-implicit-abort` — only the *implicit/default* `!abort` errors, so every fallible op must be
+  explicitly annotated (a deliberate, visible `!abort` is still allowed).
+- `--no-undefined` — rejects the unsafe `!undefined` opt-out, for safety-critical builds.
+
+(These apply to your code; the bundled core/stdlib are exempt. `extern`/FFI procs are outside the
+system — a foreign C boundary is trusted, not policy-tracked.)
+
+### Errors as values: `insert` / `delete`
+
+A fixed-capacity pool can fill up. Rather than abort, `insert`/`delete` report the recoverable
+failure **as a value** through a mandatory `ok` out-param — so they are **statement-only**, never a
+value or nested in an expression:
+
+```arche
+insert(Particle, 1.0, 0.1)(h:, ok:);   // h: the generation-checked handle, ok: 0 if the pool was full
+if (!ok) { … }                          // handle the full-pool case at the call site
+delete(h)(ok:);                          // ok: 0 on generation exhaustion
+```
+
+Use `_` to discard either out (`insert(P, …)(_:, _:)`). The legacy value form (`h := insert(…)`,
+`i32(insert(…))`) is gone (`E0096`). `insert` is **total** (overflow → `ok = 0`). `delete`'s default
+is `!abort`: a *stale* handle (use-after-free) is a bug and aborts. `delete(h)(ok:)` reports
+generation exhaustion (a resource limit) via `ok` instead.
 
 ## Enums and `match`
 

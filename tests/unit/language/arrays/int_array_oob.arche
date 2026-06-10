@@ -1,4 +1,5 @@
-// Out-of-bounds int-array write aborts (regression for bounds checking).
+// Out-of-bounds int-array write aborts at runtime: the proc default policy is `!abort`, so an
+// unguarded OOB index hits the bounds check and aborts the program.
 // RUN: %arche build -o %t %s && ! %t
 main :: proc() {
   b: int[4];

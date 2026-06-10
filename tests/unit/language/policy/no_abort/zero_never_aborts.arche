@@ -1,0 +1,13 @@
+// THE GUARANTEE (divide side): a program with NO `!abort` that deliberately divides by zero through
+// the total `!zero` policy runs to completion (exit 0). `n / d !zero` and `n % d !zero` substitute
+// (a=0, b=1) when the divisor is 0, so the raw op yields 0 and never traps. Inverse of a `!abort`
+// divide (which would crash on d==0). Runtime divisor — a literal 0 divisor would fold away.
+// RUN: %arche build -o %t %s && %t
+main :: proc(argc: int) {
+  d := argc - argc; // 0 at runtime, opaque to the constant folder
+  s := 0;
+  s = s + 10 / d !zero; // divide by zero -> 0
+  s = s + 10 % d !zero; // modulo by zero -> 0
+  n := 7;
+  s = s + n / d !zero; // -> 0
+}

@@ -104,6 +104,16 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 
 	/* Purity */
 	[SEM_DIAG_func_not_pure]                 = { "E0090", "func_not_pure",                 CLASS_ERROR, 1 },
+	[SEM_DIAG_insert_delete_outlist]         = { "E0096", "insert_delete_outlist",         CLASS_ERROR, 1 },
+	[SEM_DIAG_policy_provable_oob]           = { "E0097", "policy_provable_oob",           CLASS_ERROR, 1 },
+	[SEM_DIAG_policy_func_aborts]            = { "E0098", "policy_func_aborts",            CLASS_ERROR, 1 },
+	[SEM_DIAG_policy_unknown]                = { "E0099", "policy_unknown",                CLASS_ERROR, 1 },
+	[SEM_DIAG_policy_wrong_category]         = { "E0124", "policy_wrong_category",         CLASS_ERROR, 1 },
+	[SEM_DIAG_policy_abort_forbidden]        = { "E0125", "policy_abort_forbidden",        CLASS_ERROR, 1 },
+	[SEM_DIAG_policy_undefined_forbidden]    = { "E0126", "policy_undefined_forbidden",    CLASS_ERROR, 1 },
+	[SEM_DIAG_allow_forbidden]               = { "E0127", "allow_forbidden",               CLASS_ERROR, 1 },
+	[SEM_DIAG_duplicate_default]             = { "E0128", "duplicate_default",             CLASS_ERROR, 1 },
+	[SEM_DIAG_default_invalid]               = { "E0129", "default_invalid",               CLASS_ERROR, 1 },
 
 	/* Assignment targets */
 	[SEM_DIAG_assign_to_const]               = { "E0091", "assign_to_const",               CLASS_ERROR, 1 },
@@ -154,6 +164,14 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_unused_function]               = { "W0013", "unused_function",               CLASS_LINT, 1 },
 	[SEM_LINT_unused_static_const]           = { "W0014", "unused_static_const",           CLASS_LINT, 1 },
 	[SEM_LINT_unused_enum]                   = { "W0015", "unused_enum",                   CLASS_LINT, 1 },
+	[SEM_LINT_discarded_ok]                  = { "W0016", "discarded_ok",                  CLASS_LINT, 1 },
+	/* W0017 default-OFF: superseded by the failure-policy model. Every fallible pool-column index now
+	 * resolves to a policy — the implicit `!abort` proc default (a clean, bounds-checked crash, not raw
+	 * corruption) or an explicit `!undefined`/`!clamp`/`!zero`/`!name`. "raw, unguarded slot" is no
+	 * longer the default, so the blanket warning was noise. Opt back in with -Wraw-pool-index. */
+	[SEM_LINT_raw_pool_index]                = { "W0017", "raw_pool_index",                CLASS_LINT, 0 },
+	[SEM_LINT_policy_on_safe_op]             = { "W0018", "policy_on_safe_op",             CLASS_LINT, 1 },
+	[SEM_LINT_handler_foreign_arch]          = { "W0019", "handler_foreign_arch",          CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -396,6 +414,15 @@ void semantic_set_lint_proc_no_effect(int enabled, int werror) {
 }
 void semantic_set_lint_func_impure(int enabled, int werror) {
 	semantic_set_diag(SEM_LINT_func_impure, enabled, werror);
+}
+
+/* `-Werror` (no `=slug`): promote EVERY currently-enabled lint to a hard error. Does NOT re-enable a
+ * default-off lint (a disabled lint never fires, so there's nothing to promote) — matches gcc/clang. */
+void semantic_set_all_lints_werror(int werror) {
+	ensure_init();
+	for (int i = 0; i < SEM_DIAG_KIND_COUNT; i++)
+		if (g_table[i].class == CLASS_LINT)
+			g_werror[i] = werror ? 1 : 0;
 }
 
 /* ========== Typed wrappers ==========
@@ -699,6 +726,72 @@ SemDiag *sem_emit_func_not_pure(SemanticContext *ctx, SourceLoc loc, const char 
 	return sem_emit_(ctx, SEM_DIAG_func_not_pure, loc, "func '%s' is not pure — %s (effects belong in a proc)", name,
 	                 reason);
 }
+SemDiag *sem_emit_insert_delete_outlist(SemanticContext *ctx, SourceLoc loc, const char *name, const char *form) {
+	return sem_emit_(ctx, SEM_DIAG_insert_delete_outlist, loc,
+	                 "`%s` reports success as a value — it must be called as a statement with an out-list: `%s`", name,
+	                 form);
+}
+
+/* --- Failure policies --- */
+SemDiag *sem_emit_policy_provable_oob(SemanticContext *ctx, SourceLoc loc, const char *base, int idx, int len) {
+	return sem_emit_(ctx, SEM_DIAG_policy_provable_oob, loc,
+	                 "'%s[%d]' is provably out of bounds (length %d) — a statically-wrong access, not something a "
+	                 "policy can fix; fix the index",
+	                 base, idx, len);
+}
+SemDiag *sem_emit_policy_func_aborts(SemanticContext *ctx, SourceLoc loc, const char *func) {
+	return sem_emit_(ctx, SEM_DIAG_policy_func_aborts, loc,
+	                 "`!abort` is not allowed in func '%s' — a func can never crash; use a total policy "
+	                 "(e.g. `!clamp`, `!zero`) or `!undefined`",
+	                 func);
+}
+SemDiag *sem_emit_duplicate_default(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *category) {
+	return sem_emit_(ctx, SEM_DIAG_duplicate_default, loc,
+	                 "duplicate `@default(%s, %s, …)` — a program sets at most one failure-policy default per "
+	                 "(effect-kind, category) cell",
+	                 kind, category);
+}
+SemDiag *sem_emit_default_invalid(SemanticContext *ctx, SourceLoc loc, const char *msg) {
+	return sem_emit_(ctx, SEM_DIAG_default_invalid, loc, "invalid `@default` directive — %s", msg);
+}
+SemDiag *sem_emit_policy_unknown(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_policy_unknown, loc,
+	                 "unknown policy `%s` — no visible `policy` decl by that name (core defines abort, "
+	                 "clamp, wrap, undefined, zero, reject)",
+	                 name);
+}
+SemDiag *sem_emit_policy_wrong_category(SemanticContext *ctx, SourceLoc loc, const char *name, const char *want,
+                                        const char *got) {
+	return sem_emit_(ctx, SEM_DIAG_policy_wrong_category, loc,
+	                 "policy `%s` is a @policy(%s) — this site needs a @policy(%s) policy", name, got, want);
+}
+SemDiag *sem_emit_policy_wrong_sigil(SemanticContext *ctx, SourceLoc loc, const char *name, int want_handler) {
+	if (want_handler)
+		return sem_emit_(ctx, SEM_DIAG_policy_wrong_sigil, loc,
+		                 "`!%s` on an insert — a pool overflow handler is invoked with `?` (`insert(P, x) ?%s`); "
+		                 "`!` marks a panic policy on a channel-less op",
+		                 name, name);
+	return sem_emit_(ctx, SEM_DIAG_policy_wrong_sigil, loc,
+	                 "`?%s` here — `?` marks a pool insert handler; this op takes a panic policy with `!` "
+	                 "(`a[i] !%s`)",
+	                 name, name);
+}
+SemDiag *sem_emit_policy_abort_forbidden(SemanticContext *ctx, SourceLoc loc, const char *which, const char *flag) {
+	return sem_emit_(ctx, SEM_DIAG_policy_abort_forbidden, loc,
+	                 "%s can abort, but %s forbids it — annotate a total policy (`!clamp`, `!zero`) or `!undefined`",
+	                 which, flag);
+}
+SemDiag *sem_emit_policy_undefined_forbidden(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_DIAG_policy_undefined_forbidden, loc,
+	                 "`!undefined` opts out of all runtime safety, but --no-undefined forbids it — use a checked "
+	                 "total policy (`!clamp`, `!zero`) instead");
+}
+SemDiag *sem_emit_allow_forbidden(SemanticContext *ctx, SourceLoc loc, const char *slug) {
+	return sem_emit_(ctx, SEM_DIAG_allow_forbidden, loc,
+	                 "`@allow(%s)` is forbidden under --forbid-allow — fix the underlying issue instead of "
+	                 "suppressing the lint",
+	                 slug);
+}
 
 /* --- Assignment targets --- */
 
@@ -876,4 +969,30 @@ SemDiag *sem_emit_lint_unused_enum(SemanticContext *ctx, SourceLoc loc, const ch
 	return sem_emit_(ctx, SEM_LINT_unused_enum, loc,
 	                 "enum '%s' is declared but never used (prefix with '_' to silence, or @allow(unused_enum))%s%s%s",
 	                 name, module_path ? " [in " : "", module_path ? module_path : "", module_path ? "]" : "");
+}
+SemDiag *sem_emit_lint_discarded_ok(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_LINT_discarded_ok, loc,
+	                 "`%s`'s `ok` result is discarded with `_` — a capacity/handle failure is silently "
+	                 "ignored; capture and check `ok`, or @allow(discarded_ok) if it genuinely cannot fail",
+	                 name);
+}
+SemDiag *sem_emit_lint_raw_pool_index(SemanticContext *ctx, SourceLoc loc, const char *arch) {
+	return sem_emit_(ctx, SEM_LINT_raw_pool_index, loc,
+	                 "pool column '%s' indexed by an unproven raw slot — bounds aren't statically "
+	                 "guaranteed; prefer a generation-checked handle (insert/delete), bound the index by "
+	                 "`%s.length`, or @allow(raw_pool_index)",
+	                 arch, arch);
+}
+SemDiag *sem_emit_lint_policy_on_safe_op(SemanticContext *ctx, SourceLoc loc, const char *name, const char *base) {
+	return sem_emit_(ctx, SEM_LINT_policy_on_safe_op, loc,
+	                 "policy `!%s` on '%s' is dead — the access is provably in bounds, so it can never fail; "
+	                 "drop the policy or @allow(policy_on_safe_op)",
+	                 name, base);
+}
+SemDiag *sem_emit_lint_handler_foreign_arch(SemanticContext *ctx, SourceLoc loc, const char *handler,
+                                            const char *foreign, const char *target) {
+	return sem_emit_(ctx, SEM_LINT_handler_foreign_arch, loc,
+	                 "overflow handler `?%s` on `insert(%s, …)` reads a different pool's columns (`%s.…`) — "
+	                 "likely a copy-paste mismatch; scan `%s`'s columns or @allow(handler_foreign_arch)",
+	                 handler, target, foreign, target);
 }

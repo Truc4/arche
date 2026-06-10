@@ -35,6 +35,7 @@ typedef enum TokenKind {
 	TOK_RUN,
 	TOK_ENUM,
 	TOK_MATCH,
+	TOK_POLICY,
 
 	/* punctuation */
 	TOK_LPAREN,       /* ( */
@@ -55,17 +56,19 @@ typedef enum TokenKind {
 	TOK_HASH_FOREIGN, /* #foreign — region of foreign-bodied (FFI) proc decls */
 
 	/* assignment */
-	TOK_EQ,       /* = */
-	TOK_PLUS_EQ,  /* += */
-	TOK_MINUS_EQ, /* -= */
-	TOK_STAR_EQ,  /* *= */
-	TOK_SLASH_EQ, /* /= */
+	TOK_EQ,         /* = */
+	TOK_PLUS_EQ,    /* += */
+	TOK_MINUS_EQ,   /* -= */
+	TOK_STAR_EQ,    /* *= */
+	TOK_SLASH_EQ,   /* /= */
+	TOK_PERCENT_EQ, /* %= */
 
 	/* arithmetic */
-	TOK_PLUS,  /* + */
-	TOK_MINUS, /* - */
-	TOK_STAR,  /* * */
-	TOK_SLASH, /* / */
+	TOK_PLUS,    /* + */
+	TOK_MINUS,   /* - */
+	TOK_STAR,    /* * */
+	TOK_SLASH,   /* / */
+	TOK_PERCENT, /* % */
 
 	/* comparisons */
 	TOK_EQ_EQ,   /* == */
@@ -83,7 +86,8 @@ typedef enum TokenKind {
 	TOK_ARROW, /* -> */
 
 	/* unary */
-	TOK_BANG /* ! */
+	TOK_BANG,    /* ! */
+	TOK_QUESTION /* ? — handler-policy sigil on a pool insert (`insert(P,x) ?reject`) */
 } TokenKind;
 
 /* Trivia = anything between syntactic tokens that the parser doesn't structurally

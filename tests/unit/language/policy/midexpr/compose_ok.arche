@@ -1,0 +1,18 @@
+// MID-EXPRESSION CONTROL FLOW (the cases that DO compose): policies nested and as call arguments.
+// Each policy mutates its own operand copy, so they compose left-to-right within one expression. An
+// index produced by a policy'd read, and policies in distinct call arguments, all clamp independently.
+// (Contrast the *_shortcircuit tests, where a policy in a `&&`/`||` operand is the open defect.)
+// RUN: %arche build -o %t %s && %t | grep -qF "r=5"
+#import { fmt }
+g :: func(x: int, y: int) -> int {
+  return x + y;
+}
+main :: proc(argc: int) {
+  a: int[4];
+  a[0] = 2;
+  a[3] = 3;
+  hi   := argc + 50; // OOB -> clamp to a[3]
+  idx  := a[hi] !clamp; // a[3] = 3 -> clamp index to a[3]
+  r    := g(a[hi] !clamp, a[idx - idx] !abort); // g(a[3]=3, a[0]=2) = 5
+  fmt.printf("r=%d\n", r);
+}

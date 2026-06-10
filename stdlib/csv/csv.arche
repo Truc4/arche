@@ -80,6 +80,12 @@ load_cols: int[64]
 // first index of byte `ch` in data[start..end), or end if absent
 find_byte :: func(data: char[], start: i64, end: i64, ch: int) -> i64 {
   for (i: i64 = start; i < end; i = i + 1) {
+    if (i < 0) {
+      return end;
+    }
+    if (i >= data.length) {
+      return end; // guard: makes data[i] provably in-bounds
+    }
     if (data[i] == ch) {
       return i;
     }
@@ -94,7 +100,17 @@ name_eq :: func(name: char[], data: char[], start: i64, end: i64) -> int {
     return 0;
   }
   for (i: i64 = 0; i < len; i = i + 1) {
-    if (name[i] != data[start + i]) {
+    if (i >= name.length) {
+      return 0; // guard name[i]
+    }
+    k: i64 = start + i;
+    if (k < 0) {
+      return 0;
+    }
+    if (k >= data.length) {
+      return 0; // guard data[k]
+    }
+    if (name[i] != data[k]) {
       return 0;
     }
   }

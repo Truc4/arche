@@ -62,7 +62,7 @@ integrate :: sys (pos, vel) { pos = pos + vel; }
 Particle[1000]                      // bare name — the datasheet shape is global vocabulary
 
 main :: proc() {
-  insert(Particle, 10.0, 1.0);
+  insert(Particle, 10.0, 1.0)(_:, _:);  // insert is statement-only: (handle:, ok:); `_` discards
   run physics.integrate;            // run the device's system by qualified name
   fmt.printf("pos0 = %d\n", Particle.pos[0] * 10);  // 110
 }
@@ -81,7 +81,7 @@ A shape is identified by its **set of component (field) names**, not by its name
 ```arche
 Foo :: arche { x :: float, y :: float }
 Foo[4]
-insert(arche { x :: float, y :: float }, 1.0, 2.0);  // inserts into Foo's pool
+insert(arche { x :: float, y :: float }, 1.0, 2.0)(_:, _:);  // inserts into Foo's pool
 ```
 
 Components are **program-global** and defined exactly once; reference a component elsewhere by its bare name.

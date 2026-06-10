@@ -1,0 +1,17 @@
+// A `@policy(bounds)` decl provides the failure resolution for an out-of-bounds index. `a[i] !clamp`
+// remaps an OOB read into [0, len) using the user policy `clamp`, then the compiler's net guarantees
+// the result is in range — so the read NEVER aborts. The index is a runtime value the prover can't
+// bound (a literal `a[9]` would be a provably-OOB compile error, E0097); here it clamps to a[3].
+// RUN: %arche build -o %t %s && %t | grep -qF "clamped=13"
+#import { fmt }
+
+main :: proc() {
+  a: int[4];
+  a[0] = 10;
+  a[1] = 11;
+  a[2] = 12;
+  a[3] = 13;
+  i    := 9; // a runtime value: unprovable, so the policy governs the access
+  x    := a[i] !clamp; // OOB -> clamp to index 3
+  fmt.printf("clamped=%d\n", x);
+}

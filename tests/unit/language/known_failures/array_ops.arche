@@ -5,11 +5,11 @@ Particle :: arche { pos :: float, vel :: float }
 Particle[1000]
 
 main :: proc() {
-  insert(table<Particle>, 1.0, 0.1);
-  insert(table<Particle>, 2.0, 0.2);
-  insert(table<Particle>, 3.0, 0.3);
-  insert(table<Particle>, 4.0, 0.4);
-  insert(table<Particle>, 5.0, 0.5);
+  insert(table<Particle>, 1.0, 0.1)(_:, _:);
+  insert(table<Particle>, 2.0, 0.2)(_:, _:);
+  insert(table<Particle>, 3.0, 0.3)(_:, _:);
+  insert(table<Particle>, 4.0, 0.4)(_:, _:);
+  insert(table<Particle>, 5.0, 0.5)(_:, _:);
   Particle.pos = Particle.pos + Particle.vel;
   p0           := Particle.pos[0];
   p1           := Particle.pos[1];

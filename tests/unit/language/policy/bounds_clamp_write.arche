@@ -1,0 +1,14 @@
+// The write-site form `a[i] !clamp = v` attaches the policy to the indexed lvalue (the op that can
+// fail), not to the value. An OOB write is remapped into [0, len) and stored there — no abort. Here
+// the OOB write to a runtime index lands in a[3]; the in-bounds read confirms it. (A literal `a[9]`
+// would be a provably-OOB compile error, E0097 — only an unprovable index gets a runtime policy.)
+// RUN: %arche build -o %t %s && %t | grep -qF "a3=99"
+#import { fmt }
+
+main :: proc() {
+  a: int[4];
+  a[0]        = 1;
+  i           := 9; // a runtime value: unprovable, so the policy governs the write
+  a[i] !clamp = 99; // OOB write -> a[3]
+  fmt.printf("a3=%d\n", a[3]);
+}

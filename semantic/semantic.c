@@ -166,6 +166,10 @@ struct SemanticContext {
 	 * STMT_ASSIGN, captured-and-cleared at the top of EXPR_CALL so the call's own args are
 	 * value positions. */
 	int stmt_call_ok;
+	/* Like stmt_call_ok but set ONLY for the value of an out-list statement (`f(in)(out)` /
+	 * multi-bind), NOT a plain `x := f(…)` bind. The mandatory-ok builtins insert/delete are valid
+	 * only here, so this distinguishes `insert(P,…)(h:,ok:)` from an illegal `h := insert(…)`. */
+	int proc_call_stmt_ok;
 
 	/* AstProgram for looking up declarations */
 	/* The resolved decl-signature table — the single source of truth for analysis (with the syntax
@@ -519,10 +523,108 @@ static DeclSummary *find_callable_sig(SemanticContext *ctx, const char *name) {
 		return NULL;
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *d = ctx->decls[i];
-		if ((d->kind == DECL_PROC || d->kind == DECL_FUNC) && d->name && strcmp(d->name, name) == 0)
+		if ((d->kind == DECL_PROC || d->kind == DECL_FUNC) && !d->is_policy && d->name && strcmp(d->name, name) == 0)
+			return d; /* a policy is NOT callable — it's invoked via `!name` (see find_policy_sig) */
+	}
+	return NULL;
+}
+
+/* A failure-policy decl by name (the `!name` namespace), or NULL. Separate from find_callable_sig so a
+ * policy and a func/proc may share a name (`zero` the divide policy and `zero` a user func coexist). */
+static DeclSummary *find_policy_sig(SemanticContext *ctx, const char *name) {
+	if (!name)
+		return NULL;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->is_policy && d->name && strcmp(d->name, name) == 0)
 			return d;
 	}
 	return NULL;
+}
+
+/* As find_policy_sig, but matching a specific op category — `abort`/`undefined` exist as both a bounds
+ * and a divide policy, so the category disambiguates which decl `!name` resolves to. */
+static DeclSummary *find_policy_sig_cat(SemanticContext *ctx, const char *name, PolicyCategory cat) {
+	if (!name)
+		return NULL;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->is_policy && d->policy_category == (int)cat && d->name && strcmp(d->name, name) == 0)
+			return d;
+	}
+	return NULL;
+}
+
+static const char *policy_cat_name(PolicyCategory c); /* defined below, near the bounds-policy checks */
+static char *sem_txt_dup(SynText t);                  /* defined below */
+static char *sv_name_expr_dup(SyntaxView v);          /* defined below */
+
+/* Scan a handler body for an archetype-column reference (`Arch.field`) to an archetype other than
+ * `target` — a likely copy-paste mismatch. Returns the foreign name (static buffer) or NULL. */
+static const char *handler_body_foreign_arch(SemanticContext *ctx, SyntaxView v, const char *target) {
+	static char foreign[128];
+	if (!sv_present(v))
+		return NULL;
+	const SyntaxNode *n = v.node;
+	for (int i = 0; i < n->child_count; i++) {
+		const SyntaxElem *ch = &n->children[i];
+		if (ch->tag == SE_TOKEN && ch->as.token.kind == TOK_IDENT) {
+			int len = (int)ch->as.token.length;
+			if (len > 0 && len < (int)sizeof foreign) {
+				char buf[128];
+				memcpy(buf, v.src + ch->as.token.offset, (size_t)len);
+				buf[len] = '\0';
+				if (find_archetype(ctx, buf) && (!target || strcmp(buf, target) != 0)) {
+					snprintf(foreign, sizeof foreign, "%s", buf);
+					return foreign;
+				}
+			}
+		} else if (ch->tag == SE_NODE) {
+			SyntaxView cv = {ch->as.node, v.src};
+			const char *r = handler_body_foreign_arch(ctx, cv, target);
+			if (r)
+				return r;
+		}
+	}
+	return NULL;
+}
+
+/* Validate the `?handler` on a pool `insert(...)` call (operates on the call syntax `v`). The sigil
+ * must be `?` (handler), the name must resolve to a @policy(pool), and a handler whose body reads a
+ * different archetype's columns than the insert target is a lint. Emits at most one diagnostic. */
+static void sem_check_insert_handler(SemanticContext *ctx, SyntaxView v, SourceLoc loc) {
+	SyntaxView pol = sv_child(v, SN_POLICY_REF);
+	if (!sv_present(pol))
+		return; /* unannotated → the pool's declared handler or the `reject` default (resolved in codegen) */
+	SynText nt = sv_token(pol, TOK_IDENT);
+	if (!nt.ptr)
+		return;
+	char *nm = sem_txt_dup(nt);
+	int is_handler = sv_token(pol, TOK_QUESTION).ptr != NULL;
+	if (!is_handler) {
+		sem_emit_policy_wrong_sigil(ctx, loc, nm, 1); /* `!` on an insert → needs `?` */
+		free(nm);
+		return;
+	}
+	DeclSummary *p = find_policy_sig_cat(ctx, nm, POLICY_CAT_POOL);
+	if (!p) {
+		DeclSummary *any = find_policy_sig(ctx, nm);
+		if (!any)
+			sem_emit_policy_unknown(ctx, loc, nm);
+		else
+			sem_emit_policy_wrong_category(ctx, loc, nm, "pool", policy_cat_name(any->policy_category));
+		free(nm);
+		return;
+	}
+	/* W0019: the handler reads a foreign pool's columns. */
+	char *target = sv_name_expr_dup(sem_node_at_expr(v, 0));
+	if (target) {
+		const char *foreign = handler_body_foreign_arch(ctx, p->body_node, target);
+		if (foreign)
+			sem_emit_lint_handler_foreign_arch(ctx, loc, nm, foreign, target);
+		free(target);
+	}
+	free(nm);
 }
 
 /* The compilation unit a reference originates in: the enclosing proc/func's owning unit (0 = entry). */
@@ -1726,7 +1828,9 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 
 	case SN_CALL_EXPR: {
 		int call_stmt_ok = ctx->stmt_call_ok;
+		int outlist_call_ok = ctx->proc_call_stmt_ok;
 		ctx->stmt_call_ok = 0;
+		ctx->proc_call_stmt_ok = 0;
 
 		/* resolved callee name (qualify-mangled for `mod.f`) from the side model; NULL for a
 		 * non-module qualified field call. */
@@ -1808,6 +1912,17 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 				}
 			}
 		}
+
+		/* Mandatory-ok: insert/delete report success as a value, so they are statement-only — they must
+		 * be the value of a proc-call statement carrying an out-list. A bare `insert(…)`, an `x := insert(…)`
+		 * bind, or a nested `i32(insert(…))` (any context with !call_stmt_ok) is rejected here. The valid
+		 * `insert(P,…)(h:, ok:)` / `delete(h)(ok:)` form analyzes its call with call_stmt_ok set. */
+		if (strcmp(func_name, "insert") == 0 && !outlist_call_ok)
+			sem_emit_insert_delete_outlist(ctx, loc, "insert", "insert(P, …)(handle:, ok:)");
+		if (strcmp(func_name, "delete") == 0 && !outlist_call_ok)
+			sem_emit_insert_delete_outlist(ctx, loc, "delete", "delete(h)(ok:)");
+		if (strcmp(func_name, "insert") == 0)
+			sem_check_insert_handler(ctx, v, loc); /* validate the `?handler` (sigil + @policy(pool)) */
 
 		GroupInfo *gi = find_group(ctx, func_name);
 		if (!gi) {
@@ -2493,16 +2608,36 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 			}
 		/* analyze the value (whole multi-return RHS) first, then bind targets */
 		ctx->stmt_call_ok = (sv_present(mb_value) && sv_kind(mb_value) == SN_CALL_EXPR);
+		ctx->proc_call_stmt_ok = ctx->stmt_call_ok; /* out-list statement: insert/delete are valid here */
 		if (sv_present(mb_value))
 			analyze_expression(ctx, mb_value);
 		ctx->stmt_call_ok = 0;
+		ctx->proc_call_stmt_ok = 0;
 
-		/* resolve callee proc for the inout-redundant lint + out-param typing */
+		/* resolve callee proc for the inout-redundant lint + out-param typing; also detect the
+		 * mandatory-ok builtins insert/delete, whose out-slots are typed explicitly below. */
+		const char *mb_builtin = NULL; /* "insert" | "delete" | NULL */
 		if (sv_present(mb_value) && sv_kind(mb_value) == SN_CALL_EXPR) {
 			const char *cn = ctx->model ? sem_model_callee_name(ctx->model, sv_id(mb_value)) : NULL;
 			char *cnf = cn ? sem_dupz(cn) : sem_cv_dup(sv_child(mb_value, SN_CALLEE_NAME));
 			mb_callee_proc = find_proc_sig(ctx, cnf);
+			if (cnf && strcmp(cnf, "insert") == 0)
+				mb_builtin = "insert";
+			else if (cnf && strcmp(cnf, "delete") == 0)
+				mb_builtin = "delete";
 			free(cnf);
+		}
+		/* Validate the mandatory out-list arity: insert → (handle:, ok:), delete → (ok:). */
+		if (mb_builtin && strcmp(mb_builtin, "insert") == 0 && mbt_count != 2)
+			sem_emit_insert_delete_outlist(ctx, loc, "insert", "insert(P, …)(handle:, ok:)");
+		if (mb_builtin && strcmp(mb_builtin, "delete") == 0 && mbt_count != 1)
+			sem_emit_insert_delete_outlist(ctx, loc, "delete", "delete(h)(ok:)");
+		/* W0016 discarded_ok: the capacity/handle `ok` (insert's 2nd out, delete's only out) was
+		 * discarded with `_` — a silently-ignored failure. */
+		if (mb_builtin) {
+			int ok_idx = (strcmp(mb_builtin, "insert") == 0) ? 1 : 0;
+			if (ok_idx < mbt_count && mbt[ok_idx].name && strcmp(mbt[ok_idx].name, "_") == 0)
+				sem_emit_lint_discarded_ok(ctx, loc, mb_builtin);
 		}
 
 		/* W0011 inout_redundant: an in-arg NAME equal to an out-target NAME at an in-out position. */
@@ -2529,12 +2664,26 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 			TypeId bind_type = t->type_id;
 			if (bind_type == TYID_UNKNOWN && mb_callee_proc && i < mb_callee_proc->out_param_count)
 				bind_type = mb_callee_proc->out_params[i].type_id;
+			/* mandatory-ok builtins: insert → (handle, int), delete → (int). */
+			int is_handle_slot = 0;
+			if (bind_type == TYID_UNKNOWN && mb_builtin) {
+				if (strcmp(mb_builtin, "insert") == 0 && i == 0)
+					is_handle_slot = 1;
+				else
+					bind_type = sem_tyid_of_name(ctx, "int");
+			}
 			if (t->is_new) {
 				/* already added above for "_"-filtered new targets; re-add to capture type/nominal */
 				if (t->name && strcmp(t->name, "_") != 0) {
 					add_variable(ctx, t->name, bind_type);
 					TyKind bk = tyid_kind(ctx->ty_arena, bind_type);
-					if ((bk == TYK_NOMINAL || bk == TYK_PRIM) && ctx->scope_count > 0) {
+					if (is_handle_slot && ctx->scope_count > 0) {
+						/* insert's handle out-slot: an opaque generation-checked handle (i64). It carries
+						 * no TypeId, but `delete(h)` and handle equality rely on inferred_type "handle". */
+						Scope *sc = &ctx->scopes[ctx->scope_count - 1];
+						if (sc->var_count > 0)
+							sc->vars[sc->var_count - 1]->inferred_type = "handle";
+					} else if ((bk == TYK_NOMINAL || bk == TYK_PRIM) && ctx->scope_count > 0) {
 						Scope *sc = &ctx->scopes[ctx->scope_count - 1];
 						if (sc->var_count > 0) {
 							VariableInfo *vv = sc->vars[sc->var_count - 1];
@@ -3140,11 +3289,915 @@ static const char *func_purity_body_view(SemanticContext *ctx, SyntaxView declno
 /* Enforce func purity: a non-extern `func` body must be pure (no effects). This is a RULE, not a
  * lint — a violation is a hard compile error. Effects belong in a proc. */
 static void enforce_func_purity(SemanticContext *ctx, DeclSummary *func) {
-	if (!func || func->is_extern)
-		return;
+	if (!func || func->is_extern || func->is_policy)
+		return; /* a policy is a macro, not a pure func — it may mutate operands and call `exit()` */
 	const char *reason = func_purity_body_view(ctx, func->body_node);
 	if (reason) {
 		sem_emit_func_not_pure(ctx, func->loc, func->name ? func->name : "<unknown>", reason);
+	}
+}
+
+/* ===== value-array / slice bounds analysis (Phase D: OOB totality) =====
+ * A plain proc/func must prove every VALUE-array / slice index in-bounds; an unprovable one is an
+ * abort site (func → error, proc → must be `proc!`). Scope: indexing of array/slice PARAMETERS
+ * (`s[i]`, `buf[i]`). Pool COLUMNS (`Arch.field[i]`) and locals are the trusted data-oriented model
+ * and are exempt — so this targets exactly the string/buffer code where OOB bugs bite. Provable:
+ * a literal index into a sized `T[N]` param (0<=k<N); an index var proven `0 <= v < base.length/.cap`
+ * (or `< N` for a sized base) by an enclosing `for v:=K>=0; v<bound; v+=+>0` loop or by guard-exits
+ * (`if (v<0){ret/break/continue} … if (v>=bound){…}`). `&&` conjunctions and guards compose.
+ * Intentionally conservative: anything else is reported unprovable. */
+
+#define BND_MAX_FACTS 64
+typedef struct {
+	char *var;  /* index variable name (owned); NULL for a pure min-length fact */
+	char *base; /* upper-bound base name (owned), or NULL when only nonneg is known */
+	int nonneg; /* 1 once v>=0 is established */
+	int minlen; /* if var==NULL && base!=NULL: `base.length >= minlen` (proves literal idx < minlen) */
+	int litub;  /* if var!=NULL: `var < litub` (a literal upper bound; 0 = none) — proves idx into a
+	             * sized T[N] when litub <= N */
+} BndFact;
+
+/* A local array/slice declaration seen in the body, so `name[i]` on a local is checked like a
+ * param. kind: 1 = sized `T[N]` (size = N), 2 = slice `T[]`. Persists for the whole decl walk
+ * (not snapshot-scoped); last declaration of a name wins (conservative). */
+typedef struct {
+	char *name;
+	int kind;
+	int size;
+} BndLocal;
+
+typedef struct {
+	BndFact facts[BND_MAX_FACTS];
+	int count;
+	BndLocal locals[BND_MAX_FACTS];
+	int local_count;
+	int lint_columns;   /* 1 = also emit W0017 for unprovable pool-column (`Arch.field[i]`) indexing */
+	int check_policies; /* 1 = the failure-policy validation pass (E0097-99/E0124/W0018); see sem_check_policies */
+} BndEnv;
+
+/* int value of a literal node, or -1 if not a nonneg int literal. */
+static int bnd_lit_int(SyntaxView v) {
+	if (!sv_present(v) || sv_kind(v) != SN_LITERAL_EXPR)
+		return -1;
+	char *t = sem_cv_dup(v);
+	if (!t)
+		return -1;
+	int neg = (t[0] == '-');
+	const char *p = neg ? t + 1 : t;
+	for (const char *q = p; *q; q++)
+		if (*q < '0' || *q > '9') {
+			free(t);
+			return -1;
+		}
+	int val = atoi(p);
+	free(t);
+	return neg ? -1 : val; /* a negative literal is never a valid index */
+}
+
+/* If `v` is a plain NAME expr (no field chain), its name (owned), else NULL. */
+static char *bnd_plain_name(SemanticContext *ctx, SyntaxView v) {
+	if (!sv_present(v) || sv_kind(v) != SN_NAME_EXPR || sv_count(v, SN_FIELD_NAME) != 0)
+		return NULL;
+	return sv_resolved_name(ctx, v);
+}
+
+/* If `v` is a `X.length` / `X.cap` extent expr, the base name X (owned), else NULL. */
+static char *bnd_extent_base(SemanticContext *ctx, SyntaxView v) {
+	if (!sv_present(v) || sv_kind(v) != SN_FIELD_EXPR)
+		return NULL;
+	int nf = sv_count(v, SN_FIELD_NAME);
+	if (nf != 1)
+		return NULL;
+	char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, 0));
+	int is_extent = fld && (strcmp(fld, "length") == 0 || strcmp(fld, "cap") == 0 || strcmp(fld, "capacity") == 0 ||
+	                        strcmp(fld, "max_length") == 0 || strcmp(fld, "count") == 0);
+	free(fld);
+	if (!is_extent)
+		return NULL;
+	return sv_resolved_name(ctx, v); /* the root X */
+}
+
+/* param kind of `name`: 1 = sized `T[N]` (out_n=N), 2 = slice `T[]`, 0 = not a checked array base. */
+static int bnd_param_kind(SemanticContext *ctx, DeclSummary *d, const char *name, int *out_n) {
+	for (int pass = 0; pass < 2; pass++) {
+		ParamSummary *ps = pass ? d->out_params : d->params;
+		int n = pass ? d->out_param_count : d->param_count;
+		for (int i = 0; i < n; i++) {
+			if (!ps[i].name || strcmp(ps[i].name, name) != 0)
+				continue;
+			TyKind k = tyid_kind(ctx->ty_arena, ps[i].type_id);
+			if (k == TYK_SHAPED_ARRAY) {
+				if (out_n)
+					*out_n = tyid_shaped_rank(ctx->ty_arena, ps[i].type_id);
+				return 1;
+			}
+			if (k == TYK_ARRAY)
+				return 2;
+			return 0;
+		}
+	}
+	return 0;
+}
+
+static void bnd_local_add(BndEnv *e, const char *name, int kind, int size) {
+	if (!name || e->local_count >= BND_MAX_FACTS)
+		return;
+	e->locals[e->local_count].name = sem_dupz(name);
+	e->locals[e->local_count].kind = kind;
+	e->locals[e->local_count].size = size;
+	e->local_count++;
+}
+
+/* Kind of an indexed plain-name base: a param/out-param array, a tracked local array, or — for an
+ * unknown name that is neither a module static nor an archetype — a conservatively-checked
+ * slice-like local. Module statics and archetype columns stay exempt (kind 0). */
+static int bnd_base_kind(SemanticContext *ctx, DeclSummary *d, BndEnv *e, const char *name, int *out_n) {
+	int k = bnd_param_kind(ctx, d, name, out_n);
+	if (k != 0)
+		return k;
+	for (int i = e->local_count - 1; i >= 0; i--) /* last decl wins */
+		if (e->locals[i].name && strcmp(e->locals[i].name, name) == 0) {
+			if (out_n)
+				*out_n = e->locals[i].size;
+			return e->locals[i].kind;
+		}
+	/* Only PARAMs and explicitly-typed local arrays are gated. An unknown plain name (module static,
+	 * archetype column, inferred-type local, tuple, …) stays exempt to avoid false positives. */
+	return 0;
+}
+
+/* Facts are append-only within a scope; a var may carry several (one per upper base, plus a nonneg
+ * marker). proven(v, base) needs BOTH a nonneg marker and an upper-bound fact naming `base`. */
+static void bnd_env_add(BndEnv *e, const char *var, const char *base, int nonneg) {
+	if (!var || e->count >= BND_MAX_FACTS)
+		return;
+	e->facts[e->count].var = sem_dupz(var);
+	e->facts[e->count].base = base ? sem_dupz(base) : NULL;
+	e->facts[e->count].nonneg = nonneg;
+	e->facts[e->count].minlen = 0;
+	e->facts[e->count].litub = 0;
+	e->count++;
+}
+
+/* Record `base.length >= n` (so a literal index k < n into `base` is in-bounds). */
+static void bnd_env_add_min(BndEnv *e, const char *base, int n) {
+	if (!base || n <= 0 || e->count >= BND_MAX_FACTS)
+		return;
+	e->facts[e->count].var = NULL;
+	e->facts[e->count].base = sem_dupz(base);
+	e->facts[e->count].nonneg = 0;
+	e->facts[e->count].minlen = n;
+	e->facts[e->count].litub = 0;
+	e->count++;
+}
+
+/* Record `var < k` (a literal upper bound; proves a var index into a sized T[N] when k <= N). */
+static void bnd_env_add_litub(BndEnv *e, const char *var, int k) {
+	if (!var || k <= 0 || e->count >= BND_MAX_FACTS)
+		return;
+	e->facts[e->count].var = sem_dupz(var);
+	e->facts[e->count].base = NULL;
+	e->facts[e->count].nonneg = 0;
+	e->facts[e->count].minlen = 0;
+	e->facts[e->count].litub = k;
+	e->count++;
+}
+
+/* Smallest literal upper bound known for `var` (INT_MAX if none). */
+static int bnd_litub(BndEnv *e, const char *var) {
+	int best = 2147483647;
+	for (int i = 0; i < e->count; i++)
+		if (e->facts[i].litub > 0 && e->facts[i].var && strcmp(e->facts[i].var, var) == 0 && e->facts[i].litub < best)
+			best = e->facts[i].litub;
+	return best;
+}
+
+/* True if `base.length >= k+1` is known (proves literal index k). */
+static int bnd_minlen_ok(BndEnv *e, const char *base, int k) {
+	for (int i = 0; i < e->count; i++)
+		if (!e->facts[i].var && e->facts[i].base && base && strcmp(e->facts[i].base, base) == 0 &&
+		    e->facts[i].minlen > k)
+			return 1;
+	return 0;
+}
+
+static void bnd_env_truncate(BndEnv *e, int to) {
+	if (to >= e->count)
+		return; /* never GROW the count — a mid-block kill may have shrunk it below `to` */
+	for (int i = to; i < e->count; i++) {
+		free(e->facts[i].var);
+		free(e->facts[i].base);
+	}
+	e->count = to;
+}
+
+/* Snapshot/restore the whole fact set so a nested block scopes BOTH its additions and its kills
+ * (a conditional `i = 1` inside an `if` must not destroy the outer `i >= 0` fact). The snapshot
+ * deep-copies; restore frees the current facts and transfers the snapshot's ownership back. */
+static BndFact *bnd_snapshot(BndEnv *e, int *out_n) {
+	*out_n = e->count;
+	if (e->count == 0)
+		return NULL;
+	BndFact *s = malloc((size_t)e->count * sizeof(BndFact));
+	for (int i = 0; i < e->count; i++) {
+		s[i].var = e->facts[i].var ? sem_dupz(e->facts[i].var) : NULL;
+		s[i].base = e->facts[i].base ? sem_dupz(e->facts[i].base) : NULL;
+		s[i].nonneg = e->facts[i].nonneg;
+		s[i].minlen = e->facts[i].minlen;
+		s[i].litub = e->facts[i].litub;
+	}
+	return s;
+}
+static void bnd_restore(BndEnv *e, BndFact *snap, int n) {
+	for (int i = 0; i < e->count; i++) {
+		free(e->facts[i].var);
+		free(e->facts[i].base);
+	}
+	for (int i = 0; i < n; i++)
+		e->facts[i] = snap[i]; /* transfer ownership */
+	e->count = n;
+	free(snap);
+}
+
+/* Drop every fact about `var` (used when `var` is reassigned to an unknown value). */
+static void bnd_env_kill(BndEnv *e, const char *var) {
+	int w = 0;
+	for (int i = 0; i < e->count; i++) {
+		if (e->facts[i].var && strcmp(e->facts[i].var, var) == 0) {
+			free(e->facts[i].var);
+			free(e->facts[i].base);
+		} else
+			e->facts[w++] = e->facts[i];
+	}
+	e->count = w;
+}
+
+static int bnd_is_nonneg(BndEnv *e, const char *var) {
+	for (int i = 0; i < e->count; i++)
+		if (e->facts[i].nonneg && e->facts[i].var && strcmp(e->facts[i].var, var) == 0)
+			return 1;
+	return 0;
+}
+
+/* Is the value expression provably >= 0? Nonneg literal, a known-nonneg name, or a sum of two
+ * nonneg sub-expressions (so `k := i + j` with i,j >= 0 is nonneg without a dead guard). */
+static int bnd_expr_nonneg(SemanticContext *ctx, BndEnv *e, SyntaxView v) {
+	if (!sv_present(v))
+		return 0;
+	if (sv_kind(v) == SN_LITERAL_EXPR)
+		return bnd_lit_int(v) >= 0;
+	if (sv_kind(v) == SN_NAME_EXPR && sv_count(v, SN_FIELD_NAME) == 0) {
+		char *n = sv_resolved_name(ctx, v);
+		int r = n ? bnd_is_nonneg(e, n) : 0;
+		free(n);
+		return r;
+	}
+	if (sv_kind(v) == SN_BINARY_EXPR && sem_binary_op(v) == OP_ADD)
+		return bnd_expr_nonneg(ctx, e, sem_node_at_expr(v, 0)) && bnd_expr_nonneg(ctx, e, sem_node_at_expr(v, 1));
+	return 0;
+}
+
+/* True if `var` is proven in [0, base): a nonneg marker AND an upper-bound fact naming `base`. */
+static int bnd_proven(BndEnv *e, const char *var, const char *base) {
+	if (!bnd_is_nonneg(e, var))
+		return 0;
+	for (int i = 0; i < e->count; i++)
+		if (e->facts[i].var && e->facts[i].base && base && strcmp(e->facts[i].var, var) == 0 &&
+		    strcmp(e->facts[i].base, base) == 0)
+			return 1;
+	return 0;
+}
+
+/* Extract bound facts from a (possibly `&&`-conjoined) condition into env:
+ *   `v < X.length`        ⇒ upper(v, X)
+ *   `X.length > k`        ⇒ minlen(X, k+1)   (and `k < X.length`)
+ *   `X.length >= k`       ⇒ minlen(X, k)
+ * so guards like `if (s.length > 0)` validate the literal index `s[0]`. */
+static void bnd_collect_facts(SemanticContext *ctx, SyntaxView cond, BndEnv *e) {
+	if (!sv_present(cond) || sv_kind(cond) != SN_BINARY_EXPR)
+		return;
+	Operator op = sem_binary_op(cond);
+	if (op == OP_AND) {
+		bnd_collect_facts(ctx, sem_node_at_expr(cond, 0), e);
+		bnd_collect_facts(ctx, sem_node_at_expr(cond, 1), e);
+		return;
+	}
+	SyntaxView l = sem_node_at_expr(cond, 0), r = sem_node_at_expr(cond, 1);
+	if (op == OP_LT) {
+		/* v < X.length  → upper(v, X) */
+		char *v = bnd_plain_name(ctx, l);
+		char *b = bnd_extent_base(ctx, r);
+		if (v && b)
+			bnd_env_add(e, v, b, 0);
+		/* v < K (literal) → litub(v, K) — proves v into a sized T[N] with K <= N */
+		int rlit = bnd_lit_int(r);
+		if (v && rlit >= 0)
+			bnd_env_add_litub(e, v, rlit);
+		free(v);
+		free(b);
+		/* k < X.length → minlen(X, k+1) */
+		int k = bnd_lit_int(l);
+		char *xb = bnd_extent_base(ctx, r);
+		if (k >= 0 && xb)
+			bnd_env_add_min(e, xb, k + 1);
+		free(xb);
+	} else if (op == OP_GT) {
+		/* X.length > k → minlen(X, k+1) */
+		char *xb = bnd_extent_base(ctx, l);
+		int k = bnd_lit_int(r);
+		if (xb && k >= 0)
+			bnd_env_add_min(e, xb, k + 1);
+		free(xb);
+		/* v > k (k >= 0 literal) → v >= 0 */
+		char *v = bnd_plain_name(ctx, l);
+		if (v && bnd_lit_int(r) >= 0)
+			bnd_env_add(e, v, NULL, 1);
+		free(v);
+	} else if (op == OP_GTE) {
+		/* X.length >= k → minlen(X, k) */
+		char *xb = bnd_extent_base(ctx, l);
+		int k = bnd_lit_int(r);
+		if (xb && k > 0)
+			bnd_env_add_min(e, xb, k);
+		free(xb);
+		/* v >= k (k >= 0 literal) → v >= 0 */
+		char *v = bnd_plain_name(ctx, l);
+		if (v && bnd_lit_int(r) >= 0)
+			bnd_env_add(e, v, NULL, 1);
+		free(v);
+	}
+}
+
+/* Does the if-then body unconditionally exit the enclosing flow (return/break/continue)? */
+static int bnd_body_exits(SyntaxView ifv, int else_part) {
+	/* then-statements are the stmt children before any TOK_ELSE; else-statements after. We only
+	 * need a coarse check: any return/break/continue among the relevant statements. */
+	(void)else_part;
+	for (int i = 0, n = sem_stmt_count(ifv); i < n; i++) {
+		SyntaxNodeKind k = sv_kind(sem_stmt_at(ifv, i));
+		if (k == SN_RETURN_STMT || k == SN_BREAK_STMT || k == SN_CONTINUE_STMT)
+			return 1;
+	}
+	return 0;
+}
+
+/* Add the facts implied by the NEGATION of one comparison `cond` (used for guard-exits, where the
+ * if-body exits so the rest of the block runs only when `cond` was false). Recognizes:
+ *   v < 0          ⇒ v >= 0           (nonneg)
+ *   v >= X.length  ⇒ v <  X.length    (upper)
+ *   v > X.length / v >= X.length      (upper, conservative)
+ *   X.length < K   ⇒ X.length >= K    (minlen)
+ *   X.length <= K  ⇒ X.length >  K    (minlen K+1)
+ * Returns 1 if it recognized the form. */
+static int bnd_guard_neg(SemanticContext *ctx, SyntaxView cond, BndEnv *e) {
+	if (!sv_present(cond) || sv_kind(cond) != SN_BINARY_EXPR)
+		return 0;
+	Operator op = sem_binary_op(cond);
+	if (op == OP_OR) { /* !(A || B) = !A && !B */
+		int a = bnd_guard_neg(ctx, sem_node_at_expr(cond, 0), e);
+		int b = bnd_guard_neg(ctx, sem_node_at_expr(cond, 1), e);
+		return a || b;
+	}
+	SyntaxView l = sem_node_at_expr(cond, 0), r = sem_node_at_expr(cond, 1);
+	/* X.length < K  /  X.length <= K  ⇒ minlen */
+	if (op == OP_LT || op == OP_LTE) {
+		char *xb = bnd_extent_base(ctx, l);
+		int k = bnd_lit_int(r);
+		if (xb && k >= 0) {
+			bnd_env_add_min(e, xb, op == OP_LTE ? k + 1 : k);
+			free(xb);
+			return 1;
+		}
+		free(xb);
+	}
+	char *v = bnd_plain_name(ctx, l);
+	int handled = 0;
+	if (v && op == OP_LT && bnd_lit_int(r) == 0) {
+		bnd_env_add(e, v, NULL, 1); /* v < 0 exit ⇒ v >= 0 */
+		handled = 1;
+	} else if (v && (op == OP_GTE || op == OP_GT)) {
+		char *b = bnd_extent_base(ctx, r);
+		int klit = bnd_lit_int(r);
+		if (b) {
+			bnd_env_add(e, v, b, 0); /* v >= X.length exit ⇒ v < X.length */
+			handled = 1;
+		} else if (klit >= 0) {
+			bnd_env_add_litub(e, v, op == OP_GT ? klit + 1 : klit); /* v >= K exit ⇒ v < K */
+			handled = 1;
+		}
+		free(b);
+	}
+	free(v);
+	return handled;
+}
+
+/* A guard-exit `if (COND) { return/break/continue }` establishes COND's negation for the rest of
+ * the enclosing block. Returns 1 if recognized. */
+static int bnd_guard_exit(SemanticContext *ctx, SyntaxView ifv, BndEnv *e) {
+	if (!bnd_body_exits(ifv, 0))
+		return 0;
+	return bnd_guard_neg(ctx, sem_node_at_expr(ifv, 0), e);
+}
+
+static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxView v, BndEnv *e);
+
+/* If `v` is a compile-time integer constant (a literal, or unary-minus on one), set *out and return
+ * 1; else 0. (bnd_lit_int collapses a negative literal to -1, losing the value — the failure-policy
+ * pass needs the signed value to tell a provably-OOB negative index apart from a non-literal. A
+ * negative index `a[-7]` parses as SN_UNARY_EXPR(`-`, 7), so the negate case must be folded here;
+ * `a[0 - 7]` is a binary expr, deliberately left as a runtime value — no constant folding.) */
+static int bnd_lit_int_signed(SyntaxView v, int *out) {
+	if (!sv_present(v))
+		return 0;
+	if (sv_kind(v) == SN_UNARY_EXPR && sv_has_token(v, TOK_MINUS)) {
+		int inner;
+		if (bnd_lit_int_signed(sem_node_at_expr(v, 0), &inner)) {
+			*out = -inner;
+			return 1;
+		}
+		return 0;
+	}
+	if (sv_kind(v) != SN_LITERAL_EXPR)
+		return 0;
+	char *t = sem_cv_dup(v);
+	if (!t)
+		return 0;
+	int neg = (t[0] == '-');
+	const char *p = neg ? t + 1 : t;
+	int ok = (*p != '\0');
+	for (const char *q = p; *q; q++)
+		if (*q < '0' || *q > '9')
+			ok = 0;
+	int val = atoi(p);
+	free(t);
+	if (!ok)
+		return 0;
+	*out = neg ? -val : val;
+	return 1;
+}
+
+static const char *policy_cat_name(PolicyCategory c) {
+	switch (c) {
+	case POLICY_CAT_BOUNDS:
+		return "bounds";
+	case POLICY_CAT_POOL:
+		return "pool";
+	case POLICY_CAT_DIVIDE:
+		return "divide";
+	default:
+		return "?";
+	}
+}
+
+/* Crash-free enforcement flags — set by the CLI (cmd_build), consulted by the failure-policy pass.
+ * `--no-abort` rejects any op resolving to `!abort` (implicit OR explicit); `--no-implicit-abort`
+ * rejects only the default/implicit `!abort` (a deliberate, visible `!abort` is still allowed);
+ * `--no-undefined` rejects any `!undefined` site. */
+static int g_no_abort = 0;
+static int g_no_implicit_abort = 0;
+static int g_no_undefined = 0;
+static int g_forbid_allow = 0;
+void semantic_set_no_abort(int on) {
+	g_no_abort = on;
+}
+void semantic_set_no_implicit_abort(int on) {
+	g_no_implicit_abort = on;
+}
+void semantic_set_no_undefined(int on) {
+	g_no_undefined = on;
+}
+void semantic_set_forbid_allow(int on) {
+	g_forbid_allow = on;
+}
+
+/* The crash-free flags assert the USER's code is total — they don't fire on the bundled core/stdlib
+ * (which aren't policy-annotated) nor on the prepended prelude text (origin ENTRY, but above the
+ * user's first line). Mirrors the origin/line-offset gate the dead-code passes use. */
+static int decl_is_user_code(DeclSummary *d) {
+	if (d->origin == DECL_ORIGIN_STDLIB || d->origin == DECL_ORIGIN_CORE)
+		return 0;
+	int core_off = semantic_print_line_offset();
+	if (d->origin == DECL_ORIGIN_ENTRY && core_off > 0 && d->loc.line <= core_off)
+		return 0; /* prepended prelude */
+	return 1;
+}
+
+/* Validate an explicit `!name` against the op's category `want` (and the func-total / `--no-abort` /
+ * `--no-undefined` rules). `d` is the enclosing decl; `loc` the op site. Emits at most one diagnostic.
+ * Category, not signature, disambiguates: `abort`/`undefined` exist for both bounds and divide. */
+static void validate_explicit_policy(SemanticContext *ctx, DeclSummary *d, SourceLoc loc, const char *name,
+                                     PolicyCategory want) {
+	if (strcmp(name, "abort") == 0) {
+		if (d->kind == DECL_FUNC) {
+			sem_emit_policy_func_aborts(ctx, loc, d->name ? d->name : "<anon>");
+			return;
+		}
+		if (g_no_abort && decl_is_user_code(d)) {
+			sem_emit_policy_abort_forbidden(ctx, loc, "this `!abort`", "--no-abort");
+			return;
+		}
+	} else if (strcmp(name, "undefined") == 0 && g_no_undefined && decl_is_user_code(d)) {
+		sem_emit_policy_undefined_forbidden(ctx, loc);
+		return;
+	}
+	if (find_policy_sig_cat(ctx, name, want))
+		return; /* a policy of this name AND category exists — valid */
+	DeclSummary *any = find_policy_sig(ctx, name);
+	if (!any)
+		sem_emit_policy_unknown(ctx, loc, name);
+	else
+		sem_emit_policy_wrong_category(ctx, loc, name, policy_cat_name(want), policy_cat_name(any->policy_category));
+}
+
+/* Validate the failure policy on a single index/slice op. `kind`/`n` are as bnd_base_kind reports
+ * for `base` (kind 0 = base isn't a tracked value-array ⇒ provability unknown). The prover's verdict
+ * is authoritative — a policy attaches ONLY to ops it can't decide:
+ *   provably OOB const  → E0097 (even with a policy: a statically-wrong access, not a runtime case);
+ *   provably safe       → W0018 if an explicit policy is present (dead — the op can never fail);
+ *   unprovable          → an explicit `!name` is validated: E0098 `!abort` in a func/policy (must be
+ *                         total), E0099 unknown policy, E0124 wrong @policy(category).
+ * Slices skip provability (the prover doesn't bound them) — only their explicit policy is validated. */
+static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, SyntaxView v, int is_slice,
+                             const char *base, int kind, int n) {
+	char *explicit_pol = NULL;
+	SyntaxView pol = sv_child(v, SN_POLICY_REF);
+	if (sv_present(pol)) {
+		SynText t = sv_token(pol, TOK_IDENT);
+		if (t.ptr)
+			explicit_pol = sem_txt_dup(t);
+	}
+	SourceLoc loc = sem_node_loc(v.node);
+
+	/* An index/slice is a panic op (no failure channel) — it takes `!`, not the `?` handler sigil. */
+	if (explicit_pol && sv_token(pol, TOK_QUESTION).ptr != NULL) {
+		sem_emit_policy_wrong_sigil(ctx, loc, explicit_pol, 0);
+		free(explicit_pol);
+		return;
+	}
+
+	int provably_oob = 0, provably_safe = 0, oob_lit = 0;
+	if (!is_slice && kind != 0) {
+		SyntaxView idx = sem_node_at_expr(v, 0);
+		int lit;
+		if (bnd_lit_int_signed(idx, &lit)) {
+			if (lit < 0) {
+				provably_oob = 1;
+				oob_lit = lit;
+			} else if (kind == 1 && n >= 0) {
+				if (lit >= n) {
+					provably_oob = 1;
+					oob_lit = lit;
+				} else {
+					provably_safe = 1;
+				}
+			} else if (bnd_minlen_ok(e, base, lit)) {
+				provably_safe = 1;
+			}
+		} else {
+			char *iv = bnd_plain_name(ctx, idx);
+			if (iv) {
+				if (bnd_proven(e, iv, base))
+					provably_safe = 1;
+				else if (kind == 1 && n >= 0 && bnd_is_nonneg(e, iv) && bnd_litub(e, iv) > 0 && bnd_litub(e, iv) <= n)
+					provably_safe = 1;
+			}
+			free(iv);
+		}
+	}
+
+	if (provably_oob) {
+		sem_emit_policy_provable_oob(ctx, loc, base ? base : "?", oob_lit, n);
+	} else if (provably_safe) {
+		if (explicit_pol)
+			sem_emit_lint_policy_on_safe_op(ctx, loc, explicit_pol, base ? base : "?");
+	} else if (explicit_pol) { /* unprovable: an explicit policy governs the op — validate it */
+		validate_explicit_policy(ctx, d, loc, explicit_pol, POLICY_CAT_BOUNDS);
+	} else if (d->kind != DECL_FUNC && (g_no_abort || g_no_implicit_abort) && decl_is_user_code(d)) {
+		/* unprovable, unannotated, in a proc/sys → the implicit default is `!abort`. */
+		sem_emit_policy_abort_forbidden(ctx, loc, "this op's implicit `!abort`",
+		                                g_no_abort ? "--no-abort" : "--no-implicit-abort");
+	}
+	free(explicit_pol);
+}
+
+/* Recurse into every expression/child of a node, checking each value-array index. Statement-shaped
+ * children that introduce their own scope (for/if/block) are handled by bnd_check_stmt; here we just
+ * descend generic expression trees. */
+static const char *bnd_check_expr(SemanticContext *ctx, DeclSummary *d, SyntaxView v, BndEnv *e) {
+	if (!sv_present(v))
+		return NULL;
+	/* `A && B`: B is evaluated only when A holds, so check B under the facts A implies (this validates
+	 * `s.length > 0 && s[0] == '-'`). */
+	if (sv_kind(v) == SN_BINARY_EXPR && sem_binary_op(v) == OP_AND) {
+		const char *r = bnd_check_expr(ctx, d, sem_node_at_expr(v, 0), e);
+		if (r)
+			return r;
+		int saved = e->count;
+		bnd_collect_facts(ctx, sem_node_at_expr(v, 0), e);
+		r = bnd_check_expr(ctx, d, sem_node_at_expr(v, 1), e);
+		bnd_env_truncate(e, saved);
+		return r;
+	}
+	/* Divide-by-zero policy validation: `a / b !name` / `a % b !name` — the policy must be @policy(divide).
+	 * (A divide is never statically OOB the way an index is, so there's only the category check.) */
+	if (e->check_policies && sv_kind(v) == SN_BINARY_EXPR) {
+		int bop = sem_binary_op(v);
+		if (bop == OP_DIV || bop == OP_MOD) {
+			SyntaxView pol = sv_child(v, SN_POLICY_REF);
+			if (sv_present(pol)) {
+				SynText t = sv_token(pol, TOK_IDENT);
+				if (t.ptr) {
+					char *nm = sem_txt_dup(t);
+					if (sv_token(pol, TOK_QUESTION).ptr != NULL) /* divide is a panic op: `!`, not `?` */
+						sem_emit_policy_wrong_sigil(ctx, sem_node_loc(v.node), nm, 0);
+					else
+						validate_explicit_policy(ctx, d, sem_node_loc(v.node), nm, POLICY_CAT_DIVIDE);
+					free(nm);
+				}
+			}
+		}
+	}
+	/* W0017 (lint mode only): a pool-column index `Arch.field[i]` whose `i` isn't proven in-bounds
+	 * (constant, or `i < Arch.length/.count`). Advisory — prefer handles. Not gated (columns are the
+	 * trusted bulk model), so this only warns, never forces `proc!`. */
+	if (e->lint_columns && sv_kind(v) == SN_INDEX_EXPR && sv_count(v, SN_FIELD_NAME) > 0 &&
+	    !sv_present(sv_child(v, SN_POLICY_REF))) {
+		/* An explicit `!policy` (e.g. `Arch.f[i] !undefined`) IS the acknowledgment W0017 asks for —
+		 * the failure behavior is declared at the site, so don't also warn about the raw slot. */
+		char *root = sv_resolved_name(ctx, v);
+		if (root && find_archetype(ctx, root)) {
+			SyntaxView idx = sem_node_at_expr(v, 0);
+			int ok = (bnd_lit_int(idx) >= 0); /* constant slot: assume within capacity */
+			if (!ok) {
+				char *iv = bnd_plain_name(ctx, idx);
+				if (iv)
+					ok = bnd_proven(e, iv, root); /* i < Arch.length/.count, i >= 0 */
+				free(iv);
+			}
+			if (!ok)
+				sem_emit_lint_raw_pool_index(ctx, sem_node_loc(v.node), root);
+		}
+		free(root);
+	}
+	/* Failure-policy validation on a pool-column index (`Arch.f[i] !policy`): no static count, so just
+	 * validate the explicit policy name (intrinsic / bounds policy / func-`!abort` / flag enforcement). */
+	if (e->check_policies && sv_kind(v) == SN_INDEX_EXPR && sv_count(v, SN_FIELD_NAME) > 0) {
+		char *root = sv_resolved_name(ctx, v);
+		if (root && find_archetype(ctx, root))
+			bnd_policy_check(ctx, d, e, v, 0, root, 0, -1);
+		free(root);
+	}
+	if (sv_kind(v) == SN_INDEX_EXPR && sv_count(v, SN_FIELD_NAME) == 0) {
+		char *base = sv_resolved_name(ctx, v);
+		int n = -1;
+		int kind = base ? bnd_base_kind(ctx, d, e, base, &n) : 0;
+		if (e->check_policies) { /* failure-policy validation pass (emits; never short-circuits) */
+			bnd_policy_check(ctx, d, e, v, 0, base, kind, n);
+		} else if (kind != 0) { /* a checked array/slice parameter */
+			SyntaxView idx = sem_node_at_expr(v, 0);
+			int lit = bnd_lit_int(idx);
+			int ok = 0;
+			if (lit >= 0) {
+				if (kind == 1 && n >= 0)
+					ok = (lit < n); /* literal into sized T[N] */
+				else
+					ok = bnd_minlen_ok(e, base, lit); /* slice (or unknown N): need a length guard */
+			} else {
+				char *iv = bnd_plain_name(ctx, idx);
+				if (iv) {
+					ok = bnd_proven(e, iv, base);
+					/* sized T[N]: a literal upper bound `iv < K` with K <= N also proves it */
+					if (!ok && kind == 1 && n >= 0 && bnd_is_nonneg(e, iv) && bnd_litub(e, iv) <= n)
+						ok = 1;
+				}
+				free(iv);
+			}
+			if (!ok) {
+				static char buf[160];
+				snprintf(buf, sizeof buf, "indexes '%s' with an unproven bound", base);
+				free(base);
+				return buf;
+			}
+		}
+		free(base);
+	}
+	if (e->check_policies && sv_kind(v) == SN_SLICE_EXPR) {
+		char *base = sv_resolved_name(ctx, v);
+		int n = -1;
+		int kind = base ? bnd_base_kind(ctx, d, e, base, &n) : 0;
+		bnd_policy_check(ctx, d, e, v, 1, base, kind, n);
+		free(base);
+	}
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE) {
+			const char *r = bnd_check_expr(ctx, d, (SyntaxView){v.node->children[i].as.node, v.src}, e);
+			if (r)
+				return r;
+		}
+	return NULL;
+}
+
+/* Walk statements in order with a fact env; returns the first unprovable index reason or NULL.
+ * Facts mutated inside the block (adds AND kills) are scoped to it via snapshot/restore. */
+static const char *bnd_check_block(SemanticContext *ctx, DeclSummary *d, SyntaxView block, BndEnv *e) {
+	int snn;
+	BndFact *snap = bnd_snapshot(e, &snn);
+	const char *r = NULL;
+	for (int i = 0, n = sem_stmt_count(block); i < n && !r; i++)
+		r = bnd_check_stmt(ctx, d, sem_stmt_at(block, i), e);
+	bnd_restore(e, snap, snn);
+	return r;
+}
+
+static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxView v, BndEnv *e) {
+	if (!sv_present(v))
+		return NULL;
+	SyntaxNodeKind k = sv_kind(v);
+	if (k == SN_FOR_STMT) {
+		/* extract the loop var's init (>=0?) and the cond's `v < bound` facts for the body */
+		int snn;
+		BndFact *snap = bnd_snapshot(e, &snn);
+		/* find init/cond among header segments: init is a bind/assign, cond is a bare expr before `{` */
+		SyntaxView cond = {NULL, v.src};
+		int init_nonneg_var_seen = 0;
+		char *init_var = NULL;
+		int seen_brace = 0, seg = 0;
+		for (int i = 0; i < v.node->child_count; i++) {
+			SyntaxElem *ch = &v.node->children[i];
+			if (ch->tag == SE_TOKEN) {
+				if (ch->as.token.kind == TOK_LBRACE)
+					seen_brace = 1;
+				else if (ch->as.token.kind == TOK_SEMI && !seen_brace && seg < 2)
+					seg++;
+				continue;
+			}
+			if (seen_brace)
+				continue;
+			SyntaxView cv = {ch->as.node, v.src};
+			SyntaxNodeKind ck = sv_kind(cv);
+			if (seg == 0 && (ck == SN_BIND_STMT || ck == SN_ASSIGN_STMT)) {
+				/* init `var := K` with K provably nonneg ⇒ var is nonneg at loop entry */
+				char *iv = sv_resolved_name(ctx, sem_node_at_expr(cv, 0));
+				int nn = bnd_expr_nonneg(ctx, e, sem_node_at_expr(cv, 1));
+				if (iv && nn) {
+					init_var = iv;
+					init_nonneg_var_seen = 1;
+				} else {
+					free(iv);
+				}
+			} else if (seg == 1 && ck >= SN_LITERAL_EXPR && ck <= SN_PAREN_EXPR) {
+				cond = cv;
+			}
+		}
+		/* push cond upper-bound facts; mark the init var nonneg */
+		bnd_collect_facts(ctx, cond, e);
+		if (init_var)
+			bnd_env_add(e, init_var, NULL, 1);
+		(void)init_nonneg_var_seen;
+		/* Check ONLY the post-`{` body statements (NOT the header init/incr — the incr `i=i+1` would
+		 * otherwise kill the loop var's facts before the body is checked). */
+		const char *r = NULL;
+		seen_brace = 0;
+		for (int i = 0; i < v.node->child_count && !r; i++) {
+			SyntaxElem *ch = &v.node->children[i];
+			if (ch->tag == SE_TOKEN) {
+				if (ch->as.token.kind == TOK_LBRACE)
+					seen_brace = 1;
+				continue;
+			}
+			if (!seen_brace)
+				continue;
+			r = bnd_check_stmt(ctx, d, (SyntaxView){ch->as.node, v.src}, e);
+		}
+		bnd_restore(e, snap, snn);
+		free(init_var);
+		return r;
+	}
+	if (k == SN_IF_STMT) {
+		/* guard-exit: establish negated facts for statements AFTER this if (same block); these must
+		 * PERSIST in the enclosing block (the enclosing bnd_check_block scopes them). */
+		if (bnd_guard_exit(ctx, v, e))
+			return bnd_check_expr(ctx, d, sem_node_at_expr(v, 0), e);
+		/* plain if: within the then-body, the cond's `v < X.length` / minlen facts hold */
+		SyntaxView cond = sem_node_at_expr(v, 0);
+		const char *r = bnd_check_expr(ctx, d, cond, e);
+		if (r)
+			return r;
+		int snn;
+		BndFact *snap = bnd_snapshot(e, &snn);
+		bnd_collect_facts(ctx, cond, e);
+		r = bnd_check_block(ctx, d, v, e);
+		bnd_restore(e, snap, snn);
+		return r;
+	}
+	if (k == SN_BLOCK)
+		return bnd_check_block(ctx, d, v, e);
+	if (k == SN_MATCH_STMT) {
+		int narm = sv_count(v, SN_MATCH_ARM);
+		for (int i = 0; i < narm; i++) {
+			const char *r = bnd_check_block(ctx, d, sv_child_at(v, SN_MATCH_ARM, i), e);
+			if (r)
+				return r;
+		}
+		return bnd_check_expr(ctx, d, sem_node_at_expr(v, 0), e);
+	}
+	if (k == SN_BIND_STMT || k == SN_ASSIGN_STMT) {
+		/* track counter nonneg: `v := K>=0` / `v = K>=0` marks v nonneg; any other reassignment of a
+		 * plain name invalidates what we knew about it. The value expr is still scanned for indices. */
+		const char *r = bnd_check_expr(ctx, d, sem_node_at_expr(v, 1), e);
+		if (r)
+			return r;
+		char *tgt = bnd_plain_name(ctx, sem_node_at_expr(v, 0));
+		if (tgt) {
+			int nn = bnd_expr_nonneg(ctx, e, sem_node_at_expr(v, 1));
+			if (k == SN_ASSIGN_STMT)
+				bnd_env_kill(e, tgt);
+			if (nn)
+				bnd_env_add(e, tgt, NULL, 1);
+		}
+		/* Track a typed local array/slice decl so `tgt[i]` is checked like a param. */
+		if (k == SN_BIND_STMT && tgt) {
+			SyntaxView t0 = sem_type_at(v, 0);
+			if (sv_present(t0)) {
+				TypeId tid = sem_intern_view(ctx, t0);
+				TyKind tk = tyid_kind(ctx->ty_arena, tid);
+				if (tk == TYK_SHAPED_ARRAY)
+					bnd_local_add(e, tgt, 1, tyid_shaped_rank(ctx->ty_arena, tid));
+				else if (tk == TYK_ARRAY)
+					bnd_local_add(e, tgt, 2, 0);
+			}
+		}
+		free(tgt);
+		return bnd_check_expr(ctx, d, sem_node_at_expr(v, 0), e);
+	}
+	/* ordinary statement: scan its expressions for indices */
+	return bnd_check_expr(ctx, d, v, e);
+}
+
+/* One-time pass: emit W0017 (raw_pool_index) for unprovable pool-column indexing in each proc/func/
+ * sys body. Each site warns once. */
+static void sem_check_raw_pool_lint(SemanticContext *ctx) {
+	for (int di = 0; di < ctx->decl_count; di++) {
+		DeclSummary *d = ctx->decls[di];
+		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYS) || d->is_extern)
+			continue;
+		if (!sv_present(d->body_node))
+			continue;
+		BndEnv e;
+		e.count = 0;
+		e.local_count = 0;
+		e.lint_columns = 1;
+		e.check_policies = 0;
+		/* This pass runs after analyze cleared active_allow_slugs, so re-arm the decl's @allow set
+		 * around the walk — otherwise a `@allow(raw_pool_index)` on the decl is silently ignored (the
+		 * lint's documented escape hatch). Mirrors the dead-code pass above. */
+		ctx->active_allow_slugs = d->allow_slugs;
+		ctx->active_allow_slug_count = d->allow_slug_count;
+		for (int i = 0, n = sem_stmt_count(d->body_node); i < n; i++)
+			bnd_check_stmt(ctx, d, sem_stmt_at(d->body_node, i), &e); /* return ignored; emits lints */
+		ctx->active_allow_slugs = NULL;
+		ctx->active_allow_slug_count = 0;
+		bnd_env_truncate(&e, 0);
+		for (int i = 0; i < e.local_count; i++)
+			free(e.locals[i].name);
+	}
+}
+
+/* `--forbid-allow`: a strict build that tolerates no lint escape hatches in the user's own code —
+ * every `@allow(<slug>)` is a hard error (E0127). Scoped to user code (not the bundled core/stdlib),
+ * like the crash-free flags. Fix the underlying lint, don't suppress it. */
+static void sem_check_forbid_allow(SemanticContext *ctx) {
+	if (!g_forbid_allow)
+		return;
+	for (int di = 0; di < ctx->decl_count; di++) {
+		DeclSummary *d = ctx->decls[di];
+		if (!decl_is_user_code(d))
+			continue;
+		for (int i = 0; i < d->allow_slug_count; i++)
+			sem_emit_allow_forbidden(ctx, d->loc, d->allow_slugs[i]);
+	}
+}
+
+/* Failure-policy validation: walk every proc/func/policy body and check each index/slice op's policy
+ * against the prover's verdict (proven-safe ⇒ no policy; provably-OOB ⇒ error; unprovable ⇒ validate
+ * the explicit `!name`). See bnd_policy_check for the emitted diagnostics (E0097-99/E0124/W0018). */
+static void sem_check_policies(SemanticContext *ctx) {
+	for (int di = 0; di < ctx->decl_count; di++) {
+		DeclSummary *d = ctx->decls[di];
+		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYS) || d->is_extern)
+			continue;
+		if (!sv_present(d->body_node))
+			continue;
+		BndEnv e;
+		e.count = 0;
+		e.local_count = 0;
+		e.lint_columns = 0;
+		e.check_policies = 1;
+		for (int i = 0, n = sem_stmt_count(d->body_node); i < n; i++)
+			bnd_check_stmt(ctx, d, sem_stmt_at(d->body_node, i), &e);
+		bnd_env_truncate(&e, 0);
+		for (int i = 0; i < e.local_count; i++)
+			free(e.locals[i].name);
 	}
 }
 
@@ -3987,6 +5040,10 @@ static Operator sem_tok_to_op(TokenKind k) {
 		return OP_LTE;
 	case TOK_GT_EQ:
 		return OP_GTE;
+	case TOK_AMP_AMP:
+		return OP_AND;
+	case TOK_PIPE_PIPE:
+		return OP_OR;
 	default:
 		return OP_NONE;
 	}
@@ -4099,6 +5156,37 @@ static char *syntax_drop_type(SyntaxView d) {
 		}
 	}
 	return NULL;
+}
+
+/* The op category a `policy` decl serves, from its `@policy(<category>)` decorator: the IDENT inside
+ * the parens. `policy` lexes as TOK_POLICY (a keyword), so the sequence is `@ policy ( <cat> )`.
+ * POLICY_CAT_NONE if absent/malformed/unrecognized. */
+static PolicyCategory syntax_policy_category(SyntaxView d) {
+	int n = d.node->child_count;
+	for (int i = 0; i + 4 < n; i++) {
+		const SyntaxElem *at = &d.node->children[i];
+		if (at->tag != SE_TOKEN || at->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *kw = &d.node->children[i + 1];
+		if (kw->tag != SE_TOKEN || kw->as.token.kind != TOK_POLICY)
+			continue;
+		const SyntaxElem *lp = &d.node->children[i + 2];
+		const SyntaxElem *cat = &d.node->children[i + 3];
+		const SyntaxElem *rp = &d.node->children[i + 4];
+		if (lp->tag != SE_TOKEN || lp->as.token.kind != TOK_LPAREN || cat->tag != SE_TOKEN ||
+		    cat->as.token.kind != TOK_IDENT || rp->tag != SE_TOKEN || rp->as.token.kind != TOK_RPAREN)
+			continue;
+		const char *p = d.src + cat->as.token.offset;
+		size_t len = cat->as.token.length;
+		if (len == 6 && memcmp(p, "bounds", 6) == 0)
+			return POLICY_CAT_BOUNDS;
+		if (len == 4 && memcmp(p, "pool", 4) == 0)
+			return POLICY_CAT_POOL;
+		if (len == 6 && memcmp(p, "divide", 6) == 0)
+			return POLICY_CAT_DIVIDE;
+		return POLICY_CAT_NONE;
+	}
+	return POLICY_CAT_NONE;
 }
 
 /* Build the `@implements` map from every decl's `@implements(<dev>.<req>, …)` decorator: each
@@ -4225,8 +5313,8 @@ static SyntaxView sem_rhs_form(SyntaxView d) {
 		if (d.node->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
-		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR || k == SN_GROUP_EXPR ||
-		    k == SN_ENUM_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
+		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR ||
+		    k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
 			SyntaxView v = {d.node->children[i].as.node, d.src};
 			return v;
 		}
@@ -4556,7 +5644,7 @@ static void sem_add_module_decl(SemanticContext *ctx, const SyntaxNode *node, co
 /* True for a declaration node kind eligible for collection (excludes SN_USE_DECL, handled
  * separately, and SN_REGION, which is a container/marker rather than a decl). */
 static int sem_is_collectible_decl(SyntaxNodeKind k) {
-	return k >= SN_WORLD_DECL && k <= SN_USE_DECL && k != SN_USE_DECL;
+	return k >= SN_WORLD_DECL && k <= SN_USE_DECL && k != SN_USE_DECL && k != SN_DEFAULT_DECL;
 }
 
 /* The module name an `#import` element resolves to: IDENT = the name verbatim (device by name);
@@ -4595,10 +5683,13 @@ static void sem_check_one_region_per_file(const SyntaxNode *root, const char *sr
 	if (!g_sem_qualify_ctx || !root)
 		return;
 	int seen_module = 0, seen_file = 0, seen_foreign = 0, seen_import = 0;
+	int core_off = semantic_print_line_offset(); /* prepended-core lines; its own regions don't count */
 	for (int i = 0; i < root->child_count; i++) {
 		if (root->children[i].tag != SE_NODE)
 			continue;
 		const SyntaxNode *cn = root->children[i].as.node;
+		if (core_off > 0 && sem_node_loc(cn).line <= core_off)
+			continue; /* core (the prelude) is prepended text — its `#foreign`/region is not the user's */
 		const char *name = NULL;
 		int *seen = NULL;
 		if (cn->kind == SN_REGION) {
@@ -4769,6 +5860,66 @@ static void sem_inline_module(SemanticContext *ctx, const char *mod_name) {
 	}
 }
 
+/* Validate the program's `@default(<kind>, <category>, <policy>)` directives (run after the decl table
+ * is collected, so policies — incl. core's — are visible). Each names a core/user policy by name and
+ * targets one (effect-kind, op-category) cell; rules: the category must be recognized; `pool` is
+ * proc-only and a `func` cell cannot name `abort` (a func stays total); the policy must exist in that
+ * category; and at most one directive per cell (E0128). */
+static void sem_check_default_directives(SemanticContext *ctx, const SyntaxNode *root, const char *src) {
+	int seen[2][4] = {{0, 0, 0, 0}, {0, 0, 0, 0}}; /* [effect_kind 0=proc/1=func][category 1/2/3] */
+	for (int i = 0; i < root->child_count; i++) {
+		if (root->children[i].tag != SE_NODE)
+			continue;
+		const SyntaxNode *n = root->children[i].as.node;
+		if (n->kind != SN_DEFAULT_DECL)
+			continue;
+		SourceLoc loc = sem_node_loc(n);
+		int effect = 0, cat = 0, seenarg = 0;
+		char *policy = NULL;
+		for (int c = 0; c < n->child_count && seenarg < 3; c++) {
+			if (n->children[c].tag != SE_TOKEN)
+				continue;
+			TokenKind tk = n->children[c].as.token.kind;
+			uint32_t off = n->children[c].as.token.offset, len = n->children[c].as.token.length;
+			if (tk == TOK_AT || tk == TOK_LPAREN || tk == TOK_RPAREN || tk == TOK_COMMA)
+				continue;
+			if (seenarg == 0 && tk == TOK_IDENT && len == 7 && memcmp(src + off, "default", 7) == 0)
+				continue;
+			if (seenarg == 0)
+				effect = (tk == TOK_FUNC) ? 1 : 0;
+			else if (seenarg == 1)
+				cat = (len == 6 && memcmp(src + off, "bounds", 6) == 0)   ? 1
+				      : (len == 4 && memcmp(src + off, "pool", 4) == 0)   ? 2
+				      : (len == 6 && memcmp(src + off, "divide", 6) == 0) ? 3
+				                                                          : 0;
+			else
+				policy = sem_txt_dup((SynText){src + off, len});
+			seenarg++;
+		}
+		const char *kindname = effect == 1 ? "func" : "proc";
+		const char *catname = cat == 1 ? "bounds" : cat == 2 ? "pool" : cat == 3 ? "divide" : "?";
+		if (cat == 0) {
+			sem_emit_default_invalid(ctx, loc, "unknown category — use bounds, divide, or pool");
+		} else if (effect == 1 && cat == 2) {
+			sem_emit_default_invalid(ctx, loc, "pool is proc-only — an insert is an action, not a func value");
+		} else if (effect == 1 && policy && strcmp(policy, "abort") == 0) {
+			sem_emit_default_invalid(ctx, loc, "a func must stay total — it cannot default to `abort`");
+		} else if (policy && !find_policy_sig_cat(ctx, policy, (PolicyCategory)cat)) {
+			DeclSummary *any = find_policy_sig(ctx, policy);
+			if (!any)
+				sem_emit_policy_unknown(ctx, loc, policy);
+			else
+				sem_emit_policy_wrong_category(ctx, loc, policy, policy_cat_name((PolicyCategory)cat),
+				                               policy_cat_name(any->policy_category));
+		} else if (seen[effect][cat]) {
+			sem_emit_duplicate_default(ctx, loc, kindname, catname);
+		} else {
+			seen[effect][cat] = 1;
+		}
+		free(policy);
+	}
+}
+
 /* Collect the resolved DeclSummary table from the main-file syntax tree plus all registered module
  * syntax trees, inlining + name-prefixing modules exactly as main.c's resolve_uses does. Summaries
  * are built directly from the tree (bare names) into ctx->decls; the loader records each module's
@@ -4812,6 +5963,9 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 			continue;
 		SyntaxView dv = {root->children[i].as.node, src};
 
+		if (k == SN_DEFAULT_DECL)
+			continue; /* a program-default directive: validated in sem_check_default_directives */
+
 		if (k == SN_USE_DECL) {
 			/* One element per import: IDENT = device by name, STRING = module by path. Inline each —
 			 * the helper recurses into the module's own transitive imports + dedups. */
@@ -4846,6 +6000,9 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 	/* Module exports are reachable ONLY via qualified access (handled by the tree-qualify pass); a bare
 	 * `name` does NOT resolve to a module export. The persisted interfaces are owned by ctx (freed at
 	 * teardown), so nothing transient to release here. */
+
+	/* Now that all policies (incl. core's) are in the decl table, validate the `@default` directives. */
+	sem_check_default_directives(ctx, root, src);
 }
 
 /* W0013 unused_function (Rust `dead_code`): warn on a top-level func/proc that is never reachable
@@ -4991,6 +6148,8 @@ static int dead_is_root(const DeclSummary *d) {
 		             * decides root-ness uniformly — the exported surface IS the root set, foreign or not.
 		             * (Stdlib/core externs still fall through to the dependency rule below and stay kept.) */
 	if (d->is_drop) /* opaque destructor — invoked by the compiler's RAII path, never syntactically */
+		return 1;
+	if (d->is_policy) /* a failure policy — invoked by the compiler at fallible op sites via `!name` */
 		return 1;
 	if (d->name[0] == '_') /* Rust `_`-prefix silence */
 		return 1;
@@ -5440,21 +6599,29 @@ static void analyze_program_core(SemanticContext *ctx) {
 	sem_check_storage_requirements(ctx);
 	sem_check_device_impl_decls(ctx);
 	sem_check_datasheet_decls(ctx);
+	sem_check_raw_pool_lint(ctx); /* W0017: advise handles for unprovable pool-column indexing */
+	sem_check_policies(ctx);      /* E0097-99/E0124/W0018: failure-policy validation at index/slice ops */
+	sem_check_forbid_allow(ctx);  /* E0127: --forbid-allow rejects @allow(...) in user code */
 
 	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The
 	 * two kinds are still distinct (keyword, `-> T` vs out-list, call form), but the name namespace
 	 * is single, so a clash is E0031. Scans real decls only (not builtins). */
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *di = ctx->decls[i];
-		if (di->kind != DECL_FUNC && di->kind != DECL_PROC)
-			continue;
+		if ((di->kind != DECL_FUNC && di->kind != DECL_PROC) || di->is_policy)
+			continue; /* a policy is a separate namespace (invoked via `!name`, never called) */
 		const char *ni = di->name;
 		if (!ni)
 			continue;
 		const char *ki = (di->kind == DECL_FUNC) ? "func" : "proc";
 		for (int j = 0; j < i; j++) {
 			DeclSummary *dj = ctx->decls[j];
-			if (dj->kind != DECL_FUNC && dj->kind != DECL_PROC)
+			if ((dj->kind != DECL_FUNC && dj->kind != DECL_PROC) || dj->is_policy)
+				continue;
+			/* A stdlib symbol is module-qualified (`os.write`) — it never duplicates a global/core/user
+			 * name (core `write`, a user `write`) in real resolution; the two only appear flat together in
+			 * the all-stdlib codegen-test harness. Skip any pair involving a stdlib decl. */
+			if (di->origin == DECL_ORIGIN_STDLIB || dj->origin == DECL_ORIGIN_STDLIB)
 				continue;
 			if (dj->name && strcmp(dj->name, ni) == 0) {
 				sem_emit_duplicate_decl(ctx, di->loc, ki, ni);
@@ -5529,6 +6696,8 @@ static SemanticContext *make_context(void) {
 	ctx->current_func = NULL;
 	ctx->in_sys = 0;
 	ctx->in_body = 0;
+	ctx->stmt_call_ok = 0;
+	ctx->proc_call_stmt_ok = 0; /* only the out-list statement sets this; cleared in every EXPR_CALL */
 	ctx->model = sem_model_new();
 	ctx->hints = sem_hints_new();
 	ctx->diags = NULL;
@@ -5657,7 +6826,7 @@ static SyntaxView sem_decl_body_node(SyntaxView dn) {
 	for (int i = 0; i < dn.node->child_count; i++)
 		if (dn.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = dn.node->children[i].as.node->kind;
-			if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_SYS_EXPR)
+			if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR)
 				return (SyntaxView){dn.node->children[i].as.node, dn.src};
 		}
 	return dn;
@@ -5932,8 +7101,8 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 	DeclKind kind;
 	if (fk == SN_PROC_EXPR)
 		kind = DECL_PROC;
-	else if (fk == SN_FUNC_EXPR)
-		kind = DECL_FUNC;
+	else if (fk == SN_FUNC_EXPR || fk == SN_POLICY_EXPR)
+		kind = DECL_FUNC; /* a policy is a func for typing/codegen; category handled at op site */
 	else if (fk == SN_SYS_EXPR)
 		kind = DECL_SYS;
 	else if (fk == SN_GROUP_EXPR)
@@ -5946,6 +7115,8 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 		return decl_summary_const_node(ctx, dv); /* SN_TYPE_PROC/FUNC RHS — a named callable-type alias */
 	DeclSummary *ds = calloc(1, sizeof(DeclSummary));
 	ds->kind = kind;
+	ds->is_policy = (fk == SN_POLICY_EXPR); /* a `policy` form — invoked via `!name`, never called */
+	ds->policy_category = ds->is_policy ? syntax_policy_category(dv) : POLICY_CAT_NONE;
 	ds->static_kind = -1; /* mirror decl_summary_from: static_kind=-1 for all; pool_count/value_kind stay 0 */
 	ds->loc = sem_node_loc(dv.node);
 	ds->node = dv;
