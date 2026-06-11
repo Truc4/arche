@@ -1,6 +1,6 @@
 // Smoke: a small units program. Distinct subtypes meters/seconds/mps over float; safe arithmetic on
 // same-backing operands; an explicit `mps(...)` conversion tags the result at the unit boundary.
-// Prints speed=4. RED until subtypes + the general `T(x)` conversion land.
+// Prints speed=4.
 // RUN: %arche build -o %t %s && %t | grep "speed=4"
 #import { fmt }
 meters  :: float

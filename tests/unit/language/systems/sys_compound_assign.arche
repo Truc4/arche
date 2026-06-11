@@ -1,0 +1,19 @@
+// RUN: %arche build -o %t %s && %t | grep "ok"
+// A `+=` compound assignment inside a sys body mutates the matched column in place.
+#import { fmt }
+
+Particle :: arche { pos :: float, vel :: float }
+
+Particle[10]
+
+bump :: sys (pos, vel) {
+  pos += vel;
+}
+
+main :: proc() {
+  insert(Particle, 1.0, 0.1)(_:, _:);
+  run bump;
+  pi := Particle.pos[0] * 10.0;
+  fmt.assert(pi == 11, "compound add in sys failed\n");
+  fmt.printf("ok\n");
+}

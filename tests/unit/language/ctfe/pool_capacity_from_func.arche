@@ -1,0 +1,17 @@
+// CTFE: a `func` is a value (README), so a pure func of constants folds at compile time and can size
+// a pool. `area(3, 4)` folds to 12 in both the capacity and the init_size position. The 12 live rows
+// make `Grid.cell[11]` valid.
+// RUN: %arche build -o %t %s && %t | grep "ok"
+#import { fmt }
+area :: func(w: int, h: int) -> int {
+  return w * h;
+}
+Grid :: arche { cell :: int }
+Grid[area(3, 4)](area(3, 4)) {
+  cell: 0,
+}
+
+main :: proc() {
+  fmt.assert(Grid.cell[11] == 0, "last cell should exist (capacity 12)\n");
+  fmt.printf("ok\n");
+}

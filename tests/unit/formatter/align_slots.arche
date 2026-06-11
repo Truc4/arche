@@ -1,13 +1,14 @@
 // Alignment is by semantic SLOT, not by ordinal position: a type annotation `:` is the first
-// column, the binding (`=`/`:=`/`::`) is always the second. So a `name = value` lines up under
-// another line's `=`/`:=`, never under a `name : type` colon. Lines only align with same-shaped
-// neighbours (same has-type / has-bind), so an absent slot never opens a gap.
+// column, the binding (`:=`/`::`/`=`) is always the second, never under a `name : type` colon. Lines
+// only align with same-shaped neighbours (same has-type / has-bind), so an absent slot never opens a
+// gap — AND the bind column is split by kind: a colon-led binding (`:=`/`::`) never shares a column
+// with a `=` assignment (a binding's `:` must not land under an assignment's `=`).
 //
 // `foo` is a typed bind (`: int =`); `bar`/`baz` are bind-only (`:=`). Different shape, so `foo`
 // is left alone — its `:` is NOT dragged into a column with the `:=` binds (it keeps hugging).
 // RUN: %arche fmt %s | grep -qE "^  foo: int = 1;$"
 // RUN: ! %arche fmt %s | grep -qE "^  foo +: "
-// The two bind-only lines align with each other (`:=`/`=` share the bind column):
+// The two bind-only lines align with each other (same `:=` kind):
 // RUN: %arche fmt %s | grep -qE "^  bar := 2;$"
 // RUN: %arche fmt %s | grep -qE "^  baz := 3;$"
 // A lone typed const stays natural (colon hugs, no forced alignment space):

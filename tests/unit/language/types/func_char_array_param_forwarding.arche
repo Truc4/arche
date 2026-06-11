@@ -1,29 +1,10 @@
 // RUN: %arche build -o %t %s && %t | grep "commas=2"
-// BUG: forwarding a `char[]` parameter into another non-extern that also
-//      takes `char[]` passes the wrong LLVM type, causing a SIGSEGV at runtime
-//      (printed as "stack overflow" by the SIGSEGV handler in runtime/stack_check.c).
-//
-// Root cause (codegen call-site lowering): when the argument is a `char[]`
-// *parameter* (an arche_array value), the call site extracts the inner i8*
-// data pointer (field 0) — the C-ABI form — even when the callee is a
-// non-extern Arche func that expects `%struct.arche_array*`. The callee then
-// reinterprets raw char bytes as a {ptr,len,cap} struct and dereferences the
-// bogus "ptr" field.
-//
-// Observed IR:
-//   define i32 @inner(%struct.arche_array* %arg0, i32 %arg1) { ... }
-//   define i32 @outer(%struct.arche_array* %arg0, i32 %arg1) {
-//     %p = getelementptr %struct.arche_array, %struct.arche_array* %arg0, i32 0, i32 0
-//     %d = load i8*, i8** %p
-//     %r = call i32 @inner(i8* %d, i32 %arg1)   ; <-- i8* passed where arche_array* expected
-//   }
-//
-// This is the same class as the local-buffer / static-array arg cases that
-// were fixed in codegen (wrap-in-arche_array for non-extern callees); the
-// "arg is itself a char[] param" path was missed.
-//
-// Discovered: 2026-05-19 while building the pure-Arche CSV loader, where
-// field_at(data: char[], ...) forwards `data` to find_byte(data: char[], ...).
+// Regression: forwarding a `char[]` parameter into another non-extern that also takes `char[]` must
+// pass the arche_array by reference (`%struct.arche_array*`), not the inner i8* data pointer. The
+// call-site lowering once extracted field 0 (the C-ABI i8*) for a `char[]` *param* even when the
+// callee was a non-extern Arche func, so the callee reinterpreted raw bytes as a {ptr,len,cap}
+// struct and dereferenced a bogus pointer (SIGSEGV). Now fixed (same wrap-in-arche_array class as the
+// local-buffer / static-array arg cases). Here `outer(data)` forwards `data` to `inner(data)`.
 
 #import { fmt }
 inner :: func(data: char[], n: int) -> int {

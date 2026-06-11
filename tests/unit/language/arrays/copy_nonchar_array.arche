@@ -1,0 +1,22 @@
+// `copy` of a local fixed-size array makes an independent clone — for any element type, not just
+// `char[N]`. Mutating the copy leaves the source untouched.
+// RUN: %arche build -o %t %s && %t | grep "ok"
+#import { fmt }
+main :: proc() {
+  xs: int[4];
+  xs[0] = 7;
+  xs[1] = 9;
+  ys := copy xs;
+  ys[0] = 100;
+  fmt.assert(xs[0] == 7, "source must be unchanged\n");
+  fmt.assert(ys[0] == 100, "copy must be independent\n");
+  fmt.assert(xs[1] == 9, "rest of source intact\n");
+
+  a: float[3];
+  a[0] = 1.5;
+  b := copy a;
+  b[0] = 9.0;
+  fmt.assert(a[0] == 1.5, "float source unchanged\n");
+  fmt.assert(b[0] == 9.0, "float copy independent\n");
+  fmt.printf("ok\n");
+}

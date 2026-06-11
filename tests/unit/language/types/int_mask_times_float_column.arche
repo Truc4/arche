@@ -1,0 +1,25 @@
+// RUN: %arche build -o %t %s && %t | grep "ok"
+// Regression: a proc-level column expression using an int-column comparison as a 0/1 mask
+// multiplied into a float column — `float_col = float_col * (int_col > <int>)`. The README
+// documents this pattern ("Conditional Behavior", `vel = vel * (pos > 10)`). It once produced
+// malformed vectorized IR at proc level (scalar i32 fed into a `<4 x i32>` sitofp); now fixed.
+
+#import { fmt }
+Row :: arche { price :: float, quantity :: int }
+
+Row[10](10) {
+  price: 5.0, quantity: 1,
+}
+
+main :: proc() {
+  // No-op: every row has quantity=1, so the mask is all 1s and price stays at 5.0.
+  Row.price = Row.price * (Row.quantity > 0);
+
+  p0 := Row.price[0];
+  if (p0 == 5.0) {
+    fmt.printf("ok\n");
+  }
+  else {
+    fmt.printf("fail: price[0] = %f, expected 5.0\n", p0);
+  }
+}

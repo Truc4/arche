@@ -134,8 +134,10 @@ NOT regressions from this work and each needs a separate, orthogonal feature:
   codegen → **segfault**. (Match arms without calls, e.g. `block_mutate`, still pass.) Fix = port the
   match desugar into the semantic analyzer (a feature, tracked separately).
 - `opaque_write_rejected` — a deliberately-red TDD test (committed in `54a1fad "basic core refactor
-  (red)"`) for opaque-write rejection, a feature that is not implemented (the `opaque_pass_only`
-  attempt was explicitly abandoned).
+  (red)"`) for opaque-write rejection. **RESOLVED:** opaque-write rejection is now implemented and
+  enforced — see `tests/unit/language/opaque/write_raw_rejected.arche` and
+  `tests/unit/language/opaque/write_file_opaque_rejected.arche`. (The `match` and `shadowing` items in
+  this same baseline list are likewise resolved and now have passing tests.)
 - `shadowing_local_shadows_callable` — shadow-detection diagnostic not emitted at baseline.
 - Also pre-existing and outside `make test`: two C-unit tests (`parser-test` "proc with for loop",
   `lower-test` "range for") fail identically at baseline — a for-loop parsing issue unrelated here.

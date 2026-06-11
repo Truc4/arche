@@ -10,9 +10,9 @@
  * which requires resolving the call to a specific signature. Strings are OWNED
  * (copied in; freed by sem_hints_free).
  *
- * (Implicit move/copy belongs here too, but the language requires explicit
- * move/copy today — see the implicit-move TODO in semantic.c — so there is no
- * implicit decision to record yet.) */
+ * (The implicit move/copy decision — a bare move-only name in an ownership-taking position is an
+ * implicit move — is the intended behavior; it is decided by SemModel and applied during lowering,
+ * not surfaced as an editor hint here.) */
 
 #include "../syntax/syntax_tree.h"
 #include <stdint.h>
