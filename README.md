@@ -12,9 +12,45 @@ data-oriented-design / ECS exploration - basically a playground for the idea.
 
 **Editor support:** [Truc4/arche.nvim](https://github.com/Truc4/arche.nvim) - a Neovim plugin / LSP client.
 
-**Libraries — devices & drivers:** Arche organizes reusable code as *devices* (a group of files
-defining shapes + systems) and *drivers* (programs that size the storage and run them). See
-[docs/devices.md](docs/devices.md).
+## Quick start
+
+> Needs an **LLVM + C toolchain** on your `PATH` — see [Requirements](#requirements) just below.
+
+```sh
+git clone https://github.com/Truc4/arche && cd arche
+make                  # builds ./build/arche
+sudo make install     # optional: put `arche` on your PATH (PREFIX=<dir> for a custom location)
+```
+
+The installed `arche` is relocatable — it finds its standard library and runtime relative to the
+binary. (If you skipped `make install`, use `./build/arche` in place of `arche`.)
+
+```arche
+// hello.arche
+#import { fmt }
+
+main :: proc() {
+  fmt.print("Hello, World!\n")();
+}
+```
+
+```sh
+arche run hello.arche                # compile + run     -> Hello, World!
+arche build hello.arche -o hello     # …or build a binary
+./hello                              # -> Hello, World!
+```
+
+## Requirements
+
+Building and running Arche programs needs an **LLVM + C toolchain** on your `PATH`:
+
+- `opt` and `llc` — from a full LLVM install (the `llvm-libs` pulled in by `clang` is **not**
+  enough; you need the standalone tools).
+- `cc` — a C compiler/linker (`clang` or `gcc`).
+
+Install the LLVM tools and a C compiler with your package manager — for example, on Arch Linux
+they're in the official `extra` repo (not the AUR): `sudo pacman -S llvm clang`. On Debian/Ubuntu:
+`sudo apt install llvm clang`.
 
 ## Why Arche?
 
@@ -26,7 +62,7 @@ way to write code.
 - **Data-oriented by default** - think in columns and whole-collection transforms, not objects and element loops.
 - **Database-style data model** - archetypes are tables defined by a set of component types; a system is a query that runs over every matching table.
 - **No implicit heap** - all storage is static and planned upfront, so memory behavior is fully predictable. That's a property of the *language core*, **not** a ceiling on the data model: "no dynamic allocation" does **not** mean "no dynamic archetypes". **Dynamic (resizable) archetypes — the backbone of a full ECS — are on the roadmap as a library** built on the same columnar model, once the core language matures; the core just doesn't bake in implicit allocation.
-- **Libraries as devices & drivers** - a *device* is a library that declares shapes + systems but owns no storage; the *driver* (your program) picks the pool sizes and runs the device's systems. A hardware metaphor for dependency injection: the storage owner is always the caller, never the library.
+- **Libraries as devices & drivers** - a *device* is a library that declares shapes + systems but owns no storage; the *driver* (your program) picks the pool sizes and runs the device's systems. A hardware metaphor for dependency injection: the storage owner is always the caller, never the library. See [docs/devices.md](docs/devices.md).
 - **The "function," split four ways** - most languages overload one `function` keyword for jobs that have nothing in common. Arche gives each job its own form, and the grammar enforces the split (see below).
 - **Crashes are opt-in and visible** - the rare op that can still fail at runtime (an out-of-bounds index, a full pool) carries a *failure policy* right at the site: `a[i] !clamp`, `n / d !zero`, `a[i] !undefined`. A `func` defaults to `clamp`, so an unannotated op in one can't crash; a `proc` defaults to `!abort`, the deliberate crash site. `--no-abort` bans every abort site (implicit or explicit) — but that is **not** a whole-build crash-free *proof*: `!undefined` is a raw unchecked op (UB can still fault), and a custom `policy` is your own code (it can call `_exit` or leave an op out of bounds). `--no-undefined` also bans the unsafe opt-out; the rest is on the policies you write.
 
@@ -44,8 +80,8 @@ won't let you blur them. The shape of a declaration *tells you what it does*.
 | `policy` | `name :: policy(len, i)`    | no          | a failure macro — inlined at a fallible op (`a[i] !clamp`) to resolve the failure *at the site* |
 
 ```arche
-area   :: func(w: int, h: int) -> int        // value:   r := area(w, h)
-divmod :: proc(a: int, b: int)(q:, r:)       // action:  divmod(17, 5)(q:, r:)
+area   :: func(w: int, h: int) -> int         // value:    r := area(w, h)
+divmod :: proc(a: int, b: int)(q:, r:)        // action:   divmod(17, 5)(q:, r:)
 step   :: sys(pos, vel) { pos = pos + vel; }  // transform: run step;
 clamp  :: policy(len: int, i: int) { … }      // failure:  v := xs[k] !clamp
 ```
@@ -66,56 +102,25 @@ Why bother? Each split buys a real guarantee the overloaded keyword can't:
   proof: `!undefined` (a raw unchecked op) and a misguided custom policy are still your own code.
   `--no-undefined` closes the unsafe opt-out.
 
-## Requirements
-
-Building and running Arche programs needs an **LLVM + C toolchain** on your `PATH`:
-
-- `opt` and `llc` — from a full LLVM install (the `llvm-libs` pulled in by `clang` is **not**
-  enough; you need the standalone tools).
-- `cc` — a C compiler/linker (`clang` or `gcc`).
-
-Install the LLVM tools and a C compiler with your package manager — for example, on Arch Linux
-they're in the official `extra` repo (not the AUR): `sudo pacman -S llvm clang`. On Debian/Ubuntu:
-`sudo apt install llvm clang`.
-
-## Quick start
-
-```sh
-git clone https://github.com/Truc4/arche && cd arche
-make                  # builds ./build/arche
-sudo make install     # optional: put `arche` on your PATH (PREFIX=<dir> for a custom location)
-```
-
-The installed `arche` is relocatable — it finds its standard library and runtime relative to the
-binary.
-
-```sh
-echo 'proc main() { print("Hello, World!\n"); }' > hello.arche
-arche run hello.arche                # compile + run     -> Hello, World!
-arche build hello.arche -o hello     # …or build a binary
-./hello                              # -> Hello, World!
-```
-
-(If you skipped `make install`, use `./build/arche` in place of `arche`.)
-
 ## A taste of Arche
 
 ```arche
-arche Particle {
+#import { fmt }
+
+Particle :: arche {
   pos :: float,
   vel :: float,
 }
 
-Particle[100]
+Particle[100](100) { vel: 0.1 } // 100 live particles; pos starts at 0, vel at 0.1
 
-sys integrate(pos, vel) {
-  pos = pos + vel;        // runs over the whole column, no explicit loop
+integrate :: sys(pos, vel) {
+  pos = pos + vel; // whole-column update — no explicit loop
 }
 
-proc main() {
-  insert(Particle, 1.0, 0.1);
-  run integrate;
-  print("systems executed\n");
+main :: proc() {
+  run integrate; // runs over every archetype carrying pos + vel
+  fmt.print("stepped\n")();
 }
 ```
 
