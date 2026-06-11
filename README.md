@@ -27,8 +27,41 @@ way to write code.
 - **Database-style data model** - archetypes are tables defined by a set of component types; a system is a query that runs over every matching table.
 - **No implicit heap** - all storage is static and planned upfront, so memory behavior is fully predictable. That's a property of the *language core*, **not** a ceiling on the data model: "no dynamic allocation" does **not** mean "no dynamic archetypes". **Dynamic (resizable) archetypes — the backbone of a full ECS — are on the roadmap as a library** built on the same columnar model, once the core language matures; the core just doesn't bake in implicit allocation.
 - **Libraries as devices & drivers** - a *device* is a library that declares shapes + systems but owns no storage; the *driver* (your program) picks the pool sizes and runs the device's systems. A hardware metaphor for dependency injection: the storage owner is always the caller, never the library.
-- **Functional meets procedural** - pure `func` values alongside procedural static operations (`proc` / `sys`).
+- **The "function," split four ways** - most languages overload one `function` keyword for jobs that have nothing in common. Arche gives each job its own form, and the grammar enforces the split (see below).
 - **Crashes are opt-in and visible** - the rare op that can still fail at runtime (an out-of-bounds index, a full pool) carries a *failure policy* right at the site: `a[i] !clamp`, `n / d !zero`, `a[i] !undefined`. A `func` is total by construction — it can **never** crash — and a `proc` crashes only at an explicit `!abort`; only `!abort` can ever abort, so `--no-abort` proves a whole build crash-free.
+
+### The "function," split four ways
+
+A traditional `function` is asked to be a value, an effect, a loop, and an error handler all at once.
+Arche refuses that overload: it splits the one keyword into **four distinct forms**, and the grammar
+won't let you blur them. The shape of a declaration *tells you what it does*.
+
+| Form     | Binding                     | Is a value? | Job |
+| -------- | --------------------------- | ----------- | --- |
+| `func`   | `name :: func(in) -> T`     | **yes**     | pure computation — one return, no side effects, **can never crash** |
+| `proc`   | `name :: proc(in)(out)`     | no          | an action — does things; writes results into caller-provided out-params |
+| `sys`    | `name :: sys(components)`   | no          | a data transform — runs over **every** archetype carrying those components |
+| `policy` | `name :: policy(len, i)`    | no          | a failure macro — inlined at a fallible op (`a[i] !clamp`) to resolve the failure *at the site* |
+
+```arche
+area   :: func(w: int, h: int) -> int        // value:   r := area(w, h)
+divmod :: proc(a: int, b: int)(q:, r:)       // action:  divmod(17, 5)(q:, r:)
+step   :: sys(pos, vel) { pos = pos + vel; }  // transform: run step;
+clamp  :: policy(len: int, i: int) { … }      // failure:  v := xs[k] !clamp
+```
+
+Why bother? Each split buys a real guarantee the overloaded keyword can't:
+
+- **`func` vs `proc` — value vs effect.** A `func` is pure by construction (calling a proc/extern/
+  mutating builtin from one is a hard error) and **total** (it can't crash). A proc is the only
+  thing that *does*. So purity and crash-freedom are readable straight off the keyword — no
+  annotations, no effect inference.
+- **`sys` — the loop isn't yours to write.** A system names *components*, not tables, and the
+  compiler runs it over every matching archetype, generating the column loop. Data-first iteration
+  with no element loop in source.
+- **`policy` — failure is a value-site decision, not a hidden default.** `xs[k] !clamp` puts the
+  out-of-bounds behavior right on the op as an ordinary, user-writable macro. Because `!abort` is
+  the *only* thing that can terminate, `--no-abort` proves a whole build crash-free.
 
 ## Requirements
 
@@ -134,8 +167,9 @@ Each is covered in depth in the [language reference](docs/language.md).
 - **Database-style archetypes** - a shape is a _set_ of component types, so `{a, b}` and
   `{b, a}` are the same table and share one pool; columns are reached by type name, not field
   name.
-- **`func` / `proc` / `sys`** - a pure functional value, a procedural action, and a data
-  transform over tables; the distinction is enforced by the grammar itself.
+- **`func` / `proc` / `sys` / `policy`** - the overloaded "function" split four ways: a pure
+  functional value, a procedural action, a data transform over tables, and a failure-handling
+  macro; the distinctions are enforced by the grammar itself.
 - **Ownership without a GC or borrow-checker zoo** - read-only borrow by default; opt into
   `own` + caller `move` (zero-copy) / `copy` (memcpy).
 - **Implicit loops** - whole-column ops have no element loop in source; the compiler generates
