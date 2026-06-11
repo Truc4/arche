@@ -8590,7 +8590,11 @@ static void emit_cross_unit_declares(CodegenContext *ctx) {
 		}
 		if (d->unit == ctx->emit_only_unit)
 			continue;
-		if (d->kind == HIR_DECL_FUNC && !d->data.func->is_extern) {
+		if (d->kind == HIR_DECL_FUNC && !d->data.func->is_extern && !d->data.func->is_policy) {
+			/* A policy is a MACRO — inlined at op sites, never emitted as a function (see the
+			 * definition pass), so it must NOT get a cross-unit declare either. Declaring it would be
+			 * dangling, and same-named policies across categories (e.g. `abort` in both `bounds` and
+			 * `divide`) collide as duplicate declares. */
 			HirFuncDecl *f = d->data.func;
 			char ret[512];
 			if (f->return_type_count == 0)

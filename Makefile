@@ -151,13 +151,15 @@ test: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN)
 	lit -v tests/
 	$(MAKE) test-doc
 
-# DORMANT, manual-only per-unit codegen check: runs the full lit suite emitting one LLVM module per
-# compilation unit (mangled/external symbols + linkonce_odr shared defs), llvm-link-merged, with the
-# ODR folding verifier ALWAYS on (intrinsic to per-unit mode — no env toggle). A correctness/readiness
-# mode, NOT a build-speed mode (no object cache) — default-off with no current consumer, so it is NOT
-# in `make test` NOR in CI (it would ~2x the suite for an unused mode). Run this by hand if reviving
-# separate compilation. The codegen determinism fix that makes it sound (per-body SSA reset +
-# content-addressed linkonce_odr globals) is exercised by `make test`/`verify-codegen` regardless.
+# Per-unit codegen check: runs the full lit suite emitting one LLVM module per compilation unit
+# (unit 0 = driver, unit N = the Nth imported device; mangled/external symbols + linkonce_odr shared
+# defs), with the ODR folding verifier ALWAYS on. This is the foundation of arche's INCREMENTAL
+# separate-compilation mode: a `--emit=link` build opt/llc/cc's each unit to its own content-hashed
+# object (ARCHE_CACHE_DIR), reusing unchanged devices verbatim. Now fully passing and gated in
+# `make test` for the key paths via tests/unit/compiler/per_unit/ (smoke, policy-no-cross-declare,
+# incremental_cache). This full-suite run is kept out of CI only to avoid ~2x suite time; run it by
+# hand to re-validate the whole language under per-unit. Whole-program (no inlining loss) stays the
+# default build.
 test-per-unit: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 	ARCHE_PER_UNIT=1 lit -v tests/
 

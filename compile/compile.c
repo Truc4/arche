@@ -190,6 +190,75 @@ static int module_is_device(const char *name) {
 	return 0;
 }
 
+/* ---- Per-unit (device-granular) object cache: the "compile this part, leave that alone" engine.
+ * In per-unit codegen each compilation unit (unit 0 = the driver, unit N = the Nth imported device)
+ * is opt/llc/cc'd to its OWN object, keyed by a content hash of its IR. An unchanged device emits
+ * byte-identical IR → same hash → its object is reused verbatim instead of recompiled. */
+
+static void pe_fnv1a_hex(const char *data, size_t n, char out[17]) {
+	unsigned long long h = 1469598103934665603ULL; /* FNV-1a */
+	for (size_t i = 0; i < n; i++) {
+		h ^= (unsigned char)data[i];
+		h *= 1099511628211ULL;
+	}
+	snprintf(out, 17, "%016llx", h);
+}
+
+static int pe_exists(const char *path) {
+	struct stat st;
+	return stat(path, &st) == 0;
+}
+
+/* Build (or reuse from cache) the object for one per-unit IR module `unit_ll`. The cache key is a
+ * content hash of the IR salted with the toolchain/flag identity, so an unchanged unit's object is
+ * reused across builds while a compiler/flag change invalidates everything. Writes the object path to
+ * `obj_out` and sets *was_cached. Returns 0 on success, 1 on failure. */
+static int build_unit_object_cached(const char *unit_ll, const char *workdir, int u, const char *cache_dir,
+                                    char *obj_out, size_t obj_cap, int *was_cached) {
+	char *ir = read_file_optional(unit_ll);
+	if (!ir)
+		return 1;
+	char hash[17];
+	{
+		/* Salt with the exact toolchain + flags the steps below use; bump on any flag change. */
+		static const char salt[] = "auc1|" ARCHE_VERSION "|opt-O2-v3|llc-fsec-large-v3|cc-nopie-large";
+		size_t sn = sizeof(salt) - 1, n = strlen(ir);
+		char *buf = malloc(sn + n);
+		memcpy(buf, salt, sn);
+		memcpy(buf + sn, ir, n);
+		pe_fnv1a_hex(buf, sn + n, hash);
+		free(buf);
+	}
+	free(ir);
+	snprintf(obj_out, obj_cap, "%s/%s.o", cache_dir, hash);
+	if (pe_exists(obj_out)) {
+		*was_cached = 1;
+		return 0; /* cache hit — this unit is left alone */
+	}
+	*was_cached = 0;
+	char optf[700], asmf[700], objtmp[800], cmd[2048];
+	snprintf(optf, sizeof(optf), "%s/unit_%d_opt.ll", workdir, u);
+	snprintf(asmf, sizeof(asmf), "%s/unit_%d.s", workdir, u);
+	snprintf(objtmp, sizeof(objtmp), "%s/unit_%d.o", workdir, u);
+	snprintf(cmd, sizeof(cmd), "opt -O2 -mcpu=x86-64-v3 -S -o %s %s", optf, unit_ll);
+	if (system(cmd) != 0)
+		return 1;
+	snprintf(cmd, sizeof(cmd), "llc -function-sections -data-sections -code-model=large -mcpu=x86-64-v3 -o %s %s",
+	         asmf, optf);
+	if (system(cmd) != 0)
+		return 1;
+	snprintf(cmd, sizeof(cmd), "cc -no-pie -mcmodel=large -c -o %s %s", objtmp, asmf);
+	if (system(cmd) != 0)
+		return 1;
+	/* Publish atomically into the cache (rename; cp across filesystems). */
+	if (rename(objtmp, obj_out) != 0) {
+		snprintf(cmd, sizeof(cmd), "cp %s %s", objtmp, obj_out);
+		if (system(cmd) != 0)
+			return 1;
+	}
+	return 0;
+}
+
 static void load_module(const char *name, const char *source_dir);           /* fwd (mutual recursion) */
 static void load_module_from_path(const char *path, const char *source_dir); /* fwd */
 
@@ -526,11 +595,13 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	}
 
 	if (per_unit_build) {
-		/* Per-unit codegen: emit one LLVM module per compilation unit, then llvm-link them into the
-		 * combined IR the rest of the pipeline consumes. Cross-unit references resolve via the declares
-		 * each unit module emits + external/mangled symbols. A correctness/readiness mode that proves
-		 * per-unit emission + linkage produce a correct program — NOT a build-speed mode (there is no
-		 * per-object cache; see the always-on ODR verifier below and the doc comment on CodegenContext). */
+		/* Per-unit codegen: emit one LLVM module per compilation unit (unit 0 = driver, unit N = the
+		 * Nth imported device). Cross-unit references resolve via the declares each unit emits +
+		 * external/mangled symbols. For a `--emit=link` build this is arche's INCREMENTAL
+		 * separate-compilation mode: each unit is opt/llc/cc'd to its own content-hash-cached object,
+		 * so an unchanged device is reused verbatim ("compile this part, leave that alone"). The
+		 * tradeoff vs the default whole-program build is no cross-unit inlining. For non-link emit
+		 * kinds the units are llvm-linked into one merged artifact. The ODR verifier below stays on. */
 		int max_unit = 0;
 		for (int i = 0; i < ast->decl_count; i++)
 			if (ast->decls[i]->unit > max_unit)
@@ -569,10 +640,88 @@ int compile_source(const char *user_source, const char *source_path, const char 
 			rc = 1;
 			goto cleanup;
 		}
-		/* llvm-link the per-unit modules into the combined IR the shared opt/llc/cc pipeline below
-		 * consumes. Per-unit is an EXPERIMENTAL correctness/readiness mode — it proves codegen can split
-		 * and exercises the mangled/external symbol model — NOT a build-speed mode; there is no
-		 * per-object caching (that was removed as speculative; see the plan). */
+		if (emit == EMIT_LINK) {
+			/* Incremental separate compilation: opt/llc/cc EACH unit to its own cached object, then link
+			 * the objects. An unchanged device's object is reused verbatim — "compile this part, leave
+			 * that alone". (linkonce_odr shared defs are folded by the linker's COMDAT handling; the ODR
+			 * verifier above already confirmed they're byte-identical across units.) */
+			char cache_dir[1024];
+			const char *cenv = getenv("ARCHE_CACHE_DIR");
+			if (cenv && *cenv) {
+				snprintf(cache_dir, sizeof(cache_dir), "%s", cenv);
+			} else {
+				char base[800];
+				snprintf(base, sizeof(base), "%s", out_path);
+				char *slash = strrchr(base, '/');
+				if (slash) {
+					*slash = '\0';
+					snprintf(cache_dir, sizeof(cache_dir), "%s/.arche-cache", base);
+				} else {
+					snprintf(cache_dir, sizeof(cache_dir), ".arche-cache");
+				}
+			}
+			char mkcmd[1100];
+			snprintf(mkcmd, sizeof(mkcmd), "mkdir -p %s", cache_dir);
+			if (system(mkcmd) != 0) {
+				fprintf(stderr, "Failed to create object cache dir %s\n", cache_dir);
+				rc = 1;
+				goto cleanup;
+			}
+			const char *rt = arche_resource_dir(ARCHE_RES_RUNTIME);
+			char cc_cmd[1 << 16];
+			const char *out_obj = out_path;
+			int cl = snprintf(cc_cmd, sizeof(cc_cmd), "cc -Wl,--gc-sections -no-pie -mcmodel=large -o %s", out_obj);
+			int reused = 0;
+			for (int u = 0; u <= max_unit; u++) {
+				char unit_ll[700], obj[1200];
+				snprintf(unit_ll, sizeof(unit_ll), "%s/unit_%d.ll", workdir, u);
+				int cached = 0;
+				if (build_unit_object_cached(unit_ll, workdir, u, cache_dir, obj, sizeof(obj), &cached)) {
+					fprintf(stderr, "Failed to build object for unit %d\n", u);
+					rc = 1;
+					goto cleanup;
+				}
+				reused += cached;
+				int m = snprintf(cc_cmd + cl, sizeof(cc_cmd) - (size_t)cl, " %s", obj);
+				if (m < 0 || m >= (int)sizeof(cc_cmd) - cl) {
+					fprintf(stderr, "link command too long\n");
+					rc = 1;
+					goto cleanup;
+				}
+				cl += m;
+			}
+			int m = snprintf(cc_cmd + cl, sizeof(cc_cmd) - (size_t)cl,
+			                 " %s/stack_check.o %s/io.o %s/net.o %s/term.o -lc", rt, rt, rt, rt);
+			if (m < 0 || m >= (int)sizeof(cc_cmd) - cl) {
+				fprintf(stderr, "link command too long\n");
+				rc = 1;
+				goto cleanup;
+			}
+			cl += m;
+			int link_count = opts ? opts->link_count : 0;
+			for (int li = 0; li < link_count; li++) {
+				m = snprintf(cc_cmd + cl, sizeof(cc_cmd) - (size_t)cl, " %s", opts->link_paths[li]);
+				if (m < 0 || m >= (int)sizeof(cc_cmd) - cl) {
+					fprintf(stderr, "link command too long; refusing to drop --link inputs\n");
+					rc = 1;
+					goto cleanup;
+				}
+				cl += m;
+			}
+			if (!quiet)
+				printf("Incremental link: %d unit object(s), %d reused from cache\n", max_unit + 1, reused);
+			if (system(cc_cmd) != 0) {
+				fprintf(stderr, "Failed to link executable\n");
+				rc = 1;
+				goto cleanup;
+			}
+			if (!quiet)
+				printf("Successfully generated executable: %s\n", out_path);
+			rc = 0;
+			goto cleanup;
+		}
+		/* Non-LINK emit (llvm-ir/asm/obj) under per-unit: llvm-link the per-unit modules into the
+		 * combined IR the shared opt/llc/cc pipeline below consumes (a single merged artifact is wanted). */
 		char link_cmd[16384];
 		int lp = snprintf(link_cmd, sizeof(link_cmd), "llvm-link -S -o %s", ir_file);
 		for (int u = 0; u <= max_unit; u++)
