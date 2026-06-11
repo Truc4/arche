@@ -84,7 +84,7 @@ add :: proc(pattern: char[], handler_id: int) {
     // implicit `!abort` default — a bad slot is a clean, visible crash, never a raw out-of-bounds
     // write. (The check is free here and never fires for a slot from a good insert; no annotation
     // needed since `!abort` is the proc default.)
-    found := 0 - 1;
+    found := -1;
     child := TrieNode.first_child[cur];
     for (; child >= 0;) {
       if (TrieNode.kind[child] == kind) {
@@ -142,7 +142,7 @@ resolve :: proc(path: char[])(handler_id: int) {
   n            := str.strlen(path);
   cur          := 0;
   cap_count[0] = 0;
-  handler_id   = 0 - 1;
+  handler_id   = -1;
   s            := 0;
   if (n > 0) {
     if (path.length > 0) {
@@ -158,9 +158,9 @@ resolve :: proc(path: char[])(handler_id: int) {
     // path (per request) and every slot here is a link that `add` already validated at build time —
     // the trie is append-only and consistent — so these reads carry `!undefined`: a deliberate,
     // visible opt-out of the bounds check (the slot is in-bounds by construction; trust it for speed).
-    static_hit   := 0 - 1;
-    param_hit    := 0 - 1;
-    catchall_hit := 0 - 1;
+    static_hit   := -1;
+    param_hit    := -1;
+    catchall_hit := -1;
     child        := TrieNode.first_child[cur] !undefined;
     for (; child >= 0;) {
       k := TrieNode.kind[child] !undefined;
@@ -188,7 +188,7 @@ resolve :: proc(path: char[])(handler_id: int) {
       chosen = catchall_hit;
     }
     if (chosen < 0) {
-      handler_id = 0 - 1;
+      handler_id = -1;
       return;
     }
 
@@ -287,6 +287,6 @@ seg_eq :: func(stored: char[32], stored_len: int, p: char[], start: int, end: in
 // Allocate a node holding `seg` (content length `seg_len`); return its pool slot. `ok` reports
 // whether the fixed TrieNode pool had room (insert no longer aborts on a full pool).
 new_node :: proc(seg: char[], seg_len: int, kind: nodeKind)(idx: int, ok: int) {
-  insert(TrieNode, seg, seg_len, kind, 0 - 1, 0 - 1, 0 - 1)(slot:, ok:);
+  insert(TrieNode, seg, seg_len, kind, -1, -1, -1)(slot:, ok:);
   idx = i32(slot);
 }

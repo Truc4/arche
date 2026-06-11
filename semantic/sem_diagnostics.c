@@ -111,6 +111,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_policy_wrong_category]         = { "E0124", "policy_wrong_category",         CLASS_ERROR, 1 },
 	[SEM_DIAG_policy_abort_forbidden]        = { "E0125", "policy_abort_forbidden",        CLASS_ERROR, 1 },
 	[SEM_DIAG_policy_undefined_forbidden]    = { "E0126", "policy_undefined_forbidden",    CLASS_ERROR, 1 },
+	[SEM_DIAG_policy_uses_undefined]         = { "E0213", "policy_uses_undefined",          CLASS_ERROR, 1 },
+	[SEM_DIAG_cyclic_policy]                 = { "E0214", "cyclic_policy",                  CLASS_ERROR, 1 },
 	[SEM_DIAG_allow_forbidden]               = { "E0127", "allow_forbidden",               CLASS_ERROR, 1 },
 	[SEM_DIAG_duplicate_default]             = { "E0128", "duplicate_default",             CLASS_ERROR, 1 },
 	[SEM_DIAG_default_invalid]               = { "E0129", "default_invalid",               CLASS_ERROR, 1 },
@@ -172,6 +174,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_raw_pool_index]                = { "W0017", "raw_pool_index",                CLASS_LINT, 0 },
 	[SEM_LINT_policy_on_safe_op]             = { "W0018", "policy_on_safe_op",             CLASS_LINT, 1 },
 	[SEM_LINT_handler_foreign_arch]          = { "W0019", "handler_foreign_arch",          CLASS_LINT, 1 },
+	[SEM_LINT_redundant_guard]               = { "W0020", "redundant_guard",               CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -783,8 +786,23 @@ SemDiag *sem_emit_policy_abort_forbidden(SemanticContext *ctx, SourceLoc loc, co
 }
 SemDiag *sem_emit_policy_undefined_forbidden(SemanticContext *ctx, SourceLoc loc) {
 	return sem_emit_(ctx, SEM_DIAG_policy_undefined_forbidden, loc,
-	                 "`!undefined` opts out of all runtime safety, but --no-undefined forbids it — use a checked "
-	                 "total policy (`!clamp`, `!zero`) instead");
+	                 "`!undefined` opts out of all runtime safety (a raw, unchecked op — UB if out of bounds) "
+	                 "and is forbidden by default — use a checked total policy (`!clamp`, `!zero`), make the "
+	                 "access provably in bounds, or pass `--allow-undefined` to opt in");
+}
+SemDiag *sem_emit_policy_uses_undefined(SemanticContext *ctx, SourceLoc loc, const char *policy) {
+	return sem_emit_(ctx, SEM_DIAG_policy_uses_undefined, loc,
+	                 "policy `%s` uses `!undefined` — a raw, unchecked op that can read out of bounds. A policy is "
+	                 "the safety mechanism and must stay total: use a checked total policy (`!clamp`, `!wrap`, "
+	                 "`!zero`) or make the access provably in bounds",
+	                 policy);
+}
+SemDiag *sem_emit_cyclic_policy(SemanticContext *ctx, SourceLoc loc, const char *policy) {
+	return sem_emit_(ctx, SEM_DIAG_cyclic_policy, loc,
+	                 "policy `%s` applies itself (directly or transitively) — a policy is inlined as a macro, so "
+	                 "this would expand forever. Policies may not recurse: drop the self-referential `!%s`, or make "
+	                 "that access provably in bounds / use a different total policy",
+	                 policy, policy);
 }
 SemDiag *sem_emit_allow_forbidden(SemanticContext *ctx, SourceLoc loc, const char *slug) {
 	return sem_emit_(ctx, SEM_DIAG_allow_forbidden, loc,
@@ -995,4 +1013,10 @@ SemDiag *sem_emit_lint_handler_foreign_arch(SemanticContext *ctx, SourceLoc loc,
 	                 "overflow handler `?%s` on `insert(%s, …)` reads a different pool's columns (`%s.…`) — "
 	                 "likely a copy-paste mismatch; scan `%s`'s columns or @allow(handler_foreign_arch)",
 	                 handler, target, foreign, target);
+}
+SemDiag *sem_emit_lint_redundant_guard(SemanticContext *ctx, SourceLoc loc, const char *var) {
+	return sem_emit_(ctx, SEM_LINT_redundant_guard, loc,
+	                 "guard on `%s` re-tests the enclosing loop condition, which already holds at the top of "
+	                 "every iteration — it can never fire; remove it or @allow(redundant_guard)",
+	                 var);
 }

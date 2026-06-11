@@ -1,12 +1,16 @@
 // Explicit view: gopls-style call-site parameter-name hints, with `own` marked.
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 17 14 0 1 param a:"
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 17 17 0 1 param b:"
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 19 9 0 1 param own dst:"
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 19 19 0 1 param src:"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 21 14 0 1 param a:"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 21 17 0 1 param b:"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 23 9 0 1 param own dst:"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 23 19 0 1 param src:"
 // A bare proc call carries an implied empty out-list — shown as a ghost `()` so the reader sees the
 // call may have effects. The func call `add(1, 2)` (a value) gets no such hint.
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 19 23 0 0 effect ()"
-// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN ") -eq 7
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 23 23 0 0 effect ()"
+// The `store` body indexes slices with a constant `0`; a slice index is runtime-fallible (the slice
+// may be shorter than the index), so the implicit `!abort` policy applies and is shown as a ghost.
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 18 9 0 0 policy !abort"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 18 18 0 0 policy !abort"
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN ") -eq 9
 add :: func(a: int, b: int) -> int {
   return a + b;
 }

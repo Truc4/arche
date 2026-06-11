@@ -10,7 +10,7 @@ not_found :: proc()(code: int) {
   code = 404;
 }
 negate :: func(a: int) -> int {
-  return 0 - a;
+  return -a;
 }
 
 h : handler : not_found

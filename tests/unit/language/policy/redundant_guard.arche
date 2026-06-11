@@ -1,0 +1,32 @@
+// W0020 redundant_guard: a LEADING guard-exit that re-tests its enclosing loop's own condition can
+// never fire (the loop re-checks that condition every iteration). Only the exact complement on the
+// SAME operands is flagged — a guard on a different bound is left alone (it's real control flow).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qF "[redundant_guard]" %t.out
+// exactly one hit: `dup`'s `i >= s.length` (complement of the loop's `i < s.length`); `keep`'s guard
+// tests a different bound (`lim`), so it is NOT flagged. (Match the bracketed warning tag — the build's
+// success line prints the output path, which also contains the substring "redundant_guard".)
+// RUN: test $(grep -cF "[redundant_guard]" %t.out) -eq 1
+#import { fmt }
+dup :: func(s: char[]) -> int {
+  acc := 0;
+  for (i := 0; i < s.length; i = i + 1) {
+    if (i >= s.length) { // re-tests the loop condition → W0020
+      return acc;
+    }
+    acc = acc + s[i];
+  }
+  return acc;
+}
+keep :: func(s: char[], lim: int) -> int {
+  acc := 0;
+  for (i := 0; i < s.length; i = i + 1) {
+    if (i >= lim) { // a DIFFERENT bound — real early-out, NOT flagged
+      return acc;
+    }
+    acc = acc + s[i];
+  }
+  return acc;
+}
+main :: proc() {
+  fmt.printf("%d\n", dup("ab") + keep("ab", 1));
+}

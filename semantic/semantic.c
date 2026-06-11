@@ -28,13 +28,15 @@ typedef struct {
 	char *signature; /* deterministic key: "field:type:kind;" per field in order */
 	FieldInfo **fields;
 	int field_count;
-	int is_allocated;   /* 1 once any alias for this shape has been alloc'd */
-	int alloc_capacity; /* the driver pool's capacity (rows), 0 if not allocated by the driver */
-	int min_rows;       /* max storage REQUIREMENT from device datasheets; the driver pool must meet it */
-	int req_count;      /* how many distinct datasheets posted a requirement on this shape (shared-shape) */
-	char *req_first;    /* name in the first requirement's decl (for the shared-shape build note) */
-	int has_public_def; /* 1 if any EXPORTED definition names this shape — a storage requirement needs one
-	                     * (a driver can only size a shape it can see; a `#module` shape is private) */
+	int is_allocated;     /* 1 once any alias for this shape has been alloc'd */
+	int alloc_capacity;   /* the driver pool's capacity (rows), 0 if not allocated by the driver */
+	int alloc_init_count; /* the pool's guaranteed-live initial count (M in `Arch[N](M)`), 0 if none — the
+	                       * sound basis for eliding a column bounds check (count can only grow via insert) */
+	int min_rows;         /* max storage REQUIREMENT from device datasheets; the driver pool must meet it */
+	int req_count;        /* how many distinct datasheets posted a requirement on this shape (shared-shape) */
+	char *req_first;      /* name in the first requirement's decl (for the shared-shape build note) */
+	int has_public_def;   /* 1 if any EXPORTED definition names this shape — a storage requirement needs one
+	                       * (a driver can only size a shape it can see; a `#module` shape is private) */
 } ArchetypeInfo;
 
 typedef struct {
@@ -2292,6 +2294,15 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		ctx->stmt_call_ok = (sv_present(value_view) && sv_kind(value_view) == SN_CALL_EXPR);
 		analyze_expression(ctx, value_view);
 		ctx->stmt_call_ok = 0;
+		/* Record the BINDING's type onto the bind node id — the uniform key every binding's type reads
+		 * (locals + file-scope decls), so the reader needs no per-kind value-node logic. UNCONDITIONAL so
+		 * the node→type map is complete: annotated → the DECLARED type (btype_id), else → type-of(RHS).
+		 * Keyed on `v` (the bind node), disjoint from the value node's own slot. */
+		if (ctx->model)
+			sem_model_set_expr_type_id(ctx->model, sv_id(v),
+			                           has_btype                ? btype_id
+			                           : sv_present(value_view) ? sem_model_expr_type_id(ctx->model, sv_id(value_view))
+			                                                    : TYID_UNKNOWN);
 		implicit_move_consume(ctx, value_view);
 
 		check_shadows_callable(ctx, bind_name, loc);
@@ -2755,8 +2766,7 @@ static void analyze_archetype_decl(SemanticContext *ctx, DeclSummary *arch) {
 		TypeId t = arch->fields[i].type_id;
 		const char *tn = tyid_nominal_name(ctx->ty_arena, t);
 		/* inline `on_hit :: proc()()`/`func`, or a named callable-type alias `on_hit :: handler`. */
-		int callable =
-		    tyid_kind(ctx->ty_arena, t) == TYK_FUNC || (tn && callable_type_alias_id(ctx, tn) != TYID_UNKNOWN);
+		int callable = tyid_is_callable(ctx->ty_arena, t) || (tn && callable_type_alias_id(ctx, tn) != TYID_UNKNOWN);
 		if (callable)
 			sem_emit_callable_in_archetype(ctx, arch->fields[i].loc, arch->fields[i].name);
 	}
@@ -2781,6 +2791,7 @@ static void analyze_archetype_decl(SemanticContext *ctx, DeclSummary *arch) {
 		shape->signature = sig;
 		shape->is_allocated = 0;
 		shape->alloc_capacity = 0;
+		shape->alloc_init_count = 0;
 		shape->min_rows = 0;
 		shape->req_count = 0;
 		shape->req_first = NULL;
@@ -3007,6 +3018,9 @@ static void analyze_static_decl(SemanticContext *ctx, DeclSummary *alloc) {
 	}
 	/* Record the driver pool's capacity so the final sweep can check it against datasheet minimums. */
 	arch->alloc_capacity = alloc->static_pool_count;
+	/* Guaranteed-live initial count (M): the bounds prover elides a column index proven `< M`. Mirrors
+	 * codegen's old static-count elision; only set when an explicit init_size literal was given. */
+	arch->alloc_init_count = alloc->static_init_length_present ? alloc->static_init_count : 0;
 
 	/* Validate: init block requires explicit init_size parameter */
 	if (alloc->static_field_count > 1 && !alloc->static_init_length_present) {
@@ -3140,7 +3154,7 @@ static int name_is_proc_typed_param(SemanticContext *ctx, DeclSummary *proc, con
 		if (!p->name || strcmp(p->name, name) != 0)
 			continue;
 		TypeId t = p->type_id;
-		if (tyid_kind(ctx->ty_arena, t) == TYK_FUNC)
+		if (tyid_is_callable(ctx->ty_arena, t))
 			return tyid_is_proc(ctx->ty_arena, t) ? 1 : 0;
 		const char *tn = tyid_nominal_name(ctx->ty_arena, t);
 		if (tn && tyid_is_proc(ctx->ty_arena, callable_type_alias_id(ctx, tn)))
@@ -3691,6 +3705,99 @@ static int bnd_guard_neg(SemanticContext *ctx, SyntaxView cond, BndEnv *e) {
 	return handled;
 }
 
+/* Decompose a comparison `<name> <op> <rhs>` (name a plain var, op a relational operator) into its
+ * parts. Returns 1 on a match, filling *name (owned), *op, *rhs (a view into the same tree). */
+static int bnd_cmp_parts(SemanticContext *ctx, SyntaxView cmp, char **name, Operator *op, SyntaxView *rhs) {
+	if (!sv_present(cmp) || sv_kind(cmp) != SN_BINARY_EXPR)
+		return 0;
+	Operator o = sem_binary_op(cmp);
+	if (o != OP_LT && o != OP_LTE && o != OP_GT && o != OP_GTE)
+		return 0;
+	char *n = bnd_plain_name(ctx, sem_node_at_expr(cmp, 0));
+	if (!n)
+		return 0;
+	*name = n;
+	*op = o;
+	*rhs = sem_node_at_expr(cmp, 1);
+	return 1;
+}
+
+/* True if `guard_op` is the exact logical complement of `loop_op` (so a guard testing `guard_op` can
+ * never hold when the loop's `loop_op` holds): `<`/`>=`, `<=`/`>`, `>`/`<=`, `>=`/`<`. */
+static int bnd_is_complement(Operator loop_op, Operator guard_op) {
+	return (loop_op == OP_LT && guard_op == OP_GTE) || (loop_op == OP_LTE && guard_op == OP_GT) ||
+	       (loop_op == OP_GT && guard_op == OP_LTE) || (loop_op == OP_GTE && guard_op == OP_LT);
+}
+
+/* True if two RHS bound expressions are the SAME bound: equal plain names, equal int literals, or the
+ * same extent accessor (same base AND same `.length`/`.cap`/… field). Conservative — anything else is
+ * treated as different (no false "redundant"). */
+static int bnd_view_same(SemanticContext *ctx, SyntaxView a, SyntaxView b) {
+	char *na = bnd_plain_name(ctx, a), *nb = bnd_plain_name(ctx, b);
+	if (na && nb) {
+		int eq = strcmp(na, nb) == 0;
+		free(na);
+		free(nb);
+		return eq;
+	}
+	free(na);
+	free(nb);
+	int la = bnd_lit_int(a), lb = bnd_lit_int(b);
+	if (la >= 0 && lb >= 0)
+		return la == lb;
+	if (sv_present(a) && sv_present(b) && sv_kind(a) == SN_FIELD_EXPR && sv_kind(b) == SN_FIELD_EXPR) {
+		char *ba = bnd_extent_base(ctx, a), *bb = bnd_extent_base(ctx, b);
+		int eq = 0;
+		if (ba && bb && strcmp(ba, bb) == 0 && sv_count(a, SN_FIELD_NAME) == 1 && sv_count(b, SN_FIELD_NAME) == 1) {
+			char *fa = sem_cv_dup(sv_child_at(a, SN_FIELD_NAME, 0));
+			char *fb = sem_cv_dup(sv_child_at(b, SN_FIELD_NAME, 0));
+			eq = fa && fb && strcmp(fa, fb) == 0;
+			free(fa);
+			free(fb);
+		}
+		free(ba);
+		free(bb);
+		return eq;
+	}
+	return 0;
+}
+
+/* W0020: flag a LEADING guard-exit in a loop body that re-tests the loop's own condition (the exact
+ * complement of `cond` on the same operands). Sound: a leading guard-exit only exits or falls through
+ * UNCHANGED, so at each such guard the loop variable and bound still hold their body-top values, where
+ * the loop condition is guaranteed (the loop re-checks it every iteration). The run stops at the first
+ * statement that isn't a guard-exit (it may reassign the operands). */
+static void bnd_lint_loop_cond_guards(SemanticContext *ctx, SyntaxView forstmt, SyntaxView cond) {
+	char *lname = NULL;
+	Operator lop;
+	SyntaxView lrhs;
+	if (!bnd_cmp_parts(ctx, cond, &lname, &lop, &lrhs))
+		return;
+	int seen_brace = 0;
+	for (int i = 0; i < forstmt.node->child_count; i++) {
+		SyntaxElem *ch = &forstmt.node->children[i];
+		if (ch->tag == SE_TOKEN) {
+			if (ch->as.token.kind == TOK_LBRACE)
+				seen_brace = 1;
+			continue;
+		}
+		if (!seen_brace)
+			continue;
+		SyntaxView st = {ch->as.node, forstmt.src};
+		if (sv_kind(st) != SN_IF_STMT || !bnd_body_exits(st, 0))
+			break; /* end of the leading guard-exit run — a later statement may reassign the operands */
+		char *gname = NULL;
+		Operator gop;
+		SyntaxView grhs;
+		if (bnd_cmp_parts(ctx, sem_node_at_expr(st, 0), &gname, &gop, &grhs)) {
+			if (gname && strcmp(lname, gname) == 0 && bnd_is_complement(lop, gop) && bnd_view_same(ctx, lrhs, grhs))
+				sem_emit_lint_redundant_guard(ctx, sem_node_loc(st.node), gname);
+			free(gname);
+		}
+	}
+	free(lname);
+}
+
 /* A guard-exit `if (COND) { return/break/continue }` establishes COND's negation for the rest of
  * the enclosing block. Returns 1 if recognized. */
 static int bnd_guard_exit(SemanticContext *ctx, SyntaxView ifv, BndEnv *e) {
@@ -3752,10 +3859,10 @@ static const char *policy_cat_name(PolicyCategory c) {
 /* Crash-free enforcement flags — set by the CLI (cmd_build), consulted by the failure-policy pass.
  * `--no-abort` rejects any op resolving to `!abort` (implicit OR explicit); `--no-implicit-abort`
  * rejects only the default/implicit `!abort` (a deliberate, visible `!abort` is still allowed);
- * `--no-undefined` rejects any `!undefined` site. */
+ * `!undefined` (the raw, runtime-unsafe opt-out) is rejected BY DEFAULT — `--allow-undefined` opts in. */
 static int g_no_abort = 0;
 static int g_no_implicit_abort = 0;
-static int g_no_undefined = 0;
+static int g_allow_undefined = 0; /* default: `!undefined` is forbidden in user code; flag opts in */
 static int g_forbid_allow = 0;
 void semantic_set_no_abort(int on) {
 	g_no_abort = on;
@@ -3763,8 +3870,8 @@ void semantic_set_no_abort(int on) {
 void semantic_set_no_implicit_abort(int on) {
 	g_no_implicit_abort = on;
 }
-void semantic_set_no_undefined(int on) {
-	g_no_undefined = on;
+void semantic_set_allow_undefined(int on) {
+	g_allow_undefined = on;
 }
 void semantic_set_forbid_allow(int on) {
 	g_forbid_allow = on;
@@ -3796,9 +3903,21 @@ static void validate_explicit_policy(SemanticContext *ctx, DeclSummary *d, Sourc
 			sem_emit_policy_abort_forbidden(ctx, loc, "this `!abort`", "--no-abort");
 			return;
 		}
-	} else if (strcmp(name, "undefined") == 0 && g_no_undefined && decl_is_user_code(d)) {
-		sem_emit_policy_undefined_forbidden(ctx, loc);
-		return;
+	} else if (strcmp(name, "undefined") == 0) {
+		/* A policy is the safety mechanism — it may never opt out of safety. `!undefined` (a raw,
+		 * unchecked op) inside ANY policy body is an error regardless of flags. Unprovable accesses are
+		 * still allowed in a policy as long as they stay TOTAL (e.g. an eviction handler's clamped column
+		 * scan) — only the raw opt-out is banned. Covers bounds AND divide `!undefined` (shared validator). */
+		if (d->is_policy) {
+			sem_emit_policy_uses_undefined(ctx, loc, d->name ? d->name : "<anon>");
+			return;
+		}
+		/* `!undefined` is forbidden in user code BY DEFAULT (it's the raw, runtime-unsafe opt-out);
+		 * `--allow-undefined` (or `--unchecked`) opts back in. Bundled core/stdlib are always exempt. */
+		if (!g_allow_undefined && decl_is_user_code(d)) {
+			sem_emit_policy_undefined_forbidden(ctx, loc);
+			return;
+		}
 	}
 	if (find_policy_sig_cat(ctx, name, want))
 		return; /* a policy of this name AND category exists — valid */
@@ -3850,6 +3969,10 @@ static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, Sy
 				} else {
 					provably_safe = 1;
 				}
+			} else if (kind == 3 && n > 0 && lit < n) {
+				/* column (kind 3): `n` is the pool's guaranteed-live init count. A literal below it is
+				 * in range; `lit >= n` is NOT OOB (the count can grow via insert) — keep the check. */
+				provably_safe = 1;
 			} else if (bnd_minlen_ok(e, base, lit)) {
 				provably_safe = 1;
 			}
@@ -3860,6 +3983,10 @@ static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, Sy
 					provably_safe = 1;
 				else if (kind == 1 && n >= 0 && bnd_is_nonneg(e, iv) && bnd_litub(e, iv) > 0 && bnd_litub(e, iv) <= n)
 					provably_safe = 1;
+				/* column loop var bounded by a literal `K <= init count` (mirrors the old codegen
+				 * `bounds_check_elidable`: `loop_bound <= static_count`). */
+				else if (kind == 3 && n > 0 && bnd_is_nonneg(e, iv) && bnd_litub(e, iv) <= n)
+					provably_safe = 1;
 			}
 			free(iv);
 		}
@@ -3868,6 +3995,10 @@ static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, Sy
 	if (provably_oob) {
 		sem_emit_policy_provable_oob(ctx, loc, base ? base : "?", oob_lit, n);
 	} else if (provably_safe) {
+		/* Proven in-bounds ⇒ no failure policy applies. THE single verdict: read by the analyzer (no
+		 * ghost inlay) AND by lowering→codegen (elide the policy macro). Neither re-derives. */
+		if (ctx->model)
+			sem_model_set_policy_elided(ctx->model, sv_id(v));
 		if (explicit_pol)
 			sem_emit_lint_policy_on_safe_op(ctx, loc, explicit_pol, base ? base : "?");
 	} else if (explicit_pol) { /* unprovable: an explicit policy governs the op — validate it */
@@ -3939,12 +4070,16 @@ static const char *bnd_check_expr(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 		}
 		free(root);
 	}
-	/* Failure-policy validation on a pool-column index (`Arch.f[i] !policy`): no static count, so just
-	 * validate the explicit policy name (intrinsic / bounds policy / func-`!abort` / flag enforcement). */
+	/* Failure-policy validation on a pool-column index (`Arch.f[i] !policy`). kind 3 = column: there's
+	 * no static count, so the only proof path is symbolic — `i` proven `0 <= i < Arch.count/length` by a
+	 * guard/loop (`bnd_proven` against the LIVE count, sounder than codegen's static-count elision). A
+	 * proven column index needs no policy (sets `policy_elided`); an unproven one validates its explicit
+	 * `!name` / keeps the implicit check. A bare literal `Arch.f[3]` stays unproven (no length guard). */
 	if (e->check_policies && sv_kind(v) == SN_INDEX_EXPR && sv_count(v, SN_FIELD_NAME) > 0) {
 		char *root = sv_resolved_name(ctx, v);
-		if (root && find_archetype(ctx, root))
-			bnd_policy_check(ctx, d, e, v, 0, root, 0, -1);
+		ArchetypeInfo *ai = root ? find_archetype(ctx, root) : NULL;
+		if (ai)
+			bnd_policy_check(ctx, d, e, v, 0, root, 3, ai->alloc_init_count); /* n = guaranteed-live count M */
 		free(root);
 	}
 	if (sv_kind(v) == SN_INDEX_EXPR && sv_count(v, SN_FIELD_NAME) == 0) {
@@ -4054,6 +4189,10 @@ static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 		if (init_var)
 			bnd_env_add(e, init_var, NULL, 1);
 		(void)init_nonneg_var_seen;
+		/* W0020: leading guard-exits that re-test this loop's own condition can never fire. Lint pass
+		 * only (where @allow is armed); emit-once since each for-stmt is visited once per pass. */
+		if (e->lint_columns)
+			bnd_lint_loop_cond_guards(ctx, v, cond);
 		/* Check ONLY the post-`{` body statements (NOT the header init/incr — the incr `i=i+1` would
 		 * otherwise kill the loop var's facts before the body is checked). */
 		const char *r = NULL;
@@ -4175,6 +4314,201 @@ static void sem_check_forbid_allow(SemanticContext *ctx) {
 			continue;
 		for (int i = 0; i < d->allow_slug_count; i++)
 			sem_emit_allow_forbidden(ctx, d->loc, d->allow_slugs[i]);
+	}
+}
+
+/* The interned `TypeId` a top-level declaration denotes — the type its name binds to, sourced from
+ * whichever DeclSummary field(s) hold it — or TYID_UNKNOWN when the declaration is not a value/type
+ * binding. This is a GENERAL compiler fact (it completes the node→type map for decl nodes, the same
+ * fact hover/go-to-type want), not inlay-specific. The per-kind sourcing lives ONLY here; everything
+ * downstream is kind-agnostic. The switch is EXHAUSTIVE with NO `default`: a new DeclKind is a
+ * compile-time forcing function (-Wswitch), never a silent drop. */
+static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
+	switch (d->kind) {
+	case DECL_CONST: {
+		/* A VALUE const denotes its value's type; a TYPE alias (`int :: alias i32`) denotes the `type`
+		 * meta-type — `int : type : alias i32` is the longhand, so its ⟨type⟩ slot is `type`. */
+		const char *vt = value_const_type(ctx, d->name);
+		if (vt)
+			return sem_tyid_of_name(ctx, vt);
+		if (is_type_alias(ctx, d->name))
+			return sem_tyid_of_name(ctx, "type");
+		return TYID_UNKNOWN;
+	}
+	case DECL_STATIC:
+		/* SCALAR → its scalar type; ARRAY → the array type built over its ELEMENT type (static_type_id
+		 * holds the element, not the array); ARCHETYPE-allocation (`Particle[4]`) is not a name::value
+		 * binding → UNKNOWN. */
+		switch (d->static_kind) {
+		case STATIC_KIND_SCALAR:
+			return d->static_type_id;
+		case STATIC_KIND_ARRAY:
+			return tyid_of_array(ctx->ty_arena, d->static_type_id);
+		default:
+			return TYID_UNKNOWN; /* STATIC_KIND_ARCHETYPE */
+		}
+	case DECL_FUNC: /* also policies — a policy is a DECL_FUNC with is_policy */
+	case DECL_PROC:
+	case DECL_SYS: {
+		/* Each form gets its OWN callable kind — func/proc/sys/policy never unify. Params are common;
+		 * a func carries its return list, a proc its out-params, sys/policy none. */
+		/* foreign decls have a fully computed signature (sem_fill_decl_type_ids types their params/returns
+		 * unconditionally), so they get their type like any other callable — no special-case hide. */
+		int np = d->param_count;
+		TypeId pbuf[32];
+		TypeId *params = np > 32 ? malloc((size_t)np * sizeof(TypeId)) : pbuf;
+		for (int i = 0; i < np; i++)
+			/* func/proc/policy params are typed (`a: int`); a sys's are bare COMPONENT names whose type
+			 * is the component itself — resolve those by name so `sys(pos, vel)` isn't `sys(<unknown>)`. */
+			params[i] = (d->kind == DECL_SYS && d->params[i].name) ? sem_tyid_of_name(ctx, d->params[i].name)
+			                                                       : d->params[i].type_id;
+		TypeId out;
+		if (d->kind == DECL_SYS) {
+			out = tyid_of_sys(ctx->ty_arena, params, np);
+		} else if (d->is_policy) {
+			out = tyid_of_policy(ctx->ty_arena, params, np);
+		} else if (d->kind == DECL_PROC) {
+			int nr = d->out_param_count;
+			TypeId rbuf[8];
+			TypeId *rets = nr > 8 ? malloc((size_t)nr * sizeof(TypeId)) : rbuf;
+			for (int i = 0; i < nr; i++)
+				rets[i] = d->out_params[i].type_id;
+			out = tyid_of_proc(ctx->ty_arena, params, np, rets, nr);
+			if (rets != rbuf)
+				free(rets);
+		} else {
+			int nr = d->return_type_count;
+			TypeId rbuf[8];
+			TypeId *rets = nr > 8 ? malloc((size_t)nr * sizeof(TypeId)) : rbuf;
+			for (int i = 0; i < nr; i++)
+				rets[i] = d->return_type_ids[i];
+			out = tyid_of_func(ctx->ty_arena, params, np, rets, nr);
+			if (rets != rbuf)
+				free(rets);
+		}
+		if (params != pbuf)
+			free(params);
+		return out;
+	}
+	case DECL_ARCHETYPE:
+		return tyid_of_archetype_category(ctx->ty_arena);
+	case DECL_ENUM:
+		/* An enum decl (`Method :: enum{…}`) DENOTES a type, so its `⟨type⟩` slot is the `type` meta —
+		 * the longhand `Method : type : enum{…}`, mirroring the type-alias arm in DECL_CONST. */
+		return sem_tyid_of_name(ctx, "type");
+	case DECL_FUNC_GROUP:
+		return TYID_UNKNOWN; /* an overload SET has no single type — a principled "none", not a dropped kind */
+	case DECL_WORLD:
+	case DECL_USE:
+		return TYID_UNKNOWN; /* not value/type bindings — no `⟨type⟩` slot to fill */
+	}
+	return TYID_UNKNOWN; /* unreachable: switch is exhaustive over DeclKind (-Wswitch enforces) */
+}
+
+/* Complete the node→type map for every top-level declaration node, keyed by the decl node — the SAME
+ * key locals use (see the SN_BIND_STMT handler) — so a uniform, kind-agnostic reader covers every
+ * binding form at file scope. Records unconditionally (an UNKNOWN is the map's default and is inert),
+ * so "this node has a type" is a complete fact, not a curated subset. Runs after const-fixpoint +
+ * type-fill, so all sources are final. */
+static void sem_record_binding_types(SemanticContext *ctx) {
+	if (!ctx->model)
+		return;
+	for (int di = 0; di < ctx->decl_count; di++) {
+		DeclSummary *d = ctx->decls[di];
+		if (!sv_present(d->node))
+			continue;
+		sem_model_set_expr_type_id(ctx->model, sv_id(d->node), sem_decl_type_id(ctx, d));
+	}
+}
+
+/* The policy a fallible op explicitly applies (`expr !P`), resolved by the op's category — or NULL.
+ * Bounds for index/slice, divide for `/`,`%`; `?`-handlers (pool) are a separate mechanism. */
+static DeclSummary *policy_op_applies(SemanticContext *ctx, SyntaxView v) {
+	PolicyCategory cat;
+	SyntaxNodeKind k = sv_kind(v);
+	if (k == SN_INDEX_EXPR || k == SN_SLICE_EXPR) {
+		cat = POLICY_CAT_BOUNDS;
+	} else if (k == SN_BINARY_EXPR) {
+		int op = sem_binary_op(v);
+		if (op != OP_DIV && op != OP_MOD)
+			return NULL;
+		cat = POLICY_CAT_DIVIDE;
+	} else {
+		return NULL;
+	}
+	SyntaxView pol = sv_child(v, SN_POLICY_REF);
+	if (!sv_present(pol) || sv_token(pol, TOK_QUESTION).ptr) /* `!` panic policies only */
+		return NULL;
+	SynText t = sv_token(pol, TOK_IDENT);
+	if (!t.ptr)
+		return NULL;
+	char *nm = sem_txt_dup(t);
+	DeclSummary *p = nm ? find_policy_sig_cat(ctx, nm, cat) : NULL;
+	free(nm);
+	return p;
+}
+
+/* Collect (deduped, capped) every policy the subtree `v` explicitly applies. */
+static void policy_edges_walk(SemanticContext *ctx, SyntaxView v, DeclSummary **out, int *n, int cap) {
+	if (!sv_present(v))
+		return;
+	DeclSummary *p = policy_op_applies(ctx, v);
+	if (p) {
+		int dup = 0;
+		for (int i = 0; i < *n; i++)
+			if (out[i] == p) {
+				dup = 1;
+				break;
+			}
+		if (!dup && *n < cap)
+			out[(*n)++] = p;
+	}
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE)
+			policy_edges_walk(ctx, (SyntaxView){v.node->children[i].as.node, v.src}, out, n, cap);
+}
+
+/* True if policy `cur` can reach `target` through explicit `!P` applications. `seen` prevents infinite
+ * looping in THIS traversal (we're detecting cycles), bounded by `cap`. */
+static int policy_reaches(SemanticContext *ctx, DeclSummary *cur, DeclSummary *target, DeclSummary **seen, int *seen_n,
+                          int cap) {
+	if (!cur || !sv_present(cur->body_node))
+		return 0;
+	DeclSummary *edges[32];
+	int en = 0;
+	for (int i = 0, m = sem_stmt_count(cur->body_node); i < m; i++)
+		policy_edges_walk(ctx, sem_stmt_at(cur->body_node, i), edges, &en, 32);
+	for (int i = 0; i < en; i++) {
+		if (edges[i] == target)
+			return 1;
+		int visited = 0;
+		for (int j = 0; j < *seen_n; j++)
+			if (seen[j] == edges[i]) {
+				visited = 1;
+				break;
+			}
+		if (!visited && *seen_n < cap) {
+			seen[(*seen_n)++] = edges[i];
+			if (policy_reaches(ctx, edges[i], target, seen, seen_n, cap))
+				return 1;
+		}
+	}
+	return 0;
+}
+
+/* E0214: a policy is inlined as a MACRO, so a policy that applies itself (directly or transitively)
+ * would expand forever — a codegen stack overflow. Detect such cycles over explicit `!P` applications
+ * in policy bodies and reject before codegen. (The implicit default of an unannotated op resolves to a
+ * core total policy that doesn't index, so it can't close a cycle — only explicit `!P` can.) */
+static void sem_check_policy_cycles(SemanticContext *ctx) {
+	for (int di = 0; di < ctx->decl_count; di++) {
+		DeclSummary *d = ctx->decls[di];
+		if (!d->is_policy || d->is_extern || !sv_present(d->body_node))
+			continue;
+		DeclSummary *seen[64];
+		int seen_n = 0;
+		if (policy_reaches(ctx, d, d, seen, &seen_n, 64))
+			sem_emit_cyclic_policy(ctx, d->loc, d->name ? d->name : "<anon>");
 	}
 }
 
@@ -4899,7 +5233,7 @@ TypeId sem_intern_view(SemanticContext *ctx, SyntaxView t) {
 			rets = rbuf;
 			rets[0] = sem_intern_view(ctx, sem_type_at(t, 0));
 		}
-		TypeId out = tyid_of_func(arena, params, np, rets, nr, is_proc);
+		TypeId out = is_proc ? tyid_of_proc(arena, params, np, rets, nr) : tyid_of_func(arena, params, np, rets, nr);
 		if (params != pbuf)
 			free(params);
 		if (rets != rbuf)
@@ -6336,8 +6670,8 @@ static void analyze_program_core(SemanticContext *ctx) {
 		if (c->const_type_value_id != TYID_UNKNOWN) {
 			TypeId tv = c->const_type_value_id;
 			TyKind tvk = tyid_kind(ctx->ty_arena, tv);
-			if (tvk == TYK_FUNC) {
-				/* `name :: proc()(…)` — a named structural callable type. */
+			if (tyid_is_callable(ctx->ty_arena, tv)) {
+				/* `name :: proc()(…)` / `func` — a named structural callable type. */
 				register_callable_type_alias(ctx, c->name, tv);
 				continue;
 			}
@@ -6599,9 +6933,11 @@ static void analyze_program_core(SemanticContext *ctx) {
 	sem_check_storage_requirements(ctx);
 	sem_check_device_impl_decls(ctx);
 	sem_check_datasheet_decls(ctx);
-	sem_check_raw_pool_lint(ctx); /* W0017: advise handles for unprovable pool-column indexing */
-	sem_check_policies(ctx);      /* E0097-99/E0124/W0018: failure-policy validation at index/slice ops */
-	sem_check_forbid_allow(ctx);  /* E0127: --forbid-allow rejects @allow(...) in user code */
+	sem_check_raw_pool_lint(ctx);  /* W0017: advise handles for unprovable pool-column indexing */
+	sem_check_policies(ctx);       /* E0097-99/E0124/W0018: failure-policy validation at index/slice ops */
+	sem_check_policy_cycles(ctx);  /* E0214: a policy that applies itself would inline forever */
+	sem_check_forbid_allow(ctx);   /* E0127: --forbid-allow rejects @allow(...) in user code */
+	sem_record_binding_types(ctx); /* editor inlay: type-of(RHS) per top-level decl, keyed by decl node */
 
 	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The
 	 * two kinds are still distinct (keyword, `-> T` vs out-list, call form), but the name namespace
@@ -7049,6 +7385,12 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 					}
 				} else if (phase == 2) {
 					ds->static_init_length_present = 1;
+					if (sv_kind(ev) == SN_LITERAL_EXPR) {
+						char *lx = sem_cv_dup_first_token(ev);
+						if (lx)
+							ds->static_init_count = atoi(lx);
+						free(lx);
+					}
 				} else if (phase == 3) {
 					ds->static_fields[ds->static_field_count++] = ev;
 				}

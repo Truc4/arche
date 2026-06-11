@@ -1,7 +1,8 @@
 // Handler resolution precedence: per-call `?name` › the pool's declared `?name` › `reject`. Here the
 // pool declares `?evict_oldest`, but a call site overrides with `?reject`, so that insert rejects
 // (ok=0) instead of evicting — the oldest slot is left untouched.
-// RUN: %arche build -o %t %s && %t | grep -qF "ok2=0 v0=10"
+// (reads results with `!undefined`, so opt into the raw op)
+// RUN: %arche build --allow-undefined -o %t %s && %t | grep -qF "ok2=0 v0=10"
 #import { fmt }
 Foo :: arche { v :: int, ts :: int }
 Foo[2] ?evict_oldest

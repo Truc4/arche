@@ -1,0 +1,21 @@
+// A pool-column index whose loop bound is <= the pool's guaranteed-live init count is proven
+// in-bounds by the bounds prover, so it carries NO implicit `!abort` — and `--no-abort` accepts this
+// proc. (An unproven column index in a proc would be E0125; see no_abort_rejects_unproven_column.)
+// This is the single-verdict path: the same proof that suppresses the editor's ghost `!abort` also
+// elides the codegen policy and clears the --no-abort gate.
+// RUN: %arche build --no-abort -o %t %s && %t | grep -qF "sum=6"
+#import { fmt }
+P :: arche { x :: int }
+P[4](4) {
+  x: 0
+}
+main :: proc() {
+  for (i := 0; i < 4; i = i + 1) {
+    P.x[i] = i; // i < 4 <= init count 4 → proven, no implicit !abort
+  }
+  s := 0;
+  for (i := 0; i < 4; i = i + 1) {
+    s = s + P.x[i];
+  }
+  fmt.printf("sum=%d\n", s); // 0+1+2+3
+}

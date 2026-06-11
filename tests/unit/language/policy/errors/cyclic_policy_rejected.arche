@@ -1,0 +1,14 @@
+// E0214: a `policy` is inlined as a macro, so a policy that applies itself — directly or transitively —
+// would expand forever (a codegen stack overflow). It's caught at semantic time and rejected cleanly,
+// instead of crashing the compiler. (Acyclic nesting, e.g. `!clamp` inside another policy, stays fine.)
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiF "applies itself" %t.out
+@policy (bounds) evil :: policy (len: int, i: int) {
+  buf: int[3];
+  i = buf[i] !evil; // self-referential application → E0214 (would inline forever)
+}
+
+main :: proc() {
+  a: int[8];
+  j  := 5;
+  _x := a[j] !evil;
+}

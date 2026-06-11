@@ -370,13 +370,16 @@ struct HirExpr {
 			HirExpr *base;
 			HirExpr **indices;
 			int index_count;
-			char *policy; /* `!name` failure policy (bounds category), or NULL → default (!abort) */
+			char *policy;      /* `!name` failure policy (bounds category), or NULL → default (!abort) */
+			int policy_elided; /* 1 if the bounds prover proved this in-bounds (SemModel verdict, stamped at
+			                      lowering): codegen emits NO policy macro. The single elision authority. */
 		} index;
 		struct {
 			HirExpr *base;
-			HirExpr *lo;  /* NULL → 0 */
-			HirExpr *hi;  /* NULL → base length */
-			char *policy; /* `!name` failure policy (bounds category), or NULL → default */
+			HirExpr *lo;       /* NULL → 0 */
+			HirExpr *hi;       /* NULL → base length */
+			char *policy;      /* `!name` failure policy (bounds category), or NULL → default */
+			int policy_elided; /* 1 if the bounds prover proved this in-bounds (SemModel verdict). */
 		} slice;
 		struct {
 			Operator op;

@@ -10,7 +10,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-enum { R_WNO_PCBF = 1, R_WNO_PNE, R_WERR_PCBF, R_WERR_PNE, R_WERR };
+enum { R_WNO_PCBF = 1, R_WNO_PNE, R_WERR_PCBF, R_WERR_PNE, R_WERR, R_ALLOW_UNDEFINED };
 
 static const ArgSpec k_run_specs[] = {
     {R_WNO_PCBF, "-Wno-proc-could-be-func", ARG_FLAG, 0, 0, NULL, "disable the proc-could-be-func lint"},
@@ -19,6 +19,8 @@ static const ArgSpec k_run_specs[] = {
      "promote the proc-could-be-func lint to an error"},
     {R_WERR_PNE, "-Werror=proc-no-effect", ARG_FLAG, 0, 0, NULL, "promote the proc-no-effect lint to an error"},
     {R_WERR, "-Werror", ARG_FLAG, 0, 0, NULL, "promote all lints to errors"},
+    {R_ALLOW_UNDEFINED, "--allow-undefined", ARG_FLAG, 0, 0, NULL,
+     "permit the raw, runtime-unsafe `!undefined` opt-out (forbidden by default)"},
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
@@ -54,6 +56,7 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 	}
 	semantic_set_lint_proc_could_be_func(pcbf_en, pcbf_we);
 	semantic_set_lint_proc_no_effect(pne_en, pne_we);
+	semantic_set_allow_undefined(args_has(&p, R_ALLOW_UNDEFINED));
 
 	if (p.pos_count == 0) {
 		fprintf(stderr, "%s: no input file\n", g_prog);

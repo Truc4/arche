@@ -460,34 +460,73 @@ static void emit_syn(int line, int col, int padL, int padR, const char *kind, co
 	printf("SYN %d %d %d %d %s %s\n", uline, col, padL ? 1 : 0, padR ? 1 : 0, kind, text);
 }
 
-/* Inferred-type hint: for a bind with no written type, slot the inferred type
- * INTO the bind operator so the rendered view reads exactly as the longhand —
- *   `r := e`  →  `r : int = e`     (anchor before the `=`, pad both sides)
- *   `x :: e`  →  `x : int : e`     (anchor before the 2nd `:`, pad both sides)
- * Skips type-alias declarations and any bind that already states its type. */
-static void emit_bind_hint(SyntaxView bind, SemanticContext *ctx) {
+/* Opt-out of redundancy filtering: when set, EVERY binding's type is shown, including the redundant
+ * definition-form ones. Off by default (concise view). This is the LSP/editor-side verbosity setting —
+ * NOT a compiler concern; the editor stores it per-project and passes it via `--full` / `HINTS full`. */
+static int g_full_type_hints = 0;
+
+/* The "small list of exceptions": redundancy is presentation-only and lives HERE, in the editor layer,
+ * never in the compiler. A binding is a redundant definition-form iff its source form ALREADY spells the
+ * type — i.e. its RHS is a `func`/`proc`/`sys`/`policy`/`enum` literal, or it is an archetype decl. The
+ * test is SYNTACTIC (the RHS node kind), not type-based: an enum decl's type is the `type` meta, identical
+ * to an alias's, so only the syntax distinguishes "hide enum / show alias". To hide another form later,
+ * add its node kind to this one list. */
+static int binding_is_redundant_form(SyntaxView binding) {
+	switch (sv_kind(binding)) {
+	case SN_FUNC_DECL:
+	case SN_PROC_DECL:
+	case SN_SYS_DECL:
+	case SN_ARCHETYPE_DECL: /* dedicated form decls: the decl node itself is the form */
+		return 1;
+	default:
+		break;
+	}
+	/* unified `name :: <form-literal>`: the value child is a definition-form expression */
+	for (int i = 0; i < binding.node->child_count; i++) {
+		if (binding.node->children[i].tag != SE_NODE)
+			continue;
+		switch (binding.node->children[i].as.node->kind) {
+		case SN_FUNC_EXPR:
+		case SN_PROC_EXPR:
+		case SN_SYS_EXPR:
+		case SN_POLICY_EXPR:
+		case SN_ENUM_EXPR:
+		case SN_ARCH_EXPR:
+			return 1;
+		default:
+			break;
+		}
+	}
+	return 0;
+}
+
+/* The inferred-type inlay: fill the elided `⟨type⟩` slot of the unified grammar so the view reads as
+ * the longhand —
+ *   `r := e`  →  `r : T = e`   (anchor before the `=`)
+ *   `x :: e`  →  `x : T : e`   (anchor before the 2nd `:`)
+ * ONE rule for EVERY binding/declaration form (locals, consts, statics, func/proc/sys/policy/arche/enum):
+ * the compiler records the binding's type keyed by the binding node id, and this renders it. A node shows
+ * a hint iff the compiler typed it AND the source didn't already write the `⟨type⟩` slot AND — unless the
+ * editor opted into full hints — it isn't a redundant definition-form (the form already spells the type).
+ * Skips type aliases (emit_typeref_hint). */
+static void emit_type_hint(SyntaxView binding, SemanticContext *ctx) {
 	const SemModel *model = sem_context_model(ctx);
-	if (sem_model_bind_alias(model, sv_id(bind)))
-		return;
-	if (sv_type_count(bind) > 0)
-		return;
-	SyntaxView target = sv_expr_at(bind, 0);
-	SyntaxView value = sv_expr_at(bind, 1);
-	if (!sv_present(target) || !sv_present(value) || sv_kind(target) != SN_NAME_EXPR)
-		return;
-	TypeId tid = sem_model_expr_type_id(model, sv_id(value));
+	if (sem_model_bind_alias(model, sv_id(binding)))
+		return; /* a nominal type alias, not a value binding */
+	if (sv_type_count(binding) > 0)
+		return; /* the `⟨type⟩` slot is already written in source — nothing to infer */
+	TypeId tid = sem_model_expr_type_id(model, sv_id(binding));
 	if (tid == TYID_UNKNOWN)
 		return;
+	if (!g_full_type_hints && binding_is_redundant_form(binding))
+		return; /* redundant: the form already states its type — hidden unless the editor opted into full */
 	char tybuf[128];
 	const char *ty = tyid_display(sem_context_arena(ctx), tid, tybuf, sizeof(tybuf));
 	if (!ty || !ty[0])
 		return;
-	/* Anchor at the 2nd separator token of the bind operator: the `=` of `:=`, or
-	 * (when there is no `=`) the 2nd `:` of `::`. The type then renders between
-	 * the two real tokens that the bind operator is made of. */
-	CvPos anchor = sv_token_pos(bind, TOK_EQ);
+	CvPos anchor = sv_token_pos(binding, TOK_EQ); /* the `=` of `:=`, else the 2nd `:` of `::` */
 	if (!anchor.line)
-		anchor = sv_token_pos_at(bind, TOK_COLON, 1);
+		anchor = sv_token_pos_at(binding, TOK_COLON, 1);
 	if (!anchor.line)
 		return;
 	emit_syn(anchor.line, anchor.column, 1, 1, "type", display_type(ty));
@@ -623,44 +662,18 @@ static void emit_effect_hint(SyntaxView expr_stmt) {
 	emit_syn(end.line, end.column + (int)end.length, 0, 0, "effect", "()");
 }
 
-/* True if `n` is a compile-time-constant index (a non-negative or `-K` integer literal). Such an
- * index is resolved at compile time (proven safe → no policy, or provably-OOB → E0097), so it never
- * carries a runtime policy and gets no implicit-policy inlay. */
-static int policy_idx_is_const(SyntaxView n) {
-	if (!n.node)
-		return 0;
-	if (sv_kind(n) == SN_LITERAL_EXPR)
-		return 1;
-	if (sv_kind(n) == SN_UNARY_EXPR && sv_has_token(n, TOK_MINUS)) {
-		for (int i = 0; i < n.node->child_count; i++)
-			if (n.node->children[i].tag == SE_NODE)
-				return policy_idx_is_const((SyntaxView){n.node->children[i].as.node, n.src});
-	}
-	return 0;
-}
-
-/* Inlay the IMPLICIT failure policy at a fallible index/slice op: render the ghost default
- * (`!abort` in a proc, `!clamp` in a func) right after the op. Only the implicit case — an explicit
- * `!name` is already in the source. Skipped for a constant index (resolved at compile time, no
- * runtime policy). Applies to value arrays, slices, AND pool-column indexing (`Arch.field[i]`). */
-static void emit_policy_hint(SyntaxView op, int in_func) {
+/* Inlay the IMPLICIT failure policy at an index/slice op: the ghost default (`!abort` in a proc,
+ * `!clamp` in a func) right after the op. This is a PURE PROJECTION of the bounds prover's verdict
+ * (`sem_model_policy_elided`) — the SAME bit codegen reads to elide the policy macro — so the hint
+ * shows exactly when a runtime policy actually applies. No provability logic of its own:
+ *   - explicit `!name`        → already in source, no ghost
+ *   - prover proved in-bounds → policy elided (incl. constant-safe indices), no ghost
+ *   - otherwise               → a policy applies, render its ghost. */
+static void emit_policy_hint(SyntaxView op, SemanticContext *ctx, int in_func) {
 	if (sv_present(sv_child(op, SN_POLICY_REF)))
 		return; /* explicit policy already visible in source */
-	/* fallible only: at least one bound (index, or a slice lo/hi) is a non-constant expression */
-	int fallible = 0;
-	for (int i = 0; i < op.node->child_count; i++) {
-		if (op.node->children[i].tag != SE_NODE)
-			continue;
-		SyntaxView c = {op.node->children[i].as.node, op.src};
-		if (sv_kind(c) == SN_FIELD_NAME || sv_kind(c) == SN_POLICY_REF)
-			continue;
-		if (!policy_idx_is_const(c)) {
-			fallible = 1;
-			break;
-		}
-	}
-	if (!fallible)
-		return;
+	if (sem_model_policy_elided(sem_context_model(ctx), sv_id(op)))
+		return; /* prover proved it in-bounds — no policy applies (same verdict codegen elides on) */
 	CvPos end = sv_last_token_pos(op);
 	if (!end.line)
 		return;
@@ -672,14 +685,19 @@ static void walk(SyntaxView v, SemanticContext *ctx, int in_func) {
 		return;
 	emit_param_hint(v, ctx); /* any node may be a resolved call argument */
 	emit_move_hint(v, ctx);  /* any name may be an implicitly-moved (consumed) bare binding */
-	if (sv_kind(v) == SN_BIND_STMT)
-		emit_bind_hint(v, ctx);
-	else if (sv_kind(v) == SN_TYPE_REF)
+	/* Every binding/declaration form gets the same elided-`⟨type⟩` inlay (keyed by node id); whether a
+	 * redundant form type is shown is decided inside emit_type_hint. The parser makes proc/func/sys/arche
+	 * decls `SN_CONST_DECL` (value = a *_EXPR form), so the value-binding kinds cover them too. */
+	SyntaxNodeKind vk = sv_kind(v);
+	if (vk == SN_BIND_STMT || vk == SN_CONST_DECL || vk == SN_STATIC_DECL || vk == SN_FUNC_DECL || vk == SN_PROC_DECL ||
+	    vk == SN_SYS_DECL || vk == SN_ARCHETYPE_DECL)
+		emit_type_hint(v, ctx);
+	if (sv_kind(v) == SN_TYPE_REF)
 		emit_typeref_hint(v, ctx);
 	else if (sv_kind(v) == SN_EXPR_STMT)
 		emit_effect_hint(v); /* bare proc call → ghost `()` */
 	else if (sv_kind(v) == SN_INDEX_EXPR || sv_kind(v) == SN_SLICE_EXPR)
-		emit_policy_hint(v, in_func); /* implicit failure policy → ghost `!abort`/`!clamp` */
+		emit_policy_hint(v, ctx, in_func); /* implicit failure policy → ghost `!abort`/`!clamp` */
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
 			SyntaxView c = {v.node->children[i].as.node, v.src};
@@ -788,9 +806,10 @@ static void analysis_free(Analysis *a) {
 	a->holds = (ModuleHolds){NULL, 0, 0};
 }
 
-static void emit_hints(const Analysis *a) {
+static void emit_hints(const Analysis *a, int full) {
 	if (!a->ctx)
 		return;
+	g_full_type_hints = full;
 	SyntaxView root = sv_root(a->syntax_root, a->combined);
 	g_proc_name_count = 0;
 	collect_proc_names(root); /* gather proc names first (a call may precede its decl) */
@@ -1187,7 +1206,7 @@ static void emit_goto(const Analysis *a, const char *kind, int uline, int col, c
 
 /* ---- one-shot dump ---- */
 
-static int run_dump(const char *path) {
+static int run_dump(const char *path, int full) {
 	char *user = path ? read_file(path) : read_stream(stdin);
 	if (!user) {
 		fprintf(stderr, "arche-analyzer: could not read %s\n", path ? path : "<stdin>");
@@ -1199,7 +1218,7 @@ static int run_dump(const char *path) {
 		analysis_free(&a);
 		return 1;
 	}
-	emit_hints(&a);
+	emit_hints(&a, full);
 	emit_diags(&a);
 	emit_docs(&a);
 	analysis_free(&a);
@@ -1324,9 +1343,17 @@ static int run_serve(void) {
 			printf("OK\n\n");                 /* blank line terminates every response */
 			fflush(stdout);
 		} else if (strncmp(line, "HINTS ", 6) == 0) {
-			Doc *doc = docs_find(&docs, line + 6);
+			/* `HINTS <path>` (default) or `HINTS full <path>` — the editor asks for full type hints per
+			 * the user's inlay setting; the server just honors the request. */
+			const char *arg = line + 6;
+			int full = 0;
+			if (strncmp(arg, "full ", 5) == 0) {
+				full = 1;
+				arg += 5;
+			}
+			Doc *doc = docs_find(&docs, arg);
 			if (doc)
-				emit_hints(&doc->a);
+				emit_hints(&doc->a, full);
 			printf("\n"); /* blank line terminates the response */
 			fflush(stdout);
 		} else if (strncmp(line, "TOKENS ", 7) == 0) {
@@ -1367,12 +1394,16 @@ static int run_serve(void) {
 /* Entry point for the analyzer, shared by the folded `arche analyze` subcommand (cli/cmd_analyze.c)
  * and the standalone `arche-analyzer` shim (arche_analyzer_main.c). Declared in arche_analyzer.h. */
 int analyze_main(int argc, char *argv[]) {
-	if (argc >= 2 && strcmp(argv[1], "--dump") == 0)
-		return run_dump(argc >= 3 ? argv[2] : NULL);
+	if (argc >= 2 && strcmp(argv[1], "--dump") == 0) {
+		/* `--dump [--full] [file]` — --full also renders the redundant form-decl type hints. */
+		int full = (argc >= 3 && strcmp(argv[2], "--full") == 0);
+		const char *file = full ? (argc >= 4 ? argv[3] : NULL) : (argc >= 3 ? argv[2] : NULL);
+		return run_dump(file, full);
+	}
 	if (argc >= 2 && strcmp(argv[1], "--serve") == 0)
 		return run_serve();
 	if (argc >= 6 && strcmp(argv[1], "--goto") == 0)
 		return run_goto(argv[2], atoi(argv[3]), atoi(argv[4]), argv[5]);
-	fprintf(stderr, "usage: %s (--dump [file] | --serve | --goto <kind> <line> <col> <file>)\n", argv[0]);
+	fprintf(stderr, "usage: %s (--dump [--full] [file] | --serve | --goto <kind> <line> <col> <file>)\n", argv[0]);
 	return 2;
 }

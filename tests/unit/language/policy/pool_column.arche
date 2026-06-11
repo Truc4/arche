@@ -2,7 +2,8 @@
 // `!undefined` reads raw (no check), `!abort` (the proc default) bounds-checks against the live count,
 // `!clamp` remaps an OOB index into [0, count). (`!zero` is divide-only — a bounds site rejects it.)
 // An explicit policy also silences the (now default-off) raw_pool_index lint — it IS the acknowledgment.
-// RUN: %arche build -o %t %s && %t | grep -qF "undef=20 clamp=20 w1=99"
+// (exercises `!undefined` among the policies, so opt into the raw op)
+// RUN: %arche build --allow-undefined -o %t %s && %t | grep -qF "undef=20 clamp=20 w1=99"
 #import { fmt }
 P :: arche { v :: int }
 P[8]

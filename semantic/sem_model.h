@@ -22,6 +22,10 @@ typedef struct {
 	                             taking position is an IMPLICIT move. Semantic decides this (it has the
 	                             types); lowering materializes an explicit `move` HIR node so codegen
 	                             has a single move path (no syntax re-derivation downstream). */
+	uint8_t *policy_elided;   /* indexed by an index/slice op node id; 1 if the bounds prover proved it
+	                             in-bounds ⇒ no failure policy applies. THE single provability verdict:
+	                             read by the analyzer (no ghost inlay) and by lowering→codegen (elide the
+	                             policy macro). Neither re-derives. */
 	const char **callee_name; /* indexed by an SN_CALL_EXPR node id; the call's resolved callee name —
 	                             for `mod.f` the qualify pass's mangled/foreign link name, else the bare
 	                             name. Lets a syntax-tree-driven resolver read what the qualify pass
@@ -54,6 +58,9 @@ int sem_model_bind_alias(const SemModel *m, uint32_t node_id);
  * implicit move. Semantic records it; lowering wraps the HIR expr in an explicit `move`. */
 void sem_model_set_implicit_move(SemModel *m, uint32_t node_id);
 int sem_model_implicit_move(const SemModel *m, uint32_t node_id);
+
+void sem_model_set_policy_elided(SemModel *m, uint32_t node_id);
+int sem_model_policy_elided(const SemModel *m, uint32_t node_id);
 
 /* The resolved callee name for an SN_CALL_EXPR node (qualify-mangled for `mod.f`, else the bare
  * name). NULL if not recorded (e.g. a non-module qualified field call). Model owns its copy. */

@@ -10,6 +10,7 @@ SemModel *sem_model_new(void) {
 	m->expr_type_id = NULL;
 	m->bind_alias = NULL;
 	m->implicit_move = NULL;
+	m->policy_elided = NULL;
 	m->callee_name = NULL;
 	m->ref_name = NULL;
 	m->callee_def = NULL;
@@ -32,6 +33,7 @@ void sem_model_free(SemModel *m) {
 	free(m->expr_type_id);
 	free(m->bind_alias);
 	free(m->implicit_move);
+	free(m->policy_elided);
 	free(m->callee_name);
 	free(m->ref_name);
 	free(m->callee_def);
@@ -48,6 +50,7 @@ static void ensure(SemModel *m, uint32_t node_id) {
 	m->expr_type_id = realloc(m->expr_type_id, (size_t)newcap * sizeof(TypeId));
 	m->bind_alias = realloc(m->bind_alias, (size_t)newcap * sizeof(uint8_t));
 	m->implicit_move = realloc(m->implicit_move, (size_t)newcap * sizeof(uint8_t));
+	m->policy_elided = realloc(m->policy_elided, (size_t)newcap * sizeof(uint8_t));
 	m->callee_name = realloc(m->callee_name, (size_t)newcap * sizeof(const char *));
 	m->ref_name = realloc(m->ref_name, (size_t)newcap * sizeof(const char *));
 	m->callee_def = realloc(m->callee_def, (size_t)newcap * sizeof(DefId));
@@ -56,6 +59,7 @@ static void ensure(SemModel *m, uint32_t node_id) {
 		m->expr_type_id[i] = TYID_UNKNOWN;
 		m->bind_alias[i] = 0;
 		m->implicit_move[i] = 0;
+		m->policy_elided[i] = 0;
 		m->callee_name[i] = NULL;
 		m->ref_name[i] = NULL;
 		m->callee_def[i] = defid_none();
@@ -99,6 +103,17 @@ int sem_model_implicit_move(const SemModel *m, uint32_t node_id) {
 	if (!m || (int)node_id >= m->cap)
 		return 0;
 	return m->implicit_move[node_id];
+}
+
+void sem_model_set_policy_elided(SemModel *m, uint32_t node_id) {
+	ensure(m, node_id);
+	m->policy_elided[node_id] = 1;
+}
+
+int sem_model_policy_elided(const SemModel *m, uint32_t node_id) {
+	if (!m || (int)node_id >= m->cap)
+		return 0;
+	return m->policy_elided[node_id];
 }
 
 void sem_model_set_callee_name(SemModel *m, uint32_t node_id, const char *name) {
