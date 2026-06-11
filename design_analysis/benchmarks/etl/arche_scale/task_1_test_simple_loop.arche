@@ -1,20 +1,24 @@
+#import { io fmt }
+
 Transaction :: arche { price :: float, quantity :: int, revenue :: float }
 Transaction[100](100) {
   price: 0.0, quantity: 0, revenue: 0.0,
 }
 
 main :: proc() {
-  arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv")(fd:);
-  line: char[128];
-  arche_fread_line(fd, line, 128);
+  io.fopen_read("design_analysis/benchmarks/etl/data/data.csv")(fd:);
+  hdr: char[128];
+  io.fread_line(fd, move hdr, 128)(_hdr:);
   idx := 0;
   for (; idx < 100;) {
-    arche_fread_line(fd, line, 128)(n:);
+    line: char[128];
+    io.fread_line(fd, move line, 128)(view:);
+    n := view.length;
     if (n <= 0) {
       break;
     }
     idx = idx + 1;
   }
-  arche_fclose(fd);
-  printf("ok\n");
+  io.fclose(move fd);
+  fmt.printf("ok\n");
 }

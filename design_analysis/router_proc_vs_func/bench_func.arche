@@ -32,16 +32,16 @@ seg_end :: func(p: char[], start: int, n: int) -> int {
 // `seg` is a sub-slice of the path/pattern (a borrowed view), so it indexes from 0 and carries its
 // own `.length` — no explicit `n`. The stored segment lives in a fixed char[32] column, which has no
 // length of its own, so its content length travels in the `seg_len` column.
-seg_eq :: func(stored: char[], stored_len: int, seg: char[]) -> int {
+seg_eq :: func(stored: char[], stored_len: int, seg: char[]) -> bool {
   if (stored_len != seg.length) {
-    return 0;
+    return false;
   }
   for (i := 0; i < seg.length; i = i + 1) {
     if (stored[i] != seg[i]) {
-      return 0;
+      return false;
     }
   }
-  return 1;
+  return true;
 }
 
 new_node :: proc(seg: char[], seg_len: int, kind: nodeKind)(idx: int) {
@@ -81,7 +81,7 @@ add :: proc(pattern: char[], handler_id: route) {
       if (TrieNode.kind[child] == kind) {
         if (kind == nodeKind.kstatic) {
           cs := TrieNode.seg[child];
-          if (seg_eq(cs, TrieNode.seg_len[child], pattern[tstart: e]) == 1) {
+          if (seg_eq(cs, TrieNode.seg_len[child], pattern[tstart: e])) {
             found = child;
           }
         }
@@ -135,7 +135,7 @@ resolve :: proc(path: char[])(cstart: int[8], clen: int[8], handler_id: route, c
       k := TrieNode.kind[child];
       if (k == nodeKind.kstatic) {
         cs := TrieNode.seg[child];
-        if (seg_eq(cs, TrieNode.seg_len[child], path[s: e]) == 1) {
+        if (seg_eq(cs, TrieNode.seg_len[child], path[s: e])) {
           static_hit = child;
         }
       }

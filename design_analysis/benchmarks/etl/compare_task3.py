@@ -11,7 +11,7 @@ import os
 def run_arche(iterations=10):
     os.makedirs('build/benchmarks/etl/task3', exist_ok=True)
     start = time.perf_counter()
-    result = subprocess.run(['./build/arche', '-o', 'build/benchmarks/etl/task3/task3_arche_bin',
+    result = subprocess.run(['./build/arche', 'build', '-o', 'build/benchmarks/etl/task3/task3_arche_bin',
                            'design_analysis/benchmarks/etl/arche/task_3_bucket_timestamps.arche'],
                           capture_output=True, text=True)
     if result.returncode != 0:

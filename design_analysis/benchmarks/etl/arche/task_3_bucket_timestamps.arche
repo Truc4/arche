@@ -1,5 +1,7 @@
 // Task 3: Bucket prices into buckets
 // price_bucket = floor(price / 10)
+#import { csv io fmt }
+
 Transaction :: arche { price :: float, quantity :: int, price_bucket :: float }
 
 Transaction[1000](1000) {
@@ -7,92 +9,28 @@ Transaction[1000](1000) {
 }
 
 load_transactions :: proc() {
-  arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv")(fd:);
-  buf       : char[65536];
-  price_str : char[32];
-  qty_str   : char[32];
-  arche_fread(fd, buf, 65536)(total_n:);
-  arche_fclose(fd);
-  idx        := 0;
-  pos        := 0;
-  line_start := 0;
-  for (; pos < total_n;) {
-    if (buf[pos] == '\n') {
-      line_start = pos + 1;
-      pos        = pos + 1;
-      break;
-    }
-    pos = pos + 1;
-  }
-  for (; idx < 1000;) {
-    if (line_start >= total_n) {
-      break;
-    }
-    line_end := line_start;
-    for (; line_end < total_n;) {
-      if (buf[line_end] == '\n') {
-        break;
-      }
-      line_end = line_end + 1;
-    }
-    c1 := line_start;
-    for (; c1 < line_end;) {
-      if (buf[c1] == ',') {
-        break;
-      }
-      c1 = c1 + 1;
-    }
-    c2 := c1 + 1;
-    for (; c2 < line_end;) {
-      if (buf[c2] == ',') {
-        break;
-      }
-      c2 = c2 + 1;
-    }
-    j := 0;
-    i := c1 + 1;
-    for (; i < c2;) {
-      price_str[j] = buf[i];
-      j            = j + 1;
-      i            = i + 1;
-    }
-    price_str[j] = 0;
-    j            = 0;
-    i            = c2 + 1;
-    for (; i < line_end;) {
-      qty_str[j] = buf[i];
-      j          = j + 1;
-      i          = i + 1;
-    }
-    qty_str[j]                = 0;
-    Transaction.price[idx]    = atof(price_str);
-    Transaction.quantity[idx] = atoi(qty_str);
-    idx                       = idx + 1;
-    line_start                = line_end + 1;
-  }
+  csv.load(Transaction, "design_analysis/benchmarks/etl/data/data.csv");
 }
 
 write_transactions :: proc() {
-  arche_fopen_write("build/benchmarks/etl/task3/arche_output.csv")(fd:);
-  buf: char[256];
-  i := 0;
-  for (; i < 1000;) {
-    sprintf(
-      buf,
+  io.fopen_write("build/benchmarks/etl/task3/arche_output.csv")(fd:);
+  for (i := 0; i < 1000; i = i + 1) {
+    buf: char[256];
+    fmt.sprintf(
+      _,
       "%f,%d,%f\n",
       Transaction.price[i],
       Transaction.quantity[i],
       Transaction.price_bucket[i],
-    )(n:);
-    arche_fwrite(fd, buf, n);
-    i = i + 1;
+    )(buf, n:);
+    io.fwrite(fd, move buf, n);
   }
-  arche_fclose(fd);
+  io.fclose(move fd);
 }
 
 main :: proc() {
   load_transactions();
   Transaction.price_bucket = Transaction.price / 10.0;
   write_transactions();
-  printf("Task3 complete: 1000 rows bucketed\n");
+  fmt.printf("Task3 complete: 1000 rows bucketed\n");
 }

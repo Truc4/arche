@@ -1,5 +1,5 @@
 // Task 2 (arche, transform-only): count(quantity > 0), repeated N=216,000 times.
-#import { csv }
+#import { csv io fmt os }
 
 Transaction :: arche { quantity :: int }
 
@@ -8,15 +8,15 @@ Transaction[10000](10000) {
 }
 
 load_transactions :: proc() {
-  csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");
+  csv.load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");
 }
 
 write_output :: proc(count: i64) {
-  arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_2.csv")(fd:);
+  io.fopen_write("design_analysis/benchmarks/transform/out/arche/task_2.csv")(fd:);
   buf: char[64];
-  sprintf(buf, "count\n%ld\n", count);
-  arche_fwrite(fd, buf, strlen(buf));
-  arche_fclose(move fd);
+  fmt.sprintf(_, "count\n%ld\n", count)(buf, n:);
+  io.fwrite(fd, move buf, n);
+  io.fclose(move fd);
 }
 
 main :: proc() {
@@ -25,7 +25,7 @@ main :: proc() {
   // Up to 2.16e9 across all iters — past i32 but well within i64. An integer accumulator
   // (unlike a float one) lets the conditional count auto-vectorize into a SIMD masked-add.
   count: i64 = 0;
-  arche_now_sec()(t0:);
+  os.os_now_sec()(t0:);
   for (iter := 0; iter < 216000; iter += 1) {
     for (i := 0; i < 10000; i += 1) {
       if (Transaction.quantity[i] > 0) {
@@ -33,11 +33,11 @@ main :: proc() {
       }
     }
   }
-  arche_now_sec()(t1:);
+  os.os_now_sec()(t1:);
   elapsed := t1 - t0;
 
   write_output(count);
 
-  printf("task2_checksum: %ld\n", count);
-  printf("task2_time: %g\n", elapsed / 216000.0);
+  fmt.printf("task2_checksum: %ld\n", count);
+  fmt.printf("task2_time: %g\n", elapsed / 216000.0);
 }
