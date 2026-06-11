@@ -3,7 +3,9 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "compile-time constant" %t.out
 #import { fmt }
 pick :: func(n: int) -> int {
-  if (n > 0) { return 4; }
+  if (n > 0) {
+    return 4;
+  }
   return 0;
 }
 Grid :: arche { cell :: int }

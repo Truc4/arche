@@ -3252,8 +3252,9 @@ static void analyze_static_decl(SemanticContext *ctx, DeclSummary *alloc) {
 		if (semantic_try_const_int(ctx, alloc->static_fields[0], &folded) && folded >= 0) {
 			alloc->static_pool_count = folded;
 		} else {
-			fprintf(stderr,
-			        "Error: alloc count must be a compile-time constant (a literal, a const, or a pure func of them)\n");
+			fprintf(
+			    stderr,
+			    "Error: alloc count must be a compile-time constant (a literal, a const, or a pure func of them)\n");
 			ctx->error_count++;
 			return;
 		}

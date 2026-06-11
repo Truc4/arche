@@ -1,7 +1,9 @@
 // CTFE folds a pure func of constants used as a pool field initializer value.
 // RUN: %arche build -o %t %s && %t | grep "ok"
 #import { fmt }
-two :: func() -> int { return 1 + 1; }
+two :: func() -> int {
+  return 1 + 1;
+}
 Grid :: arche { cell :: int }
 Grid[4](4) {
   cell: two(),

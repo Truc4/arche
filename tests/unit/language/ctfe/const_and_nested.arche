@@ -2,9 +2,13 @@
 // func of constants. `add(area(SZ,4), 0)` → add(12,0) → 12.
 // RUN: %arche build -o %t %s && %t | grep "ok"
 #import { fmt }
-SZ :: 3
-area :: func(w: int, h: int) -> int { return w * h; }
-add  :: func(a: int, b: int) -> int { return a + b; }
+SZ   :: 3
+area :: func(w: int, h: int) -> int {
+  return w * h;
+}
+add :: func(a: int, b: int) -> int {
+  return a + b;
+}
 MAX  :: area(SZ, 4)
 Grid :: arche { cell :: int }
 Grid[add(area(SZ, 4), 0)](MAX) {

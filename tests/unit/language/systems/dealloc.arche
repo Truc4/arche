@@ -14,8 +14,8 @@ main :: proc() {
   insert(Particle, 2.0, 0.2)(_:, _:);
   insert(Particle, 3.0, 0.3)(_:, _:);
   run advance;
-  p0 := Particle.pos[0];
-  p1 := Particle.pos[1];
+  p0  := Particle.pos[0];
+  p1  := Particle.pos[1];
   p0i := p0 * 10.0;
   p1i := p1 * 10.0;
   fmt.print("p0i=");
