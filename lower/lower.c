@@ -1365,6 +1365,11 @@ static HirStmt *lower_stmt_cst(SyntaxView s) {
 				call->data.call.args[0] = sarg;
 				call->data.call.args[1] = parg;
 				call->data.call.arg_count = 2;
+				/* streq returns bool (i8). Tag the synthetic call's resolved type so codegen
+				 * coerces its i8 result to the comparison width (zext to i32) instead of treating
+				 * it as the i32 default — otherwise the `!= 0` emits `icmp ne i32 <i8>` (bad IR). */
+				call->resolved.tag = HIR_TYPE_NAMED;
+				call->resolved.name = "bool";
 				HirExpr *zero = hir_expr_create(HIR_EXPR_LITERAL);
 				zero->data.literal.lexeme = dupz("0");
 				cond = hir_expr_create(HIR_EXPR_BINARY);

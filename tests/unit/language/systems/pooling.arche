@@ -1,0 +1,26 @@
+// RUN: %arche build -o %t %s && %t | grep "ok"
+// Pool reuse: column ops touch the live rows, a handle `delete` frees a slot, and a later
+// insert reuses freed capacity — column reads stay correct throughout.
+#import { fmt }
+Entity :: arche { x :: float, y :: float }
+
+Entity[100]
+
+main :: proc() {
+  insert(Entity, 1.0, 2.0)(_:, _:);
+  insert(Entity, 3.0, 4.0)(h1:, _:);
+  insert(Entity, 5.0, 6.0)(_:, _:);
+  insert(Entity, 7.0, 8.0)(_:, _:);
+  insert(Entity, 9.0, 10.0)(_:, _:);
+  Entity.x = Entity.x + 1.0;
+  Entity.y = Entity.y * 2.0;
+  delete(h1)(_:);
+  insert(Entity, 11.0, 12.0)(_:, _:);
+  x0  := Entity.x[0];
+  y4  := Entity.y[4];
+  x0i := x0 * 10.0;
+  y4i := y4 * 10.0;
+  fmt.assert(x0i == 20, "x[0] != 2.0\n");
+  fmt.assert(y4i == 200, "y[4] != 20.0\n");
+  fmt.printf("ok\n");
+}

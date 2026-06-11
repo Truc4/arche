@@ -1,24 +1,19 @@
 // RUN: %arche build -o %t %s && %t | grep "p0i"
+// A sys mutates the column, then the archetype storage is released with `dealloc`.
 #import { fmt }
-Particle :: arche {
-  pos :: float,
-  vel :: float,
-}
+Particle :: arche { pos :: float, vel :: float }
 
+Particle[10]
 
-Particle[10];
-
-
-move :: sys(pos, vel) {
+advance :: sys (pos, vel) {
   pos = pos + vel;
 }
 
-
 main :: proc() {
-  insert(table<Particle>, 1.0, 0.1)(_:, _:);
-  insert(table<Particle>, 2.0, 0.2)(_:, _:);
-  insert(table<Particle>, 3.0, 0.3)(_:, _:);
-  run move;
+  insert(Particle, 1.0, 0.1)(_:, _:);
+  insert(Particle, 2.0, 0.2)(_:, _:);
+  insert(Particle, 3.0, 0.3)(_:, _:);
+  run advance;
   p0 := Particle.pos[0];
   p1 := Particle.pos[1];
   p0i := p0 * 10.0;
