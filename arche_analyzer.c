@@ -270,14 +270,9 @@ static int sem_register_file_cb(void *ctx, const char *mod_name, const char *pat
  * with, so the analyzer selects the SAME backend the compiler does — the LSP can't green-light a
  * call that the build's selected variant doesn't define. */
 static VariantMap g_sem_variants;
-static int g_sem_variants_loaded;
 
 static const char *sem_select_variant(void *ctx, const char *mod_name) {
 	(void)ctx;
-	if (!g_sem_variants_loaded) {
-		variant_map_load_env(&g_sem_variants);
-		g_sem_variants_loaded = 1;
-	}
 	return variant_map_lookup(&g_sem_variants, mod_name);
 }
 
@@ -343,6 +338,11 @@ static void resolve_uses_sem(const SyntaxNode *root, const char *src, const char
 	g_sem_loaded_count = 0;
 
 	char *source_dir = source_dir_of(path);
+	/* Resolve the active backend selection (manifest -> env; the analyzer has no CLI overrides) the
+	 * SAME way the compiler does, so a variant-specific symbol error appears in the editor exactly
+	 * when it appears in the build. Rebuilt each analysis (the --serve loop reuses the process). */
+	variant_map_free(&g_sem_variants);
+	variant_map_load_resolved(&g_sem_variants, source_dir);
 	for (int u = 0; u < root->child_count; u++) {
 		if (root->children[u].tag != SE_NODE || root->children[u].as.node->kind != SN_USE_DECL)
 			continue;

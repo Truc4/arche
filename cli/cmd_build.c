@@ -1,5 +1,6 @@
 #include "../codegen/codegen.h"
 #include "../compile/compile.h"
+#include "../compile/variant_select.h"
 #include "../semantic/semantic.h"
 #include "args.h"
 #include "cli.h"
@@ -23,6 +24,7 @@ enum {
 	B_ALLOW_UNDEFINED,
 	B_FORBID_ALLOW,
 	B_UNCHECKED,
+	B_SELECT,
 };
 
 /* Flag table = parsing + `--help`, one source of truth. The `-Wno-*` / `-Werror[=...]` spellings are
@@ -48,6 +50,8 @@ static const ArgSpec k_build_specs[] = {
      "reject only the implicit/default `!abort` — every fallible op must be annotated"},
     {B_ALLOW_UNDEFINED, "--allow-undefined", ARG_FLAG, 0, 0, NULL,
      "permit the raw, runtime-unsafe `!undefined` opt-out (forbidden by default)"},
+    {B_SELECT, "--select", ARG_VALUE, 1, 0, "<dev>=<variant>",
+     "select a device's variant subfolder (repeatable; overrides arche.toml and ARCHE_SELECT)"},
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
@@ -106,6 +110,12 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 	semantic_set_allow_undefined(args_has(&p, B_ALLOW_UNDEFINED) || args_has(&p, B_UNCHECKED));
 	semantic_set_forbid_allow(args_has(&p, B_FORBID_ALLOW));
 	codegen_set_unchecked(args_has(&p, B_UNCHECKED));
+
+	/* `--select dev=var` (repeatable): the highest-precedence backend selection, layered over
+	 * arche.toml + ARCHE_SELECT when the front-end resolves variants. */
+	for (int i = 0; i < p.hit_count; i++)
+		if (p.hits[i].id == B_SELECT)
+			variant_select_cli_set(p.hits[i].value);
 
 	if (p.pos_count == 0) {
 		fprintf(stderr, "%s: no input file\n", g_prog);

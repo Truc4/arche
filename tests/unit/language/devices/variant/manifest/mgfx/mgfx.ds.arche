@@ -1,0 +1,2 @@
+// Datasheet: marks mgfx a device. Not a standalone test.
+// RUN: true

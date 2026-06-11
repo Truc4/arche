@@ -287,18 +287,13 @@ static void compile_mark_device(void *ctx, const char *mod_name) {
 	mark_device_module(mod_name);
 }
 
-/* Active per-device variant selection. Loaded once from `ARCHE_SELECT` (env) the first time a
- * device is resolved; the CLI/manifest layers (higher precedence) will preload this map in a later
- * phase. The SAME selection drives the analyzer, so the editor and the build agree on backends. */
+/* Active per-device variant selection, rebuilt per compilation in resolve_uses from
+ * manifest -> env -> CLI (precedence). The SAME resolution drives the analyzer, so the editor and
+ * the build agree on backends. */
 static VariantMap g_compile_variants;
-static int g_compile_variants_loaded;
 
 static const char *compile_select_variant(void *ctx, const char *mod_name) {
 	(void)ctx;
-	if (!g_compile_variants_loaded) {
-		variant_map_load_env(&g_compile_variants);
-		g_compile_variants_loaded = 1;
-	}
 	return variant_map_lookup(&g_compile_variants, mod_name);
 }
 
@@ -336,6 +331,11 @@ static void resolve_uses(const SyntaxNode *syntax_root, const char *src, const c
 	g_resolve_errors = 0;
 
 	char *source_dir = source_dir_of(source_path);
+	/* Resolve the active backend selection (manifest -> env -> CLI) before loading any module, so
+	 * variant overlays merge the right subfolder. Rebuilt each compilation (the doctest runner
+	 * compiles many in one process). */
+	variant_map_free(&g_compile_variants);
+	variant_map_load_resolved(&g_compile_variants, source_dir);
 	for (int u = 0; u < syntax_root->child_count; u++) {
 		if (syntax_root->children[u].tag != SE_NODE || syntax_root->children[u].as.node->kind != SN_USE_DECL)
 			continue;
