@@ -426,11 +426,12 @@ mutable locals, then runs the *raw* op on whatever they now are. Nothing is buil
 The only irreducible primitive is `_exit` (a libc extern); `abort` is just a policy that calls it.
 `!undefined` is the *empty* policy — no mutation ⇒ the raw op.
 
-Only `!abort` (or a user policy that calls `_exit`) can terminate. This makes the guarantee sharp and
+Only `!abort` (or a user policy that calls `_exit`) *deliberately* terminates — `!undefined` can
+still fault as UB, and a buggy policy can leave the raw op out of bounds. But the deliberate crash is
 per-site rather than smeared over a whole proc:
 
-- A **`func` is total by construction** — its baseline default is `clamp`. An unannotated fallible op
-  in a func clamps; it can't crash.
+- A **`func`'s** baseline default is `clamp`. An unannotated fallible op in a func clamps — it can't
+  crash unless you explicitly opt into `!undefined`/`!abort` or a crashing custom policy.
 - A **`proc`'s** baseline default is `abort`. Either default is overridable per-decl with
   `@default(<policy>)` (e.g. `@default(clamp) hot :: proc(){…}`), or globally with `--unchecked`
   (→ `undefined`). The implicit default is surfaced as an editor inlay so it's never a surprise.
@@ -455,18 +456,25 @@ A bounds policy binds `(len, i)` and **mutates `i`** (a divide policy binds and 
 @policy(divide) zero :: policy(a: int, b: int) { if (b == 0) { a = 0; b = 1; } }  // n/d → 0 when d==0
 ```
 
-### Crash-free builds
+### Narrowing crash sources
 
-Because `!abort` is the only crash source, crash-freedom is assertable for a whole build:
+`!abort` is the *deliberate* crash site, and these flags ban it — but no single flag proves a build
+crash-free. A program can still fault through `!undefined` (a raw, unchecked op — UB), through a
+custom `policy` that calls `_exit`, or through one that fails to bring its operands in range and
+leaves the raw op out of bounds. Policies are ordinary user code. What the flags give you is control
+over the *built-in* abort and the unsafe opt-out:
 
 - `--no-abort` — any op resolving to `!abort` (implicit **or** explicit) is a compile error: the
-  binary provably cannot abort from a policy site.
+  binary contains no abort-policy site. (It says nothing about `!undefined` or a `_exit`-calling
+  custom policy.)
 - `--no-implicit-abort` — only the *implicit/default* `!abort` errors, so every fallible op must be
   explicitly annotated (a deliberate, visible `!abort` is still allowed).
 - `--no-undefined` — rejects the unsafe `!undefined` opt-out, for safety-critical builds.
 
-(These apply to your code; the bundled core/stdlib are exempt. `extern`/FFI procs are outside the
-system — a foreign C boundary is trusted, not policy-tracked.)
+To get close to a crash-free build you combine `--no-abort --no-undefined` **and** audit the
+policies you use (the bundled `clamp`/`zero`/`wrap` are total and don't call `_exit`; a policy you
+write is your responsibility). These apply to your code; the bundled core/stdlib are exempt, and
+`extern`/FFI procs are outside the system — a foreign C boundary is trusted, not policy-tracked.
 
 ### Errors as values: `insert` / `delete`
 
