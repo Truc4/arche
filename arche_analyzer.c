@@ -460,29 +460,29 @@ static void emit_syn(int line, int col, int padL, int padR, const char *kind, co
 	printf("SYN %d %d %d %d %s %s\n", uline, col, padL ? 1 : 0, padR ? 1 : 0, kind, text);
 }
 
-/* Off by default — also render the redundant FORM-type inlays. A presentation choice the editor makes
- * per the user's inlay setting (HINTS full / --dump --full), never a compile concern. */
+/* Retained plumbing for a future verbosity layer; currently UNUSED — no hints are hidden, so it has no
+ * effect. The thin "hide the redundant ones" layer will wire back to this. */
 static int g_full_type_hints = 0;
 
 /* The inferred-type inlay: fill the elided `⟨type⟩` slot of the unified grammar so the view reads as
  * the longhand —
  *   `r := e`  →  `r : T = e`   (anchor before the `=`)
  *   `x :: e`  →  `x : T : e`   (anchor before the 2nd `:`)
- * ONE rule for EVERY binding/declaration form (locals, consts, statics, func/proc/sys/policy/arche): the
- * compiler records `type-of(RHS)` keyed by the binding node id, and this renders it. A node shows a hint
- * iff the compiler typed it AND the source didn't already write the `⟨type⟩` slot — and, by default, the
- * type isn't a redundant form type (hidden unless full mode). Skips type aliases (emit_typeref_hint). */
+ * ONE rule for EVERY binding/declaration form (locals, consts, statics, func/proc/sys/policy/arche/enum):
+ * the compiler records the binding's type keyed by the binding node id, and this renders it. A node shows
+ * a hint iff the compiler typed it AND the source didn't already write the `⟨type⟩` slot. NO redundancy
+ * filtering for now — every binding's type is shown, including the "super redundant" form types
+ * (`add : func(...) -> ... : func(){…}`); a thin hide-the-redundant layer comes later. Skips type
+ * aliases (emit_typeref_hint). */
 static void emit_type_hint(SyntaxView binding, SemanticContext *ctx) {
 	const SemModel *model = sem_context_model(ctx);
 	if (sem_model_bind_alias(model, sv_id(binding)))
 		return; /* a nominal type alias, not a value binding */
 	if (sv_type_count(binding) > 0)
-		return; /* the `⟨type⟩` slot is already written in source */
+		return; /* the `⟨type⟩` slot is already written in source — nothing to infer */
 	TypeId tid = sem_model_expr_type_id(model, sv_id(binding));
 	if (tid == TYID_UNKNOWN)
 		return;
-	if (!g_full_type_hints && tyid_is_form_type(sem_context_arena(ctx), tid))
-		return; /* redundant: the form already states its type — hidden by default (still in the model) */
 	char tybuf[128];
 	const char *ty = tyid_display(sem_context_arena(ctx), tid, tybuf, sizeof(tybuf));
 	if (!ty || !ty[0])

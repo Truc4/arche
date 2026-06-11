@@ -77,15 +77,36 @@ the map **complete**.
   (`btype_id`), else → `type-of(RHS)`, always keyed on the bind node. This makes the map complete for
   locals too and removes the asymmetry with top-level. Suppression of an already-written type now lives in
   exactly ONE place: the presentation check `sv_type_count > 0` in `emit_type_hint`.
-- **The one suppression predicate is compiler-side: `tyid_is_form_type(arena, t)`** in
-  `semantic/sem_types.{c,h}` (replaces the analyzer's inline `type_is_form`). The editor owns zero
-  per-kind knowledge — it reads the map, checks the syntax slot, and asks the compiler "is this a form
-  type?". Every fact comes from the compiler.
-- **Aliases and enums show `: type :` by default** (the `type` meta is not a form type). This is a
-  deliberate behavior change: `explicit_view/alias_backing.arche` now expects the alias *declarations* to
-  carry a `type` inlay (superseding the earlier "alias decl gets no hint" note above), and
-  `full_type_hints.arche`'s component aliases (`pos :: float`) likewise show `type`. New
-  `binding_type_completeness.arche` proves the 2×2 matrix (local/top-level × inferred/annotated) plus enum.
+- **NO redundancy filtering for now — every binding's type is SHOWN.** Decision (deliberate, current
+  state): the editor renders the type for *every* binding with an elided `⟨type⟩` slot, including the
+  "super redundant" form types — `add : func(i32, i32) -> i32 : func(){…}`, `step : sys(pos, vel) : sys(…)`,
+  `Particle : archetype : arche{…}`, `Color : type : enum{…}`. The only thing suppressed is a slot the
+  source *already wrote* (`sv_type_count > 0` — there is nothing to infer there). The goal is to *see* all
+  the redundant hints first; a thin "hide the redundant ones" layer comes **later**. `g_full_type_hints` /
+  `--full` is retained as inert plumbing for that layer.
+- **The redundancy is SYNTACTIC, not type-kind-based — proven by enum.** The earlier attempt used a
+  type-based predicate `tyid_is_form_type` (func/proc/sys/policy/archetype-category). It cannot express
+  enum: there is **no `TYK_ENUM`**, so an enum decl's type collapses to the *same* `type` meta as an
+  alias — a type-based rule literally can't "hide enum, show alias." That forced a special-case-to-SHOW
+  for enum, which is the wrong direction (show is the universal rule; hide is the special case). The
+  predicate was removed. When the hide layer lands it should key on the **source form** — the binding's
+  RHS is a definition-form node (`SN_FUNC_EXPR`/`SN_PROC_EXPR`/`SN_SYS_EXPR`/`SN_POLICY_EXPR`/`SN_ENUM_EXPR`,
+  or the decl is `SN_ARCHETYPE_DECL`) — so enum falls out with zero special casing.
+- **`decl_display_type_id` → `sem_decl_type_id`, exhaustive, no `default`.** The switch covers every
+  `DeclKind` explicitly; a new kind is a `-Wswitch` compile error, never a silent `UNKNOWN` drop. Added
+  arms: `DECL_ENUM` → the `type` meta; `DECL_STATIC` array → `tyid_of_array(static_type_id)`
+  (**`static_type_id` is the ELEMENT type for arrays** — the array node must denote the array type, not the
+  element; a static array always carries a written type so its inlay is suppressed, but the *fact* in the
+  map is now correct); `DECL_FUNC_GROUP` → UNKNOWN (overload set — no single type); `DECL_WORLD`/`DECL_USE`
+  → UNKNOWN (not bindings).
+- **Locals record their type UNCONDITIONALLY (`SN_BIND_STMT` handler).** Previously a local recorded its
+  type only when *un*annotated, and recorded `type-of(RHS)`. Now: annotated → the **declared** type
+  (`btype_id`), else → `type-of(RHS)`, always keyed on the bind node — completing the map for locals too
+  and removing the asymmetry with top-level.
+- **Test fallout (deliberate, behavior change).** Every `explicit_view` test whose dump now contains form
+  decls gained the redundant form-type inlays: `file_scope_type_hints`, `infer_var_type`, `alias_backing`,
+  `param_hints` updated counts/lines; `full_type_hints` repurposed (forms now show by default; `--full` is
+  a no-op); new `binding_type_completeness.arche` proves the full matrix + enum + forms all show.
 - **Rejected:** a `canonical_type_id` field on `DeclSummary` (the decl type is single-call and the map is
   already the one store — a second store with no second reader); and literally merging the two recording
   paths (they consume different inputs at different stages — the unified thing is the *invariant + key*,

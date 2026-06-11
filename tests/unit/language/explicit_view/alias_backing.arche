@@ -1,13 +1,13 @@
 // Explicit view: a type-alias name in a type position shows its backing type.
-// A type-alias DECLARATION now fills its elided ⟨type⟩ slot with the `type` meta — `base : type : int`
-// — the longhand the unified grammar hides (an alias mints a type, and `type` is that type's type).
+// A type-alias DECLARATION fills its elided ⟨type⟩ slot with the `type` meta — `base : type : int`:
 // RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 11 8 1 1 type type"
 // RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 12 8 1 1 type type"
-// And each alias USE in a type position still shows its backing:
+// The proc decl shows its (redundant) form type; each alias USE shows its backing:
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 13 8 1 1 type proc()()"
 // RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 14 11 1 0 alias (i32)"
 // RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 15 12 1 0 alias (i32)"
-// Exactly those four — two alias-decl `type` hints + two backing hints on the use sites.
-// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN ") -eq 4
+// Five SYN total: 2 alias-decl `type`, 1 proc form-type, 2 backing hints.
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN ") -eq 5
 base  :: int
 level :: base
 main  :: proc() {

@@ -1,11 +1,15 @@
-// Inferred-type inlays are CONSISTENT at file scope: a value const, a static global, and a name-const
-// each fill their elided ⟨type⟩ slot exactly like a local `:=`/`::`. A func/proc/sys/arche decl spells
-// its type in the form itself, so its inlay is redundant and HIDDEN by default (opt in: full_type_hints).
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 10 8 1 1 type i32"
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 11 8 1 1 type i32"
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 12 8 1 1 type i32"
-// exactly those three — the func and proc decls add no type inlay by default:
-// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -cF " type ") -eq 3
+// Type inlays are CONSISTENT at file scope: a value const, a static global, and a name-const each fill
+// their elided ⟨type⟩ slot exactly like a local `:=`/`::`. NO redundancy filtering for now — a func/proc
+// decl spells its type in the form, yet its (redundant) type inlay is still shown; a thin hide layer
+// comes later.
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 14 8 1 1 type i32"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 15 8 1 1 type i32"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 16 8 1 1 type i32"
+// the func and proc decls show their (redundant) form types too:
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 17 8 1 1 type func(i32, i32) -> i32"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 20 7 1 1 type proc()()"
+// exactly those five:
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -cF " type ") -eq 5
 #import { fmt }
 MAX   :: 100
 count := 0
