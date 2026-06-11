@@ -130,10 +130,11 @@ void semantic_set_lint_proc_no_effect(int enabled, int werror);
 
 /* Crash-free enforcement (failure policies). Set from the CLI before analysis; consulted by the
  * failure-policy pass. --no-abort: any op resolving to `!abort` (implicit or explicit) is an error;
- * --no-implicit-abort: only the default/implicit `!abort` errors; --no-undefined: `!undefined` errors. */
+ * --no-implicit-abort: only the default/implicit `!abort` errors. `!undefined` is rejected by default;
+ * --allow-undefined opts back in. */
 void semantic_set_no_abort(int on);
 void semantic_set_no_implicit_abort(int on);
-void semantic_set_no_undefined(int on);
+void semantic_set_allow_undefined(int on);
 
 /* `-Werror` (bare): promote every enabled lint to a hard error. */
 void semantic_set_all_lints_werror(int werror);

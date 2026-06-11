@@ -20,7 +20,7 @@ enum {
 	B_WERR,
 	B_NO_ABORT,
 	B_NO_IMPLICIT_ABORT,
-	B_NO_UNDEFINED,
+	B_ALLOW_UNDEFINED,
 	B_FORBID_ALLOW,
 	B_UNCHECKED,
 };
@@ -46,7 +46,8 @@ static const ArgSpec k_build_specs[] = {
      "crash-free build: reject any op resolving to `!abort` (implicit or explicit)"},
     {B_NO_IMPLICIT_ABORT, "--no-implicit-abort", ARG_FLAG, 0, 0, NULL,
      "reject only the implicit/default `!abort` — every fallible op must be annotated"},
-    {B_NO_UNDEFINED, "--no-undefined", ARG_FLAG, 0, 0, NULL, "reject `!undefined` (the raw, runtime-unsafe opt-out)"},
+    {B_ALLOW_UNDEFINED, "--allow-undefined", ARG_FLAG, 0, 0, NULL,
+     "permit the raw, runtime-unsafe `!undefined` opt-out (forbidden by default)"},
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
@@ -100,7 +101,9 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 	/* Crash-free enforcement (failure policies) + escape-hatch ban. */
 	semantic_set_no_abort(args_has(&p, B_NO_ABORT));
 	semantic_set_no_implicit_abort(args_has(&p, B_NO_IMPLICIT_ABORT));
-	semantic_set_no_undefined(args_has(&p, B_NO_UNDEFINED));
+	/* `!undefined` is forbidden by default; --allow-undefined opts in, and --unchecked (which strips
+	 * implicit ops to undefined anyway) implies it. */
+	semantic_set_allow_undefined(args_has(&p, B_ALLOW_UNDEFINED) || args_has(&p, B_UNCHECKED));
 	semantic_set_forbid_allow(args_has(&p, B_FORBID_ALLOW));
 	codegen_set_unchecked(args_has(&p, B_UNCHECKED));
 

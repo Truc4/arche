@@ -786,8 +786,9 @@ SemDiag *sem_emit_policy_abort_forbidden(SemanticContext *ctx, SourceLoc loc, co
 }
 SemDiag *sem_emit_policy_undefined_forbidden(SemanticContext *ctx, SourceLoc loc) {
 	return sem_emit_(ctx, SEM_DIAG_policy_undefined_forbidden, loc,
-	                 "`!undefined` opts out of all runtime safety, but --no-undefined forbids it — use a checked "
-	                 "total policy (`!clamp`, `!zero`) instead");
+	                 "`!undefined` opts out of all runtime safety (a raw, unchecked op — UB if out of bounds) "
+	                 "and is forbidden by default — use a checked total policy (`!clamp`, `!zero`), make the "
+	                 "access provably in bounds, or pass `--allow-undefined` to opt in");
 }
 SemDiag *sem_emit_policy_uses_undefined(SemanticContext *ctx, SourceLoc loc, const char *policy) {
 	return sem_emit_(ctx, SEM_DIAG_policy_uses_undefined, loc,

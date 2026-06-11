@@ -3851,10 +3851,10 @@ static const char *policy_cat_name(PolicyCategory c) {
 /* Crash-free enforcement flags — set by the CLI (cmd_build), consulted by the failure-policy pass.
  * `--no-abort` rejects any op resolving to `!abort` (implicit OR explicit); `--no-implicit-abort`
  * rejects only the default/implicit `!abort` (a deliberate, visible `!abort` is still allowed);
- * `--no-undefined` rejects any `!undefined` site. */
+ * `!undefined` (the raw, runtime-unsafe opt-out) is rejected BY DEFAULT — `--allow-undefined` opts in. */
 static int g_no_abort = 0;
 static int g_no_implicit_abort = 0;
-static int g_no_undefined = 0;
+static int g_allow_undefined = 0; /* default: `!undefined` is forbidden in user code; flag opts in */
 static int g_forbid_allow = 0;
 void semantic_set_no_abort(int on) {
 	g_no_abort = on;
@@ -3862,8 +3862,8 @@ void semantic_set_no_abort(int on) {
 void semantic_set_no_implicit_abort(int on) {
 	g_no_implicit_abort = on;
 }
-void semantic_set_no_undefined(int on) {
-	g_no_undefined = on;
+void semantic_set_allow_undefined(int on) {
+	g_allow_undefined = on;
 }
 void semantic_set_forbid_allow(int on) {
 	g_forbid_allow = on;
@@ -3897,15 +3897,16 @@ static void validate_explicit_policy(SemanticContext *ctx, DeclSummary *d, Sourc
 		}
 	} else if (strcmp(name, "undefined") == 0) {
 		/* A policy is the safety mechanism — it may never opt out of safety. `!undefined` (a raw,
-		 * unchecked op) inside ANY policy body is an error, independent of --no-undefined. Unprovable
-		 * accesses are still allowed in a policy as long as they stay TOTAL (e.g. an eviction handler's
-		 * clamped column scan) — only the raw opt-out is banned. Covers bounds AND divide `!undefined`,
-		 * since this validator is shared. */
+		 * unchecked op) inside ANY policy body is an error regardless of flags. Unprovable accesses are
+		 * still allowed in a policy as long as they stay TOTAL (e.g. an eviction handler's clamped column
+		 * scan) — only the raw opt-out is banned. Covers bounds AND divide `!undefined` (shared validator). */
 		if (d->is_policy) {
 			sem_emit_policy_uses_undefined(ctx, loc, d->name ? d->name : "<anon>");
 			return;
 		}
-		if (g_no_undefined && decl_is_user_code(d)) {
+		/* `!undefined` is forbidden in user code BY DEFAULT (it's the raw, runtime-unsafe opt-out);
+		 * `--allow-undefined` (or `--unchecked`) opts back in. Bundled core/stdlib are always exempt. */
+		if (!g_allow_undefined && decl_is_user_code(d)) {
 			sem_emit_policy_undefined_forbidden(ctx, loc);
 			return;
 		}

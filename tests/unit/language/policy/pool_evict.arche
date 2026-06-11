@@ -2,7 +2,8 @@
 // it scans a column to pick a victim and redirects the write `slot`. The new entity overwrites the
 // victim and the insert succeeds (ok=1). Pool-specific (names Foo's columns), the kind of custom
 // overflow logic the handler mechanism exists for.
-// RUN: %arche build -o %t %s && %t | grep -qF "ok2=1 v0=30 v1=20"
+// (reads results with `!undefined`, so opt into the raw op)
+// RUN: %arche build --allow-undefined -o %t %s && %t | grep -qF "ok2=1 v0=30 v1=20"
 #import { fmt }
 Foo :: arche { v :: int, ts :: int }
 Foo[2] ?evict_oldest

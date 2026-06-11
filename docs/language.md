@@ -420,6 +420,10 @@ raw := buf[j] !undefined; // opt out of all runtime safety: raw access, no check
 crash := buf[j] !abort;   // the only policy that terminates — a visible, deliberate crash site
 ```
 
+`!undefined` is the raw, runtime-unsafe escape hatch, so it is **forbidden by default** — an ordinary
+build rejects it ([E0126](explain/E0126.md)); pass `--allow-undefined` (implied by `--unchecked`) to
+opt in. It is *never* allowed inside a `policy` body.
+
 **A policy is a MACRO** — the compiler inlines its body at the op, with the op's operands bound as
 mutable locals, then runs the *raw* op on whatever they now are. Nothing is built in: `abort`,
 `clamp`, `wrap`, `undefined`, `zero` are all ordinary `policy` decls in `core`, and you write your own.
@@ -459,19 +463,20 @@ A bounds policy binds `(len, i)` and **mutates `i`** (a divide policy binds and 
 ### Narrowing crash sources
 
 `!abort` is the *deliberate* crash site, and these flags ban it — but no single flag proves a build
-crash-free. A program can still fault through `!undefined` (a raw, unchecked op — UB), through a
-custom `policy` that calls `_exit`, or through one that fails to bring its operands in range and
-leaves the raw op out of bounds. Policies are ordinary user code. What the flags give you is control
-over the *built-in* abort and the unsafe opt-out:
+crash-free. A program can still fault through a custom `policy` that calls `_exit`, or one that fails
+to bring its operands in range and leaves the raw op out of bounds. Policies are ordinary user code.
+The raw `!undefined` opt-out is already off by default; the flags control the *built-in* abort:
 
 - `--no-abort` — any op resolving to `!abort` (implicit **or** explicit) is a compile error: the
-  binary contains no abort-policy site. (It says nothing about `!undefined` or a `_exit`-calling
-  custom policy.)
+  binary contains no abort-policy site. (It says nothing about a `_exit`-calling custom policy.)
 - `--no-implicit-abort` — only the *implicit/default* `!abort` errors, so every fallible op must be
   explicitly annotated (a deliberate, visible `!abort` is still allowed).
-- `--no-undefined` — rejects the unsafe `!undefined` opt-out, for safety-critical builds.
+- `--allow-undefined` — opts the raw `!undefined` op back IN. It is **forbidden by default** (it reads
+  out of bounds with no check — UB), so an ordinary build already rejects it; this flag is the
+  trusted-build escape hatch. (`--unchecked` implies it.) `!undefined` is *never* allowed inside a
+  `policy` body regardless of this flag — a policy must stay total ([E0213](explain/E0213.md)).
 
-To get close to a crash-free build you combine `--no-abort --no-undefined` **and** audit the
+To get close to a crash-free build you add `--no-abort` (the raw op is already off) **and** audit the
 policies you use (the bundled `clamp`/`zero`/`wrap` are total and don't call `_exit`; a policy you
 write is your responsibility). These apply to your code; the bundled core/stdlib are exempt, and
 `extern`/FFI procs are outside the system — a foreign C boundary is trusted, not policy-tracked.
