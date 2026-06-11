@@ -1,12 +1,14 @@
+#import { io fmt }
+
 Transaction :: arche { price :: float, quantity :: int, revenue :: float }
 Transaction[100](100) {
   price: 0.0, quantity: 0, revenue: 0.0,
 }
 
 main :: proc() {
-  arche_fopen_read("design_analysis/benchmarks/etl/data/data.csv")(fd:);
+  io.fopen_read("design_analysis/benchmarks/etl/data/data.csv")(fd:);
   line: char[128];
-  arche_fread_line(fd, line, 128);
-  arche_fclose(fd);
-  printf("ok\n");
+  io.fread_line(fd, move line, 128)(_discard:);
+  io.fclose(move fd);
+  fmt.printf("ok\n");
 }

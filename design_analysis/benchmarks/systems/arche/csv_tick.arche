@@ -17,7 +17,7 @@
 //     (currently we'd time externally via the runner)
 //   - write the Python/Polars comparison loop (deferred per plan)
 
-#import { csv }
+#import { csv fmt }
 
 Transaction :: arche {
   price    :: float,
@@ -30,7 +30,7 @@ Transaction[100000](100000) {
 }
 
 load_once :: proc() {
-  csv_load(Transaction, "design_analysis/benchmarks/systems/data/data_100k.csv");
+  csv.load(Transaction, "design_analysis/benchmarks/systems/data/data_100k.csv");
 }
 
 // Per-tick compute: revenue = price * quantity, then dampen.
@@ -45,6 +45,7 @@ dampen :: sys (revenue) {
 
 // TODO: write revenue column to build/benchmarks/systems/snapshot_<iter>.bin
 // For now this is a no-op so the loop structure is visible.
+@allow(proc_no_effect)
 snapshot :: proc(iter: int) {
   // let buf: char[64];
   // let n := sprintf(buf, "build/benchmarks/systems/snapshot_%d.bin", iter);
@@ -73,6 +74,6 @@ main :: proc() {
   for (m := 0; m < 100000; m += 1) {
     sum = sum + Transaction.revenue[m];
   }
-  printf("systems_checksum: %g\n", sum);
-  printf("systems_iters: %d\n", ITERS);
+  fmt.printf("systems_checksum: %g\n", sum);
+  fmt.printf("systems_iters: %d\n", ITERS);
 }

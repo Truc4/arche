@@ -1,6 +1,6 @@
 // Task 2: Filter invalid rows
 // Count rows where quantity > 0
-#import { csv }
+#import { csv fmt }
 
 Transaction :: arche { quantity :: int }
 
@@ -9,7 +9,7 @@ Transaction[100000000](100000000) {
 }
 
 load_transactions :: proc() {
-  csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_100m.csv");
+  csv.load(Transaction, "design_analysis/benchmarks/etl/data/data_100m.csv");
 }
 
 main :: proc() {
@@ -20,5 +20,5 @@ main :: proc() {
       count += 1;
     }
   }
-  printf("task2_checksum: %d\n", count);
+  fmt.printf("task2_checksum: %d\n", count);
 }

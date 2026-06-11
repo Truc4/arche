@@ -1,6 +1,6 @@
 // Task 1 (arche, transform-only): revenue = price * quantity, repeated N=216,000 times.
 // Load CSV into static archetype once; the timed loop is pure vectorized column op.
-#import { csv }
+#import { csv io fmt os }
 
 Transaction :: arche { price :: float, quantity :: int, revenue :: float }
 
@@ -9,29 +9,29 @@ Transaction[10000](10000) {
 }
 
 load_transactions :: proc() {
-  csv_load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");
+  csv.load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");
 }
 
 write_output :: proc() {
-  arche_fopen_write("design_analysis/benchmarks/transform/out/arche/task_1.csv")(fd:);
+  io.fopen_write("design_analysis/benchmarks/transform/out/arche/task_1.csv")(fd:);
   header: char[16];
-  sprintf(header, "revenue\n");
-  arche_fwrite(fd, header, strlen(header));
+  fmt.sprintf(_, "revenue\n")(header, hn:);
+  io.fwrite(fd, move header, hn);
   buf: char[64];
   for (i := 0; i < 10000; i += 1) {
-    sprintf(buf, "%g\n", Transaction.revenue[i]);
-    arche_fwrite(fd, buf, strlen(buf));
+    fmt.sprintf(_, "%g\n", Transaction.revenue[i])(buf, n:);
+    io.fwrite(fd, move buf, n);
   }
-  arche_fclose(move fd);
+  io.fclose(move fd);
 }
 
 main :: proc() {
   load_transactions();
-  arche_now_sec()(t0:);
+  os.os_now_sec()(t0:);
   for (iter := 0; iter < 216000; iter += 1) {
     Transaction.revenue = Transaction.price * Transaction.quantity;
   }
-  arche_now_sec()(t1:);
+  os.os_now_sec()(t1:);
   elapsed := t1 - t0;
 
   sum := 0.0;
@@ -41,6 +41,6 @@ main :: proc() {
 
   write_output();
 
-  printf("task1_checksum: %g\n", sum);
-  printf("task1_time: %g\n", elapsed / 216000.0);
+  fmt.printf("task1_checksum: %g\n", sum);
+  fmt.printf("task1_time: %g\n", elapsed / 216000.0);
 }
