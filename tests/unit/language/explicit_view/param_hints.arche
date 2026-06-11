@@ -10,7 +10,7 @@
 // may be shorter than the index), so the implicit `!abort` policy applies and is shown as a ghost.
 // RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 18 9 0 0 policy !abort"
 // RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 18 18 0 0 policy !abort"
-// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN ") -eq 12
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN ") -eq 9
 add :: func(a: int, b: int) -> int {
   return a + b;
 }

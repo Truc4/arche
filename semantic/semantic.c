@@ -4353,8 +4353,8 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 	case DECL_SYS: {
 		/* Each form gets its OWN callable kind — func/proc/sys/policy never unify. Params are common;
 		 * a func carries its return list, a proc its out-params, sys/policy none. */
-		if (d->is_extern)
-			return TYID_UNKNOWN; /* a foreign C signature isn't a value the editor surfaces */
+		/* foreign decls have a fully computed signature (sem_fill_decl_type_ids types their params/returns
+		 * unconditionally), so they get their type like any other callable — no special-case hide. */
 		int np = d->param_count;
 		TypeId pbuf[32];
 		TypeId *params = np > 32 ? malloc((size_t)np * sizeof(TypeId)) : pbuf;

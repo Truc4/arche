@@ -460,9 +460,45 @@ static void emit_syn(int line, int col, int padL, int padR, const char *kind, co
 	printf("SYN %d %d %d %d %s %s\n", uline, col, padL ? 1 : 0, padR ? 1 : 0, kind, text);
 }
 
-/* Retained plumbing for a future verbosity layer; currently UNUSED — no hints are hidden, so it has no
- * effect. The thin "hide the redundant ones" layer will wire back to this. */
+/* Opt-out of redundancy filtering: when set, EVERY binding's type is shown, including the redundant
+ * definition-form ones. Off by default (concise view). This is the LSP/editor-side verbosity setting —
+ * NOT a compiler concern; the editor stores it per-project and passes it via `--full` / `HINTS full`. */
 static int g_full_type_hints = 0;
+
+/* The "small list of exceptions": redundancy is presentation-only and lives HERE, in the editor layer,
+ * never in the compiler. A binding is a redundant definition-form iff its source form ALREADY spells the
+ * type — i.e. its RHS is a `func`/`proc`/`sys`/`policy`/`enum` literal, or it is an archetype decl. The
+ * test is SYNTACTIC (the RHS node kind), not type-based: an enum decl's type is the `type` meta, identical
+ * to an alias's, so only the syntax distinguishes "hide enum / show alias". To hide another form later,
+ * add its node kind to this one list. */
+static int binding_is_redundant_form(SyntaxView binding) {
+	switch (sv_kind(binding)) {
+	case SN_FUNC_DECL:
+	case SN_PROC_DECL:
+	case SN_SYS_DECL:
+	case SN_ARCHETYPE_DECL: /* dedicated form decls: the decl node itself is the form */
+		return 1;
+	default:
+		break;
+	}
+	/* unified `name :: <form-literal>`: the value child is a definition-form expression */
+	for (int i = 0; i < binding.node->child_count; i++) {
+		if (binding.node->children[i].tag != SE_NODE)
+			continue;
+		switch (binding.node->children[i].as.node->kind) {
+		case SN_FUNC_EXPR:
+		case SN_PROC_EXPR:
+		case SN_SYS_EXPR:
+		case SN_POLICY_EXPR:
+		case SN_ENUM_EXPR:
+		case SN_ARCH_EXPR:
+			return 1;
+		default:
+			break;
+		}
+	}
+	return 0;
+}
 
 /* The inferred-type inlay: fill the elided `⟨type⟩` slot of the unified grammar so the view reads as
  * the longhand —
@@ -470,10 +506,9 @@ static int g_full_type_hints = 0;
  *   `x :: e`  →  `x : T : e`   (anchor before the 2nd `:`)
  * ONE rule for EVERY binding/declaration form (locals, consts, statics, func/proc/sys/policy/arche/enum):
  * the compiler records the binding's type keyed by the binding node id, and this renders it. A node shows
- * a hint iff the compiler typed it AND the source didn't already write the `⟨type⟩` slot. NO redundancy
- * filtering for now — every binding's type is shown, including the "super redundant" form types
- * (`add : func(...) -> ... : func(){…}`); a thin hide-the-redundant layer comes later. Skips type
- * aliases (emit_typeref_hint). */
+ * a hint iff the compiler typed it AND the source didn't already write the `⟨type⟩` slot AND — unless the
+ * editor opted into full hints — it isn't a redundant definition-form (the form already spells the type).
+ * Skips type aliases (emit_typeref_hint). */
 static void emit_type_hint(SyntaxView binding, SemanticContext *ctx) {
 	const SemModel *model = sem_context_model(ctx);
 	if (sem_model_bind_alias(model, sv_id(binding)))
@@ -483,6 +518,8 @@ static void emit_type_hint(SyntaxView binding, SemanticContext *ctx) {
 	TypeId tid = sem_model_expr_type_id(model, sv_id(binding));
 	if (tid == TYID_UNKNOWN)
 		return;
+	if (!g_full_type_hints && binding_is_redundant_form(binding))
+		return; /* redundant: the form already states its type — hidden unless the editor opted into full */
 	char tybuf[128];
 	const char *ty = tyid_display(sem_context_arena(ctx), tid, tybuf, sizeof(tybuf));
 	if (!ty || !ty[0])

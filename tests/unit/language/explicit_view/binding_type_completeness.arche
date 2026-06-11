@@ -1,26 +1,21 @@
-// Completeness: "see the `:`, return the type" holds for EVERY binding kind. Each binding records its
-// type as a general compiler fact (the node->type map); the editor renders it by ONE kind-agnostic rule
-// — fill the elided <type> slot, unless the source already wrote it. NO redundancy filtering for now, so
-// EVERY binding's type shows, including the "super redundant" form types (the thin hide layer comes
-// later). Covers the 2x2 matrix local/top-level x inferred/annotated, plus enum and the func/proc forms.
-// A static ARRAY (`buf: int[4]`) always carries a written type, so its inlay is suppressed by
-// construction — the array arm's fact is in the map but is not observable here.
-//
-// Inferred bindings fill their slot — top-level (value const, static scalar) and local alike:
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 25 8 1 1 type i32"
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 26 8 1 1 type i32"
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 33 6 1 1 type i32"
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 35 6 1 1 type Color"
-// An enum decl denotes the `type` meta:
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 27 8 1 1 type type"
-// Form decls (func/proc) show their redundant type too — no hiding:
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 29 6 1 1 type func(i32, i32) -> i32"
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 32 7 1 1 type proc()()"
-// Annotated bindings already spell their type, so the inlay is hidden — no SYN on those lines:
-// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN 28 ") -eq 0
-// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN 34 ") -eq 0
-// Exactly those seven type inlays (every binding with an elided slot; only the two annotated ones hidden):
-// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -cF " type ") -eq 7
+// Completeness + the editor's hide layer. The compiler records a type for EVERY binding (the node->type
+// map is complete); the editor then HIDES the redundant definition-forms by default via its small
+// exception list — func/proc/sys/policy/enum/arche — and shows the rest; --full opts out. The split is
+// SYNTACTIC: an enum decl's type is the `type` meta, identical to an alias's, yet enum HIDES (its RHS is
+// `enum{…}`, a form) while an alias shows. A static ARRAY always carries a written type so its inlay is
+// suppressed regardless; its fact lives in the map but isn't observable here.
+// Default view — value/inferred bindings show (top-level value-const + static scalar, and locals):
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 20 8 1 1 type i32"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 21 8 1 1 type i32"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 28 6 1 1 type i32"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 30 6 1 1 type Color"
+// exactly four by default — enum, the func/proc forms, and the two annotated bindings are all hidden:
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -cF " type ") -eq 4
+// --full opts out: enum (the `type` meta) and the func/proc forms then render too:
+// RUN: %build/arche-analyzer --dump --full %s | grep -qxF "SYN 22 8 1 1 type type"
+// RUN: %build/arche-analyzer --dump --full %s | grep -qxF "SYN 24 6 1 1 type func(i32, i32) -> i32"
+// RUN: %build/arche-analyzer --dump --full %s | grep -qxF "SYN 27 7 1 1 type proc()()"
+// RUN: test $(%build/arche-analyzer --dump --full %s 2>/dev/null | grep -cF " type ") -eq 7
 #import { fmt }
 total :: 100
 count := 0

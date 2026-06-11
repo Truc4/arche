@@ -54,60 +54,40 @@ Implemented and green: 595 lit + doctests, ASan 6/6, semantic/codegen/lower unit
 no longer conflates the forms (no `is_proc`); the inlay is one rule over `type-of(RHS)`; value bindings
 are consistent at every scope; form types are recorded but hidden by default with an editor opt-in.
 
-## Follow-up: no "hint metadata" — complete the general map, plugin is a pure reader
+## Follow-up: complete the map in the compiler, do the hiding in the editor
 
-Plan: `~/.claude/plans/structured-drifting-fern.md`. The principle, made load-bearing: there is **no
-inlay-specific hint table**. Types live in the **one general node→type map** (`sem_model_expr_type_id`),
-the same map every consumer reads. The editor derives the inlay by *comparing* the concrete syntax it
-already has against that map — `O(1)` per binding, no per-kind logic. The compiler's only job is to make
-the map **complete**.
+Plan: `~/.claude/plans/structured-drifting-fern.md`. Two clean layers, no inlay-specific "hint table":
 
-- **The node→type map is the single source of truth and must be COMPLETE for every binding node.** A
-  binding node having a recorded type is now an *invariant*, not a curated subset — so the per-kind
-  computation is a real compiler fact (reusable by hover / go-to-type), never a side channel.
-- **`decl_display_type_id` → `sem_decl_type_id`, exhaustive, no `default`.** The switch covers every
-  `DeclKind` explicitly; a new kind is a `-Wswitch` compile error, never a silent `UNKNOWN` drop. Added
-  arms: `DECL_ENUM` → the `type` meta (an enum *denotes a type*, like an alias); `DECL_STATIC` array →
-  `tyid_of_array(static_type_id)` (**`static_type_id` is the ELEMENT type for arrays** — the array node
-  must denote the array type, not the element; note a static array always carries a written type so its
-  inlay is suppressed, but the *fact* in the map is now correct); `DECL_FUNC_GROUP` → UNKNOWN (an overload
-  set has no single type — a principled "none"); `DECL_WORLD`/`DECL_USE` → UNKNOWN (not bindings).
-- **Locals record their type UNCONDITIONALLY (`SN_BIND_STMT` handler).** Previously a local recorded its
-  type only when *un*annotated, and recorded `type-of(RHS)`. Now: annotated → the **declared** type
-  (`btype_id`), else → `type-of(RHS)`, always keyed on the bind node. This makes the map complete for
-  locals too and removes the asymmetry with top-level. Suppression of an already-written type now lives in
-  exactly ONE place: the presentation check `sv_type_count > 0` in `emit_type_hint`.
-- **NO redundancy filtering for now — every binding's type is SHOWN.** Decision (deliberate, current
-  state): the editor renders the type for *every* binding with an elided `⟨type⟩` slot, including the
-  "super redundant" form types — `add : func(i32, i32) -> i32 : func(){…}`, `step : sys(pos, vel) : sys(…)`,
-  `Particle : archetype : arche{…}`, `Color : type : enum{…}`. The only thing suppressed is a slot the
-  source *already wrote* (`sv_type_count > 0` — there is nothing to infer there). The goal is to *see* all
-  the redundant hints first; a thin "hide the redundant ones" layer comes **later**. `g_full_type_hints` /
-  `--full` is retained as inert plumbing for that layer.
-- **The redundancy is SYNTACTIC, not type-kind-based — proven by enum.** The earlier attempt used a
-  type-based predicate `tyid_is_form_type` (func/proc/sys/policy/archetype-category). It cannot express
-  enum: there is **no `TYK_ENUM`**, so an enum decl's type collapses to the *same* `type` meta as an
-  alias — a type-based rule literally can't "hide enum, show alias." That forced a special-case-to-SHOW
-  for enum, which is the wrong direction (show is the universal rule; hide is the special case). The
-  predicate was removed. When the hide layer lands it should key on the **source form** — the binding's
-  RHS is a definition-form node (`SN_FUNC_EXPR`/`SN_PROC_EXPR`/`SN_SYS_EXPR`/`SN_POLICY_EXPR`/`SN_ENUM_EXPR`,
-  or the decl is `SN_ARCHETYPE_DECL`) — so enum falls out with zero special casing.
-- **`decl_display_type_id` → `sem_decl_type_id`, exhaustive, no `default`.** The switch covers every
-  `DeclKind` explicitly; a new kind is a `-Wswitch` compile error, never a silent `UNKNOWN` drop. Added
-  arms: `DECL_ENUM` → the `type` meta; `DECL_STATIC` array → `tyid_of_array(static_type_id)`
-  (**`static_type_id` is the ELEMENT type for arrays** — the array node must denote the array type, not the
-  element; a static array always carries a written type so its inlay is suppressed, but the *fact* in the
-  map is now correct); `DECL_FUNC_GROUP` → UNKNOWN (overload set — no single type); `DECL_WORLD`/`DECL_USE`
-  → UNKNOWN (not bindings).
-- **Locals record their type UNCONDITIONALLY (`SN_BIND_STMT` handler).** Previously a local recorded its
-  type only when *un*annotated, and recorded `type-of(RHS)`. Now: annotated → the **declared** type
-  (`btype_id`), else → `type-of(RHS)`, always keyed on the bind node — completing the map for locals too
-  and removing the asymmetry with top-level.
-- **Test fallout (deliberate, behavior change).** Every `explicit_view` test whose dump now contains form
-  decls gained the redundant form-type inlays: `file_scope_type_hints`, `infer_var_type`, `alias_backing`,
-  `param_hints` updated counts/lines; `full_type_hints` repurposed (forms now show by default; `--full` is
-  a no-op); new `binding_type_completeness.arche` proves the full matrix + enum + forms all show.
-- **Rejected:** a `canonical_type_id` field on `DeclSummary` (the decl type is single-call and the map is
-  already the one store — a second store with no second reader); and literally merging the two recording
-  paths (they consume different inputs at different stages — the unified thing is the *invariant + key*,
-  not the code).
+**Compiler layer — the node→type map is the single source of truth and must be COMPLETE.** Every binding
+node carries its type in the *general* `sem_model_expr_type_id` map (the same map hover / go-to-type read),
+by construction — never a curated subset, never a side channel.
+
+- **`decl_display_type_id` → `sem_decl_type_id`, exhaustive, no `default`.** Covers every `DeclKind`
+  explicitly; a new kind is a `-Wswitch` compile error, never a silent `UNKNOWN` drop. Arms: `DECL_ENUM` →
+  the `type` meta; `DECL_STATIC` array → `tyid_of_array(static_type_id)` (**`static_type_id` is the ELEMENT
+  type for arrays** — the array node must denote the array type, not the element; a static array always has
+  a written type so its inlay is suppressed, but the *fact* in the map is now correct); `DECL_FUNC_GROUP` →
+  UNKNOWN (overload set — no single type); `DECL_WORLD`/`DECL_USE` → UNKNOWN (not bindings).
+- **Foreign/extern callables are typed like any other.** Removed the `if (d->is_extern) return UNKNOWN`
+  special-case: `sem_fill_decl_type_ids` types their params/returns unconditionally, so the signature is a
+  real fact in the map. The editor decides whether to *show* it (see below), the compiler never hides.
+- **Locals record their type UNCONDITIONALLY (`SN_BIND_STMT`).** Previously only when *un*annotated, and as
+  `type-of(RHS)`. Now: annotated → the **declared** type (`btype_id`), else → `type-of(RHS)`, keyed on the
+  bind node — completing the map for locals too and removing the asymmetry with top-level.
+
+**Editor layer — redundancy hiding is presentation, lives in `arche_analyzer.c`, never the compiler.**
+
+- **A small, explicit exception list (`binding_is_redundant_form`)** hides the redundant definition-forms
+  by default: a binding whose source form already spells the type — RHS is a `func`/`proc`/`sys`/`policy`/
+  `enum` literal (`SN_*_EXPR`), or it is an archetype/func/proc/sys *decl* node. To hide another form later,
+  add its node kind to that one list.
+- **The test is SYNTACTIC, not type-based — proven by enum.** A type-based predicate (`tyid_is_form_type`,
+  since removed) *cannot* express it: there is **no `TYK_ENUM`**, so an enum decl's type is the *same*
+  `type` meta as an alias's. Only the syntax distinguishes "hide enum (`enum{…}` literal) / show alias
+  (a type reference)". So enum hides with zero special-casing; aliases still show `: type :`.
+- **Opt-out is an editor/LSP setting, not a compiler flag.** `--full` / the `HINTS full` protocol line sets
+  `g_full_type_hints`, which shows everything (including the redundant forms). The editor owns the value and
+  is expected to make it per-project; the analyzer is stateless and just honors the flag.
+- **Rejected:** a `canonical_type_id` field on `DeclSummary` (decl type is single-call; the map is already
+  the one store); and merging the two recording paths (different inputs/stages — the unified thing is the
+  *invariant + key*, not the code).
