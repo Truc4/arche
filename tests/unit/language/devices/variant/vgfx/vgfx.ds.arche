@@ -1,0 +1,4 @@
+// Datasheet for the `vgfx` device: its presence makes vgfx importable by name. vgfx carries
+// per-backend VARIANT subfolders (x11/, wayland/) selected at build time via `ARCHE_SELECT`.
+// Not a standalone test.
+// RUN: true

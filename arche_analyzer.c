@@ -24,6 +24,9 @@
  * combined (core+user) coordinates; we subtract the core line count and drop
  * anything inside the core region so the editor sees its own buffer's lines.
  */
+#include "cli/resource.h"
+#include "compile/module_resolve.h"
+#include "compile/variant_select.h"
 #include "lexer/lexer.h"
 #include "parser/parser.h"
 #include "semantic/sem_decls.h"
@@ -37,13 +40,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-
-#ifndef ARCHE_CORE_DIR
-#define ARCHE_CORE_DIR "core"
-#endif
-#ifndef ARCHE_STDLIB_DIR
-#define ARCHE_STDLIB_DIR "stdlib"
-#endif
 
 /* C99 doesn't expose strdup; declare it explicitly (as codegen.c / sem_model.c do). */
 char *strdup(const char *s);
@@ -79,11 +75,6 @@ static char *read_file(const char *path) {
 	char *s = read_stream(f);
 	fclose(f);
 	return s;
-}
-
-static int file_exists(const char *path) {
-	struct stat sb;
-	return stat(path, &sb) == 0;
 }
 
 static char *source_dir_of(const char *path) {
@@ -254,84 +245,57 @@ static int sem_register_module_file(const char *mod_name, const char *path, cons
 	return 1;
 }
 
-/* A module is a FOLDER `<dir>/<name>/` of `.arche` files merged into one namespace; falls back to a
- * single file `<dir>/<name>.arche`. Returns files registered. */
-static int sem_try_load_module_dir(const char *mod_name, const char *dir, const char *source_dir, ModuleHolds *holds,
-                                   DeclOrigin origin) {
-	char folder[640];
-	snprintf(folder, sizeof(folder), "%s/%s", dir, mod_name);
-	DIR *d = opendir(folder);
-	if (d) {
-		int n = 0;
-		struct dirent *ent;
-		while ((ent = readdir(d)) != NULL) {
-			size_t L = strlen(ent->d_name);
-			if (L > 6 && strcmp(ent->d_name + L - 6, ".arche") == 0) {
-				char fp[1300];
-				snprintf(fp, sizeof(fp), "%s/%s", folder, ent->d_name);
-				n += sem_register_module_file(mod_name, fp, source_dir, holds, origin);
-			}
-		}
-		closedir(d);
-		if (n > 0)
-			return n;
-	}
-	char fp[640];
-	snprintf(fp, sizeof(fp), "%s/%s.arche", dir, mod_name);
-	if (file_exists(fp))
-		return sem_register_module_file(mod_name, fp, source_dir, holds, origin);
+/* ---- Module resolution: delegate the SEARCH POLICY to the shared resolver (compile/module_resolve.c)
+ * so the analyzer and the compiler agree on which file backs an `#import` — same search order
+ * (stdlib -> source -> core via arche_resource_dir), same folder/variant layout. The analyzer supplies
+ * its own registration (semantics only, no lowering) and dedup via callbacks; `ctx` carries the
+ * per-analysis ModuleHolds that keeps borrowed syntax trees + sources alive. */
+
+static int sem_mark_seen(void *ctx, const char *name) {
+	(void)ctx;
+	for (int i = 0; i < g_sem_loaded_count; i++)
+		if (strcmp(g_sem_loaded_mods[i], name) == 0)
+			return 1;
+	if (g_sem_loaded_count < SEM_MAX_LOADED_MODS)
+		g_sem_loaded_mods[g_sem_loaded_count++] = strdup(name); /* mark before load → cycle-safe */
 	return 0;
 }
 
-/* Load module `name` (dedup'd) by searching the source dir, then stdlib, then core. The matched search
- * root determines the unit's provenance (DeclOrigin) — correct by construction, no path-sniffing. */
-static void sem_load_module(const char *name, const char *source_dir, ModuleHolds *holds) {
-	for (int i = 0; i < g_sem_loaded_count; i++)
-		if (strcmp(g_sem_loaded_mods[i], name) == 0)
-			return;
-	if (g_sem_loaded_count < SEM_MAX_LOADED_MODS)
-		g_sem_loaded_mods[g_sem_loaded_count++] = strdup(name); /* mark before load → cycle-safe */
-	int loaded = sem_try_load_module_dir(name, source_dir, source_dir, holds, DECL_ORIGIN_USER_MODULE);
-	if (!loaded)
-		loaded = sem_try_load_module_dir(name, ARCHE_STDLIB_DIR, source_dir, holds, DECL_ORIGIN_STDLIB);
-	if (!loaded)
-		loaded = sem_try_load_module_dir(name, ARCHE_CORE_DIR, source_dir, holds, DECL_ORIGIN_CORE);
-	(void)loaded; /* not-found is reported per import-site by the caller below */
+static int sem_register_file_cb(void *ctx, const char *mod_name, const char *path, const char *source_dir,
+                                DeclOrigin origin) {
+	return sem_register_module_file(mod_name, path, source_dir, (ModuleHolds *)ctx, origin);
 }
 
-/* Load a plain MODULE imported by PATH (`#import { "./util" }`): resolve relative to the importer's
- * dir; module name = basename sans `.arche`. Mirror of compile.c's load_module_from_path. */
-static void sem_load_module_from_path(const char *pathstr, const char *source_dir, ModuleHolds *holds) {
-	const char *slash = strrchr(pathstr, '/');
-	const char *base = slash ? slash + 1 : pathstr;
-	char subdir[512];
-	if (slash) {
-		size_t dl = (size_t)(slash - pathstr);
-		if (dl > sizeof(subdir) - 1)
-			dl = sizeof(subdir) - 1;
-		memcpy(subdir, pathstr, dl);
-		subdir[dl] = '\0';
-	} else {
-		subdir[0] = '\0';
+/* Variant selection from `ARCHE_SELECT`, loaded once. The editor inherits the env it was launched
+ * with, so the analyzer selects the SAME backend the compiler does — the LSP can't green-light a
+ * call that the build's selected variant doesn't define. */
+static VariantMap g_sem_variants;
+static int g_sem_variants_loaded;
+
+static const char *sem_select_variant(void *ctx, const char *mod_name) {
+	(void)ctx;
+	if (!g_sem_variants_loaded) {
+		variant_map_load_env(&g_sem_variants);
+		g_sem_variants_loaded = 1;
 	}
-	char mod_name[256];
-	snprintf(mod_name, sizeof(mod_name), "%s", base);
-	size_t ml = strlen(mod_name);
-	if (ml > 6 && strcmp(mod_name + ml - 6, ".arche") == 0)
-		mod_name[ml - 6] = '\0';
-	if (mod_name[0] == '\0')
-		return;
-	for (int i = 0; i < g_sem_loaded_count; i++)
-		if (strcmp(g_sem_loaded_mods[i], mod_name) == 0)
-			return;
-	if (g_sem_loaded_count < SEM_MAX_LOADED_MODS)
-		g_sem_loaded_mods[g_sem_loaded_count++] = strdup(mod_name);
-	char dir[800];
-	if (subdir[0])
-		snprintf(dir, sizeof(dir), "%s/%s", source_dir, subdir);
-	else
-		snprintf(dir, sizeof(dir), "%s", source_dir);
-	sem_try_load_module_dir(mod_name, dir, dir, holds, DECL_ORIGIN_USER_MODULE); /* path import = user's tree */
+	return variant_map_lookup(&g_sem_variants, mod_name);
+}
+
+static ModuleResolver sem_resolver(ModuleHolds *holds) {
+	ModuleResolver r = {holds, sem_mark_seen, sem_register_file_cb, NULL, sem_select_variant};
+	return r;
+}
+
+/* Load module `name` (dedup'd): stdlib, then the source dir, then core (matching the compiler). */
+static void sem_load_module(const char *name, const char *source_dir, ModuleHolds *holds) {
+	ModuleResolver r = sem_resolver(holds);
+	arche_module_load_by_name(&r, name, source_dir);
+}
+
+/* Load a plain MODULE imported by PATH (`#import { "./util" }`). */
+static void sem_load_module_from_path(const char *pathstr, const char *source_dir, ModuleHolds *holds) {
+	ModuleResolver r = sem_resolver(holds);
+	arche_module_load_by_path(&r, pathstr, source_dir);
 }
 
 /* The open document may be a member file of a DEVICE folder (`<dir>/<name>/…` with a `.ds.arche`
@@ -422,7 +386,7 @@ static void ensure_core(void) {
 		return;
 	g_core_loaded = 1;
 	char core_path[512];
-	snprintf(core_path, sizeof(core_path), "%s/core.arche", ARCHE_CORE_DIR);
+	snprintf(core_path, sizeof(core_path), "%s/core.arche", arche_resource_dir(ARCHE_RES_CORE));
 	g_core = read_file(core_path);
 	g_core_newlines = (g_core && g_core[0]) ? count_newlines(g_core) : 0;
 	g_core_lines = g_core_newlines;
@@ -435,7 +399,7 @@ static int path_is_core(const char *path) {
 	if (!path || !path[0])
 		return 0;
 	char core_path[512];
-	snprintf(core_path, sizeof(core_path), "%s/core.arche", ARCHE_CORE_DIR);
+	snprintf(core_path, sizeof(core_path), "%s/core.arche", arche_resource_dir(ARCHE_RES_CORE));
 	struct stat sp, sc;
 	if (stat(path, &sp) != 0 || stat(core_path, &sc) != 0)
 		return 0;
@@ -1012,7 +976,7 @@ static void goto_emit_decl(const Analysis *a, const char *path, int idx) {
 		printf("LOC %d %d %s\n", line, col, file);
 	} else if (line <= g_core_lines) {
 		char core_path[512];
-		snprintf(core_path, sizeof(core_path), "%s/core.arche", ARCHE_CORE_DIR);
+		snprintf(core_path, sizeof(core_path), "%s/core.arche", arche_resource_dir(ARCHE_RES_CORE));
 		printf("LOC %d %d %s\n", line, col, core_path);
 	} else {
 		printf("LOC %d %d %s\n", line - g_core_lines, col, path);

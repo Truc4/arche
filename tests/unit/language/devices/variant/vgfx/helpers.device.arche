@@ -1,0 +1,9 @@
+// Collision-safety: a top-level file with a DESCRIPTIVE dotted name (`helpers.device.arche`) is an
+// ordinary always-merged impl file — the variant scheme tags backends with SUBFOLDERS, never with a
+// filename segment, so a dotted name is never mistaken for a variant tag or a `.ds.arche`. Not a
+// standalone test.
+// RUN: true
+#import { fmt }
+extra :: proc() {
+  fmt.print("vgfx extra\n")();
+}

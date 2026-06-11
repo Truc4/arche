@@ -1,4 +1,6 @@
 #include "compile.h"
+#include "module_resolve.h"
+#include "variant_select.h"
 #include "../cli/resource.h"
 #include "../codegen/codegen.h"
 #include "../lexer/lexer.h"
@@ -27,11 +29,6 @@
 
 /* C99 doesn't expose mkdtemp; declare it explicitly (as we do for strdup). */
 char *mkdtemp(char *tmpl);
-
-static int file_exists(const char *path) {
-	struct stat sb;
-	return stat(path, &sb) == 0;
-}
 
 /* ODR verification (unconditional in per-unit mode). Every `define
  * linkonce_odr` symbol emitted in more than one unit module MUST have a byte-identical body — that is
@@ -193,11 +190,6 @@ static int module_is_device(const char *name) {
 	return 0;
 }
 
-static int file_is_datasheet(const char *name) {
-	size_t L = strlen(name);
-	return L >= 9 && strcmp(name + L - 9, ".ds.arche") == 0;
-}
-
 static void load_module(const char *name, const char *source_dir);           /* fwd (mutual recursion) */
 static void load_module_from_path(const char *path, const char *source_dir); /* fwd */
 
@@ -269,100 +261,60 @@ static int register_module_file(const char *mod_name, const char *path, const ch
 	return 1;
 }
 
-/* A module is a FOLDER: `<dir>/<name>/` with one or more `.arche` files, all merged into one
- * module namespace. Falls back to a single file `<dir>/<name>.arche`. Returns files registered. */
-static int try_load_module_dir(const char *mod_name, const char *dir, const char *source_dir, DeclOrigin origin) {
-	char folder[640];
-	snprintf(folder, sizeof(folder), "%s/%s", dir, mod_name);
-	DIR *d = opendir(folder);
-	if (d) {
-		int n = 0;
-		struct dirent *ent;
-		while ((ent = readdir(d)) != NULL) {
-			size_t L = strlen(ent->d_name);
-			if (L > 6 && strcmp(ent->d_name + L - 6, ".arche") == 0) {
-				char fp[1300];
-				snprintf(fp, sizeof(fp), "%s/%s", folder, ent->d_name);
-				n += register_module_file(mod_name, fp, source_dir, origin);
-				if (file_is_datasheet(ent->d_name))
-					mark_device_module(mod_name); /* a `.ds.arche` in the folder makes it a device */
-			}
-		}
-		closedir(d);
-		if (n > 0)
-			return n;
-	}
-	char fp[640];
-	snprintf(fp, sizeof(fp), "%s/%s.arche", dir, mod_name);
-	if (file_exists(fp))
-		return register_module_file(mod_name, fp, source_dir, origin);
+/* ---- Module resolution: the SEARCH POLICY (which dir, which files, dedup, variants) lives in the
+ * shared resolver (compile/module_resolve.c) so the compiler and the editor analyzer can never
+ * disagree about which file backs an `#import`. The compiler supplies its own registration (parse +
+ * lower + semantic) and device/dedup bookkeeping via these callbacks. */
+
+static int compile_mark_seen(void *ctx, const char *name) {
+	(void)ctx;
+	for (int i = 0; i < g_loaded_count; i++)
+		if (strcmp(g_loaded_mods[i], name) == 0)
+			return 1;
+	if (g_loaded_count < MAX_LOADED_MODS)
+		g_loaded_mods[g_loaded_count++] = strcpy(malloc(strlen(name) + 1), name); /* mark before load → cycle-safe */
 	return 0;
 }
 
-/* Load a plain MODULE imported by PATH (`#import { "./util" }`): resolve `path` relative to the
- * importing file's dir, derive the module name from the path's basename (sans `.arche`), and load the
- * file/folder there. Unlike a bare-name import, no stdlib/core search and no device requirement —
- * importing a `.ds.arche` by path is legal (just not useful). */
-static void load_module_from_path(const char *path, const char *source_dir) {
-	/* Split `path` into its directory part and basename. */
-	const char *slash = strrchr(path, '/');
-	const char *base = slash ? slash + 1 : path;
-	char subdir[512];
-	if (slash) {
-		size_t dl = (size_t)(slash - path);
-		if (dl > sizeof(subdir) - 1)
-			dl = sizeof(subdir) - 1;
-		memcpy(subdir, path, dl);
-		subdir[dl] = '\0';
-	} else {
-		subdir[0] = '\0';
+static int compile_register_file(void *ctx, const char *mod_name, const char *path, const char *source_dir,
+                                 DeclOrigin origin) {
+	(void)ctx;
+	return register_module_file(mod_name, path, source_dir, origin);
+}
+
+static void compile_mark_device(void *ctx, const char *mod_name) {
+	(void)ctx;
+	mark_device_module(mod_name);
+}
+
+/* Active per-device variant selection. Loaded once from `ARCHE_SELECT` (env) the first time a
+ * device is resolved; the CLI/manifest layers (higher precedence) will preload this map in a later
+ * phase. The SAME selection drives the analyzer, so the editor and the build agree on backends. */
+static VariantMap g_compile_variants;
+static int g_compile_variants_loaded;
+
+static const char *compile_select_variant(void *ctx, const char *mod_name) {
+	(void)ctx;
+	if (!g_compile_variants_loaded) {
+		variant_map_load_env(&g_compile_variants);
+		g_compile_variants_loaded = 1;
 	}
-	/* Module name = basename without a trailing `.arche`. */
-	char mod_name[256];
-	snprintf(mod_name, sizeof(mod_name), "%s", base);
-	size_t ml = strlen(mod_name);
-	if (ml > 6 && strcmp(mod_name + ml - 6, ".arche") == 0)
-		mod_name[ml - 6] = '\0';
-	if (mod_name[0] == '\0')
-		return;
-	/* Dedup by module name (the registry namespace is flat). */
-	for (int i = 0; i < g_loaded_count; i++)
-		if (strcmp(g_loaded_mods[i], mod_name) == 0)
-			return;
-	if (g_loaded_count < MAX_LOADED_MODS)
-		g_loaded_mods[g_loaded_count++] = strcpy(malloc(strlen(mod_name) + 1), mod_name);
-	/* Resolve the directory to search relative to the importing file's dir. Transitive imports from
-	 * the loaded module resolve relative to that same dir. */
-	char dir[800];
-	if (subdir[0])
-		snprintf(dir, sizeof(dir), "%s/%s", source_dir, subdir);
-	else
-		snprintf(dir, sizeof(dir), "%s", source_dir);
-	if (!try_load_module_dir(mod_name, dir, dir, DECL_ORIGIN_USER_MODULE)) /* path import = user's tree */
+	return variant_map_lookup(&g_compile_variants, mod_name);
+}
+
+static const ModuleResolver g_compile_resolver = {
+    NULL, compile_mark_seen, compile_register_file, compile_mark_device, compile_select_variant,
+};
+
+/* Load a plain MODULE imported by PATH (`#import { "./util" }`). */
+static void load_module_from_path(const char *path, const char *source_dir) {
+	if (!arche_module_load_by_path(&g_compile_resolver, path, source_dir))
 		fprintf(stderr, "Error: module path not found: %s\n", path);
 }
 
-/* Load module `name` (dedup'd) by searching the source dir, then stdlib, then core. */
+/* Load module `name` (dedup'd) by searching stdlib, then the source dir, then core. */
 static void load_module(const char *name, const char *source_dir) {
-	for (int i = 0; i < g_loaded_count; i++)
-		if (strcmp(g_loaded_mods[i], name) == 0)
-			return;
-	if (g_loaded_count < MAX_LOADED_MODS) {
-		char *dup = malloc(strlen(name) + 1);
-		strcpy(dup, name);
-		g_loaded_mods[g_loaded_count++] = dup; /* mark before load → cycle-safe */
-	}
-	/* STDLIB is authoritative: a stdlib module name (io/net/str/parse/sys/csv/router/…) always
-	 * resolves to stdlib, even if the source tree has a same-named subdir (e.g. the test suite's
-	 * `tests/unit/language/io/`). The prelude imports `io`, so every program triggers this — without
-	 * stdlib-first, a local `io/` dir would shadow it. A user's OWN (non-stdlib) module is still
-	 * found by the source-dir search below. */
-	int loaded = try_load_module_dir(name, arche_resource_dir(ARCHE_RES_STDLIB), source_dir, DECL_ORIGIN_STDLIB);
-	if (!loaded)
-		loaded = try_load_module_dir(name, source_dir, source_dir, DECL_ORIGIN_USER_MODULE);
-	if (!loaded)
-		loaded = try_load_module_dir(name, arche_resource_dir(ARCHE_RES_CORE), source_dir, DECL_ORIGIN_CORE);
-	if (!loaded)
+	if (!arche_module_load_by_name(&g_compile_resolver, name, source_dir))
 		fprintf(stderr, "Error: Module not found: %s\n", name);
 }
 

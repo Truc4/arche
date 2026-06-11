@@ -25,6 +25,8 @@ SRCS = lexer/lexer.c \
        syntax/format_syntax.c \
        parser/parser.c \
        compile/compile.c \
+       compile/module_resolve.c \
+       compile/variant_select.c \
        doctest/doctest_extract.c \
        doctest/doctest_run.c \
        semantic/semantic.c \
@@ -44,13 +46,13 @@ CLI_OBJS = $(BUILD_DIR)/cli/args.o $(BUILD_DIR)/cli/cli.o $(BUILD_DIR)/cli/resou
 # Satellite tools folded into the `arche` binary as subcommands (fmt, analyze): their objects join
 # the main link. The standalone arche-fmt / arche-analyzer binaries still build during the migration.
 FOLD_OBJS = $(BUILD_DIR)/syntax/format_syntax.o $(BUILD_DIR)/syntax/token_category.o $(BUILD_DIR)/arche_analyzer.o
-COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/compile/compile.o $(BUILD_DIR)/doctest/doctest_extract.o $(BUILD_DIR)/doctest/doctest_run.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/codegen/codegen.o $(CLI_OBJS) $(FOLD_OBJS) $(BUILD_DIR)/main.o
+COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/compile/compile.o $(BUILD_DIR)/compile/module_resolve.o $(BUILD_DIR)/compile/variant_select.o $(BUILD_DIR)/doctest/doctest_extract.o $(BUILD_DIR)/doctest/doctest_run.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/codegen/codegen.o $(CLI_OBJS) $(FOLD_OBJS) $(BUILD_DIR)/main.o
 LEXER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/lexer/lexer_main.o
 FMT_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/syntax/format_syntax.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_fmt.o
 SYNTAX_TOKENS_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/syntax/token_category.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_syntax_tokens.o
 # Standalone arche-analyzer = the analyzer object + a thin shim main (analyze_main lives in
 # arche_analyzer.o, shared with the folded `arche analyze` subcommand).
-ANALYZER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/syntax/token_category.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/arche_analyzer.o $(BUILD_DIR)/arche_analyzer_main.o
+ANALYZER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/syntax/token_category.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/compile/module_resolve.o $(BUILD_DIR)/compile/variant_select.o $(BUILD_DIR)/cli/resource.o $(BUILD_DIR)/arche_analyzer.o $(BUILD_DIR)/arche_analyzer_main.o
 SYNTAX_ROUNDTRIP_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_syntax_roundtrip.o
 SYNTAX_VIEW_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/unit/compiler/syntax_view_tests.o
 SEMANTIC_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/unit/compiler/semantic_tests.o
