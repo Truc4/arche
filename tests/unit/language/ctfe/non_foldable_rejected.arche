@@ -1,0 +1,15 @@
+// A capacity the evaluator cannot fold (here a func with control flow, outside the straight-line
+// CTFE subset) is rejected with a clean compile-time error — never a crash or a wrong size.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "compile-time constant" %t.out
+#import { fmt }
+pick :: func(n: int) -> int {
+  if (n > 0) { return 4; }
+  return 0;
+}
+Grid :: arche { cell :: int }
+Grid[pick(1)](pick(1)) {
+  cell: 0,
+}
+main :: proc() {
+  fmt.printf("unreached\n");
+}

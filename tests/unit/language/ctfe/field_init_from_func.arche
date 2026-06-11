@@ -1,0 +1,12 @@
+// CTFE folds a pure func of constants used as a pool field initializer value.
+// RUN: %arche build -o %t %s && %t | grep "ok"
+#import { fmt }
+two :: func() -> int { return 1 + 1; }
+Grid :: arche { cell :: int }
+Grid[4](4) {
+  cell: two(),
+}
+main :: proc() {
+  fmt.assert(Grid.cell[0] == 2, "field init should fold to 2\n");
+  fmt.printf("ok\n");
+}

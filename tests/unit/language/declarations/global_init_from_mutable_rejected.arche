@@ -1,0 +1,13 @@
+// WANT: a non-constant global initializer is a clean error. Static storage is initialized at
+// compile/link time (no code runs before main), so the value must be compile-time-known. Reading a
+// *mutable* global (`counter`) is not compile-time-known and is rejected — CTFE folds literals,
+// consts, and pure funcs of them, never a runtime storage location.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "compile-time constant" %t.out
+#import { fmt }
+counter: int = 0
+
+x: int = counter // a mutable global is not compile-time-known -> error
+
+main :: proc() {
+  fmt.printf("%d\n", x);
+}

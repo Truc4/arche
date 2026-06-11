@@ -1,6 +1,6 @@
 // The negative half of component_distinct: two components over the same backing are DISTINCT, so a
-// `mass` value cannot fill a `charge`-typed slot without `charge(x)`. RED until component nominal
-// typing lands (today `mass` == `charge` == float, so the bind succeeds silently).
+// `mass` value cannot fill a `charge`-typed slot without `charge(x)`. The bind is rejected
+// ("expected 'charge'").
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'charge'" %t.out
 #import { fmt }
 Particle :: arche { mass :: float, charge :: float }

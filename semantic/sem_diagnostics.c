@@ -520,8 +520,8 @@ SemDiag *sem_emit_cannot_move_borrowed(SemanticContext *ctx, SourceLoc loc, cons
 }
 SemDiag *sem_emit_copy_unsupported(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_copy_unsupported, loc,
-	                 "copy of '%s' is not yet supported (only a local `char[N]` buffer can be "
-	                 "copied); copy it into a local first, or use `move`",
+	                 "copy of '%s' is not supported (only a local fixed-size array `T[N]` can be copied — a "
+	                 "parameter array or a slice cannot); bind it into a local `T[N]` first, or use `move`",
 	                 name);
 }
 SemDiag *sem_emit_assign_after_move(SemanticContext *ctx, SourceLoc loc, const char *name) {
@@ -619,7 +619,7 @@ SemDiag *sem_emit_alloc_not_at_top(SemanticContext *ctx, SourceLoc loc) {
 }
 SemDiag *sem_emit_alloc_count_not_literal(SemanticContext *ctx, SourceLoc loc) {
 	return sem_emit_(ctx, SEM_DIAG_alloc_count_not_literal, loc,
-	                 "alloc count must be a literal; dynamic counts not yet supported");
+	                 "alloc count must be a compile-time constant (a literal, a const, or a pure func of them)");
 }
 SemDiag *sem_emit_shape_already_allocated(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_shape_already_allocated, loc,

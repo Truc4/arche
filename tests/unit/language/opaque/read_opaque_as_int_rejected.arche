@@ -1,7 +1,6 @@
 // You cannot read an opaque's raw value in arche. `rd` borrows a `res` and tries to return it as an
-// `int` (opaque->int coercion) — illegal; the bits of an FFI handle are not an integer. Today the
-// checker wrongly accepts this (it only blows up later in codegen); after the coercion hole is
-// removed it must be rejected in semantics with a type error.
+// `int` (opaque->int coercion) — illegal; the bits of an FFI handle are not an integer. The checker
+// rejects it in semantics with a type error ("got 'res'").
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "got 'res'" %t.out
 res :: opaque
 @allow(unused_function)

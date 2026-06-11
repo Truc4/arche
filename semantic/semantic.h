@@ -1,6 +1,7 @@
 #ifndef SEMANTIC_H
 #define SEMANTIC_H
 
+#include "../syntax/syntax_view.h"
 #include "../syntax/type_ref.h"
 #include "sem_hints.h"
 #include "sem_model.h"
@@ -120,6 +121,10 @@ const char *semantic_field_type_name(SemanticContext *ctx, const char *archetype
 
 /* Constant queries */
 const char *semantic_get_const_value(SemanticContext *ctx, const char *const_name);
+
+/* CTFE: fold `e` to a compile-time integer constant (literal / const / pure-func-of-constants).
+ * Returns 1 and writes *out on success, 0 if `e` is not a compile-time-constant integer. */
+int semantic_try_const_int(SemanticContext *ctx, SyntaxView e, int *out);
 
 /* Lint configuration. Both lints are enabled by default. CLI flags
  * (--Wno-proc-could-be-func / --Wno-proc-no-effect) disable them;

@@ -223,7 +223,7 @@ This run still doesn't address the following items from
 Implementing the vectorized form of Task 5 in arche
 (`revenue = revenue * (quantity > 0) * (price > 10.0)`) triggered a codegen bug
 where the int comparison mask isn't lifted to `<4 x i32>` before being fed
-into a vectorized `sitofp` for the float multiply. Full writeup at
-`tests/known_failures/CODEGEN_INT_MASK_FLOAT_COL.md`; minimal repro at
-`tests/unit/language/known_failures/codegen_int_mask_times_float_column.arche`.
-Task 5 in arche falls back to a scalar `if`-filter loop as a workaround.
+into a vectorized `sitofp` for the float multiply.
+(NOTE: now fixed; the writeup doc was removed and the repro relocated to
+`tests/unit/language/types/int_mask_times_float_column.arche` as a passing test.)
+Task 5 in arche fell back to a scalar `if`-filter loop as a workaround at the time.

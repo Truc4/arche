@@ -1,7 +1,7 @@
-// `copy` currently duplicates only a local `char[N]` buffer (statically sized). Copying a
-// forwarded array parameter (whose backing size isn't statically known here) is a clear compile
+// `copy` duplicates a local fixed-size array `T[N]` (any element type). Copying a forwarded array
+// *parameter* — whose backing is not a statically sized local `T[N]` here — is a clear compile
 // error rather than a silent no-copy. See docs/ownership_design_decisions.md.
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "not yet supported" %t.out
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "only a local fixed-size array" %t.out
 consume :: func(own b: char[]) -> char[] {
   b[0] = 'X';
   return b;

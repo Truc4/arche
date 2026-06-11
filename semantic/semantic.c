@@ -1974,20 +1974,10 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 						free(nm);
 					}
 				}
-				/* extern-type nominal distinctness per argument */
-				if (is_extern) {
-					int check_count = param_count < argc ? param_count : argc;
-					for (int j = 0; j < check_count; j++) {
-						ParamSummary *p = &params[j];
-						const char *pn = tyid_nominal_name(ctx->ty_arena, p->type_id);
-						if (pn && is_type_alias(ctx, pn) && !alias_is_transparent(ctx, pn)) {
-							const char *arg_nominal = nominal_type_of_expr(ctx, sem_node_at_expr(v, j));
-							if (arg_nominal && strcmp(arg_nominal, pn) != 0)
-								sem_emit_extern_type_mismatch(ctx, sem_node_loc(sem_node_at_expr(v, j).node), func_name,
-								                              p->name ? p->name : "?", pn, arg_nominal);
-						}
-					}
-				}
+				/* (Extern-arg nominal distinctness is handled by the general per-argument nominal check,
+				 * which reports it in the unified `expected 'X', got 'Y'` vocabulary — no extern-only
+				 * special case. The former bolted-on check here was redundant and emitted a duplicate
+				 * diagnostic.) */
 			}
 			free(func_name);
 			break;
@@ -2947,6 +2937,13 @@ static int sem_is_const_init(SemanticContext *ctx, SyntaxView e) {
 		free(nm);
 		return r;
 	}
+	/* CTFE: constant arithmetic or a pure `func` of constants folds at compile time (a `func` is a
+	 * value), so it is a valid compile-time initializer. */
+	if (k == SN_BINARY_EXPR || k == SN_UNARY_EXPR || k == SN_CALL_EXPR || k == SN_PAREN_EXPR) {
+		int v;
+		if (semantic_try_const_int(ctx, e, &v))
+			return 1;
+	}
 	return 0;
 }
 
@@ -2960,12 +2957,249 @@ static void analyze_static_scalar_decl(SemanticContext *ctx, DeclSummary *s) {
 		return;
 	}
 	if (!sem_is_const_init(ctx, s->static_init)) {
-		fprintf(stderr, "Error: global '%s' initializer must be a compile-time constant (a literal or const)\n",
+		fprintf(stderr,
+		        "Error: global '%s' initializer must be a compile-time constant (a literal, a const, or a pure "
+		        "func of them)\n",
 		        s->name);
 		ctx->error_count++;
 		return;
 	}
 	/* Registration is hoisted (see the pre-pass); nothing to add here. */
+}
+
+/* ---------------------------------------------------------------------------
+ * CTFE — compile-time evaluation of a constant integer expression.
+ *
+ * A `func` is a value (README): with compile-time-constant arguments its result is itself a
+ * compile-time constant. This folds an integer expression — literals, `const`s, arithmetic, and
+ * calls to pure `func`s (straight-line `:=` binds + a terminal `return`) — for use in a constant
+ * position (pool capacity, array size, const decl, field default, global scalar init). Integer-only;
+ * anything it cannot fold returns 0 so the caller keeps its existing "must be a constant" error.
+ * ------------------------------------------------------------------------- */
+#define CTFE_MAX_DEPTH 64
+
+typedef struct {
+	const char *name; /* borrowed: a param name (owned by the DeclSummary) or a bind name (freed by the caller) */
+	long val;
+} CtfeBinding;
+
+typedef struct {
+	CtfeBinding *vars; /* the param/local scope of the func body under evaluation; NULL at top level */
+	int count;
+	int cap;
+	int depth;
+} CtfeScope;
+
+static int ctfe_eval(SemanticContext *ctx, SyntaxView e, CtfeScope *scope, long *out);
+
+static int ctfe_lookup_local(const CtfeScope *scope, const char *name, long *out) {
+	if (!scope || !name)
+		return 0;
+	for (int i = scope->count - 1; i >= 0; i--)
+		if (scope->vars[i].name && strcmp(scope->vars[i].name, name) == 0) {
+			*out = scope->vars[i].val;
+			return 1;
+		}
+	return 0;
+}
+
+/* Evaluate a pure-func call with constant integer arguments: bind its params, walk its straight-line
+ * body (`:=` binds, terminal `return`). */
+static int ctfe_eval_call(SemanticContext *ctx, SyntaxView call, CtfeScope *caller, long *out) {
+	int depth = (caller ? caller->depth : 0) + 1;
+	if (depth > CTFE_MAX_DEPTH)
+		return 0;
+	char *callee = semantic_call_callee_name(ctx, call);
+	if (!callee)
+		return 0;
+	const DeclSummary *fn = semantic_find_callable_sig(ctx, callee);
+	free(callee);
+	if (!fn || fn->kind != DECL_FUNC || fn->is_extern || fn->return_type_count != 1)
+		return 0;
+	if (!sv_present(fn->body_node))
+		return 0;
+	int argc = sem_expr_count(call);
+	if (argc != fn->param_count)
+		return 0;
+
+	CtfeScope inner = {0};
+	inner.depth = depth;
+	inner.cap = argc + 16;
+	inner.vars = calloc(inner.cap, sizeof(CtfeBinding));
+	char *owned[64];
+	int owned_count = 0;
+	int ok = 0;
+
+	/* Bind arguments (evaluated in the caller's scope) to the func's params. */
+	for (int i = 0; i < argc; i++) {
+		long av;
+		if (!ctfe_eval(ctx, sem_node_at_expr(call, i), caller, &av))
+			goto done;
+		inner.vars[inner.count].name = fn->params[i].name;
+		inner.vars[inner.count].val = av;
+		inner.count++;
+	}
+
+	/* Walk the body: binds extend the scope; the first `return` yields the result. */
+	int nstmt = sem_stmt_count(fn->body_node);
+	for (int i = 0; i < nstmt; i++) {
+		SyntaxView st = sem_stmt_at(fn->body_node, i);
+		SyntaxNodeKind sk = sv_kind(st);
+		if (sk == SN_BIND_STMT) {
+			if (inner.count >= inner.cap || owned_count >= 64)
+				goto done;
+			char *nm = sv_name_expr_dup(sem_node_at_expr(st, 0));
+			long bv;
+			if (!nm || !ctfe_eval(ctx, sem_node_at_expr(st, 1), &inner, &bv)) {
+				free(nm);
+				goto done;
+			}
+			owned[owned_count++] = nm;
+			inner.vars[inner.count].name = nm;
+			inner.vars[inner.count].val = bv;
+			inner.count++;
+		} else if (sk == SN_RETURN_STMT) {
+			long rv;
+			if (ctfe_eval(ctx, sem_node_at_expr(st, 0), &inner, &rv)) {
+				*out = rv;
+				ok = 1;
+			}
+			goto done;
+		} else {
+			goto done; /* unsupported statement form — cannot fold */
+		}
+	}
+done:
+	for (int i = 0; i < owned_count; i++)
+		free(owned[i]);
+	free(inner.vars);
+	return ok;
+}
+
+static int ctfe_eval(SemanticContext *ctx, SyntaxView e, CtfeScope *scope, long *out) {
+	if (!sv_present(e))
+		return 0;
+	switch (sv_kind(e)) {
+	case SN_PAREN_EXPR:
+		return ctfe_eval(ctx, sem_first_expr(e), scope, out);
+	case SN_LITERAL_EXPR: {
+		char *lx = sem_cv_dup_first_token(e);
+		if (!lx)
+			return 0;
+		int ok = 0, is_float = 0;
+		for (char *p = lx; *p; p++)
+			if (*p == '.') {
+				is_float = 1;
+				break;
+			}
+		if (!is_float) {
+			char *end = NULL;
+			long v = strtol(lx, &end, 0);
+			if (end && end != lx && *end == '\0') {
+				*out = v;
+				ok = 1;
+			}
+		}
+		free(lx);
+		return ok;
+	}
+	case SN_NAME_EXPR: {
+		char *nm = sv_name_expr_dup(e);
+		if (!nm)
+			return 0;
+		long v;
+		int ok = 0;
+		if (ctfe_lookup_local(scope, nm, &v)) {
+			*out = v;
+			ok = 1;
+		} else {
+			const char *cv = semantic_get_const_value(ctx, nm);
+			if (cv) {
+				char *end = NULL;
+				long c = strtol(cv, &end, 0);
+				if (end && end != cv && *end == '\0') {
+					*out = c;
+					ok = 1;
+				}
+			}
+		}
+		free(nm);
+		return ok;
+	}
+	case SN_UNARY_EXPR: {
+		long v;
+		if (!ctfe_eval(ctx, sem_node_at_expr(e, 0), scope, &v))
+			return 0;
+		if (sv_has_token(e, TOK_MINUS)) {
+			*out = -v;
+			return 1;
+		}
+		return 0;
+	}
+	case SN_BINARY_EXPR: {
+		long l, r;
+		if (!ctfe_eval(ctx, sem_node_at_expr(e, 0), scope, &l))
+			return 0;
+		if (!ctfe_eval(ctx, sem_node_at_expr(e, 1), scope, &r))
+			return 0;
+		switch (sem_binary_op(e)) {
+		case OP_ADD:
+			*out = l + r;
+			return 1;
+		case OP_SUB:
+			*out = l - r;
+			return 1;
+		case OP_MUL:
+			*out = l * r;
+			return 1;
+		case OP_DIV:
+			if (r == 0)
+				return 0;
+			*out = l / r;
+			return 1;
+		case OP_MOD:
+			if (r == 0)
+				return 0;
+			*out = l % r;
+			return 1;
+		case OP_EQ:
+			*out = (l == r);
+			return 1;
+		case OP_NEQ:
+			*out = (l != r);
+			return 1;
+		case OP_LT:
+			*out = (l < r);
+			return 1;
+		case OP_GT:
+			*out = (l > r);
+			return 1;
+		case OP_LTE:
+			*out = (l <= r);
+			return 1;
+		case OP_GTE:
+			*out = (l >= r);
+			return 1;
+		default:
+			return 0; /* &&/|| or none — not foldable here */
+		}
+	}
+	case SN_CALL_EXPR:
+		return ctfe_eval_call(ctx, e, scope, out);
+	default:
+		return 0;
+	}
+}
+
+/* Public: fold `e` to a compile-time integer constant. Returns 1 and writes *out on success, 0 if it
+ * cannot be folded (the caller then keeps its own "must be a constant" diagnostic). */
+int semantic_try_const_int(SemanticContext *ctx, SyntaxView e, int *out) {
+	long v;
+	if (ctx && ctfe_eval(ctx, e, NULL, &v)) {
+		*out = (int)v;
+		return 1;
+	}
+	return 0;
 }
 
 static void analyze_static_decl(SemanticContext *ctx, DeclSummary *alloc) {
@@ -3012,9 +3246,17 @@ static void analyze_static_decl(SemanticContext *ctx, DeclSummary *alloc) {
 	}
 
 	if (alloc->static_pool_count < 0) {
-		fprintf(stderr, "Error: alloc count must be a literal; dynamic counts not yet supported\n");
-		ctx->error_count++;
-		return;
+		/* Not a bare literal — try to fold it (a `const`, or a pure `func` of constants). Runtime-dynamic
+		 * counts are intentionally not a language feature; a dynamic-archetype library is the path there. */
+		int folded;
+		if (semantic_try_const_int(ctx, alloc->static_fields[0], &folded) && folded >= 0) {
+			alloc->static_pool_count = folded;
+		} else {
+			fprintf(stderr,
+			        "Error: alloc count must be a compile-time constant (a literal, a const, or a pure func of them)\n");
+			ctx->error_count++;
+			return;
+		}
 	}
 	/* Record the driver pool's capacity so the final sweep can check it against datasheet minimums. */
 	arch->alloc_capacity = alloc->static_pool_count;
@@ -6723,6 +6965,19 @@ static void analyze_program_core(SemanticContext *ctx) {
 			deferred_loc[deferred_count] = cloc;
 			deferred_count++;
 			continue;
+		}
+
+		/* CTFE: a const whose RHS is constant arithmetic or a pure `func` of constants folds to an
+		 * integer value (a `func` is a value). Register the folded result so it resolves like a
+		 * literal const everywhere downstream. */
+		{
+			int folded;
+			if (semantic_try_const_int(ctx, c->const_value, &folded)) {
+				char tmp[32];
+				snprintf(tmp, sizeof(tmp), "%d", folded);
+				register_value_const(ctx, c->name, sem_dupz(tmp), "int", cloc);
+				continue;
+			}
 		}
 
 		sem_emit_const_rhs_invalid(ctx, cloc);

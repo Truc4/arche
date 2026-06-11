@@ -1,7 +1,6 @@
 // A plain int does NOT implicitly become an enum value — an enum is a DISTINCT type, not int. To get
 // an enum value you name a case (`color.red`) or convert explicitly (`color(0)`); assigning a bare
-// int is a type error. RED until enums are distinct (today they are transparent int aliases, so this
-// wrongly compiles).
+// int is a type error, reported as "expected 'color'".
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'color'" %t.out
 color :: enum { red, green, blue }
 @allow(unused_function)
