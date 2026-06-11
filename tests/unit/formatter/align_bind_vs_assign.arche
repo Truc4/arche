@@ -1,0 +1,17 @@
+// A colon-led binding (`:=`/`::`) and a `=` assignment are different kinds and do NOT share an
+// alignment column: otherwise the binding's `:` would be parked directly under the assignment's `=`.
+// Here `y := 100` must hug — NOT be padded to align its `:=` under the `data[i] =` assignments above.
+// RUN: %arche fmt %s | grep -qE "^  y := 100;$"
+// The `=` assignments still align among themselves (same kind):
+// RUN: %arche fmt %s | grep -qE "^  data\[0\] = 7;$"
+// RUN: %arche fmt %s | grep -qE "^  data\[1\] = 9;$"
+// And the binding is never widened to reach the assignment column:
+// RUN: ! %arche fmt %s | grep -qE "^  y + := "
+#import { fmt }
+main :: proc() {
+  data: int[2];
+  data[0] = 7;
+  data[1] = 9;
+  y := 100;
+  fmt.printf("%d\n", data[0] + y);
+}
