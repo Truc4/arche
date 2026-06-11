@@ -1,10 +1,7 @@
-// RULE (NOT yet enforced — EXPECTED TO FAIL until it is):
-//   You import a DEVICE by name and a plain MODULE by path. A bare name in `#import { … }` must
-//   resolve to a device (a unit with a `.ds.arche` datasheet); a non-device imported by bare name is
-//   an error telling you to import it by path instead (`#import { "./plainmod" }`).
-//   `plainmod` has no datasheet, so importing it by name must error.
-//
-// Today `#import { plainmod }` succeeds, so the grep finds no error and the test FAILS.
+// RULE (enforced): you import a DEVICE by name and a plain MODULE by path. A bare name in
+//   `#import { … }` must resolve to a device (a unit with a `.ds.arche` datasheet); a non-device
+//   imported by bare name is an error telling you to import it by path instead
+//   (`#import { "./plainmod" }`). `plainmod` has no datasheet, so importing it by name errors.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "by path|not a device|import .* by path|only devices.*by name" %t.out
 #import { plainmod }
 

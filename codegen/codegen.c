@@ -456,6 +456,9 @@ static void emit_int_convert(CodegenContext *ctx, const char *val, HirType *from
 	int from_w = (from && from->tag == HIR_TYPE_INT && from->int_width) ? from->int_width : 32;
 	if (from && (from->tag == HIR_TYPE_OPAQUE || from->tag == HIR_TYPE_HANDLE))
 		from_w = 64; /* opaque cell / handle are pointer-width i64 */
+	if (from && from->tag == HIR_TYPE_NAMED && from->name && strcmp(from->name, "bool") == 0)
+		from_w = 8; /* `bool` lowers to i8 — coerce from its real width, not the i32 default, so an
+		             * i8 value (e.g. a `streq` result in `streq(...) != 0`) is zext'd before the icmp */
 	int from_signed = (from && from->tag == HIR_TYPE_INT) ? from->int_signed : 1;
 	if (to_w == 0)
 		to_w = 32;

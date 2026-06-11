@@ -1,6 +1,6 @@
 // Sibling distinctness: `meters` and `seconds` both back `float` but are DISTINCT tier-2 subtypes,
-// so passing a `meters` where a `seconds` is expected is a compile error. Today this compiles
-// SILENTLY (the bug this overhaul fixes) — RED until distinct-by-default lands.
+// so passing a `meters` where a `seconds` is expected is a compile error (distinct-by-default),
+// reported as "expected 'seconds'".
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'seconds'" %t.out
 #import { fmt }
 meters        :: float

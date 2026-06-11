@@ -1,6 +1,6 @@
 // A raw int may not be silently coerced into an opaque. Passing `5` where a `res` is expected must
-// be a type error — opaques never coerce to/from ints in arche. RED until the coercion hole is
-// removed (today `takes(5)` compiles).
+// be a type error — opaques never coerce to/from ints in arche. `takes(5)` is rejected
+// ("expected 'res'").
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'res'" %t.out
 res :: opaque
 @allow(unused_function)

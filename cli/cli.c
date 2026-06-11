@@ -266,14 +266,8 @@ int cli_main(int argc, char **argv) {
 	if (c)
 		return c->run(argc - 1, argv + 1, &g);
 
-	/* Unknown command. A bare source path is the most common mistake (the old implicit-build form),
-	 * so point at `build` explicitly. */
-	// TODO: remove legacy reminder
-	size_t len = strlen(a1);
-	if (len > 6 && strcmp(a1 + len - 6, ".arche") == 0)
-		fprintf(stderr, "%s: '%s' is not a command. Did you mean `%s build %s`?\n", g_prog, a1, g_prog, a1);
-	else
-		fprintf(stderr, "%s: unknown command '%s'\n\n", g_prog, a1);
+	/* Unknown command. */
+	fprintf(stderr, "%s: unknown command '%s'\n\n", g_prog, a1);
 	print_top_help(stderr);
 	return ARCHE_USAGE;
 }

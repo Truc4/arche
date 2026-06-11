@@ -1,6 +1,6 @@
 // You cannot invent an opaque in pure arche — opaque handles originate ONLY at the FFI boundary.
-// The `T(x)` conversion `res(5)` fabricates an opaque from an int and must be rejected. RED until
-// the construct ban lands (today the bogus conversion compiles via the coercion hole).
+// The `T(x)` conversion `res(5)` fabricates an opaque from an int and is rejected ("cannot construct
+// opaque").
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "construct opaque" %t.out
 res :: opaque
 @allow(unused_function)

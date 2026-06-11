@@ -1,0 +1,28 @@
+// RUN: %arche build -o %t %s && %t | grep "ok"
+// A sys names a subset of components; it runs only over archetypes that have ALL of them.
+// `gravity (pos, mass)` matches Body (has `mass`) but NOT Particle (no `mass`), so Particle.pos
+// is left untouched while Body.pos advances by mass. (Body reuses the global `pos`/`vel`
+// components by bare name and defines `mass`.)
+#import { fmt }
+Particle :: arche { pos :: float, vel :: float }
+
+Body :: arche { pos, vel, mass :: float }
+
+Particle[5]
+
+Body[5]
+
+gravity :: sys (pos, mass) {
+  pos = pos + mass;
+}
+
+main :: proc() {
+  insert(Particle, 1.0, 0.1)(_:, _:);
+  insert(Body, 2.0, 0.2, 10.0)(_:, _:);
+  run gravity;
+  ppi := Particle.pos[0] * 10.0;
+  bpi := Body.pos[0] * 10.0;
+  fmt.assert(ppi == 10, "Particle.pos should stay 1.0 (no mass component)\n");
+  fmt.assert(bpi == 120, "Body.pos should be 12.0 (2.0 + mass 10.0)\n");
+  fmt.printf("ok\n");
+}

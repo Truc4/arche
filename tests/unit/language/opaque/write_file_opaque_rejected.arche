@@ -1,0 +1,17 @@
+// An `opaque` handle is a black box: you may pass it around (move / borrow / return), but you may
+// NOT write a raw value into it. `f = 0` assigns an `int` into a `file` opaque out-param — a type
+// error. Constructing one from its underlying repr is an explicit `file(x)` at the FFI/syscall
+// boundary. (`h` is consumed via `sink` so the ONLY error is the illegal write, not must-consume.)
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'file'" %t.out
+#import { io }
+@allow(proc_could_be_func)
+make_fd :: proc()(f: file) {
+  f = 0;
+}
+sink :: proc(own f: file) {
+}
+
+main :: proc() {
+  make_fd()(h:);
+  sink(move h);
+}

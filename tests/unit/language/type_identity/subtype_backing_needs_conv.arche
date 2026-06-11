@@ -1,6 +1,5 @@
 // The backing is NOT implicitly a subtype: a bare `float` value into a `meters` slot is an error
-// (B -> N needs an explicit `meters(x)`). RED until distinct-by-default lands (today float == meters
-// so the bind succeeds with no error).
+// (B -> N needs an explicit `meters(x)`). The bare-float bind is rejected ("expected 'meters'").
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'meters'" %t.out
 #import { fmt }
 meters :: float

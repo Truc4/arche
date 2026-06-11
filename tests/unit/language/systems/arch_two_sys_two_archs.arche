@@ -1,5 +1,4 @@
 // RUN: %arche build -o %t %s && %t
-// BUG: System operations don't modify fields (see COMPILER_BUG_SYSTEM_OPERATIONS.md)
 #import { fmt }
 Particle :: arche { pos :: float, vel :: float }
 

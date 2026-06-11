@@ -183,6 +183,23 @@ static void tuple_rewrite_stmt(HirStmt *s, const char *base) {
 
 static HirExpr *lower_expr_cst(SyntaxView e);
 static HirStmt *lower_stmt_cst(SyntaxView s);
+static char *dupz(const char *s);
+
+/* Lower an expression in a constant-required position (pool capacity / init length / field default /
+ * const decl / global scalar init). CTFE first: if it folds to a compile-time integer, emit that
+ * literal so codegen sees a constant; otherwise lower it normally. A `func` is a value, so
+ * `Grid[area(3,4)]` becomes `Grid[12]` here. */
+static HirExpr *lower_const_or_expr(SyntaxView e) {
+	int folded;
+	if (g_lower_sem && semantic_try_const_int(g_lower_sem, e, &folded)) {
+		HirExpr *lit = hir_expr_create(HIR_EXPR_LITERAL);
+		char buf[32];
+		snprintf(buf, sizeof(buf), "%d", folded);
+		lit->data.literal.lexeme = dupz(buf);
+		return lit;
+	}
+	return lower_expr_cst(e);
+}
 static HirDecl *lower_archetype_from(SyntaxView f, char *name);
 /* An anonymous `arche { … }` literal denotes the shape with those fields: mint a synthetic global
  * archetype for it and return its (deterministic) name, so codegen's canonical_archetype_decl
@@ -1365,6 +1382,11 @@ static HirStmt *lower_stmt_cst(SyntaxView s) {
 				call->data.call.args[0] = sarg;
 				call->data.call.args[1] = parg;
 				call->data.call.arg_count = 2;
+				/* streq returns bool (i8). Tag the synthetic call's resolved type so codegen
+				 * coerces its i8 result to the comparison width (zext to i32) instead of treating
+				 * it as the i32 default — otherwise the `!= 0` emits `icmp ne i32 <i8>` (bad IR). */
+				call->resolved.tag = HIR_TYPE_NAMED;
+				call->resolved.name = "bool";
 				HirExpr *zero = hir_expr_create(HIR_EXPR_LITERAL);
 				zero->data.literal.lexeme = dupz("0");
 				cond = hir_expr_create(HIR_EXPR_BINARY);
@@ -2255,7 +2277,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		HirDecl *ad = hir_decl_create(HIR_DECL_CONST);
 		HirConstDecl *ac = calloc(1, sizeof(HirConstDecl));
 		ac->name = txt_dup(sv_token(d, TOK_IDENT));
-		ac->value = lower_expr_cst(sv_node_at_expr(d, 0));
+		ac->value = lower_const_or_expr(sv_node_at_expr(d, 0));
 		ad->data.constant = ac;
 		return ad;
 	}
@@ -2337,14 +2359,14 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					continue;
 				SyntaxView ev = {ch->as.node, d.src};
 				if (phase == PH_CAP) {
-					sd->archetype.field_values[0] = lower_expr_cst(ev);
+					sd->archetype.field_values[0] = lower_const_or_expr(ev);
 					sd->archetype.field_count = 1;
 				} else if (phase == PH_LEN) {
-					sd->archetype.init_length = lower_expr_cst(ev);
+					sd->archetype.init_length = lower_const_or_expr(ev);
 				} else if (phase == PH_FIELDS && pend) {
 					int fc = sd->archetype.field_count;
 					sd->archetype.field_names[fc] = txt_dup((SynText){pend, pend_len});
-					sd->archetype.field_values[fc] = lower_expr_cst(ev);
+					sd->archetype.field_values[fc] = lower_const_or_expr(ev);
 					sd->archetype.field_count++;
 					pend = NULL;
 				}
@@ -2377,8 +2399,8 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 				sd->array.init = sv_present(initv) ? lower_expr_cst(initv) : NULL;
 			} else {
 				/* scalar; inferred form `name := v` carries no type node — infer int/float from the
-				 * literal initializer's lexeme. */
-				HirExpr *ie = sv_present(initv) ? lower_expr_cst(initv) : NULL;
+				 * literal initializer's lexeme. A constant func/expr initializer folds to a literal. */
+				HirExpr *ie = sv_present(initv) ? lower_const_or_expr(initv) : NULL;
 				HirType *sty = full;
 				if (!sty) {
 					sty = hir_type_create(HIR_TYPE_UNKNOWN);

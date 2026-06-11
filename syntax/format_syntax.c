@@ -269,10 +269,12 @@ static void bpad(Buf *b, size_t n) {
 }
 
 /* One source line with its two alignment columns. The separators split a declaration into fixed
- * semantic slots, NOT by ordinal position: a `name = value` aligns its `=` under another line's
- * `=`/`:=`/`::`, never under a `name : type` colon — because `:` is the type (first column) and the
- * binding is always the second. So each line has at most a TYPE colon and a BIND separator; either
- * may be absent (`x := 1` has only a bind; a struct field `a: int` has only a type). */
+ * semantic slots, NOT by ordinal position: the binding separator aligns under another line's binding,
+ * never under a `name : type` colon — because `:` is the type (first column) and the binding is
+ * always the second. So each line has at most a TYPE colon and a BIND separator; either may be absent
+ * (`x := 1` has only a bind; a struct field `a: int` has only a type). The bind column is further
+ * split by KIND — a colon-led binding (`:=`/`::`) never shares a column with a `=` assignment (see
+ * same_shape / bind_is_colon), so a binding's `:` never lands under an assignment's `=`. */
 typedef struct {
 	const char *text; /* start of line in the formatted buffer (no trailing '\n') */
 	size_t len;
@@ -285,11 +287,23 @@ static int alignable(const AlignLine *L) {
 	return L->has_type || L->has_bind;
 }
 
+/* The bind separator is colon-led (`:=` / `::` — a binding/declaration) vs `=` (an assignment).
+ * These are different kinds and must NOT share a column: aligning a `:=` with a `=` would anchor on
+ * the separator start and park the binding's `:` directly under the assignment's `=`. */
+static int bind_is_colon(const AlignLine *L) {
+	return L->has_bind && L->bind_start < (int)L->len && L->text[L->bind_start] == ':';
+}
+
 /* Lines align only with same-shaped neighbours: a `x := 1` (bind-only) does not align with a
- * `y : int = 2` (typed bind), so an absent slot never opens a gap. A shape change ends the run,
- * just like a blank line — the gofmt rule. */
+ * `y : int = 2` (typed bind), so an absent slot never opens a gap. A `:=`/`::` binding does not align
+ * with a `=` assignment (different bind kinds — see bind_is_colon). A shape change ends the run, just
+ * like a blank line — the gofmt rule. */
 static int same_shape(const AlignLine *a, const AlignLine *b) {
-	return a->has_type == b->has_type && a->has_bind == b->has_bind;
+	if (a->has_type != b->has_type || a->has_bind != b->has_bind)
+		return 0;
+	if (a->has_bind && bind_is_colon(a) != bind_is_colon(b))
+		return 0;
+	return 1;
 }
 
 /* Route a separator unit into the line's TYPE or BIND column. A leading single `:` is a type

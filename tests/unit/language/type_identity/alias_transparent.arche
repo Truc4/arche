@@ -1,6 +1,5 @@
 // Tier-1 transparent alias: `dist :: alias float` is THE SAME type as float — interchangeable both
-// ways with no conversion. Prints 3. RED until the `alias` soft-keyword parses (today `alias` lexes
-// as an ordinary identifier, so the RHS `alias float` is a malformed backing).
+// ways with no conversion. Prints 3. The `alias` soft-keyword parses and the alias is transparent.
 // RUN: %arche build -o %t %s && %t | grep "r=3"
 #import { fmt }
 dist        :: alias float
