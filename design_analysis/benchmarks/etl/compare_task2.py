@@ -15,7 +15,7 @@ def run_arche(iterations=10):
 
     # Compile once
     start = time.perf_counter()
-    result = subprocess.run(['./build/arche', '-o', 'build/benchmarks/etl/task2/task2_arche_bin',
+    result = subprocess.run(['./build/arche', 'build', '-o', 'build/benchmarks/etl/task2/task2_arche_bin',
                            'design_analysis/benchmarks/etl/arche/task_2_filter_invalid.arche'],
                           capture_output=True, text=True)
     if result.returncode != 0:

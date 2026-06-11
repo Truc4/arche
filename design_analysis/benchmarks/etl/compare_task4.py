@@ -11,7 +11,7 @@ import re
 def run_arche(iterations=10):
     os.makedirs('build/benchmarks/etl/task4', exist_ok=True)
     start = time.perf_counter()
-    result = subprocess.run(['./build/arche', '-o', 'build/benchmarks/etl/task4/task4_arche_bin',
+    result = subprocess.run(['./build/arche', 'build', '-o', 'build/benchmarks/etl/task4/task4_arche_bin',
                            'design_analysis/benchmarks/etl/arche/task_4_aggregate_region.arche'],
                           capture_output=True, text=True)
     if result.returncode != 0:

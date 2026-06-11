@@ -114,7 +114,7 @@ def run_arche(task_n, task_name, csv_path, iterations):
     out_bin.parent.mkdir(parents=True, exist_ok=True)
 
     compile_proc = subprocess.run(
-        [str(ARCHE_BIN), "-o", str(out_bin), str(src)],
+        [str(ARCHE_BIN), "build", "-o", str(out_bin), str(src)],
         capture_output=True,
         text=True,
         timeout=600,
