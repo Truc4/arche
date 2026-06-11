@@ -1,9 +1,14 @@
-// Explicit view: a type-alias name in a type position shows its backing type.
-// The alias declaration itself gets no inferred-type hint (it mints a type, not a value).
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 10 11 1 0 alias (i32)"
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 11 12 1 0 alias (i32)"
-// Exactly two alias hints, nothing else (no `: int` on the alias decls).
-// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN ") -eq 2
+// Explicit view: a type-alias name in a type position shows its backing; the alias DECLARATION fills
+// its elided ⟨type⟩ slot with the `type` meta (`base : type : int`). An alias is NOT a definition-form
+// so it shows by default; the enclosing proc IS a form → hidden by default, shown under --full.
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 12 8 1 1 type type"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 13 8 1 1 type type"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 15 11 1 0 alias (i32)"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 16 12 1 0 alias (i32)"
+// Four SYN by default: 2 alias-decl `type` hints + 2 backing hints (the proc is hidden):
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN ") -eq 4
+// --full opts out, so the proc decl shows its form type too:
+// RUN: %build/arche-analyzer --dump --full %s | grep -qxF "SYN 14 8 1 1 type proc()()"
 base  :: int
 level :: base
 main  :: proc() {

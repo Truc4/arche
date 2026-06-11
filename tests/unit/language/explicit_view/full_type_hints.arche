@@ -1,0 +1,30 @@
+// Form decls (func/proc/sys/policy/arche) carry a type; the editor HIDES these redundant definition-
+// forms by default (the form already spells them) and renders them only under --full / `HINTS full`, in
+// Arche's own spelling. The pos/vel component ALIASES are not forms, so they show by default.
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 21 11 1 1 type type"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 22 11 1 1 type type"
+// by default ONLY the two aliases show — no form spelling leaks in:
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -cE "type (func|proc|sys|archetype)") -eq 0
+// --full opts out, rendering every form in Arche's own spelling:
+// RUN: %build/arche-analyzer --dump --full %s | grep -qxF "SYN 14 6 1 1 type func(i32, i32) -> i32"
+// RUN: %build/arche-analyzer --dump --full %s | grep -qxF "SYN 17 7 1 1 type proc(i32, i32)(i32, i32)"
+// RUN: %build/arche-analyzer --dump --full %s | grep -qxF "SYN 23 11 1 1 type archetype"
+// RUN: %build/arche-analyzer --dump --full %s | grep -qxF "SYN 25 7 1 1 type sys(pos, vel)"
+// RUN: %build/arche-analyzer --dump --full %s | grep -qxF "SYN 28 7 1 1 type proc()()"
+add :: func(a: int, b: int) -> int {
+  return a + b;
+}
+swap :: proc(a: int, b: int)(x: int, y: int) {
+  x = b;
+  y = a;
+}
+pos      :: float
+vel      :: float
+Particle :: arche { pos, vel }
+Particle[2](2)
+step :: sys (pos, vel) {
+  pos = pos + vel;
+}
+main :: proc() {
+  run step;
+}

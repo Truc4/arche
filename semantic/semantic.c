@@ -2294,6 +2294,15 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		ctx->stmt_call_ok = (sv_present(value_view) && sv_kind(value_view) == SN_CALL_EXPR);
 		analyze_expression(ctx, value_view);
 		ctx->stmt_call_ok = 0;
+		/* Record the BINDING's type onto the bind node id — the uniform key every binding's type reads
+		 * (locals + file-scope decls), so the reader needs no per-kind value-node logic. UNCONDITIONAL so
+		 * the node→type map is complete: annotated → the DECLARED type (btype_id), else → type-of(RHS).
+		 * Keyed on `v` (the bind node), disjoint from the value node's own slot. */
+		if (ctx->model)
+			sem_model_set_expr_type_id(ctx->model, sv_id(v),
+			                           has_btype ? btype_id
+			                           : sv_present(value_view) ? sem_model_expr_type_id(ctx->model, sv_id(value_view))
+			                                                     : TYID_UNKNOWN);
 		implicit_move_consume(ctx, value_view);
 
 		check_shadows_callable(ctx, bind_name, loc);
@@ -2758,7 +2767,7 @@ static void analyze_archetype_decl(SemanticContext *ctx, DeclSummary *arch) {
 		const char *tn = tyid_nominal_name(ctx->ty_arena, t);
 		/* inline `on_hit :: proc()()`/`func`, or a named callable-type alias `on_hit :: handler`. */
 		int callable =
-		    tyid_kind(ctx->ty_arena, t) == TYK_FUNC || (tn && callable_type_alias_id(ctx, tn) != TYID_UNKNOWN);
+		    tyid_is_callable(ctx->ty_arena, t) || (tn && callable_type_alias_id(ctx, tn) != TYID_UNKNOWN);
 		if (callable)
 			sem_emit_callable_in_archetype(ctx, arch->fields[i].loc, arch->fields[i].name);
 	}
@@ -3146,7 +3155,7 @@ static int name_is_proc_typed_param(SemanticContext *ctx, DeclSummary *proc, con
 		if (!p->name || strcmp(p->name, name) != 0)
 			continue;
 		TypeId t = p->type_id;
-		if (tyid_kind(ctx->ty_arena, t) == TYK_FUNC)
+		if (tyid_is_callable(ctx->ty_arena, t))
 			return tyid_is_proc(ctx->ty_arena, t) ? 1 : 0;
 		const char *tn = tyid_nominal_name(ctx->ty_arena, t);
 		if (tn && tyid_is_proc(ctx->ty_arena, callable_type_alias_id(ctx, tn)))
@@ -4309,6 +4318,110 @@ static void sem_check_forbid_allow(SemanticContext *ctx) {
 	}
 }
 
+/* The interned `TypeId` a top-level declaration denotes — the type its name binds to, sourced from
+ * whichever DeclSummary field(s) hold it — or TYID_UNKNOWN when the declaration is not a value/type
+ * binding. This is a GENERAL compiler fact (it completes the node→type map for decl nodes, the same
+ * fact hover/go-to-type want), not inlay-specific. The per-kind sourcing lives ONLY here; everything
+ * downstream is kind-agnostic. The switch is EXHAUSTIVE with NO `default`: a new DeclKind is a
+ * compile-time forcing function (-Wswitch), never a silent drop. */
+static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
+	switch (d->kind) {
+	case DECL_CONST: {
+		/* A VALUE const denotes its value's type; a TYPE alias (`int :: alias i32`) denotes the `type`
+		 * meta-type — `int : type : alias i32` is the longhand, so its ⟨type⟩ slot is `type`. */
+		const char *vt = value_const_type(ctx, d->name);
+		if (vt)
+			return sem_tyid_of_name(ctx, vt);
+		if (is_type_alias(ctx, d->name))
+			return sem_tyid_of_name(ctx, "type");
+		return TYID_UNKNOWN;
+	}
+	case DECL_STATIC:
+		/* SCALAR → its scalar type; ARRAY → the array type built over its ELEMENT type (static_type_id
+		 * holds the element, not the array); ARCHETYPE-allocation (`Particle[4]`) is not a name::value
+		 * binding → UNKNOWN. */
+		switch (d->static_kind) {
+		case STATIC_KIND_SCALAR:
+			return d->static_type_id;
+		case STATIC_KIND_ARRAY:
+			return tyid_of_array(ctx->ty_arena, d->static_type_id);
+		default:
+			return TYID_UNKNOWN; /* STATIC_KIND_ARCHETYPE */
+		}
+	case DECL_FUNC: /* also policies — a policy is a DECL_FUNC with is_policy */
+	case DECL_PROC:
+	case DECL_SYS: {
+		/* Each form gets its OWN callable kind — func/proc/sys/policy never unify. Params are common;
+		 * a func carries its return list, a proc its out-params, sys/policy none. */
+		/* foreign decls have a fully computed signature (sem_fill_decl_type_ids types their params/returns
+		 * unconditionally), so they get their type like any other callable — no special-case hide. */
+		int np = d->param_count;
+		TypeId pbuf[32];
+		TypeId *params = np > 32 ? malloc((size_t)np * sizeof(TypeId)) : pbuf;
+		for (int i = 0; i < np; i++)
+			/* func/proc/policy params are typed (`a: int`); a sys's are bare COMPONENT names whose type
+			 * is the component itself — resolve those by name so `sys(pos, vel)` isn't `sys(<unknown>)`. */
+			params[i] = (d->kind == DECL_SYS && d->params[i].name) ? sem_tyid_of_name(ctx, d->params[i].name)
+			                                                       : d->params[i].type_id;
+		TypeId out;
+		if (d->kind == DECL_SYS) {
+			out = tyid_of_sys(ctx->ty_arena, params, np);
+		} else if (d->is_policy) {
+			out = tyid_of_policy(ctx->ty_arena, params, np);
+		} else if (d->kind == DECL_PROC) {
+			int nr = d->out_param_count;
+			TypeId rbuf[8];
+			TypeId *rets = nr > 8 ? malloc((size_t)nr * sizeof(TypeId)) : rbuf;
+			for (int i = 0; i < nr; i++)
+				rets[i] = d->out_params[i].type_id;
+			out = tyid_of_proc(ctx->ty_arena, params, np, rets, nr);
+			if (rets != rbuf)
+				free(rets);
+		} else {
+			int nr = d->return_type_count;
+			TypeId rbuf[8];
+			TypeId *rets = nr > 8 ? malloc((size_t)nr * sizeof(TypeId)) : rbuf;
+			for (int i = 0; i < nr; i++)
+				rets[i] = d->return_type_ids[i];
+			out = tyid_of_func(ctx->ty_arena, params, np, rets, nr);
+			if (rets != rbuf)
+				free(rets);
+		}
+		if (params != pbuf)
+			free(params);
+		return out;
+	}
+	case DECL_ARCHETYPE:
+		return tyid_of_archetype_category(ctx->ty_arena);
+	case DECL_ENUM:
+		/* An enum decl (`Method :: enum{…}`) DENOTES a type, so its `⟨type⟩` slot is the `type` meta —
+		 * the longhand `Method : type : enum{…}`, mirroring the type-alias arm in DECL_CONST. */
+		return sem_tyid_of_name(ctx, "type");
+	case DECL_FUNC_GROUP:
+		return TYID_UNKNOWN; /* an overload SET has no single type — a principled "none", not a dropped kind */
+	case DECL_WORLD:
+	case DECL_USE:
+		return TYID_UNKNOWN; /* not value/type bindings — no `⟨type⟩` slot to fill */
+	}
+	return TYID_UNKNOWN; /* unreachable: switch is exhaustive over DeclKind (-Wswitch enforces) */
+}
+
+/* Complete the node→type map for every top-level declaration node, keyed by the decl node — the SAME
+ * key locals use (see the SN_BIND_STMT handler) — so a uniform, kind-agnostic reader covers every
+ * binding form at file scope. Records unconditionally (an UNKNOWN is the map's default and is inert),
+ * so "this node has a type" is a complete fact, not a curated subset. Runs after const-fixpoint +
+ * type-fill, so all sources are final. */
+static void sem_record_binding_types(SemanticContext *ctx) {
+	if (!ctx->model)
+		return;
+	for (int di = 0; di < ctx->decl_count; di++) {
+		DeclSummary *d = ctx->decls[di];
+		if (!sv_present(d->node))
+			continue;
+		sem_model_set_expr_type_id(ctx->model, sv_id(d->node), sem_decl_type_id(ctx, d));
+	}
+}
+
 /* The policy a fallible op explicitly applies (`expr !P`), resolved by the op's category — or NULL.
  * Bounds for index/slice, divide for `/`,`%`; `?`-handlers (pool) are a separate mechanism. */
 static DeclSummary *policy_op_applies(SemanticContext *ctx, SyntaxView v) {
@@ -5121,7 +5234,7 @@ TypeId sem_intern_view(SemanticContext *ctx, SyntaxView t) {
 			rets = rbuf;
 			rets[0] = sem_intern_view(ctx, sem_type_at(t, 0));
 		}
-		TypeId out = tyid_of_func(arena, params, np, rets, nr, is_proc);
+		TypeId out = is_proc ? tyid_of_proc(arena, params, np, rets, nr) : tyid_of_func(arena, params, np, rets, nr);
 		if (params != pbuf)
 			free(params);
 		if (rets != rbuf)
@@ -6558,8 +6671,8 @@ static void analyze_program_core(SemanticContext *ctx) {
 		if (c->const_type_value_id != TYID_UNKNOWN) {
 			TypeId tv = c->const_type_value_id;
 			TyKind tvk = tyid_kind(ctx->ty_arena, tv);
-			if (tvk == TYK_FUNC) {
-				/* `name :: proc()(…)` — a named structural callable type. */
+			if (tyid_is_callable(ctx->ty_arena, tv)) {
+				/* `name :: proc()(…)` / `func` — a named structural callable type. */
 				register_callable_type_alias(ctx, c->name, tv);
 				continue;
 			}
@@ -6825,6 +6938,7 @@ static void analyze_program_core(SemanticContext *ctx) {
 	sem_check_policies(ctx);      /* E0097-99/E0124/W0018: failure-policy validation at index/slice ops */
 	sem_check_policy_cycles(ctx); /* E0214: a policy that applies itself would inline forever */
 	sem_check_forbid_allow(ctx);  /* E0127: --forbid-allow rejects @allow(...) in user code */
+	sem_record_binding_types(ctx); /* editor inlay: type-of(RHS) per top-level decl, keyed by decl node */
 
 	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The
 	 * two kinds are still distinct (keyword, `-> T` vs out-list, call form), but the name namespace
