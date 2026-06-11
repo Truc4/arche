@@ -21,6 +21,7 @@ typedef struct {
 	const char **param_name; /* indexed by syntax tree node id; the call arg's resolved param name, or NULL */
 	uint8_t *param_is_own;   /* indexed by syntax tree node id; 1 if that parameter is `own` */
 	uint8_t *elided_move;    /* indexed by syntax tree node id; 1 if a bare name was consumed (elided `move`) */
+	uint8_t *policy_proven;  /* indexed by syntax tree node id; 1 if a fallible index/slice op was proven in-bounds (no implicit policy) */
 	int cap;
 } SemHints;
 
@@ -37,5 +38,10 @@ int sem_hints_param_is_own(const SemHints *h, uint32_t node_id);
  * (canonical form is `b := move a` / `f(move a)`). The editor renders an inlay "move" hint. */
 void sem_hints_set_elided_move(SemHints *h, uint32_t node_id);
 int sem_hints_is_elided_move(const SemHints *h, uint32_t node_id);
+
+/* Record that the fallible index/slice op at `node_id` was proven in-bounds by the bounds prover —
+ * it carries no implicit failure policy, so the editor renders no ghost `!clamp`/`!abort` inlay. */
+void sem_hints_set_policy_proven(SemHints *h, uint32_t node_id);
+int sem_hints_is_policy_proven(const SemHints *h, uint32_t node_id);
 
 #endif /* SEM_HINTS_H */

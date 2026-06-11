@@ -3868,6 +3868,8 @@ static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, Sy
 	if (provably_oob) {
 		sem_emit_policy_provable_oob(ctx, loc, base ? base : "?", oob_lit, n);
 	} else if (provably_safe) {
+		/* Proven in-bounds ⇒ no implicit policy ⇒ no ghost `!clamp`/`!abort` inlay (editor-only hint). */
+		sem_hints_set_policy_proven(ctx->hints, sv_id(v));
 		if (explicit_pol)
 			sem_emit_lint_policy_on_safe_op(ctx, loc, explicit_pol, base ? base : "?");
 	} else if (explicit_pol) { /* unprovable: an explicit policy governs the op — validate it */

@@ -643,9 +643,11 @@ static int policy_idx_is_const(SyntaxView n) {
  * (`!abort` in a proc, `!clamp` in a func) right after the op. Only the implicit case — an explicit
  * `!name` is already in the source. Skipped for a constant index (resolved at compile time, no
  * runtime policy). Applies to value arrays, slices, AND pool-column indexing (`Arch.field[i]`). */
-static void emit_policy_hint(SyntaxView op, int in_func) {
+static void emit_policy_hint(SyntaxView op, SemanticContext *ctx, int in_func) {
 	if (sv_present(sv_child(op, SN_POLICY_REF)))
 		return; /* explicit policy already visible in source */
+	if (sem_hints_is_policy_proven(sem_context_hints(ctx), sv_id(op)))
+		return; /* prover proved it in-bounds — no implicit policy, no ghost */
 	/* fallible only: at least one bound (index, or a slice lo/hi) is a non-constant expression */
 	int fallible = 0;
 	for (int i = 0; i < op.node->child_count; i++) {
@@ -679,7 +681,7 @@ static void walk(SyntaxView v, SemanticContext *ctx, int in_func) {
 	else if (sv_kind(v) == SN_EXPR_STMT)
 		emit_effect_hint(v); /* bare proc call → ghost `()` */
 	else if (sv_kind(v) == SN_INDEX_EXPR || sv_kind(v) == SN_SLICE_EXPR)
-		emit_policy_hint(v, in_func); /* implicit failure policy → ghost `!abort`/`!clamp` */
+		emit_policy_hint(v, ctx, in_func); /* implicit failure policy → ghost `!abort`/`!clamp` */
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
 			SyntaxView c = {v.node->children[i].as.node, v.src};

@@ -10,6 +10,7 @@ SemHints *sem_hints_new(void) {
 	h->param_name = NULL;
 	h->param_is_own = NULL;
 	h->elided_move = NULL;
+	h->policy_proven = NULL;
 	h->cap = 0;
 	return h;
 }
@@ -24,6 +25,7 @@ void sem_hints_free(SemHints *h) {
 	free(h->param_name);
 	free(h->param_is_own);
 	free(h->elided_move);
+	free(h->policy_proven);
 	free(h);
 }
 
@@ -36,10 +38,12 @@ static void ensure(SemHints *h, uint32_t node_id) {
 	h->param_name = realloc(h->param_name, (size_t)newcap * sizeof(const char *));
 	h->param_is_own = realloc(h->param_is_own, (size_t)newcap * sizeof(uint8_t));
 	h->elided_move = realloc(h->elided_move, (size_t)newcap * sizeof(uint8_t));
+	h->policy_proven = realloc(h->policy_proven, (size_t)newcap * sizeof(uint8_t));
 	for (int i = h->cap; i < newcap; i++) {
 		h->param_name[i] = NULL;
 		h->param_is_own[i] = 0;
 		h->elided_move[i] = 0;
+		h->policy_proven[i] = 0;
 	}
 	h->cap = newcap;
 }
@@ -74,4 +78,15 @@ int sem_hints_is_elided_move(const SemHints *h, uint32_t node_id) {
 	if (!h || (int)node_id >= h->cap)
 		return 0;
 	return h->elided_move[node_id];
+}
+
+void sem_hints_set_policy_proven(SemHints *h, uint32_t node_id) {
+	ensure(h, node_id);
+	h->policy_proven[node_id] = 1;
+}
+
+int sem_hints_is_policy_proven(const SemHints *h, uint32_t node_id) {
+	if (!h || (int)node_id >= h->cap)
+		return 0;
+	return h->policy_proven[node_id];
 }
