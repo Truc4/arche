@@ -417,14 +417,20 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
  * suffixes are part of the name (minting `name_a`, `name_b`, …), `T` is the shared type. */
 static int parse_tuple_name_group(Parser *parser) {
 	advance(parser); /* consume '(' */
+	int name_count = 0;
 	while (!check(parser, TOK_RPAREN) && !check(parser, TOK_EOF)) {
 		if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected a name in tuple group `(a, b, …)`");
 			break;
 		}
 		advance(parser);
+		name_count++;
 		if (!match(parser, TOK_COMMA))
 			break;
+	}
+	if (name_count == 0) {
+		error(parser, "Empty tuple group `()`: a tuple needs at least one name, e.g. `pos (x, y) :: T`");
+		return 0;
 	}
 	if (!match(parser, TOK_RPAREN)) {
 		error(parser, "Expected ')' to close tuple name group");
