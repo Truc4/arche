@@ -111,6 +111,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_policy_wrong_category]         = { "E0124", "policy_wrong_category",         CLASS_ERROR, 1 },
 	[SEM_DIAG_policy_abort_forbidden]        = { "E0125", "policy_abort_forbidden",        CLASS_ERROR, 1 },
 	[SEM_DIAG_policy_undefined_forbidden]    = { "E0126", "policy_undefined_forbidden",    CLASS_ERROR, 1 },
+	[SEM_DIAG_policy_uses_undefined]         = { "E0213", "policy_uses_undefined",          CLASS_ERROR, 1 },
+	[SEM_DIAG_cyclic_policy]                 = { "E0214", "cyclic_policy",                  CLASS_ERROR, 1 },
 	[SEM_DIAG_allow_forbidden]               = { "E0127", "allow_forbidden",               CLASS_ERROR, 1 },
 	[SEM_DIAG_duplicate_default]             = { "E0128", "duplicate_default",             CLASS_ERROR, 1 },
 	[SEM_DIAG_default_invalid]               = { "E0129", "default_invalid",               CLASS_ERROR, 1 },
@@ -786,6 +788,20 @@ SemDiag *sem_emit_policy_undefined_forbidden(SemanticContext *ctx, SourceLoc loc
 	return sem_emit_(ctx, SEM_DIAG_policy_undefined_forbidden, loc,
 	                 "`!undefined` opts out of all runtime safety, but --no-undefined forbids it — use a checked "
 	                 "total policy (`!clamp`, `!zero`) instead");
+}
+SemDiag *sem_emit_policy_uses_undefined(SemanticContext *ctx, SourceLoc loc, const char *policy) {
+	return sem_emit_(ctx, SEM_DIAG_policy_uses_undefined, loc,
+	                 "policy `%s` uses `!undefined` — a raw, unchecked op that can read out of bounds. A policy is "
+	                 "the safety mechanism and must stay total: use a checked total policy (`!clamp`, `!wrap`, "
+	                 "`!zero`) or make the access provably in bounds",
+	                 policy);
+}
+SemDiag *sem_emit_cyclic_policy(SemanticContext *ctx, SourceLoc loc, const char *policy) {
+	return sem_emit_(ctx, SEM_DIAG_cyclic_policy, loc,
+	                 "policy `%s` applies itself (directly or transitively) — a policy is inlined as a macro, so "
+	                 "this would expand forever. Policies may not recurse: drop the self-referential `!%s`, or make "
+	                 "that access provably in bounds / use a different total policy",
+	                 policy, policy);
 }
 SemDiag *sem_emit_allow_forbidden(SemanticContext *ctx, SourceLoc loc, const char *slug) {
 	return sem_emit_(ctx, SEM_DIAG_allow_forbidden, loc,

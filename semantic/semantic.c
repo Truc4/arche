@@ -3895,9 +3895,20 @@ static void validate_explicit_policy(SemanticContext *ctx, DeclSummary *d, Sourc
 			sem_emit_policy_abort_forbidden(ctx, loc, "this `!abort`", "--no-abort");
 			return;
 		}
-	} else if (strcmp(name, "undefined") == 0 && g_no_undefined && decl_is_user_code(d)) {
-		sem_emit_policy_undefined_forbidden(ctx, loc);
-		return;
+	} else if (strcmp(name, "undefined") == 0) {
+		/* A policy is the safety mechanism — it may never opt out of safety. `!undefined` (a raw,
+		 * unchecked op) inside ANY policy body is an error, independent of --no-undefined. Unprovable
+		 * accesses are still allowed in a policy as long as they stay TOTAL (e.g. an eviction handler's
+		 * clamped column scan) — only the raw opt-out is banned. Covers bounds AND divide `!undefined`,
+		 * since this validator is shared. */
+		if (d->is_policy) {
+			sem_emit_policy_uses_undefined(ctx, loc, d->name ? d->name : "<anon>");
+			return;
+		}
+		if (g_no_undefined && decl_is_user_code(d)) {
+			sem_emit_policy_undefined_forbidden(ctx, loc);
+			return;
+		}
 	}
 	if (find_policy_sig_cat(ctx, name, want))
 		return; /* a policy of this name AND category exists — valid */
@@ -4294,6 +4305,97 @@ static void sem_check_forbid_allow(SemanticContext *ctx) {
 			continue;
 		for (int i = 0; i < d->allow_slug_count; i++)
 			sem_emit_allow_forbidden(ctx, d->loc, d->allow_slugs[i]);
+	}
+}
+
+/* The policy a fallible op explicitly applies (`expr !P`), resolved by the op's category — or NULL.
+ * Bounds for index/slice, divide for `/`,`%`; `?`-handlers (pool) are a separate mechanism. */
+static DeclSummary *policy_op_applies(SemanticContext *ctx, SyntaxView v) {
+	PolicyCategory cat;
+	SyntaxNodeKind k = sv_kind(v);
+	if (k == SN_INDEX_EXPR || k == SN_SLICE_EXPR) {
+		cat = POLICY_CAT_BOUNDS;
+	} else if (k == SN_BINARY_EXPR) {
+		int op = sem_binary_op(v);
+		if (op != OP_DIV && op != OP_MOD)
+			return NULL;
+		cat = POLICY_CAT_DIVIDE;
+	} else {
+		return NULL;
+	}
+	SyntaxView pol = sv_child(v, SN_POLICY_REF);
+	if (!sv_present(pol) || sv_token(pol, TOK_QUESTION).ptr) /* `!` panic policies only */
+		return NULL;
+	SynText t = sv_token(pol, TOK_IDENT);
+	if (!t.ptr)
+		return NULL;
+	char *nm = sem_txt_dup(t);
+	DeclSummary *p = nm ? find_policy_sig_cat(ctx, nm, cat) : NULL;
+	free(nm);
+	return p;
+}
+
+/* Collect (deduped, capped) every policy the subtree `v` explicitly applies. */
+static void policy_edges_walk(SemanticContext *ctx, SyntaxView v, DeclSummary **out, int *n, int cap) {
+	if (!sv_present(v))
+		return;
+	DeclSummary *p = policy_op_applies(ctx, v);
+	if (p) {
+		int dup = 0;
+		for (int i = 0; i < *n; i++)
+			if (out[i] == p) {
+				dup = 1;
+				break;
+			}
+		if (!dup && *n < cap)
+			out[(*n)++] = p;
+	}
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE)
+			policy_edges_walk(ctx, (SyntaxView){v.node->children[i].as.node, v.src}, out, n, cap);
+}
+
+/* True if policy `cur` can reach `target` through explicit `!P` applications. `seen` prevents infinite
+ * looping in THIS traversal (we're detecting cycles), bounded by `cap`. */
+static int policy_reaches(SemanticContext *ctx, DeclSummary *cur, DeclSummary *target, DeclSummary **seen,
+                          int *seen_n, int cap) {
+	if (!cur || !sv_present(cur->body_node))
+		return 0;
+	DeclSummary *edges[32];
+	int en = 0;
+	for (int i = 0, m = sem_stmt_count(cur->body_node); i < m; i++)
+		policy_edges_walk(ctx, sem_stmt_at(cur->body_node, i), edges, &en, 32);
+	for (int i = 0; i < en; i++) {
+		if (edges[i] == target)
+			return 1;
+		int visited = 0;
+		for (int j = 0; j < *seen_n; j++)
+			if (seen[j] == edges[i]) {
+				visited = 1;
+				break;
+			}
+		if (!visited && *seen_n < cap) {
+			seen[(*seen_n)++] = edges[i];
+			if (policy_reaches(ctx, edges[i], target, seen, seen_n, cap))
+				return 1;
+		}
+	}
+	return 0;
+}
+
+/* E0214: a policy is inlined as a MACRO, so a policy that applies itself (directly or transitively)
+ * would expand forever — a codegen stack overflow. Detect such cycles over explicit `!P` applications
+ * in policy bodies and reject before codegen. (The implicit default of an unannotated op resolves to a
+ * core total policy that doesn't index, so it can't close a cycle — only explicit `!P` can.) */
+static void sem_check_policy_cycles(SemanticContext *ctx) {
+	for (int di = 0; di < ctx->decl_count; di++) {
+		DeclSummary *d = ctx->decls[di];
+		if (!d->is_policy || d->is_extern || !sv_present(d->body_node))
+			continue;
+		DeclSummary *seen[64];
+		int seen_n = 0;
+		if (policy_reaches(ctx, d, d, seen, &seen_n, 64))
+			sem_emit_cyclic_policy(ctx, d->loc, d->name ? d->name : "<anon>");
 	}
 }
 
@@ -6720,6 +6822,7 @@ static void analyze_program_core(SemanticContext *ctx) {
 	sem_check_datasheet_decls(ctx);
 	sem_check_raw_pool_lint(ctx); /* W0017: advise handles for unprovable pool-column indexing */
 	sem_check_policies(ctx);      /* E0097-99/E0124/W0018: failure-policy validation at index/slice ops */
+	sem_check_policy_cycles(ctx); /* E0214: a policy that applies itself would inline forever */
 	sem_check_forbid_allow(ctx);  /* E0127: --forbid-allow rejects @allow(...) in user code */
 
 	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The

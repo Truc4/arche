@@ -126,6 +126,8 @@ typedef enum {
 	SEM_DIAG_policy_wrong_sigil,         /* `?` (handler) used on a panic op, or `!` (panic) used on an insert */
 	SEM_DIAG_policy_abort_forbidden,     /* an op resolves to `!abort` under --no-abort / --no-implicit-abort */
 	SEM_DIAG_policy_undefined_forbidden, /* an `!undefined` site under --no-undefined */
+	SEM_DIAG_policy_uses_undefined,      /* `!undefined` (raw/UB op) inside a `policy` body — must stay total */
+	SEM_DIAG_cyclic_policy,              /* a `policy` applies itself (directly/transitively) — infinite inlining */
 	SEM_DIAG_allow_forbidden,            /* an `@allow(...)` decorator under --forbid-allow */
 	SEM_DIAG_duplicate_default,          /* a second `@default(kind, category, ...)` for the same cell */
 	SEM_DIAG_default_invalid,            /* `@default` shape error: func+abort, func+pool, bad category */
@@ -325,6 +327,8 @@ SemDiag *sem_emit_policy_wrong_category(SemanticContext *ctx, SourceLoc loc, con
                                         const char *got);
 SemDiag *sem_emit_policy_abort_forbidden(SemanticContext *ctx, SourceLoc loc, const char *which, const char *flag);
 SemDiag *sem_emit_policy_undefined_forbidden(SemanticContext *ctx, SourceLoc loc);
+SemDiag *sem_emit_policy_uses_undefined(SemanticContext *ctx, SourceLoc loc, const char *policy);
+SemDiag *sem_emit_cyclic_policy(SemanticContext *ctx, SourceLoc loc, const char *policy);
 SemDiag *sem_emit_allow_forbidden(SemanticContext *ctx, SourceLoc loc, const char *slug);
 
 SemDiag *sem_emit_assign_to_const(SemanticContext *ctx, SourceLoc loc, const char *name);
