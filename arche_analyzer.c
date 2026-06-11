@@ -623,46 +623,18 @@ static void emit_effect_hint(SyntaxView expr_stmt) {
 	emit_syn(end.line, end.column + (int)end.length, 0, 0, "effect", "()");
 }
 
-/* True if `n` is a compile-time-constant index (a non-negative or `-K` integer literal). Such an
- * index is resolved at compile time (proven safe → no policy, or provably-OOB → E0097), so it never
- * carries a runtime policy and gets no implicit-policy inlay. */
-static int policy_idx_is_const(SyntaxView n) {
-	if (!n.node)
-		return 0;
-	if (sv_kind(n) == SN_LITERAL_EXPR)
-		return 1;
-	if (sv_kind(n) == SN_UNARY_EXPR && sv_has_token(n, TOK_MINUS)) {
-		for (int i = 0; i < n.node->child_count; i++)
-			if (n.node->children[i].tag == SE_NODE)
-				return policy_idx_is_const((SyntaxView){n.node->children[i].as.node, n.src});
-	}
-	return 0;
-}
-
-/* Inlay the IMPLICIT failure policy at a fallible index/slice op: render the ghost default
- * (`!abort` in a proc, `!clamp` in a func) right after the op. Only the implicit case — an explicit
- * `!name` is already in the source. Skipped for a constant index (resolved at compile time, no
- * runtime policy). Applies to value arrays, slices, AND pool-column indexing (`Arch.field[i]`). */
+/* Inlay the IMPLICIT failure policy at an index/slice op: the ghost default (`!abort` in a proc,
+ * `!clamp` in a func) right after the op. This is a PURE PROJECTION of the bounds prover's verdict
+ * (`sem_model_policy_elided`) — the SAME bit codegen reads to elide the policy macro — so the hint
+ * shows exactly when a runtime policy actually applies. No provability logic of its own:
+ *   - explicit `!name`        → already in source, no ghost
+ *   - prover proved in-bounds → policy elided (incl. constant-safe indices), no ghost
+ *   - otherwise               → a policy applies, render its ghost. */
 static void emit_policy_hint(SyntaxView op, SemanticContext *ctx, int in_func) {
 	if (sv_present(sv_child(op, SN_POLICY_REF)))
 		return; /* explicit policy already visible in source */
-	if (sem_hints_is_policy_proven(sem_context_hints(ctx), sv_id(op)))
-		return; /* prover proved it in-bounds — no implicit policy, no ghost */
-	/* fallible only: at least one bound (index, or a slice lo/hi) is a non-constant expression */
-	int fallible = 0;
-	for (int i = 0; i < op.node->child_count; i++) {
-		if (op.node->children[i].tag != SE_NODE)
-			continue;
-		SyntaxView c = {op.node->children[i].as.node, op.src};
-		if (sv_kind(c) == SN_FIELD_NAME || sv_kind(c) == SN_POLICY_REF)
-			continue;
-		if (!policy_idx_is_const(c)) {
-			fallible = 1;
-			break;
-		}
-	}
-	if (!fallible)
-		return;
+	if (sem_model_policy_elided(sem_context_model(ctx), sv_id(op)))
+		return; /* prover proved it in-bounds — no policy applies (same verdict codegen elides on) */
 	CvPos end = sv_last_token_pos(op);
 	if (!end.line)
 		return;

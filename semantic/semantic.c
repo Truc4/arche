@@ -29,7 +29,9 @@ typedef struct {
 	FieldInfo **fields;
 	int field_count;
 	int is_allocated;   /* 1 once any alias for this shape has been alloc'd */
-	int alloc_capacity; /* the driver pool's capacity (rows), 0 if not allocated by the driver */
+	int alloc_capacity;  /* the driver pool's capacity (rows), 0 if not allocated by the driver */
+	int alloc_init_count; /* the pool's guaranteed-live initial count (M in `Arch[N](M)`), 0 if none — the
+	                       * sound basis for eliding a column bounds check (count can only grow via insert) */
 	int min_rows;       /* max storage REQUIREMENT from device datasheets; the driver pool must meet it */
 	int req_count;      /* how many distinct datasheets posted a requirement on this shape (shared-shape) */
 	char *req_first;    /* name in the first requirement's decl (for the shared-shape build note) */
@@ -2781,6 +2783,7 @@ static void analyze_archetype_decl(SemanticContext *ctx, DeclSummary *arch) {
 		shape->signature = sig;
 		shape->is_allocated = 0;
 		shape->alloc_capacity = 0;
+		shape->alloc_init_count = 0;
 		shape->min_rows = 0;
 		shape->req_count = 0;
 		shape->req_first = NULL;
@@ -3007,6 +3010,9 @@ static void analyze_static_decl(SemanticContext *ctx, DeclSummary *alloc) {
 	}
 	/* Record the driver pool's capacity so the final sweep can check it against datasheet minimums. */
 	arch->alloc_capacity = alloc->static_pool_count;
+	/* Guaranteed-live initial count (M): the bounds prover elides a column index proven `< M`. Mirrors
+	 * codegen's old static-count elision; only set when an explicit init_size literal was given. */
+	arch->alloc_init_count = alloc->static_init_length_present ? alloc->static_init_count : 0;
 
 	/* Validate: init block requires explicit init_size parameter */
 	if (alloc->static_field_count > 1 && !alloc->static_init_length_present) {
@@ -3850,6 +3856,10 @@ static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, Sy
 				} else {
 					provably_safe = 1;
 				}
+			} else if (kind == 3 && n > 0 && lit < n) {
+				/* column (kind 3): `n` is the pool's guaranteed-live init count. A literal below it is
+				 * in range; `lit >= n` is NOT OOB (the count can grow via insert) — keep the check. */
+				provably_safe = 1;
 			} else if (bnd_minlen_ok(e, base, lit)) {
 				provably_safe = 1;
 			}
@@ -3860,6 +3870,10 @@ static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, Sy
 					provably_safe = 1;
 				else if (kind == 1 && n >= 0 && bnd_is_nonneg(e, iv) && bnd_litub(e, iv) > 0 && bnd_litub(e, iv) <= n)
 					provably_safe = 1;
+				/* column loop var bounded by a literal `K <= init count` (mirrors the old codegen
+				 * `bounds_check_elidable`: `loop_bound <= static_count`). */
+				else if (kind == 3 && n > 0 && bnd_is_nonneg(e, iv) && bnd_litub(e, iv) <= n)
+					provably_safe = 1;
 			}
 			free(iv);
 		}
@@ -3868,8 +3882,10 @@ static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, Sy
 	if (provably_oob) {
 		sem_emit_policy_provable_oob(ctx, loc, base ? base : "?", oob_lit, n);
 	} else if (provably_safe) {
-		/* Proven in-bounds ⇒ no implicit policy ⇒ no ghost `!clamp`/`!abort` inlay (editor-only hint). */
-		sem_hints_set_policy_proven(ctx->hints, sv_id(v));
+		/* Proven in-bounds ⇒ no failure policy applies. THE single verdict: read by the analyzer (no
+		 * ghost inlay) AND by lowering→codegen (elide the policy macro). Neither re-derives. */
+		if (ctx->model)
+			sem_model_set_policy_elided(ctx->model, sv_id(v));
 		if (explicit_pol)
 			sem_emit_lint_policy_on_safe_op(ctx, loc, explicit_pol, base ? base : "?");
 	} else if (explicit_pol) { /* unprovable: an explicit policy governs the op — validate it */
@@ -3941,12 +3957,16 @@ static const char *bnd_check_expr(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 		}
 		free(root);
 	}
-	/* Failure-policy validation on a pool-column index (`Arch.f[i] !policy`): no static count, so just
-	 * validate the explicit policy name (intrinsic / bounds policy / func-`!abort` / flag enforcement). */
+	/* Failure-policy validation on a pool-column index (`Arch.f[i] !policy`). kind 3 = column: there's
+	 * no static count, so the only proof path is symbolic — `i` proven `0 <= i < Arch.count/length` by a
+	 * guard/loop (`bnd_proven` against the LIVE count, sounder than codegen's static-count elision). A
+	 * proven column index needs no policy (sets `policy_elided`); an unproven one validates its explicit
+	 * `!name` / keeps the implicit check. A bare literal `Arch.f[3]` stays unproven (no length guard). */
 	if (e->check_policies && sv_kind(v) == SN_INDEX_EXPR && sv_count(v, SN_FIELD_NAME) > 0) {
 		char *root = sv_resolved_name(ctx, v);
-		if (root && find_archetype(ctx, root))
-			bnd_policy_check(ctx, d, e, v, 0, root, 0, -1);
+		ArchetypeInfo *ai = root ? find_archetype(ctx, root) : NULL;
+		if (ai)
+			bnd_policy_check(ctx, d, e, v, 0, root, 3, ai->alloc_init_count); /* n = guaranteed-live count M */
 		free(root);
 	}
 	if (sv_kind(v) == SN_INDEX_EXPR && sv_count(v, SN_FIELD_NAME) == 0) {
@@ -7051,6 +7071,12 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 					}
 				} else if (phase == 2) {
 					ds->static_init_length_present = 1;
+					if (sv_kind(ev) == SN_LITERAL_EXPR) {
+						char *lx = sem_cv_dup_first_token(ev);
+						if (lx)
+							ds->static_init_count = atoi(lx);
+						free(lx);
+					}
 				} else if (phase == 3) {
 					ds->static_fields[ds->static_field_count++] = ev;
 				}

@@ -699,6 +699,10 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 			if (sv_present(pol))
 				ax->data.index.policy = txt_dup(sv_token(pol, TOK_IDENT));
 		}
+		/* Stamp the bounds prover's verdict (SemModel, keyed by node id) so codegen elides the policy
+		 * macro on a proven-in-bounds index — the single elision authority, no codegen re-derivation. */
+		if (g_lower_model && sem_model_policy_elided(g_lower_model, sv_id(e)))
+			ax->data.index.policy_elided = 1;
 		break;
 	}
 	case SN_SLICE_EXPR: {
@@ -741,6 +745,8 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 			if (sv_present(pol))
 				ax->data.slice.policy = txt_dup(sv_token(pol, TOK_IDENT));
 		}
+		if (g_lower_model && sem_model_policy_elided(g_lower_model, sv_id(e)))
+			ax->data.slice.policy_elided = 1;
 		break;
 	}
 	case SN_BINARY_EXPR: {

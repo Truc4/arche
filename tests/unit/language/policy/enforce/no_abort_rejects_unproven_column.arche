@@ -1,0 +1,14 @@
+// The other direction: an UNPROVEN pool-column index in a proc (the index isn't bounded by the pool's
+// init count) keeps the implicit `!abort` default, which `--no-abort` rejects (E0125). Confirms the
+// column verdict is sound — it does NOT over-prove an unbounded index.
+// RUN: %arche build --no-abort -o %t %s > %t.out 2>&1 ; grep -qiE "no-abort forbids|E0125" %t.out
+P :: arche { x :: int }
+P[4](4) {
+  x: 0
+}
+poke :: proc(j: int)() {
+  P.x[j] = 1; // j unbounded → unproven → implicit !abort → E0125 under --no-abort
+}
+main :: proc() {
+  poke(2)();
+}

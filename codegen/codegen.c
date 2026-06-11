@@ -144,17 +144,6 @@ struct CodegenContext {
 	int current_return_type_count;
 	char current_return_type_buf[512];
 
-	/* Loop bound tracking for bounds-check elision. When a C-style `for`
-	 * loop has the shape `for (let v = 0; v < BOUND; v += 1)` with BOUND a
-	 * compile-time int, we push (v, BOUND) here. A bounds check on an
-	 * archetype column access whose index is `v` can then be elided when
-	 * BOUND <= the archetype's static capacity. */
-	struct {
-		char var_name[64];
-		int bound; /* exclusive upper bound */
-	} loop_bounds[16];
-	int loop_bound_count;
-
 	/* Monomorphization state: set during specialized emission of an
 	 * archetype-parametric proc. NULL outside such emission. */
 	HirArchetypeDecl *current_archetype_param;
@@ -1223,42 +1212,6 @@ static const char *cg_insert_handler(CodegenContext *ctx, HirExpr *rhs, const ch
 	return prog ? prog : "reject";
 }
 
-/* Compile-time initialized count for a static archetype. Mirrors the
- * count computation in codegen_alloc_expr:
- *   - explicit `static T(cap, N)` second arg → N
- *   - `static T(cap) { field: val, ... }` (init block present) → cap
- *   - `static T(cap)` with no init block → 0
- * Returns -1 if the count is not statically knowable (e.g. non-literal
- * init_length). Callers MUST treat -1 as "cannot elide bounds checks". */
-static int get_arch_static_count(CodegenContext *ctx, const char *arch_name) {
-	for (int i = 0; i < ctx->ast->decl_count; i++) {
-		if (ctx->ast->decls[i]->kind != HIR_DECL_STATIC)
-			continue;
-		HirStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
-		if (s->kind != HIR_STATIC_ARCHETYPE)
-			continue;
-		if (s->is_requirement) /* datasheet minimum, not an allocation — emits no storage */
-			continue;
-		if (strcmp(canonical_arch_name(ctx, s->archetype.archetype_name), canonical_arch_name(ctx, arch_name)) != 0)
-			continue;
-		if (s->archetype.field_count == 0)
-			return 0;
-		if (s->archetype.init_length) {
-			if (s->archetype.init_length->kind != HIR_EXPR_LITERAL)
-				return -1;
-			return atoi(s->archetype.init_length->data.literal.lexeme);
-		}
-		if (s->archetype.field_count > 1) {
-			/* Init block present — count = capacity. */
-			if (s->archetype.field_values[0]->kind != HIR_EXPR_LITERAL)
-				return -1;
-			return atoi(s->archetype.field_values[0]->data.literal.lexeme);
-		}
-		return 0;
-	}
-	return 0;
-}
-
 static HirSysDecl *find_sys_decl(CodegenContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		HirDecl *decl = ctx->ast->decls[i];
@@ -1854,7 +1807,6 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 static void codegen_statement(CodegenContext *ctx, HirStmt *stmt);
 static int resolve_index_arch(CodegenContext *ctx, HirExpr *base_expr, HirExpr *idx_expr, const char **out_arch_name,
                               const char **out_arch_ptr, int *out_count_idx, int *out_idx_is_i64);
-static int bounds_check_elidable(CodegenContext *ctx, const char *arch_name, HirExpr *idx_expr);
 /* Failure-policy MACRO inliner: bind a policy's params to the op's operand SSAs as mutable locals,
  * inline its body (it mutates them / may exit()), read the operands back into `out`. A NULL/empty
  * policy leaves them unchanged ⇒ the raw op. Operands are i32 (`int`), per the policy signatures. */
@@ -1868,14 +1820,13 @@ static const char *cg_policy_for(CodegenContext *ctx, const char *explicit_pol, 
 static void emit_int_divmod(CodegenContext *ctx, const char *op, const char *type, const char *left, const char *right,
                             const char *explicit_pol, const char *res_name);
 /* Apply an index op's failure policy in place. Determines the base length (compile-time N / pool live
- * count / slice runtime .len), and if the index is fallible-and-unprovable, inlines the resolved policy
- * over (len, i) — writing the resulting i64 index into `idx_buf` and pointing `*final_idx` at it. */
-static void emit_index_policy(CodegenContext *ctx, HirExpr *base, HirExpr *idx_expr, int applies, int type6_bound,
-                              const char *slice_len, const char *policy, char *idx_buf, const char **final_idx);
-static int const_index_in_range(CodegenContext *ctx, HirExpr *idx_expr, int n);
-static int try_extract_loop_bound(HirStmt *for_stmt, char **out_var, int *out_bound);
-static void push_loop_bound(CodegenContext *ctx, const char *var_name, int bound);
-static void pop_loop_bound(CodegenContext *ctx);
+ * count / slice runtime .len) and inlines the resolved policy over (len, i) — writing the resulting i64
+ * index into `idx_buf` and pointing `*final_idx` at it. Skipped when `elided` (the bounds prover's
+ * SemModel verdict, stamped on the HIR node at lowering): provability is decided ONCE in semantic, not
+ * re-derived here. */
+static void emit_index_policy(CodegenContext *ctx, HirExpr *base, HirExpr *idx_expr, int applies, int elided,
+                              int type6_bound, const char *slice_len, const char *policy, char *idx_buf,
+                              const char **final_idx);
 
 /* Emit a `buf[lo:hi]` sub-slice. Computes the element pointer `base.ptr + lo` and runtime length
  * `hi - lo`, writing them into ptr_out / len_out (caller char[256]) and the element base name +
@@ -1936,7 +1887,9 @@ static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *l
 	 * bound into [0, N] and `abort` aborts when it exceeds N, exactly the slice semantics. The reversed
 	 * case (lo > hi) is governed by the SAME policy applied a third time — to the length `hi - lo` — so
 	 * there is no hidden net-clamp: clamp -> empty (0), abort -> aborts on reversed, undefined -> raw. */
-	if (strcmp(base_len, "-1") != 0) { /* a `-1` base length = unknown (foreign raw pointer) → trust it, raw view */
+	/* `-1` base length = unknown (foreign raw pointer) → trust it, raw view. `policy_elided` = the bounds
+	 * prover proved this sub-slice in-bounds (SemModel verdict) → no policy, same authority as an index. */
+	if (strcmp(base_len, "-1") != 0 && !e->data.slice.policy_elided) {
 		const char *pol = cg_policy_for(ctx, e->data.slice.policy, 1);
 		char *np1_64 = gen_value_name(ctx); /* boundary count = base_len + 1, as i32 */
 		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", np1_64, base_len);
@@ -2949,8 +2902,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		 * `.len` (slice param). Proven-safe indices are elided (no policy). Operands are i32 (`int`):
 		 * trunc the index in, inline the policy (it mutates `i` / `exit()`s), sext the result back. */
 		emit_index_policy(ctx, expr->data.index.base, expr->data.index.indices[0],
-		                  expr->data.index.index_count > 0 && !shaped_elem, type6_bound, slice_len,
-		                  expr->data.index.policy, final_idx_buf, &final_idx);
+		                  expr->data.index.index_count > 0 && !shaped_elem, expr->data.index.policy_elided,
+		                  type6_bound, slice_len, expr->data.index.policy, final_idx_buf, &final_idx);
 
 		char *res_name = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", res_name, scalar_type, scalar_type,
@@ -4469,117 +4422,6 @@ static int resolve_index_arch(CodegenContext *ctx, HirExpr *base_expr, HirExpr *
 	return (*out_arch_name != NULL && *out_arch_ptr != NULL && *out_count_idx >= 0);
 }
 
-/* If `expr` is an int literal whose value parses to a non-negative int, return that
- * value in *out and return 1. Otherwise return 0. */
-static int try_extract_int_literal(HirExpr *expr, int *out) {
-	if (!expr || expr->kind != HIR_EXPR_LITERAL || !expr->data.literal.lexeme)
-		return 0;
-	const char *s = expr->data.literal.lexeme;
-	if (!*s)
-		return 0;
-	long v = strtol(s, NULL, 10);
-	if (v < 0 || v > 2147483647L)
-		return 0;
-	*out = (int)v;
-	return 1;
-}
-
-/* If the for-stmt has the shape `for (let v = <int_const>; v < BOUND; v += <step>)`
- * (where BOUND is also an int constant), populate out_var/out_bound and return 1.
- * Conservative: only matches the canonical 0..BOUND form actually used in practice. */
-static int try_extract_loop_bound(HirStmt *for_stmt, char **out_var, int *out_bound) {
-	if (!for_stmt || for_stmt->kind != HIR_STMT_FOR)
-		return 0;
-	HirStmt *init = for_stmt->data.for_stmt.init;
-	HirExpr *cond = for_stmt->data.for_stmt.cond;
-	if (!init || !cond)
-		return 0;
-
-	/* Init: a `let` declaration introducing the loop variable. */
-	const char *var_name = NULL;
-	if (init->kind == HIR_STMT_BIND && init->data.bind_stmt.name_count >= 1 && init->data.bind_stmt.names[0]) {
-		var_name = init->data.bind_stmt.names[0];
-	}
-	if (!var_name)
-		return 0;
-
-	/* Cond: <var> < <int_literal> (also accept <=). */
-	if (cond->kind != HIR_EXPR_BINARY)
-		return 0;
-	if (cond->data.binary.op != OP_LT && cond->data.binary.op != OP_LTE)
-		return 0;
-	HirExpr *cmp_left = cond->data.binary.left;
-	HirExpr *cmp_right = cond->data.binary.right;
-	if (!cmp_left || cmp_left->kind != HIR_EXPR_NAME)
-		return 0;
-	if (strcmp(cmp_left->data.name.name, var_name) != 0)
-		return 0;
-
-	int bound;
-	if (!try_extract_int_literal(cmp_right, &bound))
-		return 0;
-	if (cond->data.binary.op == OP_LTE) {
-		if (bound == 2147483647)
-			return 0; /* would overflow */
-		bound++;      /* `v <= N` means max `v` is N, so exclusive bound is N+1 */
-	}
-
-	*out_var = (char *)var_name;
-	*out_bound = bound;
-	return 1;
-}
-
-static void push_loop_bound(CodegenContext *ctx, const char *var_name, int bound) {
-	if (ctx->loop_bound_count >= (int)(sizeof(ctx->loop_bounds) / sizeof(ctx->loop_bounds[0])))
-		return; /* stack full — silently drop; only affects bounds-check elision, not correctness */
-	int i = ctx->loop_bound_count++;
-	strncpy(ctx->loop_bounds[i].var_name, var_name, sizeof(ctx->loop_bounds[i].var_name) - 1);
-	ctx->loop_bounds[i].var_name[sizeof(ctx->loop_bounds[i].var_name) - 1] = '\0';
-	ctx->loop_bounds[i].bound = bound;
-}
-
-static void pop_loop_bound(CodegenContext *ctx) {
-	if (ctx->loop_bound_count > 0)
-		ctx->loop_bound_count--;
-}
-
-/* If `idx_expr` references a loop variable currently in scope and we know the loop's
- * upper bound, return that bound. Otherwise return -1. */
-static int lookup_loop_var_bound(CodegenContext *ctx, HirExpr *idx_expr) {
-	if (!idx_expr || idx_expr->kind != HIR_EXPR_NAME)
-		return -1;
-	const char *name = idx_expr->data.name.name;
-	for (int i = ctx->loop_bound_count - 1; i >= 0; i--) {
-		if (strcmp(ctx->loop_bounds[i].var_name, name) == 0)
-			return ctx->loop_bounds[i].bound;
-	}
-	return -1;
-}
-
-/* Returns 1 if a bounds check on `arch[idx_expr]` is provably unnecessary. */
-static int bounds_check_elidable(CodegenContext *ctx, const char *arch_name, HirExpr *idx_expr) {
-	if (!arch_name)
-		return 0;
-	int cap = get_arch_static_capacity(ctx, arch_name);
-	if (cap <= 0)
-		return 0; /* dynamic capacity — can't elide statically */
-	/* The runtime check is `index < count`, not `index < capacity`. Elide only
-	 * when the index is provably less than the static *count*. A static count of
-	 * -1 (unknowable at compile time) or 0 (uninitialized archetype) means we
-	 * cannot elide. */
-	int count = get_arch_static_count(ctx, arch_name);
-	if (count <= 0)
-		return 0;
-	int lit;
-	if (try_extract_int_literal(idx_expr, &lit)) {
-		return lit >= 0 && lit < count;
-	}
-	int loop_bound = lookup_loop_var_bound(ctx, idx_expr);
-	if (loop_bound > 0 && loop_bound <= count)
-		return 1;
-	return 0;
-}
-
 /* `--unchecked`: a trusted/embedded build that strips the IMPLICIT runtime checks — an unannotated
  * fallible op resolves to `!undefined` (raw) instead of its `!abort`/`!clamp` default. Explicit
  * policies are still honored (a written `!clamp`/`!zero` may be load-bearing logic, not just a safety
@@ -4686,23 +4528,20 @@ static void emit_int_divmod(CodegenContext *ctx, const char *op, const char *typ
 	buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", res_name, op, type, out[0], out[1]);
 }
 
-static void emit_index_policy(CodegenContext *ctx, HirExpr *base, HirExpr *idx_expr, int applies, int type6_bound,
-                              const char *slice_len, const char *policy, char *idx_buf, const char **final_idx) {
-	if (!applies)
-		return;
+static void emit_index_policy(CodegenContext *ctx, HirExpr *base, HirExpr *idx_expr, int applies, int elided,
+                              int type6_bound, const char *slice_len, const char *policy, char *idx_buf,
+                              const char **final_idx) {
+	if (!applies || elided)
+		return; /* `elided` = the bounds prover proved this in-bounds (SemModel verdict) → no policy */
 	/* The base length as an i32 (`int`, matching the policy signature). One of: a fixed `T[N]`'s N, a
-	 * pool column's live count, or a slice's runtime .len. A proven-safe index is elided (no policy). */
+	 * pool column's live count, or a slice's runtime .len. */
 	char len_i32[256] = "";
 	if (type6_bound > 0) {
-		if (const_index_in_range(ctx, idx_expr, type6_bound))
-			return; /* proven in range */
 		snprintf(len_i32, sizeof len_i32, "%d", type6_bound);
 	} else {
 		const char *an = NULL, *ap = NULL;
 		int ci = -1, ii = 0;
 		if (resolve_index_arch(ctx, base, idx_expr, &an, &ap, &ci, &ii)) {
-			if (bounds_check_elidable(ctx, an, idx_expr))
-				return;          /* proven in range */
 			const char *sp = ap; /* load the live count from the archetype struct, trunc to i32 */
 			if (strncmp(ap, "@archetype_", 11) == 0) {
 				char *lp = gen_value_name(ctx);
@@ -4734,15 +4573,6 @@ static void emit_index_policy(CodegenContext *ctx, HirExpr *base, HirExpr *idx_e
 	buffer_append_fmt(ctx, "  %s = sext i32 %s to i64\n", clamped64, out[1]);
 	snprintf(idx_buf, 256, "%s", clamped64);
 	*final_idx = idx_buf;
-}
-
-/* 1 if `idx_expr` is provably within [0, n): a literal in range, or a loop var bounded <= n. */
-static int const_index_in_range(CodegenContext *ctx, HirExpr *idx_expr, int n) {
-	int lit;
-	if (try_extract_int_literal(idx_expr, &lit))
-		return lit >= 0 && lit < n;
-	int lb = lookup_loop_var_bound(ctx, idx_expr);
-	return lb > 0 && lb <= n;
 }
 
 /* ========== WHOLE-COLUMN LOOP HELPER ========== */
@@ -6616,7 +6446,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				 * against the fixed count N / pool live count / slice .len. Proven-safe indices elide. */
 				const char *wfidx = idx_i64;
 				emit_index_policy(ctx, stmt->data.assign_stmt.target->data.index.base,
-				                  stmt->data.assign_stmt.target->data.index.indices[0], 1, type6_target->string_len,
+				                  stmt->data.assign_stmt.target->data.index.indices[0], 1,
+				                  stmt->data.assign_stmt.target->data.index.policy_elided, type6_target->string_len,
 				                  type6_target->is_slice ? type6_target->len_ssa : NULL,
 				                  stmt->data.assign_stmt.target->data.index.policy, idx_i64, &wfidx);
 				const char *et6 = type6_target->field_type ? type6_target->field_type : "char";
@@ -6682,7 +6513,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 
 			/* Pool-column write (`Arch.field[i] = v`): apply the index's failure policy (a macro
 			 * inlined over (len, i)) against the live count. Proven-safe indices elide. */
-			emit_index_policy(ctx, base_expr, stmt->data.assign_stmt.target->data.index.indices[0], 1, 0, NULL,
+			emit_index_policy(ctx, base_expr, stmt->data.assign_stmt.target->data.index.indices[0], 1,
+			                  stmt->data.assign_stmt.target->data.index.policy_elided, 0, NULL,
 			                  stmt->data.assign_stmt.target->data.index.policy, final_idx_buf, &final_idx);
 
 			/* Compute target address (always uses scalar pointer) */
@@ -6748,17 +6580,6 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 
 			push_value_scope(ctx);
 
-			/* If the loop is `for (let v = K; v < N; v += 1)` with N a compile-time int,
-			 * track (v, N) so bounds checks on column accesses indexed by v can be elided
-			 * when N <= archetype capacity. Pushed before the body, popped after exit. */
-			char *bound_var = NULL;
-			int bound_val = 0;
-			int pushed_bound = 0;
-			if (try_extract_loop_bound(stmt, &bound_var, &bound_val)) {
-				push_loop_bound(ctx, bound_var, bound_val);
-				pushed_bound = 1;
-			}
-
 			if (stmt->data.for_stmt.init) {
 				codegen_statement(ctx, stmt->data.for_stmt.init);
 			}
@@ -6811,8 +6632,6 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 
 			ctx->loop_exit_count--;
 			ctx->loop_cont_count--;
-			if (pushed_bound)
-				pop_loop_bound(ctx);
 			pop_value_scope(ctx);
 		} else if (!stmt->data.for_stmt.var_name) {
 			/* Condition-based or infinite for loop */
@@ -8656,7 +8475,6 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->alloca_buf_size = 0;
 	ctx->alloca_buf_pos = 0;
 	ctx->hoisting_allocas = 0;
-	ctx->loop_bound_count = 0;
 	ctx->current_archetype_param = NULL;
 	ctx->current_arch_param_name = NULL;
 	ctx->current_arch_param_llvm = NULL;
