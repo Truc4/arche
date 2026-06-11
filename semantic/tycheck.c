@@ -114,12 +114,12 @@ static TypeId tyid_of_callee(TyCtx *cx, const DeclSummary *d) {
 		rc = d->out_param_count > 8 ? 8 : d->out_param_count;
 		for (int i = 0; i < rc; i++)
 			rbuf[i] = d->out_params[i].type_id;
-	} else {
-		rc = d->return_type_count > 8 ? 8 : d->return_type_count;
-		for (int i = 0; i < rc; i++)
-			rbuf[i] = d->return_type_ids[i];
+		return tyid_of_proc(cx->arena, pbuf, pc, rbuf, rc);
 	}
-	return tyid_of_func(cx->arena, pbuf, pc, rbuf, rc, is_proc);
+	rc = d->return_type_count > 8 ? 8 : d->return_type_count;
+	for (int i = 0; i < rc; i++)
+		rbuf[i] = d->return_type_ids[i];
+	return tyid_of_func(cx->arena, pbuf, pc, rbuf, rc);
 }
 
 /* Encode the call-typing rule: arity + per-arg type + return type, against the DeclTable. */

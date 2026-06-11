@@ -1,0 +1,26 @@
+// Form decls (func/proc/sys/policy/arche) DO carry a type — it's just hidden by default because the
+// form already spells it. `--dump --full` (the editor's `HINTS full`) renders them in Arche's own
+// spelling. The plain `--dump` of the same file shows NONE of these (redundant → hidden, not ignored).
+// RUN: %build/arche-analyzer --dump --full %s | grep -qxF "SYN 10 6 1 1 type func(i32, i32) -> i32"
+// RUN: %build/arche-analyzer --dump --full %s | grep -qxF "SYN 13 7 1 1 type proc(i32, i32)(i32, i32)"
+// RUN: %build/arche-analyzer --dump --full %s | grep -qxF "SYN 21 7 1 1 type sys(pos, vel)"
+// RUN: %build/arche-analyzer --dump --full %s | grep -qxF "SYN 19 11 1 1 type archetype"
+// default hides every form type:
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -cF " type ") -eq 0
+add :: func(a: int, b: int) -> int {
+  return a + b;
+}
+swap :: proc(a: int, b: int)(x: int, y: int) {
+  x = b;
+  y = a;
+}
+pos      :: float
+vel      :: float
+Particle :: arche { pos, vel }
+Particle[2](2)
+step :: sys (pos, vel) {
+  pos = pos + vel;
+}
+main :: proc() {
+  run step;
+}

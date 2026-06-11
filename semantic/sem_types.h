@@ -37,7 +37,12 @@ typedef enum {
 	TYK_TUPLE,
 	TYK_HANDLE,
 	TYK_ARCHETYPE_CATEGORY, /* the bare `archetype` keyword (sys param only) */
-	TYK_FUNC                /* callable: (params) -> (returns) */
+	/* The callable FORMS are DISTINCT kinds — Arche's whole identity is that func (pure value), proc
+	 * (action), sys (transform), and policy (failure macro) are not the same thing. They never unify. */
+	TYK_FUNC,  /* func: (params) -> return — a pure value */
+	TYK_PROC,  /* proc: (in)(out) — an action */
+	TYK_SYS,   /* sys: (components) — a data transform */
+	TYK_POLICY /* policy: (operands) — a failure-handling macro */
 } TyKind;
 
 typedef struct TypeArena TypeArena;
@@ -56,12 +61,18 @@ TypeId tyid_of_shaped(TypeArena *a, TypeId elem, int rank);
 TypeId tyid_of_tuple(TypeArena *a, const char *const *field_names, const TypeId *field_types, int field_count);
 TypeId tyid_of_handle(TypeArena *a, const char *archetype_name);
 TypeId tyid_of_archetype_category(TypeArena *a);
-TypeId tyid_of_func(TypeArena *a, const TypeId *params, int param_count, const TypeId *returns, int return_count,
-                    int is_proc);
+/* The three callable forms, each its own distinct kind. `returns` is a func's single return, a proc's
+ * out-params, or a sys's (none). Structural inequality (`proc()(int) != func()->int`) is automatic —
+ * a different kind interns to a different id. */
+TypeId tyid_of_func(TypeArena *a, const TypeId *params, int param_count, const TypeId *returns, int return_count);
+TypeId tyid_of_proc(TypeArena *a, const TypeId *params, int param_count, const TypeId *returns, int return_count);
+TypeId tyid_of_sys(TypeArena *a, const TypeId *params, int param_count);
+TypeId tyid_of_policy(TypeArena *a, const TypeId *params, int param_count);
 
 /* Inspection. */
 TyKind tyid_kind(const TypeArena *a, TypeId t);
-int tyid_is_proc(const TypeArena *a, TypeId t);              /* 1 if a TYK_FUNC callable is a proc */
+int tyid_is_proc(const TypeArena *a, TypeId t);     /* 1 if t is a TYK_PROC */
+int tyid_is_callable(const TypeArena *a, TypeId t); /* 1 if t is a func OR proc (a first-class callable) */
 PrimKind tyid_prim(const TypeArena *a, TypeId t);            /* the PrimKind of a TYK_PRIM, else PRIM_COUNT */
 const char *tyid_nominal_name(const TypeArena *a, TypeId t); /* a TYK_NOMINAL's interned name, else NULL */
 const char *tyid_handle_name(const TypeArena *a, TypeId t);  /* a TYK_HANDLE's archetype name, else NULL */

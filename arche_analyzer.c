@@ -460,34 +460,45 @@ static void emit_syn(int line, int col, int padL, int padR, const char *kind, co
 	printf("SYN %d %d %d %d %s %s\n", uline, col, padL ? 1 : 0, padR ? 1 : 0, kind, text);
 }
 
-/* Inferred-type hint: for a bind with no written type, slot the inferred type
- * INTO the bind operator so the rendered view reads exactly as the longhand —
- *   `r := e`  →  `r : int = e`     (anchor before the `=`, pad both sides)
- *   `x :: e`  →  `x : int : e`     (anchor before the 2nd `:`, pad both sides)
- * Skips type-alias declarations and any bind that already states its type. */
-static void emit_bind_hint(SyntaxView bind, SemanticContext *ctx) {
+/* Off by default — also render the redundant FORM-type inlays. A presentation choice the editor makes
+ * per the user's inlay setting (HINTS full / --dump --full), never a compile concern. */
+static int g_full_type_hints = 0;
+
+/* A FORM type (func/proc/sys/policy/archetype) is already spelled out by the source form, so its inlay
+ * is redundant; a value type's `⟨type⟩` is hidden in source, so it's the useful one. The redundancy is
+ * decided by the TYPE, not the node kind (the parser makes `add :: func(){}` an `SN_CONST_DECL` too). */
+static int type_is_form(const SemModel *model, SemanticContext *ctx, SyntaxView binding) {
+	TypeId tid = sem_model_expr_type_id(model, sv_id(binding));
+	TyKind k = tyid_kind(sem_context_arena(ctx), tid);
+	return k == TYK_FUNC || k == TYK_PROC || k == TYK_SYS || k == TYK_POLICY || k == TYK_ARCHETYPE_CATEGORY;
+}
+
+/* The inferred-type inlay: fill the elided `⟨type⟩` slot of the unified grammar so the view reads as
+ * the longhand —
+ *   `r := e`  →  `r : T = e`   (anchor before the `=`)
+ *   `x :: e`  →  `x : T : e`   (anchor before the 2nd `:`)
+ * ONE rule for EVERY binding/declaration form (locals, consts, statics, func/proc/sys/policy/arche): the
+ * compiler records `type-of(RHS)` keyed by the binding node id, and this renders it. A node shows a hint
+ * iff the compiler typed it AND the source didn't already write the `⟨type⟩` slot — and, by default, the
+ * type isn't a redundant form type (hidden unless full mode). Skips type aliases (emit_typeref_hint). */
+static void emit_type_hint(SyntaxView binding, SemanticContext *ctx) {
 	const SemModel *model = sem_context_model(ctx);
-	if (sem_model_bind_alias(model, sv_id(bind)))
-		return;
-	if (sv_type_count(bind) > 0)
-		return;
-	SyntaxView target = sv_expr_at(bind, 0);
-	SyntaxView value = sv_expr_at(bind, 1);
-	if (!sv_present(target) || !sv_present(value) || sv_kind(target) != SN_NAME_EXPR)
-		return;
-	TypeId tid = sem_model_expr_type_id(model, sv_id(value));
+	if (sem_model_bind_alias(model, sv_id(binding)))
+		return; /* a nominal type alias, not a value binding */
+	if (sv_type_count(binding) > 0)
+		return; /* the `⟨type⟩` slot is already written in source */
+	TypeId tid = sem_model_expr_type_id(model, sv_id(binding));
 	if (tid == TYID_UNKNOWN)
 		return;
+	if (!g_full_type_hints && type_is_form(model, ctx, binding))
+		return; /* redundant: the form already states its type — hidden by default (still in the model) */
 	char tybuf[128];
 	const char *ty = tyid_display(sem_context_arena(ctx), tid, tybuf, sizeof(tybuf));
 	if (!ty || !ty[0])
 		return;
-	/* Anchor at the 2nd separator token of the bind operator: the `=` of `:=`, or
-	 * (when there is no `=`) the 2nd `:` of `::`. The type then renders between
-	 * the two real tokens that the bind operator is made of. */
-	CvPos anchor = sv_token_pos(bind, TOK_EQ);
+	CvPos anchor = sv_token_pos(binding, TOK_EQ); /* the `=` of `:=`, else the 2nd `:` of `::` */
 	if (!anchor.line)
-		anchor = sv_token_pos_at(bind, TOK_COLON, 1);
+		anchor = sv_token_pos_at(binding, TOK_COLON, 1);
 	if (!anchor.line)
 		return;
 	emit_syn(anchor.line, anchor.column, 1, 1, "type", display_type(ty));
@@ -646,9 +657,14 @@ static void walk(SyntaxView v, SemanticContext *ctx, int in_func) {
 		return;
 	emit_param_hint(v, ctx); /* any node may be a resolved call argument */
 	emit_move_hint(v, ctx);  /* any name may be an implicitly-moved (consumed) bare binding */
-	if (sv_kind(v) == SN_BIND_STMT)
-		emit_bind_hint(v, ctx);
-	else if (sv_kind(v) == SN_TYPE_REF)
+	/* Every binding/declaration form gets the same elided-`⟨type⟩` inlay (keyed by node id); whether a
+	 * redundant form type is shown is decided inside emit_type_hint. The parser makes proc/func/sys/arche
+	 * decls `SN_CONST_DECL` (value = a *_EXPR form), so the value-binding kinds cover them too. */
+	SyntaxNodeKind vk = sv_kind(v);
+	if (vk == SN_BIND_STMT || vk == SN_CONST_DECL || vk == SN_STATIC_DECL || vk == SN_FUNC_DECL ||
+	    vk == SN_PROC_DECL || vk == SN_SYS_DECL || vk == SN_ARCHETYPE_DECL)
+		emit_type_hint(v, ctx);
+	if (sv_kind(v) == SN_TYPE_REF)
 		emit_typeref_hint(v, ctx);
 	else if (sv_kind(v) == SN_EXPR_STMT)
 		emit_effect_hint(v); /* bare proc call → ghost `()` */
@@ -762,9 +778,10 @@ static void analysis_free(Analysis *a) {
 	a->holds = (ModuleHolds){NULL, 0, 0};
 }
 
-static void emit_hints(const Analysis *a) {
+static void emit_hints(const Analysis *a, int full) {
 	if (!a->ctx)
 		return;
+	g_full_type_hints = full;
 	SyntaxView root = sv_root(a->syntax_root, a->combined);
 	g_proc_name_count = 0;
 	collect_proc_names(root); /* gather proc names first (a call may precede its decl) */
@@ -1161,7 +1178,7 @@ static void emit_goto(const Analysis *a, const char *kind, int uline, int col, c
 
 /* ---- one-shot dump ---- */
 
-static int run_dump(const char *path) {
+static int run_dump(const char *path, int full) {
 	char *user = path ? read_file(path) : read_stream(stdin);
 	if (!user) {
 		fprintf(stderr, "arche-analyzer: could not read %s\n", path ? path : "<stdin>");
@@ -1173,7 +1190,7 @@ static int run_dump(const char *path) {
 		analysis_free(&a);
 		return 1;
 	}
-	emit_hints(&a);
+	emit_hints(&a, full);
 	emit_diags(&a);
 	emit_docs(&a);
 	analysis_free(&a);
@@ -1298,9 +1315,17 @@ static int run_serve(void) {
 			printf("OK\n\n");                 /* blank line terminates every response */
 			fflush(stdout);
 		} else if (strncmp(line, "HINTS ", 6) == 0) {
-			Doc *doc = docs_find(&docs, line + 6);
+			/* `HINTS <path>` (default) or `HINTS full <path>` — the editor asks for full type hints per
+			 * the user's inlay setting; the server just honors the request. */
+			const char *arg = line + 6;
+			int full = 0;
+			if (strncmp(arg, "full ", 5) == 0) {
+				full = 1;
+				arg += 5;
+			}
+			Doc *doc = docs_find(&docs, arg);
 			if (doc)
-				emit_hints(&doc->a);
+				emit_hints(&doc->a, full);
 			printf("\n"); /* blank line terminates the response */
 			fflush(stdout);
 		} else if (strncmp(line, "TOKENS ", 7) == 0) {
@@ -1341,12 +1366,17 @@ static int run_serve(void) {
 /* Entry point for the analyzer, shared by the folded `arche analyze` subcommand (cli/cmd_analyze.c)
  * and the standalone `arche-analyzer` shim (arche_analyzer_main.c). Declared in arche_analyzer.h. */
 int analyze_main(int argc, char *argv[]) {
-	if (argc >= 2 && strcmp(argv[1], "--dump") == 0)
-		return run_dump(argc >= 3 ? argv[2] : NULL);
+	if (argc >= 2 && strcmp(argv[1], "--dump") == 0) {
+		/* `--dump [--full] [file]` — --full also renders the redundant form-decl type hints. */
+		int full = (argc >= 3 && strcmp(argv[2], "--full") == 0);
+		const char *file = full ? (argc >= 4 ? argv[3] : NULL) : (argc >= 3 ? argv[2] : NULL);
+		return run_dump(file, full);
+	}
 	if (argc >= 2 && strcmp(argv[1], "--serve") == 0)
 		return run_serve();
 	if (argc >= 6 && strcmp(argv[1], "--goto") == 0)
 		return run_goto(argv[2], atoi(argv[3]), atoi(argv[4]), argv[5]);
-	fprintf(stderr, "usage: %s (--dump [file] | --serve | --goto <kind> <line> <col> <file>)\n", argv[0]);
+	fprintf(stderr,
+	        "usage: %s (--dump [--full] [file] | --serve | --goto <kind> <line> <col> <file>)\n", argv[0]);
 	return 2;
 }

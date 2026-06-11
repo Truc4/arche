@@ -41,10 +41,10 @@ typedef struct {
 		struct {
 			TypeId *params;
 			int param_count;
-			TypeId *returns; /* proc: out-params; func: the single return */
+			TypeId *returns; /* func: single return; proc: out-params; sys/policy: none */
 			int return_count;
-			int is_proc; /* 1 = proc (action), 0 = func (value): proc()(int) != func()->int */
-		} func;
+		} func; /* shared payload for the four callable KINDS (TYK_FUNC/PROC/SYS/POLICY) — the kind, not
+		         * a flag, tells them apart, so a proc-type and func-type never unify. */
 	} data;
 } TypeNode;
 
@@ -77,7 +77,7 @@ void ty_arena_free(TypeArena *a) {
 		if (n->kind == TYK_TUPLE) {
 			free(n->data.tuple.names);
 			free(n->data.tuple.types);
-		} else if (n->kind == TYK_FUNC) {
+		} else if (n->kind == TYK_FUNC || n->kind == TYK_PROC || n->kind == TYK_SYS || n->kind == TYK_POLICY) {
 			free(n->data.func.params);
 			free(n->data.func.returns);
 		}
@@ -244,12 +244,13 @@ TypeId tyid_of_archetype_category(TypeArena *a) {
 	return push_node(a, node);
 }
 
-TypeId tyid_of_func(TypeArena *a, const TypeId *params, int param_count, const TypeId *returns, int return_count,
-                    int is_proc) {
+/* Hash-cons a callable node of `kind` (TYK_FUNC/PROC/SYS/POLICY). Dedup keys on the KIND, so a proc and
+ * func with identical (params, returns) intern to DIFFERENT ids — structural inequality, no flag. */
+static TypeId intern_callable(TypeArena *a, TyKind kind, const TypeId *params, int param_count, const TypeId *returns,
+                              int return_count) {
 	for (int i = 1; i < a->node_count; i++) {
 		TypeNode *n = &a->nodes[i];
-		if (n->kind != TYK_FUNC || n->data.func.is_proc != is_proc || n->data.func.param_count != param_count ||
-		    n->data.func.return_count != return_count)
+		if (n->kind != kind || n->data.func.param_count != param_count || n->data.func.return_count != return_count)
 			continue;
 		int eq = 1;
 		for (int j = 0; j < param_count && eq; j++)
@@ -262,8 +263,7 @@ TypeId tyid_of_func(TypeArena *a, const TypeId *params, int param_count, const T
 			return (TypeId)i;
 	}
 	TypeNode node = {0};
-	node.kind = TYK_FUNC;
-	node.data.func.is_proc = is_proc;
+	node.kind = kind;
 	node.data.func.param_count = param_count;
 	node.data.func.return_count = return_count;
 	node.data.func.params = malloc(param_count * sizeof(TypeId));
@@ -273,6 +273,19 @@ TypeId tyid_of_func(TypeArena *a, const TypeId *params, int param_count, const T
 	return push_node(a, node);
 }
 
+TypeId tyid_of_func(TypeArena *a, const TypeId *params, int param_count, const TypeId *returns, int return_count) {
+	return intern_callable(a, TYK_FUNC, params, param_count, returns, return_count);
+}
+TypeId tyid_of_proc(TypeArena *a, const TypeId *params, int param_count, const TypeId *returns, int return_count) {
+	return intern_callable(a, TYK_PROC, params, param_count, returns, return_count);
+}
+TypeId tyid_of_sys(TypeArena *a, const TypeId *params, int param_count) {
+	return intern_callable(a, TYK_SYS, params, param_count, NULL, 0);
+}
+TypeId tyid_of_policy(TypeArena *a, const TypeId *params, int param_count) {
+	return intern_callable(a, TYK_POLICY, params, param_count, NULL, 0);
+}
+
 TyKind tyid_kind(const TypeArena *a, TypeId t) {
 	if (!a || t == 0 || (int)t >= a->node_count)
 		return TYK_UNKNOWN;
@@ -280,9 +293,14 @@ TyKind tyid_kind(const TypeArena *a, TypeId t) {
 }
 
 int tyid_is_proc(const TypeArena *a, TypeId t) {
-	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_FUNC)
+	return a && t != 0 && (int)t < a->node_count && a->nodes[t].kind == TYK_PROC;
+}
+
+int tyid_is_callable(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count)
 		return 0;
-	return a->nodes[t].data.func.is_proc;
+	TyKind k = a->nodes[t].kind;
+	return k == TYK_FUNC || k == TYK_PROC;
 }
 
 PrimKind tyid_prim(const TypeArena *a, TypeId t) {
@@ -406,11 +424,37 @@ const char *tyid_display(const TypeArena *a, TypeId t, char *buf, int buflen) {
 		snprintf(buf, buflen, "archetype");
 		break;
 	case TYK_FUNC:
-		if (n->data.func.is_proc)
-			snprintf(buf, buflen, "proc(%d)(%d)", n->data.func.param_count, n->data.func.return_count);
-		else
-			snprintf(buf, buflen, "func(%d) -> (%d)", n->data.func.param_count, n->data.func.return_count);
+	case TYK_PROC:
+	case TYK_SYS:
+	case TYK_POLICY: {
+		/* Render each callable form in Arche's own spelling — `func(T, U) -> R`, `proc(T)(A)`,
+		 * `sys(T)`, `policy(T)` — with the real param/return types (cf. Odin/Jai showing the types). */
+		char ps[400] = "";
+		for (int i = 0; i < n->data.func.param_count; i++) {
+			char one[128];
+			tyid_display(a, n->data.func.params[i], one, sizeof(one));
+			size_t l = strlen(ps);
+			snprintf(ps + l, sizeof(ps) - l, "%s%s", i ? ", " : "", one);
+		}
+		if (n->kind == TYK_PROC) {
+			char rs[400] = "";
+			for (int i = 0; i < n->data.func.return_count; i++) {
+				char one[128];
+				tyid_display(a, n->data.func.returns[i], one, sizeof(one));
+				size_t l = strlen(rs);
+				snprintf(rs + l, sizeof(rs) - l, "%s%s", i ? ", " : "", one);
+			}
+			snprintf(buf, buflen, "proc(%s)(%s)", ps, rs);
+		} else if (n->kind == TYK_FUNC) {
+			char rs[128] = "void";
+			if (n->data.func.return_count >= 1)
+				tyid_display(a, n->data.func.returns[0], rs, sizeof(rs));
+			snprintf(buf, buflen, "func(%s) -> %s", ps, rs);
+		} else {
+			snprintf(buf, buflen, "%s(%s)", n->kind == TYK_SYS ? "sys" : "policy", ps);
+		}
 		break;
+	}
 	}
 	return buf;
 }
