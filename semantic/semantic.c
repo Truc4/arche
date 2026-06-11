@@ -3697,6 +3697,99 @@ static int bnd_guard_neg(SemanticContext *ctx, SyntaxView cond, BndEnv *e) {
 	return handled;
 }
 
+/* Decompose a comparison `<name> <op> <rhs>` (name a plain var, op a relational operator) into its
+ * parts. Returns 1 on a match, filling *name (owned), *op, *rhs (a view into the same tree). */
+static int bnd_cmp_parts(SemanticContext *ctx, SyntaxView cmp, char **name, Operator *op, SyntaxView *rhs) {
+	if (!sv_present(cmp) || sv_kind(cmp) != SN_BINARY_EXPR)
+		return 0;
+	Operator o = sem_binary_op(cmp);
+	if (o != OP_LT && o != OP_LTE && o != OP_GT && o != OP_GTE)
+		return 0;
+	char *n = bnd_plain_name(ctx, sem_node_at_expr(cmp, 0));
+	if (!n)
+		return 0;
+	*name = n;
+	*op = o;
+	*rhs = sem_node_at_expr(cmp, 1);
+	return 1;
+}
+
+/* True if `guard_op` is the exact logical complement of `loop_op` (so a guard testing `guard_op` can
+ * never hold when the loop's `loop_op` holds): `<`/`>=`, `<=`/`>`, `>`/`<=`, `>=`/`<`. */
+static int bnd_is_complement(Operator loop_op, Operator guard_op) {
+	return (loop_op == OP_LT && guard_op == OP_GTE) || (loop_op == OP_LTE && guard_op == OP_GT) ||
+	       (loop_op == OP_GT && guard_op == OP_LTE) || (loop_op == OP_GTE && guard_op == OP_LT);
+}
+
+/* True if two RHS bound expressions are the SAME bound: equal plain names, equal int literals, or the
+ * same extent accessor (same base AND same `.length`/`.cap`/… field). Conservative — anything else is
+ * treated as different (no false "redundant"). */
+static int bnd_view_same(SemanticContext *ctx, SyntaxView a, SyntaxView b) {
+	char *na = bnd_plain_name(ctx, a), *nb = bnd_plain_name(ctx, b);
+	if (na && nb) {
+		int eq = strcmp(na, nb) == 0;
+		free(na);
+		free(nb);
+		return eq;
+	}
+	free(na);
+	free(nb);
+	int la = bnd_lit_int(a), lb = bnd_lit_int(b);
+	if (la >= 0 && lb >= 0)
+		return la == lb;
+	if (sv_present(a) && sv_present(b) && sv_kind(a) == SN_FIELD_EXPR && sv_kind(b) == SN_FIELD_EXPR) {
+		char *ba = bnd_extent_base(ctx, a), *bb = bnd_extent_base(ctx, b);
+		int eq = 0;
+		if (ba && bb && strcmp(ba, bb) == 0 && sv_count(a, SN_FIELD_NAME) == 1 && sv_count(b, SN_FIELD_NAME) == 1) {
+			char *fa = sem_cv_dup(sv_child_at(a, SN_FIELD_NAME, 0));
+			char *fb = sem_cv_dup(sv_child_at(b, SN_FIELD_NAME, 0));
+			eq = fa && fb && strcmp(fa, fb) == 0;
+			free(fa);
+			free(fb);
+		}
+		free(ba);
+		free(bb);
+		return eq;
+	}
+	return 0;
+}
+
+/* W0020: flag a LEADING guard-exit in a loop body that re-tests the loop's own condition (the exact
+ * complement of `cond` on the same operands). Sound: a leading guard-exit only exits or falls through
+ * UNCHANGED, so at each such guard the loop variable and bound still hold their body-top values, where
+ * the loop condition is guaranteed (the loop re-checks it every iteration). The run stops at the first
+ * statement that isn't a guard-exit (it may reassign the operands). */
+static void bnd_lint_loop_cond_guards(SemanticContext *ctx, SyntaxView forstmt, SyntaxView cond) {
+	char *lname = NULL;
+	Operator lop;
+	SyntaxView lrhs;
+	if (!bnd_cmp_parts(ctx, cond, &lname, &lop, &lrhs))
+		return;
+	int seen_brace = 0;
+	for (int i = 0; i < forstmt.node->child_count; i++) {
+		SyntaxElem *ch = &forstmt.node->children[i];
+		if (ch->tag == SE_TOKEN) {
+			if (ch->as.token.kind == TOK_LBRACE)
+				seen_brace = 1;
+			continue;
+		}
+		if (!seen_brace)
+			continue;
+		SyntaxView st = {ch->as.node, forstmt.src};
+		if (sv_kind(st) != SN_IF_STMT || !bnd_body_exits(st, 0))
+			break; /* end of the leading guard-exit run — a later statement may reassign the operands */
+		char *gname = NULL;
+		Operator gop;
+		SyntaxView grhs;
+		if (bnd_cmp_parts(ctx, sem_node_at_expr(st, 0), &gname, &gop, &grhs)) {
+			if (gname && strcmp(lname, gname) == 0 && bnd_is_complement(lop, gop) && bnd_view_same(ctx, lrhs, grhs))
+				sem_emit_lint_redundant_guard(ctx, sem_node_loc(st.node), gname);
+			free(gname);
+		}
+	}
+	free(lname);
+}
+
 /* A guard-exit `if (COND) { return/break/continue }` establishes COND's negation for the rest of
  * the enclosing block. Returns 1 if recognized. */
 static int bnd_guard_exit(SemanticContext *ctx, SyntaxView ifv, BndEnv *e) {
@@ -4076,6 +4169,10 @@ static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 		if (init_var)
 			bnd_env_add(e, init_var, NULL, 1);
 		(void)init_nonneg_var_seen;
+		/* W0020: leading guard-exits that re-test this loop's own condition can never fire. Lint pass
+		 * only (where @allow is armed); emit-once since each for-stmt is visited once per pass. */
+		if (e->lint_columns)
+			bnd_lint_loop_cond_guards(ctx, v, cond);
 		/* Check ONLY the post-`{` body statements (NOT the header init/incr — the incr `i=i+1` would
 		 * otherwise kill the loop var's facts before the body is checked). */
 		const char *r = NULL;

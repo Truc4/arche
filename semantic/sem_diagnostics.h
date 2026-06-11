@@ -182,6 +182,7 @@ typedef enum {
 	SEM_LINT_raw_pool_index,
 	SEM_LINT_policy_on_safe_op,    /* an explicit `!policy` on an op the prover already proved safe (dead policy) */
 	SEM_LINT_handler_foreign_arch, /* a pool `?handler` body references a DIFFERENT archetype's columns */
+	SEM_LINT_redundant_guard,      /* a leading guard-exit re-tests the enclosing loop's own condition */
 
 	SEM_DIAG_KIND_COUNT
 } SemDiagKind;
@@ -375,6 +376,7 @@ SemDiag *sem_emit_lint_unused_enum(SemanticContext *ctx, SourceLoc loc, const ch
 SemDiag *sem_emit_lint_discarded_ok(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_raw_pool_index(SemanticContext *ctx, SourceLoc loc, const char *arch);
 SemDiag *sem_emit_lint_policy_on_safe_op(SemanticContext *ctx, SourceLoc loc, const char *name, const char *base);
+SemDiag *sem_emit_lint_redundant_guard(SemanticContext *ctx, SourceLoc loc, const char *var);
 SemDiag *sem_emit_lint_handler_foreign_arch(SemanticContext *ctx, SourceLoc loc, const char *handler,
                                             const char *foreign, const char *target);
 

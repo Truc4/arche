@@ -172,6 +172,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_raw_pool_index]                = { "W0017", "raw_pool_index",                CLASS_LINT, 0 },
 	[SEM_LINT_policy_on_safe_op]             = { "W0018", "policy_on_safe_op",             CLASS_LINT, 1 },
 	[SEM_LINT_handler_foreign_arch]          = { "W0019", "handler_foreign_arch",          CLASS_LINT, 1 },
+	[SEM_LINT_redundant_guard]               = { "W0020", "redundant_guard",               CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -995,4 +996,10 @@ SemDiag *sem_emit_lint_handler_foreign_arch(SemanticContext *ctx, SourceLoc loc,
 	                 "overflow handler `?%s` on `insert(%s, …)` reads a different pool's columns (`%s.…`) — "
 	                 "likely a copy-paste mismatch; scan `%s`'s columns or @allow(handler_foreign_arch)",
 	                 handler, target, foreign, target);
+}
+SemDiag *sem_emit_lint_redundant_guard(SemanticContext *ctx, SourceLoc loc, const char *var) {
+	return sem_emit_(ctx, SEM_LINT_redundant_guard, loc,
+	                 "guard on `%s` re-tests the enclosing loop condition, which already holds at the top of "
+	                 "every iteration — it can never fire; remove it or @allow(redundant_guard)",
+	                 var);
 }
