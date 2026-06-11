@@ -71,8 +71,8 @@ TypeId tyid_of_policy(TypeArena *a, const TypeId *params, int param_count);
 
 /* Inspection. */
 TyKind tyid_kind(const TypeArena *a, TypeId t);
-int tyid_is_proc(const TypeArena *a, TypeId t);     /* 1 if t is a TYK_PROC */
-int tyid_is_callable(const TypeArena *a, TypeId t); /* 1 if t is a func OR proc (a first-class callable) */
+int tyid_is_proc(const TypeArena *a, TypeId t);              /* 1 if t is a TYK_PROC */
+int tyid_is_callable(const TypeArena *a, TypeId t);          /* 1 if t is a func OR proc (a first-class callable) */
 PrimKind tyid_prim(const TypeArena *a, TypeId t);            /* the PrimKind of a TYK_PRIM, else PRIM_COUNT */
 const char *tyid_nominal_name(const TypeArena *a, TypeId t); /* a TYK_NOMINAL's interned name, else NULL */
 const char *tyid_handle_name(const TypeArena *a, TypeId t);  /* a TYK_HANDLE's archetype name, else NULL */

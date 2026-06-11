@@ -689,8 +689,8 @@ static void walk(SyntaxView v, SemanticContext *ctx, int in_func) {
 	 * redundant form type is shown is decided inside emit_type_hint. The parser makes proc/func/sys/arche
 	 * decls `SN_CONST_DECL` (value = a *_EXPR form), so the value-binding kinds cover them too. */
 	SyntaxNodeKind vk = sv_kind(v);
-	if (vk == SN_BIND_STMT || vk == SN_CONST_DECL || vk == SN_STATIC_DECL || vk == SN_FUNC_DECL ||
-	    vk == SN_PROC_DECL || vk == SN_SYS_DECL || vk == SN_ARCHETYPE_DECL)
+	if (vk == SN_BIND_STMT || vk == SN_CONST_DECL || vk == SN_STATIC_DECL || vk == SN_FUNC_DECL || vk == SN_PROC_DECL ||
+	    vk == SN_SYS_DECL || vk == SN_ARCHETYPE_DECL)
 		emit_type_hint(v, ctx);
 	if (sv_kind(v) == SN_TYPE_REF)
 		emit_typeref_hint(v, ctx);
@@ -1404,7 +1404,6 @@ int analyze_main(int argc, char *argv[]) {
 		return run_serve();
 	if (argc >= 6 && strcmp(argv[1], "--goto") == 0)
 		return run_goto(argv[2], atoi(argv[3]), atoi(argv[4]), argv[5]);
-	fprintf(stderr,
-	        "usage: %s (--dump [--full] [file] | --serve | --goto <kind> <line> <col> <file>)\n", argv[0]);
+	fprintf(stderr, "usage: %s (--dump [--full] [file] | --serve | --goto <kind> <line> <col> <file>)\n", argv[0]);
 	return 2;
 }

@@ -2902,8 +2902,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		 * `.len` (slice param). Proven-safe indices are elided (no policy). Operands are i32 (`int`):
 		 * trunc the index in, inline the policy (it mutates `i` / `exit()`s), sext the result back. */
 		emit_index_policy(ctx, expr->data.index.base, expr->data.index.indices[0],
-		                  expr->data.index.index_count > 0 && !shaped_elem, expr->data.index.policy_elided,
-		                  type6_bound, slice_len, expr->data.index.policy, final_idx_buf, &final_idx);
+		                  expr->data.index.index_count > 0 && !shaped_elem, expr->data.index.policy_elided, type6_bound,
+		                  slice_len, expr->data.index.policy, final_idx_buf, &final_idx);
 
 		char *res_name = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", res_name, scalar_type, scalar_type,

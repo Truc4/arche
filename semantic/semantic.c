@@ -28,15 +28,15 @@ typedef struct {
 	char *signature; /* deterministic key: "field:type:kind;" per field in order */
 	FieldInfo **fields;
 	int field_count;
-	int is_allocated;   /* 1 once any alias for this shape has been alloc'd */
-	int alloc_capacity;  /* the driver pool's capacity (rows), 0 if not allocated by the driver */
+	int is_allocated;     /* 1 once any alias for this shape has been alloc'd */
+	int alloc_capacity;   /* the driver pool's capacity (rows), 0 if not allocated by the driver */
 	int alloc_init_count; /* the pool's guaranteed-live initial count (M in `Arch[N](M)`), 0 if none — the
 	                       * sound basis for eliding a column bounds check (count can only grow via insert) */
-	int min_rows;       /* max storage REQUIREMENT from device datasheets; the driver pool must meet it */
-	int req_count;      /* how many distinct datasheets posted a requirement on this shape (shared-shape) */
-	char *req_first;    /* name in the first requirement's decl (for the shared-shape build note) */
-	int has_public_def; /* 1 if any EXPORTED definition names this shape — a storage requirement needs one
-	                     * (a driver can only size a shape it can see; a `#module` shape is private) */
+	int min_rows;         /* max storage REQUIREMENT from device datasheets; the driver pool must meet it */
+	int req_count;        /* how many distinct datasheets posted a requirement on this shape (shared-shape) */
+	char *req_first;      /* name in the first requirement's decl (for the shared-shape build note) */
+	int has_public_def;   /* 1 if any EXPORTED definition names this shape — a storage requirement needs one
+	                       * (a driver can only size a shape it can see; a `#module` shape is private) */
 } ArchetypeInfo;
 
 typedef struct {
@@ -2300,9 +2300,9 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		 * Keyed on `v` (the bind node), disjoint from the value node's own slot. */
 		if (ctx->model)
 			sem_model_set_expr_type_id(ctx->model, sv_id(v),
-			                           has_btype ? btype_id
+			                           has_btype                ? btype_id
 			                           : sv_present(value_view) ? sem_model_expr_type_id(ctx->model, sv_id(value_view))
-			                                                     : TYID_UNKNOWN);
+			                                                    : TYID_UNKNOWN);
 		implicit_move_consume(ctx, value_view);
 
 		check_shadows_callable(ctx, bind_name, loc);
@@ -2766,8 +2766,7 @@ static void analyze_archetype_decl(SemanticContext *ctx, DeclSummary *arch) {
 		TypeId t = arch->fields[i].type_id;
 		const char *tn = tyid_nominal_name(ctx->ty_arena, t);
 		/* inline `on_hit :: proc()()`/`func`, or a named callable-type alias `on_hit :: handler`. */
-		int callable =
-		    tyid_is_callable(ctx->ty_arena, t) || (tn && callable_type_alias_id(ctx, tn) != TYID_UNKNOWN);
+		int callable = tyid_is_callable(ctx->ty_arena, t) || (tn && callable_type_alias_id(ctx, tn) != TYID_UNKNOWN);
 		if (callable)
 			sem_emit_callable_in_archetype(ctx, arch->fields[i].loc, arch->fields[i].name);
 	}
@@ -4471,8 +4470,8 @@ static void policy_edges_walk(SemanticContext *ctx, SyntaxView v, DeclSummary **
 
 /* True if policy `cur` can reach `target` through explicit `!P` applications. `seen` prevents infinite
  * looping in THIS traversal (we're detecting cycles), bounded by `cap`. */
-static int policy_reaches(SemanticContext *ctx, DeclSummary *cur, DeclSummary *target, DeclSummary **seen,
-                          int *seen_n, int cap) {
+static int policy_reaches(SemanticContext *ctx, DeclSummary *cur, DeclSummary *target, DeclSummary **seen, int *seen_n,
+                          int cap) {
 	if (!cur || !sv_present(cur->body_node))
 		return 0;
 	DeclSummary *edges[32];
@@ -6934,10 +6933,10 @@ static void analyze_program_core(SemanticContext *ctx) {
 	sem_check_storage_requirements(ctx);
 	sem_check_device_impl_decls(ctx);
 	sem_check_datasheet_decls(ctx);
-	sem_check_raw_pool_lint(ctx); /* W0017: advise handles for unprovable pool-column indexing */
-	sem_check_policies(ctx);      /* E0097-99/E0124/W0018: failure-policy validation at index/slice ops */
-	sem_check_policy_cycles(ctx); /* E0214: a policy that applies itself would inline forever */
-	sem_check_forbid_allow(ctx);  /* E0127: --forbid-allow rejects @allow(...) in user code */
+	sem_check_raw_pool_lint(ctx);  /* W0017: advise handles for unprovable pool-column indexing */
+	sem_check_policies(ctx);       /* E0097-99/E0124/W0018: failure-policy validation at index/slice ops */
+	sem_check_policy_cycles(ctx);  /* E0214: a policy that applies itself would inline forever */
+	sem_check_forbid_allow(ctx);   /* E0127: --forbid-allow rejects @allow(...) in user code */
 	sem_record_binding_types(ctx); /* editor inlay: type-of(RHS) per top-level decl, keyed by decl node */
 
 	/* Unique-name rule (Rust/Go): a func and a proc — or two of either — may not share a name. The

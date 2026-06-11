@@ -20,13 +20,13 @@
 total :: 100
 count := 0
 Color :: enum { Red, Green, Blue }
-typed_g : int = 7
+typed_g: int = 7
 add :: func(a: int, b: int) -> int {
   return a + b;
 }
 main :: proc() {
   x := 5;
-  y : int = 9;
+  y: int = 9;
   c := Color.Red;
   fmt.printf("%d %d %d %d %d\n", total, count, add(x, y), typed_g, c);
 }
