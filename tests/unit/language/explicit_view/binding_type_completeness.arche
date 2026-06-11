@@ -1,0 +1,37 @@
+// Completeness: "see the `:`, return the type" holds for EVERY binding kind. Each binding records its
+// type as a general compiler fact (the node->type map); the editor renders it by ONE kind-agnostic rule
+// — fill the elided <type> slot, unless the source already wrote it (hidden) or the type is a redundant
+// FORM type (hidden unless --full). Covers the 2x2 matrix local/top-level x inferred/annotated, plus an
+// enum decl (denotes the `type` meta, like an alias). A static ARRAY (`buf: int[4]`) always carries a
+// written type, so its inlay is suppressed by construction — the array arm's fact is in the map but is
+// not observable here.
+//
+// Inferred bindings fill their slot — top-level (value const, static scalar) and local alike:
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 25 8 1 1 type i32"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 26 8 1 1 type i32"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 33 6 1 1 type i32"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 35 6 1 1 type Color"
+// An enum decl denotes the `type` meta (shown by default, like an alias):
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 27 8 1 1 type type"
+// Annotated bindings already spell their type, so the inlay is hidden — no SYN on those lines:
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN 28 ") -eq 0
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN 34 ") -eq 0
+// Exactly those five type inlays by default (forms hidden):
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -cF " type ") -eq 5
+// Forms carry a type too — hidden by default, rendered under --full in Arche's own spelling:
+// RUN: %build/arche-analyzer --dump --full %s | grep -qxF "SYN 29 6 1 1 type func(i32, i32) -> i32"
+// RUN: %build/arche-analyzer --dump --full %s | grep -qxF "SYN 32 7 1 1 type proc()()"
+#import { fmt }
+total :: 100
+count := 0
+Color :: enum { Red, Green, Blue }
+typed_g : int = 7
+add :: func(a: int, b: int) -> int {
+  return a + b;
+}
+main :: proc() {
+  x := 5;
+  y : int = 9;
+  c := Color.Red;
+  fmt.printf("%d %d %d %d %d\n", total, count, add(x, y), typed_g, c);
+}

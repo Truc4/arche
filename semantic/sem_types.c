@@ -303,6 +303,13 @@ int tyid_is_callable(const TypeArena *a, TypeId t) {
 	return k == TYK_FUNC || k == TYK_PROC;
 }
 
+int tyid_is_form_type(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count)
+		return 0;
+	TyKind k = a->nodes[t].kind;
+	return k == TYK_FUNC || k == TYK_PROC || k == TYK_SYS || k == TYK_POLICY || k == TYK_ARCHETYPE_CATEGORY;
+}
+
 PrimKind tyid_prim(const TypeArena *a, TypeId t) {
 	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_PRIM)
 		return PRIM_COUNT;

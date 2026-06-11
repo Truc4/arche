@@ -73,6 +73,10 @@ TypeId tyid_of_policy(TypeArena *a, const TypeId *params, int param_count);
 TyKind tyid_kind(const TypeArena *a, TypeId t);
 int tyid_is_proc(const TypeArena *a, TypeId t);     /* 1 if t is a TYK_PROC */
 int tyid_is_callable(const TypeArena *a, TypeId t); /* 1 if t is a func OR proc (a first-class callable) */
+/* 1 if t is a FORM type (func/proc/sys/policy/archetype-category) — a type whose source form already
+ * spells it out, so an inlay of it is redundant. The one compiler-side fact the editor reads to decide
+ * "is this hint redundant"; the categorization stays here, never in the editor. */
+int tyid_is_form_type(const TypeArena *a, TypeId t);
 PrimKind tyid_prim(const TypeArena *a, TypeId t);            /* the PrimKind of a TYK_PRIM, else PRIM_COUNT */
 const char *tyid_nominal_name(const TypeArena *a, TypeId t); /* a TYK_NOMINAL's interned name, else NULL */
 const char *tyid_handle_name(const TypeArena *a, TypeId t);  /* a TYK_HANDLE's archetype name, else NULL */

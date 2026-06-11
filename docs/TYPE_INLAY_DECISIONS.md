@@ -53,3 +53,40 @@ gap to close, not a binding to skip. Plan: `~/.claude/plans/1-lets-plan-this-par
 Implemented and green: 595 lit + doctests, ASan 6/6, semantic/codegen/lower unit bins. The type system
 no longer conflates the forms (no `is_proc`); the inlay is one rule over `type-of(RHS)`; value bindings
 are consistent at every scope; form types are recorded but hidden by default with an editor opt-in.
+
+## Follow-up: no "hint metadata" — complete the general map, plugin is a pure reader
+
+Plan: `~/.claude/plans/structured-drifting-fern.md`. The principle, made load-bearing: there is **no
+inlay-specific hint table**. Types live in the **one general node→type map** (`sem_model_expr_type_id`),
+the same map every consumer reads. The editor derives the inlay by *comparing* the concrete syntax it
+already has against that map — `O(1)` per binding, no per-kind logic. The compiler's only job is to make
+the map **complete**.
+
+- **The node→type map is the single source of truth and must be COMPLETE for every binding node.** A
+  binding node having a recorded type is now an *invariant*, not a curated subset — so the per-kind
+  computation is a real compiler fact (reusable by hover / go-to-type), never a side channel.
+- **`decl_display_type_id` → `sem_decl_type_id`, exhaustive, no `default`.** The switch covers every
+  `DeclKind` explicitly; a new kind is a `-Wswitch` compile error, never a silent `UNKNOWN` drop. Added
+  arms: `DECL_ENUM` → the `type` meta (an enum *denotes a type*, like an alias); `DECL_STATIC` array →
+  `tyid_of_array(static_type_id)` (**`static_type_id` is the ELEMENT type for arrays** — the array node
+  must denote the array type, not the element; note a static array always carries a written type so its
+  inlay is suppressed, but the *fact* in the map is now correct); `DECL_FUNC_GROUP` → UNKNOWN (an overload
+  set has no single type — a principled "none"); `DECL_WORLD`/`DECL_USE` → UNKNOWN (not bindings).
+- **Locals record their type UNCONDITIONALLY (`SN_BIND_STMT` handler).** Previously a local recorded its
+  type only when *un*annotated, and recorded `type-of(RHS)`. Now: annotated → the **declared** type
+  (`btype_id`), else → `type-of(RHS)`, always keyed on the bind node. This makes the map complete for
+  locals too and removes the asymmetry with top-level. Suppression of an already-written type now lives in
+  exactly ONE place: the presentation check `sv_type_count > 0` in `emit_type_hint`.
+- **The one suppression predicate is compiler-side: `tyid_is_form_type(arena, t)`** in
+  `semantic/sem_types.{c,h}` (replaces the analyzer's inline `type_is_form`). The editor owns zero
+  per-kind knowledge — it reads the map, checks the syntax slot, and asks the compiler "is this a form
+  type?". Every fact comes from the compiler.
+- **Aliases and enums show `: type :` by default** (the `type` meta is not a form type). This is a
+  deliberate behavior change: `explicit_view/alias_backing.arche` now expects the alias *declarations* to
+  carry a `type` inlay (superseding the earlier "alias decl gets no hint" note above), and
+  `full_type_hints.arche`'s component aliases (`pos :: float`) likewise show `type`. New
+  `binding_type_completeness.arche` proves the 2×2 matrix (local/top-level × inferred/annotated) plus enum.
+- **Rejected:** a `canonical_type_id` field on `DeclSummary` (the decl type is single-call and the map is
+  already the one store — a second store with no second reader); and literally merging the two recording
+  paths (they consume different inputs at different stages — the unified thing is the *invariant + key*,
+  not the code).

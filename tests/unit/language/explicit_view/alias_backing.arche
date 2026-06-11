@@ -1,9 +1,13 @@
 // Explicit view: a type-alias name in a type position shows its backing type.
-// The alias declaration itself gets no inferred-type hint (it mints a type, not a value).
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 10 11 1 0 alias (i32)"
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 11 12 1 0 alias (i32)"
-// Exactly two alias hints, nothing else (no `: int` on the alias decls).
-// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN ") -eq 2
+// A type-alias DECLARATION now fills its elided ⟨type⟩ slot with the `type` meta — `base : type : int`
+// — the longhand the unified grammar hides (an alias mints a type, and `type` is that type's type).
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 11 8 1 1 type type"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 12 8 1 1 type type"
+// And each alias USE in a type position still shows its backing:
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 14 11 1 0 alias (i32)"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 15 12 1 0 alias (i32)"
+// Exactly those four — two alias-decl `type` hints + two backing hints on the use sites.
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN ") -eq 4
 base  :: int
 level :: base
 main  :: proc() {

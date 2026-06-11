@@ -2294,10 +2294,15 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		ctx->stmt_call_ok = (sv_present(value_view) && sv_kind(value_view) == SN_CALL_EXPR);
 		analyze_expression(ctx, value_view);
 		ctx->stmt_call_ok = 0;
-		/* Mirror the RHS's type onto the BIND node id — the uniform key every binding's inlay reads
-		 * (locals + file-scope decls), so the analyzer needs no per-kind value-node logic. */
-		if (ctx->model && !has_btype && sv_present(value_view))
-			sem_model_set_expr_type_id(ctx->model, sv_id(v), sem_model_expr_type_id(ctx->model, sv_id(value_view)));
+		/* Record the BINDING's type onto the bind node id — the uniform key every binding's type reads
+		 * (locals + file-scope decls), so the reader needs no per-kind value-node logic. UNCONDITIONAL so
+		 * the node→type map is complete: annotated → the DECLARED type (btype_id), else → type-of(RHS).
+		 * Keyed on `v` (the bind node), disjoint from the value node's own slot. */
+		if (ctx->model)
+			sem_model_set_expr_type_id(ctx->model, sv_id(v),
+			                           has_btype ? btype_id
+			                           : sv_present(value_view) ? sem_model_expr_type_id(ctx->model, sv_id(value_view))
+			                                                     : TYID_UNKNOWN);
 		implicit_move_consume(ctx, value_view);
 
 		check_shadows_callable(ctx, bind_name, loc);
@@ -4313,10 +4318,13 @@ static void sem_check_forbid_allow(SemanticContext *ctx) {
 	}
 }
 
-/* The interned `TypeId` a top-level declaration's elided `⟨type⟩` slot denotes — `type-of(RHS)` for the
- * binding form — or TYID_UNKNOWN if the type system has none yet. The per-kind sourcing (types live in
- * different DeclSummary fields) lives ONLY here; everything downstream is kind-agnostic. */
-static TypeId decl_display_type_id(SemanticContext *ctx, DeclSummary *d) {
+/* The interned `TypeId` a top-level declaration denotes — the type its name binds to, sourced from
+ * whichever DeclSummary field(s) hold it — or TYID_UNKNOWN when the declaration is not a value/type
+ * binding. This is a GENERAL compiler fact (it completes the node→type map for decl nodes, the same
+ * fact hover/go-to-type want), not inlay-specific. The per-kind sourcing lives ONLY here; everything
+ * downstream is kind-agnostic. The switch is EXHAUSTIVE with NO `default`: a new DeclKind is a
+ * compile-time forcing function (-Wswitch), never a silent drop. */
+static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 	switch (d->kind) {
 	case DECL_CONST: {
 		/* A VALUE const denotes its value's type; a TYPE alias (`int :: alias i32`) denotes the `type`
@@ -4329,7 +4337,17 @@ static TypeId decl_display_type_id(SemanticContext *ctx, DeclSummary *d) {
 		return TYID_UNKNOWN;
 	}
 	case DECL_STATIC:
-		return d->static_kind == STATIC_KIND_SCALAR ? d->static_type_id : TYID_UNKNOWN;
+		/* SCALAR → its scalar type; ARRAY → the array type built over its ELEMENT type (static_type_id
+		 * holds the element, not the array); ARCHETYPE-allocation (`Particle[4]`) is not a name::value
+		 * binding → UNKNOWN. */
+		switch (d->static_kind) {
+		case STATIC_KIND_SCALAR:
+			return d->static_type_id;
+		case STATIC_KIND_ARRAY:
+			return tyid_of_array(ctx->ty_arena, d->static_type_id);
+		default:
+			return TYID_UNKNOWN; /* STATIC_KIND_ARCHETYPE */
+		}
 	case DECL_FUNC: /* also policies — a policy is a DECL_FUNC with is_policy */
 	case DECL_PROC:
 	case DECL_SYS: {
@@ -4375,14 +4393,24 @@ static TypeId decl_display_type_id(SemanticContext *ctx, DeclSummary *d) {
 	}
 	case DECL_ARCHETYPE:
 		return tyid_of_archetype_category(ctx->ty_arena);
-	default:
-		return TYID_UNKNOWN;
+	case DECL_ENUM:
+		/* An enum decl (`Method :: enum{…}`) DENOTES a type, so its `⟨type⟩` slot is the `type` meta —
+		 * the longhand `Method : type : enum{…}`, mirroring the type-alias arm in DECL_CONST. */
+		return sem_tyid_of_name(ctx, "type");
+	case DECL_FUNC_GROUP:
+		return TYID_UNKNOWN; /* an overload SET has no single type — a principled "none", not a dropped kind */
+	case DECL_WORLD:
+	case DECL_USE:
+		return TYID_UNKNOWN; /* not value/type bindings — no `⟨type⟩` slot to fill */
 	}
+	return TYID_UNKNOWN; /* unreachable: switch is exhaustive over DeclKind (-Wswitch enforces) */
 }
 
-/* Record each top-level declaration's `type-of(RHS)` in the node-id model, keyed by the decl node — the
- * SAME key locals use (see the SN_BIND_STMT handler) — so the analyzer's one inlay rule covers every
- * binding form at file scope. Runs after const-fixpoint + type-fill, so all sources are final. */
+/* Complete the node→type map for every top-level declaration node, keyed by the decl node — the SAME
+ * key locals use (see the SN_BIND_STMT handler) — so a uniform, kind-agnostic reader covers every
+ * binding form at file scope. Records unconditionally (an UNKNOWN is the map's default and is inert),
+ * so "this node has a type" is a complete fact, not a curated subset. Runs after const-fixpoint +
+ * type-fill, so all sources are final. */
 static void sem_record_binding_types(SemanticContext *ctx) {
 	if (!ctx->model)
 		return;
@@ -4390,9 +4418,7 @@ static void sem_record_binding_types(SemanticContext *ctx) {
 		DeclSummary *d = ctx->decls[di];
 		if (!sv_present(d->node))
 			continue;
-		TypeId tid = decl_display_type_id(ctx, d);
-		if (tid != TYID_UNKNOWN)
-			sem_model_set_expr_type_id(ctx->model, sv_id(d->node), tid);
+		sem_model_set_expr_type_id(ctx->model, sv_id(d->node), sem_decl_type_id(ctx, d));
 	}
 }
 

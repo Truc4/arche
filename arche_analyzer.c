@@ -464,15 +464,6 @@ static void emit_syn(int line, int col, int padL, int padR, const char *kind, co
  * per the user's inlay setting (HINTS full / --dump --full), never a compile concern. */
 static int g_full_type_hints = 0;
 
-/* A FORM type (func/proc/sys/policy/archetype) is already spelled out by the source form, so its inlay
- * is redundant; a value type's `⟨type⟩` is hidden in source, so it's the useful one. The redundancy is
- * decided by the TYPE, not the node kind (the parser makes `add :: func(){}` an `SN_CONST_DECL` too). */
-static int type_is_form(const SemModel *model, SemanticContext *ctx, SyntaxView binding) {
-	TypeId tid = sem_model_expr_type_id(model, sv_id(binding));
-	TyKind k = tyid_kind(sem_context_arena(ctx), tid);
-	return k == TYK_FUNC || k == TYK_PROC || k == TYK_SYS || k == TYK_POLICY || k == TYK_ARCHETYPE_CATEGORY;
-}
-
 /* The inferred-type inlay: fill the elided `⟨type⟩` slot of the unified grammar so the view reads as
  * the longhand —
  *   `r := e`  →  `r : T = e`   (anchor before the `=`)
@@ -490,7 +481,7 @@ static void emit_type_hint(SyntaxView binding, SemanticContext *ctx) {
 	TypeId tid = sem_model_expr_type_id(model, sv_id(binding));
 	if (tid == TYID_UNKNOWN)
 		return;
-	if (!g_full_type_hints && type_is_form(model, ctx, binding))
+	if (!g_full_type_hints && tyid_is_form_type(sem_context_arena(ctx), tid))
 		return; /* redundant: the form already states its type — hidden by default (still in the model) */
 	char tybuf[128];
 	const char *ty = tyid_display(sem_context_arena(ctx), tid, tybuf, sizeof(tybuf));
