@@ -6,6 +6,6 @@
 main :: proc() {
   a: int[4];
   a[0] = 1;
-  x    := a[2] !clamp; // provably in bounds -> dead policy, W0018
+  x := a[2] !clamp; // provably in bounds -> dead policy, W0018
   fmt.printf("%d\n", x);
 }

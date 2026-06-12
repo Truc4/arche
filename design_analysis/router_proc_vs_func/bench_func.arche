@@ -115,11 +115,11 @@ add :: proc(pattern: char[], handler_id: route) {
 // Reentrant: captures written into the caller-allocated OUT-params; count + handler returned. No
 // module state, and no in-out shadow — the buffers are pure outputs.
 resolve :: proc(path: char[])(cstart: int[8], clen: int[8], handler_id: route, count: int) {
-  n          := path.length;
-  cur        := 0;
+  n   := path.length;
+  cur := 0;
   count      = 0;
   handler_id = route.miss;
-  s          := 0;
+  s := 0;
   if (n > 0) {
     if (path[0] == '/') {
       s = 1;

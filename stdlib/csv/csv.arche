@@ -27,7 +27,7 @@ load :: proc(arch: archetype, own path: char[]) {
   // header pass: map each archetype field to its file column by name
   #each_field f in arch {
     load_cols[f.index] = -1;
-    col                := 0;
+    col := 0;
     cstart: i64 = 0;
     for (; cstart < hdr_end;) {
       cend: i64 = find_byte(data, cstart, hdr_end, ',');

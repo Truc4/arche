@@ -10,6 +10,6 @@ take :: func(b: char[8]) -> int {
 main :: proc() {
   buf: char[8];
   buf[0] = 'A';
-  n      := take(move buf);
+  n := take(move buf);
   fmt.printf("%d\n", buf[0]);
 }

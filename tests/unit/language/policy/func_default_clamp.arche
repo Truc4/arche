@@ -8,7 +8,7 @@ fdef :: func() -> int {
   a: int[4];
   a[0] = 10;
   a[3] = 13;
-  i    := 100; // runtime, unprovable, unannotated -> func default = clamp -> a[3]
+  i := 100; // runtime, unprovable, unannotated -> func default = clamp -> a[3]
   return a[i];
 }
 

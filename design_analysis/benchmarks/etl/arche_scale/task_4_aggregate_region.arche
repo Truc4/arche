@@ -18,7 +18,7 @@ main :: proc() {
   // DOD would not store it — it is a throwaway intermediate for the sum below; you'd fuse the multiply
   // into the reduce: `total_revenue += Transaction.price[m] * Transaction.quantity[m]`, keeping nothing.
   Transaction.revenue = Transaction.price * Transaction.quantity;
-  total_revenue       := 0.0;
+  total_revenue := 0.0;
   for (m := 0; m < 100000000; m += 1) {
     total_revenue = total_revenue + Transaction.revenue[m];
   }

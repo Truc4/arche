@@ -118,11 +118,11 @@ add :: proc(pattern: char[], handler_id: route) {
 
 // Procedural: captures recorded into module statics; read back via param/param_count.
 resolve :: proc(path: char[])(handler_id: route) {
-  n            := path.length;
-  cur          := 0;
+  n   := path.length;
+  cur := 0;
   cap_count[0] = 0;
   handler_id   = route.miss;
-  s            := 0;
+  s := 0;
   if (n > 0) {
     if (path[0] == '/') {
       s = 1;

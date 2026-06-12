@@ -7,7 +7,7 @@
 fill_two :: proc()(buf1: char[32], buf2: char[32], n: int) {
   buf1 := str.strcopy(move buf1, "test1");
   buf2 := str.strcopy(move buf2, "test2");
-  n    = 77;
+  n = 77;
 }
 
 main :: proc() {
