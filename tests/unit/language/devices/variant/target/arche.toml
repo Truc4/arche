@@ -1,0 +1,15 @@
+# Target profiles: ONE `target` switch retargets every device. `[target.<name>]` maps each device to
+# its variant for that platform; `[select]` is a target-independent base (here `tsnd` has no per-target
+# mapping, so it resolves from `[select]` under any target). Read by BOTH the compiler and the analyzer.
+target = "linux"
+
+[select]
+tsnd = "alsa"
+
+[target.linux]
+tgfx = "wayland"
+tnet = "tcp"
+
+[target.windows]
+tgfx = "dx12"
+tnet = "winsock"

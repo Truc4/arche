@@ -3,7 +3,7 @@
 // RUN: env ARCHE_SELECT=vgfx=x11 %arche build -o %t %s && %t | grep "x11 window"
 #import { vgfx }
 main :: proc() {
-  vgfx.hello();          // always-merged
-  vgfx.extra();          // always-merged (descriptive dotted filename)
-  vgfx.open_window();    // x11 variant
+  vgfx.hello(); // always-merged
+  vgfx.extra(); // always-merged (descriptive dotted filename)
+  vgfx.open_window(); // x11 variant
 }

@@ -5,5 +5,5 @@
 main :: proc() {
   vgfx.hello();
   vgfx.extra();
-  vgfx.open_window();    // wayland variant
+  vgfx.open_window(); // wayland variant
 }

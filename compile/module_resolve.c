@@ -17,8 +17,8 @@ static int has_suffix(const char *name, const char *suf) {
 
 /* Register every `.arche` file directly in `folder` (NOT its subdirs) as part of module
  * `mod_name`. A `.ds.arche` among them marks the module a device. Returns files registered. */
-static int merge_arche_dir(const ModuleResolver *r, const char *mod_name, const char *folder,
-                           const char *source_dir, DeclOrigin origin) {
+static int merge_arche_dir(const ModuleResolver *r, const char *mod_name, const char *folder, const char *source_dir,
+                           DeclOrigin origin) {
 	DIR *d = opendir(folder);
 	if (!d)
 		return 0;
@@ -41,14 +41,13 @@ static int merge_arche_dir(const ModuleResolver *r, const char *mod_name, const 
  * top-level files always merge; when `apply_variant` and a variant is selected, that variant
  * subfolder's `.arche` files merge on top), else a single `<dir>/<mod_name>.arche`. Returns
  * files registered. */
-static int try_load_dir(const ModuleResolver *r, const char *mod_name, const char *dir,
-                        const char *source_dir, DeclOrigin origin, int apply_variant) {
+static int try_load_dir(const ModuleResolver *r, const char *mod_name, const char *dir, const char *source_dir,
+                        DeclOrigin origin, int apply_variant) {
 	char folder[1024];
 	snprintf(folder, sizeof(folder), "%s/%s", dir, mod_name);
 	int n = merge_arche_dir(r, mod_name, folder, source_dir, origin);
 	if (n > 0) {
-		const char *variant =
-		    (apply_variant && r->select_variant) ? r->select_variant(r->ctx, mod_name) : NULL;
+		const char *variant = (apply_variant && r->select_variant) ? r->select_variant(r->ctx, mod_name) : NULL;
 		if (variant && variant[0]) {
 			char vfolder[1300];
 			snprintf(vfolder, sizeof(vfolder), "%s/%s", folder, variant);

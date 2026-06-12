@@ -10,10 +10,10 @@ P[8]
 main :: proc() {
   insert(P, 10)(h0:, ok0:);
   insert(P, 20)(h1:, ok1:); // live count is 2: slots 0,1
-  ix             := 1;
-  oob            := 5;
-  u              := P.v[ix] !undefined; // raw, in range -> 20
-  c              := P.v[oob] !clamp; // OOB -> clamp into [0,2) -> slot 1 -> 20
+  ix  := 1;
+  oob := 5;
+  u   := P.v[ix] !undefined; // raw, in range -> 20
+  c   := P.v[oob] !clamp; // OOB -> clamp into [0,2) -> slot 1 -> 20
   P.v[ix] !clamp = 99; // in range -> slot 1 = 99
   fmt.printf("undef=%d clamp=%d w1=%d\n", u, c, P.v[1] !undefined);
 }

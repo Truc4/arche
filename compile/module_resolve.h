@@ -24,8 +24,7 @@ typedef struct ModuleResolver {
 
 	/* Parse + register one `.arche` file into the front-end (the front-end recurses into that
 	 * file's own `#import`s, which re-enters this resolver). Returns 1 on success, 0 otherwise. */
-	int (*register_file)(void *ctx, const char *mod_name, const char *path, const char *source_dir,
-	                     DeclOrigin origin);
+	int (*register_file)(void *ctx, const char *mod_name, const char *path, const char *source_dir, DeclOrigin origin);
 
 	/* Note that `mod_name`'s folder carries a `.ds.arche` datasheet (it is a device). Optional —
 	 * may be NULL for front-ends that don't track the device set. */

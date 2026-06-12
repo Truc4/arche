@@ -1,0 +1,2 @@
+// Datasheet: marks tnet a device. Not a standalone test.
+// RUN: true

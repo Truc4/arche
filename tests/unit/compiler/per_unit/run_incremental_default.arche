@@ -1,0 +1,18 @@
+// `arche run` is the dev-iteration path → defaults to device-granular INCREMENTAL codegen (per-unit +
+// per-device object cache), so editing one device only recompiles that device. `arche build` stays
+// whole-program. `--whole-program` opts run out. Here ARCHE_CACHE_DIR is set explicitly to keep the test
+// hermetic (run otherwise anchors the cache to the project dir).
+//
+// run defaults to incremental → per-unit objects land in the cache, and the program runs correctly.
+// RUN: rm -rf %t.cache && env ARCHE_CACHE_DIR=%t.cache %arche run %s | grep -qF "run_ok"
+// RUN: ls %t.cache/*.o
+// a second run still works (reusing the cached device objects).
+// RUN: env ARCHE_CACHE_DIR=%t.cache %arche run %s | grep -qF "run_ok"
+//
+// `--whole-program` opts out → no per-unit object cache is produced, program still runs.
+// RUN: rm -rf %t.cache2 && env ARCHE_CACHE_DIR=%t.cache2 %arche run --whole-program %s | grep -qF "run_ok"
+// RUN: not ls %t.cache2/*.o
+#import { fmt }
+main :: proc() {
+  fmt.print("run_ok\n")();
+}

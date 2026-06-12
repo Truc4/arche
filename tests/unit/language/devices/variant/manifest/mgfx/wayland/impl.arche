@@ -1,4 +1,6 @@
 // wayland variant. Not a standalone test.
 // RUN: true
 #import { fmt }
-backend :: proc() { fmt.print("mgfx wayland\n")(); }
+backend :: proc() {
+  fmt.print("mgfx wayland\n")();
+}

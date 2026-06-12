@@ -6,7 +6,7 @@
 main :: proc() {
   a: int[3];
   a[0] = 5;
-  b    := copy a; // explicit clone — a stays alive
+  b := copy a; // explicit clone — a stays alive
   b[0] = 9;
   fmt.printf("a0=%d b0=%d ", a[0], b[0]);
   c := move b; // explicit move — b consumed, c owns it

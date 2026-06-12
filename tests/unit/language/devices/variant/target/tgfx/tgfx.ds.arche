@@ -1,0 +1,2 @@
+// Datasheet: marks tgfx a device with per-platform variant subfolders. Not a standalone test.
+// RUN: true

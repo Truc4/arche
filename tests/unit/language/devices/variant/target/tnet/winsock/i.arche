@@ -1,0 +1,6 @@
+// tnet winsock variant (selected by [target.windows]). Not a standalone test.
+// RUN: true
+#import { fmt }
+send :: proc() {
+  fmt.print("tnet winsock\n")();
+}

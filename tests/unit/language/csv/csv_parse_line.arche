@@ -2,14 +2,14 @@
 #import { parse fmt }
 main :: proc() {
   buf: char[256];
-  buf[0]     = '1';
-  buf[1]     = '0';
-  buf[2]     = '.';
-  buf[3]     = '0';
-  buf[4]     = ',';
-  buf[5]     = '1';
-  buf[6]     = '0';
-  buf[7]     = '\n';
+  buf[0] = '1';
+  buf[1] = '0';
+  buf[2] = '.';
+  buf[3] = '0';
+  buf[4] = ',';
+  buf[5] = '1';
+  buf[6] = '0';
+  buf[7] = '\n';
   line_start := 0;
   line_end   := 8;
   comma_pos  := 4;
@@ -31,8 +31,8 @@ main :: proc() {
     i          = i + 1;
   }
   qty_str[j] = 0;
-  price      := parse.atof(price_str);
-  qty        := parse.atoi(qty_str);
+  price := parse.atof(price_str);
+  qty   := parse.atoi(qty_str);
   fmt.printf("price=%f qty=%d\n", price, qty);
   fmt.assert(price == 10.0, "price should be 10.0\n");
   fmt.assert(qty == 10, "qty should be 10\n");

@@ -5,7 +5,7 @@
 fill_two :: proc(own buf1: char[32], own buf2: char[32])(buf1: char[32], buf2: char[32], n: int) {
   buf1 := str.strcopy(move buf1, "hello");
   buf2 := str.strcopy(move buf2, "world");
-  n    = 99;
+  n = 99;
 }
 
 main :: proc() {

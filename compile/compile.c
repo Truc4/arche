@@ -1,6 +1,4 @@
 #include "compile.h"
-#include "module_resolve.h"
-#include "variant_select.h"
 #include "../cli/resource.h"
 #include "../codegen/codegen.h"
 #include "../lexer/lexer.h"
@@ -8,6 +6,8 @@
 #include "../parser/parser.h"
 #include "../semantic/sem_diagnostics.h"
 #include "../semantic/semantic.h"
+#include "module_resolve.h"
+#include "variant_select.h"
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -243,8 +243,8 @@ static int build_unit_object_cached(const char *unit_ll, const char *workdir, in
 	snprintf(cmd, sizeof(cmd), "opt -O2 -mcpu=x86-64-v3 -S -o %s %s", optf, unit_ll);
 	if (system(cmd) != 0)
 		return 1;
-	snprintf(cmd, sizeof(cmd), "llc -function-sections -data-sections -code-model=large -mcpu=x86-64-v3 -o %s %s",
-	         asmf, optf);
+	snprintf(cmd, sizeof(cmd), "llc -function-sections -data-sections -code-model=large -mcpu=x86-64-v3 -o %s %s", asmf,
+	         optf);
 	if (system(cmd) != 0)
 		return 1;
 	snprintf(cmd, sizeof(cmd), "cc -no-pie -mcmodel=large -c -o %s %s", objtmp, asmf);
@@ -779,7 +779,7 @@ int compile_source(const char *user_source, const char *source_path, const char 
 		/* Per-unit codegen gives arche funcs external linkage (cross-object refs), so the optimizer no
 		 * longer DCEs unreferenced ones. `-function-sections`/`-data-sections` + the linker's
 		 * `--gc-sections` (below) restore dead-symbol stripping at link time. */
-		const char *sections = getenv("ARCHE_PER_UNIT") ? "-function-sections -data-sections " : "";
+		const char *sections = codegen_per_unit_enabled() ? "-function-sections -data-sections " : "";
 		int m = snprintf(llc_cmd, sizeof(llc_cmd), "llc %s-code-model=large -mcpu=x86-64-v3 -o %s %s", sections,
 		                 asm_target, opt_file);
 		if (m < 0 || m >= (int)sizeof(llc_cmd)) {
@@ -823,7 +823,7 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	{
 		const char *rt = arche_resource_dir(ARCHE_RES_RUNTIME);
 		char cc_cmd[8192];
-		const char *gc = getenv("ARCHE_PER_UNIT") ? "-Wl,--gc-sections " : "";
+		const char *gc = codegen_per_unit_enabled() ? "-Wl,--gc-sections " : "";
 		int cc_len = snprintf(cc_cmd, sizeof(cc_cmd),
 		                      "cc %s-no-pie -mcmodel=large -o %s %s %s/stack_check.o %s/io.o %s/net.o %s/term.o -lc",
 		                      gc, out_path, asm_file, rt, rt, rt, rt);

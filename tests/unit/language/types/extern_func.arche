@@ -5,7 +5,7 @@ main :: proc() {
   buf[0] = '4';
   buf[1] = '2';
   buf[2] = 0;
-  n      := parse.atoi(buf);
+  n := parse.atoi(buf);
   fmt.printf("atoi: %d\n", n);
   fmt.assert(n == 42, "atoi failed\n");
 }

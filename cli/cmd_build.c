@@ -25,6 +25,9 @@ enum {
 	B_FORBID_ALLOW,
 	B_UNCHECKED,
 	B_SELECT,
+	B_TARGET,
+	B_INCREMENTAL,
+	B_WHOLE_PROGRAM,
 };
 
 /* Flag table = parsing + `--help`, one source of truth. The `-Wno-*` / `-Werror[=...]` spellings are
@@ -52,6 +55,12 @@ static const ArgSpec k_build_specs[] = {
      "permit the raw, runtime-unsafe `!undefined` opt-out (forbidden by default)"},
     {B_SELECT, "--select", ARG_VALUE, 1, 0, "<dev>=<variant>",
      "select a device's variant subfolder (repeatable; overrides arche.toml and ARCHE_SELECT)"},
+    {B_TARGET, "--target", ARG_VALUE, 0, 0, "<name>",
+     "select the active target/platform profile (overrides arche.toml `target` and ARCHE_TARGET)"},
+    {B_INCREMENTAL, "--incremental", ARG_FLAG, 0, 0, NULL,
+     "device-granular incremental build: cache each device's object, reuse unchanged ones (no cross-unit inlining)"},
+    {B_WHOLE_PROGRAM, "--whole-program", ARG_FLAG, 0, 0, NULL,
+     "force a whole-program build (the default for build; full cross-device inlining)"},
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
@@ -111,11 +120,24 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 	semantic_set_forbid_allow(args_has(&p, B_FORBID_ALLOW));
 	codegen_set_unchecked(args_has(&p, B_UNCHECKED));
 
+	/* `--incremental`: device-granular separate compilation with a per-device object cache. `build`
+	 * defaults to whole-program (release: full cross-device inlining); `--whole-program` is a hard
+	 * override (beats `--incremental` and the env). (`arche run` defaults to incremental.) */
+	if (args_has(&p, B_WHOLE_PROGRAM))
+		codegen_force_whole_program();
+	else
+		codegen_set_per_unit(args_has(&p, B_INCREMENTAL));
+
 	/* `--select dev=var` (repeatable): the highest-precedence backend selection, layered over
 	 * arche.toml + ARCHE_SELECT when the front-end resolves variants. */
 	for (int i = 0; i < p.hit_count; i++)
 		if (p.hits[i].id == B_SELECT)
 			variant_select_cli_set(p.hits[i].value);
+
+	/* `--target <name>`: the active platform profile; one switch retargets every device. */
+	if (args_has(&p, B_TARGET))
+		variant_select_cli_target(args_value(&p, B_TARGET));
+	variant_select_set_warnings(1); /* warn on a typo'd / undefined target (compiler only) */
 
 	if (p.pos_count == 0) {
 		fprintf(stderr, "%s: no input file\n", g_prog);

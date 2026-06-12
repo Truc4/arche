@@ -106,6 +106,18 @@ static char *find_manifest(const char *source_dir) {
 	return NULL;
 }
 
+int variant_manifest_dir(const char *source_dir, char *out, size_t cap) {
+	char *path = find_manifest(source_dir);
+	if (!path)
+		return 0;
+	char *slash = strrchr(path, '/'); /* strip the trailing "/arche.toml" → the project dir */
+	if (slash)
+		*slash = '\0';
+	snprintf(out, cap, "%s", path[0] ? path : "/");
+	free(path);
+	return 1;
+}
+
 /* Read a value after `=` into `out` (cap bytes): a `"quoted"` string, or a bare token up to the
  * first whitespace or `#` comment. */
 static void read_value(const char *v, char *out, size_t cap) {
@@ -123,7 +135,43 @@ static void read_value(const char *v, char *out, size_t cap) {
 	out[n] = '\0';
 }
 
-void variant_map_load_manifest(VariantMap *m, const char *source_dir) {
+/* Copy every entry of `src` into `dst` (later sources override; precedence = call order). */
+static void variant_map_merge(VariantMap *dst, const VariantMap *src) {
+	for (int i = 0; i < src->count; i++)
+		variant_map_set(dst, src->items[i].device, src->items[i].variant);
+}
+
+/* In-memory model of one `arche.toml`, parsed once then flattened by the active target. The TOML
+ * SUBSET: `[section]` headers, `key = value` lines, `#` comments. We consume the top-level `target`
+ * key, the `[select]` base table (device = "variant"), and any number of `[target.<name>]` platform
+ * tables (each device = "variant"); unknown sections are ignored, so future sections stay
+ * forward-compatible without touching this reader. */
+#define MANIFEST_MAX_TARGETS 32
+typedef struct {
+	char name[64];  /* the `<name>` of a `[target.<name>]` table */
+	VariantMap map; /* its device -> variant entries */
+} TargetTable;
+typedef struct {
+	char declared_target[64]; /* top-level `target = "..."` ("" if absent) */
+	VariantMap select;        /* `[select]` base */
+	TargetTable targets[MANIFEST_MAX_TARGETS];
+	int target_count;
+} Manifest;
+
+/* Find (or create) the per-name map for a `[target.<name>]` table. NULL only if the table cap is hit. */
+static VariantMap *manifest_target_map(Manifest *mf, const char *name) {
+	for (int i = 0; i < mf->target_count; i++)
+		if (strcmp(mf->targets[i].name, name) == 0)
+			return &mf->targets[i].map;
+	if (mf->target_count >= MANIFEST_MAX_TARGETS)
+		return NULL;
+	TargetTable *t = &mf->targets[mf->target_count++];
+	snprintf(t->name, sizeof(t->name), "%s", name); /* t->map already zeroed by manifest_parse's memset */
+	return &t->map;
+}
+
+static void manifest_parse(Manifest *mf, const char *source_dir) {
+	memset(mf, 0, sizeof(*mf));
 	char *path = find_manifest(source_dir);
 	if (!path)
 		return;
@@ -131,9 +179,6 @@ void variant_map_load_manifest(VariantMap *m, const char *source_dir) {
 	free(path);
 	if (!f)
 		return;
-	/* A deliberately small TOML SUBSET: `[section]` headers, `key = value` lines, `#` comments. We
-	 * only consume the `[select]` table (device = "variant"); other sections are skipped, so a
-	 * future `[build]`/`[editor]` section is forward-compatible without touching this reader. */
 	char line[1024];
 	char section[64] = "";
 	while (fgets(line, sizeof(line), f)) {
@@ -167,10 +212,36 @@ void variant_map_load_manifest(VariantMap *m, const char *source_dir) {
 		key[kl] = '\0';
 		char val[64];
 		read_value(eq + 1, val, sizeof(val));
-		if (strcmp(section, "select") == 0 && key[0])
-			variant_map_set(m, key, val);
+		if (section[0] == '\0') { /* top-level keys (before any [section]) */
+			if (strcmp(key, "target") == 0)
+				snprintf(mf->declared_target, sizeof(mf->declared_target), "%s", val);
+		} else if (strcmp(section, "select") == 0) {
+			if (key[0])
+				variant_map_set(&mf->select, key, val);
+		} else if (strncmp(section, "target.", 7) == 0) {
+			const char *tname = section + 7;
+			if (tname[0] && key[0]) {
+				VariantMap *tm = manifest_target_map(mf, tname);
+				if (tm)
+					variant_map_set(tm, key, val);
+			}
+		}
 	}
 	fclose(f);
+}
+
+static void manifest_free(Manifest *mf) {
+	variant_map_free(&mf->select);
+	for (int i = 0; i < mf->target_count; i++)
+		variant_map_free(&mf->targets[i].map);
+}
+
+void variant_map_load_manifest(VariantMap *m, const char *source_dir) {
+	/* Back-compat entry: apply only the target-independent `[select]` base. */
+	Manifest mf;
+	manifest_parse(&mf, source_dir);
+	variant_map_merge(m, &mf.select);
+	manifest_free(&mf);
 }
 
 /* CLI `--select` overrides accumulate here (highest precedence), set before any compile. */
@@ -180,10 +251,54 @@ void variant_select_cli_set(const char *spec) {
 	variant_map_parse(&g_cli_overrides, spec);
 }
 
+/* CLI `--target` override (compiler only; transient). The analyzer has no command line, so this can
+ * never desync the editor — the persistent target lives in the manifest / ARCHE_TARGET, read by both. */
+static char g_cli_target[64];
+
+void variant_select_cli_target(const char *name) {
+	if (name && name[0])
+		snprintf(g_cli_target, sizeof(g_cli_target), "%s", name);
+}
+
+/* Whether to warn (stderr) when the active target names no `[target.<name>]` table — catches typos.
+ * Opt-in so only the compiler's CLI warns; the analyzer leaves it off (no per-keystroke log spam). */
+static int g_warn_targets;
+
+void variant_select_set_warnings(int on) {
+	g_warn_targets = on;
+}
+
 void variant_map_load_resolved(VariantMap *m, const char *source_dir) {
-	/* Lowest precedence first; each later source overrides via variant_map_set. */
-	variant_map_load_manifest(m, source_dir); /* project manifest */
-	variant_map_load_env(m);                  /* ARCHE_SELECT */
+	Manifest mf;
+	manifest_parse(&mf, source_dir);
+	/* Active target (highest precedence first): CLI `--target` > `ARCHE_TARGET` env > manifest `target`. */
+	const char *active = NULL;
+	if (g_cli_target[0])
+		active = g_cli_target;
+	if (!active) {
+		const char *e = getenv("ARCHE_TARGET");
+		if (e && e[0])
+			active = e;
+	}
+	if (!active && mf.declared_target[0])
+		active = mf.declared_target;
+	/* Flatten, lowest precedence first; each later source overrides via variant_map_set:
+	 * `[select]` base -> active `[target.<active>]` -> `ARCHE_SELECT` env -> CLI `--select`. */
+	variant_map_merge(m, &mf.select);
+	if (active) {
+		int matched = 0;
+		for (int i = 0; i < mf.target_count; i++)
+			if (strcmp(mf.targets[i].name, active) == 0) {
+				variant_map_merge(m, &mf.targets[i].map);
+				matched = 1;
+				break;
+			}
+		if (!matched && g_warn_targets)
+			fprintf(stderr, "warning: target '%s' has no [target.%s] table in arche.toml; using [select]/defaults\n",
+			        active, active);
+	}
+	manifest_free(&mf);
+	variant_map_load_env(m);                        /* ARCHE_SELECT */
 	for (int i = 0; i < g_cli_overrides.count; i++) /* CLI --select (compiler only) */
 		variant_map_set(m, g_cli_overrides.items[i].device, g_cli_overrides.items[i].variant);
 }

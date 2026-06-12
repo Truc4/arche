@@ -1,16 +1,19 @@
 /* `arche run` uses POSIX process + temp-file calls (mkdtemp, fork, execv, waitpid, unlink, rmdir),
  * which glibc hides under -std=c99 without a feature-test macro. */
 #define _POSIX_C_SOURCE 200809L
+#include "../codegen/codegen.h"
 #include "../compile/compile.h"
+#include "../compile/variant_select.h"
 #include "../semantic/semantic.h"
 #include "args.h"
 #include "cli.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-enum { R_WNO_PCBF = 1, R_WNO_PNE, R_WERR_PCBF, R_WERR_PNE, R_WERR, R_ALLOW_UNDEFINED };
+enum { R_WNO_PCBF = 1, R_WNO_PNE, R_WERR_PCBF, R_WERR_PNE, R_WERR, R_ALLOW_UNDEFINED, R_WHOLE_PROGRAM };
 
 static const ArgSpec k_run_specs[] = {
     {R_WNO_PCBF, "-Wno-proc-could-be-func", ARG_FLAG, 0, 0, NULL, "disable the proc-could-be-func lint"},
@@ -21,6 +24,8 @@ static const ArgSpec k_run_specs[] = {
     {R_WERR, "-Werror", ARG_FLAG, 0, 0, NULL, "promote all lints to errors"},
     {R_ALLOW_UNDEFINED, "--allow-undefined", ARG_FLAG, 0, 0, NULL,
      "permit the raw, runtime-unsafe `!undefined` opt-out (forbidden by default)"},
+    {R_WHOLE_PROGRAM, "--whole-program", ARG_FLAG, 0, 0, NULL,
+     "force a whole-program build (run defaults to incremental: per-device object cache, fast rebuilds)"},
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
@@ -82,6 +87,33 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 	}
 	char exe[600];
 	snprintf(exe, sizeof(exe), "%s/a.out", dir);
+
+	/* `arche run` is the dev-iteration path → default to device-granular incremental codegen (per-unit +
+	 * object cache) so editing one device only recompiles that device. `arche build` stays whole-program
+	 * (full cross-device inlining) for release. `--whole-program` opts run out. */
+	if (args_has(&p, R_WHOLE_PROGRAM))
+		codegen_force_whole_program(); /* hard override, beats the ARCHE_PER_UNIT env too */
+	else
+		codegen_set_per_unit(1);
+	variant_select_set_warnings(1); /* warn on a typo'd / undefined target (compiler only) */
+	/* The run output is a throwaway temp, so anchor the object cache to a project-stable dir (the
+	 * `arche.toml` dir, else the source dir) — otherwise the cache would vanish each run. Don't clobber an
+	 * explicit ARCHE_CACHE_DIR. */
+	if (!getenv("ARCHE_CACHE_DIR")) {
+		char src_dir[1024];
+		snprintf(src_dir, sizeof(src_dir), "%s", input);
+		char *slash = strrchr(src_dir, '/');
+		if (slash)
+			*slash = '\0';
+		else
+			snprintf(src_dir, sizeof(src_dir), ".");
+		char proj[1024];
+		if (!variant_manifest_dir(src_dir, proj, sizeof(proj)))
+			snprintf(proj, sizeof(proj), "%s", src_dir);
+		char cache[1100];
+		snprintf(cache, sizeof(cache), "%s/build/.arche-cache", proj); /* under the build/ dir convention */
+		setenv("ARCHE_CACHE_DIR", cache, 0);
+	}
 
 	CompileOpts opts = {0};
 	opts.quiet = 1; /* `go run`-style: no pipeline chatter, just the program's own output */
