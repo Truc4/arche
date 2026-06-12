@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s && %t | grep -x "20"
 #import { fmt }
 XS :: { 10, 20, 30 }
-;
+
 nth :: func(i: int) -> int {
   return XS[i];
 }

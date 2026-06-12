@@ -3,6 +3,6 @@
 // RUN: ! %arche build -o %t %s 2>%t.err
 // RUN: grep -iE "element|count|size|mismatch" %t.err
 XS: [3]int: { 1, 2 }
-;
+
 main :: proc() {
 }

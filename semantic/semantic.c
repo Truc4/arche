@@ -4043,7 +4043,8 @@ static int bnd_base_kind(SemanticContext *ctx, DeclSummary *d, BndEnv *e, const 
 	 * hint on a trivially-safe `M[0]`). */
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *cd = ctx->decls[i];
-		if (cd->kind == DECL_STATIC && cd->static_kind == STATIC_KIND_ARRAY && cd->name && strcmp(cd->name, name) == 0) {
+		if (cd->kind == DECL_STATIC && cd->static_kind == STATIC_KIND_ARRAY && cd->name &&
+		    strcmp(cd->name, name) == 0) {
 			if (out_n)
 				*out_n = array_const_row_count(cd);
 			return 1;
@@ -4938,9 +4939,9 @@ static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 		 * index provable; a `[]T` slice (kind 2) has a runtime length, so it still needs a guard. */
 		if (k == SN_BIND_STMT && tgt) {
 			SyntaxView t0 = sem_type_at(v, 0);
-			TypeId tid = sv_present(t0)        ? sem_intern_view(ctx, t0)
-			             : ctx->model          ? sem_model_expr_type_id(ctx->model, sv_id(v))
-			                                    : TYID_UNKNOWN;
+			TypeId tid = sv_present(t0) ? sem_intern_view(ctx, t0)
+			             : ctx->model   ? sem_model_expr_type_id(ctx->model, sv_id(v))
+			                            : TYID_UNKNOWN;
 			TyKind tk = tyid_kind(ctx->ty_arena, tid);
 			if (tk == TYK_ARRAY)
 				bnd_local_add(e, tgt, 1, tyid_array_len(ctx->ty_arena, tid));

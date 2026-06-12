@@ -548,6 +548,11 @@ void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 		if (l->kind == TOK_COMMA && in_frame && next == fr[frn - 1].closer && !fr[frn - 1].broken)
 			continue;
 
+		/* A `;` right after a top-level `}` is the OPTIONAL decl terminator (the `}` self-terminates the
+		 * decl — `M :: { … }`, `f :: proc() { … }`). Drop it rather than strand it on its own line. */
+		if (l->kind == TOK_SEMI && prev == TOK_RBRACE && depth == 0)
+			continue;
+
 		int nl = 0, space = 0, eff_indent = indent; /* layout decision for the gap before `l` */
 		int add_trailing_comma = 0;
 
@@ -612,6 +617,8 @@ void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 				want_nl = (l->line != prev_line);
 			if (for_header_semi && l->line > prev_line)
 				want_nl = 1; /* author split the header across lines — keep it */
+			if (l->kind == TOK_SEMI && prev == TOK_RBRACE)
+				want_nl = 0; /* a REQUIRED `;` after a `}` (in-body `b := { … };`) hugs it, no new line */
 			if (block_close && !is_match_brace(l) && indent > 0)
 				indent--;
 			if (want_nl) {

@@ -16,7 +16,6 @@ sum :: func(xs: []int) -> int {
 }
 
 M :: { { 1, 2, 3 }, { 4, 5, 6 } }
-;
 
 main :: proc() {
   fmt.printf("r0=%d r1=%d\n", sum(M[0]), sum(M[1]));

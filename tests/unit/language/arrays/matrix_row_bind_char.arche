@@ -3,7 +3,7 @@
 // RUN: %arche build -o %t %s && %t | grep -x "aa"
 #import { os }
 S :: { "aa", "bb" }
-;
+
 main :: proc() {
   r := S[0];
   os.write(1, r, r.length);

@@ -5,7 +5,7 @@
 // RUN: %arche build -o %t %s && %t | grep -x "abc ccc"
 #import { fmt }
 S :: { "a", "bb", "ccc" }
-;
+
 main :: proc() {
   fmt.printf("%c%c%c %c%c%c\n", S[0][0], S[1][0], S[2][0], S[2][0], S[2][1], S[2][2]);
 }

@@ -2,7 +2,7 @@
 // now that index/slice expressions carry real `[]T` types (it formerly slipped to an LLVM error).
 // RUN: ! %arche build -o %t %s 2>&1 | grep -q "binary operand"
 M :: { { 1, 2, 3 } }
-;
+
 main :: proc() {
   _ := M[0] + 1;
 }

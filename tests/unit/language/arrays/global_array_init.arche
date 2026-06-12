@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s && %t | grep -x "7"
 #import { fmt }
 XS: [3]int = { 5, 6, 7 }
-;
+
 main :: proc() {
   fmt.printf("%d\n", XS[2]);
 }

@@ -9,9 +9,9 @@
 // RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 19 10 1 1 type []i32"
 // RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 20 10 1 1 type []char"
 XS :: { 10, 20, 30 }
-;
+
 M :: { { 1, 2, 3 }, { 4, 5, 6 } }
-;
+
 main :: proc() {
   whole := XS;
   row   := M[1];
