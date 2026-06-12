@@ -1,0 +1,9 @@
+// Aggregate array consts are 1-D or 2-D (matrix / string table) only — the flat storage carries a
+// single row stride, which can't describe a 3rd dimension. A 3-D literal must be rejected with a
+// clear dimensionality message (NOT silently under-counted into a malformed `[N x T]` global that
+// fails opaquely at the LLVM layer, which is what happened before this check).
+// RUN: ! %arche build -o %t %s 2>&1 | grep -q "has 3 dimensions"
+C :: { { {1, 2}, {3, 4} }, { {5, 6}, {7, 8} } };
+main :: proc() {
+  _ := C;
+}

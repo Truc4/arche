@@ -3661,8 +3661,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 							elem_type = "double";
 							elem_ptr_type = "double*";
 						} else if (strcmp(elem_name, "float") == 0) {
-							elem_type = "float";
-							elem_ptr_type = "float*";
+							elem_type = "double"; /* arche `float` is a 64-bit double everywhere */
+							elem_ptr_type = "double*";
 						} else if (strcmp(elem_name, "int") == 0) {
 							elem_type = "i32";
 							elem_ptr_type = "i32*";
@@ -8920,7 +8920,7 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 				if (strcmp(elem_name, "double") == 0) {
 					llvm_type = "double";
 				} else if (strcmp(elem_name, "float") == 0) {
-					llvm_type = "float";
+					llvm_type = "double"; /* arche `float` is a 64-bit double everywhere */
 				} else if (strcmp(elem_name, "int") == 0) {
 					llvm_type = "i32";
 				}

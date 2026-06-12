@@ -2930,9 +2930,78 @@ static void analyze_archetype_decl(SemanticContext *ctx, DeclSummary *arch) {
 	ctx->aliases[ctx->alias_count++] = entry;
 }
 
+/* Dimensionality of an aggregate-const initializer literal: a scalar is 0-D, a string literal is a
+ * 1-D char row, and an `{ … }` array literal is one more than its first element's. So `{1,2}`→1,
+ * `{{1,2},{3,4}}`→2, `{"a","bb"}`→2 (a char matrix), `{{{…}}}`→3. Used to reject >2-D consts with a
+ * clear message instead of letting an under-counted flat global reach (and fail at) LLVM. */
+static int const_array_lit_dims(SyntaxView v) {
+	if (!sv_present(v))
+		return 0;
+	if (sv_kind(v) == SN_STRING_EXPR)
+		return 1;
+	if (sv_kind(v) != SN_ARRAY_LIT_EXPR)
+		return 0;
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE)
+			return 1 + const_array_lit_dims((SyntaxView){v.node->children[i].as.node, v.src});
+	return 1; /* empty `{}` — a 1-D (zero-length) array */
+}
+
 static void analyze_static_array_decl(SemanticContext *ctx, DeclSummary *s) {
 	if (!s)
 		return;
+
+	/* Aggregate consts are 1-D arrays or 2-D matrices / string tables only — the flat storage model
+	 * carries a single row stride, which can't describe a 3rd dimension. Reject higher rank cleanly
+	 * (the size would otherwise be under-counted and miscompile at the LLVM layer). */
+	if (s->static_has_init && sv_present(s->static_init) && sv_kind(s->static_init) == SN_ARRAY_LIT_EXPR) {
+		int dims = const_array_lit_dims(s->static_init);
+		if (dims > 2) {
+			fprintf(stderr,
+			        "Error: array '%s' has %d dimensions — array literals support at most 2 (a 1-D array, or a "
+			        "2-D matrix / string table); higher-rank arrays are not yet supported\n",
+			        s->name, dims);
+			ctx->error_count++;
+			return;
+		}
+	}
+
+	/* A 2-D NUMERIC matrix must be rectangular: every row exactly `row_stride` wide. The flat global
+	 * reserves rows*stride slots with NO padding for int/float, so a ragged row would emit fewer leaves
+	 * than reserved and fail opaquely at the LLVM layer. (char/string rows ARE NUL-padded to the widest,
+	 * so a short string row is legal — those are skipped here.) */
+	if (s->static_has_init && s->static_row_stride > 1 && sv_present(s->static_init) &&
+	    sv_kind(s->static_init) == SN_ARRAY_LIT_EXPR) {
+		int is_str_matrix = 0;
+		for (int i = 0; i < s->static_init.node->child_count; i++)
+			if (s->static_init.node->children[i].tag == SE_NODE) {
+				is_str_matrix = (s->static_init.node->children[i].as.node->kind == SN_STRING_EXPR);
+				break;
+			}
+		if (!is_str_matrix) {
+			int row = 0;
+			for (int i = 0; i < s->static_init.node->child_count; i++) {
+				if (s->static_init.node->children[i].tag != SE_NODE)
+					continue;
+				SyntaxNode *rn = s->static_init.node->children[i].as.node;
+				if (rn->kind != SN_ARRAY_LIT_EXPR)
+					continue;
+				int w = 0;
+				for (int j = 0; j < rn->child_count; j++)
+					if (rn->children[j].tag == SE_NODE)
+						w++;
+				if (w != s->static_row_stride) {
+					fprintf(stderr,
+					        "Error: matrix '%s' is not rectangular — row %d has %d element%s but the matrix width "
+					        "is %d\n",
+					        s->name, row, w, w == 1 ? "" : "s", s->static_row_stride);
+					ctx->error_count++;
+					return;
+				}
+				row++;
+			}
+		}
+	}
 
 	/* Validate element type is a scalar */
 	TyKind sk = tyid_kind(ctx->ty_arena, s->static_type_id);
@@ -7672,11 +7741,30 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 			SyntaxView declty = sem_type_at(dv, 0);
 			TypeId declid = sv_present(declty) ? sem_intern_view(ctx, declty) : TYID_UNKNOWN;
 			TyKind dk = tyid_kind(ctx->ty_arena, declid);
-			if (dk == TYK_ARRAY || dk == TYK_SLICE) {
-				ds->static_type_id = tyid_elem(ctx->ty_arena, declid);
-				int dn = tyid_array_len(ctx->ty_arena, declid);
-				if (dn > 0)
-					ds->static_size = dn; /* declared `[N]`; a count mismatch is caught in analysis */
+			if (dk == TYK_ARRAY) {
+				/* Walk the declared array dims down to the innermost SCALAR element. A nested matrix
+				 * type `[N][M]T` flattens to `N*M` slots (product of dims) with the innermost dim as
+				 * the row stride; a plain `[N]T` keeps size N and stride 1. (A count mismatch vs the
+				 * initializer is caught in analysis.) */
+				TypeId cur = declid;
+				long prod = 1;
+				int dims = 0, innermost = 1;
+				while (tyid_kind(ctx->ty_arena, cur) == TYK_ARRAY) {
+					int dn = tyid_array_len(ctx->ty_arena, cur);
+					if (dn > 0) {
+						prod *= dn;
+						innermost = dn;
+					}
+					cur = tyid_elem(ctx->ty_arena, cur);
+					dims++;
+				}
+				ds->static_type_id = cur; /* innermost scalar */
+				if (prod > 0)
+					ds->static_size = (int)prod;
+				if (dims >= 2)
+					ds->static_row_stride = innermost;
+			} else if (dk == TYK_SLICE) {
+				ds->static_type_id = tyid_elem(ctx->ty_arena, declid); /* `[]T` slot keeps inferred size */
 			} else {
 				if (strcmp(et, "char") != 0) {
 					const char *r = sv_present(elem_for_infer) ? resolve_expression_type(ctx, elem_for_infer) : "int";

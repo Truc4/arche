@@ -1,0 +1,18 @@
+// A TYPED 2-D matrix const `M : [N][W]T : { … }` must resolve its element type to the INNERMOST
+// scalar (int), not the inner row type `[W]int` — and flatten to N*W slots with W as the row stride.
+// An earlier bug took one `tyid_elem` step (yielding `[2]int`) and rejected it as "element type must
+// be scalar". Verifies element access `M[i, j]` and a row decaying to a `[]int` slice argument.
+// RUN: %arche build -o %t %s && %t | grep -x "e=6 sum=15"
+#import { fmt }
+sum :: func(xs: []int) -> int {
+  s := 0;
+  i := 0;
+  for (i = 0; i < xs.length; i = i + 1) {
+    s = s + xs[i];
+  }
+  return s;
+}
+M : [2][3]int : { {1, 2, 3}, {4, 5, 6} };
+main :: proc() {
+  fmt.printf("e=%d sum=%d\n", M[1, 2], sum(M[1]));
+}

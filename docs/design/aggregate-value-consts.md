@@ -89,7 +89,37 @@ implementing, recorded so it can be reviewed.
     row to a local (`r := M[i]`) and the inline postfix chain `M[i].length` (the primary parser does
     single-level postfix, so `.field` after `]` doesn't chain). Tracked, not papered over.
 
+## Concern-review fixes (correctness bugs found by stress-probing the decisions)
+
+A pass over the decisions above (not just the tests that existed) surfaced four real defects in the
+array-const feature — three silently shipped because no fixture exercised them:
+
+12. **`float` array consts stored 32-bit, read 64-bit (CORRUPTION).** The backing global was emitted
+    as `[N x float]` (a hand-rolled `float`→`float` map in two codegen sites), but arche's `float` is
+    LLVM `double` (64-bit) everywhere, and every *read* path used `double`. So the bytes were
+    reinterpreted and reads returned garbage (`sum(F)`→`8.000002`, not `7.0`). Fixed both sites to map
+    `float`→`double`; covered 1-D index, 1-D decay, and matrix-row decay in `const_array_float`. No
+    float array-const test existed before — that is how it shipped.
+
+13. **Typed 2-D matrix const `M : [N][W]T : {…}` was rejected** as "element type must be scalar". The
+    decl builder took a single `tyid_elem` step (yielding the inner row type `[W]int`) instead of
+    walking to the innermost scalar. Now it walks all declared array dims: element = innermost scalar,
+    size = product of dims, stride = innermost dim. Covered by `const_matrix_typed`. (The *untyped*
+    `M :: {…}` form always worked, which masked this.)
+
+14. **>2-D and ragged matrices miscompiled at the LLVM layer.** A 3-D literal under-counted its flat
+    size (the size walk descended only one level) and a ragged numeric row under-filled a no-padding
+    global — both surfaced as opaque LLVM type-mismatch errors. Now rejected in semantic analysis with
+    clear messages: "has N dimensions … at most 2" (`const_array_3d_rejected`) and "matrix … is not
+    rectangular — row R has W elements but the matrix width is S" (`const_matrix_ragged_rejected`).
+    True N-D (rank > 2) remains a deliberate non-goal: the flat model carries a single row stride, so
+    arbitrary-rank indexing/decay would need a multi-stride shape vector — a separate feature, not a
+    bug. The 2-D ceiling is now enforced, not assumed.
+
 ## Verification
-654/654 lit tests, doctests, and AddressSanitizer+UBSan all green; `extras/demo.arche` runs correctly
+658/658 lit tests, doctests, and AddressSanitizer+UBSan all green; `extras/demo.arche` runs correctly
 for both `linux` and `windows` targets with the backends as `char[]` consts. `matrix_row_as_slice`
-covers the row→slice decay (distinct sums per row prove pointer + length both reach the callee).
+covers the row→slice decay (distinct sums per row prove pointer + length both reach the callee);
+`const_array_float` guards the float-width corruption; `const_matrix_typed` the typed-matrix element
+walk; `const_array_3d_rejected` / `const_matrix_ragged_rejected` the dimensionality + rectangularity
+guards.
