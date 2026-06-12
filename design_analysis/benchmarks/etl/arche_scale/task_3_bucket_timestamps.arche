@@ -19,7 +19,7 @@ load_transactions :: proc() {
 main :: proc() {
   load_transactions();
   Transaction.price_bucket = Transaction.price / 10.0;
-  price_sum                := 0.0;
+  price_sum := 0.0;
   for (m := 0; m < 100000000; m += 1) {
     price_sum = price_sum + Transaction.price_bucket[m];
   }

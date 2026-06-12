@@ -4,7 +4,7 @@
 main :: proc(argc: int) {
   a: int[4];
   a[0] = 1;
-  i    := argc + 100; // unprovable OOB -> default !abort
-  x    := a[i];
-  y    := x + 0;
+  i := argc + 100; // unprovable OOB -> default !abort
+  x := a[i];
+  y := x + 0;
 }

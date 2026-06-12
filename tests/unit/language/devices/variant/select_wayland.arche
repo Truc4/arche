@@ -1,0 +1,9 @@
+// The SAME source, with the wayland backend selected, binds `open_window` to the wayland
+// implementation instead — proving the variant overlay swaps the backing file at build time.
+// RUN: env ARCHE_SELECT=vgfx=wayland %arche build -o %t %s && %t | grep "wayland window"
+#import { vgfx }
+main :: proc() {
+  vgfx.hello();
+  vgfx.extra();
+  vgfx.open_window(); // wayland variant
+}

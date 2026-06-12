@@ -1,0 +1,10 @@
+// tgfx wayland variant (selected by [target.linux]). `wl_only` exists ONLY here — the symbol the
+// sync test uses to prove the compiler and analyzer agree on the active target. Not a standalone test.
+// RUN: true
+#import { fmt }
+render :: proc() {
+  fmt.print("tgfx wayland\n")();
+}
+wl_only :: proc() {
+  fmt.print("wayland only\n")();
+}

@@ -139,11 +139,11 @@ add :: proc(pattern: char[], handler_id: int) {
 // Resolve `path`. Returns handler_id (-1 on miss). Captured :param / *catchall segments are
 // recorded as spans into `path` — read them with router.param_count / router.param.
 resolve :: proc(path: char[])(handler_id: int) {
-  n            := str.strlen(path);
-  cur          := 0;
+  n   := str.strlen(path);
+  cur := 0;
   cap_count[0] = 0;
   handler_id   = -1;
-  s            := 0;
+  s := 0;
   if (n > 0) {
     if (path.length > 0) {
       if (path[0] == '/') {

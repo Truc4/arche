@@ -1,0 +1,7 @@
+// Backend-agnostic vgfx behavior: ALWAYS merged, regardless of the selected variant. Not a
+// standalone test (it is part of the vgfx device).
+// RUN: true
+#import { fmt }
+hello :: proc() {
+  fmt.print("vgfx common\n")();
+}

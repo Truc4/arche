@@ -1,0 +1,11 @@
+// windows backend for the `platform` device — selected by `[target.windows] platform = "windows"`.
+// Same public surface as the linux backend (name / sep / null_device); only the values differ.
+name :: func() -> char[] {
+  return "windows";
+}
+sep :: func() -> char[] {
+  return "\\";
+}
+null_device :: func() -> char[] {
+  return "NUL";
+}

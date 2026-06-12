@@ -8427,8 +8427,18 @@ void codegen_set_emit_unit(CodegenContext *ctx, int unit) {
 	ctx->per_unit = 1;
 	ctx->emit_only_unit = unit;
 }
+/* Tri-state: 0 = auto (the ARCHE_PER_UNIT env decides), 1 = force on, -1 = force whole-program. */
+static int g_per_unit_mode = 0;
+void codegen_set_per_unit(int on) {
+	g_per_unit_mode = on ? 1 : 0;
+}
+void codegen_force_whole_program(void) {
+	g_per_unit_mode = -1;
+}
 int codegen_per_unit_enabled(void) {
-	return getenv("ARCHE_PER_UNIT") != NULL;
+	if (g_per_unit_mode < 0) /* `--whole-program` is a hard override, beating the env too */
+		return 0;
+	return g_per_unit_mode > 0 || getenv("ARCHE_PER_UNIT") != NULL;
 }
 
 CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
@@ -8436,7 +8446,7 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->ast = ast;
 	ctx->sem_ctx = sem_ctx;
 	ctx->had_error = 0;
-	ctx->per_unit = getenv("ARCHE_PER_UNIT") != NULL;
+	ctx->per_unit = codegen_per_unit_enabled();
 	ctx->emit_only_unit = -1;
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
@@ -8590,7 +8600,11 @@ static void emit_cross_unit_declares(CodegenContext *ctx) {
 		}
 		if (d->unit == ctx->emit_only_unit)
 			continue;
-		if (d->kind == HIR_DECL_FUNC && !d->data.func->is_extern) {
+		if (d->kind == HIR_DECL_FUNC && !d->data.func->is_extern && !d->data.func->is_policy) {
+			/* A policy is a MACRO — inlined at op sites, never emitted as a function (see the
+			 * definition pass), so it must NOT get a cross-unit declare either. Declaring it would be
+			 * dangling, and same-named policies across categories (e.g. `abort` in both `bounds` and
+			 * `divide`) collide as duplicate declares. */
 			HirFuncDecl *f = d->data.func;
 			char ret[512];
 			if (f->return_type_count == 0)

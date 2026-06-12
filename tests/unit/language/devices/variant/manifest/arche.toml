@@ -1,0 +1,4 @@
+# Project manifest: the persistent, committed source of truth for backend selection. Both the
+# compiler and the editor analyzer read this (closest arche.toml wins, walking up from the source).
+[select]
+mgfx = "wayland"   # pin mgfx to the wayland backend

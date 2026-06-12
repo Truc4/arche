@@ -1,0 +1,7 @@
+// tgfx dx12 variant (selected by [target.windows]). No `wl_only` here — so a call to it under the
+// windows target is unresolved, in BOTH the compiler and the analyzer. Not a standalone test.
+// RUN: true
+#import { fmt }
+render :: proc() {
+  fmt.print("tgfx dx12\n")();
+}

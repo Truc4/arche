@@ -17,7 +17,7 @@ main :: proc() {
   r1    := Node.seg[1];
   total := 0;
   for (i := 0; i < 2; i = i + 1) {
-    row   := Node.seg[i];
+    row := Node.seg[i];
     total = total + str.strlen(row[0: 5]); // content slice → 5 + 5
   }
   eq := streq(r0[0: 5], "users");

@@ -1,0 +1,17 @@
+// Named target profiles: ONE switch retargets every device. The manifest's `target = "linux"` backs
+// tgfx->wayland, tnet->tcp (tsnd->alsa from the [select] base). `--target windows` flips BOTH tgfx and
+// tnet to their windows variants with a single flag, while tsnd (no target mapping) stays on its
+// [select] base. A per-device `--select` still overrides just that one device, target intact for the rest.
+//
+// manifest target=linux  -> wayland + tcp + alsa
+// RUN: %arche build -o %t %s && %t > %t.out && grep "tgfx wayland" %t.out && grep "tnet tcp" %t.out && grep "tsnd alsa" %t.out
+// --target windows: one flag flips BOTH devices; tsnd stays alsa (backward-compat [select] base)
+// RUN: %arche build --target windows -o %t %s && %t > %t.out && grep "tgfx dx12" %t.out && grep "tnet winsock" %t.out && grep "tsnd alsa" %t.out
+// per-device --select overrides ONE device; the rest of the target is unchanged
+// RUN: %arche build --target windows --select tgfx=wayland -o %t %s && %t > %t.out && grep "tgfx wayland" %t.out && grep "tnet winsock" %t.out
+#import { tgfx tnet tsnd }
+main :: proc() {
+  tgfx.render();
+  tnet.send();
+  tsnd.beep();
+}

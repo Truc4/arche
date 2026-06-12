@@ -1,0 +1,6 @@
+// tnet tcp variant (selected by [target.linux]). Not a standalone test.
+// RUN: true
+#import { fmt }
+send :: proc() {
+  fmt.print("tnet tcp\n")();
+}

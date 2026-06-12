@@ -7,11 +7,11 @@ main :: proc() {
   a: int[4];
   a[0] = 1;
   a[3] = 4;
-  s    := 0;
-  i    := 99;
-  j    := 0 - 7;
-  k    := 4;
-  s    = s + a[i] !clamp; // -> a[3]
-  s    = s + a[j] !clamp; // negative -> a[0]
-  s    = s + a[k] !clamp; // just past end -> a[3]
+  s := 0;
+  i := 99;
+  j := 0 - 7;
+  k := 4;
+  s = s + a[i] !clamp; // -> a[3]
+  s = s + a[j] !clamp; // negative -> a[0]
+  s = s + a[k] !clamp; // just past end -> a[3]
 }

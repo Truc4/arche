@@ -1,0 +1,9 @@
+// Selection comes from arche.toml ([select] mgfx = "wayland") with NO env and NO CLI flag — proving
+// the committed manifest is a working, persistent source of truth that the build honors. The CLI
+// flag, when given, overrides it (highest precedence).
+// RUN: %arche build -o %t %s && %t | grep "mgfx wayland"
+// RUN: %arche build --select mgfx=x11 -o %t %s && %t | grep "mgfx x11"
+#import { mgfx }
+main :: proc() {
+  mgfx.backend();
+}

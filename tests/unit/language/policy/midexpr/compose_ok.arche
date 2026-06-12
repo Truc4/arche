@@ -11,8 +11,8 @@ main :: proc(argc: int) {
   a: int[4];
   a[0] = 2;
   a[3] = 3;
-  hi   := argc + 50; // OOB -> clamp to a[3]
-  idx  := a[hi] !clamp; // a[3] = 3 -> clamp index to a[3]
-  r    := g(a[hi] !clamp, a[idx - idx] !abort); // g(a[3]=3, a[0]=2) = 5
+  hi  := argc + 50; // OOB -> clamp to a[3]
+  idx := a[hi] !clamp; // a[3] = 3 -> clamp index to a[3]
+  r   := g(a[hi] !clamp, a[idx - idx] !abort); // g(a[3]=3, a[0]=2) = 5
   fmt.printf("r=%d\n", r);
 }

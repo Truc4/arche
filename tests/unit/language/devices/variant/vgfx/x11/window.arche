@@ -1,0 +1,11 @@
+// The x11 VARIANT of vgfx: merged only under `ARCHE_SELECT=vgfx=x11`. Defines `open_window` (also
+// present in the wayland variant) plus `x11_only` (present ONLY here — the symbol used to prove the
+// compiler and the analyzer agree about the active backend). Not a standalone test.
+// RUN: true
+#import { fmt }
+open_window :: proc() {
+  fmt.print("x11 window\n")();
+}
+x11_only :: proc() {
+  fmt.print("x11 only\n")();
+}

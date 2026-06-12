@@ -1,0 +1,9 @@
+# Project manifest for the extras/ showcase. One `target` switch picks the backend for EVERY device.
+# Here there's a single device (`platform`), but the same line would retarget a dozen of them at once.
+target = "linux"
+
+[target.linux]
+platform = "linux"
+
+[target.windows]
+platform = "windows"

@@ -1,0 +1,15 @@
+// Regression: per-unit codegen must NOT emit a failure policy as a cross-unit function declare. A
+// policy is an inlined MACRO with no symbol of its own (the definition pass already skips it), so a
+// `declare @arche.abort(...)` is dangling — and worse, the same name exists in multiple categories
+// (`abort`/`clamp`/`zero`/`undefined` for bounds AND divide), so the declares collided as duplicates
+// and llvm-link rejected the module ("invalid redefinition of function 'arche.abort'"). Importing
+// fmt makes a second unit so the cross-unit declare pass runs; the explicit `!clamp` keeps a policy
+// in play.
+// RUN: env ARCHE_PER_UNIT=1 %arche build -o %t %s && %t | grep -qF "pu_ok"
+#import { fmt }
+main :: proc(argc: int) {
+  a: int[4];
+  a[0] = 9;
+  v := a[argc] !clamp; // runtime index under an explicit policy (won't fold away)
+  fmt.printf("pu_ok=%d\n", v);
+}

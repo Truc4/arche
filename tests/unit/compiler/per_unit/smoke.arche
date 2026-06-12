@@ -1,0 +1,9 @@
+// Baseline per-unit codegen: the simplest program must build under ARCHE_PER_UNIT=1. Importing fmt
+// creates a SECOND compilation unit (unit 1), which triggers the cross-unit declare pass. Before the
+// policy-declare fix, even this failed at llvm-link with "invalid redefinition of function
+// 'arche.abort'", because core's failure policies were wrongly emitted as cross-unit declares.
+// RUN: env ARCHE_PER_UNIT=1 %arche build -o %t %s && %t | grep -qF "pu hello"
+#import { fmt }
+main :: proc() {
+  fmt.print("pu hello\n")();
+}

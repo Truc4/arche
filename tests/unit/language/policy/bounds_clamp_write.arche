@@ -7,8 +7,8 @@
 
 main :: proc() {
   a: int[4];
-  a[0]        = 1;
-  i           := 9; // a runtime value: unprovable, so the policy governs the write
+  a[0] = 1;
+  i := 9; // a runtime value: unprovable, so the policy governs the write
   a[i] !clamp = 99; // OOB write -> a[3]
   fmt.printf("a3=%d\n", a[3]);
 }

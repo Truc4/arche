@@ -6,8 +6,8 @@
 main :: proc(argc: int) {
   a: int[4];
   a[0] = 1;
-  hi   := argc; // 1 at runtime
-  lo   := argc + 2; // 3 at runtime -> lo > hi, reversed
-  s    := a[lo: hi] !abort; // reversed -> abort
-  x    := s.length;
+  hi := argc; // 1 at runtime
+  lo := argc + 2; // 3 at runtime -> lo > hi, reversed
+  s  := a[lo: hi] !abort; // reversed -> abort
+  x  := s.length;
 }
