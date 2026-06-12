@@ -5396,6 +5396,41 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			break;
 		}
 
+		/* `r := M[i]` — bind a partial index into a flat matrix const as a read-only `[]T` slice view
+		 * (ptr = `@M + i*stride`, len = the row width). Mirrors the `buf[lo:hi]` slice bind above: the
+		 * row aliases a read-only `constant` global, so it is a borrow (no copy). Once registered as a
+		 * type-6 slice, `r[j]` / `r.length` fall out via the existing type-6 paths. */
+		{
+			int mrow_stride = 0;
+			HirStaticDecl *mrow_sa =
+			    stmt->data.bind_stmt.value ? codegen_matrix_row_arg(ctx, stmt->data.bind_stmt.value, &mrow_stride) : NULL;
+			if (mrow_sa) {
+				char row_ptr[256];
+				codegen_expression(ctx, stmt->data.bind_stmt.value, row_ptr); /* the row element pointer */
+				const char *elem_name =
+				    mrow_sa->array.element_type ? field_base_type_name(mrow_sa->array.element_type) : "char";
+				const char *lt = llvm_type_from_arche(elem_name);
+				char *lenv = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = add i64 0, %d\n", lenv, mrow_stride);
+				ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+				vi->name = strdup(var_name);
+				vi->llvm_name = strdup(row_ptr);
+				vi->type = 6;
+				vi->is_slice = 1;
+				vi->len_ssa = strdup(lenv);
+				vi->cap_ssa = strdup(lenv);
+				vi->field_type = elem_name; /* stable static-string literal from field_base_type_name */
+				vi->string_len = -1;
+				vi->bit_width = llvm_type_sizeof(lt) * 8;
+				if (ctx->scope_count > 0) {
+					ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+					scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+					scope->values[scope->value_count++] = vi;
+				}
+				break;
+			}
+		}
+
 		if (stmt->data.bind_stmt.value) {
 			codegen_expression(ctx, stmt->data.bind_stmt.value, value_buf);
 		} else {

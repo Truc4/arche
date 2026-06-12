@@ -3662,8 +3662,8 @@ static const char *purity_walk(SemanticContext *ctx, SyntaxView v) {
 		if (nm) {
 			if (find_archetype(ctx, nm))
 				rr = "reads static memory (an archetype column)";
-			else if (is_static_name(ctx, nm))
-				rr = "reads a mutable global";
+			else if (is_static_name(ctx, nm) && !name_is_const_static_array(ctx, nm))
+				rr = "reads a mutable global"; /* a `::` const array is immutable — reading it is pure */
 		}
 		free(nm);
 		if (rr)
