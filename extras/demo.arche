@@ -5,17 +5,15 @@
 //     arche run extras/demo.arche                    # target = "linux" (from extras/arche.toml)
 //     arche build --target windows -o /tmp/d extras/demo.arche && /tmp/d
 //
-// (os.write is used instead of fmt.print so the backends' returned char[] slices print directly.)
+// The backends expose `name`/`sep`/`null_device` as `char[]` string CONSTS; the active target picks
+// which file supplies them. (os.write prints the char[] slices directly.)
 #import { platform os }
 main :: proc() {
   os.write(1, "os=", 3);
-  n :: platform.name();
-  os.write(1, n, n.length);
+  os.write(1, platform.name, platform.name.length);
   os.write(1, " sep=", 5);
-  s :: platform.sep();
-  os.write(1, s, s.length);
+  os.write(1, platform.sep, platform.sep.length);
   os.write(1, " null=", 6);
-  d :: platform.null_device();
-  os.write(1, d, d.length);
+  os.write(1, platform.null_device, platform.null_device.length);
   os.write(1, "\n", 1);
 }

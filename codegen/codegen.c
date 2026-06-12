@@ -1991,9 +1991,24 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		/* Check if this is a compile-time constant */
 		const char *const_val = semantic_get_const_value(ctx->sem_ctx, name);
 		if (const_val) {
-			/* Inline the constant's value. A char-literal lexeme must be emitted as its integer
+			/* Inline the constant's value. A char[] string const (`name :: "linux"`, incl. a
+			 * device-qualified `platform.name`) materializes the literal global and returns its
+			 * element pointer — exactly like a string literal. A char-literal lexeme emits its integer
 			 * code (LLVM has no char token); int/float lexemes pass through verbatim. */
-			if (const_val[0] == '\'')
+			if (const_val[0] == '"') {
+				char *g = emit_string_global(ctx, const_val);
+				size_t slen = 0;
+				for (int i = 1; const_val[i] != '"' && const_val[i] != '\0'; i++) {
+					if (const_val[i] == '\\' && const_val[i + 1] != '\0')
+						i++;
+					slen++;
+				}
+				char *res = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = getelementptr [%zu x i8], [%zu x i8]* %s, i32 0, i32 0\n", res,
+				                  slen + 1, slen + 1, g);
+				free(g);
+				strcpy(result_buf, res);
+			} else if (const_val[0] == '\'')
 				snprintf(result_buf, 256, "%d", char_literal_value(const_val));
 			else
 				strcpy(result_buf, const_val);
@@ -2535,6 +2550,35 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			base_val = find_value(ctx, name);
 			if (!base_val && find_archetype_decl(ctx, name)) {
 				arch_name_direct = name;
+			}
+		}
+
+		/* `.length`/`.cap`/etc. on a string literal — incl. a `char[]` string value-const that lowered
+		 * to one (`name :: "linux"`) or a device-qualified one (`platform.name`, still a NAME at
+		 * codegen). The length is the literal's compile-time char count. */
+		int is_len_field = strcmp(field_name, "length") == 0 || strcmp(field_name, "cap") == 0 ||
+		                   strcmp(field_name, "capacity") == 0 || strcmp(field_name, "max_length") == 0;
+		if (is_len_field && expr->data.field.base->kind == HIR_EXPR_STRING) {
+			snprintf(result_buf, 256, "%d", expr->data.field.base->data.string.length);
+			break;
+		}
+		if (is_len_field && expr->data.field.base->kind == HIR_EXPR_NAME) {
+			const char *cv = semantic_get_const_value(ctx->sem_ctx, expr->data.field.base->data.name.name);
+			if (cv && cv[0] == '"') {
+				int slen = 0;
+				for (int i = 1; cv[i] != '"' && cv[i] != '\0'; i++) {
+					if (cv[i] == '\\' && cv[i + 1] != '\0')
+						i++;
+					slen++;
+				}
+				snprintf(result_buf, 256, "%d", slen);
+				break;
+			}
+			/* `.length`/`.cap` on a static array (incl. an array value-const) — the declared count. */
+			HirStaticDecl *sa = codegen_find_static_array(ctx, expr->data.field.base->data.name.name);
+			if (sa) {
+				snprintf(result_buf, 256, "%d", sa->array.size);
+				break;
 			}
 		}
 
@@ -8729,8 +8773,32 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 				/* char and non-char static arrays alike: a plain `[N x T]` global. char is just i8 —
 				 * a normal array, no arche_array struct wrapper. (`is_char` only selects the element.) */
 				(void)is_char;
-				buffer_append_fmt(ctx, "@%s = %sglobal [%d x %s] zeroinitializer\n", s->array.name, cg_shared(ctx),
-				                  s->array.size, llvm_type);
+				/* `: T[N] = {…}` — emit the typed constant initializer from the (1-D) array literal;
+				 * absent initializer stays zero-initialized. */
+				if (s->array.init && s->array.init->kind == HIR_EXPR_ARRAY_LITERAL) {
+					HirExpr **els = s->array.init->data.array_literal.elements;
+					int ec = s->array.init->data.array_literal.element_count;
+					char init[4096];
+					int p = 0;
+					p += snprintf(init + p, sizeof(init) - (size_t)p, "[");
+					for (int i = 0; i < ec && p < (int)sizeof(init) - 64; i++) {
+						const char *v = "0";
+						char vb[64];
+						HirExpr *el = els[i];
+						if (el && el->kind == HIR_EXPR_LITERAL && el->data.literal.lexeme) {
+							const char *lx = el->data.literal.lexeme;
+							if (lx[0] == '\'') { snprintf(vb, sizeof(vb), "%d", char_literal_value(lx)); v = vb; }
+							else { v = lx; }
+						}
+						p += snprintf(init + p, sizeof(init) - (size_t)p, "%s%s %s", i ? ", " : "", llvm_type, v);
+					}
+					snprintf(init + p, sizeof(init) - (size_t)p, "]");
+					buffer_append_fmt(ctx, "@%s = %sglobal [%d x %s] %s\n", s->array.name, cg_shared(ctx),
+					                  s->array.size, llvm_type, init);
+				} else {
+					buffer_append_fmt(ctx, "@%s = %sglobal [%d x %s] zeroinitializer\n", s->array.name, cg_shared(ctx),
+					                  s->array.size, llvm_type);
+				}
 				/* registered in the pre-pass above */
 			}
 			break;

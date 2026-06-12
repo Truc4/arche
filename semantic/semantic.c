@@ -498,6 +498,20 @@ static int name_is_static_array(SemanticContext *ctx, const char *name) {
 	return 0;
 }
 
+/* 1 if `name` is an aggregate value const (a `::`-bound array const, e.g. `XS :: {1,2,3}`), which is
+ * immutable — assigning to it or to one of its elements is an error. */
+static int name_is_const_static_array(SemanticContext *ctx, const char *name) {
+	if (!name)
+		return 0;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->kind == DECL_STATIC && d->static_kind == STATIC_KIND_ARRAY && d->static_is_const && d->name &&
+		    strcmp(d->name, name) == 0)
+			return 1;
+	}
+	return 0;
+}
+
 static void register_static_name(SemanticContext *ctx, const char *name) {
 	if (!name || is_static_name(ctx, name))
 		return;
@@ -1217,7 +1231,7 @@ static void check_const_literal_type(SemanticContext *ctx, DeclSummary *c) {
 	TyKind dk = tyid_kind(ctx->ty_arena, c->const_decl_type_id);
 	if (dk != TYK_NOMINAL && dk != TYK_PRIM)
 		return; /* only concrete named declared types */
-	if (c->const_value_kind != EXPR_LITERAL)
+	if (c->const_value_kind != EXPR_LITERAL && c->const_value_kind != EXPR_STRING)
 		return; /* only literal RHS (a name RHS is a value-const chain, checked elsewhere) */
 	const char *want = sem_tyid_name(ctx, c->const_decl_type_id);
 	if (!want)
@@ -1644,6 +1658,10 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 		ArchetypeInfo *arch = find_archetype(ctx, idnt);
 		if (!arch) {
 			if (!base_var) {
+				/* A value const can be a field base — e.g. `.length`/`.cap` on a `char[]` string const
+				 * (`name :: "linux"`). The length-family fields resolve to int (resolve_field_type). */
+				if (semantic_get_const_value(ctx, idnt) != NULL)
+					goto done;
 				sem_emit_undefined_field_base(ctx, field_loc, idnt);
 				goto done;
 			}
@@ -1673,6 +1691,12 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 					arch = find_archetype(ctx, tyid_nominal_name(A, bt));
 				if (!arch && btk != TYK_TUPLE && btk != TYK_ARCHETYPE_CATEGORY) {
 					if ((btk == TYK_SLICE || btk == TYK_ARRAY) &&
+					    (strcmp(field_name, "cap") == 0 || strcmp(field_name, "capacity") == 0 ||
+					     strcmp(field_name, "length") == 0 || strcmp(field_name, "max_length") == 0))
+						goto done;
+					/* A static array's VariableInfo carries its ELEMENT type, so `.length`/`.cap` on it
+					 * aren't caught above — allow them here (they resolve to int). */
+					if (name_is_static_array(ctx, idnt) &&
 					    (strcmp(field_name, "cap") == 0 || strcmp(field_name, "capacity") == 0 ||
 					     strcmp(field_name, "length") == 0 || strcmp(field_name, "max_length") == 0))
 						goto done;
@@ -2350,6 +2374,15 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 				sem_emit_assign_after_move(ctx, sem_node_loc(target.node), tn);
 			free(tn);
 		}
+		/* An aggregate value const (`XS :: {…}`) is immutable — reject both `XS = …` and an element
+		 * write `XS[i] = …` (its backing global is read-only). The leftmost IDENT of the target is the
+		 * base name in both forms. */
+		{
+			char *tln = sv_name_expr_dup(target);
+			if (tln && name_is_const_static_array(ctx, tln))
+				sem_emit_assign_to_const(ctx, sem_node_loc(target.node), tln);
+			free(tln);
+		}
 		/* Purity: a borrowed (non-`move`) array parameter is read-only. Uses the leftmost name. */
 		{
 			const char *rn = ctx->model ? sem_model_ref_name(ctx->model, sv_id(target)) : NULL;
@@ -2901,15 +2934,8 @@ static void analyze_static_array_decl(SemanticContext *ctx, DeclSummary *s) {
 		return;
 	}
 
-	/* Constant array initializers (`buf : T[N] = {…}`) are not lowered yet — zero-init only. */
-	if (s->static_has_init) {
-		fprintf(stderr,
-		        "Error: global '%s' array initializers are not yet implemented; declare it zero-initialized "
-		        "(`%s : T[N]`)\n",
-		        s->name, s->name);
-		ctx->error_count++;
-		return;
-	}
+	/* `buf : T[N] = {…}` — a typed initializer is now emitted by codegen (a `[N x T]` global with the
+	 * literal's values); an absent initializer stays zero-initialized. */
 
 	/* Registration is hoisted: the name was added to the global scope in the pre-pass so forward
 	 * references to it resolve regardless of declaration order. */
@@ -3555,19 +3581,17 @@ static void enforce_func_purity(SemanticContext *ctx, DeclSummary *func) {
 }
 
 /* W0021 func_could_be_const: the return expression carries no computation — a numeric/char
- * literal (`42`, `'x'`, `3.14`) or a bare reference to a value const. Deliberately tight: a
- * `func` that computes its result (arithmetic, a call, an `Enum.variant`, a field/index) is
- * left alone, even when CTFE could fold it — those exist for readability, not by mistake.
+ * literal (`42`, `'x'`, `3.14`, `"linux"`) or a bare reference to a value const. Deliberately
+ * tight: a `func` that computes its result (arithmetic, a call, an `Enum.variant`, a field/index)
+ * is left alone, even when CTFE could fold it — those exist for readability, not by mistake.
  *
- * A STRING literal is intentionally excluded: arche has no string-literal value const
- * (`x :: "s"` is E0083 const_rhs_invalid), so a `func() -> char[]` returning a literal is the
- * ONLY way to name a string constant — the lint must not suggest a rewrite the language can't
- * express. (This is exactly why the extras/platform device backends are funcs, not consts.) */
+ * A string literal IS flagged now that arche has `char[]` value consts: a `func() -> []char`
+ * returning a literal could be `name :: "literal"`. */
 static int func_return_is_constish(SemanticContext *ctx, SyntaxView e) {
 	if (!sv_present(e))
 		return 0;
 	SyntaxNodeKind k = sv_kind(e);
-	if (k == SN_LITERAL_EXPR) /* int/float/char literal — NOT SN_STRING_EXPR (no string const) */
+	if (k == SN_LITERAL_EXPR || k == SN_STRING_EXPR) /* int/float/char OR a string literal */
 		return 1;
 	if (k == SN_NAME_EXPR && sv_count(e, SN_FIELD_NAME) == 0) {
 		char *nm = sv_name_expr_dup(e);
@@ -6987,8 +7011,10 @@ static void analyze_program_core(SemanticContext *ctx) {
 		}
 
 		/* Literal RHS: a value const. Its type is the explicit declared type if present, else the
-		 * literal's own type (`3.14`→float, `42`→int) — so the const resolves to its real type. */
-		if (c->const_value_kind == EXPR_LITERAL) {
+		 * literal's own type (`3.14`→float, `42`→int, `"s"`→char_array) — so the const resolves to its
+		 * real type. A string const (`name :: "linux"`) is a `[N]char` whose reference lowers back to
+		 * the string literal (see lower.c), so all the existing `char[]`/`.length`/decay machinery applies. */
+		if (c->const_value_kind == EXPR_LITERAL || c->const_value_kind == EXPR_STRING) {
 			const char *vt = NULL;
 			TyKind ddk = tyid_kind(ctx->ty_arena, c->const_decl_type_id);
 			if (ddk == TYK_NOMINAL || ddk == TYK_PRIM)
@@ -7536,6 +7562,48 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 	ds->name = bn.ptr ? sem_txt_dup(bn) : NULL;
 	ds->const_value_loc = ds->loc;
 
+	/* Aggregate value const `XS :: { … }` / `XS : [N]T : { … }` (1-D, scalar elements): route it
+	 * through the static-array machinery as a `[N]T` global initialized from the literal. (Const
+	 * immutability — `constant` linkage + write rejection — is a separate pass; for now it's a
+	 * global.) Nested `{ {…} }` matrices are not handled here. */
+	{
+		SyntaxView valv = sem_node_at_expr(dv, 0);
+		if (sv_present(valv) && sv_kind(valv) == SN_ARRAY_LIT_EXPR) {
+			SyntaxView first = {0};
+			int ec = 0;
+			for (int i = 0; i < valv.node->child_count; i++)
+				if (valv.node->children[i].tag == SE_NODE) {
+					if (ec == 0)
+						first = (SyntaxView){valv.node->children[i].as.node, valv.src};
+					ec++;
+				}
+			int nested = sv_present(first) && sv_kind(first) == SN_ARRAY_LIT_EXPR;
+			if (!nested) {
+				ds->kind = DECL_STATIC;
+				ds->static_kind = STATIC_KIND_ARRAY;
+				ds->static_is_const = 1; /* an aggregate value const — immutable */
+				ds->static_init = valv;
+				ds->static_has_init = 1;
+				ds->static_size = ec; /* default: the literal's element count */
+				SyntaxView declty = sem_type_at(dv, 0);
+				TypeId declid = sv_present(declty) ? sem_intern_view(ctx, declty) : TYID_UNKNOWN;
+				TyKind dk = tyid_kind(ctx->ty_arena, declid);
+				if (dk == TYK_ARRAY || dk == TYK_SLICE) {
+					ds->static_type_id = tyid_elem(ctx->ty_arena, declid);
+					int dn = tyid_array_len(ctx->ty_arena, declid);
+					if (dn > 0)
+						ds->static_size = dn; /* declared `[N]`; a count mismatch is caught in analysis */
+				} else {
+					const char *et = sv_present(first) ? resolve_expression_type(ctx, first) : "int";
+					if (!et || strcmp(et, "i32") == 0)
+						et = "int";
+					ds->static_type_id = sem_tyid_of_name(ctx, et);
+				}
+				return ds;
+			}
+		}
+	}
+
 	SyntaxView form = sem_rhs_form(dv);
 	if (sv_present(form) && (sv_kind(form) == SN_TYPE_PROC || sv_kind(form) == SN_TYPE_FUNC)) {
 		ds->const_type_value_id = sem_intern_view(ctx, form); /* callable-type alias */
@@ -7599,7 +7667,7 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 			ds->const_value = val;
 			ds->const_value_kind = sem_expr_kind_of(sv_kind(val));
 			ds->const_value_loc = sem_node_loc(val.node);
-			if (sv_kind(val) == SN_LITERAL_EXPR)
+			if (sv_kind(val) == SN_LITERAL_EXPR || sv_kind(val) == SN_STRING_EXPR)
 				ds->const_value_lexeme = sem_cv_dup_first_token(val);
 			else if (sv_kind(val) == SN_NAME_EXPR)
 				ds->const_value_name = sv_name_expr_dup(val);

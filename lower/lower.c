@@ -607,6 +607,21 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 		} else {
 			ax->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
 		}
+		/* A reference to a string value-const (`name :: "linux"`) lowers to the string literal itself,
+		 * so all the existing char[] / `.length` / slice-decay machinery applies (the const has no
+		 * runtime storage of its own — its value IS the literal). */
+		if (g_lower_sem && ax->data.name.name) {
+			const char *cv = semantic_get_const_value(g_lower_sem, ax->data.name.name);
+			if (cv && cv[0] == '"') {
+				char *nm = ax->data.name.name;
+				int n = 0;
+				char *decoded = syntax_decode_string((SynText){cv, (int)strlen(cv)}, &n);
+				ax->kind = HIR_EXPR_STRING;
+				ax->data.string.value = decoded;
+				ax->data.string.length = n;
+				free(nm);
+			}
+		}
 		break;
 	}
 	case SN_FIELD_EXPR: {
@@ -636,6 +651,20 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 		 * optionally a trailing `[indices]`. Rebuild the left-assoc AST. */
 		HirExpr *base = hir_expr_create(HIR_EXPR_NAME);
 		base->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
+		/* A string value-const as a field base (`name.length`) lowers to the literal, so `.length`
+		 * resolves to the literal's compile-time char count (see codegen). */
+		if (g_lower_sem && base->data.name.name) {
+			const char *cv = semantic_get_const_value(g_lower_sem, base->data.name.name);
+			if (cv && cv[0] == '"') {
+				char *nm = base->data.name.name;
+				int n = 0;
+				char *decoded = syntax_decode_string((SynText){cv, (int)strlen(cv)}, &n);
+				base->kind = HIR_EXPR_STRING;
+				base->data.string.value = decoded;
+				base->data.string.length = n;
+				free(nm);
+			}
+		}
 		HirExpr *cur = base;
 		int nfields = sv_count(e, SN_FIELD_NAME);
 		for (int i = 0; i < nfields; i++) {
@@ -2292,6 +2321,64 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		 * (pos_x, pos_y); it's compile-time only and erased before codegen. */
 		if (sv_has_token(d, TOK_LPAREN))
 			return NULL;
+		/* `XS :: {1,2,3}` / `XS : [N]T : {…}` (1-D scalar array const) → a static `[N]T` global,
+		 * the same shape as the mutable `XS : [N]T = {…}` form. */
+		{
+			SyntaxView cval = sv_node_at_expr(d, 0);
+			if (sv_present(cval) && sv_kind(cval) == SN_ARRAY_LIT_EXPR) {
+				SyntaxView first = {0};
+				int ec = 0;
+				for (int i = 0; i < cval.node->child_count; i++)
+					if (cval.node->children[i].tag == SE_NODE) {
+						if (ec == 0)
+							first = (SyntaxView){cval.node->children[i].as.node, cval.src};
+						ec++;
+					}
+				if (!(sv_present(first) && sv_kind(first) == SN_ARRAY_LIT_EXPR)) { /* 1-D only */
+					HirDecl *sdd = hir_decl_create(HIR_DECL_STATIC);
+					HirStaticDecl *sd = calloc(1, sizeof(HirStaticDecl));
+					sd->kind = HIR_STATIC_ARRAY;
+					sd->array.name = txt_dup(sv_token(d, TOK_IDENT));
+					sd->array.size = ec;
+					sd->array.init = lower_expr_cst(cval);
+					SyntaxView declty = sv_type_at(d, 0);
+					HirType *ft = sv_present(declty) ? lower_type_cst(declty) : NULL;
+					if (ft && ft->elem) {
+						sd->array.element_type = ft->elem;
+						for (int i = 0; i < declty.node->child_count; i++)
+							if (declty.node->children[i].tag == SE_TOKEN &&
+							    declty.node->children[i].as.token.kind == TOK_NUMBER) {
+								char b[32];
+								int l = (int)declty.node->children[i].as.token.length;
+								if (l > 31)
+									l = 31;
+								memcpy(b, declty.src + declty.node->children[i].as.token.offset, l);
+								b[l] = '\0';
+								sd->array.size = atoi(b);
+								break;
+							}
+					} else {
+						/* bare `::` — infer the element type from the first literal (int default). */
+						const char *etn = "int";
+						if (sv_present(first) && sv_kind(first) == SN_LITERAL_EXPR) {
+							char *lx = sv_dup(first);
+							if (lx) {
+								if (lx[0] == '\'')
+									etn = "char";
+								else if (strpbrk(lx, ".eE"))
+									etn = "float";
+								free(lx);
+							}
+						}
+						HirType *et = hir_type_create(HIR_TYPE_UNKNOWN);
+						*et = map_type_str(etn);
+						sd->array.element_type = et;
+					}
+					sdd->data.static_decl = sd;
+					return sdd;
+				}
+			}
+		}
 		HirDecl *ad = hir_decl_create(HIR_DECL_CONST);
 		HirConstDecl *ac = calloc(1, sizeof(HirConstDecl));
 		ac->name = txt_dup(sv_token(d, TOK_IDENT));
@@ -2804,6 +2891,24 @@ static int qual_lookup(const QualCtx *q, const char *base, const char *field, ch
 	return 0;
 }
 
+/* If `e` is a NAME referencing a `char[]` string value-const, rewrite it in place to the string
+ * literal so all string machinery (value, `.length`, slice-decay) applies. Covers device-qualified
+ * consts (`platform.name`) that only become a NAME after qualification. */
+static void hir_try_string_const(HirExpr *e) {
+	if (!e || e->kind != HIR_EXPR_NAME || !e->data.name.name || !g_lower_sem)
+		return;
+	const char *cv = semantic_get_const_value(g_lower_sem, e->data.name.name);
+	if (!cv || cv[0] != '"')
+		return;
+	char *nm = e->data.name.name;
+	int n = 0;
+	char *decoded = syntax_decode_string((SynText){cv, (int)strlen(cv)}, &n);
+	e->kind = HIR_EXPR_STRING;
+	e->data.string.value = decoded;
+	e->data.string.length = n;
+	free(nm);
+}
+
 static void hir_q_expr(HirExpr *e, const QualCtx *q) {
 	if (!e)
 		return;
@@ -2815,6 +2920,7 @@ static void hir_q_expr(HirExpr *e, const QualCtx *q) {
 			 * (small, bounded; the union write below clobbers the field pointers anyway). */
 			e->kind = HIR_EXPR_NAME;
 			e->data.name.name = dupz(mangled);
+			hir_try_string_const(e); /* a device-qualified string const → the literal */
 			return;
 		}
 	}
