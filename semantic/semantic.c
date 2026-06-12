@@ -498,6 +498,23 @@ static int name_is_static_array(SemanticContext *ctx, const char *name) {
 	return 0;
 }
 
+/* If `name` is an N-D matrix const (row stride > 1), return its element type name (e.g. "char") and
+ * write the row width to `*stride`; else NULL. Lets `S[i]` (one index) type as a ROW slice. */
+static const char *name_const_matrix(SemanticContext *ctx, const char *name, int *stride) {
+	if (!name)
+		return NULL;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->kind == DECL_STATIC && d->static_kind == STATIC_KIND_ARRAY && d->static_row_stride > 1 && d->name &&
+		    strcmp(d->name, name) == 0) {
+			if (stride)
+				*stride = d->static_row_stride;
+			return sem_tyid_name(ctx, d->static_type_id);
+		}
+	}
+	return NULL;
+}
+
 /* 1 if `name` is an aggregate value const (a `::`-bound array const, e.g. `XS :: {1,2,3}`), which is
  * immutable — assigning to it or to one of its elements is an error. */
 static int name_is_const_static_array(SemanticContext *ctx, const char *name) {
@@ -1435,6 +1452,20 @@ static const char *resolve_expression_type(SemanticContext *ctx, SyntaxView v) {
 	}
 
 	case SN_INDEX_EXPR: {
+		/* A single index on an N-D matrix const yields a ROW (a slice: `S[i]` is a `char[]`); a full
+		 * index set (`M[i, j]`) yields the scalar element. */
+		char *bn = sv_name_expr_dup(v);
+		int mstride = 0;
+		const char *met = bn ? name_const_matrix(ctx, bn, &mstride) : NULL;
+		free(bn);
+		if (met && mstride > 1) {
+			int ni = 0;
+			while (sv_present(sem_node_at_expr(v, ni)))
+				ni++;
+			if (ni <= 1)
+				return strcmp(met, "char") == 0 ? "char_array" : met; /* a row slice */
+			return met;                                                /* full index → scalar element */
+		}
 		/* An index yields the base's ELEMENT type; a char buffer ("char_array") indexes to "char". */
 		const char *base_type = resolve_base_chain_type(ctx, v);
 		if (base_type && strcmp(base_type, "char_array") == 0)
@@ -2935,7 +2966,23 @@ static void analyze_static_array_decl(SemanticContext *ctx, DeclSummary *s) {
 	}
 
 	/* `buf : T[N] = {…}` — a typed initializer is now emitted by codegen (a `[N x T]` global with the
-	 * literal's values); an absent initializer stays zero-initialized. */
+	 * literal's values); an absent initializer stays zero-initialized. For a 1-D array with both a
+	 * declared `[N]` and a `{…}` literal, the element count must match the declared size. */
+	if (s->static_has_init && s->static_row_stride <= 1 && sv_present(s->static_init) &&
+	    sv_kind(s->static_init) == SN_ARRAY_LIT_EXPR) {
+		int n = 0;
+		for (int i = 0; i < s->static_init.node->child_count; i++)
+			if (s->static_init.node->children[i].tag == SE_NODE)
+				n++;
+		if (n != s->static_size) {
+			fprintf(stderr,
+			        "Error: array '%s' is declared with size %d but its initializer has %d element%s — "
+			        "the element count must match the declared size\n",
+			        s->name, s->static_size, n, n == 1 ? "" : "s");
+			ctx->error_count++;
+			return;
+		}
+	}
 
 	/* Registration is hoisted: the name was added to the global scope in the pre-pass so forward
 	 * references to it resolve regardless of declaration order. */
@@ -7562,10 +7609,9 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 	ds->name = bn.ptr ? sem_txt_dup(bn) : NULL;
 	ds->const_value_loc = ds->loc;
 
-	/* Aggregate value const `XS :: { … }` / `XS : [N]T : { … }` (1-D, scalar elements): route it
-	 * through the static-array machinery as a `[N]T` global initialized from the literal. (Const
-	 * immutability — `constant` linkage + write rejection — is a separate pass; for now it's a
-	 * global.) Nested `{ {…} }` matrices are not handled here. */
+	/* Aggregate value const → an immutable static-array global (a flat `[total]elem`, arche's
+	 * row-stride model). Three forms: 1-D scalar `{1,2,3}`, N×M matrix `{ {…},{…} }`, and N strings
+	 * `{ "a","bb" }` (an N×W char matrix). The element type is the innermost scalar. */
 	{
 		SyntaxView valv = sem_node_at_expr(dv, 0);
 		if (sv_present(valv) && sv_kind(valv) == SN_ARRAY_LIT_EXPR) {
@@ -7577,30 +7623,68 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 						first = (SyntaxView){valv.node->children[i].as.node, valv.src};
 					ec++;
 				}
-			int nested = sv_present(first) && sv_kind(first) == SN_ARRAY_LIT_EXPR;
-			if (!nested) {
-				ds->kind = DECL_STATIC;
-				ds->static_kind = STATIC_KIND_ARRAY;
-				ds->static_is_const = 1; /* an aggregate value const — immutable */
-				ds->static_init = valv;
-				ds->static_has_init = 1;
-				ds->static_size = ec; /* default: the literal's element count */
-				SyntaxView declty = sem_type_at(dv, 0);
-				TypeId declid = sv_present(declty) ? sem_intern_view(ctx, declty) : TYID_UNKNOWN;
-				TyKind dk = tyid_kind(ctx->ty_arena, declid);
-				if (dk == TYK_ARRAY || dk == TYK_SLICE) {
-					ds->static_type_id = tyid_elem(ctx->ty_arena, declid);
-					int dn = tyid_array_len(ctx->ty_arena, declid);
-					if (dn > 0)
-						ds->static_size = dn; /* declared `[N]`; a count mismatch is caught in analysis */
-				} else {
-					const char *et = sv_present(first) ? resolve_expression_type(ctx, first) : "int";
-					if (!et || strcmp(et, "i32") == 0)
-						et = "int";
-					ds->static_type_id = sem_tyid_of_name(ctx, et);
-				}
-				return ds;
+			int total = ec, stride = 1;
+			const char *et = "int";
+			SyntaxView elem_for_infer = first;
+			if (sv_present(first) && sv_kind(first) == SN_ARRAY_LIT_EXPR) {
+				int inner = 0;
+				SyntaxView ifirst = {0};
+				for (int i = 0; i < first.node->child_count; i++)
+					if (first.node->children[i].tag == SE_NODE) {
+						if (inner == 0)
+							ifirst = (SyntaxView){first.node->children[i].as.node, first.src};
+						inner++;
+					}
+				total = ec * inner;
+				stride = inner;
+				elem_for_infer = ifirst;
+			} else if (sv_present(first) && sv_kind(first) == SN_STRING_EXPR) {
+				et = "char";
+				/* total stays the row count: row-indexing `S[i]` bounds-checks against it; the flat
+				 * `[rows*width]char` global size is computed in lowering/codegen. The row width is the
+				 * widest string (escapes count as one char). */
+				int maxw = 0;
+				for (int i = 0; i < valv.node->child_count; i++)
+					if (valv.node->children[i].tag == SE_NODE &&
+					    valv.node->children[i].as.node->kind == SN_STRING_EXPR) {
+						SyntaxView sv = {valv.node->children[i].as.node, valv.src};
+						char *raw = sem_cv_dup_first_token(sv); /* the quoted literal */
+						int w = 0;
+						if (raw)
+							for (int k = 1; raw[k] && raw[k] != '"'; k++) {
+								if (raw[k] == '\\' && raw[k + 1])
+									k++;
+								w++;
+							}
+						free(raw);
+						if (w > maxw)
+							maxw = w;
+					}
+				stride = maxw > 0 ? maxw : 1;
 			}
+			ds->kind = DECL_STATIC;
+			ds->static_kind = STATIC_KIND_ARRAY;
+			ds->static_is_const = 1; /* an aggregate value const — immutable */
+			ds->static_init = valv;
+			ds->static_has_init = 1;
+			ds->static_size = total;
+			ds->static_row_stride = stride;
+			SyntaxView declty = sem_type_at(dv, 0);
+			TypeId declid = sv_present(declty) ? sem_intern_view(ctx, declty) : TYID_UNKNOWN;
+			TyKind dk = tyid_kind(ctx->ty_arena, declid);
+			if (dk == TYK_ARRAY || dk == TYK_SLICE) {
+				ds->static_type_id = tyid_elem(ctx->ty_arena, declid);
+				int dn = tyid_array_len(ctx->ty_arena, declid);
+				if (dn > 0)
+					ds->static_size = dn; /* declared `[N]`; a count mismatch is caught in analysis */
+			} else {
+				if (strcmp(et, "char") != 0) {
+					const char *r = sv_present(elem_for_infer) ? resolve_expression_type(ctx, elem_for_infer) : "int";
+					et = (!r || strcmp(r, "i32") == 0) ? "int" : r;
+				}
+				ds->static_type_id = sem_tyid_of_name(ctx, et);
+			}
+			return ds;
 		}
 	}
 

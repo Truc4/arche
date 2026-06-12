@@ -1476,7 +1476,8 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			return 1;
 		}
 
-		/* indexing `a[i]` or sub-slice `a[lo:hi]` */
+		/* indexing `a[i]` / multi-dim `a[i, j]` (comma indices in one bracket — arche's convention for
+		 * its flat rectangular arrays), or sub-slice `a[lo:hi]`. */
 		if (match(parser, TOK_LBRACKET)) {
 			int is_slice;
 			if (!parse_bracket_index_or_slice(parser, &is_slice))

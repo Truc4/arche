@@ -83,6 +83,7 @@ typedef struct {
 	int static_size;                /* ARRAY: declared element count */
 	int static_has_init;            /* ARRAY: 1 if an initializer was written */
 	int static_is_const;            /* ARRAY: came from an aggregate value const (`::`) — immutable */
+	int static_row_stride;          /* ARRAY: N-D matrix row width (inner dim); 0/1 = plain 1-D */
 	SyntaxView static_init;         /* SCALAR: the scalar initializer value view (NULL node = none) */
 	SyntaxView *static_fields;      /* POOL: per-field value views (field 0 = count); owned array */
 	int static_field_count;         /* POOL: number of field values */

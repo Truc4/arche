@@ -2321,8 +2321,11 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		 * (pos_x, pos_y); it's compile-time only and erased before codegen. */
 		if (sv_has_token(d, TOK_LPAREN))
 			return NULL;
-		/* `XS :: {1,2,3}` / `XS : [N]T : {…}` (1-D scalar array const) → a static `[N]T` global,
-		 * the same shape as the mutable `XS : [N]T = {…}` form. */
+		/* Array value const → a static global, the same shape as the mutable `XS : [N]T = {…}` form.
+		 * Three forms, all flattened to a `[total]elem` global (arche's flat row-stride model):
+		 *   `{1,2,3}`            1-D scalar → size = count, stride = 1
+		 *   `{ {1,2}, {3,4} }`   N×M matrix → size = N*M, stride = M (inner element count)
+		 *   `{ "a","bb","ccc" }` N strings → an N×W char matrix, W = widest, rows NUL-padded */
 		{
 			SyntaxView cval = sv_node_at_expr(d, 0);
 			if (sv_present(cval) && sv_kind(cval) == SN_ARRAY_LIT_EXPR) {
@@ -2334,49 +2337,78 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 							first = (SyntaxView){cval.node->children[i].as.node, cval.src};
 						ec++;
 					}
-				if (!(sv_present(first) && sv_kind(first) == SN_ARRAY_LIT_EXPR)) { /* 1-D only */
-					HirDecl *sdd = hir_decl_create(HIR_DECL_STATIC);
-					HirStaticDecl *sd = calloc(1, sizeof(HirStaticDecl));
-					sd->kind = HIR_STATIC_ARRAY;
-					sd->array.name = txt_dup(sv_token(d, TOK_IDENT));
-					sd->array.size = ec;
-					sd->array.init = lower_expr_cst(cval);
-					SyntaxView declty = sv_type_at(d, 0);
-					HirType *ft = sv_present(declty) ? lower_type_cst(declty) : NULL;
-					if (ft && ft->elem) {
-						sd->array.element_type = ft->elem;
-						for (int i = 0; i < declty.node->child_count; i++)
-							if (declty.node->children[i].tag == SE_TOKEN &&
-							    declty.node->children[i].as.token.kind == TOK_NUMBER) {
-								char b[32];
-								int l = (int)declty.node->children[i].as.token.length;
-								if (l > 31)
-									l = 31;
-								memcpy(b, declty.src + declty.node->children[i].as.token.offset, l);
-								b[l] = '\0';
-								sd->array.size = atoi(b);
-								break;
-							}
-					} else {
-						/* bare `::` — infer the element type from the first literal (int default). */
-						const char *etn = "int";
-						if (sv_present(first) && sv_kind(first) == SN_LITERAL_EXPR) {
-							char *lx = sv_dup(first);
-							if (lx) {
-								if (lx[0] == '\'')
-									etn = "char";
-								else if (strpbrk(lx, ".eE"))
-									etn = "float";
-								free(lx);
-							}
+				int stride = 1, total = ec;
+				const char *etn = "int";
+				SyntaxView scalar_for_infer = first;
+				if (sv_present(first) && sv_kind(first) == SN_ARRAY_LIT_EXPR) {
+					int inner = 0;
+					SyntaxView ifirst = {0};
+					for (int i = 0; i < first.node->child_count; i++)
+						if (first.node->children[i].tag == SE_NODE) {
+							if (inner == 0)
+								ifirst = (SyntaxView){first.node->children[i].as.node, first.src};
+							inner++;
 						}
-						HirType *et = hir_type_create(HIR_TYPE_UNKNOWN);
-						*et = map_type_str(etn);
-						sd->array.element_type = et;
-					}
-					sdd->data.static_decl = sd;
-					return sdd;
+					stride = inner;
+					total = ec * inner;
+					scalar_for_infer = ifirst;
+				} else if (sv_present(first) && sv_kind(first) == SN_STRING_EXPR) {
+					int maxw = 0;
+					for (int i = 0; i < cval.node->child_count; i++)
+						if (cval.node->children[i].tag == SE_NODE &&
+						    cval.node->children[i].as.node->kind == SN_STRING_EXPR) {
+							int n = 0;
+							char *dec = syntax_decode_string(
+							    sv_text((SyntaxView){cval.node->children[i].as.node, cval.src}), &n);
+							free(dec);
+							if (n > maxw)
+								maxw = n;
+						}
+					stride = maxw > 0 ? maxw : 1;
+					total = ec * stride;
+					etn = "char";
 				}
+				if (sv_present(scalar_for_infer) && sv_kind(scalar_for_infer) == SN_LITERAL_EXPR &&
+				    strcmp(etn, "char") != 0) {
+					char *lx = sv_dup(scalar_for_infer);
+					if (lx) {
+						if (lx[0] == '\'')
+							etn = "char";
+						else if (strpbrk(lx, ".eE"))
+							etn = "float";
+						free(lx);
+					}
+				}
+				HirDecl *sdd = hir_decl_create(HIR_DECL_STATIC);
+				HirStaticDecl *sd = calloc(1, sizeof(HirStaticDecl));
+				sd->kind = HIR_STATIC_ARRAY;
+				sd->array.name = txt_dup(sv_token(d, TOK_IDENT));
+				sd->array.size = total;
+				sd->array.row_stride = stride;
+				sd->array.init = lower_expr_cst(cval);
+				SyntaxView declty = sv_type_at(d, 0);
+				HirType *ft = (stride <= 1 && sv_present(declty)) ? lower_type_cst(declty) : NULL;
+				if (ft && ft->elem) {
+					sd->array.element_type = ft->elem;
+					for (int i = 0; i < declty.node->child_count; i++)
+						if (declty.node->children[i].tag == SE_TOKEN &&
+						    declty.node->children[i].as.token.kind == TOK_NUMBER) {
+							char b[32];
+							int l = (int)declty.node->children[i].as.token.length;
+							if (l > 31)
+								l = 31;
+							memcpy(b, declty.src + declty.node->children[i].as.token.offset, l);
+							b[l] = '\0';
+							sd->array.size = atoi(b);
+							break;
+						}
+				} else {
+					HirType *et = hir_type_create(HIR_TYPE_UNKNOWN);
+					*et = map_type_str(etn);
+					sd->array.element_type = et;
+				}
+				sdd->data.static_decl = sd;
+				return sdd;
 			}
 		}
 		HirDecl *ad = hir_decl_create(HIR_DECL_CONST);

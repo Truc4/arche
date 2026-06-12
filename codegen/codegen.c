@@ -279,6 +279,25 @@ static HirStaticDecl *codegen_find_static_array(CodegenContext *ctx, const char 
 	return NULL;
 }
 
+/* If `e` (unwrapping a `move`/`copy` marker) is a single index into a static matrix-const ROW —
+ * `M[i]` where `M` is a flat `[N x T]` global with row_stride > 1 — return its static decl and the
+ * row stride (the row's element width). Else NULL. Used so a matrix row decays to a `(ptr, len)`
+ * slice at a call boundary, exactly as a sized local `[W]T` does. */
+static HirStaticDecl *codegen_matrix_row_arg(CodegenContext *ctx, HirExpr *e, int *out_stride) {
+	if (e && e->kind == HIR_EXPR_UNARY &&
+	    (e->data.unary.op == UNARY_MOVE || e->data.unary.op == UNARY_COPY))
+		e = e->data.unary.operand;
+	if (!e || e->kind != HIR_EXPR_INDEX || e->data.index.index_count != 1 ||
+	    e->data.index.base->kind != HIR_EXPR_NAME)
+		return NULL;
+	HirStaticDecl *sa = codegen_find_static_array(ctx, e->data.index.base->data.name.name);
+	if (sa && sa->kind == HIR_STATIC_ARRAY && sa->array.row_stride > 1) {
+		*out_stride = sa->array.row_stride;
+		return sa;
+	}
+	return NULL;
+}
+
 static int char_literal_value(const char *lex); /* defined below */
 
 static void codegen_register_scalar(CodegenContext *ctx, HirStaticDecl *sc) {
@@ -695,6 +714,47 @@ static int char_literal_value(const char *lex) {
 		}
 	}
 	return lex[1];
+}
+
+/* Append the flat LLVM constant elements of an array-literal initializer (comma-separated
+ * `<llvm_type> <value>` entries) to `buf`, recursing into nested `{…}` rows. A string element is a
+ * row in a char matrix: its chars, then NUL-padded to `row_stride`. `*count` tracks emitted entries
+ * (for the leading comma); `*pos` is the write cursor. */
+static void emit_array_init_elems(char *buf, size_t bufsz, int *pos, int *count, const HirExpr *e,
+                                  const char *llvm_type, int row_stride) {
+	if (!e || *pos >= (int)bufsz - 80)
+		return;
+	if (e->kind == HIR_EXPR_ARRAY_LITERAL) {
+		for (int i = 0; i < e->data.array_literal.element_count; i++)
+			emit_array_init_elems(buf, bufsz, pos, count, e->data.array_literal.elements[i], llvm_type, row_stride);
+		return;
+	}
+	if (e->kind == HIR_EXPR_STRING) {
+		int w = 0;
+		for (; w < e->data.string.length && *pos < (int)bufsz - 80; w++) {
+			*pos += snprintf(buf + *pos, bufsz - (size_t)*pos, "%s%s %d", *count ? ", " : "", llvm_type,
+			                 (unsigned char)e->data.string.value[w]);
+			(*count)++;
+		}
+		for (; w < row_stride && *pos < (int)bufsz - 80; w++) { /* NUL-pad the row to the matrix width */
+			*pos += snprintf(buf + *pos, bufsz - (size_t)*pos, "%s%s 0", *count ? ", " : "", llvm_type);
+			(*count)++;
+		}
+		return;
+	}
+	const char *v = "0";
+	char vb[64];
+	if (e->kind == HIR_EXPR_LITERAL && e->data.literal.lexeme) {
+		const char *lx = e->data.literal.lexeme;
+		if (lx[0] == '\'') {
+			snprintf(vb, sizeof(vb), "%d", char_literal_value(lx));
+			v = vb;
+		} else {
+			v = lx;
+		}
+	}
+	*pos += snprintf(buf + *pos, bufsz - (size_t)*pos, "%s%s %s", *count ? ", " : "", llvm_type, v);
+	(*count)++;
 }
 
 static const char *hir_resolved_type_name(const HirExpr *expr) {
@@ -2859,6 +2919,51 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			break;
 		}
 
+		/* Standalone multi-dimensional array const/global: `M[i, j]` / `S[i]` — arche's flat
+		 * row-stride model (`M` is a `[total x T]` global). `M[i, j]` → flat = i*stride + j (load a
+		 * scalar); `M[i]` → the row element-pointer at i*stride (a `[stride]T` row, usable as a char[]
+		 * slice — e.g. a string row from a `{ "a","bb" }` char matrix). */
+		if (expr->data.index.base->kind == HIR_EXPR_NAME &&
+		    (expr->data.index.index_count == 1 || expr->data.index.index_count == 2)) {
+			HirStaticDecl *msa = codegen_find_static_array(ctx, expr->data.index.base->data.name.name);
+			if (msa && msa->kind == HIR_STATIC_ARRAY && msa->array.row_stride > 1) {
+				const char *lt = llvm_type_from_arche(field_base_type_name(msa->array.element_type));
+				int total = msa->array.size, stride = msa->array.row_stride;
+				const char *bn = expr->data.index.base->data.name.name;
+				char i0[256], i0b[256];
+				codegen_expression(ctx, expr->data.index.indices[0], i0);
+				emit_index_i64(ctx, i0, expr->data.index.indices[0], i0b);
+				char *flat = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", flat, i0b, stride);
+				if (expr->data.index.index_count == 2) {
+					char i1[256], i1b[256];
+					codegen_expression(ctx, expr->data.index.indices[1], i1);
+					emit_index_i64(ctx, i1, expr->data.index.indices[1], i1b);
+					char *f2 = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = add i64 %s, %s\n", f2, flat, i1b);
+					flat = f2;
+				}
+				char *gep = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* @%s, i64 0, i64 %s\n", gep, total,
+				                  lt, total, lt, bn, flat);
+				if (expr->data.index.index_count == 2) { /* a scalar element — load it */
+					char *val = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", val, lt, lt, gep);
+					/* promote a char/byte (i8) element to i32 for int/variadic contexts, like the other
+					 * index paths (printf %c/%d, compares). */
+					if (strcmp(lt, "i8") == 0) {
+						char *ext = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = zext i8 %s to i32\n", ext, val);
+						val = ext;
+					}
+					strcpy(result_buf, val);
+				} else { /* a row — return the element pointer (a [stride]T slice base) */
+					strcpy(result_buf, gep);
+				}
+				break;
+			}
+		}
+
 		/* index access: array[index] or field[index] */
 		char base_buf[256], idx_buf[256];
 		codegen_expression(ctx, expr->data.index.base, base_buf);
@@ -3493,8 +3598,57 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			else if (callee_pt && callee_pt->tag == HIR_TYPE_SHAPED_ARRAY)
 				callee_wants_shaped_arr = 1;
 
-			/* Handle type conversions, emit code before call if needed */
-			if (arg_is_static_array[i]) {
+			/* A matrix-const ROW `M[i]` decays to a slice: arg_bufs[i] already holds the row
+			 * element-pointer (`@M + i*stride`); the row width (stride) is the carried length. This
+			 * mirrors the whole-static-array decay below, but for one row of a flat `[N x T]` matrix. */
+			int mrow_stride = 0;
+			HirStaticDecl *mrow_sa = codegen_matrix_row_arg(ctx, expr->data.call.args[i], &mrow_stride);
+			if (mrow_sa && (callee_wants_slice || callee_wants_arr || callee_wants_shaped_arr)) {
+				const char *elem_name =
+				    mrow_sa->array.element_type ? field_base_type_name(mrow_sa->array.element_type) : "char";
+				const char *lt = llvm_type_from_arche(elem_name);
+				const char *ept = "i8*";
+				if (strcmp(lt, "double") == 0)
+					ept = "double*";
+				else if (strcmp(lt, "i64") == 0)
+					ept = "i64*";
+				else if (strcmp(lt, "i32") == 0)
+					ept = "i32*";
+				else if (strcmp(lt, "i16") == 0)
+					ept = "i16*";
+				if (callee_wants_slice) {
+					/* `T[]` slice param: element pointer + i64 len (the row width). */
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = ept;
+					call_arg_len[i] = malloc(32);
+					snprintf(call_arg_len[i], 32, "%d", mrow_stride);
+				} else if (callee_wants_arr && !callee_is_extern && strcmp(lt, "i8") == 0) {
+					/* char[] (arche_array) param: wrap the row pointer in a stack {ptr,len,cap}. */
+					char *arr_alloca = gen_value_name(ctx);
+					emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
+					char *ptr_gep = gen_value_name(ctx);
+					buffer_append_fmt(
+					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
+					    ptr_gep, arr_alloca);
+					buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", arg_bufs[i], ptr_gep);
+					char *len_gep = gen_value_name(ctx);
+					buffer_append_fmt(
+					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
+					    len_gep, arr_alloca);
+					buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", mrow_stride, len_gep);
+					char *cap_gep = gen_value_name(ctx);
+					buffer_append_fmt(
+					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
+					    cap_gep, arr_alloca);
+					buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", mrow_stride, cap_gep);
+					strcpy(call_arg_vals[i], arr_alloca);
+					call_arg_types[i] = "%struct.arche_array*";
+				} else {
+					/* Extern (C ABI) char[], or a sized `T[N]` param: bare element pointer. */
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = ept;
+				}
+			} else if (arg_is_static_array[i]) {
 				/* Static array: check if needs wrapping in arche_array struct */
 				const char *arg_name = expr->data.call.args[i]->data.name.name;
 				HirStaticDecl *sa = codegen_find_static_array(ctx, arg_name);
@@ -8776,22 +8930,13 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 				/* `: T[N] = {…}` — emit the typed constant initializer from the (1-D) array literal;
 				 * absent initializer stays zero-initialized. */
 				if (s->array.init && s->array.init->kind == HIR_EXPR_ARRAY_LITERAL) {
-					HirExpr **els = s->array.init->data.array_literal.elements;
-					int ec = s->array.init->data.array_literal.element_count;
-					char init[4096];
-					int p = 0;
+					/* Flatten the (possibly nested / string-row) literal to the `[total x T]` global's
+					 * constant elements. The matrix width (`row_stride`) drives string-row NUL-padding. */
+					char init[16384];
+					int p = 0, count = 0;
+					int stride = s->array.row_stride > 1 ? s->array.row_stride : 1;
 					p += snprintf(init + p, sizeof(init) - (size_t)p, "[");
-					for (int i = 0; i < ec && p < (int)sizeof(init) - 64; i++) {
-						const char *v = "0";
-						char vb[64];
-						HirExpr *el = els[i];
-						if (el && el->kind == HIR_EXPR_LITERAL && el->data.literal.lexeme) {
-							const char *lx = el->data.literal.lexeme;
-							if (lx[0] == '\'') { snprintf(vb, sizeof(vb), "%d", char_literal_value(lx)); v = vb; }
-							else { v = lx; }
-						}
-						p += snprintf(init + p, sizeof(init) - (size_t)p, "%s%s %s", i ? ", " : "", llvm_type, v);
-					}
+					emit_array_init_elems(init, sizeof(init), &p, &count, s->array.init, llvm_type, stride);
 					snprintf(init + p, sizeof(init) - (size_t)p, "]");
 					buffer_append_fmt(ctx, "@%s = %sglobal [%d x %s] %s\n", s->array.name, cg_shared(ctx),
 					                  s->array.size, llvm_type, init);
