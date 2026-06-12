@@ -3,13 +3,14 @@
 // COMPILER and the ANALYZER must agree. ARCHE_TARGET (read by both front-ends) overrides the manifest's
 // `target = "linux"`, also exercising env-overrides-manifest precedence.
 //
-// Compiler: rejects under windows, accepts under linux.
-// RUN: not env ARCHE_TARGET=windows %arche check %s
+// Compiler: rejects under windows, accepts under linux. (`!` — POSIX shell negation — not the LLVM
+// `not` utility, which isn't installed on the CI runner.)
+// RUN: ! env ARCHE_TARGET=windows %arche check %s
 // RUN: env ARCHE_TARGET=linux %arche check %s
 //
 // Analyzer: reports the SAME error under windows, and is clean under linux.
 // RUN: env ARCHE_TARGET=windows %analyzer --dump %s 2>&1 | grep "has no member 'wl_only'"
-// RUN: env ARCHE_TARGET=linux %analyzer --dump %s 2>&1 | not grep "has no member"
+// RUN: ! env ARCHE_TARGET=linux %analyzer --dump %s 2>&1 | grep "has no member"
 #import { tgfx }
 main :: proc() {
   tgfx.wl_only();

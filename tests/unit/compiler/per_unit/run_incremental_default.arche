@@ -11,7 +11,7 @@
 //
 // `--whole-program` opts out → no per-unit object cache is produced, program still runs.
 // RUN: rm -rf %t.cache2 && env ARCHE_CACHE_DIR=%t.cache2 %arche run --whole-program %s | grep -qF "run_ok"
-// RUN: not ls %t.cache2/*.o
+// RUN: ! ls %t.cache2/*.o
 #import { fmt }
 main :: proc() {
   fmt.print("run_ok\n")();

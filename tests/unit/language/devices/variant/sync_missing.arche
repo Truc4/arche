@@ -2,13 +2,14 @@
 // is unresolved, and the COMPILER and the ANALYZER must agree — the editor can't green-light a call
 // the build rejects. Under x11 both must be clean.
 //
-// Compiler: rejects under wayland, accepts under x11.
-// RUN: not env ARCHE_SELECT=vgfx=wayland %arche check %s
+// Compiler: rejects under wayland, accepts under x11. (`!` — POSIX shell negation — not the LLVM
+// `not` utility, which isn't installed on the CI runner.)
+// RUN: ! env ARCHE_SELECT=vgfx=wayland %arche check %s
 // RUN: env ARCHE_SELECT=vgfx=x11 %arche check %s
 //
 // Analyzer: reports the SAME error under wayland, and is clean under x11.
 // RUN: env ARCHE_SELECT=vgfx=wayland %analyzer --dump %s 2>&1 | grep "has no member 'x11_only'"
-// RUN: env ARCHE_SELECT=vgfx=x11 %analyzer --dump %s 2>&1 | not grep "has no member"
+// RUN: ! env ARCHE_SELECT=vgfx=x11 %analyzer --dump %s 2>&1 | grep "has no member"
 #import { vgfx }
 main :: proc() {
   vgfx.x11_only();
