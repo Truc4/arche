@@ -1,0 +1,16 @@
+// A `func -> []T` may RETURN a freshly-formed slice — a `buf[lo:hi]` sub-view or a matrix-const row
+// `M[i]` — not just a slice it was handed. The return builds the `{T*, i64}` fat pointer from the
+// (element ptr, runtime length); the caller recovers `.length` and indexes it. Previously a fresh
+// slice in return position emitted a bare pointer and failed the `{ptr,i64}` return type.
+// RUN: %arche build -o %t %s && %t | grep -x "sub=3,2 row=3,6"
+#import { fmt }
+sub :: func(xs: []int) -> []int { return xs[1:4]; }
+M :: { {1, 2, 3}, {4, 5, 6} };
+getrow :: func(i: int) -> []int { return M[i]; }
+main :: proc() {
+  b: [5]int;
+  b[0]=1; b[1]=2; b[2]=3; b[3]=4; b[4]=5;
+  s := sub(b);
+  r := getrow(1);
+  fmt.printf("sub=%d,%d row=%d,%d\n", s.length, s[0], r.length, r[2]);
+}

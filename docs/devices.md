@@ -49,7 +49,7 @@ behavior only; the driver owns the pool and picks the size. The device's *system
 ```arche
 // physics/physics.ds.arche  — datasheet: the shape (global vocabulary) + storage requirement
 Particle :: arche { pos :: float, vel :: float }
-Particle[256]                       // minimum rows the driver must provide
+[256]Particle                       // minimum rows the driver must provide
 
 // physics/physics.arche  — impl: behavior only (no shape/alloc here — that's rule 3)
 integrate :: sys (pos, vel) { pos = pos + vel; }
@@ -59,7 +59,7 @@ integrate :: sys (pos, vel) { pos = pos + vel; }
 // main.arche  — the driver: owns the pool, runs the device's system
 #import { physics fmt }
 
-Particle[1000]                      // bare name — the datasheet shape is global vocabulary
+[1000]Particle                      // bare name — the datasheet shape is global vocabulary
 
 main :: proc() {
   insert(Particle, 10.0, 1.0)(_:, _:);  // insert is statement-only: (handle:, ok:); `_` discards
@@ -68,7 +68,7 @@ main :: proc() {
 }
 ```
 
-- `Particle[N]` — the driver sizes the shape (bare name). The datasheet's `Particle[N]` is a minimum
+- `[N]Particle` — the driver sizes the shape (bare name). The datasheet's `[N]Particle` is a minimum
   *requirement*, not an allocation; the driver's pool must meet it (`arche fill` can write it for you).
 - `run physics.integrate;` — a driver runs an imported device's *system* by **qualified name**.
 - A shape may have **at most one pool** program-wide; two driver pool decls for the same canonical
@@ -80,7 +80,7 @@ A shape is identified by its **set of component (field) names**, not by its name
 
 ```arche
 Foo :: arche { x :: float, y :: float }
-Foo[4]
+[4]Foo
 insert(arche { x :: float, y :: float }, 1.0, 2.0)(_:, _:);  // inserts into Foo's pool
 ```
 
@@ -138,7 +138,7 @@ integrate :: sys (pos, vel) { pos = pos + vel; }
 // main.arche                  — the driver owns the shape, built from physics's components
 #import { physics }
 Thing :: arche { pos, vel, mass :: float }   // references the datasheet's pos/vel + its own mass
-Thing[1000]
+[1000]Thing
 // run physics.integrate over Thing
 ```
 
@@ -160,13 +160,13 @@ allocation: it emits no storage; it records a minimum the driver's own pool must
 ```arche
 // store/store.ds.arche   — datasheet: store's shape + its minimum storage
 Node :: arche { key :: float, val :: float }
-Node[4]                    // REQUIREMENT: the driver must size Node to at least 4 rows
+[4]Node                    // REQUIREMENT: the driver must size Node to at least 4 rows
 ```
 
 ```arche
 // main.arche             — the driver owns the pool and sizes it (>= the minimum)
 #import { store }
-Node[8]                    // sized above the minimum; the device's systems run over this pool
+[8]Node                    // sized above the minimum; the device's systems run over this pool
 ```
 
 Rules (the driver owns all storage; the datasheet only states minimums):

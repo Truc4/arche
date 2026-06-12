@@ -1549,6 +1549,37 @@ static int parse_unary_expr(Parser *parser) {
 	SyntaxNodeKind prim_kind = SN_NAME_EXPR;
 	if (!parse_primary_expr(parser, &prim_kind))
 		return 0;
+	/* General postfix CHAINING past the first group: a `.field` or `[index]`/`[lo:hi]` that follows a
+	 * closed `]`/`)` NESTS — the node parsed so far becomes the base of the next (`a[i].b` → FIELD over
+	 * INDEX, `f().g` → FIELD over CALL, `f()[i]` → INDEX over CALL, `a.b[i].c` → FIELD over INDEX). The
+	 * FIRST group stays flat (parse_primary_expr), preserving `a.b.c`, `a.b.c[i]`, and qualified calls
+	 * `mod.f(args)` whose flat SN_FIELD_NAME children lowering relies on. A trailing `(` is deliberately
+	 * NOT chained: `call(args)(outs)` is out-param binding, not a call-on-call, and a call on a postfix
+	 * result isn't a target here. Re-wrapping from `p_cp` each step encloses the prior node as base. */
+	while ((prim_kind == SN_INDEX_EXPR || prim_kind == SN_SLICE_EXPR || prim_kind == SN_CALL_EXPR ||
+	        prim_kind == SN_FIELD_EXPR) &&
+	       (check(parser, TOK_DOT) || check(parser, TOK_LBRACKET))) {
+		syntax_wrap(parser, p_cp, prim_kind); /* close the node parsed so far → it becomes the base */
+		if (check(parser, TOK_DOT)) {
+			do {
+				advance(parser); /* consume '.' */
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "Expected field name after '.'");
+					return 0;
+				}
+				int fcp = syntax_cp(parser);
+				advance(parser); /* consume the field ident */
+				syntax_wrap(parser, fcp, SN_FIELD_NAME);
+			} while (check(parser, TOK_DOT));
+			prim_kind = SN_FIELD_EXPR;
+		} else { /* TOK_LBRACKET */
+			advance(parser); /* consume '[' */
+			int is_slice;
+			if (!parse_bracket_index_or_slice(parser, &is_slice))
+				return 0;
+			prim_kind = is_slice ? SN_SLICE_EXPR : SN_INDEX_EXPR;
+		}
+	}
 	/* Postfix failure-policy: `expr !policy` (panic, on a channel-less fallible op: index / slice /
 	 * call) or `expr ?policy` (handler, on a pool `insert(...)` call). A bare `!`/`?` here is
 	 * unambiguous — `!=` lexes as TOK_BANG_EQ, there is no infix `!`/`?` — so right after a completed

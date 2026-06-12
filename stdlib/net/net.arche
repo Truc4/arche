@@ -41,7 +41,7 @@ recv :: proc(s: socket, buf: []char)(out: []char) {
 
 // C implementation layer (runtime/net.c) — module-private. The `#module` band drops these externs
 // from the device's export set, so `net.net_recv` does not resolve for importers; only the wrappers
-// above are public (the bare C symbol stays linkable, an unavoidable C-ABI fact). A `char[]` in BOTH
+// above are public (the bare C symbol stays linkable, an unavoidable C-ABI fact). A `[]char` in BOTH
 // the in- and out-lists is the in-out idiom — legitimate ONLY here, to align with the C ABI (the call
 // writes the lent pointer and hands it back); the wrappers never duplicate that way.
 #module

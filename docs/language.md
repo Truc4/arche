@@ -13,7 +13,7 @@ for doc comments and doctests see [DOCTESTS.md](DOCTESTS.md).
 - [Archetypes](#archetypes)
 - [Array-oriented operations](#array-oriented-operations)
 - [Indexing](#indexing)
-- [Arrays and slices: `T[N]` values, `T[]` slices](#arrays-and-slices-tn-values-t-slices)
+- [Arrays and slices: `[N]T` values, `[]T` slices](#arrays-and-slices-nt-values-t-slices)
 - [Procedures (`proc`)](#procedures-proc)
 - [Systems (`sys`)](#systems-sys)
 - [Functions (`func`)](#functions-func)
@@ -32,16 +32,16 @@ for doc comments and doctests see [DOCTESTS.md](DOCTESTS.md).
 **Arche has NO dynamic or heap allocation.** All memory is allocated statically at
 program startup. This is a core design principle, not a limitation.
 
-- **Explicit allocation**: `Archetype[N]` declares a fixed-capacity pool for an archetype shape. There is no `static` keyword — every top-level declaration is static-lifetime, so position alone marks the storage.
+- **Explicit allocation**: `[N]Archetype` declares a fixed-capacity pool for an archetype shape. There is no `static` keyword — every top-level declaration is static-lifetime, so position alone marks the storage.
 - **Static storage**: All pools have program lifetime. They exist from program start to end. No deallocation during execution.
 - **Fixed size**: Each pool is immutable in size. No resizing, no growing vectors. Capacity is permanent once set.
 - **Implicit cleanup**: At program end, all storage is implicitly freed. Explicit deallocation is **not allowed** (and unnecessary).
-- **Initial live count**: `Archetype[N](M)` allocates capacity `N` and starts with `M` live rows; deleted slots are tracked in a free-list and reused by later inserts, eliminating fragmentation.
+- **Initial live count**: `[N]Archetype(M)` allocates capacity `N` and starts with `M` live rows; deleted slots are tracked in a free-list and reused by later inserts, eliminating fragmentation.
 
 A pool declaration can include field initialization to set the live instances' values at allocation time:
 
 ```arche
-Counter[5](5) { val: 7, score: 2.5 }
+[5]Counter(5) { val: 7, score: 2.5 }
 ```
 
 This reserves capacity for 5 instances, starts all 5 live, and initializes the `val` and `score` columns. Uninitialized columns are zero-initialized.
@@ -49,9 +49,9 @@ This reserves capacity for 5 instances, starts all 5 live, and initializes the `
 **Encouraged pattern** - plan memory upfront, allocate what you need, use predictably:
 
 ```arche
-Particle[10000](10000) { active: 0 }
-Enemy[5000](5000)
-Projectile[1000](1000)
+[10000]Particle(10000) { active: 0 }
+[5000]Enemy(5000)
+[1000]Projectile(1000)
 
 main :: proc() {
   run initialize;
@@ -97,7 +97,7 @@ elided defaults to zero). The value separator is the mutability axis: `:` binds 
 compile-time **definition**, `=` binds mutable **storage**. Implicit and explicit are treated
 identically.
 
-These forms work at **file scope** too: `count := 0`, `limit : int = MAX`, `buf : int[8]` are
+These forms work at **file scope** too: `count := 0`, `limit : int = MAX`, `buf : [8]int` are
 mutable globals. A mutable global's *initial value* must be compile-time-constant (static storage
 is initialized at link time — there is no startup code), but the variable is still reassignable;
 a non-constant initializer is an error. Implicit `flag : int` is exactly `flag : int = 0`.
@@ -182,8 +182,8 @@ archetype is a compile error (it would be unreachable):
 A :: arche { health, shield }
 B :: arche { shield, health }   // same shape as A
 
-A[1000]
-B[1000]            // ERROR: shape already allocated (B is the same shape as A)
+[1000]A
+[1000]B            // ERROR: shape already allocated (B is the same shape as A)
 ```
 
 **Tuples** are named flat sugar: `pos (x, y) :: float` mints the flat component types
@@ -196,7 +196,7 @@ pos (x, y) :: float
 Body :: arche { pos_x, pos_y }   // two flat columns
 ```
 
-A shape's storage is one fixed-capacity static pool declared with `Foo[N]` (a declaration —
+A shape's storage is one fixed-capacity static pool declared with `[N]Foo` (a declaration —
 no trailing `;`, no `static` keyword: top-level position implies static storage).
 There is no `alloc` and no resizing - all capacity is reserved upfront. Allocating the same
 shape twice (under any name) is a compile error.
@@ -206,7 +206,7 @@ shape twice (under any name) is a compile error.
 Operations on archetype columns apply across the entire collection without explicit loops:
 
 ```arche
-Particle[1000]
+[1000]Particle
 // ... insert particles
 Particle.pos_x = Particle.pos_x + Particle.vel_x;
 ```
@@ -233,38 +233,38 @@ matrices.data[i, x, y] // 3D indexing
 
 This keeps the language focused on whole-array transformations.
 
-## Arrays and slices: `T[N]` values, `T[]` slices
+## Arrays and slices: `[N]T` values, `[]T` slices
 
 Apart from archetype columns, Arche has two array forms — a sized value and a borrowed view.
 
-**`T[N]` — a sized value.** `buf: int[8]` is stack storage of exactly `N` elements. It is a
+**`[N]T` — a sized value.** `buf: [8]int` is stack storage of exactly `N` elements. It is a
 **value**: it owns its storage, it is mutable (it's yours), and binding/assigning it transfers or
 duplicates it under the ownership rules below. `.length` / `.cap` are the compile-time count `N`.
 Indexing is bounds-checked; a provably in-range literal/loop index elides the check.
 
-**`T[]` — a slice (fat pointer).** A slice is a `{ptr, len}` view whose length is carried at
+**`[]T` — a slice (fat pointer).** A slice is a `{ptr, len}` view whose length is carried at
 **runtime**, so it appears in signatures without a size. A slice never owns storage — it borrows an
 array's. It exists at the **function boundary** (a parameter, or a return), not as a free-floating
 local you build up. Two modes, set by the ownership keyword:
 
 ```arche
-sum  :: func(xs: int[]) -> int { ... }        // borrowed: READ-ONLY view, source stays alive
-fill :: func(own xs: int[]) -> int[] { ... }  // owned: mutable, movable, single writer
+sum  :: func(xs: []int) -> int { ... }        // borrowed: READ-ONLY view, source stays alive
+fill :: func(own xs: []int) -> []int { ... }  // owned: mutable, movable, single writer
 ```
 
-- A **borrowed** `xs: T[]` is read-only — writing through it is a compile error. You can hand out
+- A **borrowed** `xs: []T` is read-only — writing through it is a compile error. You can hand out
   as many borrows as you like precisely because none can mutate.
-- An **owned** `own xs: T[]` is the mutable, length-carrying buffer handle: the caller `move`s a
+- An **owned** `own xs: []T` is the mutable, length-carrying buffer handle: the caller `move`s a
   buffer in, the callee mutates it and may hand it back. Obtaining a *mutable* slice consumes its
   source (it's a move), so there is never a second live writer — no mutable aliasing.
 
-**Decay.** A sized `T[N]` **decays** to a `T[]` at a call: the compile-time count becomes the
-slice's runtime length. Sizing flows one way — a `T[]` cannot satisfy a `T[N]` parameter (a slice's
+**Decay.** A sized `[N]T` **decays** to a `[]T` at a call: the compile-time count becomes the
+slice's runtime length. Sizing flows one way — a `[]T` cannot satisfy a `[N]T` parameter (a slice's
 length isn't statically known), so that is rejected.
 
 ```arche
-a: int[8];
-total := sum(a);        // a decays to int[] (a borrow) — a stays alive, .length == 8 at runtime
+a: [8]int;
+total := sum(a);        // a decays to []int (a borrow) — a stays alive, .length == 8 at runtime
 a := fill(move a);      // move a in (a consumed), mutate, hand the fat pointer back, rebind
 ```
 
@@ -280,7 +280,7 @@ mid := a[:n];           // prefix view; mid.length == n
 
 **Lifetime.** Storage lives in the stack frame that declared it and is reclaimed when that frame
 returns; `move` transfers the *right* to a buffer, never the memory. The one rule the compiler
-enforces: a function may not **return a slice that traces to its own local** `T[N]` (it would
+enforces: a function may not **return a slice that traces to its own local** `[N]T` (it would
 dangle) — a returned slice must trace back to a buffer passed *in*.
 
 There is no `for x in array`. Iterate a buffer with a C-style `for (i := 0; i < xs.length; i = i + 1)`,
@@ -329,7 +329,7 @@ main :: proc() {
 Procedures are also used for setup, orchestration, and whole-collection array ops:
 
 ```arche
-Particle[1000](1000)
+[1000]Particle(1000)
 
 main :: proc() {
   Particle.pos_x = Particle.pos_x + Particle.vel_x;   // array op over the whole column
@@ -526,7 +526,7 @@ handle :: proc(m: Method)() {
 source, no function pointers. String patterns compare with the pure `streq` helper:
 
 ```arche
-route :: proc(path: char[])() {
+route :: proc(path: []char)() {
   match path {
     "/"      : home()();
     "/about" : about()();
@@ -572,7 +572,7 @@ callback-taking proc). A proc/func type can be a parameter or a named binding, b
 ## Ownership: borrow, `move`, `copy`
 
 Functions are **pure by use** - a function never mutates its caller's data as a side effect.
-The default parameter mode is a **read-only borrow**: a plain slice `xs: T[]` (or any aggregate
+The default parameter mode is a **read-only borrow**: a plain slice `xs: []T` (or any aggregate
 borrowed by reference) is read-only (mutating it is a compile error) and is not consumed. Scalars
 are passed by value. Arrays/slices and foreign `opaque` values are **move-only** (linear).
 
@@ -596,23 +596,23 @@ so a consumed binding is always visible without the keyword.)
 ```arche
 a := b;          // move: b is consumed (dead), a owns the storage
 a := copy b;     // clone: b stays alive, a is independent
-n := sink(buf);  // own param: buf moved in (consumed); a borrow param (xs: T[]) would NOT consume
+n := sink(buf);  // own param: buf moved in (consumed); a borrow param (xs: []T) would NOT consume
 ```
 
-A bare name handed to a **borrow** parameter (`xs: T[]`) is *not* consumed — it's a borrow, the
-source stays alive. So borrow-vs-move is read straight off the callee's signature (`T[]` borrows,
-`own T[]` takes ownership); there is no separate borrow keyword at the call site.
+A bare name handed to a **borrow** parameter (`xs: []T`) is *not* consumed — it's a borrow, the
+source stays alive. So borrow-vs-move is read straight off the callee's signature (`[]T` borrows,
+`own []T` takes ownership); there is no separate borrow keyword at the call site.
 
 To **fill a caller buffer in place** you don't need `own` or `move` at all - use an **in-out**
 parameter (the same name in both the in-list and the out-list). The out occurrence shadows the
 in-list borrow, so the body writes the buffer in place and the binding is never killed:
 
 ```arche
-read_into :: proc(fd: int, buf: char[], len: int)(buf: char[], n: int) {
+read_into :: proc(fd: int, buf: []char, len: int)(buf: []char, n: int) {
   read(fd, buf, len)(buf, n);             // the extern fills the in-out buffer in place
 }
 
-buf: char[256];
+buf: [256]char;
 read_into(0, buf, 256)(buf, n:);          // zero copy: buf lent in, handed back, stays live
 ```
 
@@ -632,8 +632,8 @@ Arche never reads, writes, or fabricates. Distinctness comes from the *name*, no
 window :: opaque
 sound  :: opaque
 
-window_open    :: extern proc(own title: char[], w: int, h: int)(w: window)   // out-only w = C return
-window_present :: extern proc(w: window, fb: int[], width: int, height: int)(fb: int[])  // fb in-out
+window_open    :: extern proc(own title: []char, w: int, h: int)(w: window)   // out-only w = C return
+window_present :: extern proc(w: window, fb: []int, width: int, height: int)(fb: []int)  // fb in-out
 window_close   :: extern proc(own w: window)()
 ```
 
@@ -643,7 +643,7 @@ window_close   :: extern proc(own w: window)()
   the other is expected is a compile error.
 - `0` is the null cell; returning `NULL` from C yields `0`, and `if (w)` is a non-null check.
 - A foreign resource can also live in a **pool**: put the type in an `arche` and use
-  `Foo[N]` + generation-checked handles for capacity-bounded, use-after-free-safe storage.
+  `[N]Foo` + generation-checked handles for capacity-bounded, use-after-free-safe storage.
 
 ```arche
 render :: proc() {
@@ -673,11 +673,11 @@ is an **in-out** parameter: the caller lends a buffer (no `own`, no `move`, no c
 fills it in place, and the same live binding is handed back through the out-arg:
 
 ```arche
-read_chunk :: proc(fd: file, buf: char[], size: int)(buf: char[], n: int) {
+read_chunk :: proc(fd: file, buf: []char, size: int)(buf: []char, n: int) {
   arche_csv_read_chunk(fd, buf, size)(buf, n);   // the extern fills the in-out buffer in place
 }
 
-buf: char[65536];
+buf: [65536]char;
 read_chunk(fd, buf, 65536)(buf, n:);             // buf comes back filled; n is the byte count
 ```
 

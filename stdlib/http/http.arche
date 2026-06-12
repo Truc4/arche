@@ -1,5 +1,5 @@
 // The `http` module — procedural HTTP/1.1 building blocks (parse + respond). `#import { http }`.
-// Everything is a length-carried char[] slice. Arche has no by-value record type, so there is no
+// Everything is a length-carried []char slice. Arche has no by-value record type, so there is no
 // Request/Response value: the request line is handed back as MULTIPLE RETURN VALUES (Odin-style), and
 // responses are free procedures over a connection + caller buffer. C (libc sprintf) is an
 // implementation detail; `%s` only ever formats NUL-terminated literals (mime/reason), never a slice.

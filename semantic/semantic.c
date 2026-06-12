@@ -1359,8 +1359,21 @@ static const char *canonical_cast_type(const char *s) {
 /* Type of a base = leading IDENT + optional SN_FIELD_NAME chain (the base shape inside
  * SN_FIELD_EXPR / SN_INDEX_EXPR / SN_SLICE_EXPR). nf==0 → bare name; nf==1 → single field
  * access; nf>=2 → the old AST's nested-FIELD base isn't a NAME, so only the metadata props
- * on the LAST field resolve (matching the old EXPR_FIELD path), else NULL. */
+ * on the LAST field resolve (matching the old EXPR_FIELD path), else NULL.
+ * A NESTED base (general postfix) resolves the base SUB-EXPRESSION's type first, then applies the
+ * trailing field(s): a `.length`/`.cap`-style property is `int`; element access falls through. */
 static const char *resolve_base_chain_type(SemanticContext *ctx, SyntaxView v) {
+	if (has_nested_base(v)) {
+		SyntaxView base = base_subexpr(v);
+		int nf = sv_count(v, SN_FIELD_NAME);
+		if (nf == 0)
+			return resolve_expression_type(ctx, base); /* e.g. `a[i][j]` — element of the base */
+		char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 1));
+		int is_prop = fld && (strcmp(fld, "length") == 0 || strcmp(fld, "max_length") == 0 ||
+		                      strcmp(fld, "cap") == 0 || strcmp(fld, "capacity") == 0);
+		free(fld);
+		return is_prop ? "int" : resolve_expression_type(ctx, base);
+	}
 	int nf = sv_count(v, SN_FIELD_NAME);
 	char *idnt = sv_resolved_name(ctx, v);
 	const char *r;
@@ -1623,6 +1636,14 @@ static const char *nominal_type_of_expr(SemanticContext *ctx, SyntaxView v) {
  * checks. The old AST flattened `a.b.c` into nested FIELDs; here we read the flat node directly.
  * `field_loc` is the location used for field diagnostics (the whole expr). */
 static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc field_loc) {
+	/* General postfix on a NESTED base (`M[i].length`, `f().g`, `a[i][j]`): analyze the base
+	 * sub-expression (which catches errors inside it, e.g. `M[bad]`), then accept the trailing
+	 * field/index — it is a property or element access on a COMPUTED value, not a flat name, so the
+	 * leading-name checks below don't apply. */
+	if (has_nested_base(v)) {
+		analyze_expression(ctx, base_subexpr(v));
+		return;
+	}
 	char *idnt = sv_resolved_name(ctx, v);
 	int nf = sv_count(v, SN_FIELD_NAME);
 
@@ -5814,6 +5835,8 @@ static Operator sem_tok_to_op(TokenKind k) {
  * archetype name (the 2nd IDENT); otherwise the sole IDENT. Caller frees. Shared by
  * cst_build_expr and the view-driven analysis so the two never disagree. */
 static char *sv_name_expr_dup(SyntaxView e) {
+	if (has_nested_base(e))
+		return sv_name_expr_dup(base_subexpr(e)); /* leftmost IDENT of a nested postfix base */
 	if (sv_has_token(e, TOK_LT)) {
 		char *nm = NULL;
 		int seen = 0;

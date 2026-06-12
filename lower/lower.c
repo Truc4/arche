@@ -647,22 +647,32 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 			}
 			free(bn);
 		}
-		/* `base.f1.f2…[idx]` is flat under one node: base IDENT, then (DOT FIELD_NAME)+,
-		 * optionally a trailing `[indices]`. Rebuild the left-assoc AST. */
-		HirExpr *base = hir_expr_create(HIR_EXPR_NAME);
-		base->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
-		/* A string value-const as a field base (`name.length`) lowers to the literal, so `.length`
-		 * resolves to the literal's compile-time char count (see codegen). */
-		if (g_lower_sem && base->data.name.name) {
-			const char *cv = semantic_get_const_value(g_lower_sem, base->data.name.name);
-			if (cv && cv[0] == '"') {
-				char *nm = base->data.name.name;
-				int n = 0;
-				char *decoded = syntax_decode_string((SynText){cv, (int)strlen(cv)}, &n);
-				base->kind = HIR_EXPR_STRING;
-				base->data.string.value = decoded;
-				base->data.string.length = n;
-				free(nm);
+		/* `base.f1.f2…[idx]` is flat under one node: base IDENT, then (DOT FIELD_NAME)+, optionally a
+		 * trailing `[indices]`. A general-postfix NESTED base (`M[i].length`, `f().g`) instead carries
+		 * its base as a recursively-lowered first child node, which is then SKIPPED in the trailing
+		 * index scan. Rebuild the left-assoc AST. */
+		const SyntaxNode *base_skip = NULL;
+		HirExpr *base;
+		if (has_nested_base(e)) {
+			SyntaxView bv = base_subexpr(e);
+			base_skip = bv.node;
+			base = lower_expr_cst(bv);
+		} else {
+			base = hir_expr_create(HIR_EXPR_NAME);
+			base->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
+			/* A string value-const as a field base (`name.length`) lowers to the literal, so `.length`
+			 * resolves to the literal's compile-time char count (see codegen). */
+			if (g_lower_sem && base->data.name.name) {
+				const char *cv = semantic_get_const_value(g_lower_sem, base->data.name.name);
+				if (cv && cv[0] == '"') {
+					char *nm = base->data.name.name;
+					int n = 0;
+					char *decoded = syntax_decode_string((SynText){cv, (int)strlen(cv)}, &n);
+					base->kind = HIR_EXPR_STRING;
+					base->data.string.value = decoded;
+					base->data.string.length = n;
+					free(nm);
+				}
 			}
 		}
 		HirExpr *cur = base;
@@ -683,7 +693,7 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 			idx->data.index.base = cur;
 			int ic = 0;
 			for (int i = 0; i < e.node->child_count; i++)
-				if (e.node->children[i].tag == SE_NODE) {
+				if (e.node->children[i].tag == SE_NODE && e.node->children[i].as.node != base_skip) {
 					SyntaxNodeKind k = e.node->children[i].as.node->kind;
 					if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
 						ic++;
@@ -691,7 +701,7 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 			idx->data.index.indices = calloc(ic ? ic : 1, sizeof(HirExpr *));
 			idx->data.index.index_count = 0;
 			for (int i = 0; i < e.node->child_count; i++)
-				if (e.node->children[i].tag == SE_NODE) {
+				if (e.node->children[i].tag == SE_NODE && e.node->children[i].as.node != base_skip) {
 					SyntaxNodeKind k = e.node->children[i].as.node->kind;
 					if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
 						SyntaxView iv = {e.node->children[i].as.node, e.src};
@@ -706,10 +716,19 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 	}
 	case SN_INDEX_EXPR: {
 		ax->kind = HIR_EXPR_INDEX;
-		/* base may be a `name.f1.f2…` member chain folded into this node
-		 * (e.g. `Particle.pos_x[0]`); rebuild the FIELD chain over the IDENT. */
-		HirExpr *base = hir_expr_create(HIR_EXPR_NAME);
-		base->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
+		/* base may be a `name.f1.f2…` member chain folded into this node (e.g. `Particle.pos_x[0]`),
+		 * or — for general postfix — a NESTED base node (`a[i][j]`, `f()[i]`) that is recursively
+		 * lowered and SKIPPED in the index enumeration; rebuild the FIELD chain over the IDENT. */
+		const SyntaxNode *base_skip = NULL;
+		HirExpr *base;
+		if (has_nested_base(e)) {
+			SyntaxView bv = base_subexpr(e);
+			base_skip = bv.node;
+			base = lower_expr_cst(bv);
+		} else {
+			base = hir_expr_create(HIR_EXPR_NAME);
+			base->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
+		}
 		int nfields = sv_count(e, SN_FIELD_NAME);
 		for (int i = 0; i < nfields; i++) {
 			HirExpr *f = hir_expr_create(HIR_EXPR_FIELD);
@@ -724,7 +743,7 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 		ax->data.index.base = base;
 		int ic = 0;
 		for (int i = 0; i < e.node->child_count; i++)
-			if (e.node->children[i].tag == SE_NODE) {
+			if (e.node->children[i].tag == SE_NODE && e.node->children[i].as.node != base_skip) {
 				SyntaxNodeKind k = e.node->children[i].as.node->kind;
 				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
 					ic++;
@@ -732,7 +751,7 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 		ax->data.index.indices = calloc(ic ? ic : 1, sizeof(HirExpr *));
 		ax->data.index.index_count = 0;
 		for (int i = 0; i < e.node->child_count; i++)
-			if (e.node->children[i].tag == SE_NODE) {
+			if (e.node->children[i].tag == SE_NODE && e.node->children[i].as.node != base_skip) {
 				SyntaxNodeKind k = e.node->children[i].as.node->kind;
 				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
 					SyntaxView iv = {e.node->children[i].as.node, e.src};
@@ -755,8 +774,16 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 		/* `base[lo:hi]` — base is IDENT + folded field chain (as for index); the expr child(ren)
 		 * split on the `:` token: before → lo, after → hi (either may be omitted → NULL). */
 		ax->kind = HIR_EXPR_SLICE;
-		HirExpr *base = hir_expr_create(HIR_EXPR_NAME);
-		base->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
+		const SyntaxNode *base_skip = NULL;
+		HirExpr *base;
+		if (has_nested_base(e)) {
+			SyntaxView bv = base_subexpr(e);
+			base_skip = bv.node;
+			base = lower_expr_cst(bv);
+		} else {
+			base = hir_expr_create(HIR_EXPR_NAME);
+			base->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
+		}
 		int nfields = sv_count(e, SN_FIELD_NAME);
 		for (int i = 0; i < nfields; i++) {
 			HirExpr *f = hir_expr_create(HIR_EXPR_FIELD);
@@ -774,7 +801,7 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 				seen_colon = 1;
 				continue;
 			}
-			if (ch->tag == SE_NODE) {
+			if (ch->tag == SE_NODE && ch->as.node != base_skip) {
 				SyntaxNodeKind k = ch->as.node->kind;
 				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
 					SyntaxView iv = {ch->as.node, e.src};

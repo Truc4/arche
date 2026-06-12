@@ -5,8 +5,8 @@
 //     arche run extras/demo.arche                    # target = "linux" (from extras/arche.toml)
 //     arche build --target windows -o /tmp/d extras/demo.arche && /tmp/d
 //
-// The backends expose `name`/`sep`/`null_device` as `char[]` string CONSTS; the active target picks
-// which file supplies them. (os.write prints the char[] slices directly.)
+// The backends expose `name`/`sep`/`null_device` as `[]char` string CONSTS; the active target picks
+// which file supplies them. (os.write prints the []char slices directly.)
 #import { platform os }
 main :: proc() {
   os.write(1, "os=", 3);

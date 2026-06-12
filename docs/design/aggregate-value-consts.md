@@ -116,10 +116,41 @@ array-const feature — three silently shipped because no fixture exercised them
     arbitrary-rank indexing/decay would need a multi-stride shape vector — a separate feature, not a
     bug. The 2-D ceiling is now enforced, not assumed.
 
+## Sub-array views + general postfix chaining (the "second half")
+
+The flat/data-oriented matrix model had only built the *scalar* access (`M[i, j]`); a partial index
+`M[i]` (a ROW) as a first-class value was unfinished. Completed in dependency order:
+
+15. **A matrix row binds as a read-only `[]T` slice.** `r := M[i]` registers a type-6 slice
+    `ValueInfo` (ptr = `@M + i*stride`, len = the row width) — a borrow of the read-only `constant`
+    global, mirroring the existing `buf[lo:hi]` bind. `r.length` / `r[j]` / re-passing `r` then fall
+    out via the existing type-6 paths; typed slots (`x : []int = M[i]`) and call args work too. The
+    resolver needed NO change — a partial index already types consistently with `buf[lo:hi]` (the
+    slice system is codegen-seam-based). Covered by `matrix_row_bind*` / `matrix_row_typed_slot`.
+
+16. **Const arrays are pure to read in a `func`.** Reading a `::` const array (even a scalar element)
+    was wrongly rejected as "reads a mutable global"; the backing global is immutable (`constant`),
+    so it is now pure, exactly like a string/scalar const. `const_array_read_in_func`.
+
+17. **Slice-return ABI — return a freshly-formed slice.** A `func -> []T` returning `buf[lo:hi]` or a
+    matrix row `M[i]` now builds the `{T*, i64}` fat pointer (the return type/signature/caller-unpack
+    were already correct; only the return-statement seam emitted a bare pointer). `return_slice_fresh`.
+
+18. **General postfix chaining — a postfix base may be any expression.** The flat CST assumed a
+    field/index base is a bare NAME *token*; now `.field` / `[index]` chain on any postfix result
+    (`M[i].length`, `M[i][j]`, `f().length`, `f()[j]`, `buf[lo:hi].length`/`[j]`). Implemented as:
+    a parser nesting loop (`a[i].b` → `FIELD(base=INDEX)`); a shared `base_subexpr`/`has_nested_base`
+    discriminator (in `syntax_view.h`, used by semantic + lowering); resolver/analysis + lowering that
+    recurse into a nested base; and one codegen primitive — `codegen_eval_slice` — that turns ANY
+    slice-producing expression (slice var, `buf[lo:hi]`, matrix row, `[]T`-returning call) into a
+    `(ptr, len)` pair, which the `.length` and index paths route through (indexing stays
+    bounds-checked). A trailing `(` is deliberately not chained — `call(args)(outs)` is out-param
+    binding, not a call-on-call. `(e).f` (paren base) is deferred (the unparenthesized form works).
+    `postfix_chain_inline` / `postfix_chain_call`.
+
 ## Verification
-658/658 lit tests, doctests, and AddressSanitizer+UBSan all green; `extras/demo.arche` runs correctly
-for both `linux` and `windows` targets with the backends as `char[]` consts. `matrix_row_as_slice`
-covers the row→slice decay (distinct sums per row prove pointer + length both reach the callee);
-`const_array_float` guards the float-width corruption; `const_matrix_typed` the typed-matrix element
-walk; `const_array_3d_rejected` / `const_matrix_ragged_rejected` the dimensionality + rectangularity
-guards.
+666/666 lit tests, doctests, and AddressSanitizer+UBSan all green; `extras/demo.arche` runs correctly
+for both `linux` and `windows` targets. Earlier fixtures stand (`matrix_row_as_slice`,
+`const_array_float`, `const_matrix_typed`, `const_array_3d_rejected`, `const_matrix_ragged_rejected`);
+the rework adds `matrix_row_bind*`, `matrix_row_typed_slot`, `const_array_read_in_func`,
+`return_slice_fresh`, `postfix_chain_inline`, `postfix_chain_call`.

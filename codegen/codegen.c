@@ -2002,6 +2002,64 @@ static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *l
 	return 1;
 }
 
+/* Evaluate a freshly-formed slice-PRODUCING expression to a fat pointer: the element pointer (ptr_out)
+ * and an i64 runtime length (len_out), plus the element arche type name (*elem_out). Handles the forms
+ * that yield a `[]T` value without a registered ValueInfo: `buf[lo:hi]` (HIR_EXPR_SLICE) and a
+ * matrix-const ROW `M[i]` (single-index HIR_EXPR_INDEX; length = the row stride). Returns 1 on success,
+ * 0 if `e` is not one of these forms. The NAME case (a registered type-6 slice var) is left to callers
+ * via find_value — it carries richer metadata (cap, bounds). This is the shared "expr → (ptr,len)"
+ * seam used by slice returns, args, binds, and nested-base `.length`/indexing. */
+static int codegen_eval_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *len_out,
+                              const char **elem_out) {
+	if (!e)
+		return 0;
+	if (e->kind == HIR_EXPR_SLICE) {
+		char cap[64];
+		const char *se = NULL;
+		int sw = 0;
+		if (codegen_slice(ctx, e, ptr_out, len_out, cap, &se, &sw)) {
+			if (elem_out)
+				*elem_out = se;
+			return 1;
+		}
+		return 0;
+	}
+	int stride = 0;
+	HirStaticDecl *sa = codegen_matrix_row_arg(ctx, e, &stride);
+	if (sa) {
+		char row_ptr[256];
+		codegen_expression(ctx, e, row_ptr); /* row element pointer: @M + i*stride */
+		strcpy(ptr_out, row_ptr);
+		char *lenv = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = add i64 0, %d\n", lenv, stride);
+		strcpy(len_out, lenv);
+		if (elem_out)
+			*elem_out = sa->array.element_type ? field_base_type_name(sa->array.element_type) : "char";
+		return 1;
+	}
+	/* A call returning a `[]T` slice yields the `{T*, i64}` fat pointer (Phase A return ABI) — unpack
+	 * its element pointer + length. The callee's DECLARED return type fixes the element LLVM type. */
+	if (e->kind == HIR_EXPR_CALL && e->data.call.callee && e->data.call.callee->kind == HIR_EXPR_NAME) {
+		HirFuncDecl *cf = find_func_decl(ctx, e->data.call.callee->data.name.name);
+		if (cf && cf->return_type_count == 1 && cf->return_types[0] && cf->return_types[0]->tag == HIR_TYPE_ARRAY) {
+			const char *elem = field_base_type_name(cf->return_types[0]);
+			const char *lt = llvm_type_from_arche(elem);
+			char call_buf[256];
+			codegen_expression(ctx, e, call_buf); /* the `{lt*, i64}` struct value */
+			char *p = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = extractvalue { %s*, i64 } %s, 0\n", p, lt, call_buf);
+			char *l = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = extractvalue { %s*, i64 } %s, 1\n", l, lt, call_buf);
+			strcpy(ptr_out, p);
+			strcpy(len_out, l);
+			if (elem_out)
+				*elem_out = elem;
+			return 1;
+		}
+	}
+	return 0;
+}
+
 /* ========== EXPRESSION CODEGEN ========== */
 
 static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
@@ -2596,6 +2654,28 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			}
 		}
 
+		/* `.length`/`.cap` on a freshly-formed slice EXPRESSION base — general postfix `M[i].length`
+		 * (a matrix row) or `buf[lo:hi].length`. Evaluate the base to its (ptr, runtime length) via the
+		 * shared slice primitive and return the length, truncated to the i32 the accessor yields. (A
+		 * full index `M[i,j]` is a scalar — codegen_eval_slice declines it, so this can't misfire.) */
+		{
+			const char *fn = expr->data.field.field_name;
+			int is_len = fn && (strcmp(fn, "length") == 0 || strcmp(fn, "cap") == 0 ||
+			                    strcmp(fn, "capacity") == 0 || strcmp(fn, "max_length") == 0);
+			if (is_len && (expr->data.field.base->kind == HIR_EXPR_SLICE ||
+			               expr->data.field.base->kind == HIR_EXPR_INDEX ||
+			               expr->data.field.base->kind == HIR_EXPR_CALL)) {
+				char sp[256], sl[256];
+				const char *se = NULL;
+				if (codegen_eval_slice(ctx, expr->data.field.base, sp, sl, &se)) {
+					char *t = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", t, sl);
+					strcpy(result_buf, t);
+					break;
+				}
+			}
+		}
+
 		/* fieldexpr like archetype.field */
 		char base_buf[256];
 		codegen_expression(ctx, expr->data.field.base, base_buf);
@@ -2966,13 +3046,33 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 
 		/* index access: array[index] or field[index] */
 		char base_buf[256], idx_buf[256];
-		codegen_expression(ctx, expr->data.index.base, base_buf);
-
-		/* Check if base is a type-6 slice pointer variable */
 		const char *type6_elem_type = NULL;
 		int type6_bound = 0;          /* compile-time element count N for a bounded array (0 = unbounded slice) */
 		const char *slice_len = NULL; /* runtime i64 length of a `T[]` slice base (fat-pointer .len), else NULL */
-		if (expr->data.index.base->kind == HIR_EXPR_NAME) {
+		char nested_len[256];
+
+		/* Indexing a freshly-formed slice EXPRESSION base — `f()[i]` (a slice-returning call) or
+		 * `buf[lo:hi][i]`: evaluate the base to its (ptr, runtime length, element) via the shared
+		 * primitive and feed them into the normal slice-index path, so element typing AND the bounds
+		 * policy apply exactly as for a slice variable. */
+		int nested_slice_base = 0;
+		if ((expr->data.index.base->kind == HIR_EXPR_CALL || expr->data.index.base->kind == HIR_EXPR_SLICE) &&
+		    expr->data.index.index_count == 1) {
+			char sp[256], sl[256];
+			const char *se = NULL;
+			if (codegen_eval_slice(ctx, expr->data.index.base, sp, sl, &se)) {
+				strcpy(base_buf, sp);
+				strcpy(nested_len, sl);
+				type6_elem_type = se;
+				slice_len = nested_len;
+				nested_slice_base = 1;
+			}
+		}
+		if (!nested_slice_base)
+			codegen_expression(ctx, expr->data.index.base, base_buf);
+
+		/* Check if base is a type-6 slice pointer variable */
+		if (!nested_slice_base && expr->data.index.base->kind == HIR_EXPR_NAME) {
 			ValueInfo *vi = find_value(ctx, expr->data.index.base->data.name.name);
 			if (vi && vi->type == 6 && vi->field_type) {
 				type6_elem_type = vi->field_type;
@@ -7184,6 +7284,24 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				                  rv->data.string.length);
 				buffer_append_fmt(ctx, "  ret %s %s\n", ret_type, a2);
 				break;
+			}
+			/* Returning a freshly-formed slice — `buf[lo:hi]` or a matrix-const row `M[i]` — builds the
+			 * `{T*, i64}` fat pointer from its (element ptr, runtime length). Without this the value is a
+			 * bare `ptr` and mismatches the slice return type. */
+			if (slice_ret) {
+				char sp[256], sl[256];
+				const char *se = NULL;
+				if (codegen_eval_slice(ctx, rv, sp, sl, &se)) {
+					const char *e = llvm_type_from_arche(field_base_type_name(rt0));
+					char ptrt[16];
+					snprintf(ptrt, sizeof(ptrt), "%s*", e);
+					char *a1 = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = insertvalue %s undef, %s %s, 0\n", a1, ret_type, ptrt, sp);
+					char *a2 = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = insertvalue %s %s, i64 %s, 1\n", a2, ret_type, a1, sl);
+					buffer_append_fmt(ctx, "  ret %s %s\n", ret_type, a2);
+					break;
+				}
 			}
 			char value_buf[256];
 			codegen_expression(ctx, rs->values[0], value_buf);

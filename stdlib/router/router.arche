@@ -8,7 +8,7 @@
 // precedence (Go httprouter et al.).
 //
 // No heap: nodes live in a fixed pool (`TrieNode[256]`), variable fan-out is an intrusive
-// first-child/next-sibling index list, and a node's segment text is a `char[32]` column. A node's
+// first-child/next-sibling index list, and a node's segment text is a `[32]char` column. A node's
 // index is just its pool slot — `i32(insert(...))` hands it back, so there's no hand-rolled counter
 // and no segment arena.
 //
@@ -33,7 +33,7 @@
 // requirement). The driver provides the pool; the device owns no storage.
 TrieNode :: arche {
   seg          :: [32]char, // segment text (":id"/"*" stored as the name after the marker), "" for root
-  seg_len      :: int, // content length of `seg` (a fixed char[32] column carries no length itself)
+  seg_len      :: int, // content length of `seg` (a fixed [32]char column carries no length itself)
   kind         :: nodeKind, // static / :param / *catchall
   first_child  :: int, // pool index of first child, or -1
   next_sibling :: int, // pool index of next sibling, or -1
