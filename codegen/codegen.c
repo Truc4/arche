@@ -3003,8 +3003,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		 * row-stride model (`M` is a `[total x T]` global). `M[i, j]` → flat = i*stride + j (load a
 		 * scalar); `M[i]` → the row element-pointer at i*stride (a `[stride]T` row, usable as a char[]
 		 * slice — e.g. a string row from a `{ "a","bb" }` char matrix). */
-		if (expr->data.index.base->kind == HIR_EXPR_NAME &&
-		    (expr->data.index.index_count == 1 || expr->data.index.index_count == 2)) {
+		if (expr->data.index.base->kind == HIR_EXPR_NAME && expr->data.index.index_count == 1) {
 			HirStaticDecl *msa = codegen_find_static_array(ctx, expr->data.index.base->data.name.name);
 			if (msa && msa->kind == HIR_STATIC_ARRAY && msa->array.row_stride > 1) {
 				const char *lt = llvm_type_from_arche(field_base_type_name(msa->array.element_type));
@@ -3013,33 +3012,20 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				char i0[256], i0b[256];
 				codegen_expression(ctx, expr->data.index.indices[0], i0);
 				emit_index_i64(ctx, i0, expr->data.index.indices[0], i0b);
+				/* Bounds-check the ROW index against the row count (total/stride), applying this index's
+				 * failure policy (`M[i] !clamp` etc.; the default policy when none is written). The element
+				 * `M[i][j]` is reached by chaining `[j]` over this row pointer (the nested-slice-base path),
+				 * which bounds-checks the column against `stride` with its OWN policy. */
+				const char *row_idx = i0b;
+				emit_index_policy(ctx, expr->data.index.base, expr->data.index.indices[0], 1,
+				                  expr->data.index.policy_elided, total / stride, NULL, expr->data.index.policy, i0b,
+				                  &row_idx);
 				char *flat = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", flat, i0b, stride);
-				if (expr->data.index.index_count == 2) {
-					char i1[256], i1b[256];
-					codegen_expression(ctx, expr->data.index.indices[1], i1);
-					emit_index_i64(ctx, i1, expr->data.index.indices[1], i1b);
-					char *f2 = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = add i64 %s, %s\n", f2, flat, i1b);
-					flat = f2;
-				}
+				buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", flat, row_idx, stride);
 				char *gep = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* @%s, i64 0, i64 %s\n", gep, total,
-				                  lt, total, lt, bn, flat);
-				if (expr->data.index.index_count == 2) { /* a scalar element — load it */
-					char *val = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", val, lt, lt, gep);
-					/* promote a char/byte (i8) element to i32 for int/variadic contexts, like the other
-					 * index paths (printf %c/%d, compares). */
-					if (strcmp(lt, "i8") == 0) {
-						char *ext = gen_value_name(ctx);
-						buffer_append_fmt(ctx, "  %s = zext i8 %s to i32\n", ext, val);
-						val = ext;
-					}
-					strcpy(result_buf, val);
-				} else { /* a row — return the element pointer (a [stride]T slice base) */
-					strcpy(result_buf, gep);
-				}
+				                  lt, total, lt, bn, flat); /* the row element pointer (a [stride]T slice base) */
+				strcpy(result_buf, gep);
 				break;
 			}
 		}
@@ -3056,7 +3042,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		 * primitive and feed them into the normal slice-index path, so element typing AND the bounds
 		 * policy apply exactly as for a slice variable. */
 		int nested_slice_base = 0;
-		if ((expr->data.index.base->kind == HIR_EXPR_CALL || expr->data.index.base->kind == HIR_EXPR_SLICE) &&
+		if ((expr->data.index.base->kind == HIR_EXPR_CALL || expr->data.index.base->kind == HIR_EXPR_SLICE ||
+		     expr->data.index.base->kind == HIR_EXPR_INDEX) &&
 		    expr->data.index.index_count == 1) {
 			char sp[256], sl[256];
 			const char *se = NULL;
@@ -3087,22 +3074,10 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		                              ? get_shaped_field_info(ctx, expr->data.index.base, &shaped_rank)
 		                              : NULL;
 
-		if (expr->data.index.index_count == 2 && shaped_elem) {
-			/* 2D: [entity, elem] → flat = entity * rank + elem */
-			char row_raw[256], elem_raw[256], row_buf[256], elem_buf[256];
-			codegen_expression(ctx, expr->data.index.indices[0], row_raw);
-			codegen_expression(ctx, expr->data.index.indices[1], elem_raw);
-			/* Coerce both indices to i64 — the flat-index math is i64 (a narrower
-			 * loop var like i32 would otherwise mismatch the `mul i64`). */
-			emit_index_i64(ctx, row_raw, expr->data.index.indices[0], row_buf);
-			emit_index_i64(ctx, elem_raw, expr->data.index.indices[1], elem_buf);
-			char *scaled = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", scaled, row_buf, shaped_rank);
-			char *flat = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = add i64 %s, %s\n", flat, scaled, elem_buf);
-			strcpy(idx_buf, flat);
-		} else if (expr->data.index.index_count == 1 && shaped_elem) {
-			/* Single-index on shaped array: entity * rank → returns slice pointer, no load */
+		if (expr->data.index.index_count == 1 && shaped_elem) {
+			/* Single-index on a shaped column → entity * rank, returns the ROW slice pointer (no load).
+			 * 2-D column access `col[i][j]` chains `[j]` over this row (the nested-slice-base path), each
+			 * index with its own bounds policy — there is no comma `col[i, j]` form. */
 			char row_raw[256], row_buf[256];
 			codegen_expression(ctx, expr->data.index.indices[0], row_raw);
 			emit_index_i64(ctx, row_raw, expr->data.index.indices[0], row_buf);

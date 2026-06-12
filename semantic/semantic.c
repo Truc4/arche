@@ -57,6 +57,7 @@ typedef struct {
 	                      borrow) */
 	int is_const;      /* 1 if an immutable local constant (`k :: e` / `k : T : e`) */
 	int is_referenced; /* 1 once any read-site (EXPR_NAME, field-base, etc.) touched this binding */
+	int borrows_local; /* 1 if bound from a slice/row of a FRESH LOCAL array — returning it would dangle */
 	SourceLoc loc;     /* declaration site, for the must-consume / unused-local diagnostics */
 } VariableInfo;
 
@@ -967,6 +968,7 @@ static void add_variable_with_archetype(SemanticContext *ctx, const char *name, 
 	var->is_out_place = 0;
 	var->is_const = 0;
 	var->is_referenced = 0;
+	var->borrows_local = 0;
 	var->loc.line = 0;
 	var->loc.column = 0;
 
@@ -1799,6 +1801,68 @@ done:
 	free(idnt);
 }
 
+/* TypeId-native type of an expression for the side model — preserves the slice/array structure that
+ * the stringly resolver collapses to its element. A `b[lo:hi]` slice and a PARTIAL matrix index `M[i]`
+ * (a row) become a real `TYK_SLICE([elem])`; everything else falls back to the string round-trip. This
+ * is what makes slice/row binds carry `[]T` into the model (so hints, tycheck, and the dangling-return
+ * check all see a slice, not a scalar). */
+static TypeId sem_expr_type_id(SemanticContext *ctx, SyntaxView v) {
+	SyntaxNodeKind k = sv_kind(v);
+	/* A NAME referring to a slice/array variable or param keeps its real `[]T`/`[N]T` type — the
+	 * string path collapses it to the element (`sem_tyid_name` of an array yields the element base), so
+	 * read `var->type_id` directly. Keeps both sides of a slice assignment (`out = raw[0:n]`) in sync. */
+	if (k == SN_NAME_EXPR) {
+		char *nm = sv_name_expr_dup(v);
+		if (nm) {
+			VariableInfo *var = find_variable(ctx, nm);
+			if (var && var->type_id != TYID_UNKNOWN) {
+				TyKind tk = tyid_kind(ctx->ty_arena, var->type_id);
+				if (tk == TYK_SLICE || tk == TYK_ARRAY) {
+					free(nm);
+					return var->type_id;
+				}
+			}
+			/* a NAME referring to an array/slice VALUE CONST keeps its real `[]T`. Checked even when a
+			 * VariableInfo exists, because a static-array const's VariableInfo carries the ELEMENT type
+			 * (not the array), so the var check above misses it. Mirrors sem_decl_type_id's array case. */
+			for (int i = 0; i < ctx->decl_count; i++) {
+				DeclSummary *d = ctx->decls[i];
+				if (d->kind == DECL_STATIC && d->static_kind == STATIC_KIND_ARRAY && d->name &&
+				    strcmp(d->name, nm) == 0) {
+					free(nm);
+					return tyid_of_slice(ctx->ty_arena, d->static_type_id);
+				}
+			}
+			free(nm);
+		}
+	}
+	if (k == SN_SLICE_EXPR || k == SN_INDEX_EXPR) {
+		int is_slice_val = (k == SN_SLICE_EXPR);
+		if (k == SN_INDEX_EXPR) {
+			/* a partial index of a matrix const (fewer indices than its rank) is a row slice */
+			char *bn = sv_name_expr_dup(v);
+			int stride = 0;
+			const char *met = bn ? name_const_matrix(ctx, bn, &stride) : NULL;
+			free(bn);
+			if (met && stride > 1) {
+				int ni = 0;
+				while (sv_present(sem_node_at_expr(v, ni)))
+					ni++;
+				is_slice_val = (ni <= 1);
+			}
+		}
+		if (is_slice_val) {
+			const char *es = resolve_expression_type(ctx, v); /* element (or "char_array" for a char row) */
+			const char *elem = (es && strcmp(es, "char_array") == 0) ? "char" : es;
+			return tyid_of_slice(ctx->ty_arena, sem_tyid_of_name(ctx, elem ? elem : "int"));
+		}
+	}
+	const char *resolved = resolve_expression_type(ctx, v);
+	const char *nom = nominal_type_of_expr(ctx, v);
+	int nomset = nom && is_type_alias(ctx, nom) && !alias_is_transparent(ctx, nom);
+	return sem_tyid_of_name(ctx, nomset ? nom : resolved);
+}
+
 static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 	if (!sv_present(v))
 		return;
@@ -2112,12 +2176,9 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 	/* Resolve + record this expression's type in the side model, keyed by node id. The interned id
 	 * prefers the distinct tier-2 nominal (so a `meters` value keeps its identity); else the resolved
 	 * backing. This is the single home for an expression's type — read by tycheck + lowering. */
-	const char *resolved = resolve_expression_type(ctx, v);
 	if (ctx->model) {
 		uint32_t nid = sv_id(v);
-		const char *nom = nominal_type_of_expr(ctx, v);
-		int nomset = nom && is_type_alias(ctx, nom) && !alias_is_transparent(ctx, nom);
-		sem_model_set_expr_type_id(ctx->model, nid, sem_tyid_of_name(ctx, nomset ? nom : resolved));
+		sem_model_set_expr_type_id(ctx->model, nid, sem_expr_type_id(ctx, v));
 	}
 }
 
@@ -2373,6 +2434,24 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 
 		check_shadows_callable(ctx, bind_name, loc);
 		add_variable(ctx, bind_name, btype_id);
+		/* Borrow-source taint: a bind whose RHS is a freshly-formed slice/row of a FRESH LOCAL array
+		 * (`r := loc[0:3]` / `r := M[i]` of a local matrix) makes `r` borrow stack storage that is
+		 * reclaimed on return — so `return r` would dangle. Mark it (propagating from a tainted base) so
+		 * the return check rejects it, WITHOUT the over-broad "is it a byref local" proxy that also trips
+		 * safe own-buffer / param-borrow returns. A slice of a param/own/global is NOT tainted. */
+		if (!has_btype && sv_present(value_view) &&
+		    (sv_kind(value_view) == SN_SLICE_EXPR || sv_kind(value_view) == SN_INDEX_EXPR)) {
+			char *vbn = sv_name_expr_dup(value_view);
+			VariableInfo *vbv = vbn ? find_variable(ctx, vbn) : NULL;
+			free(vbn);
+			int base_is_fresh_local =
+			    vbv && !vbv->is_param && type_is_byref_aggregate(ctx->ty_arena, vbv->type_id);
+			if ((base_is_fresh_local || (vbv && vbv->borrows_local))) {
+				VariableInfo *rv2 = find_variable(ctx, bind_name);
+				if (rv2)
+					rv2->borrows_local = 1;
+			}
+		}
 
 		/* Type annotation → inferred/nominal type. */
 		if (ctx->scope_count > 0) {
@@ -2611,8 +2690,38 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 					fprintf(stderr, "Error: cannot return a local array by value (array copy-out is not implemented); "
 					                "return an `own` parameter or thread a caller-provided buffer instead\n");
 					ctx->error_count++;
+				} else if (ctx->current_func && rvar && rvar->borrows_local) {
+					/* `r := loc[0:3]; return r` — `r` borrows a fresh local's storage (reclaimed on return),
+					 * so handing it back dangles. The direct form `return loc[0:3]` is caught below. */
+					fprintf(stderr, "Error: cannot return a slice of a local array — its storage does not outlive the "
+					                "function; slice an `own`/caller-provided buffer or a global instead\n");
+					ctx->error_count++;
 				}
 				free(nm);
+			}
+			/* A freshly-formed slice/row of a LOCAL stack array escaping by return is a dangling pointer
+			 * — the local's storage is reclaimed on return. Only applies when the func actually returns a
+			 * slice (so a scalar element return `return a[i]` from an `int` func is untouched). A slice of
+			 * a PARAM (the caller's buffer) or a const/static global is fine (that storage outlives the
+			 * call), so only a non-param local byref-aggregate base is rejected. Mirrors the whole-array
+			 * check above, for `base[lo:hi]` and the matrix row `M[i]`. */
+			else if (ctx->current_func && (sv_kind(rv) == SN_SLICE_EXPR || sv_kind(rv) == SN_INDEX_EXPR) &&
+			         ctx->current_func->return_type_count > 0) {
+				TypeId rid = ctx->current_func->return_type_ids[0];
+				if (rid == TYID_UNKNOWN && ctx->current_func->return_type_nodes &&
+				    sv_present(ctx->current_func->return_type_nodes[0]))
+					rid = sem_intern_view(ctx, ctx->current_func->return_type_nodes[0]);
+				if (type_is_byref_aggregate(ctx->ty_arena, rid)) {
+					char *bn = sv_name_expr_dup(rv);
+					VariableInfo *bvar = bn ? find_variable(ctx, bn) : NULL;
+					if (bvar && type_is_byref_aggregate(ctx->ty_arena, bvar->type_id) && !bvar->is_param) {
+						fprintf(stderr,
+						        "Error: cannot return a slice of a local array — its storage does not outlive the "
+						        "function; slice an `own`/caller-provided buffer or a global instead\n");
+						ctx->error_count++;
+					}
+					free(bn);
+				}
 			}
 		}
 		break;

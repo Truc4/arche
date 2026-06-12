@@ -213,8 +213,12 @@ static TypeId synth(TyCtx *cx, SyntaxView e) {
 		SyntaxView r = sem_node_at_expr(e, 1);
 		TypeId lt = synth(cx, l);
 		TypeId rt = synth(cx, r);
-		if (!tyid_is_unknown(lt) && !tyid_is_unknown(rt) && !tyid_equal(lt, rt) &&
-		    !prim_binop_compatible(cx->arena, lt, rt)) {
+		/* A slice/array (an aggregate) is not an arithmetic/comparison operand — `M[i] + 1`, `s == t`.
+		 * (This is now reachable because index/slice exprs carry real `[]T`/`[N]T` types.) */
+		TyKind lk = tyid_kind(cx->arena, lt), rk = tyid_kind(cx->arena, rt);
+		int aggr_operand = lk == TYK_SLICE || lk == TYK_ARRAY || rk == TYK_SLICE || rk == TYK_ARRAY;
+		if (!tyid_is_unknown(lt) && !tyid_is_unknown(rt) &&
+		    (aggr_operand || (!tyid_equal(lt, rt) && !prim_binop_compatible(cx->arena, lt, rt)))) {
 			char want[64];
 			char have[64];
 			tyid_display(cx->arena, lt, want, sizeof(want));
@@ -375,6 +379,18 @@ static void check(TyCtx *cx, SyntaxView e, TypeId expected, const char *where) {
 		return;
 	if (sub != 0 && prim_silently_compatible(cx->arena, got, expected))
 		return;
+	/* A buffer/slice GOT decays to its data POINTER at integer / FFI boundaries (syscall args, extern
+	 * C-ABI params, pointer-width slots): accept a slice/array where an integer is expected. This is the
+	 * SAME coercion a buffer used before slices became first-class (when it collapsed to `char`, an
+	 * intish type) — now expressed at the slice level rather than relying on the collapse. */
+	TyKind gk = tyid_kind(cx->arena, got);
+	if (gk == TYK_SLICE || gk == TYK_ARRAY) {
+		char en[32];
+		tyid_display(cx->arena, expected, en, sizeof(en));
+		if (strcmp(en, "int") == 0 || strcmp(en, "char") == 0 || strcmp(en, "i64") == 0 ||
+		    strcmp(en, "opaque") == 0 || is_width_int_name(en))
+			return;
+	}
 	char want[128];
 	char have[128];
 	tyid_display(cx->arena, expected, want, sizeof(want));

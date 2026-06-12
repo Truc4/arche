@@ -1,0 +1,18 @@
+// Slices, array-consts, matrix rows, sub-slices, and string buffers are FIRST-CLASS: their inferred
+// binds show the real `[]T` / `[N]T` type as an inlay hint (previously they collapsed to the scalar
+// element, e.g. `i32`). The enclosing proc form is hidden by default.
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 11 10 1 1 type []i32"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 12 10 1 1 type []i32"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 14 10 1 1 type []i32"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 15 10 1 1 type []char"
+XS :: { 10, 20, 30 };
+M  :: { {1, 2, 3}, {4, 5, 6} };
+main :: proc() {
+  whole := XS;
+  row   := M[1];
+  buf: [5]int;
+  view  := buf[1:4];
+  label := "hi";
+  fmt.printf("%d%d%d%d\n", whole[0], row[0], view[0], label.length);
+}
+#import { fmt }

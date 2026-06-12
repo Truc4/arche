@@ -227,9 +227,19 @@ Individual element access requires explicit column reference:
 ```arche
 Particle.mass[i]      // scalar column
 Particle.pos_x[i]     // tuple column (flat access), x component of position at i
-messages.text[i, j]   // 2D indexing
-matrices.data[i, x, y] // 3D indexing
+messages.text[i][j]   // 2-D: chained, one index per bracket
 ```
+
+Multi-dimensional access is **chained** — `a[i][j]`, one index per bracket (the former comma form
+`a[i, j]` is gone). Chaining lets **each index carry its own failure policy**, which a single
+comma-bracket could not express:
+
+```arche
+grid[row] !clamp [col] !abort   // clamp the row into range; abort if the column is out of bounds
+```
+
+A partial index yields the sub-row as a `[]T` slice (`messages.text[i]` is a `[]char`), so the chain
+is just slice indexing applied one dimension at a time.
 
 This keeps the language focused on whole-array transformations.
 

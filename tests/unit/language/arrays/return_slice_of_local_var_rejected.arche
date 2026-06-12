@@ -1,0 +1,14 @@
+// A slice bound from a fresh LOCAL array (`r := loc[0:3]`) borrows stack storage reclaimed on return,
+// so `return r` would dangle. Rejected by borrow-source tracking — the indirect form of the direct
+// `return loc[0:3]` rejection. A slice of an `own`/caller buffer or a global is NOT tainted.
+// RUN: ! %arche build -o %t %s 2>&1 | grep -q "cannot return a slice of a local"
+mk :: func() -> []int {
+  loc: [5]int;
+  loc[0] = 7;
+  r := loc[0:3];
+  return r;
+}
+main :: proc() {
+  x := mk();
+  _ := x;
+}

@@ -409,7 +409,7 @@ static int path_is_core(const char *path) {
 /* Render an internal type name as it would be written in arche source (longhand). */
 static const char *display_type(const char *ty) {
 	if (strcmp(ty, "char_array") == 0 || strcmp(ty, "str") == 0)
-		return "char[]"; /* the interned string prim displays as "str"; the inlay hint shows char[] */
+		return "[]char"; /* a string/char buffer is a `[]char` slice — matches how real slices render */
 	return ty;
 }
 

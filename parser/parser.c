@@ -1248,9 +1248,11 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 
 /* ========== EXPRESSION PARSING ========== */
 
-/* After a postfix `[` is matched, parse either an index list `a, b, …` or a slice `lo:hi` (lo/hi
- * each optional: `[:hi]`, `[lo:]`, `[:]`). Sets *out_slice=1 for the slice form. Consumes the `]`.
- * A `:` inside the brackets is what marks a slice. */
+/* After a postfix `[` is matched, parse a SINGLE index `a` or a slice `lo:hi` (lo/hi each optional:
+ * `[:hi]`, `[lo:]`, `[:]`). Sets *out_slice=1 for the slice form. Consumes the `]`. A `:` inside the
+ * brackets marks a slice. Multi-dimensional access is CHAINED — `a[i][j]`, one index per bracket —
+ * which lets each index carry its own failure policy (`a[i] !clamp [j] !abort`); the former comma
+ * form `a[i, j]` couldn't, and is now a clear error. */
 static int parse_bracket_index_or_slice(Parser *parser, int *out_slice) {
 	*out_slice = 0;
 	if (check(parser, TOK_COLON)) { /* [:hi] / [:] — no lo */
@@ -1268,10 +1270,10 @@ static int parse_bracket_index_or_slice(Parser *parser, int *out_slice) {
 			if (!check(parser, TOK_RBRACKET))
 				if (!parse_expression(parser))
 					return 0;
-		} else { /* index: optional comma list */
-			while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACKET))
-				if (!parse_expression(parser))
-					return 0;
+		} else if (check(parser, TOK_COMMA)) {
+			error(parser, "multi-dimensional indexing is chained `a[i][j]` (one index per bracket), not "
+			              "comma `a[i, j]` — so each index can take its own failure policy");
+			return 0;
 		}
 	}
 	if (!match(parser, TOK_RBRACKET)) {
@@ -1524,6 +1526,24 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 
 /* Prefix unary operators: `-x` (negate) and `!x` (logical not). Binds tighter
  * than binary operators, looser than postfix (calls/indexing in primary). */
+/* Consume an optional postfix failure-policy `!policy` / `?policy` on a just-parsed index/slice/call,
+ * wrapping it as an SN_POLICY_REF child of that node. With chained indexing this runs after EACH `[i]`
+ * so every index carries its own policy — `foo[i] !clamp [j] !abort`. */
+static int parse_opt_policy(Parser *parser, SyntaxNodeKind kind) {
+	if ((kind == SN_INDEX_EXPR || kind == SN_SLICE_EXPR || kind == SN_CALL_EXPR) &&
+	    (check(parser, TOK_BANG) || check(parser, TOK_QUESTION))) {
+		int pol_cp = syntax_cp(parser);
+		advance(parser); /* consume '!' or '?' */
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected a policy name after the sigil (e.g. `a[i] !clamp`, `insert(P,x) ?reject`)");
+			return 0;
+		}
+		advance(parser); /* consume the policy ident */
+		syntax_wrap(parser, pol_cp, SN_POLICY_REF);
+	}
+	return 1;
+}
+
 static int parse_unary_expr(Parser *parser) {
 	int u_cp = syntax_cp(parser);
 	/* `move <expr>` / `copy <expr>` — call-site ownership markers; transparent to the
@@ -1548,6 +1568,10 @@ static int parse_unary_expr(Parser *parser) {
 	int p_cp = syntax_cp(parser);
 	SyntaxNodeKind prim_kind = SN_NAME_EXPR;
 	if (!parse_primary_expr(parser, &prim_kind))
+		return 0;
+	/* Policy on the FIRST postfix group (`a[i] !clamp`, `insert(P,x) ?reject`) — emitted before the
+	 * chaining loop so it's wrapped INTO the first index/call node. */
+	if (!parse_opt_policy(parser, prim_kind))
 		return 0;
 	/* General postfix CHAINING past the first group: a `.field` or `[index]`/`[lo:hi]` that follows a
 	 * closed `]`/`)` NESTS — the node parsed so far becomes the base of the next (`a[i].b` → FIELD over
@@ -1578,23 +1602,10 @@ static int parse_unary_expr(Parser *parser) {
 			if (!parse_bracket_index_or_slice(parser, &is_slice))
 				return 0;
 			prim_kind = is_slice ? SN_SLICE_EXPR : SN_INDEX_EXPR;
+			/* this index's own failure policy — `foo[i] !clamp [j] !abort` */
+			if (!parse_opt_policy(parser, prim_kind))
+				return 0;
 		}
-	}
-	/* Postfix failure-policy: `expr !policy` (panic, on a channel-less fallible op: index / slice /
-	 * call) or `expr ?policy` (handler, on a pool `insert(...)` call). A bare `!`/`?` here is
-	 * unambiguous — `!=` lexes as TOK_BANG_EQ, there is no infix `!`/`?` — so right after a completed
-	 * postfix op it can only be a policy marker. The sigil (`!` vs `?`) is kept inside the wrapped
-	 * SN_POLICY_REF node; lowering reads it to enforce sigil↔kind (panic vs handler). */
-	if ((prim_kind == SN_INDEX_EXPR || prim_kind == SN_SLICE_EXPR || prim_kind == SN_CALL_EXPR) &&
-	    (check(parser, TOK_BANG) || check(parser, TOK_QUESTION))) {
-		int pol_cp = syntax_cp(parser);
-		advance(parser); /* consume '!' or '?' */
-		if (!check(parser, TOK_IDENT)) {
-			error(parser, "Expected a policy name after the sigil (e.g. `a[i] !clamp`, `insert(P,x) ?reject`)");
-			return 0;
-		}
-		advance(parser); /* consume the policy ident */
-		syntax_wrap(parser, pol_cp, SN_POLICY_REF);
 	}
 	if (!syntax_single_node(parser, p_cp))
 		syntax_wrap(parser, p_cp, prim_kind);
