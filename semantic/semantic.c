@@ -8213,6 +8213,7 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 						break;
 					}
 				ds->static_has_init = sv_present(initv);
+				ds->static_init = initv; /* the `{…}` literal — also drives element/shape checks */
 			} else {
 				ds->static_kind = STATIC_KIND_SCALAR;
 				ds->static_type_id = full_id; /* UNKNOWN → inferred below */

@@ -264,6 +264,18 @@ static TypeId synth(TyCtx *cx, SyntaxView e) {
 	}
 	case SN_UNARY_EXPR:
 		return synth(cx, sem_first_expr(e));
+	case SN_ARRAY_LIT_EXPR: {
+		/* The aggregate's type is `[N]elem` where `elem` is the FIRST element's type (the same first-
+		 * element inference the static-decl path uses). Element-homogeneity is enforced in visit_expr so
+		 * the diagnostic fires exactly once per literal — synth stays a pure (silent) type producer. */
+		int n = sem_expr_count(e);
+		if (n == 0)
+			return TYID_UNKNOWN;
+		TypeId el0 = synth(cx, sem_node_at_expr(e, 0));
+		if (tyid_is_unknown(el0))
+			return TYID_UNKNOWN;
+		return tyid_of_array(cx->arena, el0, n);
+	}
 	default:
 		return TYID_UNKNOWN;
 	}
@@ -334,6 +346,20 @@ static int subtype_check(TyCtx *cx, TypeId got, TypeId expected) {
 			return 1;
 	}
 	return -1;
+}
+
+/* An array element is acceptable against the literal's inferred element type under the SAME rules an
+ * assignment uses: exact identity, a one-way distinct-subtype fit, or a silent int-family widening.
+ * Anything else (int vs float, int vs str, two unrelated nominals) is a genuine mixed-type literal. */
+static int element_matches(TyCtx *cx, TypeId got, TypeId expected) {
+	if (tyid_equal(got, expected))
+		return 1;
+	int sub = subtype_check(cx, got, expected);
+	if (sub == 1)
+		return 1;
+	if (sub != 0 && prim_silently_compatible(cx->arena, got, expected))
+		return 1;
+	return 0;
 }
 
 /* True if `t` is a distinct (non-transparent) nominal whose backing is `opaque` — a sealed handle
@@ -415,10 +441,35 @@ static void visit_expr(TyCtx *cx, SyntaxView e) {
 		break;
 	case SN_INDEX_EXPR:
 	case SN_SLICE_EXPR:
-	case SN_ARRAY_LIT_EXPR:
 		for (int i = 0, n = sem_expr_count(e); i < n; i++)
 			visit_expr(cx, sem_node_at_expr(e, i));
 		break;
+	case SN_ARRAY_LIT_EXPR: {
+		/* Walk each element, then enforce element-type homogeneity against the first element's type.
+		 * `{ 1, "x" }` / `{ 1, 1.5 }` are mixed-type literals (E0200); `{ 1, 2, 3 }` is fine. */
+		TypeId elem = TYID_UNKNOWN;
+		int have_elem = 0;
+		for (int i = 0, n = sem_expr_count(e); i < n; i++) {
+			SyntaxView el = sem_node_at_expr(e, i);
+			visit_expr(cx, el);
+			TypeId et = synth(cx, el);
+			if (tyid_is_unknown(et))
+				continue;
+			if (!have_elem) {
+				elem = et;
+				have_elem = 1;
+				continue;
+			}
+			if (element_matches(cx, et, elem))
+				continue;
+			char want[128];
+			char have[128];
+			tyid_display(cx->arena, elem, want, sizeof(want));
+			tyid_display(cx->arena, et, have, sizeof(have));
+			sem_emit_type_mismatch(cx->ctx, sem_node_loc(el.node), "array element", want, have);
+		}
+		break;
+	}
 	case SN_CALL_EXPR:
 		/* args already walked by synth_call via check(); don't double-walk */
 		break;
@@ -568,6 +619,13 @@ void tycheck_run(SemanticContext *ctx) {
 			for (int k = 0, sc = sem_stmt_count(d->body_node); k < sc; k++)
 				visit_stmt(&cx, sem_stmt_at(d->body_node, k), fn);
 		}
+
+		/* A top-level array/matrix initializer (`XS : [3]int = { … }`, `M :: { {…}, {…} }`) lives outside
+		 * any proc body, so the statement walk never reaches it. Walk the literal directly so its element-
+		 * homogeneity is checked the same as a local — `{ 1, "x", 3 }` is mixed-type wherever it appears. */
+		if (d->kind == DECL_STATIC && d->static_kind == STATIC_KIND_ARRAY && d->static_has_init &&
+		    sv_present(d->static_init) && sv_kind(d->static_init) == SN_ARRAY_LIT_EXPR)
+			visit_expr(&cx, d->static_init);
 	}
 	/* The arena is owned by the SemanticContext (freed at its teardown), not here. */
 }
