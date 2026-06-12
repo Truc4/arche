@@ -354,8 +354,8 @@ static void check(TyCtx *cx, SyntaxView e, TypeId expected, const char *where) {
 	 * matching rich ids, so checking them would be spurious. This preserves the pre-Phase-3 coverage
 	 * (NAME + callable only). Encoding these checks is a deliberate follow-up with golden updates. */
 	switch (tyid_kind(cx->arena, expected)) {
+	case TYK_SLICE:
 	case TYK_ARRAY:
-	case TYK_SHAPED_ARRAY:
 	case TYK_HANDLE:
 	case TYK_TUPLE:
 	case TYK_ARCHETYPE_CATEGORY:

@@ -7,7 +7,7 @@ five :: func() -> int {
   return 5;
 }
 
-x: int = five() // folds to 5 at compile time
+x: int = five(); // folds to 5 at compile time
 
 main :: proc() {
   fmt.printf("x=%d\n", x);

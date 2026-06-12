@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s && %t | grep "predef_ok"
 #import { vstore fmt }
 
-Cell[8] // driver pool (the shape comes from vstore), >= the datasheet minimum of 4
+[8]Cell; // driver pool (the shape comes from vstore), >= the datasheet minimum of 4
 
 main :: proc() {
   insert(Cell, 1.0, 2.0)(_:, _:);

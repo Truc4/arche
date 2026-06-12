@@ -2,7 +2,7 @@
 // The `T(x)` conversion `res(5)` fabricates an opaque from an int and is rejected ("cannot construct
 // opaque").
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "construct opaque" %t.out
-res :: opaque
+res :: opaque;
 @allow(unused_function)
 takes :: func(h: res) -> int {
   return 0;

@@ -2,7 +2,7 @@
 // the catch-all. The scrutinee is inlined per arm.
 // RUN: %arche build -o %t %s && %t | grep "about"
 #import { fmt }
-route :: proc(path: char[])() {
+route :: proc(path: []char)() {
   match path {
   "/"      : fmt.printf("home\n");
   "/about" : fmt.printf("about\n");

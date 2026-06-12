@@ -248,9 +248,9 @@ static char *compute_shape_signature(SemanticContext *ctx, FieldSummary *fields,
 		FieldSummary *f = &fields[i];
 		const char *type_name = "unknown";
 		TyKind k = tyid_kind(ctx->ty_arena, f->type_id);
-		if (k == TYK_ARRAY)
+		if (k == TYK_SLICE)
 			type_name = "array";
-		else if (k == TYK_SHAPED_ARRAY)
+		else if (k == TYK_ARRAY)
 			type_name = "shaped_array";
 		else {
 			const char *n = sem_tyid_name(ctx, f->type_id);
@@ -974,7 +974,7 @@ static const char *resolve_expression_type(SemanticContext *ctx, SyntaxView v);
  * value (a freely-mutable local copy); opaque can't be indexed/assigned at all. */
 static int type_is_byref_aggregate(const TypeArena *a, TypeId t) {
 	TyKind k = tyid_kind(a, t);
-	return k == TYK_ARRAY || k == TYK_SHAPED_ARRAY;
+	return k == TYK_SLICE || k == TYK_ARRAY;
 }
 
 /* Implicit `move` of a bare move-only name in an ownership-taking position (defined below). */
@@ -1358,7 +1358,7 @@ static const char *resolve_func_return(SemanticContext *ctx, const char *func_na
 	TypeId rid = fs->return_type_ids[0];
 	TyKind rk = tyid_kind(ctx->ty_arena, rid);
 	/* An array return resolves to its ELEMENT base; a char array stays "char_array". */
-	if (rk == TYK_ARRAY || rk == TYK_SHAPED_ARRAY) {
+	if (rk == TYK_SLICE || rk == TYK_ARRAY) {
 		const char *en = sem_tyid_name(ctx, rid); /* resolves through to the element base */
 		return (en && strcmp(en, "char") == 0) ? "char_array" : en;
 	}
@@ -1672,7 +1672,7 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 				if (btk == TYK_NOMINAL)
 					arch = find_archetype(ctx, tyid_nominal_name(A, bt));
 				if (!arch && btk != TYK_TUPLE && btk != TYK_ARCHETYPE_CATEGORY) {
-					if ((btk == TYK_ARRAY || btk == TYK_SHAPED_ARRAY) &&
+					if ((btk == TYK_SLICE || btk == TYK_ARRAY) &&
 					    (strcmp(field_name, "cap") == 0 || strcmp(field_name, "capacity") == 0 ||
 					     strcmp(field_name, "length") == 0 || strcmp(field_name, "max_length") == 0))
 						goto done;
@@ -1681,10 +1681,10 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 					case TYK_NOMINAL:
 						kind_name = tyid_nominal_name(A, bt); /* archetype/opaque/scalar name */
 						break;
-					case TYK_ARRAY:
+					case TYK_SLICE:
 						kind_name = "array";
 						break;
-					case TYK_SHAPED_ARRAY:
+					case TYK_ARRAY:
 						kind_name = "shaped array";
 						break;
 					default:
@@ -1820,7 +1820,7 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 				if (var_is_opaque(ctx, cv))
 					sem_emit_cannot_copy_opaque(ctx, sem_node_loc(operand.node), nm);
 				else if (type_is_byref_aggregate(ctx->ty_arena, cv->type_id) &&
-				         !(tyid_kind(ctx->ty_arena, cv->type_id) == TYK_SHAPED_ARRAY && !cv->is_param))
+				         !(tyid_kind(ctx->ty_arena, cv->type_id) == TYK_ARRAY && !cv->is_param))
 					sem_emit_copy_unsupported(ctx, sem_node_loc(operand.node), nm);
 			}
 			free(nm);
@@ -1954,7 +1954,7 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 				/* a `T[]` slice cannot satisfy a sized `T[N]` parameter */
 				for (int j = 0; j < n; j++) {
 					ParamSummary *p = &params[j];
-					if (tyid_kind(ctx->ty_arena, p->type_id) != TYK_SHAPED_ARRAY)
+					if (tyid_kind(ctx->ty_arena, p->type_id) != TYK_ARRAY)
 						continue;
 					SyntaxView a = sem_node_at_expr(v, j);
 					while (sv_present(a) && sv_kind(a) == SN_UNARY_EXPR &&
@@ -1963,7 +1963,7 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 					if (sv_present(a) && sv_kind(a) == SN_NAME_EXPR && sv_count(a, SN_FIELD_NAME) == 0) {
 						char *nm = sv_name_expr_dup(a);
 						VariableInfo *av = find_variable(ctx, nm);
-						if (av && tyid_kind(ctx->ty_arena, av->type_id) == TYK_ARRAY) {
+						if (av && tyid_kind(ctx->ty_arena, av->type_id) == TYK_SLICE) {
 							fprintf(stderr,
 							        "Error: cannot pass a slice `T[]` to a sized `T[N]` parameter '%s' — a "
 							        "slice's length is only known at runtime; sizing flows one way "
@@ -2312,10 +2312,10 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 						const char *nn = tyid_nominal_name(ctx->ty_arena, btype_id);
 						if (nn && is_type_alias(ctx, nn) && !alias_is_transparent(ctx, nn))
 							var->nominal_type = nn;
-					} else if (bk == TYK_SHAPED_ARRAY || bk == TYK_ARRAY) {
+					} else if (bk == TYK_ARRAY || bk == TYK_SLICE) {
 						TypeId et = btype_id;
 						TyKind ek;
-						while ((ek = tyid_kind(ctx->ty_arena, et)) == TYK_SHAPED_ARRAY || ek == TYK_ARRAY)
+						while ((ek = tyid_kind(ctx->ty_arena, et)) == TYK_ARRAY || ek == TYK_SLICE)
 							et = tyid_elem(ctx->ty_arena, et);
 						ek = tyid_kind(ctx->ty_arena, et);
 						var->inferred_type = (ek == TYK_PRIM || ek == TYK_NOMINAL) ? sem_tyid_name(ctx, et) : NULL;
@@ -3686,12 +3686,12 @@ static int bnd_param_kind(SemanticContext *ctx, DeclSummary *d, const char *name
 			if (!ps[i].name || strcmp(ps[i].name, name) != 0)
 				continue;
 			TyKind k = tyid_kind(ctx->ty_arena, ps[i].type_id);
-			if (k == TYK_SHAPED_ARRAY) {
+			if (k == TYK_ARRAY) {
 				if (out_n)
-					*out_n = tyid_shaped_rank(ctx->ty_arena, ps[i].type_id);
+					*out_n = tyid_array_len(ctx->ty_arena, ps[i].type_id);
 				return 1;
 			}
-			if (k == TYK_ARRAY)
+			if (k == TYK_SLICE)
 				return 2;
 			return 0;
 		}
@@ -4546,9 +4546,9 @@ static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 			if (sv_present(t0)) {
 				TypeId tid = sem_intern_view(ctx, t0);
 				TyKind tk = tyid_kind(ctx->ty_arena, tid);
-				if (tk == TYK_SHAPED_ARRAY)
-					bnd_local_add(e, tgt, 1, tyid_shaped_rank(ctx->ty_arena, tid));
-				else if (tk == TYK_ARRAY)
+				if (tk == TYK_ARRAY)
+					bnd_local_add(e, tgt, 1, tyid_array_len(ctx->ty_arena, tid));
+				else if (tk == TYK_SLICE)
 					bnd_local_add(e, tgt, 2, 0);
 			}
 		}
@@ -4629,7 +4629,7 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 		case STATIC_KIND_SCALAR:
 			return d->static_type_id;
 		case STATIC_KIND_ARRAY:
-			return tyid_of_array(ctx->ty_arena, d->static_type_id);
+			return tyid_of_slice(ctx->ty_arena, d->static_type_id);
 		default:
 			return TYID_UNKNOWN; /* STATIC_KIND_ARCHETYPE */
 		}
@@ -5435,7 +5435,7 @@ TypeId sem_intern_view(SemanticContext *ctx, SyntaxView t) {
 		char *en = sem_txt_dup(sv_token(t, TOK_IDENT));
 		TypeId elem = (strcmp(en, "opaque") == 0) ? tyid_of_nominal(arena, "opaque") : sem_tyid_of_name(ctx, en);
 		free(en);
-		return tyid_of_array(arena, elem);
+		return tyid_of_slice(arena, elem);
 	}
 	case SN_TYPE_SHAPED_ARRAY: {
 		/* `T[a][b]…` — innermost element is the named type; each `[n]` adds a rank. */
@@ -5455,7 +5455,7 @@ TypeId sem_intern_view(SemanticContext *ctx, SyntaxView t) {
 			}
 		TypeId cur = elem;
 		for (int i = nr - 1; i >= 0; i--)
-			cur = tyid_of_shaped(arena, cur, ranks[i]);
+			cur = tyid_of_array(arena, cur, ranks[i]);
 		return cur;
 	}
 	case SN_TYPE_HANDLE: {
@@ -5540,7 +5540,7 @@ static const char *sem_tyid_name(SemanticContext *ctx, TypeId t) {
 	if (!ctx)
 		return NULL;
 	TypeArena *a = ctx->ty_arena;
-	while (tyid_kind(a, t) == TYK_ARRAY || tyid_kind(a, t) == TYK_SHAPED_ARRAY)
+	while (tyid_kind(a, t) == TYK_SLICE || tyid_kind(a, t) == TYK_ARRAY)
 		t = tyid_elem(a, t);
 	if (tyid_kind(a, t) == TYK_HANDLE)
 		return tyid_handle_name(a, t);
@@ -7636,23 +7636,10 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 			/* pool `Name[C](N){V}` — archetype name = dotted IDENT head before `[`; field values are
 			 * the expr nodes by phase ([cap] (len) {fields}). */
 			ds->static_kind = STATIC_KIND_ARCHETYPE;
+			/* prefix pool `[C]Name`: the archetype name is the top-level IDENT run AFTER the capacity
+			 * `[…]`, collected in the phase walk below (phase 0). */
 			char an[256];
 			int al = 0;
-			for (int i = 0; i < dv.node->child_count; i++) {
-				SyntaxElem *ch = &dv.node->children[i];
-				if (ch->tag != SE_TOKEN)
-					continue;
-				if (ch->as.token.kind == TOK_LBRACKET)
-					break;
-				if (ch->as.token.kind != TOK_IDENT)
-					continue;
-				if (al > 0 && al < (int)sizeof(an) - 1)
-					an[al++] = '.';
-				for (int k = 0; k < (int)ch->as.token.length && al < (int)sizeof(an) - 1; k++)
-					an[al++] = dv.src[ch->as.token.offset + k];
-			}
-			an[al] = '\0';
-			ds->name = sem_dupz(an);
 			int cap = dv.node->child_count + 1;
 			ds->static_fields = calloc(cap, sizeof(SyntaxView));
 			int phase = 0; /* 1=cap 2=len 3=fields */
@@ -7668,6 +7655,13 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 						phase = 3;
 					else if (tk == TOK_RBRACKET || tk == TOK_RPAREN || tk == TOK_RBRACE)
 						phase = 0;
+					else if (tk == TOK_IDENT && phase == 0) {
+						/* archetype name segment (top level, after the capacity `[]`) */
+						if (al > 0 && al < (int)sizeof(an) - 1)
+							an[al++] = '.';
+						for (int k = 0; k < (int)ch->as.token.length && al < (int)sizeof(an) - 1; k++)
+							an[al++] = dv.src[ch->as.token.offset + k];
+					}
 					continue;
 				}
 				SyntaxNodeKind k = ch->as.node->kind;
@@ -7695,13 +7689,15 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 					ds->static_fields[ds->static_field_count++] = ev;
 				}
 			}
+			an[al] = '\0';
+			ds->name = sem_dupz(an);
 		} else {
 			char *aname = sem_txt_dup(sv_token(dv, TOK_IDENT));
 			SyntaxView arr_ty = sem_type_at(dv, 0);
 			SyntaxView initv = sem_node_at_expr(dv, 0);
 			TypeId full_id = sem_intern_view(ctx, arr_ty);
 			TyKind fullk = tyid_kind(ctx->ty_arena, full_id);
-			int is_array = (fullk == TYK_SHAPED_ARRAY || fullk == TYK_ARRAY);
+			int is_array = (fullk == TYK_ARRAY || fullk == TYK_SLICE);
 			ds->name = aname;
 			if (is_array) {
 				ds->static_kind = STATIC_KIND_ARRAY;

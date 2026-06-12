@@ -6,7 +6,7 @@
 #import { io net }
 main :: proc() {
   io.stdout()(f:);
-  buf: char[8];
+  buf: [8]char;
   // net.send expects a `socket`; handing it an `fd` is the type error.
   net.send(f, buf);
 }

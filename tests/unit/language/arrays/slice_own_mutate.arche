@@ -4,7 +4,7 @@
 // because obtaining a mutable slice consumes the source.
 // RUN: %arche build -o %t %s && %t | grep -q "zeroed n=2"
 #import { fmt }
-zero :: func(own xs: int[]) -> int {
+zero :: func(own xs: []int) -> int {
   if (xs.length < 2) {
     return xs.length;
   }
@@ -14,7 +14,7 @@ zero :: func(own xs: int[]) -> int {
 }
 
 main :: proc() {
-  a: int[2];
+  a: [2]int;
   a[0] = 7;
   a[1] = 9;
   n := zero(move a);

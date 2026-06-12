@@ -2,6 +2,6 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "Undefined symbol 'fread'" %t.out
 #import { io }
 main :: proc() {
-  buf: char[16];
+  buf: [16]char;
   fread(0, buf, 16)(buf, _n:);
 }

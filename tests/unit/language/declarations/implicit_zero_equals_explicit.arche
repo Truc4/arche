@@ -4,8 +4,8 @@
 // name-based, so a global named `a`/`b`/`s` would shadow a core func's param of the same name.)
 // RUN: %arche build -o %t %s && %t | grep -q "imp=0 exp=0"
 #import { fmt }
-g_implicit: int // implicit: defaults to = 0
-g_explicit: int = 0 // explicit zero
+g_implicit: int; // implicit: defaults to = 0
+g_explicit: int = 0; // explicit zero
 
 main :: proc() {
   fmt.printf("imp=%d exp=%d\n", g_implicit, g_explicit);

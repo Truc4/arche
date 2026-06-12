@@ -1,10 +1,10 @@
 // linux backend for the `platform` device — selected by `[target.linux] platform = "linux"`.
-name :: func() -> char[] {
+name :: func() -> []char {
   return "linux";
 }
-sep :: func() -> char[] {
+sep :: func() -> []char {
   return "/";
 }
-null_device :: func() -> char[] {
+null_device :: func() -> []char {
   return "/dev/null";
 }

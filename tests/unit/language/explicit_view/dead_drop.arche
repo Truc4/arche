@@ -4,9 +4,9 @@
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "W0013 unused_function") -eq 0
 #import { fmt }
 #foreign {
-  free_widget :: proc(own w: widget)
+  free_widget :: proc(own w: widget);
 }
-widget :: opaque
+widget :: opaque;
 @drop(widget)
 wfree :: proc(own w: widget) {
   free_widget(move w)();

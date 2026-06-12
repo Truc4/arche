@@ -18,26 +18,26 @@ stderr :: proc()(f: fd) {
 }
 // open returns a negative errno on failure; map that to descriptor 0 so callers keep the
 // `fd == 0`-is-failure convention. open flags (x86-64 Linux): O_RDONLY=0; O_WRONLY|O_CREAT|O_TRUNC=577, mode 0644=420.
-fopen_read :: proc(path: char[])(f: fd) {
+fopen_read :: proc(path: []char)(f: fd) {
   os.syscall(2, path, 0, 0, 0, 0, 0)(r:);
   if (r < 0) {
     r = 0;
   }
   f = fd(r);
 }
-fopen_write :: proc(path: char[])(f: fd) {
+fopen_write :: proc(path: []char)(f: fd) {
   os.syscall(2, path, 577, 420, 0, 0, 0)(r:);
   if (r < 0) {
     r = 0;
   }
   f = fd(r);
 }
-fwrite :: proc(f: fd, buf: char[], n: int) {
+fwrite :: proc(f: fd, buf: []char, n: int) {
   os.syscall(1, f, buf, n, 0, 0, 0)(_w:);
 }
 // Lend `buf` (a borrow = backing store), get back a slice VIEW of the `n` bytes read. Out-only — the
 // byte count travels on the returned slice's `.length` (mirrors `net.recv`).
-fread :: proc(f: fd, buf: char[], n: int)(out: char[]) {
+fread :: proc(f: fd, buf: []char, n: int)(out: []char) {
   os.syscall(0, f, buf, n, 0, 0, 0)(rr:);
   k := i32(rr);
   if (k < 0) {
@@ -46,15 +46,15 @@ fread :: proc(f: fd, buf: char[], n: int)(out: char[]) {
   out = buf[0: k];
 }
 // Read up to the buffer's capacity. Thin alias for `fread(f, buf, buf.cap)`.
-read :: proc(f: fd, buf: char[])(out: char[]) {
+read :: proc(f: fd, buf: []char)(out: []char) {
   fread(f, buf, buf.cap)(r:);
   out = r;
 }
 // `own buf` — this fills the buffer byte-by-byte in arche code (not via a single FFI write), so it
 // must own a writable buffer; `move` it in and take back the line view.
-fread_line :: proc(f: fd, own buf: char[], n: int)(out: char[]) {
+fread_line :: proc(f: fd, own buf: []char, n: int)(out: []char) {
   i := 0;
-  ch: char[1];
+  ch: [1]char;
   for (; i < n - 1;) {
     if (i >= buf.length) {
       break; // guard buf[i] below
@@ -81,29 +81,29 @@ fclose :: proc(f: fd) {
   os.syscall(3, f, 0, 0, 0, 0, 0)(_c:);
 }
 
-stdout_write :: proc(buf: char[], n: int) {
+stdout_write :: proc(buf: []char, n: int) {
   os.write(1, buf, n);
 }
-stderr_write :: proc(buf: char[], n: int) {
+stderr_write :: proc(buf: []char, n: int) {
   os.write(2, buf, n);
 }
-stdin_read :: proc(buf: char[], n: int)(out: char[]) {
+stdin_read :: proc(buf: []char, n: int)(out: []char) {
   os.read(0, buf, n)(r:);
   out = r;
 }
 
 // File-handle convenience wrappers (`io.open`, `io.read_chunk`, …).
-open :: proc(own path: char[])(f: fd) {
+open :: proc(own path: []char)(f: fd) {
   fopen_read(move path)(f);
 }
 close :: proc(f: fd) {
   fclose(f);
 }
 skip_header :: proc(f: fd) {
-  line: char[256];
+  line: [256]char;
   fread_line(f, move line, 256)(_discard:);
 }
-read_chunk :: proc(f: fd, buf: char[], size: int)(out: char[]) {
+read_chunk :: proc(f: fd, buf: []char, size: int)(out: []char) {
   fread(f, buf, size)(r:);
   out = r;
 }
@@ -113,7 +113,7 @@ read_chunk :: proc(f: fd, buf: char[], size: int)(out: char[]) {
 // Returns the mapped file as a length-carried slice VIEW (mirrors net.recv / io.fread: the slice op
 // is what propagates the C-side pointer back out through this wrapper). The byte count rides on
 // `data.length`, and `io.file_size` still reports it as i64 for >2 GB files.
-file_map :: proc(own path: char[])(data: char[]) {
+file_map :: proc(own path: []char)(data: []char) {
   arche_file_map(move path)(raw:);
   arche_file_size()(n: i64);
   data = raw[0: n];
@@ -121,7 +121,7 @@ file_map :: proc(own path: char[])(data: char[]) {
 file_size :: proc()(n: i64) {
   arche_file_size()(n);
 }
-file_unmap :: proc(own data: char[], size: i64) {
+file_unmap :: proc(own data: []char, size: i64) {
   arche_file_unmap(move data, size);
 }
 
@@ -130,7 +130,7 @@ file_unmap :: proc(own data: char[], size: i64) {
 // wrappers above are public (the C symbols stay linkable, an unavoidable ABI fact).
 #module
 #foreign {
-  arche_file_map   :: proc(own path: char[])(data: char[])
-  arche_file_size  :: proc()(n: i64)
-  arche_file_unmap :: proc(own data: char[], size: i64)
+  arche_file_map   :: proc(own path: []char)(data: []char);
+  arche_file_size  :: proc()(n: i64);
+  arche_file_unmap :: proc(own data: []char, size: i64);
 }

@@ -9,7 +9,7 @@
 /// fmt.assert(atoi("-7") == -7, "atoi -7\n");
 /// fmt.assert(atoi("13abc") == 13, "atoi stops at non-digit\n");
 /// ```
-atoi :: func(s: char[]) -> int {
+atoi :: func(s: []char) -> int {
   i    := 0;
   sign := 1;
   if (s.length > 0 && s[0] == '-') {
@@ -30,7 +30,7 @@ atoi :: func(s: char[]) -> int {
 }
 
 /// Parse a leading (optionally signed) decimal: integer part then optional fraction, like libc atof.
-atof :: func(s: char[]) -> float {
+atof :: func(s: []char) -> float {
   i    := 0;
   sign := 1.0;
   if (s.length > 0 && s[0] == '-') {

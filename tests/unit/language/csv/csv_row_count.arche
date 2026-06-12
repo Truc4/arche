@@ -5,7 +5,7 @@ main :: proc() {
   io.open("tests/fixtures/data.csv")(fd:);
   io.skip_header(fd);
   rows := 0;
-  buf: char[65536];
+  buf: [65536]char;
   io.read_chunk(fd, buf, 65536)(v:);
   pos := 0;
   for (; pos < v.length;) {

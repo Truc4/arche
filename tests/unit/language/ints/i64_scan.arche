@@ -2,7 +2,7 @@
 // i64 arithmetic past 2^31, comparison, loop counter, and array indexing.
 #import { fmt }
 main :: proc() {
-  buf: char[16];
+  buf: [16]char;
   buf[0] = 'a';
   buf[1] = 'b';
   buf[2] = 'c';

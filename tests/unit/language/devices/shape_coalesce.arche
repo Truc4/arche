@@ -5,7 +5,7 @@
 #import { coaldev fmt }
 
 Pt :: arche { px, py } // the same shape coaldev defines — coalesces, does not duplicate
-Pt[8]
+[8]Pt;
 
 main :: proc() {
   insert(Pt, 10.0, 1.0)(_:, _:);

@@ -4,7 +4,7 @@
 // the variable-length mutate-and-hand-back idiom, kept single-writer by the linear `move`.
 // RUN: %arche build -o %t %s && %t | grep -q "len=4 a0=100 a1=200"
 #import { fmt }
-step :: func(own xs: int[], i: int, v: int) -> int[] {
+step :: func(own xs: []int, i: int, v: int) -> []int {
   if (i >= 0 && i < xs.length) {
     xs[i] = v;
   }
@@ -12,7 +12,7 @@ step :: func(own xs: int[], i: int, v: int) -> int[] {
 }
 
 main :: proc() {
-  a: int[4];
+  a: [4]int;
   a := step(move a, 0, 100);
   a := step(move a, 1, 200);
   fmt.printf("len=%d a0=%d a1=%d\n", a.length, a[0], a[1]);

@@ -7,7 +7,7 @@
 // success line prints the output path, which also contains the substring "redundant_guard".)
 // RUN: test $(grep -cF "[redundant_guard]" %t.out) -eq 1
 #import { fmt }
-dup :: func(s: char[]) -> int {
+dup :: func(s: []char) -> int {
   acc := 0;
   for (i := 0; i < s.length; i = i + 1) {
     if (i >= s.length) { // re-tests the loop condition → W0020
@@ -17,7 +17,7 @@ dup :: func(s: char[]) -> int {
   }
   return acc;
 }
-keep :: func(s: char[], lim: int) -> int {
+keep :: func(s: []char, lim: int) -> int {
   acc := 0;
   for (i := 0; i < s.length; i = i + 1) {
     if (i >= lim) { // a DIFFERENT bound — real early-out, NOT flagged

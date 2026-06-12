@@ -1,0 +1,11 @@
+// Array of strings = NUL-padded char matrix, NO pointer indirection. `{ "a", "bb", "ccc" }` infers
+// `[3][3]char` (rows padded to the widest = 3). Row 2 is `"ccc"` (exactly fills the width).
+// `S[i]` is a `[3]char` row that decays to `[]char`. (RED until N-D char-matrix consts land.)
+// RUN: %arche build -o %t %s && %t | grep -x "ccc"
+#import { os }
+S :: { "a", "bb", "ccc" };
+main :: proc() {
+  row :: S[2];
+  os.write(1, row, 3);
+  os.write(1, "\n", 1);
+}

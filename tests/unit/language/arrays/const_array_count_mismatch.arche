@@ -1,0 +1,6 @@
+// A declared `[3]int` with the wrong number of elements is a compile error (the literal's count is
+// checked against the binding's size). (RED until prefix syntax + {..} literals land.)
+// RUN: ! %arche build -o %t %s 2>%t.err
+// RUN: grep -iE "element|count|size|mismatch" %t.err
+XS : [3]int : { 1, 2 };
+main :: proc() {}

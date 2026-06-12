@@ -4,7 +4,7 @@
 // A fixed `char[8]` buffer holds whatever was written; writing "hi\0" makes strlen report 2 (native
 // code would instead carry the length on a sub-slice `buf[0:n]`).
 #import { str fmt }
-slen :: proc(s: char[])(r: int) {
+slen :: proc(s: []char)(r: int) {
   r = str.strlen(s);
 }
 
@@ -14,7 +14,7 @@ main :: proc() {
   x := "hello";
   slen(x)(var:); // literal-bound variable → length 5
 
-  buf: char[8];
+  buf: [8]char;
   buf[0] = 'h';
   buf[1] = 'i';
   buf[2] = 0; // NUL-terminate so the C strlen stops at the content

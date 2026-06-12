@@ -4,6 +4,6 @@
 // The doctest drives the shape with the pool auto-provided (device doctests compile as generated
 // drivers, where the requirement becomes the real allocation).
 // RUN: true
-pos :: float
-vel :: float
-Particle[4]
+pos :: float;
+vel :: float;
+[4]Particle;

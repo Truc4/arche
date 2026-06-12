@@ -2,13 +2,13 @@
 #import { parse fmt os }
 Transaction :: arche { price :: float, quantity :: int }
 
-Transaction[100](100) {
+[100]Transaction(100) {
   price: 0.0, quantity: 0,
 }
 
 main :: proc() {
   os.open("../../../../../tests/fixtures/transactions.csv", 0)(fd:);
-  buf: char[256];
+  buf: [256]char;
   os.read(fd, buf, 256)(data:);
   os.close(move fd);
   fmt.printf("data.length=%d\n", data.length);
@@ -23,8 +23,8 @@ main :: proc() {
     }
     pos = pos + 1;
   }
-  price_str : char[32];
-  qty_str   : char[32];
+  price_str : [32]char;
+  qty_str   : [32]char;
   for (; idx < 100;) {
     if (line_start >= data.length) {
       break;

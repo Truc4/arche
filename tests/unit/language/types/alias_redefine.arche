@@ -1,8 +1,8 @@
 // A type name may not be redefined with a *different* backing (redefinition must agree).
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "different backing" %t.out
 #import { fmt }
-thing :: int
-thing :: float
+thing :: int;
+thing :: float;
 main  :: proc() {
   fmt.printf("unreachable\n");
 }

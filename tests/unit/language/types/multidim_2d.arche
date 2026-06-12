@@ -1,8 +1,8 @@
 // RUN: %arche build -o %t %s && %t | grep "value:"
 #import { fmt }
-Matrix :: arche { data :: float[10] }
+Matrix :: arche { data :: [10]float }
 
-Matrix[5]
+[5]Matrix;
 
 main :: proc() {
   insert(Matrix, 1.5)(_:, _:);

@@ -2,7 +2,7 @@
 // an int-typed constant cannot take a float literal.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "declared .i32. but its value is a float literal" %t.out
 #import { fmt }
-bad: int: 3.5
+bad: int: 3.5;
 main :: proc() {
   fmt.printf("unreachable\n");
 }

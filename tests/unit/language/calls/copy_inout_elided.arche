@@ -5,9 +5,9 @@
 // — still copies; that is a different test.)
 // RUN: %arche build --emit llvm-ir -o %t.ll %s ; ! grep -q "llvm.memcpy" %t.ll
 #foreign {
-  sink :: proc(own buf: char[], n: int)(buf: char[], r: int)
+  sink :: proc(own buf: []char, n: int)(buf: []char, r: int);
 }
 main :: proc() {
-  b: char[64];
+  b: [64]char;
   sink(copy b, 64)(b, _r:);
 }

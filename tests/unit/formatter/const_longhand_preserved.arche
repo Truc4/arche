@@ -2,7 +2,7 @@
 // (the declared type is meaningful and must not be dropped).
 // RUN: %arche fmt %s | grep -F "answer : int : 42"
 #import { fmt }
-answer: int: 42
+answer: int: 42;
 
 main :: proc() {
   fmt.printf("%d\n", answer);

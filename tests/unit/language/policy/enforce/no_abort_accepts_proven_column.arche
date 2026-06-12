@@ -6,7 +6,7 @@
 // RUN: %arche build --no-abort -o %t %s && %t | grep -qF "sum=6"
 #import { fmt }
 P :: arche { x :: int }
-P[4](4) {
+[4]P(4) {
   x: 0
 }
 main :: proc() {

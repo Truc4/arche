@@ -7,4 +7,4 @@ bump :: sys (val) {
   val = val + 1.0;
 }
 
-handle :: opaque
+handle :: opaque;

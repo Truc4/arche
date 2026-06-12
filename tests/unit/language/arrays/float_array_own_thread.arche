@@ -3,7 +3,7 @@
 // int coercion). Guards the element-type generalization of the array-return path beyond int/char.
 // RUN: %arche build -o %t %s && %t | grep -q "owned 9.5 2.25"
 #import { fmt }
-step :: func(own a: float[4], i: int, v: float) -> float[4] {
+step :: func(own a: [4]float, i: int, v: float) -> [4]float {
   if (i >= 0 && i < a.length) {
     a[i] = v;
   }
@@ -11,7 +11,7 @@ step :: func(own a: float[4], i: int, v: float) -> float[4] {
 }
 
 main :: proc() {
-  a: float[4];
+  a: [4]float;
   a := step(move a, 0, 9.5);
   a := step(move a, 1, 2.25);
   fmt.printf("owned %g %g\n", a[0], a[1]);

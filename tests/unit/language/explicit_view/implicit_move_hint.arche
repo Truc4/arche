@@ -3,12 +3,12 @@
 // `move` inlay on the consumed argument, so the ownership hand-off stays visible without the keyword.
 // RUN: %build/arche-analyzer --dump %s | grep -qF "move move"
 #import { fmt }
-sink :: func(own b: int[3]) -> int {
+sink :: func(own b: [3]int) -> int {
   return b[0];
 }
 
 main :: proc() {
-  a: int[3];
+  a: [3]int;
   n := sink(a);
   fmt.printf("%d\n", n);
 }

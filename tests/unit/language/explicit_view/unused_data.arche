@@ -7,8 +7,8 @@
 #import { fmt }
 Color  :: enum { Red, Green, Blue }
 Unused :: enum { A, B }
-used_g : int = 7
-dead_g : int = 9
+used_g : int = 7;
+dead_g : int = 9;
 main :: proc() {
   c := Color.Red;
   fmt.printf("%d %d\n", c, used_g);

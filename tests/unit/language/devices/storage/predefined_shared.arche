@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s 2> %t.err && %t | grep "predef_shared_ok" && grep -qiE "shared pool|datasheets require" %t.err
 #import { vstore vcache fmt }
 
-Cell[16] // one pool (the shape comes from the devices), sized to max(4, 16)
+[16]Cell; // one pool (the shape comes from the devices), sized to max(4, 16)
 
 main :: proc() {
   insert(Cell, 1.0, 2.0)(_:, _:);

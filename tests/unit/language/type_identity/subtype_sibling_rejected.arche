@@ -3,8 +3,8 @@
 // reported as "expected 'seconds'".
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'seconds'" %t.out
 #import { fmt }
-meters        :: float
-seconds       :: float
+meters        :: float;
+seconds       :: float;
 takes_seconds :: proc(s: seconds) {
   fmt.printf("%g\n", s);
 }

@@ -7,7 +7,7 @@
 // local-buffer / static-array arg cases). Here `outer(data)` forwards `data` to `inner(data)`.
 
 #import { fmt }
-inner :: func(data: char[], n: int) -> int {
+inner :: func(data: []char, n: int) -> int {
   cnt := 0;
   for (i := 0; i < n; i += 1) {
     if (i >= data.length) {
@@ -20,12 +20,12 @@ inner :: func(data: char[], n: int) -> int {
   return cnt;
 }
 
-outer :: func(data: char[], n: int) -> int {
+outer :: func(data: []char, n: int) -> int {
   return inner(data, n);
 }
 
 main :: proc() {
-  buf: char[8];
+  buf: [8]char;
   buf[0] = 'a';
   buf[1] = ',';
   buf[2] = 'b';

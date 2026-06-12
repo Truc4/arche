@@ -6,7 +6,7 @@
 // RUN: %arche build --allow-undefined -o %t %s && %t | grep -qF "undef=20 clamp=20 w1=99"
 #import { fmt }
 P :: arche { v :: int }
-P[8]
+[8]P;
 main :: proc() {
   insert(P, 10)(h0:, ok0:);
   insert(P, 20)(h1:, ok1:); // live count is 2: slots 0,1

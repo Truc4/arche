@@ -3,7 +3,7 @@
 // inner call lands directly on it.
 // RUN: %arche build -o %t %s && %t | grep "hello"
 #import { fmt }
-h :: proc()()
+h :: proc()();
 
 hello :: proc()() {
   fmt.printf("hello\n");

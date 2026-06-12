@@ -1,4 +1,4 @@
 // Datasheet: device `diskc` exposes opaque handle `file`. Datasheet types are shared global
 // vocabulary, so `file` is the SAME `file` as any other device's `file`. Not a standalone test.
 // RUN: true
-file :: opaque
+file :: opaque;

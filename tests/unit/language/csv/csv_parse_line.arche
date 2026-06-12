@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t
 #import { parse fmt }
 main :: proc() {
-  buf: char[256];
+  buf: [256]char;
   buf[0] = '1';
   buf[1] = '0';
   buf[2] = '.';
@@ -13,8 +13,8 @@ main :: proc() {
   line_start := 0;
   line_end   := 8;
   comma_pos  := 4;
-  price_str : char[32];
-  qty_str   : char[32];
+  price_str : [32]char;
+  qty_str   : [32]char;
   j := 0;
   i := line_start;
   for (; i < comma_pos;) {

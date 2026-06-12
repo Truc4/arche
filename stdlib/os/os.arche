@@ -7,21 +7,21 @@
 // it emits the `syscall` instruction directly (no libc). A buffer arg decays to its data pointer
 // (like C). The fd wrappers below build on it. Call qualified as `os.syscall(...)`.
 #foreign {
-  os_now_sec  :: proc()(t: float)
-  os_sleep_ms :: proc(ms: int)
-  os_argc     :: proc()(n: int)
-  os_argv     :: proc(i: int)(s: char[])
-  os_argv_len :: proc(i: int)(n: i64)
+  os_now_sec  :: proc()(t: float);
+  os_sleep_ms :: proc(ms: int);
+  os_argc     :: proc()(n: int);
+  os_argv     :: proc(i: int)(s: []char);
+  os_argv_len :: proc(i: int)(n: i64);
 
   @intrinsic
   syscall :: proc(n: i64, a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64)(
     r: i64,
-  )
+  );
 }
 
 // `os.argv(i)` returns argument `i` as a normal length-carried slice — it pairs the raw C pointer
 // with its boundary length and hands back the slice view, so the caller never sees the C-string seam.
-argv :: proc(i: int)(out: char[]) {
+argv :: proc(i: int)(out: []char) {
   os_argv(i)(raw:);
   os_argv_len(i)(n:);
   out = raw[0: n];
@@ -30,11 +30,11 @@ argv :: proc(i: int)(out: char[]) {
 // Raw fd I/O — thin syscall wrappers (x86-64 Linux), no libc. Read-only buffers (`write`/`open`
 // path) are plain borrows; `read` lends `buf` and hands back a slice VIEW of the bytes read (the
 // count travels on `.length`) — out-only, no in-out shadow.
-open :: proc(path: char[], flags: int)(fd: int) {
+open :: proc(path: []char, flags: int)(fd: int) {
   syscall(2, path, flags, 0, 0, 0, 0)(r:); // SYS_open(path, flags, mode=0)
   fd = i32(r);
 }
-read :: proc(fd: int, buf: char[], len: int)(out: char[]) {
+read :: proc(fd: int, buf: []char, len: int)(out: []char) {
   syscall(0, fd, buf, len, 0, 0, 0)(r:); // SYS_read(fd, buf, len)
   n := i32(r);
   if (n < 0) {
@@ -42,7 +42,7 @@ read :: proc(fd: int, buf: char[], len: int)(out: char[]) {
   }
   out = buf[0: n];
 }
-write :: proc(fd: int, buf: char[], len: int) {
+write :: proc(fd: int, buf: []char, len: int) {
   syscall(1, fd, buf, len, 0, 0, 0)(_r:); // SYS_write(fd, buf, len)
 }
 close :: proc(fd: int) {

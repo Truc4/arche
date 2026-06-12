@@ -3,9 +3,9 @@
 // Prints speed=4.
 // RUN: %arche build -o %t %s && %t | grep "speed=4"
 #import { fmt }
-meters  :: float
-seconds :: float
-mps     :: float
+meters  :: float;
+seconds :: float;
+mps     :: float;
 speed   :: func(d: meters, t: seconds) -> mps {
   return mps(d / t); // meters/seconds is a float; tag it mps explicitly
 }

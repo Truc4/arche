@@ -2,6 +2,6 @@
 // RUN: %arche build -o %t %s && %t | grep -q "len=8"
 #import { fmt }
 main :: proc() {
-  b: int[8];
+  b: [8]int;
   fmt.printf("len=%d\n", b.length);
 }

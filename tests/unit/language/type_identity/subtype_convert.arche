@@ -3,7 +3,7 @@
 // accepts alias names (e.g. `meters(f)`), not just width-int names like `i32(x)`.
 // RUN: %arche build -o %t %s && %t | grep "r=7"
 #import { fmt }
-meters :: float
+meters :: float;
 main   :: proc() {
   f    : float  = 7.0;
   d    : meters = meters(f); // float -> meters via conversion

@@ -5,7 +5,7 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "handle is a lifetime token" %t.out
 #import { fmt }
 Foo :: arche { hp :: int }
-Foo[10]
+[10]Foo;
 
 main :: proc() {
   insert(Foo, 5)(h:, _:);

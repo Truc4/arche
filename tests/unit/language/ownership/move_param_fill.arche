@@ -4,7 +4,7 @@
 // canonical fill-buffer / FFI shape.
 // RUN: %arche build -o %t %s && %t | grep "filled=hello n=5"
 #import { fmt }
-fill :: proc(buf: char[32], s: char[])(buf: char[32], n: int) {
+fill :: proc(buf: [32]char, s: []char)(buf: [32]char, n: int) {
   i := 0;
   for (; i < s.length; i += 1) {
     if (i >= 32) {
@@ -19,7 +19,7 @@ fill :: proc(buf: char[32], s: char[])(buf: char[32], n: int) {
 }
 
 main :: proc() {
-  b: char[32];
+  b: [32]char;
   fill(b, "hello")(b, n:);
   fmt.printf("filled=%s n=%d\n", b, n);
 }

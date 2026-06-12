@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'charge'" %t.out
 #import { fmt }
 Particle :: arche { mass :: float, charge :: float }
-Particle[4](4)
+[4]Particle(4);
 main :: proc() {
   Particle.mass[0] = 10.0;
   m := Particle.mass[0]; // m : mass

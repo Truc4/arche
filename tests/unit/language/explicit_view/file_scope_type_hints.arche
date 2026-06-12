@@ -12,9 +12,9 @@
 // RUN: %build/arche-analyzer --dump --full %s | grep -qxF "SYN 21 7 1 1 type proc()()"
 // RUN: test $(%build/arche-analyzer --dump --full %s 2>/dev/null | grep -cF " type ") -eq 5
 #import { fmt }
-MAX   :: 100
-count := 0
-total :: MAX
+MAX   :: 100;
+count := 0;
+total :: MAX;
 add   :: func(a: int, b: int) -> int {
   return a + b;
 }

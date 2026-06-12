@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { str fmt }
-check_buf :: func(buf: char[]) -> int {
+check_buf :: func(buf: []char) -> int {
   return str.strlen(buf);
 }
 

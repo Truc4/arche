@@ -3,7 +3,7 @@
 
 Pair :: arche { a :: int, b :: int }
 
-Pair[3](3) {
+[3]Pair(3) {
   a: 0, b: 0,
 }
 

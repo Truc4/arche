@@ -4,8 +4,8 @@
 // RUN: %arche build -o %t %s && %t | grep -q "a0=7"
 #import { fmt }
 main :: proc() {
-  a : int[3];
-  b : int[3];
+  a : [3]int;
+  b : [3]int;
   b[0] = 7;
   a    = b; // move: a now owns b's storage, b is consumed
   fmt.printf("a0=%d\n", a[0]);

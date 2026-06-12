@@ -2,7 +2,7 @@
 // unguarded OOB index hits the bounds check and aborts the program.
 // RUN: %arche build -o %t %s && ! %t
 main :: proc() {
-  b: int[4];
+  b: [4]int;
   i := 4;
   b[i] = 1;
 }

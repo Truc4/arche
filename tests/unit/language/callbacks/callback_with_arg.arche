@@ -2,7 +2,7 @@
 // the supplied args.
 // RUN: %arche build -o %t %s && %t | grep "n=7"
 #import { fmt }
-logger :: proc(n: int)()
+logger :: proc(n: int)();
 
 log_it :: proc(n: int)() {
   fmt.printf("n=%d\n", n);

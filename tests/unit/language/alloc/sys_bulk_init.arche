@@ -2,7 +2,7 @@
 #import { fmt }
 Task :: arche { val :: int }
 
-Task[1](1) {
+[1]Task(1) {
   val: 5,
 }
 

@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t
 #import { parse fmt }
 main :: proc() {
-  s: char[32];
+  s: [32]char;
   s[0] = '1';
   s[1] = '.';
   s[2] = '5';

@@ -1,10 +1,10 @@
 // Linear must-consume: an opaque local that is never consumed (moved into a consume
 // call, returned, or inserted) before its scope ends is a compile error. No silent leak.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "not consumed" %t.out
-resource :: opaque
+resource :: opaque;
 #foreign {
-  resource_open  :: proc(initial: int)(ret: resource)
-  resource_close :: proc(own r: resource)
+  resource_open  :: proc(initial: int)(ret: resource);
+  resource_close :: proc(own r: resource);
 }
 
 main :: proc() {

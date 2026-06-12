@@ -6,8 +6,8 @@
 // RUN: %arche fmt %s | grep -F "loc : type : int"
 // RUN: %arche fmt %s | grep -F "short_top :: int"
 #import { fmt }
-alias_top: type: int
-short_top :: int
+alias_top: type: int;
+short_top :: int;
 Body      :: arche { mass: type: int }
 
 main :: proc() {

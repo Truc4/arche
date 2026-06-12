@@ -886,9 +886,27 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 		}
 		break;
 	}
+	case SN_ARRAY_LIT_EXPR: {
+		/* `{ e0, e1, … }` — a fixed-size array literal. Each child expression node is an element
+		 * (nested `{…}` for inner dimensions lower recursively into nested array literals). */
+		ax->kind = HIR_EXPR_ARRAY_LITERAL;
+		int n = 0;
+		for (int i = 0; i < e.node->child_count; i++)
+			if (e.node->children[i].tag == SE_NODE)
+				n++;
+		ax->data.array_literal.elements = n ? calloc((size_t)n, sizeof(HirExpr *)) : NULL;
+		ax->data.array_literal.element_count = 0;
+		for (int i = 0; i < e.node->child_count; i++) {
+			if (e.node->children[i].tag != SE_NODE)
+				continue;
+			SyntaxView ev = {e.node->children[i].as.node, e.src};
+			ax->data.array_literal.elements[ax->data.array_literal.element_count++] = lower_expr_cst(ev);
+		}
+		break;
+	}
 	default:
-		/* SN_ALLOC_EXPR / SN_ARRAY_LIT_EXPR and any unhandled: leave as a placeholder
-		 * literal for now (these surface in verify-codegen if exercised). */
+		/* SN_ALLOC_EXPR and any unhandled: leave as a placeholder literal for now (these surface in
+		 * verify-codegen if exercised). */
 		ax->kind = HIR_EXPR_LITERAL;
 		ax->data.literal.lexeme = sv_dup(e);
 		break;
@@ -2289,25 +2307,13 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 			 * the `.`-joined IDENT tokens before `[`. A bare `Particle[N]` yields "Particle"; a
 			 * qualified `lib.Particle[N]` yields "lib.Particle" (the imported shape's canonical name). */
 			sd->kind = HIR_STATIC_ARCHETYPE;
+			/* Prefix pool `[C]Name(N){V}`: the archetype name is the (possibly `.`-qualified) IDENT
+			 * run that sits at top level AFTER the capacity `[…]` and before any `(`/`{`. It is
+			 * collected in the phase walk below (the PH_NONE IDENT case), so a bare `[N]Particle`
+			 * yields "Particle" and `[N]lib.Particle` yields "lib.Particle". */
 			char namebuf[256];
 			int nl = 0;
-			for (int i = 0; i < d.node->child_count; i++) {
-				SyntaxElem *ch = &d.node->children[i];
-				if (ch->tag != SE_TOKEN)
-					continue;
-				if (ch->as.token.kind == TOK_LBRACKET)
-					break;
-				if (ch->as.token.kind != TOK_IDENT)
-					continue;
-				if (nl > 0 && nl < (int)sizeof(namebuf) - 1)
-					namebuf[nl++] = '.';
-				int seg = (int)ch->as.token.length;
-				for (int k = 0; k < seg && nl < (int)sizeof(namebuf) - 1; k++)
-					namebuf[nl++] = d.src[ch->as.token.offset + k];
-			}
-			namebuf[nl] = '\0';
-			sd->archetype.archetype_name = dupz(namebuf);
-			/* `Foo[N] ?handler`: the pool's default insert overflow handler. */
+			/* `[8]Foo ?handler`: the pool's default insert overflow handler. */
 			{
 				SyntaxView pol = sv_child(d, SN_POLICY_REF);
 				if (sv_present(pol))
@@ -2347,6 +2353,13 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 						if (phase == PH_FIELDS) {
 							pend = d.src + ch->as.token.offset;
 							pend_len = (int)ch->as.token.length;
+						} else if (phase == PH_NONE) {
+							/* archetype name segment — top level, after the capacity `[]` */
+							if (nl > 0 && nl < (int)sizeof(namebuf) - 1)
+								namebuf[nl++] = '.';
+							int seg = (int)ch->as.token.length;
+							for (int kk = 0; kk < seg && nl < (int)sizeof(namebuf) - 1; kk++)
+								namebuf[nl++] = d.src[ch->as.token.offset + kk];
 						}
 						break;
 					default:
@@ -2371,6 +2384,8 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					pend = NULL;
 				}
 			}
+			namebuf[nl] = '\0';
+			sd->archetype.archetype_name = dupz(namebuf);
 		} else {
 			/* Storage form of the unified binding: `name : T` / `name : T = v` / `name := v`. A
 			 * sized-array T (it has an element type) is a buffer; any other (or absent) T is a

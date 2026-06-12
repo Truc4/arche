@@ -2,7 +2,7 @@
 // aborts at runtime rather than silently over-reading. Runtime check (the `!` expects nonzero exit).
 // RUN: %arche build -o %t %s && ! %t
 #import { fmt }
-sum :: func(xs: int[]) -> int {
+sum :: func(xs: []int) -> int {
   total := 0;
   i     := 0;
   for (i = 0; i < xs.length; i = i + 1) {
@@ -12,6 +12,6 @@ sum :: func(xs: int[]) -> int {
 }
 
 main :: proc() {
-  a: int[8];
+  a: [8]int;
   fmt.printf("%d\n", sum(a[2: 10])); // hi=10 > length 8 -> abort
 }

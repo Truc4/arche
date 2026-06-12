@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep ABC
 #import { fmt }
-buf: char[128]
+buf: [128]char;
 
 main :: proc() {
   buf[0] = 65;

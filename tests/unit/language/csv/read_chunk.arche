@@ -6,7 +6,7 @@ main :: proc() {
   fmt.printf("fd=%d\n", fd);
   if (fd > 0) {
     fmt.printf("calling csv_read_chunk\n");
-    buf: char[65536];
+    buf: [65536]char;
     io.read_chunk(fd, buf, 65536)(buf, n:);
     fmt.printf("n=%d\n", n);
   }

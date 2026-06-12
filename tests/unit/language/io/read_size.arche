@@ -2,7 +2,7 @@
 #import { io fmt }
 main :: proc() {
   io.fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
-  buf: char[256];
+  buf: [256]char;
   io.fread(fd, buf, 256)(v:);
   io.fclose(move fd);
   fmt.printf("read 256 returned: %d\n", v.length);

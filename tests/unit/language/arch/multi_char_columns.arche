@@ -4,9 +4,9 @@
 // round-trip. See arch/char_column.arche and
 // docs/superpowers/specs/2026-06-01-array-archetype-columns.md.
 #import { fmt }
-Message :: arche { text :: char[256], author :: char[64] }
+Message :: arche { text :: [256]char, author :: [64]char }
 
-Message[100]
+[100]Message;
 
 main :: proc() {
   insert(Message, "hello", "ada")(_:, _:);

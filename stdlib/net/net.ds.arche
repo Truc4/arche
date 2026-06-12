@@ -2,4 +2,4 @@
 // impl). `socket` is a primitive opaque handle for a TCP socket (a raw fd in the opaque cell). You
 // may move/borrow/return a `socket` but not write a raw value into it; the operations in net.arche
 // are the only way to act on it. No storage requirements.
-socket :: opaque
+socket :: opaque;

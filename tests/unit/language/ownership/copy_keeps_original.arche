@@ -3,12 +3,12 @@
 // filled prefix as a `char[]` content slice — a normal `(ptr, len)` array, no NUL — read by index.
 // RUN: %arche build -o %t %s && %t | grep "src0=104 src1=105 out0=121 out1=111 outlen=2"
 #import { str fmt }
-fill :: func(own b: char[8], s: char[]) -> char[] {
+fill :: func(own b: [8]char, s: []char) -> []char {
   return str.strcopy(move b, s);
 }
 
 main :: proc() {
-  src: char[8];
+  src: [8]char;
   src[0] = 'h';
   src[1] = 'i';
   out := fill(copy src, "yo"); // copy: src untouched; out is the filled duplicate "yo"

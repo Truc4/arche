@@ -4,18 +4,18 @@
 // hands back a normal `(ptr, len)` array — no NUL — so content is read by index / `.length`.
 // RUN: %arche build -o %t %s && %t | grep "a0=104 a1=105 alen=2 b0=11"
 #import { str fmt }
-fill :: func(own buf: char[16]) -> char[] {
+fill :: func(own buf: [16]char) -> []char {
   return str.strcopy(move buf, "hi");
 }
-bump :: func(own buf: char[16]) -> char[16] {
+bump :: func(own buf: [16]char) -> [16]char {
   buf[0] = buf[0] + 1;
   return buf;
 }
 
 main :: proc() {
-  a: char[16];
+  a: [16]char;
   a := fill(move a); // a is now a `char[]` slice "hi" (length 2)
-  b: char[16];
+  b: [16]char;
   b[0] = 10;
   b := bump(move b);
   fmt.printf("a0=%d a1=%d alen=%d b0=%d\n", a[0], a[1], a.length, b[0]);

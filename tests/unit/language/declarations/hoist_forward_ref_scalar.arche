@@ -6,7 +6,7 @@ read_g :: proc()(v: int) {
   v = g; // forward reference to a global declared later
 }
 
-g: int = 7
+g: int = 7;
 
 main :: proc() {
   read_g()(v:);

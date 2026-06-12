@@ -3,7 +3,7 @@
 // RUN: %arche build -o %t %s && %t | grep "abs=7"
 #import { fmt }
 #foreign {
-  abs :: proc(x: int)(r: int)
+  abs :: proc(x: int)(r: int);
 }
 
 main :: proc() {

@@ -2,5 +2,5 @@
 // only in the impl's `#module` (private) band. A storage requirement is a contract for the DRIVER, and
 // a driver can only size a PUBLIC shape — so this requirement is unsatisfiable. Support file.
 // RUN: true
-z :: float
-Hidden[4]
+z :: float;
+[4]Hidden;

@@ -18,7 +18,7 @@
 ///
 /// Pure, but returns three values (two slices + ok) — a func returns only one, so it must be a proc.
 @allow_pure_proc
-parse_request_line :: proc(req: char[])(method: char[], target: char[], ok: bool) {
+parse_request_line :: proc(req: []char)(method: []char, target: []char, ok: bool) {
   ok = false;
   if (req.length < 5) {
     return;
@@ -41,7 +41,7 @@ parse_request_line :: proc(req: char[])(method: char[], target: char[], ok: bool
 
 /// Content-Type for a path, chosen by file extension. Returns a NUL-terminated string literal — safe
 /// to hand to `%s`. Unknown extensions fall back to `application/octet-stream`.
-mime_by_ext :: func(path: char[]) -> char[] {
+mime_by_ext :: func(path: []char) -> []char {
   if (str.ends_with(path, ".html")) {
     return "text/html; charset=utf-8";
   }
@@ -73,7 +73,7 @@ mime_by_ext :: func(path: char[]) -> char[] {
 }
 
 /// Reason phrase for a status code. Returns a NUL-terminated literal — safe for `%s`.
-reason :: func(status: int) -> char[] {
+reason :: func(status: int) -> []char {
   if (status == 200) {
     return "OK";
   }
@@ -97,10 +97,10 @@ reason :: func(status: int) -> char[] {
 /// the NUL-terminated `reason`/`ctype` literals — never a body slice (the body is sent raw).
 respond :: proc(
   conn      : socket,
-  hdr       : char[],
+  hdr       : []char,
   status    : int,
-  ctype     : char[],
-  body      : char[],
+  ctype     : []char,
+  body      : []char,
   send_body : bool,
 ) {
   // Bind the reason phrase to a local: an inline func-call result is a `{ptr,len}` slice, but a `%s`
@@ -122,6 +122,6 @@ respond :: proc(
 
 /// Plain-text response (error pages). `msg` is the body AND its own Content-Length (a length-carried
 /// slice). Always sends the body.
-respond_text :: proc(conn: socket, hdr: char[], status: int, msg: char[]) {
+respond_text :: proc(conn: socket, hdr: []char, status: int, msg: []char) {
   respond(conn, hdr, status, "text/plain; charset=utf-8", msg, true);
 }

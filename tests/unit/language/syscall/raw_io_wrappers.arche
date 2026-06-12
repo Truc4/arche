@@ -6,7 +6,7 @@
 main :: proc() {
   os.open("/tmp/arche_raw_io.txt", 0)(fd:);
   if (fd > 0) {
-    buf: char[64];
+    buf: [64]char;
     os.read(fd, buf, 64)(v:);
     os.close(fd);
     if (v.length > 0) {

@@ -11,7 +11,7 @@
 /// fmt.assert(strlen("hello") == 5, "strlen hello\n");
 /// fmt.assert(strlen("") == 0, "strlen empty\n");
 /// ```
-strlen :: func(s: char[]) -> int {
+strlen :: func(s: []char) -> int {
   i := 0;
   for (; i < s.cap; i += 1) {
     if (s[i] == 0) {
@@ -24,7 +24,7 @@ strlen :: func(s: char[]) -> int {
 // Copy `src`'s bytes into `dst` and return the filled prefix `dst[0:src.length]` as a slice. No NUL
 // terminator — a char[] is a normal array; its length travels with the slice. The own/move contract
 // makes the in-place fill explicit: `b := str.strcopy(move b, s)`.
-strcopy :: func(own dst: char[], src: char[]) -> char[] {
+strcopy :: func(own dst: []char, src: []char) -> []char {
   n := 0;
   for (i := 0; i < src.length && i < dst.length; i = i + 1) {
     dst[i] = src[i];
@@ -41,7 +41,7 @@ strcopy :: func(own dst: char[], src: char[]) -> char[] {
 /// fmt.assert(find_char("a b", 0, 3, ' ') == 1, "find space\n");
 /// fmt.assert(find_char("abc", 0, 3, 'z') == 3, "absent → end\n");
 /// ```
-find_char :: func(s: char[], start: int, end: int, ch: int) -> int {
+find_char :: func(s: []char, start: int, end: int, ch: int) -> int {
   for (i := start; i < end; i = i + 1) {
     if (i < 0) {
       return end;
@@ -62,7 +62,7 @@ find_char :: func(s: char[], start: int, end: int, ch: int) -> int {
 /// fmt.assert(ends_with("a.html", ".html"), "html\n");
 /// fmt.assert(!ends_with("a.css", ".html"), "no match\n");
 /// ```
-ends_with :: func(s: char[], suf: char[]) -> bool {
+ends_with :: func(s: []char, suf: []char) -> bool {
   ls := s.length;
   lf := suf.length;
   if (lf > ls) {
@@ -89,7 +89,7 @@ ends_with :: func(s: char[], suf: char[]) -> bool {
 /// fmt.assert(contains("/a/../b", ".."), "has dotdot\n");
 /// fmt.assert(!contains("/a/b", ".."), "clean path\n");
 /// ```
-contains :: func(s: char[], needle: char[]) -> bool {
+contains :: func(s: []char, needle: []char) -> bool {
   ln := needle.length;
   if (ln == 0) {
     return true;

@@ -4,12 +4,12 @@
 // insert into the full pool yields ok==0.
 // RUN: %arche build -o %t --link %S/runtime/test_resource.c %s && %t | grep "full"
 #import { fmt }
-cell     :: opaque
+cell     :: opaque;
 Resource :: arche { cell }
 #foreign {
-  resource_open :: proc(initial: int)(ret: cell)
+  resource_open :: proc(initial: int)(ret: cell);
 }
-Resource[2]
+[2]Resource;
 
 main :: proc() {
   resource_open(1)(r1:);

@@ -4,9 +4,9 @@ Particle :: arche { pos :: float, vel :: float }
 
 Body :: arche { pos, vel, mass :: float }
 
-Particle[100]
+[100]Particle;
 
-Body[50]
+[50]Body;
 
 step :: sys (pos, vel) {
   pos = pos + vel;

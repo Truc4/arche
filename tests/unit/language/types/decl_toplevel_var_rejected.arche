@@ -4,7 +4,7 @@
 // (Full spec: tests/unit/language/declarations/.)
 // RUN: %arche build -o %t %s && %t | grep -q "count=0 then 3"
 #import { fmt }
-count := 0
+count := 0;
 
 main :: proc() {
   fmt.printf("count=%d then ", count);

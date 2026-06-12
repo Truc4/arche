@@ -1,10 +1,10 @@
 // RUN: %arche build -o %t %s && %t | grep "PASS"
 #import { fmt }
-pos(x, y) :: float
-vel(x, y) :: float
+pos(x, y) :: float;
+vel(x, y) :: float;
 Particle  :: arche { pos_x, pos_y, vel_x, vel_y }
 
-Particle[5]
+[5]Particle;
 
 main :: proc() {
   insert(Particle, 0.0, 1.0, 0.5, 0.1)(_:, _:);

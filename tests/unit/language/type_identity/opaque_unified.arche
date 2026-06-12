@@ -3,11 +3,11 @@
 // special case. Passing a `handle_a` where a `handle_b` is expected is an error reported in the
 // unified `expected 'X'` vocabulary.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'handle_b'" %t.out
-handle_a :: opaque
-handle_b :: opaque
+handle_a :: opaque;
+handle_b :: opaque;
 #foreign {
-  make_a :: proc()(r: handle_a)
-  use_b  :: proc(own h: handle_b)
+  make_a :: proc()(r: handle_a);
+  use_b  :: proc(own h: handle_b);
 }
 main :: proc() {
   make_a()(a:);

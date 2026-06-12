@@ -4,7 +4,7 @@
 // fires. Runtime bounds so nothing folds away.
 // RUN: %arche build -o %t %s && ! %t
 main :: proc(argc: int) {
-  a: int[4];
+  a: [4]int;
   a[0] = 1;
   hi := argc; // 1 at runtime
   lo := argc + 2; // 3 at runtime -> lo > hi, reversed

@@ -1,9 +1,9 @@
 // RUN: %arche build -o %t %s && %t | grep "system_ran"
 #import { fmt }
-pos  :: float
+pos  :: float;
 Body :: arche { pos }
 
-Body[5]
+[5]Body;
 
 dummy :: sys (pos) {
   fmt.printf("system_ran\n");

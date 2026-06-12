@@ -13,7 +13,7 @@
 // RUN: %arche build -o %t %s
 #import { fmt }
 MAX :: 100;
-greeting :: func() -> char[] { // string literal → W0021
+greeting :: func() -> []char { // string literal → W0021
   return "hi";
 }
 magic :: func() -> int { // int literal → W0021

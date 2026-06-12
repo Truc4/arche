@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "cannot be sys parameter" %t.out
 Entity :: arche { next :: handle<Entity> }
 
-Entity[10]
+[10]Entity;
 
 process :: sys (next) {
 }

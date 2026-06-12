@@ -5,7 +5,7 @@ two :: func() -> int {
   return 1 + 1;
 }
 Grid :: arche { cell :: int }
-Grid[4](4) {
+[4]Grid(4) {
   cell: two(),
 }
 main :: proc() {

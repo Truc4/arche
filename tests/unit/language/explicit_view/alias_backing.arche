@@ -9,8 +9,8 @@
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "^SYN ") -eq 4
 // --full opts out, so the proc decl shows its form type too:
 // RUN: %build/arche-analyzer --dump --full %s | grep -qxF "SYN 14 8 1 1 type proc()()"
-base  :: int
-level :: base
+base  :: int;
+level :: base;
 main  :: proc() {
   a : base  = 10;
   b : level = 20;

@@ -2,10 +2,10 @@
 // New model: a tuple alias mints flat name-prefixed components (pos_x, pos_y); access is
 // flat (Particle.pos_x), never nested (no Particle.pos.x).
 #import { fmt }
-pos(x, y) :: float
+pos(x, y) :: float;
 Particle  :: arche { pos_x, pos_y }
 
-Particle[5]
+[5]Particle;
 
 main :: proc() {
   insert(Particle, 1.0, 2.0)(_:, _:);

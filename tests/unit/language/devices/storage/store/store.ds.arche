@@ -3,6 +3,6 @@
 // shape; `Node` is defined by the driver (or a device impl), and `Node[4]` is a storage REQUIREMENT
 // (minimum), never an allocation. The driver owns the real pool and may size it larger. Support file.
 // RUN: true
-key :: float
-val :: float
-Node[4]
+key :: float;
+val :: float;
+[4]Node;

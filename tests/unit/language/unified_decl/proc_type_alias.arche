@@ -2,13 +2,13 @@
 // proc/func type names are lowercase (Uppercase is reserved for archetypes).
 // RUN: %arche build -o %t %s && %t | grep "code=404"
 #import { fmt }
-handler :: proc()(code: int)
+handler :: proc()(code: int);
 
 not_found :: proc()(code: int) {
   code = 404;
 }
 
-h: handler: not_found
+h: handler: not_found;
 
 main :: proc() {
   h()(c:);

@@ -5,7 +5,7 @@
 
 Row :: arche { price :: float, quantity :: int }
 
-Row[3](3) {
+[3]Row(3) {
   price: 0.0, quantity: 0,
 }
 

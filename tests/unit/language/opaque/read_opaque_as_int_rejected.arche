@@ -2,7 +2,7 @@
 // `int` (opaque->int coercion) — illegal; the bits of an FFI handle are not an integer. The checker
 // rejects it in semantics with a type error ("got 'res'").
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "got 'res'" %t.out
-res :: opaque
+res :: opaque;
 @allow(unused_function)
 rd :: func(f: res) -> int {
   return f;

@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s && %t | grep -qF "ok=1 h_nonzero=1"
 #import { fmt }
 Foo :: arche { v :: int }
-Foo[4]
+[4]Foo;
 main :: proc() {
   insert(Foo, 7)(h:, ok:); // lands at slot 0
   fmt.printf("ok=%d h_nonzero=%d\n", ok, h != 0); // h != 0 must be true despite slot 0

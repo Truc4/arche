@@ -1,0 +1,12 @@
+// Once `[]char` value consts exist, a zero-param func whose body is a single `return "literal";` is
+// a const in disguise — W0021 must fire on it (the string-exclusion stub is reverted in Milestone G).
+// (RED until prefix syntax + char[] consts + the stub revert land.)
+// RUN: %build/arche-analyzer --dump %s | grep -qF "W0021 func_could_be_const 0 func 'greeting'"
+#import { os }
+greeting :: func() -> []char {
+  return "hi";
+}
+main :: proc() {
+  g :: greeting();
+  os.write(1, g, g.length);
+}

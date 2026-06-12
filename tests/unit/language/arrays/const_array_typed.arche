@@ -1,0 +1,8 @@
+// Explicit fixed-size type on the binding slot (prefix `[3]int`); the literal is bare and its count
+// is checked against `[3]`. (RED until prefix syntax + {..} literals + array consts land.)
+// RUN: %arche build -o %t %s && %t | grep -x "10"
+#import { fmt }
+XS : [3]int : { 10, 20, 30 };
+main :: proc() {
+  fmt.printf("%d\n", XS[0]);
+}

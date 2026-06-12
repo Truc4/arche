@@ -4,7 +4,7 @@
 main :: proc() {
   io.open("tests/fixtures/data.csv")(fd:);
   if (fd > 0) {
-    buf: char[65536];
+    buf: [65536]char;
     io.read_chunk(fd, buf, 65536)(buf, n:);
     fmt.printf("n=%d\n", n);
   }

@@ -3,12 +3,12 @@
 // (the index no longer inherits the "char_array" type and get mistaken for a string).
 // RUN: %arche build -o %t %s && %t | grep "first=72 second=105"
 #import { fmt }
-passthru :: func(buf: char[]) -> char[] {
+passthru :: func(buf: []char) -> []char {
   return buf;
 }
 
 main :: proc() {
-  b: char[8];
+  b: [8]char;
   b[0] = 72;
   b[1] = 105;
   b := passthru(move b);

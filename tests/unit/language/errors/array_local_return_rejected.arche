@@ -5,8 +5,8 @@
 // (see arrays/int_array_own_thread, float_array_own_thread, i64_array_own_thread).
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "copy-out" %t.out
 #import { fmt }
-make :: func() -> char[8] {
-  buf: char[8];
+make :: func() -> [8]char {
+  buf: [8]char;
   buf[0] = 65;
   return buf;
 }

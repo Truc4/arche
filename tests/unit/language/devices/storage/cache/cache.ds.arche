@@ -3,6 +3,6 @@
 // shapes by structure. A datasheet defines no shape; the driver defines `Node` and must provide ONE
 // pool that meets the max of the two minimums. Support file.
 // RUN: true
-key :: float
-val :: float
-Node[16]
+key :: float;
+val :: float;
+[16]Node;

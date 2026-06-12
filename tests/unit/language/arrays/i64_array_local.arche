@@ -2,7 +2,7 @@
 // RUN: %arche build -o %t %s && %t | grep -q "x=5000000000"
 #import { fmt }
 main :: proc() {
-  a: i64[4];
+  a: [4]i64;
   a[0] = 3000000000;
   a[1] = 2000000000;
   fmt.printf("x=%lld\n", a[0] + a[1]);

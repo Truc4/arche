@@ -8,7 +8,7 @@
 #import { diska diskb }
 
 @implements(diska.file1, diskb.file2)
-file :: opaque
+file :: opaque;
 
 @allow(unused_function)
 relay :: func(h: file) -> int {

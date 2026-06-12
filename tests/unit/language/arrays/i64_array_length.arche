@@ -2,6 +2,6 @@
 // RUN: %arche build -o %t %s && %t | grep -q "ilen=4"
 #import { fmt }
 main :: proc() {
-  a: i64[4];
+  a: [4]i64;
   fmt.printf("ilen=%d\n", a.length);
 }

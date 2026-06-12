@@ -47,10 +47,8 @@ static void collect(const SyntaxNode *n, const char *src, Leaves *ls) {
 			if (top && ls->count > before)
 				ls->items[before].decl_start = 1;
 		} else {
-			/* Declarations take no trailing ';' (only statements do). Drop it from a
-			 * static/pool decl so the canonical output is ';'-free. */
-			if (e->as.token.kind == TOK_SEMI && n->kind == SN_STATIC_DECL)
-				continue;
+			/* Non-brace top-level decls are `;`-terminated now (required unless the body ends in `}`),
+			 * so keep the terminator rather than dropping it. */
 			push_leaf(ls, e->as.token.kind, src + e->as.token.offset, (int)e->as.token.length, e->as.token.line,
 			          n->kind);
 		}

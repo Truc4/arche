@@ -5,7 +5,7 @@
 // content in a sub-slice `buf[0:n]`; strlen is only for a NUL-terminated value at the C boundary.
 #import { str fmt }
 main :: proc() {
-  buf: char[16];
+  buf: [16]char;
   fmt.sprintf(buf, "hello")(buf, _w:);
   fmt.printf(
     "cap=%d capacity=%d length=%d max=%d strlen=%d\n",

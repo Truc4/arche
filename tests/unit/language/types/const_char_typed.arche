@@ -2,8 +2,8 @@
 // char token). Both the inferred `::` and the explicit `: char :` forms work.
 // RUN: %arche build -o %t %s && %t | grep "a=A b=B"
 #import { fmt }
-A :: 'A'
-B: char: 'B'
+A :: 'A';
+B: char: 'B';
 main :: proc() {
   fmt.printf("a=%c b=%c\n", A, B);
 }

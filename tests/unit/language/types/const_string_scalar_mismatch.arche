@@ -1,0 +1,6 @@
+// A scalar declared type with a string-literal value is still a category error — a string
+// (`[N]char`) does not fit `int`. The fix must accept char[] consts WITHOUT over-accepting this.
+// RUN: ! %arche build -o %t %s 2>%t.err
+// RUN: grep -iE "int|char|string|type" %t.err
+X : int : "hello";
+main :: proc() {}

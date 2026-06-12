@@ -3,7 +3,7 @@
 // value baked into the data section.
 // RUN: %arche build -o %t %s && %t | grep -q "x=5 then 9"
 #import { fmt }
-x: int = 5
+x: int = 5;
 
 main :: proc() {
   fmt.printf("x=%d then ", x);

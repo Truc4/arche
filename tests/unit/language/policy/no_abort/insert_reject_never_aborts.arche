@@ -3,7 +3,7 @@
 // 0). (This is the `!reject` behavior; the report form is total by construction.)
 // RUN: %arche build -o %t %s && %t
 Particle :: arche { pos :: float }
-Particle[2]
+[2]Particle;
 main :: proc() {
   insert(Particle, 1.0)(h1:, ok1:);
   insert(Particle, 2.0)(h2:, ok2:);
