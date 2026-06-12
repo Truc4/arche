@@ -3554,6 +3554,49 @@ static void enforce_func_purity(SemanticContext *ctx, DeclSummary *func) {
 	}
 }
 
+/* W0021 func_could_be_const: the return expression carries no computation — a numeric/char
+ * literal (`42`, `'x'`, `3.14`) or a bare reference to a value const. Deliberately tight: a
+ * `func` that computes its result (arithmetic, a call, an `Enum.variant`, a field/index) is
+ * left alone, even when CTFE could fold it — those exist for readability, not by mistake.
+ *
+ * A STRING literal is intentionally excluded: arche has no string-literal value const
+ * (`x :: "s"` is E0083 const_rhs_invalid), so a `func() -> char[]` returning a literal is the
+ * ONLY way to name a string constant — the lint must not suggest a rewrite the language can't
+ * express. (This is exactly why the extras/platform device backends are funcs, not consts.) */
+static int func_return_is_constish(SemanticContext *ctx, SyntaxView e) {
+	if (!sv_present(e))
+		return 0;
+	SyntaxNodeKind k = sv_kind(e);
+	if (k == SN_LITERAL_EXPR) /* int/float/char literal — NOT SN_STRING_EXPR (no string const) */
+		return 1;
+	if (k == SN_NAME_EXPR && sv_count(e, SN_FIELD_NAME) == 0) {
+		char *nm = sv_name_expr_dup(e);
+		int r = nm && semantic_get_const_value(ctx, nm) != NULL;
+		free(nm);
+		return r;
+	}
+	return 0;
+}
+
+/* A zero-parameter `func` whose entire body is a single `return <literal/const>;` is a
+ * constant in a func costume — suggest a `::` value const (referenced without `()`). A func
+ * WITH parameters genuinely maps inputs to a value, so it is never flagged; that's the
+ * "no input" half of the rule. */
+static void lint_func_could_be_const(SemanticContext *ctx, DeclSummary *func) {
+	if (!func || func->is_extern || func->is_policy)
+		return;
+	if (func->param_count != 0 || func->return_type_count != 1)
+		return; /* takes inputs, or returns a tuple — a real func, not a const */
+	if (sem_stmt_count(func->body_node) != 1)
+		return; /* more than a lone return — there's logic, leave it */
+	SyntaxView st = sem_stmt_at(func->body_node, 0);
+	if (sv_kind(st) != SN_RETURN_STMT)
+		return;
+	if (!func_return_is_constish(ctx, sem_node_at_expr(st, 0)))
+		return;
+	sem_emit_lint_func_could_be_const(ctx, func->loc, func->name ? func->name : "<unknown>");
+}
+
 /* ===== value-array / slice bounds analysis (Phase D: OOB totality) =====
  * A plain proc/func must prove every VALUE-array / slice index in-bounds; an unprovable one is an
  * abort site (func → error, proc → must be `proc!`). Scope: indexing of array/slice PARAMETERS
@@ -5090,6 +5133,7 @@ static void analyze_func_decl(SemanticContext *ctx, DeclSummary *func) {
 	ctx->current_func = prev_func;
 
 	enforce_func_purity(ctx, func); /* a `func` must be pure — hard error if not */
+	lint_func_could_be_const(ctx, func);
 
 	pop_scope(ctx);
 }
