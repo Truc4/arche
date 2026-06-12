@@ -71,9 +71,20 @@ User decisions: make slices **first-class via the TypeId-native path**, combined
    ROW count for a string matrix — counting the literal sidesteps that bookkeeping difference. Used by
    both `sem_decl_type_id` (the decl hint) and the NAME-const / partial-index paths.
 
+10. **Bounds prover extended so trivially-safe const indexing elides its policy** (`bnd_*`). A constant
+    index into a value-array CONST (`M[0]`, `XS[2]`) is now proven in-bounds and its `!abort` policy is
+    elided (no runtime check, no ghost hint) — `bnd_base_kind` recognises const arrays with their outer
+    length (`array_const_row_count`). The prover is also nested-aware: a chained `M[k][i]` checks the
+    SECOND child as the index and bounds it by the matrix STRIDE (so `M[0][0]` fully elides, while a
+    valid column `M[0][2]` is not falsely flagged); and an INFERRED sized-array local (`a := M[0]` →
+    `[3]int`, read from the bind's model type) is tracked like a written one, so `a[i]` proves. A
+    *literal* out-of-bounds index stays an E0097 compile error (policies are for runtime-unprovable
+    indices). `[]T` slices keep their bounds check (runtime length) — unchanged.
+
 ## Verification
 672/672 lit tests, doctests, AddressSanitizer+UBSan all green; `extras/demo.arche` correct for both
 targets. Analyzer hints: a matrix const → `[2][3]i32`, a string matrix → `[3][3]char`, a row →
-`[3]i32`/`[3]char`, a 1-D const → `[N]i32`, a sub-slice → `[]i32`, a string → `[]char`. New fixtures:
-`slice_array_hints` (incl. the nested-matrix assertions), `slice_not_arith_operand`,
+`[3]i32`/`[3]char`, a 1-D const → `[N]i32`, a sub-slice → `[]i32`, a string → `[]char`; and a
+trivially-in-bounds constant index (`M[0]`, `M[0][0]`, `XS[2]`, an inferred-row `a[0]`) shows NO policy
+ghost. New fixtures: `slice_array_hints` (incl. the nested-matrix assertions), `slice_not_arith_operand`,
 `return_slice_of_local_var_rejected`, `per_index_policy_chained`, `comma_index_rejected`.

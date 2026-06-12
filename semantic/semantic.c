@@ -1467,8 +1467,8 @@ static const char *resolve_expression_type(SemanticContext *ctx, SyntaxView v) {
 	}
 
 	case SN_INDEX_EXPR: {
-		/* A single index on an N-D matrix const yields a ROW (a slice: `S[i]` is a `char[]`); a full
-		 * index set (`M[i, j]`) yields the scalar element. */
+		/* A single index on an N-D matrix const yields a ROW (`S[i]` is a `[]char`); chaining the next
+		 * index (`M[i][j]`) reaches the scalar element. */
 		char *bn = sv_name_expr_dup(v);
 		int mstride = 0;
 		const char *met = bn ? name_const_matrix(ctx, bn, &mstride) : NULL;
@@ -1801,20 +1801,24 @@ done:
 	free(idnt);
 }
 
+/* The OUTER length of an array value const — the count of top-level elements in its initializer
+ * literal (a 1-D const's element count, or a matrix's ROW count). Robust to `static_size`, which is the
+ * FLAT total for a numeric matrix but the ROW count for a string matrix. This is the bound a top-level
+ * index (`XS[i]`, the row of `M[i]`) is checked against. */
+static int array_const_row_count(const DeclSummary *d) {
+	int rows = 0;
+	if (sv_present(d->static_init))
+		while (sv_present(sem_node_at_expr(d->static_init, rows)))
+			rows++;
+	return rows > 0 ? rows : (d->static_size > 0 ? d->static_size : 1);
+}
+
 /* The interned type of a whole array VALUE CONST: a fixed `[N]elem` (1-D), or the nested
  * `[rows][stride]elem` for a 2-D matrix (`static_row_stride` is the inner dim). A SUB-slice or partial
  * row is a separate `[]T`/`[stride]T` value; this is the whole aggregate. */
 static TypeId array_const_type_id(SemanticContext *ctx, const DeclSummary *d) {
 	TypeId elem = d->static_type_id;
-	/* Row count = number of top-level elements in the initializer literal. (Robust to `static_size`,
-	 * which is the FLAT total for a numeric matrix but the ROW count for a string matrix — counting the
-	 * literal sidesteps that bookkeeping difference.) */
-	int rows = 0;
-	if (sv_present(d->static_init))
-		while (sv_present(sem_node_at_expr(d->static_init, rows)))
-			rows++;
-	if (rows <= 0)
-		rows = d->static_size > 0 ? d->static_size : 1;
+	int rows = array_const_row_count(d);
 	if (d->static_row_stride > 1)
 		return tyid_of_array(ctx->ty_arena, tyid_of_array(ctx->ty_arena, elem, d->static_row_stride), rows);
 	return tyid_of_array(ctx->ty_arena, elem, rows);
@@ -4014,8 +4018,18 @@ static int bnd_base_kind(SemanticContext *ctx, DeclSummary *d, BndEnv *e, const 
 				*out_n = e->locals[i].size;
 			return e->locals[i].kind;
 		}
-	/* Only PARAMs and explicitly-typed local arrays are gated. An unknown plain name (module static,
-	 * archetype column, inferred-type local, tuple, …) stays exempt to avoid false positives. */
+	/* A module-level array VALUE CONST (`XS :: {…}`, a matrix `M`) has a compile-time-known outer length
+	 * — a constant index into it is provable, so the bounds policy elides (no runtime check, no ghost
+	 * hint on a trivially-safe `M[0]`). */
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *cd = ctx->decls[i];
+		if (cd->kind == DECL_STATIC && cd->static_kind == STATIC_KIND_ARRAY && cd->name && strcmp(cd->name, name) == 0) {
+			if (out_n)
+				*out_n = array_const_row_count(cd);
+			return 1;
+		}
+	}
+	/* Other unknown plain names (archetype column, inferred-type local, tuple, …) stay exempt. */
 	return 0;
 }
 
@@ -4535,7 +4549,9 @@ static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, Sy
 
 	int provably_oob = 0, provably_safe = 0, oob_lit = 0;
 	if (!is_slice && kind != 0) {
-		SyntaxView idx = sem_node_at_expr(v, 0);
+		/* For a chained `M[k][i]` the real index is the SECOND expr child (the first is the nested base);
+		 * a flat `a[i]` keeps the first. */
+		SyntaxView idx = sem_node_at_expr(v, has_nested_base(v) ? 1 : 0);
 		int lit;
 		if (bnd_lit_int_signed(idx, &lit)) {
 			if (lit < 0) {
@@ -4664,11 +4680,28 @@ static const char *bnd_check_expr(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 	if (sv_kind(v) == SN_INDEX_EXPR && sv_count(v, SN_FIELD_NAME) == 0) {
 		char *base = sv_resolved_name(ctx, v);
 		int n = -1;
-		int kind = base ? bnd_base_kind(ctx, d, e, base, &n) : 0;
+		int kind;
+		int nested = has_nested_base(v);
+		if (nested) {
+			/* chained `M[k][i]`: a matrix-const ROW base bounds THIS index by the inner dim (stride),
+			 * so a constant column index into a known matrix is provable (no policy on `M[0][0]`). */
+			kind = 0;
+			SyntaxView bsub = base_subexpr(v);
+			char *bn = sv_name_expr_dup(bsub);
+			int stride = 0;
+			const char *met = bn ? name_const_matrix(ctx, bn, &stride) : NULL;
+			free(bn);
+			if (met && stride > 1) {
+				kind = 1;
+				n = stride;
+			}
+		} else {
+			kind = base ? bnd_base_kind(ctx, d, e, base, &n) : 0;
+		}
 		if (e->check_policies) { /* failure-policy validation pass (emits; never short-circuits) */
 			bnd_policy_check(ctx, d, e, v, 0, base, kind, n);
 		} else if (kind != 0) { /* a checked array/slice parameter */
-			SyntaxView idx = sem_node_at_expr(v, 0);
+			SyntaxView idx = sem_node_at_expr(v, nested ? 1 : 0);
 			int lit = bnd_lit_int(idx);
 			int ok = 0;
 			if (lit >= 0) {
@@ -4833,17 +4866,20 @@ static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 			if (nn)
 				bnd_env_add(e, tgt, NULL, 1);
 		}
-		/* Track a typed local array/slice decl so `tgt[i]` is checked like a param. */
+		/* Track a local array/slice bind so `tgt[i]` is checked like a param — whether the type was
+		 * WRITTEN (`a: [4]int`) or INFERRED (`a := M[0]` → `[3]int`, `v := buf[lo:hi]` → `[]int`); the
+		 * inferred type is read from the bind node's model entry. A sized `[N]T` (kind 1) makes a constant
+		 * index provable; a `[]T` slice (kind 2) has a runtime length, so it still needs a guard. */
 		if (k == SN_BIND_STMT && tgt) {
 			SyntaxView t0 = sem_type_at(v, 0);
-			if (sv_present(t0)) {
-				TypeId tid = sem_intern_view(ctx, t0);
-				TyKind tk = tyid_kind(ctx->ty_arena, tid);
-				if (tk == TYK_ARRAY)
-					bnd_local_add(e, tgt, 1, tyid_array_len(ctx->ty_arena, tid));
-				else if (tk == TYK_SLICE)
-					bnd_local_add(e, tgt, 2, 0);
-			}
+			TypeId tid = sv_present(t0)        ? sem_intern_view(ctx, t0)
+			             : ctx->model          ? sem_model_expr_type_id(ctx->model, sv_id(v))
+			                                    : TYID_UNKNOWN;
+			TyKind tk = tyid_kind(ctx->ty_arena, tid);
+			if (tk == TYK_ARRAY)
+				bnd_local_add(e, tgt, 1, tyid_array_len(ctx->ty_arena, tid));
+			else if (tk == TYK_SLICE)
+				bnd_local_add(e, tgt, 2, 0);
 		}
 		free(tgt);
 		return bnd_check_expr(ctx, d, sem_node_at_expr(v, 0), e);

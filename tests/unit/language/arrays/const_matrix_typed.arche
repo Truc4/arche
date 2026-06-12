@@ -1,7 +1,7 @@
 // A TYPED 2-D matrix const `M : [N][W]T : { … }` must resolve its element type to the INNERMOST
 // scalar (int), not the inner row type `[W]int` — and flatten to N*W slots with W as the row stride.
 // An earlier bug took one `tyid_elem` step (yielding `[2]int`) and rejected it as "element type must
-// be scalar". Verifies element access `M[i, j]` and a row decaying to a `[]int` slice argument.
+// be scalar". Verifies chained element access `M[i][j]` and a row decaying to a `[]int` slice arg.
 // RUN: %arche build -o %t %s && %t | grep -x "e=6 sum=15"
 #import { fmt }
 sum :: func(xs: []int) -> int {

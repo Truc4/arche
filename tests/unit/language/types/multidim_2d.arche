@@ -9,7 +9,7 @@ main :: proc() {
   val := Matrix.data[0][0];
   vi  := val * 10.0;
   fmt.print("value: 15\n");
-  fmt.assert(vi == 15, "data[0,0] != 1.5\n");
+  fmt.assert(vi == 15, "data[0][0] != 1.5\n");
   row   := Matrix.data[0];
   vrow  := row[0];
   virow := vrow * 10.0;

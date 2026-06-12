@@ -2654,7 +2654,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		/* `.length`/`.cap` on a freshly-formed slice EXPRESSION base — general postfix `M[i].length`
 		 * (a matrix row) or `buf[lo:hi].length`. Evaluate the base to its (ptr, runtime length) via the
 		 * shared slice primitive and return the length, truncated to the i32 the accessor yields. (A
-		 * full index `M[i,j]` is a scalar — codegen_eval_slice declines it, so this can't misfire.) */
+		 * fully-chained `M[i][j]` is a scalar — codegen_eval_slice declines it, so this can't misfire.) */
 		{
 			const char *fn = expr->data.field.field_name;
 			int is_len = fn && (strcmp(fn, "length") == 0 || strcmp(fn, "cap") == 0 || strcmp(fn, "capacity") == 0 ||
@@ -2996,10 +2996,10 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			break;
 		}
 
-		/* Standalone multi-dimensional array const/global: `M[i, j]` / `S[i]` — arche's flat
-		 * row-stride model (`M` is a `[total x T]` global). `M[i, j]` → flat = i*stride + j (load a
-		 * scalar); `M[i]` → the row element-pointer at i*stride (a `[stride]T` row, usable as a char[]
-		 * slice — e.g. a string row from a `{ "a","bb" }` char matrix). */
+		/* Standalone multi-dimensional array const/global row `M[i]` — arche's flat row-stride model
+		 * (`M` is a `[total x T]` global): `M[i]` → the row element-pointer at i*stride (a `[stride]T`
+		 * row, usable as a `[]char` slice — e.g. a string row from a `{ "a","bb" }` char matrix). The
+		 * element `M[i][j]` is reached by chaining `[j]` over this row (one index per bracket). */
 		if (expr->data.index.base->kind == HIR_EXPR_NAME && expr->data.index.index_count == 1) {
 			HirStaticDecl *msa = codegen_find_static_array(ctx, expr->data.index.base->data.name.name);
 			if (msa && msa->kind == HIR_STATIC_ARRAY && msa->array.row_stride > 1) {
