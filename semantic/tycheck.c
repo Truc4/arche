@@ -387,8 +387,8 @@ static void check(TyCtx *cx, SyntaxView e, TypeId expected, const char *where) {
 	if (gk == TYK_SLICE || gk == TYK_ARRAY) {
 		char en[32];
 		tyid_display(cx->arena, expected, en, sizeof(en));
-		if (strcmp(en, "int") == 0 || strcmp(en, "char") == 0 || strcmp(en, "i64") == 0 ||
-		    strcmp(en, "opaque") == 0 || is_width_int_name(en))
+		if (strcmp(en, "int") == 0 || strcmp(en, "char") == 0 || strcmp(en, "i64") == 0 || strcmp(en, "opaque") == 0 ||
+		    is_width_int_name(en))
 			return;
 	}
 	char want[128];

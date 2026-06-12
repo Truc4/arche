@@ -1,4 +1,4 @@
 // linux backend for the `platform` device — selected by `[target.linux] platform = "linux"`.
-name :: "linux";
-sep :: "/";
+name        :: "linux";
+sep         :: "/";
 null_device :: "/dev/null";

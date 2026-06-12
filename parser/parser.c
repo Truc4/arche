@@ -339,7 +339,7 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
 			error(parser, "Expected element type name after array brackets (e.g. `[]int`)");
 			return 0;
 		}
-		advance(parser); /* element name */
+		advance(parser);              /* element name */
 		if (check(parser, TOK_DOT)) { /* qualified `mod.Name` element */
 			advance(parser);
 			if (!check(parser, TOK_IDENT)) {
@@ -799,7 +799,7 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	 * the name references the archetype shape whose singleton pool to allocate. */
 	if (check(parser, TOK_LBRACKET)) {
 		*out_kind = SN_STATIC_DECL;
-		advance(parser); /* '[' */
+		advance(parser);               /* '[' */
 		if (!parse_expression(parser)) /* capacity expression */
 			return 0;
 		if (!match(parser, TOK_RBRACKET)) {
@@ -810,7 +810,7 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			error(parser, "Expected an archetype name after pool capacity (e.g. `[8]Particle`)");
 			return 0;
 		}
-		advance(parser); /* archetype name head */
+		advance(parser);                 /* archetype name head */
 		while (check(parser, TOK_DOT)) { /* qualified `lib.Particle` */
 			advance(parser);
 			if (!check(parser, TOK_IDENT)) {
@@ -1596,7 +1596,7 @@ static int parse_unary_expr(Parser *parser) {
 				syntax_wrap(parser, fcp, SN_FIELD_NAME);
 			} while (check(parser, TOK_DOT));
 			prim_kind = SN_FIELD_EXPR;
-		} else { /* TOK_LBRACKET */
+		} else {             /* TOK_LBRACKET */
 			advance(parser); /* consume '[' */
 			int is_slice;
 			if (!parse_bracket_index_or_slice(parser, &is_slice))

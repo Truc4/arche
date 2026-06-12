@@ -3,7 +3,7 @@
 // column verdict is sound — it does NOT over-prove an unbounded index.
 // RUN: %arche build --no-abort -o %t %s > %t.out 2>&1 ; grep -qiE "no-abort forbids|E0125" %t.out
 P :: arche { x :: int }
-[4]P(4) {
+[4] P(4) {
   x: 0
 }
 poke :: proc(j: int)() {

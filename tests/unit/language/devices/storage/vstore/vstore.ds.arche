@@ -5,4 +5,4 @@
 // RUN: true
 a :: float;
 b :: float;
-[4]Cell;
+[4] Cell;

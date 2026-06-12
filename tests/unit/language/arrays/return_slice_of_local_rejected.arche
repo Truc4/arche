@@ -6,7 +6,7 @@
 mk :: func() -> []int {
   loc: [5]int;
   loc[0] = 7;
-  return loc[0:3];
+  return loc[0: 3];
 }
 main :: proc() {
   r := mk();

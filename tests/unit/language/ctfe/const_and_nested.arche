@@ -11,7 +11,7 @@ add :: func(a: int, b: int) -> int {
 }
 MAX  :: area(SZ, 4);
 Grid :: arche { cell :: int }
-[add(area(SZ, 4), 0)]Grid(MAX) {
+[add(area(SZ, 4), 0)] Grid(MAX) {
   cell: 0,
 }
 main :: proc() {

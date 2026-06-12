@@ -7,7 +7,7 @@
   }
 }
 Foo :: arche { v :: int }
-[2]Foo;
+[2] Foo;
 main :: proc() {
   insert(Foo, 1) ?bx(h:, ok:); // bounds policy on a pool site -> wrong category
 }

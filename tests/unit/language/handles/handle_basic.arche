@@ -3,9 +3,9 @@ Player :: arche { pos :: float }
 
 AliveList :: arche { player_ref :: handle<Player> }
 
-[10]Player;
+[10] Player;
 
-[10]AliveList;
+[10] AliveList;
 
 main :: proc() {
   insert(Player, 1.0)(p_handle:, _:);

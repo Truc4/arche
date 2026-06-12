@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && ! %t
 Player :: arche { pos :: float }
 
-[10]Player;
+[10] Player;
 
 main :: proc() {
   insert(Player, 1.0)(h1:, _:);

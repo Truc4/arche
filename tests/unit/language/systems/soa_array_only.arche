@@ -4,7 +4,7 @@ pos      :: float;
 vel      :: float;
 Particle :: arche { pos, vel }
 
-[1000]Particle;
+[1000] Particle;
 
 main :: proc() {
   insert(Particle, 10.0, 1.0)(_:, _:);

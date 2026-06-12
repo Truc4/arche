@@ -3,7 +3,8 @@
 // clear dimensionality message (NOT silently under-counted into a malformed `[N x T]` global that
 // fails opaquely at the LLVM layer, which is what happened before this check).
 // RUN: ! %arche build -o %t %s 2>&1 | grep -q "has 3 dimensions"
-C :: { { {1, 2}, {3, 4} }, { {5, 6}, {7, 8} } };
+C :: { { { 1, 2 }, { 3, 4 } }, { { 5, 6 }, { 7, 8 } } }
+;
 main :: proc() {
   _ := C;
 }

@@ -3,8 +3,11 @@
 // indexes it (bounds-checked). `row(1)` is {4,5,6}: length 3, [2]=6.
 // RUN: %arche build -o %t %s && %t | grep -x "n=3 v=6"
 #import { fmt }
-M :: { {1, 2, 3}, {4, 5, 6} };
-row :: func(i: int) -> []int { return M[i]; }
+M :: { { 1, 2, 3 }, { 4, 5, 6 } }
+;
+row :: func(i: int) -> []int {
+  return M[i];
+}
 main :: proc() {
   fmt.printf("n=%d v=%d\n", row(1).length, row(1)[2]);
 }

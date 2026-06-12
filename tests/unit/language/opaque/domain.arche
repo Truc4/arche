@@ -5,7 +5,7 @@
 #import { fmt }
 res       :: opaque;
 OpenFiles :: arche { handle :: res }
-[8]OpenFiles;
+[8] OpenFiles;
 main :: proc() {
   fmt.printf("ok opaque_domain\n");
 }

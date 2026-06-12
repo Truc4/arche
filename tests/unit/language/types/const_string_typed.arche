@@ -2,7 +2,7 @@
 // (RED until char[] consts + prefix syntax land.)
 // RUN: %arche build -o %t %s && %t | grep -x "linux"
 #import { os }
-name : []char : "linux";
+name: []char: "linux";
 main :: proc() {
   os.write(1, name, name.length);
   os.write(1, "\n", 1);

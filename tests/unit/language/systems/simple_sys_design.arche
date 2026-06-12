@@ -2,7 +2,7 @@
 #import { fmt }
 Counter :: arche { val :: int }
 
-[1]Counter(1) {
+[1] Counter(1) {
   val: 0,
 }
 

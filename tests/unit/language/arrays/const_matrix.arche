@@ -2,7 +2,8 @@
 // dims). `M[1][0]` == 3 (chained per-dimension indexing).
 // RUN: %arche build -o %t %s && %t | grep -x "3"
 #import { fmt }
-M :: { {1, 2}, {3, 4} };
+M :: { { 1, 2 }, { 3, 4 } }
+;
 main :: proc() {
   fmt.printf("%d\n", M[1][0]);
 }

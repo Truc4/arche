@@ -2,7 +2,8 @@
 // (== 3, read from the type). (RED until {..} literals + array consts land.)
 // RUN: %arche build -o %t %s && %t | grep -x "2 3"
 #import { fmt }
-XS :: { 1, 2, 3 };
+XS :: { 1, 2, 3 }
+;
 main :: proc() {
   fmt.printf("%d %d\n", XS[1], XS.length);
 }

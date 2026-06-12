@@ -55,8 +55,8 @@ static inline SyntaxView base_subexpr(SyntaxView v) {
 		return none; /* a leading base IDENT token ⇒ flat (`a[i]`, `a.b`, `mod.f(args)`) */
 	SyntaxView first = sv_node_at(v, 0);
 	if (sv_present(first) && (sv_is_postfix_kind(sv_kind(first)) || sv_kind(first) == SN_PAREN_EXPR))
-		return first;     /* first child node is the nested base */
-	return none;          /* SN_CALLEE_NAME (bare call), FIELD_NAME, etc. ⇒ flat */
+		return first; /* first child node is the nested base */
+	return none;      /* SN_CALLEE_NAME (bare call), FIELD_NAME, etc. ⇒ flat */
 }
 static inline int has_nested_base(SyntaxView v) {
 	return sv_present(base_subexpr(v));

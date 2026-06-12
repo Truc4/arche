@@ -3,7 +3,8 @@
 // enforcement covers indexed targets rooted at a value const.)
 // RUN: ! %arche build -o %t %s 2>%t.err
 // RUN: grep -iE "assign to const|cannot assign|immutable" %t.err
-XS :: { 1, 2, 3 };
+XS :: { 1, 2, 3 }
+;
 main :: proc() {
   XS[0] = 9;
 }

@@ -21,7 +21,7 @@ swap :: proc(a: int, b: int)(x: int, y: int) {
 pos      :: float;
 vel      :: float;
 Particle :: arche { pos, vel }
-[2]Particle(2);
+[2] Particle(2);
 step :: sys (pos, vel) {
   pos = pos + vel;
 }

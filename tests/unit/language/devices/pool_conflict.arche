@@ -3,5 +3,5 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "already allocated" %t.out
 #import { "./phys" }
 
-[8]Particle;
-[4]Particle;
+[8] Particle;
+[4] Particle;

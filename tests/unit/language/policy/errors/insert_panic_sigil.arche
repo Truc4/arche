@@ -2,7 +2,7 @@
 // `insert(Foo, x) !reject` uses the panic sigil on a handler op -> error.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "invoked with .?\|handler" %t.out
 Foo :: arche { v :: int }
-[2]Foo;
+[2] Foo;
 main :: proc() {
   insert(Foo, 1) !reject(h:, ok:); // panic sigil on an insert -> wrong sigil
 }

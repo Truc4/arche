@@ -3,8 +3,11 @@
 // "reads a mutable global", which wrongly rejected even a scalar element read from a func.
 // RUN: %arche build -o %t %s && %t | grep -x "20"
 #import { fmt }
-XS :: { 10, 20, 30 };
-nth :: func(i: int) -> int { return XS[i]; }
+XS :: { 10, 20, 30 }
+;
+nth :: func(i: int) -> int {
+  return XS[i];
+}
 main :: proc() {
   fmt.printf("%d\n", nth(1));
 }

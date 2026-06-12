@@ -4,7 +4,7 @@
 #import { fmt }
 Entity :: arche { x :: float, y :: float }
 
-[100]Entity;
+[100] Entity;
 
 main :: proc() {
   insert(Entity, 1.0, 2.0)(_:, _:);

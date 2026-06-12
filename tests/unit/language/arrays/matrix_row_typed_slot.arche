@@ -2,8 +2,9 @@
 // drives the local and the row is borrowed as a (ptr, len) slice. x.length == row width, x[2] reads.
 // RUN: %arche build -o %t %s && %t | grep -x "n=3 v=6"
 #import { fmt }
-M :: { {1, 2, 3}, {4, 5, 6} };
+M :: { { 1, 2, 3 }, { 4, 5, 6 } }
+;
 main :: proc() {
-  x : []int = M[1];
+  x: []int = M[1];
   fmt.printf("n=%d v=%d\n", x.length, x[2]);
 }

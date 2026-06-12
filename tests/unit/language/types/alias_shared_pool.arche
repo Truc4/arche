@@ -9,7 +9,7 @@ mp :: int;
 A  :: arche { hp, mp }
 B  :: arche { mp, hp }
 
-[4]A;
+[4] A;
 
 main :: proc() {
   insert(A, 10, 20)(_:, _:);

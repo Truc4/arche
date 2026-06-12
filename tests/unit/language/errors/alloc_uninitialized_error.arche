@@ -3,7 +3,7 @@
 #import { fmt }
 Counter :: arche { val :: int }
 
-[5]Counter;
+[5] Counter;
 
 main :: proc() {
   x := Counter.val[0];

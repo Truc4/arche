@@ -2,7 +2,7 @@
 #import { fmt }
 Body :: arche { position :: float, velocity :: float }
 
-[500]Body;
+[500] Body;
 
 step :: sys (position, velocity) {
   position = position + velocity;

@@ -1371,8 +1371,8 @@ static const char *resolve_base_chain_type(SemanticContext *ctx, SyntaxView v) {
 		if (nf == 0)
 			return resolve_expression_type(ctx, base); /* e.g. `a[i][j]` — element of the base */
 		char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 1));
-		int is_prop = fld && (strcmp(fld, "length") == 0 || strcmp(fld, "max_length") == 0 ||
-		                      strcmp(fld, "cap") == 0 || strcmp(fld, "capacity") == 0);
+		int is_prop = fld && (strcmp(fld, "length") == 0 || strcmp(fld, "max_length") == 0 || strcmp(fld, "cap") == 0 ||
+		                      strcmp(fld, "capacity") == 0);
 		free(fld);
 		return is_prop ? "int" : resolve_expression_type(ctx, base);
 	}
@@ -1479,7 +1479,7 @@ static const char *resolve_expression_type(SemanticContext *ctx, SyntaxView v) {
 				ni++;
 			if (ni <= 1)
 				return strcmp(met, "char") == 0 ? "char_array" : met; /* a row slice */
-			return met;                                                /* full index → scalar element */
+			return met;                                               /* full index → scalar element */
 		}
 		/* An index yields the base's ELEMENT type; a char buffer ("char_array") indexes to "char". */
 		const char *base_type = resolve_base_chain_type(ctx, v);
@@ -1801,11 +1801,30 @@ done:
 	free(idnt);
 }
 
+/* The interned type of a whole array VALUE CONST: a fixed `[N]elem` (1-D), or the nested
+ * `[rows][stride]elem` for a 2-D matrix (`static_row_stride` is the inner dim). A SUB-slice or partial
+ * row is a separate `[]T`/`[stride]T` value; this is the whole aggregate. */
+static TypeId array_const_type_id(SemanticContext *ctx, const DeclSummary *d) {
+	TypeId elem = d->static_type_id;
+	/* Row count = number of top-level elements in the initializer literal. (Robust to `static_size`,
+	 * which is the FLAT total for a numeric matrix but the ROW count for a string matrix — counting the
+	 * literal sidesteps that bookkeeping difference.) */
+	int rows = 0;
+	if (sv_present(d->static_init))
+		while (sv_present(sem_node_at_expr(d->static_init, rows)))
+			rows++;
+	if (rows <= 0)
+		rows = d->static_size > 0 ? d->static_size : 1;
+	if (d->static_row_stride > 1)
+		return tyid_of_array(ctx->ty_arena, tyid_of_array(ctx->ty_arena, elem, d->static_row_stride), rows);
+	return tyid_of_array(ctx->ty_arena, elem, rows);
+}
+
 /* TypeId-native type of an expression for the side model — preserves the slice/array structure that
- * the stringly resolver collapses to its element. A `b[lo:hi]` slice and a PARTIAL matrix index `M[i]`
- * (a row) become a real `TYK_SLICE([elem])`; everything else falls back to the string round-trip. This
- * is what makes slice/row binds carry `[]T` into the model (so hints, tycheck, and the dangling-return
- * check all see a slice, not a scalar). */
+ * the stringly resolver collapses to its element. A `b[lo:hi]` sub-slice → `[]elem`; a PARTIAL matrix
+ * index `M[i]` (a row) → the sized inner `[stride]elem`; a whole array const → its `[N]`/`[N][W]` type;
+ * everything else falls back to the string round-trip. This is what makes slice/row/array binds carry
+ * the real `[]T`/`[N]T`/`[N][W]T` into the model (so hints, tycheck, and the dangling check see it). */
 static TypeId sem_expr_type_id(SemanticContext *ctx, SyntaxView v) {
 	SyntaxNodeKind k = sv_kind(v);
 	/* A NAME referring to a slice/array variable or param keeps its real `[]T`/`[N]T` type — the
@@ -1830,16 +1849,17 @@ static TypeId sem_expr_type_id(SemanticContext *ctx, SyntaxView v) {
 				if (d->kind == DECL_STATIC && d->static_kind == STATIC_KIND_ARRAY && d->name &&
 				    strcmp(d->name, nm) == 0) {
 					free(nm);
-					return tyid_of_slice(ctx->ty_arena, d->static_type_id);
+					return array_const_type_id(ctx, d);
 				}
 			}
 			free(nm);
 		}
 	}
 	if (k == SN_SLICE_EXPR || k == SN_INDEX_EXPR) {
+		int row_stride = 0; /* >0 ⇒ a sized matrix ROW `[stride]elem`; a SLICE stays a `[]elem` view */
 		int is_slice_val = (k == SN_SLICE_EXPR);
 		if (k == SN_INDEX_EXPR) {
-			/* a partial index of a matrix const (fewer indices than its rank) is a row slice */
+			/* a partial index of a matrix const (fewer indices than its rank) is a row */
 			char *bn = sv_name_expr_dup(v);
 			int stride = 0;
 			const char *met = bn ? name_const_matrix(ctx, bn, &stride) : NULL;
@@ -1848,13 +1868,17 @@ static TypeId sem_expr_type_id(SemanticContext *ctx, SyntaxView v) {
 				int ni = 0;
 				while (sv_present(sem_node_at_expr(v, ni)))
 					ni++;
-				is_slice_val = (ni <= 1);
+				if (ni <= 1) {
+					is_slice_val = 1;
+					row_stride = stride;
+				}
 			}
 		}
 		if (is_slice_val) {
 			const char *es = resolve_expression_type(ctx, v); /* element (or "char_array" for a char row) */
 			const char *elem = (es && strcmp(es, "char_array") == 0) ? "char" : es;
-			return tyid_of_slice(ctx->ty_arena, sem_tyid_of_name(ctx, elem ? elem : "int"));
+			TypeId etid = sem_tyid_of_name(ctx, elem ? elem : "int");
+			return row_stride > 0 ? tyid_of_array(ctx->ty_arena, etid, row_stride) : tyid_of_slice(ctx->ty_arena, etid);
 		}
 	}
 	const char *resolved = resolve_expression_type(ctx, v);
@@ -2444,8 +2468,7 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 			char *vbn = sv_name_expr_dup(value_view);
 			VariableInfo *vbv = vbn ? find_variable(ctx, vbn) : NULL;
 			free(vbn);
-			int base_is_fresh_local =
-			    vbv && !vbv->is_param && type_is_byref_aggregate(ctx->ty_arena, vbv->type_id);
+			int base_is_fresh_local = vbv && !vbv->is_param && type_is_byref_aggregate(ctx->ty_arena, vbv->type_id);
 			if ((base_is_fresh_local || (vbv && vbv->borrows_local))) {
 				VariableInfo *rv2 = find_variable(ctx, bind_name);
 				if (rv2)
@@ -4899,7 +4922,7 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 		case STATIC_KIND_SCALAR:
 			return d->static_type_id;
 		case STATIC_KIND_ARRAY:
-			return tyid_of_slice(ctx->ty_arena, d->static_type_id);
+			return array_const_type_id(ctx, d);
 		default:
 			return TYID_UNKNOWN; /* STATIC_KIND_ARCHETYPE */
 		}

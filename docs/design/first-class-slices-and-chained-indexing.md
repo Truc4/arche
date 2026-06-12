@@ -63,8 +63,17 @@ User decisions: make slices **first-class via the TypeId-native path**, combined
    multidim_2d) were migrated to chained. The now-unreachable `index_count == 2` codegen branches
    (matrix-const + shaped-column) were removed. docs/language.md updated.
 
+9. **Nested array/matrix types render nested, not flat** (`array_const_type_id`). A whole array const
+   is a sized `[N]elem`; a 2-D matrix is the NESTED `[rows][stride]elem` (e.g. `[2][3]i32`,
+   `[3][3]char`), not a flat `[]i32`; a partial matrix row is the sized inner `[stride]elem`
+   (`M[i]` : `[3]i32`); a `buf[lo:hi]` sub-slice stays a runtime `[]T` view. The row count is taken
+   from the *initializer literal*, because `static_size` is the FLAT total for a numeric matrix but the
+   ROW count for a string matrix — counting the literal sidesteps that bookkeeping difference. Used by
+   both `sem_decl_type_id` (the decl hint) and the NAME-const / partial-index paths.
+
 ## Verification
 672/672 lit tests, doctests, AddressSanitizer+UBSan all green; `extras/demo.arche` correct for both
-targets; analyzer hints show `[]i32`/`[]char` for slice/array/row/string binds. New fixtures:
-`slice_array_hints`, `slice_not_arith_operand`, `return_slice_of_local_var_rejected`,
-`per_index_policy_chained`, `comma_index_rejected`.
+targets. Analyzer hints: a matrix const → `[2][3]i32`, a string matrix → `[3][3]char`, a row →
+`[3]i32`/`[3]char`, a 1-D const → `[N]i32`, a sub-slice → `[]i32`, a string → `[]char`. New fixtures:
+`slice_array_hints` (incl. the nested-matrix assertions), `slice_not_arith_operand`,
+`return_slice_of_local_var_rejected`, `per_index_policy_chained`, `comma_index_rejected`.

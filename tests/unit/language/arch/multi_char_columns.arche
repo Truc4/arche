@@ -6,7 +6,7 @@
 #import { fmt }
 Message :: arche { text :: [256]char, author :: [64]char }
 
-[100]Message;
+[100] Message;
 
 main :: proc() {
   insert(Message, "hello", "ada")(_:, _:);

@@ -3,7 +3,7 @@
 pos(x, y) :: float;
 Particle  :: arche { pos_x, pos_y }
 
-[5]Particle;
+[5] Particle;
 
 main :: proc() {
   insert(Particle, 1.0, 2.0)(_:, _:);

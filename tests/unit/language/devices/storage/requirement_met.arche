@@ -5,7 +5,7 @@
 // RUN: %arche build -o %t %s && %t | grep "req_ok"
 #import { store fmt }
 
-[8]Node; // driver owns the pool (the shape comes from store), sized above the minimum of 4
+[8] Node; // driver owns the pool (the shape comes from store), sized above the minimum of 4
 
 main :: proc() {
   insert(Node, 2.0, 3.0)(_:, _:);

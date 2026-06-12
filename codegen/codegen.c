@@ -284,11 +284,9 @@ static HirStaticDecl *codegen_find_static_array(CodegenContext *ctx, const char 
  * row stride (the row's element width). Else NULL. Used so a matrix row decays to a `(ptr, len)`
  * slice at a call boundary, exactly as a sized local `[W]T` does. */
 static HirStaticDecl *codegen_matrix_row_arg(CodegenContext *ctx, HirExpr *e, int *out_stride) {
-	if (e && e->kind == HIR_EXPR_UNARY &&
-	    (e->data.unary.op == UNARY_MOVE || e->data.unary.op == UNARY_COPY))
+	if (e && e->kind == HIR_EXPR_UNARY && (e->data.unary.op == UNARY_MOVE || e->data.unary.op == UNARY_COPY))
 		e = e->data.unary.operand;
-	if (!e || e->kind != HIR_EXPR_INDEX || e->data.index.index_count != 1 ||
-	    e->data.index.base->kind != HIR_EXPR_NAME)
+	if (!e || e->kind != HIR_EXPR_INDEX || e->data.index.index_count != 1 || e->data.index.base->kind != HIR_EXPR_NAME)
 		return NULL;
 	HirStaticDecl *sa = codegen_find_static_array(ctx, e->data.index.base->data.name.name);
 	if (sa && sa->kind == HIR_STATIC_ARRAY && sa->array.row_stride > 1) {
@@ -2009,8 +2007,7 @@ static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *l
  * 0 if `e` is not one of these forms. The NAME case (a registered type-6 slice var) is left to callers
  * via find_value — it carries richer metadata (cap, bounds). This is the shared "expr → (ptr,len)"
  * seam used by slice returns, args, binds, and nested-base `.length`/indexing. */
-static int codegen_eval_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *len_out,
-                              const char **elem_out) {
+static int codegen_eval_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *len_out, const char **elem_out) {
 	if (!e)
 		return 0;
 	if (e->kind == HIR_EXPR_SLICE) {
@@ -2122,8 +2119,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 					slen++;
 				}
 				char *res = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = getelementptr [%zu x i8], [%zu x i8]* %s, i32 0, i32 0\n", res,
-				                  slen + 1, slen + 1, g);
+				buffer_append_fmt(ctx, "  %s = getelementptr [%zu x i8], [%zu x i8]* %s, i32 0, i32 0\n", res, slen + 1,
+				                  slen + 1, g);
 				free(g);
 				strcpy(result_buf, res);
 			} else if (const_val[0] == '\'')
@@ -2660,11 +2657,11 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		 * full index `M[i,j]` is a scalar — codegen_eval_slice declines it, so this can't misfire.) */
 		{
 			const char *fn = expr->data.field.field_name;
-			int is_len = fn && (strcmp(fn, "length") == 0 || strcmp(fn, "cap") == 0 ||
-			                    strcmp(fn, "capacity") == 0 || strcmp(fn, "max_length") == 0);
-			if (is_len && (expr->data.field.base->kind == HIR_EXPR_SLICE ||
-			               expr->data.field.base->kind == HIR_EXPR_INDEX ||
-			               expr->data.field.base->kind == HIR_EXPR_CALL)) {
+			int is_len = fn && (strcmp(fn, "length") == 0 || strcmp(fn, "cap") == 0 || strcmp(fn, "capacity") == 0 ||
+			                    strcmp(fn, "max_length") == 0);
+			if (is_len &&
+			    (expr->data.field.base->kind == HIR_EXPR_SLICE || expr->data.field.base->kind == HIR_EXPR_INDEX ||
+			     expr->data.field.base->kind == HIR_EXPR_CALL)) {
 				char sp[256], sl[256];
 				const char *se = NULL;
 				if (codegen_eval_slice(ctx, expr->data.field.base, sp, sl, &se)) {
@@ -5477,8 +5474,9 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		 * type-6 slice, `r[j]` / `r.length` fall out via the existing type-6 paths. */
 		{
 			int mrow_stride = 0;
-			HirStaticDecl *mrow_sa =
-			    stmt->data.bind_stmt.value ? codegen_matrix_row_arg(ctx, stmt->data.bind_stmt.value, &mrow_stride) : NULL;
+			HirStaticDecl *mrow_sa = stmt->data.bind_stmt.value
+			                             ? codegen_matrix_row_arg(ctx, stmt->data.bind_stmt.value, &mrow_stride)
+			                             : NULL;
 			if (mrow_sa) {
 				char row_ptr[256];
 				codegen_expression(ctx, stmt->data.bind_stmt.value, row_ptr); /* the row element pointer */

@@ -15,4 +15,4 @@ main :: proc() {
 #module
 T :: arche { a :: int, b :: int }
 
-[4]T(4);
+[4] T(4);

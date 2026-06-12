@@ -4,4 +4,4 @@
 // RUN: true
 v   :: float;
 Box :: arche { v }
-[4]Box;
+[4] Box;

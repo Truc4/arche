@@ -12,7 +12,7 @@
 // A plain build still succeeds (a lint is a warning, not an error).
 // RUN: %arche build -o %t %s
 #import { fmt }
-MAX :: 100;
+MAX      :: 100;
 greeting :: func() -> []char { // string literal → W0021
   return "hi";
 }
@@ -34,5 +34,13 @@ hushed :: func() -> int { // would fire, but silenced — NOT flagged
 }
 main :: proc() {
   g := greeting(); // call greeting (so it isn't unused); use .length to stay all-int
-  fmt.printf("%d %d %d %d %d %d\n", g.length, magic(), aliased(), identity(1), doubled(), hushed());
+  fmt.printf(
+    "%d %d %d %d %d %d\n",
+    g.length,
+    magic(),
+    aliased(),
+    identity(1),
+    doubled(),
+    hushed(),
+  );
 }

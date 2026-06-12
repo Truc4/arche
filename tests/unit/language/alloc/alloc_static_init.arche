@@ -5,11 +5,11 @@ Counter :: arche { val :: int, score :: float }
 
 Empty :: arche { x :: int }
 
-[5]Counter(5) {
+[5] Counter(5) {
   val: 7, score: 2.5,
 }
 
-[5]Empty;
+[5] Empty;
 
 main :: proc() {
   fmt.assert(Counter.val[0] == 7, "val[0] not 7\n");

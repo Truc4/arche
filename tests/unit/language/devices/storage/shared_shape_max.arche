@@ -5,7 +5,7 @@
 // RUN: %arche build -o %t %s 2> %t.err && %t | grep "shared_ok" && grep -qiE "shared pool|both require|datasheets require" %t.err
 #import { store cache fmt }
 
-[16]Node; // one pool (the shape comes from the devices), sized to the max of store's 4 and cache's 16
+[16] Node; // one pool (the shape comes from the devices), sized to the max of store's 4 and cache's 16
 
 main :: proc() {
   insert(Node, 2.0, 3.0)(_:, _:);

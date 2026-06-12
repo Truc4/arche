@@ -5,4 +5,4 @@
 // RUN: true
 key :: float;
 val :: float;
-[4]Node;
+[4] Node;
