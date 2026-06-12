@@ -81,10 +81,24 @@ User decisions: make slices **first-class via the TypeId-native path**, combined
     *literal* out-of-bounds index stays an E0097 compile error (policies are for runtime-unprovable
     indices). `[]T` slices keep their bounds check (runtime length) — unchanged.
 
+11. **A sub-slice with literal bounds is statically provable** (`bnd_slice_literal`). The prover used to
+    skip all slice provability; now `base[lo:hi]` of a sized base with LITERAL `lo`/`hi` in `[0, n]` is
+    proven (its `!abort` elides, no ghost), and the carried length `hi-lo` is exact — so a chained
+    `b[1:4][1]` also proves (the column is bounded by the slice length). A non-literal bound or an
+    out-of-range one keeps the runtime check.
+
+12. **`copy`/`move` are transparent to the type** (`sem_expr_type_id` SN_UNARY_EXPR). `b := copy a` /
+    `c := move b` of a sized `[3]int` keep the `[3]int` type (not a collapsed `i32`), so the hint is
+    right and `b[i]` is tracked/proven. An inferred bind of a SIZED ARRAY value also stamps the
+    variable's `type_id` (so `move b` resolves it); slices are deliberately left untyped on the
+    variable so the safe own-buffer / param-borrow slice returns still pass (the dangling case is the
+    borrow taint's job).
+
 ## Verification
-672/672 lit tests, doctests, AddressSanitizer+UBSan all green; `extras/demo.arche` correct for both
+674/674 lit tests, doctests, AddressSanitizer+UBSan all green; `extras/demo.arche` correct for both
 targets. Analyzer hints: a matrix const → `[2][3]i32`, a string matrix → `[3][3]char`, a row →
-`[3]i32`/`[3]char`, a 1-D const → `[N]i32`, a sub-slice → `[]i32`, a string → `[]char`; and a
-trivially-in-bounds constant index (`M[0]`, `M[0][0]`, `XS[2]`, an inferred-row `a[0]`) shows NO policy
-ghost. New fixtures: `slice_array_hints` (incl. the nested-matrix assertions), `slice_not_arith_operand`,
-`return_slice_of_local_var_rejected`, `per_index_policy_chained`, `comma_index_rejected`.
+`[3]i32`/`[3]char`, a 1-D const → `[N]i32`, a sub-slice → `[]i32`, a string → `[]char`, `copy`/`move`
+of `[3]int` → `[3]i32`; and any trivially-in-bounds index — `M[0]`, `M[0][0]`, `XS[2]`, an inferred-row
+`a[0]`, a literal-bounded `b[1:4]` / `b[1:4][1]` — shows NO policy ghost. New fixtures: `slice_array_hints`,
+`slice_not_arith_operand`, `return_slice_of_local_var_rejected`, `per_index_policy_chained`,
+`comma_index_rejected`, `const_index_no_ghost`, `copy_move_array_typed`.

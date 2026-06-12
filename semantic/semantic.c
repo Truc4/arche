@@ -1831,6 +1831,14 @@ static TypeId array_const_type_id(SemanticContext *ctx, const DeclSummary *d) {
  * the real `[]T`/`[N]T`/`[N][W]T` into the model (so hints, tycheck, and the dangling check see it). */
 static TypeId sem_expr_type_id(SemanticContext *ctx, SyntaxView v) {
 	SyntaxNodeKind k = sv_kind(v);
+	/* `move x` / `copy x` are transparent to the type — they carry the operand's type (incl. an array
+	 * or slice). Without this, `b := copy a` (a `[3]int`) loses the array type → wrong hint + an
+	 * untracked `b[i]`. (Negate/not fall through to the string path, which types them fine.) */
+	if (k == SN_UNARY_EXPR && (sv_has_token(v, TOK_MOVE) || sv_has_token(v, TOK_COPY))) {
+		SyntaxView operand = sem_first_expr(v);
+		if (sv_present(operand))
+			return sem_expr_type_id(ctx, operand);
+	}
 	/* A NAME referring to a slice/array variable or param keeps its real `[]T`/`[N]T` type — the
 	 * string path collapses it to the element (`sem_tyid_name` of an array yields the element base), so
 	 * read `var->type_id` directly. Keeps both sides of a slice assignment (`out = raw[0:n]`) in sync. */
@@ -2462,6 +2470,18 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 
 		check_shadows_callable(ctx, bind_name, loc);
 		add_variable(ctx, bind_name, btype_id);
+		/* An inferred bind of a SIZED ARRAY value (`b := copy a`, a `[3]int`) carries that real `[N]T`
+		 * type onto the variable, so `move b` / `b[i]` resolve it. Deliberately NOT slices: a `[]T` local
+		 * stays untyped here so the return check's "local array by value" rule keeps allowing the safe
+		 * own-buffer / param-borrow slice returns (the dangling case is caught by the borrow taint). */
+		if (!has_btype && sv_present(value_view) && ctx->model) {
+			VariableInfo *bv = find_variable(ctx, bind_name);
+			if (bv && bv->type_id == TYID_UNKNOWN) {
+				TypeId vt = sem_model_expr_type_id(ctx->model, sv_id(value_view));
+				if (tyid_kind(ctx->ty_arena, vt) == TYK_ARRAY)
+					bv->type_id = vt;
+			}
+		}
 		/* Borrow-source taint: a bind whose RHS is a freshly-formed slice/row of a FRESH LOCAL array
 		 * (`r := loc[0:3]` / `r := M[i]` of a local matrix) makes `r` borrow stack storage that is
 		 * reclaimed on return — so `return r` would dangle. Mark it (propagating from a tainted base) so
@@ -4528,7 +4548,43 @@ static void validate_explicit_policy(SemanticContext *ctx, DeclSummary *d, Sourc
  *   provably safe       → W0018 if an explicit policy is present (dead — the op can never fail);
  *   unprovable          → an explicit `!name` is validated: E0098 `!abort` in a func/policy (must be
  *                         total), E0099 unknown policy, E0124 wrong @policy(category).
- * Slices skip provability (the prover doesn't bound them) — only their explicit policy is validated. */
+ * A sub-slice `base[lo:hi]` of a sized base (length `n`) with LITERAL bounds in `[0, n]` is provable —
+ * its policy elides and the carried length `hi-lo` is exact. */
+
+/* For a flat slice `base[lo:hi]` whose base has length `n` (>= 0): returns 1 (and writes the slice
+ * length `hi-lo` to *out_len) iff lo/hi are literals — or omitted (lo=0, hi=n) — with 0<=lo<=hi<=n. */
+static int bnd_slice_literal(SyntaxView v, int n, int *out_len) {
+	if (n < 0 || sv_kind(v) != SN_SLICE_EXPR)
+		return 0;
+	int lo = 0, hi = n, seen_colon = 0, ok = 1;
+	for (int i = 0; i < v.node->child_count; i++) {
+		const SyntaxElem *ch = &v.node->children[i];
+		if (ch->tag == SE_TOKEN && ch->as.token.kind == TOK_COLON) {
+			seen_colon = 1;
+			continue;
+		}
+		if (ch->tag == SE_NODE) {
+			SyntaxNodeKind ck = ch->as.node->kind;
+			if (ck >= SN_LITERAL_EXPR && ck <= SN_PAREN_EXPR) {
+				int lit;
+				if (bnd_lit_int_signed((SyntaxView){ch->as.node, v.src}, &lit)) {
+					if (!seen_colon)
+						lo = lit;
+					else
+						hi = lit;
+				} else {
+					ok = 0; /* a non-literal bound — not statically provable */
+				}
+			}
+		}
+	}
+	if (!ok || lo < 0 || hi < lo || hi > n)
+		return 0;
+	if (out_len)
+		*out_len = hi - lo;
+	return 1;
+}
+
 static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, SyntaxView v, int is_slice,
                              const char *base, int kind, int n) {
 	char *explicit_pol = NULL;
@@ -4586,6 +4642,9 @@ static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, Sy
 			free(iv);
 		}
 	}
+	/* A sub-slice of a sized base with literal bounds in range is statically safe — no bounds policy. */
+	if (is_slice && kind == 1 && n >= 0 && bnd_slice_literal(v, n, NULL))
+		provably_safe = 1;
 
 	if (provably_oob) {
 		sem_emit_policy_provable_oob(ctx, loc, base ? base : "?", oob_lit, n);
@@ -4683,18 +4742,25 @@ static const char *bnd_check_expr(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 		int kind;
 		int nested = has_nested_base(v);
 		if (nested) {
-			/* chained `M[k][i]`: a matrix-const ROW base bounds THIS index by the inner dim (stride),
-			 * so a constant column index into a known matrix is provable (no policy on `M[0][0]`). */
+			/* chained index over a nested base. Two provable bounds: a matrix-const ROW base bounds this
+			 * index by the inner dim (stride) — `M[0][0]`; a sub-slice base `b[lo:hi]` with literal bounds
+			 * bounds it by the slice length `hi-lo` — `b[1:4][1]`. */
 			kind = 0;
 			SyntaxView bsub = base_subexpr(v);
 			char *bn = sv_name_expr_dup(bsub);
 			int stride = 0;
 			const char *met = bn ? name_const_matrix(ctx, bn, &stride) : NULL;
-			free(bn);
 			if (met && stride > 1) {
 				kind = 1;
 				n = stride;
+			} else if (sv_kind(bsub) == SN_SLICE_EXPR && bn) {
+				int sn = -1, slen = 0;
+				if (bnd_base_kind(ctx, d, e, bn, &sn) == 1 && bnd_slice_literal(bsub, sn, &slen)) {
+					kind = 1;
+					n = slen;
+				}
 			}
+			free(bn);
 		} else {
 			kind = base ? bnd_base_kind(ctx, d, e, base, &n) : 0;
 		}
