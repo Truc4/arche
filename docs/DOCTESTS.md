@@ -109,3 +109,32 @@ DOCLINE <text>            × linecount
 ```
 
 The language server renders the `DOCLINE`s as the hover body.
+
+## Markdown doctests
+
+`arche test` also runs ```arche fenced blocks inside **`.md` files** — so prose docs
+(`docs/*.md`, a project's README) are compiled and run, not just inspected. A directory sweep
+(`arche test docs/...`) picks up `.md` and `.arche` files alike.
+
+Unlike `.arche` doctests (which run with their documenting file's full context), a `.md` block has
+no documenting file. Instead, blocks are grouped by **markdown section**:
+
+- Every ```arche block under the same heading shares one scope — the section's top-level
+  declarations (`name :: …` forms, `#module`/`#file`/`#foreign` regions) and imports are pooled,
+  and each block's loose statements run in their own `main` with that scope visible. So you declare
+  a type once and reuse it in a later block of the same section, with no repeated setup.
+- A **new heading starts a fresh scope.** Two sections are isolated, so independent examples may
+  reuse names (and each may have its own `#module`) without colliding.
+
+`fmt` is always available (no import needed). A section that contains only declarations is
+compile-checked; a section with statements runs them.
+
+### Convention: every ```arche block is runnable
+
+Markdown doctests have **no opt-out flags** — every ```arche block must be a real, complete program
+that compiles and exits 0. There is deliberately no `ignore`/`no_run`/`compile_fail` here: a doc
+example you wouldn't run is a doc example that can rot.
+
+A deliberately-wrong "don't write this" snippet is therefore **not** tagged `arche` — write it as a
+plain ` ``` ` (or ` ```text `) fence so the runner skips it. It isn't valid arche; it shouldn't be
+presented as exemplary arche.

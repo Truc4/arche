@@ -163,12 +163,15 @@ test: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN)
 test-per-unit: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 	ARCHE_PER_UNIT=1 lit -v tests/
 
-# Run doctests (```arche examples in /// doc comments) over the real source tree.
-# The synthetic runner fixtures in tests/unit/doctest/ are exercised by lit above
-# (some are intentional failures wrapped in `not`); this sweeps the production
+# Run doctests over the real source tree: ```arche examples in /// doc comments (.arche) AND in
+# prose docs (.md). The synthetic runner fixtures in tests/unit/doctest/ + tests/unit/mddoc/ are
+# exercised by lit above (some are intentional failures wrapped in `not`); this sweeps the production
 # sources so any documented example is CI-gated. Skips files with no examples.
+# docs/*.md are listed explicitly (not docs/...): docs/devices.md is deliberately excluded — its
+# examples are inherently multi-file (datasheet + impl + driver) and cannot run as standalone
+# .md doctests (see docs/DOCTESTS.md "Markdown doctests").
 test-doc: $(TARGET) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
-	./$(TARGET) test core/... stdlib/... examples/...
+	./$(TARGET) test core/... stdlib/... examples/... README.md docs/language.md docs/patterns.md docs/DOCTESTS.md
 
 # Memory-safety regression gate (AddressSanitizer + UndefinedBehaviorSanitizer). Rebuilds the
 # context-freeing unit-test binaries in an ISOLATED object tree (build-asan/) — so the normal

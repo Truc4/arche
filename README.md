@@ -79,7 +79,7 @@ won't let you blur them. The shape of a declaration *tells you what it does*.
 | `sys`    | `name :: sys(components)`   | no          | a data transform — runs over **every** archetype carrying those components |
 | `policy` | `name :: policy(len, i)`    | no          | a failure macro — inlined at a fallible op (`a[i] !clamp`) to resolve the failure *at the site* |
 
-```arche
+```
 area   :: func(w: int, h: int) -> int         // value:    r := area(w, h)
 divmod :: proc(a: int, b: int)(q:, r:)        // action:   divmod(17, 5)(q:, r:)
 step   :: sys(pos, vel) { pos = pos + vel; }  // transform: run step;
