@@ -62,7 +62,7 @@ static int is_line_comment(const Leaf *l) {
 /* No space before this token on the same line. `next` is the following token kind
  * so compound colon operators (`:=`, `::`) — which arche lexes as two tokens — can
  * be spaced as units: `result := e`, `name :: T`, but `a: int` for a type colon. */
-static int no_space_before(TokenKind t, TokenKind prev, TokenKind next) {
+static int no_space_before(TokenKind t, TokenKind prev, TokenKind next, SyntaxNodeKind prev_parent) {
 	switch (t) {
 	case TOK_SEMI:
 	case TOK_COMMA:
@@ -101,6 +101,11 @@ static int no_space_before(TokenKind t, TokenKind prev, TokenKind next) {
 	case TOK_LBRACKET:
 	case TOK_AT:
 		return 1;
+	case TOK_RBRACKET:
+		/* pool capacity `[C]Name`: the archetype name hugs the `]`. A `]` parented to a static
+		 * decl is a pool-capacity bracket; an array-type `]` (`[N]T`) is parented to a TYPE node,
+		 * so it falls through and its own SN_TYPE_* compact path handles the glue. */
+		return prev_parent == SN_STATIC_DECL;
 	case TOK_BANG:
 	case TOK_QUESTION:
 		return 1; /* a policy name hugs its sigil: `!clamp`, `?reject` (and unary `!x`) */
@@ -173,13 +178,14 @@ static int is_match_brace(const Leaf *l) {
 static int flat_width(const Leaves *ls, int i) {
 	int depth = 0, w = 0;
 	TokenKind prev = TOK_EOF;
+	SyntaxNodeKind prev_parent = SN_SOURCE_FILE;
 	for (int k = i; k < ls->count; k++) {
 		const Leaf *l = &ls->items[k];
 		if (l->kind == TOK_COMMENT || l->kind == TOK_SEMI)
 			return INT_MAX;
 		if (k > i) {
 			TokenKind nx = (k + 1 < ls->count) ? ls->items[k + 1].kind : TOK_EOF;
-			if (!no_space_before(l->kind, prev, nx))
+			if (!no_space_before(l->kind, prev, nx, prev_parent))
 				w += 1;
 		}
 		w += l->len;
@@ -193,6 +199,7 @@ static int flat_width(const Leaves *ls, int i) {
 			}
 		}
 		prev = l->kind;
+		prev_parent = l->parent;
 	}
 	return w;
 }
@@ -600,7 +607,7 @@ void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 				int compact = (l->parent == prev_parent && (l->parent == SN_TYPE_REF || l->parent == SN_TYPE_ARRAY ||
 				                                            l->parent == SN_TYPE_SHAPED_ARRAY ||
 				                                            l->parent == SN_TYPE_HANDLE || l->parent == SN_NAME_EXPR));
-				space = (!compact && !after_unary && !no_space_before(l->kind, prev, next));
+				space = (!compact && !after_unary && !no_space_before(l->kind, prev, next, prev_parent));
 			}
 		} else {
 			/* ===== legacy block / statement / decl path ===== */
@@ -629,7 +636,7 @@ void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 				int compact = (l->parent == prev_parent && (l->parent == SN_TYPE_REF || l->parent == SN_TYPE_ARRAY ||
 				                                            l->parent == SN_TYPE_SHAPED_ARRAY ||
 				                                            l->parent == SN_TYPE_HANDLE || l->parent == SN_NAME_EXPR));
-				space = (!compact && !after_unary && !no_space_before(l->kind, prev, next));
+				space = (!compact && !after_unary && !no_space_before(l->kind, prev, next, prev_parent));
 				if (l->kind == TOK_COMMENT)
 					space = 1; /* always a gap before a same-line trailing comment */
 			}

@@ -1,0 +1,17 @@
+// A pool-capacity bracket hugs its archetype name: `[4]Body`, NOT `[4] Body`. The `]` here is
+// parented to the static pool decl (capacity bracket), unlike an array-type `]` (`[N]T`) which is
+// parented to a TYPE node and glues via its own compact path.
+// RUN: %arche fmt %s | grep -qE "^\[4\]Body\(4\) \{$"
+// Array-type buffers and index expressions keep their normal spacing (regression guard):
+// RUN: %arche fmt %s | grep -qE "px :: \[2\]float"
+// RUN: %arche fmt %s | grep -qE "b\[0\]"
+#import { fmt }
+Body :: arche { px :: [2]float, mass :: float }
+[4]Body(4) {
+  px: 0.0, mass: 0.0,
+}
+main :: proc() {
+  b: [4]int;
+  b[0] = 7;
+  fmt.printf("%d\n", b[0]);
+}
