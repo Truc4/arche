@@ -45,9 +45,9 @@ fread :: proc(f: fd, buf: []char, n: int)(out: []char) {
   }
   out = buf[0: k];
 }
-// Read up to the buffer's capacity. Thin alias for `fread(f, buf, buf.cap)`.
+// Read up to the buffer's length. Thin alias for `fread(f, buf, buf.length)`.
 read :: proc(f: fd, buf: []char)(out: []char) {
-  fread(f, buf, buf.cap)(r:);
+  fread(f, buf, buf.length)(r:);
   out = r;
 }
 // `own buf` — this fills the buffer byte-by-byte in arche code (not via a single FFI write), so it

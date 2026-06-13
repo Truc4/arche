@@ -1437,17 +1437,15 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 			if (!arch && bt != TYID_UNKNOWN && !sys_column_access) {
 				if (btk == TYK_NOMINAL)
 					arch = find_archetype(ctx, tyid_nominal_name(A, bt));
-				/* A string (`PRIM_STR`) is a length-carrying char slice — its `.length`/`.cap` are valid
-				 * just like a slice's. */
+				/* A string (`PRIM_STR`) is a length-carrying char slice — its `.length` is valid just
+				 * like a slice's. (No `.cap`: a slice has no capacity.) */
 				int str_like = (btk == TYK_PRIM && tyid_prim(A, bt) == PRIM_STR);
 				if (!arch && btk != TYK_TUPLE && btk != TYK_ARCHETYPE_CATEGORY) {
 					if ((btk == TYK_SLICE || btk == TYK_ARRAY || str_like) && is_len_prop(field_name))
 						goto done;
-					/* A static array's VariableInfo carries its ELEMENT type, so `.length`/`.cap` on it
-					 * aren't caught above — allow them here (they resolve to int). */
-					if (name_is_static_array(ctx, idnt) &&
-					    (strcmp(field_name, "cap") == 0 || strcmp(field_name, "capacity") == 0 ||
-					     strcmp(field_name, "length") == 0 || strcmp(field_name, "max_length") == 0))
+					/* A static array's VariableInfo carries its ELEMENT type, so `.length` on it isn't
+					 * caught above — allow it here (resolves to int). */
+					if (name_is_static_array(ctx, idnt) && is_len_prop(field_name))
 						goto done;
 					const char *kind_name;
 					switch (btk) {
@@ -1559,10 +1557,11 @@ static TypeId array_const_type_id(SemanticContext *ctx, const DeclSummary *d) {
 	return tyid_of_array(ctx->ty_arena, elem, rows);
 }
 
-/* A `.length`/`.cap`/etc. metadata property — its value is always an `int`. */
+/* The `.length` metadata property — an array/slice/string's size, always an `int`. Arrays and slices
+ * have NO capacity: a slice is a borrowed `{ptr,len}` window and an array is a fixed `[N]T` (size in
+ * the type). Capacity/growth is a POOL concept (`.capacity` / `.count`), handled separately. */
 static int is_len_prop(const char *f) {
-	return f && (strcmp(f, "length") == 0 || strcmp(f, "max_length") == 0 || strcmp(f, "cap") == 0 ||
-	             strcmp(f, "capacity") == 0);
+	return f && strcmp(f, "length") == 0;
 }
 
 static TypeId sem_expr_type_id(SemanticContext *ctx, SyntaxView v); /* mutually recursive with the helpers */
@@ -3932,8 +3931,10 @@ static char *bnd_extent_base(SemanticContext *ctx, SyntaxView v) {
 	if (nf != 1)
 		return NULL;
 	char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, 0));
-	int is_extent = fld && (strcmp(fld, "length") == 0 || strcmp(fld, "cap") == 0 || strcmp(fld, "capacity") == 0 ||
-	                        strcmp(fld, "max_length") == 0 || strcmp(fld, "count") == 0);
+	/* An extent guard names a length: `.length` (array/slice/string size) or a pool's `.capacity` /
+	 * `.count` (its static cap / live rows). Arrays/slices have no `.cap` — capacity is a pool concept,
+	 * so `cap`/`max_length` (the removed slice spellings) are gone. */
+	int is_extent = fld && (strcmp(fld, "length") == 0 || strcmp(fld, "capacity") == 0 || strcmp(fld, "count") == 0);
 	free(fld);
 	if (!is_extent)
 		return NULL;

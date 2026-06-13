@@ -12,18 +12,16 @@ char *strdup(const char *s);
 
 typedef struct {
 	char *name;
-	char *llvm_name;              /* allocated SSA value name */
-	int type;                     /* 0=i32, 1=i32*, 2=i8* (string), 3=arch*, 4=column ptr, 5=%struct.arche_array* */
-	char *arch_name;              /* for type==3 or 4, nullable otherwise */
-	int string_len;               /* for type==2 (string), the compile-time length (-1 if unknown) */
-	const char *field_type;       /* for type==4 (column ptr), the Arche type name (e.g. "float") */
+	char *llvm_name;        /* allocated SSA value name */
+	int type;               /* 0=i32, 1=i32*, 2=i8* (string), 3=arch*, 4=column ptr, 6=array/slice, 7=[N]char buf */
+	char *arch_name;        /* for type==3 or 4, nullable otherwise */
+	int string_len;         /* for type==2 (string), the compile-time length (-1 if unknown) */
+	const char *field_type; /* for type==4 (column ptr), the Arche type name (e.g. "float") */
 	const char *handle_archetype; /* if field_type=="handle", the target archetype name (borrowed, like field_type) */
 	int bit_width;                /* 32 (default) or 64 for SSA values */
 	int is_slice; /* type==6: 1 = T[] fat-pointer slice (runtime len in len_ssa), 0 = bounded T[N] (len = string_len) */
-	char *len_ssa;      /* type==6 slice: SSA value (or literal) holding the i64 runtime length; NULL otherwise */
-	char *cap_ssa;      /* type==6 slice: i64 backing capacity (`.cap`); NULL ⇒ fall back to length. Part of the
-	                     * heapless {ptr,len,cap} model. TODO: not yet threaded through the call ABI (a slice
-	                     * param's cap falls back to its len); revisit per the plan's cap optimization note. */
+	char *len_ssa;      /* type==6 slice: SSA value (or literal) holding the i64 runtime length; NULL otherwise.
+	                     * A slice is a borrowed `{ptr,len}` window — no capacity (capacity is a pool concept). */
 	char *out_aggr_ptr; /* out-ONLY unbounded `char[]`/`T[]` out-param: the `{T*,i64}*` caller slot (%outN).
 	                     * When set, assigning a slice/array to this name stores the {ptr,len} back through
 	                     * it so the caller recovers the returned view. NULL for ordinary values. */
@@ -1894,14 +1892,14 @@ static void emit_index_policy(CodegenContext *ctx, HirExpr *base, HirExpr *idx_e
  * bit width into *elem_out / *bitw_out. Returns 1 on success (base is a known array/slice), 0 if the
  * base isn't sliceable. Omitted bounds default to lo=0, hi=base length. A read-only borrowed view —
  * no copy, no consume. */
-static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *len_out, char *cap_out,
-                         const char **elem_out, int *bitw_out) {
+static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *len_out, const char **elem_out,
+                         int *bitw_out) {
 	HirExpr *base = e->data.slice.base;
 	ValueInfo *bv = (base->kind == HIR_EXPR_NAME) ? find_value(ctx, base->data.name.name) : NULL;
 	if (!bv)
 		return 0;
 	const char *elem_base, *elem_llvm;
-	char base_ptr[256], base_len[64], base_cap[64];
+	char base_ptr[256], base_len[64];
 	if (bv->type == 6 && bv->field_type) {
 		elem_base = bv->field_type;
 		elem_llvm = llvm_type_from_arche(elem_base);
@@ -1910,12 +1908,6 @@ static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *l
 			snprintf(base_len, sizeof(base_len), "%s", bv->len_ssa);
 		else
 			snprintf(base_len, sizeof(base_len), "%d", bv->string_len);
-		/* Backing capacity of the base: a slice carries its own cap (else falls back to len); a
-		 * bounded T[N] has cap = N. The sub-view's cap is this minus the lo offset (below). */
-		if (bv->is_slice)
-			snprintf(base_cap, sizeof(base_cap), "%s", bv->cap_ssa ? bv->cap_ssa : base_len);
-		else
-			snprintf(base_cap, sizeof(base_cap), "%d", bv->string_len);
 	} else if (bv->type == 7) {
 		elem_base = "char";
 		elem_llvm = "i8";
@@ -1924,7 +1916,6 @@ static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *l
 		                  bv->string_len, bv->llvm_name);
 		strcpy(base_ptr, ep);
 		snprintf(base_len, sizeof(base_len), "%d", bv->string_len);
-		snprintf(base_cap, sizeof(base_cap), "%d", bv->string_len);
 	} else {
 		return 0;
 	}
@@ -1989,12 +1980,6 @@ static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *l
 	buffer_append_fmt(ctx, "  %s = sub i64 %s, %s\n", len2, hi64, lo64);
 	snprintf(ptr_out, 256, "%s", ptr2);
 	snprintf(len_out, 256, "%s", len2);
-	/* Sub-view capacity = backing capacity from the slice start: base_cap - lo. */
-	if (cap_out) {
-		char *cap2 = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = sub i64 %s, %s\n", cap2, base_cap, lo64);
-		snprintf(cap_out, 256, "%s", cap2);
-	}
 	*elem_out = elem_base;
 	*bitw_out = strcmp(elem_llvm, "double") == 0 ? 64 : (strcmp(elem_llvm, "i8") == 0 ? 8 : 32);
 	return 1;
@@ -2011,10 +1996,9 @@ static int codegen_eval_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, ch
 	if (!e)
 		return 0;
 	if (e->kind == HIR_EXPR_SLICE) {
-		char cap[64];
 		const char *se = NULL;
 		int sw = 0;
-		if (codegen_slice(ctx, e, ptr_out, len_out, cap, &se, &sw)) {
+		if (codegen_slice(ctx, e, ptr_out, len_out, &se, &sw)) {
 			if (elem_out)
 				*elem_out = se;
 			return 1;
@@ -2651,14 +2635,13 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			}
 		}
 
-		/* `.length`/`.cap` on a freshly-formed slice EXPRESSION base — general postfix `M[i].length`
-		 * (a matrix row) or `buf[lo:hi].length`. Evaluate the base to its (ptr, runtime length) via the
-		 * shared slice primitive and return the length, truncated to the i32 the accessor yields. (A
-		 * fully-chained `M[i][j]` is a scalar — codegen_eval_slice declines it, so this can't misfire.) */
+		/* `.length` on a freshly-formed slice EXPRESSION base — general postfix `M[i].length` (a matrix
+		 * row) or `buf[lo:hi].length`. Evaluate the base to its (ptr, runtime length) via the shared
+		 * slice primitive and return the length, truncated to the i32 the accessor yields. (A fully-
+		 * chained `M[i][j]` is a scalar — codegen_eval_slice declines it, so this can't misfire.) */
 		{
 			const char *fn = expr->data.field.field_name;
-			int is_len = fn && (strcmp(fn, "length") == 0 || strcmp(fn, "cap") == 0 || strcmp(fn, "capacity") == 0 ||
-			                    strcmp(fn, "max_length") == 0);
+			int is_len = fn && strcmp(fn, "length") == 0;
 			if (is_len &&
 			    (expr->data.field.base->kind == HIR_EXPR_SLICE || expr->data.field.base->kind == HIR_EXPR_INDEX ||
 			     expr->data.field.base->kind == HIR_EXPR_CALL)) {
@@ -2690,11 +2673,10 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			}
 		}
 
-		/* `.length`/`.cap`/etc. on a string literal — incl. a `char[]` string value-const that lowered
-		 * to one (`name :: "linux"`) or a device-qualified one (`platform.name`, still a NAME at
-		 * codegen). The length is the literal's compile-time char count. */
-		int is_len_field = strcmp(field_name, "length") == 0 || strcmp(field_name, "cap") == 0 ||
-		                   strcmp(field_name, "capacity") == 0 || strcmp(field_name, "max_length") == 0;
+		/* `.length` on a string literal — incl. a `char[]` string value-const that lowered to one
+		 * (`name :: "linux"`) or a device-qualified one (`platform.name`, still a NAME at codegen). The
+		 * length is the literal's compile-time char count. (Arrays/slices have only `.length`, no cap.) */
+		int is_len_field = strcmp(field_name, "length") == 0;
 		if (is_len_field && expr->data.field.base->kind == HIR_EXPR_STRING) {
 			snprintf(result_buf, 256, "%d", expr->data.field.base->data.string.length);
 			break;
@@ -2711,7 +2693,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				snprintf(result_buf, 256, "%d", slen);
 				break;
 			}
-			/* `.length`/`.cap` on a static array (incl. an array value-const) — the declared count. */
+			/* `.length` on a static array (incl. an array value-const) — the declared count. */
 			HirStaticDecl *sa = codegen_find_static_array(ctx, expr->data.field.base->data.name.name);
 			if (sa) {
 				snprintf(result_buf, 256, "%d", sa->array.size);
@@ -2719,36 +2701,26 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			}
 		}
 
-		/* Fixed char[N]/T[N] stack buffer (type 7): .cap/.capacity/.length/.max_length are the
-		 * declared size (string_len) — the same bound buf[i] is bounds-checked against. A fixed
-		 * array has no dynamic length, so length == capacity == N; content length is strlen(). */
-		if (base_val && base_val->type == 7 &&
-		    (strcmp(field_name, "cap") == 0 || strcmp(field_name, "capacity") == 0 ||
-		     strcmp(field_name, "length") == 0 || strcmp(field_name, "max_length") == 0)) {
+		/* Fixed char[N]/T[N] stack buffer (type 7): `.length` is the declared size (string_len) — the
+		 * same bound `buf[i]` is checked against. A fixed array's size IS its length; content length
+		 * (after a write) is `strlen()`. */
+		if (base_val && base_val->type == 7 && is_len_field) {
 			snprintf(result_buf, 256, "%d", base_val->string_len);
 			break;
 		}
 
-		/* Type-6 `T[]` slice: `.length` is the runtime len; `.cap`/`.capacity`/`.max_length` is the
-		 * backing capacity (`cap_ssa`) — the heapless `{ptr,len,cap}` model. Both i64, trunc'd to the
-		 * i32 the accessors return. A slice with no carried cap (e.g. a slice param — cap isn't
-		 * threaded through the ABI yet) falls back to its length. */
-		if (base_val && base_val->type == 6 && base_val->is_slice && base_val->len_ssa &&
-		    (strcmp(field_name, "cap") == 0 || strcmp(field_name, "capacity") == 0 ||
-		     strcmp(field_name, "length") == 0 || strcmp(field_name, "max_length") == 0)) {
-			int want_cap = strcmp(field_name, "length") != 0;
-			const char *src = (want_cap && base_val->cap_ssa) ? base_val->cap_ssa : base_val->len_ssa;
+		/* Type-6 `T[]` slice: `.length` is the runtime len (i64, trunc'd to the i32 the accessor
+		 * returns). A slice is a borrowed `{ptr,len}` window — no capacity. */
+		if (base_val && base_val->type == 6 && base_val->is_slice && base_val->len_ssa && is_len_field) {
 			char *t = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", t, src);
+			buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", t, base_val->len_ssa);
 			snprintf(result_buf, 256, "%s", t);
 			break;
 		}
 
-		/* Type-6 bounded array (non-char `int[N]`/`float[N]`/…): .cap/.length/etc. are the declared
-		 * element count N (string_len) — the same constant bound its indexing is checked against. */
-		if (base_val && base_val->type == 6 && base_val->string_len > 0 &&
-		    (strcmp(field_name, "cap") == 0 || strcmp(field_name, "capacity") == 0 ||
-		     strcmp(field_name, "length") == 0 || strcmp(field_name, "max_length") == 0)) {
+		/* Type-6 bounded array (non-char `int[N]`/`float[N]`/…): `.length` is the declared element
+		 * count N (string_len) — the same constant bound its indexing is checked against. */
+		if (base_val && base_val->type == 6 && base_val->string_len > 0 && is_len_field) {
 			snprintf(result_buf, 256, "%d", base_val->string_len);
 			break;
 		}
@@ -2767,36 +2739,6 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 					char *count = gen_value_name(ctx);
 					buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, gep);
 					strcpy(result_buf, count);
-					break;
-				}
-			}
-
-			/* For arche_array: load length or max_length field */
-			if (base_val && base_val->type == 5) {
-				int field_idx = (strcmp(field_name, "max_length") == 0) ? 2 : 1;
-				char *gep = gen_value_name(ctx);
-				buffer_append_fmt(
-				    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 %d\n", gep,
-				    base_buf, field_idx);
-				char *loaded = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", loaded, gep);
-				char *truncated = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", truncated, loaded);
-				strcpy(result_buf, truncated);
-				break;
-			}
-
-			/* For archetype: max_length is the capacity field */
-			if (strcmp(field_name, "max_length") == 0 && base_val && base_val->type == 3 && base_val->arch_name) {
-				HirArchetypeDecl *arch = find_archetype_decl(ctx, base_val->arch_name);
-				if (arch) {
-					int cap_idx = arch->field_count + 1;
-					char *gep = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gep,
-					                  base_val->arch_name, base_val->arch_name, base_buf, cap_idx);
-					char *cap = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cap, gep);
-					strcpy(result_buf, cap);
 					break;
 				}
 			}
@@ -2942,12 +2884,11 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 	case HIR_EXPR_SLICE: {
 		/* `buf[lo:hi]` as a bare expression value: emit the sub-view and yield its element pointer.
 		 * (Call args and binds use codegen_slice directly to also carry the runtime length.) */
-		char sp[256], sl[256], scp[256];
+		char sp[256], sl[256];
 		const char *se;
 		int sw;
-		if (codegen_slice(ctx, expr, sp, sl, scp, &se, &sw)) {
+		if (codegen_slice(ctx, expr, sp, sl, &se, &sw)) {
 			(void)sl;
-			(void)scp;
 			strcpy(result_buf, sp);
 		} else {
 			strcpy(result_buf, "null");
@@ -3152,8 +3093,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				                  align);
 			}
 
-			/* Zero-extend an i8 element load to i32, matching the type-5 (arche_array) and
-			 * type-7 (char[N]) paths which always promote: a char/byte element acts as an i32 in
+			/* Zero-extend an i8 element load to i32, matching the type-7 (char[N]) path which always
+			 * promotes: a char/byte element acts as an i32 in
 			 * int contexts (printf %d, compares, arithmetic), and a store back to an i8 target
 			 * truncs as needed. Without this a local string-literal index (`s := "hi"; s[0]`, a
 			 * raw i8* on this general path) stayed i8 and failed the verifier. */
@@ -3242,23 +3183,14 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				HirType *rt = &expr->data.call.args[i]->resolved;
 				/* A buffer arg decays to its data pointer (like C): extract the i8* and `ptrtoint`
 				 * it to i64 so a buffer can be handed to a raw syscall. The arg's LLVM repr is
-				 * known from its ValueInfo type: 5 = %struct.arche_array* (static buffer),
-				 * 7 = [N x i8]* (local char buffer), 2 = i8* (string), 6 = i8* (char[] param,
-				 * data ptr pre-extracted at entry). */
+				 * known from its ValueInfo type: 7 = [N x i8]* (local char buffer), 2 = i8*
+				 * (string), 6 = i8* (char[] param, data ptr pre-extracted at entry). */
 				ValueInfo *avi = (expr->data.call.args[i]->kind == HIR_EXPR_NAME)
 				                     ? find_value(ctx, expr->data.call.args[i]->data.name.name)
 				                     : NULL;
-				if (avi && (avi->type == 5 || avi->type == 7 || avi->type == 2 || avi->type == 6)) {
+				if (avi && (avi->type == 7 || avi->type == 2 || avi->type == 6)) {
 					char dptr[256];
-					if (avi->type == 5) {
-						char *g = gen_value_name(ctx);
-						buffer_append_fmt(
-						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
-						    g, ab);
-						char *l = gen_value_name(ctx);
-						buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", l, g);
-						strcpy(dptr, l);
-					} else if (avi->type == 7) {
+					if (avi->type == 7) {
 						char *b = gen_value_name(ctx);
 						buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", b, avi->string_len, ab);
 						strcpy(dptr, b);
@@ -3529,17 +3461,16 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			/* A `buf[lo:hi]` slice arg: emit the sub-view once and capture (ptr, len) as a temp
 			 * type-6 slice ValueInfo, so the slice-arg dispatch below passes it like a slice var. */
 			if (inner->kind == HIR_EXPR_SLICE) {
-				char sp[256], sl[256], scp[256];
+				char sp[256], sl[256];
 				const char *se;
 				int sw;
-				if (codegen_slice(ctx, inner, sp, sl, scp, &se, &sw)) {
+				if (codegen_slice(ctx, inner, sp, sl, &se, &sw)) {
 					ValueInfo *vi = calloc(1, sizeof(ValueInfo));
 					vi->name = strdup("");
 					vi->llvm_name = strdup(sp);
 					vi->type = 6;
 					vi->is_slice = 1;
 					vi->len_ssa = strdup(sl);
-					vi->cap_ssa = strdup(scp);
 					vi->field_type = se;
 					vi->string_len = -1;
 					vi->bit_width = sw;
@@ -3566,7 +3497,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				ValueInfo *var = find_value(ctx, arg_name);
 				if (var) {
 					arg_values[i] = var;
-					if (var->type == 2 || var->type == 5) {
+					if (var->type == 2) {
 						arg_is_string[i] = 1;
 					}
 				} else if (codegen_find_static_array(ctx, arg_name)) {
@@ -3653,7 +3584,6 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			}
 
 			/* Determine what callee param expects */
-			int callee_wants_arr = 0;        /* unbounded char[] (arche_array struct on non-extern) */
 			int callee_wants_shaped_arr = 0; /* sized char[N] (raw i8*) */
 			int callee_is_extern = (callee_proc && callee_proc->is_extern) || (callee_func && callee_func->is_extern);
 			HirType *callee_pt = NULL;
@@ -3661,13 +3591,11 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				callee_pt = callee_proc->params[i]->type;
 			if (callee_func && i < callee_func->param_count)
 				callee_pt = callee_func->params[i]->type;
-			/* `T[]` param (any element, incl. char) = a two-arg slice (ptr,len) on a non-extern callee. */
+			/* `T[]` param (any element, incl. char) = a two-arg slice (ptr,len) on a non-extern callee;
+			 * on an EXTERN (C ABI) callee it is a bare element pointer (handled by the fall-through arg
+			 * branches — no `arche_array` wrapping). `callee_wants_arr` is retired (always 0). */
 			int callee_wants_slice = callee_pt && callee_pt->tag == HIR_TYPE_ARRAY && !callee_is_extern;
-			if (callee_wants_slice)
-				; /* handled in the type-6 arg branch below; not the arche_array path */
-			else if (callee_pt && callee_pt->tag == HIR_TYPE_ARRAY)
-				callee_wants_arr = 1;
-			else if (callee_pt && callee_pt->tag == HIR_TYPE_SHAPED_ARRAY)
+			if (callee_pt && callee_pt->tag == HIR_TYPE_SHAPED_ARRAY)
 				callee_wants_shaped_arr = 1;
 
 			/* A matrix-const ROW `M[i]` decays to a slice: arg_bufs[i] already holds the row
@@ -3675,7 +3603,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			 * mirrors the whole-static-array decay below, but for one row of a flat `[N x T]` matrix. */
 			int mrow_stride = 0;
 			HirStaticDecl *mrow_sa = codegen_matrix_row_arg(ctx, expr->data.call.args[i], &mrow_stride);
-			if (mrow_sa && (callee_wants_slice || callee_wants_arr || callee_wants_shaped_arr)) {
+			if (mrow_sa && (callee_wants_slice || callee_wants_shaped_arr)) {
 				const char *elem_name =
 				    mrow_sa->array.element_type ? field_base_type_name(mrow_sa->array.element_type) : "char";
 				const char *lt = llvm_type_from_arche(elem_name);
@@ -3694,34 +3622,13 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 					call_arg_types[i] = ept;
 					call_arg_len[i] = malloc(32);
 					snprintf(call_arg_len[i], 32, "%d", mrow_stride);
-				} else if (callee_wants_arr && !callee_is_extern && strcmp(lt, "i8") == 0) {
-					/* char[] (arche_array) param: wrap the row pointer in a stack {ptr,len,cap}. */
-					char *arr_alloca = gen_value_name(ctx);
-					emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
-					char *ptr_gep = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
-					    ptr_gep, arr_alloca);
-					buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", arg_bufs[i], ptr_gep);
-					char *len_gep = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
-					    len_gep, arr_alloca);
-					buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", mrow_stride, len_gep);
-					char *cap_gep = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
-					    cap_gep, arr_alloca);
-					buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", mrow_stride, cap_gep);
-					strcpy(call_arg_vals[i], arr_alloca);
-					call_arg_types[i] = "%struct.arche_array*";
 				} else {
 					/* Extern (C ABI) char[], or a sized `T[N]` param: bare element pointer. */
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = ept;
 				}
 			} else if (arg_is_static_array[i]) {
-				/* Static array: check if needs wrapping in arche_array struct */
+				/* Static array: pass as a slice (ptr + len) or a bare element pointer. */
 				const char *arg_name = expr->data.call.args[i]->data.name.name;
 				HirStaticDecl *sa = codegen_find_static_array(ctx, arg_name);
 				if (sa) {
@@ -3744,42 +3651,14 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 					buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* @%s, i64 0, i64 0\n", gep,
 					                  sa->array.size, elem_type, sa->array.size, elem_type, arg_name);
 
-					/* If callee wants char[] and is not extern, wrap in arche_array struct */
 					if (callee_wants_slice) {
 						/* `T[]` slice param: pass element pointer + i64 len (the static size N). */
 						strcpy(call_arg_vals[i], gep);
 						call_arg_types[i] = elem_ptr_type;
 						call_arg_len[i] = malloc(32);
 						snprintf(call_arg_len[i], 32, "%d", sa->array.size);
-					} else if (callee_wants_arr && !callee_is_extern && strcmp(elem_type, "i8") == 0) {
-						/* Create struct on stack */
-						char *arr_alloca = gen_value_name(ctx);
-						emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
-
-						/* Store data pointer in field 0 */
-						char *ptr_gep = gen_value_name(ctx);
-						buffer_append_fmt(
-						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
-						    ptr_gep, arr_alloca);
-						buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", gep, ptr_gep);
-
-						/* Store length in field 1 */
-						char *len_gep = gen_value_name(ctx);
-						buffer_append_fmt(
-						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
-						    len_gep, arr_alloca);
-						buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", sa->array.size, len_gep);
-
-						/* Store capacity in field 2 */
-						char *cap_gep = gen_value_name(ctx);
-						buffer_append_fmt(
-						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
-						    cap_gep, arr_alloca);
-						buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", sa->array.size, cap_gep);
-
-						strcpy(call_arg_vals[i], arr_alloca);
-						call_arg_types[i] = "%struct.arche_array*";
 					} else {
+						/* Sized `T[N]` / extern char[] param: bare element pointer. */
 						strcpy(call_arg_vals[i], gep);
 						call_arg_types[i] = elem_ptr_type;
 					}
@@ -3798,216 +3677,56 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				 * handed over). The old by-value memcpy clone is gone.
 				 * TODO(FBIP reuse): a producer that does need a private result buffer can reuse a
 				 * dead input's storage when aliasing is provably safe (see plan Phase C). */
-				if (callee_wants_arr && !callee_is_extern) {
-					/* Non-extern callee expects char[] (arche_array*): wrap the
-					 * bare buffer pointer in a stack arche_array {ptr,len,cap}. */
-					char *arr_alloca = gen_value_name(ctx);
-					emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
-					char *ptr_gep = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
-					    ptr_gep, arr_alloca);
-					buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", bitcast, ptr_gep);
-					char *len_gep = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
-					    len_gep, arr_alloca);
-					buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", buf_len, len_gep);
-					char *cap_gep = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
-					    cap_gep, arr_alloca);
-					buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", buf_len, cap_gep);
-					strcpy(call_arg_vals[i], arr_alloca);
-					call_arg_types[i] = "%struct.arche_array*";
-				} else {
-					/* Extern (C ABI) or scalar callee: pass bare i8*. */
-					strcpy(call_arg_vals[i], bitcast);
-					call_arg_types[i] = "i8*";
-				}
-			} else if (arg_values[i] && arg_values[i]->type == 5) {
-				/* Arg is arche_array struct (e.g. a static char buffer) */
-				if ((callee_is_extern && callee_wants_arr) || callee_wants_shaped_arr) {
-					/* Extract i8* data ptr from struct (field 0): C ABI, or a sized char[N]
-					 * param (which takes a bare i8*). */
-					char *dp_gep = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
-					    dp_gep, arg_bufs[i]);
-					char *dp = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", dp, dp_gep);
-					strcpy(call_arg_vals[i], dp);
-					call_arg_types[i] = "i8*";
-				} else if (callee_wants_arr) {
-					/* Pass struct ptr directly — non-extern call */
-					strcpy(call_arg_vals[i], arg_bufs[i]);
-					call_arg_types[i] = "%struct.arche_array*";
-				} else {
-					/* Default to i32 */
-					strcpy(call_arg_vals[i], arg_bufs[i]);
-					call_arg_types[i] = "i32";
-				}
+				/* Extern (C ABI), slice, or scalar callee: pass the buffer's bare i8* data ptr. */
+				strcpy(call_arg_vals[i], bitcast);
+				call_arg_types[i] = "i8*";
 			} else if (arg_is_string[i]) {
-				/* String literals are already i8*, string variables may be arche_array */
+				/* String literals / string vars are i8* (NUL-terminated). */
 				int is_string_literal = (arg_values[i] == NULL);
-				int is_array_struct = arg_values[i] && arg_values[i]->type == 5; /* arche_array struct */
 
 				if (callee_wants_slice) {
 					/* char[] slice param: pass two positional args `(i8* ptr, i64 len)`. */
 					char ptr_out[64], len_out[64];
-					if (is_array_struct) {
-						/* string var as arche_array: ptr = field 0, len = field 1. */
-						char *dp_gep = gen_value_name(ctx);
-						buffer_append_fmt(
-						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
-						    dp_gep, arg_bufs[i]);
-						char *dp = gen_value_name(ctx);
-						buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", dp, dp_gep);
-						char *ln_gep = gen_value_name(ctx);
-						buffer_append_fmt(
-						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
-						    ln_gep, arg_bufs[i]);
-						char *ln = gen_value_name(ctx);
-						buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", ln, ln_gep);
-						snprintf(ptr_out, sizeof(ptr_out), "%s", dp);
-						snprintf(len_out, sizeof(len_out), "%s", ln);
-					} else {
-						/* literal or bare i8* var: content length is compile-time known. */
-						size_t str_len = 0;
-						HirExpr *arg_expr = expr->data.call.args[i];
-						if (arg_expr->kind == HIR_EXPR_STRING) {
-							str_len = arg_expr->data.string.length;
-						} else if (arg_expr->kind == HIR_EXPR_LITERAL && arg_expr->data.literal.lexeme[0] == '"') {
-							const char *lex = arg_expr->data.literal.lexeme;
-							for (int j = 1; lex[j] != '"' && lex[j] != '\0'; j++) {
-								if (lex[j] == '\\' && lex[j + 1] != '\0')
-									j++;
-								str_len++;
-							}
-						} else if (arg_values[i] && arg_values[i]->string_len >= 0) {
-							str_len = (size_t)arg_values[i]->string_len;
-						} else if (ctx->current_each_field_target && arg_expr->kind == HIR_EXPR_FIELD &&
-						           arg_expr->data.field.field_name &&
-						           strcmp(arg_expr->data.field.field_name, "name") == 0) {
-							/* `f.name` reflection: content length is the field identifier's length. */
-							str_len = strlen(ctx->current_each_field_target->name);
+					/* literal or bare i8* var: content length is compile-time known. */
+					size_t str_len = 0;
+					HirExpr *arg_expr = expr->data.call.args[i];
+					if (arg_expr->kind == HIR_EXPR_STRING) {
+						str_len = arg_expr->data.string.length;
+					} else if (arg_expr->kind == HIR_EXPR_LITERAL && arg_expr->data.literal.lexeme[0] == '"') {
+						const char *lex = arg_expr->data.literal.lexeme;
+						for (int j = 1; lex[j] != '"' && lex[j] != '\0'; j++) {
+							if (lex[j] == '\\' && lex[j + 1] != '\0')
+								j++;
+							str_len++;
 						}
-						snprintf(ptr_out, sizeof(ptr_out), "%s", arg_bufs[i]);
-						snprintf(len_out, sizeof(len_out), "%zu", str_len);
+					} else if (arg_values[i] && arg_values[i]->string_len >= 0) {
+						str_len = (size_t)arg_values[i]->string_len;
+					} else if (ctx->current_each_field_target && arg_expr->kind == HIR_EXPR_FIELD &&
+					           arg_expr->data.field.field_name &&
+					           strcmp(arg_expr->data.field.field_name, "name") == 0) {
+						/* `f.name` reflection: content length is the field identifier's length. */
+						str_len = strlen(ctx->current_each_field_target->name);
 					}
+					snprintf(ptr_out, sizeof(ptr_out), "%s", arg_bufs[i]);
+					snprintf(len_out, sizeof(len_out), "%zu", str_len);
 					strcpy(call_arg_vals[i], ptr_out);
 					call_arg_types[i] = "i8*";
 					call_arg_len[i] = malloc(64);
 					snprintf(call_arg_len[i], 64, "%s", len_out);
-				} else if (is_string_literal && callee_wants_arr && !callee_is_extern) {
-					/* String literal passed to non-extern function expecting char[]: wrap in arche_array struct */
-					char *str_ptr = arg_bufs[i]; /* i8* from getelementptr */
-
-					/* Need to know string length */
-					size_t str_len = 0;
-					HirExpr *arg_expr = expr->data.call.args[i];
-					if (arg_expr->kind == HIR_EXPR_STRING) {
-						/* String from parser (already processed, without quotes) */
-						str_len = arg_expr->data.string.length;
-					} else if (arg_expr->kind == HIR_EXPR_LITERAL && arg_expr->data.literal.lexeme[0] == '"') {
-						/* Old-style string literal with quotes */
-						const char *lex = arg_expr->data.literal.lexeme;
-						for (int j = 1; lex[j] != '"' && lex[j] != '\0'; j++) {
-							if (lex[j] == '\\' && lex[j + 1] != '\0') {
-								j++; /* skip escape sequence (count as 1 char) */
-							}
-							str_len++;
-						}
-					}
-
-					/* Create struct on stack */
-					char *arr_alloca = gen_value_name(ctx);
-					emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
-
-					/* Store data pointer in field 0 */
-					char *ptr_gep = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
-					    ptr_gep, arr_alloca);
-					buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", str_ptr, ptr_gep);
-
-					/* Store length in field 1 */
-					char *len_gep = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
-					    len_gep, arr_alloca);
-					buffer_append_fmt(ctx, "  store i64 %zu, i64* %s\n", str_len, len_gep);
-
-					/* Store capacity in field 2 */
-					char *cap_gep = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
-					    cap_gep, arr_alloca);
-					buffer_append_fmt(ctx, "  store i64 %zu, i64* %s\n", str_len, cap_gep);
-
-					strcpy(call_arg_vals[i], arr_alloca);
-					call_arg_types[i] = "%struct.arche_array*";
 				} else if (is_string_literal) {
 					/* String literal: a NUL-terminated i8* from codegen_expression (the NUL backs the
 					 * [N+1] global, past the content length). FFI %s / paths consume it directly. */
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = "i8*";
-				} else if (is_array_struct) {
-					/* String variable stored as arche_array struct: pass struct ptr (variadic handler will unwrap) */
-					strcpy(call_arg_vals[i], arg_bufs[i]);
-					call_arg_types[i] = "%struct.arche_array*";
-				} else if (callee_is_extern && callee_wants_arr) {
-					/* String variable from extern callee expecting char[]: extract i8* from struct */
-					char *dp_gep = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
-					    dp_gep, arg_bufs[i]);
-					char *dp = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", dp, dp_gep);
-					strcpy(call_arg_vals[i], dp);
-					call_arg_types[i] = "i8*";
-				} else if (callee_wants_arr) {
-					/* String variable stored as a bare i8* (type 2, e.g. `x := "lit"`): a
-					 * non-extern char[] callee expects a %struct.arche_array*, not a raw char
-					 * pointer — wrap it in a stack arche_array. (Passing the bare i8* here was a
-					 * bug: the callee read the string bytes as {ptr,len,cap} and crashed.) len/cap
-					 * use the known literal length, else 0 — arche `strlen` scans to NUL anyway. */
-					int slen = (arg_values[i] && arg_values[i]->string_len >= 0) ? arg_values[i]->string_len : 0;
-					char *arr_alloca = gen_value_name(ctx);
-					emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
-					char *ptr_gep = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
-					    ptr_gep, arr_alloca);
-					buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", arg_bufs[i], ptr_gep);
-					char *len_gep = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
-					    len_gep, arr_alloca);
-					buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", slen, len_gep);
-					char *cap_gep = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
-					    cap_gep, arr_alloca);
-					buffer_append_fmt(ctx, "  store i64 %d, i64* %s\n", slen, cap_gep);
-					strcpy(call_arg_vals[i], arr_alloca);
-					call_arg_types[i] = "%struct.arche_array*";
 				} else {
 					/* Pass bare pointer */
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = "i8*";
 				}
 			} else if (arg_is_array_literal[i]) {
-				/* Array literal */
-				if (callee_wants_arr) {
-					/* Pass struct pointer directly */
-					strcpy(call_arg_vals[i], arg_bufs[i]);
-					call_arg_types[i] = "%struct.arche_array*";
-				} else {
-					/* Pass bare value */
-					strcpy(call_arg_vals[i], arg_bufs[i]);
-					call_arg_types[i] = "i32";
-				}
+				/* Array literal: pass the bare value. */
+				strcpy(call_arg_vals[i], arg_bufs[i]);
+				call_arg_types[i] = "i32";
 			} else {
 				/* Check if arg is type 6 (i8* pointer parameter from array param) */
 				if (arg_values[i] && arg_values[i]->type == 6) {
@@ -4033,31 +3752,6 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 							snprintf(call_arg_len[i], 32, "%s", arg_values[i]->len_ssa);
 						else
 							snprintf(call_arg_len[i], 32, "%d", arg_values[i]->string_len);
-					} else if (callee_wants_arr && !callee_is_extern) {
-						/* Forwarding a char[] param (already an i8* data ptr) to a
-						 * non-extern callee that expects %struct.arche_array*:
-						 * re-wrap the pointer in a stack arche_array. The callee
-						 * reads only field 0 (data ptr) and uses explicit bounds,
-						 * so placeholder len/cap are fine. */
-						char *arr_alloca = gen_value_name(ctx);
-						emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
-						char *ptr_gep = gen_value_name(ctx);
-						buffer_append_fmt(
-						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
-						    ptr_gep, arr_alloca);
-						buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", arg_bufs[i], ptr_gep);
-						char *len_gep = gen_value_name(ctx);
-						buffer_append_fmt(
-						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
-						    len_gep, arr_alloca);
-						buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", len_gep);
-						char *cap_gep = gen_value_name(ctx);
-						buffer_append_fmt(
-						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
-						    cap_gep, arr_alloca);
-						buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", cap_gep);
-						strcpy(call_arg_vals[i], arr_alloca);
-						call_arg_types[i] = "%struct.arche_array*";
 					} else {
 						/* Bare element pointer for a non-arche_array callee. For a char[]
 						 * buffer this is i8*; for a non-char array it is the element pointer
@@ -4077,35 +3771,11 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 							call_arg_types[i] = "i8*";
 					}
 				} else if (expr->data.call.args[i]->resolved.tag == HIR_TYPE_CHAR_ARRAY) {
-					/* Arg is a char[] value with no ValueInfo — e.g. the result of an
-					 * extern call like arche_argv() (a raw i8*). For a non-extern char[]
-					 * callee, wrap it in a stack arche_array (placeholder len/cap; callees
-					 * use strlen on the NUL-terminated data ptr). Extern (C ABI) callees
-					 * take the bare i8*. Previously this fell through to a bogus i32. */
-					if (callee_wants_arr && !callee_is_extern) {
-						char *arr_alloca = gen_value_name(ctx);
-						emit_alloca(ctx, "  %s = alloca %%struct.arche_array\n", arr_alloca);
-						char *ptr_gep = gen_value_name(ctx);
-						buffer_append_fmt(
-						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
-						    ptr_gep, arr_alloca);
-						buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", arg_bufs[i], ptr_gep);
-						char *len_gep = gen_value_name(ctx);
-						buffer_append_fmt(
-						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 1\n",
-						    len_gep, arr_alloca);
-						buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", len_gep);
-						char *cap_gep = gen_value_name(ctx);
-						buffer_append_fmt(
-						    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 2\n",
-						    cap_gep, arr_alloca);
-						buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", cap_gep);
-						strcpy(call_arg_vals[i], arr_alloca);
-						call_arg_types[i] = "%struct.arche_array*";
-					} else {
-						strcpy(call_arg_vals[i], arg_bufs[i]);
-						call_arg_types[i] = "i8*";
-					}
+					/* Arg is a char[] value with no ValueInfo — e.g. the result of an extern call like
+					 * arche_argv() (a raw i8*). Pass the bare i8* data pointer (callees scan to NUL or use
+					 * explicit bounds). */
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+					call_arg_types[i] = "i8*";
 				} else if (expr->data.call.args[i]->resolved.tag == HIR_TYPE_FLOAT) {
 					strcpy(call_arg_vals[i], arg_bufs[i]);
 					call_arg_types[i] = "double";
@@ -4190,21 +3860,6 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			buffer_append(ctx, "  unreachable\n");
 			strcpy(result_buf, "0");
 		} else if (is_variadic) {
-			/* For variadic C functions, array struct args must be unwrapped to i8* */
-			for (int i = 0; i < expr->data.call.arg_count; i++) {
-				if (arg_is_callback[i])
-					continue;
-				if (call_arg_types[i] && strcmp(call_arg_types[i], "%struct.arche_array*") == 0) {
-					char *dp_gep = gen_value_name(ctx);
-					buffer_append_fmt(
-					    ctx, "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
-					    dp_gep, call_arg_vals[i]);
-					char *dp = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", dp, dp_gep);
-					strcpy(call_arg_vals[i], dp);
-					call_arg_types[i] = "i8*";
-				}
-			}
 			/* Emit variadic signature based on function */
 			if (strcmp(func_name, "sprintf") == 0) {
 				buffer_append_fmt(ctx, "  %s = call i32 (i8*, i8*, ...)", res_name);
@@ -4310,8 +3965,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 	}
 
 	case HIR_EXPR_ARRAY_LITERAL: {
-		/* Array literal: {elem1, elem2, ...} */
-		/* Generate global constant array and wrap in arche_array struct */
+		/* Array literal: {elem1, elem2, ...} — a global constant `[N x i8]`, returned as its element
+		 * pointer (a normal type-6 char array; no arche_array struct). */
 		HirExpr **elems = expr->data.array_literal.elements;
 		int elem_count = expr->data.array_literal.element_count;
 
@@ -5341,7 +4996,6 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				vi->bit_width = strcmp(lt, "double") == 0 ? 64 : (strcmp(lt, "i8") == 0 ? 8 : 32);
 				vi->is_slice = 1;
 				vi->len_ssa = strdup("0");
-				vi->cap_ssa = strdup("0");
 				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
 				scope->values[scope->value_count++] = vi;
 			} else if (type->tag == HIR_TYPE_SHAPED_ARRAY) {
@@ -5441,10 +5095,10 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		/* `ys := buf[lo:hi]` — bind a read-only slice view: register a type-6 slice (ptr + runtime
 		 * length) so `ys[i]` / `ys.length` work; no copy. */
 		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == HIR_EXPR_SLICE) {
-			char sp[256], sl[256], scp[256];
+			char sp[256], sl[256];
 			const char *se;
 			int sw;
-			if (codegen_slice(ctx, stmt->data.bind_stmt.value, sp, sl, scp, &se, &sw)) {
+			if (codegen_slice(ctx, stmt->data.bind_stmt.value, sp, sl, &se, &sw)) {
 				ValueInfo *vi = calloc(1, sizeof(ValueInfo));
 				vi->name = malloc(strlen(var_name) + 1);
 				strcpy(vi->name, var_name);
@@ -5454,8 +5108,6 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				vi->is_slice = 1;
 				vi->len_ssa = malloc(strlen(sl) + 1);
 				strcpy(vi->len_ssa, sl);
-				vi->cap_ssa = malloc(strlen(scp) + 1);
-				strcpy(vi->cap_ssa, scp);
 				vi->field_type = se;
 				vi->string_len = -1;
 				vi->bit_width = sw;
@@ -5491,7 +5143,6 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				vi->type = 6;
 				vi->is_slice = 1;
 				vi->len_ssa = strdup(lenv);
-				vi->cap_ssa = strdup(lenv);
 				vi->field_type = elem_name; /* stable static-string literal from field_base_type_name */
 				vi->string_len = -1;
 				vi->bit_width = llvm_type_sizeof(lt) * 8;
@@ -6231,10 +5882,9 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				snprintf(agg, sizeof(agg), "{ %s*, i64 }", elem);
 				char ptr[256], len[64];
 				if (rv && rv->kind == HIR_EXPR_SLICE) {
-					char cap[64];
 					const char *se;
 					int sw;
-					codegen_slice(ctx, rv, ptr, len, cap, &se, &sw);
+					codegen_slice(ctx, rv, ptr, len, &se, &sw);
 				} else if (rv && rv->kind == HIR_EXPR_NAME) {
 					ValueInfo *sv = find_value(ctx, rv->data.name.name);
 					strcpy(ptr, sv->llvm_name);
@@ -8258,27 +7908,6 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 			vi->is_slice = 1;
 			vi->len_ssa = malloc(strlen(len_name) + 1);
 			strcpy(vi->len_ssa, len_name);
-			scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
-			scope->values[scope->value_count++] = vi;
-		} else if (ptype && ptype->tag == HIR_TYPE_ARRAY && !func->is_extern) {
-			/* Non-extern unbounded char[]: extract data pointer from the arche_array struct once. */
-			ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
-			char *dp_gep = gen_value_name(ctx);
-			buffer_append_fmt(ctx,
-			                  "  %s = getelementptr %%struct.arche_array, %%struct.arche_array* %s, i32 0, i32 0\n",
-			                  dp_gep, param_name);
-			char *dp = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = load i8*, i8** %s\n", dp, dp_gep);
-			ValueInfo *vi = calloc(1, sizeof(ValueInfo));
-			vi->name = malloc(strlen(func->params[i]->name) + 1);
-			strcpy(vi->name, func->params[i]->name);
-			vi->llvm_name = malloc(strlen(dp) + 1);
-			strcpy(vi->llvm_name, dp);
-			vi->type = 6;
-			vi->arch_name = NULL;
-			vi->string_len = -1;
-			vi->field_type = "char";
-			vi->bit_width = 8;
 			scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
 			scope->values[scope->value_count++] = vi;
 		} else if (ptype && (ptype->tag == HIR_TYPE_SHAPED_ARRAY || ptype->tag == HIR_TYPE_ARRAY)) {

@@ -13,12 +13,12 @@
 /// ```
 strlen :: func(s: []char) -> int {
   i := 0;
-  for (; i < s.cap; i += 1) {
+  for (; i < s.length; i += 1) {
     if (s[i] == 0) {
       return i;
     }
   }
-  return s.cap;
+  return s.length;
 }
 
 // Copy `src`'s bytes into `dst` and return the filled prefix `dst[0:src.length]` as a slice. No NUL

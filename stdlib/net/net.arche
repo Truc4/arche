@@ -32,7 +32,7 @@ send :: proc(s: socket, data: []char) {
 // Lend `buf` (a borrow = backing store) and get back `out`, a slice VIEW of exactly the bytes read.
 // One allocation, two roles: the caller owns the storage, the view carries the true length.
 recv :: proc(s: socket, buf: []char)(out: []char) {
-  net_recv(s, _, buf.cap)(buf, r:);
+  net_recv(s, _, buf.length)(buf, r:);
   if (r < 0) {
     r = 0;
   }

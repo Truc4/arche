@@ -1,0 +1,11 @@
+// A fixed `char[N]` stack buffer is a real value array of N elements — its size is `.length` = N.
+// Arrays and slices have NO `.cap`/`.capacity`/`.max_length` (capacity is a pool concept); their size
+// IS `.length`. `str.strlen` is the real C strlen — it scans to the NUL, so after `sprintf` writes
+// "hello\0" it reports content length 5, not the buffer size.
+// RUN: %arche build -o %t %s && %t | grep "length=16 strlen=5"
+#import { str fmt }
+main :: proc() {
+  buf: [16]char;
+  fmt.sprintf(buf, "hello")(buf, _w:);
+  fmt.printf("length=%d strlen=%d\n", buf.length, str.strlen(buf));
+}
