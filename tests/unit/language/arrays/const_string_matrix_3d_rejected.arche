@@ -1,0 +1,12 @@
+// A matrix whose leaves are STRINGS is 3-D: each string is its own `[W]char` dimension, so
+// `{ {"1","2","3"}, {"4","5","6"} }` is `[2][3][1]char`, not a 2-D `[2][3]char`. The flat 2-D
+// storage model can't describe the third dimension, so it must be rejected with the dimensionality
+// message — the same as a `{{{…}}}` int cube. (The analyzer types it honestly as `[2][3][1]char`;
+// only codegen rejects the rank.)
+// RUN: ! %arche build -o %t %s 2>&1 | grep -q "has 3 dimensions"
+#import { fmt }
+M :: { { "1", "2", "3" }, { "4", "5", "6" } }
+
+main :: proc() {
+  fmt.printf("%d\n", M[0][0].length);
+}

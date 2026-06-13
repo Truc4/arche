@@ -435,6 +435,10 @@ static HirType map_type_id(const TypeArena *a, TypeId t) {
 	case TYK_NOMINAL:
 		/* width-int / char_array / handle / opaque / archetype name — same parse as map_type_str. */
 		return map_type_str(tyid_nominal_name(a, t));
+	case TYK_HANDLE:
+		/* an archetype handle (e.g. an `insert` out-slot) — a pointer-width i64 cell, as map_type_str. */
+		ht.tag = HIR_TYPE_HANDLE;
+		return ht;
 	default:
 		ht.tag = HIR_TYPE_UNKNOWN;
 		return ht;
