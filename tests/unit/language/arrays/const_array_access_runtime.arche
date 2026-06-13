@@ -2,8 +2,8 @@
 // only run the analyzer (`--dump`), so the actual codegen of these binds was never exercised. Covers:
 // a direct const index (`XS[0]`), a matrix ROW bind + index (`row := M[1]; row[2]`), a runtime SLICE
 // bind + index (`view := buf[1:4]; view[0]`), a chained matrix index (`M[0][1]`), and `.length` on a
-// string-literal bind (`label := "hi"`). (NOTE: binding a WHOLE 1-D const array, `whole := XS`, is a
-// separate pre-existing codegen gap and is intentionally NOT exercised here.)
+// string-literal bind (`label := "hi"`). (A whole 1-D const bind `whole := XS` is covered by
+// whole_array_const_bind.arche.)
 // RUN: %arche build -o %t %s && %t | grep -x "10 6 7 2 2"
 #import { fmt }
 XS   :: { 10, 20, 30 }

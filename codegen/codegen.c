@@ -5155,6 +5155,35 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			}
 		}
 
+		/* `whole := XS` — bind a whole 1-D value-array const as a read-only ALIAS: register a type-6
+		 * bounded array at the const's element pointer (`@XS + 0`), so `whole[i]` / `whole.length` fall
+		 * out via the existing type-6 array paths. A borrow of a read-only `constant` global (no copy) —
+		 * the 1-D analogue of the `r := M[i]` row bind above. (A matrix has row_stride > 1 and is bound
+		 * via the row-bind path, not here.) */
+		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == HIR_EXPR_NAME) {
+			HirStaticDecl *wsa = codegen_find_static_array(ctx, stmt->data.bind_stmt.value->data.name.name);
+			if (wsa && wsa->array.row_stride <= 1) {
+				const char *en = wsa->array.element_type ? field_base_type_name(wsa->array.element_type) : "char";
+				const char *lt = llvm_type_from_arche(en);
+				char *elem0 = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* @%s, i64 0, i64 0\n", elem0,
+				                  wsa->array.size, lt, wsa->array.size, lt, wsa->array.name);
+				ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+				vi->name = strdup(var_name);
+				vi->llvm_name = strdup(elem0);
+				vi->type = 6; /* element pointer; field_type drives element typing */
+				vi->string_len = wsa->array.size;
+				vi->field_type = en;
+				vi->bit_width = strcmp(lt, "double") == 0 ? 64 : (strcmp(lt, "i8") == 0 ? 8 : 32);
+				if (ctx->scope_count > 0) {
+					ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+					scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+					scope->values[scope->value_count++] = vi;
+				}
+				break;
+			}
+		}
+
 		if (stmt->data.bind_stmt.value) {
 			codegen_expression(ctx, stmt->data.bind_stmt.value, value_buf);
 		} else {
