@@ -198,7 +198,7 @@ Unit :: arche { health, shield }   // two int columns, reached as h.health / h.s
 same shape and share one pool; component order is irrelevant. A component type repeated in one
 archetype is a compile error (it would be unreachable):
 
-```text
+```
 A :: arche { health, shield }
 B :: arche { shield, health }   // same shape as A
 
@@ -251,7 +251,7 @@ step :: sys(pos_x, vel_x) {
 
 Individual element access requires explicit column reference:
 
-```text
+```
 Particle.mass[i]      // scalar column
 Particle.pos_x[i]     // tuple column (flat access), x component of position at i
 messages.text[i][j]   // 2-D: chained, one index per bracket
@@ -261,7 +261,7 @@ Multi-dimensional access is **chained** — `a[i][j]`, one index per bracket (th
 `a[i, j]` is gone). Chaining lets **each index carry its own failure policy**, which a single
 comma-bracket could not express:
 
-```text
+```
 grid[row] !clamp [col] !abort   // clamp the row into range; abort if the column is out of bounds
 ```
 
@@ -348,7 +348,7 @@ and process archetype columns with a `sys`.
 *signature itself* - a `func` and a `proc` differ in shape (the name is on the binding LHS;
 `proc`/`func` are RHS value forms):
 
-```text
+```
 area   :: func(w: int, h: int) -> int            // a value: one return, no side effects
 divmod :: proc(a: int, b: int)(q: int, r: int)   // an action: inputs (in), outputs (out)
 ```
@@ -484,7 +484,7 @@ Most arche operations are total by construction (proven indexing, ok-valued inse
 can still fail at runtime — an out-of-bounds index, a slice past the end, a divide-by-zero — resolve
 that failure **locally, at the site**, with a *failure policy* written `expr !policy`:
 
-```text
+```
 v := samples[k] !clamp;   // out-of-range index → clamped into [0, len)
 grid[x] !clamp = c;       // the write form attaches the policy to the indexed lvalue
 n := count / d !zero;     // divide-by-zero → 0
@@ -679,7 +679,7 @@ is the *cheap* operation: a bare hand-off never silently performs an expensive c
 name — they copy, as before. (The editor surfaces the elided transfer as a ghost **`move`** inlay,
 so a consumed binding is always visible without the keyword.)
 
-```text
+```
 a := b;          // move: b is consumed (dead), a owns the storage
 a := copy b;     // clone: b stays alive, a is independent
 n := sink(buf);  // own param: buf moved in (consumed); a borrow param (xs: []T) would NOT consume
