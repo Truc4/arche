@@ -1,0 +1,10 @@
+// A string-literal value const is a fixed-size `[N]char` that decays to a `[]char` view.
+// `name :: "linux"` is `[5]char`; `name.length` is 5 (read from the type); `os.write` takes the
+// decayed `[]char`. (RED until char[] consts + prefix syntax + [N]char→[]char decay land.)
+// RUN: %arche build -o %t %s && %t | grep -x "linux 5"
+#import { os fmt }
+name :: "linux";
+main :: proc() {
+  os.write(1, name, name.length);
+  fmt.printf(" %d\n", name.length);
+}

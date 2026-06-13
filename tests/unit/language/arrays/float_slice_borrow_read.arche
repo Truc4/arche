@@ -3,7 +3,7 @@
 // i32) and the runtime `.length` bounds the read. Guards element-typing of the slice ABI beyond int.
 // RUN: %arche build -o %t %s && %t | grep -q "flen=3 fsum=4"
 #import { fmt }
-fsum :: func(xs: float[]) -> float {
+fsum :: func(xs: []float) -> float {
   total := 0.0;
   i     := 0;
   for (i = 0; i < xs.length; i = i + 1) {
@@ -13,7 +13,7 @@ fsum :: func(xs: float[]) -> float {
 }
 
 main :: proc() {
-  a: float[3];
+  a: [3]float;
   a[0] = 1.5;
   a[1] = 2.25;
   a[2] = 0.25;

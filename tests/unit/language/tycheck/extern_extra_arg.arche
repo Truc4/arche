@@ -4,9 +4,9 @@
 // private to it, so this no longer leans on a stdlib internal).
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0203 wrong_arity 0 'unmap2' expects 2 arguments, got 3"
 #foreign {
-  unmap2 :: proc(data: char[], size: i64)
+  unmap2 :: proc(data: []char, size: i64);
 }
 main :: proc() {
-  buf: char[8];
+  buf: [8]char;
   unmap2(buf, 8, 8);
 }

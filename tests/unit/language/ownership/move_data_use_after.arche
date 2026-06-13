@@ -3,12 +3,12 @@
 // return value (`buf, n := f(move buf)`).
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
 #import { fmt }
-take :: func(b: char[8]) -> int {
+take :: func(b: [8]char) -> int {
   return 0;
 }
 
 main :: proc() {
-  buf: char[8];
+  buf: [8]char;
   buf[0] = 'A';
   n := take(move buf);
   fmt.printf("%d\n", buf[0]);

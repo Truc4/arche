@@ -309,6 +309,49 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
 		return parse_func_sig(parser, 0);
 	}
 
+	/* Prefix array/slice type: `[]T` (slice, runtime length) or `[N]T` / `[a][b]T` (fixed-size).
+	 * The element type FOLLOWS the brackets. Indexing (`a[i]`) is a separate production, unaffected.
+	 * The node holds the same IDENT + NUMBER tokens as before — downstream reads them by kind, not
+	 * position — so only the surface order changed (postfix `T[N]` → prefix `[N]T`). */
+	if (check(parser, TOK_LBRACKET)) {
+		int any_number = 0;
+		while (check(parser, TOK_LBRACKET)) {
+			advance(parser); /* '[' */
+			if (check(parser, TOK_RBRACKET)) {
+				advance(parser); /* ']' — slice dimension */
+			} else if (check(parser, TOK_NUMBER)) {
+				advance(parser); /* size */
+				any_number = 1;
+				if (!match(parser, TOK_RBRACKET)) {
+					error(parser, "Expected ']' after array size");
+					return 1;
+				}
+			} else {
+				error(parser, "Expected ']' or integer size after '['");
+				while (!check(parser, TOK_RBRACKET) && !check(parser, TOK_EOF))
+					advance(parser);
+				if (check(parser, TOK_RBRACKET))
+					advance(parser);
+			}
+		}
+		/* element type name (a primitive or name, optionally qualified `mod.Name`) */
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected element type name after array brackets (e.g. `[]int`)");
+			return 0;
+		}
+		advance(parser);              /* element name */
+		if (check(parser, TOK_DOT)) { /* qualified `mod.Name` element */
+			advance(parser);
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected type name after '.' in qualified element type");
+				return 0;
+			}
+			advance(parser);
+		}
+		out->syntax_kind = any_number ? SN_TYPE_SHAPED_ARRAY : SN_TYPE_ARRAY;
+		return 1;
+	}
+
 	if (!check(parser, TOK_IDENT)) {
 		error(parser, "Expected type name");
 		return 0;
@@ -361,54 +404,9 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
 		return 1;
 	}
 
-	/* `archetype` / `opaque` bare-category names parse like an ordinary type name (the
-	 * syntax tree records the keyword token; semantic interprets it). */
-
-	if (check(parser, TOK_LBRACKET)) {
-		advance(parser); /* consume [ */
-		if (check(parser, TOK_RBRACKET)) {
-			/* float[] → TYPE_ARRAY */
-			advance(parser);
-			out->syntax_kind = SN_TYPE_ARRAY;
-			return 1;
-		}
-		if (!check(parser, TOK_NUMBER)) {
-			error(parser, "Expected ']' or integer size after '['");
-			while (!check(parser, TOK_RBRACKET) && !check(parser, TOK_EOF)) {
-				advance(parser);
-			}
-			if (check(parser, TOK_RBRACKET)) {
-				advance(parser);
-			}
-			return 1;
-		}
-		advance(parser); /* size */
-		if (!match(parser, TOK_RBRACKET)) {
-			error(parser, "Expected ']' after array size");
-			return 1;
-		}
-		out->syntax_kind = SN_TYPE_SHAPED_ARRAY;
-		/* chain: float[5][5] */
-		while (check(parser, TOK_LBRACKET)) {
-			advance(parser);
-			if (!check(parser, TOK_NUMBER)) {
-				error(parser, "Expected integer size after '['");
-				while (!check(parser, TOK_RBRACKET) && !check(parser, TOK_EOF)) {
-					advance(parser);
-				}
-				if (check(parser, TOK_RBRACKET)) {
-					advance(parser);
-				}
-				return 1;
-			}
-			advance(parser); /* size */
-			if (!match(parser, TOK_RBRACKET)) {
-				error(parser, "Expected ']' after array size");
-				return 1;
-			}
-		}
-		return 1;
-	}
+	/* `archetype` / `opaque` bare-category names parse like an ordinary type name (the syntax tree
+	 * records the keyword token; semantic interprets it). The array/slice suffix is NO LONGER
+	 * accepted here — array types are PREFIX (`[]T` / `[N]T`), parsed at the top of this function. */
 
 	return 1;
 }
@@ -782,40 +780,50 @@ static int cur_ident_is(Parser *parser, const char *kw, size_t len) {
 	return check(parser, TOK_IDENT) && parser->current.length == len && strncmp(parser->current.start, kw, len) == 0;
 }
 
+/* A top-level (and tuple-group) declaration is `;`-terminated, EXCEPT a brace body self-terminates
+ * (Jai-style): if the last consumed token was `}`, the `;` is optional. Requiring it on non-brace
+ * decls removes the grammar ambiguity where a bare-name RHS would absorb a following prefix-pool `[`
+ * (`val :: float` then `[4]Node` — without a terminator, `float[4]` reads as indexing). */
+static void require_decl_terminator(Parser *parser) {
+	if (match(parser, TOK_SEMI))
+		return;
+	if (parser->previous.kind == TOK_RBRACE)
+		return; /* a `{ … }` body self-terminates — `;` optional after `}` */
+	error(parser, "expected `;` to end the declaration");
+}
+
 static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
-	if (!check(parser, TOK_IDENT))
-		return 0;
-	advance(parser); /* the binding name — a bare leading IDENT for every top-level form */
-
-	/* Qualified pool head: `lib.Particle[N]` sizes an imported shape's pool. Consume the
-	 * `.IDENT` chain (reassembled to the dotted canonical name in lowering). Only a pool decl
-	 * has a dotted binding name — no other top-level form does — so this is unambiguous. */
-	while (check(parser, TOK_DOT)) {
-		advance(parser); /* '.' */
-		if (!check(parser, TOK_IDENT)) {
-			error(parser, "expected an identifier after `.` in a qualified pool name");
-			return 0;
-		}
-		advance(parser); /* the next name segment */
-	}
-
-	/* Pool allocation: `Name[C](N){V}` — capacity in `[]`, optional initial live-count in
-	 * `()`, optional field-init block `{}`. Top-level position implies static storage; the
-	 * name references the archetype shape whose singleton pool to allocate. */
+	/* Prefix pool allocation: `[C]Name(N){V} ?handler` — capacity LEADS (`[C]`), then the
+	 * (possibly qualified `lib.Particle`) archetype name, then optional initial live-count `(N)`,
+	 * field-init block `{V}`, and overflow `?handler`. Top-level position implies static storage;
+	 * the name references the archetype shape whose singleton pool to allocate. */
 	if (check(parser, TOK_LBRACKET)) {
 		*out_kind = SN_STATIC_DECL;
-		advance(parser); /* '[' */
-		if (!parse_expression(parser))
+		advance(parser);               /* '[' */
+		if (!parse_expression(parser)) /* capacity expression */
 			return 0;
 		if (!match(parser, TOK_RBRACKET)) {
-			error(parser, "Expected ']' after pool capacity in `Name[C]`");
+			error(parser, "Expected ']' after pool capacity in `[C]Name`");
 			return 0;
+		}
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected an archetype name after pool capacity (e.g. `[8]Particle`)");
+			return 0;
+		}
+		advance(parser);                 /* archetype name head */
+		while (check(parser, TOK_DOT)) { /* qualified `lib.Particle` */
+			advance(parser);
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "expected an identifier after `.` in a qualified pool name");
+				return 0;
+			}
+			advance(parser); /* the next name segment */
 		}
 		if (match(parser, TOK_LPAREN)) {
 			if (!parse_expression(parser))
 				return 0;
 			if (!match(parser, TOK_RPAREN))
-				error(parser, "Expected ')' after pool live-count in `Name[C](N)`");
+				error(parser, "Expected ')' after pool live-count in `[C]Name(N)`");
 		}
 		if (match(parser, TOK_LBRACE)) {
 			if (!check(parser, TOK_RBRACE)) {
@@ -845,15 +853,19 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			int pol_cp = syntax_cp(parser);
 			advance(parser); /* '?' */
 			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected a handler name after '?' on a pool decl (e.g. `Foo[8] ?evict_oldest`)");
+				error(parser, "Expected a handler name after '?' on a pool decl (e.g. `[8]Foo ?evict_oldest`)");
 				return 0;
 			}
 			advance(parser); /* the handler ident */
 			syntax_wrap(parser, pol_cp, SN_POLICY_REF);
 		}
-		match(parser, TOK_SEMI); /* recorded; formatter drops it for static decls */
+		require_decl_terminator(parser); /* required; `;` optional after a `}` body */
 		return 1;
 	}
+
+	if (!check(parser, TOK_IDENT))
+		return 0;
+	advance(parser); /* the binding name — a bare leading IDENT for every non-pool top-level form */
 
 	/* Tuple group: `pos (x, y) :: float` — the parenthesized suffixes mint flat names
 	 * (`pos_x`, `pos_y`); the shared type follows `::`. */
@@ -861,8 +873,7 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		*out_kind = SN_CONST_DECL;
 		if (!parse_tuple_name_group(parser))
 			return 0;
-		if (check(parser, TOK_SEMI))
-			advance(parser);
+		require_decl_terminator(parser);
 		return 1;
 	}
 
@@ -880,7 +891,7 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser); /* '=' */
 			if (!parse_expression(parser))
 				return 0;
-			match(parser, TOK_SEMI); /* recorded; formatter drops it for static decls */
+			require_decl_terminator(parser); /* required; `;` optional after a `}` body */
 			return 1;
 		}
 
@@ -901,7 +912,7 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser); /* '=' */
 			if (!parse_expression(parser))
 				return 0;
-			match(parser, TOK_SEMI);
+			require_decl_terminator(parser);
 			return 1;
 		}
 
@@ -909,7 +920,7 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		 * implicit `= 0` of the unified form). T may be a sized array (a buffer) or a scalar. */
 		if (have_type && !check(parser, TOK_COLON)) {
 			*out_kind = SN_STATIC_DECL;
-			match(parser, TOK_SEMI); /* recorded; formatter drops it for static decls */
+			require_decl_terminator(parser); /* required; `;` optional after a `}` body */
 			return 1;
 		}
 
@@ -934,8 +945,7 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			if (!parse_expression(parser))
 				return 0;
 		}
-		if (check(parser, TOK_SEMI))
-			advance(parser);
+		require_decl_terminator(parser);
 		return 1;
 	}
 
@@ -1225,9 +1235,9 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 		/* Region marker (`#module` / `#file` / `#foreign`) — banner or `{ ... }` block. */
 		return parse_region(parser, out_kind);
 	default:
-		/* Every top-level declaration is an IDENT-led binding (const, pool alloc, or static
-		 * buffer) — see parse_static_decl. */
-		if (check(parser, TOK_IDENT)) {
+		/* Top-level declarations: an IDENT-led binding (const / static buffer) or a prefix pool
+		 * alloc (`[C]Name…`, which leads with `[`) — see parse_static_decl. */
+		if (check(parser, TOK_IDENT) || check(parser, TOK_LBRACKET)) {
 			if (parse_static_decl(parser, out_kind))
 				return 1;
 		}
@@ -1238,9 +1248,11 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 
 /* ========== EXPRESSION PARSING ========== */
 
-/* After a postfix `[` is matched, parse either an index list `a, b, …` or a slice `lo:hi` (lo/hi
- * each optional: `[:hi]`, `[lo:]`, `[:]`). Sets *out_slice=1 for the slice form. Consumes the `]`.
- * A `:` inside the brackets is what marks a slice. */
+/* After a postfix `[` is matched, parse a SINGLE index `a` or a slice `lo:hi` (lo/hi each optional:
+ * `[:hi]`, `[lo:]`, `[:]`). Sets *out_slice=1 for the slice form. Consumes the `]`. A `:` inside the
+ * brackets marks a slice. Multi-dimensional access is CHAINED — `a[i][j]`, one index per bracket —
+ * which lets each index carry its own failure policy (`a[i] !clamp [j] !abort`); the former comma
+ * form `a[i, j]` couldn't, and is now a clear error. */
 static int parse_bracket_index_or_slice(Parser *parser, int *out_slice) {
 	*out_slice = 0;
 	if (check(parser, TOK_COLON)) { /* [:hi] / [:] — no lo */
@@ -1258,10 +1270,10 @@ static int parse_bracket_index_or_slice(Parser *parser, int *out_slice) {
 			if (!check(parser, TOK_RBRACKET))
 				if (!parse_expression(parser))
 					return 0;
-		} else { /* index: optional comma list */
-			while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACKET))
-				if (!parse_expression(parser))
-					return 0;
+		} else if (check(parser, TOK_COMMA)) {
+			error(parser, "multi-dimensional indexing is chained `a[i][j]` (one index per bracket), not "
+			              "comma `a[i, j]` — so each index can take its own failure policy");
+			return 0;
 		}
 	}
 	if (!match(parser, TOK_RBRACKET)) {
@@ -1466,7 +1478,8 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			return 1;
 		}
 
-		/* indexing `a[i]` or sub-slice `a[lo:hi]` */
+		/* indexing `a[i]` (multi-dim is chained `a[i][j]`, one index per bracket), or sub-slice
+		 * `a[lo:hi]`. */
 		if (match(parser, TOK_LBRACKET)) {
 			int is_slice;
 			if (!parse_bracket_index_or_slice(parser, &is_slice))
@@ -1513,6 +1526,24 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 
 /* Prefix unary operators: `-x` (negate) and `!x` (logical not). Binds tighter
  * than binary operators, looser than postfix (calls/indexing in primary). */
+/* Consume an optional postfix failure-policy `!policy` / `?policy` on a just-parsed index/slice/call,
+ * wrapping it as an SN_POLICY_REF child of that node. With chained indexing this runs after EACH `[i]`
+ * so every index carries its own policy — `foo[i] !clamp [j] !abort`. */
+static int parse_opt_policy(Parser *parser, SyntaxNodeKind kind) {
+	if ((kind == SN_INDEX_EXPR || kind == SN_SLICE_EXPR || kind == SN_CALL_EXPR) &&
+	    (check(parser, TOK_BANG) || check(parser, TOK_QUESTION))) {
+		int pol_cp = syntax_cp(parser);
+		advance(parser); /* consume '!' or '?' */
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected a policy name after the sigil (e.g. `a[i] !clamp`, `insert(P,x) ?reject`)");
+			return 0;
+		}
+		advance(parser); /* consume the policy ident */
+		syntax_wrap(parser, pol_cp, SN_POLICY_REF);
+	}
+	return 1;
+}
+
 static int parse_unary_expr(Parser *parser) {
 	int u_cp = syntax_cp(parser);
 	/* `move <expr>` / `copy <expr>` — call-site ownership markers; transparent to the
@@ -1538,21 +1569,43 @@ static int parse_unary_expr(Parser *parser) {
 	SyntaxNodeKind prim_kind = SN_NAME_EXPR;
 	if (!parse_primary_expr(parser, &prim_kind))
 		return 0;
-	/* Postfix failure-policy: `expr !policy` (panic, on a channel-less fallible op: index / slice /
-	 * call) or `expr ?policy` (handler, on a pool `insert(...)` call). A bare `!`/`?` here is
-	 * unambiguous — `!=` lexes as TOK_BANG_EQ, there is no infix `!`/`?` — so right after a completed
-	 * postfix op it can only be a policy marker. The sigil (`!` vs `?`) is kept inside the wrapped
-	 * SN_POLICY_REF node; lowering reads it to enforce sigil↔kind (panic vs handler). */
-	if ((prim_kind == SN_INDEX_EXPR || prim_kind == SN_SLICE_EXPR || prim_kind == SN_CALL_EXPR) &&
-	    (check(parser, TOK_BANG) || check(parser, TOK_QUESTION))) {
-		int pol_cp = syntax_cp(parser);
-		advance(parser); /* consume '!' or '?' */
-		if (!check(parser, TOK_IDENT)) {
-			error(parser, "Expected a policy name after the sigil (e.g. `a[i] !clamp`, `insert(P,x) ?reject`)");
-			return 0;
+	/* Policy on the FIRST postfix group (`a[i] !clamp`, `insert(P,x) ?reject`) — emitted before the
+	 * chaining loop so it's wrapped INTO the first index/call node. */
+	if (!parse_opt_policy(parser, prim_kind))
+		return 0;
+	/* General postfix CHAINING past the first group: a `.field` or `[index]`/`[lo:hi]` that follows a
+	 * closed `]`/`)` NESTS — the node parsed so far becomes the base of the next (`a[i].b` → FIELD over
+	 * INDEX, `f().g` → FIELD over CALL, `f()[i]` → INDEX over CALL, `a.b[i].c` → FIELD over INDEX). The
+	 * FIRST group stays flat (parse_primary_expr), preserving `a.b.c`, `a.b.c[i]`, and qualified calls
+	 * `mod.f(args)` whose flat SN_FIELD_NAME children lowering relies on. A trailing `(` is deliberately
+	 * NOT chained: `call(args)(outs)` is out-param binding, not a call-on-call, and a call on a postfix
+	 * result isn't a target here. Re-wrapping from `p_cp` each step encloses the prior node as base. */
+	while ((prim_kind == SN_INDEX_EXPR || prim_kind == SN_SLICE_EXPR || prim_kind == SN_CALL_EXPR ||
+	        prim_kind == SN_FIELD_EXPR) &&
+	       (check(parser, TOK_DOT) || check(parser, TOK_LBRACKET))) {
+		syntax_wrap(parser, p_cp, prim_kind); /* close the node parsed so far → it becomes the base */
+		if (check(parser, TOK_DOT)) {
+			do {
+				advance(parser); /* consume '.' */
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "Expected field name after '.'");
+					return 0;
+				}
+				int fcp = syntax_cp(parser);
+				advance(parser); /* consume the field ident */
+				syntax_wrap(parser, fcp, SN_FIELD_NAME);
+			} while (check(parser, TOK_DOT));
+			prim_kind = SN_FIELD_EXPR;
+		} else {             /* TOK_LBRACKET */
+			advance(parser); /* consume '[' */
+			int is_slice;
+			if (!parse_bracket_index_or_slice(parser, &is_slice))
+				return 0;
+			prim_kind = is_slice ? SN_SLICE_EXPR : SN_INDEX_EXPR;
+			/* this index's own failure policy — `foo[i] !clamp [j] !abort` */
+			if (!parse_opt_policy(parser, prim_kind))
+				return 0;
 		}
-		advance(parser); /* consume the policy ident */
-		syntax_wrap(parser, pol_cp, SN_POLICY_REF);
 	}
 	if (!syntax_single_node(parser, p_cp))
 		syntax_wrap(parser, p_cp, prim_kind);

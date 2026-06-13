@@ -10,8 +10,8 @@ add :: func(a: int, b: int) -> int {
   return a + b;
 }
 
-handler :: not_found // proc alias
-plus    :: add // func alias
+handler :: not_found; // proc alias
+plus    :: add; // func alias
 
 main :: proc() {
   handler()(c:);

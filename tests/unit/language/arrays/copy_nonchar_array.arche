@@ -3,7 +3,7 @@
 // RUN: %arche build -o %t %s && %t | grep "ok"
 #import { fmt }
 main :: proc() {
-  xs: int[4];
+  xs: [4]int;
   xs[0] = 7;
   xs[1] = 9;
   ys := copy xs;
@@ -12,7 +12,7 @@ main :: proc() {
   fmt.assert(ys[0] == 100, "copy must be independent\n");
   fmt.assert(xs[1] == 9, "rest of source intact\n");
 
-  a: float[3];
+  a: [3]float;
   a[0] = 1.5;
   b := copy a;
   b[0] = 9.0;

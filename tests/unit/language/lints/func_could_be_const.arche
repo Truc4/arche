@@ -1,0 +1,46 @@
+// W0021 func_could_be_const: a zero-parameter `func` whose entire body is a single
+// `return <literal-or-value-const>;` is a value const wearing a func costume — it should be a
+// `::` const, referenced without `()`. Deliberately tight: a func WITH a parameter (a real
+// input→value mapping) or one that COMPUTES its result (arithmetic, a call) is left alone.
+// `greeting` (string literal), `magic` (int literal), and `aliased` (a bare value-const ref) fire;
+// `identity` (has a param), `doubled` (computes), and `@allow`-silenced `hushed` do not.
+// RUN: %build/arche-analyzer --dump %s | grep -qF "warning W0021 func_could_be_const 0 func 'greeting'"
+// RUN: %build/arche-analyzer --dump %s | grep -qF "func 'magic'"
+// RUN: %build/arche-analyzer --dump %s | grep -qF "func 'aliased'"
+// exactly three hits — the negatives below must NOT add to the count.
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "W0021 func_could_be_const") -eq 3
+// A plain build still succeeds (a lint is a warning, not an error).
+// RUN: %arche build -o %t %s
+#import { fmt }
+MAX      :: 100;
+greeting :: func() -> []char { // string literal → W0021
+  return "hi";
+}
+magic :: func() -> int { // int literal → W0021
+  return 42;
+}
+aliased :: func() -> int { // bare reference to a value const → W0021
+  return MAX;
+}
+identity :: func(x: int) -> int { // has an input — a real func, NOT flagged
+  return x;
+}
+doubled :: func() -> int { // computes its result — NOT flagged
+  return 21 + 21;
+}
+@allow(func_could_be_const)
+hushed :: func() -> int { // would fire, but silenced — NOT flagged
+  return 7;
+}
+main :: proc() {
+  g := greeting(); // call greeting (so it isn't unused); use .length to stay all-int
+  fmt.printf(
+    "%d %d %d %d %d %d\n",
+    g.length,
+    magic(),
+    aliased(),
+    identity(1),
+    doubled(),
+    hushed(),
+  );
+}

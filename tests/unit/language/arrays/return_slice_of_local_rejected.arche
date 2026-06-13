@@ -1,0 +1,14 @@
+// A `func -> []T` may return a slice of a CALLER-provided buffer or a global, but NOT a freshly-formed
+// slice of a LOCAL stack array — the local's storage is reclaimed on return, so the slice would
+// dangle. Rejected in semantic analysis (the whole-array form was already rejected; this covers the
+// `local[lo:hi]` / matrix-row escape that the slice-return ABI would otherwise compile to UB).
+// RUN: ! %arche build -o %t %s 2>&1 | grep -q "cannot return a slice of a local"
+mk :: func() -> []int {
+  loc: [5]int;
+  loc[0] = 7;
+  return loc[0: 3];
+}
+main :: proc() {
+  r := mk();
+  _ := r;
+}

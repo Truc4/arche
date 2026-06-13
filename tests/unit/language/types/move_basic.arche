@@ -2,12 +2,12 @@
 // its close (which consumes it). Runs end to end.
 // RUN: %arche build -o %t --link %S/../extern_type/runtime/test_resource.c %s && %t | grep "value=42"
 #import { fmt }
-resource :: opaque
+resource :: opaque;
 #foreign {
-  resource_open  :: proc(initial: int)(ret: resource)
-  resource_set   :: proc(r: resource, v: int)
-  resource_get   :: proc(r: resource)(ret: int)
-  resource_close :: proc(own r: resource)
+  resource_open  :: proc(initial: int)(ret: resource);
+  resource_set   :: proc(r: resource, v: int);
+  resource_get   :: proc(r: resource)(ret: int);
+  resource_close :: proc(own r: resource);
 }
 
 main :: proc() {

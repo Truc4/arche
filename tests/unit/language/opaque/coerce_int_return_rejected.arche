@@ -2,7 +2,7 @@
 // `res` but hands back `5`; an opaque cannot be born from an int in arche. The return is rejected
 // ("expected 'res'").
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'res'" %t.out
-res :: opaque
+res :: opaque;
 @allow(unused_function)
 mk :: func() -> res {
   return 5;

@@ -4,18 +4,18 @@
 // alongside the scalar at the call.
 // RUN: %arche build -o %t --link %S/runtime/test_resource.c %s && %t | grep "v=42 b=2"
 #import { fmt }
-resource :: opaque
+resource :: opaque;
 // A file carries one `#foreign` region; all FFI decls live together here. `resource_fill`'s `buf`
 // is filled by C, so it must be handed back: in-out (its name is also in the out-list).
 #foreign {
-  resource_open  :: proc(initial: int)(ret: resource)
-  resource_fill  :: proc(r: resource, buf: char[], n: int)(buf: char[], ret: int)
-  resource_close :: proc(own r: resource)
+  resource_open  :: proc(initial: int)(ret: resource);
+  resource_fill  :: proc(r: resource, buf: []char, n: int)(buf: []char, ret: int);
+  resource_close :: proc(own r: resource);
 }
 
 main :: proc() {
   resource_open(42)(r:);
-  buf: char[8];
+  buf: [8]char;
   resource_fill(r, buf, 8)(buf, v:);
   fmt.printf("v=%d b=%s\n", v, buf);
   resource_close(move r);

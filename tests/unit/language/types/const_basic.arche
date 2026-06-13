@@ -1,8 +1,8 @@
 // RUN: %arche build -o %t %s && %t | grep "result: 42"
 #import { fmt }
-PI     :: 3.14159
-SCALE  :: 2
-ANSWER :: 42
+PI     :: 3.14159;
+SCALE  :: 2;
+ANSWER :: 42;
 main   :: proc() {
   x := ANSWER;
   fmt.print("result: ");

@@ -1,6 +1,6 @@
 // The `parse` module — string→number parsing (pure Arche, no FFI). `#import { parse }` then call
 // `parse.atoi(s)` / `parse.atof(s)`. Access is qualified-only: a bare `atoi(...)` does not resolve.
-// Inputs are normal `char[]` arrays — bounded by `.length`, no NUL terminator.
+// Inputs are normal `[]char` arrays — bounded by `.length`, no NUL terminator.
 
 /// Parse a leading (optionally signed) integer; stops at the first non-digit, like libc atoi.
 ///
@@ -9,7 +9,7 @@
 /// fmt.assert(atoi("-7") == -7, "atoi -7\n");
 /// fmt.assert(atoi("13abc") == 13, "atoi stops at non-digit\n");
 /// ```
-atoi :: func(s: char[]) -> int {
+atoi :: func(s: []char) -> int {
   i    := 0;
   sign := 1;
   if (s.length > 0 && s[0] == '-') {
@@ -30,7 +30,7 @@ atoi :: func(s: char[]) -> int {
 }
 
 /// Parse a leading (optionally signed) decimal: integer part then optional fraction, like libc atof.
-atof :: func(s: char[]) -> float {
+atof :: func(s: []char) -> float {
   i    := 0;
   sign := 1.0;
   if (s.length > 0 && s[0] == '-') {

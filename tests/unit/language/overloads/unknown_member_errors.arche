@@ -1,4 +1,5 @@
-// RUN: ! %arche build -o %t %s 2>&1
+// RUN: ! %arche build -o %t %s 2>%t.err
+// RUN: grep -qiF "unknown member" %t.err
 
 a :: func(x: int) -> int {
   return x;

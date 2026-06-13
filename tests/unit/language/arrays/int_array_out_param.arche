@@ -4,7 +4,7 @@
 // codegen (signature `T*`, type-6 body binding, caller `[N x T]` alloca).
 // RUN: %arche build -o %t %s && %t | grep -q "out 9 7 c=2"
 #import { fmt }
-fill :: proc(n: int)(buf: int[8], count: int) {
+fill :: proc(n: int)(buf: [8]int, count: int) {
   buf[0] = 9;
   buf[1] = 7;
   count  = 2;

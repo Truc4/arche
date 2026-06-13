@@ -3,8 +3,8 @@
 // device requires Node[4]; a driver importing it with no pool gets `Node[4]` written into its source,
 // after which it builds. Re-running fill is idempotent (the pool already exists → nothing added).
 // RUN: rm -rf %t.f && mkdir -p %t.f/store && cp %repo/tests/unit/language/devices/storage/store/store.arche %repo/tests/unit/language/devices/storage/store/store.ds.arche %t.f/store/ && printf '#import { store fmt }\nmain :: proc() {\n  run store.bump;\n  fmt.printf("filled_build_ok\\n");\n}\n' > %t.f/app.arche
-// RUN: cd %t.f && %arche fill app.arche | grep -q "filled Node\[4\]"
-// RUN: grep -q "Node\[4\]" %t.f/app.arche
+// RUN: cd %t.f && %arche fill app.arche | grep -q "filled \[4\]Node"
+// RUN: grep -q "\[4\]Node" %t.f/app.arche
 // RUN: cd %t.f && %arche fill app.arche | grep -q "nothing to do"
 // RUN: cd %t.f && %arche build -o app app.arche && ./app | grep -q "filled_build_ok"
 #import { fmt }

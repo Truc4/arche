@@ -2,6 +2,6 @@
 // RUN: %arche build -o %t %s && %t | grep -q "flen=4"
 #import { fmt }
 main :: proc() {
-  b: float[4];
+  b: [4]float;
   fmt.printf("flen=%d\n", b.length);
 }

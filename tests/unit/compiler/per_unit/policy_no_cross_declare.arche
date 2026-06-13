@@ -8,7 +8,7 @@
 // RUN: env ARCHE_PER_UNIT=1 %arche build -o %t %s && %t | grep -qF "pu_ok"
 #import { fmt }
 main :: proc(argc: int) {
-  a: int[4];
+  a: [4]int;
   a[0] = 9;
   v := a[argc] !clamp; // runtime index under an explicit policy (won't fold away)
   fmt.printf("pu_ok=%d\n", v);

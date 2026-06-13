@@ -3,6 +3,6 @@
 // storage requirement (`Cell[4]`, the minimum), but never defines the `Cell` shape itself (the driver
 // does that). Support file.
 // RUN: true
-a :: float
-b :: float
-Cell[4]
+a :: float;
+b :: float;
+[4] Cell;

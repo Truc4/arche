@@ -3,10 +3,10 @@
 // allowed. Declare the buffer `own` (handed to C) or in-out (filled and handed back).
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "assumed to mutate" %t.out
 #foreign {
-  fill_it :: proc(buf: char[], n: int)(r: int)
+  fill_it :: proc(buf: []char, n: int)(r: int);
 }
 
 main :: proc() {
-  b: char[8];
+  b: [8]char;
   fill_it(b, 8)(r:);
 }

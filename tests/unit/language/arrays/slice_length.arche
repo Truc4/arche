@@ -1,0 +1,12 @@
+// A sub-slice `a[lo:hi]` is a borrowed `{ptr, len}` window of length `hi-lo`; a fixed `T[N]` has length
+// N. Slices and arrays expose only `.length` (no capacity — that's a pool concept). Works the same for
+// char and numeric element types.
+// RUN: %arche build -o %t %s && %t | grep "slen=3 tlen=4 buflen=8 iblen=10"
+#import { fmt }
+main :: proc() {
+  buf: [8]char;
+  s := buf[2: 5]; // length 3
+  ib: [10]int;
+  t := ib[3: 7]; // length 4
+  fmt.printf("slen=%d tlen=%d buflen=%d iblen=%d\n", s.length, t.length, buf.length, ib.length);
+}

@@ -4,7 +4,7 @@
 // The written buffer is moved in by reference and returned; the read-only source
 // is passed by value (copied in, no side effect).
 #import { fmt }
-copy_bytes :: func(own dst: char[], src: char[], n: i64) -> char[] {
+copy_bytes :: func(own dst: []char, src: []char, n: i64) -> []char {
   for (i: i64 = 0; i < n; i = i + 1) {
     if (i >= dst.length) {
       break;
@@ -16,7 +16,7 @@ copy_bytes :: func(own dst: char[], src: char[], n: i64) -> char[] {
   }
   return dst;
 }
-classify_commas :: func(data: char[], own mask: char[], n: i64) -> char[] {
+classify_commas :: func(data: []char, own mask: []char, n: i64) -> []char {
   for (i: i64 = 0; i < n; i = i + 1) {
     if (i >= mask.length) {
       break;
@@ -29,7 +29,7 @@ classify_commas :: func(data: char[], own mask: char[], n: i64) -> char[] {
   return mask;
 }
 main :: proc() {
-  src: char[8];
+  src: [8]char;
   src[0] = 'a';
   src[1] = ',';
   src[2] = 'b';
@@ -38,9 +38,9 @@ main :: proc() {
   src[5] = 'd';
   src[6] = 'e';
   src[7] = 'f';
-  dst: char[8];
+  dst: [8]char;
   dst := copy_bytes(move dst, src, 8);
-  mask: char[8];
+  mask: [8]char;
   mask := classify_commas(src, move mask, 8);
   commas: i64 = 0;
   for (i: i64 = 0; i < 8; i = i + 1) {

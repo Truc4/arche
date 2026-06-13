@@ -2,10 +2,10 @@
 // `if` branch but not the implicit else; the programmer must close on every path or none (and let
 // auto-drop handle all). `f` is an `own` param of an opaque with a `@drop` destructor.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "some paths" %t.out
-res :: opaque
+res :: opaque;
 #foreign {
   @drop(res)
-  res_close :: proc(own r: res)
+  res_close :: proc(own r: res);
 }
 @allow(unused_function)
 maybe_close :: proc(own f: res) {

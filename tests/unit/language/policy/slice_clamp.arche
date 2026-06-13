@@ -4,7 +4,7 @@
 #import { fmt }
 
 main :: proc() {
-  a: int[4];
+  a: [4]int;
   a[0] = 1;
   a[1] = 2;
   a[2] = 3;

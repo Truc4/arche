@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s && %t | grep -q "a0=5 b0=9 c0=9"
 #import { fmt }
 main :: proc() {
-  a: int[3];
+  a: [3]int;
   a[0] = 5;
   b := copy a; // explicit clone — a stays alive
   b[0] = 9;

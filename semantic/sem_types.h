@@ -14,7 +14,7 @@
  *   `check(e, expected)` matches anything against `tyid_unknown` so missing
  *   rules don't generate noise.
  * - Hash-consing is structural: identical (kind, payload) tuples intern once.
- *   Two `tyid_of_array(arena, Int)` calls return the same TypeId.
+ *   Two `tyid_of_slice(arena, Int)` calls return the same TypeId.
  * - Function types (`tyid_of_func`) carry param + return TypeId arrays; the
  *   arrays are owned by the arena. */
 
@@ -32,8 +32,8 @@ typedef enum {
 	TYK_UNKNOWN, /* sentinel — id 0 */
 	TYK_PRIM,
 	TYK_NOMINAL, /* archetype names, type aliases, opaque tags */
+	TYK_SLICE,
 	TYK_ARRAY,
-	TYK_SHAPED_ARRAY,
 	TYK_TUPLE,
 	TYK_HANDLE,
 	TYK_ARCHETYPE_CATEGORY, /* the bare `archetype` keyword (sys param only) */
@@ -56,8 +56,8 @@ TypeId tyid_of_nominal(TypeArena *a, const char *name); /* standalone nominal (b
 /* A tier-2 DISTINCT subtype: its own identity, one-way usable AS `backing`. A tier-1 transparent
  * alias must NOT use this — intern it directly as its backing's TypeId so tyid_equal collapses. */
 TypeId tyid_of_nominal_sub(TypeArena *a, const char *name, TypeId backing);
-TypeId tyid_of_array(TypeArena *a, TypeId elem);
-TypeId tyid_of_shaped(TypeArena *a, TypeId elem, int rank);
+TypeId tyid_of_slice(TypeArena *a, TypeId elem);
+TypeId tyid_of_array(TypeArena *a, TypeId elem, int rank);
 TypeId tyid_of_tuple(TypeArena *a, const char *const *field_names, const TypeId *field_types, int field_count);
 TypeId tyid_of_handle(TypeArena *a, const char *archetype_name);
 TypeId tyid_of_archetype_category(TypeArena *a);
@@ -77,7 +77,7 @@ PrimKind tyid_prim(const TypeArena *a, TypeId t);            /* the PrimKind of 
 const char *tyid_nominal_name(const TypeArena *a, TypeId t); /* a TYK_NOMINAL's interned name, else NULL */
 const char *tyid_handle_name(const TypeArena *a, TypeId t);  /* a TYK_HANDLE's archetype name, else NULL */
 TypeId tyid_elem(const TypeArena *a, TypeId t);              /* an array/shaped element type, else UNKNOWN */
-int tyid_shaped_rank(const TypeArena *a, TypeId t);          /* a shaped array's static length, else -1 */
+int tyid_array_len(const TypeArena *a, TypeId t);            /* a shaped array's static length, else -1 */
 int tyid_tuple_count(const TypeArena *a, TypeId t);
 const char *tyid_tuple_field_name(const TypeArena *a, TypeId t, int i);
 TypeId tyid_tuple_field_type(const TypeArena *a, TypeId t, int i);

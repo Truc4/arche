@@ -5,7 +5,7 @@
 // RUN: rm -rf %t.drv && mkdir -p %t.drv && cd %t.drv && %arche init driver app && test -f app.arche
 // `arche init driver <name> <device>...` scaffolds a driver importing the devices and pre-fills a
 // pool for each shape they require, at the datasheet minimum — then it builds.
-// RUN: rm -rf %t.dd && mkdir -p %t.dd/store && cp %repo/tests/unit/language/devices/storage/store/store.arche %repo/tests/unit/language/devices/storage/store/store.ds.arche %t.dd/store/ && cd %t.dd && %arche init driver app store && grep -q "Node\[4\]" app.arche && %arche build -o app app.arche && ./app | grep -q "ran"
+// RUN: rm -rf %t.dd && mkdir -p %t.dd/store && cp %repo/tests/unit/language/devices/storage/store/store.arche %repo/tests/unit/language/devices/storage/store/store.ds.arche %t.dd/store/ && cd %t.dd && %arche init driver app store && grep -q "\[4\]Node" app.arche && %arche build -o app app.arche && ./app | grep -q "ran"
 #import { fmt }
 main :: proc() {
   fmt.printf("init_cli_ok\n");

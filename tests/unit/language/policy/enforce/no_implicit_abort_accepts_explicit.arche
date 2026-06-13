@@ -2,7 +2,7 @@
 // compiles. It closes the "didn't realize this could crash" gap without banning intentional aborts.
 // RUN: %arche build --no-implicit-abort -o %t %s
 main :: proc() {
-  a: int[4];
+  a: [4]int;
   i := 9;
   x := a[i] !abort; // explicit !abort -> accepted under --no-implicit-abort
 }

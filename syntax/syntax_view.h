@@ -35,6 +35,33 @@ static inline uint32_t sv_id(SyntaxView v) {
 	return v.node->id;
 }
 
+static inline int sv_is_postfix_kind(SyntaxNodeKind k) {
+	return k == SN_FIELD_EXPR || k == SN_INDEX_EXPR || k == SN_SLICE_EXPR || k == SN_CALL_EXPR;
+}
+
+/* The NESTED base sub-expression of a postfix node `v` — the general-postfix forms `M[i].length`,
+ * `f().g`, `a[i][j]`, `(e).f` — else an absent view for the common FLAT postfix. A flat postfix
+ * carries its base as a leading IDENT token (`a[i]`, `a.b`, `mod.f(args)`) or a wrapped callee name
+ * (`f(args)`); a nested one carries it as its FIRST child NODE (a postfix or paren expression) with
+ * no leading base token. Declared inline so semantic + lowering discriminate identically. */
+SyntaxView sv_node_at(SyntaxView v, int index); /* (declared below; used by base_subexpr) */
+SynText sv_token(SyntaxView v, TokenKind kind);
+int sv_has_token(SyntaxView v, TokenKind kind);
+static inline SyntaxView base_subexpr(SyntaxView v) {
+	SyntaxView none = {NULL, v.src};
+	if (!sv_present(v) || !sv_is_postfix_kind(sv_kind(v)))
+		return none;
+	if (sv_has_token(v, TOK_IDENT))
+		return none; /* a leading base IDENT token ⇒ flat (`a[i]`, `a.b`, `mod.f(args)`) */
+	SyntaxView first = sv_node_at(v, 0);
+	if (sv_present(first) && (sv_is_postfix_kind(sv_kind(first)) || sv_kind(first) == SN_PAREN_EXPR))
+		return first; /* first child node is the nested base */
+	return none;      /* SN_CALLEE_NAME (bare call), FIELD_NAME, etc. ⇒ flat */
+}
+static inline int has_nested_base(SyntaxView v) {
+	return sv_present(base_subexpr(v));
+}
+
 /* The node's full source span as a borrowed slice (an identifier node's text). */
 SynText sv_text(SyntaxView v);
 int sv_text_eq(SyntaxView v, const char *s);

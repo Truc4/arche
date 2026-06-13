@@ -1,0 +1,22 @@
+// A single index into an `[N][W]T` matrix yields a ROW. Passing that row where a `[]T` slice is
+// expected must decay to a (ptr, len=W) fat pointer — exactly as a sized local `[W]T` decays
+// (see slice_decay_from_sized). The reader borrows a `[]int`, walks `.length` (== W, the row width),
+// and sums it. Row 0 of M is {1,2,3} -> 6; row 1 is {4,5,6} -> 15. Distinct sums prove the row
+// POINTER (base + i*stride) and the carried LENGTH both reach the callee. (Previously this silently
+// miscompiled: the row was passed as a single scalar arg with no length, so the slice arrived empty.)
+// RUN: %arche build -o %t %s && %t | grep -q "r0=6 r1=15"
+#import { fmt }
+sum :: func(xs: []int) -> int {
+  total := 0;
+  i     := 0;
+  for (i = 0; i < xs.length; i = i + 1) {
+    total = total + xs[i];
+  }
+  return total;
+}
+
+M :: { { 1, 2, 3 }, { 4, 5, 6 } }
+
+main :: proc() {
+  fmt.printf("r0=%d r1=%d\n", sum(M[0]), sum(M[1]));
+}

@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t
 #import { io fmt }
 
-buf: char[65536]
+buf: [65536]char;
 
 main :: proc() {
   fmt.printf("about to open file\n");

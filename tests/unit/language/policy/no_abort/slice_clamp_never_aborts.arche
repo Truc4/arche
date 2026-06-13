@@ -2,7 +2,7 @@
 // completion (exit 0) — the clamp nets lo,hi into [0, len], never aborting.
 // RUN: %arche build -o %t %s && %t
 main :: proc() {
-  a: int[4];
+  a: [4]int;
   a[0] = 1;
   lo := 0 - 5;
   hi := 99;

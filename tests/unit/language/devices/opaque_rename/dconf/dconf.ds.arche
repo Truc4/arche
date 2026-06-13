@@ -1,4 +1,4 @@
 // Datasheet: device `dconf` exposes an opaque type it calls `handle`. The importer happens to have
 // its OWN unrelated `handle` type, so it renames this one via `@implements`. Not a standalone test.
 // RUN: true
-handle :: opaque
+handle :: opaque;

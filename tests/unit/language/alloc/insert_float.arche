@@ -2,7 +2,7 @@
 #import { fmt }
 FloatOps :: arche { val :: float }
 
-FloatOps[8]
+[8] FloatOps;
 
 main :: proc() {
   insert(FloatOps, 1.0)(_:, _:);

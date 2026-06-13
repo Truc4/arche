@@ -3,15 +3,15 @@
 // over-read) is rejected at compile time.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "slice .T\[\]. to a sized" %t.out
 #import { fmt }
-needs_sized :: func(xs: int[4]) -> int {
+needs_sized :: func(xs: [4]int) -> int {
   return xs[0];
 }
 
-forward :: func(xs: int[]) -> int {
+forward :: func(xs: []int) -> int {
   return needs_sized(xs);
 }
 
 main :: proc() {
-  a: int[4];
+  a: [4]int;
   fmt.printf("%d\n", forward(a));
 }

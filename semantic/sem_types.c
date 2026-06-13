@@ -25,11 +25,11 @@ typedef struct {
 		} nominal;
 		struct {
 			TypeId elem;
-		} array;
+		} slice;
 		struct {
 			TypeId elem;
-			int rank;
-		} shaped;
+			int len;
+		} array;
 		struct {
 			const char **names; /* interned in str pool */
 			TypeId *types;
@@ -165,28 +165,28 @@ int tyid_usable_as(const TypeArena *a, TypeId from, TypeId to) {
 	return 0;
 }
 
-TypeId tyid_of_array(TypeArena *a, TypeId elem) {
+TypeId tyid_of_slice(TypeArena *a, TypeId elem) {
 	for (int i = 1; i < a->node_count; i++) {
 		TypeNode *n = &a->nodes[i];
-		if (n->kind == TYK_ARRAY && n->data.array.elem == elem)
+		if (n->kind == TYK_SLICE && n->data.slice.elem == elem)
+			return (TypeId)i;
+	}
+	TypeNode node = {0};
+	node.kind = TYK_SLICE;
+	node.data.slice.elem = elem;
+	return push_node(a, node);
+}
+
+TypeId tyid_of_array(TypeArena *a, TypeId elem, int rank) {
+	for (int i = 1; i < a->node_count; i++) {
+		TypeNode *n = &a->nodes[i];
+		if (n->kind == TYK_ARRAY && n->data.array.elem == elem && n->data.array.len == rank)
 			return (TypeId)i;
 	}
 	TypeNode node = {0};
 	node.kind = TYK_ARRAY;
 	node.data.array.elem = elem;
-	return push_node(a, node);
-}
-
-TypeId tyid_of_shaped(TypeArena *a, TypeId elem, int rank) {
-	for (int i = 1; i < a->node_count; i++) {
-		TypeNode *n = &a->nodes[i];
-		if (n->kind == TYK_SHAPED_ARRAY && n->data.shaped.elem == elem && n->data.shaped.rank == rank)
-			return (TypeId)i;
-	}
-	TypeNode node = {0};
-	node.kind = TYK_SHAPED_ARRAY;
-	node.data.shaped.elem = elem;
-	node.data.shaped.rank = rank;
+	node.data.array.len = rank;
 	return push_node(a, node);
 }
 
@@ -325,18 +325,18 @@ TypeId tyid_elem(const TypeArena *a, TypeId t) {
 	if (!a || t == 0 || (int)t >= a->node_count)
 		return TYID_UNKNOWN;
 	const TypeNode *n = &a->nodes[t];
+	if (n->kind == TYK_SLICE)
+		return n->data.slice.elem;
 	if (n->kind == TYK_ARRAY)
 		return n->data.array.elem;
-	if (n->kind == TYK_SHAPED_ARRAY)
-		return n->data.shaped.elem;
 	return TYID_UNKNOWN;
 }
 
-int tyid_shaped_rank(const TypeArena *a, TypeId t) {
+int tyid_array_len(const TypeArena *a, TypeId t) {
 	if (!a || t == 0 || (int)t >= a->node_count)
 		return -1;
 	const TypeNode *n = &a->nodes[t];
-	return n->kind == TYK_SHAPED_ARRAY ? n->data.shaped.rank : -1;
+	return n->kind == TYK_ARRAY ? n->data.array.len : -1;
 }
 
 int tyid_tuple_count(const TypeArena *a, TypeId t) {
@@ -402,16 +402,16 @@ const char *tyid_display(const TypeArena *a, TypeId t, char *buf, int buflen) {
 	case TYK_NOMINAL:
 		snprintf(buf, buflen, "%s", n->data.nominal.name ? n->data.nominal.name : "?");
 		break;
-	case TYK_ARRAY: {
+	case TYK_SLICE: {
 		char inner[128];
-		tyid_display(a, n->data.array.elem, inner, sizeof(inner));
+		tyid_display(a, n->data.slice.elem, inner, sizeof(inner));
 		snprintf(buf, buflen, "[]%s", inner);
 		break;
 	}
-	case TYK_SHAPED_ARRAY: {
+	case TYK_ARRAY: {
 		char inner[128];
-		tyid_display(a, n->data.shaped.elem, inner, sizeof(inner));
-		snprintf(buf, buflen, "[%d]%s", n->data.shaped.rank, inner);
+		tyid_display(a, n->data.array.elem, inner, sizeof(inner));
+		snprintf(buf, buflen, "[%d]%s", n->data.array.len, inner);
 		break;
 	}
 	case TYK_TUPLE:

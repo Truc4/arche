@@ -4,7 +4,7 @@
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "W0013 unused_function") -eq 0
 #import { fmt }
 Particle :: arche { pos :: float, vel :: float }
-Particle[10]
+[10] Particle;
 log_step :: proc() {
   fmt.print("step\n");
 }

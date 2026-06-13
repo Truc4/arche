@@ -2,14 +2,14 @@
 // Storing into a char[] / buffer at an i64 index (write-path index coercion).
 // The buffer is moved in by reference (so the store reaches the caller) and returned.
 #import { fmt }
-setb :: func(own buf: char[], i: i64, v: int) -> char[] {
+setb :: func(own buf: []char, i: i64, v: int) -> []char {
   if (i >= 0 && i < buf.length) {
     buf[i] = v;
   }
   return buf;
 }
 main :: proc() {
-  b: char[16];
+  b: [16]char;
   // i64-indexed stores into a local buffer and via a char[] param
   for (i: i64 = 0; i < 16; i = i + 1) {
     b[i] = 0;

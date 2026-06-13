@@ -7,7 +7,7 @@
 
 Thing :: arche { pos, vel, mass :: float }
 
-Thing[4]
+[4] Thing;
 
 main :: proc() {
   insert(Thing, 10.0, 1.0, 5.0)(_:, _:);

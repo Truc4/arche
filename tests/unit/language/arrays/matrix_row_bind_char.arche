@@ -1,0 +1,11 @@
+// A char matrix row binds as a `[]char` slice; `os.write(1, r, r.length)` prints the row's chars.
+// Row 0 of S is "aa" (the rows NUL-pad to the widest, here width 2) — prints "aa".
+// RUN: %arche build -o %t %s && %t | grep -x "aa"
+#import { os }
+S :: { "aa", "bb" }
+
+main :: proc() {
+  r := S[0];
+  os.write(1, r, r.length);
+  os.write(1, "\n", 1);
+}

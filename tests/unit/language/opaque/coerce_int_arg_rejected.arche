@@ -2,7 +2,7 @@
 // be a type error — opaques never coerce to/from ints in arche. `takes(5)` is rejected
 // ("expected 'res'").
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'res'" %t.out
-res :: opaque
+res :: opaque;
 @allow(unused_function)
 takes :: func(h: res) -> int {
   return 0;

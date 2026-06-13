@@ -2,9 +2,9 @@
 // `#file` marker is a redundant region — rejected (E0121).
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "at most one .#file. region" %t.out
 #file
-helper :: 1
+helper :: 1;
 #file
-other :: 2
+other :: 2;
 
 main :: proc() {
 }

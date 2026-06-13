@@ -18,10 +18,10 @@ swap :: proc(a: int, b: int)(x: int, y: int) {
   x = b;
   y = a;
 }
-pos      :: float
-vel      :: float
+pos      :: float;
+vel      :: float;
 Particle :: arche { pos, vel }
-Particle[2](2)
+[2] Particle(2);
 step :: sys (pos, vel) {
   pos = pos + vel;
 }

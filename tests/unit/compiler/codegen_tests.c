@@ -347,9 +347,9 @@ void test_compile_overloads_smoke(void) {
  * needs 2^32 deletes — untestable at runtime — so assert the guard branch is emitted. */
 void test_codegen_gen_exhaustion_abort(void) {
 	test_start("delete emits generation-exhaustion abort");
-	char *ir = compile_to_ir_string("hp :: int\n"
+	char *ir = compile_to_ir_string("hp :: int;\n"
 	                                "Unit :: arche { hp }\n"
-	                                "Unit[4];\n"
+	                                "[4]Unit;\n"
 	                                "main :: proc() {\n"
 	                                "  insert(Unit, 1)(h:, _:);\n"
 	                                "  delete(h)(_:);\n"

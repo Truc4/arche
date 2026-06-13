@@ -1,0 +1,15 @@
+// Binding a WHOLE 1-D value-array const to a local is a read-only ALIAS (no copy): `whole := XS` /
+// `whole: [3]i32 = XS` register a type-6 array at the const's element pointer, so `whole[i]` and
+// `whole.length` work. Regression: this crashed LLVM ("global variable reference must have pointer
+// type") because the bare array-const NAME wasn't decayed to its element pointer the way `M[i]` /
+// `buf[lo:hi]` binds are. Covers int + float consts, inferred and explicit type.
+// RUN: %arche build -o %t %s && %t | grep -x "10 30 2.5 3"
+#import { fmt }
+XS   :: { 10, 20, 30 }
+FS   :: { 1.5, 2.5 }
+main :: proc() {
+  whole := XS;
+  typed: [3]i32 = XS;
+  fs := FS;
+  fmt.printf("%d %d %g %d\n", whole[0], typed[2], fs[1], whole.length);
+}

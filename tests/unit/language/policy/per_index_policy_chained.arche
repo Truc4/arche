@@ -1,0 +1,17 @@
+// Per-index failure policies on chained multi-dimensional indexing — each `[i]` carries its OWN
+// policy, which the former comma form `a[i, j]` could not express (a single bracket, one policy). A
+// RUNTIME row index out of range is `!clamp`ed to the last valid row (not aborted), then the column
+// index reads it. M's last row is {4,5,6}, so the result is 4. (A *literal* out-of-bounds index is a
+// compile error E0097 instead — policies are for runtime-unprovable indices, not statically-wrong
+// ones — so the index is laundered through a func to make it unprovable.)
+// RUN: %arche build -o %t %s && %t | grep -x "4"
+#import { fmt }
+M :: { { 1, 2, 3 }, { 4, 5, 6 } }
+
+runtime :: func(n: int) -> int {
+  return n;
+}
+main :: proc() {
+  i := runtime(99);
+  fmt.printf("%d\n", M[i] !clamp[0]);
+}

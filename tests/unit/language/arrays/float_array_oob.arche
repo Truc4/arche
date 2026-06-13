@@ -3,7 +3,7 @@
 // RUN: %arche build -o %t %s && ! %t
 #import { fmt }
 main :: proc() {
-  b: float[4];
+  b: [4]float;
   i := 9;
   fmt.printf("%g\n", b[i]);
 }

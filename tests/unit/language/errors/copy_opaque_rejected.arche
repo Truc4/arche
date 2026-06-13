@@ -1,7 +1,7 @@
 // Opaque values are non-copyable (move-only): `copy` of one is a compile error. `res` is a real
 // opaque handle, received as an `own` param so no producer is needed (the bad `copy` is the test).
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "move-only" %t.out
-res :: opaque
+res :: opaque;
 @allow(unused_function)
 clobber :: proc(own f: res) {
   g := copy f;

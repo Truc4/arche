@@ -2,7 +2,7 @@
 // RUN: %arche build --no-abort -o %t %s && %t | grep -qF "ok=13"
 #import { fmt }
 main :: proc() {
-  a: int[4];
+  a: [4]int;
   a[3] = 13;
   i := 99;
   fmt.printf("ok=%d\n", a[i] !clamp); // total -> accepted, clamps to a[3]

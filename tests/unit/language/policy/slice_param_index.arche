@@ -4,15 +4,15 @@
 // a read-only borrow by default).
 // RUN: %arche build -o %t %s && %t | grep -qF "read=13 wrote=77"
 #import { fmt }
-rd :: func(s: int[], i: int) -> int {
+rd :: func(s: []int, i: int) -> int {
   return s[i] !clamp;
 } // OOB read -> clamp
-wr :: proc(own s: int[], i: int, v: int) {
+wr :: proc(own s: []int, i: int, v: int) {
   s[i] !clamp = v;
 } // OOB write -> clamp
 
 main :: proc() {
-  a: int[4];
+  a: [4]int;
   a[0] = 10;
   a[1] = 11;
   a[2] = 12;

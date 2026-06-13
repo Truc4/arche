@@ -1,0 +1,23 @@
+// Slices, array-consts, matrix rows, sub-slices, and string buffers are FIRST-CLASS: their inferred
+// binds show the real `[N]T` / `[N][W]T` / `[]T` type as an inlay hint (previously they collapsed to
+// the scalar element, e.g. `i32`, and a nested matrix showed a flat `[]i32` instead of `[2][3]i32`).
+// A whole const is sized; a matrix is NESTED; a partial row is the sized inner array; a `buf[lo:hi]`
+// sub-slice is a runtime `[]T` view. The enclosing proc form is hidden by default.
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 13 4 1 1 type [2][3]i32"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 16 10 1 1 type [3]i32"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 17 10 1 1 type [3]i32"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 19 10 1 1 type []i32"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 20 10 1 1 type []char"
+XS :: { 10, 20, 30 }
+
+M :: { { 1, 2, 3 }, { 4, 5, 6 } }
+
+main :: proc() {
+  whole := XS;
+  row   := M[1];
+  buf: [5]int;
+  view  := buf[1: 4];
+  label := "hi";
+  fmt.printf("%d%d%d%d\n", whole[0], row[0], view[0], label.length);
+}
+#import { fmt }

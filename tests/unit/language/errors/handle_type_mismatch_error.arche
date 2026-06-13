@@ -3,9 +3,9 @@ Player :: arche { pos :: float }
 
 Enemy :: arche { health :: float }
 
-Player[10]
+[10] Player;
 
-Enemy[10]
+[10] Enemy;
 
 main :: proc() {
   insert(Player, 1.0)(p:, _:);

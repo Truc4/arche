@@ -4,7 +4,7 @@
 // for it on the in-side. Prints "X" if `_` correctly resolved to `b`.
 // RUN: %arche build -o %t %s ; %t | grep -q "^X$"
 #import { fmt }
-fill :: proc(buf: char[], n: int)(buf: char[]) {
+fill :: proc(buf: []char, n: int)(buf: []char) {
   if (buf.length >= 3) {
     buf[0] = 'X';
     buf[1] = 10;
@@ -12,7 +12,7 @@ fill :: proc(buf: char[], n: int)(buf: char[]) {
   }
 }
 main :: proc() {
-  b: char[4];
+  b: [4]char;
   fill(_, 4)(b);
   fmt.print(b);
 }
