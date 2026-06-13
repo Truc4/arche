@@ -3,4 +3,4 @@
 // a driver can only size a PUBLIC shape — so this requirement is unsatisfiable. Support file.
 // RUN: true
 z :: float;
-[4] Hidden;
+[4]Hidden;

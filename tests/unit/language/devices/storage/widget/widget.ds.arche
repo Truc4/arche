@@ -6,4 +6,4 @@
 // RUN: true
 pos :: float;
 vel :: float;
-[4] Particle;
+[4]Particle;

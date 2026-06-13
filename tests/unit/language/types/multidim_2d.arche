@@ -2,7 +2,7 @@
 #import { fmt }
 Matrix :: arche { data :: [10]float }
 
-[5] Matrix;
+[5]Matrix;
 
 main :: proc() {
   insert(Matrix, 1.5)(_:, _:);
