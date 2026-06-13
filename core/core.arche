@@ -12,24 +12,24 @@
 
 // `i32` is the canonical 32-bit integer; `int` is a TRANSPARENT (tier-1) alias of it — the same
 // type, freely interchangeable. Diagnostics read `i32` (the primary name).
-int :: alias i32
+int :: alias i32;
 
 // `byte` is a raw unsigned 8-bit value — a TRANSPARENT (tier-1) alias over the canonical `u8`
 // primitive: `byte` and `u8` are the same type, freely interchangeable.
-byte :: alias u8
+byte :: alias u8;
 
 // Boolean type. Arche has no `bool` primitive; comparisons yield 0/1, so `bool` is a DISTINCT
 // (tier-2) subtype of `i8`. Comparison operands stay lenient (`1 == true` ok), int literals flex in
 // (`ok : bool : 1`), and a bool flows back out AS an int one-way (`bool`→`i8`). What it blocks: a
 // named int silently becoming a bool (`int n := 1; bool b := n` needs `bool(n)`).
-bool :: i8
-true  : bool : 1
-false : bool : 0
+bool :: i8;
+true  : bool : 1;
+false : bool : 0;
 
 // Byte-compare two strings: 1 if equal, 0 otherwise. Pure (no FFI). Lives in core because the
 // `match` string-pattern desugar emits a bare `streq(...)` call — it is compiler-emitted, not a
 // user-facing library symbol, so it must resolve without an import.
-streq :: func(a: char[], b: char[]) -> bool {
+streq :: func(a: []char, b: []char) -> bool {
   if (a.length != b.length) {
     return false;
   }
@@ -49,8 +49,8 @@ streq :: func(a: char[], b: char[]) -> bool {
 // `dprintf` over `write` so the symbol can't collide with `os.write` in the all-stdlib test harness;
 // the messages carry no `%`, so it is a plain fd-write). The `own` is the FFI rule for array params.
 #foreign {
-  _exit   :: proc(code: int)
-  dprintf :: proc(fd: int, own fmt: char[])(r: int)
+  _exit   :: proc(code: int);
+  dprintf :: proc(fd: int, own fmt: []char)(r: int);
 }
 
 // ===== failure policies =====

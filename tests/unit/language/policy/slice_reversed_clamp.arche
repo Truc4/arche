@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s && %t | grep -qF "rev_len=0"
 #import { fmt }
 main :: proc(argc: int) {
-  a: int[4];
+  a: [4]int;
   a[0] = 1;
   lo := argc + 2; // 3
   hi := argc; // 1  -> reversed

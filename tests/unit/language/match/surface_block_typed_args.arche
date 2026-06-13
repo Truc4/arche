@@ -4,12 +4,12 @@
 // Regression for the `cst_build_stmt` SN_BLOCK desugar. Uses a foreign `resource` opaque.
 // RUN: %arche build -o %t --link %S/../extern_type/runtime/test_resource.c %s && %t | grep -q "^x=3.5 r=42$"
 #import { fmt }
-resource :: opaque
+resource :: opaque;
 #foreign {
-  resource_open :: proc(initial: int)(r: resource)
-  resource_get  :: proc(r: resource)(v: int)
+  resource_open :: proc(initial: int)(r: resource);
+  resource_get  :: proc(r: resource)(v: int);
   @drop(resource)
-  resource_close :: proc(own r: resource)
+  resource_close :: proc(own r: resource);
 }
 take :: proc(x: float, r: resource)(v: int) {
   resource_get(r)(rv:);

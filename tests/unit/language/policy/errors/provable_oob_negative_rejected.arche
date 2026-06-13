@@ -3,6 +3,6 @@
 // (`a[0 - 7]` is a real binary expr — no constant folding — so it stays a runtime index, not this.)
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "provably out of bounds\|E0097" %t.out
 main :: proc() {
-  a: int[4];
+  a: [4]int;
   a[-7] = 1; // negative literal -> provably OOB, E0097
 }

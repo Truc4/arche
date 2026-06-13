@@ -2,9 +2,9 @@
 // `::` and the mutable `=` interoperate: `limit` is mutable, seeded from the constant MAX.
 // RUN: %arche build -o %t %s && %t | grep -q "limit=100"
 #import { fmt }
-MAX :: 100
+MAX :: 100;
 
-limit: int = MAX
+limit: int = MAX;
 
 main :: proc() {
   fmt.printf("limit=%d\n", limit);

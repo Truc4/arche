@@ -2,7 +2,7 @@
 #import { io fmt }
 main :: proc() {
   io.fopen_write("/tmp/arche_test_write.txt")(fd:);
-  buf: char[32];
+  buf: [32]char;
   fmt.sprintf(buf, "test123\n")(buf, n:);
   io.fwrite(fd, move buf, n);
   io.fclose(move fd);

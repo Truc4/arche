@@ -6,7 +6,7 @@
 #import { io os fmt }
 main :: proc() {
   io.fopen_read("/dev/null")(fd:);
-  buf: char[16];
+  buf: [16]char;
   io.fread(fd, buf, 16)(buf, _n:);
   io.fclose(move fd);
   os.os_now_sec()(_t:); // extern module, qualified

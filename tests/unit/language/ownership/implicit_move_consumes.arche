@@ -3,13 +3,13 @@
 // is a use-after-move error. (The editor shows an inlay `move` hint at the elided transfer.)
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
 #import { fmt }
-sink :: func(own b: char[8]) -> int {
+sink :: func(own b: [8]char) -> int {
   b[0] = 'X';
   return 0;
 }
 
 main :: proc() {
-  buf: char[8];
+  buf: [8]char;
   a := sink(buf);
   c := sink(buf);
   fmt.printf("%d %d\n", a, c);

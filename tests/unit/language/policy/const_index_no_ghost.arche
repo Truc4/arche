@@ -1,0 +1,14 @@
+// A trivially in-bounds CONSTANT index into a value-array const — direct `M[0]` / `XS[2]`, chained
+// `M[0][0]`, or via an inferred row local (`a := M[0]; a[1]`) — is proven in-bounds, so its bounds
+// policy is ELIDED: no runtime check, and the analyzer shows NO `!abort` ghost. (A `[]T` slice keeps
+// its check — runtime length — so this file deliberately uses only sized consts.)
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "policy") -eq 0
+#import { fmt }
+M :: { { 1, 2, 3 }, { 4, 5, 6 } }
+
+XS :: { 10, 20, 30 }
+
+main :: proc() {
+  a := M[0];
+  fmt.printf("%d%d%d%d\n", M[1][2], XS[0], a[1], M[0][0]);
+}

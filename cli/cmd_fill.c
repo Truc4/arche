@@ -54,20 +54,28 @@ static int first_number(const SyntaxNode *node, const char *src) {
 	return -1;
 }
 
-/* For a static/pool decl node `Name[N]` (or `dev.Name[N]`), write the shape's OWN name (the last
- * dotted IDENT before `[`) into `name`, and return the capacity literal (the first number), or -1. */
+/* For a prefix pool decl node `[N]Name` (or `[N]dev.Name`), write the shape's OWN name (the last
+ * dotted IDENT after the capacity `[…]`) into `name`, and return the capacity literal (the first
+ * number), or -1. The name run ends at the `(live)` / `{init}` extras. */
 static int static_decl_shape(const SyntaxNode *node, const char *src, char *name, size_t cap) {
-	int found_name = 0;
+	int found_name = 0, after_rbracket = 0;
 	name[0] = '\0';
 	for (int i = 0; i < node->child_count; i++) {
 		const SyntaxElem *ch = &node->children[i];
 		if (ch->tag != SE_TOKEN)
 			continue;
-		if (ch->as.token.kind == TOK_LBRACKET)
-			break; /* name is the dotted IDENT run before `[`; capacity follows (nested) */
-		if (ch->as.token.kind == TOK_IDENT) {
-			tok_text(src, ch, name, cap); /* keep the LAST IDENT before `[` = the shape's own name */
-			found_name = 1;
+		TokenKind k = ch->as.token.kind;
+		if (k == TOK_RBRACKET) {
+			after_rbracket = 1; /* the archetype name follows the capacity `[…]` */
+			continue;
+		}
+		if (after_rbracket) {
+			if (k == TOK_LPAREN || k == TOK_LBRACE || k == TOK_QUESTION)
+				break; /* name ends; `(live)` / `{init}` / `?handler` follow */
+			if (k == TOK_IDENT) {
+				tok_text(src, ch, name, cap); /* keep the LAST dotted segment = the shape's own name */
+				found_name = 1;
+			}
 		}
 	}
 	return found_name ? first_number(node, src) : -1;
@@ -234,10 +242,10 @@ int arche_fill_driver(const char *driver_path) {
 			cn += snprintf(comment + cn, sizeof(comment) - (size_t)cn, "%s%s: %d", c ? ", " : "",
 			               reqs[r].contrib_dev[c], reqs[r].contrib_min[c]);
 		if (reqs[r].contrib_n > 1)
-			fprintf(out, "%s[%d] // %s\n", reqs[r].name, reqs[r].min, comment);
+			fprintf(out, "[%d]%s; // %s\n", reqs[r].min, reqs[r].name, comment);
 		else
-			fprintf(out, "%s[%d]\n", reqs[r].name, reqs[r].min);
-		printf("filled %s[%d]\n", reqs[r].name, reqs[r].min);
+			fprintf(out, "[%d]%s;\n", reqs[r].min, reqs[r].name);
+		printf("filled [%d]%s\n", reqs[r].min, reqs[r].name);
 		written++;
 	}
 	if (out)

@@ -6,19 +6,19 @@
 // libc stdio C-runtime externs. C foreign symbols → callable bare within this module; qualified
 // `fmt.printf` / `fmt.sprintf` from importers.
 #foreign {
-  sprintf :: proc(buf: char[], own fmt: char[], ...)(buf: char[], n: int)
-  printf  :: proc(own fmt: char[], ...)(n: int)
-  fflush  :: proc(stream: int)
+  sprintf :: proc(buf: []char, own fmt: []char, ...)(buf: []char, n: int);
+  printf  :: proc(own fmt: []char, ...)(n: int);
+  fflush  :: proc(stream: int);
 }
 
 print_float :: proc(f: float) {
   printf("%g", f);
   fflush(0);
 }
-print :: proc(msg: char[]) {
+print :: proc(msg: []char) {
   os.write(1, msg, msg.length);
 }
-assert :: proc(condition: int, message: char[]) {
+assert :: proc(condition: int, message: []char) {
   if (condition == 0) {
     fflush(0);
     print(message);

@@ -5,7 +5,7 @@
 // RUN: %arche build --unchecked -o %t %s && %t | grep -qF "ran=1"
 #import { fmt }
 main :: proc() {
-  a: int[4];
+  a: [4]int;
   a[0] = 11;
   i := 9;
   x := a[i] + 1; // would abort on a normal build; --unchecked -> raw, no abort

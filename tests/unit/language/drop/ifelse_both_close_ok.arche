@@ -2,10 +2,10 @@
 // consumed handle" in the else, no double-drop). Consumed on all paths → no auto-drop. `f` is an
 // `own` param of an opaque with a `@drop` destructor; the proc is never called (no producer needed).
 // RUN: %arche build -o %t %s
-res :: opaque
+res :: opaque;
 #foreign {
   @drop(res)
-  res_close :: proc(own r: res)
+  res_close :: proc(own r: res);
 }
 @allow(unused_function)
 both :: proc(own f: res) {

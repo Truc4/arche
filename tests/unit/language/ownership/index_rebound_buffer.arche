@@ -2,7 +2,7 @@
 // the caller — the CSV reader fills a buffer then scans it byte by byte.
 // RUN: %arche build -o %t %s && %t | grep "c0=72 c1=105 n=2"
 #import { fmt }
-fill :: proc(buf: char[32], s: char[])(buf: char[32], n: int) {
+fill :: proc(buf: [32]char, s: []char)(buf: [32]char, n: int) {
   i := 0;
   for (; i < s.length; i += 1) {
     if (i >= 32) {
@@ -17,7 +17,7 @@ fill :: proc(buf: char[32], s: char[])(buf: char[32], n: int) {
 }
 
 main :: proc() {
-  b: char[32];
+  b: [32]char;
   fill(b, "Hi")(b, n:);
   c0 := b[0];
   c1 := b[1];

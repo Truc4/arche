@@ -2,13 +2,13 @@
 // denote the SAME shape. Allocating a pool for each is therefore a double-allocation of
 // one shape — the compiler recognizes the reorder as identical and rejects it.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "already allocated" %t.out
-hp :: int
-mp :: int
+hp :: int;
+mp :: int;
 A  :: arche { hp, mp }
 B  :: arche { mp, hp }
 
-A[4]
-B[4]
+[4] A;
+[4] B;
 
 main :: proc() {
 }

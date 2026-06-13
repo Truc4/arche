@@ -9,7 +9,7 @@
 // RUN: ! %arche fmt %s | grep -qE "^  y + := "
 #import { fmt }
 main :: proc() {
-  data: int[2];
+  data: [2]int;
   data[0] = 7;
   data[1] = 9;
   y := 100;

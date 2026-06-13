@@ -1,4 +1,4 @@
-UndefinedArch[10]
+[10] UndefinedArch;
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "unknown archetype" %t.out
 
 @allow_pure_proc

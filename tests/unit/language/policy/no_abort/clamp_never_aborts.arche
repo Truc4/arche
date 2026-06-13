@@ -4,7 +4,7 @@
 // (runtime values — literals would be provably-OOB compile errors, E0097), all clamped, exits cleanly.
 // RUN: %arche build -o %t %s && %t
 main :: proc() {
-  a: int[4];
+  a: [4]int;
   a[0] = 1;
   a[3] = 4;
   s := 0;

@@ -3,8 +3,8 @@
 main :: proc() {
   i := 0;
   for (; i < 1000; i += 1) {
-    price_str : char[32];
-    qty_str   : char[32];
+    price_str : [32]char;
+    qty_str   : [32]char;
     x := i;
     price_str[0] = 65;
   }

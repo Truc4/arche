@@ -1,0 +1,11 @@
+// Arrays and slices have NO capacity field: a slice is a borrowed `{ptr,len}` window and an array is a
+// fixed `[N]T` whose size is in the type. `.cap`/`.capacity`/`.max_length` are rejected — the size is
+// `.length`; a growable container with a capacity is a pool. (Same code path for an array base and a
+// slice base; one offending access is enough to prove the field is gone.)
+// RUN: ! %arche build -o %t %s 2>&1 | grep -q "has no field 'cap'"
+#import { fmt }
+main :: proc() {
+  buf: [5]int;
+  s := buf[1: 4];
+  fmt.printf("%d\n", s.cap);
+}

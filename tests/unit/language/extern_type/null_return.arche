@@ -3,10 +3,10 @@
 // so the 9th open returns null.
 // RUN: %arche build -o %t --link %S/runtime/test_resource.c %s && %t | grep "ok_null=1"
 #import { fmt }
-resource :: opaque
+resource :: opaque;
 #foreign {
-  resource_open  :: proc(initial: int)(ret: resource)
-  resource_close :: proc(own r: resource)
+  resource_open  :: proc(initial: int)(ret: resource);
+  resource_close :: proc(own r: resource);
 }
 
 main :: proc() {

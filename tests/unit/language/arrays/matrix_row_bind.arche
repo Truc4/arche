@@ -1,0 +1,20 @@
+// Binding a matrix ROW to a local: `r := M[i]` borrows the row as a read-only `[]int` slice
+// (ptr + len), so `r.length` (== the row width W), `r[j]`, and re-passing `r` as a `[]int` arg all
+// work — exactly as a `buf[lo:hi]` sub-slice does (the row aliases a read-only `constant` global, so
+// it is a borrow, no copy). Row 1 of M is {4,5,6}: length 3, r[0]=4, r[2]=6, sum 15.
+// RUN: %arche build -o %t %s && %t | grep -x "len=3 a=4 c=6 sum=15"
+#import { fmt }
+sum :: func(xs: []int) -> int {
+  s := 0;
+  i := 0;
+  for (i = 0; i < xs.length; i = i + 1) {
+    s = s + xs[i];
+  }
+  return s;
+}
+M :: { { 1, 2, 3 }, { 4, 5, 6 } }
+
+main :: proc() {
+  r := M[1];
+  fmt.printf("len=%d a=%d c=%d sum=%d\n", r.length, r[0], r[2], sum(r));
+}

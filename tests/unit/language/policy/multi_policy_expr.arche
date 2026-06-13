@@ -4,15 +4,15 @@
 // RUN: %arche build -o %t %s && %t | grep -qF "a=36 b=36 c=0 d=35 e=5"
 #import { fmt }
 
-read2 :: func(small: int[], big: int[], i: int) -> int {
+read2 :: func(small: []int, big: []int, i: int) -> int {
   // `small` has length 2, `big` length 8 — the SAME `i` clamps to small[1] and big[7] respectively.
   return small[i] !clamp + big[i] !clamp;
 }
 
 main :: proc() {
-  foo : int[4];
-  bar : int[4];
-  baz : int[4];
+  foo : [4]int;
+  bar : [4]int;
+  baz : [4]int;
   foo[0] = 10;
   foo[1] = 11;
   foo[2] = 12;
@@ -29,8 +29,8 @@ main :: proc() {
   q := foo[i] !clamp / (i - i) !zero; // 13 / 0 !zero -> 0
   u := foo[2] !undefined + bar[i] !clamp; // 12 + 23 = 35
 
-  s : int[2];
-  b : int[8];
+  s : [2]int;
+  b : [8]int;
   s[0] = 1;
   s[1] = 2;
   b[7] = 3;

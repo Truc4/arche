@@ -5,7 +5,7 @@
   return 0;
 }
 main :: proc() {
-  a: int[4];
+  a: [4]int;
   i := 9;
   x := a[i] !dz; // divide policy on a bounds site -> E0124
 }

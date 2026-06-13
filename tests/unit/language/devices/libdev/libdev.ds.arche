@@ -2,5 +2,5 @@
 // shared GLOBAL vocabulary (`.ds.arche` decls are registered unprefixed), so the driver references
 // `pos`/`vel` by bare name and libdev's systems bind to the driver's shape. Not a standalone test.
 // RUN: true
-pos :: float
-vel :: float
+pos :: float;
+vel :: float;

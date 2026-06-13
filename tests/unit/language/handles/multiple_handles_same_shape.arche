@@ -5,7 +5,7 @@ Players :: arche { x :: float, y :: int }
 
 Enemies :: arche { x, y }
 
-Players[2](2) {
+[2] Players(2) {
   x: 1.0, y: 10,
 }
 

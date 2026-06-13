@@ -112,7 +112,7 @@ Particle :: arche {
   vel :: float,
 }
 
-Particle[100](100) { vel: 0.1 } // 100 live particles; pos starts at 0, vel at 0.1
+[100]Particle(100) { vel: 0.1 } // 100 live particles; pos starts at 0, vel at 0.1
 
 integrate :: sys(pos, vel) {
   pos = pos + vel; // whole-column update — no explicit loop
@@ -168,7 +168,7 @@ works in place with no configuration.
 
 Each is covered in depth in the [language reference](docs/language.md).
 
-- **Static allocation only (no heap)** - `T[N]` pools with free-lists; zero `malloc` in
+- **Static allocation only (no heap)** - `[N]T` pools with free-lists; zero `malloc` in
   hot loops, no fragmentation, no use-after-free. (Scope note: this is the *core* language —
   *dynamic, resizable* archetypes for a full ECS are planned as a later library layer, not a
   language built-in. No implicit allocation ≠ no growth.)

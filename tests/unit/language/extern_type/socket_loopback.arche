@@ -11,7 +11,7 @@ main :: proc() {
   net.connect("127.0.0.1", 34567)(cli:);
   net.accept(srv)(conn:);
   net.send(cli, "hi");
-  buf: char[64];
+  buf: [64]char;
   net.recv(conn, buf)(out:);
   fmt.printf("ok n=%d first=%d\n", out.length, out[0]);
   net.close(move cli);

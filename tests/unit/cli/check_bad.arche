@@ -1,5 +1,6 @@
 // `arche check` rejects a semantic error and exits non-zero.
-// RUN: ! %arche check %s
+// RUN: ! %arche check %s 2>%t.err
+// RUN: grep -qiF "Undefined symbol" %t.err
 main :: proc() {
   definitely_not_defined();
 }

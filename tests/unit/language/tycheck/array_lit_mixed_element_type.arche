@@ -1,0 +1,11 @@
+// E0200: an array literal whose elements are not all the same type is a mixed-type
+// literal. The element type is inferred from the first element (`int` here); a `str`
+// element is rejected — there is no implicit numeric/str conversion (Rust/Go model).
+// Previously array literals were never element-checked (synth returned UNKNOWN), so a
+// mixed `{ 1, "two", 3 }` slipped through both the compiler and the LSP.
+// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 array element: expected 'i32', got 'str'"
+#import { fmt }
+main :: proc() {
+  xs: [3]int = { 1, "two", 3 };
+  fmt.printf("%d\n", xs[0]);
+}

@@ -25,7 +25,7 @@ the file is the exported (public) surface.
 
 ```arche
 // public API (default band = exported)
-resolve :: proc(path: char[])(handler_id: int) { ... }
+resolve :: proc(path: []char)(handler_id: int) { ... }
 
 #module                       // everything below is module-private
 TrieNode :: arche { ... }
@@ -52,7 +52,7 @@ regardless of source order. A declaration may reference one that appears later.
 resolve :: proc()(h: int) { h = cap_count[0]; }   // ok — cap_count is declared below
 
 #module
-cap_count : int[1]
+cap_count : [1]int
 ```
 
 **Why it matters:** this is what lets the visibility-band idiom (public API on top, internals behind
@@ -69,15 +69,15 @@ caller or by the module** — a fixed, bounded slot either way.
 **Don't** try to hand back a freshly-made array:
 
 ```arche
-resolve :: proc(path: char[])(starts: int[], lens: int[], count: int)   // no storage exists for starts/lens
+resolve :: proc(path: []char)(starts: []int, lens: []int, count: int)   // no storage exists for starts/lens
 ```
 
 **Do** either (a) write into a caller-owned, bounded buffer passed by reference (the buffer is both
 in — "here's my storage" — and out — "now it's filled", the same shadow as `io.fread`):
 
 ```arche
-resolve :: proc(path: char[], starts: int[], lens: int[])(starts: int[], lens: int[], count: int)
-// caller: starts: int[8]; lens: int[8]; resolve(path, starts, lens)(starts, lens, count:)
+resolve :: proc(path: []char, starts: []int, lens: []int)(starts: []int, lens: []int, count: int)
+// caller: starts: [8]int; lens: [8]int; resolve(path, starts, lens)(starts, lens, count:)
 ```
 
 or (b) record into module-level state and expose accessors (what `router` does — `cap_start[8]` /
@@ -89,8 +89,8 @@ slice, so no size appears in the signature, and there is still no heap — the s
 buffer throughout:
 
 ```arche
-fill :: func(own xs: int[], n: int) -> int[] { ... xs[i] = …; return xs; }
-// caller: buf: int[16]; buf := fill(move buf, 16);   // .length flows back with it
+fill :: func(own xs: []int, n: int) -> []int { ... xs[i] = …; return xs; }
+// caller: buf: [16]int; buf := fill(move buf, 16);   // .length flows back with it
 ```
 
 A func may return a slice only when it traces to a buffer passed *in* — returning a slice of a

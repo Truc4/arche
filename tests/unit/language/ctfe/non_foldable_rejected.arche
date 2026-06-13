@@ -9,7 +9,7 @@ pick :: func(n: int) -> int {
   return 0;
 }
 Grid :: arche { cell :: int }
-Grid[pick(1)](pick(1)) {
+[pick(1)] Grid(pick(1)) {
   cell: 0,
 }
 main :: proc() {

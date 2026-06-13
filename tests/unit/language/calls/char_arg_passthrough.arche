@@ -6,7 +6,7 @@
 // RUN: %arche build -o %t %s && %t 42 | grep "len=2"
 // RUN: %t 42 | grep "n=42"
 #import { str parse os fmt }
-mylen :: func(s: char[]) -> int {
+mylen :: func(s: []char) -> int {
   return str.strlen(s);
 }
 main :: proc() {

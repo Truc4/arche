@@ -2,7 +2,7 @@
 // Test if csv_open causes segfault
 #import { io fmt }
 
-buf: char[65536]
+buf: [65536]char;
 
 main :: proc() {
   io.open("tests/fixtures/data.csv")(fd:);

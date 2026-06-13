@@ -7,11 +7,11 @@
 #import { dconf }
 
 // our own, unrelated `handle` — same spelling, different concept
-handle :: opaque
+handle :: opaque;
 
 // rename dconf's `handle` to `dh` so it does not clash with the `handle` above
 @implements(dconf.handle)
-dh :: opaque
+dh :: opaque;
 
 @allow(unused_function)
 relay :: func(h: dh) -> int {

@@ -175,6 +175,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_policy_on_safe_op]             = { "W0018", "policy_on_safe_op",             CLASS_LINT, 1 },
 	[SEM_LINT_handler_foreign_arch]          = { "W0019", "handler_foreign_arch",          CLASS_LINT, 1 },
 	[SEM_LINT_redundant_guard]               = { "W0020", "redundant_guard",               CLASS_LINT, 1 },
+	[SEM_LINT_func_could_be_const]           = { "W0021", "func_could_be_const",           CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -1019,4 +1020,10 @@ SemDiag *sem_emit_lint_redundant_guard(SemanticContext *ctx, SourceLoc loc, cons
 	                 "guard on `%s` re-tests the enclosing loop condition, which already holds at the top of "
 	                 "every iteration — it can never fire; remove it or @allow(redundant_guard)",
 	                 var);
+}
+SemDiag *sem_emit_lint_func_could_be_const(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_LINT_func_could_be_const, loc,
+	                 "func '%s' takes no parameters and just returns a constant — it could be a value const "
+	                 "(`%s :: <value>`), called without `()`; suppress with @allow(func_could_be_const)",
+	                 name, name);
 }

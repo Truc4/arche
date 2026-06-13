@@ -1,0 +1,12 @@
+// The slice static-length elision is precise, not blanket: a RUNTIME index into a known-length slice
+// is NOT decidable (the value of `i` is unknown), so it keeps its bounds check — exactly ONE policy
+// ghost here, on `view[i]`, while the constant `view[0]` is elided. (Counterpart to
+// slice_const_index_provable, which elides the constant index.)
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "policy") -eq 1
+#import { fmt }
+main :: proc() {
+  buf: [5]int;
+  view := buf[1: 4];
+  i    := 2;
+  fmt.printf("%d %d\n", view[0], view[i]);
+}

@@ -15,7 +15,7 @@ accept :: proc(s: socket)(c: socket) {
 }
 
 // Connect to `ip`:`port`; the returned `socket` auto-closes at scope exit (RAII) unless `move`d.
-connect :: proc(own ip: char[], port: int)(s: socket) {
+connect :: proc(own ip: []char, port: int)(s: socket) {
   net_connect(move ip, port)(s);
 }
 
@@ -25,14 +25,14 @@ close :: proc(own s: socket) {
 }
 
 // Send a slice: the byte count IS the slice's own length — no manual `n`. `data` is a borrow.
-send :: proc(s: socket, data: char[]) {
+send :: proc(s: socket, data: []char) {
   net_send(s, _, data.length)(data, _r:);
 }
 
 // Lend `buf` (a borrow = backing store) and get back `out`, a slice VIEW of exactly the bytes read.
 // One allocation, two roles: the caller owns the storage, the view carries the true length.
-recv :: proc(s: socket, buf: char[])(out: char[]) {
-  net_recv(s, _, buf.cap)(buf, r:);
+recv :: proc(s: socket, buf: []char)(out: []char) {
+  net_recv(s, _, buf.length)(buf, r:);
   if (r < 0) {
     r = 0;
   }
@@ -41,17 +41,17 @@ recv :: proc(s: socket, buf: char[])(out: char[]) {
 
 // C implementation layer (runtime/net.c) — module-private. The `#module` band drops these externs
 // from the device's export set, so `net.net_recv` does not resolve for importers; only the wrappers
-// above are public (the bare C symbol stays linkable, an unavoidable C-ABI fact). A `char[]` in BOTH
+// above are public (the bare C symbol stays linkable, an unavoidable C-ABI fact). A `[]char` in BOTH
 // the in- and out-lists is the in-out idiom — legitimate ONLY here, to align with the C ABI (the call
 // writes the lent pointer and hands it back); the wrappers never duplicate that way.
 #module
 #foreign
-net_listen  :: proc(port: int)(s: socket)
-net_accept  :: proc(s: socket)(r: socket)
-net_connect :: proc(own ip: char[], port: int)(s: socket)
-net_send    :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
-net_recv    :: proc(s: socket, buf: char[], n: int)(buf: char[], r: int)
+net_listen  :: proc(port: int)(s: socket);
+net_accept  :: proc(s: socket)(r: socket);
+net_connect :: proc(own ip: []char, port: int)(s: socket);
+net_send    :: proc(s: socket, buf: []char, n: int)(buf: []char, r: int);
+net_recv    :: proc(s: socket, buf: []char, n: int)(buf: []char, r: int);
 // RAII: registers net.net_close as the destructor for `socket`. A `socket` local that is never
 // explicitly closed is auto-dropped via this proc at scope exit.
 @drop(socket)
-net_close :: proc(own s: socket)
+net_close :: proc(own s: socket);

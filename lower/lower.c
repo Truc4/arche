@@ -435,6 +435,10 @@ static HirType map_type_id(const TypeArena *a, TypeId t) {
 	case TYK_NOMINAL:
 		/* width-int / char_array / handle / opaque / archetype name — same parse as map_type_str. */
 		return map_type_str(tyid_nominal_name(a, t));
+	case TYK_HANDLE:
+		/* an archetype handle (e.g. an `insert` out-slot) — a pointer-width i64 cell, as map_type_str. */
+		ht.tag = HIR_TYPE_HANDLE;
+		return ht;
 	default:
 		ht.tag = HIR_TYPE_UNKNOWN;
 		return ht;
@@ -607,6 +611,21 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 		} else {
 			ax->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
 		}
+		/* A reference to a string value-const (`name :: "linux"`) lowers to the string literal itself,
+		 * so all the existing char[] / `.length` / slice-decay machinery applies (the const has no
+		 * runtime storage of its own — its value IS the literal). */
+		if (g_lower_sem && ax->data.name.name) {
+			const char *cv = semantic_get_const_value(g_lower_sem, ax->data.name.name);
+			if (cv && cv[0] == '"') {
+				char *nm = ax->data.name.name;
+				int n = 0;
+				char *decoded = syntax_decode_string((SynText){cv, (int)strlen(cv)}, &n);
+				ax->kind = HIR_EXPR_STRING;
+				ax->data.string.value = decoded;
+				ax->data.string.length = n;
+				free(nm);
+			}
+		}
 		break;
 	}
 	case SN_FIELD_EXPR: {
@@ -632,10 +651,34 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 			}
 			free(bn);
 		}
-		/* `base.f1.f2…[idx]` is flat under one node: base IDENT, then (DOT FIELD_NAME)+,
-		 * optionally a trailing `[indices]`. Rebuild the left-assoc AST. */
-		HirExpr *base = hir_expr_create(HIR_EXPR_NAME);
-		base->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
+		/* `base.f1.f2…[idx]` is flat under one node: base IDENT, then (DOT FIELD_NAME)+, optionally a
+		 * trailing `[indices]`. A general-postfix NESTED base (`M[i].length`, `f().g`) instead carries
+		 * its base as a recursively-lowered first child node, which is then SKIPPED in the trailing
+		 * index scan. Rebuild the left-assoc AST. */
+		const SyntaxNode *base_skip = NULL;
+		HirExpr *base;
+		if (has_nested_base(e)) {
+			SyntaxView bv = base_subexpr(e);
+			base_skip = bv.node;
+			base = lower_expr_cst(bv);
+		} else {
+			base = hir_expr_create(HIR_EXPR_NAME);
+			base->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
+			/* A string value-const as a field base (`name.length`) lowers to the literal, so `.length`
+			 * resolves to the literal's compile-time char count (see codegen). */
+			if (g_lower_sem && base->data.name.name) {
+				const char *cv = semantic_get_const_value(g_lower_sem, base->data.name.name);
+				if (cv && cv[0] == '"') {
+					char *nm = base->data.name.name;
+					int n = 0;
+					char *decoded = syntax_decode_string((SynText){cv, (int)strlen(cv)}, &n);
+					base->kind = HIR_EXPR_STRING;
+					base->data.string.value = decoded;
+					base->data.string.length = n;
+					free(nm);
+				}
+			}
+		}
 		HirExpr *cur = base;
 		int nfields = sv_count(e, SN_FIELD_NAME);
 		for (int i = 0; i < nfields; i++) {
@@ -654,7 +697,7 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 			idx->data.index.base = cur;
 			int ic = 0;
 			for (int i = 0; i < e.node->child_count; i++)
-				if (e.node->children[i].tag == SE_NODE) {
+				if (e.node->children[i].tag == SE_NODE && e.node->children[i].as.node != base_skip) {
 					SyntaxNodeKind k = e.node->children[i].as.node->kind;
 					if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
 						ic++;
@@ -662,7 +705,7 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 			idx->data.index.indices = calloc(ic ? ic : 1, sizeof(HirExpr *));
 			idx->data.index.index_count = 0;
 			for (int i = 0; i < e.node->child_count; i++)
-				if (e.node->children[i].tag == SE_NODE) {
+				if (e.node->children[i].tag == SE_NODE && e.node->children[i].as.node != base_skip) {
 					SyntaxNodeKind k = e.node->children[i].as.node->kind;
 					if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
 						SyntaxView iv = {e.node->children[i].as.node, e.src};
@@ -677,10 +720,19 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 	}
 	case SN_INDEX_EXPR: {
 		ax->kind = HIR_EXPR_INDEX;
-		/* base may be a `name.f1.f2…` member chain folded into this node
-		 * (e.g. `Particle.pos_x[0]`); rebuild the FIELD chain over the IDENT. */
-		HirExpr *base = hir_expr_create(HIR_EXPR_NAME);
-		base->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
+		/* base may be a `name.f1.f2…` member chain folded into this node (e.g. `Particle.pos_x[0]`),
+		 * or — for general postfix — a NESTED base node (`a[i][j]`, `f()[i]`) that is recursively
+		 * lowered and SKIPPED in the index enumeration; rebuild the FIELD chain over the IDENT. */
+		const SyntaxNode *base_skip = NULL;
+		HirExpr *base;
+		if (has_nested_base(e)) {
+			SyntaxView bv = base_subexpr(e);
+			base_skip = bv.node;
+			base = lower_expr_cst(bv);
+		} else {
+			base = hir_expr_create(HIR_EXPR_NAME);
+			base->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
+		}
 		int nfields = sv_count(e, SN_FIELD_NAME);
 		for (int i = 0; i < nfields; i++) {
 			HirExpr *f = hir_expr_create(HIR_EXPR_FIELD);
@@ -695,7 +747,7 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 		ax->data.index.base = base;
 		int ic = 0;
 		for (int i = 0; i < e.node->child_count; i++)
-			if (e.node->children[i].tag == SE_NODE) {
+			if (e.node->children[i].tag == SE_NODE && e.node->children[i].as.node != base_skip) {
 				SyntaxNodeKind k = e.node->children[i].as.node->kind;
 				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR)
 					ic++;
@@ -703,7 +755,7 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 		ax->data.index.indices = calloc(ic ? ic : 1, sizeof(HirExpr *));
 		ax->data.index.index_count = 0;
 		for (int i = 0; i < e.node->child_count; i++)
-			if (e.node->children[i].tag == SE_NODE) {
+			if (e.node->children[i].tag == SE_NODE && e.node->children[i].as.node != base_skip) {
 				SyntaxNodeKind k = e.node->children[i].as.node->kind;
 				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
 					SyntaxView iv = {e.node->children[i].as.node, e.src};
@@ -726,8 +778,16 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 		/* `base[lo:hi]` — base is IDENT + folded field chain (as for index); the expr child(ren)
 		 * split on the `:` token: before → lo, after → hi (either may be omitted → NULL). */
 		ax->kind = HIR_EXPR_SLICE;
-		HirExpr *base = hir_expr_create(HIR_EXPR_NAME);
-		base->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
+		const SyntaxNode *base_skip = NULL;
+		HirExpr *base;
+		if (has_nested_base(e)) {
+			SyntaxView bv = base_subexpr(e);
+			base_skip = bv.node;
+			base = lower_expr_cst(bv);
+		} else {
+			base = hir_expr_create(HIR_EXPR_NAME);
+			base->data.name.name = txt_dup(sv_token(e, TOK_IDENT));
+		}
 		int nfields = sv_count(e, SN_FIELD_NAME);
 		for (int i = 0; i < nfields; i++) {
 			HirExpr *f = hir_expr_create(HIR_EXPR_FIELD);
@@ -745,7 +805,7 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 				seen_colon = 1;
 				continue;
 			}
-			if (ch->tag == SE_NODE) {
+			if (ch->tag == SE_NODE && ch->as.node != base_skip) {
 				SyntaxNodeKind k = ch->as.node->kind;
 				if (k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) {
 					SyntaxView iv = {ch->as.node, e.src};
@@ -886,9 +946,27 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 		}
 		break;
 	}
+	case SN_ARRAY_LIT_EXPR: {
+		/* `{ e0, e1, … }` — a fixed-size array literal. Each child expression node is an element
+		 * (nested `{…}` for inner dimensions lower recursively into nested array literals). */
+		ax->kind = HIR_EXPR_ARRAY_LITERAL;
+		int n = 0;
+		for (int i = 0; i < e.node->child_count; i++)
+			if (e.node->children[i].tag == SE_NODE)
+				n++;
+		ax->data.array_literal.elements = n ? calloc((size_t)n, sizeof(HirExpr *)) : NULL;
+		ax->data.array_literal.element_count = 0;
+		for (int i = 0; i < e.node->child_count; i++) {
+			if (e.node->children[i].tag != SE_NODE)
+				continue;
+			SyntaxView ev = {e.node->children[i].as.node, e.src};
+			ax->data.array_literal.elements[ax->data.array_literal.element_count++] = lower_expr_cst(ev);
+		}
+		break;
+	}
 	default:
-		/* SN_ALLOC_EXPR / SN_ARRAY_LIT_EXPR and any unhandled: leave as a placeholder
-		 * literal for now (these surface in verify-codegen if exercised). */
+		/* SN_ALLOC_EXPR and any unhandled: leave as a placeholder literal for now (these surface in
+		 * verify-codegen if exercised). */
 		ax->kind = HIR_EXPR_LITERAL;
 		ax->data.literal.lexeme = sv_dup(e);
 		break;
@@ -2274,6 +2352,96 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		 * (pos_x, pos_y); it's compile-time only and erased before codegen. */
 		if (sv_has_token(d, TOK_LPAREN))
 			return NULL;
+		/* Array value const → a static global, the same shape as the mutable `XS : [N]T = {…}` form.
+		 * Three forms, all flattened to a `[total]elem` global (arche's flat row-stride model):
+		 *   `{1,2,3}`            1-D scalar → size = count, stride = 1
+		 *   `{ {1,2}, {3,4} }`   N×M matrix → size = N*M, stride = M (inner element count)
+		 *   `{ "a","bb","ccc" }` N strings → an N×W char matrix, W = widest, rows NUL-padded */
+		{
+			SyntaxView cval = sv_node_at_expr(d, 0);
+			if (sv_present(cval) && sv_kind(cval) == SN_ARRAY_LIT_EXPR) {
+				SyntaxView first = {0};
+				int ec = 0;
+				for (int i = 0; i < cval.node->child_count; i++)
+					if (cval.node->children[i].tag == SE_NODE) {
+						if (ec == 0)
+							first = (SyntaxView){cval.node->children[i].as.node, cval.src};
+						ec++;
+					}
+				int stride = 1, total = ec;
+				const char *etn = "int";
+				SyntaxView scalar_for_infer = first;
+				if (sv_present(first) && sv_kind(first) == SN_ARRAY_LIT_EXPR) {
+					int inner = 0;
+					SyntaxView ifirst = {0};
+					for (int i = 0; i < first.node->child_count; i++)
+						if (first.node->children[i].tag == SE_NODE) {
+							if (inner == 0)
+								ifirst = (SyntaxView){first.node->children[i].as.node, first.src};
+							inner++;
+						}
+					stride = inner;
+					total = ec * inner;
+					scalar_for_infer = ifirst;
+				} else if (sv_present(first) && sv_kind(first) == SN_STRING_EXPR) {
+					int maxw = 0;
+					for (int i = 0; i < cval.node->child_count; i++)
+						if (cval.node->children[i].tag == SE_NODE &&
+						    cval.node->children[i].as.node->kind == SN_STRING_EXPR) {
+							int n = 0;
+							char *dec = syntax_decode_string(
+							    sv_text((SyntaxView){cval.node->children[i].as.node, cval.src}), &n);
+							free(dec);
+							if (n > maxw)
+								maxw = n;
+						}
+					stride = maxw > 0 ? maxw : 1;
+					total = ec * stride;
+					etn = "char";
+				}
+				if (sv_present(scalar_for_infer) && sv_kind(scalar_for_infer) == SN_LITERAL_EXPR &&
+				    strcmp(etn, "char") != 0) {
+					char *lx = sv_dup(scalar_for_infer);
+					if (lx) {
+						if (lx[0] == '\'')
+							etn = "char";
+						else if (strpbrk(lx, ".eE"))
+							etn = "float";
+						free(lx);
+					}
+				}
+				HirDecl *sdd = hir_decl_create(HIR_DECL_STATIC);
+				HirStaticDecl *sd = calloc(1, sizeof(HirStaticDecl));
+				sd->kind = HIR_STATIC_ARRAY;
+				sd->array.name = txt_dup(sv_token(d, TOK_IDENT));
+				sd->array.size = total;
+				sd->array.row_stride = stride;
+				sd->array.init = lower_expr_cst(cval);
+				SyntaxView declty = sv_type_at(d, 0);
+				HirType *ft = (stride <= 1 && sv_present(declty)) ? lower_type_cst(declty) : NULL;
+				if (ft && ft->elem) {
+					sd->array.element_type = ft->elem;
+					for (int i = 0; i < declty.node->child_count; i++)
+						if (declty.node->children[i].tag == SE_TOKEN &&
+						    declty.node->children[i].as.token.kind == TOK_NUMBER) {
+							char b[32];
+							int l = (int)declty.node->children[i].as.token.length;
+							if (l > 31)
+								l = 31;
+							memcpy(b, declty.src + declty.node->children[i].as.token.offset, l);
+							b[l] = '\0';
+							sd->array.size = atoi(b);
+							break;
+						}
+				} else {
+					HirType *et = hir_type_create(HIR_TYPE_UNKNOWN);
+					*et = map_type_str(etn);
+					sd->array.element_type = et;
+				}
+				sdd->data.static_decl = sd;
+				return sdd;
+			}
+		}
 		HirDecl *ad = hir_decl_create(HIR_DECL_CONST);
 		HirConstDecl *ac = calloc(1, sizeof(HirConstDecl));
 		ac->name = txt_dup(sv_token(d, TOK_IDENT));
@@ -2289,25 +2457,13 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 			 * the `.`-joined IDENT tokens before `[`. A bare `Particle[N]` yields "Particle"; a
 			 * qualified `lib.Particle[N]` yields "lib.Particle" (the imported shape's canonical name). */
 			sd->kind = HIR_STATIC_ARCHETYPE;
+			/* Prefix pool `[C]Name(N){V}`: the archetype name is the (possibly `.`-qualified) IDENT
+			 * run that sits at top level AFTER the capacity `[…]` and before any `(`/`{`. It is
+			 * collected in the phase walk below (the PH_NONE IDENT case), so a bare `[N]Particle`
+			 * yields "Particle" and `[N]lib.Particle` yields "lib.Particle". */
 			char namebuf[256];
 			int nl = 0;
-			for (int i = 0; i < d.node->child_count; i++) {
-				SyntaxElem *ch = &d.node->children[i];
-				if (ch->tag != SE_TOKEN)
-					continue;
-				if (ch->as.token.kind == TOK_LBRACKET)
-					break;
-				if (ch->as.token.kind != TOK_IDENT)
-					continue;
-				if (nl > 0 && nl < (int)sizeof(namebuf) - 1)
-					namebuf[nl++] = '.';
-				int seg = (int)ch->as.token.length;
-				for (int k = 0; k < seg && nl < (int)sizeof(namebuf) - 1; k++)
-					namebuf[nl++] = d.src[ch->as.token.offset + k];
-			}
-			namebuf[nl] = '\0';
-			sd->archetype.archetype_name = dupz(namebuf);
-			/* `Foo[N] ?handler`: the pool's default insert overflow handler. */
+			/* `[8]Foo ?handler`: the pool's default insert overflow handler. */
 			{
 				SyntaxView pol = sv_child(d, SN_POLICY_REF);
 				if (sv_present(pol))
@@ -2347,6 +2503,13 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 						if (phase == PH_FIELDS) {
 							pend = d.src + ch->as.token.offset;
 							pend_len = (int)ch->as.token.length;
+						} else if (phase == PH_NONE) {
+							/* archetype name segment — top level, after the capacity `[]` */
+							if (nl > 0 && nl < (int)sizeof(namebuf) - 1)
+								namebuf[nl++] = '.';
+							int seg = (int)ch->as.token.length;
+							for (int kk = 0; kk < seg && nl < (int)sizeof(namebuf) - 1; kk++)
+								namebuf[nl++] = d.src[ch->as.token.offset + kk];
 						}
 						break;
 					default:
@@ -2371,6 +2534,8 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					pend = NULL;
 				}
 			}
+			namebuf[nl] = '\0';
+			sd->archetype.archetype_name = dupz(namebuf);
 		} else {
 			/* Storage form of the unified binding: `name : T` / `name : T = v` / `name := v`. A
 			 * sized-array T (it has an element type) is a buffer; any other (or absent) T is a
@@ -2789,6 +2954,24 @@ static int qual_lookup(const QualCtx *q, const char *base, const char *field, ch
 	return 0;
 }
 
+/* If `e` is a NAME referencing a `char[]` string value-const, rewrite it in place to the string
+ * literal so all string machinery (value, `.length`, slice-decay) applies. Covers device-qualified
+ * consts (`platform.name`) that only become a NAME after qualification. */
+static void hir_try_string_const(HirExpr *e) {
+	if (!e || e->kind != HIR_EXPR_NAME || !e->data.name.name || !g_lower_sem)
+		return;
+	const char *cv = semantic_get_const_value(g_lower_sem, e->data.name.name);
+	if (!cv || cv[0] != '"')
+		return;
+	char *nm = e->data.name.name;
+	int n = 0;
+	char *decoded = syntax_decode_string((SynText){cv, (int)strlen(cv)}, &n);
+	e->kind = HIR_EXPR_STRING;
+	e->data.string.value = decoded;
+	e->data.string.length = n;
+	free(nm);
+}
+
 static void hir_q_expr(HirExpr *e, const QualCtx *q) {
 	if (!e)
 		return;
@@ -2800,6 +2983,7 @@ static void hir_q_expr(HirExpr *e, const QualCtx *q) {
 			 * (small, bounded; the union write below clobbers the field pointers anyway). */
 			e->kind = HIR_EXPR_NAME;
 			e->data.name.name = dupz(mangled);
+			hir_try_string_const(e); /* a device-qualified string const → the literal */
 			return;
 		}
 	}

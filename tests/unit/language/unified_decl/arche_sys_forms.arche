@@ -2,11 +2,11 @@
 // (`Name :: arche { ... }`, `name :: sys(...) { ... }`).
 // RUN: %arche build -o %t %s && %t | grep "pos0=3"
 #import { fmt }
-pos :: float
+pos :: float;
 
 Particle :: arche { pos }
 
-Particle[10]
+[10] Particle;
 
 bump :: sys (pos) {
   pos = pos + 2.0;

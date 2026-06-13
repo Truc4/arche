@@ -2,10 +2,10 @@
 // later banner) is rejected (E0121) — merge all FFI declarations under one region.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "at most one .#foreign. region" %t.out
 #foreign {
-  a :: proc()(x: int)
+  a :: proc()(x: int);
 }
 #foreign {
-  b :: proc()(y: int)
+  b :: proc()(y: int);
 }
 
 main :: proc() {

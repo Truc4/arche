@@ -1,7 +1,7 @@
 // Explicit view: inferred variable types appear as inlay hints; user-file coords (core subtracted). The
 // enclosing proc decl is a redundant definition-form, HIDDEN by default; --full opts out and shows it.
 // RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 12 10 1 1 type i32"
-// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 13 10 1 1 type char[]"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 13 10 1 1 type []char"
 // RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 14 10 1 1 type float"
 // `typed` has a written type → no hint; the proc is hidden → exactly 3 type inlays by default:
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -cF " type ") -eq 3

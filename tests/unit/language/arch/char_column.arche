@@ -5,9 +5,9 @@
 // in a zero-initialized 32-wide column, so content is the sub-slice `row[0:5]` (a normal (ptr,len)
 // array — no NUL); `%s` displays them via the column's zero padding (a C-printf boundary detail).
 #import { str fmt }
-Node :: arche { seg :: char[32], id :: int }
+Node :: arche { seg :: [32]char, id :: int }
 
-Node[8]
+[8] Node;
 
 main :: proc() {
   insert(Node, "users", 7)(_:, _:);

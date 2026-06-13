@@ -176,8 +176,9 @@ typedef struct {
 		struct {
 			char *name;
 			HirType *element_type;
-			int size;
-			HirExpr *init; /* constant array initializer, or NULL = zero-init */
+			int size;       /* total flat element count (N*M for an N×M matrix) */
+			int row_stride; /* N-D: inner-dimension product (row width); 0/1 = plain 1-D */
+			HirExpr *init;  /* constant array initializer, or NULL = zero-init */
 		} array;
 		struct {
 			char *name;

@@ -6,14 +6,14 @@
 // different declaration kind (const / #foreign / proc), and the values must round-trip exactly.
 // Also exercises core's `true`/`false` (which sit right before a comment in core.arche).
 #import { fmt }
-A :: 7
+A :: 7;
 // comment between a const and the next const
-B :: 0
+B :: 0;
 // comment between a const and a #foreign block
 #foreign {
-  myabs :: proc(x: int)(r: int)
+  myabs :: proc(x: int)(r: int);
 }
-C :: 42
+C :: 42;
 // comment between a const and a proc
 main :: proc() {
   fmt.printf("a=%d b=%d c=%d t=%d f=%d\n", A, B, C, true, false);

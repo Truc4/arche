@@ -3,7 +3,7 @@
 // out-list. No `own`, no `move`: the out occurrences shadow the in-list borrows, so the buffers
 // stay live and come back through the out-args.
 #import { fmt }
-fill_two :: proc(buf1: char[32], buf2: char[32])(buf1: char[32], buf2: char[32], n: int) {
+fill_two :: proc(buf1: [32]char, buf2: [32]char)(buf1: [32]char, buf2: [32]char, n: int) {
   buf1[0] = 'a';
   buf1[1] = 'b';
   buf1[2] = 0;
@@ -14,8 +14,8 @@ fill_two :: proc(buf1: char[32], buf2: char[32])(buf1: char[32], buf2: char[32],
 }
 
 main :: proc() {
-  x : char[32];
-  y : char[32];
+  x : [32]char;
+  y : [32]char;
   fill_two(x, y)(x, y, n:);
   fmt.printf("x=%s y=%s n=%d\n", x, y, n);
 }

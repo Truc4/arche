@@ -3,7 +3,7 @@
 // continuation; the callback arg is erased from the ABI.
 // RUN: %arche build -o %t %s && %t | grep -A1 "work=9" | grep "cleanup"
 #import { fmt }
-done_handler :: proc()()
+done_handler :: proc()();
 
 finish :: proc()() {
   fmt.printf("finish\n");

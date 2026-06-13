@@ -2,15 +2,15 @@
 #import { parse io fmt }
 Transaction :: arche { price :: float, quantity :: int }
 
-Transaction[3](3) {
+[3] Transaction(3) {
   price: 0.0, quantity: 0,
 }
 
-load_csv :: proc(own path: char[]) {
+load_csv :: proc(own path: []char) {
   io.fopen_read(move path)(fd:);
-  buf       : char[256];
-  price_str : char[32];
-  qty_str   : char[32];
+  buf       : [256]char;
+  price_str : [32]char;
+  qty_str   : [32]char;
   io.fread(fd, buf, 256)(data:);
   io.fclose(move fd);
   idx        := 0;

@@ -3,7 +3,7 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "requires" %t.out
 #import { store fmt }
 
-Node[2] // below the datasheet minimum of 4 — must error (the shape comes from store)
+[2] Node; // below the datasheet minimum of 4 — must error (the shape comes from store)
 
 main :: proc() {
   insert(Node, 2.0, 3.0)(_:, _:);

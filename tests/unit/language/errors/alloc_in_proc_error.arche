@@ -6,10 +6,9 @@ Counter :: arche {
   val :: int,
 }
 
-Counter[5];
+[5]Counter;
 
 main :: proc() {
   alloc Counter(10);
   fmt.printf("should not reach\n");
 }
-

@@ -1,0 +1,17 @@
+// General postfix chaining: `.field` and `[index]` chain on ANY postfix base (not just a bare name).
+// `M[i].length` (a matrix row's width), `M[i][j]` (chained index → row then element), and the
+// non-matrix `buf[lo:hi].length` / `buf[lo:hi][j]` all work — the flat-CST "base is a NAME token"
+// limit is lifted (base may be a nested INDEX/SLICE/CALL node). M row 1 = {4,5,6}: width 3, [0]=4.
+// RUN: %arche build -o %t %s && %t | grep -x "len=3 e=4 sl=3 si=3"
+#import { fmt }
+M :: { { 1, 2, 3 }, { 4, 5, 6 } }
+
+main :: proc() {
+  b: [5]int;
+  b[0] = 1;
+  b[1] = 2;
+  b[2] = 3;
+  b[3] = 4;
+  b[4] = 5;
+  fmt.printf("len=%d e=%d sl=%d si=%d\n", M[1].length, M[1][0], b[1: 4].length, b[1: 4][1]);
+}

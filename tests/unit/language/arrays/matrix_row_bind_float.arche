@@ -1,0 +1,10 @@
+// A float matrix row binds as a `[]float` slice (64-bit double element width). Row 1 of M is
+// {3.0,4.0}: length 2, r[1]=4.0. Guards the double-width path of the matrix-row bind.
+// RUN: %arche build -o %t %s && %t | grep -x "len=2 b=4.000000"
+#import { fmt }
+M :: { { 1.5, 2.5 }, { 3.0, 4.0 } }
+
+main :: proc() {
+  r := M[1];
+  fmt.printf("len=%d b=%f\n", r.length, r[1]);
+}

@@ -4,7 +4,7 @@
 // is still rejected (it would dangle / needs copy-out) — see errors/array_local_return_rejected.
 // RUN: %arche build -o %t %s && %t | grep -q "owned 300 9"
 #import { fmt }
-step :: func(own a: int[8], i: int, v: int) -> int[8] {
+step :: func(own a: [8]int, i: int, v: int) -> [8]int {
   if (i >= 0 && i < a.length) {
     a[i] = v;
   }
@@ -12,7 +12,7 @@ step :: func(own a: int[8], i: int, v: int) -> int[8] {
 }
 
 main :: proc() {
-  a: int[8];
+  a: [8]int;
   a := step(move a, 0, 300);
   a := step(move a, 1, 9);
   fmt.printf("owned %d %d\n", a[0], a[1]);

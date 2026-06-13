@@ -1,0 +1,10 @@
+// A value const is immutable. Writing an element of a const array is rejected at compile time — the
+// backing global is `constant` (read-only), so this would be UB if allowed. (RED until immutability
+// enforcement covers indexed targets rooted at a value const.)
+// RUN: ! %arche build -o %t %s 2>%t.err
+// RUN: grep -iE "assign to const|cannot assign|immutable" %t.err
+XS :: { 1, 2, 3 }
+
+main :: proc() {
+  XS[0] = 9;
+}

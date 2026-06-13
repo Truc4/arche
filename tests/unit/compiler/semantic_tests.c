@@ -343,7 +343,7 @@ void test_call_no_matching_member_errors(void) {
 
 void test_opaque_passthrough_in_proc_ok(void) {
 	test_start("opaque value may pass through a non-extern proc param");
-	AnalysisResult r = analyze_string("window :: opaque\n"
+	AnalysisResult r = analyze_string("window :: opaque;\n"
 	                                  "#foreign { window_close :: proc(own w: window) }\n"
 	                                  "wrap_close :: proc(w: window) { window_close(move w); }\n");
 	ASSERT_EQ(semantic_error_count(r.ctx), 0, "should be no errors");
@@ -353,7 +353,7 @@ void test_opaque_passthrough_in_proc_ok(void) {
 
 void test_unknown_type_name_still_errors(void) {
 	test_start("unknown type name in extern signature is still an error");
-	AnalysisResult r = analyze_string("#foreign { bad :: proc()(ret: Doesnotexist) }\n");
+	AnalysisResult r = analyze_string("#foreign { bad :: proc()(ret: Doesnotexist); }\n");
 	ASSERT_TRUE(semantic_error_count(r.ctx) >= 1, "expected unknown-type error");
 	semantic_context_free(r.ctx);
 	test_pass_msg();
@@ -361,11 +361,11 @@ void test_unknown_type_name_still_errors(void) {
 
 void test_opaque_aliases_distinct(void) {
 	test_start("window and sound opaque aliases are not interchangeable");
-	AnalysisResult r = analyze_string("window :: opaque\n"
-	                                  "sound :: opaque\n"
+	AnalysisResult r = analyze_string("window :: opaque;\n"
+	                                  "sound :: opaque;\n"
 	                                  "#foreign {\n"
-	                                  "  window_close :: proc(own w: window)\n"
-	                                  "  sound_open :: proc()(ret: sound)\n"
+	                                  "  window_close :: proc(own w: window);\n"
+	                                  "  sound_open :: proc()(ret: sound);\n"
 	                                  "}\n"
 	                                  "main :: proc() {\n"
 	                                  "  sound_open()(s:);\n"
@@ -380,11 +380,11 @@ void test_opaque_aliases_distinct(void) {
 
 void test_use_after_consume_local_error(void) {
 	test_start("use after consume in same scope is a compile error");
-	AnalysisResult r = analyze_string("window :: opaque\n"
+	AnalysisResult r = analyze_string("window :: opaque;\n"
 	                                  "#foreign {\n"
-	                                  "  open_ :: proc(own t: char[], a: int, b: int)(ret: window)\n"
-	                                  "  close_ :: proc(own w: window)\n"
-	                                  "  poll_ :: proc(w: window)\n"
+	                                  "  open_ :: proc(own t: []char, a: int, b: int)(ret: window);\n"
+	                                  "  close_ :: proc(own w: window);\n"
+	                                  "  poll_ :: proc(w: window);\n"
 	                                  "}\n"
 	                                  "main :: proc() {\n"
 	                                  "  open_(\"\", 1, 1)(w:);\n"
@@ -398,11 +398,11 @@ void test_use_after_consume_local_error(void) {
 
 void test_no_false_positive_when_unconsumed(void) {
 	test_start("normal borrow then consume is fine");
-	AnalysisResult r = analyze_string("window :: opaque\n"
+	AnalysisResult r = analyze_string("window :: opaque;\n"
 	                                  "#foreign {\n"
-	                                  "  open_ :: proc(own t: char[], a: int, b: int)(ret: window)\n"
-	                                  "  close_ :: proc(own w: window)\n"
-	                                  "  poll_ :: proc(w: window)\n"
+	                                  "  open_ :: proc(own t: []char, a: int, b: int)(ret: window);\n"
+	                                  "  close_ :: proc(own w: window);\n"
+	                                  "  poll_ :: proc(w: window);\n"
 	                                  "}\n"
 	                                  "main :: proc() {\n"
 	                                  "  open_(\"\", 1, 1)(w:);\n"
@@ -418,7 +418,7 @@ void test_no_false_positive_when_unconsumed(void) {
 
 void test_mutate_borrow_param_error(void) {
 	test_start("mutating a borrowed (non-move) array param is a compile error");
-	AnalysisResult r = analyze_string("clobber :: func(b: char[8]) -> int {\n"
+	AnalysisResult r = analyze_string("clobber :: func(b: [8]char) -> int {\n"
 	                                  "  b[0] = 'X';\n"
 	                                  "  return 0;\n"
 	                                  "}\n");
@@ -429,7 +429,7 @@ void test_mutate_borrow_param_error(void) {
 
 void test_move_param_can_mutate(void) {
 	test_start("a `move` array param is owned and may be mutated");
-	AnalysisResult r = analyze_string("fill :: func(own b: char[8]) -> int {\n"
+	AnalysisResult r = analyze_string("fill :: func(own b: [8]char) -> int {\n"
 	                                  "  b[0] = 'X';\n"
 	                                  "  return 0;\n"
 	                                  "}\n");
@@ -451,8 +451,8 @@ void test_scalar_param_mutation_ok(void) {
 
 void test_move_out_of_borrow_error(void) {
 	test_start("moving a borrowed array param out is a compile error");
-	AnalysisResult r = analyze_string("sink :: proc(own b: char[8]) { b[0] = 'X'; }\n"
-	                                  "relay :: func(b: char[8]) -> int {\n"
+	AnalysisResult r = analyze_string("sink :: proc(own b: [8]char) { b[0] = 'X'; }\n"
+	                                  "relay :: func(b: [8]char) -> int {\n"
 	                                  "  sink(move b);\n"
 	                                  "  return 0;\n"
 	                                  "}\n");
@@ -463,12 +463,12 @@ void test_move_out_of_borrow_error(void) {
 
 void test_copy_does_not_consume(void) {
 	test_start("`copy` does not consume — the source stays usable");
-	AnalysisResult r = analyze_string("fill :: func(own b: char[8]) -> char[8] {\n"
+	AnalysisResult r = analyze_string("fill :: func(own b: [8]char) -> [8]char {\n"
 	                                  "  b[0] = 'X';\n"
 	                                  "  return b;\n"
 	                                  "}\n"
 	                                  "main :: proc() {\n"
-	                                  "  src: char[8];\n"
+	                                  "  src: [8]char;\n"
 	                                  "  out := fill(copy src);\n"
 	                                  "  src[0] = 'Y';\n"
 	                                  "}\n");
@@ -481,21 +481,21 @@ void test_own_param_bare_arg_error(void) {
 	test_start("bare arg to an `own` param is an implicit move (consumes the source)");
 	/* A bare move-only name handed to an `own` param implicitly moves — no error on the call
 	 * itself. The transfer consumes the source, so a LATER use of it is the error. */
-	AnalysisResult ok = analyze_string("fill :: func(own b: char[8]) -> char[8] {\n"
+	AnalysisResult ok = analyze_string("fill :: func(own b: [8]char) -> [8]char {\n"
 	                                   "  b[0] = 'X';\n"
 	                                   "  return b;\n"
 	                                   "}\n"
 	                                   "main :: proc() {\n"
-	                                   "  buf: char[8];\n"
+	                                   "  buf: [8]char;\n"
 	                                   "  out := fill(buf);\n"
 	                                   "}\n");
 	ASSERT_TRUE(semantic_error_count(ok.ctx) == 0, "a bare arg implicitly moves — no error expected");
 	semantic_context_free(ok.ctx);
-	AnalysisResult reuse = analyze_string("fill :: func(own b: char[8]) -> char[8] {\n"
+	AnalysisResult reuse = analyze_string("fill :: func(own b: [8]char) -> [8]char {\n"
 	                                      "  return b;\n"
 	                                      "}\n"
 	                                      "main :: proc() {\n"
-	                                      "  buf: char[8];\n"
+	                                      "  buf: [8]char;\n"
 	                                      "  a := fill(buf);\n"
 	                                      "  c := fill(buf);\n"
 	                                      "}\n");
@@ -506,10 +506,10 @@ void test_own_param_bare_arg_error(void) {
 
 void test_copy_opaque_error(void) {
 	test_start("`copy` of an opaque value is a compile error (move-only)");
-	AnalysisResult r = analyze_string("window :: opaque\n"
+	AnalysisResult r = analyze_string("window :: opaque;\n"
 	                                  "#foreign {\n"
-	                                  "  wopen :: proc()(ret: window)\n"
-	                                  "  wuse :: proc(own w: window)\n"
+	                                  "  wopen :: proc()(ret: window);\n"
+	                                  "  wuse :: proc(own w: window);\n"
 	                                  "}\n"
 	                                  "main :: proc() {\n"
 	                                  "  wopen()(w:);\n"

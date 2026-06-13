@@ -5,7 +5,7 @@
 #import { fmt }
 Foo :: arche { x :: float, y :: float }
 
-Foo[4]
+[4] Foo;
 
 main :: proc() {
   insert(arche { x :: float, y :: float }, 1.0, 2.0)(_:, _:);

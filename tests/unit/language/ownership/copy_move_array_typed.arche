@@ -1,0 +1,17 @@
+// `copy`/`move` are transparent to the type: `b := copy a` and `c := move b` of a sized `[3]int` keep
+// the `[3]int` type (not a collapsed `i32`), so the analyzer hints them as `[3]i32` and a constant
+// index `b[0]` / `c[0]` is proven in-bounds (no `!abort` ghost, no runtime check).
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 12 6 1 1 type [3]i32"
+// RUN: %build/arche-analyzer --dump %s | grep -qxF "SYN 15 6 1 1 type [3]i32"
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "policy") -eq 0
+// RUN: %arche build -o %t %s && %t | grep -qx "a0=5 b0=9 c0=9"
+#import { fmt }
+main :: proc() {
+  a: [3]int;
+  a[0] = 5;
+  b := copy a; // explicit clone — a stays alive
+  b[0] = 9;
+  fmt.printf("a0=%d b0=%d ", a[0], b[0]);
+  c := move b; // explicit move — b consumed, c owns it
+  fmt.printf("c0=%d\n", c[0]);
+}

@@ -1,0 +1,16 @@
+// Guard: a POOL (archetype) is the growable container, so it KEEPS `.capacity` (its static `[N]` size)
+// even though arrays/slices lost `.cap`/`.capacity`. `arch.capacity` resolves to N via the archetype
+// path, distinct from the array/slice `.length` surface.
+// RUN: %arche build -o %t %s && %t | grep -x "cap=4"
+#import { fmt }
+Thing :: arche { v :: int }
+
+[4] Thing;
+
+report :: proc(arch: archetype) {
+  fmt.printf("cap=%d\n", arch.capacity);
+}
+
+main :: proc() {
+  report(Thing);
+}

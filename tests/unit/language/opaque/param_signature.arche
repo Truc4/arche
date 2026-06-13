@@ -3,7 +3,7 @@
 // (opaque values come only from FFI); a param type needs no producer.
 // RUN: %arche build -o %t %s && %t | grep "ok"
 #import { fmt }
-res :: opaque
+res :: opaque;
 @allow(unused_function)
 describe :: func(f: res) -> int {
   return 0;

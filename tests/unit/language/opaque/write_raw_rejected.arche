@@ -3,7 +3,7 @@
 // `f` is a borrow param (no handle is ever created — opaques only come from FFI), so the ONLY thing
 // under test is the `=` overwrite. The compiler rejects it ("cannot assign over opaque").
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "assign over opaque" %t.out
-res :: opaque
+res :: opaque;
 @allow(unused_function)
 clobber :: proc(f: res) {
   f = 5;

@@ -1,0 +1,13 @@
+// Postfix chaining on a CALL result: `f().length` and `f()[j]` — a func returning a `[]T` slice
+// hands back a `{T*, i64}` fat pointer (the slice-return ABI), and the chain reads its length and
+// indexes it (bounds-checked). `row(1)` is {4,5,6}: length 3, [2]=6.
+// RUN: %arche build -o %t %s && %t | grep -x "n=3 v=6"
+#import { fmt }
+M :: { { 1, 2, 3 }, { 4, 5, 6 } }
+
+row :: func(i: int) -> []int {
+  return M[i];
+}
+main :: proc() {
+  fmt.printf("n=%d v=%d\n", row(1).length, row(1)[2]);
+}

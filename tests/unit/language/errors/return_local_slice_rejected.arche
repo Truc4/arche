@@ -3,8 +3,8 @@
 // slice must trace to a buffer passed IN (an `own`/borrowed param). Caught at compile time, never UB.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "cannot return a local array" %t.out
 #import { fmt }
-mk :: func() -> int[] {
-  b: int[4];
+mk :: func() -> []int {
+  b: [4]int;
   return b;
 }
 

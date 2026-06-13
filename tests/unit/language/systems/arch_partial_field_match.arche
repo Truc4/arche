@@ -8,9 +8,9 @@ Particle :: arche { pos :: float, vel :: float }
 
 Body :: arche { pos, vel, mass :: float }
 
-Particle[5]
+[5] Particle;
 
-Body[5]
+[5] Body;
 
 gravity :: sys (pos, mass) {
   pos = pos + mass;

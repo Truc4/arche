@@ -1,0 +1,10 @@
+// E0200: a top-level (global) typed array initializer is element-checked the same as a
+// local. `XS : [3]int = { … }` lives outside any proc body, so tycheck reaches it via the
+// static-decl initializer (not the statement walk). The typed-array decl form also had to
+// start recording its `{…}` literal node (it set static_has_init but dropped static_init).
+// RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 array element: expected 'i32', got 'str'"
+#import { fmt }
+XS: [3]int = { 1, "two", 3 }
+main :: proc() {
+  fmt.printf("%d\n", XS[0]);
+}

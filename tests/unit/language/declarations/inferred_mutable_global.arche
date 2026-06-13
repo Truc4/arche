@@ -2,7 +2,7 @@
 // — type inferred from the constant initializer, variable mutable.
 // RUN: %arche build -o %t %s && %t | grep -q "count=5"
 #import { fmt }
-count := 5
+count := 5;
 
 main :: proc() {
   fmt.printf("count=%d\n", count);

@@ -3,9 +3,9 @@
 // a distinct nominal type that erases to a pointer-width slot. Each opaque type is defined once.
 // RUN: %arche build -o %t %s && %t | grep "ok"
 #import { fmt }
-res       :: opaque
+res       :: opaque;
 OpenFiles :: arche { handle :: res }
-OpenFiles[8]
+[8] OpenFiles;
 main :: proc() {
   fmt.printf("ok opaque_domain\n");
 }

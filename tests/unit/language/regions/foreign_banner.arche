@@ -9,4 +9,4 @@ main :: proc() {
 }
 
 #foreign
-abs :: proc(x: int)(r: int)
+abs :: proc(x: int)(r: int);

@@ -2,7 +2,7 @@
 // result used. Distinct funcs produce distinct specializations of `apply`.
 // RUN: %arche build -o %t %s && %t | grep "20"
 #import { fmt }
-unary :: func(x: int) -> int
+unary :: func(x: int) -> int;
 
 dbl :: func(x: int) -> int {
   return x * 2;

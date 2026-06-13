@@ -21,7 +21,7 @@
 // RUN: test $(%build/arche-analyzer --goto def 31 12 %s 2>/dev/null | grep -c "^LOC ") -eq 0
 Point :: arche { x :: int, y :: int }
 
-widget :: opaque
+widget :: opaque;
 
 @drop(widget)
 wfree :: proc(own w: widget) {

@@ -3,7 +3,7 @@
 // like a normal use-after-free. (Companion to pool_evict, which checks the value side.)
 // RUN: %arche build -o %t %s && ! %t
 Foo :: arche { v :: int, ts :: int }
-Foo[2] ?evict_oldest
+[2] Foo ?evict_oldest;
 @policy (pool) evict_oldest :: policy (count: int, cap: int, ok: int, slot: int) {
   if (count >= cap) {
     oldest := 0;

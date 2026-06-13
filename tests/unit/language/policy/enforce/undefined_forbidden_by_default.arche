@@ -4,7 +4,7 @@
 // the opt-in flag permits it — build succeeds, no E0126:
 // RUN: %arche build --allow-undefined -o %t2 %s > %t2.out 2>&1 ; ! grep -qiF "forbidden by default" %t2.out
 main :: proc() {
-  a: int[4];
+  a: [4]int;
   i  := 9;
   _x := a[i] !undefined; // raw opt-out → rejected by default; allowed under --allow-undefined
 }

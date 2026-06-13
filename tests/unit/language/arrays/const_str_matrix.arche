@@ -1,0 +1,11 @@
+// Array of strings = NUL-padded char matrix, NO pointer indirection. `{ "a", "bb", "ccc" }` is a
+// `[3][3]char`: rows padded to the widest (3) → bytes `a 0 0 | b b 0 | c c c`. Chained indexing
+// `S[i][j]` reads element j of row i (the stride is the row width). First char of each row spells
+// "abc"; row 2 is the fully-filled "ccc".
+// RUN: %arche build -o %t %s && %t | grep -x "abc ccc"
+#import { fmt }
+S :: { "a", "bb", "ccc" }
+
+main :: proc() {
+  fmt.printf("%c%c%c %c%c%c\n", S[0][0], S[1][0], S[2][0], S[2][0], S[2][1], S[2][2]);
+}

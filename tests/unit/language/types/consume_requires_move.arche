@@ -2,9 +2,9 @@
 // move (no `move` keyword required) — the transfer consumes the binding, so a second hand-off is a
 // use-after-move error. `f` is received as an `own` param so no producer is needed.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
-res :: opaque
+res :: opaque;
 #foreign {
-  sink :: proc(own r: res)
+  sink :: proc(own r: res);
 }
 @allow(unused_function)
 twice :: proc(own f: res) {

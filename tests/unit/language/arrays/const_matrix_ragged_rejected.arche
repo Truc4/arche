@@ -1,0 +1,9 @@
+// A numeric 2-D matrix must be rectangular — every row as wide as the stride. A ragged row would
+// under-fill the flat (no-padding) global and miscompile at the LLVM layer, so it is rejected in
+// semantic analysis with a clear "not rectangular" message naming the offending row.
+// RUN: ! %arche build -o %t %s 2>&1 | grep -q "not rectangular"
+M :: { { 1, 2, 3 }, { 4, 5 } }
+
+main :: proc() {
+  _ := M;
+}

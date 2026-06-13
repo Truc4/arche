@@ -2,7 +2,7 @@
 // Step 2: Stack-allocated char arrays
 #import { fmt }
 main :: proc() {
-  buf: char[3];
+  buf: [3]char;
   buf[0] = 104;
   buf[1] = 105;
   buf[2] = 0;

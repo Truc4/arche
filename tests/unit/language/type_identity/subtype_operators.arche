@@ -3,8 +3,8 @@
 // NOT block arithmetic. (GREEN today; must STAY green.)
 // RUN: %arche build -o %t %s && %t | grep "a=30 b=15 c=8"
 #import { fmt }
-meters  :: float
-seconds :: float
+meters  :: float;
+seconds :: float;
 main    :: proc() {
   m1 : meters  = 10.0;
   m2 : meters  = 20.0;

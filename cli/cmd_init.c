@@ -43,10 +43,10 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		snprintf(ds_path, sizeof(ds_path), "%s/%s.ds.arche", name, name);
 		const char *ds = "// Datasheet: the device's required components + storage requirements (NOT its impl). A\n"
 		                 "// datasheet describes requirements only — it never defines a shape. A driver provides the\n"
-		                 "// `Particle` pool; `Particle[4]` is the minimum it must size.\n"
-		                 "pos :: float\n"
-		                 "vel :: float\n"
-		                 "Particle[4]\n";
+		                 "// `Particle` pool; `[4]Particle` is the minimum it must size.\n"
+		                 "pos :: float;\n"
+		                 "vel :: float;\n"
+		                 "[4]Particle;\n";
 		if (write_new_file(ds_path, ds) != ARCHE_OK)
 			return ARCHE_ERR;
 
@@ -54,7 +54,7 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		const char *impl =
 		    "// A device: its shape + behavior. The `Particle` shape is defined here (a shape is global\n"
 		    "// vocabulary, defined where it is used, not in the datasheet); the datasheet states the\n"
-		    "// components + the `Particle[4]` storage requirement. The doctest below drives the shape —\n"
+		    "// components + the `[4]Particle` storage requirement. The doctest below drives the shape —\n"
 		    "// `arche test` compiles it as a generated driver, so the requirement provides the pool.\n"
 		    "#import { fmt }\n"
 		    "\n"
@@ -101,7 +101,7 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		         "// Replace `physics` with the device(s) you depend on.\n"
 		         "#import { physics fmt }\n"
 		         "\n"
-		         "physics.Particle[1000]    // the driver picks the storage size\n"
+		         "[1000]physics.Particle;    // the driver picks the storage size\n"
 		         "\n"
 		         "main :: proc() {\n"
 		         "  insert(physics.Particle, 10.0, 1.0)(_:, _:);\n"

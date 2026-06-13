@@ -4,7 +4,7 @@
 main :: proc() {
   io.open("tests/fixtures/data.csv")(fd:);
   if (fd > 0) {
-    buf: char[65536];
+    buf: [65536]char;
     io.read_chunk(fd, buf, 65536)(v:);
     // RAII: `fd` is auto-dropped (io.close) at scope exit on every path — no explicit close.
     // An explicit close only in this `then` branch would be a 'some paths' consumption error.

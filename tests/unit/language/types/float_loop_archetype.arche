@@ -2,7 +2,7 @@
 #import { fmt }
 Nums :: arche { val :: float }
 
-Nums[4](4) {
+[4] Nums(4) {
   val: 0.0,
 }
 
