@@ -4,9 +4,9 @@ Particle :: arche { pos :: float, vel :: float }
 
 Body :: arche { pos, vel, mass :: float }
 
-[5] Particle;
+[5]Particle;
 
-[5] Body;
+[5]Body;
 
 main :: proc() {
   insert(Particle, 1.0, 0.1)(_:, _:);

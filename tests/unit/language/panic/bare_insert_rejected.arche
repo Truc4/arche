@@ -2,7 +2,7 @@
 // `insert(…);` statement must both be rejected — insert is statement-only with an out-list.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "out-list" %t.out
 Particle :: arche { pos :: float }
-[4] Particle;
+[4]Particle;
 main :: proc() {
   h := insert(Particle, 1.0);
   insert(Particle, 2.0);

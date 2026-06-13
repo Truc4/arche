@@ -6,7 +6,7 @@
 
 handler :: enum { not_found, home, user, static_files }
 
-[256] TrieNode; // the driver owns router's storage (router is a device; it declares the requirement)
+[256]TrieNode; // the driver owns router's storage (router is a device; it declares the requirement)
 
 // Copy path[start..start+len) into buf as a NUL-terminated string (caller-side materialization).
 slice :: func(own buf: []char, path: []char, start: int, len: int) -> []char {

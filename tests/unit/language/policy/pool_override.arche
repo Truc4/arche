@@ -5,7 +5,7 @@
 // RUN: %arche build --allow-undefined -o %t %s && %t | grep -qF "ok2=0 v0=10"
 #import { fmt }
 Foo :: arche { v :: int, ts :: int }
-[2] Foo ?evict_oldest;
+[2]Foo ?evict_oldest;
 @policy (pool) evict_oldest :: policy (count: int, cap: int, ok: int, slot: int) {
   if (count >= cap) {
     oldest := 0;

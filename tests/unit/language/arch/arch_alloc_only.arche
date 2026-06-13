@@ -2,7 +2,7 @@
 #import { fmt }
 Particle :: arche { pos :: float, vel :: float }
 
-[5] Particle;
+[5]Particle;
 
 main :: proc() {
   insert(Particle, 5.5, 0.1)(_:, _:);

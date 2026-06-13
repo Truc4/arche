@@ -7,7 +7,7 @@ area :: func(w: int, h: int) -> int {
   return w * h;
 }
 Grid :: arche { cell :: int }
-[area(3, 4)] Grid(area(3, 4)) {
+[area(3, 4)]Grid(area(3, 4)) {
   cell: 0,
 }
 

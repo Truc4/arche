@@ -2,7 +2,7 @@
 #import { parse fmt os }
 Transaction :: arche { price :: float, quantity :: int }
 
-[100] Transaction(100) {
+[100]Transaction(100) {
   price: 0.0, quantity: 0,
 }
 

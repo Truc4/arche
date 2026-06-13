@@ -11,7 +11,7 @@ bar :: float;
 
 Thing :: arche { bar }
 
-[4] Thing;
+[4]Thing;
 
 main :: proc() {
   insert(Thing, 10.0)(_:, _:);

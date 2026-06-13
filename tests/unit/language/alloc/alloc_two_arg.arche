@@ -2,7 +2,7 @@
 #import { fmt }
 Counter :: arche { val :: int }
 
-[10] Counter(3);
+[10]Counter(3);
 
 main :: proc() {
   fmt.assert(Counter.val[0] == 0, "val[0] not 0\n");

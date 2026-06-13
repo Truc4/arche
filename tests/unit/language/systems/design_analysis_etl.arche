@@ -3,7 +3,7 @@
 #import { fmt }
 Task1 :: arche { price :: float, quantity :: int, revenue :: float }
 
-[1] Task1(1) {
+[1]Task1(1) {
   price: 2.0, quantity: 3, revenue: 0.0,
 }
 
@@ -13,7 +13,7 @@ task1_compute_revenue :: sys (price, quantity, revenue) {
 // Task 2: Filter invalid (valid flag for quantity > 0)
 Task2 :: arche { quantity, valid :: int }
 
-[1] Task2(1) {
+[1]Task2(1) {
   quantity: 5, valid: 0,
 }
 
@@ -23,7 +23,7 @@ task2_filter_invalid :: sys (quantity, valid) {
 // Task 3: Bucket timestamps (hour_bucket = timestamp rounded down to nearest hour)
 Task3 :: arche { timestamp :: int, hour_bucket :: int }
 
-[1] Task3(1) {
+[1]Task3(1) {
   timestamp: 7654, hour_bucket: 0,
 }
 
@@ -33,7 +33,7 @@ task3_bucket_timestamps :: sys (timestamp, hour_bucket) {
 // Task 4: Aggregate region (total revenue by region, simplified to single value per archetype)
 Task4 :: arche { price, qty :: int, total :: float }
 
-[1] Task4(1) {
+[1]Task4(1) {
   price: 2.0, qty: 2, total: 0.0,
 }
 

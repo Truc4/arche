@@ -7,7 +7,7 @@
 #import { str fmt }
 Node :: arche { seg :: [32]char, id :: int }
 
-[8] Node;
+[8]Node;
 
 main :: proc() {
   insert(Node, "users", 7)(_:, _:);

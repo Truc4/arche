@@ -4,4 +4,4 @@
 // `TrieNode` SHAPE is defined in the impl (router.arche), which uses it; the driver owns the pool.
 nodeKind :: enum { kstatic, kparam, kcatchall }
 
-[256] TrieNode; // storage requirement: the driver allocates at least this many nodes
+[256]TrieNode; // storage requirement: the driver allocates at least this many nodes

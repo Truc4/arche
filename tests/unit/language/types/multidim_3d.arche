@@ -2,7 +2,7 @@
 #import { fmt }
 Tensor :: arche { data :: [5][5]float }
 
-[5] Tensor;
+[5]Tensor;
 
 main :: proc() {
   fmt.print("allocations done\n");

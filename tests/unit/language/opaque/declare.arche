@@ -5,7 +5,7 @@
 #import { fmt }
 fd   :: opaque;
 File :: arche { fd }
-[4] File;
+[4]File;
 main :: proc() {
   fmt.printf("ok opaque_declared\n");
 }

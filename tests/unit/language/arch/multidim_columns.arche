@@ -4,9 +4,9 @@ Message :: arche { text :: [256]char, author :: [64]char }
 
 Matrix :: arche { data :: [10][10]float }
 
-[100] Message;
+[100]Message;
 
-[50] Matrix;
+[50]Matrix;
 
 main :: proc() {
   fmt.print("allocations done\n");
