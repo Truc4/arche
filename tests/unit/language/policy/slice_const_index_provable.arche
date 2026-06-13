@@ -1,0 +1,12 @@
+// A CONSTANT index into a slice with a statically-known non-empty length is proven in-bounds and
+// ELIDED — no `!abort` ghost — exactly like a sized buffer/const index. `view := buf[1:4]` is a
+// literal-bounded slice of a sized `[5]int`, so it has static length 3 and `view[0]` is provably in
+// bounds. (The bounds prover records a slice local's static length from its slice-expr bounds; a
+// RUNTIME index or a slice of unknown length still keeps its check — see slice_runtime_index_keeps.)
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "policy") -eq 0
+#import { fmt }
+main :: proc() {
+  buf: [5]int;
+  view := buf[1: 4];
+  fmt.printf("%d\n", view[0]);
+}

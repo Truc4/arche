@@ -1,0 +1,13 @@
+// END-TO-END: a provable constant index into a statically-known-length slice elides its bounds check
+// AND executes correctly — the single elision verdict drives codegen too, so no runtime check is
+// emitted yet the values are right. `view := buf[1:4]` views buf[1],buf[2],buf[3]; view[0]==buf[1]==10,
+// view[2]==buf[3]==30.
+// RUN: %arche build -o %t %s && %t | grep -x "10 30"
+#import { fmt }
+main :: proc() {
+  buf: [5]int;
+  buf[1] = 10;
+  buf[3] = 30;
+  view := buf[1: 4];
+  fmt.printf("%d %d\n", view[0], view[2]);
+}

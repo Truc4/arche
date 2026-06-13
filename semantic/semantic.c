@@ -4532,6 +4532,25 @@ static int bnd_slice_literal(SyntaxView v, int n, int *out_len) {
 	return 1;
 }
 
+/* The statically-known length of a slice-producing RHS, or 0 (unknown). A literal-bounded slice of a
+ * SIZED base (`buf[1:4]` over a `[5]int` local/param/const, or a slice-of-a-known-length-slice) has a
+ * compile-time length `hi-lo` — so a constant index into the bound variable can later be proven. Only
+ * this exact shape is sound; everything else (runtime bounds, a base of unknown length) yields 0. */
+static int bnd_static_slice_len(SemanticContext *ctx, DeclSummary *d, BndEnv *e, SyntaxView rhs) {
+	if (!sv_present(rhs) || sv_kind(rhs) != SN_SLICE_EXPR || has_nested_base(rhs))
+		return 0;
+	char *base = sv_resolved_name(ctx, rhs); /* the slice's base name (the leading IDENT of `base[lo:hi]`) */
+	if (!base)
+		return 0;
+	int n = -1;
+	int kind = bnd_base_kind(ctx, d, e, base, &n);
+	free(base);
+	if ((kind != 1 && kind != 2) || n <= 0) /* base must have a known static length */
+		return 0;
+	int len = 0;
+	return bnd_slice_literal(rhs, n, &len) ? len : 0;
+}
+
 static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, SyntaxView v, int is_slice,
                              const char *base, int kind, int n) {
 	char *explicit_pol = NULL;
@@ -4561,6 +4580,15 @@ static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, Sy
 				provably_oob = 1;
 				oob_lit = lit;
 			} else if (kind == 1 && n >= 0) {
+				if (lit >= n) {
+					provably_oob = 1;
+					oob_lit = lit;
+				} else {
+					provably_safe = 1;
+				}
+			} else if (kind == 2 && n > 0) {
+				/* a slice of statically-known length `n` (from a literal-bounded `base[lo:hi]`): a constant
+				 * index is decidable just like a sized array — in range is safe, `lit >= n` is OOB. */
 				if (lit >= n) {
 					provably_oob = 1;
 					oob_lit = lit;
@@ -4879,11 +4907,13 @@ static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 			if (nn)
 				bnd_env_add(e, tgt, NULL, 1);
 		}
-		/* Track a local array/slice bind so `tgt[i]` is checked like a param — whether the type was
-		 * WRITTEN (`a: [4]int`) or INFERRED (`a := M[0]` → `[3]int`, `v := buf[lo:hi]` → `[]int`); the
-		 * inferred type is read from the bind node's model entry. A sized `[N]T` (kind 1) makes a constant
-		 * index provable; a `[]T` slice (kind 2) has a runtime length, so it still needs a guard. */
-		if (k == SN_BIND_STMT && tgt) {
+		/* Track a local array/slice so `tgt[i]` is checked like a param — whether the type was WRITTEN
+		 * (`a: [4]int`) or INFERRED (`a := M[0]` → `[3]int`, `v := buf[lo:hi]` → `[]int`). A sized `[N]T`
+		 * (kind 1) or a literal-bounded slice of a sized base (kind 2 with a known length) makes a
+		 * constant index provable; a `[]T` slice of unknown length (size 0) still needs a guard. An
+		 * ASSIGN re-derives a known slice local's length from its NEW RHS — a reassignment to a shorter
+		 * or unknown slice soundly downgrades what a constant index may assume (last-decl-wins). */
+		if (tgt && k == SN_BIND_STMT) {
 			SyntaxView t0 = sem_type_at(v, 0);
 			TypeId tid = sv_present(t0) ? sem_intern_view(ctx, t0)
 			             : ctx->model   ? sem_model_expr_type_id(ctx->model, sv_id(v))
@@ -4892,7 +4922,11 @@ static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 			if (tk == TYK_ARRAY)
 				bnd_local_add(e, tgt, 1, tyid_array_len(ctx->ty_arena, tid));
 			else if (tk == TYK_SLICE)
-				bnd_local_add(e, tgt, 2, 0);
+				bnd_local_add(e, tgt, 2, bnd_static_slice_len(ctx, d, e, sem_node_at_expr(v, 1)));
+		} else if (tgt) { /* SN_ASSIGN_STMT: re-record a known slice local's static length */
+			int dummy = -1;
+			if (bnd_base_kind(ctx, d, e, tgt, &dummy) == 2)
+				bnd_local_add(e, tgt, 2, bnd_static_slice_len(ctx, d, e, sem_node_at_expr(v, 1)));
 		}
 		free(tgt);
 		return bnd_check_expr(ctx, d, sem_node_at_expr(v, 0), e);
