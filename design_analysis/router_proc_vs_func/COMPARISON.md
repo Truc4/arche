@@ -53,7 +53,7 @@ cross-module out-param call would clobber the state.)
 
 **Call sites are comparable.** Both bind their results positionally:
 
-```arche
+```
 resolve(path)(h:);  param(0)(st:, ln:);            // procedural: result, then read captures back
 resolve(path)(s0:, l0:, h:, c:);                   // reentrant: captures bound as out-params
 ```

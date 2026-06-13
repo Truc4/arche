@@ -31,6 +31,13 @@ typedef struct {
  * unterminated fence is skipped (its decl yields no example) rather than
  * aborting. Caller frees with doctest_examples_free. */
 DoctestExamples doctest_extract(const SyntaxNode *root, const char *src);
+
+/* Extract every ```arche fenced block from a markdown (`.md`) source. Unlike
+ * doctest_extract, there is no syntax tree and no documenting declaration: the whole
+ * file is scanned line-by-line and each block is a STANDALONE example (decl_name "doc").
+ * Caller frees with doctest_examples_free. */
+DoctestExamples doctest_extract_markdown(const char *src);
+
 void doctest_examples_free(DoctestExamples *ex);
 
 #endif /* ARCHE_DOCTEST_EXTRACT_H */

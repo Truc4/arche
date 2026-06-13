@@ -207,14 +207,14 @@ Engines: C baseline (`cc -O3 -march=native`, `mmap` + `memchr` + `strtod`), pand
 
 Arche loads CSV via the `csv` module's single entry point - a **pure-Arche** loader (no custom CSV C; only libc `mmap`/`atof`/`atoi`):
 
-```arche
-use csv;
+```
+#import { csv }
 
-arche Transaction { price: float, quantity: int, revenue: float }
-static Transaction(100000000, 100000000) { price: 0.0, quantity: 0 };
+Transaction :: arche { price :: float, quantity :: int, revenue :: float }
+[100000000]Transaction(100000000) { price: 0.0, quantity: 0, revenue: 0.0 }
 
-proc main() {
-  csv_load(Transaction, "data_100m.csv");          // mmap + name-matched scatter-parse
+main :: proc() {
+  csv.load(Transaction, "data_100m.csv");          // mmap + name-matched scatter-parse
   Transaction.revenue = Transaction.price * Transaction.quantity;  // vectorized
 }
 ```
@@ -251,7 +251,7 @@ df[['price', 'quantity', 'revenue']].to_csv('output.csv')
 ```
 
 **Arche** (with CSV library):
-```arche
+```
 let txns = csv_load(Transaction, "data.csv");
 txns.revenue = txns.price * txns.quantity;  // Vectorized
 csv_write(txns, "output.csv");
@@ -267,7 +267,7 @@ df['valid'] = (df['quantity'] > 0).astype(int)
 ```
 
 **Arche** (with CSV library):
-```arche
+```
 txns.valid = txns.quantity > 0;  // Vectorized: comparison broadcasts to all rows
 ```
 
@@ -281,7 +281,7 @@ df['price_bucket'] = (df['price'] / 10).astype(int)
 ```
 
 **Arche** (with CSV library):
-```arche
+```
 txns.price_bucket = txns.price / 10.0;  // Vectorized
 ```
 
@@ -297,7 +297,7 @@ total = df['revenue'].sum()
 ```
 
 **Arche** (with CSV library):
-```arche
+```
 let txns = csv_load(Transaction, "data.csv");
 txns.revenue = txns.price * txns.quantity;  // Vectorized column op
 let total: float = 0.0;

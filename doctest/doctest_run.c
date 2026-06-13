@@ -245,6 +245,171 @@ static char *synthesize(const char *file_source, int is_core, const DoctestExamp
 	return out;
 }
 
+/* ---- markdown shared-context model ----
+ *
+ * A `.md` page's ```arche blocks are NOT independent programs. Following the model used by
+ * Scala mdoc / Python doctest.testfile / Julia Documenter (and matching arche's order-free
+ * top-level hoisting), the whole page shares one declaration scope: every block's top-level
+ * DECLARATIONS (`name :: <form>` and `#module`/`#file`/`#foreign` regions) and IMPORTS are
+ * pooled, while each block's executable STATEMENTS run in their own `main` with that pooled
+ * scope visible. So a type declared in one block is usable by a later block with no repeated
+ * setup — which is what makes a reference doc testable without boilerplate.
+ *
+ * Classification is line-based: at brace-depth 0, a line is a DECL if it is an `#…` region or
+ * contains the `::` definition operator (arche uses `::` nowhere else); an `#import` line feeds
+ * the merged import set instead; anything else is a STATEMENT. Lines inside an open `{ … }`
+ * inherit the classification of the construct that opened them. Limitation (documented): single
+ * `:`/`:=` global bindings and pool decls are treated as per-block statements, not shared; a name
+ * defined in two blocks collides (E0031), as it would in one file. */
+
+typedef struct {
+	char *buf;
+	size_t len, cap;
+} Str;
+
+static void str_add(Str *s, const char *p, size_t n) {
+	if (s->len + n + 1 > s->cap) {
+		size_t nc = s->cap ? s->cap * 2 : 256;
+		while (nc < s->len + n + 1)
+			nc *= 2;
+		char *g = realloc(s->buf, nc);
+		if (!g)
+			return;
+		s->buf = g;
+		s->cap = nc;
+	}
+	memcpy(s->buf + s->len, p, n);
+	s->len += n;
+	s->buf[s->len] = '\0';
+}
+static void str_addz(Str *s, const char *z) {
+	str_add(s, z, strlen(z));
+}
+
+/* A small deduplicated set of imported module names. */
+typedef struct {
+	char **names;
+	int count, cap;
+} NameSet;
+
+static void nameset_add(NameSet *ns, const char *p, size_t n) {
+	if (n == 0)
+		return;
+	for (int i = 0; i < ns->count; i++)
+		if (strlen(ns->names[i]) == n && memcmp(ns->names[i], p, n) == 0)
+			return;
+	if (ns->count == ns->cap) {
+		ns->cap = ns->cap ? ns->cap * 2 : 8;
+		ns->names = realloc(ns->names, (size_t)ns->cap * sizeof(char *));
+	}
+	char *z = malloc(n + 1);
+	memcpy(z, p, n);
+	z[n] = '\0';
+	ns->names[ns->count++] = z;
+}
+static void nameset_free(NameSet *ns) {
+	for (int i = 0; i < ns->count; i++)
+		free(ns->names[i]);
+	free(ns->names);
+}
+
+static int is_ident_ch(char c) {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+/* Collect identifier tokens from an `#import` region line into `imports`, skipping the
+ * `#import` keyword and the braces. */
+static void collect_imports(const char *line, size_t len, NameSet *imports) {
+	size_t i = 0;
+	while (i < len) {
+		if (line[i] == '{' || line[i] == '}') {
+			i++;
+			continue;
+		}
+		if (is_ident_ch(line[i])) {
+			size_t s = i;
+			while (i < len && is_ident_ch(line[i]))
+				i++;
+			size_t n = i - s;
+			if (!(n == 7 && memcmp(line + s, "#import", 7) == 0) && !(n == 6 && memcmp(line + s, "import", 6) == 0))
+				nameset_add(imports, line + s, n);
+		} else {
+			i++;
+		}
+	}
+}
+
+/* Trim leading/trailing spaces and tabs from [p,len), returning the inner slice. */
+static void md_trim(const char *p, size_t len, const char **out, size_t *out_len) {
+	size_t a = 0, b = len;
+	while (a < b && (p[a] == ' ' || p[a] == '\t' || p[a] == '\n' || p[a] == '\r'))
+		a++;
+	while (b > a && (p[b - 1] == ' ' || p[b - 1] == '\t' || p[b - 1] == '\n' || p[b - 1] == '\r'))
+		b--;
+	*out = p + a;
+	*out_len = b - a;
+}
+
+/* Does [p,len) contain the `::` definition operator outside a `//` comment? */
+static int has_colcol(const char *p, size_t len) {
+	for (size_t i = 0; i + 1 < len; i++) {
+		if (p[i] == '/' && p[i + 1] == '/')
+			return 0; /* rest of line is a comment */
+		if (p[i] == ':' && p[i + 1] == ':')
+			return 1;
+	}
+	return 0;
+}
+
+static int brace_delta(const char *p, size_t len) {
+	int d = 0;
+	for (size_t i = 0; i < len; i++) {
+		if (p[i] == '{')
+			d++;
+		else if (p[i] == '}')
+			d--;
+	}
+	return d;
+}
+
+/* Classify one block's lines: append top-level declaration lines to `decls`, this block's
+ * executable statements to `stmts`, and pool any imported module names into `imports`. */
+static void classify_block(const char *code, Str *decls, Str *stmts, NameSet *imports) {
+	const char *p = code;
+	int depth = 0;
+	enum { M_DECL, M_STMT, M_IMPORT } mode = M_STMT;
+	while (*p) {
+		const char *nl = strchr(p, '\n');
+		size_t len = nl ? (size_t)(nl - p) : strlen(p);
+		if (depth == 0) {
+			const char *t;
+			size_t tl;
+			md_trim(p, len, &t, &tl);
+			if (tl >= 7 && memcmp(t, "#import", 7) == 0)
+				mode = M_IMPORT;
+			else if ((tl >= 1 && t[0] == '#') || has_colcol(t, tl) || (tl >= 1 && t[0] == '['))
+				mode = M_DECL; /* `#…` region, `name :: …` definition, or `[N]Foo` pool storage decl */
+			else
+				mode = M_STMT;
+		}
+		if (mode == M_IMPORT) {
+			collect_imports(p, len, imports);
+		} else if (mode == M_DECL) {
+			str_add(decls, p, len);
+			str_addz(decls, "\n");
+		} else {
+			str_add(stmts, p, len);
+			str_addz(stmts, "\n");
+		}
+		depth += brace_delta(p, len);
+		if (depth < 0)
+			depth = 0;
+		if (!nl)
+			break;
+		p = nl + 1;
+	}
+}
+
 /* Capture a child/compiler fd into `buf` from a temp file, trimming a trailing
  * newline. Rewinds and reads up to cap-1 bytes. */
 static void slurp_fd_file(int fd, char *buf, size_t cap) {
@@ -371,6 +536,281 @@ typedef struct {
  * output shown only on failure. `verbose` adds a per-example PASS line.
  * `quiet_empty` suppresses the `?` line (recursive runs). Tallies fold into *t.
  * Returns non-zero if any example in this file failed. */
+/* A markdown file? `.md` doctests are STANDALONE (no documenting file, no in-file
+ * model) — extracted by line scan, not via the syntax tree. */
+static int has_md_ext(const char *name) {
+	size_t n = strlen(name);
+	return n > 3 && strcmp(name + n - 3, ".md") == 0;
+}
+
+/* Does pooled-decl text declare a top-level `main` proc? (Then the section is a complete program
+ * with its own entry point — we run it as-is instead of synthesizing a `main` wrapper.) */
+static int decls_have_main(const char *s) {
+	const char *p = s;
+	int depth = 0;
+	while (*p) {
+		const char *nl = strchr(p, '\n');
+		size_t len = nl ? (size_t)(nl - p) : strlen(p);
+		if (depth == 0) {
+			const char *t;
+			size_t tl;
+			md_trim(p, len, &t, &tl);
+			if ((tl >= 12 && memcmp(t, "main :: proc", 12) == 0) || (tl >= 10 && memcmp(t, "main::proc", 10) == 0))
+				return 1;
+		}
+		depth += brace_delta(p, len);
+		if (depth < 0)
+			depth = 0;
+		if (!nl)
+			break;
+		p = nl + 1;
+	}
+	return 0;
+}
+
+/* A markdown ATX heading: 1-6 leading `#` then a space or end-of-line. (Region directives like
+ * `#import` have no space after the hashes, so they never match.) Checked only outside code fences. */
+static int is_md_heading(const char *t, size_t tl) {
+	size_t h = 0;
+	while (h < tl && t[h] == '#')
+		h++;
+	if (h == 0 || h > 6)
+		return 0;
+	return h == tl || t[h] == ' ' || t[h] == '\t';
+}
+
+/* Assign each extracted block to a SECTION group: blocks under the same markdown heading share a
+ * group (a new heading starts a fresh one). Walks the source tracking fence state so that `#` lines
+ * inside ```arche blocks are never mistaken for headings. group[i] is filled for every example. */
+static void assign_groups(const char *source, const DoctestExamples *ex, int *group) {
+	int gi = 0, in_fence = 0, lineno = 1, next = 0;
+	const char *p = source;
+	while (*p && next < ex->count) {
+		const char *nl = strchr(p, '\n');
+		size_t len = nl ? (size_t)(nl - p) : strlen(p);
+		const char *t;
+		size_t tl;
+		md_trim(p, len, &t, &tl);
+		int is_fence = (tl >= 3 && t[0] == '`' && t[1] == '`' && t[2] == '`');
+		if (!in_fence && is_md_heading(t, tl))
+			gi++;
+		while (next < ex->count && ex->items[next].src_line == lineno)
+			group[next++] = gi;
+		if (is_fence)
+			in_fence = !in_fence;
+		if (!nl)
+			break;
+		p = nl + 1;
+		lineno++;
+	}
+	while (next < ex->count) /* defensive: any unmatched trailing blocks */
+		group[next++] = gi;
+}
+
+/* Run one SECTION's blocks as a shared-context group: pool that section's declarations + imports
+ * into one scope, run each of its statement blocks in its own `main` with that scope visible, and —
+ * if the section has no executable statements — compile-check its declarations once. */
+static void run_group(const char *synth_path, DoctestExamples *ex, const int *group, int g, int verbose, int *passed,
+                      int *failed) {
+	Str decls = {NULL, 0, 0};
+	NameSet imports = {NULL, 0, 0};
+	nameset_add(&imports, "fmt", 3);
+	Str *stmts = calloc((size_t)ex->count, sizeof(Str));
+	for (int i = 0; i < ex->count; i++)
+		if (group[i] == g)
+			classify_block(ex->items[i].code, &decls, &stmts[i], &imports);
+
+	Str shared = {NULL, 0, 0};
+	str_addz(&shared, "#import {");
+	for (int i = 0; i < imports.count; i++) {
+		str_addz(&shared, " ");
+		str_addz(&shared, imports.names[i]);
+	}
+	str_addz(&shared, " }\n");
+	if (decls.buf)
+		str_add(&shared, decls.buf, decls.len);
+
+	int sect_line = -1;
+	for (int i = 0; i < ex->count; i++)
+		if (group[i] == g) {
+			sect_line = ex->items[i].src_line;
+			break;
+		}
+
+	/* Section declares its own `main` — it is a complete program. Compile and run it as-is; do not
+	 * synthesize a wrapper main (that would be a duplicate). Any loose statements in the section are
+	 * expected to live inside that main already. */
+	if (decls_have_main(shared.buf)) {
+		char exe[256], captured[4096] = "";
+		snprintf(exe, sizeof(exe), "/tmp/arche_dt_%d_m%d", (int)getpid(), g);
+		int rc = compile_capturing(shared.buf, synth_path, exe, captured, sizeof(captured));
+		int ok = 1;
+		const char *why = "";
+		if (rc != 0) {
+			ok = 0;
+			why = "compile error";
+		} else {
+			int code = run_executable(exe, captured, sizeof(captured));
+			unlink(exe);
+			ok = (code == 0);
+			if (code == DT_TIMEOUT)
+				why = "timed out";
+			else if (code == DT_CRASHED)
+				why = "crashed";
+			else if (code != 0)
+				why = "exited non-zero";
+		}
+		if (ok) {
+			(*passed)++;
+			if (verbose)
+				printf("    --- PASS: doc (line %d)\n", sect_line);
+		} else {
+			(*failed)++;
+			printf("    --- FAIL: doc (line %d): %s\n", sect_line, why);
+			print_indented(captured);
+		}
+		free(decls.buf);
+		free(shared.buf);
+		for (int i = 0; i < ex->count; i++)
+			free(stmts[i].buf);
+		free(stmts);
+		nameset_free(&imports);
+		return;
+	}
+
+	int ran_any = 0, first_line = -1;
+	for (int i = 0; i < ex->count; i++) {
+		if (group[i] != g)
+			continue;
+		if (first_line < 0)
+			first_line = ex->items[i].src_line;
+		const char *body = stmts[i].buf ? stmts[i].buf : "";
+		const char *tt;
+		size_t tl;
+		md_trim(body, strlen(body), &tt, &tl);
+		if (tl == 0)
+			continue; /* declaration-only block: contributes to scope, runs nothing of its own */
+		ran_any = 1;
+
+		Str synth = {NULL, 0, 0};
+		str_add(&synth, shared.buf, shared.len);
+		str_addz(&synth, "\nmain :: proc() {\n");
+		str_addz(&synth, body);
+		str_addz(&synth, "}\n");
+
+		char exe[256], detail[80] = "", captured[4096] = "";
+		snprintf(exe, sizeof(exe), "/tmp/arche_dt_%d_%d", (int)getpid(), i);
+		int rc = compile_capturing(synth.buf, synth_path, exe, captured, sizeof(captured));
+		free(synth.buf);
+
+		int ok;
+		if (rc != 0) {
+			ok = 0;
+			snprintf(detail, sizeof(detail), "compile error");
+		} else {
+			int code = run_executable(exe, captured, sizeof(captured));
+			unlink(exe);
+			ok = (code == 0);
+			if (code == DT_TIMEOUT)
+				snprintf(detail, sizeof(detail), "timed out");
+			else if (code == DT_CRASHED)
+				snprintf(detail, sizeof(detail), "crashed");
+			else if (code != 0)
+				snprintf(detail, sizeof(detail), "exit %d", code);
+		}
+
+		if (ok) {
+			(*passed)++;
+			if (verbose)
+				printf("    --- PASS: %s (line %d)\n", ex->items[i].decl_name, ex->items[i].src_line);
+		} else {
+			(*failed)++;
+			printf("    --- FAIL: %s (line %d)%s%s\n", ex->items[i].decl_name, ex->items[i].src_line,
+			       detail[0] ? ": " : "", detail);
+			print_indented(captured);
+		}
+	}
+
+	/* Section had no executable statements: still verify its pooled declarations compile. */
+	if (!ran_any && first_line >= 0) {
+		Str synth = {NULL, 0, 0};
+		str_add(&synth, shared.buf, shared.len);
+		str_addz(&synth, "\nmain :: proc() {\n}\n");
+		char exe[256], captured[4096] = "";
+		snprintf(exe, sizeof(exe), "/tmp/arche_dt_%d_ctx%d", (int)getpid(), g);
+		int rc = compile_capturing(synth.buf, synth_path, exe, captured, sizeof(captured));
+		free(synth.buf);
+		unlink(exe);
+		if (rc != 0) {
+			(*failed)++;
+			printf("    --- FAIL: doc (line %d): declarations do not compile\n", first_line);
+			print_indented(captured);
+		} else {
+			(*passed)++;
+			if (verbose)
+				printf("    --- PASS: declarations compile (line %d)\n", first_line);
+		}
+	}
+
+	free(decls.buf);
+	free(shared.buf);
+	for (int i = 0; i < ex->count; i++)
+		free(stmts[i].buf);
+	free(stmts);
+	nameset_free(&imports);
+}
+
+/* Run the doctests in one `.md` file. Blocks are partitioned into SECTION groups by markdown
+ * heading; each section is its own shared-context scope (decls/imports pooled within a section,
+ * isolated across sections — so independent examples never collide). Returns non-zero on any fail. */
+static int run_one_markdown(const char *path, char *source, int quiet_empty, int verbose, DtTally *t) {
+	DoctestExamples ex = doctest_extract_markdown(source);
+	if (ex.count == 0) {
+		if (!quiet_empty)
+			printf("?    %s  [no examples]\n", path);
+		doctest_examples_free(&ex);
+		return 0;
+	}
+	t->files++;
+
+	char dir[512], synth_path[768];
+	dir_of(path, dir, sizeof(dir));
+	snprintf(synth_path, sizeof(synth_path), "%s/__arche_doctest_synth__.arche", dir);
+
+	int *group = calloc((size_t)ex.count, sizeof(int));
+	assign_groups(source, &ex, group);
+	int max_group = 0;
+	for (int i = 0; i < ex.count; i++)
+		if (group[i] > max_group)
+			max_group = group[i];
+
+	int passed = 0, failed = 0;
+	for (int g = 0; g <= max_group; g++) {
+		int has = 0;
+		for (int i = 0; i < ex.count; i++)
+			if (group[i] == g) {
+				has = 1;
+				break;
+			}
+		if (has)
+			run_group(synth_path, &ex, group, g, verbose, &passed, &failed);
+	}
+
+	if (failed > 0)
+		printf("FAIL %s\n", path);
+	else if (verbose)
+		printf("ok   %s  (%d passed)\n", path, passed);
+	else
+		printf("ok   %s\n", path);
+
+	t->passed += passed;
+	t->failed += failed;
+
+	free(group);
+	doctest_examples_free(&ex);
+	return failed > 0 ? 1 : 0;
+}
+
 static int run_one(const char *path, int quiet_empty, int verbose, DtTally *t) {
 	char *source = read_file(path);
 	if (!source) {
@@ -378,10 +818,15 @@ static int run_one(const char *path, int quiet_empty, int verbose, DtTally *t) {
 		return 1;
 	}
 
-	/* Parse the file and extract doctests from the (error-recovering) syntax tree. A file
-	 * with no extractable examples is NOT a doctest target — skip it silently,
-	 * even if it has parse errors (e.g. intentional negative-test fixtures). We
-	 * only surface failures for files that actually carry doctests. */
+	if (has_md_ext(path)) {
+		int r = run_one_markdown(path, source, quiet_empty, verbose, t);
+		free(source);
+		return r;
+	}
+
+	/* Parse the file and extract doctests from the (error-recovering) syntax tree. A file with no
+	 * extractable examples is NOT a doctest target — skip it silently, even with parse errors (e.g.
+	 * intentional negative-test fixtures). We only surface failures for files that carry doctests. */
 	ParseResult pr = parse_source(source);
 	DoctestExamples ex = {NULL, 0};
 	if (pr.syntax_root)
@@ -535,7 +980,7 @@ static void collect_arche(const char *dir, PathList *pl) {
 		if (S_ISDIR(sb.st_mode)) {
 			if (!skip_dir(e->d_name))
 				collect_arche(full, pl);
-		} else if (S_ISREG(sb.st_mode) && has_arche_ext(e->d_name)) {
+		} else if (S_ISREG(sb.st_mode) && (has_arche_ext(e->d_name) || has_md_ext(e->d_name))) {
 			pathlist_push(pl, full);
 		}
 	}
