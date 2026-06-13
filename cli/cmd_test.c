@@ -14,17 +14,17 @@ int test_run(int argc, char **argv, const GlobalOpts *g) {
 	ArgParse p;
 	if (args_parse(k_test_specs, argc, argv, &p) != 0) {
 		fprintf(stderr, "%s: %s\n", g_prog, p.err);
-		args_usage(stderr, g_prog, "test", "[-v] <file.arche | dir | ./...> ...", k_test_specs);
+		args_usage(stderr, g_prog, "test", "[-v] <file.arche | file.md | dir | ./...> ...", k_test_specs);
 		return ARCHE_USAGE;
 	}
 	if (p.want_help) {
-		args_usage(stdout, g_prog, "test", "[-v] <file.arche | dir | ./...> ...", k_test_specs);
+		args_usage(stdout, g_prog, "test", "[-v] <file.arche | file.md | dir | ./...> ...", k_test_specs);
 		return ARCHE_OK;
 	}
 	int verbose = args_has(&p, T_VERBOSE) || (g && g->verbose);
 
 	if (p.pos_count == 0) {
-		args_usage(stderr, g_prog, "test", "[-v] <file.arche | dir | ./...> ...", k_test_specs);
+		args_usage(stderr, g_prog, "test", "[-v] <file.arche | file.md | dir | ./...> ...", k_test_specs);
 		return ARCHE_ERR;
 	}
 

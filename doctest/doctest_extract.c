@@ -210,6 +210,57 @@ DoctestExamples doctest_extract(const SyntaxNode *root, const char *src) {
 	return ex;
 }
 
+/* Markdown extraction: a `.md` file has no syntax tree and no documenting decl, so we
+ * just split it into lines and feed them to the same fence scanner. Each block is a
+ * STANDALONE example (the runner wraps it in its own `main` + `#import { fmt }`). */
+DoctestExamples doctest_extract_markdown(const char *src) {
+	DoctestExamples ex = {NULL, 0};
+	if (!src)
+		return ex;
+
+	/* Split into borrowed line slices (newline excluded) with 1-based line numbers.
+	 * Heap-grown: a `.md` can have far more lines than the fixed decl-doc buffer. */
+	int cap = 256, n = 0;
+	SynText *lines = malloc((size_t)cap * sizeof(SynText));
+	int *linenos = malloc((size_t)cap * sizeof(int));
+	if (!lines || !linenos) {
+		free(lines);
+		free(linenos);
+		return ex;
+	}
+	const char *p = src;
+	int lineno = 1;
+	while (1) {
+		const char *nl = strchr(p, '\n');
+		size_t len = nl ? (size_t)(nl - p) : strlen(p);
+		if (n == cap) {
+			cap *= 2;
+			SynText *gl = realloc(lines, (size_t)cap * sizeof(SynText));
+			int *gn = realloc(linenos, (size_t)cap * sizeof(int));
+			if (!gl || !gn) {
+				free(gl ? gl : lines);
+				free(gn ? gn : linenos);
+				return ex;
+			}
+			lines = gl;
+			linenos = gn;
+		}
+		lines[n].ptr = p;
+		lines[n].len = len;
+		linenos[n] = lineno;
+		n++;
+		if (!nl)
+			break;
+		p = nl + 1;
+		lineno++;
+	}
+
+	scan_fences(lines, linenos, n, "doc", &ex);
+	free(lines);
+	free(linenos);
+	return ex;
+}
+
 void doctest_examples_free(DoctestExamples *ex) {
 	if (!ex)
 		return;

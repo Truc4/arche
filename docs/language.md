@@ -41,7 +41,11 @@ program startup. This is a core design principle, not a limitation.
 A pool declaration can include field initialization to set the live instances' values at allocation time:
 
 ```arche
-[5]Counter(5) { val: 7, score: 2.5 }
+val   :: int;
+score :: float;
+Counter :: arche { val, score };
+
+[5]Counter(5) { val: 7, score: 2.5 };
 ```
 
 This reserves capacity for 5 instances, starts all 5 live, and initializes the `val` and `score` columns. Uninitialized columns are zero-initialized.
@@ -49,9 +53,20 @@ This reserves capacity for 5 instances, starts all 5 live, and initializes the `
 **Encouraged pattern** - plan memory upfront, allocate what you need, use predictably:
 
 ```arche
-[10000]Particle(10000) { active: 0 }
-[5000]Enemy(5000)
-[1000]Projectile(1000)
+active :: int;
+hp     :: int;
+speed  :: int;
+
+Particle   :: arche { active };
+Enemy      :: arche { hp };
+Projectile :: arche { speed };
+
+[10000]Particle(10000) { active: 0 };
+[5000]Enemy(5000);
+[1000]Projectile(1000);
+
+initialize  :: sys(active) { active = 1; }
+update_loop :: sys(speed)  { speed = speed + 1; }
 
 main :: proc() {
   run initialize;
@@ -85,10 +100,10 @@ universal: `name : [type] (: | =) value`.
 - `type` is the meta-type (type-of-types), compile-time only; `x : type : T` is a local type alias
 
 ```arche
-meters :: float     // nominal type alias (distinct from any other float type)
-seconds :: float    // meters != seconds, though both back to float
-MAX :: 100          // value const (literal RHS)
-x := 5              // runtime variable
+meters :: float;    // nominal type alias (distinct from any other float type)
+seconds :: float;   // meters != seconds, though both back to float
+MAX :: 100;         // value const (literal RHS)
+x := 5;             // runtime variable
 ```
 
 The short forms are **elisions of the one canonical form**, not separate rules — `x :: e` is
@@ -119,7 +134,10 @@ This is the entire basis of foreign-resource safety (`file :: opaque` != `socket
 - Comparisons produce numeric values (`0` or `1`); conditions treat `0` as false, non-zero as true
 
 ```arche
-x = a < b   // x is 0 or 1
+a := 3;
+b := 7;
+x := a < b;   // x is 0 or 1
+fmt.assert(x == 1, "a < b\n");
 ```
 
 **Fixed-width integers** are always available alongside `int`: `i8`/`u8`, `i16`/`u16`,
@@ -138,8 +156,10 @@ b: byte = 255;
 Convert between widths with a call-style cast (`sext`/`zext` to widen, `trunc` to narrow):
 
 ```arche
+offset: i64 = 5;
 small := i32(offset);   // truncate i64 -> i32
 wide: i64 = i64(small); // widen i32 -> i64
+fmt.assert(wide == 5, "round trip\n");
 ```
 
 Integer literals adopt the type of their context (`x: i64 = 3000000000` types the literal
@@ -157,7 +177,7 @@ name *is* both the component and how you reach it (`h.mass`).
 **Components** are either a *reference* to an existing type or an *inline definition*:
 
 ```arche
-mass :: float            // nominal type (lowercase = type)
+mass :: float;           // nominal type (lowercase = type)
 
 Particle :: arche {
   mass,                  // reference an existing component type
@@ -169,8 +189,8 @@ To carry two values of the same backing, **mint two distinct types** - you never
 type under two names:
 
 ```arche
-health :: int
-shield :: int
+health :: int;
+shield :: int;
 Unit :: arche { health, shield }   // two int columns, reached as h.health / h.shield
 ```
 
@@ -178,7 +198,7 @@ Unit :: arche { health, shield }   // two int columns, reached as h.health / h.s
 same shape and share one pool; component order is irrelevant. A component type repeated in one
 archetype is a compile error (it would be unreachable):
 
-```arche
+```text
 A :: arche { health, shield }
 B :: arche { shield, health }   // same shape as A
 
@@ -192,7 +212,7 @@ only - no nested tuples.) Reached as `h.pos_x` / `h.pos_y`. `pos (x, y) :: float
 `vel (x, y) :: float` are **distinct** (`pos_x` != `vel_x`); reuse is by name.
 
 ```arche
-pos (x, y) :: float
+pos (x, y) :: float;
 Body :: arche { pos_x, pos_y }   // two flat columns
 ```
 
@@ -206,9 +226,16 @@ shape twice (under any name) is a compile error.
 Operations on archetype columns apply across the entire collection without explicit loops:
 
 ```arche
-[1000]Particle
-// ... insert particles
+pos_x :: float;
+vel_x :: float;
+Particle :: arche { pos_x, vel_x };
+
+[1000]Particle(1000) { pos_x: 0.0, vel_x: 2.0 }
+```
+```arche
+// updates each position by its velocity, across the whole column
 Particle.pos_x = Particle.pos_x + Particle.vel_x;
+fmt.assert(Particle.pos_x[0] == 2.0, "whole-column add\n");
 ```
 
 This iterates all elements, updating each position by its velocity. Inside a system the
@@ -224,7 +251,7 @@ step :: sys(pos_x, vel_x) {
 
 Individual element access requires explicit column reference:
 
-```arche
+```text
 Particle.mass[i]      // scalar column
 Particle.pos_x[i]     // tuple column (flat access), x component of position at i
 messages.text[i][j]   // 2-D: chained, one index per bracket
@@ -234,7 +261,7 @@ Multi-dimensional access is **chained** — `a[i][j]`, one index per bracket (th
 `a[i, j]` is gone). Chaining lets **each index carry its own failure policy**, which a single
 comma-bracket could not express:
 
-```arche
+```text
 grid[row] !clamp [col] !abort   // clamp the row into range; abort if the column is out of bounds
 ```
 
@@ -258,8 +285,19 @@ array's. It exists at the **function boundary** (a parameter, or a return), not 
 local you build up. Two modes, set by the ownership keyword:
 
 ```arche
-sum  :: func(xs: []int) -> int { ... }        // borrowed: READ-ONLY view, source stays alive
-fill :: func(own xs: []int) -> []int { ... }  // owned: mutable, movable, single writer
+sum  :: func(xs: []int) -> int {              // borrowed: READ-ONLY view, source stays alive
+  total := 0;
+  for (i := 0; i < xs.length; i = i + 1) {
+    total = total + xs[i];
+  }
+  return total;
+}
+fill :: func(own xs: []int) -> []int {        // owned: mutable, movable, single writer
+  for (i := 0; i < xs.length; i = i + 1) {
+    xs[i] = i;
+  }
+  return move xs;
+}
 ```
 
 - A **borrowed** `xs: []T` is read-only — writing through it is a compile error. You can hand out
@@ -274,8 +312,11 @@ length isn't statically known), so that is rejected.
 
 ```arche
 a: [8]int;
+for (i := 0; i < a.length; i = i + 1) { a[i] = 2; }
 total := sum(a);        // a decays to []int (a borrow) — a stays alive, .length == 8 at runtime
-a := fill(move a);      // move a in (a consumed), mutate, hand the fat pointer back, rebind
+fmt.assert(total == 16, "eight 2s sum to 16\n");
+view := fill(move a);   // move a in (a consumed), mutate, hand the fat pointer back, rebind
+fmt.assert(sum(view) == 28, "0+1+...+7 == 28\n");
 ```
 
 **Sub-slicing.** `buf[lo:hi]` is a read-only borrowed sub-view — `{ptr+lo, hi-lo}`, no copy. `lo`/`hi`
@@ -284,8 +325,13 @@ aborts otherwise) and, being a borrow, consumes nothing — the base stays fully
 a sub-range to a reader (`sum(xs[2:5])`) or bind a view (`mid := xs[2:5]`).
 
 ```arche
+a: [8]int;
+for (i := 0; i < a.length; i = i + 1) { a[i] = 3; }
+n := 5;
 total := sum(a[2:5]);   // borrow elements 2..4 — a untouched
 mid := a[:n];           // prefix view; mid.length == n
+fmt.assert(mid.length == 5, "prefix length\n");
+fmt.assert(total == 9, "three 3s sum to 9\n");
 ```
 
 **Lifetime.** Storage lives in the stack frame that declared it and is reclaimed when that frame
@@ -302,7 +348,7 @@ and process archetype columns with a `sys`.
 *signature itself* - a `func` and a `proc` differ in shape (the name is on the binding LHS;
 `proc`/`func` are RHS value forms):
 
-```arche
+```text
 area   :: func(w: int, h: int) -> int            // a value: one return, no side effects
 divmod :: proc(a: int, b: int)(q: int, r: int)   // an action: inputs (in), outputs (out)
 ```
@@ -319,7 +365,8 @@ divmod :: proc(a: int, b: int)(q: int, r: int) {
 
 main :: proc() {
   divmod(17, 5)(q:, r:);          // call mirrors the signature: foo(in)(out)
-  printf("%d %d\n", q, r);        // q and r are declared by the out-args, scoped here
+  fmt.printf("%d %d\n", q, r);    // q and r are declared by the out-args, scoped here
+  fmt.assert(q == 3 && r == 2, "17 / 5 = 3 rem 2\n");
 }
 ```
 
@@ -339,9 +386,13 @@ main :: proc() {
 Procedures are also used for setup, orchestration, and whole-collection array ops:
 
 ```arche
-[1000]Particle(1000)
+pos_x :: float;
+vel_x :: float;
+Particle :: arche { pos_x, vel_x };
 
-main :: proc() {
+[1000]Particle(1000);
+
+advance :: proc() {
   Particle.pos_x = Particle.pos_x + Particle.vel_x;   // array op over the whole column
 }
 ```
@@ -351,10 +402,21 @@ main :: proc() {
 Systems perform **data-driven transformations** over all matching archetypes.
 
 ```arche
+pos_x :: float;
+vel_x :: float;
+Particle :: arche { pos_x, vel_x };
+
+[1000]Particle(1000) { pos_x: 0.0, vel_x: 1.5 }
+
 step :: sys(pos_x, vel_x) {
   pos_x = pos_x + vel_x;
 }
+```
 
+A `proc` drives a system with the `run` statement (the system needs a pool whose shape
+supplies its components):
+
+```arche
 update :: proc() {
   run step;
 }
@@ -422,7 +484,7 @@ Most arche operations are total by construction (proven indexing, ok-valued inse
 can still fail at runtime — an out-of-bounds index, a slice past the end, a divide-by-zero — resolve
 that failure **locally, at the site**, with a *failure policy* written `expr !policy`:
 
-```arche
+```text
 v := samples[k] !clamp;   // out-of-range index → clamped into [0, len)
 grid[x] !clamp = c;       // the write form attaches the policy to the indexed lvalue
 n := count / d !zero;     // divide-by-zero → 0
@@ -498,9 +560,19 @@ failure **as a value** through a mandatory `ok` out-param — so they are **stat
 value or nested in an expression:
 
 ```arche
+mass   :: float;
+charge :: float;
+Particle :: arche { mass, charge };
+
+[8]Particle(0);           // capacity 8, starts empty
+```
+```arche
 insert(Particle, 1.0, 0.1)(h:, ok:);   // h: the generation-checked handle, ok: 0 if the pool was full
-if (!ok) { … }                          // handle the full-pool case at the call site
-delete(h)(ok:);                          // ok: 0 on generation exhaustion
+if (!ok) { fmt.printf("pool full\n"); } // handle the full-pool case at the call site
+fmt.assert(ok == 1, "insert succeeded\n");
+fmt.assert(Particle.mass[0] == 1.0, "inserted mass\n");
+delete(h)(ok:);                         // ok: 0 on generation exhaustion
+fmt.assert(ok == 1, "delete succeeded\n");
 ```
 
 Use `_` to discard either out (`insert(P, …)(_:, _:)`). The legacy value form (`h := insert(…)`,
@@ -525,9 +597,9 @@ error ([E0210](explain/E0210.md)). Each arm is `pattern : statement` (or a block
 ```arche
 handle :: proc(m: Method)() {
   match m {
-    get    : printf("GET\n");
-    post   : printf("POST\n");
-    delete : printf("DELETE\n");
+    Method.get    : fmt.printf("GET\n");
+    Method.post   : fmt.printf("POST\n");
+    Method.delete : fmt.printf("DELETE\n");
   }
 }
 ```
@@ -536,6 +608,10 @@ handle :: proc(m: Method)() {
 source, no function pointers. String patterns compare with the pure `streq` helper:
 
 ```arche
+home      :: proc()() { fmt.printf("home\n"); }
+about     :: proc()() { fmt.printf("about\n"); }
+not_found :: proc()() { fmt.printf("404\n"); }
+
 route :: proc(path: []char)() {
   match path {
     "/"      : home()();
@@ -557,15 +633,15 @@ by name, and the callee is **monomorphized** per call site so the call lowers to
 values). The proc/func type may be inline or a named alias:
 
 ```arche
-done_handler :: proc()()                         // a proc TYPE (callable, structural)
+done_handler :: proc()();                        // a proc TYPE (callable, structural)
 
 run_task :: proc(work: int, on_done: done_handler)() {
   // ... do the work ...
   on_done()();                                   // direct call to the bound proc
 }
 
-finish  :: proc()() { printf("done\n"); }
-cleanup :: proc()() { printf("cleaned\n"); }
+finish  :: proc()() { fmt.printf("done\n"); }
+cleanup :: proc()() { fmt.printf("cleaned\n"); }
 
 main :: proc() {
   run_task(5, finish)();     // compiler specializes run_task for on_done = finish
@@ -603,7 +679,7 @@ is the *cheap* operation: a bare hand-off never silently performs an expensive c
 name — they copy, as before. (The editor surfaces the elided transfer as a ghost **`move`** inlay,
 so a consumed binding is always visible without the keyword.)
 
-```arche
+```text
 a := b;          // move: b is consumed (dead), a owns the storage
 a := copy b;     // clone: b stays alive, a is independent
 n := sink(buf);  // own param: buf moved in (consumed); a borrow param (xs: []T) would NOT consume
@@ -618,12 +694,13 @@ parameter (the same name in both the in-list and the out-list). The out occurren
 in-list borrow, so the body writes the buffer in place and the binding is never killed:
 
 ```arche
-read_into :: proc(fd: int, buf: []char, len: int)(buf: []char, n: int) {
-  read(fd, buf, len)(buf, n);             // the extern fills the in-out buffer in place
+#foreign {
+  read :: proc(fd: int, buf: []char, len: int)(buf: []char, n: int);   // libc read(2)
 }
 
-buf: [256]char;
-read_into(0, buf, 256)(buf, n:);          // zero copy: buf lent in, handed back, stays live
+read_into :: proc(fd: int, buf: []char, len: int)(buf: []char, n: int) {
+  read(fd, buf, len)(buf, n:);            // the extern fills the in-out buffer in place
+}
 ```
 
 - **You can't move out of a borrow.** `move`-ing a borrowed (non-`own`) array parameter - which
@@ -639,12 +716,14 @@ pointer) is just a **nominal type aliased over `opaque`** - a pointer-width, C-o
 Arche never reads, writes, or fabricates. Distinctness comes from the *name*, not a wrapper.
 
 ```arche
-window :: opaque
-sound  :: opaque
+window :: opaque;
+sound  :: opaque;
 
-window_open    :: extern proc(own title: []char, w: int, h: int)(w: window)   // out-only w = C return
-window_present :: extern proc(w: window, fb: []int, width: int, height: int)(fb: []int)  // fb in-out
-window_close   :: extern proc(own w: window)()
+#foreign {
+  window_open    :: proc(own title: []char, w: int, h: int)(w: window);   // out-only w = C return
+  window_present :: proc(w: window, fb: []int, width: int, height: int)(fb: []int);  // fb in-out
+  window_close   :: proc(own w: window)();
+}
 ```
 
 - An `opaque` value is passed to/from C **by value** - the cell *is* an `i64`, ABI-compatible
@@ -657,7 +736,8 @@ window_close   :: extern proc(own w: window)()
 
 ```arche
 render :: proc() {
-  w := window_open("demo", 640, 480);
+  fb: [307200]int;                       // 640 * 480 framebuffer
+  window_open("demo", 640, 480)(w:);
   window_present(w, fb, 640, 480)(fb);   // in-out: fb lent and handed back, stays live
   window_close(move w);              // `own` param consumes it - w dead afterward
 }
@@ -676,6 +756,7 @@ sum_diff :: proc(a: int, b: int)(s: int, d: int) {
 }
 
 sum_diff(10, 3)(s:, d:);   // s = 13, d = 7 - declared + scoped by the out-args
+fmt.assert(s == 13 && d == 7, "sum and diff\n");
 ```
 
 **Filling a caller buffer (zero-copy in-out).** A name in *both* the in-list and the out-list
@@ -683,12 +764,15 @@ is an **in-out** parameter: the caller lends a buffer (no `own`, no `move`, no c
 fills it in place, and the same live binding is handed back through the out-arg:
 
 ```arche
-read_chunk :: proc(fd: file, buf: []char, size: int)(buf: []char, n: int) {
-  arche_csv_read_chunk(fd, buf, size)(buf, n);   // the extern fills the in-out buffer in place
+file :: opaque;
+
+#foreign {
+  arche_csv_read_chunk :: proc(fd: file, buf: []char, size: int)(buf: []char, n: int);
 }
 
-buf: [65536]char;
-read_chunk(fd, buf, 65536)(buf, n:);             // buf comes back filled; n is the byte count
+read_chunk :: proc(fd: file, buf: []char, size: int)(buf: []char, n: int) {
+  arche_csv_read_chunk(fd, buf, size)(buf, n:);   // the extern fills the in-out buffer in place
+}
 ```
 
 For an `extern proc`, the in-list maps the C argument order, an in-out name is an in-place
