@@ -1,0 +1,15 @@
+// x11 variant of vlink: merged only under ARCHE_SELECT=vlink=x11. Declares its OWN `#link`/shim;
+// `value` returns 11. Not a standalone test.
+// RUN: true
+#link {
+  "m"
+}
+
+value :: proc()(r: int) {
+  vlink_xval()(r);
+}
+
+#module
+#foreign {
+  vlink_xval :: proc()(r: int);
+}

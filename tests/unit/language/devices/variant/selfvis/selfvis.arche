@@ -1,0 +1,12 @@
+// Editor self-visibility regression. When the analyzer opens a device's always-merged impl file, it
+// reconstructs the WHOLE device (datasheet + the SELECTED variant), treating those files as the SAME
+// unit as the open file — so BOTH resolve here:
+//   - `handle`   : a type from the sibling datasheet (selfvis.ds.arche), and
+//   - `sv_make`  : a `#module`-PRIVATE `#foreign` in the selected x11 variant (x11/impl.arche).
+// In a full build these are one unit, so the editor must agree (no false "undefined"/"unknown type").
+//
+// RUN: ! env ARCHE_SELECT=selfvis=x11 %analyzer --dump %s 2>&1 | grep "Undefined symbol 'sv_make'"
+// RUN: ! env ARCHE_SELECT=selfvis=x11 %analyzer --dump %s 2>&1 | grep "unknown type 'handle'"
+make :: proc()(h: handle) {
+  sv_make()(h);
+}

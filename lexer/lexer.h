@@ -54,6 +54,7 @@ typedef enum TokenKind {
 	TOK_HASH_MODULE,  /* #module  — narrow visibility to module scope (phase B) */
 	TOK_HASH_FILE,    /* #file    — narrow visibility to file scope (phase B) */
 	TOK_HASH_FOREIGN, /* #foreign — region of foreign-bodied (FFI) proc decls */
+	TOK_HASH_LINK,    /* #link    — region of quoted system-library names to link (-l<name>) */
 
 	/* assignment */
 	TOK_EQ,         /* = */

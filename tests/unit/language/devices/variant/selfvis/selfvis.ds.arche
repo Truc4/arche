@@ -1,0 +1,4 @@
+// Datasheet for the `selfvis` device — declares the opaque type `handle`. Used by the editor
+// self-visibility regression tests (selfvis.arche, x11/impl.arche). Not a standalone test.
+// RUN: true
+handle :: opaque;

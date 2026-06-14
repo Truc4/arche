@@ -1,4 +1,6 @@
 // `platform` device — OS-specific conventions (name, path separator, null device).
+// Not a standalone test (exercised by demo.arche).
+// RUN: true
 //
 // This is the device DATASHEET: its presence marks `platform/` a device. The behavior lives in two
 // interchangeable backends — `linux/` and `windows/` — and the active build TARGET picks which one

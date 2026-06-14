@@ -177,6 +177,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_redundant_guard]               = { "W0020", "redundant_guard",               CLASS_LINT, 1 },
 	[SEM_LINT_func_could_be_const]           = { "W0021", "func_could_be_const",           CLASS_LINT, 1 },
 	[SEM_LINT_exported_mutable_global]       = { "W0022", "exported_mutable_global",       CLASS_LINT, 1 },
+	[SEM_LINT_outarg_shadows_outparam]       = { "W0023", "outarg_shadows_outparam",       CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -1040,4 +1041,11 @@ SemDiag *sem_emit_lint_exported_mutable_global(SemanticContext *ctx, SourceLoc l
 	                 "exported mutable global `%s` — shared mutable state should live in a pool (or be "
 	                 "`#module`/`#file`-private in a library); opt out with --exported-mutable=warn|allow",
 	                 name);
+}
+SemDiag *sem_emit_lint_outarg_shadows_outparam(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_LINT_outarg_shadows_outparam, loc,
+	                 "out-arg `%s:` declares a NEW local that shadows this proc's out-param `%s` — the call's "
+	                 "result fills the shadow and the out-param is left unwritten; drop the `:` (`%s`) to write "
+	                 "the out-param, or rename if a fresh local is intended",
+	                 name, name, name);
 }

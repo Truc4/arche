@@ -1,0 +1,9 @@
+// A device's `#link` libraries and its bundled `.c` shim are linked automatically: importing clink
+// pulls in clink_c.c (compiled by cc) and `-lm` (from clink's `#link { "m" }`), so cbrt(27) = 3.
+// RUN: %arche build -o %t %s && %t | grep "cbrt27=3"
+// RUN: %arche run %s | grep "cbrt27=3"
+#import { clink fmt }
+main :: proc() {
+  clink.cube_root(27.0)(r:);
+  fmt.printf("cbrt27=%f\n", r);
+}

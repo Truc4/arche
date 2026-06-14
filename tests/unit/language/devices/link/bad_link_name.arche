@@ -1,0 +1,11 @@
+// A `#link` library name flows into the cc `-l` command, so it is sanitized to [A-Za-z0-9._-]. A name
+// with shell metacharacters / spaces is rejected and the build fails (no cc command is run with it).
+// RUN: ! %arche build -o %t %s 2>%t.err
+// RUN: grep "invalid #link library name" %t.err
+#import { fmt }
+#link {
+  "m; echo pwned"
+}
+main :: proc() {
+  fmt.printf("unreachable\n");
+}

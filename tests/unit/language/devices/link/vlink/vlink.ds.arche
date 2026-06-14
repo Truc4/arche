@@ -1,0 +1,4 @@
+// Datasheet for the `vlink` device. vlink has per-backend variant subfolders (x11/, wayland/), each
+// shipping its OWN `#link` region + `.c` shim. Selecting a variant must link only that variant's lib
+// and shim — proving the link plumbing rides the variant overlay. Not a standalone test.
+// RUN: true

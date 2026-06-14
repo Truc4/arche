@@ -189,6 +189,10 @@ typedef enum {
 	SEM_LINT_exported_mutable_global, /* a top-level mutable global on the exported surface — shared mutable
 	                                     state must be a pool or be narrowed to #module/#file. Lint-class so
 	                                     it's tunable, but default-promoted to error (see ensure_init). */
+	SEM_LINT_outarg_shadows_outparam, /* a call out-arg `(name:)` whose COLON declares a fresh local that
+	                                     shadows the enclosing proc's out-param of the same name — the
+	                                     call's result fills the shadow, the out-param is left unwritten
+	                                     (silent lost writeback). Use `(name)` (no colon) to write it. */
 
 	SEM_DIAG_KIND_COUNT
 } SemDiagKind;
@@ -389,5 +393,6 @@ SemDiag *sem_emit_lint_handler_foreign_arch(SemanticContext *ctx, SourceLoc loc,
                                             const char *foreign, const char *target);
 SemDiag *sem_emit_lint_func_could_be_const(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_exported_mutable_global(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_lint_outarg_shadows_outparam(SemanticContext *ctx, SourceLoc loc, const char *name);
 
 #endif /* SEM_DIAGNOSTICS_H */

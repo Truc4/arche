@@ -33,6 +33,12 @@ typedef struct ModuleResolver {
 	/* The selected variant subfolder for a device (e.g. "x11"), or NULL/"" for none. Optional —
 	 * may be NULL. Consulted only for bare-name device imports, never for path imports. */
 	const char *(*select_variant)(void *ctx, const char *mod_name);
+
+	/* A C shim file (`.c`) found in a device folder (or its selected variant subfolder) to compile +
+	 * link into the final executable. Optional — NULL for the analyzer (it never links), so a device's
+	 * C glue is collected only by the compiler. Like the variant overlay, this is automatically
+	 * variant-aware: it fires for the top-level folder and the SELECTED variant subfolder only. */
+	void (*add_c_shim)(void *ctx, const char *path);
 } ModuleResolver;
 
 /* `#import { name }` — a device/module imported by bare name: searched in stdlib, then the

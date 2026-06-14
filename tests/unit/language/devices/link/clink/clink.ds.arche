@@ -1,0 +1,4 @@
+// Datasheet for the `clink` device: its presence makes clink importable by name. clink ships a C
+// shim (clink_c.c) and a `#link { "m" }` region, exercising auto-discovery of a device's `.c` glue
+// plus system-library linking. Not a standalone test.
+// RUN: true

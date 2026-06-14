@@ -27,6 +27,11 @@ argv :: proc(i: int)(out: []char) {
   out = raw[0: n];
 }
 
+// Sleep for `ms` milliseconds (public wrapper over the foreign timer).
+sleep_ms :: proc(ms: int) {
+  os_sleep_ms(ms);
+}
+
 // Raw fd I/O — thin syscall wrappers (x86-64 Linux), no libc. Read-only buffers (`write`/`open`
 // path) are plain borrows; `read` lends `buf` and hands back a slice VIEW of the bytes read (the
 // count travels on `.length`) — out-only, no in-out shadow.

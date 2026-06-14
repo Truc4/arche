@@ -4,6 +4,9 @@
 /* Maximum number of --link paths accepted on one command line */
 #define ARCHE_MAX_LINK_PATHS 32
 
+/* Maximum number of distinct `#link` system-library names collected program-wide */
+#define ARCHE_MAX_LINK_LIBS 64
+
 /* How far the pipeline runs and what `out_path` receives. EMIT_LINK (0) is the default — a full
  * executable — so a zero-initialized CompileOpts behaves as before. */
 typedef enum {
