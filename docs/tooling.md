@@ -90,3 +90,24 @@ The build uses `make`:
 Tools built by `make all`: `build/arche` (compiler), `build/arche-fmt` (formatter),
 `build/arche-analyzer` (editor analysis), `build/arche-syntax-tokens` (syntax-highlight token
 dumper), plus the unit-test binaries.
+
+## Documentation generation (planned)
+
+An `arche doc` site generator (rustdoc-style) is **deferred** — `arche test` already runs the doc
+examples (see [DOCTESTS.md](DOCTESTS.md)), but there is no rendered site yet.
+
+**TODO — generated Vocabulary page.** When the renderer lands, it should compile a browsable
+**Vocabulary** page straight from the program's schema (sourced from the same `SemModel` /
+`DeclSummary` data the compiler already builds), *not* a hand-written reference. The page is the
+data-model index a data-oriented program most wants:
+
+- **Component types** — every global component name (one canonical type, [E0045](explain/E0045.md)),
+  its backing type, and which archetypes carry it.
+- **Archetypes** — each named shape = its component set (weightless; a shape always exists, naming it
+  just gives the set a label).
+- **Pools** — each `[N]Shape` allocation, with capacity and initial count — the only concrete global
+  state.
+- **Enums / distinct aliases** — the rest of the type vocabulary.
+
+This makes the "fully global" schema (vocabulary that can't be scoped) legible without a dedicated
+in-source marker: the page *is* the rendered global context.

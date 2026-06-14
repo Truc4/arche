@@ -1,6 +1,7 @@
 /* opendir/readdir/stat (directory entry-point resolution) are POSIX; expose under -std=c99. */
 #define _POSIX_C_SOURCE 200809L
 #include "cli.h"
+#include "../semantic/semantic.h"
 #include "resource.h"
 #include <dirent.h>
 #include <stdio.h>
@@ -9,6 +10,20 @@
 #include <sys/stat.h>
 
 const char *g_prog = "arche";
+
+int cli_apply_exported_mutable(const char *value) {
+	if (!value)
+		return 0; /* flag absent — keep the error-by-default (set in ensure_init) */
+	if (strcmp(value, "error") == 0)
+		semantic_set_lint_exported_mutable_global(1, 1);
+	else if (strcmp(value, "warn") == 0)
+		semantic_set_lint_exported_mutable_global(1, 0);
+	else if (strcmp(value, "allow") == 0)
+		semantic_set_lint_exported_mutable_global(0, 0);
+	else
+		return -1; /* unknown level */
+	return 0;
+}
 
 static int cli_has_arche_ext(const char *name) {
 	size_t n = strlen(name);

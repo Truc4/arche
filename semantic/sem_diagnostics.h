@@ -182,10 +182,13 @@ typedef enum {
 	SEM_LINT_unused_enum,
 	SEM_LINT_discarded_ok,
 	SEM_LINT_raw_pool_index,
-	SEM_LINT_policy_on_safe_op,    /* an explicit `!policy` on an op the prover already proved safe (dead policy) */
-	SEM_LINT_handler_foreign_arch, /* a pool `?handler` body references a DIFFERENT archetype's columns */
-	SEM_LINT_redundant_guard,      /* a leading guard-exit re-tests the enclosing loop's own condition */
-	SEM_LINT_func_could_be_const,  /* a zero-param func whose body is a single `return <literal/const>;` */
+	SEM_LINT_policy_on_safe_op,       /* an explicit `!policy` on an op the prover already proved safe (dead policy) */
+	SEM_LINT_handler_foreign_arch,    /* a pool `?handler` body references a DIFFERENT archetype's columns */
+	SEM_LINT_redundant_guard,         /* a leading guard-exit re-tests the enclosing loop's own condition */
+	SEM_LINT_func_could_be_const,     /* a zero-param func whose body is a single `return <literal/const>;` */
+	SEM_LINT_exported_mutable_global, /* a top-level mutable global on the exported surface — shared mutable
+	                                     state must be a pool or be narrowed to #module/#file. Lint-class so
+	                                     it's tunable, but default-promoted to error (see ensure_init). */
 
 	SEM_DIAG_KIND_COUNT
 } SemDiagKind;
@@ -385,5 +388,6 @@ SemDiag *sem_emit_lint_redundant_guard(SemanticContext *ctx, SourceLoc loc, cons
 SemDiag *sem_emit_lint_handler_foreign_arch(SemanticContext *ctx, SourceLoc loc, const char *handler,
                                             const char *foreign, const char *target);
 SemDiag *sem_emit_lint_func_could_be_const(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_lint_exported_mutable_global(SemanticContext *ctx, SourceLoc loc, const char *name);
 
 #endif /* SEM_DIAGNOSTICS_H */
