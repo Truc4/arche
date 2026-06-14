@@ -7178,6 +7178,36 @@ static const char *sem_decl_module_path(SemanticContext *ctx, const DeclSummary 
 	return NULL;
 }
 
+/* W0022 exported_mutable_global — a top-level mutable global (scalar or non-const buffer) on the
+ * exported surface is banned: shared mutable state must be a pool (the world's columnar storage) or
+ * be narrowed to #module/#file. Pools (STATIC_KIND_ARCHETYPE) and immutable `::` consts (static_is_const)
+ * are exempt. Scoped to user code; bundled core/stdlib is never flagged. Default severity is error (the
+ * lint is default-promoted in ensure_init); `--exported-mutable=warn|allow` and @allow(...) relax it. */
+static void sem_check_exported_mutable(SemanticContext *ctx) {
+	if (!ctx->model || ctx->decl_count <= 0)
+		return;
+	int core_off = semantic_print_line_offset();
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->kind != DECL_STATIC || d->visibility != VIS_EXPORTED || d->is_requirement)
+			continue;
+		if (d->origin != DECL_ORIGIN_ENTRY && d->origin != DECL_ORIGIN_USER_MODULE)
+			continue; /* never flag bundled core/stdlib */
+		int is_mutable =
+		    d->static_kind == STATIC_KIND_SCALAR || (d->static_kind == STATIC_KIND_ARRAY && !d->static_is_const);
+		if (!is_mutable)
+			continue; /* pools (archetype) and immutable `::` consts are exempt */
+		if (d->origin == DECL_ORIGIN_ENTRY && core_off > 0 && d->loc.line <= core_off)
+			continue; /* prepended core prelude — not user code */
+		/* re-arm @allow suppression for this decl (sem_emit_v matches the slug) */
+		ctx->active_allow_slugs = d->allow_slugs;
+		ctx->active_allow_slug_count = d->allow_slug_count;
+		sem_emit_lint_exported_mutable_global(ctx, d->loc, d->name);
+		ctx->active_allow_slugs = NULL;
+		ctx->active_allow_slug_count = 0;
+	}
+}
+
 static void sem_check_dead_code(SemanticContext *ctx) {
 	if (!ctx->model || ctx->decl_count <= 0)
 		return;
@@ -7653,6 +7683,9 @@ static void analyze_program_core(SemanticContext *ctx) {
 
 	/* pass 5: dead-code lint (W0013) — reachability sweep over the resolved DeclTable. */
 	sem_check_dead_code(ctx);
+
+	/* pass 6: exported-mutable lint (W0022) — ban global mutable state on the exported surface. */
+	sem_check_exported_mutable(ctx);
 }
 
 /* Allocate + zero-initialize a SemanticContext and register builtins. Shared by both

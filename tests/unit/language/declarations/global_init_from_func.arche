@@ -1,7 +1,7 @@
 // WANT: a global's initializer may be any compile-time constant — including a pure `func` of
 // constants, since a `func` is a value (README). Static storage is initialized at compile/link time
 // (no code runs before main), so the value must be compile-time-known; CTFE folds `five()` to 5.
-// RUN: %arche build -o %t %s && %t | grep "x=5"
+// RUN: %arche build --exported-mutable=allow -o %t %s && %t | grep "x=5"
 #import { fmt }
 five :: func() -> int {
   return 5;

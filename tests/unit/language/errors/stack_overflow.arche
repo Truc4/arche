@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --exported-mutable=allow -o %t %s && %t
 // `recurse` writes the global `sink`, so it's a `proc` (an action) — a func may not touch a static.
 // The base case lets LLVM see a path on which the call returns, so the post-call store to `sink`
 // is reachable code with an observable side effect (a global the signal handler can see), which

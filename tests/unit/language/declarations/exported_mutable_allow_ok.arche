@@ -1,0 +1,10 @@
+// --exported-mutable=allow silences W0022 entirely: clean build, no diagnostic, program runs.
+// RUN: %arche build --exported-mutable=allow -o %t %s 2>%t.err && %t | grep -q "ok"
+// RUN: test $(grep -c exported_mutable_global %t.err) -eq 0
+#import { fmt }
+count := 0;
+
+main :: proc() {
+  count = count + 1;
+  fmt.print("ok\n");
+}

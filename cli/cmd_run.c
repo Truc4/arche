@@ -13,7 +13,16 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-enum { R_WNO_PCBF = 1, R_WNO_PNE, R_WERR_PCBF, R_WERR_PNE, R_WERR, R_ALLOW_UNDEFINED, R_WHOLE_PROGRAM };
+enum {
+	R_WNO_PCBF = 1,
+	R_WNO_PNE,
+	R_WERR_PCBF,
+	R_WERR_PNE,
+	R_WERR,
+	R_ALLOW_UNDEFINED,
+	R_WHOLE_PROGRAM,
+	R_EXPORTED_MUTABLE
+};
 
 static const ArgSpec k_run_specs[] = {
     {R_WNO_PCBF, "-Wno-proc-could-be-func", ARG_FLAG, 0, 0, NULL, "disable the proc-could-be-func lint"},
@@ -26,6 +35,8 @@ static const ArgSpec k_run_specs[] = {
      "permit the raw, runtime-unsafe `!undefined` opt-out (forbidden by default)"},
     {R_WHOLE_PROGRAM, "--whole-program", ARG_FLAG, 0, 0, NULL,
      "force a whole-program build (run defaults to incremental: per-device object cache, fast rebuilds)"},
+    {R_EXPORTED_MUTABLE, "--exported-mutable", ARG_VALUE, 0, 0, "<level>",
+     "exported-mutable-global lint (W0022): error (default) | warn | allow"},
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
@@ -62,6 +73,11 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 	semantic_set_lint_proc_could_be_func(pcbf_en, pcbf_we);
 	semantic_set_lint_proc_no_effect(pne_en, pne_we);
 	semantic_set_allow_undefined(args_has(&p, R_ALLOW_UNDEFINED));
+	if (cli_apply_exported_mutable(args_value(&p, R_EXPORTED_MUTABLE)) != 0) {
+		fprintf(stderr, "%s: --exported-mutable expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "run", "[flags] <input.arche> [-- program-args...]", k_run_specs);
+		return ARCHE_USAGE;
+	}
 
 	if (p.pos_count == 0) {
 		fprintf(stderr, "%s: no input file\n", g_prog);

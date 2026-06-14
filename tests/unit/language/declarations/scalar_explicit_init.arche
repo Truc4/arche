@@ -1,7 +1,7 @@
 // WANT: a mutable scalar global with an explicit constant initializer (`x : int = 5`). The
 // variable is still MUTABLE — `=` is the mutability separator, the constant is only the initial
 // value baked into the data section.
-// RUN: %arche build -o %t %s && %t | grep -q "x=5 then 9"
+// RUN: %arche build --exported-mutable=allow -o %t %s && %t | grep -q "x=5 then 9"
 #import { fmt }
 x: int = 5;
 

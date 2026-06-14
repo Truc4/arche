@@ -28,6 +28,7 @@ enum {
 	B_TARGET,
 	B_INCREMENTAL,
 	B_WHOLE_PROGRAM,
+	B_EXPORTED_MUTABLE,
 };
 
 /* Flag table = parsing + `--help`, one source of truth. The `-Wno-*` / `-Werror[=...]` spellings are
@@ -61,6 +62,8 @@ static const ArgSpec k_build_specs[] = {
      "device-granular incremental build: cache each device's object, reuse unchanged ones (no cross-unit inlining)"},
     {B_WHOLE_PROGRAM, "--whole-program", ARG_FLAG, 0, 0, NULL,
      "force a whole-program build (the default for build; full cross-device inlining)"},
+    {B_EXPORTED_MUTABLE, "--exported-mutable", ARG_VALUE, 0, 0, "<level>",
+     "exported-mutable-global lint (W0022): error (default) | warn | allow"},
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
@@ -110,6 +113,13 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 	/* Bare `-Werror`: promote EVERY enabled lint to an error (not just the two named above). */
 	if (args_has(&p, B_WERR))
 		semantic_set_all_lints_werror(1);
+	/* W0022 tri-state — applied after `-Werror` so an explicit `--exported-mutable=warn|allow` can
+	 * still demote it (W0022 is error-by-default; this is the dedicated opt-out). */
+	if (cli_apply_exported_mutable(args_value(&p, B_EXPORTED_MUTABLE)) != 0) {
+		fprintf(stderr, "%s: --exported-mutable expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "build", "[flags] <input.arche>", k_build_specs);
+		return ARCHE_USAGE;
+	}
 
 	/* Crash-free enforcement (failure policies) + escape-hatch ban. */
 	semantic_set_no_abort(args_has(&p, B_NO_ABORT));

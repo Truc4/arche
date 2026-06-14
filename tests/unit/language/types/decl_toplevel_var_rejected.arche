@@ -2,7 +2,7 @@
 // implemented yet"). That form is now SUPPORTED — a mutable global whose initial value is a
 // compile-time constant baked into the data section. The variable is reassignable at runtime.
 // (Full spec: tests/unit/language/declarations/.)
-// RUN: %arche build -o %t %s && %t | grep -q "count=0 then 3"
+// RUN: %arche build --exported-mutable=allow -o %t %s && %t | grep -q "count=0 then 3"
 #import { fmt }
 count := 0;
 

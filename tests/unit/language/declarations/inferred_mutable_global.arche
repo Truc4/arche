@@ -1,6 +1,6 @@
 // WANT: the inferred-type mutable short form at file scope. `count := 5` is `count : ⟨int⟩ = 5`
 // — type inferred from the constant initializer, variable mutable.
-// RUN: %arche build -o %t %s && %t | grep -q "count=5"
+// RUN: %arche build --exported-mutable=allow -o %t %s && %t | grep -q "count=5"
 #import { fmt }
 count := 5;
 

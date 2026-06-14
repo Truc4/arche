@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --exported-mutable=allow -o %t %s && %t
 #import { io fmt }
 
 buf: [65536]char;

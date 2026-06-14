@@ -176,6 +176,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_handler_foreign_arch]          = { "W0019", "handler_foreign_arch",          CLASS_LINT, 1 },
 	[SEM_LINT_redundant_guard]               = { "W0020", "redundant_guard",               CLASS_LINT, 1 },
 	[SEM_LINT_func_could_be_const]           = { "W0021", "func_could_be_const",           CLASS_LINT, 1 },
+	[SEM_LINT_exported_mutable_global]       = { "W0022", "exported_mutable_global",       CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -193,6 +194,10 @@ static void ensure_init(void) {
 		g_enabled[i] = (uint8_t)g_table[i].default_enabled;
 		g_werror[i] = 0;
 	}
+	/* W0022 is a lint (so it's tunable via `--exported-mutable` / `@allow`) but bans exported mutable
+	 * globals as an ERROR by default — promote it here so every entry point (build/run/check/LSP),
+	 * not just the CLI flag path, gets error-by-default. `--exported-mutable=warn|allow` demotes it. */
+	g_werror[SEM_LINT_exported_mutable_global] = 1;
 	g_init_done = 1;
 }
 
@@ -418,6 +423,9 @@ void semantic_set_lint_proc_no_effect(int enabled, int werror) {
 }
 void semantic_set_lint_func_impure(int enabled, int werror) {
 	semantic_set_diag(SEM_LINT_func_impure, enabled, werror);
+}
+void semantic_set_lint_exported_mutable_global(int enabled, int werror) {
+	semantic_set_diag(SEM_LINT_exported_mutable_global, enabled, werror);
 }
 
 /* `-Werror` (no `=slug`): promote EVERY currently-enabled lint to a hard error. Does NOT re-enable a
@@ -1026,4 +1034,10 @@ SemDiag *sem_emit_lint_func_could_be_const(SemanticContext *ctx, SourceLoc loc, 
 	                 "func '%s' takes no parameters and just returns a constant — it could be a value const "
 	                 "(`%s :: <value>`), called without `()`; suppress with @allow(func_could_be_const)",
 	                 name, name);
+}
+SemDiag *sem_emit_lint_exported_mutable_global(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_LINT_exported_mutable_global, loc,
+	                 "exported mutable global `%s` — shared mutable state should live in a pool (or be "
+	                 "`#module`/`#file`-private in a library); opt out with --exported-mutable=warn|allow",
+	                 name);
 }

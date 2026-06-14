@@ -132,6 +132,9 @@ int semantic_try_const_int(SemanticContext *ctx, SyntaxView e, int *out);
  * warning to a hard error. */
 void semantic_set_lint_proc_could_be_func(int enabled, int werror);
 void semantic_set_lint_proc_no_effect(int enabled, int werror);
+/* W0022 exported_mutable_global: error by default (see ensure_init). `--exported-mutable=error|warn|allow`
+ * maps to (enabled, werror) = (1,1) / (1,0) / (0,0). */
+void semantic_set_lint_exported_mutable_global(int enabled, int werror);
 
 /* Crash-free enforcement (failure policies). Set from the CLI before analysis; consulted by the
  * failure-policy pass. --no-abort: any op resolving to `!abort` (implicit or explicit) is an error;
