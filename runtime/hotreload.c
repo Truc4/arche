@@ -24,7 +24,7 @@
 typedef struct {
 	char path[1024]; /* the device's .so on disk (rebuilt by the dev to trigger a reload) */
 	void *handle;    /* current dlopen handle, or NULL until first load */
-	long mtime;      /* st_mtime of `path` when `handle` was loaded */
+	long long mtime; /* NANOSECOND mtime of `path` when `handle` was loaded (see ensure_loaded) */
 	unsigned gen;    /* bumped each reload → unique temp-copy name (dodge dlopen's path/inode cache) */
 	int active;      /* registered? */
 } HotUnit;
@@ -55,7 +55,10 @@ static void ensure_loaded(HotUnit *u) {
 	struct stat st;
 	if (stat(u->path, &st) != 0)
 		return; /* not built yet — keep whatever we have (possibly NULL) */
-	long m = (long)st.st_mtime;
+	/* NANOSECOND mtime: a `.so` rebuilt within the same wall-clock second as its last build must still be
+	 * seen as changed (seconds-granularity st_mtime would miss a fast rebuild — the dev edits faster than
+	 * once a second). Must match the watcher's resolution in cli/cmd_run.c. */
+	long long m = (long long)st.st_mtim.tv_sec * 1000000000LL + (long long)st.st_mtim.tv_nsec;
 	if (u->handle && m == u->mtime)
 		return; /* current */
 

@@ -297,7 +297,39 @@ static int build_unit_object_cached(const char *unit_ll, const char *workdir, in
 /* Build ONE device unit's IR into a position-independent `.so` for dev hot-reload. Thin: no runtime/
  * shims/libs linked — every external (the runtime, device C shims, pools, `arche_hot_resolve`, libc) is
  * resolved from the host at `dlopen` time (the host is linked `-rdynamic`). */
-static int build_unit_so(const char *unit_ll, const char *workdir, int u, const char *out_so) {
+/* Build a device unit's reloadable PIC `.so`, CONTENT-HASH GATED. The dev-loop watcher rebuilds on every
+ * edit, but only the edited device's IR actually changes; an unchanged unit's `.so` must be LEFT ALONE so
+ * its mtime stays put and the running host's reload check skips it (else every save reloads every device).
+ * A sidecar `<out_so>.hash` records the IR hash (salted with the PIC toolchain identity); a hit leaves the
+ * `.so` untouched. *rebuilt is set to 1 if the `.so` was (re)written, 0 if reused. */
+static int build_unit_so(const char *unit_ll, const char *workdir, int u, const char *out_so, int *rebuilt) {
+	if (rebuilt)
+		*rebuilt = 0;
+	char *ir = read_file_optional(unit_ll);
+	if (!ir)
+		return 1;
+	char hash[17];
+	{
+		static const char salt[] = "uso1|" ARCHE_VERSION "|opt-O2-v3|llc-pic-small-v3|cc-shared-fpic";
+		size_t sn = sizeof(salt) - 1, n = strlen(ir);
+		char *buf = malloc(sn + n);
+		memcpy(buf, salt, sn);
+		memcpy(buf + sn, ir, n);
+		pe_fnv1a_hex(buf, sn + n, hash);
+		free(buf);
+	}
+	free(ir);
+
+	char hashf[1400];
+	snprintf(hashf, sizeof(hashf), "%s.hash", out_so);
+	if (pe_exists(out_so)) {
+		char *prev = read_file_optional(hashf);
+		int hit = prev && strncmp(prev, hash, 16) == 0;
+		free(prev);
+		if (hit)
+			return 0; /* unchanged unit — leave the .so (and its mtime) alone so the host won't reload it */
+	}
+
 	char optf[700], asmf[700], cmd[4096];
 	snprintf(optf, sizeof(optf), "%s/unit_%d_opt.ll", workdir, u);
 	snprintf(asmf, sizeof(asmf), "%s/unit_%d_pic.s", workdir, u);
@@ -311,6 +343,14 @@ static int build_unit_so(const char *unit_ll, const char *workdir, int u, const 
 	snprintf(cmd, sizeof(cmd), "cc -shared -fPIC -o %s %s", out_so, asmf);
 	if (system(cmd) != 0)
 		return 1;
+	/* Record the IR hash so the next watcher pass can skip this unit if it didn't change. */
+	FILE *hf = fopen(hashf, "w");
+	if (hf) {
+		fwrite(hash, 1, 16, hf);
+		fclose(hf);
+	}
+	if (rebuilt)
+		*rebuilt = 1;
 	return 0;
 }
 
@@ -755,16 +795,21 @@ int compile_source(const char *user_source, const char *source_path, const char 
 				rc = 1;
 				goto cleanup;
 			}
+			int hot_rebuilt = 0;
 			for (int u = 1; u <= max_unit; u++) {
 				char unit_ll[700], so[1300];
+				int one = 0;
 				snprintf(unit_ll, sizeof(unit_ll), "%s/unit_%d.ll", workdir, u);
 				snprintf(so, sizeof(so), "%s/unit_%d.so", hotdir, u);
-				if (build_unit_so(unit_ll, workdir, u, so)) {
+				if (build_unit_so(unit_ll, workdir, u, so, &one)) {
 					fprintf(stderr, "Failed to build hot device .so for unit %d\n", u);
 					rc = 1;
 					goto cleanup;
 				}
+				hot_rebuilt += one;
 			}
+			if (!quiet)
+				printf("Hot-reload: %d device .so(s), %d rebuilt\n", max_unit, hot_rebuilt);
 			/* Host exe = driver unit 0, -rdynamic so device .so's resolve runtime/shim/pool/hot symbols.
 			 * Cache the host object in the same per-device object cache the non-hot incremental path uses
 			 * (ARCHE_CACHE_DIR, else <out_dir>/.arche-cache) so an unchanged driver relinks from cache. */
@@ -823,8 +868,6 @@ int compile_source(const char *user_source, const char *source_path, const char 
 				rc = 1;
 				goto cleanup;
 			}
-			if (!quiet)
-				printf("Hot-reload: %d device .so(s) + host\n", max_unit);
 			if (system(cc_cmd) != 0) {
 				fprintf(stderr, "Failed to link hot-reload host\n");
 				rc = 1;

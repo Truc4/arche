@@ -52,13 +52,15 @@ static int copy_exec(const char *src, const char *dst) {
 	return err ? -1 : 0;
 }
 
-/* Newest st_mtime of any `.arche` file under `root` (recursive). The dev-loop watcher samples this and
- * rebuilds when it bumps — cheap, dependency-free edit detection across every device in the project. */
-static long latest_arche_mtime(const char *root) {
+/* Newest modification time of any `.arche` file under `root` (recursive), in NANOSECONDS. The dev-loop
+ * watcher samples this and rebuilds when it bumps. Nanosecond precision is load-bearing: a save within the
+ * same wall-clock second as the previous build must still be detected (seconds-granularity `st_mtime` would
+ * silently miss a fast edit). Cheap, dependency-free edit detection across every device in the project. */
+static long long latest_arche_mtime(const char *root) {
 	DIR *d = opendir(root);
 	if (!d)
 		return 0;
-	long newest = 0;
+	long long newest = 0;
 	struct dirent *e;
 	while ((e = readdir(d)) != NULL) {
 		if (e->d_name[0] == '.') /* skip ., .., and dotdirs (build/.arche-* etc.) */
@@ -69,13 +71,16 @@ static long latest_arche_mtime(const char *root) {
 		if (stat(path, &st) != 0)
 			continue;
 		if (S_ISDIR(st.st_mode)) {
-			long sub = latest_arche_mtime(path);
+			long long sub = latest_arche_mtime(path);
 			if (sub > newest)
 				newest = sub;
 		} else {
 			size_t len = strlen(e->d_name);
-			if (len >= 6 && strcmp(e->d_name + len - 6, ".arche") == 0 && (long)st.st_mtime > newest)
-				newest = (long)st.st_mtime;
+			if (len >= 6 && strcmp(e->d_name + len - 6, ".arche") == 0) {
+				long long m = (long long)st.st_mtim.tv_sec * 1000000000LL + (long long)st.st_mtim.tv_nsec;
+				if (m > newest)
+					newest = m;
+			}
 		}
 	}
 	closedir(d);
@@ -267,7 +272,7 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 	 * device's `.so` is relinked into ARCHE_HOT_DIR, where the running host reloads it). The host exe is
 	 * rebuilt too but never re-exec'd — the live child keeps running on its staged copy. `--whole-program`
 	 * (not hot) just blocks on the child like a plain `go run`. */
-	long watch_mtime = hot ? latest_arche_mtime(proj) : 0;
+	long long watch_mtime = hot ? latest_arche_mtime(proj) : 0;
 	int status = 0;
 	if (!hot) {
 		while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
@@ -284,17 +289,23 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 			}
 			struct timespec ts = {0, 200 * 1000 * 1000}; /* 200ms poll */
 			nanosleep(&ts, NULL);
-			long m = latest_arche_mtime(proj);
+			long long m = latest_arche_mtime(proj);
+			if (getenv("ARCHE_HOT_DEBUG"))
+				fprintf(stderr, "[hot] proj=%s base=%lld now=%lld %s\n", proj, watch_mtime, m,
+				        m > watch_mtime ? "REBUILD" : "-");
 			if (m > watch_mtime) {
-				watch_mtime = m;
 				char *nsrc = cli_read_file(input);
 				if (nsrc) {
 					CompileOpts ropts = {0};
 					ropts.quiet = 1;
 					int brc = compile_source(nsrc, input, exe, &ropts);
 					free(nsrc);
-					if (brc != 0)
+					if (brc == 0)
+						watch_mtime = m; /* advance only on success, so a transient bad edit is retried */
+					else
 						fprintf(stderr, "%s: rebuild failed — host keeps running on last-good code\n", g_prog);
+				} else {
+					watch_mtime = m; /* couldn't read the entry file; don't spin on it */
 				}
 			}
 		}
