@@ -454,6 +454,8 @@ Token lexer_next_token(Lexer *lexer) {
 			k = TOK_HASH_FILE;
 		else if (wlen == 7 && strncmp(word, "foreign", 7) == 0)
 			k = TOK_HASH_FOREIGN;
+		else if (wlen == 4 && strncmp(word, "link", 4) == 0)
+			k = TOK_HASH_LINK;
 		return make_token(k, start, tlen, line, column);
 	}
 
@@ -630,6 +632,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_HASH_FILE";
 	case TOK_HASH_FOREIGN:
 		return "TOK_HASH_FOREIGN";
+	case TOK_HASH_LINK:
+		return "TOK_HASH_LINK";
 
 	case TOK_EQ:
 		return "TOK_EQ";

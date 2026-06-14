@@ -277,7 +277,8 @@ static const char *sem_select_variant(void *ctx, const char *mod_name) {
 }
 
 static ModuleResolver sem_resolver(ModuleHolds *holds) {
-	ModuleResolver r = {holds, sem_mark_seen, sem_register_file_cb, NULL, sem_select_variant};
+	/* add_c_shim = NULL: the analyzer never links, so a device's C glue is the compiler's concern only. */
+	ModuleResolver r = {holds, sem_mark_seen, sem_register_file_cb, NULL, sem_select_variant, NULL};
 	return r;
 }
 

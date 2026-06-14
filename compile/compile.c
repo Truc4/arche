@@ -175,6 +175,41 @@ static int g_device_count;
  * resolve_uses; checked by compile_frontend so a violation fails the build. */
 static int g_resolve_errors;
 
+/* C shim files (`.c`) discovered in imported device folders / their selected variant subfolders, to
+ * compile + link into the final executable (e.g. an X11 glue file). Deduped; reset in resolve_uses
+ * (the in-process doctest runner compiles many programs — a leak would mislink the next one). */
+static char *g_c_shims[MAX_LOADED_MODS];
+static int g_c_shim_count;
+
+static void compile_add_c_shim(void *ctx, const char *path) {
+	(void)ctx;
+	for (int i = 0; i < g_c_shim_count; i++)
+		if (strcmp(g_c_shims[i], path) == 0)
+			return;
+	if (g_c_shim_count < MAX_LOADED_MODS)
+		g_c_shims[g_c_shim_count++] = strcpy(malloc(strlen(path) + 1), path);
+}
+
+/* Append the collected device C shims and `#link` `-l<lib>` flags to a cc command being assembled in
+ * `cmd` (current length *len, capacity cap). Shims precede the `-l` libs so the linker resolves a
+ * shim's library references (left-to-right). Returns 0, or -1 if appending would overflow — the caller
+ * fails the link rather than silently drop an input (mirrors the `--link` overflow policy). */
+static int append_link_extras(char *cmd, int *len, size_t cap, char libs[][64], int nlib) {
+	for (int i = 0; i < g_c_shim_count; i++) {
+		int m = snprintf(cmd + *len, cap - (size_t)*len, " %s", g_c_shims[i]);
+		if (m < 0 || m >= (int)cap - *len)
+			return -1;
+		*len += m;
+	}
+	for (int i = 0; i < nlib; i++) {
+		int m = snprintf(cmd + *len, cap - (size_t)*len, " -l%s", libs[i]);
+		if (m < 0 || m >= (int)cap - *len)
+			return -1;
+		*len += m;
+	}
+	return 0;
+}
+
 static void mark_device_module(const char *name) {
 	for (int i = 0; i < g_device_count; i++)
 		if (strcmp(g_device_mods[i], name) == 0)
@@ -367,7 +402,8 @@ static const char *compile_select_variant(void *ctx, const char *mod_name) {
 }
 
 static const ModuleResolver g_compile_resolver = {
-    NULL, compile_mark_seen, compile_register_file, compile_mark_device, compile_select_variant,
+    NULL,         compile_mark_seen,      compile_register_file, compile_mark_device,
+    compile_select_variant, compile_add_c_shim,
 };
 
 /* Load a plain MODULE imported by PATH (`#import { "./util" }`). */
@@ -397,6 +433,9 @@ static void resolve_uses(const SyntaxNode *syntax_root, const char *src, const c
 	for (int i = 0; i < g_device_count; i++)
 		free(g_device_mods[i]);
 	g_device_count = 0;
+	for (int i = 0; i < g_c_shim_count; i++)
+		free(g_c_shims[i]);
+	g_c_shim_count = 0;
 	g_resolve_errors = 0;
 
 	char *source_dir = source_dir_of(source_path);
@@ -554,6 +593,18 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	SyntaxNode *syntax_root = fe.syntax_root;
 	SemanticContext *sem_ctx = fe.sem_ctx;
 
+	/* Collect `#link` system libraries (driver + imported devices' SELECTED variants) once, now that
+	 * every module is registered. Appended as `-l<name>` at the link step(s) below. A bad name (outside
+	 * [A-Za-z0-9._-]) returns -1 — fail the build rather than emit it into the cc command. The collected
+	 * `.c` device shims (g_c_shims) ride the same link sites. */
+	char link_libs[ARCHE_MAX_LINK_LIBS][64];
+	int link_lib_count = semantic_collect_link_libs(syntax_root, source, link_libs, ARCHE_MAX_LINK_LIBS);
+	if (link_lib_count < 0) {
+		semantic_context_free(sem_ctx);
+		free(source);
+		return 1;
+	}
+
 	/* Lower the lossless syntax tree → AST (the only lowering path). Resolved types come from the
 	 * semantic side model (keyed by syntax tree node id, globally unique across inlined modules);
 	 * `use` modules are inlined from their registered syntax trees (see resolve_uses / lower_add_module). */
@@ -708,6 +759,11 @@ int compile_source(const char *user_source, const char *source_path, const char 
 				}
 				cl += m;
 			}
+			if (append_link_extras(cc_cmd, &cl, sizeof(cc_cmd), link_libs, link_lib_count) < 0) {
+				fprintf(stderr, "link command too long; refusing to drop device shims / #link libs\n");
+				rc = 1;
+				goto cleanup;
+			}
 			if (!quiet)
 				printf("Incremental link: %d unit object(s), %d reused from cache\n", max_unit + 1, reused);
 			if (system(cc_cmd) != 0) {
@@ -841,6 +897,10 @@ int compile_source(const char *user_source, const char *source_path, const char 
 				goto cleanup;
 			}
 			cc_len += m;
+		}
+		if (append_link_extras(cc_cmd, &cc_len, sizeof(cc_cmd), link_libs, link_lib_count) < 0) {
+			fprintf(stderr, "link command too long; refusing to drop device shims / #link libs\n");
+			goto cleanup;
 		}
 		if (!quiet)
 			printf("Linking executable...\n");

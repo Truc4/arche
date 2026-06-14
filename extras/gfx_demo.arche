@@ -1,0 +1,31 @@
+// gfx showcase: open a window, fill a software framebuffer with an R/B gradient, present it each
+// frame, and run until the window is closed or a key is pressed. The backend (x11) is picked by
+// extras/arche.toml; `ARCHE_SELECT=gfx=wayland arche run …` would swap it with no code change.
+//
+//   arche run extras/gfx_demo.arche
+#import { gfx os }
+
+W :: 256;
+H :: 192;
+
+main :: proc() {
+  px: [49152]int; // W*H, row-major, 0xRRGGBB — a stack local (192 KB, well under the 8 MB stack)
+  gfx.open(W, H, "arche gfx — close the window or press a key")(win:);
+
+  y := 0;
+  for (; y < H;) {
+    x := 0;
+    for (; x < W;) {
+      px[y * W + x] = x * 65536 + y; // red ramps with x, blue with y
+      x             = x + 1;
+    }
+    y = y + 1;
+  }
+
+  is_open := 1;
+  for (; is_open != 0;) {
+    gfx.blit(win, px);
+    gfx.poll(win)(is_open);
+    os.sleep_ms(16);
+  }
+}

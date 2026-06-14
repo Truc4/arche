@@ -1,0 +1,14 @@
+// x11 backend for gfx: merged only under ARCHE_SELECT=gfx=x11 (the default). Binds the Xlib C shim
+// (gfx_x11.c) and links libX11. The `gfx_be_*` symbols are #module-private — the public wrappers in
+// gfx.arche (same device unit) call them; importers see only gfx.open/blit/poll/close.
+#link {
+  "X11"
+}
+
+#module
+#foreign {
+  gfx_be_open  :: proc(w: int, h: int, own title: []char)(win: window);
+  gfx_be_blit  :: proc(win: window, px: []int)(px: []int);
+  gfx_be_poll  :: proc(win: window)(is_open: int);
+  gfx_be_close :: proc(own win: window);
+}

@@ -6376,6 +6376,82 @@ void semantic_set_extra_inline_module(const char *name) {
 	g_sem_extra_inline = name ? sem_dupz(name) : NULL;
 }
 
+/* A system-library name flows verbatim into the cc `-l<name>` link command (a system() string), so it
+ * must be shell- and linker-safe: restrict to the same charset cc/ld accept for a library stem. */
+static int sem_link_name_ok(const char *s, size_t n) {
+	if (n == 0)
+		return 0;
+	for (size_t i = 0; i < n; i++) {
+		char c = s[i];
+		if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+		      c == '-'))
+			return 0;
+	}
+	return 1;
+}
+
+/* Gather the quoted lib names of every `#link` region in one syntax root into out[] (deduped),
+ * advancing *pn. Returns 0 on success, -1 on an invalid name (hard fail — see sem_link_name_ok). */
+static int sem_collect_link_from_root(const SyntaxNode *root, const char *src, char out[][64], int *pn, int cap) {
+	if (!root)
+		return 0;
+	for (int i = 0; i < root->child_count; i++) {
+		if (root->children[i].tag != SE_NODE)
+			continue;
+		const SyntaxNode *cn = root->children[i].as.node;
+		if (cn->kind != SN_REGION)
+			continue;
+		if (!sv_has_token((SyntaxView){cn, src}, TOK_HASH_LINK))
+			continue;
+		for (int j = 0; j < cn->child_count; j++) {
+			if (cn->children[j].tag != SE_TOKEN || cn->children[j].as.token.kind != TOK_STRING)
+				continue;
+			size_t L = cn->children[j].as.token.length;
+			size_t off = cn->children[j].as.token.offset;
+			if (L >= 2) { /* strip the surrounding quotes */
+				off += 1;
+				L -= 2;
+			}
+			const char *name = src + off;
+			if (!sem_link_name_ok(name, L)) {
+				fprintf(stderr, "Error: invalid #link library name \"%.*s\" — only [A-Za-z0-9._-] allowed\n", (int)L,
+				        name);
+				return -1;
+			}
+			if (L > 63)
+				L = 63;
+			char tmp[64];
+			memcpy(tmp, name, L);
+			tmp[L] = '\0';
+			int dup = 0;
+			for (int k = 0; k < *pn; k++)
+				if (strcmp(out[k], tmp) == 0) {
+					dup = 1;
+					break;
+				}
+			if (dup)
+				continue;
+			if (*pn >= cap) {
+				fprintf(stderr, "Error: too many #link libraries (max %d)\n", cap);
+				return -1;
+			}
+			memcpy(out[*pn], tmp, L + 1);
+			(*pn)++;
+		}
+	}
+	return 0;
+}
+
+int semantic_collect_link_libs(const SyntaxNode *root, const char *root_src, char out[][64], int cap) {
+	int n = 0;
+	if (sem_collect_link_from_root(root, root_src, out, &n, cap) < 0)
+		return -1;
+	for (int m = 0; m < g_sem_module_count; m++)
+		if (sem_collect_link_from_root(g_sem_modules[m].root, g_sem_modules[m].src, out, &n, cap) < 0)
+			return -1;
+	return n;
+}
+
 int semantic_has_module(const char *name) {
 	for (int i = 0; i < g_sem_module_count; i++)
 		if (strcmp(g_sem_modules[i].name, name) == 0)
@@ -6693,7 +6769,9 @@ static void sem_check_one_region_per_file(const SyntaxNode *root, const char *sr
 		int *seen = NULL;
 		if (cn->kind == SN_REGION) {
 			SyntaxView rv = {cn, src};
-			if (sv_has_token(rv, TOK_HASH_FOREIGN)) {
+			if (sv_has_token(rv, TOK_HASH_LINK)) {
+				continue; /* #link is link metadata, not a visibility region — many allowed per file */
+			} else if (sv_has_token(rv, TOK_HASH_FOREIGN)) {
 				name = "#foreign";
 				seen = &seen_foreign;
 			} else if (sv_has_token(rv, TOK_HASH_FILE)) {

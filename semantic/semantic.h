@@ -21,6 +21,13 @@ void semantic_add_module(const char *name, const SyntaxNode *root, const char *s
 /* Clear registered modules (static registry; reset at the start of each compilation). */
 void semantic_reset_modules(void);
 
+/* Collect the deduped system-library names from every `#link { "lib" ... }` region across `root`
+ * (the driver) plus all registered modules (= only the selected variant's files, since the resolver
+ * overlays just the active variant). Names are written into out[][64]; returns the count, or -1 if a
+ * name contains a char outside [A-Za-z0-9._-] (a hard fail — these flow into the cc `-l` link line).
+ * The compiler calls this after the front-end to append `-l<name>` to its link command. */
+int semantic_collect_link_libs(const SyntaxNode *root, const char *root_src, char out[][64], int cap);
+
 /* Editor-only: also inline module `name` into the root namespace even when the root has no `#import`
  * for it (NULL clears). Set by the analyzer when the open document is a member of a device folder, so
  * its sibling datasheet's global type vocabulary resolves; the compiler never sets it. Call after

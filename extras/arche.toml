@@ -4,6 +4,7 @@ target = "linux"
 
 [target.linux]
 platform = "linux"
+gfx = "x11"
 
 [target.windows]
 platform = "windows"

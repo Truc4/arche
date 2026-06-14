@@ -1,0 +1,29 @@
+// gfx public surface (always merged, backend-agnostic). Each call forwards to the selected variant's
+// `gfx_be_*` foreign symbol (declared #module-private in x11/backend.arche or wayland/backend.arche,
+// visible here because variant files share this device's unit). A pixel buffer is `[]int` in 0xRRGGBB
+// form, row-major, length width*height.
+
+// Open a width x height window titled `title`; returns its handle (a null handle on failure). The
+// backend keeps its own copy of the title, so the slice is consumed (`own`).
+open :: proc(w: int, h: int, own title: []char)(win: window) {
+  gfx_be_open(w, h, move title)(win);
+}
+
+// Copy `px` (width*height ints, 0xRRGGBB) to the window and present it. The backend only reads `px`,
+// but an extern's array in-param must be `own` or in-out; the in-out idiom (px in the out-list too)
+// lends the buffer and hands the same view back, so the caller keeps ownership across frames.
+blit :: proc(win: window, px: []int) {
+  gfx_be_blit(win, _)(px);
+}
+
+// Pump pending events; returns 1 while the window is open, 0 once a close (window-close or key) is
+// requested. Call each frame.
+poll :: proc(win: window)(is_open: int) {
+  gfx_be_poll(win)(is_open);
+}
+
+// Destroy the window and release its backend state. Runs automatically at scope exit (@drop).
+@drop(window)
+close :: proc(own win: window) {
+  gfx_be_close(move win);
+}
