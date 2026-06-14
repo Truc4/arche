@@ -148,7 +148,7 @@ test-lower: $(LOWER_TEST_BIN)
 
 # Run all tests with LIT
 test: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
-	lit -v tests/
+	lit -v tests/ extras/
 	$(MAKE) test-doc
 
 # Per-unit codegen check: runs the full lit suite emitting one LLVM module per compilation unit
@@ -161,7 +161,7 @@ test: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN)
 # hand to re-validate the whole language under per-unit. Whole-program (no inlining loss) stays the
 # default build.
 test-per-unit: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
-	ARCHE_PER_UNIT=1 lit -v tests/
+	ARCHE_PER_UNIT=1 lit -v tests/ extras/
 
 # Run doctests over the real source tree: ```arche examples in /// doc comments (.arche) AND in
 # prose docs (.md). The synthetic runner fixtures in tests/unit/doctest/ + tests/unit/mddoc/ are

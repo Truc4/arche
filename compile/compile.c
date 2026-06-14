@@ -402,8 +402,7 @@ static const char *compile_select_variant(void *ctx, const char *mod_name) {
 }
 
 static const ModuleResolver g_compile_resolver = {
-    NULL,         compile_mark_seen,      compile_register_file, compile_mark_device,
-    compile_select_variant, compile_add_c_shim,
+    NULL, compile_mark_seen, compile_register_file, compile_mark_device, compile_select_variant, compile_add_c_shim,
 };
 
 /* Load a plain MODULE imported by PATH (`#import { "./util" }`). */

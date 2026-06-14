@@ -1,4 +1,5 @@
 // linux backend for the `platform` device — selected by `[target.linux] platform = "linux"`.
+// Not a standalone test (exercised by demo.arche). RUN: true
 name        :: "linux";
 sep         :: "/";
 null_device :: "/dev/null";

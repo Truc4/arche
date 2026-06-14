@@ -7,6 +7,9 @@
 //
 // The backends expose `name`/`sep`/`null_device` as `[]char` string CONSTS; the active target picks
 // which file supplies them. (os.write prints the []char slices directly.)
+//
+// RUN: %arche run %s | grep "os=linux sep=/ null=/dev/null"
+// RUN: %arche build --target windows -o %t %s && %t | grep "os=windows sep=. null=NUL"
 #import { platform os }
 main :: proc() {
   os.write(1, "os=", 3);
