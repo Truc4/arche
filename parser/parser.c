@@ -1001,6 +1001,37 @@ static int parse_region(Parser *parser, SyntaxNodeKind *out_kind) {
 	return 1;
 }
 
+/* `#link { "X11" "Xext" }` — a region of quoted system-library names. Unlike `#foreign`, its
+ * payload is STRING items (not decls), so it parses like the `#import { ... }` block but accepts
+ * only TOK_STRING. It carries no declarations and no visibility/foreign effect — it is pure link
+ * metadata, collected program-wide at link time (see semantic_collect_link_libs) and appended to the
+ * cc command as `-l<name>`. Emitted as SN_REGION; consumers distinguish it via TOK_HASH_LINK. Block
+ * form only (a bare banner `#link X11` is rejected — libs must be quoted). */
+static int parse_link_region(Parser *parser, SyntaxNodeKind *out_kind) {
+	advance(parser); /* consume '#link' */
+	*out_kind = SN_REGION;
+	if (!match(parser, TOK_LBRACE)) {
+		error(parser, "expected `{ \"lib\" ... }` after `#link`");
+		return 0;
+	}
+	if (check(parser, TOK_RBRACE)) {
+		error(parser, "empty `#link { }` — list one or more quoted system-library names");
+		return 0;
+	}
+	while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+		if (!check(parser, TOK_STRING)) {
+			error(parser, "expected a quoted system-library name in `#link { ... }` (e.g. \"X11\")");
+			return 0;
+		}
+		advance(parser);
+	}
+	if (!match(parser, TOK_RBRACE)) {
+		error(parser, "Expected '}' to close `#link { ... }`");
+		return 0;
+	}
+	return 1;
+}
+
 static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	*out_kind = SN_ERROR;
 
@@ -1234,6 +1265,9 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	case TOK_HASH_FOREIGN:
 		/* Region marker (`#module` / `#file` / `#foreign`) — banner or `{ ... }` block. */
 		return parse_region(parser, out_kind);
+	case TOK_HASH_LINK:
+		/* `#link { "lib" ... }` — system libraries to link (block form only). */
+		return parse_link_region(parser, out_kind);
 	default:
 		/* Top-level declarations: an IDENT-led binding (const / static buffer) or a prefix pool
 		 * alloc (`[C]Name…`, which leads with `[`) — see parse_static_decl. */

@@ -1,0 +1,16 @@
+// clink impl: a pure-Arche wrapper over the C shim. The `#link { "m" }` pulls libm (the shim calls
+// pow), and clink_c.c is compiled + linked automatically because it sits in this device folder.
+// Not a standalone test.
+// RUN: true
+#link {
+  "m"
+}
+
+cube_root :: proc(x: float)(r: float) {
+  clink_cbrt(x)(r);
+}
+
+#module
+#foreign {
+  clink_cbrt :: proc(x: float)(r: float);
+}

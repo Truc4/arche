@@ -1742,6 +1742,33 @@ static TypeId name_type_id(SemanticContext *ctx, SyntaxView v) {
 /* BINARY: comparisons & logicals are `int` (boolean); a same-backing operator yields the LEFT (then
  * RIGHT) operand's distinct nominal subtype; float promotes; else the left operand's type. Mirrors
  * tycheck's synth() so the model and the checker agree. */
+/* Integer width of a type for arithmetic promotion: 32 for plain `int`, the fixed width for a
+ * width-int (`byte`=8, `i8`/`u8`=8 … `i128`=128), else 0 (not an integer — don't promote). */
+static int sem_int_width_of(SemanticContext *ctx, TypeId t, const char *name) {
+	if (tyid_kind(ctx->ty_arena, t) == TYK_PRIM && tyid_prim(ctx->ty_arena, t) == PRIM_INT)
+		return 32;
+	if (!name)
+		return 0;
+	if (strcmp(name, "byte") == 0)
+		return 8;
+	if (strcmp(name, "int") == 0)
+		return 32;
+	if (name[0] == 'i' || name[0] == 'u') {
+		const char *n = name + 1;
+		if (strcmp(n, "8") == 0)
+			return 8;
+		if (strcmp(n, "16") == 0)
+			return 16;
+		if (strcmp(n, "32") == 0)
+			return 32;
+		if (strcmp(n, "64") == 0)
+			return 64;
+		if (strcmp(n, "128") == 0)
+			return 128;
+	}
+	return 0;
+}
+
 static TypeId binary_type_id(SemanticContext *ctx, SyntaxView v) {
 	Operator op = sem_binary_op(v);
 	if (op >= OP_EQ && op <= OP_GTE)
@@ -1761,6 +1788,19 @@ static TypeId binary_type_id(SemanticContext *ctx, SyntaxView v) {
 	TypeId fl = tyid_of_prim(ctx->ty_arena, PRIM_FLOAT);
 	if (tyid_equal(lt, fl) || tyid_equal(rt, fl))
 		return fl;
+	/* Integer promotion (C-style), matching codegen which computes the result in i32: a sub-`int`
+	 * operand (byte/u8/i8/i16/u16) promotes to `int`, so `byte + byte` is `int`, not `byte` — fixing an
+	 * implicit `s := b[0] + b[1]` inferring a too-narrow byte var. The result is the WIDER of the
+	 * promoted operand widths, so `byte + i64` stays i64 and `int + int` stays int. */
+	int lw = sem_int_width_of(ctx, lt, ln);
+	int rw = sem_int_width_of(ctx, rt, rn);
+	if (lw > 0 && rw > 0) {
+		int pl = lw < 32 ? 32 : lw;
+		int pr = rw < 32 ? 32 : rw;
+		if (pl <= 32 && pr <= 32)
+			return tyid_of_prim(ctx->ty_arena, PRIM_INT);
+		return pl >= pr ? lt : rt; /* the wider operand (i64/i128) wins */
+	}
 	return lt;
 }
 
@@ -2856,6 +2896,19 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 					bind_type = sem_tyid_of_name(ctx, "int");
 			}
 			if (t->is_new) {
+				/* W0023: `(name:)` declares a fresh local that shadows the enclosing proc's out-param of
+				 * the same name — the call's result fills the shadow and the out-param is silently left
+				 * unwritten. Almost always a mistake: the author meant `(name)` (no colon) to fill the
+				 * out-param. (Mirrors the real bug behind net.arche/io.arche using the colon-less form.) */
+				if (t->name && strcmp(t->name, "_") != 0 && ctx->current_proc) {
+					for (int op = 0; op < ctx->current_proc->out_param_count; op++) {
+						const char *opn = ctx->current_proc->out_params[op].name;
+						if (opn && strcmp(opn, t->name) == 0) {
+							sem_emit_lint_outarg_shadows_outparam(ctx, loc, t->name);
+							break;
+						}
+					}
+				}
 				/* already added above for "_"-filtered new targets; re-add to capture type/nominal */
 				if (t->name && strcmp(t->name, "_") != 0) {
 					add_variable(ctx, t->name, bind_type);
@@ -6376,6 +6429,82 @@ void semantic_set_extra_inline_module(const char *name) {
 	g_sem_extra_inline = name ? sem_dupz(name) : NULL;
 }
 
+/* A system-library name flows verbatim into the cc `-l<name>` link command (a system() string), so it
+ * must be shell- and linker-safe: restrict to the same charset cc/ld accept for a library stem. */
+static int sem_link_name_ok(const char *s, size_t n) {
+	if (n == 0)
+		return 0;
+	for (size_t i = 0; i < n; i++) {
+		char c = s[i];
+		if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+		      c == '-'))
+			return 0;
+	}
+	return 1;
+}
+
+/* Gather the quoted lib names of every `#link` region in one syntax root into out[] (deduped),
+ * advancing *pn. Returns 0 on success, -1 on an invalid name (hard fail — see sem_link_name_ok). */
+static int sem_collect_link_from_root(const SyntaxNode *root, const char *src, char out[][64], int *pn, int cap) {
+	if (!root)
+		return 0;
+	for (int i = 0; i < root->child_count; i++) {
+		if (root->children[i].tag != SE_NODE)
+			continue;
+		const SyntaxNode *cn = root->children[i].as.node;
+		if (cn->kind != SN_REGION)
+			continue;
+		if (!sv_has_token((SyntaxView){cn, src}, TOK_HASH_LINK))
+			continue;
+		for (int j = 0; j < cn->child_count; j++) {
+			if (cn->children[j].tag != SE_TOKEN || cn->children[j].as.token.kind != TOK_STRING)
+				continue;
+			size_t L = cn->children[j].as.token.length;
+			size_t off = cn->children[j].as.token.offset;
+			if (L >= 2) { /* strip the surrounding quotes */
+				off += 1;
+				L -= 2;
+			}
+			const char *name = src + off;
+			if (!sem_link_name_ok(name, L)) {
+				fprintf(stderr, "Error: invalid #link library name \"%.*s\" — only [A-Za-z0-9._-] allowed\n", (int)L,
+				        name);
+				return -1;
+			}
+			if (L > 63)
+				L = 63;
+			char tmp[64];
+			memcpy(tmp, name, L);
+			tmp[L] = '\0';
+			int dup = 0;
+			for (int k = 0; k < *pn; k++)
+				if (strcmp(out[k], tmp) == 0) {
+					dup = 1;
+					break;
+				}
+			if (dup)
+				continue;
+			if (*pn >= cap) {
+				fprintf(stderr, "Error: too many #link libraries (max %d)\n", cap);
+				return -1;
+			}
+			memcpy(out[*pn], tmp, L + 1);
+			(*pn)++;
+		}
+	}
+	return 0;
+}
+
+int semantic_collect_link_libs(const SyntaxNode *root, const char *root_src, char out[][64], int cap) {
+	int n = 0;
+	if (sem_collect_link_from_root(root, root_src, out, &n, cap) < 0)
+		return -1;
+	for (int m = 0; m < g_sem_module_count; m++)
+		if (sem_collect_link_from_root(g_sem_modules[m].root, g_sem_modules[m].src, out, &n, cap) < 0)
+			return -1;
+	return n;
+}
+
 int semantic_has_module(const char *name) {
 	for (int i = 0; i < g_sem_module_count; i++)
 		if (strcmp(g_sem_modules[i].name, name) == 0)
@@ -6693,7 +6822,9 @@ static void sem_check_one_region_per_file(const SyntaxNode *root, const char *sr
 		int *seen = NULL;
 		if (cn->kind == SN_REGION) {
 			SyntaxView rv = {cn, src};
-			if (sv_has_token(rv, TOK_HASH_FOREIGN)) {
+			if (sv_has_token(rv, TOK_HASH_LINK)) {
+				continue; /* #link is link metadata, not a visibility region — many allowed per file */
+			} else if (sv_has_token(rv, TOK_HASH_FOREIGN)) {
 				name = "#foreign";
 				seen = &seen_foreign;
 			} else if (sv_has_token(rv, TOK_HASH_FILE)) {
@@ -6737,7 +6868,12 @@ static UnitInterface *sem_iface_add(SemanticContext *ctx, const char *unit_name)
 	return u;
 }
 
-static void sem_inline_module(SemanticContext *ctx, const char *mod_name) {
+/* `self_unit`: the module being inlined is the EDITOR's open-file device itself (set only for the
+ * analyzer's extra-inline; the compiler always passes 0). In a real build the open file and its device
+ * siblings are ONE unit, so `#module`-private decls (e.g. a variant's `#foreign gfx_be_*`) are visible
+ * to the open file — make them so here, instead of treating them as a separately-imported module whose
+ * privacy would hide them. (`#file` decls stay file-local: the per-file rename hides them regardless.) */
+static void sem_inline_module(SemanticContext *ctx, const char *mod_name, int self_unit) {
 	if (sem_iface_find(ctx, mod_name))
 		return; /* already inlined (direct or via another transitive path) — registry makes it cycle-safe */
 	/* Register the unit up front (cycle-safe: a transitive re-import finds it) and stamp every decl
@@ -6781,7 +6917,7 @@ static void sem_inline_module(SemanticContext *ctx, const char *mod_name) {
 				int is_foreign = sv_has_token(rv, TOK_HASH_FOREIGN);
 				int is_file = sv_has_token(rv, TOK_HASH_FILE);
 				if (is_block) {
-					int child_exp = is_foreign ? exported : 0;
+					int child_exp = (is_foreign || self_unit) ? exported : 0;
 					int child_fl = is_file ? 1 : file_local;
 					for (int c = 0; c < cn->child_count; c++) {
 						if (cn->children[c].tag != SE_NODE)
@@ -6793,7 +6929,9 @@ static void sem_inline_module(SemanticContext *ctx, const char *mod_name) {
 						                    &fileset, &filesetn, &filesetcap, uid, g_sem_modules[m].origin);
 					}
 				} else if (!is_foreign) {
-					exported = 0;
+					if (!self_unit) /* same-unit (editor self-device): a `#module` banner doesn't hide from the open
+					                   file */
+						exported = 0;
 					if (is_file)
 						file_local = 1; /* `#file` banner → rest of this file is file-local */
 				}
@@ -6852,7 +6990,7 @@ static void sem_inline_module(SemanticContext *ctx, const char *mod_name) {
 				char *sub = sem_import_token_module_name(msrc, &un->children[t]);
 				if (!sub)
 					continue;
-				sem_inline_module(ctx, sub);
+				sem_inline_module(ctx, sub, 0); /* a device's own #imports are normal imports, not same-unit */
 				free(sub);
 			}
 		}
@@ -6973,7 +7111,7 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 				char *mod_name = sem_import_token_module_name(src, &un->children[t]);
 				if (!mod_name)
 					continue;
-				sem_inline_module(ctx, mod_name);
+				sem_inline_module(ctx, mod_name, 0);
 				free(mod_name);
 			}
 			continue;
@@ -6989,7 +7127,7 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 	 * bare type references (`fd`, …) resolve — matching how the file behaves when the device is imported
 	 * whole. sem_inline_module dedups, so a real import of the same name above is harmless. */
 	if (g_sem_extra_inline)
-		sem_inline_module(ctx, g_sem_extra_inline);
+		sem_inline_module(ctx, g_sem_extra_inline, 1); /* the open file's OWN device → same unit (see self_unit) */
 
 	/* Scope resolution snapshot: the tree-qualify pass in build_decl_table binds every `mod.member`
 	 * reference/call to its member's qualified identity (looked up by literal name in the module's

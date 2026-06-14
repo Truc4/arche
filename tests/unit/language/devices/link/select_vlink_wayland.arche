@@ -1,0 +1,7 @@
+// Selecting wayland merges vlink/wayland/ — its `#link` + w_c.c shim — so value() = 22.
+// RUN: env ARCHE_SELECT=vlink=wayland %arche build -o %t %s && %t | grep "val=22"
+#import { vlink fmt }
+main :: proc() {
+  vlink.value()(v:);
+  fmt.printf("val=%d\n", v);
+}

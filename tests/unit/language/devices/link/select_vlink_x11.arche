@@ -1,0 +1,8 @@
+// Selecting x11 merges vlink/x11/ — its `#link` + x_c.c shim — so value() = 11. The wayland shim
+// (vlink_wval) is NOT linked. Proves a device's link inputs follow the variant overlay.
+// RUN: env ARCHE_SELECT=vlink=x11 %arche build -o %t %s && %t | grep "val=11"
+#import { vlink fmt }
+main :: proc() {
+  vlink.value()(v:);
+  fmt.printf("val=%d\n", v);
+}

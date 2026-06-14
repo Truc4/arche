@@ -1,0 +1,8 @@
+// x11 variant of selfvis: a #module-private #foreign backend. Editing THIS variant file, the analyzer
+// must resolve `handle` from the device datasheet ONE LEVEL UP (selfvis.ds.arche) — the "seek the
+// .ds.arche from a variant impl" case. Assert no false "unknown type 'handle'".
+// RUN: ! env ARCHE_SELECT=selfvis=x11 %analyzer --dump %s 2>&1 | grep "unknown type 'handle'"
+#module
+#foreign {
+  sv_make :: proc()(h: handle);
+}

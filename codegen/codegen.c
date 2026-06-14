@@ -2300,6 +2300,17 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				int_signed = lt->int_signed;
 			else if (rt->tag == HIR_TYPE_INT)
 				int_signed = rt->int_signed;
+
+			/* Record the arithmetic result's actual width on the expr, so downstream consumers (a `:=`
+			 * bind sizing its alloca, a store coercion) match the value codegen emits. Without this a
+			 * byte+byte add — whose operands promote to i32 here — would keep semantic width 8 and a
+			 * `s := b[0] + b[1]` bind would alloca i8 and store the i32 result, mis-typing the IR.
+			 * Comparisons (>= OP_EQ) are excluded: they yield an i32 boolean regardless of operand width. */
+			if (ctx->vector_lanes == 0 && expr->data.binary.op < OP_EQ) {
+				expr->resolved.tag = HIR_TYPE_INT;
+				expr->resolved.int_width = int_width;
+				expr->resolved.int_signed = int_signed;
+			}
 		}
 
 		switch (expr->data.binary.op) {
@@ -3102,6 +3113,13 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				char *extended = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = zext i8 %s to i32\n", extended, loaded);
 				strcpy(result_buf, extended);
+				/* The loaded element is now an i32 value. A `char` element's resolved tag is
+				 * HIR_TYPE_CHAR (width-agnostic → treated as i32 downstream), but a width-int element
+				 * (`byte`/`u8`/`i8`) keeps HIR_TYPE_INT width 8 — so reflect the widening here, or
+				 * downstream width coercion (emit_int_convert) would zext the already-i32 value AGAIN as
+				 * if it were i8 and emit type-mismatched IR. */
+				if (expr->resolved.tag == HIR_TYPE_INT && expr->resolved.int_width == 8)
+					expr->resolved.int_width = 32;
 			} else {
 				strcpy(result_buf, loaded);
 			}
@@ -6439,18 +6457,19 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				                  type6_target->is_slice ? type6_target->len_ssa : NULL,
 				                  stmt->data.assign_stmt.target->data.index.policy, idx_i64, &wfidx);
 				const char *et6 = type6_target->field_type ? type6_target->field_type : "char";
-				if (strcmp(et6, "char") == 0) {
-					char *target_addr = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = getelementptr i8, i8* %s, i64 %s\n", target_addr, base_buf, wfidx);
-					char *trunc_val = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = trunc i32 %s to i8\n", trunc_val, value_buf);
-					buffer_append_fmt(ctx, "  store i8 %s, i8* %s, align 1\n", trunc_val, target_addr);
+				const char *st = strcmp(et6, "char") == 0 ? "i8" : llvm_type_from_arche(et6);
+				char *target_addr = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", target_addr, st, st, base_buf,
+				                  wfidx);
+				if (strcmp(st, "i8") == 0) {
+					/* A byte-width element (char/byte/u8/i8): the RHS is carried at i32, so coerce it down to
+					 * i8 before storing — a literal lands directly, a wider SSA truncs. (Previously only
+					 * `char` truncated; a `byte`/`u8` element stored the raw i32, which mis-typed the IR.) */
+					char conv[256];
+					emit_int_convert(ctx, value_buf, &stmt->data.assign_stmt.value->resolved, 8, conv);
+					buffer_append_fmt(ctx, "  store i8 %s, i8* %s, align 1\n", conv, target_addr);
 				} else {
-					const char *st = llvm_type_from_arche(et6);
 					int align = strcmp(st, "double") == 0 ? 8 : 4;
-					char *target_addr = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", target_addr, st, st, base_buf,
-					                  wfidx);
 					buffer_append_fmt(ctx, "  store %s %s, %s* %s, align %d\n", st, value_buf, st, target_addr, align);
 				}
 				break;

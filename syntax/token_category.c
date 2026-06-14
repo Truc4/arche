@@ -45,6 +45,7 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_HASH_MODULE:
 	case TOK_HASH_FILE:
 	case TOK_HASH_FOREIGN:
+	case TOK_HASH_LINK:
 	case TOK_RUN:
 	case TOK_ENUM:
 	case TOK_MATCH:

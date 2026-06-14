@@ -25,6 +25,15 @@ static int merge_arche_dir(const ModuleResolver *r, const char *mod_name, const 
 	int n = 0;
 	struct dirent *ent;
 	while ((ent = readdir(d)) != NULL) {
+		/* A `.c` shim alongside the device's `.arche` files (or in the selected variant subfolder) is
+		 * compiled + linked, not parsed as arche source. Collected here so it rides the same variant
+		 * overlay as the `.arche` files: only the selected variant's glue reaches the link. */
+		if (r->add_c_shim && has_suffix(ent->d_name, ".c")) {
+			char cp[1300];
+			snprintf(cp, sizeof(cp), "%s/%s", folder, ent->d_name);
+			r->add_c_shim(r->ctx, cp);
+			continue;
+		}
 		if (!has_suffix(ent->d_name, ".arche"))
 			continue;
 		char fp[1300];

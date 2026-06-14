@@ -1,0 +1,31 @@
+// W0023 outarg_shadows_outparam: a call out-arg `(name:)` whose COLON declares a fresh local that
+// shadows the enclosing proc's out-param of the same name. The call's result fills the shadow and the
+// out-param is left unwritten — a silent lost writeback. `bad` fires (uses `(r:)` to forward into its
+// own out-param `r`); `good` does not (uses `(r)`, writing the out-param); `fresh` does not (the
+// colon name `q` is a genuinely new local, not an out-param).
+// RUN: %build/arche-analyzer --dump %s | grep -qF "warning W0023 outarg_shadows_outparam"
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "W0023 outarg_shadows_outparam") -eq 1
+// RUN: %arche build -o %t %s
+
+inner :: proc(x: int)(r: int) {
+  r = x + 5;
+}
+
+bad :: proc(x: int)(r: int) {
+  inner(x)(r:); // shadows out-param `r` → W0023
+}
+
+good :: proc(x: int)(r: int) {
+  inner(x)(r); // writes the out-param `r` → no warning
+}
+
+fresh :: proc(x: int)(r: int) {
+  inner(x)(q:); // `q` is a new local, not the out-param → no warning
+  r = q;
+}
+
+main :: proc() {
+  bad(1)(_:);
+  good(2)(_:);
+  fresh(3)(_:);
+}

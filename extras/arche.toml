@@ -4,6 +4,7 @@ target = "linux"
 
 [target.linux]
 platform = "linux"
+gfx = "wayland"
 
 [target.windows]
 platform = "windows"

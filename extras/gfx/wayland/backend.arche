@@ -1,0 +1,18 @@
+// wayland backend for gfx: merged only under ARCHE_SELECT=gfx=wayland. Binds the wl_shm + xdg-shell C
+// shim (gfx_wl.c + the generated xdg-shell-protocol.c, both auto-compiled) and links libwayland-client.
+// Exposes the SAME `gfx_be_*` surface as the x11 backend, so gfx.arche's public wrappers are
+// backend-agnostic. Not a standalone test.
+// RUN: true
+#link {
+  "wayland-client"
+}
+
+#module
+#foreign
+gfx_be_open    :: proc(w: int, h: int, own title: []char)(win: window);
+gfx_be_frame   :: proc(win: window)(px: []int);
+gfx_be_w       :: proc(win: window)(w: int);
+gfx_be_h       :: proc(win: window)(h: int);
+gfx_be_present :: proc(win: window);
+gfx_be_poll    :: proc(win: window)(is_open: int);
+gfx_be_close   :: proc(own win: window);

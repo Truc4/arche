@@ -148,7 +148,7 @@ test-lower: $(LOWER_TEST_BIN)
 
 # Run all tests with LIT
 test: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
-	lit -v tests/
+	lit -v tests/ extras/
 	$(MAKE) test-doc
 
 # Per-unit codegen check: runs the full lit suite emitting one LLVM module per compilation unit
@@ -161,7 +161,7 @@ test: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN)
 # hand to re-validate the whole language under per-unit. Whole-program (no inlining loss) stays the
 # default build.
 test-per-unit: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
-	ARCHE_PER_UNIT=1 lit -v tests/
+	ARCHE_PER_UNIT=1 lit -v tests/ extras/
 
 # Run doctests over the real source tree: ```arche examples in /// doc comments (.arche) AND in
 # prose docs (.md). The synthetic runner fixtures in tests/unit/doctest/ + tests/unit/mddoc/ are
@@ -264,15 +264,9 @@ format: $(TARGET)
 	@if [ -z "$(CLANG_FORMAT_VERSION)" ]; then \
 		echo "error: .clang-format-version missing"; exit 1; \
 	fi
-	@if [ -z "$(CLANG_FORMAT)" ]; then \
-		echo "error: no clang-format matching pinned version $(CLANG_FORMAT_VERSION) on PATH"; \
-		echo "  expected 'clang-format-$(CLANG_FORMAT_VERSION)' or 'clang-format' reporting major $(CLANG_FORMAT_VERSION)"; \
-		echo "  install from apt.llvm.org (Debian/Ubuntu):"; \
-		echo "    wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- $(CLANG_FORMAT_VERSION)"; \
-		echo "    sudo apt-get install clang-format-$(CLANG_FORMAT_VERSION)"; \
-		echo "  or via your distro's package manager (Arch: clang)"; \
-		exit 1; \
-	fi
+	# Format `.arche` files FIRST — this uses the arche binary, NOT clang-format, so it must not be
+	# gated behind clang-format availability (a missing/mismatched clang-format would otherwise block
+	# .arche formatting too, across the WHOLE tree including extras/).
 	for f in $$(find . -name "*.arche" -type f \
 	             -not -path "*/.venv/*" \
 	             -not -path "*/site-packages/*" \
@@ -287,11 +281,24 @@ format: $(TARGET)
 			echo "✗ $$f (parse error or output would not round-trip — left unchanged)"; \
 		fi; \
 	done
+	@if [ -z "$(CLANG_FORMAT)" ]; then \
+		echo "error: no clang-format matching pinned version $(CLANG_FORMAT_VERSION) on PATH (C/H files NOT formatted)"; \
+		echo "  expected 'clang-format-$(CLANG_FORMAT_VERSION)' or 'clang-format' reporting major $(CLANG_FORMAT_VERSION)"; \
+		echo "  install from apt.llvm.org (Debian/Ubuntu):"; \
+		echo "    wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- $(CLANG_FORMAT_VERSION)"; \
+		echo "    sudo apt-get install clang-format-$(CLANG_FORMAT_VERSION)"; \
+		echo "  or via your distro's package manager (Arch: clang)"; \
+		exit 1; \
+	fi
+	# Format C/H with the pinned clang-format. Skip wayland-scanner-GENERATED protocol code
+	# (`*-protocol.c` / `*-client-protocol.h`) — machine-emitted, not held to the style (matches ci.yml).
 	for f in $$(find . \( -name "*.c" -o -name "*.h" \) -type f \
 	             -not -path "./build/*" \
 	             -not -path "*/.venv/*" \
 	             -not -path "*/site-packages/*" \
 	             -not -path "*/__pycache__/*" \
+	             -not -name "*-protocol.c" \
+	             -not -name "*-protocol.h" \
 	             -not -path "./tests/known_failures/*"); do \
 		$(CLANG_FORMAT) -i "$$f"; \
 		echo "✓ $$f"; \
