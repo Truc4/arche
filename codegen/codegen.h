@@ -34,4 +34,9 @@ void codegen_force_whole_program(void);
  * consults this to choose the device-granular pipeline. */
 int codegen_per_unit_enabled(void);
 
+/* `--shared`: arche-owned defs get external (dlsym-able) linkage so a device's procs are reachable in a
+ * loadable `.so`. The CLI also forces whole-program when this is set (one clean export surface). */
+void codegen_set_shared(int on);
+int codegen_shared_enabled(void);
+
 #endif /* CODEGEN_H */

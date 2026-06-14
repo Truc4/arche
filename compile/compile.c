@@ -585,6 +585,13 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	EmitKind emit = opts ? opts->emit : EMIT_LINK;
 	int quiet = opts ? opts->quiet : 0;
 
+	/* `--emit=shared`: emit a loadable `.so`. Force whole-program (one clean export surface) and mark
+	 * codegen shared so arche defs get external (dlsym-able) linkage. Set explicitly each call (globals;
+	 * the in-process doctest runner reuses this entry) so shared-ness never leaks into a later build. */
+	codegen_set_shared(emit == EMIT_SHARED ? 1 : 0);
+	if (emit == EMIT_SHARED)
+		codegen_force_whole_program();
+
 	Frontend fe;
 	if (compile_frontend(user_source, source_path, &fe) != 0)
 		return 1;
@@ -835,8 +842,12 @@ int compile_source(const char *user_source, const char *source_path, const char 
 		 * longer DCEs unreferenced ones. `-function-sections`/`-data-sections` + the linker's
 		 * `--gc-sections` (below) restore dead-symbol stripping at link time. */
 		const char *sections = codegen_per_unit_enabled() ? "-function-sections -data-sections " : "";
-		int m = snprintf(llc_cmd, sizeof(llc_cmd), "llc %s-code-model=large -mcpu=x86-64-v3 -o %s %s", sections,
-		                 asm_target, opt_file);
+		/* A loadable `.so` needs position-independent code; `-code-model=small` is the standard, tested
+		 * PIC model (the exe path keeps `-no-pie -mcmodel=large`). */
+		const char *reloc = (emit == EMIT_SHARED) ? "-relocation-model=pic " : "";
+		const char *cmodel = (emit == EMIT_SHARED) ? "small" : "large";
+		int m = snprintf(llc_cmd, sizeof(llc_cmd), "llc %s%s-code-model=%s -mcpu=x86-64-v3 -o %s %s", reloc, sections,
+		                 cmodel, asm_target, opt_file);
 		if (m < 0 || m >= (int)sizeof(llc_cmd)) {
 			fprintf(stderr, "llc command too long\n");
 			goto cleanup;
@@ -870,6 +881,45 @@ int compile_source(const char *user_source, const char *source_path, const char 
 			fprintf(stderr, "Failed to assemble object file\n");
 			goto cleanup;
 		}
+		rc = 0;
+		goto cleanup;
+	}
+
+	/* `--emit=shared`: link a position-independent shared library (`cc -shared -fPIC`) with the PIC
+	 * runtime objects. Self-contained (.pic.o + -lc) so it loads standalone; device shims + `#link` libs
+	 * still apply. */
+	if (emit == EMIT_SHARED) {
+		const char *rt = arche_resource_dir(ARCHE_RES_RUNTIME);
+		char cc_cmd[8192];
+		int cc_len =
+		    snprintf(cc_cmd, sizeof(cc_cmd),
+		             "cc -shared -fPIC -o %s %s %s/stack_check.pic.o %s/io.pic.o %s/net.pic.o %s/term.pic.o -lc",
+		             out_path, asm_file, rt, rt, rt, rt);
+		if (cc_len < 0 || cc_len >= (int)sizeof(cc_cmd)) {
+			fprintf(stderr, "link command too long\n");
+			goto cleanup;
+		}
+		int link_count = opts ? opts->link_count : 0;
+		for (int li = 0; li < link_count; li++) {
+			int m = snprintf(cc_cmd + cc_len, sizeof(cc_cmd) - (size_t)cc_len, " %s", opts->link_paths[li]);
+			if (m < 0 || m >= (int)sizeof(cc_cmd) - cc_len) {
+				fprintf(stderr, "link command too long; refusing to drop --link inputs\n");
+				goto cleanup;
+			}
+			cc_len += m;
+		}
+		if (append_link_extras(cc_cmd, &cc_len, sizeof(cc_cmd), link_libs, link_lib_count) < 0) {
+			fprintf(stderr, "link command too long; refusing to drop device shims / #link libs\n");
+			goto cleanup;
+		}
+		if (!quiet)
+			printf("Linking shared library...\n");
+		if (system(cc_cmd) != 0) {
+			fprintf(stderr, "Failed to link shared library\n");
+			goto cleanup;
+		}
+		if (!quiet)
+			printf("Successfully generated shared library: %s\n", out_path);
 		rc = 0;
 		goto cleanup;
 	}

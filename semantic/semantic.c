@@ -6968,9 +6968,12 @@ static void sem_inline_module(SemanticContext *ctx, const char *mod_name, int se
 	/* Scope resolution: rename this module's pure-Arche decls + their intra-module references to the
 	 * qualified identity `<mod>.<name>` (foreign decls keep their C-symbol name). `full` is the set
 	 * of this module's pure-Arche names, so a bare reference inside the module binds to its own
-	 * member. */
-	for (int dd = first; dd < ctx->decl_count; dd++)
-		sem_record_rnop(ctx->decls[dd]->node.node, mod_name, full, fulln);
+	 * member. SKIP for `self_unit` (the editor's open-file device): the open file and these sibling
+	 * files are ONE unit, so they reference each other BARE (e.g. gfx/raster.arche calling gfx/gfx.arche's
+	 * `frame`) — qualifying to `gfx.frame` would leave the open file's bare `frame` unresolved. */
+	if (!self_unit)
+		for (int dd = first; dd < ctx->decl_count; dd++)
+			sem_record_rnop(ctx->decls[dd]->node.node, mod_name, full, fulln);
 	for (int x = 0; x < fulln; x++)
 		free(full[x]);
 	free(full);

@@ -58,6 +58,7 @@ struct CodegenContext {
 	 * pool storage — emit in every module as linkonce_odr, gated by the always-on ODR verifier in
 	 * compile.c). Default off → the whole-program path is unchanged. See the compilation plan. */
 	int per_unit;
+	int shared;         /* --shared: arche defs get external (dlsym-able) linkage; see codegen_set_shared */
 	int emit_only_unit; /* -1 = emit all units (whole-program / default) */
 
 	/* For tracking allocated values */
@@ -1465,9 +1466,10 @@ static const char *cg_fnsym(CodegenContext *ctx, const char *name, int is_extern
 	snprintf(buf, n, "arche.%s", name);
 	return buf;
 }
-/* Linkage keyword for an arche-owned def: external under per-unit (cross-object), else internal. */
+/* Linkage keyword for an arche-owned def: external under per-unit (cross-object) OR --shared (so the
+ * device's procs are dlsym-able in a `.so`), else internal. */
 static const char *cg_linkage(CodegenContext *ctx) {
-	return ctx->per_unit ? "" : "internal ";
+	return (ctx->per_unit || ctx->shared) ? "" : "internal ";
 }
 /* Linkage keyword for a SHARED definition (global storage, archetype helpers, monomorph instances) that
  * each per-unit module emits identically: `linkonce_odr` lets the linker fold the duplicate definitions
@@ -8442,12 +8444,24 @@ int codegen_per_unit_enabled(void) {
 	return g_per_unit_mode > 0 || getenv("ARCHE_PER_UNIT") != NULL;
 }
 
+/* `--shared`: emit a loadable shared library. arche-owned defs get EXTERNAL (not `internal`) linkage so
+ * the device's procs are dlsym-able by a hot-reload host; combined with whole-program codegen (forced by
+ * the CLI), names stay bare (no per-unit mangling). Off → the executable path is byte-unchanged. */
+static int g_shared_mode = 0;
+void codegen_set_shared(int on) {
+	g_shared_mode = on ? 1 : 0;
+}
+int codegen_shared_enabled(void) {
+	return g_shared_mode;
+}
+
 CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	CodegenContext *ctx = malloc(sizeof(CodegenContext));
 	ctx->ast = ast;
 	ctx->sem_ctx = sem_ctx;
 	ctx->had_error = 0;
 	ctx->per_unit = codegen_per_unit_enabled();
+	ctx->shared = g_shared_mode;
 	ctx->emit_only_unit = -1;
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
