@@ -21,10 +21,10 @@ main :: proc() {
     for (; y < h;) {
       x := 0;
       for (; x < w;) {
-        r := (x % W0) * 256 / W0;      // red ramps 0..255 across each W0-wide tile
-        b := (y % H0) * 256 / H0;      // blue ramps 0..255 down each H0-tall tile
+        r := (x % W0) * 256 / W0; // red ramps 0..255 across each W0-wide tile
+        b := (y % H0) * 256 / H0; // blue ramps 0..255 down each H0-tall tile
         px[y * w + x] = r * 65536 + b; // 0xRRGGBB
-        x = x + 1;
+        x             = x + 1;
       }
       y = y + 1;
     }

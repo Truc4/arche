@@ -301,31 +301,98 @@ static void sem_load_module_from_path(const char *pathstr, const char *source_di
  * folder's module name and ask semantic to inline that module into the root, so the open impl file's
  * bare references to device types (`fd`, …) resolve exactly as they do in a full build. Skips when the
  * open file IS the datasheet (it already defines those types) or the folder has no datasheet. */
-static void register_self_device(const char *path, const char *source_dir, ModuleHolds *holds) {
-	const char *slash = strrchr(source_dir, '/');
-	const char *mod_name = slash ? slash + 1 : source_dir;
-	if (!mod_name[0] || strcmp(mod_name, ".") == 0)
-		return;
-	const char *base = strrchr(path, '/');
-	base = base ? base + 1 : path;
-	DIR *d = opendir(source_dir);
+/* True if `folder` contains a `*.ds.arche` datasheet (i.e. it is a device folder). */
+static int folder_has_datasheet(const char *folder) {
+	DIR *d = opendir(folder);
 	if (!d)
-		return;
+		return 0;
+	int found = 0;
+	struct dirent *ent;
+	while ((ent = readdir(d)) != NULL) {
+		size_t L = strlen(ent->d_name);
+		if (L >= 9 && strcmp(ent->d_name + L - 9, ".ds.arche") == 0) {
+			found = 1;
+			break;
+		}
+	}
+	closedir(d);
+	return found;
+}
+
+/* Register every `*.arche` file directly in `folder` (datasheet + impls, NOT subdirs) under `mod_name`,
+ * skipping `skip_base` (the open file, already in the root). Returns the count registered. */
+static int register_dir_arche(const char *folder, const char *mod_name, const char *skip_base, ModuleHolds *holds) {
+	DIR *d = opendir(folder);
+	if (!d)
+		return 0;
 	int registered = 0;
 	struct dirent *ent;
 	while ((ent = readdir(d)) != NULL) {
 		size_t L = strlen(ent->d_name);
-		if (L < 9 || strcmp(ent->d_name + L - 9, ".ds.arche") != 0)
+		if (L < 6 || strcmp(ent->d_name + L - 6, ".arche") != 0)
 			continue;
-		if (strcmp(ent->d_name, base) == 0) /* the open file itself — its decls are already in the root */
+		if (skip_base && strcmp(ent->d_name, skip_base) == 0)
 			continue;
 		char fp[1300];
-		snprintf(fp, sizeof(fp), "%s/%s", source_dir, ent->d_name);
-		registered += sem_register_module_file(mod_name, fp, source_dir, holds, DECL_ORIGIN_USER_MODULE);
+		snprintf(fp, sizeof(fp), "%s/%s", folder, ent->d_name);
+		registered += sem_register_module_file(mod_name, fp, folder, holds, DECL_ORIGIN_USER_MODULE);
 	}
 	closedir(d);
+	return registered;
+}
+
+/* The open document may be a member file of a DEVICE folder (`<dir>/<name>/…` with a `.ds.arche`
+ * datasheet) — possibly inside a VARIANT subfolder (`<name>/x11/…`). The compiler only ever sees such
+ * a file as part of the WHOLE device (datasheet + all top-level impls + the selected variant), loaded
+ * via an `#import`; the editor analyzes one file in isolation. Reconstruct the device here: register
+ * every other `.arche` of it (datasheet, sibling impls, and the selected variant's files) under the
+ * device name and inline that module into the root, so the open file's references to device types
+ * (`window`) AND to sibling/variant decls (`gfx_be_*`) resolve exactly as in a full build. The open
+ * file itself is skipped (its decls are already the root). */
+static void register_self_device(const char *path, const char *source_dir, ModuleHolds *holds) {
+	const char *base = strrchr(path, '/');
+	base = base ? base + 1 : path;
+
+	/* Locate the device folder + name: the open file's own dir if it has a datasheet, else (a variant
+	 * overlay) its parent. `open_in_variant` = the open file lives in the variant subfolder. */
+	char devfolder[1024];
+	char devname[1024];
+	char varfolder[1024] = "";
+	if (folder_has_datasheet(source_dir)) {
+		snprintf(devfolder, sizeof(devfolder), "%s", source_dir);
+	} else {
+		snprintf(devfolder, sizeof(devfolder), "%s", source_dir);
+		char *psl = strrchr(devfolder, '/');
+		if (!psl || psl == devfolder)
+			return;
+		*psl = '\0';
+		if (!folder_has_datasheet(devfolder))
+			return; /* not a device file */
+		snprintf(varfolder, sizeof(varfolder), "%s", source_dir);
+	}
+	const char *dslash = strrchr(devfolder, '/');
+	const char *dn = dslash ? dslash + 1 : devfolder;
+	if (!dn[0] || strcmp(dn, ".") == 0)
+		return;
+	snprintf(devname, sizeof(devname), "%s", dn);
+
+	int registered = 0;
+	/* Top-level device files (datasheet + always-merged impls); skip the open file if it lives here. */
+	registered += register_dir_arche(devfolder, devname, varfolder[0] ? NULL : base, holds);
+	/* The selected variant's files: the folder the open file is in (skip the open file), or — when the
+	 * open file is a top-level device file — the variant chosen by the manifest/env. */
+	if (varfolder[0]) {
+		registered += register_dir_arche(varfolder, devname, base, holds);
+	} else {
+		const char *sel = variant_map_lookup(&g_sem_variants, devname);
+		if (sel && sel[0]) {
+			char vf[1300];
+			snprintf(vf, sizeof(vf), "%s/%s", devfolder, sel);
+			registered += register_dir_arche(vf, devname, NULL, holds);
+		}
+	}
 	if (registered)
-		semantic_set_extra_inline_module(mod_name);
+		semantic_set_extra_inline_module(devname);
 }
 
 static void resolve_uses_sem(const SyntaxNode *root, const char *src, const char *path, ModuleHolds *holds,
@@ -695,6 +762,11 @@ static Analysis analyze(char *user, const char *path) {
 	 * When the document IS core.arche, analyze it bare and zero the line offset. */
 	int prepend = g_core && g_core[0] && !path_is_core(path);
 	g_core_lines = prepend ? g_core_newlines : 0;
+	/* Tell semantic how many prepended-core lines to ignore, exactly as main.c does for the compiler.
+	 * Without this, core's own regions (e.g. core.arche's `#foreign`) count toward per-file checks and
+	 * a user file with its own `#foreign` would spuriously trip duplicate_region (E0121) in the editor
+	 * only — a classic analyzer/compiler divergence. */
+	semantic_set_print_line_offset(g_core_lines);
 	if (prepend) {
 		size_t cl = strlen(g_core), ul = strlen(user);
 		a.combined = malloc(cl + ul + 1);
