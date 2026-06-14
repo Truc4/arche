@@ -1,0 +1,7 @@
+// hotsys device: defines the Cell shape + a system over it. Not a standalone test.
+// RUN: true
+Cell :: arche { v }
+
+bump :: sys (v) {
+  v = v + 1;
+}

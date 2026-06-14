@@ -28,10 +28,17 @@ present :: proc(win: window) {
   gfx_be_present(win);
 }
 
-// Pump pending events (incl. resize); returns 1 while the window is open, 0 once a close (window-close
-// or key) is requested. Call each frame.
-poll :: proc(win: window)(is_open: int) {
-  gfx_be_poll(win)(is_open);
+// Pump pending events (incl. resize); returns `true` while the window is open, `false` once a close
+// (window-close or key) is requested. Call each frame. (The backend reports an int 0/1 at the C ABI; we
+// expose a proper bool so callers write `is_open := true; for (; is_open;) { … gfx.poll(win)(is_open); }`.)
+poll :: proc(win: window)(is_open: bool) {
+  gfx_be_poll(win)(r:);
+  // NOTE: arche comparisons (`r != 0`) currently yield i32, and `bool` is a distinct type, so we can't
+  // write `is_open = r != 0` (i32 → bool). Branch to a bool literal instead.
+  is_open = false;
+  if (r != 0) {
+    is_open = true;
+  }
 }
 
 // Destroy the window and release its backend state. Runs automatically at scope exit (@drop).

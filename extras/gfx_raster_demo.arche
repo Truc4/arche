@@ -7,8 +7,8 @@ main :: proc() {
   gfx.open(640, 480, "arche gfx raster — close or press a key")(win:);
 
   t       := 0;
-  is_open := 1;
-  for (; is_open != 0;) {
+  is_open := true;
+  for (; is_open;) {
     gfx.clear(win, 1052704); // 0x101020 dark blue-grey
     cx := 80 + t % 480; // circle slides across
     gfx.circle(win, cx, 240, 60, 16744512); // 0xFF8040 orange

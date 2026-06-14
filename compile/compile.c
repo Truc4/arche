@@ -339,10 +339,21 @@ static int build_unit_so(const char *unit_ll, const char *workdir, int u, const 
 	snprintf(cmd, sizeof(cmd), "llc -relocation-model=pic -code-model=small -mcpu=x86-64-v3 -o %s %s", asmf, optf);
 	if (system(cmd) != 0)
 		return 1;
-	/* `-Wl,-z,undefs` (the default for -shared) leaves the host-provided symbols undefined until load. */
-	snprintf(cmd, sizeof(cmd), "cc -shared -fPIC -o %s %s", out_so, asmf);
+	/* Link to a temp then atomically rename into place. The running host polls `out_so`'s mtime and
+	 * dlopens it on change; cc writes the `.so` non-atomically, so without this the host can catch a
+	 * half-written file mid-rebuild ("dlopen: file too short"). A rename publishes it in one step — the
+	 * host only ever sees the old `.so` or the complete new one.
+	 * (`-Wl,-z,undefs`, the -shared default, leaves host-provided symbols undefined until load.) */
+	char so_tmp[1400];
+	snprintf(so_tmp, sizeof(so_tmp), "%s.tmp", out_so);
+	snprintf(cmd, sizeof(cmd), "cc -shared -fPIC -o %s %s", so_tmp, asmf);
 	if (system(cmd) != 0)
 		return 1;
+	if (rename(so_tmp, out_so) != 0) {
+		snprintf(cmd, sizeof(cmd), "mv -f %s %s", so_tmp, out_so);
+		if (system(cmd) != 0)
+			return 1;
+	}
 	/* Record the IR hash so the next watcher pass can skip this unit if it didn't change. */
 	FILE *hf = fopen(hashf, "w");
 	if (hf) {

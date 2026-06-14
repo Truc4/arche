@@ -1,0 +1,3 @@
+tag :: func() -> []char {
+  return "GEN-BETA\n";
+}

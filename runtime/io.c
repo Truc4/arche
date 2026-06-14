@@ -15,6 +15,15 @@ double os_now_sec(void) {
 	return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
+/* Monotonic milliseconds — integer, for fixed-timestep loops (accumulate real elapsed ms, step the sim a
+ * fixed dt at a time, so the simulation runs at the same rate regardless of frame rate). Monotonic: only
+ * ever moves forward, immune to wall-clock/NTP jumps. */
+long long os_now_ms(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 /* The file/stdio family (stdin/stdout/stderr, fopen/fread/fwrite/fclose, fread_line,
  * csv_read_chunk) now lives in core.arche as pure-Arche syscall wrappers — a `file` is a raw
  * fd. Only the mmap-based file map, the clock, and argv remain here (they need a language

@@ -10,6 +10,7 @@
  * This file is C, not arche, because arche has no runtime function pointers by design: the dlopen/
  * dlsym/indirect-call machinery is confined here, an internal implementation detail of the dev loop. */
 #define _GNU_SOURCE
+#include "hotreload.h"
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -100,4 +101,11 @@ void *arche_hot_resolve(int unit, const char *sym) {
 	if (!g_units[unit].handle)
 		return NULL;
 	return dlsym(g_units[unit].handle, sym);
+}
+
+/* Reload generation: 0 until the first successful load, then bumped on each (re)load (see ensure_loaded). */
+unsigned arche_hot_gen(int unit) {
+	if (unit < 0 || unit >= HOT_MAX_UNITS)
+		return 0;
+	return g_units[unit].gen;
 }

@@ -1,0 +1,4 @@
+// hotsys device datasheet — components + storage requirement. Not a standalone test.
+// RUN: true
+v :: int;
+[1]Cell;
