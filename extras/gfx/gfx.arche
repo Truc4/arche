@@ -1,7 +1,11 @@
 // gfx public surface (always merged, backend-agnostic). Each call forwards to the selected variant's
-// `gfx_be_*` foreign symbol (declared #module-private in x11/backend.arche or wayland/backend.arche,
-// visible here because variant files share this device's unit). A pixel buffer is `[]int` in 0xRRGGBB
-// form, row-major, length width*height.
+// `gfx_be_*` foreign symbol (declared #module-private in x11/backend.arche, visible here because
+// variant files share this device's unit).
+//
+// The framebuffer is owned by the backend and tracks the window size, so the loop is:
+//   open → { frame (get a writable view + current w/h) → draw into it → present → poll } → close.
+// Re-querying `frame` each iteration is what makes the window resizable (incl. tiling WMs that pick
+// the size): the view follows the window's current dimensions.
 
 // Open a width x height window titled `title`; returns its handle (a null handle on failure). The
 // backend keeps its own copy of the title, so the slice is consumed (`own`).
@@ -9,15 +13,23 @@ open :: proc(w: int, h: int, own title: []char)(win: window) {
   gfx_be_open(w, h, move title)(win);
 }
 
-// Copy `px` (width*height ints, 0xRRGGBB) to the window and present it. The backend only reads `px`,
-// but an extern's array in-param must be `own` or in-out; the in-out idiom (px in the out-list too)
-// lends the buffer and hands the same view back, so the caller keeps ownership across frames.
-blit :: proc(win: window, px: []int) {
-  gfx_be_blit(win, _)(px);
+// The current writable framebuffer (0xRRGGBB ints, row-major) plus the window's CURRENT size. Write
+// `px[y*w + x]`; the view is valid until the next `frame`/`poll`. Call each iteration so it tracks
+// resizes.
+frame :: proc(win: window)(px: []int, w: int, h: int) {
+  gfx_be_frame(win)(raw:);
+  gfx_be_w(win)(w);
+  gfx_be_h(win)(h);
+  px = raw[0: w * h];
 }
 
-// Pump pending events; returns 1 while the window is open, 0 once a close (window-close or key) is
-// requested. Call each frame.
+// Present the framebuffer to the window.
+present :: proc(win: window) {
+  gfx_be_present(win);
+}
+
+// Pump pending events (incl. resize); returns 1 while the window is open, 0 once a close (window-close
+// or key) is requested. Call each frame.
 poll :: proc(win: window)(is_open: int) {
   gfx_be_poll(win)(is_open);
 }

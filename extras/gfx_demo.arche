@@ -1,30 +1,35 @@
-// gfx showcase: open a window, fill a software framebuffer with an R/B gradient, present it each
-// frame, and run until the window is closed or a key is pressed. The backend (x11) is picked by
-// extras/arche.toml; `ARCHE_SELECT=gfx=wayland arche run …` would swap it with no code change.
+// gfx showcase: open a RESIZABLE window and fill it with a gradient that REPEATS once per
+// original-window-sized tile. The framebuffer is owned by the backend and follows the window size
+// (re-queried via gfx.frame each frame), so when a WM (e.g. a tiling WM) stretches the window, the
+// W0 x H0 gradient tiles across the whole thing. Runs until the window is closed or a key is pressed.
+// Backend (x11) comes from extras/arche.toml; `ARCHE_SELECT=gfx=wayland arche run …` would swap it.
 //
 //   arche run extras/gfx_demo.arche
 #import { gfx os }
 
-W :: 256;
-H :: 192;
+W0 :: 640; // the original window size — also the gradient TILE size, so it repeats once per W0 x H0
+H0 :: 480;
 
 main :: proc() {
-  px: [49152]int; // W*H, row-major, 0xRRGGBB — a stack local (192 KB, well under the 8 MB stack)
-  gfx.open(W, H, "arche gfx — close the window or press a key")(win:);
-
-  y := 0;
-  for (; y < H;) {
-    x := 0;
-    for (; x < W;) {
-      px[y * W + x] = x * 65536 + y; // red ramps with x, blue with y
-      x             = x + 1;
-    }
-    y = y + 1;
-  }
+  gfx.open(W0, H0, "arche gfx — resize me; close or press a key")(win:);
 
   is_open := 1;
   for (; is_open != 0;) {
-    gfx.blit(win, px);
+    gfx.frame(win)(px:, w:, h:); // writable view sized to the window's CURRENT dimensions
+
+    y := 0;
+    for (; y < h;) {
+      x := 0;
+      for (; x < w;) {
+        r := (x % W0) * 256 / W0;      // red ramps 0..255 across each W0-wide tile
+        b := (y % H0) * 256 / H0;      // blue ramps 0..255 down each H0-tall tile
+        px[y * w + x] = r * 65536 + b; // 0xRRGGBB
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+
+    gfx.present(win);
     gfx.poll(win)(is_open);
     os.sleep_ms(16);
   }
