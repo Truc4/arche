@@ -2,7 +2,7 @@
 #import { io fmt }
 Task1Data :: arche { price :: float, quantity :: int, revenue :: float }
 
-[1000] Task1Data(1000) {
+[1000]Task1Data(1000) {
   price: 0.0, quantity: 0,
 }
 

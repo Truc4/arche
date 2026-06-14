@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s && %t | grep "total=100"
 #import { fmt }
 Body :: arche { px :: float, py :: float, mass :: float }
-[4] Body(4) {
+[4]Body(4) {
   px: 0.0, py: 0.0, mass: 0.0,
 }
 main :: proc() {

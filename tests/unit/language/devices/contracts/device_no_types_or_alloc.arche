@@ -7,7 +7,7 @@
 
 Thing :: arche { val } // references the datasheet's global `val`
 
-[2] Thing;
+[2]Thing;
 
 main :: proc() {
   insert(Thing, 1.0)(_:, _:);

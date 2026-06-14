@@ -1,6 +1,6 @@
 #import { fmt }
 Message :: arche { id :: int, value :: float }
-[100] Message;
+[100]Message;
 main :: proc() {
   msg := "allocations done\n";
   fmt.print(msg);

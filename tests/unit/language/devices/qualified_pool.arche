@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s && %t | grep "qualified_pool_ok"
 #import { "./phys" fmt }
 
-[8] Particle;
+[8]Particle;
 
 main :: proc() {
   insert(Particle, 10.0, 1.0)(_:, _:);

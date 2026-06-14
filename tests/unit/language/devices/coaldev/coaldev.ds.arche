@@ -4,4 +4,4 @@
 // RUN: true
 px :: float;
 py :: float;
-[4] Pt;
+[4]Pt;

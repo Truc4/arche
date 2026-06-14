@@ -3,7 +3,7 @@
 #import { fmt }
 Particle :: arche { pos :: float, vel :: float }
 
-[10] Particle;
+[10]Particle;
 
 advance :: sys (pos, vel) {
   pos = pos + vel;

@@ -3,7 +3,7 @@
 pos  :: float;
 Body :: arche { pos }
 
-[5] Body;
+[5]Body;
 
 dummy :: sys (pos) {
   fmt.printf("system_ran\n");

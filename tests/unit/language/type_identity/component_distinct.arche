@@ -5,7 +5,7 @@
 // RUN: %arche build -o %t %s && %t | grep "e=50"
 #import { fmt }
 Particle :: arche { mass :: float, charge :: float }
-[4] Particle(4);
+[4]Particle(4);
 main :: proc() {
   Particle.mass[0]   = 10.0;
   Particle.charge[0] = 5.0;

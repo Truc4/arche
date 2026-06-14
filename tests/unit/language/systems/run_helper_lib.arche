@@ -8,7 +8,7 @@
 hp  :: int;
 Mob :: arche { hp }
 
-[10] Mob;
+[10]Mob;
 
 bump :: sys (hp) {
   hp = hp + 1;

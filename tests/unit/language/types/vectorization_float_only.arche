@@ -2,7 +2,7 @@
 #import { fmt }
 FloatOps :: arche { val :: float }
 
-[8] FloatOps;
+[8]FloatOps;
 
 float_multiply :: sys (val) {
   val = val * 2.0;

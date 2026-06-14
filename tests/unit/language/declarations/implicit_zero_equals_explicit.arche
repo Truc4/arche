@@ -2,7 +2,7 @@
 // `g_implicit : int = 0`. Both produce a mutable scalar initialized to 0; they must behave the same.
 // (Names are distinctive to avoid colliding with core function locals — the purity checker is
 // name-based, so a global named `a`/`b`/`s` would shadow a core func's param of the same name.)
-// RUN: %arche build -o %t %s && %t | grep -q "imp=0 exp=0"
+// RUN: %arche build --exported-mutable=allow -o %t %s && %t | grep -q "imp=0 exp=0"
 #import { fmt }
 g_implicit: int; // implicit: defaults to = 0
 g_explicit: int = 0; // explicit zero

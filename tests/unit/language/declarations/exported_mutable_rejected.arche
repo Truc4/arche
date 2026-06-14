@@ -1,0 +1,11 @@
+// W0022 exported_mutable_global — a top-level mutable global on the exported surface is an ERROR by
+// default. Shared mutable state must live in a pool (or be #module/#file-private in a library).
+// The build fails; the diagnostic is reported as a lint *error*.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "Lint error \[exported_mutable_global\]" %t.out
+#import { fmt }
+count := 0;
+
+main :: proc() {
+  count = count + 1;
+  fmt.printf("count=%d\n", count);
+}

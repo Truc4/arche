@@ -2,7 +2,7 @@
 #import { fmt }
 Pair :: arche { a :: int, b :: int }
 
-[3] Pair(3) {
+[3]Pair(3) {
   a: 10, b: 20,
 }
 

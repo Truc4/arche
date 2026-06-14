@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t | grep "fd="
+// RUN: %arche build --exported-mutable=allow -o %t %s && %t | grep "fd="
 // Test if csv_open causes segfault
 #import { io fmt }
 

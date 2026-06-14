@@ -1,7 +1,7 @@
 // Mutable global array with an initializer (previously "global array initializers are not yet
 // implemented"). `XS : [3]int = { 5, 6, 7 }` — `global` linkage, same initializer codegen as a
 // const. (RED until prefix syntax + typed initializer codegen land.)
-// RUN: %arche build -o %t %s && %t | grep -x "7"
+// RUN: %arche build --exported-mutable=allow -o %t %s && %t | grep -x "7"
 #import { fmt }
 XS: [3]int = { 5, 6, 7 }
 

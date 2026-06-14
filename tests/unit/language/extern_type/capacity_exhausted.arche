@@ -9,7 +9,7 @@ Resource :: arche { cell }
 #foreign {
   resource_open :: proc(initial: int)(ret: cell);
 }
-[2] Resource;
+[2]Resource;
 
 main :: proc() {
   resource_open(1)(r1:);
