@@ -39,4 +39,9 @@ int codegen_per_unit_enabled(void);
 void codegen_set_shared(int on);
 int codegen_shared_enabled(void);
 
+/* Dev hot-reload (`arche run`): route the driver's cross-unit (device) calls through a reload trampoline
+ * (internal indirect call). `arche build` leaves it off → direct calls, no runtime fn-pointers. */
+void codegen_set_hot(int on);
+int codegen_hot_enabled(void);
+
 #endif /* CODEGEN_H */

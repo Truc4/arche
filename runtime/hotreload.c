@@ -12,6 +12,7 @@
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -30,11 +31,17 @@ typedef struct {
 
 static HotUnit g_units[HOT_MAX_UNITS];
 
-/* Record a device unit's `.so` path. Codegen emits one call per imported device at host startup. */
-void arche_hot_register(int unit, const char *path) {
-	if (unit < 0 || unit >= HOT_MAX_UNITS || !path)
+/* Record a device unit's reloadable `.so`. Codegen passes a bare name (`unit_N.so`); the actual file
+ * lives under $ARCHE_HOT_DIR (set by `arche run`), so resolve the full path here. Codegen emits one call
+ * per device unit at host startup. */
+void arche_hot_register(int unit, const char *name) {
+	if (unit < 0 || unit >= HOT_MAX_UNITS || !name)
 		return;
-	snprintf(g_units[unit].path, sizeof(g_units[unit].path), "%s", path);
+	const char *dir = getenv("ARCHE_HOT_DIR");
+	if (dir && dir[0])
+		snprintf(g_units[unit].path, sizeof(g_units[unit].path), "%s/%s", dir, name);
+	else
+		snprintf(g_units[unit].path, sizeof(g_units[unit].path), "%s", name);
 	g_units[unit].handle = NULL;
 	g_units[unit].mtime = 0;
 	g_units[unit].gen = 0;

@@ -1,0 +1,12 @@
+// `arche run` is the dev path = HOT (no flag). With ARCHE_HOT_DIR set, each imported device is built to a
+// reloadable `.so` under it and the driver's cross-device calls route through the reload trampoline
+// (`arche_hot_resolve`) — yet the program runs identically to a static build. The complement of
+// `release_no_hot.arche`: dev turns the indirection ON, release compiles it OUT.
+// RUN: rm -rf %t.hot %t.cache && mkdir -p %t.hot
+// RUN: env ARCHE_HOT_DIR=%t.hot ARCHE_CACHE_DIR=%t.cache %arche run %s | grep -qF "hot_ok"
+// the imported device(s) materialized as loadable .so(s) in the hot dir
+// RUN: ls %t.hot/unit_1.so
+#import { fmt }
+main :: proc() {
+  fmt.print("hot_ok\n")();
+}

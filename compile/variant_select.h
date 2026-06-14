@@ -70,4 +70,16 @@ const char *variant_map_lookup(const VariantMap *m, const char *device);
 
 void variant_map_free(VariantMap *m);
 
+/* Extra module-search roots so a project can import devices/modules that live OUTSIDE its own source
+ * tree (e.g. an external app importing the arche repo's `extras`/`stdlib`). Sources, highest precedence
+ * first: the `ARCHE_PATH` env (colon-separated dirs) then the nearest `arche.toml`'s `[lib] paths = [..]`
+ * (relative entries resolved against the manifest dir). The SAME builder feeds the compiler resolver and
+ * the analyzer, so the editor and the build search identical places. Order in `dirs` is search order. */
+#define ARCHE_LIB_MAX_ROOTS 16
+typedef struct {
+	char dirs[ARCHE_LIB_MAX_ROOTS][1024];
+	int count;
+} LibRoots;
+void arche_lib_roots(const char *source_dir, LibRoots *out);
+
 #endif /* ARCHE_VARIANT_SELECT_H */

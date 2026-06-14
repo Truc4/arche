@@ -59,6 +59,7 @@ struct CodegenContext {
 	 * compile.c). Default off → the whole-program path is unchanged. See the compilation plan. */
 	int per_unit;
 	int shared;         /* --shared: arche defs get external (dlsym-able) linkage; see codegen_set_shared */
+	int hot;            /* dev hot-reload (arche run): cross-unit calls route through a reload trampoline */
 	int emit_only_unit; /* -1 = emit all units (whole-program / default) */
 
 	/* For tracking allocated values */
@@ -8455,6 +8456,18 @@ int codegen_shared_enabled(void) {
 	return g_shared_mode;
 }
 
+/* Dev hot-reload (`arche run`): the driver's calls to a cross-unit (device) proc/func go through a
+ * compiler-emitted trampoline that resolves the symbol from the device's reloadable `.so` and calls it
+ * indirectly (the ONLY indirect call; never user-visible). OFF for `arche build` → plain direct calls,
+ * so a release binary has zero runtime function pointers. Implies per-unit. */
+static int g_hot_mode = 0;
+void codegen_set_hot(int on) {
+	g_hot_mode = on ? 1 : 0;
+}
+int codegen_hot_enabled(void) {
+	return g_hot_mode;
+}
+
 CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	CodegenContext *ctx = malloc(sizeof(CodegenContext));
 	ctx->ast = ast;
@@ -8462,6 +8475,7 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->had_error = 0;
 	ctx->per_unit = codegen_per_unit_enabled();
 	ctx->shared = g_shared_mode;
+	ctx->hot = g_hot_mode;
 	ctx->emit_only_unit = -1;
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
@@ -8591,6 +8605,101 @@ static int collect_sys_matching_archs(CodegenContext *ctx, HirSysDecl *sys, cons
  * callback) have no real symbol (only their monomorphized instances do), so they're skipped. Systems
  * are defined only in the entry unit (unit 0), so any non-entry unit that `run`s one needs a declare —
  * over-declare all matching systems there (harmless if unused). Inert unless emitting one unit. */
+/* Param TYPES only (no names), for an indirect-call function type — mirrors emit_proc_params' shapes. */
+static void emit_proc_param_types(CodegenContext *ctx, HirProcDecl *proc) {
+	int n = 0;
+	for (int i = 0; i < proc->param_count; i++) {
+		HirType *pt = proc->params[i]->type;
+		const char *tn = field_base_type_name(pt);
+		const char *bt = llvm_type_from_arche(tn);
+		if (n++)
+			buffer_append(ctx, ", ");
+		if (pt && pt->tag == HIR_TYPE_ARRAY)
+			buffer_append_fmt(ctx, "%s*, i64", bt);
+		else if (pt && pt->tag == HIR_TYPE_SHAPED_ARRAY)
+			buffer_append_fmt(ctx, "%s*", bt);
+		else if (find_archetype_decl(ctx, tn))
+			buffer_append_fmt(ctx, "%%struct.%s*", tn);
+		else
+			buffer_append_fmt(ctx, "%s", bt);
+	}
+	for (int oi = 0; oi < proc->out_param_count; oi++) {
+		if (proc_out_param_is_inout(proc, oi))
+			continue;
+		HirType *ot = proc->out_params[oi]->type;
+		const char *otn = field_base_type_name(ot);
+		if (n++)
+			buffer_append(ctx, ", ");
+		if (ot && ot->tag == HIR_TYPE_SHAPED_ARRAY)
+			buffer_append_fmt(ctx, "%s*", llvm_type_from_arche(otn));
+		else if (ot && find_archetype_decl(ctx, otn))
+			buffer_append_fmt(ctx, "%%struct.%s*", otn);
+		else
+			buffer_append_fmt(ctx, "%s*", return_member_llvm(ot));
+	}
+}
+static void emit_func_param_types(CodegenContext *ctx, HirFuncDecl *func) {
+	for (int i = 0; i < func->param_count; i++) {
+		HirType *pt = func->params[i]->type;
+		const char *bt = llvm_type_from_arche(field_base_type_name(pt));
+		if (i > 0)
+			buffer_append(ctx, ", ");
+		if (pt && pt->tag == HIR_TYPE_ARRAY)
+			buffer_append_fmt(ctx, "%s*, i64", bt);
+		else if (pt && (pt->tag == HIR_TYPE_SHAPED_ARRAY))
+			buffer_append_fmt(ctx, "%s*", bt);
+		else
+			buffer_append_fmt(ctx, "%s", bt);
+	}
+}
+
+/* Dev hot-reload: emit a trampoline DEFINE for a cross-unit (device) callee, in place of its plain
+ * `declare`. Body: resolve the device's reloadable symbol, then one indirect call forwarding the args.
+ * `mangled` is the per-unit symbol (`arche.<name>`) — also the name the device `.so` exports and the
+ * host dlsym's. `bare` (the unmangled name) keys the private symbol-name string global. This is the ONLY
+ * indirect call arche emits, and only in hot mode (so a release build never has one). */
+static void emit_hot_trampoline(CodegenContext *ctx, const char *mangled, const char *bare, int unit, int is_proc,
+                                HirProcDecl *p, HirFuncDecl *f) {
+	size_t slen = strlen(mangled) + 1;
+	buffer_append_fmt(ctx, "@.hotsym.%s = private unnamed_addr constant [%zu x i8] c\"%s\\00\"\n", bare, slen, mangled);
+	char ret[512];
+	if (is_proc || f->return_type_count == 0)
+		snprintf(ret, sizeof(ret), "void");
+	else
+		func_llvm_return_type(f, ret, sizeof(ret));
+	buffer_append_fmt(ctx, "define %s @%s(", ret, mangled);
+	if (is_proc)
+		emit_proc_params(ctx, p);
+	else
+		emit_func_params(ctx, f);
+	buffer_append(ctx, ") {\nentry:\n");
+	char *fp = gen_value_name(ctx);
+	buffer_append_fmt(ctx,
+	                  "  %s = call i8* @arche_hot_resolve(i32 %d, i8* getelementptr inbounds ([%zu x i8], [%zu x i8]* "
+	                  "@.hotsym.%s, i64 0, i64 0))\n",
+	                  fp, unit, slen, slen, bare);
+	char *fpc = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = bitcast i8* %s to %s (", fpc, fp, ret);
+	if (is_proc)
+		emit_proc_param_types(ctx, p);
+	else
+		emit_func_param_types(ctx, f);
+	buffer_append(ctx, ")*\n");
+	if (strcmp(ret, "void") == 0) {
+		buffer_append_fmt(ctx, "  call void %s(", fpc);
+		if (is_proc)
+			emit_proc_params(ctx, p);
+		else
+			emit_func_params(ctx, f);
+		buffer_append(ctx, ")\n  ret void\n}\n");
+	} else {
+		char *r = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = call %s %s(", r, ret, fpc);
+		emit_func_params(ctx, f);
+		buffer_append_fmt(ctx, ")\n  ret %s %s\n}\n", ret, r);
+	}
+}
+
 static void emit_cross_unit_declares(CodegenContext *ctx) {
 	if (!ctx->per_unit || ctx->emit_only_unit < 0)
 		return;
@@ -8615,26 +8724,44 @@ static void emit_cross_unit_declares(CodegenContext *ctx) {
 		}
 		if (d->unit == ctx->emit_only_unit)
 			continue;
+		/* `main`/`main_user` is the program entry — defined once in unit 0, never a cross-unit callee.
+		 * cg_fnsym leaves it un-mangled (returns the name, doesn't touch `sym`), so emitting a cross-unit
+		 * stub here would reuse the stale `sym` buffer AND collide with the entry. Skip it. */
+		const char *dname = (d->kind == HIR_DECL_PROC)   ? d->data.proc->name
+		                    : (d->kind == HIR_DECL_FUNC) ? d->data.func->name
+		                                                 : NULL;
+		if (dname && (strcmp(dname, "main") == 0 || strcmp(dname, "main_user") == 0))
+			continue;
 		if (d->kind == HIR_DECL_FUNC && !d->data.func->is_extern && !d->data.func->is_policy) {
 			/* A policy is a MACRO — inlined at op sites, never emitted as a function (see the
 			 * definition pass), so it must NOT get a cross-unit declare either. Declaring it would be
 			 * dangling, and same-named policies across categories (e.g. `abort` in both `bounds` and
 			 * `divide`) collide as duplicate declares. */
 			HirFuncDecl *f = d->data.func;
-			char ret[512];
-			if (f->return_type_count == 0)
-				snprintf(ret, sizeof(ret), "void");
-			else
-				func_llvm_return_type(f, ret, sizeof(ret));
-			buffer_append_fmt(ctx, "declare %s @%s(", ret, cg_fnsym(ctx, f->name, 0, sym, sizeof(sym)));
-			emit_func_params(ctx, f);
-			buffer_append(ctx, ")\n");
+			cg_fnsym(ctx, f->name, 0, sym, sizeof(sym));
+			if (ctx->hot) {
+				emit_hot_trampoline(ctx, sym, f->name, d->unit, 0, NULL, f);
+			} else {
+				char ret[512];
+				if (f->return_type_count == 0)
+					snprintf(ret, sizeof(ret), "void");
+				else
+					func_llvm_return_type(f, ret, sizeof(ret));
+				buffer_append_fmt(ctx, "declare %s @%s(", ret, sym);
+				emit_func_params(ctx, f);
+				buffer_append(ctx, ")\n");
+			}
 		} else if (d->kind == HIR_DECL_PROC && !d->data.proc->is_extern && !is_archetype_parametric(d->data.proc) &&
 		           !has_callback_param(ctx, d->data.proc)) {
 			HirProcDecl *p = d->data.proc;
-			buffer_append_fmt(ctx, "declare void @%s(", cg_fnsym(ctx, p->name, 0, sym, sizeof(sym)));
-			emit_proc_params(ctx, p);
-			buffer_append(ctx, ")\n");
+			cg_fnsym(ctx, p->name, 0, sym, sizeof(sym));
+			if (ctx->hot) {
+				emit_hot_trampoline(ctx, sym, p->name, d->unit, 1, p, NULL);
+			} else {
+				buffer_append_fmt(ctx, "declare void @%s(", sym);
+				emit_proc_params(ctx, p);
+				buffer_append(ctx, ")\n");
+			}
 		}
 	}
 }
@@ -8661,6 +8788,10 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "declare void @abort()\n");
 	/* `write` (libc, for a policy's stderr diagnostic) is declared by core's `#foreign` block, which is
 	 * prepended to every program — no codegen-side declare, so no redefinition clash. */
+
+	/* Dev hot-reload: the reload runtime (linked into the host, RTLD-visible to device .so's). */
+	if (ctx->hot)
+		buffer_append(ctx, "declare i8* @arche_hot_resolve(i32, i8*)\n");
 
 	/* Per-unit: declare cross-unit funcs/procs up front (inert in whole-program mode). */
 	emit_cross_unit_declares(ctx);
@@ -8829,9 +8960,30 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	if (!(ctx->per_unit && ctx->emit_only_unit >= 1)) {
 		char init_sym[512], mainu_sym[512];
 		buffer_append(ctx, "\ndeclare void @arche_set_args(i32, i8**)\n");
+		/* Dev hot-reload: register each device unit's reloadable `.so` (a name the runtime resolves under
+		 * $ARCHE_HOT_DIR). The host calls these at startup; the per-symbol trampolines then resolve+reload. */
+		int hot_maxu = 0;
+		if (ctx->hot) {
+			for (int i = 0; i < ctx->ast->decl_count; i++)
+				if (ctx->ast->decls[i]->unit > hot_maxu)
+					hot_maxu = ctx->ast->decls[i]->unit;
+			buffer_append(ctx, "declare void @arche_hot_register(i32, i8*)\n");
+			for (int u = 1; u <= hot_maxu; u++)
+				buffer_append_fmt(ctx, "@.hotpath.%d = private unnamed_addr constant [%d x i8] c\"unit_%d.so\\00\"\n",
+				                  u, (int)(strlen("unit_.so") + 1 + snprintf(NULL, 0, "%d", u)), u);
+		}
 		buffer_append(ctx, "\ndefine i32 @main(i32 %argc, i8** %argv) {\n");
 		buffer_append(ctx, "entry:\n");
 		buffer_append(ctx, "  call void @arche_set_args(i32 %argc, i8** %argv)\n");
+		if (ctx->hot)
+			for (int u = 1; u <= hot_maxu; u++) {
+				int plen = (int)(strlen("unit_.so") + 1 + snprintf(NULL, 0, "%d", u));
+				buffer_append_fmt(
+				    ctx,
+				    "  call void @arche_hot_register(i32 %d, i8* getelementptr inbounds ([%d x i8], [%d x "
+				    "i8]* @.hotpath.%d, i64 0, i64 0))\n",
+				    u, plen, plen, u);
+			}
 
 		/* Emit allocation initialization code (always, regardless of user main) */
 		for (int i = 0; i < ctx->alloc_count; i++) {

@@ -1,0 +1,10 @@
+// USER INVARIANT: a release `arche build` must contain NO runtime function pointers. The dev-only
+// hot-reload dispatch (the `arche_hot_resolve` trampoline + indirect call) is compiled out ENTIRELY —
+// release cross-device calls are ordinary direct calls. Assert the emitted IR is clean: zero
+// `arche_hot_resolve`. (`arche run` is the only path that turns the trampoline on; `build` never does.)
+// RUN: %arche build --emit=llvm-ir -o %t.ll %s
+// RUN: ! grep -q arche_hot_resolve %t.ll
+#import { fmt }
+main :: proc() {
+  fmt.print("ok\n")();
+}

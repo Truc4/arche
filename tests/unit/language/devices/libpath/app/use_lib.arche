@@ -1,0 +1,10 @@
+// Import a device from a SEPARATE source root — the `extlib` device lives in ../vendor, not in this app's
+// tree. Search roots come from arche.toml `[lib] paths` (first RUN, no env) and ARCHE_PATH (second RUN).
+// Proves cross-root imports resolve; the analyzer shares the resolver, so the editor agrees.
+// RUN: %arche build -o %t %s && %t | grep -qF "lib=42"
+// RUN: env ARCHE_PATH=%S/../vendor %arche build -o %t.e %s && %t.e | grep -qF "lib=42"
+#import { extlib fmt }
+main :: proc() {
+  r := extlib.dbl(21);
+  fmt.printf("lib=%d\n", r);
+}
