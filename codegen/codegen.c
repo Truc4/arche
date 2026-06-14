@@ -8307,13 +8307,14 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 	buffer_append(ctx, "}\n\n");
 }
 
-static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys) {
-	/* Per-unit: a system is emitted exactly once, in the ENTRY unit (0) — regardless of which unit it
-	 * was declared in (a device system lives in the device's unit but is `run` only from the entry).
-	 * Emitting it in unit 0 (where the archetype types/pools are also present via the hoist + linkonce_odr
-	 * globals) gives a single external definition that the entry's `run` dispatch resolves — no
-	 * linkonce_odr duplication, so nothing to keep byte-identical. Skip in any non-entry per-unit module. */
-	if (ctx->per_unit && ctx->emit_only_unit >= 1)
+static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys, int decl_unit) {
+	/* Per-unit: a system is emitted in the unit that DECLARED it (a device's system lives in that device's
+	 * unit), so editing a device's system body rebuilds ITS `.so` and hot-reloads — exactly like a proc.
+	 * A `run` from another unit (the driver) reaches it via a cross-unit declare (release) or reload
+	 * trampoline (dev), see emit_cross_unit_declares. Archetype struct types + pool globals are present in
+	 * every module (hoist + linkonce_odr), and the pool storage is passed in by the run site, so the body
+	 * is unit-independent. Whole-program (emit_only_unit < 0) always emits. */
+	if (ctx->per_unit && ctx->emit_only_unit >= 0 && ctx->emit_only_unit != decl_unit)
 		return;
 
 	/* Collect all archetypes that have the required fields */
@@ -8700,6 +8701,33 @@ static void emit_hot_trampoline(CodegenContext *ctx, const char *mangled, const 
 	}
 }
 
+/* Dev hot-reload: the trampoline for a cross-unit SYSTEM. A system's ABI is `void(%struct.A*, ...)` over
+ * the archetypes it matches (the driver's pools, passed by the `run` site); this forwards them through a
+ * reload-resolved indirect call so editing a device's system body reloads live, exactly like a proc. */
+static void emit_hot_sys_trampoline(CodegenContext *ctx, const char *mangled, const char *bare, int unit,
+                                    const char *archs[], int na) {
+	size_t slen = strlen(mangled) + 1;
+	buffer_append_fmt(ctx, "@.hotsym.%s = private unnamed_addr constant [%zu x i8] c\"%s\\00\"\n", bare, slen, mangled);
+	buffer_append_fmt(ctx, "define void @%s(", mangled);
+	for (int a = 0; a < na; a++)
+		buffer_append_fmt(ctx, "%s%%struct.%s* %%arg%d", a ? ", " : "", archs[a], a);
+	buffer_append(ctx, ") {\nentry:\n");
+	char *fp = gen_value_name(ctx);
+	buffer_append_fmt(ctx,
+	                  "  %s = call i8* @arche_hot_resolve(i32 %d, i8* getelementptr inbounds ([%zu x i8], [%zu x i8]* "
+	                  "@.hotsym.%s, i64 0, i64 0))\n",
+	                  fp, unit, slen, slen, bare);
+	char *fpc = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = bitcast i8* %s to void (", fpc, fp);
+	for (int a = 0; a < na; a++)
+		buffer_append_fmt(ctx, "%s%%struct.%s*", a ? ", " : "", archs[a]);
+	buffer_append(ctx, ")*\n");
+	buffer_append_fmt(ctx, "  call void %s(", fpc);
+	for (int a = 0; a < na; a++)
+		buffer_append_fmt(ctx, "%s%%struct.%s* %%arg%d", a ? ", " : "", archs[a], a);
+	buffer_append(ctx, ")\n  ret void\n}\n");
+}
+
 static void emit_cross_unit_declares(CodegenContext *ctx) {
 	if (!ctx->per_unit || ctx->emit_only_unit < 0)
 		return;
@@ -8707,19 +8735,23 @@ static void emit_cross_unit_declares(CodegenContext *ctx) {
 		HirDecl *d = ctx->ast->decls[i];
 		char sym[512];
 		if (d->kind == HIR_DECL_SYS) {
-			if (ctx->emit_only_unit < 1)
-				continue; /* unit 0 defines systems; no declare needed there */
+			/* A system is defined in its DECLARING unit (so editing a device's system rebuilds its .so);
+			 * any OTHER unit that `run`s it needs a cross-unit declare (or a hot trampoline). */
+			if (d->unit == ctx->emit_only_unit)
+				continue; /* defined here */
 			const char *archs[256];
 			int na = collect_sys_matching_archs(ctx, d->data.sys, archs, 256);
 			if (na == 0)
 				continue; /* no matching shape → no definition emitted → nothing to declare */
-			buffer_append_fmt(ctx, "declare void @%s(", cg_fnsym(ctx, d->data.sys->name, 0, sym, sizeof(sym)));
-			for (int a = 0; a < na; a++) {
-				if (a > 0)
-					buffer_append(ctx, ", ");
-				buffer_append_fmt(ctx, "%%struct.%s*", archs[a]);
+			cg_fnsym(ctx, d->data.sys->name, 0, sym, sizeof(sym));
+			if (ctx->hot) {
+				emit_hot_sys_trampoline(ctx, sym, d->data.sys->name, d->unit, archs, na);
+			} else {
+				buffer_append_fmt(ctx, "declare void @%s(", sym);
+				for (int a = 0; a < na; a++)
+					buffer_append_fmt(ctx, "%s%%struct.%s*", a ? ", " : "", archs[a]);
+				buffer_append(ctx, ")\n");
 			}
-			buffer_append(ctx, ")\n");
 			continue;
 		}
 		if (d->unit == ctx->emit_only_unit)
@@ -8917,7 +8949,7 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			codegen_proc_decl(ctx, decl->data.proc);
 			break;
 		case HIR_DECL_SYS:
-			codegen_sys_decl(ctx, decl->data.sys);
+			codegen_sys_decl(ctx, decl->data.sys, decl->unit);
 			break;
 		case HIR_DECL_CONST:
 			/* Value consts are inlined at their use sites (semantic_get_const_value); type

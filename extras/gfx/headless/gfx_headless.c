@@ -62,7 +62,13 @@ void gfx_be_present(void *handle) {
 	const char *path = getenv("GFX_HEADLESS_DUMP");
 	if (!path || !*path)
 		return;
-	FILE *f = fopen(path, "wb");
+	/* Write to a sibling temp then rename over `path` — present can fire every frame, so an ATOMIC publish
+	 * lets a watcher/test read a whole PPM instead of a half-written one (torn read). */
+	char tmp[2048];
+	int tl = snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+	if (tl < 0 || tl >= (int)sizeof(tmp))
+		return;
+	FILE *f = fopen(tmp, "wb");
 	if (!f)
 		return;
 	fprintf(f, "P6\n%d %d\n255\n", g->w, g->h);
@@ -74,6 +80,7 @@ void gfx_be_present(void *handle) {
 		fwrite(rgb, 1, 3, f);
 	}
 	fclose(f);
+	rename(tmp, path);
 }
 
 int gfx_be_poll(void *handle) {

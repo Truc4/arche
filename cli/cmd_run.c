@@ -271,7 +271,22 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 	 * bump means a device was edited → recompile (the object cache reuses unchanged units; only the touched
 	 * device's `.so` is relinked into ARCHE_HOT_DIR, where the running host reloads it). The host exe is
 	 * rebuilt too but never re-exec'd — the live child keeps running on its staged copy. `--whole-program`
-	 * (not hot) just blocks on the child like a plain `go run`. */
+	 * (not hot) just blocks on the child like a plain `go run`.
+	 *
+	 * TODO(hot-reload, deferred — see docs/hot_reload.md "Deferred rebuild work" for the why/why-not):
+	 *  - BENCHMARK then maybe trim the rebuild: an edit re-runs the WHOLE front-end (parse+analyze every
+	 *    unit) + relinks the changed device `.so`. Fine for small projects (sub-second); measure before
+	 *    adding front-end incrementality, which is real complexity for a dev-only path.
+	 *  - DEBOUNCE: a burst of saves triggers a rebuild per 200ms tick. Partial writes are already retried
+	 *    (advance watch_mtime only on success), so this is cosmetic; add coalescing only if it churns.
+	 *  - PER-CALL dispatch cost: arche_hot_resolve does stat+dlsym per cross-device call. Device calls are
+	 *    coarse (~tens/frame; a system call processes all rows at once), so it's ~0.2% at 60fps — measure
+	 *    before caching the resolved pointer + a reload generation counter.
+	 *  - CLEANUP: ARCHE_HOT_DIR accumulates unit_N.so + the runtime's versioned .hot.<gen> copies across a
+	 *    session; prune stale ones (keep the live generation) on startup/exit.
+	 *  - FLAKY-HARNESS NOTE: a Python subprocess launching this with stdout=DEVNULL + stderr=file +
+	 *    start_new_session can wedge the host on some boxes (shell `>/dev/null` and a piped stdout are
+	 *    fine); the integration tests route stdout to a file + retry once. Root-cause the fd interaction. */
 	long long watch_mtime = hot ? latest_arche_mtime(proj) : 0;
 	int status = 0;
 	if (!hot) {

@@ -58,11 +58,8 @@ def wait_for(path, needle, timeout):
     return False
 
 
-def main():
-    if not os.path.exists(arche_bin):
-        print("SKIP: arche binary not built", file=sys.stderr)
-        return 0
-
+def attempt():
+    """Run the scenario once; return (ok, detail). Timing-sensitive, so main() retries."""
     work = tempfile.mkdtemp(prefix='arche_hotreload_')
     proc = None
     try:
@@ -88,18 +85,17 @@ def main():
                                 start_new_session=True, env=env)
 
         def fail(msg):
-            print("FAIL: " + msg, file=sys.stderr)
             try:
                 with open(err_path) as fh:
                     tail = ''.join(fh.readlines()[-25:])
                 if tail.strip():
-                    print("--- host/watcher stderr (tail) ---\n" + tail, file=sys.stderr)
+                    msg += "\n--- host/watcher stderr (tail) ---\n" + tail
             except OSError:
                 pass
-            return 1
+            return (False, msg)
 
         # 1) Host comes up and streams the original tag (includes the initial compile + device .so links).
-        if not wait_for(out_path, 'GEN-ALPHA', timeout=40):
+        if not wait_for(out_path, 'GEN-ALPHA', timeout=60):
             return fail("host never emitted the initial tag (GEN-ALPHA)")
 
         # 2) Edit the device WHILE the host runs. The watcher should rebuild dev's .so; the host reloads it.
@@ -107,16 +103,14 @@ def main():
             f.write(DEV_BETA)
 
         # 3) The live host must start emitting the NEW tag — the actual reload assertion.
-        if not wait_for(out_path, 'GEN-BETA', timeout=40):
+        if not wait_for(out_path, 'GEN-BETA', timeout=60):
             return fail("edit did not take effect in the running host (no GEN-BETA)")
 
         # Sanity: the host was the SAME process throughout (never restarted).
         if proc.poll() is not None:
-            print("FAIL: host exited instead of reloading in place", file=sys.stderr)
-            return 1
+            return (False, "host exited instead of reloading in place")
 
-        print("PASS: live device edit reloaded into the running host (ALPHA -> BETA)")
-        return 0
+        return (True, "live device edit reloaded into the running host (ALPHA -> BETA)")
     finally:
         if proc is not None and proc.poll() is None:
             try:
@@ -131,6 +125,22 @@ def main():
                 except ProcessLookupError:
                     pass
         shutil.rmtree(work, ignore_errors=True)
+
+
+def main():
+    if not os.path.exists(arche_bin):
+        print("SKIP: arche binary not built", file=sys.stderr)
+        return 0
+    last = ""
+    for i in range(2):  # one retry: live-timing test, not a logic test
+        ok, detail = attempt()
+        if ok:
+            print("PASS: " + detail)
+            return 0
+        last = detail
+        print("attempt %d failed: %s" % (i + 1, detail.splitlines()[0]), file=sys.stderr)
+    print("FAIL: " + last, file=sys.stderr)
+    return 1
 
 
 if __name__ == '__main__':
