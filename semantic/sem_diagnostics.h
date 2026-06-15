@@ -193,6 +193,10 @@ typedef enum {
 	                                     shadows the enclosing proc's out-param of the same name — the
 	                                     call's result fills the shadow, the out-param is left unwritten
 	                                     (silent lost writeback). Use `(name)` (no colon) to write it. */
+	SEM_LINT_sys_writes_foreign_pool, /* a system writes a pool it does not iterate — a foreign-pool write in
+	                                     a per-entity system runs once, not per row (the driver WRITES shared
+	                                     singletons, a system READS them). Lint-class so it's tunable, but
+	                                     default-promoted to error (see ensure_init). */
 
 	SEM_DIAG_KIND_COUNT
 } SemDiagKind;
@@ -290,6 +294,7 @@ SemDiag *sem_emit_archetype_not_return_type(SemanticContext *ctx, SourceLoc loc,
 SemDiag *sem_emit_archetype_funcs_only(SemanticContext *ctx, SourceLoc loc, const char *func_name);
 SemDiag *sem_emit_multiple_archetype_params(SemanticContext *ctx, SourceLoc loc, const char *proc_name);
 SemDiag *sem_emit_handle_in_sys_param(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_lint_sys_writes_foreign_pool(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_each_field_filter_type_not_name(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_each_field_filter_type_not_primitive(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_each_field_invalid_rhs(SemanticContext *ctx, SourceLoc loc, const char *name);

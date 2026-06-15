@@ -294,6 +294,77 @@ static int build_unit_object_cached(const char *unit_ll, const char *workdir, in
 	return 0;
 }
 
+/* Build ONE device unit's IR into a position-independent `.so` for dev hot-reload. Thin: no runtime/
+ * shims/libs linked — every external (the runtime, device C shims, pools, `arche_hot_resolve`, libc) is
+ * resolved from the host at `dlopen` time (the host is linked `-rdynamic`). */
+/* Build a device unit's reloadable PIC `.so`, CONTENT-HASH GATED. The dev-loop watcher rebuilds on every
+ * edit, but only the edited device's IR actually changes; an unchanged unit's `.so` must be LEFT ALONE so
+ * its mtime stays put and the running host's reload check skips it (else every save reloads every device).
+ * A sidecar `<out_so>.hash` records the IR hash (salted with the PIC toolchain identity); a hit leaves the
+ * `.so` untouched. *rebuilt is set to 1 if the `.so` was (re)written, 0 if reused. */
+static int build_unit_so(const char *unit_ll, const char *workdir, int u, const char *out_so, int *rebuilt) {
+	if (rebuilt)
+		*rebuilt = 0;
+	char *ir = read_file_optional(unit_ll);
+	if (!ir)
+		return 1;
+	char hash[17];
+	{
+		static const char salt[] = "uso1|" ARCHE_VERSION "|opt-O2-v3|llc-pic-small-v3|cc-shared-fpic";
+		size_t sn = sizeof(salt) - 1, n = strlen(ir);
+		char *buf = malloc(sn + n);
+		memcpy(buf, salt, sn);
+		memcpy(buf + sn, ir, n);
+		pe_fnv1a_hex(buf, sn + n, hash);
+		free(buf);
+	}
+	free(ir);
+
+	char hashf[1400];
+	snprintf(hashf, sizeof(hashf), "%s.hash", out_so);
+	if (pe_exists(out_so)) {
+		char *prev = read_file_optional(hashf);
+		int hit = prev && strncmp(prev, hash, 16) == 0;
+		free(prev);
+		if (hit)
+			return 0; /* unchanged unit — leave the .so (and its mtime) alone so the host won't reload it */
+	}
+
+	char optf[700], asmf[700], cmd[4096];
+	snprintf(optf, sizeof(optf), "%s/unit_%d_opt.ll", workdir, u);
+	snprintf(asmf, sizeof(asmf), "%s/unit_%d_pic.s", workdir, u);
+	snprintf(cmd, sizeof(cmd), "opt -O2 -mcpu=x86-64-v3 -S -o %s %s", optf, unit_ll);
+	if (system(cmd) != 0)
+		return 1;
+	snprintf(cmd, sizeof(cmd), "llc -relocation-model=pic -code-model=small -mcpu=x86-64-v3 -o %s %s", asmf, optf);
+	if (system(cmd) != 0)
+		return 1;
+	/* Link to a temp then atomically rename into place. The running host polls `out_so`'s mtime and
+	 * dlopens it on change; cc writes the `.so` non-atomically, so without this the host can catch a
+	 * half-written file mid-rebuild ("dlopen: file too short"). A rename publishes it in one step — the
+	 * host only ever sees the old `.so` or the complete new one.
+	 * (`-Wl,-z,undefs`, the -shared default, leaves host-provided symbols undefined until load.) */
+	char so_tmp[1400];
+	snprintf(so_tmp, sizeof(so_tmp), "%s.tmp", out_so);
+	snprintf(cmd, sizeof(cmd), "cc -shared -fPIC -o %s %s", so_tmp, asmf);
+	if (system(cmd) != 0)
+		return 1;
+	if (rename(so_tmp, out_so) != 0) {
+		snprintf(cmd, sizeof(cmd), "mv -f %s %s", so_tmp, out_so);
+		if (system(cmd) != 0)
+			return 1;
+	}
+	/* Record the IR hash so the next watcher pass can skip this unit if it didn't change. */
+	FILE *hf = fopen(hashf, "w");
+	if (hf) {
+		fwrite(hash, 1, 16, hf);
+		fclose(hf);
+	}
+	if (rebuilt)
+		*rebuilt = 1;
+	return 0;
+}
+
 static void load_module(const char *name, const char *source_dir);           /* fwd (mutual recursion) */
 static void load_module_from_path(const char *path, const char *source_dir); /* fwd */
 
@@ -585,6 +656,22 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	EmitKind emit = opts ? opts->emit : EMIT_LINK;
 	int quiet = opts ? opts->quiet : 0;
 
+	/* `--emit=shared`: emit a loadable `.so`. Force whole-program (one clean export surface) and mark
+	 * codegen shared so arche defs get external (dlsym-able) linkage. Set explicitly each call (globals;
+	 * the in-process doctest runner reuses this entry) so shared-ness never leaks into a later build. */
+	codegen_set_shared(emit == EMIT_SHARED ? 1 : 0);
+	if (emit == EMIT_SHARED)
+		codegen_force_whole_program();
+	/* Dev hot-reload is driven internally (no user flag): the run path sets ARCHE_HOT_DIR. Enabling it
+	 * implies per-unit (each device → its own reloadable `.so`). `arche build` never sets it → release
+	 * stays direct-call. (Internal env, set by `arche run`; also lets tests exercise the path.) */
+	if (getenv("ARCHE_HOT_DIR")) {
+		codegen_set_hot(1);
+		codegen_set_per_unit(1);
+	} else {
+		codegen_set_hot(0);
+	}
+
 	Frontend fe;
 	if (compile_frontend(user_source, source_path, &fe) != 0)
 		return 1;
@@ -688,6 +775,116 @@ int compile_source(const char *user_source, const char *source_path, const char 
 		if (verify_odr(workdir, max_unit)) {
 			fprintf(stderr, "Per-unit ODR verification failed (shared definitions diverge across units)\n");
 			rc = 1;
+			goto cleanup;
+		}
+		if (emit == EMIT_LINK && codegen_hot_enabled()) {
+			/* Dev hot-reload: device units (1..max) → individual `.so`s under $ARCHE_HOT_DIR (so a rebuild
+			 * of one device lands at the path the running host watches); the driver unit (0) → the host
+			 * exe, linked `-rdynamic` with the runtime + device C shims + `#link` libs + the reload runtime,
+			 * so the thin device `.so`s resolve every external from it at load. The driver's cross-unit
+			 * calls are trampolines (codegen `ctx->hot`); a release `arche build` never takes this path. */
+			const char *rt = arche_resource_dir(ARCHE_RES_RUNTIME);
+			char hotdir[1024];
+			const char *henv = getenv("ARCHE_HOT_DIR");
+			if (henv && *henv) {
+				snprintf(hotdir, sizeof(hotdir), "%s", henv);
+			} else {
+				char base[800];
+				snprintf(base, sizeof(base), "%s", out_path);
+				char *slash = strrchr(base, '/');
+				if (slash) {
+					*slash = '\0';
+					snprintf(hotdir, sizeof(hotdir), "%s/.arche-hot", base);
+				} else {
+					snprintf(hotdir, sizeof(hotdir), ".arche-hot");
+				}
+			}
+			char mk[1100];
+			snprintf(mk, sizeof(mk), "mkdir -p %s", hotdir);
+			if (system(mk) != 0) {
+				fprintf(stderr, "Failed to create hot-reload dir %s\n", hotdir);
+				rc = 1;
+				goto cleanup;
+			}
+			int hot_rebuilt = 0;
+			for (int u = 1; u <= max_unit; u++) {
+				char unit_ll[700], so[1300];
+				int one = 0;
+				snprintf(unit_ll, sizeof(unit_ll), "%s/unit_%d.ll", workdir, u);
+				snprintf(so, sizeof(so), "%s/unit_%d.so", hotdir, u);
+				if (build_unit_so(unit_ll, workdir, u, so, &one)) {
+					fprintf(stderr, "Failed to build hot device .so for unit %d\n", u);
+					rc = 1;
+					goto cleanup;
+				}
+				hot_rebuilt += one;
+			}
+			if (!quiet)
+				printf("Hot-reload: %d device .so(s), %d rebuilt\n", max_unit, hot_rebuilt);
+			/* Host exe = driver unit 0, -rdynamic so device .so's resolve runtime/shim/pool/hot symbols.
+			 * Cache the host object in the same per-device object cache the non-hot incremental path uses
+			 * (ARCHE_CACHE_DIR, else <out_dir>/.arche-cache) so an unchanged driver relinks from cache. */
+			char cache0[1024];
+			const char *cenv0 = getenv("ARCHE_CACHE_DIR");
+			if (cenv0 && *cenv0) {
+				snprintf(cache0, sizeof(cache0), "%s", cenv0);
+			} else {
+				char base[800];
+				snprintf(base, sizeof(base), "%s", out_path);
+				char *slash0 = strrchr(base, '/');
+				if (slash0) {
+					*slash0 = '\0';
+					snprintf(cache0, sizeof(cache0), "%s/.arche-cache", base);
+				} else {
+					snprintf(cache0, sizeof(cache0), ".arche-cache");
+				}
+			}
+			char mkc0[1100];
+			snprintf(mkc0, sizeof(mkc0), "mkdir -p %s", cache0);
+			if (system(mkc0) != 0) {
+				fprintf(stderr, "Failed to create object cache dir %s\n", cache0);
+				rc = 1;
+				goto cleanup;
+			}
+			char u0_ll[700], u0_obj[1200];
+			int cached = 0;
+			snprintf(u0_ll, sizeof(u0_ll), "%s/unit_0.ll", workdir);
+			if (build_unit_object_cached(u0_ll, workdir, 0, cache0, u0_obj, sizeof(u0_obj), &cached)) {
+				fprintf(stderr, "Failed to build host object\n");
+				rc = 1;
+				goto cleanup;
+			}
+			char cc_cmd[1 << 16];
+			int cl = snprintf(cc_cmd, sizeof(cc_cmd),
+			                  "cc -rdynamic -no-pie -mcmodel=large -o %s %s %s/stack_check.o %s/io.o %s/net.o "
+			                  "%s/term.o %s/hotreload.o -ldl -lc",
+			                  out_path, u0_obj, rt, rt, rt, rt, rt);
+			if (cl < 0 || cl >= (int)sizeof(cc_cmd)) {
+				fprintf(stderr, "link command too long\n");
+				rc = 1;
+				goto cleanup;
+			}
+			int link_count = opts ? opts->link_count : 0;
+			for (int li = 0; li < link_count; li++) {
+				int m = snprintf(cc_cmd + cl, sizeof(cc_cmd) - (size_t)cl, " %s", opts->link_paths[li]);
+				if (m < 0 || m >= (int)sizeof(cc_cmd) - cl) {
+					fprintf(stderr, "link command too long; refusing to drop --link inputs\n");
+					rc = 1;
+					goto cleanup;
+				}
+				cl += m;
+			}
+			if (append_link_extras(cc_cmd, &cl, sizeof(cc_cmd), link_libs, link_lib_count) < 0) {
+				fprintf(stderr, "link command too long; refusing to drop device shims / #link libs\n");
+				rc = 1;
+				goto cleanup;
+			}
+			if (system(cc_cmd) != 0) {
+				fprintf(stderr, "Failed to link hot-reload host\n");
+				rc = 1;
+				goto cleanup;
+			}
+			rc = 0;
 			goto cleanup;
 		}
 		if (emit == EMIT_LINK) {
@@ -835,8 +1032,12 @@ int compile_source(const char *user_source, const char *source_path, const char 
 		 * longer DCEs unreferenced ones. `-function-sections`/`-data-sections` + the linker's
 		 * `--gc-sections` (below) restore dead-symbol stripping at link time. */
 		const char *sections = codegen_per_unit_enabled() ? "-function-sections -data-sections " : "";
-		int m = snprintf(llc_cmd, sizeof(llc_cmd), "llc %s-code-model=large -mcpu=x86-64-v3 -o %s %s", sections,
-		                 asm_target, opt_file);
+		/* A loadable `.so` needs position-independent code; `-code-model=small` is the standard, tested
+		 * PIC model (the exe path keeps `-no-pie -mcmodel=large`). */
+		const char *reloc = (emit == EMIT_SHARED) ? "-relocation-model=pic " : "";
+		const char *cmodel = (emit == EMIT_SHARED) ? "small" : "large";
+		int m = snprintf(llc_cmd, sizeof(llc_cmd), "llc %s%s-code-model=%s -mcpu=x86-64-v3 -o %s %s", reloc, sections,
+		                 cmodel, asm_target, opt_file);
 		if (m < 0 || m >= (int)sizeof(llc_cmd)) {
 			fprintf(stderr, "llc command too long\n");
 			goto cleanup;
@@ -870,6 +1071,45 @@ int compile_source(const char *user_source, const char *source_path, const char 
 			fprintf(stderr, "Failed to assemble object file\n");
 			goto cleanup;
 		}
+		rc = 0;
+		goto cleanup;
+	}
+
+	/* `--emit=shared`: link a position-independent shared library (`cc -shared -fPIC`) with the PIC
+	 * runtime objects. Self-contained (.pic.o + -lc) so it loads standalone; device shims + `#link` libs
+	 * still apply. */
+	if (emit == EMIT_SHARED) {
+		const char *rt = arche_resource_dir(ARCHE_RES_RUNTIME);
+		char cc_cmd[8192];
+		int cc_len =
+		    snprintf(cc_cmd, sizeof(cc_cmd),
+		             "cc -shared -fPIC -o %s %s %s/stack_check.pic.o %s/io.pic.o %s/net.pic.o %s/term.pic.o -lc",
+		             out_path, asm_file, rt, rt, rt, rt);
+		if (cc_len < 0 || cc_len >= (int)sizeof(cc_cmd)) {
+			fprintf(stderr, "link command too long\n");
+			goto cleanup;
+		}
+		int link_count = opts ? opts->link_count : 0;
+		for (int li = 0; li < link_count; li++) {
+			int m = snprintf(cc_cmd + cc_len, sizeof(cc_cmd) - (size_t)cc_len, " %s", opts->link_paths[li]);
+			if (m < 0 || m >= (int)sizeof(cc_cmd) - cc_len) {
+				fprintf(stderr, "link command too long; refusing to drop --link inputs\n");
+				goto cleanup;
+			}
+			cc_len += m;
+		}
+		if (append_link_extras(cc_cmd, &cc_len, sizeof(cc_cmd), link_libs, link_lib_count) < 0) {
+			fprintf(stderr, "link command too long; refusing to drop device shims / #link libs\n");
+			goto cleanup;
+		}
+		if (!quiet)
+			printf("Linking shared library...\n");
+		if (system(cc_cmd) != 0) {
+			fprintf(stderr, "Failed to link shared library\n");
+			goto cleanup;
+		}
+		if (!quiet)
+			printf("Successfully generated shared library: %s\n", out_path);
 		rc = 0;
 		goto cleanup;
 	}

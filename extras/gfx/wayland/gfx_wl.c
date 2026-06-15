@@ -162,6 +162,20 @@ void *gfx_be_open(int w, int h, char *title) {
 	xdg_toplevel_add_listener(g->toplevel, &top_listener, g);
 	if (title)
 		xdg_toplevel_set_title(g->toplevel, title);
+	/* A stable app_id (the Wayland equivalent of an X11 WM_CLASS): Wayland has no "float me" request —
+	 * tiling vs floating is the compositor's policy — so the most we can do is identify ourselves, letting
+	 * a tiling WM target us with a rule, e.g. Hyprland: `windowrulev2 = float, class:^(arche-gfx)$`. */
+	xdg_toplevel_set_app_id(g->toplevel, "arche-gfx");
+	/* Window sizing. Default is FIXED (min == max): a non-resizable window, which a tiling WM auto-floats
+	 * with no rule — so the window floats out of the box. Wayland has no "float me" request (floating is
+	 * the compositor's call), so fixed-size is the only way to float without a compositor rule.
+	 * `ARCHE_GFX_RESIZABLE=1` opts into a RESIZABLE window (like Godot): the framebuffer reallocs to the
+	 * compositor's size (see create_buffer / the configure handler) — but a resizable window tiles unless
+	 * you add a rule keyed on the app_id above (Hyprland: `windowrulev2 = float, class:^(arche-gfx)$`). */
+	if (!getenv("ARCHE_GFX_RESIZABLE")) {
+		xdg_toplevel_set_min_size(g->toplevel, w, h);
+		xdg_toplevel_set_max_size(g->toplevel, w, h);
+	}
 	g->pending_w = w;
 	g->pending_h = h;
 	wl_surface_commit(g->surface);

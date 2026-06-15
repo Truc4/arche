@@ -1,0 +1,7 @@
+// A library device living OUTSIDE any importing app's tree; reached via a search root (ARCHE_PATH or
+// arche.toml `[lib] paths`). Pure func so the importer stays lint-clean. Imported by ../../app — not a
+// standalone test.
+// RUN: true
+dbl :: func(n: int) -> int {
+  return n * 2;
+}

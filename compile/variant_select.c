@@ -319,3 +319,112 @@ void variant_map_free(VariantMap *m) {
 	m->items = NULL;
 	m->count = m->cap = 0;
 }
+
+/* Append `dir` to the roots list (dedup, cap-guarded; empty ignored). */
+static void lib_roots_add(LibRoots *out, const char *dir) {
+	if (!dir || !dir[0] || out->count >= ARCHE_LIB_MAX_ROOTS)
+		return;
+	for (int i = 0; i < out->count; i++)
+		if (strcmp(out->dirs[i], dir) == 0)
+			return;
+	snprintf(out->dirs[out->count++], sizeof(out->dirs[0]), "%s", dir);
+}
+
+/* Pull the `[lib] paths = [ "a", "b" ]` array out of the manifest at `manifest_path` (whose dir is
+ * `manifest_dir`), resolving relative entries against the project dir. Single- or multi-line arrays are
+ * both handled: we scan from `paths =` to the closing `]`, lifting every "quoted" token. */
+static void lib_roots_from_manifest(LibRoots *out, const char *manifest_path, const char *manifest_dir) {
+	FILE *f = fopen(manifest_path, "r");
+	if (!f)
+		return;
+	char line[1024];
+	char section[64] = "";
+	int in_array = 0; /* inside an unterminated `paths = [ ... ` spanning lines */
+	while (fgets(line, sizeof(line), f)) {
+		const char *p = line;
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (!in_array) {
+			if (*p == '#' || *p == '\n' || *p == '\r' || *p == '\0')
+				continue;
+			if (*p == '[') {
+				const char *end = strchr(p, ']');
+				if (end && end > p + 1) {
+					size_t n = (size_t)(end - (p + 1));
+					if (n >= sizeof(section))
+						n = sizeof(section) - 1;
+					memcpy(section, p + 1, n);
+					section[n] = '\0';
+				}
+				continue;
+			}
+			if (strcmp(section, "lib") != 0)
+				continue;
+			const char *eq = strchr(p, '=');
+			if (!eq)
+				continue;
+			char key[64];
+			const char *ke = eq;
+			while (ke > p && (ke[-1] == ' ' || ke[-1] == '\t'))
+				ke--;
+			size_t kl = (size_t)(ke - p);
+			if (kl >= sizeof(key))
+				kl = sizeof(key) - 1;
+			memcpy(key, p, kl);
+			key[kl] = '\0';
+			if (strcmp(key, "paths") != 0)
+				continue;
+			p = eq + 1; /* fall through into the array body on this same line */
+			in_array = 1;
+		}
+		/* Inside the array body: lift each "quoted" entry; stop at `]`. */
+		for (const char *q = p; *q; q++) {
+			if (*q == ']') {
+				in_array = 0;
+				break;
+			}
+			if (*q != '"')
+				continue;
+			char entry[1024];
+			size_t n = 0;
+			q++;
+			while (*q && *q != '"' && n < sizeof(entry) - 1)
+				entry[n++] = *q++;
+			entry[n] = '\0';
+			if (!*q)
+				break; /* unterminated quote — bail */
+			if (entry[0] == '/') {
+				lib_roots_add(out, entry); /* absolute */
+			} else if (entry[0]) {
+				char abs[2304];
+				snprintf(abs, sizeof(abs), "%s/%s", manifest_dir, entry); /* relative to project dir */
+				lib_roots_add(out, abs);
+			}
+		}
+	}
+	fclose(f);
+}
+
+void arche_lib_roots(const char *source_dir, LibRoots *out) {
+	out->count = 0;
+	/* `ARCHE_PATH` (colon-separated) — highest precedence, searched first. */
+	const char *env = getenv("ARCHE_PATH");
+	if (env && *env) {
+		char buf[4096];
+		snprintf(buf, sizeof(buf), "%s", env);
+		char *save = NULL;
+		for (char *tok = strtok_r(buf, ":", &save); tok; tok = strtok_r(NULL, ":", &save))
+			lib_roots_add(out, tok);
+	}
+	/* Then the nearest `arche.toml`'s `[lib] paths`. */
+	char *path = find_manifest(source_dir);
+	if (path) {
+		char dir[1024];
+		snprintf(dir, sizeof(dir), "%s", path);
+		char *slash = strrchr(dir, '/');
+		if (slash)
+			*slash = '\0';
+		lib_roots_from_manifest(out, path, dir[0] ? dir : "/");
+		free(path);
+	}
+}

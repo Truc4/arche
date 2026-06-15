@@ -14,6 +14,7 @@ typedef enum {
 	EMIT_LLVM_IR,  /* codegen only: LLVM IR (.ll)              */
 	EMIT_ASM,      /* opt → llc: x86-64 assembly (.s)          */
 	EMIT_OBJ,      /* opt → llc → cc -c: an object file (.o)   */
+	EMIT_SHARED,   /* opt → llc(pic) → cc -shared -fPIC: a loadable shared library (.so) */
 } EmitKind;
 
 /* Options for one compile. Mirrors the CLI flags the historical inline pipeline

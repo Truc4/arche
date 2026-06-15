@@ -1,0 +1,27 @@
+// A system reads a SINGLETON (shared context) while iterating its per-entity pool: `accel` adds
+// Config.gravity (one shared [1]-pool row) to every Thing.v. The driver owns + sets the singleton; the
+// device system reads it. Works whole-program AND under `arche run` (hot).
+// Sharing model differs by build mode (deliberately):
+//   - whole-program: ONE `@Config`; the system reads it directly (zero indirection — accel takes only the
+//     iterated pool: `accel(%struct.Thing* %arch_Thing)`).
+//   - incremental/hot: the host's `Config` pool is PASSED BY POINTER to the system, which binds it as an
+//     instance (`accel(ptr %arch_Thing, ptr %arch_Config)`) — the device reads the host's pool through the
+//     param, NOT via weak-symbol interposition.
+// RUN: %arche build -o %t %s && %t | grep -qF "v0=10 v1=110 g=10"
+// RUN: %arche build --emit=llvm-ir -o %t.ll %s && ! grep -q arche_hot_resolve %t.ll
+// whole-program: no foreign-pool param (direct global ref, zero indirection) → no `arch_Config` param
+// RUN: ! grep -q arch_Config %t.ll
+// incremental: the foreign Config pool is passed by pointer (no interposition reliance) → an `arch_Config` param
+// RUN: %arche build --incremental --emit=llvm-ir -o %t.inc.ll %s && grep -q arch_Config %t.inc.ll
+// RUN: rm -rf %t.hot %t.cache && mkdir -p %t.hot
+// RUN: env ARCHE_HOT_DIR=%t.hot ARCHE_CACHE_DIR=%t.cache %arche run %s | grep -qF "v0=10 v1=110 g=10"
+#import { sgldev fmt }
+[1]Config;
+[4]Thing;
+main :: proc() {
+  insert(Config, 10)(_:, _:); // create the singleton instance (gravity = 10)
+  insert(Thing, 0)(_:, _:);
+  insert(Thing, 100)(_:, _:);
+  run sgldev.accel;
+  fmt.printf("v0=%d v1=%d g=%d\n", Thing.v[0], Thing.v[1], Config.gravity[0]);
+}

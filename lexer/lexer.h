@@ -159,6 +159,10 @@ const char *token_kind_name(TokenKind kind);
 int arche_is_doc_comment(const char *text, size_t len);
 int arche_is_inner_doc_comment(const char *text, size_t len);
 
+/* Decode an integer literal lexeme (decimal / 0x / 0b / 0o, with `_` separators) to its value.
+ * Returns 1 on success, 0 if the lexeme is not an integer (float/string/garbage). */
+int arche_int_lit(const char *lex, long long *out);
+
 /* Full-buffer tokenization: lex entire source into an array.
  * Returns a TokenBuffer with all tokens (including TOK_COMMENT).
  * Terminates with TOK_EOF as the last entry.

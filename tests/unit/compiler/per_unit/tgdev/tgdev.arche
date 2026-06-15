@@ -1,0 +1,10 @@
+// tgdev device: a shape built from STRUCTURED components (`pos`/`vel` are each an `(x, y)` pair) and a
+// system that integrates position by velocity, addressing the group fields as `pos.x` / `vel.y`. Support
+// file, not a standalone test.
+// RUN: true
+Mover :: arche { pos, vel }
+
+integrate :: sys (pos, vel) {
+  pos.x = pos.x + vel.x;
+  pos.y = pos.y + vel.y;
+}

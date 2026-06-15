@@ -142,6 +142,9 @@ void semantic_set_lint_proc_no_effect(int enabled, int werror);
 /* W0022 exported_mutable_global: error by default (see ensure_init). `--exported-mutable=error|warn|allow`
  * maps to (enabled, werror) = (1,1) / (1,0) / (0,0). */
 void semantic_set_lint_exported_mutable_global(int enabled, int werror);
+/* W0024 sys_writes_foreign_pool: error by default (see ensure_init). `--sys-foreign-write=error|warn|allow`
+ * maps to (enabled, werror) = (1,1) / (1,0) / (0,0). */
+void semantic_set_lint_sys_writes_foreign_pool(int enabled, int werror);
 
 /* Crash-free enforcement (failure policies). Set from the CLI before analysis; consulted by the
  * failure-policy pass. --no-abort: any op resolving to `!abort` (implicit or explicit) is an error;

@@ -1,0 +1,12 @@
+// Driver for the off-gate live-reload smoke (tests/integration/e2e_hot_reload). Loops printing the
+// device's tag via fmt.print (raw os.write, unbuffered) so an edit's effect is observable on stdout.
+// Run by `make test-e2e` (NOT the default gate); excluded from lit. Real fixture file (formatter-checked).
+#import { dev fmt os }
+main :: proc() {
+  i := 0;
+  for (i = 0; i < 6000; i = i + 1) {
+    t := dev.tag();
+    fmt.print(t);
+    os.sleep_ms(15);
+  }
+}

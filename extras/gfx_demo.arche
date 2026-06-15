@@ -13,8 +13,8 @@ H0 :: 480;
 main :: proc() {
   gfx.open(W0, H0, "arche gfx — resize me; close or press a key")(win:);
 
-  is_open := 1;
-  for (; is_open != 0;) {
+  is_open := true;
+  for (; is_open;) {
     gfx.frame(win)(px:, w:, h:); // writable view sized to the window's CURRENT dimensions
 
     y := 0;

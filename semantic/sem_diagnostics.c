@@ -178,6 +178,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_func_could_be_const]           = { "W0021", "func_could_be_const",           CLASS_LINT, 1 },
 	[SEM_LINT_exported_mutable_global]       = { "W0022", "exported_mutable_global",       CLASS_LINT, 1 },
 	[SEM_LINT_outarg_shadows_outparam]       = { "W0023", "outarg_shadows_outparam",       CLASS_LINT, 1 },
+	[SEM_LINT_sys_writes_foreign_pool]       = { "W0024", "sys_writes_foreign_pool",       CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -199,6 +200,10 @@ static void ensure_init(void) {
 	 * globals as an ERROR by default — promote it here so every entry point (build/run/check/LSP),
 	 * not just the CLI flag path, gets error-by-default. `--exported-mutable=warn|allow` demotes it. */
 	g_werror[SEM_LINT_exported_mutable_global] = 1;
+	/* W0024 sys_writes_foreign_pool: same model — a lint (tunable via `--sys-foreign-write` / `@allow`)
+	 * but error-by-default, since a foreign-pool write in a per-entity system silently runs once, not per
+	 * row. `--sys-foreign-write=warn|allow` demotes it. */
+	g_werror[SEM_LINT_sys_writes_foreign_pool] = 1;
 	g_init_done = 1;
 }
 
@@ -428,6 +433,9 @@ void semantic_set_lint_func_impure(int enabled, int werror) {
 void semantic_set_lint_exported_mutable_global(int enabled, int werror) {
 	semantic_set_diag(SEM_LINT_exported_mutable_global, enabled, werror);
 }
+void semantic_set_lint_sys_writes_foreign_pool(int enabled, int werror) {
+	semantic_set_diag(SEM_LINT_sys_writes_foreign_pool, enabled, werror);
+}
 
 /* `-Werror` (no `=slug`): promote EVERY currently-enabled lint to a hard error. Does NOT re-enable a
  * default-off lint (a disabled lint never fires, so there's nothing to promote) — matches gcc/clang. */
@@ -607,6 +615,14 @@ SemDiag *sem_emit_multiple_archetype_params(SemanticContext *ctx, SourceLoc loc,
 }
 SemDiag *sem_emit_handle_in_sys_param(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_handle_in_sys_param, loc, "handle column '%s' cannot be sys parameter", name);
+}
+
+SemDiag *sem_emit_lint_sys_writes_foreign_pool(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_LINT_sys_writes_foreign_pool, loc,
+	                 "a system cannot write to '%s' — it is not the shape this system iterates; a system READS shared "
+	                 "singletons, the driver WRITES them (a foreign-pool write in a system runs once, not per row); "
+	                 "opt out with --sys-foreign-write=warn|allow",
+	                 name);
 }
 SemDiag *sem_emit_each_field_filter_type_not_name(SemanticContext *ctx, SourceLoc loc) {
 	return sem_emit_(ctx, SEM_DIAG_each_field_filter_type_not_name, loc,

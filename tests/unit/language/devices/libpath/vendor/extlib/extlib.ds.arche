@@ -1,0 +1,2 @@
+// extlib device datasheet — its presence marks `extlib` a device. Storage (if any) is the driver's.
+// RUN: true

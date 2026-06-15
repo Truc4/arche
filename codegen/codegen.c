@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "codegen.h"
+#include "../lexer/lexer.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,6 +59,8 @@ struct CodegenContext {
 	 * pool storage — emit in every module as linkonce_odr, gated by the always-on ODR verifier in
 	 * compile.c). Default off → the whole-program path is unchanged. See the compilation plan. */
 	int per_unit;
+	int shared;         /* --shared: arche defs get external (dlsym-able) linkage; see codegen_set_shared */
+	int hot;            /* dev hot-reload (arche run): cross-unit calls route through a reload trampoline */
 	int emit_only_unit; /* -1 = emit all units (whole-program / default) */
 
 	/* For tracking allocated values */
@@ -1060,6 +1063,7 @@ static void drop_exit_all_for_return(CodegenContext *ctx) {
 static const char *cg_fnsym(CodegenContext *ctx, const char *name, int is_extern, char *buf, size_t n);
 /* Archetypes covering a system's params (system ABI param list) — defined near emit_cross_unit_declares. */
 static int collect_sys_matching_archs(CodegenContext *ctx, HirSysDecl *sys, const char **out, int max);
+static int collect_sys_foreign_pools(CodegenContext *ctx, HirSysDecl *sys, const char **out, int max);
 
 /* Is the proc/func named `name` an extern (#foreign, C-ABI)? A `@drop` destructor may be either an
  * arche proc (mangled under per-unit) or an extern (keeps its C name) — the dtor call must match. */
@@ -1465,9 +1469,10 @@ static const char *cg_fnsym(CodegenContext *ctx, const char *name, int is_extern
 	snprintf(buf, n, "arche.%s", name);
 	return buf;
 }
-/* Linkage keyword for an arche-owned def: external under per-unit (cross-object), else internal. */
+/* Linkage keyword for an arche-owned def: external under per-unit (cross-object) OR --shared (so the
+ * device's procs are dlsym-able in a `.so`), else internal. */
 static const char *cg_linkage(CodegenContext *ctx) {
-	return ctx->per_unit ? "" : "internal ";
+	return (ctx->per_unit || ctx->shared) ? "" : "internal ";
 }
 /* Linkage keyword for a SHARED definition (global storage, archetype helpers, monomorph instances) that
  * each per-unit module emits identically: `linkonce_odr` lets the linker fold the duplicate definitions
@@ -2075,11 +2080,19 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			strcpy(result_buf, res_name);
 			free(global_name);
 		} else if (strchr(lex, '.') != NULL) {
-			/* Float literal */
-			strcpy(result_buf, lex);
+			/* Float literal — strip `_` digit separators (LLVM wants 1000.5, not 1_000.5). */
+			size_t k = 0;
+			for (const char *p = lex; *p && k < 255; p++)
+				if (*p != '_')
+					result_buf[k++] = *p;
+			result_buf[k] = '\0';
 		} else {
-			/* Integer literal */
-			strcpy(result_buf, lex);
+			/* Integer literal — decode 0x/0b/0o/decimal (+ `_`) to a decimal LLVM constant. */
+			long long iv;
+			if (arche_int_lit(lex, &iv))
+				snprintf(result_buf, 256, "%lld", iv);
+			else
+				strcpy(result_buf, lex);
 		}
 		break;
 	}
@@ -2139,6 +2152,10 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 					                  align);
 				}
 				strcpy(result_buf, elem);
+				/* Stamp the node type so an enclosing binary picks float ops (fadd/fsub/…). A sys column
+				 * read otherwise left `resolved` unset → `pos.x - …` on float columns emitted `sub i32`. */
+				if (strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0)
+					expr->resolved.tag = HIR_TYPE_FLOAT;
 			} else if (val->type == 1) {
 				/* Type-1: regular allocated value (iN, float, handle, etc) - load from pointer */
 				char *loaded = gen_value_name(ctx);
@@ -2311,6 +2328,10 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				expr->resolved.int_width = int_width;
 				expr->resolved.int_signed = int_signed;
 			}
+		} else if (expr->data.binary.op < OP_EQ) {
+			/* Float arithmetic result is float — stamp it so a nested binary (`(a - b) / c`) sees the
+			 * inner result as float and also picks float ops. */
+			expr->resolved.tag = HIR_TYPE_FLOAT;
 		}
 
 		switch (expr->data.binary.op) {
@@ -3004,8 +3025,21 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				nested_slice_base = 1;
 			}
 		}
-		if (!nested_slice_base)
+		if (!nested_slice_base) {
+			/* An EXPLICIT index means "use THIS index" — so the base must yield the column/array POINTER,
+			 * not be auto-indexed by the enclosing sys row loop (which exists only for the iterated
+			 * archetype's own columns). Suppress the implicit loop index + vectorization while evaluating
+			 * the base so a foreign singleton access `Config.gravity[0]` reads row 0 (not gravity[loopidx]),
+			 * and any explicit `col[i]` in a sys uses i rather than the loop counter. */
+			char saved_loop[64];
+			int saved_lanes = ctx->vector_lanes;
+			snprintf(saved_loop, sizeof(saved_loop), "%s", ctx->implicit_loop_index);
+			ctx->implicit_loop_index[0] = '\0';
+			ctx->vector_lanes = 0;
 			codegen_expression(ctx, expr->data.index.base, base_buf);
+			snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", saved_loop);
+			ctx->vector_lanes = saved_lanes;
+		}
 
 		/* Check if base is a type-6 slice pointer variable */
 		if (!nested_slice_base && expr->data.index.base->kind == HIR_EXPR_NAME) {
@@ -3051,6 +3085,32 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		} else if (shaped_elem) {
 			arche_type = shaped_elem;
 			scalar_type = llvm_type_from_arche(shaped_elem);
+		} else if (expr->data.index.base->kind == HIR_EXPR_FIELD &&
+		           expr->data.index.base->data.field.base->kind == HIR_EXPR_NAME) {
+			/* Archetype-column read `Arch.col[i]` (e.g. a singleton `Config.center_x[0]`): take the element
+			 * type straight from the archetype field decl. Without this `scalar_type` stays the i32 default,
+			 * so a FLOAT column was loaded as i32 (`%v = i32` fed into an `fsub double` → verifier error). */
+			const char *bn = expr->data.index.base->data.field.base->data.name.name;
+			HirArchetypeDecl *ad = find_archetype_decl(ctx, bn);
+			if (!ad) {
+				ValueInfo *iv = find_value(ctx, bn);
+				if (iv && iv->arch_name)
+					ad = find_archetype_decl(ctx, iv->arch_name);
+			}
+			const char *fn = expr->data.index.base->data.field.field_name;
+			if (ad) {
+				for (int i = 0; i < ad->field_count; i++) {
+					if (ad->fields[i]->kind == FIELD_COLUMN && strcmp(ad->fields[i]->name, fn) == 0) {
+						arche_type = field_base_type_name(ad->fields[i]->type);
+						scalar_type = llvm_type_from_arche(arche_type);
+						break;
+					}
+				}
+			}
+			if (!arche_type && expr->resolved.tag != HIR_TYPE_UNKNOWN) {
+				arche_type = hir_resolved_type_name(expr);
+				scalar_type = llvm_type_from_arche(arche_type);
+			}
 		} else if (expr->resolved.tag != HIR_TYPE_UNKNOWN) {
 			arche_type = hir_resolved_type_name(expr);
 			scalar_type = llvm_type_from_arche(arche_type);
@@ -4581,6 +4641,55 @@ static void hoist_column_geps(CodegenContext *ctx, HirExpr *expr, const char *st
 	}
 }
 
+/* True if a sys whole-column-loop RHS must run SCALAR rather than 4-lane float-vectorized. A column op is
+ * only vectorizable when every leaf is itself a per-row column (a sys param, loaded as `<4 x double>`) and
+ * the ops between them are plain arithmetic. Anything else — a literal (`vel *= 2.0`), an explicit index
+ * (a singleton `Config.center[0]` or a gather), or a non-column name — is a single SCALAR value that would
+ * have to be splatted into all four lanes; the column-SIMD path doesn't do that, so it miscompiles
+ * (`fmul <4 x double> %v, 2.0`, or an i32/`<4 x double>` mismatch). Run those scalar (integer loops always
+ * do). LLVM's own vectorizer can still re-vectorize the clean scalar loop. */
+static int rhs_forces_scalar(CodegenContext *ctx, const HirExpr *e) {
+	if (!e)
+		return 0;
+	switch (e->kind) {
+	case HIR_EXPR_LITERAL:
+	case HIR_EXPR_STRING:
+	case HIR_EXPR_INDEX:
+		return 1;
+	case HIR_EXPR_NAME: {
+		ValueInfo *v = find_value(ctx, e->data.name.name);
+		return !(v && v->type == 4); /* only a per-row sys column lane-loads cleanly */
+	}
+	case HIR_EXPR_FIELD:
+		return 1; /* a field read (e.g. an archetype column) is not a per-row lane here */
+	case HIR_EXPR_BINARY:
+		return rhs_forces_scalar(ctx, e->data.binary.left) || rhs_forces_scalar(ctx, e->data.binary.right);
+	case HIR_EXPR_UNARY:
+		return rhs_forces_scalar(ctx, e->data.unary.operand);
+	default:
+		return 1; /* unknown shape → be safe, run scalar */
+	}
+}
+
+/* Promote an INTEGER compound-assignment RHS to double when the target column is float: `vel *= 2` needs
+ * `fmul double %v, 2.0`, not `fmul double %v, 2` (LLVM rejects an integer constant for a float op). An
+ * integer literal gets a `.0` suffix; an integer-typed value is `sitofp`'d. A value that is already float
+ * (a float literal, a float column/singleton read) is left untouched. Returns the operand to use. */
+static const char *float_promote_operand(CodegenContext *ctx, const HirExpr *rhs, const char *buf, char *out,
+                                         size_t outsz) {
+	if (rhs && rhs->kind == HIR_EXPR_LITERAL && strchr(buf, '.') == NULL && strchr(buf, '%') == NULL) {
+		snprintf(out, outsz, "%s.0", buf);
+		return out;
+	}
+	if (rhs && (rhs->resolved.tag == HIR_TYPE_INT || rhs->resolved.tag == HIR_TYPE_CHAR)) {
+		char *c = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = sitofp i32 %s to double\n", c, buf);
+		snprintf(out, outsz, "%s", c);
+		return out;
+	}
+	return buf;
+}
+
 static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* SSA reg: scalar* column data */
                                    const char *count,                        /* SSA reg: i64 element count */
                                    const char *scalar_type,                  /* "double" or "i32" */
@@ -4593,6 +4702,13 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 	if (struct_ptr_val) {
 		hoist_column_geps(ctx, rhs, struct_ptr_val);
 	}
+
+	/* Compound-assignment (`col += rhs`) arithmetic must match the column's type: a float column adds with
+	 * `fadd`, an integer column with `add` (and signed/unsigned div/mod). Without this an int column's `+=`
+	 * emitted `fadd i32` → invalid IR. (The plain `col = col + rhs` form goes through the binary-expr
+	 * codegen, which already picks the right op; this path is only reached by the compound operators.) */
+	int col_is_float = strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0;
+	int col_unsigned = arche_type[0] == 'u';
 
 	/* Align count down to 4-element boundary for vector loop */
 	char *count_aligned = gen_value_name(ctx);
@@ -4627,8 +4743,9 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 	buffer_append_fmt(ctx, "%s:\n", vec_body_lbl);
 	snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", vi);
 
-	/* Enable vectorization for float columns with vector type conversions for mixed types */
-	if (strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0) {
+	/* Enable 4-lane vectorization for float columns — but NOT when the RHS has an explicit index (a
+	 * singleton/foreign/gather read), whose scalar result can't share a vector lane (see expr_has_index). */
+	if ((strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0) && !rhs_forces_scalar(ctx, rhs)) {
 		ctx->vector_lanes = 4;
 	} else {
 		ctx->vector_lanes = 0;
@@ -4659,26 +4776,32 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 		const char *op_str;
 		switch (op) {
 		case OP_ADD:
-			op_str = "fadd";
+			op_str = col_is_float ? "fadd" : "add";
 			break;
 		case OP_SUB:
-			op_str = "fsub";
+			op_str = col_is_float ? "fsub" : "sub";
 			break;
 		case OP_MUL:
-			op_str = "fmul";
+			op_str = col_is_float ? "fmul" : "mul";
 			break;
 		case OP_DIV:
-			op_str = "fdiv";
+			op_str = col_is_float ? "fdiv" : (col_unsigned ? "udiv" : "sdiv");
 			break;
 		case OP_MOD:
-			op_str = "frem";
+			op_str = col_is_float ? "frem" : (col_unsigned ? "urem" : "srem");
 			break;
 		default:
-			op_str = "fadd";
+			op_str = col_is_float ? "fadd" : "add";
 			break;
 		}
 		char *op_result = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", op_result, op_str, load_type, loaded, rhs_buf);
+		char rhs_promo[256];
+		const char *rhs_op =
+		    col_is_float ? float_promote_operand(ctx, rhs, rhs_buf, rhs_promo, sizeof(rhs_promo)) : rhs_buf;
+		if (!col_is_float && (op == OP_DIV || op == OP_MOD))
+			emit_int_divmod(ctx, op_str, load_type, loaded, rhs_buf, NULL, op_result);
+		else
+			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", op_result, op_str, load_type, loaded, rhs_op);
 		strcpy(compute_result, op_result);
 	}
 
@@ -4738,26 +4861,32 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 		const char *op_str;
 		switch (op) {
 		case OP_ADD:
-			op_str = "fadd";
+			op_str = col_is_float ? "fadd" : "add";
 			break;
 		case OP_SUB:
-			op_str = "fsub";
+			op_str = col_is_float ? "fsub" : "sub";
 			break;
 		case OP_MUL:
-			op_str = "fmul";
+			op_str = col_is_float ? "fmul" : "mul";
 			break;
 		case OP_DIV:
-			op_str = "fdiv";
+			op_str = col_is_float ? "fdiv" : (col_unsigned ? "udiv" : "sdiv");
 			break;
 		case OP_MOD:
-			op_str = "frem";
+			op_str = col_is_float ? "frem" : (col_unsigned ? "urem" : "srem");
 			break;
 		default:
-			op_str = "fadd";
+			op_str = col_is_float ? "fadd" : "add";
 			break;
 		}
 		char *op_result = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", op_result, op_str, scalar_type, loaded, rhs_buf);
+		char rhs_promo[256];
+		const char *rhs_op =
+		    col_is_float ? float_promote_operand(ctx, rhs, rhs_buf, rhs_promo, sizeof(rhs_promo)) : rhs_buf;
+		if (!col_is_float && (op == OP_DIV || op == OP_MOD))
+			emit_int_divmod(ctx, op_str, scalar_type, loaded, rhs_buf, NULL, op_result);
+		else
+			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", op_result, op_str, scalar_type, loaded, rhs_op);
 		strcpy(compute_result, op_result);
 	}
 
@@ -5914,6 +6043,82 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 	}
 
 	case HIR_STMT_ASSIGN: {
+		/* Bulk column seed: `Player.pos.x = {80, 560, …}` scatters element i → column row i — a DOD batch
+		 * init of distinct per-row values, the columnar alternative to N row-at-a-time `insert`s. The
+		 * literal's length fills rows 0..n-1; the pool's live count (from `[N]Arch(M)`) is unchanged. Only a
+		 * direct column target (not a tuple base) + a plain `=` qualify.
+		 * TODO(B): a declaration-site form `[N]Arch(M){ pos.x: {…}, pos.y: {…} }` would fold this into the
+		 * pool literal (today the literal only broadcasts one scalar per column). Build it on this scatter. */
+		if (stmt->data.assign_stmt.op == OP_NONE && stmt->data.assign_stmt.value &&
+		    stmt->data.assign_stmt.value->kind == HIR_EXPR_ARRAY_LITERAL &&
+		    stmt->data.assign_stmt.target->kind == HIR_EXPR_FIELD &&
+		    stmt->data.assign_stmt.target->data.field.base->kind == HIR_EXPR_NAME) {
+			const char *bn = stmt->data.assign_stmt.target->data.field.base->data.name.name;
+			ValueInfo *inst = find_value(ctx, bn);
+			const char *arch_name = (inst && inst->type == 3 && inst->arch_name)
+			                            ? inst->arch_name
+			                            : (find_archetype_decl(ctx, bn) ? bn : NULL);
+			HirArchetypeDecl *arch = arch_name ? find_archetype_decl(ctx, arch_name) : NULL;
+			if (arch) {
+				const char *fname = stmt->data.assign_stmt.target->data.field.field_name;
+				int field_idx = -1;
+				HirField *fdecl = NULL;
+				for (int i = 0; i < arch->field_count; i++)
+					if (strcmp(arch->fields[i]->name, fname) == 0) {
+						field_idx = i;
+						fdecl = arch->fields[i];
+						break;
+					}
+				if (field_idx >= 0 && fdecl && fdecl->kind == FIELD_COLUMN) {
+					const char *arche_type = field_base_type_name(fdecl->type);
+					const char *llvm_type = llvm_type_from_arche(arche_type);
+					int col_is_float = strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0;
+					int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+					/* struct pointer */
+					char struct_ptr[256];
+					if (inst) {
+						snprintf(struct_ptr, sizeof(struct_ptr), "%s", inst->llvm_name);
+					} else if (is_static) {
+						snprintf(struct_ptr, sizeof(struct_ptr), "@%s", arch_name);
+					} else {
+						char *ld = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", ld, arch_name,
+						                  arch_name, arch_name);
+						snprintf(struct_ptr, sizeof(struct_ptr), "%s", ld);
+					}
+					/* column base pointer (element 0) */
+					char col_ptr[256];
+					if (is_static) {
+						char *cp = gen_value_name(ctx);
+						buffer_append_fmt(ctx,
+						                  "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n",
+						                  cp, arch_name, arch_name, struct_ptr, field_idx);
+						snprintf(col_ptr, sizeof(col_ptr), "%s", cp);
+					} else {
+						char *fg = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", fg,
+						                  arch_name, arch_name, struct_ptr, field_idx);
+						char *cp = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", cp, llvm_type, llvm_type, fg);
+						snprintf(col_ptr, sizeof(col_ptr), "%s", cp);
+					}
+					HirExpr **elems = stmt->data.assign_stmt.value->data.array_literal.elements;
+					int n = stmt->data.assign_stmt.value->data.array_literal.element_count;
+					for (int i = 0; i < n; i++) {
+						char ebuf[256];
+						codegen_expression(ctx, elems[i], ebuf);
+						char promo[256];
+						const char *ev =
+						    col_is_float ? float_promote_operand(ctx, elems[i], ebuf, promo, sizeof(promo)) : ebuf;
+						char *gep = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %d\n", gep, llvm_type, llvm_type,
+						                  col_ptr, i);
+						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", llvm_type, ev, llvm_type, gep);
+					}
+					break;
+				}
+			}
+		}
 		/* Write-back to an out-ONLY unbounded `char[]`/`T[]` out-param (`out = buf[0:r]`): store the
 		 * RHS slice's {ptr,len} through the caller's `{T*,i64}*` slot so the caller recovers the view.
 		 * Without this the slice is computed and dropped (the proc returns void). */
@@ -6838,6 +7043,14 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				buffer_append_fmt(ctx, "%%struct.%s* %s", arch_name, dynamic_ptrs[i]);
 			}
 		}
+		/* Per-unit/hot: also pass the foreign pools the system reads (the host owns them), so the device
+		 * binds the host's pool by pointer rather than referencing its own global. Same deterministic list
+		 * the define/trampoline build, so the ABI matches. (All foreign pools are static → `@Name`.) */
+		const char *run_foreign[64];
+		int run_fcount = collect_sys_foreign_pools(ctx, sys, run_foreign, 64);
+		for (int i = 0; i < run_fcount; i++)
+			buffer_append_fmt(ctx, "%s%%struct.%s* @%s", (matching_count + i) > 0 ? ", " : "", run_foreign[i],
+			                  run_foreign[i]);
 		buffer_append(ctx, ")\n");
 
 		break;
@@ -7474,7 +7687,18 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	buffer_append(ctx, "}\n\n");
 
 	/* Emit global variable for this archetype (after struct type is defined). Shared across per-unit
-	 * modules → linkonce_odr so the linker folds the identical duplicates to one pool. */
+	 * modules → linkonce_odr so the linker folds the identical duplicates to one pool.
+	 *
+	 * HOT-RELOAD CONTRACT (load-bearing): `linkonce_odr` lowers to a WEAK symbol with default visibility.
+	 * In `arche run` (hot), a device `.so` carries its own weak copy of a pool it references, but the host
+	 * is linked `-rdynamic` so the host's definition INTERPOSES the device's at dlopen → one shared pool.
+	 * This is how a device system reads the driver-owned SINGLETON ([1] pool) live (see
+	 * docs/DECISIONS_singletons.md). It relies on: (1) default visibility here (do NOT emit `hidden`, and
+	 * do not compile these objects with -fvisibility=hidden), (2) the host staying `-rdynamic`, (3) the
+	 * reload runtime using RTLD_NOW|RTLD_LOCAL and NOT RTLD_DEEPBIND (DEEPBIND inverts lookup → the device
+	 * binds its own copy → silent split state). If any of these must change, pass the pool pointer
+	 * explicitly instead (the bulletproof fallback). Layout can't drift across units: the whole program is
+	 * analyzed every build, so `%struct.<Arch>` is identical in every unit. */
 	if (static_cap > 0) {
 		buffer_append_fmt(ctx, "@%s = %sglobal %%struct.%s zeroinitializer\n\n", arch->name, cg_shared(ctx),
 		                  arch->name);
@@ -8304,13 +8528,14 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 	buffer_append(ctx, "}\n\n");
 }
 
-static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys) {
-	/* Per-unit: a system is emitted exactly once, in the ENTRY unit (0) — regardless of which unit it
-	 * was declared in (a device system lives in the device's unit but is `run` only from the entry).
-	 * Emitting it in unit 0 (where the archetype types/pools are also present via the hoist + linkonce_odr
-	 * globals) gives a single external definition that the entry's `run` dispatch resolves — no
-	 * linkonce_odr duplication, so nothing to keep byte-identical. Skip in any non-entry per-unit module. */
-	if (ctx->per_unit && ctx->emit_only_unit >= 1)
+static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys, int decl_unit) {
+	/* Per-unit: a system is emitted in the unit that DECLARED it (a device's system lives in that device's
+	 * unit), so editing a device's system body rebuilds ITS `.so` and hot-reloads — exactly like a proc.
+	 * A `run` from another unit (the driver) reaches it via a cross-unit declare (release) or reload
+	 * trampoline (dev), see emit_cross_unit_declares. Archetype struct types + pool globals are present in
+	 * every module (hoist + linkonce_odr), and the pool storage is passed in by the run site, so the body
+	 * is unit-independent. Whole-program (emit_only_unit < 0) always emits. */
+	if (ctx->per_unit && ctx->emit_only_unit >= 0 && ctx->emit_only_unit != decl_unit)
 		return;
 
 	/* Collect all archetypes that have the required fields */
@@ -8324,6 +8549,12 @@ static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys) {
 	/* Generate ONE function taking all matching archetypes as params. Emitted once in the entry unit
 	 * (the per-unit filter keeps it to unit 0) with normal linkage — internal whole-program, external
 	 * under per-unit — so there is no `linkonce_odr` duplication to keep byte-identical. */
+	/* Foreign pools the body reads (a `[1]Config` singleton, etc): in per-unit/hot they are PASSED by the
+	 * run site as extra pointer params and bound as instances below, so the device reads the host's pool
+	 * directly — no global ref / weak interposition. Empty in whole-program (the direct global is kept). */
+	const char *foreign_pools[64];
+	int foreign_count = collect_sys_foreign_pools(ctx, sys, foreign_pools, 64);
+
 	char sys_sym_buf[512];
 	buffer_append_fmt(ctx, "define %svoid @%s(", cg_linkage(ctx),
 	                  cg_fnsym(ctx, sys->name, 0, sys_sym_buf, sizeof(sys_sym_buf)));
@@ -8332,6 +8563,9 @@ static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys) {
 			buffer_append(ctx, ", ");
 		buffer_append_fmt(ctx, "%%struct.%s* %%arch_%s", matching_archs[i], matching_archs[i]);
 	}
+	for (int i = 0; i < foreign_count; i++)
+		buffer_append_fmt(ctx, "%s%%struct.%s* %%arch_%s", (matching_count + i) > 0 ? ", " : "", foreign_pools[i],
+		                  foreign_pools[i]);
 	buffer_append(ctx, ") #0 {\nentry:\n");
 
 	FunctionBodyState fbs = begin_function_body(ctx);
@@ -8400,6 +8634,16 @@ static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys) {
 			}
 		}
 
+		/* Bind each foreign pool param as an archetype INSTANCE, so a body access `Config.center[0]`
+		 * resolves through the passed-in pointer (find_value hits this before the global fallback) instead
+		 * of the device's own `@Config`. Per-unit only; in whole-program foreign_count is 0 and the global
+		 * ref is used. */
+		for (int fp = 0; fp < foreign_count; fp++) {
+			char fp_llvm[256];
+			snprintf(fp_llvm, sizeof(fp_llvm), "%%arch_%s", foreign_pools[fp]);
+			add_arch_value(ctx, foreign_pools[fp], fp_llvm, foreign_pools[fp]);
+		}
+
 		/* Emit system body with this archetype's bindings */
 		ctx->in_sys = 1;
 		for (int s = 0; s < sys->stmt_count; s++) {
@@ -8442,12 +8686,37 @@ int codegen_per_unit_enabled(void) {
 	return g_per_unit_mode > 0 || getenv("ARCHE_PER_UNIT") != NULL;
 }
 
+/* `--shared`: emit a loadable shared library. arche-owned defs get EXTERNAL (not `internal`) linkage so
+ * the device's procs are dlsym-able by a hot-reload host; combined with whole-program codegen (forced by
+ * the CLI), names stay bare (no per-unit mangling). Off → the executable path is byte-unchanged. */
+static int g_shared_mode = 0;
+void codegen_set_shared(int on) {
+	g_shared_mode = on ? 1 : 0;
+}
+int codegen_shared_enabled(void) {
+	return g_shared_mode;
+}
+
+/* Dev hot-reload (`arche run`): the driver's calls to a cross-unit (device) proc/func go through a
+ * compiler-emitted trampoline that resolves the symbol from the device's reloadable `.so` and calls it
+ * indirectly (the ONLY indirect call; never user-visible). OFF for `arche build` → plain direct calls,
+ * so a release binary has zero runtime function pointers. Implies per-unit. */
+static int g_hot_mode = 0;
+void codegen_set_hot(int on) {
+	g_hot_mode = on ? 1 : 0;
+}
+int codegen_hot_enabled(void) {
+	return g_hot_mode;
+}
+
 CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	CodegenContext *ctx = malloc(sizeof(CodegenContext));
 	ctx->ast = ast;
 	ctx->sem_ctx = sem_ctx;
 	ctx->had_error = 0;
 	ctx->per_unit = codegen_per_unit_enabled();
+	ctx->shared = g_shared_mode;
+	ctx->hot = g_hot_mode;
 	ctx->emit_only_unit = -1;
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
@@ -8572,11 +8841,254 @@ static int collect_sys_matching_archs(CodegenContext *ctx, HirSysDecl *sys, cons
 	return n;
 }
 
+/* True if `name` appears as a NAME anywhere in the expression (e.g. the base of `Config.center[0]`). */
+static int expr_refs_name(const HirExpr *e, const char *name) {
+	if (!e)
+		return 0;
+	switch (e->kind) {
+	case HIR_EXPR_NAME:
+		return e->data.name.name && strcmp(e->data.name.name, name) == 0;
+	case HIR_EXPR_FIELD:
+		return expr_refs_name(e->data.field.base, name);
+	case HIR_EXPR_INDEX: {
+		if (expr_refs_name(e->data.index.base, name))
+			return 1;
+		for (int i = 0; i < e->data.index.index_count; i++)
+			if (expr_refs_name(e->data.index.indices[i], name))
+				return 1;
+		return 0;
+	}
+	case HIR_EXPR_BINARY:
+		return expr_refs_name(e->data.binary.left, name) || expr_refs_name(e->data.binary.right, name);
+	case HIR_EXPR_UNARY:
+		return expr_refs_name(e->data.unary.operand, name);
+	case HIR_EXPR_CALL: {
+		if (expr_refs_name(e->data.call.callee, name))
+			return 1;
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			if (expr_refs_name(e->data.call.args[i], name))
+				return 1;
+		return 0;
+	}
+	default:
+		return 0;
+	}
+}
+
+static int stmt_refs_name(const HirStmt *s, const char *name) {
+	if (!s)
+		return 0;
+	switch (s->kind) {
+	case HIR_STMT_BIND:
+		return expr_refs_name(s->data.bind_stmt.value, name);
+	case HIR_STMT_ASSIGN:
+		return expr_refs_name(s->data.assign_stmt.target, name) || expr_refs_name(s->data.assign_stmt.value, name);
+	case HIR_STMT_EXPR:
+		return expr_refs_name(s->data.expr_stmt.expr, name);
+	case HIR_STMT_IF: {
+		if (expr_refs_name(s->data.if_stmt.cond, name))
+			return 1;
+		for (int i = 0; i < s->data.if_stmt.then_count; i++)
+			if (stmt_refs_name(s->data.if_stmt.then_body[i], name))
+				return 1;
+		for (int i = 0; i < s->data.if_stmt.else_count; i++)
+			if (stmt_refs_name(s->data.if_stmt.else_body[i], name))
+				return 1;
+		return 0;
+	}
+	case HIR_STMT_FOR: {
+		if (stmt_refs_name(s->data.for_stmt.init, name) || expr_refs_name(s->data.for_stmt.cond, name) ||
+		    stmt_refs_name(s->data.for_stmt.incr, name))
+			return 1;
+		for (int i = 0; i < s->data.for_stmt.body_count; i++)
+			if (stmt_refs_name(s->data.for_stmt.body[i], name))
+				return 1;
+		return 0;
+	}
+	case HIR_STMT_BLOCK: {
+		for (int i = 0; i < s->data.block.count; i++)
+			if (stmt_refs_name(s->data.block.stmts[i], name))
+				return 1;
+		return 0;
+	}
+	default:
+		return 0;
+	}
+}
+
+/* The FOREIGN pools a system reads — archetypes referenced in its body (e.g. a `[1]Config` singleton) that
+ * are NOT the iterated archetype(s) it matches. In per-unit/hot builds these are passed by POINTER from the
+ * `run` site (the host owns the pool) and bound as instances inside the system, instead of the device
+ * referencing the pool's global and relying on weak-symbol interposition. Deterministic order (ast decl
+ * order) so the define, the `run` call, and the cross-unit trampoline/declare build an identical ABI.
+ * Returns 0 in whole-program builds (the direct global ref is kept — zero indirection). */
+static int collect_sys_foreign_pools(CodegenContext *ctx, HirSysDecl *sys, const char **out, int max) {
+	if (!ctx->per_unit)
+		return 0;
+	/* Compute the matching (iterated) set HERE, internally, so every ABI site derives an identical foreign
+	 * list regardless of how its own matching set was filtered/ordered. */
+	const char *matching[256];
+	int mcount = collect_sys_matching_archs(ctx, sys, matching, 256);
+	int n = 0;
+	for (int d = 0; d < ctx->ast->decl_count; d++) {
+		if (ctx->ast->decls[d]->kind != HIR_DECL_ARCHETYPE)
+			continue;
+		const char *an = ctx->ast->decls[d]->data.archetype->name;
+		const char *cn = canonical_arch_name(ctx, an);
+		if (get_arch_static_capacity(ctx, cn) <= 0)
+			continue; /* no real pool backs it */
+		int is_matching = 0;
+		for (int m = 0; m < mcount; m++)
+			if (strcmp(canonical_arch_name(ctx, matching[m]), cn) == 0) {
+				is_matching = 1;
+				break;
+			}
+		if (is_matching)
+			continue;
+		int dup = 0;
+		for (int o = 0; o < n; o++)
+			if (strcmp(out[o], cn) == 0) {
+				dup = 1;
+				break;
+			}
+		if (dup)
+			continue;
+		int refd = 0;
+		for (int s = 0; s < sys->stmt_count && !refd; s++)
+			refd = stmt_refs_name(sys->stmts[s], an);
+		if (refd && n < max)
+			out[n++] = cn;
+	}
+	return n;
+}
+
 /* Per-unit: emit `declare`s for every arche func/proc defined in a DIFFERENT unit, so this unit's
  * module is self-contained and the linker resolves the references. Parametric procs (archetype/
  * callback) have no real symbol (only their monomorphized instances do), so they're skipped. Systems
  * are defined only in the entry unit (unit 0), so any non-entry unit that `run`s one needs a declare —
  * over-declare all matching systems there (harmless if unused). Inert unless emitting one unit. */
+/* Param TYPES only (no names), for an indirect-call function type — mirrors emit_proc_params' shapes. */
+static void emit_proc_param_types(CodegenContext *ctx, HirProcDecl *proc) {
+	int n = 0;
+	for (int i = 0; i < proc->param_count; i++) {
+		HirType *pt = proc->params[i]->type;
+		const char *tn = field_base_type_name(pt);
+		const char *bt = llvm_type_from_arche(tn);
+		if (n++)
+			buffer_append(ctx, ", ");
+		if (pt && pt->tag == HIR_TYPE_ARRAY)
+			buffer_append_fmt(ctx, "%s*, i64", bt);
+		else if (pt && pt->tag == HIR_TYPE_SHAPED_ARRAY)
+			buffer_append_fmt(ctx, "%s*", bt);
+		else if (find_archetype_decl(ctx, tn))
+			buffer_append_fmt(ctx, "%%struct.%s*", tn);
+		else
+			buffer_append_fmt(ctx, "%s", bt);
+	}
+	for (int oi = 0; oi < proc->out_param_count; oi++) {
+		if (proc_out_param_is_inout(proc, oi))
+			continue;
+		HirType *ot = proc->out_params[oi]->type;
+		const char *otn = field_base_type_name(ot);
+		if (n++)
+			buffer_append(ctx, ", ");
+		if (ot && ot->tag == HIR_TYPE_SHAPED_ARRAY)
+			buffer_append_fmt(ctx, "%s*", llvm_type_from_arche(otn));
+		else if (ot && find_archetype_decl(ctx, otn))
+			buffer_append_fmt(ctx, "%%struct.%s*", otn);
+		else
+			buffer_append_fmt(ctx, "%s*", return_member_llvm(ot));
+	}
+}
+static void emit_func_param_types(CodegenContext *ctx, HirFuncDecl *func) {
+	for (int i = 0; i < func->param_count; i++) {
+		HirType *pt = func->params[i]->type;
+		const char *bt = llvm_type_from_arche(field_base_type_name(pt));
+		if (i > 0)
+			buffer_append(ctx, ", ");
+		if (pt && pt->tag == HIR_TYPE_ARRAY)
+			buffer_append_fmt(ctx, "%s*, i64", bt);
+		else if (pt && (pt->tag == HIR_TYPE_SHAPED_ARRAY))
+			buffer_append_fmt(ctx, "%s*", bt);
+		else
+			buffer_append_fmt(ctx, "%s", bt);
+	}
+}
+
+/* Dev hot-reload: emit a trampoline DEFINE for a cross-unit (device) callee, in place of its plain
+ * `declare`. Body: resolve the device's reloadable symbol, then one indirect call forwarding the args.
+ * `mangled` is the per-unit symbol (`arche.<name>`) — also the name the device `.so` exports and the
+ * host dlsym's. `bare` (the unmangled name) keys the private symbol-name string global. This is the ONLY
+ * indirect call arche emits, and only in hot mode (so a release build never has one). */
+static void emit_hot_trampoline(CodegenContext *ctx, const char *mangled, const char *bare, int unit, int is_proc,
+                                HirProcDecl *p, HirFuncDecl *f) {
+	size_t slen = strlen(mangled) + 1;
+	buffer_append_fmt(ctx, "@.hotsym.%s = private unnamed_addr constant [%zu x i8] c\"%s\\00\"\n", bare, slen, mangled);
+	char ret[512];
+	if (is_proc || f->return_type_count == 0)
+		snprintf(ret, sizeof(ret), "void");
+	else
+		func_llvm_return_type(f, ret, sizeof(ret));
+	buffer_append_fmt(ctx, "define %s @%s(", ret, mangled);
+	if (is_proc)
+		emit_proc_params(ctx, p);
+	else
+		emit_func_params(ctx, f);
+	buffer_append(ctx, ") {\nentry:\n");
+	char *fp = gen_value_name(ctx);
+	buffer_append_fmt(ctx,
+	                  "  %s = call i8* @arche_hot_resolve(i32 %d, i8* getelementptr inbounds ([%zu x i8], [%zu x i8]* "
+	                  "@.hotsym.%s, i64 0, i64 0))\n",
+	                  fp, unit, slen, slen, bare);
+	char *fpc = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = bitcast i8* %s to %s (", fpc, fp, ret);
+	if (is_proc)
+		emit_proc_param_types(ctx, p);
+	else
+		emit_func_param_types(ctx, f);
+	buffer_append(ctx, ")*\n");
+	if (strcmp(ret, "void") == 0) {
+		buffer_append_fmt(ctx, "  call void %s(", fpc);
+		if (is_proc)
+			emit_proc_params(ctx, p);
+		else
+			emit_func_params(ctx, f);
+		buffer_append(ctx, ")\n  ret void\n}\n");
+	} else {
+		char *r = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = call %s %s(", r, ret, fpc);
+		emit_func_params(ctx, f);
+		buffer_append_fmt(ctx, ")\n  ret %s %s\n}\n", ret, r);
+	}
+}
+
+/* Dev hot-reload: the trampoline for a cross-unit SYSTEM. A system's ABI is `void(%struct.A*, ...)` over
+ * the archetypes it matches (the driver's pools, passed by the `run` site); this forwards them through a
+ * reload-resolved indirect call so editing a device's system body reloads live, exactly like a proc. */
+static void emit_hot_sys_trampoline(CodegenContext *ctx, const char *mangled, const char *bare, int unit,
+                                    const char *archs[], int na) {
+	size_t slen = strlen(mangled) + 1;
+	buffer_append_fmt(ctx, "@.hotsym.%s = private unnamed_addr constant [%zu x i8] c\"%s\\00\"\n", bare, slen, mangled);
+	buffer_append_fmt(ctx, "define void @%s(", mangled);
+	for (int a = 0; a < na; a++)
+		buffer_append_fmt(ctx, "%s%%struct.%s* %%arg%d", a ? ", " : "", archs[a], a);
+	buffer_append(ctx, ") {\nentry:\n");
+	char *fp = gen_value_name(ctx);
+	buffer_append_fmt(ctx,
+	                  "  %s = call i8* @arche_hot_resolve(i32 %d, i8* getelementptr inbounds ([%zu x i8], [%zu x i8]* "
+	                  "@.hotsym.%s, i64 0, i64 0))\n",
+	                  fp, unit, slen, slen, bare);
+	char *fpc = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = bitcast i8* %s to void (", fpc, fp);
+	for (int a = 0; a < na; a++)
+		buffer_append_fmt(ctx, "%s%%struct.%s*", a ? ", " : "", archs[a]);
+	buffer_append(ctx, ")*\n");
+	buffer_append_fmt(ctx, "  call void %s(", fpc);
+	for (int a = 0; a < na; a++)
+		buffer_append_fmt(ctx, "%s%%struct.%s* %%arg%d", a ? ", " : "", archs[a], a);
+	buffer_append(ctx, ")\n  ret void\n}\n");
+}
+
 static void emit_cross_unit_declares(CodegenContext *ctx) {
 	if (!ctx->per_unit || ctx->emit_only_unit < 0)
 		return;
@@ -8584,22 +9096,36 @@ static void emit_cross_unit_declares(CodegenContext *ctx) {
 		HirDecl *d = ctx->ast->decls[i];
 		char sym[512];
 		if (d->kind == HIR_DECL_SYS) {
-			if (ctx->emit_only_unit < 1)
-				continue; /* unit 0 defines systems; no declare needed there */
+			/* A system is defined in its DECLARING unit (so editing a device's system rebuilds its .so);
+			 * any OTHER unit that `run`s it needs a cross-unit declare (or a hot trampoline). */
+			if (d->unit == ctx->emit_only_unit)
+				continue; /* defined here */
 			const char *archs[256];
 			int na = collect_sys_matching_archs(ctx, d->data.sys, archs, 256);
 			if (na == 0)
 				continue; /* no matching shape → no definition emitted → nothing to declare */
-			buffer_append_fmt(ctx, "declare void @%s(", cg_fnsym(ctx, d->data.sys->name, 0, sym, sizeof(sym)));
-			for (int a = 0; a < na; a++) {
-				if (a > 0)
-					buffer_append(ctx, ", ");
-				buffer_append_fmt(ctx, "%%struct.%s*", archs[a]);
+			/* Append the foreign read-set pools, so the trampoline/declare ABI matches the define + run. */
+			na += collect_sys_foreign_pools(ctx, d->data.sys, archs + na, 256 - na);
+			cg_fnsym(ctx, d->data.sys->name, 0, sym, sizeof(sym));
+			if (ctx->hot) {
+				emit_hot_sys_trampoline(ctx, sym, d->data.sys->name, d->unit, archs, na);
+			} else {
+				buffer_append_fmt(ctx, "declare void @%s(", sym);
+				for (int a = 0; a < na; a++)
+					buffer_append_fmt(ctx, "%s%%struct.%s*", a ? ", " : "", archs[a]);
+				buffer_append(ctx, ")\n");
 			}
-			buffer_append(ctx, ")\n");
 			continue;
 		}
 		if (d->unit == ctx->emit_only_unit)
+			continue;
+		/* `main`/`main_user` is the program entry — defined once in unit 0, never a cross-unit callee.
+		 * cg_fnsym leaves it un-mangled (returns the name, doesn't touch `sym`), so emitting a cross-unit
+		 * stub here would reuse the stale `sym` buffer AND collide with the entry. Skip it. */
+		const char *dname = (d->kind == HIR_DECL_PROC)   ? d->data.proc->name
+		                    : (d->kind == HIR_DECL_FUNC) ? d->data.func->name
+		                                                 : NULL;
+		if (dname && (strcmp(dname, "main") == 0 || strcmp(dname, "main_user") == 0))
 			continue;
 		if (d->kind == HIR_DECL_FUNC && !d->data.func->is_extern && !d->data.func->is_policy) {
 			/* A policy is a MACRO — inlined at op sites, never emitted as a function (see the
@@ -8607,20 +9133,30 @@ static void emit_cross_unit_declares(CodegenContext *ctx) {
 			 * dangling, and same-named policies across categories (e.g. `abort` in both `bounds` and
 			 * `divide`) collide as duplicate declares. */
 			HirFuncDecl *f = d->data.func;
-			char ret[512];
-			if (f->return_type_count == 0)
-				snprintf(ret, sizeof(ret), "void");
-			else
-				func_llvm_return_type(f, ret, sizeof(ret));
-			buffer_append_fmt(ctx, "declare %s @%s(", ret, cg_fnsym(ctx, f->name, 0, sym, sizeof(sym)));
-			emit_func_params(ctx, f);
-			buffer_append(ctx, ")\n");
+			cg_fnsym(ctx, f->name, 0, sym, sizeof(sym));
+			if (ctx->hot) {
+				emit_hot_trampoline(ctx, sym, f->name, d->unit, 0, NULL, f);
+			} else {
+				char ret[512];
+				if (f->return_type_count == 0)
+					snprintf(ret, sizeof(ret), "void");
+				else
+					func_llvm_return_type(f, ret, sizeof(ret));
+				buffer_append_fmt(ctx, "declare %s @%s(", ret, sym);
+				emit_func_params(ctx, f);
+				buffer_append(ctx, ")\n");
+			}
 		} else if (d->kind == HIR_DECL_PROC && !d->data.proc->is_extern && !is_archetype_parametric(d->data.proc) &&
 		           !has_callback_param(ctx, d->data.proc)) {
 			HirProcDecl *p = d->data.proc;
-			buffer_append_fmt(ctx, "declare void @%s(", cg_fnsym(ctx, p->name, 0, sym, sizeof(sym)));
-			emit_proc_params(ctx, p);
-			buffer_append(ctx, ")\n");
+			cg_fnsym(ctx, p->name, 0, sym, sizeof(sym));
+			if (ctx->hot) {
+				emit_hot_trampoline(ctx, sym, p->name, d->unit, 1, p, NULL);
+			} else {
+				buffer_append_fmt(ctx, "declare void @%s(", sym);
+				emit_proc_params(ctx, p);
+				buffer_append(ctx, ")\n");
+			}
 		}
 	}
 }
@@ -8647,6 +9183,10 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "declare void @abort()\n");
 	/* `write` (libc, for a policy's stderr diagnostic) is declared by core's `#foreign` block, which is
 	 * prepended to every program — no codegen-side declare, so no redefinition clash. */
+
+	/* Dev hot-reload: the reload runtime (linked into the host, RTLD-visible to device .so's). */
+	if (ctx->hot)
+		buffer_append(ctx, "declare i8* @arche_hot_resolve(i32, i8*)\n");
 
 	/* Per-unit: declare cross-unit funcs/procs up front (inert in whole-program mode). */
 	emit_cross_unit_declares(ctx);
@@ -8772,7 +9312,7 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			codegen_proc_decl(ctx, decl->data.proc);
 			break;
 		case HIR_DECL_SYS:
-			codegen_sys_decl(ctx, decl->data.sys);
+			codegen_sys_decl(ctx, decl->data.sys, decl->unit);
 			break;
 		case HIR_DECL_CONST:
 			/* Value consts are inlined at their use sites (semantic_get_const_value); type
@@ -8815,9 +9355,30 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	if (!(ctx->per_unit && ctx->emit_only_unit >= 1)) {
 		char init_sym[512], mainu_sym[512];
 		buffer_append(ctx, "\ndeclare void @arche_set_args(i32, i8**)\n");
+		/* Dev hot-reload: register each device unit's reloadable `.so` (a name the runtime resolves under
+		 * $ARCHE_HOT_DIR). The host calls these at startup; the per-symbol trampolines then resolve+reload. */
+		int hot_maxu = 0;
+		if (ctx->hot) {
+			for (int i = 0; i < ctx->ast->decl_count; i++)
+				if (ctx->ast->decls[i]->unit > hot_maxu)
+					hot_maxu = ctx->ast->decls[i]->unit;
+			buffer_append(ctx, "declare void @arche_hot_register(i32, i8*)\n");
+			for (int u = 1; u <= hot_maxu; u++)
+				buffer_append_fmt(ctx, "@.hotpath.%d = private unnamed_addr constant [%d x i8] c\"unit_%d.so\\00\"\n",
+				                  u, (int)(strlen("unit_.so") + 1 + snprintf(NULL, 0, "%d", u)), u);
+		}
 		buffer_append(ctx, "\ndefine i32 @main(i32 %argc, i8** %argv) {\n");
 		buffer_append(ctx, "entry:\n");
 		buffer_append(ctx, "  call void @arche_set_args(i32 %argc, i8** %argv)\n");
+		if (ctx->hot)
+			for (int u = 1; u <= hot_maxu; u++) {
+				int plen = (int)(strlen("unit_.so") + 1 + snprintf(NULL, 0, "%d", u));
+				buffer_append_fmt(
+				    ctx,
+				    "  call void @arche_hot_register(i32 %d, i8* getelementptr inbounds ([%d x i8], [%d x "
+				    "i8]* @.hotpath.%d, i64 0, i64 0))\n",
+				    u, plen, plen, u);
+			}
 
 		/* Emit allocation initialization code (always, regardless of user main) */
 		for (int i = 0; i < ctx->alloc_count; i++) {

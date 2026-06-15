@@ -8,6 +8,7 @@
 // (like C). The fd wrappers below build on it. Call qualified as `os.syscall(...)`.
 #foreign {
   os_now_sec  :: proc()(t: float);
+  os_now_ms   :: proc()(t: i64); // monotonic milliseconds (integer) — for fixed-timestep sim loops
   os_sleep_ms :: proc(ms: int);
   os_argc     :: proc()(n: int);
   os_argv     :: proc(i: int)(s: []char);
@@ -30,6 +31,12 @@ argv :: proc(i: int)(out: []char) {
 // Sleep for `ms` milliseconds (public wrapper over the foreign timer).
 sleep_ms :: proc(ms: int) {
   os_sleep_ms(ms);
+}
+
+// Monotonic milliseconds (public wrapper). For fixed-timestep loops: `os.now_ms()(t:)`. A clock read is
+// an effect (it observes mutable external state — different each call), so it's a proc, not a func.
+now_ms :: proc()(t: i64) {
+  os_now_ms()(t);
 }
 
 // Raw fd I/O — thin syscall wrappers (x86-64 Linux), no libc. Read-only buffers (`write`/`open`
