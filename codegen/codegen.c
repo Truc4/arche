@@ -4610,6 +4610,13 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 		hoist_column_geps(ctx, rhs, struct_ptr_val);
 	}
 
+	/* Compound-assignment (`col += rhs`) arithmetic must match the column's type: a float column adds with
+	 * `fadd`, an integer column with `add` (and signed/unsigned div/mod). Without this an int column's `+=`
+	 * emitted `fadd i32` → invalid IR. (The plain `col = col + rhs` form goes through the binary-expr
+	 * codegen, which already picks the right op; this path is only reached by the compound operators.) */
+	int col_is_float = strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0;
+	int col_unsigned = arche_type[0] == 'u';
+
 	/* Align count down to 4-element boundary for vector loop */
 	char *count_aligned = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = and i64 %s, -4\n", count_aligned, count);
@@ -4675,26 +4682,29 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 		const char *op_str;
 		switch (op) {
 		case OP_ADD:
-			op_str = "fadd";
+			op_str = col_is_float ? "fadd" : "add";
 			break;
 		case OP_SUB:
-			op_str = "fsub";
+			op_str = col_is_float ? "fsub" : "sub";
 			break;
 		case OP_MUL:
-			op_str = "fmul";
+			op_str = col_is_float ? "fmul" : "mul";
 			break;
 		case OP_DIV:
-			op_str = "fdiv";
+			op_str = col_is_float ? "fdiv" : (col_unsigned ? "udiv" : "sdiv");
 			break;
 		case OP_MOD:
-			op_str = "frem";
+			op_str = col_is_float ? "frem" : (col_unsigned ? "urem" : "srem");
 			break;
 		default:
-			op_str = "fadd";
+			op_str = col_is_float ? "fadd" : "add";
 			break;
 		}
 		char *op_result = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", op_result, op_str, load_type, loaded, rhs_buf);
+		if (!col_is_float && (op == OP_DIV || op == OP_MOD))
+			emit_int_divmod(ctx, op_str, load_type, loaded, rhs_buf, NULL, op_result);
+		else
+			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", op_result, op_str, load_type, loaded, rhs_buf);
 		strcpy(compute_result, op_result);
 	}
 
@@ -4754,26 +4764,29 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 		const char *op_str;
 		switch (op) {
 		case OP_ADD:
-			op_str = "fadd";
+			op_str = col_is_float ? "fadd" : "add";
 			break;
 		case OP_SUB:
-			op_str = "fsub";
+			op_str = col_is_float ? "fsub" : "sub";
 			break;
 		case OP_MUL:
-			op_str = "fmul";
+			op_str = col_is_float ? "fmul" : "mul";
 			break;
 		case OP_DIV:
-			op_str = "fdiv";
+			op_str = col_is_float ? "fdiv" : (col_unsigned ? "udiv" : "sdiv");
 			break;
 		case OP_MOD:
-			op_str = "frem";
+			op_str = col_is_float ? "frem" : (col_unsigned ? "urem" : "srem");
 			break;
 		default:
-			op_str = "fadd";
+			op_str = col_is_float ? "fadd" : "add";
 			break;
 		}
 		char *op_result = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", op_result, op_str, scalar_type, loaded, rhs_buf);
+		if (!col_is_float && (op == OP_DIV || op == OP_MOD))
+			emit_int_divmod(ctx, op_str, scalar_type, loaded, rhs_buf, NULL, op_result);
+		else
+			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", op_result, op_str, scalar_type, loaded, rhs_buf);
 		strcpy(compute_result, op_result);
 	}
 

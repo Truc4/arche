@@ -1934,11 +1934,160 @@ static HirDecl *lower_func_from(SyntaxView f, char *name) {
 	return ad;
 }
 
+/* Deep-clone an expression subtree (used to fan a whole-group op `pos = pos + vel` out into one
+ * independent statement per component — each needs its own copy of the RHS to suffix differently). */
+static HirExpr *hir_expr_deep_clone(const HirExpr *e) {
+	if (!e)
+		return NULL;
+	HirExpr *c = hir_expr_create(e->kind);
+	c->loc = e->loc;
+	c->resolved = e->resolved;
+	switch (e->kind) {
+	case HIR_EXPR_LITERAL:
+		c->data.literal.lexeme = e->data.literal.lexeme ? dupz(e->data.literal.lexeme) : NULL;
+		break;
+	case HIR_EXPR_NAME:
+		c->data.name.name = e->data.name.name ? dupz(e->data.name.name) : NULL;
+		break;
+	case HIR_EXPR_STRING:
+		c->data.string.value = e->data.string.value ? dupz(e->data.string.value) : NULL;
+		c->data.string.length = e->data.string.length;
+		break;
+	case HIR_EXPR_FIELD:
+		c->data.field.base = hir_expr_deep_clone(e->data.field.base);
+		c->data.field.field_name = e->data.field.field_name ? dupz(e->data.field.field_name) : NULL;
+		break;
+	case HIR_EXPR_INDEX:
+		c->data.index.base = hir_expr_deep_clone(e->data.index.base);
+		c->data.index.index_count = e->data.index.index_count;
+		c->data.index.indices = calloc(e->data.index.index_count ? e->data.index.index_count : 1, sizeof(HirExpr *));
+		for (int i = 0; i < e->data.index.index_count; i++)
+			c->data.index.indices[i] = hir_expr_deep_clone(e->data.index.indices[i]);
+		c->data.index.policy = e->data.index.policy ? dupz(e->data.index.policy) : NULL;
+		c->data.index.policy_elided = e->data.index.policy_elided;
+		break;
+	case HIR_EXPR_SLICE:
+		c->data.slice.base = hir_expr_deep_clone(e->data.slice.base);
+		c->data.slice.lo = hir_expr_deep_clone(e->data.slice.lo);
+		c->data.slice.hi = hir_expr_deep_clone(e->data.slice.hi);
+		c->data.slice.policy = e->data.slice.policy ? dupz(e->data.slice.policy) : NULL;
+		c->data.slice.policy_elided = e->data.slice.policy_elided;
+		break;
+	case HIR_EXPR_BINARY:
+		c->data.binary.op = e->data.binary.op;
+		c->data.binary.left = hir_expr_deep_clone(e->data.binary.left);
+		c->data.binary.right = hir_expr_deep_clone(e->data.binary.right);
+		c->data.binary.policy = e->data.binary.policy ? dupz(e->data.binary.policy) : NULL;
+		break;
+	case HIR_EXPR_UNARY:
+		c->data.unary.op = e->data.unary.op;
+		c->data.unary.operand = hir_expr_deep_clone(e->data.unary.operand);
+		break;
+	case HIR_EXPR_CALL:
+		c->data.call.callee = hir_expr_deep_clone(e->data.call.callee);
+		c->data.call.arg_count = e->data.call.arg_count;
+		c->data.call.args = calloc(e->data.call.arg_count ? e->data.call.arg_count : 1, sizeof(HirExpr *));
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			c->data.call.args[i] = hir_expr_deep_clone(e->data.call.args[i]);
+		c->data.call.policy = e->data.call.policy ? dupz(e->data.call.policy) : NULL;
+		c->data.call.policy_is_handler = e->data.call.policy_is_handler;
+		break;
+	default:
+		break;
+	}
+	return c;
+}
+
+/* In a cloned per-component RHS, rename each bare tuple-group reference `vel` → `vel_<suffix>` (the
+ * flattened column for this component). A group used as a field base (`vel.x`) is left alone — that is
+ * already component-specific and the per-param tuple_rewrite pass handles it. */
+static void group_suffix_names(HirExpr *e, const char *suffix) {
+	if (!e)
+		return;
+	switch (e->kind) {
+	case HIR_EXPR_NAME:
+		if (tgroup_lookup(e->data.name.name)) {
+			char *n = malloc(strlen(e->data.name.name) + 1 + strlen(suffix) + 1);
+			sprintf(n, "%s_%s", e->data.name.name, suffix);
+			e->data.name.name = n; /* old name intentionally leaked (arena-style lowering) */
+		}
+		break;
+	case HIR_EXPR_FIELD:
+		/* skip a bare-group base (`vel.x`); recurse otherwise */
+		if (!(e->data.field.base && e->data.field.base->kind == HIR_EXPR_NAME &&
+		      tgroup_lookup(e->data.field.base->data.name.name)))
+			group_suffix_names(e->data.field.base, suffix);
+		break;
+	case HIR_EXPR_INDEX:
+		group_suffix_names(e->data.index.base, suffix);
+		for (int i = 0; i < e->data.index.index_count; i++)
+			group_suffix_names(e->data.index.indices[i], suffix);
+		break;
+	case HIR_EXPR_SLICE:
+		group_suffix_names(e->data.slice.base, suffix);
+		group_suffix_names(e->data.slice.lo, suffix);
+		group_suffix_names(e->data.slice.hi, suffix);
+		break;
+	case HIR_EXPR_BINARY:
+		group_suffix_names(e->data.binary.left, suffix);
+		group_suffix_names(e->data.binary.right, suffix);
+		break;
+	case HIR_EXPR_UNARY:
+		group_suffix_names(e->data.unary.operand, suffix);
+		break;
+	case HIR_EXPR_CALL:
+		group_suffix_names(e->data.call.callee, suffix);
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			group_suffix_names(e->data.call.args[i], suffix);
+		break;
+	default:
+		break;
+	}
+}
+
+/* Whole-group (vector) assignment: `pos = pos + vel` / `pos += vel`, where `pos` is a tuple group, fans
+ * out into one scalar assignment per component — `{ pos_x = pos_x + vel_x; pos_y = pos_y + vel_y; }` — so
+ * the user writes the vector once instead of hand-expanding each axis. Each component clones the RHS and
+ * suffixes its bare group references. Statements are replaced in place by a BLOCK (codegen + the later
+ * tuple_rewrite pass both recurse into blocks). */
+static void expand_group_assigns(HirSysDecl *as) {
+	for (int sx = 0; sx < as->stmt_count; sx++) {
+		HirStmt *s = as->stmts[sx];
+		if (!s || s->kind != HIR_STMT_ASSIGN)
+			continue;
+		HirExpr *tgt = s->data.assign_stmt.target;
+		if (!tgt || tgt->kind != HIR_EXPR_NAME)
+			continue;
+		CstTupleGroup *g = tgroup_lookup(tgt->data.name.name);
+		if (!g)
+			continue;
+		HirStmt *blk = hir_stmt_create(HIR_STMT_BLOCK);
+		blk->data.block.stmts = calloc(g->nsuf ? g->nsuf : 1, sizeof(HirStmt *));
+		blk->data.block.count = 0;
+		for (int j = 0; j < g->nsuf; j++) {
+			HirStmt *cs = hir_stmt_create(HIR_STMT_ASSIGN);
+			cs->data.assign_stmt.op = s->data.assign_stmt.op;
+			HirExpr *ct = hir_expr_create(HIR_EXPR_NAME);
+			ct->data.name.name = malloc(strlen(tgt->data.name.name) + 1 + strlen(g->suffix[j]) + 1);
+			sprintf(ct->data.name.name, "%s_%s", tgt->data.name.name, g->suffix[j]);
+			cs->data.assign_stmt.target = ct;
+			HirExpr *cv = hir_expr_deep_clone(s->data.assign_stmt.value);
+			group_suffix_names(cv, g->suffix[j]);
+			cs->data.assign_stmt.value = cv;
+			blk->data.block.stmts[blk->data.block.count++] = cs;
+		}
+		as->stmts[sx] = blk; /* old single-assign stmt intentionally leaked (arena-style lowering) */
+	}
+}
+
 static HirDecl *lower_sys_from(SyntaxView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_SYS);
 	HirSysDecl *as = calloc(1, sizeof(HirSysDecl));
 	as->name = name;
 	as->stmts = syntax_lower_body(f, &as->stmt_count);
+	/* Expand whole-group vector ops (`pos = pos + vel`) into per-component blocks BEFORE the per-param
+	 * `pos.x`→`pos_x` rewrite below, so the produced scalar columns match the flattened params. */
+	expand_group_assigns(as);
 	int np = sv_count(f, SN_PARAM);
 	int pcount = 0;
 	for (int i = 0; i < np; i++) {
