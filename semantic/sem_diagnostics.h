@@ -78,6 +78,7 @@ typedef enum {
 	SEM_DIAG_archetype_funcs_only,
 	SEM_DIAG_multiple_archetype_params,
 	SEM_DIAG_handle_in_sys_param,
+	SEM_DIAG_sys_writes_foreign_pool,
 	SEM_DIAG_each_field_filter_type_not_name,
 	SEM_DIAG_each_field_filter_type_not_primitive,
 	SEM_DIAG_each_field_invalid_rhs,
@@ -290,6 +291,7 @@ SemDiag *sem_emit_archetype_not_return_type(SemanticContext *ctx, SourceLoc loc,
 SemDiag *sem_emit_archetype_funcs_only(SemanticContext *ctx, SourceLoc loc, const char *func_name);
 SemDiag *sem_emit_multiple_archetype_params(SemanticContext *ctx, SourceLoc loc, const char *proc_name);
 SemDiag *sem_emit_handle_in_sys_param(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_sys_writes_foreign_pool(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_each_field_filter_type_not_name(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_each_field_filter_type_not_primitive(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_each_field_invalid_rhs(SemanticContext *ctx, SourceLoc loc, const char *name);

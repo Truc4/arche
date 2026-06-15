@@ -1,0 +1,10 @@
+// sgldev device: defines a singleton shape `Config` and a system that READS it as shared context while
+// iterating `Thing`. The singleton lives in a [1] pool the driver owns; the system reaches row 0 directly
+// (Config.gravity[0]) — shared across every Thing row. Support file, not a standalone test.
+// RUN: true
+Config :: arche { gravity }
+Thing  :: arche { v }
+
+accel :: sys (v) {
+  v = v + Config.gravity[0];
+}

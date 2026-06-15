@@ -1,0 +1,18 @@
+// A system reads a SINGLETON (shared context) while iterating its per-entity pool: `accel` adds
+// Config.gravity (one shared [1]-pool row) to every Thing.v. The driver owns + sets the singleton; the
+// device system reads it. Works whole-program AND under `arche run` (hot): the device .so shares the
+// host's Config via weak-symbol interposition (-rdynamic), so no reload indirection and no split state.
+// RUN: %arche build -o %t %s && %t | grep -qF "v0=10 v1=110 g=10"
+// RUN: %arche build --emit=llvm-ir -o %t.ll %s && ! grep -q arche_hot_resolve %t.ll
+// RUN: rm -rf %t.hot %t.cache && mkdir -p %t.hot
+// RUN: env ARCHE_HOT_DIR=%t.hot ARCHE_CACHE_DIR=%t.cache %arche run %s | grep -qF "v0=10 v1=110 g=10"
+#import { sgldev fmt }
+[1]Config;
+[4]Thing;
+main :: proc() {
+  insert(Config, 10)(_:, _:); // create the singleton instance (gravity = 10)
+  insert(Thing, 0)(_:, _:);
+  insert(Thing, 100)(_:, _:);
+  run sgldev.accel;
+  fmt.printf("v0=%d v1=%d g=%d\n", Thing.v[0], Thing.v[1], Config.gravity[0]);
+}

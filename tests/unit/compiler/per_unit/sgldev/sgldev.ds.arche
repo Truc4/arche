@@ -1,0 +1,6 @@
+// sgldev device datasheet: components + a Config singleton + a Thing pool requirement. Support file.
+// RUN: true
+gravity :: int;
+v       :: int;
+[1]Config;
+[1]Thing;

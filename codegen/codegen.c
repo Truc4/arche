@@ -3007,8 +3007,21 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				nested_slice_base = 1;
 			}
 		}
-		if (!nested_slice_base)
+		if (!nested_slice_base) {
+			/* An EXPLICIT index means "use THIS index" — so the base must yield the column/array POINTER,
+			 * not be auto-indexed by the enclosing sys row loop (which exists only for the iterated
+			 * archetype's own columns). Suppress the implicit loop index + vectorization while evaluating
+			 * the base so a foreign singleton access `Config.gravity[0]` reads row 0 (not gravity[loopidx]),
+			 * and any explicit `col[i]` in a sys uses i rather than the loop counter. */
+			char saved_loop[64];
+			int saved_lanes = ctx->vector_lanes;
+			snprintf(saved_loop, sizeof(saved_loop), "%s", ctx->implicit_loop_index);
+			ctx->implicit_loop_index[0] = '\0';
+			ctx->vector_lanes = 0;
 			codegen_expression(ctx, expr->data.index.base, base_buf);
+			snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", saved_loop);
+			ctx->vector_lanes = saved_lanes;
+		}
 
 		/* Check if base is a type-6 slice pointer variable */
 		if (!nested_slice_base && expr->data.index.base->kind == HIR_EXPR_NAME) {

@@ -69,6 +69,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_archetype_funcs_only]          = { "E0035", "archetype_funcs_only",          CLASS_ERROR, 1 },
 	[SEM_DIAG_multiple_archetype_params]     = { "E0036", "multiple_archetype_params",     CLASS_ERROR, 1 },
 	[SEM_DIAG_handle_in_sys_param]           = { "E0037", "handle_in_sys_param",           CLASS_ERROR, 1 },
+	[SEM_DIAG_sys_writes_foreign_pool]       = { "E0215", "sys_writes_foreign_pool",       CLASS_ERROR, 1 },
 	[SEM_DIAG_each_field_filter_type_not_name]      = { "E0038", "each_field_filter_not_name",      CLASS_ERROR, 1 },
 	[SEM_DIAG_each_field_filter_type_not_primitive] = { "E0039", "each_field_filter_not_primitive", CLASS_ERROR, 1 },
 	[SEM_DIAG_each_field_invalid_rhs]        = { "E0040", "each_field_invalid_rhs",        CLASS_ERROR, 1 },
@@ -607,6 +608,13 @@ SemDiag *sem_emit_multiple_archetype_params(SemanticContext *ctx, SourceLoc loc,
 }
 SemDiag *sem_emit_handle_in_sys_param(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_handle_in_sys_param, loc, "handle column '%s' cannot be sys parameter", name);
+}
+
+SemDiag *sem_emit_sys_writes_foreign_pool(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_sys_writes_foreign_pool, loc,
+	                 "a system cannot write to '%s' — it is not the shape this system iterates; a system READS shared "
+	                 "singletons, the driver WRITES them (a foreign-pool write in a system runs once, not per row)",
+	                 name);
 }
 SemDiag *sem_emit_each_field_filter_type_not_name(SemanticContext *ctx, SourceLoc loc) {
 	return sem_emit_(ctx, SEM_DIAG_each_field_filter_type_not_name, loc,

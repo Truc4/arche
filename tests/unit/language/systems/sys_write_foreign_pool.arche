@@ -1,0 +1,19 @@
+// A system may READ a shared singleton but must NOT WRITE a foreign pool (E0215): writing an archetype it
+// does not iterate runs once (not per row) — the run-once footgun. Singletons are written by the driver
+// and read by systems. Reading a foreign singleton in a system IS allowed (see per_unit/singleton_read).
+// RUN: ! %arche build -o %t %s 2>%t.err
+// RUN: grep -qF "cannot write to 'Config'" %t.err
+gravity :: int;
+v       :: int;
+Config  :: arche { gravity }
+Thing   :: arche { v }
+[1]Config;
+[2]Thing;
+bump :: sys (v) {
+  Config.gravity[0] = v; // foreign write from a system → E0215
+}
+main :: proc() {
+  insert(Config, 0)(_:, _:);
+  insert(Thing, 5)(_:, _:);
+  run bump;
+}

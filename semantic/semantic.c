@@ -2549,6 +2549,17 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 				sem_emit_cannot_mutate_borrowed(ctx, loc, ln);
 			free(ln);
 		}
+		/* A system READS shared singletons but must not WRITE a foreign pool. Writing an archetype that is
+		 * NOT the one this system iterates runs ONCE (not per row) — almost always a mistaken per-entity
+		 * reduction (D5). The driver writes singletons; systems read them. (find_archetype canonicalizes
+		 * aliases, so the pointer compare is alias-safe; the leftmost target IDENT is the base pool name.) */
+		if (ctx->in_sys && ctx->current_sys_archetype) {
+			char *tbase = sv_name_expr_dup(target);
+			ArchetypeInfo *ta = tbase ? find_archetype(ctx, tbase) : NULL;
+			if (ta && ta != find_archetype(ctx, ctx->current_sys_archetype))
+				sem_emit_sys_writes_foreign_pool(ctx, sem_node_loc(target.node), tbase);
+			free(tbase);
+		}
 		break;
 	}
 
