@@ -6034,6 +6034,82 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 	}
 
 	case HIR_STMT_ASSIGN: {
+		/* Bulk column seed: `Player.pos.x = {80, 560, …}` scatters element i → column row i — a DOD batch
+		 * init of distinct per-row values, the columnar alternative to N row-at-a-time `insert`s. The
+		 * literal's length fills rows 0..n-1; the pool's live count (from `[N]Arch(M)`) is unchanged. Only a
+		 * direct column target (not a tuple base) + a plain `=` qualify.
+		 * TODO(B): a declaration-site form `[N]Arch(M){ pos.x: {…}, pos.y: {…} }` would fold this into the
+		 * pool literal (today the literal only broadcasts one scalar per column). Build it on this scatter. */
+		if (stmt->data.assign_stmt.op == OP_NONE && stmt->data.assign_stmt.value &&
+		    stmt->data.assign_stmt.value->kind == HIR_EXPR_ARRAY_LITERAL &&
+		    stmt->data.assign_stmt.target->kind == HIR_EXPR_FIELD &&
+		    stmt->data.assign_stmt.target->data.field.base->kind == HIR_EXPR_NAME) {
+			const char *bn = stmt->data.assign_stmt.target->data.field.base->data.name.name;
+			ValueInfo *inst = find_value(ctx, bn);
+			const char *arch_name = (inst && inst->type == 3 && inst->arch_name)
+			                            ? inst->arch_name
+			                            : (find_archetype_decl(ctx, bn) ? bn : NULL);
+			HirArchetypeDecl *arch = arch_name ? find_archetype_decl(ctx, arch_name) : NULL;
+			if (arch) {
+				const char *fname = stmt->data.assign_stmt.target->data.field.field_name;
+				int field_idx = -1;
+				HirField *fdecl = NULL;
+				for (int i = 0; i < arch->field_count; i++)
+					if (strcmp(arch->fields[i]->name, fname) == 0) {
+						field_idx = i;
+						fdecl = arch->fields[i];
+						break;
+					}
+				if (field_idx >= 0 && fdecl && fdecl->kind == FIELD_COLUMN) {
+					const char *arche_type = field_base_type_name(fdecl->type);
+					const char *llvm_type = llvm_type_from_arche(arche_type);
+					int col_is_float = strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0;
+					int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+					/* struct pointer */
+					char struct_ptr[256];
+					if (inst) {
+						snprintf(struct_ptr, sizeof(struct_ptr), "%s", inst->llvm_name);
+					} else if (is_static) {
+						snprintf(struct_ptr, sizeof(struct_ptr), "@%s", arch_name);
+					} else {
+						char *ld = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", ld, arch_name,
+						                  arch_name, arch_name);
+						snprintf(struct_ptr, sizeof(struct_ptr), "%s", ld);
+					}
+					/* column base pointer (element 0) */
+					char col_ptr[256];
+					if (is_static) {
+						char *cp = gen_value_name(ctx);
+						buffer_append_fmt(ctx,
+						                  "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n",
+						                  cp, arch_name, arch_name, struct_ptr, field_idx);
+						snprintf(col_ptr, sizeof(col_ptr), "%s", cp);
+					} else {
+						char *fg = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", fg,
+						                  arch_name, arch_name, struct_ptr, field_idx);
+						char *cp = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", cp, llvm_type, llvm_type, fg);
+						snprintf(col_ptr, sizeof(col_ptr), "%s", cp);
+					}
+					HirExpr **elems = stmt->data.assign_stmt.value->data.array_literal.elements;
+					int n = stmt->data.assign_stmt.value->data.array_literal.element_count;
+					for (int i = 0; i < n; i++) {
+						char ebuf[256];
+						codegen_expression(ctx, elems[i], ebuf);
+						char promo[256];
+						const char *ev =
+						    col_is_float ? float_promote_operand(ctx, elems[i], ebuf, promo, sizeof(promo)) : ebuf;
+						char *gep = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %d\n", gep, llvm_type, llvm_type,
+						                  col_ptr, i);
+						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", llvm_type, ev, llvm_type, gep);
+					}
+					break;
+				}
+			}
+		}
 		/* Write-back to an out-ONLY unbounded `char[]`/`T[]` out-param (`out = buf[0:r]`): store the
 		 * RHS slice's {ptr,len} through the caller's `{T*,i64}*` slot so the caller recovers the view.
 		 * Without this the slice is computed and dropped (the proc returns void). */

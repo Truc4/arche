@@ -516,7 +516,16 @@ static void visit_stmt(TyCtx *cx, SyntaxView s, const DeclSummary *fn) {
 				sem_emit_opaque_overwrite(cx->ctx, sem_node_loc(target.node), on);
 				break;
 			}
-			check(cx, value, tt, "assignment");
+			/* Column ← array-literal scatter (`Mob.pos.x = {1, 2, 3}`): each element fills a row, so check
+			 * the ELEMENTS against the column type, not the array aggregate against the scalar (which would
+			 * spuriously read `[3]i32` vs `float`). Only for a field target (a column); a plain scalar local
+			 * `x = {…}` still falls through to the normal (rejecting) check. */
+			if (sv_kind(target) == SN_FIELD_EXPR && sv_kind(value) == SN_ARRAY_LIT_EXPR) {
+				for (int i = 0, n = sem_expr_count(value); i < n; i++)
+					check(cx, sem_node_at_expr(value, i), tt, "column element");
+			} else {
+				check(cx, value, tt, "assignment");
+			}
 		}
 		break;
 	}

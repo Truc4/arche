@@ -93,6 +93,18 @@ arche-rpg's physics tuning (stiffness, center_x, center_y) moved from `::` const
 and HOT mode yields identical values — the device `.so` reads the HOST's Config singleton live (weak
 interposition), and `arche run` hot-reloads game.arche edits with the singleton intact.
 
+## D12 — arche-rpg demoted from singleton to device consts (the demo didn't justify a singleton)
+Honest reckoning (user-led): arche-rpg's Config was set ONCE at driver init (`insert(Config, 24, 320, 240)`)
+and never mutated — the loop never touches it, the system only reads it. So it was functionally a constant.
+Worse, hot reload reloads the DEVICE, not the driver, so the driver-owned Config could NOT be hot-tuned —
+while a const in the device CAN. A driver-owned singleton only earns its keep for genuinely runtime-dynamic
+driver→system state (input, per-frame dt, a disk-loaded config); arche-rpg has none of that. So
+stiffness/center moved to device consts (`STIFFNESS`/`CENTER_X`/`CENTER_Y` in game.arche, alongside
+DAMP_*): simpler (no `insert`/`[0]`/W0024) AND more live-editable. The singleton FEATURE is unaffected and
+still covered by per_unit/singleton_read.arche + systems/sys_whole_group_singleton.arche +
+sys_write_foreign_pool.arche — the demo just no longer over-applies it. (D8's "arche-rpg uses the singleton"
+is now historical; the demo uses consts.)
+
 ## Final state
 Feature SHIPPED: a system reads a shared singleton (a `[1]` pool) directly in the body; works whole-program
 and hot (no reload indirection — direct global, shared via -rdynamic weak interposition). One codegen fix
