@@ -55,10 +55,11 @@ void *gfx_be_open(int w, int h, char *title) {
 		XSetClassHint(dpy, win, cls);
 		XFree(cls);
 	}
-	/* Default RESIZABLE (the framebuffer reallocs on ConfigureNotify). To float a resizable window, add a
-	 * WM rule keyed on the WM_CLASS "arche-gfx" above. `ARCHE_GFX_FIXED=1` instead pins the size (min ==
-	 * max) → a non-resizable window most tiling WMs auto-float, matching the Wayland backend. */
-	if (getenv("ARCHE_GFX_FIXED")) {
+	/* Default FIXED size (min == max): a non-resizable window most tiling WMs auto-float, so the window
+	 * floats out of the box with no compositor rule. `ARCHE_GFX_RESIZABLE=1` opts into a resizable window
+	 * (the framebuffer reallocs on ConfigureNotify) — but a resizable window tiles unless you add a WM rule
+	 * keyed on the WM_CLASS "arche-gfx" above. Matches the Wayland backend. */
+	if (!getenv("ARCHE_GFX_RESIZABLE")) {
 		XSizeHints *sh = XAllocSizeHints();
 		if (sh) {
 			sh->flags = PMinSize | PMaxSize;

@@ -1,0 +1,6 @@
+// tgdev device datasheet: STRUCTURED (tuple-group) components `pos(x, y)` / `vel(x, y)` + a Mover pool
+// requirement. Support file. Exercises tuple-group flattening across the device/datasheet boundary.
+// RUN: true
+pos(x, y) :: int;
+vel(x, y) :: int;
+[1]Mover;

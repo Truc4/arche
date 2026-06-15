@@ -1617,8 +1617,9 @@ static int decl_is_decorated(const SyntaxNode *d) {
 	return 0;
 }
 
-static void build_tgroups(const SyntaxNode *root, const char *src) {
-	g_tgroup_count = 0;
+/* Register every tuple group declared directly under `root` into the lookup table (does NOT reset the
+ * table — call build_tgroups first, then scan_tgroups per imported module). */
+static void scan_tgroups(const SyntaxNode *root, const char *src) {
 	for (int i = 0; i < root->child_count; i++) {
 		if (root->children[i].tag != SE_NODE)
 			continue;
@@ -1634,6 +1635,11 @@ static void build_tgroups(const SyntaxNode *root, const char *src) {
 		else if (d->kind == SN_ARCHETYPE_DECL)
 			register_arch_tgroups(d, src);
 	}
+}
+
+static void build_tgroups(const SyntaxNode *root, const char *src) {
+	g_tgroup_count = 0;
+	scan_tgroups(root, src);
 }
 
 static CstTupleGroup *tgroup_lookup(const char *name) {
@@ -3394,7 +3400,12 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 	HirProgram *ast = hir_program_create();
 	SyntaxView r = sv_root(root, src);
 	build_tgroups(root, src); /* tuple-group consts → archetype-field expansion table */
-	g_synth_arch_count = 0;   /* synthetic archetypes minted from anonymous `arche {…}` literals */
+	/* Tuple groups declared in an imported module (a device's datasheet/impl) must be visible too, so an
+	 * archetype shape lowered from that module flattens `pos`→`pos_x`/`pos_y` like a single-file build.
+	 * Without this, a cross-unit `insert`/shape kept the group as a by-value `%struct.pos` column. */
+	for (int m = 0; m < g_module_count; m++)
+		scan_tgroups(g_modules[m].root, g_modules[m].src);
+	g_synth_arch_count = 0; /* synthetic archetypes minted from anonymous `arche {…}` literals */
 	/* Deep count: decls nested inside `#foreign { }` / `#module { }` block regions are collected
 	 * too (see the region recursion below), so the shallow top-level child count would undersize
 	 * the array and overflow it. sv_node_count_deep is a safe (over-)estimate. */
