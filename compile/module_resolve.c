@@ -1,5 +1,6 @@
 #include "module_resolve.h"
 #include "../cli/resource.h"
+#include "variant_select.h"
 #include <dirent.h>
 #include <stdio.h>
 #include <string.h>
@@ -81,6 +82,15 @@ int arche_module_load_by_name(const ModuleResolver *r, const char *name, const c
 	int loaded = try_load_dir(r, name, arche_resource_dir(ARCHE_RES_STDLIB), source_dir, DECL_ORIGIN_STDLIB, 1);
 	if (!loaded)
 		loaded = try_load_dir(r, name, source_dir, source_dir, DECL_ORIGIN_USER_MODULE, 1);
+	if (!loaded) {
+		/* Extra library roots (ARCHE_PATH + arche.toml `[lib] paths`) — so a project can import
+		 * devices/modules living outside its own tree (e.g. an external app pulling in the arche repo's
+		 * `extras`/`stdlib`). Resolved AS user modules (a lib device's source dir is the matched root). */
+		LibRoots roots;
+		arche_lib_roots(source_dir, &roots);
+		for (int i = 0; i < roots.count && !loaded; i++)
+			loaded = try_load_dir(r, name, roots.dirs[i], roots.dirs[i], DECL_ORIGIN_USER_MODULE, 1);
+	}
 	if (!loaded)
 		loaded = try_load_dir(r, name, arche_resource_dir(ARCHE_RES_CORE), source_dir, DECL_ORIGIN_CORE, 1);
 	return loaded > 0;

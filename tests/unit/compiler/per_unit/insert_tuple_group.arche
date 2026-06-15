@@ -1,0 +1,14 @@
+// Tuple-group (structured) components across the device boundary: a driver inserts a Mover whose columns
+// are `pos(x, y)` / `vel(x, y)` and runs the device `integrate` system over it. The `insert` args flatten
+// the groups in declaration order — (pos.x, pos.y, vel.x, vel.y) — and the device shape must flatten to
+// scalar columns too, so the generated `@arche_insert_Mover` helper takes scalar field args (NOT
+// by-value `%struct.pos` args, which LLVM rejects: "invalid type for function argument"). Regression test
+// for that miscompile, which only surfaced across the device/datasheet boundary (single-file flattened OK).
+// RUN: %arche build -o %t %s && %t | grep -qF "p=11 22 v=1 2"
+#import { tgdev fmt }
+[1]Mover;
+main :: proc() {
+  insert(Mover, 10, 20, 1, 2)(_:, _:); // pos.x=10 pos.y=20 vel.x=1 vel.y=2
+  run tgdev.integrate; // pos += vel  → pos.x=11 pos.y=22
+  fmt.printf("p=%d %d v=%d %d\n", Mover.pos.x[0], Mover.pos.y[0], Mover.vel.x[0], Mover.vel.y[0]);
+}

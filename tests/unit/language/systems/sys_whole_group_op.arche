@@ -1,0 +1,27 @@
+// REGRESSION + feature: a WHOLE tuple-group op in a sys body — `pos = pos + vel` and `pos += vel`, where
+// `pos`/`vel` are `(x, y)` groups — operates on every component at once (lowering fans it out into
+// `pos_x = pos_x + vel_x; pos_y = pos_y + vel_y`). Before, a group-level op silently NO-OP'd (`pos` is not
+// a real column, so codegen wrote nothing) — the reason the demo hand-expanded each axis. Multi-row, so
+// the per-component whole-column loop is exercised across rows.
+// RUN: %arche build -o %t %s && %t | grep -qF "p0=12 24 p1=106 208"
+#import { fmt }
+pos(x, y) :: int;
+vel(x, y) :: int;
+Mover     :: arche { pos, vel }
+[2]Mover;
+step :: sys (pos, vel) {
+  pos += vel; // whole-group compound:  (10,20)->(11,22) ; (100,200)->(103,204)
+  pos = pos + vel; // whole-group plain add: (11,22)->(12,24) ; (103,204)->(106,208)
+}
+main :: proc() {
+  insert(Mover, 10, 20, 1, 2)(_:, _:);
+  insert(Mover, 100, 200, 3, 4)(_:, _:);
+  run step;
+  fmt.printf(
+    "p0=%d %d p1=%d %d\n",
+    Mover.pos.x[0],
+    Mover.pos.y[0],
+    Mover.pos.x[1],
+    Mover.pos.y[1],
+  );
+}

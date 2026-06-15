@@ -1,0 +1,16 @@
+// A device SYSTEM is hot-swappable like a proc: it is emitted in its DECLARING unit, and the driver's
+// `run` reaches it via the reload trampoline in dev (`arche run`) but a plain direct call in release
+// (`arche build`). This guards both that systems compile correctly in whole-program AND per-unit/hot, and
+// that release stays free of the reload indirection even with a system in play.
+// RUN: %arche build -o %t %s && %t | grep -qF "sys_ok"
+// RUN: %arche build --emit=llvm-ir -o %t.ll %s && ! grep -q arche_hot_resolve %t.ll
+// RUN: rm -rf %t.hot %t.cache && mkdir -p %t.hot
+// RUN: env ARCHE_HOT_DIR=%t.hot ARCHE_CACHE_DIR=%t.cache %arche run %s | grep -qF "sys_ok"
+#import { hotsys fmt }
+[1]Cell;
+main :: proc() {
+  insert(Cell, 0)(_:, _:);
+  run hotsys.bump;
+  fmt.assert(Cell.v[0] == 1, "system did not run over the driver's pool\n");
+  fmt.printf("sys_ok\n");
+}

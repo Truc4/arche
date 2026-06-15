@@ -1,0 +1,25 @@
+// REGRESSION: compound assignment (`+= -= *= /=`) in a SYS body on INTEGER columns must emit integer ops
+// (add/sub/mul/sdiv) — the whole-column-loop codegen once hardcoded the FLOAT ops (`fadd i32` → "invalid
+// operand type for instruction", build failed). The existing sys_compound_assign.arche only covers FLOAT
+// columns (float ops were correct), so it masked this; this is the int counterpart. One column per
+// operator. NB: the longhand `a = a + 5` went through a different, correct path — which is why
+// hand-expanded code hid the bug. Compound assignment must work.
+// RUN: %arche build -o %t %s && %t | grep -qF "a=15 b=6 c=30 d=2"
+#import { fmt }
+a :: int;
+b :: int;
+c :: int;
+d :: int;
+N :: arche { a, b, c, d }
+[1]N;
+bump :: sys (a, b, c, d) {
+  a += 5; // 10 + 5 = 15
+  b -= 4; // 10 - 4 = 6
+  c *= 3; // 10 * 3 = 30
+  d /= 5; // 10 / 5 = 2  (integer sdiv, not fdiv)
+}
+main :: proc() {
+  insert(N, 10, 10, 10, 10)(_:, _:);
+  run bump;
+  fmt.printf("a=%d b=%d c=%d d=%d\n", N.a[0], N.b[0], N.c[0], N.d[0]);
+}

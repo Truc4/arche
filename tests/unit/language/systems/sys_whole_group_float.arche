@@ -1,0 +1,33 @@
+// The sys-body idioms (compound assign, whole-group vector ops, a singleton group field in a vector op)
+// must work on FLOAT columns too, not just integers. A float sys loop is 4-lane vectorized, but a singleton
+// read (`Config.center[0]`) is a scalar — mixing a vectorized column with that scalar once miscompiled
+// (`sub i32` on a `<4 x double>`). The fix runs such a loop scalar. Mirrors sys_whole_group_singleton but
+// float; results must match the hand-expanded per-axis arithmetic exactly.
+// RUN: %arche build -o %t %s && %t | grep -qF "v=4 24 p=84 104"
+#import { fmt }
+pos(x, y)    :: float;
+vel(x, y)    :: float;
+center(x, y) :: float;
+k            :: float;
+Mover        :: arche { pos, vel }
+Config       :: arche { k, center }
+[1]Mover;
+[1]Config;
+step :: sys (pos, vel) {
+  vel -= (pos - Config.center[0]) / Config.k[0]; // float whole-vector spring toward the singleton center
+  vel *= 2.0; // float whole-group compound
+  pos += vel; // float whole-vector integrate
+}
+main :: proc() {
+  insert(Config, 10.0, 100.0, 200.0)(_:, _:); // k=10, center=(100,200)
+  insert(Mover, 80.0, 80.0, 0.0, 0.0)(_:, _:); // pos=(80,80), vel=(0,0)
+  run step;
+  // vel.x -= (80-100)/10 = +2, *2 = 4, pos.x = 84 ; vel.y -= (80-200)/10 = +12, *2 = 24, pos.y = 104
+  fmt.printf(
+    "v=%.0f %.0f p=%.0f %.0f\n",
+    Mover.vel.x[0] * 1.0,
+    Mover.vel.y[0] * 1.0,
+    Mover.pos.x[0] * 1.0,
+    Mover.pos.y[0] * 1.0,
+  );
+}

@@ -1225,8 +1225,29 @@ static void register_value_const(SemanticContext *ctx, const char *name, const c
 	ctx->const_values = realloc(ctx->const_values, (ctx->const_count + 1) * sizeof(const char *));
 	ctx->const_value_types = realloc(ctx->const_value_types, (ctx->const_count + 1) * sizeof(const char *));
 	ctx->const_locs = realloc(ctx->const_locs, (ctx->const_count + 1) * sizeof(SourceLoc));
+	/* Normalize an integer const to decimal (0xFFC000 → 16760960) and strip `_` from a float, so every
+	 * consumer (codegen inline, CTFE, type checks) sees a plain value. Strings/chars pass through. */
+	const char *stored = lexeme;
+	if (lexeme && lexeme[0] != '"' && lexeme[0] != '\'') {
+		long long iv;
+		if (strchr(lexeme, '.') != NULL) {
+			if (strchr(lexeme, '_') != NULL) {
+				char *f = malloc(strlen(lexeme) + 1);
+				size_t k = 0;
+				for (const char *p = lexeme; *p; p++)
+					if (*p != '_')
+						f[k++] = *p;
+				f[k] = '\0';
+				stored = f;
+			}
+		} else if (arche_int_lit(lexeme, &iv)) {
+			char *d = malloc(32);
+			snprintf(d, 32, "%lld", iv);
+			stored = d;
+		}
+	}
 	ctx->const_names[ctx->const_count] = (char *)name;
-	ctx->const_values[ctx->const_count] = lexeme;
+	ctx->const_values[ctx->const_count] = stored;
 	ctx->const_value_types[ctx->const_count] = type;
 	ctx->const_locs[ctx->const_count] = loc;
 	ctx->const_count++;
@@ -2549,6 +2570,17 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 				sem_emit_cannot_mutate_borrowed(ctx, loc, ln);
 			free(ln);
 		}
+		/* A system READS shared singletons but must not WRITE a foreign pool. Writing an archetype that is
+		 * NOT the one this system iterates runs ONCE (not per row) — almost always a mistaken per-entity
+		 * reduction (D5). The driver writes singletons; systems read them. (find_archetype canonicalizes
+		 * aliases, so the pointer compare is alias-safe; the leftmost target IDENT is the base pool name.) */
+		if (ctx->in_sys && ctx->current_sys_archetype) {
+			char *tbase = sv_name_expr_dup(target);
+			ArchetypeInfo *ta = tbase ? find_archetype(ctx, tbase) : NULL;
+			if (ta && ta != find_archetype(ctx, ctx->current_sys_archetype))
+				sem_emit_lint_sys_writes_foreign_pool(ctx, sem_node_loc(target.node), tbase);
+			free(tbase);
+		}
 		break;
 	}
 
@@ -3410,10 +3442,9 @@ static int ctfe_eval(SemanticContext *ctx, SyntaxView e, CtfeScope *scope, long 
 				break;
 			}
 		if (!is_float) {
-			char *end = NULL;
-			long v = strtol(lx, &end, 0);
-			if (end && end != lx && *end == '\0') {
-				*out = v;
+			long long v;
+			if (arche_int_lit(lx, &v)) {
+				*out = (long)v;
 				ok = 1;
 			}
 		}
@@ -6968,9 +6999,12 @@ static void sem_inline_module(SemanticContext *ctx, const char *mod_name, int se
 	/* Scope resolution: rename this module's pure-Arche decls + their intra-module references to the
 	 * qualified identity `<mod>.<name>` (foreign decls keep their C-symbol name). `full` is the set
 	 * of this module's pure-Arche names, so a bare reference inside the module binds to its own
-	 * member. */
-	for (int dd = first; dd < ctx->decl_count; dd++)
-		sem_record_rnop(ctx->decls[dd]->node.node, mod_name, full, fulln);
+	 * member. SKIP for `self_unit` (the editor's open-file device): the open file and these sibling
+	 * files are ONE unit, so they reference each other BARE (e.g. gfx/raster.arche calling gfx/gfx.arche's
+	 * `frame`) — qualifying to `gfx.frame` would leave the open file's bare `frame` unresolved. */
+	if (!self_unit)
+		for (int dd = first; dd < ctx->decl_count; dd++)
+			sem_record_rnop(ctx->decls[dd]->node.node, mod_name, full, fulln);
 	for (int x = 0; x < fulln; x++)
 		free(full[x]);
 	free(full);

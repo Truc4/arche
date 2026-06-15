@@ -1,0 +1,21 @@
+// A column accepts an ARRAY LITERAL: `Mob.pos.x = {10, 20, 30}` scatters element i → row i. This is the
+// DOD batch seed of distinct per-row values — the columnar alternative to N row-at-a-time `insert`s. Covers
+// int columns, a tuple-group column (`pos.x`/`pos.y`), and int-literal→float promotion into a float column.
+// (Distinct from the pool-literal `[N]Arch(M){ col: v }`, which BROADCASTS one scalar to every row.)
+// RUN: %arche build -o %t %s && %t | grep -qF "ok"
+#import { fmt }
+pos(x, y) :: int;
+hp        :: float;
+Mob       :: arche { pos, hp }
+[8]Mob(3);
+main :: proc() {
+  Mob.pos.x = { 10, 20, 30 };
+  Mob.pos.y = { 1, 2, 3 };
+  Mob.hp    = { 5, 10, 15 }; // int literals into a float column → promoted to 5.0/10.0/15.0
+  fmt.assert(Mob.pos.x[0] == 10, "x0\n");
+  fmt.assert(Mob.pos.x[2] == 30, "x2\n");
+  fmt.assert(Mob.pos.y[1] == 2, "y1\n");
+  fmt.assert(Mob.hp[0] == 5.0, "hp0\n");
+  fmt.assert(Mob.hp[2] == 15.0, "hp2\n");
+  fmt.printf("ok\n");
+}

@@ -1,0 +1,34 @@
+// Integer literals in every base + `_` digit separators: hex `0x`, binary `0b`, octal `0o`, decimal — each
+// usable as a const, a local, in a comparison, and as a column array-scatter element. All decode to the
+// same value an equivalent decimal literal would (and emit decimal in the IR).
+// RUN: %arche build -o %t %s && %t | grep -qF "ok"
+#import { fmt }
+RED  :: 0xFF0000; // 16711680
+MASK :: 0b1010; // 10
+PERM :: 0o755; // 493
+BIG  :: 1_000_000;
+v    :: int;
+N    :: arche { v }
+[4]N(4);
+main :: proc() {
+  fmt.assert(RED == 16711680, "hex const\n");
+  fmt.assert(MASK == 10, "bin const\n");
+  fmt.assert(PERM == 493, "oct const\n");
+  fmt.assert(BIG == 1000000, "underscore const\n");
+
+  h := 0xFF_C0; // 65472, with a separator inside hex
+  b := 0b1111; // 15
+  o := 0o17; // 15
+  s := 2_500; // 2500
+  fmt.assert(h == 65472, "hex local\n");
+  fmt.assert(b == 15, "bin local\n");
+  fmt.assert(o == 15, "oct local\n");
+  fmt.assert(s == 2500, "underscore local\n");
+
+  N.v = { 0x10, 0b100, 0o7, 1_0 }; // 16, 4, 7, 10 — mixed bases in one column scatter
+  fmt.assert(N.v[0] == 16, "scatter hex\n");
+  fmt.assert(N.v[1] == 4, "scatter bin\n");
+  fmt.assert(N.v[2] == 7, "scatter oct\n");
+  fmt.assert(N.v[3] == 10, "scatter sep\n");
+  fmt.printf("ok\n");
+}

@@ -48,6 +48,27 @@ void *gfx_be_open(int w, int h, char *title) {
 	unsigned long black = BlackPixel(dpy, screen);
 	Window win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen), 0, 0, (unsigned)w, (unsigned)h, 0, black, black);
 	XStoreName(dpy, win, title ? title : "arche");
+	XClassHint *cls = XAllocClassHint(); /* WM_CLASS so a WM rule can target us, e.g. class "arche-gfx" */
+	if (cls) {
+		cls->res_name = (char *)"arche-gfx";
+		cls->res_class = (char *)"arche-gfx";
+		XSetClassHint(dpy, win, cls);
+		XFree(cls);
+	}
+	/* Default FIXED size (min == max): a non-resizable window most tiling WMs auto-float, so the window
+	 * floats out of the box with no compositor rule. `ARCHE_GFX_RESIZABLE=1` opts into a resizable window
+	 * (the framebuffer reallocs on ConfigureNotify) — but a resizable window tiles unless you add a WM rule
+	 * keyed on the WM_CLASS "arche-gfx" above. Matches the Wayland backend. */
+	if (!getenv("ARCHE_GFX_RESIZABLE")) {
+		XSizeHints *sh = XAllocSizeHints();
+		if (sh) {
+			sh->flags = PMinSize | PMaxSize;
+			sh->min_width = sh->max_width = w;
+			sh->min_height = sh->max_height = h;
+			XSetWMNormalHints(dpy, win, sh);
+			XFree(sh);
+		}
+	}
 	XSelectInput(dpy, win, ExposureMask | KeyPressMask | StructureNotifyMask);
 	Atom wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
 	XSetWMProtocols(dpy, win, &wm_delete, 1);

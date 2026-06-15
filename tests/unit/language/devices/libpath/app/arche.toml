@@ -1,0 +1,5 @@
+# Project manifest. `[lib] paths` adds extra module-search roots so this app can import devices that
+# live outside its own source tree (here a sibling `vendor/` dir). The compiler resolver AND the editor
+# analyzer read this same key, so editor and build agree on where modules come from.
+[lib]
+paths = ["../vendor"]

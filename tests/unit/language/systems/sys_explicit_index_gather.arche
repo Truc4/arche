@@ -1,0 +1,31 @@
+// D2 lock: an EXPLICIT index in a sys body uses the literal/expression, NOT the implicit row-loop counter.
+// This "gather" — out[i] = Table.val[v[i]] — exercises BOTH halves of the fix at once: the index BASE
+// (`Table.val`) must yield the column POINTER (row-loop index suppressed while evaluating the base), while
+// the index EXPRESSION (`v`, an iterated column) must still auto-index per row (loop index restored after
+// the base). A regression would read Table.val[loop_index] or use a loaded i32 as a pointer (miscompile).
+// (Reading a foreign pool from a sys is allowed; writing one is W0024 — here `out` is the iterated column.)
+// RUN: %arche build -o %t %s && %t | grep -qF "out=30 10 40"
+#import { fmt }
+val   :: int;
+v     :: int;
+out   :: int;
+Table :: arche { val }
+Ent   :: arche { v, out }
+[4]Table;
+[3]Ent;
+
+gather :: sys (v, out) {
+  out = Table.val[v]; // base suppressed → column ptr; index v auto-indexed per row → Table.val[v_i]
+}
+
+main :: proc() {
+  insert(Table, 10)(_:, _:);
+  insert(Table, 20)(_:, _:);
+  insert(Table, 30)(_:, _:);
+  insert(Table, 40)(_:, _:);
+  insert(Ent, 2, 0)(_:, _:);
+  insert(Ent, 0, 0)(_:, _:);
+  insert(Ent, 3, 0)(_:, _:);
+  run gather;
+  fmt.printf("out=%d %d %d\n", Ent.out[0], Ent.out[1], Ent.out[2]); // gather: 30 10 40
+}

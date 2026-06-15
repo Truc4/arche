@@ -1,0 +1,82 @@
+// gfx rasterization — the "draw" category of the gfx device, kept in its own file but the SAME unit as
+// gfx/gfx.arche (windowing). gfx is the sole framebuffer authority: these take the `window` HANDLE, fetch
+// the backend framebuffer as a LOCAL view via the device's own `frame` wrapper, and write pixels into
+// that local. Writing a local slice's elements is allowed (the read-only-borrow rule only blocks
+// mutating a slice PARAMETER), so a reusable draw API needs no `own`/in-out/`mut` ceremony AND the raw
+// framebuffer never crosses a device boundary as a writable value. Colors are 0xRRGGBB ints.
+
+// Fill the whole framebuffer with `color`.
+clear :: proc(win: window, color: int) {
+  frame(win)(px:, w:, h:);
+  n := w * h;
+  i := 0;
+  for (; i < n;) {
+    px[i] = color;
+    i     = i + 1;
+  }
+}
+
+// Fill the axis-aligned rectangle [x, x+rw) x [y, y+rh), clamped to the framebuffer.
+rect :: proc(win: window, x: int, y: int, rw: int, rh: int, color: int) {
+  frame(win)(px:, w:, h:);
+  x0 := x;
+  y0 := y;
+  if (x0 < 0) {
+    x0 = 0;
+  }
+  if (y0 < 0) {
+    y0 = 0;
+  }
+  x1 := x + rw;
+  y1 := y + rh;
+  if (x1 > w) {
+    x1 = w;
+  }
+  if (y1 > h) {
+    y1 = h;
+  }
+  yy := y0;
+  for (; yy < y1;) {
+    xx := x0;
+    for (; xx < x1;) {
+      px[yy * w + xx] = color;
+      xx              = xx + 1;
+    }
+    yy = yy + 1;
+  }
+}
+
+// Fill a disc of radius `r` centered at (cx, cy), clamped to the framebuffer.
+circle :: proc(win: window, cx: int, cy: int, r: int, color: int) {
+  frame(win)(px:, w:, h:);
+  r2 := r * r;
+  y0 := cy - r;
+  y1 := cy + r;
+  if (y0 < 0) {
+    y0 = 0;
+  }
+  if (y1 >= h) {
+    y1 = h - 1;
+  }
+  yy := y0;
+  for (; yy <= y1;) {
+    x0 := cx - r;
+    x1 := cx + r;
+    if (x0 < 0) {
+      x0 = 0;
+    }
+    if (x1 >= w) {
+      x1 = w - 1;
+    }
+    xx := x0;
+    for (; xx <= x1;) {
+      dx := xx - cx;
+      dy := yy - cy;
+      if (dx * dx + dy * dy <= r2) {
+        px[yy * w + xx] = color;
+      }
+      xx = xx + 1;
+    }
+    yy = yy + 1;
+  }
+}
