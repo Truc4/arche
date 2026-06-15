@@ -219,12 +219,41 @@ static Token lex_identifier(Lexer *lexer) {
 	return make_token(kind, start, length, line, column);
 }
 
+static int is_hex_digit(int c) {
+	return isdigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
 static Token lex_number(Lexer *lexer) {
 	const char *start = lexer->cur;
 	int line = lexer->line;
 	int column = lexer->column;
 
-	while (isdigit((unsigned char)peek(lexer))) {
+	/* Prefixed integer bases: 0x hex / 0b binary / 0o octal. `_` digit separators allowed throughout
+	 * (e.g. 0xFF_C0_00, 1_000_000). The base/separator-aware value is decoded later by arche_int_lit. */
+	if (peek(lexer) == '0') {
+		char n = peek_next(lexer);
+		if (n == 'x' || n == 'X' || n == 'b' || n == 'B' || n == 'o' || n == 'O') {
+			advance(lexer); /* 0 */
+			advance(lexer); /* base char */
+			for (;;) {
+				char c = peek(lexer);
+				int ok;
+				if (n == 'x' || n == 'X')
+					ok = is_hex_digit((unsigned char)c);
+				else if (n == 'b' || n == 'B')
+					ok = (c == '0' || c == '1');
+				else
+					ok = (c >= '0' && c <= '7');
+				if (ok || c == '_')
+					advance(lexer);
+				else
+					break;
+			}
+			return make_token(TOK_NUMBER, start, (size_t)(lexer->cur - start), line, column);
+		}
+	}
+
+	while (isdigit((unsigned char)peek(lexer)) || peek(lexer) == '_') {
 		advance(lexer);
 	}
 
@@ -232,12 +261,62 @@ static Token lex_number(Lexer *lexer) {
 	if (peek(lexer) == '.' && isdigit((unsigned char)peek_next(lexer))) {
 		advance(lexer); /* consume '.' */
 
-		while (isdigit((unsigned char)peek(lexer))) {
+		while (isdigit((unsigned char)peek(lexer)) || peek(lexer) == '_') {
 			advance(lexer);
 		}
 	}
 
 	return make_token(TOK_NUMBER, start, (size_t)(lexer->cur - start), line, column);
+}
+
+/* Decode an arche integer literal lexeme — decimal, 0x/0X hex, 0b/0B binary, 0o/0O octal, with optional
+ * `_` digit separators — to its value. Returns 1 on success; 0 if not a valid integer (a float `1.5`, a
+ * string, an empty/garbage lexeme). Shared by codegen (→ decimal for LLVM IR), const folding, and CTFE so
+ * every consumer agrees on one grammar. */
+int arche_int_lit(const char *lex, long long *out) {
+	if (!lex || !*lex)
+		return 0;
+	const char *p = lex;
+	int neg = 0;
+	if (*p == '+' || *p == '-') {
+		neg = (*p == '-');
+		p++;
+	}
+	int base = 10;
+	if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+		base = 16;
+		p += 2;
+	} else if (p[0] == '0' && (p[1] == 'b' || p[1] == 'B')) {
+		base = 2;
+		p += 2;
+	} else if (p[0] == '0' && (p[1] == 'o' || p[1] == 'O')) {
+		base = 8;
+		p += 2;
+	}
+	unsigned long long v = 0;
+	int any = 0;
+	for (; *p; p++) {
+		if (*p == '_')
+			continue;
+		int d;
+		char c = *p;
+		if (c >= '0' && c <= '9')
+			d = c - '0';
+		else if (c >= 'a' && c <= 'f')
+			d = c - 'a' + 10;
+		else if (c >= 'A' && c <= 'F')
+			d = c - 'A' + 10;
+		else
+			return 0; /* e.g. '.', 'e' — not an integer */
+		if (d >= base)
+			return 0;
+		v = v * (unsigned)base + (unsigned)d;
+		any = 1;
+	}
+	if (!any)
+		return 0;
+	*out = neg ? -(long long)v : (long long)v;
+	return 1;
 }
 
 static Token lex_char_lit(Lexer *lexer) {

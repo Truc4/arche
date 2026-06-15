@@ -1225,8 +1225,29 @@ static void register_value_const(SemanticContext *ctx, const char *name, const c
 	ctx->const_values = realloc(ctx->const_values, (ctx->const_count + 1) * sizeof(const char *));
 	ctx->const_value_types = realloc(ctx->const_value_types, (ctx->const_count + 1) * sizeof(const char *));
 	ctx->const_locs = realloc(ctx->const_locs, (ctx->const_count + 1) * sizeof(SourceLoc));
+	/* Normalize an integer const to decimal (0xFFC000 → 16760960) and strip `_` from a float, so every
+	 * consumer (codegen inline, CTFE, type checks) sees a plain value. Strings/chars pass through. */
+	const char *stored = lexeme;
+	if (lexeme && lexeme[0] != '"' && lexeme[0] != '\'') {
+		long long iv;
+		if (strchr(lexeme, '.') != NULL) {
+			if (strchr(lexeme, '_') != NULL) {
+				char *f = malloc(strlen(lexeme) + 1);
+				size_t k = 0;
+				for (const char *p = lexeme; *p; p++)
+					if (*p != '_')
+						f[k++] = *p;
+				f[k] = '\0';
+				stored = f;
+			}
+		} else if (arche_int_lit(lexeme, &iv)) {
+			char *d = malloc(32);
+			snprintf(d, 32, "%lld", iv);
+			stored = d;
+		}
+	}
 	ctx->const_names[ctx->const_count] = (char *)name;
-	ctx->const_values[ctx->const_count] = lexeme;
+	ctx->const_values[ctx->const_count] = stored;
 	ctx->const_value_types[ctx->const_count] = type;
 	ctx->const_locs[ctx->const_count] = loc;
 	ctx->const_count++;
@@ -3421,10 +3442,9 @@ static int ctfe_eval(SemanticContext *ctx, SyntaxView e, CtfeScope *scope, long 
 				break;
 			}
 		if (!is_float) {
-			char *end = NULL;
-			long v = strtol(lx, &end, 0);
-			if (end && end != lx && *end == '\0') {
-				*out = v;
+			long long v;
+			if (arche_int_lit(lx, &v)) {
+				*out = (long)v;
 				ok = 1;
 			}
 		}

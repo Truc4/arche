@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "codegen.h"
+#include "../lexer/lexer.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2079,11 +2080,19 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			strcpy(result_buf, res_name);
 			free(global_name);
 		} else if (strchr(lex, '.') != NULL) {
-			/* Float literal */
-			strcpy(result_buf, lex);
+			/* Float literal — strip `_` digit separators (LLVM wants 1000.5, not 1_000.5). */
+			size_t k = 0;
+			for (const char *p = lex; *p && k < 255; p++)
+				if (*p != '_')
+					result_buf[k++] = *p;
+			result_buf[k] = '\0';
 		} else {
-			/* Integer literal */
-			strcpy(result_buf, lex);
+			/* Integer literal — decode 0x/0b/0o/decimal (+ `_`) to a decimal LLVM constant. */
+			long long iv;
+			if (arche_int_lit(lex, &iv))
+				snprintf(result_buf, 256, "%lld", iv);
+			else
+				strcpy(result_buf, lex);
 		}
 		break;
 	}
