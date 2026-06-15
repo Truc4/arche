@@ -2013,10 +2013,22 @@ static void group_suffix_names(HirExpr *e, const char *suffix) {
 		}
 		break;
 	case HIR_EXPR_FIELD:
-		/* skip a bare-group base (`vel.x`); recurse otherwise */
-		if (!(e->data.field.base && e->data.field.base->kind == HIR_EXPR_NAME &&
-		      tgroup_lookup(e->data.field.base->data.name.name)))
+		if (tgroup_lookup(e->data.field.field_name)) {
+			/* A group FIELD of an archetype/singleton — `Config.center` (often indexed `Config.center[0]`).
+			 * For component `c`, fold straight to the flattened column field `Config.center_c` (the same
+			 * thing tuple_collapse produces for a hand-written `Config.center.c`). This is what lets a
+			 * singleton group join a whole-group vector op:
+			 *   vel -= (pos - Config.center[0]) / Config.stiffness[0]. */
 			group_suffix_names(e->data.field.base, suffix);
+			char *combined = malloc(strlen(e->data.field.field_name) + 1 + strlen(suffix) + 1);
+			sprintf(combined, "%s_%s", e->data.field.field_name, suffix);
+			e->data.field.field_name = combined; /* old name intentionally leaked */
+		} else if (e->data.field.base && e->data.field.base->kind == HIR_EXPR_NAME &&
+		           tgroup_lookup(e->data.field.base->data.name.name)) {
+			/* a bare-group base (`vel.x`) — already component-specific; leave it */
+		} else {
+			group_suffix_names(e->data.field.base, suffix);
+		}
 		break;
 	case HIR_EXPR_INDEX:
 		group_suffix_names(e->data.index.base, suffix);
