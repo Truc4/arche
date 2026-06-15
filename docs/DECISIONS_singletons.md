@@ -128,3 +128,31 @@ write. `sys_write_foreign_pool.arche` now also asserts `--sys-foreign-write=allo
 renamed `E0215.md` → `W0024.md`. The single-READ-only interposition story (C1/C2 above) is unaffected — an
 opted-in foreign write in hot still resolves the host's pool via weak interposition.
 725/725 default + per-unit, ASan clean.
+
+## D11 — pointer-passing replaces weak interposition (incremental/hot only; whole-program keeps the direct global)
+User: "can we do pointer passing instead as long as its still internal and only for incremental?" Yes — this
+is the robustness fix the reviewers wanted (C1), done without reopening user-facing ABI. The iterated pool
+was ALREADY passed to a system by pointer from the `run` site; this extends the same mechanism to the
+FOREIGN pools a system reads (singletons like `Config`).
+
+- **Read-set** (`collect_sys_foreign_pools`, codegen.c): walk the sys body for archetype NAMEs that are not
+  the iterated/matching shape and have a real pool. Deterministic (ast decl order), computes its own
+  matching set internally, so the define + `run` call + cross-unit trampoline/declare all build an
+  IDENTICAL ABI. Returns 0 when `!per_unit` → whole-program is untouched.
+- **ABI**: a system's param list becomes `[iterated pools…, foreign pools…]`. Four sites extended in
+  lockstep: `codegen_sys_decl` (define + bind each foreign param as an archetype INSTANCE via
+  `add_arch_value`, so a body `Config.center[0]` resolves through the param — `find_value` is consulted
+  before the `@Config` global fallback), the `run` dispatch (passes the host's `@Config`), and the hot
+  trampoline + cross-unit declare.
+- **No syntax change**: source still says `Config.gravity[0]`. Internal-only, as requested.
+- **Whole-program unchanged**: `accel(%struct.Thing*)` — one `@Config`, read directly, zero indirection.
+- **Graceful fallback**: any foreign ref the read-set doesn't detect is simply not passed at ANY site
+  (consistent ABI) and the body falls back to the `@Config` global → weak interposition still covers it. So
+  incomplete detection degrades to the old mechanism, never to a miscompile.
+- **C1/C2 now MOOT for the common path**: the device body no longer references the host pool's global, so
+  hot reads don't depend on `-rdynamic` weak interposition (still present as the fallback). The RTLD
+  contract note stays valid but is no longer load-bearing for detected singletons.
+- Verified: incremental IR shows `@arche.sgldev.accel(ptr %arch_Thing, ptr %arch_Config)` with the body
+  reading `%arch_Config` (NOT `@Config`); whole-program shows `@sgldev.accel(%struct.Thing* %arch_Thing)`
+  with no foreign param. Both directions in singleton_read.arche (+ new IR-shape RUN lines). arche-rpg hot
+  (incremental) builds + renders. 734/734, ASan clean, format clean.

@@ -1062,6 +1062,7 @@ static void drop_exit_all_for_return(CodegenContext *ctx) {
 static const char *cg_fnsym(CodegenContext *ctx, const char *name, int is_extern, char *buf, size_t n);
 /* Archetypes covering a system's params (system ABI param list) — defined near emit_cross_unit_declares. */
 static int collect_sys_matching_archs(CodegenContext *ctx, HirSysDecl *sys, const char **out, int max);
+static int collect_sys_foreign_pools(CodegenContext *ctx, HirSysDecl *sys, const char **out, int max);
 
 /* Is the proc/func named `name` an extern (#foreign, C-ABI)? A `@drop` destructor may be either an
  * arche proc (mangled under per-unit) or an extern (keeps its C name) — the dtor call must match. */
@@ -4661,6 +4662,25 @@ static int rhs_forces_scalar(CodegenContext *ctx, const HirExpr *e) {
 	}
 }
 
+/* Promote an INTEGER compound-assignment RHS to double when the target column is float: `vel *= 2` needs
+ * `fmul double %v, 2.0`, not `fmul double %v, 2` (LLVM rejects an integer constant for a float op). An
+ * integer literal gets a `.0` suffix; an integer-typed value is `sitofp`'d. A value that is already float
+ * (a float literal, a float column/singleton read) is left untouched. Returns the operand to use. */
+static const char *float_promote_operand(CodegenContext *ctx, const HirExpr *rhs, const char *buf, char *out,
+                                         size_t outsz) {
+	if (rhs && rhs->kind == HIR_EXPR_LITERAL && strchr(buf, '.') == NULL && strchr(buf, '%') == NULL) {
+		snprintf(out, outsz, "%s.0", buf);
+		return out;
+	}
+	if (rhs && (rhs->resolved.tag == HIR_TYPE_INT || rhs->resolved.tag == HIR_TYPE_CHAR)) {
+		char *c = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = sitofp i32 %s to double\n", c, buf);
+		snprintf(out, outsz, "%s", c);
+		return out;
+	}
+	return buf;
+}
+
 static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* SSA reg: scalar* column data */
                                    const char *count,                        /* SSA reg: i64 element count */
                                    const char *scalar_type,                  /* "double" or "i32" */
@@ -4766,10 +4786,13 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 			break;
 		}
 		char *op_result = gen_value_name(ctx);
+		char rhs_promo[256];
+		const char *rhs_op =
+		    col_is_float ? float_promote_operand(ctx, rhs, rhs_buf, rhs_promo, sizeof(rhs_promo)) : rhs_buf;
 		if (!col_is_float && (op == OP_DIV || op == OP_MOD))
 			emit_int_divmod(ctx, op_str, load_type, loaded, rhs_buf, NULL, op_result);
 		else
-			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", op_result, op_str, load_type, loaded, rhs_buf);
+			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", op_result, op_str, load_type, loaded, rhs_op);
 		strcpy(compute_result, op_result);
 	}
 
@@ -4848,10 +4871,13 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 			break;
 		}
 		char *op_result = gen_value_name(ctx);
+		char rhs_promo[256];
+		const char *rhs_op =
+		    col_is_float ? float_promote_operand(ctx, rhs, rhs_buf, rhs_promo, sizeof(rhs_promo)) : rhs_buf;
 		if (!col_is_float && (op == OP_DIV || op == OP_MOD))
 			emit_int_divmod(ctx, op_str, scalar_type, loaded, rhs_buf, NULL, op_result);
 		else
-			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", op_result, op_str, scalar_type, loaded, rhs_buf);
+			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", op_result, op_str, scalar_type, loaded, rhs_op);
 		strcpy(compute_result, op_result);
 	}
 
@@ -6932,6 +6958,14 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				buffer_append_fmt(ctx, "%%struct.%s* %s", arch_name, dynamic_ptrs[i]);
 			}
 		}
+		/* Per-unit/hot: also pass the foreign pools the system reads (the host owns them), so the device
+		 * binds the host's pool by pointer rather than referencing its own global. Same deterministic list
+		 * the define/trampoline build, so the ABI matches. (All foreign pools are static → `@Name`.) */
+		const char *run_foreign[64];
+		int run_fcount = collect_sys_foreign_pools(ctx, sys, run_foreign, 64);
+		for (int i = 0; i < run_fcount; i++)
+			buffer_append_fmt(ctx, "%s%%struct.%s* @%s", (matching_count + i) > 0 ? ", " : "", run_foreign[i],
+			                  run_foreign[i]);
 		buffer_append(ctx, ")\n");
 
 		break;
@@ -8430,6 +8464,12 @@ static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys, int decl_unit
 	/* Generate ONE function taking all matching archetypes as params. Emitted once in the entry unit
 	 * (the per-unit filter keeps it to unit 0) with normal linkage — internal whole-program, external
 	 * under per-unit — so there is no `linkonce_odr` duplication to keep byte-identical. */
+	/* Foreign pools the body reads (a `[1]Config` singleton, etc): in per-unit/hot they are PASSED by the
+	 * run site as extra pointer params and bound as instances below, so the device reads the host's pool
+	 * directly — no global ref / weak interposition. Empty in whole-program (the direct global is kept). */
+	const char *foreign_pools[64];
+	int foreign_count = collect_sys_foreign_pools(ctx, sys, foreign_pools, 64);
+
 	char sys_sym_buf[512];
 	buffer_append_fmt(ctx, "define %svoid @%s(", cg_linkage(ctx),
 	                  cg_fnsym(ctx, sys->name, 0, sys_sym_buf, sizeof(sys_sym_buf)));
@@ -8438,6 +8478,9 @@ static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys, int decl_unit
 			buffer_append(ctx, ", ");
 		buffer_append_fmt(ctx, "%%struct.%s* %%arch_%s", matching_archs[i], matching_archs[i]);
 	}
+	for (int i = 0; i < foreign_count; i++)
+		buffer_append_fmt(ctx, "%s%%struct.%s* %%arch_%s", (matching_count + i) > 0 ? ", " : "", foreign_pools[i],
+		                  foreign_pools[i]);
 	buffer_append(ctx, ") #0 {\nentry:\n");
 
 	FunctionBodyState fbs = begin_function_body(ctx);
@@ -8504,6 +8547,16 @@ static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys, int decl_unit
 					}
 				}
 			}
+		}
+
+		/* Bind each foreign pool param as an archetype INSTANCE, so a body access `Config.center[0]`
+		 * resolves through the passed-in pointer (find_value hits this before the global fallback) instead
+		 * of the device's own `@Config`. Per-unit only; in whole-program foreign_count is 0 and the global
+		 * ref is used. */
+		for (int fp = 0; fp < foreign_count; fp++) {
+			char fp_llvm[256];
+			snprintf(fp_llvm, sizeof(fp_llvm), "%%arch_%s", foreign_pools[fp]);
+			add_arch_value(ctx, foreign_pools[fp], fp_llvm, foreign_pools[fp]);
 		}
 
 		/* Emit system body with this archetype's bindings */
@@ -8703,6 +8756,127 @@ static int collect_sys_matching_archs(CodegenContext *ctx, HirSysDecl *sys, cons
 	return n;
 }
 
+/* True if `name` appears as a NAME anywhere in the expression (e.g. the base of `Config.center[0]`). */
+static int expr_refs_name(const HirExpr *e, const char *name) {
+	if (!e)
+		return 0;
+	switch (e->kind) {
+	case HIR_EXPR_NAME:
+		return e->data.name.name && strcmp(e->data.name.name, name) == 0;
+	case HIR_EXPR_FIELD:
+		return expr_refs_name(e->data.field.base, name);
+	case HIR_EXPR_INDEX: {
+		if (expr_refs_name(e->data.index.base, name))
+			return 1;
+		for (int i = 0; i < e->data.index.index_count; i++)
+			if (expr_refs_name(e->data.index.indices[i], name))
+				return 1;
+		return 0;
+	}
+	case HIR_EXPR_BINARY:
+		return expr_refs_name(e->data.binary.left, name) || expr_refs_name(e->data.binary.right, name);
+	case HIR_EXPR_UNARY:
+		return expr_refs_name(e->data.unary.operand, name);
+	case HIR_EXPR_CALL: {
+		if (expr_refs_name(e->data.call.callee, name))
+			return 1;
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			if (expr_refs_name(e->data.call.args[i], name))
+				return 1;
+		return 0;
+	}
+	default:
+		return 0;
+	}
+}
+
+static int stmt_refs_name(const HirStmt *s, const char *name) {
+	if (!s)
+		return 0;
+	switch (s->kind) {
+	case HIR_STMT_BIND:
+		return expr_refs_name(s->data.bind_stmt.value, name);
+	case HIR_STMT_ASSIGN:
+		return expr_refs_name(s->data.assign_stmt.target, name) || expr_refs_name(s->data.assign_stmt.value, name);
+	case HIR_STMT_EXPR:
+		return expr_refs_name(s->data.expr_stmt.expr, name);
+	case HIR_STMT_IF: {
+		if (expr_refs_name(s->data.if_stmt.cond, name))
+			return 1;
+		for (int i = 0; i < s->data.if_stmt.then_count; i++)
+			if (stmt_refs_name(s->data.if_stmt.then_body[i], name))
+				return 1;
+		for (int i = 0; i < s->data.if_stmt.else_count; i++)
+			if (stmt_refs_name(s->data.if_stmt.else_body[i], name))
+				return 1;
+		return 0;
+	}
+	case HIR_STMT_FOR: {
+		if (stmt_refs_name(s->data.for_stmt.init, name) || expr_refs_name(s->data.for_stmt.cond, name) ||
+		    stmt_refs_name(s->data.for_stmt.incr, name))
+			return 1;
+		for (int i = 0; i < s->data.for_stmt.body_count; i++)
+			if (stmt_refs_name(s->data.for_stmt.body[i], name))
+				return 1;
+		return 0;
+	}
+	case HIR_STMT_BLOCK: {
+		for (int i = 0; i < s->data.block.count; i++)
+			if (stmt_refs_name(s->data.block.stmts[i], name))
+				return 1;
+		return 0;
+	}
+	default:
+		return 0;
+	}
+}
+
+/* The FOREIGN pools a system reads — archetypes referenced in its body (e.g. a `[1]Config` singleton) that
+ * are NOT the iterated archetype(s) it matches. In per-unit/hot builds these are passed by POINTER from the
+ * `run` site (the host owns the pool) and bound as instances inside the system, instead of the device
+ * referencing the pool's global and relying on weak-symbol interposition. Deterministic order (ast decl
+ * order) so the define, the `run` call, and the cross-unit trampoline/declare build an identical ABI.
+ * Returns 0 in whole-program builds (the direct global ref is kept — zero indirection). */
+static int collect_sys_foreign_pools(CodegenContext *ctx, HirSysDecl *sys, const char **out, int max) {
+	if (!ctx->per_unit)
+		return 0;
+	/* Compute the matching (iterated) set HERE, internally, so every ABI site derives an identical foreign
+	 * list regardless of how its own matching set was filtered/ordered. */
+	const char *matching[256];
+	int mcount = collect_sys_matching_archs(ctx, sys, matching, 256);
+	int n = 0;
+	for (int d = 0; d < ctx->ast->decl_count; d++) {
+		if (ctx->ast->decls[d]->kind != HIR_DECL_ARCHETYPE)
+			continue;
+		const char *an = ctx->ast->decls[d]->data.archetype->name;
+		const char *cn = canonical_arch_name(ctx, an);
+		if (get_arch_static_capacity(ctx, cn) <= 0)
+			continue; /* no real pool backs it */
+		int is_matching = 0;
+		for (int m = 0; m < mcount; m++)
+			if (strcmp(canonical_arch_name(ctx, matching[m]), cn) == 0) {
+				is_matching = 1;
+				break;
+			}
+		if (is_matching)
+			continue;
+		int dup = 0;
+		for (int o = 0; o < n; o++)
+			if (strcmp(out[o], cn) == 0) {
+				dup = 1;
+				break;
+			}
+		if (dup)
+			continue;
+		int refd = 0;
+		for (int s = 0; s < sys->stmt_count && !refd; s++)
+			refd = stmt_refs_name(sys->stmts[s], an);
+		if (refd && n < max)
+			out[n++] = cn;
+	}
+	return n;
+}
+
 /* Per-unit: emit `declare`s for every arche func/proc defined in a DIFFERENT unit, so this unit's
  * module is self-contained and the linker resolves the references. Parametric procs (archetype/
  * callback) have no real symbol (only their monomorphized instances do), so they're skipped. Systems
@@ -8845,6 +9019,8 @@ static void emit_cross_unit_declares(CodegenContext *ctx) {
 			int na = collect_sys_matching_archs(ctx, d->data.sys, archs, 256);
 			if (na == 0)
 				continue; /* no matching shape → no definition emitted → nothing to declare */
+			/* Append the foreign read-set pools, so the trampoline/declare ABI matches the define + run. */
+			na += collect_sys_foreign_pools(ctx, d->data.sys, archs + na, 256 - na);
 			cg_fnsym(ctx, d->data.sys->name, 0, sym, sizeof(sym));
 			if (ctx->hot) {
 				emit_hot_sys_trampoline(ctx, sym, d->data.sys->name, d->unit, archs, na);

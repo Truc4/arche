@@ -1,0 +1,19 @@
+// A FLOAT value into an INTEGER column must be REJECTED — `v` is an int column, so `v *= 2.0` would
+// silently change its meaning (truncate). You can't retype the column, so this is a type error, the same
+// way a scalar `x: int = 2.0` is rejected ("expected 'i32', got 'float'"). The reverse — an int literal
+// into a FLOAT column (`vel *= 2`) — IS fine (widening); see sys_float_col_int_literal.arche.
+// (The build is rejected today via the backend type check; a dedicated front-end diagnostic for float→int
+//  on a sys COLUMN is a follow-up — sys bodies aren't yet walked by the tycheck pass.)
+// RUN: ! %arche build -o %t %s
+#import { fmt }
+v(x, y) :: int;
+M       :: arche { v }
+[1]M;
+s :: sys (v) {
+  v *= 2.0; // float into an int column → rejected
+}
+main :: proc() {
+  insert(M, 10, 20)(_:, _:);
+  run s;
+  fmt.printf("v=%d %d\n", M.v.x[0], M.v.y[0]);
+}

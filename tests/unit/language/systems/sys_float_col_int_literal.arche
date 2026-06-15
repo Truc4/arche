@@ -1,0 +1,25 @@
+// A float column scaled by an INTEGER literal — `vel *= 2` — must promote the literal to double (the column
+// type wins; the value isn't truncated). LLVM needs a float constant (`2.0`) for an `fmul double`, so a
+// bare `2` must be converted. Mixed int-literal-into-float is fine (widening); the reverse (a float value
+// into an int column) is not — see sys_float_into_int_col.arche.
+// RUN: %arche build -o %t %s && %t | grep -qF "v=6 10 p=86 90"
+#import { fmt }
+pos(x, y) :: float;
+vel(x, y) :: float;
+Mover     :: arche { pos, vel }
+[1]Mover;
+step :: sys (pos, vel) {
+  vel *= 2; // int literal 2 → 2.0 : (3,5) -> (6,10)
+  pos = pos + vel; // (80,80) + (6,10) -> (86,90)
+}
+main :: proc() {
+  insert(Mover, 80.0, 80.0, 3.0, 5.0)(_:, _:);
+  run step;
+  fmt.printf(
+    "v=%.0f %.0f p=%.0f %.0f\n",
+    Mover.vel.x[0] * 1.0,
+    Mover.vel.y[0] * 1.0,
+    Mover.pos.x[0] * 1.0,
+    Mover.pos.y[0] * 1.0,
+  );
+}
