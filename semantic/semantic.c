@@ -2557,7 +2557,7 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 			char *tbase = sv_name_expr_dup(target);
 			ArchetypeInfo *ta = tbase ? find_archetype(ctx, tbase) : NULL;
 			if (ta && ta != find_archetype(ctx, ctx->current_sys_archetype))
-				sem_emit_sys_writes_foreign_pool(ctx, sem_node_loc(target.node), tbase);
+				sem_emit_lint_sys_writes_foreign_pool(ctx, sem_node_loc(target.node), tbase);
 			free(tbase);
 		}
 		break;

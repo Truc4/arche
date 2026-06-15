@@ -100,3 +100,31 @@ and hot (no reload indirection — direct global, shared via -rdynamic weak inte
 may read but not write a foreign pool). No new syntax. Tests: per_unit/singleton_read.arche (read,
 whole-program + hot + purity), systems/sys_write_foreign_pool.arche (E0215). 724/724 default + per-unit,
 ASan clean, format clean.
+
+## D9 — Easy-win hardening (post-review follow-up)
+- **D2 lock test:** tests/unit/language/systems/sys_explicit_index_gather.arche — a gather
+  `out[i] = Table.val[v[i]]` proving BOTH halves of D2 (base suppressed → column ptr; index expr `v` still
+  auto-indexed per row). Whole-program + hot verified (out=30 10 40). Guards against a D2 regression.
+- **`--explain E0215`:** docs/explain/E0215.md added.
+- **Interposition contract documented at the emission site** (codegen.c pool-global emit): the load-bearing
+  reliance (linkonce_odr→weak + host -rdynamic interposes; needs default visibility, no -fvisibility=hidden,
+  RTLD_NOW|RTLD_LOCAL and NOT RTLD_DEEPBIND) + the explicit fallback (pass the pool pointer).
+- **Skipped with rationale:** verify_odr-globals (struct layout can't drift — whole-program analyzed every
+  build, so `%struct.<Arch>` is identical across units); explicit `default` visibility emission (arche's
+  llc/cc pipeline never passes -fvisibility=hidden and linkonce_odr is already default-visibility — the risk
+  is documented, not live); shared-identity test (singleton_read's hot RUN already proves it: the device
+  reads the host's 10, which would be 0 if split); a [1]-enforcement / read-before-insert diagnostic needs a
+  singleton marker — deferred.
+
+## D10 — foreign-pool write: hard error → tunable lint (E0215 → W0024)
+User: "I like the error, but there should be an opt out flag, level=warning or whatever." The run-once
+foreign write is *occasionally* intentional (a deliberate single-shot side effect from a system the author
+knows iterates one row), so a locked hard error is too strict. Converted to the **W0022 model**: a
+lint-class diagnostic that is **error-by-default** (promoted in `ensure_init`), tunable via
+`--sys-foreign-write=error|warn|allow` (build/run/check) and `@allow(sys_writes_foreign_pool)`. Renumbered
+**E0215 → W0024** to match the convention (W-code = tunable lint, even when error-by-default — exactly like
+W0022 exported_mutable_global). Default behavior is unchanged: a plain build still fails on the foreign
+write. `sys_write_foreign_pool.arche` now also asserts `--sys-foreign-write=allow` compiles it. explain doc
+renamed `E0215.md` → `W0024.md`. The single-READ-only interposition story (C1/C2 above) is unaffected — an
+opted-in foreign write in hot still resolves the host's pool via weak interposition.
+725/725 default + per-unit, ASan clean.

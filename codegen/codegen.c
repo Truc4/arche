@@ -7490,7 +7490,18 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	buffer_append(ctx, "}\n\n");
 
 	/* Emit global variable for this archetype (after struct type is defined). Shared across per-unit
-	 * modules → linkonce_odr so the linker folds the identical duplicates to one pool. */
+	 * modules → linkonce_odr so the linker folds the identical duplicates to one pool.
+	 *
+	 * HOT-RELOAD CONTRACT (load-bearing): `linkonce_odr` lowers to a WEAK symbol with default visibility.
+	 * In `arche run` (hot), a device `.so` carries its own weak copy of a pool it references, but the host
+	 * is linked `-rdynamic` so the host's definition INTERPOSES the device's at dlopen → one shared pool.
+	 * This is how a device system reads the driver-owned SINGLETON ([1] pool) live (see
+	 * docs/DECISIONS_singletons.md). It relies on: (1) default visibility here (do NOT emit `hidden`, and
+	 * do not compile these objects with -fvisibility=hidden), (2) the host staying `-rdynamic`, (3) the
+	 * reload runtime using RTLD_NOW|RTLD_LOCAL and NOT RTLD_DEEPBIND (DEEPBIND inverts lookup → the device
+	 * binds its own copy → silent split state). If any of these must change, pass the pool pointer
+	 * explicitly instead (the bulletproof fallback). Layout can't drift across units: the whole program is
+	 * analyzed every build, so `%struct.<Arch>` is identical in every unit. */
 	if (static_cap > 0) {
 		buffer_append_fmt(ctx, "@%s = %sglobal %%struct.%s zeroinitializer\n\n", arch->name, cg_shared(ctx),
 		                  arch->name);
