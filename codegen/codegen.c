@@ -2142,6 +2142,10 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 					                  align);
 				}
 				strcpy(result_buf, elem);
+				/* Stamp the node type so an enclosing binary picks float ops (fadd/fsub/…). A sys column
+				 * read otherwise left `resolved` unset → `pos.x - …` on float columns emitted `sub i32`. */
+				if (strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0)
+					expr->resolved.tag = HIR_TYPE_FLOAT;
 			} else if (val->type == 1) {
 				/* Type-1: regular allocated value (iN, float, handle, etc) - load from pointer */
 				char *loaded = gen_value_name(ctx);
@@ -2314,6 +2318,10 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				expr->resolved.int_width = int_width;
 				expr->resolved.int_signed = int_signed;
 			}
+		} else if (expr->data.binary.op < OP_EQ) {
+			/* Float arithmetic result is float — stamp it so a nested binary (`(a - b) / c`) sees the
+			 * inner result as float and also picks float ops. */
+			expr->resolved.tag = HIR_TYPE_FLOAT;
 		}
 
 		switch (expr->data.binary.op) {
@@ -3067,6 +3075,32 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		} else if (shaped_elem) {
 			arche_type = shaped_elem;
 			scalar_type = llvm_type_from_arche(shaped_elem);
+		} else if (expr->data.index.base->kind == HIR_EXPR_FIELD &&
+		           expr->data.index.base->data.field.base->kind == HIR_EXPR_NAME) {
+			/* Archetype-column read `Arch.col[i]` (e.g. a singleton `Config.center_x[0]`): take the element
+			 * type straight from the archetype field decl. Without this `scalar_type` stays the i32 default,
+			 * so a FLOAT column was loaded as i32 (`%v = i32` fed into an `fsub double` → verifier error). */
+			const char *bn = expr->data.index.base->data.field.base->data.name.name;
+			HirArchetypeDecl *ad = find_archetype_decl(ctx, bn);
+			if (!ad) {
+				ValueInfo *iv = find_value(ctx, bn);
+				if (iv && iv->arch_name)
+					ad = find_archetype_decl(ctx, iv->arch_name);
+			}
+			const char *fn = expr->data.index.base->data.field.field_name;
+			if (ad) {
+				for (int i = 0; i < ad->field_count; i++) {
+					if (ad->fields[i]->kind == FIELD_COLUMN && strcmp(ad->fields[i]->name, fn) == 0) {
+						arche_type = field_base_type_name(ad->fields[i]->type);
+						scalar_type = llvm_type_from_arche(arche_type);
+						break;
+					}
+				}
+			}
+			if (!arche_type && expr->resolved.tag != HIR_TYPE_UNKNOWN) {
+				arche_type = hir_resolved_type_name(expr);
+				scalar_type = llvm_type_from_arche(arche_type);
+			}
 		} else if (expr->resolved.tag != HIR_TYPE_UNKNOWN) {
 			arche_type = hir_resolved_type_name(expr);
 			scalar_type = llvm_type_from_arche(arche_type);
@@ -4597,6 +4631,36 @@ static void hoist_column_geps(CodegenContext *ctx, HirExpr *expr, const char *st
 	}
 }
 
+/* True if a sys whole-column-loop RHS must run SCALAR rather than 4-lane float-vectorized. A column op is
+ * only vectorizable when every leaf is itself a per-row column (a sys param, loaded as `<4 x double>`) and
+ * the ops between them are plain arithmetic. Anything else — a literal (`vel *= 2.0`), an explicit index
+ * (a singleton `Config.center[0]` or a gather), or a non-column name — is a single SCALAR value that would
+ * have to be splatted into all four lanes; the column-SIMD path doesn't do that, so it miscompiles
+ * (`fmul <4 x double> %v, 2.0`, or an i32/`<4 x double>` mismatch). Run those scalar (integer loops always
+ * do). LLVM's own vectorizer can still re-vectorize the clean scalar loop. */
+static int rhs_forces_scalar(CodegenContext *ctx, const HirExpr *e) {
+	if (!e)
+		return 0;
+	switch (e->kind) {
+	case HIR_EXPR_LITERAL:
+	case HIR_EXPR_STRING:
+	case HIR_EXPR_INDEX:
+		return 1;
+	case HIR_EXPR_NAME: {
+		ValueInfo *v = find_value(ctx, e->data.name.name);
+		return !(v && v->type == 4); /* only a per-row sys column lane-loads cleanly */
+	}
+	case HIR_EXPR_FIELD:
+		return 1; /* a field read (e.g. an archetype column) is not a per-row lane here */
+	case HIR_EXPR_BINARY:
+		return rhs_forces_scalar(ctx, e->data.binary.left) || rhs_forces_scalar(ctx, e->data.binary.right);
+	case HIR_EXPR_UNARY:
+		return rhs_forces_scalar(ctx, e->data.unary.operand);
+	default:
+		return 1; /* unknown shape → be safe, run scalar */
+	}
+}
+
 static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* SSA reg: scalar* column data */
                                    const char *count,                        /* SSA reg: i64 element count */
                                    const char *scalar_type,                  /* "double" or "i32" */
@@ -4650,8 +4714,9 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 	buffer_append_fmt(ctx, "%s:\n", vec_body_lbl);
 	snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", vi);
 
-	/* Enable vectorization for float columns with vector type conversions for mixed types */
-	if (strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0) {
+	/* Enable 4-lane vectorization for float columns — but NOT when the RHS has an explicit index (a
+	 * singleton/foreign/gather read), whose scalar result can't share a vector lane (see expr_has_index). */
+	if ((strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0) && !rhs_forces_scalar(ctx, rhs)) {
 		ctx->vector_lanes = 4;
 	} else {
 		ctx->vector_lanes = 0;
