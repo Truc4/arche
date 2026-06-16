@@ -1,0 +1,17 @@
+// A `map` is a branch-free, loopless kernel: control flow is rejected. An `if` in a map body must error
+// with `map_control_flow` and point the user to `select`. (Spec; red until the rejection is implemented —
+// today an `if` in a map silently miscompiles.)
+// RUN: ! %arche build -o %t %s 2>%t.err
+// RUN: grep -qF "branch-free, loopless kernel" %t.err
+// RUN: grep -qiF "select" %t.err
+v :: int;
+N :: arche { v }
+[2]N(2);
+bump :: map (v) {
+  if (v > 0) {
+    v = v + 1;
+  }
+}
+main :: proc() {
+  run bump;
+}

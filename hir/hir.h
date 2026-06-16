@@ -70,7 +70,7 @@ typedef enum {
 	HIR_DECL_WORLD,
 	HIR_DECL_ARCHETYPE,
 	HIR_DECL_PROC,
-	HIR_DECL_SYS,
+	HIR_DECL_MAP,
 	HIR_DECL_FUNC,
 	HIR_DECL_FUNC_GROUP,
 	HIR_DECL_STATIC,
@@ -131,7 +131,7 @@ typedef struct {
 	HirStmt **stmts;
 	int stmt_count;
 	SourceLoc loc;
-} HirSysDecl;
+} HirMapDecl;
 
 typedef struct {
 	char *name;
@@ -212,7 +212,7 @@ struct HirDecl {
 		HirWorldDecl *world;
 		HirArchetypeDecl *archetype;
 		HirProcDecl *proc;
-		HirSysDecl *sys;
+		HirMapDecl *map;
 		HirFuncDecl *func;
 		HirFuncGroupDecl *func_group;
 		HirStaticDecl *static_decl;
@@ -278,7 +278,7 @@ typedef struct {
 } HirIfStmt;
 
 typedef struct {
-	char *system_name;
+	char *map_name;
 	char *world_name;
 } HirRunStmt;
 

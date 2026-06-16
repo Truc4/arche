@@ -127,7 +127,7 @@ static int is_list_brace_parent(SyntaxNodeKind p) {
 	return p == SN_ARRAY_LIT_EXPR || p == SN_USE_DECL || p == SN_GROUP_EXPR || p == SN_ARCH_EXPR || p == SN_ENUM_EXPR;
 }
 
-/* A `( … )` that holds a genuine comma list — call args, proc/func/sys params + out-params — and so
+/* A `( … )` that holds a genuine comma list — call args, proc/func/map params + out-params — and so
  * is worth breaking one-per-line. A single-expression paren (`(expr)`), `alloc(...)`, and control-flow
  * headers (`if`/`for`) are excluded: they aren't lists, so breaking them (and adding a trailing
  * comma) would just be noise. (Trailing commas parse fine everywhere now — this is a style choice,

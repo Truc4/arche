@@ -46,7 +46,7 @@ typedef struct {
 	SyntaxView body_node; /* the node whose direct children are the body statements (the SN_*_EXPR
 	                         value-form for a unified `name :: proc(){…}`, else == node) */
 	SourceLoc loc;
-	/* proc / func / sys signature */
+	/* proc / func / map signature */
 	ParamSummary *params;
 	int param_count;
 	ParamSummary *out_params; /* proc out-params */

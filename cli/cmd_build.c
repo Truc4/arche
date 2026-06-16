@@ -65,8 +65,8 @@ static const ArgSpec k_build_specs[] = {
      "force a whole-program build (the default for build; full cross-device inlining)"},
     {B_EXPORTED_MUTABLE, "--exported-mutable", ARG_VALUE, 0, 0, "<level>",
      "exported-mutable-global lint (W0022): error (default) | warn | allow"},
-    {B_SYS_FOREIGN_WRITE, "--sys-foreign-write", ARG_VALUE, 0, 0, "<level>",
-     "sys-writes-foreign-pool lint (W0024): error (default) | warn | allow"},
+    {B_SYS_FOREIGN_WRITE, "--map-foreign-write", ARG_VALUE, 0, 0, "<level>",
+     "map-writes-foreign-pool lint (W0024): error (default) | warn | allow"},
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
@@ -123,10 +123,10 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 		args_usage(stderr, g_prog, "build", "[flags] <input.arche>", k_build_specs);
 		return ARCHE_USAGE;
 	}
-	/* W0024 tri-state — applied after `-Werror` so an explicit `--sys-foreign-write=warn|allow` can
+	/* W0024 tri-state — applied after `-Werror` so an explicit `--map-foreign-write=warn|allow` can
 	 * still demote it (W0024 is error-by-default; this is the dedicated opt-out). */
-	if (cli_apply_sys_foreign_write(args_value(&p, B_SYS_FOREIGN_WRITE)) != 0) {
-		fprintf(stderr, "%s: --sys-foreign-write expects error|warn|allow\n", g_prog);
+	if (cli_apply_map_foreign_write(args_value(&p, B_SYS_FOREIGN_WRITE)) != 0) {
+		fprintf(stderr, "%s: --map-foreign-write expects error|warn|allow\n", g_prog);
 		args_usage(stderr, g_prog, "build", "[flags] <input.arche>", k_build_specs);
 		return ARCHE_USAGE;
 	}

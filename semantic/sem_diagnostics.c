@@ -35,7 +35,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_undefined_archetype_for]       = { "E0005", "undefined_archetype_for",       CLASS_ERROR, 1 },
 	[SEM_DIAG_undefined_archetype_bind]      = { "E0006", "undefined_archetype_bind",      CLASS_ERROR, 1 },
 
-	/* Type system */
+	/* Type map */
 	[SEM_DIAG_type_alias_redefined]          = { "E0010", "type_alias_redefined",          CLASS_ERROR, 1 },
 	[SEM_DIAG_type_alias_unknown_backing]    = { "E0011", "type_alias_unknown_backing",    CLASS_ERROR, 1 },
 	[SEM_DIAG_local_alias_invalid_backing]   = { "E0012", "local_alias_invalid_backing",   CLASS_ERROR, 1 },
@@ -56,7 +56,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_cannot_mutate_borrowed]        = { "E0026", "cannot_mutate_borrowed",        CLASS_ERROR, 1 },
 	[SEM_DIAG_extern_array_param_needs_own]  = { "E0027", "extern_array_param_needs_own",  CLASS_ERROR, 1 },
 	[SEM_DIAG_proc_return_has_value]         = { "E0028", "proc_return_has_value",         CLASS_ERROR, 1 },
-	[SEM_DIAG_sys_no_return]                 = { "E0029", "sys_no_return",                 CLASS_ERROR, 1 },
+	[SEM_DIAG_map_no_return]                 = { "E0029", "map_no_return",                 CLASS_ERROR, 1 },
+	[SEM_DIAG_map_not_a_transform]           = { "E0046", "map_not_a_transform",           CLASS_ERROR, 1 },
 
 	/* Field / component */
 	[SEM_DIAG_no_field]                      = { "E0030", "no_field",                      CLASS_ERROR, 1 },
@@ -68,7 +69,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_archetype_not_return_type]     = { "E0034", "archetype_not_return_type",     CLASS_ERROR, 1 },
 	[SEM_DIAG_archetype_funcs_only]          = { "E0035", "archetype_funcs_only",          CLASS_ERROR, 1 },
 	[SEM_DIAG_multiple_archetype_params]     = { "E0036", "multiple_archetype_params",     CLASS_ERROR, 1 },
-	[SEM_DIAG_handle_in_sys_param]           = { "E0037", "handle_in_sys_param",           CLASS_ERROR, 1 },
+	[SEM_DIAG_handle_in_map_param]           = { "E0037", "handle_in_map_param",           CLASS_ERROR, 1 },
 	[SEM_DIAG_each_field_filter_type_not_name]      = { "E0038", "each_field_filter_not_name",      CLASS_ERROR, 1 },
 	[SEM_DIAG_each_field_filter_type_not_primitive] = { "E0039", "each_field_filter_not_primitive", CLASS_ERROR, 1 },
 	[SEM_DIAG_each_field_invalid_rhs]        = { "E0040", "each_field_invalid_rhs",        CLASS_ERROR, 1 },
@@ -178,7 +179,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_func_could_be_const]           = { "W0021", "func_could_be_const",           CLASS_LINT, 1 },
 	[SEM_LINT_exported_mutable_global]       = { "W0022", "exported_mutable_global",       CLASS_LINT, 1 },
 	[SEM_LINT_outarg_shadows_outparam]       = { "W0023", "outarg_shadows_outparam",       CLASS_LINT, 1 },
-	[SEM_LINT_sys_writes_foreign_pool]       = { "W0024", "sys_writes_foreign_pool",       CLASS_LINT, 1 },
+	[SEM_LINT_map_writes_foreign_pool]       = { "W0024", "map_writes_foreign_pool",       CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -200,10 +201,10 @@ static void ensure_init(void) {
 	 * globals as an ERROR by default — promote it here so every entry point (build/run/check/LSP),
 	 * not just the CLI flag path, gets error-by-default. `--exported-mutable=warn|allow` demotes it. */
 	g_werror[SEM_LINT_exported_mutable_global] = 1;
-	/* W0024 sys_writes_foreign_pool: same model — a lint (tunable via `--sys-foreign-write` / `@allow`)
-	 * but error-by-default, since a foreign-pool write in a per-entity system silently runs once, not per
-	 * row. `--sys-foreign-write=warn|allow` demotes it. */
-	g_werror[SEM_LINT_sys_writes_foreign_pool] = 1;
+	/* W0024 map_writes_foreign_pool: same model — a lint (tunable via `--map-foreign-write` / `@allow`)
+	 * but error-by-default, since a foreign-pool write in a per-entity map silently runs once, not per
+	 * row. `--map-foreign-write=warn|allow` demotes it. */
+	g_werror[SEM_LINT_map_writes_foreign_pool] = 1;
 	g_init_done = 1;
 }
 
@@ -433,8 +434,8 @@ void semantic_set_lint_func_impure(int enabled, int werror) {
 void semantic_set_lint_exported_mutable_global(int enabled, int werror) {
 	semantic_set_diag(SEM_LINT_exported_mutable_global, enabled, werror);
 }
-void semantic_set_lint_sys_writes_foreign_pool(int enabled, int werror) {
-	semantic_set_diag(SEM_LINT_sys_writes_foreign_pool, enabled, werror);
+void semantic_set_lint_map_writes_foreign_pool(int enabled, int werror) {
+	semantic_set_diag(SEM_LINT_map_writes_foreign_pool, enabled, werror);
 }
 
 /* `-Werror` (no `=slug`): promote EVERY currently-enabled lint to a hard error. Does NOT re-enable a
@@ -474,7 +475,7 @@ SemDiag *sem_emit_undefined_archetype_bind(SemanticContext *ctx, SourceLoc loc, 
 	return sem_emit_(ctx, SEM_DIAG_undefined_archetype_bind, loc, "Archetype '%s' not defined", name);
 }
 
-/* --- Type system --- */
+/* --- Type map --- */
 
 SemDiag *sem_emit_type_alias_redefined(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_type_alias_redefined, loc, "type '%s' redefined with a different backing", name);
@@ -573,10 +574,18 @@ SemDiag *sem_emit_proc_return_has_value(SemanticContext *ctx, SourceLoc loc) {
 	                 "a `proc` has no return value — write results to out-params; a bare "
 	                 "`return;` is an early exit");
 }
-SemDiag *sem_emit_sys_no_return(SemanticContext *ctx, SourceLoc loc) {
-	return sem_emit_(ctx, SEM_DIAG_sys_no_return, loc,
-	                 "a `sys` does not support `return` — it runs to completion over all matching "
-	                 "archetypes; use an `if` to guard work instead");
+SemDiag *sem_emit_map_no_return(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_DIAG_map_no_return, loc,
+	                 "a `map` does not support `return` — it runs to completion over all matching "
+	                 "archetypes; use `select(...)` for conditional values");
+}
+SemDiag *sem_emit_map_not_a_transform(SemanticContext *ctx, SourceLoc loc, const char *kind) {
+	return sem_emit_(ctx, SEM_DIAG_map_not_a_transform, loc,
+	                 "%s is not a column transform — a `map` body is a sequence of `col = expr` transforms (a "
+	                 "branch-free, loopless kernel: the runtime owns the iteration, branch-free code "
+	                 "vectorizes / runs on the GPU). Use `select(cond, a, b)` for conditionals; put control "
+	                 "flow, loops, and calls in a `func`/`proc`",
+	                 kind);
 }
 
 /* --- Field / component --- */
@@ -613,15 +622,15 @@ SemDiag *sem_emit_multiple_archetype_params(SemanticContext *ctx, SourceLoc loc,
 	return sem_emit_(ctx, SEM_DIAG_multiple_archetype_params, loc,
 	                 "proc '%s': only one `archetype` parameter is allowed per proc", proc_name);
 }
-SemDiag *sem_emit_handle_in_sys_param(SemanticContext *ctx, SourceLoc loc, const char *name) {
-	return sem_emit_(ctx, SEM_DIAG_handle_in_sys_param, loc, "handle column '%s' cannot be sys parameter", name);
+SemDiag *sem_emit_handle_in_map_param(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_handle_in_map_param, loc, "handle column '%s' cannot be map parameter", name);
 }
 
-SemDiag *sem_emit_lint_sys_writes_foreign_pool(SemanticContext *ctx, SourceLoc loc, const char *name) {
-	return sem_emit_(ctx, SEM_LINT_sys_writes_foreign_pool, loc,
-	                 "a system cannot write to '%s' — it is not the shape this system iterates; a system READS shared "
-	                 "singletons, the driver WRITES them (a foreign-pool write in a system runs once, not per row); "
-	                 "opt out with --sys-foreign-write=warn|allow",
+SemDiag *sem_emit_lint_map_writes_foreign_pool(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_LINT_map_writes_foreign_pool, loc,
+	                 "a map cannot write to '%s' — it is not the shape this map iterates; a map READS shared "
+	                 "singletons, the driver WRITES them (a foreign-pool write in a map runs once, not per row); "
+	                 "opt out with --map-foreign-write=warn|allow",
 	                 name);
 }
 SemDiag *sem_emit_each_field_filter_type_not_name(SemanticContext *ctx, SourceLoc loc) {
@@ -641,7 +650,7 @@ SemDiag *sem_emit_each_field_invalid_rhs(SemanticContext *ctx, SourceLoc loc, co
 
 SemDiag *sem_emit_alloc_not_at_top(SemanticContext *ctx, SourceLoc loc) {
 	return sem_emit_(ctx, SEM_DIAG_alloc_not_at_top, loc,
-	                 "alloc only allowed at top-level, not inside proc or sys body");
+	                 "alloc only allowed at top-level, not inside proc or map body");
 }
 SemDiag *sem_emit_alloc_count_not_literal(SemanticContext *ctx, SourceLoc loc) {
 	return sem_emit_(ctx, SEM_DIAG_alloc_count_not_literal, loc,
@@ -679,7 +688,7 @@ SemDiag *sem_emit_wildcard_in_enum_match(SemanticContext *ctx, SourceLoc loc) {
 SemDiag *sem_emit_callable_in_archetype(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_callable_in_archetype, loc,
 	                 "proc/func types cannot be archetype components ('%s') — archetypes are data; "
-	                 "dispatch with `match` or a system",
+	                 "dispatch with `match` or a map",
 	                 name);
 }
 

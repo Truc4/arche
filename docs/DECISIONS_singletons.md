@@ -42,7 +42,7 @@ params, but for POLYMORPHISM/dynamic count, not for sharing.) Works in all three
 @Config), per-unit non-hot (linker folds linkonce_odr), hot (weak interposition).
 
 ## D5 — A sys statement that writes ONLY a singleton runs once, not per-row (documented limitation)
-`bump :: sys (v) { Counter.tick[0] = Counter.tick[0] + 1 }` over N entities yields tick=1, not N. arche
+`bump :: map (v) { Counter.tick[0] = Counter.tick[0] + 1 }` over N entities yields tick=1, not N. arche
 systems have no unified per-row body loop — each assignment to an ITERATED column generates its own row
 loop; a statement touching only a foreign singleton isn't looped, so it executes once. Consequence:
 per-entity ACCUMULATION into a singleton (sum/count) is not expressible (needs the same unified-body-loop
@@ -61,7 +61,7 @@ against the live count, so the driver must `insert(Config, …)` once to create 
 ## D7 — odin/jai senior review: concerns triaged + addressed
 Both reviewers: "ship-with-fixes." Resolutions:
 - **D5 footgun (their #1: a sys writing only a singleton runs once → silent wrong accumulation).** FIXED with
-  a hard error **E0215 (sys_writes_foreign_pool)**: a system may READ a foreign singleton but not WRITE one
+  a hard error **E0215 (map_writes_foreign_pool)**: a system may READ a foreign singleton but not WRITE one
   (the leftmost target IDENT resolves to an archetype != the system's iterated shape; find_archetype
   canonicalizes aliases so it's alias-safe). Turns the silent run-once trap into a clear compile error
   ("a system READS shared singletons, the driver WRITES them"). Negative test:
@@ -133,10 +133,10 @@ User: "I like the error, but there should be an opt out flag, level=warning or w
 foreign write is *occasionally* intentional (a deliberate single-shot side effect from a system the author
 knows iterates one row), so a locked hard error is too strict. Converted to the **W0022 model**: a
 lint-class diagnostic that is **error-by-default** (promoted in `ensure_init`), tunable via
-`--sys-foreign-write=error|warn|allow` (build/run/check) and `@allow(sys_writes_foreign_pool)`. Renumbered
+`--map-foreign-write=error|warn|allow` (build/run/check) and `@allow(map_writes_foreign_pool)`. Renumbered
 **E0215 → W0024** to match the convention (W-code = tunable lint, even when error-by-default — exactly like
 W0022 exported_mutable_global). Default behavior is unchanged: a plain build still fails on the foreign
-write. `sys_write_foreign_pool.arche` now also asserts `--sys-foreign-write=allow` compiles it. explain doc
+write. `sys_write_foreign_pool.arche` now also asserts `--map-foreign-write=allow` compiles it. explain doc
 renamed `E0215.md` → `W0024.md`. The single-READ-only interposition story (C1/C2 above) is unaffected — an
 opted-in foreign write in hot still resolves the host's pool via weak interposition.
 725/725 default + per-unit, ASan clean.

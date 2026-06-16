@@ -1,14 +1,14 @@
 // A system may READ a shared singleton but must NOT WRITE a foreign pool (W0024): writing an archetype it
 // does not iterate runs once (not per row) — the run-once footgun. Singletons are written by the driver
 // and read by systems. Reading a foreign singleton in a system IS allowed (see per_unit/singleton_read).
-// W0024 is a tunable lint that is error-by-default: a plain build fails. `--sys-foreign-write=allow`
+// W0024 is a tunable lint that is error-by-default: a plain build fails. `--map-foreign-write=allow`
 // silences it — a deliberate single-shot write then compiles and runs once (here: g becomes 7).
 // (NB: a foreign write whose RHS reads an ITERATED column mixes two loop domains and won't codegen even
 //  under `allow` — that case is inherently ambiguous; see docs/explain/W0024.md.)
 // RUN: ! %arche build -o %t %s 2>%t.err
 // RUN: grep -qF "cannot write to 'Config'" %t.err
-// RUN: grep -qF "[sys_writes_foreign_pool]" %t.err
-// RUN: %arche build --sys-foreign-write=allow -o %t %s && %t | grep -qF "g=7"
+// RUN: grep -qF "[map_writes_foreign_pool]" %t.err
+// RUN: %arche build --map-foreign-write=allow -o %t %s && %t | grep -qF "g=7"
 #import { fmt }
 gravity :: int;
 v       :: int;
@@ -16,7 +16,7 @@ Config  :: arche { gravity }
 Thing   :: arche { v }
 [1]Config;
 [2]Thing;
-bump :: sys (v) {
+bump :: map (v) {
   Config.gravity[0] = 7; // foreign write from a system → W0024 (a single-shot write; runs once, not per row)
 }
 main :: proc() {

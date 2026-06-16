@@ -2,8 +2,8 @@
 
 Arche's library model is built on a hardware metaphor: **everything is a device or a driver.**
 
-- A **device** is a library — a group of files that defines *shapes* (archetypes) and *systems* (behavior). A device declares what it operates on but, ideally, does not allocate storage.
-- A **driver** is the program that uses devices — it **picks the storage and its size**, drives the device's systems, and has the ultimate say. The top-level program is the driver.
+- A **device** is a library — a group of files that defines *shapes* (archetypes) and *maps* (behavior). A device declares what it operates on but, ideally, does not allocate storage.
+- A **driver** is the program that uses devices — it **picks the storage and its size**, drives the device's maps, and has the ultimate say. The top-level program is the driver.
 
 Groups all the way up: **files → device → driver.**
 
@@ -33,7 +33,7 @@ own program split across files. Name collisions across flat-merged files are a h
 
 ## A device's impl is behavior-only (rule 3)
 
-A device's impl (`.arche`) holds **behavior** — procs, funcs, systems. Its **types** (opaque, enums,
+A device's impl (`.arche`) holds **behavior** — procs, funcs, maps. Its **types** (opaque, enums,
 aliases, archetype shapes) and **storage requirements** live in its `.ds.arche` datasheet; the device
 **may not allocate a pool** (the driver owns storage). Defining a type/archetype or allocating in a
 device impl is an error. (Types are global shared vocabulary — `net`'s `socket` is the type `socket`,
@@ -43,7 +43,7 @@ written bare, not `net.socket`.)
 
 A device declares its **shape** (and an optional storage requirement) in its datasheet — shapes are
 shared **global vocabulary**, so the driver references them by **bare name**. The device's impl is
-behavior only; the driver owns the pool and picks the size. The device's *system* is run by its
+behavior only; the driver owns the pool and picks the size. The device's *map* is run by its
 **qualified device name** (behavior is namespaced; the shape is not):
 
 ```arche
@@ -52,25 +52,25 @@ Particle :: arche { pos :: float, vel :: float }
 [256]Particle                       // minimum rows the driver must provide
 
 // physics/physics.arche  — impl: behavior only (no shape/alloc here — that's rule 3)
-integrate :: sys (pos, vel) { pos = pos + vel; }
+integrate :: map (pos, vel) { pos = pos + vel; }
 ```
 
 ```arche
-// main.arche  — the driver: owns the pool, runs the device's system
+// main.arche  — the driver: owns the pool, runs the device's map
 #import { physics fmt }
 
 [1000]Particle                      // bare name — the datasheet shape is global vocabulary
 
 main :: proc() {
   insert(Particle, 10.0, 1.0)(_:, _:);  // insert is statement-only: (handle:, ok:); `_` discards
-  run physics.integrate;            // run the device's system by qualified name
+  run physics.integrate;            // run the device's map by qualified name
   fmt.printf("pos0 = %d\n", Particle.pos[0] * 10);  // 110
 }
 ```
 
 - `[N]Particle` — the driver sizes the shape (bare name). The datasheet's `[N]Particle` is a minimum
   *requirement*, not an allocation; the driver's pool must meet it (`arche fill` can write it for you).
-- `run physics.integrate;` — a driver runs an imported device's *system* by **qualified name**.
+- `run physics.integrate;` — a driver runs an imported device's *map* by **qualified name**.
 - A shape may have **at most one pool** program-wide; two driver pool decls for the same canonical
   shape are a compile error ("Shape already allocated").
 
@@ -121,7 +121,7 @@ exactly this shape: the shape in `<name>.ds.arche`, behavior + the driving docte
 
 ## The datasheet (`.ds.arche`) and `@implements`
 
-A device can declare the **components it requires** in a `<name>.ds.arche` *datasheet* — these are shared **global** vocabulary (registered unprefixed), so the driver references them by bare name and builds its own shape from them. The device's systems then bind to the driver's shape by column name:
+A device can declare the **components it requires** in a `<name>.ds.arche` *datasheet* — these are shared **global** vocabulary (registered unprefixed), so the driver references them by bare name and builds its own shape from them. The device's maps then bind to the driver's shape by column name:
 
 ```arche
 // physics/physics.ds.arche   — datasheet: the components physics requires
@@ -130,8 +130,8 @@ vel :: float
 ```
 
 ```arche
-// physics/systems.arche      — physics owns no shape, no storage
-integrate :: sys (pos, vel) { pos = pos + vel; }
+// physics/maps.arche      — physics owns no shape, no storage
+integrate :: map (pos, vel) { pos = pos + vel; }
 ```
 
 ```arche
@@ -146,10 +146,10 @@ If the driver wants to call a required component by a **different name**, it bin
 
 ```arche
 @implements(physics.foo)
-bar :: float                  // bar IS physics's foo; physics's systems are rewritten foo -> bar
+bar :: float                  // bar IS physics's foo; physics's maps are rewritten foo -> bar
 ```
 
-A `run device.system` where no shape provides the system's components is a build error (not a silent no-op).
+A `run device.map` where no shape provides the map's components is a build error (not a silent no-op).
 
 ## Storage requirements (datasheet minimums) and `arche fill`
 
@@ -166,7 +166,7 @@ Node :: arche { key :: float, val :: float }
 ```arche
 // main.arche             — the driver owns the pool and sizes it (>= the minimum)
 #import { store }
-[8]Node                    // sized above the minimum; the device's systems run over this pool
+[8]Node                    // sized above the minimum; the device's maps run over this pool
 ```
 
 Rules (the driver owns all storage; the datasheet only states minimums):
@@ -191,4 +191,4 @@ exercised by a driver (or the doctest declares its own local shape).
 
 ## Status
 
-Fully implemented and tested (`tests/unit/language/devices/`): caller-sized pools, anonymous-literal unification, cross-module `run device.system`, device-by-name / plain-module-by-path imports (plain modules merge flat, namespacing is device-only), `#module` (unit-private) + `#file` (file-local) visibility, the `.ds.arche` datasheet, `@implements` name-mapping, the unsatisfied-`run` diagnostic, rule-3 (device impl is behavior-only), datasheet storage requirements (minimums + composition + enforcement, `tests/unit/language/devices/storage/`), and `arche fill`. See `docs/DEVICE_DRIVER_DECISIONS.md` for the design decisions.
+Fully implemented and tested (`tests/unit/language/devices/`): caller-sized pools, anonymous-literal unification, cross-module `run device.map`, device-by-name / plain-module-by-path imports (plain modules merge flat, namespacing is device-only), `#module` (unit-private) + `#file` (file-local) visibility, the `.ds.arche` datasheet, `@implements` name-mapping, the unsatisfied-`run` diagnostic, rule-3 (device impl is behavior-only), datasheet storage requirements (minimums + composition + enforcement, `tests/unit/language/devices/storage/`), and `arche fill`. See `docs/DEVICE_DRIVER_DECISIONS.md` for the design decisions.

@@ -34,10 +34,10 @@ typedef struct {
 } ValueScope;
 
 typedef struct {
-	char sys_name[256];
+	char map_name[256];
 	char arch_name[256];
 	char versioned_name[512];
-} SysVersion;
+} MapVersion;
 
 struct CodegenContext {
 	HirProgram *ast;
@@ -55,7 +55,7 @@ struct CodegenContext {
 	 * bit-equivalent to whole-program: per-unit runs `opt -O2` over each isolated module (no cross-module
 	 * IPO), whole-program opts the merged module — same semantics, different binary (an opt-sensitive bug
 	 * could surface in only one mode; the suite runs in BOTH). When set, `emit_only_unit` >= 0 restricts
-	 * func/proc emission to that unit (systems emit once in unit 0; shared decls — archetype types/helpers,
+	 * func/proc emission to that unit (maps emit once in unit 0; shared decls — archetype types/helpers,
 	 * pool storage — emit in every module as linkonce_odr, gated by the always-on ODR verifier in
 	 * compile.c). Default off → the whole-program path is unchanged. See the compilation plan. */
 	int per_unit;
@@ -90,7 +90,7 @@ struct CodegenContext {
 
 	/* SIMD vectorization context */
 	int vector_lanes; /* 0 = scalar mode, 4 = AVX2 double (256-bit / 64-bit = 4 lanes) */
-	int in_sys;       /* 1 when generating inside a sys function body */
+	int in_map;       /* 1 when generating inside a map function body */
 	int in_func;      /* 1 when generating inside a `func` body — an unannotated fallible op's baseline
 	                   * default is the total `clamp` policy instead of `abort`, so a func never crashes */
 
@@ -108,10 +108,10 @@ struct CodegenContext {
 	int loop_cont_count;
 	int loop_cont_capacity;
 
-	/* System function version mapping: (sys_name, arch_name) -> versioned_name */
-	SysVersion *sys_versions;
-	int sys_version_count;
-	int sys_version_capacity;
+	/* System function version mapping: (map_name, arch_name) -> versioned_name */
+	MapVersion *map_versions;
+	int map_version_count;
+	int map_version_capacity;
 
 	/* Top-level allocations to initialize in main() */
 	HirStaticDecl **top_level_allocs;
@@ -246,19 +246,19 @@ struct CodegenContext {
 
 /* ========== SYSTEM VERSION MAPPING ========== */
 
-static void codegen_register_sys_version(CodegenContext *ctx, const char *sys_name, const char *arch_name) {
-	if (ctx->sys_version_count >= ctx->sys_version_capacity) {
-		ctx->sys_version_capacity = (ctx->sys_version_capacity == 0) ? 16 : ctx->sys_version_capacity * 2;
-		ctx->sys_versions = realloc(ctx->sys_versions, ctx->sys_version_capacity * sizeof(ctx->sys_versions[0]));
+static void codegen_register_map_version(CodegenContext *ctx, const char *map_name, const char *arch_name) {
+	if (ctx->map_version_count >= ctx->map_version_capacity) {
+		ctx->map_version_capacity = (ctx->map_version_capacity == 0) ? 16 : ctx->map_version_capacity * 2;
+		ctx->map_versions = realloc(ctx->map_versions, ctx->map_version_capacity * sizeof(ctx->map_versions[0]));
 	}
 
-	SysVersion *entry = &ctx->sys_versions[ctx->sys_version_count];
-	strncpy(entry->sys_name, sys_name, sizeof(entry->sys_name) - 1);
-	entry->sys_name[sizeof(entry->sys_name) - 1] = '\0';
+	MapVersion *entry = &ctx->map_versions[ctx->map_version_count];
+	strncpy(entry->map_name, map_name, sizeof(entry->map_name) - 1);
+	entry->map_name[sizeof(entry->map_name) - 1] = '\0';
 	strncpy(entry->arch_name, arch_name, sizeof(entry->arch_name) - 1);
 	entry->arch_name[sizeof(entry->arch_name) - 1] = '\0';
-	snprintf(entry->versioned_name, sizeof(entry->versioned_name), "%s_%s", sys_name, arch_name);
-	ctx->sys_version_count++;
+	snprintf(entry->versioned_name, sizeof(entry->versioned_name), "%s_%s", map_name, arch_name);
+	ctx->map_version_count++;
 }
 
 /* ========== STATIC ARRAY TRACKING ========== */
@@ -1061,9 +1061,9 @@ static void drop_exit_all_for_return(CodegenContext *ctx) {
 
 /* Per-unit symbol/linkage helpers (defined below, near monomorph_mangle). */
 static const char *cg_fnsym(CodegenContext *ctx, const char *name, int is_extern, char *buf, size_t n);
-/* Archetypes covering a system's params (system ABI param list) — defined near emit_cross_unit_declares. */
-static int collect_sys_matching_archs(CodegenContext *ctx, HirSysDecl *sys, const char **out, int max);
-static int collect_sys_foreign_pools(CodegenContext *ctx, HirSysDecl *sys, const char **out, int max);
+/* Archetypes covering a map's params (map ABI param list) — defined near emit_cross_unit_declares. */
+static int collect_map_matching_archs(CodegenContext *ctx, HirMapDecl *map, const char **out, int max);
+static int collect_map_foreign_pools(CodegenContext *ctx, HirMapDecl *map, const char **out, int max);
 
 /* Is the proc/func named `name` an extern (#foreign, C-ABI)? A `@drop` destructor may be either an
  * arche proc (mangled under per-unit) or an extern (keeps its C name) — the dtor call must match. */
@@ -1275,11 +1275,11 @@ static const char *cg_insert_handler(CodegenContext *ctx, HirExpr *rhs, const ch
 	return prog ? prog : "reject";
 }
 
-static HirSysDecl *find_sys_decl(CodegenContext *ctx, const char *name) {
+static HirMapDecl *find_map_decl(CodegenContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		HirDecl *decl = ctx->ast->decls[i];
-		if (decl->kind == HIR_DECL_SYS && strcmp(decl->data.sys->name, name) == 0) {
-			return decl->data.sys;
+		if (decl->kind == HIR_DECL_MAP && strcmp(decl->data.map->name, name) == 0) {
+			return decl->data.map;
 		}
 	}
 	return NULL;
@@ -1458,7 +1458,7 @@ static void monomorph_mangle(const char *proc_name, const char *arch_name, char 
 	snprintf(out, out_sz, "__%s_%s", proc_name, arch_name);
 }
 
-/* Per-unit symbol name for an arche-owned function/proc/sys. Under per-unit codegen these get EXTERNAL
+/* Per-unit symbol name for an arche-owned function/proc/map. Under per-unit codegen these get EXTERNAL
  * linkage (cross-object references), so their names must not collide with libc — a dot-bearing prefix
  * is C-incompatible (no C symbol contains a `.`), making collisions impossible and retiring the
  * `internal`-everything workaround. Externs keep their C-ABI name; `main`/`main_user` stay bare (the
@@ -1849,16 +1849,16 @@ static int archetype_has_field(HirArchetypeDecl *arch, const char *field_name) {
 	return 0;
 }
 
-/* Check if archetype has all required fields for a system */
-static int archetype_matches_system(HirArchetypeDecl *arch, HirSysDecl *sys) {
-	if (!arch || !sys || !sys->params) {
+/* Check if archetype has all required fields for a map */
+static int archetype_matches_map(HirArchetypeDecl *arch, HirMapDecl *map) {
+	if (!arch || !map || !map->params) {
 		return 0;
 	}
-	for (int i = 0; i < sys->param_count; i++) {
-		if (!sys->params[i] || !sys->params[i]->name) {
+	for (int i = 0; i < map->param_count; i++) {
+		if (!map->params[i] || !map->params[i]->name) {
 			return 0;
 		}
-		const char *param_name = sys->params[i]->name;
+		const char *param_name = map->params[i]->name;
 		if (!archetype_has_field(arch, param_name)) {
 			return 0;
 		}
@@ -2152,7 +2152,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 					                  align);
 				}
 				strcpy(result_buf, elem);
-				/* Stamp the node type so an enclosing binary picks float ops (fadd/fsub/…). A sys column
+				/* Stamp the node type so an enclosing binary picks float ops (fadd/fsub/…). A map column
 				 * read otherwise left `resolved` unset → `pos.x - …` on float columns emitted `sub i32`. */
 				if (strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0)
 					expr->resolved.tag = HIR_TYPE_FLOAT;
@@ -3027,10 +3027,10 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		}
 		if (!nested_slice_base) {
 			/* An EXPLICIT index means "use THIS index" — so the base must yield the column/array POINTER,
-			 * not be auto-indexed by the enclosing sys row loop (which exists only for the iterated
+			 * not be auto-indexed by the enclosing map row loop (which exists only for the iterated
 			 * archetype's own columns). Suppress the implicit loop index + vectorization while evaluating
 			 * the base so a foreign singleton access `Config.gravity[0]` reads row 0 (not gravity[loopidx]),
-			 * and any explicit `col[i]` in a sys uses i rather than the loop counter. */
+			 * and any explicit `col[i]` in a map uses i rather than the loop counter. */
 			char saved_loop[64];
 			int saved_lanes = ctx->vector_lanes;
 			snprintf(saved_loop, sizeof(saved_loop), "%s", ctx->implicit_loop_index);
@@ -3195,6 +3195,35 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			/* Inside a callback specialization, a call to a callback param resolves to
 			 * its bound proc/func (direct call). No-op (idempotent) outside one. */
 			func_name = (char *)cb_resolve(ctx, func_name);
+		}
+
+		/* `select(cond, a, b)` — branch-free conditional → LLVM `select` (scalar, or a vector blend in a
+		 * vectorized map loop). cond is normalized to i1 with `icmp ne <cond>, 0`. */
+		if (func_name && strcmp(func_name, "select") == 0 && expr->data.call.arg_count == 3) {
+			char condb[256], ab[256], bb[256];
+			codegen_expression(ctx, expr->data.call.args[0], condb);
+			codegen_expression(ctx, expr->data.call.args[1], ab);
+			codegen_expression(ctx, expr->data.call.args[2], bb);
+			int lanes = ctx->vector_lanes;
+			HirExpr *va = expr->data.call.args[1];
+			int is_float = va->resolved.tag == HIR_TYPE_FLOAT || strchr(ab, '.') != NULL || strchr(bb, '.') != NULL;
+			const char *st = is_float ? "double" : "i32";
+			char vt[32], ct[32], i1t[32];
+			if (lanes > 0) {
+				snprintf(vt, sizeof(vt), "<%d x %s>", lanes, st);
+				snprintf(ct, sizeof(ct), "<%d x i32>", lanes);
+				snprintf(i1t, sizeof(i1t), "<%d x i1>", lanes);
+			} else {
+				snprintf(vt, sizeof(vt), "%s", st);
+				snprintf(ct, sizeof(ct), "i32");
+				snprintf(i1t, sizeof(i1t), "i1");
+			}
+			char *ci = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = icmp ne %s %s, %s\n", ci, ct, condb, lanes > 0 ? "zeroinitializer" : "0");
+			char *r = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = select %s %s, %s %s, %s %s\n", r, i1t, ci, vt, ab, vt, bb);
+			strcpy(result_buf, r);
+			break;
 		}
 
 		/* Width-type cast i64(x)/u8(x)/...: convert the single arg to the target
@@ -4402,7 +4431,7 @@ static int resolve_index_arch(CodegenContext *ctx, HirExpr *base_expr, HirExpr *
 			}
 		}
 	}
-	/* Case 2: base is HIR_EXPR_NAME with type 4 (column param in sys) */
+	/* Case 2: base is HIR_EXPR_NAME with type 4 (column param in map) */
 	else if (base_expr->kind == HIR_EXPR_NAME) {
 		ValueInfo *vi = find_value(ctx, base_expr->data.name.name);
 		if (vi && vi->type == 4 && vi->arch_name) {
@@ -4641,8 +4670,8 @@ static void hoist_column_geps(CodegenContext *ctx, HirExpr *expr, const char *st
 	}
 }
 
-/* True if a sys whole-column-loop RHS must run SCALAR rather than 4-lane float-vectorized. A column op is
- * only vectorizable when every leaf is itself a per-row column (a sys param, loaded as `<4 x double>`) and
+/* True if a map whole-column-loop RHS must run SCALAR rather than 4-lane float-vectorized. A column op is
+ * only vectorizable when every leaf is itself a per-row column (a map param, loaded as `<4 x double>`) and
  * the ops between them are plain arithmetic. Anything else — a literal (`vel *= 2.0`), an explicit index
  * (a singleton `Config.center[0]` or a gather), or a non-column name — is a single SCALAR value that would
  * have to be splatted into all four lanes; the column-SIMD path doesn't do that, so it miscompiles
@@ -4658,7 +4687,7 @@ static int rhs_forces_scalar(CodegenContext *ctx, const HirExpr *e) {
 		return 1;
 	case HIR_EXPR_NAME: {
 		ValueInfo *v = find_value(ctx, e->data.name.name);
-		return !(v && v->type == 4); /* only a per-row sys column lane-loads cleanly */
+		return !(v && v->type == 4); /* only a per-row map column lane-loads cleanly */
 	}
 	case HIR_EXPR_FIELD:
 		return 1; /* a field read (e.g. an archetype column) is not a per-row lane here */
@@ -6268,7 +6297,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			}
 		}
 
-		/* Check Path B: target is HIR_EXPR_NAME type-4 (sys parameter) */
+		/* Check Path B: target is HIR_EXPR_NAME type-4 (map parameter) */
 		if (stmt->data.assign_stmt.target->kind == HIR_EXPR_NAME) {
 			const char *var_name = stmt->data.assign_stmt.target->data.name.name;
 			ValueInfo *val = find_value(ctx, var_name);
@@ -6379,11 +6408,11 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				}
 			}
 
-			/* Path B: target is HIR_EXPR_NAME type-4 (sys parameter) */
+			/* Path B: target is HIR_EXPR_NAME type-4 (map parameter) */
 			if (val && val->type == 4) {
 				/* Column parameter: emit whole-column loop */
 				const char *arche_type = val->field_type ? val->field_type : "float";
-				/* Skip handle columns — cannot use in sys operations */
+				/* Skip handle columns — cannot use in map operations */
 				if (strcmp(arche_type, "handle") == 0) {
 					break;
 				}
@@ -6950,19 +6979,19 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 	}
 
 	case HIR_STMT_RUN: {
-		/* run system - call one function with all matching archetypes as params */
-		const char *system_name = stmt->data.run_stmt.system_name;
+		/* run map - call one function with all matching archetypes as params */
+		const char *map_name = stmt->data.run_stmt.map_name;
 
-		/* Find the system definition */
-		HirSysDecl *sys = find_sys_decl(ctx, system_name);
-		if (!sys) {
-			fprintf(stderr, "Error: `run %s` — unknown system '%s'\n", system_name, system_name);
+		/* Find the map definition */
+		HirMapDecl *map = find_map_decl(ctx, map_name);
+		if (!map) {
+			fprintf(stderr, "Error: `run %s` — unknown map '%s'\n", map_name, map_name);
 			ctx->had_error = 1;
-			buffer_append_fmt(ctx, "  ; ERROR: undefined system '%s'\n", system_name);
+			buffer_append_fmt(ctx, "  ; ERROR: undefined map '%s'\n", map_name);
 			break;
 		}
 
-		/* Collect the shapes this system runs over. A shape may be defined in several places (a device
+		/* Collect the shapes this map runs over. A shape may be defined in several places (a device
 		 * impl that uses it AND the driver) — all the same canonical shape — so dedup by canonical name.
 		 * A shape is a valid target only if a driver actually allocated storage for it: all storage is
 		 * static, so a shape with no static pool (capacity 0) is an unallocated phantom and is skipped
@@ -6976,7 +7005,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			if (decl->kind != HIR_DECL_ARCHETYPE)
 				continue;
 			HirArchetypeDecl *arch = decl->data.archetype;
-			if (!archetype_matches_system(arch, sys))
+			if (!archetype_matches_map(arch, map))
 				continue;
 			matched_components = 1;
 			const char *cn = canonical_arch_name(ctx, arch->name);
@@ -6997,22 +7026,22 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				/* A shape provides the components, but no driver allocated a pool for it. All storage is
 				 * the driver's, so an unallocated shape is unimplemented — running it would bind a null
 				 * pool. Hard error. */
-				fprintf(stderr, "Error: `run %s` — no storage for the shape system '%s' operates on { ", system_name,
-				        system_name);
-				for (int p = 0; p < sys->param_count; p++)
-					fprintf(stderr, "%s%s", p ? ", " : "", sys->params[p] ? sys->params[p]->name : "?");
+				fprintf(stderr, "Error: `run %s` — no storage for the shape map '%s' operates on { ", map_name,
+				        map_name);
+				for (int p = 0; p < map->param_count; p++)
+					fprintf(stderr, "%s%s", p ? ", " : "", map->params[p] ? map->params[p]->name : "?");
 				fprintf(stderr, " }; a driver must allocate a pool for it\n");
 			} else {
 				/* No shape in the program provides the components — running it would be a silent no-op.
 				 * A driver must define an archetype with the device's required components. */
-				fprintf(stderr, "Error: `run %s` — no shape provides the components system '%s' operates on { ",
-				        system_name, system_name);
-				for (int p = 0; p < sys->param_count; p++)
-					fprintf(stderr, "%s%s", p ? ", " : "", sys->params[p] ? sys->params[p]->name : "?");
+				fprintf(stderr, "Error: `run %s` — no shape provides the components map '%s' operates on { ", map_name,
+				        map_name);
+				for (int p = 0; p < map->param_count; p++)
+					fprintf(stderr, "%s%s", p ? ", " : "", map->params[p] ? map->params[p]->name : "?");
 				fprintf(stderr, " }; a driver must define an archetype with these components\n");
 			}
 			ctx->had_error = 1;
-			buffer_append_fmt(ctx, "  ; ERROR: no matching archetypes for system '%s'\n", system_name);
+			buffer_append_fmt(ctx, "  ; ERROR: no matching archetypes for map '%s'\n", map_name);
 			break;
 		}
 
@@ -7030,9 +7059,9 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			}
 		}
 
-		/* Build: call void @system_name(%struct.A* @A, %struct.B* @B, ...) */
-		char sys_call_buf[512];
-		buffer_append_fmt(ctx, "  call void @%s(", cg_fnsym(ctx, system_name, 0, sys_call_buf, sizeof(sys_call_buf)));
+		/* Build: call void @map_name(%struct.A* @A, %struct.B* @B, ...) */
+		char map_call_buf[512];
+		buffer_append_fmt(ctx, "  call void @%s(", cg_fnsym(ctx, map_name, 0, map_call_buf, sizeof(map_call_buf)));
 		for (int i = 0; i < matching_count; i++) {
 			if (i > 0)
 				buffer_append(ctx, ", ");
@@ -7043,11 +7072,11 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				buffer_append_fmt(ctx, "%%struct.%s* %s", arch_name, dynamic_ptrs[i]);
 			}
 		}
-		/* Per-unit/hot: also pass the foreign pools the system reads (the host owns them), so the device
+		/* Per-unit/hot: also pass the foreign pools the map reads (the host owns them), so the device
 		 * binds the host's pool by pointer rather than referencing its own global. Same deterministic list
 		 * the define/trampoline build, so the ABI matches. (All foreign pools are static → `@Name`.) */
 		const char *run_foreign[64];
-		int run_fcount = collect_sys_foreign_pools(ctx, sys, run_foreign, 64);
+		int run_fcount = collect_map_foreign_pools(ctx, map, run_foreign, 64);
 		for (int i = 0; i < run_fcount; i++)
 			buffer_append_fmt(ctx, "%s%%struct.%s* @%s", (matching_count + i) > 0 ? ", " : "", run_foreign[i],
 			                  run_foreign[i]);
@@ -7069,7 +7098,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			buffer_append_fmt(ctx, "  store %%struct.%s* %s, %%struct.%s** @archetype_%s\n", arch_name, expr_buf,
 			                  arch_name, arch_name);
 
-			/* Add archetype to scope so sys functions can find it */
+			/* Add archetype to scope so map functions can find it */
 			add_arch_value(ctx, arch_name, expr_buf, arch_name);
 		} else {
 			char expr_buf[256];
@@ -7692,7 +7721,7 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	 * HOT-RELOAD CONTRACT (load-bearing): `linkonce_odr` lowers to a WEAK symbol with default visibility.
 	 * In `arche run` (hot), a device `.so` carries its own weak copy of a pool it references, but the host
 	 * is linked `-rdynamic` so the host's definition INTERPOSES the device's at dlopen → one shared pool.
-	 * This is how a device system reads the driver-owned SINGLETON ([1] pool) live (see
+	 * This is how a device map reads the driver-owned SINGLETON ([1] pool) live (see
 	 * docs/DECISIONS_singletons.md). It relies on: (1) default visibility here (do NOT emit `hidden`, and
 	 * do not compile these objects with -fvisibility=hidden), (2) the host staying `-rdynamic`, (3) the
 	 * reload runtime using RTLD_NOW|RTLD_LOCAL and NOT RTLD_DEEPBIND (DEEPBIND inverts lookup → the device
@@ -8528,9 +8557,9 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 	buffer_append(ctx, "}\n\n");
 }
 
-static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys, int decl_unit) {
-	/* Per-unit: a system is emitted in the unit that DECLARED it (a device's system lives in that device's
-	 * unit), so editing a device's system body rebuilds ITS `.so` and hot-reloads — exactly like a proc.
+static void codegen_map_decl(CodegenContext *ctx, HirMapDecl *map, int decl_unit) {
+	/* Per-unit: a map is emitted in the unit that DECLARED it (a device's map lives in that device's
+	 * unit), so editing a device's map body rebuilds ITS `.so` and hot-reloads — exactly like a proc.
 	 * A `run` from another unit (the driver) reaches it via a cross-unit declare (release) or reload
 	 * trampoline (dev), see emit_cross_unit_declares. Archetype struct types + pool globals are present in
 	 * every module (hoist + linkonce_odr), and the pool storage is passed in by the run site, so the body
@@ -8540,7 +8569,7 @@ static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys, int decl_unit
 
 	/* Collect all archetypes that have the required fields */
 	const char *matching_archs[256];
-	int matching_count = collect_sys_matching_archs(ctx, sys, matching_archs, 256);
+	int matching_count = collect_map_matching_archs(ctx, map, matching_archs, 256);
 
 	if (matching_count == 0) {
 		return;
@@ -8553,11 +8582,11 @@ static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys, int decl_unit
 	 * run site as extra pointer params and bound as instances below, so the device reads the host's pool
 	 * directly — no global ref / weak interposition. Empty in whole-program (the direct global is kept). */
 	const char *foreign_pools[64];
-	int foreign_count = collect_sys_foreign_pools(ctx, sys, foreign_pools, 64);
+	int foreign_count = collect_map_foreign_pools(ctx, map, foreign_pools, 64);
 
-	char sys_sym_buf[512];
+	char map_sym_buf[512];
 	buffer_append_fmt(ctx, "define %svoid @%s(", cg_linkage(ctx),
-	                  cg_fnsym(ctx, sys->name, 0, sys_sym_buf, sizeof(sys_sym_buf)));
+	                  cg_fnsym(ctx, map->name, 0, map_sym_buf, sizeof(map_sym_buf)));
 	for (int i = 0; i < matching_count; i++) {
 		if (i > 0)
 			buffer_append(ctx, ", ");
@@ -8581,8 +8610,8 @@ static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys, int decl_unit
 		/* Bind field parameters to this archetype's columns */
 		HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
 		if (arch) {
-			for (int p = 0; p < sys->param_count; p++) {
-				const char *param_name = sys->params[p]->name;
+			for (int p = 0; p < map->param_count; p++) {
+				const char *param_name = map->params[p]->name;
 
 				/* Find this field in the archetype */
 				for (int f = 0; f < arch->field_count; f++) {
@@ -8644,12 +8673,12 @@ static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys, int decl_unit
 			add_arch_value(ctx, foreign_pools[fp], fp_llvm, foreign_pools[fp]);
 		}
 
-		/* Emit system body with this archetype's bindings */
-		ctx->in_sys = 1;
-		for (int s = 0; s < sys->stmt_count; s++) {
-			codegen_statement(ctx, sys->stmts[s]);
+		/* Emit map body with this archetype's bindings */
+		ctx->in_map = 1;
+		for (int s = 0; s < map->stmt_count; s++) {
+			codegen_statement(ctx, map->stmts[s]);
 		}
-		ctx->in_sys = 0;
+		ctx->in_map = 0;
 
 		pop_value_scope(ctx);
 	}
@@ -8659,7 +8688,7 @@ static void codegen_sys_decl(CodegenContext *ctx, HirSysDecl *sys, int decl_unit
 	buffer_append(ctx, "}\n\n");
 
 	/* Register function name (no version suffix) for HIR_STMT_RUN lookup */
-	codegen_register_sys_version(ctx, sys->name, sys->name);
+	codegen_register_map_version(ctx, map->name, map->name);
 }
 
 /* ========== PUBLIC API ========== */
@@ -8733,7 +8762,7 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->interned_cap = 0;
 	ctx->interned_count = 0;
 	ctx->vector_lanes = 0;
-	ctx->in_sys = 0;
+	ctx->in_map = 0;
 	ctx->in_func = 0;
 	ctx->implicit_loop_index[0] = '\0'; /* Initialize to empty (not in loop) */
 	ctx->loop_exit_labels = NULL;
@@ -8742,9 +8771,9 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->loop_cont_labels = NULL;
 	ctx->loop_cont_count = 0;
 	ctx->loop_cont_capacity = 0;
-	ctx->sys_versions = NULL;
-	ctx->sys_version_count = 0;
-	ctx->sys_version_capacity = 0;
+	ctx->map_versions = NULL;
+	ctx->map_version_count = 0;
+	ctx->map_version_capacity = 0;
 	ctx->top_level_allocs = NULL;
 	ctx->alloc_count = 0;
 	ctx->alloc_capacity = 0;
@@ -8815,21 +8844,21 @@ static void codegen_build_drop_registry(CodegenContext *ctx) {
 	}
 }
 
-/* Archetypes whose fields cover all of a system's params (the system's ABI param list). Shared by the
- * system definition (codegen_sys_decl) and its cross-unit declare so they agree exactly. */
-static int collect_sys_matching_archs(CodegenContext *ctx, HirSysDecl *sys, const char **out, int max) {
+/* Archetypes whose fields cover all of a map's params (the map's ABI param list). Shared by the
+ * map definition (codegen_map_decl) and its cross-unit declare so they agree exactly. */
+static int collect_map_matching_archs(CodegenContext *ctx, HirMapDecl *map, const char **out, int max) {
 	int n = 0;
-	if (!(sys->param_count > 0 && sys->params[0] && sys->params[0]->name))
+	if (!(map->param_count > 0 && map->params[0] && map->params[0]->name))
 		return 0;
 	for (int d = 0; d < ctx->ast->decl_count; d++) {
 		if (ctx->ast->decls[d]->kind != HIR_DECL_ARCHETYPE)
 			continue;
 		HirArchetypeDecl *arch = ctx->ast->decls[d]->data.archetype;
 		int has_all = 1;
-		for (int p = 0; p < sys->param_count && has_all; p++) {
+		for (int p = 0; p < map->param_count && has_all; p++) {
 			int found = 0;
 			for (int f = 0; f < arch->field_count; f++)
-				if (strcmp(arch->fields[f]->name, sys->params[p]->name) == 0) {
+				if (strcmp(arch->fields[f]->name, map->params[p]->name) == 0) {
 					found = 1;
 					break;
 				}
@@ -8916,19 +8945,19 @@ static int stmt_refs_name(const HirStmt *s, const char *name) {
 	}
 }
 
-/* The FOREIGN pools a system reads — archetypes referenced in its body (e.g. a `[1]Config` singleton) that
+/* The FOREIGN pools a map reads — archetypes referenced in its body (e.g. a `[1]Config` singleton) that
  * are NOT the iterated archetype(s) it matches. In per-unit/hot builds these are passed by POINTER from the
- * `run` site (the host owns the pool) and bound as instances inside the system, instead of the device
+ * `run` site (the host owns the pool) and bound as instances inside the map, instead of the device
  * referencing the pool's global and relying on weak-symbol interposition. Deterministic order (ast decl
  * order) so the define, the `run` call, and the cross-unit trampoline/declare build an identical ABI.
  * Returns 0 in whole-program builds (the direct global ref is kept — zero indirection). */
-static int collect_sys_foreign_pools(CodegenContext *ctx, HirSysDecl *sys, const char **out, int max) {
+static int collect_map_foreign_pools(CodegenContext *ctx, HirMapDecl *map, const char **out, int max) {
 	if (!ctx->per_unit)
 		return 0;
 	/* Compute the matching (iterated) set HERE, internally, so every ABI site derives an identical foreign
 	 * list regardless of how its own matching set was filtered/ordered. */
 	const char *matching[256];
-	int mcount = collect_sys_matching_archs(ctx, sys, matching, 256);
+	int mcount = collect_map_matching_archs(ctx, map, matching, 256);
 	int n = 0;
 	for (int d = 0; d < ctx->ast->decl_count; d++) {
 		if (ctx->ast->decls[d]->kind != HIR_DECL_ARCHETYPE)
@@ -8954,8 +8983,8 @@ static int collect_sys_foreign_pools(CodegenContext *ctx, HirSysDecl *sys, const
 		if (dup)
 			continue;
 		int refd = 0;
-		for (int s = 0; s < sys->stmt_count && !refd; s++)
-			refd = stmt_refs_name(sys->stmts[s], an);
+		for (int s = 0; s < map->stmt_count && !refd; s++)
+			refd = stmt_refs_name(map->stmts[s], an);
 		if (refd && n < max)
 			out[n++] = cn;
 	}
@@ -8966,7 +8995,7 @@ static int collect_sys_foreign_pools(CodegenContext *ctx, HirSysDecl *sys, const
  * module is self-contained and the linker resolves the references. Parametric procs (archetype/
  * callback) have no real symbol (only their monomorphized instances do), so they're skipped. Systems
  * are defined only in the entry unit (unit 0), so any non-entry unit that `run`s one needs a declare —
- * over-declare all matching systems there (harmless if unused). Inert unless emitting one unit. */
+ * over-declare all matching maps there (harmless if unused). Inert unless emitting one unit. */
 /* Param TYPES only (no names), for an indirect-call function type — mirrors emit_proc_params' shapes. */
 static void emit_proc_param_types(CodegenContext *ctx, HirProcDecl *proc) {
 	int n = 0;
@@ -9062,10 +9091,10 @@ static void emit_hot_trampoline(CodegenContext *ctx, const char *mangled, const 
 	}
 }
 
-/* Dev hot-reload: the trampoline for a cross-unit SYSTEM. A system's ABI is `void(%struct.A*, ...)` over
+/* Dev hot-reload: the trampoline for a cross-unit SYSTEM. A map's ABI is `void(%struct.A*, ...)` over
  * the archetypes it matches (the driver's pools, passed by the `run` site); this forwards them through a
- * reload-resolved indirect call so editing a device's system body reloads live, exactly like a proc. */
-static void emit_hot_sys_trampoline(CodegenContext *ctx, const char *mangled, const char *bare, int unit,
+ * reload-resolved indirect call so editing a device's map body reloads live, exactly like a proc. */
+static void emit_hot_map_trampoline(CodegenContext *ctx, const char *mangled, const char *bare, int unit,
                                     const char *archs[], int na) {
 	size_t slen = strlen(mangled) + 1;
 	buffer_append_fmt(ctx, "@.hotsym.%s = private unnamed_addr constant [%zu x i8] c\"%s\\00\"\n", bare, slen, mangled);
@@ -9095,20 +9124,20 @@ static void emit_cross_unit_declares(CodegenContext *ctx) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		HirDecl *d = ctx->ast->decls[i];
 		char sym[512];
-		if (d->kind == HIR_DECL_SYS) {
-			/* A system is defined in its DECLARING unit (so editing a device's system rebuilds its .so);
+		if (d->kind == HIR_DECL_MAP) {
+			/* A map is defined in its DECLARING unit (so editing a device's map rebuilds its .so);
 			 * any OTHER unit that `run`s it needs a cross-unit declare (or a hot trampoline). */
 			if (d->unit == ctx->emit_only_unit)
 				continue; /* defined here */
 			const char *archs[256];
-			int na = collect_sys_matching_archs(ctx, d->data.sys, archs, 256);
+			int na = collect_map_matching_archs(ctx, d->data.map, archs, 256);
 			if (na == 0)
 				continue; /* no matching shape → no definition emitted → nothing to declare */
 			/* Append the foreign read-set pools, so the trampoline/declare ABI matches the define + run. */
-			na += collect_sys_foreign_pools(ctx, d->data.sys, archs + na, 256 - na);
-			cg_fnsym(ctx, d->data.sys->name, 0, sym, sizeof(sym));
+			na += collect_map_foreign_pools(ctx, d->data.map, archs + na, 256 - na);
+			cg_fnsym(ctx, d->data.map->name, 0, sym, sizeof(sym));
 			if (ctx->hot) {
-				emit_hot_sys_trampoline(ctx, sym, d->data.sys->name, d->unit, archs, na);
+				emit_hot_map_trampoline(ctx, sym, d->data.map->name, d->unit, archs, na);
 			} else {
 				buffer_append_fmt(ctx, "declare void @%s(", sym);
 				for (int a = 0; a < na; a++)
@@ -9224,9 +9253,9 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 
 		/* Per-unit codegen: when restricted to one unit, emit only THIS unit's non-extern func/proc
 		 * BODIES (cross-unit callees are `declare`d up front; externs are `declare`d in every module so
-		 * they stay visible). Systems are NOT filtered by `decl->unit` — a device system lives in the
+		 * they stay visible). Systems are NOT filtered by `decl->unit` — a device map lives in the
 		 * device's unit but is `run` from the entry, so it is emitted once in unit 0 (the guard in
-		 * codegen_sys_decl), not in its source unit. Inert by default (emit_only_unit == -1). */
+		 * codegen_map_decl), not in its source unit. Inert by default (emit_only_unit == -1). */
 		if (ctx->per_unit && ctx->emit_only_unit >= 0 && decl->unit != ctx->emit_only_unit) {
 			int is_ext = (decl->kind == HIR_DECL_FUNC && decl->data.func->is_extern) ||
 			             (decl->kind == HIR_DECL_PROC && decl->data.proc->is_extern);
@@ -9311,8 +9340,8 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			}
 			codegen_proc_decl(ctx, decl->data.proc);
 			break;
-		case HIR_DECL_SYS:
-			codegen_sys_decl(ctx, decl->data.sys, decl->unit);
+		case HIR_DECL_MAP:
+			codegen_map_decl(ctx, decl->data.map, decl->unit);
 			break;
 		case HIR_DECL_CONST:
 			/* Value consts are inlined at their use sites (semantic_get_const_value); type
@@ -9428,7 +9457,7 @@ void codegen_free(CodegenContext *ctx) {
 	free(ctx->interned_names);
 	free(ctx->interned_rhs);
 	free(ctx->alloca_buffer);
-	free(ctx->sys_versions);
+	free(ctx->map_versions);
 	free(ctx->loop_exit_labels);
 	free(ctx->loop_cont_labels);
 	free(ctx->top_level_allocs);

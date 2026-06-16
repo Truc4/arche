@@ -1,0 +1,16 @@
+// A `map` is loopless — the runtime owns the iteration. A `for` in a map body must error with
+// `map_control_flow` (a loop in a kernel defeats vectorization/GPU dispatch). (Spec; red until implemented.)
+// RUN: ! %arche build -o %t %s 2>%t.err
+// RUN: grep -qF "branch-free, loopless kernel" %t.err
+v :: int;
+N :: arche { v }
+[2]N(2);
+bump :: map (v) {
+  i := 0;
+  for (; i < 3; i += 1) {
+    v = v + 1;
+  }
+}
+main :: proc() {
+  run bump;
+}

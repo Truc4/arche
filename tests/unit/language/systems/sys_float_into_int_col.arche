@@ -9,7 +9,7 @@
 v(x, y) :: int;
 M       :: arche { v }
 [1]M;
-s :: sys (v) {
+s :: map (v) {
   v *= 2.0; // float into an int column → rejected
 }
 main :: proc() {

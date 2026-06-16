@@ -6,12 +6,12 @@ Task :: arche { val :: int }
   val: 5,
 }
 
-double_val :: sys (val) {
-  fmt.printf("system_ran\n");
+double_val :: map (val) {
   val = val * 2;
 }
 
 main :: proc() {
   run double_val;
+  fmt.printf("system_ran\n");
   fmt.assert(Task.val[0] == 10, "val not 10\n");
 }

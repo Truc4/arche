@@ -7,7 +7,7 @@ Task1 :: arche { price :: float, quantity :: int, revenue :: float }
   price: 2.0, quantity: 3, revenue: 0.0,
 }
 
-task1_compute_revenue :: sys (price, quantity, revenue) {
+task1_compute_revenue :: map (price, quantity, revenue) {
   revenue = price * quantity;
 }
 // Task 2: Filter invalid (valid flag for quantity > 0)
@@ -17,7 +17,7 @@ Task2 :: arche { quantity, valid :: int }
   quantity: 5, valid: 0,
 }
 
-task2_filter_invalid :: sys (quantity, valid) {
+task2_filter_invalid :: map (quantity, valid) {
   valid = quantity > 0;
 }
 // Task 3: Bucket timestamps (hour_bucket = timestamp rounded down to nearest hour)
@@ -27,7 +27,7 @@ Task3 :: arche { timestamp :: int, hour_bucket :: int }
   timestamp: 7654, hour_bucket: 0,
 }
 
-task3_bucket_timestamps :: sys (timestamp, hour_bucket) {
+task3_bucket_timestamps :: map (timestamp, hour_bucket) {
   hour_bucket = timestamp / 3600 * 3600;
 }
 // Task 4: Aggregate region (total revenue by region, simplified to single value per archetype)
@@ -37,7 +37,7 @@ Task4 :: arche { price, qty :: int, total :: float }
   price: 2.0, qty: 2, total: 0.0,
 }
 
-task4_aggregate_revenue :: sys (price, qty, total) {
+task4_aggregate_revenue :: map (price, qty, total) {
   total = price * qty;
 }
 // Top-level allocations with init

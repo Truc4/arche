@@ -1,7 +1,7 @@
 # The Arche language
 
-A reference for Arche's memory model, type system, declarations, and the
-`proc` / `func` / `sys` split. For tooling (CLI, editor, build) see
+A reference for Arche's memory model, type map, declarations, and the
+`proc` / `func` / `map` split. For tooling (CLI, editor, build) see
 [tooling.md](tooling.md); for benchmarks see [performance.md](performance.md);
 for doc comments and doctests see [DOCTESTS.md](DOCTESTS.md).
 
@@ -15,9 +15,9 @@ for doc comments and doctests see [DOCTESTS.md](DOCTESTS.md).
 - [Indexing](#indexing)
 - [Arrays and slices: `[N]T` values, `[]T` slices](#arrays-and-slices-nt-values-t-slices)
 - [Procedures (`proc`)](#procedures-proc)
-- [Systems (`sys`)](#systems-sys)
+- [Maps (`map`)](#maps-map)
 - [Functions (`func`)](#functions-func)
-- [`proc` vs `sys` vs `func`](#proc-vs-sys-vs-func)
+- [`proc` vs `map` vs `func`](#proc-vs-map-vs-func)
 - [Enums and `match`](#enums-and-match)
 - [Compile-time callbacks](#compile-time-callbacks)
 - [Ownership: borrow, `move`, `copy`](#ownership-borrow-move-copy)
@@ -65,8 +65,8 @@ Projectile :: arche { speed };
 [5000]Enemy(5000);
 [1000]Projectile(1000);
 
-initialize  :: sys(active) { active = 1; }
-update_loop :: sys(speed)  { speed = speed + 1; }
+initialize  :: map (active) { active = 1; }
+update_loop :: map (speed)  { speed = speed + 1; }
 
 main :: proc() {
   run initialize;
@@ -238,11 +238,11 @@ Particle.pos_x = Particle.pos_x + Particle.vel_x;
 fmt.assert(Particle.pos_x[0] == 2.0, "whole-column add\n");
 ```
 
-This iterates all elements, updating each position by its velocity. Inside a system the
+This iterates all elements, updating each position by its velocity. Inside a map the
 component type names are available directly:
 
 ```arche
-step :: sys(pos_x, vel_x) {
+step :: map (pos_x, vel_x) {
   pos_x = pos_x + vel_x;
 }
 ```
@@ -340,7 +340,7 @@ enforces: a function may not **return a slice that traces to its own local** `[N
 dangle) — a returned slice must trace back to a buffer passed *in*.
 
 There is no `for x in array`. Iterate a buffer with a C-style `for (i := 0; i < xs.length; i = i + 1)`,
-and process archetype columns with a `sys`.
+and process archetype columns with a `map`.
 
 ## Procedures (`proc`)
 
@@ -397,9 +397,9 @@ advance :: proc() {
 }
 ```
 
-## Systems (`sys`)
+## Maps (`map`)
 
-Systems perform **data-driven transformations** over all matching archetypes.
+Maps perform **data-driven transformations** over all matching archetypes.
 
 ```arche
 pos_x :: float;
@@ -408,12 +408,12 @@ Particle :: arche { pos_x, vel_x };
 
 [1000]Particle(1000) { pos_x: 0.0, vel_x: 1.5 }
 
-step :: sys(pos_x, vel_x) {
+step :: map (pos_x, vel_x) {
   pos_x = pos_x + vel_x;
 }
 ```
 
-A `proc` drives a system with the `run` statement (the system needs a pool whose shape
+A `proc` drives a map with the `run` statement (the map needs a pool whose shape
 supplies its components):
 
 ```arche
@@ -424,10 +424,10 @@ update :: proc() {
 
 - executes via the `run system_name` statement
 - automatically matches any archetype in scope containing the required component types
-- binds those components inside the system body
+- binds those components inside the map body
 - operates on whole columns (array-first)
 
-So a system over `pos` and `vel` applies to any archetype with those components (`Player`,
+So a map over `pos` and `vel` applies to any archetype with those components (`Player`,
 `Mob`, `Projectile`, …) without naming them explicitly.
 
 ### Conditional behavior
@@ -435,13 +435,13 @@ So a system over `pos` and `vel` applies to any archetype with those components 
 Conditionals can be written as mathematical expressions (comparisons produce 0 or 1):
 
 ```arche
-dampen :: sys(vel, pos) {
+dampen :: map (vel, pos) {
   // multiply velocity by 0 if below threshold
   vel = vel * (pos > 10);
 }
 ```
 
-Systems also support `if`/`for` for control flow. Branchless math like `vel = vel * (pos > 10)`
+Maps also support `if`/`for` for control flow. Branchless math like `vel = vel * (pos > 10)`
 avoids branch mispredictions and vectorizes well **when the condition is data-dependent and
 unpredictable**. For *predictable* conditions the branch predictor is effectively free, and a
 real branch can be faster by skipping the masked-off work entirely. Neither is universally
@@ -466,17 +466,17 @@ drag_factor :: func(x: float) -> float {
 - Usable inside expressions; freely callable as a proc's **in**-argument (a func call is a
   value), but never as an **out**-argument (a value is not a place).
 
-## `proc` vs `sys` vs `func`
+## `proc` vs `map` vs `func`
 
 | Kind   | Binding                   | Is it a value? | Purpose                        |
 | ------ | ------------------------- | -------------- | ------------------------------ |
 | `func` | `name :: func(in) -> T`   | yes            | pure computation, one return   |
 | `proc` | `name :: proc(in)(out)`   | no             | an action; writes out-params   |
-| `sys`  | `name :: sys(components)` | no             | data transform over archetypes |
+| `map`  | `name :: map (components)` | no             | data transform over archetypes |
 
 - `func`: "compute a value" - `r := area(w, h)`
 - `proc`: "do this, writing the results into these places" - `divmod(17, 5)(q:, r:)`
-- `sys`: "run this on _any data shaped like this_" - `run step;`
+- `map`: "run this on _any data shaped like this_" - `run step;`
 
 ## Totality and failure policies (`!policy`)
 
@@ -551,7 +551,7 @@ The raw `!undefined` opt-out is already off by default; the flags control the *b
 To get close to a crash-free build you add `--no-abort` (the raw op is already off) **and** audit the
 policies you use (the bundled `clamp`/`zero`/`wrap` are total and don't call `_exit`; a policy you
 write is your responsibility). These apply to your code; the bundled core/stdlib are exempt, and
-`extern`/FFI procs are outside the system — a foreign C boundary is trusted, not policy-tracked.
+`extern`/FFI procs are outside the map — a foreign C boundary is trusted, not policy-tracked.
 
 ### Errors as values: `insert` / `delete`
 
@@ -711,7 +711,7 @@ read_into :: proc(fd: int, buf: []char, len: int)(buf: []char, n: int) {
 
 ## Foreign resources: `opaque` types
 
-There is no separate "extern type" system. A foreign resource (OS window, audio voice, file
+There is no separate "extern type" map. A foreign resource (OS window, audio voice, file
 pointer) is just a **nominal type aliased over `opaque`** - a pointer-width, C-owned cell that
 Arche never reads, writes, or fabricates. Distinctness comes from the *name*, not a wrapper.
 
@@ -806,10 +806,10 @@ Arche prioritizes **access speed and predictability** over memory footprint:
 
 It deliberately avoids pointers/references (columnar layout instead), dynamic memory
 (fixed sizes upfront), classes/inheritance (archetypes instead), implicit iteration (loops
-made explicit via systems), and complex type systems (primitives and columns only).
+made explicit via maps), and complex type maps (primitives and columns only).
 
 ## Worlds (planned)
 
 A **World** is a planned feature that will act as a collection of archetypes and a scope for
-systems (syntax sketch: `world Simulation()`), allowing parallel data-driven computations.
-**Not yet implemented** - currently systems operate on all matching archetypes in scope.
+maps (syntax sketch: `world Simulation()`), allowing parallel data-driven computations.
+**Not yet implemented** - currently maps operate on all matching archetypes in scope.

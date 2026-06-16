@@ -67,7 +67,7 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		    "///   fmt.assert(Particle.pos[0] * 10 == 110, \"integrate did not run\\n\");\n"
 		    "/// }\n"
 		    "/// ```\n"
-		    "integrate :: sys (pos, vel) {\n"
+		    "integrate :: map (pos, vel) {\n"
 		    "  pos = pos + vel;\n"
 		    "}\n";
 		return write_new_file(path, impl);

@@ -202,7 +202,7 @@ static void synchronize(Parser *parser) {
 		switch (parser->current.kind) {
 		case TOK_ARCHETYPE:
 		case TOK_PROC:
-		case TOK_SYS:
+		case TOK_MAP:
 		case TOK_FUNC:
 		case TOK_LET:
 		case TOK_FOR:
@@ -613,9 +613,9 @@ static int parse_func_return(Parser *parser, int is_extern) {
 	return 1;
 }
 
-/* sys parameters are bare component names (no `: T`) between an already-consumed '(' and the
+/* map parameters are bare component names (no `: T`) between an already-consumed '(' and the
  * closing ')' (matched by the caller). */
-static int parse_sys_param_list_body(Parser *parser) {
+static int parse_map_param_list_body(Parser *parser) {
 	if (check(parser, TOK_RPAREN))
 		return 1;
 	do {
@@ -634,7 +634,7 @@ static int parse_sys_param_list_body(Parser *parser) {
 	return 1;
 }
 
-/* A `{ statement* }` body. Identical across proc / sys / func. */
+/* A `{ statement* }` body. Identical across proc / map / func. */
 static int parse_block_body(Parser *parser) {
 	if (!match(parser, TOK_LBRACE)) {
 		error(parser, "Expected '{'");
@@ -1208,7 +1208,7 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	}
 
 	switch (parser->current.kind) {
-	/* Unified grammar: declarations are bindings `name :: <form>`. proc/func/sys/arche (and
+	/* Unified grammar: declarations are bindings `name :: <form>`. proc/func/map/arche (and
 	 * `extern proc`) are RHS value/type forms (see parse_primary_expr / parse_type_inner), reached
 	 * via the IDENT-led default case below. There are no keyword-led top-level declarations. */
 	case TOK_USE: {
@@ -1356,7 +1356,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 		return 1;
 	}
 
-	/* Unified-grammar RHS forms — proc/func/sys/archetype as value literals or type forms.
+	/* Unified-grammar RHS forms — proc/func/map/archetype as value literals or type forms.
 	 * The name is the binding LHS, so none of these consume a name. Top-level keyword-led decls
 	 * are still handled by parse_decl; these fire only in expression/RHS position. */
 	if (check(parser, TOK_PROC) || check(parser, TOK_FUNC)) {
@@ -1391,14 +1391,14 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 		}
 		return 1;
 	}
-	if (check(parser, TOK_SYS)) {
-		advance(parser); /* consume 'sys' */
+	if (check(parser, TOK_MAP)) {
+		advance(parser); /* consume 'map' */
 		*out_kind = SN_SYS_EXPR;
 		if (!match(parser, TOK_LPAREN)) {
-			error(parser, "Expected '(' after 'sys'");
+			error(parser, "Expected '(' after 'map'");
 			return 0;
 		}
-		if (!parse_sys_param_list_body(parser))
+		if (!parse_map_param_list_body(parser))
 			return 0;
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')'");
@@ -1978,7 +1978,7 @@ static int parse_statement(Parser *parser) {
 	}
 
 	if (match(parser, TOK_RETURN)) {
-		/* `return;` — naked early exit (valid in a proc/sys); or `return e1, …, en` — a list of
+		/* `return;` — naked early exit (valid in a proc/map); or `return e1, …, en` — a list of
 		 * returned values (a single return is just count 1, for a func). The expression list is
 		 * present only when the next token isn't `;`. */
 		if (!check(parser, TOK_SEMI)) {
@@ -2243,9 +2243,9 @@ static int parse_statement(Parser *parser) {
 				goto cleanup;
 			}
 		} else {
-			/* `for x in <expr>` does not exist: iteration is a `sys` (over archetypes) or a
+			/* `for x in <expr>` does not exist: iteration is a `map` (over archetypes) or a
 			 * C-style `for (init; cond; incr)`. Reject the range-for form at parse time. */
-			error(parser, "for-in is not supported — iterate with a `sys` (over an archetype) or a "
+			error(parser, "for-in is not supported — iterate with a `map` (over an archetype) or a "
 			              "C-style `for (init; cond; incr)`");
 			goto cleanup;
 		}

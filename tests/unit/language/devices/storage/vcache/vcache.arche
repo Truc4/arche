@@ -3,6 +3,6 @@
 // RUN: true
 Cell :: arche { a, b }
 
-vtouch :: sys (a) {
+vtouch :: map (a) {
   a = a + 1.0;
 }
