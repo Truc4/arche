@@ -248,10 +248,37 @@ static char *build_shader(HirMapDecl *map, HirArchetypeDecl *arch) {
 	return out.data; /* caller frees */
 }
 
+/* Mark a map for GPU emission if any `run <map> @gpu` dispatches it. GPU dispatch is a call-site decision
+ * (`run step @gpu`), so the trigger lives on the run statement; this propagates it to the map the emitter
+ * walks. Recurses into block statements (a run can sit inside a desugared block). */
+static void mark_gpu_runs(HirProgram *prog, HirStmt **stmts, int count) {
+	for (int i = 0; i < count; i++) {
+		HirStmt *s = stmts[i];
+		if (!s)
+			continue;
+		if (s->kind == HIR_STMT_RUN && s->data.run_stmt.is_gpu && s->data.run_stmt.map_name) {
+			for (int d = 0; d < prog->decl_count; d++)
+				if (prog->decls[d] && prog->decls[d]->kind == HIR_DECL_MAP && prog->decls[d]->data.map &&
+				    prog->decls[d]->data.map->name &&
+				    strcmp(prog->decls[d]->data.map->name, s->data.run_stmt.map_name) == 0)
+					prog->decls[d]->data.map->is_gpu = 1;
+		} else if (s->kind == HIR_STMT_BLOCK) {
+			mark_gpu_runs(prog, s->data.block.stmts, s->data.block.count);
+		}
+	}
+}
+
 int arche_gpu_emit(HirProgram *prog, const char *out_dir, int *out_count) {
 	if (!prog)
 		return 0;
 	int written = 0, gpu_maps = 0;
+
+	/* Propagate `run ... @gpu` dispatch markers from proc bodies onto the target maps. */
+	for (int i = 0; i < prog->decl_count; i++) {
+		HirDecl *d = prog->decls[i];
+		if (d && d->kind == HIR_DECL_PROC && d->data.proc)
+			mark_gpu_runs(prog, d->data.proc->stmts, d->data.proc->stmt_count);
+	}
 
 	/* Index archetype decls once. */
 	HirArchetypeDecl **archs = calloc(prog->decl_count ? (size_t)prog->decl_count : 1, sizeof(*archs));

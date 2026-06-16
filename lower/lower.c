@@ -1136,7 +1136,10 @@ static HirStmt *lower_stmt_cst(SyntaxView s) {
 		 * system's canonical identity. (`run … in world` is not emitted by the parser today.) */
 		char namebuf[256];
 		int nl = 0;
-		for (int i = 0; i < s.node->child_count; i++)
+		for (int i = 0; i < s.node->child_count; i++) {
+			/* the optional trailing `@gpu` marker is not part of the system name — stop at the `@`. */
+			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_AT)
+				break;
 			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
 				if (nl > 0 && nl < (int)sizeof(namebuf) - 1)
 					namebuf[nl++] = '.';
@@ -1144,9 +1147,20 @@ static HirStmt *lower_stmt_cst(SyntaxView s) {
 				for (int k = 0; k < seg && nl < (int)sizeof(namebuf) - 1; k++)
 					namebuf[nl++] = s.src[s.node->children[i].as.token.offset + k];
 			}
+		}
 		namebuf[nl] = '\0';
 		as->data.run_stmt.map_name = dupz(namebuf);
 		as->data.run_stmt.world_name = NULL;
+		/* `run map @gpu`: a `@ gpu` token pair after the name marks this dispatch for the GPU. */
+		for (int i = 0; i + 1 < s.node->child_count; i++) {
+			const SyntaxElem *a = &s.node->children[i], *g = &s.node->children[i + 1];
+			if (a->tag == SE_TOKEN && a->as.token.kind == TOK_AT && g->tag == SE_TOKEN &&
+			    g->as.token.kind == TOK_IDENT && g->as.token.length == 3 &&
+			    memcmp(s.src + g->as.token.offset, "gpu", 3) == 0) {
+				as->data.run_stmt.is_gpu = 1;
+				break;
+			}
+		}
 		break;
 	}
 	case SN_IF_STMT: {
@@ -1804,25 +1818,6 @@ static int syntax_decl_has_intrinsic_decorator(SyntaxView d) {
 		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
 			continue;
 		if (e2->as.token.length == 9 && memcmp(d.src + e2->as.token.offset, "intrinsic", 9) == 0)
-			return 1;
-	}
-	return 0;
-}
-
-/* True if this decl node carries a `@gpu` decorator (a `@ gpu` token pair) — marks a map for GPU
- * compute-shader emission/dispatch. */
-static int syntax_decl_has_gpu_decorator(SyntaxView d) {
-	if (!sv_present(d))
-		return 0;
-	int n = d.node->child_count;
-	for (int i = 0; i + 1 < n; i++) {
-		const SyntaxElem *e1 = &d.node->children[i];
-		if (e1->tag != SE_TOKEN || e1->as.token.kind != TOK_AT)
-			continue;
-		const SyntaxElem *e2 = &d.node->children[i + 1];
-		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
-			continue;
-		if (e2->as.token.length == 3 && memcmp(d.src + e2->as.token.offset, "gpu", 3) == 0)
 			return 1;
 	}
 	return 0;
@@ -2518,13 +2513,10 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					}
 					return pf;
 				}
-				case SN_SYS_EXPR: {
-					/* `@gpu`: mark this map for GPU compute-shader emission/dispatch. */
-					HirDecl *md = lower_map_from(rhs, nm);
-					if (md && md->kind == HIR_DECL_MAP && md->data.map && syntax_decl_has_gpu_decorator(d))
-						md->data.map->is_gpu = 1;
-					return md;
-				}
+				case SN_SYS_EXPR:
+					/* GPU dispatch is decided at the call site (`run map @gpu`), not here — see the
+					 * SN_RUN_STMT lowering, which sets the map's is_gpu flag for the emitter. */
+					return lower_map_from(rhs, nm);
 				case SN_ARCH_EXPR:
 					return lower_archetype_from(rhs, nm);
 				case SN_GROUP_EXPR:

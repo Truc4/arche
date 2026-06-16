@@ -30,5 +30,5 @@ main :: proc() {
   bpi := bp * 100.0;
   fmt.print("DEBUG: checking Particle.pos\n");
   fmt.assert(ppi == 110.0, "Particle.pos != 11.0\n");
-  fmt.assert(bpi == 495.0, "Body.vel != 4.95\n");
+  fmt.assert((bpi > 494.9) * (bpi < 495.1), "Body.vel != 4.95\n"); // f32: 5*0.99*100 = 495.000005
 }

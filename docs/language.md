@@ -130,7 +130,7 @@ This is the entire basis of foreign-resource safety (`file :: opaque` != `socket
 
 ## Numeric model
 
-- Base primitives: `int`, `float`, `char` (no `bool` type)
+- Base primitives: `int`, `float` (32-bit, f32 — like Jai; matches the GPU), `char` (no `bool` type)
 - Comparisons produce numeric values (`0` or `1`); conditions treat `0` as false, non-zero as true
 
 ```arche
@@ -491,8 +491,9 @@ drag_factor :: func(x: float) -> float {
 ## GPU maps (`@gpu`)
 
 Because a `map` is already a loopless, branch-free, per-element kernel, it maps directly onto a GPU compute
-shader. Annotate a map with `@gpu` and the compiler can *also* lower it to a compute shader — the same
-source, a different backend:
+shader. The dispatch decision lives at the **call site** — annotate the `run` with `@gpu` and the compiler
+can *also* lower that kernel to a compute shader. The same map can run on the CPU from one driver and the
+GPU from another:
 
 ```arche
 pos :: float;
@@ -500,12 +501,12 @@ vel :: float;
 Mover :: arche { pos, vel };
 [256]Mover(256);
 
-@gpu integrate :: map (pos, vel) {
+integrate :: map (pos, vel) {
   pos = pos + vel;
 }
 
 main :: proc() {
-  run integrate;
+  run integrate @gpu;
 }
 ```
 
@@ -516,7 +517,8 @@ main :: proc() {
   checks the result equals the CPU path.
 - The emittable subset today is float columns with arithmetic and `select`; a map outside it is simply not
   emitted (its CPU path is unaffected). The dispatch runtime, residency, and instanced rendering are staged
-  — see `docs/DECISIONS_gpu.md` (note: arche `float` is f64 on the CPU but f32 in the shader).
+  — see `docs/DECISIONS_gpu.md`. Because arche `float` is **f32 on both the CPU and the GPU**, the two
+  backends are the same numeric machine — the GPU result matches the CPU bit-for-bit.
 
 ## Collectives (`reduce` / `scan` / `sort`)
 
@@ -527,7 +529,8 @@ compiler builtins, not keywords, and they run from a `proc` over a pool's column
 - **`scan(op, Pool.col)`** overwrites each element with the inclusive prefix fold (a running
   reduction), in place.
 - **`sort(Pool.key)`** sorts the whole pool ascending by a key column, permuting every column
-  together so each entity's fields stay aligned.
+  together so each entity's fields stay aligned. Pass `desc` for descending order —
+  `sort(Pool.key, desc)` (`asc` is the default).
 
 `reduce`/`scan` take a **monoid** as their first argument: an associative operator plus an
 identity. The operator is a fixed built-in set — `+` (identity 0), `*` (1), `min` (+∞), and

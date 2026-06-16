@@ -74,6 +74,22 @@ Companion: `docs/DECISIONS_gpu.md` (GPU design detail), `docs/explain/E0046.md`/
     uniform grid guard is universal compute-shader boilerplate, not a per-element data branch — it does not
     violate the branch-free kernel model.
 
+## Follow-up decisions (from the post-implementation review)
+
+15. **`float` is f32 everywhere** (was f64 on the CPU). Unified to match the GPU shader and Jai's `float`;
+    the earlier CPU-f64 / GPU-f32 divergence is gone — GPU == CPU bit-for-bit. Float literals not exactly
+    representable in f32 are emitted as the hex bit-pattern; a C shim taking arche `float` now uses C
+    `float`. *Alt:* keep f64 + emit f64 GPU shaders (~1/64 GPU throughput — rejected).
+16. **GPU dispatch is a call-site decision** — `run map @gpu`, not a decl-site `@gpu map` decorator. The
+    same kernel can run on the CPU from one driver and the GPU from another.
+17. **`sort` takes an optional `asc`/`desc` direction** — `sort(Pool.key, desc)`; `asc` default.
+18. **`reduce` is SIMD-vectorized** — a `<4 x T>` accumulator folds the 4-aligned prefix (lane-wise
+    op; min/max via vector compare+select), then a horizontal fold + a scalar tail finish. The four monoid
+    identities are idempotent under self-combine, so short columns and empty pools stay correct. **Still
+    scalar (staged):** `scan` (a prefix fold is cross-lane — needs a Hillis-Steele / blocked scan) and
+    `sort` (O(n²) insertion → a real O(n log n) permuting all columns). Done now because reduce is the
+    keystone data-parallel primitive and the lowest-risk to vectorize correctly.
+
 ## What is explicitly STAGED (designed, not built) — see `docs/DECISIONS_gpu.md`
 
 - The production GPU runtime wired into `arche run`: device-local buffers, persistent column residency,

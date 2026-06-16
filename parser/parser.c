@@ -1084,13 +1084,6 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser);
 			continue;
 		}
-		if (cur_ident_is(parser, "gpu", 3)) {
-			/* `@gpu` marks a `map` kernel for GPU compute dispatch: the backend also emits it as a
-			 * compute shader (one SSBO per column). No arguments — recognized by this marker on the
-			 * decl; lowering sets HirMapDecl.is_gpu, semantic validates it sits on a `map`. */
-			advance(parser);
-			continue;
-		}
 		if (cur_ident_is(parser, "default", 7)) {
 			/* `@default(<kind>, <category>, <policy>)` — a STANDALONE top-level directive setting the
 			 * program's failure-policy default for one (effect-kind, op-category) cell. <kind> is the
@@ -2047,6 +2040,19 @@ static int parse_statement(Parser *parser) {
 				goto cleanup;
 			}
 			advance(parser);
+		}
+
+		/* optional `@gpu` dispatch marker: `run step @gpu;` requests GPU compute dispatch (and emits a
+		 * compute shader for the map). The decision lives at the call site — the same kernel can run on
+		 * the CPU from one driver and the GPU from another. */
+		if (check(parser, TOK_AT)) {
+			advance(parser); /* '@' */
+			if (!check(parser, TOK_IDENT) || !cur_ident_is(parser, "gpu", 3)) {
+				error(parser, "Expected `gpu` after `@` in a run statement (only `@gpu` is recognized)");
+				parser->recursion_depth--;
+				goto cleanup;
+			}
+			advance(parser); /* 'gpu' */
 		}
 
 		if (!match(parser, TOK_SEMI)) {

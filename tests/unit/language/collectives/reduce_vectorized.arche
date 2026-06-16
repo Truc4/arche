@@ -1,0 +1,17 @@
+// `reduce` is SIMD-vectorized: a `<4 x T>` accumulator folds the 4-aligned prefix, then a scalar tail
+// finishes the rest. This exercises multiple vector iterations PLUS a non-empty tail (10 = 4+4 vector + 2
+// tail), and min/max which lower to a lane-wise compare+select — so a vectorization bug would change the
+// exact result.
+// RUN: %arche build -o %t %s && %t | grep -qF "sum=55 prod=3628800 mn=1 mx=10"
+#import { fmt }
+v :: int;
+N :: arche { v }
+[10]N(10);
+main :: proc() {
+  N.v = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+  sum  := reduce(+, N.v); // 55
+  prod := reduce(*, N.v); // 10! = 3628800
+  mn   := reduce(min, N.v); // 1
+  mx   := reduce(max, N.v); // 10
+  fmt.printf("sum=%d prod=%d mn=%d mx=%d\n", sum, prod, mn, mx);
+}

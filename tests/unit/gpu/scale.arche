@@ -6,13 +6,12 @@ x :: float;
 P :: arche { x }
 [4]P(4);
 
-@gpu
 scale :: map (x) {
   x = x * 10.0;
 }
 
 main :: proc() {
   P.x = { 0.0, 1.0, 2.0, 3.0 };
-  run scale;
+  run scale @gpu;
   fmt.printf("x0=%.0f x3=%.0f\n", P.x[0] * 1.0, P.x[3] * 1.0);
 }

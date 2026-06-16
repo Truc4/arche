@@ -513,6 +513,10 @@ void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 	for (int i = 0; deco_end && i < ls.count; i++) {
 		if (ls.items[i].kind != TOK_AT || i + 1 >= ls.count || ls.items[i + 1].kind != TOK_IDENT)
 			continue;
+		/* `run map @gpu` — the `@gpu` is an inline dispatch marker on a run statement, not a decl
+		 * decorator, so it must NOT force a line break (which would strand the `;`). */
+		if (ls.items[i].parent == SN_RUN_STMT)
+			continue;
 		int last = i + 1; /* `@name` with no argument list ends at the name */
 		if (i + 2 < ls.count && ls.items[i + 2].kind == TOK_LPAREN) {
 			int d = 0;

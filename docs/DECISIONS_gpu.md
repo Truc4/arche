@@ -21,15 +21,16 @@ See `docs/AUTONOMOUS_DECISIONS.md` for the decision log; this file is the design
 - Both gates are **opt-in** and skip cleanly when the toolchain / Vulkan device is absent — `make test`
   needs no GPU and no shader toolchain. The CPU correctness of `@gpu` maps is covered by the normal suite.
 
+## Precision: CPU and GPU are the same numeric machine
+
+arche `float` is **f32 on the CPU** (lowered to LLVM `float`) **and f32 on the GPU** (a `float` SSBO), so
+the two backends compute at the same precision — the GPU result matches the CPU bit-for-bit, not just on
+exactly-representable data. (This resolved the earlier f64-CPU / f32-GPU divergence: `float` was unified to
+f32 everywhere, matching Jai and the GPU.) One consequence: a C shim taking an arche `float` must use C
+`float` (not `double`) — the FFI maps `float` ↔ `float`.
+
 ## Known divergences (accepted for v1, must be tracked)
 
-- **CPU `float` is f64; the GPU shader is f32.** arche lowers `float` to LLVM `double` on the CPU, while a
-  GLSL `float` SSBO is 32-bit and Vulkan reads/writes 4-byte floats. So "the same map on CPU and GPU" runs
-  at *different precision*. The equivalence gates use exactly-representable integer-valued data, so they are
-  honest exact checks; for general floating-point data CPU and GPU results may differ in the low bits. A
-  future option is to lower arche `float` to f32 on the CPU too (making both backends the same numeric
-  machine) or to emit `double` SSBOs (needs the Vulkan `shaderFloat64` feature; ~1/64 throughput on most
-  GPUs — usually not worth it). Until then this is a documented limitation, not a silent one.
 - **NaN / select semantics.** CPU `select` normalizes its condition via an integer compare of the (i32 0/1)
   comparison result; the GPU emits a scalar-bool ternary. For *ordered* float compares both agree on NaN
   (a NaN compare is false on both sides). `==`/`!=` on NaN, and any future GPU `min`/`max`, can diverge

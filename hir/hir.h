@@ -281,6 +281,7 @@ typedef struct {
 typedef struct {
 	char *map_name;
 	char *world_name;
+	int is_gpu; /* `run map @gpu`: dispatch on the GPU (and emit a compute shader for the map) */
 } HirRunStmt;
 
 typedef struct {

@@ -2080,9 +2080,9 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 			if (ctx->in_map)
 				sem_emit_collective_in_map(ctx, loc, func_name);
 			int is_sort = strcmp(func_name, "sort") == 0;
-			int want = is_sort ? 1 : 2;
-			if (argc != want)
-				sem_emit_wrong_arity(ctx, loc, func_name, want, argc);
+			/* sort takes 1 arg (key column) or 2 (key + `asc`/`desc`); reduce/scan take exactly 2. */
+			if (is_sort ? (argc < 1 || argc > 2) : (argc != 2))
+				sem_emit_wrong_arity(ctx, loc, func_name, is_sort ? 1 : 2, argc);
 			/* reduce/scan's first arg is the monoid operator — a fixed set with a known identity. Reject
 			 * anything else here (an unknown op would otherwise silently fall back to `+` in codegen). */
 			if (!is_sort && argc >= 1) {
