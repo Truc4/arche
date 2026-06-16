@@ -61,6 +61,8 @@ typedef enum {
 	SEM_DIAG_proc_return_has_value,
 	SEM_DIAG_map_no_return,
 	SEM_DIAG_map_not_a_transform,
+	SEM_DIAG_collective_in_map,
+	SEM_DIAG_invalid_monoid_op,
 	SEM_DIAG_move_outside_arg,
 	/* E0113/E0114 retired: arche has zero runtime allocation, no `free` statement.
 	 * Burn-on-delete (codes never reused). */
@@ -285,6 +287,8 @@ SemDiag *sem_emit_extern_array_param_needs_own(SemanticContext *ctx, SourceLoc l
 SemDiag *sem_emit_proc_return_has_value(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_map_no_return(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_map_not_a_transform(SemanticContext *ctx, SourceLoc loc, const char *kind);
+SemDiag *sem_emit_collective_in_map(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_invalid_monoid_op(SemanticContext *ctx, SourceLoc loc, const char *fn, const char *op);
 
 SemDiag *sem_emit_no_field(SemanticContext *ctx, SourceLoc loc, const char *arch_name, const char *field_name);
 SemDiag *sem_emit_cannot_read_through_handle(SemanticContext *ctx, SourceLoc loc, const char *field_name,

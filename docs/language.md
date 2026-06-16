@@ -430,22 +430,32 @@ update :: proc() {
 So a map over `pos` and `vel` applies to any archetype with those components (`Player`,
 `Mob`, `Projectile`, …) without naming them explicitly.
 
+A map body is **only** column transforms (`col = expr`). It is a loopless, branch-free kernel:
+the runtime owns the iteration, so the same source vectorizes on the CPU today and runs on the
+GPU later. Control flow (`if`/`for`/`while`/`match`), loops, local bindings, and calls are
+rejected in a map body (E0046) — put those in a `func`/`proc`.
+
 ### Conditional behavior
 
-Conditionals can be written as mathematical expressions (comparisons produce 0 or 1):
+Inside a kernel, conditionals are values, not branches. A comparison produces `0`/`1`, and
+**`select(cond, a, b)`** is the branch-free ternary — `cond` nonzero picks `a`, else `b`:
 
 ```arche
+vel :: float;
+pos :: float;
+Body :: arche { vel, pos };
+[8]Body(8);
+
 dampen :: map (vel, pos) {
-  // multiply velocity by 0 if below threshold
+  // kill velocity below a threshold (mask), and clamp with a branch-free select
   vel = vel * (pos > 10);
+  vel = select(pos > 100.0, 0.0, vel);
 }
 ```
 
-Maps also support `if`/`for` for control flow. Branchless math like `vel = vel * (pos > 10)`
-avoids branch mispredictions and vectorizes well **when the condition is data-dependent and
-unpredictable**. For *predictable* conditions the branch predictor is effectively free, and a
-real branch can be faster by skipping the masked-off work entirely. Neither is universally
-better - it depends on the data, so measure before converting one to the other.
+`select` lowers to LLVM `select`: it vectorizes and has no GPU warp divergence, so it is the
+portable conditional everywhere a `map` runs. There is no `if` in a kernel by design — a
+per-element branch would defeat vectorization / GPU dispatch.
 
 ## Functions (`func`)
 
@@ -477,6 +487,77 @@ drag_factor :: func(x: float) -> float {
 - `func`: "compute a value" - `r := area(w, h)`
 - `proc`: "do this, writing the results into these places" - `divmod(17, 5)(q:, r:)`
 - `map`: "run this on _any data shaped like this_" - `run step;`
+
+## GPU maps (`@gpu`)
+
+Because a `map` is already a loopless, branch-free, per-element kernel, it maps directly onto a GPU compute
+shader. Annotate a map with `@gpu` and the compiler can *also* lower it to a compute shader — the same
+source, a different backend:
+
+```arche
+pos :: float;
+vel :: float;
+Mover :: arche { pos, vel };
+[256]Mover(256);
+
+@gpu integrate :: map (pos, vel) {
+  pos = pos + vel;
+}
+
+main :: proc() {
+  run integrate;
+}
+```
+
+- `@gpu` is **additive and transparent**: it never changes the CPU result — it only enables GPU emission.
+  The CPU lowering still runs, so a program behaves identically with or without a GPU present.
+- `arche build --emit-gpu=<dir>` writes a GLSL compute shader (one storage buffer per column) for each
+  `@gpu` map; `make test-gpu` validates them to SPIR-V and `make test-gpu-run` executes them on the GPU and
+  checks the result equals the CPU path.
+- The emittable subset today is float columns with arithmetic and `select`; a map outside it is simply not
+  emitted (its CPU path is unaffected). The dispatch runtime, residency, and instanced rendering are staged
+  — see `docs/DECISIONS_gpu.md` (note: arche `float` is f64 on the CPU but f32 in the shader).
+
+## Collectives (`reduce` / `scan` / `sort`)
+
+A `map` is per-element; a **collective** is a whole-column operation. The three collectives are
+compiler builtins, not keywords, and they run from a `proc` over a pool's columns:
+
+- **`reduce(op, Pool.col)`** folds a column to a scalar.
+- **`scan(op, Pool.col)`** overwrites each element with the inclusive prefix fold (a running
+  reduction), in place.
+- **`sort(Pool.key)`** sorts the whole pool ascending by a key column, permuting every column
+  together so each entity's fields stay aligned.
+
+`reduce`/`scan` take a **monoid** as their first argument: an associative operator plus an
+identity. The operator is a fixed built-in set — `+` (identity 0), `*` (1), `min` (+∞), and
+`max` (−∞) — not an arbitrary expression or function: it must have a compiler-known identity and
+be associative (a bad op is rejected, E0048). Associativity is *trusted* (as in Futhark / C++) —
+it is what lets the runtime fold in any order, and later in parallel on the GPU. A fold of an
+empty pool returns the identity.
+
+`reduce` is a **value** (use it in an expression — `total := reduce(+, N.col)`); `scan` and
+`sort` are **actions** (statements that mutate the column in place). This is the same value/action
+split as `func` vs `proc`.
+
+```arche
+#import { fmt }
+score :: int;
+N :: arche { score };
+[5]N(5);
+
+tally :: proc() {
+  N.score = { 5, 1, 4, 2, 3 };
+  total := reduce(+, N.score); // 15
+  best  := reduce(max, N.score); // 5
+  scan(+, N.score); // N.score becomes the running sum: 5 6 10 12 15
+  sort(N.score); // sorts the pool ascending by score
+  fmt.printf("total=%d best=%d\n", total, best);
+}
+```
+
+A collective is rejected inside a `map` body (E0047): a kernel sees one element at a time, so a
+whole-column reduction belongs in the driver.
 
 ## Totality and failure policies (`!policy`)
 

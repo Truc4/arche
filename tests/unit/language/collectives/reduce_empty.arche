@@ -1,0 +1,12 @@
+// `reduce` over an empty pool (zero rows) returns the monoid IDENTITY — 0 for +, 1 for *. This is the whole
+// point of an identity: a fold of nothing is well-defined. (Phase 2 spec; red until reduce is implemented.)
+// RUN: %arche build -o %t %s && %t | grep -qF "sum=0 prod=1"
+#import { fmt }
+v :: int;
+N :: arche { v }
+[4]N; // capacity 4, zero rows inserted
+main :: proc() {
+  sum  := reduce(+, N.v);
+  prod := reduce(*, N.v);
+  fmt.printf("sum=%d prod=%d\n", sum, prod);
+}

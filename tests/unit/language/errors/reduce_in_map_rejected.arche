@@ -1,0 +1,13 @@
+// A collective (`reduce`/`scan`/`sort`) is a whole-column operation, NOT a per-element transform, so it may
+// not appear inside a `map` body. Must error pointing at the driver. (Phase 2 spec; red until enforced.)
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "collective" %t.out
+v :: int;
+s :: int;
+N :: arche { v, s }
+[3]N(3);
+bad :: map (v, s) {
+  s = reduce(+, v);
+}
+main :: proc() {
+  run bad;
+}

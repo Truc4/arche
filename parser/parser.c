@@ -1084,6 +1084,13 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser);
 			continue;
 		}
+		if (cur_ident_is(parser, "gpu", 3)) {
+			/* `@gpu` marks a `map` kernel for GPU compute dispatch: the backend also emits it as a
+			 * compute shader (one SSBO per column). No arguments — recognized by this marker on the
+			 * decl; lowering sets HirMapDecl.is_gpu, semantic validates it sits on a `map`. */
+			advance(parser);
+			continue;
+		}
 		if (cur_ident_is(parser, "default", 7)) {
 			/* `@default(<kind>, <category>, <policy>)` — a STANDALONE top-level directive setting the
 			 * program's failure-policy default for one (effect-kind, op-category) cell. <kind> is the
@@ -1443,6 +1450,10 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 	if (check(parser, TOK_IDENT)) {
 		int prim_name_cp = syntax_cp(parser);
 		int is_table = cur_ident_is(parser, "table", 5);
+		/* `reduce`/`scan` take a monoid operator as their FIRST argument — `+`, `*`, or a named op
+		 * (`min`/`max`). The operator forms (`+`/`*`) aren't expressions, so the call-arg parse below
+		 * accepts an operator token there and wraps it as a literal carrying the op text. */
+		int is_collective = cur_ident_is(parser, "reduce", 6) || cur_ident_is(parser, "scan", 4);
 		advance(parser);
 
 		/* table<Name> in value position: the singleton table for shape Name. */
@@ -1527,7 +1538,19 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			syntax_wrap(parser, prim_name_cp, SN_CALLEE_NAME);
 			advance(parser); /* consume '(' */
 			if (!check(parser, TOK_RPAREN)) {
+				/* `reduce`/`scan` first arg = monoid operator. Only `+`/`*` need special handling — they
+				 * are operator tokens, not expressions, so wrap one as a literal whose lexeme IS the op
+				 * text. A named op (`min`/`max`) is a plain IDENT that parses as a normal name argument.
+				 * The op is validated in semantic (so a user identifier named `reduce` isn't broken here). */
+				if (is_collective && (check(parser, TOK_PLUS) || check(parser, TOK_STAR))) {
+					int op_cp = syntax_cp(parser);
+					advance(parser);
+					syntax_wrap(parser, op_cp, SN_LITERAL_EXPR);
+					match(parser, TOK_COMMA);
+				}
 				do {
+					if (check(parser, TOK_RPAREN))
+						break;
 					if (!parse_expression(parser))
 						return 0;
 				} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));

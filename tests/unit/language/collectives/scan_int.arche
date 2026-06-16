@@ -1,0 +1,12 @@
+// `scan(op, Column)` replaces each element with the inclusive prefix fold (running reduction) over the
+// monoid, in place — element i becomes op(v0..vi). (Phase 2 spec; red until scan is implemented.)
+// RUN: %arche build -o %t %s && %t | grep -qF "1 3 6 10 15"
+#import { fmt }
+v :: int;
+N :: arche { v }
+[5]N(5);
+main :: proc() {
+  N.v = { 1, 2, 3, 4, 5 };
+  scan(+, N.v);
+  fmt.printf("%d %d %d %d %d\n", N.v[0], N.v[1], N.v[2], N.v[3], N.v[4]);
+}

@@ -1844,6 +1844,12 @@ static TypeId call_type_id(SemanticContext *ctx, SyntaxView v) {
 			result = sem_tyid_of_name(ctx, func_name); /* cast target (alias/prim/width; int→i32 canonical) */
 		} else if (strcmp(func_name, "insert") == 0) {
 			result = sem_tyid_of_name(ctx, "handle");
+		} else if (strcmp(func_name, "reduce") == 0) {
+			/* `reduce(op, col)` folds a column to a scalar of the column's element type (arg 1). */
+			result = sem_expr_type_id(ctx, sem_node_at_expr(v, 1));
+		} else if (strcmp(func_name, "select") == 0) {
+			/* `select(cond, a, b)` yields the type of its value branches (arg 1). */
+			result = sem_expr_type_id(ctx, sem_node_at_expr(v, 1));
 		} else {
 			GroupInfo *gi = find_group(ctx, func_name);
 			if (gi) {
@@ -2061,6 +2067,34 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 				ctx->analyzing_call_arg = 1;
 				analyze_expression(ctx, sem_node_at_expr(v, i));
 			}
+			free(func_name);
+			break;
+		}
+
+		/* Collectives — `reduce(op, col)` / `scan(op, col)` fold or prefix-fold a whole column over a
+		 * monoid; `sort(col)` sorts the pool by a key column. Recognized here so the op-literal first arg
+		 * and the builtin name aren't flagged undefined; only the column arg is analyzed. A collective is a
+		 * whole-column operation, so it is illegal inside a `map` (which is strictly per-element). */
+		if (func_name &&
+		    (strcmp(func_name, "reduce") == 0 || strcmp(func_name, "scan") == 0 || strcmp(func_name, "sort") == 0)) {
+			if (ctx->in_map)
+				sem_emit_collective_in_map(ctx, loc, func_name);
+			int is_sort = strcmp(func_name, "sort") == 0;
+			int want = is_sort ? 1 : 2;
+			if (argc != want)
+				sem_emit_wrong_arity(ctx, loc, func_name, want, argc);
+			/* reduce/scan's first arg is the monoid operator — a fixed set with a known identity. Reject
+			 * anything else here (an unknown op would otherwise silently fall back to `+` in codegen). */
+			if (!is_sort && argc >= 1) {
+				char *op = sem_cv_dup_first_token(sem_node_at_expr(v, 0));
+				if (op && strcmp(op, "+") != 0 && strcmp(op, "*") != 0 && strcmp(op, "min") != 0 &&
+				    strcmp(op, "max") != 0)
+					sem_emit_invalid_monoid_op(ctx, loc, func_name, op);
+				free(op);
+			}
+			int col_i = is_sort ? 0 : 1; /* the column arg; reduce/scan skip the op-literal arg 0 */
+			ctx->analyzing_call_arg = 1;
+			analyze_expression(ctx, sem_node_at_expr(v, col_i));
 			free(func_name);
 			break;
 		}

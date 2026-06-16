@@ -36,7 +36,8 @@ SRCS = lexer/lexer.c \
        semantic/sem_diagnostics.c \
        semantic/sem_types.c \
        semantic/tycheck.c \
-       codegen/codegen.c
+       codegen/codegen.c \
+       codegen/gpu_glsl.c
 
 RUNTIME_SRCS = runtime/stack_check.c runtime/io.c runtime/net.c runtime/term.c
 RUNTIME_OBJS = $(RUNTIME_SRCS:.c=.o)
@@ -50,7 +51,7 @@ CLI_OBJS = $(BUILD_DIR)/cli/args.o $(BUILD_DIR)/cli/cli.o $(BUILD_DIR)/cli/resou
 # Satellite tools folded into the `arche` binary as subcommands (fmt, analyze): their objects join
 # the main link. The standalone arche-fmt / arche-analyzer binaries still build during the migration.
 FOLD_OBJS = $(BUILD_DIR)/syntax/format_syntax.o $(BUILD_DIR)/syntax/token_category.o $(BUILD_DIR)/arche_analyzer.o
-COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/compile/compile.o $(BUILD_DIR)/compile/module_resolve.o $(BUILD_DIR)/compile/variant_select.o $(BUILD_DIR)/doctest/doctest_extract.o $(BUILD_DIR)/doctest/doctest_run.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/codegen/codegen.o $(CLI_OBJS) $(FOLD_OBJS) $(BUILD_DIR)/main.o
+COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/compile/compile.o $(BUILD_DIR)/compile/module_resolve.o $(BUILD_DIR)/compile/variant_select.o $(BUILD_DIR)/doctest/doctest_extract.o $(BUILD_DIR)/doctest/doctest_run.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/codegen/gpu_glsl.o $(CLI_OBJS) $(FOLD_OBJS) $(BUILD_DIR)/main.o
 LEXER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/lexer/lexer_main.o
 FMT_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/syntax/format_syntax.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_fmt.o
 SYNTAX_TOKENS_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/syntax/token_category.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_syntax_tokens.o
@@ -211,6 +212,47 @@ test-asan memcheck:
 	ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 ./build-asan/semantic-test
 	ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 ./build-asan/lower-test
 	ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 ./build-asan/hotreload-test
+
+# GPU shader gate (opt-in; NOT part of `make test` so the core suite needs no GPU toolchain). For each
+# `@gpu` map fixture it emits the GLSL compute shader and proves it is real, valid GPU code: glslc
+# compiles it to SPIR-V and spirv-val validates the module. Skips cleanly if the toolchain is absent.
+test-gpu: $(TARGET)
+	@command -v glslc >/dev/null 2>&1 && command -v spirv-val >/dev/null 2>&1 || { \
+		echo "test-gpu: SKIP (glslc/spirv-val not found)"; exit 0; }
+	@rm -rf $(BUILD_DIR)/gpu && mkdir -p $(BUILD_DIR)/gpu
+	@fail=0; n=0; \
+	for f in tests/unit/gpu/*.arche; do \
+		./$(TARGET) build -o $(BUILD_DIR)/gpu/exe --emit-gpu=$(BUILD_DIR)/gpu $$f >/dev/null 2>&1 || { echo "FAIL build $$f"; fail=1; continue; }; \
+	done; \
+	for c in $(BUILD_DIR)/gpu/*.comp; do \
+		[ -e "$$c" ] || { echo "test-gpu: no shaders emitted"; exit 1; }; \
+		glslc -fshader-stage=compute "$$c" -o "$$c.spv" 2>/tmp/glslc.err || { echo "FAIL glslc $$c"; cat /tmp/glslc.err; fail=1; continue; }; \
+		spirv-val "$$c.spv" 2>/tmp/spv.err || { echo "FAIL spirv-val $$c"; cat /tmp/spv.err; fail=1; continue; }; \
+		n=$$((n+1)); echo "PASS gpu-shader $$(basename $$c) (glslc + spirv-val)"; \
+	done; \
+	if [ $$fail -ne 0 ]; then echo "test-gpu: FAILED"; exit 1; fi; \
+	echo "test-gpu: $$n shader(s) validated"
+
+# GPU EXECUTION gate (opt-in). Proves an arche `@gpu` map actually runs on the GPU and matches the CPU:
+# emit the shader, glslc → SPIR-V, dispatch via a tiny Vulkan runner, assert the readback == the CPU
+# result. Skips cleanly if the toolchain or a Vulkan device is absent (so it never breaks GPU-less CI).
+test-gpu-run: $(TARGET)
+	@command -v glslc >/dev/null 2>&1 || { echo "test-gpu-run: SKIP (glslc not found)"; exit 0; }
+	@cc -O2 -o $(BUILD_DIR)/gpu/vk_run tests/gpu/vk_run.c -lvulkan 2>/dev/null || { echo "test-gpu-run: SKIP (libvulkan not found)"; exit 0; }
+	@mkdir -p $(BUILD_DIR)/gpu
+	@./$(TARGET) build -o $(BUILD_DIR)/gpu/x --emit-gpu=$(BUILD_DIR)/gpu tests/unit/gpu/scale.arche >/dev/null 2>&1
+	@./$(TARGET) build -o $(BUILD_DIR)/gpu/x --emit-gpu=$(BUILD_DIR)/gpu tests/unit/gpu/physics_step.arche >/dev/null 2>&1
+	@glslc -fshader-stage=compute $(BUILD_DIR)/gpu/scale__P.comp -o $(BUILD_DIR)/gpu/scale.spv
+	@glslc -fshader-stage=compute $(BUILD_DIR)/gpu/step__Body.comp -o $(BUILD_DIR)/gpu/step.spv
+	@# single-column arithmetic: x = x*10 over [0,1,2,3]
+	@o1=$$($(BUILD_DIR)/gpu/vk_run $(BUILD_DIR)/gpu/scale.spv 4 1 0 1 2 3); rc=$$?; \
+	if [ $$rc -eq 2 ]; then echo "test-gpu-run: SKIP (no usable Vulkan device)"; exit 0; fi; \
+	if [ $$rc -ne 0 ]; then echo "test-gpu-run: FAIL (runner error)"; exit 1; fi; \
+	if [ "$$o1" != "0 10 20 30" ]; then echo "test-gpu-run: FAIL scale — GPU [$$o1] != [0 10 20 30]"; exit 1; fi; \
+	echo "test-gpu-run: PASS scale — GPU [$$o1] == CPU"; \
+	o2=$$($(BUILD_DIR)/gpu/vk_run $(BUILD_DIR)/gpu/step.spv 8 2 0 1 2 3 4 5 6 7 1 1 1 1 1 1 1 1); \
+	if [ "$$o2" != "1 2 3 4 5 6 7 8 | 1 1 1 1 1 1 1 1" ]; then echo "test-gpu-run: FAIL step — GPU [$$o2]"; exit 1; fi; \
+	echo "test-gpu-run: PASS step (2-col + select) — GPU [$$o2] == CPU"
 
 # Test folder with pattern: make test-folder FOLDER=path PATTERN="*.arche"
 test-folder: $(TARGET) $(BUILD_DIR)
@@ -432,4 +474,4 @@ test-install: all
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
 
 # Phony targets
-.PHONY: all run run-lexer test test-per-unit test-doc test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install
+.PHONY: all run run-lexer test test-per-unit test-doc test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install

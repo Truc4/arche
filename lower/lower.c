@@ -1809,6 +1809,25 @@ static int syntax_decl_has_intrinsic_decorator(SyntaxView d) {
 	return 0;
 }
 
+/* True if this decl node carries a `@gpu` decorator (a `@ gpu` token pair) — marks a map for GPU
+ * compute-shader emission/dispatch. */
+static int syntax_decl_has_gpu_decorator(SyntaxView d) {
+	if (!sv_present(d))
+		return 0;
+	int n = d.node->child_count;
+	for (int i = 0; i + 1 < n; i++) {
+		const SyntaxElem *e1 = &d.node->children[i];
+		if (e1->tag != SE_TOKEN || e1->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *e2 = &d.node->children[i + 1];
+		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
+			continue;
+		if (e2->as.token.length == 3 && memcmp(d.src + e2->as.token.offset, "gpu", 3) == 0)
+			return 1;
+	}
+	return 0;
+}
+
 /* The op category a `policy` decl serves, from `@policy(<category>)`: 1=bounds, 2=pool, 3=divide, 0=none.
  * `policy` lexes as TOK_POLICY (a keyword), so the sequence is `@ policy ( <cat> )`. */
 static int syntax_decl_policy_category(SyntaxView d) {
@@ -2499,8 +2518,13 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					}
 					return pf;
 				}
-				case SN_SYS_EXPR:
-					return lower_map_from(rhs, nm);
+				case SN_SYS_EXPR: {
+					/* `@gpu`: mark this map for GPU compute-shader emission/dispatch. */
+					HirDecl *md = lower_map_from(rhs, nm);
+					if (md && md->kind == HIR_DECL_MAP && md->data.map && syntax_decl_has_gpu_decorator(d))
+						md->data.map->is_gpu = 1;
+					return md;
+				}
 				case SN_ARCH_EXPR:
 					return lower_archetype_from(rhs, nm);
 				case SN_GROUP_EXPR:

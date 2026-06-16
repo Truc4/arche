@@ -58,6 +58,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_proc_return_has_value]         = { "E0028", "proc_return_has_value",         CLASS_ERROR, 1 },
 	[SEM_DIAG_map_no_return]                 = { "E0029", "map_no_return",                 CLASS_ERROR, 1 },
 	[SEM_DIAG_map_not_a_transform]           = { "E0046", "map_not_a_transform",           CLASS_ERROR, 1 },
+	[SEM_DIAG_collective_in_map]             = { "E0047", "collective_in_map",             CLASS_ERROR, 1 },
+	[SEM_DIAG_invalid_monoid_op]             = { "E0048", "invalid_monoid_op",             CLASS_ERROR, 1 },
 
 	/* Field / component */
 	[SEM_DIAG_no_field]                      = { "E0030", "no_field",                      CLASS_ERROR, 1 },
@@ -586,6 +588,22 @@ SemDiag *sem_emit_map_not_a_transform(SemanticContext *ctx, SourceLoc loc, const
 	                 "vectorizes / runs on the GPU). Use `select(cond, a, b)` for conditionals; put control "
 	                 "flow, loops, and calls in a `func`/`proc`",
 	                 kind);
+}
+
+SemDiag *sem_emit_collective_in_map(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_collective_in_map, loc,
+	                 "`%s` is a collective (a whole-column reduction), not a per-element transform, so it "
+	                 "cannot appear in a `map` body. A `map` sees one element at a time; run the collective "
+	                 "from the driver (a `proc`) over the whole column instead",
+	                 name);
+}
+
+SemDiag *sem_emit_invalid_monoid_op(SemanticContext *ctx, SourceLoc loc, const char *fn, const char *op) {
+	return sem_emit_(ctx, SEM_DIAG_invalid_monoid_op, loc,
+	                 "`%s` first argument must be a monoid operator — one of `+`, `*`, `min`, `max` (got "
+	                 "`%s`). The operator must have a known identity and be associative, so it is a fixed "
+	                 "built-in set, not an arbitrary function",
+	                 fn, op);
 }
 
 /* --- Field / component --- */

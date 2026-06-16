@@ -30,6 +30,7 @@ enum {
 	B_WHOLE_PROGRAM,
 	B_EXPORTED_MUTABLE,
 	B_SYS_FOREIGN_WRITE,
+	B_EMIT_GPU,
 };
 
 /* Flag table = parsing + `--help`, one source of truth. The `-Wno-*` / `-Werror[=...]` spellings are
@@ -67,6 +68,8 @@ static const ArgSpec k_build_specs[] = {
      "exported-mutable-global lint (W0022): error (default) | warn | allow"},
     {B_SYS_FOREIGN_WRITE, "--map-foreign-write", ARG_VALUE, 0, 0, "<level>",
      "map-writes-foreign-pool lint (W0024): error (default) | warn | allow"},
+    {B_EMIT_GPU, "--emit-gpu", ARG_VALUE, 0, 0, "<dir>",
+     "also emit a GLSL compute shader per `@gpu` map into <dir> (side artifact; CPU build unchanged)"},
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
@@ -234,6 +237,7 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 		}
 		opts.link_paths[opts.link_count++] = p.hits[i].value;
 	}
+	opts.emit_gpu_dir = args_value(&p, B_EMIT_GPU); /* NULL if not passed */
 
 	int rc = compile_source(source, input_file, output_file, &opts);
 	free(source);

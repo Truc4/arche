@@ -1,6 +1,7 @@
 #include "compile.h"
 #include "../cli/resource.h"
 #include "../codegen/codegen.h"
+#include "../codegen/gpu_glsl.h"
 #include "../lexer/lexer.h"
 #include "../lower/lower.h"
 #include "../parser/parser.h"
@@ -697,6 +698,15 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	lower_set_model(sem_context_model(sem_ctx));
 	lower_set_sem(sem_ctx);
 	HirProgram *ast = lower_to_hir(syntax_root, source);
+
+	/* `--emit-gpu=<dir>`: also lower every `@gpu` map to a GLSL compute shader (the GPU form of the
+	 * kernel) alongside the normal CPU build. A side artifact — it never changes the executable. */
+	if (opts && opts->emit_gpu_dir) {
+		int gpu_maps = 0;
+		int n = arche_gpu_emit(ast, opts->emit_gpu_dir, &gpu_maps);
+		if (!opts->quiet && n >= 0)
+			printf("Emitted %d GPU compute shader(s) from %d @gpu map(s) to %s\n", n, gpu_maps, opts->emit_gpu_dir);
+	}
 
 	/* Code generation */
 	CodegenContext *codegen_ctx = codegen_create(ast, sem_ctx);

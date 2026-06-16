@@ -1,0 +1,18 @@
+// A second `@gpu` map exercising plain float arithmetic (no select). Its emitted compute shader is
+// validated in `make test-gpu`; the CPU path must produce the same result here.
+// RUN: %arche build -o %t %s && %t | grep -qF "x0=0 x3=30"
+#import { fmt }
+x :: float;
+P :: arche { x }
+[4]P(4);
+
+@gpu
+scale :: map (x) {
+  x = x * 10.0;
+}
+
+main :: proc() {
+  P.x = { 0.0, 1.0, 2.0, 3.0 };
+  run scale;
+  fmt.printf("x0=%.0f x3=%.0f\n", P.x[0] * 1.0, P.x[3] * 1.0);
+}

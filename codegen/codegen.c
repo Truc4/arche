@@ -2046,6 +2046,280 @@ static int codegen_eval_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, ch
 	return 0;
 }
 
+/* ========== COLLECTIVES (reduce / scan / sort) ========== */
+
+/* The monoid op text from a collective's first argument — a literal whose lexeme is the op (`+`/`*`/
+ * `min`/`max`); the parser wraps even `+`/`*` as a literal so this is uniform. */
+static const char *collective_op_text(HirExpr *opexpr) {
+	if (opexpr && opexpr->kind == HIR_EXPR_LITERAL && opexpr->data.literal.lexeme)
+		return opexpr->data.literal.lexeme;
+	if (opexpr && opexpr->kind == HIR_EXPR_NAME && opexpr->data.name.name)
+		return opexpr->data.name.name;
+	return "+";
+}
+
+/* The LLVM constant for the monoid identity of `op` over the element type. A fold of zero elements
+ * returns this, so `reduce` over an empty pool is well-defined. (+inf/-inf for float min/max.) */
+static const char *monoid_identity(const char *op, int is_float) {
+	if (strcmp(op, "*") == 0)
+		return is_float ? "1.0" : "1";
+	if (strcmp(op, "min") == 0)
+		return is_float ? "0x7FF0000000000000" : "2147483647";
+	if (strcmp(op, "max") == 0)
+		return is_float ? "0xFFF0000000000000" : "-2147483648";
+	return is_float ? "0.0" : "0"; /* `+` and the fallback */
+}
+
+/* Emit `acc <op> el` over element type `ty`, returning the fresh SSA value name. min/max lower to a
+ * branch-free compare+select (the same primitive a `map` uses), so they stay vectorizable. */
+static char *emit_monoid_combine(CodegenContext *ctx, const char *op, int is_float, const char *ty, const char *a,
+                                 const char *el) {
+	char *r = gen_value_name(ctx);
+	if (strcmp(op, "*") == 0) {
+		buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", r, is_float ? "fmul" : "mul", ty, a, el);
+	} else if (strcmp(op, "min") == 0 || strcmp(op, "max") == 0) {
+		int is_min = strcmp(op, "min") == 0;
+		const char *cmp = is_float ? (is_min ? "fcmp olt" : "fcmp ogt") : (is_min ? "icmp slt" : "icmp sgt");
+		char *c = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", c, cmp, ty, el, a);
+		buffer_append_fmt(ctx, "  %s = select i1 %s, %s %s, %s %s\n", r, c, ty, el, ty, a);
+	} else { /* `+` */
+		buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", r, is_float ? "fadd" : "add", ty, a, el);
+	}
+	return r;
+}
+
+/* For a collective's column argument `Pool.field`, emit the column base pointer and the pool's live row
+ * count, and report the element LLVM type. Returns 1 on a real archetype column, 0 otherwise. */
+static int emit_collective_column(CodegenContext *ctx, HirExpr *colexpr, char *colptr_out, char *count_out,
+                                  const char **ty_out, int *is_float_out) {
+	if (!colexpr || colexpr->kind != HIR_EXPR_FIELD)
+		return 0;
+	HirExpr *base = colexpr->data.field.base;
+	if (!base || base->kind != HIR_EXPR_NAME)
+		return 0;
+	const char *arch_name = base->data.name.name;
+	HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+	if (!arch)
+		return 0;
+	int field_idx = -1;
+	HirField *fdecl = NULL;
+	for (int i = 0; i < arch->field_count; i++)
+		if (strcmp(arch->fields[i]->name, colexpr->data.field.field_name) == 0) {
+			field_idx = i;
+			fdecl = arch->fields[i];
+			break;
+		}
+	if (field_idx < 0 || !fdecl || fdecl->kind != FIELD_COLUMN)
+		return 0;
+
+	const char *llvm_type = llvm_type_from_arche(field_base_type_name(fdecl->type));
+	int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+
+	char base_buf[256];
+	codegen_expression(ctx, base, base_buf); /* the pool struct pointer */
+
+	char *ptr_val = gen_value_name(ctx);
+	if (is_static) {
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n", ptr_val,
+		                  arch_name, arch_name, base_buf, field_idx);
+	} else {
+		char *gep = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gep, arch_name,
+		                  arch_name, base_buf, field_idx);
+		buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", ptr_val, llvm_type, llvm_type, gep);
+	}
+	strcpy(colptr_out, ptr_val);
+
+	char *cgep = gen_value_name(ctx); /* count is the last struct field, after the columns */
+	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cgep, arch_name,
+	                  arch_name, base_buf, arch->field_count);
+	char *count = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, cgep);
+	strcpy(count_out, count);
+
+	*ty_out = llvm_type;
+	*is_float_out = (strcmp(llvm_type, "double") == 0);
+	return 1;
+}
+
+/* `reduce(op, col)` — fold a whole column to a scalar over the monoid; `scan(op, col)` — overwrite each
+ * element with the inclusive prefix fold. One sequential accumulate loop seeded with the identity (so an
+ * empty pool yields the identity for reduce). `is_scan` selects write-back. Result SSA → result_buf. */
+static void emit_reduce_or_scan(CodegenContext *ctx, HirExpr *expr, int is_scan, char *result_buf) {
+	const char *op = collective_op_text(expr->data.call.args[0]);
+	char colptr[256], count[256];
+	const char *ty;
+	int is_float;
+	if (!emit_collective_column(ctx, expr->data.call.args[1], colptr, count, &ty, &is_float)) {
+		strcpy(result_buf, "0");
+		return;
+	}
+	const char *id = monoid_identity(op, is_float);
+	char *acc = gen_value_name(ctx), *iv = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca %s\n", acc, ty); /* hoisted to entry: no stack growth if in a loop */
+	buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", ty, id, ty, acc);
+	emit_alloca(ctx, "  %s = alloca i64\n", iv);
+	buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", iv);
+	char *cond = gen_value_name(ctx), *body = gen_value_name(ctx), *end = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  br label %s\n", cond);
+	buffer_append_fmt(ctx, "%s:\n", cond + 1);
+	char *i = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", i, iv);
+	char *lt = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", lt, i, count);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", lt, body, end);
+	buffer_append_fmt(ctx, "%s:\n", body + 1);
+	char *ep = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", ep, ty, ty, colptr, i);
+	char *el = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", el, ty, ty, ep);
+	char *a = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", a, ty, ty, acc);
+	char *r = emit_monoid_combine(ctx, op, is_float, ty, a, el);
+	buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", ty, r, ty, acc);
+	if (is_scan) /* inclusive prefix: write the running fold back into the column */
+		buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", ty, r, ty, ep);
+	char *ni = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ni, i);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ni, iv);
+	buffer_append_fmt(ctx, "  br label %s\n", cond);
+	buffer_append_fmt(ctx, "%s:\n", end + 1);
+	if (is_scan) {
+		strcpy(result_buf, "0");
+	} else {
+		char *final = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", final, ty, ty, acc);
+		strcpy(result_buf, final);
+	}
+}
+
+/* `sort(Pool.key)` — sort the WHOLE archetype pool ascending by the key column, permuting every column
+ * together so each entity's fields stay aligned. Stable insertion sort (Phase 2: simple + correct on the
+ * CPU; can be upgraded to a parallel/GPU sort later without changing semantics). */
+static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
+	strcpy(result_buf, "0");
+	HirExpr *keyexpr = expr->data.call.args[0];
+	if (!keyexpr || keyexpr->kind != HIR_EXPR_FIELD)
+		return;
+	HirExpr *base = keyexpr->data.field.base;
+	if (!base || base->kind != HIR_EXPR_NAME)
+		return;
+	const char *arch_name = base->data.name.name;
+	HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+	if (!arch)
+		return;
+	int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+
+	char base_buf[256];
+	codegen_expression(ctx, base, base_buf);
+
+	/* Gather every column's base pointer + element type; remember the key column. */
+	char **cptr = calloc(arch->field_count ? arch->field_count : 1, sizeof(char *));
+	const char **cty = calloc(arch->field_count ? arch->field_count : 1, sizeof(char *));
+	int ncol = 0, key_col = -1;
+	const char *key_ty = "i32";
+	int key_is_float = 0;
+	for (int fi = 0; fi < arch->field_count; fi++) {
+		HirField *f = arch->fields[fi];
+		if (f->kind != FIELD_COLUMN)
+			continue;
+		const char *ty = llvm_type_from_arche(field_base_type_name(f->type));
+		char *ptr = gen_value_name(ctx);
+		if (is_static) {
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n", ptr,
+			                  arch_name, arch_name, base_buf, fi);
+		} else {
+			char *gep = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gep, arch_name,
+			                  arch_name, base_buf, fi);
+			buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", ptr, ty, ty, gep);
+		}
+		cptr[ncol] = ptr;
+		cty[ncol] = ty;
+		if (strcmp(f->name, keyexpr->data.field.field_name) == 0) {
+			key_col = ncol;
+			key_ty = ty;
+			key_is_float = (strcmp(ty, "double") == 0);
+		}
+		ncol++;
+	}
+	if (key_col < 0) {
+		free(cptr);
+		free(cty);
+		return;
+	}
+
+	char *cgep = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cgep, arch_name,
+	                  arch_name, base_buf, arch->field_count);
+	char *count = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, cgep);
+
+	/* for (i=1; i<count; i++) { for (j=i; j>0 && key[j-1] > key[j]; j--) swap_all(j-1, j); } */
+	char *iv = gen_value_name(ctx), *jv = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca i64\n", iv); /* hoisted to entry: no stack growth if in a loop */
+	emit_alloca(ctx, "  %s = alloca i64\n", jv);
+	buffer_append_fmt(ctx, "  store i64 1, i64* %s\n", iv);
+	char *ocond = gen_value_name(ctx), *obody = gen_value_name(ctx), *oend = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  br label %s\n", ocond);
+	buffer_append_fmt(ctx, "%s:\n", ocond + 1);
+	char *i = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", i, iv);
+	char *olt = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", olt, i, count);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", olt, obody, oend);
+	buffer_append_fmt(ctx, "%s:\n", obody + 1);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", i, jv);
+	char *icond = gen_value_name(ctx), *icmp = gen_value_name(ctx), *ibody = gen_value_name(ctx),
+	     *iend = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  br label %s\n", icond);
+	buffer_append_fmt(ctx, "%s:\n", icond + 1);
+	char *j = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", j, jv);
+	/* Guard `j > 0` FIRST and branch — so key[j-1] is never loaded when j==0 (that would be an
+	 * out-of-bounds read at index -1; `&&` is not short-circuit in straight-line IR). */
+	char *jpos = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp sgt i64 %s, 0\n", jpos, j);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", jpos, icmp, iend);
+	buffer_append_fmt(ctx, "%s:\n", icmp + 1);
+	char *jm = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = sub i64 %s, 1\n", jm, j);
+	/* compare key[j-1] > key[j] (reached only when j > 0) */
+	char *kp0 = gen_value_name(ctx), *kp1 = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", kp0, key_ty, key_ty, cptr[key_col], jm);
+	buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", kp1, key_ty, key_ty, cptr[key_col], j);
+	char *kv0 = gen_value_name(ctx), *kv1 = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", kv0, key_ty, key_ty, kp0);
+	buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", kv1, key_ty, key_ty, kp1);
+	char *gt = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", gt, key_is_float ? "fcmp ogt" : "icmp sgt", key_ty, kv0, kv1);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", gt, ibody, iend);
+	buffer_append_fmt(ctx, "%s:\n", ibody + 1);
+	/* swap every column at [j-1] and [j] */
+	for (int c = 0; c < ncol; c++) {
+		const char *ty = cty[c];
+		char *p0 = gen_value_name(ctx), *p1 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", p0, ty, ty, cptr[c], jm);
+		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", p1, ty, ty, cptr[c], j);
+		char *v0 = gen_value_name(ctx), *v1 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", v0, ty, ty, p0);
+		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", v1, ty, ty, p1);
+		buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", ty, v1, ty, p0);
+		buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", ty, v0, ty, p1);
+	}
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", jm, jv);
+	buffer_append_fmt(ctx, "  br label %s\n", icond);
+	buffer_append_fmt(ctx, "%s:\n", iend + 1);
+	char *ni = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ni, i);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ni, iv);
+	buffer_append_fmt(ctx, "  br label %s\n", ocond);
+	buffer_append_fmt(ctx, "%s:\n", oend + 1);
+	free(cptr);
+	free(cty);
+}
+
 /* ========== EXPRESSION CODEGEN ========== */
 
 static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
@@ -3223,6 +3497,21 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			char *r = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = select %s %s, %s %s, %s %s\n", r, i1t, ci, vt, ab, vt, bb);
 			strcpy(result_buf, r);
+			break;
+		}
+
+		/* Collectives — whole-column ops over a monoid. `reduce` folds to a scalar (returned),
+		 * `scan` prefix-folds in place, `sort` sorts the pool by a key column. */
+		if (func_name && strcmp(func_name, "reduce") == 0 && expr->data.call.arg_count == 2) {
+			emit_reduce_or_scan(ctx, expr, 0, result_buf);
+			break;
+		}
+		if (func_name && strcmp(func_name, "scan") == 0 && expr->data.call.arg_count == 2) {
+			emit_reduce_or_scan(ctx, expr, 1, result_buf);
+			break;
+		}
+		if (func_name && strcmp(func_name, "sort") == 0 && expr->data.call.arg_count == 1) {
+			emit_sort(ctx, expr, result_buf);
 			break;
 		}
 

@@ -130,6 +130,7 @@ typedef struct {
 	int param_count;
 	HirStmt **stmts;
 	int stmt_count;
+	int is_gpu; /* 1 if `@gpu`: the kernel is emitted as a GPU compute shader (SSBO per column) */
 	SourceLoc loc;
 } HirMapDecl;
 
