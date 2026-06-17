@@ -25,6 +25,8 @@ typedef struct {
 	int quiet;                                    /* suppress progress chatter on stdout (doctest runner) */
 	const char *link_paths[ARCHE_MAX_LINK_PATHS]; /* extra .c/.o files for cc at link time */
 	int link_count;
+	const char *emit_gpu_dir; /* `--emit-gpu=<dir>`: also write a GLSL compute shader per `@gpu` map (NULL = off) */
+	int gpu; /* `--gpu`: embed @gpu maps' SPIR-V and dispatch them on the GPU at runtime (CPU fallback) */
 } CompileOpts;
 
 /* Compile `user_source` (raw user text — the core prelude is NOT yet prepended;

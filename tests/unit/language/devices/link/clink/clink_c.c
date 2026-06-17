@@ -2,6 +2,7 @@
  * device folder. Calls pow(), so the build must link libm — supplied by clink.arche's `#link { "m" }`. */
 #include <math.h>
 
-double clink_cbrt(double x) {
-	return pow(x, 1.0 / 3.0);
+/* arche `float` is f32, so the shim takes/returns C `float` (use powf, not pow). */
+float clink_cbrt(float x) {
+	return powf(x, 1.0f / 3.0f);
 }

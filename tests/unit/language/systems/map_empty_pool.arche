@@ -1,0 +1,14 @@
+// Edge: a `map` over an empty pool (capacity > 0, ZERO live rows) runs zero iterations — no crash, no
+// out-of-bounds. (Coverage the old suite lacked.)
+// RUN: %arche build -o %t %s && %t | grep -qF "done"
+#import { fmt }
+v :: int;
+N :: arche { v }
+[4]N;
+bump :: map (v) {
+  v = v + 1;
+}
+main :: proc() {
+  run bump; // no live rows -> no-op
+  fmt.printf("done\n");
+}

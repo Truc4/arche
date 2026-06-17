@@ -183,7 +183,7 @@ void hir_stmt_free(HirStmt *stmt) {
 	case HIR_STMT_CONTINUE:
 		break;
 	case HIR_STMT_RUN:
-		free(stmt->data.run_stmt.system_name);
+		free(stmt->data.run_stmt.map_name);
 		free(stmt->data.run_stmt.world_name);
 		break;
 	case HIR_STMT_EXPR:
@@ -236,17 +236,17 @@ static void hir_proc_decl_free(HirProcDecl *proc) {
 	free(proc);
 }
 
-static void hir_sys_decl_free(HirSysDecl *sys) {
-	if (!sys)
+static void hir_map_decl_free(HirMapDecl *map) {
+	if (!map)
 		return;
-	free(sys->name);
-	for (int i = 0; i < sys->param_count; i++)
-		hir_param_free(sys->params[i]);
-	free(sys->params);
-	for (int i = 0; i < sys->stmt_count; i++)
-		hir_stmt_free(sys->stmts[i]);
-	free(sys->stmts);
-	free(sys);
+	free(map->name);
+	for (int i = 0; i < map->param_count; i++)
+		hir_param_free(map->params[i]);
+	free(map->params);
+	for (int i = 0; i < map->stmt_count; i++)
+		hir_stmt_free(map->stmts[i]);
+	free(map->stmts);
+	free(map);
 }
 
 static void hir_func_decl_free(HirFuncDecl *func) {
@@ -315,8 +315,8 @@ void hir_decl_free(HirDecl *decl) {
 	case HIR_DECL_PROC:
 		hir_proc_decl_free(decl->data.proc);
 		break;
-	case HIR_DECL_SYS:
-		hir_sys_decl_free(decl->data.sys);
+	case HIR_DECL_MAP:
+		hir_map_decl_free(decl->data.map);
 		break;
 	case HIR_DECL_FUNC:
 		hir_func_decl_free(decl->data.func);

@@ -5,8 +5,7 @@ Body :: arche { pos }
 
 [5]Body;
 
-dummy :: sys (pos) {
-  fmt.printf("system_ran\n");
+dummy :: map (pos) {
   pos = pos;
 }
 
@@ -15,6 +14,7 @@ main :: proc() {
   insert(Body, 2.0)(_:, _:);
   insert(Body, 3.0)(_:, _:);
   run dummy;
+  fmt.printf("system_ran\n");
   p0  := Body.pos[0];
   p1  := Body.pos[1];
   p0i := p0 * 10.0;

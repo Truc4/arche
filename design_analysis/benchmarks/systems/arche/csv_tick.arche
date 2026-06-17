@@ -25,7 +25,7 @@ Transaction :: arche {
   revenue  :: float,
 }
 
-Transaction[100000](100000) {
+[100000]Transaction(100000) {
   price: 0.0, quantity: 0, revenue: 0.0,
 }
 
@@ -35,11 +35,11 @@ load_once :: proc() {
 
 // Per-tick compute: revenue = price * quantity, then dampen.
 // Two sys calls so we exercise dispatch overhead, not just one big op.
-compute_revenue :: sys (price, quantity, revenue) {
+compute_revenue :: map (price, quantity, revenue) {
   revenue = price * quantity;
 }
 
-dampen :: sys (revenue) {
+dampen :: map (revenue) {
   revenue = revenue * 0.999;
 }
 

@@ -1,0 +1,11 @@
+// float(x) for an int wider (or narrower) than i32 must `sitofp` from the value's real width, not a
+// hardcoded i32 source. `float(i64)` produced `sitofp i32 <i64>` → bad IR. RED before, GREEN after.
+// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+#import { fmt }
+main :: proc() {
+  big := i64(3000000000); // 3e9, an i64 (exceeds i32 max)
+  f   := float(big) / 1000000.0; // 3000.0
+  fmt.assert(f > 2999.0, "float(i64) low\n");
+  fmt.assert(f < 3001.0, "float(i64) high\n");
+  fmt.printf("PASS\n");
+}

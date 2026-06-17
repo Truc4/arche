@@ -1,0 +1,16 @@
+// `iN(floatval)` must emit a float→int conversion (fptosi), not route the float through the int-width
+// (sext/zext/trunc) path — which dropped the conversion and produced type-mismatched IR. Truncates
+// toward zero. RED (bad IR) before the fix; GREEN after.
+// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+#import { fmt }
+main :: proc() {
+  f := 3.7;
+  g := 0.0 - 2.9;
+  a := i64(f);
+  b := i32(f);
+  c := i64(g);
+  fmt.assert(a == 3, "i64(float) wrong\n");
+  fmt.assert(b == 3, "i32(float) wrong\n");
+  fmt.assert(c == 0 - 2, "i64(negative float) wrong\n");
+  fmt.printf("PASS\n");
+}

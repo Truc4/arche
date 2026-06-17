@@ -3,6 +3,6 @@
 // RUN: true
 Pt :: arche { px, py }
 
-step :: sys (px, py) {
+step :: map (px, py) {
   px = px + py;
 }

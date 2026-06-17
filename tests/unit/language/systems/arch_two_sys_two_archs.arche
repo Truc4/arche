@@ -8,11 +8,11 @@ Body :: arche { pos, vel, mass :: float }
 
 [5]Body;
 
-step :: sys (pos, vel) {
+step :: map (pos, vel) {
   pos = pos + vel;
 }
 
-dampen :: sys (vel) {
+dampen :: map (vel) {
   vel = vel * 0.99;
 }
 

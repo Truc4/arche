@@ -1,5 +1,5 @@
 // Unified grammar: archetype and sys declared as RHS value forms
-// (`Name :: arche { ... }`, `name :: sys(...) { ... }`).
+// (`Name :: arche { ... }`, `name :: map (...) { ... }`).
 // RUN: %arche build -o %t %s && %t | grep "pos0=3"
 #import { fmt }
 pos :: float;
@@ -8,7 +8,7 @@ Particle :: arche { pos }
 
 [10]Particle;
 
-bump :: sys (pos) {
+bump :: map (pos) {
   pos = pos + 2.0;
 }
 

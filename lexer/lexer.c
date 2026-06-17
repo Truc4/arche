@@ -148,8 +148,9 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 4 && strncmp(start, "proc", 4) == 0) {
 		return TOK_PROC;
 	}
-	if (length == 3 && strncmp(start, "sys", 3) == 0) {
-		return TOK_SYS;
+	/* `map` is the per-element data-parallel kernel keyword (renamed from `sys`, now retired). */
+	if (length == 3 && strncmp(start, "map", 3) == 0) {
+		return TOK_MAP;
 	}
 	if (length == 4 && strncmp(start, "func", 4) == 0) {
 		return TOK_FUNC;
@@ -644,8 +645,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_ARCHETYPE";
 	case TOK_PROC:
 		return "TOK_PROC";
-	case TOK_SYS:
-		return "TOK_SYS";
+	case TOK_MAP:
+		return "TOK_MAP";
 	case TOK_FUNC:
 		return "TOK_FUNC";
 	case TOK_POLICY:

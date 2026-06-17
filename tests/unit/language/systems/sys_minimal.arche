@@ -5,13 +5,12 @@ Particle :: arche { pos }
 
 [10]Particle;
 
-dummy :: sys (pos) {
-  fmt.printf("system_ran\n");
+dummy :: map (pos) {
   pos = pos;
 }
 
 main :: proc() {
   insert(Particle, 1.0)(_:, _:);
   run dummy;
-  fmt.printf("pos[0]=%f\n", Particle.pos[0]);
+  fmt.printf("system_ran\n"); // marker lives in the driver, not the kernel
 }

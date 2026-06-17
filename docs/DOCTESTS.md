@@ -6,7 +6,7 @@ as tests**, so the code in your docs can never silently rot.
 ## Doc comments
 
 - `/// ...` - an **outer** doc comment. Attaches to the declaration immediately
-  below it (a `func`, `proc`, `sys`, archetype, `const`, …). A blank line or a
+  below it (a `func`, `proc`, `map`, archetype, `const`, …). A blank line or a
   plain `//` comment between the doc and the declaration detaches it.
 - `//!` - an **inner**/module-level doc comment (file-level docs).
 - `//// ...` (four or more slashes) is a plain banner comment, not a doc comment.

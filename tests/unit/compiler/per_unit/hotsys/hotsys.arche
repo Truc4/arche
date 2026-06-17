@@ -2,6 +2,6 @@
 // RUN: true
 Cell :: arche { v }
 
-bump :: sys (v) {
+bump :: map (v) {
   v = v + 1;
 }

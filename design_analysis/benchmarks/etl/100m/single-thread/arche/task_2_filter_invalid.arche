@@ -1,0 +1,26 @@
+// Task 2: Filter invalid rows — count where quantity > 0. The count IS the benchmark (and the checksum).
+#import { csv fmt os }
+
+Transaction :: arche { quantity :: int }
+
+[100000000]Transaction(100000000) {
+  quantity: 0,
+}
+
+load_transactions :: proc() {
+  csv.load(Transaction, "design_analysis/benchmarks/etl/data/data_100m.csv");
+}
+
+main :: proc() {
+  os.now_ms()(t0:);
+  load_transactions();
+  count := 0;
+  for (m := 0; m < 100000000; m += 1) {
+    if (Transaction.quantity[m] > 0) {
+      count += 1;
+    }
+  }
+  os.now_ms()(t1:);
+  fmt.printf("task2_time: %g\n", float(t1 - t0) / 1000.0);
+  fmt.printf("task2_checksum: %d\n", count);
+}

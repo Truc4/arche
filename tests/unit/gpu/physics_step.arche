@@ -1,0 +1,21 @@
+// A `@gpu` map: the canonical physics integrate + a branch-free wall clamp via `select`. The build
+// emits a GLSL compute shader for it (verified by glslc → SPIR-V → spirv-val in `make test-gpu`); the
+// CPU path still runs and must produce the same result.
+// RUN: %arche build -o %t %s && %t | grep -qF "p0=1 p7=8"
+#import { fmt }
+pos  :: float;
+vel  :: float;
+Body :: arche { pos, vel }
+[8]Body(8);
+
+step :: map (pos, vel) {
+  pos = pos + vel;
+  vel = select(pos > 1000.0, 0.0 - vel, vel);
+}
+
+main :: proc() {
+  Body.pos = { 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0 };
+  Body.vel = { 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+  run step @gpu;
+  fmt.printf("p0=%.0f p7=%.0f\n", Body.pos[0] * 1.0, Body.pos[7] * 1.0);
+}

@@ -1,0 +1,9 @@
+// `reduce`/`scan`'s first argument is the monoid operator — a fixed set (`+ * min max`). Anything else
+// must error (otherwise an unknown op would silently fall back to `+`). (Spec; red until enforced.)
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "monoid operator" %t.out
+v :: int;
+N :: arche { v }
+[3]N(3);
+main :: proc() {
+  t := reduce(foo, N.v);
+}

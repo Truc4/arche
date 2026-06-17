@@ -1,0 +1,40 @@
+// Task 1: Compute derived columns
+// Compute revenue = price * quantity for all rows.
+// `revenue` is a stored column here because materializing it IS what this benchmark measures (the
+// vectorized column op, head-to-head with pandas `df['revenue'] = price*qty`) and it is the output.
+#import { csv io fmt }
+
+Transaction :: arche { price :: float, quantity :: int, revenue :: float }
+
+[1000]Transaction(1000) {
+  price: 0.0, quantity: 0, revenue: 0.0,
+}
+
+load_transactions :: proc() {
+  csv.load(Transaction, "design_analysis/benchmarks/etl/data/data_1k.csv");
+}
+
+write_transactions :: proc() {
+  io.fopen_write("build/benchmarks/etl/task1/arche_output.csv")(fd:);
+  for (i := 0; i < 1000; i = i + 1) {
+    buf: [256]char;
+    fmt.sprintf(
+      _,
+      "%f,%d,%f\n",
+      Transaction.price[i],
+      Transaction.quantity[i],
+      Transaction.revenue[i],
+    )(buf, n:);
+    io.fwrite(fd, move buf, n);
+  }
+  io.fclose(move fd);
+}
+
+main :: proc() {
+  load_transactions();
+  Transaction.revenue = Transaction.price * Transaction.quantity;
+  write_transactions();
+  fmt.printf(
+    "Task1 complete: 1000 rows written to build/benchmarks/etl/task1/arche_output.csv\n",
+  );
+}

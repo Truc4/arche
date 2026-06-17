@@ -36,12 +36,12 @@ typedef enum {
 	TYK_ARRAY,
 	TYK_TUPLE,
 	TYK_HANDLE,
-	TYK_ARCHETYPE_CATEGORY, /* the bare `archetype` keyword (sys param only) */
+	TYK_ARCHETYPE_CATEGORY, /* the bare `archetype` keyword (map param only) */
 	/* The callable FORMS are DISTINCT kinds — Arche's whole identity is that func (pure value), proc
-	 * (action), sys (transform), and policy (failure macro) are not the same thing. They never unify. */
+	 * (action), map (transform), and policy (failure macro) are not the same thing. They never unify. */
 	TYK_FUNC,  /* func: (params) -> return — a pure value */
 	TYK_PROC,  /* proc: (in)(out) — an action */
-	TYK_SYS,   /* sys: (components) — a data transform */
+	TYK_SYS,   /* map: (components) — a data transform */
 	TYK_POLICY /* policy: (operands) — a failure-handling macro */
 } TyKind;
 
@@ -62,11 +62,11 @@ TypeId tyid_of_tuple(TypeArena *a, const char *const *field_names, const TypeId 
 TypeId tyid_of_handle(TypeArena *a, const char *archetype_name);
 TypeId tyid_of_archetype_category(TypeArena *a);
 /* The three callable forms, each its own distinct kind. `returns` is a func's single return, a proc's
- * out-params, or a sys's (none). Structural inequality (`proc()(int) != func()->int`) is automatic —
+ * out-params, or a map's (none). Structural inequality (`proc()(int) != func()->int`) is automatic —
  * a different kind interns to a different id. */
 TypeId tyid_of_func(TypeArena *a, const TypeId *params, int param_count, const TypeId *returns, int return_count);
 TypeId tyid_of_proc(TypeArena *a, const TypeId *params, int param_count, const TypeId *returns, int return_count);
-TypeId tyid_of_sys(TypeArena *a, const TypeId *params, int param_count);
+TypeId tyid_of_map(TypeArena *a, const TypeId *params, int param_count);
 TypeId tyid_of_policy(TypeArena *a, const TypeId *params, int param_count);
 
 /* Inspection. */

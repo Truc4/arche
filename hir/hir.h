@@ -70,7 +70,7 @@ typedef enum {
 	HIR_DECL_WORLD,
 	HIR_DECL_ARCHETYPE,
 	HIR_DECL_PROC,
-	HIR_DECL_SYS,
+	HIR_DECL_MAP,
 	HIR_DECL_FUNC,
 	HIR_DECL_FUNC_GROUP,
 	HIR_DECL_STATIC,
@@ -130,8 +130,9 @@ typedef struct {
 	int param_count;
 	HirStmt **stmts;
 	int stmt_count;
+	int is_gpu; /* 1 if `@gpu`: the kernel is emitted as a GPU compute shader (SSBO per column) */
 	SourceLoc loc;
-} HirSysDecl;
+} HirMapDecl;
 
 typedef struct {
 	char *name;
@@ -212,7 +213,7 @@ struct HirDecl {
 		HirWorldDecl *world;
 		HirArchetypeDecl *archetype;
 		HirProcDecl *proc;
-		HirSysDecl *sys;
+		HirMapDecl *map;
 		HirFuncDecl *func;
 		HirFuncGroupDecl *func_group;
 		HirStaticDecl *static_decl;
@@ -278,8 +279,9 @@ typedef struct {
 } HirIfStmt;
 
 typedef struct {
-	char *system_name;
+	char *map_name;
 	char *world_name;
+	int is_gpu; /* `run map @gpu`: dispatch on the GPU (and emit a compute shader for the map) */
 } HirRunStmt;
 
 typedef struct {

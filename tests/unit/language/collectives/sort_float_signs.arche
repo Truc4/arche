@@ -1,0 +1,29 @@
+// Float key straddling zero (negatives, fractionals, positives) → exercises the IEEE-754 radix bit-flip
+// transform, which must order negatives before positives. n=40 → radix path. `v = 20.5 - v` maps the
+// ascending 1..40 to a descending 19.5..-19.5; sorting ascending reverses it, so the most-negative lands
+// first and tag is permuted in lockstep.
+// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+#import { fmt }
+
+v :: float;
+
+tag :: int;
+
+N :: arche { v, tag }
+
+[40]N(40) { v: 1.0, tag: 1 }
+
+flip :: map (v) { v = 20.5 - v; }
+
+main :: proc() {
+  scan(+, N.v);   // v   = 1.0..40.0
+  scan(+, N.tag); // tag = 1..40
+  run flip;       // v   = 19.5..-19.5 (straddles 0)
+  sort(N.v);      // ascending → -19.5 first, 19.5 last
+  fmt.assert(N.v[0] < 0.0, "neg first\n");
+  fmt.assert(N.v[39] > 0.0, "pos last\n");
+  fmt.assert(N.v[0] < N.v[39], "ascending\n");
+  fmt.assert(N.tag[0] == 40, "t0\n");
+  fmt.assert(N.tag[39] == 1, "t39\n");
+  fmt.printf("PASS\n");
+}

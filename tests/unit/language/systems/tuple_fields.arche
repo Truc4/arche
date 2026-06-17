@@ -6,7 +6,7 @@
 #import { fmt }
 Body :: arche { pos(x, y) :: int, vel(x, y) :: int }
 [2]Body;
-step :: sys (pos, vel) {
+step :: map (pos, vel) {
   pos.x = pos.x + vel.x;
   pos.y = pos.y + vel.y;
 }
