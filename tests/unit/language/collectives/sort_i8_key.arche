@@ -1,6 +1,6 @@
 // i8 key, n>=32 → radix with a single pass and the width-8 byte-extraction path (no shift). Filled with
-// an explicit reversed literal list (narrow-int arithmetic is independently unreliable, so no scan here);
-// ascending sort yields 1..40 and permutes the ascending tag column into reverse.
+// an explicit reversed literal list; ascending sort yields 1..40 and permutes the ascending tag column
+// into reverse.
 // RUN: %arche build -o %t %s && %t | grep -qF "PASS"
 #import { fmt }
 k   :: i8;

@@ -1,8 +1,8 @@
 // Several columns of differing widths (i32 key, i32, i64, float → GEP strides 4 and 8) must all be
 // permuted consistently by the cycle-following apply (catches per-column stride bugs). n=40 → radix path.
 // Negated i32 key reverses the pool; each column's value at a row equals that row's ordinal, so post-sort
-// they stay aligned. (i8/i16 column permutation is covered by sort_by_key-style small-n fixtures; their
-// fill-by-arithmetic is skipped here because narrow-int arithmetic is independently unreliable.)
+// they stay aligned. (Narrow i8/i16 columns share the same cycle-apply code path; their permutation is
+// covered by sort_by_key-style small-n fixtures and sort_i8_key.)
 // RUN: %arche build -o %t %s && %t | grep -qF "PASS"
 #import { fmt }
 k :: int;
