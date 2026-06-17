@@ -2073,6 +2073,46 @@ static void cg_float_const(const char *decimal, char *out, size_t cap) {
 
 /* The monoid op text from a collective's first argument — a literal whose lexeme is the op (`+`/`*`/
  * `min`/`max`); the parser wraps even `+`/`*` as a literal so this is uniform. */
+/* ---- Data-parallel IR (ParOp) + pluggable backends -------------------------------------------------
+ * map/reduce/scan/sort are ONE family of whole-column ops; the execution backend (scalar/SIMD/cores/GPU)
+ * is an orthogonal axis. HIR lowers each op to a `ParOp`; a `Backend` emits it — so adding a backend or
+ * an op is O(primitives), not O(ops×backends). (Phase 0: `reduce` is routed through this seam; map/scan/
+ * sort migrate in later phases.) */
+typedef enum { PAR_MAP, PAR_REDUCE, PAR_SCAN, PAR_PERMUTE } ParOpKind;
+typedef enum { SCHED_AUTO, SCHED_SCALAR, SCHED_SIMD, SCHED_CORES, SCHED_GPU } SchedTarget;
+
+typedef struct {
+	const char *op;  /* monoid op text: "+","*","min","max" (later: generalize to a func + identity) */
+	int associative; /* set for all four built-ins — what licenses SIMD/parallel reordering */
+	int commutative;
+} ParMonoid;
+
+typedef struct {
+	ParOpKind kind;
+	SchedTarget target;
+	HirExpr *col;     /* REDUCE/SCAN: the column being folded */
+	ParMonoid monoid; /* REDUCE/SCAN */
+	HirExpr *src;     /* bridge to the original HIR call for emitters not yet split (PERMUTE=sort) */
+	/* MAP (`col = expr` whole-column auto-loop): */
+	const char *col_ptr, *count, *scalar_type, *arche_type, *struct_ptr;
+	HirExpr *rhs;
+	int compound_op; /* OP_NONE = store; others = load+op+store */
+} ParOp;
+
+typedef struct {
+	const char *name;
+	void (*emit_reduce)(CodegenContext *ctx, const ParOp *op, char *result_buf);
+	void (*emit_scan)(CodegenContext *ctx, const ParOp *op, char *result_buf);
+	void (*emit_permute)(CodegenContext *ctx, const ParOp *op, char *result_buf);
+	void (*emit_map)(CodegenContext *ctx, const ParOp *op); /* statement: no result value */
+} Backend;
+
+/* fwd decls — the CPU backend primitives bridge to these emitters defined later in the file. */
+static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf);
+static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, const char *count,
+                                   const char *scalar_type, const char *arche_type, HirExpr *rhs, int op,
+                                   const char *struct_ptr_val);
+
 static const char *collective_op_text(HirExpr *opexpr) {
 	if (opexpr && opexpr->kind == HIR_EXPR_LITERAL && opexpr->data.literal.lexeme)
 		return opexpr->data.literal.lexeme;
@@ -2083,6 +2123,17 @@ static const char *collective_op_text(HirExpr *opexpr) {
 
 /* The LLVM constant for the monoid identity of `op` over the element type. A fold of zero elements
  * returns this, so `reduce` over an empty pool is well-defined. (+inf/-inf for float min/max.) */
+/* Monoid op → the integer code the runtime parallel-reduce (io.c PR_*) expects. */
+static int monoid_op_code(const char *op) {
+	if (strcmp(op, "*") == 0)
+		return 1; /* PR_MUL */
+	if (strcmp(op, "min") == 0)
+		return 2; /* PR_MIN */
+	if (strcmp(op, "max") == 0)
+		return 3; /* PR_MAX */
+	return 0;     /* PR_ADD (default, "+") */
+}
+
 static const char *monoid_identity(const char *op, int is_float) {
 	if (strcmp(op, "*") == 0)
 		return is_float ? "1.0" : "1";
@@ -2188,12 +2239,13 @@ static int emit_collective_column(CodegenContext *ctx, HirExpr *colexpr, char *c
 /* `reduce(op, col)` — fold a whole column to a scalar over the monoid; `scan(op, col)` — overwrite each
  * element with the inclusive prefix fold. One sequential accumulate loop seeded with the identity (so an
  * empty pool yields the identity for reduce). `is_scan` selects write-back. Result SSA → result_buf. */
-static void emit_reduce_or_scan(CodegenContext *ctx, HirExpr *expr, int is_scan, char *result_buf) {
-	const char *op = collective_op_text(expr->data.call.args[0]);
+/* The collective FOLD primitive (CPU scalar + 4-lane SIMD): folds `col` with monoid `op` to a scalar
+ * (reduce) or prefix-folds it in place (scan). Backends call this; see the ParOp/Backend seam above. */
+static void emit_fold(CodegenContext *ctx, HirExpr *col, const char *op, int is_scan, char *result_buf) {
 	char colptr[256], count[256];
 	const char *ty;
 	int is_float;
-	if (!emit_collective_column(ctx, expr->data.call.args[1], colptr, count, &ty, &is_float)) {
+	if (!emit_collective_column(ctx, col, colptr, count, &ty, &is_float)) {
 		strcpy(result_buf, "0");
 		return;
 	}
@@ -2298,6 +2350,76 @@ static void emit_reduce_or_scan(CodegenContext *ctx, HirExpr *expr, int is_scan,
 		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", final, ty, ty, acc);
 		strcpy(result_buf, final);
 	}
+}
+
+/* The CPU backend: scalar + 4-lane SIMD. reduce/scan share the `emit_fold` primitive; permute bridges to
+ * `emit_sort` (the index-permutation sort). */
+static void cpu_emit_reduce(CodegenContext *ctx, const ParOp *op, char *result_buf) {
+	emit_fold(ctx, op->col, op->monoid.op, /*is_scan=*/0, result_buf);
+}
+static void cpu_emit_scan(CodegenContext *ctx, const ParOp *op, char *result_buf) {
+	emit_fold(ctx, op->col, op->monoid.op, /*is_scan=*/1, result_buf);
+}
+static void cpu_emit_permute(CodegenContext *ctx, const ParOp *op, char *result_buf) {
+	emit_sort(ctx, op->src, result_buf);
+}
+static void cpu_emit_map(CodegenContext *ctx, const ParOp *op) {
+	emit_whole_column_loop(ctx, op->col_ptr, op->count, op->scalar_type, op->arche_type, op->rhs,
+	                       op->compound_op, op->struct_ptr);
+}
+static const Backend BACKEND_CPU = {"cpu", cpu_emit_reduce, cpu_emit_scan, cpu_emit_permute, cpu_emit_map};
+
+/* The CORES backend: a multicore reduce (runtime `arche_par_reduce_*` in io.c, chunk→fold→combine).
+ * Only f32/i32/i64 element folds are parallelized; anything else falls back to the CPU SIMD reduce.
+ * scan/permute/map reuse the CPU primitives (parallelizing those is future work). */
+static void cores_emit_reduce(CodegenContext *ctx, const ParOp *op, char *result_buf) {
+	char colptr[256], count[256];
+	const char *ty;
+	int is_float;
+	if (!emit_collective_column(ctx, op->col, colptr, count, &ty, &is_float)) {
+		strcpy(result_buf, "0");
+		return;
+	}
+	const char *fn = is_float ? "arche_par_reduce_f32"
+	                 : strcmp(ty, "i32") == 0 ? "arche_par_reduce_i32"
+	                 : strcmp(ty, "i64") == 0 ? "arche_par_reduce_i64"
+	                                          : NULL;
+	if (!fn) {
+		cpu_emit_reduce(ctx, op, result_buf); /* unsupported elem type → CPU fold */
+		return;
+	}
+	char *r = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = call %s @%s(%s* %s, i64 %s, i32 %d)\n", r, ty, fn, ty, colptr, count,
+	                  monoid_op_code(op->monoid.op));
+	strcpy(result_buf, r);
+}
+static const Backend BACKEND_CORES = {"cores", cores_emit_reduce, cpu_emit_scan, cpu_emit_permute,
+                                      cpu_emit_map};
+
+/* Pick the backend for a schedule target. AUTO = CPU (scalar/SIMD); CORES = multicore reduce; GPU is a
+ * later phase (falls back to CPU for now). */
+static const Backend *select_backend(SchedTarget target) {
+	if (target == SCHED_CORES)
+		return &BACKEND_CORES;
+	return &BACKEND_CPU;
+}
+
+/* Lower a whole-column `col = expr` map to ParOp.Map and emit it via the active backend (one path for
+ * all 4 column-assignment call sites). */
+static void emit_map_op(CodegenContext *ctx, const char *col_ptr, const char *count,
+                        const char *scalar_type, const char *arche_type, HirExpr *rhs, int op,
+                        const char *struct_ptr_val) {
+	ParOp pop = {0};
+	pop.kind = PAR_MAP;
+	pop.target = SCHED_AUTO;
+	pop.col_ptr = col_ptr;
+	pop.count = count;
+	pop.scalar_type = scalar_type;
+	pop.arche_type = arche_type;
+	pop.rhs = rhs;
+	pop.compound_op = op;
+	pop.struct_ptr = struct_ptr_val;
+	select_backend(pop.target)->emit_map(ctx, &pop);
 }
 
 /* ---- `sort(Pool.key[, desc])` — sort the WHOLE archetype pool by the key column, permuting every
@@ -4154,17 +4276,36 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 
 		/* Collectives — whole-column ops over a monoid. `reduce` folds to a scalar (returned),
 		 * `scan` prefix-folds in place, `sort` sorts the pool by a key column. */
-		if (func_name && strcmp(func_name, "reduce") == 0 && expr->data.call.arg_count == 2) {
-			emit_reduce_or_scan(ctx, expr, 0, result_buf);
-			break;
-		}
-		if (func_name && strcmp(func_name, "scan") == 0 && expr->data.call.arg_count == 2) {
-			emit_reduce_or_scan(ctx, expr, 1, result_buf);
+		/* Each collective lowers to a ParOp and is emitted by the active backend (one uniform path,
+		 * not per-op strcmp→emitter). The built-in monoids are all associative + commutative. */
+		if (func_name && (strcmp(func_name, "reduce") == 0 || strcmp(func_name, "scan") == 0) &&
+		    expr->data.call.arg_count == 2) {
+			int is_scan = (func_name[0] == 's');
+			ParOp pop = {0};
+			pop.kind = is_scan ? PAR_SCAN : PAR_REDUCE;
+			/* Backend = AUTO (CPU scalar/SIMD) by default. `ARCHE_REDUCE_CORES` is an EXPERIMENTAL toggle
+			 * routing reduce to the multicore backend — proves the interface extends to a new backend
+			 * with no per-op work, but note a pure column sum is memory-bandwidth-bound, so multicore is
+			 * not faster than the single-thread SIMD reduce (the win needs compute-bound/fused kernels).
+			 * A per-op `@cores`/`@gpu` surface is the eventual replacement for this toggle. */
+			pop.target = (!is_scan && getenv("ARCHE_REDUCE_CORES")) ? SCHED_CORES : SCHED_AUTO;
+			pop.col = expr->data.call.args[1];
+			pop.monoid.op = collective_op_text(expr->data.call.args[0]);
+			pop.monoid.associative = pop.monoid.commutative = 1;
+			const Backend *be = select_backend(pop.target);
+			if (is_scan)
+				be->emit_scan(ctx, &pop, result_buf);
+			else
+				be->emit_reduce(ctx, &pop, result_buf);
 			break;
 		}
 		if (func_name && strcmp(func_name, "sort") == 0 &&
 		    (expr->data.call.arg_count == 1 || expr->data.call.arg_count == 2)) {
-			emit_sort(ctx, expr, result_buf);
+			ParOp pop = {0};
+			pop.kind = PAR_PERMUTE;
+			pop.target = SCHED_AUTO;
+			pop.src = expr;
+			select_backend(pop.target)->emit_permute(ctx, &pop, result_buf);
 			break;
 		}
 
@@ -7409,7 +7550,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					char *count = gen_value_name(ctx);
 					buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, count_gep);
 
-					emit_whole_column_loop(ctx, val->llvm_name, count, scalar_type, arche_type,
+					emit_map_op(ctx, val->llvm_name, count, scalar_type, arche_type,
 					                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op, arch_param);
 				}
 			}
@@ -7484,7 +7625,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 
 							/* Emit whole-column loop */
 							const char *scalar_type = llvm_type_from_arche(field_base_type_name(fdecl->type));
-							emit_whole_column_loop(ctx, col_ptr, count, scalar_type, field_base_type_name(fdecl->type),
+							emit_map_op(ctx, col_ptr, count, scalar_type, field_base_type_name(fdecl->type),
 							                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op,
 							                       struct_ptr_val);
 						} else {
@@ -7585,7 +7726,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 										/* Preserve resolved type for operation */
 										temp_rhs.resolved = *comp->type;
 
-										emit_whole_column_loop(ctx, col_ptr, count, scalar_type,
+										emit_map_op(ctx, col_ptr, count, scalar_type,
 										                       field_base_type_name(comp->type), &temp_rhs,
 										                       stmt->data.assign_stmt.op, struct_ptr_val);
 									} else if (rhs_expr->kind == HIR_EXPR_FIELD) {
@@ -7618,7 +7759,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 											/* Preserve resolved type */
 											temp_rhs.resolved = *comp->type;
 
-											emit_whole_column_loop(ctx, col_ptr, count, scalar_type,
+											emit_map_op(ctx, col_ptr, count, scalar_type,
 											                       field_base_type_name(comp->type), &temp_rhs,
 											                       stmt->data.assign_stmt.op, struct_ptr_val);
 										}
@@ -10292,6 +10433,11 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "declare i8* @calloc(i64, i64)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
 	buffer_append(ctx, "declare void @abort()\n");
+	/* The `cores` backend's multicore reduce primitives (runtime/io.c). Declared unconditionally; harmless
+	 * if unused (resolves against io.o, which every program links). */
+	buffer_append(ctx, "declare float @arche_par_reduce_f32(float*, i64, i32)\n");
+	buffer_append(ctx, "declare i32 @arche_par_reduce_i32(i32*, i64, i32)\n");
+	buffer_append(ctx, "declare i64 @arche_par_reduce_i64(i64*, i64, i32)\n");
 	/* `write` (libc, for a policy's stderr diagnostic) is declared by core's `#foreign` block, which is
 	 * prepended to every program — no codegen-side declare, so no redefinition clash. */
 

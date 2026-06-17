@@ -118,3 +118,32 @@ accurate.
 **Takeaway:** arche's next single-thread perf lever is the **CSV parser** (a SIMD/custom numeric parse),
 not the compute. The 100M CSV (~3.4 GB) is generated, not in-repo —
 `python data/generate_data.py <rows> data/data_<size>.csv`.
+
+## Multicore reduce: does it help? (no — the sum is bandwidth-bound)
+
+After unifying the data-parallel ops under one IR + a pluggable backend interface (`ParOp` + `Backend`
+in codegen.c — map/reduce/scan/sort all flow through it), adding a **`cores` backend** was ~40 lines of
+codegen + one runtime function (`arche_par_reduce_*` in `runtime/io.c`: chunk the column → per-thread
+fold → combine partials with the monoid). That cheapness *is* the payoff of the unification — a new
+backend is "implement the interface once," not per-op. Reachable experimentally via
+`ARCHE_REDUCE_CORES=1 arche build …` (a per-op `@cores` annotation is the eventual surface).
+
+But it is **not faster** for a pure column sum. 100M f32 `reduce(+, col)`, this machine (12 cores):
+
+| backend | 100M f32 sum | result |
+|---|---:|---|
+| AUTO (single-thread SIMD `<4×f32>`) | ~26–32 ms | `6.71e7` (2²⁶, saturated) |
+| CORES (multicore) | ~30 ms | `1e8` (**exact** — 12 chunk-accumulators) |
+
+A wash on time. The sum reads 400 MB and does ~1 add/element → it's **memory-bandwidth-bound**, and the
+single-thread SIMD reduce *already* saturates bandwidth (~14 GB/s here), so more threads add nothing
+(thread-spawn overhead even nudges it slower). Multicore only wins when the kernel is **compute-bound** —
+real arithmetic per element (a fused map→reduce), or working sets that fit per-core caches. (Side note:
+cores is *more accurate* — each ~8M-element chunk stays under f32's 2²⁴ saturation, so the combined sum
+is exact, beating even the 4-lane SIMD's 2²⁶.)
+
+**Conclusion:** the earlier "monoids → parallel → faster" intuition is false for bandwidth-bound folds.
+The real multicore lever is **fusion** (next): fold an elementwise expression — `reduce(+, price*qty)` —
+in one pass without materializing the intermediate column, turning a bandwidth-bound sum into a
+compute-bound kernel that *both* SIMD and cores accelerate (and eliminating the column the current ETL
+task 4 writes only to immediately sum).
