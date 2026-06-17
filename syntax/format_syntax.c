@@ -127,7 +127,7 @@ static int is_list_brace_parent(SyntaxNodeKind p) {
 	return p == SN_ARRAY_LIT_EXPR || p == SN_USE_DECL || p == SN_GROUP_EXPR || p == SN_ARCH_EXPR || p == SN_ENUM_EXPR;
 }
 
-/* A `( … )` that holds a genuine comma list — call args, proc/func/sys params + out-params — and so
+/* A `( … )` that holds a genuine comma list — call args, proc/func/map params + out-params — and so
  * is worth breaking one-per-line. A single-expression paren (`(expr)`), `alloc(...)`, and control-flow
  * headers (`if`/`for`) are excluded: they aren't lists, so breaking them (and adding a trailing
  * comma) would just be noise. (Trailing commas parse fine everywhere now — this is a style choice,
@@ -512,6 +512,10 @@ void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 	int *deco_end = ls.count ? calloc((size_t)ls.count, sizeof(int)) : NULL;
 	for (int i = 0; deco_end && i < ls.count; i++) {
 		if (ls.items[i].kind != TOK_AT || i + 1 >= ls.count || ls.items[i + 1].kind != TOK_IDENT)
+			continue;
+		/* `run map @gpu` — the `@gpu` is an inline dispatch marker on a run statement, not a decl
+		 * decorator, so it must NOT force a line break (which would strand the `;`). */
+		if (ls.items[i].parent == SN_RUN_STMT)
 			continue;
 		int last = i + 1; /* `@name` with no argument list ends at the name */
 		if (i + 2 < ls.count && ls.items[i + 2].kind == TOK_LPAREN) {

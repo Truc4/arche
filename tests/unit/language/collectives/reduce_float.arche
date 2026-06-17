@@ -1,0 +1,14 @@
+// `reduce` over a float column folds with the float monoid identity (0.0 for +, etc.).
+// (Phase 2 spec; red until reduce is implemented.)
+// RUN: %arche build -o %t %s && %t | grep -qF "sum=10 mx=4 mn=1"
+#import { fmt }
+w :: float;
+N :: arche { w }
+[4]N(4);
+main :: proc() {
+  N.w = { 1.0, 2.0, 3.0, 4.0 };
+  s  := reduce(+, N.w);
+  mx := reduce(max, N.w);
+  mn := reduce(min, N.w);
+  fmt.printf("sum=%.0f mx=%.0f mn=%.0f\n", s * 1.0, mx * 1.0, mn * 1.0);
+}

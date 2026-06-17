@@ -6,6 +6,6 @@
 
 Hidden :: arche { z }
 
-tick :: sys (z) {
+tick :: map (z) {
   z = z + 1.0;
 }

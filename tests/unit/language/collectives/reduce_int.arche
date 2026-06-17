@@ -1,0 +1,16 @@
+// `reduce(op, Column)` folds a whole column to a scalar over a monoid (associative op + identity).
+// Built-in ops: + (id 0), * (id 1), min (id +MAX), max (id -MAX). A collective, NOT a per-element map.
+// (Phase 2 spec; red until reduce is implemented.)
+// RUN: %arche build -o %t %s && %t | grep -qF "sum=15 prod=120 mn=1 mx=5"
+#import { fmt }
+v :: int;
+N :: arche { v }
+[5]N(5);
+main :: proc() {
+  N.v = { 1, 2, 3, 4, 5 };
+  sum  := reduce(+, N.v);
+  prod := reduce(*, N.v);
+  mn   := reduce(min, N.v);
+  mx   := reduce(max, N.v);
+  fmt.printf("sum=%d prod=%d mn=%d mx=%d\n", sum, prod, mn, mx);
+}

@@ -41,7 +41,7 @@ typedef struct {
 		struct {
 			TypeId *params;
 			int param_count;
-			TypeId *returns; /* func: single return; proc: out-params; sys/policy: none */
+			TypeId *returns; /* func: single return; proc: out-params; map/policy: none */
 			int return_count;
 		} func; /* shared payload for the four callable KINDS (TYK_FUNC/PROC/SYS/POLICY) — the kind, not
 		         * a flag, tells them apart, so a proc-type and func-type never unify. */
@@ -279,7 +279,7 @@ TypeId tyid_of_func(TypeArena *a, const TypeId *params, int param_count, const T
 TypeId tyid_of_proc(TypeArena *a, const TypeId *params, int param_count, const TypeId *returns, int return_count) {
 	return intern_callable(a, TYK_PROC, params, param_count, returns, return_count);
 }
-TypeId tyid_of_sys(TypeArena *a, const TypeId *params, int param_count) {
+TypeId tyid_of_map(TypeArena *a, const TypeId *params, int param_count) {
 	return intern_callable(a, TYK_SYS, params, param_count, NULL, 0);
 }
 TypeId tyid_of_policy(TypeArena *a, const TypeId *params, int param_count) {
@@ -428,7 +428,7 @@ const char *tyid_display(const TypeArena *a, TypeId t, char *buf, int buflen) {
 	case TYK_SYS:
 	case TYK_POLICY: {
 		/* Render each callable form in Arche's own spelling — `func(T, U) -> R`, `proc(T)(A)`,
-		 * `sys(T)`, `policy(T)` — with the real param/return types (cf. Odin/Jai showing the types). */
+		 * `map(T)`, `policy(T)` — with the real param/return types (cf. Odin/Jai showing the types). */
 		char ps[400] = "";
 		for (int i = 0; i < n->data.func.param_count; i++) {
 			char one[128];
@@ -451,7 +451,7 @@ const char *tyid_display(const TypeArena *a, TypeId t, char *buf, int buflen) {
 				tyid_display(a, n->data.func.returns[0], rs, sizeof(rs));
 			snprintf(buf, buflen, "func(%s) -> %s", ps, rs);
 		} else {
-			snprintf(buf, buflen, "%s(%s)", n->kind == TYK_SYS ? "sys" : "policy", ps);
+			snprintf(buf, buflen, "%s(%s)", n->kind == TYK_SYS ? "map" : "policy", ps);
 		}
 		break;
 	}

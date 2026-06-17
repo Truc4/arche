@@ -1,0 +1,24 @@
+// `min`/`max` over an empty pool must return the monoid identity — +∞ for min, −∞ for max — so that
+// folding in any subset is well-defined. Covers both int and float empty folds (the subtlest identities).
+// RUN: %arche build -o %t %s && %t | grep -qF "imn=1 imx=1 fmn=1 fmx=1"
+#import { fmt }
+iv :: int;
+fv :: float;
+I  :: arche { iv }
+F  :: arche { fv }
+[4]I; // zero rows
+[4]F; // zero rows
+main :: proc() {
+  imn := reduce(min, I.iv); // +INT_MAX
+  imx := reduce(max, I.iv); // -INT_MAX-ish (INT_MIN)
+  fmn := reduce(min, F.fv); // +inf
+  fmx := reduce(max, F.fv); // -inf
+  // Identity sanity: min-identity must be > max-identity for both types (no elements folded in).
+  fmt.printf(
+    "imn=%d imx=%d fmn=%d fmx=%d\n",
+    (imn > imx),
+    (imx < imn),
+    (fmn > fmx),
+    (fmx < fmn),
+  );
+}

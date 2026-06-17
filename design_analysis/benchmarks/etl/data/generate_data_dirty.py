@@ -20,7 +20,7 @@ NOT used by the default benchmark runner. Generate explicitly:
 
     python3 generate_data_dirty.py 1000000 design_analysis/benchmarks/etl/data/data_dirty.csv
 
-Then point compare_scale.py at it via --csv.
+Then point etl/compare.py at it via --csv.
 """
 
 import random

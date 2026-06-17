@@ -1,14 +1,11 @@
-// A `sys` runs to completion over all matching archetypes and supports no `return` at all —
-// neither a naked early exit nor a value. Guard work with `if` instead.
+// A `map` runs to completion over all matching entities and supports no `return` at all — neither a naked
+// early exit nor a value (it is a branch-free kernel; use `select(...)` for conditional values).
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "does not support .return." %t.out
 Mover :: arche { pos :: float, vel :: float }
 [4]Mover(4);
 
-step :: sys (pos, vel) {
-  if (vel < 0.0) {
-    return;
-  }
-  pos = pos + vel;
+step :: map (pos, vel) {
+  return;
 }
 
 main :: proc() {

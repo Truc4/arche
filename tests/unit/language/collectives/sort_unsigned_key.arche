@@ -1,0 +1,18 @@
+// Unsigned key whose values straddle 2^31. The previous sort always used a signed compare (icmp slt),
+// so 4000000000 (negative as i32) sorted FIRST — wrong. With the unsigned-correct compare it sorts LAST.
+// Probes the tag order (unambiguous regardless of how the u32 prints). RED before the unsigned fix.
+// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+#import { fmt }
+k   :: u32;
+tag :: int;
+N   :: arche { k, tag }
+[3]N(3);
+main :: proc() {
+  N.k   = { 1, 4000000000, 2 };
+  N.tag = { 10, 20, 30 };
+  sort(N.k); // unsigned ascending: 1, 2, 4000000000 → tags 10, 30, 20
+  fmt.assert(N.tag[0] == 10, "t0\n");
+  fmt.assert(N.tag[1] == 30, "t1\n");
+  fmt.assert(N.tag[2] == 20, "t2\n");
+  fmt.printf("PASS\n");
+}

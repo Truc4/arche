@@ -145,22 +145,22 @@ struct SemanticContext {
 
 	int error_count;
 
-	/* Track which archetype we're analyzing a sys for (NULL if not in sys) */
-	const char *current_sys_archetype;
+	/* Track which archetype we're analyzing a map for (NULL if not in map) */
+	const char *current_map_archetype;
 
 	/* Track the proc currently being analyzed (NULL if not in a proc body).
 	 * Used by each_field to verify its RHS is an `archetype` parameter of this proc. */
 	DeclSummary *current_proc;
 
 	/* Track the func currently being analyzed (NULL if not in a func body). Used by STMT_RETURN
-	 * to require a value in a func and forbid one in a proc/sys (which use out-params). */
+	 * to require a value in a func and forbid one in a proc/map (which use out-params). */
 	DeclSummary *current_func;
 
-	/* Track if inside proc/sys body (for alloc enforcement) */
+	/* Track if inside proc/map body (for alloc enforcement) */
 	int in_body;
 
-	/* 1 while analyzing a `sys` body. A `sys` supports no `return` at all (naked or valued). */
-	int in_sys;
+	/* 1 while analyzing a `map` body. A `map` supports no `return` at all (naked or valued). */
+	int in_map;
 
 	/* 1 only while analyzing a call that sits in a statement / bind-RHS position (where an
 	 * *action* is allowed). A proc or extern call is an action, not a value, so it may appear
@@ -1448,14 +1448,14 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 			if (base_var->archetype_name)
 				arch = find_archetype(ctx, base_var->archetype_name);
 			/* E0111: a typed variable with no field-access shape (skip tuples, archetype params,
-			 * sys-column access, and array metadata props). */
-			int sys_column_access = 0;
-			if (base_var->is_param && ctx->current_sys_archetype) {
-				ArchetypeInfo *sa = find_archetype(ctx, ctx->current_sys_archetype);
+			 * map-column access, and array metadata props). */
+			int map_column_access = 0;
+			if (base_var->is_param && ctx->current_map_archetype) {
+				ArchetypeInfo *sa = find_archetype(ctx, ctx->current_map_archetype);
 				if (sa && find_field(sa, idnt))
-					sys_column_access = 1;
+					map_column_access = 1;
 			}
-			if (!arch && bt != TYID_UNKNOWN && !sys_column_access) {
+			if (!arch && bt != TYID_UNKNOWN && !map_column_access) {
 				if (btk == TYK_NOMINAL)
 					arch = find_archetype(ctx, tyid_nominal_name(A, bt));
 				/* A string (`PRIM_STR`) is a length-carrying char slice — its `.length` is valid just
@@ -1844,6 +1844,12 @@ static TypeId call_type_id(SemanticContext *ctx, SyntaxView v) {
 			result = sem_tyid_of_name(ctx, func_name); /* cast target (alias/prim/width; int→i32 canonical) */
 		} else if (strcmp(func_name, "insert") == 0) {
 			result = sem_tyid_of_name(ctx, "handle");
+		} else if (strcmp(func_name, "reduce") == 0) {
+			/* `reduce(op, col)` folds a column to a scalar of the column's element type (arg 1). */
+			result = sem_expr_type_id(ctx, sem_node_at_expr(v, 1));
+		} else if (strcmp(func_name, "select") == 0) {
+			/* `select(cond, a, b)` yields the type of its value branches (arg 1). */
+			result = sem_expr_type_id(ctx, sem_node_at_expr(v, 1));
 		} else {
 			GroupInfo *gi = find_group(ctx, func_name);
 			if (gi) {
@@ -2047,6 +2053,48 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 				ctx->analyzing_call_arg = 1;
 				analyze_expression(ctx, sem_node_at_expr(v, i));
 			}
+			free(func_name);
+			break;
+		}
+
+		/* `select(cond, a, b)` — the branch-free conditional builtin. cond nonzero -> a, else b. Pure,
+		 * vectorizable, GPU-portable; it's the conditional you use inside a `map` kernel (where `if` is
+		 * forbidden). Recognized here so it isn't flagged undefined; codegen lowers it to LLVM `select`. */
+		if (func_name && strcmp(func_name, "select") == 0) {
+			if (argc != 3)
+				sem_emit_wrong_arity(ctx, loc, "select", 3, argc);
+			for (int i = 0; i < argc; i++) {
+				ctx->analyzing_call_arg = 1;
+				analyze_expression(ctx, sem_node_at_expr(v, i));
+			}
+			free(func_name);
+			break;
+		}
+
+		/* Collectives — `reduce(op, col)` / `scan(op, col)` fold or prefix-fold a whole column over a
+		 * monoid; `sort(col)` sorts the pool by a key column. Recognized here so the op-literal first arg
+		 * and the builtin name aren't flagged undefined; only the column arg is analyzed. A collective is a
+		 * whole-column operation, so it is illegal inside a `map` (which is strictly per-element). */
+		if (func_name &&
+		    (strcmp(func_name, "reduce") == 0 || strcmp(func_name, "scan") == 0 || strcmp(func_name, "sort") == 0)) {
+			if (ctx->in_map)
+				sem_emit_collective_in_map(ctx, loc, func_name);
+			int is_sort = strcmp(func_name, "sort") == 0;
+			/* sort takes 1 arg (key column) or 2 (key + `asc`/`desc`); reduce/scan take exactly 2. */
+			if (is_sort ? (argc < 1 || argc > 2) : (argc != 2))
+				sem_emit_wrong_arity(ctx, loc, func_name, is_sort ? 1 : 2, argc);
+			/* reduce/scan's first arg is the monoid operator — a fixed set with a known identity. Reject
+			 * anything else here (an unknown op would otherwise silently fall back to `+` in codegen). */
+			if (!is_sort && argc >= 1) {
+				char *op = sem_cv_dup_first_token(sem_node_at_expr(v, 0));
+				if (op && strcmp(op, "+") != 0 && strcmp(op, "*") != 0 && strcmp(op, "min") != 0 &&
+				    strcmp(op, "max") != 0)
+					sem_emit_invalid_monoid_op(ctx, loc, func_name, op);
+				free(op);
+			}
+			int col_i = is_sort ? 0 : 1; /* the column arg; reduce/scan skip the op-literal arg 0 */
+			ctx->analyzing_call_arg = 1;
+			analyze_expression(ctx, sem_node_at_expr(v, col_i));
 			free(func_name);
 			break;
 		}
@@ -2382,6 +2430,49 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		return;
 	SourceLoc loc = sem_node_loc(v.node);
 
+	/* A `map` body is, by definition, a sequence of column transforms (`col = expr`). Rather than
+	 * blacklist control-flow constructs one by one, whitelist the only thing a kernel can be: an
+	 * assignment. Anything else (if/for/match/call/bind/break/run/…) is not a transform and is rejected
+	 * here — the restriction falls out of the form, not a hand-maintained ban list. (`return` is allowed
+	 * to fall through to its own, more specific `map_no_return` message.) */
+	if (ctx->in_map) {
+		SyntaxNodeKind mk = sv_kind(v);
+		if (mk != SN_ASSIGN_STMT && mk != SN_RETURN_STMT) {
+			const char *w;
+			switch (mk) {
+			case SN_IF_STMT:
+				w = "`if`";
+				break;
+			case SN_FOR_STMT:
+				w = "`for`";
+				break;
+			case SN_MATCH_STMT:
+				w = "`match`";
+				break;
+			case SN_BREAK_STMT:
+				w = "`break`";
+				break;
+			case SN_CONTINUE_STMT:
+				w = "`continue`";
+				break;
+			case SN_RUN_STMT:
+				w = "`run`";
+				break;
+			case SN_EACH_FIELD_STMT:
+				w = "`each_field`";
+				break;
+			case SN_BIND_STMT:
+				w = "a local binding (`:=`)";
+				break;
+			default:
+				w = "a call / expression statement";
+				break;
+			}
+			sem_emit_map_not_a_transform(ctx, loc, w);
+			return;
+		}
+	}
+
 	switch (sv_kind(v)) {
 	case SN_BIND_STMT: {
 		/* `:` introduces the value ⇒ constant; `=` ⇒ variable (mirror cst_build_stmt). */
@@ -2570,15 +2661,15 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 				sem_emit_cannot_mutate_borrowed(ctx, loc, ln);
 			free(ln);
 		}
-		/* A system READS shared singletons but must not WRITE a foreign pool. Writing an archetype that is
-		 * NOT the one this system iterates runs ONCE (not per row) — almost always a mistaken per-entity
-		 * reduction (D5). The driver writes singletons; systems read them. (find_archetype canonicalizes
+		/* A map READS shared singletons but must not WRITE a foreign pool. Writing an archetype that is
+		 * NOT the one this map iterates runs ONCE (not per row) — almost always a mistaken per-entity
+		 * reduction (D5). The driver writes singletons; maps read them. (find_archetype canonicalizes
 		 * aliases, so the pointer compare is alias-safe; the leftmost target IDENT is the base pool name.) */
-		if (ctx->in_sys && ctx->current_sys_archetype) {
+		if (ctx->in_map && ctx->current_map_archetype) {
 			char *tbase = sv_name_expr_dup(target);
 			ArchetypeInfo *ta = tbase ? find_archetype(ctx, tbase) : NULL;
-			if (ta && ta != find_archetype(ctx, ctx->current_sys_archetype))
-				sem_emit_lint_sys_writes_foreign_pool(ctx, sem_node_loc(target.node), tbase);
+			if (ta && ta != find_archetype(ctx, ctx->current_map_archetype))
+				sem_emit_lint_map_writes_foreign_pool(ctx, sem_node_loc(target.node), tbase);
 			free(tbase);
 		}
 		break;
@@ -2730,8 +2821,8 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 
 	case SN_RETURN_STMT: {
 		int rcount = sem_expr_count(v);
-		if (ctx->in_sys)
-			sem_emit_sys_no_return(ctx, loc);
+		if (ctx->in_map)
+			sem_emit_map_no_return(ctx, loc);
 		else if (rcount > 0 && !ctx->current_func)
 			sem_emit_proc_return_has_value(ctx, loc);
 		for (int i = 0; i < rcount; i++) {
@@ -3022,7 +3113,7 @@ static void analyze_archetype_decl(SemanticContext *ctx, DeclSummary *arch) {
 		reject_meta_type(ctx, arch->fields[i].type_id, arch->fields[i].loc, "archetype component type");
 
 	/* proc/func types can't be archetype components — archetypes are data; per-row behavior
-	 * dispatch is the anti-pattern (Stage D dropped). Use `match` or a system instead. */
+	 * dispatch is the anti-pattern (Stage D dropped). Use `match` or a map instead. */
 	for (int i = 0; i < arch->field_count; i++) {
 		TypeId t = arch->fields[i].type_id;
 		const char *tn = tyid_nominal_name(ctx->ty_arena, t);
@@ -3842,7 +3933,7 @@ static const char *purity_walk(SemanticContext *ctx, SyntaxView v) {
 	const char *r;
 	SyntaxNodeKind k = sv_kind(v);
 	if (k == SN_RUN_STMT)
-		return "runs a system (`run`)";
+		return "runs a map (`run`)";
 	if (k == SN_CALL_EXPR) {
 		const char *cn = ctx->model ? sem_model_callee_name(ctx->model, sv_id(v)) : NULL;
 		char *fb = (!cn && sv_count(v, SN_FIELD_NAME) == 0) ? sem_cv_dup(sv_child(v, SN_CALLEE_NAME)) : NULL;
@@ -4718,7 +4809,7 @@ static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, Sy
 	} else if (explicit_pol) { /* unprovable: an explicit policy governs the op — validate it */
 		validate_explicit_policy(ctx, d, loc, explicit_pol, POLICY_CAT_BOUNDS);
 	} else if (d->kind != DECL_FUNC && (g_no_abort || g_no_implicit_abort) && decl_is_user_code(d)) {
-		/* unprovable, unannotated, in a proc/sys → the implicit default is `!abort`. */
+		/* unprovable, unannotated, in a proc/map → the implicit default is `!abort`. */
 		sem_emit_policy_abort_forbidden(ctx, loc, "this op's implicit `!abort`",
 		                                g_no_abort ? "--no-abort" : "--no-implicit-abort");
 	}
@@ -5021,7 +5112,7 @@ static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 }
 
 /* One-time pass: emit W0017 (raw_pool_index) for unprovable pool-column indexing in each proc/func/
- * sys body. Each site warns once. */
+ * map body. Each site warns once. */
 static void sem_check_raw_pool_lint(SemanticContext *ctx) {
 	for (int di = 0; di < ctx->decl_count; di++) {
 		DeclSummary *d = ctx->decls[di];
@@ -5097,21 +5188,21 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 	case DECL_FUNC: /* also policies — a policy is a DECL_FUNC with is_policy */
 	case DECL_PROC:
 	case DECL_SYS: {
-		/* Each form gets its OWN callable kind — func/proc/sys/policy never unify. Params are common;
-		 * a func carries its return list, a proc its out-params, sys/policy none. */
+		/* Each form gets its OWN callable kind — func/proc/map/policy never unify. Params are common;
+		 * a func carries its return list, a proc its out-params, map/policy none. */
 		/* foreign decls have a fully computed signature (sem_fill_decl_type_ids types their params/returns
 		 * unconditionally), so they get their type like any other callable — no special-case hide. */
 		int np = d->param_count;
 		TypeId pbuf[32];
 		TypeId *params = np > 32 ? malloc((size_t)np * sizeof(TypeId)) : pbuf;
 		for (int i = 0; i < np; i++)
-			/* func/proc/policy params are typed (`a: int`); a sys's are bare COMPONENT names whose type
-			 * is the component itself — resolve those by name so `sys(pos, vel)` isn't `sys(<unknown>)`. */
+			/* func/proc/policy params are typed (`a: int`); a map's are bare COMPONENT names whose type
+			 * is the component itself — resolve those by name so `map(pos, vel)` isn't `map(<unknown>)`. */
 			params[i] = (d->kind == DECL_SYS && d->params[i].name) ? sem_tyid_of_name(ctx, d->params[i].name)
 			                                                       : d->params[i].type_id;
 		TypeId out;
 		if (d->kind == DECL_SYS) {
-			out = tyid_of_sys(ctx->ty_arena, params, np);
+			out = tyid_of_map(ctx->ty_arena, params, np);
 		} else if (d->is_policy) {
 			out = tyid_of_policy(ctx->ty_arena, params, np);
 		} else if (d->kind == DECL_PROC) {
@@ -5400,25 +5491,25 @@ static void analyze_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 	lint_proc_decl(ctx, proc);
 }
 
-static void analyze_sys_decl(SemanticContext *ctx, DeclSummary *sys) {
-	if (!sys)
+static void analyze_map_decl(SemanticContext *ctx, DeclSummary *map) {
+	if (!map)
 		return;
 
 	push_scope(ctx);
 
-	/* infer which archetype this sys operates on by matching parameter names to fields */
-	const char *sys_archetype = NULL;
+	/* infer which archetype this map operates on by matching parameter names to fields */
+	const char *map_archetype = NULL;
 	ArchetypeInfo *arch_info = NULL;
 	for (int a = 0; a < ctx->archetype_count; a++) {
 		int matches = 0;
-		for (int p = 0; p < sys->param_count; p++) {
-			if (find_field(ctx->archetypes[a], sys->params[p].name)) {
+		for (int p = 0; p < map->param_count; p++) {
+			if (find_field(ctx->archetypes[a], map->params[p].name)) {
 				matches++;
 			}
 		}
 		/* if all parameters match fields in this archetype, this is our archetype */
-		if (matches == sys->param_count && sys->param_count > 0) {
-			sys_archetype = archetype_any_alias(ctx, ctx->archetypes[a]);
+		if (matches == map->param_count && map->param_count > 0) {
+			map_archetype = archetype_any_alias(ctx, ctx->archetypes[a]);
 			arch_info = ctx->archetypes[a];
 			break;
 		}
@@ -5426,40 +5517,40 @@ static void analyze_sys_decl(SemanticContext *ctx, DeclSummary *sys) {
 
 	/* Check that no parameter is a handle column */
 	if (arch_info) {
-		for (int p = 0; p < sys->param_count; p++) {
-			FieldInfo *field = find_field(arch_info, sys->params[p].name);
+		for (int p = 0; p < map->param_count; p++) {
+			FieldInfo *field = find_field(arch_info, map->params[p].name);
 			if (field && tyid_kind(ctx->ty_arena, field->type_id) == TYK_HANDLE) {
-				sem_emit_handle_in_sys_param(ctx, sys->params[p].loc, sys->params[p].name);
+				sem_emit_handle_in_map_param(ctx, map->params[p].loc, map->params[p].name);
 			}
 		}
 	}
 
 	/* add parameters as variables, using field types from archetype if available */
-	for (int i = 0; i < sys->param_count; i++) {
-		reject_meta_type(ctx, sys->params[i].type_id, sys->params[i].loc, "sys parameter type");
-		TypeId param_type = sys->params[i].type_id;
+	for (int i = 0; i < map->param_count; i++) {
+		reject_meta_type(ctx, map->params[i].type_id, map->params[i].loc, "map parameter type");
+		TypeId param_type = map->params[i].type_id;
 		/* If no explicit type and we found the archetype, use the field's type */
 		if (param_type == TYID_UNKNOWN && arch_info) {
-			FieldInfo *field = find_field(arch_info, sys->params[i].name);
+			FieldInfo *field = find_field(arch_info, map->params[i].name);
 			if (field)
 				param_type = field->type_id;
 		}
-		add_variable(ctx, sys->params[i].name, param_type);
-		mark_last_param(ctx, sys->params[i].is_own);
+		add_variable(ctx, map->params[i].name, param_type);
+		mark_last_param(ctx, map->params[i].is_own);
 	}
 
-	const char *old_sys_archetype = ctx->current_sys_archetype;
-	ctx->current_sys_archetype = sys_archetype;
+	const char *old_map_archetype = ctx->current_map_archetype;
+	ctx->current_map_archetype = map_archetype;
 
-	int prev_in_sys = ctx->in_sys;
-	ctx->in_sys = 1;
+	int prev_in_map = ctx->in_map;
+	ctx->in_map = 1;
 	ctx->in_body = 1;
-	for (int i = 0, n = sem_stmt_count(sys->body_node); i < n; i++)
-		analyze_statement(ctx, sem_stmt_at(sys->body_node, i));
+	for (int i = 0, n = sem_stmt_count(map->body_node); i < n; i++)
+		analyze_statement(ctx, sem_stmt_at(map->body_node, i));
 	ctx->in_body = 0;
-	ctx->in_sys = prev_in_sys;
+	ctx->in_map = prev_in_map;
 
-	ctx->current_sys_archetype = old_sys_archetype;
+	ctx->current_map_archetype = old_map_archetype;
 	pop_scope(ctx);
 }
 
@@ -5631,7 +5722,7 @@ static void analyze_decl(SemanticContext *ctx, DeclSummary *ds) {
 		analyze_proc_decl(ctx, ds);
 		break;
 	case DECL_SYS:
-		analyze_sys_decl(ctx, ds);
+		analyze_map_decl(ctx, ds);
 		break;
 	case DECL_FUNC:
 		analyze_func_decl(ctx, ds);
@@ -6460,7 +6551,7 @@ void semantic_set_extra_inline_module(const char *name) {
 	g_sem_extra_inline = name ? sem_dupz(name) : NULL;
 }
 
-/* A system-library name flows verbatim into the cc `-l<name>` link command (a system() string), so it
+/* A map-library name flows verbatim into the cc `-l<name>` link command (a map() string), so it
  * must be shell- and linker-safe: restrict to the same charset cc/ld accept for a library stem. */
 static int sem_link_name_ok(const char *s, size_t n) {
 	if (n == 0)
@@ -6765,7 +6856,7 @@ static void sem_add_module_decl(SemanticContext *ctx, const SyntaxNode *node, co
 	 * in `#module` stays unit-private, so a datasheet storage requirement that names it can't resolve a
 	 * public shape and errors), OR from a PLAIN module (no `.ds.arche`) — a plain/path module merges flat
 	 * into the importer (Jai `#load`), so `helper()` not `mod.helper()`. Only a DEVICE's pure-Arche impl
-	 * behavior decls (procs/systems/funcs) are prefixed to `<device>.<name>` (the namespaced contract). */
+	 * behavior decls (procs/maps/funcs) are prefixed to `<device>.<name>` (the namespaced contract). */
 	int flat = is_ext || is_datasheet || !module_is_device || (md->kind == DECL_ARCHETYPE && exported);
 	/* A `#file` decl is file-local: it must NOT join the cross-file `full` set (so sibling files can't
 	 * bind to it) and is never exported. It goes into the per-file `fileset` instead; sem_inline_module
@@ -7288,7 +7379,7 @@ static void dead_mark_def(SemanticContext *ctx, DefId d, char *reachable, int *w
 }
 
 /* Walk a body subtree, marking the DefId target of every call (callee_def) and every bare name
- * reference (ref_def — a func/proc/sys handed by name, e.g. a compile-time callback arg). */
+ * reference (ref_def — a func/proc/map handed by name, e.g. a compile-time callback arg). */
 static void dead_walk(SemanticContext *ctx, const SyntaxNode *n, const char *src, char *reachable, int *work,
                       int *work_n) {
 	if (!n)
@@ -7304,7 +7395,7 @@ static void dead_walk(SemanticContext *ctx, const SyntaxNode *n, const char *src
 			dead_walk(ctx, n->children[i].as.node, src, reachable, work, work_n);
 }
 
-/* A func/proc/sys that is always kept regardless of reachability — visibility/origin-aware (Go
+/* A func/proc/map that is always kept regardless of reachability — visibility/origin-aware (Go
  * capitals / Rust `pub`), replacing the old `.`-in-name heuristic. Entry-unit decls are NOT roots here;
  * the crate-kind gate in sem_check_dead_code decides whether to flag them (binary = closed world). */
 static int dead_is_root(const DeclSummary *d) {
@@ -7408,8 +7499,8 @@ static void sem_check_dead_code(SemanticContext *ctx) {
 	}
 	int work_n = 0;
 	/* seed roots. Systems are entry points — invoked by `run`, which records no call edge — so seed
-	 * every `sys` and walk its body; a func/proc reachable only from a system is thus kept alive
-	 * (systems themselves are never flagged). Other callables seed only when they are roots. */
+	 * every `map` and walk its body; a func/proc reachable only from a map is thus kept alive
+	 * (maps themselves are never flagged). Other callables seed only when they are roots. */
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *d = ctx->decls[i];
 		if (d->kind == DECL_SYS)
@@ -7912,10 +8003,10 @@ static SemanticContext *make_context(void) {
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
 	ctx->error_count = 0;
-	ctx->current_sys_archetype = NULL;
+	ctx->current_map_archetype = NULL;
 	ctx->current_proc = NULL;
 	ctx->current_func = NULL;
-	ctx->in_sys = 0;
+	ctx->in_map = 0;
 	ctx->in_body = 0;
 	ctx->stmt_call_ok = 0;
 	ctx->proc_call_stmt_ok = 0; /* only the out-list statement sets this; cleared in every EXPR_CALL */
@@ -8032,7 +8123,7 @@ static void walk_matches(SemanticContext *ctx, const SyntaxNode *n, const char *
 			walk_matches(ctx, n->children[i].as.node, src);
 }
 
-/* The node whose direct children are a proc/func/sys body's statements. In the unified grammar a
+/* The node whose direct children are a proc/func/map body's statements. In the unified grammar a
  * `name :: proc(){…}` decl node carries the body under its SN_PROC_EXPR/SN_FUNC_EXPR/SN_SYS_EXPR
  * value-form child; the legacy SN_*_DECL form holds the statements directly. */
 static SyntaxView sem_decl_body_node(SyntaxView dn) {

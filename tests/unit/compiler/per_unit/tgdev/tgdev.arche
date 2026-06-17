@@ -4,7 +4,7 @@
 // RUN: true
 Mover :: arche { pos, vel }
 
-integrate :: sys (pos, vel) {
+integrate :: map (pos, vel) {
   pos.x = pos.x + vel.x;
   pos.y = pos.y + vel.y;
 }

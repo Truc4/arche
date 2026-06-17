@@ -7,8 +7,7 @@ Task1 :: arche { price :: float, quantity :: int, revenue :: float }
   price: 2.0, quantity: 3, revenue: 0.0,
 }
 
-task1_compute_revenue :: sys (price, quantity, revenue) {
-  fmt.printf("sys1_ran\n");
+task1_compute_revenue :: map (price, quantity, revenue) {
   revenue = price * quantity;
 }
 // Task 2: Filter invalid (valid flag for quantity > 0)
@@ -18,8 +17,7 @@ Task2 :: arche { quantity, valid :: int }
   quantity: 5, valid: 0,
 }
 
-task2_filter_invalid :: sys (quantity, valid) {
-  fmt.printf("sys2_ran\n");
+task2_filter_invalid :: map (quantity, valid) {
   valid = quantity > 0;
 }
 // Task 3: Bucket timestamps (hour_bucket = timestamp rounded down to nearest hour)
@@ -29,8 +27,7 @@ Task3 :: arche { timestamp :: int, hour_bucket :: int }
   timestamp: 7654, hour_bucket: 0,
 }
 
-task3_bucket_timestamps :: sys (timestamp, hour_bucket) {
-  fmt.printf("sys3_ran\n");
+task3_bucket_timestamps :: map (timestamp, hour_bucket) {
   hour_bucket = timestamp / 3600 * 3600;
 }
 // Task 4: Different shape - OK to init
@@ -40,8 +37,7 @@ Task4 :: arche { amount :: float }
   amount: 100.0,
 }
 
-task4_process :: sys (amount) {
-  fmt.printf("sys4_ran\n");
+task4_process :: map (amount) {
   amount = amount * 2.0;
 }
 

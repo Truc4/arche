@@ -14,7 +14,7 @@ Ent   :: arche { v, out }
 [4]Table;
 [3]Ent;
 
-gather :: sys (v, out) {
+gather :: map (v, out) {
   out = Table.val[v]; // base suppressed → column ptr; index v auto-indexed per row → Table.val[v_i]
 }
 

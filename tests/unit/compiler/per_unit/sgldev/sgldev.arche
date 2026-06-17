@@ -5,6 +5,6 @@
 Config :: arche { gravity }
 Thing  :: arche { v }
 
-accel :: sys (v) {
+accel :: map (v) {
   v = v + Config.gravity[0];
 }

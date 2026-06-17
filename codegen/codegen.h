@@ -44,4 +44,10 @@ int codegen_shared_enabled(void);
 void codegen_set_hot(int on);
 int codegen_hot_enabled(void);
 
+/* `--gpu`: a `run map @gpu` tries the embedded compute shader on the GPU, falling back to the direct CPU
+ * call on failure. Off (default) → `@gpu` builds are pure CPU (no Vulkan dependency, core suite stays
+ * GPU-free). See runtime/gpu_runtime.c and codegen/gpu_embed.c. */
+void codegen_set_gpu(int on);
+int codegen_gpu_enabled(void);
+
 #endif /* CODEGEN_H */

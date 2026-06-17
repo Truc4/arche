@@ -1,0 +1,26 @@
+// `sort(Pool.key)` sorts the WHOLE archetype pool ascending by that key column, permuting EVERY column
+// together so each entity's fields stay aligned (sorting one column alone would shear the rows).
+// (Phase 2 spec; red until sort is implemented.)
+// RUN: %arche build -o %t %s && %t | grep -qF "k=1 2 3 4 tag=20 40 10 30"
+#import { fmt }
+k   :: int;
+tag :: int;
+N   :: arche { k, tag }
+[4]N(4);
+main :: proc() {
+  N.k   = { 3, 1, 4, 2 };
+  N.tag = { 10, 20, 30, 40 };
+  sort(N.k);
+  // rows sorted by k asc: (1,20) (2,40) (3,10) (4,30)
+  fmt.printf(
+    "k=%d %d %d %d tag=%d %d %d %d\n",
+    N.k[0],
+    N.k[1],
+    N.k[2],
+    N.k[3],
+    N.tag[0],
+    N.tag[1],
+    N.tag[2],
+    N.tag[3],
+  );
+}

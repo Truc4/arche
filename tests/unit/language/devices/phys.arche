@@ -3,6 +3,6 @@
 // RUN: true
 Particle :: arche { pos :: float, vel :: float }
 
-integrate :: sys (pos, vel) {
+integrate :: map (pos, vel) {
   pos = pos + vel;
 }

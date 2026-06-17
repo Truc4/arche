@@ -6,12 +6,12 @@ Counter :: arche { val :: int }
   val: 0,
 }
 
-increment :: sys (val) {
-  fmt.printf("system_ran\n");
+increment :: map (val) {
   val = val + 1;
 }
 
 main :: proc() {
   run increment;
+  fmt.printf("system_ran\n");
   fmt.assert(Counter.val[0] == 1, "system did not run\n");
 }

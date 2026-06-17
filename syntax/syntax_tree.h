@@ -86,7 +86,7 @@ typedef enum {
 	SN_POLICY_EXPR,  /* policy value literal: `policy(in)->T{body}` — a failure-policy decl */
 	SN_GROUP_EXPR,   /* Odin-style overload group: `proc{a,b}` / `func{a,b}` */
 	SN_ARCH_EXPR,    /* archetype (record type) definition: `archetype{ fields }` */
-	SN_SYS_EXPR,     /* sys definition: `sys(components){body}` */
+	SN_SYS_EXPR,     /* map definition: `map(components){body}` */
 	SN_ENUM_EXPR,    /* enum type definition: `enum { a, b = 2, c }` */
 	SN_ENUM_VARIANT, /* one enum variant: name + optional `= N` */
 
@@ -102,7 +102,7 @@ typedef enum {
 	/* Identifier-role leaves (kept for the highlighter's classification; these
 	 * wrap a single identifier token inside the structural nodes above) */
 	SN_TYPE_DEF_NAME, /* archetype name at its declaration (a type definition) */
-	SN_FUNC_DEF_NAME, /* proc / sys / func name at its declaration */
+	SN_FUNC_DEF_NAME, /* proc / map / func name at its declaration */
 	SN_FIELD_NAME,    /* field-decl name, or the name in a `.field` access */
 	SN_PARAM_NAME,    /* parameter name */
 	SN_CALLEE_NAME,   /* the callee identifier of a call expression */

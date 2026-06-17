@@ -1,0 +1,15 @@
+// os_now_sec returns a C `double`, but arche `float` is f32 — the FFI return type must agree or the
+// caller reads the wrong bytes. A valid monotonic clock is positive and two adjacent reads are within a
+// second; the f32/double mismatch returns garbage that violates this. RED while the runtime returns
+// `double` into an f32 slot; GREEN once it returns `float`.
+// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+#import { os fmt }
+main :: proc() {
+  os.os_now_sec()(s0:);
+  os.os_now_sec()(s1:);
+  diff := s1 - s0;
+  fmt.assert(s0 > 0.0, "os_now_sec non-positive (f32/double ABI mismatch)\n");
+  fmt.assert(s1 >= s0, "os_now_sec not monotonic (f32/double ABI mismatch)\n");
+  fmt.assert(diff < 1.0, "os_now_sec adjacent reads >1s apart (f32/double ABI mismatch)\n");
+  fmt.printf("PASS\n");
+}

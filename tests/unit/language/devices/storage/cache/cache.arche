@@ -3,6 +3,6 @@
 // RUN: true
 Node :: arche { key, val }
 
-touch :: sys (key) {
+touch :: map (key) {
   key = key + 1.0;
 }

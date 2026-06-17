@@ -1131,12 +1131,15 @@ static HirStmt *lower_stmt_cst(SyntaxView s) {
 	}
 	case SN_RUN_STMT: {
 		as->kind = HIR_STMT_RUN;
-		/* `run sys` / `run device.system`: `run` is a keyword, so the only IDENTs are the
+		/* `run map` / `run device.system`: `run` is a keyword, so the only IDENTs are the
 		 * (possibly qualified) system-name segments — join them with `.` to match the imported
 		 * system's canonical identity. (`run … in world` is not emitted by the parser today.) */
 		char namebuf[256];
 		int nl = 0;
-		for (int i = 0; i < s.node->child_count; i++)
+		for (int i = 0; i < s.node->child_count; i++) {
+			/* the optional trailing `@gpu` marker is not part of the system name — stop at the `@`. */
+			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_AT)
+				break;
 			if (s.node->children[i].tag == SE_TOKEN && s.node->children[i].as.token.kind == TOK_IDENT) {
 				if (nl > 0 && nl < (int)sizeof(namebuf) - 1)
 					namebuf[nl++] = '.';
@@ -1144,9 +1147,20 @@ static HirStmt *lower_stmt_cst(SyntaxView s) {
 				for (int k = 0; k < seg && nl < (int)sizeof(namebuf) - 1; k++)
 					namebuf[nl++] = s.src[s.node->children[i].as.token.offset + k];
 			}
+		}
 		namebuf[nl] = '\0';
-		as->data.run_stmt.system_name = dupz(namebuf);
+		as->data.run_stmt.map_name = dupz(namebuf);
 		as->data.run_stmt.world_name = NULL;
+		/* `run map @gpu`: a `@ gpu` token pair after the name marks this dispatch for the GPU. */
+		for (int i = 0; i + 1 < s.node->child_count; i++) {
+			const SyntaxElem *a = &s.node->children[i], *g = &s.node->children[i + 1];
+			if (a->tag == SE_TOKEN && a->as.token.kind == TOK_AT && g->tag == SE_TOKEN &&
+			    g->as.token.kind == TOK_IDENT && g->as.token.length == 3 &&
+			    memcmp(s.src + g->as.token.offset, "gpu", 3) == 0) {
+				as->data.run_stmt.is_gpu = 1;
+				break;
+			}
+		}
 		break;
 	}
 	case SN_IF_STMT: {
@@ -1523,7 +1537,7 @@ static HirStmt *lower_stmt_cst(SyntaxView s) {
 static HirParam *lower_param_cst(SyntaxView p) {
 	HirParam *ap = hir_param_create(NULL, NULL);
 	ap->name = sv_dup(sv_child(p, SN_PARAM_NAME));
-	ap->type = lower_type_cst(sv_type_at(p, 0)); /* NULL for sys params */
+	ap->type = lower_type_cst(sv_type_at(p, 0)); /* NULL for map params */
 	ap->is_own = sv_has_token(p, TOK_OWN);
 	return ap;
 }
@@ -1762,9 +1776,9 @@ static void tuple_collapse_decl(HirDecl *d) {
 		for (int i = 0; i < d->data.proc->stmt_count; i++)
 			tuple_collapse_stmt(d->data.proc->stmts[i]);
 		break;
-	case HIR_DECL_SYS:
-		for (int i = 0; i < d->data.sys->stmt_count; i++)
-			tuple_collapse_stmt(d->data.sys->stmts[i]);
+	case HIR_DECL_MAP:
+		for (int i = 0; i < d->data.map->stmt_count; i++)
+			tuple_collapse_stmt(d->data.map->stmts[i]);
 		break;
 	case HIR_DECL_FUNC:
 		for (int i = 0; i < d->data.func->stmt_count; i++)
@@ -2062,7 +2076,7 @@ static void group_suffix_names(HirExpr *e, const char *suffix) {
  * the user writes the vector once instead of hand-expanding each axis. Each component clones the RHS and
  * suffixes its bare group references. Statements are replaced in place by a BLOCK (codegen + the later
  * tuple_rewrite pass both recurse into blocks). */
-static void expand_group_assigns(HirSysDecl *as) {
+static void expand_group_assigns(HirMapDecl *as) {
 	for (int sx = 0; sx < as->stmt_count; sx++) {
 		HirStmt *s = as->stmts[sx];
 		if (!s || s->kind != HIR_STMT_ASSIGN)
@@ -2092,9 +2106,9 @@ static void expand_group_assigns(HirSysDecl *as) {
 	}
 }
 
-static HirDecl *lower_sys_from(SyntaxView f, char *name) {
-	HirDecl *ad = hir_decl_create(HIR_DECL_SYS);
-	HirSysDecl *as = calloc(1, sizeof(HirSysDecl));
+static HirDecl *lower_map_from(SyntaxView f, char *name) {
+	HirDecl *ad = hir_decl_create(HIR_DECL_MAP);
+	HirMapDecl *as = calloc(1, sizeof(HirMapDecl));
 	as->name = name;
 	as->stmts = syntax_lower_body(f, &as->stmt_count);
 	/* Expand whole-group vector ops (`pos = pos + vel`) into per-component blocks BEFORE the per-param
@@ -2134,7 +2148,7 @@ static HirDecl *lower_sys_from(SyntaxView f, char *name) {
 		}
 		free(pn);
 	}
-	ad->data.sys = as;
+	ad->data.map = as;
 	return ad;
 }
 
@@ -2399,12 +2413,12 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		return ad;
 	}
 	case SN_SYS_DECL: {
-		HirDecl *ad = hir_decl_create(HIR_DECL_SYS);
-		HirSysDecl *as = calloc(1, sizeof(HirSysDecl));
+		HirDecl *ad = hir_decl_create(HIR_DECL_MAP);
+		HirMapDecl *as = calloc(1, sizeof(HirMapDecl));
 		as->name = sv_dup(sv_child(d, SN_FUNC_DEF_NAME));
 		/* Lower the body first; a tuple-group param then expands into one scalar param
 		 * per component (`pos` → `pos_x`, `pos_y`) and its `pos.x` body accesses are
-		 * rewritten to the flattened names (flattened sys lowering). */
+		 * rewritten to the flattened names (flattened map lowering). */
 		as->stmts = syntax_lower_body(d, &as->stmt_count);
 		int np = sv_count(d, SN_PARAM);
 		int pcount = 0;
@@ -2440,7 +2454,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 			}
 			free(pn);
 		}
-		ad->data.sys = as;
+		ad->data.map = as;
 		return ad;
 	}
 	case SN_FUNC_DECL: {
@@ -2500,7 +2514,9 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					return pf;
 				}
 				case SN_SYS_EXPR:
-					return lower_sys_from(rhs, nm);
+					/* GPU dispatch is decided at the call site (`run map @gpu`), not here — see the
+					 * SN_RUN_STMT lowering, which sets the map's is_gpu flag for the emitter. */
+					return lower_map_from(rhs, nm);
 				case SN_ARCH_EXPR:
 					return lower_archetype_from(rhs, nm);
 				case SN_GROUP_EXPR:
@@ -2839,7 +2855,7 @@ typedef struct {
 static ImplBind g_impl[64];
 static int g_impl_count = 0;
 
-/* Apply an active `@implements` binding to an owned name slot (e.g. a sys param or archetype field
+/* Apply an active `@implements` binding to an owned name slot (e.g. a map param or archetype field
  * name). The normal rename traversal skips these — but column binding is by name, so a device
  * requirement used as a column must be substituted to the driver's name here. */
 static void subst_name(char **slot) {
@@ -3013,12 +3029,12 @@ static void hir_rn_decl(HirDecl *d, const char *prefix, char **set, int count) {
 		for (int i = 0; i < d->data.proc->stmt_count; i++)
 			hir_rn_stmt(d->data.proc->stmts[i], prefix, set, count);
 		break;
-	case HIR_DECL_SYS:
-		rn_owned(&d->data.sys->name, prefix, set, count);
-		for (int i = 0; i < d->data.sys->param_count; i++)
-			hir_rn_type(d->data.sys->params[i]->type, prefix, set, count);
-		for (int i = 0; i < d->data.sys->stmt_count; i++)
-			hir_rn_stmt(d->data.sys->stmts[i], prefix, set, count);
+	case HIR_DECL_MAP:
+		rn_owned(&d->data.map->name, prefix, set, count);
+		for (int i = 0; i < d->data.map->param_count; i++)
+			hir_rn_type(d->data.map->params[i]->type, prefix, set, count);
+		for (int i = 0; i < d->data.map->stmt_count; i++)
+			hir_rn_stmt(d->data.map->stmts[i], prefix, set, count);
 		break;
 	case HIR_DECL_FUNC:
 		rn_owned(&d->data.func->name, prefix, set, count);
@@ -3069,8 +3085,8 @@ static const char *hir_decl_name(HirDecl *d) {
 		return d->data.archetype->name;
 	case HIR_DECL_PROC:
 		return d->data.proc->name;
-	case HIR_DECL_SYS:
-		return d->data.sys->name;
+	case HIR_DECL_MAP:
+		return d->data.map->name;
 	case HIR_DECL_FUNC:
 		return d->data.func->name;
 	case HIR_DECL_FUNC_GROUP:
@@ -3256,9 +3272,9 @@ static void hir_q_decl(HirDecl *d, const QualCtx *q) {
 		for (int i = 0; i < d->data.proc->stmt_count; i++)
 			hir_q_stmt(d->data.proc->stmts[i], q);
 		break;
-	case HIR_DECL_SYS:
-		for (int i = 0; i < d->data.sys->stmt_count; i++)
-			hir_q_stmt(d->data.sys->stmts[i], q);
+	case HIR_DECL_MAP:
+		for (int i = 0; i < d->data.map->stmt_count; i++)
+			hir_q_stmt(d->data.map->stmts[i], q);
 		break;
 	case HIR_DECL_FUNC:
 		for (int i = 0; i < d->data.func->stmt_count; i++)
@@ -3663,10 +3679,10 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 		for (int d = 0; d < ast->decl_count; d++) {
 			HirDecl *dd = ast->decls[d];
 			hir_rn_decl(dd, "", NULL, 0); /* count=0 → only g_impl substitutions fire (names + body refs) */
-			/* Column-binding names that the traversal skips: sys params, archetype fields. */
-			if (dd->kind == HIR_DECL_SYS)
-				for (int p = 0; p < dd->data.sys->param_count; p++)
-					subst_name(&dd->data.sys->params[p]->name);
+			/* Column-binding names that the traversal skips: map params, archetype fields. */
+			if (dd->kind == HIR_DECL_MAP)
+				for (int p = 0; p < dd->data.map->param_count; p++)
+					subst_name(&dd->data.map->params[p]->name);
 			else if (dd->kind == HIR_DECL_ARCHETYPE)
 				for (int f = 0; f < dd->data.archetype->field_count; f++)
 					subst_name(&dd->data.archetype->fields[f]->name);

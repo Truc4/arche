@@ -1,0 +1,34 @@
+// `select(cond, a, b)` — the branch-free conditional inside a `map` kernel (replaces `if`, which a map
+// forbids). cond nonzero -> a, else b; applied per element, vectorizable. Covers int + float columns and a
+// nested select. (Spec for the new builtin; red until `select` is implemented.)
+// RUN: %arche build -o %t %s && %t | grep -qF "v=6 -4 21 w=2 0 4 c=1 0 2"
+#import { fmt }
+v :: int;
+w :: float;
+c :: int;
+N :: arche { v, w, c }
+[3]N(3);
+bump :: map (v, w, c) {
+  v = select(v > 0, v + 1, v - 1); // int select
+  w = select(w > 0.0, w * 2.0, 0.0); // float select
+  c = select(c > 0, select(c > 10, 2, 1), 0); // nested select
+}
+main :: proc() {
+  N.v = { 5, -3, 20 };
+  N.w = { 1.0, -1.0, 2.0 };
+  N.c = { 5, -1, 99 };
+  run bump;
+  // v: 5>0->6, -3>0?no->-4, 20>0->21 ; w: 1->2, -1->0, 2->4 ; c: 5>0&5>10?no->1, -1->0, 99>10->2
+  fmt.printf(
+    "v=%d %d %d w=%.0f %.0f %.0f c=%d %d %d\n",
+    N.v[0],
+    N.v[1],
+    N.v[2],
+    N.w[0] * 1.0,
+    N.w[1] * 1.0,
+    N.w[2] * 1.0,
+    N.c[0],
+    N.c[1],
+    N.c[2],
+  );
+}

@@ -1,0 +1,12 @@
+// `select` also works outside a kernel — in a `func` (it's just a branch-free conditional expression).
+// (Spec; red until `select` is implemented.)
+// RUN: %arche build -o %t %s && %t | grep -qF "ok"
+#import { fmt }
+clampish :: func(x: int) -> int {
+  return select(x > 10, 10, x);
+}
+main :: proc() {
+  fmt.assert(clampish(20) == 10, "clamp high\n");
+  fmt.assert(clampish(3) == 3, "clamp low\n");
+  fmt.printf("ok\n");
+}

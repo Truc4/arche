@@ -1,0 +1,30 @@
+// Task 1: Compute derived columns — revenue = price * quantity for all rows.
+// The benchmark is the load + the column compute. The trailing sum is NOT part of the benchmark — it is
+// an untimed checksum (verifies the column came out right, comparable across engines).
+#import { csv fmt os }
+
+Transaction :: arche { price :: float, quantity :: int, revenue :: float }
+
+[100000000]Transaction(100000000) {
+  price: 0.0, quantity: 0, revenue: 0.0,
+}
+
+load_transactions :: proc() {
+  csv.load(Transaction, "design_analysis/benchmarks/etl/data/data_100m.csv");
+}
+
+main :: proc() {
+  os.now_ms()(t0:);
+  load_transactions();
+  Transaction.revenue = Transaction.price * Transaction.quantity;
+  os.now_ms()(t1:);
+  // ---- benchmark ends here ----
+
+  // checksum (verification only, NOT timed): sum the produced column.
+  sum := 0.0;
+  for (m := 0; m < 100000000; m += 1) {
+    sum = sum + Transaction.revenue[m];
+  }
+  fmt.printf("task1_time: %g\n", float(t1 - t0) / 1000.0);
+  fmt.printf("task1_checksum: %g\n", sum);
+}

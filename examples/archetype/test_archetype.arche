@@ -3,10 +3,10 @@ Particle :: arche { pos :: float, vel :: float }
 Body     :: arche { pos, vel, mass :: float }
 [100]Particle;
 [50]Body;
-integrate :: sys (pos, vel) {
+integrate :: map (pos, vel) {
   pos = pos + vel;
 }
-dampen :: sys (vel) {
+dampen :: map (vel) {
   vel = vel * 0.99;
 }
 main :: proc() {
