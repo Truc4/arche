@@ -1,6 +1,6 @@
-// Large n (>=32) float key → the iterative heapsort path (float is not radix-sorted in v1). scan builds
-// 1.0..40.0, negate makes -1.0..-40.0, so ascending sort reverses the pool. Confirms float ordering and
-// that tag is permuted in lockstep.
+// Large n (>=32) float key → the radix path (float reinterpreted to i32 via the IEEE bit-flip). scan
+// builds 1.0..40.0, negate makes -1.0..-40.0, so ascending sort reverses the pool. Confirms float ordering
+// and that tag is permuted in lockstep. (Sign-straddling floats are covered by sort_float_signs.)
 // RUN: %arche build -o %t %s && %t | grep -qF "PASS"
 #import { fmt }
 v   :: float;
