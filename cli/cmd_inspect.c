@@ -260,6 +260,50 @@ static int encode_value(const FieldDesc *d, const char *text, unsigned char *byt
 	}
 }
 
+/* Round a double to the nearest integer without pulling in libm (the CLI does not link -lm). */
+static long long round_ll(double x) {
+	return (long long)(x < 0 ? x - 0.5 : x + 0.5);
+}
+
+/* Add `delta` to a numeric cell's current value, writing esize bytes into `bytes`. Float deltas apply
+ * directly; integer cells round the delta to the nearest whole step. Returns 0 on success, -1 if the
+ * field is not an adjustable scalar number (char/handle/opaque/array cells). */
+static int delta_value(const FieldDesc *d, const unsigned char *cur, double delta, unsigned char *bytes) {
+	if (d->ecount != 1)
+		return -1;
+	switch (d->tag) {
+	case AIT_F32: {
+		float f;
+		memcpy(&f, cur, 4);
+		f = (float)((double)f + delta);
+		memcpy(bytes, &f, 4);
+		return 0;
+	}
+	case AIT_U8:
+	case AIT_U16:
+	case AIT_U32:
+	case AIT_U64:
+	case AIT_U128: {
+		unsigned long long v = read_unsigned(cur, d->esize);
+		v = (unsigned long long)((long long)v + round_ll(delta));
+		memcpy(bytes, &v, (size_t)d->esize);
+		return 0;
+	}
+	case AIT_I8:
+	case AIT_I16:
+	case AIT_I32:
+	case AIT_I64:
+	case AIT_I128: {
+		long long v = read_signed(cur, d->esize);
+		v += round_ll(delta);
+		memcpy(bytes, &v, (size_t)d->esize);
+		return 0;
+	}
+	default:
+		return -1; /* char/handle/opaque are not arithmetic */
+	}
+}
+
 /* ---- subcommands ------------------------------------------------------------------------------------ */
 
 static int do_list(int fd, Reader *r) {
@@ -472,6 +516,9 @@ static int tui_enter(void) {
 	atexit(tui_restore);
 	signal(SIGINT, tui_on_signal);
 	signal(SIGTERM, tui_on_signal);
+	/* When the host dies, writing a request to the now-dead socket would raise SIGPIPE and kill us before
+	 * we ever see the failed read. Ignore it so send_req just returns -1 and we drop to the reconnect path. */
+	signal(SIGPIPE, SIG_IGN);
 	/* enter alternate screen, hide cursor */
 	if (write(STDOUT_FILENO, "\x1b[?1049h\x1b[?25l", 14) < 0) {
 	}
@@ -644,40 +691,92 @@ static int num_digits(long long v) {
 	return d;
 }
 
-static int tui_run(int fd, Reader *r, const char *start_pool) {
-	/* Pools list. */
-	if (send_req(fd, "LIST\n") != 0)
-		return ARCHE_ERR;
+/* ~1s between reconnect attempts (the read() VTIME tick is 0.2s, so 5 ticks). */
+#define TUI_RECONNECT_TICKS 5
+
+/* (Re)connect to the inspect socket and load the pool list into the caller's arrays. Returns the fd on
+ * success (Reader initialized), or -1 if no host is reachable / it spoke garbage. A connected host with
+ * zero registered pools is a success (npools 0). */
+static int tui_open(const char *path, Reader *r, char pool_names[][64], int *pool_dyn, long *pool_cap, int *pool_fc,
+                    int *npools_out) {
+	int fd = inspect_connect(path, r);
+	if (fd < 0)
+		return -1;
+	if (send_req(fd, "LIST\n") != 0) {
+		close(fd);
+		return -1;
+	}
 	char line[512];
-	if (rd_line(r, line, sizeof(line)) != 0)
-		return ARCHE_ERR;
 	int npools = 0;
-	if (sscanf(line, "OK %d", &npools) != 1 || npools <= 0) {
-		fprintf(stderr, "arche inspect: no pools (%s)\n", line);
-		return ARCHE_ERR;
+	if (rd_line(r, line, sizeof(line)) != 0 || sscanf(line, "OK %d", &npools) != 1 || npools < 0) {
+		close(fd);
+		return -1;
 	}
 	if (npools > 64)
 		npools = 64;
+	for (int i = 0; i < npools; i++) {
+		if (rd_line(r, line, sizeof(line)) != 0) {
+			close(fd);
+			return -1;
+		}
+		pool_dyn[i] = pool_fc[i] = 0;
+		pool_cap[i] = 0;
+		sscanf(line, "%63s %d %ld %d", pool_names[i], &pool_dyn[i], &pool_cap[i], &pool_fc[i]);
+	}
+	*npools_out = npools;
+	return fd;
+}
+
+/* Draw a minimal centered full-screen message (used while not connected, or connected with no pools).
+ * Keeps the title-bar / footer chrome so the screen does not jump when a host appears. */
+static void tui_message_screen(const char *title_text, const char *msg) {
+	int trows, tcols;
+	tui_term_size(&trows, &tcols);
+	char frame[1 << 14];
+	int o = 0;
+	APPEND("\x1b[H");
+	APPEND(C_TITLE "%-*.*s" C_RST C_EOL "\r\n", tcols, tcols, title_text);
+	for (int row = 2; row < trows; row++) {
+		if (row == trows / 2) {
+			int pad = (tcols - (int)strlen(msg)) / 2;
+			if (pad < 0)
+				pad = 0;
+			APPEND(C_DIM "%*s%.*s" C_RST C_EOL "\r\n", pad, "", tcols, msg);
+		} else {
+			APPEND(C_EOL "\r\n");
+		}
+	}
+	APPEND("\x1b[%d;1H" C_EOL C_DIM " q quit" C_RST, trows);
+	if (write(STDOUT_FILENO, frame, (size_t)o) < 0) {
+	}
+}
+
+static int tui_run(const char *path, const char *start_pool) {
+	if (tui_enter() != 0) {
+		/* not a tty — fall back to the one-shot listing if a host is up */
+		Reader r0;
+		int fd0 = inspect_connect(path, &r0);
+		if (fd0 < 0) {
+			fprintf(stderr, "arche inspect: cannot connect to %s (is `arche run` active?)\n", path);
+			return ARCHE_ERR;
+		}
+		int rc = do_list(fd0, &r0);
+		close(fd0);
+		return rc;
+	}
+
 	char pool_names[64][64];
 	int pool_dyn[64], pool_fc[64];
 	long pool_cap[64];
-	for (int i = 0; i < npools; i++) {
-		if (rd_line(r, line, sizeof(line)) != 0)
-			return ARCHE_ERR;
-		sscanf(line, "%63s %d %ld %d", pool_names[i], &pool_dyn[i], &pool_cap[i], &pool_fc[i]);
-	}
+	int npools = 0;
 
-	if (tui_enter() != 0) {
-		/* not a tty — fall back to the one-shot listing */
-		return do_list(fd, r);
-	}
+	Reader r;
+	int fd = -1;           /* <0 = not connected; the TUI runs regardless and reconnects on its own */
+	int retry = 0;         /* ticks until the next reconnect attempt */
+	int start_applied = 0; /* honor start_pool only on the first successful connect */
 
+	char line[512];
 	int pool_idx = 0;
-	if (start_pool)
-		for (int i = 0; i < npools; i++)
-			if (strcmp(pool_names[i], start_pool) == 0)
-				pool_idx = i;
-
 	FieldDesc fields[ARCHE_INSPECT_MAX_FIELDS];
 	int fcount = 0;
 	int colmap[ARCHE_INSPECT_MAX_FIELDS]; /* display column -> field index (COLUMN fields only) */
@@ -686,16 +785,57 @@ static int tui_run(int fd, Reader *r, const char *start_pool) {
 	int loaded_pool = -1;
 
 	int sel_row = 0, sel_col = 0, top = 0, left_col = 0;
+	double step = 1;                              /* +/- increment applied to the selected cell */
 	int count = 0, have_count = 0, pending_g = 0; /* vim numeric prefix + `g` lead-in */
 	int status_kind = 0;                          /* 0 none, 1 ok, 2 err */
 	int status_ttl = 0;                           /* ticks to keep `status` visible instead of the hints */
 	char status[256] = "";
-	int lost = 0;
 
 	for (;;) {
+		/* Not connected: try to (re)connect on a throttle, otherwise show a waiting screen and keep going. */
+		if (fd < 0) {
+			if (retry <= 0) {
+				fd = tui_open(path, &r, pool_names, pool_dyn, pool_cap, pool_fc, &npools);
+				if (fd < 0) {
+					retry = TUI_RECONNECT_TICKS;
+				} else {
+					loaded_pool = -1; /* force a schema (re)load */
+					if (!start_applied) {
+						start_applied = 1;
+						if (start_pool)
+							for (int i = 0; i < npools; i++)
+								if (strcmp(pool_names[i], start_pool) == 0)
+									pool_idx = i;
+					}
+					if (pool_idx >= npools)
+						pool_idx = 0;
+				}
+			}
+			if (fd < 0) {
+				char msg[300];
+				snprintf(msg, sizeof(msg), "waiting for `arche run` on %s …", path);
+				tui_message_screen(" arche inspect — waiting for a host", msg);
+				int key = tui_read_key();
+				if (key == K_QUIT)
+					break;
+				if (key == K_NONE && retry > 0)
+					retry--;
+				continue;
+			}
+		}
+
+		/* Connected, but the host registered no pools (yet). */
+		if (npools <= 0) {
+			tui_message_screen(" arche inspect — connected", "connected · host registered no pools");
+			int key = tui_read_key();
+			if (key == K_QUIT)
+				break;
+			continue;
+		}
+
 		/* (Re)load schema when the pool changes. */
 		if (loaded_pool != pool_idx) {
-			fcount = fetch_schema(fd, r, pool_names[pool_idx], fields, ARCHE_INSPECT_MAX_FIELDS);
+			fcount = fetch_schema(fd, &r, pool_names[pool_idx], fields, ARCHE_INSPECT_MAX_FIELDS);
 			if (fcount < 0)
 				fcount = 0;
 			ncols = 0;
@@ -708,10 +848,13 @@ static int tui_run(int fd, Reader *r, const char *start_pool) {
 
 		unsigned char *blob = NULL;
 		long nrows = 0, row_bytes = 0;
-		if (tui_fetch_rows(fd, r, pool_names[pool_idx], &blob, &nrows, &row_bytes) != 0) {
+		if (tui_fetch_rows(fd, &r, pool_names[pool_idx], &blob, &nrows, &row_bytes) != 0) {
+			/* the host went away — drop back to the waiting/reconnect state instead of exiting */
 			free(blob);
-			lost = 1;
-			break;
+			close(fd);
+			fd = -1;
+			retry = TUI_RECONNECT_TICKS;
+			continue;
 		}
 
 		int trows, tcols;
@@ -854,10 +997,11 @@ static int tui_run(int fd, Reader *r, const char *start_pool) {
 			lcolor = status_kind == 2 ? C_ERR : status_kind == 1 ? C_OK : C_DIM;
 		} else {
 			snprintf(lbuf, sizeof(lbuf),
-			         " h j k l move · gg/G top/bot · ^D/^U page · 0/$ col · i edit · gt/[ ] pool · q quit");
+			         " hjkl move · i edit · +/- adjust · s step · gg/G top/bot · ^D/^U page · [ ] pool · q quit");
 		}
-		snprintf(rbuf, sizeof(rbuf), "%s%d  row %d/%ld  %s ", have_count ? "(count) " : "", have_count ? count : 0,
-		         nrows ? sel_row + 1 : 0, nrows, ncols ? fields[colmap[sel_col]].name : "-");
+		snprintf(rbuf, sizeof(rbuf), "%s%d  step %g  row %d/%ld  %s ", have_count ? "(count) " : "",
+		         have_count ? count : 0, step, nrows ? sel_row + 1 : 0, nrows,
+		         ncols ? fields[colmap[sel_col]].name : "-");
 		int lw = (int)strlen(lbuf), rw = (int)strlen(rbuf);
 		if (lw > tcols - rw - 1) {
 			lw = tcols - rw - 1;
@@ -971,7 +1115,7 @@ static int tui_run(int fd, Reader *r, const char *start_pool) {
 						char req[256];
 						snprintf(req, sizeof(req), "POKE %s %lld %d %d 0 %s\n", pool_names[pool_idx], slot, gen, fidx,
 						         hex);
-						if (send_req(fd, req) == 0 && rd_line(r, line, sizeof(line)) == 0) {
+						if (send_req(fd, req) == 0 && rd_line(&r, line, sizeof(line)) == 0) {
 							if (strncmp(line, "OK", 2) == 0) {
 								snprintf(status, sizeof(status), "set %s = %s", fdesc->name, val);
 								status_kind = 1;
@@ -987,14 +1131,67 @@ static int tui_run(int fd, Reader *r, const char *start_pool) {
 				}
 				status_ttl = 12;
 			}
+		} else if ((key == '+' || key == '=' || key == '-' || key == '_') && nrows > 0 && ncols > 0) {
+			/* adjust the selected cell by ±(step × count) without retyping its value */
+			const unsigned char *p = blob + sel_row * row_bytes;
+			long long slot;
+			int gen;
+			memcpy(&slot, p, 8);
+			memcpy(&gen, p + 8, 4);
+			int fidx = colmap[sel_col];
+			FieldDesc *fdesc = &fields[fidx];
+			const unsigned char *cell = p + 12;
+			for (int k = 0; k < sel_col; k++)
+				cell += fields[colmap[k]].ecount * fields[colmap[k]].esize;
+			double mag = step * n;
+			double delta = (key == '-' || key == '_') ? -mag : mag;
+			unsigned char bytes[16];
+			if (delta_value(fdesc, cell, delta, bytes) != 0) {
+				snprintf(status, sizeof(status), "%s is not an adjustable number", fdesc->name);
+				status_kind = 2;
+			} else {
+				char hex[40];
+				int ho = 0;
+				for (long i = 0; i < fdesc->esize; i++)
+					ho += snprintf(hex + ho, sizeof(hex) - ho, "%02x", bytes[i]);
+				char req[256];
+				snprintf(req, sizeof(req), "POKE %s %lld %d %d 0 %s\n", pool_names[pool_idx], slot, gen, fidx, hex);
+				if (send_req(fd, req) == 0 && rd_line(&r, line, sizeof(line)) == 0) {
+					if (strncmp(line, "OK", 2) == 0) {
+						char nb[64];
+						fmt_cell(nb, sizeof(nb), fdesc, bytes);
+						snprintf(status, sizeof(status), "%s %c= %g → %s", fdesc->name, delta < 0 ? '-' : '+', mag, nb);
+						status_kind = 1;
+					} else {
+						snprintf(status, sizeof(status), "poke failed: %.200s", line);
+						status_kind = 2;
+					}
+				}
+			}
+			status_ttl = 12;
+		} else if (key == 's') {
+			/* set the +/- step amount */
+			char val[64] = {0};
+			if (tui_edit_line(trows, "step =", NULL, val, sizeof(val)) == 0 && val[0]) {
+				double s = strtod(val, NULL);
+				if (s != 0) {
+					step = s;
+					snprintf(status, sizeof(status), "step = %g", step);
+					status_kind = 1;
+				} else {
+					snprintf(status, sizeof(status), "invalid step '%s'", val);
+					status_kind = 2;
+				}
+				status_ttl = 12;
+			}
 		}
 		count = have_count = 0;
 		free(blob);
 	}
 
+	if (fd >= 0)
+		close(fd);
 	tui_restore();
-	if (lost)
-		fprintf(stderr, "arche inspect: lost connection to the running program\n");
 	return ARCHE_OK;
 }
 #undef APPEND
@@ -1030,6 +1227,12 @@ int inspect_run(int argc, char **argv, const GlobalOpts *g) {
 	const char *verb = p.pos_count > 0 ? p.pos[0] : "tui";
 	const char *path = resolve_sock(&p);
 
+	/* The TUI is connection-independent: it launches with no host, shows a waiting screen, and connects
+	 * (and reconnects) on its own. It owns its socket lifecycle, so we do NOT pre-connect here. */
+	if (strcmp(verb, "tui") == 0)
+		return tui_run(path, p.pos_count > 1 ? p.pos[1] : NULL);
+
+	/* One-shot scripting verbs require a live host — fail fast if none is up. */
 	Reader r;
 	if (inspect_connect(path, &r) < 0) {
 		fprintf(stderr, "arche inspect: cannot connect to %s (is `arche run` active?)\n", path);
@@ -1038,9 +1241,7 @@ int inspect_run(int argc, char **argv, const GlobalOpts *g) {
 	int fd = r.fd;
 	int rc;
 
-	if (strcmp(verb, "tui") == 0) {
-		rc = tui_run(fd, &r, p.pos_count > 1 ? p.pos[1] : NULL);
-	} else if (strcmp(verb, "list") == 0) {
+	if (strcmp(verb, "list") == 0) {
 		rc = do_list(fd, &r);
 	} else if (strcmp(verb, "schema") == 0) {
 		if (p.pos_count < 2) {

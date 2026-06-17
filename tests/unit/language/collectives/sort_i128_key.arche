@@ -9,15 +9,19 @@ tag :: int;
 
 N :: arche { k, tag }
 
-[40]N(40) { k: 1, tag: 1 }
+[40]N(40) {
+  k: 1, tag: 1
+}
 
-negk :: map (k) { k = 0 - k; }
+negk :: map (k) {
+  k = 0 - k;
+}
 
 main :: proc() {
-  scan(+, N.k);   // 1..40 (i128)
+  scan(+, N.k); // 1..40 (i128)
   scan(+, N.tag); // 1..40
-  run negk;       // k = -1..-40
-  sort(N.k);      // ascending → reversal
+  run negk; // k = -1..-40
+  sort(N.k); // ascending → reversal
   fmt.assert(N.tag[0] == 40, "t0\n");
   fmt.assert(N.tag[39] == 1, "t39\n");
   fmt.printf("PASS\n");
