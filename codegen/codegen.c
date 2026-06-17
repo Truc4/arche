@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "codegen.h"
 #include "../lexer/lexer.h"
+#include "../runtime/inspect.h" /* ArcheInspectType tags for the dev state-inspector registration */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -587,6 +588,42 @@ static int field_total_elements(HirType *type) {
 	if (type && type->tag == HIR_TYPE_SHAPED_ARRAY)
 		return type->rank * field_total_elements(type->elem);
 	return 1;
+}
+
+/* ArcheInspectType wire tag for an arche base-type name (see field_base_type_name / int_width_name). Used
+ * only by the dev state-inspector descriptor emission so the `arche inspect` client can format cells. */
+static int inspect_type_tag(const char *base) {
+	if (!base)
+		return AIT_I32;
+	if (!strcmp(base, "float"))
+		return AIT_F32;
+	if (!strcmp(base, "char"))
+		return AIT_CHAR;
+	if (!strcmp(base, "handle"))
+		return AIT_HANDLE;
+	if (!strcmp(base, "opaque"))
+		return AIT_OPAQUE;
+	if (!strcmp(base, "int") || !strcmp(base, "i32"))
+		return AIT_I32;
+	if (!strcmp(base, "i8"))
+		return AIT_I8;
+	if (!strcmp(base, "i16"))
+		return AIT_I16;
+	if (!strcmp(base, "i64"))
+		return AIT_I64;
+	if (!strcmp(base, "i128"))
+		return AIT_I128;
+	if (!strcmp(base, "u8"))
+		return AIT_U8;
+	if (!strcmp(base, "u16"))
+		return AIT_U16;
+	if (!strcmp(base, "u32"))
+		return AIT_U32;
+	if (!strcmp(base, "u64"))
+		return AIT_U64;
+	if (!strcmp(base, "u128"))
+		return AIT_U128;
+	return AIT_I32;
 }
 
 /* LLVM type of one return value. char[] returns a raw i8* byte view; everything else maps
@@ -9911,6 +9948,162 @@ void codegen_set_emit_unit(CodegenContext *ctx, int unit) {
 	ctx->per_unit = 1;
 	ctx->emit_only_unit = unit;
 }
+
+/* ===== Dev state-inspector registration (hot mode only) =================================================
+ * In hot mode the host links runtime/inspect.o and, in main(), tells it where each pool lives and how it
+ * is laid out, so `arche inspect` can view/edit live state. The descriptor mirrors the struct layout from
+ * codegen_archetype_decl: columns [0..field_count), then count, free_list, free_count, gen_counters (and a
+ * capacity field for dynamic pools). Byte offsets are emitted as LLVM `ptrtoint(getelementptr null...)`
+ * constant-expressions so they always track the real layout instead of being recomputed in C. */
+
+/* Collect the distinct (canonical) pools to register, in allocation order. Returns the count; fills
+ * `out_arch` with canonical decls and `out_dyn` with 1 for dynamic pools, 0 for static. */
+static int collect_inspect_pools(CodegenContext *ctx, HirArchetypeDecl **out_arch, int *out_dyn, int max) {
+	int n = 0;
+	for (int i = 0; i < ctx->alloc_count && n < max; i++) {
+		HirStaticDecl *alloc = ctx->top_level_allocs[i];
+		if (alloc->is_requirement || alloc->kind != HIR_STATIC_ARCHETYPE)
+			continue;
+		HirArchetypeDecl *arch = find_archetype_decl(ctx, alloc->archetype.archetype_name);
+		if (!arch)
+			continue;
+		int dup = 0;
+		for (int j = 0; j < n; j++)
+			if (out_arch[j] == arch) {
+				dup = 1;
+				break;
+			}
+		if (dup)
+			continue;
+		out_arch[n] = arch;
+		out_dyn[n] = get_arch_static_capacity(ctx, arch->name) > 0 ? 0 : 1;
+		n++;
+	}
+	return n;
+}
+
+/* Emit the module-level declares and the private name constants for the inspector. Must run BEFORE the
+ * `define i32 @main`. Pool p's name is @.ipname.p; field f of pool p is @.ifname.p.f. */
+static void codegen_emit_inspect_decls(CodegenContext *ctx) {
+	HirArchetypeDecl *pools[ARCHE_INSPECT_MAX_POOLS];
+	int dyn[ARCHE_INSPECT_MAX_POOLS];
+	int np = collect_inspect_pools(ctx, pools, dyn, ARCHE_INSPECT_MAX_POOLS);
+	if (np == 0)
+		return;
+	buffer_append(ctx, "declare void @arche_inspect_register(i8*, i8*, i32, i64, i32, i64, i64, i64, i64, i64)\n");
+	buffer_append(ctx, "declare void @arche_inspect_field(i8*, i8*, i32, i32, i64, i64, i64)\n");
+	for (int p = 0; p < np; p++) {
+		HirArchetypeDecl *arch = pools[p];
+		int nlen = (int)strlen(arch->name) + 1;
+		buffer_append_fmt(ctx, "@.ipname.%d = private unnamed_addr constant [%d x i8] c\"%s\\00\"\n", p, nlen,
+		                  arch->name);
+		for (int f = 0; f < arch->field_count; f++) {
+			int flen = (int)strlen(arch->fields[f]->name) + 1;
+			buffer_append_fmt(ctx, "@.ifname.%d.%d = private unnamed_addr constant [%d x i8] c\"%s\\00\"\n", p, f, flen,
+			                  arch->fields[f]->name);
+		}
+	}
+}
+
+/* Emit the register/field calls inside main(). Mirror the index math in codegen_archetype_decl. */
+static void codegen_emit_inspect_calls(CodegenContext *ctx) {
+	HirArchetypeDecl *pools[ARCHE_INSPECT_MAX_POOLS];
+	int dyn[ARCHE_INSPECT_MAX_POOLS];
+	int np = collect_inspect_pools(ctx, pools, dyn, ARCHE_INSPECT_MAX_POOLS);
+	for (int p = 0; p < np; p++) {
+		HirArchetypeDecl *arch = pools[p];
+		const char *nm = arch->name;
+		int is_dyn = dyn[p];
+		int fc = arch->field_count;
+		int nlen = (int)strlen(nm) + 1;
+		int cap = is_dyn ? 0 : get_arch_static_capacity(ctx, nm);
+
+		/* Bookkeeping field indices (see codegen_archetype_decl 8568-8579). */
+		int count_idx = fc;
+		int fl_idx = is_dyn ? fc + 2 : fc + 1;
+		int fc_idx = is_dyn ? fc + 3 : fc + 2;
+		int gc_idx = is_dyn ? fc + 4 : fc + 3;
+		int cap_idx = fc + 1; /* dynamic only */
+
+		/* base: static = &@<nm> (the struct); dynamic = &@archetype_<nm> (a struct**). */
+		char base[256];
+		if (is_dyn)
+			snprintf(base, sizeof(base), "i8* bitcast (%%struct.%s** @archetype_%s to i8*)", nm, nm);
+		else
+			snprintf(base, sizeof(base), "i8* bitcast (%%struct.%s* @%s to i8*)", nm, nm);
+
+		/* Offsets of the bookkeeping fields. count/free_count are scalar i64; free_list/gen are an inline
+		 * array (static, index element 0) or a pointer field (dynamic); capacity exists only for dynamic. */
+		char count_off[256], fl_off[256], fc_off[256], gc_off[256], cap_off[256];
+		snprintf(count_off, sizeof(count_off),
+		         "ptrtoint (i64* getelementptr inbounds (%%struct.%s, %%struct.%s* null, i32 0, i32 %d) to i64)", nm,
+		         nm, count_idx);
+		snprintf(fc_off, sizeof(fc_off),
+		         "ptrtoint (i64* getelementptr inbounds (%%struct.%s, %%struct.%s* null, i32 0, i32 %d) to i64)", nm,
+		         nm, fc_idx);
+		if (is_dyn) {
+			snprintf(fl_off, sizeof(fl_off),
+			         "ptrtoint (i64** getelementptr inbounds (%%struct.%s, %%struct.%s* null, i32 0, i32 %d) to i64)",
+			         nm, nm, fl_idx);
+			snprintf(gc_off, sizeof(gc_off),
+			         "ptrtoint (i32** getelementptr inbounds (%%struct.%s, %%struct.%s* null, i32 0, i32 %d) to i64)",
+			         nm, nm, gc_idx);
+			snprintf(cap_off, sizeof(cap_off),
+			         "ptrtoint (i64* getelementptr inbounds (%%struct.%s, %%struct.%s* null, i32 0, i32 %d) to i64)",
+			         nm, nm, cap_idx);
+		} else {
+			snprintf(
+			    fl_off, sizeof(fl_off),
+			    "ptrtoint (i64* getelementptr inbounds (%%struct.%s, %%struct.%s* null, i32 0, i32 %d, i64 0) to i64)",
+			    nm, nm, fl_idx);
+			snprintf(
+			    gc_off, sizeof(gc_off),
+			    "ptrtoint (i32* getelementptr inbounds (%%struct.%s, %%struct.%s* null, i32 0, i32 %d, i64 0) to i64)",
+			    nm, nm, gc_idx);
+			snprintf(cap_off, sizeof(cap_off), "-1");
+		}
+
+		buffer_append_fmt(ctx,
+		                  "  call void @arche_inspect_register(i8* getelementptr inbounds ([%d x i8], [%d x i8]* "
+		                  "@.ipname.%d, i64 0, i64 0), %s, i32 %d, i64 %d, i32 %d, i64 %s, i64 %s, i64 %s, i64 %s, "
+		                  "i64 %s)\n",
+		                  nlen, nlen, p, base, is_dyn, cap, fc, count_off, fl_off, fc_off, gc_off, cap_off);
+
+		for (int f = 0; f < fc; f++) {
+			HirField *fld = arch->fields[f];
+			const char *bt = llvm_type_from_arche(field_base_type_name(fld->type));
+			int tag = inspect_type_tag(field_base_type_name(fld->type));
+			int kind = (fld->kind == FIELD_COLUMN) ? 1 : 0;
+			int ecount = (fld->kind == FIELD_COLUMN) ? field_total_elements(fld->type) : 1;
+			int esize = llvm_type_sizeof(bt);
+			int flen = (int)strlen(fld->name) + 1;
+			char foff[256];
+			if (is_dyn) {
+				/* Column = a T* pointer field; meta = an inline scalar. Either way a single index. */
+				snprintf(
+				    foff, sizeof(foff),
+				    "ptrtoint (%s%s getelementptr inbounds (%%struct.%s, %%struct.%s* null, i32 0, i32 %d) to i64)", bt,
+				    fld->kind == FIELD_COLUMN ? "**" : "*", nm, nm, f);
+			} else if (fld->kind == FIELD_COLUMN) {
+				/* Inline [cap*per_row x T] array: offset of element 0. */
+				snprintf(foff, sizeof(foff),
+				         "ptrtoint (%s* getelementptr inbounds (%%struct.%s, %%struct.%s* null, i32 0, i32 %d, i64 0) "
+				         "to i64)",
+				         bt, nm, nm, f);
+			} else {
+				snprintf(foff, sizeof(foff),
+				         "ptrtoint (%s* getelementptr inbounds (%%struct.%s, %%struct.%s* null, i32 0, i32 %d) to i64)",
+				         bt, nm, nm, f);
+			}
+			buffer_append_fmt(ctx,
+			                  "  call void @arche_inspect_field(i8* getelementptr inbounds ([%d x i8], [%d x i8]* "
+			                  "@.ipname.%d, i64 0, i64 0), i8* getelementptr inbounds ([%d x i8], [%d x i8]* "
+			                  "@.ifname.%d.%d, i64 0, i64 0), i32 %d, i32 %d, i64 %s, i64 %d, i64 %d)\n",
+			                  nlen, nlen, p, flen, flen, p, f, tag, kind, foff, ecount, esize);
+		}
+	}
+}
+
 /* Tri-state: 0 = auto (the ARCHE_PER_UNIT env decides), 1 = force on, -1 = force whole-program. */
 static int g_per_unit_mode = 0;
 void codegen_set_per_unit(int on) {
@@ -10626,6 +10819,8 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			for (int u = 1; u <= hot_maxu; u++)
 				buffer_append_fmt(ctx, "@.hotpath.%d = private unnamed_addr constant [%d x i8] c\"unit_%d.so\\00\"\n",
 				                  u, (int)(strlen("unit_.so") + 1 + snprintf(NULL, 0, "%d", u)), u);
+			/* Dev state inspector: declares + pool/field name constants (module scope, before main). */
+			codegen_emit_inspect_decls(ctx);
 		}
 		buffer_append(ctx, "\ndefine i32 @main(i32 %argc, i8** %argv) {\n");
 		buffer_append(ctx, "entry:\n");
@@ -10639,6 +10834,10 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 				    "i8]* @.hotpath.%d, i64 0, i64 0))\n",
 				    u, plen, plen, u);
 			}
+		/* Dev state inspector: tell runtime/inspect.o where each pool lives and how it is laid out, so
+		 * `arche inspect` can read/edit live state. Hot mode only; release builds emit none of this. */
+		if (ctx->hot)
+			codegen_emit_inspect_calls(ctx);
 
 		/* Emit allocation initialization code (always, regardless of user main) */
 		for (int i = 0; i < ctx->alloc_count; i++) {

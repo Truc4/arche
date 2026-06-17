@@ -54,8 +54,9 @@ int args_parse(const ArgSpec *specs, int argc, char **argv, ArgParse *out) {
 			continue;
 		}
 
-		/* Positional: anything not starting with '-' (a lone "-" is also positional, e.g. stdin). */
-		if (tok[0] != '-' || tok[1] == '\0') {
+		/* Positional: anything not starting with '-' (a lone "-" is also positional, e.g. stdin), plus a
+		 * negative number (`-5`, `-.5`) — a value, not a flag (no flag spelling is `-<digit>` / `-.`). */
+		if (tok[0] != '-' || tok[1] == '\0' || (tok[1] >= '0' && tok[1] <= '9') || tok[1] == '.') {
 			if (out->pos_count < ARG_MAX_POS)
 				out->pos[out->pos_count++] = tok;
 			continue;

@@ -201,6 +201,7 @@ static const SubCmd k_cmds[] = {
     {"version", "print the arche version", 0, version_run, NULL},
     {"init", "scaffold a device or driver (arche init <device|driver> <name>)", 0, init_run, NULL},
     {"fill", "size a driver's pools from its imported devices' datasheets", 0, fill_run, NULL},
+    {"inspect", "view/edit a running `arche run` session's pools", 0, inspect_run, inspect_specs},
 };
 static const int k_cmd_count = (int)(sizeof(k_cmds) / sizeof(k_cmds[0]));
 
