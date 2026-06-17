@@ -47,7 +47,11 @@ static inline double fast_atof(const char **pp) {
 }
 
 /* Pointer-taking convenience wrappers (drop-in for strtod/strtol where the field start is already known). */
-static inline double fast_atof_p(const char *s) { return fast_atof(&s); }
-static inline long fast_atol_p(const char *s) { return fast_atol(&s); }
+static inline double fast_atof_p(const char *s) {
+	return fast_atof(&s);
+}
+static inline long fast_atol_p(const char *s) {
+	return fast_atol(&s);
+}
 
 #endif

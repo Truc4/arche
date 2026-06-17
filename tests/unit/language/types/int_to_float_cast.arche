@@ -3,8 +3,8 @@
 // RUN: %arche build -o %t %s && %t | grep -qF "PASS"
 #import { fmt }
 main :: proc() {
-  big := i64(3000000000);        // 3e9, an i64 (exceeds i32 max)
-  f := float(big) / 1000000.0;   // 3000.0
+  big := i64(3000000000); // 3e9, an i64 (exceeds i32 max)
+  f   := float(big) / 1000000.0; // 3000.0
   fmt.assert(f > 2999.0, "float(i64) low\n");
   fmt.assert(f < 3001.0, "float(i64) high\n");
   fmt.printf("PASS\n");

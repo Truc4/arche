@@ -14,7 +14,9 @@ v :: float;
 
 T :: arche { v }
 
-[100000000]T(100000000) { v: 1.0 }
+[100000000]T(100000000) {
+  v: 1.0
+}
 
 main :: proc() {
   // broadcast init above wrote all 100M elements → pages resident before the timed regions.
@@ -29,7 +31,12 @@ main :: proc() {
   os.now_ms()(t2:);
 
   reduce_ms := t1 - t0;
-  loop_ms := t2 - t1;
-  fmt.printf("fold_n=100000000 reduce_ms=%lld loop_ms=%lld reduce_sum=%g loop_sum=%g\n",
-             reduce_ms, loop_ms, red, total);
+  loop_ms   := t2 - t1;
+  fmt.printf(
+    "fold_n=100000000 reduce_ms=%lld loop_ms=%lld reduce_sum=%g loop_sum=%g\n",
+    reduce_ms,
+    loop_ms,
+    red,
+    total,
+  );
 }

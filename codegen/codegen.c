@@ -2109,9 +2109,8 @@ typedef struct {
 
 /* fwd decls — the CPU backend primitives bridge to these emitters defined later in the file. */
 static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf);
-static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, const char *count,
-                                   const char *scalar_type, const char *arche_type, HirExpr *rhs, int op,
-                                   const char *struct_ptr_val);
+static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, const char *count, const char *scalar_type,
+                                   const char *arche_type, HirExpr *rhs, int op, const char *struct_ptr_val);
 
 static const char *collective_op_text(HirExpr *opexpr) {
 	if (opexpr && opexpr->kind == HIR_EXPR_LITERAL && opexpr->data.literal.lexeme)
@@ -2364,8 +2363,8 @@ static void cpu_emit_permute(CodegenContext *ctx, const ParOp *op, char *result_
 	emit_sort(ctx, op->src, result_buf);
 }
 static void cpu_emit_map(CodegenContext *ctx, const ParOp *op) {
-	emit_whole_column_loop(ctx, op->col_ptr, op->count, op->scalar_type, op->arche_type, op->rhs,
-	                       op->compound_op, op->struct_ptr);
+	emit_whole_column_loop(ctx, op->col_ptr, op->count, op->scalar_type, op->arche_type, op->rhs, op->compound_op,
+	                       op->struct_ptr);
 }
 static const Backend BACKEND_CPU = {"cpu", cpu_emit_reduce, cpu_emit_scan, cpu_emit_permute, cpu_emit_map};
 
@@ -2380,7 +2379,7 @@ static void cores_emit_reduce(CodegenContext *ctx, const ParOp *op, char *result
 		strcpy(result_buf, "0");
 		return;
 	}
-	const char *fn = is_float ? "arche_par_reduce_f32"
+	const char *fn = is_float                 ? "arche_par_reduce_f32"
 	                 : strcmp(ty, "i32") == 0 ? "arche_par_reduce_i32"
 	                 : strcmp(ty, "i64") == 0 ? "arche_par_reduce_i64"
 	                                          : NULL;
@@ -2393,8 +2392,7 @@ static void cores_emit_reduce(CodegenContext *ctx, const ParOp *op, char *result
 	                  monoid_op_code(op->monoid.op));
 	strcpy(result_buf, r);
 }
-static const Backend BACKEND_CORES = {"cores", cores_emit_reduce, cpu_emit_scan, cpu_emit_permute,
-                                      cpu_emit_map};
+static const Backend BACKEND_CORES = {"cores", cores_emit_reduce, cpu_emit_scan, cpu_emit_permute, cpu_emit_map};
 
 /* Pick the backend for a schedule target. AUTO = CPU (scalar/SIMD); CORES = multicore reduce; GPU is a
  * later phase (falls back to CPU for now). */
@@ -2406,9 +2404,8 @@ static const Backend *select_backend(SchedTarget target) {
 
 /* Lower a whole-column `col = expr` map to ParOp.Map and emit it via the active backend (one path for
  * all 4 column-assignment call sites). */
-static void emit_map_op(CodegenContext *ctx, const char *col_ptr, const char *count,
-                        const char *scalar_type, const char *arche_type, HirExpr *rhs, int op,
-                        const char *struct_ptr_val) {
+static void emit_map_op(CodegenContext *ctx, const char *col_ptr, const char *count, const char *scalar_type,
+                        const char *arche_type, HirExpr *rhs, int op, const char *struct_ptr_val) {
 	ParOp pop = {0};
 	pop.kind = PAR_MAP;
 	pop.target = SCHED_AUTO;
@@ -2473,8 +2470,8 @@ static char *emit_sort_before(CodegenContext *ctx, const char *key_ty, SortKeyKi
 		lt_op = descending ? "icmp sgt" : "icmp slt";
 		eq_op = "icmp eq";
 	}
-	char *lt = gen_value_name(ctx), *eq = gen_value_name(ctx), *idxlt = gen_value_name(ctx),
-	     *tie = gen_value_name(ctx), *res = gen_value_name(ctx);
+	char *lt = gen_value_name(ctx), *eq = gen_value_name(ctx), *idxlt = gen_value_name(ctx), *tie = gen_value_name(ctx),
+	     *res = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", lt, lt_op, key_ty, kva, kvb);
 	buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", eq, eq_op, key_ty, kva, kvb);
 	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", idxlt, idxa, idxb);
@@ -2495,8 +2492,7 @@ static void emit_sift_down(CodegenContext *ctx, const char *idxbase, const char 
 	     *afterr = gen_value_name(ctx), *doswap = gen_value_name(ctx), *end = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  br label %s\n", cond);
 	buffer_append_fmt(ctx, "%s:\n", cond + 1);
-	char *p = gen_value_name(ctx), *twop = gen_value_name(ctx), *l = gen_value_name(ctx),
-	     *hasl = gen_value_name(ctx);
+	char *p = gen_value_name(ctx), *twop = gen_value_name(ctx), *l = gen_value_name(ctx), *hasl = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", p, pos);
 	buffer_append_fmt(ctx, "  %s = mul i64 %s, 2\n", twop, p);
 	buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", l, twop);
@@ -2539,8 +2535,8 @@ static void emit_sift_down(CodegenContext *ctx, const char *idxbase, const char 
 }
 
 /* Heapsort the index array [0,count) by the key column (O(n log n), iterative, alloca-only). */
-static void emit_index_heapsort(CodegenContext *ctx, const char *idxbase, const char *keyptr,
-                                const char *key_ty, SortKeyKind kind, int descending, const char *count) {
+static void emit_index_heapsort(CodegenContext *ctx, const char *idxbase, const char *keyptr, const char *key_ty,
+                                SortKeyKind kind, int descending, const char *count) {
 	char *bi = gen_value_name(ctx), *half = gen_value_name(ctx), *start = gen_value_name(ctx);
 	emit_alloca(ctx, "  %s = alloca i64\n", bi);
 	buffer_append_fmt(ctx, "  %s = sdiv i64 %s, 2\n", half, count);
@@ -2583,8 +2579,8 @@ static void emit_index_heapsort(CodegenContext *ctx, const char *idxbase, const 
 
 /* Insertion-sort the index array [0,count) by the key column (small-n fast path; keeps tiny pools cheap
  * and byte-identical to the previous implementation). */
-static void emit_index_insertion(CodegenContext *ctx, const char *idxbase, const char *keyptr,
-                                 const char *key_ty, SortKeyKind kind, int descending, const char *count) {
+static void emit_index_insertion(CodegenContext *ctx, const char *idxbase, const char *keyptr, const char *key_ty,
+                                 SortKeyKind kind, int descending, const char *count) {
 	char *iv = gen_value_name(ctx), *jv = gen_value_name(ctx);
 	emit_alloca(ctx, "  %s = alloca i64\n", iv);
 	emit_alloca(ctx, "  %s = alloca i64\n", jv);
@@ -2598,8 +2594,7 @@ static void emit_index_insertion(CodegenContext *ctx, const char *idxbase, const
 	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", olt, ob, oe);
 	buffer_append_fmt(ctx, "%s:\n", ob + 1);
 	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", i, jv);
-	char *ic = gen_value_name(ctx), *icc = gen_value_name(ctx), *ib = gen_value_name(ctx),
-	     *ie = gen_value_name(ctx);
+	char *ic = gen_value_name(ctx), *icc = gen_value_name(ctx), *ib = gen_value_name(ctx), *ie = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  br label %s\n", ic);
 	buffer_append_fmt(ctx, "%s:\n", ic + 1);
 	char *j = gen_value_name(ctx), *jpos = gen_value_name(ctx);
@@ -2636,16 +2631,24 @@ static int sort_radix_passes(SortKeyKind kind, int width) {
 
 /* Map a key value to an unsigned, radix-sortable bit pattern of the same width: signed → flip the sign
  * bit; descending → bitwise NOT. (Equal keys map equal, so LSD radix stays stable.) */
-static const char *emit_radix_transform(CodegenContext *ctx, const char *key_ty, SortKeyKind kind,
-                                        int width, int descending, const char *kval) {
+static const char *emit_radix_transform(CodegenContext *ctx, const char *key_ty, SortKeyKind kind, int width,
+                                        int descending, const char *kval) {
 	const char *x = kval;
 	if (kind == SORT_KEY_SIGNED) {
 		long long sign;
 		switch (width) {
-		case 8: sign = -128; break;
-		case 16: sign = -32768; break;
-		case 32: sign = -2147483648LL; break;
-		default: sign = (-9223372036854775807LL - 1); break;
+		case 8:
+			sign = -128;
+			break;
+		case 16:
+			sign = -32768;
+			break;
+		case 32:
+			sign = -2147483648LL;
+			break;
+		default:
+			sign = (-9223372036854775807LL - 1);
+			break;
 		}
 		char *t = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = xor %s %s, %lld\n", t, key_ty, x, sign);
@@ -2660,8 +2663,7 @@ static const char *emit_radix_transform(CodegenContext *ctx, const char *key_ty,
 }
 
 /* Extract digit byte `pass` of a transformed key as an i64 histogram index. */
-static const char *emit_radix_byte(CodegenContext *ctx, const char *key_ty, int width, const char *x,
-                                   int pass) {
+static const char *emit_radix_byte(CodegenContext *ctx, const char *key_ty, int width, const char *x, int pass) {
 	const char *low = x;
 	if (width > 8) {
 		char *sh = gen_value_name(ctx), *m = gen_value_name(ctx);
@@ -2686,8 +2688,8 @@ static char *emit_hist_ep(CodegenContext *ctx, const char *hist, const char *b) 
 /* LSD radix sort the index array [0,count) by the key column. `idx2`/`hist` are compile-time-sized
  * scratch ([cap x i64] and [256 x i32]). Naturally stable. */
 static void emit_index_radix(CodegenContext *ctx, const char *idxbase, const char *idx2, const char *hist,
-                             const char *keyptr, const char *key_ty, SortKeyKind kind, int width,
-                             int descending, const char *count) {
+                             const char *keyptr, const char *key_ty, SortKeyKind kind, int width, int descending,
+                             const char *count) {
 	int passes = width / 8;
 	const char *src = idxbase, *dst = idx2;
 	for (int pass = 0; pass < passes; pass++) {
@@ -2819,9 +2821,8 @@ static void emit_index_radix(CodegenContext *ctx, const char *idxbase, const cha
 
 /* Legacy stable insertion sort that swaps all columns inline — kept only as a safety fallback for the
  * (nonexistent) non-static-pool case so behavior never regresses; static pools take the index path. */
-static void emit_sort_legacy_columns(CodegenContext *ctx, char **cptr, const char **cty, int ncol,
-                                     int key_col, const char *key_ty, int key_is_float, int descending,
-                                     const char *count) {
+static void emit_sort_legacy_columns(CodegenContext *ctx, char **cptr, const char **cty, int ncol, int key_col,
+                                     const char *key_ty, int key_is_float, int descending, const char *count) {
 	char *iv = gen_value_name(ctx), *jv = gen_value_name(ctx);
 	emit_alloca(ctx, "  %s = alloca i64\n", iv);
 	emit_alloca(ctx, "  %s = alloca i64\n", jv);
@@ -2961,8 +2962,7 @@ static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 
 	if (!is_static) {
 		/* arche has no dynamic pools; preserve the old behavior if one is ever reached. */
-		emit_sort_legacy_columns(ctx, cptr, cty, ncol, key_col, key_ty, key_kind == SORT_KEY_FLOAT, descending,
-		                         count);
+		emit_sort_legacy_columns(ctx, cptr, cty, ncol, key_col, key_ty, key_kind == SORT_KEY_FLOAT, descending, count);
 		free(cptr);
 		free(cty);
 		return;
@@ -4219,7 +4219,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				 * already sext's); `char`/`byte`/`u8`/`u16` zero-extend (byte/word values 0..2^w-1). */
 				int sgn = (expr->resolved.tag == HIR_TYPE_INT) ? expr->resolved.int_signed : 0;
 				char *extended = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = %s %s %s to i32\n", extended, sgn ? "sext" : "zext", scalar_type, loaded);
+				buffer_append_fmt(ctx, "  %s = %s %s %s to i32\n", extended, sgn ? "sext" : "zext", scalar_type,
+				                  loaded);
 				strcpy(result_buf, extended);
 				/* The loaded element is now an i32 value. A `char` element's resolved tag is
 				 * HIR_TYPE_CHAR (width-agnostic → treated as i32 downstream), but a width-int element
@@ -7550,8 +7551,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					char *count = gen_value_name(ctx);
 					buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, count_gep);
 
-					emit_map_op(ctx, val->llvm_name, count, scalar_type, arche_type,
-					                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op, arch_param);
+					emit_map_op(ctx, val->llvm_name, count, scalar_type, arche_type, stmt->data.assign_stmt.value,
+					            stmt->data.assign_stmt.op, arch_param);
 				}
 			}
 		} else if (stmt->data.assign_stmt.target->kind == HIR_EXPR_FIELD) {
@@ -7626,8 +7627,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 							/* Emit whole-column loop */
 							const char *scalar_type = llvm_type_from_arche(field_base_type_name(fdecl->type));
 							emit_map_op(ctx, col_ptr, count, scalar_type, field_base_type_name(fdecl->type),
-							                       stmt->data.assign_stmt.value, stmt->data.assign_stmt.op,
-							                       struct_ptr_val);
+							            stmt->data.assign_stmt.value, stmt->data.assign_stmt.op, struct_ptr_val);
 						} else {
 							/* Tuple field: emit loop for each component */
 							HirField **tuple_components = NULL;
@@ -7726,9 +7726,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 										/* Preserve resolved type for operation */
 										temp_rhs.resolved = *comp->type;
 
-										emit_map_op(ctx, col_ptr, count, scalar_type,
-										                       field_base_type_name(comp->type), &temp_rhs,
-										                       stmt->data.assign_stmt.op, struct_ptr_val);
+										emit_map_op(ctx, col_ptr, count, scalar_type, field_base_type_name(comp->type),
+										            &temp_rhs, stmt->data.assign_stmt.op, struct_ptr_val);
 									} else if (rhs_expr->kind == HIR_EXPR_FIELD) {
 										/* Check if RHS is tuple field reference - match components by position */
 										const char *rhs_base = rhs_expr->data.field.field_name;
@@ -7760,8 +7759,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 											temp_rhs.resolved = *comp->type;
 
 											emit_map_op(ctx, col_ptr, count, scalar_type,
-											                       field_base_type_name(comp->type), &temp_rhs,
-											                       stmt->data.assign_stmt.op, struct_ptr_val);
+											            field_base_type_name(comp->type), &temp_rhs,
+											            stmt->data.assign_stmt.op, struct_ptr_val);
 										}
 										if (rhs_tuple_components)
 											free(rhs_tuple_components);

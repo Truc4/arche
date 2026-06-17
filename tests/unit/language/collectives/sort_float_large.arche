@@ -6,13 +6,17 @@
 v   :: float;
 tag :: int;
 N   :: arche { v, tag }
-[40]N(40) { v: 1.0, tag: 1 }
-neg :: map (v) { v = 0.0 - v; }
+[40]N(40) {
+  v: 1.0, tag: 1
+}
+neg :: map (v) {
+  v = 0.0 - v;
+}
 main :: proc() {
-  scan(+, N.v);   // v   = 1.0..40.0
+  scan(+, N.v); // v   = 1.0..40.0
   scan(+, N.tag); // tag = 1..40
-  run neg;        // v   = -1.0..-40.0
-  sort(N.v);      // ascending by v → full reversal
+  run neg; // v   = -1.0..-40.0
+  sort(N.v); // ascending by v → full reversal
   fmt.assert(N.tag[0] == 40, "t0\n");
   fmt.assert(N.tag[39] == 1, "t39\n");
   fmt.assert(N.v[0] < N.v[39], "asc\n"); // -40.0 < -1.0

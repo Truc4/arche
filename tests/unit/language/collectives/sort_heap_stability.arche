@@ -5,10 +5,12 @@
 v   :: float;
 tag :: int;
 N   :: arche { v, tag }
-[40]N(40) { v: 5.0, tag: 1 }
+[40]N(40) {
+  v: 5.0, tag: 1
+}
 main :: proc() {
   scan(+, N.tag); // tag = 1..40, v all equal (5.0)
-  sort(N.v);      // equal keys → stable → tag order unchanged
+  sort(N.v); // equal keys → stable → tag order unchanged
   fmt.assert(N.tag[0] == 1, "t0\n");
   fmt.assert(N.tag[19] == 20, "t19\n");
   fmt.assert(N.tag[39] == 40, "t39\n");

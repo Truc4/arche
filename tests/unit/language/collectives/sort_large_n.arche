@@ -6,17 +6,21 @@
 k   :: int;
 tag :: int;
 N   :: arche { k, tag }
-[64]N(64) { k: 1, tag: 1 }
-neg :: map (k) { k = 0 - k; }
+[64]N(64) {
+  k: 1, tag: 1
+}
+neg :: map (k) {
+  k = 0 - k;
+}
 main :: proc() {
-  scan(+, N.k);   // k   = 1..64
+  scan(+, N.k); // k   = 1..64
   scan(+, N.tag); // tag = 1..64
-  run neg;        // k   = -1..-64
-  sort(N.k);      // ascending by k → full reversal
-  k0 := N.k[0];
-  k63 := N.k[63];
+  run neg; // k   = -1..-64
+  sort(N.k); // ascending by k → full reversal
+  k0   := N.k[0];
+  k63  := N.k[63];
   em64 := 0 - 64;
-  em1 := 0 - 1;
+  em1  := 0 - 1;
   fmt.assert(k0 == em64, "k0\n");
   fmt.assert(N.tag[0] == 64, "t0\n");
   fmt.assert(k63 == em1, "k63\n");

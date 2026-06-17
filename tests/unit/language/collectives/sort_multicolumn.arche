@@ -10,15 +10,19 @@ a :: int;
 b :: i64;
 c :: float;
 N :: arche { k, a, b, c }
-[40]N(40) { k: 1, a: 1, b: 1, c: 1.0 }
-negk :: map (k) { k = 0 - k; }
+[40]N(40) {
+  k: 1, a: 1, b: 1, c: 1.0
+}
+negk :: map (k) {
+  k = 0 - k;
+}
 main :: proc() {
   scan(+, N.k); // 1..40
   scan(+, N.a); // 1..40
   scan(+, N.b); // 1..40 (i64)
   scan(+, N.c); // 1.0..40.0
-  run negk;     // k = -1..-40
-  sort(N.k);    // reversal; original row 39 → position 0
+  run negk; // k = -1..-40
+  sort(N.k); // reversal; original row 39 → position 0
   b0 := N.b[0];
   fmt.assert(N.a[0] == 40, "a0\n");
   fmt.assert(b0 == 40, "b0\n");

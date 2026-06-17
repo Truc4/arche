@@ -7,14 +7,18 @@ a :: int;
 b :: int;
 c :: int;
 N :: arche { k, a, b, c }
-[20000]N(20000) { k: 1, a: 1, b: 1, c: 1 }
-negk :: map (k) { k = 0 - k; }
+[20000]N(20000) {
+  k: 1, a: 1, b: 1, c: 1
+}
+negk :: map (k) {
+  k = 0 - k;
+}
 main :: proc() {
   scan(+, N.k);
   scan(+, N.a);
   scan(+, N.b);
   scan(+, N.c);
-  run negk;        // k = -1..-20000 (descending → worst case for insertion)
+  run negk; // k = -1..-20000 (descending → worst case for insertion)
   sort(N.k);
   chk := reduce(+, N.a);
   fmt.assert(N.a[0] == 20000, "rev\n"); // row reversed: position 0 holds original last row
