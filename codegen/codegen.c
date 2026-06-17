@@ -2073,6 +2073,31 @@ static void cg_float_const(const char *decimal, char *out, size_t cap) {
 
 /* The monoid op text from a collective's first argument — a literal whose lexeme is the op (`+`/`*`/
  * `min`/`max`); the parser wraps even `+`/`*` as a literal so this is uniform. */
+/* ---- Data-parallel IR (ParOp) + pluggable backends -------------------------------------------------
+ * map/reduce/scan/sort are ONE family of whole-column ops; the execution backend (scalar/SIMD/cores/GPU)
+ * is an orthogonal axis. HIR lowers each op to a `ParOp`; a `Backend` emits it — so adding a backend or
+ * an op is O(primitives), not O(ops×backends). (Phase 0: `reduce` is routed through this seam; map/scan/
+ * sort migrate in later phases.) */
+typedef enum { PAR_MAP, PAR_REDUCE, PAR_SCAN, PAR_PERMUTE } ParOpKind;
+typedef enum { SCHED_AUTO, SCHED_SCALAR, SCHED_SIMD, SCHED_CORES, SCHED_GPU } SchedTarget;
+
+typedef struct {
+	const char *op; /* monoid op text: "+","*","min","max" (Phase 1 generalizes to a func + identity) */
+} ParMonoid;
+
+typedef struct {
+	ParOpKind kind;
+	SchedTarget target;
+	HirExpr *col;     /* REDUCE/SCAN: the column being folded */
+	ParMonoid monoid; /* REDUCE/SCAN */
+} ParOp;
+
+typedef struct {
+	const char *name;
+	void (*emit_reduce)(CodegenContext *ctx, const ParOp *op, char *result_buf);
+	/* emit_map / emit_scan / emit_permute added as ops migrate (Phases 2+) */
+} Backend;
+
 static const char *collective_op_text(HirExpr *opexpr) {
 	if (opexpr && opexpr->kind == HIR_EXPR_LITERAL && opexpr->data.literal.lexeme)
 		return opexpr->data.literal.lexeme;
@@ -2188,12 +2213,13 @@ static int emit_collective_column(CodegenContext *ctx, HirExpr *colexpr, char *c
 /* `reduce(op, col)` — fold a whole column to a scalar over the monoid; `scan(op, col)` — overwrite each
  * element with the inclusive prefix fold. One sequential accumulate loop seeded with the identity (so an
  * empty pool yields the identity for reduce). `is_scan` selects write-back. Result SSA → result_buf. */
-static void emit_reduce_or_scan(CodegenContext *ctx, HirExpr *expr, int is_scan, char *result_buf) {
-	const char *op = collective_op_text(expr->data.call.args[0]);
+/* The collective FOLD primitive (CPU scalar + 4-lane SIMD): folds `col` with monoid `op` to a scalar
+ * (reduce) or prefix-folds it in place (scan). Backends call this; see the ParOp/Backend seam above. */
+static void emit_fold(CodegenContext *ctx, HirExpr *col, const char *op, int is_scan, char *result_buf) {
 	char colptr[256], count[256];
 	const char *ty;
 	int is_float;
-	if (!emit_collective_column(ctx, expr->data.call.args[1], colptr, count, &ty, &is_float)) {
+	if (!emit_collective_column(ctx, col, colptr, count, &ty, &is_float)) {
 		strcpy(result_buf, "0");
 		return;
 	}
@@ -2298,6 +2324,19 @@ static void emit_reduce_or_scan(CodegenContext *ctx, HirExpr *expr, int is_scan,
 		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", final, ty, ty, acc);
 		strcpy(result_buf, final);
 	}
+}
+
+/* The CPU backend: scalar + 4-lane SIMD. Its reduce primitive is `emit_fold` (above). */
+static void cpu_emit_reduce(CodegenContext *ctx, const ParOp *op, char *result_buf) {
+	emit_fold(ctx, op->col, op->monoid.op, /*is_scan=*/0, result_buf);
+}
+static const Backend BACKEND_CPU = {"cpu", cpu_emit_reduce};
+
+/* Pick the backend for a schedule target. Only the CPU backend exists today; cores/gpu land in a later
+ * phase (then SCHED_AUTO chooses by column size). */
+static const Backend *select_backend(SchedTarget target) {
+	(void)target;
+	return &BACKEND_CPU;
 }
 
 /* ---- `sort(Pool.key[, desc])` — sort the WHOLE archetype pool by the key column, permuting every
@@ -4155,11 +4194,18 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		/* Collectives — whole-column ops over a monoid. `reduce` folds to a scalar (returned),
 		 * `scan` prefix-folds in place, `sort` sorts the pool by a key column. */
 		if (func_name && strcmp(func_name, "reduce") == 0 && expr->data.call.arg_count == 2) {
-			emit_reduce_or_scan(ctx, expr, 0, result_buf);
+			/* HIR reduce-call → ParOp.Reduce → the active backend's reduce primitive. */
+			ParOp pop = {0};
+			pop.kind = PAR_REDUCE;
+			pop.target = SCHED_AUTO;
+			pop.col = expr->data.call.args[1];
+			pop.monoid.op = collective_op_text(expr->data.call.args[0]);
+			select_backend(pop.target)->emit_reduce(ctx, &pop, result_buf);
 			break;
 		}
 		if (func_name && strcmp(func_name, "scan") == 0 && expr->data.call.arg_count == 2) {
-			emit_reduce_or_scan(ctx, expr, 1, result_buf);
+			/* scan still calls the fold primitive directly; migrates to ParOp.Scan + emit_scan in Phase 2. */
+			emit_fold(ctx, expr->data.call.args[1], collective_op_text(expr->data.call.args[0]), 1, result_buf);
 			break;
 		}
 		if (func_name && strcmp(func_name, "sort") == 0 &&
