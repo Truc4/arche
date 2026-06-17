@@ -525,7 +525,7 @@ main :: proc() {
   runner, and `make test-gpu-exe` runs a real `--gpu` executable on the GPU and checks its output.
 - The GPU-executable subset today is a single static pool whose columns are all float, with arithmetic and
   `select`; anything outside it runs on the CPU. Runtime residency/async and instanced rendering are staged
-  — see `docs/DECISIONS_gpu.md`.
+  — see `docs/OPEN_ITEMS.md`.
 
 ## Collectives (`reduce` / `scan` / `sort`)
 

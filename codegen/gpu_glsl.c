@@ -7,7 +7,7 @@
  *
  * v1 supports the common case — float columns, arithmetic, comparisons, and `select`. Anything else
  * (non-float columns, consts/singletons, other calls) makes the map non-emittable; it is skipped (its
- * CPU path is untouched) and reported. See docs/DECISIONS_gpu.md. */
+ * CPU path is untouched) and reported. See docs/OPEN_ITEMS.md. */
 
 #include "gpu_glsl.h"
 #include <stdarg.h>

@@ -5,7 +5,7 @@
  *
  * Deliberately tiny and dependency-free (just -lvulkan): host-visible/coherent memory so there is no
  * staging copy. NOT the production runtime (that needs device-local buffers, persistent residency, async
- * submit, and per-map descriptor layouts — see docs/DECISIONS_gpu.md); it exists to verify the emission
+ * submit, and per-map descriptor layouts — see docs/OPEN_ITEMS.md); it exists to verify the emission
  * path end-to-end on real hardware.
  *
  * usage: vk_run <shader.spv> <count> <nbuf> <buf0 floats...> <buf1 floats...> ...

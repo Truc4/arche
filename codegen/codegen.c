@@ -2300,86 +2300,415 @@ static void emit_reduce_or_scan(CodegenContext *ctx, HirExpr *expr, int is_scan,
 	}
 }
 
-/* `sort(Pool.key)` — sort the WHOLE archetype pool ascending by the key column, permuting every column
- * together so each entity's fields stay aligned. Stable insertion sort (Phase 2: simple + correct on the
- * CPU; can be upgraded to a parallel/GPU sort later without changing semantics). */
-static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
-	strcpy(result_buf, "0");
-	/* optional second arg `desc` flips the order (default ascending). */
-	int descending = 0;
-	if (expr->data.call.arg_count == 2) {
-		HirExpr *d = expr->data.call.args[1];
-		if (d && d->kind == HIR_EXPR_NAME && d->data.name.name && strcmp(d->data.name.name, "desc") == 0)
-			descending = 1;
+/* ---- `sort(Pool.key[, desc])` — sort the WHOLE archetype pool by the key column, permuting every
+ * column together so each entity's row stays intact. Build an i64 index permutation, sort the indices by
+ * the key (LSD radix for integer-shaped keys, iterative heapsort for float/i128, insertion for small n),
+ * then apply the permutation to every column once via in-place cycle-following. O(n·k) data moves (was
+ * O(n²·k)). All scratch is compile-time-sized alloca — every arche pool is static. */
+
+typedef enum { SORT_KEY_SIGNED, SORT_KEY_UNSIGNED, SORT_KEY_FLOAT } SortKeyKind;
+
+/* idx[p] : load the row index stored at index-array slot p. */
+static char *emit_load_idx(CodegenContext *ctx, const char *idxbase, const char *p) {
+	char *gep = gen_value_name(ctx), *v = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr i64, i64* %s, i64 %s\n", gep, idxbase, p);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", v, gep);
+	return v;
+}
+
+static void emit_store_idx(CodegenContext *ctx, const char *idxbase, const char *p, const char *val) {
+	char *gep = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr i64, i64* %s, i64 %s\n", gep, idxbase, p);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", val, gep);
+}
+
+static void emit_swap_idx(CodegenContext *ctx, const char *idxbase, const char *pa, const char *pb) {
+	char *va = emit_load_idx(ctx, idxbase, pa), *vb = emit_load_idx(ctx, idxbase, pb);
+	emit_store_idx(ctx, idxbase, pa, vb);
+	emit_store_idx(ctx, idxbase, pb, va);
+}
+
+/* key[row] : load the key value for row index `row`. */
+static char *emit_load_key(CodegenContext *ctx, const char *key_ty, const char *keyptr, const char *row) {
+	char *gep = gen_value_name(ctx), *v = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", gep, key_ty, key_ty, keyptr, row);
+	buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", v, key_ty, key_ty, gep);
+	return v;
+}
+
+/* i1 = "row a sorts strictly before row b" under the requested order, with a stable tie-break by original
+ * row index (equal keys keep input order). Fixes the unsigned-key bug: UNSIGNED uses ult/ugt. */
+static char *emit_sort_before(CodegenContext *ctx, const char *key_ty, SortKeyKind kind, int descending,
+                              const char *kva, const char *kvb, const char *idxa, const char *idxb) {
+	const char *lt_op, *eq_op;
+	if (kind == SORT_KEY_FLOAT) {
+		lt_op = descending ? "fcmp ogt" : "fcmp olt";
+		eq_op = "fcmp oeq";
+	} else if (kind == SORT_KEY_UNSIGNED) {
+		lt_op = descending ? "icmp ugt" : "icmp ult";
+		eq_op = "icmp eq";
+	} else {
+		lt_op = descending ? "icmp sgt" : "icmp slt";
+		eq_op = "icmp eq";
 	}
-	HirExpr *keyexpr = expr->data.call.args[0];
-	if (!keyexpr || keyexpr->kind != HIR_EXPR_FIELD)
-		return;
-	HirExpr *base = keyexpr->data.field.base;
-	if (!base || base->kind != HIR_EXPR_NAME)
-		return;
-	const char *arch_name = base->data.name.name;
-	HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
-	if (!arch)
-		return;
-	int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+	char *lt = gen_value_name(ctx), *eq = gen_value_name(ctx), *idxlt = gen_value_name(ctx),
+	     *tie = gen_value_name(ctx), *res = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", lt, lt_op, key_ty, kva, kvb);
+	buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", eq, eq_op, key_ty, kva, kvb);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", idxlt, idxa, idxb);
+	buffer_append_fmt(ctx, "  %s = and i1 %s, %s\n", tie, eq, idxlt);
+	buffer_append_fmt(ctx, "  %s = or i1 %s, %s\n", res, lt, tie);
+	return res;
+}
 
-	char base_buf[256];
-	codegen_expression(ctx, base, base_buf);
+/* Iterative max-heap sift-down over the i64 index array (heap ordered by `before`, so the root sorts
+ * LAST). Only index slots move. Uses two hoisted i64 allocas (pos cursor, largest-slot). */
+static void emit_sift_down(CodegenContext *ctx, const char *idxbase, const char *keyptr, const char *key_ty,
+                           SortKeyKind kind, int descending, const char *root, const char *heapn) {
+	char *pos = gen_value_name(ctx), *lp = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca i64\n", pos);
+	emit_alloca(ctx, "  %s = alloca i64\n", lp);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", root, pos);
+	char *cond = gen_value_name(ctx), *body = gen_value_name(ctx), *brc = gen_value_name(ctx),
+	     *afterr = gen_value_name(ctx), *doswap = gen_value_name(ctx), *end = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  br label %s\n", cond);
+	buffer_append_fmt(ctx, "%s:\n", cond + 1);
+	char *p = gen_value_name(ctx), *twop = gen_value_name(ctx), *l = gen_value_name(ctx),
+	     *hasl = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", p, pos);
+	buffer_append_fmt(ctx, "  %s = mul i64 %s, 2\n", twop, p);
+	buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", l, twop);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", hasl, l, heapn);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", hasl, body, end);
+	/* body: pick larger of {pos, left child}; store its slot into lp */
+	buffer_append_fmt(ctx, "%s:\n", body + 1);
+	char *ip = emit_load_idx(ctx, idxbase, p), *il = emit_load_idx(ctx, idxbase, l);
+	char *kp = emit_load_key(ctx, key_ty, keyptr, ip), *kl = emit_load_key(ctx, key_ty, keyptr, il);
+	char *lbig = emit_sort_before(ctx, key_ty, kind, descending, kp, kl, ip, il);
+	char *lpv = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = select i1 %s, i64 %s, i64 %s\n", lpv, lbig, l, p);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", lpv, lp);
+	char *r = gen_value_name(ctx), *hasr = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = add i64 %s, 2\n", r, twop);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", hasr, r, heapn);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", hasr, brc, afterr);
+	/* brc: compare current-largest vs right child */
+	buffer_append_fmt(ctx, "%s:\n", brc + 1);
+	char *cur = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cur, lp);
+	char *icur = emit_load_idx(ctx, idxbase, cur), *ir = emit_load_idx(ctx, idxbase, r);
+	char *kcur = emit_load_key(ctx, key_ty, keyptr, icur), *kr = emit_load_key(ctx, key_ty, keyptr, ir);
+	char *rbig = emit_sort_before(ctx, key_ty, kind, descending, kcur, kr, icur, ir);
+	char *lpv2 = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = select i1 %s, i64 %s, i64 %s\n", lpv2, rbig, r, cur);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", lpv2, lp);
+	buffer_append_fmt(ctx, "  br label %s\n", afterr);
+	/* afterr: if largest == pos done; else swap and continue from largest */
+	buffer_append_fmt(ctx, "%s:\n", afterr + 1);
+	char *largest = gen_value_name(ctx), *same = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", largest, lp);
+	buffer_append_fmt(ctx, "  %s = icmp eq i64 %s, %s\n", same, largest, p);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", same, end, doswap);
+	buffer_append_fmt(ctx, "%s:\n", doswap + 1);
+	emit_swap_idx(ctx, idxbase, p, largest);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", largest, pos);
+	buffer_append_fmt(ctx, "  br label %s\n", cond);
+	buffer_append_fmt(ctx, "%s:\n", end + 1);
+}
 
-	/* Gather every column's base pointer + element type; remember the key column. */
-	char **cptr = calloc(arch->field_count ? arch->field_count : 1, sizeof(char *));
-	const char **cty = calloc(arch->field_count ? arch->field_count : 1, sizeof(char *));
-	int ncol = 0, key_col = -1;
-	const char *key_ty = "i32";
-	int key_is_float = 0;
-	for (int fi = 0; fi < arch->field_count; fi++) {
-		HirField *f = arch->fields[fi];
-		if (f->kind != FIELD_COLUMN)
-			continue;
-		const char *ty = llvm_type_from_arche(field_base_type_name(f->type));
-		char *ptr = gen_value_name(ctx);
-		if (is_static) {
-			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n", ptr,
-			                  arch_name, arch_name, base_buf, fi);
-		} else {
-			char *gep = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gep, arch_name,
-			                  arch_name, base_buf, fi);
-			buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", ptr, ty, ty, gep);
-		}
-		cptr[ncol] = ptr;
-		cty[ncol] = ty;
-		if (strcmp(f->name, keyexpr->data.field.field_name) == 0) {
-			key_col = ncol;
-			key_ty = ty;
-			key_is_float = (strcmp(ty, "float") == 0);
-		}
-		ncol++;
-	}
-	if (key_col < 0) {
-		free(cptr);
-		free(cty);
-		return;
-	}
+/* Heapsort the index array [0,count) by the key column (O(n log n), iterative, alloca-only). */
+static void emit_index_heapsort(CodegenContext *ctx, const char *idxbase, const char *keyptr,
+                                const char *key_ty, SortKeyKind kind, int descending, const char *count) {
+	char *bi = gen_value_name(ctx), *half = gen_value_name(ctx), *start = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca i64\n", bi);
+	buffer_append_fmt(ctx, "  %s = sdiv i64 %s, 2\n", half, count);
+	buffer_append_fmt(ctx, "  %s = sub i64 %s, 1\n", start, half);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", start, bi);
+	char *bc = gen_value_name(ctx), *bb = gen_value_name(ctx), *be = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  br label %s\n", bc);
+	buffer_append_fmt(ctx, "%s:\n", bc + 1);
+	char *ci = gen_value_name(ctx), *cge = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", ci, bi);
+	buffer_append_fmt(ctx, "  %s = icmp sge i64 %s, 0\n", cge, ci);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cge, bb, be);
+	buffer_append_fmt(ctx, "%s:\n", bb + 1);
+	emit_sift_down(ctx, idxbase, keyptr, key_ty, kind, descending, ci, count);
+	char *bni = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = sub i64 %s, 1\n", bni, ci);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", bni, bi);
+	buffer_append_fmt(ctx, "  br label %s\n", bc);
+	buffer_append_fmt(ctx, "%s:\n", be + 1);
+	char *ei = gen_value_name(ctx), *cm1 = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca i64\n", ei);
+	buffer_append_fmt(ctx, "  %s = sub i64 %s, 1\n", cm1, count);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", cm1, ei);
+	char *ec = gen_value_name(ctx), *eb = gen_value_name(ctx), *ee = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  br label %s\n", ec);
+	buffer_append_fmt(ctx, "%s:\n", ec + 1);
+	char *ce = gen_value_name(ctx), *cgt = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", ce, ei);
+	buffer_append_fmt(ctx, "  %s = icmp sgt i64 %s, 0\n", cgt, ce);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", cgt, eb, ee);
+	buffer_append_fmt(ctx, "%s:\n", eb + 1);
+	emit_swap_idx(ctx, idxbase, "0", ce);
+	emit_sift_down(ctx, idxbase, keyptr, key_ty, kind, descending, "0", ce);
+	char *eni = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = sub i64 %s, 1\n", eni, ce);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", eni, ei);
+	buffer_append_fmt(ctx, "  br label %s\n", ec);
+	buffer_append_fmt(ctx, "%s:\n", ee + 1);
+}
 
-	char *cgep = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cgep, arch_name,
-	                  arch_name, base_buf, arch->field_count);
-	char *count = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, cgep);
-
-	/* for (i=1; i<count; i++) { for (j=i; j>0 && key[j-1] > key[j]; j--) swap_all(j-1, j); } */
+/* Insertion-sort the index array [0,count) by the key column (small-n fast path; keeps tiny pools cheap
+ * and byte-identical to the previous implementation). */
+static void emit_index_insertion(CodegenContext *ctx, const char *idxbase, const char *keyptr,
+                                 const char *key_ty, SortKeyKind kind, int descending, const char *count) {
 	char *iv = gen_value_name(ctx), *jv = gen_value_name(ctx);
-	emit_alloca(ctx, "  %s = alloca i64\n", iv); /* hoisted to entry: no stack growth if in a loop */
+	emit_alloca(ctx, "  %s = alloca i64\n", iv);
+	emit_alloca(ctx, "  %s = alloca i64\n", jv);
+	buffer_append_fmt(ctx, "  store i64 1, i64* %s\n", iv);
+	char *oc = gen_value_name(ctx), *ob = gen_value_name(ctx), *oe = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  br label %s\n", oc);
+	buffer_append_fmt(ctx, "%s:\n", oc + 1);
+	char *i = gen_value_name(ctx), *olt = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", i, iv);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", olt, i, count);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", olt, ob, oe);
+	buffer_append_fmt(ctx, "%s:\n", ob + 1);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", i, jv);
+	char *ic = gen_value_name(ctx), *icc = gen_value_name(ctx), *ib = gen_value_name(ctx),
+	     *ie = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  br label %s\n", ic);
+	buffer_append_fmt(ctx, "%s:\n", ic + 1);
+	char *j = gen_value_name(ctx), *jpos = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", j, jv);
+	buffer_append_fmt(ctx, "  %s = icmp sgt i64 %s, 0\n", jpos, j);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", jpos, icc, ie);
+	buffer_append_fmt(ctx, "%s:\n", icc + 1);
+	char *jm = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = sub i64 %s, 1\n", jm, j);
+	char *idj = emit_load_idx(ctx, idxbase, j), *idjm = emit_load_idx(ctx, idxbase, jm);
+	char *kj = emit_load_key(ctx, key_ty, keyptr, idj), *kjm = emit_load_key(ctx, key_ty, keyptr, idjm);
+	char *swapit = emit_sort_before(ctx, key_ty, kind, descending, kj, kjm, idj, idjm);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", swapit, ib, ie);
+	buffer_append_fmt(ctx, "%s:\n", ib + 1);
+	emit_swap_idx(ctx, idxbase, jm, j);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", jm, jv);
+	buffer_append_fmt(ctx, "  br label %s\n", ic);
+	buffer_append_fmt(ctx, "%s:\n", ie + 1);
+	char *ni = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ni, i);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ni, iv);
+	buffer_append_fmt(ctx, "  br label %s\n", oc);
+	buffer_append_fmt(ctx, "%s:\n", oe + 1);
+}
+
+/* radix passes for a key kind/width: 0 = "use heapsort" (float, i128); else width/8 bytes. */
+static int sort_radix_passes(SortKeyKind kind, int width) {
+	if (kind == SORT_KEY_FLOAT)
+		return 0;
+	if (width >= 128)
+		return 0;
+	return width / 8;
+}
+
+/* Map a key value to an unsigned, radix-sortable bit pattern of the same width: signed → flip the sign
+ * bit; descending → bitwise NOT. (Equal keys map equal, so LSD radix stays stable.) */
+static const char *emit_radix_transform(CodegenContext *ctx, const char *key_ty, SortKeyKind kind,
+                                        int width, int descending, const char *kval) {
+	const char *x = kval;
+	if (kind == SORT_KEY_SIGNED) {
+		long long sign;
+		switch (width) {
+		case 8: sign = -128; break;
+		case 16: sign = -32768; break;
+		case 32: sign = -2147483648LL; break;
+		default: sign = (-9223372036854775807LL - 1); break;
+		}
+		char *t = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = xor %s %s, %lld\n", t, key_ty, x, sign);
+		x = t;
+	}
+	if (descending) {
+		char *t = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = xor %s %s, -1\n", t, key_ty, x);
+		x = t;
+	}
+	return x;
+}
+
+/* Extract digit byte `pass` of a transformed key as an i64 histogram index. */
+static const char *emit_radix_byte(CodegenContext *ctx, const char *key_ty, int width, const char *x,
+                                   int pass) {
+	const char *low = x;
+	if (width > 8) {
+		char *sh = gen_value_name(ctx), *m = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = lshr %s %s, %d\n", sh, key_ty, x, 8 * pass);
+		buffer_append_fmt(ctx, "  %s = and %s %s, 255\n", m, key_ty, sh);
+		low = m;
+	}
+	if (strcmp(key_ty, "i64") == 0)
+		return low;
+	char *z = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = zext %s %s to i64\n", z, key_ty, low);
+	return z;
+}
+
+/* histogram element pointer for byte index b. */
+static char *emit_hist_ep(CodegenContext *ctx, const char *hist, const char *b) {
+	char *gep = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr [256 x i32], [256 x i32]* %s, i64 0, i64 %s\n", gep, hist, b);
+	return gep;
+}
+
+/* LSD radix sort the index array [0,count) by the key column. `idx2`/`hist` are compile-time-sized
+ * scratch ([cap x i64] and [256 x i32]). Naturally stable. */
+static void emit_index_radix(CodegenContext *ctx, const char *idxbase, const char *idx2, const char *hist,
+                             const char *keyptr, const char *key_ty, SortKeyKind kind, int width,
+                             int descending, const char *count) {
+	int passes = width / 8;
+	const char *src = idxbase, *dst = idx2;
+	for (int pass = 0; pass < passes; pass++) {
+		/* zero histogram[0,256) */
+		char *zi = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca i64\n", zi);
+		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", zi);
+		char *zc = gen_value_name(ctx), *zb = gen_value_name(ctx), *ze = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  br label %s\n", zc);
+		buffer_append_fmt(ctx, "%s:\n", zc + 1);
+		char *zci = gen_value_name(ctx), *zlt = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", zci, zi);
+		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, 256\n", zlt, zci);
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", zlt, zb, ze);
+		buffer_append_fmt(ctx, "%s:\n", zb + 1);
+		char *zep = emit_hist_ep(ctx, hist, zci);
+		buffer_append_fmt(ctx, "  store i32 0, i32* %s\n", zep);
+		char *zni = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", zni, zci);
+		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", zni, zi);
+		buffer_append_fmt(ctx, "  br label %s\n", zc);
+		buffer_append_fmt(ctx, "%s:\n", ze + 1);
+		/* count: hist[byte(key[src[i]])]++ */
+		char *ki = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca i64\n", ki);
+		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", ki);
+		char *kc = gen_value_name(ctx), *kb = gen_value_name(ctx), *ke = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  br label %s\n", kc);
+		buffer_append_fmt(ctx, "%s:\n", kc + 1);
+		char *kci = gen_value_name(ctx), *klt = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", kci, ki);
+		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", klt, kci, count);
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", klt, kb, ke);
+		buffer_append_fmt(ctx, "%s:\n", kb + 1);
+		char *krow = emit_load_idx(ctx, src, kci);
+		char *kkey = emit_load_key(ctx, key_ty, keyptr, krow);
+		const char *kt = emit_radix_transform(ctx, key_ty, kind, width, descending, kkey);
+		const char *kbyte = emit_radix_byte(ctx, key_ty, width, kt, pass);
+		char *kcep = emit_hist_ep(ctx, hist, kbyte);
+		char *kcv = gen_value_name(ctx), *kc1 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", kcv, kcep);
+		buffer_append_fmt(ctx, "  %s = add i32 %s, 1\n", kc1, kcv);
+		buffer_append_fmt(ctx, "  store i32 %s, i32* %s\n", kc1, kcep);
+		char *kni = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", kni, kci);
+		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", kni, ki);
+		buffer_append_fmt(ctx, "  br label %s\n", kc);
+		buffer_append_fmt(ctx, "%s:\n", ke + 1);
+		/* prefix-sum hist in place → exclusive starting offsets */
+		char *acc = gen_value_name(ctx), *pi = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca i32\n", acc);
+		emit_alloca(ctx, "  %s = alloca i64\n", pi);
+		buffer_append_fmt(ctx, "  store i32 0, i32* %s\n", acc);
+		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", pi);
+		char *pc = gen_value_name(ctx), *pb = gen_value_name(ctx), *pe = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  br label %s\n", pc);
+		buffer_append_fmt(ctx, "%s:\n", pc + 1);
+		char *pbi = gen_value_name(ctx), *plt = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", pbi, pi);
+		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, 256\n", plt, pbi);
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", plt, pb, pe);
+		buffer_append_fmt(ctx, "%s:\n", pb + 1);
+		char *pep = emit_hist_ep(ctx, hist, pbi);
+		char *pcnt = gen_value_name(ctx), *pa = gen_value_name(ctx), *pna = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", pcnt, pep);
+		buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", pa, acc);
+		buffer_append_fmt(ctx, "  store i32 %s, i32* %s\n", pa, pep);
+		buffer_append_fmt(ctx, "  %s = add i32 %s, %s\n", pna, pa, pcnt);
+		buffer_append_fmt(ctx, "  store i32 %s, i32* %s\n", pna, acc);
+		char *pni = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", pni, pbi);
+		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", pni, pi);
+		buffer_append_fmt(ctx, "  br label %s\n", pc);
+		buffer_append_fmt(ctx, "%s:\n", pe + 1);
+		/* scatter: dst[hist[byte]++] = src[i] */
+		char *xi = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca i64\n", xi);
+		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", xi);
+		char *xc = gen_value_name(ctx), *xb = gen_value_name(ctx), *xe = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  br label %s\n", xc);
+		buffer_append_fmt(ctx, "%s:\n", xc + 1);
+		char *xci = gen_value_name(ctx), *xlt = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", xci, xi);
+		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", xlt, xci, count);
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", xlt, xb, xe);
+		buffer_append_fmt(ctx, "%s:\n", xb + 1);
+		char *xrow = emit_load_idx(ctx, src, xci);
+		char *xkey = emit_load_key(ctx, key_ty, keyptr, xrow);
+		const char *xt = emit_radix_transform(ctx, key_ty, kind, width, descending, xkey);
+		const char *xbyte = emit_radix_byte(ctx, key_ty, width, xt, pass);
+		char *xep = emit_hist_ep(ctx, hist, xbyte);
+		char *xpos = gen_value_name(ctx), *xpos64 = gen_value_name(ctx), *xpos1 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", xpos, xep);
+		buffer_append_fmt(ctx, "  %s = zext i32 %s to i64\n", xpos64, xpos);
+		emit_store_idx(ctx, dst, xpos64, xrow);
+		buffer_append_fmt(ctx, "  %s = add i32 %s, 1\n", xpos1, xpos);
+		buffer_append_fmt(ctx, "  store i32 %s, i32* %s\n", xpos1, xep);
+		char *xni = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", xni, xci);
+		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", xni, xi);
+		buffer_append_fmt(ctx, "  br label %s\n", xc);
+		buffer_append_fmt(ctx, "%s:\n", xe + 1);
+		const char *t = src;
+		src = dst;
+		dst = t;
+	}
+	if (src != idxbase) {
+		/* odd pass count: copy the final buffer back into idxbase over [0,count) */
+		char *ci = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca i64\n", ci);
+		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", ci);
+		char *cc = gen_value_name(ctx), *cb = gen_value_name(ctx), *ce = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  br label %s\n", cc);
+		buffer_append_fmt(ctx, "%s:\n", cc + 1);
+		char *cci = gen_value_name(ctx), *clt = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cci, ci);
+		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", clt, cci, count);
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", clt, cb, ce);
+		buffer_append_fmt(ctx, "%s:\n", cb + 1);
+		char *cv = emit_load_idx(ctx, src, cci);
+		emit_store_idx(ctx, idxbase, cci, cv);
+		char *cni = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", cni, cci);
+		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", cni, ci);
+		buffer_append_fmt(ctx, "  br label %s\n", cc);
+		buffer_append_fmt(ctx, "%s:\n", ce + 1);
+	}
+}
+
+/* Legacy stable insertion sort that swaps all columns inline — kept only as a safety fallback for the
+ * (nonexistent) non-static-pool case so behavior never regresses; static pools take the index path. */
+static void emit_sort_legacy_columns(CodegenContext *ctx, char **cptr, const char **cty, int ncol,
+                                     int key_col, const char *key_ty, int key_is_float, int descending,
+                                     const char *count) {
+	char *iv = gen_value_name(ctx), *jv = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca i64\n", iv);
 	emit_alloca(ctx, "  %s = alloca i64\n", jv);
 	buffer_append_fmt(ctx, "  store i64 1, i64* %s\n", iv);
 	char *ocond = gen_value_name(ctx), *obody = gen_value_name(ctx), *oend = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  br label %s\n", ocond);
 	buffer_append_fmt(ctx, "%s:\n", ocond + 1);
-	char *i = gen_value_name(ctx);
+	char *i = gen_value_name(ctx), *olt = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", i, iv);
-	char *olt = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", olt, i, count);
 	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", olt, obody, oend);
 	buffer_append_fmt(ctx, "%s:\n", obody + 1);
@@ -2388,30 +2717,24 @@ static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 	     *iend = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  br label %s\n", icond);
 	buffer_append_fmt(ctx, "%s:\n", icond + 1);
-	char *j = gen_value_name(ctx);
+	char *j = gen_value_name(ctx), *jpos = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", j, jv);
-	/* Guard `j > 0` FIRST and branch — so key[j-1] is never loaded when j==0 (that would be an
-	 * out-of-bounds read at index -1; `&&` is not short-circuit in straight-line IR). */
-	char *jpos = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = icmp sgt i64 %s, 0\n", jpos, j);
 	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", jpos, icmp, iend);
 	buffer_append_fmt(ctx, "%s:\n", icmp + 1);
 	char *jm = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = sub i64 %s, 1\n", jm, j);
-	/* compare key[j-1] > key[j] (reached only when j > 0) */
 	char *kp0 = gen_value_name(ctx), *kp1 = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", kp0, key_ty, key_ty, cptr[key_col], jm);
 	buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", kp1, key_ty, key_ty, cptr[key_col], j);
 	char *kv0 = gen_value_name(ctx), *kv1 = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", kv0, key_ty, key_ty, kp0);
 	buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", kv1, key_ty, key_ty, kp1);
-	/* swap when adjacent pair is out of order: ascending → key[j-1] > key[j]; descending → key[j-1] < key[j] */
 	const char *cmp = descending ? (key_is_float ? "fcmp olt" : "icmp slt") : (key_is_float ? "fcmp ogt" : "icmp sgt");
 	char *gt = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", gt, cmp, key_ty, kv0, kv1);
 	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", gt, ibody, iend);
 	buffer_append_fmt(ctx, "%s:\n", ibody + 1);
-	/* swap every column at [j-1] and [j] */
 	for (int c = 0; c < ncol; c++) {
 		const char *ty = cty[c];
 		char *p0 = gen_value_name(ctx), *p1 = gen_value_name(ctx);
@@ -2431,6 +2754,218 @@ static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ni, iv);
 	buffer_append_fmt(ctx, "  br label %s\n", ocond);
 	buffer_append_fmt(ctx, "%s:\n", oend + 1);
+}
+
+static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
+	strcpy(result_buf, "0");
+	/* optional second arg `desc` flips the order (default ascending). */
+	int descending = 0;
+	if (expr->data.call.arg_count == 2) {
+		HirExpr *d = expr->data.call.args[1];
+		if (d && d->kind == HIR_EXPR_NAME && d->data.name.name && strcmp(d->data.name.name, "desc") == 0)
+			descending = 1;
+	}
+	HirExpr *keyexpr = expr->data.call.args[0];
+	if (!keyexpr || keyexpr->kind != HIR_EXPR_FIELD)
+		return;
+	HirExpr *base = keyexpr->data.field.base;
+	if (!base || base->kind != HIR_EXPR_NAME)
+		return;
+	const char *arch_name = base->data.name.name;
+	HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+	if (!arch)
+		return;
+	int cap = get_arch_static_capacity(ctx, arch_name);
+	int is_static = cap > 0;
+
+	char base_buf[256];
+	codegen_expression(ctx, base, base_buf);
+
+	/* Gather every column's base pointer + element type; remember the key column + its sort kind/width. */
+	char **cptr = calloc(arch->field_count ? arch->field_count : 1, sizeof(char *));
+	const char **cty = calloc(arch->field_count ? arch->field_count : 1, sizeof(char *));
+	int ncol = 0, key_col = -1, key_width = 32;
+	const char *key_ty = "i32";
+	SortKeyKind key_kind = SORT_KEY_SIGNED;
+	for (int fi = 0; fi < arch->field_count; fi++) {
+		HirField *f = arch->fields[fi];
+		if (f->kind != FIELD_COLUMN)
+			continue;
+		const char *btn = field_base_type_name(f->type);
+		const char *ty = llvm_type_from_arche(btn);
+		char *ptr = gen_value_name(ctx);
+		if (is_static) {
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n", ptr,
+			                  arch_name, arch_name, base_buf, fi);
+		} else {
+			char *gep = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gep, arch_name,
+			                  arch_name, base_buf, fi);
+			buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", ptr, ty, ty, gep);
+		}
+		cptr[ncol] = ptr;
+		cty[ncol] = ty;
+		if (strcmp(f->name, keyexpr->data.field.field_name) == 0) {
+			key_col = ncol;
+			key_ty = ty;
+			if (strcmp(btn, "float") == 0) {
+				key_kind = SORT_KEY_FLOAT;
+				key_width = 32;
+			} else {
+				int w, sg;
+				if (hir_parse_int_width(btn, &w, &sg)) {
+					key_kind = sg ? SORT_KEY_SIGNED : SORT_KEY_UNSIGNED;
+					key_width = w;
+				} else {
+					/* int/char/handle/opaque → signed i-shaped; width from the LLVM type "iN". */
+					key_kind = SORT_KEY_SIGNED;
+					key_width = (int)strtol(ty + 1, NULL, 10);
+				}
+			}
+		}
+		ncol++;
+	}
+	if (key_col < 0) {
+		free(cptr);
+		free(cty);
+		return;
+	}
+
+	char *cgep = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cgep, arch_name,
+	                  arch_name, base_buf, arch->field_count);
+	char *count = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, cgep);
+
+	if (!is_static) {
+		/* arche has no dynamic pools; preserve the old behavior if one is ever reached. */
+		emit_sort_legacy_columns(ctx, cptr, cty, ncol, key_col, key_ty, key_kind == SORT_KEY_FLOAT, descending,
+		                         count);
+		free(cptr);
+		free(cty);
+		return;
+	}
+
+	/* index buffer idx[0,count) = identity, then sorted by key. Compile-time-sized (pool is static). */
+	char *idxarr = gen_value_name(ctx), *idxbase = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca [%d x i64]\n", idxarr, cap);
+	buffer_append_fmt(ctx, "  %s = getelementptr [%d x i64], [%d x i64]* %s, i64 0, i64 0\n", idxbase, cap, cap,
+	                  idxarr);
+	{
+		char *ii = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca i64\n", ii);
+		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", ii);
+		char *c = gen_value_name(ctx), *b = gen_value_name(ctx), *e = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  br label %s\n", c);
+		buffer_append_fmt(ctx, "%s:\n", c + 1);
+		char *cii = gen_value_name(ctx), *lt = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cii, ii);
+		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", lt, cii, count);
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", lt, b, e);
+		buffer_append_fmt(ctx, "%s:\n", b + 1);
+		emit_store_idx(ctx, idxbase, cii, cii);
+		char *ni = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ni, cii);
+		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ni, ii);
+		buffer_append_fmt(ctx, "  br label %s\n", c);
+		buffer_append_fmt(ctx, "%s:\n", e + 1);
+	}
+
+	/* sort the index array: insertion (small n) vs the type-chosen large-n algorithm. */
+	int passes = sort_radix_passes(key_kind, key_width);
+	char *small = gen_value_name(ctx), *sins = gen_value_name(ctx), *sbig = gen_value_name(ctx),
+	     *sapply = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, 32\n", small, count);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", small, sins, sbig);
+	buffer_append_fmt(ctx, "%s:\n", sins + 1);
+	emit_index_insertion(ctx, idxbase, cptr[key_col], key_ty, key_kind, descending, count);
+	buffer_append_fmt(ctx, "  br label %s\n", sapply);
+	buffer_append_fmt(ctx, "%s:\n", sbig + 1);
+	if (passes > 0) {
+		char *idx2arr = gen_value_name(ctx), *idx2 = gen_value_name(ctx), *hist = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca [%d x i64]\n", idx2arr, cap);
+		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i64], [%d x i64]* %s, i64 0, i64 0\n", idx2, cap, cap,
+		                  idx2arr);
+		emit_alloca(ctx, "  %s = alloca [256 x i32]\n", hist);
+		emit_index_radix(ctx, idxbase, idx2, hist, cptr[key_col], key_ty, key_kind, key_width, descending, count);
+	} else {
+		emit_index_heapsort(ctx, idxbase, cptr[key_col], key_ty, key_kind, descending, count);
+	}
+	buffer_append_fmt(ctx, "  br label %s\n", sapply);
+	buffer_append_fmt(ctx, "%s:\n", sapply + 1);
+
+	/* apply the permutation to every column once, in place via cycle-following.
+	 * visited marker = sign bit of idx[] (row indices are < 2^63); k scalar temps hold one row. */
+	char **tmp = malloc((ncol ? ncol : 1) * sizeof(char *));
+	for (int c = 0; c < ncol; c++) {
+		tmp[c] = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca %s\n", tmp[c], cty[c]);
+	}
+	char *si = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca i64\n", si);
+	buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", si);
+	char *ac = gen_value_name(ctx), *ab = gen_value_name(ctx), *ae = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  br label %s\n", ac);
+	buffer_append_fmt(ctx, "%s:\n", ac + 1);
+	char *s = gen_value_name(ctx), *slt = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", s, si);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", slt, s, count);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", slt, ab, ae);
+	buffer_append_fmt(ctx, "%s:\n", ab + 1);
+	char *vs = emit_load_idx(ctx, idxbase, s);
+	char *visited = gen_value_name(ctx), *cyc = gen_value_name(ctx), *skip = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, 0\n", visited, vs);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", visited, skip, cyc);
+	buffer_append_fmt(ctx, "%s:\n", cyc + 1);
+	for (int c = 0; c < ncol; c++) {
+		char *ep = gen_value_name(ctx), *v = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", ep, cty[c], cty[c], cptr[c], s);
+		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", v, cty[c], cty[c], ep);
+		buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", cty[c], v, cty[c], tmp[c]);
+	}
+	char *curv = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca i64\n", curv);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", s, curv);
+	char *wc = gen_value_name(ctx), *wb = gen_value_name(ctx), *we = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  br label %s\n", wc);
+	buffer_append_fmt(ctx, "%s:\n", wc + 1);
+	char *cur = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cur, curv);
+	char *src = emit_load_idx(ctx, idxbase, cur);
+	char *done = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp eq i64 %s, %s\n", done, src, s);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", done, we, wb);
+	buffer_append_fmt(ctx, "%s:\n", wb + 1);
+	for (int c = 0; c < ncol; c++) {
+		char *dep = gen_value_name(ctx), *sep = gen_value_name(ctx), *v = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", dep, cty[c], cty[c], cptr[c], cur);
+		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", sep, cty[c], cty[c], cptr[c], src);
+		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", v, cty[c], cty[c], sep);
+		buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", cty[c], v, cty[c], dep);
+	}
+	char *marked = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = or i64 %s, -9223372036854775808\n", marked, src);
+	emit_store_idx(ctx, idxbase, cur, marked);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", src, curv);
+	buffer_append_fmt(ctx, "  br label %s\n", wc);
+	buffer_append_fmt(ctx, "%s:\n", we + 1);
+	for (int c = 0; c < ncol; c++) {
+		char *dep = gen_value_name(ctx), *v = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", v, cty[c], cty[c], tmp[c]);
+		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", dep, cty[c], cty[c], cptr[c], cur);
+		buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", cty[c], v, cty[c], dep);
+	}
+	char *vcur = emit_load_idx(ctx, idxbase, cur), *mcur = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = or i64 %s, -9223372036854775808\n", mcur, vcur);
+	emit_store_idx(ctx, idxbase, cur, mcur);
+	buffer_append_fmt(ctx, "  br label %s\n", skip);
+	buffer_append_fmt(ctx, "%s:\n", skip + 1);
+	char *sni = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", sni, s);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", sni, si);
+	buffer_append_fmt(ctx, "  br label %s\n", ac);
+	buffer_append_fmt(ctx, "%s:\n", ae + 1);
+	free(tmp);
 	free(cptr);
 	free(cty);
 }
@@ -3555,16 +4090,21 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			 * int contexts (printf %d, compares, arithmetic), and a store back to an i8 target
 			 * truncs as needed. Without this a local string-literal index (`s := "hi"; s[0]`, a
 			 * raw i8* on this general path) stayed i8 and failed the verifier. */
-			if (scalar_type && strcmp(scalar_type, "i8") == 0) {
+			if (scalar_type && (strcmp(scalar_type, "i8") == 0 || strcmp(scalar_type, "i16") == 0)) {
+				/* Promote a narrow int element (i8/i16) to i32 so it acts as an i32 in int contexts (printf
+				 * %d, compares, arithmetic) — the store path truncs back to the column width. SIGNED columns
+				 * sign-extend (so a negative `i8`/`i16` reads back negative, matching the kernel load which
+				 * already sext's); `char`/`byte`/`u8`/`u16` zero-extend (byte/word values 0..2^w-1). */
+				int sgn = (expr->resolved.tag == HIR_TYPE_INT) ? expr->resolved.int_signed : 0;
 				char *extended = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = zext i8 %s to i32\n", extended, loaded);
+				buffer_append_fmt(ctx, "  %s = %s %s %s to i32\n", extended, sgn ? "sext" : "zext", scalar_type, loaded);
 				strcpy(result_buf, extended);
 				/* The loaded element is now an i32 value. A `char` element's resolved tag is
 				 * HIR_TYPE_CHAR (width-agnostic → treated as i32 downstream), but a width-int element
-				 * (`byte`/`u8`/`i8`) keeps HIR_TYPE_INT width 8 — so reflect the widening here, or
-				 * downstream width coercion (emit_int_convert) would zext the already-i32 value AGAIN as
-				 * if it were i8 and emit type-mismatched IR. */
-				if (expr->resolved.tag == HIR_TYPE_INT && expr->resolved.int_width == 8)
+				 * (`byte`/`u8`/`i8`/`u16`/`i16`) keeps HIR_TYPE_INT at its width — so reflect the widening
+				 * here, or downstream width coercion (emit_int_convert) would extend the already-i32 value
+				 * AGAIN as if it were narrow and emit type-mismatched IR. */
+				if (expr->resolved.tag == HIR_TYPE_INT && expr->resolved.int_width < 32)
 					expr->resolved.int_width = 32;
 			} else {
 				strcpy(result_buf, loaded);
@@ -5248,6 +5788,14 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 	char *target_gep = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", target_gep, scalar_type, scalar_type, col_ptr,
 	                  vi);
+	/* Plain `col = expr` on an integer column: the RHS evaluates at i32 (narrow column loads are promoted
+	 * to i32 for arithmetic), so truncate back to the column width before storing — the load path documents
+	 * this "a store back to a narrow target truncs as needed" contract. */
+	if (op == OP_NONE && scalar_type[0] == 'i') {
+		char coerced[256];
+		emit_int_convert(ctx, compute_result, &rhs->resolved, atoi(scalar_type + 1), coerced);
+		strcpy(compute_result, coerced);
+	}
 	/* For vector stores, bitcast pointer to vector type */
 	if (ctx->vector_lanes > 0) {
 		const char *vec_type = elem_llvm_type(ctx, arche_type);
@@ -5333,6 +5881,12 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
 	target_gep = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", target_gep, scalar_type, scalar_type, col_ptr,
 	                  si);
+	/* See the vector-loop store above: truncate an i32 integer RHS back to a narrow column width. */
+	if (op == OP_NONE && scalar_type[0] == 'i') {
+		char coerced[256];
+		emit_int_convert(ctx, compute_result, &rhs->resolved, atoi(scalar_type + 1), coerced);
+		strcpy(compute_result, coerced);
+	}
 	buffer_append_fmt(ctx, "  store %s %s, %s* %s, align 4\n", scalar_type, compute_result, scalar_type, target_gep);
 
 	/* Loop increment */

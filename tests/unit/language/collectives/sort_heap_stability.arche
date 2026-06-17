@@ -1,0 +1,16 @@
+// Heapsort stability: all keys equal, distinct tags 1..40, n>=32 so it takes the heapsort path. A stable
+// sort must keep equal-key rows in input order — verified via the index tie-break in the comparator.
+// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+#import { fmt }
+v   :: float;
+tag :: int;
+N   :: arche { v, tag }
+[40]N(40) { v: 5.0, tag: 1 }
+main :: proc() {
+  scan(+, N.tag); // tag = 1..40, v all equal (5.0)
+  sort(N.v);      // equal keys → stable → tag order unchanged
+  fmt.assert(N.tag[0] == 1, "t0\n");
+  fmt.assert(N.tag[19] == 20, "t19\n");
+  fmt.assert(N.tag[39] == 40, "t39\n");
+  fmt.printf("PASS\n");
+}

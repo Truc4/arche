@@ -1,0 +1,20 @@
+// Large n (>=32) float key → the iterative heapsort path (float is not radix-sorted in v1). scan builds
+// 1.0..40.0, negate makes -1.0..-40.0, so ascending sort reverses the pool. Confirms float ordering and
+// that tag is permuted in lockstep.
+// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+#import { fmt }
+v   :: float;
+tag :: int;
+N   :: arche { v, tag }
+[40]N(40) { v: 1.0, tag: 1 }
+neg :: map (v) { v = 0.0 - v; }
+main :: proc() {
+  scan(+, N.v);   // v   = 1.0..40.0
+  scan(+, N.tag); // tag = 1..40
+  run neg;        // v   = -1.0..-40.0
+  sort(N.v);      // ascending by v → full reversal
+  fmt.assert(N.tag[0] == 40, "t0\n");
+  fmt.assert(N.tag[39] == 1, "t39\n");
+  fmt.assert(N.v[0] < N.v[39], "asc\n"); // -40.0 < -1.0
+  fmt.printf("PASS\n");
+}

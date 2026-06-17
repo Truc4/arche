@@ -1,0 +1,16 @@
+// Radix-path stability: an integer key with all-equal values at n>=32 (radix path), distinct tags 1..40.
+// LSD radix with stable counting passes must keep equal-key rows in input order, so tag stays 1..40.
+// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+#import { fmt }
+k   :: int;
+tag :: int;
+N   :: arche { k, tag }
+[40]N(40) { k: 7, tag: 1 }
+main :: proc() {
+  scan(+, N.tag); // tag = 1..40, k all 7
+  sort(N.k);      // equal keys → stable → tag order unchanged
+  fmt.assert(N.tag[0] == 1, "t0\n");
+  fmt.assert(N.tag[19] == 20, "t19\n");
+  fmt.assert(N.tag[39] == 40, "t39\n");
+  fmt.printf("PASS\n");
+}
