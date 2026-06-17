@@ -1,0 +1,42 @@
+// Task 5 (arche, transform-only): filter q>0 AND p>10, sum(p*q), repeated N=216,000 times.
+// Uses the natural vectorized form: revenue = price * quantity * (quantity > 0) * (price > 10).
+// The int-mask * float-column codegen bug that previously forced a scalar fallback is fixed.
+#import { csv io fmt os }
+
+Transaction :: arche { price :: float, quantity :: int, revenue :: float }
+
+[10000]Transaction(10000) {
+  price: 0.0, quantity: 0, revenue: 0.0,
+}
+
+load_transactions :: proc() {
+  csv.load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");
+}
+
+write_output :: proc(total: float) {
+  io.fopen_write("design_analysis/benchmarks/etl/out/arche/task_5.csv")(fd:);
+  buf: [64]char;
+  fmt.sprintf(buf, "total\n%g\n", total)(buf, n:);
+  io.fwrite(fd, move buf, n);
+  io.fclose(move fd);
+}
+
+main :: proc() {
+  load_transactions();
+
+  total := 0.0;
+  os.os_now_sec()(t0:);
+  for (iter := 0; iter < 216000; iter += 1) {
+    Transaction.revenue = Transaction.price * Transaction.quantity * (Transaction.quantity > 0) * (Transaction.price > 10.0);
+    for (m := 0; m < 10000; m += 1) {
+      total = total + Transaction.revenue[m];
+    }
+  }
+  os.os_now_sec()(t1:);
+  elapsed := t1 - t0;
+
+  write_output(total);
+
+  fmt.printf("task5_checksum: %g\n", total);
+  fmt.printf("task5_time: %g\n", elapsed / 216000.0);
+}

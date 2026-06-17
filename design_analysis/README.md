@@ -150,8 +150,8 @@ loop plus ~80 lines of `mmap` + manual CSV parsing. Arche keeps the scripting-st
 expression while compiling to C-class machine code.
 
 **Reproduce** (from the repo root, so the tasks' relative CSV paths resolve):
-`python design_analysis/benchmarks/transform/compare.py --task all --engines arche,c,pandas,polars`.
-Build first: `make -C design_analysis/benchmarks/transform/c`, and
+`python design_analysis/benchmarks/etl/compare.py --size 10k --task all --engines arche,c,pandas,polars`.
+Build first: `make -C design_analysis/benchmarks/etl/10k/c`, and
 `build/arche -o …/arche/bin/task_N …/arche/task_N_*.arche` per task.
 
 ## ETL Benchmarks (100M rows)
@@ -183,23 +183,23 @@ Engines: C baseline (`cc -O3 -march=native`, `mmap` + `memchr` + `strtod`), pand
 
 **Where Arche's gap to C comes from:** the column *compute* is already AVX2-vectorized (`revenue = price * quantity` → `fmul <N x double>` over SoA columns). The remaining gap is entirely the **CSV parse** - Arche scans delimiters with a scalar byte loop, while C calls glibc `memchr` (hand-written AVX2). C's *compiler* doesn't vectorize its parse either (zero inline vector ops in the scan IR) - its speed there is purely from *calling* a SIMD primitive. Task 2 (most parse-bound) shows the widest Arche/C ratio, consistent with this.
 
-> **Reproducing:** the multi-engine runner (`compare_scale.py`) invokes the Arche binary from a directory where its hardcoded relative CSV path doesn't resolve, so it reports a `0.0` checksum for Arche. The Arche numbers above are from running the compiled task **from the repo root**. The Python-engine numbers are straight from the runner. Engines live in `benchmarks/.venv` (`python -m venv` + `pip install pandas polars duckdb datafusion`).
+> **Reproducing:** the multi-engine runner (`compare.py --size 100m`) invokes the Arche binary from a directory where its hardcoded relative CSV path doesn't resolve, so it reports a `0.0` checksum for Arche. The Arche numbers above are from running the compiled task **from the repo root**. The Python-engine numbers are straight from the runner. Engines live in `benchmarks/.venv` (`python -m venv` + `pip install pandas polars duckdb datafusion`).
 
 ### Task Details
 
-**Task 1 - Derived columns** (`arche_scale/task_1_derived_columns.arche`):
+**Task 1 - Derived columns** (`100m/single-thread/arche/task_1_derived_columns.arche`):
 - Loads price (float) and quantity (int) for 100M rows via mmap
 - Computes `Transaction.revenue = Transaction.price * Transaction.quantity` (vectorized SIMD column op)
 - Sums all revenue values; prints checksum
 
-**Task 2 - Filter invalid rows** (`arche_scale/task_2_filter_invalid.arche`):
+**Task 2 - Filter invalid rows** (`100m/single-thread/arche/task_2_filter_invalid.arche`):
 - `csv_load` matches only the columns the archetype declares (by header name); undeclared columns are skipped
 - Counts rows where `quantity > 0`
 
-**Task 3 - Bucket timestamps** (`arche_scale/task_3_bucket_timestamps.arche`):
+**Task 3 - Bucket timestamps** (`100m/single-thread/arche/task_3_bucket_timestamps.arche`):
 - Loads price; computes `price_bucket = price / 10` (vectorized)
 
-**Task 4 - Aggregate revenue** (`arche_scale/task_4_aggregate_region.arche`):
+**Task 4 - Aggregate revenue** (`100m/single-thread/arche/task_4_aggregate_region.arche`):
 - Same load as Task 1, same vectorized multiply
 - Sums per-region revenue; prints total checksum
 
@@ -328,10 +328,10 @@ for (;i < txns.count;) {
 These results need more validation before drawing strong conclusions.
 
 **What the harness covers:**
-- **Compiled baselines**: Polars, DuckDB, DataFusion, and a hand-written C baseline (mmap + manual parse + accumulate) all run via `compare_scale.py`. See `polars/`, `duckdb/`, `datafusion/`, and `c_baseline/`.
+- **Compiled baselines**: Polars, DuckDB, DataFusion, and a hand-written C baseline (mmap + manual parse + accumulate) all run via `compare.py --size 100m`. See `100m/multicore/{polars,duckdb,datafusion}` and `100m/single-thread/{arche,c,pandas}`.
 - **Selective column loading**: `pandas/task_*.py` scripts use `usecols` to read only the fields each task needs, matching what Arche parses.
-- **Multi-run variance**: `compare_scale.py` defaults to 10 iterations and reports min / median / max for both wall time and internal (parse+compute) time.
-- **Cold-cache mode**: `compare_scale.py --cold-cache` drops the OS page cache before each iteration (Linux only; requires NOPASSWD sudo for `/sbin/sysctl vm.drop_caches=3` - see runner module docstring).
+- **Multi-run variance**: `compare.py --size 100m` defaults to 10 iterations and reports min / median / max for both wall time and internal (parse+compute) time.
+- **Cold-cache mode**: `compare.py --size 100m --cold-cache` drops the OS page cache before each iteration (Linux only; requires NOPASSWD sudo for `/sbin/sysctl vm.drop_caches=3` - see runner module docstring).
 - **Multi-step pipelines**: Task 5 (`pipeline`) implements a filter→compute→reduce pipeline (`quantity > 0 AND price > 10`, then `sum(price*quantity)`) across all engines.
 - **Internal vs wall time**: Runner reports both. `internal` excludes Python interpreter startup and library import; `wall` includes them. Apples-to-apples comparison for compiled engines uses `internal`.
 

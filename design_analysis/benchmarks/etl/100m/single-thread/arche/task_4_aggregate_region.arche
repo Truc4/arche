@@ -1,0 +1,26 @@
+// Task 4: Aggregate — sum of revenue (price * quantity). Here the SUM *is* the benchmark (it's the
+// aggregation), so it's inside the timed region; the result doubles as the checksum.
+#import { csv fmt os }
+
+Transaction :: arche { price :: float, quantity :: int, revenue :: float }
+
+[100000000]Transaction(100000000) {
+  price: 0.0, quantity: 0, revenue: 0.0,
+}
+
+load_transactions :: proc() {
+  csv.load(Transaction, "design_analysis/benchmarks/etl/data/data_100m.csv");
+}
+
+main :: proc() {
+  os.now_ms()(t0:);
+  load_transactions();
+  // `revenue` materialized as a column (mirrors pandas); a fused `reduce(price*quantity)` would keep
+  // nothing. Monoid fold: `+` is associative, which licenses the vectorized `<4 x float>` reduction
+  // (see codegen emit_reduce_or_scan) that a scalar loop could not express.
+  Transaction.revenue = Transaction.price * Transaction.quantity;
+  total_revenue := reduce(+, Transaction.revenue);
+  os.now_ms()(t1:);
+  fmt.printf("task4_time: %g\n", float(t1 - t0) / 1000.0);
+  fmt.printf("task4_checksum: %g\n", total_revenue);
+}

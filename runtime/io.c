@@ -9,10 +9,13 @@
 #include <time.h>
 #include <unistd.h>
 
-double os_now_sec(void) {
+/* Returns `float` (f32), not `double`: arche `float` is f32, and the FFI return type must match the
+ * caller's ABI or it reads the wrong register bytes (garbage). For sub-second timing prefer os_now_ms
+ * (i64) — f32 monotonic seconds is coarse (~0.06s ULP at typical uptimes). */
+float os_now_sec(void) {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return ts.tv_sec + ts.tv_nsec * 1e-9;
+	return (float)(ts.tv_sec + ts.tv_nsec * 1e-9);
 }
 
 /* Monotonic milliseconds — integer, for fixed-timestep loops (accumulate real elapsed ms, step the sim a

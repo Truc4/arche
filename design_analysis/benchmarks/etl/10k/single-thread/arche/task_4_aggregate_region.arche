@@ -1,0 +1,44 @@
+// Task 4 (arche, transform-only): sum(price * quantity), repeated N=216,000 times.
+// Materializes the revenue column each iter via the vector op, then scalar-reduces.
+#import { csv io fmt os }
+
+Transaction :: arche { price :: float, quantity :: int, revenue :: float }
+
+[10000]Transaction(10000) {
+  price: 0.0, quantity: 0, revenue: 0.0,
+}
+
+load_transactions :: proc() {
+  csv.load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");
+}
+
+write_output :: proc(total: float) {
+  io.fopen_write("design_analysis/benchmarks/etl/out/arche/task_4.csv")(fd:);
+  buf: [64]char;
+  fmt.sprintf(buf, "total\n%g\n", total)(buf, n:);
+  io.fwrite(fd, move buf, n);
+  io.fclose(move fd);
+}
+
+main :: proc() {
+  load_transactions();
+
+  total := 0.0;
+  os.os_now_sec()(t0:);
+  // `revenue` is materialized as a column to measure the vectorized op (and mirror pandas). Idiomatic
+  // DOD would not store it — it is a throwaway intermediate for the inner sum; you'd fuse the multiply
+  // into the reduce: `total += Transaction.price[m] * Transaction.quantity[m]`, keeping no column.
+  for (iter := 0; iter < 216000; iter += 1) {
+    Transaction.revenue = Transaction.price * Transaction.quantity;
+    for (m := 0; m < 10000; m += 1) {
+      total = total + Transaction.revenue[m];
+    }
+  }
+  os.os_now_sec()(t1:);
+  elapsed := t1 - t0;
+
+  write_output(total);
+
+  fmt.printf("task4_checksum: %g\n", total);
+  fmt.printf("task4_time: %g\n", elapsed / 216000.0);
+}

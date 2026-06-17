@@ -4175,9 +4175,16 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			if (func_name && expr->data.call.arg_count == 1 && hir_parse_int_width(func_name, &cw, &csg)) {
 				char arg_buf[256];
 				codegen_expression(ctx, expr->data.call.args[0], arg_buf);
-				char converted[256];
-				emit_int_convert(ctx, arg_buf, &expr->data.call.args[0]->resolved, cw, converted);
-				strcpy(result_buf, converted);
+				if (expr->data.call.args[0]->resolved.tag == HIR_TYPE_FLOAT) {
+					/* float → iN is a real conversion (fptosi), not an int-width sext/zext/trunc. */
+					char *c = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = fptosi float %s to %s\n", c, arg_buf, llvm_int_type(cw));
+					strcpy(result_buf, c);
+				} else {
+					char converted[256];
+					emit_int_convert(ctx, arg_buf, &expr->data.call.args[0]->resolved, cw, converted);
+					strcpy(result_buf, converted);
+				}
 				break;
 			}
 		}
@@ -4197,8 +4204,12 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				HirType *from = &expr->data.call.args[0]->resolved;
 				HirType *to = &expr->resolved;
 				if (to->tag == HIR_TYPE_FLOAT && from->tag != HIR_TYPE_FLOAT) {
+					/* int → float: sitofp from the value's REAL width (i64/i128/handle/opaque are not i32). */
+					int fw = (from->tag == HIR_TYPE_INT && from->int_width) ? from->int_width : 32;
+					if (from->tag == HIR_TYPE_OPAQUE || from->tag == HIR_TYPE_HANDLE)
+						fw = 64;
 					char *c = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = sitofp i32 %s to float\n", c, arg_buf);
+					buffer_append_fmt(ctx, "  %s = sitofp %s %s to float\n", c, llvm_int_type(fw), arg_buf);
 					strcpy(result_buf, c);
 				} else if (to->tag == HIR_TYPE_INT && from->tag == HIR_TYPE_FLOAT) {
 					char *c = gen_value_name(ctx);

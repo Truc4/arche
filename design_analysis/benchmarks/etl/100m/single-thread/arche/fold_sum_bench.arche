@@ -1,0 +1,35 @@
+// Fold microbenchmark — isolates the column SUM (the monoid fold) from CSV load, so the speedup of
+// `reduce(+, col)` over a hand-written scalar loop is directly measurable. No CSV: the column is filled
+// in-program (broadcast init faults in all pages before timing), then the same fold is run both ways.
+//
+// Why reduce wins: the scalar loop has one accumulator → a serial fadd dependency chain (latency-bound,
+// below memory bandwidth). reduce emits a `<4 x float>` SIMD fold (4 independent lanes), licensed by the
+// monoid's associativity — it breaks the chain and approaches bandwidth. It is also MORE ACCURATE: 4
+// partial sums saturate f32 ~4x higher than a single accumulator.
+//
+// RUN: %arche build -o %t %s && %t
+#import { os fmt }
+
+v :: float;
+
+T :: arche { v }
+
+[100000000]T(100000000) { v: 1.0 }
+
+main :: proc() {
+  // broadcast init above wrote all 100M elements → pages resident before the timed regions.
+  os.now_ms()(t0:);
+  red := reduce(+, T.v);
+  os.now_ms()(t1:);
+
+  total := 0.0;
+  for (m := 0; m < 100000000; m += 1) {
+    total = total + T.v[m];
+  }
+  os.now_ms()(t2:);
+
+  reduce_ms := t1 - t0;
+  loop_ms := t2 - t1;
+  fmt.printf("fold_n=100000000 reduce_ms=%lld loop_ms=%lld reduce_sum=%g loop_sum=%g\n",
+             reduce_ms, loop_ms, red, total);
+}

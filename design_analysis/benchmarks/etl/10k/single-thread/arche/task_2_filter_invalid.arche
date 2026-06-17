@@ -1,0 +1,43 @@
+// Task 2 (arche, transform-only): count(quantity > 0), repeated N=216,000 times.
+#import { csv io fmt os }
+
+Transaction :: arche { quantity :: int }
+
+[10000]Transaction(10000) {
+  quantity: 0,
+}
+
+load_transactions :: proc() {
+  csv.load(Transaction, "design_analysis/benchmarks/etl/data/data_10k.csv");
+}
+
+write_output :: proc(count: i64) {
+  io.fopen_write("design_analysis/benchmarks/etl/out/arche/task_2.csv")(fd:);
+  buf: [64]char;
+  fmt.sprintf(buf, "count\n%ld\n", count)(buf, n:);
+  io.fwrite(fd, move buf, n);
+  io.fclose(move fd);
+}
+
+main :: proc() {
+  load_transactions();
+
+  // Up to 2.16e9 across all iters — past i32 but well within i64. An integer accumulator
+  // (unlike a float one) lets the conditional count auto-vectorize into a SIMD masked-add.
+  count: i64 = 0;
+  os.os_now_sec()(t0:);
+  for (iter := 0; iter < 216000; iter += 1) {
+    for (i := 0; i < 10000; i += 1) {
+      if (Transaction.quantity[i] > 0) {
+        count = count + 1;
+      }
+    }
+  }
+  os.os_now_sec()(t1:);
+  elapsed := t1 - t0;
+
+  write_output(count);
+
+  fmt.printf("task2_checksum: %ld\n", count);
+  fmt.printf("task2_time: %g\n", elapsed / 216000.0);
+}
