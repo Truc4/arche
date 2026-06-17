@@ -230,6 +230,16 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 		setenv("ARCHE_HOT_DIR", hotdir, 1);
 	}
 
+	/* Dev state inspector: the host (built with inspect.o in hot mode) serves its live pools on this Unix
+	 * socket, under the same dir the watcher manages. `arche inspect` connects here. One socket per project
+	 * (running two sessions of the same project simultaneously collides — last one wins). */
+	if (hot && !getenv("ARCHE_INSPECT_SOCK")) {
+		const char *hd = getenv("ARCHE_HOT_DIR");
+		char sock[1300];
+		snprintf(sock, sizeof(sock), "%s/inspect.sock", hd ? hd : proj);
+		setenv("ARCHE_INSPECT_SOCK", sock, 1);
+	}
+
 	CompileOpts opts = {0};
 	opts.quiet = 1; /* `go run`-style: no pipeline chatter, just the program's own output */
 	int rc = compile_source(src, input, exe, &opts);

@@ -877,8 +877,8 @@ int compile_source(const char *user_source, const char *source_path, const char 
 			char cc_cmd[1 << 16];
 			int cl = snprintf(cc_cmd, sizeof(cc_cmd),
 			                  "cc -rdynamic -no-pie -mcmodel=large -o %s %s %s/stack_check.o %s/io.o %s/net.o "
-			                  "%s/term.o %s/hotreload.o -ldl -lc",
-			                  out_path, u0_obj, rt, rt, rt, rt, rt);
+			                  "%s/term.o %s/hotreload.o %s/inspect.o -ldl -lc",
+			                  out_path, u0_obj, rt, rt, rt, rt, rt, rt);
 			if (cl < 0 || cl >= (int)sizeof(cc_cmd)) {
 				fprintf(stderr, "link command too long\n");
 				rc = 1;

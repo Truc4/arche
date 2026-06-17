@@ -32,6 +32,10 @@ typedef struct {
 
 static HotUnit g_units[HOT_MAX_UNITS];
 
+/* Dev state inspector (runtime/inspect.c) is serviced at this quiesce point — see arche_hot_resolve. Weak
+ * so the standalone hotreload unit test, which does not link inspect.o, still resolves to NULL (no-op). */
+extern void arche_inspect_poll(void) __attribute__((weak));
+
 /* Record a device unit's reloadable `.so`. Codegen passes a bare name (`unit_N.so`); the actual file
  * lives under $ARCHE_HOT_DIR (set by `arche run`), so resolve the full path here. Codegen emits one call
  * per device unit at host startup. */
@@ -98,6 +102,10 @@ void *arche_hot_resolve(int unit, const char *sym) {
 	if (unit < 0 || unit >= HOT_MAX_UNITS || !g_units[unit].active)
 		return NULL;
 	ensure_loaded(&g_units[unit]);
+	/* Cooperative quiesce point: service any pending inspect-socket traffic here, on the main thread,
+	 * BETWEEN pool mutations — so reads are consistent and edits land safely without locks. */
+	if (arche_inspect_poll)
+		arche_inspect_poll();
 	if (!g_units[unit].handle)
 		return NULL;
 	return dlsym(g_units[unit].handle, sym);
