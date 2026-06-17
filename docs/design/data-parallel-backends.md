@@ -50,9 +50,13 @@ single-thread SIMD reduce already saturates bandwidth, so more threads add nothi
 even nudges it slower). Multicore wins only on **compute-bound** kernels. (Cores is incidentally *more
 accurate* — exact `1e8` vs SIMD's saturated `6.71e7`, from per-chunk f32 accumulators.)
 
-Takeaway: "monoids → parallel → faster" is false for bandwidth-bound folds. Parallel speedup, when it
-matters, comes from running the **map** (the compute-heavy op) on SIMD/cores — which the unified backend
-already enables. Benchmark detail: `design_analysis/benchmarks/etl/results_fold_reduce.md`.
+Takeaway: a pure column sum — which is exactly the ETL's aggregation task (task 4 `aggregate_region` =
+`reduce(+, revenue)`, where summing the column *is the whole task*) — is **inherently bandwidth-bound**.
+The 4-lane SIMD reduce already reaches the memory-bandwidth ceiling (that's why it beats the
+latency-bound scalar loop ~3×); multicore can't exceed that ceiling, so it adds nothing. So
+"monoids → parallel → faster" is false for a standalone fold: **SIMD is the win, more threads aren't.**
+Where extra parallelism *does* pay is the compute-bound **map** (real arithmetic per row), which the
+unified backend already parallelizes. Benchmark detail: `design_analysis/benchmarks/etl/results_fold_reduce.md`.
 
 ## Fusion — evaluated and rejected (not arche's lever)
 
@@ -65,12 +69,15 @@ is built around it.
 maps mutate *named, declared* columns in place; there is no anonymous-intermediate explosion to clean up.
 And derived columns are typically **deliverables** (written out), so they must be materialized — the
 "eliminate the intermediate" fusion is outright illegal there (it would delete a live output). Parallel
-speedup also does not depend on fusion: the map is already the compute-bound op the backend parallelizes;
-the reduce is the cheap bandwidth-bound tail.
+speedup also does not depend on fusion: the map is already the compute-bound op the backend parallelizes.
 
-What would remain is small and only modestly valuable — fuse-into-producer (compute a column *and* its
-aggregate in one sweep, column preserved; saves one read-back), and aggregate-only queries
-(`sum(price*qty)`, product not kept — which arche can't even express today, and aren't the ETL workload).
+The ETL *does* have a standalone aggregation task — task 4, `reduce(+, revenue)` — but it sums an
+**already-materialized** column (`revenue` is a deliverable produced by task 1), so there is no
+intermediate to fuse; it's simply a (bandwidth-bound) fold. The only thing fusion would add is the niche
+**fuse-into-producer** case: if a single pipeline both wrote a column *and* wanted its aggregate, compute
+them in one sweep instead of write-then-reread (column preserved; saves one pass). The "eliminate the
+intermediate" form — summing an expression like `price*qty` you never keep — arche can't express today,
+and it doesn't arise in this workload precisely *because* the workload deliberately keeps `revenue`.
 
 **Decision: no fusion pass.** Reconsider only the fuse-into-producer case if a real workload shows the
 redundant read-back mattering.
