@@ -774,6 +774,7 @@ static int tui_run(const char *path, const char *start_pool) {
 	int fd = -1;           /* <0 = not connected; the TUI runs regardless and reconnects on its own */
 	int retry = 0;         /* ticks until the next reconnect attempt */
 	int start_applied = 0; /* honor start_pool only on the first successful connect */
+	int anim = 0;          /* frame counter for the waiting-screen spinner */
 
 	char line[512];
 	int pool_idx = 0;
@@ -812,9 +813,16 @@ static int tui_run(const char *path, const char *start_pool) {
 				}
 			}
 			if (fd < 0) {
+				/* a tiny spinner + cycling dots so the screen reads as "alive, retrying" not "frozen".
+				 * dots is kept a fixed 3 chars wide (space-padded) so the centered text never jitters. */
+				static const char spin[] = "|/-\\";
+				char dots[4] = "   ";
+				for (int i = 0; i < anim % 4; i++)
+					dots[i] = '.';
 				char msg[300];
-				snprintf(msg, sizeof(msg), "waiting for `arche run` on %s …", path);
+				snprintf(msg, sizeof(msg), "%c  waiting for `arche run` on %s %s", spin[anim % 4], path, dots);
 				tui_message_screen(" arche inspect — waiting for a host", msg);
+				anim++;
 				int key = tui_read_key();
 				if (key == K_QUIT)
 					break;
