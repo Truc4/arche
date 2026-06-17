@@ -90,14 +90,37 @@ Companion: `docs/DECISIONS_gpu.md` (GPU design detail), `docs/explain/E0046.md`/
     `sort` (O(n²) insertion → a real O(n log n) permuting all columns). Done now because reduce is the
     keystone data-parallel primitive and the lowest-risk to vectorize correctly.
 
+19. **In-binary GPU dispatch via `arche build --gpu`** — `run map @gpu` now executes on a real GPU from a
+    normal compiled executable (verified live on an RTX 3060), not just in a side test harness. Each
+    `@gpu` map's GLSL is compiled to SPIR-V at build time and **embedded** in a generated registry object
+    (`codegen/gpu_embed.c`); the build links it + the in-binary Vulkan dispatcher (`runtime/gpu_runtime.c`,
+    `-lvulkan`). *Alt considered:* write `.spv` next to the binary and load by path — rejected (binary not
+    self-contained, fragile path resolution). Embedding keeps a `--gpu` binary standalone.
+20. **CPU fallback is structural, not optional** — codegen emits the `arche_gpu_dispatch` call then a branch;
+    any nonzero return (no device/driver/shader, or a dispatch error) runs the existing CPU map call. A
+    `--gpu` binary is therefore *always* correct; the GPU is a best-effort accelerator. With `float`=f32 the
+    two paths agree bit-for-bit, so the fallback is observably identical. This is why the dispatcher can
+    return a plain `int` status and never needs to abort.
+21. **`--gpu` is opt-in and isolated** — default `arche build` emits no dispatch calls, links no Vulkan, and
+    is byte-identical to before; the core `make test` never passes `--gpu`, so it stays GPU-free. `--gpu`
+    forces a whole-program build so the dispatch calls + the registry/dispatcher objects always land in one
+    link step (never the per-unit / shared / hot paths, which would leave `arche_gpu_dispatch` undefined).
+22. **Graceful degradation without the toolchain** — no `glslc` at build → an empty registry (every dispatch
+    falls back to CPU), build still succeeds. No `<vulkan/vulkan.h>` when the *compiler* is built
+    (`ARCHE_HAVE_VULKAN` unset) → `gpu_runtime.c` compiles to a stub that always fails to the CPU path and
+    no `-lvulkan` is linked. So `--gpu` works (as CPU) on machines with no GPU stack at all.
+23. **v1 dispatch scope = a single static all-float pool per map** (mirrors the emitter's constraint).
+    Multi-pool, dynamic (heap) pools, and non-float columns stay CPU-only — never wrong, just not on the
+    GPU. Keeps the codegen column-pointer logic to the simple static inline-array GEP form.
+
 ## What is explicitly STAGED (designed, not built) — see `docs/DECISIONS_gpu.md`
 
-- The production GPU runtime wired into `arche run`: device-local buffers, persistent column residency,
-  async submit + barriers, async `run`. (`tests/gpu/vk_run.c` is a single-SSBO **test harness** proving
-  the path on hardware, not the in-binary dispatcher.)
-- Multi-SSBO / per-map descriptor layouts in the dispatcher (the emitter already emits N SSBOs).
+- GPU runtime **performance**: device-local buffers (the shipped dispatcher uses host-coherent memory
+  created+freed per dispatch), persistent column residency across `run`s, async submit + barriers, a
+  non-blocking `run` (the shipped path is synchronous `vkQueueWaitIdle`). Correctness shipped; speed staged.
 - Collectives on the GPU (`reduce`/`scan`/`sort` as GPU tree-fold / segmented scan / sort).
-- Instanced rendering (columns → instance buffer → one instanced draw).
+- Instanced rendering (columns → instance buffer → one instanced draw) — the graphics half of the thesis,
+  needs a Vulkan surface/swapchain on the window + a vertex/fragment emitter + column-slice-to-proc binding.
 - The emitter's unsupported cases: int/mixed columns, consts, singletons, user `func` calls in a kernel.
 
 These are staged because each needs real runtime engineering that cannot be made test-clean and

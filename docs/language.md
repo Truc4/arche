@@ -510,15 +510,22 @@ main :: proc() {
 }
 ```
 
-- `@gpu` is **additive and transparent**: it never changes the CPU result — it only enables GPU emission.
-  The CPU lowering still runs, so a program behaves identically with or without a GPU present.
-- `arche build --emit-gpu=<dir>` writes a GLSL compute shader (one storage buffer per column) for each
-  `@gpu` map; `make test-gpu` validates them to SPIR-V and `make test-gpu-run` executes them on the GPU and
-  checks the result equals the CPU path.
-- The emittable subset today is float columns with arithmetic and `select`; a map outside it is simply not
-  emitted (its CPU path is unaffected). The dispatch runtime, residency, and instanced rendering are staged
-  — see `docs/DECISIONS_gpu.md`. Because arche `float` is **f32 on both the CPU and the GPU**, the two
-  backends are the same numeric machine — the GPU result matches the CPU bit-for-bit.
+- `@gpu` is **additive and transparent**: it never changes the result — it only enables GPU execution.
+  A program behaves identically with or without a GPU present.
+- **`arche build --gpu`** produces a normal executable that actually runs each `@gpu` map on the GPU: the
+  map's shader is compiled to SPIR-V and embedded in the binary, and a `run map @gpu` dispatches it via an
+  in-binary Vulkan runtime. If there is no GPU (no device, no driver, or the build had no shader compiler),
+  the dispatch **falls back to the CPU map automatically** — so a `--gpu` binary is always correct. Because
+  arche `float` is **f32 on both the CPU and the GPU**, the two paths are the same numeric machine: the GPU
+  result matches the CPU bit-for-bit.
+- Plain `arche build` (no `--gpu`) is a pure CPU binary with no Vulkan dependency — `@gpu` is inert there.
+- `arche build --emit-gpu=<dir>` writes the GLSL compute shader (one storage buffer per column) for each
+  `@gpu` map as a side artifact, without changing the executable.
+- Gates: `make test-gpu` validates the shaders to SPIR-V, `make test-gpu-run` dispatches via a standalone
+  runner, and `make test-gpu-exe` runs a real `--gpu` executable on the GPU and checks its output.
+- The GPU-executable subset today is a single static pool whose columns are all float, with arithmetic and
+  `select`; anything outside it runs on the CPU. Runtime residency/async and instanced rendering are staged
+  — see `docs/DECISIONS_gpu.md`.
 
 ## Collectives (`reduce` / `scan` / `sort`)
 

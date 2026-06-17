@@ -61,6 +61,7 @@ struct CodegenContext {
 	int per_unit;
 	int shared;         /* --shared: arche defs get external (dlsym-able) linkage; see codegen_set_shared */
 	int hot;            /* dev hot-reload (arche run): cross-unit calls route through a reload trampoline */
+	int gpu;            /* --gpu: `run map @gpu` dispatches the embedded shader on the GPU (CPU fallback) */
 	int emit_only_unit; /* -1 = emit all units (whole-program / default) */
 
 	/* For tracking allocated values */
@@ -7470,6 +7471,91 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			}
 		}
 
+		/* `--gpu` + `run map @gpu`: try the embedded compute shader on the GPU first, falling back to the
+		 * direct CPU call below on any nonzero return (no device, no embedded shader, dispatch error). v1
+		 * dispatches one matching static pool whose columns are all float (the common case, and what the
+		 * GLSL emitter supports); a multi-pool, dynamic, or non-float map stays CPU-only. The column base
+		 * pointers are passed in map-param order — the same order the shader binds its SSBOs. */
+		char *gpu_done = NULL;
+		if (ctx->gpu && stmt->data.run_stmt.is_gpu && matching_count == 1 && map->param_count > 0 &&
+		    map->param_count <= 64) {
+			const char *an = matching_archs[0];
+			HirArchetypeDecl *ga = find_archetype_decl(ctx, an);
+			int ok = ga != NULL && get_arch_static_capacity(ctx, an) > 0;
+			int field_idx[64];
+			for (int p = 0; ok && p < map->param_count; p++) {
+				const char *pn = map->params[p] ? map->params[p]->name : NULL;
+				int fi = -1;
+				for (int f = 0; pn && f < ga->field_count; f++)
+					if (ga->fields[f]->kind == FIELD_COLUMN && strcmp(ga->fields[f]->name, pn) == 0) {
+						if (ga->fields[f]->type && ga->fields[f]->type->tag == HIR_TYPE_FLOAT)
+							fi = f; /* float column → GPU-able */
+						break;
+					}
+				field_idx[p] = fi;
+				if (fi < 0)
+					ok = 0; /* a non-float / missing column → no GPU form for this map */
+			}
+			if (ok) {
+				int ncol = map->param_count;
+				/* cols[]: an [ncol x i8*] of column base pointers (binding order). */
+				char *cols = gen_value_name(ctx);
+				emit_alloca(ctx, "  %s = alloca [%d x i8*]\n", cols, ncol);
+				for (int p = 0; p < ncol; p++) {
+					char *cp = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* @%s, i32 0, i32 %d, i64 0\n",
+					                  cp, an, an, an, field_idx[p]);
+					char *cp8 = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = bitcast float* %s to i8*\n", cp8, cp);
+					char *slot = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8*], [%d x i8*]* %s, i32 0, i32 %d\n", slot,
+					                  ncol, ncol, cols, p);
+					buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", cp8, slot);
+					free(cp);
+					free(cp8);
+					free(slot);
+				}
+				char *cols0 = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8*], [%d x i8*]* %s, i32 0, i32 0\n", cols0, ncol,
+				                  ncol, cols);
+				/* live row count (last struct field, after the columns), truncated to i32 */
+				char *cgep = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* @%s, i32 0, i32 %d\n", cgep, an,
+				                  an, an, ga->field_count);
+				char *cnt64 = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cnt64, cgep);
+				char *cnt32 = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", cnt32, cnt64);
+				/* the map name as a C string (the dispatch lookup key) */
+				char qname[300];
+				snprintf(qname, sizeof(qname), "\"%s\"", map_name);
+				char *nameg = emit_string_global(ctx, qname);
+				char *namep = gen_value_name(ctx);
+				size_t nl = strlen(map_name);
+				buffer_append_fmt(ctx, "  %s = getelementptr [%zu x i8], [%zu x i8]* %s, i32 0, i32 0\n", namep, nl + 1,
+				                  nl + 1, nameg);
+				free(nameg);
+				char *rc = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = call i32 @arche_gpu_dispatch(i8* %s, i32 %d, i8** %s, i32 4, i32 %s)\n",
+				                  rc, namep, ncol, cols0, cnt32);
+				char *need_cpu = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = icmp ne i32 %s, 0\n", need_cpu, rc); /* nonzero → run CPU path */
+				char *cpu_lbl = gen_value_name(ctx);
+				gpu_done = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", need_cpu, cpu_lbl, gpu_done);
+				buffer_append_fmt(ctx, "%s:\n", cpu_lbl + 1);
+				free(cols);
+				free(cols0);
+				free(cgep);
+				free(cnt64);
+				free(cnt32);
+				free(namep);
+				free(rc);
+				free(need_cpu);
+				free(cpu_lbl);
+			}
+		}
+
 		/* Build: call void @map_name(%struct.A* @A, %struct.B* @B, ...) */
 		char map_call_buf[512];
 		buffer_append_fmt(ctx, "  call void @%s(", cg_fnsym(ctx, map_name, 0, map_call_buf, sizeof(map_call_buf)));
@@ -7492,6 +7578,14 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			buffer_append_fmt(ctx, "%s%%struct.%s* @%s", (matching_count + i) > 0 ? ", " : "", run_foreign[i],
 			                  run_foreign[i]);
 		buffer_append(ctx, ")\n");
+
+		/* Close the GPU/CPU diamond: the CPU call above is the fallback block; merge back. */
+		if (gpu_done) {
+			buffer_append_fmt(ctx, "  br label %s\n", gpu_done);
+			buffer_append_fmt(ctx, "%s:\n", gpu_done + 1);
+			ctx->block_terminated = 0;
+			free(gpu_done);
+		}
 
 		break;
 	}
@@ -9149,6 +9243,17 @@ int codegen_hot_enabled(void) {
 	return g_hot_mode;
 }
 
+/* `--gpu`: a `run map @gpu` tries the embedded compute shader on the GPU at runtime, falling back to the
+ * direct CPU map call on any failure (no device, no shader, dispatch error). OFF (default) → `@gpu` is a
+ * pure CPU build, so the core suite stays GPU-free and the binary needs no Vulkan. See gpu_runtime.c. */
+static int g_gpu_mode = 0;
+void codegen_set_gpu(int on) {
+	g_gpu_mode = on ? 1 : 0;
+}
+int codegen_gpu_enabled(void) {
+	return g_gpu_mode;
+}
+
 CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	CodegenContext *ctx = malloc(sizeof(CodegenContext));
 	ctx->ast = ast;
@@ -9157,6 +9262,7 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->per_unit = codegen_per_unit_enabled();
 	ctx->shared = g_shared_mode;
 	ctx->hot = g_hot_mode;
+	ctx->gpu = g_gpu_mode;
 	ctx->emit_only_unit = -1;
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
@@ -9627,6 +9733,10 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	/* Dev hot-reload: the reload runtime (linked into the host, RTLD-visible to device .so's). */
 	if (ctx->hot)
 		buffer_append(ctx, "declare i8* @arche_hot_resolve(i32, i8*)\n");
+
+	/* `--gpu`: the in-binary Vulkan dispatcher (runtime/gpu_runtime.c). Returns nonzero → CPU fallback. */
+	if (ctx->gpu)
+		buffer_append(ctx, "declare i32 @arche_gpu_dispatch(i8*, i32, i8**, i32, i32)\n");
 
 	/* Per-unit: declare cross-unit funcs/procs up front (inert in whole-program mode). */
 	emit_cross_unit_declares(ctx);

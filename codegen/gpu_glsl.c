@@ -218,7 +218,7 @@ static int arch_matches_float(HirMapDecl *map, HirArchetypeDecl *arch) {
 
 /* Build the full shader text for (map, arch). Returns a malloc'd string on success, NULL if the body is
  * not GPU-emittable in v1. */
-static char *build_shader(HirMapDecl *map, HirArchetypeDecl *arch) {
+char *gpu_glsl_build_src(HirMapDecl *map, HirArchetypeDecl *arch) {
 	GBuf body;
 	gb_init(&body);
 	emit_stmts(&body, map, map->stmts, map->stmt_count);
@@ -251,7 +251,7 @@ static char *build_shader(HirMapDecl *map, HirArchetypeDecl *arch) {
 /* Mark a map for GPU emission if any `run <map> @gpu` dispatches it. GPU dispatch is a call-site decision
  * (`run step @gpu`), so the trigger lives on the run statement; this propagates it to the map the emitter
  * walks. Recurses into block statements (a run can sit inside a desugared block). */
-static void mark_gpu_runs(HirProgram *prog, HirStmt **stmts, int count) {
+static void mark_gpu_runs_in(HirProgram *prog, HirStmt **stmts, int count) {
 	for (int i = 0; i < count; i++) {
 		HirStmt *s = stmts[i];
 		if (!s)
@@ -263,9 +263,30 @@ static void mark_gpu_runs(HirProgram *prog, HirStmt **stmts, int count) {
 				    strcmp(prog->decls[d]->data.map->name, s->data.run_stmt.map_name) == 0)
 					prog->decls[d]->data.map->is_gpu = 1;
 		} else if (s->kind == HIR_STMT_BLOCK) {
-			mark_gpu_runs(prog, s->data.block.stmts, s->data.block.count);
+			mark_gpu_runs_in(prog, s->data.block.stmts, s->data.block.count);
 		}
 	}
+}
+
+void gpu_glsl_mark_runs(HirProgram *prog) {
+	if (!prog)
+		return;
+	for (int i = 0; i < prog->decl_count; i++) {
+		HirDecl *d = prog->decls[i];
+		if (d && d->kind == HIR_DECL_PROC && d->data.proc)
+			mark_gpu_runs_in(prog, d->data.proc->stmts, d->data.proc->stmt_count);
+	}
+}
+
+HirArchetypeDecl *gpu_glsl_first_float_arch(HirProgram *prog, HirMapDecl *map) {
+	if (!prog || !map)
+		return NULL;
+	for (int i = 0; i < prog->decl_count; i++) {
+		HirDecl *d = prog->decls[i];
+		if (d && d->kind == HIR_DECL_ARCHETYPE && d->data.archetype && arch_matches_float(map, d->data.archetype))
+			return d->data.archetype;
+	}
+	return NULL;
 }
 
 int arche_gpu_emit(HirProgram *prog, const char *out_dir, int *out_count) {
@@ -274,11 +295,7 @@ int arche_gpu_emit(HirProgram *prog, const char *out_dir, int *out_count) {
 	int written = 0, gpu_maps = 0;
 
 	/* Propagate `run ... @gpu` dispatch markers from proc bodies onto the target maps. */
-	for (int i = 0; i < prog->decl_count; i++) {
-		HirDecl *d = prog->decls[i];
-		if (d && d->kind == HIR_DECL_PROC && d->data.proc)
-			mark_gpu_runs(prog, d->data.proc->stmts, d->data.proc->stmt_count);
-	}
+	gpu_glsl_mark_runs(prog);
 
 	/* Index archetype decls once. */
 	HirArchetypeDecl **archs = calloc(prog->decl_count ? (size_t)prog->decl_count : 1, sizeof(*archs));
@@ -297,7 +314,7 @@ int arche_gpu_emit(HirProgram *prog, const char *out_dir, int *out_count) {
 		for (int a = 0; a < narch; a++) {
 			if (!arch_matches_float(map, archs[a]))
 				continue;
-			char *src = build_shader(map, archs[a]);
+			char *src = gpu_glsl_build_src(map, archs[a]);
 			if (!src)
 				continue;
 			char path[1024];

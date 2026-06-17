@@ -20,6 +20,24 @@ See `docs/AUTONOMOUS_DECISIONS.md` for the decision log; this file is the design
   arithmetic map (`scale`) and a two-column map with `select` (`physics_step`).
 - Both gates are **opt-in** and skip cleanly when the toolchain / Vulkan device is absent — `make test`
   needs no GPU and no shader toolchain. The CPU correctness of `@gpu` maps is covered by the normal suite.
+- **In-binary GPU dispatch** (`arche build --gpu`): the executable itself runs `@gpu` maps on the GPU.
+  - At build time, each `@gpu` map's GLSL is compiled to SPIR-V (`glslc`) and embedded in a generated
+    registry object (`codegen/gpu_embed.c`); the build links it plus the in-binary Vulkan dispatcher
+    (`runtime/gpu_runtime.c`, `-lvulkan`).
+  - At runtime, a `run map @gpu` calls `arche_gpu_dispatch(name, cols, count)` — lazy device init, a
+    per-shader compute-pipeline cache, host-coherent SSBOs uploaded per dispatch, a synchronous submit,
+    and readback into the same columns.
+  - **CPU fallback is structural**: codegen emits the GPU call followed by a branch — any nonzero return
+    (no device, no driver, no embedded shader, dispatch error) runs the existing CPU map call instead. So
+    a `--gpu` binary is *always* correct; the GPU is a best-effort accelerator. With `float`=f32 the GPU
+    result equals the CPU result bit-for-bit.
+  - **Default `arche build` is unchanged** — no `--gpu` means no Vulkan dependency, no dispatch calls, a
+    byte-identical CPU binary. The core suite never passes `--gpu`, so it stays GPU-free.
+  - **Execution gate** `make test-gpu-exe`: builds `--gpu` executables, runs them, asserts the program's
+    own output is correct AND (via `ARCHE_GPU_DEBUG`) that the GPU path actually ran when a device is
+    present; no device → CPU fallback, still correct. Verified live on an RTX 3060.
+  - v1 scope of dispatch: a single matching **static** pool whose columns are all `float` (mirrors the
+    emitter). Multi-pool / dynamic / non-float maps stay CPU-only — no incorrectness, just no GPU.
 
 ## Precision: CPU and GPU are the same numeric machine
 
@@ -45,11 +63,11 @@ either way.
 
 ## Staged (designed, not built)
 
-1. **Production runtime wired into `arche run`.** `tests/gpu/vk_run.c` is a *test harness*, not the
-   in-binary dispatcher. The real path needs: device-local buffers (not host-visible), persistent column
-   residency across `run`s (upload once, not per dispatch), async submit + pipeline barriers, and an async
-   `run` so the CPU isn't blocked on `vkQueueWaitIdle`. This is the bulk of the work and is intentionally
-   deferred — it cannot be made regression-free without a GPU CI target.
+1. **Runtime performance: residency + async.** The shipped dispatcher is correct but not yet fast: it uses
+   host-coherent buffers created+uploaded+freed *per dispatch* and a synchronous `vkQueueWaitIdle`. The
+   performance path needs device-local buffers, persistent column residency across `run`s (upload once),
+   async submit + pipeline barriers, and a non-blocking `run`. Correctness-first was the deliberate v1 call;
+   these are pure optimizations over a working, hardware-verified base.
 2. **Per-column `@gpu` residency** (vs the per-map decorator) — mark a column as device-resident so a chain
    of GPU maps doesn't round-trip through host memory.
 3. **Collectives on the GPU** — `reduce`/`scan` as a GPU tree-fold / segmented scan, `sort` as a GPU sort.

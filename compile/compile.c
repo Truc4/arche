@@ -1,6 +1,7 @@
 #include "compile.h"
 #include "../cli/resource.h"
 #include "../codegen/codegen.h"
+#include "../codegen/gpu_embed.h"
 #include "../codegen/gpu_glsl.h"
 #include "../lexer/lexer.h"
 #include "../lower/lower.h"
@@ -672,6 +673,15 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	} else {
 		codegen_set_hot(0);
 	}
+	/* `--gpu`: a `run map @gpu` dispatches the embedded compute shader at runtime (CPU fallback). Force
+	 * whole-program so the dispatch calls + the registry/dispatcher objects land in one link step (the
+	 * standard executable path below); set explicitly each call so the mode never leaks into a later build. */
+	if (opts && opts->gpu && emit == EMIT_LINK) {
+		codegen_set_gpu(1);
+		codegen_force_whole_program();
+	} else {
+		codegen_set_gpu(0);
+	}
 
 	Frontend fe;
 	if (compile_frontend(user_source, source_path, &fe) != 0)
@@ -1127,6 +1137,27 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	/* cc: assemble + link the runtime objects (and any --link inputs). */
 	{
 		const char *rt = arche_resource_dir(ARCHE_RES_RUNTIME);
+
+		/* `--gpu`: compile each `@gpu` map's GLSL to SPIR-V (via glslc) and emit a registry object that
+		 * holds the bytes; it links beside runtime/gpu_runtime.o so the in-binary dispatcher can find a
+		 * shader by map name. No glslc → an empty registry (every dispatch falls back to CPU). */
+		char gpu_reg_obj[600] = "";
+		if (opts && opts->gpu && have_workdir) {
+			char reg_c[600];
+			snprintf(reg_c, sizeof(reg_c), "%s/arche_gpu_reg.c", workdir);
+			if (arche_gpu_embed(ast, reg_c, quiet) < 0) {
+				fprintf(stderr, "Failed to embed GPU shaders\n");
+				goto cleanup;
+			}
+			snprintf(gpu_reg_obj, sizeof(gpu_reg_obj), "%s/arche_gpu_reg.o", workdir);
+			char rc_cmd[1400];
+			snprintf(rc_cmd, sizeof(rc_cmd), "cc -std=c99 -O2 -c -o %s %s", gpu_reg_obj, reg_c);
+			if (system(rc_cmd) != 0) {
+				fprintf(stderr, "Failed to compile GPU shader registry\n");
+				goto cleanup;
+			}
+		}
+
 		char cc_cmd[8192];
 		const char *gc = codegen_per_unit_enabled() ? "-Wl,--gc-sections " : "";
 		int cc_len = snprintf(cc_cmd, sizeof(cc_cmd),
@@ -1150,6 +1181,23 @@ int compile_source(const char *user_source, const char *source_path, const char 
 		if (append_link_extras(cc_cmd, &cc_len, sizeof(cc_cmd), link_libs, link_lib_count) < 0) {
 			fprintf(stderr, "link command too long; refusing to drop device shims / #link libs\n");
 			goto cleanup;
+		}
+		/* `--gpu`: link the generated shader registry + the Vulkan dispatcher. `-lvulkan` only when the
+		 * compiler itself was built with the Vulkan headers (ARCHE_HAVE_VULKAN); otherwise gpu_runtime.o
+		 * is the no-op stub that needs no library and every dispatch falls back to CPU. */
+		if (gpu_reg_obj[0]) {
+#ifdef ARCHE_HAVE_VULKAN
+			const char *gpu_libs = " -lvulkan";
+#else
+			const char *gpu_libs = "";
+#endif
+			int m = snprintf(cc_cmd + cc_len, sizeof(cc_cmd) - (size_t)cc_len, " %s %s/gpu_runtime.o%s", gpu_reg_obj,
+			                 rt, gpu_libs);
+			if (m < 0 || m >= (int)sizeof(cc_cmd) - cc_len) {
+				fprintf(stderr, "link command too long; refusing to drop GPU objects\n");
+				goto cleanup;
+			}
+			cc_len += m;
 		}
 		if (!quiet)
 			printf("Linking executable...\n");

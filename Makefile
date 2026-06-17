@@ -37,7 +37,19 @@ SRCS = lexer/lexer.c \
        semantic/sem_types.c \
        semantic/tycheck.c \
        codegen/codegen.c \
-       codegen/gpu_glsl.c
+       codegen/gpu_glsl.c \
+       codegen/gpu_embed.c
+
+# `--gpu` builds dispatch @gpu maps on the GPU via Vulkan. Detect the Vulkan SDK once — the probe both
+# includes <vulkan/vulkan.h> AND links -lvulkan against a real symbol, so headers-without-library does NOT
+# falsely enable it (which would make every `arche build --gpu` fail to link). When present, define
+# ARCHE_HAVE_VULKAN; this MUST reach both compile.o (the -lvulkan #ifdef) and runtime/gpu_runtime.o (the
+# real-vs-stub #if) — it does, via the single generic %.o rule's CFLAGS. Absent → the compiler still
+# builds and `--gpu` degrades to a CPU-fallback stub that links no library.
+HAVE_VULKAN := $(shell printf '#include <vulkan/vulkan.h>\nint main(void){vkEnumerateInstanceVersion(0);return 0;}\n' | $(CC) -x c - -lvulkan -o /dev/null >/dev/null 2>&1 && echo 1)
+ifeq ($(HAVE_VULKAN),1)
+CFLAGS += -DARCHE_HAVE_VULKAN
+endif
 
 RUNTIME_SRCS = runtime/stack_check.c runtime/io.c runtime/net.c runtime/term.c
 RUNTIME_OBJS = $(RUNTIME_SRCS:.c=.o)
@@ -51,7 +63,7 @@ CLI_OBJS = $(BUILD_DIR)/cli/args.o $(BUILD_DIR)/cli/cli.o $(BUILD_DIR)/cli/resou
 # Satellite tools folded into the `arche` binary as subcommands (fmt, analyze): their objects join
 # the main link. The standalone arche-fmt / arche-analyzer binaries still build during the migration.
 FOLD_OBJS = $(BUILD_DIR)/syntax/format_syntax.o $(BUILD_DIR)/syntax/token_category.o $(BUILD_DIR)/arche_analyzer.o
-COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/compile/compile.o $(BUILD_DIR)/compile/module_resolve.o $(BUILD_DIR)/compile/variant_select.o $(BUILD_DIR)/doctest/doctest_extract.o $(BUILD_DIR)/doctest/doctest_run.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/codegen/gpu_glsl.o $(CLI_OBJS) $(FOLD_OBJS) $(BUILD_DIR)/main.o
+COMPILER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/compile/compile.o $(BUILD_DIR)/compile/module_resolve.o $(BUILD_DIR)/compile/variant_select.o $(BUILD_DIR)/doctest/doctest_extract.o $(BUILD_DIR)/doctest/doctest_run.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/codegen/gpu_glsl.o $(BUILD_DIR)/codegen/gpu_embed.o $(CLI_OBJS) $(FOLD_OBJS) $(BUILD_DIR)/main.o
 LEXER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/lexer/lexer_main.o
 FMT_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/syntax/format_syntax.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_fmt.o
 SYNTAX_TOKENS_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/syntax/token_category.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_syntax_tokens.o
@@ -69,7 +81,7 @@ HOTRELOAD_TEST_OBJS = $(BUILD_DIR)/runtime/hotreload.o $(BUILD_DIR)/unit/runtime
 # Default target
 # `arche fmt` replaces the standalone arche-fmt (its target is still defined, buildable on demand).
 # arche-analyzer (LSP) + arche-syntax-tokens stay for editor integration.
-all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(SYNTAX_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o $(RUNTIME_PIC_OBJS) $(BUILD_DIR)/runtime/hotreload.o
+all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(SYNTAX_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o $(RUNTIME_PIC_OBJS) $(BUILD_DIR)/runtime/hotreload.o $(BUILD_DIR)/runtime/gpu_runtime.o
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/syntax $(BUILD_DIR)/hir $(BUILD_DIR)/lower $(BUILD_DIR)/parser $(BUILD_DIR)/compile $(BUILD_DIR)/doctest $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/cli $(BUILD_DIR)/unit/compiler $(BUILD_DIR)/runtime
@@ -253,6 +265,26 @@ test-gpu-run: $(TARGET)
 	o2=$$($(BUILD_DIR)/gpu/vk_run $(BUILD_DIR)/gpu/step.spv 8 2 0 1 2 3 4 5 6 7 1 1 1 1 1 1 1 1); \
 	if [ "$$o2" != "1 2 3 4 5 6 7 8 | 1 1 1 1 1 1 1 1" ]; then echo "test-gpu-run: FAIL step — GPU [$$o2]"; exit 1; fi; \
 	echo "test-gpu-run: PASS step (2-col + select) — GPU [$$o2] == CPU"
+
+# GPU EXECUTABLE gate (opt-in). The end-to-end Phase 3 path: `arche build --gpu` produces a normal
+# executable that embeds the @gpu maps' SPIR-V and dispatches them on the GPU at runtime (CPU fallback).
+# Asserts the program's own output is correct AND — via ARCHE_GPU_DEBUG — that the GPU path actually ran
+# when a device is present. With no Vulkan device the CPU fallback still produces the right answer (SKIP).
+test-gpu-exe: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
+	@command -v glslc >/dev/null 2>&1 || { echo "test-gpu-exe: SKIP (glslc not found)"; exit 0; }
+	@mkdir -p $(BUILD_DIR)/gpu
+	@for t in scale:"x0=0 x3=30" physics_step:"p0=1 p7=8"; do \
+		name=$${t%%:*}; want=$${t#*:}; \
+		./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/$$name.exe tests/unit/gpu/$$name.arche >/dev/null 2>&1 \
+			|| { echo "test-gpu-exe: SKIP ($$name --gpu build failed; likely no libvulkan at link)"; exit 0; }; \
+		out=$$(ARCHE_GPU_DEBUG=1 $(BUILD_DIR)/gpu/$$name.exe 2>$(BUILD_DIR)/gpu/$$name.err); \
+		echo "$$out" | grep -qF "$$want" || { echo "test-gpu-exe: FAIL $$name — output [$$out] != [$$want]"; exit 1; }; \
+		if grep -q "gpu dispatch" $(BUILD_DIR)/gpu/$$name.err; then \
+			echo "test-gpu-exe: PASS $$name — ran on GPU, output [$$want]"; \
+		else \
+			echo "test-gpu-exe: SKIP $$name (no Vulkan device; CPU fallback output [$$want] correct)"; \
+		fi; \
+	done
 
 # Test folder with pattern: make test-folder FOLDER=path PATTERN="*.arche"
 test-folder: $(TARGET) $(BUILD_DIR)
@@ -444,7 +476,7 @@ install: all
 	install -m 0755 $(ANALYZER_BIN) "$(ARCHE_BINDIR)/arche-analyzer"
 	install -m 0644 core/core.arche "$(ARCHE_LIBDIR)/core/"
 	cp -R stdlib/. "$(ARCHE_LIBDIR)/stdlib/"
-	install -m 0644 $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o "$(ARCHE_LIBDIR)/runtime/"
+	install -m 0644 $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o $(BUILD_DIR)/runtime/gpu_runtime.o "$(ARCHE_LIBDIR)/runtime/"
 	@[ -d docs/explain ] && cp -R docs/explain/. "$(ARCHE_LIBDIR)/explain/" || true
 	@# `cp -R` preserves source-tree modes (and leaves a pre-existing dest file's mode untouched on
 	@# re-install), so a stdlib file that happens to be 0600 in the tree lands unreadable for the
@@ -474,4 +506,4 @@ test-install: all
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
 
 # Phony targets
-.PHONY: all run run-lexer test test-per-unit test-doc test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install
+.PHONY: all run run-lexer test test-per-unit test-doc test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install

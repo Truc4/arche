@@ -13,4 +13,17 @@
  * `*out_count` (if non-NULL) receives the number of `@gpu` maps seen. */
 int arche_gpu_emit(HirProgram *prog, const char *out_dir, int *out_count);
 
+/* Propagate `run <map> @gpu` dispatch markers from proc bodies onto the target map decls (sets
+ * `HirMapDecl.is_gpu`). Both the file emitter above and the in-binary embed path (gpu_embed.c) call
+ * this first so they agree on which maps are GPU. Idempotent. */
+void gpu_glsl_mark_runs(HirProgram *prog);
+
+/* Build the full GLSL compute-shader text for one (map, arch). Returns a malloc'd string (caller
+ * frees), or NULL if the map body isn't GPU-emittable in v1. */
+char *gpu_glsl_build_src(HirMapDecl *map, HirArchetypeDecl *arch);
+
+/* The first archetype in `prog` whose columns cover all of `map`'s params and are all float (the v1
+ * GPU constraint). NULL if none — then the map has no GPU form and stays CPU-only. */
+HirArchetypeDecl *gpu_glsl_first_float_arch(HirProgram *prog, HirMapDecl *map);
+
 #endif
