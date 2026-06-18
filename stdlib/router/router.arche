@@ -296,6 +296,6 @@ new_node :: proc(seg: []char, seg_len: int, kind: nodeKind)(idx: int, ok: int) {
       next_sibling : -1,
       handler_id   : -1,
     },
-  )(slot:, ok:);
+  )(slot:, ok);
   idx = i32(slot);
 }

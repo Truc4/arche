@@ -221,6 +221,13 @@ test-per-unit: $(TARGET) $(ANALYZER_BIN) $(SYNTAX_TOKENS_BIN) $(SEMANTIC_TEST_BI
 test-doc: $(TARGET) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 	./$(TARGET) test core/... stdlib/... examples/... README.md docs/language.md docs/patterns.md docs/DOCTESTS.md
 
+# Corpus lint gate: compile every stdlib + extras module IN CONTEXT with `-Werror`, failing on any
+# warning or error. Unlike `make test` (which only catches errors in library code a test happens to
+# compile, and never gates warnings), this imports each module like a real program does and promotes
+# every lint to an error — so a stray warning or an unexercised module can't rot. See scripts/check_corpus.sh.
+check-corpus: $(TARGET)
+	@ARCHE=$(TARGET) bash scripts/check_corpus.sh
+
 # Memory-safety regression gate (AddressSanitizer + UndefinedBehaviorSanitizer). Rebuilds the
 # context-freeing unit-test binaries in an ISOLATED object tree (build-asan/) — so the normal
 # build/ stays usable — and runs them, FAILING on the first leak / use-after-free / UB. Scoped to
@@ -517,4 +524,4 @@ test-install: all
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
 
 # Phony targets
-.PHONY: all run run-lexer test test-per-unit test-doc test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install
+.PHONY: all run run-lexer test test-per-unit test-doc check-corpus test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install
