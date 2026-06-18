@@ -13,7 +13,9 @@ enum {
 	C_WERR,
 	C_ALLOW_UNDEFINED,
 	C_EXPORTED_MUTABLE,
-	C_SYS_FOREIGN_WRITE
+	C_SYS_FOREIGN_WRITE,
+	C_WNO_LSA,
+	C_WERR_LSA
 };
 
 static const ArgSpec k_check_specs[] = {
@@ -29,6 +31,9 @@ static const ArgSpec k_check_specs[] = {
      "exported-mutable-global lint (W0022): error (default) | warn | allow"},
     {C_SYS_FOREIGN_WRITE, "--map-foreign-write", ARG_VALUE, 0, 0, "<level>",
      "map-writes-foreign-pool lint (W0024): error (default) | warn | allow"},
+    {C_WNO_LSA, "-Wno-large-stack-array", ARG_FLAG, 0, 0, NULL, "disable the large-stack-array lint (W0026)"},
+    {C_WERR_LSA, "-Werror=large-stack-array", ARG_FLAG, 0, 0, NULL,
+     "promote the large-stack-array lint (W0026) to an error"},
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
@@ -45,21 +50,27 @@ int check_run(int argc, char **argv, const GlobalOpts *g) {
 		return ARCHE_OK;
 	}
 
-	int pcbf_en = 1, pcbf_we = 0, pne_en = 1, pne_we = 0;
+	int pcbf_en = 1, pcbf_we = 0, pne_en = 1, pne_we = 0, lsa_en = 1, lsa_we = 0;
 	if (args_has(&p, C_WNO_PCBF))
 		pcbf_en = 0;
 	if (args_has(&p, C_WNO_PNE))
 		pne_en = 0;
+	if (args_has(&p, C_WNO_LSA))
+		lsa_en = 0;
 	if (args_has(&p, C_WERR_PCBF))
 		pcbf_we = 1;
 	if (args_has(&p, C_WERR_PNE))
 		pne_we = 1;
+	if (args_has(&p, C_WERR_LSA))
+		lsa_we = 1;
 	if (args_has(&p, C_WERR)) {
 		pcbf_we = 1;
 		pne_we = 1;
+		lsa_we = 1;
 	}
 	semantic_set_lint_proc_could_be_func(pcbf_en, pcbf_we);
 	semantic_set_lint_proc_no_effect(pne_en, pne_we);
+	semantic_set_lint_large_stack_array(lsa_en, lsa_we);
 	semantic_set_allow_undefined(args_has(&p, C_ALLOW_UNDEFINED));
 	if (cli_apply_exported_mutable(args_value(&p, C_EXPORTED_MUTABLE)) != 0) {
 		fprintf(stderr, "%s: --exported-mutable expects error|warn|allow\n", g_prog);

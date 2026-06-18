@@ -872,6 +872,10 @@ static void push_scope(SemanticContext *ctx) {
 	ctx->scope_count++;
 }
 
+/* Byte size of a type's stack storage (0 if not determinable / not a value that owns storage).
+ * Defined after sem_int_width_of (width-int sizing); forward-declared for pop_scope's W0026 check. */
+static int sem_type_bytes(SemanticContext *ctx, TypeId t);
+
 static void pop_scope(SemanticContext *ctx) {
 	if (ctx->scope_count > 0) {
 		Scope *scope = &ctx->scopes[ctx->scope_count - 1];
@@ -914,6 +918,15 @@ static void pop_scope(SemanticContext *ctx) {
 			if (!v->is_param && !v->is_referenced && !v->is_consumed && !is_outparam_name && !is_shadowed && v->name &&
 			    v->name[0] != '_' && !var_is_opaque(ctx, v)) {
 				sem_emit_lint_unused_local(ctx, v->loc, v->name);
+			}
+			/* W0026 large_stack_array: a local sized array `[N]T` is a value that owns its storage on the
+			 * stack; a large one bloats the frame. Steer to a single-type archetype pool (static, columnar)
+			 * or a #module-private global. Params are borrows (caller's storage) so they're exempt; slices
+			 * `[]T` are views (TYK_SLICE, not TYK_ARRAY) and so are excluded by construction. */
+			if (!v->is_param && v->name && tyid_kind(ctx->ty_arena, v->type_id) == TYK_ARRAY) {
+				int bytes = sem_type_bytes(ctx, v->type_id);
+				if (bytes >= 1024)
+					sem_emit_lint_large_stack_array(ctx, v->loc, v->name, bytes);
 			}
 		}
 		for (int i = 0; i < scope->var_count; i++) {
@@ -1840,6 +1853,56 @@ static int sem_int_width_of(SemanticContext *ctx, TypeId t, const char *name) {
 			return 128;
 	}
 	return 0;
+}
+
+/* Byte size of a type's stack storage, for the W0026 large-stack-array lint. Matches the codegen
+ * scalar widths (arche `int`/`float` are 4 bytes, `char`/`bool` 1, handle/opaque pointer-width 8;
+ * width-ints by their declared width). A sized array recurses into its element (so multi-dim `[a][b]T`
+ * is a*b*elem); a tuple sums its fields. Returns 0 for anything whose storage we can't size (opaque
+ * nominals, slices/views, callables) — those simply never trip the threshold. */
+static int sem_type_bytes(SemanticContext *ctx, TypeId t) {
+	TypeArena *a = ctx->ty_arena;
+	switch (tyid_kind(a, t)) {
+	case TYK_PRIM:
+		switch (tyid_prim(a, t)) {
+		case PRIM_CHAR:
+		case PRIM_BOOL:
+			return 1;
+		case PRIM_INT:   /* i32 */
+		case PRIM_FLOAT: /* f32 */
+			return 4;
+		case PRIM_STR:
+			return 8; /* pointer-width view */
+		default:
+			return 0; /* void / unknown */
+		}
+	case TYK_HANDLE:
+		return 8;
+	case TYK_NOMINAL: {
+		const char *nm = tyid_nominal_name(a, t);
+		int w = sem_int_width_of(ctx, t, nm); /* width-int → bits */
+		if (w > 0)
+			return w / 8;
+		TypeId b = tyid_backing(a, t); /* tier-2 distinct subtype → size of its backing */
+		if (!tyid_is_unknown(b) && b != t)
+			return sem_type_bytes(ctx, b);
+		return 0; /* opaque / unsizable nominal */
+	}
+	case TYK_ARRAY: {
+		int n = tyid_array_len(a, t);
+		if (n < 0)
+			return 0;
+		return n * sem_type_bytes(ctx, tyid_elem(a, t));
+	}
+	case TYK_TUPLE: {
+		int sum = 0, c = tyid_tuple_count(a, t);
+		for (int i = 0; i < c; i++)
+			sum += sem_type_bytes(ctx, tyid_tuple_field_type(a, t, i));
+		return sum;
+	}
+	default:
+		return 0; /* slices are views; callables don't own array storage */
+	}
 }
 
 static TypeId binary_type_id(SemanticContext *ctx, SyntaxView v) {

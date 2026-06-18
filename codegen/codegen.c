@@ -1445,7 +1445,14 @@ static const char *cb_resolve(CodegenContext *ctx, const char *name) {
 
 /* Emit a comma-separated `type val` argument list, skipping any slot flagged in
  * `skip` (callback args, which have no runtime value). Returns the number of
- * args actually emitted, so callers can get trailing separators right. */
+ * args actually emitted, so callers can get trailing separators right.
+ *
+ * TODO(pool-column-slices): a pool column (`Pool.field`, a type-4 column ptr) passed where a `[]T`
+ * slice param is expected is NOT lowered to a (ptr, i64 len) fat-pointer pair here — it goes through
+ * as a bare scalar, so the call mistypes (e.g. `io.read_chunk(fd, Buf.b, n)` emits `i32` for the
+ * buffer). Supporting this would let single-type archetype pools back I/O / scratch buffers, which is
+ * the fix the W0026 large_stack_array lint steers toward. Until then, pools can't serve as []T buffers
+ * and large byte buffers stay on the stack or in an --exported-mutable=allow global. */
 static int emit_call_arglist(CodegenContext *ctx, int count, const int *skip, const char *const *types,
                              char *const *vals, char *const *slice_len) {
 	int emitted = 0;
