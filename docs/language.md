@@ -65,8 +65,8 @@ Projectile :: arche { speed };
 [5000]Enemy(5000);
 [1000]Projectile(1000);
 
-initialize  :: map (active) { active = 1; }
-update_loop :: map (speed)  { speed = speed + 1; }
+initialize  :: map (query { active }) { active = 1; }
+update_loop :: map (query { speed })  { speed = speed + 1; }
 
 main :: proc() {
   run initialize;
@@ -242,7 +242,7 @@ This iterates all elements, updating each position by its velocity. Inside a map
 component type names are available directly:
 
 ```arche
-step :: map (pos_x, vel_x) {
+step :: map (query { pos_x, vel_x }) {
   pos_x = pos_x + vel_x;
 }
 ```
@@ -408,7 +408,7 @@ Particle :: arche { pos_x, vel_x };
 
 [1000]Particle(1000) { pos_x: 0.0, vel_x: 1.5 }
 
-step :: map (pos_x, vel_x) {
+step :: map (query { pos_x, vel_x }) {
   pos_x = pos_x + vel_x;
 }
 ```
@@ -446,7 +446,7 @@ pos :: float;
 Body :: arche { vel, pos };
 [8]Body(8);
 
-dampen :: map (vel, pos) {
+dampen :: map (query { vel, pos }) {
   // kill velocity below a threshold (mask), and clamp with a branch-free select
   vel = vel * (pos > 10);
   vel = select(pos > 100.0, 0.0, vel);
@@ -482,7 +482,7 @@ drag_factor :: func(x: float) -> float {
 | ------ | ------------------------- | -------------- | ------------------------------ |
 | `func` | `name :: func(in) -> T`   | yes            | pure computation, one return   |
 | `proc` | `name :: proc(in)(out)`   | no             | an action; writes out-params   |
-| `map`  | `name :: map (components)` | no             | data transform over archetypes |
+| `map`  | `name :: map (query {components})` | no     | data transform over archetypes |
 
 - `func`: "compute a value" - `r := area(w, h)`
 - `proc`: "do this, writing the results into these places" - `divmod(17, 5)(q:, r:)`
@@ -501,7 +501,7 @@ vel :: float;
 Mover :: arche { pos, vel };
 [256]Mover(256);
 
-integrate :: map (pos, vel) {
+integrate :: map (query { pos, vel }) {
   pos = pos + vel;
 }
 

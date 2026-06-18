@@ -9558,6 +9558,7 @@ static void emit_func_params(CodegenContext *ctx, HirFuncDecl *func) {
 }
 
 static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
+	ctx->entity_bind_count = 0; /* entity bindings are body-local (mirrors codegen_proc_decl) */
 	/* For extern funcs, emit declare stub */
 	if (func->is_extern) {
 		/* Return type from the declaration: a bare extern with no `->` is void; char[] returns a
@@ -10371,6 +10372,7 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->vector_lanes = 0;
 	ctx->in_map = 0;
 	ctx->in_func = 0;
+	ctx->entity_bind_count = 0; /* must be zeroed: malloc'd ctx, and reused in-process (doctest runner) */
 	ctx->implicit_loop_index[0] = '\0'; /* Initialize to empty (not in loop) */
 	ctx->loop_exit_labels = NULL;
 	ctx->loop_exit_count = 0;
@@ -10425,6 +10427,27 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->drop_live_capacity = 0;
 	ctx->block_terminated = 0;
 	return ctx;
+}
+
+/* See codegen.h. Deterministic regression guard for the entity_bind_count zero-init: poison a chunk
+ * of exactly sizeof(CodegenContext), free it (glibc keeps the count offset — deep past the freed
+ * chunk's metadata header — at 0xFF), then codegen_create's first malloc reuses that block. With the
+ * field initialized this reads 0; without it, the garbage survives. Runs a few rounds for allocator
+ * robustness. (No front-end needed: codegen_create/codegen_free never dereference ast/sem.) */
+int codegen_selftest_context_zero_init(void) {
+	for (int round = 0; round < 8; round++) {
+		void *poison = malloc(sizeof(CodegenContext));
+		if (!poison)
+			return 1; /* allocator refused — don't turn an OOM into a spurious failure */
+		memset(poison, 0xFF, sizeof(CodegenContext));
+		free(poison);
+		CodegenContext *ctx = codegen_create(NULL, NULL);
+		int ok = (ctx->entity_bind_count == 0);
+		codegen_free(ctx);
+		if (!ok)
+			return 0;
+	}
+	return 1;
 }
 
 /* Build the RAII auto-drop registry from `@drop` HIR procs: opaque nominal type -> dtor symbol.
