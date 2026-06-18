@@ -190,6 +190,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_outarg_shadows_outparam]       = { "W0023", "outarg_shadows_outparam",       CLASS_LINT, 1 },
 	[SEM_LINT_map_writes_foreign_pool]       = { "W0024", "map_writes_foreign_pool",       CLASS_LINT, 1 },
 	[SEM_LINT_large_stack_array]             = { "W0026", "large_stack_array",             CLASS_LINT, 1 },
+	[SEM_LINT_pointless_move]                = { "W0027", "pointless_move",                CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -1146,4 +1147,10 @@ SemDiag *sem_emit_lint_large_stack_array(SemanticContext *ctx, SourceLoc loc, co
 	                 "single-type archetype pool `[N]T` (static, columnar) or a #module-private global, or "
 	                 "@allow(large_stack_array)",
 	                 name, size_bytes);
+}
+SemDiag *sem_emit_lint_pointless_move(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_LINT_pointless_move, loc,
+	                 "`move` here is pointless — a pool column is shared, fixed storage with no ownership to "
+	                 "transfer, so `move` does nothing and consumes nothing; pass the column (slice) as a plain "
+	                 "borrow (drop `move`). Suppress with @allow(pointless_move)");
 }

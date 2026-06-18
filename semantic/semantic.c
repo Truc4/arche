@@ -1638,6 +1638,32 @@ static int is_pool_extent_prop(const char *f) {
 	return f && (strcmp(f, "count") == 0 || strcmp(f, "capacity") == 0);
 }
 
+/* True if `v` is a pool-column access `Pool.col` (or a slice of one, `Pool.col[lo:hi]`): a single
+ * field segment whose base resolves to an archetype and whose field is a real column. Used to flag a
+ * `move` of such a view as pointless (a column is shared, fixed storage — nothing to transfer). The
+ * `sv_count`/`sv_resolved_name` base-chain accessors read through a slice node too (see
+ * index_base_type_id), so one check covers both the bare-column and sliced-column forms. */
+static int expr_is_pool_column_view(SemanticContext *ctx, SyntaxView v) {
+	if (!sv_present(v))
+		return 0;
+	if (sv_count(v, SN_FIELD_NAME) != 1)
+		return 0;
+	char *idnt = sv_resolved_name(ctx, v);
+	if (!idnt)
+		return 0;
+	char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, 0));
+	ArchetypeInfo *arch = find_archetype(ctx, idnt);
+	if (!arch) {
+		VariableInfo *bv = find_variable(ctx, idnt);
+		if (bv && bv->archetype_name)
+			arch = find_archetype(ctx, bv->archetype_name);
+	}
+	int yes = (arch && fld && find_field(arch, fld) != NULL);
+	free(fld);
+	free(idnt);
+	return yes;
+}
+
 static TypeId sem_expr_type_id(SemanticContext *ctx, SyntaxView v); /* mutually recursive with the helpers */
 static TypeId archetype_field_type_id(SemanticContext *ctx, const char *base_name, const char *field_name);
 
@@ -2137,12 +2163,14 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 		SyntaxView operand = sem_first_expr(v);
 		analyze_expression(ctx, operand);
 		(void)was_arg;
-		/* TODO(column-slice-ownership): `move`-ing a pool-column slice (`move Pool.col[lo:hi]`) is
-		 * currently a silent no-op — it's a SLICE_EXPR, not a NAME, so the move-consume check below
-		 * skips it. A column is shared, pool-owned storage with no ownership to transfer, so this and
-		 * passing a column slice to an `own` param should be rejected ("a pool column is shared
-		 * storage, not an owned value"). Benign today (nothing is consumed/freed; arche has no heap),
-		 * so deferred pending a dedicated diagnostic. Column slices are sound as borrows. */
+		/* W0027 pointless_move: `move` of a pool column (slice) — `move Pool.col[lo:hi]` / `move Pool.col`
+		 * — does nothing. A column is shared, fixed pool storage with no ownership to transfer, and the
+		 * operand is an expression (not a name), so nothing is consumed either. Flag it; the column is
+		 * sound as a plain borrow. */
+		if (sv_has_token(v, TOK_MOVE) && sv_present(operand) &&
+		    (sv_kind(operand) == SN_SLICE_EXPR || sv_kind(operand) == SN_FIELD_EXPR) &&
+		    expr_is_pool_column_view(ctx, operand))
+			sem_emit_lint_pointless_move(ctx, sem_node_loc(operand.node));
 		/* `move x` transfers ownership: mark x consumed; can't move out of a borrowed param. */
 		if (sv_has_token(v, TOK_MOVE) && sv_present(operand) && sv_kind(operand) == SN_NAME_EXPR) {
 			char *nm = sv_name_expr_dup(operand);
