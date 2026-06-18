@@ -232,7 +232,7 @@ A pool is not a sequence, so `Foo.length` is rejected — use `.count` or `.capa
 for a bare column (`Foo.col.length` is rejected): a column becomes a `[]T` only by **slicing** it.
 
 **A column as a buffer.** Slicing a single-field pool's column yields a `[]T` view over its storage —
-this is how a pool backs a scratch/IO buffer without a large stack array:
+this is how a pool backs a scratch/IO buffer without a large stack array ([W0026](explain/W0026.md)):
 
 ```arche,ignore
 b :: char;
@@ -243,7 +243,7 @@ io.read_chunk(fd, Buf.b[0:Buf.capacity], 65536)(chunk:);   // []char view over t
 ```
 
 The slice is a **borrow** of the pool's (stable, mutable) storage — pass it to borrowing readers/IO.
-It has no ownership to transfer, so it is not `move`d.
+It has no ownership to transfer, so it is not `move`d (doing so is flagged — [W0027](explain/W0027.md)).
 
 ## Array-oriented operations
 
@@ -821,6 +821,11 @@ read_into :: proc(fd: int, buf: []char, len: int)(buf: []char, n: int) {
 
 - **You can't move out of a borrow.** `move`-ing a borrowed (non-`own`) array parameter - which
   includes an in-out buffer - is a compile error. You *may* `copy` a borrow.
+- **A pool column (slice) is borrow-only.** A column view such as `Buf.b[0:Buf.capacity]` borrows
+  the pool's shared, fixed storage — there is no ownership to transfer, so `move`-ing it does nothing
+  and is flagged ([W0027](explain/W0027.md) `pointless_move`). Pass it as a plain borrow. (To get a
+  consumable binding, bind the slice to a local first and `move` that local — the local is killed,
+  the pool storage is not.)
 - **Must-consume:** an opaque *local* must leave its scope before the end - moved into an
   `own` parameter, returned, or `insert`ed into a pool. Otherwise it is a compile error
   (`opaque value 'w' not consumed before scope end`). No implicit `drop`/RAII, no silent leak.

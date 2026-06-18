@@ -32,6 +32,8 @@ enum {
 	B_SYS_FOREIGN_WRITE,
 	B_EMIT_GPU,
 	B_GPU,
+	B_WNO_LSA,
+	B_WERR_LSA,
 };
 
 /* Flag table = parsing + `--help`, one source of truth. The `-Wno-*` / `-Werror[=...]` spellings are
@@ -73,6 +75,9 @@ static const ArgSpec k_build_specs[] = {
      "also emit a GLSL compute shader per `@gpu` map into <dir> (side artifact; CPU build unchanged)"},
     {B_GPU, "--gpu", ARG_FLAG, 0, 0, NULL,
      "dispatch `run map @gpu` on the GPU at runtime (embeds SPIR-V; CPU fallback if no device/glslc)"},
+    {B_WNO_LSA, "-Wno-large-stack-array", ARG_FLAG, 0, 0, NULL, "disable the large-stack-array lint (W0026)"},
+    {B_WERR_LSA, "-Werror=large-stack-array", ARG_FLAG, 0, 0, NULL,
+     "promote the large-stack-array lint (W0026) to an error"},
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
@@ -104,21 +109,27 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 	}
 
 	/* Lint config — both on by default; flags disable or promote to errors. */
-	int pcbf_en = 1, pcbf_we = 0, pne_en = 1, pne_we = 0;
+	int pcbf_en = 1, pcbf_we = 0, pne_en = 1, pne_we = 0, lsa_en = 1, lsa_we = 0;
 	if (args_has(&p, B_WNO_PCBF))
 		pcbf_en = 0;
 	if (args_has(&p, B_WNO_PNE))
 		pne_en = 0;
+	if (args_has(&p, B_WNO_LSA))
+		lsa_en = 0;
 	if (args_has(&p, B_WERR_PCBF))
 		pcbf_we = 1;
 	if (args_has(&p, B_WERR_PNE))
 		pne_we = 1;
+	if (args_has(&p, B_WERR_LSA))
+		lsa_we = 1;
 	if (args_has(&p, B_WERR)) {
 		pcbf_we = 1;
 		pne_we = 1;
+		lsa_we = 1;
 	}
 	semantic_set_lint_proc_could_be_func(pcbf_en, pcbf_we);
 	semantic_set_lint_proc_no_effect(pne_en, pne_we);
+	semantic_set_lint_large_stack_array(lsa_en, lsa_we);
 	/* Bare `-Werror`: promote EVERY enabled lint to an error (not just the two named above). */
 	if (args_has(&p, B_WERR))
 		semantic_set_all_lints_werror(1);

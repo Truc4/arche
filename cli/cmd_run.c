@@ -96,7 +96,9 @@ enum {
 	R_ALLOW_UNDEFINED,
 	R_WHOLE_PROGRAM,
 	R_EXPORTED_MUTABLE,
-	R_SYS_FOREIGN_WRITE
+	R_SYS_FOREIGN_WRITE,
+	R_WNO_LSA,
+	R_WERR_LSA
 };
 
 static const ArgSpec k_run_specs[] = {
@@ -106,6 +108,9 @@ static const ArgSpec k_run_specs[] = {
      "promote the proc-could-be-func lint to an error"},
     {R_WERR_PNE, "-Werror=proc-no-effect", ARG_FLAG, 0, 0, NULL, "promote the proc-no-effect lint to an error"},
     {R_WERR, "-Werror", ARG_FLAG, 0, 0, NULL, "promote all lints to errors"},
+    {R_WNO_LSA, "-Wno-large-stack-array", ARG_FLAG, 0, 0, NULL, "disable the large-stack-array lint (W0026)"},
+    {R_WERR_LSA, "-Werror=large-stack-array", ARG_FLAG, 0, 0, NULL,
+     "promote the large-stack-array lint (W0026) to an error"},
     {R_ALLOW_UNDEFINED, "--allow-undefined", ARG_FLAG, 0, 0, NULL,
      "permit the raw, runtime-unsafe `!undefined` opt-out (forbidden by default)"},
     {R_WHOLE_PROGRAM, "--whole-program", ARG_FLAG, 0, 0, NULL,
@@ -134,21 +139,27 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 		return ARCHE_OK;
 	}
 
-	int pcbf_en = 1, pcbf_we = 0, pne_en = 1, pne_we = 0;
+	int pcbf_en = 1, pcbf_we = 0, pne_en = 1, pne_we = 0, lsa_en = 1, lsa_we = 0;
 	if (args_has(&p, R_WNO_PCBF))
 		pcbf_en = 0;
 	if (args_has(&p, R_WNO_PNE))
 		pne_en = 0;
+	if (args_has(&p, R_WNO_LSA))
+		lsa_en = 0;
 	if (args_has(&p, R_WERR_PCBF))
 		pcbf_we = 1;
 	if (args_has(&p, R_WERR_PNE))
 		pne_we = 1;
+	if (args_has(&p, R_WERR_LSA))
+		lsa_we = 1;
 	if (args_has(&p, R_WERR)) {
 		pcbf_we = 1;
 		pne_we = 1;
+		lsa_we = 1;
 	}
 	semantic_set_lint_proc_could_be_func(pcbf_en, pcbf_we);
 	semantic_set_lint_proc_no_effect(pne_en, pne_we);
+	semantic_set_lint_large_stack_array(lsa_en, lsa_we);
 	semantic_set_allow_undefined(args_has(&p, R_ALLOW_UNDEFINED));
 	if (cli_apply_exported_mutable(args_value(&p, R_EXPORTED_MUTABLE)) != 0) {
 		fprintf(stderr, "%s: --exported-mutable expects error|warn|allow\n", g_prog);
