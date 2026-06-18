@@ -1,0 +1,12 @@
+// A pool's extent vocabulary: `.count` (live rows), `.capacity` (allocated slots N), and a column
+// sliced into a `[]T` whose `.length` is the slice range. (A pool is not a sequence: it has no
+// `.length`; a column becomes a `[]T` only by slicing — see pool_extent_errors.arche.)
+// RUN: %arche build -o %t %s && %t | grep -q "count=3 cap=8 slen=5"
+#import { fmt }
+v :: int;
+P :: arche { v }
+[8]P(3);
+
+main :: proc() {
+  fmt.printf("count=%d cap=%d slen=%d\n", P.count, P.capacity, P.v[0: 5].length);
+}

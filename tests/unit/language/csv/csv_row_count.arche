@@ -1,12 +1,15 @@
 // RUN: %arche build -o %t %s && cd %repo && %t | grep "rows: 1000"
 #import { io fmt }
 
+cb      :: char;
+CharBuf :: arche { cb }
+[65536]CharBuf;
+
 main :: proc() {
   io.open("tests/fixtures/data.csv")(fd:);
   io.skip_header(fd);
   rows := 0;
-  buf: [65536]char;
-  io.read_chunk(fd, buf, 65536)(v:);
+  io.read_chunk(fd, CharBuf.cb[0: CharBuf.capacity], 65536)(v:);
   pos := 0;
   for (; pos < v.length;) {
     if (v[pos] == 10) {

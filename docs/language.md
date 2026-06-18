@@ -221,6 +221,30 @@ no trailing `;`, no `static` keyword: top-level position implies static storage)
 There is no `alloc` and no resizing - all capacity is reserved upfront. Allocating the same
 shape twice (under any name) is a compile error.
 
+**Pool extents: `.count` and `.capacity`.** A pool has its own size vocabulary, distinct from a
+sequence's `.length`:
+
+- `Foo.count` — the number of **live rows** (entities currently in the pool). This is the
+  iteration bound: `for (i := 0; i < Foo.count; i = i + 1) { … }`.
+- `Foo.capacity` — the **allocated slots** `N`. Fixed storage size; not an iteration bound.
+
+A pool is not a sequence, so `Foo.length` is rejected — use `.count` or `.capacity`. The same goes
+for a bare column (`Foo.col.length` is rejected): a column becomes a `[]T` only by **slicing** it.
+
+**A column as a buffer.** Slicing a single-field pool's column yields a `[]T` view over its storage —
+this is how a pool backs a scratch/IO buffer without a large stack array:
+
+```arche,ignore
+b :: char;
+Buf :: arche { b }
+[65536]Buf;                                       // a 64 KB byte buffer, statically allocated
+
+io.read_chunk(fd, Buf.b[0:Buf.capacity], 65536)(chunk:);   // []char view over the pool's storage
+```
+
+The slice is a **borrow** of the pool's (stable, mutable) storage — pass it to borrowing readers/IO.
+It has no ownership to transfer, so it is not `move`d.
+
 ## Array-oriented operations
 
 Operations on archetype columns apply across the entire collection without explicit loops:
@@ -276,7 +300,8 @@ Apart from archetype columns, Arche has two array forms — a sized value and a 
 
 **`[N]T` — a sized value.** `buf: [8]int` is stack storage of exactly `N` elements. It is a
 **value**: it owns its storage, it is mutable (it's yours), and binding/assigning it transfers or
-duplicates it under the ownership rules below. `.length` / `.cap` are the compile-time count `N`.
+duplicates it under the ownership rules below. `.length` is the compile-time count `N` (arrays and
+slices have a `.length`, never a `.cap`/`.capacity` — capacity is a pool concept; see *Pools*).
 Indexing is bounds-checked; a provably in-range literal/loop index elides the check.
 
 **`[]T` — a slice (fat pointer).** A slice is a `{ptr, len}` view whose length is carried at

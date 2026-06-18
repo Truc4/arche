@@ -6,18 +6,21 @@ Transaction :: arche { price :: float, quantity :: int }
   price: 0.0, quantity: 0,
 }
 
+cb      :: char;
+CharBuf :: arche { cb }
+[50000]CharBuf;
+
 main :: proc() {
   io.fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
-  buf       : [50000]char;
   price_str : [32]char;
   qty_str   : [32]char;
-  io.fread(fd, buf, 50000)(data:);
+  io.fread(fd, CharBuf.cb[0: CharBuf.capacity], 50000)(data:);
   io.fclose(move fd);
   idx        := 0;
   pos        := 0;
   line_start := 0;
   for (; pos < data.length; pos = pos + 1) {
-    if (buf[pos] == '\n') {
+    if (data[pos] == '\n') {
       line_start = pos + 1;
       break;
     }
@@ -28,33 +31,33 @@ main :: proc() {
     }
     line_end := line_start;
     for (; line_end < data.length; line_end = line_end + 1) {
-      if (buf[line_end] == '\n') {
+      if (data[line_end] == '\n') {
         break;
       }
     }
     c1 := line_start;
     for (; c1 < line_end; c1 = c1 + 1) {
-      if (buf[c1] == ',') {
+      if (data[c1] == ',') {
         break;
       }
     }
     c2 := c1 + 1;
     for (; c2 < line_end; c2 = c2 + 1) {
-      if (buf[c2] == ',') {
+      if (data[c2] == ',') {
         break;
       }
     }
     j := 0;
     i := c1 + 1;
     for (; i < c2; i = i + 1) {
-      price_str[j] = buf[i];
+      price_str[j] = data[i];
       j            = j + 1;
     }
     price_str[j] = 0;
     j            = 0;
     i            = c2 + 1;
     for (; i < line_end; i = i + 1) {
-      qty_str[j] = buf[i];
+      qty_str[j] = data[i];
       j          = j + 1;
     }
     qty_str[j]                = 0;

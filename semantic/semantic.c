@@ -541,6 +541,7 @@ static void register_static_name(SemanticContext *ctx, const char *name) {
 /* Forward-declare normalize_type_name so helpers below can use it. */
 static const char *normalize_type_name(const char *type_name);
 static int is_len_prop(const char *f);
+static int is_pool_extent_prop(const char *f);
 
 static GroupInfo *find_group(SemanticContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->group_count; i++) {
@@ -1434,6 +1435,16 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 				free(idnt);
 				return; /* resolved as a tuple component */
 			}
+			/* `Pool.col.length/.count/.capacity` — a column is not a sequence and the extent props are
+			 * pool-level, not column-level. Reject: slice the column (`col[0:Pool.capacity]`) to get a
+			 * `[]T` with a `.length`, or read `Pool.count`/`Pool.capacity`. */
+			if ((is_len_prop(field_name) || is_pool_extent_prop(field_name)) && find_field(arch, tuple_base)) {
+				sem_emit_no_field(ctx, field_loc, archetype_any_alias(ctx, arch), field_name);
+				free(tuple_base);
+				free(field_name);
+				free(idnt);
+				return;
+			}
 		}
 		free(tuple_base);
 		/* fall through to simple checks below (base treated as the IDENT) */
@@ -1519,6 +1530,11 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 		}
 		/* check the field exists on this archetype */
 		if (arch) {
+			/* `.count` (live rows) / `.capacity` (slots N) are pool extent properties, not columns —
+			 * accept them here (they resolve to int). `.length` is NOT a pool word and falls through to
+			 * the field check below, which rejects it (use `.count`/`.capacity`, or slice a column). */
+			if (is_pool_extent_prop(field_name))
+				goto done;
 			FieldInfo *found_field = find_field(arch, field_name);
 			if (!found_field) {
 				int is_tuple_base = 0;
@@ -1612,6 +1628,14 @@ static TypeId array_const_type_id(SemanticContext *ctx, const DeclSummary *d) {
  * the type). Capacity/growth is a POOL concept (`.capacity` / `.count`), handled separately. */
 static int is_len_prop(const char *f) {
 	return f && strcmp(f, "length") == 0;
+}
+
+/* Pool extent properties: `.count` (live rows) and `.capacity` (allocated slots N). These are POOL
+ * vocabulary, distinct from a sequence's `.length` — a pool is not a sequence (and a sequence has
+ * neither). Both resolve to `int`. A pool column is viewed as a `[]T` only by slicing it
+ * (`col[0:Pool.capacity]`); the resulting slice is what carries a `.length`. */
+static int is_pool_extent_prop(const char *f) {
+	return f && (strcmp(f, "count") == 0 || strcmp(f, "capacity") == 0);
 }
 
 static TypeId sem_expr_type_id(SemanticContext *ctx, SyntaxView v); /* mutually recursive with the helpers */
@@ -1759,7 +1783,7 @@ static TypeId field_type_id(SemanticContext *ctx, SyntaxView v) {
 	if (has_nested_base(v)) {
 		int nf = sv_count(v, SN_FIELD_NAME);
 		char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 1));
-		int prop = is_len_prop(fld);
+		int prop = is_len_prop(fld) || is_pool_extent_prop(fld);
 		free(fld);
 		return prop ? tyid_of_prim(ctx->ty_arena, PRIM_INT) : sem_expr_type_id(ctx, base_subexpr(v));
 	}
@@ -1768,7 +1792,7 @@ static TypeId field_type_id(SemanticContext *ctx, SyntaxView v) {
 	TypeId r = TYID_UNKNOWN;
 	if (nf >= 1) {
 		char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 1));
-		if (is_len_prop(fld))
+		if (is_len_prop(fld) || is_pool_extent_prop(fld))
 			r = tyid_of_prim(ctx->ty_arena, PRIM_INT);
 		else if (nf == 1)
 			r = archetype_field_type_id(ctx, idnt, fld);
@@ -2113,6 +2137,12 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 		SyntaxView operand = sem_first_expr(v);
 		analyze_expression(ctx, operand);
 		(void)was_arg;
+		/* TODO(column-slice-ownership): `move`-ing a pool-column slice (`move Pool.col[lo:hi]`) is
+		 * currently a silent no-op — it's a SLICE_EXPR, not a NAME, so the move-consume check below
+		 * skips it. A column is shared, pool-owned storage with no ownership to transfer, so this and
+		 * passing a column slice to an `own` param should be rejected ("a pool column is shared
+		 * storage, not an owned value"). Benign today (nothing is consumed/freed; arche has no heap),
+		 * so deferred pending a dedicated diagnostic. Column slices are sound as borrows. */
 		/* `move x` transfers ownership: mark x consumed; can't move out of a borrowed param. */
 		if (sv_has_token(v, TOK_MOVE) && sv_present(operand) && sv_kind(operand) == SN_NAME_EXPR) {
 			char *nm = sv_name_expr_dup(operand);

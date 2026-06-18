@@ -1,9 +1,11 @@
 // RUN: %arche build -o %t %s && %t
 #import { io fmt }
+cb      :: char;
+CharBuf :: arche { cb }
+[4096]CharBuf;
 main :: proc() {
   io.fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
-  buf: [4096]char;
-  io.fread(fd, buf, 4096)(data:);
+  io.fread(fd, CharBuf.cb[0: CharBuf.capacity], 4096)(data:);
   io.fclose(move fd);
   fmt.printf("Read %d bytes from CSV file\n", data.length);
   fmt.assert(data.length > 0, "should read CSV file\n");

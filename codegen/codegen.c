@@ -1935,10 +1935,42 @@ static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *l
                          int *bitw_out) {
 	HirExpr *base = e->data.slice.base;
 	ValueInfo *bv = (base->kind == HIR_EXPR_NAME) ? find_value(ctx, base->data.name.name) : NULL;
-	if (!bv)
-		return 0;
 	const char *elem_base, *elem_llvm;
 	char base_ptr[256], base_len[64];
+	/* `Pool.col[lo:hi]` — slice a pool column into a `[]T` view over its allocated storage. The
+	 * column base pointer is the element-0 pointer codegen_expression yields for `Pool.col`; the base
+	 * length (the default `hi` / bounds extent) is the pool's CAPACITY — the storage you may address,
+	 * not the live `.count`. This is how a single-type pool backs a buffer (e.g. an io read buffer). */
+	if (!bv && base->kind == HIR_EXPR_FIELD && base->data.field.base->kind == HIR_EXPR_NAME) {
+		const char *fname = base->data.field.field_name;
+		HirExpr *fb = base->data.field.base;
+		const char *arch_name = NULL;
+		ValueInfo *fbv = find_value(ctx, fb->data.name.name);
+		if (fbv && fbv->type == 3 && fbv->arch_name)
+			arch_name = fbv->arch_name;
+		else if (find_archetype_decl(ctx, fb->data.name.name))
+			arch_name = fb->data.name.name;
+		HirArchetypeDecl *arch = arch_name ? find_archetype_decl(ctx, arch_name) : NULL;
+		HirField *fdecl = NULL;
+		if (arch)
+			for (int i = 0; i < arch->field_count; i++)
+				if (strcmp(arch->fields[i]->name, fname) == 0 && arch->fields[i]->kind == FIELD_COLUMN) {
+					fdecl = arch->fields[i];
+					break;
+				}
+		/* Static pool only: capacity is the compile-time N. (A dynamic, driver-allocated pool keeps its
+		 * capacity behind a struct pointer we don't resolve here; column-slicing those isn't needed for
+		 * buffers, so decline and let it fall through.) */
+		if (fdecl && get_arch_static_capacity(ctx, arch_name) > 0) {
+			elem_base = field_base_type_name(fdecl->type);
+			elem_llvm = llvm_type_from_arche(elem_base);
+			codegen_expression(ctx, base, base_ptr); /* the column's element-0 pointer (T*) */
+			snprintf(base_len, sizeof(base_len), "%d", get_arch_static_capacity(ctx, arch_name));
+			goto have_base;
+		}
+	}
+	if (!bv)
+		return 0;
 	if (bv->type == 6 && bv->field_type) {
 		elem_base = bv->field_type;
 		elem_llvm = llvm_type_from_arche(elem_base);
@@ -1958,6 +1990,7 @@ static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *l
 	} else {
 		return 0;
 	}
+have_base:;
 	char lo64[256] = "0";
 	if (e->data.slice.lo) {
 		char b[256];
@@ -3891,6 +3924,39 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			}
 		}
 
+		/* Pool extent properties `.count` (live rows) and `.capacity` (slots N) on a pool — either a
+		 * bare pool name (`P.count`) or an `archetype`-typed value (a map/proc param). `.capacity` of a
+		 * static pool is the compile-time N; otherwise (count, or a dynamic pool's capacity) load the
+		 * i64 field from the pool struct and truncate to the i32 the accessor yields. The count field is
+		 * at struct index `field_count`; a dynamic pool's capacity is the next field. */
+		{
+			const char *pool_arch = NULL;
+			if (base_val && base_val->type == 3 && base_val->arch_name)
+				pool_arch = base_val->arch_name;
+			else if (arch_name_direct)
+				pool_arch = arch_name_direct;
+			if (pool_arch && (strcmp(field_name, "count") == 0 || strcmp(field_name, "capacity") == 0)) {
+				HirArchetypeDecl *arch = find_archetype_decl(ctx, pool_arch);
+				int static_cap = get_arch_static_capacity(ctx, pool_arch);
+				if (strcmp(field_name, "capacity") == 0 && static_cap > 0) {
+					snprintf(result_buf, 256, "%d", static_cap);
+					break;
+				}
+				if (arch) {
+					int idx = (strcmp(field_name, "capacity") == 0) ? arch->field_count + 1 : arch->field_count;
+					char *gep = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gep,
+					                  pool_arch, pool_arch, base_buf, idx);
+					char *loaded = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", loaded, gep);
+					char *t = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", t, loaded);
+					strcpy(result_buf, t);
+					break;
+				}
+			}
+		}
+
 		/* `.length` on a string literal — incl. a `char[]` string value-const that lowered to one
 		 * (`name :: "linux"`) or a device-qualified one (`platform.name`, still a NAME at codegen). The
 		 * length is the literal's compile-time char count. (Arrays/slices have only `.length`, no cap.) */
@@ -3943,24 +4009,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			break;
 		}
 
-		/* Handle .length property */
-		if (strcmp(field_name, "length") == 0) {
-			/* For archetype columns: load count field */
-			if (base_val && base_val->type == 3 && base_val->arch_name) {
-				/* count field is always the last field in archetype struct */
-				HirArchetypeDecl *arch = find_archetype_decl(ctx, base_val->arch_name);
-				if (arch) {
-					int count_idx = arch->field_count; /* count field index */
-					char *gep = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gep,
-					                  base_val->arch_name, base_val->arch_name, base_buf, count_idx);
-					char *count = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, gep);
-					strcpy(result_buf, count);
-					break;
-				}
-			}
-		}
+		/* (`.length` is a sequence word — not valid on a pool/column; semantics rejects it. Pools use
+		 * `.count`/`.capacity`, handled above, and a column becomes a `[]T` only via an explicit slice.) */
 
 		if (base_val && base_val->type == 3 && base_val->arch_name) {
 			/* Find field index in archetype */
