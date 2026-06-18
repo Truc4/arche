@@ -1,0 +1,13 @@
+// An entity binding `e := B{…}` is virtual — it can only be inserted, never used as a value (read a
+// field, pass it, etc.). Doing so is a clean compile error, not invalid IR.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "can only be inserted" %t.out
+#import { fmt }
+v :: int;
+B :: arche { v }
+[4]B;
+
+main :: proc() {
+  e := B { v: 9 };
+  x := e.v; // illegal: an entity is not a readable value
+  fmt.printf("x=%d\n", x);
+}

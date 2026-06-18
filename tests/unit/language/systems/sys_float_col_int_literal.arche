@@ -8,12 +8,12 @@ pos(x, y) :: float;
 vel(x, y) :: float;
 Mover     :: arche { pos, vel }
 [1]Mover;
-step :: map (pos, vel) {
+step :: map (query { pos, vel }) {
   vel *= 2; // int literal 2 → 2.0 : (3,5) -> (6,10)
   pos = pos + vel; // (80,80) + (6,10) -> (86,90)
 }
 main :: proc() {
-  insert(Mover, 80.0, 80.0, 3.0, 5.0)(_:, _:);
+  insert(Mover { pos_x: 80.0, pos_y: 80.0, vel_x: 3.0, vel_y: 5.0 })(_:, _:);
   run step;
   fmt.printf(
     "v=%.0f %.0f p=%.0f %.0f\n",

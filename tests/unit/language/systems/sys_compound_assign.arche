@@ -6,12 +6,12 @@ Particle :: arche { pos :: float, vel :: float }
 
 [10]Particle;
 
-bump :: map (pos, vel) {
+bump :: map (query { pos, vel }) {
   pos += vel;
 }
 
 main :: proc() {
-  insert(Particle, 1.0, 0.1)(_:, _:);
+  insert(Particle { pos: 1.0, vel: 0.1 })(_:, _:);
   run bump;
   pi := Particle.pos[0] * 10.0;
   fmt.assert(pi == 11, "compound add in sys failed\n");

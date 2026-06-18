@@ -16,12 +16,12 @@ Config  :: arche { gravity }
 Thing   :: arche { v }
 [1]Config;
 [2]Thing;
-bump :: map (v) {
+bump :: map (query { v }) {
   Config.gravity[0] = 7; // foreign write from a system → W0024 (a single-shot write; runs once, not per row)
 }
 main :: proc() {
-  insert(Config, 0)(_:, _:);
-  insert(Thing, 5)(_:, _:);
+  insert(Config { gravity: 0 })(_:, _:);
+  insert(Thing { v: 5 })(_:, _:);
   run bump;
   fmt.printf("g=%d\n", Config.gravity[0]); // 7 — the system's single-shot write took effect once
 }

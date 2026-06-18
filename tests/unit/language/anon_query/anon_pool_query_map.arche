@@ -1,0 +1,22 @@
+// RED until anonymous storage + query-as-accessor ship: `[N]arche {cols}` is UNNAMED storage; the named
+// query `Movers` is the sole handle — map over it, insert an entity through it, read columns through it.
+// The idiom: named queries + anonymous archetypes.
+// RUN: %arche build -o %t %s && %t | grep -qF "ok"
+#import { fmt }
+pos :: float;
+vel :: float;
+[4]arche { pos, vel }
+
+Movers :: query { pos, vel }
+
+step :: map (Movers) {
+  pos = pos + vel;
+}
+
+main :: proc() {
+  insert(Movers { pos: 10.0, vel: 1.0 })(_:, _:);
+  run step;
+  v := Movers.pos[0] * 10.0; // read a column THROUGH the query
+  fmt.assert(v == 110.0, "pos should be 11\n");
+  fmt.printf("ok\n");
+}

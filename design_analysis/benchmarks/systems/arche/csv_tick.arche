@@ -35,11 +35,11 @@ load_once :: proc() {
 
 // Per-tick compute: revenue = price * quantity, then dampen.
 // Two sys calls so we exercise dispatch overhead, not just one big op.
-compute_revenue :: map (price, quantity, revenue) {
+compute_revenue :: map (query { price, quantity, revenue }) {
   revenue = price * quantity;
 }
 
-dampen :: map (revenue) {
+dampen :: map (query { revenue }) {
   revenue = revenue * 0.999;
 }
 

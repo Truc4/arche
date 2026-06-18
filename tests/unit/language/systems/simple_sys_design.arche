@@ -6,7 +6,7 @@ Counter :: arche { val :: int }
   val: 0,
 }
 
-increment :: map (val) {
+increment :: map (query { val }) {
   val = val + 1;
 }
 

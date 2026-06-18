@@ -102,7 +102,7 @@ streq :: func(a: []char, b: []char) -> bool {
 @policy (divide) undefined :: policy (a: int, b: int) {
 }
 
-// Pool overflow HANDLER policies — category `pool`, invoked with `?` (`insert(P,x) ?reject`), not `!`.
+// Pool overflow HANDLER policies — category `pool`, invoked with `?` (`insert(P{ x: x }) ?reject`), not `!`.
 // A full pool is an EXPECTED condition (reported via `ok`), not a bug, so a handler shapes the result
 // rather than crashing. Operands are the prefix of `(count, cap, ok, slot)` the handler uses: `count` =
 // live entities, `cap` = capacity (read-only); `ok` starts 1 (the insert writes iff it stays nonzero);

@@ -1,0 +1,12 @@
+// Positional insert is removed (E0220): the legacy `insert(Pool, v0, v1)` form is a compile error
+// directing to the entity form.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "positional insert is removed" %t.out
+#import { fmt }
+v   :: int;
+tag :: int;
+B   :: arche { v, tag }
+[4]B;
+
+main :: proc() {
+  insert(B, 2, 7)(_:, _:); // legacy positional — must be `insert(B{ v: 2, tag: 7 })`
+}

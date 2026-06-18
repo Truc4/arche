@@ -1,0 +1,17 @@
+// RED until Phase 5 (collectives over a query): `reduce(op, Q.col)` folds the matched pool's column,
+// identical to reducing the concrete `Pool.col`. Single-match query → rewrite to the concrete column.
+// RUN: %arche build -o %t %s && %t | grep -qF "sum=60"
+#import { fmt }
+v :: int;
+N :: arche { v }
+[4]N;
+
+Vals :: query { v }
+
+main :: proc() {
+  insert(N { v: 10 })(_:, _:);
+  insert(N { v: 20 })(_:, _:);
+  insert(N { v: 30 })(_:, _:);
+  sum := reduce(+, Vals.v);
+  fmt.printf("sum=%d\n", sum);
+}

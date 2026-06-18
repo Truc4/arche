@@ -18,8 +18,8 @@ Foo :: arche { v :: int, ts :: int }
   }
 }
 main :: proc() {
-  insert(Foo, 10, 5)(h0:, ok0:);
-  insert(Foo, 20, 9)(h1:, ok1:);
-  insert(Foo, 30, 7) ?reject(h2:, ok2:); // per-call override: reject, not evict
+  insert(Foo { v: 10, ts: 5 })(h0:, ok0:);
+  insert(Foo { v: 20, ts: 9 })(h1:, ok1:);
+  insert(Foo { v: 30, ts: 7 }) ?reject(h2:, ok2:); // per-call override: reject, not evict
   fmt.printf("ok2=%d v0=%d\n", ok2, Foo.v[0] !undefined); // slot 0 unchanged
 }

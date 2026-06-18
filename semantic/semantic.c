@@ -1023,6 +1023,8 @@ static char *sv_name_expr_dup(SyntaxView e);
 static char *sv_resolved_name(SemanticContext *ctx, SyntaxView v);
 static Operator sem_tok_to_op(TokenKind k);
 static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv);
+/* Copy a named query's columns into each `map(Name)` summary, once all DECL_QUERY summaries exist. */
+static void sem_resolve_map_queries(SemanticContext *ctx);
 static void sem_expand_tuple_groups_table(SemanticContext *ctx);
 static void sem_fill_decl_type_ids(SemanticContext *ctx, DeclSummary *ds);
 static char *sem_own_str(SemanticContext *ctx, char *s);
@@ -1433,6 +1435,20 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 				 * (`name :: "linux"`). The length-family fields resolve to int. */
 				if (semantic_get_const_value(ctx, idnt) != NULL)
 					goto done;
+				/* A query name is a valid field base in a collective (`reduce(+, Q.col)`): `Q.col`
+				 * resolves to the column of whatever shape the query matches. Accept it here (codegen
+				 * does the resolution); without this it would read as an undefined variable. */
+				{
+					int is_query = 0;
+					for (int qi = 0; qi < ctx->decl_count; qi++)
+						if (ctx->decls[qi] && ctx->decls[qi]->kind == DECL_QUERY && ctx->decls[qi]->name &&
+						    strcmp(ctx->decls[qi]->name, idnt) == 0) {
+							is_query = 1;
+							break;
+						}
+					if (is_query)
+						goto done;
+				}
 				sem_emit_undefined_field_base(ctx, field_loc, idnt);
 				goto done;
 			}
@@ -1648,6 +1664,21 @@ static TypeId index_or_slice_type_id(SemanticContext *ctx, SyntaxView v, int is_
 	return is_slice ? tyid_of_slice(ctx->ty_arena, elem) : elem;
 }
 
+/* Does archetype `ai` provide column `col`? True for a direct match, or when `col` is a tuple-group base
+ * whose components (`col_x`, `col_y`, …) are columns — so a query naming the grouped `pos` covers a shape
+ * with flattened `pos_x`/`pos_y`. */
+static int sem_arch_covers_col(ArchetypeInfo *ai, const char *col) {
+	if (find_field(ai, col))
+		return 1;
+	size_t l = strlen(col);
+	for (int i = 0; i < ai->field_count; i++) {
+		const char *cn = ai->fields[i]->name;
+		if (cn && strncmp(cn, col, l) == 0 && cn[l] == '_')
+			return 1;
+	}
+	return 0;
+}
+
 /* The type of an archetype field `base.field` (a field of an archetype name or of a var of that
  * archetype). TYID_UNKNOWN if not an archetype field. */
 static TypeId archetype_field_type_id(SemanticContext *ctx, const char *base_name, const char *field_name) {
@@ -1656,6 +1687,27 @@ static TypeId archetype_field_type_id(SemanticContext *ctx, const char *base_nam
 		VariableInfo *var = find_variable(ctx, base_name);
 		if (var && var->archetype_name)
 			arch = find_archetype(ctx, var->archetype_name);
+	}
+	if (!arch) {
+		/* A query base (`Q.col` in a collective): type the column off any shape the query matches (all
+		 * matching shapes share the column's backing type — that's what makes them matchable). */
+		DeclSummary *qd = NULL;
+		for (int i = 0; i < ctx->decl_count; i++)
+			if (ctx->decls[i] && ctx->decls[i]->kind == DECL_QUERY && ctx->decls[i]->name &&
+			    strcmp(ctx->decls[i]->name, base_name) == 0) {
+				qd = ctx->decls[i];
+				break;
+			}
+		if (qd)
+			for (int a = 0; a < ctx->archetype_count && !arch; a++) {
+				ArchetypeInfo *ai = ctx->archetypes[a];
+				int covers = 1;
+				for (int p = 0; p < qd->param_count && covers; p++)
+					if (!sem_arch_covers_col(ai, qd->params[p].name))
+						covers = 0;
+				if (covers)
+					arch = ai;
+			}
 	}
 	if (arch) {
 		FieldInfo *field = find_field(arch, field_name);
@@ -2142,6 +2194,16 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 
 		/* insert(Foo, v…) consumes any opaque-backed value args (arg 0 is the archetype). */
 		if (strcmp(func_name, "insert") == 0) {
+			if (argc >= 2) {
+				SyntaxView p0 = sem_node_at_expr(v, 0);
+				char *pn = sv_kind(p0) == SN_NAME_EXPR ? sv_name_expr_dup(p0) : NULL;
+				sem_emit_positional_insert(ctx, loc, pn ? pn : "Pool");
+				free(pn);
+			}
+			/* Analyze arg 0 — an entity literal `B{…}` runs its column checks (E0217/E0218); a pool name
+			 * is harmlessly re-checked. (Legacy positional value args are opaque-marked below.) */
+			if (argc > 0)
+				analyze_expression(ctx, sem_node_at_expr(v, 0));
 			for (int i = 1; i < argc; i++) {
 				SyntaxView a = sem_node_at_expr(v, i);
 				if (sv_kind(a) == SN_NAME_EXPR && sv_count(a, SN_FIELD_NAME) == 0) {
@@ -2151,6 +2213,21 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 						iv->is_consumed = 1;
 					free(nm);
 				}
+			}
+		}
+
+		/* An entity literal `insert(B{ cell: r })` moves its opaque field values into the pool — mark them
+		 * consumed so the must-consume check passes (mirrors the positional opaque-arg marking above). */
+		if (strcmp(func_name, "insert") == 0 && argc > 0 && sv_kind(sem_node_at_expr(v, 0)) == SN_ENTITY_EXPR) {
+			SyntaxView ent = sem_node_at_expr(v, 0);
+			for (int c = 0; c < ent.node->child_count; c++) {
+				if (ent.node->children[c].tag != SE_NODE || ent.node->children[c].as.node->kind != SN_NAME_EXPR)
+					continue;
+				char *nm = sv_name_expr_dup((SyntaxView){ent.node->children[c].as.node, ent.src});
+				VariableInfo *iv = nm ? find_variable(ctx, nm) : NULL;
+				if (iv && var_is_opaque(ctx, iv))
+					iv->is_consumed = 1;
+				free(nm);
 			}
 		}
 
@@ -2261,6 +2338,70 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 				sem_emit_ambiguous_group_call(ctx, loc, func_name);
 		}
 		free(func_name);
+		break;
+	}
+
+	case SN_ENTITY_EXPR: {
+		/* `Name { field: val, ... }` — resolve the shape (archetype, or a query → its covering shape),
+		 * analyze each field value, then check every field is a column and every column is provided. A
+		 * tuple-group base field (`pos`) covers its components (`pos_x`, `pos_y`). */
+		SynText tn = sv_token(v, TOK_IDENT);
+		char *type_name = tn.ptr ? sem_txt_dup(tn) : NULL;
+		for (int i = 0; i < v.node->child_count; i++)
+			if (v.node->children[i].tag == SE_NODE && v.node->children[i].as.node->kind != SN_FIELD_NAME)
+				analyze_expression(ctx, (SyntaxView){v.node->children[i].as.node, v.src});
+		ArchetypeInfo *arch = type_name ? find_archetype(ctx, type_name) : NULL;
+		if (!arch && type_name)
+			for (int i = 0; i < ctx->decl_count && !arch; i++) {
+				DeclSummary *q = ctx->decls[i];
+				if (!q || q->kind != DECL_QUERY || !q->name || strcmp(q->name, type_name) != 0)
+					continue;
+				for (int a = 0; a < ctx->archetype_count && !arch; a++) {
+					ArchetypeInfo *ai = ctx->archetypes[a];
+					int covers = 1;
+					for (int p = 0; p < q->param_count && covers; p++)
+						if (!sem_arch_covers_col(ai, q->params[p].name))
+							covers = 0;
+					if (covers)
+						arch = ai;
+				}
+			}
+		if (!arch) {
+			if (type_name)
+				sem_emit_entity_unknown_type(ctx, loc, type_name);
+			free(type_name);
+			break;
+		}
+		char *fields[64];
+		int nf = 0;
+		for (int i = 0; i < v.node->child_count && nf < 64; i++)
+			if (v.node->children[i].tag == SE_NODE && v.node->children[i].as.node->kind == SN_FIELD_NAME)
+				fields[nf++] = sem_cv_dup((SyntaxView){v.node->children[i].as.node, v.src});
+		for (int f = 0; f < nf; f++) {
+			int ok = find_field(arch, fields[f]) != NULL;
+			size_t fl = strlen(fields[f]);
+			for (int c = 0; c < arch->field_count && !ok; c++) {
+				const char *cn = arch->fields[c]->name;
+				if (strncmp(cn, fields[f], fl) == 0 && cn[fl] == '_')
+					ok = 1; /* a tuple-group base */
+			}
+			if (!ok)
+				sem_emit_entity_unknown_column(ctx, loc, type_name, fields[f]);
+		}
+		for (int c = 0; c < arch->field_count; c++) {
+			const char *cn = arch->fields[c]->name;
+			int covered = 0;
+			for (int f = 0; f < nf && !covered; f++) {
+				size_t fl = strlen(fields[f]);
+				if (strcmp(cn, fields[f]) == 0 || (strncmp(cn, fields[f], fl) == 0 && cn[fl] == '_'))
+					covered = 1;
+			}
+			if (!covered)
+				sem_emit_entity_missing_column(ctx, loc, type_name, cn);
+		}
+		for (int f = 0; f < nf; f++)
+			free(fields[f]);
+		free(type_name);
 		break;
 	}
 
@@ -2810,8 +2951,23 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		break;
 	}
 
-	case SN_RUN_STMT:
+	case SN_RUN_STMT: {
+		/* `run X` drives a MAP. If X names a query, that's a category error — a query is the domain a
+		 * map runs over, not something runnable itself. */
+		SynText tn = sv_token(v, TOK_IDENT);
+		if (tn.ptr) {
+			char *rn = sem_txt_dup(tn);
+			for (int i = 0; i < ctx->decl_count; i++) {
+				DeclSummary *d = ctx->decls[i];
+				if (d && d->kind == DECL_QUERY && d->name && rn && strcmp(d->name, rn) == 0) {
+					sem_emit_run_targets_query(ctx, loc, rn);
+					break;
+				}
+			}
+			free(rn);
+		}
 		break;
+	}
 
 	case SN_EXPR_STMT:
 		ctx->stmt_call_ok = 1;
@@ -3648,7 +3804,14 @@ static void analyze_static_decl(SemanticContext *ctx, DeclSummary *alloc) {
 	/* Validate archetype exists */
 	ArchetypeInfo *arch = find_archetype(ctx, alloc->name);
 	if (!arch) {
-		fprintf(stderr, "Error: unknown archetype '%s' in alloc\n", alloc->name);
+		const char *dot = alloc->name ? strrchr(alloc->name, '.') : NULL;
+		if (dot)
+			/* A shape is GLOBAL vocabulary — qualifying it is meaningless (only a device's systems are
+			 * qualified). Point at the bare name rather than a confusing "unknown archetype 'mod.X'". */
+			fprintf(stderr, "Error: a shape is global — write `[N]%s`, not `[N]%s` (only systems are qualified)\n",
+			        dot + 1, alloc->name);
+		else
+			fprintf(stderr, "Error: unknown archetype '%s' in alloc\n", alloc->name);
 		ctx->error_count++;
 		return;
 	}
@@ -5236,6 +5399,8 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 		return sem_tyid_of_name(ctx, "type");
 	case DECL_FUNC_GROUP:
 		return TYID_UNKNOWN; /* an overload SET has no single type — a principled "none", not a dropped kind */
+	case DECL_QUERY:
+		return TYID_UNKNOWN; /* a query names a column set, not a value/type — no ⟨type⟩ slot */
 	case DECL_WORLD:
 	case DECL_USE:
 		return TYID_UNKNOWN; /* not value/type bindings — no `⟨type⟩` slot to fill */
@@ -5739,6 +5904,9 @@ static void analyze_decl(SemanticContext *ctx, DeclSummary *ds) {
 		break;
 	case DECL_ENUM:
 		/* Registered in pass 0 (enum type + variants); erased before lowering. */
+		break;
+	case DECL_QUERY:
+		/* A column set — no body to analyze; its columns are validated where a map consumes them. */
 		break;
 	}
 
@@ -6488,7 +6656,7 @@ static SyntaxView sem_rhs_form(SyntaxView d) {
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
 		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR ||
-		    k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
+		    k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_QUERY_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
 			SyntaxView v = {d.node->children[i].as.node, d.src};
 			return v;
 		}
@@ -7182,6 +7350,76 @@ static void sem_check_default_directives(SemanticContext *ctx, const SyntaxNode 
 	}
 }
 
+/* The content-addressed name for an anonymous `arche { cols }` shape — sorted field names so the same
+ * shape always names the same synthetic archetype (independent of field order). Internal to semantic;
+ * needs only to be consistent here (codegen uses lowering's own synthetic name). */
+static void sem_synth_shape_name(SyntaxView arch_expr, char *buf, size_t n) {
+	const char *names[64];
+	int lens[64], cnt = 0;
+	for (int i = 0; i < arch_expr.node->child_count && cnt < 64; i++)
+		if (arch_expr.node->children[i].tag == SE_NODE && arch_expr.node->children[i].as.node->kind == SN_FIELD_NAME) {
+			SynText t = sv_text((SyntaxView){arch_expr.node->children[i].as.node, arch_expr.src});
+			names[cnt] = t.ptr;
+			lens[cnt] = (int)t.len;
+			cnt++;
+		}
+	for (int i = 1; i < cnt; i++)
+		for (int j = i; j > 0; j--) {
+			int m = lens[j - 1] < lens[j] ? lens[j - 1] : lens[j];
+			int c = memcmp(names[j - 1], names[j], (size_t)m);
+			if (c == 0)
+				c = lens[j - 1] - lens[j];
+			if (c <= 0)
+				break;
+			const char *tn = names[j - 1];
+			int tl = lens[j - 1];
+			names[j - 1] = names[j];
+			lens[j - 1] = lens[j];
+			names[j] = tn;
+			lens[j] = tl;
+		}
+	size_t w = (size_t)snprintf(buf, n, "__shape");
+	for (int i = 0; i < cnt && w < n; i++)
+		w += (size_t)snprintf(buf + w, n - w, "_%.*s", lens[i], names[i]);
+}
+
+/* Build a synthetic DECL_ARCHETYPE summary for an anonymous `[N]arche { cols }` pool's shape, so the
+ * normal shape-registration pass registers it (mirrors the DECL_ARCHETYPE field extraction). */
+static DeclSummary *sem_make_anon_archetype(SemanticContext *ctx, SyntaxView form, const char *name) {
+	(void)ctx;
+	DeclSummary *ds = calloc(1, sizeof(DeclSummary));
+	ds->kind = DECL_ARCHETYPE;
+	ds->static_kind = -1;
+	ds->name = sem_dupz(name);
+	ds->node = form;
+	ds->loc = sem_node_loc(form.node);
+	int nf = sv_count(form, SN_FIELD_NAME);
+	ds->fields = calloc(nf > 0 ? nf : 1, sizeof(FieldSummary));
+	for (int i = 0; i < form.node->child_count; i++) {
+		if (form.node->children[i].tag != SE_NODE || form.node->children[i].as.node->kind != SN_FIELD_NAME)
+			continue;
+		SyntaxView fn = {form.node->children[i].as.node, form.src};
+		SyntaxView ty = {NULL, form.src};
+		for (int k = i + 1; k < form.node->child_count; k++) {
+			if (form.node->children[k].tag == SE_TOKEN)
+				continue;
+			SyntaxNodeKind kk = form.node->children[k].as.node->kind;
+			if (kk == SN_FIELD_NAME)
+				break;
+			if (kk >= SN_TYPE_REF && kk <= SN_TYPE_FUNC) {
+				ty.node = form.node->children[k].as.node;
+				break;
+			}
+		}
+		ds->fields[ds->field_count].name = sem_cv_dup(fn);
+		ds->fields[ds->field_count].type_node = ty;
+		ds->fields[ds->field_count].kind = FIELD_COLUMN;
+		ds->fields[ds->field_count].loc = sem_node_loc(fn.node);
+		ds->field_count++;
+	}
+	return ds;
+}
+
 /* Collect the resolved DeclSummary table from the main-file syntax tree plus all registered module
  * syntax trees, inlining + name-prefixing modules exactly as main.c's resolve_uses does. Summaries
  * are built directly from the tree (bare names) into ctx->decls; the loader records each module's
@@ -7243,8 +7481,24 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 		}
 
 		DeclSummary *ad = decl_summary_from_node(ctx, dv);
-		if (ad)
+		if (ad) {
 			ctx->decls[ctx->decl_count++] = ad;
+			/* Anonymous pool `[N]arche { cols }`: also register its synthetic shape (unless an identical
+			 * one is already registered) so the pool allocates and a query matches it by columns. */
+			if (ad->kind == DECL_STATIC && ad->static_kind == STATIC_KIND_ARCHETYPE && ad->name &&
+			    strncmp(ad->name, "__shape", 7) == 0) {
+				int exists = 0;
+				for (int e = 0; e < ctx->decl_count; e++)
+					if (ctx->decls[e] && ctx->decls[e]->kind == DECL_ARCHETYPE && ctx->decls[e]->name &&
+					    strcmp(ctx->decls[e]->name, ad->name) == 0) {
+						exists = 1;
+						break;
+					}
+				SyntaxView ash = sv_child(dv, SN_ARCH_EXPR);
+				if (!exists && sv_present(ash))
+					ctx->decls[ctx->decl_count++] = sem_make_anon_archetype(ctx, ash, ad->name);
+			}
+		}
 	}
 
 	/* Editor-only: inline the open document's own device module (its sibling datasheet) even though the
@@ -7253,6 +7507,10 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 	 * whole. sem_inline_module dedups, so a real import of the same name above is harmless. */
 	if (g_sem_extra_inline)
 		sem_inline_module(ctx, g_sem_extra_inline, 1); /* the open file's OWN device → same unit (see self_unit) */
+
+	/* Now every DECL_QUERY (root + inlined modules) is in the table — resolve each `map(Name)` to its
+	 * named query's columns, so the map's body types against those columns like an inline map does. */
+	sem_resolve_map_queries(ctx);
 
 	/* Scope resolution snapshot: the tree-qualify pass in build_decl_table binds every `mod.member`
 	 * reference/call to its member's qualified identity (looked up by literal name in the module's
@@ -7588,6 +7846,48 @@ static void sem_check_dead_code(SemanticContext *ctx) {
 		}
 		free(referenced);
 	}
+
+	/* W0025 unused_query — a `query {…}` no map references. Query refs (`map(Name)`'s SN_QUERY_REF) are
+	 * not in the id-keyed channels, so usage is detected by a direct scan of map decls. Same origin/
+	 * crate-kind roots as the data-decl lints above. */
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *q = ctx->decls[i];
+		if (!q || q->kind != DECL_QUERY || !q->name || q->name[0] == '_')
+			continue;
+		if (q->origin == DECL_ORIGIN_STDLIB || q->origin == DECL_ORIGIN_CORE)
+			continue;
+		if (q->origin == DECL_ORIGIN_USER_MODULE && q->visibility == VIS_EXPORTED)
+			continue;
+		if (q->origin == DECL_ORIGIN_ENTRY && core_off > 0 && q->loc.line <= core_off)
+			continue;
+		if (q->origin == DECL_ORIGIN_ENTRY && !entry_is_binary)
+			continue;
+		int used = 0;
+		for (int j = 0; j < ctx->decl_count && !used; j++) {
+			DeclSummary *m = ctx->decls[j];
+			if (!m || m->kind != DECL_SYS)
+				continue;
+			SyntaxView form = sem_rhs_form(m->node);
+			if (!sv_present(form))
+				continue;
+			SyntaxView ref = sv_child_at(form, SN_QUERY_REF, 0);
+			if (!sv_present(ref))
+				continue;
+			char *rn = sem_cv_dup(ref);
+			if (rn && strcmp(rn, q->name) == 0)
+				used = 1;
+			free(rn);
+		}
+		if (used)
+			continue;
+		ctx->active_allow_slugs = q->allow_slugs;
+		ctx->active_allow_slug_count = q->allow_slug_count;
+		if (!sem_diag_slug_suppressed(ctx, "unused_query"))
+			sem_emit_lint_unused_query(ctx, q->loc, q->name, sem_decl_module_path(ctx, q));
+		ctx->active_allow_slugs = NULL;
+		ctx->active_allow_slug_count = 0;
+	}
+
 	free(reachable);
 	free(work);
 }
@@ -8469,6 +8769,12 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 				}
 			}
 			an[al] = '\0';
+			/* Anonymous storage `[C]arche { cols }`: no name token — name the shape from its columns. */
+			if (al == 0) {
+				SyntaxView ash = sv_child(dv, SN_ARCH_EXPR);
+				if (sv_present(ash))
+					sem_synth_shape_name(ash, an, sizeof(an));
+			}
 			ds->name = sem_dupz(an);
 		} else {
 			char *aname = sem_txt_dup(sv_token(dv, TOK_IDENT));
@@ -8527,6 +8833,8 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 		kind = DECL_FUNC_GROUP;
 	else if (fk == SN_ENUM_EXPR)
 		kind = DECL_ENUM;
+	else if (fk == SN_QUERY_EXPR)
+		kind = DECL_QUERY; /* a column set; its SN_PARAM children populate ds->params via the generic loop */
 	else if (fk == SN_ARCH_EXPR)
 		kind = DECL_ARCHETYPE;
 	else
@@ -8617,11 +8925,21 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 		}
 		return ds;
 	}
-	int np = sv_count(form, SN_PARAM);
+	/* A map's columns come from the query it runs over. An inline `map(query {…})` carries them in a
+	 * child SN_QUERY_EXPR; a named `map(Name)` carries an SN_QUERY_REF whose columns are copied in by a
+	 * post-pass (sem_resolve_map_queries) once all DECL_QUERY summaries exist. A query decl itself is the
+	 * SN_QUERY_EXPR form, so its own SN_PARAM children flow through directly. */
+	SyntaxView col_src = form;
+	if (kind == DECL_SYS) {
+		SyntaxView iq = sv_child_at(form, SN_QUERY_EXPR, 0);
+		if (sv_present(iq))
+			col_src = iq;
+	}
+	int np = sv_count(col_src, SN_PARAM);
 	ds->param_count = np;
 	ds->params = calloc(np ? np : 1, sizeof(ParamSummary));
 	for (int i = 0; i < np; i++)
-		ds->params[i] = sem_param_summary_node(sv_child_at(form, SN_PARAM, i));
+		ds->params[i] = sem_param_summary_node(sv_child_at(col_src, SN_PARAM, i));
 	if (kind == DECL_PROC) {
 		ds->is_extern = !sv_has_token(form, TOK_LBRACE);
 		ds->is_variadic = sv_has_token(form, TOK_DOTDOTDOT);
@@ -8639,6 +8957,45 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 			ds->return_type_nodes[i] = sem_type_at(form, i);
 	}
 	return ds;
+}
+
+/* Resolve `map(Name)`: copy the named query's columns into the map summary's params, so the map body
+ * types against those columns. Runs after the whole table (root + inlined modules) is built, so every
+ * DECL_QUERY is present. Inline `map(query {…})` maps already have params (sourced in decl_summary_from)
+ * and are skipped. An unresolved name leaves the map param-less; Phase 4 diagnoses it. */
+static void sem_resolve_map_queries(SemanticContext *ctx) {
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *m = ctx->decls[i];
+		if (!m || m->kind != DECL_SYS || m->param_count > 0)
+			continue;
+		SyntaxView form = sem_rhs_form(m->node);
+		if (!sv_present(form))
+			continue;
+		SyntaxView ref = sv_child_at(form, SN_QUERY_REF, 0);
+		if (!sv_present(ref))
+			continue; /* not a named-query map (an inline/empty map) */
+		char *qn = sem_cv_dup(ref);
+		SyntaxView qcols = {NULL, NULL};
+		for (int j = 0; j < ctx->decl_count; j++) {
+			DeclSummary *q = ctx->decls[j];
+			if (q && q->kind == DECL_QUERY && q->name && qn && strcmp(q->name, qn) == 0) {
+				qcols = sem_rhs_form(q->node); /* the SN_QUERY_EXPR bearing the columns */
+				break;
+			}
+		}
+		if (!sv_present(qcols)) {
+			sem_emit_unknown_query(ctx, m->loc, m->name ? m->name : "<map>", qn ? qn : "?");
+			free(qn);
+			continue; /* unknown query — left param-less */
+		}
+		free(qn);
+		int np = sv_count(qcols, SN_PARAM);
+		m->param_count = np;
+		free(m->params);
+		m->params = calloc(np ? np : 1, sizeof(ParamSummary));
+		for (int k = 0; k < np; k++)
+			m->params[k] = sem_param_summary_node(sv_child_at(qcols, SN_PARAM, k));
+	}
 }
 
 static void free_decl_summary(DeclSummary *ds); /* fwd */

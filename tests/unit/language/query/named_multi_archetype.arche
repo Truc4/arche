@@ -1,0 +1,29 @@
+// A NAMED query (`map(Movers)`) matches EVERY archetype that has all its columns — here two distinct
+// shapes — and a single `run` drives the map over both pools. The canonical idiom: define the query
+// once, run maps over it by name.
+// RUN: %arche build -o %t %s && %t | grep -qF "ok"
+#import { fmt }
+pos  :: float;
+vel  :: float;
+mass :: float;
+A    :: arche { pos, vel }
+B    :: arche { pos, vel, mass }
+[4]A;
+[4]B;
+
+Movers :: query { pos, vel }
+
+step :: map (Movers) {
+  pos = pos + vel;
+}
+
+main :: proc() {
+  insert(A { pos: 10.0, vel: 1.0 })(_:, _:);
+  insert(B { pos: 20.0, vel: 2.0, mass: 5.0 })(_:, _:);
+  run step;
+  ap := A.pos[0] * 10.0;
+  bp := B.pos[0] * 10.0;
+  fmt.assert(ap == 110.0, "A.pos should be 11\n");
+  fmt.assert(bp == 220.0, "B.pos should be 22\n");
+  fmt.printf("ok\n");
+}

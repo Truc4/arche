@@ -3,7 +3,7 @@ Entity :: arche { next :: handle<Entity> }
 
 [10]Entity;
 
-process :: map (next) {
+process :: map (query { next }) {
 }
 
 @allow_pure_proc

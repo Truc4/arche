@@ -9,7 +9,7 @@ N   :: arche { k, tag }
 [64]N(64) {
   k: 1, tag: 1
 }
-neg :: map (k) {
+neg :: map (query { k }) {
   k = 0 - k;
 }
 main :: proc() {

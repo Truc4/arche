@@ -8,7 +8,7 @@ N   :: arche { k, tag }
 [40]N(40) {
   k: 1, tag: 1
 }
-negk :: map (k) {
+negk :: map (query { k }) {
   k = 0 - k;
 }
 main :: proc() {

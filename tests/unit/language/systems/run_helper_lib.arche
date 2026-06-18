@@ -10,12 +10,12 @@ Mob :: arche { hp }
 
 [10]Mob;
 
-bump :: map (hp) {
+bump :: map (query { hp }) {
   hp = hp + 1;
 }
 
 step :: proc() {
-  insert(Mob, 0)(_:, _:);
+  insert(Mob { hp: 0 })(_:, _:);
   run bump;
   fmt.printf("n=%d\n", Mob.hp[0]);
 }

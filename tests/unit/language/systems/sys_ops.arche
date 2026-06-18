@@ -4,23 +4,23 @@ Body :: arche { position :: float, velocity :: float }
 
 [500]Body;
 
-step :: map (position, velocity) {
+step :: map (query { position, velocity }) {
   position = position + velocity;
 }
 
 main :: proc() {
-  insert(Body, 10.0, 1.0)(_:, _:);
-  insert(Body, 20.0, 2.0)(_:, _:);
-  insert(Body, 30.0, 3.0)(_:, _:);
-  insert(Body, 40.0, 4.0)(_:, _:);
-  insert(Body, 50.0, 5.0)(_:, _:);
-  insert(Body, 60.0, 6.0)(_:, _:);
-  insert(Body, 70.0, 7.0)(_:, _:);
-  insert(Body, 80.0, 8.0)(_:, _:);
-  insert(Body, 90.0, 9.0)(_:, _:);
-  insert(Body, 100.0, 10.0)(_:, _:);
-  insert(Body, 110.0, 11.0)(_:, _:);
-  insert(Body, 120.0, 12.0)(_:, _:);
+  insert(Body { position: 10.0, velocity: 1.0 })(_:, _:);
+  insert(Body { position: 20.0, velocity: 2.0 })(_:, _:);
+  insert(Body { position: 30.0, velocity: 3.0 })(_:, _:);
+  insert(Body { position: 40.0, velocity: 4.0 })(_:, _:);
+  insert(Body { position: 50.0, velocity: 5.0 })(_:, _:);
+  insert(Body { position: 60.0, velocity: 6.0 })(_:, _:);
+  insert(Body { position: 70.0, velocity: 7.0 })(_:, _:);
+  insert(Body { position: 80.0, velocity: 8.0 })(_:, _:);
+  insert(Body { position: 90.0, velocity: 9.0 })(_:, _:);
+  insert(Body { position: 100.0, velocity: 10.0 })(_:, _:);
+  insert(Body { position: 110.0, velocity: 11.0 })(_:, _:);
+  insert(Body { position: 120.0, velocity: 12.0 })(_:, _:);
   run step;
   p0   := Body.position[0];
   p11  := Body.position[11];

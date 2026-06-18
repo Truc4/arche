@@ -6,7 +6,7 @@ x :: float;
 P :: arche { x }
 [4]P(4);
 
-scale :: map (x) {
+scale :: map (query { x }) {
   x = x * 10.0;
 }
 

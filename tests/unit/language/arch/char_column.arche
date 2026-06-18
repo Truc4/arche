@@ -10,8 +10,8 @@ Node :: arche { seg :: [32]char, id :: int }
 [8]Node;
 
 main :: proc() {
-  insert(Node, "users", 7)(_:, _:);
-  insert(Node, "posts", 9)(_:, _:);
+  insert(Node { seg: "users", id: 7 })(_:, _:);
+  insert(Node { seg: "posts", id: 9 })(_:, _:);
 
   r0    := Node.seg[0];
   r1    := Node.seg[1];

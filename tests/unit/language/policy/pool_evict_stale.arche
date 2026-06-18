@@ -16,8 +16,8 @@ Foo :: arche { v :: int, ts :: int }
   }
 }
 main :: proc() {
-  insert(Foo, 10, 5)(h0:, ok0:);
-  insert(Foo, 20, 9)(h1:, ok1:);
-  insert(Foo, 30, 7)(h2:, ok2:); // evicts slot 0 -> h0 is now stale
+  insert(Foo { v: 10, ts: 5 })(h0:, ok0:);
+  insert(Foo { v: 20, ts: 9 })(h1:, ok1:);
+  insert(Foo { v: 30, ts: 7 })(h2:, ok2:); // evicts slot 0 -> h0 is now stale
   delete(h0)(okd:); // use-after-evict -> abort
 }

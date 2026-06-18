@@ -16,8 +16,6 @@
 /// fmt.assert(streq(t, "/a"), "target query-trimmed\n");
 /// ```
 ///
-/// Pure, but returns three values (two slices + ok) — a func returns only one, so it must be a proc.
-@allow_pure_proc
 parse_request_line :: proc(req: []char)(method: []char, target: []char, ok: bool) {
   ok = false;
   if (req.length < 5) {

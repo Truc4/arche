@@ -15,7 +15,7 @@ N :: arche { v, tag }
   v: 1.0, tag: 1
 }
 
-flip :: map (v) {
+flip :: map (query { v }) {
   v = 20.5 - v;
 }
 

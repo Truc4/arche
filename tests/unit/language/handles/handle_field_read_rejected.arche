@@ -8,7 +8,7 @@ Foo :: arche { hp :: int }
 [10]Foo;
 
 main :: proc() {
-  insert(Foo, 5)(h:, _:);
+  insert(Foo { hp: 5 })(h:, _:);
   x := h.hp;
   fmt.printf("x=%d\n", x);
 }

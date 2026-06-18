@@ -14,13 +14,13 @@ Mover        :: arche { pos, vel }
 Config       :: arche { stiffness, center }
 [1]Mover;
 [1]Config;
-step :: map (pos, vel) {
+step :: map (query { pos, vel }) {
   vel -= (pos - Config.center[0]) / Config.stiffness[0]; // whole-vector spring toward the singleton center
   pos += vel; // whole-vector integrate
 }
 main :: proc() {
-  insert(Config, 10, 100, 200)(_:, _:); // stiffness=10, center=(100,200)
-  insert(Mover, 80, 80, 0, 0)(_:, _:); // pos=(80,80), vel=(0,0)
+  insert(Config { stiffness: 10, center_x: 100, center_y: 200 })(_:, _:); // stiffness=10, center=(100,200)
+  insert(Mover { pos_x: 80, pos_y: 80, vel_x: 0, vel_y: 0 })(_:, _:); // pos=(80,80), vel=(0,0)
   run step;
   // vel.x -= (80-100)/10 = +2 ; vel.y -= (80-200)/10 = +12 ; pos += vel → (82,92)
   fmt.printf("v=%d %d p=%d %d\n", Mover.vel.x[0], Mover.vel.y[0], Mover.pos.x[0], Mover.pos.y[0]);

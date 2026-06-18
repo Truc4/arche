@@ -8,12 +8,12 @@ Particle :: arche { pos }
 
 [10]Particle;
 
-bump :: map (pos) {
+bump :: map (query { pos }) {
   pos = pos + 2.0;
 }
 
 main :: proc() {
-  insert(Particle, 1.0)(_:, _:);
+  insert(Particle { pos: 1.0 })(_:, _:);
   run bump;
   fmt.printf("pos0=%f\n", Particle.pos[0]);
 }

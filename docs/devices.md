@@ -62,7 +62,7 @@ integrate :: map (pos, vel) { pos = pos + vel; }
 [1000]Particle                      // bare name — the datasheet shape is global vocabulary
 
 main :: proc() {
-  insert(Particle, 10.0, 1.0)(_:, _:);  // insert is statement-only: (handle:, ok:); `_` discards
+  insert(Particle{ pos: 10.0, vel: 1.0 })(_:, _:);  // insert is statement-only: (handle:, ok:); `_` discards
   run physics.integrate;            // run the device's map by qualified name
   fmt.printf("pos0 = %d\n", Particle.pos[0] * 10);  // 110
 }

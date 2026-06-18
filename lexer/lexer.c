@@ -152,6 +152,10 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 3 && strncmp(start, "map", 3) == 0) {
 		return TOK_MAP;
 	}
+	/* `query` is a first-class archetype selector (a column set) — a `map`/collective runs over one. */
+	if (length == 5 && strncmp(start, "query", 5) == 0) {
+		return TOK_QUERY;
+	}
 	if (length == 4 && strncmp(start, "func", 4) == 0) {
 		return TOK_FUNC;
 	}
@@ -647,6 +651,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_PROC";
 	case TOK_MAP:
 		return "TOK_MAP";
+	case TOK_QUERY:
+		return "TOK_QUERY";
 	case TOK_FUNC:
 		return "TOK_FUNC";
 	case TOK_POLICY:

@@ -11,10 +11,10 @@ Resource :: arche { cell }
 
 main :: proc() {
   resource_open(10)(r1:);
-  insert(Resource, r1)(h:, _:);
+  insert(Resource { cell: r1 })(h:, _:);
   alias := h;
   delete(h)(_:);
   resource_open(99)(r2:);
-  insert(Resource, r2)(h2:, _:);
+  insert(Resource { cell: r2 })(h2:, _:);
   delete(alias)(_:);
 }

@@ -3,6 +3,6 @@
 // RUN: true
 Node :: arche { key, val }
 
-touch :: map (key) {
+touch :: map (query { key }) {
   key = key + 1.0;
 }

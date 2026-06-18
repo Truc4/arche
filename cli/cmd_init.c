@@ -60,14 +60,17 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		    "\n"
 		    "Particle :: arche { pos, vel }\n"
 		    "\n"
+		    "// A query names the columns a map runs over — define it once, run maps over it by name.\n"
+		    "Movers :: query { pos, vel }\n"
+		    "\n"
 		    "/// ```arche\n"
 		    "/// main :: proc() {\n"
-		    "///   insert(Particle, 10.0, 1.0)(_:, _:);\n"
+		    "///   insert(Particle{ pos: 10.0, vel: 1.0 })(_:, _:);\n"
 		    "///   run integrate;\n"
 		    "///   fmt.assert(Particle.pos[0] * 10 == 110, \"integrate did not run\\n\");\n"
 		    "/// }\n"
 		    "/// ```\n"
-		    "integrate :: map (pos, vel) {\n"
+		    "integrate :: map(Movers) {\n"
 		    "  pos = pos + vel;\n"
 		    "}\n";
 		return write_new_file(path, impl);
@@ -98,15 +101,16 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		char content[2048];
 		snprintf(content, sizeof(content),
 		         "// %s — a driver: it imports devices, sizes their shapes, and runs their systems.\n"
-		         "// Replace `physics` with the device(s) you depend on.\n"
+		         "// Replace `physics` with the device(s) you depend on. A shape (`Particle`) is GLOBAL\n"
+		         "// vocabulary — bare, never `physics.Particle`; only a device's systems are qualified.\n"
 		         "#import { physics fmt }\n"
 		         "\n"
-		         "[1000]physics.Particle;    // the driver picks the storage size\n"
+		         "[1000]Particle;    // the driver picks the storage size for the global shape\n"
 		         "\n"
 		         "main :: proc() {\n"
-		         "  insert(physics.Particle, 10.0, 1.0)(_:, _:);\n"
+		         "  insert(Particle{ pos: 10.0, vel: 1.0 })(_:, _:);\n"
 		         "  run physics.integrate;\n"
-		         "  fmt.assert(physics.Particle.pos[0] * 10 == 110, \"integrate did not run\\n\");\n"
+		         "  fmt.assert(Particle.pos[0] * 10 == 110, \"integrate did not run\\n\");\n"
 		         "  fmt.printf(\"ran\\n\");\n"
 		         "}\n",
 		         name);

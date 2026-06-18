@@ -76,13 +76,13 @@ won't let you blur them. The shape of a declaration *tells you what it does*.
 | -------- | --------------------------- | ----------- | --- |
 | `func`   | `name :: func(in) -> T`     | **yes**     | pure computation — one return, no side effects, **total by default** (unannotated ops clamp) |
 | `proc`   | `name :: proc(in)(out)`     | no          | an action — does things; writes results into caller-provided out-params |
-| `map`    | `name :: map (components)`   | no          | a data transform — runs over **every** archetype carrying those components |
+| `map`    | `name :: map (query {components})` | no    | a data transform — runs over **every** archetype carrying those components |
 | `policy` | `name :: policy(len, i)`    | no          | a failure macro — inlined at a fallible op (`a[i] !clamp`) to resolve the failure *at the site* |
 
 ```
 area   :: func(w: int, h: int) -> int         // value:    r := area(w, h)
 divmod :: proc(a: int, b: int)(q:, r:)        // action:   divmod(17, 5)(q:, r:)
-step   :: map (pos, vel) { pos = pos + vel; }  // transform: run step;
+step   :: map (query { pos, vel }) { pos = pos + vel; }  // transform: run step;
 clamp  :: policy(len: int, i: int) { … }      // failure:  v := xs[k] !clamp
 ```
 
@@ -93,9 +93,9 @@ Why bother? Each split buys a real guarantee the overloaded keyword can't:
   `clamp`, so an unannotated fallible op can't crash). A proc is the only thing that *does*. So
   purity and the totality default are readable straight off the keyword — no annotations, no effect
   inference.
-- **`map` — the loop isn't yours to write.** A map names *components*, not tables, and the
-  compiler runs it over every matching archetype, generating the column loop. Data-first iteration
-  with no element loop in source.
+- **`map` — the loop isn't yours to write.** A map runs over a *query* — a set of *components*,
+  not tables — and the compiler runs it over every matching archetype, generating the column loop.
+  Data-first iteration with no element loop in source.
 - **`policy` — failure is a value-site decision, not a hidden default.** `xs[k] !clamp` puts the
   out-of-bounds behavior right on the op as an ordinary, user-writable macro. `!abort` is the
   deliberate crash site, and `--no-abort` bans every one — though that is not a full crash-free
@@ -114,7 +114,7 @@ Particle :: arche {
 
 [100]Particle(100) { vel: 0.1 } // 100 live particles; pos starts at 0, vel at 0.1
 
-integrate :: map (pos, vel) {
+integrate :: map (query { pos, vel }) {
   pos = pos + vel; // whole-column update — no explicit loop
 }
 

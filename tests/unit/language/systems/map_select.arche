@@ -8,7 +8,7 @@ w :: float;
 c :: int;
 N :: arche { v, w, c }
 [3]N(3);
-bump :: map (v, w, c) {
+bump :: map (query { v, w, c }) {
   v = select(v > 0, v + 1, v - 1); // int select
   w = select(w > 0.0, w * 2.0, 0.0); // float select
   c = select(c > 0, select(c > 10, 2, 1), 0); // nested select
