@@ -10372,7 +10372,7 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->vector_lanes = 0;
 	ctx->in_map = 0;
 	ctx->in_func = 0;
-	ctx->entity_bind_count = 0; /* must be zeroed: malloc'd ctx, and reused in-process (doctest runner) */
+	ctx->entity_bind_count = 0;         /* must be zeroed: malloc'd ctx, and reused in-process (doctest runner) */
 	ctx->implicit_loop_index[0] = '\0'; /* Initialize to empty (not in loop) */
 	ctx->loop_exit_labels = NULL;
 	ctx->loop_exit_count = 0;
