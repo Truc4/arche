@@ -61,6 +61,11 @@ jobs:
         env:
           ARCHE_CORE_DIR: ${{ github.workspace }}/core
 
+      - name: Corpus lint gate (stdlib + extras, -Werror)
+        run: make check-corpus
+        env:
+          ARCHE_CORE_DIR: ${{ github.workspace }}/core
+
       # NB: two codegen checks are intentionally NOT gated here, both manual-only (`make test-per-unit`,
       # `make verify-codegen`):
       #  - per-unit codegen is DORMANT (default-off, no current consumer); the always-on ODR verifier
