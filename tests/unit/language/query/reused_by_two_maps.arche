@@ -17,7 +17,7 @@ damp :: map (Movers) {
 }
 
 main :: proc() {
-  insert(P, 10.0, 2.0)(_:, _:);
+  insert(P { pos: 10.0, vel: 2.0 })(_:, _:);
   run integrate; // pos 10 -> 12
   run damp; // vel 2 -> 1
   run integrate; // pos 12 -> 13

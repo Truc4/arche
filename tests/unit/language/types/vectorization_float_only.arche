@@ -9,14 +9,14 @@ float_multiply :: map (query { val }) {
 }
 
 main :: proc() {
-  insert(FloatOps, 1.0)(_:, _:);
-  insert(FloatOps, 1.0)(_:, _:);
-  insert(FloatOps, 1.0)(_:, _:);
-  insert(FloatOps, 1.0)(_:, _:);
-  insert(FloatOps, 1.0)(_:, _:);
-  insert(FloatOps, 1.0)(_:, _:);
-  insert(FloatOps, 1.0)(_:, _:);
-  insert(FloatOps, 1.0)(_:, _:);
+  insert(FloatOps { val: 1.0 })(_:, _:);
+  insert(FloatOps { val: 1.0 })(_:, _:);
+  insert(FloatOps { val: 1.0 })(_:, _:);
+  insert(FloatOps { val: 1.0 })(_:, _:);
+  insert(FloatOps { val: 1.0 })(_:, _:);
+  insert(FloatOps { val: 1.0 })(_:, _:);
+  insert(FloatOps { val: 1.0 })(_:, _:);
+  insert(FloatOps { val: 1.0 })(_:, _:);
   run float_multiply;
   v0          := FloatOps.val[0];
   v1          := FloatOps.val[1];

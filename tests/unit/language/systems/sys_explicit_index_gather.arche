@@ -19,13 +19,13 @@ gather :: map (query { v, out }) {
 }
 
 main :: proc() {
-  insert(Table, 10)(_:, _:);
-  insert(Table, 20)(_:, _:);
-  insert(Table, 30)(_:, _:);
-  insert(Table, 40)(_:, _:);
-  insert(Ent, 2, 0)(_:, _:);
-  insert(Ent, 0, 0)(_:, _:);
-  insert(Ent, 3, 0)(_:, _:);
+  insert(Table { val: 10 })(_:, _:);
+  insert(Table { val: 20 })(_:, _:);
+  insert(Table { val: 30 })(_:, _:);
+  insert(Table { val: 40 })(_:, _:);
+  insert(Ent { v: 2, out: 0 })(_:, _:);
+  insert(Ent { v: 0, out: 0 })(_:, _:);
+  insert(Ent { v: 3, out: 0 })(_:, _:);
   run gather;
   fmt.printf("out=%d %d %d\n", Ent.out[0], Ent.out[1], Ent.out[2]); // gather: 30 10 40
 }

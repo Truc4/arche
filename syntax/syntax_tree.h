@@ -77,6 +77,8 @@ typedef enum {
 	SN_ALLOC_EXPR,
 	SN_ARRAY_LIT_EXPR,
 	SN_STRING_EXPR,
+	SN_ENTITY_EXPR, /* entity literal value: `Name { field: val, ... }` — a row of archetype/query Name */
+	SN_TUPLE_LIT,   /* a tuple value `(a, b)` — only as an entity field value for a tuple-group column */
 	SN_PAREN_EXPR,
 	/* Unified-grammar RHS value forms: the name is the binding LHS, so these carry no
 	 * SN_FUNC_DEF_NAME. A bodied (or `extern`) proc/func is a value; a bodiless one is a

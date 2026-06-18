@@ -359,6 +359,7 @@ typedef enum {
 	HIR_EXPR_UNARY,
 	HIR_EXPR_CALL,
 	HIR_EXPR_ALLOC,
+	HIR_EXPR_ENTITY_LIT,
 	HIR_EXPR_ARRAY_LITERAL,
 	HIR_EXPR_STRING,
 } HirExprKind;
@@ -417,6 +418,12 @@ struct HirExpr {
 			int field_count;
 			HirExpr *init_length;
 		} alloc;
+		struct {
+			char *type_name; /* the archetype OR query named by the literal */
+			char **field_names;
+			HirExpr **field_values;
+			int field_count;
+		} entity;
 		struct {
 			HirExpr **elements;
 			int element_count;

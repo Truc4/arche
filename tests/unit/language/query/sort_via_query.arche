@@ -8,10 +8,10 @@ N :: arche { v }
 Vals :: query { v }
 
 main :: proc() {
-  insert(N, 5)(_:, _:);
-  insert(N, 9)(_:, _:);
-  insert(N, 1)(_:, _:);
-  insert(N, 3)(_:, _:);
+  insert(N { v: 5 })(_:, _:);
+  insert(N { v: 9 })(_:, _:);
+  insert(N { v: 1 })(_:, _:);
+  insert(N { v: 3 })(_:, _:);
   sort(Vals.v);
   fmt.printf("min=%d max=%d\n", N.v[0], N.v[3]);
 }

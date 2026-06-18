@@ -15,7 +15,7 @@ step :: map (Movers) {
 }
 
 main :: proc() {
-  insert(Mover, 1.0, 2.0, 3.0, 4.0)(_:, _:); // pos=(1,2) vel=(3,4)
+  insert(Mover { pos_x: 1.0, pos_y: 2.0, vel_x: 3.0, vel_y: 4.0 })(_:, _:); // pos=(1,2) vel=(3,4)
   run step;
   px := Mover.pos.x[0] * 1.0;
   py := Mover.pos.y[0] * 1.0;

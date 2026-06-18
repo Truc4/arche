@@ -9,7 +9,7 @@ Message :: arche { text :: [256]char, author :: [64]char }
 [100]Message;
 
 main :: proc() {
-  insert(Message, "hello", "ada")(_:, _:);
+  insert(Message { text: "hello", author: "ada" })(_:, _:);
   t := Message.text[0];
   a := Message.author[0];
   fmt.printf("msg=%s by=%s\n", t, a);

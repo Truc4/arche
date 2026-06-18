@@ -4,9 +4,9 @@
 #import { fmt }
 v   :: int;
 tag :: int;
-B :: arche { v, tag }
+B   :: arche { v, tag }
 [4]B;
 
 main :: proc() {
-  insert(B{ v: 2 })(_:, _:); // missing `tag`
+  insert(B { v: 2 })(_:, _:); // missing `tag`
 }

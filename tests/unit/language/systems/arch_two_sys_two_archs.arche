@@ -17,8 +17,8 @@ dampen :: map (query { vel }) {
 }
 
 main :: proc() {
-  insert(Particle, 10.0, 1.0)(_:, _:);
-  insert(Body, 20.0, 2.0, 10.0)(_:, _:);
+  insert(Particle { pos: 10.0, vel: 1.0 })(_:, _:);
+  insert(Body { pos: 20.0, vel: 2.0, mass: 10.0 })(_:, _:);
   run step;
   run dampen;
   pp  := Particle.pos[0];

@@ -599,6 +599,31 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 		ax->data.string.length = n;
 		break;
 	}
+	case SN_ENTITY_EXPR: {
+		/* `Name { field: val, ... }` — leading IDENT = archetype/query name; then alternating
+		 * SN_FIELD_NAME nodes + value expr nodes. (Tuple-group field expansion handled in a later pass.) */
+		ax->kind = HIR_EXPR_ENTITY_LIT;
+		ax->data.entity.type_name = sv_dup_first_token(e);
+		int nf = sv_count(e, SN_FIELD_NAME);
+		ax->data.entity.field_names = calloc(nf ? nf : 1, sizeof(char *));
+		ax->data.entity.field_values = calloc(nf ? nf : 1, sizeof(HirExpr *));
+		ax->data.entity.field_count = 0;
+		for (int i = 0; i < e.node->child_count; i++) {
+			if (e.node->children[i].tag != SE_NODE || e.node->children[i].as.node->kind != SN_FIELD_NAME)
+				continue;
+			char *fn = sv_dup((SyntaxView){e.node->children[i].as.node, e.src});
+			HirExpr *val = NULL;
+			for (int j = i + 1; j < e.node->child_count; j++)
+				if (e.node->children[j].tag == SE_NODE && e.node->children[j].as.node->kind != SN_FIELD_NAME) {
+					val = lower_expr_cst((SyntaxView){e.node->children[j].as.node, e.src});
+					break;
+				}
+			ax->data.entity.field_names[ax->data.entity.field_count] = fn;
+			ax->data.entity.field_values[ax->data.entity.field_count] = val;
+			ax->data.entity.field_count++;
+		}
+		break;
+	}
 	case SN_NAME_EXPR: {
 		ax->kind = HIR_EXPR_NAME;
 		/* table<Name> in value position resolves to the bare archetype name */
@@ -913,7 +938,7 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 		for (int i = 0; i < e.node->child_count; i++)
 			if (e.node->children[i].tag == SE_NODE) {
 				SyntaxNodeKind k = e.node->children[i].as.node->kind;
-				if ((k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) || k == SN_ARCH_EXPR)
+				if ((k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) || k == SN_ARCH_EXPR || k == SN_ENTITY_EXPR)
 					ac++;
 			}
 		ax->data.call.args = calloc(ac ? ac : 1, sizeof(HirExpr *));
@@ -921,9 +946,10 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 		for (int i = 0; i < e.node->child_count; i++)
 			if (e.node->children[i].tag == SE_NODE) {
 				SyntaxNodeKind k = e.node->children[i].as.node->kind;
-				/* SN_ARCH_EXPR (an anonymous `arche {…}` literal) is an expression arg too, but sits
-				 * outside the contiguous expr-kind range — accept it so `insert(arche{…}, …)` works. */
-				if ((k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) || k == SN_ARCH_EXPR) {
+				/* SN_ARCH_EXPR (an anonymous `arche {…}` literal) and SN_ENTITY_EXPR (`Name{…}` row value)
+				 * are expression args too, but sit outside the contiguous expr-kind range — accept them so
+				 * `insert(arche{…}, …)` and `insert(Name{…})` work. */
+				if ((k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR) || k == SN_ARCH_EXPR || k == SN_ENTITY_EXPR) {
 					SyntaxView av = {e.node->children[i].as.node, e.src};
 					ax->data.call.args[ax->data.call.arg_count++] = lower_expr_cst(av);
 				}
@@ -953,6 +979,9 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 		}
 		break;
 	}
+	case SN_TUPLE_LIT:
+		/* A tuple value `(a, b)` for an entity's tuple-group column — lower as an array literal; codegen
+		 * spreads its elements across the group's component columns. (Falls through to the array path.) */
 	case SN_ARRAY_LIT_EXPR: {
 		/* `{ e0, e1, … }` — a fixed-size array literal. Each child expression node is an element
 		 * (nested `{…}` for inner dimensions lower recursively into nested array literals). */
@@ -2829,7 +2858,19 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 				}
 			}
 			namebuf[nl] = '\0';
-			sd->archetype.archetype_name = dupz(namebuf);
+			/* Anonymous storage `[C]arche { cols }`: no name token — the shape sits in an SN_ARCH_EXPR
+			 * child. Mint the same synthetic, content-addressed name an anonymous `arche {…}` literal gets,
+			 * so the pool unifies with structurally-identical shapes and a query matches it by columns. */
+			if (nl == 0) {
+				SyntaxView anon = sv_child(d, SN_ARCH_EXPR);
+				if (sv_present(anon)) {
+					const char *sn = synth_archetype_name(anon);
+					if (sn)
+						sd->archetype.archetype_name = dupz(sn);
+				}
+			}
+			if (!sd->archetype.archetype_name)
+				sd->archetype.archetype_name = dupz(namebuf);
 		} else {
 			/* Storage form of the unified binding: `name : T` / `name : T = v` / `name := v`. A
 			 * sized-array T (it has an element type) is a buffer; any other (or absent) T is a

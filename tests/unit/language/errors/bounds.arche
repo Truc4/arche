@@ -5,8 +5,8 @@ Particle :: arche { id :: int }
 [5]Particle;
 
 main :: proc() {
-  insert(Particle, 1)(_:, _:);
-  insert(Particle, 2)(_:, _:);
+  insert(Particle { id: 1 })(_:, _:);
+  insert(Particle { id: 2 })(_:, _:);
   a := Particle.id[0];
   b := Particle.id[1];
   fmt.assert(a == 1, "bounds check failed: a != 1\n");

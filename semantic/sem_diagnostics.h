@@ -176,6 +176,12 @@ typedef enum {
 	SEM_DIAG_unknown_query,     /* a map names a query that is not declared */
 	SEM_DIAG_run_targets_query, /* `run X` where X is a query, not a map */
 
+	/* Entities (`insert(Name{…})`) — E0217+ */
+	SEM_DIAG_entity_missing_column, /* an entity literal omits a required column */
+	SEM_DIAG_entity_unknown_column, /* an entity literal names a field that is not a column */
+	SEM_DIAG_entity_unknown_type,   /* `Name{…}` where Name is neither an archetype nor a query */
+	SEM_DIAG_positional_insert,     /* legacy positional `insert(Pool, v0, …)` — use an entity literal */
+
 	/* === Lints (promotable warnings) === */
 	SEM_LINT_proc_could_be_func,
 	SEM_LINT_proc_no_effect,
@@ -307,6 +313,10 @@ SemDiag *sem_emit_multiple_archetype_params(SemanticContext *ctx, SourceLoc loc,
 SemDiag *sem_emit_handle_in_map_param(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_unknown_query(SemanticContext *ctx, SourceLoc loc, const char *map_name, const char *query_name);
 SemDiag *sem_emit_run_targets_query(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_entity_missing_column(SemanticContext *ctx, SourceLoc loc, const char *type_name, const char *col);
+SemDiag *sem_emit_entity_unknown_column(SemanticContext *ctx, SourceLoc loc, const char *type_name, const char *col);
+SemDiag *sem_emit_entity_unknown_type(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_positional_insert(SemanticContext *ctx, SourceLoc loc, const char *pool);
 SemDiag *sem_emit_lint_unused_query(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path);
 SemDiag *sem_emit_lint_map_writes_foreign_pool(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_each_field_filter_type_not_name(SemanticContext *ctx, SourceLoc loc);

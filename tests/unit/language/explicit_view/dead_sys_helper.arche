@@ -13,6 +13,6 @@ move_sys :: map (query { pos, vel }) {
   log_step()();
 }
 main :: proc() {
-  insert(Particle, 1.0, 2.0)(_:, _:);
+  insert(Particle { pos: 1.0, vel: 2.0 })(_:, _:);
   run move_sys;
 }

@@ -20,8 +20,8 @@ step :: map (Movers) {
 }
 
 main :: proc() {
-  insert(Config, 10.0, 100.0, 200.0)(_:, _:);
-  insert(Mover, 80.0, 80.0, 0.0, 0.0)(_:, _:);
+  insert(Config { k: 10.0, center_x: 100.0, center_y: 200.0 })(_:, _:);
+  insert(Mover { pos_x: 80.0, pos_y: 80.0, vel_x: 0.0, vel_y: 0.0 })(_:, _:);
   run step;
   fmt.printf(
     "v=%.0f %.0f p=%.0f %.0f\n",

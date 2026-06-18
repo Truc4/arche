@@ -26,6 +26,9 @@ struct Parser {
 	int pending_count;
 	int pending_cap;
 	int recursion_depth;
+	/* Rust-style restriction: while set, a bare `IDENT {` is NOT an entity literal — it's a control-flow
+	 * header (the `match` scrutinee, whose `{` opens the arm block). Lifted inside `(`/`[` groups. */
+	int no_brace_lit;
 	/* Inside a `#foreign` region (banner = rest of file, or a `#foreign { ... }` block). While set,
 	 * a bodiless proc parses as a foreign value-form (SN_PROC_EXPR) rather than a proc type. */
 	int in_foreign;
@@ -817,18 +820,37 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			error(parser, "Expected ']' after pool capacity in `[C]Name`");
 			return 0;
 		}
-		if (!check(parser, TOK_IDENT)) {
-			error(parser, "Expected an archetype name after pool capacity (e.g. `[8]Particle`)");
-			return 0;
-		}
-		advance(parser);                 /* archetype name head */
-		while (check(parser, TOK_DOT)) { /* qualified `lib.Particle` */
-			advance(parser);
-			if (!check(parser, TOK_IDENT)) {
-				error(parser, "expected an identifier after `.` in a qualified pool name");
+		if (check(parser, TOK_ARCHETYPE)) {
+			/* Anonymous storage `[C]arche { cols }` — the shape has no name; a query is its accessor. */
+			int arch_cp = syntax_cp(parser);
+			advance(parser); /* consume 'arche' */
+			if (!match(parser, TOK_LBRACE)) {
+				error(parser, "Expected '{' after 'archetype'");
 				return 0;
 			}
-			advance(parser); /* the next name segment */
+			while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+				drain_pending_trivia(parser);
+				if (!parse_arch_field(parser))
+					break;
+			}
+			if (!match(parser, TOK_RBRACE)) {
+				error(parser, "Expected '}' after archetype fields");
+				return 0;
+			}
+			syntax_wrap(parser, arch_cp, SN_ARCH_EXPR);
+		} else if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected an archetype name or `arche {…}` after pool capacity (e.g. `[8]Particle`)");
+			return 0;
+		} else {
+			advance(parser);                 /* archetype name head */
+			while (check(parser, TOK_DOT)) { /* qualified `lib.Particle` */
+				advance(parser);
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "expected an identifier after `.` in a qualified pool name");
+					return 0;
+				}
+				advance(parser); /* the next name segment */
+			}
 		}
 		if (match(parser, TOK_LPAREN)) {
 			if (!parse_expression(parser))
@@ -1495,6 +1517,59 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			return 1;
 		}
 
+		/* entity literal `Name { field: val, ... }` — a row value of archetype/query `Name` with NAMED
+		 * fields (order-free). The leading name is a bare IDENT token; each field name is wrapped
+		 * SN_FIELD_NAME so lowering tells the type-name apart from the fields. Suppressed in a `match`
+		 * scrutinee (no_brace_lit), where the `{` opens the arm block, not an entity. */
+		if (check(parser, TOK_LBRACE) && !parser->no_brace_lit) {
+			*out_kind = SN_ENTITY_EXPR;
+			advance(parser); /* consume '{' */
+			if (!check(parser, TOK_RBRACE)) {
+				do {
+					if (check(parser, TOK_RBRACE)) /* trailing comma */
+						break;
+					if (!check(parser, TOK_IDENT)) {
+						error(parser, "Expected field name in entity literal");
+						return 0;
+					}
+					int field_name_cp = syntax_cp(parser);
+					advance(parser);
+					syntax_wrap(parser, field_name_cp, SN_FIELD_NAME);
+					if (!match(parser, TOK_COLON)) {
+						error(parser, "Expected ':' after field name in entity literal");
+						return 0;
+					}
+					/* A tuple-group column takes a tuple value `(a, b)`; `(a, b)` isn't an expression (a paren
+					 * holds one), so parse a comma list as SN_TUPLE_LIT when it has >1 element. `(e)` stays a
+					 * normal parenthesized expression. */
+					if (check(parser, TOK_LPAREN)) {
+						int tup_cp = syntax_cp(parser);
+						advance(parser); /* '(' */
+						int nelem = 0;
+						if (!check(parser, TOK_RPAREN)) {
+							do {
+								if (!parse_expression(parser))
+									return 0;
+								nelem++;
+							} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
+						}
+						if (!match(parser, TOK_RPAREN)) {
+							error(parser, "Expected ')' to close tuple value");
+							return 0;
+						}
+						syntax_wrap(parser, tup_cp, nelem > 1 ? SN_TUPLE_LIT : SN_PAREN_EXPR);
+					} else if (!parse_expression(parser)) {
+						return 0;
+					}
+				} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACE));
+			}
+			if (!match(parser, TOK_RBRACE)) {
+				error(parser, "Expected '}' to close entity literal");
+				return 0;
+			}
+			return 1;
+		}
+
 		/* field access (and optional trailing index): `a.b.c[i]` */
 		if (match(parser, TOK_DOT)) {
 			if (!check(parser, TOK_IDENT)) {
@@ -2095,8 +2170,12 @@ static int parse_statement(Parser *parser) {
 	}
 
 	if (check(parser, TOK_MATCH)) {
-		advance(parser);               /* consume 'match' */
-		if (!parse_expression(parser)) /* scrutinee */
+		advance(parser); /* consume 'match' */
+		int prev_nbl = parser->no_brace_lit;
+		parser->no_brace_lit = 1;                /* a bare `IDENT {` here is the arm block, not an entity */
+		int scrut_ok = parse_expression(parser); /* scrutinee */
+		parser->no_brace_lit = prev_nbl;
+		if (!scrut_ok)
 			goto cleanup;
 		if (!match(parser, TOK_LBRACE)) {
 			error(parser, "Expected '{' after match scrutinee");

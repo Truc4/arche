@@ -133,6 +133,15 @@ void hir_expr_free(HirExpr *expr) {
 		free(expr->data.alloc.field_values);
 		hir_expr_free(expr->data.alloc.init_length);
 		break;
+	case HIR_EXPR_ENTITY_LIT:
+		free(expr->data.entity.type_name);
+		for (int i = 0; i < expr->data.entity.field_count; i++) {
+			free(expr->data.entity.field_names[i]);
+			hir_expr_free(expr->data.entity.field_values[i]);
+		}
+		free(expr->data.entity.field_names);
+		free(expr->data.entity.field_values);
+		break;
 	case HIR_EXPR_ARRAY_LITERAL:
 		for (int i = 0; i < expr->data.array_literal.element_count; i++)
 			hir_expr_free(expr->data.array_literal.elements[i]);

@@ -211,6 +211,10 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "SYS_EXPR";
 	case SN_QUERY_EXPR:
 		return "QUERY_EXPR";
+	case SN_ENTITY_EXPR:
+		return "ENTITY_EXPR";
+	case SN_TUPLE_LIT:
+		return "TUPLE_LIT";
 	case SN_ENUM_EXPR:
 		return "ENUM_EXPR";
 	case SN_ENUM_VARIANT:

@@ -9,7 +9,7 @@
 #import { hotsys fmt }
 [1]Cell;
 main :: proc() {
-  insert(Cell, 0)(_:, _:);
+  insert(Cell { v: 0 })(_:, _:);
   run hotsys.bump;
   fmt.assert(Cell.v[0] == 1, "system did not run over the driver's pool\n");
   fmt.printf("sys_ok\n");

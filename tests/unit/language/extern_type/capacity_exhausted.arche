@@ -13,11 +13,11 @@ Resource :: arche { cell }
 
 main :: proc() {
   resource_open(1)(r1:);
-  insert(Resource, r1)(_:, _:);
+  insert(Resource { cell: r1 })(_:, _:);
   resource_open(2)(r2:);
-  insert(Resource, r2)(_:, _:);
+  insert(Resource { cell: r2 })(_:, _:);
   resource_open(3)(r3:);
-  insert(Resource, r3)(_:, ok3:);
+  insert(Resource { cell: r3 })(_:, ok3:);
   if (!ok3) {
     fmt.print("full\n");
   }

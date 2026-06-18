@@ -19,8 +19,8 @@ step :: map (query { pos, vel }) {
   pos += vel; // float whole-vector integrate
 }
 main :: proc() {
-  insert(Config, 10.0, 100.0, 200.0)(_:, _:); // k=10, center=(100,200)
-  insert(Mover, 80.0, 80.0, 0.0, 0.0)(_:, _:); // pos=(80,80), vel=(0,0)
+  insert(Config { k: 10.0, center_x: 100.0, center_y: 200.0 })(_:, _:); // k=10, center=(100,200)
+  insert(Mover { pos_x: 80.0, pos_y: 80.0, vel_x: 0.0, vel_y: 0.0 })(_:, _:); // pos=(80,80), vel=(0,0)
   run step;
   // vel.x -= (80-100)/10 = +2, *2 = 4, pos.x = 84 ; vel.y -= (80-200)/10 = +12, *2 = 24, pos.y = 104
   fmt.printf(

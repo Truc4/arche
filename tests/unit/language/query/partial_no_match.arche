@@ -16,8 +16,8 @@ step :: map (Movers) {
 }
 
 main :: proc() {
-  insert(Full, 10.0, 1.0)(_:, _:);
-  insert(PosOnly, 50.0)(_:, _:);
+  insert(Full { pos: 10.0, vel: 1.0 })(_:, _:);
+  insert(PosOnly { pos: 50.0 })(_:, _:);
   run step;
   fp := Full.pos[0] * 10.0;
   pp := PosOnly.pos[0] * 10.0;

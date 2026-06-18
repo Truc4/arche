@@ -13,7 +13,7 @@ s :: map (query { v }) {
   v *= 2.0; // float into an int column → rejected
 }
 main :: proc() {
-  insert(M, 10, 20)(_:, _:);
+  insert(M { v_x: 10, v_y: 20 })(_:, _:);
   run s;
   fmt.printf("v=%d %d\n", M.v.x[0], M.v.y[0]);
 }

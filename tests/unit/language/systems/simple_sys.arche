@@ -10,9 +10,9 @@ dummy :: map (query { pos }) {
 }
 
 main :: proc() {
-  insert(Body, 1.0)(_:, _:);
-  insert(Body, 2.0)(_:, _:);
-  insert(Body, 3.0)(_:, _:);
+  insert(Body { pos: 1.0 })(_:, _:);
+  insert(Body { pos: 2.0 })(_:, _:);
+  insert(Body { pos: 3.0 })(_:, _:);
   run dummy;
   fmt.printf("system_ran\n");
   p0  := Body.pos[0];

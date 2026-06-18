@@ -15,7 +15,7 @@ tick :: map (Wounded) {
 }
 
 main :: proc() {
-  insert(Rich, 100, 7, 3)(_:, _:);
+  insert(Rich { hp: 100, armor: 7, speed: 3 })(_:, _:);
   run tick;
   fmt.assert(Rich.hp[0] == 99, "hp should be 99\n");
   fmt.assert(Rich.armor[0] == 7, "armor untouched\n");

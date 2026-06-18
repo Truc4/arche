@@ -45,6 +45,14 @@ struct CodegenContext {
 	SemanticContext *sem_ctx;
 	int had_error; /* set when codegen hits a hard error (e.g. a `run` no shape can satisfy) */
 
+	/* A local bound to an entity literal (`e := B{…}`) is virtual — no runtime value. The binding maps
+	 * the name to its entity HIR so a later `insert(e)` resolves to the same literal as `insert(B{…})`. */
+	struct {
+		const char *name;
+		HirExpr *entity;
+	} entity_binds[256];
+	int entity_bind_count;
+
 	/* Per-unit codegen (EXPERIMENTAL + DORMANT, behind ARCHE_PER_UNIT; not in CI — see Makefile
 	 * test-per-unit) — a correctness/READINESS mode, NOT a build-speed mode: it proves codegen can split
 	 * into one LLVM module per compilation unit (with mangled/external symbols + linkonce_odr shared
@@ -3203,6 +3211,11 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 	}
 
 	switch (expr->kind) {
+	case HIR_EXPR_ENTITY_LIT:
+		/* An entity as a VALUE (a bound `e := B{…}`) is materialized in Phase E5. Inline `insert(B{…})`
+		 * never reaches here — cg_emit_insert_mb consumes the literal arg directly. */
+		strcpy(result_buf, "0");
+		break;
 	case HIR_EXPR_LITERAL: {
 		const char *lex = expr->data.literal.lexeme;
 
@@ -3847,6 +3860,15 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			base_val = find_value(ctx, name);
 			if (!base_val && find_archetype_decl(ctx, name)) {
 				arch_name_direct = name;
+			} else if (!base_val) {
+				/* `Query.col` — read a column through a query, resolved to its single matched pool. The
+				 * query name has no value, so point base_buf at the matched pool directly. */
+				const char *resolved = name;
+				if (resolve_collective_query(ctx, name, &resolved) == 1) {
+					arch_name_direct = resolved;
+					emit_query_pool_ptr(ctx, resolved, get_arch_static_capacity(ctx, resolved) > 0, base_buf,
+					                    sizeof(base_buf));
+				}
 			}
 		}
 
@@ -4241,6 +4263,12 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				ValueInfo *iv = find_value(ctx, bn);
 				if (iv && iv->arch_name)
 					ad = find_archetype_decl(ctx, iv->arch_name);
+			}
+			if (!ad) {
+				/* `Query.col[i]` — resolve the query to its single matched pool for the column's type. */
+				const char *resolved = bn;
+				if (resolve_collective_query(ctx, bn, &resolved) == 1)
+					ad = find_archetype_decl(ctx, resolved);
 			}
 			const char *fn = expr->data.index.base->data.field.field_name;
 			if (ad) {
@@ -6207,35 +6235,110 @@ static void cg_emit_insert_mb(CodegenContext *ctx, HirExpr *rhs, HirBindingTarge
 			drop_mark_consumed(ctx, ia->data.name.name);
 	}
 	char arch_buf[256];
-	codegen_expression(ctx, rhs->data.call.args[0], arch_buf);
 	const char *arch_name = NULL;
 	HirArchetypeDecl *arch = NULL;
-	if (rhs->data.call.args[0]->kind == HIR_EXPR_NAME) {
-		const char *name = rhs->data.call.args[0]->data.name.name;
-		ValueInfo *av = find_value(ctx, name);
-		if (av && av->arch_name) {
-			arch_name = av->arch_name;
-			arch = find_archetype_decl(ctx, arch_name);
-		} else if (find_archetype_decl(ctx, name)) {
-			arch_name = name;
-			arch = find_archetype_decl(ctx, arch_name);
-		}
-	}
-	if (arch)
-		arch_name = arch->name;
-	if (!arch || !arch_name)
-		return;
-
-	/* Evaluate column-field arguments (skip non-column fields). */
 	char field_bufs[32][256];
-	int arg_count = 0, field_idx = 0;
-	for (int i = 1; i < rhs->data.call.arg_count && arg_count < 32; i++) {
-		while (field_idx < arch->field_count && arch->fields[field_idx]->kind != FIELD_COLUMN)
-			field_idx++;
-		if (field_idx < arch->field_count) {
-			codegen_expression(ctx, rhs->data.call.args[i], field_bufs[arg_count]);
+	int arg_count = 0;
+
+	HirExpr *a0 = rhs->data.call.args[0];
+	/* `insert(e)` where `e := B{…}` — resolve the virtual entity binding to its literal. */
+	if (a0->kind == HIR_EXPR_NAME && a0->data.name.name)
+		for (int i = 0; i < ctx->entity_bind_count; i++)
+			if (ctx->entity_binds[i].name && strcmp(ctx->entity_binds[i].name, a0->data.name.name) == 0) {
+				a0 = ctx->entity_binds[i].entity;
+				break;
+			}
+	if (a0->kind == HIR_EXPR_ENTITY_LIT) {
+		/* `insert(Name{ field: val, ... })` — Name is an archetype, or a query resolving to one pool.
+		 * Each COLUMN's value is found by NAME (order-free) and emitted in column order. */
+		const char *tn = a0->data.entity.type_name;
+		arch = find_archetype_decl(ctx, tn);
+		if (arch) {
+			arch_name = arch->name;
+		} else {
+			const char *resolved = tn;
+			if (resolve_collective_query(ctx, tn, &resolved) == 1) {
+				arch_name = resolved;
+				arch = find_archetype_decl(ctx, arch_name);
+			}
+		}
+		if (!arch || !arch_name)
+			return;
+		int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+		emit_query_pool_ptr(ctx, arch_name, is_static, arch_buf, sizeof(arch_buf));
+		/* RAII: a moved entity-field value is consumed. */
+		for (int fi = 0; fi < a0->data.entity.field_count; fi++) {
+			HirExpr *fv = a0->data.entity.field_values[fi];
+			if (fv && fv->kind == HIR_EXPR_UNARY && fv->data.unary.op == UNARY_MOVE)
+				fv = fv->data.unary.operand;
+			if (fv && fv->kind == HIR_EXPR_NAME)
+				drop_mark_consumed(ctx, fv->data.name.name);
+		}
+		for (int fidx = 0; fidx < arch->field_count && arg_count < 32; fidx++) {
+			if (arch->fields[fidx]->kind != FIELD_COLUMN)
+				continue;
+			const char *col = arch->fields[fidx]->name;
+			HirExpr *val = NULL;
+			/* direct scalar match (`v: 2`) */
+			for (int fi = 0; fi < a0->data.entity.field_count; fi++)
+				if (a0->data.entity.field_names[fi] && strcmp(a0->data.entity.field_names[fi], col) == 0) {
+					val = a0->data.entity.field_values[fi];
+					break;
+				}
+			/* else a tuple-group field (`pos: (1,2)`) covers this component column `pos_x`: take the element
+			 * whose index = how many prior columns share the same group base. */
+			for (int fi = 0; !val && fi < a0->data.entity.field_count; fi++) {
+				const char *fn = a0->data.entity.field_names[fi];
+				size_t fl = fn ? strlen(fn) : 0;
+				if (!fn || strncmp(col, fn, fl) != 0 || col[fl] != '_')
+					continue;
+				HirExpr *fv = a0->data.entity.field_values[fi];
+				if (!fv || fv->kind != HIR_EXPR_ARRAY_LITERAL)
+					break;
+				int elem = 0;
+				for (int c2 = 0; c2 < fidx; c2++)
+					if (arch->fields[c2]->kind == FIELD_COLUMN) {
+						const char *cn2 = arch->fields[c2]->name;
+						if (strncmp(cn2, fn, fl) == 0 && cn2[fl] == '_')
+							elem++;
+					}
+				if (elem < fv->data.array_literal.element_count)
+					val = fv->data.array_literal.elements[elem];
+				break;
+			}
+			if (val)
+				codegen_expression(ctx, val, field_bufs[arg_count]);
+			else
+				snprintf(field_bufs[arg_count], 256, "0"); /* missing column — semantic E0217 reports it */
 			arg_count++;
-			field_idx++;
+		}
+	} else {
+		/* Legacy positional path: `insert(Pool, v0, v1, ...)` (removed in Phase E6). */
+		codegen_expression(ctx, a0, arch_buf);
+		if (a0->kind == HIR_EXPR_NAME) {
+			const char *name = a0->data.name.name;
+			ValueInfo *av = find_value(ctx, name);
+			if (av && av->arch_name) {
+				arch_name = av->arch_name;
+				arch = find_archetype_decl(ctx, arch_name);
+			} else if (find_archetype_decl(ctx, name)) {
+				arch_name = name;
+				arch = find_archetype_decl(ctx, arch_name);
+			}
+		}
+		if (arch)
+			arch_name = arch->name;
+		if (!arch || !arch_name)
+			return;
+		int field_idx = 0;
+		for (int i = 1; i < rhs->data.call.arg_count && arg_count < 32; i++) {
+			while (field_idx < arch->field_count && arch->fields[field_idx]->kind != FIELD_COLUMN)
+				field_idx++;
+			if (field_idx < arch->field_count) {
+				codegen_expression(ctx, rhs->data.call.args[i], field_bufs[arg_count]);
+				arg_count++;
+				field_idx++;
+			}
 		}
 	}
 
@@ -6298,7 +6401,7 @@ static void cg_emit_insert_mb(CodegenContext *ctx, HirExpr *rhs, HirBindingTarge
 	}
 
 	buffer_append_fmt(ctx, "  call void @arche_insert_%s(%%struct.%s* %s", arch_name, arch_name, arch_buf);
-	field_idx = 0;
+	int field_idx = 0;
 	for (int i = 0; i < arg_count; i++) {
 		while (field_idx < arch->field_count && arch->fields[field_idx]->kind != FIELD_COLUMN)
 			field_idx++;
@@ -6368,6 +6471,17 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 	case HIR_STMT_BIND: {
 		const char *var_name = stmt->data.bind_stmt.names[0];
 		char value_buf[256];
+
+		/* `e := B{…}` — an entity binding is virtual (no runtime value); record name→entity so a later
+		 * `insert(e)` resolves to the same literal. Emit no code. */
+		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == HIR_EXPR_ENTITY_LIT) {
+			if (ctx->entity_bind_count < 256) {
+				ctx->entity_binds[ctx->entity_bind_count].name = var_name;
+				ctx->entity_binds[ctx->entity_bind_count].entity = stmt->data.bind_stmt.value;
+				ctx->entity_bind_count++;
+			}
+			break;
+		}
 
 		/* Handle type-annotated declaration without initialization */
 		if (stmt->data.bind_stmt.type && !stmt->data.bind_stmt.value) {
@@ -9641,6 +9755,7 @@ static void emit_proc_params(CodegenContext *ctx, HirProcDecl *proc) {
 }
 
 static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
+	ctx->entity_bind_count = 0; /* entity bindings are proc-local */
 	/* For extern procs, emit declare stub */
 	if (proc->is_extern) {
 		/* An extern proc's out-only out-param (a name NOT in the in-list) maps to the C return

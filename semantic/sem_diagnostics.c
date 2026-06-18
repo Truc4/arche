@@ -159,6 +159,10 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_wildcard_in_enum_match]        = { "E0212", "wildcard_in_enum_match",        CLASS_ERROR, 1 },
 	[SEM_DIAG_unknown_query]                 = { "E0215", "unknown_query",                 CLASS_ERROR, 1 },
 	[SEM_DIAG_run_targets_query]             = { "E0216", "run_targets_query",             CLASS_ERROR, 1 },
+	[SEM_DIAG_entity_missing_column]         = { "E0217", "entity_missing_column",         CLASS_ERROR, 1 },
+	[SEM_DIAG_entity_unknown_column]         = { "E0218", "entity_unknown_column",         CLASS_ERROR, 1 },
+	[SEM_DIAG_entity_unknown_type]           = { "E0219", "entity_unknown_type",           CLASS_ERROR, 1 },
+	[SEM_DIAG_positional_insert]             = { "E0220", "positional_insert",             CLASS_ERROR, 1 },
 
 	/* Lints */
 	[SEM_LINT_proc_could_be_func]            = { "W0001", "proc_could_be_func",            CLASS_LINT, 1 },
@@ -656,6 +660,25 @@ SemDiag *sem_emit_unknown_query(SemanticContext *ctx, SourceLoc loc, const char 
 SemDiag *sem_emit_run_targets_query(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_run_targets_query, loc,
 	                 "'%s' is a query, not a map — `run` drives a map; a query is the domain a map runs over", name);
+}
+
+SemDiag *sem_emit_entity_missing_column(SemanticContext *ctx, SourceLoc loc, const char *type_name, const char *col) {
+	return sem_emit_(ctx, SEM_DIAG_entity_missing_column, loc,
+	                 "entity '%s' is missing column '%s' — an entity must provide every column", type_name, col);
+}
+
+SemDiag *sem_emit_entity_unknown_column(SemanticContext *ctx, SourceLoc loc, const char *type_name, const char *col) {
+	return sem_emit_(ctx, SEM_DIAG_entity_unknown_column, loc, "entity '%s' has unknown column '%s'", type_name, col);
+}
+
+SemDiag *sem_emit_entity_unknown_type(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_entity_unknown_type, loc,
+	                 "'%s' is not an archetype or query — an entity literal needs a known shape", name);
+}
+
+SemDiag *sem_emit_positional_insert(SemanticContext *ctx, SourceLoc loc, const char *pool) {
+	return sem_emit_(ctx, SEM_DIAG_positional_insert, loc,
+	                 "positional insert is removed — pass one entity: `insert(%s{ field: value, … })`", pool);
 }
 
 SemDiag *sem_emit_lint_unused_query(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path) {

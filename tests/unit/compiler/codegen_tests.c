@@ -351,7 +351,7 @@ void test_codegen_gen_exhaustion_abort(void) {
 	                                "Unit :: arche { hp }\n"
 	                                "[4]Unit;\n"
 	                                "main :: proc() {\n"
-	                                "  insert(Unit, 1)(h:, _:);\n"
+	                                "  insert(Unit{ hp: 1 })(h:, _:);\n"
 	                                "  delete(h)(_:);\n"
 	                                "}\n");
 	ASSERT_NOT_NULL(ir, "no IR produced");

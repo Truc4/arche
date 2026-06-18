@@ -4,9 +4,9 @@
 #import { fmt }
 v   :: int;
 tag :: int;
-B :: arche { v, tag }
+B   :: arche { v, tag }
 [4]B;
 
 main :: proc() {
-  insert(B{ v: 2, tag: 7, hp: 9 })(_:, _:); // `hp` is not a column of B
+  insert(B { v: 2, tag: 7, hp: 9 })(_:, _:); // `hp` is not a column of B
 }

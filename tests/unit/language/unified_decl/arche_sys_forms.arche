@@ -13,7 +13,7 @@ bump :: map (query { pos }) {
 }
 
 main :: proc() {
-  insert(Particle, 1.0)(_:, _:);
+  insert(Particle { pos: 1.0 })(_:, _:);
   run bump;
   fmt.printf("pos0=%f\n", Particle.pos[0]);
 }

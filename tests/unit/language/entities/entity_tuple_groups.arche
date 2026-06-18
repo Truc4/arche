@@ -4,11 +4,11 @@
 #import { fmt }
 pos(x, y) :: float;
 vel(x, y) :: float;
-Mover :: arche { pos, vel }
+Mover     :: arche { pos, vel }
 [2]Mover;
 
 main :: proc() {
-  insert(Mover{ pos: (1.0, 2.0), vel: (3.0, 4.0) })(_:, _:);
+  insert(Mover { pos: (1.0, 2.0), vel: (3.0, 4.0) })(_:, _:);
   fmt.printf(
     "p=%.0f %.0f v=%.0f %.0f\n",
     Mover.pos.x[0] * 1.0,

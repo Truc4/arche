@@ -658,7 +658,7 @@ Particle :: arche { mass, charge };
 [8]Particle(0);           // capacity 8, starts empty
 ```
 ```arche
-insert(Particle, 1.0, 0.1)(h:, ok:);   // h: the generation-checked handle, ok: 0 if the pool was full
+insert(Particle{ mass: 1.0, charge: 0.1 })(h:, ok:);   // h: the generation-checked handle, ok: 0 if the pool was full
 if (!ok) { fmt.printf("pool full\n"); } // handle the full-pool case at the call site
 fmt.assert(ok == 1, "insert succeeded\n");
 fmt.assert(Particle.mass[0] == 1.0, "inserted mass\n");
@@ -666,7 +666,7 @@ delete(h)(ok:);                         // ok: 0 on generation exhaustion
 fmt.assert(ok == 1, "delete succeeded\n");
 ```
 
-Use `_` to discard either out (`insert(P, …)(_:, _:)`). The legacy value form (`h := insert(…)`,
+Use `_` to discard either out (`insert(P{ x: … })(_:, _:)`). The legacy value form (`h := insert(…)`,
 `i32(insert(…))`) is gone (`E0096`). `insert` is **total** (overflow → `ok = 0`). `delete`'s default
 is `!abort`: a *stale* handle (use-after-free) is a bug and aborts. `delete(h)(ok:)` reports
 generation exhaustion (a resource limit) via `ok` instead.

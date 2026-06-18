@@ -5,16 +5,16 @@
 #import { fmt }
 pos :: float;
 vel :: float;
-[4]arche { pos, vel };
+[4]arche { pos, vel }
 
-Movers :: query { pos, vel };
+Movers :: query { pos, vel }
 
-step :: map(Movers) {
+step :: map (Movers) {
   pos = pos + vel;
 }
 
 main :: proc() {
-  insert(Movers{ pos: 10.0, vel: 1.0 })(_:, _:);
+  insert(Movers { pos: 10.0, vel: 1.0 })(_:, _:);
   run step;
   v := Movers.pos[0] * 10.0; // read a column THROUGH the query
   fmt.assert(v == 110.0, "pos should be 11\n");
