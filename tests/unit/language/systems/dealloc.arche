@@ -5,14 +5,14 @@ Particle :: arche { pos :: float, vel :: float }
 
 [10]Particle;
 
-advance :: map (pos, vel) {
+advance :: map (query { pos, vel }) {
   pos = pos + vel;
 }
 
 main :: proc() {
-  insert(Particle, 1.0, 0.1)(_:, _:);
-  insert(Particle, 2.0, 0.2)(_:, _:);
-  insert(Particle, 3.0, 0.3)(_:, _:);
+  insert(Particle { pos: 1.0, vel: 0.1 })(_:, _:);
+  insert(Particle { pos: 2.0, vel: 0.2 })(_:, _:);
+  insert(Particle { pos: 3.0, vel: 0.3 })(_:, _:);
   run advance;
   p0  := Particle.pos[0];
   p1  := Particle.pos[1];

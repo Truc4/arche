@@ -9,7 +9,7 @@ N   :: arche { v, tag }
 [40]N(40) {
   v: 1.0, tag: 1
 }
-neg :: map (v) {
+neg :: map (query { v }) {
   v = 0.0 - v;
 }
 main :: proc() {

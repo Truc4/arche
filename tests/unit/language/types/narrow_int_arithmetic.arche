@@ -15,7 +15,7 @@ N :: arche { k8, k16 }
   k8: 5, k16: 5
 }
 
-neg :: map (k8, k16) {
+neg :: map (query { k8, k16 }) {
   k8  = 0 - k8;
   k16 = 0 - k16;
 }

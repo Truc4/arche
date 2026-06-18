@@ -1,0 +1,18 @@
+// RED until the analyzer renders queries in form-type hints: a `map(Name)` form's `--full` type hint
+// should render as `map(Movers)` (naming the query it runs over), not the legacy expanded column list.
+// RUN: %build/arche-analyzer --dump --full %s | grep -qF "type map(Movers)"
+#import { fmt }
+pos :: float;
+vel :: float;
+P   :: arche { pos, vel }
+[2]P;
+
+Movers :: query { pos, vel }
+
+step :: map (Movers) {
+  pos = pos + vel;
+}
+
+main :: proc() {
+  run step;
+}

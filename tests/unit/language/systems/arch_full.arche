@@ -8,20 +8,20 @@ Body :: arche { pos, vel, mass :: float }
 
 [50]Body;
 
-step :: map (pos, vel) {
+step :: map (query { pos, vel }) {
   pos = pos + vel;
 }
 
-dampen :: map (vel) {
+dampen :: map (query { vel }) {
   vel = vel * 0.99;
 }
 
 main :: proc() {
-  insert(Particle, 10.0, 1.0)(_:, _:);
-  insert(Particle, 20.0, 2.0)(_:, _:);
-  insert(Particle, 30.0, 3.0)(_:, _:);
-  insert(Body, 50.0, 5.0, 10.0)(_:, _:);
-  insert(Body, 60.0, 6.0, 20.0)(_:, _:);
+  insert(Particle { pos: 10.0, vel: 1.0 })(_:, _:);
+  insert(Particle { pos: 20.0, vel: 2.0 })(_:, _:);
+  insert(Particle { pos: 30.0, vel: 3.0 })(_:, _:);
+  insert(Body { pos: 50.0, vel: 5.0, mass: 10.0 })(_:, _:);
+  insert(Body { pos: 60.0, vel: 6.0, mass: 20.0 })(_:, _:);
   run step;
   run dampen;
   pp  := Particle.pos[0];

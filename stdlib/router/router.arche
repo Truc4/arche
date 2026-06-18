@@ -287,6 +287,15 @@ seg_eq :: func(stored: [32]char, stored_len: int, p: []char, start: int, end: in
 // Allocate a node holding `seg` (content length `seg_len`); return its pool slot. `ok` reports
 // whether the fixed TrieNode pool had room (insert no longer aborts on a full pool).
 new_node :: proc(seg: []char, seg_len: int, kind: nodeKind)(idx: int, ok: int) {
-  insert(TrieNode, seg, seg_len, kind, -1, -1, -1)(slot:, ok:);
+  insert(
+    TrieNode {
+      seg          : seg,
+      seg_len      : seg_len,
+      kind         : kind,
+      first_child  : -1,
+      next_sibling : -1,
+      handler_id   : -1,
+    },
+  )(slot:, ok:);
   idx = i32(slot);
 }

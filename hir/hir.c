@@ -133,6 +133,15 @@ void hir_expr_free(HirExpr *expr) {
 		free(expr->data.alloc.field_values);
 		hir_expr_free(expr->data.alloc.init_length);
 		break;
+	case HIR_EXPR_ENTITY_LIT:
+		free(expr->data.entity.type_name);
+		for (int i = 0; i < expr->data.entity.field_count; i++) {
+			free(expr->data.entity.field_names[i]);
+			hir_expr_free(expr->data.entity.field_values[i]);
+		}
+		free(expr->data.entity.field_names);
+		free(expr->data.entity.field_values);
+		break;
 	case HIR_EXPR_ARRAY_LITERAL:
 		for (int i = 0; i < expr->data.array_literal.element_count; i++)
 			hir_expr_free(expr->data.array_literal.elements[i]);
@@ -314,6 +323,15 @@ void hir_decl_free(HirDecl *decl) {
 		break;
 	case HIR_DECL_PROC:
 		hir_proc_decl_free(decl->data.proc);
+		break;
+	case HIR_DECL_QUERY:
+		if (decl->data.query) {
+			free(decl->data.query->name);
+			for (int i = 0; i < decl->data.query->col_count; i++)
+				free(decl->data.query->cols[i]);
+			free(decl->data.query->cols);
+			free(decl->data.query);
+		}
 		break;
 	case HIR_DECL_MAP:
 		hir_map_decl_free(decl->data.map);

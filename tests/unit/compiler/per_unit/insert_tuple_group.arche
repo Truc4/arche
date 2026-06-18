@@ -8,7 +8,7 @@
 #import { tgdev fmt }
 [1]Mover;
 main :: proc() {
-  insert(Mover, 10, 20, 1, 2)(_:, _:); // pos.x=10 pos.y=20 vel.x=1 vel.y=2
+  insert(Mover { pos_x: 10, pos_y: 20, vel_x: 1, vel_y: 2 })(_:, _:); // pos.x=10 pos.y=20 vel.x=1 vel.y=2
   run tgdev.integrate; // pos += vel  → pos.x=11 pos.y=22
   fmt.printf("p=%d %d v=%d %d\n", Mover.pos.x[0], Mover.pos.y[0], Mover.vel.x[0], Mover.vel.y[0]);
 }

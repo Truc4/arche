@@ -18,5 +18,5 @@ Bar :: arche { w :: int, ts :: int }
   }
 }
 main :: proc() {
-  insert(Foo, 1, 5) ?evict_bar(h:, ok:); // handler reads Bar, target Foo -> W0019
+  insert(Foo { v: 1, ts: 5 }) ?evict_bar(h:, ok:); // handler reads Bar, target Foo -> W0019
 }

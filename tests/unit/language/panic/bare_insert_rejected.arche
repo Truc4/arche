@@ -4,6 +4,6 @@
 Particle :: arche { pos :: float }
 [4]Particle;
 main :: proc() {
-  h := insert(Particle, 1.0);
-  insert(Particle, 2.0);
+  h := insert(Particle { pos: 1.0 });
+  insert(Particle { pos: 2.0 });
 }

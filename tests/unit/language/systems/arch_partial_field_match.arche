@@ -12,13 +12,13 @@ Body :: arche { pos, vel, mass :: float }
 
 [5]Body;
 
-gravity :: map (pos, mass) {
+gravity :: map (query { pos, mass }) {
   pos = pos + mass;
 }
 
 main :: proc() {
-  insert(Particle, 1.0, 0.1)(_:, _:);
-  insert(Body, 2.0, 0.2, 10.0)(_:, _:);
+  insert(Particle { pos: 1.0, vel: 0.1 })(_:, _:);
+  insert(Body { pos: 2.0, vel: 0.2, mass: 10.0 })(_:, _:);
   run gravity;
   ppi := Particle.pos[0] * 10.0;
   bpi := Body.pos[0] * 10.0;

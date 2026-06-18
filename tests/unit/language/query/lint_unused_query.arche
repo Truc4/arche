@@ -1,0 +1,19 @@
+// RED until Phase 4 (W0016 unused_query): a query that no map references is dead, like an unused enum.
+// Modeled on the W0013/W0015 reachability lints; suppressible via @allow(unused_query).
+// RUN: %build/arche-analyzer --dump %s 2>/dev/null | grep -qF "W0025 unused_query"
+#import { fmt }
+pos :: float;
+vel :: float;
+P   :: arche { pos, vel }
+[4]P;
+
+Used   :: query { pos, vel }
+Unused :: query { pos }
+
+step :: map (Used) {
+  pos = pos + vel;
+}
+
+main :: proc() {
+  run step;
+}

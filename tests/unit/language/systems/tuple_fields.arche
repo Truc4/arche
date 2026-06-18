@@ -6,13 +6,13 @@
 #import { fmt }
 Body :: arche { pos(x, y) :: int, vel(x, y) :: int }
 [2]Body;
-step :: map (pos, vel) {
+step :: map (query { pos, vel }) {
   pos.x = pos.x + vel.x;
   pos.y = pos.y + vel.y;
 }
 main :: proc() {
-  insert(Body, 0, 0, 1, 2)(_:, _:);
-  insert(Body, 10, 10, -1, -1)(_:, _:);
+  insert(Body { pos: (0, 0), vel: (1, 2) })(_:, _:);
+  insert(Body { pos: (10, 10), vel: (-1, -1) })(_:, _:);
   run step;
   fmt.printf("R %d %d %d %d\n", Body.pos.x[0], Body.pos.y[0], Body.pos.x[1], Body.pos.y[1]);
 }

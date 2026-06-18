@@ -1,6 +1,5 @@
-// An anonymous `arche {…}` literal and a structurally-identical named shape lower to the EXACT
-// same canonical shape — one struct, one pool. Here `insert(arche{x,y}, …)` populates the named
-// Foo's pool (proven by reading it back through `Foo.x`).
+// An entity literal `Foo{…}` populates the named shape's pool, read back through `Foo.x`. (Entities
+// replaced the old positional `insert(arche{x,y}, …)` anonymous-literal target.)
 // RUN: %arche build -o %t %s && %t | grep "literal_ok"
 #import { fmt }
 Foo :: arche { x :: float, y :: float }
@@ -8,8 +7,8 @@ Foo :: arche { x :: float, y :: float }
 [4]Foo;
 
 main :: proc() {
-  insert(arche { x :: float, y :: float }, 1.0, 2.0)(_:, _:);
+  insert(Foo { x: 1.0, y: 2.0 })(_:, _:);
   v := Foo.x[0] * 10.0;
-  fmt.assert(v == 10, "x[0] != 1.0 — literal did not unify with Foo's pool\n");
+  fmt.assert(v == 10, "x[0] != 1.0 — entity did not populate Foo's pool\n");
   fmt.printf("literal_ok\n");
 }

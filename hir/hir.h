@@ -76,6 +76,7 @@ typedef enum {
 	HIR_DECL_STATIC,
 	HIR_DECL_CONST,
 	HIR_DECL_DEFAULT, /* `@default(<kind>, <category>, <policy>)` program default directive */
+	HIR_DECL_QUERY,   /* `Name :: query {cols}` — a named column set; emits no code, resolves collectives */
 } HirDeclKind;
 
 typedef enum {
@@ -133,6 +134,13 @@ typedef struct {
 	int is_gpu; /* 1 if `@gpu`: the kernel is emitted as a GPU compute shader (SSBO per column) */
 	SourceLoc loc;
 } HirMapDecl;
+
+typedef struct {
+	char *name;
+	char **cols; /* the query's column names (tuple-group flattened, like a map's params) */
+	int col_count;
+	SourceLoc loc;
+} HirQueryDecl;
 
 typedef struct {
 	char *name;
@@ -214,6 +222,7 @@ struct HirDecl {
 		HirArchetypeDecl *archetype;
 		HirProcDecl *proc;
 		HirMapDecl *map;
+		HirQueryDecl *query;
 		HirFuncDecl *func;
 		HirFuncGroupDecl *func_group;
 		HirStaticDecl *static_decl;
@@ -350,6 +359,7 @@ typedef enum {
 	HIR_EXPR_UNARY,
 	HIR_EXPR_CALL,
 	HIR_EXPR_ALLOC,
+	HIR_EXPR_ENTITY_LIT,
 	HIR_EXPR_ARRAY_LITERAL,
 	HIR_EXPR_STRING,
 } HirExprKind;
@@ -408,6 +418,12 @@ struct HirExpr {
 			int field_count;
 			HirExpr *init_length;
 		} alloc;
+		struct {
+			char *type_name; /* the archetype OR query named by the literal */
+			char **field_names;
+			HirExpr **field_values;
+			int field_count;
+		} entity;
 		struct {
 			HirExpr **elements;
 			int element_count;

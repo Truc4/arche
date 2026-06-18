@@ -1,0 +1,12 @@
+// RED until entities ship: an entity must provide EVERY column (a full, well-formed row). Omitting one is
+// a compile error — "required to match at compile time".
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "missing column 'tag'" %t.out
+#import { fmt }
+v   :: int;
+tag :: int;
+B   :: arche { v, tag }
+[4]B;
+
+main :: proc() {
+  insert(B { v: 2 })(_:, _:); // missing `tag`
+}

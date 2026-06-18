@@ -50,4 +50,11 @@ int codegen_hot_enabled(void);
 void codegen_set_gpu(int on);
 int codegen_gpu_enabled(void);
 
+/* Test hook (tests/unit/compiler/codegen_tests.c). codegen_create malloc's its context and is reused
+ * in-process across many compiles (the `arche test` doctest runner); it MUST zero-init every field it
+ * relies on. This poisons an exact-size heap chunk, frees it, then lets codegen_create reuse that block
+ * and verifies entity_bind_count came back 0 (not the poison's garbage, which would send a func body's
+ * name-expr scan off the end of entity_binds[256] into unmapped memory). Returns 1 on success. */
+int codegen_selftest_context_zero_init(void);
+
 #endif /* CODEGEN_H */

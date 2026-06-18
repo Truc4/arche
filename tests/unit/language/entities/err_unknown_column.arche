@@ -1,0 +1,12 @@
+// RED until entities ship: a field not in the archetype is a compile error — the entity must match the
+// shape exactly (no stray columns).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "unknown column 'hp'" %t.out
+#import { fmt }
+v   :: int;
+tag :: int;
+B   :: arche { v, tag }
+[4]B;
+
+main :: proc() {
+  insert(B { v: 2, tag: 7, hp: 9 })(_:, _:); // `hp` is not a column of B
+}

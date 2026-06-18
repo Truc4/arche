@@ -8,6 +8,6 @@ AliveList :: arche { player_ref :: handle<Player> }
 [10]AliveList;
 
 main :: proc() {
-  insert(Player, 1.0)(p_handle:, _:);
-  insert(AliveList, p_handle)(_:, _:);
+  insert(Player { pos: 1.0 })(p_handle:, _:);
+  insert(AliveList { player_ref: p_handle })(_:, _:);
 }

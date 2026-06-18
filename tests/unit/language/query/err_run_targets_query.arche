@@ -1,0 +1,14 @@
+// RED until Phase 4: `run X` where X is a query (not a map) must error clearly — a query is a domain, not
+// a runnable kernel. Desired message names that X is a query, not a map.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "is a query, not a map" %t.out
+#import { fmt }
+pos :: float;
+vel :: float;
+P   :: arche { pos, vel }
+[4]P;
+
+Movers :: query { pos, vel }
+
+main :: proc() {
+  run Movers;
+}

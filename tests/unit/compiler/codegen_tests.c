@@ -351,7 +351,7 @@ void test_codegen_gen_exhaustion_abort(void) {
 	                                "Unit :: arche { hp }\n"
 	                                "[4]Unit;\n"
 	                                "main :: proc() {\n"
-	                                "  insert(Unit, 1)(h:, _:);\n"
+	                                "  insert(Unit{ hp: 1 })(h:, _:);\n"
 	                                "  delete(h)(_:);\n"
 	                                "}\n");
 	ASSERT_NOT_NULL(ir, "no IR produced");
@@ -360,10 +360,25 @@ void test_codegen_gen_exhaustion_abort(void) {
 	test_pass_msg();
 }
 
+/* Regression: a CodegenContext is malloc'd and REUSED in-process across many compiles (the `arche
+ * test` markdown-doctest runner compiles every section in one process). codegen_create must zero
+ * entity_bind_count: a reused heap block carries garbage at that offset, and a func body's name-expr
+ * scan (codegen_expression / HIR_EXPR_NAME) then walks entity_binds[] far past its 256-element bound
+ * into unmapped memory and SIGSEGVs. The crash itself is heap-layout-dependent (it surfaced on
+ * docs/language.md, whose many differently-sized sections churn the heap), so this asserts the
+ * underlying invariant deterministically via a poison-and-reuse probe instead of chasing the crash. */
+void test_codegen_context_zero_init(void) {
+	test_start("codegen_create zero-inits entity_bind_count over a reused heap block");
+	ASSERT_TRUE(codegen_selftest_context_zero_init(),
+	            "codegen_create left entity_bind_count uninitialized — a reused ctx scans past entity_binds[]");
+	test_pass_msg();
+}
+
 int main(void) {
 	printf("codegen tests\n");
 
 	test_codegen_gen_exhaustion_abort();
+	test_codegen_context_zero_init();
 	test_compile_simple();
 	test_compile_hello_world();
 	test_compile_with_params();

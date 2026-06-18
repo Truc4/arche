@@ -85,6 +85,7 @@ int completion_run(int argc, char **argv, const GlobalOpts *g);
 int version_run(int argc, char **argv, const GlobalOpts *g);
 int init_run(int argc, char **argv, const GlobalOpts *g);
 int fill_run(int argc, char **argv, const GlobalOpts *g);
+int inspect_run(int argc, char **argv, const GlobalOpts *g);
 
 /* Append a pool decl to driver `path` for each imported device's required shape it does not already
  * size, at the datasheet minimum (composed by max). Idempotent. Returns pools written, or -1 on
@@ -105,5 +106,6 @@ const ArgSpec *check_specs(void);
 const ArgSpec *test_specs(void);
 const ArgSpec *fmt_specs(void);
 const ArgSpec *analyze_specs(void);
+const ArgSpec *inspect_specs(void);
 
 #endif /* ARCHE_CLI_CLI_H */

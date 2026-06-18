@@ -45,7 +45,7 @@ seg_eq :: func(stored: char[], stored_len: int, seg: char[]) -> bool {
 }
 
 new_node :: proc(seg: char[], seg_len: int, kind: nodeKind)(idx: int) {
-  idx = i32(insert(TrieNode, seg, seg_len, kind, -1, -1, route.miss));
+  idx = i32(insert(TrieNode{ seg: seg, seg_len: seg_len, kind: kind, first_child: -1, next_sibling: -1, handler_id: route.miss }));
 }
 
 init :: proc() {

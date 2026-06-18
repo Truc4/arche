@@ -8,6 +8,6 @@ Enemy :: arche { health :: float }
 [10]Enemy;
 
 main :: proc() {
-  insert(Player, 1.0)(p:, _:);
+  insert(Player { pos: 1.0 })(p:, _:);
   delete(table<Enemy>, p)(_:);
 }

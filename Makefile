@@ -14,6 +14,7 @@ SEMANTIC_TEST_BIN = $(BUILD_DIR)/semantic-test
 CODEGEN_TEST_BIN = $(BUILD_DIR)/codegen-test
 LOWER_TEST_BIN = $(BUILD_DIR)/lower-test
 HOTRELOAD_TEST_BIN = $(BUILD_DIR)/hotreload-test
+INSPECT_TEST_BIN = $(BUILD_DIR)/inspect-test
 LIBARCH = $(BUILD_DIR)/libarch.a
 LIBARCH_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/parser/parser.o
 
@@ -51,7 +52,7 @@ ifeq ($(HAVE_VULKAN),1)
 CFLAGS += -DARCHE_HAVE_VULKAN
 endif
 
-RUNTIME_SRCS = runtime/stack_check.c runtime/io.c runtime/net.c runtime/term.c
+RUNTIME_SRCS = runtime/stack_check.c runtime/io.c runtime/net.c runtime/term.c runtime/inspect.c
 RUNTIME_OBJS = $(RUNTIME_SRCS:.c=.o)
 # Position-independent copies of the runtime, linked into `--emit=shared` (.so) builds. Kept SEPARATE
 # from the non-PIC `.o` set so the executable link (-no-pie -mcmodel=large) stays byte-identical.
@@ -59,7 +60,7 @@ RUNTIME_PIC_OBJS = $(BUILD_DIR)/runtime/stack_check.pic.o $(BUILD_DIR)/runtime/i
 
 OBJS = $(SRCS:.c=.o)
 # CLI multitool: dispatch + table-driven arg parser + one object per subcommand.
-CLI_OBJS = $(BUILD_DIR)/cli/args.o $(BUILD_DIR)/cli/cli.o $(BUILD_DIR)/cli/resource.o $(BUILD_DIR)/cli/cmd_build.o $(BUILD_DIR)/cli/cmd_run.o $(BUILD_DIR)/cli/cmd_check.o $(BUILD_DIR)/cli/cmd_test.o $(BUILD_DIR)/cli/cmd_fmt.o $(BUILD_DIR)/cli/cmd_explain.o $(BUILD_DIR)/cli/cmd_analyze.o $(BUILD_DIR)/cli/cmd_completion.o $(BUILD_DIR)/cli/cmd_version.o $(BUILD_DIR)/cli/cmd_init.o $(BUILD_DIR)/cli/cmd_fill.o
+CLI_OBJS = $(BUILD_DIR)/cli/args.o $(BUILD_DIR)/cli/cli.o $(BUILD_DIR)/cli/resource.o $(BUILD_DIR)/cli/cmd_build.o $(BUILD_DIR)/cli/cmd_run.o $(BUILD_DIR)/cli/cmd_check.o $(BUILD_DIR)/cli/cmd_test.o $(BUILD_DIR)/cli/cmd_fmt.o $(BUILD_DIR)/cli/cmd_explain.o $(BUILD_DIR)/cli/cmd_analyze.o $(BUILD_DIR)/cli/cmd_completion.o $(BUILD_DIR)/cli/cmd_version.o $(BUILD_DIR)/cli/cmd_init.o $(BUILD_DIR)/cli/cmd_fill.o $(BUILD_DIR)/cli/cmd_inspect.o
 # Satellite tools folded into the `arche` binary as subcommands (fmt, analyze): their objects join
 # the main link. The standalone arche-fmt / arche-analyzer binaries still build during the migration.
 FOLD_OBJS = $(BUILD_DIR)/syntax/format_syntax.o $(BUILD_DIR)/syntax/token_category.o $(BUILD_DIR)/arche_analyzer.o
@@ -77,11 +78,13 @@ CODEGEN_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(
 LOWER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/unit/compiler/lower_tests.o
 # Reload-runtime unit test: just the runtime object + the test driver (links libdl for dlopen/dlsym).
 HOTRELOAD_TEST_OBJS = $(BUILD_DIR)/runtime/hotreload.o $(BUILD_DIR)/unit/runtime/hotreload_tests.o
+# State-inspector unit test: the runtime object + the test driver (drives arche_inspect_handle directly).
+INSPECT_TEST_OBJS = $(BUILD_DIR)/runtime/inspect.o $(BUILD_DIR)/unit/runtime/inspect_tests.o
 
 # Default target
 # `arche fmt` replaces the standalone arche-fmt (its target is still defined, buildable on demand).
 # arche-analyzer (LSP) + arche-syntax-tokens stay for editor integration.
-all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(SYNTAX_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o $(RUNTIME_PIC_OBJS) $(BUILD_DIR)/runtime/hotreload.o $(BUILD_DIR)/runtime/gpu_runtime.o
+all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(SYNTAX_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(INSPECT_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o $(RUNTIME_PIC_OBJS) $(BUILD_DIR)/runtime/hotreload.o $(BUILD_DIR)/runtime/inspect.o $(BUILD_DIR)/runtime/gpu_runtime.o
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/syntax $(BUILD_DIR)/hir $(BUILD_DIR)/lower $(BUILD_DIR)/parser $(BUILD_DIR)/compile $(BUILD_DIR)/doctest $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/cli $(BUILD_DIR)/unit/compiler $(BUILD_DIR)/runtime
@@ -129,6 +132,10 @@ $(LOWER_TEST_BIN): $(LOWER_TEST_OBJS)
 # Build hot-reload runtime unit test (needs libdl for the runtime's dlopen/dlsym)
 $(HOTRELOAD_TEST_BIN): $(HOTRELOAD_TEST_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -ldl
+
+# Build state-inspector unit test (plain libc; no sockets opened in the test)
+$(INSPECT_TEST_BIN): $(INSPECT_TEST_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^
 
 # Build syntax/parsing library
 $(LIBARCH): $(LIBARCH_OBJS)
@@ -178,13 +185,17 @@ test-lower: $(LOWER_TEST_BIN)
 test-hotreload: $(HOTRELOAD_TEST_BIN)
 	./$(HOTRELOAD_TEST_BIN)
 
+# Run state-inspector unit tests
+test-inspect: $(INSPECT_TEST_BIN)
+	./$(INSPECT_TEST_BIN)
+
 # OFF-GATE live hot-reload smoke (real `arche run` + a mid-run device edit). Kept out of `make test`
 # (timing/process-bound by nature); fixture files are formatter-checked so they can't silently rot.
 test-e2e: $(TARGET) $(BUILD_DIR)/runtime/hotreload.o
 	python3 tests/integration/e2e_hot_reload/run_e2e.py
 
 # Run all tests with LIT
-test: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
+test: $(TARGET) $(ANALYZER_BIN) $(SYNTAX_TOKENS_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(INSPECT_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 	lit -v tests/ extras/
 	$(MAKE) test-doc
 
@@ -197,7 +208,7 @@ test: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN)
 # incremental_cache). This full-suite run is kept out of CI only to avoid ~2x suite time; run it by
 # hand to re-validate the whole language under per-unit. Whole-program (no inlining loss) stays the
 # default build.
-test-per-unit: $(TARGET) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
+test-per-unit: $(TARGET) $(ANALYZER_BIN) $(SYNTAX_TOKENS_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(INSPECT_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 	ARCHE_PER_UNIT=1 lit -v tests/ extras/
 
 # Run doctests over the real source tree: ```arche examples in /// doc comments (.arche) AND in
@@ -476,7 +487,7 @@ install: all
 	install -m 0755 $(ANALYZER_BIN) "$(ARCHE_BINDIR)/arche-analyzer"
 	install -m 0644 core/core.arche "$(ARCHE_LIBDIR)/core/"
 	cp -R stdlib/. "$(ARCHE_LIBDIR)/stdlib/"
-	install -m 0644 $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o $(BUILD_DIR)/runtime/gpu_runtime.o "$(ARCHE_LIBDIR)/runtime/"
+	install -m 0644 $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o $(BUILD_DIR)/runtime/gpu_runtime.o $(BUILD_DIR)/runtime/hotreload.o $(BUILD_DIR)/runtime/inspect.o "$(ARCHE_LIBDIR)/runtime/"
 	@[ -d docs/explain ] && cp -R docs/explain/. "$(ARCHE_LIBDIR)/explain/" || true
 	@# `cp -R` preserves source-tree modes (and leaves a pre-existing dest file's mode untouched on
 	@# re-install), so a stdlib file that happens to be 0600 in the tree lands unreadable for the

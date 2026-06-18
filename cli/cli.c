@@ -4,6 +4,7 @@
 #include "../semantic/semantic.h"
 #include "resource.h"
 #include <dirent.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -201,6 +202,7 @@ static const SubCmd k_cmds[] = {
     {"version", "print the arche version", 0, version_run, NULL},
     {"init", "scaffold a device or driver (arche init <device|driver> <name>)", 0, init_run, NULL},
     {"fill", "size a driver's pools from its imported devices' datasheets", 0, fill_run, NULL},
+    {"inspect", "view/edit a running `arche run` session's pools", 0, inspect_run, inspect_specs},
 };
 static const int k_cmd_count = (int)(sizeof(k_cmds) / sizeof(k_cmds[0]));
 
@@ -255,6 +257,11 @@ static int do_explain(int argc, char **argv, int at) {
 }
 
 int cli_main(int argc, char **argv) {
+	/* Behave like a well-mannered Unix tool: when a downstream consumer closes the pipe early
+	 * (e.g. `arche completion bash | grep -q _arche`), writes should fail with EPIPE and let us
+	 * exit cleanly rather than dying with signal 13 / exit 141. */
+	signal(SIGPIPE, SIG_IGN);
+
 	if (argc >= 1 && argv[0]) {
 		const char *slash = strrchr(argv[0], '/');
 		g_prog = slash ? slash + 1 : argv[0];

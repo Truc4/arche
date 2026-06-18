@@ -9,8 +9,8 @@ Body :: arche { pos, vel, mass :: float }
 [5]Body;
 
 main :: proc() {
-  insert(Particle, 1.0, 0.1)(_:, _:);
-  insert(Body, 2.0, 0.2, 10.0)(_:, _:);
+  insert(Particle { pos: 1.0, vel: 0.1 })(_:, _:);
+  insert(Body { pos: 2.0, vel: 0.2, mass: 10.0 })(_:, _:);
   pp  := Particle.pos[0];
   bm  := Body.mass[0];
   ppi := pp * 10.0;

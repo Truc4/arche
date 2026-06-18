@@ -8,7 +8,7 @@ vel  :: float;
 Body :: arche { pos, vel }
 [8]Body(8);
 
-step :: map (pos, vel) {
+step :: map (query { pos, vel }) {
   pos = pos + vel;
   vel = select(pos > 1000.0, 0.0 - vel, vel);
 }
