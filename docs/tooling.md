@@ -18,7 +18,10 @@ It drives `build/arche-analyzer` under the hood (see below).
 ## Compiler CLI
 
 ```
-arche [flags] input.arche          # compile to an executable
+arche [flags] input.arche          # compile to an executable (implicit `build`)
+arche build [flags] input.arche    # compile to an executable / artifact
+arche run [flags] input.arche      # compile and run (forwards program args after `--`)
+arche check [flags] input.arche    # analyze only; report diagnostics, write nothing (like `cargo check`)
 arche test <path> [-v]             # run doctests (see DOCTESTS.md)
 arche init device <name>           # scaffold a device folder (shape + system + doctest)
 arche init driver <name> [dev...]  # scaffold a driver file; with devices, fill their required pools
@@ -31,8 +34,16 @@ Compile flags:
 - `-o <file>` - output executable path
 - `-emit-llvm -o <file.ll>` - emit LLVM IR instead of an executable
 - `--link <path>` - pass an extra `.c`/`.o` to `cc` at link time (repeatable)
-- `-Wno-proc-could-be-func`, `-Wno-proc-no-effect` - disable lints
-- `-Werror=proc-could-be-func`, `-Werror=proc-no-effect`, `-Werror` - promote lints to errors
+
+Lint flags (accepted by `build`, `run`, and `check`):
+
+- `-Wno-proc-could-be-func`, `-Wno-proc-no-effect`, `-Wno-large-stack-array` - disable a lint
+- `-Werror=proc-could-be-func`, `-Werror=proc-no-effect`, `-Werror=large-stack-array` - promote one lint to an error
+- `-Werror` - promote every enabled lint to an error
+- `--exported-mutable <error|warn|allow>` - tune the exported-mutable-global lint (`W0022`, error by default)
+- `--map-foreign-write <error|warn|allow>` - tune the map-writes-foreign-pool lint (`W0024`, error by default)
+- `--forbid-allow` - reject any `@allow(...)` escape hatch in your code
+- Any other lint is on by default and silenced per-declaration with `@allow(<slug>)` (e.g. `@allow(pointless_move)`).
 
 `arche test` runs the runnable examples in `///` doc comments - see [DOCTESTS.md](DOCTESTS.md).
 `arche --explain E0001` reads the long-form note from `docs/explain/<code>.md`.
@@ -43,8 +54,10 @@ also run by `arche init driver <name> <device>...`. See [devices.md](devices.md#
 
 ## Diagnostics
 
-Errors carry stable codes `E0001`–`E0203`; warnings `W0001`–`W0010` (promotable to
-`-Werror`). Codes are stable forever (burn-on-delete). A sample:
+Errors carry stable codes `E0001`–`E0220`; warnings `W0001`–`W0027` (promotable to
+`-Werror`). Codes are stable forever (burn-on-delete) and severity is configuration, not identity —
+a lint can be disabled (`-Wno-<slug>`), promoted (`-Werror=<slug>`), or silenced on one declaration
+(`@allow(<slug>)`). A sample:
 
 | Code | Meaning |
 | ---- | ------- |
@@ -57,6 +70,10 @@ Errors carry stable codes `E0001`–`E0203`; warnings `W0001`–`W0010` (promota
 | `E0200` | type mismatch |
 | `W0001` | proc could be a func |
 | `W0002` | proc has no effect |
+| `W0022` | exported mutable global (error by default) |
+| `W0024` | map writes a foreign pool (error by default) |
+| `W0026` | large stack array — prefer a pool or a sliced column |
+| `W0027` | pointless `move` (e.g. of a pool column) |
 
 Run `arche --explain <code>` for the full write-up.
 

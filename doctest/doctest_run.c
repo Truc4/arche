@@ -617,7 +617,7 @@ static void run_group(const char *synth_path, DoctestExamples *ex, const int *gr
 	nameset_add(&imports, "fmt", 3);
 	Str *stmts = calloc((size_t)ex->count, sizeof(Str));
 	for (int i = 0; i < ex->count; i++)
-		if (group[i] == g)
+		if (group[i] == g && !(ex->items[i].flags & DOCTEST_IGNORE))
 			classify_block(ex->items[i].code, &decls, &stmts[i], &imports);
 
 	Str shared = {NULL, 0, 0};
@@ -681,6 +681,10 @@ static void run_group(const char *synth_path, DoctestExamples *ex, const int *gr
 	int ran_any = 0, first_line = -1;
 	for (int i = 0; i < ex->count; i++) {
 		if (group[i] != g)
+			continue;
+		/* `arche,ignore`: shown in docs, never compiled or run (matches run_one for .arche). It
+		 * contributed nothing to the pooled decls/imports above, so just skip it here too. */
+		if (ex->items[i].flags & DOCTEST_IGNORE)
 			continue;
 		if (first_line < 0)
 			first_line = ex->items[i].src_line;

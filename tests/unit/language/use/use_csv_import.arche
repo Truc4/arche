@@ -1,11 +1,14 @@
 // RUN: %arche build -o %t %s && %t
 #import { io }
 
+cb      :: char;
+CharBuf :: arche { cb }
+[65536]CharBuf;
+
 main :: proc() {
   io.open("tests/fixtures/data.csv")(fd:);
   if (fd) {
-    buf: [65536]char;
-    io.read_chunk(fd, buf, 65536)(buf, n:);
+    io.read_chunk(fd, CharBuf.cb[0: CharBuf.capacity], 65536)(_v:);
   }
   io.close(move fd);
 }

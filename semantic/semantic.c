@@ -541,6 +541,7 @@ static void register_static_name(SemanticContext *ctx, const char *name) {
 /* Forward-declare normalize_type_name so helpers below can use it. */
 static const char *normalize_type_name(const char *type_name);
 static int is_len_prop(const char *f);
+static int is_pool_extent_prop(const char *f);
 
 static GroupInfo *find_group(SemanticContext *ctx, const char *name) {
 	for (int i = 0; i < ctx->group_count; i++) {
@@ -872,6 +873,10 @@ static void push_scope(SemanticContext *ctx) {
 	ctx->scope_count++;
 }
 
+/* Byte size of a type's stack storage (0 if not determinable / not a value that owns storage).
+ * Defined after sem_int_width_of (width-int sizing); forward-declared for pop_scope's W0026 check. */
+static int sem_type_bytes(SemanticContext *ctx, TypeId t);
+
 static void pop_scope(SemanticContext *ctx) {
 	if (ctx->scope_count > 0) {
 		Scope *scope = &ctx->scopes[ctx->scope_count - 1];
@@ -914,6 +919,15 @@ static void pop_scope(SemanticContext *ctx) {
 			if (!v->is_param && !v->is_referenced && !v->is_consumed && !is_outparam_name && !is_shadowed && v->name &&
 			    v->name[0] != '_' && !var_is_opaque(ctx, v)) {
 				sem_emit_lint_unused_local(ctx, v->loc, v->name);
+			}
+			/* W0026 large_stack_array: a local sized array `[N]T` is a value that owns its storage on the
+			 * stack; a large one bloats the frame. Steer to a single-type archetype pool (static, columnar)
+			 * or a #module-private global. Params are borrows (caller's storage) so they're exempt; slices
+			 * `[]T` are views (TYK_SLICE, not TYK_ARRAY) and so are excluded by construction. */
+			if (!v->is_param && v->name && tyid_kind(ctx->ty_arena, v->type_id) == TYK_ARRAY) {
+				int bytes = sem_type_bytes(ctx, v->type_id);
+				if (bytes >= 1024)
+					sem_emit_lint_large_stack_array(ctx, v->loc, v->name, bytes);
 			}
 		}
 		for (int i = 0; i < scope->var_count; i++) {
@@ -1421,6 +1435,16 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 				free(idnt);
 				return; /* resolved as a tuple component */
 			}
+			/* `Pool.col.length/.count/.capacity` — a column is not a sequence and the extent props are
+			 * pool-level, not column-level. Reject: slice the column (`col[0:Pool.capacity]`) to get a
+			 * `[]T` with a `.length`, or read `Pool.count`/`Pool.capacity`. */
+			if ((is_len_prop(field_name) || is_pool_extent_prop(field_name)) && find_field(arch, tuple_base)) {
+				sem_emit_no_field(ctx, field_loc, archetype_any_alias(ctx, arch), field_name);
+				free(tuple_base);
+				free(field_name);
+				free(idnt);
+				return;
+			}
 		}
 		free(tuple_base);
 		/* fall through to simple checks below (base treated as the IDENT) */
@@ -1506,6 +1530,11 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 		}
 		/* check the field exists on this archetype */
 		if (arch) {
+			/* `.count` (live rows) / `.capacity` (slots N) are pool extent properties, not columns —
+			 * accept them here (they resolve to int). `.length` is NOT a pool word and falls through to
+			 * the field check below, which rejects it (use `.count`/`.capacity`, or slice a column). */
+			if (is_pool_extent_prop(field_name))
+				goto done;
 			FieldInfo *found_field = find_field(arch, field_name);
 			if (!found_field) {
 				int is_tuple_base = 0;
@@ -1599,6 +1628,40 @@ static TypeId array_const_type_id(SemanticContext *ctx, const DeclSummary *d) {
  * the type). Capacity/growth is a POOL concept (`.capacity` / `.count`), handled separately. */
 static int is_len_prop(const char *f) {
 	return f && strcmp(f, "length") == 0;
+}
+
+/* Pool extent properties: `.count` (live rows) and `.capacity` (allocated slots N). These are POOL
+ * vocabulary, distinct from a sequence's `.length` — a pool is not a sequence (and a sequence has
+ * neither). Both resolve to `int`. A pool column is viewed as a `[]T` only by slicing it
+ * (`col[0:Pool.capacity]`); the resulting slice is what carries a `.length`. */
+static int is_pool_extent_prop(const char *f) {
+	return f && (strcmp(f, "count") == 0 || strcmp(f, "capacity") == 0);
+}
+
+/* True if `v` is a pool-column access `Pool.col` (or a slice of one, `Pool.col[lo:hi]`): a single
+ * field segment whose base resolves to an archetype and whose field is a real column. Used to flag a
+ * `move` of such a view as pointless (a column is shared, fixed storage — nothing to transfer). The
+ * `sv_count`/`sv_resolved_name` base-chain accessors read through a slice node too (see
+ * index_base_type_id), so one check covers both the bare-column and sliced-column forms. */
+static int expr_is_pool_column_view(SemanticContext *ctx, SyntaxView v) {
+	if (!sv_present(v))
+		return 0;
+	if (sv_count(v, SN_FIELD_NAME) != 1)
+		return 0;
+	char *idnt = sv_resolved_name(ctx, v);
+	if (!idnt)
+		return 0;
+	char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, 0));
+	ArchetypeInfo *arch = find_archetype(ctx, idnt);
+	if (!arch) {
+		VariableInfo *bv = find_variable(ctx, idnt);
+		if (bv && bv->archetype_name)
+			arch = find_archetype(ctx, bv->archetype_name);
+	}
+	int yes = (arch && fld && find_field(arch, fld) != NULL);
+	free(fld);
+	free(idnt);
+	return yes;
 }
 
 static TypeId sem_expr_type_id(SemanticContext *ctx, SyntaxView v); /* mutually recursive with the helpers */
@@ -1746,7 +1809,7 @@ static TypeId field_type_id(SemanticContext *ctx, SyntaxView v) {
 	if (has_nested_base(v)) {
 		int nf = sv_count(v, SN_FIELD_NAME);
 		char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 1));
-		int prop = is_len_prop(fld);
+		int prop = is_len_prop(fld) || is_pool_extent_prop(fld);
 		free(fld);
 		return prop ? tyid_of_prim(ctx->ty_arena, PRIM_INT) : sem_expr_type_id(ctx, base_subexpr(v));
 	}
@@ -1755,7 +1818,7 @@ static TypeId field_type_id(SemanticContext *ctx, SyntaxView v) {
 	TypeId r = TYID_UNKNOWN;
 	if (nf >= 1) {
 		char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 1));
-		if (is_len_prop(fld))
+		if (is_len_prop(fld) || is_pool_extent_prop(fld))
 			r = tyid_of_prim(ctx->ty_arena, PRIM_INT);
 		else if (nf == 1)
 			r = archetype_field_type_id(ctx, idnt, fld);
@@ -1840,6 +1903,56 @@ static int sem_int_width_of(SemanticContext *ctx, TypeId t, const char *name) {
 			return 128;
 	}
 	return 0;
+}
+
+/* Byte size of a type's stack storage, for the W0026 large-stack-array lint. Matches the codegen
+ * scalar widths (arche `int`/`float` are 4 bytes, `char`/`bool` 1, handle/opaque pointer-width 8;
+ * width-ints by their declared width). A sized array recurses into its element (so multi-dim `[a][b]T`
+ * is a*b*elem); a tuple sums its fields. Returns 0 for anything whose storage we can't size (opaque
+ * nominals, slices/views, callables) — those simply never trip the threshold. */
+static int sem_type_bytes(SemanticContext *ctx, TypeId t) {
+	TypeArena *a = ctx->ty_arena;
+	switch (tyid_kind(a, t)) {
+	case TYK_PRIM:
+		switch (tyid_prim(a, t)) {
+		case PRIM_CHAR:
+		case PRIM_BOOL:
+			return 1;
+		case PRIM_INT:   /* i32 */
+		case PRIM_FLOAT: /* f32 */
+			return 4;
+		case PRIM_STR:
+			return 8; /* pointer-width view */
+		default:
+			return 0; /* void / unknown */
+		}
+	case TYK_HANDLE:
+		return 8;
+	case TYK_NOMINAL: {
+		const char *nm = tyid_nominal_name(a, t);
+		int w = sem_int_width_of(ctx, t, nm); /* width-int → bits */
+		if (w > 0)
+			return w / 8;
+		TypeId b = tyid_backing(a, t); /* tier-2 distinct subtype → size of its backing */
+		if (!tyid_is_unknown(b) && b != t)
+			return sem_type_bytes(ctx, b);
+		return 0; /* opaque / unsizable nominal */
+	}
+	case TYK_ARRAY: {
+		int n = tyid_array_len(a, t);
+		if (n < 0)
+			return 0;
+		return n * sem_type_bytes(ctx, tyid_elem(a, t));
+	}
+	case TYK_TUPLE: {
+		int sum = 0, c = tyid_tuple_count(a, t);
+		for (int i = 0; i < c; i++)
+			sum += sem_type_bytes(ctx, tyid_tuple_field_type(a, t, i));
+		return sum;
+	}
+	default:
+		return 0; /* slices are views; callables don't own array storage */
+	}
 }
 
 static TypeId binary_type_id(SemanticContext *ctx, SyntaxView v) {
@@ -2050,6 +2163,14 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 		SyntaxView operand = sem_first_expr(v);
 		analyze_expression(ctx, operand);
 		(void)was_arg;
+		/* W0027 pointless_move: `move` of a pool column (slice) — `move Pool.col[lo:hi]` / `move Pool.col`
+		 * — does nothing. A column is shared, fixed pool storage with no ownership to transfer, and the
+		 * operand is an expression (not a name), so nothing is consumed either. Flag it; the column is
+		 * sound as a plain borrow. */
+		if (sv_has_token(v, TOK_MOVE) && sv_present(operand) &&
+		    (sv_kind(operand) == SN_SLICE_EXPR || sv_kind(operand) == SN_FIELD_EXPR) &&
+		    expr_is_pool_column_view(ctx, operand))
+			sem_emit_lint_pointless_move(ctx, sem_node_loc(operand.node));
 		/* `move x` transfers ownership: mark x consumed; can't move out of a borrowed param. */
 		if (sv_has_token(v, TOK_MOVE) && sv_present(operand) && sv_kind(operand) == SN_NAME_EXPR) {
 			char *nm = sv_name_expr_dup(operand);

@@ -189,6 +189,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_exported_mutable_global]       = { "W0022", "exported_mutable_global",       CLASS_LINT, 1 },
 	[SEM_LINT_outarg_shadows_outparam]       = { "W0023", "outarg_shadows_outparam",       CLASS_LINT, 1 },
 	[SEM_LINT_map_writes_foreign_pool]       = { "W0024", "map_writes_foreign_pool",       CLASS_LINT, 1 },
+	[SEM_LINT_large_stack_array]             = { "W0026", "large_stack_array",             CLASS_LINT, 1 },
+	[SEM_LINT_pointless_move]                = { "W0027", "pointless_move",                CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -445,6 +447,9 @@ void semantic_set_lint_exported_mutable_global(int enabled, int werror) {
 }
 void semantic_set_lint_map_writes_foreign_pool(int enabled, int werror) {
 	semantic_set_diag(SEM_LINT_map_writes_foreign_pool, enabled, werror);
+}
+void semantic_set_lint_large_stack_array(int enabled, int werror) {
+	semantic_set_diag(SEM_LINT_large_stack_array, enabled, werror);
 }
 
 /* `-Werror` (no `=slug`): promote EVERY currently-enabled lint to a hard error. Does NOT re-enable a
@@ -1135,4 +1140,17 @@ SemDiag *sem_emit_lint_outarg_shadows_outparam(SemanticContext *ctx, SourceLoc l
 	                 "result fills the shadow and the out-param is left unwritten; drop the `:` (`%s`) to write "
 	                 "the out-param, or rename if a fresh local is intended",
 	                 name, name, name);
+}
+SemDiag *sem_emit_lint_large_stack_array(SemanticContext *ctx, SourceLoc loc, const char *name, int size_bytes) {
+	return sem_emit_(ctx, SEM_LINT_large_stack_array, loc,
+	                 "local array '%s' is %d bytes on the stack — a large stack value bloats the frame; prefer a "
+	                 "single-type archetype pool `[N]T` (static, columnar) or a #module-private global, or "
+	                 "@allow(large_stack_array)",
+	                 name, size_bytes);
+}
+SemDiag *sem_emit_lint_pointless_move(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_LINT_pointless_move, loc,
+	                 "`move` here is pointless — a pool column is shared, fixed storage with no ownership to "
+	                 "transfer, so `move` does nothing and consumes nothing; pass the column (slice) as a plain "
+	                 "borrow (drop `move`). Suppress with @allow(pointless_move)");
 }

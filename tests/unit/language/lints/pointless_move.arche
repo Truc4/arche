@@ -1,0 +1,24 @@
+// W0027 pointless_move: `move` of a pool column (slice) transfers nothing — a column is shared, fixed
+// pool storage, so `move` is a no-op. Flagged on the move; silent on a plain borrow and under @allow.
+// RUN: test "$(%arche check %s 2>&1 | grep -c pointless_move)" -eq 1
+#import { fmt }
+
+cb      :: char;
+CharBuf :: arche { cb }
+[64]CharBuf;
+
+use :: func(buf: []char) -> int {
+  return buf.length;
+}
+
+@allow(pointless_move)
+allowed :: proc()(n: int) {
+  n = use(move CharBuf.cb[0: CharBuf.capacity]); // suppressed by @allow
+}
+
+main :: proc() {
+  allowed()(a:);
+  b := use(move CharBuf.cb[0: CharBuf.capacity]); // W0027 — the only one
+  c := use(CharBuf.cb[0: CharBuf.capacity]); // plain borrow — no lint
+  fmt.printf("%d %d %d\n", a, b, c);
+}

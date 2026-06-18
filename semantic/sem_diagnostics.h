@@ -211,6 +211,12 @@ typedef enum {
 	                                     a per-entity system runs once, not per row (the driver WRITES shared
 	                                     singletons, a system READS them). Lint-class so it's tunable, but
 	                                     default-promoted to error (see ensure_init). */
+	SEM_LINT_large_stack_array,       /* a local fixed-size array `[N]T` whose storage exceeds the frame
+	                                     threshold (1 KB) — a big stack value. Prefer a single-type archetype
+	                                     pool `[N]T` (static, columnar) or a #module-private global. W0026. */
+	SEM_LINT_pointless_move,          /* `move` of a value with no ownership to transfer — currently a pool
+	                                     column (slice): it is shared, fixed storage, so `move` does nothing.
+	                                     Pass it as a plain borrow. W0027. */
 
 	SEM_DIAG_KIND_COUNT
 } SemDiagKind;
@@ -423,5 +429,7 @@ SemDiag *sem_emit_lint_handler_foreign_arch(SemanticContext *ctx, SourceLoc loc,
 SemDiag *sem_emit_lint_func_could_be_const(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_exported_mutable_global(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_outarg_shadows_outparam(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_lint_large_stack_array(SemanticContext *ctx, SourceLoc loc, const char *name, int size_bytes);
+SemDiag *sem_emit_lint_pointless_move(SemanticContext *ctx, SourceLoc loc);
 
 #endif /* SEM_DIAGNOSTICS_H */

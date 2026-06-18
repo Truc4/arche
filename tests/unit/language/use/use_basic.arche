@@ -1,11 +1,14 @@
 // RUN: %arche build -o %t %s && cd %repo && %t | grep "PASS"
 #import { io fmt }
 
+cb      :: char;
+CharBuf :: arche { cb }
+[65536]CharBuf;
+
 main :: proc() {
   io.open("tests/fixtures/data.csv")(fd:);
   if (fd > 0) {
-    buf: [65536]char;
-    io.read_chunk(fd, buf, 65536)(v:);
+    io.read_chunk(fd, CharBuf.cb[0: CharBuf.capacity], 65536)(v:);
     // RAII: `fd` is auto-dropped (io.close) at scope exit on every path — no explicit close.
     // An explicit close only in this `then` branch would be a 'some paths' consumption error.
     if (v.length > 0) {

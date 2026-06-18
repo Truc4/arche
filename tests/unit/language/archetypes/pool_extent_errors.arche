@@ -1,0 +1,15 @@
+// `.length` is a sequence word (array/slice/string), not a pool word: a pool has no `.length`, and
+// neither `.length` nor the pool extents `.count`/`.capacity` apply to a bare column. Use `Pool.count`
+// / `Pool.capacity`, or slice the column (`Pool.col[0:Pool.capacity]`) to get a `[]T`.
+// RUN: test "$(%arche check %s 2>&1 | grep -c "no field 'length'")" -ge 1
+// RUN: test "$(%arche check %s 2>&1 | grep -c "no field 'count'")" -ge 1
+#import { fmt }
+v :: int;
+P :: arche { v }
+[8]P(3);
+
+main :: proc() {
+  fmt.printf("%d\n", P.length); // pool has no .length
+  fmt.printf("%d\n", P.v.length); // a column is not a sequence
+  fmt.printf("%d\n", P.v.count); // .count is pool-level, not column-level
+}
