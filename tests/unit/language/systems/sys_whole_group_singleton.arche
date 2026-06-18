@@ -14,7 +14,7 @@ Mover        :: arche { pos, vel }
 Config       :: arche { stiffness, center }
 [1]Mover;
 [1]Config;
-step :: map (pos, vel) {
+step :: map (query { pos, vel }) {
   vel -= (pos - Config.center[0]) / Config.stiffness[0]; // whole-vector spring toward the singleton center
   pos += vel; // whole-vector integrate
 }

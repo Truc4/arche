@@ -541,6 +541,33 @@ static int binding_is_redundant_form(SyntaxView binding) {
  * a hint iff the compiler typed it AND the source didn't already write the `⟨type⟩` slot AND — unless the
  * editor opted into full hints — it isn't a redundant definition-form (the form already spells the type).
  * Skips type aliases (emit_typeref_hint). */
+/* A map decl's type hint shows the QUERY it runs over (its real surface) rather than the structural
+ * column-type list: `map(Movers)` for a named query, `map(query { pos, vel })` for an inline literal. */
+static int map_query_hint(SyntaxView binding, char *buf, size_t n) {
+	SyntaxView form = sv_child_at(binding, SN_SYS_EXPR, 0);
+	if (!sv_present(form))
+		return 0;
+	SyntaxView ref = sv_child_at(form, SN_QUERY_REF, 0);
+	if (sv_present(ref)) {
+		SynText rn = sv_token(ref, TOK_IDENT);
+		snprintf(buf, n, "map(%.*s)", (int)rn.len, rn.ptr ? rn.ptr : "");
+		return 1;
+	}
+	SyntaxView iq = sv_child_at(form, SN_QUERY_EXPR, 0);
+	if (sv_present(iq)) {
+		char cols[256] = "";
+		int np = sv_count(iq, SN_PARAM);
+		for (int i = 0; i < np; i++) {
+			SynText cn = sv_token(sv_child(sv_child_at(iq, SN_PARAM, i), SN_PARAM_NAME), TOK_IDENT);
+			size_t l = strlen(cols);
+			snprintf(cols + l, sizeof(cols) - l, "%s%.*s", i ? ", " : "", (int)cn.len, cn.ptr ? cn.ptr : "");
+		}
+		snprintf(buf, n, "map(query { %s })", cols);
+		return 1;
+	}
+	return 0;
+}
+
 static void emit_type_hint(SyntaxView binding, SemanticContext *ctx) {
 	const SemModel *model = sem_context_model(ctx);
 	if (sem_model_bind_alias(model, sv_id(binding)))
@@ -553,7 +580,10 @@ static void emit_type_hint(SyntaxView binding, SemanticContext *ctx) {
 	if (!g_full_type_hints && binding_is_redundant_form(binding))
 		return; /* redundant: the form already states its type — hidden unless the editor opted into full */
 	char tybuf[128];
-	const char *ty = tyid_display(sem_context_arena(ctx), tid, tybuf, sizeof(tybuf));
+	char maphint[256];
+	const char *ty = map_query_hint(binding, maphint, sizeof(maphint))
+	                     ? maphint
+	                     : tyid_display(sem_context_arena(ctx), tid, tybuf, sizeof(tybuf));
 	if (!ty || !ty[0])
 		return;
 	CvPos anchor = sv_token_pos(binding, TOK_EQ); /* the `=` of `:=`, else the 2nd `:` of `::` */

@@ -1,0 +1,19 @@
+// RED until Phase 5: a collective over a query matching MULTIPLE archetypes has ambiguous fold-across-
+// pools semantics, so this cut REJECTS it (single-match only). Desired: a clear diagnostic.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "multi-archetype query" %t.out
+#import { fmt }
+v   :: int;
+tag :: int;
+A   :: arche { v }
+B   :: arche { v, tag } // distinct shape, but both have column `v`
+[4]A;
+[4]B;
+
+Vals :: query { v }
+
+main :: proc() {
+  insert(A, 1)(_:, _:);
+  insert(B, 2, 7)(_:, _:);
+  sum := reduce(+, Vals.v);
+  fmt.printf("sum=%d\n", sum);
+}

@@ -86,7 +86,8 @@ typedef enum {
 	SN_POLICY_EXPR,  /* policy value literal: `policy(in)->T{body}` — a failure-policy decl */
 	SN_GROUP_EXPR,   /* Odin-style overload group: `proc{a,b}` / `func{a,b}` */
 	SN_ARCH_EXPR,    /* archetype (record type) definition: `archetype{ fields }` */
-	SN_SYS_EXPR,     /* map definition: `map(components){body}` */
+	SN_SYS_EXPR,     /* map definition: `map(<query>){body}` — runs over a query */
+	SN_QUERY_EXPR,   /* query definition: `query { col, col }` — an archetype-selecting column set */
 	SN_ENUM_EXPR,    /* enum type definition: `enum { a, b = 2, c }` */
 	SN_ENUM_VARIANT, /* one enum variant: name + optional `= N` */
 
@@ -106,6 +107,7 @@ typedef enum {
 	SN_FIELD_NAME,    /* field-decl name, or the name in a `.field` access */
 	SN_PARAM_NAME,    /* parameter name */
 	SN_CALLEE_NAME,   /* the callee identifier of a call expression */
+	SN_QUERY_REF,     /* a query name naming the query a `map(Name)` runs over */
 	SN_ALLOC_TYPE,    /* the archetype name in `alloc Name(...)` */
 	SN_NAME_REF,      /* any other identifier reference (a variable) */
 	SN_POLICY_REF,    /* `!name` failure-policy marker trailing a fallible op (index/slice/call/pool-cap) */

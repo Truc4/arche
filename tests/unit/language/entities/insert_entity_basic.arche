@@ -1,0 +1,13 @@
+// RED until entities ship: `insert(B{ v: 2, tag: 7 })` — the entity (a row-as-value with named fields)
+// is the sole arg; the target pool is inferred from the entity's archetype. Replaces positional insert.
+// RUN: %arche build -o %t %s && %t | grep -qF "v=2 tag=7"
+#import { fmt }
+v   :: int;
+tag :: int;
+B :: arche { v, tag }
+[4]B;
+
+main :: proc() {
+  insert(B{ v: 2, tag: 7 })(_:, _:);
+  fmt.printf("v=%d tag=%d\n", B.v[0], B.tag[0]);
+}

@@ -33,6 +33,7 @@ typedef enum {
 	DECL_CONST,
 	DECL_USE,
 	DECL_ENUM,
+	DECL_QUERY, /* `Name :: query {cols}` — a compile-time archetype selector; emits no symbol */
 } DeclKind;
 
 typedef enum {

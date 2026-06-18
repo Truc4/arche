@@ -6,7 +6,7 @@ Particle :: arche { pos :: float, vel :: float }
 
 [10]Particle;
 
-bump :: map (pos, vel) {
+bump :: map (query { pos, vel }) {
   pos += vel;
 }
 

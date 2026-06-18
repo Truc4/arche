@@ -5,6 +5,6 @@
 Config :: arche { gravity }
 Thing  :: arche { v }
 
-accel :: map (v) {
+accel :: map (query { v }) {
   v = v + Config.gravity[0];
 }

@@ -4,6 +4,6 @@
 // RUN: true
 Node :: arche { key, val }
 
-bump :: map (val) {
+bump :: map (query { val }) {
   val = val + 1.0;
 }

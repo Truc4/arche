@@ -1,0 +1,16 @@
+// RED until anonymous storage + query-as-accessor ship: a collective folds a column of anonymous storage
+// THROUGH its query — `reduce(+, Vals.v)` where `Vals` is the only name for the `[N]arche {v}` pool.
+// RUN: %arche build -o %t %s && %t | grep -qF "sum=60"
+#import { fmt }
+v :: int;
+[4]arche { v };
+
+Vals :: query { v };
+
+main :: proc() {
+  insert(Vals{ v: 10 })(_:, _:);
+  insert(Vals{ v: 20 })(_:, _:);
+  insert(Vals{ v: 30 })(_:, _:);
+  sum := reduce(+, Vals.v);
+  fmt.printf("sum=%d\n", sum);
+}

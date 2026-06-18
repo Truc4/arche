@@ -16,7 +16,7 @@ Config  :: arche { gravity }
 Thing   :: arche { v }
 [1]Config;
 [2]Thing;
-bump :: map (v) {
+bump :: map (query { v }) {
   Config.gravity[0] = 7; // foreign write from a system → W0024 (a single-shot write; runs once, not per row)
 }
 main :: proc() {

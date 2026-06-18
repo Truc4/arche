@@ -5,7 +5,7 @@ Body :: arche { pos }
 
 [5]Body;
 
-dummy :: map (pos) {
+dummy :: map (query { pos }) {
   pos = pos;
 }
 

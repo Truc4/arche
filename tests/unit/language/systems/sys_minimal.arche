@@ -5,7 +5,7 @@ Particle :: arche { pos }
 
 [10]Particle;
 
-dummy :: map (pos) {
+dummy :: map (query { pos }) {
   pos = pos;
 }
 

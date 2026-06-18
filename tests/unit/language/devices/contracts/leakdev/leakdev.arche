@@ -3,7 +3,7 @@
 // shared vocabulary and belong in its `.ds.arche` datasheet. (This mirrors net.arche's top-level
 // public `socket :: opaque`.) Support file for device_no_types_or_alloc.arche.
 // RUN: true
-bump :: map (val) {
+bump :: map (query { val }) {
   val = val + 1.0;
 }
 

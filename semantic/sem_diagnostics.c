@@ -157,6 +157,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_non_exhaustive_match]          = { "E0210", "non_exhaustive_match",          CLASS_ERROR, 1 },
 	[SEM_DIAG_callable_in_archetype]         = { "E0211", "callable_in_archetype",         CLASS_ERROR, 1 },
 	[SEM_DIAG_wildcard_in_enum_match]        = { "E0212", "wildcard_in_enum_match",        CLASS_ERROR, 1 },
+	[SEM_DIAG_unknown_query]                 = { "E0215", "unknown_query",                 CLASS_ERROR, 1 },
+	[SEM_DIAG_run_targets_query]             = { "E0216", "run_targets_query",             CLASS_ERROR, 1 },
 
 	/* Lints */
 	[SEM_LINT_proc_could_be_func]            = { "W0001", "proc_could_be_func",            CLASS_LINT, 1 },
@@ -170,6 +172,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_unused_static_const]           = { "W0014", "unused_static_const",           CLASS_LINT, 1 },
 	[SEM_LINT_unused_enum]                   = { "W0015", "unused_enum",                   CLASS_LINT, 1 },
 	[SEM_LINT_discarded_ok]                  = { "W0016", "discarded_ok",                  CLASS_LINT, 1 },
+	[SEM_LINT_unused_query]                  = { "W0025", "unused_query",                  CLASS_LINT, 1 },
 	/* W0017 default-OFF: superseded by the failure-policy model. Every fallible pool-column index now
 	 * resolves to a policy — the implicit `!abort` proc default (a clean, bounds-checked crash, not raw
 	 * corruption) or an explicit `!undefined`/`!clamp`/`!zero`/`!name`. "raw, unguarded slot" is no
@@ -642,6 +645,24 @@ SemDiag *sem_emit_multiple_archetype_params(SemanticContext *ctx, SourceLoc loc,
 }
 SemDiag *sem_emit_handle_in_map_param(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_handle_in_map_param, loc, "handle column '%s' cannot be map parameter", name);
+}
+
+SemDiag *sem_emit_unknown_query(SemanticContext *ctx, SourceLoc loc, const char *map_name, const char *query_name) {
+	return sem_emit_(ctx, SEM_DIAG_unknown_query, loc,
+	                 "map '%s' references unknown query '%s' — declare it as `%s :: query {…}`", map_name, query_name,
+	                 query_name);
+}
+
+SemDiag *sem_emit_run_targets_query(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_run_targets_query, loc,
+	                 "'%s' is a query, not a map — `run` drives a map; a query is the domain a map runs over", name);
+}
+
+SemDiag *sem_emit_lint_unused_query(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path) {
+	return sem_emit_(
+	    ctx, SEM_LINT_unused_query, loc,
+	    "query '%s' is declared but never used (prefix with '_' to silence, or @allow(unused_query))%s%s%s", name,
+	    module_path ? " [" : "", module_path ? module_path : "", module_path ? "]" : "");
 }
 
 SemDiag *sem_emit_lint_map_writes_foreign_pool(SemanticContext *ctx, SourceLoc loc, const char *name) {

@@ -315,6 +315,15 @@ void hir_decl_free(HirDecl *decl) {
 	case HIR_DECL_PROC:
 		hir_proc_decl_free(decl->data.proc);
 		break;
+	case HIR_DECL_QUERY:
+		if (decl->data.query) {
+			free(decl->data.query->name);
+			for (int i = 0; i < decl->data.query->col_count; i++)
+				free(decl->data.query->cols[i]);
+			free(decl->data.query->cols);
+			free(decl->data.query);
+		}
+		break;
 	case HIR_DECL_MAP:
 		hir_map_decl_free(decl->data.map);
 		break;

@@ -1,0 +1,24 @@
+// A query naming a SUBSET of an archetype's columns still matches (cover, not equality). `Rich` has three
+// columns; a one-column `query { hp }` matches it and transforms just that column, the others untouched.
+// RUN: %arche build -o %t %s && %t | grep -qF "ok"
+#import { fmt }
+hp    :: int;
+armor :: int;
+speed :: int;
+Rich  :: arche { hp, armor, speed }
+[4]Rich;
+
+Wounded :: query { hp }
+
+tick :: map (Wounded) {
+  hp = hp - 1;
+}
+
+main :: proc() {
+  insert(Rich, 100, 7, 3)(_:, _:);
+  run tick;
+  fmt.assert(Rich.hp[0] == 99, "hp should be 99\n");
+  fmt.assert(Rich.armor[0] == 7, "armor untouched\n");
+  fmt.assert(Rich.speed[0] == 3, "speed untouched\n");
+  fmt.printf("ok\n");
+}

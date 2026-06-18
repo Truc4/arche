@@ -1665,6 +1665,59 @@ static CstTupleGroup *tgroup_lookup(const char *name) {
 	return NULL;
 }
 
+/* ---- query registry (mirrors the tgroup table): a named `Name :: query {…}` decl → its column node,
+ * so a `map(Name)` can resolve `Name` to its SN_PARAM columns at lowering time. Built once per root
+ * (build_queries), scanned per imported module so a query declared in a device datasheet is visible. */
+static SynText lower_binding_name(SyntaxView d); /* fwd: defined below */
+
+typedef struct {
+	char *name;
+	SyntaxView cols; /* the SN_QUERY_EXPR node bearing this query's SN_PARAM column children */
+} CstQuery;
+static CstQuery g_queries[128];
+static int g_query_count = 0;
+
+/* The SN_QUERY_EXPR child of a `Name :: query {…}` decl (the RHS form node). */
+static const SyntaxNode *query_expr_child(const SyntaxNode *d) {
+	for (int i = 0; i < d->child_count; i++)
+		if (d->children[i].tag == SE_NODE && d->children[i].as.node->kind == SN_QUERY_EXPR)
+			return d->children[i].as.node;
+	return NULL;
+}
+
+static void scan_queries(const SyntaxNode *root, const char *src) {
+	for (int i = 0; i < root->child_count; i++) {
+		if (root->children[i].tag != SE_NODE)
+			continue;
+		const SyntaxNode *d = root->children[i].as.node;
+		if (d->kind != SN_CONST_DECL || g_query_count >= 128)
+			continue;
+		const SyntaxNode *qe = query_expr_child(d);
+		if (!qe)
+			continue;
+		SynText nm = lower_binding_name((SyntaxView){d, src});
+		if (!nm.ptr)
+			continue;
+		g_queries[g_query_count].name = txt_dup(nm);
+		g_queries[g_query_count].cols = (SyntaxView){qe, src};
+		g_query_count++;
+	}
+}
+
+static void build_queries(const SyntaxNode *root, const char *src) {
+	g_query_count = 0;
+	scan_queries(root, src);
+}
+
+/* The column node (SN_QUERY_EXPR) of a named query, or an absent view if the name is unknown. */
+static SyntaxView query_cols_lookup(const char *name) {
+	if (name)
+		for (int i = 0; i < g_query_count; i++)
+			if (strcmp(g_queries[i].name, name) == 0)
+				return g_queries[i].cols;
+	return (SyntaxView){NULL, NULL};
+}
+
 /* Collapse a nested tuple-field access `arch.pos.x` (FIELD over FIELD over NAME,
  * where `pos` is a tuple group with component `x`) into the flattened column
  * `arch.pos_x`, matching the flattened archetype columns. Recurses over the tree. */
@@ -2106,6 +2159,40 @@ static void expand_group_assigns(HirMapDecl *as) {
 	}
 }
 
+/* `Name :: query {cols}` → a HirQueryDecl carrying the tuple-flattened column names. Emits no code;
+ * codegen reads it to resolve a collective's `Q.field` to the pool the query matches. */
+static HirDecl *lower_query_from(SyntaxView f, char *name) {
+	HirDecl *qd = hir_decl_create(HIR_DECL_QUERY);
+	HirQueryDecl *q = calloc(1, sizeof(HirQueryDecl));
+	q->name = name;
+	int np = sv_count(f, SN_PARAM);
+	int cap = 0;
+	for (int i = 0; i < np; i++) {
+		char *pn = sv_dup(sv_child(sv_child_at(f, SN_PARAM, i), SN_PARAM_NAME));
+		CstTupleGroup *g = tgroup_lookup(pn);
+		cap += g ? g->nsuf : 1;
+		free(pn);
+	}
+	q->cols = calloc(cap ? cap : 1, sizeof(char *));
+	q->col_count = 0;
+	for (int i = 0; i < np; i++) {
+		char *pn = sv_dup(sv_child(sv_child_at(f, SN_PARAM, i), SN_PARAM_NAME));
+		CstTupleGroup *g = tgroup_lookup(pn);
+		if (!g) {
+			q->cols[q->col_count++] = pn;
+			continue;
+		}
+		for (int j = 0; j < g->nsuf; j++) {
+			char *cn = malloc(strlen(pn) + 1 + strlen(g->suffix[j]) + 1);
+			sprintf(cn, "%s_%s", pn, g->suffix[j]);
+			q->cols[q->col_count++] = cn;
+		}
+		free(pn);
+	}
+	qd->data.query = q;
+	return qd;
+}
+
 static HirDecl *lower_map_from(SyntaxView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_MAP);
 	HirMapDecl *as = calloc(1, sizeof(HirMapDecl));
@@ -2114,10 +2201,25 @@ static HirDecl *lower_map_from(SyntaxView f, char *name) {
 	/* Expand whole-group vector ops (`pos = pos + vel`) into per-component blocks BEFORE the per-param
 	 * `pos.x`→`pos_x` rewrite below, so the produced scalar columns match the flattened params. */
 	expand_group_assigns(as);
-	int np = sv_count(f, SN_PARAM);
+	/* The map's columns come from the query it runs over: an inline `query {…}` child (a wrapped
+	 * SN_QUERY_EXPR), or a named query `map(Name)` (an SN_QUERY_REF) resolved through the registry. The
+	 * body stays from `f`; only the column source moves. Resolving named columns here — before the
+	 * `pos.x`→`pos_x` body rewrite below — keeps tuple-group flattening correct for named queries. */
+	SyntaxView cols = sv_child_at(f, SN_QUERY_EXPR, 0);
+	if (!sv_present(cols)) {
+		SyntaxView ref = sv_child_at(f, SN_QUERY_REF, 0);
+		if (sv_present(ref)) {
+			char *qn = sv_dup(ref);
+			cols = query_cols_lookup(qn);
+			free(qn);
+		}
+	}
+	if (!sv_present(cols))
+		cols = f; /* defensive: no query resolved → no SN_PARAM columns (an empty map) */
+	int np = sv_count(cols, SN_PARAM);
 	int pcount = 0;
 	for (int i = 0; i < np; i++) {
-		char *pn = sv_dup(sv_child(sv_child_at(f, SN_PARAM, i), SN_PARAM_NAME));
+		char *pn = sv_dup(sv_child(sv_child_at(cols, SN_PARAM, i), SN_PARAM_NAME));
 		CstTupleGroup *g = tgroup_lookup(pn);
 		pcount += g ? g->nsuf : 1;
 		free(pn);
@@ -2125,7 +2227,7 @@ static HirDecl *lower_map_from(SyntaxView f, char *name) {
 	as->params = calloc(pcount ? pcount : 1, sizeof(HirParam *));
 	as->param_count = 0;
 	for (int i = 0; i < np; i++) {
-		SyntaxView p = sv_child_at(f, SN_PARAM, i);
+		SyntaxView p = sv_child_at(cols, SN_PARAM, i);
 		char *pn = sv_dup(sv_child(p, SN_PARAM_NAME));
 		CstTupleGroup *g = tgroup_lookup(pn);
 		if (!g) {
@@ -2298,7 +2400,7 @@ static SyntaxView lower_rhs_form(SyntaxView d) {
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
 		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR ||
-		    k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
+		    k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_QUERY_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
 			SyntaxView v = {d.node->children[i].as.node, d.src};
 			return v;
 		}
@@ -2483,9 +2585,11 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		if (sv_present(rhs)) {
 			SyntaxNodeKind rk = sv_kind(rhs);
 			if (rk == SN_PROC_EXPR || rk == SN_FUNC_EXPR || rk == SN_POLICY_EXPR || rk == SN_SYS_EXPR ||
-			    rk == SN_ARCH_EXPR || rk == SN_GROUP_EXPR) {
+			    rk == SN_ARCH_EXPR || rk == SN_GROUP_EXPR || rk == SN_QUERY_EXPR) {
 				char *nm = txt_dup(lower_binding_name(d));
 				switch (rk) {
+				case SN_QUERY_EXPR:
+					return lower_query_from(rhs, nm);
 				case SN_PROC_EXPR: {
 					HirDecl *pd = lower_proc_from(rhs, nm);
 					/* Propagate the `@drop` decorator (a direct `@ drop` token pair on the
@@ -3036,6 +3140,9 @@ static void hir_rn_decl(HirDecl *d, const char *prefix, char **set, int count) {
 		for (int i = 0; i < d->data.map->stmt_count; i++)
 			hir_rn_stmt(d->data.map->stmts[i], prefix, set, count);
 		break;
+	case HIR_DECL_QUERY:
+		rn_owned(&d->data.query->name, prefix, set, count);
+		break;
 	case HIR_DECL_FUNC:
 		rn_owned(&d->data.func->name, prefix, set, count);
 		for (int i = 0; i < d->data.func->return_type_count; i++)
@@ -3087,6 +3194,8 @@ static const char *hir_decl_name(HirDecl *d) {
 		return d->data.proc->name;
 	case HIR_DECL_MAP:
 		return d->data.map->name;
+	case HIR_DECL_QUERY:
+		return d->data.query->name;
 	case HIR_DECL_FUNC:
 		return d->data.func->name;
 	case HIR_DECL_FUNC_GROUP:
@@ -3582,6 +3691,11 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 	 * Without this, a cross-unit `insert`/shape kept the group as a by-value `%struct.pos` column. */
 	for (int m = 0; m < g_module_count; m++)
 		scan_tgroups(g_modules[m].root, g_modules[m].src);
+	/* Named queries → column lists, for `map(Name)` resolution. Same root-then-modules visibility as
+	 * tuple groups, so a query declared in a device datasheet is reachable from a driver's map. */
+	build_queries(root, src);
+	for (int m = 0; m < g_module_count; m++)
+		scan_queries(g_modules[m].root, g_modules[m].src);
 	g_synth_arch_count = 0; /* synthetic archetypes minted from anonymous `arche {…}` literals */
 	/* Deep count: decls nested inside `#foreign { }` / `#module { }` block regions are collected
 	 * too (see the region recursion below), so the shallow top-level child count would undersize

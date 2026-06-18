@@ -18,6 +18,7 @@ typedef enum TokenKind {
 	TOK_ARCHETYPE,
 	TOK_PROC,
 	TOK_MAP,
+	TOK_QUERY,
 	TOK_FUNC,
 	TOK_LET,
 	TOK_FOR,

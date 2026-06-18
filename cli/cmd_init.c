@@ -60,6 +60,9 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		    "\n"
 		    "Particle :: arche { pos, vel }\n"
 		    "\n"
+		    "// A query names the columns a map runs over — define it once, run maps over it by name.\n"
+		    "Movers :: query { pos, vel }\n"
+		    "\n"
 		    "/// ```arche\n"
 		    "/// main :: proc() {\n"
 		    "///   insert(Particle, 10.0, 1.0)(_:, _:);\n"
@@ -67,7 +70,7 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		    "///   fmt.assert(Particle.pos[0] * 10 == 110, \"integrate did not run\\n\");\n"
 		    "/// }\n"
 		    "/// ```\n"
-		    "integrate :: map (pos, vel) {\n"
+		    "integrate :: map(Movers) {\n"
 		    "  pos = pos + vel;\n"
 		    "}\n";
 		return write_new_file(path, impl);

@@ -7,7 +7,7 @@
 v :: int;
 N :: arche { v }
 [2]N(2);
-bump :: map (v) {
+bump :: map (query { v }) {
   if (v > 0) {
     v = v + 1;
   }

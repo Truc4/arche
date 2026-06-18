@@ -1,0 +1,27 @@
+// A query touches ONLY archetypes that have ALL its columns. `Full` has {pos, vel} and is updated;
+// `PosOnly` lacks `vel`, so the `{pos, vel}` query never matches it and its rows are left untouched.
+// RUN: %arche build -o %t %s && %t | grep -qF "ok"
+#import { fmt }
+pos     :: float;
+vel     :: float;
+Full    :: arche { pos, vel }
+PosOnly :: arche { pos }
+[4]Full;
+[4]PosOnly;
+
+Movers :: query { pos, vel }
+
+step :: map (Movers) {
+  pos = pos + vel;
+}
+
+main :: proc() {
+  insert(Full, 10.0, 1.0)(_:, _:);
+  insert(PosOnly, 50.0)(_:, _:);
+  run step;
+  fp := Full.pos[0] * 10.0;
+  pp := PosOnly.pos[0] * 10.0;
+  fmt.assert(fp == 110.0, "Full.pos should be 11\n");
+  fmt.assert(pp == 500.0, "PosOnly should be untouched (still 50)\n");
+  fmt.printf("ok\n");
+}

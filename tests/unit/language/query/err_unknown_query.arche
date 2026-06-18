@@ -1,0 +1,16 @@
+// RED until Phase 4 (unknown_query diagnostic): a map naming a query that isn't declared must report a
+// precise "unknown query 'X'" error, not a generic undefined-symbol/no-shape error.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "unknown query 'Nonexistent'" %t.out
+#import { fmt }
+pos :: float;
+vel :: float;
+P   :: arche { pos, vel }
+[4]P;
+
+step :: map (Nonexistent) {
+  pos = pos + vel;
+}
+
+main :: proc() {
+  run step;
+}

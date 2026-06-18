@@ -8,7 +8,7 @@ Particle :: arche { pos }
 
 [10]Particle;
 
-bump :: map (pos) {
+bump :: map (query { pos }) {
   pos = pos + 2.0;
 }
 

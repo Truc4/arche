@@ -613,24 +613,35 @@ static int parse_func_return(Parser *parser, int is_extern) {
 	return 1;
 }
 
-/* map parameters are bare component names (no `: T`) between an already-consumed '(' and the
- * closing ')' (matched by the caller). */
-static int parse_map_param_list_body(Parser *parser) {
-	if (check(parser, TOK_RPAREN))
-		return 1;
-	do {
-		int param_cp = syntax_cp(parser);
-		if (!check(parser, TOK_IDENT)) {
-			error(parser, "Expected parameter name");
-			return 0;
-		}
+/* query columns: bare component names (no `: T`) inside `{ … }`. Assumes `query` is already consumed;
+ * this parses the brace list. It is the SAME production for a standalone `Name :: query {…}` decl and
+ * for an inline `map(query {…})`, so the column grammar is identical wherever a query appears. */
+static int parse_query_columns(Parser *parser) {
+	if (!match(parser, TOK_LBRACE)) {
+		error(parser, "Expected '{' after 'query'");
+		return 0;
+	}
+	if (!check(parser, TOK_RBRACE)) {
+		do {
+			if (check(parser, TOK_RBRACE)) /* trailing comma */
+				break;
+			int param_cp = syntax_cp(parser);
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected a column name");
+				return 0;
+			}
 
-		int param_name_cp = syntax_cp(parser);
-		advance(parser);
-		syntax_wrap(parser, param_name_cp, SN_PARAM_NAME);
+			int param_name_cp = syntax_cp(parser);
+			advance(parser);
+			syntax_wrap(parser, param_name_cp, SN_PARAM_NAME);
 
-		syntax_wrap(parser, param_cp, SN_PARAM);
-	} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
+			syntax_wrap(parser, param_cp, SN_PARAM);
+		} while (match(parser, TOK_COMMA) && !check(parser, TOK_RBRACE));
+	}
+	if (!match(parser, TOK_RBRACE)) {
+		error(parser, "Expected '}' to close query");
+		return 0;
+	}
 	return 1;
 }
 
@@ -1391,6 +1402,11 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 		}
 		return 1;
 	}
+	if (check(parser, TOK_QUERY)) {
+		advance(parser); /* consume 'query' */
+		*out_kind = SN_QUERY_EXPR;
+		return parse_query_columns(parser);
+	}
 	if (check(parser, TOK_MAP)) {
 		advance(parser); /* consume 'map' */
 		*out_kind = SN_SYS_EXPR;
@@ -1398,8 +1414,22 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			error(parser, "Expected '(' after 'map'");
 			return 0;
 		}
-		if (!parse_map_param_list_body(parser))
+		/* map runs over a query THING in its parens: an inline `query {…}` literal (wrapped as a child
+		 * SN_QUERY_EXPR) or a named query (an SN_QUERY_REF leaf). No bare column list. */
+		if (check(parser, TOK_QUERY)) {
+			int q_cp = syntax_cp(parser);
+			advance(parser); /* consume 'query' */
+			if (!parse_query_columns(parser))
+				return 0;
+			syntax_wrap(parser, q_cp, SN_QUERY_EXPR);
+		} else if (check(parser, TOK_IDENT)) {
+			int ref_cp = syntax_cp(parser);
+			advance(parser); /* the query name */
+			syntax_wrap(parser, ref_cp, SN_QUERY_REF);
+		} else {
+			error(parser, "Expected a query in `map(...)` — a name `map(Movers)` or a literal `map(query {…})`");
 			return 0;
+		}
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')'");
 			return 0;

@@ -13,7 +13,7 @@ N :: arche { k, a, b, c }
 [40]N(40) {
   k: 1, a: 1, b: 1, c: 1.0
 }
-negk :: map (k) {
+negk :: map (query { k }) {
   k = 0 - k;
 }
 main :: proc() {

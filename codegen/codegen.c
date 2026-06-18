@@ -1099,7 +1099,15 @@ static void drop_exit_all_for_return(CodegenContext *ctx) {
 
 /* Per-unit symbol/linkage helpers (defined below, near monomorph_mangle). */
 static const char *cg_fnsym(CodegenContext *ctx, const char *name, int is_extern, char *buf, size_t n);
-/* Archetypes covering a map's params (map ABI param list) — defined near emit_cross_unit_declares. */
+/* The shared query evaluator — archetypes covering a column list (the implicit query a map runs over).
+ * Map matching, the `run` site's component check, foreign-pool derivation, and the cross-unit declare
+ * all key off these so they can never disagree (the ABI-agreement invariant). Defined near
+ * emit_cross_unit_declares. */
+static int query_match_archs(CodegenContext *ctx, const char **cols, int ncol, const char **out, int max);
+static int query_foreign_pools(CodegenContext *ctx, const char **cols, int ncol, HirStmt **stmts, int nstmt,
+                               const char **out, int max);
+static int map_query_cols(HirMapDecl *map, const char **cols, int max);
+/* Archetypes covering a map's params (map ABI param list) — thin wrappers over the evaluator above. */
 static int collect_map_matching_archs(CodegenContext *ctx, HirMapDecl *map, const char **out, int max);
 static int collect_map_foreign_pools(CodegenContext *ctx, HirMapDecl *map, const char **out, int max);
 
@@ -1877,33 +1885,6 @@ static const char *get_shaped_field_info(CodegenContext *ctx, HirExpr *field_exp
 	return NULL;
 }
 
-/* Check if archetype has a field with given name */
-static int archetype_has_field(HirArchetypeDecl *arch, const char *field_name) {
-	for (int i = 0; i < arch->field_count; i++) {
-		if (strcmp(arch->fields[i]->name, field_name) == 0) {
-			return 1;
-		}
-	}
-	return 0;
-}
-
-/* Check if archetype has all required fields for a map */
-static int archetype_matches_map(HirArchetypeDecl *arch, HirMapDecl *map) {
-	if (!arch || !map || !map->params) {
-		return 0;
-	}
-	for (int i = 0; i < map->param_count; i++) {
-		if (!map->params[i] || !map->params[i]->name) {
-			return 0;
-		}
-		const char *param_name = map->params[i]->name;
-		if (!archetype_has_field(arch, param_name)) {
-			return 0;
-		}
-	}
-	return 1;
-}
-
 /* Forward declarations */
 static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_buf);
 static void codegen_statement(CodegenContext *ctx, HirStmt *stmt);
@@ -2218,8 +2199,80 @@ static char *emit_vec_combine(CodegenContext *ctx, const char *op, int is_float,
 	return r;
 }
 
-/* For a collective's column argument `Pool.field`, emit the column base pointer and the pool's live row
- * count, and report the element LLVM type. Returns 1 on a real archetype column, 0 otherwise. */
+/* The named query `name`, or NULL. */
+static HirQueryDecl *find_query_decl(CodegenContext *ctx, const char *name) {
+	if (!name)
+		return NULL;
+	for (int d = 0; d < ctx->ast->decl_count; d++)
+		if (ctx->ast->decls[d]->kind == HIR_DECL_QUERY && ctx->ast->decls[d]->data.query->name &&
+		    strcmp(ctx->ast->decls[d]->data.query->name, name) == 0)
+			return ctx->ast->decls[d]->data.query;
+	return NULL;
+}
+
+/* A collective's column base may be a query name (`reduce(+, Q.col)`). Resolve it to the single matched,
+ * allocated shape (the same evaluator maps use). Returns: 1 → resolved (*out = canonical shape name);
+ * 0 → not a query (*out = name, use as-is); -1 → a query matching 0 or >1 allocated shapes (an error is
+ * printed for >1). The caller emits the matched pool's pointer directly when this returns 1. */
+static int resolve_collective_query(CodegenContext *ctx, const char *name, const char **out) {
+	*out = name;
+	HirQueryDecl *q = find_query_decl(ctx, name);
+	if (!q)
+		return 0;
+	const char *qcols[256];
+	int qn = q->col_count < 256 ? q->col_count : 256;
+	for (int i = 0; i < qn; i++)
+		qcols[i] = q->cols[i];
+	const char *raw[256];
+	int rc = query_match_archs(ctx, qcols, qn, raw, 256);
+	const char *matched[256];
+	int mc = 0;
+	for (int i = 0; i < rc; i++) {
+		const char *cn = canonical_arch_name(ctx, raw[i]);
+		if (get_arch_static_capacity(ctx, cn) <= 0)
+			continue;
+		int seen = 0;
+		for (int j = 0; j < mc; j++)
+			if (strcmp(matched[j], cn) == 0) {
+				seen = 1;
+				break;
+			}
+		if (!seen && mc < 256)
+			matched[mc++] = cn;
+	}
+	if (mc > 1) {
+		fprintf(stderr,
+		        "Error: a collective over the multi-archetype query '%s' is not yet supported — it matches "
+		        "%d allocated shapes; reduce/scan/sort needs a query resolving to one shape\n",
+		        name, mc);
+		ctx->had_error = 1;
+		return -1;
+	}
+	if (mc == 1) {
+		*out = matched[0];
+		return 1;
+	}
+	return -1; /* a query that matches no allocated shape */
+}
+
+/* Emit the matched pool's struct pointer into `base_buf` for a query-resolved collective base (the query
+ * name has no value of its own): a static pool's global, or the loaded handle for a dynamic one. */
+static void emit_query_pool_ptr(CodegenContext *ctx, const char *arch_name, int is_static, char *base_buf,
+                                size_t buf_sz) {
+	if (is_static) {
+		snprintf(base_buf, buf_sz, "@%s", arch_name);
+	} else {
+		char *loaded = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", loaded, arch_name, arch_name,
+		                  arch_name);
+		snprintf(base_buf, buf_sz, "%s", loaded);
+		free(loaded);
+	}
+}
+
+/* For a collective's column argument `Pool.field` — or `Query.field`, which resolves to the single
+ * allocated shape the query matches — emit the column base pointer and the pool's live row count, and
+ * report the element LLVM type. Returns 1 on a real archetype column, 0 otherwise. */
 static int emit_collective_column(CodegenContext *ctx, HirExpr *colexpr, char *colptr_out, char *count_out,
                                   const char **ty_out, int *is_float_out) {
 	if (!colexpr || colexpr->kind != HIR_EXPR_FIELD)
@@ -2228,6 +2281,9 @@ static int emit_collective_column(CodegenContext *ctx, HirExpr *colexpr, char *c
 	if (!base || base->kind != HIR_EXPR_NAME)
 		return 0;
 	const char *arch_name = base->data.name.name;
+	int query_resolved = resolve_collective_query(ctx, arch_name, &arch_name);
+	if (query_resolved < 0)
+		return 0;
 	HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
 	if (!arch)
 		return 0;
@@ -2246,7 +2302,10 @@ static int emit_collective_column(CodegenContext *ctx, HirExpr *colexpr, char *c
 	int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
 
 	char base_buf[256];
-	codegen_expression(ctx, base, base_buf); /* the pool struct pointer */
+	if (query_resolved == 1)
+		emit_query_pool_ptr(ctx, arch_name, is_static, base_buf, sizeof(base_buf));
+	else
+		codegen_expression(ctx, base, base_buf); /* the pool struct pointer */
 
 	char *ptr_val = gen_value_name(ctx);
 	if (is_static) {
@@ -2932,6 +2991,9 @@ static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 	if (!base || base->kind != HIR_EXPR_NAME)
 		return;
 	const char *arch_name = base->data.name.name;
+	int query_resolved = resolve_collective_query(ctx, arch_name, &arch_name);
+	if (query_resolved < 0)
+		return;
 	HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
 	if (!arch)
 		return;
@@ -2939,7 +3001,10 @@ static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 	int is_static = cap > 0;
 
 	char base_buf[256];
-	codegen_expression(ctx, base, base_buf);
+	if (query_resolved == 1)
+		emit_query_pool_ptr(ctx, arch_name, is_static, base_buf, sizeof(base_buf));
+	else
+		codegen_expression(ctx, base, base_buf);
 
 	/* Gather every column's base pointer + element type; remember the key column + its sort kind/width. */
 	char **cptr = calloc(arch->field_count ? arch->field_count : 1, sizeof(char *));
@@ -8154,15 +8219,15 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		int matching_count = 0;
 		int matched_components = 0; /* a shape provides the components, even if no pool backs it */
 
-		for (int d = 0; d < ctx->ast->decl_count; d++) {
-			HirDecl *decl = ctx->ast->decls[d];
-			if (decl->kind != HIR_DECL_ARCHETYPE)
-				continue;
-			HirArchetypeDecl *arch = decl->data.archetype;
-			if (!archetype_matches_map(arch, map))
-				continue;
+		/* Component match via the shared query evaluator (same set every ABI site derives), then keep
+		 * only shapes a driver actually allocated (canonical + capacity filter + dedup). */
+		const char *run_cols[256];
+		int run_ncol = map_query_cols(map, run_cols, 256);
+		const char *comp_match[256];
+		int comp_count = query_match_archs(ctx, run_cols, run_ncol, comp_match, 256);
+		for (int i = 0; i < comp_count; i++) {
 			matched_components = 1;
-			const char *cn = canonical_arch_name(ctx, arch->name);
+			const char *cn = canonical_arch_name(ctx, comp_match[i]);
 			if (get_arch_static_capacity(ctx, cn) <= 0)
 				continue; /* shape defined but no driver pool — not a runnable shape */
 			int seen = 0;
@@ -10259,21 +10324,24 @@ static void codegen_build_drop_registry(CodegenContext *ctx) {
 	}
 }
 
-/* Archetypes whose fields cover all of a map's params (the map's ABI param list). Shared by the
- * map definition (codegen_map_decl) and its cross-unit declare so they agree exactly. */
-static int collect_map_matching_archs(CodegenContext *ctx, HirMapDecl *map, const char **out, int max) {
+/* The shared query evaluator: archetypes whose fields cover all of `cols` (the columns a query names).
+ * Returns arch->name in ast decl order — the raw structural required-component match, with NO canonical
+ * collapse or capacity filter (callers that need those apply them). Every consumer (map matching, the
+ * `run` component check, foreign-pool derivation, the cross-unit declare) routes through here so they
+ * derive an identical set and the map ABI agrees across all sites. */
+static int query_match_archs(CodegenContext *ctx, const char **cols, int ncol, const char **out, int max) {
 	int n = 0;
-	if (!(map->param_count > 0 && map->params[0] && map->params[0]->name))
+	if (!(ncol > 0 && cols && cols[0]))
 		return 0;
 	for (int d = 0; d < ctx->ast->decl_count; d++) {
 		if (ctx->ast->decls[d]->kind != HIR_DECL_ARCHETYPE)
 			continue;
 		HirArchetypeDecl *arch = ctx->ast->decls[d]->data.archetype;
 		int has_all = 1;
-		for (int p = 0; p < map->param_count && has_all; p++) {
+		for (int p = 0; p < ncol && has_all; p++) {
 			int found = 0;
 			for (int f = 0; f < arch->field_count; f++)
-				if (strcmp(arch->fields[f]->name, map->params[p]->name) == 0) {
+				if (strcmp(arch->fields[f]->name, cols[p]) == 0) {
 					found = 1;
 					break;
 				}
@@ -10283,6 +10351,24 @@ static int collect_map_matching_archs(CodegenContext *ctx, HirMapDecl *map, cons
 			out[n++] = arch->name;
 	}
 	return n;
+}
+
+/* A map's columns (its query) as a name list. Matches the old guard: empty if the first param is
+ * missing (then query_match_archs also returns empty). */
+static int map_query_cols(HirMapDecl *map, const char **cols, int max) {
+	if (!(map->param_count > 0 && map->params[0] && map->params[0]->name))
+		return 0;
+	int n = 0;
+	for (int p = 0; p < map->param_count && n < max; p++)
+		cols[n++] = map->params[p]->name;
+	return n;
+}
+
+/* Archetypes covering a map's params (the map's ABI param list) — a thin wrapper over the evaluator. */
+static int collect_map_matching_archs(CodegenContext *ctx, HirMapDecl *map, const char **out, int max) {
+	const char *cols[256];
+	int ncol = map_query_cols(map, cols, 256);
+	return query_match_archs(ctx, cols, ncol, out, max);
 }
 
 /* True if `name` appears as a NAME anywhere in the expression (e.g. the base of `Config.center[0]`). */
@@ -10366,13 +10452,14 @@ static int stmt_refs_name(const HirStmt *s, const char *name) {
  * referencing the pool's global and relying on weak-symbol interposition. Deterministic order (ast decl
  * order) so the define, the `run` call, and the cross-unit trampoline/declare build an identical ABI.
  * Returns 0 in whole-program builds (the direct global ref is kept — zero indirection). */
-static int collect_map_foreign_pools(CodegenContext *ctx, HirMapDecl *map, const char **out, int max) {
+static int query_foreign_pools(CodegenContext *ctx, const char **cols, int ncol, HirStmt **stmts, int nstmt,
+                               const char **out, int max) {
 	if (!ctx->per_unit)
 		return 0;
 	/* Compute the matching (iterated) set HERE, internally, so every ABI site derives an identical foreign
 	 * list regardless of how its own matching set was filtered/ordered. */
 	const char *matching[256];
-	int mcount = collect_map_matching_archs(ctx, map, matching, 256);
+	int mcount = query_match_archs(ctx, cols, ncol, matching, 256);
 	int n = 0;
 	for (int d = 0; d < ctx->ast->decl_count; d++) {
 		if (ctx->ast->decls[d]->kind != HIR_DECL_ARCHETYPE)
@@ -10398,12 +10485,19 @@ static int collect_map_foreign_pools(CodegenContext *ctx, HirMapDecl *map, const
 		if (dup)
 			continue;
 		int refd = 0;
-		for (int s = 0; s < map->stmt_count && !refd; s++)
-			refd = stmt_refs_name(map->stmts[s], an);
+		for (int s = 0; s < nstmt && !refd; s++)
+			refd = stmt_refs_name(stmts[s], an);
 		if (refd && n < max)
 			out[n++] = cn;
 	}
 	return n;
+}
+
+/* The foreign pools a map reads — a thin wrapper deriving the query (its columns) and body from the map. */
+static int collect_map_foreign_pools(CodegenContext *ctx, HirMapDecl *map, const char **out, int max) {
+	const char *cols[256];
+	int ncol = map_query_cols(map, cols, 256);
+	return query_foreign_pools(ctx, cols, ncol, map->stmts, map->stmt_count, out, max);
 }
 
 /* Per-unit: emit `declare`s for every arche func/proc defined in a DIFFERENT unit, so this unit's
@@ -10691,6 +10785,9 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		switch (decl->kind) {
 		case HIR_DECL_ARCHETYPE:
 			/* Already emitted in the hoist pre-pass above. */
+			break;
+		case HIR_DECL_QUERY:
+			/* A named column set — compile-time only; resolves collective `Q.field` sites, emits no code. */
 			break;
 		case HIR_DECL_STATIC: {
 			HirStaticDecl *s = decl->data.static_decl;

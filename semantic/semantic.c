@@ -1023,6 +1023,8 @@ static char *sv_name_expr_dup(SyntaxView e);
 static char *sv_resolved_name(SemanticContext *ctx, SyntaxView v);
 static Operator sem_tok_to_op(TokenKind k);
 static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv);
+/* Copy a named query's columns into each `map(Name)` summary, once all DECL_QUERY summaries exist. */
+static void sem_resolve_map_queries(SemanticContext *ctx);
 static void sem_expand_tuple_groups_table(SemanticContext *ctx);
 static void sem_fill_decl_type_ids(SemanticContext *ctx, DeclSummary *ds);
 static char *sem_own_str(SemanticContext *ctx, char *s);
@@ -1433,6 +1435,20 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 				 * (`name :: "linux"`). The length-family fields resolve to int. */
 				if (semantic_get_const_value(ctx, idnt) != NULL)
 					goto done;
+				/* A query name is a valid field base in a collective (`reduce(+, Q.col)`): `Q.col`
+				 * resolves to the column of whatever shape the query matches. Accept it here (codegen
+				 * does the resolution); without this it would read as an undefined variable. */
+				{
+					int is_query = 0;
+					for (int qi = 0; qi < ctx->decl_count; qi++)
+						if (ctx->decls[qi] && ctx->decls[qi]->kind == DECL_QUERY && ctx->decls[qi]->name &&
+						    strcmp(ctx->decls[qi]->name, idnt) == 0) {
+							is_query = 1;
+							break;
+						}
+					if (is_query)
+						goto done;
+				}
 				sem_emit_undefined_field_base(ctx, field_loc, idnt);
 				goto done;
 			}
@@ -1656,6 +1672,27 @@ static TypeId archetype_field_type_id(SemanticContext *ctx, const char *base_nam
 		VariableInfo *var = find_variable(ctx, base_name);
 		if (var && var->archetype_name)
 			arch = find_archetype(ctx, var->archetype_name);
+	}
+	if (!arch) {
+		/* A query base (`Q.col` in a collective): type the column off any shape the query matches (all
+		 * matching shapes share the column's backing type — that's what makes them matchable). */
+		DeclSummary *qd = NULL;
+		for (int i = 0; i < ctx->decl_count; i++)
+			if (ctx->decls[i] && ctx->decls[i]->kind == DECL_QUERY && ctx->decls[i]->name &&
+			    strcmp(ctx->decls[i]->name, base_name) == 0) {
+				qd = ctx->decls[i];
+				break;
+			}
+		if (qd)
+			for (int a = 0; a < ctx->archetype_count && !arch; a++) {
+				ArchetypeInfo *ai = ctx->archetypes[a];
+				int covers = 1;
+				for (int p = 0; p < qd->param_count && covers; p++)
+					if (!find_field(ai, qd->params[p].name))
+						covers = 0;
+				if (covers)
+					arch = ai;
+			}
 	}
 	if (arch) {
 		FieldInfo *field = find_field(arch, field_name);
@@ -2810,8 +2847,23 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		break;
 	}
 
-	case SN_RUN_STMT:
+	case SN_RUN_STMT: {
+		/* `run X` drives a MAP. If X names a query, that's a category error — a query is the domain a
+		 * map runs over, not something runnable itself. */
+		SynText tn = sv_token(v, TOK_IDENT);
+		if (tn.ptr) {
+			char *rn = sem_txt_dup(tn);
+			for (int i = 0; i < ctx->decl_count; i++) {
+				DeclSummary *d = ctx->decls[i];
+				if (d && d->kind == DECL_QUERY && d->name && rn && strcmp(d->name, rn) == 0) {
+					sem_emit_run_targets_query(ctx, loc, rn);
+					break;
+				}
+			}
+			free(rn);
+		}
 		break;
+	}
 
 	case SN_EXPR_STMT:
 		ctx->stmt_call_ok = 1;
@@ -5236,6 +5288,8 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 		return sem_tyid_of_name(ctx, "type");
 	case DECL_FUNC_GROUP:
 		return TYID_UNKNOWN; /* an overload SET has no single type — a principled "none", not a dropped kind */
+	case DECL_QUERY:
+		return TYID_UNKNOWN; /* a query names a column set, not a value/type — no ⟨type⟩ slot */
 	case DECL_WORLD:
 	case DECL_USE:
 		return TYID_UNKNOWN; /* not value/type bindings — no `⟨type⟩` slot to fill */
@@ -5739,6 +5793,9 @@ static void analyze_decl(SemanticContext *ctx, DeclSummary *ds) {
 		break;
 	case DECL_ENUM:
 		/* Registered in pass 0 (enum type + variants); erased before lowering. */
+		break;
+	case DECL_QUERY:
+		/* A column set — no body to analyze; its columns are validated where a map consumes them. */
 		break;
 	}
 
@@ -6488,7 +6545,7 @@ static SyntaxView sem_rhs_form(SyntaxView d) {
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
 		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR ||
-		    k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
+		    k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_QUERY_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
 			SyntaxView v = {d.node->children[i].as.node, d.src};
 			return v;
 		}
@@ -7254,6 +7311,10 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 	if (g_sem_extra_inline)
 		sem_inline_module(ctx, g_sem_extra_inline, 1); /* the open file's OWN device → same unit (see self_unit) */
 
+	/* Now every DECL_QUERY (root + inlined modules) is in the table — resolve each `map(Name)` to its
+	 * named query's columns, so the map's body types against those columns like an inline map does. */
+	sem_resolve_map_queries(ctx);
+
 	/* Scope resolution snapshot: the tree-qualify pass in build_decl_table binds every `mod.member`
 	 * reference/call to its member's qualified identity (looked up by literal name in the module's
 	 * export set, no prefix stripping), records it in the callee_name/ref_name channels, and emits a
@@ -7588,6 +7649,48 @@ static void sem_check_dead_code(SemanticContext *ctx) {
 		}
 		free(referenced);
 	}
+
+	/* W0025 unused_query — a `query {…}` no map references. Query refs (`map(Name)`'s SN_QUERY_REF) are
+	 * not in the id-keyed channels, so usage is detected by a direct scan of map decls. Same origin/
+	 * crate-kind roots as the data-decl lints above. */
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *q = ctx->decls[i];
+		if (!q || q->kind != DECL_QUERY || !q->name || q->name[0] == '_')
+			continue;
+		if (q->origin == DECL_ORIGIN_STDLIB || q->origin == DECL_ORIGIN_CORE)
+			continue;
+		if (q->origin == DECL_ORIGIN_USER_MODULE && q->visibility == VIS_EXPORTED)
+			continue;
+		if (q->origin == DECL_ORIGIN_ENTRY && core_off > 0 && q->loc.line <= core_off)
+			continue;
+		if (q->origin == DECL_ORIGIN_ENTRY && !entry_is_binary)
+			continue;
+		int used = 0;
+		for (int j = 0; j < ctx->decl_count && !used; j++) {
+			DeclSummary *m = ctx->decls[j];
+			if (!m || m->kind != DECL_SYS)
+				continue;
+			SyntaxView form = sem_rhs_form(m->node);
+			if (!sv_present(form))
+				continue;
+			SyntaxView ref = sv_child_at(form, SN_QUERY_REF, 0);
+			if (!sv_present(ref))
+				continue;
+			char *rn = sem_cv_dup(ref);
+			if (rn && strcmp(rn, q->name) == 0)
+				used = 1;
+			free(rn);
+		}
+		if (used)
+			continue;
+		ctx->active_allow_slugs = q->allow_slugs;
+		ctx->active_allow_slug_count = q->allow_slug_count;
+		if (!sem_diag_slug_suppressed(ctx, "unused_query"))
+			sem_emit_lint_unused_query(ctx, q->loc, q->name, sem_decl_module_path(ctx, q));
+		ctx->active_allow_slugs = NULL;
+		ctx->active_allow_slug_count = 0;
+	}
+
 	free(reachable);
 	free(work);
 }
@@ -8527,6 +8630,8 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 		kind = DECL_FUNC_GROUP;
 	else if (fk == SN_ENUM_EXPR)
 		kind = DECL_ENUM;
+	else if (fk == SN_QUERY_EXPR)
+		kind = DECL_QUERY; /* a column set; its SN_PARAM children populate ds->params via the generic loop */
 	else if (fk == SN_ARCH_EXPR)
 		kind = DECL_ARCHETYPE;
 	else
@@ -8617,11 +8722,21 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 		}
 		return ds;
 	}
-	int np = sv_count(form, SN_PARAM);
+	/* A map's columns come from the query it runs over. An inline `map(query {…})` carries them in a
+	 * child SN_QUERY_EXPR; a named `map(Name)` carries an SN_QUERY_REF whose columns are copied in by a
+	 * post-pass (sem_resolve_map_queries) once all DECL_QUERY summaries exist. A query decl itself is the
+	 * SN_QUERY_EXPR form, so its own SN_PARAM children flow through directly. */
+	SyntaxView col_src = form;
+	if (kind == DECL_SYS) {
+		SyntaxView iq = sv_child_at(form, SN_QUERY_EXPR, 0);
+		if (sv_present(iq))
+			col_src = iq;
+	}
+	int np = sv_count(col_src, SN_PARAM);
 	ds->param_count = np;
 	ds->params = calloc(np ? np : 1, sizeof(ParamSummary));
 	for (int i = 0; i < np; i++)
-		ds->params[i] = sem_param_summary_node(sv_child_at(form, SN_PARAM, i));
+		ds->params[i] = sem_param_summary_node(sv_child_at(col_src, SN_PARAM, i));
 	if (kind == DECL_PROC) {
 		ds->is_extern = !sv_has_token(form, TOK_LBRACE);
 		ds->is_variadic = sv_has_token(form, TOK_DOTDOTDOT);
@@ -8639,6 +8754,45 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 			ds->return_type_nodes[i] = sem_type_at(form, i);
 	}
 	return ds;
+}
+
+/* Resolve `map(Name)`: copy the named query's columns into the map summary's params, so the map body
+ * types against those columns. Runs after the whole table (root + inlined modules) is built, so every
+ * DECL_QUERY is present. Inline `map(query {…})` maps already have params (sourced in decl_summary_from)
+ * and are skipped. An unresolved name leaves the map param-less; Phase 4 diagnoses it. */
+static void sem_resolve_map_queries(SemanticContext *ctx) {
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *m = ctx->decls[i];
+		if (!m || m->kind != DECL_SYS || m->param_count > 0)
+			continue;
+		SyntaxView form = sem_rhs_form(m->node);
+		if (!sv_present(form))
+			continue;
+		SyntaxView ref = sv_child_at(form, SN_QUERY_REF, 0);
+		if (!sv_present(ref))
+			continue; /* not a named-query map (an inline/empty map) */
+		char *qn = sem_cv_dup(ref);
+		SyntaxView qcols = {NULL, NULL};
+		for (int j = 0; j < ctx->decl_count; j++) {
+			DeclSummary *q = ctx->decls[j];
+			if (q && q->kind == DECL_QUERY && q->name && qn && strcmp(q->name, qn) == 0) {
+				qcols = sem_rhs_form(q->node); /* the SN_QUERY_EXPR bearing the columns */
+				break;
+			}
+		}
+		if (!sv_present(qcols)) {
+			sem_emit_unknown_query(ctx, m->loc, m->name ? m->name : "<map>", qn ? qn : "?");
+			free(qn);
+			continue; /* unknown query — left param-less */
+		}
+		free(qn);
+		int np = sv_count(qcols, SN_PARAM);
+		m->param_count = np;
+		free(m->params);
+		m->params = calloc(np ? np : 1, sizeof(ParamSummary));
+		for (int k = 0; k < np; k++)
+			m->params[k] = sem_param_summary_node(sv_child_at(qcols, SN_PARAM, k));
+	}
 }
 
 static void free_decl_summary(DeclSummary *ds); /* fwd */

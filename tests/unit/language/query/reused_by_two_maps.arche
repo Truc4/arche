@@ -1,0 +1,29 @@
+// One named query, two maps. The query is the shared domain; each map is a distinct transform over it.
+// RUN: %arche build -o %t %s && %t | grep -qF "ok"
+#import { fmt }
+pos :: float;
+vel :: float;
+P   :: arche { pos, vel }
+[4]P;
+
+Movers :: query { pos, vel }
+
+integrate :: map (Movers) {
+  pos = pos + vel;
+}
+
+damp :: map (Movers) {
+  vel = vel * 0.5;
+}
+
+main :: proc() {
+  insert(P, 10.0, 2.0)(_:, _:);
+  run integrate; // pos 10 -> 12
+  run damp; // vel 2 -> 1
+  run integrate; // pos 12 -> 13
+  p := P.pos[0] * 10.0;
+  v := P.vel[0] * 10.0;
+  fmt.assert(p == 130.0, "pos should be 13\n");
+  fmt.assert(v == 10.0, "vel should be 1\n");
+  fmt.printf("ok\n");
+}

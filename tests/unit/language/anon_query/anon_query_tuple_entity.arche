@@ -1,0 +1,22 @@
+// RED until anonymous storage + query-as-accessor + entities ship: the full idiom with TUPLE-GROUP columns
+// — anonymous storage, a named query as the handle, an entity constructed through the query with grouped
+// tuple fields, and reads through the query.
+// RUN: %arche build -o %t %s && %t | grep -qF "p=4 6"
+#import { fmt }
+pos(x, y) :: float;
+vel(x, y) :: float;
+[2]arche { pos, vel };
+
+Movers :: query { pos, vel };
+
+step :: map(Movers) {
+  pos = pos + vel;
+}
+
+main :: proc() {
+  insert(Movers{ pos: (1.0, 2.0), vel: (3.0, 4.0) })(_:, _:);
+  run step;
+  px := Movers.pos.x[0] * 1.0;
+  py := Movers.pos.y[0] * 1.0;
+  fmt.printf("p=%.0f %.0f\n", px, py);
+}

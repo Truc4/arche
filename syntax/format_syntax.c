@@ -124,7 +124,8 @@ static int no_space_before(TokenKind t, TokenKind prev, TokenKind next, SyntaxNo
  * fields, enum variants) — as opposed to a statement/decl block (proc body, `#foreign`/`#module`
  * region), which always breaks. Omissions are safe: an unlisted brace keeps the legacy block path. */
 static int is_list_brace_parent(SyntaxNodeKind p) {
-	return p == SN_ARRAY_LIT_EXPR || p == SN_USE_DECL || p == SN_GROUP_EXPR || p == SN_ARCH_EXPR || p == SN_ENUM_EXPR;
+	return p == SN_ARRAY_LIT_EXPR || p == SN_USE_DECL || p == SN_GROUP_EXPR || p == SN_ARCH_EXPR || p == SN_ENUM_EXPR ||
+	       p == SN_QUERY_EXPR;
 }
 
 /* A `( … )` that holds a genuine comma list — call args, proc/func/map params + out-params — and so

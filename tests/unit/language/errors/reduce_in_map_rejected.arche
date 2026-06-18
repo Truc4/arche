@@ -5,7 +5,7 @@ v :: int;
 s :: int;
 N :: arche { v, s }
 [3]N(3);
-bad :: map (v, s) {
+bad :: map (query { v, s }) {
   s = reduce(+, v);
 }
 main :: proc() {

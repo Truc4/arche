@@ -8,7 +8,7 @@ Particle :: arche { pos :: float, vel :: float }
 log_step :: proc() {
   fmt.print("step\n");
 }
-move_sys :: map (pos, vel) {
+move_sys :: map (query { pos, vel }) {
   pos = pos + vel;
   log_step()();
 }

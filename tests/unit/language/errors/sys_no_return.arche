@@ -4,7 +4,7 @@
 Mover :: arche { pos :: float, vel :: float }
 [4]Mover(4);
 
-step :: map (pos, vel) {
+step :: map (query { pos, vel }) {
   return;
 }
 

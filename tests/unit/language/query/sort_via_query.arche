@@ -1,0 +1,17 @@
+// RED until Phase 5: `sort(Q.col)` sorts the matched pool by that column, like `sort(Pool.col)`.
+// RUN: %arche build -o %t %s && %t | grep -qF "min=1 max=9"
+#import { fmt }
+v :: int;
+N :: arche { v }
+[8]N;
+
+Vals :: query { v }
+
+main :: proc() {
+  insert(N, 5)(_:, _:);
+  insert(N, 9)(_:, _:);
+  insert(N, 1)(_:, _:);
+  insert(N, 3)(_:, _:);
+  sort(Vals.v);
+  fmt.printf("min=%d max=%d\n", N.v[0], N.v[3]);
+}

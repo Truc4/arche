@@ -16,6 +16,6 @@ Particle :: arche { pos, vel }
 ///   fmt.printf("widget_doctest_ok\n");
 /// }
 /// ```
-integrate :: map (pos, vel) {
+integrate :: map (query { pos, vel }) {
   pos = pos + vel;
 }

@@ -1,5 +1,5 @@
 // econf_a's behavior. Support file for datasheet_enum_conflict.arche.
 // RUN: true
-use_a :: map (px) {
+use_a :: map (query { px }) {
   px = px + 1.0;
 }

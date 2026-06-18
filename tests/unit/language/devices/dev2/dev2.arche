@@ -1,5 +1,5 @@
 // `dev2` device behavior: a system over its required `foo`. Not a standalone test.
 // RUN: true
-bump :: map (foo) {
+bump :: map (query { foo }) {
   foo = foo + 1.0;
 }
