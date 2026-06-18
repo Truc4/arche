@@ -3804,7 +3804,14 @@ static void analyze_static_decl(SemanticContext *ctx, DeclSummary *alloc) {
 	/* Validate archetype exists */
 	ArchetypeInfo *arch = find_archetype(ctx, alloc->name);
 	if (!arch) {
-		fprintf(stderr, "Error: unknown archetype '%s' in alloc\n", alloc->name);
+		const char *dot = alloc->name ? strrchr(alloc->name, '.') : NULL;
+		if (dot)
+			/* A shape is GLOBAL vocabulary — qualifying it is meaningless (only a device's systems are
+			 * qualified). Point at the bare name rather than a confusing "unknown archetype 'mod.X'". */
+			fprintf(stderr, "Error: a shape is global — write `[N]%s`, not `[N]%s` (only systems are qualified)\n",
+			        dot + 1, alloc->name);
+		else
+			fprintf(stderr, "Error: unknown archetype '%s' in alloc\n", alloc->name);
 		ctx->error_count++;
 		return;
 	}

@@ -3256,6 +3256,18 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 	case HIR_EXPR_NAME: {
 		const char *name = expr->data.name.name;
 
+		/* An entity binding (`e := B{…}`) is virtual — it has no runtime value. Using it as anything but
+		 * `insert(e)` (which resolves the literal directly) is unsupported; report it cleanly instead of
+		 * emitting invalid IR. */
+		for (int i = 0; i < ctx->entity_bind_count; i++)
+			if (ctx->entity_binds[i].name && name && strcmp(ctx->entity_binds[i].name, name) == 0) {
+				fprintf(stderr, "Error: entity '%s' can only be inserted (`insert(%s)`), not used as a value\n", name,
+				        name);
+				ctx->had_error = 1;
+				strcpy(result_buf, "0");
+				return;
+			}
+
 		/* Check if this is a compile-time constant */
 		const char *const_val = semantic_get_const_value(ctx->sem_ctx, name);
 		if (const_val) {

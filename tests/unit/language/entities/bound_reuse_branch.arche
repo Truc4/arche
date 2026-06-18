@@ -1,0 +1,18 @@
+// A bound entity inlines its literal at each `insert(e)` site, so reuse and conditional insertion both
+// work and respect control flow (the entity is only inserted where `insert(e)` actually runs).
+// RUN: %arche build -o %t %s && %t | grep -qF "v0=7 v1=7"
+#import { fmt }
+v :: int;
+B :: arche { v }
+[8]B;
+
+main :: proc() {
+  e := B { v: 7 };
+  insert(e)(_:, _:); // reuse the same entity twice
+  insert(e)(_:, _:);
+  c := 0; // a guarded insert does NOT run, so no third row
+  if (c == 1) {
+    insert(e)(_:, _:);
+  }
+  fmt.printf("v0=%d v1=%d\n", B.v[0], B.v[1]);
+}
