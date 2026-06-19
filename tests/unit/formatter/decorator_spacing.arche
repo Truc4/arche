@@ -1,9 +1,9 @@
 // A decorator hugs its parens (`@policy(bounds)`, not `@policy (bounds)`) and sits on its own line
 // above the decl it annotates. `@policy`'s name lexes as the `policy` keyword, but it must format
-// like any other decorator (e.g. `@allow(...)`). The `policy` DECL form keeps its space (`policy (in)`)
-// — distinguished by parent — so this also guards that the decl-form spacing is unchanged.
+// like any other decorator (e.g. `@allow(...)`). The `policy` DECL form also hugs its params
+// (`policy(in)`, like `proc`/`func`), which this guards too.
 // RUN: %arche fmt %s | grep -qE "^@policy\(bounds\)$"
-// RUN: %arche fmt %s | grep -qE "^clamp :: policy \(len: int, i: int\) \{$"
+// RUN: %arche fmt %s | grep -qE "^clamp :: policy\(len: int, i: int\) \{$"
 // RUN: %arche fmt %s | grep -qE "^@allow\(proc_no_effect\)$"
 @policy(bounds)
 clamp :: policy (len: int, i: int) {

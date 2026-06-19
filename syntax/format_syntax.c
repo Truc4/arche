@@ -92,9 +92,9 @@ static int no_space_before(TokenKind t, TokenKind prev, TokenKind next, SyntaxNo
 		 * list the same way (`proc!(...)`); this also tightens unary `!(expr)`. */
 		return prev == TOK_IDENT || prev == TOK_RPAREN || prev == TOK_RBRACKET || prev == TOK_PROC ||
 		       prev == TOK_FUNC || prev == TOK_BANG ||
-		       /* `@policy(cat)` decorator hugs its parens like any other decorator; the `policy`
-		        * DECL form (`name :: policy (in)`) keeps its space — distinguished by parent. */
-		       (prev == TOK_POLICY && prev_parent != SN_POLICY_EXPR);
+		       /* `policy` hugs its param list like `proc`/`func` — both the `@policy(cat)` decorator and
+		        * the decl form `name :: policy(in)`. */
+		       prev == TOK_POLICY;
 	default:
 		break;
 	}
