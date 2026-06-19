@@ -6120,16 +6120,10 @@ static int sv_type_count_sem(SyntaxView v);
 /* 1 if a `name :: <rhs>` const carries the `alias` transparent-marker: a loose IDENT token `alias`
  * sitting after the binding name (the backing-name value is an expr node, not a loose token). */
 static int syntax_const_alias_marked(SyntaxView d) {
-	int seen_name = 0;
 	for (int i = 0; i < d.node->child_count; i++) {
 		const SyntaxElem *e = &d.node->children[i];
-		if (e->tag != SE_TOKEN || e->as.token.kind != TOK_IDENT)
-			continue;
-		if (!seen_name) {
-			seen_name = 1; /* the binding name */
-			continue;
-		}
-		return e->as.token.length == 5 && memcmp(d.src + e->as.token.offset, "alias", 5) == 0;
+		if (e->tag == SE_TOKEN && e->as.token.kind == TOK_ALIAS)
+			return 1; /* the transparent-alias keyword marker */
 	}
 	return 0;
 }
@@ -6145,31 +6139,14 @@ static char *syntax_handle_name(SyntaxView t) {
 	return sem_dupz("");
 }
 
-/* Type name from an SN_TYPE_REF: a qualified `mod.Name` (two IDENTs) folds to `mod_Name` (the
- * module's mangled type symbol), matching lower.c's type_ref_name; a bare type returns its IDENT. */
-/* 1 if this SN_TYPE_REF has a `.` token — a qualified `mod.name`. Distinguishes a real two-IDENT
- * qualified type from the `alias T` transparent marker (two adjacent IDENTs, no dot). */
-static int sem_type_ref_has_dot(SyntaxView t) {
-	for (int i = 0; i < t.node->child_count; i++)
-		if (t.node->children[i].tag == SE_TOKEN && t.node->children[i].as.token.kind == TOK_DOT)
-			return 1;
-	return 0;
-}
-
-/* 1 if this SN_TYPE_REF carries the leading `alias` transparent-marker (with a real backing name
- * following): two adjacent IDENTs where the first is `alias`, and no `.` (so it is not `mod.name`). */
+/* 1 if this SN_TYPE_REF carries the leading `alias` transparent-marker keyword (`alias T`). */
 static int sem_type_ref_alias_marked(SyntaxView t) {
-	SynText ids[2];
-	int n = 0;
-	for (int i = 0; i < t.node->child_count && n < 2; i++) {
+	for (int i = 0; i < t.node->child_count; i++) {
 		const SyntaxElem *e = &t.node->children[i];
-		if (e->tag == SE_TOKEN && e->as.token.kind == TOK_IDENT) {
-			ids[n].ptr = t.src + e->as.token.offset;
-			ids[n].len = e->as.token.length;
-			n++;
-		}
+		if (e->tag == SE_TOKEN && e->as.token.kind == TOK_ALIAS)
+			return 1;
 	}
-	return n >= 2 && ids[0].len == 5 && memcmp(ids[0].ptr, "alias", 5) == 0 && !sem_type_ref_has_dot(t);
+	return 0;
 }
 
 static char *sem_type_ref_name(SyntaxView t) {
@@ -6183,9 +6160,6 @@ static char *sem_type_ref_name(SyntaxView t) {
 			n++;
 		}
 	}
-	/* `alias T`: transparent marker — the real type name is the second IDENT, not a `mod.name`. */
-	if (n >= 2 && ids[0].len == 5 && memcmp(ids[0].ptr, "alias", 5) == 0 && !sem_type_ref_has_dot(t))
-		return sem_txt_dup(ids[1]);
 	if (n >= 2) {
 		size_t L = ids[0].len + 1 + ids[1].len + 1;
 		char *r = malloc(L);

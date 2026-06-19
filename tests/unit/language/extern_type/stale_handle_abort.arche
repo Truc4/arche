@@ -1,5 +1,5 @@
 // Pooled foreign resources get generation-checked handles: after a row is deleted and its
-// slot reused, an old handle to it is stale and any use aborts loudly. Here `alias`
+// slot reused, an old handle to it is stale and any use aborts loudly. Here `dup`
 // outlives the delete+reinsert, so deleting through it aborts.
 // RUN: %arche build -o %t --link %S/runtime/test_resource.c %s && ! %t
 cell     :: opaque;
@@ -12,9 +12,9 @@ Resource :: arche { cell }
 main :: proc() {
   resource_open(10)(r1:);
   insert(Resource { cell: r1 })(h:, _:);
-  alias := h;
+  dup := h;
   delete(h)(_:);
   resource_open(99)(r2:);
   insert(Resource { cell: r2 })(h2:, _:);
-  delete(alias)(_:);
+  delete(dup)(_:);
 }
