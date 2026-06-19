@@ -1,43 +1,12 @@
-// The `router` module — a segment-level radix (compressed-trie) URL router, pure Arche.
-// `#import { router }` then call `router.init()`, `router.add(...)`, `router.resolve(...)`.
-// Access is qualified-only: a bare `init()` does not resolve.
-//
-// The tree is built over '/'-split path SEGMENTS, not bytes. Each node is one segment with a
-// kind: static ("users"), param (":id" — matches any one segment), or catchall ("*" — matches the
-// rest of the path). Resolution prefers static > param > catchall, the standard radix-router
-// precedence (Go httprouter et al.).
-//
-// No heap: nodes live in a fixed pool (`TrieNode[256]`), variable fan-out is an intrusive
-// first-child/next-sibling index list, and a node's segment text is a `[32]char` column. A node's
-// index is just its pool slot — `i32(insert(...))` hands it back, so there's no hand-rolled counter
-// and no segment arena.
-//
-// Output is REPORTED, not owned: `router.resolve` returns an int `handler_id` (>=0, or -1 on miss)
-// and records each captured :param / *catchall as a zero-copy SPAN (offset+length into the path
-// you passed). The caller slices its own path via `router.param`. No output buffers, no ownership,
-// no copy. The caller dispatches on `handler_id` with `match`. (Doesn't intern segments — the node
-// links are already dense ints and a segment is matched once per request; see docs/patterns.md and
-// design_analysis/key_lookup/DESIGN.md.) Segments are capped at 31 chars + NUL.
-//
-// Layout follows the visibility-band idiom (see docs/patterns.md): the public API leads (default
-// band = exported), then `#module` for the module-internal data model (the node type, the pool,
-// and the capture-span state), then `#file` for the leaf helpers. All top-level names hoist, so the
-// internals sit below the API that uses them and stay private to the module.
-
-// Reset the router and create the root (node 0: empty static segment). Init-once: the pool starts
-// empty, so this just inserts the root.
 #import { str }
 
-// The radix-trie node SHAPE. A shape is global vocabulary, so it is defined here (the impl that uses
-// it), not in the datasheet (which only states the `nodeKind` type + the `TrieNode[256]` storage
-// requirement). The driver provides the pool; the device owns no storage.
 TrieNode :: arche {
-  seg          :: [32]char, // segment text (":id"/"*" stored as the name after the marker), "" for root
-  seg_len      :: int, // content length of `seg` (a fixed [32]char column carries no length itself)
-  kind         :: nodeKind, // static / :param / *catchall
-  first_child  :: int, // pool index of first child, or -1
-  next_sibling :: int, // pool index of next sibling, or -1
-  handler_id   :: int, // >=0 if a route terminates here, else -1
+  seg          :: [32]char,
+  seg_len      :: int,
+  kind         :: nodeKind,
+  first_child  :: int,
+  next_sibling :: int,
+  handler_id   :: int,
 }
 
 init :: proc() {
@@ -46,7 +15,6 @@ init :: proc() {
   new_node(empty, 0, nodeKind.kstatic)(_root:, _:);
 }
 
-// Register `pattern` (e.g. "/users/:id", "/static/*") -> handler_id.
 add :: proc(pattern: []char, handler_id: int) {
   n   := str.strlen(pattern);
   cur := 0;
@@ -54,7 +22,7 @@ add :: proc(pattern: []char, handler_id: int) {
   if (n > 0) {
     if (pattern.length > 0) {
       if (pattern[0] == '/') {
-        s = 1; // skip leading '/'
+        s = 1;
       }
     }
   }
@@ -63,11 +31,10 @@ add :: proc(pattern: []char, handler_id: int) {
       break;
     }
     if (s >= pattern.length) {
-      break; // guard pattern[s] below (s < n = strlen(pattern) <= pattern.length)
+      break;
     }
     e := seg_end(pattern, s, n);
 
-    // Classify the segment; param/catchall store the name after the marker byte.
     kind   := nodeKind.kstatic;
     tstart := s;
     if (pattern[s] == ':') {
@@ -79,11 +46,6 @@ add :: proc(pattern: []char, handler_id: int) {
       tstart = s + 1;
     }
 
-    // Find an existing child of `cur` matching this segment. Registration is the COLD path, and
-    // `new_node` can fail on a full pool (returning an invalid slot), so these accesses keep the
-    // implicit `!abort` default — a bad slot is a clean, visible crash, never a raw out-of-bounds
-    // write. (The check is free here and never fires for a slot from a good insert; no annotation
-    // needed since `!abort` is the proc default.)
     found := -1;
     child := TrieNode.first_child[cur];
     for (; child >= 0;) {
@@ -95,7 +57,7 @@ add :: proc(pattern: []char, handler_id: int) {
           }
         }
         else {
-          found = child; // one param/catchall child per node
+          found = child;
         }
       }
       if (found >= 0) {
@@ -104,8 +66,6 @@ add :: proc(pattern: []char, handler_id: int) {
       child = TrieNode.next_sibling[child];
     }
 
-    // Create + link a new child if none matched: materialize the segment text into a buffer, then
-    // insert it as the node's `seg` column.
     if (found < 0) {
       segbuf: [32]char;
       j := 0;
@@ -114,10 +74,10 @@ add :: proc(pattern: []char, handler_id: int) {
           break;
         }
         if (i >= pattern.length) {
-          break; // guard pattern[i]
+          break;
         }
         if (j >= segbuf.length) {
-          break; // guard segbuf[j] (32-byte segment cap)
+          break;
         }
         segbuf[j] = pattern[i];
         j         = j + 1;
@@ -136,8 +96,6 @@ add :: proc(pattern: []char, handler_id: int) {
   TrieNode.handler_id[cur] = handler_id;
 }
 
-// Resolve `path`. Returns handler_id (-1 on miss). Captured :param / *catchall segments are
-// recorded as spans into `path` — read them with router.param_count / router.param.
 resolve :: proc(path: []char)(handler_id: int) {
   n   := str.strlen(path);
   cur := 0;
@@ -154,10 +112,6 @@ resolve :: proc(path: []char)(handler_id: int) {
   for (; s < n;) {
     e := seg_end(path, s, n);
 
-    // Scan children: remember a static match, a param child, a catchall child. Resolution is the HOT
-    // path (per request) and every slot here is a link that `add` already validated at build time —
-    // the trie is append-only and consistent — so these reads carry `!undefined`: a deliberate,
-    // visible opt-out of the bounds check (the slot is in-bounds by construction; trust it for speed).
     static_hit   := -1;
     param_hit    := -1;
     catchall_hit := -1;
@@ -179,7 +133,6 @@ resolve :: proc(path: []char)(handler_id: int) {
       child = TrieNode.next_sibling[child] !undefined;
     }
 
-    // Precedence: static > param > catchall.
     chosen := static_hit;
     if (chosen < 0) {
       chosen = param_hit;
@@ -192,8 +145,6 @@ resolve :: proc(path: []char)(handler_id: int) {
       return;
     }
 
-    // param captures one segment; catchall captures the rest of the path. Both just record a
-    // span — no buffers, no per-slot branching (cap arrays are indexed by the count).
     ck := TrieNode.kind[chosen] !undefined;
     if (ck == nodeKind.kstatic) {
       cur = chosen;
@@ -208,50 +159,36 @@ resolve :: proc(path: []char)(handler_id: int) {
       cap_len[cap_count[0]]   = cend - s;
       cap_count[0]            = cap_count[0] + 1;
       cur                     = chosen;
-      s                       = cend + 1; // for catchall cend==n, so the loop exits
+      s                       = cend + 1;
     }
   }
   handler_id = TrieNode.handler_id[cur];
 }
 
-// Number of params/catchalls captured by the most recent router.resolve.
 param_count :: proc()(n: int) {
   n = cap_count[0];
 }
 
-// The i-th captured span: (start, len) offsets into the path passed to router.resolve.
 param :: proc(i: int)(start: int, len: int) {
   start = cap_start[i];
   len   = cap_len[i];
 }
 
-// ====================== Module-internal data model (private) =======================
-// `#module` narrows the rest of the file to module-private (visible across the module's files,
-// invisible to importers). The `TrieNode` SHAPE is NOT here — a shape is global vocabulary (its name
-// is public no matter where it's defined), so it leads at the top of the file with the public API; the
-// driver references `TrieNode` by bare name to size its pool.
 #module
 
-// Capture spans from the most recent router.resolve (offsets into that path), read via
-// router.param_count / router.param. Hoisted, so they sit here with the data model even though the
-// public procs above write them.
-cap_start : [8]int; // up to 8 params per route
+cap_start : [8]int;
 cap_len   : [8]int;
 cap_count : [1]int;
 
-// ========================= File-local parsing helpers (private) ========================
-// `#file` narrows to file-local: leaf routines used only by this file. Funcs/procs are hoisted,
-// so they may trail their callers above.
 #file
 
-// First index of '/' in p[start..n), or n if none.
 seg_end :: func(p: []char, start: int, n: int) -> int {
   for (i := start; i < n; i = i + 1) {
     if (i < 0) {
       return n;
     }
     if (i >= p.length) {
-      return n; // guard: makes p[i] provably in-bounds
+      return n;
     }
     if (p[i] == '/') {
       return i;
@@ -260,22 +197,20 @@ seg_end :: func(p: []char, start: int, n: int) -> int {
   return n;
 }
 
-// true if the NUL-terminated stored segment equals p[start..end), else false. Pure (reads only
-// params), so it's usable inline in conditions.
 seg_eq :: func(stored: [32]char, stored_len: int, p: []char, start: int, end: int) -> bool {
   if (stored_len != end - start) {
     return false;
   }
   for (i := 0; i < end - start; i = i + 1) {
     if (i >= stored.length) {
-      return false; // guard stored[i]
+      return false;
     }
     k := start + i;
     if (k < 0) {
       return false;
     }
     if (k >= p.length) {
-      return false; // guard p[k]
+      return false;
     }
     if (stored[i] != p[k]) {
       return false;
@@ -284,8 +219,6 @@ seg_eq :: func(stored: [32]char, stored_len: int, p: []char, start: int, end: in
   return true;
 }
 
-// Allocate a node holding `seg` (content length `seg_len`); return its pool slot. `ok` reports
-// whether the fixed TrieNode pool had room (insert no longer aborts on a full pool).
 new_node :: proc(seg: []char, seg_len: int, kind: nodeKind)(idx: int, ok: int) {
   insert(
     TrieNode {

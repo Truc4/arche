@@ -1,15 +1,5 @@
-// The `csv` module — pure-Arche, header-name-matched CSV loader. `#import { csv }` then
-// `csv.load(Archetype, path)` (access is qualified-only: a bare `load(...)` does not resolve).
-// Memory-maps the file and scans it with i64 offsets, so files larger than 2 GB work; columns
-// match by header name.
-// (Mmap goes through io's public `file_map`/`file_size`/`file_unmap` wrappers — io's raw C externs
-// are private to that device.)
-
 #import { parse str io }
 
-// Type-directed cell parser: the group dispatches on the static type of the witness `c` (the
-// destination column element). A func group does not hoist and its dispatch does not resolve from a
-// `#module`/`#file` band, so it leads the file in the exported band, before `load` uses it.
 cell_float :: func(c: float, s: []char) -> float {
   return parse.atof(s);
 }
@@ -24,7 +14,6 @@ load :: proc(arch: archetype, own path: []char) {
 
   hdr_end: i64 = find_byte(data, 0, size, '\n');
 
-  // header pass: map each archetype field to its file column by name
   #each_field f in arch {
     load_cols[f.index] = -1;
     col := 0;
@@ -40,7 +29,6 @@ load :: proc(arch: archetype, own path: []char) {
     }
   }
 
-  // row pass: pull each field from its mapped column
   pos: i64 = hdr_end + 1;
   for (row := 0; row < arch.capacity; row += 1) {
     if (pos >= size) {
@@ -67,24 +55,19 @@ load :: proc(arch: archetype, own path: []char) {
   io.file_unmap(move data, size);
 }
 
-// ============================ Module-internal state (private) ===========================
-// `#module` narrows to module-private — the header→column map, invisible to importers. Hoisted.
 #module
 
 load_cols: [64]int;
 
-// ============================== File-local parse helpers (private) ==============================
-// `#file` narrows to file-local: leaf routines used only by `load`. Hoisted, so they trail it.
 #file
 
-// first index of byte `ch` in data[start..end), or end if absent
 find_byte :: func(data: []char, start: i64, end: i64, ch: int) -> i64 {
   for (i: i64 = start; i < end; i = i + 1) {
     if (i < 0) {
       return end;
     }
     if (i >= data.length) {
-      return end; // guard: makes data[i] provably in-bounds
+      return end;
     }
     if (data[i] == ch) {
       return i;
@@ -93,7 +76,6 @@ find_byte :: func(data: []char, start: i64, end: i64, ch: int) -> i64 {
   return end;
 }
 
-// true if archetype field name `name` equals the CSV header cell data[start..end)
 name_eq :: func(name: []char, data: []char, start: i64, end: i64) -> bool {
   len: i64 = end - start;
   if (str.strlen(name) != len) {
@@ -101,14 +83,14 @@ name_eq :: func(name: []char, data: []char, start: i64, end: i64) -> bool {
   }
   for (i: i64 = 0; i < len; i = i + 1) {
     if (i >= name.length) {
-      return false; // guard name[i]
+      return false;
     }
     k: i64 = start + i;
     if (k < 0) {
       return false;
     }
     if (k >= data.length) {
-      return false; // guard data[k]
+      return false;
     }
     if (name[i] != data[k]) {
       return false;
@@ -117,7 +99,6 @@ name_eq :: func(name: []char, data: []char, start: i64, end: i64) -> bool {
   return true;
 }
 
-// start offset of the col-th comma-separated field within data[row_start..row_end)
 field_at :: func(data: []char, row_start: i64, row_end: i64, col: int) -> i64 {
   p: i64 = row_start;
   for (remaining := col; remaining > 0; remaining -= 1) {

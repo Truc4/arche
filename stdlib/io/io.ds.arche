@@ -1,7 +1,1 @@
-// Datasheet for the `io` device. `fd` is a file DESCRIPTOR — the small integer the kernel hands back
-// (an index into the process's open-file table; stdin/stdout/stderr = 0/1/2). It is a plain value,
-// NOT opaque: our syscall layer returns a number, never a pointer, so there is nothing to seal. The
-// enum names the three standard descriptors; an opened file is just an unnamed `fd` value. A `fd` is
-// copyable and closed manually (no RAII) — losing one only leaks a kernel slot the OS reclaims on
-// exit. No storage requirements.
 fd :: enum { stdin, stdout, stderr }

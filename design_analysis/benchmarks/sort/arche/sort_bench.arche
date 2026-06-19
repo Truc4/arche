@@ -1,6 +1,3 @@
-// Sort microbenchmark: reverse-fill a large multi-column pool and sort once. The old insertion sort is
-// O(n²·k) data moves; the index-permutation radix sort is O(n·k). Time the executable to compare.
-// RUN: %arche build -o %t %s && %t | grep -qF "ok"
 #import { fmt }
 k :: int;
 a :: int;
@@ -18,9 +15,9 @@ main :: proc() {
   scan(+, N.a);
   scan(+, N.b);
   scan(+, N.c);
-  run negk; // k = -1..-20000 (descending → worst case for insertion)
+  run negk;
   sort(N.k);
   chk := reduce(+, N.a);
-  fmt.assert(N.a[0] == 20000, "rev\n"); // row reversed: position 0 holds original last row
+  fmt.assert(N.a[0] == 20000, "rev\n");
   fmt.printf("ok chk=%d\n", chk);
 }

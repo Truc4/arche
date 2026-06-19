@@ -1,4 +1,3 @@
-// Task 2: Filter invalid rows
 // A row is valid iff quantity > 0. That is a pure function of `quantity` — an IMPLICIT boolean — so
 // it is NOT a stored column (a per-row 0/1 flag column would duplicate derivable data). It is
 // computed at the point of use, when writing each row.

@@ -1,3 +1,1 @@
-// Datasheet for the `csv` device. csv loads CSV rows into a caller-provided archetype: no storage
-// requirements of its own (it fills the driver's pool), no exposed types. Its API lives in csv.arche,
-// reached via exports. The datasheet's presence marks csv as a device (importable by name).
+

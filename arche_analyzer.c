@@ -460,18 +460,13 @@ static void ensure_core(void) {
 	g_core_lines = g_core_newlines;
 }
 
-/* True when `path` resolves to core.arche itself, so prepending core would define
- * every prelude symbol twice. Compare by (device, inode) so absolute/relative/
- * symlinked editor paths all match the canonical prelude location. */
+/* True when `path` is the core prelude itself, so prepending core would define every prelude
+ * symbol twice. Delegates to the shared arche_path_is_core() (inode identity OR prelude-layout
+ * role) so the analyzer and compiler front-end never diverge on "is this core?" — in particular
+ * the repo's own core/core.arche, opened in the editor, is recognized even when a different
+ * installed copy is the resolved prelude. */
 static int path_is_core(const char *path) {
-	if (!path || !path[0])
-		return 0;
-	char core_path[512];
-	snprintf(core_path, sizeof(core_path), "%s/core.arche", arche_resource_dir(ARCHE_RES_CORE));
-	struct stat sp, sc;
-	if (stat(path, &sp) != 0 || stat(core_path, &sc) != 0)
-		return 0;
-	return sp.st_dev == sc.st_dev && sp.st_ino == sc.st_ino;
+	return arche_path_is_core(path);
 }
 
 /* Render an internal type name as it would be written in arche source (longhand). */

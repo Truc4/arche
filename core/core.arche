@@ -1,41 +1,18 @@
-// core — the compiler's IMPLICIT RUNTIME (always in scope, no `#import`). This is prepended to
-// every program, so it holds only the symbols the COMPILER ITSELF emits on the user's behalf:
-// the boolean constants the language uses, and `streq` (the `match` string-pattern desugar emits a
-// bare call to it). User-facing library code lives in explicit, qualified stdlib modules:
-//   os  — raw syscall + fd I/O (open/read/write/close/lseek/exit)
-//   io  — `file` handle + file ops + whole-file mmap externs
-//   fmt — printf/sprintf/fflush + print/print_float + assert
-//   net — `socket` handle + TCP ops
-//   str — strlen/strcopy
-// (Nothing a user calls by name belongs here; future compiler-emitted helpers — panic/bounds/eq —
-// would join `streq`, never user library code.)
-
-// `i32` is the canonical 32-bit integer; `int` is a TRANSPARENT (tier-1) alias of it — the same
-// type, freely interchangeable. Diagnostics read `i32` (the primary name).
 int :: alias i32;
 
-// `byte` is a raw unsigned 8-bit value — a TRANSPARENT (tier-1) alias over the canonical `u8`
-// primitive: `byte` and `u8` are the same type, freely interchangeable.
 byte :: alias u8;
 
-// Boolean type. Arche has no `bool` primitive; comparisons yield 0/1, so `bool` is a DISTINCT
-// (tier-2) subtype of `i8`. Comparison operands stay lenient (`1 == true` ok), int literals flex in
-// (`ok : bool : 1`), and a bool flows back out AS an int one-way (`bool`→`i8`). What it blocks: a
-// named int silently becoming a bool (`int n := 1; bool b := n` needs `bool(n)`).
 bool :: i8;
 true  : bool : 1;
 false : bool : 0;
 
-// Byte-compare two strings: 1 if equal, 0 otherwise. Pure (no FFI). Lives in core because the
-// `match` string-pattern desugar emits a bare `streq(...)` call — it is compiler-emitted, not a
-// user-facing library symbol, so it must resolve without an import.
 streq :: func(a: []char, b: []char) -> bool {
   if (a.length != b.length) {
     return false;
   }
   for (i := 0; i < a.length; i = i + 1) {
     if (i >= b.length) {
-      return false; // guard: makes b[i] provably in-bounds (a.length == b.length here anyway)
+      return false;
     }
     if (a[i] != b[i]) {
       return false;
@@ -44,21 +21,10 @@ streq :: func(a: []char, b: []char) -> bool {
   return true;
 }
 
-// The primitives a failure policy needs to crash: libc `_exit` (terminate; `_exit` not `exit` keeps the
-// global name distinct from a device's `os.exit`) and `dprintf` (emit a diagnostic to a fd first —
-// `dprintf` over `write` so the symbol can't collide with `os.write` in the all-stdlib test harness;
-// the messages carry no `%`, so it is a plain fd-write). The `own` is the FFI rule for array params.
 #foreign {
   _exit   :: proc(code: int);
   dprintf :: proc(fd: int, own fmt: []char)(r: int);
 }
-
-// ===== failure policies =====
-// A `policy` is a MACRO: the compiler inlines its body at a fallible op, with the op's operands bound
-// as mutable locals (`len`,`i` for a bounds index/slice; `a`,`b` for a divide), then runs the RAW op
-// on whatever they now are. So a policy mutates its operands and/or terminates — nothing is built in,
-// not even `abort`. An EMPTY body leaves the operands untouched ⇒ the raw op ⇒ that's `undefined`.
-// These are the common ones; users write their own (`@policy(bounds) my_clamp :: policy(len,i){…}`).
 
 @policy (bounds) abort :: policy (len: int, i: int) {
   if (i < 0 || i >= len) {
@@ -76,17 +42,13 @@ streq :: func(a: []char, b: []char) -> bool {
   }
 }
 
-// Modulo (ring/toroidal) index — out of range wraps around. The double-mod keeps a negative `i` positive.
 @policy (bounds) wrap :: policy (len: int, i: int) {
   i = ( (i % len) + len) % len;
 }
 
-// The empty policy: no mutation ⇒ the raw, unchecked access. `a[i] !undefined`.
 @policy (bounds) undefined :: policy (len: int, i: int) {
 }
 
-// Divide-by-zero policies — category `divide`, so they bind (a, b) = dividend, divisor. `abort` and
-// `undefined` share their names with the bounds policies above; the op's category selects which.
 @policy (divide) zero :: policy (a: int, b: int) {
   if (b == 0) {
     a = 0;
@@ -102,12 +64,6 @@ streq :: func(a: []char, b: []char) -> bool {
 @policy (divide) undefined :: policy (a: int, b: int) {
 }
 
-// Pool overflow HANDLER policies — category `pool`, invoked with `?` (`insert(P{ x: x }) ?reject`), not `!`.
-// A full pool is an EXPECTED condition (reported via `ok`), not a bug, so a handler shapes the result
-// rather than crashing. Operands are the prefix of `(count, cap, ok, slot)` the handler uses: `count` =
-// live entities, `cap` = capacity (read-only); `ok` starts 1 (the insert writes iff it stays nonzero);
-// `slot` is the write target (declare it to redirect the write — eviction). The capacity check lives
-// HERE, so an empty handler is a raw write. `reject` is the default applied to every pool.
 @policy (pool) reject :: policy (count: int, cap: int, ok: int) {
   if (count >= cap) {
     ok = 0;

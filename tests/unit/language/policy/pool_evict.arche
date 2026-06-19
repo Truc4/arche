@@ -5,8 +5,11 @@
 // (reads results with `!undefined`, so opt into the raw op)
 // RUN: %arche build --allow-undefined -o %t %s && %t | grep -qF "ok2=1 v0=30 v1=20"
 #import { fmt }
+
 Foo :: arche { v :: int, ts :: int }
+
 [2]Foo ?evict_oldest;
+
 @policy (pool) evict_oldest :: policy (count: int, cap: int, ok: int, slot: int) {
   if (count >= cap) {
     oldest := 0;
@@ -18,6 +21,7 @@ Foo :: arche { v :: int, ts :: int }
     slot = oldest; // recycle the oldest slot
   }
 }
+
 main :: proc() {
   insert(Foo { v: 10, ts: 5 })(h0:, ok0:); // slot 0: v=10 ts=5
   insert(Foo { v: 20, ts: 9 })(h1:, ok1:); // slot 1: v=20 ts=9

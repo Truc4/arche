@@ -112,3 +112,25 @@ const char *arche_resource_dir(ArcheResource which) {
 	cached[i] = 1;
 	return cache[i];
 }
+
+int arche_path_is_core(const char *path) {
+	if (!path || !path[0])
+		return 0;
+	/* identity: any path spelling (relative/absolute/symlinked) of the resolved prelude */
+	char core_path[1024];
+	snprintf(core_path, sizeof(core_path), "%s/core.arche", arche_resource_dir(ARCHE_RES_CORE));
+	struct stat sp, sc;
+	if (stat(path, &sp) == 0 && stat(core_path, &sc) == 0 && sp.st_dev == sc.st_dev &&
+	    sp.st_ino == sc.st_ino)
+		return 1;
+	/* role: any prelude-layout copy, e.g. a repo's own `core/core.arche` opened in the editor while
+	 * a different installed copy is the resolved prelude (identical role, different inode). A plain
+	 * suffix match on the canonical layout matches both the editor's absolute path and the
+	 * compiler's CLI-relative path; the inode test above already covers symlinks/odd spellings. */
+	const char *whole = "core/core.arche";  /* relative spelling, e.g. `arche check core/core.arche` */
+	const char *suf = "/core/core.arche";   /* absolute/nested spelling */
+	size_t n = strlen(path), sl = strlen(suf);
+	if (strcmp(path, whole) == 0 || (n >= sl && strcmp(path + n - sl, suf) == 0))
+		return 1;
+	return 0;
+}

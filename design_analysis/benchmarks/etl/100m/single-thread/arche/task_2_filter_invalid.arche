@@ -1,4 +1,3 @@
-// Task 2: Filter invalid rows — count where quantity > 0. The count IS the benchmark (and the checksum).
 #import { csv fmt os }
 
 Transaction :: arche { quantity :: int }

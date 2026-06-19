@@ -1,6 +1,3 @@
-// Task 3: Bucket prices — price_bucket = price / 10.0.
-// The benchmark is the load + the column compute. The trailing sum is NOT part of the benchmark — it is
-// an untimed checksum (comparable across engines).
 #import { csv fmt os }
 
 Transaction :: arche {
@@ -22,9 +19,7 @@ main :: proc() {
   load_transactions();
   Transaction.price_bucket = Transaction.price / 10.0;
   os.now_ms()(t1:);
-  // ---- benchmark ends here ----
 
-  // checksum (verification only, NOT timed): sum the produced column.
   price_sum := 0.0;
   for (m := 0; m < 100000000; m += 1) {
     price_sum = price_sum + Transaction.price_bucket[m];
