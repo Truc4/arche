@@ -2,7 +2,7 @@
 // (a bounds site) is E0124. The category — not the (int,int)->int signature — disambiguates.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "needs a @policy(bounds)\|E0124" %t.out
 @policy(divide)
-dz :: policy (a: int, b: int) -> int {
+dz :: policy(a: int, b: int) -> int {
   return 0;
 }
 main :: proc() {

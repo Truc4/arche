@@ -27,7 +27,7 @@ streq :: func(a: []char, b: []char) -> bool {
 }
 
 @policy(bounds)
-abort :: policy (len: int, i: int) {
+abort :: policy(len: int, i: int) {
   if (i < 0 || i >= len) {
     dprintf(2, "arche: index out of bounds\n")(_:);
     _exit(134);
@@ -35,7 +35,7 @@ abort :: policy (len: int, i: int) {
 }
 
 @policy(bounds)
-clamp :: policy (len: int, i: int) {
+clamp :: policy(len: int, i: int) {
   if (i < 0) {
     i = 0;
   }
@@ -45,34 +45,34 @@ clamp :: policy (len: int, i: int) {
 }
 
 @policy(bounds)
-wrap :: policy (len: int, i: int) {
+wrap :: policy(len: int, i: int) {
   i = ( (i % len) + len) % len;
 }
 
 @policy(bounds)
-undefined :: policy (len: int, i: int) {
+undefined :: policy(len: int, i: int) {
 }
 
 @policy(divide)
-zero :: policy (a: int, b: int) {
+zero :: policy(a: int, b: int) {
   if (b == 0) {
     a = 0;
     b = 1;
   }
 }
 @policy(divide)
-abort :: policy (a: int, b: int) {
+abort :: policy(a: int, b: int) {
   if (b == 0) {
     dprintf(2, "arche: divide by zero\n")(_:);
     _exit(134);
   }
 }
 @policy(divide)
-undefined :: policy (a: int, b: int) {
+undefined :: policy(a: int, b: int) {
 }
 
 @policy(pool)
-reject :: policy (count: int, cap: int, ok: int) {
+reject :: policy(count: int, cap: int, ok: int) {
   if (count >= cap) {
     ok = 0;
   }

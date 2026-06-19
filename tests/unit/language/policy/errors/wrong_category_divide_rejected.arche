@@ -3,7 +3,7 @@
 // Guards the divide-side validation (bnd_check_expr's OP_DIV/OP_MOD branch).
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "needs a @policy(divide)\|E0124" %t.out
 @policy(bounds)
-bx :: policy (len: int, i: int) {
+bx :: policy(len: int, i: int) {
   if (i < 0) {
     i = 0;
   }

@@ -6,7 +6,7 @@
 scratch: [2]int;
 
 @policy(bounds)
-leaky :: policy (len: int, i: int) {
+leaky :: policy(len: int, i: int) {
   z := scratch[i] !undefined; // raw op inside a policy → E0213
   if (i >= len) {
     i = z;

@@ -4344,12 +4344,12 @@ static void lint_func_could_be_const(SemanticContext *ctx, DeclSummary *func) {
 
 #define BND_MAX_FACTS 64
 typedef struct {
-	char *var;  /* index variable name (owned); NULL for a pure min-length fact */
-	char *base; /* upper-bound base name (owned), or NULL when only nonneg is known */
-	int nonneg; /* 1 once v>=0 is established */
-	int minlen; /* if var==NULL && base!=NULL: `base.length >= minlen` (proves literal idx < minlen) */
-	int litub;  /* if var!=NULL: `var < litub` (a literal upper bound; 0 = none) — proves idx into a
-	             * sized T[N] when litub <= N */
+	char *var;        /* index variable name (owned); NULL for a pure min-length fact */
+	char *base;       /* upper-bound base name (owned), or NULL when only nonneg is known */
+	int nonneg;       /* 1 once v>=0 is established */
+	int minlen;       /* if var==NULL && base!=NULL: `base.length >= minlen` (proves literal idx < minlen) */
+	int litub;        /* if var!=NULL: `var < litub` (a literal upper bound; 0 = none) — proves idx into a
+	                   * sized T[N] when litub <= N */
 	int pool_bounded; /* if var!=NULL: `var < count|cap` of a @policy(pool) handler ⇒ var is within the
 	                   * handled pool's extent (count <= cap == capacity); proves a column index in it */
 } BndFact;

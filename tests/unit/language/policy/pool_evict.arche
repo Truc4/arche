@@ -12,7 +12,7 @@ Foo :: arche { v :: int, ts :: int }
 // This is a naive implementation, the user is in charge of writing the bound
 // policy that makes sense for their usecase
 @policy(pool)
-evict_oldest :: policy (count: int, cap: int, ok: int, slot: int) {
+evict_oldest :: policy(count: int, cap: int, ok: int, slot: int) {
   if (count >= cap) {
     oldest := 0;
     for (j := 1; j < count; j = j + 1) {
