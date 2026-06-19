@@ -22,4 +22,11 @@ typedef enum {
 
 const char *arche_resource_dir(ArcheResource which);
 
+/* True when `path` is the core prelude itself, so prepending core would double-define every
+ * prelude symbol. Matches by (device, inode) against the resolved prelude AND by the canonical
+ * `…/core/core.arche` layout — the latter recognizes the prelude *source* in a repo even when a
+ * different installed copy is the resolved prelude (same role, different inode). Shared by the
+ * compiler front-end and the analyzer so the two never diverge on "is this core?". */
+int arche_path_is_core(const char *path);
+
 #endif /* ARCHE_CLI_RESOURCE_H */

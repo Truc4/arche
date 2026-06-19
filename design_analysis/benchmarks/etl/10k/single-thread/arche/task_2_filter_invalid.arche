@@ -1,4 +1,3 @@
-// Task 2 (arche, transform-only): count(quantity > 0), repeated N=216,000 times.
 #import { csv io fmt os }
 
 Transaction :: arche { quantity :: int }
@@ -22,8 +21,6 @@ write_output :: proc(count: i64) {
 main :: proc() {
   load_transactions();
 
-  // Up to 2.16e9 across all iters — past i32 but well within i64. An integer accumulator
-  // (unlike a float one) lets the conditional count auto-vectorize into a SIMD masked-add.
   count: i64 = 0;
   os.os_now_sec()(t0:);
   for (iter := 0; iter < 216000; iter += 1) {

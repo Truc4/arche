@@ -1,5 +1,3 @@
-// Task 1: Compute derived columns
-// Compute revenue = price * quantity for all rows.
 // `revenue` is a stored column here because materializing it IS what this benchmark measures (the
 // vectorized column op, head-to-head with pandas `df['revenue'] = price*qty`) and it is the output.
 #import { csv io fmt }

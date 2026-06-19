@@ -198,6 +198,7 @@ test-e2e: $(TARGET) $(BUILD_DIR)/runtime/hotreload.o
 test: $(TARGET) $(ANALYZER_BIN) $(SYNTAX_TOKENS_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(INSPECT_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 	lit -v tests/ extras/
 	$(MAKE) test-doc
+	$(MAKE) verify-fmt
 
 # Per-unit codegen check: runs the full lit suite emitting one LLVM module per compilation unit
 # (unit 0 = driver, unit N = the Nth imported device; mangled/external symbols + linkonce_odr shared
@@ -431,6 +432,11 @@ verify-syntax: $(SYNTAX_ROUNDTRIP_BIN)
 	@./$(SYNTAX_ROUNDTRIP_BIN) $(CORPUS) \
 		&& echo "verify-syntax: all $(words $(CORPUS)) files round-trip losslessly"
 
+# Verify `arche fmt` never corrupts a file and is idempotent, across the whole corpus. The net that
+# was missing while the formatter silently produced NUL/heap garbage for some files (data loss).
+verify-fmt: $(TARGET)
+	@ARCHE=$(TARGET) bash scripts/verify_fmt.sh $(CORPUS)
+
 # syntax tree view-layer unit tests
 test-syntax-view: $(SYNTAX_VIEW_TEST_BIN)
 	@./$(SYNTAX_VIEW_TEST_BIN)
@@ -524,4 +530,4 @@ test-install: all
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
 
 # Phony targets
-.PHONY: all run run-lexer test test-per-unit test-doc check-corpus test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-codegen install test-install
+.PHONY: all run run-lexer test test-per-unit test-doc check-corpus test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-fmt verify-codegen install test-install

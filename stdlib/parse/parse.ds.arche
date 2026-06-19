@@ -1,3 +1,1 @@
-// Datasheet for the `parse` device. parse is a pure stateless numeric-parsing library: no storage
-// requirements, no exposed types. Its API (atoi/atof/…) lives in parse.arche, reached via exports.
-// The datasheet's presence marks parse as a device (importable by name).
+

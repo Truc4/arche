@@ -198,6 +198,9 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 4 && strncmp(start, "copy", 4) == 0) {
 		return TOK_COPY;
 	}
+	if (length == 5 && strncmp(start, "alias", 5) == 0) {
+		return TOK_ALIAS;
+	}
 	if (length == 6 && strncmp(start, "return", 6) == 0) {
 		return TOK_RETURN;
 	}
@@ -679,6 +682,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_OWN";
 	case TOK_COPY:
 		return "TOK_COPY";
+	case TOK_ALIAS:
+		return "TOK_ALIAS";
 	case TOK_RETURN:
 		return "TOK_RETURN";
 	case TOK_EACH_FIELD:
