@@ -2,12 +2,17 @@
 // it scans a column to pick a victim and redirects the write `slot`. The new entity overwrites the
 // victim and the insert succeeds (ok=1). Pool-specific (names Foo's columns), the kind of custom
 // overflow logic the handler mechanism exists for.
-// (reads results with `!undefined`, so opt into the raw op)
 // RUN: %arche build --allow-undefined -o %t %s && %t | grep -qF "ok2=1 v0=30 v1=20"
 #import { fmt }
+
 Foo :: arche { v :: int, ts :: int }
+
 [2]Foo ?evict_oldest;
-@policy (pool) evict_oldest :: policy (count: int, cap: int, ok: int, slot: int) {
+
+// This is a naive implementation, the user is in charge of writing the bound
+// policy that makes sense for their usecase
+@policy(pool)
+evict_oldest :: policy(count: int, cap: int, ok: int, slot: int) {
   if (count >= cap) {
     oldest := 0;
     for (j := 1; j < count; j = j + 1) {
@@ -18,9 +23,10 @@ Foo :: arche { v :: int, ts :: int }
     slot = oldest; // recycle the oldest slot
   }
 }
+
 main :: proc() {
   insert(Foo { v: 10, ts: 5 })(h0:, ok0:); // slot 0: v=10 ts=5
   insert(Foo { v: 20, ts: 9 })(h1:, ok1:); // slot 1: v=20 ts=9
   insert(Foo { v: 30, ts: 7 })(h2:, ok2:); // full -> evict oldest (slot 0, ts=5) -> v=30 at slot 0
-  fmt.printf("ok2=%d v0=%d v1=%d\n", ok2, Foo.v[0] !undefined, Foo.v[1] !undefined);
+  fmt.printf("ok2=%d v0=%d v1=%d\n", ok2, Foo.v[0], Foo.v[1]);
 }

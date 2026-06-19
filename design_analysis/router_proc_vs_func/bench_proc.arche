@@ -1,7 +1,3 @@
-// Procedural router — module-static capture state (the current stdlib/router design).
-// `resolve` records captures into module globals; `param`/`param_count` read them back. Terse call
-// site, but stateful: the captures are clobbered by the next `resolve`, so it is not reentrant.
-// RUN: %arche build -o %t %s && %t | grep -q "checksum="
 #import { os }
 
 route :: enum { miss, root, user, post, asset }
@@ -19,7 +15,6 @@ TrieNode :: arche {
 
 TrieNode[256]
 
-// Per-request capture state — MODULE GLOBALS (overwritten by the next resolve).
 cap_start : int[8]
 cap_len   : int[8]
 cap_count : int[1]
@@ -33,9 +28,6 @@ seg_end :: func(p: char[], start: int, n: int) -> int {
   return n;
 }
 
-// `seg` is a sub-slice of the path/pattern (a borrowed view), so it indexes from 0 and carries its
-// own `.length` — no explicit `n`. The stored segment lives in a fixed char[32] column, which has no
-// length of its own, so its content length travels in the `seg_len` column.
 seg_eq :: func(stored: char[], stored_len: int, seg: char[]) -> bool {
   if (stored_len != seg.length) {
     return false;
@@ -116,7 +108,6 @@ add :: proc(pattern: char[], handler_id: route) {
   TrieNode.handler_id[cur] = handler_id;
 }
 
-// Procedural: captures recorded into module statics; read back via param/param_count.
 resolve :: proc(path: char[])(handler_id: route) {
   n   := path.length;
   cur := 0;

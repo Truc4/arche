@@ -971,9 +971,8 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 				return 0;
 		} else {
 			/* `name :: alias T` — consume the transparent-alias marker; the backing then parses as
-			 * the value name (which denotes a type), exactly like the bare `name :: T` alias form.
-			 * `alias` stays an ordinary identifier elsewhere — only this leading `::`-RHS slot. */
-			if (parser->current.length == 5 && strncmp(parser->current.start, "alias", 5) == 0)
+			 * the value name (which denotes a type), exactly like the bare `name :: T` alias form. */
+			if (parser->current.kind == TOK_ALIAS)
 				advance(parser);
 			if (!parse_expression(parser))
 				return 0;
@@ -1909,7 +1908,7 @@ static int parse_binding_tail(Parser *parser, SyntaxNodeKind *out_kind) {
 		} else if (check(parser, TOK_COLON)) {
 			advance(parser); /* `::` — inferred-meta local constant */
 			/* `k :: alias T` — consume the transparent-alias marker; backing parses as the value. */
-			if (parser->current.length == 5 && strncmp(parser->current.start, "alias", 5) == 0)
+			if (parser->current.kind == TOK_ALIAS)
 				advance(parser);
 			int rhs_cp = syntax_cp(parser);
 			if (!parse_expression(parser))

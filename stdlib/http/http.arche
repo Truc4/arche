@@ -1,8 +1,3 @@
-// The `http` module — procedural HTTP/1.1 building blocks (parse + respond). `#import { http }`.
-// Everything is a length-carried []char slice. Arche has no by-value record type, so there is no
-// Request/Response value: the request line is handed back as MULTIPLE RETURN VALUES (Odin-style), and
-// responses are free procedures over a connection + caller buffer. C (libc sprintf) is an
-// implementation detail; `%s` only ever formats NUL-terminated literals (mime/reason), never a slice.
 #import { net str fmt }
 
 /// Parse a request line "METHOD SP TARGET SP VERSION" into VIEWS of `req` plus an `ok` flag. The
@@ -24,14 +19,14 @@ parse_request_line :: proc(req: []char)(method: []char, target: []char, ok: bool
   sp1 := str.find_char(req, 0, req.length, ' ');
   sp2 := str.find_char(req, sp1 + 1, req.length, ' ');
   if (sp1 >= req.length || sp2 >= req.length) {
-    return; // no two spaces → not a valid request line
+    return;
   }
   method = req[0: sp1];
   tstart := sp1 + 1;
   tend   := sp2;
   q      := str.find_char(req, tstart, tend, '?');
   if (q < tend) {
-    tend = q; // drop the query string
+    tend = q;
   }
   target = req[tstart: tend];
   ok     = true;
@@ -101,8 +96,7 @@ respond :: proc(
   body      : []char,
   send_body : bool,
 ) {
-  // Bind the reason phrase to a local: an inline func-call result is a `{ptr,len}` slice, but a `%s`
-  // vararg needs a bare NUL-terminated pointer — a NAME is passed as its `.ptr`, an inline call is not.
+
   rs := reason(status);
   fmt.sprintf(
     _,

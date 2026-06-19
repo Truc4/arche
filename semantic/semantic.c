@@ -959,6 +959,17 @@ static void mark_last_param(SemanticContext *ctx, int is_own) {
 	}
 }
 
+/* Stamp the declaration site on the most-recently-added variable. Locals are created with a zero
+ * loc; without this, unused-local (W0004) and opaque-must-consume diagnostics report line 0 and pile
+ * up at the top of the file instead of pointing at the binding. */
+static void set_last_var_loc(SemanticContext *ctx, SourceLoc loc) {
+	if (ctx->scope_count > 0) {
+		Scope *s = &ctx->scopes[ctx->scope_count - 1];
+		if (s->var_count > 0)
+			s->vars[s->var_count - 1]->loc = loc;
+	}
+}
+
 static void add_variable_with_archetype(SemanticContext *ctx, const char *name, TypeId type_id,
                                         const char *archetype_name) {
 	if (ctx->scope_count == 0)
@@ -2834,6 +2845,7 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 
 		check_shadows_callable(ctx, bind_name, loc);
 		add_variable(ctx, bind_name, btype_id);
+		set_last_var_loc(ctx, loc); /* W0004/must-consume point at the binding, not line 0 */
 		/* An inferred bind of a SIZED ARRAY value (`b := copy a`, a `[3]int`) carries that real `[N]T`
 		 * type onto the variable, so `move b` / `b[i]` resolve it. Deliberately NOT slices: a `[]T` local
 		 * stays untyped here so the return check's "local array by value" rule keeps allowing the safe
@@ -3203,6 +3215,7 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 			sem_emit_each_field_invalid_rhs(ctx, loc, arch_param);
 		push_scope(ctx);
 		add_variable(ctx, binding_name, TYID_UNKNOWN);
+		set_last_var_loc(ctx, loc);
 		for (int i = 0, n = sem_stmt_count(v); i < n; i++)
 			analyze_statement(ctx, sem_stmt_at(v, i));
 		pop_scope(ctx);
@@ -3312,6 +3325,7 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 				/* already added above for "_"-filtered new targets; re-add to capture type/nominal */
 				if (t->name && strcmp(t->name, "_") != 0) {
 					add_variable(ctx, t->name, bind_type);
+					set_last_var_loc(ctx, loc); /* out-slot decl site (the call line), not line 0 */
 					TyKind bk = tyid_kind(ctx->ty_arena, bind_type);
 					if (is_handle_slot && ctx->scope_count > 0) {
 						/* insert's handle out-slot: a generation-checked handle to the target archetype (arg 0
@@ -4330,12 +4344,14 @@ static void lint_func_could_be_const(SemanticContext *ctx, DeclSummary *func) {
 
 #define BND_MAX_FACTS 64
 typedef struct {
-	char *var;  /* index variable name (owned); NULL for a pure min-length fact */
-	char *base; /* upper-bound base name (owned), or NULL when only nonneg is known */
-	int nonneg; /* 1 once v>=0 is established */
-	int minlen; /* if var==NULL && base!=NULL: `base.length >= minlen` (proves literal idx < minlen) */
-	int litub;  /* if var!=NULL: `var < litub` (a literal upper bound; 0 = none) — proves idx into a
-	             * sized T[N] when litub <= N */
+	char *var;        /* index variable name (owned); NULL for a pure min-length fact */
+	char *base;       /* upper-bound base name (owned), or NULL when only nonneg is known */
+	int nonneg;       /* 1 once v>=0 is established */
+	int minlen;       /* if var==NULL && base!=NULL: `base.length >= minlen` (proves literal idx < minlen) */
+	int litub;        /* if var!=NULL: `var < litub` (a literal upper bound; 0 = none) — proves idx into a
+	                   * sized T[N] when litub <= N */
+	int pool_bounded; /* if var!=NULL: `var < count|cap` of a @policy(pool) handler ⇒ var is within the
+	                   * handled pool's extent (count <= cap == capacity); proves a column index in it */
 } BndFact;
 
 /* A local array/slice declaration seen in the body, so `name[i]` on a local is checked like a
@@ -4354,6 +4370,8 @@ typedef struct {
 	int local_count;
 	int lint_columns;   /* 1 = also emit W0017 for unprovable pool-column (`Arch.field[i]`) indexing */
 	int check_policies; /* 1 = the failure-policy validation pass (E0097-99/E0124/W0018); see sem_check_policies */
+	int insert_flow_ok; /* 1 = this proc has no `delete`, so `insert`s monotonically raise a pool's live
+	                     * count — track it (insert-flow liveness) to prove a filled pool's column index */
 } BndEnv;
 
 /* int value of a literal node, or -1 if not a nonneg int literal. */
@@ -4470,6 +4488,7 @@ static void bnd_env_add(BndEnv *e, const char *var, const char *base, int nonneg
 	e->facts[e->count].nonneg = nonneg;
 	e->facts[e->count].minlen = 0;
 	e->facts[e->count].litub = 0;
+	e->facts[e->count].pool_bounded = 0;
 	e->count++;
 }
 
@@ -4482,6 +4501,7 @@ static void bnd_env_add_min(BndEnv *e, const char *base, int n) {
 	e->facts[e->count].nonneg = 0;
 	e->facts[e->count].minlen = n;
 	e->facts[e->count].litub = 0;
+	e->facts[e->count].pool_bounded = 0;
 	e->count++;
 }
 
@@ -4494,7 +4514,39 @@ static void bnd_env_add_litub(BndEnv *e, const char *var, int k) {
 	e->facts[e->count].nonneg = 0;
 	e->facts[e->count].minlen = 0;
 	e->facts[e->count].litub = k;
+	e->facts[e->count].pool_bounded = 0;
 	e->count++;
+}
+
+/* Record `var < count|cap` of a @policy(pool) handler: var is within the handled pool's extent. */
+static void bnd_env_add_poolbound(BndEnv *e, const char *var) {
+	if (!var || e->count >= BND_MAX_FACTS)
+		return;
+	e->facts[e->count].var = sem_dupz(var);
+	e->facts[e->count].base = NULL;
+	e->facts[e->count].nonneg = 0;
+	e->facts[e->count].minlen = 0;
+	e->facts[e->count].litub = 0;
+	e->facts[e->count].pool_bounded = 1;
+	e->count++;
+}
+
+static int bnd_is_poolbound(BndEnv *e, const char *var) {
+	for (int i = 0; i < e->count; i++)
+		if (e->facts[i].pool_bounded && e->facts[i].var && var && strcmp(e->facts[i].var, var) == 0)
+			return 1;
+	return 0;
+}
+
+/* In a @policy(pool) handler the first two params are (count, cap) by the pool-policy ABI; both are
+ * <= the pool's capacity, so an index proven below either is within the handled pool's storage. */
+static int bnd_is_pool_extent_param(DeclSummary *d, const char *name) {
+	if (!d || !d->is_policy || d->policy_category != POLICY_CAT_POOL || !name)
+		return 0;
+	for (int i = 0; i < d->param_count && i < 2; i++)
+		if (d->params[i].name && strcmp(d->params[i].name, name) == 0)
+			return 1;
+	return 0;
 }
 
 /* Smallest literal upper bound known for `var` (INT_MAX if none). */
@@ -4511,6 +4563,37 @@ static int bnd_minlen_ok(BndEnv *e, const char *base, int k) {
 	for (int i = 0; i < e->count; i++)
 		if (!e->facts[i].var && e->facts[i].base && base && strcmp(e->facts[i].base, base) == 0 &&
 		    e->facts[i].minlen > k)
+			return 1;
+	return 0;
+}
+
+/* Largest known lower bound on `base`'s live length from minlen facts (0 if none). */
+static int bnd_pool_minlive(BndEnv *e, const char *base) {
+	int best = 0;
+	for (int i = 0; i < e->count; i++)
+		if (!e->facts[i].var && e->facts[i].base && base && strcmp(e->facts[i].base, base) == 0 &&
+		    e->facts[i].minlen > best)
+			best = e->facts[i].minlen;
+	return best;
+}
+
+/* True if the body contains ANY `delete(...)` call (at any depth). A delete can lower a pool's live
+ * count, which would make insert-flow liveness unsound; so any proc that deletes opts out of it
+ * entirely (conservative — falls back to the guaranteed-live init count). */
+static int bnd_body_has_delete(SemanticContext *ctx, SyntaxView v) {
+	if (!sv_present(v))
+		return 0;
+	if (sv_kind(v) == SN_CALL_EXPR) {
+		const char *cn = ctx->model ? sem_model_callee_name(ctx->model, sv_id(v)) : NULL;
+		char *cnf = cn ? sem_dupz(cn) : sem_cv_dup(sv_child(v, SN_CALLEE_NAME));
+		int is_del = cnf && strcmp(cnf, "delete") == 0;
+		free(cnf);
+		if (is_del)
+			return 1;
+	}
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE &&
+		    bnd_body_has_delete(ctx, (SyntaxView){v.node->children[i].as.node, v.src}))
 			return 1;
 	return 0;
 }
@@ -4539,6 +4622,7 @@ static BndFact *bnd_snapshot(BndEnv *e, int *out_n) {
 		s[i].nonneg = e->facts[i].nonneg;
 		s[i].minlen = e->facts[i].minlen;
 		s[i].litub = e->facts[i].litub;
+		s[i].pool_bounded = e->facts[i].pool_bounded;
 	}
 	return s;
 }
@@ -4607,13 +4691,13 @@ static int bnd_proven(BndEnv *e, const char *var, const char *base) {
  *   `X.length > k`        ⇒ minlen(X, k+1)   (and `k < X.length`)
  *   `X.length >= k`       ⇒ minlen(X, k)
  * so guards like `if (s.length > 0)` validate the literal index `s[0]`. */
-static void bnd_collect_facts(SemanticContext *ctx, SyntaxView cond, BndEnv *e) {
+static void bnd_collect_facts(SemanticContext *ctx, DeclSummary *d, SyntaxView cond, BndEnv *e) {
 	if (!sv_present(cond) || sv_kind(cond) != SN_BINARY_EXPR)
 		return;
 	Operator op = sem_binary_op(cond);
 	if (op == OP_AND) {
-		bnd_collect_facts(ctx, sem_node_at_expr(cond, 0), e);
-		bnd_collect_facts(ctx, sem_node_at_expr(cond, 1), e);
+		bnd_collect_facts(ctx, d, sem_node_at_expr(cond, 0), e);
+		bnd_collect_facts(ctx, d, sem_node_at_expr(cond, 1), e);
 		return;
 	}
 	SyntaxView l = sem_node_at_expr(cond, 0), r = sem_node_at_expr(cond, 1);
@@ -4627,6 +4711,13 @@ static void bnd_collect_facts(SemanticContext *ctx, SyntaxView cond, BndEnv *e) 
 		int rlit = bnd_lit_int(r);
 		if (v && rlit >= 0)
 			bnd_env_add_litub(e, v, rlit);
+		/* v < count|cap (a @policy(pool) extent param) → v is within the handled pool's extent */
+		if (v) {
+			char *rn = bnd_plain_name(ctx, r);
+			if (rn && bnd_is_pool_extent_param(d, rn))
+				bnd_env_add_poolbound(e, v);
+			free(rn);
+		}
 		free(v);
 		free(b);
 		/* k < X.length → minlen(X, k+1) */
@@ -5057,7 +5148,9 @@ static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, Sy
 				}
 			} else if (kind == 3 && n > 0 && lit < n) {
 				/* column (kind 3): `n` is the pool's guaranteed-live init count. A literal below it is
-				 * in range; `lit >= n` is NOT OOB (the count can grow via insert) — keep the check. */
+				 * in range; `lit >= n` is NOT OOB (the count can grow via insert) — keep the check.
+				 * A within-capacity-but-not-live slot is uninitialized, NOT safe — so capacity is not
+				 * used here; only the proven-live count proves a column index. */
 				provably_safe = 1;
 			} else if (bnd_minlen_ok(e, base, lit)) {
 				provably_safe = 1;
@@ -5072,6 +5165,10 @@ static void bnd_policy_check(SemanticContext *ctx, DeclSummary *d, BndEnv *e, Sy
 				/* column loop var bounded by a literal `K <= init count` (mirrors the old codegen
 				 * `bounds_check_elidable`: `loop_bound <= static_count`). */
 				else if (kind == 3 && n > 0 && bnd_is_nonneg(e, iv) && bnd_litub(e, iv) <= n)
+					provably_safe = 1;
+				/* pool-policy: `iv` proven nonneg and `< count|cap` (the handled pool's LIVE extent) —
+				 * e.g. `for (j := 1; j < count; ...) Foo.ts[j]`. Sound: count rows are live. */
+				else if (kind == 3 && bnd_is_nonneg(e, iv) && bnd_is_poolbound(e, iv))
 					provably_safe = 1;
 			}
 			free(iv);
@@ -5113,7 +5210,7 @@ static const char *bnd_check_expr(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 		if (r)
 			return r;
 		int saved = e->count;
-		bnd_collect_facts(ctx, sem_node_at_expr(v, 0), e);
+		bnd_collect_facts(ctx, d, sem_node_at_expr(v, 0), e);
 		r = bnd_check_expr(ctx, d, sem_node_at_expr(v, 1), e);
 		bnd_env_truncate(e, saved);
 		return r;
@@ -5298,7 +5395,7 @@ static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 			}
 		}
 		/* push cond upper-bound facts; mark the init var nonneg */
-		bnd_collect_facts(ctx, cond, e);
+		bnd_collect_facts(ctx, d, cond, e);
 		if (init_var)
 			bnd_env_add(e, init_var, NULL, 1);
 		(void)init_nonneg_var_seen;
@@ -5337,7 +5434,7 @@ static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 			return r;
 		int snn;
 		BndFact *snap = bnd_snapshot(e, &snn);
-		bnd_collect_facts(ctx, cond, e);
+		bnd_collect_facts(ctx, d, cond, e);
 		r = bnd_check_block(ctx, d, v, e);
 		bnd_restore(e, snap, snn);
 		return r;
@@ -5366,6 +5463,18 @@ static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 				bnd_env_kill(e, tgt);
 			if (nn)
 				bnd_env_add(e, tgt, NULL, 1);
+			/* In a @policy(pool) handler, carry the "< pool extent" marker so a column index built from a
+			 * count-bounded var stays provable: `oldest = j` (RHS poolbound) or `oldest := 0` (slot 0 is in
+			 * any non-empty pool). Runs after the kill+nonneg above so reassignment re-derives cleanly. */
+			if (nn && d && d->is_policy && d->policy_category == POLICY_CAT_POOL) {
+				char *rn = bnd_plain_name(ctx, sem_node_at_expr(v, 1));
+				int rhs_pb = rn && bnd_is_poolbound(e, rn);
+				free(rn);
+				int rl;
+				int lit0 = bnd_lit_int_signed(sem_node_at_expr(v, 1), &rl) && rl == 0;
+				if (rhs_pb || lit0)
+					bnd_env_add_poolbound(e, tgt);
+			}
 		}
 		/* Track a local array/slice so `tgt[i]` is checked like a param — whether the type was WRITTEN
 		 * (`a: [4]int`) or INFERRED (`a := M[0]` → `[3]int`, `v := buf[lo:hi]` → `[]int`). A sized `[N]T`
@@ -5391,6 +5500,42 @@ static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 		free(tgt);
 		return bnd_check_expr(ctx, d, sem_node_at_expr(v, 0), e);
 	}
+	/* Insert-flow liveness: a successful `insert(P, …)` raises P's live count by 1 (capped at capacity).
+	 * Recorded as a `P.length >= K` minlen fact (the same fact bnd_minlen_ok proves literal column
+	 * indices with), so e.g. after two inserts into `[2]Foo`, `Foo.v[0]`/`Foo.v[1]` are provably live.
+	 * Only when the proc has no `delete` (insert_flow_ok); conditional inserts are scoped away by the
+	 * surrounding snapshot/restore (so only the monotone, unconditional raises persist) — sound. */
+	if ((k == SN_PROC_CALL_STMT || k == SN_MULTI_BIND_STMT) && e->insert_flow_ok) {
+		SyntaxView call = {NULL, v.src};
+		for (int i = 0; i < v.node->child_count; i++)
+			if (v.node->children[i].tag == SE_NODE) {
+				SyntaxNodeKind ck = v.node->children[i].as.node->kind;
+				if (ck >= SN_LITERAL_EXPR && ck <= SN_PAREN_EXPR) {
+					call = (SyntaxView){v.node->children[i].as.node, v.src};
+					break;
+				}
+			}
+		if (sv_present(call) && sv_kind(call) == SN_CALL_EXPR) {
+			const char *cn = ctx->model ? sem_model_callee_name(ctx->model, sv_id(call)) : NULL;
+			char *cnf = cn ? sem_dupz(cn) : sem_cv_dup(sv_child(call, SN_CALLEE_NAME));
+			if (cnf && strcmp(cnf, "insert") == 0) {
+				SynText nm = sv_token(sem_node_at_expr(call, 0), TOK_IDENT); /* arg0 = `P { … }` */
+				if (nm.ptr) {
+					char *p = sem_txt_dup(nm);
+					ArchetypeInfo *ai = find_archetype(ctx, p);
+					if (ai && ai->alloc_capacity > 0) {
+						int cur = bnd_pool_minlive(e, p);
+						if (ai->alloc_init_count > cur)
+							cur = ai->alloc_init_count;
+						if (cur < ai->alloc_capacity)
+							bnd_env_add_min(e, p, cur + 1);
+					}
+					free(p);
+				}
+			}
+			free(cnf);
+		}
+	}
 	/* ordinary statement: scan its expressions for indices */
 	return bnd_check_expr(ctx, d, v, e);
 }
@@ -5409,6 +5554,7 @@ static void sem_check_raw_pool_lint(SemanticContext *ctx) {
 		e.local_count = 0;
 		e.lint_columns = 1;
 		e.check_policies = 0;
+		e.insert_flow_ok = 0; /* liveness proof only matters in the policy-check pass */
 		/* This pass runs after analyze cleared active_allow_slugs, so re-arm the decl's @allow set
 		 * around the walk — otherwise a `@allow(raw_pool_index)` on the decl is silently ignored (the
 		 * lint's documented escape hatch). Mirrors the dead-code pass above. */
@@ -5651,6 +5797,7 @@ static void sem_check_policies(SemanticContext *ctx) {
 		e.local_count = 0;
 		e.lint_columns = 0;
 		e.check_policies = 1;
+		e.insert_flow_ok = !bnd_body_has_delete(ctx, d->body_node);
 		for (int i = 0, n = sem_stmt_count(d->body_node); i < n; i++)
 			bnd_check_stmt(ctx, d, sem_stmt_at(d->body_node, i), &e);
 		bnd_env_truncate(&e, 0);
@@ -6120,16 +6267,10 @@ static int sv_type_count_sem(SyntaxView v);
 /* 1 if a `name :: <rhs>` const carries the `alias` transparent-marker: a loose IDENT token `alias`
  * sitting after the binding name (the backing-name value is an expr node, not a loose token). */
 static int syntax_const_alias_marked(SyntaxView d) {
-	int seen_name = 0;
 	for (int i = 0; i < d.node->child_count; i++) {
 		const SyntaxElem *e = &d.node->children[i];
-		if (e->tag != SE_TOKEN || e->as.token.kind != TOK_IDENT)
-			continue;
-		if (!seen_name) {
-			seen_name = 1; /* the binding name */
-			continue;
-		}
-		return e->as.token.length == 5 && memcmp(d.src + e->as.token.offset, "alias", 5) == 0;
+		if (e->tag == SE_TOKEN && e->as.token.kind == TOK_ALIAS)
+			return 1; /* the transparent-alias keyword marker */
 	}
 	return 0;
 }
@@ -6145,31 +6286,14 @@ static char *syntax_handle_name(SyntaxView t) {
 	return sem_dupz("");
 }
 
-/* Type name from an SN_TYPE_REF: a qualified `mod.Name` (two IDENTs) folds to `mod_Name` (the
- * module's mangled type symbol), matching lower.c's type_ref_name; a bare type returns its IDENT. */
-/* 1 if this SN_TYPE_REF has a `.` token — a qualified `mod.name`. Distinguishes a real two-IDENT
- * qualified type from the `alias T` transparent marker (two adjacent IDENTs, no dot). */
-static int sem_type_ref_has_dot(SyntaxView t) {
-	for (int i = 0; i < t.node->child_count; i++)
-		if (t.node->children[i].tag == SE_TOKEN && t.node->children[i].as.token.kind == TOK_DOT)
-			return 1;
-	return 0;
-}
-
-/* 1 if this SN_TYPE_REF carries the leading `alias` transparent-marker (with a real backing name
- * following): two adjacent IDENTs where the first is `alias`, and no `.` (so it is not `mod.name`). */
+/* 1 if this SN_TYPE_REF carries the leading `alias` transparent-marker keyword (`alias T`). */
 static int sem_type_ref_alias_marked(SyntaxView t) {
-	SynText ids[2];
-	int n = 0;
-	for (int i = 0; i < t.node->child_count && n < 2; i++) {
+	for (int i = 0; i < t.node->child_count; i++) {
 		const SyntaxElem *e = &t.node->children[i];
-		if (e->tag == SE_TOKEN && e->as.token.kind == TOK_IDENT) {
-			ids[n].ptr = t.src + e->as.token.offset;
-			ids[n].len = e->as.token.length;
-			n++;
-		}
+		if (e->tag == SE_TOKEN && e->as.token.kind == TOK_ALIAS)
+			return 1;
 	}
-	return n >= 2 && ids[0].len == 5 && memcmp(ids[0].ptr, "alias", 5) == 0 && !sem_type_ref_has_dot(t);
+	return 0;
 }
 
 static char *sem_type_ref_name(SyntaxView t) {
@@ -6183,9 +6307,6 @@ static char *sem_type_ref_name(SyntaxView t) {
 			n++;
 		}
 	}
-	/* `alias T`: transparent marker — the real type name is the second IDENT, not a `mod.name`. */
-	if (n >= 2 && ids[0].len == 5 && memcmp(ids[0].ptr, "alias", 5) == 0 && !sem_type_ref_has_dot(t))
-		return sem_txt_dup(ids[1]);
 	if (n >= 2) {
 		size_t L = ids[0].len + 1 + ids[1].len + 1;
 		char *r = malloc(L);

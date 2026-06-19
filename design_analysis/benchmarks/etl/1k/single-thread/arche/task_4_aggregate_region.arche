@@ -1,5 +1,3 @@
-// Task 4: Aggregate total revenue
-// Sum revenue (price * quantity) across all rows
 #import { csv io fmt }
 
 Transaction :: arche { price :: float, quantity :: int, revenue :: float }

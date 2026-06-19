@@ -1,7 +1,8 @@
 // Category check on a pool handler: `?name` must resolve to a @policy(pool). A @policy(bounds) policy
 // used (even with the `?` sigil) on an insert is the wrong category -> E0124.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "needs a @policy(pool)\|E0124" %t.out
-@policy (bounds) bx :: policy (len: int, i: int) {
+@policy(bounds)
+bx :: policy(len: int, i: int) {
   if (i < 0) {
     i = 0;
   }

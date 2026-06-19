@@ -1,7 +1,3 @@
-// Datasheet for the `router` device — its TYPE requirements + a storage requirement. A datasheet
-// DESCRIBES REQUIREMENTS, never definitions: it states the `nodeKind` type (a device's types are its
-// shared vocabulary) and that the driver must provide a `TrieNode` pool of at least 256 rows. The
-// `TrieNode` SHAPE is defined in the impl (router.arche), which uses it; the driver owns the pool.
 nodeKind :: enum { kstatic, kparam, kcatchall }
 
-[256]TrieNode; // storage requirement: the driver allocates at least this many nodes
+[256]TrieNode;

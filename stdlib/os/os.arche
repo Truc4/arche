@@ -1,14 +1,6 @@
-// The `os` module — process/system services (C-backed in runtime/io.c, term.c).
-// `#import { os }` then call `os.os_now_sec()`, `os.os_sleep_ms(...)`, `os.os_argc()`, `os.argv(i)`.
-// Access is qualified-only: a bare `now_sec()` does not resolve.
-// `os_argv(i)` is the raw C pointer (no carried length); `os_argv_len(i)` is its FFI-boundary length
-// (C-side strlen). Both stay reachable for interop, but prefer the `os.argv` wrapper below.
-// Raw Linux/x86-64 `syscall` intrinsic lives in this same `#foreign` region (a file carries one):
-// it emits the `syscall` instruction directly (no libc). A buffer arg decays to its data pointer
-// (like C). The fd wrappers below build on it. Call qualified as `os.syscall(...)`.
 #foreign {
   os_now_sec  :: proc()(t: float);
-  os_now_ms   :: proc()(t: i64); // monotonic milliseconds (integer) — for fixed-timestep sim loops
+  os_now_ms   :: proc()(t: i64);
   os_sleep_ms :: proc(ms: int);
   os_argc     :: proc()(n: int);
   os_argv     :: proc(i: int)(s: []char);
@@ -20,34 +12,26 @@
   );
 }
 
-// `os.argv(i)` returns argument `i` as a normal length-carried slice — it pairs the raw C pointer
-// with its boundary length and hands back the slice view, so the caller never sees the C-string seam.
 argv :: proc(i: int)(out: []char) {
   os_argv(i)(raw:);
   os_argv_len(i)(n:);
   out = raw[0: n];
 }
 
-// Sleep for `ms` milliseconds (public wrapper over the foreign timer).
 sleep_ms :: proc(ms: int) {
   os_sleep_ms(ms);
 }
 
-// Monotonic milliseconds (public wrapper). For fixed-timestep loops: `os.now_ms()(t:)`. A clock read is
-// an effect (it observes mutable external state — different each call), so it's a proc, not a func.
 now_ms :: proc()(t: i64) {
   os_now_ms()(t);
 }
 
-// Raw fd I/O — thin syscall wrappers (x86-64 Linux), no libc. Read-only buffers (`write`/`open`
-// path) are plain borrows; `read` lends `buf` and hands back a slice VIEW of the bytes read (the
-// count travels on `.length`) — out-only, no in-out shadow.
 open :: proc(path: []char, flags: int)(fd: int) {
-  syscall(2, path, flags, 0, 0, 0, 0)(r:); // SYS_open(path, flags, mode=0)
+  syscall(2, path, flags, 0, 0, 0, 0)(r:);
   fd = i32(r);
 }
 read :: proc(fd: int, buf: []char, len: int)(out: []char) {
-  syscall(0, fd, buf, len, 0, 0, 0)(r:); // SYS_read(fd, buf, len)
+  syscall(0, fd, buf, len, 0, 0, 0)(r:);
   n := i32(r);
   if (n < 0) {
     n = 0;
@@ -55,15 +39,15 @@ read :: proc(fd: int, buf: []char, len: int)(out: []char) {
   out = buf[0: n];
 }
 write :: proc(fd: int, buf: []char, len: int) {
-  syscall(1, fd, buf, len, 0, 0, 0)(_r:); // SYS_write(fd, buf, len)
+  syscall(1, fd, buf, len, 0, 0, 0)(_r:);
 }
 close :: proc(fd: int) {
-  syscall(3, fd, 0, 0, 0, 0, 0)(_r:); // SYS_close(fd)
+  syscall(3, fd, 0, 0, 0, 0, 0)(_r:);
 }
 lseek :: proc(fd: int, off: i64, whence: int)(pos: i64) {
-  syscall(8, fd, off, whence, 0, 0, 0)(r:); // SYS_lseek(fd, off, whence)
+  syscall(8, fd, off, whence, 0, 0, 0)(r:);
   pos = r;
 }
 exit :: proc(code: int) {
-  syscall(231, code, 0, 0, 0, 0, 0)(_r:); // SYS_exit_group(code) — does not return
+  syscall(231, code, 0, 0, 0, 0, 0)(_r:);
 }

@@ -91,7 +91,10 @@ static int no_space_before(TokenKind t, TokenKind prev, TokenKind next, SyntaxNo
 		 * callable, like an identifier before a call's `(`. A `proc!` marker hugs the param
 		 * list the same way (`proc!(...)`); this also tightens unary `!(expr)`. */
 		return prev == TOK_IDENT || prev == TOK_RPAREN || prev == TOK_RBRACKET || prev == TOK_PROC ||
-		       prev == TOK_FUNC || prev == TOK_BANG;
+		       prev == TOK_FUNC || prev == TOK_BANG ||
+		       /* `policy` hugs its param list like `proc`/`func` — both the `@policy(cat)` decorator and
+		        * the decl form `name :: policy(in)`. */
+		       prev == TOK_POLICY;
 	default:
 		break;
 	}
@@ -360,6 +363,11 @@ static void align_and_write(FILE *out, Buf *b) {
 		return;
 	}
 
+	/* NUL-terminate for the re-lex below NOW — BEFORE taking pointers into b->data. buf_reserve can
+	 * realloc (when len == cap), which would dangle every lines[].text captured below (heap-UAF). */
+	buf_reserve(b, 1);
+	b->data[b->len] = '\0';
+
 	AlignLine *lines = calloc((size_t)line_count, sizeof(AlignLine));
 	int li = 0;
 	size_t start = 0;
@@ -376,9 +384,7 @@ static void align_and_write(FILE *out, Buf *b) {
 		start = i + 1;
 	}
 
-	/* Re-lex the formatted text to locate genuine separators. */
-	buf_reserve(b, 1);
-	b->data[b->len] = '\0'; /* NUL terminator past len, not counted */
+	/* Re-lex the formatted text to locate genuine separators (NUL-terminated above). */
 	TokenBuffer tb = lexer_tokenize(b->data);
 	int *start_depth = malloc((size_t)line_count * sizeof(int));
 	for (int i = 0; i < line_count; i++)
@@ -512,8 +518,9 @@ void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 	 * rather than inline. `@` is only ever a decorator marker in Arche source. */
 	int *deco_end = ls.count ? calloc((size_t)ls.count, sizeof(int)) : NULL;
 	for (int i = 0; deco_end && i < ls.count; i++) {
-		if (ls.items[i].kind != TOK_AT || i + 1 >= ls.count || ls.items[i + 1].kind != TOK_IDENT)
-			continue;
+		if (ls.items[i].kind != TOK_AT || i + 1 >= ls.count ||
+		    (ls.items[i + 1].kind != TOK_IDENT && ls.items[i + 1].kind != TOK_POLICY))
+			continue; /* the name after `@` is an IDENT, or `policy` (a keyword) for `@policy(...)` */
 		/* `run map @gpu` — the `@gpu` is an inline dispatch marker on a run statement, not a decl
 		 * decorator, so it must NOT force a line break (which would strand the `;`). */
 		if (ls.items[i].parent == SN_RUN_STMT)

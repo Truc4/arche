@@ -40,6 +40,7 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_MOVE:
 	case TOK_OWN:
 	case TOK_COPY:
+	case TOK_ALIAS:
 	case TOK_RETURN:
 	case TOK_USE:
 	case TOK_EACH_FIELD:

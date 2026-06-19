@@ -1,0 +1,13 @@
+// A column index into a pool FILLED to capacity by preceding inserts is provably in bounds: after two
+// inserts into `[2]Foo`, rows 0 and 1 are live, so `Foo.v[0]` needs no failure policy and an explicit
+// one is dead (W0018 policy_on_safe_op). This is the live-count proof — distinct from reading an
+// UNINITIALIZED pool (alloc_uninitialized_error.arche), which stays unsafe.
+// RUN: %build/arche-analyzer --dump %s | grep -qi "W0018 policy_on_safe_op.*Foo"
+#import { fmt }
+Foo :: arche { v :: int }
+[2]Foo;
+main :: proc() {
+  insert(Foo { v: 10 })(h0:, ok0:);
+  insert(Foo { v: 20 })(h1:, ok1:);
+  fmt.printf("%d\n", Foo.v[0] !clamp);
+}

@@ -1,10 +1,5 @@
-// The `fmt` module — formatting and printing. `#import { fmt }` then call `fmt.printf(...)`,
-// `fmt.print(...)`, `fmt.print_float(...)`, etc. Access is qualified-only. Built on libc stdio
-// (printf/sprintf/fflush) for formatting and on `os` for raw stdout/abort.
 #import { os }
 
-// libc stdio C-runtime externs. C foreign symbols → callable bare within this module; qualified
-// `fmt.printf` / `fmt.sprintf` from importers.
 #foreign {
   sprintf :: proc(buf: []char, own fmt: []char, ...)(buf: []char, n: int);
   printf  :: proc(own fmt: []char, ...)(n: int);

@@ -267,9 +267,11 @@ static TypeId intern_callable(TypeArena *a, TyKind kind, const TypeId *params, i
 	node.data.func.param_count = param_count;
 	node.data.func.return_count = return_count;
 	node.data.func.params = malloc(param_count * sizeof(TypeId));
-	memcpy(node.data.func.params, params, param_count * sizeof(TypeId));
+	if (param_count) /* a 0-count memcpy from a NULL src is UB (no-arg proc/func) — guard it */
+		memcpy(node.data.func.params, params, param_count * sizeof(TypeId));
 	node.data.func.returns = malloc(return_count * sizeof(TypeId));
-	memcpy(node.data.func.returns, returns, return_count * sizeof(TypeId));
+	if (return_count)
+		memcpy(node.data.func.returns, returns, return_count * sizeof(TypeId));
 	return push_node(a, node);
 }
 

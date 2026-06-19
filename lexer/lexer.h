@@ -30,6 +30,7 @@ typedef enum TokenKind {
 	TOK_MOVE,
 	TOK_OWN,
 	TOK_COPY,
+	TOK_ALIAS,
 	TOK_RETURN,
 	TOK_USE,
 	TOK_EACH_FIELD,
