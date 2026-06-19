@@ -1,0 +1,14 @@
+// W0004 unused_local must point at the local's DECLARATION line, not line 0 — otherwise the editor
+// stacks every unused-local lint at the top of the file instead of on the offending binding. Covers
+// both `:=` locals AND call out-slot bindings (`f(...)(name:)`), the latter being how insert/recv/…
+// produce unused locals (the case that originally clustered at the top).
+// RUN: %build/arche-analyzer --dump %s | grep -qE "^DIAG 11 [0-9]+ warning W0004 unused_local 0 local 'dead'"
+// RUN: %build/arche-analyzer --dump %s | grep -qE "^DIAG 12 [0-9]+ warning W0004 unused_local 0 local 'ok'"
+#import { fmt }
+Foo :: arche { v :: int }
+[2]Foo;
+main :: proc() {
+  dead := 2;
+  insert(Foo { v: 9 })(h:, ok:);
+  fmt.printf("done\n");
+}

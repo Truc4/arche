@@ -363,6 +363,11 @@ static void align_and_write(FILE *out, Buf *b) {
 		return;
 	}
 
+	/* NUL-terminate for the re-lex below NOW — BEFORE taking pointers into b->data. buf_reserve can
+	 * realloc (when len == cap), which would dangle every lines[].text captured below (heap-UAF). */
+	buf_reserve(b, 1);
+	b->data[b->len] = '\0';
+
 	AlignLine *lines = calloc((size_t)line_count, sizeof(AlignLine));
 	int li = 0;
 	size_t start = 0;
@@ -379,9 +384,7 @@ static void align_and_write(FILE *out, Buf *b) {
 		start = i + 1;
 	}
 
-	/* Re-lex the formatted text to locate genuine separators. */
-	buf_reserve(b, 1);
-	b->data[b->len] = '\0'; /* NUL terminator past len, not counted */
+	/* Re-lex the formatted text to locate genuine separators (NUL-terminated above). */
 	TokenBuffer tb = lexer_tokenize(b->data);
 	int *start_depth = malloc((size_t)line_count * sizeof(int));
 	for (int i = 0; i < line_count; i++)
