@@ -1,0 +1,1464 @@
+ ▐▛███▜▌   Claude Code v2.1.181
+▝▜█████▛▘  Opus 4.8 · Claude Max
+  ▘▘ ▝▝    ~/Code/arche
+
+
+❯ load the conversation and update the document to reflect the recent decisions 
+  we made but aren't showing yet                                                
+
+● Need find what "conversation" and "document" mean. Check recent commits +
+  docs.
+
+● Bash(git show --stat a7ed551 && echo "---e19c029---" && git show --stat
+      e19c029)
+  ⎿  commit a7ed5518496c5864079b0825ee66840a485680b3
+     Author: Curt <curtreyes00@yahoo.com>
+     Date:   Thu Jun 18 16:30:09 2026 -0600
+     … +16 lines (ctrl+o to expand)
+
+● Conversation = algebraic-effecs-chat.txt. Document =
+  docs/design/flat-procedures-systems-effects.md. Load both.
+
+  Read 1 file (ctrl+o to expand)
+
+● Doc loaded (888 lines, design exploration on flat procs/effects). Now mine
+  chat for decisions not yet in doc. Chat huge (6201 lines) — delegate to fork
+  so it reads chat without dumping into my context.
+
+● fork(Extract chat decisions vs doc)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● Fork launched, reading chat. Waiting for delta list before editing doc.
+
+✻ Cogitated for 33s
+
+● Agent "Extract chat decisions vs doc" came to rest · 2m 13s
+
+● One real delta: naming-convention rule (intent-vs-mechanism) decided in chat,
+  drove the emit/render_row renames, but never written into §5 — and §8.6 has a
+  dangling §5 pointer to it. Add it.
+
+● Update(docs/design/flat-procedures-systems-effects.md)
+  ⎿  Added 20 lines
+      271  fixed_limit :: handler Config(n: int) { get_limit()(limit) { l
+           imit = n; resume; } }
+      272  ```
+      273  
+      274 +### Naming: a name claims no more than its layer commits      
+      275 +                                                              
+      276 +The split between *performing* an effect and *handling* it has
+          + a naming                                                     
+      277 +consequence: **an op is named for its role/intent, never its m
+          +echanism.** The leaf                                          
+      278 +that performs knows *what it wants done*, not *how* or *where*
+          + — so the name must                                           
+      279 +not smuggle in a commitment the leaf doesn't make.            
+      280 +                                                              
+      281 +- **Role/sink effects → intent-names.** `emit`, `yield`, `log`
+          +, `render` — the                                              
+      282 +  performer asks for an outcome; the installed handler decides
+          + the sink. `Out.emit`                                         
+      283 +  (not `Out.write_file`): the leaf emits a row, it does not kn
+          +ow a file exists.                                             
+      284 +- **Resource effects → mechanism-names.** `File.read` / `File.
+          +write`,                                                       
+      285 +  `Net.send` / `Net.recv` — here the *resource* is the whole p
+          +oint, so naming the                                           
+      286 +  mechanism is honest; the op is already committed to a kind o
+          +f resource.                                                   
+      287 +                                                              
+      288 +The general rule: **a name must not claim more than its layer 
+          +commits to.** A leaf                                          
+      289 +doesn't name a destination, an op doesn't name a mechanism — t
+          +he commitment lives                                           
+      290 +at the `system`/`handler` that actually decides. This is why §
+          +8.6's shared leaves                                           
+      291 +read `draw`/`read`/`emit` and never `blit`/`poll_keys`/`write_
+          +file`: those                                                  
+      292 +mechanisms belong to the handler that the system swaps, not to
+          + the reusable leaf.                                           
+      293 +                                                              
+      294  ### What a handler is (and isn't)
+      295  
+      296  A handler is a **leaf, not a composer** — it has exactly a `pr
+           oc`'s powers (call funcs,
+
+● Done. §5 now has Naming: a name claims no more than its layer commits
+  subsection — codifies the intent-vs-mechanism rule (decided ~chat L4334–4441)
+  that drove the write→emit / write_row→render_row renames already in the doc.
+  Also fixes §8.6's dangling §5 pointer (now resolves).
+
+  Fork swept all 6201 chat lines: doc already faithful on everything else — each
+  rename, no-extern func, effects-as-values, stdlib-as-handlers, implied
+  #schedule, §9 resolved markers all match. Two borderline items
+  (dynamic-handler stack cost as own open-Q; perform marker consistency) were
+  offered in chat but never approved — left out.
+
+✻ Sautéed for 3m 5s
+
+❯ so if effect descriptions are a thing. I don't think procs serve a purpose.   
+  They have been supersceded by handlers, no?                                   
+
+● Short answer: no. Handler is proc's dual, not its replacement.
+
+  The duality. Every performed effect needs two ends:
+  - initiator — someone performs (kicks it off). Active, scheduled, sequenced by
+  run.
+  - reactor — someone handles (catches + acts + resume). Passive, installed,
+  waits to be routed to.
+
+  proc = call-once initiator. handler = reactor. Doc says this directly: handler
+  is "the reactive dual of a proc (the same leaf body bound to a run/schedule
+  site, which initiates instead of reacting)." Delete procs → nothing starts the
+  effect. Handlers never run on their own; they only fire when something
+  performs.
+
+  Effect-descriptions don't change this. Description is inert data. Chain is:
+  func builds description → proc PERFORMS it → handler does the work
+  func can build but never perform — perform is impure, func is pure. So the
+  perform must live in an impure call-once kind. That kind is proc. Descriptions
+  kill proc-as-plumber (forwarding data between procs — now func's job, that's
+  why proc→proc banned). They don't kill proc-as-performer.
+
+  Grain of truth — worth naming. Your instinct bites on the thin one-shots:
+  step_clear :: proc()() { clear(...) }, step_present, respond_text. Those exist
+  only to wrap one perform so a system can run it. Real question hiding here:
+
+  ▎ can the initiator role be absorbed — system or schedule performs inline — 
+  ▎ collapsing proc+handler into ONE "effect leaf" kind, distinguished only by 
+  ▎ trigger (schedule-triggered vs perform-triggered)?
+
+  That's coherent (it's the "everything is a handler, the schedule is the only
+  performer" design). But two costs:
+  - breaks §5 firewall "no construct both performs and installs" — system
+  installs, so it can't perform; that firewall is exactly what keeps proc
+  separate. Relax it → pyramid-of-with nesting returns.
+  - it's a rename/unify, not a supersession — the schedule-triggered "handler"
+  does precisely what the proc did. Initiator role is irreducible; you'd just
+  call it something else, and lose the clean initiate-vs-react split + the
+  system param-threading model.
+
+  So: handlers ≠ procs. The thing that could eat thin procs is the
+  system/schedule, not the handler — and the design deliberately blocks it.
+
+  Want me to record this as a §9 open question ("can the call-once performer
+  collapse into system/schedule, unifying proc+handler") + a sharper note in §5
+  that proc/handler are duals not substitutes?
+
+✻ Cogitated for 1m 7s
+
+❯ yeah but systems compose handlers and functions (which return effect          
+  descriptions) or does that not work and we have to use procs to "use" the     
+  effect                                                                        
+
+● Right question. Answer: system can compose handlers + funcs, but it still 
+  can't perform — so the description stays inert until a leaf uses it. That leaf
+  is the proc (or each).
+
+  Walk the mechanics:
+
+  func   builds  the description   (pure — returns Emit("%d", x), performs
+  nothing)
+  proc   PERFORMS the description   (impure, call-once — the "use")
+  handler does    the work          (impure, terminal — renders bytes, os.write)
+  system INSTALLS handler + wires   (no compute, no perform)
+
+  System has handle + run + thread. It does not have perform. Blocked by the §5
+  firewall: "no construct both performs and installs." So a system holding a
+  func's returned Emit value can't turn it into a real effect — it can only hand
+  it to a leaf that performs.
+
+  Why the firewall, not arbitrary:
+  1. Pyramid-of-with. Install lives in a flat system preamble; perform lives in
+  a flat leaf body. Let one body do both → handler-installing-bodies nest → the
+  OCaml/Haskell with-pyramid the design kills.
+  2. Untracked effects. If "system uses func's return value" silently performed,
+  a pure-looking func call would cause effects when consumed. That's exactly
+  the OCaml-5 untracked-effect footgun §5 rejects. Perform must be a visible act
+  in an impure kind.
+
+  So your two-turn arc lands here:
+
+  ▎ proc is not superseded. It's the call-once performer — the only thing that 
+  ▎ can "use" a description at call-once grain, because func can't (pure) and 
+  ▎ system can't (firewalled).
+
+  One refinement to your phrasing: the irreducible category is "performing 
+  leaf," not "proc" specifically. proc = call-once member, each = fanned member.
+  A system with only run each/run map needs zero procs — but it still needs a
+  performer. You never escape needing one; you just pick call-once (proc) vs
+  fanned (each).
+
+  Net: func + handler + system is not enough. The perform is a hole only a
+  proc/each fills. That's proc's whole reason to exist post-descriptions — not
+  plumbing (descriptions killed that), but being the visible, impure, call-once 
+  perform site.
+
+  Want the doc note now? I'd add to §5: "proc/handler/system are three 
+  irreducible roles, not substitutes — perform (proc/each) ⟂ react (handler) ⟂
+  install+wire (system); the install/perform firewall is what forbids the system
+  from absorbing the perform." Plus drop the §9 "can the performer collapse"
+  question, since this converged to no.
+
+✻ Brewed for 47s
+
+❯ I think we might be hung up on the algebraic effect model. It doesn't really  
+  apply because the handler is always sibling to the proc that calls the        
+  effect. So what is the difference between calling an effect and returning one 
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ actually I want procs to do multiple effects                                  
+
+● Yeah. You've caught the real thing. Let me name it.
+
+  "Algebraic effects" oversells what's here. The literature's machinery —
+  dynamic non-local handler search up a runtime stack, multi-shot continuations
+  — is the part that gives you power: perform an effect, and which handler
+  catches it depends on the runtime install-stack, possibly far away. This
+  design already killed all of that: static resolution, tail-resumptive only,
+  terminal handlers, handler installed by the sibling system. What's left isn't
+  really algebraic effects — it's a statically-swapped sibling action.
+  Dependency injection / a vtable picked at the system, not Koka/Eff.
+
+  So perform-vs-return collapses. With a static sibling handler, both resolve to
+  the same known handler. The only differences left:
+
+  ┌──────────────┬────────────────┬─────────────────────┬───────────────────┐
+  │              │   who pulls    │        when         │       pure?       │
+  │              │    trigger     │                     │                   │
+  ├──────────────┼────────────────┼─────────────────────┼───────────────────┤
+  │ perform      │ the callee,    │ inside the body     │ impure            │
+  │ (call)       │ now            │                     │                   │
+  ├──────────────┼────────────────┼─────────────────────┼───────────────────┤
+  │ return       │ the caller,    │ wherever it's       │ producing it is   │
+  │              │ later          │ performed           │ pure              │
+  └──────────────┴────────────────┴─────────────────────┴───────────────────┘
+
+  In full algebraic effects, returning an effect buys a third thing: carry it 
+  across handler scopes — build it under one installed handler, perform it under
+  another. That power is dead here — the handler is fixed statically by where
+  you perform, and where you perform is statically known. So return-an-effect's
+  only surviving value is deferral + letting pure code (func/map) stage output.
+  For a proc, which is already impure and performs now, returning is pure
+  ceremony. Perform is the honest primitive.
+
+  "I want procs to do multiple effects" — yes, that's already the model, and 
+  it's the right center. A proc is a flat sequence of performs, depth 1:
+
+  load :: proc(path: []char)(count: int) {
+    open(path)(fd:);        // perform File.open
+    read(fd, buf)(chunk:);  // perform File.read
+    log("loaded %d", n);    // perform Out.emit
+    close(fd);              // perform File.close
+  }                         // inferred effect set: {File, Out}
+
+  Many effects, flat, sequential, no proc→proc, no nesting. Each routes to its
+  sibling handler the system bound. Nothing forbids this — procs were never
+  one-effect. The single-effect limit (return AN effect, first-order, no monadic
+  chain) was only ever on funcs, the pure side.
+
+  The reframe this points to:
+  - Central mechanism = proc performs a flat multi-effect sequence; system binds
+  each effect-name to a sibling handler (static swap); handler implements it.
+  That's it. Drop the "algebraic effects" vocab — call it swappable sibling 
+  actions or statically-bound handlers.
+  - Effects-as-values demotes from "how effects work" to a narrow pure-side 
+  tool: the only reason it exists is to let a func/map (which can't perform)
+  stage an effect for a later proc/each. Formatting is the one real user. Not
+  the headline.
+
+  This actually simplifies §5 a lot. Want me to rewrite it: lead with "proc =
+  flat sequence of multiple performs + static sibling handlers (not dynamic
+  algebraic effects)," demote effects-as-values to a short pure-side subsection,
+  and add the perform-vs-return table showing the difference is just
+  trigger/timing/purity?
+
+✻ Crunched for 1m 26s
+
+❯ yeah                                                                          
+● Rewriting §5. Let me read the current exact state first (I inserted the Naming
+  subsection earlier).
+
+  Read 1 file (ctrl+o to expand)
+
+● Now the edits. First the heading + intro — reframe from "algebraic effects" to
+  statically-swapped sibling handlers, and lead with multi-effect procs.
+
+● Update(docs/design/flat-procedures-systems-effects.md)
+  ⎿  Added 28 lines, removed 1 line
+      235  
+      236  ---
+      237  
+      238 -## 5. Algebraic effects (how data/effects pass between procs) 
+      238 +## 5. Effects = statically-swapped sibling actions (how data/e
+          +ffects pass between procs)                                    
+      239  
+      240  With proc→proc banned, the thing a proc-call used to do — *inv
+           oke a named action with
+      241  args* — is replaced by **performing an effect**. An effect is 
+           **a callback you didn't
+      242  have to pass**: the proc names an *operation*, not a concrete 
+           callee; a *handler*
+      243  installed by the composer decides what it does.
+      244  
+      245 +**This is not "algebraic effects" in the Koka/Eff/OCaml-5 sens
+          +e, and the name oversells                                     
+      246 +it.** That model's defining power is *dynamic, non-local* disp
+          +atch — perform an op, and                                     
+      247 +which handler catches it is decided at runtime by an install-*
+          +stack* that may sit                                           
+      248 +arbitrarily far up the call chain, with first-class (often mul
+          +ti-shot) continuations.                                       
+      249 +arche keeps **none** of that. Here the handler is **resolved s
+          +tatically** and is always                                     
+      250 +the one the **sibling `system`** installed for that `run` exte
+          +nt. So the real primitive                                     
+      251 +is plain: **a handler is a swappable implementation the system
+          + binds by name** — closer                                     
+      252 +to a compile-time vtable / dependency injection than to effect
+          + handlers. We keep the                                        
+      253 +words *effect / perform / handler / resume* as vocabulary, but
+          + the dispatch underneath                                      
+      254 +is static and local, and that is what makes §7's certified sta
+          +ck bound possible.                                            
+      255 +                                                              
+      256 +**A proc performs a flat sequence of *many* effects** — that i
+          +s the normal shape, not an                                    
+      257 +exception. Depth stays 1 (proc → sibling handler, return, next
+          +), no proc→proc, no                                           
+      258 +nesting:                                                      
+      259 +                                                              
+      260  ```arche
+      261 +load :: proc(path: []char)(count: int) {                      
+      262 +  open(path)(fd:);         // perform File.open               
+      263 +  read(fd, buf)(chunk:);   // perform File.read               
+      264 +  log("loaded %d", n);     // perform Out.emit                
+      265 +  close(fd);               // perform File.close              
+      266 +}                          // inferred effect set: {File, Out}
+      267 +```                                                           
+      268 +                                                              
+      269 +The single-effect / first-order restriction below is on **func
+          +s** (the pure side), never                                    
+      270 +on procs. A proc is an ordinary imperative body whose statemen
+          +ts happen to be performs.                                     
+      271 +                                                              
+      272 +```arche                                                      
+      273  effect Out { emit :: op(fmt: []char, args: ...)(); }   // a fo
+           rmat spec + args — the handler renders
+      274  
+      275  render_row :: each query { id } {                    // perfor
+           ms {Out} — inferred, not written
+
+● Now insert the perform-vs-return table after the Config example, before the
+  Naming subsection.
+
+● Update(docs/design/flat-procedures-systems-effects.md)
+  ⎿  Added 21 lines
+      298  fixed_limit :: handler Config(n: int) { get_limit()(limit) { l
+           imit = n; resume; } }
+      299  ```
+      300  
+      301 +### Perform vs. return — the difference is only trigger, timin
+          +g, purity                                                     
+      302 +                                                              
+      303 +Because dispatch is static, *performing* an effect and *return
+          +ing* one (§"Effects as                                        
+      304 +values") resolve to the **same** sibling handler. The choice b
+          +etween them is not about                                      
+      305 +*which* handler runs — it's only about **who pulls the trigger
+          +, when, and whether the                                       
+      306 +producer stays pure**:                                        
+      307 +                                                              
+      308 +| | who triggers | when | producer |                          
+      309 +| --- | --- | --- | --- |                                     
+      310 +| **perform (call)** `emit(x)` | the callee, itself | now, in 
+          +the body | **impure** (only `proc`/`each`/handler) |          
+      311 +| **return** `return Emit(x)` | whoever later performs the val
+          +ue | deferred, elsewhere | **pure** (a `func`/`map` may build 
+          +it) |                                                         
+      312 +                                                              
+      313 +In *real* algebraic effects, returning an effect buys a third 
+          +thing — **carry it across                                     
+      314 +handler scopes**, building it under one installed handler and 
+          +performing it under                                           
+      315 +another. **That power is dead here**: the handler is fixed sta
+          +tically by *where* you                                        
+      316 +perform, and where you perform is statically known. So return-
+          +an-effect's only surviving                                    
+      317 +value is **deferral + letting pure code (`func`/`map`) stage o
+          +utput it cannot perform                                       
+      318 +itself**. For a `proc` — already impure, performing now — retu
+          +rning is pure ceremony.                                       
+      319 +**`perform` is the honest primitive; returning is the narrow p
+          +ure-side escape hatch**                                       
+      320 +(§"Effects as values").                                       
+      321 +                                                              
+      322  ### Naming: a name claims no more than its layer commits
+      323  
+      324  The split between *performing* an effect and *handling* it has
+            a naming
+
+● Now demote "Effects as values" to a narrow pure-side tool.
+
+● Update(docs/design/flat-procedures-systems-effects.md)
+  ⎿  Added 15 lines, removed 10 lines
+      447  barrier. §8.4's `insert Conn rows` / `delete done rows` depend
+            on these deferred-at-barrier
+      448  semantics: spawns land for the next stage, deletes don't distu
+           rb the current fan-out.
+      449  
+      450 -### Effects as values (a func may return one)                 
+      450 +### Effects as values — the narrow pure-side escape hatch     
+      451  
+      452 -An effect need not be performed where it's named. **Effects ar
+          -e first-class values:** you                                   
+      453 -can construct an *unperformed* effect — a description — and re
+          -turn it. This stays pure,                                     
+      454 -because **returning an effect ≠ performing it**:              
+      452 +This is **not** the headline mechanism (that's a proc performi
+          +ng a flat sequence —                                          
+      453 +above). It exists for exactly one problem: **pure code cannot 
+          +perform, but sometimes                                        
+      454 +pure code is the only place that has the data to describe an e
+          +ffect.** A `func`/`map` is                                    
+      455 +barred from performing (it would stop being pure), so instead 
+          +it can construct an                                           
+      456 +*unperformed* effect — a fixed-size description — and **return
+          +** it as an ordinary value.                                   
+      457 +A `proc`/`each` later performs it. This stays pure because **r
+          +eturning ≠ performing**:                                      
+      458  
+      459  ```arche
+      460  fmt_int :: func(x: int) -> Emit { return Emit("%d", x); }   //
+            pure: builds a description, performs nothing
+      461  
+      462  show :: each query { id } {
+      460 -  perform fmt_int(id);     // a proc/each performs the effect 
+          -the func returned                                             
+      463 +  perform fmt_int(id);     // the impure side performs the des
+          +cription the func built                                       
+      464  }
+      465  ```
+      466  
+      464 -Pure code (including `func`s and `map`s) builds the *plan*; a 
+          -`proc`/`each` (or the                                         
+      465 -runtime) *performs* it; the *handler* does the actual work — e
+          -.g. rendering bytes and                                       
+      466 -writing them. This is the clean answer to "how does pure code 
+          -do effectful-looking                                          
+      467 -work": it **returns** the effect, it doesn't perform it. (It's
+          - the IO-value / free-monad                                    
+      468 -shape — see below.)                                           
+      467 +The division of labor: pure code builds the *description*; a `
+          +proc`/`each` (or the                                          
+      468 +runtime) *performs* it; the *handler* does the work. **Formatt
+          +ing is essentially the only                                   
+      469 +real user** — byte rendering writes memory, so it can't be a p
+          +ure func, yet the spec+args                                   
+      470 +are known in pure code; the func returns the `Fmt`/`Emit` desc
+          +ription and the handler                                       
+      471 +renders. Outside that, prefer a plain `perform` in a proc — do
+          +n't reach for returned                                        
+      472 +effect-values where a direct perform will do. (It's the IO-val
+          +ue / free-monad shape — see                                   
+      473 +below.)                                                       
+      474  
+      475  Two constraints keep it arche-shaped:
+      476  - **Bounded.** An effect-value is a fixed-size description (op
+            tag + bounded args) — no
+
+● Add a §9 entry capturing the resolution from this conversation (proc is
+  irreducible; effects are static dispatch). Let me check §9's current tail.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(docs/design/flat-procedures-systems-effects.md)
+  ⎿  Added 10 lines
+      940     func`. Instead a pure `func` *returns* a `Fmt`/`Emit` descr
+           iption (spec + bounded
+      941     args — §5), and the **handler** renders the bytes and write
+           s them. Pure code builds
+      942     the plan; handlers produce bytes.
+      943 +11. **(Resolved) `proc` is irreducible — handlers do not super
+          +sede it.** With effects-as-                                   
+      944 +   values on the table, the question was whether `func` (build
+          +s descriptions) + `handler`                                   
+      945 +   (does the work) + `system` (installs + wires) make `proc` r
+          +edundant. No: someone must                                    
+      946 +   **perform** — turn an inert description into a real effect 
+          +— and perform is impure +                                     
+      947 +   call-once. `func` can't (pure); `system` can't (the §5 fire
+          +wall: *no construct both                                      
+      948 +   performs and installs*); `handler` is the *reactive dual* (
+          +it only runs when something                                   
+      949 +   performs). So the **performing leaf** (`proc` call-once / `
+          +each` fanned) is the one                                      
+      950 +   role nothing else can fill (§5). Corollary also settled: th
+          +is design is **static                                         
+      951 +   sibling dispatch, not dynamic algebraic effects** — so perf
+          +orm-vs-return differs only                                    
+      952 +   in trigger/timing/purity, never in *which* handler runs (§5
+          +).                                                            
+      953  
+      954  ## 10. Honest costs (so we're not selling magic)
+      955  
+
+● Done. §5 reframed, conclusions recorded.
+
+  §5 changes:
+  - Heading → "Effects = statically-swapped sibling actions." Intro now states
+  up front: this is not Koka/Eff/OCaml-5 algebraic effects — no dynamic
+  install-stack search, no first-class continuations; handler is statically 
+  resolved, always the sibling system's binding. Vocab
+  (effect/perform/handler/resume) kept; dispatch underneath is a compile-time
+  vtable / DI.
+  - Procs do multiple effects is now the lead, with a flat 4-perform load
+  example + inferred {File, Out} set. Noted the single-effect/first-order limit
+  is funcs-only.
+  - New "Perform vs. return" table — trigger / timing / purity. Spells out that
+  the algebraic-effects payoff (carry an effect across handler scopes) is dead
+  under static dispatch, so returning survives only as the pure-side deferral
+  hatch; perform is the honest primitive.
+  - "Effects as values" demoted — retitled "the narrow pure-side escape hatch,"
+  reframed as for-pure-code-only, formatting as essentially its sole real user,
+  with a "prefer a direct perform" steer.
+
+  §9 #11 (Resolved): proc is irreducible — func/handler/system can't supersede
+  it because the perform role is impure + call-once and the firewall bars the
+  system; handler is the reactive dual. Plus the static-dispatch corollary.
+
+  Two cross-checks held: the §8.6→§5 naming pointer still resolves; the
+  "Tracked, not OCaml-5-style" design-rule bullet now reinforces the new intro
+  rather than conflicting.
+
+✻ Baked for 1m 49s
+
+※ recap: Goal: update the flat-procedures design doc to match recent decisions. Done so far: added the naming rule, then reframed §5 around static sibling dispatch, multi-effect procs, and the perform-vs-return distinction, plus §9 resolution. Next: confirm with you whether this captures it or needs more. (disable recaps in /config)
+
+❯ there is something still not right here. it feels like handlers and procs are 
+  seperated only arbitrarily                                                    
+
+● You're right, and it's worth not papering over. Let me find exactly where it's
+  arbitrary and where it isn't.
+
+  Strip the vocabulary. A handler is a proc. Specifically: the doc says handlers
+  are tail-resumptive only → "compiles to call handler, return, continue." Read
+  that literally:
+
+  perform emit(x)   +   handle Out with to_file
+          ≡   to_file_emit(x)        // a direct proc call
+
+  A tail-resumptive handler runs, then resume returns control after the perform.
+  That is call-and-return. So resume isn't a real extra power — it's implicit.
+  Drop the effect vocabulary and a perform is a proc-call, and a handler is the 
+  proc being called. That's the arbitrariness you're feeling — and it's most
+  visible on the trivial single-op effects (Out.emit, Config.get_limit), where a
+  handler is nothing but a one-body proc.
+
+  So why does the kind exist at all? Because proc→proc is banned. That ban kills
+  calling an impure thing → kills unbounded depth. But you still need one level
+  of "invoke a swappable impure action" — the syscall, the sink. The handler is
+  that single permitted level. It's not a parallel kind to proc; it's the one 
+  sanctioned exception to the proc→proc ban. Its three restrictions are exactly
+  the conditions that keep the exception bounded:
+
+  ┌───────────────────────┬─────────────────────────────────────────────────┐
+  │  handler restriction  │                  what it buys                   │
+  ├───────────────────────┼─────────────────────────────────────────────────┤
+  │ terminal (can't       │ depth stays exactly 1 → the §7 stack bound      │
+  │ perform further)      │                                                 │
+  ├───────────────────────┼─────────────────────────────────────────────────┤
+  │ tail-resumptive       │ lowers to call+return → no captured             │
+  │                       │ continuation, no heap                           │
+  ├───────────────────────┼─────────────────────────────────────────────────┤
+  │ late-bound (system    │ swappability — the whole point (test tape vs    │
+  │ picks via handle)     │ prod keys, §8.6). Early-bound, it'd just be the │
+  │                       │  banned named proc-call.                        │
+  └───────────────────────┴─────────────────────────────────────────────────┘
+
+  So perform = the one swappable, terminal, flat proc-call the ban otherwise 
+  forbids. That's not arbitrary — it's derived from the ban.
+
+  Where the kind genuinely earns its name (and stops being "just a proc"): a
+  multi-op, stateful effect. effect File { open; read; write; close } — the
+  handler isn't one proc, it's a resource object: shared state (the fd), setup
+  to acquire, teardown to release, and one proc-body per op, all scoped to the
+  install extent. A bare proc can't express "a bundle of bodies sharing a
+  resource lifecycle." There the handler is a real thing a proc isn't. At the
+  single-op end it collapses back to "a late-bound proc," which is why it smells
+  arbitrary.
+
+  The honest framing, then: proc and handler are one body kind in two binding 
+  modes —
+  - bind to a run/schedule site → proc (active, you reach it).
+  - bind to an effect op via handle → handler (reactive, a perform reaches it);
+  when it spans multiple ops + a resource, it's a proc-bundle + lifecycle.
+
+  The duality (you need both a performer and a thing performed) is irreducible.
+  But "performer = kind A, performed = kind B" is the part that's arbitrary.
+  They're the same leaf; the handler is a proc, restricted into the single 
+  bounded hole the proc→proc ban leaves open.
+
+  The doc currently presents them as parallel kinds and even contradicts itself
+  ("the same leaf body bound to…"). I'd fix §5 to lead with handler = the 
+  proc→proc ban's one sanctioned exception (terminal/tail/late-bound), and note
+  the single-op handler ≡ a late-bound proc while the multi-op handler ≡ a
+  resource object.
+
+  One real fork before I write it — how far to collapse:
+
+  (A) Keep handler as its own keyword, but reframe as derived from proc (the
+  bounded exception), not parallel. Minimal churn.
+  (B) Collapse the single-op case: no handler keyword for it — you handle Out 
+  with some_proc, binding an ordinary proc; handler (with setup/teardown/state)
+  is reserved for the multi-op resource case only. Fewer kinds, matches arche's
+  existing "proc-as-callback" pattern, but makes a proc's available context
+  depend on binding site.
+
+  Which way — (A) reframe, or (B) actually unify the trivial case?
+
+✻ Cogitated for 2m 13s
+
+❯ all of this seems overdesigned. Any convienent wins we can recover from these 
+  experimental ideas?                                                           
+
+● Yeah — most of it is "this is a different language" territory (the proc→proc
+  ban, algebraic effects, #schedule replacing main, the certified stack bound).
+  Shelve those. Here's what's actually cheap and recoverable into
+  arche-as-it-is, ranked by cost:
+
+  1. The testability win — you already have it. $0. §8.6's emotional headline
+  ("test the real game logic, no mocks — install tape instead of keys") does not
+  need effects or handlers. Arche already ships compile-time callbacks
+  (proc/func-typed params, monomorphized, no runtime fn-ptr). Swap the
+  implementation by passing it as a compile-time proc arg:
+  play   :: ... { run_world(keys) }   // live input
+  verify :: ... { run_world(tape) }   // recorded input — deterministic,
+  headless
+  Same logic, swapped impl, today. That's dependency-injection-for-testing
+  without any of the machinery. Biggest payoff, zero build.
+
+  2. each — the effectful fan-out. Small, fills a real gap. Sibling of map: same
+  row-loop, but allows branches + effects, sequential (no GPU). The codebase
+  already documents the hole — per-row if on a column is unsupported in a map,
+  so there's no branchy per-row loop today. each = map minus the E0046
+  branch-free check minus the GPU path. Honest cost: the
+  per-row-branch-on-column codegen bug (the ptr-vs-i32 error sys/map punted on)
+  has to get fixed — but that's worth fixing regardless of any of this.
+
+  3. DOD patterns — docs only, $0. No language change, just rewrite examples
+  that way:
+  - query-as-condition (§6): don't iterate-then-test; select() for pure masks,
+  compact-then-run for effectful selection.
+  - lifecycle-as-pipeline (§8.4): connections as a Conn pool, stages over
+  columns — the web server can be rebuilt like this with today's map/pools.
+
+  4. Naming discipline (intent vs mechanism) — already landed in the doc. Free
+  convention.
+
+  5. reduce/scan over query — mostly already shipped (collectives). Only the
+  reduce query{…} -> T (+) surface spelling is new ergonomics, if you want it.
+
+  Shelve as overdesigned: proc→proc ban, handlers/algebraic-effects-as-a-kind,
+  #schedule/systems, the stack-bound formula, effects-as-values. Leave them in
+  the speculative doc as the "someday / other language" record.
+
+  Want me to (a) spike each (incl. the per-row-branch codegen fix), (b) rewrite
+  the web-server as the §8.4 pool pipeline using only today's features, or (c)
+  just add a short "Cheap wins recoverable today" section at the top of the doc
+  so this salvage isn't lost?
+
+✻ Baked for 53s
+
+※ recap: Goal: salvage cheap wins from the speculative effects/handlers design doc. I laid out five recoverable wins (swap-impl via existing callbacks, an `each` kind, DOD patterns, naming, reduce/scan) and shelved the rest. Next: you pick spike `each`, rewrite the web-server, or add a salvage section. (disable recaps in /config)
+
+❯ maybe there is a different way to get what I want. I want to make things flat 
+  and explicit. Long proc call stacks tend to be what happens in normal         
+  procedural code though                                                        
+
+● Then attack flatness directly — don't reach for the effects edifice to get it
+  as a side effect. And check the premise: deep proc stacks aren't intrinsic to
+  procedural code, they're what happens when logic that belongs in funcs ends up
+  in procs. You already have the lever.
+
+  1. The free win: use the func/proc split you already have. §1's actual insight
+  — "nesting/recursion belong to the functional world; procedural = flat
+  sequence of steps." Arche already splits these. So:
+  - funcs nest and recurse freely (pure, that's where depth is fine — the doc
+  even says so).
+  - procs stay flat: a sequence of effects + func-call results threaded in. No
+  proc calls another proc to "compute" — it calls a func for that.
+
+  Most of the deep-stack fear is "I decomposed a proc into sub-procs." Decompose
+  into funcs instead and the proc body is the flat step list. Zero new feature
+  — it's a discipline the existing split supports.
+
+  2. The cheap enforcement: a tunable depth lint, not a ban. A warn-by-default
+  lint on proc→proc nesting depth — --proc-depth=warn|error|allow, matching your
+  existing lint family (W0013/W0022/W0024). Reuses the dead-code lint's
+  call-graph walk (already built). Flat becomes the path of least resistance;
+  deep chains get flagged; you escape with intent (@allow) where DRY actually
+  wins. This is the banned-by-default-but-tunable idea from the doc, downgraded
+  from a hard rule to a nag. Small build.
+
+  3. For wrappers that should vanish: inline. Thin proc-over-proc (new_node,
+  respond_text) — mark inline, decompose in source, flatten at runtime. Explicit
+  source, depth-1 stack. Monomorphization infra mostly exists (compile-time
+  callbacks).
+
+  4. Quiet realization — the certified stack bound is nearly free already. §7
+  oversold the ban. Arche has no dynamic dispatch (no runtime fn-pointers;
+  callbacks are compile-time). So the call graph is already statically known → a
+  -fstack-usage-style sum + optional @stack(≤N) ceiling can compute and check
+  the worst-case stack today, no ban required. The ban was never needed to
+  compute the bound — only to make the number small/flat. So the safety property
+  is medium-cost and ban-free.
+
+  So the menu for "flat and explicit," cheapest first: (1) discipline you 
+  already have → (2) depth lint → (3) inline → (4) stack-usage report. None
+  require the proc→proc ban, handlers, #schedule, or effects.
+
+  Recommend building #2 (the depth lint) as the concrete next step — it's the
+  smallest thing that makes flatness the default and directly serves what you
+  want. Want me to spike it?
+
+✻ Cooked for 1m 5s
+
+❯ im not designing disciplines im designing languages                           
+
+● Fair hit. I gave you conventions; you want a mechanism that makes it true by
+  construction. Let me separate the load-bearing primitive from the cargo,
+  because I think the doc buried the former under the latter.
+
+  The one real language move is the ban: an effectful unit cannot call another.
+  proc → proc forbidden. That single rule makes "procedural = flat sequence of
+  steps" a type-level fact, not a discipline you can @allow away. Runtime
+  effect-stack depth becomes ≤ 1 by construction. That's the mechanism. The ban 
+  was never the overdesign. The overdesign was the five things stacked on it —
+  algebraic effects, handlers-as-a-kind, #schedule, the certified-stack-bound
+  formula, effects-as-values. Strip those; keep the ban.
+
+  Once you keep only the ban, the language is tiny:
+  func  :: pure — nests & recurses freely        (the depth world)
+  proc  :: effectful LEAF — flat body; calls funcs + intrinsics/externs; never a
+  proc
+  map   :: pure fan-out
+  each  :: effectful fan-out
+  <seq> :: a flat ordered list of proc/run steps  (the ONLY composer of effects)
+  The ban forces depth into func (where you want it) and forces effects flat
+  into leaves. The <seq> is just "run these in order" — not a handler-installing
+  system. That's the whole language.
+
+  And here's the part the doc got backwards: I kept answering "how does a proc
+  reach the next action?" with effects/handlers. But effects are anti-explicit.
+  You perform emit(x) and then chase which handler the sibling installed —
+  that's more indirection, the exact reference-chasing you're trying to kill.
+  The explicit answer is a direct intrinsic/extern call: os.write(fd, buf) says
+  exactly what happens, right there, no late binding to trace. So your explicit
+  goal actively argues against the handler layer and for direct calls.
+
+  That inverts the doc's foundation:
+  - Doc's foundation: effects are how anything reaches I/O; direct calls are
+  forbidden. ← the overdesign.
+  - Real foundation: proc is a leaf, I/O is a visible direct intrinsic.
+  Effects/handlers become an optional add-on only if you later want
+  runtime-swappable I/O — and swappability you can already get from compile-time
+  callbacks without them.
+
+  So flat + explicit = ban proc→proc + direct intrinsics + funcs for depth + a 
+  flat sequencer. Nothing else.
+
+  The one genuine cost the ban creates (worth designing for, not hiding):
+  effectful reuse. Two procs sharing an effectful sub-step can't factor it into
+  a shared sub-proc. The answer that stays in-language: factor the pure part
+  into a shared func, inline/duplicate the small effectful tail. That's the real
+  tax — DRY shrinks for the effectful slice — and it's the price of making
+  flatness structural.
+
+  Want me to rewrite the doc around this inversion — lead with the ban +
+  direct-intrinsics as the foundation, demote effects/handlers/#schedule to an
+  optional appendix ("if you want runtime-swappable effects, here's the heavy
+  layer")? That'd turn the doc from "a different language" into "a small, sharp
+  extension with one load-bearing rule."
+
+✻ Cogitated for 1m 1s
+
+※ recap: Goal: redesign arche so procedural code is flat and explicit by construction. We landed on one load-bearing rule (a proc can't call a proc) plus direct intrinsics, demoting the algebraic-effects machinery. Next: rewrite the design doc around that inversion. (disable recaps in /config)
+❯ unless funcs can pass effect descriptions this will never work                
+
+● You're right, and that overturns what I said last turn. I called
+  effect-descriptions a "narrow hatch" and pushed direct intrinsics — but direct
+  intrinsics give you flat with zero reuse. Under the ban, a proc can't factor
+  effectful logic into a sub-proc, and funcs are pure, so without descriptions
+  there's no way to reuse effectful behavior except inline/duplicate. The ban is
+  unlivable. So: funcs returning effect descriptions is the keystone, not a 
+  hatch. Concede.
+
+  But sharpen what kind of description — because this is exactly where the
+  design forks cheap vs heavy:
+
+  Descriptions as DATA (command buffer) — NOT algebraic effects. A func returns
+  a value describing an effect — a command. A thin, fixed executor drains it. No
+  handlers, no perform-to-dynamic-handler routing, no install stack, no resume.
+  Just: pure code builds commands; one flat step runs them.
+
+  build_response :: func(...) -> Cmd     // pure, reusable, nests freely — the
+  LOGIC lives here
+  proc { send(build_response(...)); }    // proc is a thin performer of a value
+  it didn't compute
+
+  This beats both alternatives on your two goals:
+  - vs handlers: a command is a concrete value you can see/inspect/test — more
+  explicit than a late-bound jump to a sibling-installed handler. Handlers were
+  the anti-explicit part; descriptions-as-data are the explicit part. Keep the
+  keystone, drop the routing.
+  - vs direct intrinsics: intrinsics are explicit but un-reusable. Commands are
+  explicit and reusable (the func that builds them is freely composable).
+
+  Why this makes the ban survivable — funcs become the universal reuse layer.
+  The ban touches only procs. Funcs nest/recurse/reuse freely (untouched). If
+  funcs can build both pure values and effect-intent-as-data, then all reusable
+  logic — pure compute AND "what effect to do" — lives in the func world, and
+  the proc world shrinks to a thin flat performer. The thing you feared (deep
+  proc stacks) can't form, because there's nothing to stack: depth lives in
+  funcs (pure, fine), effects are one flat perform of a func-built plan.
+
+  It also already exists in arche. The doc's structural insert/delete are
+  already a deferred command buffer (Bevy Commands) — performed in a leaf,
+  flushed at a barrier. You're not inventing a mechanism; you're generalizing 
+  the command-buffer arche already has from structural ops to all effects.
+  No-heap fits: a command is a bounded value (or a static command pool), exactly
+  like the doc's "effect-values must be bounded."
+
+  The one real decision left (and it's the cheap-vs-heavy line):
+  - fixed executor — the runtime interprets each command kind one way. Cheapest,
+  most explicit, no swap. ← default.
+  - swappable executor (= handlers) — only if you need runtime-swapped I/O (test
+  tape vs prod keys). This is the one place the heavy layer earns its keep, and
+  even then compile-time callbacks may cover it. Make it strictly optional,
+  layered on top.
+
+  So the recoverable language: ban proc→proc + funcs build effect-commands 
+  (data) + a fixed flat executor. That's flat (depth in funcs, effects flat),
+  explicit (commands are visible values), reusable (command-building funcs
+  compose), and reuses machinery arche already ships.
+
+  Want me to rewrite the doc with this as the foundation —
+  funcs-produce-commands + fixed executor as the core, handlers demoted to
+  "optional swappable executor"? This is the version where the keystone is
+  load-bearing and the cargo is gone.
+
+✻ Cogitated for 1m 2s
+
+❯ I like systems. I like banning proc -> proc. I like effect descriptors (we    
+  will distinguish them from monads because you seem to get really confused and 
+  talk about the heap a lot with monads).                                       
+                                                                                
+  we can keep these things without the odd effect hoisting with the algebraic   
+  effects                                                                       
+
+● Got it. Locking the model, then converting the whole doc to it. Here's what
+  I'm building to — correct me if I misread:
+
+  KEEP: system (composer), proc→proc ban, effect descriptors (bounded data
+  values a func builds and returns — the keystone that makes the ban survivable:
+  pure funcs are the reuse layer for effect-intent, procs stay thin).
+
+  DROP — all the algebraic-effects machinery: perform, resume,
+  handler-as-a-kind, the dynamic install-stack, "nearest/sibling handler,"
+  terminal-vs-outward performs, effect hoisting (the non-local routing). Gone.
+
+  Executor (my read of how descriptors run, since you didn't pin it): a
+  descriptor is executed locally, never hoisted — either a proc runs it via an
+  intrinsic/extern at the leaf, or a system drains descriptors by running an 
+  executor proc (system→proc is fine; only proc→proc is banned). Swappability
+  (the test-with-tape win) = the system picks which executor/producer proc to
+  run, statically — not an installed handler. Primitive effects
+  (File/Net/Fmt/structural) get runtime executors, like the command buffer arche
+  already has for insert/delete.
+
+  Descriptors ≠ monads: plain bounded data — no bind, no chaining, no heap. The
+  monad framing (and its heap/transformer baggage I kept tripping on) just
+  doesn't apply; I'll say that once and move on.
+
+  Launching the full conversion now — it's a simplification, so the doc should
+  get shorter where the effects machinery comes out.
+
+● fork(Convert doc to descriptor model)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● Conversion running in the background (full doc, all sections). I'll review its
+  output when it lands and flag anything off before calling it done.
+
+✻ Brewed for 2m 53s
+
+● Agent "Convert doc to descriptor model" came to rest · 6m 11s
+
+● Conversion landed (831 lines, −121). Let me verify the heaviest rewrite (§5)
+  and the two judgment calls the fork flagged — the os.* tier change and the
+  formatting-descriptor handwave.
+
+  Read 1 file (ctrl+o to expand)
+
+● §5 is clean and internally consistent. Let me confirm §7 dropped the
+  handler-chain term and §9 reflects the resolutions.
+
+  Read 1 file (ctrl+o to expand)
+
+● Reviewed the conversion — §5, §7, §9 all consistent, no dangling
+  handler/perform/resume refs except the deliberate "this is what we dropped"
+  notes. 831 lines, −121. Done and coherent.
+
+  What landed:
+  - §5 retitled "Effect descriptors (effects as data, no proc→proc)" —
+  funcs-build-descriptors keystone, two execution paths (leaf-direct /
+  system-run executor proc), runtime executors for primitives, "this is not
+  algebraic effects" one-liner, 3-sentence "Descriptors are not monads." Naming
+  + structural-insert/delete survived (scrubbed). All the
+  perform/resume/handler/install-stack machinery gone.
+  - §2 table: proc/each "executes descriptors," system "drains via executor
+  procs"; depth-1 = "system → leaf, or system → executor proc."
+  - §4 handle…with/perform removed; systems run executors + thread + sequence;
+  added static-executor-choice (name / compile-time callback) note.
+  - §7 dropped the Σ(handler-frames) term and the acyclic-effect-graph
+  condition; formula = spine + max(proc frame, incl. executors).
+  - §8 all examples converted; §8.6 tape/keys/png → system swaps a
+  producer/executor proc, input as a column-filling stage.
+  - §9 resolved: descriptors-not-algebraic-effects, proc-irreducible,
+  formatting-as-descriptor; dropped handler-precedence/terminal-vs-outward;
+  added open Qs for executor-binding surface + request-response-as-stage.
+
+  Three judgment calls the fork made — two need your eyes:
+
+  1. os.* tier relaxed. With handlers gone there's no "handler-only" layer, so
+  os.* is now "callable from impure leaves (proc/each), not func/map" — just the
+  pure/impure split. Coherent fallout of dropping handlers. Fine unless you
+  wanted a tighter syscall floor.
+  2. Formatting/varargs descriptor left abstract. Line shown as a fixed struct
+  ({price,quantity,bucket}) while prose says "spec + bounded args." A general
+  printf-style descriptor — format string + heterogeneous bounded varargs in a 
+  column — is the real unsolved bit. Candidate for a pinned open-Q.
+  3. Cosmetic: HTTP handler.* enum → route.*/route_id (avoid colliding with the
+  deleted handler term). App-domain naming; say the word and I revert it.
+
+  Want me to pin #2 as a §9 open question, or leave it abstract?
+
+✻ Baked for 9m 40s
+
+❯ evaluate it with various functional programming subagents                     
+
+● Spawning five FP evaluators in parallel, each a distinct tradition, each
+  reading the doc cold and critiquing from its own lens.
+
+● 5 background agents launched (↓ to manage)
+   ├ Algebraic-effects critique
+   ├ Monads/Haskell critique
+   ├ Synchronous-dataflow/FRP critique
+   ├ Total/linear-types critique
+   └ Data-parallel/array-lang critique
+
+● Five evaluators running in parallel — algebraic effects, monads/Haskell,
+  synchronous dataflow/FRP, total/linear types, and data-parallel/array. I'll
+  synthesize their verdicts into a cross-cutting critique once they land.
+
+✻ Sautéed for 1m 25s
+
+● Agent "Algebraic-effects critique" came to rest · 1m 18s
+
+● Algebraic-effects evaluator is in — 3/5. Sharpest point: it argues the doc
+  mis-states why it dropped handlers (tail-resumptive handlers already compile
+  flat + heapless, so the stated cost only applies to the multi-shot minority),
+  and that "descriptors + statically-chosen executor" is a batched, one-shot,
+  tail-resumptive deep handler — they've rebuilt a sound handler fragment while
+  denying the lineage, and rediscovered its holes as open questions
+  (request-response = Q6, error-as-data = exceptions, executor-binding = handler
+  resolution).
+
+  Waiting on the other four (monads, dataflow, total/linear, data-parallel)
+  before I synthesize the cross-cutting view.
+
+✻ Churned for 9s
+
+● Agent "Synchronous-dataflow/FRP critique" came to rest · 1m 5s
+
+● Dataflow/FRP evaluator in — 2/5, the harshest so far. Verdict: it wears the
+  Lustre/Esterel vocabulary but implements none of the four guarantees — no
+  clocks, no causality analysis (stage order is hand-written, columns are
+  mutable globals so a mis-ordered system silently reads last-tick's value), the
+  insert/delete barrier is an unmodeled pre/fby delay register, and §7
+  certifies space but never time (WCET). Sharpest fix: the compiler already
+  knows every stage's read/write columns from query{} — derive stage order from
+  those and reject causal cycles, instead of trusting the author's run a; run b;
+  ordering.
+
+  Two evaluators left (monads, total/linear, data-parallel — three actually).
+  Holding synthesis until they land.
+
+✻ Crunched for 8s
+
+● Agent "Monads/Haskell critique" came to rest · 1m 30s
+
+● Monads/Haskell evaluator in — 4/5, the most generous. Its central reframe
+  converges hard with the algebraic-effects one: what the doc built is a free 
+  applicative (Ap f), not "not a monad." Refusing bind isn't escaping baggage —
+  it's trading away exactly one capability: result-dependent effect sequencing
+  (read a length header, then read that many bytes — the doc's own open Q6,
+  sitting at the center of the §8.4 HTTP server). Two concrete gifts: name it an
+  applicative and you inherit the theorem for why parallel scheduling is sound;
+  and replace the fixed-struct Line with a bounded Builder monoid to solve
+  heterogeneous varargs formatting (the other open Q) — a pure algebra, no heap,
+  fits the constraints perfectly.
+
+  Pattern across all three so far: you re-derived a known FP structure and 
+  denied the lineage, then rediscovered its boundary as open questions.
+
+  Two evaluators left (total/linear types, data-parallel/array). Synthesis once
+  they land.
+
+✻ Worked for 10s
+
+● Agent "Total/linear-types critique" came to rest · 1m 17s
+● Total/linear-types evaluator in — 3/5. Splits the verdict sharply: the depth-1
+  effect spine is a real, sound 5/5 contribution (closing the call graph by a
+  typing rule instead of a coding standard is exactly right), but the
+  whole-program certified-stack headline is partial by construction — the
+  max_stack formula omits the func term the doc itself admits is unbounded,
+  @depth(≤N)/@stack(≤N) are asserted not proved (no decreasing measure → a
+  totality checker would reject them as assume), no-heap silently leaks at
+  varargs, descriptors holding an fd aren't linear (a pure reusable func
+  returning one → double-close), and "trusted C" rides the critical path of any
+  program that draws a pixel. Sharpest: advertise the depth-1 spine as the hard
+  theorem; quarantine func termination behind a real structural-recursion check
+  (you've reinvented Agda's termination checker — adopt its discipline).
+
+  One evaluator left (data-parallel/array). Then I synthesize all five.
+
+✻ Crunched for 8s
+
+● Agent "Data-parallel/array-lang critique" came to rest · 1m 11s
+
+● All five in. Scoreboard:
+
+  ┌───────────────────┬───────┬─────────────────────────────────────────────┐
+  │       Lens        │ Score │              One-line verdict               │
+  ├───────────────────┼───────┼─────────────────────────────────────────────┤
+  │ Monads / Haskell  │ 4/5   │ Coherent — but it's a free applicative in   │
+  │                   │       │ denial                                      │
+  ├───────────────────┼───────┼─────────────────────────────────────────────┤
+  │ Algebraic effects │ 3/5   │ A tail-resumptive handler fragment that     │
+  │                   │       │ denies its lineage                          │
+  ├───────────────────┼───────┼─────────────────────────────────────────────┤
+  │ Total / linear    │ 3/5   │ Depth-1 spine is a real theorem;            │
+  │ types             │       │ whole-program bound is partial              │
+  ├───────────────────┼───────┼─────────────────────────────────────────────┤
+  │ Data-parallel /   │ 3/5   │ Sound core; map/each cut contradicts its    │
+  │ array             │       │ own §6                                      │
+  ├───────────────────┼───────┼─────────────────────────────────────────────┤
+  │ Synchronous       │ 2/5   │ Wears the Lustre vocabulary, implements     │
+  │ dataflow          │       │ none of its guarantees                      │
+  └───────────────────┴───────┴─────────────────────────────────────────────┘
+
+  Convergent findings (where independent traditions hit the same nail — these
+  are the real signal):
+
+  1. You re-derived known structures and disowned them — costing yourself their 
+  free theorems. Algebraic-effects: "descriptors + statically-chosen executor"
+  is a batched, one-shot, tail-resumptive deep handler. Monads: the command-pool
+  + single executor is a free applicative (Ap f). Both note: tail-resumptive
+  handlers / applicatives already compile flat + heapless — exactly your goal —
+  so naming them inherits the soundness proof for your §7 stack bound and your
+  "parallel scheduling is safe" claim, instead of asserting them. (Nuance the
+  lenses agree on: correctly not a free monad — but it is a free applicative + a
+  handler fragment.)
+
+  2. Result-dependent sequencing is the one real hole, and it's at the center of
+  your flagship example. Algebraic-effects and monads independently: the thing
+  you can't express is "effect B's shape depends on effect A's value, mid-body"
+  — read a length header, then read that many bytes. That's bind; that's your
+  own open Q6; that's the HTTP server in §8.4. Both prescribe the same fix:
+  bless one bounded in-leaf sequencing primitive (a synchronous one-shot perform
+  descr -> value, depth still 1) — which is, again, exactly the tail-resumptive
+  handler call you said you didn't need.
+
+  3. Several "checked contracts" are actually unverified assertions — and the 
+  compiler already has the data to check them. Dataflow: stage order is
+  hand-written; derive it from each query{}'s read/write column sets and reject
+  causal cycles (real causality analysis). Total/linear: @depth(≤N)/@stack(≤N)
+  are asserted, not backed by a decreasing measure — a totality checker would
+  reject them as assume. Algebraic-effects: "checked at the system boundary" is
+  liveness, not typing (no effect rows → producer→executor discharge isn't a
+  real check).
+
+  4. The headline guarantees overreach; split them. Total/linear: the depth-1
+  effect spine is a clean 5/5 theorem — advertise that; the whole-program stack
+  bound is partial (the formula omits the func term you admit is unbounded).
+  Dataflow: you certify space but never time (no WCET) — so "synchronous" is
+  unearned. Total/linear again: "no-heap" really means "everything max-reserved"
+  (your §10 cost) — promote that to the load-bearing thesis, and the varargs
+  case is the visible leak.
+
+  5. Formatting/varargs is the recurring concrete failure. Monads + total/linear
+  both flag the fixed-struct Line as a dead end for heterogeneous varargs.
+  Monads gives the clean fix: a bounded Builder monoid (associative
+  bounded-append, identity = empty) — a pure algebra, no heap, fits your
+  constraints exactly.
+
+  The one genuine disagreement: data-parallel says even keeping map vs each as
+  separate kinds is wrong — §6 admits branches are GPU-safe via predication, so
+  "branch-free" is a divergence lint, not a kind boundary; collapse to one
+  fanned kernel + a checked @gpu contract, which also restores the missing
+  pure-branchy-parallel cell. That cuts against the doc's (and your earlier)
+  enthusiasm for each as a distinct kind.
+
+  Universal praise (every lens): effects-as-inspectable-data is the right
+  keystone; func/proc = the value/computation (CBPV) split done honestly;
+  closing the call graph by a typing rule (not a coding standard) is the genuine
+  contribution; keeping policy/Fail as a tail-resumptive effect is correct;
+  §10's honesty is rare and good.
+
+  Net: ~3/5 across the board — a real, defensible design that under-claims its 
+  losses and mis-explains its motivation. The cheapest high-value moves: (a)
+  name it a free applicative + tail-resumptive handler fragment, (b) add the one
+  bounded in-leaf sequencing primitive for Q6, (c) split the §7 claim into
+  proven-spine vs unproven-func-bound, (d) swap Line for a bounded Builder
+  monoid.
+
+  Want me to fold this into the doc — rewrite §5's "not algebraic effects / not
+  monads" framing to name the structures, add the bounded-sequencing primitive
+  to §9/§5, split §7's guarantee, and log the rest as open questions with the
+  proposed fixes?
+
+✻ Churned for 3m 39s
+
+❯ what is free applicative                                                      
+
+● Applicative vs monad — the one distinction that matters here:
+
+  - Monad (>>=): a later effect can depend on an earlier effect's value.
+  n    <- read_header        // get a value
+  body <- read_bytes(n)      // the NEXT effect's shape depends on n
+  - The computation's structure isn't known until you run it — read_bytes(n)
+  doesn't exist until n does.
+  - Applicative (<*>): you can combine independent effects, but none can depend 
+  on another's runtime value.
+  combine(+)  read_x  read_y    // both reads fixed up front; (+) applied to
+  results
+  - The structure is fully known before execution — read_x and read_y are both
+  there from the start, no value flows between them.
+
+  That "structure known up front" is the whole property. It's why independent
+  effects can be inspected, reordered, batched, run in parallel — there's no
+  data dependency to respect.
+
+  "Free" = the data-structure version. A free applicative is: take your set of
+  operations (your effect descriptors), and get — for free, mechanically — the
+  ability to combine them into a fixed plan, without giving them meaning yet.
+  The plan is just data: a list of operation-nodes plus a pure function to fold
+  their results. Meaning comes later, from one interpreter that walks the
+  structure and actually does the work.
+
+  This is your design, exactly:
+  - effect descriptor = one operation node (the functor)
+  - the command pool (a list of descriptors, all known before draining) = the
+  free applicative's fixed structure
+  - executor proc / runtime executor = the interpreter (the natural
+  transformation to real I/O)
+  - the thing you can't do — read_header then read_bytes(n) per row — = bind,
+  the monad upgrade you don't have
+
+  So when the Haskell lens said "free applicative in denial," it meant: your
+  command-pool-plus-executor is the textbook Ap f construction. And that's good 
+  news, two ways:
+
+  1. Your parallelism is sound by theorem, not luck. "Applicative effects have
+  no inter-effect data dependency" is exactly the proof that your cores-backend
+  can run stages/rows in parallel. You get to cite it instead of asserting it.
+  (Same reason optparse-applicative can build --help by inspecting all flags
+  before parsing, and Haxl batches independent fetches.)
+  2. Your one hole has a precise name and boundary. The free applicative
+  provably cannot express result-dependent sequencing. So "read a length, then
+  read that many bytes" isn't a vague gap — it's the exact Ap→Free
+  (applicative→monad) boundary. You either climb to a bounded monad for that one
+  case, or declare it out of scope. Either way it's a known line, not a
+  surprise bug.
+
+  The lattice, top to bottom: Functor (map a result) → Applicative (combine
+  independent effects, static structure) → Monad (effects depend on prior
+  results, dynamic structure). You're parked at the applicative rung on purpose.
+  The value: static inspectability + parallel scheduling. The cost: no value
+  can flow from one effect into the shape of the next.
+
+✻ Cogitated for 35s
+
+❯ with my new design how does extern work? what does our example of the etl     
+  stuff look like now?                                                          
+
+● Let me read the current ETL section and the foreign/OS-floor wording so I
+  answer against what's actually in the doc.
+
+  Read 1 file (ctrl+o to expand)
+
+● Good — these two pin down the model. Read the current ETL (§8.1) and OS-floor
+  (§5) wording; here's the answer against what's actually in the doc.
+
+  How extern works now
+
+  Three rules carry it:
+
+  1. No extern func — foreign code is always an extern proc (§2). Calling C
+  touches the world / depends on more than its args, so it's effectful by
+  definition. Even a pure-looking C function (sin, a parser) is an extern proc.
+  Deliberate: it "keeps C from being the least-friction way to write logic — the
+  friction sits on doing." Logic goes in arche funcs; C is only for the
+  boundary.
+
+  2. An extern is the terminal boundary — the one place the proc→proc ban 
+  doesn't bite. The ban is arche-proc → arche-proc. An extern proc has no arche
+  body to recurse into, so an impure leaf calling it is one hop, depth-1, and 
+  stops:
+  #foreign {
+    os_write :: extern proc(fd: i32, buf: []char)(n: int)   // C body, linked
+  }
+  A func/map can never call it (pure). Only proc/each (and executor procs) can —
+  that is the pure/impure line, and it's why os.* are "leaf-only."
+
+  3. Two ways a leaf reaches an extern:
+  - Direct (one hop): the leaf calls os.write itself — immediate, explicit,
+  non-swappable. Good for the simple case.
+  - Via descriptor: the leaf emits a high-level descriptor (File.write), a
+  system runs an executor proc (or the runtime's ambient executor) that bottoms
+  out in the extern. Indirect, swappable (test vs prod), batchable. The C
+  frame's stack cost rides on that executor's @stack budget (§7).
+
+  So extern didn't change shape — it's just been relocated to its honest spot:
+  the bottom of an executor, reached one-hop, never from pure code. (Existing
+  arche bits still apply: #foreign region, foreign-extern privacy, own/move for
+  buffers.)
+
+  ETL, in the new model
+
+  What the doc now has (§8.1) — annotated for where extern lives:
+
+  // ── pure arche: ALL logic. zero foreign contact. nests/reuses freely ──
+  bucket :: map query { price, price_bucket } { price_bucket = price / 10.0; }
+  // pure transform
+
+  parse_line :: func(chunk: []char) -> Record { … }                 // pure
+  parse
+  fmt_row    :: func(price: float, quantity: int, bucket: float) -> Line {
+    return line("%f,%d,%f\n", price, quantity, bucket);             // builds a
+  descriptor — renders nothing
+  }
+
+  // ── impure leaves: the ONLY place externs are touched, one hop each ──
+  load_tx   :: proc()() {
+    os.read(fd, buf)(chunk:);          // extern, one hop
+    parse_line(chunk)(record:);        // back to pure logic
+  }
+  write_csv :: each query { price, quantity, price_bucket } (fd: fd) {
+    os.write(fd, render(fmt_row(price, quantity, price_bucket)));   //
+  render(Fmt) + os.write(File) — both extern-backed
+  }
+  open_csv  :: proc(path: []char)(fd: fd) { os.open(path, WRITE)(fd); }   //
+  extern, one hop
+  close_csv :: proc(fd: fd)()             { os.close(fd); }               //
+  extern, one hop
+
+  // ── system: pure glue. opens, fans, closes. computes nothing ──
+  write_out :: system {
+    open_csv("…/arche_output.csv")(fd:);
+    run write_csv(fd);                  // fd is a uniform; func builds
+  descriptor, each executes it
+    close_csv(fd);
+  }
+
+  #schedule {
+    once load_tx;    // read+parse  (File extern via runtime executor)
+    once bucket;     // compute     (map → vectorizes / cores, NO foreign)
+    once write_out;  // serialize+write
+  }
+
+  The shape: pure column transform (map) + pure descriptor-builders (func) + 
+  thin impure leaves that hit os.* one hop + a system that just sequences. Every
+  foreign call is at a leaf; main is gone into #schedule; bucket never touches
+  C so it can lower to cores/GPU.
+
+  One honest wrinkle (straight from the FP review): line("%f,%d,%f\n", …) is the
+  unsolved varargs case — a fixed Line struct can't carry heterogeneous
+  variadic args without a max-arity cap, and that's also where the "no-heap"
+  claim leaks. The clean fix the Haskell lens gave is a bounded Builder monoid
+  instead of a printf-style spec:
+  fmt_row :: func(price: float, quantity: int, bucket: float) -> Line {
+    return f32(price) <> "," <> i32(quantity) <> "," <> f32(bucket) <> "\n";
+  // bounded append, pure, no heap
+  }
+  Same pipeline, but the descriptor gains a real composition law and a constant
+  sizeof.
+
+  Want me to fold the Builder form into §8.1 and add the extern explanation as a
+  short subsection (it's currently implicit across §2/§5)?
+
+✻ Worked for 1m 18s
+
+❯ I don't like os stuff being directly used like that                           
+
+● Agree — that's the io.arche wrapper-tower smell reincarnated, just moved into
+  the leaves. Raw syscalls sprayed across user code is exactly what the
+  descriptor model was supposed to kill. The fix is a rule the fork accidentally
+  relaxed, and re-tightening it converges with what two of the FP reviewers
+  flagged:
+
+  Rule: os.* is executor-only — never leaf-callable. Not "callable from any
+  impure leaf" (what the doc currently says, §5 line 327-329). Three tiers:
+
+  ┌────────────────────────────────────┬─────────┬─────────────────────────┐
+  │                Tier                │  sees   │         speaks          │
+  │                                    │  os.*?  │                         │
+  ├────────────────────────────────────┼─────────┼─────────────────────────┤
+  │ func / map                         │ no      │ values, builds          │
+  │                                    │ (pure)  │ descriptors             │
+  ├────────────────────────────────────┼─────────┼─────────────────────────┤
+  │ proc / each (general leaves)       │ no      │ high-level effects only │
+  │                                    │         │  — File, Out, Net, Gfx  │
+  ├────────────────────────────────────┼─────────┼─────────────────────────┤
+  │ executor (runtime-provided, or     │ yes     │ the one place a syscall │
+  │ user-written for a new resource)   │         │  lives                  │
+  └────────────────────────────────────┴─────────┴─────────────────────────┘
+
+  So a leaf emits intent; the system binds an executor to that effect kind; the
+  executor — almost always runtime-provided — is the sole os.* caller. You only
+  ever write os.* yourself when you're implementing a brand-new resource's
+  executor, and that's explicitly the bottom of the stack. fd never threads
+  through user procs either.
+
+  ETL with zero os.* and zero fd in user code:
+
+  // ── pure logic ──
+  bucket  :: map query { price, price_bucket } { price_bucket = price / 10.0; }
+  fmt_row :: func(p: float, q: int, b: float) -> Line {
+    return f32(p) <> "," <> i32(q) <> "," <> f32(b) <> "\n";   // bounded
+  Builder; no spec, no heap
+  }
+
+  // ── impure leaf: emits row descriptors. knows NO file, NO fd, NO os.* ──
+  write_rows :: each query { price, quantity, price_bucket } {
+    emit(fmt_row(price, quantity, price_bucket));   // emit an Out descriptor —
+  that's the whole body
+  }
+
+  // ── systems: bind the executor + its resource; the runtime File executor
+  does open/write/close ──
+  load_tx :: system {
+    source Transaction <- csv("…/data_1k.csv");     // runtime CSV executor
+  fills the columns
+  }
+  write_out :: system {
+    sink Out -> csv("…/arche_output.csv");           // system wires the Out
+  executor to a file
+    run write_rows;                                   // fan: func builds
+  descriptor, each emits it
+  }
+
+  #schedule {
+    once load_tx;    // read + fill   (runtime executor — no os.* in sight)
+    once bucket;     // compute       (map → cores/GPU)
+    once write_out;  // serialize     (emit → runtime executor → write)
+  }
+
+  The leaf write_rows doesn't know a file exists — it emits Out; write_out
+  decides that Out goes to a CSV file; open/write/close is the runtime
+  executor's job. Swap sink Out -> csv(path) for sink Out -> stdout() and
+  nothing in the logic changes. That source/sink line is just the system
+  choosing an executor (the §4 "static executor binding" we kept) — not
+  algebraic-effect install; no perform, no resume, no hoisting. (Spelling is
+  cosmetic; the load-bearing bit is "system binds executor, leaf stays
+  ignorant.")
+
+  One honest note: source Transaction <- csv(...) is the read/request-response
+  side (the Q6 point). It works cleanly because it's batched — the runtime
+  executor fills the whole pool before bucket runs. The hard case the FP
+  reviewers flagged (read a header, then read N bytes per row, mid-leaf) still
+  needs the bounded in-leaf primitive; bulk load doesn't.
+
+  Want me to (a) re-tighten §5's OS-floor rule to "executor-only" and (b)
+  rewrite §8.1 to this source/sink form with no os.* in user code?
+
+✻ Sautéed for 1m 20s
+
+❯ umm, no. no reason to do that.                                                
+                                                                                
+  have a way for a func to "wrap" an extern "effect" and pass it out for the    
+  proc to use. That way we get conveinent io                                    
+
+● Yes — that's cleaner than both my attempts. The func wraps the extern into a
+  descriptor and hands it out; the proc executes it. The io stdlib becomes a
+  pile of pure funcs, and os.* never appears in a proc body. Mechanism in three
+  moves:
+
+  1. extern = foreign proc, declared once (the raw boundary).
+  2. func wraps it — names the extern + args as a descriptor value and returns
+  it. Pure: building the description calls nothing.
+  3. proc executes the descriptor — now the extern runs, and the result flows
+  back.
+
+  #foreign {
+    os_write :: extern proc(fd: i32, buf: []char)(n: int)
+    os_open  :: extern proc(path: []char, mode: i32)(fd: i32)
+    os_close :: extern proc(fd: i32)()
+  }
+
+  // ── io stdlib: pure funcs WRAP externs into descriptors. reusable, execute
+  nothing ──
+  write :: func(fd: i32, buf: []char) -> IO(int) { return io os_write(fd, buf);
+  }   // builds a descriptor
+  open  :: func(path: []char)         -> IO(i32) { return io os_open(path,
+  O_WRITE); }
+  close :: func(fd: i32)              -> IO()     { return io os_close(fd); }
+
+  // funcs compose freely — convenient io combinators, all pure:
+  write_line :: func(fd: i32, s: []char) -> IO(int) { return write(fd, s <>
+  "\n"); }
+
+  // ── logic stays pure ──
+  bucket  :: map query { price, price_bucket } { price_bucket = price / 10.0; }
+  fmt_row :: func(p: float, q: int, b: float) -> Line { return f32(p) <> "," <>
+  i32(q) <> "," <> f32(b); }
+
+  // ── procs EXECUTE the descriptors the funcs handed out. zero os.* in here ──
+  write_csv :: each query { price, quantity, price_bucket } (fd: i32) {
+    do write_line(fd, render(fmt_row(price, quantity, price_bucket)));   //
+  execute → extern runs
+  }
+  open_csv  :: proc(path: []char)(fd: i32) { fd = do open(path); }       //
+  execute → real fd back
+  close_csv :: proc(fd: i32)()             { do close(fd); }
+
+  write_out :: system {
+    open_csv("…/arche_output.csv")(fd:);
+    run write_csv(fd);
+    close_csv(fd);
+  }
+  #schedule { once load_tx; once bucket; once write_out; }
+
+  Two constructs (spelling cosmetic): io <extern>(args) in a func = wrap into a
+  descriptor; do <IO> in a proc/each = execute + get the result.
+
+  Why this is the right shape:
+  - Convenient io — the stdlib reads like a normal io library (write, open,
+  write_line), but every entry is a pure func returning a descriptor. Reuse
+  lives in funcs (free applicative), so the proc→proc ban never bites io.
+  - No raw os.* in user code — it's sealed inside #foreign; funcs reference it,
+  procs execute the wrapped result. Your actual objection, gone.
+  - Ban respected — proc → func (pure, allowed) → proc does do → extern
+  (terminal, one hop). No arche-proc→arche-proc; depth stays 1.
+  - Bonus: request-response just works. n := do read_header(fd); body := do 
+  read(fd, n); — because do executes inline and returns the value, the proc can
+  sequence dependent io. That's the Q6 hole the FP reviewers flagged, closed by 
+  this exact mechanism — and it's still flat (the proc is the imperative layer;
+  funcs only build).
+
+  This replaces both the os.*-at-leaf path and the executor-binding ceremony.
+  Want me to make it §5's io story — io-wrap in funcs + do-execute in procs,
+  externs sealed in #foreign — and redo §8.1/§8.2 around it?
+
+✻ Cogitated for 1m 23s
