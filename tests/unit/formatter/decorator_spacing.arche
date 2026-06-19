@@ -5,5 +5,10 @@
 // RUN: %arche fmt %s | grep -qE "^@policy\(bounds\)$"
 // RUN: %arche fmt %s | grep -qE "^clamp :: policy \(len: int, i: int\) \{$"
 // RUN: %arche fmt %s | grep -qE "^@allow\(proc_no_effect\)$"
-@policy(bounds) clamp :: policy(len: int, i: int) { i = len; }
-@allow(proc_no_effect) noop :: proc()() {}
+@policy(bounds)
+clamp :: policy (len: int, i: int) {
+  i = len;
+}
+@allow(proc_no_effect)
+noop :: proc()() {
+}

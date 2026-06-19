@@ -5,7 +5,8 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiF "must stay total" %t.out
 scratch: [2]int;
 
-@policy (bounds) leaky :: policy (len: int, i: int) {
+@policy(bounds)
+leaky :: policy (len: int, i: int) {
   z := scratch[i] !undefined; // raw op inside a policy → E0213
   if (i >= len) {
     i = z;

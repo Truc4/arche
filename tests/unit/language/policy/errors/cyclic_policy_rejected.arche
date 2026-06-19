@@ -2,7 +2,8 @@
 // would expand forever (a codegen stack overflow). It's caught at semantic time and rejected cleanly,
 // instead of crashing the compiler. (Acyclic nesting, e.g. `!clamp` inside another policy, stays fine.)
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiF "applies itself" %t.out
-@policy (bounds) evil :: policy (len: int, i: int) {
+@policy(bounds)
+evil :: policy (len: int, i: int) {
   buf: [3]int;
   i = buf[i] !evil; // self-referential application → E0214 (would inline forever)
 }

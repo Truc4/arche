@@ -6,7 +6,8 @@ Foo :: arche { v :: int, ts :: int }
 Bar :: arche { w :: int, ts :: int }
 [2]Foo;
 [2]Bar;
-@policy (pool) evict_bar :: policy (count: int, cap: int, ok: int, slot: int) {
+@policy(pool)
+evict_bar :: policy (count: int, cap: int, ok: int, slot: int) {
   if (count >= cap) {
     oldest := 0;
     for (j := 1; j < count; j = j + 1) {

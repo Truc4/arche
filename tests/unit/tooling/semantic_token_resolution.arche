@@ -7,9 +7,13 @@
 // RUN: %build/arche-analyzer --tokens %s | grep -qE "^[0-9]+ 5 [0-9]+ 10 function"
 // RUN: %build/arche-syntax-tokens %s | grep -qE "^[0-9]+ 5 [0-9]+ 10 variable"
 #import { fmt }
-sig :: proc()();
-greet :: proc()() { fmt.printf("hi\n"); }
-run_it :: proc(cb: sig)() { cb(); }
+sig   :: proc()();
+greet :: proc()() {
+  fmt.printf("hi\n");
+}
+run_it :: proc(cb: sig)() {
+  cb();
+}
 main :: proc() {
   run_it(greet)();
 }
