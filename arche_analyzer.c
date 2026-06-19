@@ -963,29 +963,78 @@ static void emit_docs(const Analysis *a) {
 	}
 }
 
-/* Syntax-highlighting tokens, same `offset length line col CATEGORY` format the
- * editor already consumes — but served from the warm parse and translated to user
- * coordinates (core-region tokens dropped). Needs only the syntax tree, not analysis. */
-static void walk_tokens(const SyntaxNode *node) {
+/* Resolution overlay for semantic tokens. When `node` is a value name-reference (`SN_NAME_EXPR`) that
+ * the resolver binds to an in-program decl, return the category for what the name ACTUALLY is —
+ * overriding the syntactic default (which collapses every bare name to "variable"). This makes the
+ * highlighter a projection of the resolved model (the same DefId channels goto uses), not a guess.
+ * Returns NULL — falling back to the lexical category — when there is no analysis, the target is not
+ * an in-program decl (locals/params/externs → DEFID_NONE), or the kind has no more-specific category. */
+static const char *resolved_name_category(const Analysis *a, const SyntaxNode *node) {
+	if (!a || !a->ctx || node->kind != SN_NAME_EXPR)
+		return NULL;
+	DefId d = sem_model_ref_def(sem_context_model(a->ctx), node->id);
+	if (defid_is_none(d))
+		return NULL;
+	const DeclSummary *ds = semantic_decl_at(a->ctx, d.index);
+	if (!ds)
+		return NULL;
+	switch (ds->kind) {
+	case DECL_PROC:
+	case DECL_FUNC:
+	case DECL_FUNC_GROUP:
+	case DECL_SYS:
+		return "function";
+	case DECL_ARCHETYPE:
+	case DECL_ENUM:
+		return "type";
+	default:
+		return NULL; /* const/static/etc. — the syntactic "variable" is already correct */
+	}
+}
+
+/* Syntax-highlighting tokens, same `offset length line col CATEGORY` format the editor already
+ * consumes, translated to user coordinates (core-region tokens dropped). Lexical by default; for
+ * identifier USE-sites it consults the resolved model (resolved_name_category) so names are colored
+ * as what they resolve to. With no analysis (a->ctx == NULL, e.g. the standalone tool path) it
+ * degrades to the pure lexical category — identical to the previous behavior. */
+static void walk_tokens(const Analysis *a, const SyntaxNode *node) {
+	const char *name_cat = resolved_name_category(a, node);
+	int prev_was_at = 0; /* the previous code token was `@` → this token is the decorator name */
 	for (int i = 0; i < node->child_count; i++) {
 		const SyntaxElem *e = &node->children[i];
 		if (e->tag == SE_NODE) {
-			walk_tokens(e->as.node);
-		} else {
-			const char *cat = arche_token_category(e->as.token.kind, node->kind);
-			if (!cat)
-				continue;
-			int uline = e->as.token.line - g_core_lines;
-			if (uline <= 0)
-				continue; /* core region */
-			printf("%u %u %d %d %s\n", e->as.token.offset, e->as.token.length, uline, e->as.token.column, cat);
+			walk_tokens(a, e->as.node);
+			prev_was_at = 0;
+			continue;
 		}
+		TokenKind tk = e->as.token.kind;
+		const char *cat = arche_token_category(tk, node->kind);
+		/* Decorators (`@policy`, `@allow`, …): `@` is only ever a decorator marker, and the name
+		 * token right after it is the decorator — color both as "decorator" so e.g. the `policy` in
+		 * `@policy(...)` reads as a decorator, not the `policy`-declaration keyword it lexes as. */
+		if (tk == TOK_AT)
+			cat = "decorator";
+		else if (prev_was_at && (tk == TOK_IDENT || tk == TOK_POLICY))
+			cat = "decorator";
+		else if (name_cat && tk == TOK_IDENT)
+			cat = name_cat; /* resolution overlay over the lexical baseline */
+		/* carry the `@` flag across an intervening comment so the decorator name is still tagged */
+		if (tk == TOK_AT)
+			prev_was_at = 1;
+		else if (tk != TOK_COMMENT)
+			prev_was_at = 0;
+		if (!cat)
+			continue;
+		int uline = e->as.token.line - g_core_lines;
+		if (uline <= 0)
+			continue; /* core region */
+		printf("%u %u %d %d %s\n", e->as.token.offset, e->as.token.length, uline, e->as.token.column, cat);
 	}
 }
 
 static void emit_tokens(const Analysis *a) {
 	if (a->syntax_root)
-		walk_tokens(a->syntax_root);
+		walk_tokens(a, a->syntax_root);
 }
 
 /* ---- goto navigation (definition / type / implementation / declaration) ----
@@ -1287,6 +1336,25 @@ static int run_dump(const char *path, int full) {
 	return 0;
 }
 
+/* One-shot semantic tokens (testing parity with --serve TOKENS): analyze `path` and print the
+ * resolution-aware token lines. Same `offset length line col category` format the warm server emits. */
+static int run_tokens(const char *path) {
+	char *user = path ? read_file(path) : read_stream(stdin);
+	if (!user) {
+		fprintf(stderr, "arche-analyzer: could not read %s\n", path ? path : "<stdin>");
+		return 1;
+	}
+	Analysis a = analyze(user, path);
+	if (!a.syntax_root) {
+		fprintf(stderr, "arche-analyzer: parse produced no syntax tree\n");
+		analysis_free(&a);
+		return 1;
+	}
+	emit_tokens(&a);
+	analysis_free(&a);
+	return 0;
+}
+
 /* One-shot goto query (testing parity with --dump): analyze `path` and print LOC lines for the
  * cursor at 1-based (line, col). `kind` ∈ def|type|impl|decl. */
 static int run_goto(const char *kind, int line, int col, const char *path) {
@@ -1462,10 +1530,14 @@ int analyze_main(int argc, char *argv[]) {
 		const char *file = full ? (argc >= 4 ? argv[3] : NULL) : (argc >= 3 ? argv[2] : NULL);
 		return run_dump(file, full);
 	}
+	if (argc >= 2 && strcmp(argv[1], "--tokens") == 0)
+		return run_tokens(argc >= 3 ? argv[2] : NULL);
 	if (argc >= 2 && strcmp(argv[1], "--serve") == 0)
 		return run_serve();
 	if (argc >= 6 && strcmp(argv[1], "--goto") == 0)
 		return run_goto(argv[2], atoi(argv[3]), atoi(argv[4]), argv[5]);
-	fprintf(stderr, "usage: %s (--dump [--full] [file] | --serve | --goto <kind> <line> <col> <file>)\n", argv[0]);
+	fprintf(stderr,
+	        "usage: %s (--dump [--full] [file] | --tokens [file] | --serve | --goto <kind> <line> <col> <file>)\n",
+	        argv[0]);
 	return 2;
 }

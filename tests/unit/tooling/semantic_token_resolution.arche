@@ -1,0 +1,15 @@
+// Semantic tokens are RESOLUTION-driven: `arche-analyzer --tokens` colors an identifier by what it
+// resolves to, not by its lexer kind. `greet` is a bodied proc passed by name as a callback value;
+// the resolver binds the reference to the proc, so it categorizes as "function" — overriding the
+// syntactic default ("variable"). The standalone `arche-syntax-tokens` has no semantic context, so it
+// keeps the lexical "variable": that contrast proves the overlay is a semantic layer, not a lexer
+// change, and that the syntactic baseline is unchanged.
+// RUN: %build/arche-analyzer --tokens %s | grep -qE "^[0-9]+ 5 [0-9]+ 10 function"
+// RUN: %build/arche-syntax-tokens %s | grep -qE "^[0-9]+ 5 [0-9]+ 10 variable"
+#import { fmt }
+sig :: proc()();
+greet :: proc()() { fmt.printf("hi\n"); }
+run_it :: proc(cb: sig)() { cb(); }
+main :: proc() {
+  run_it(greet)();
+}

@@ -1,0 +1,12 @@
+// Decorators highlight as "decorator": `@` and the name token right after it (`allow`) are colored
+// `decorator` by the analyzer's token path (arche-analyzer --tokens). `@` is only ever a decorator
+// marker, so this reads the parse structure, not a lexical guess. The same `policy`/`allow` words
+// elsewhere keep their real categories (the decl-form `policy` keyword stays a keyword).
+// RUN: %build/arche-analyzer --tokens %s | grep -qE "^[0-9]+ 1 [0-9]+ 1 decorator"
+// RUN: %build/arche-analyzer --tokens %s | grep -qE "^[0-9]+ 5 [0-9]+ 2 decorator"
+#import { fmt }
+@allow(proc_no_effect)
+noop :: proc()() {}
+main :: proc()() {
+  noop();
+}
