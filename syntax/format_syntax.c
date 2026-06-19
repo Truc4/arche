@@ -91,7 +91,10 @@ static int no_space_before(TokenKind t, TokenKind prev, TokenKind next, SyntaxNo
 		 * callable, like an identifier before a call's `(`. A `proc!` marker hugs the param
 		 * list the same way (`proc!(...)`); this also tightens unary `!(expr)`. */
 		return prev == TOK_IDENT || prev == TOK_RPAREN || prev == TOK_RBRACKET || prev == TOK_PROC ||
-		       prev == TOK_FUNC || prev == TOK_BANG;
+		       prev == TOK_FUNC || prev == TOK_BANG ||
+		       /* `@policy(cat)` decorator hugs its parens like any other decorator; the `policy`
+		        * DECL form (`name :: policy (in)`) keeps its space — distinguished by parent. */
+		       (prev == TOK_POLICY && prev_parent != SN_POLICY_EXPR);
 	default:
 		break;
 	}
@@ -512,8 +515,9 @@ void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 	 * rather than inline. `@` is only ever a decorator marker in Arche source. */
 	int *deco_end = ls.count ? calloc((size_t)ls.count, sizeof(int)) : NULL;
 	for (int i = 0; deco_end && i < ls.count; i++) {
-		if (ls.items[i].kind != TOK_AT || i + 1 >= ls.count || ls.items[i + 1].kind != TOK_IDENT)
-			continue;
+		if (ls.items[i].kind != TOK_AT || i + 1 >= ls.count ||
+		    (ls.items[i + 1].kind != TOK_IDENT && ls.items[i + 1].kind != TOK_POLICY))
+			continue; /* the name after `@` is an IDENT, or `policy` (a keyword) for `@policy(...)` */
 		/* `run map @gpu` — the `@gpu` is an inline dispatch marker on a run statement, not a decl
 		 * decorator, so it must NOT force a line break (which would strand the `;`). */
 		if (ls.items[i].parent == SN_RUN_STMT)
