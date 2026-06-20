@@ -67,6 +67,12 @@ typedef struct {
 	char **enum_variant_names; /* owned */
 	long *enum_variant_values;
 	int enum_variant_count;
+	/* sum (tagged union): per-variant name + payload type-node list (interned to TypeIds at registration) */
+	char **sum_variant_names;        /* owned; [sum_variant_count] */
+	SyntaxView **sum_variant_ptypes; /* owned; [v] = array of payload type-node views */
+	int *sum_variant_pcounts;        /* owned; [v] = payload count */
+	int sum_variant_count;
+	TypeId sum_type_id; /* the interned TYK_SUM identity (built two-phase), else UNKNOWN */
 	/* const (`name :: value` / `name : [type] : value`) */
 	SyntaxView const_value;     /* the RHS value node view (for resolve + loc), NULL node if none */
 	int const_value_kind;       /* ExpressionType of the RHS value (EXPR_LITERAL/EXPR_NAME/…), or -1 */

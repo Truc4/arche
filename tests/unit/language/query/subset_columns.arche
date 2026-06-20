@@ -10,13 +10,13 @@ Rich  :: arche { hp, armor, speed }
 
 Wounded :: query { hp }
 
-tick :: map (Wounded) {
+decay :: map (Wounded) {
   hp = hp - 1;
 }
 
 main :: proc() {
   insert(Rich { hp: 100, armor: 7, speed: 3 })(_:, _:);
-  run tick;
+  run decay;
   fmt.assert(Rich.hp[0] == 99, "hp should be 99\n");
   fmt.assert(Rich.armor[0] == 7, "armor untouched\n");
   fmt.assert(Rich.speed[0] == 3, "speed untouched\n");

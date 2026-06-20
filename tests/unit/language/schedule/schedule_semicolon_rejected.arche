@@ -1,0 +1,16 @@
+// `#schedule` entries are whitespace-separated, exactly like `#import { a b }` — a `;` is not a
+// separator. `#schedule { a; b }` is rejected the same way an import block rejects punctuation.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "system/map name" %t.out
+v :: int;
+Counter :: arche { v }
+[1]Counter;
+
+step :: map (query { v }) {
+  v = v + 1;
+}
+
+#schedule { step; step }
+
+main :: proc() {
+  tick();
+}

@@ -35,6 +35,8 @@ typedef enum {
 	TYK_SLICE,
 	TYK_ARRAY,
 	TYK_TUPLE,
+	TYK_SUM, /* a tagged union (sum type): named variants, each with a payload type list. Nominal-by-name
+	          * (recursive payloads can't be structurally hash-consed), built two-phase (forward then complete). */
 	TYK_HANDLE,
 	TYK_ARCHETYPE_CATEGORY, /* the bare `archetype` keyword (map param only) */
 	/* The callable FORMS are DISTINCT kinds — Arche's whole identity is that func (pure value), proc
@@ -59,6 +61,12 @@ TypeId tyid_of_nominal_sub(TypeArena *a, const char *name, TypeId backing);
 TypeId tyid_of_slice(TypeArena *a, TypeId elem);
 TypeId tyid_of_array(TypeArena *a, TypeId elem, int rank);
 TypeId tyid_of_tuple(TypeArena *a, const char *const *field_names, const TypeId *field_types, int field_count);
+/* Sum type (tagged union). Nominal-by-name. TWO-PHASE so a variant payload may reference the sum itself
+ * (e.g. `seq([]Self)`): forward-declare to reserve the TypeId, build payload types against it, then
+ * complete. `tyid_sum_forward` returns the existing id if a sum of that name was already interned. */
+TypeId tyid_sum_forward(TypeArena *a, const char *name);
+void tyid_sum_complete(TypeArena *a, TypeId sum, const char *const *variant_names,
+                       const TypeId *const *variant_payloads, const int *variant_payload_counts, int variant_count);
 TypeId tyid_of_handle(TypeArena *a, const char *archetype_name);
 TypeId tyid_of_archetype_category(TypeArena *a);
 /* The three callable forms, each its own distinct kind. `returns` is a func's single return, a proc's
@@ -81,6 +89,13 @@ int tyid_array_len(const TypeArena *a, TypeId t);            /* a shaped array's
 int tyid_tuple_count(const TypeArena *a, TypeId t);
 const char *tyid_tuple_field_name(const TypeArena *a, TypeId t, int i);
 TypeId tyid_tuple_field_type(const TypeArena *a, TypeId t, int i);
+/* Sum-type inspection. */
+const char *tyid_sum_name(const TypeArena *a, TypeId t);                  /* a TYK_SUM's name, else NULL */
+int tyid_sum_variant_count(const TypeArena *a, TypeId t);                 /* variant count, else -1 */
+int tyid_sum_variant_index(const TypeArena *a, TypeId t, const char *nm); /* variant index by name, else -1 */
+const char *tyid_sum_variant_name(const TypeArena *a, TypeId t, int v);
+int tyid_sum_variant_payload_count(const TypeArena *a, TypeId t, int v);
+TypeId tyid_sum_variant_payload_at(const TypeArena *a, TypeId t, int v, int i);
 int tyid_equal(TypeId a, TypeId b); /* same interned id */
 int tyid_is_unknown(TypeId t);
 /* The backing of a tier-2 distinct subtype (else TYID_UNKNOWN). */

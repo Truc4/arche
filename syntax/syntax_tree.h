@@ -35,8 +35,10 @@ typedef enum {
 	SN_DEFAULT_DECL, /* `@default(<kind>, <category>, <policy>)` — standalone directive setting the
 	                  * program's failure-policy default for one (effect-kind, op-category) cell */
 	SN_USE_DECL,
-	SN_REGION, /* `#module`/`#file`/`#foreign` region marker — banner (narrows following decls to
-	            * end-of-file) or, when it carries a `{ ... }` body, a bounded block of child decls */
+	SN_REGION,        /* `#module`/`#file`/`#foreign` region marker — banner (narrows following decls to
+	                   * end-of-file) or, when it carries a `{ ... }` body, a bounded block of child decls */
+	SN_SCHEDULE_DECL, /* `#schedule { a; b; }` — one tick's ordered list of system/map entries; each
+	                   * child is an SN_NAME_EXPR naming a scheduled unit, in declaration order */
 
 	/* Structure */
 	SN_PARAM_LIST,
@@ -89,9 +91,12 @@ typedef enum {
 	SN_GROUP_EXPR,   /* Odin-style overload group: `proc{a,b}` / `func{a,b}` */
 	SN_ARCH_EXPR,    /* archetype (record type) definition: `archetype{ fields }` */
 	SN_SYS_EXPR,     /* map definition: `map(<query>){body}` — runs over a query */
+	SN_SYSTEM_EXPR,  /* system definition: `system { body }` — the composer; invoked by `#schedule` */
 	SN_QUERY_EXPR,   /* query definition: `query { col, col }` — an archetype-selecting column set */
 	SN_ENUM_EXPR,    /* enum type definition: `enum { a, b = 2, c }` */
 	SN_ENUM_VARIANT, /* one enum variant: name + optional `= N` */
+	SN_SUM_EXPR,     /* sum (tagged-union) type definition: `sum { a(T), b([]Self), c }` */
+	SN_SUM_VARIANT,  /* one sum variant: name + optional `(type, ...)` payload type list */
 
 	/* Types (children of / refinements within a type position) */
 	SN_TYPE_REF, /* a type position: identifiers within are types */

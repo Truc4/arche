@@ -4445,6 +4445,14 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			func_name = (char *)cb_resolve(ctx, func_name);
 		}
 
+		/* `tick()` — advance the schedule once: a call to the synthesized `@arche_tick`. A reserved
+		 * builtin name (no user decl); statement-only (its result is unused). */
+		if (func_name && strcmp(func_name, "tick") == 0 && expr->data.call.arg_count == 0) {
+			buffer_append(ctx, "  call void @arche_tick()\n");
+			strcpy(result_buf, "0");
+			break;
+		}
+
 		/* `select(cond, a, b)` — branch-free conditional → LLVM `select` (scalar, or a vector blend in a
 		 * vectorized map loop). cond is normalized to i1 with `icmp ne <cond>, 0`. */
 		if (func_name && strcmp(func_name, "select") == 0 && expr->data.call.arg_count == 3) {
@@ -10054,6 +10062,91 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 	buffer_append(ctx, "}\n\n");
 }
 
+/* `Name :: system { body }` — the composer, emitted as a no-arg void function (a parameterless proc
+ * body). Invoked by the schedule's generated @arche_tick. */
+static void codegen_system_decl(CodegenContext *ctx, HirSystemDecl *sys) {
+	ctx->entity_bind_count = 0;
+	snprintf(ctx->current_return_type_buf, sizeof(ctx->current_return_type_buf), "void");
+	ctx->current_return_types = NULL;
+	ctx->current_return_type_count = 0;
+	ctx->current_return_type = ctx->current_return_type_buf;
+	ctx->current_func = NULL;
+	char sys_sym_buf[512];
+	buffer_append_fmt(ctx, "define %svoid @%s() {\n", cg_linkage(ctx),
+	                  cg_fnsym(ctx, sys->name, 0, sys_sym_buf, sizeof(sys_sym_buf)));
+	buffer_append(ctx, "entry:\n");
+	FunctionBodyState fbs_sys = begin_function_body(ctx);
+	push_value_scope(ctx);
+	ctx->block_terminated = 0;
+	register_static_arrays_in_scope(ctx);
+	for (int i = 0; i < sys->stmt_count; i++)
+		codegen_statement(ctx, sys->stmts[i]);
+	pop_value_scope(ctx);
+	buffer_append(ctx, "  ret void\n");
+	end_function_body(ctx, fbs_sys);
+	buffer_append(ctx, "}\n\n");
+}
+
+/* Find a top-level system or map decl by its source name (schedule-entry resolution). */
+static HirDecl *cg_find_scheduled_decl(CodegenContext *ctx, const char *name) {
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		HirDecl *d = ctx->ast->decls[i];
+		const char *n = NULL;
+		if (d->kind == HIR_DECL_SYSTEM)
+			n = d->data.system->name;
+		else if (d->kind == HIR_DECL_MAP)
+			n = d->data.map->name;
+		if (n && strcmp(n, name) == 0)
+			return d;
+	}
+	return NULL;
+}
+
+/* The schedule decl (at most one program-wide), or NULL. */
+static HirScheduleDecl *cg_find_schedule(CodegenContext *ctx) {
+	for (int i = 0; i < ctx->ast->decl_count; i++)
+		if (ctx->ast->decls[i]->kind == HIR_DECL_SCHEDULE)
+			return ctx->ast->decls[i]->data.schedule;
+	return NULL;
+}
+
+/* Synthesize `@arche_tick` — one tick = run each schedule entry in order. A system entry is a direct
+ * `call void @<sys>()`; a map entry reuses the `run <map>` pool-binding emission. Emitted once, in the
+ * entry/whole-program unit, beside @main. `tick()` in driver code lowers to a call to this. */
+static void codegen_tick_decl(CodegenContext *ctx, HirScheduleDecl *sched) {
+	ctx->entity_bind_count = 0;
+	snprintf(ctx->current_return_type_buf, sizeof(ctx->current_return_type_buf), "void");
+	ctx->current_return_types = NULL;
+	ctx->current_return_type_count = 0;
+	ctx->current_return_type = ctx->current_return_type_buf;
+	ctx->current_func = NULL;
+	buffer_append(ctx, "define void @arche_tick() {\n");
+	buffer_append(ctx, "entry:\n");
+	FunctionBodyState fbs_tick = begin_function_body(ctx);
+	push_value_scope(ctx);
+	ctx->block_terminated = 0;
+	register_static_arrays_in_scope(ctx);
+	for (int i = 0; i < sched->entry_count; i++) {
+		HirDecl *d = cg_find_scheduled_decl(ctx, sched->entries[i]);
+		if (d && d->kind == HIR_DECL_SYSTEM) {
+			char sym[512];
+			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, d->data.system->name, 0, sym, sizeof(sym)));
+		} else {
+			/* A map entry: reuse the `run <map>` emission (pool binding + direct call). */
+			HirStmt rs = {0};
+			rs.kind = HIR_STMT_RUN;
+			rs.data.run_stmt.map_name = sched->entries[i];
+			rs.data.run_stmt.world_name = NULL;
+			rs.data.run_stmt.is_gpu = 0;
+			codegen_statement(ctx, &rs);
+		}
+	}
+	pop_value_scope(ctx);
+	buffer_append(ctx, "  ret void\n");
+	end_function_body(ctx, fbs_tick);
+	buffer_append(ctx, "}\n\n");
+}
+
 static void codegen_map_decl(CodegenContext *ctx, HirMapDecl *map, int decl_unit) {
 	/* Per-unit: a map is emitted in the unit that DECLARED it (a device's map lives in that device's
 	 * unit), so editing a device's map body rebuilds ITS `.so` and hot-reloads — exactly like a proc.
@@ -11082,6 +11175,12 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			/* A `@default` directive only sets a resolution table (read by cg_policy_for /
 			 * cg_insert_handler); it emits no code. */
 			break;
+		case HIR_DECL_SYSTEM:
+			codegen_system_decl(ctx, decl->data.system);
+			break;
+		case HIR_DECL_SCHEDULE:
+			/* The schedule emits no code itself; it drives the synthesized @arche_tick (below). */
+			break;
 		}
 	}
 
@@ -11111,6 +11210,11 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	 * per-unit module for an imported unit. (emit_only_unit -1 = whole-program, also emits it.) */
 	if (!(ctx->per_unit && ctx->emit_only_unit >= 1)) {
 		char init_sym[512], mainu_sym[512];
+		/* Synthesize @arche_tick from the schedule (program-global, entry unit only), before @main —
+		 * a `tick()` call in the driver lowers to `call void @arche_tick()`. */
+		HirScheduleDecl *sched = cg_find_schedule(ctx);
+		if (sched)
+			codegen_tick_decl(ctx, sched);
 		buffer_append(ctx, "\ndeclare void @arche_set_args(i32, i8**)\n");
 		/* Dev hot-reload: register each device unit's reloadable `.so` (a name the runtime resolves under
 		 * $ARCHE_HOT_DIR). The host calls these at startup; the per-symbol trampolines then resolve+reload. */

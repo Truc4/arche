@@ -522,6 +522,47 @@ void test_copy_opaque_error(void) {
 
 /* ========== TypeId arena: alias-tier encoding (Stage 0) ========== */
 
+/* Regression: a valid `#schedule` + `tick()` program analyzes clean. Also guards the uninitialized-
+ * read bug where `ctx->schedule_node` (in malloc'd, non-calloc'd contexts) was read by
+ * sem_check_schedule; exercised here under ASan/UBSan both with and without a `#schedule`. */
+void test_schedule_analysis_ok(void) {
+	test_start("schedule: valid system+map schedule analyzes clean");
+	AnalysisResult result = analyze_string("v :: int;\n"
+	                                       "C :: arche { v }\n"
+	                                       "[1]C;\n"
+	                                       "step :: map (query { v }) { v = v + 1; }\n"
+	                                       "frame :: system { run step; }\n"
+	                                       "#schedule { frame }\n"
+	                                       "main :: proc() { tick(); }\n");
+	ASSERT_TRUE(result.ctx != NULL, "context is null");
+	ASSERT_FALSE(semantic_has_errors(result.ctx), "valid schedule should analyze clean");
+	analysis_result_free(&result);
+	test_pass_msg();
+}
+
+void test_schedule_absent_no_crash(void) {
+	test_start("schedule: absent #schedule reads no garbage (init-bug regression)");
+	/* No `#schedule` here: sem_check_schedule must see schedule_node == NULL and bail, not read
+	 * uninitialized memory. Under ASan this crashes if the context fields are left uninitialized. */
+	AnalysisResult result = analyze_string("Player :: arche { x :: Float }\n"
+	                                       "main :: proc() { _y := 1; }\n");
+	ASSERT_TRUE(result.ctx != NULL, "context is null");
+	ASSERT_FALSE(semantic_has_errors(result.ctx), "no-schedule program should analyze clean");
+	analysis_result_free(&result);
+	test_pass_msg();
+}
+
+void test_schedule_bad_entry_errors(void) {
+	test_start("schedule: a proc entry is rejected (not schedulable)");
+	AnalysisResult result = analyze_string("p :: proc() { }\n"
+	                                       "#schedule { p }\n"
+	                                       "main :: proc() { tick(); }\n");
+	ASSERT_TRUE(result.ctx != NULL, "context is null");
+	ASSERT_TRUE(semantic_has_errors(result.ctx), "a proc schedule entry should error");
+	analysis_result_free(&result);
+	test_pass_msg();
+}
+
 void test_tyid_distinct_subtype(void) {
 	test_start("tyid: distinct subtype != backing, usable-as one-way");
 	TypeArena *a = ty_arena_new();
@@ -624,6 +665,12 @@ int main(void) {
 	test_copy_does_not_consume();
 	test_own_param_bare_arg_error();
 	test_copy_opaque_error();
+
+	/* Scheduling (system / #schedule / tick) */
+	printf("\nScheduling tests:\n");
+	test_schedule_analysis_ok();
+	test_schedule_absent_no_crash();
+	test_schedule_bad_entry_errors();
 
 	/* Results */
 	printf("\n");

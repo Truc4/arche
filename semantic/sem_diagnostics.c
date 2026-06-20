@@ -61,6 +61,14 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_collective_in_map]             = { "E0047", "collective_in_map",             CLASS_ERROR, 1 },
 	[SEM_DIAG_invalid_monoid_op]             = { "E0048", "invalid_monoid_op",             CLASS_ERROR, 1 },
 
+	/* Scheduling (system / #schedule / tick) */
+	[SEM_DIAG_schedule_entry_not_runnable]   = { "E0063", "schedule_entry_not_runnable",   CLASS_ERROR, 1 },
+	[SEM_DIAG_tick_no_schedule]              = { "E0064", "tick_no_schedule",              CLASS_ERROR, 1 },
+	[SEM_DIAG_tick_in_map]                   = { "E0065", "tick_in_map",                   CLASS_ERROR, 1 },
+	[SEM_DIAG_tick_in_system]                = { "E0066", "tick_in_system",                CLASS_ERROR, 1 },
+	[SEM_DIAG_tick_not_statement]            = { "E0067", "tick_not_statement",            CLASS_ERROR, 1 },
+	[SEM_DIAG_tick_reserved_name]            = { "E0068", "tick_reserved_name",            CLASS_ERROR, 1 },
+
 	/* Field / component */
 	[SEM_DIAG_no_field]                      = { "E0030", "no_field",                      CLASS_ERROR, 1 },
 	[SEM_DIAG_cannot_read_through_handle]    = { "E0031", "cannot_read_through_handle",    CLASS_ERROR, 1 },
@@ -616,6 +624,49 @@ SemDiag *sem_emit_invalid_monoid_op(SemanticContext *ctx, SourceLoc loc, const c
 	                 "`%s`). The operator must have a known identity and be associative, so it is a fixed "
 	                 "built-in set, not an arbitrary function",
 	                 fn, op);
+}
+
+/* --- Scheduling (system / #schedule / tick) --- */
+
+SemDiag *sem_emit_schedule_entry_not_runnable(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_schedule_entry_not_runnable, loc,
+	                 "`%s` is not schedulable — a `#schedule` entry must name a `system` or a `map`. Procs "
+	                 "are called by a system, funcs are pure values, and a `query` is a selector; none of "
+	                 "them is a unit of per-tick work",
+	                 name);
+}
+
+SemDiag *sem_emit_tick_no_schedule(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_DIAG_tick_no_schedule, loc,
+	                 "`tick()` advances the program's `#schedule`, but no `#schedule` is declared. Add a "
+	                 "`#schedule { ... }` listing the systems/maps that run each tick");
+}
+
+SemDiag *sem_emit_tick_in_map(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_DIAG_tick_in_map, loc,
+	                 "`tick()` cannot appear in a `map` body. A `map` is a branch-free per-element kernel; "
+	                 "`tick` is a driver action that advances the whole schedule");
+}
+
+SemDiag *sem_emit_tick_in_system(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_DIAG_tick_in_system, loc,
+	                 "`tick()` cannot appear in a `system` body. A system runs *within* a tick; `tick` "
+	                 "advances the schedule and belongs to the driver (a `proc`), never to a unit the "
+	                 "schedule runs");
+}
+
+SemDiag *sem_emit_tick_not_statement(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_DIAG_tick_not_statement, loc,
+	                 "`tick()` is an action that produces no value — call it on its own line (`tick();`). It "
+	                 "cannot be bound (`x := tick()`), nested in an expression, or used where a value is "
+	                 "expected");
+}
+
+SemDiag *sem_emit_tick_reserved_name(SemanticContext *ctx, SourceLoc loc, const char *kind) {
+	return sem_emit_(ctx, SEM_DIAG_tick_reserved_name, loc,
+	                 "`tick` is a reserved builtin (it advances the `#schedule`) — a %s may not be named "
+	                 "`tick`. Choose another name",
+	                 kind);
 }
 
 /* --- Field / component --- */

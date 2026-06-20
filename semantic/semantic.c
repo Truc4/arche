@@ -162,12 +162,22 @@ struct SemanticContext {
 	/* 1 while analyzing a `map` body. A `map` supports no `return` at all (naked or valued). */
 	int in_map;
 
+	/* `#schedule` state. `has_schedule` gates `tick()`; `schedule_node`/`schedule_src` keep the
+	 * (first) schedule node so its entries can be validated against the decl table after collection. */
+	int has_schedule;
+	const SyntaxNode *schedule_node;
+	const char *schedule_src;
+
 	/* 1 only while analyzing a call that sits in a statement / bind-RHS position (where an
 	 * *action* is allowed). A proc or extern call is an action, not a value, so it may appear
 	 * only there — never nested inside another expression. Set by STMT_EXPR / STMT_BIND /
 	 * STMT_ASSIGN, captured-and-cleared at the top of EXPR_CALL so the call's own args are
 	 * value positions. */
 	int stmt_call_ok;
+	/* 1 only while analyzing the call of a BARE expression statement (`f();`) — not a bind/assign RHS.
+	 * Distinguishes `tick();` (legal) from `x := tick()` (illegal): tick is a pure action with no value,
+	 * so it is valid only as a standalone statement, stricter than a value-returning proc. */
+	int bare_expr_stmt;
 	/* Like stmt_call_ok but set ONLY for the value of an out-list statement (`f(in)(out)` /
 	 * multi-bind), NOT a plain `x := f(…)` bind. The mandatory-ok builtins insert/delete are valid
 	 * only here, so this distinguishes `insert(P,…)(h:,ok:)` from an illegal `h := insert(…)`. */
@@ -2212,8 +2222,10 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 	case SN_CALL_EXPR: {
 		int call_stmt_ok = ctx->stmt_call_ok;
 		int outlist_call_ok = ctx->proc_call_stmt_ok;
+		int call_bare_stmt = ctx->bare_expr_stmt; /* this call is a bare `f();` statement (not bound/nested) */
 		ctx->stmt_call_ok = 0;
 		ctx->proc_call_stmt_ok = 0;
+		ctx->bare_expr_stmt = 0; /* args are not bare statements */
 
 		/* resolved callee name (qualify-mangled for `mod.f`) from the side model; NULL for a
 		 * non-module qualified field call. */
@@ -2237,6 +2249,26 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 				ctx->analyzing_call_arg = 1;
 				analyze_expression(ctx, sem_node_at_expr(v, i));
 			}
+			free(func_name);
+			break;
+		}
+
+		/* `tick()` — advance the program's schedule once. A reserved builtin (recognized here so it isn't
+		 * flagged undefined); codegen lowers it to `call @arche_tick`. It is a driver action: it needs a
+		 * `#schedule` to advance, and it may not appear in a `map` (per-element kernel) or a `system` (a
+		 * unit the schedule runs) — only in the driver (`proc`). */
+		if (func_name && strcmp(func_name, "tick") == 0) {
+			if (argc != 0)
+				sem_emit_wrong_arity(ctx, loc, "tick", 0, argc);
+			if (ctx->in_map)
+				sem_emit_tick_in_map(ctx, loc);
+			else if (ctx->current_proc && ctx->current_proc->kind == DECL_SYSTEM)
+				sem_emit_tick_in_system(ctx, loc);
+			else if (!ctx->has_schedule)
+				sem_emit_tick_no_schedule(ctx, loc);
+			else if (!call_bare_stmt)
+				/* a pure action: legal only as a bare `tick();` statement, never as a value */
+				sem_emit_tick_not_statement(ctx, loc);
 			free(func_name);
 			break;
 		}
@@ -3104,7 +3136,9 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 
 	case SN_EXPR_STMT:
 		ctx->stmt_call_ok = 1;
+		ctx->bare_expr_stmt = 1; /* the one position a pure action (`tick();`) is valid */
 		analyze_expression(ctx, sem_node_at_expr(v, 0));
+		ctx->bare_expr_stmt = 0;
 		ctx->stmt_call_ok = 0;
 		break;
 
@@ -5617,6 +5651,7 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 		}
 	case DECL_FUNC: /* also policies — a policy is a DECL_FUNC with is_policy */
 	case DECL_PROC:
+	case DECL_SYSTEM: /* the composer: typed as a no-arg void proc for Phase 1 (params/outs are empty) */
 	case DECL_SYS: {
 		/* Each form gets its OWN callable kind — func/proc/map/policy never unify. Params are common;
 		 * a func carries its return list, a proc its out-params, map/policy none. */
@@ -5633,6 +5668,8 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 		TypeId out;
 		if (d->kind == DECL_SYS) {
 			out = tyid_of_map(ctx->ty_arena, params, np);
+		} else if (d->kind == DECL_SYSTEM) {
+			out = tyid_of_proc(ctx->ty_arena, params, np, NULL, 0); /* no-arg, no-out */
 		} else if (d->is_policy) {
 			out = tyid_of_policy(ctx->ty_arena, params, np);
 		} else if (d->kind == DECL_PROC) {
@@ -5661,8 +5698,9 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 	case DECL_ARCHETYPE:
 		return tyid_of_archetype_category(ctx->ty_arena);
 	case DECL_ENUM:
-		/* An enum decl (`Method :: enum{…}`) DENOTES a type, so its `⟨type⟩` slot is the `type` meta —
-		 * the longhand `Method : type : enum{…}`, mirroring the type-alias arm in DECL_CONST. */
+	case DECL_SUM:
+		/* An enum/sum decl (`Method :: enum{…}`, `Schedule :: sum{…}`) DENOTES a type, so its `⟨type⟩`
+		 * slot is the `type` meta — the longhand `Method : type : enum{…}`. */
 		return sem_tyid_of_name(ctx, "type");
 	case DECL_FUNC_GROUP:
 		return TYID_UNKNOWN; /* an overload SET has no single type — a principled "none", not a dropped kind */
@@ -5924,6 +5962,24 @@ static void analyze_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 	lint_proc_decl(ctx, proc);
 }
 
+/* A `system` is the composer: a no-arg body with full control flow that `run`s maps and calls
+ * procs/funcs/externs. Analyze its body like a parameterless proc. (Phase 1: permissive — the
+ * system→system ban and scheduled-only rule are Phase 3.) */
+static void analyze_system_decl(SemanticContext *ctx, DeclSummary *sys) {
+	if (!sys)
+		return;
+	register_func(ctx, sys->name); /* so a call (and the schedule) can resolve the name */
+	push_scope(ctx);
+	DeclSummary *prev_proc = ctx->current_proc;
+	ctx->current_proc = sys;
+	ctx->in_body = 1;
+	for (int i = 0, n = sem_stmt_count(sys->body_node); i < n; i++)
+		analyze_statement(ctx, sem_stmt_at(sys->body_node, i));
+	ctx->in_body = 0;
+	pop_scope(ctx);
+	ctx->current_proc = prev_proc;
+}
+
 static void analyze_map_decl(SemanticContext *ctx, DeclSummary *map) {
 	if (!map)
 		return;
@@ -6157,6 +6213,9 @@ static void analyze_decl(SemanticContext *ctx, DeclSummary *ds) {
 	case DECL_SYS:
 		analyze_map_decl(ctx, ds);
 		break;
+	case DECL_SYSTEM:
+		analyze_system_decl(ctx, ds);
+		break;
 	case DECL_FUNC:
 		analyze_func_decl(ctx, ds);
 		break;
@@ -6172,6 +6231,9 @@ static void analyze_decl(SemanticContext *ctx, DeclSummary *ds) {
 		break;
 	case DECL_ENUM:
 		/* Registered in pass 0 (enum type + variants); erased before lowering. */
+		break;
+	case DECL_SUM:
+		/* Registered in pass 0 (sum type + variant constructors); erased before lowering. */
 		break;
 	case DECL_QUERY:
 		/* A column set — no body to analyze; its columns are validated where a map consumes them. */
@@ -6897,8 +6959,9 @@ static SyntaxView sem_rhs_form(SyntaxView d) {
 		if (d.node->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
-		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR ||
-		    k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_QUERY_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
+		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR || k == SN_SYSTEM_EXPR ||
+		    k == SN_ARCH_EXPR || k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_SUM_EXPR || k == SN_QUERY_EXPR ||
+		    k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
 			SyntaxView v = {d.node->children[i].as.node, d.src};
 			return v;
 		}
@@ -7667,6 +7730,51 @@ static DeclSummary *sem_make_anon_archetype(SemanticContext *ctx, SyntaxView for
  * are built directly from the tree (bare names) into ctx->decls; the loader records each module's
  * rename ops (build_decl_table applies them) and snapshots the export sets for the tree-qualify pass.
  * No abstract AST is built — the syntax tree + SemModel + this table are the single source of truth. */
+/* Validate the recorded `#schedule`: every entry must name a `system` or a `map` (DECL_SYSTEM /
+ * DECL_SYS) in the decl table. Procs/funcs/queries/unknowns are not units of per-tick work (E0063).
+ * Runs after the decl table is fully built. */
+static void sem_check_schedule(SemanticContext *ctx) {
+	if (!ctx->schedule_node)
+		return;
+	const SyntaxNode *sn = ctx->schedule_node;
+	for (int i = 0; i < sn->child_count; i++) {
+		if (sn->children[i].tag != SE_NODE || sn->children[i].as.node->kind != SN_NAME_EXPR)
+			continue;
+		SyntaxView entry = {sn->children[i].as.node, ctx->schedule_src};
+		char *name = sem_txt_dup(sv_token(entry, TOK_IDENT));
+		if (!name)
+			continue;
+		int ok = 0;
+		for (int d = 0; d < ctx->decl_count; d++) {
+			DeclSummary *ds = ctx->decls[d];
+			if (ds && ds->name && (ds->kind == DECL_SYSTEM || ds->kind == DECL_SYS) && strcmp(ds->name, name) == 0) {
+				ok = 1;
+				break;
+			}
+		}
+		if (!ok)
+			sem_emit_schedule_entry_not_runnable(ctx, sem_node_loc(entry.node), name);
+		free(name);
+	}
+}
+
+/* `tick` is a reserved builtin (the schedule-advance action). A callable decl named `tick` would be
+ * silently shadowed by the builtin at every call site, so reject it (E0068). Runs over the built table. */
+static void sem_check_reserved_names(SemanticContext *ctx) {
+	for (int d = 0; d < ctx->decl_count; d++) {
+		DeclSummary *ds = ctx->decls[d];
+		if (!ds || !ds->name || strcmp(ds->name, "tick") != 0)
+			continue;
+		const char *kind = ds->kind == DECL_FUNC     ? "func"
+		                   : ds->kind == DECL_PROC   ? "proc"
+		                   : ds->kind == DECL_SYS    ? "map"
+		                   : ds->kind == DECL_SYSTEM ? "system"
+		                                             : NULL;
+		if (kind)
+			sem_emit_tick_reserved_name(ctx, ds->loc, kind);
+	}
+}
+
 static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, const char *src) {
 	SyntaxView r = sv_root(root, src);
 	/* Deep count so decls nested in `#foreign { }` / `#module { }` block regions (collected by the
@@ -7698,6 +7806,18 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 					if (ad)
 						ctx->decls[ctx->decl_count++] = ad;
 				}
+			}
+			continue;
+		}
+		/* `#schedule` — at most one program-wide. Record it (entries validated post-collection by
+		 * sem_check_schedule); a second one is a duplicate region (E0121). */
+		if (k == SN_SCHEDULE_DECL) {
+			if (ctx->has_schedule)
+				sem_emit_duplicate_region(ctx, sem_node_loc(root->children[i].as.node), "#schedule");
+			else {
+				ctx->has_schedule = 1;
+				ctx->schedule_node = root->children[i].as.node;
+				ctx->schedule_src = src;
 			}
 			continue;
 		}
@@ -7765,6 +7885,11 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 
 	/* Now that all policies (incl. core's) are in the decl table, validate the `@default` directives. */
 	sem_check_default_directives(ctx, root, src);
+
+	/* Decl table complete — validate `#schedule` entries resolve to a system/map, and reject decls
+	 * that collide with reserved builtin names (`tick`). */
+	sem_check_schedule(ctx);
+	sem_check_reserved_names(ctx);
 }
 
 /* W0013 unused_function (Rust `dead_code`): warn on a top-level func/proc that is never reachable
@@ -8550,7 +8675,11 @@ static SemanticContext *make_context(void) {
 	ctx->current_func = NULL;
 	ctx->in_map = 0;
 	ctx->in_body = 0;
+	ctx->has_schedule = 0;
+	ctx->schedule_node = NULL;
+	ctx->schedule_src = NULL;
 	ctx->stmt_call_ok = 0;
+	ctx->bare_expr_stmt = 0;
 	ctx->proc_call_stmt_ok = 0; /* only the out-list statement sets this; cleared in every EXPR_CALL */
 	ctx->model = sem_model_new();
 	ctx->hints = sem_hints_new();
@@ -8680,7 +8809,8 @@ static SyntaxView sem_decl_body_node(SyntaxView dn) {
 	for (int i = 0; i < dn.node->child_count; i++)
 		if (dn.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = dn.node->children[i].as.node->kind;
-			if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR)
+			if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR ||
+			    k == SN_SYSTEM_EXPR)
 				return (SyntaxView){dn.node->children[i].as.node, dn.src};
 		}
 	return dn;
@@ -9071,10 +9201,14 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 		kind = DECL_FUNC; /* a policy is a func for typing/codegen; category handled at op site */
 	else if (fk == SN_SYS_EXPR)
 		kind = DECL_SYS;
+	else if (fk == SN_SYSTEM_EXPR)
+		kind = DECL_SYSTEM; /* the composer: no params; body_node holds its statements */
 	else if (fk == SN_GROUP_EXPR)
 		kind = DECL_FUNC_GROUP;
 	else if (fk == SN_ENUM_EXPR)
 		kind = DECL_ENUM;
+	else if (fk == SN_SUM_EXPR)
+		kind = DECL_SUM;
 	else if (fk == SN_QUERY_EXPR)
 		kind = DECL_QUERY; /* a column set; its SN_PARAM children populate ds->params via the generic loop */
 	else if (fk == SN_ARCH_EXPR)
@@ -9129,6 +9263,35 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 			ds->enum_variant_names[ds->enum_variant_count] = sem_txt_dup(sv_token(ev, TOK_IDENT));
 			ds->enum_variant_values[ds->enum_variant_count++] = val;
 			next = val + 1;
+		}
+		return ds;
+	}
+	if (kind == DECL_SUM) {
+		int nv = sv_count(form, SN_SUM_VARIANT);
+		ds->sum_variant_names = calloc(nv ? nv : 1, sizeof(char *));
+		ds->sum_variant_ptypes = calloc(nv ? nv : 1, sizeof(SyntaxView *));
+		ds->sum_variant_pcounts = calloc(nv ? nv : 1, sizeof(int));
+		for (int i = 0; i < nv; i++) {
+			SyntaxView vv = sv_child_at(form, SN_SUM_VARIANT, i);
+			int pc = 0;
+			for (int c = 0; c < vv.node->child_count; c++)
+				if (vv.node->children[c].tag == SE_NODE) {
+					SyntaxNodeKind kk = vv.node->children[c].as.node->kind;
+					if (kk >= SN_TYPE_REF && kk <= SN_TYPE_FUNC)
+						pc++;
+				}
+			SyntaxView *ptypes = calloc(pc ? pc : 1, sizeof(SyntaxView));
+			int pi = 0;
+			for (int c = 0; c < vv.node->child_count; c++)
+				if (vv.node->children[c].tag == SE_NODE) {
+					SyntaxNodeKind kk = vv.node->children[c].as.node->kind;
+					if (kk >= SN_TYPE_REF && kk <= SN_TYPE_FUNC)
+						ptypes[pi++] = (SyntaxView){vv.node->children[c].as.node, vv.src};
+				}
+			ds->sum_variant_names[ds->sum_variant_count] = sem_txt_dup(sv_token(vv, TOK_IDENT));
+			ds->sum_variant_ptypes[ds->sum_variant_count] = ptypes;
+			ds->sum_variant_pcounts[ds->sum_variant_count] = pc;
+			ds->sum_variant_count++;
 		}
 		return ds;
 	}
@@ -9395,6 +9558,13 @@ static void free_decl_summary(DeclSummary *ds) {
 		free(ds->enum_variant_names[e]);
 	free(ds->enum_variant_names);
 	free(ds->enum_variant_values);
+	for (int v = 0; v < ds->sum_variant_count; v++) {
+		free(ds->sum_variant_names[v]);
+		free(ds->sum_variant_ptypes[v]);
+	}
+	free(ds->sum_variant_names);
+	free(ds->sum_variant_ptypes);
+	free(ds->sum_variant_pcounts);
 	free(ds->const_value_lexeme);
 	free(ds->const_value_name);
 	free(ds->static_fields);

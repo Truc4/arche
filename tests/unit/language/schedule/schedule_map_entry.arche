@@ -1,0 +1,22 @@
+// A schedule entry may be a bare `map` (not only a `system`): listing `step` runs it each tick, the
+// same as `run step`. Two ticks advance the `[1]Counter` to 2.
+// RUN: %arche build -o %t %s && %t | grep -qF "v=2"
+#import { fmt }
+v       :: int;
+Counter :: arche { v }
+[1]Counter;
+
+step :: map (query { v }) {
+  v = v + 1;
+}
+
+#schedule {
+  step
+}
+
+main :: proc() {
+  insert(Counter { v: 0 })(_:, _:);
+  tick();
+  tick();
+  fmt.printf("v=%d\n", Counter.v[0]);
+}

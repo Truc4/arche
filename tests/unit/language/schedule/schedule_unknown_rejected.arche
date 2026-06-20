@@ -1,0 +1,18 @@
+// A `#schedule` entry that names nothing resolvable (no system/map by that name) is E0063 — the
+// schedule lists units of work, so an unknown name is not schedulable.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "is not schedulable" %t.out
+v       :: int;
+Counter :: arche { v }
+[1]Counter;
+
+step :: map (query { v }) {
+  v = v + 1;
+}
+
+#schedule {
+  nonexistent
+}
+
+main :: proc() {
+  tick();
+}

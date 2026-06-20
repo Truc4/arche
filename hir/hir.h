@@ -75,8 +75,10 @@ typedef enum {
 	HIR_DECL_FUNC_GROUP,
 	HIR_DECL_STATIC,
 	HIR_DECL_CONST,
-	HIR_DECL_DEFAULT, /* `@default(<kind>, <category>, <policy>)` program default directive */
-	HIR_DECL_QUERY,   /* `Name :: query {cols}` — a named column set; emits no code, resolves collectives */
+	HIR_DECL_DEFAULT,  /* `@default(<kind>, <category>, <policy>)` program default directive */
+	HIR_DECL_QUERY,    /* `Name :: query {cols}` — a named column set; emits no code, resolves collectives */
+	HIR_DECL_SYSTEM,   /* `Name :: system { body }` — the composer; a no-arg fn invoked by the schedule */
+	HIR_DECL_SCHEDULE, /* `#schedule { a; b; }` — the one-tick ordered list of systems/maps (driver-owned) */
 } HirDeclKind;
 
 typedef enum {
@@ -134,6 +136,19 @@ typedef struct {
 	int is_gpu; /* 1 if `@gpu`: the kernel is emitted as a GPU compute shader (SSBO per column) */
 	SourceLoc loc;
 } HirMapDecl;
+
+typedef struct {
+	char *name;
+	HirStmt **stmts;
+	int stmt_count;
+	SourceLoc loc;
+} HirSystemDecl;
+
+typedef struct {
+	char **entries; /* scheduled unit names, in declaration order */
+	int entry_count;
+	SourceLoc loc;
+} HirScheduleDecl;
 
 typedef struct {
 	char *name;
@@ -228,6 +243,8 @@ struct HirDecl {
 		HirStaticDecl *static_decl;
 		HirConstDecl *constant;
 		HirDefaultDecl *default_decl;
+		HirSystemDecl *system;
+		HirScheduleDecl *schedule;
 	} data;
 };
 

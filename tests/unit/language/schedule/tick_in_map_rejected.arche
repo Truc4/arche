@@ -1,0 +1,19 @@
+// `tick()` is a driver action that advances the whole schedule; it cannot appear in a `map`, which is
+// a branch-free per-element kernel (E0065). Here it sits in transform RHS position (a bare `tick();`
+// statement is already rejected as "not a column transform" — this exercises the tick-specific guard).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "cannot appear in a .map. body" %t.out
+v       :: int;
+Counter :: arche { v }
+[1]Counter;
+
+step :: map (query { v }) {
+  v = tick();
+}
+
+#schedule {
+  step
+}
+
+main :: proc() {
+  tick();
+}

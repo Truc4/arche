@@ -3,7 +3,7 @@
 ### a concrete before/after for [the-flat-effect-model](the-flat-effect-model.md)
 
 > **Status.** The model is a *design* (see [the-flat-effect-model.md](the-flat-effect-model.md)); the
-> singleton-pool / device-system / `#schedule` forms here are not all implemented. The **"before"** is
+> singleton-pool / device-system / `#run <Schedule>` forms here are not all implemented. The **"before"** is
 > real current source from `~/Code/arche-rpg`. The **"after"** is illustrative. This is the demo for the
 > **device-systems** discipline: a device exposes *systems over pools*, not callable procs — and that
 > turns the one un-ECS seam in arche-rpg (a hand loop calling a draw proc) into a kernel.
@@ -14,7 +14,7 @@
 
 A hot-reloadable toy: a driver (`rpg.arche`) owns the window and a `Player` pool of balls; a hot device
 (`game.arche`) supplies spring physics and drawing. Each frame: fixed-step physics, clear, draw every
-ball, present, poll for close. ~60 lines of driver.
+ball, present, poll for close. ~60 lines of hand-written loop.
 
 ## Before — the real source
 
@@ -56,37 +56,39 @@ The tell: physics is a **system** that fans over the pool automatically (`run ga
 a **proc** the driver calls in a hand-written per-entity loop — *because a system "can't take the window
 handle."* So rendering can't be a kernel the way physics is. That asymmetry is the whole target.
 
-## After — the window is a singleton; draw becomes a system
+## After — the window is a singleton; draw becomes a system; the loop is a `Schedule`
 
 Make the window a `[1]Window` singleton pool. Now `draw` can be a **system** over `(pos, color)` that
-reads `Window[0]` — and the driver's per-entity loop disappears, exactly as it did for physics:
+reads `Window[0]` — and the per-entity loop disappears, exactly as it did for physics. There is no driver
+loop to write at all: the program is its declarations plus one `#run <Schedule>` value, and the **runtime**
+owns the loop:
 
 ```arche
 [1]Window;   Window :: arche { handle :: window }     // external context as data (a singleton pool)
 
 // the game device now exposes ONLY systems + pools + types — no draw_ball proc
-draw :: map query { pos, color } {                    // SYSTEM: fans over every ball, like step
+draw :: system query { pos, color } {                 // fans over every ball, like step
   gfx.circle(Window.handle[0], pos.x, pos.y, BALL_RADIUS, color);   // reads the window singleton
 }
 
-#schedule { step; draw; }   // ONE tick's systems; gfx.clear/present are device LIFECYCLE, runtime-woven at the seam
-                            // gfx.poll writes a should_close singleton the driver reads
+// boot opens the window → insert Window{…}, seeds the Player pool; gfx.poll writes a should_close singleton
 
-// the DRIVER paces ticks — plain code, the same fixed-timestep accumulator as today, now driving tick():
-drive :: proc() {
-  setup();                                            // open window → insert Window{…}, seed Player pool
-  for (;;) {
-    acc += elapsed();
-    for (; acc >= DT_MS; acc -= DT_MS) { tick(); }    // fixed step: run the schedule 0..N times to catch up
-    if (Window.should_close[0]) { break; }
-  }
-}
+#run seq({                              // the program IS this one Schedule value; the runtime runs it
+  once(run(boot)),                      // setup: a once(...) prefix, not a separate phase
+  forever(seq({                         // the frame loop, owned by the runtime — no hand-written loop
+    catch_up(DT, run(step)),            // fixed-step physics: catch up 0..N substeps to wall time
+    run(draw),                          // render fans over the column, symmetric with physics
+  })),
+})
 ```
 
 Physics and rendering are now **symmetric**: both are systems fanning over the same `Player` pool, and the
-schedule is just `step; draw;`. The *pacing* — the fixed-timestep accumulator — stays in the driver as plain
-code calling `tick()`, exactly where every ECS keeps it (Flecs `ecs_progress`, Legion `execute`); it is not
-a schedule annotation. The frame's clear/present are device lifecycle the runtime brackets at the seam.
+loop is just a value, `seq({ once(run(boot)), forever(seq({ catch_up(DT, run(step)), run(draw) })) })`. The
+*pacing* — the fixed-timestep catch-up — is `catch_up(DT, run(step))`, a library `func` returning a
+`Schedule` (§9), composed into the same value as everything else rather than buried in an imperative
+accumulator. A system enters the schedule via explicit `run(step)` / `run(draw)`; a bare system is not a
+`Schedule`. The frame's clear/present are device lifecycle the runtime brackets at the seam — `draw` is
+scheduled, `present` is guaranteed after it.
 
 ## Where the model earns its keep here (the strengths)
 
@@ -94,17 +96,17 @@ a schedule annotation. The frame's clear/present are device lifecycle the runtim
    `step`. Physics-and-render symmetry is the ECS ideal, and the device-systems rule is what reaches it —
    the proc existed *only* to thread the window, and a singleton dissolves that need.
 2. **Every device effect is in the schedule.** Clear, draw, present, poll — none are imperative calls
-   buried in driver code; they're scheduled systems (or runtime-woven lifecycle). Read the schedule, see
-   the whole frame. The timeline is complete.
+   buried in a hand loop; they're scheduled systems (or runtime-woven lifecycle). Read the `#run` value,
+   see the whole frame. The timeline is complete.
 3. **External context generalizes cleanly.** Window today; `dt`, input state, camera tomorrow — all
    singleton pools systems read. The pattern that unlocks `draw` unlocks all of them.
 4. **It fits hot-reload, which arche-rpg already lives on.** A device = systems + pools; reload swaps
    system bodies while pools persist. That's already how the project works; device-systems just makes the
    *interface* match the reality (the device was already mostly systems + a reluctant proc).
-5. **Deterministic replay falls out of tick-based driving.** The schedule is advanced by `tick()`, which
-   has no clock; the wall-clock accumulator lives only in the driver. So a headless replay — `for n { tick() }`
-   feeding recorded input per tick — reproduces the run exactly. Same systems, a different driver. (The §6
-   tape-test, for free.)
+5. **Deterministic replay falls out of runtime-driven scheduling.** The systems read the clock and input
+   only through the runtime's `World`; they hold no wall-clock state of their own. So a headless replay —
+   a `#run` that advances the same systems against recorded input per tick, no real clock — reproduces the
+   run exactly. Same systems, a different `Schedule`. (The §6 tape-test, for free.)
 
 ## Where it doesn't pay (the weaknesses — honest)
 
@@ -116,13 +118,13 @@ a schedule annotation. The frame's clear/present are device lifecycle the runtim
    the backend owns, invalidated by `present`. A `draw` *proc* grabs that view locally and is done; a
    `draw` *system* fanning per row has to respect the borrow/ownership rules (FFI slice, read-only borrow)
    across the kernel. Drawing-as-a-system is conceptually cleaner but mechanically fussier than the proc.
-3. **Half the payoff rests on unbuilt machinery.** The `tick()` primitive, the singleton-driven schedule,
-   and runtime-woven device lifecycle are all design-only (§9). The pacing loop is *not* the issue — it
-   stays the same plain accumulator that works today — but the schedule + `tick()` it drives don't exist
-   yet. Swapping a working 60-line loop for an unbuilt construct is net-negative until it does.
+3. **Half the payoff rests on unbuilt machinery.** The `Schedule` value type, the runtime that walks it,
+   the singleton-driven systems, and runtime-woven device lifecycle are all design-only (§9). Even the
+   pacing — `catch_up(DT, …)` as a `Schedule` combinator over a `World` clock — depends on the runtime that
+   doesn't exist yet. Swapping a working 60-line loop for an unbuilt construct is net-negative until it does.
 4. **Woven lifecycle is invisible in the source.** The runtime guaranteeing `present` at the frame seam is
    elegant, but for a one-file game an explicit `gfx.present(win)` is more legible than weaving the reader
-   can't see in the schedule (the §9 "authored vs woven" wrinkle).
+   can't see in the `#run` value (the §9 "authored vs woven" wrinkle).
 
 ## Net
 

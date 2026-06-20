@@ -1,0 +1,16 @@
+// A `sum` is a tagged-union type: named variants, each with an optional `(type, ...)` payload. Payloads
+// may be recursive — by value (`pair(Tree, Tree)`) or through a slice (`many([]Tree)`, finite via the
+// slice pointer). `sum` is a CONTEXTUAL keyword (only `Name :: sum { … }`), so it stays usable as an
+// ordinary identifier. The type is compile-time-only for now (no runtime value), so a program that merely
+// declares one builds and runs.
+// RUN: %arche build -o %t %s && %t | grep -qF "ok"
+#import { fmt }
+
+Tree :: sum {
+  leaf(int) pair(Tree, Tree) many( []Tree) empty
+}
+
+main :: proc() {
+  sum := 1 + 2; // `sum` is still a normal identifier
+  fmt.printf("ok %d\n", sum);
+}

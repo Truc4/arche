@@ -27,12 +27,14 @@ typedef enum {
 	DECL_ARCHETYPE,
 	DECL_PROC,
 	DECL_SYS,
+	DECL_SYSTEM, /* `Name :: system { body }` — the composer (distinct from DECL_SYS = map) */
 	DECL_FUNC,
 	DECL_FUNC_GROUP,
 	DECL_STATIC,
 	DECL_CONST,
 	DECL_USE,
 	DECL_ENUM,
+	DECL_SUM,   /* `Name :: sum { a(T), b([]Self) }` — a tagged-union type; compile-time only for now */
 	DECL_QUERY, /* `Name :: query {cols}` — a compile-time archetype selector; emits no symbol */
 } DeclKind;
 

@@ -2222,6 +2222,17 @@ static HirDecl *lower_query_from(SyntaxView f, char *name) {
 	return qd;
 }
 
+/* `Name :: system { body }` — the composer. No query, no params; the body is plain statements
+ * (control flow, `run <map>`, proc/func/extern calls). Lowers to a no-arg HIR_DECL_SYSTEM. */
+static HirDecl *lower_system_from(SyntaxView f, char *name) {
+	HirDecl *ad = hir_decl_create(HIR_DECL_SYSTEM);
+	HirSystemDecl *as = calloc(1, sizeof(HirSystemDecl));
+	as->name = name;
+	as->stmts = syntax_lower_body(f, &as->stmt_count);
+	ad->data.system = as;
+	return ad;
+}
+
 static HirDecl *lower_map_from(SyntaxView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_MAP);
 	HirMapDecl *as = calloc(1, sizeof(HirMapDecl));
@@ -2428,8 +2439,9 @@ static SyntaxView lower_rhs_form(SyntaxView d) {
 		if (d.node->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
-		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR ||
-		    k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_QUERY_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
+		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR || k == SN_SYSTEM_EXPR ||
+		    k == SN_ARCH_EXPR || k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_SUM_EXPR || k == SN_QUERY_EXPR ||
+		    k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
 			SyntaxView v = {d.node->children[i].as.node, d.src};
 			return v;
 		}
@@ -2444,6 +2456,21 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		return NULL;
 	case SN_DEFAULT_DECL:
 		return lower_default_directive(d);
+	case SN_SCHEDULE_DECL: {
+		HirDecl *ad = hir_decl_create(HIR_DECL_SCHEDULE);
+		HirScheduleDecl *sc = calloc(1, sizeof(HirScheduleDecl));
+		int n = sv_count(d, SN_NAME_EXPR);
+		sc->entries = calloc(n > 0 ? n : 1, sizeof(char *));
+		sc->entry_count = 0;
+		for (int i = 0; i < d.node->child_count; i++) {
+			if (d.node->children[i].tag != SE_NODE || d.node->children[i].as.node->kind != SN_NAME_EXPR)
+				continue;
+			SyntaxView entry = {d.node->children[i].as.node, d.src};
+			sc->entries[sc->entry_count++] = txt_dup(sv_token(entry, TOK_IDENT));
+		}
+		ad->data.schedule = sc;
+		return ad;
+	}
 	case SN_WORLD_DECL: {
 		HirDecl *ad = hir_decl_create(HIR_DECL_WORLD);
 		ad->data.world = calloc(1, sizeof(HirWorldDecl));
@@ -2614,7 +2641,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		if (sv_present(rhs)) {
 			SyntaxNodeKind rk = sv_kind(rhs);
 			if (rk == SN_PROC_EXPR || rk == SN_FUNC_EXPR || rk == SN_POLICY_EXPR || rk == SN_SYS_EXPR ||
-			    rk == SN_ARCH_EXPR || rk == SN_GROUP_EXPR || rk == SN_QUERY_EXPR) {
+			    rk == SN_SYSTEM_EXPR || rk == SN_ARCH_EXPR || rk == SN_GROUP_EXPR || rk == SN_QUERY_EXPR) {
 				char *nm = txt_dup(lower_binding_name(d));
 				switch (rk) {
 				case SN_QUERY_EXPR:
@@ -2650,6 +2677,8 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					/* GPU dispatch is decided at the call site (`run map @gpu`), not here — see the
 					 * SN_RUN_STMT lowering, which sets the map's is_gpu flag for the emitter. */
 					return lower_map_from(rhs, nm);
+				case SN_SYSTEM_EXPR:
+					return lower_system_from(rhs, nm);
 				case SN_ARCH_EXPR:
 					return lower_archetype_from(rhs, nm);
 				case SN_GROUP_EXPR:
@@ -2660,6 +2689,10 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 			}
 			/* enum: compile-time only (variants resolve to int literals); emit no decl. */
 			if (rk == SN_ENUM_EXPR)
+				return NULL;
+			/* sum: compile-time only for now (Schedule folds at #run; runtime sum codegen deferred);
+			 * emit no decl. */
+			if (rk == SN_SUM_EXPR)
 				return NULL;
 		}
 		/* Callable alias `handler :: some_proc`: compile-time only (calls are rewritten to the
@@ -3181,6 +3214,14 @@ static void hir_rn_decl(HirDecl *d, const char *prefix, char **set, int count) {
 		for (int i = 0; i < d->data.map->stmt_count; i++)
 			hir_rn_stmt(d->data.map->stmts[i], prefix, set, count);
 		break;
+	case HIR_DECL_SYSTEM:
+		rn_owned(&d->data.system->name, prefix, set, count);
+		for (int i = 0; i < d->data.system->stmt_count; i++)
+			hir_rn_stmt(d->data.system->stmts[i], prefix, set, count);
+		break;
+	case HIR_DECL_SCHEDULE:
+		/* Entry-file only; never inlined as a module, so no module-local rename. */
+		break;
 	case HIR_DECL_QUERY:
 		rn_owned(&d->data.query->name, prefix, set, count);
 		break;
@@ -3235,6 +3276,10 @@ static const char *hir_decl_name(HirDecl *d) {
 		return d->data.proc->name;
 	case HIR_DECL_MAP:
 		return d->data.map->name;
+	case HIR_DECL_SYSTEM:
+		return d->data.system->name;
+	case HIR_DECL_SCHEDULE:
+		return NULL; /* a region, not a named decl */
 	case HIR_DECL_QUERY:
 		return d->data.query->name;
 	case HIR_DECL_FUNC:
@@ -3425,6 +3470,10 @@ static void hir_q_decl(HirDecl *d, const QualCtx *q) {
 	case HIR_DECL_MAP:
 		for (int i = 0; i < d->data.map->stmt_count; i++)
 			hir_q_stmt(d->data.map->stmts[i], q);
+		break;
+	case HIR_DECL_SYSTEM:
+		for (int i = 0; i < d->data.system->stmt_count; i++)
+			hir_q_stmt(d->data.system->stmts[i], q);
 		break;
 	case HIR_DECL_FUNC:
 		for (int i = 0; i < d->data.func->stmt_count; i++)
@@ -3773,6 +3822,15 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 						ast->decls[ast->decl_count++] = ad;
 				}
 			}
+			continue;
+		}
+		/* `#schedule` is driver-owned: collected only from the root/entry file (this loop), never
+		 * from an inlined module (those go through hir_inline_module). Sits outside the decl range
+		 * guard below, so handle it explicitly here. */
+		if (k == SN_SCHEDULE_DECL) {
+			HirDecl *ad = lower_decl_cst((SyntaxView){root->children[i].as.node, src});
+			if (ad)
+				ast->decls[ast->decl_count++] = ad;
 			continue;
 		}
 		if (k < SN_WORLD_DECL || k > SN_USE_DECL)

@@ -1,0 +1,21 @@
+// At most one `#schedule` program-wide: a second one is a duplicate region (E0121), the same rule
+// the other `#`-regions follow.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "at most one .#schedule. region" %t.out
+v       :: int;
+Counter :: arche { v }
+[1]Counter;
+
+step :: map (query { v }) {
+  v = v + 1;
+}
+
+#schedule {
+  step
+}
+#schedule {
+  step
+}
+
+main :: proc() {
+  tick();
+}

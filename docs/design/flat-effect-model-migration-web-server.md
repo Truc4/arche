@@ -3,7 +3,7 @@
 ### a concrete before/after for [the-flat-effect-model](the-flat-effect-model.md)
 
 > **Status & honesty note.** The flat effect model is a *design* (see
-> [the-flat-effect-model.md](the-flat-effect-model.md)); the `Eff`/`system`/`#schedule` forms below are
+> [the-flat-effect-model.md](the-flat-effect-model.md)); the `Eff`/`system`/`#run` forms below are
 > not yet implemented. The **"before"** snippets are the *real, current* source of
 > `arche-web-server` (verbatim, with file:line). The **"after"** snippets are illustrative — they show
 > how the same program restructures under the model, in its proposed syntax. The point isn't a
@@ -232,38 +232,45 @@ main :: proc() {
 }
 ```
 
-### After — the tick is one connection; the driver loops it
+### After — one connection is one system; the runtime paces it
 
-The per-connection work (`serve`) is one **tick**: accept, handle. The driver does setup, then paces ticks
-in plain code — here a free-running `for(;;)` (no clock; the server is event-paced by `accept` blocking).
-The listener and root are singleton state (a 1-row pool — arche's idiom for a global) the tick reads:
+There is no `main`, no driver, no `for(;;)`. A program is its declarations plus one **`#run <Schedule>`**,
+and the **runtime** owns the loop. The per-connection work is a `system` (`serve`): accept, handle. Setup —
+parsing the port, registering routes, opening the listener, seeding the singleton — is a second `system`
+(`bind`) the schedule runs *once* before the loop. The listener and root live in singleton state (a 1-row
+pool — arche's idiom for a global) the systems read:
 
 ```arche
 [1]Server;   Server :: arche { srv :: socket   root :: []char }   // the singleton
 
-serve :: system {                                                // ONE tick's work
-  accept(Server.srv[0])(conn:);                                  // run the accept leaf (blocks → event-paced)
-  handle(conn, Server.root[0])(ok:);                             // run the handler proc; thread its result
-}
-
-#schedule { serve; }                                             // the tick body: just `serve`
-
-// the DRIVER: setup, then pace ticks (plain code — the loop is not in the schedule)
-drive :: proc() {
+bind :: system {                                                 // setup: run ONCE, then the loop
   os.argv(1)(portstr:);
   port := parse.atoi(portstr); if !port { port = 8000; }
   os.argv(2)(root:);
   register();
   net.listen(port)(srv:);
   insert(Server { srv: srv, root: root })(h:, ok:);
-  for (;;) { tick(); }                                           // free-run: one tick per connection
 }
+
+serve :: system {                                                // ONE connection's work
+  accept(Server.srv[0])(conn:);                                  // run the accept leaf (blocks → event-paced)
+  handle(conn, Server.root[0])(ok:);                             // run the handler proc; thread its result
+}
+
+#run seq({ once(run(bind)), forever(run(serve)) })               // bind once, then serve forever
 ```
 
-The `for(;;)` didn't *become* a schedule keyword — it stayed plain driver code calling `tick()`, exactly as
-every ECS host loop does (Flecs `ecs_progress`, Legion `execute`). The schedule holds only the tick's
-systems; pacing stays where it belongs. Every effect is still visible at two layers — the schedule (`serve`)
-and the externs behind `net`/`io`/`http` — and the driver is the one place above the spine that may `tick`.
+The loop isn't a statement anyone writes — it's the `forever(run(serve))` value, and advancing it is the
+runtime's job. A bare system is *not* a `Schedule`; a system enters one explicitly through `run(serve)`, the
+leaf that holds `serve`'s compile-time identity. `seq` takes a `[]Schedule` array literal — `once(run(bind))`
+then `forever(run(serve))` — so "set up, then loop" is a single composed value, not a phase construct.
+`forever` and `once` aren't keywords; they're ordinary pure funcs returning `Schedule`
+(`forever(s) = loop(s)`, `once(s) = seq({ s, halt })`), composed in the value plane like anything else.
+
+The server is event-paced: `accept` blocks until a connection arrives, so each iteration of `forever` is one
+connection. No clock, no `when` guard — just `forever`. Every effect is still visible at two layers — the
+schedule (`bind`, `serve`) and the externs behind `net`/`io`/`http` — and there is nothing above the systems
+but the runtime walking the one `Schedule` value.
 
 ---
 
@@ -274,10 +281,10 @@ and the externs behind `net`/`io`/`http` — and the driver is the one place abo
 | `handle` (recv+parse+route+respond) | `plan` (pure) + `handle` (thin runner) | func + proc |
 | `serve_file` (checks+path+open+read+respond) | folded: checks/path/MIME → `plan`; open/read/respond → `handle` | func + proc |
 | `build_path` | unchanged — already a pure func | func |
-| `register` | unchanged — pure router setup, called from `startup` | proc/func |
+| `register` | unchanged — pure router setup, called from the `bind` system | proc/func |
 | `net.recv`/`io.*`/`http.respond` (stdlib **procs** today) | rewritten *in the stdlib* as funcs→`Eff` wrapping the real leaves (`net_*` externs, `os.syscall`) — never wrapping a proc | func → `Eff` |
 | `io.fread_line` (result-dependent loop) | can't be a func/`Eff`; stays monadic — the `routine` holdout (§9) | proc / future `routine` |
-| `main` + `for(;;)` | `drive` proc (setup + `for(;;){ tick(); }`) + `serve` tick in `#schedule` | driver + system |
+| `main` + `for(;;)` | `bind` system (setup) + `serve` system (one connection); runtime loops via `#run seq({ once(run(bind)), forever(run(serve)) })` | system + `Schedule` |
 
 The pure logic **did not get rewritten** — it got *relocated and relabelled*. Migration cost is low
 precisely because a well-written imperative handler already has a pure core; the model just makes you
@@ -299,8 +306,9 @@ An honest accounting for this specific program:
   `router.resolve`/`build_path`/`mime_by_ext`/`reason` are already `func`s. `plan` only adds the status-
   selection glue — and lifting that to a pure func is "extract a function," which the language already
   allows with **no** `Eff`, no model. The model contributes nothing here a struct return doesn't.
-- **The one real structural win is the readable timeline.** The tick (`#schedule { serve; }`) names the
-  per-connection work, the driver paces it in plain code, and the effect set is the closed
+- **The one real structural win is the readable timeline.** The `Schedule`
+  (`#run seq({ once(run(bind)), forever(run(serve)) })`) names the per-connection work and its
+  setup-then-loop pacing as one value, the runtime drives it, and the effect set is the closed
   `net`/`io`/`http`/`os` primitive list. Modest, but genuine.
 - **The cost is real and program-wide — don't spin it.** Making `net.recv`/`io.read`/`http.respond`
   composable means rewriting `net`/`io`/`http`/`os` — the modules *every* arche program imports — from

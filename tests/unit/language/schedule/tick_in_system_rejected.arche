@@ -1,0 +1,23 @@
+// A `system` runs *within* a tick; `tick()` advances the schedule and belongs to the driver (a
+// `proc`), never to a unit the schedule runs. A `tick()` in a system body is E0066.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "cannot appear in a .system. body" %t.out
+v       :: int;
+Counter :: arche { v }
+[1]Counter;
+
+step :: map (query { v }) {
+  v = v + 1;
+}
+
+frame :: system {
+  run step;
+  tick();
+}
+
+#schedule {
+  frame
+}
+
+main :: proc() {
+  tick();
+}

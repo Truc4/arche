@@ -36,6 +36,14 @@ typedef struct {
 			int count;
 		} tuple;
 		struct {
+			const char *name;            /* interned */
+			const char **variant_names;  /* interned; [variant_count] */
+			TypeId **variant_payloads;   /* [variant_count][payload_counts[v]] */
+			int *variant_payload_counts; /* [variant_count] */
+			int variant_count;
+			int complete; /* 0 until tyid_sum_complete fills the variants */
+		} sum;
+		struct {
 			const char *archetype_name;
 		} handle;
 		struct {
@@ -77,6 +85,12 @@ void ty_arena_free(TypeArena *a) {
 		if (n->kind == TYK_TUPLE) {
 			free(n->data.tuple.names);
 			free(n->data.tuple.types);
+		} else if (n->kind == TYK_SUM) {
+			for (int v = 0; v < n->data.sum.variant_count; v++)
+				free(n->data.sum.variant_payloads[v]);
+			free(n->data.sum.variant_payloads);
+			free(n->data.sum.variant_payload_counts);
+			free(n->data.sum.variant_names);
 		} else if (n->kind == TYK_FUNC || n->kind == TYK_PROC || n->kind == TYK_SYS || n->kind == TYK_POLICY) {
 			free(n->data.func.params);
 			free(n->data.func.returns);
@@ -219,6 +233,91 @@ TypeId tyid_of_tuple(TypeArena *a, const char *const *field_names, const TypeId 
 	node.data.tuple.types = malloc(field_count * sizeof(TypeId));
 	memcpy(node.data.tuple.types, field_types, field_count * sizeof(TypeId));
 	return push_node(a, node);
+}
+
+TypeId tyid_sum_forward(TypeArena *a, const char *name) {
+	const char *interned = intern_str(a, name);
+	for (int i = 1; i < a->node_count; i++) {
+		TypeNode *n = &a->nodes[i];
+		if (n->kind == TYK_SUM && n->data.sum.name == interned)
+			return (TypeId)i; /* already forwarded/completed under this name */
+	}
+	TypeNode node = {0};
+	node.kind = TYK_SUM;
+	node.data.sum.name = interned;
+	node.data.sum.complete = 0;
+	return push_node(a, node);
+}
+
+void tyid_sum_complete(TypeArena *a, TypeId sum, const char *const *variant_names,
+                       const TypeId *const *variant_payloads, const int *variant_payload_counts, int variant_count) {
+	if (!a || sum == 0 || (int)sum >= a->node_count)
+		return;
+	TypeNode *n = &a->nodes[sum];
+	if (n->kind != TYK_SUM || n->data.sum.complete)
+		return;
+	n->data.sum.variant_count = variant_count;
+	n->data.sum.variant_names = malloc((variant_count ? variant_count : 1) * sizeof(char *));
+	n->data.sum.variant_payloads = malloc((variant_count ? variant_count : 1) * sizeof(TypeId *));
+	n->data.sum.variant_payload_counts = malloc((variant_count ? variant_count : 1) * sizeof(int));
+	for (int v = 0; v < variant_count; v++) {
+		n->data.sum.variant_names[v] = intern_str(a, variant_names[v]);
+		int pc = variant_payload_counts[v];
+		n->data.sum.variant_payload_counts[v] = pc;
+		n->data.sum.variant_payloads[v] = malloc((pc ? pc : 1) * sizeof(TypeId));
+		for (int i = 0; i < pc; i++)
+			n->data.sum.variant_payloads[v][i] = variant_payloads[v][i];
+	}
+	n->data.sum.complete = 1;
+}
+
+const char *tyid_sum_name(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_SUM)
+		return NULL;
+	return a->nodes[t].data.sum.name;
+}
+
+int tyid_sum_variant_count(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_SUM)
+		return -1;
+	return a->nodes[t].data.sum.variant_count;
+}
+
+int tyid_sum_variant_index(const TypeArena *a, TypeId t, const char *nm) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_SUM || !nm)
+		return -1;
+	const TypeNode *n = &a->nodes[t];
+	for (int v = 0; v < n->data.sum.variant_count; v++)
+		if (strcmp(n->data.sum.variant_names[v], nm) == 0)
+			return v;
+	return -1;
+}
+
+const char *tyid_sum_variant_name(const TypeArena *a, TypeId t, int v) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_SUM)
+		return NULL;
+	const TypeNode *n = &a->nodes[t];
+	if (v < 0 || v >= n->data.sum.variant_count)
+		return NULL;
+	return n->data.sum.variant_names[v];
+}
+
+int tyid_sum_variant_payload_count(const TypeArena *a, TypeId t, int v) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_SUM)
+		return -1;
+	const TypeNode *n = &a->nodes[t];
+	if (v < 0 || v >= n->data.sum.variant_count)
+		return -1;
+	return n->data.sum.variant_payload_counts[v];
+}
+
+TypeId tyid_sum_variant_payload_at(const TypeArena *a, TypeId t, int v, int i) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_SUM)
+		return TYID_UNKNOWN;
+	const TypeNode *n = &a->nodes[t];
+	if (v < 0 || v >= n->data.sum.variant_count || i < 0 || i >= n->data.sum.variant_payload_counts[v])
+		return TYID_UNKNOWN;
+	return n->data.sum.variant_payloads[v][i];
 }
 
 TypeId tyid_of_handle(TypeArena *a, const char *archetype_name) {
@@ -418,6 +517,9 @@ const char *tyid_display(const TypeArena *a, TypeId t, char *buf, int buflen) {
 	}
 	case TYK_TUPLE:
 		snprintf(buf, buflen, "tuple(%d)", n->data.tuple.count);
+		break;
+	case TYK_SUM:
+		snprintf(buf, buflen, "%s", n->data.sum.name ? n->data.sum.name : "sum");
 		break;
 	case TYK_HANDLE:
 		snprintf(buf, buflen, "handle(%s)", n->data.handle.archetype_name ? n->data.handle.archetype_name : "?");

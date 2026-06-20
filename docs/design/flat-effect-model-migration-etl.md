@@ -3,7 +3,7 @@
 ### a concrete before/after for [the-flat-effect-model](the-flat-effect-model.md)
 
 > **Status.** The model is a *design* (see [the-flat-effect-model.md](the-flat-effect-model.md)); the
-> `Eff`/`each`/`#schedule` forms here are not implemented. The **"before"** is real current source from
+> `Eff`/`each`/`#run` forms here are not implemented. The **"before"** is real current source from
 > `design_analysis/benchmarks/etl/`. The **"after"** is illustrative — what the same pipeline looks like
 > under the model. This is the demo where the model's *engine* actually turns over: the output is a
 > **column of effects**, fanned in one kernel — the thing a one-at-a-time server never has.
@@ -69,12 +69,14 @@ write_out :: system {                  // composer: open, fan the writes, close 
   io.fclose(fd);
 }
 
-#schedule { load; derive; write_out; }     // the tick body
+#run once(seq({ run(load), run(derive), run(write_out) }))   // the one-shot pipeline
 ```
 
-ETL is the degenerate pacing case: **a single tick**. There's no loop — the driver just calls `tick()` once
-(or `for n { tick() }` to re-run the pipeline over fresh input). No clock, no `loop` in the schedule; the
-ordered stages *are* the one tick. (Contrast the rpg/server demos, whose drivers pace many ticks.)
+ETL is the degenerate pacing case: **a single pass**. The `Schedule` is `once(seq({ … }))` — the three
+ordered stages run in sequence, then `once` halts; no `loop`, no clock. The runtime owns the loop, so there
+is nothing to write but the value: hand it the ordered `Schedule` and it dispatches the stages exactly once.
+(To re-run over fresh input you compose a different `Schedule` — `forever(seq({ … }))` or `repeat(n, …)`;
+contrast the rpg/server demos, whose `Schedule`s pace many ticks.)
 
 ## Where the model earns its keep here (the strengths)
 

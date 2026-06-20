@@ -129,6 +129,8 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "DEFAULT_DECL";
 	case SN_REGION:
 		return "REGION";
+	case SN_SCHEDULE_DECL:
+		return "SCHEDULE_DECL";
 	case SN_USE_DECL:
 		return "USE_DECL";
 	case SN_PARAM_LIST:
@@ -209,6 +211,8 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "ARCH_EXPR";
 	case SN_SYS_EXPR:
 		return "SYS_EXPR";
+	case SN_SYSTEM_EXPR:
+		return "SYSTEM_EXPR";
 	case SN_QUERY_EXPR:
 		return "QUERY_EXPR";
 	case SN_ENTITY_EXPR:
@@ -219,6 +223,10 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "ENUM_EXPR";
 	case SN_ENUM_VARIANT:
 		return "ENUM_VARIANT";
+	case SN_SUM_EXPR:
+		return "SUM_EXPR";
+	case SN_SUM_VARIANT:
+		return "SUM_VARIANT";
 	case SN_MATCH_STMT:
 		return "MATCH_STMT";
 	case SN_MATCH_ARM:

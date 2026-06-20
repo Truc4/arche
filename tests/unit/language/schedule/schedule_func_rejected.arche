@@ -1,0 +1,13 @@
+// A `func` is a pure value, not a unit of per-tick work — it cannot be a `#schedule` entry (E0063).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "is not schedulable" %t.out
+double :: func(x: int) -> int {
+  return x * 2;
+}
+
+#schedule {
+  double
+}
+
+main :: proc() {
+  tick();
+}

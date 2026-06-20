@@ -258,6 +258,25 @@ static void hir_map_decl_free(HirMapDecl *map) {
 	free(map);
 }
 
+static void hir_system_decl_free(HirSystemDecl *sys) {
+	if (!sys)
+		return;
+	free(sys->name);
+	for (int i = 0; i < sys->stmt_count; i++)
+		hir_stmt_free(sys->stmts[i]);
+	free(sys->stmts);
+	free(sys);
+}
+
+static void hir_schedule_decl_free(HirScheduleDecl *sch) {
+	if (!sch)
+		return;
+	for (int i = 0; i < sch->entry_count; i++)
+		free(sch->entries[i]);
+	free(sch->entries);
+	free(sch);
+}
+
 static void hir_func_decl_free(HirFuncDecl *func) {
 	if (!func)
 		return;
@@ -366,6 +385,12 @@ void hir_decl_free(HirDecl *decl) {
 			free(decl->data.default_decl->policy);
 			free(decl->data.default_decl);
 		}
+		break;
+	case HIR_DECL_SYSTEM:
+		hir_system_decl_free(decl->data.system);
+		break;
+	case HIR_DECL_SCHEDULE:
+		hir_schedule_decl_free(decl->data.schedule);
 		break;
 	}
 	free(decl);

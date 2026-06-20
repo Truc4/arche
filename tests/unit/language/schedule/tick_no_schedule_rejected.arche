@@ -1,0 +1,5 @@
+// `tick()` advances the `#schedule`. With no `#schedule` declared there is nothing to advance — E0064.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "no .#schedule. is declared" %t.out
+main :: proc() {
+  tick();
+}

@@ -206,6 +206,7 @@ static void synchronize(Parser *parser) {
 		case TOK_ARCHETYPE:
 		case TOK_PROC:
 		case TOK_MAP:
+		case TOK_SYSTEM:
 		case TOK_FUNC:
 		case TOK_LET:
 		case TOK_FOR:
@@ -1064,6 +1065,38 @@ static int parse_link_region(Parser *parser, SyntaxNodeKind *out_kind) {
 	return 1;
 }
 
+/* `#schedule { a b c }` — one tick's ordered list of scheduled units. Each entry is a bare
+ * identifier naming a `system` or a `map`, wrapped as an SN_NAME_EXPR child so lowering can read
+ * the entries in declaration order. Entries are whitespace-separated, exactly like `#import { a b }`
+ * (a `;` is rejected, not a separator). Block form only; the list must be non-empty. Emitted as
+ * SN_SCHEDULE_DECL. */
+static int parse_schedule_region(Parser *parser, SyntaxNodeKind *out_kind) {
+	advance(parser); /* consume '#schedule' */
+	*out_kind = SN_SCHEDULE_DECL;
+	if (!match(parser, TOK_LBRACE)) {
+		error(parser, "expected `{ name ... }` after `#schedule`");
+		return 0;
+	}
+	if (check(parser, TOK_RBRACE)) {
+		error(parser, "empty `#schedule { }` — list one or more system/map names");
+		return 0;
+	}
+	while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "expected a system/map name in `#schedule { ... }`");
+			return 0;
+		}
+		int entry_cp = syntax_cp(parser);
+		advance(parser); /* consume the entry name */
+		syntax_wrap(parser, entry_cp, SN_NAME_EXPR);
+	}
+	if (!match(parser, TOK_RBRACE)) {
+		error(parser, "Expected '}' to close `#schedule { ... }`");
+		return 0;
+	}
+	return 1;
+}
+
 static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	*out_kind = SN_ERROR;
 
@@ -1300,6 +1333,9 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	case TOK_HASH_LINK:
 		/* `#link { "lib" ... }` — system libraries to link (block form only). */
 		return parse_link_region(parser, out_kind);
+	case TOK_HASH_SCHEDULE:
+		/* `#schedule { a; b; }` — one tick's ordered system/map list (block form only). */
+		return parse_schedule_region(parser, out_kind);
 	default:
 		/* Top-level declarations: an IDENT-led binding (const / static buffer) or a prefix pool
 		 * alloc (`[C]Name…`, which leads with `[`) — see parse_static_decl. */
@@ -1457,6 +1493,12 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 		}
 		return parse_block_body(parser);
 	}
+	if (check(parser, TOK_SYSTEM)) {
+		advance(parser); /* consume 'system' */
+		*out_kind = SN_SYSTEM_EXPR;
+		/* `system { body }` — the composer: full control flow, no params (reads pools/singletons). */
+		return parse_block_body(parser);
+	}
 	if (check(parser, TOK_ENUM)) {
 		advance(parser); /* consume 'enum' */
 		*out_kind = SN_ENUM_EXPR;
@@ -1490,10 +1532,12 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 		}
 		return 1;
 	}
-
 	if (check(parser, TOK_IDENT)) {
 		int prim_name_cp = syntax_cp(parser);
 		int is_table = cur_ident_is(parser, "table", 5);
+		/* `sum` is a CONTEXTUAL keyword (not a hard token — `sum` is far too common an identifier):
+		 * recognized only as the value-form `Name :: sum { … }`. Checked before the entity-literal `{`. */
+		int is_sum = cur_ident_is(parser, "sum", 3);
 		/* `reduce`/`scan` take a monoid operator as their FIRST argument — `+`, `*`, or a named op
 		 * (`min`/`max`). The operator forms (`+`/`*`) aren't expressions, so the call-arg parse below
 		 * accepts an operator token there and wraps it as a literal carrying the op text. */
@@ -1513,6 +1557,40 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 				return 0;
 			}
 			*out_kind = SN_NAME_EXPR;
+			return 1;
+		}
+
+		/* `sum { variant(types), … }` — a tagged-union type definition. Checked before the entity
+		 * literal (which also leads `IDENT {`): a sum body is variant constructors, not `field: val`. */
+		if (is_sum && check(parser, TOK_LBRACE)) {
+			*out_kind = SN_SUM_EXPR;
+			advance(parser); /* consume '{' */
+			while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+				int v_cp = syntax_cp(parser);
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "Expected sum variant name");
+					return 0;
+				}
+				advance(parser); /* variant name */
+				if (match(parser, TOK_LPAREN)) {
+					if (!check(parser, TOK_RPAREN)) {
+						do {
+							if (!parse_type(parser))
+								return 0;
+						} while (match(parser, TOK_COMMA));
+					}
+					if (!match(parser, TOK_RPAREN)) {
+						error(parser, "Expected ')' to close sum variant payload");
+						return 0;
+					}
+				}
+				syntax_wrap(parser, v_cp, SN_SUM_VARIANT);
+				match(parser, TOK_COMMA); /* optional separator */
+			}
+			if (!match(parser, TOK_RBRACE)) {
+				error(parser, "Expected '}' to close sum");
+				return 0;
+			}
 			return 1;
 		}
 
