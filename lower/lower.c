@@ -2471,6 +2471,16 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		ad->data.schedule = sc;
 		return ad;
 	}
+	case SN_RUN_DECL: {
+		HirDecl *ad = hir_decl_create(HIR_DECL_RUN);
+		HirRunDecl *rn = calloc(1, sizeof(HirRunDecl));
+		/* Fold the `#run` expression to a constant ScheduleTree (value-CTFE). NULL = didn't fold; the
+		 * semantic pass reports that — codegen treats a NULL tree as an empty run. */
+		SyntaxView ex = sv_node_at_expr(d, 0);
+		rn->tree = g_lower_sem ? semantic_try_const_schedule(g_lower_sem, ex) : NULL;
+		ad->data.run = rn;
+		return ad;
+	}
 	case SN_WORLD_DECL: {
 		HirDecl *ad = hir_decl_create(HIR_DECL_WORLD);
 		ad->data.world = calloc(1, sizeof(HirWorldDecl));
@@ -2659,6 +2669,10 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					return pd;
 				}
 				case SN_FUNC_EXPR: {
+					/* A sum-typed func (a Schedule combinator) is CTFE-only — folded at `#run`, never
+					 * called at runtime; emit no decl (sums have no runtime representation yet). */
+					if (g_lower_sem && nm && semantic_func_is_ctfe_only(g_lower_sem, nm))
+						return NULL;
 					HirDecl *fd = lower_func_from(rhs, nm);
 					return fd;
 				}
@@ -3219,6 +3233,7 @@ static void hir_rn_decl(HirDecl *d, const char *prefix, char **set, int count) {
 		for (int i = 0; i < d->data.system->stmt_count; i++)
 			hir_rn_stmt(d->data.system->stmts[i], prefix, set, count);
 		break;
+	case HIR_DECL_RUN:
 	case HIR_DECL_SCHEDULE:
 		/* Entry-file only; never inlined as a module, so no module-local rename. */
 		break;
@@ -3278,6 +3293,7 @@ static const char *hir_decl_name(HirDecl *d) {
 		return d->data.map->name;
 	case HIR_DECL_SYSTEM:
 		return d->data.system->name;
+	case HIR_DECL_RUN:
 	case HIR_DECL_SCHEDULE:
 		return NULL; /* a region, not a named decl */
 	case HIR_DECL_QUERY:
@@ -3827,7 +3843,7 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 		/* `#schedule` is driver-owned: collected only from the root/entry file (this loop), never
 		 * from an inlined module (those go through hir_inline_module). Sits outside the decl range
 		 * guard below, so handle it explicitly here. */
-		if (k == SN_SCHEDULE_DECL) {
+		if (k == SN_SCHEDULE_DECL || k == SN_RUN_DECL) {
 			HirDecl *ad = lower_decl_cst((SyntaxView){root->children[i].as.node, src});
 			if (ad)
 				ast->decls[ast->decl_count++] = ad;

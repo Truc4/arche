@@ -77,3 +77,19 @@ reject :: policy(count: int, cap: int, ok: int) {
     ok = 0;
   }
 }
+
+// ── Scheduling (the flat effect model §9): the Schedule is a first-class value the runtime executes.
+// `Schedule` is a compile-time-folded tree (Approach A): the combinators are pure funcs the `#run` site
+// evaluates to a constant, so they are erased from codegen — no runtime representation, no fn pointers.
+// Runtime state (the clock, the tick counter) is NOT a type — it is read through runtime intrinsic funcs
+// (e.g. `elapsed()`, `tick_count()`), so a guard predicate is just `func() -> bool`.
+Schedule :: sum {
+  run (system) seq( []Schedule) par( []Schedule) loop(Schedule) when(func() -> bool, Schedule) halt
+}
+
+once :: func(s: Schedule) -> Schedule {
+  return seq({ s, halt });
+}
+forever :: func(s: Schedule) -> Schedule {
+  return loop(s);
+}

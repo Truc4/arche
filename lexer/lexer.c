@@ -549,6 +549,8 @@ Token lexer_next_token(Lexer *lexer) {
 			k = TOK_HASH_LINK;
 		else if (wlen == 8 && strncmp(word, "schedule", 8) == 0)
 			k = TOK_HASH_SCHEDULE;
+		else if (wlen == 3 && strncmp(word, "run", 3) == 0)
+			k = TOK_HASH_RUN;
 		return make_token(k, start, tlen, line, column);
 	}
 
@@ -735,6 +737,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_HASH_LINK";
 	case TOK_HASH_SCHEDULE:
 		return "TOK_HASH_SCHEDULE";
+	case TOK_HASH_RUN:
+		return "TOK_HASH_RUN";
 
 	case TOK_EQ:
 		return "TOK_EQ";

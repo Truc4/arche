@@ -4445,14 +4445,6 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			func_name = (char *)cb_resolve(ctx, func_name);
 		}
 
-		/* `tick()` — advance the schedule once: a call to the synthesized `@arche_tick`. A reserved
-		 * builtin name (no user decl); statement-only (its result is unused). */
-		if (func_name && strcmp(func_name, "tick") == 0 && expr->data.call.arg_count == 0) {
-			buffer_append(ctx, "  call void @arche_tick()\n");
-			strcpy(result_buf, "0");
-			break;
-		}
-
 		/* `select(cond, a, b)` — branch-free conditional → LLVM `select` (scalar, or a vector blend in a
 		 * vectorized map loop). cond is normalized to i1 with `icmp ne <cond>, 0`. */
 		if (func_name && strcmp(func_name, "select") == 0 && expr->data.call.arg_count == 3) {
@@ -10102,48 +10094,83 @@ static HirDecl *cg_find_scheduled_decl(CodegenContext *ctx, const char *name) {
 	return NULL;
 }
 
-/* The schedule decl (at most one program-wide), or NULL. */
-static HirScheduleDecl *cg_find_schedule(CodegenContext *ctx) {
-	for (int i = 0; i < ctx->ast->decl_count; i++)
-		if (ctx->ast->decls[i]->kind == HIR_DECL_SCHEDULE)
-			return ctx->ast->decls[i]->data.schedule;
-	return NULL;
+/* Emit one ScheduleTree node into the current @arche_run body. Direct calls only — no fn pointers.
+ * `halt` is `ret void` (exits the loop); `loop` is a back-edge; `when` guards on a predicate direct-call. */
+static void emit_sched(CodegenContext *ctx, ScheduleTree *t) {
+	if (!t || ctx->block_terminated)
+		return;
+	switch (t->kind) {
+	case SCHED_HALT:
+		buffer_append(ctx, "  ret void\n");
+		ctx->block_terminated = 1;
+		break;
+	case SCHED_RUN: {
+		HirDecl *d = t->sym ? cg_find_scheduled_decl(ctx, t->sym) : NULL;
+		if (d && d->kind == HIR_DECL_SYSTEM) {
+			char sym[512];
+			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, d->data.system->name, 0, sym, sizeof(sym)));
+		} else {
+			HirStmt rs = {0};
+			rs.kind = HIR_STMT_RUN;
+			rs.data.run_stmt.map_name = t->sym;
+			codegen_statement(ctx, &rs);
+		}
+		break;
+	}
+	case SCHED_SEQ:
+	case SCHED_PAR: /* MVP: sequential (data-dependency concurrency is §9-open) */
+		for (int i = 0; i < t->child_count && !ctx->block_terminated; i++)
+			emit_sched(ctx, t->children[i]);
+		break;
+	case SCHED_LOOP: {
+		int id = ctx->value_counter++;
+		buffer_append_fmt(ctx, "  br label %%Lsched%d\nLsched%d:\n", id, id);
+		emit_sched(ctx, t->children[0]);
+		if (!ctx->block_terminated)
+			buffer_append_fmt(ctx, "  br label %%Lsched%d\n", id);
+		ctx->block_terminated = 1; /* loop never falls through — only a halt-ret leaves it */
+		break;
+	}
+	case SCHED_WHEN: {
+		int id = ctx->value_counter++;
+		char *r = gen_value_name(ctx);
+		char sym[512];
+		buffer_append_fmt(ctx, "  %s = call i8 @%s()\n", r,
+		                  t->sym ? cg_fnsym(ctx, t->sym, 0, sym, sizeof(sym)) : "arche_false");
+		char *c = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = icmp ne i8 %s, 0\n", c, r);
+		buffer_append_fmt(ctx, "  br i1 %s, label %%Lw%dt, label %%Lw%de\nLw%dt:\n", c, id, id, id);
+		free(r);
+		free(c);
+		emit_sched(ctx, t->children[0]);
+		if (!ctx->block_terminated)
+			buffer_append_fmt(ctx, "  br label %%Lw%de\n", id);
+		buffer_append_fmt(ctx, "Lw%de:\n", id);
+		ctx->block_terminated = 0;
+		break;
+	}
+	}
 }
 
-/* Synthesize `@arche_tick` — one tick = run each schedule entry in order. A system entry is a direct
- * `call void @<sys>()`; a map entry reuses the `run <map>` pool-binding emission. Emitted once, in the
- * entry/whole-program unit, beside @main. `tick()` in driver code lowers to a call to this. */
-static void codegen_tick_decl(CodegenContext *ctx, HirScheduleDecl *sched) {
+/* `@arche_run` — the program's loop, synthesized from the folded #run ScheduleTree (replaces @arche_tick).
+ * Walked at compile time into direct-dispatch control flow; called once from @main. */
+static void codegen_run_decl(CodegenContext *ctx, ScheduleTree *tree) {
 	ctx->entity_bind_count = 0;
 	snprintf(ctx->current_return_type_buf, sizeof(ctx->current_return_type_buf), "void");
 	ctx->current_return_types = NULL;
 	ctx->current_return_type_count = 0;
 	ctx->current_return_type = ctx->current_return_type_buf;
 	ctx->current_func = NULL;
-	buffer_append(ctx, "define void @arche_tick() {\n");
-	buffer_append(ctx, "entry:\n");
-	FunctionBodyState fbs_tick = begin_function_body(ctx);
+	buffer_append(ctx, "define void @arche_run() {\nentry:\n");
+	FunctionBodyState fbs = begin_function_body(ctx);
 	push_value_scope(ctx);
 	ctx->block_terminated = 0;
 	register_static_arrays_in_scope(ctx);
-	for (int i = 0; i < sched->entry_count; i++) {
-		HirDecl *d = cg_find_scheduled_decl(ctx, sched->entries[i]);
-		if (d && d->kind == HIR_DECL_SYSTEM) {
-			char sym[512];
-			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, d->data.system->name, 0, sym, sizeof(sym)));
-		} else {
-			/* A map entry: reuse the `run <map>` emission (pool binding + direct call). */
-			HirStmt rs = {0};
-			rs.kind = HIR_STMT_RUN;
-			rs.data.run_stmt.map_name = sched->entries[i];
-			rs.data.run_stmt.world_name = NULL;
-			rs.data.run_stmt.is_gpu = 0;
-			codegen_statement(ctx, &rs);
-		}
-	}
+	emit_sched(ctx, tree);
+	if (!ctx->block_terminated)
+		buffer_append(ctx, "  ret void\n");
 	pop_value_scope(ctx);
-	buffer_append(ctx, "  ret void\n");
-	end_function_body(ctx, fbs_tick);
+	end_function_body(ctx, fbs);
 	buffer_append(ctx, "}\n\n");
 }
 
@@ -11181,6 +11208,9 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		case HIR_DECL_SCHEDULE:
 			/* The schedule emits no code itself; it drives the synthesized @arche_tick (below). */
 			break;
+		case HIR_DECL_RUN:
+			/* The #run tree drives the synthesized @arche_run (emitted beside @main, below). */
+			break;
 		}
 	}
 
@@ -11210,11 +11240,20 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	 * per-unit module for an imported unit. (emit_only_unit -1 = whole-program, also emits it.) */
 	if (!(ctx->per_unit && ctx->emit_only_unit >= 1)) {
 		char init_sym[512], mainu_sym[512];
-		/* Synthesize @arche_tick from the schedule (program-global, entry unit only), before @main —
-		 * a `tick()` call in the driver lowers to `call void @arche_tick()`. */
-		HirScheduleDecl *sched = cg_find_schedule(ctx);
-		if (sched)
-			codegen_tick_decl(ctx, sched);
+		/* Synthesize @arche_run from the folded #run ScheduleTree (the runtime-owned loop), entry unit
+		 * only, before @main — @main calls it (no driver proc). */
+		ScheduleTree *run_tree = NULL;
+		for (int i = 0; i < ctx->ast->decl_count; i++)
+			if (ctx->ast->decls[i]->kind == HIR_DECL_RUN) {
+				run_tree = ctx->ast->decls[i]->data.run->tree;
+				break;
+			}
+		int has_run = 0;
+		for (int i = 0; i < ctx->ast->decl_count; i++)
+			if (ctx->ast->decls[i]->kind == HIR_DECL_RUN)
+				has_run = 1;
+		if (has_run)
+			codegen_run_decl(ctx, run_tree);
 		buffer_append(ctx, "\ndeclare void @arche_set_args(i32, i8**)\n");
 		/* Dev hot-reload: register each device unit's reloadable `.so` (a name the runtime resolves under
 		 * $ARCHE_HOT_DIR). The host calls these at startup; the per-symbol trampolines then resolve+reload. */
@@ -11257,6 +11296,10 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 
 		if (has_main_proc)
 			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, "main_user", 0, mainu_sym, sizeof(mainu_sym)));
+
+		/* The runtime owns the loop: run the program's #run Schedule (no driver proc). */
+		if (has_run)
+			buffer_append(ctx, "  call void @arche_run()\n");
 
 		buffer_append(ctx, "  ret i32 0\n");
 		buffer_append(ctx, "}\n");

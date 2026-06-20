@@ -1,4 +1,5 @@
 #include "semantic.h"
+#include "../hir/hir.h" /* ScheduleTree — the value-CTFE fold target for #run */
 #include "../parser/parser.h"
 #include "../syntax/syntax_view.h"
 #include "sem_decls.h"
@@ -469,6 +470,28 @@ static int enum_is_type(SemanticContext *ctx, const char *name) {
 		if (strcmp(ctx->enum_type_names[i], name) == 0)
 			return 1;
 	return 0;
+}
+
+/* If `name` is a sum variant constructor (bare, e.g. `leaf` of `Tree :: sum { leaf(int) … }`), return
+ * the sum's TypeId and (if requested) the variant index + payload count; else TYID_UNKNOWN. First match
+ * wins across all sums. */
+static TypeId sum_ctor_lookup(SemanticContext *ctx, const char *name, int *out_variant, int *out_pcount) {
+	if (!ctx || !name)
+		return TYID_UNKNOWN;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (!d || d->kind != DECL_SUM || d->sum_type_id == TYID_UNKNOWN)
+			continue;
+		for (int v = 0; v < d->sum_variant_count; v++)
+			if (strcmp(d->sum_variant_names[v], name) == 0) {
+				if (out_variant)
+					*out_variant = v;
+				if (out_pcount)
+					*out_pcount = d->sum_variant_pcounts[v];
+				return d->sum_type_id;
+			}
+	}
+	return TYID_UNKNOWN;
 }
 
 /* Look up a variant's value. If `en` is non-NULL, scope to that enum; else search all enums
@@ -1855,6 +1878,13 @@ static TypeId name_type_id(SemanticContext *ctx, SyntaxView v) {
 	char *nm = sv_name_expr_dup(v);
 	TypeId out = TYID_UNKNOWN;
 	if (nm) {
+		/* A bare name that is a NULLARY sum constructor (`empty`, `halt`) is a value of its sum type. */
+		int sc_pc = -1;
+		TypeId sc = sum_ctor_lookup(ctx, nm, NULL, &sc_pc);
+		if (sc != TYID_UNKNOWN && sc_pc == 0) {
+			free(nm);
+			return sc;
+		}
 		VariableInfo *var = find_variable(ctx, nm);
 		if (var && var->type_id != TYID_UNKNOWN) {
 			TyKind tk = tyid_kind(ctx->ty_arena, var->type_id);
@@ -2026,7 +2056,10 @@ static TypeId call_type_id(SemanticContext *ctx, SyntaxView v) {
 	const char *func_name = resolved ? resolved : fallback;
 	TypeId result = TYID_UNKNOWN;
 	if (func_name) {
-		if (is_width_int_name(func_name) || is_primitive_type_name(func_name) || is_type_alias(ctx, func_name)) {
+		TypeId sctor = sum_ctor_lookup(ctx, func_name, NULL, NULL);
+		if (sctor != TYID_UNKNOWN) {
+			result = sctor; /* a sum variant constructor `V(args)` yields its sum type */
+		} else if (is_width_int_name(func_name) || is_primitive_type_name(func_name) || is_type_alias(ctx, func_name)) {
 			result = sem_tyid_of_name(ctx, func_name); /* cast target (alias/prim/width; int→i32 canonical) */
 		} else if (strcmp(func_name, "insert") == 0) {
 			result = sem_tyid_of_name(ctx, "handle");
@@ -2132,9 +2165,10 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 		int is_var = name_var != NULL;
 		int is_arch = find_archetype(ctx, name) != NULL;
 		int is_const = semantic_get_const_value(ctx, name) != NULL;
+		int is_nullary_ctor = sum_ctor_lookup(ctx, name, NULL, NULL) != TYID_UNKNOWN; /* a bare `halt`/`empty` */
 		if (is_var)
 			name_var->is_referenced = 1;
-		if (!is_known_func && !is_var && !is_arch && !is_const)
+		if (!is_known_func && !is_var && !is_arch && !is_const && !is_nullary_ctor)
 			sem_emit_undefined_symbol(ctx, loc, name);
 		else if (is_var && name_var->is_consumed)
 			sem_emit_use_after_consume(ctx, loc, name);
@@ -2222,10 +2256,8 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 	case SN_CALL_EXPR: {
 		int call_stmt_ok = ctx->stmt_call_ok;
 		int outlist_call_ok = ctx->proc_call_stmt_ok;
-		int call_bare_stmt = ctx->bare_expr_stmt; /* this call is a bare `f();` statement (not bound/nested) */
 		ctx->stmt_call_ok = 0;
 		ctx->proc_call_stmt_ok = 0;
-		ctx->bare_expr_stmt = 0; /* args are not bare statements */
 
 		/* resolved callee name (qualify-mangled for `mod.f`) from the side model; NULL for a
 		 * non-module qualified field call. */
@@ -2249,26 +2281,6 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 				ctx->analyzing_call_arg = 1;
 				analyze_expression(ctx, sem_node_at_expr(v, i));
 			}
-			free(func_name);
-			break;
-		}
-
-		/* `tick()` — advance the program's schedule once. A reserved builtin (recognized here so it isn't
-		 * flagged undefined); codegen lowers it to `call @arche_tick`. It is a driver action: it needs a
-		 * `#schedule` to advance, and it may not appear in a `map` (per-element kernel) or a `system` (a
-		 * unit the schedule runs) — only in the driver (`proc`). */
-		if (func_name && strcmp(func_name, "tick") == 0) {
-			if (argc != 0)
-				sem_emit_wrong_arity(ctx, loc, "tick", 0, argc);
-			if (ctx->in_map)
-				sem_emit_tick_in_map(ctx, loc);
-			else if (ctx->current_proc && ctx->current_proc->kind == DECL_SYSTEM)
-				sem_emit_tick_in_system(ctx, loc);
-			else if (!ctx->has_schedule)
-				sem_emit_tick_no_schedule(ctx, loc);
-			else if (!call_bare_stmt)
-				/* a pure action: legal only as a bare `tick();` statement, never as a value */
-				sem_emit_tick_not_statement(ctx, loc);
 			free(func_name);
 			break;
 		}
@@ -2332,9 +2344,10 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 			int is_arch = find_archetype(ctx, func_name) != NULL;
 			int is_const = semantic_get_const_value(ctx, func_name) != NULL;
 			int is_decl = !hidden && find_callable_sig(ctx, func_name) != NULL;
+			int is_sum_ctor = sum_ctor_lookup(ctx, func_name, NULL, NULL) != TYID_UNKNOWN;
 			if (cv)
 				cv->is_referenced = 1;
-			if (!is_known_func && !is_group && !is_decl && !cv && !is_arch && !is_const)
+			if (!is_known_func && !is_group && !is_decl && !cv && !is_arch && !is_const && !is_sum_ctor)
 				sem_emit_undefined_symbol(ctx, loc, func_name);
 			else if (cv && cv->is_consumed)
 				sem_emit_use_after_consume(ctx, loc, func_name);
@@ -3964,6 +3977,142 @@ int semantic_try_const_int(SemanticContext *ctx, SyntaxView e, int *out) {
 		return 1;
 	}
 	return 0;
+}
+
+/* ===== Value-CTFE: fold a Schedule expression to a constant ScheduleTree (Approach A) =====
+ * Constructors (run/seq/par/loop/when/halt) build nodes directly; combinator funcs (once/forever/user)
+ * are INLINED — their params bind to the call args and their straight-line `return <expr>` body is folded.
+ * System/predicate references are captured as names (symrefs), never evaluated. */
+typedef struct {
+	const char *name;
+	SyntaxView expr;
+} SchedBind;
+typedef struct {
+	SchedBind binds[32];
+	int n;
+	int depth;
+} SchedScope;
+
+static ScheduleTree *sched_node(SchedKind k) {
+	ScheduleTree *t = calloc(1, sizeof(ScheduleTree));
+	t->kind = k;
+	return t;
+}
+/* Local free for the fold's error paths (the public schedule_tree_free lives in hir.o, which the
+ * analyzer binary doesn't link). */
+static void sched_free_local(ScheduleTree *t) {
+	if (!t)
+		return;
+	for (int i = 0; i < t->child_count; i++)
+		sched_free_local(t->children[i]);
+	free(t->children);
+	free(t->sym);
+	free(t);
+}
+static void sched_add_child(ScheduleTree *t, ScheduleTree *c) {
+	t->children = realloc(t->children, (t->child_count + 1) * sizeof(ScheduleTree *));
+	t->children[t->child_count++] = c;
+}
+
+static ScheduleTree *fold_sched(SemanticContext *ctx, SyntaxView e, SchedScope *scope);
+
+/* The `return <expr>` value of a straight-line func body, else absent. */
+static SyntaxView func_return_expr(const DeclSummary *fn) {
+	SyntaxView none = {NULL, fn->body_node.src};
+	if (!sv_present(fn->body_node))
+		return none;
+	for (int i = 0, n = sem_stmt_count(fn->body_node); i < n; i++) {
+		SyntaxView s = sem_stmt_at(fn->body_node, i);
+		if (sv_kind(s) == SN_RETURN_STMT)
+			return sem_node_at_expr(s, 0);
+	}
+	return none;
+}
+
+static ScheduleTree *fold_sched(SemanticContext *ctx, SyntaxView e, SchedScope *scope) {
+	if (!sv_present(e) || scope->depth > CTFE_MAX_DEPTH)
+		return NULL;
+	if (sv_kind(e) == SN_PAREN_EXPR)
+		return fold_sched(ctx, sem_first_expr(e), scope);
+
+	if (sv_kind(e) == SN_NAME_EXPR) {
+		char *nm = sv_name_expr_dup(e);
+		ScheduleTree *r = NULL;
+		if (nm) {
+			for (int i = scope->n - 1; i >= 0; i--) /* a bound combinator param → fold its arg */
+				if (strcmp(scope->binds[i].name, nm) == 0) {
+					r = fold_sched(ctx, scope->binds[i].expr, scope);
+					break;
+				}
+			if (!r && sum_ctor_lookup(ctx, nm, NULL, NULL) != TYID_UNKNOWN && strcmp(nm, "halt") == 0)
+				r = sched_node(SCHED_HALT);
+			free(nm);
+		}
+		return r;
+	}
+
+	if (sv_kind(e) != SN_CALL_EXPR)
+		return NULL;
+	char *callee = semantic_call_callee_name(ctx, e);
+	if (!callee)
+		return NULL;
+	int argc = sem_expr_count(e);
+	ScheduleTree *r = NULL;
+
+	if (strcmp(callee, "run") == 0 && argc == 1) {
+		r = sched_node(SCHED_RUN);
+		r->sym = sv_name_expr_dup(sem_node_at_expr(e, 0)); /* a system/map name */
+	} else if ((strcmp(callee, "seq") == 0 || strcmp(callee, "par") == 0) && argc == 1) {
+		SyntaxView lit = sem_node_at_expr(e, 0); /* an array literal of sub-schedules */
+		if (sv_kind(lit) == SN_ARRAY_LIT_EXPR) {
+			r = sched_node(strcmp(callee, "seq") == 0 ? SCHED_SEQ : SCHED_PAR);
+			for (int i = 0, n = sem_expr_count(lit); i < n; i++) {
+				ScheduleTree *c = fold_sched(ctx, sem_node_at_expr(lit, i), scope);
+				if (!c) {
+					sched_free_local(r);
+					r = NULL;
+					break;
+				}
+				sched_add_child(r, c);
+			}
+		}
+	} else if (strcmp(callee, "loop") == 0 && argc == 1) {
+		ScheduleTree *c = fold_sched(ctx, sem_node_at_expr(e, 0), scope);
+		if (c) {
+			r = sched_node(SCHED_LOOP);
+			sched_add_child(r, c);
+		}
+	} else if (strcmp(callee, "when") == 0 && argc == 2) {
+		ScheduleTree *c = fold_sched(ctx, sem_node_at_expr(e, 1), scope);
+		if (c) {
+			r = sched_node(SCHED_WHEN);
+			r->sym = sv_name_expr_dup(sem_node_at_expr(e, 0)); /* a predicate func name */
+			sched_add_child(r, c);
+		}
+	} else {
+		/* a combinator func (once/forever/user) — inline: bind params to args, fold its return body */
+		const DeclSummary *fn = semantic_find_callable_sig(ctx, callee);
+		if (fn && fn->kind == DECL_FUNC && fn->param_count == argc && scope->n + argc <= 32) {
+			SchedScope inner = *scope;
+			inner.depth = scope->depth + 1;
+			for (int i = 0; i < argc; i++) {
+				inner.binds[inner.n].name = fn->params[i].name;
+				inner.binds[inner.n].expr = sem_node_at_expr(e, i);
+				inner.n++;
+			}
+			r = fold_sched(ctx, func_return_expr(fn), &inner);
+		}
+	}
+	free(callee);
+	return r;
+}
+
+/* Public entry: fold `#run`'s expression to a constant ScheduleTree, or NULL if it doesn't fold. */
+ScheduleTree *semantic_try_const_schedule(SemanticContext *ctx, SyntaxView e) {
+	if (!ctx)
+		return NULL;
+	SchedScope scope = {0};
+	return fold_sched(ctx, e, &scope);
 }
 
 static void analyze_static_decl(SemanticContext *ctx, DeclSummary *alloc) {
@@ -6428,6 +6577,13 @@ TypeId sem_tyid_of_name(SemanticContext *ctx, const char *n) {
 		return tyid_of_prim(arena, PRIM_VOID);
 	if (strcmp(r, "opaque") == 0)
 		return tyid_of_nominal(arena, "opaque");
+	/* A sum type name resolves to its interned TYK_SUM identity (forward-declared before payloads are
+	 * interned, so a recursive payload `[]Self` resolves here too). */
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d && d->kind == DECL_SUM && d->name && d->sum_type_id != TYID_UNKNOWN && strcmp(d->name, r) == 0)
+			return d->sum_type_id;
+	}
 	/* Any other name (an archetype, or `char_array` should it reach here) interns as a distinct nominal
 	 * — NOT collapsed to a prim — so its spelling round-trips for lowering (e.g. CHAR_ARRAY). */
 	return tyid_of_nominal(arena, r);
@@ -6442,6 +6598,9 @@ TypeId sem_intern_view(SemanticContext *ctx, SyntaxView t) {
 	TypeArena *arena = ctx->ty_arena;
 	switch (sv_kind(t)) {
 	case SN_TYPE_REF: {
+		/* `system` in type position (the Schedule `run` leaf's payload): a system-reference type. */
+		if (sv_has_token(t, TOK_SYSTEM))
+			return tyid_of_nominal(arena, "system");
 		char *raw = sem_type_ref_name(t);
 		TypeId id;
 		if (strcmp(raw, "archetype") == 0)
@@ -7730,51 +7889,6 @@ static DeclSummary *sem_make_anon_archetype(SemanticContext *ctx, SyntaxView for
  * are built directly from the tree (bare names) into ctx->decls; the loader records each module's
  * rename ops (build_decl_table applies them) and snapshots the export sets for the tree-qualify pass.
  * No abstract AST is built — the syntax tree + SemModel + this table are the single source of truth. */
-/* Validate the recorded `#schedule`: every entry must name a `system` or a `map` (DECL_SYSTEM /
- * DECL_SYS) in the decl table. Procs/funcs/queries/unknowns are not units of per-tick work (E0063).
- * Runs after the decl table is fully built. */
-static void sem_check_schedule(SemanticContext *ctx) {
-	if (!ctx->schedule_node)
-		return;
-	const SyntaxNode *sn = ctx->schedule_node;
-	for (int i = 0; i < sn->child_count; i++) {
-		if (sn->children[i].tag != SE_NODE || sn->children[i].as.node->kind != SN_NAME_EXPR)
-			continue;
-		SyntaxView entry = {sn->children[i].as.node, ctx->schedule_src};
-		char *name = sem_txt_dup(sv_token(entry, TOK_IDENT));
-		if (!name)
-			continue;
-		int ok = 0;
-		for (int d = 0; d < ctx->decl_count; d++) {
-			DeclSummary *ds = ctx->decls[d];
-			if (ds && ds->name && (ds->kind == DECL_SYSTEM || ds->kind == DECL_SYS) && strcmp(ds->name, name) == 0) {
-				ok = 1;
-				break;
-			}
-		}
-		if (!ok)
-			sem_emit_schedule_entry_not_runnable(ctx, sem_node_loc(entry.node), name);
-		free(name);
-	}
-}
-
-/* `tick` is a reserved builtin (the schedule-advance action). A callable decl named `tick` would be
- * silently shadowed by the builtin at every call site, so reject it (E0068). Runs over the built table. */
-static void sem_check_reserved_names(SemanticContext *ctx) {
-	for (int d = 0; d < ctx->decl_count; d++) {
-		DeclSummary *ds = ctx->decls[d];
-		if (!ds || !ds->name || strcmp(ds->name, "tick") != 0)
-			continue;
-		const char *kind = ds->kind == DECL_FUNC     ? "func"
-		                   : ds->kind == DECL_PROC   ? "proc"
-		                   : ds->kind == DECL_SYS    ? "map"
-		                   : ds->kind == DECL_SYSTEM ? "system"
-		                                             : NULL;
-		if (kind)
-			sem_emit_tick_reserved_name(ctx, ds->loc, kind);
-	}
-}
-
 static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, const char *src) {
 	SyntaxView r = sv_root(root, src);
 	/* Deep count so decls nested in `#foreign { }` / `#module { }` block regions (collected by the
@@ -7809,17 +7923,8 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 			}
 			continue;
 		}
-		/* `#schedule` — at most one program-wide. Record it (entries validated post-collection by
-		 * sem_check_schedule); a second one is a duplicate region (E0121). */
-		if (k == SN_SCHEDULE_DECL) {
-			if (ctx->has_schedule)
-				sem_emit_duplicate_region(ctx, sem_node_loc(root->children[i].as.node), "#schedule");
-			else {
-				ctx->has_schedule = 1;
-				ctx->schedule_node = root->children[i].as.node;
-				ctx->schedule_src = src;
-			}
-			continue;
+		if (k == SN_SCHEDULE_DECL || k == SN_RUN_DECL) {
+			continue; /* #schedule legacy (no-op); #run is folded + dispatched in lowering/codegen */
 		}
 		if (k < SN_WORLD_DECL || k > SN_USE_DECL)
 			continue;
@@ -7885,11 +7990,6 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 
 	/* Now that all policies (incl. core's) are in the decl table, validate the `@default` directives. */
 	sem_check_default_directives(ctx, root, src);
-
-	/* Decl table complete — validate `#schedule` entries resolve to a system/map, and reject decls
-	 * that collide with reserved builtin names (`tick`). */
-	sem_check_schedule(ctx);
-	sem_check_reserved_names(ctx);
 }
 
 /* W0013 unused_function (Rust `dead_code`): warn on a top-level func/proc that is never reachable
@@ -8434,6 +8534,39 @@ static void analyze_program_core(SemanticContext *ctx) {
 		 * (so `match`/comparison and `printf("%d", …)` work), but a raw int is NOT usable as the enum —
 		 * you must name a case (`color.red`) or convert explicitly (`color(0)`). */
 		register_type_alias_tiered(ctx, sem_dupz(e->name), "int", 0, e->loc, e->is_datasheet);
+	}
+
+	/* Sum types (tagged unions): TWO-PHASE so a variant payload may reference the sum itself (`[]Self`)
+	 * or another sum. Pass 1 forward-declares every sum (so its name resolves in sem_tyid_of_name); pass 2
+	 * interns each variant's payload type-nodes (recursive refs now resolve) and completes the type.
+	 * Compile-time only — erased before lowering. */
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *s = ctx->decls[i];
+		if (s->kind == DECL_SUM)
+			s->sum_type_id = tyid_sum_forward(ctx->ty_arena, s->name);
+	}
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *s = ctx->decls[i];
+		if (s->kind != DECL_SUM)
+			continue;
+		int nv = s->sum_variant_count;
+		const char **vnames = malloc((nv ? nv : 1) * sizeof(char *));
+		TypeId **vpayloads = malloc((nv ? nv : 1) * sizeof(TypeId *));
+		int *vpcounts = malloc((nv ? nv : 1) * sizeof(int));
+		for (int v = 0; v < nv; v++) {
+			vnames[v] = s->sum_variant_names[v];
+			int pc = s->sum_variant_pcounts[v];
+			vpcounts[v] = pc;
+			vpayloads[v] = malloc((pc ? pc : 1) * sizeof(TypeId));
+			for (int p = 0; p < pc; p++)
+				vpayloads[v][p] = sem_intern_view(ctx, s->sum_variant_ptypes[v][p]);
+		}
+		tyid_sum_complete(ctx->ty_arena, s->sum_type_id, vnames, (const TypeId *const *)vpayloads, vpcounts, nv);
+		for (int v = 0; v < nv; v++)
+			free(vpayloads[v]);
+		free(vpayloads);
+		free(vpcounts);
+		free(vnames);
 	}
 
 	/* Inline component definitions: `arche Foo { hp :: int, … }` mints the nominal type `hp`
@@ -9288,7 +9421,18 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 					if (kk >= SN_TYPE_REF && kk <= SN_TYPE_FUNC)
 						ptypes[pi++] = (SyntaxView){vv.node->children[c].as.node, vv.src};
 				}
-			ds->sum_variant_names[ds->sum_variant_count] = sem_txt_dup(sv_token(vv, TOK_IDENT));
+			/* The variant name is the variant node's FIRST token (an IDENT, or the `run` keyword) — read it
+			 * positionally, NOT by token-kind: a payload like `[]Tree` also contains an IDENT token. */
+			char *vname = NULL;
+			for (int c = 0; c < vv.node->child_count; c++)
+				if (vv.node->children[c].tag == SE_TOKEN) {
+					int l = (int)vv.node->children[c].as.token.length;
+					vname = malloc(l + 1);
+					memcpy(vname, vv.src + vv.node->children[c].as.token.offset, l);
+					vname[l] = '\0';
+					break;
+				}
+			ds->sum_variant_names[ds->sum_variant_count] = vname;
 			ds->sum_variant_ptypes[ds->sum_variant_count] = ptypes;
 			ds->sum_variant_pcounts[ds->sum_variant_count] = pc;
 			ds->sum_variant_count++;
@@ -9879,6 +10023,26 @@ TypeId semantic_callable_type_alias(SemanticContext *ctx, const char *name) {
 
 int semantic_is_enum_type(SemanticContext *ctx, const char *name) {
 	return enum_is_type(ctx, name);
+}
+
+/* A func whose signature touches a sum type is CTFE-only (sums are compile-time-only for now: the
+ * Schedule combinators fold at `#run`). Lowering erases it — no runtime body is emitted. */
+int semantic_func_is_ctfe_only(SemanticContext *ctx, const char *name) {
+	if (!ctx || !name)
+		return 0;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (!d || d->kind != DECL_FUNC || !d->name || strcmp(d->name, name) != 0)
+			continue;
+		for (int r = 0; r < d->return_type_count; r++)
+			if (tyid_kind(ctx->ty_arena, d->return_type_ids[r]) == TYK_SUM)
+				return 1;
+		for (int p = 0; p < d->param_count; p++)
+			if (tyid_kind(ctx->ty_arena, d->params[p].type_id) == TYK_SUM)
+				return 1;
+		return 0;
+	}
+	return 0;
 }
 
 int semantic_enum_variant_value(SemanticContext *ctx, const char *enum_name, const char *variant, long *out) {

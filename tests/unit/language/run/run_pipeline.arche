@@ -1,0 +1,23 @@
+// `#run <Schedule>` — scheduling as a first-class value, no `main`. The combinator expression
+// (`seq`/`run` + the `once`/`forever` library funcs) is folded at COMPILE TIME (value-CTFE, Approach A)
+// to a constant tree, which codegen lowers to a direct-dispatch `@arche_run` the runtime calls. There is
+// no driver proc: a startup system seeds, two map runs advance, a report system prints. Output: x=2.
+// RUN: %arche build -o %t %s && %t | grep -qF "x=2"
+#import { fmt }
+x       :: int;
+Counter :: arche { x }
+[1]Counter;
+
+step :: map (query { x }) {
+  x = x + 1;
+}
+
+boot :: system {
+  insert(Counter { x: 0 })(_:, _:);
+}
+
+report :: system {
+  fmt.printf("x=%d\n", Counter.x[0]);
+}
+
+#run seq({ run (boot), run (step), run (step), run (report) })

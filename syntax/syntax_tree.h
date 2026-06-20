@@ -38,7 +38,8 @@ typedef enum {
 	SN_REGION,        /* `#module`/`#file`/`#foreign` region marker — banner (narrows following decls to
 	                   * end-of-file) or, when it carries a `{ ... }` body, a bounded block of child decls */
 	SN_SCHEDULE_DECL, /* `#schedule { a; b; }` — one tick's ordered list of system/map entries; each
-	                   * child is an SN_NAME_EXPR naming a scheduled unit, in declaration order */
+	                   * child is an SN_NAME_EXPR naming a scheduled unit, in declaration order [legacy] */
+	SN_RUN_DECL,      /* `#run <expr>` — the program's Schedule value; one expression child */
 
 	/* Structure */
 	SN_PARAM_LIST,

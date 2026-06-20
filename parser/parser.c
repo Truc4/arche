@@ -312,6 +312,15 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
 		out->is_type_meta = 1;
 		return parse_func_sig(parser, 0);
 	}
+	/* `system` as a TYPE — a system reference (the payload of the Schedule `run` leaf). The `system`
+	 * keyword in type position denotes the category of systems; the actual identity is a compile-time
+	 * reference captured at construction. Wrapped as SN_TYPE_REF carrying the `system` token. */
+	if (check(parser, TOK_SYSTEM)) {
+		advance(parser);
+		out->syntax_kind = SN_TYPE_REF;
+		out->is_type_meta = 1;
+		return 1;
+	}
 
 	/* Prefix array/slice type: `[]T` (slice, runtime length) or `[N]T` / `[a][b]T` (fixed-size).
 	 * The element type FOLLOWS the brackets. Indexing (`a[i]`) is a separate production, unaffected.
@@ -1097,6 +1106,18 @@ static int parse_schedule_region(Parser *parser, SyntaxNodeKind *out_kind) {
 	return 1;
 }
 
+/* `#run <expr>` — the program's one Schedule value, which the runtime executes. Unlike `#schedule`
+ * (a name list), it carries a single value EXPRESSION child (e.g. `forever(seq({ run(a), run(b) }))`). */
+static int parse_run_region(Parser *parser, SyntaxNodeKind *out_kind) {
+	advance(parser); /* consume '#run' */
+	*out_kind = SN_RUN_DECL;
+	if (!parse_expression(parser)) {
+		error(parser, "expected a Schedule expression after `#run`");
+		return 0;
+	}
+	return 1;
+}
+
 static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	*out_kind = SN_ERROR;
 
@@ -1336,6 +1357,9 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	case TOK_HASH_SCHEDULE:
 		/* `#schedule { a; b; }` — one tick's ordered system/map list (block form only). */
 		return parse_schedule_region(parser, out_kind);
+	case TOK_HASH_RUN:
+		/* `#run <expr>` — the program's Schedule value. */
+		return parse_run_region(parser, out_kind);
 	default:
 		/* Top-level declarations: an IDENT-led binding (const / static buffer) or a prefix pool
 		 * alloc (`[C]Name…`, which leads with `[`) — see parse_static_decl. */
@@ -1532,7 +1556,9 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 		}
 		return 1;
 	}
-	if (check(parser, TOK_IDENT)) {
+	/* `run(x)` in EXPRESSION position is the Schedule `run` leaf constructor (the `run <map>` STATEMENT
+	 * is parsed separately). Treated like an IDENT-led call whose callee token is the `run` keyword. */
+	if (check(parser, TOK_IDENT) || check(parser, TOK_RUN)) {
 		int prim_name_cp = syntax_cp(parser);
 		int is_table = cur_ident_is(parser, "table", 5);
 		/* `sum` is a CONTEXTUAL keyword (not a hard token — `sum` is far too common an identifier):
@@ -1567,7 +1593,9 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser); /* consume '{' */
 			while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
 				int v_cp = syntax_cp(parser);
-				if (!check(parser, TOK_IDENT)) {
+				/* A variant name is an IDENT, or the `run` keyword (the Schedule leaf constructor reuses
+				 * the `run` keyword — see #run dispatch). */
+				if (!check(parser, TOK_IDENT) && !check(parser, TOK_RUN)) {
 					error(parser, "Expected sum variant name");
 					return 0;
 				}

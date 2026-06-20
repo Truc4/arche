@@ -1,0 +1,15 @@
+// A sum value is built with a bare variant constructor: `leaf(1)`, `pair(a, b)`. The constructor call
+// type-checks to the sum type, so it nests (`pair(leaf(1), leaf(2))`) and a `func` may return it. (The
+// runtime value representation is not emitted yet — this is the semantic/type layer; checked, not run.)
+// RUN: %arche check %s
+Tree :: sum {
+  leaf(int) pair(Tree, Tree) empty
+}
+
+build :: func() -> Tree {
+  return pair(leaf(1), pair(leaf(2), empty));
+}
+
+main :: proc() {
+  _t := build();
+}

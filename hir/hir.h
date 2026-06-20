@@ -78,8 +78,21 @@ typedef enum {
 	HIR_DECL_DEFAULT,  /* `@default(<kind>, <category>, <policy>)` program default directive */
 	HIR_DECL_QUERY,    /* `Name :: query {cols}` — a named column set; emits no code, resolves collectives */
 	HIR_DECL_SYSTEM,   /* `Name :: system { body }` — the composer; a no-arg fn invoked by the schedule */
-	HIR_DECL_SCHEDULE, /* `#schedule { a; b; }` — the one-tick ordered list of systems/maps (driver-owned) */
+	HIR_DECL_SCHEDULE, /* `#schedule { a; b; }` — the one-tick ordered list of systems/maps (driver-owned) [legacy] */
+	HIR_DECL_RUN,      /* `#run <expr>` — the program's Schedule, folded to a constant ScheduleTree */
 } HirDeclKind;
+
+/* A compile-time-folded Schedule node (Approach A: `#run`'s value-CTFE result). The runtime never sees
+ * this — codegen walks it to emit a direct-dispatch function (@arche_run). `sym` is a system/map name
+ * (SCHED_RUN) or a predicate func name (SCHED_WHEN); children are sub-schedules. No function pointers. */
+typedef enum { SCHED_RUN, SCHED_SEQ, SCHED_PAR, SCHED_LOOP, SCHED_WHEN, SCHED_HALT } SchedKind;
+typedef struct ScheduleTree {
+	SchedKind kind;
+	char *sym; /* SCHED_RUN: system/map name; SCHED_WHEN: predicate func name; else NULL */
+	struct ScheduleTree **children;
+	int child_count;
+} ScheduleTree;
+void schedule_tree_free(ScheduleTree *t);
 
 typedef enum {
 	HIR_STATIC_ARCHETYPE,
@@ -149,6 +162,11 @@ typedef struct {
 	int entry_count;
 	SourceLoc loc;
 } HirScheduleDecl;
+
+typedef struct {
+	ScheduleTree *tree; /* the folded Schedule (owns it) */
+	SourceLoc loc;
+} HirRunDecl;
 
 typedef struct {
 	char *name;
@@ -245,6 +263,7 @@ struct HirDecl {
 		HirDefaultDecl *default_decl;
 		HirSystemDecl *system;
 		HirScheduleDecl *schedule;
+		HirRunDecl *run;
 	} data;
 };
 

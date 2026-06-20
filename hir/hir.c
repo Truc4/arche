@@ -277,6 +277,23 @@ static void hir_schedule_decl_free(HirScheduleDecl *sch) {
 	free(sch);
 }
 
+void schedule_tree_free(ScheduleTree *t) {
+	if (!t)
+		return;
+	for (int i = 0; i < t->child_count; i++)
+		schedule_tree_free(t->children[i]);
+	free(t->children);
+	free(t->sym);
+	free(t);
+}
+
+static void hir_run_decl_free(HirRunDecl *run) {
+	if (!run)
+		return;
+	schedule_tree_free(run->tree);
+	free(run);
+}
+
 static void hir_func_decl_free(HirFuncDecl *func) {
 	if (!func)
 		return;
@@ -391,6 +408,9 @@ void hir_decl_free(HirDecl *decl) {
 		break;
 	case HIR_DECL_SCHEDULE:
 		hir_schedule_decl_free(decl->data.schedule);
+		break;
+	case HIR_DECL_RUN:
+		hir_run_decl_free(decl->data.run);
 		break;
 	}
 	free(decl);

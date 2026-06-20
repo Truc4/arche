@@ -105,3 +105,41 @@ derived ordering, startup phase, command-buffer/barrier).
 
 ### Final state: 816/816 lit (4 new + earlier 9 schedule tests), semantic-test 36/36 (3 new), ASan
 ### 36/36 + 6/6 + 7/7 clean (no UB, no leaks), verify-fmt clean.
+
+## REBUILD (scheduling-as-value) — Stage 1 COMPLETE
+
+Sum types (`TYK_SUM`) shipped — the keystone (also unlocks Result/Option/Eff). 818/818 lit + ASan green.
+- Type arena: `tyid_sum_forward`/`tyid_sum_complete` (two-phase, recursion-through-slice) + inspectors (sem_types.{h,c}).
+- Syntax: `sum` is a CONTEXTUAL keyword (`cur_ident_is`, NOT a hard token — `sum` is a common identifier; a hard token broke 20 tests). `SN_SUM_EXPR`/`SN_SUM_VARIANT`, parser in the IDENT branch.
+- Decl: `DECL_SUM`, decl-summary sum fields, compile-time-only erasure (like enum, no HIR).
+- Registration: two-phase pass in sem_collect_decls (forward all → intern payloads → complete); `sem_tyid_of_name` resolves sum names.
+- Construction: `sum_ctor_lookup` + recognition in EXPR_CALL and bare-NAME (nullary); `call_type_id`/`name_type_id` type a constructor as its sum. Lenient arg-checking (MVP).
+- Tests: tests/unit/language/sum/{sum_decl_recursive (build+run), sum_construct (check)}.
+- DEFERRED (off Schedule critical path): 1d runtime tagged-union codegen, 1e match-on-sum payload binding.
+
+### NEXT (precise continuation)
+1. **Schedule keyword blockers (Stage 3 gate):** `run(system)` — `run` is `TOK_RUN`, `system` is `TOK_SYSTEM`. Need: (a) `system` usable as a TYPE (a system-reference; add to parse_type_inner + sem_intern_view, intern as nominal "system" or a new meta-category); (b) `run(x)` usable as a Schedule constructor in EXPRESSION position (reuse TOK_RUN); (c) `func(World)->bool` payload — parse_func_sig requires `name:` params, must accept bare-type params in a func-TYPE.
+2. **Stage 3:** declare `World` + `Schedule` sum + combinators (run/seq/par/loop/when/halt + once/forever/at_hz) in core/core.arche.
+3. **Stage 2 (value-CTFE):** extend ctfe_eval (semantic.c:~3736) to a CtfeValue domain (INT|SUM|SLICE|SYMREF); `semantic_try_const_schedule`. Capture system/predicate args as SYMREF.
+4. **Stage 4:** `#run <expr>` region + `codegen_run_decl` (@arche_run from the folded tree) + entry→@arche_run (no main) + runtime/world.c.
+5. **Stage 5:** remove #schedule/tick/main substrate + rewrite tests.
+
+## CORRECTION — World is NOT an archetype (and not a type)
+An `archetype` is an ENTITY-POOL schema: it mints global component types and models N rows. World is
+singular, RUNTIME-OWNED state (clock/tick counter), not user pool data. Making `World :: arche {…}` was a
+category error — it polluted every program's component namespace (`ticks`/`frames`) and modeled a clock as
+a pool-of-one. FIXED: dropped the World archetype entirely. Runtime state is read through **intrinsic funcs**
+(`elapsed()`/`tick_count()`, the §4 primitive boundary) — so a Schedule guard predicate is `func() -> bool`,
+not `func(World) -> bool`. (Open: Schedule+combinators sit in core for bare names + erasure; a dedicated
+`sched` module is the cleaner long-term home — core is otherwise the minimal prelude.)
+
+## Stage 3 done + Stage 4 started
+- core/core.arche: `Schedule` sum (run/seq/par/loop/when(func()->bool)/halt) + `once`/`forever` combinators,
+  CTFE-only (erased via `semantic_func_is_ctfe_only` → lower returns NULL for sum-typed funcs). 818 green.
+- Keyword blockers resolved: `run` accepted as a sum-variant name + as an expr-position constructor
+  (`run(x)`); `system` accepted as a type (interns nominal "system"); predicate uses `func()->bool`.
+- `#run <expr>` PARSING added: `TOK_HASH_RUN`, `SN_RUN_DECL`, `parse_run_region` (one expression child),
+  region dispatch. NOT yet lowered/folded/dispatched.
+
+### NEXT: Stage 2 value-CTFE (`semantic_try_const_schedule`) → Stage 4 codegen_run_decl (@arche_run) +
+### entry (no main) + runtime/world.c intrinsics → Stage 5 remove #schedule/tick/main + tests.

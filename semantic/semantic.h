@@ -68,6 +68,7 @@ TypeId semantic_callable_type_alias(SemanticContext *ctx, const char *name);
 
 /* Enum support (used by lowering to resolve `Enum.variant` and bare variant patterns to int values). */
 int semantic_is_enum_type(SemanticContext *ctx, const char *name);
+int semantic_func_is_ctfe_only(SemanticContext *ctx, const char *name); /* sum-typed func → erased at lowering */
 int semantic_enum_variant_value(SemanticContext *ctx, const char *enum_name, const char *variant, long *out);
 int semantic_find_enum_variant(SemanticContext *ctx, const char *variant, long *out);
 
@@ -132,6 +133,10 @@ const char *semantic_get_const_value(SemanticContext *ctx, const char *const_nam
 /* CTFE: fold `e` to a compile-time integer constant (literal / const / pure-func-of-constants).
  * Returns 1 and writes *out on success, 0 if `e` is not a compile-time-constant integer. */
 int semantic_try_const_int(SemanticContext *ctx, SyntaxView e, int *out);
+
+/* Value-CTFE: fold a `#run` Schedule expression to a constant ScheduleTree (the runtime-dispatch IR),
+ * or NULL if it doesn't fold. Owns the returned tree (caller frees via schedule_tree_free). */
+struct ScheduleTree *semantic_try_const_schedule(SemanticContext *ctx, SyntaxView e);
 
 /* Lint configuration. Both lints are enabled by default. CLI flags
  * (--Wno-proc-could-be-func / --Wno-proc-no-effect) disable them;

@@ -1,8 +1,0 @@
-// `tick` is a reserved builtin (it advances the `#schedule`). A callable decl named `tick` would be
-// silently shadowed by the builtin at every call site, so it is rejected (E0068).
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "tick. is a reserved builtin" %t.out
-tick :: proc() {
-}
-
-main :: proc() {
-}
