@@ -102,15 +102,56 @@ plan :: func(req: Request, root: []char) -> Reply {
 }
 ```
 
-Then the effectful stdlib calls become `Eff`-returning builders (under-applied — no `wrap` keyword; the
-absent out-slots *are* the `Eff`, per the model's saturation form):
+Then the effectful steps run the stdlib directly — but **not** by wrapping the stdlib procs. `net.recv`,
+`io.fopen_read`, `io.read`, `http.respond` are stdlib *procs* today, and a func may not wrap a proc
+(that's the proc→proc loophole the model forbids — wrapping `http.respond` in a func is just
+proc→proc with extra steps). The fix lives in the **stdlib**, not the app: the convenience layer itself
+becomes funcs→`Eff` that wrap the *real* leaves — the `net_*` externs and `os.syscall` — never another
+proc (see [§4 of the model](the-flat-effect-model.md)). So the app defines **no** wrappers at all; it
+just calls a now-`Eff`-returning stdlib.
+
+What that rewrite looks like in the lib (faithful to the current externs/syscalls — `net_recv`/`net_send`
+are `#foreign` externs; `io.*` bottom out at `os.syscall`):
+
+These calls *can fail*, so fallibility lives **in the result type** — `Eff(Result(V, IoErr))` — not clamped
+away (per the model's error rule: an `Eff` is orthogonal to errors; a fallible one carries a `Result`, an
+infallible one doesn't). The finalizer is exactly where the raw errno gets folded into that `Result`:
 
 ```arche
-recv_req  :: func(conn: socket, buf: []char)                            -> Eff(Request) { return net.recv(conn, buf); }
-open_read :: func(path: []char)                                         -> Eff(int)     { return io.fopen_read(path); }
-read_all  :: func(fd: int, buf: []char)                                 -> Eff([]char)  { return io.read(fd, buf); }
-send      :: func(conn: socket, hdr: []char, st: int, ct: []char, b: []char, withbody: bool) -> Eff() { return http.respond(conn, hdr, st, ct, b, withbody); }
+// stdlib/net — wrap the EXTERN net_recv; the finalizer surfaces the error in T, never discards it
+recv :: func(s: socket, buf: []char) -> Eff(Result([]char, IoErr)) {
+  return net_recv(s, buf, buf.length) |> (b: []char, r: int) { return r < 0 ? Err(io_err(r)) : Ok(b[0: r]); };
+}
+
+// stdlib/io — io.read / io.fopen_read bottom out at os.syscall (the prim); same Result shape
+read :: func(f: fd, buf: []char) -> Eff(Result([]char, IoErr)) {
+  return os.syscall(0, f, buf, buf.length, 0, 0, 0) |> (r: i64) { return r < 0 ? Err(io_err(r)) : Ok(buf[0: i32(r)]); };
+}
+fopen_read :: func(path: []char) -> Eff(Result(fd, IoErr)) {
+  return os.syscall(2, path, 0, 0, 0, 0, 0) |> (r: i64) { return r < 0 ? Err(io_err(r)) : Ok(fd(r)); };
+}
+
+// stdlib/http — respond splits into a PURE head + an applicative compose of EXTERN sends
+head :: func(hdr: []char, status: int, ctype: []char, body_len: int) -> []char {
+  fmt.sprintf(_, "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+              status, reason(status), ctype, body_len)(hdr, n:);
+  return hdr[0: n];                                                   // pure: the head bytes
+}
+send_bytes :: func(conn: socket, data: []char) -> Eff(Result(int, IoErr)) {
+  return net_send(conn, data, data.length) |> (b: []char, r: int) { return r < 0 ? Err(io_err(r)) : Ok(r); };
+}
+respond :: func(conn: socket, hdr: []char, status: int, ctype: []char, body: []char, send_body: bool) -> Eff(Result(int, IoErr)) {
+  h := head(hdr, status, ctype, body.length);
+  return send_body ? seq(send_bytes(conn, h), send_bytes(conn, body))  // applicative: sends are independent
+                   : send_bytes(conn, h);
+}
 ```
+
+(`|>` = apply a pure finalizer to the primitive's raw out-slots — the applicative `fmap`; `seq` =
+applicative sequence of two `Eff`s, yielding the last. Illustrative spellings, not final syntax; both
+require `Eff` to carry a pure finalizer, which the free-applicative value layer already implies. The
+*result-dependent* `io.fread_line` is the one stdlib proc this rewrite can't reach — it stays monadic;
+its long-term home is the `routine` construct, §9 of the model.)
 
 Now the proc is a thin imperative shell: run recv, call the pure planner, run the reply — and the *one*
 genuinely result-dependent step (does the file open? then read it) stays inline, exactly where the model
@@ -121,25 +162,25 @@ handle :: proc(conn: socket, root: []char)(ok: bool) {
   reqbuf: [8192]char;
   hdr:    [1024]char;
 
-  recv_req(conn, reqbuf)(req:);                                 // RUN recv
+  net.recv(conn, reqbuf)(rcv:);                                 // RUN: rcv is Result([]char, IoErr)
+  req := rcv ? Ok => v | Err => { ok = false; return; };        // react to the error as data — no exception
   if req.length <= 0 { ok = false; return; }
 
   r := plan(req, root);                                         // PURE: one call, whole decision
 
   if r.path.length == 0 {                                       // inline reply (health, errors)
-    send(conn, hdr, r.status, r.ctype, r.body, true)(n:, err:);
-    ok = (err == 0); return;
+    http.respond(conn, hdr, r.status, r.ctype, r.body, true)(res:);
+    ok = res is Ok; return;
   }
 
-  open_read(r.path)(fd:);                                       // result-dependent leaf…
-  if !fd {
-    send(conn, hdr, 404, "text/plain", "Not Found\n", true)(n:, err:);
-    ok = (err == 0); return;
-  }
+  io.fopen_read(r.path)(opened:);                              // result-dependent leaf…
+  fd := opened ? Ok => f | Err => {                            // open failed → 404, as data
+    http.respond(conn, hdr, 404, "text/plain", "Not Found\n", true)(_:); ok = false; return;
+  };
   body: [262144]char;
-  read_all(fd, body)(content:);                                // …its input (fd) was a prior output
-  send(conn, hdr, 200, r.ctype, content, r.is_get)(n:, err:);
-  ok = (err == 0);
+  io.read(fd, body)(content:);                                // …its input (fd) was a prior output
+  http.respond(conn, hdr, 200, r.ctype, body_or_empty(content), r.is_get)(res:);
+  ok = res is Ok;
 }
 ```
 
@@ -147,16 +188,24 @@ What changed, precisely:
 
 - **All routing/parsing/status logic** moved into `plan`, a pure func returning a value. You can test
   every route, every error path, the `..` rejection, GET-vs-HEAD — with a literal `Request` and an
-  equality check. No socket, no disk, no server running. Today that same coverage needs a live server
-  and a real client.
+  equality check. **Be precise about the size of this win, though:** most of that logic is *already* pure
+  and *already* tested without a socket today — `parse_request_line` ships with a doctest
+  (`stdlib/http/http.arche`) and a unit test (`tests/unit/.../request_line.arche`); `router.resolve`,
+  `build_path`, `mime_by_ext`, `reason` are already `func`s. What `plan` adds is only the *glue* (status
+  selection) those leave out — and extracting that into a pure `func` returning a `Reply` is "extract a
+  function," which the language already permits with **no** `Eff`, no model, no migration. The model
+  contributes nothing here that a struct return doesn't. (The genuinely model-specific testability lever —
+  swapping the executor `system` to replay a recorded tape, §6 — this program has no use for.)
 - **`serve_file` disappears as a separate proc.** Its pure parts (method check, `..` check, path build,
   MIME) folded into `plan`; its one impure, result-dependent part (open → read → send) folded into
   `handle`. This is the model's answer to "two procs shared an effectful step": you don't share a
   *sub-proc*, you share the pure planner and keep the thin run-it shell.
-- **The result-dependent read stays a proc**, on purpose. `read_all`'s input is `open_read`'s output —
-  that's the applicative→monadic boundary (§5 of the model). It cannot become an `Eff`; it cannot be a
-  func; it lives imperatively in the one flat leaf. The migration makes the boundary *visible* instead
-  of smearing it through `serve_file`.
+- **The result-dependent read stays a proc**, on purpose. `io.read`'s input (`fd`) is `io.fopen_read`'s
+  output — that's the applicative→monadic boundary (§5 of the model). That *sequencing* cannot become an
+  `Eff` and cannot be a func; it lives imperatively in the one flat leaf. (Each individual call —
+  `net.recv`, `io.fopen_read`, `io.read`, `http.respond` — is now itself a func→`Eff` built in the
+  stdlib over a real primitive; what stays in the proc is only the *order-with-dependency* between them.)
+  The migration makes the boundary *visible* instead of smearing it through `serve_file`.
 
 ---
 
@@ -183,39 +232,38 @@ main :: proc() {
 }
 ```
 
-### After — setup is a `once` system, the loop is the schedule
+### After — the tick is one connection; the driver loops it
 
-There is no `main`. Setup runs once; the per-connection work is a system the schedule loops. The listener
-and root are singleton state (a 1-row pool — arche's idiom for a global) that the loop system reads:
+The per-connection work (`serve`) is one **tick**: accept, handle. The driver does setup, then paces ticks
+in plain code — here a free-running `for(;;)` (no clock; the server is event-paced by `accept` blocking).
+The listener and root are singleton state (a 1-row pool — arche's idiom for a global) the tick reads:
 
 ```arche
 [1]Server;   Server :: arche { srv :: socket   root :: []char }   // the singleton
 
-startup :: system {
+serve :: system {                                                // ONE tick's work
+  accept(Server.srv[0])(conn:);                                  // run the accept leaf (blocks → event-paced)
+  handle(conn, Server.root[0])(ok:);                             // run the handler proc; thread its result
+}
+
+#schedule { serve; }                                             // the tick body: just `serve`
+
+// the DRIVER: setup, then pace ticks (plain code — the loop is not in the schedule)
+drive :: proc() {
   os.argv(1)(portstr:);
   port := parse.atoi(portstr); if !port { port = 8000; }
   os.argv(2)(root:);
   register();
   net.listen(port)(srv:);
-  fmt.printf("arche-web-server listening on port %d\n", port);
-  insert(Server { srv: srv, root: root })(h:, ok:);              // stash the listener
-}
-
-serve :: system {                                                // the composer: no params
-  accept(Server.srv[0])(conn:);                                  // run the accept leaf
-  handle(conn, Server.root[0])(ok:);                             // run the handler proc; thread its result
-}
-
-#schedule {
-  once startup;
-  loop serve;
+  insert(Server { srv: srv, root: root })(h:, ok:);
+  for (;;) { tick(); }                                           // free-run: one tick per connection
 }
 ```
 
-The `for(;;)` became `loop serve` in a declarative schedule. Every effect the server can perform is now
-visible at two layers: the schedule (`startup` then forever `serve`) and the externs/primitives behind
-`net`/`io`/`http`. Reading the schedule tells you the whole timeline — which is the legibility the model
-trades flatness for.
+The `for(;;)` didn't *become* a schedule keyword — it stayed plain driver code calling `tick()`, exactly as
+every ECS host loop does (Flecs `ecs_progress`, Legion `execute`). The schedule holds only the tick's
+systems; pacing stays where it belongs. Every effect is still visible at two layers — the schedule (`serve`)
+and the externs behind `net`/`io`/`http` — and the driver is the one place above the spine that may `tick`.
 
 ---
 
@@ -227,8 +275,9 @@ trades flatness for.
 | `serve_file` (checks+path+open+read+respond) | folded: checks/path/MIME → `plan`; open/read/respond → `handle` | func + proc |
 | `build_path` | unchanged — already a pure func | func |
 | `register` | unchanged — pure router setup, called from `startup` | proc/func |
-| `net.recv`/`io.*`/`http.respond` | `Eff`-returning builders (saturation) | func → `Eff` |
-| `main` + `for(;;)` | `startup` (once) + `serve` (loop) | systems + `#schedule` |
+| `net.recv`/`io.*`/`http.respond` (stdlib **procs** today) | rewritten *in the stdlib* as funcs→`Eff` wrapping the real leaves (`net_*` externs, `os.syscall`) — never wrapping a proc | func → `Eff` |
+| `io.fread_line` (result-dependent loop) | can't be a func/`Eff`; stays monadic — the `routine` holdout (§9) | proc / future `routine` |
+| `main` + `for(;;)` | `drive` proc (setup + `for(;;){ tick(); }`) + `serve` tick in `#schedule` | driver + system |
 
 The pure logic **did not get rewritten** — it got *relocated and relabelled*. Migration cost is low
 precisely because a well-written imperative handler already has a pure core; the model just makes you
@@ -238,18 +287,34 @@ draw the line that was implicit.
 
 ## Honest assessment for *this* program
 
-- **The clear win: testability.** `plan` turns the server's entire decision logic into one pure function
-  over values. That's the difference between "spin up a server and curl it" and a table of
-  `(Request) → Reply` assertions.
-- **The clear win: a readable timeline.** `#schedule { once startup; loop serve; }` states the control
-  flow declaratively; the effect set is the closed list of `net`/`io`/`http`/`os` primitives.
-- **The honest small print:** this server is so I/O-shaped and so small that the *visible* restructuring
-  is modest — one func extracted, one loop turned into a schedule. The model's leverage **grows with
-  complexity**: add middleware, multiple backends, conditional pipelines, or per-route policies and the
-  pure-planner / thin-runner split is what keeps it all testable and flat. For a 130-line blocking
-  server, the migration is mostly *clarifying*, not *transformative* — which is itself a fair data point
-  about when the model earns its keep.
-- **The one thing it does *not* fix here:** concurrency. The model gives you a flat, legible,
-  one-timeline server; it does not, by itself, make `serve` handle connections in parallel. That's the
-  same open question as §9 (the schedule) in the main doc — multiple timelines are deliberately out of
-  scope until something forces them.
+An honest accounting for this specific program:
+
+- **The model's engine never turns over here.** Its real payoff is the *effect column* — many independent
+  effects built in a pure pass and drained in one fanned `each` kernel (§6 of the model). This server
+  handles **one connection at a time**, one sequential I/O chain. There is no fan-out, no column, no
+  batch. So it pays the model's setup cost for leverage it never exercises. (Contrast the ETL migration,
+  where the write *is* a column of N effects — that's where the engine runs.)
+- **The testability "win" is mostly pre-existing.** The routing/parsing logic `plan` extracts is *already*
+  pure and *already* tested without a socket: `parse_request_line` ships a doctest + unit test;
+  `router.resolve`/`build_path`/`mime_by_ext`/`reason` are already `func`s. `plan` only adds the status-
+  selection glue — and lifting that to a pure func is "extract a function," which the language already
+  allows with **no** `Eff`, no model. The model contributes nothing here a struct return doesn't.
+- **The one real structural win is the readable timeline.** The tick (`#schedule { serve; }`) names the
+  per-connection work, the driver paces it in plain code, and the effect set is the closed
+  `net`/`io`/`http`/`os` primitive list. Modest, but genuine.
+- **The cost is real and program-wide — don't spin it.** Making `net.recv`/`io.read`/`http.respond`
+  composable means rewriting `net`/`io`/`http`/`os` — the modules *every* arche program imports — from
+  `proc(...)(out:)` to `func → Eff`. That ripples to every caller, and leaves a **mixed** stdlib: half
+  `Eff`-returning funcs, half irreducibly-monadic procs (`io.fread_line` and its callers can't convert,
+  §9). A maintainer must now track which is which. That is a larger maintenance surface than today's
+  uniform "everything's a proc with out-slots," and calling it a "forcing function" doesn't make the bill
+  smaller.
+- **Streaming/chunked responses get *harder*.** A chunked writer is result-dependent (write a chunk, check
+  it, write the next) — the monadic case the model forbids from being a func or `Eff`, and procs aren't
+  values, so it **can't be factored** into a shared helper. Today you could write `stream_file` once and
+  call it; the model removes that option until the `routine` construct exists (§9).
+- **Where it *would* win: the concurrent version.** Model N connections as a `Connection` pool and the
+  server becomes device-systems over a column — `accept`/`recv`/`send` as systems, readiness as event
+  rows (epoll-as-ECS), result-dependent per-connection protocol state as a defunctionalized state-column.
+  *That* exercises the engine. The blocking, one-at-a-time server is the degenerate case that doesn't —
+  which is the honest reason this is the model's weakest demo, not its showcase.

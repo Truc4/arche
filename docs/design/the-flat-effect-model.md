@@ -2,8 +2,9 @@
 
 ### effects as values, procedures as leaves — side effects in arche without monads or algebraic-effect machinery
 
-> **Status:** design exploration. The schedule section (§9) is genuinely open — it's written as
-> questions with proposed answers, not settled law.
+> **Status:** design exploration, not settled law. The schedule (§9) is now mostly decided — systems
+> stay flat, the schedule is a derived minimal construct — with the genuinely-open parts (hierarchy/rates,
+> reusable system-sequences, true concurrency) marked as such.
 
 ## Abstract
 
@@ -13,15 +14,14 @@ with **three kinds** (`func`, `proc`, `system`) and **one primitive**: an effect
 that a pure function builds and an impure leaf runs. Flatness isn't even a rule you enforce — a proc
 simply has no way to call a proc, so the effect call graph is depth-1 by construction.
 
-The surprise is that this isn't a sacrifice. The model is **flat** (the effect call graph is depth-1
-by construction), **explicit** (no late-bound jump to chase), **heap-free** (effects are fixed-size
-descriptors), **data-oriented** (effects compose into columns and drain in a fanned kernel), and
-**statically dispatched** (a compile-time vtable, not a runtime search). And every one of those
-properties falls *out of* arche's existing constraints — no heap, static pools, ECS columns — rather
-than fighting them.
+The surprise is that this isn't a sacrifice. The model is **flat**, **explicit** (no late-bound jump to
+chase), **heap-free** (effects are fixed-size descriptors), **data-oriented** (effects compose into
+columns and drain in a fanned kernel), and **statically dispatched** (a compile-time vtable, not a
+runtime search). Every one of those falls *out of* arche's existing constraints — no heap, static pools,
+ECS columns — rather than fighting them.
 
 This document explains what the model is, why each piece exists, and why it's specifically good in
-arche. It ends with the one part we haven't nailed: the schedule.
+arche. It ends with the schedule — the timeline that runs it all.
 
 ---
 
@@ -83,13 +83,14 @@ And the keystone — the thing that makes the whole shape work:
 
 ```arche
 // pure: builds a description of "write this", returns it; performs no write
-write_b :: func(fd: int, buf: []char) -> Eff(int, int) { return wrap fwrite(fd, buf); }
+write_b :: func(fd: int, buf: []char) -> Eff(int, int) { return fwrite(fd, buf); }   // extern under-applied by its out-slots
 ```
 
-`Eff(int, int)` is the type of a **wrapped, not-yet-run effect**: a bounded value standing for "an
-effect that, when run, yields these results" — here the two out-slots `(n, err)` of `fwrite`. Think
-Haskell's `IO a`, adapted to arche's multi-out-slot convention. The value is inert. You **run** it by
-calling it with out-slots — there's no special keyword; running an effect *is* providing its out-params:
+`Eff(int, int)` is the type of a **not-yet-run effect**: a bounded value standing for "an effect that,
+when run, yields these results" — here the two out-slots `(n, err)` of `fwrite`. Think Haskell's `IO a`,
+adapted to arche's multi-out-slot convention. There is **no special keyword in either direction** — an
+`Eff` is just an extern *under-applied* by its out-slots (saturation), and you **run** it by *supplying*
+those out-slots:
 
 ```arche
 eff := write_b(fd, line);   // PURE: build the effect value, bind it like any other value
@@ -98,7 +99,7 @@ eff(n:, err:);              // IMPURE: run it — the out-slots come from runnin
 
 That two-line split is the entire model in miniature:
 
-- **`func` + `wrap`** is the *value* world. Effects-as-data live here. They nest, compose, get passed
+- **the `func` world** is the *value* world. Effects-as-data live here. They nest, compose, get passed
   around, get chosen conditionally, get stored — all pure.
 - **`eff(out:)`** is the single impure act: calling an `Eff` with out-slots turns the inert value into
   a real call and binds its results. Out-params belong to *running* an effect, never to a func — which
@@ -108,13 +109,14 @@ Because reuse lives entirely in the `func` world, **a proc never needs to call a
 language gives it no way to.** You can't factor a shared effectful step into a sub-proc; you factor it
 into a func that builds the `Eff`. So flatness isn't a checked rule with an error message — it's
 **unspellable**: an effect is inert data (it can't run anything), and a proc has no syntax to invoke
-another proc. The one back door — wrap a proc in a func, then run that from another proc — is closed by
-construction: **`wrap` ingests only an `extern`** (a foreign leaf with no arche body), never a proc.
-The reason is ontological, not a rule bolted on: an extern is *inert without its out-slots* (just an
-opcode plus inputs — a value), whereas a proc minus its out-slots is a *suspended computation*, exactly
-the runnable thunk the value world refuses to contain. So there is no expression anywhere that turns a
-proc into an `Eff`. The proc shrinks to a thin imperative shell: *run these effects, react, report via
-out-params.*
+another proc. The one back door — under-apply a proc to "build an `Eff`" from it, then run that from
+another proc — is closed by construction: **only an `extern` is inert when under-applied.** An extern
+minus its out-slots is just an opcode plus inputs — a value; a *proc* minus its out-slots is a
+*suspended computation*, exactly the runnable thunk the value world refuses to contain. So
+under-applying a proc is an **error**, not an `Eff` — there is no expression anywhere that turns a proc
+into one. (An optional `wrap` keyword may mark a build site for emphasis — `return wrap fwrite(…)` ≡
+`return fwrite(…)` — but it is never required and never changes what's wrappable.) The proc shrinks to a
+thin imperative shell: *run these effects, react, report via out-params.*
 
 ```arche
 // procs = flat effect LEAVES: run what funcs built (call it with out-slots), react, expose out-params.
@@ -209,6 +211,36 @@ Each is the same thing the model already handles: an inert, world-touching leaf 
 and run in a proc. The *model is unchanged*; only the primitive vocabulary grows. And the invariant
 holds at every stage of self-hosting: pure code can never mint an atom, so the closed primitive set
 always *is* the program's complete, auditable effect surface.
+
+### The convenience layer: stdlib procs become funcs→`Eff`
+
+This has a sharp, practical consequence the moment you read the real stdlib. Today `net.recv`,
+`http.respond`, `io.read` are **procs** — convenience wrappers over the true leaves (`net_recv` /
+`net_send` externs; `os.syscall`). Under the ban a func may **not** wrap a proc, so these can't be
+lifted to `Eff` as written: wrapping `http.respond` would be the proc→proc loophole wearing a func
+hat. The fix isn't to keep them procs — it's to rewrite the convenience layer itself as
+**funcs→`Eff`** that wrap the *real* primitive, never another proc. Almost every wrapper is exactly
+that shape: pure shaping around one primitive. The pure shaping rides along in two legal-in-the-value-world ways:
+
+- **input-prep** — pure work computing the primitive's arguments (the syscall number, the formatted
+  header bytes);
+- **a result-map (`fmap`)** — a pure function over the primitive's *raw* out-slots (`clamp r<0→0`,
+  `slice buf[0:r]`), carried inside the `Eff` and applied when it runs.
+
+Effects that don't depend on each other's results compose **applicatively** (`respond`'s head-send
+then body-send) into one `Eff`. The wrapped leaf is always the genuine primitive, so the spine stays
+depth-1 and no ban is touched. The payoff for the library author: a func is callable from funcs,
+procs, *and* systems freely — so the convenience **stays in the lib** and the caller barely changes
+(same call site; it just supplies the out-slots to run the `Eff` the lib built). A faithful before/after
+of exactly this rewrite on `net`/`io`/`http` is in
+[flat-effect-model-migration-web-server.md](flat-effect-model-migration-web-server.md).
+
+**The one exception is result-dependent convenience.** A wrapper whose *internal* sequencing is
+monadic — `io.fread_line` (read char-by-char until `\n`), a retry loop, a framed "read a length then
+read that many bytes" — cannot be a func/`Eff` (that needs a free monad: continuations, allocation,
+unbounded). Today the honest move is: the lib exposes the *leaf* as a func→`Eff` (`read1 ->
+Eff(char,int)`) and the monadic loop is written in the consuming proc — the cost is the loop isn't
+shared. The principled long-term home is a fourth construct (see §9).
 
 ## 5. The applicative/imperative line (the one subtlety worth memorizing)
 
@@ -320,7 +352,7 @@ bucket  :: map query { price, price_bucket } { price_bucket = price / 10.0; }   
 fmt_row :: func(p: float, q: int, b: float) -> []char {                          // pure row builder
   return f32(p) <> "," <> int(q) <> "," <> f32(b) <> "\n";
 }
-write_b :: func(fd: int, buf: []char) -> Eff(int, int) { return wrap fwrite(fd, buf); }  // wrap
+write_b :: func(fd: int, buf: []char) -> Eff(int, int) { return fwrite(fd, buf); }  // under-applied extern = Eff
 
 write_row :: each query { price, quantity, price_bucket, ok } (fd: int) {   // effect leaf, fanned
   eff := write_b(fd, fmt_row(price, quantity, price_bucket));
@@ -333,7 +365,7 @@ write_out :: system {                       // composer: open, fan, close; threa
   if ok { run write_row(fd); close_csv(fd); }
 }
 
-#schedule { once load; once bucket; once write_out; }   // the one timeline
+#schedule { load; bucket; write_out; }   // one tick; a one-shot ETL — the driver calls tick() once
 ```
 
 The shape to notice: *all* the logic is pure (`bucket`, `fmt_row`), the effect intent is a value
@@ -361,58 +393,146 @@ No free lunches; here are the bills.
 - **"No heap" really means "everything max-reserved."** A command-buffer column is a static `[N]`. You
   pay the ceiling up front. That's arche's deal everywhere, but it's worth saying out loud.
 
-## 9. The open problem: the schedule
+## 9. The schedule: a flat, derived, minimal construct — not a language, not a system
 
-Here is the part we have *not* settled. `#schedule` is the single, deterministic timeline — the spine
-that says what runs, in what order, once or in a loop. The questions are about how rigid that spine
-is and who's allowed to touch it.
+`#schedule` declares **one tick**: the systems that run, in what order, in a single pass of the timeline.
+It does *not* contain the loop — pacing lives in the driver (below). Working the alternatives against
+mature ECS schedulers (Bevy, Flecs, Unity DOTS, specs, Legion) settles its shape.
 
-**Q: One schedule, or many? Can a module/device own its own schedule?**
-Proposed answer: **one schedule, owned by the entry (the driver).** A module is a library of funcs,
-procs, systems, and devices; if every module shipped a `#schedule`, importing two of them would mean
-two competing loops with no defined interleaving — there'd be no single timeline, and "deterministic"
-would be a lie. So a module that contains a `#schedule` should be a *compile error* (the rule "one
-schedule per driver," enforced semantically). Determinism is the reason you need to enforce it, and
-it's cheap to enforce: it's a count.
+**Systems stay flat: a `system` may not call a `system`.** This is the `proc→proc` ban one rung up, and
+it holds for the same reason — *legibility*, not the stack bound (a non-recursive deeper spine is
+computable too, §6; depth-1 only makes the bound a one-liner). Read the schedule and you have the
+complete inventory of effect-bearing units; let systems call systems and the effect set hides inside a
+call graph nobody can see at a glance — the exact rot §1 opens by condemning. The survey is blunt: 4 of 5
+frameworks forbid system-calls-system outright; the one that allows it (Unity DOTS `ComponentSystemGroup`)
+had to invent a separate composer kind and pays with an unbounded depth-first spine — the precise
+anti-arche choice. **Composition lives in the schedule, never in inter-system calls.**
 
-**Q: Then how does a physics module get its `step` to run every tick?**
-It doesn't *schedule* — it *contributes*. A module exposes systems (`physics.step`), and the driver
-places them in its schedule. The contribution is **opt-in by the importer**, which keeps the timeline
-legible: you can read one `#schedule` and know everything that runs. (A registration mechanism —
-"modules may *offer* systems, the driver *accepts* them" — is the principled middle ground if explicit
-listing gets tedious; the key invariant is that the driver's schedule is the single source of truth.)
+**The schedule is the *root* of the spine — not a fourth kind, not a system.** The three kinds
+(`func`/`proc`/`system`) are interior nodes, classified by what calls them and what they call. The
+schedule has no caller from within the spine — a boundary object; only the driver, *above* it, advances
+it (via `tick`, below). There is exactly one per program (a count; a module that ships a `#schedule` is a compile error — two
+timelines means no timeline). Making the root a *system* would be the Unity slope; keeping it a distinct
+construct makes nesting structurally impossible rather than count-policed.
 
-**Q: What about devices?**
-Same shape, plus lifecycle. A device (`gfx`) has setup/teardown that must bracket the user's work
-(open the window before drawing, present after). It shouldn't own the loop, but it has phases the
-runtime must honor. Proposal: a device *declares* lifecycle systems (init/teardown/present), and the
-**runtime weaves them at the schedule's seams** (see the last question) — the user schedules
-`draw`; the runtime ensures `present` runs at the frame boundary.
+**It is not a DSL — its algebra is `{sequence, guard, barrier}`.** No `if`, no variables, no arithmetic,
+**and no loop** — the loop moved to the driver (below). A schedule is an ordered list of systems; a guard
+is a pure `func`-computed bool the schedule reads (`@when state`, or the tick-counted `@every(N)`); a
+barrier is the seam between entries where the command buffer flushes. A structured list, not a sublanguage
+— the keyword-creep that threatened a bolted-on DSL (`loop`/`@fixed`/`loop(N)`/`await`) was *pacing*
+leaking into the schedule; pulling pacing out to the driver, where every ECS keeps it, dissolves it.
 
-**Q: What if I want a specific loop (60 Hz game loop, an accept loop)?**
-Loops are first-class schedule entries: `loop serve;`, or a grouped tick `loop { input; sim; render; }`.
-A *rate* ("60 Hz") is a property of a `loop` entry, not a new construct. Genuinely *independent*
-concurrent loops (a render loop and a network loop on different timelines) are a different beast —
-that's concurrency, i.e. multiple timelines, and it should be an explicit, backend-aware feature, not
-something you get by accident from two `#schedule`s. The default stays: one timeline, loops nested
-inside it.
+**Order is *derived*, stable — never Bevy-nondeterministic.** Systems already declare which pool columns
+they read and write (the barrier logic needs it). The per-tick order is a topological sort of that
+data-flow DAG; the author supplies only what derivation can't infer — the entry and tie-breaks where two
+orders are equally valid. (Cardinal survey warning: Bevy leaves conflicting systems' relative order unspecified
+— a footgun. arche's single declared timeline + derived-but-stable order is the Flecs-phase / specs-named-dep
+family, not parallelize-and-hope.)
 
-**Q: Can the runtime inject systems into the schedule?**
-Yes — and this is the most interesting one, because the answer is **"at seams, principled, never
-arbitrary."** The user's `#schedule` is the spine; the runtime is allowed to weave its own work into
-the *gaps between stages*: the structural `insert`/`delete` **command-buffer flush** between `run`s
-(already true today), device **present/flush** at the frame boundary, device **init/teardown** at
-program start/end, hot-reload bookkeeping. The discipline: the runtime injects only at the
-**schedule/stage seam**, so the user's timeline stays the readable skeleton and the injected work is
-predictable (it happens *between* your stages, never inside them). What the runtime must *not* do is
-inject a system whose effects interleave unpredictably with user stages — that would break the single
-deterministic timeline the whole model rests on.
+**Systems compose through data across barriers, never the stack** — and every piece already exists:
+schedule ordering (temporal composition), the deferred `insert`/`delete` command buffer flushed at the
+seam (Bevy `ApplyDeferred`, Unity `EntityCommandBufferSystem`, Legion `.flush()`, specs `maintain()` —
+universal), event pools drained next tick, and singleton (`[1]`-pool) state. `input→sim→draw` is three
+flat systems the schedule sequences, data flowing through pools — not a call between them.
 
-So the through-line for all five questions is the same invariant: **one readable, deterministic
-timeline.** Modules contribute to it, devices bracket it, the runtime weaves at its seams — but
-nobody gets a second one for free. Whether that invariant should ever be *relaxed* (true concurrency,
-multiple timelines) is the real open question, and the honest answer today is "not until something
-forces it."
+```arche
+[256]InputEvent;   [256]RenderCmd;            // event channels, drained next tick
+[1]World;   World :: arche { /* sim state */ }
+
+gather :: system { /* run input-device leaves → write InputEvent rows */ }
+step   :: system { /* drain InputEvent, mutate World, write RenderCmd rows */ }
+paint  :: system { /* drain RenderCmd → run draw-device leaves */ }
+
+#schedule { gather; step; paint; }   // ONE tick: order derivable (step reads what gather wrote, …);
+                                     // barrier (command-buffer flush) at each seam; no system calls another
+```
+
+**`tick()` advances the schedule once; the driver paces ticks.** The schedule is one tick's worth of work;
+the *loop* that runs ticks is plain code in the driver — exactly as every ECS does it (Flecs
+`ecs_progress(dt)`, Legion `schedule.execute()`, EnTT's hand-written loop, Bevy's overridable runner). The
+four pacings are ordinary control flow, not schedule syntax:
+
+```arche
+for (;;)            { tick(); }                          // free-run    — as fast as work allows
+for (i:=0;i<n;i+=1) { tick(); }                          // counted     — headless sim / replay
+for (;;)            { await_input(); tick(); }           // event-gated — turn-based / lockstep
+for (;;)            { acc += elapsed();                  // clock-paced — real-time (the arche-rpg accumulator)
+                      for (; acc >= DT; acc -= DT) { tick(); }
+                      present(); }
+```
+
+Tick-based is the **default** — `tick()` has no clock; you get Hz only if the driver chooses to count
+wall-time. Same `tick`, four pacings, all plain `for`/`if`.
+
+**One-time work is the same idea — advance once instead of looping.** Removing `once`/`loop` dropped the
+*keywords*, not setup. Proc-shaped setup (open a socket, open a window, read argv) is plain driver code
+before the loop (the demos). System-shaped setup — a *kernel* run once: seed initial entities, build a
+lookup table — is a **startup phase**: systems the driver advances *exactly once* before the tick loop.
+So one-time systems do exist; they're a phase the driver advances once, distinguished by **cadence**
+(once vs every tick), not by a keyword inside the schedule. The timeline stays one — startup, then ticks,
+one driver — exactly what `once startup; loop serve;` used to mean, with the cadence now living in the
+driver where pacing already does. (This is Bevy's `Startup` vs `Update`.)
+
+**`tick` is the dual of `extern` — the top boundary of the spine.** `extern` is the bottom leaf (touches
+the world, runs nothing, reached from above); `tick` is the top (runs everything, touches nothing directly,
+reached only by the driver). It is effectful but **not a primitive** (§4 — it doesn't *originate* an effect,
+it *runs* the primitive set once), **not wrappable** (a "deferred tick" is the entire schedule suspended —
+the free monad the model refuses), and **not a leaf**. It is **callable only from the one driver — never
+from a system, device, or module**, all of which are *downstream* of `tick`; calling it from below is the
+schedule re-entering itself (`tick → … → system → tick → …`), the `system→system` ban in its ultimate,
+unbounded form. Driver-only, enforced by the same count as one-schedule-per-program. (A device or module
+that drove the tick would be *owning the timeline* — already forbidden. A *nested* tick — a sub-world
+advancing its own schedule — is the deferred sub-schedule feature below, not "use `tick` in a system.")
+
+**Devices bracket the timeline; the runtime weaves lifecycle at seams.** A device declares
+init/present/teardown systems; the runtime runs them at schedule seams (present at the frame boundary,
+init/teardown at program start/end) — the same seam machinery as the command flush, never interleaved
+*inside* a stage. The user schedules `draw`; the runtime guarantees `present` after it. (Bevy
+`Plugin::build`, Flecs modules, Unity root groups.) A non-driver module likewise *contributes* systems the
+driver places; it never owns a timeline.
+
+**A device's public surface is systems, pools, and types — never procs or funcs.** This is the ECS
+discipline taken seriously: a device *is* its data (pools/components, plus singleton `[1]`-pools for
+boundary state like a window handle) and the **systems** that transform it. Procs, funcs, and the foreign
+externs underneath are *private* device internals — a system runs them, but they are not the interface.
+The driver **schedules** a device's systems; it never *calls* a device proc and never threads external
+context by hand. That keeps the timeline complete: every device effect appears in the schedule, nothing
+hides behind an imperative device call. (This is exactly Bevy plugins and Flecs modules — a device adds
+systems + components to the global namespace, and the schedule wires them; it does not export a bag of
+callable functions.)
+
+The payoff is concrete. arche-rpg today exports `draw_ball` as a **proc** and the driver hand-loops over
+entities calling it (`for i … { draw_ball(win, pos.x[i], …) }`) — because a system "can't take the window
+handle." Make the window a singleton pool and `draw` becomes a **system** over `(pos, color)` + `Window`:
+the manual loop vanishes, drawing fans over the column like any other kernel, and the driver just
+schedules `draw`. The thing that *forced* the proc — threading external context — dissolves once context
+is a singleton the system reads. Systems are global the way pools and types are; a device contributes to
+that global vocabulary, and the schedule is where it all gets ordered.
+
+### Still genuinely open
+
+- **Hierarchy / sub-schedules / nested ticks.** Reusable *sequences* of systems, and a sub-world that
+  advances its *own* schedule (sub-stepped physics, a rollback re-sim, a nested mini-game), want a
+  **nestable phase / sub-schedule owned by the scheduler** (Flecs phases-as-entities, Unity
+  `FixedStepSimulationSystemGroup`, Bevy `FixedUpdate`) — *not* relaxing the system ban and *not* letting a
+  system call `tick`. Deferred until forced. (Plain per-tick *rates* are **not** open: `@every(N)` is a
+  tick-counted guard, and wall-clock pacing is ordinary driver-loop code — both settled above.)
+- **The reuse residue.** With systems flat, a reusable ordered *sequence* of systems has no name until that
+  phase construct exists — the same hole, one rung up, as the proc-level `routine` below. Duplicate or push
+  into the schedule for now.
+- **True concurrency.** Independent timelines (a render loop ‖ a net loop) stay out of scope — explicit,
+  backend-aware, "not until something forces it."
+
+### A second, unrelated open problem (from §4): result-dependent reusable convenience
+
+The convenience-layer rewrite (§4) lifts almost every stdlib wrapper to a func→`Eff`. The holdouts are the
+wrappers whose own body is monadic — `io.fread_line`, a retry loop, a framed read: not a func (impure),
+not an `Eff` (a free monad — allocating, unbounded), not a sub-proc (procs aren't values). The proposed fix
+is a fourth construct — a **`routine`**: a proc-bodied unit the compiler splices into the caller
+(monomorphized, no independent frame). Reusable *and* result-dependent, yet flattened at compile time, so
+the depth-1 spine and trivial bound survive and no free monad returns (structure static, only the frame
+inlined). Note the symmetry: this is the proc-level twin of the system-level phase construct above — both
+are compile-time-flattened reuse, neither relaxes a runtime nesting ban. Not settled.
 
 ## 10. Isn't this just the IO monad? (yes, and:)
 
