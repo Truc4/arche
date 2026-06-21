@@ -1074,43 +1074,31 @@ static int parse_link_region(Parser *parser, SyntaxNodeKind *out_kind) {
 	return 1;
 }
 
-/* `#schedule { a b c }` — one tick's ordered list of scheduled units. Each entry is a bare
- * identifier naming a `system` or a `map`, wrapped as an SN_NAME_EXPR child so lowering can read
- * the entries in declaration order. Entries are whitespace-separated, exactly like `#import { a b }`
- * (a `;` is rejected, not a separator). Block form only; the list must be non-empty. Emitted as
- * SN_SCHEDULE_DECL. */
-static int parse_schedule_region(Parser *parser, SyntaxNodeKind *out_kind) {
-	advance(parser); /* consume '#schedule' */
-	*out_kind = SN_SCHEDULE_DECL;
-	if (!match(parser, TOK_LBRACE)) {
-		error(parser, "expected `{ name ... }` after `#schedule`");
-		return 0;
-	}
-	if (check(parser, TOK_RBRACE)) {
-		error(parser, "empty `#schedule { }` — list one or more system/map names");
-		return 0;
-	}
-	while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
-		if (!check(parser, TOK_IDENT)) {
-			error(parser, "expected a system/map name in `#schedule { ... }`");
-			return 0;
-		}
-		int entry_cp = syntax_cp(parser);
-		advance(parser); /* consume the entry name */
-		syntax_wrap(parser, entry_cp, SN_NAME_EXPR);
-	}
-	if (!match(parser, TOK_RBRACE)) {
-		error(parser, "Expected '}' to close `#schedule { ... }`");
-		return 0;
-	}
-	return 1;
-}
-
-/* `#run <expr>` — the program's one Schedule value, which the runtime executes. Unlike `#schedule`
- * (a name list), it carries a single value EXPRESSION child (e.g. `forever(seq({ run(a), run(b) }))`). */
+/* `#run <expr>` or `#run { e1, e2, … }` — the program's Schedule value(s) the runtime executes. The
+ * block form is region-style (trailing comma allowed) and runs its entries in order (an implicit `seq`);
+ * the bare form is a single expression (e.g. `forever(seq({ run(a), run(b) }))`). Either way the children
+ * are EXPRESSION nodes folded at lowering. */
 static int parse_run_region(Parser *parser, SyntaxNodeKind *out_kind) {
 	advance(parser); /* consume '#run' */
 	*out_kind = SN_RUN_DECL;
+	if (check(parser, TOK_LBRACE)) {
+		advance(parser); /* consume '{' */
+		if (check(parser, TOK_RBRACE)) {
+			error(parser, "empty `#run { }` — list one or more Schedule expressions");
+			return 0;
+		}
+		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+			if (!parse_expression(parser))
+				return 0;
+			if (!match(parser, TOK_COMMA))
+				break;
+		}
+		if (!match(parser, TOK_RBRACE)) {
+			error(parser, "expected '}' to close `#run { ... }`");
+			return 0;
+		}
+		return 1;
+	}
 	if (!parse_expression(parser)) {
 		error(parser, "expected a Schedule expression after `#run`");
 		return 0;
@@ -1354,9 +1342,6 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	case TOK_HASH_LINK:
 		/* `#link { "lib" ... }` — system libraries to link (block form only). */
 		return parse_link_region(parser, out_kind);
-	case TOK_HASH_SCHEDULE:
-		/* `#schedule { a; b; }` — one tick's ordered system/map list (block form only). */
-		return parse_schedule_region(parser, out_kind);
 	case TOK_HASH_RUN:
 		/* `#run <expr>` — the program's Schedule value. */
 		return parse_run_region(parser, out_kind);

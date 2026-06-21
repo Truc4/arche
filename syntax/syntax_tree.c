@@ -129,8 +129,6 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "DEFAULT_DECL";
 	case SN_REGION:
 		return "REGION";
-	case SN_SCHEDULE_DECL:
-		return "SCHEDULE_DECL";
 	case SN_RUN_DECL:
 		return "RUN_DECL";
 	case SN_USE_DECL:

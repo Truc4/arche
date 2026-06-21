@@ -79,6 +79,38 @@ jobs:
         if: success()
         run: echo "✓ All tests passed"
 
+  # Example apps live in their own repos (arche-web-server, arche-rpg) — referenced, never vendored or
+  # submoduled. CI clones them and runs each one's `run_tests.sh` against the freshly built arche, so a
+  # compiler change that breaks a real downstream app is caught here. (If a repo is private, set an
+  # `APPS_TOKEN` secret and the clone URLs pick it up.)
+  example-apps:
+    runs-on: ubuntu-latest
+    name: Example apps
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          # build toolchain + curl (web-server integration) + xvfb & libx11 (rpg headless x11 backend)
+          sudo apt-get install -y build-essential llvm curl xvfb libx11-dev
+
+      - name: Build arche
+        run: make
+
+      - name: Clone example apps (referenced, not vendored)
+        run: |
+          AUTH=""
+          [ -n "${{ secrets.APPS_TOKEN }}" ] && AUTH="x-access-token:${{ secrets.APPS_TOKEN }}@"
+          git clone --depth 1 "https://${AUTH}github.com/Truc4/arche-web-server.git" ../arche-web-server
+          git clone --depth 1 "https://${AUTH}github.com/Truc4/arche-rpg.git" ../arche-rpg
+
+      - name: Test arche-web-server
+        run: ARCHE="$PWD/build/arche" bash ../arche-web-server/run_tests.sh
+
+      - name: Test arche-rpg
+        run: ARCHE="$PWD/build/arche" ARCHE_REPO="$PWD" bash ../arche-rpg/run_tests.sh
+
   # Require every PR to bump VERSION: the build bakes it in (-DARCHE_VERSION) and `arche version`
   # reports it, so master must never carry a stale or duplicate version. We fail (rather than
   # auto-bump) so the bump stays in the PR diff and the author chooses patch/minor/major — no
@@ -114,7 +146,7 @@ jobs:
 
   # Require status checks for PR merges
   status-check:
-    needs: [format-and-test, version-check]
+    needs: [format-and-test, version-check, example-apps]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -128,6 +160,10 @@ jobs:
           fi
           if [ "${{ needs.version-check.result }}" = "failure" ]; then
             echo "Version bump check failed"
+            exit 1
+          fi
+          if [ "${{ needs.example-apps.result }}" = "failure" ]; then
+            echo "Example apps (web-server/rpg) job failed"
             exit 1
           fi
         shell: bash

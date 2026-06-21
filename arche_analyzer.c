@@ -516,8 +516,10 @@ static int binding_is_redundant_form(SyntaxView binding) {
 		case SN_FUNC_EXPR:
 		case SN_PROC_EXPR:
 		case SN_SYS_EXPR:
+		case SN_SYSTEM_EXPR:
 		case SN_POLICY_EXPR:
 		case SN_ENUM_EXPR:
+		case SN_SUM_EXPR:
 		case SN_ARCH_EXPR:
 			return 1;
 		default:

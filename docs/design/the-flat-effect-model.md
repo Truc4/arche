@@ -521,17 +521,19 @@ not own a callable surface anyone reaches into.
 | fixed-step + catch-up | `forever(catch_up(DT, run(sim)))` |
 | CPU / free-run / cores | `forever(par({ run(physics), run(ai), run(audio) }))` |
 | event-gated | `forever(when(has_input, run(step)))` |
-| startup-then-loop | `seq({ once(run(boot)), forever(run(serve)) })` |
+| startup-then-loop | `seq({ run(boot), forever(run(serve)) })` |
 | nested / sub-step / rollback | embed a `Schedule` in a `Schedule` — values nest |
 
-The last two rows retire old open problems for free. **Setup** is a `once(...)` prefix in the program's
-schedule — no separate "startup phase" construct, just a `Schedule` that runs before the loop. **Nested
+The last two rows retire old open problems for free. **Setup** is just a `run(boot)` entry *before* the loop
+in the `seq` — no separate "startup phase" construct, it simply runs once because a `seq` entry runs once.
+(`once(s)` is the *one-shot program* wrapper — `seq({ s, halt })`, run-then-exit — not a setup prefix; using
+it before a `forever` would `halt` the program before the loop ever starts.) **Nested
 ticks / sub-schedules** (sub-stepped physics, a rollback re-sim, a nested mini-game) are a `Schedule` inside
 a `Schedule` — no new keyword, because values nest. And a **reusable named sequence of systems** is just a
 `func` returning a `Schedule` — the "reuse residue" dissolves too.
 
 ```arche
-#run seq({ once(run(boot)), forever(run(serve)) })   // setup once, then loop — one value
+#run seq({ run(boot), forever(run(serve)) })   // setup once, then loop — one value
 ```
 
 There is no `tick` keyword. Advancing the schedule is the runtime's job, not a statement a program writes —
@@ -583,7 +585,7 @@ is answered by *not exposing the handle at all*, not by passing it some other wa
 
 Reifying the schedule as a value closed three problems that were open under the old directive form:
 **nested ticks / sub-schedules** are a `Schedule` inside a `Schedule`; a **reusable named sequence** is a
-`func` returning a `Schedule`; **startup** is a `once(...)` prefix. None needs a new construct or relaxes
+`func` returning a `Schedule`; **startup** is a `run(boot)` entry before the loop. None needs a new construct or relaxes
 the system ban. What remains:
 
 - **The `World` primitive set + the `Schedule` value's exact shape.** The runtime walks a recursive,

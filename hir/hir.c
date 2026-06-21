@@ -268,15 +268,6 @@ static void hir_system_decl_free(HirSystemDecl *sys) {
 	free(sys);
 }
 
-static void hir_schedule_decl_free(HirScheduleDecl *sch) {
-	if (!sch)
-		return;
-	for (int i = 0; i < sch->entry_count; i++)
-		free(sch->entries[i]);
-	free(sch->entries);
-	free(sch);
-}
-
 void schedule_tree_free(ScheduleTree *t) {
 	if (!t)
 		return;
@@ -405,9 +396,6 @@ void hir_decl_free(HirDecl *decl) {
 		break;
 	case HIR_DECL_SYSTEM:
 		hir_system_decl_free(decl->data.system);
-		break;
-	case HIR_DECL_SCHEDULE:
-		hir_schedule_decl_free(decl->data.schedule);
 		break;
 	case HIR_DECL_RUN:
 		hir_run_decl_free(decl->data.run);

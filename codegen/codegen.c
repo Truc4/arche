@@ -10055,7 +10055,7 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 }
 
 /* `Name :: system { body }` — the composer, emitted as a no-arg void function (a parameterless proc
- * body). Invoked by the schedule's generated @arche_tick. */
+ * body). Dispatched by the generated @arche_run (from the #run ScheduleTree). */
 static void codegen_system_decl(CodegenContext *ctx, HirSystemDecl *sys) {
 	ctx->entity_bind_count = 0;
 	snprintf(ctx->current_return_type_buf, sizeof(ctx->current_return_type_buf), "void");
@@ -10152,7 +10152,7 @@ static void emit_sched(CodegenContext *ctx, ScheduleTree *t) {
 	}
 }
 
-/* `@arche_run` — the program's loop, synthesized from the folded #run ScheduleTree (replaces @arche_tick).
+/* `@arche_run` — the program's loop, synthesized from the folded #run ScheduleTree.
  * Walked at compile time into direct-dispatch control flow; called once from @main. */
 static void codegen_run_decl(CodegenContext *ctx, ScheduleTree *tree) {
 	ctx->entity_bind_count = 0;
@@ -11204,9 +11204,6 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			break;
 		case HIR_DECL_SYSTEM:
 			codegen_system_decl(ctx, decl->data.system);
-			break;
-		case HIR_DECL_SCHEDULE:
-			/* The schedule emits no code itself; it drives the synthesized @arche_tick (below). */
 			break;
 		case HIR_DECL_RUN:
 			/* The #run tree drives the synthesized @arche_run (emitted beside @main, below). */

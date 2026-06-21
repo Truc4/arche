@@ -163,22 +163,12 @@ struct SemanticContext {
 	/* 1 while analyzing a `map` body. A `map` supports no `return` at all (naked or valued). */
 	int in_map;
 
-	/* `#schedule` state. `has_schedule` gates `tick()`; `schedule_node`/`schedule_src` keep the
-	 * (first) schedule node so its entries can be validated against the decl table after collection. */
-	int has_schedule;
-	const SyntaxNode *schedule_node;
-	const char *schedule_src;
-
 	/* 1 only while analyzing a call that sits in a statement / bind-RHS position (where an
 	 * *action* is allowed). A proc or extern call is an action, not a value, so it may appear
 	 * only there — never nested inside another expression. Set by STMT_EXPR / STMT_BIND /
 	 * STMT_ASSIGN, captured-and-cleared at the top of EXPR_CALL so the call's own args are
 	 * value positions. */
 	int stmt_call_ok;
-	/* 1 only while analyzing the call of a BARE expression statement (`f();`) — not a bind/assign RHS.
-	 * Distinguishes `tick();` (legal) from `x := tick()` (illegal): tick is a pure action with no value,
-	 * so it is valid only as a standalone statement, stricter than a value-returning proc. */
-	int bare_expr_stmt;
 	/* Like stmt_call_ok but set ONLY for the value of an out-list statement (`f(in)(out)` /
 	 * multi-bind), NOT a plain `x := f(…)` bind. The mandatory-ok builtins insert/delete are valid
 	 * only here, so this distinguishes `insert(P,…)(h:,ok:)` from an illegal `h := insert(…)`. */
@@ -3149,9 +3139,7 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 
 	case SN_EXPR_STMT:
 		ctx->stmt_call_ok = 1;
-		ctx->bare_expr_stmt = 1; /* the one position a pure action (`tick();`) is valid */
 		analyze_expression(ctx, sem_node_at_expr(v, 0));
-		ctx->bare_expr_stmt = 0;
 		ctx->stmt_call_ok = 0;
 		break;
 
@@ -4107,11 +4095,28 @@ static ScheduleTree *fold_sched(SemanticContext *ctx, SyntaxView e, SchedScope *
 	return r;
 }
 
-/* Public entry: fold `#run`'s expression to a constant ScheduleTree, or NULL if it doesn't fold. */
+/* Public entry: fold `#run`'s expression(s) to a constant ScheduleTree, or NULL if they don't fold. The
+ * node may be a single expression (`#run <expr>`) or the SN_RUN_DECL block (`#run { e1, e2, … }`), which
+ * runs its entries in order (an implicit `seq`). */
 ScheduleTree *semantic_try_const_schedule(SemanticContext *ctx, SyntaxView e) {
-	if (!ctx)
+	if (!ctx || !sv_present(e))
 		return NULL;
 	SchedScope scope = {0};
+	if (sv_kind(e) == SN_RUN_DECL) {
+		int n = sem_expr_count(e);
+		if (n == 1)
+			return fold_sched(ctx, sem_node_at_expr(e, 0), &scope);
+		ScheduleTree *seq = sched_node(SCHED_SEQ);
+		for (int i = 0; i < n; i++) {
+			ScheduleTree *c = fold_sched(ctx, sem_node_at_expr(e, i), &scope);
+			if (!c) {
+				sched_free_local(seq);
+				return NULL;
+			}
+			sched_add_child(seq, c);
+		}
+		return seq;
+	}
 	return fold_sched(ctx, e, &scope);
 }
 
@@ -4181,8 +4186,8 @@ static void analyze_static_decl(SemanticContext *ctx, DeclSummary *alloc) {
 	}
 	/* Record the driver pool's capacity so the final sweep can check it against datasheet minimums. */
 	arch->alloc_capacity = alloc->static_pool_count;
-	/* Guaranteed-live initial count (M): the bounds prover elides a column index proven `< M`. Mirrors
-	 * codegen's old static-count elision; only set when an explicit init_size literal was given. */
+	/* Guaranteed-live initial count (M): the bounds prover elides a column index proven `< M`. Only set
+	 * from an explicit init_size literal (`Arch[N](M)`) — a singleton declares its live row as `[1]P(1)`. */
 	arch->alloc_init_count = alloc->static_init_length_present ? alloc->static_init_count : 0;
 
 	/* Validate: init block requires explicit init_size parameter */
@@ -4576,6 +4581,18 @@ static int bnd_lit_int(SyntaxView v) {
 	return neg ? -1 : val; /* a negative literal is never a valid index */
 }
 
+/* Like bnd_lit_int but also folds a compile-time integer expression — e.g. a `NBALLS :: 5` const used
+ * as a loop bound `i < NBALLS`. Returns the nonneg value, or -1 if it isn't a nonneg constant int. */
+static int bnd_const_int(SemanticContext *ctx, SyntaxView v) {
+	int lit = bnd_lit_int(v);
+	if (lit >= 0)
+		return lit;
+	int folded;
+	if (sv_present(v) && semantic_try_const_int(ctx, v, &folded) && folded >= 0)
+		return folded;
+	return -1;
+}
+
 /* If `v` is a plain NAME expr (no field chain), its name (owned), else NULL. */
 static char *bnd_plain_name(SemanticContext *ctx, SyntaxView v) {
 	if (!sv_present(v) || sv_kind(v) != SN_NAME_EXPR || sv_count(v, SN_FIELD_NAME) != 0)
@@ -4890,8 +4907,9 @@ static void bnd_collect_facts(SemanticContext *ctx, DeclSummary *d, SyntaxView c
 		char *b = bnd_extent_base(ctx, r);
 		if (v && b)
 			bnd_env_add(e, v, b, 0);
-		/* v < K (literal) → litub(v, K) — proves v into a sized T[N] with K <= N */
-		int rlit = bnd_lit_int(r);
+		/* v < K (literal or const, e.g. `i < NBALLS`) → litub(v, K) — proves v into a sized T[N] /
+		 * a column with K <= N */
+		int rlit = bnd_const_int(ctx, r);
 		if (v && rlit >= 0)
 			bnd_env_add_litub(e, v, rlit);
 		/* v < count|cap (a @policy(pool) extent param) → v is within the handled pool's extent */
@@ -5728,7 +5746,8 @@ static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 static void sem_check_raw_pool_lint(SemanticContext *ctx) {
 	for (int di = 0; di < ctx->decl_count; di++) {
 		DeclSummary *d = ctx->decls[di];
-		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYS) || d->is_extern)
+		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYS && d->kind != DECL_SYSTEM) ||
+		    d->is_extern)
 			continue;
 		if (!sv_present(d->body_node))
 			continue;
@@ -5800,7 +5819,7 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 		}
 	case DECL_FUNC: /* also policies — a policy is a DECL_FUNC with is_policy */
 	case DECL_PROC:
-	case DECL_SYSTEM: /* the composer: typed as a no-arg void proc for Phase 1 (params/outs are empty) */
+	case DECL_SYSTEM: /* the composer — its own kind (a `system` reference), not a proc */
 	case DECL_SYS: {
 		/* Each form gets its OWN callable kind — func/proc/map/policy never unify. Params are common;
 		 * a func carries its return list, a proc its out-params, map/policy none. */
@@ -5818,7 +5837,7 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 		if (d->kind == DECL_SYS) {
 			out = tyid_of_map(ctx->ty_arena, params, np);
 		} else if (d->kind == DECL_SYSTEM) {
-			out = tyid_of_proc(ctx->ty_arena, params, np, NULL, 0); /* no-arg, no-out */
+			out = tyid_of_nominal(ctx->ty_arena, "system"); /* a system reference — its OWN kind, not a proc */
 		} else if (d->is_policy) {
 			out = tyid_of_policy(ctx->ty_arena, params, np);
 		} else if (d->kind == DECL_PROC) {
@@ -5975,7 +5994,8 @@ static void sem_check_policy_cycles(SemanticContext *ctx) {
 static void sem_check_policies(SemanticContext *ctx) {
 	for (int di = 0; di < ctx->decl_count; di++) {
 		DeclSummary *d = ctx->decls[di];
-		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYS) || d->is_extern)
+		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYS && d->kind != DECL_SYSTEM) ||
+		    d->is_extern)
 			continue;
 		if (!sv_present(d->body_node))
 			continue;
@@ -7923,8 +7943,8 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 			}
 			continue;
 		}
-		if (k == SN_SCHEDULE_DECL || k == SN_RUN_DECL) {
-			continue; /* #schedule legacy (no-op); #run is folded + dispatched in lowering/codegen */
+		if (k == SN_RUN_DECL) {
+			continue; /* #run is folded + dispatched in lowering/codegen */
 		}
 		if (k < SN_WORLD_DECL || k > SN_USE_DECL)
 			continue;
@@ -8808,11 +8828,7 @@ static SemanticContext *make_context(void) {
 	ctx->current_func = NULL;
 	ctx->in_map = 0;
 	ctx->in_body = 0;
-	ctx->has_schedule = 0;
-	ctx->schedule_node = NULL;
-	ctx->schedule_src = NULL;
 	ctx->stmt_call_ok = 0;
-	ctx->bare_expr_stmt = 0;
 	ctx->proc_call_stmt_ok = 0; /* only the out-list statement sets this; cleared in every EXPR_CALL */
 	ctx->model = sem_model_new();
 	ctx->hints = sem_hints_new();

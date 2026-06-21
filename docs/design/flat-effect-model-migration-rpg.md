@@ -74,7 +74,7 @@ draw :: system query { pos, color } {                 // fans over every ball, l
 // boot opens the window → insert Window{…}, seeds the Player pool; gfx.poll writes a should_close singleton
 
 #run seq({                              // the program IS this one Schedule value; the runtime runs it
-  once(run(boot)),                      // setup: a once(...) prefix, not a separate phase
+  run(boot),                            // setup runs once (it is in the seq); the loop follows
   forever(seq({                         // the frame loop, owned by the runtime — no hand-written loop
     catch_up(DT, run(step)),            // fixed-step physics: catch up 0..N substeps to wall time
     run(draw),                          // render fans over the column, symmetric with physics
@@ -83,7 +83,7 @@ draw :: system query { pos, color } {                 // fans over every ball, l
 ```
 
 Physics and rendering are now **symmetric**: both are systems fanning over the same `Player` pool, and the
-loop is just a value, `seq({ once(run(boot)), forever(seq({ catch_up(DT, run(step)), run(draw) })) })`. The
+loop is just a value, `seq({ run(boot), forever(seq({ catch_up(DT, run(step)), run(draw) })) })`. The
 *pacing* — the fixed-timestep catch-up — is `catch_up(DT, run(step))`, a library `func` returning a
 `Schedule` (§9), composed into the same value as everything else rather than buried in an imperative
 accumulator. A system enters the schedule via explicit `run(step)` / `run(draw)`; a bare system is not a

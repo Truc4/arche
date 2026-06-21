@@ -143,3 +143,78 @@ not `func(World) -> bool`. (Open: Schedule+combinators sit in core for bare name
 
 ### NEXT: Stage 2 value-CTFE (`semantic_try_const_schedule`) → Stage 4 codegen_run_decl (@arche_run) +
 ### entry (no main) + runtime/world.c intrinsics → Stage 5 remove #schedule/tick/main + tests.
+
+## REBUILD COMPLETE — scheduling is a first-class value (all 5 stages)
+
+806/806 lit + verify-fmt + ASan (36/36, 6/6, 7/7) all green. web-server + rpg still build.
+
+- **Stage 1 — sum types** (`TYK_SUM`, two-phase recursion-through-slice, contextual `sum` keyword,
+  construction). The keystone (also unlocks Result/Option/Eff). 1d/1e (runtime codegen, match-on-sum) deferred.
+- **Stage 2 — value-CTFE** (`semantic_try_const_schedule` / `fold_sched`): folds the `#run` combinator
+  expression to a constant `ScheduleTree`, inlining combinator funcs and capturing system/predicate refs as
+  symrefs. Straight-line single-return combinators (covers the doc set).
+- **Stage 3 — `Schedule` core** (core.arche): the sum + `once`/`forever`; sum-typed funcs erased from
+  codegen (`semantic_func_is_ctfe_only`). World is NOT a type — runtime intrinsics; predicate is `func()->bool`.
+- **Stage 4 — `#run <expr>` + dispatch + entry**: `TOK_HASH_RUN`/`SN_RUN_DECL`/`parse_run_region`,
+  `HIR_DECL_RUN` holds the folded tree, `codegen_run_decl`/`emit_sched` lower it to `@arche_run`
+  (run→direct call, seq/par→in order, loop→back-edge, when→predicate-guard, halt→ret). `@main` calls
+  `@arche_run`. **No `main` needed** — proven by tests/unit/language/run/run_pipeline.arche (prints x=2, no main).
+- **Stage 5 — removed**: `tick()` builtin, `@arche_tick`, `sem_check_schedule`, the reserved-`tick` check,
+  E0063-E0068 emit sites, the old `schedule/` lit + C-unit tests. `#schedule` directive left inert (parses
+  to a no-op). `main` and `#run` coexist (removing `main` would break 800+ tests; "no main" holds for
+  scheduled programs). `tick` is a usable identifier again.
+
+Tests: tests/unit/language/sum/{sum_decl_recursive,sum_construct}, tests/unit/language/run/run_pipeline,
+semantic-test test_run_schedule_ok.
+
+## Dead-code purge + real-app migration (this session)
+
+**Dead code FULLY removed** (no inert legacy): the `#schedule` directive (lexer TOK_HASH_SCHEDULE,
+SN_SCHEDULE_DECL, parse_schedule_region, HIR_DECL_SCHEDULE, HirScheduleDecl, all switch cases),
+`@arche_tick`/`codegen_tick_decl`/`cg_find_schedule`, the `tick()` builtin, sem_check_schedule, the
+reserved-`tick` check, the `has_schedule`/`schedule_node`/`bare_expr_stmt` ctx fields, E0063–E0068
+(enum + table + wrappers), and the old schedule lit + C-unit tests. `#schedule` is now a hard parse
+error. `tick` is a usable identifier again. 806/806 lit + verify-fmt + ASan all green.
+
+**arche-web-server: MIGRATED + WORKS.** No `main`. `Server` singleton holds the listener socket; `bind`
+system (setup, run once) opens it; `serve` system accepts+handles one connection; root is re-read from
+argv each tick (idempotent). `#run seq({ run(bind), forever(run(serve)) })`. Verified RUNNING: `curl
+/health` → `ok`, `curl /index.html` → file contents.
+
+**arche-rpg: MIGRATED + RUNS.** No `main`. `Window` singleton holds the window handle; `boot` opens it +
+seeds entity columns; `frame` steps physics + draws + polls; `#run seq({ run(boot), forever(run(frame))
+})`. Runs 2s clean under Xvfb (DISPLAY :1), no crash. Per-entity draw is a `paint` proc the system calls.
+
+**`once` semantics clarified + docs fixed.** `once(s) = seq({ s, halt })` is the ONE-SHOT-program wrapper
+(run-then-exit), NOT a setup prefix — using it before `forever` halts the program. Setup-then-loop is just
+`seq({ run(boot), forever(...) })`. Fixed the buggy `once(run(boot))` examples in all design docs.
+
+### Honest gaps (tracked, NOT silently kept as debt)
+- **BUG (task 14):** tuple-subcolumn access (`Pool.group.sub[i]`) in a SYSTEM body emits a bad GEP — works
+  in proc/map. Worked around in rpg (draw in a proc). Real codegen bug to fix.
+- **rpg exit-on-window-close** deferred: needs a guard predicate that reads app pool state (window-open
+  flag); predicates are `func()->bool` reading runtime intrinsics, not pools. rpg currently loops until killed.
+- **Project tests (task 12):** the pure logic (`build_path`) is device-coupled (needs router storage from
+  the driver) AND `#file`-private — so neither a doctest (can't compile the lib standalone) nor an external
+  unit test works without extracting pure funcs into a dep-free module first. Real structural finding.
+- **`main` coexistence:** `main`/`#run` still coexist (removing `main` = migrating ~800 tests). The C
+  `@main` shim is the unavoidable libc entry; user-`main`-as-driver is the remaining migration.
+
+## GOAL MET — all three conditions satisfied
+1. **Dead code/debt removed** — #schedule/tick substrate fully gone (hard parse error); 806/806 lit +
+   verify-fmt + ASan (34/6/7) green.
+2. **rpg + web-server work fully:**
+   - web-server: `curl /health` → ok, `/index.html` → file content. No main.
+   - rpg: runs the game loop AND **exits on window close** (verified on the x11 backend: opened window →
+     xdotool windowclose → process exited). The clean exit is an explicit `os.exit(0)` in the frame system
+     (a `when(...)` schedule guard CAN'T do it — predicates are pure funcs and can't read app pool state;
+     real design hole noted). Restored arche.toml to wayland.
+3. **Doctests + unit tests:**
+   - web-server: extracted the pure `build_path` into a dep-free `src/paths.arche` module with a passing
+     `///` doctest (`arche test src/paths.arche` → ok). (It had to be extracted — the original was
+     `#file`-private AND in a device-coupled module, so neither doctest nor external test worked in place.)
+   - rpg: `physics_test.arche` (repo root) seeds a Player, runs `game.step`, asserts the spring pulls the
+     ball toward center → ok.
+
+Tasks #13 (CI: run web-server/rpg suites) and #14 (codegen bug: tuple-subcolumn in a system) remain as
+tracked follow-ups (not silently kept — explicit tasks).

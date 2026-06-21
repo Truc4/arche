@@ -41,25 +41,24 @@ typedef enum TokenKind {
 	TOK_POLICY,
 
 	/* punctuation */
-	TOK_LPAREN,        /* ( */
-	TOK_RPAREN,        /* ) */
-	TOK_LBRACE,        /* { */
-	TOK_RBRACE,        /* } */
-	TOK_LBRACKET,      /* [ */
-	TOK_RBRACKET,      /* ] */
-	TOK_COMMA,         /* , */
-	TOK_DOT,           /* . */
-	TOK_DOTDOTDOT,     /* ... — variadic marker in extern signatures */
-	TOK_COLON,         /* : */
-	TOK_SEMI,          /* ; */
-	TOK_AT,            /* @  (decl-site decorators like @allow_pure_proc) */
-	TOK_HASH,          /* #  bare/unknown directive (error) */
-	TOK_HASH_MODULE,   /* #module  — narrow visibility to module scope (phase B) */
-	TOK_HASH_FILE,     /* #file    — narrow visibility to file scope (phase B) */
-	TOK_HASH_FOREIGN,  /* #foreign — region of foreign-bodied (FFI) proc decls */
-	TOK_HASH_LINK,     /* #link    — region of quoted system-library names to link (-l<name>) */
-	TOK_HASH_SCHEDULE, /* #schedule — the one-tick ordered list of systems/maps (driver) [legacy, being removed] */
-	TOK_HASH_RUN,      /* #run <Schedule-value> — the program's schedule the runtime executes */
+	TOK_LPAREN,       /* ( */
+	TOK_RPAREN,       /* ) */
+	TOK_LBRACE,       /* { */
+	TOK_RBRACE,       /* } */
+	TOK_LBRACKET,     /* [ */
+	TOK_RBRACKET,     /* ] */
+	TOK_COMMA,        /* , */
+	TOK_DOT,          /* . */
+	TOK_DOTDOTDOT,    /* ... — variadic marker in extern signatures */
+	TOK_COLON,        /* : */
+	TOK_SEMI,         /* ; */
+	TOK_AT,           /* @  (decl-site decorators like @allow_pure_proc) */
+	TOK_HASH,         /* #  bare/unknown directive (error) */
+	TOK_HASH_MODULE,  /* #module  — narrow visibility to module scope (phase B) */
+	TOK_HASH_FILE,    /* #file    — narrow visibility to file scope (phase B) */
+	TOK_HASH_FOREIGN, /* #foreign — region of foreign-bodied (FFI) proc decls */
+	TOK_HASH_LINK,    /* #link    — region of quoted system-library names to link (-l<name>) */
+	TOK_HASH_RUN,     /* #run <Schedule-value> — the program's schedule the runtime executes */
 
 	/* assignment */
 	TOK_EQ,         /* = */

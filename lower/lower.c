@@ -2456,28 +2456,10 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		return NULL;
 	case SN_DEFAULT_DECL:
 		return lower_default_directive(d);
-	case SN_SCHEDULE_DECL: {
-		HirDecl *ad = hir_decl_create(HIR_DECL_SCHEDULE);
-		HirScheduleDecl *sc = calloc(1, sizeof(HirScheduleDecl));
-		int n = sv_count(d, SN_NAME_EXPR);
-		sc->entries = calloc(n > 0 ? n : 1, sizeof(char *));
-		sc->entry_count = 0;
-		for (int i = 0; i < d.node->child_count; i++) {
-			if (d.node->children[i].tag != SE_NODE || d.node->children[i].as.node->kind != SN_NAME_EXPR)
-				continue;
-			SyntaxView entry = {d.node->children[i].as.node, d.src};
-			sc->entries[sc->entry_count++] = txt_dup(sv_token(entry, TOK_IDENT));
-		}
-		ad->data.schedule = sc;
-		return ad;
-	}
 	case SN_RUN_DECL: {
 		HirDecl *ad = hir_decl_create(HIR_DECL_RUN);
 		HirRunDecl *rn = calloc(1, sizeof(HirRunDecl));
-		/* Fold the `#run` expression to a constant ScheduleTree (value-CTFE). NULL = didn't fold; the
-		 * semantic pass reports that — codegen treats a NULL tree as an empty run. */
-		SyntaxView ex = sv_node_at_expr(d, 0);
-		rn->tree = g_lower_sem ? semantic_try_const_schedule(g_lower_sem, ex) : NULL;
+		rn->tree = g_lower_sem ? semantic_try_const_schedule(g_lower_sem, d) : NULL;
 		ad->data.run = rn;
 		return ad;
 	}
@@ -3234,7 +3216,6 @@ static void hir_rn_decl(HirDecl *d, const char *prefix, char **set, int count) {
 			hir_rn_stmt(d->data.system->stmts[i], prefix, set, count);
 		break;
 	case HIR_DECL_RUN:
-	case HIR_DECL_SCHEDULE:
 		/* Entry-file only; never inlined as a module, so no module-local rename. */
 		break;
 	case HIR_DECL_QUERY:
@@ -3294,7 +3275,6 @@ static const char *hir_decl_name(HirDecl *d) {
 	case HIR_DECL_SYSTEM:
 		return d->data.system->name;
 	case HIR_DECL_RUN:
-	case HIR_DECL_SCHEDULE:
 		return NULL; /* a region, not a named decl */
 	case HIR_DECL_QUERY:
 		return d->data.query->name;
@@ -3843,7 +3823,7 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 		/* `#schedule` is driver-owned: collected only from the root/entry file (this loop), never
 		 * from an inlined module (those go through hir_inline_module). Sits outside the decl range
 		 * guard below, so handle it explicitly here. */
-		if (k == SN_SCHEDULE_DECL || k == SN_RUN_DECL) {
+		if (k == SN_RUN_DECL) {
 			HirDecl *ad = lower_decl_cst((SyntaxView){root->children[i].as.node, src});
 			if (ad)
 				ast->decls[ast->decl_count++] = ad;

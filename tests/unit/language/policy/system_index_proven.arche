@@ -1,0 +1,24 @@
+// A `system` body gets the SAME bounds elision as a proc/func: the policy prover walks it, so a
+// provably in-bounds column index carries no implicit `!abort` and the analyzer shows no ghost.
+//   - `S.v[0]` on a `[1]S(1)` singleton (M=1): constant 0 < 1 -> proven.
+//   - `P.w[i]` under `for (i := 0; i < N; ...)` with a NAMED const `N` equal to the init count:
+//     the prover folds N -> 4 and proves i in [0,4) against M=4.
+// (Regression: the policy pass once skipped DECL_SYSTEM, and the loop bound only folded a literal,
+// not a named const, so both sites wrongly kept a `!abort` ghost.)
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "policy") -eq 0
+#import { fmt }
+S :: arche { v :: int }
+[1]S(1);
+
+P :: arche { w :: int }
+[4]P(4);
+N :: 4;
+
+show :: system {
+  fmt.printf("%d\n", S.v[0]);
+  for (i := 0; i < N; i = i + 1) {
+    fmt.printf("%d\n", P.w[i]);
+  }
+}
+
+#run run (show)

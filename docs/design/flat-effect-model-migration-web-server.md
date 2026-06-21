@@ -257,12 +257,12 @@ serve :: system {                                                // ONE connecti
   handle(conn, Server.root[0])(ok:);                             // run the handler proc; thread its result
 }
 
-#run seq({ once(run(bind)), forever(run(serve)) })               // bind once, then serve forever
+#run seq({ run(bind), forever(run(serve)) })               // bind once, then serve forever
 ```
 
 The loop isn't a statement anyone writes — it's the `forever(run(serve))` value, and advancing it is the
 runtime's job. A bare system is *not* a `Schedule`; a system enters one explicitly through `run(serve)`, the
-leaf that holds `serve`'s compile-time identity. `seq` takes a `[]Schedule` array literal — `once(run(bind))`
+leaf that holds `serve`'s compile-time identity. `seq` takes a `[]Schedule` array literal — `run(bind)`
 then `forever(run(serve))` — so "set up, then loop" is a single composed value, not a phase construct.
 `forever` and `once` aren't keywords; they're ordinary pure funcs returning `Schedule`
 (`forever(s) = loop(s)`, `once(s) = seq({ s, halt })`), composed in the value plane like anything else.
@@ -284,7 +284,7 @@ but the runtime walking the one `Schedule` value.
 | `register` | unchanged — pure router setup, called from the `bind` system | proc/func |
 | `net.recv`/`io.*`/`http.respond` (stdlib **procs** today) | rewritten *in the stdlib* as funcs→`Eff` wrapping the real leaves (`net_*` externs, `os.syscall`) — never wrapping a proc | func → `Eff` |
 | `io.fread_line` (result-dependent loop) | can't be a func/`Eff`; stays monadic — the `routine` holdout (§9) | proc / future `routine` |
-| `main` + `for(;;)` | `bind` system (setup) + `serve` system (one connection); runtime loops via `#run seq({ once(run(bind)), forever(run(serve)) })` | system + `Schedule` |
+| `main` + `for(;;)` | `bind` system (setup) + `serve` system (one connection); runtime loops via `#run seq({ run(bind), forever(run(serve)) })` | system + `Schedule` |
 
 The pure logic **did not get rewritten** — it got *relocated and relabelled*. Migration cost is low
 precisely because a well-written imperative handler already has a pure core; the model just makes you
@@ -307,7 +307,7 @@ An honest accounting for this specific program:
   selection glue — and lifting that to a pure func is "extract a function," which the language already
   allows with **no** `Eff`, no model. The model contributes nothing here a struct return doesn't.
 - **The one real structural win is the readable timeline.** The `Schedule`
-  (`#run seq({ once(run(bind)), forever(run(serve)) })`) names the per-connection work and its
+  (`#run seq({ run(bind), forever(run(serve)) })`) names the per-connection work and its
   setup-then-loop pacing as one value, the runtime drives it, and the effect set is the closed
   `net`/`io`/`http`/`os` primitive list. Modest, but genuine.
 - **The cost is real and program-wide — don't spin it.** Making `net.recv`/`io.read`/`http.respond`
