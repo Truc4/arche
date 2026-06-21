@@ -1,0 +1,23 @@
+// FEATURE: a tuple-subcolumn column-init scatter inside a SYSTEM body (`Mover.pos.x = { … }`) stores each
+// element into its row, exactly as it does in a proc. (The read-back is in a proc — where column access
+// already works — to ISOLATE the write/scatter path. Currently the scatter store is dropped in a system
+// body, so the column stays zero and this reads "ok 0 0".)
+// RUN: %arche build -o %t %s && %t | grep -qF "ok 7 9"
+#import { fmt }
+pos(x, y) :: int;
+Mover     :: arche { pos }
+[4]Mover(2);
+
+boot :: system {
+  Mover.pos.x = { 7, 9 };
+}
+
+verify :: proc() {
+  fmt.printf("ok %d %d\n", Mover.pos.x[0], Mover.pos.x[1]);
+}
+
+check :: system {
+  verify();
+}
+
+#run seq({ run (boot), run (check) })

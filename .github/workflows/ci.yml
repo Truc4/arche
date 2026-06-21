@@ -80,9 +80,11 @@ jobs:
         run: echo "✓ All tests passed"
 
   # Example apps live in their own repos (arche-web-server, arche-rpg) — referenced, never vendored or
-  # submoduled. CI clones them and runs each one's `run_tests.sh` against the freshly built arche, so a
-  # compiler change that breaks a real downstream app is caught here. (If a repo is private, set an
-  # `APPS_TOKEN` secret and the clone URLs pick it up.)
+  # submoduled. CI clones them and exercises each against the freshly built arche, so a compiler change
+  # that breaks a real downstream app is caught here. There is NO per-repo test script: `arche test ./...`
+  # runs every doctest (the app logic lives in doctests), and the only non-doctest steps are the
+  # irreducibly-external smokes — a build + HTTP integration for the server, a headless build for the GUI.
+  # (If a repo is private, set an `APPS_TOKEN` secret and the clone URLs pick it up.)
   example-apps:
     runs-on: ubuntu-latest
     name: Example apps
@@ -92,8 +94,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          # build toolchain + curl (web-server integration) + xvfb & libx11 (rpg headless x11 backend)
-          sudo apt-get install -y build-essential llvm curl xvfb libx11-dev
+          # build toolchain + libx11 (rpg headless x11 backend); the web-server integration uses Python stdlib
+          sudo apt-get install -y build-essential llvm libx11-dev
 
       - name: Build arche
         run: make
@@ -105,11 +107,27 @@ jobs:
           git clone --depth 1 "https://${AUTH}github.com/Truc4/arche-web-server.git" ../arche-web-server
           git clone --depth 1 "https://${AUTH}github.com/Truc4/arche-rpg.git" ../arche-rpg
 
+      # Doctests (app logic) + the external HTTP integration test against the running server.
       - name: Test arche-web-server
-        run: ARCHE="$PWD/build/arche" bash ../arche-web-server/run_tests.sh
+        working-directory: ../arche-web-server
+        run: |
+          set -e
+          ARCHE="$GITHUB_WORKSPACE/build/arche"
+          "$ARCHE" test ./...
+          "$ARCHE" build -o server src/main.arche
+          python3 tests/integration/test_http.py
 
+      # Doctests (spring physics) + a headless x11 build (proves the gfx device links). ARCHE_SELECT
+      # overrides the repo's wayland default so both steps use the x11 backend available on the runner.
       - name: Test arche-rpg
-        run: ARCHE="$PWD/build/arche" ARCHE_REPO="$PWD" bash ../arche-rpg/run_tests.sh
+        working-directory: ../arche-rpg
+        env:
+          ARCHE_SELECT: gfx=x11
+        run: |
+          set -e
+          ARCHE="$GITHUB_WORKSPACE/build/arche"
+          "$ARCHE" test ./...
+          "$ARCHE" build -o rpg main.arche
 
   # Require every PR to bump VERSION: the build bakes it in (-DARCHE_VERSION) and `arche version`
   # reports it, so master must never carry a stale or duplicate version. We fail (rather than

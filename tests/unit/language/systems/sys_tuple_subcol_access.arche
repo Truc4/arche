@@ -1,0 +1,25 @@
+// FEATURE: a `system` body handles tuple-subcolumn pool columns exactly like a proc/map — a column-init
+// scatter (`Mover.pos.x = { … }`) STORES the values, and an indexed read (`Mover.pos.x[i]`) addresses
+// the pool's column. (Both already work in a proc/map; this asserts the system path matches.)
+// RUN: %arche build -o %t %s && %t | grep -qF "x0=11 x1=22"
+#import { fmt }
+pos(x, y) :: int;
+vel(x, y) :: int;
+Mover     :: arche { pos, vel }
+[4]Mover(2);
+Pair      :: query { pos, vel }
+integrate :: map (Pair) {
+  pos += vel;
+}
+
+boot :: system {
+  Mover.pos.x = { 10, 20 };
+  Mover.vel.x = { 1, 2 };
+}
+
+show :: system {
+  run integrate;
+  fmt.printf("x0=%d x1=%d\n", Mover.pos.x[0], Mover.pos.x[1]);
+}
+
+#run seq({ run (boot), run (show) })
