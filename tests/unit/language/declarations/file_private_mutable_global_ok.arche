@@ -1,0 +1,22 @@
+// FEATURE (mirrors arche-rpg, the exact shape that regressed): a `#run`-driven program — no `main` — holds
+// private driver state as a `#file`-private mutable global that a SYSTEM writes. `#file` narrows it off the
+// exported surface, so W0022 (exported_mutable_global) does NOT fire. The rpg built with EXPORTED mutable
+// globals undetected because W0022 was wrongly role-gated to skip the file you run; now the rule is purely
+// visibility-based (an exported no-banner global is flagged in ANY file — see
+// exported_mutable_in_run_file_rejected) and `#file` works on the run-directly file to make state private.
+// RUN: %arche build -o %t %s 2>%t.err && %t | grep -q "tick=1"
+// RUN: ! grep -qi "exported_mutable_global" %t.err
+#import { fmt }
+
+#file
+ticks := 0;
+
+boot :: system {
+  ticks = ticks + 1;
+}
+
+check :: system {
+  fmt.printf("tick=%d\n", ticks);
+}
+
+#run seq({ run (boot), run (check) })

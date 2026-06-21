@@ -7921,25 +7921,45 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 
 	sem_check_one_region_per_file(root, src);
 
+	/* Region-band visibility for the file being compiled directly (the "run this file" file). It is NOT a
+	 * special "entry" role — nothing about a file is intrinsically an entry point, and the same file may be
+	 * `#import`'d elsewhere — so it honors `#file`/`#module` bands exactly like the module loader does
+	 * (sem_add_module_decl): a `#file` banner narrows the rest of the file to VIS_FILE, a `#module` banner
+	 * to VIS_UNIT, a `{ ... }` block scopes the band to its children. This is what lets a driver hold
+	 * private mutable state (`#file` then `win : window`) without tripping W0022. */
+	int file_local = 0; /* sticky once a `#file` banner is seen */
+	int unit_band = 0;  /* sticky once a `#module` banner is seen */
+
 	for (int i = 0; i < root->child_count; i++) {
 		if (root->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = root->children[i].as.node->kind;
-		/* A region marker. The banner form contributes no decls here (its following siblings are
-		 * collected normally); a `{ ... }` block's child decls are collected inline. In the main
-		 * file there is no export band to narrow (that's module-only), so the marker kind is moot. */
+		/* A region marker. The banner form narrows the rest of the file (sticky); a `{ ... }` block's child
+		 * decls are collected inline and scoped to the block's own band. `#foreign`/`#import` don't narrow. */
 		if (k == SN_REGION) {
 			const SyntaxNode *rn = root->children[i].as.node;
-			if (sv_has_token((SyntaxView){rn, src}, TOK_LBRACE)) {
+			SyntaxView rv = {rn, src};
+			int is_file = sv_has_token(rv, TOK_HASH_FILE);
+			int is_module = sv_has_token(rv, TOK_HASH_MODULE);
+			if (sv_has_token(rv, TOK_LBRACE)) {
+				Visibility block_vis = is_file     ? VIS_FILE
+				                       : is_module ? VIS_UNIT
+				                                   : (file_local ? VIS_FILE : (unit_band ? VIS_UNIT : VIS_EXPORTED));
 				for (int c = 0; c < rn->child_count; c++) {
 					if (rn->children[c].tag != SE_NODE)
 						continue;
 					if (!sem_is_collectible_decl(rn->children[c].as.node->kind))
 						continue;
 					DeclSummary *ad = decl_summary_from_node(ctx, (SyntaxView){rn->children[c].as.node, src});
-					if (ad)
+					if (ad) {
+						ad->visibility = block_vis;
 						ctx->decls[ctx->decl_count++] = ad;
+					}
 				}
+			} else if (is_file) {
+				file_local = 1;
+			} else if (is_module) {
+				unit_band = 1;
 			}
 			continue;
 		}
@@ -7969,6 +7989,7 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 
 		DeclSummary *ad = decl_summary_from_node(ctx, dv);
 		if (ad) {
+			ad->visibility = file_local ? VIS_FILE : (unit_band ? VIS_UNIT : VIS_EXPORTED);
 			ctx->decls[ctx->decl_count++] = ad;
 			/* Anonymous pool `[N]arche { cols }`: also register its synthetic shape (unless an identical
 			 * one is already registered) so the pool allocates and a query matches it by columns. */
@@ -8186,27 +8207,26 @@ static const char *sem_decl_module_path(SemanticContext *ctx, const DeclSummary 
 	return NULL;
 }
 
-/* W0022 exported_mutable_global — a top-level mutable global (scalar or non-const buffer) on the
- * exported surface is banned: shared mutable state must be a pool (the world's columnar storage) or
- * be narrowed to #module/#file. Pools (STATIC_KIND_ARCHETYPE) and immutable `::` consts (static_is_const)
- * are exempt. Scoped to user code; bundled core/stdlib is never flagged. Default severity is error (the
- * lint is default-promoted in ensure_init); `--exported-mutable=warn|allow` and @allow(...) relax it. */
+/* W0022 exported_mutable_global — a top-level mutable global (scalar or non-const buffer) on the EXPORTED
+ * surface is banned: any importer could mutate it across the contract boundary, so shared mutable state
+ * must be a pool (the world's columnar storage) or be made private with #module/#file. The rule is purely
+ * VISIBILITY-based — it fires on any VIS_EXPORTED (no-banner) mutable global, in ANY file. Nothing is
+ * special about the file you happen to run: "entry-ness" is not a property of a file, only of how you
+ * invoked the compiler, and the same file may be #import'd elsewhere. So a driver that wants private
+ * mutable state marks it `#file` (visible only in that file) — it is then not exported and not flagged.
+ * Pools (STATIC_KIND_ARCHETYPE) and immutable `::` consts (static_is_const) are exempt. Default severity is
+ * error (default-promoted in ensure_init); `--exported-mutable=warn|allow` and @allow(...) relax it. */
 static void sem_check_exported_mutable(SemanticContext *ctx) {
 	if (!ctx->model || ctx->decl_count <= 0)
 		return;
-	int core_off = semantic_print_line_offset();
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *d = ctx->decls[i];
 		if (d->kind != DECL_STATIC || d->visibility != VIS_EXPORTED || d->is_requirement)
 			continue;
-		if (d->origin != DECL_ORIGIN_ENTRY && d->origin != DECL_ORIGIN_USER_MODULE)
-			continue; /* never flag bundled core/stdlib */
 		int is_mutable =
 		    d->static_kind == STATIC_KIND_SCALAR || (d->static_kind == STATIC_KIND_ARRAY && !d->static_is_const);
 		if (!is_mutable)
 			continue; /* pools (archetype) and immutable `::` consts are exempt */
-		if (d->origin == DECL_ORIGIN_ENTRY && core_off > 0 && d->loc.line <= core_off)
-			continue; /* prepended core prelude — not user code */
 		/* re-arm @allow suppression for this decl (sem_emit_v matches the slug) */
 		ctx->active_allow_slugs = d->allow_slugs;
 		ctx->active_allow_slug_count = d->allow_slug_count;

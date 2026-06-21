@@ -78,11 +78,13 @@ reject :: policy(count: int, cap: int, ok: int) {
   }
 }
 
-// ── Scheduling (the flat effect model §9): the Schedule is a first-class value the runtime executes.
-// `Schedule` is a compile-time-folded tree (Approach A): the combinators are pure funcs the `#run` site
-// evaluates to a constant, so they are erased from codegen — no runtime representation, no fn pointers.
-// Runtime state (the clock, the tick counter) is NOT a type — it is read through runtime intrinsic funcs
-// (e.g. `elapsed()`, `tick_count()`), so a guard predicate is just `func() -> bool`.
+// ── Scheduling (the flat effect model §9 / docs/design/scheduling.md): the Schedule is a first-class
+// value the runtime executes. It is a compile-time-folded tree (Approach A): combinators are pure funcs
+// the `#run` site evaluates to a constant, erased from codegen — no runtime representation, no fn pointers.
+// There is no `World`, and the schedule reads NO program state: runtime conditions are scrapped. Pacing
+// is a system's own accumulator, conditional work lives in a system body, and loop-end is `os.exit` today.
+// `when` is reserved but UNWIRED. TODO(loop-end): the one place a runtime condition might earn itself is
+// loop termination — stop the loop on a quit flag so teardown runs after (`loop`-until / `when(quit,halt)`).
 Schedule :: sum {
   run (system) seq( []Schedule) par( []Schedule) loop(Schedule) when(func() -> bool, Schedule) halt
 }

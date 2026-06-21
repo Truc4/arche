@@ -1,0 +1,15 @@
+// BEHAVIOR (intentional, locked): `#run` is collected ONLY from the file you compile/run directly. An
+// imported module's `#run` is IGNORED — a schedule belongs to the file you run, not a library. By design
+// this is silent: no error, no warning (see docs/design/scheduling.md). The imported lib declares its own
+// `#run` that would print "from lib"; it must NOT run. Only this file's schedule (printing "from main")
+// runs. This pins the intentional drop so it can't regress into accidentally running a module's schedule.
+// RUN: %arche build -o %t %s && %t > %t.out
+// RUN: grep -q "from main" %t.out
+// RUN: ! grep -q "from lib" %t.out
+#import { fmt "runmod/lib.arche" }
+
+hello :: system {
+  fmt.printf("from main\n");
+}
+
+#run seq({ run(hello) })

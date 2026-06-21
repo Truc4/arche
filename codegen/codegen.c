@@ -7476,6 +7476,17 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 	}
 
 	case HIR_STMT_ASSIGN: {
+		/* Assigning an opaque-with-@drop `NAME` into any place MOVES it (opaque is move-only) — consume the
+		 * source so its `@drop` doesn't fire at scope exit and free the handle the target now owns (e.g.
+		 * `win = w` storing a `window` into a driver global). A no-op for non-droppable sources. */
+		{
+			HirExpr *av = stmt->data.assign_stmt.value;
+			while (av && av->kind == HIR_EXPR_UNARY &&
+			       (av->data.unary.op == UNARY_MOVE || av->data.unary.op == UNARY_COPY))
+				av = av->data.unary.operand;
+			if (av && av->kind == HIR_EXPR_NAME)
+				drop_mark_consumed(ctx, av->data.name.name);
+		}
 		/* Bulk column seed: `Player.pos.x = {80, 560, …}` scatters element i → column row i — a DOD batch
 		 * init of distinct per-row values, the columnar alternative to N row-at-a-time `insert`s. The
 		 * literal's length fills rows 0..n-1; the pool's live count (from `[N]Arch(M)`) is unchanged. Only a
@@ -7538,15 +7549,26 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					HirExpr **elems = stmt->data.assign_stmt.value->data.array_literal.elements;
 					int n = stmt->data.assign_stmt.value->data.array_literal.element_count;
 					for (int i = 0; i < n; i++) {
+						/* A value stored into a pool column is MOVED into storage the pool now owns — so its
+						 * source local is consumed (an explicit `move` is optional). Without this an
+						 * opaque-with-@drop local (e.g. a `window` handle) is still dropped at scope exit,
+						 * closing the handle the column just took ownership of. Mirrors the entity-insert
+						 * consume; a no-op for non-droppable element names. */
+						HirExpr *src = elems[i];
+						if (src && src->kind == HIR_EXPR_UNARY &&
+						    (src->data.unary.op == UNARY_MOVE || src->data.unary.op == UNARY_COPY))
+							src = src->data.unary.operand;
 						char ebuf[256];
-						codegen_expression(ctx, elems[i], ebuf);
+						codegen_expression(ctx, src, ebuf);
 						char promo[256];
 						const char *ev =
-						    col_is_float ? float_promote_operand(ctx, elems[i], ebuf, promo, sizeof(promo)) : ebuf;
+						    col_is_float ? float_promote_operand(ctx, src, ebuf, promo, sizeof(promo)) : ebuf;
 						char *gep = gen_value_name(ctx);
 						buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %d\n", gep, llvm_type, llvm_type,
 						                  col_ptr, i);
 						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", llvm_type, ev, llvm_type, gep);
+						if (src && src->kind == HIR_EXPR_NAME)
+							drop_mark_consumed(ctx, src->data.name.name);
 					}
 					break;
 				}

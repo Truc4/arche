@@ -1,0 +1,9 @@
+// A plain library module with a mutable global on its exported surface. Imported by the
+// exported_mutable_* tests, where W0022 flags `count` (a library can be mutated across the boundary).
+// Not a standalone test — only imported.
+// RUN: true
+count := 0;
+
+bump :: proc() {
+  count = count + 1;
+}

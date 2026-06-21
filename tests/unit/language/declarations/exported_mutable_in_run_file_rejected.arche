@@ -1,0 +1,13 @@
+// BUG GUARD: a no-banner (VIS_EXPORTED) mutable global is banned in ANY file, including the file you
+// compile/run directly. There is no "entry file" exemption — running a file is not a property of the file,
+// and the same file may be `#import`'d, where the global would be a mutable cross-boundary surface. The fix
+// is `#file` (see file_private_mutable_global_ok), not a role carve-out. W0022 must fire here.
+// RUN: ! %arche build -o %t %s 2>%t.err
+// RUN: grep -qi "exported_mutable_global" %t.err
+#import { fmt }
+shared := 0;
+
+main :: proc() {
+  shared = shared + 1;
+  fmt.printf("v=%d\n", shared);
+}

@@ -1,11 +1,11 @@
-// --exported-mutable=warn demotes W0022 to a warning: the build SUCCEEDS and the program runs, but
-// the lint is still reported on stderr.
+// --exported-mutable=warn demotes the library exported-mutable error (W0022, fired on the imported
+// `./extmut/lib`'s `count`) to a warning: the build SUCCEEDS and the program runs, but the lint is still
+// reported on stderr.
 // RUN: %arche build --exported-mutable=warn -o %t %s 2>%t.err && %t | grep -q "ok"
 // RUN: grep -qi "Lint warning \[exported_mutable_global\]" %t.err
-#import { fmt }
-count := 0;
+#import { "./extmut/lib" fmt }
 
 main :: proc() {
-  count = count + 1;
+  bump();
   fmt.print("ok\n");
 }

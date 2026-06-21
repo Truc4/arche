@@ -75,20 +75,16 @@ draw :: system query { pos, color } {                 // fans over every ball, l
 
 #run seq({                              // the program IS this one Schedule value; the runtime runs it
   run(boot),                            // setup runs once (it is in the seq); the loop follows
-  forever(seq({                         // the frame loop, owned by the runtime — no hand-written loop
-    catch_up(DT, run(step)),            // fixed-step physics: catch up 0..N substeps to wall time
-    run(draw),                          // render fans over the column, symmetric with physics
-  })),
+  forever(run(frame)),                  // the frame loop
 })
 ```
 
-Physics and rendering are now **symmetric**: both are systems fanning over the same `Player` pool, and the
-loop is just a value, `seq({ run(boot), forever(seq({ catch_up(DT, run(step)), run(draw) })) })`. The
-*pacing* — the fixed-timestep catch-up — is `catch_up(DT, run(step))`, a library `func` returning a
-`Schedule` (§9), composed into the same value as everything else rather than buried in an imperative
-accumulator. A system enters the schedule via explicit `run(step)` / `run(draw)`; a bare system is not a
-`Schedule`. The frame's clear/present are device lifecycle the runtime brackets at the seam — `draw` is
-scheduled, `present` is guaranteed after it.
+The loop is just a value, `seq({ run(boot), forever(run(frame)) })`. **Pacing is not a language or stdlib
+feature** — a fixed-timestep loop is game logic, so `frame` inlines its own accumulator using the OS clock
+(`os.now_ms` / `os.sleep_ms`) and `last`/`bank` **driver globals**: add the elapsed delta to a bank, drain
+owed ticks (`if (bank >= DT) { bank -= DT; run game.step }`, the schedule re-running `frame` to catch up if
+behind), render once, then sleep the remainder. A `system` body may hold `for`/`if` and `run <map>`, which
+is exactly what lets the loop be ordinary code. The schedule stays trivial; see [scheduling.md](scheduling.md).
 
 ## Where the model earns its keep here (the strengths)
 
@@ -103,25 +99,28 @@ scheduled, `present` is guaranteed after it.
 4. **It fits hot-reload, which arche-rpg already lives on.** A device = systems + pools; reload swaps
    system bodies while pools persist. That's already how the project works; device-systems just makes the
    *interface* match the reality (the device was already mostly systems + a reluctant proc).
-5. **Deterministic replay falls out of runtime-driven scheduling.** The systems read the clock and input
-   only through the runtime's `World`; they hold no wall-clock state of their own. So a headless replay —
-   a `#run` that advances the same systems against recorded input per tick, no real clock — reproduces the
-   run exactly. Same systems, a different `Schedule`. (The §6 tape-test, for free.)
+5. **Deterministic replay falls out of a dumb schedule + explicit time.** Wall-clock time enters the
+   program at exactly one place — the pacing system's `os.now_ms` — not through a hidden runtime `World`
+   (there is none). Feed that system a recorded `dt` instead of the real clock and the same systems, run
+   by the same dumb `loop`, reproduce the run exactly. Same systems, a different time source. (The §6
+   tape-test, for free.)
 
 ## Where it doesn't pay (the weaknesses — honest)
 
-1. **Everything a system touches must be a column or singleton.** The window handle, `dt`, frame count,
-   the should-close flag — all become singleton pools. For a 60-line driver that used plain locals, that's
-   real ceremony: you trade a `window` local for a `[1]Window` pool plus an insert. Small program, visible
-   overhead.
+1. **Shared state a system reads must be a column, a singleton, or a `#file`-private global.** Per-entity
+   data is columns; genuinely one-of state (the window handle, `last`/`bank` for the clock, a should-close
+   flag) is a **`#file`-private mutable global** — `#file` narrows it off the exported surface, so W0022
+   (which is purely visibility-based — it fires on any exported mutable global in any file, no entry-file
+   exemption) does not apply. So the window is just `#file` then `win : window`, not a `[1]Window` pool +
+   insert. The ceremony is small; the one rule is that a system reads *ambient* state, never as a parameter.
 2. **The framebuffer borrow gets subtler inside a system.** `gfx.frame(win)` hands back a *writable view*
    the backend owns, invalidated by `present`. A `draw` *proc* grabs that view locally and is done; a
    `draw` *system* fanning per row has to respect the borrow/ownership rules (FFI slice, read-only borrow)
    across the kernel. Drawing-as-a-system is conceptually cleaner but mechanically fussier than the proc.
-3. **Half the payoff rests on unbuilt machinery.** The `Schedule` value type, the runtime that walks it,
-   the singleton-driven systems, and runtime-woven device lifecycle are all design-only (§9). Even the
-   pacing — `catch_up(DT, …)` as a `Schedule` combinator over a `World` clock — depends on the runtime that
-   doesn't exist yet. Swapping a working 60-line loop for an unbuilt construct is net-negative until it does.
+3. **Pacing stays application logic.** A fixed-timestep loop is game logic, not a language or stdlib
+   concern, so there is no `every`/`catch_up` combinator — `frame` inlines its own accumulator over the OS
+   clock (`os.now_ms`/`os.sleep_ms`). The language supplies only the primitives (systems, `run`, the
+   schedule); the game composes them.
 4. **Woven lifecycle is invisible in the source.** The runtime guaranteeing `present` at the frame seam is
    elegant, but for a one-file game an explicit `gfx.present(win)` is more legible than weaving the reader
    can't see in the `#run` value (the §9 "authored vs woven" wrinkle).

@@ -441,30 +441,29 @@ run  (s)         dispatch one system or map      (the leaf — a system enters a
 seq  (steps)     run a []Schedule in order
 par  (steps)     run a []Schedule concurrently   (only within data dependencies)
 loop (s)         repeat
-when (pred, s)   guard by a predicate over World
+when (c, s)      reserved — NOT wired to program state; possible future loop-end hook   (see below)
 halt             stop the program
 ```
 
 `seq`/`par` take a **`[]Schedule`** — passed as an array literal (`seq({ run(a), run(b) })`), never
-variadic. The whole `Schedule` is a compile-time-constant tree of these nodes; system and predicate
+variadic. The whole `Schedule` is a compile-time-constant tree of these nodes; system and condition
 references are compile-time identities (the callback-by-name machinery), so it is **static and heap-free**
 — the runtime walks a fixed structure and allocates nothing.
 
-**Everything ergonomic is a library `func` over the core — not a DSL.** `once`, `forever`, `at_hz`,
-`every`, `catch_up`, and any combinator *you* write are ordinary pure funcs returning `Schedule`:
+**Structure combinators are `func`s you write over the core — not a DSL, not a stdlib.** Only `once` and
+`forever` ship (in `core.arche`); any other *structural* combinator is yours to write as a func returning
+`Schedule`:
 
 ```arche
 once    :: func(s: Schedule) -> Schedule { return seq({ s, halt }); }
 forever :: func(s: Schedule) -> Schedule { return loop(s); }
-every   :: func(n: int, s: Schedule) -> Schedule { return when(tick_mod(n), s); }
-at_hz   :: func(hz: int, s: Schedule) -> Schedule { return loop(when(elapsed(1.0 / hz), s)); }
 ```
 
-That is why scheduling has **absolute expression without being a second language**: it *is* the `func`
-value plane pointed at time. You are not choosing from runtime "modes" — you compose values, with your own
-combinators and your own predicates, exactly as you compose anything else. The earlier fear of a bolted-on
-schedule DSL (`loop`/`@fixed`/`@await`) dissolves: those were *pacing*, and pacing is now just `Schedule`
-values built by funcs.
+There is deliberately **no `at_hz`/`every`/`catch_up`** — because pacing is not a `Schedule` value at all.
+The schedule loops dumbly; *timing* is work a system does (read `os.now_ms`, decide whether to
+`os.sleep_ms`). So the earlier fear of a bolted-on schedule DSL (`loop`/`@fixed`/`@await`) dissolves from
+both ends: structure is ordinary `func`-built values, and pacing is ordinary system work — neither is a
+second language.
 
 **A system enters a `Schedule` explicitly, with `run`.** `run(draw)` is the leaf node holding `draw`'s
 compile-time identity; a bare system is *not* a `Schedule`. (An implicit `system → Schedule` lift is a
@@ -472,13 +471,18 @@ tempting single coercion — `seq({ draw, present })` reading bare names as "run
 keeps it explicit for now: `seq({ run(draw), run(present) })`.)
 Sub-schedules don't lift — they already are `Schedule`s — which is what lets schedules nest for free.
 
-**Scheduling decides; systems do — and the decision is pure.** A `Schedule` is a pure value: structure
-(`seq`/`par`/`loop`) plus conditions (predicates over `World`). It performs no effect. The runtime owns the
-**`World`** — the real clock, the input queue, the tick counter, the core count — and each iteration it
-walks your `Schedule`, evaluates your predicates (`func(World) -> bool`) against the `World`, and dispatches
-the systems whose guards fire, in the order and parallelism you composed. Effects happen only in the
-dispatched systems. So scheduling logic is pure, the effects are confined to systems, and the runtime is
-the one thing that turns the value into real, timed dispatch.
+**Scheduling structures; systems do.** A `Schedule` is a pure value: pure structure (`seq`/`par`/`loop`).
+It performs no effect and the runtime owns no state. There is **no `World`** — an earlier draft gave
+predicates a `func(World) -> bool` over a runtime `World` value, but that was a mistake twice over: "World"
+is the ECS word for the pool universe (which arche already *is*), and the things it bundled each have a
+concrete home — the **clock** is a syscall, **input** is a device writing an event pool, a **tick count**
+is a `[1]` singleton a system bumps. **The schedule does not gate on program state at all** — there is no
+`when`-over-state pass; the runtime walks the static tree and dispatches, reading no pool to decide what
+runs. The `when` constructor is reserved but unwired; its one plausible future use is **loop termination**
+(stop the loop on a quit flag so teardown runs after) — a **deferred TODO**, with `os.exit` in a system
+ending the program today. **Timing is not a schedule concern either** — the schedule loops dumbly; a system
+reads the delta (`os.now_ms`) and decides whether to wait (`os.sleep_ms`). Effects, including pacing,
+happen in the dispatched systems; the schedule is just *what* runs and *in what order*.
 
 **Parallelism is derived from data; order is what you wrote.** Systems already declare which pool columns
 they read and write (the barrier logic needs it). `seq` is explicit order — run these in this sequence.
@@ -496,10 +500,10 @@ flat systems the schedule sequences, data flowing through pools — not a call b
 
 ```arche
 [256]InputEvent;   [256]RenderCmd;            // event channels, drained next tick
-[1]World;   World :: arche { /* sim state */ }
+[1]Sim;   Sim :: arche { /* sim state */ }    // a [1] singleton — NOT a "World" (that's all the pools)
 
 gather :: system { /* run input-device leaves → write InputEvent rows */ }
-step   :: system { /* drain InputEvent, mutate World, write RenderCmd rows */ }
+step   :: system { /* drain InputEvent, mutate Sim, write RenderCmd rows */ }
 paint  :: system { /* drain RenderCmd → run draw-device leaves */ }
 
 #run forever(seq({ run(gather), run(step), run(paint) }))   // ONE tick, sequenced; barrier at each seam
@@ -511,20 +515,20 @@ global the way pools and types are** — a system has one name in the program's 
 bare (`run(draw)`, never `run(gfx.draw)`). A device *contributes* systems to that global namespace; it does
 not own a callable surface anyone reaches into.
 
-**The four pacings — and anything else — are `Schedule` values:**
+**The schedule expresses STRUCTURE; timing and conditions are not its job.** Only the core
+(`run`/`seq`/`par`/`loop`/`when`/`halt` + `once`/`forever`) is provided. *Structural* shapes are
+`Schedule` values; *timing* is work a system does:
 
-| pacing | the value |
+| concern | how |
 |---|---|
-| tick (default) | `forever(run(serve))` |
-| counted | `repeat(n, run(serve))` |
-| time / Hz | `at_hz(60, run(sim))` |
-| fixed-step + catch-up | `forever(catch_up(DT, run(sim)))` |
-| CPU / free-run / cores | `forever(par({ run(physics), run(ai), run(audio) }))` |
-| event-gated | `forever(when(has_input, run(step)))` |
-| startup-then-loop | `seq({ run(boot), forever(run(serve)) })` |
-| nested / sub-step / rollback | embed a `Schedule` in a `Schedule` — values nest |
+| tick (default) | `forever(run(serve))` — a schedule value (core) |
+| startup-then-loop | `seq({ run(boot), forever(run(serve)) })` — a schedule value (core) |
+| nested / sub-step / rollback | embed a `Schedule` in a `Schedule` — values nest (core) |
+| time / Hz, fixed-step + catch-up | a **system** does all the timing (read `os.now_ms`, accumulate a bank, `run` the sim map while behind, sleep the remainder when caught up); the schedule just `loop`s and re-runs the system to drain catch-up. No schedule condition — timing is wholly system work |
+| event-gated, state-gated | **not a schedule feature** — gate inside a system's body (`if`), or end the loop with `os.exit`. The schedule reads no program state. (A schedule-level loop-end hook is a deferred TODO.) |
+| CPU / cores | `forever(par({ run(physics), run(ai) }))` — `par`-as-true-concurrency is **open** |
 
-The last two rows retire old open problems for free. **Setup** is just a `run(boot)` entry *before* the loop
+**Setup** is just a `run(boot)` entry *before* the loop
 in the `seq` — no separate "startup phase" construct, it simply runs once because a `seq` entry runs once.
 (`once(s)` is the *one-shot program* wrapper — `seq({ s, halt })`, run-then-exit — not a setup prefix; using
 it before a `forever` would `halt` the program before the loop ever starts.) **Nested
@@ -588,16 +592,19 @@ Reifying the schedule as a value closed three problems that were open under the 
 `func` returning a `Schedule`; **startup** is a `run(boot)` entry before the loop. None needs a new construct or relaxes
 the system ban. What remains:
 
-- **The `World` primitive set + the `Schedule` value's exact shape.** The runtime walks a recursive,
-  compile-time-constant `Schedule` whose predicates are pure `func(World) -> bool`. Which primitives `World`
-  exposes (clock, input, tick count, core count, …) and the precise node representation are the contract to
-  pin — and they rest on `Schedule` being expressible as a **recursive value type** built as a static
-  constant. That representability, not variadic or closures, is the real prerequisite.
+- **A schedule-level loop-end hook (deferred TODO).** `Schedule`-as-a-recursive-value, the fold, `#run`,
+  the core constructors, and dumb `loop`-of-systems all shipped, and **pacing is resolved**: it is not a
+  schedule concern — a system reads `os.now_ms` and decides whether to `os.sleep_ms` (so there is no clock
+  condition, no `World`, no pacing primitive). **Runtime conditions over program state are scrapped** — the
+  schedule reads no pool/global to gate dispatch; conditional work lives inside a system's body (`if`). The
+  *one* place a runtime condition might still earn itself is **loop termination** — stopping the loop on a
+  quit flag so teardown systems run *after* it (`loop`-until / `when(should_quit, halt)`), instead of the
+  hard `os.exit`-in-a-system used today. That is a **deferred TODO**, not being built now.
 - **Truly independent timelines.** `par` is cooperative concurrency *within one tick*, honored within data
   dependencies. Two genuinely independent loops (a render loop ‖ a net loop, each with its own cadence)
   stay out of scope — explicit, backend-aware, not until something forces it.
-- **A new dispatch primitive.** Composing the core (`seq`/`par`/`loop`/`when`) with arbitrary predicates
-  covers every pacing that *derives*. A fundamentally new execution semantics (preemption, I/O-completion
+- **A new dispatch primitive.** Composing the core (`seq`/`par`/`loop`) with system-body logic covers every
+  pacing that *derives*. A fundamentally new execution semantics (preemption, I/O-completion
   dispatch) would be a new runtime primitive, not a library `func` — and that needs runtime support.
 
 ### A second, unrelated open problem (from §4): result-dependent reusable convenience

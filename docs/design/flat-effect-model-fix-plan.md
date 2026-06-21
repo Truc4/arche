@@ -78,15 +78,19 @@ Replaces `#schedule` / `tick()` / `main` wholesale.
     static compile-time constant** (a node holding `[]Schedule` of its own kind), with system/predicate
     references as compile-time identities (the existing callback-by-name machinery). *That* representability
     — not variadic, not closures — is the real gate. Confirm it before building combinators.
-- **`World`** — runtime-owned: clock, input queue, tick counter, core count. Predicates are pure
-  `func(World) -> bool`.
-- **`sched` library module** — `once`, `forever`, `at_hz`, `every`, `catch_up` as ordinary funcs over the
-  core. User-extensible (any func returning `Schedule`).
+- **No `World`** — there is no runtime-owned state object. Timing is **not** a schedule concern: the
+  schedule `loop`s dumbly and a *system* reads `os.now_ms` and decides whether to `os.sleep_ms`. The clock
+  is a syscall, input is a device's event pool, a tick count is a `[1]` singleton — each has a concrete
+  home, none belongs to the runtime. (See [scheduling.md](scheduling.md).)
+- **No `sched` library** — only `once`/`forever` ship (in `core.arche`); `at_hz`/`every`/`catch_up` are
+  deliberately not provided. Structural combinators are funcs the user writes; pacing is system work, not
+  a combinator at all.
 - **`#run <Schedule>`** — one per program (a second `#run` is a duplicate-region error, like the old
   one-schedule rule). Names the program's schedule value.
-- **The runtime executor** — walks the static `Schedule`, evaluates predicates against `World`, dispatches
-  the guarded systems in composed order/parallelism. Parallelism in `par` is honored only within each
-  system's pool read/write set (already known from `query{}`/pool access). This replaces `@arche_tick`.
+- **The runtime executor** — walks the static `Schedule` and dispatches the systems in composed
+  order/parallelism. It reads **no** program state to gate dispatch (runtime conditions are scrapped;
+  conditional work lives in a system body). Parallelism in `par` is honored only within each system's pool
+  read/write set (already known from `query{}`/pool access). This replaces `@arche_tick`.
 - **Remove** `tick()`, the `#schedule` directive, and the `main`→`@main_user` driver wiring; the process
   entry (`@main`) runs the `#run` schedule.
 - **Rewrite** `tests/unit/language/schedule/` for `#run` + the combinators.
@@ -114,5 +118,9 @@ Replaces `#schedule` / `tick()` / `main` wholesale.
 
 ## Out of scope (model §9, "still genuinely open")
 
-The exact `World` primitive set; truly independent concurrent timelines (`par` is within-tick only); any
-fundamentally new dispatch primitive (preemption, I/O-completion) that isn't a `func` over the core.
+- **TODO — a schedule-level loop-end hook.** Runtime conditions over program state are scrapped; the
+  schedule reads no program state. The one place a runtime condition might still earn itself is **loop
+  termination** — stopping the loop on a quit flag so teardown systems run *after* it (`loop`-until /
+  `when(should_quit, halt)`), instead of the hard `os.exit`-in-a-system used today. Deferred; not built now.
+- Truly independent concurrent timelines (`par` is within-tick only); any fundamentally new dispatch
+  primitive (preemption, I/O-completion) that isn't a `func` over the core.

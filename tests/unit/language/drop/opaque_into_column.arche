@@ -1,0 +1,30 @@
+// FEATURE: an opaque-with-`@drop` handle stored into a pool column is MOVED into the pool — the source
+// local is consumed, so its `@drop` does NOT fire at scope exit. The handle stays live (owned by the
+// column). (Regression: the column-scatter store didn't consume its source, so the handle was dropped
+// out from under the pool the instant it was stored — exactly what closed arche-rpg's `window` the
+// moment it opened. `obj_live` returning 1, not 0, proves the handle survived the storing scope.)
+// RUN: %arche build -o %t --link %S/runtime/dropcount.c %s && %t | grep -qF "live=1"
+#import { fmt }
+H :: opaque;
+#foreign {
+  obj_open :: proc()(h: H);
+  @drop(H)
+  obj_close :: proc(own h: H);
+  obj_live  :: proc()(n: int);
+}
+
+slot :: H;
+Slot :: arche { slot }
+[1]Slot(1);
+
+boot :: system {
+  obj_open()(h:);
+  Slot.slot = { h };
+}
+
+check :: system {
+  obj_live()(n:);
+  fmt.printf("live=%d\n", n);
+}
+
+#run seq({ run (boot), run (check) })

@@ -1,11 +1,11 @@
-// W0022 exported_mutable_global — a top-level mutable global on the exported surface is an ERROR by
-// default. Shared mutable state must live in a pool (or be #module/#file-private in a library).
-// The build fails; the diagnostic is reported as a lint *error*.
+// W0022 exported_mutable_global — a mutable global exported from an IMPORTED LIBRARY is an ERROR by
+// default: an importer could mutate it across the contract boundary, so shared mutable state must be a
+// pool (or #module/#file-private). The flag is role-based — a global in the ENTRY file (the driver) is
+// fine (see entry_mutable_global_ok); importing that library is what arms the ban. The build fails.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "Lint error \[exported_mutable_global\]" %t.out
-#import { fmt }
-count := 0;
+#import { "./extmut/lib" fmt }
 
 main :: proc() {
-  count = count + 1;
-  fmt.printf("count=%d\n", count);
+  bump();
+  fmt.printf("count\n");
 }

@@ -1866,6 +1866,13 @@ static void tuple_collapse_decl(HirDecl *d) {
 		for (int i = 0; i < d->data.func->stmt_count; i++)
 			tuple_collapse_stmt(d->data.func->stmts[i]);
 		break;
+	case HIR_DECL_SYSTEM:
+		/* A system body accesses pool columns just like a proc — collapse its `arch.pos.x` tuple-subcolumn
+		 * accesses to the flattened `arch.pos_x` too, or codegen leaks the bare subcomponent name as the
+		 * column base (`getelementptr i32, i32* x`) and drops column-init scatter stores. */
+		for (int i = 0; i < d->data.system->stmt_count; i++)
+			tuple_collapse_stmt(d->data.system->stmts[i]);
+		break;
 	default:
 		break;
 	}
