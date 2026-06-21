@@ -12,4 +12,4 @@ hello :: system {
   fmt.printf("from main\n");
 }
 
-#run seq({ run(hello) })
+#run seq({ run (hello) })
