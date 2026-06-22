@@ -1,0 +1,13 @@
+// ALL mutable globals are banned — even file-PRIVATE (`#file`) ones. Shared mutable state belongs in a
+// pool; a scalar/buffer global with no `::` must error regardless of visibility. Currently RED: only
+// EXPORTED mutable globals (W0022) are caught — a private one like this slips through (the exact hole the
+// arche-rpg `#file win: window` relied on).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "mutable global" %t.out
+#file
+hidden: int;
+
+bump :: system {
+  hidden = hidden + 1;
+}
+
+#run seq({ run (bump) })

@@ -96,7 +96,9 @@ enum {
 	R_ALLOW_UNDEFINED,
 	R_WHOLE_PROGRAM,
 	R_EXPORTED_MUTABLE,
+	R_PROC_LEAF,
 	R_SYS_FOREIGN_WRITE,
+	R_POOL_INDEX,
 	R_WNO_LSA,
 	R_WERR_LSA
 };
@@ -117,8 +119,12 @@ static const ArgSpec k_run_specs[] = {
      "force a whole-program build (run defaults to incremental: per-device object cache, fast rebuilds)"},
     {R_EXPORTED_MUTABLE, "--exported-mutable", ARG_VALUE, 0, 0, "<level>",
      "exported-mutable-global lint (W0022): error (default) | warn | allow"},
+    {R_PROC_LEAF, "--proc-leaf", ARG_VALUE, 0, 0, "<level>",
+     "proc-calls-proc lint (W0028): warn (default) | error | allow"},
     {R_SYS_FOREIGN_WRITE, "--map-foreign-write", ARG_VALUE, 0, 0, "<level>",
      "map-writes-foreign-pool lint (W0024): error (default) | warn | allow"},
+    {R_POOL_INDEX, "--pool-index", ARG_VALUE, 0, 0, "<level>",
+     "pool-index-outside-query lint (W0029): warn (default) | error | allow"},
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
@@ -166,8 +172,18 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 		args_usage(stderr, g_prog, "run", "[flags] <input.arche> [-- program-args...]", k_run_specs);
 		return ARCHE_USAGE;
 	}
+	if (cli_apply_proc_leaf(args_value(&p, R_PROC_LEAF)) != 0) {
+		fprintf(stderr, "%s: --proc-leaf expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "run", "[flags] <input.arche> [-- program-args...]", k_run_specs);
+		return ARCHE_USAGE;
+	}
 	if (cli_apply_map_foreign_write(args_value(&p, R_SYS_FOREIGN_WRITE)) != 0) {
 		fprintf(stderr, "%s: --map-foreign-write expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "run", "[flags] <input.arche> [-- program-args...]", k_run_specs);
+		return ARCHE_USAGE;
+	}
+	if (cli_apply_pool_index(args_value(&p, R_POOL_INDEX)) != 0) {
+		fprintf(stderr, "%s: --pool-index expects error|warn|allow\n", g_prog);
 		args_usage(stderr, g_prog, "run", "[flags] <input.arche> [-- program-args...]", k_run_specs);
 		return ARCHE_USAGE;
 	}

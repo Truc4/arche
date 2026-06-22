@@ -1,0 +1,19 @@
+// FEATURE (the applicative sequence `seq`, §5): `seq(a, b)` composes two INDEPENDENT effects into one Eff
+// that, when run, performs `a` then `b` and yields `b`'s out-slots. Fully fused at the run site —
+// `both(10, 20)(t:)` emits `eff_acc(10)` (for effect, result discarded) then `eff_acc(20)` (bound to t).
+// `eff_acc` accumulates into a running total, so t == 30 PROVES both ran in order (if only the last ran,
+// t would be 20). `seq` here is the 2-arg Eff form, distinct from the Schedule `seq({ … })` combinator.
+// RUN: %arche build -o %t --link %S/runtime/effshim.c %s && %t | grep -qF "t=30"
+#foreign {
+  eff_acc :: proc(x: int)(total: int);
+}
+#import { fmt }
+
+both :: func(a: int, b: int) -> Eff(int) {
+  return seq(eff_acc(a), eff_acc(b));
+}
+
+main :: proc() {
+  both(10, 20)(t:);
+  fmt.printf("t=%d\n", t);
+}

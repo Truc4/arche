@@ -166,6 +166,20 @@ static TypeId synth_call(TyCtx *cx, SyntaxView e) {
 		check(cx, sem_node_at_expr(e, i), expected, where);
 	}
 
+	/* BUILD SITE: an extern under-applied in value position (in-args only) BUILDS an Eff value — its
+	 * out-params are the out-slots. Mirrors call_type_id in semantic.c so tycheck agrees on the type. */
+	if (cr->is_extern && cr->kind == DECL_PROC && cr->out_param_count > 0) {
+		int oc = cr->out_param_count;
+		TypeId obuf[16];
+		TypeId *outs = oc > 16 ? malloc((size_t)oc * sizeof(TypeId)) : obuf;
+		for (int i = 0; i < oc; i++)
+			outs[i] = cr->out_params[i].type_id;
+		TypeId r = tyid_of_eff_concrete(cx->arena, name, outs, oc);
+		if (outs != obuf)
+			free(outs);
+		free(name);
+		return r;
+	}
 	TypeId r = ret_count > 0 ? cr->return_type_ids[0] : tyid_of_prim(cx->arena, PRIM_VOID);
 	free(name);
 	return r;
@@ -399,6 +413,10 @@ static void check(TyCtx *cx, SyntaxView e, TypeId expected, const char *where) {
 	if (tyid_is_unknown(got))
 		return;
 	if (tyid_equal(got, expected))
+		return;
+	/* An Eff position accepts a concrete `Eff#extern(out…)` where the STRUCTURAL `Eff(out…)` is declared
+	 * (e.g. a func's `-> Eff(int,int)` return). Out-slots must match; the extern rides in the concrete id. */
+	if (tyid_kind(cx->arena, expected) == TYK_EFF && tyid_usable_as(cx->arena, got, expected))
 		return;
 	int sub = subtype_check(cx, got, expected);
 	if (sub == 1)

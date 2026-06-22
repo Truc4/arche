@@ -47,6 +47,12 @@ typedef struct {
 			const char *archetype_name;
 		} handle;
 		struct {
+			const char *extern_name; /* interned; the under-applied extern's name, or NULL for a structural
+			                          * annotation `Eff(T…)` matched only on out-slots */
+			TypeId *out_slots;       /* [out_slot_count] — the types yielded when run */
+			int out_slot_count;
+		} eff;
+		struct {
 			TypeId *params;
 			int param_count;
 			TypeId *returns; /* func: single return; proc: out-params; map/policy: none */
@@ -94,6 +100,8 @@ void ty_arena_free(TypeArena *a) {
 		} else if (n->kind == TYK_FUNC || n->kind == TYK_PROC || n->kind == TYK_SYS || n->kind == TYK_POLICY) {
 			free(n->data.func.params);
 			free(n->data.func.returns);
+		} else if (n->kind == TYK_EFF) {
+			free(n->data.eff.out_slots);
 		}
 	}
 	free(a->nodes);
@@ -173,6 +181,22 @@ TypeId tyid_backing(const TypeArena *a, TypeId t) {
 /* Is a value of type `from` usable where `to` is expected? `from == to`, or `from` is a distinct
  * subtype whose backing chain reaches `to` (one-way: `meters` usable as `float`, not vice versa). */
 int tyid_usable_as(const TypeArena *a, TypeId from, TypeId to) {
+	/* A concrete `Eff#extern(out…)` is usable as the STRUCTURAL annotation `Eff(out…)` with the same
+	 * out-slots: the build site mints the concrete one, while a func's declared `-> Eff(int,int)` is
+	 * structural (extern_name NULL). A structural target accepts any extern; a concrete target requires
+	 * the same extern. (Out-slots compared by id; arche has no Eff subtyping beyond this.) */
+	if (a && tyid_kind(a, from) == TYK_EFF && tyid_kind(a, to) == TYK_EFF) {
+		int nf = tyid_eff_out_count(a, from);
+		if (nf == tyid_eff_out_count(a, to)) {
+			int eq = 1;
+			for (int i = 0; i < nf && eq; i++)
+				if (tyid_eff_out_at(a, from, i) != tyid_eff_out_at(a, to, i))
+					eq = 0;
+			const char *te = tyid_eff_extern_name(a, to);
+			if (eq && (te == NULL || te == tyid_eff_extern_name(a, from)))
+				return 1;
+		}
+	}
 	for (TypeId t = from; t != TYID_UNKNOWN; t = tyid_backing(a, t))
 		if (t == to)
 			return 1;
@@ -331,6 +355,56 @@ TypeId tyid_of_handle(TypeArena *a, const char *archetype_name) {
 	node.kind = TYK_HANDLE;
 	node.data.handle.archetype_name = interned;
 	return push_node(a, node);
+}
+
+/* Hash-cons an Eff node. Keyed on (extern_name, out_slots) so a structural `Eff(int,int)` (extern_name
+ * NULL) and a concrete `Eff#fwrite(int,int)` are DISTINCT ids — the run site uses the concrete extern,
+ * while a func's declared `-> Eff(int,int)` annotation is the structural one (checked on out-slots only). */
+static TypeId intern_eff(TypeArena *a, const char *extern_name, const TypeId *out_slots, int out_slot_count) {
+	const char *interned = extern_name ? intern_str(a, extern_name) : NULL;
+	for (int i = 1; i < a->node_count; i++) {
+		TypeNode *n = &a->nodes[i];
+		if (n->kind != TYK_EFF || n->data.eff.extern_name != interned || n->data.eff.out_slot_count != out_slot_count)
+			continue;
+		int eq = 1;
+		for (int j = 0; j < out_slot_count && eq; j++)
+			if (n->data.eff.out_slots[j] != out_slots[j])
+				eq = 0;
+		if (eq)
+			return (TypeId)i;
+	}
+	TypeNode node = {0};
+	node.kind = TYK_EFF;
+	node.data.eff.extern_name = interned;
+	node.data.eff.out_slot_count = out_slot_count;
+	node.data.eff.out_slots = malloc((out_slot_count ? out_slot_count : 1) * sizeof(TypeId));
+	if (out_slot_count)
+		memcpy(node.data.eff.out_slots, out_slots, out_slot_count * sizeof(TypeId));
+	return push_node(a, node);
+}
+
+TypeId tyid_of_eff_structural(TypeArena *a, const TypeId *out_slots, int out_slot_count) {
+	return intern_eff(a, NULL, out_slots, out_slot_count);
+}
+TypeId tyid_of_eff_concrete(TypeArena *a, const char *extern_name, const TypeId *out_slots, int out_slot_count) {
+	return intern_eff(a, extern_name, out_slots, out_slot_count);
+}
+const char *tyid_eff_extern_name(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_EFF)
+		return NULL;
+	return a->nodes[t].data.eff.extern_name;
+}
+int tyid_eff_out_count(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_EFF)
+		return -1;
+	return a->nodes[t].data.eff.out_slot_count;
+}
+TypeId tyid_eff_out_at(const TypeArena *a, TypeId t, int i) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_EFF)
+		return TYID_UNKNOWN;
+	if (i < 0 || i >= a->nodes[t].data.eff.out_slot_count)
+		return TYID_UNKNOWN;
+	return a->nodes[t].data.eff.out_slots[i];
 }
 
 TypeId tyid_of_archetype_category(TypeArena *a) {
@@ -524,6 +598,17 @@ const char *tyid_display(const TypeArena *a, TypeId t, char *buf, int buflen) {
 	case TYK_HANDLE:
 		snprintf(buf, buflen, "handle(%s)", n->data.handle.archetype_name ? n->data.handle.archetype_name : "?");
 		break;
+	case TYK_EFF: {
+		char os[300] = "";
+		for (int i = 0; i < n->data.eff.out_slot_count; i++) {
+			char one[128];
+			tyid_display(a, n->data.eff.out_slots[i], one, sizeof(one));
+			size_t l = strlen(os);
+			snprintf(os + l, sizeof(os) - l, "%s%s", i ? ", " : "", one);
+		}
+		snprintf(buf, buflen, "Eff(%s)", os);
+		break;
+	}
 	case TYK_ARCHETYPE_CATEGORY:
 		snprintf(buf, buflen, "archetype");
 		break;

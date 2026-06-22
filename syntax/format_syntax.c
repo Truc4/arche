@@ -144,6 +144,7 @@ static int is_list_paren_parent(SyntaxNodeKind p) {
 	case SN_FUNC_EXPR:
 	case SN_SYS_EXPR:
 	case SN_SYS_DECL:
+	case SN_SYSTEM_EXPR:
 	case SN_TYPE_PROC:
 	case SN_TYPE_FUNC:
 	case SN_PROC_DECL:

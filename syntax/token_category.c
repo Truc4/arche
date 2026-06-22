@@ -90,6 +90,7 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_AT:
 	case TOK_AMP_AMP:
 	case TOK_PIPE_PIPE:
+	case TOK_PIPE_GT:
 		return "operator";
 
 	case TOK_LPAREN:

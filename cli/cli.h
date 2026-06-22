@@ -44,10 +44,18 @@ int cli_main(int argc, char **argv);
  * an unknown level (the caller surfaces a usage error). Shared by build/check/run. */
 int cli_apply_exported_mutable(const char *value);
 
+/* Apply `--proc-leaf=<level>` (error|warn|allow) to the W0028 proc-calls-proc lint (the flat-effect
+ * proc→proc ban). `value` may be NULL (flag absent → leave the warn-by-default). Returns 0 on success,
+ * non-zero on an unknown level (the caller surfaces a usage error). Shared by build/check/run. */
+int cli_apply_proc_leaf(const char *value);
+
 /* Apply `--map-foreign-write=<level>` (error|warn|allow) to the W0024 map-writes-foreign-pool lint.
  * `value` may be NULL (flag absent → leave the error-by-default). Returns 0 on success, non-zero on
  * an unknown level (the caller surfaces a usage error). Shared by build/check/run. */
 int cli_apply_map_foreign_write(const char *value);
+
+/* Apply `--pool-index=error|warn|allow` (W0029 pool_index_outside_query). NULL → keep the warn-by-default. */
+int cli_apply_pool_index(const char *value);
 
 /* Read a whole file into a freshly malloc'd, NUL-terminated buffer (caller frees). On error prints
  * a perror message and returns NULL. Shared by the build/check/run subcommands. */

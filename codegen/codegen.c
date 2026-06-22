@@ -1330,11 +1330,17 @@ static const char *cg_insert_handler(CodegenContext *ctx, HirExpr *rhs, const ch
 }
 
 static HirMapDecl *find_map_decl(CodegenContext *ctx, const char *name) {
+	const char *rdot = strrchr(name, '.');
+	const char *rtail = rdot ? rdot + 1 : name;
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		HirDecl *decl = ctx->ast->decls[i];
-		if (decl->kind == HIR_DECL_MAP && strcmp(decl->data.map->name, name) == 0) {
+		if (decl->kind != HIR_DECL_MAP)
+			continue;
+		const char *n = decl->data.map->name;
+		const char *ndot = strrchr(n, '.');
+		const char *ntail = ndot ? ndot + 1 : n;
+		if (strcmp(n, name) == 0 || strcmp(ntail, rtail) == 0)
 			return decl->data.map;
-		}
 	}
 	return NULL;
 }
@@ -1357,6 +1363,93 @@ static HirFuncDecl *find_func_decl(CodegenContext *ctx, const char *name) {
 			return decl->data.func; /* skip policies — they're inlined, not called (find_policy_decl) */
 	}
 	return NULL;
+}
+
+/* Inline ONE under-applied extern call `ec` taken from a builder body: produce `<extern>(args with fn's
+ * params substituted by the actual call args)`. Returns a freshly-allocated HIR_EXPR_CALL (caller frees its
+ * `.args` array + the node; the callee NAME + arg elements are SHARED) and sets *out_proc to the extern, or
+ * NULL if `ec` is not an under-applied extern call (only an extern is inert under-applied). */
+static HirExpr *eff_subst_call(CodegenContext *ctx, HirFuncDecl *fn, HirExpr **actual_args, int actual_argc,
+                               HirExpr *ec, HirProcDecl **out_proc) {
+	*out_proc = NULL;
+	while (ec && ec->kind == HIR_EXPR_UNARY && (ec->data.unary.op == UNARY_MOVE || ec->data.unary.op == UNARY_COPY))
+		ec = ec->data.unary.operand;
+	if (!ec || ec->kind != HIR_EXPR_CALL || !ec->data.call.callee || ec->data.call.callee->kind != HIR_EXPR_NAME)
+		return NULL;
+	const char *ename = ec->data.call.callee->data.name.name;
+	HirProcDecl *ep = ename ? find_proc_decl(ctx, ename) : NULL;
+	if (!ep || !ep->is_extern)
+		return NULL;
+	int n = ec->data.call.arg_count;
+	HirExpr *call = hir_expr_create(HIR_EXPR_CALL);
+	call->data.call.callee = ec->data.call.callee; /* SHARED NAME(extern) */
+	call->data.call.args = malloc((size_t)(n ? n : 1) * sizeof(HirExpr *));
+	call->data.call.arg_count = n;
+	for (int i = 0; i < n; i++) {
+		HirExpr *ea = ec->data.call.args[i];
+		/* The body arg may be `move`/`copy`-wrapped when the extern's param is `own` (e.g. an `own []char`
+		 * slice) — unwrap to find the underlying param NAME for matching. On a match we substitute the WHOLE
+		 * actual arg (which already carries its own move/copy for the destination param). */
+		HirExpr *eu = ea;
+		while (eu && eu->kind == HIR_EXPR_UNARY && (eu->data.unary.op == UNARY_MOVE || eu->data.unary.op == UNARY_COPY))
+			eu = eu->data.unary.operand;
+		int sub = -1;
+		if (eu && eu->kind == HIR_EXPR_NAME && eu->data.name.name)
+			for (int p = 0; p < fn->param_count; p++)
+				if (fn->params[p]->name && strcmp(fn->params[p]->name, eu->data.name.name) == 0) {
+					sub = p;
+					break;
+				}
+		call->data.call.args[i] = (sub >= 0 && sub < actual_argc) ? actual_args[sub] : ea; /* SHARED */
+	}
+	*out_proc = ep;
+	return call;
+}
+
+/* Eff FUSION (the compile-time keystone). A func-returning-Eff is a builder whose body is a single `return
+ * <eff>` where <eff> is an under-applied extern, optionally `|> fin` (a pure result-map) and/or
+ * `seq(<eff_a>, <eff_b>)` (run a then b, yield b). Given a call `fn(actual…)`, recover the underlying
+ * extern call(s) INLINED with fn's params substituted by the actual args. Returns the MAIN (result-bearing,
+ * = last) extern call + sets *out_proc; *out_finalizer is the `|>` finalizer (or NULL); *out_prefix is a
+ * leading effect to run first for `seq` (or NULL) with *out_prefix_proc its extern. Returns NULL if not a
+ * static-extern builder (the E0222 case). Mirrors fold_sched's combinator inlining but keeps SSA args live. */
+static HirExpr *eff_inline_build(CodegenContext *ctx, HirFuncDecl *fn, HirExpr **actual_args, int actual_argc,
+                                 HirProcDecl **out_proc, HirFuncDecl **out_finalizer, HirExpr **out_prefix,
+                                 HirProcDecl **out_prefix_proc) {
+	*out_proc = NULL;
+	*out_finalizer = NULL;
+	*out_prefix = NULL;
+	*out_prefix_proc = NULL;
+	if (!fn)
+		return NULL;
+	/* the builder body is a single `return <expr>` (allow other no-op stmts before it defensively) */
+	HirExpr *bcall = NULL;
+	for (int i = 0; i < fn->stmt_count; i++) {
+		HirStmt *st = fn->stmts[i];
+		if (st && st->kind == HIR_STMT_RETURN && st->data.return_stmt.count == 1) {
+			bcall = st->data.return_stmt.values[0];
+			break;
+		}
+	}
+	/* `… |> fin` — recover the pure FINALIZER; the Eff being mapped is the left operand. */
+	if (bcall && bcall->kind == HIR_EXPR_BINARY && bcall->data.binary.op == OP_FMAP) {
+		HirExpr *fnm = bcall->data.binary.right;
+		if (fnm && fnm->kind == HIR_EXPR_NAME && fnm->data.name.name)
+			*out_finalizer = find_func_decl(ctx, fnm->data.name.name);
+		bcall = bcall->data.binary.left;
+	}
+	while (bcall && bcall->kind == HIR_EXPR_UNARY &&
+	       (bcall->data.unary.op == UNARY_MOVE || bcall->data.unary.op == UNARY_COPY))
+		bcall = bcall->data.unary.operand;
+	/* `seq(a, b)` — run `a` for effect first (the prefix), then `b` is the result-bearing main. Both must be
+	 * direct under-applied externs (the applicative keystone; nested seq/fmap-in-args is not yet supported). */
+	if (bcall && bcall->kind == HIR_EXPR_CALL && bcall->data.call.callee &&
+	    bcall->data.call.callee->kind == HIR_EXPR_NAME && bcall->data.call.callee->data.name.name &&
+	    strcmp(bcall->data.call.callee->data.name.name, "seq") == 0 && bcall->data.call.arg_count == 2) {
+		*out_prefix = eff_subst_call(ctx, fn, actual_args, actual_argc, bcall->data.call.args[0], out_prefix_proc);
+		bcall = bcall->data.call.args[1];
+	}
+	return eff_subst_call(ctx, fn, actual_args, actual_argc, bcall, out_proc);
 }
 
 /* A failure-policy decl by name AND op category (1=bounds, 3=divide) — the `!name` namespace. Separate
@@ -7111,6 +7204,35 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		HirFuncDecl *callee_func = fn ? find_func_decl(ctx, fn) : NULL;
 		HirProcDecl *callee_proc = (!callee_func && fn) ? find_proc_decl(ctx, fn) : NULL;
 
+		/* Eff FUSION (the keystone): a func-returning-Eff callee with out-args is an effect RUN. Inline the
+		 * builder to recover the underlying extern + args, then let the extern out-param path below emit it
+		 * directly — `wb(1,s)(n:)` fuses to `fwr(1,s)(n:)`, the build func never called. (A direct
+		 * under-applied extern `fwr(1,s)(n:)` needs no fusion — it is already an extern call.) */
+		HirExpr *eff_inlined = NULL;
+		HirExpr *eff_prefix = NULL;  /* a leading `seq` effect to run before the main one, or NULL */
+		HirFuncDecl *eff_fin = NULL; /* the `|>` finalizer applied to the extern's raw out-slot, or NULL */
+		if (callee_func && callee_func->return_type_count > 0 && callee_func->return_types[0] &&
+		    callee_func->return_types[0]->tag == HIR_TYPE_EFF && rhs && rhs->kind == HIR_EXPR_CALL) {
+			HirProcDecl *eff_ext = NULL, *eff_prefix_proc = NULL;
+			eff_inlined = eff_inline_build(ctx, callee_func, rhs->data.call.args, rhs->data.call.arg_count, &eff_ext,
+			                               &eff_fin, &eff_prefix, &eff_prefix_proc);
+			if (eff_inlined) {
+				/* `seq`: run the prefix effect first (for its side effect; its result is discarded). */
+				if (eff_prefix) {
+					char pres[256];
+					codegen_expression(ctx, eff_prefix, pres);
+				}
+				rhs = eff_inlined;
+				callee_proc = eff_ext;
+				callee_func = NULL;
+				fn = eff_ext->name;
+			} else {
+				/* the builder is not a single `return <extern>(…)` — its extern is not statically one extern */
+				fprintf(stderr, "Error: cannot run this Eff — its extern is not statically known (E0222)\n");
+				ctx->had_error = 1;
+			}
+		}
+
 		/* `_` placeholder in an in-out in-slot: it names no value. The buffer lives in the out-list,
 		 * named by the positionally-matching out-target. Rewrite each such `_` arg's NAME to that
 		 * out-target buffer in place for the duration of this call's emission, so the existing
@@ -7176,6 +7298,18 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				saved_uscore_args[ui]->data.name.name = saved_uscore_names[ui]; /* restore `_` */
 			for (int ui = 0; ui < saved_copy_count; ui++)
 				*saved_copy_slots[ui] = saved_copy_vals[ui]; /* restore elided `copy` node */
+			/* `|>` fmap: apply the pure finalizer to the extern's RAW out-slot, in place — `ext(a)(r:)`
+			 * with `… |> fin` emits `%r = call @fin(%raw)`. The finalized value replaces `res` so the
+			 * binding below stores it. (Single raw out-slot → single finalizer arg; the keystone shape.) */
+			if (eff_fin) {
+				char fret[256], fsym_buf[512];
+				func_llvm_return_type(eff_fin, fret, sizeof(fret));
+				const char *fsym = cg_fnsym(ctx, eff_fin->name, 0, fsym_buf, sizeof(fsym_buf));
+				const char *pty = eff_fin->param_count > 0 ? return_member_llvm(eff_fin->params[0]->type) : "i32";
+				char *fres = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = call %s @%s(%s %s)\n", fres, fret, fsym, pty, res);
+				snprintf(res, sizeof(res), "%s", fres);
+			}
 			for (int i = 0; i < target_count && i < callee_proc->out_param_count; i++) {
 				if (proc_out_param_is_inout(callee_proc, i))
 					continue;
@@ -7472,6 +7606,16 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				}
 			}
 		}
+		/* free the Eff-fusion scaffolding: each node + its args ARRAY only (callee NAME and arg elements are
+		 * shared with the builder body / actual-arg HIR, owned elsewhere). */
+		if (eff_inlined) {
+			free(eff_inlined->data.call.args);
+			free(eff_inlined);
+		}
+		if (eff_prefix) {
+			free(eff_prefix->data.call.args);
+			free(eff_prefix);
+		}
 		break;
 	}
 
@@ -7728,6 +7872,51 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			const char *var_name = stmt->data.assign_stmt.target->data.name.name;
 			ValueInfo *val = find_value(ctx, var_name);
 			if (val && val->type == 4) {
+				/* A column write inside a `system(Q)` row loop is a PER-ROW scalar store (`col[row] = expr`),
+				 * NOT the map whole-column loop (which assumes a map param + emits a vectorized loop). We are
+				 * already in the explicit row loop with `implicit_loop_index` set and `in_map` clear. */
+				if (ctx->implicit_loop_index[0] && !ctx->in_map) {
+					const char *arche_type = val->field_type ? val->field_type : "i64";
+					if (strcmp(arche_type, "handle") != 0) {
+						const char *st = llvm_type_from_arche(arche_type);
+						int is_flt = strcmp(st, "float") == 0 || strcmp(st, "double") == 0;
+						char *gep = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", gep, st, st, val->llvm_name,
+						                  ctx->implicit_loop_index);
+						char rhs_buf[256];
+						codegen_expression(ctx, stmt->data.assign_stmt.value, rhs_buf);
+						if (stmt->data.assign_stmt.op != OP_NONE) {
+							char *cur = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", cur, st, st, gep);
+							const char *opc = "add";
+							switch (stmt->data.assign_stmt.op) {
+							case OP_ADD:
+								opc = is_flt ? "fadd" : "add";
+								break;
+							case OP_SUB:
+								opc = is_flt ? "fsub" : "sub";
+								break;
+							case OP_MUL:
+								opc = is_flt ? "fmul" : "mul";
+								break;
+							case OP_DIV:
+								opc = is_flt ? "fdiv" : "sdiv";
+								break;
+							case OP_MOD:
+								opc = is_flt ? "frem" : "srem";
+								break;
+							default:
+								break;
+							}
+							char *res = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", res, opc, st, cur, rhs_buf);
+							buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", st, res, st, gep);
+						} else {
+							buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", st, rhs_buf, st, gep);
+						}
+					}
+					break;
+				}
 				is_whole_column = 1;
 			}
 		}
@@ -8568,9 +8757,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			}
 		}
 
-		/* Build: call void @map_name(%struct.A* @A, %struct.B* @B, ...) */
 		char map_call_buf[512];
-		buffer_append_fmt(ctx, "  call void @%s(", cg_fnsym(ctx, map_name, 0, map_call_buf, sizeof(map_call_buf)));
+		buffer_append_fmt(ctx, "  call void @%s(", cg_fnsym(ctx, map->name, 0, map_call_buf, sizeof(map_call_buf)));
 		for (int i = 0; i < matching_count; i++) {
 			if (i > 0)
 				buffer_append(ctx, ", ");
@@ -9638,6 +9826,12 @@ static void emit_func_params(CodegenContext *ctx, HirFuncDecl *func) {
 
 static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 	ctx->entity_bind_count = 0; /* entity bindings are body-local (mirrors codegen_proc_decl) */
+	/* An Eff-returning func is a compile-time effect BUILDER: it is inlined at each run site (the underlying
+	 * extern + args are recovered there) and never emitted as an LLVM function — an Eff has no runtime type.
+	 * It stays in the HIR so the fusion (eff_inline_build) can read its body. */
+	if (!func->is_extern && func->return_type_count > 0 && func->return_types[0] &&
+	    func->return_types[0]->tag == HIR_TYPE_EFF)
+		return;
 	/* For extern funcs, emit declare stub */
 	if (func->is_extern) {
 		/* Return type from the declaration: a bare extern with no `->` is void; char[] returns a
@@ -10078,6 +10272,52 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 
 /* `Name :: system { body }` — the composer, emitted as a no-arg void function (a parameterless proc
  * body). Dispatched by the generated @arche_run (from the #run ScheduleTree). */
+/* The archetype that owns a column of this name (first in decl order), or NULL. A query column resolves to
+ * its archetype by name — source-agnostic. Used to split a join's columns into the driver pool (looped) and
+ * `[1]` singleton pools (broadcast). */
+static const char *arch_owning_col(CodegenContext *ctx, const char *col) {
+	for (int d = 0; d < ctx->ast->decl_count; d++) {
+		if (ctx->ast->decls[d]->kind != HIR_DECL_ARCHETYPE)
+			continue;
+		HirArchetypeDecl *arch = ctx->ast->decls[d]->data.archetype;
+		for (int f = 0; f < arch->field_count; f++)
+			if (strcmp(arch->fields[f]->name, col) == 0)
+				return arch->name;
+	}
+	return NULL;
+}
+
+/* Load a singleton column's value at index 0 (broadcast) as a scalar SSA, binding it to `param_name`. */
+static void bind_singleton_col(CodegenContext *ctx, const char *param_name, const char *arch_name) {
+	HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+	if (!arch)
+		return;
+	int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+	char base_buf[256];
+	emit_query_pool_ptr(ctx, arch_name, is_static, base_buf, sizeof(base_buf));
+	for (int f = 0; f < arch->field_count; f++) {
+		if (strcmp(arch->fields[f]->name, param_name) != 0)
+			continue;
+		const char *elem_type = llvm_type_from_arche(field_base_type_name(arch->fields[f]->type));
+		char *elem_ptr;
+		if (is_static) {
+			elem_ptr = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n",
+			                  elem_ptr, arch_name, arch_name, base_buf, f);
+		} else {
+			char *field_gep = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", field_gep,
+			                  arch_name, arch_name, base_buf, f);
+			elem_ptr = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", elem_ptr, elem_type, elem_type, field_gep);
+		}
+		char *val = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", val, elem_type, elem_type, elem_ptr);
+		add_value(ctx, param_name, val, 0);
+		break;
+	}
+}
+
 static void codegen_system_decl(CodegenContext *ctx, HirSystemDecl *sys) {
 	ctx->entity_bind_count = 0;
 	snprintf(ctx->current_return_type_buf, sizeof(ctx->current_return_type_buf), "void");
@@ -10093,16 +10333,127 @@ static void codegen_system_decl(CodegenContext *ctx, HirSystemDecl *sys) {
 	push_value_scope(ctx);
 	ctx->block_terminated = 0;
 	register_static_arrays_in_scope(ctx);
-	for (int i = 0; i < sys->stmt_count; i++)
-		codegen_statement(ctx, sys->stmts[i]);
+	if (sys->param_count > 0) {
+		/* EFFECTFUL per-entity fan (`system(Q)`): find the archetype(s) carrying these columns and run the
+		 * WHOLE body once PER row — ONE explicit row loop, unlike a map's per-`col=expr` vectorized loops,
+		 * and the body permits effects/control flow. Reuses map's column binding + the auto-index machinery
+		 * (a type-4 column read with `implicit_loop_index` set → `col[row]`). The pool is read from its
+		 * GLOBAL (the system is dispatched no-arg), so no dispatch change is needed. */
+		/* Split the (possibly joined) columns: a column whose owning pool is a `[1]` singleton broadcasts;
+		 * the rest belong to the DRIVER pool whose row count drives the loop. The driver columns determine
+		 * which archetype(s) we fan over (a query may still match several same-shape archetypes). */
+		const char *cols[256];
+		int ncol = 0;
+		for (int p = 0; p < sys->param_count && ncol < 256; p++) {
+			const char *owner = arch_owning_col(ctx, sys->params[p]->name);
+			if (owner && get_arch_static_capacity(ctx, owner) == 1)
+				continue; /* singleton column — broadcast, not a loop driver */
+			cols[ncol++] = sys->params[p]->name;
+		}
+		/* A query over ONLY singletons (e.g. `system(query{handle})`, or a join of two `[1]` pools) has no
+		 * broadcast counterpart — drive over the FIRST singleton (one row); the rest broadcast as usual. */
+		if (ncol == 0 && sys->param_count > 0)
+			cols[ncol++] = sys->params[0]->name;
+		const char *archs[16];
+		int na = ncol > 0 ? query_match_archs(ctx, cols, ncol, archs, 16) : 0;
+		for (int ai = 0; ai < na; ai++) {
+			const char *arch_name = archs[ai];
+			HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+			if (!arch)
+				continue;
+			int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+			char base_buf[256];
+			emit_query_pool_ptr(ctx, arch_name, is_static, base_buf, sizeof(base_buf));
+			char *cgep = gen_value_name(ctx); /* row count = the struct field after all columns */
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cgep,
+			                  arch_name, arch_name, base_buf, arch->field_count);
+			char *count = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, cgep);
+			int id = ctx->value_counter++;
+			char head[40], lbody[40], lend[40];
+			snprintf(head, sizeof(head), "qsrow_head_%d", id);
+			snprintf(lbody, sizeof(lbody), "qsrow_body_%d", id);
+			snprintf(lend, sizeof(lend), "qsrow_end_%d", id);
+			char *ralloca = gen_value_name(ctx);
+			emit_alloca(ctx, "  %s = alloca i64\n", ralloca);
+			buffer_append_fmt(ctx, "  store i64 0, i64* %s\n  br label %%%s\n%s:\n", ralloca, head, head);
+			char *row = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", row, ralloca);
+			char *cmp = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n  br i1 %s, label %%%s, label %%%s\n%s:\n", cmp, row,
+			                  count, cmp, lbody, lend, lbody);
+			push_value_scope(ctx);
+			/* bind each query column: a DRIVER column (in this archetype) as a type-4 column pointer
+			 * (auto-indexed at %row); a SINGLETON column as a broadcast scalar loaded at index 0. */
+			for (int p = 0; p < sys->param_count; p++) {
+				const char *param_name = sys->params[p]->name;
+				const char *owner = arch_owning_col(ctx, param_name);
+				if (owner && strcmp(owner, arch_name) != 0 && get_arch_static_capacity(ctx, owner) == 1) {
+					bind_singleton_col(ctx, param_name, owner);
+					continue;
+				}
+				for (int f = 0; f < arch->field_count; f++) {
+					if (strcmp(arch->fields[f]->name, param_name) != 0)
+						continue;
+					const char *elem_type = llvm_type_from_arche(field_base_type_name(arch->fields[f]->type));
+					if (arch->fields[f]->kind == FIELD_COLUMN) {
+						char *field_ptr = gen_value_name(ctx);
+						if (is_static) {
+							buffer_append_fmt(
+							    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n",
+							    field_ptr, arch_name, arch_name, base_buf, f);
+						} else {
+							char *field_gep = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+							                  field_gep, arch_name, arch_name, base_buf, f);
+							buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", field_ptr, elem_type, elem_type,
+							                  field_gep);
+						}
+						add_value(ctx, param_name, field_ptr, 4); /* type 4 = column pointer (auto-indexed) */
+						ValueInfo *col_val = find_value(ctx, param_name);
+						if (col_val) {
+							col_val->arch_name = malloc(strlen(arch_name) + 1);
+							strcpy(col_val->arch_name, arch_name);
+							col_val->field_type = field_base_type_name(arch->fields[f]->type);
+						}
+					} else {
+						char *field_gep = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+						                  field_gep, arch_name, arch_name, base_buf, f);
+						char *field_val = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", field_val, elem_type, elem_type, field_gep);
+						add_value(ctx, param_name, field_val, 0);
+					}
+					break;
+				}
+			}
+			snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", row); /* col[row] access */
+			ctx->block_terminated = 0;
+			for (int s = 0; s < sys->stmt_count; s++)
+				codegen_statement(ctx, sys->stmts[s]);
+			ctx->implicit_loop_index[0] = '\0';
+			pop_value_scope(ctx);
+			char *rnext = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n  store i64 %s, i64* %s\n  br label %%%s\n%s:\n", rnext, row,
+			                  rnext, ralloca, head, lend);
+			ctx->block_terminated = 0;
+		}
+	} else {
+		for (int i = 0; i < sys->stmt_count; i++)
+			codegen_statement(ctx, sys->stmts[i]);
+	}
 	pop_value_scope(ctx);
 	buffer_append(ctx, "  ret void\n");
 	end_function_body(ctx, fbs_sys);
 	buffer_append(ctx, "}\n\n");
 }
 
-/* Find a top-level system or map decl by its source name (schedule-entry resolution). */
+/* Find a top-level system or map decl by its source name (schedule-entry resolution). A qualified schedule
+ * reference `game.pace` matches either the full dotted name or, for an imported decl that kept its bare
+ * name, the reference's tail (`pace`). */
 static HirDecl *cg_find_scheduled_decl(CodegenContext *ctx, const char *name) {
+	const char *dot = strrchr(name, '.');
+	const char *tail = dot ? dot + 1 : name;
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		HirDecl *d = ctx->ast->decls[i];
 		const char *n = NULL;
@@ -10110,7 +10461,7 @@ static HirDecl *cg_find_scheduled_decl(CodegenContext *ctx, const char *name) {
 			n = d->data.system->name;
 		else if (d->kind == HIR_DECL_MAP)
 			n = d->data.map->name;
-		if (n && strcmp(n, name) == 0)
+		if (n && (strcmp(n, name) == 0 || strcmp(n, tail) == 0))
 			return d;
 	}
 	return NULL;

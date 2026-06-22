@@ -86,6 +86,7 @@ typedef enum TokenKind {
 	/* logical */
 	TOK_AMP_AMP,   /* && */
 	TOK_PIPE_PIPE, /* || */
+	TOK_PIPE_GT,   /* |> — fmap a pure func over an Eff's out-slots (the applicative result-map) */
 
 	/* arrow */
 	TOK_ARROW, /* -> */

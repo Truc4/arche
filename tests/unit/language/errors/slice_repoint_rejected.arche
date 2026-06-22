@@ -1,0 +1,19 @@
+// DESIRED: a slice is a VIEW whose pointer is fixed at creation. Reassigning a slice variable to a
+// different slice repoints it — that must be rejected. You may write THROUGH a slice (`s[i] = x`), never
+// change where it points. (This is the invariant the gfx `frame` proc violates: `px = raw[0:w*h]`
+// launders a raw device pointer into a slice value by repointing it.)
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiF "fixed at creation" %t.out
+#import { fmt }
+
+repoint :: func() -> int {
+  buf: [8]int;
+  s := buf[0: 4];
+  s = buf[1: 5];
+  return s[0];
+}
+
+show :: system {
+  fmt.printf("%d\n", repoint());
+}
+
+#run seq({ run (show) })

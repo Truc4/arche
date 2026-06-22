@@ -103,6 +103,8 @@ typedef enum {
 	SN_TYPE_SHAPED_ARRAY,
 	SN_TYPE_TUPLE,
 	SN_TYPE_HANDLE,
+	SN_TYPE_EFF,  /* a not-yet-run effect value type: `Eff(T…)` — the parenthesized out-slot types. Kept
+	               * inside the SN_TYPE_REF..SN_TYPE_FUNC range so the "is a type node" guards include it. */
 	SN_TYPE_PROC, /* a proc type (bodiless signature): `proc(in)(out)` */
 	SN_TYPE_FUNC, /* a func type (bodiless signature): `func(in)->T` */
 

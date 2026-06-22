@@ -70,8 +70,9 @@ typedef enum {
 	OP_GT,
 	OP_LTE,
 	OP_GTE,
-	OP_AND, /* && — logical, eager (arche exprs have no side effects) */
-	OP_OR,  /* || */
+	OP_AND,  /* && — logical, eager (arche exprs have no side effects) */
+	OP_OR,   /* || */
+	OP_FMAP, /* |> — fmap a pure func over an Eff's out-slots (the applicative result-map) */
 } Operator;
 
 /* =========================

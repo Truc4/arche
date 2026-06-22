@@ -1,0 +1,14 @@
+// Overwriting an opaque handle held in a file-scoped mutable global with `=` must be rejected (E0122).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "assign over opaque" %t.out
+res :: opaque;
+
+@allow(unused_function)
+clobber :: proc(src: res) {
+  slot = src;
+}
+
+#file
+slot: res;
+
+main :: proc() {
+}

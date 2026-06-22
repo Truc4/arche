@@ -371,6 +371,7 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
 	}
 
 	int is_handle = (parser->current.length == 6 && strncmp(parser->current.start, "handle", 6) == 0);
+	int is_eff = (parser->current.length == 3 && strncmp(parser->current.start, "Eff", 3) == 0);
 	int is_type_kw = (parser->current.length == 4 && strncmp(parser->current.start, "type", 4) == 0);
 	int is_archetype = (parser->current.length == 9 && strncmp(parser->current.start, "archetype", 9) == 0);
 	int is_opaque = (parser->current.length == 6 && strncmp(parser->current.start, "opaque", 6) == 0);
@@ -414,6 +415,25 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
 			return 0;
 		}
 		out->syntax_kind = SN_TYPE_HANDLE;
+		return 1;
+	}
+
+	/* Eff(T…) — a not-yet-run effect value (the flat effect model §3). The parenthesized list is the
+	 * out-slot types it yields when run. A built-in type constructor (no generics); the paren form is
+	 * deliberately distinct from handle<…>'s angle brackets. Each out-slot is a child type node. */
+	if (is_eff && check(parser, TOK_LPAREN)) {
+		advance(parser); /* ( */
+		if (!check(parser, TOK_RPAREN)) {
+			do {
+				if (!parse_type(parser))
+					return 0;
+			} while (match(parser, TOK_COMMA));
+		}
+		if (!match(parser, TOK_RPAREN)) {
+			error(parser, "Expected ')' to close the Eff(...) out-slot type list");
+			return 0;
+		}
+		out->syntax_kind = SN_TYPE_EFF;
 		return 1;
 	}
 
@@ -1496,6 +1516,10 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			error(parser, "Expected a query in `map(...)` — a name `map(Movers)` or a literal `map(query {…})`");
 			return 0;
 		}
+		if (check(parser, TOK_COMMA)) {
+			error(parser, "maps don't support joins — a join is a tuple of queries, use a `system`");
+			return 0;
+		}
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')'");
 			return 0;
@@ -1505,7 +1529,32 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 	if (check(parser, TOK_SYSTEM)) {
 		advance(parser); /* consume 'system' */
 		*out_kind = SN_SYSTEM_EXPR;
-		/* `system { body }` — the composer: full control flow, no params (reads pools/singletons). */
+		/* `system { body }` runs once. `system(Q) { body }` fans over a query. `system(Q1, Q2) { body }` is
+		 * a JOIN — a comma-separated tuple of source-agnostic queries, each wrapped as its own child. */
+		if (check(parser, TOK_LPAREN)) {
+			advance(parser); /* consume '(' */
+			do {
+				if (check(parser, TOK_QUERY)) {
+					int q_cp = syntax_cp(parser);
+					advance(parser); /* consume 'query' */
+					if (!parse_query_columns(parser))
+						return 0;
+					syntax_wrap(parser, q_cp, SN_QUERY_EXPR);
+				} else if (check(parser, TOK_IDENT)) {
+					int ref_cp = syntax_cp(parser);
+					advance(parser); /* the query name */
+					syntax_wrap(parser, ref_cp, SN_QUERY_REF);
+				} else {
+					error(parser, "Expected a query in `system(...)` — a name `system(Drawables)` or a literal "
+					              "`system(query {…})`");
+					return 0;
+				}
+			} while (match(parser, TOK_COMMA));
+			if (!match(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')'");
+				return 0;
+			}
+		}
 		return parse_block_body(parser);
 	}
 	if (check(parser, TOK_ENUM)) {
@@ -1880,6 +1929,8 @@ static int binop_prec(TokenKind k) {
 		return 2;
 	case TOK_PIPE_PIPE:
 		return 1;
+	case TOK_PIPE_GT:
+		return 1; /* |> binds loosest: `ext(a, b) |> fin` groups the call as the left operand */
 	default:
 		return -1;
 	}

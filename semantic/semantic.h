@@ -150,6 +150,12 @@ void semantic_set_lint_exported_mutable_global(int enabled, int werror);
 /* W0024 map_writes_foreign_pool: error by default (see ensure_init). `--map-foreign-write=error|warn|allow`
  * maps to (enabled, werror) = (1,1) / (1,0) / (0,0). */
 void semantic_set_lint_map_writes_foreign_pool(int enabled, int werror);
+/* W0028 proc_calls_proc: WARN by default (the flat-effect proc→proc ban). `--proc-leaf=error|warn|allow`
+ * maps to (enabled, werror) = (1,1) / (1,0) / (0,0). */
+void semantic_set_lint_proc_calls_proc(int enabled, int werror);
+/* W0029 pool_index_outside_query: WARN by default (pool values must come from a query, not `Pool.col[i]`).
+ * `--pool-index=error|warn|allow` maps to (1,1) / (1,0) / (0,0). */
+void semantic_set_lint_pool_index_outside_query(int enabled, int werror);
 /* W0026 large_stack_array: warn by default. `-Wno-large-stack-array` disables; `-Werror=large-stack-array`
  * (or bare `-Werror`) promotes to a hard error. */
 void semantic_set_lint_large_stack_array(int enabled, int werror);

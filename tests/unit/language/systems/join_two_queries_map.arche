@@ -1,0 +1,14 @@
+// Joins are systems-only. `map` is a pure single-archetype kernel (GPU-portable), so a tuple-of-queries
+// selector on a `map` must be REJECTED — a join is a `system`. (The system form is join_two_queries_system.)
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiF "maps don't support joins" %t.out
+#import { fmt }
+[8]Mover(3);
+Mover :: arche { n :: int }
+[1]Win;
+Win :: arche { id :: int }
+
+addwin :: map (query { n }, query { id }) {
+  n = n + id;
+}
+
+#run seq({ run (addwin) })

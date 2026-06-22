@@ -1,0 +1,11 @@
+// An inline `system(query {…})` selector must format on one line like `map(query {…})` — the closing `)`
+// must NOT break onto its own line (regression: SN_SYSTEM_EXPR was missing from is_list_paren_parent).
+// RUN: %arche fmt %s | grep -qF "draw :: system (query { pos, color }) {"
+Mob :: arche { pos, color }
+[1]Mob;
+
+draw :: system (query { pos, color }) {
+  pos.x += color;
+}
+
+#run seq({ run (draw) })

@@ -1,0 +1,17 @@
+// FEATURE: the build func's params substitute into the under-applied extern's args at the run site —
+// `prod(6, 7)(p:)` fuses to a direct `eff_mul(6, 7)` call (multi-arg inlining, runtime args threaded as
+// SSA). The build func is erased. p must be 42.
+// RUN: %arche build -o %t --link %S/runtime/effshim.c %s && %t | grep -qF "p=42"
+#foreign {
+  eff_mul :: proc(a: int, b: int)(r: int);
+}
+#import { fmt }
+
+prod :: func(a: int, b: int) -> Eff(int) {
+  return eff_mul(a, b);
+}
+
+main :: proc() {
+  prod(6, 7)(p:);
+  fmt.printf("p=%d\n", p);
+}

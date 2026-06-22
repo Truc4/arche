@@ -164,6 +164,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_entity_unknown_column]         = { "E0218", "entity_unknown_column",         CLASS_ERROR, 1 },
 	[SEM_DIAG_entity_unknown_type]           = { "E0219", "entity_unknown_type",           CLASS_ERROR, 1 },
 	[SEM_DIAG_positional_insert]             = { "E0220", "positional_insert",             CLASS_ERROR, 1 },
+	[SEM_DIAG_proc_under_applied]            = { "E0221", "proc_under_applied",            CLASS_ERROR, 1 },
+	[SEM_DIAG_eff_extern_not_static]         = { "E0222", "eff_extern_not_static",         CLASS_ERROR, 1 },
 
 	/* Lints */
 	[SEM_LINT_proc_could_be_func]            = { "W0001", "proc_could_be_func",            CLASS_LINT, 1 },
@@ -192,6 +194,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_map_writes_foreign_pool]       = { "W0024", "map_writes_foreign_pool",       CLASS_LINT, 1 },
 	[SEM_LINT_large_stack_array]             = { "W0026", "large_stack_array",             CLASS_LINT, 1 },
 	[SEM_LINT_pointless_move]                = { "W0027", "pointless_move",                CLASS_LINT, 1 },
+	[SEM_LINT_proc_calls_proc]               = { "W0028", "proc_calls_proc",               CLASS_LINT, 1 },
+	[SEM_LINT_pool_index_outside_query]      = { "W0029", "pool_index_outside_query",      CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -445,6 +449,12 @@ void semantic_set_lint_func_impure(int enabled, int werror) {
 }
 void semantic_set_lint_exported_mutable_global(int enabled, int werror) {
 	semantic_set_diag(SEM_LINT_exported_mutable_global, enabled, werror);
+}
+void semantic_set_lint_proc_calls_proc(int enabled, int werror) {
+	semantic_set_diag(SEM_LINT_proc_calls_proc, enabled, werror);
+}
+void semantic_set_lint_pool_index_outside_query(int enabled, int werror) {
+	semantic_set_diag(SEM_LINT_pool_index_outside_query, enabled, werror);
 }
 void semantic_set_lint_map_writes_foreign_pool(int enabled, int werror) {
 	semantic_set_diag(SEM_LINT_map_writes_foreign_pool, enabled, werror);
@@ -767,6 +777,21 @@ SemDiag *sem_emit_action_in_expression(SemanticContext *ctx, SourceLoc loc, cons
 	                 "a %s call is an action, not a value — bind it (`x := %s(...)`) or call "
 	                 "it as a statement; it can't appear inside an expression",
 	                 kind, name);
+}
+
+SemDiag *sem_emit_proc_under_applied(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_proc_under_applied, loc,
+	                 "cannot build an Eff from proc `%s` — only an extern is inert when under-applied; a proc "
+	                 "minus its out-slots is a suspended computation, not a value. Wrap the underlying extern "
+	                 "in a func instead",
+	                 name);
+}
+
+SemDiag *sem_emit_eff_extern_not_static(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_DIAG_eff_extern_not_static, loc,
+	                 "this Eff's extern is not statically known — an Eff's extern is part of its type and must "
+	                 "resolve to exactly one extern (no runtime selection between effects); there is no "
+	                 "function pointer to dispatch it");
 }
 SemDiag *sem_emit_no_group_match(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_no_group_match, loc, "no member of group '%s' matches the argument types", name);
@@ -1131,9 +1156,22 @@ SemDiag *sem_emit_lint_func_could_be_const(SemanticContext *ctx, SourceLoc loc, 
 }
 SemDiag *sem_emit_lint_exported_mutable_global(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_LINT_exported_mutable_global, loc,
-	                 "exported mutable global `%s` — shared mutable state should live in a pool (or be "
-	                 "`#module`/`#file`-private in a library); opt out with --exported-mutable=warn|allow",
+	                 "mutable global `%s` — shared mutable state must live in a pool (even a `#file`/`#module`-"
+	                 "private mutable global is banned); opt out with --exported-mutable=warn|allow",
 	                 name);
+}
+SemDiag *sem_emit_lint_proc_calls_proc(SemanticContext *ctx, SourceLoc loc, const char *callee) {
+	return sem_emit_(ctx, SEM_LINT_proc_calls_proc, loc,
+	                 "proc calls another proc `%s` — a proc is a flat effect leaf; share an effectful step by "
+	                 "building an Eff in a func, not by calling a proc (extern/func/map are fine); opt out "
+	                 "with --proc-leaf=warn|allow",
+	                 callee);
+}
+SemDiag *sem_emit_lint_pool_index_outside_query(SemanticContext *ctx, SourceLoc loc, const char *pool) {
+	return sem_emit_(ctx, SEM_LINT_pool_index_outside_query, loc,
+	                 "pool `%s` column indexed by hand `[…]` outside a query — pool values must come from a "
+	                 "query/map/system selector (a singleton too), not `[i]`; opt out with --pool-index=allow",
+	                 pool);
 }
 SemDiag *sem_emit_lint_outarg_shadows_outparam(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_LINT_outarg_shadows_outparam, loc,

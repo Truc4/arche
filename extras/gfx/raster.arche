@@ -46,37 +46,30 @@ rect :: proc(win: window, x: int, y: int, rw: int, rh: int, color: int) {
   }
 }
 
-// Fill a disc of radius `r` centered at (cx, cy), clamped to the framebuffer.
-circle :: proc(win: window, cx: int, cy: int, r: int, color: int) {
-  frame(win)(px:, w:, h:);
+paint :: func(own px: []int, w: int, h: int, cx: int, cy: int, r: int, color: int) -> []int {
   r2 := r * r;
-  y0 := cy - r;
-  y1 := cy + r;
-  if (y0 < 0) {
-    y0 = 0;
+  yy := cy - r;
+  if (yy < 0) {
+    yy = 0;
   }
-  if (y1 >= h) {
-    y1 = h - 1;
-  }
-  yy := y0;
-  for (; yy <= y1;) {
-    x0 := cx - r;
-    x1 := cx + r;
-    if (x0 < 0) {
-      x0 = 0;
+  for (; yy <= cy + r && yy < h; yy += 1) {
+    xx := cx - r;
+    if (xx < 0) {
+      xx = 0;
     }
-    if (x1 >= w) {
-      x1 = w - 1;
-    }
-    xx := x0;
-    for (; xx <= x1;) {
-      dx := xx - cx;
-      dy := yy - cy;
-      if (dx * dx + dy * dy <= r2) {
+    for (; xx <= cx + r && xx < w; xx += 1) {
+      if ((xx - cx) * (xx - cx) + (yy - cy) * (yy - cy) <= r2) {
         px[yy * w + xx] = color;
       }
-      xx = xx + 1;
     }
-    yy = yy + 1;
   }
+  return px;
+}
+
+circle :: func(handle: window, w: int, h: int, cx: int, cy: int, r: int, color: int) -> Eff {
+  return frame(handle) |> paint(w, h, cx, cy, r, color) |> present(handle);
+}
+
+circle :: system (Window, Circle) {
+  circle(handle, w, h, cx, cy, r, color)();
 }

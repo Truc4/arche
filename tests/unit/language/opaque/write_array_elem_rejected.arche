@@ -1,0 +1,12 @@
+// Overwriting an opaque handle held in an array slot with `=` must be rejected (E0122).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "assign over opaque" %t.out
+res :: opaque;
+
+@allow(unused_function)
+put :: proc(src: res) {
+  arr: [8]res;
+  arr[0] = src;
+}
+
+main :: proc() {
+}

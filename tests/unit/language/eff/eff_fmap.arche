@@ -1,0 +1,22 @@
+// FEATURE (the applicative result-map `|>`, §4): a pure func is fmapped over an Eff's raw out-slots,
+// carried inside the Eff and applied when it runs. `eff_add1(x) |> neg` builds an `Eff(int)` that, when run,
+// computes add1 then negates — all fused at the run site: `bumpneg(41)(r:)` emits `add1(41)` then `neg(...)`,
+// no Eff stored, both build func and finalizer composed in. r = -(41+1) = -42.
+// RUN: %arche build -o %t --link %S/runtime/effshim.c %s && %t | grep -qF "r=-42"
+#foreign {
+  eff_add1 :: proc(x: int)(r: int);
+}
+#import { fmt }
+
+neg :: func(v: int) -> int {
+  return 0 - v; // the pure finalizer over the extern's raw out-slot
+}
+
+bumpneg :: func(x: int) -> Eff(int) {
+  return eff_add1(x) |> neg;
+}
+
+main :: proc() {
+  bumpneg(41)(r:);
+  fmt.printf("r=%d\n", r);
+}

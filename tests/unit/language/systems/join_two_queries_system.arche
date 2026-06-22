@@ -1,0 +1,27 @@
+// Tuple-of-queries JOIN: each query is source-agnostic (it names components, never an archetype); the
+// system fans over the PRODUCT of the two queries. Mover (N rows) × Win (a [1] singleton) broadcasts —
+// every mover sees the one window's `id`, so `n = n + id` adds 99 to each row. RED until joins exist
+// (today the tuple selector doesn't parse / a cross-pool query matches 0 rows).
+// RUN: %arche build -o %t %s && %t
+#import { fmt }
+[8]Mover(3);
+Mover :: arche { n :: int }
+[1]Win;
+Win :: arche { id :: int }
+
+seed :: system {
+  Mover.n = { 10, 20, 30 };
+  insert(Win { id: 99 })(_:, _:);
+}
+
+addwin :: system (query { n }, query { id }) {
+  n = n + id;
+}
+
+check :: system {
+  fmt.assert(Mover.n[0] == 109, "row 0\n");
+  fmt.assert(Mover.n[1] == 119, "row 1\n");
+  fmt.assert(Mover.n[2] == 129, "row 2\n");
+}
+
+#run seq({ run (seed), run (addwin), run (check) })

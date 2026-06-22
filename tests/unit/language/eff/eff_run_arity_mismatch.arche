@@ -1,0 +1,15 @@
+// FEATURE: running an Eff binds EXACTLY its out-slots. An `Eff(int)` yields one result, so supplying two
+// out-arguments is rejected (the out-list must match the Eff's out-slot count).
+// RUN: %arche check %s > %t.out 2>&1 ; grep -qi "yields 1 result" %t.out
+// RUN: ! %arche check %s
+#foreign {
+  eff_add1 :: proc(x: int)(r: int);
+}
+
+bump :: func(x: int) -> Eff(int) {
+  return eff_add1(x);
+}
+
+main :: proc() {
+  bump(1)(a:, b:); // Eff(int) yields 1, but 2 out-args given
+}

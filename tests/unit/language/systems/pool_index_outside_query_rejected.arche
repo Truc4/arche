@@ -1,0 +1,18 @@
+// W0029 pool_index_outside_query: reading a pool column by explicit index `Pool.col[i]` is banned
+// (error-by-default lint). Pool values must come from a query/map/system selector, never hand-indexed.
+// Opt out with `--allow-pool-index` or `@allow(pool_index_outside_query)`. A query body uses bare column
+// names (no `[i]`), so this only fires on the hand-indexing escape hatch (singleton-`[0]`, gather, etc.).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qF "[pool_index_outside_query]" %t.out
+#import { fmt }
+[8]Thing(3);
+Thing :: arche { n :: int }
+
+seed :: system {
+  Thing.n = { 10, 20, 30 };
+}
+
+peek :: system {
+  fmt.printf("%d\n", Thing.n[0]);
+}
+
+#run seq({ run (seed), run (peek) })

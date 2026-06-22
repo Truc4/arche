@@ -1,0 +1,23 @@
+// A `system` over a query operates on the COLUMNS the query gives you — a columnar transform applied
+// across every matched row, like `map` but effectful and schedulable. `n = n + 5` adds to every row of
+// the `n` column. Verified by reading the resulting cells.
+// RUN: %arche build -o %t %s && %t
+#import { fmt }
+[8]Acc(3);
+Acc :: arche { n :: int }
+
+seed :: system {
+  Acc.n = { 10, 20, 30 };
+}
+
+bump :: system (query { n }) {
+  n = n + 5;
+}
+
+check :: system {
+  fmt.assert(Acc.n[0] == 15, "row 0\n");
+  fmt.assert(Acc.n[1] == 25, "row 1\n");
+  fmt.assert(Acc.n[2] == 35, "row 2\n");
+}
+
+#run seq({ run (seed), run (bump), run (check) })

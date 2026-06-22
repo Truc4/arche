@@ -1,0 +1,29 @@
+// Inline and NAMED selectors are equivalent: this join uses NAMED queries (`Nums`, `Ids`) and must produce
+// the same singleton broadcast as the inline form in join_two_queries_system. Mover (N) × Win ([1]) → each
+// row's n gains the broadcast id (99).
+// RUN: %arche build -o %t %s && %t
+#import { fmt }
+[8]Mover(3);
+Mover :: arche { n :: int }
+[1]Win;
+Win :: arche { id :: int }
+
+Nums :: query { n }
+Ids  :: query { id }
+
+seed :: system {
+  Mover.n = { 10, 20, 30 };
+  insert(Win { id: 99 })(_:, _:);
+}
+
+addwin :: system (Nums, Ids) {
+  n = n + id;
+}
+
+check :: system {
+  fmt.assert(Mover.n[0] == 109, "row 0\n");
+  fmt.assert(Mover.n[1] == 119, "row 1\n");
+  fmt.assert(Mover.n[2] == 129, "row 2\n");
+}
+
+#run seq({ run (seed), run (addwin), run (check) })

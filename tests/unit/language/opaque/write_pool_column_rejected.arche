@@ -1,0 +1,15 @@
+// Overwriting an opaque handle held in a pool COLUMN with `=` must be rejected (E0122).
+// Currently RED: a pool-column opaque write compiles clean — the create-once seal misses columns.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "assign over opaque" %t.out
+res :: opaque;
+
+Holder :: arche { h :: res }
+[1]Holder;
+
+@allow(unused_function)
+put :: proc(src: res) {
+  Holder.h[0] = src;
+}
+
+main :: proc() {
+}

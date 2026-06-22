@@ -631,7 +631,11 @@ Token lexer_next_token(Lexer *lexer) {
 			advance(lexer);
 			return make_token(TOK_PIPE_PIPE, start, 2, line, column);
 		}
-		return error_token(lexer, "unexpected character (did you mean `||`?)", line, column);
+		if (peek(lexer) == '>') {
+			advance(lexer);
+			return make_token(TOK_PIPE_GT, start, 2, line, column); /* `|>` — fmap a func over an Eff's out-slots */
+		}
+		return error_token(lexer, "unexpected character (did you mean `||` or `|>`?)", line, column);
 
 	default:
 		return error_token(lexer, "unexpected character", line, column);

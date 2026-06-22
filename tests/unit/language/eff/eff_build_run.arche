@@ -1,0 +1,19 @@
+// FEATURE (the flat-effect keystone, §3): a pure `func` BUILDS an effect as a value by under-applying an
+// extern by its out-slots, and returns it (running nothing); a proc RUNS it by supplying the out-slots.
+// `bump(41)(r:)` fuses to a single direct `eff_add1(41)` call — the build func is erased (never emitted),
+// the runtime args thread straight into the extern, no Eff value is ever stored. r must be 42.
+// RUN: %arche build -o %t --link %S/runtime/effshim.c %s && %t | grep -qF "r=42"
+#foreign {
+  eff_add1 :: proc(x: int)(r: int);
+}
+#import { fmt }
+
+// PURE: builds a description of "add1 to x", returns it; performs no call.
+bump :: func(x: int) -> Eff(int) {
+  return eff_add1(x);
+}
+
+main :: proc() {
+  bump(41)(r:); // IMPURE: run it — r comes from running, not from the func
+  fmt.printf("r=%d\n", r);
+}

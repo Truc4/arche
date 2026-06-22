@@ -26,6 +26,20 @@ int cli_apply_exported_mutable(const char *value) {
 	return 0;
 }
 
+int cli_apply_proc_leaf(const char *value) {
+	if (!value)
+		return 0; /* flag absent — keep the warn-by-default (set in ensure_init) */
+	if (strcmp(value, "error") == 0)
+		semantic_set_lint_proc_calls_proc(1, 1);
+	else if (strcmp(value, "warn") == 0)
+		semantic_set_lint_proc_calls_proc(1, 0);
+	else if (strcmp(value, "allow") == 0)
+		semantic_set_lint_proc_calls_proc(0, 0);
+	else
+		return -1; /* unknown level */
+	return 0;
+}
+
 int cli_apply_map_foreign_write(const char *value) {
 	if (!value)
 		return 0; /* flag absent — keep the error-by-default (set in ensure_init) */
@@ -35,6 +49,20 @@ int cli_apply_map_foreign_write(const char *value) {
 		semantic_set_lint_map_writes_foreign_pool(1, 0);
 	else if (strcmp(value, "allow") == 0)
 		semantic_set_lint_map_writes_foreign_pool(0, 0);
+	else
+		return -1; /* unknown level */
+	return 0;
+}
+
+int cli_apply_pool_index(const char *value) {
+	if (!value)
+		return 0; /* flag absent — keep the warn-by-default */
+	if (strcmp(value, "error") == 0)
+		semantic_set_lint_pool_index_outside_query(1, 1);
+	else if (strcmp(value, "warn") == 0)
+		semantic_set_lint_pool_index_outside_query(1, 0);
+	else if (strcmp(value, "allow") == 0)
+		semantic_set_lint_pool_index_outside_query(0, 0);
 	else
 		return -1; /* unknown level */
 	return 0;

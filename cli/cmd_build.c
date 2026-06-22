@@ -29,7 +29,9 @@ enum {
 	B_INCREMENTAL,
 	B_WHOLE_PROGRAM,
 	B_EXPORTED_MUTABLE,
+	B_PROC_LEAF,
 	B_SYS_FOREIGN_WRITE,
+	B_POOL_INDEX,
 	B_EMIT_GPU,
 	B_GPU,
 	B_WNO_LSA,
@@ -69,8 +71,12 @@ static const ArgSpec k_build_specs[] = {
      "force a whole-program build (the default for build; full cross-device inlining)"},
     {B_EXPORTED_MUTABLE, "--exported-mutable", ARG_VALUE, 0, 0, "<level>",
      "exported-mutable-global lint (W0022): error (default) | warn | allow"},
+    {B_PROC_LEAF, "--proc-leaf", ARG_VALUE, 0, 0, "<level>",
+     "proc-calls-proc lint (W0028): warn (default) | error | allow"},
     {B_SYS_FOREIGN_WRITE, "--map-foreign-write", ARG_VALUE, 0, 0, "<level>",
      "map-writes-foreign-pool lint (W0024): error (default) | warn | allow"},
+    {B_POOL_INDEX, "--pool-index", ARG_VALUE, 0, 0, "<level>",
+     "pool-index-outside-query lint (W0029): warn (default) | error | allow"},
     {B_EMIT_GPU, "--emit-gpu", ARG_VALUE, 0, 0, "<dir>",
      "also emit a GLSL compute shader per `@gpu` map into <dir> (side artifact; CPU build unchanged)"},
     {B_GPU, "--gpu", ARG_FLAG, 0, 0, NULL,
@@ -140,10 +146,20 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 		args_usage(stderr, g_prog, "build", "[flags] <input.arche>", k_build_specs);
 		return ARCHE_USAGE;
 	}
+	if (cli_apply_proc_leaf(args_value(&p, B_PROC_LEAF)) != 0) {
+		fprintf(stderr, "%s: --proc-leaf expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "build", "[flags] <input.arche>", k_build_specs);
+		return ARCHE_USAGE;
+	}
 	/* W0024 tri-state — applied after `-Werror` so an explicit `--map-foreign-write=warn|allow` can
 	 * still demote it (W0024 is error-by-default; this is the dedicated opt-out). */
 	if (cli_apply_map_foreign_write(args_value(&p, B_SYS_FOREIGN_WRITE)) != 0) {
 		fprintf(stderr, "%s: --map-foreign-write expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "build", "[flags] <input.arche>", k_build_specs);
+		return ARCHE_USAGE;
+	}
+	if (cli_apply_pool_index(args_value(&p, B_POOL_INDEX)) != 0) {
+		fprintf(stderr, "%s: --pool-index expects error|warn|allow\n", g_prog);
 		args_usage(stderr, g_prog, "build", "[flags] <input.arche>", k_build_specs);
 		return ARCHE_USAGE;
 	}

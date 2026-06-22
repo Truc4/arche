@@ -182,6 +182,11 @@ typedef enum {
 	SEM_DIAG_entity_unknown_column, /* an entity literal names a field that is not a column */
 	SEM_DIAG_entity_unknown_type,   /* `Name{…}` where Name is neither an archetype nor a query */
 	SEM_DIAG_positional_insert,     /* legacy positional `insert(Pool, v0, …)` — use an entity literal */
+	SEM_DIAG_proc_under_applied,    /* under-applying a (non-extern) proc to "build an Eff" — only an extern
+	                                   is inert under-applied; a proc minus its out-slots is a suspended
+	                                   computation, not a value. E0221. */
+	SEM_DIAG_eff_extern_not_static, /* an Eff at a run site whose extern is not statically one extern (a
+	                                   runtime `?:`/`match` selecting different externs) — no fn-pointer. E0222. */
 
 	/* === Lints (promotable warnings) === */
 	SEM_LINT_proc_could_be_func,
@@ -218,6 +223,15 @@ typedef enum {
 	SEM_LINT_pointless_move,          /* `move` of a value with no ownership to transfer — currently a pool
 	                                     column (slice): it is shared, fixed storage, so `move` does nothing.
 	                                     Pass it as a plain borrow. W0027. */
+	SEM_LINT_proc_calls_proc,         /* a proc body calls another (non-extern) proc — the flat-effect
+	                                     proc→proc ban. Reuse lives in funcs (building Eff values), so a proc
+	                                     never needs another proc; permitted callees are extern/func/map.
+	                                     Default WARN (the stdlib/apps still nest procs until the Eff
+	                                     convenience layer lands; flip to error later). W0028. */
+	SEM_LINT_pool_index_outside_query, /* an explicit index on a pool column `Pool.col[i]` (incl. the
+	                                      singleton `[0]`) outside a query/map/system fan body — pool values
+	                                      must come from a query, not hand-indexing. Default WARN (tunable to
+	                                      error per build, e.g. for an app + its libs). W0029. */
 
 	SEM_DIAG_KIND_COUNT
 } SemDiagKind;
@@ -324,6 +338,8 @@ SemDiag *sem_emit_entity_missing_column(SemanticContext *ctx, SourceLoc loc, con
 SemDiag *sem_emit_entity_unknown_column(SemanticContext *ctx, SourceLoc loc, const char *type_name, const char *col);
 SemDiag *sem_emit_entity_unknown_type(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_positional_insert(SemanticContext *ctx, SourceLoc loc, const char *pool);
+SemDiag *sem_emit_proc_under_applied(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_eff_extern_not_static(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_lint_unused_query(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path);
 SemDiag *sem_emit_lint_map_writes_foreign_pool(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_each_field_filter_type_not_name(SemanticContext *ctx, SourceLoc loc);
@@ -432,5 +448,7 @@ SemDiag *sem_emit_lint_exported_mutable_global(SemanticContext *ctx, SourceLoc l
 SemDiag *sem_emit_lint_outarg_shadows_outparam(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_large_stack_array(SemanticContext *ctx, SourceLoc loc, const char *name, int size_bytes);
 SemDiag *sem_emit_lint_pointless_move(SemanticContext *ctx, SourceLoc loc);
+SemDiag *sem_emit_lint_proc_calls_proc(SemanticContext *ctx, SourceLoc loc, const char *callee);
+SemDiag *sem_emit_lint_pool_index_outside_query(SemanticContext *ctx, SourceLoc loc, const char *pool);
 
 #endif /* SEM_DIAGNOSTICS_H */

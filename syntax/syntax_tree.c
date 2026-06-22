@@ -241,6 +241,8 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "TYPE_TUPLE";
 	case SN_TYPE_HANDLE:
 		return "TYPE_HANDLE";
+	case SN_TYPE_EFF:
+		return "TYPE_EFF";
 	case SN_TYPE_PROC:
 		return "TYPE_PROC";
 	case SN_TYPE_FUNC:

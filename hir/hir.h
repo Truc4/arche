@@ -23,6 +23,8 @@ typedef enum {
 	HIR_TYPE_ARCHETYPE, /* bare-category `archetype` parameter type */
 	HIR_TYPE_OPAQUE,    /* opaque: pointer-width C-owned cell */
 	HIR_TYPE_FUNC,      /* a callable value: proc/func type (structural) */
+	HIR_TYPE_EFF,       /* a not-yet-run effect value `Eff(T…)`: compile-time only — a func returning it is
+	                     * an Eff builder (erased from emission; inlined at the run site). No runtime type. */
 } HirTypeTag;
 
 typedef struct HirType HirType;
@@ -151,6 +153,10 @@ typedef struct {
 
 typedef struct {
 	char *name;
+	/* A query-bearing `system(Q)` is the EFFECTFUL per-entity fan: `params` are its query columns
+	 * (flattened, like a map's). param_count == 0 ⇒ a plain run-once `system { }` (no fan). */
+	HirParam **params;
+	int param_count;
 	HirStmt **stmts;
 	int stmt_count;
 	SourceLoc loc;

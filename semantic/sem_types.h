@@ -38,6 +38,8 @@ typedef enum {
 	TYK_SUM, /* a tagged union (sum type): named variants, each with a payload type list. Nominal-by-name
 	          * (recursive payloads can't be structurally hash-consed), built two-phase (forward then complete). */
 	TYK_HANDLE,
+	TYK_EFF, /* a not-yet-run effect value (`Eff(T…)`): an extern under-applied by its out-slots. Carries the
+	          * out-slot types and, at a build site, the static extern name. Compile-time only (never stored). */
 	TYK_ARCHETYPE_CATEGORY, /* the bare `archetype` keyword (map param only) */
 	/* The callable FORMS are DISTINCT kinds — Arche's whole identity is that func (pure value), proc
 	 * (action), map (transform), and policy (failure macro) are not the same thing. They never unify. */
@@ -68,6 +70,14 @@ TypeId tyid_sum_forward(TypeArena *a, const char *name);
 void tyid_sum_complete(TypeArena *a, TypeId sum, const char *const *variant_names,
                        const TypeId *const *variant_payloads, const int *variant_payload_counts, int variant_count);
 TypeId tyid_of_handle(TypeArena *a, const char *archetype_name);
+/* A not-yet-run effect type `Eff(out_slots…)`. `tyid_of_eff_structural` (extern_name == NULL) is the source
+ * annotation `Eff(int,int)`, matched structurally on out-slots; `tyid_of_eff_concrete` carries the static
+ * extern name a build site recovers (an extern under-applied by its out-slots). */
+TypeId tyid_of_eff_structural(TypeArena *a, const TypeId *out_slots, int out_slot_count);
+TypeId tyid_of_eff_concrete(TypeArena *a, const char *extern_name, const TypeId *out_slots, int out_slot_count);
+const char *tyid_eff_extern_name(const TypeArena *a, TypeId t); /* the static extern, or NULL (structural) */
+int tyid_eff_out_count(const TypeArena *a, TypeId t);           /* out-slot count, or -1 if not a TYK_EFF */
+TypeId tyid_eff_out_at(const TypeArena *a, TypeId t, int i);    /* out-slot type at i, or UNKNOWN */
 TypeId tyid_of_archetype_category(TypeArena *a);
 /* The three callable forms, each its own distinct kind. `returns` is a func's single return, a proc's
  * out-params, or a map's (none). Structural inequality (`proc()(int) != func()->int`) is automatic —

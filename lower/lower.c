@@ -372,6 +372,11 @@ static HirType *lower_type_cst(SyntaxView t) {
 			}
 		break;
 	}
+	case SN_TYPE_EFF:
+		/* `Eff(T…)` — compile-time only. The tag is enough: an Eff-returning func is an erased builder
+		 * inlined at the run site, so the out-slot types never need a runtime representation here. */
+		at->tag = HIR_TYPE_EFF;
+		return at;
 	case SN_TYPE_PROC:
 	case SN_TYPE_FUNC: {
 		int is_proc = (sv_kind(t) == SN_TYPE_PROC);
@@ -538,6 +543,8 @@ static Operator syntax_tok_to_op(TokenKind k) {
 		return OP_AND;
 	case TOK_PIPE_PIPE:
 		return OP_OR;
+	case TOK_PIPE_GT:
+		return OP_FMAP;
 	default:
 		return OP_NONE;
 	}
@@ -1714,6 +1721,8 @@ static const SyntaxNode *query_expr_child(const SyntaxNode *d) {
 	return NULL;
 }
 
+static const SyntaxNode *arch_expr_child(const SyntaxNode *d); /* fwd */
+
 static void scan_queries(const SyntaxNode *root, const char *src) {
 	for (int i = 0; i < root->child_count; i++) {
 		if (root->children[i].tag != SE_NODE)
@@ -1721,14 +1730,19 @@ static void scan_queries(const SyntaxNode *root, const char *src) {
 		const SyntaxNode *d = root->children[i].as.node;
 		if (d->kind != SN_CONST_DECL || g_query_count >= 128)
 			continue;
-		const SyntaxNode *qe = query_expr_child(d);
-		if (!qe)
+		/* Archetypes and queries are INTERCHANGEABLE in the `map(X)`/`system(X)` selector: a named query
+		 * (its SN_QUERY_EXPR) OR an archetype (its SN_ARCH_EXPR — `map(X)` then selects ALL its columns).
+		 * Register either's column-source node under the name; lower_query_columns reads both shapes. */
+		const SyntaxNode *cols = query_expr_child(d);
+		if (!cols)
+			cols = arch_expr_child(d);
+		if (!cols)
 			continue;
 		SynText nm = lower_binding_name((SyntaxView){d, src});
 		if (!nm.ptr)
 			continue;
 		g_queries[g_query_count].name = txt_dup(nm);
-		g_queries[g_query_count].cols = (SyntaxView){qe, src};
+		g_queries[g_query_count].cols = (SyntaxView){cols, src};
 		g_query_count++;
 	}
 }
@@ -2231,11 +2245,93 @@ static HirDecl *lower_query_from(SyntaxView f, char *name) {
 
 /* `Name :: system { body }` — the composer. No query, no params; the body is plain statements
  * (control flow, `run <map>`, proc/func/extern calls). Lowers to a no-arg HIR_DECL_SYSTEM. */
+/* Resolve a query's columns (inline `query{…}` child, or a named `(Name)` via the registry) into FLATTENED
+ * HirParams, rewriting tuple-group accesses (`pos.x`→`pos_x`) in `stmts`. Shared by map and query-system
+ * lowering ("same logic as map"). No query present ⇒ 0 params. */
+/* Gather a query selector's top-level columns (name, is_own) from EITHER a query (SN_PARAM children) or an
+ * archetype (SN_FIELD_NAME children of SN_ARCH_EXPR — tuple MEMBERS x/y are not SN_FIELD_NAME, so this picks
+ * exactly the top-level columns). Appends to names[]/owns[] at *nc. */
+static void lower_gather_cols(SyntaxView cols, char **names, int *owns, int *nc) {
+	if (!sv_present(cols))
+		return;
+	if (cols.node->kind == SN_ARCH_EXPR) {
+		for (int k = 0; k < cols.node->child_count && *nc < 256; k++)
+			if (cols.node->children[k].tag == SE_NODE && cols.node->children[k].as.node->kind == SN_FIELD_NAME) {
+				names[*nc] = sv_dup((SyntaxView){cols.node->children[k].as.node, cols.src});
+				owns[*nc] = 0;
+				(*nc)++;
+			}
+	} else {
+		int np = sv_count(cols, SN_PARAM);
+		for (int i = 0; i < np && *nc < 256; i++) {
+			SyntaxView p = sv_child_at(cols, SN_PARAM, i);
+			names[*nc] = sv_dup(sv_child(p, SN_PARAM_NAME));
+			owns[*nc] = sv_has_token(p, TOK_OWN);
+			(*nc)++;
+		}
+	}
+}
+
+static void lower_query_columns(SyntaxView f, HirStmt **stmts, int stmt_count, HirParam ***out_params, int *out_count) {
+	/* A `system(Q1, Q2)` JOIN carries several query children — gather columns from every one (inline
+	 * SN_QUERY_EXPR and named SN_QUERY_REF), flattened. Single-query map/system gathers from one. */
+	char *names[256];
+	int owns[256];
+	int nc = 0;
+	int nqe = sv_count(f, SN_QUERY_EXPR);
+	for (int qi = 0; qi < nqe; qi++)
+		lower_gather_cols(sv_child_at(f, SN_QUERY_EXPR, qi), names, owns, &nc);
+	int nqr = sv_count(f, SN_QUERY_REF);
+	for (int qi = 0; qi < nqr; qi++) {
+		char *qn = sv_dup(sv_child_at(f, SN_QUERY_REF, qi));
+		SyntaxView cols = query_cols_lookup(qn);
+		free(qn);
+		lower_gather_cols(cols, names, owns, &nc);
+	}
+	int pcount = 0;
+	for (int i = 0; i < nc; i++) {
+		CstTupleGroup *g = tgroup_lookup(names[i]);
+		pcount += g ? g->nsuf : 1;
+	}
+	HirParam **params = calloc(pcount ? pcount : 1, sizeof(HirParam *));
+	int pc = 0;
+	for (int i = 0; i < nc; i++) {
+		char *pn = names[i];
+		CstTupleGroup *g = tgroup_lookup(pn);
+		if (!g) {
+			HirParam *ap = hir_param_create(NULL, NULL);
+			ap->name = malloc(strlen(pn) + 1);
+			strcpy(ap->name, pn);
+			ap->is_own = owns[i];
+			params[pc++] = ap;
+			free(pn);
+			continue;
+		}
+		for (int sx = 0; sx < stmt_count; sx++)
+			tuple_rewrite_stmt(stmts[sx], pn);
+		for (int j = 0; j < g->nsuf; j++) {
+			HirParam *ap = hir_param_create(NULL, NULL);
+			ap->name = malloc(strlen(pn) + 1 + strlen(g->suffix[j]) + 1);
+			sprintf(ap->name, "%s_%s", pn, g->suffix[j]);
+			HirType *mt = hir_type_create(HIR_TYPE_UNKNOWN);
+			*mt = g->member;
+			ap->type = mt;
+			ap->is_own = owns[i];
+			params[pc++] = ap;
+		}
+		free(pn);
+	}
+	*out_params = params;
+	*out_count = pc;
+}
+
 static HirDecl *lower_system_from(SyntaxView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_SYSTEM);
 	HirSystemDecl *as = calloc(1, sizeof(HirSystemDecl));
 	as->name = name;
 	as->stmts = syntax_lower_body(f, &as->stmt_count);
+	/* `system(Q)` carries query columns (the effectful fan); a run-once `system { }` resolves to 0. */
+	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
 	ad->data.system = as;
 	return ad;
 }
@@ -2246,57 +2342,9 @@ static HirDecl *lower_map_from(SyntaxView f, char *name) {
 	as->name = name;
 	as->stmts = syntax_lower_body(f, &as->stmt_count);
 	/* Expand whole-group vector ops (`pos = pos + vel`) into per-component blocks BEFORE the per-param
-	 * `pos.x`→`pos_x` rewrite below, so the produced scalar columns match the flattened params. */
+	 * `pos.x`→`pos_x` rewrite, so the produced scalar columns match the flattened params. */
 	expand_group_assigns(as);
-	/* The map's columns come from the query it runs over: an inline `query {…}` child (a wrapped
-	 * SN_QUERY_EXPR), or a named query `map(Name)` (an SN_QUERY_REF) resolved through the registry. The
-	 * body stays from `f`; only the column source moves. Resolving named columns here — before the
-	 * `pos.x`→`pos_x` body rewrite below — keeps tuple-group flattening correct for named queries. */
-	SyntaxView cols = sv_child_at(f, SN_QUERY_EXPR, 0);
-	if (!sv_present(cols)) {
-		SyntaxView ref = sv_child_at(f, SN_QUERY_REF, 0);
-		if (sv_present(ref)) {
-			char *qn = sv_dup(ref);
-			cols = query_cols_lookup(qn);
-			free(qn);
-		}
-	}
-	if (!sv_present(cols))
-		cols = f; /* defensive: no query resolved → no SN_PARAM columns (an empty map) */
-	int np = sv_count(cols, SN_PARAM);
-	int pcount = 0;
-	for (int i = 0; i < np; i++) {
-		char *pn = sv_dup(sv_child(sv_child_at(cols, SN_PARAM, i), SN_PARAM_NAME));
-		CstTupleGroup *g = tgroup_lookup(pn);
-		pcount += g ? g->nsuf : 1;
-		free(pn);
-	}
-	as->params = calloc(pcount ? pcount : 1, sizeof(HirParam *));
-	as->param_count = 0;
-	for (int i = 0; i < np; i++) {
-		SyntaxView p = sv_child_at(cols, SN_PARAM, i);
-		char *pn = sv_dup(sv_child(p, SN_PARAM_NAME));
-		CstTupleGroup *g = tgroup_lookup(pn);
-		if (!g) {
-			as->params[as->param_count++] = lower_param_cst(p);
-			free(pn);
-			continue;
-		}
-		for (int sx = 0; sx < as->stmt_count; sx++)
-			tuple_rewrite_stmt(as->stmts[sx], pn);
-		int is_own = sv_has_token(p, TOK_OWN);
-		for (int j = 0; j < g->nsuf; j++) {
-			HirParam *ap = hir_param_create(NULL, NULL);
-			ap->name = malloc(strlen(pn) + 1 + strlen(g->suffix[j]) + 1);
-			sprintf(ap->name, "%s_%s", pn, g->suffix[j]);
-			HirType *mt = hir_type_create(HIR_TYPE_UNKNOWN);
-			*mt = g->member;
-			ap->type = mt;
-			ap->is_own = is_own;
-			as->params[as->param_count++] = ap;
-		}
-		free(pn);
-	}
+	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
 	ad->data.map = as;
 	return ad;
 }

@@ -1,0 +1,16 @@
+// FEATURE (error E0221 proc_under_applied): only an EXTERN is inert when under-applied. Under-applying a
+// (non-extern) proc to "build an Eff" is rejected — a proc minus its out-slots is a suspended computation,
+// not a value. There is no expression anywhere that turns a proc into an Eff (the one closed back door, §3).
+// RUN: %arche check %s > %t.out 2>&1 ; grep -q "cannot build an Eff from proc" %t.out
+// RUN: ! %arche check %s
+realproc :: proc(x: int)(n: int) {
+  n = x;
+}
+
+bad :: func(x: int) -> Eff(int) {
+  return realproc(x); // realproc is a proc, not an extern → E0221
+}
+
+main :: proc() {
+  bad(1)(n:);
+}

@@ -1,0 +1,19 @@
+// REGRESSION: a build func whose under-applied extern takes a NON-SCALAR arg — an `own []char` slice — must
+// thread that arg through the fusion. The `own` param wraps the body arg in move/copy, so the fusion's
+// param-substitution must unwrap to find the param name (else the slice arg is dropped → a null pointer →
+// crash). `measure("hello")(n:)` fuses to `eff_strlen("hello")`; n == 5.
+// (Found by a proof-of-concept: the original keystone tests only used int args and missed this.)
+// RUN: %arche build -o %t --link %S/runtime/effshim.c %s && %t | grep -qF "n=5"
+#foreign {
+  eff_strlen :: proc(own s: []char)(n: int);
+}
+#import { fmt }
+
+measure :: func(own s: []char) -> Eff(int) {
+  return eff_strlen(s);
+}
+
+main :: proc() {
+  measure("hello")(n:);
+  fmt.printf("n=%d\n", n);
+}
