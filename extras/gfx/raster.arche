@@ -46,7 +46,7 @@ rect :: proc(win: window, x: int, y: int, rw: int, rh: int, color: int) {
   }
 }
 
-paint :: func(own px: []int, w: int, h: int, cx: int, cy: int, r: int, color: int) -> []int {
+circle :: func(own px: []int, w: int, h: int, cx: int, cy: int, r: int, color: int) -> []int {
   r2 := r * r;
   yy := cy - r;
   if (yy < 0) {
@@ -66,10 +66,10 @@ paint :: func(own px: []int, w: int, h: int, cx: int, cy: int, r: int, color: in
   return px;
 }
 
-circle :: func(handle: window, w: int, h: int, cx: int, cy: int, r: int, color: int) -> Eff {
-  return frame(handle) |> paint(w, h, cx, cy, r, color) |> present(handle);
+draw :: each (Circle, Window) {
+  px := circle(move px, w, h, cx, cy, r, color);
 }
 
-circle :: system (Window, Circle) {
-  circle(handle, w, h, cx, cy, r, color)();
+present :: system (Window) {
+  blit(handle, px)();
 }
