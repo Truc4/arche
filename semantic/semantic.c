@@ -5892,7 +5892,7 @@ static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 static void sem_check_raw_pool_lint(SemanticContext *ctx) {
 	for (int di = 0; di < ctx->decl_count; di++) {
 		DeclSummary *d = ctx->decls[di];
-		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYS && d->kind != DECL_SYSTEM &&
+		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_MAP && d->kind != DECL_SYSTEM &&
 		     d->kind != DECL_EACH) ||
 		    d->is_extern)
 			continue;
@@ -5968,7 +5968,7 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 	case DECL_PROC:
 	case DECL_SYSTEM: /* the composer — its own kind (a `system` reference), not a proc */
 	case DECL_EACH:   /* the per-element fan — its own kind (an `each` reference) */
-	case DECL_SYS: {
+	case DECL_MAP: {
 		/* Each form gets its OWN callable kind — func/proc/map/policy never unify. Params are common;
 		 * a func carries its return list, a proc its out-params, map/policy none. */
 		/* foreign decls have a fully computed signature (sem_fill_decl_type_ids types their params/returns
@@ -5979,11 +5979,11 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 		for (int i = 0; i < np; i++)
 			/* func/proc/policy params are typed (`a: int`); a map's are bare COMPONENT names whose type
 			 * is the component itself — resolve those by name so `map(pos, vel)` isn't `map(<unknown>)`. */
-			params[i] = ((d->kind == DECL_SYS || d->kind == DECL_SYSTEM || d->kind == DECL_EACH) && d->params[i].name)
+			params[i] = ((d->kind == DECL_MAP || d->kind == DECL_SYSTEM || d->kind == DECL_EACH) && d->params[i].name)
 			                ? sem_tyid_of_name(ctx, d->params[i].name)
 			                : d->params[i].type_id;
 		TypeId out;
-		if (d->kind == DECL_SYS) {
+		if (d->kind == DECL_MAP) {
 			out = tyid_of_map(ctx->ty_arena, params, np);
 		} else if (d->kind == DECL_SYSTEM) {
 			out = tyid_of_nominal(ctx->ty_arena, "system"); /* a system reference — its OWN kind, not a proc */
@@ -6145,7 +6145,7 @@ static void sem_check_policy_cycles(SemanticContext *ctx) {
 static void sem_check_policies(SemanticContext *ctx) {
 	for (int di = 0; di < ctx->decl_count; di++) {
 		DeclSummary *d = ctx->decls[di];
-		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYS && d->kind != DECL_SYSTEM &&
+		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_MAP && d->kind != DECL_SYSTEM &&
 		     d->kind != DECL_EACH) ||
 		    d->is_extern)
 			continue;
@@ -6583,7 +6583,7 @@ static void analyze_decl(SemanticContext *ctx, DeclSummary *ds) {
 	case DECL_PROC:
 		analyze_proc_decl(ctx, ds);
 		break;
-	case DECL_SYS:
+	case DECL_MAP:
 		analyze_map_decl(ctx, ds);
 		break;
 	case DECL_SYSTEM:
@@ -7360,7 +7360,7 @@ static SyntaxView sem_rhs_form(SyntaxView d) {
 		if (d.node->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
-		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR || k == SN_SYSTEM_EXPR ||
+		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_MAP_EXPR || k == SN_SYSTEM_EXPR ||
 		    k == SN_EACH_EXPR || k == SN_ARCH_EXPR || k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_SUM_EXPR ||
 		    k == SN_QUERY_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
 			SyntaxView v = {d.node->children[i].as.node, d.src};
@@ -7585,7 +7585,7 @@ static void sem_rename_decl_summary(DeclSummary *ds, const char *prefix, char **
 	switch (ds->kind) {
 	case DECL_ARCHETYPE:
 	case DECL_PROC:
-	case DECL_SYS:
+	case DECL_MAP:
 	case DECL_FUNC:
 	case DECL_STATIC:
 	case DECL_CONST:
@@ -8268,7 +8268,7 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 
 /* A callable decl: the kinds reachability tracks as call/seed targets and roots. */
 static int decl_is_callable(DeclKind k) {
-	return k == DECL_FUNC || k == DECL_PROC || k == DECL_FUNC_GROUP || k == DECL_SYS;
+	return k == DECL_FUNC || k == DECL_PROC || k == DECL_FUNC_GROUP || k == DECL_MAP;
 }
 
 /* A reference TARGET: any top-level decl a name/call can resolve to. Broader than callable so the
@@ -8485,12 +8485,12 @@ static void sem_check_dead_code(SemanticContext *ctx) {
 		}
 	}
 	int work_n = 0;
-	/* seed roots. Systems are entry points — invoked by `run`, which records no call edge — so seed
-	 * every `map` and walk its body; a func/proc reachable only from a map is thus kept alive
-	 * (maps themselves are never flagged). Other callables seed only when they are roots. */
+	/* seed roots. map/system/each are entry points — scheduled by name (which records no call edge) — so
+	 * seed every one and walk its body; a func/proc/extern reachable only from one is thus kept alive (they
+	 * themselves are never flagged). Other callables seed only when they are roots. */
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *d = ctx->decls[i];
-		if (d->kind == DECL_SYS)
+		if (d->kind == DECL_MAP || d->kind == DECL_SYSTEM || d->kind == DECL_EACH)
 			dead_mark(ctx, i, reachable, work, &work_n);
 		else if ((d->kind == DECL_FUNC || d->kind == DECL_PROC || d->kind == DECL_FUNC_GROUP) && dead_is_root(d))
 			dead_mark(ctx, i, reachable, work, &work_n);
@@ -8594,7 +8594,7 @@ static void sem_check_dead_code(SemanticContext *ctx) {
 		int used = 0;
 		for (int j = 0; j < ctx->decl_count && !used; j++) {
 			DeclSummary *m = ctx->decls[j];
-			if (!m || m->kind != DECL_SYS)
+			if (!m || m->kind != DECL_MAP)
 				continue;
 			SyntaxView form = sem_rhs_form(m->node);
 			if (!sv_present(form))
@@ -9235,7 +9235,7 @@ static void walk_matches(SemanticContext *ctx, const SyntaxNode *n, const char *
 }
 
 /* The node whose direct children are a proc/func/map body's statements. In the unified grammar a
- * `name :: proc(){…}` decl node carries the body under its SN_PROC_EXPR/SN_FUNC_EXPR/SN_SYS_EXPR
+ * `name :: proc(){…}` decl node carries the body under its SN_PROC_EXPR/SN_FUNC_EXPR/SN_MAP_EXPR
  * value-form child; the legacy SN_*_DECL form holds the statements directly. */
 static SyntaxView sem_decl_body_node(SyntaxView dn) {
 	if (!sv_present(dn))
@@ -9249,7 +9249,7 @@ static SyntaxView sem_decl_body_node(SyntaxView dn) {
 	for (int i = 0; i < dn.node->child_count; i++)
 		if (dn.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = dn.node->children[i].as.node->kind;
-			if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR ||
+			if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_MAP_EXPR ||
 			    k == SN_SYSTEM_EXPR || k == SN_EACH_EXPR)
 				return (SyntaxView){dn.node->children[i].as.node, dn.src};
 		}
@@ -9656,8 +9656,8 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 		kind = DECL_PROC;
 	else if (fk == SN_FUNC_EXPR || fk == SN_POLICY_EXPR)
 		kind = DECL_FUNC; /* a policy is a func for typing/codegen; category handled at op site */
-	else if (fk == SN_SYS_EXPR)
-		kind = DECL_SYS;
+	else if (fk == SN_MAP_EXPR)
+		kind = DECL_MAP;
 	else if (fk == SN_SYSTEM_EXPR)
 		kind = DECL_SYSTEM; /* the composer: columnar; body_node holds its statements */
 	else if (fk == SN_EACH_EXPR)
@@ -9806,7 +9806,7 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 	 * SN_QUERY_EXPR form, so its own SN_PARAM children flow through directly. */
 	SyntaxView col_src = form;
 	int params_collected = 0;
-	if (kind == DECL_SYS || kind == DECL_SYSTEM || kind == DECL_EACH) {
+	if (kind == DECL_MAP || kind == DECL_SYSTEM || kind == DECL_EACH) {
 		/* map/system/each carry their columns in child SN_QUERY_EXPR node(s). A join (`system(Q1,Q2)` /
 		 * `each(Q1,Q2)`) has several — flatten every query's SN_PARAM columns into one list (a column resolves
 		 * to its archetype by name, source-agnostically). A run-once `system { body }` has no SN_QUERY_EXPR. */
@@ -9870,7 +9870,7 @@ static void sem_append_params(DeclSummary *m, int n) {
 static void sem_resolve_map_queries(SemanticContext *ctx) {
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *m = ctx->decls[i];
-		if (!m || (m->kind != DECL_SYS && m->kind != DECL_SYSTEM && m->kind != DECL_EACH))
+		if (!m || (m->kind != DECL_MAP && m->kind != DECL_SYSTEM && m->kind != DECL_EACH))
 			continue;
 		SyntaxView form = sem_rhs_form(m->node);
 		if (!sv_present(form))

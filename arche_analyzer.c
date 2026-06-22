@@ -502,7 +502,7 @@ static int binding_is_redundant_form(SyntaxView binding) {
 	switch (sv_kind(binding)) {
 	case SN_FUNC_DECL:
 	case SN_PROC_DECL:
-	case SN_SYS_DECL:
+	case SN_MAP_DECL:
 	case SN_ARCHETYPE_DECL: /* dedicated form decls: the decl node itself is the form */
 		return 1;
 	default:
@@ -515,7 +515,7 @@ static int binding_is_redundant_form(SyntaxView binding) {
 		switch (binding.node->children[i].as.node->kind) {
 		case SN_FUNC_EXPR:
 		case SN_PROC_EXPR:
-		case SN_SYS_EXPR:
+		case SN_MAP_EXPR:
 		case SN_SYSTEM_EXPR:
 		case SN_POLICY_EXPR:
 		case SN_ENUM_EXPR:
@@ -541,7 +541,7 @@ static int binding_is_redundant_form(SyntaxView binding) {
 /* A map decl's type hint shows the QUERY it runs over (its real surface) rather than the structural
  * column-type list: `map(Movers)` for a named query, `map(query { pos, vel })` for an inline literal. */
 static int map_query_hint(SyntaxView binding, char *buf, size_t n) {
-	SyntaxView form = sv_child_at(binding, SN_SYS_EXPR, 0);
+	SyntaxView form = sv_child_at(binding, SN_MAP_EXPR, 0);
 	if (!sv_present(form))
 		return 0;
 	SyntaxView ref = sv_child_at(form, SN_QUERY_REF, 0);
@@ -749,7 +749,7 @@ static void walk(SyntaxView v, SemanticContext *ctx, int in_func) {
 	 * decls `SN_CONST_DECL` (value = a *_EXPR form), so the value-binding kinds cover them too. */
 	SyntaxNodeKind vk = sv_kind(v);
 	if (vk == SN_BIND_STMT || vk == SN_CONST_DECL || vk == SN_STATIC_DECL || vk == SN_FUNC_DECL || vk == SN_PROC_DECL ||
-	    vk == SN_SYS_DECL || vk == SN_ARCHETYPE_DECL)
+	    vk == SN_MAP_DECL || vk == SN_ARCHETYPE_DECL)
 		emit_type_hint(v, ctx);
 	if (sv_kind(v) == SN_TYPE_REF)
 		emit_typeref_hint(v, ctx);
@@ -765,7 +765,7 @@ static void walk(SyntaxView v, SemanticContext *ctx, int in_func) {
 			int child_in_func = in_func;
 			if (ck == SN_FUNC_EXPR || ck == SN_POLICY_EXPR)
 				child_in_func = 1;
-			else if (ck == SN_PROC_EXPR || ck == SN_SYS_EXPR)
+			else if (ck == SN_PROC_EXPR || ck == SN_MAP_EXPR)
 				child_in_func = 0;
 			walk(c, ctx, child_in_func);
 		}
@@ -984,7 +984,7 @@ static const char *resolved_name_category(const Analysis *a, const SyntaxNode *n
 	case DECL_PROC:
 	case DECL_FUNC:
 	case DECL_FUNC_GROUP:
-	case DECL_SYS:
+	case DECL_MAP:
 		return "function";
 	case DECL_ARCHETYPE:
 	case DECL_ENUM:

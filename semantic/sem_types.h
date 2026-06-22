@@ -45,7 +45,7 @@ typedef enum {
 	 * (action), map (transform), and policy (failure macro) are not the same thing. They never unify. */
 	TYK_FUNC,  /* func: (params) -> return — a pure value */
 	TYK_PROC,  /* proc: (in)(out) — an action */
-	TYK_SYS,   /* map: (components) — a data transform */
+	TYK_MAP,   /* map: (components) — a data transform */
 	TYK_POLICY /* policy: (operands) — a failure-handling macro */
 } TyKind;
 

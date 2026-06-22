@@ -2556,7 +2556,7 @@ static SyntaxView lower_rhs_form(SyntaxView d) {
 		if (d.node->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
-		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR || k == SN_SYSTEM_EXPR ||
+		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_MAP_EXPR || k == SN_SYSTEM_EXPR ||
 		    k == SN_EACH_EXPR || k == SN_ARCH_EXPR || k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_SUM_EXPR ||
 		    k == SN_QUERY_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
 			SyntaxView v = {d.node->children[i].as.node, d.src};
@@ -2679,7 +2679,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		ad->data.proc = ap;
 		return ad;
 	}
-	case SN_SYS_DECL: {
+	case SN_MAP_DECL: {
 		HirDecl *ad = hir_decl_create(HIR_DECL_MAP);
 		HirMapDecl *as = calloc(1, sizeof(HirMapDecl));
 		as->name = sv_dup(sv_child(d, SN_FUNC_DEF_NAME));
@@ -2749,7 +2749,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		SyntaxView rhs = lower_rhs_form(d);
 		if (sv_present(rhs)) {
 			SyntaxNodeKind rk = sv_kind(rhs);
-			if (rk == SN_PROC_EXPR || rk == SN_FUNC_EXPR || rk == SN_POLICY_EXPR || rk == SN_SYS_EXPR ||
+			if (rk == SN_PROC_EXPR || rk == SN_FUNC_EXPR || rk == SN_POLICY_EXPR || rk == SN_MAP_EXPR ||
 			    rk == SN_SYSTEM_EXPR || rk == SN_EACH_EXPR || rk == SN_ARCH_EXPR || rk == SN_GROUP_EXPR ||
 			    rk == SN_QUERY_EXPR) {
 				char *nm = txt_dup(lower_binding_name(d));
@@ -2787,7 +2787,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					}
 					return pf;
 				}
-				case SN_SYS_EXPR: {
+				case SN_MAP_EXPR: {
 					/* GPU dispatch is a `@gpu` decorator on the map decl: the schedule emits a compute shader
 					 * and dispatches on the GPU (CPU fallback). */
 					HirDecl *md = lower_map_from(rhs, nm);

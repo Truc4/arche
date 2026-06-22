@@ -97,7 +97,7 @@ void ty_arena_free(TypeArena *a) {
 			free(n->data.sum.variant_payloads);
 			free(n->data.sum.variant_payload_counts);
 			free(n->data.sum.variant_names);
-		} else if (n->kind == TYK_FUNC || n->kind == TYK_PROC || n->kind == TYK_SYS || n->kind == TYK_POLICY) {
+		} else if (n->kind == TYK_FUNC || n->kind == TYK_PROC || n->kind == TYK_MAP || n->kind == TYK_POLICY) {
 			free(n->data.func.params);
 			free(n->data.func.returns);
 		} else if (n->kind == TYK_EFF) {
@@ -455,7 +455,7 @@ TypeId tyid_of_proc(TypeArena *a, const TypeId *params, int param_count, const T
 	return intern_callable(a, TYK_PROC, params, param_count, returns, return_count);
 }
 TypeId tyid_of_map(TypeArena *a, const TypeId *params, int param_count) {
-	return intern_callable(a, TYK_SYS, params, param_count, NULL, 0);
+	return intern_callable(a, TYK_MAP, params, param_count, NULL, 0);
 }
 TypeId tyid_of_policy(TypeArena *a, const TypeId *params, int param_count) {
 	return intern_callable(a, TYK_POLICY, params, param_count, NULL, 0);
@@ -614,7 +614,7 @@ const char *tyid_display(const TypeArena *a, TypeId t, char *buf, int buflen) {
 		break;
 	case TYK_FUNC:
 	case TYK_PROC:
-	case TYK_SYS:
+	case TYK_MAP:
 	case TYK_POLICY: {
 		/* Render each callable form in Arche's own spelling — `func(T, U) -> R`, `proc(T)(A)`,
 		 * `map(T)`, `policy(T)` — with the real param/return types (cf. Odin/Jai showing the types). */
@@ -640,7 +640,7 @@ const char *tyid_display(const TypeArena *a, TypeId t, char *buf, int buflen) {
 				tyid_display(a, n->data.func.returns[0], rs, sizeof(rs));
 			snprintf(buf, buflen, "func(%s) -> %s", ps, rs);
 		} else {
-			snprintf(buf, buflen, "%s(%s)", n->kind == TYK_SYS ? "map" : "policy", ps);
+			snprintf(buf, buflen, "%s(%s)", n->kind == TYK_MAP ? "map" : "policy", ps);
 		}
 		break;
 	}

@@ -1,20 +1,20 @@
-// gfx public surface (always merged, backend-agnostic) — PROC-FREE. Each operation QUERIES for the window
-// (its `handle` component) and forwards to the selected variant's `gfx_be_*` foreign symbol; the backend's
-// framebuffer is fetched as a writable LOCAL ([]int from `gfx_be_frame`), never a read-only pool column.
-// There are no middle-man wrapper procs — only this query-driven surface + the `#foreign` externs.
-//
-// The window lives in a `[1]` pool the driver sizes; gfx never holds it. The loop is:
-//   open (build the handle) -> { clear -> draw -> present -> poll } over the queried window.
+// gfx public surface (always merged, backend-agnostic). Each op QUERIES the window (its `handle`) and
+// forwards to the selected variant's `gfx_be_*` foreign symbol. The window lives in a `[1]` pool the driver
+// sizes. See docs/design/queries-systems-and-joins.md for the query/nested-fan model.
 
-// Open a width x height window titled `title`; BUILDS the open effect as an `Eff(window)`. A boot system
-// runs it (`gfx.open(w, h, title)(win:)`) and inserts the handle into its Window pool. `own title` — the
-// backend keeps its own copy, so the slice is consumed.
+// Build the open effect as an `Eff(window)`; a boot system runs it (`gfx.open(w,h,title)(win:)`) and
+// inserts the handle into its Window pool.
 open :: func(w: int, h: int, own title: []char) -> Eff(window) {
   return gfx_be_open(w, h, move title);
 }
 
-// Clear the whole framebuffer to the window's `bg` colour (0xRRGGBB). Queries the window; fetches the
-// backend framebuffer as a local and fills it.
+// @drop(window): the compiler runs this when a window value leaves scope, freeing backend state.
+@drop(window)
+close :: proc(own win: window) {
+  gfx_be_close(win);
+}
+
+// Fill each window's framebuffer with its `bg` colour (0xRRGGBB).
 clear :: system {
   each (query { handle, bg }) {
     gfx_be_frame(handle)(px:);
@@ -34,9 +34,17 @@ present :: system (query { handle }) {
   gfx_be_present(handle);
 }
 
-// Pump pending events (incl. resize) and write whether the window is still open (1) or a close was
-// requested (0) into the queried `open` flag, so a driver system can read it and exit.
-poll :: system (query { handle, open }) {
-  gfx_be_poll(handle)(r:);
-  open = r;
+// A window-close event as data: empty while open, one row once closed. The driver owns `[1]Closed` and
+// reacts (e.g. an `each (Closed)` that halts). `at` is the close stamp.
+Closed :: arche { at :: i64 }
+
+// Pump events; on a close request, record it by inserting a `Closed` row.
+@allow(discarded_ok)
+poll :: system {
+  each (query { handle }) {
+    gfx_be_poll(handle)(r:);
+    if (!r) {
+      insert(Closed { at: 0 })(_:, _:);
+    }
+  };
 }

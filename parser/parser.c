@@ -1503,7 +1503,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 	}
 	if (check(parser, TOK_MAP)) {
 		advance(parser); /* consume 'map' */
-		*out_kind = SN_SYS_EXPR;
+		*out_kind = SN_MAP_EXPR;
 		if (!match(parser, TOK_LPAREN)) {
 			error(parser, "Expected '(' after 'map'");
 			return 0;

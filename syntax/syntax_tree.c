@@ -115,7 +115,7 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "ARCHETYPE_DECL";
 	case SN_PROC_DECL:
 		return "PROC_DECL";
-	case SN_SYS_DECL:
+	case SN_MAP_DECL:
 		return "SYS_DECL";
 	case SN_FUNC_DECL:
 		return "FUNC_DECL";
@@ -209,7 +209,7 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "GROUP_EXPR";
 	case SN_ARCH_EXPR:
 		return "ARCH_EXPR";
-	case SN_SYS_EXPR:
+	case SN_MAP_EXPR:
 		return "SYS_EXPR";
 	case SN_SYSTEM_EXPR:
 		return "SYSTEM_EXPR";

@@ -27,7 +27,7 @@ typedef enum {
 	SN_WORLD_DECL,
 	SN_ARCHETYPE_DECL,
 	SN_PROC_DECL,
-	SN_SYS_DECL,
+	SN_MAP_DECL,
 	SN_FUNC_DECL,
 	SN_FUNC_GROUP_DECL,
 	SN_STATIC_DECL,
@@ -89,7 +89,7 @@ typedef enum {
 	SN_POLICY_EXPR,  /* policy value literal: `policy(in)->T{body}` — a failure-policy decl */
 	SN_GROUP_EXPR,   /* Odin-style overload group: `proc{a,b}` / `func{a,b}` */
 	SN_ARCH_EXPR,    /* archetype (record type) definition: `archetype{ fields }` */
-	SN_SYS_EXPR,     /* map definition: `map(<query>){body}` — runs over a query */
+	SN_MAP_EXPR,     /* map definition: `map(<query>){body}` — runs over a query */
 	SN_SYSTEM_EXPR,  /* system definition: `system { body }` — the composer; invoked by `#schedule` */
 	SN_EACH_EXPR,    /* each definition: `each(<query>){body}` — the per-element fan (scalars, control flow) */
 	SN_QUERY_EXPR,   /* query definition: `query { col, col }` — an archetype-selecting column set */
