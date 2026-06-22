@@ -169,6 +169,10 @@ static void tuple_rewrite_stmt(HirStmt *s, const char *base) {
 	case HIR_STMT_EXPR:
 		tuple_rewrite_expr(s->data.expr_stmt.expr, base);
 		break;
+	case HIR_STMT_EACH:
+		for (int i = 0; i < s->data.each_stmt->stmt_count; i++)
+			tuple_rewrite_stmt(s->data.each_stmt->stmts[i], base);
+		break;
 	case HIR_STMT_RETURN:
 		for (int i = 0; i < s->data.return_stmt.count; i++)
 			tuple_rewrite_expr(s->data.return_stmt.values[i], base);
@@ -190,6 +194,7 @@ static void tuple_rewrite_stmt(HirStmt *s, const char *base) {
 
 static HirExpr *lower_expr_cst(SyntaxView e);
 static HirStmt *lower_stmt_cst(SyntaxView s);
+static HirEachDecl *lower_each_payload(SyntaxView f, char *name);
 static char *dupz(const char *s);
 
 /* Lower an expression in a constant-required position (pool capacity / init length / field default /
@@ -1140,10 +1145,26 @@ static HirStmt *lower_stmt_cst(SyntaxView s) {
 		as->data.assign_stmt.value = lower_expr_cst(sv_node_at_expr(s, 1));
 		break;
 	}
-	case SN_EXPR_STMT:
+	case SN_EXPR_STMT: {
+		/* An anonymous `each(Q) { … };` in statement position is the inline per-element fan (a nested loop),
+		 * not a discarded value — lower it to HIR_STMT_EACH so codegen emits the fan in place. `each` is a
+		 * value-FORM, so sv_node_at_expr (which filters to expression-category nodes) skips it — reach the
+		 * raw first node child instead. */
+		SyntaxView raw = {NULL, s.src};
+		for (int ci = 0; ci < s.node->child_count; ci++)
+			if (s.node->children[ci].tag == SE_NODE) {
+				raw = (SyntaxView){s.node->children[ci].as.node, s.src};
+				break;
+			}
+		if (sv_present(raw) && sv_kind(raw) == SN_EACH_EXPR) {
+			as->kind = HIR_STMT_EACH;
+			as->data.each_stmt = lower_each_payload(raw, NULL);
+			break;
+		}
 		as->kind = HIR_STMT_EXPR;
 		as->data.expr_stmt.expr = lower_expr_cst(sv_node_at_expr(s, 0));
 		break;
+	}
 	case SN_BREAK_STMT:
 		as->kind = HIR_STMT_BREAK;
 		break;
@@ -1847,6 +1868,10 @@ static void tuple_collapse_stmt(HirStmt *s) {
 	case HIR_STMT_EXPR:
 		tuple_collapse_expr(s->data.expr_stmt.expr);
 		break;
+	case HIR_STMT_EACH:
+		for (int i = 0; i < s->data.each_stmt->stmt_count; i++)
+			tuple_collapse_stmt(s->data.each_stmt->stmts[i]);
+		break;
 	case HIR_STMT_RETURN:
 		for (int i = 0; i < s->data.return_stmt.count; i++)
 			tuple_collapse_expr(s->data.return_stmt.values[i]);
@@ -1887,6 +1912,10 @@ static void tuple_collapse_decl(HirDecl *d) {
 		for (int i = 0; i < d->data.system->stmt_count; i++)
 			tuple_collapse_stmt(d->data.system->stmts[i]);
 		break;
+	case HIR_DECL_EACH:
+		for (int i = 0; i < d->data.each->stmt_count; i++)
+			tuple_collapse_stmt(d->data.each->stmts[i]);
+		break;
 	default:
 		break;
 	}
@@ -1921,6 +1950,22 @@ static int syntax_decl_has_intrinsic_decorator(SyntaxView d) {
 		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
 			continue;
 		if (e2->as.token.length == 9 && memcmp(d.src + e2->as.token.offset, "intrinsic", 9) == 0)
+			return 1;
+	}
+	return 0;
+}
+static int syntax_decl_has_gpu_decorator(SyntaxView d) {
+	if (!sv_present(d))
+		return 0;
+	int n = d.node->child_count;
+	for (int i = 0; i + 1 < n; i++) {
+		const SyntaxElem *e1 = &d.node->children[i];
+		if (e1->tag != SE_TOKEN || e1->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *e2 = &d.node->children[i + 1];
+		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
+			continue;
+		if (e2->as.token.length == 3 && memcmp(d.src + e2->as.token.offset, "gpu", 3) == 0)
 			return 1;
 	}
 	return 0;
@@ -2336,6 +2381,23 @@ static HirDecl *lower_system_from(SyntaxView f, char *name) {
 	return ad;
 }
 
+/* Build the `each` fan payload (columns + body) from an SN_EACH_EXPR view. `name` is the decl name, or NULL
+ * for an anonymous inline `each` used as a statement (HIR_STMT_EACH). */
+static HirEachDecl *lower_each_payload(SyntaxView f, char *name) {
+	HirEachDecl *as = calloc(1, sizeof(HirEachDecl));
+	as->name = name;
+	as->stmts = syntax_lower_body(f, &as->stmt_count);
+	/* `each(Q)` carries its query columns (flattened), bound per-element in codegen's row loop. */
+	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
+	return as;
+}
+
+static HirDecl *lower_each_from(SyntaxView f, char *name) {
+	HirDecl *ad = hir_decl_create(HIR_DECL_EACH);
+	ad->data.each = lower_each_payload(f, name);
+	return ad;
+}
+
 static HirDecl *lower_map_from(SyntaxView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_MAP);
 	HirMapDecl *as = calloc(1, sizeof(HirMapDecl));
@@ -2495,8 +2557,8 @@ static SyntaxView lower_rhs_form(SyntaxView d) {
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
 		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR || k == SN_SYSTEM_EXPR ||
-		    k == SN_ARCH_EXPR || k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_SUM_EXPR || k == SN_QUERY_EXPR ||
-		    k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
+		    k == SN_EACH_EXPR || k == SN_ARCH_EXPR || k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_SUM_EXPR ||
+		    k == SN_QUERY_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
 			SyntaxView v = {d.node->children[i].as.node, d.src};
 			return v;
 		}
@@ -2688,7 +2750,8 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		if (sv_present(rhs)) {
 			SyntaxNodeKind rk = sv_kind(rhs);
 			if (rk == SN_PROC_EXPR || rk == SN_FUNC_EXPR || rk == SN_POLICY_EXPR || rk == SN_SYS_EXPR ||
-			    rk == SN_SYSTEM_EXPR || rk == SN_ARCH_EXPR || rk == SN_GROUP_EXPR || rk == SN_QUERY_EXPR) {
+			    rk == SN_SYSTEM_EXPR || rk == SN_EACH_EXPR || rk == SN_ARCH_EXPR || rk == SN_GROUP_EXPR ||
+			    rk == SN_QUERY_EXPR) {
 				char *nm = txt_dup(lower_binding_name(d));
 				switch (rk) {
 				case SN_QUERY_EXPR:
@@ -2724,12 +2787,18 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					}
 					return pf;
 				}
-				case SN_SYS_EXPR:
-					/* GPU dispatch is decided at the call site (`run map @gpu`), not here — see the
-					 * SN_RUN_STMT lowering, which sets the map's is_gpu flag for the emitter. */
-					return lower_map_from(rhs, nm);
+				case SN_SYS_EXPR: {
+					/* GPU dispatch is a `@gpu` decorator on the map decl: the schedule emits a compute shader
+					 * and dispatches on the GPU (CPU fallback). */
+					HirDecl *md = lower_map_from(rhs, nm);
+					if (md && md->kind == HIR_DECL_MAP && md->data.map && syntax_decl_has_gpu_decorator(d))
+						md->data.map->is_gpu = 1;
+					return md;
+				}
 				case SN_SYSTEM_EXPR:
 					return lower_system_from(rhs, nm);
+				case SN_EACH_EXPR:
+					return lower_each_from(rhs, nm);
 				case SN_ARCH_EXPR:
 					return lower_archetype_from(rhs, nm);
 				case SN_GROUP_EXPR:
@@ -3220,6 +3289,10 @@ static void hir_rn_stmt(HirStmt *s, const char *prefix, char **set, int count) {
 	case HIR_STMT_EXPR:
 		hir_rn_expr(s->data.expr_stmt.expr, prefix, set, count);
 		break;
+	case HIR_STMT_EACH:
+		for (int i = 0; i < s->data.each_stmt->stmt_count; i++)
+			hir_rn_stmt(s->data.each_stmt->stmts[i], prefix, set, count);
+		break;
 	case HIR_STMT_RETURN:
 		for (int i = 0; i < s->data.return_stmt.count; i++)
 			hir_rn_expr(s->data.return_stmt.values[i], prefix, set, count);
@@ -3269,6 +3342,11 @@ static void hir_rn_decl(HirDecl *d, const char *prefix, char **set, int count) {
 		rn_owned(&d->data.system->name, prefix, set, count);
 		for (int i = 0; i < d->data.system->stmt_count; i++)
 			hir_rn_stmt(d->data.system->stmts[i], prefix, set, count);
+		break;
+	case HIR_DECL_EACH:
+		rn_owned(&d->data.each->name, prefix, set, count);
+		for (int i = 0; i < d->data.each->stmt_count; i++)
+			hir_rn_stmt(d->data.each->stmts[i], prefix, set, count);
 		break;
 	case HIR_DECL_RUN:
 		/* Entry-file only; never inlined as a module, so no module-local rename. */
@@ -3329,6 +3407,8 @@ static const char *hir_decl_name(HirDecl *d) {
 		return d->data.map->name;
 	case HIR_DECL_SYSTEM:
 		return d->data.system->name;
+	case HIR_DECL_EACH:
+		return d->data.each->name;
 	case HIR_DECL_RUN:
 		return NULL; /* a region, not a named decl */
 	case HIR_DECL_QUERY:
@@ -3487,6 +3567,10 @@ static void hir_q_stmt(HirStmt *s, const QualCtx *q) {
 	case HIR_STMT_EXPR:
 		hir_q_expr(s->data.expr_stmt.expr, q);
 		break;
+	case HIR_STMT_EACH:
+		for (int i = 0; i < s->data.each_stmt->stmt_count; i++)
+			hir_q_stmt(s->data.each_stmt->stmts[i], q);
+		break;
 	case HIR_STMT_RETURN:
 		for (int i = 0; i < s->data.return_stmt.count; i++)
 			hir_q_expr(s->data.return_stmt.values[i], q);
@@ -3525,6 +3609,10 @@ static void hir_q_decl(HirDecl *d, const QualCtx *q) {
 	case HIR_DECL_SYSTEM:
 		for (int i = 0; i < d->data.system->stmt_count; i++)
 			hir_q_stmt(d->data.system->stmts[i], q);
+		break;
+	case HIR_DECL_EACH:
+		for (int i = 0; i < d->data.each->stmt_count; i++)
+			hir_q_stmt(d->data.each->stmts[i], q);
 		break;
 	case HIR_DECL_FUNC:
 		for (int i = 0; i < d->data.func->stmt_count; i++)

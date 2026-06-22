@@ -5,8 +5,12 @@
 
 [2]Node; // below the datasheet minimum of 4 — must error (the shape comes from store)
 
-main :: proc() {
+seed :: system {
   insert(Node { key: 2.0, val: 3.0 })(_:, _:);
-  run store.bump;
+}
+
+verify :: system {
   fmt.printf("should_not_build\n");
 }
+
+#run seq({ seed, store.bump, verify })

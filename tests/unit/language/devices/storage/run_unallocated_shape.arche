@@ -8,6 +8,4 @@ s :: map (query { x }) {
   x = x + 1.0;
 }
 
-main :: proc() {
-  run s;
-}
+#run seq({ s })

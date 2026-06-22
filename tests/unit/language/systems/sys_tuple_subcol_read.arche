@@ -20,4 +20,4 @@ show :: system {
   fmt.printf("v=%d\n", Mover.pos.x[0]);
 }
 
-#run seq({ run (boot), run (show) })
+#run seq({ boot, show })

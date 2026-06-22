@@ -91,6 +91,7 @@ typedef enum {
 	SN_ARCH_EXPR,    /* archetype (record type) definition: `archetype{ fields }` */
 	SN_SYS_EXPR,     /* map definition: `map(<query>){body}` — runs over a query */
 	SN_SYSTEM_EXPR,  /* system definition: `system { body }` — the composer; invoked by `#schedule` */
+	SN_EACH_EXPR,    /* each definition: `each(<query>){body}` — the per-element fan (scalars, control flow) */
 	SN_QUERY_EXPR,   /* query definition: `query { col, col }` — an archetype-selecting column set */
 	SN_ENUM_EXPR,    /* enum type definition: `enum { a, b = 2, c }` */
 	SN_ENUM_VARIANT, /* one enum variant: name + optional `= N` */

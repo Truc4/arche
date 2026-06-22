@@ -9,9 +9,14 @@ Thing :: arche { pos, vel, mass :: float }
 
 [4]Thing;
 
-main :: proc() {
+seed :: system {
   insert(Thing { pos: 10.0, vel: 1.0, mass: 5.0 })(_:, _:);
-  run libdev.integrate; // pos = pos + vel = 11 over the driver's Thing pool
+}
+
+verify :: system {
+  // pos = pos + vel = 11 over the driver's Thing pool
   fmt.assert(Thing.pos[0] * 10 == 110, "device system did not run over the driver's shape\n");
   fmt.printf("datasheet_ok\n");
 }
+
+#run seq({ seed, libdev.integrate, verify })

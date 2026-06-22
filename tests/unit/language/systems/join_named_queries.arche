@@ -26,4 +26,4 @@ check :: system {
   fmt.assert(Mover.n[2] == 129, "row 2\n");
 }
 
-#run seq({ run (seed), run (addwin), run (check) })
+#run seq({ seed, addwin, check })

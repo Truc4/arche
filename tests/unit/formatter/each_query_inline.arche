@@ -1,0 +1,13 @@
+// An inline `each(query {…})` selector must format on one line like `map`/`system` — the closing `)` must
+// NOT break onto its own line (regression guard for SN_EACH_EXPR in is_list_paren_parent).
+// RUN: %arche fmt %s | grep -qF "draw :: each (query { pos, color }) {"
+#import { fmt }
+[8]Mob(1);
+Mob :: arche { pos(x, y) :: int color :: int }
+
+draw :: each (query { pos, color }) {
+  pos.x = pos.x + color;
+}
+
+main :: proc() {
+}

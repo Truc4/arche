@@ -1,8 +1,8 @@
-// Support module for module_body_run.arche (not a standalone test). Defines a pool + system and a proc
-// that `run`s it. The `run` lives in THIS imported (non-entry) compilation unit, so under per-unit
-// codegen the system body emits in unit 0 while this unit must resolve `@arche.bump` via the cross-unit
-// SYS declare (emit_cross_unit_declares). Mutates + prints pool state so a regressed declare (an
-// unresolved symbol / a system that never ran) is caught.
+// Support module for module_body_run.arche (not a standalone test). Defines a pool + a map + systems in
+// THIS imported (non-entry) compilation unit; the entry's `#run` dispatches them across units. Under
+// per-unit codegen the map/system bodies emit in their own unit and the entry references them via the
+// cross-unit declare (emit_cross_unit_declares). Mutates + prints pool state so a regressed declare (an
+// unresolved symbol / a body that never ran) is caught.
 // RUN: true
 #import { fmt }
 hp  :: int;
@@ -14,8 +14,10 @@ bump :: map (query { hp }) {
   hp = hp + 1;
 }
 
-step :: proc() {
+mob_seed :: system {
   insert(Mob { hp: 0 })(_:, _:);
-  run bump;
+}
+
+mob_report :: system {
   fmt.printf("n=%d\n", Mob.hp[0]);
 }

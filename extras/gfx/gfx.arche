@@ -1,48 +1,42 @@
-// gfx public surface (always merged, backend-agnostic). Each call forwards to the selected variant's
-// `gfx_be_*` foreign symbol (declared #module-private in x11/backend.arche, visible here because
-// variant files share this device's unit).
+// gfx public surface (always merged, backend-agnostic) — PROC-FREE. Each operation QUERIES for the window
+// (its `handle` component) and forwards to the selected variant's `gfx_be_*` foreign symbol; the backend's
+// framebuffer is fetched as a writable LOCAL ([]int from `gfx_be_frame`), never a read-only pool column.
+// There are no middle-man wrapper procs — only this query-driven surface + the `#foreign` externs.
 //
-// The framebuffer is owned by the backend and tracks the window size, so the loop is:
-//   open → { frame (get a writable view + current w/h) → draw into it → present → poll } → close.
-// Re-querying `frame` each iteration is what makes the window resizable (incl. tiling WMs that pick
-// the size): the view follows the window's current dimensions.
+// The window lives in a `[1]` pool the driver sizes; gfx never holds it. The loop is:
+//   open (build the handle) -> { clear -> draw -> present -> poll } over the queried window.
 
-// Open a width x height window titled `title`; returns its handle (a null handle on failure). The
-// backend keeps its own copy of the title, so the slice is consumed (`own`).
-open :: proc(w: int, h: int, own title: []char)(win: window) {
-  gfx_be_open(w, h, move title)(win);
+// Open a width x height window titled `title`; BUILDS the open effect as an `Eff(window)`. A boot system
+// runs it (`gfx.open(w, h, title)(win:)`) and inserts the handle into its Window pool. `own title` — the
+// backend keeps its own copy, so the slice is consumed.
+open :: func(w: int, h: int, own title: []char) -> Eff(window) {
+  return gfx_be_open(w, h, move title);
 }
 
-// The current writable framebuffer (0xRRGGBB ints, row-major) plus the window's CURRENT size. Write
-// `px[y*w + x]`; the view is valid until the next `frame`/`poll`. Call each iteration so it tracks
-// resizes.
-frame :: proc(win: window)(px: []int, w: int, h: int) {
-  gfx_be_frame(win)(raw:);
-  gfx_be_w(win)(w);
-  gfx_be_h(win)(h);
-  px = raw[0: w * h];
+// Clear the whole framebuffer to the window's `bg` colour (0xRRGGBB). Queries the window; fetches the
+// backend framebuffer as a local and fills it.
+clear :: system {
+  each (query { handle, bg }) {
+    gfx_be_frame(handle)(px:);
+    gfx_be_w(handle)(w:);
+    gfx_be_h(handle)(h:);
+    n := w * h;
+    i := 0;
+    for (; i < n;) {
+      px[i] = bg;
+      i     = i + 1;
+    }
+  };
 }
 
 // Present the framebuffer to the window.
-present :: proc(win: window) {
-  gfx_be_present(win);
+present :: system (query { handle }) {
+  gfx_be_present(handle);
 }
 
-// Pump pending events (incl. resize); returns `true` while the window is open, `false` once a close
-// (window-close or key) is requested. Call each frame. (The backend reports an int 0/1 at the C ABI; we
-// expose a proper bool so callers write `is_open := true; for (; is_open;) { … gfx.poll(win)(is_open); }`.)
-poll :: proc(win: window)(is_open: bool) {
-  gfx_be_poll(win)(r:);
-  // NOTE: arche comparisons (`r != 0`) currently yield i32, and `bool` is a distinct type, so we can't
-  // write `is_open = r != 0` (i32 → bool). Branch to a bool literal instead.
-  is_open = false;
-  if (r != 0) {
-    is_open = true;
-  }
-}
-
-// Destroy the window and release its backend state. Runs automatically at scope exit (@drop).
-@drop(window)
-close :: proc(own win: window) {
-  gfx_be_close(move win);
+// Pump pending events (incl. resize) and write whether the window is still open (1) or a close was
+// requested (0) into the queried `open` flag, so a driver system can read it and exit.
+poll :: system (query { handle, open }) {
+  gfx_be_poll(handle)(r:);
+  open = r;
 }

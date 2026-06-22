@@ -10,4 +10,4 @@ poke :: system {
   fmt.printf("%d\n", s[0]);
 }
 
-#run seq({ run (poke) })
+#run seq({ poke })

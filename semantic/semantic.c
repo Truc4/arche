@@ -1044,6 +1044,8 @@ static void mark_last_const(SemanticContext *ctx) {
 
 static void analyze_expression(SemanticContext *ctx, SyntaxView v);
 static void analyze_statement(SemanticContext *ctx, SyntaxView v);
+static void analyze_inline_each(SemanticContext *ctx, SyntaxView f);
+static ParamSummary sem_param_summary_node(SyntaxView p);
 static int proc_param_is_inout(DeclSummary *proc, int param_idx);
 
 /* By-reference aggregate param types: arrays are passed by reference (borrowed read-only by
@@ -3201,11 +3203,25 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		break;
 	}
 
-	case SN_EXPR_STMT:
+	case SN_EXPR_STMT: {
+		/* An anonymous `each(Q) { … };` in statement position is the inline per-element fan (a nested loop)
+		 * — analyze it as an each (bind its columns as per-element scalars, body sees the enclosing scope).
+		 * `each` is a value-form, which sem_node_at_expr filters out — reach the raw first node child. */
+		SyntaxView raw = {NULL, v.src};
+		for (int ci = 0; ci < v.node->child_count; ci++)
+			if (v.node->children[ci].tag == SE_NODE) {
+				raw = (SyntaxView){v.node->children[ci].as.node, v.src};
+				break;
+			}
+		if (sv_present(raw) && sv_kind(raw) == SN_EACH_EXPR) {
+			analyze_inline_each(ctx, raw);
+			break;
+		}
 		ctx->stmt_call_ok = 1;
 		analyze_expression(ctx, sem_node_at_expr(v, 0));
 		ctx->stmt_call_ok = 0;
 		break;
+	}
 
 	case SN_RETURN_STMT: {
 		int rcount = sem_expr_count(v);
@@ -4108,19 +4124,35 @@ static ScheduleTree *fold_sched(SemanticContext *ctx, SyntaxView e, SchedScope *
 	if (sv_kind(e) == SN_PAREN_EXPR)
 		return fold_sched(ctx, sem_first_expr(e), scope);
 
-	if (sv_kind(e) == SN_NAME_EXPR) {
-		char *nm = sv_name_expr_dup(e);
+	/* A schedule LEAF is a bare/qualified system/map/each name — no `run(...)` wrapper. (`map`/`each` are
+	 * kinds of systems; all three are dispatched by naming them directly in `#run`.) A simple name may also
+	 * be a bound combinator param (`s` in `forever(s)`) or `halt`; those are checked first. A qualified name
+	 * (`device.integrate`) is a postfix access, not a bare SN_NAME_EXPR — `sv_name_expr_dup` gives its
+	 * leftmost segment for param/halt matching, but the LEAF sym uses the FULL dotted name (`sem_cv_dup`).
+	 * Codegen resolves the name (full-or-tail) and errors if it is a query, not a runnable kernel. */
+	if (sv_kind(e) == SN_NAME_EXPR || sv_kind(e) == SN_FIELD_EXPR || has_nested_base(e)) {
+		char *seg = sv_name_expr_dup(e); /* leftmost segment (the whole name when unqualified) */
 		ScheduleTree *r = NULL;
-		if (nm) {
+		int is_bound = 0;
+		if (seg)
 			for (int i = scope->n - 1; i >= 0; i--) /* a bound combinator param → fold its arg */
-				if (strcmp(scope->binds[i].name, nm) == 0) {
+				if (strcmp(scope->binds[i].name, seg) == 0) {
 					r = fold_sched(ctx, scope->binds[i].expr, scope);
+					is_bound = 1;
 					break;
 				}
-			if (!r && sum_ctor_lookup(ctx, nm, NULL, NULL) != TYID_UNKNOWN && strcmp(nm, "halt") == 0)
+		if (!is_bound) {
+			if (seg && sum_ctor_lookup(ctx, seg, NULL, NULL) != TYID_UNKNOWN && strcmp(seg, "halt") == 0) {
 				r = sched_node(SCHED_HALT);
-			free(nm);
+			} else {
+				char *full = sem_cv_dup(e); /* the full dotted name */
+				if (full) {
+					r = sched_node(SCHED_RUN);
+					r->sym = full;
+				}
+			}
 		}
+		free(seg);
 		return r;
 	}
 
@@ -4132,12 +4164,7 @@ static ScheduleTree *fold_sched(SemanticContext *ctx, SyntaxView e, SchedScope *
 	int argc = sem_expr_count(e);
 	ScheduleTree *r = NULL;
 
-	if (strcmp(callee, "run") == 0 && argc == 1) {
-		r = sched_node(SCHED_RUN);
-		/* the run target's FULL name — a qualified `game.pace` must keep its module prefix (imported decls
-		 * carry the dotted identity), so dup the whole name expression, not just its leftmost segment. */
-		r->sym = sem_cv_dup(sem_node_at_expr(e, 0));
-	} else if ((strcmp(callee, "seq") == 0 || strcmp(callee, "par") == 0) && argc == 1) {
+	if ((strcmp(callee, "seq") == 0 || strcmp(callee, "par") == 0) && argc == 1) {
 		SyntaxView lit = sem_node_at_expr(e, 0); /* an array literal of sub-schedules */
 		if (sv_kind(lit) == SN_ARRAY_LIT_EXPR) {
 			r = sched_node(strcmp(callee, "seq") == 0 ? SCHED_SEQ : SCHED_PAR);
@@ -4308,6 +4335,11 @@ static void sem_format_shape_fields(ArchetypeInfo *arch, char *out, size_t cap) 
  * hard error; a driver pool smaller than the composed minimum is an error. Also emit a non-fatal note
  * when two+ datasheets require the same shape (shared pool). Sizing is keyed off the shape, so order
  * of requirement vs allocation decls does not matter. */
+/* Datasheet storage requirements vs the driver's pools. This is a WHOLE-PROGRAM (link-stage) check — it
+ * only makes sense once every unit is assembled — so it is NOT part of the shared per-file semantic pass
+ * (`analyze_program_core`); the compiler frontend calls `semantic_check_storage_requirements` after analysis.
+ * The analyzer (which sees one file at a time) never runs it, so it doesn't false-positive on a device whose
+ * storage the unseen driver provides. */
 static void sem_check_storage_requirements(SemanticContext *ctx) {
 	for (int a = 0; a < ctx->archetype_count; a++) {
 		ArchetypeInfo *arch = ctx->archetypes[a];
@@ -4343,6 +4375,17 @@ static void sem_check_storage_requirements(SemanticContext *ctx) {
 			fprintf(stderr, "note: %d device datasheets require %s -> one shared pool, size = %d\n", arch->req_count,
 			        fields, arch->alloc_capacity);
 	}
+}
+
+/* Public entry: the whole-program datasheet-storage check, run by the compiler frontend AFTER analysis (it
+ * needs every unit assembled — the driver's pools meeting the devices' requirements). Returns the number of
+ * errors emitted. Not part of the per-file analyzer path. */
+int semantic_check_storage_requirements(SemanticContext *ctx) {
+	if (!ctx)
+		return 0;
+	int before = ctx->error_count;
+	sem_check_storage_requirements(ctx);
+	return ctx->error_count - before;
 }
 
 static void sem_check_device_impl_decls(SemanticContext *ctx) {
@@ -5849,7 +5892,8 @@ static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 static void sem_check_raw_pool_lint(SemanticContext *ctx) {
 	for (int di = 0; di < ctx->decl_count; di++) {
 		DeclSummary *d = ctx->decls[di];
-		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYS && d->kind != DECL_SYSTEM) ||
+		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYS && d->kind != DECL_SYSTEM &&
+		     d->kind != DECL_EACH) ||
 		    d->is_extern)
 			continue;
 		if (!sv_present(d->body_node))
@@ -5923,6 +5967,7 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 	case DECL_FUNC: /* also policies — a policy is a DECL_FUNC with is_policy */
 	case DECL_PROC:
 	case DECL_SYSTEM: /* the composer — its own kind (a `system` reference), not a proc */
+	case DECL_EACH:   /* the per-element fan — its own kind (an `each` reference) */
 	case DECL_SYS: {
 		/* Each form gets its OWN callable kind — func/proc/map/policy never unify. Params are common;
 		 * a func carries its return list, a proc its out-params, map/policy none. */
@@ -5934,7 +5979,7 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 		for (int i = 0; i < np; i++)
 			/* func/proc/policy params are typed (`a: int`); a map's are bare COMPONENT names whose type
 			 * is the component itself — resolve those by name so `map(pos, vel)` isn't `map(<unknown>)`. */
-			params[i] = ((d->kind == DECL_SYS || d->kind == DECL_SYSTEM) && d->params[i].name)
+			params[i] = ((d->kind == DECL_SYS || d->kind == DECL_SYSTEM || d->kind == DECL_EACH) && d->params[i].name)
 			                ? sem_tyid_of_name(ctx, d->params[i].name)
 			                : d->params[i].type_id;
 		TypeId out;
@@ -5942,6 +5987,8 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 			out = tyid_of_map(ctx->ty_arena, params, np);
 		} else if (d->kind == DECL_SYSTEM) {
 			out = tyid_of_nominal(ctx->ty_arena, "system"); /* a system reference — its OWN kind, not a proc */
+		} else if (d->kind == DECL_EACH) {
+			out = tyid_of_nominal(ctx->ty_arena, "each"); /* an each reference — its OWN kind */
 		} else if (d->is_policy) {
 			out = tyid_of_policy(ctx->ty_arena, params, np);
 		} else if (d->kind == DECL_PROC) {
@@ -6098,7 +6145,8 @@ static void sem_check_policy_cycles(SemanticContext *ctx) {
 static void sem_check_policies(SemanticContext *ctx) {
 	for (int di = 0; di < ctx->decl_count; di++) {
 		DeclSummary *d = ctx->decls[di];
-		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYS && d->kind != DECL_SYSTEM) ||
+		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYS && d->kind != DECL_SYSTEM &&
+		     d->kind != DECL_EACH) ||
 		    d->is_extern)
 			continue;
 		if (!sv_present(d->body_node))
@@ -6283,10 +6331,9 @@ static void analyze_system_decl(SemanticContext *ctx, DeclSummary *sys) {
 	push_scope(ctx);
 	DeclSummary *prev_proc = ctx->current_proc;
 	ctx->current_proc = sys;
-	/* A query-bearing `system(Q)` is the EFFECTFUL per-entity fan: bind its columns for per-row access (so
-	 * `pos.x`/`color` resolve in the body), BUT do NOT set `ctx->in_map` — the body permits effects and
-	 * control flow (no E0046; that restriction is what makes a `map` a pure GPU-portable kernel). A plain
-	 * run-once `system { }` has no params and skips the binding. */
+	/* A query-bearing `system(Q)` is COLUMNAR: bind its columns (so `pos.x`/`color` resolve in the body) and
+	 * do NOT set `ctx->in_map` — the body permits effects (no E0046). The body operates on whole columns and
+	 * runs boundary effects; per-element iteration is `each`. A run-once `system { }` has no params. */
 	const char *old_arch = ctx->current_map_archetype;
 	if (sys->param_count > 0)
 		ctx->current_map_archetype = bind_query_archetype(ctx, sys);
@@ -6297,6 +6344,58 @@ static void analyze_system_decl(SemanticContext *ctx, DeclSummary *sys) {
 	ctx->current_map_archetype = old_arch;
 	pop_scope(ctx);
 	ctx->current_proc = prev_proc;
+}
+
+static void analyze_each_decl(SemanticContext *ctx, DeclSummary *each) {
+	if (!each)
+		return;
+	register_func(ctx, each->name); /* so the schedule can resolve the name */
+	push_scope(ctx);
+	DeclSummary *prev_proc = ctx->current_proc;
+	ctx->current_proc = each;
+	/* `each(Q)` is the PER-ELEMENT fan: bind its columns (resolved per-element in codegen's row loop) and do
+	 * NOT set `ctx->in_map` — the body permits control flow + effects, like a system. Binding is identical to
+	 * a query-system; only codegen differs (scalars at the current row vs whole columns). */
+	const char *old_arch = ctx->current_map_archetype;
+	ctx->current_map_archetype = bind_query_archetype(ctx, each);
+	ctx->in_body = 1;
+	for (int i = 0, n = sem_stmt_count(each->body_node); i < n; i++)
+		analyze_statement(ctx, sem_stmt_at(each->body_node, i));
+	ctx->in_body = 0;
+	ctx->current_map_archetype = old_arch;
+	pop_scope(ctx);
+	ctx->current_proc = prev_proc;
+}
+
+/* Analyze an anonymous inline `each(Q) { … }` appearing as a statement (HIR_STMT_EACH). `f` is the
+ * SN_EACH_EXPR view: its body statements are its direct children (sem_stmt_*); its columns come from its
+ * child SN_QUERY_EXPR(s). Bind the columns as per-element scalars in a fresh scope nested inside the
+ * enclosing one (so the body sees both its columns AND the enclosing locals), then analyze the body. */
+static void analyze_inline_each(SemanticContext *ctx, SyntaxView f) {
+	DeclSummary ds = {0};
+	ds.kind = DECL_EACH;
+	int nq = sv_count(f, SN_QUERY_EXPR);
+	int total = 0;
+	for (int q = 0; q < nq; q++)
+		total += sv_count(sv_child_at(f, SN_QUERY_EXPR, q), SN_PARAM);
+	ds.params = calloc(total ? total : 1, sizeof(ParamSummary));
+	for (int q = 0; q < nq; q++) {
+		SyntaxView iq = sv_child_at(f, SN_QUERY_EXPR, q);
+		int npq = sv_count(iq, SN_PARAM);
+		for (int i = 0; i < npq; i++)
+			ds.params[ds.param_count++] = sem_param_summary_node(sv_child_at(iq, SN_PARAM, i));
+	}
+	push_scope(ctx);
+	const char *old_arch = ctx->current_map_archetype;
+	ctx->current_map_archetype = bind_query_archetype(ctx, &ds);
+	int old_in_body = ctx->in_body;
+	ctx->in_body = 1;
+	for (int i = 0, n = sem_stmt_count(f); i < n; i++)
+		analyze_statement(ctx, sem_stmt_at(f, i));
+	ctx->in_body = old_in_body;
+	ctx->current_map_archetype = old_arch;
+	pop_scope(ctx);
+	free(ds.params);
 }
 
 static void analyze_map_decl(SemanticContext *ctx, DeclSummary *map) {
@@ -6489,6 +6588,9 @@ static void analyze_decl(SemanticContext *ctx, DeclSummary *ds) {
 		break;
 	case DECL_SYSTEM:
 		analyze_system_decl(ctx, ds);
+		break;
+	case DECL_EACH:
+		analyze_each_decl(ctx, ds);
 		break;
 	case DECL_FUNC:
 		analyze_func_decl(ctx, ds);
@@ -7259,8 +7361,8 @@ static SyntaxView sem_rhs_form(SyntaxView d) {
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
 		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR || k == SN_SYSTEM_EXPR ||
-		    k == SN_ARCH_EXPR || k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_SUM_EXPR || k == SN_QUERY_EXPR ||
-		    k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
+		    k == SN_EACH_EXPR || k == SN_ARCH_EXPR || k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_SUM_EXPR ||
+		    k == SN_QUERY_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
 			SyntaxView v = {d.node->children[i].as.node, d.src};
 			return v;
 		}
@@ -8907,8 +9009,9 @@ static void analyze_program_core(SemanticContext *ctx) {
 		}
 	}
 
-	/* pass 2.5: device datasheet storage requirements vs the driver's pools (min met, none missing). */
-	sem_check_storage_requirements(ctx);
+	/* pass 2.5: device-impl decl checks. The datasheet STORAGE requirement check is whole-program (it needs
+	 * the driver's pools), so it runs from the compiler frontend via semantic_check_storage_requirements,
+	 * not here — the per-file analyzer must not flag a device whose storage the unseen driver provides. */
 	sem_check_device_impl_decls(ctx);
 	sem_check_datasheet_decls(ctx);
 	sem_check_raw_pool_lint(ctx);  /* W0017: advise handles for unprovable pool-column indexing */
@@ -9147,7 +9250,7 @@ static SyntaxView sem_decl_body_node(SyntaxView dn) {
 		if (dn.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = dn.node->children[i].as.node->kind;
 			if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR ||
-			    k == SN_SYSTEM_EXPR)
+			    k == SN_SYSTEM_EXPR || k == SN_EACH_EXPR)
 				return (SyntaxView){dn.node->children[i].as.node, dn.src};
 		}
 	return dn;
@@ -9396,6 +9499,23 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 	return ds;
 }
 
+/* True if the decl node carries the `@allow_pure_proc` decorator (a `@ allow_pure_proc` token pair). The
+ * decorator lives on the DECL node, not the proc body form — checking the form (an earlier bug) never saw
+ * it, so the documented escape hatch silently did nothing. */
+static int sem_decl_has_allow_pure_proc(SyntaxView dv) {
+	if (!sv_present(dv))
+		return 0;
+	for (int i = 0; i + 1 < dv.node->child_count; i++) {
+		const SyntaxElem *e1 = &dv.node->children[i];
+		const SyntaxElem *e2 = &dv.node->children[i + 1];
+		if (e1->tag == SE_TOKEN && e1->as.token.kind == TOK_AT && e2->tag == SE_TOKEN &&
+		    e2->as.token.kind == TOK_IDENT && e2->as.token.length == 15 &&
+		    memcmp(dv.src + e2->as.token.offset, "allow_pure_proc", 15) == 0)
+			return 1;
+	}
+	return 0;
+}
+
 static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) {
 	if (sv_kind(dv) == SN_WORLD_DECL) {
 		DeclSummary *ds = calloc(1, sizeof(DeclSummary));
@@ -9539,7 +9659,9 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 	else if (fk == SN_SYS_EXPR)
 		kind = DECL_SYS;
 	else if (fk == SN_SYSTEM_EXPR)
-		kind = DECL_SYSTEM; /* the composer: no params; body_node holds its statements */
+		kind = DECL_SYSTEM; /* the composer: columnar; body_node holds its statements */
+	else if (fk == SN_EACH_EXPR)
+		kind = DECL_EACH; /* the per-element fan: query columns bound as scalars per row */
 	else if (fk == SN_GROUP_EXPR)
 		kind = DECL_FUNC_GROUP;
 	else if (fk == SN_ENUM_EXPR)
@@ -9684,10 +9806,10 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 	 * SN_QUERY_EXPR form, so its own SN_PARAM children flow through directly. */
 	SyntaxView col_src = form;
 	int params_collected = 0;
-	if (kind == DECL_SYS || kind == DECL_SYSTEM) {
-		/* map/system carry their columns in child SN_QUERY_EXPR node(s). A `system(Q1, Q2)` JOIN has several
-		 * — flatten every query's SN_PARAM columns into one list (a column resolves to its archetype by name,
-		 * source-agnostically). A run-once `system { body }` has no SN_QUERY_EXPR and falls through. */
+	if (kind == DECL_SYS || kind == DECL_SYSTEM || kind == DECL_EACH) {
+		/* map/system/each carry their columns in child SN_QUERY_EXPR node(s). A join (`system(Q1,Q2)` /
+		 * `each(Q1,Q2)`) has several — flatten every query's SN_PARAM columns into one list (a column resolves
+		 * to its archetype by name, source-agnostically). A run-once `system { body }` has no SN_QUERY_EXPR. */
 		int nq = sv_count(form, SN_QUERY_EXPR);
 		if (nq > 0) {
 			int total = 0;
@@ -9715,7 +9837,7 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 	if (kind == DECL_PROC) {
 		ds->is_extern = !sv_has_token(form, TOK_LBRACE);
 		ds->is_variadic = sv_has_token(form, TOK_DOTDOTDOT);
-		ds->allow_pure_proc = sv_has_token(form, TOK_AT);
+		ds->allow_pure_proc = sem_decl_has_allow_pure_proc(dv);
 		int no = sv_count(form, SN_OUT_PARAM);
 		ds->out_param_count = no;
 		ds->out_params = calloc(no ? no : 1, sizeof(ParamSummary));
@@ -9748,7 +9870,7 @@ static void sem_append_params(DeclSummary *m, int n) {
 static void sem_resolve_map_queries(SemanticContext *ctx) {
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *m = ctx->decls[i];
-		if (!m || (m->kind != DECL_SYS && m->kind != DECL_SYSTEM))
+		if (!m || (m->kind != DECL_SYS && m->kind != DECL_SYSTEM && m->kind != DECL_EACH))
 			continue;
 		SyntaxView form = sem_rhs_form(m->node);
 		if (!sv_present(form))

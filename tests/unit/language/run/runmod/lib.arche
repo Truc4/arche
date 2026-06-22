@@ -8,4 +8,4 @@ greet :: proc() {
   fmt.printf("from lib\n");
 }
 
-#run seq({ run (greet) })
+#run seq({ greet })

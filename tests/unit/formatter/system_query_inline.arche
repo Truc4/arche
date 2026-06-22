@@ -8,4 +8,4 @@ draw :: system (query { pos, color }) {
   pos.x += color;
 }
 
-#run seq({ run (draw) })
+#run seq({ draw })

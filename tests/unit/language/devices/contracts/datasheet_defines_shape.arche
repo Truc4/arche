@@ -3,6 +3,4 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "datasheet describes requirements, not shapes" %t.out
 #import { dsshape }
 
-main :: proc() {
-  run dsshape.poke;
-}
+#run seq({ dsshape.poke })

@@ -20,4 +20,4 @@ check :: system {
   verify();
 }
 
-#run seq({ run (boot), run (check) })
+#run seq({ boot, check })

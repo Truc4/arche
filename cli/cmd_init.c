@@ -64,11 +64,13 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		    "Movers :: query { pos, vel }\n"
 		    "\n"
 		    "/// ```arche\n"
-		    "/// main :: proc() {\n"
+		    "/// seed :: system {\n"
 		    "///   insert(Particle{ pos: 10.0, vel: 1.0 })(_:, _:);\n"
-		    "///   run integrate;\n"
+		    "/// }\n"
+		    "/// check :: system {\n"
 		    "///   fmt.assert(Particle.pos[0] * 10 == 110, \"integrate did not run\\n\");\n"
 		    "/// }\n"
+		    "/// #run seq({ seed, integrate, check })\n"
 		    "/// ```\n"
 		    "integrate :: map(Movers) {\n"
 		    "  pos = pos + vel;\n"
@@ -89,8 +91,9 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 			for (int i = 3; i < argc; i++)
 				n += snprintf(content + n, sizeof(content) - (size_t)n, "%s ", argv[i]);
 			n += snprintf(content + n, sizeof(content) - (size_t)n,
-			              "fmt }\n\nmain :: proc() {\n  // call the imported devices' systems here\n  "
-			              "fmt.printf(\"ran\\n\");\n}\n");
+			              "fmt }\n\nreport :: system {\n  fmt.printf(\"ran\\n\");\n}\n"
+			              "// schedule the imported devices' systems before `report` in this `#run`.\n"
+			              "#run seq({ report })\n");
 			if (write_new_file(path, content) != ARCHE_OK)
 				return ARCHE_ERR;
 			/* Pull each device's required pools from its datasheet into the driver source. */
@@ -107,12 +110,14 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		         "\n"
 		         "[1000]Particle;    // the driver picks the storage size for the global shape\n"
 		         "\n"
-		         "main :: proc() {\n"
+		         "seed :: system {\n"
 		         "  insert(Particle{ pos: 10.0, vel: 1.0 })(_:, _:);\n"
-		         "  run physics.integrate;\n"
+		         "}\n"
+		         "check :: system {\n"
 		         "  fmt.assert(Particle.pos[0] * 10 == 110, \"integrate did not run\\n\");\n"
 		         "  fmt.printf(\"ran\\n\");\n"
-		         "}\n",
+		         "}\n"
+		         "#run seq({ seed, physics.integrate, check })\n",
 		         name);
 		return write_new_file(path, content);
 	}

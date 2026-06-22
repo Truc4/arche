@@ -15,5 +15,4 @@ step :: map (Used) {
 }
 
 main :: proc() {
-  run step;
 }

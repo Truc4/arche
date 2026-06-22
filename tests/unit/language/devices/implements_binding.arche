@@ -13,9 +13,14 @@ Thing :: arche { bar }
 
 [4]Thing;
 
-main :: proc() {
+seed :: system {
   insert(Thing { bar: 10.0 })(_:, _:);
-  run dev2.bump; // bump reads `foo` == bound `bar`: 10 + 1 = 11
+}
+
+verify :: system {
+  // bump reads `foo` == bound `bar`: 10 + 1 = 11
   fmt.assert(Thing.bar[0] == 11.0, "@implements binding did not rebind foo -> bar\n");
   fmt.printf("implements_ok\n");
 }
+
+#run seq({ seed, dev2.bump, verify })

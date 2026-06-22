@@ -2,7 +2,7 @@
 // their minimums (they coexist in one pool), with a comment naming each contributor. `store` requires
 // Node[4] and `cache` requires Node[16], so fill writes `Node[20] // store: 4, cache: 16`, and the
 // result builds (20 >= the compiler's max-of-minimums enforcement floor of 16).
-// RUN: rm -rf %t.fs && mkdir -p %t.fs && cp -r %repo/tests/unit/language/devices/storage/store %repo/tests/unit/language/devices/storage/cache %t.fs/ && printf '#import { store cache fmt }\nmain :: proc() {\n  run store.bump;\n  run cache.touch;\n}\n' > %t.fs/app.arche
+// RUN: rm -rf %t.fs && mkdir -p %t.fs && cp -r %repo/tests/unit/language/devices/storage/store %repo/tests/unit/language/devices/storage/cache %t.fs/ && printf '#import { store cache fmt }\n#run seq({ store.bump, cache.touch })\n' > %t.fs/app.arche
 // RUN: cd %t.fs && %arche fill app.arche | grep -q "filled \[20\]Node"
 // RUN: grep -qE "\[20\]Node; // store: 4, cache: 16" %t.fs/app.arche
 // RUN: cd %t.fs && %arche build -o app app.arche

@@ -10,6 +10,7 @@
   );
 }
 
+@allow(proc_could_be_func)
 argv :: proc(i: int)(out: []char) {
   os_argv(i)(raw:);
   os_argv_len(i)(n:);
@@ -17,6 +18,7 @@ argv :: proc(i: int)(out: []char) {
 }
 
 // Sleep `ms` milliseconds (nanosleep, syscall 35). `ts` = timespec { sec, nsec }.
+@allow(proc_no_effect)
 sleep_ms :: proc(ms: int) {
   if (ms <= 0) {
     return;
@@ -28,16 +30,19 @@ sleep_ms :: proc(ms: int) {
 }
 
 // Monotonic milliseconds (clock_gettime CLOCK_MONOTONIC, syscall 228).
+@allow(proc_could_be_func)
 now_ms :: proc()(t: i64) {
   ts: [2]i64;
   syscall(228, 1, ts, 0, 0, 0, 0)(_r:);
   t = ts[0] * 1000 + ts[1] / 1000000;
 }
 
+@allow(proc_could_be_func)
 open :: proc(path: []char, flags: int)(fd: int) {
   syscall(2, path, flags, 0, 0, 0, 0)(r:);
   fd = i32(r);
 }
+@allow(proc_could_be_func)
 read :: proc(fd: int, buf: []char, len: int)(out: []char) {
   syscall(0, fd, buf, len, 0, 0, 0)(r:);
   n := i32(r);
@@ -46,16 +51,20 @@ read :: proc(fd: int, buf: []char, len: int)(out: []char) {
   }
   out = buf[0: n];
 }
+@allow(proc_no_effect)
 write :: proc(fd: int, buf: []char, len: int) {
   syscall(1, fd, buf, len, 0, 0, 0)(_r:);
 }
+@allow(proc_no_effect)
 close :: proc(fd: int) {
   syscall(3, fd, 0, 0, 0, 0, 0)(_r:);
 }
+@allow(proc_could_be_func)
 lseek :: proc(fd: int, off: i64, whence: int)(pos: i64) {
   syscall(8, fd, off, whence, 0, 0, 0)(r:);
   pos = r;
 }
+@allow(proc_no_effect)
 exit :: proc(code: int) {
   syscall(231, code, 0, 0, 0, 0, 0)(_r:);
 }

@@ -1,0 +1,28 @@
+// An anonymous `each(Q) { … };` in statement position is the inline per-element fan — the same iteration a
+// top-level `each` does, but emitted in place so its body CAPTURES the enclosing scope (a value-form used as
+// a statement, per the grammar; it takes a `;` like any expression-statement). Here the inline fan reads an
+// enclosing local (`bump`) and writes back through its own column per element. Verified by cells.
+// RUN: %arche build -o %t %s && %t
+#import { fmt }
+P :: arche { v :: int }
+[8]P(3);
+
+seed :: system {
+  P.v = { 1, 2, 3 };
+}
+
+run :: system {
+  bump := 100; // an enclosing local…
+  each (query { v }) { // …captured by the inline fan; per-element write-back
+    v = v + bump;
+  };
+}
+
+check :: system {
+  fmt.assert(P.v[0] == 101, "row 0\n");
+  fmt.assert(P.v[1] == 102, "row 1\n");
+  fmt.assert(P.v[2] == 103, "row 2\n");
+  fmt.printf("each-inline ok\n");
+}
+
+#run seq({ seed, run, check })

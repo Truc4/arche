@@ -9,8 +9,13 @@ dummy :: map (query { pos }) {
   pos = pos;
 }
 
-main :: proc() {
+seed :: system {
   insert(Particle { pos: 1.0 })(_:, _:);
-  run dummy;
-  fmt.printf("system_ran\n"); // marker lives in the driver, not the kernel
 }
+
+verify :: system {
+  fmt.printf("system_ran\n");
+  // marker lives in the driver, not the kernel;
+}
+
+#run seq({ seed, dummy, verify })

@@ -11,4 +11,4 @@ addwin :: map (query { n }, query { id }) {
   n = n + id;
 }
 
-#run seq({ run (addwin) })
+#run seq({ addwin })

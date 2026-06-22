@@ -9,13 +9,16 @@ integrate :: map (query { pos, vel }) {
 dampen :: map (query { vel }) {
   vel = vel * 0.99;
 }
-main :: proc() {
+seed :: system {
   insert(Particle { pos: 1.0, vel: 0.1, mass: 5.0 })(_:, _:);
   insert(Particle { pos: 2.0, vel: 0.2, mass: 10.0 })(_:, _:);
   insert(Particle { pos: 3.0, vel: 0.3, mass: 15.0 })(_:, _:);
   insert(Body { pos: 5.0, vel: 0.5, density: 1.0 })(_:, _:);
   insert(Body { pos: 6.0, vel: 0.6, density: 2.0 })(_:, _:);
-  run integrate;
-  run dampen;
+}
+
+verify :: system {
   fmt.print("simulation completed\n");
 }
+
+#run seq({ seed, integrate, dampen, verify })

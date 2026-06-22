@@ -2,6 +2,10 @@
 // RUN: %arche completion bash | grep -q _arche
 // RUN: %arche completion zsh | grep -q "#compdef arche"
 // RUN: %arche completion fish | grep -q "complete -c arche"
+// Regression: an apostrophe in a description (`driver's`) must be ESCAPED for fish's single-quoted strings,
+// else fish reports "quotes are not balanced". The `fill` summary contains one; assert the escaped form.
+// RUN: %arche completion fish | grep -qF "driver\'s"
+// RUN: ! %arche completion fish | grep -qF "a driver's pools"
 #import { fmt }
 main :: proc() {
   fmt.printf("x\n");

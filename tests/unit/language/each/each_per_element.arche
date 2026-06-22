@@ -1,0 +1,19 @@
+// `each (Q)` is the PER-ELEMENT fan: the body runs once per matched element with the query columns bound
+// as SCALARS (a current element), and MAY use control flow + effects — unlike a `map` (branch-free, E0046).
+// Here it prints only the elements above a threshold, proving per-element scalar access + an `if` in the body.
+// RUN: %arche build -o %t %s && %t | tr '\n' ',' | grep -qxF "n=20,n=30,"
+#import { fmt }
+[8]Acc(3);
+Acc :: arche { n :: int }
+
+seed :: system {
+  Acc.n = { 10, 20, 30 };
+}
+
+show :: each (query { n }) {
+  if (n > 15) {
+    fmt.printf("n=%d\n", n);
+  }
+}
+
+#run seq({ seed, show })

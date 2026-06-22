@@ -21,4 +21,4 @@ show :: system {
   }
 }
 
-#run run (show)
+#run show

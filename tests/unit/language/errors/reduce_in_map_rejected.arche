@@ -8,6 +8,4 @@ N :: arche { v, s }
 bad :: map (query { v, s }) {
   s = reduce(+, v);
 }
-main :: proc() {
-  run bad;
-}
+#run seq({ bad })

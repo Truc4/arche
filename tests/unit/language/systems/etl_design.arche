@@ -41,10 +41,8 @@ task4_process :: map (query { amount }) {
   amount = amount * 2.0;
 }
 
-main :: proc() {
-  run task1_compute_revenue;
-  run task2_filter_invalid;
-  run task3_bucket_timestamps;
-  run task4_process;
+verify :: system {
   fmt.printf("ok\n");
 }
+
+#run seq({ task1_compute_revenue, task2_filter_invalid, task3_bucket_timestamps, task4_process, verify })

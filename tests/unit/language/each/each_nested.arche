@@ -1,0 +1,36 @@
+// Cross-pool work is EXPLICIT NESTING, not a join: an `each` is single-query, so to combine two pools you
+// nest one fan inside another. The outer fan establishes a per-element context (here a window's `base`),
+// the inner fan runs over a different pool and CAPTURES it. The current row index is saved/restored across
+// the nested loop, so the outer fan resumes correctly. This is how the renderer draws balls into a window
+// without singletons, broadcasts, or hand-indexing. Verified by cells.
+// RUN: %arche build -o %t %s && %t
+#import { fmt }
+W :: arche { wid :: int }
+P :: arche { v :: int }
+[1]W(1);
+[8]P(3);
+
+seedw :: system {
+  W.wid = { 10 };
+}
+seedp :: system {
+  P.v = { 1, 2, 3 };
+}
+
+run :: system {
+  each (query { wid }) { // outer: per window
+    base := wid; // per-window context
+    each (query { v }) { // inner: per ball — captures `base`
+      v = v + base;
+    };
+  };
+}
+
+check :: system {
+  fmt.assert(P.v[0] == 11, "row 0\n");
+  fmt.assert(P.v[1] == 12, "row 1\n");
+  fmt.assert(P.v[2] == 13, "row 2\n");
+  fmt.printf("each-nested ok\n");
+}
+
+#run seq({ seedw, seedp, run, check })

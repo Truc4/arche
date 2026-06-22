@@ -14,6 +14,11 @@ typedef struct SemanticContext SemanticContext;
  * side model by syntax tree node id (read by lowering). This is the only analysis entry. */
 SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src);
 
+/* Whole-program datasheet-storage validation (a device's `[N]Shape` requirement vs the driver's pool).
+ * Run by the COMPILER frontend after `semantic_analyze_cst`, never by the per-file analyzer — it needs the
+ * whole assembled program. Returns the number of errors emitted (also added to the context's error count). */
+int semantic_check_storage_requirements(SemanticContext *ctx);
+
 /* Register a `use`-module's syntax tree so semantic_analyze_cst can inline it (parallel to
  * lower_add_module). Call once per module before semantic_analyze_cst. */
 void semantic_add_module(const char *name, const SyntaxNode *root, const char *src, const char *filename,

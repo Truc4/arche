@@ -1,75 +1,86 @@
-// gfx rasterization — the "draw" category of the gfx device, kept in its own file but the SAME unit as
-// gfx/gfx.arche (windowing). gfx is the sole framebuffer authority: these take the `window` HANDLE, fetch
-// the backend framebuffer as a LOCAL view via the device's own `frame` wrapper, and write pixels into
-// that local. Writing a local slice's elements is allowed (the read-only-borrow rule only blocks
-// mutating a slice PARAMETER), so a reusable draw API needs no `own`/in-out/`mut` ceremony AND the raw
-// framebuffer never crosses a device boundary as a writable value. Colors are 0xRRGGBB ints.
+// gfx rasterization — the "draw" category of the gfx device (same unit as gfx.arche). PROC-FREE, and
+// JOIN-FREE: a draw op is a `system` composer that NESTS two single-query fans. The OUTER `each` fans over
+// the window pool (any pool with a `handle`), establishing that window's framebuffer as a writable local;
+// the INNER `each` fans over the shape pool, painting each shape into the captured framebuffer. Two windows
+// just open two windows (the outer loop runs twice) — there is no singleton, no broadcast, no join. The
+// driver names neither pool; gfx queries components. Colours are 0xRRGGBB ints.
 
-// Fill the whole framebuffer with `color`.
-clear :: proc(win: window, color: int) {
-  frame(win)(px:, w:, h:);
-  n := w * h;
-  i := 0;
-  for (; i < n;) {
-    px[i] = color;
-    i     = i + 1;
-  }
-}
-
-// Fill the axis-aligned rectangle [x, x+rw) x [y, y+rh), clamped to the framebuffer.
-rect :: proc(win: window, x: int, y: int, rw: int, rh: int, color: int) {
-  frame(win)(px:, w:, h:);
-  x0 := x;
-  y0 := y;
-  if (x0 < 0) {
-    x0 = 0;
-  }
-  if (y0 < 0) {
-    y0 = 0;
-  }
-  x1 := x + rw;
-  y1 := y + rh;
-  if (x1 > w) {
-    x1 = w;
-  }
-  if (y1 > h) {
-    y1 = h;
-  }
-  yy := y0;
-  for (; yy < y1;) {
-    xx := x0;
-    for (; xx < x1;) {
-      px[yy * w + xx] = color;
-      xx              = xx + 1;
-    }
-    yy = yy + 1;
-  }
-}
-
-circle :: func(own px: []int, w: int, h: int, cx: int, cy: int, r: int, color: int) -> []int {
-  r2 := r * r;
-  yy := cy - r;
-  if (yy < 0) {
-    yy = 0;
-  }
-  for (; yy <= cy + r && yy < h; yy += 1) {
-    xx := cx - r;
-    if (xx < 0) {
-      xx = 0;
-    }
-    for (; xx <= cx + r && xx < w; xx += 1) {
-      if ((xx - cx) * (xx - cx) + (yy - cy) * (yy - cy) <= r2) {
-        px[yy * w + xx] = color;
+// Draw a filled disc per drawable entity — centre `pos`, radius `r`, colour `color` — into each window's
+// framebuffer, clamped to its bounds.
+circle :: system {
+  each (query { handle }) {
+    gfx_be_frame(handle)(px:);
+    gfx_be_w(handle)(w:);
+    gfx_be_h(handle)(h:);
+    each (query { pos, color, r }) {
+      r2 := r * r;
+      y0 := pos.y - r;
+      y1 := pos.y + r;
+      if (y0 < 0) {
+        y0 = 0;
       }
-    }
-  }
-  return px;
+      if (y1 >= h) {
+        y1 = h - 1;
+      }
+      yy := y0;
+      for (; yy <= y1;) {
+        x0 := pos.x - r;
+        x1 := pos.x + r;
+        if (x0 < 0) {
+          x0 = 0;
+        }
+        if (x1 >= w) {
+          x1 = w - 1;
+        }
+        xx := x0;
+        for (; xx <= x1;) {
+          dx := xx - pos.x;
+          dy := yy - pos.y;
+          if (dx * dx + dy * dy <= r2) {
+            px[yy * w + xx] = color;
+          }
+          xx = xx + 1;
+        }
+        yy = yy + 1;
+      }
+    };
+  };
 }
 
-draw :: each (Circle, Window) {
-  px := circle(move px, w, h, cx, cy, r, color);
-}
-
-present :: system (Window) {
-  blit(handle, px)();
+// Draw a filled axis-aligned rectangle per drawable entity — top-left `rx,ry`, size `rw,rh`, colour
+// `rcolor` — into each window's framebuffer, clamped to its bounds. (Components are `r`-prefixed so they
+// don't shadow the window's `w`/`h` locals inside the fan.)
+rect :: system {
+  each (query { handle }) {
+    gfx_be_frame(handle)(px:);
+    gfx_be_w(handle)(w:);
+    gfx_be_h(handle)(h:);
+    each (query { rx, ry, rw, rh, rcolor }) {
+      y0 := ry;
+      y1 := ry + rh;
+      if (y0 < 0) {
+        y0 = 0;
+      }
+      if (y1 > h) {
+        y1 = h;
+      }
+      yy := y0;
+      for (; yy < y1;) {
+        x0 := rx;
+        x1 := rx + rw;
+        if (x0 < 0) {
+          x0 = 0;
+        }
+        if (x1 > w) {
+          x1 = w;
+        }
+        xx := x0;
+        for (; xx < x1;) {
+          px[yy * w + xx] = rcolor;
+          xx              = xx + 1;
+        }
+        yy = yy + 1;
+      }
+    };
+  };
 }

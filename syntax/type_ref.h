@@ -28,6 +28,7 @@ typedef enum {
 	DECL_PROC,
 	DECL_SYS,
 	DECL_SYSTEM, /* `Name :: system { body }` — the composer (distinct from DECL_SYS = map) */
+	DECL_EACH,   /* `Name :: each(<query>) { body }` — the per-element fan (scalars, control flow + effects) */
 	DECL_FUNC,
 	DECL_FUNC_GROUP,
 	DECL_STATIC,

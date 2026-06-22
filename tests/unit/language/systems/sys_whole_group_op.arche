@@ -13,10 +13,12 @@ step :: map (query { pos, vel }) {
   pos += vel; // whole-group compound:  (10,20)->(11,22) ; (100,200)->(103,204)
   pos = pos + vel; // whole-group plain add: (11,22)->(12,24) ; (103,204)->(106,208)
 }
-main :: proc() {
+seed :: system {
   insert(Mover { pos_x: 10, pos_y: 20, vel_x: 1, vel_y: 2 })(_:, _:);
   insert(Mover { pos_x: 100, pos_y: 200, vel_x: 3, vel_y: 4 })(_:, _:);
-  run step;
+}
+
+verify :: system {
   fmt.printf(
     "p0=%d %d p1=%d %d\n",
     Mover.pos.x[0],
@@ -25,3 +27,5 @@ main :: proc() {
     Mover.pos.y[1],
   );
 }
+
+#run seq({ seed, step, verify })

@@ -5,25 +5,27 @@ value; the runtime owns the loop. `Schedule` is a first-class value built from a
 
 ```arche
 Schedule :: sum {
-  run(system)  seq([]Schedule)  par([]Schedule)  loop(Schedule)
+  seq([]Schedule)  par([]Schedule)  loop(Schedule)
   when(func() -> bool, Schedule)  halt
 }
 ```
 
-- `run(s)` — dispatch a system `s`.
+- A **leaf is a bare map/each/system name** — `#run seq({ boot, render })` dispatches them in order. There is
+  **no `run` constructor** and **no `run` statement** (both retired); `map`/`each` are kinds of systems and
+  are scheduled by name. A system body never dispatches another.
 - `seq({…})` / `par({…})` — children in order (`par` is sequential in v1).
 - `loop(s)` — repeat forever; `halt` — stop. (`when(c, s)` is a reserved constructor, not wired to program
   state — see "No runtime conditions" below.)
 - `once(s) = seq({ s, halt })` and `forever(s) = loop(s)` are ordinary funcs. Higher combinators
   (`at_hz`, `every`, a fixed-step loop) are **not** in core or stdlib — the user writes their own as funcs
-  returning `Schedule`. The core is just the six constructors above.
+  returning `Schedule`. The core is just the five constructors above.
 
 ## Compile-time fold
 
 `#run`'s argument CTFE-folds to a constant `ScheduleTree`; codegen walks it into one `@arche_run`
-function — `run(s)` → a direct `call @s()`, `loop` → a branch back-edge, `seq`/`par` → in order, `when`
-→ a guard, `halt` → return. There is **no runtime `Schedule` value and no function pointer**: the tree
-exists only at compile time, and `@main` calls `@arche_run` once.
+function — a bare leaf `s` → a direct `call @s()` (a `map` binds its pools first), `loop` → a branch
+back-edge, `seq`/`par` → in order, `when` → a guard, `halt` → return. There is **no runtime `Schedule`
+value and no function pointer**: the tree exists only at compile time, and `@main` calls `@arche_run` once.
 
 `#run` is collected **only from the file you compile/run directly** — an imported module's `#run` is
 **ignored** (a schedule belongs to the file you run, not a library). This is silent by design: no error,
@@ -53,42 +55,37 @@ work, below); dispatch needs none (the schedule just loops).
 
 ## Pacing: a system's accumulator, the schedule still looping dumbly
 
-Timing is **work a system does**, not a schedule feature. The first system in the loop reads the delta
-(`os.now_ms` vs a `last` driver global), accumulates it into a bank, drains owed ticks by running the sim
-**maps** while behind, then sleeps the remainder once caught up. Fixed-timestep **catch-up falls out of the
-schedule loop**: while behind, the system doesn't sleep, so the schedule re-runs it, draining one tick per
-pass until caught up. No schedule condition gates any of it.
+Timing is **work a system does**, not a schedule feature. A `pace` system reads the delta (`os.now_ms` vs
+the `last` cell of a `[1]Clock` pool), accumulates it into a bank, and sleeps the remainder once caught up;
+the sim `step` is its own scheduled kernel. Fixed-timestep **catch-up falls out of the schedule loop**: while
+behind, `pace` doesn't sleep, so the loop spins and re-runs `step` next pass until caught up. No schedule
+condition gates any of it.
 
 ```arche
 DT :: 16;
-last : i64;  bank : i64;                           // the program's own clock state (driver globals)
+[1]Clock(1);
+Clock :: arche { last :: i64  bank :: i64 }        // clock state in a [1] pool, not a mutable global
 
-frame :: system {                                  // the ONLY timing logic — all in one flat system
+step :: map (Movers) { … }                         // the sim tick — its own kernel, scheduled by name
+
+pace :: system (query { last, bank }) {            // columnar over the [1]Clock singleton
   os.now_ms()(now:);
   bank = bank + (now - last);  last = now;
-  if (bank >= DT) {
-    bank = bank - DT;
-    run game.step;                                 // a tick owed → step the sim map, DON'T sleep; loop re-runs to catch up
-  }
-  else {
-    paint(win);  gfx.poll(win)(open:);
-    if (!open) { os.exit(0); }                     // loop end today: a system exits (no schedule condition)
-    os.sleep_ms(i32(DT - bank));                   // caught up → sleep only the remainder
-  }
+  if (bank >= DT) { bank = bank - DT; }            // a tick is owed → don't sleep; the loop re-runs `step`
+  else { os.sleep_ms(i32(DT - bank)); }            // caught up → sleep the remainder
 }
 
-#run seq({ run(boot), forever(run(frame)) })       // the schedule loops dumbly; frame does all the pacing
+#run seq({ boot, forever(seq({ step, pace })) })   // schedule loops dumbly; `pace` does the pacing
 ```
 
-`game.step` is a **map** the system `run`s (a system can't dispatch systems, and there are no schedule
-conditions to gate dispatch). **No language primitive is involved**: the toolkit is the schedule core +
-`os.now_ms`/`os.sleep_ms`. The timing *choice* is the system's; the schedule only sequences and loops.
+A system **never dispatches** `step` — the **schedule** does, by name. **No language primitive is involved**:
+the toolkit is the schedule core + `os.now_ms`/`os.sleep_ms`. (Draining *several* owed ticks in one frame
+would need a runtime-conditioned loop — the deferred `when`/loop-end mechanism; today catch-up is one tick
+per schedule pass.)
 
-## State lives in pools or `#file`-private globals
+## State lives in pools
 
-Concrete mutable state is a pool (a `[1]` singleton for one row), or a `#file`-private mutable global.
-arche-rpg holds its window handle and clock as `#file` globals (`#file` then `win : window`,
-`last`/`bank : i64`), not `[1]Window`/`[1]Clock` singletons. The exported-mutable ban (W0022) is purely
-**visibility-based**: it fires on any exported (no-banner) mutable global, in *any* file — there is no
-"driver" or "entry file" exemption, because running a file is not a property of the file (the same file may
-be `#import`'d). To hold private mutable state you mark it `#file`; it is then not exported and not flagged.
+Concrete mutable state is a **pool** — a `[1]` singleton for one row (window handle, clock). The
+mutable-global ban (W0022) fires on **any** mutable global, exported *or* `#file`-private: shared mutable
+state belongs in a pool, never a global. There is no "driver" or "entry file" exemption, because running a
+file is not a property of the file (the same file may be `#import`'d).

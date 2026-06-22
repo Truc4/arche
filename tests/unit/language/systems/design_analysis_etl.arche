@@ -42,14 +42,30 @@ task4_aggregate_revenue :: map (query { price, qty, total }) {
 }
 // Top-level allocations with init
 
-main :: proc() {
-  run task1_compute_revenue;
+check1 :: system {
   fmt.assert(Task1.revenue[0] == 6.0, "task1 revenue not 6.0\n");
-  run task2_filter_invalid;
+}
+check2 :: system {
   fmt.assert(Task2.valid[0] == 1, "task2 valid not 1\n");
-  run task3_bucket_timestamps;
+}
+check3 :: system {
   fmt.assert(Task3.hour_bucket[0] == 7200, "task3 hour_bucket not 7200\n");
-  run task4_aggregate_revenue;
+}
+check4 :: system {
   fmt.assert(Task4.total[0] == 4.0, "task4 total not 4.0\n");
   fmt.printf("design_analysis etl ok\n");
 }
+
+// each task map runs, then its check — interleaved so an assert sees its task's result
+#run seq(
+  {
+    task1_compute_revenue,
+    check1,
+    task2_filter_invalid,
+    check2,
+    task3_bucket_timestamps,
+    check3,
+    task4_aggregate_revenue,
+    check4,
+  },
+)

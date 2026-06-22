@@ -9,12 +9,14 @@
 Particle :: arche { pos, vel }
 
 /// ```arche
-/// main :: proc() {
+/// seed :: system {
 ///   insert(Particle{ pos: 10.0, vel: 1.0 })(_:, _:);
-///   run integrate;
+/// }
+/// check :: system {
 ///   fmt.assert(Particle.pos[0] * 10 == 110, "device doctest did not drive its shape\n");
 ///   fmt.printf("widget_doctest_ok\n");
 /// }
+/// #run seq({ seed, integrate, check })
 /// ```
 integrate :: map (query { pos, vel }) {
   pos = pos + vel;

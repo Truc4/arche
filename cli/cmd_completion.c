@@ -85,6 +85,17 @@ static void emit_zsh(FILE *f) {
 	fprintf(f, "compdef _arche arche\n");
 }
 
+/* Print `s` as the BODY of a fish single-quoted string. Inside `'...'` fish treats only `\` and `'` as
+ * special (`\\` → `\`, `\'` → `'`); everything else — incl. `$`, `(`, backticks — is literal. So a
+ * description with an apostrophe (`driver's`) MUST escape it, or fish reports "quotes are not balanced". */
+static void fish_quote_body(FILE *f, const char *s) {
+	for (; s && *s; s++) {
+		if (*s == '\\' || *s == '\'')
+			fputc('\\', f);
+		fputc(*s, f);
+	}
+}
+
 static void emit_fish(FILE *f) {
 	int n;
 	const SubCmd *cmds = cli_commands(&n);
@@ -94,7 +105,9 @@ static void emit_fish(FILE *f) {
 	for (int i = 0; i < n; i++) {
 		if (cmds[i].hidden)
 			continue;
-		fprintf(f, "complete -c arche -n __fish_use_subcommand -a %s -d '%s'\n", cmds[i].name, cmds[i].summary);
+		fprintf(f, "complete -c arche -n __fish_use_subcommand -a %s -d '", cmds[i].name);
+		fish_quote_body(f, cmds[i].summary);
+		fputs("'\n", f);
 	}
 	/* per-subcommand flags: emit only `--long` flags (fish's native long-option form) */
 	for (int i = 0; i < n; i++) {
@@ -113,9 +126,12 @@ static void emit_fish(FILE *f) {
 				while (*p && *p != ' ')
 					p++;
 				size_t len = (size_t)(p - start);
-				if (len > 2 && start[0] == '-' && start[1] == '-')
-					fprintf(f, "complete -c arche -n '__fish_seen_subcommand_from %s' -l %.*s -d '%s'\n", cmds[i].name,
-					        (int)(len - 2), start + 2, s->help ? s->help : "");
+				if (len > 2 && start[0] == '-' && start[1] == '-') {
+					fprintf(f, "complete -c arche -n '__fish_seen_subcommand_from %s' -l %.*s -d '", cmds[i].name,
+					        (int)(len - 2), start + 2);
+					fish_quote_body(f, s->help ? s->help : "");
+					fputs("'\n", f);
+				}
 			}
 		}
 	}

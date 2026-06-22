@@ -9,7 +9,8 @@ Thing :: arche { val } // references the datasheet's global `val`
 
 [2]Thing;
 
-main :: proc() {
+seed :: system {
   insert(Thing { val: 1.0 })(_:, _:);
-  run leakdev.bump;
 }
+
+#run seq({ seed, leakdev.bump })

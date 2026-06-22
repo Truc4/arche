@@ -26,15 +26,25 @@ RECT = 0x00FF00
 CIRC = 0xFF0000
 
 PROG = (
+    # New model: gfx is query-driven. The driver owns the pools (a [1] Window + shape pools) and SCHEDULES
+    # the gfx draw systems by name; each draw op nests a fan over the window and a fan over its shapes (no
+    # procs, no joins). `boot` opens the window (running the open Eff) and seeds one disc + one rect.
     "#import { gfx }\n"
-    "main :: proc() {\n"
+    "Window :: arche { handle :: window  bg :: int }\n"
+    "Disc :: arche { pos(x, y) :: int  color :: int  r :: int }\n"
+    "Rect :: arche { rx :: int  ry :: int  rw :: int  rh :: int  rcolor :: int }\n"
+    "[1]Window;\n"
+    "[1]Disc;\n"
+    "[1]Rect;\n"
+    "@allow(discarded_ok)\n"
+    "boot :: system {\n"
     "  gfx.open(%d, %d, \"t\")(win:);\n"
-    "  gfx.clear(win, %d);\n"
-    "  gfx.rect(win, 2, 2, 8, 8, %d);\n"      # x,y,w,h — covers x,y in [2,10)
-    "  gfx.circle(win, 32, 32, 10, %d);\n"    # filled disc, center (32,32) r=10
-    "  gfx.present(win);\n"
+    "  insert(Window { handle: win, bg: %d })(_:, _:);\n"
+    "  insert(Disc { pos: (32, 32), color: %d, r: 10 })(_:, _:);\n"          # disc center (32,32) r=10
+    "  insert(Rect { rx: 2, ry: 2, rw: 8, rh: 8, rcolor: %d })(_:, _:);\n"   # covers x,y in [2,10)
     "}\n"
-) % (W, H, CLEAR, RECT, CIRC)
+    "#run seq({ boot, gfx.clear, gfx.rect, gfx.circle, gfx.present })\n"
+) % (W, H, CLEAR, CIRC, RECT)
 
 MANIFEST = (
     "[lib]\n"

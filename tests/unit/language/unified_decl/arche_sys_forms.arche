@@ -12,8 +12,12 @@ bump :: map (query { pos }) {
   pos = pos + 2.0;
 }
 
-main :: proc() {
+seed :: system {
   insert(Particle { pos: 1.0 })(_:, _:);
-  run bump;
+}
+
+verify :: system {
   fmt.printf("pos0=%f\n", Particle.pos[0]);
 }
+
+#run seq({ seed, bump, verify })

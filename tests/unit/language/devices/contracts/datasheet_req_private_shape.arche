@@ -4,6 +4,4 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "no public shape" %t.out
 #import { privshape }
 
-main :: proc() {
-  run privshape.tick;
-}
+#run seq({ privshape.tick })

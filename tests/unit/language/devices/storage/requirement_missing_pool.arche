@@ -6,7 +6,8 @@
 
 // no `Node[N]` pool — the store device's `Node` requirement is unmet
 
-main :: proc() {
-  run store.bump;
+verify :: system {
   fmt.printf("should_not_build\n");
 }
+
+#run seq({ store.bump, verify })

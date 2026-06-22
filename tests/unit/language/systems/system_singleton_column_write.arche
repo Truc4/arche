@@ -1,0 +1,22 @@
+// A columnar `system(Q)` over a `[1]` singleton pool must READ AND WRITE its own columns (they live at
+// `col[0]`). Regression: the columnar binding loaded a singleton column as a read-only scalar, so a write
+// (`v = v + 5`) was silently lost. A singleton the system OWNS must be a writable cell, not a broadcast.
+// RUN: %arche build -o %t %s && %t
+#import { fmt }
+[1]S;
+S :: arche { v :: int }
+
+seed :: system {
+  insert(S { v: 10 })(_:, _:);
+}
+
+bump :: system (query { v }) {
+  v = v + 5;
+}
+
+check :: system {
+  fmt.assert(S.v[0] == 15, "singleton column write lost\n");
+  fmt.printf("ok\n");
+}
+
+#run seq({ seed, bump, check })

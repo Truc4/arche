@@ -16,14 +16,17 @@ damp :: map (Movers) {
   vel = vel * 0.5;
 }
 
-main :: proc() {
+seed :: system {
   insert(P { pos: 10.0, vel: 2.0 })(_:, _:);
-  run integrate; // pos 10 -> 12
-  run damp; // vel 2 -> 1
-  run integrate; // pos 12 -> 13
+}
+
+verify :: system {
   p := P.pos[0] * 10.0;
   v := P.vel[0] * 10.0;
   fmt.assert(p == 130.0, "pos should be 13\n");
   fmt.assert(v == 10.0, "vel should be 1\n");
   fmt.printf("ok\n");
 }
+
+// seed → integrate (pos 10→12) → damp (vel 2→1) → integrate (pos 12→13) → verify
+#run seq({ seed, integrate, damp, integrate, verify })

@@ -19,11 +19,13 @@ flip :: map (query { v }) {
   v = 20.5 - v;
 }
 
-main :: proc() {
-  scan(+, N.v); // v   = 1.0..40.0
-  scan(+, N.tag); // tag = 1..40
-  run flip; // v   = 19.5..-19.5 (straddles 0)
-  sort(N.v); // ascending → -19.5 first, 19.5 last
+seed :: system {
+  scan(+, N.v);
+  scan(+, N.tag);
+}
+
+verify :: system {
+  sort(N.v);
   fmt.assert(N.v[0] < 0.0, "neg first\n");
   fmt.assert(N.v[39] > 0.0, "pos last\n");
   fmt.assert(N.v[0] < N.v[39], "ascending\n");
@@ -31,3 +33,5 @@ main :: proc() {
   fmt.assert(N.tag[39] == 1, "t39\n");
   fmt.printf("PASS\n");
 }
+
+#run seq({ seed, flip, verify })

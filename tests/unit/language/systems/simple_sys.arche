@@ -9,11 +9,13 @@ dummy :: map (query { pos }) {
   pos = pos;
 }
 
-main :: proc() {
+seed :: system {
   insert(Body { pos: 1.0 })(_:, _:);
   insert(Body { pos: 2.0 })(_:, _:);
   insert(Body { pos: 3.0 })(_:, _:);
-  run dummy;
+}
+
+verify :: system {
   fmt.printf("system_ran\n");
   p0  := Body.pos[0];
   p1  := Body.pos[1];
@@ -22,3 +24,5 @@ main :: proc() {
   fmt.assert(p0i == 10, "pos[0] != 1.0\n");
   fmt.assert(p1i == 20, "pos[1] != 2.0\n");
 }
+
+#run seq({ seed, dummy, verify })

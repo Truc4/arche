@@ -15,13 +15,17 @@ step :: map (Movers) {
   pos = pos + vel;
 }
 
-main :: proc() {
+seed :: system {
   insert(Full { pos: 10.0, vel: 1.0 })(_:, _:);
   insert(PosOnly { pos: 50.0 })(_:, _:);
-  run step;
+}
+
+verify :: system {
   fp := Full.pos[0] * 10.0;
   pp := PosOnly.pos[0] * 10.0;
   fmt.assert(fp == 110.0, "Full.pos should be 11\n");
   fmt.assert(pp == 500.0, "PosOnly should be untouched (still 50)\n");
   fmt.printf("ok\n");
 }
+
+#run seq({ seed, step, verify })

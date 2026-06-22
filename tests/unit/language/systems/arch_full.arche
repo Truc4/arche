@@ -16,19 +16,23 @@ dampen :: map (query { vel }) {
   vel = vel * 0.99;
 }
 
-main :: proc() {
+seed :: system {
   insert(Particle { pos: 10.0, vel: 1.0 })(_:, _:);
   insert(Particle { pos: 20.0, vel: 2.0 })(_:, _:);
   insert(Particle { pos: 30.0, vel: 3.0 })(_:, _:);
   insert(Body { pos: 50.0, vel: 5.0, mass: 10.0 })(_:, _:);
   insert(Body { pos: 60.0, vel: 6.0, mass: 20.0 })(_:, _:);
-  run step;
-  run dampen;
+}
+
+verify :: system {
   pp  := Particle.pos[0];
   bp  := Body.vel[0];
   ppi := pp * 10.0;
   bpi := bp * 100.0;
   fmt.print("DEBUG: checking Particle.pos\n");
   fmt.assert(ppi == 110.0, "Particle.pos != 11.0\n");
-  fmt.assert((bpi > 494.9) * (bpi < 495.1), "Body.vel != 4.95\n"); // f32: 5*0.99*100 = 495.000005
+  fmt.assert((bpi > 494.9) * (bpi < 495.1), "Body.vel != 4.95\n");
+  // f32: 5*0.99*100 = 495.000005;
 }
+
+#run seq({ seed, step, dampen, verify })

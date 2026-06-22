@@ -7,11 +7,15 @@
 
 [16]Node; // one pool (the shape comes from the devices), sized to the max of store's 4 and cache's 16
 
-main :: proc() {
+seed :: system {
   insert(Node { key: 2.0, val: 3.0 })(_:, _:);
-  run store.bump; // val: 3 -> 4
-  run cache.touch; // key: 2 -> 3
+}
+
+verify :: system {
   fmt.assert(Node.val[0] == 4.0, "store.bump did not run\n");
   fmt.assert(Node.key[0] == 3.0, "cache.touch did not run\n");
   fmt.printf("shared_ok\n");
 }
+
+// store.bump (val 3→4) then cache.touch (key 2→3) over the one shared pool, then verify
+#run seq({ seed, store.bump, cache.touch, verify })

@@ -529,8 +529,8 @@ void test_run_schedule_ok(void) {
 	                                       "C :: arche { v }\n"
 	                                       "[1]C;\n"
 	                                       "step :: map (query { v }) { v = v + 1; }\n"
-	                                       "frame :: system { run step; }\n"
-	                                       "#run seq({ run(frame) })\n");
+	                                       "frame :: system { C.v = { 0 }; }\n"
+	                                       "#run seq({ frame, step })\n");
 	ASSERT_TRUE(result.ctx != NULL, "context is null");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "valid #run should analyze clean");
 	analysis_result_free(&result);

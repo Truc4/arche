@@ -213,11 +213,13 @@ int arche_fill_driver(const char *driver_path) {
 	}
 
 	parse_result_free(&pr);
-	free(src);
 
-	/* Append a pool for each required shape the driver does not already size. */
+	/* Build the pool-decl block for each required shape the driver does not already size. The block is
+	 * INSERTED BEFORE the `#run`/`main` line (a `#run` Schedule must be the program's last decl — nothing
+	 * may follow it), or appended at EOF if the driver has neither yet. */
+	char block[8192];
+	int bn = 0;
 	int written = 0;
-	FILE *out = NULL;
 	for (int r = 0; r < req_n; r++) {
 		int already = 0;
 		for (int h = 0; h < have_n; h++)
@@ -227,29 +229,57 @@ int arche_fill_driver(const char *driver_path) {
 			}
 		if (already)
 			continue;
-		if (!out) {
-			out = fopen(driver_path, "a");
-			if (!out) {
-				fprintf(stderr, "arche fill: cannot write '%s'\n", driver_path);
-				return -1;
-			}
-			fputs("\n// storage filled by `arche fill` from device datasheets (edit sizes as needed)\n", out);
-		}
-		/* Comment naming each contributing device + its own minimum (the sum is the pool size). */
+		if (written == 0)
+			bn += snprintf(block + bn, sizeof(block) - (size_t)bn,
+			               "// storage filled by `arche fill` from device datasheets (edit sizes as needed)\n");
 		char comment[1024];
 		int cn = 0;
 		for (int c = 0; c < reqs[r].contrib_n; c++)
 			cn += snprintf(comment + cn, sizeof(comment) - (size_t)cn, "%s%s: %d", c ? ", " : "",
 			               reqs[r].contrib_dev[c], reqs[r].contrib_min[c]);
 		if (reqs[r].contrib_n > 1)
-			fprintf(out, "[%d]%s; // %s\n", reqs[r].min, reqs[r].name, comment);
+			bn += snprintf(block + bn, sizeof(block) - (size_t)bn, "[%d]%s; // %s\n", reqs[r].min, reqs[r].name, comment);
 		else
-			fprintf(out, "[%d]%s;\n", reqs[r].min, reqs[r].name);
+			bn += snprintf(block + bn, sizeof(block) - (size_t)bn, "[%d]%s;\n", reqs[r].min, reqs[r].name);
 		printf("filled [%d]%s\n", reqs[r].min, reqs[r].name);
 		written++;
 	}
-	if (out)
+
+	if (written > 0) {
+		/* Find the insertion offset: the start of the first line whose trimmed text begins with `#run` or
+		 * `main :: proc` (the entry point must stay last). Else EOF. */
+		size_t slen = strlen(src);
+		size_t anchor = slen;
+		for (size_t i = 0; i < slen;) {
+			size_t j = i;
+			while (j < slen && (src[j] == ' ' || src[j] == '\t'))
+				j++;
+			if (strncmp(src + j, "#run", 4) == 0 || strncmp(src + j, "main :: proc", 12) == 0 ||
+			    strncmp(src + j, "main::proc", 10) == 0) {
+				anchor = i;
+				break;
+			}
+			const char *nl = strchr(src + i, '\n');
+			if (!nl)
+				break;
+			i = (size_t)(nl - src) + 1;
+		}
+		FILE *out = fopen(driver_path, "w");
+		if (!out) {
+			fprintf(stderr, "arche fill: cannot write '%s'\n", driver_path);
+			free(src);
+			return -1;
+		}
+		fwrite(src, 1, anchor, out);
+		if (anchor == slen && slen > 0 && src[slen - 1] != '\n')
+			fputc('\n', out);
+		fputs(block, out);
+		if (anchor < slen)
+			fputc('\n', out); /* blank line between the filled pools and the entry point */
+		fwrite(src + anchor, 1, slen - anchor, out);
 		fclose(out);
+	}
+	free(src);
 	return written;
 }
 

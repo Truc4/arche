@@ -96,8 +96,8 @@ static void examples_push(DoctestExamples *ex, char *code, const char *name, int
 	ex->count++;
 }
 
-/* Does the example body declare `main`? Lexical substring check at a line start is enough — the
- * runner only needs to know whether to wrap in a main. Unified grammar: `main :: proc(`. */
+/* Does the example body have its OWN entry point (so the runner must NOT wrap it in a synthesized main)?
+ * A `main :: proc(` or a top-level `#run <Schedule>` both count. Lexical line-start check is enough. */
 static int code_has_main(const char *code) {
 	const char *p = code;
 	while (*p) {
@@ -105,6 +105,8 @@ static int code_has_main(const char *code) {
 		while (*q == ' ' || *q == '\t')
 			q++;
 		if (strncmp(q, "main :: proc", 12) == 0 || strncmp(q, "main::proc", 10) == 0)
+			return 1;
+		if (strncmp(q, "#run", 4) == 0)
 			return 1;
 		/* advance to next line */
 		while (*p && *p != '\n')

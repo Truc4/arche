@@ -18,8 +18,7 @@ boot :: system {
 }
 
 show :: system {
-  run integrate;
   fmt.printf("x0=%d x1=%d\n", Mover.pos.x[0], Mover.pos.x[1]);
 }
 
-#run seq({ run (boot), run (show) })
+#run seq({ boot, integrate, show })

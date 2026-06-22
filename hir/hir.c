@@ -154,6 +154,8 @@ void hir_expr_free(HirExpr *expr) {
 	free(expr);
 }
 
+static void hir_each_decl_free(HirEachDecl *each);
+
 void hir_stmt_free(HirStmt *stmt) {
 	if (!stmt)
 		return;
@@ -220,6 +222,9 @@ void hir_stmt_free(HirStmt *stmt) {
 		}
 		free(stmt->data.each_field.body);
 		break;
+	case HIR_STMT_EACH:
+		hir_each_decl_free(stmt->data.each_stmt);
+		break;
 	case HIR_STMT_BLOCK:
 		for (int i = 0; i < stmt->data.block.count; i++)
 			hir_stmt_free(stmt->data.block.stmts[i]);
@@ -266,6 +271,16 @@ static void hir_system_decl_free(HirSystemDecl *sys) {
 		hir_stmt_free(sys->stmts[i]);
 	free(sys->stmts);
 	free(sys);
+}
+
+static void hir_each_decl_free(HirEachDecl *each) {
+	if (!each)
+		return;
+	free(each->name);
+	for (int i = 0; i < each->stmt_count; i++)
+		hir_stmt_free(each->stmts[i]);
+	free(each->stmts);
+	free(each);
 }
 
 void schedule_tree_free(ScheduleTree *t) {
@@ -396,6 +411,9 @@ void hir_decl_free(HirDecl *decl) {
 		break;
 	case HIR_DECL_SYSTEM:
 		hir_system_decl_free(decl->data.system);
+		break;
+	case HIR_DECL_EACH:
+		hir_each_decl_free(decl->data.each);
 		break;
 	case HIR_DECL_RUN:
 		hir_run_decl_free(decl->data.run);

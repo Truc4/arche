@@ -14,35 +14,71 @@ hidden row cursor. What differs is what each one is *allowed to do* with those c
   is a no-op the compiler deletes (there were no side effects to keep). To thread state you rebind the
   return: `px := paint(move px, …)`.
 - **`map`** — handed columns; a **pure** per-element kernel. Branch-free, effect-free (E0046), GPU-portable.
-- **`each`** — handed columns; the **per-element fan** when the work has control flow / effects (a `map` that
-  isn't branch-free). If each element is **independent**, it parallelizes like a `map`. If it threads an
-  **accumulator** (each step consumes the previous result — folding shapes onto one framebuffer), it is a
-  **sequential fold/scan**, not parallel. *(Not yet built.)*
-- **`system`** — handed columns; **runs effects** over them (builds `Eff`s via funcs, runs them with `()`). A
-  system **never iterates**: the instant it feeds a column into a per-element scalar call it has secretly
-  become an `each`. It only composes/runs the **boundary effects**.
-- **`#run`** — the orchestrator: the compile-time-folded schedule. The only place dispatch is composed.
+- **`each`** — the **per-element fan**: a current element exists, so a query column is a **scalar** (`pos.x`
+  is *this* element's x), and the body **may have control flow / effects** (a `map` that isn't branch-free).
+  It runs over **one** query (no joins); for cross-pool work, **nest** an `each` inside another (see *Cross-pool
+  work is nesting*). An anonymous `each(Q) { … }` may appear in **statement position** — that is the inline
+  fan, emitted in place so it captures the enclosing scope. *(Built.)* The **independent fold/scan** form
+  (threading an `own` accumulator) is still open.
+- **`system`** — handed whole **columns**; **runs effects** over them (builds `Eff`s via funcs, runs them
+  with `()`), and does column-level work. A system **never iterates** per element (`pos.x` is the x
+  sub-**column**); per-element scalar work is an `each`. A run-once `system { }` (no query) is the composer.
+- **`#run`** — the orchestrator: the compile-time-folded schedule. The only place dispatch is composed. A
+  **leaf is a bare map/each/system name** — `#run seq({ boot, forever(frame) })`; there is no `run`
+  constructor or `run` statement (both retired — `map`/`each` are kinds of systems, scheduled by name).
 
-Removed / retiring: **`proc`** (gone — split into `func` that builds and `system`/effects that run);
-**`run` the statement** (retiring — redundant now that `#run` schedules and an `Eff` is run with `()`; it was
-also the only way to write the "super-system" smell of one system imperatively dispatching another).
+Removed: **`run`** — both the `run <map>` **statement** and the `run(...)` Schedule **constructor** are gone.
+A map/each/system is dispatched only by **naming it in `#run`**; a system body never dispatches. (`run` is no
+longer a keyword.) Retiring: **`proc`** as a declared kind — a "procedure" is composed (a `func` that builds
+an `Eff` + a `system` that runs it); `proc` survives for now as the **FFI/`#foreign`** C-boundary form.
 
-> Why the old `system(query)` was wrong: it handed per-row **scalars** instead of **columns**, and ran a
-> per-entity **body** instead of **composing an `Eff`**. Both are corrected above.
+> `system(Q)` is now genuinely **columnar** (whole-column ops + boundary effects, no per-element row loop).
+> The per-element fan that used to be smuggled into `system(query)` is now its own kind, **`each`**.
 
 ## Queries
 
 A query is **source-agnostic**: it names **components**, never an archetype/pool. `query { pos, vel }`
-matches any entity that has those components. **A query gives you the columns** — joined across archetypes if
-it spans several. `map`/`each`/`system` are *handed* those columns.
+matches any entity that has those components. **A query gives you the columns.** `map`/`each`/`system` are
+*handed* those columns.
 
 - **Selector forms are interchangeable**: inline `query { … }`, a named `Q :: query { … }`, or an archetype
   name all mean the same thing — the columns.
-- **A join is a tuple of queries**: `(A, B)` / `(query{…}, query{…})`. First cut: one side is the driver,
-  every other side is a `[1]` **singleton broadcast** (every driver row sees the singleton). A true N×M join
-  needs a relationship/key (future).
-- **No hand-indexing.** `Pool.col[i]` (incl. the singleton `[0]`) outside a query is banned (W0029). You get
-  values by querying, never by indexing.
+- **One query, no joins.** `map` and `each` run over **exactly one** query; there is no tuple-of-queries, no
+  driver/singleton broadcast, no N×M join. A multi-query `each(Q1, Q2)` is a **parse error**. (A singleton is
+  not a real thing — see *Cross-pool work is nesting*.)
+- **No hand-indexing.** `Pool.col[i]` (incl. the singleton `[0]`) outside a query is banned (W0029; the rule
+  is error for program code, with `@allow(pool_index_outside_query)` for test peeks — see *Bans* for rollout
+  status). You get values by querying or by per-element fan, never by indexing a pool.
+
+### Cross-pool work is nesting, not joins
+
+To combine two pools you **nest** one fan inside another — you do not join. `each` stays single-query; the
+*cross* comes from **explicit nesting**, which is just an ordinary loop inside a loop:
+
+```
+render :: system {
+  each (query { handle, bg }) {          // OUTER: per window — establishes the framebuffer context
+    gfx_be_frame(handle)(px:);           // this window's canvas (a local)
+    each (query { pos, color, r }) {     // INNER: per ball — captures px, paints into it
+      px[…] = color;
+    };
+  };
+}
+```
+
+Why this and not a join:
+
+- **It's written, not guessed.** windows × balls is exactly the nesting you typed — not a hidden default the
+  engine picked. (Cartesian as an *implicit* join default is wrong; as the meaning of explicit nesting,
+  "draw every ball in every window" is just correct.)
+- **No singleton, no `[1]` special case.** `[2]Window` just works: the outer loop runs twice. There is no
+  broadcast and nothing is "the one" window.
+- **No closures, no new kind.** An anonymous `each(Q) { … }` is the `each` value-form used in statement
+  position (Odin/Jai: anonymous = named minus the name). It is emitted **in place**, so the body captures the
+  enclosing scope lexically — there is no closure object. It is a loop, not a definition, so it does not open
+  nested funcs/systems.
+- **No hand-indexing of pools.** The inner fan hands you scalar `pos.x`/`color`; `px[…]` is a backend buffer
+  (a plain slice), not a pool column.
 
 ## Effects as values (`Eff`)
 
@@ -124,8 +160,8 @@ present :: system (Window) {
 ```
 
 - **`px` is Window state, not Circle's.** `circle` is really `paint_circle(canvas, shape) -> canvas`: it
-  takes the canvas (from `Window`, broadcast `[1]`) and a shape (from the `Circle` column) and hands the
-  canvas back. The shapes are folded onto the one canvas.
+  takes the canvas (from the `Window` fan it is nested inside) and a shape (from the `Circle` column) and
+  hands the canvas back. The shapes are painted onto the one canvas.
 - **The return must be used.** `circle(move px, …);` alone would be a dead no-op. `px := circle(move px, …)`
   moves the canvas in (consuming the old binding — `own`/`move` kills it), then rebinds the returned canvas
   with `:=`. Linear, zero-copy, fused in-place; nothing copied, nothing aliased, no slice repointed.
@@ -139,18 +175,49 @@ present :: system (Window) {
 ## Bans (status)
 
 - **No mutable globals**, even `#file`-private — W0022 (widened). Error-default.
-- **No `Pool.col[i]` outside a query** — W0029. Warn-default, app build sets it to error.
+- **No `Pool.col[i]` outside a query** — W0029. **The rule is error for program code**, with test
+  ground-truth peeks opting in via `@allow(pool_index_outside_query)`; you read pool data by querying or by a
+  per-element fan, never by indexing a pool. *Status:* the compiler already supports error-by-default
+  (`g_werror`), but the flip is **pending a peek migration** — ~126 existing tests + doctests legitimately
+  peek and need `@allow` (or a harness-level demotion) first, so it ships **warn-default** until that lands
+  (`--pool-index=error` opts in today).
 - **No slice repoint** — test landed RED; rule to build.
-- **Joins on `map` are rejected** — joins are systems-only.
+- **No joins on `map`/`each`** — both run over exactly one query; a multi-query `each(Q1, Q2)` / `map` join
+  is a parse error. Cross-pool work is **nesting** (an `each` inside another), not a join. (`system(Q1, Q2)`
+  multi-query is a remaining holdover — it should fold into nesting too; tracked as a TODO.)
+
+## Built (this model)
+
+- **`each`** — the per-element fan (scalars + control flow + effects), single-query; cross-pool by nesting
+  (incl. anonymous inline `each` in statement position). Dispatched by name from `#run`.
+- **`system(Q)` is columnar** — whole-column ops + boundary effects, no per-element row loop.
+- **`run` removed** — bare map/each/system names are schedule leaves; `@gpu` is a decorator on the map decl.
 
 ## Open / not yet built
 
-- `each` (the effectful/control-flow per-element fan) and its **fold/scan** form (threading an accumulator).
+- `each`'s **independent fold/scan** form (threading an `own` accumulator through the elements).
 - gfx as data: framebuffer-as-`Window`-pool-`px`, `circle` the pure unit, `circles` the fold, `present`/
   `blit` the one boundary effect via the opaque handle. `frame` removed.
-- `run` (the statement) retirement + `map` dispatchable directly from `#run`.
 - A pure func's discarded-return → no-op (lint?), and the move/`:=` rebind threading for `own` returns.
-- N×M joins (relationships/keys).
+- **Relationships (keyed cross-pool pairing) — TODO.** Nesting (above) is how `each` does cross-pool work
+  *today*: the inner fan sees **every** element of its pool (a full cartesian with the outer). That is right
+  when the pairing is shared context (all balls into the same window) or when "everything × everything" is
+  what you mean. It is **not** enough when each entity should pair with a *specific* other entity — "this ball
+  belongs to *that* window." That is a **relationship**: a keyed reference stored per-entity, resolved by a
+  **query variable** (flecs-style `$w`). The shape it will take is a **filter on the inner fan**, not a new
+  join construct:
+
+  ```
+  each (query { handle } as $w) {        // bind the matched window to $w
+    each (query { pos, color, r } where window == $w) {   // only THIS window's drawables
+      …
+    };
+  };
+  ```
+
+  So relationships *narrow* an existing nesting from cartesian to the matched pairs — they are a refinement of
+  nesting, not a different mechanism, and nothing written for nesting is thrown away. Needs: a relationship
+  component type (an entity reference), query variables (`$w`), and the join solver that binds them. Until
+  then, cross-pool pairing that isn't shared-context or full-cartesian has no first-class form (model it with
+  an explicit key column + an `if` in the inner body).
 - Slice-repoint enforcement (test landed RED).
-- `system` must hand **columns** and compose effects — the shipped `system(query)` per-row fan is wrong and
-  needs reworking (it currently hands per-row scalars and runs a per-entity body).

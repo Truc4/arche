@@ -27,4 +27,4 @@ check :: system {
   fmt.printf("live=%d\n", n);
 }
 
-#run seq({ run (boot), run (check) })
+#run seq({ boot, check })

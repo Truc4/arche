@@ -1,7 +1,7 @@
 // FEATURE: real-time pacing is plain arche, not a combinator — a `system` body inlines a fixed-timestep
-// accumulator: read `os.now_ms`, add the elapsed delta to a bank, drain it in `run`-loops (catch up if
-// behind), and sleep the remainder via `os.sleep_ms`. The schedule is just `forever(run(frame))`; `boot`
-// seeds the clock. Exits with the tick count once it reaches 3 (exit code survives `os.exit` cleanly).
+// accumulator: read `os.now_ms`, add the elapsed delta to a bank, drain it in a loop (catch up if behind),
+// and sleep the remainder via `os.sleep_ms`. The schedule is just `forever(frame)`; `boot` seeds the clock.
+// Exits with the tick count once it reaches 3 (exit code survives `os.exit` cleanly).
 // RUN: %arche build -o %t %s && ( %t; test $? -eq 3 )
 #import { os }
 last  :: i64;
@@ -11,10 +11,6 @@ Clock :: arche { last, bank }
 [1]Clock(1);
 Counter :: arche { n }
 [1]Counter(1);
-Cnt  :: query { n }
-bump :: map (Cnt) {
-  n = n + 1;
-}
 
 boot :: system {
   os.now_ms()(now:);
@@ -27,7 +23,7 @@ frame :: system {
   Clock.last[0] = now;
   for (; Clock.bank[0] >= 16;) {
     Clock.bank[0] = Clock.bank[0] - 16;
-    run bump;
+    Counter.n[0] = Counter.n[0] + 1; // drain one owed tick (the sim step is the system's own work now)
   }
   if (Counter.n[0] >= 3) {
     os.exit(Counter.n[0]);
@@ -38,4 +34,4 @@ frame :: system {
   }
 }
 
-#run seq({ run (boot), forever(run (frame)) })
+#run seq({ boot, forever(frame) })

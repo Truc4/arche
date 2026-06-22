@@ -12,7 +12,8 @@ move_sys :: map (query { pos, vel }) {
   pos = pos + vel;
   log_step()();
 }
-main :: proc() {
+seed :: system {
   insert(Particle { pos: 1.0, vel: 2.0 })(_:, _:);
-  run move_sys;
 }
+
+#run seq({ seed, move_sys })

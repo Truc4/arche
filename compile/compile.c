@@ -624,6 +624,12 @@ static int compile_frontend(const char *user_source, const char *source_path, Fr
 	 * AstProgram is not consulted. The side model (keyed by syntax tree node id) feeds lowering. */
 	SemanticContext *sem_ctx = semantic_analyze_cst(syntax_root, source);
 
+	/* Whole-program check: every device datasheet's storage requirement is met by the assembled driver's
+	 * pools. Runs here (the frontend sees the COMPLETE program), not in the shared per-file semantic pass —
+	 * so the editor's per-file analyzer never flags a device whose storage the unseen driver provides. */
+	if (sem_ctx)
+		semantic_check_storage_requirements(sem_ctx);
+
 	if (!sem_ctx || semantic_has_errors(sem_ctx)) {
 		fprintf(stderr, "Semantic analysis failed\n");
 		fflush(stderr);

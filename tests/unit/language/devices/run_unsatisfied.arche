@@ -6,6 +6,4 @@ integrate :: map (query { pos, vel }) {
   pos = pos + vel;
 }
 
-main :: proc() {
-  run integrate;
-}
+#run seq({ integrate })

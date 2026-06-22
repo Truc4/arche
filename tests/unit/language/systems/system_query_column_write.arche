@@ -20,4 +20,4 @@ check :: system {
   fmt.assert(Acc.n[2] == 35, "row 2\n");
 }
 
-#run seq({ run (seed), run (bump), run (check) })
+#run seq({ seed, bump, check })

@@ -8,7 +8,9 @@ N :: arche { v }
 bump :: map (query { v }) {
   v = v + 1;
 }
-main :: proc() {
-  run bump; // no live rows -> no-op
+verify :: system {
+  // no live rows -> no-op
   fmt.printf("done\n");
 }
+
+#run seq({ bump, verify })

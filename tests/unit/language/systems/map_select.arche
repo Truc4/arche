@@ -13,11 +13,13 @@ bump :: map (query { v, w, c }) {
   w = select(w > 0.0, w * 2.0, 0.0); // float select
   c = select(c > 0, select(c > 10, 2, 1), 0); // nested select
 }
-main :: proc() {
+seed :: system {
   N.v = { 5, -3, 20 };
   N.w = { 1.0, -1.0, 2.0 };
   N.c = { 5, -1, 99 };
-  run bump;
+}
+
+verify :: system {
   // v: 5>0->6, -3>0?no->-4, 20>0->21 ; w: 1->2, -1->0, 2->4 ; c: 5>0&5>10?no->1, -1->0, 99>10->2
   fmt.printf(
     "v=%d %d %d w=%.0f %.0f %.0f c=%d %d %d\n",
@@ -32,3 +34,5 @@ main :: proc() {
     N.c[2],
   );
 }
+
+#run seq({ seed, bump, verify })

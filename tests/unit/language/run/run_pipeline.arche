@@ -20,4 +20,4 @@ report :: system {
   fmt.printf("x=%d\n", Counter.x[0]);
 }
 
-#run seq({ run (boot), run (step), run (step), run (report) })
+#run seq({ boot, step, step, report })

@@ -10,8 +10,9 @@ double_val :: map (query { val }) {
   val = val * 2;
 }
 
-main :: proc() {
-  run double_val;
+verify :: system {
   fmt.printf("system_ran\n");
   fmt.assert(Task.val[0] == 10, "val not 10\n");
 }
+
+#run seq({ double_val, verify })

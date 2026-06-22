@@ -10,4 +10,4 @@ bump :: system {
   hidden = hidden + 1;
 }
 
-#run seq({ run (bump) })
+#run seq({ bump })

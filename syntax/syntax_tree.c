@@ -213,6 +213,8 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "SYS_EXPR";
 	case SN_SYSTEM_EXPR:
 		return "SYSTEM_EXPR";
+	case SN_EACH_EXPR:
+		return "EACH_EXPR";
 	case SN_QUERY_EXPR:
 		return "QUERY_EXPR";
 	case SN_ENTITY_EXPR:

@@ -26,5 +26,4 @@ step :: map (query { pos, vel }) {
   pos = pos + vel;
 }
 main :: proc() {
-  run step;
 }

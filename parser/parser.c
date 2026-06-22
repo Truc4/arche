@@ -207,6 +207,7 @@ static void synchronize(Parser *parser) {
 		case TOK_PROC:
 		case TOK_MAP:
 		case TOK_SYSTEM:
+		case TOK_EACH:
 		case TOK_FUNC:
 		case TOK_LET:
 		case TOK_FOR:
@@ -1178,6 +1179,13 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser);
 			continue;
 		}
+		if (cur_ident_is(parser, "gpu", 3)) {
+			/* `@gpu` marks a `map` decl for GPU compute dispatch: the schedule emits a compute shader for it
+			 * and dispatches on the GPU (falling back to CPU). No arguments — the marker lives on the decl
+			 * (replaces the retired `run map @gpu` site, now that dispatch is by bare name in `#run`). */
+			advance(parser);
+			continue;
+		}
 		if (cur_ident_is(parser, "default", 7)) {
 			/* `@default(<kind>, <category>, <policy>)` — a STANDALONE top-level directive setting the
 			 * program's failure-policy default for one (effect-kind, op-category) cell. <kind> is the
@@ -1297,7 +1305,7 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			continue;
 		}
 		error(parser, "Unknown decorator (recognized: @allow_pure_proc, @allow(<slug>), @drop(<type>), @intrinsic, "
-		              "@implements(<device>.<req>, …), @policy(<category>))");
+		              "@gpu, @implements(<device>.<req>, …), @policy(<category>))");
 		return 0;
 	}
 
@@ -1517,7 +1525,8 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			return 0;
 		}
 		if (check(parser, TOK_COMMA)) {
-			error(parser, "maps don't support joins — a join is a tuple of queries, use a `system`");
+			error(parser, "maps don't support joins — a map runs over ONE query; to combine pools, nest an "
+			              "`each` inside another (cross-pool work is explicit nesting, not a join)");
 			return 0;
 		}
 		if (!match(parser, TOK_RPAREN)) {
@@ -1557,6 +1566,43 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 		}
 		return parse_block_body(parser);
 	}
+	if (check(parser, TOK_EACH)) {
+		advance(parser); /* consume 'each' */
+		*out_kind = SN_EACH_EXPR;
+		/* `each(Q) { body }` is the per-element fan: the body runs PER matched element (scalars), with control
+		 * flow + effects. `each` runs over ONE query — there are NO joins. To combine pools, NEST an each
+		 * (which may be anonymous, in statement position) inside another; the inner fan captures the outer's
+		 * per-element context. Cross-pool work is explicit nesting, not a tuple of queries. */
+		if (!match(parser, TOK_LPAREN)) {
+			error(parser, "Expected '(' after 'each' — `each` always fans over a query");
+			return 0;
+		}
+		if (check(parser, TOK_QUERY)) {
+			int q_cp = syntax_cp(parser);
+			advance(parser); /* consume 'query' */
+			if (!parse_query_columns(parser))
+				return 0;
+			syntax_wrap(parser, q_cp, SN_QUERY_EXPR);
+		} else if (check(parser, TOK_IDENT)) {
+			int ref_cp = syntax_cp(parser);
+			advance(parser); /* the query name */
+			syntax_wrap(parser, ref_cp, SN_QUERY_REF);
+		} else {
+			error(parser, "Expected a query in `each(...)` — a name `each(Drawables)` or a literal "
+			              "`each(query {…})`");
+			return 0;
+		}
+		if (check(parser, TOK_COMMA)) {
+			error(parser, "each runs over ONE query — there are no joins; to combine pools, NEST an `each` "
+			              "inside another (cross-pool work is explicit nesting)");
+			return 0;
+		}
+		if (!match(parser, TOK_RPAREN)) {
+			error(parser, "Expected ')'");
+			return 0;
+		}
+		return parse_block_body(parser);
+	}
 	if (check(parser, TOK_ENUM)) {
 		advance(parser); /* consume 'enum' */
 		*out_kind = SN_ENUM_EXPR;
@@ -1590,9 +1636,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 		}
 		return 1;
 	}
-	/* `run(x)` in EXPRESSION position is the Schedule `run` leaf constructor (the `run <map>` STATEMENT
-	 * is parsed separately). Treated like an IDENT-led call whose callee token is the `run` keyword. */
-	if (check(parser, TOK_IDENT) || check(parser, TOK_RUN)) {
+	if (check(parser, TOK_IDENT)) {
 		int prim_name_cp = syntax_cp(parser);
 		int is_table = cur_ident_is(parser, "table", 5);
 		/* `sum` is a CONTEXTUAL keyword (not a hard token — `sum` is far too common an identifier):
@@ -1627,9 +1671,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser); /* consume '{' */
 			while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
 				int v_cp = syntax_cp(parser);
-				/* A variant name is an IDENT, or the `run` keyword (the Schedule leaf constructor reuses
-				 * the `run` keyword — see #run dispatch). */
-				if (!check(parser, TOK_IDENT) && !check(parser, TOK_RUN)) {
+				if (!check(parser, TOK_IDENT)) {
 					error(parser, "Expected sum variant name");
 					return 0;
 				}
@@ -2265,50 +2307,9 @@ static int parse_statement(Parser *parser) {
 		goto cleanup;
 	}
 
-	/* check for run statement */
-	if (check(parser, TOK_RUN)) {
-		advance(parser); /* consume 'run' */
-
-		if (!check(parser, TOK_IDENT)) {
-			error(parser, "Expected system name");
-			parser->recursion_depth--;
-			goto cleanup;
-		}
-		advance(parser); /* system name (leading segment) */
-
-		/* Qualified system name: `run device.integrate` — a driver runs an imported device's
-		 * system. Consume the `.IDENT` chain; the dotted name is reassembled in lowering. */
-		while (check(parser, TOK_DOT)) {
-			advance(parser); /* '.' */
-			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected an identifier after `.` in a qualified system name");
-				parser->recursion_depth--;
-				goto cleanup;
-			}
-			advance(parser);
-		}
-
-		/* optional `@gpu` dispatch marker: `run step @gpu;` requests GPU compute dispatch (and emits a
-		 * compute shader for the map). The decision lives at the call site — the same kernel can run on
-		 * the CPU from one driver and the GPU from another. */
-		if (check(parser, TOK_AT)) {
-			advance(parser); /* '@' */
-			if (!check(parser, TOK_IDENT) || !cur_ident_is(parser, "gpu", 3)) {
-				error(parser, "Expected `gpu` after `@` in a run statement (only `@gpu` is recognized)");
-				parser->recursion_depth--;
-				goto cleanup;
-			}
-			advance(parser); /* 'gpu' */
-		}
-
-		if (!match(parser, TOK_SEMI)) {
-			error(parser, "Expected ';'");
-		}
-
-		stmt_kind = SN_RUN_STMT;
-		ok = 1;
-		goto cleanup;
-	}
+	/* The `run <map>` STATEMENT is RETIRED — a map/each/system is dispatched ONLY by naming it in `#run`
+	 * (a system body never dispatches). `run` is no longer a keyword; `run X;` now parses as two
+	 * identifiers and errors. GPU dispatch moved to a `@gpu` decorator on the map decl. */
 
 	if (check(parser, TOK_MATCH)) {
 		advance(parser); /* consume 'match' */

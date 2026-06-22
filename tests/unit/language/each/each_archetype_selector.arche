@@ -1,0 +1,23 @@
+// An archetype name selects ALL its columns in an `each(X)` selector, exactly like a named query — and an
+// `each` body may write a tuple-subcolumn per element (`pos.x` is THIS element's scalar). Verified by cells.
+// RUN: %arche build -o %t %s && %t
+#import { fmt }
+Ball :: arche { pos(x, y) :: int color :: int }
+[8]Ball(2);
+
+seed :: system {
+  Ball.pos.x = { 7, 9 };
+  Ball.color = { 1, 2 };
+}
+
+shift :: each (Ball) {
+  pos.x = pos.x + color; // per-element: add this ball's color to its x
+}
+
+check :: system {
+  fmt.assert(Ball.pos.x[0] == 8, "row 0\n");
+  fmt.assert(Ball.pos.x[1] == 11, "row 1\n");
+  fmt.printf("each-archetype ok\n");
+}
+
+#run seq({ seed, shift, check })

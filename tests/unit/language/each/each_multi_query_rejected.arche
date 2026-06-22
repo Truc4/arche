@@ -1,0 +1,17 @@
+// `each` runs over ONE query — there are NO joins. A multi-query `each(Q1, Q2)` (the old broadcast "join")
+// is rejected: to combine pools you NEST an each inside another (the inner fan captures the outer's
+// per-element context — see each_nested.arche). This used to broadcast a `[1]` singleton across an N-row
+// driver; that pairing is gone, because a singleton is not a real thing and nesting expresses the intent
+// explicitly. Assert the parse error points at nesting.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiF "cross-pool work is explicit nesting" %t.out
+#import { fmt }
+[8]Mover(3);
+Mover :: arche { n :: int }
+[1]Win;
+Win :: arche { id :: int }
+
+addwin :: each (query { n }, query { id }) {
+  n = n + id;
+}
+
+#run seq({ addwin })

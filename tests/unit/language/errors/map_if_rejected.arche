@@ -12,6 +12,4 @@ bump :: map (query { v }) {
     v = v + 1;
   }
 }
-main :: proc() {
-  run bump;
-}
+#run seq({ bump })

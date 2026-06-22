@@ -20,10 +20,12 @@ neg :: map (query { k8, k16 }) {
   k16 = 0 - k16;
 }
 
-main :: proc() {
-  run neg; // each: 5 -> -5
+verify :: system {
+  // each: 5 -> -5
   e := -5;
   fmt.assert(N.k8[0] == e, "i8 negate wrong\n");
   fmt.assert(N.k16[0] == e, "i16 negate wrong\n");
   fmt.printf("PASS\n");
 }
+
+#run seq({ neg, verify })

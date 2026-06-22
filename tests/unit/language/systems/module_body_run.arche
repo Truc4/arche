@@ -1,10 +1,9 @@
-// Regression: a `run <sys>` inside a proc in an IMPORTED module (a non-entry compilation unit) must
-// resolve the system symbol across units. Under per-unit codegen the system body emits once in unit 0
-// and this entry unit references the module proc, which itself references `@arche.bump` from its own
-// (non-entry) unit — the cross-unit SYS declare path. Asserts the system actually mutated pool state, so
-// it fails loudly if the declare ever regresses. Passes in BOTH whole-program and per-unit modes.
+// Regression: the entry's `#run` dispatches a map + systems DEFINED IN AN IMPORTED module (a non-entry
+// compilation unit) across units. Under per-unit codegen the bodies emit in the module's own unit and the
+// entry references them via the cross-unit declare path. Asserts the map actually mutated pool state, so
+// it fails loudly if the declare ever regresses. Tested in BOTH whole-program AND incremental (per-unit) —
+// the per-unit run is what broke when scheduled SYSTEMS/EACH lacked a cross-unit declare (only maps had one).
 // RUN: %arche build -o %t %s && %t | grep -qF "n=1"
+// RUN: %arche build --incremental -o %t.inc %s && %t.inc | grep -qF "n=1"
 #import { "./run_helper_lib" }
-main :: proc() {
-  run_helper_lib.step()();
-}
+#run seq({ mob_seed, bump, mob_report })

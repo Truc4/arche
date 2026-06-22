@@ -18,10 +18,15 @@
 #import { sgldev fmt }
 [1]Config;
 [4]Thing;
-main :: proc() {
-  insert(Config { gravity: 10 })(_:, _:); // create the singleton instance (gravity = 10)
+seed :: system {
+  insert(Config { gravity: 10 })(_:, _:);
+  // create the singleton instance (gravity = 10)
   insert(Thing { v: 0 })(_:, _:);
   insert(Thing { v: 100 })(_:, _:);
-  run sgldev.accel;
+}
+
+verify :: system {
   fmt.printf("v0=%d v1=%d g=%d\n", Thing.v[0], Thing.v[1], Config.gravity[0]);
 }
+
+#run seq({ seed, sgldev.accel, verify })

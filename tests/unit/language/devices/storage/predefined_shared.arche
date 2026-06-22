@@ -6,11 +6,15 @@
 
 [16]Cell; // one pool (the shape comes from the devices), sized to max(4, 16)
 
-main :: proc() {
+seed :: system {
   insert(Cell { a: 1.0, b: 2.0 })(_:, _:);
-  run vstore.vbump; // b: 2 -> 3
-  run vcache.vtouch; // a: 1 -> 2
+}
+
+verify :: system {
   fmt.assert(Cell.b[0] == 3.0, "vstore.vbump did not run\n");
   fmt.assert(Cell.a[0] == 2.0, "vcache.vtouch did not run\n");
   fmt.printf("predef_shared_ok\n");
 }
+
+// vstore.vbump (b 2→3) then vcache.vtouch (a 1→2) over the one shared pool, then verify
+#run seq({ seed, vstore.vbump, vcache.vtouch, verify })

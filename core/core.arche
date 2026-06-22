@@ -85,8 +85,10 @@ reject :: policy(count: int, cap: int, ok: int) {
 // is a system's own accumulator, conditional work lives in a system body, and loop-end is `os.exit` today.
 // `when` is reserved but UNWIRED. TODO(loop-end): the one place a runtime condition might earn itself is
 // loop termination — stop the loop on a quit flag so teardown runs after (`loop`-until / `when(quit,halt)`).
+// A schedule LEAF is a bare map/each/system name (`#run seq({ boot, forever(frame) })`) — there is no
+// `run` constructor. The combinators below compose those leaves; `#run` folds the whole tree at compile time.
 Schedule :: sum {
-  run (system) seq( []Schedule) par( []Schedule) loop(Schedule) when(func() -> bool, Schedule) halt
+  seq( []Schedule) par( []Schedule) loop(Schedule) when(func() -> bool, Schedule) halt
 }
 
 once :: func(s: Schedule) -> Schedule {

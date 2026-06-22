@@ -80,6 +80,7 @@ typedef enum {
 	HIR_DECL_DEFAULT, /* `@default(<kind>, <category>, <policy>)` program default directive */
 	HIR_DECL_QUERY,   /* `Name :: query {cols}` — a named column set; emits no code, resolves collectives */
 	HIR_DECL_SYSTEM,  /* `Name :: system { body }` — the composer; a no-arg fn invoked by the schedule */
+	HIR_DECL_EACH,    /* `Name :: each(Q) { body }` — the per-element fan; a no-arg fn invoked by the schedule */
 	HIR_DECL_RUN,     /* `#run <expr>` — the program's Schedule, folded to a constant ScheduleTree */
 } HirDeclKind;
 
@@ -153,14 +154,26 @@ typedef struct {
 
 typedef struct {
 	char *name;
-	/* A query-bearing `system(Q)` is the EFFECTFUL per-entity fan: `params` are its query columns
-	 * (flattened, like a map's). param_count == 0 ⇒ a plain run-once `system { }` (no fan). */
+	/* A query-bearing `system(Q)` is COLUMNAR: `params` are its query columns (flattened, like a map's),
+	 * bound as whole columns (no per-element row loop). param_count == 0 ⇒ a plain run-once `system { }`. */
 	HirParam **params;
 	int param_count;
 	HirStmt **stmts;
 	int stmt_count;
 	SourceLoc loc;
 } HirSystemDecl;
+
+typedef struct {
+	char *name;
+	/* `each(Q)` is the PER-ELEMENT fan: `params` are its query columns (flattened), bound as SCALARS at the
+	 * current row inside an explicit row loop. Body permits control flow + effects. A `[1]` singleton in a
+	 * join broadcasts. Always query-bearing (param_count > 0). */
+	HirParam **params;
+	int param_count;
+	HirStmt **stmts;
+	int stmt_count;
+	SourceLoc loc;
+} HirEachDecl;
 
 typedef struct {
 	ScheduleTree *tree; /* the folded Schedule (owns it) */
@@ -261,6 +274,7 @@ struct HirDecl {
 		HirConstDecl *constant;
 		HirDefaultDecl *default_decl;
 		HirSystemDecl *system;
+		HirEachDecl *each;
 		HirRunDecl *run;
 	} data;
 };
@@ -287,6 +301,8 @@ typedef enum {
 	HIR_STMT_RETURN,
 	HIR_STMT_MULTI_BIND,
 	HIR_STMT_EACH_FIELD,
+	HIR_STMT_EACH,  /* an inline per-element fan — an anonymous `each(Q) { … }` used as a statement, emitted
+	                 * in place so its body sees the enclosing scope (nested fans). Same payload as the decl. */
 	HIR_STMT_BLOCK, /* a scoped statement sequence (desugaring target, e.g. match) */
 } HirStmtKind;
 
@@ -375,6 +391,7 @@ struct HirStmt {
 		HirReturnStmt return_stmt;
 		HirMultiBindStmt multi_bind;
 		HirEachFieldStmt each_field;
+		HirEachDecl *each_stmt; /* HIR_STMT_EACH — the inline fan (name == NULL); reuses the decl payload */
 		HirBlockStmt block;
 	} data;
 };

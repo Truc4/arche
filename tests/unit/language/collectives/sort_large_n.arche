@@ -12,11 +12,13 @@ N   :: arche { k, tag }
 neg :: map (query { k }) {
   k = 0 - k;
 }
-main :: proc() {
-  scan(+, N.k); // k   = 1..64
-  scan(+, N.tag); // tag = 1..64
-  run neg; // k   = -1..-64
-  sort(N.k); // ascending by k → full reversal
+seed :: system {
+  scan(+, N.k);
+  scan(+, N.tag);
+}
+
+verify :: system {
+  sort(N.k);
   k0   := N.k[0];
   k63  := N.k[63];
   em64 := 0 - 64;
@@ -27,3 +29,5 @@ main :: proc() {
   fmt.assert(N.tag[63] == 1, "t63\n");
   fmt.printf("PASS\n");
 }
+
+#run seq({ seed, neg, verify })

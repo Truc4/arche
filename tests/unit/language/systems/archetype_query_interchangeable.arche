@@ -26,4 +26,4 @@ check :: system {
   fmt.assert(Ball.color[1] == 102, "row 1 color\n");
 }
 
-#run seq({ run (seed), run (bump), run (shift), run (check) })
+#run seq({ seed, bump, shift, check })

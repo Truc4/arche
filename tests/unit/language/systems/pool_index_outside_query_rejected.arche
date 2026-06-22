@@ -15,4 +15,4 @@ peek :: system {
   fmt.printf("%d\n", Thing.n[0]);
 }
 
-#run seq({ run (seed), run (peek) })
+#run seq({ seed, peek })

@@ -10,10 +10,14 @@ bump :: map (query { pos, vel }) {
   pos += vel;
 }
 
-main :: proc() {
+seed :: system {
   insert(Particle { pos: 1.0, vel: 0.1 })(_:, _:);
-  run bump;
+}
+
+verify :: system {
   pi := Particle.pos[0] * 10.0;
   fmt.assert(pi == 11, "compound add in sys failed\n");
   fmt.printf("ok\n");
 }
+
+#run seq({ seed, bump, verify })

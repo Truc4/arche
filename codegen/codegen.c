@@ -101,6 +101,8 @@ struct CodegenContext {
 	/* SIMD vectorization context */
 	int vector_lanes; /* 0 = scalar mode, 4 = AVX2 double (256-bit / 64-bit = 4 lanes) */
 	int in_map;       /* 1 when generating inside a map function body */
+	int in_columnar_system; /* 1 inside a no-arg `system(Q)` body: whole-column ops read the pool from its
+	                         * GLOBAL (`@Arch`), not a `%arch_<name>` parameter (maps get the pool by param) */
 	int in_func;      /* 1 when generating inside a `func` body — an unannotated fallible op's baseline
 	                   * default is the total `clamp` policy instead of `abort`, so a func never crashes */
 
@@ -1996,6 +1998,8 @@ static const char *get_shaped_field_info(CodegenContext *ctx, HirExpr *field_exp
 /* Forward declarations */
 static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_buf);
 static void codegen_statement(CodegenContext *ctx, HirStmt *stmt);
+static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_count, HirStmt **stmts,
+                            int stmt_count);
 static int resolve_index_arch(CodegenContext *ctx, HirExpr *base_expr, HirExpr *idx_expr, const char **out_arch_name,
                               const char **out_arch_ptr, int *out_count_idx, int *out_idx_is_i64);
 /* Failure-policy MACRO inliner: bind a policy's params to the op's operand SSAs as mutable locals,
@@ -7327,8 +7331,17 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 						strcpy(vi->llvm_name, res);
 						vi->type = 6;
 						vi->string_len = -1;
-						vi->field_type = "char";
-						vi->bit_width = 8;
+						/* The extern returns the ELEMENT pointer (`declare <elem>* @ext`, e.g. i32* for `[]int`,
+						 * i8* for `[]char`), so bind the element type — `px[i]` then GEPs at the right stride.
+						 * (This used to hardcode char/i8, byte-striding every non-char out-slice: a `[]int`
+						 * framebuffer got written one byte per pixel.) */
+						vi->field_type = field_base_type_name(ot);
+						const char *out_el = llvm_type_from_arche(vi->field_type);
+						vi->bit_width = strcmp(out_el, "double") == 0 ? 64
+						                : strcmp(out_el, "i8") == 0   ? 8
+						                : strcmp(out_el, "i16") == 0  ? 16
+						                : strcmp(out_el, "i64") == 0  ? 64
+						                                              : 32;
 						if (ctx->scope_count > 0) {
 							ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
 							sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
@@ -8038,9 +8051,15 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				HirArchetypeDecl *arch = find_archetype_decl(ctx, val->arch_name);
 				if (arch) {
 					int count_idx = arch->field_count;
-					/* Construct the archetype parameter name (handles both old %archetype and new %arch_<name>) */
+					/* The struct base: a map gets its pool by `%arch_<name>` PARAMETER; a no-arg columnar
+					 * `system(Q)` reads the pool from its GLOBAL (`@Arch` / `@archetype_<name>` for dynamic). */
 					char arch_param[256];
-					snprintf(arch_param, sizeof(arch_param), "%%arch_%s", val->arch_name);
+					if (ctx->in_columnar_system) {
+						int is_static = get_arch_static_capacity(ctx, val->arch_name) > 0;
+						emit_query_pool_ptr(ctx, val->arch_name, is_static, arch_param, sizeof(arch_param));
+					} else {
+						snprintf(arch_param, sizeof(arch_param), "%%arch_%s", val->arch_name);
+					}
 
 					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
 					                  count_gep, val->arch_name, val->arch_name, arch_param, count_idx);
@@ -8598,7 +8617,26 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		/* Find the map definition */
 		HirMapDecl *map = find_map_decl(ctx, map_name);
 		if (!map) {
-			fprintf(stderr, "Error: `run %s` — unknown map '%s'\n", map_name, map_name);
+			/* A query named in `#run` is a domain, not a runnable kernel — give the precise diagnostic
+			 * (a query is what a map/each/system runs OVER, not a thing you schedule). */
+			const char *tail = strrchr(map_name, '.');
+			tail = tail ? tail + 1 : map_name;
+			int is_query = 0;
+			for (int qi = 0; qi < ctx->ast->decl_count; qi++) {
+				HirDecl *qd = ctx->ast->decls[qi];
+				if (qd->kind == HIR_DECL_QUERY && qd->data.query && qd->data.query->name &&
+				    (strcmp(qd->data.query->name, map_name) == 0 || strcmp(qd->data.query->name, tail) == 0)) {
+					is_query = 1;
+					break;
+				}
+			}
+			if (is_query)
+				fprintf(stderr,
+				        "Error: '%s' is a query, not a map — a query is the domain a map/each/system runs "
+				        "over, not a schedulable kernel\n",
+				        map_name);
+			else
+				fprintf(stderr, "Error: `%s` — unknown map '%s'\n", map_name, map_name);
 			ctx->had_error = 1;
 			buffer_append_fmt(ctx, "  ; ERROR: undefined map '%s'\n", map_name);
 			break;
@@ -8809,6 +8847,14 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			char expr_buf[256];
 			codegen_expression(ctx, stmt->data.expr_stmt.expr, expr_buf);
 		}
+		break;
+	}
+
+	case HIR_STMT_EACH: {
+		/* An inline anonymous `each(Q) { … }`: emit the per-element fan IN PLACE (same path as the decl) so
+		 * its body captures the enclosing scope. Nested fans nest as ordinary loops. */
+		HirEachDecl *e = stmt->data.each_stmt;
+		codegen_each_fan(ctx, e->params, e->param_count, e->stmts, e->stmt_count);
 		break;
 	}
 
@@ -10318,7 +10364,11 @@ static void bind_singleton_col(CodegenContext *ctx, const char *param_name, cons
 	}
 }
 
-static void codegen_system_decl(CodegenContext *ctx, HirSystemDecl *sys) {
+static void codegen_system_decl(CodegenContext *ctx, HirSystemDecl *sys, int decl_unit) {
+	/* Per-unit: a system is emitted in the unit that DECLARED it (whole-program emits all). Without this a
+	 * system defined in the entry file is emitted into every unit → "symbol multiply defined" at link. */
+	if (ctx->per_unit && ctx->emit_only_unit >= 0 && ctx->emit_only_unit != decl_unit)
+		return;
 	ctx->entity_bind_count = 0;
 	snprintf(ctx->current_return_type_buf, sizeof(ctx->current_return_type_buf), "void");
 	ctx->current_return_types = NULL;
@@ -10334,57 +10384,44 @@ static void codegen_system_decl(CodegenContext *ctx, HirSystemDecl *sys) {
 	ctx->block_terminated = 0;
 	register_static_arrays_in_scope(ctx);
 	if (sys->param_count > 0) {
-		/* EFFECTFUL per-entity fan (`system(Q)`): find the archetype(s) carrying these columns and run the
-		 * WHOLE body once PER row — ONE explicit row loop, unlike a map's per-`col=expr` vectorized loops,
-		 * and the body permits effects/control flow. Reuses map's column binding + the auto-index machinery
-		 * (a type-4 column read with `implicit_loop_index` set → `col[row]`). The pool is read from its
-		 * GLOBAL (the system is dispatched no-arg), so no dispatch change is needed. */
-		/* Split the (possibly joined) columns: a column whose owning pool is a `[1]` singleton broadcasts;
-		 * the rest belong to the DRIVER pool whose row count drives the loop. The driver columns determine
-		 * which archetype(s) we fan over (a query may still match several same-shape archetypes). */
+		/* COLUMNAR `system(Q)`: the body is handed whole COLUMNS (not per-row scalars) and runs over them with
+		 * effects — like a `map` but effect-bearing and schedulable. Each `col = expr` vectorizes as a
+		 * whole-column loop (Path B of the assignment codegen); a boundary effect runs once. There is NO body
+		 * row loop — per-element iteration is `each`. Columns are bound as type-4 column pointers from the
+		 * pool GLOBAL (the system is dispatched no-arg); `ctx->in_columnar_system` tells the whole-column path
+		 * to read the count/base from that global. A `[1]` singleton in a join broadcasts as a scalar. */
+		/* Pick the archetype(s) to operate on: the non-singleton driver columns determine them (a query may
+		 * match several same-shape archetypes); a query over only singletons drives over the first. */
 		const char *cols[256];
 		int ncol = 0;
 		for (int p = 0; p < sys->param_count && ncol < 256; p++) {
 			const char *owner = arch_owning_col(ctx, sys->params[p]->name);
 			if (owner && get_arch_static_capacity(ctx, owner) == 1)
-				continue; /* singleton column — broadcast, not a loop driver */
+				continue; /* singleton column — broadcast, not a driver */
 			cols[ncol++] = sys->params[p]->name;
 		}
-		/* A query over ONLY singletons (e.g. `system(query{handle})`, or a join of two `[1]` pools) has no
-		 * broadcast counterpart — drive over the FIRST singleton (one row); the rest broadcast as usual. */
 		if (ncol == 0 && sys->param_count > 0)
 			cols[ncol++] = sys->params[0]->name;
 		const char *archs[16];
 		int na = ncol > 0 ? query_match_archs(ctx, cols, ncol, archs, 16) : 0;
+		int prev_columnar = ctx->in_columnar_system;
+		ctx->in_columnar_system = 1;
 		for (int ai = 0; ai < na; ai++) {
 			const char *arch_name = archs[ai];
 			HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
 			if (!arch)
 				continue;
 			int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+			/* A `[1]` DRIVER (the whole query is over a singleton, e.g. `system(query{handle})`) operates on
+			 * `col[0]`: bind its columns as type-4 pointers and drive the body at index 0, so they READ AND
+			 * WRITE the one cell. (A non-singleton driver is whole-column; a `[1]` JOIN PARTNER broadcasts.) */
+			int driver_is_singleton = get_arch_static_capacity(ctx, arch_name) == 1;
 			char base_buf[256];
 			emit_query_pool_ptr(ctx, arch_name, is_static, base_buf, sizeof(base_buf));
-			char *cgep = gen_value_name(ctx); /* row count = the struct field after all columns */
-			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cgep,
-			                  arch_name, arch_name, base_buf, arch->field_count);
-			char *count = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, cgep);
-			int id = ctx->value_counter++;
-			char head[40], lbody[40], lend[40];
-			snprintf(head, sizeof(head), "qsrow_head_%d", id);
-			snprintf(lbody, sizeof(lbody), "qsrow_body_%d", id);
-			snprintf(lend, sizeof(lend), "qsrow_end_%d", id);
-			char *ralloca = gen_value_name(ctx);
-			emit_alloca(ctx, "  %s = alloca i64\n", ralloca);
-			buffer_append_fmt(ctx, "  store i64 0, i64* %s\n  br label %%%s\n%s:\n", ralloca, head, head);
-			char *row = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", row, ralloca);
-			char *cmp = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n  br i1 %s, label %%%s, label %%%s\n%s:\n", cmp, row,
-			                  count, cmp, lbody, lend, lbody);
 			push_value_scope(ctx);
-			/* bind each query column: a DRIVER column (in this archetype) as a type-4 column pointer
-			 * (auto-indexed at %row); a SINGLETON column as a broadcast scalar loaded at index 0. */
+			/* bind each query column: a column from an N-row pool as a type-4 COLUMN pointer (whole-column, no
+			 * row index); a `[1]` column the system does NOT own (a join broadcast partner) as the scalar at
+			 * index 0. The driver's own columns (incl. a `[1]` driver) bind as type-4 and read/write at col[0]. */
 			for (int p = 0; p < sys->param_count; p++) {
 				const char *param_name = sys->params[p]->name;
 				const char *owner = arch_owning_col(ctx, param_name);
@@ -10409,7 +10446,7 @@ static void codegen_system_decl(CodegenContext *ctx, HirSystemDecl *sys) {
 							buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", field_ptr, elem_type, elem_type,
 							                  field_gep);
 						}
-						add_value(ctx, param_name, field_ptr, 4); /* type 4 = column pointer (auto-indexed) */
+						add_value(ctx, param_name, field_ptr, 4); /* type 4 = column pointer (whole-column) */
 						ValueInfo *col_val = find_value(ctx, param_name);
 						if (col_val) {
 							col_val->arch_name = malloc(strlen(arch_name) + 1);
@@ -10427,17 +10464,18 @@ static void codegen_system_decl(CodegenContext *ctx, HirSystemDecl *sys) {
 					break;
 				}
 			}
-			snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", row); /* col[row] access */
+			/* A `[1]` driver reads/writes its columns at the single index 0 (`col[0]`); an N-row driver is
+			 * whole-column (no implicit index → assignments vectorize, scalar reads of an N-row column are an
+			 * each, not a system). */
+			if (driver_is_singleton)
+				snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "0");
 			ctx->block_terminated = 0;
 			for (int s = 0; s < sys->stmt_count; s++)
 				codegen_statement(ctx, sys->stmts[s]);
 			ctx->implicit_loop_index[0] = '\0';
 			pop_value_scope(ctx);
-			char *rnext = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n  store i64 %s, i64* %s\n  br label %%%s\n%s:\n", rnext, row,
-			                  rnext, ralloca, head, lend);
-			ctx->block_terminated = 0;
 		}
+		ctx->in_columnar_system = prev_columnar;
 	} else {
 		for (int i = 0; i < sys->stmt_count; i++)
 			codegen_statement(ctx, sys->stmts[i]);
@@ -10445,6 +10483,147 @@ static void codegen_system_decl(CodegenContext *ctx, HirSystemDecl *sys) {
 	pop_value_scope(ctx);
 	buffer_append(ctx, "  ret void\n");
 	end_function_body(ctx, fbs_sys);
+	buffer_append(ctx, "}\n\n");
+}
+
+/* `Name :: each(Q) { body }` — the PER-ELEMENT fan, emitted as a no-arg void function (dispatched by the
+ * schedule). Finds the archetype(s) carrying the query columns and runs the WHOLE body once PER row — ONE
+ * explicit row loop, and the body permits effects + control flow. Driver columns bind as type-4 column
+ * pointers auto-indexed at %row (`col[row]`, a scalar); a `[1]` singleton in a join binds as a broadcast
+ * scalar loaded at index 0. (This is what `system(Q)` did before it became columnar — now its own kind.) */
+/* Emit the per-element fan IN PLACE: split (possibly joined) columns into a DRIVER pool (its row count
+ * drives the loop) and `[1]` singleton broadcasts, then run the body once per row with columns bound as
+ * scalars at the current row. Shared by the top-level `each` decl (wrapped in a no-arg fn) and an inline
+ * anonymous `each` statement (emitted into the enclosing function so the body captures enclosing locals;
+ * the row index is saved/restored so nested fans don't clobber each other). */
+static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_count, HirStmt **stmts,
+                            int stmt_count) {
+	/* Split the (possibly joined) columns: a column whose owning pool is a `[1]` singleton broadcasts; the
+	 * rest belong to the DRIVER pool whose row count drives the loop. The driver columns determine which
+	 * archetype(s) we fan over (a query may still match several same-shape archetypes). */
+	const char *cols[256];
+	int ncol = 0;
+	for (int p = 0; p < param_count && ncol < 256; p++) {
+		const char *owner = arch_owning_col(ctx, params[p]->name);
+		if (owner && get_arch_static_capacity(ctx, owner) == 1)
+			continue; /* singleton column — broadcast, not a loop driver */
+		cols[ncol++] = params[p]->name;
+	}
+	/* A query over ONLY singletons (a join of `[1]` pools) has no broadcast counterpart — drive over the
+	 * FIRST singleton (one row); the rest broadcast as usual. */
+	if (ncol == 0 && param_count > 0)
+		cols[ncol++] = params[0]->name;
+	const char *archs[16];
+	int na = ncol > 0 ? query_match_archs(ctx, cols, ncol, archs, 16) : 0;
+	for (int ai = 0; ai < na; ai++) {
+		const char *arch_name = archs[ai];
+		HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+		if (!arch)
+			continue;
+		int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+		char base_buf[256];
+		emit_query_pool_ptr(ctx, arch_name, is_static, base_buf, sizeof(base_buf));
+		char *cgep = gen_value_name(ctx); /* row count = the struct field after all columns */
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cgep,
+		                  arch_name, arch_name, base_buf, arch->field_count);
+		char *count = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, cgep);
+		int id = ctx->value_counter++;
+		char head[40], lbody[40], lend[40];
+		snprintf(head, sizeof(head), "eachrow_head_%d", id);
+		snprintf(lbody, sizeof(lbody), "eachrow_body_%d", id);
+		snprintf(lend, sizeof(lend), "eachrow_end_%d", id);
+		char *ralloca = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca i64\n", ralloca);
+		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n  br label %%%s\n%s:\n", ralloca, head, head);
+		char *row = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", row, ralloca);
+		char *cmp = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n  br i1 %s, label %%%s, label %%%s\n%s:\n", cmp, row,
+		                  count, cmp, lbody, lend, lbody);
+		push_value_scope(ctx);
+		/* bind each query column: a DRIVER column (in this archetype) as a type-4 column pointer
+		 * (auto-indexed at %row); a SINGLETON column as a broadcast scalar loaded at index 0. */
+		for (int p = 0; p < param_count; p++) {
+			const char *param_name = params[p]->name;
+			const char *owner = arch_owning_col(ctx, param_name);
+			if (owner && strcmp(owner, arch_name) != 0 && get_arch_static_capacity(ctx, owner) == 1) {
+				bind_singleton_col(ctx, param_name, owner);
+				continue;
+			}
+			for (int f = 0; f < arch->field_count; f++) {
+				if (strcmp(arch->fields[f]->name, param_name) != 0)
+					continue;
+				const char *elem_type = llvm_type_from_arche(field_base_type_name(arch->fields[f]->type));
+				if (arch->fields[f]->kind == FIELD_COLUMN) {
+					char *field_ptr = gen_value_name(ctx);
+					if (is_static) {
+						buffer_append_fmt(
+						    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n",
+						    field_ptr, arch_name, arch_name, base_buf, f);
+					} else {
+						char *field_gep = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+						                  field_gep, arch_name, arch_name, base_buf, f);
+						buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", field_ptr, elem_type, elem_type,
+						                  field_gep);
+					}
+					add_value(ctx, param_name, field_ptr, 4); /* type 4 = column pointer (auto-indexed) */
+					ValueInfo *col_val = find_value(ctx, param_name);
+					if (col_val) {
+						col_val->arch_name = malloc(strlen(arch_name) + 1);
+						strcpy(col_val->arch_name, arch_name);
+						col_val->field_type = field_base_type_name(arch->fields[f]->type);
+					}
+				} else {
+					char *field_gep = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+					                  field_gep, arch_name, arch_name, base_buf, f);
+					char *field_val = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", field_val, elem_type, elem_type, field_gep);
+					add_value(ctx, param_name, field_val, 0);
+				}
+				break;
+			}
+		}
+		char saved_idx[64];
+		snprintf(saved_idx, sizeof(saved_idx), "%s", ctx->implicit_loop_index);
+		snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", row); /* col[row]; saved/restored so a NESTED each restores the outer row */
+		ctx->block_terminated = 0;
+		for (int s = 0; s < stmt_count; s++)
+			codegen_statement(ctx, stmts[s]);
+		snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", saved_idx);
+		pop_value_scope(ctx);
+		char *rnext = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n  store i64 %s, i64* %s\n  br label %%%s\n%s:\n", rnext, row,
+		                  rnext, ralloca, head, lend);
+		ctx->block_terminated = 0;
+	}
+}
+
+
+static void codegen_each_decl(CodegenContext *ctx, HirEachDecl *each, int decl_unit) {
+	/* Per-unit: emitted only in its declaring unit (whole-program emits all) — see codegen_system_decl. */
+	if (ctx->per_unit && ctx->emit_only_unit >= 0 && ctx->emit_only_unit != decl_unit)
+		return;
+	ctx->entity_bind_count = 0;
+	snprintf(ctx->current_return_type_buf, sizeof(ctx->current_return_type_buf), "void");
+	ctx->current_return_types = NULL;
+	ctx->current_return_type_count = 0;
+	ctx->current_return_type = ctx->current_return_type_buf;
+	ctx->current_func = NULL;
+	char each_sym_buf[512];
+	buffer_append_fmt(ctx, "define %svoid @%s() {\n", cg_linkage(ctx),
+	                  cg_fnsym(ctx, each->name, 0, each_sym_buf, sizeof(each_sym_buf)));
+	buffer_append(ctx, "entry:\n");
+	FunctionBodyState fbs_each = begin_function_body(ctx);
+	push_value_scope(ctx);
+	ctx->block_terminated = 0;
+	register_static_arrays_in_scope(ctx);
+	codegen_each_fan(ctx, each->params, each->param_count, each->stmts, each->stmt_count);
+	pop_value_scope(ctx);
+	buffer_append(ctx, "  ret void\n");
+	end_function_body(ctx, fbs_each);
 	buffer_append(ctx, "}\n\n");
 }
 
@@ -10459,6 +10638,8 @@ static HirDecl *cg_find_scheduled_decl(CodegenContext *ctx, const char *name) {
 		const char *n = NULL;
 		if (d->kind == HIR_DECL_SYSTEM)
 			n = d->data.system->name;
+		else if (d->kind == HIR_DECL_EACH)
+			n = d->data.each->name;
 		else if (d->kind == HIR_DECL_MAP)
 			n = d->data.map->name;
 		if (n && (strcmp(n, name) == 0 || strcmp(n, tail) == 0))
@@ -10482,10 +10663,15 @@ static void emit_sched(CodegenContext *ctx, ScheduleTree *t) {
 		if (d && d->kind == HIR_DECL_SYSTEM) {
 			char sym[512];
 			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, d->data.system->name, 0, sym, sizeof(sym)));
+		} else if (d && d->kind == HIR_DECL_EACH) {
+			char sym[512];
+			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, d->data.each->name, 0, sym, sizeof(sym)));
 		} else {
 			HirStmt rs = {0};
 			rs.kind = HIR_STMT_RUN;
 			rs.data.run_stmt.map_name = t->sym;
+			/* a `@gpu` map scheduled by name dispatches on the GPU (CPU fallback) — carry its flag through */
+			rs.data.run_stmt.is_gpu = (d && d->kind == HIR_DECL_MAP && d->data.map) ? d->data.map->is_gpu : 0;
 			codegen_statement(ctx, &rs);
 		}
 		break;
@@ -11141,6 +11327,12 @@ static int stmt_refs_name(const HirStmt *s, const char *name) {
 				return 1;
 		return 0;
 	}
+	case HIR_STMT_EACH: {
+		for (int i = 0; i < s->data.each_stmt->stmt_count; i++)
+			if (stmt_refs_name(s->data.each_stmt->stmts[i], name))
+				return 1;
+		return 0;
+	}
 	default:
 		return 0;
 	}
@@ -11353,6 +11545,20 @@ static void emit_cross_unit_declares(CodegenContext *ctx) {
 					buffer_append_fmt(ctx, "%s%%struct.%s*", a ? ", " : "", archs[a]);
 				buffer_append(ctx, ")\n");
 			}
+			continue;
+		}
+		if (d->kind == HIR_DECL_SYSTEM || d->kind == HIR_DECL_EACH) {
+			/* A system/each is a no-arg `void @name()` emitted in its DECLARING unit (the per-unit filter in
+			 * codegen_system_decl/each_decl). The entry unit's `@arche_run` schedules it BY NAME, so any other
+			 * unit needs a cross-unit declare (release) or a reload trampoline (dev). */
+			if (d->unit == ctx->emit_only_unit)
+				continue;
+			const char *nm = d->kind == HIR_DECL_SYSTEM ? d->data.system->name : d->data.each->name;
+			cg_fnsym(ctx, nm, 0, sym, sizeof(sym));
+			if (ctx->hot)
+				emit_hot_map_trampoline(ctx, sym, nm, d->unit, NULL, 0);
+			else
+				buffer_append_fmt(ctx, "declare void @%s()\n", sym);
 			continue;
 		}
 		if (d->unit == ctx->emit_only_unit)
@@ -11576,7 +11782,10 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			 * cg_insert_handler); it emits no code. */
 			break;
 		case HIR_DECL_SYSTEM:
-			codegen_system_decl(ctx, decl->data.system);
+			codegen_system_decl(ctx, decl->data.system, decl->unit);
+			break;
+		case HIR_DECL_EACH:
+			codegen_each_decl(ctx, decl->data.each, decl->unit);
 			break;
 		case HIR_DECL_RUN:
 			/* The #run tree drives the synthesized @arche_run (emitted beside @main, below). */

@@ -12,8 +12,12 @@ M       :: arche { v }
 s :: map (query { v }) {
   v *= 2.0; // float into an int column → rejected
 }
-main :: proc() {
+seed :: system {
   insert(M { v_x: 10, v_y: 20 })(_:, _:);
-  run s;
+}
+
+verify :: system {
   fmt.printf("v=%d %d\n", M.v.x[0], M.v.y[0]);
 }
+
+#run seq({ seed, s, verify })

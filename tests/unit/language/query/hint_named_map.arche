@@ -13,6 +13,4 @@ step :: map (Movers) {
   pos = pos + vel;
 }
 
-main :: proc() {
-  run step;
-}
+#run seq({ step })

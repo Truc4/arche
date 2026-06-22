@@ -557,6 +557,10 @@ static int decls_have_main(const char *s) {
 			md_trim(p, len, &t, &tl);
 			if ((tl >= 12 && memcmp(t, "main :: proc", 12) == 0) || (tl >= 10 && memcmp(t, "main::proc", 10) == 0))
 				return 1;
+			/* `#run <Schedule>` is its OWN entry point (no main) — run the section as-is, never wrap it in
+			 * a synthesized main (top-level system/map/each decls can't live inside a proc body). */
+			if (tl >= 4 && memcmp(t, "#run", 4) == 0)
+				return 1;
 		}
 		depth += brace_delta(p, len);
 		if (depth < 0)

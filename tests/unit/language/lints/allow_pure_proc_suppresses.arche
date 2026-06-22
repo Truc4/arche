@@ -1,0 +1,16 @@
+// `@allow_pure_proc` on a value-returning proc must suppress W0001 proc_could_be_func — it is the escape
+// hatch the lint message itself recommends. Regression: the flag was read from the proc BODY node (which
+// never carries the decorator) instead of the decl, so `@allow_pure_proc` silently did nothing.
+// RUN: test "$(%arche check %s 2>&1 | grep -c proc_could_be_func)" -eq 0
+#foreign {
+  ext :: proc()(t: int);
+}
+
+@allow_pure_proc
+wrap :: proc()(t: int) {
+  ext()(t);
+}
+
+main :: proc() {
+  wrap()(_x:);
+}

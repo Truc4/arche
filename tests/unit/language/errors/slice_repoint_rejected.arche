@@ -16,4 +16,4 @@ show :: system {
   fmt.printf("%d\n", repoint());
 }
 
-#run seq({ run (show) })
+#run seq({ show })

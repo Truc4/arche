@@ -13,10 +13,14 @@ step :: map (Movers) {
   pos = pos + vel;
 }
 
-main :: proc() {
+seed :: system {
   insert(Movers { pos: (1.0, 2.0), vel: (3.0, 4.0) })(_:, _:);
-  run step;
+}
+
+verify :: system {
   px := Movers.pos.x[0] * 1.0;
   py := Movers.pos.y[0] * 1.0;
   fmt.printf("p=%.0f %.0f\n", px, py);
 }
+
+#run seq({ seed, step, verify })
