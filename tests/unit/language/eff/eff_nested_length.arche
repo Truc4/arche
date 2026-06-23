@@ -1,0 +1,22 @@
+// REGRESSION (deep arg substitution): a builder that passes `param.length` to a NESTED func→Eff —
+// `full(s) = take(s, s.length)` — must substitute the param INSIDE the FIELD expr, so `s.length` becomes
+// the ACTUAL slice's length, not a reference to the vanished param. This is the implicit-length idiom the
+// stdlib leans on everywhere (`os.write(1, msg, msg.length)`, `net_recv(s, buf, buf.length)`); without the
+// deep substitution it would read a dangling name. eff_add1(s.length) = 5 + 1 = 6.
+// RUN: %arche build -o %t --link %S/runtime/effshim.c %s && %t | grep -qF "r=6"
+#foreign {
+  eff_add1 :: proc(x: int)(r: int);
+}
+#import { fmt }
+
+take :: func(_b: []char, n: int) -> Eff(int) {
+  return eff_add1(n);
+}
+full :: func(s: []char) -> Eff(int) {
+  return take(s, s.length); // param.length threaded through the nested builder
+}
+
+main :: proc() {
+  full("hello")(r:);
+  fmt.printf("r=%d\n", r);
+}

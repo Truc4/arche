@@ -4,5 +4,5 @@
 // RUN: true
 #import { fmt }
 open_window :: proc() {
-  fmt.print("wayland window\n")();
+  fmt.print("wayland window\n")(_:);
 }

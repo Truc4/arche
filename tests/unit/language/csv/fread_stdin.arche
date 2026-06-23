@@ -3,8 +3,8 @@
 main :: proc() {
   buf: [256]char;
   io.stdin()(fd:);
-  io.fread(fd, buf, 256)(n:);
+  io.fread(fd, 256)(buf, n:);
   fmt.printf("read from stdin returned %d bytes\n", n);
   fmt.printf("multi-assignment with read() works\n");
-  io.fclose(move fd);
+  io.fclose(move fd)(_:);
 }

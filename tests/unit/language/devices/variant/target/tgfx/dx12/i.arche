@@ -3,5 +3,5 @@
 // RUN: true
 #import { fmt }
 render :: proc() {
-  fmt.print("tgfx dx12\n")();
+  fmt.print("tgfx dx12\n")(_:);
 }

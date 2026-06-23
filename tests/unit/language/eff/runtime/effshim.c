@@ -24,3 +24,26 @@ int eff_acc(int x) {
 	eff_total_state += x;
 	return eff_total_state;
 }
+
+/* A VOID primitive (no out-slot) + its reader — proves an empty `Eff()` built from a void extern actually
+ * RUNS: eff_flag() flips the flag, eff_flagged()(r:) reads it back (r==1 ⇒ the value-less effect ran). */
+static int eff_flag_state = 0;
+void eff_flag(void) {
+	eff_flag_state = 1;
+}
+int eff_flagged(void) {
+	return eff_flag_state;
+}
+
+/* An IN-OUT buffer primitive: writes "XYZ" into the caller's buffer in place (through the pointer) and
+ * returns the count. The arche decl shadows `buf` in the out-list (`(buf, r)`) — proves a func→Eff binds
+ * that in-out out-param to the SAME memory as the in-arg (written in place), not a fresh null. */
+int eff_fill(long s, char *buf, int n) {
+	(void)s;
+	if (n >= 3) {
+		buf[0] = 'X';
+		buf[1] = 'Y';
+		buf[2] = 'Z';
+	}
+	return 3;
+}

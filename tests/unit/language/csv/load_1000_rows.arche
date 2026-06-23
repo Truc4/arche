@@ -14,8 +14,10 @@ main :: proc() {
   io.fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
   price_str : [32]char;
   qty_str   : [32]char;
-  io.fread(fd, CharBuf.cb[0: CharBuf.capacity], 50000)(data:);
-  io.fclose(move fd);
+  scratch := CharBuf.cb[0: CharBuf.capacity]; // slice-local OUT (lint-only: column write outside a query)
+  io.fread(fd, 50000)(scratch, rd_data:);
+    data := CharBuf.cb[0: rd_data];
+  io.fclose(move fd)(_:);
   idx        := 0;
   pos        := 0;
   line_start := 0;

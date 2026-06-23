@@ -2,5 +2,5 @@
 // RUN: true
 #import { fmt }
 send :: proc() {
-  fmt.print("tnet winsock\n")();
+  fmt.print("tnet winsock\n")(_:);
 }

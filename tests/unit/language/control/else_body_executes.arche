@@ -6,26 +6,26 @@
 main :: proc() {
   x := 5;
   if (x == 1) {
-    fmt.print("A\n");
+    fmt.print("A\n")(_:);
   }
   else {
-    fmt.print("B\n");
+    fmt.print("B\n")(_:);
   }
   if (x == 5) {
-    fmt.print("C\n");
+    fmt.print("C\n")(_:);
   }
   else {
-    fmt.print("D\n");
+    fmt.print("D\n")(_:);
   }
   if (x == 1) {
-    fmt.print("E\n");
+    fmt.print("E\n")(_:);
   }
   else {
     if (x == 5) {
-      fmt.print("F\n");
+      fmt.print("F\n")(_:);
     }
     else {
-      fmt.print("G\n");
+      fmt.print("G\n")(_:);
     }
   }
 }

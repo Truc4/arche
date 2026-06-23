@@ -28,11 +28,11 @@ verify :: system {
   p11  := Body.position[11];
   p0i  := p0 * 10.0;
   p11i := p11 * 10.0;
-  fmt.print("p0i=");
-  fmt.print_float(p0i);
-  fmt.print(" p11i=");
-  fmt.print_float(p11i);
-  fmt.print("\n");
+  fmt.print("p0i=")(_:);
+  fmt.print_float(p0i)();
+  fmt.print(" p11i=")(_:);
+  fmt.print_float(p11i)();
+  fmt.print("\n")(_:);
   fmt.assert(p0i == 110.0, "position[0] != 11.0\n");
   fmt.assert(p11i == 1320.0, "position[11] != 132.0\n");
 }

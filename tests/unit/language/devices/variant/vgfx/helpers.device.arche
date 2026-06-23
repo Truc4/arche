@@ -5,5 +5,5 @@
 // RUN: true
 #import { fmt }
 extra :: proc() {
-  fmt.print("vgfx extra\n")();
+  fmt.print("vgfx extra\n")(_:);
 }

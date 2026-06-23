@@ -6,5 +6,5 @@
 // RUN: %t | grep -qF "inc_ok"
 #import { fmt }
 main :: proc() {
-  fmt.print("inc_ok\n")();
+  fmt.print("inc_ok\n")(_:);
 }

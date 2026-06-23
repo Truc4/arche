@@ -7,7 +7,8 @@
 > not yet implemented. The **"before"** snippets are the *real, current* source of
 > `arche-web-server` (verbatim, with file:line). The **"after"** snippets are illustrative — they show
 > how the same program restructures under the model, in its proposed syntax. The point isn't a
-> mechanical rewrite; it's to see *what moves where* and *what gets easier*.
+> mechanical rewrite; it's to see *what moves where* and *what gets easier*. The per-wrapper conversion
+> recipe is [flat-effect-model-stdlib-migration.md](flat-effect-model-stdlib-migration.md).
 
 ---
 
@@ -113,45 +114,44 @@ just calls a now-`Eff`-returning stdlib.
 What that rewrite looks like in the lib (faithful to the current externs/syscalls — `net_recv`/`net_send`
 are `#foreign` externs; `io.*` bottom out at `os.syscall`):
 
-These calls *can fail*, so fallibility lives **in the result type** — `Eff(Result(V, IoErr))` — not clamped
-away (per the model's error rule: an `Eff` is orthogonal to errors; a fallible one carries a `Result`, an
-infallible one doesn't). The finalizer is exactly where the raw errno gets folded into that `Result`:
+Each wrapper is `func → Eff(<the primitive's raw out-slots>)` — the lib builds the effect, the caller
+cooks the raw result. The status/count is just an out-slot the caller branches on; the buffer is the
+caller's, so any slice happens at the call site. No `Result` type, no error-folding finalizer:
 
 ```arche
-// stdlib/net — wrap the EXTERN net_recv; the finalizer surfaces the error in T, never discards it
-recv :: func(s: socket, buf: []char) -> Eff(Result([]char, IoErr)) {
-  return net_recv(s, buf, buf.length) |> (b: []char, r: int) { return r < 0 ? Err(io_err(r)) : Ok(b[0: r]); };
+// stdlib/net — wrap the EXTERN net_recv; raw out-slots are (the buffer view, the count/errno)
+recv :: func(s: socket, buf: []char) -> Eff([]char, int) {
+  return net_recv(s, buf, buf.length);
 }
 
-// stdlib/io — io.read / io.fopen_read bottom out at os.syscall (the prim); same Result shape
-read :: func(f: fd, buf: []char) -> Eff(Result([]char, IoErr)) {
-  return os.syscall(0, f, buf, buf.length, 0, 0, 0) |> (r: i64) { return r < 0 ? Err(io_err(r)) : Ok(buf[0: i32(r)]); };
+// stdlib/io — io.read / io.fopen_read bottom out at os.syscall (the prim); the raw count / fd is the out-slot
+read :: func(f: fd, buf: []char) -> Eff(i64) {
+  return os.syscall(0, f, buf, buf.length, 0, 0, 0);
 }
-fopen_read :: func(path: []char) -> Eff(Result(fd, IoErr)) {
-  return os.syscall(2, path, 0, 0, 0, 0, 0) |> (r: i64) { return r < 0 ? Err(io_err(r)) : Ok(fd(r)); };
+fopen_read :: func(path: []char) -> Eff(i64) {
+  return os.syscall(2, path, 0, 0, 0, 0, 0);
 }
 
-// stdlib/http — respond splits into a PURE head + an applicative compose of EXTERN sends
+// stdlib/http — head is pure bytes; each send is a func→Eff over the EXTERN; `respond` composes the two
+// independent sends with `seq` (applicative — neither send depends on the other's result).
 head :: func(hdr: []char, status: int, ctype: []char, body_len: int) -> []char {
   fmt.sprintf(_, "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
               status, reason(status), ctype, body_len)(hdr, n:);
   return hdr[0: n];                                                   // pure: the head bytes
 }
-send_bytes :: func(conn: socket, data: []char) -> Eff(Result(int, IoErr)) {
-  return net_send(conn, data, data.length) |> (b: []char, r: int) { return r < 0 ? Err(io_err(r)) : Ok(r); };
+send_bytes :: func(conn: socket, data: []char) -> Eff([]char, int) {
+  return net_send(conn, data, data.length);
 }
-respond :: func(conn: socket, hdr: []char, status: int, ctype: []char, body: []char, send_body: bool) -> Eff(Result(int, IoErr)) {
+respond :: func(conn: socket, hdr: []char, status: int, ctype: []char, body: []char, send_body: bool) -> Eff([]char, int) {
   h := head(hdr, status, ctype, body.length);
   return send_body ? seq(send_bytes(conn, h), send_bytes(conn, body))  // applicative: sends are independent
                    : send_bytes(conn, h);
 }
 ```
 
-(`|>` = apply a pure finalizer to the primitive's raw out-slots — the applicative `fmap`; `seq` =
-applicative sequence of two `Eff`s, yielding the last. Illustrative spellings, not final syntax; both
-require `Eff` to carry a pure finalizer, which the free-applicative value layer already implies. The
-*result-dependent* `io.fread_line` is the one stdlib proc this rewrite can't reach — it stays monadic;
-its long-term home is the `routine` construct, §9 of the model.)
+(`seq` = applicative sequence of two independent `Eff`s, yielding the last. The *result-dependent*
+`io.fread_line` is the one stdlib proc this rewrite can't reach — it stays monadic; its long-term home is
+the `routine` construct, §9 of the model.)
 
 Now the proc is a thin imperative shell: run recv, call the pure planner, run the reply — and the *one*
 genuinely result-dependent step (does the file open? then read it) stays inline, exactly where the model
@@ -162,25 +162,25 @@ handle :: proc(conn: socket, root: []char)(ok: bool) {
   reqbuf: [8192]char;
   hdr:    [1024]char;
 
-  net.recv(conn, reqbuf)(rcv:);                                 // RUN: rcv is Result([]char, IoErr)
-  req := rcv ? Ok => v | Err => { ok = false; return; };        // react to the error as data — no exception
-  if req.length <= 0 { ok = false; return; }
+  net.recv(conn, reqbuf)(req:, n:);                            // RUN: raw out-slots — buffer view + count/errno
+  if n <= 0 { ok = false; return; }                           // react to the status as data — no exception
+  msg := req[0: n];                                           // caller cooks: slice its own buffer
 
-  r := plan(req, root);                                         // PURE: one call, whole decision
+  r := plan(msg, root);                                       // PURE: one call, whole decision
 
-  if r.path.length == 0 {                                       // inline reply (health, errors)
-    http.respond(conn, hdr, r.status, r.ctype, r.body, true)(res:);
-    ok = res is Ok; return;
+  if r.path.length == 0 {                                     // inline reply (health, errors)
+    http.respond(conn, hdr, r.status, r.ctype, r.body, true)(_:, sent:);
+    ok = sent >= 0; return;
   }
 
-  io.fopen_read(r.path)(opened:);                              // result-dependent leaf…
-  fd := opened ? Ok => f | Err => {                            // open failed → 404, as data
-    http.respond(conn, hdr, 404, "text/plain", "Not Found\n", true)(_:); ok = false; return;
-  };
+  io.fopen_read(r.path)(fdv:);                               // result-dependent leaf: raw fd / negative errno
+  if fdv < 0 {                                               // open failed → 404, as data
+    http.respond(conn, hdr, 404, "text/plain", "Not Found\n", true)(_:, _:); ok = false; return;
+  }
   body: [262144]char;
-  io.read(fd, body)(content:);                                // …its input (fd) was a prior output
-  http.respond(conn, hdr, 200, r.ctype, body_or_empty(content), r.is_get)(res:);
-  ok = res is Ok;
+  io.read(fd(fdv), body)(rn:);                               // …its input (fd) was a prior output
+  http.respond(conn, hdr, 200, r.ctype, body[0: rn], r.is_get)(_:, sent:);
+  ok = sent >= 0;
 }
 ```
 

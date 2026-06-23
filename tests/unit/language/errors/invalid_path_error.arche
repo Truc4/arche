@@ -5,5 +5,5 @@ main :: proc() {
   fmt.printf("open() returned fd=%d\n", fd);
   fmt.assert(fd == 0, "should fail to open nonexistent file\n");
   fmt.printf("Invalid path error test PASSED\n");
-  io.fclose(move fd);
+  io.fclose(move fd)(_:);
 }

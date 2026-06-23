@@ -3,5 +3,5 @@
 // RUN: true
 #import { fmt }
 hello :: proc() {
-  fmt.print("vgfx common\n")();
+  fmt.print("vgfx common\n")(_:);
 }

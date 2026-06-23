@@ -8,5 +8,5 @@
 // RUN: ls %t.hot/unit_1.so
 #import { fmt }
 main :: proc() {
-  fmt.print("hot_ok\n")();
+  fmt.print("hot_ok\n")(_:);
 }

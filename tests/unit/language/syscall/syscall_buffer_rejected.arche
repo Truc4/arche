@@ -1,0 +1,14 @@
+// A buffer passed to the generic scalar `syscall` must be REJECTED. A syscall that touches a buffer has to
+// be a typed `@syscall(N)` extern that declares the buffer's mutability (plain-in = read-only the kernel
+// reads; in-out = the kernel writes it) — otherwise it would scribble through a read-only borrow, the
+// soundness hole that `os.sys_read`/`sys_write`/`sys_clock` exist to close.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiF "buffer cannot be passed to the generic" %t.out
+#import { os }
+
+sneaky :: func(buf: []char) -> Eff(i64) {
+  return os.syscall(1, 1, buf, buf.length, 0, 0, 0); // buffer to the generic syscall — must be rejected
+}
+
+main :: proc() {
+  sneaky("x")(_:);
+}

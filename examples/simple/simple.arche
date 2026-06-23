@@ -3,5 +3,5 @@ main :: proc() {
   x      := 10;
   y      := 20;
   result := x + y;
-  fmt.print("result: 30\n");
+  fmt.print("result: 30\n")(_:);
 }

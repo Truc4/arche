@@ -3,5 +3,5 @@
 // RUN: rm -rf %t.dir2 && mkdir -p %t.dir2 && cp %s %t.dir2/only.arche && %arche build %t.dir2 -o %t.dirbin && %t.dirbin | grep -q dir-entry
 #import { fmt }
 main :: proc() {
-  fmt.print("dir-entry\n");
+  fmt.print("dir-entry\n")(_:);
 }

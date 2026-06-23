@@ -20,11 +20,11 @@ verify :: system {
   p1  := Particle.pos[1];
   p0i := p0 * 10.0;
   p1i := p1 * 10.0;
-  fmt.print("p0i=");
-  fmt.print_float(p0i);
-  fmt.print(" p1i=");
-  fmt.print_float(p1i);
-  fmt.print("\n");
+  fmt.print("p0i=")(_:);
+  fmt.print_float(p0i)();
+  fmt.print(" p1i=")(_:);
+  fmt.print_float(p1i)();
+  fmt.print("\n")(_:);
   fmt.assert(p0i == 11, "pos[0] != 1.1\n");
   fmt.assert(p1i == 22, "pos[1] != 2.2\n");
   dealloc(Particle);

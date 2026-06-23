@@ -75,9 +75,14 @@ TypeId tyid_of_handle(TypeArena *a, const char *archetype_name);
  * extern name a build site recovers (an extern under-applied by its out-slots). */
 TypeId tyid_of_eff_structural(TypeArena *a, const TypeId *out_slots, int out_slot_count);
 TypeId tyid_of_eff_concrete(TypeArena *a, const char *extern_name, const TypeId *out_slots, int out_slot_count);
+/* Carries an explicit interned NAME per out-slot (names[j] may be NULL). The names are intrinsic to the
+ * Eff — declared `Eff(buf: T, …)` or inferred from the constructing extern's out-params. */
+TypeId tyid_of_eff_named(TypeArena *a, const char *extern_name, const TypeId *out_slots, const char *const *names,
+                         int out_slot_count);
 const char *tyid_eff_extern_name(const TypeArena *a, TypeId t); /* the static extern, or NULL (structural) */
 int tyid_eff_out_count(const TypeArena *a, TypeId t);           /* out-slot count, or -1 if not a TYK_EFF */
 TypeId tyid_eff_out_at(const TypeArena *a, TypeId t, int i);    /* out-slot type at i, or UNKNOWN */
+const char *tyid_eff_out_name_at(const TypeArena *a, TypeId t, int i); /* out-slot NAME at i, or NULL */
 TypeId tyid_of_archetype_category(TypeArena *a);
 /* The three callable forms, each its own distinct kind. `returns` is a func's single return, a proc's
  * out-params, or a map's (none). Structural inequality (`proc()(int) != func()->int`) is automatic —

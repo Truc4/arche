@@ -137,6 +137,9 @@ typedef struct {
 	int is_extern;
 	int is_drop;      /* 1 if this proc is a `@drop` destructor (own opaque param is the type it destroys) */
 	int is_intrinsic; /* 1 if `@intrinsic`: calls lower to a built-in instruction (e.g. raw syscall) */
+	int syscall_num;  /* `@syscall(N)`: a typed direct syscall #N — calls emit the syscall asm with the
+	                   * proc's in-params as args (buffers ptrtoint'd), the written buffer declared in-out.
+	                   * -1 = not a syscall extern. Lets a syscall honestly model a written buffer. */
 	HirStmt **stmts;
 	int stmt_count;
 	SourceLoc loc;

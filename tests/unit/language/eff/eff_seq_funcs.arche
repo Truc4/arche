@@ -1,0 +1,21 @@
+// FEATURE (recursive Eff fusion, seq side): `seq(a, b)` composes two effects where each side is itself a
+// func→Eff builder (not only a direct extern) — the fusion recurses into each. `both(10,20)` runs
+// `acc_a(10)` then `acc_a(20)`; eff_acc accumulates, so t==30 PROVES both ran in order (last-only would be
+// 20). This is what lets http.respond compose `seq(send_a, send_b)` over func-built sends.
+// RUN: %arche build -o %t --link %S/runtime/effshim.c %s && %t | grep -qF "t=30"
+#foreign {
+  eff_acc :: proc(x: int)(total: int);
+}
+#import { fmt }
+
+acc_a :: func(a: int) -> Eff(int) {
+  return eff_acc(a);
+}
+both :: func(a: int, b: int) -> Eff(int) {
+  return seq(acc_a(a), acc_a(b)); // seq of two func-built Effs
+}
+
+main :: proc() {
+  both(10, 20)(t:);
+  fmt.printf("t=%d\n", t);
+}

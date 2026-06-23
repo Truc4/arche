@@ -5,6 +5,6 @@
 #import { os fmt }
 name :: "linux";
 main :: proc() {
-  os.write(1, name, name.length);
+  os.write(1, name, name.length)(_:);
   fmt.printf(" %d\n", name.length);
 }

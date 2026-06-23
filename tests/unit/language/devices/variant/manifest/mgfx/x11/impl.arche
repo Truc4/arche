@@ -2,5 +2,5 @@
 // RUN: true
 #import { fmt }
 backend :: proc() {
-  fmt.print("mgfx x11\n")();
+  fmt.print("mgfx x11\n")(_:);
 }

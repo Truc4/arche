@@ -1,11 +1,11 @@
-raw_enable :: proc() {
-  term_raw_enable();
+raw_enable :: func() -> Eff() {
+  return term_raw_enable();
 }
-raw_restore :: proc() {
-  term_raw_restore();
+raw_restore :: func() -> Eff() {
+  return term_raw_restore();
 }
-read_key :: proc()(k: int) {
-  term_read_key()(k);
+read_key :: func() -> Eff(int) {
+  return term_read_key();
 }
 
 #module

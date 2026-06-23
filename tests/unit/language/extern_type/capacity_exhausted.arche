@@ -19,6 +19,6 @@ main :: proc() {
   resource_open(3)(r3:);
   insert(Resource { cell: r3 })(_:, ok3:);
   if (!ok3) {
-    fmt.print("full\n");
+    fmt.print("full\n")(_:);
   }
 }

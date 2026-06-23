@@ -1367,45 +1367,113 @@ static HirFuncDecl *find_func_decl(CodegenContext *ctx, const char *name) {
 	return NULL;
 }
 
-/* Inline ONE under-applied extern call `ec` taken from a builder body: produce `<extern>(args with fn's
- * params substituted by the actual call args)`. Returns a freshly-allocated HIR_EXPR_CALL (caller frees its
- * `.args` array + the node; the callee NAME + arg elements are SHARED) and sets *out_proc to the extern, or
- * NULL if `ec` is not an under-applied extern call (only an extern is inert under-applied). */
+/* Substitute fn's params into ONE builder-body arg `ea`, yielding the expr to emit in the CALLER's scope.
+ * A bare param NAME maps to its whole actual arg (carrying any move/copy). A `param.field` — the
+ * implicit-length idiom `buf.length` that builders use to pass a slice's length to the primitive —
+ * rebuilds the FIELD over the SUBSTITUTED base, so it reads the ACTUAL buffer's length, not the vanished
+ * param. Other shapes pass through unchanged. The rebuilt FIELD is bounded build-time scratch (its base +
+ * field_name are SHARED); it is not tracked for free (run-once compiler, leak is bounded). */
+static HirExpr *eff_subst_arg(HirFuncDecl *fn, HirExpr **actual_args, int actual_argc, HirExpr *ea) {
+	HirExpr *eu = ea;
+	while (eu && eu->kind == HIR_EXPR_UNARY && (eu->data.unary.op == UNARY_MOVE || eu->data.unary.op == UNARY_COPY))
+		eu = eu->data.unary.operand;
+	if (eu && eu->kind == HIR_EXPR_NAME && eu->data.name.name) {
+		for (int p = 0; p < fn->param_count; p++)
+			if (fn->params[p]->name && strcmp(fn->params[p]->name, eu->data.name.name) == 0)
+				return (p < actual_argc) ? actual_args[p] : ea; /* SHARED whole actual arg */
+		return ea;
+	}
+	if (eu && eu->kind == HIR_EXPR_FIELD && eu->data.field.base && eu->data.field.base->kind == HIR_EXPR_NAME &&
+	    eu->data.field.base->data.name.name) {
+		for (int p = 0; p < fn->param_count; p++)
+			if (fn->params[p]->name && strcmp(fn->params[p]->name, eu->data.field.base->data.name.name) == 0 &&
+			    p < actual_argc) {
+				HirExpr *nf = hir_expr_create(HIR_EXPR_FIELD);
+				nf->loc = eu->loc;
+				nf->resolved = eu->resolved;
+				nf->data.field.base = actual_args[p];               /* SHARED substituted base */
+				nf->data.field.field_name = eu->data.field.field_name; /* SHARED */
+				return nf;
+			}
+	}
+	/* A param wrapped in a call/conversion (e.g. `i64(f)`, where `i64(...)` is a CALL): substitute inside
+	 * the args so the param still reaches the terminal extern (`io.fread(f,…)` → `sys_read(i64(f),…)`). New
+	 * node; callee + each substituted arg are shared. */
+	if (eu && eu->kind == HIR_EXPR_CALL && eu->data.call.callee && eu->data.call.arg_count > 0) {
+		HirExpr *nc = hir_expr_create(HIR_EXPR_CALL);
+		nc->loc = eu->loc;
+		nc->resolved = eu->resolved;
+		nc->data.call.callee = eu->data.call.callee; /* SHARED */
+		nc->data.call.arg_count = eu->data.call.arg_count;
+		nc->data.call.args = malloc(sizeof(HirExpr *) * (size_t)eu->data.call.arg_count);
+		for (int i = 0; i < eu->data.call.arg_count; i++)
+			nc->data.call.args[i] = eff_subst_arg(fn, actual_args, actual_argc, eu->data.call.args[i]);
+		return nc;
+	}
+	return ea;
+}
+
+/* Inline an Eff-building call `ec` from a builder body down to its terminal extern call. The base case is
+ * a direct under-applied extern (only an extern is inert under-applied). The RECURSIVE case is the
+ * applicative composition: when `ec` calls ANOTHER func->Eff builder `g`, substitute fn's params into ec's
+ * args to get g's actual args, then recurse into g's body — so `io.read -> fread -> syscall` collapses to
+ * one flat extern call, still depth-1. A single `|> fin` encountered anywhere in the chain accumulates in
+ * *io_fin (chaining two finalizers across builders is unsupported and errors). Returns a freshly-allocated
+ * HIR_EXPR_CALL (caller frees its `.args` array + the node; callee NAME + arg elements are SHARED) and sets
+ * *out_proc to the terminal extern, or NULL if it doesn't bottom out at an extern (the E0222 case). */
 static HirExpr *eff_subst_call(CodegenContext *ctx, HirFuncDecl *fn, HirExpr **actual_args, int actual_argc,
-                               HirExpr *ec, HirProcDecl **out_proc) {
+                               HirExpr *ec, HirProcDecl **out_proc, HirFuncDecl **io_fin) {
 	*out_proc = NULL;
 	while (ec && ec->kind == HIR_EXPR_UNARY && (ec->data.unary.op == UNARY_MOVE || ec->data.unary.op == UNARY_COPY))
 		ec = ec->data.unary.operand;
 	if (!ec || ec->kind != HIR_EXPR_CALL || !ec->data.call.callee || ec->data.call.callee->kind != HIR_EXPR_NAME)
 		return NULL;
 	const char *ename = ec->data.call.callee->data.name.name;
-	HirProcDecl *ep = ename ? find_proc_decl(ctx, ename) : NULL;
-	if (!ep || !ep->is_extern)
-		return NULL;
 	int n = ec->data.call.arg_count;
-	HirExpr *call = hir_expr_create(HIR_EXPR_CALL);
-	call->data.call.callee = ec->data.call.callee; /* SHARED NAME(extern) */
-	call->data.call.args = malloc((size_t)(n ? n : 1) * sizeof(HirExpr *));
-	call->data.call.arg_count = n;
-	for (int i = 0; i < n; i++) {
-		HirExpr *ea = ec->data.call.args[i];
-		/* The body arg may be `move`/`copy`-wrapped when the extern's param is `own` (e.g. an `own []char`
-		 * slice) — unwrap to find the underlying param NAME for matching. On a match we substitute the WHOLE
-		 * actual arg (which already carries its own move/copy for the destination param). */
-		HirExpr *eu = ea;
-		while (eu && eu->kind == HIR_EXPR_UNARY && (eu->data.unary.op == UNARY_MOVE || eu->data.unary.op == UNARY_COPY))
-			eu = eu->data.unary.operand;
-		int sub = -1;
-		if (eu && eu->kind == HIR_EXPR_NAME && eu->data.name.name)
-			for (int p = 0; p < fn->param_count; p++)
-				if (fn->params[p]->name && strcmp(fn->params[p]->name, eu->data.name.name) == 0) {
-					sub = p;
-					break;
-				}
-		call->data.call.args[i] = (sub >= 0 && sub < actual_argc) ? actual_args[sub] : ea; /* SHARED */
+	HirProcDecl *ep = ename ? find_proc_decl(ctx, ename) : NULL;
+	if (ep && ep->is_extern) {
+		/* BASE CASE: build the substituted extern call. */
+		HirExpr *call = hir_expr_create(HIR_EXPR_CALL);
+		call->data.call.callee = ec->data.call.callee; /* SHARED NAME(extern) */
+		call->data.call.args = malloc((size_t)(n ? n : 1) * sizeof(HirExpr *));
+		call->data.call.arg_count = n;
+		for (int i = 0; i < n; i++)
+			call->data.call.args[i] = eff_subst_arg(fn, actual_args, actual_argc, ec->data.call.args[i]);
+		*out_proc = ep;
+		return call;
 	}
-	*out_proc = ep;
-	return call;
+	/* RECURSIVE CASE: `ec` calls another func->Eff builder — inline through it. */
+	HirFuncDecl *g = ename ? find_func_decl(ctx, ename) : NULL;
+	if (g && g->return_type_count > 0 && g->return_types[0] && g->return_types[0]->tag == HIR_TYPE_EFF) {
+		HirExpr **g_args = malloc((size_t)(n ? n : 1) * sizeof(HirExpr *));
+		for (int i = 0; i < n; i++)
+			g_args[i] = eff_subst_arg(fn, actual_args, actual_argc, ec->data.call.args[i]);
+		/* g's builder body is a single `return <expr>`; strip a `|> fin` into the chain's finalizer. */
+		HirExpr *g_bcall = NULL;
+		for (int j = 0; j < g->stmt_count; j++)
+			if (g->stmts[j] && g->stmts[j]->kind == HIR_STMT_RETURN && g->stmts[j]->data.return_stmt.count == 1) {
+				g_bcall = g->stmts[j]->data.return_stmt.values[0];
+				break;
+			}
+		if (g_bcall && g_bcall->kind == HIR_EXPR_BINARY && g_bcall->data.binary.op == OP_FMAP) {
+			HirExpr *fnm = g_bcall->data.binary.right;
+			HirFuncDecl *gfin = (fnm && fnm->kind == HIR_EXPR_NAME && fnm->data.name.name)
+			                        ? find_func_decl(ctx, fnm->data.name.name)
+			                        : NULL;
+			if (gfin) {
+				if (*io_fin) {
+					fprintf(stderr, "Error: chained Eff finalizers across builders are not supported\n");
+					ctx->had_error = 1;
+				} else
+					*io_fin = gfin;
+			}
+			g_bcall = g_bcall->data.binary.left;
+		}
+		HirExpr *res = eff_subst_call(ctx, g, g_args, n, g_bcall, out_proc, io_fin);
+		free(g_args); /* the ARRAY only; its elements are SHARED / live in the returned call */
+		return res;
+	}
+	return NULL;
 }
 
 /* Eff FUSION (the compile-time keystone). A func-returning-Eff is a builder whose body is a single `return
@@ -1443,15 +1511,19 @@ static HirExpr *eff_inline_build(CodegenContext *ctx, HirFuncDecl *fn, HirExpr *
 	while (bcall && bcall->kind == HIR_EXPR_UNARY &&
 	       (bcall->data.unary.op == UNARY_MOVE || bcall->data.unary.op == UNARY_COPY))
 		bcall = bcall->data.unary.operand;
-	/* `seq(a, b)` — run `a` for effect first (the prefix), then `b` is the result-bearing main. Both must be
-	 * direct under-applied externs (the applicative keystone; nested seq/fmap-in-args is not yet supported). */
+	/* `seq(a, b)` — run `a` for effect first (the prefix), then `b` is the result-bearing main. Each side may
+	 * itself be a func->Eff builder (eff_subst_call recurses); the prefix's own result is discarded, so any
+	 * finalizer on it is moot (accepted into a throwaway). */
 	if (bcall && bcall->kind == HIR_EXPR_CALL && bcall->data.call.callee &&
 	    bcall->data.call.callee->kind == HIR_EXPR_NAME && bcall->data.call.callee->data.name.name &&
 	    strcmp(bcall->data.call.callee->data.name.name, "seq") == 0 && bcall->data.call.arg_count == 2) {
-		*out_prefix = eff_subst_call(ctx, fn, actual_args, actual_argc, bcall->data.call.args[0], out_prefix_proc);
+		HirFuncDecl *prefix_fin = NULL;
+		*out_prefix =
+		    eff_subst_call(ctx, fn, actual_args, actual_argc, bcall->data.call.args[0], out_prefix_proc, &prefix_fin);
 		bcall = bcall->data.call.args[1];
 	}
-	return eff_subst_call(ctx, fn, actual_args, actual_argc, bcall, out_proc);
+	/* Thread *out_finalizer as the chain accumulator so a nested builder's `|> fin` merges with an outer one. */
+	return eff_subst_call(ctx, fn, actual_args, actual_argc, bcall, out_proc, out_finalizer);
 }
 
 /* A failure-policy decl by name AND op category (1=bounds, 3=divide) — the `!name` namespace. Separate
@@ -3341,6 +3413,120 @@ static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 
 /* ========== EXPRESSION CODEGEN ========== */
 
+/* Coerce one syscall argument to an i64 for the raw `syscall` asm: a buffer/string/array decays to its
+ * data pointer via `ptrtoint` (never `sext` — it is a pointer); a narrower int is sext/zext'd to 64;
+ * opaque/handle is already pointer-width. Shared by the generic `@intrinsic syscall` and the typed
+ * `@syscall(N)` paths. `allow_buffer` is 0 for the generic scalar syscall: passing a buffer there is
+ * rejected (a buffer must go through a typed `@syscall(N)` extern that declares it in/in-out, so the
+ * kernel can't write a read-only borrow); 1 for a typed `@syscall(N)`, where the contract is declared. */
+static void coerce_syscall_arg(CodegenContext *ctx, HirExpr *arg, char *out, int allow_buffer) {
+	char ab[256];
+	codegen_expression(ctx, arg, ab);
+	HirType *rt = &arg->resolved;
+	HirExpr *arg_u = arg;
+	while (arg_u->kind == HIR_EXPR_UNARY &&
+	       (arg_u->data.unary.op == UNARY_MOVE || arg_u->data.unary.op == UNARY_COPY))
+		arg_u = arg_u->data.unary.operand;
+	ValueInfo *avi = (arg_u->kind == HIR_EXPR_NAME) ? find_value(ctx, arg_u->data.name.name) : NULL;
+	if (avi && (avi->type == 7 || avi->type == 2 || avi->type == 6)) {
+		if (!allow_buffer) {
+			fprintf(stderr, "Error: a buffer cannot be passed to the generic `syscall` — declare a typed "
+			                "`@syscall(N)` extern with the buffer as a param (in-out if the kernel writes "
+			                "it), so it cannot scribble through a read-only borrow\n");
+			ctx->had_error = 1;
+		}
+		char dptr[256];
+		if (avi->type == 7) {
+			char *b = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", b, avi->string_len, ab);
+			strcpy(dptr, b);
+		} else if (avi->type == 6 && avi->field_type && strcmp(avi->field_type, "char") != 0 &&
+		           strcmp(avi->field_type, "i8") != 0) {
+			/* a NON-char element pointer (e.g. a `[]i64` timespec buffer) is `<elem>*`, not `i8*` — bitcast
+			 * to i8* first, else `ptrtoint i8* %<elemptr>` is ill-typed. */
+			const char *lt = llvm_type_from_arche(avi->field_type);
+			char *b = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = bitcast %s* %s to i8*\n", b, lt, ab);
+			strcpy(dptr, b);
+		} else {
+			strcpy(dptr, ab); /* type 2/6 char: already i8* */
+		}
+		char *pi = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = ptrtoint i8* %s to i64\n", pi, dptr);
+		strcpy(out, pi);
+		return;
+	}
+	if (arg_u->kind == HIR_EXPR_STRING || arg_u->kind == HIR_EXPR_SLICE || rt->tag == HIR_TYPE_CHAR_ARRAY ||
+	    rt->tag == HIR_TYPE_ARRAY || rt->tag == HIR_TYPE_SHAPED_ARRAY) {
+		if (!allow_buffer) {
+			fprintf(stderr, "Error: a buffer cannot be passed to the generic `syscall` — declare a typed "
+			                "`@syscall(N)` extern with the buffer as a param (in-out if the kernel writes "
+			                "it), so it cannot scribble through a read-only borrow\n");
+			ctx->had_error = 1;
+		}
+		char *pi = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = ptrtoint i8* %s to i64\n", pi, ab);
+		strcpy(out, pi);
+	} else if (rt->tag == HIR_TYPE_INT && rt->int_width == 64) {
+		strcpy(out, ab);
+	} else if (rt->tag == HIR_TYPE_INT) {
+		emit_int_convert(ctx, ab, rt, 64, out);
+	} else if (rt->tag == HIR_TYPE_OPAQUE || rt->tag == HIR_TYPE_HANDLE) {
+		strcpy(out, ab); /* opaque cell / handle is already pointer-width i64 */
+	} else {
+		HirType t32 = {0};
+		t32.tag = HIR_TYPE_INT;
+		t32.int_width = 32;
+		t32.int_signed = 1;
+		emit_int_convert(ctx, ab, &t32, 64, out);
+	}
+}
+
+/* Emit the raw Linux/x86-64 `syscall` instruction: number + up to 6 args in i64 regs, result in rax;
+ * rcx/r11/memory clobbered. `a[0..6]` are pre-coerced i64 operands (a[0] = number). Returns the SSA
+ * name of the result into `res_out`. */
+static void emit_syscall_asm(CodegenContext *ctx, char a[7][256], char *res_out) {
+	char *res = gen_value_name(ctx);
+	buffer_append_fmt(ctx,
+	                  "  %s = call i64 asm sideeffect \"syscall\", "
+	                  "\"={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},~{rcx},~{r11},~{memory}\""
+	                  "(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n",
+	                  res, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+	strcpy(res_out, res);
+}
+
+/* Allocate a sized-array OUT buffer for a multi-bind out-target `tgt: [N]T` (`:` = allocate): emit
+ * `alloca [N x T]`, GEP element 0, and bind `tgt->name` as a type-6 element pointer (so `buf[i]` reads it).
+ * Pushes the ValueInfo into the top scope and returns it (NULL if no scope / `_` / not a NAME target).
+ * Used both as a pure out-param (out-only path) and — pre-emission — for a caller-allocated in-out OUT
+ * buffer whose syscall/extern in-slot is the `_` shadow (so the `_`→name rewrite resolves to it). */
+static ValueInfo *cg_alloc_shaped_out_buf(CodegenContext *ctx, HirBindingTarget *tgt, HirType *ot) {
+	if (!tgt || !tgt->name || strcmp(tgt->name, "_") == 0 || !ot || ot->tag != HIR_TYPE_SHAPED_ARRAY ||
+	    ctx->scope_count <= 0)
+		return NULL;
+	const char *etn = field_base_type_name(ot);
+	const char *lt = llvm_type_from_arche(etn);
+	int n = ot->rank;
+	char *arr = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca [%d x %s]\n", arr, n, lt);
+	char *ptr = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* %s, i64 0, i64 0\n", ptr, n, lt, n, lt,
+	                  arr);
+	ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+	vi->name = malloc(strlen(tgt->name) + 1);
+	strcpy(vi->name, tgt->name);
+	vi->llvm_name = malloc(strlen(ptr) + 1);
+	strcpy(vi->llvm_name, ptr);
+	vi->type = 6;
+	vi->string_len = n;
+	vi->field_type = etn;
+	vi->bit_width = strcmp(lt, "double") == 0 ? 64 : (strcmp(lt, "i8") == 0 ? 8 : 32);
+	ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+	sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+	sc->values[sc->value_count++] = vi;
+	return vi;
+}
+
 static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 	if (!expr) {
 		strcpy(result_buf, "0");
@@ -4674,52 +4860,36 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		HirProcDecl *intrinsic_decl =
 		    (func_name && expr->data.call.arg_count == 7) ? find_proc_decl(ctx, func_name) : NULL;
 		if (intrinsic_decl && intrinsic_decl->is_intrinsic) {
+			/* Generic `@intrinsic syscall(n, a0..a5)`: arg 0 is the number, args 1..6 the operands. A buffer
+			 * arg decays to a `ptrtoint`'d data pointer (handles a func→Eff fused with a move/literal/slice
+			 * buffer). NOTE: this generic form takes buffers as opaque i64s — a syscall that WRITES a buffer
+			 * should instead be a typed `@syscall(N)` extern declaring that buffer in-out (handled below). */
 			char a[7][256];
-			for (int i = 0; i < 7; i++) {
-				char ab[256];
-				codegen_expression(ctx, expr->data.call.args[i], ab);
-				HirType *rt = &expr->data.call.args[i]->resolved;
-				/* A buffer arg decays to its data pointer (like C): extract the i8* and `ptrtoint`
-				 * it to i64 so a buffer can be handed to a raw syscall. The arg's LLVM repr is
-				 * known from its ValueInfo type: 7 = [N x i8]* (local char buffer), 2 = i8*
-				 * (string), 6 = i8* (char[] param, data ptr pre-extracted at entry). */
-				ValueInfo *avi = (expr->data.call.args[i]->kind == HIR_EXPR_NAME)
-				                     ? find_value(ctx, expr->data.call.args[i]->data.name.name)
-				                     : NULL;
-				if (avi && (avi->type == 7 || avi->type == 2 || avi->type == 6)) {
-					char dptr[256];
-					if (avi->type == 7) {
-						char *b = gen_value_name(ctx);
-						buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", b, avi->string_len, ab);
-						strcpy(dptr, b);
-					} else {
-						strcpy(dptr, ab); /* type 2: already i8* */
-					}
-					char *pi = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = ptrtoint i8* %s to i64\n", pi, dptr);
-					strcpy(a[i], pi);
-					continue;
-				}
-				if (rt->tag == HIR_TYPE_INT && rt->int_width == 64) {
-					strcpy(a[i], ab);
-				} else if (rt->tag == HIR_TYPE_INT) {
-					emit_int_convert(ctx, ab, rt, 64, a[i]);
-				} else if (rt->tag == HIR_TYPE_OPAQUE || rt->tag == HIR_TYPE_HANDLE) {
-					strcpy(a[i], ab); /* opaque cell / handle is already pointer-width i64 */
-				} else {
-					HirType t32 = {0};
-					t32.tag = HIR_TYPE_INT;
-					t32.int_width = 32;
-					t32.int_signed = 1;
-					emit_int_convert(ctx, ab, &t32, 64, a[i]);
-				}
+			for (int i = 0; i < 7; i++)
+				coerce_syscall_arg(ctx, expr->data.call.args[i], a[i], 0 /* scalars only */);
+			char res[256];
+			emit_syscall_asm(ctx, a, res);
+			strcpy(result_buf, res);
+			break;
+		}
+
+		/* Typed direct syscall `@syscall(N)`: emit the syscall asm with N as the number and the call's
+		 * in-args as a0.. (buffers `ptrtoint`'d, same coercion). The result is the scalar return; a buffer
+		 * the kernel writes is an in-out out-param, surfaced at the run-site by the 0c aliasing (so the
+		 * write is honest — declared, not scribbled through a read-only borrow). */
+		HirProcDecl *sys_decl = func_name ? find_proc_decl(ctx, func_name) : NULL;
+		if (sys_decl && sys_decl->syscall_num >= 0) {
+			char a[7][256];
+			snprintf(a[0], sizeof(a[0]), "%d", sys_decl->syscall_num);
+			int na = expr->data.call.arg_count;
+			for (int i = 0; i < 6; i++) {
+				if (i < na)
+					coerce_syscall_arg(ctx, expr->data.call.args[i], a[i + 1], 1 /* typed: buffers OK */);
+				else
+					strcpy(a[i + 1], "0"); /* unused syscall arg regs are zero */
 			}
-			char *res = gen_value_name(ctx);
-			buffer_append_fmt(ctx,
-			                  "  %s = call i64 asm sideeffect \"syscall\", "
-			                  "\"={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},~{rcx},~{r11},~{memory}\""
-			                  "(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n",
-			                  res, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+			char res[256];
+			emit_syscall_asm(ctx, a, res);
 			strcpy(result_buf, res);
 			break;
 		}
@@ -7237,6 +7407,30 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			}
 		}
 
+		/* Caller-allocated in-out OUT buffer: an in-out out-param bound with `:` and a sized type
+		 * (`read(fd, n)(buf: [256]char, r:)`) is the kernel-written OUTPUT — the caller owns the storage.
+		 * Allocate it HERE, before the call emits, so the `_`-shadow rename below resolves to it and the
+		 * call passes it by reference; otherwise the `_` slot would find no value and emit `0`. A NOT-new
+		 * target (`(buf, r:)`, no `:`) writes an existing variable/column already in scope — no alloc. (The
+		 * legacy form that passes the buffer as an in-arg still aliases below; this is additive.) */
+		if (callee_proc && rhs && rhs->kind == HIR_EXPR_CALL) {
+			for (int oi = 0; oi < target_count && oi < callee_proc->out_param_count; oi++) {
+				if (!proc_out_param_is_inout(callee_proc, oi))
+					continue;
+				HirBindingTarget *tgt = &targets[oi];
+				if (!tgt->name || strcmp(tgt->name, "_") == 0 || !tgt->is_new)
+					continue; /* discarded, or an existing buffer/column (no `:`) */
+				/* Size the OUT buffer from the call-site binding (`buf: [256]char`) if given, else INFER it
+				 * from the extern's out-param type (a fixed-size effect like `sys_clock(…)(ts: [2]i64, …)`
+				 * carries the size, so `ts:` needs no spelled-out type). Only a sized array allocates here;
+				 * the unsized `[]char` of a variable-size read needs the size at the call (no fallback), and
+				 * the legacy `(filled:)` in-arg form falls to the alias path below. */
+				HirType *ot = tgt->type ? tgt->type : callee_proc->out_params[oi]->type;
+				if (ot && ot->tag == HIR_TYPE_SHAPED_ARRAY)
+					cg_alloc_shaped_out_buf(ctx, tgt, ot);
+			}
+		}
+
 		/* `_` placeholder in an in-out in-slot: it names no value. The buffer lives in the out-list,
 		 * named by the positionally-matching out-target. Rewrite each such `_` arg's NAME to that
 		 * out-target buffer in place for the duration of this call's emission, so the existing
@@ -7315,10 +7509,61 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				snprintf(res, sizeof(res), "%s", fres);
 			}
 			for (int i = 0; i < target_count && i < callee_proc->out_param_count; i++) {
-				if (proc_out_param_is_inout(callee_proc, i))
+				if (proc_out_param_is_inout(callee_proc, i)) {
+					/* In-out out-param (`net_recv(s, buf, n)(buf, r)`): the buffer was passed as the matching
+					 * in-arg and the extern wrote it IN PLACE. The proc call form links the out-target to the
+					 * in-arg via the `_` placeholder; the func→Eff run form has no `_`, so bind the out-target
+					 * to ALIAS that in-arg buffer — the caller reads the written data through the named out-param
+					 * (`recv(conn, buf)(filled:, r:)` → `filled` IS `buf`, now filled). */
+					HirBindingTarget *tgt = &targets[i];
+					const char *on = callee_proc->out_params[i]->name;
+					int j = -1;
+					for (int k = 0; k < callee_proc->param_count; k++)
+						if (callee_proc->params[k]->name && on && strcmp(callee_proc->params[k]->name, on) == 0) {
+							j = k;
+							break;
+						}
+					HirExpr *ia = (j >= 0 && rhs && rhs->kind == HIR_EXPR_CALL && j < rhs->data.call.arg_count)
+					                  ? rhs->data.call.args[j]
+					                  : NULL;
+					while (ia && ia->kind == HIR_EXPR_UNARY &&
+					       (ia->data.unary.op == UNARY_MOVE || ia->data.unary.op == UNARY_COPY))
+						ia = ia->data.unary.operand;
+					ValueInfo *src = (ia && ia->kind == HIR_EXPR_NAME && ia->data.name.name)
+					                     ? find_value(ctx, ia->data.name.name)
+					                     : NULL;
+					if (src && tgt->is_new && tgt->name && strcmp(tgt->name, "_") != 0 && ctx->scope_count > 0) {
+						ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+						vi->name = malloc(strlen(tgt->name) + 1);
+						strcpy(vi->name, tgt->name);
+						if (src->llvm_name) {
+							vi->llvm_name = malloc(strlen(src->llvm_name) + 1);
+							strcpy(vi->llvm_name, src->llvm_name);
+						}
+						vi->type = src->type;
+						if (src->arch_name) {
+							vi->arch_name = malloc(strlen(src->arch_name) + 1);
+							strcpy(vi->arch_name, src->arch_name);
+						}
+						vi->string_len = src->string_len;
+						vi->field_type = src->field_type;             /* borrowed (not freed by pop_value_scope) */
+						vi->handle_archetype = src->handle_archetype; /* borrowed */
+						vi->bit_width = src->bit_width;
+						vi->is_slice = src->is_slice;
+						vi->len_ssa = src->len_ssa; /* borrowed: pop_value_scope does not free len_ssa */
+						ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+						sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+						sc->values[sc->value_count++] = vi;
+					}
 					continue;
+				}
 				HirBindingTarget *tgt = &targets[i];
-				HirType *ot = callee_proc->out_params[i]->type;
+				/* With a `|> fin` finalizer the result was reshaped to the finalizer's RETURN type (e.g.
+				 * `syscall(2,…) |> to_fd` maps the raw i64 to an `fd`), so bind THAT, not the extern's raw
+				 * out-param type, else the i32/i64 store mismatches. (Single raw out-slot -> single return.) */
+				HirType *ot = (eff_fin && eff_fin->return_type_count > 0 && eff_fin->return_types[0])
+				                  ? eff_fin->return_types[0]
+				                  : callee_proc->out_params[i]->type;
 				int is_arr = ot && (ot->tag == HIR_TYPE_ARRAY || ot->tag == HIR_TYPE_SHAPED_ARRAY);
 				const char *elem = return_member_llvm(ot);
 				if (tgt->is_new) {
@@ -10090,6 +10335,10 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 	ctx->entity_bind_count = 0; /* entity bindings are proc-local */
 	/* For extern procs, emit declare stub */
 	if (proc->is_extern) {
+		/* A `@syscall(N)` extern is never called as a symbol — its calls emit the syscall asm inline — so
+		 * it needs no `declare` (and emitting one collides when two modules declare the same syscall name). */
+		if (proc->syscall_num >= 0)
+			return;
 		/* An extern proc's out-only out-param (a name NOT in the in-list) maps to the C return
 		 * value; in-out names are in-place pointer writes already passed in the in-list. At most
 		 * one out-only param (C returns one value); none ⇒ void. */

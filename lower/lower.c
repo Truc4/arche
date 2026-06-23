@@ -1954,6 +1954,33 @@ static int syntax_decl_has_intrinsic_decorator(SyntaxView d) {
 	}
 	return 0;
 }
+/* `@syscall(N)`: returns the syscall number N, or -1 if the decorator is absent. Scans for the
+ * `@ syscall ( <number> )` token run (the parser already validated the shape). */
+static int syntax_decl_syscall_num(SyntaxView d) {
+	if (!sv_present(d))
+		return -1;
+	int n = d.node->child_count;
+	for (int i = 0; i + 3 < n; i++) {
+		const SyntaxElem *at = &d.node->children[i];
+		if (at->tag != SE_TOKEN || at->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *nm = &d.node->children[i + 1];
+		if (nm->tag != SE_TOKEN || nm->as.token.kind != TOK_IDENT)
+			continue;
+		if (nm->as.token.length != 7 || memcmp(d.src + nm->as.token.offset, "syscall", 7) != 0)
+			continue;
+		/* i+2 = '(', i+3 = the number token. */
+		const SyntaxElem *num = &d.node->children[i + 3];
+		if (num->tag != SE_TOKEN || num->as.token.kind != TOK_NUMBER)
+			continue;
+		char buf[32];
+		size_t len = num->as.token.length < sizeof(buf) - 1 ? num->as.token.length : sizeof(buf) - 1;
+		memcpy(buf, d.src + num->as.token.offset, len);
+		buf[len] = '\0';
+		return atoi(buf);
+	}
+	return -1;
+}
 static int syntax_decl_has_gpu_decorator(SyntaxView d) {
 	if (!sv_present(d))
 		return 0;
@@ -2058,6 +2085,7 @@ static HirDecl *lower_proc_from(SyntaxView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_PROC);
 	HirProcDecl *ap = calloc(1, sizeof(HirProcDecl));
 	ap->name = name;
+	ap->syscall_num = -1; /* not a `@syscall(N)` extern unless the decorator sets it (0 is a valid syscall #) */
 	/* Foreign (FFI-bodied): a proc value-form with no `{` body block (parser emits a bodiless
 	 * proc value-form only inside a `#foreign` region). Mirrors semantic.c build_proc_from. */
 	ap->is_extern = !sv_has_token(f, TOK_LBRACE);
@@ -2663,6 +2691,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		HirDecl *ad = hir_decl_create(HIR_DECL_PROC);
 		HirProcDecl *ap = calloc(1, sizeof(HirProcDecl));
 		ap->name = sv_dup(sv_child(d, SN_FUNC_DEF_NAME));
+		ap->syscall_num = -1; /* default; `@syscall(N)` sets it (0 is a valid syscall #, so calloc-0 is wrong) */
 		ap->is_extern = !sv_has_token(d, TOK_LBRACE);
 		int np = sv_count(d, SN_PARAM);
 		ap->params = calloc(np ? np : 1, sizeof(HirParam *));
@@ -2766,6 +2795,13 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					 * checks the resolved decl's flag, not the symbol name — see codegen syscall). */
 					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && syntax_decl_has_intrinsic_decorator(d))
 						pd->data.proc->is_intrinsic = 1;
+					/* `@syscall(N)`: a typed direct syscall — calls emit the syscall asm (codegen reads
+					 * `syscall_num`), and a written buffer is declared in-out (honest, no read-only-borrow write). */
+					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc) {
+						int sn = syntax_decl_syscall_num(d);
+						if (sn >= 0)
+							pd->data.proc->syscall_num = sn;
+					}
 					return pd;
 				}
 				case SN_FUNC_EXPR: {

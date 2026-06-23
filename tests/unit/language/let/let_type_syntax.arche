@@ -9,5 +9,5 @@ main :: proc() {
   fmt.assert(z == 30, "with expression failed\n");
   a := x + 8;
   fmt.assert(a == 50, "with int addition failed\n");
-  fmt.print("all type syntax tests passed\n");
+  fmt.print("all type syntax tests passed\n")(_:);
 }

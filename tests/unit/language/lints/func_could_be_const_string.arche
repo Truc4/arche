@@ -8,5 +8,5 @@ greeting :: func() -> []char {
 }
 main :: proc() {
   g :: greeting();
-  os.write(1, g, g.length);
+  os.write(1, g, g.length)(_:);
 }

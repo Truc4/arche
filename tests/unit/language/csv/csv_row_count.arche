@@ -9,7 +9,9 @@ main :: proc() {
   io.open("tests/fixtures/data.csv")(fd:);
   io.skip_header(fd);
   rows := 0;
-  io.read_chunk(fd, CharBuf.cb[0: CharBuf.capacity], 65536)(v:);
+  scratch := CharBuf.cb[0: CharBuf.capacity]; // slice-local OUT (lint-only: column write outside a query)
+  io.read_chunk(fd, 65536)(scratch, rd_v:);
+    v := CharBuf.cb[0: rd_v];
   pos := 0;
   for (; pos < v.length;) {
     if (v[pos] == 10) {
@@ -17,6 +19,6 @@ main :: proc() {
     }
     pos = pos + 1;
   }
-  io.close(move fd);
+  io.close(move fd)(_:);
   fmt.printf("rows: %d\n", rows);
 }

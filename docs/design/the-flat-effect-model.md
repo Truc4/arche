@@ -215,32 +215,66 @@ always *is* the program's complete, auditable effect surface.
 ### The convenience layer: stdlib procs become funcs→`Eff`
 
 This has a sharp, practical consequence the moment you read the real stdlib. Today `net.recv`,
-`http.respond`, `io.read` are **procs** — convenience wrappers over the true leaves (`net_recv` /
-`net_send` externs; `os.syscall`). Under the ban a func may **not** wrap a proc, so these can't be
-lifted to `Eff` as written: wrapping `http.respond` would be the proc→proc loophole wearing a func
-hat. The fix isn't to keep them procs — it's to rewrite the convenience layer itself as
+`http.respond`, `io.read`, `os.now_ms` are **procs** — convenience wrappers over the true leaves
+(`net_recv` / `net_send` externs; `os.syscall`). Under the ban a func may **not** wrap a proc, so these
+can't be lifted to `Eff` as written: wrapping `http.respond` would be the proc→proc loophole wearing a
+func hat. The fix isn't to keep them procs — it's to rewrite the convenience layer itself as
 **funcs→`Eff`** that wrap the *real* primitive, never another proc. Almost every wrapper is exactly
-that shape: pure shaping around one primitive. The pure shaping rides along in two legal-in-the-value-world ways:
+that shape: a thin builder around one primitive.
 
-- **input-prep** — pure work computing the primitive's arguments (the syscall number, the formatted
-  header bytes);
-- **a result-map (`fmap`)** — a pure function over the primitive's *raw* out-slots (`clamp r<0→0`,
-  `slice buf[0:r]`), carried inside the `Eff` and applied when it runs.
+> **The settled recipe — the lib builds the raw effect; the caller cooks the raw result.** A wrapper
+> is `func(args…) -> Eff(<the primitive's raw out-slots>)` — nothing more. The pure post-processing the
+> old proc did (clamp `r<0`, `slice buf[0:r]`, `ts[0]*1000 + ts[1]/1e6`) does **not** ride inside the
+> `Eff`; it moves to where the result is consumed — a **pure `func`** the caller applies, or a line in
+> the calling **system**. Running the `Eff` and reacting to what came back is the system's job (§5), so
+> the cook belongs there, not hidden in the builder.
 
-Effects that don't depend on each other's results compose **applicatively** (`respond`'s head-send
-then body-send) into one `Eff`. The wrapped leaf is always the genuine primitive, so the spine stays
-depth-1 and no ban is touched. The payoff for the library author: a func is callable from funcs,
-procs, *and* systems freely — so the convenience **stays in the lib** and the caller barely changes
-(same call site; it just supplies the out-slots to run the `Eff` the lib built). A faithful before/after
-of exactly this rewrite on `net`/`io`/`http` is in
-[flat-effect-model-migration-web-server.md](flat-effect-model-migration-web-server.md).
+This is lighter than it first looks, and it needs **no** new machinery — no `Result` type, no generics,
+no result-reshaping `fmap`. Two facts make it collapse:
 
-**The one exception is result-dependent convenience.** A wrapper whose *internal* sequencing is
+- **The result/status is just an out-slot.** A read returns its byte count (or negative errno) as the
+  `Eff`'s out-slot; the caller branches on it. Fallibility is *data in an out-slot*, reacted to in the
+  proc/system — exactly the model's failure-as-data (§7). There is no `Eff(Result(…))` to build and so
+  no generic sum to invent.
+- **The buffer is caller-owned.** Anything the syscall fills through a pointer arg (`read`'s `buf`,
+  `now_ms`'s `[2]i64` timespec) is the **caller's** value, passed in. So the pure cook that reads it
+  back (`buf[0:n]`, the ms arithmetic) is an ordinary `func` over a value the caller holds — never a
+  finalizer that has to reach inside the builder.
+
+Worked shape — `os.now_ms`, which *looks* like it needs post-processing but doesn't need a proc:
+
+```arche
+clock_get :: func(ts: []i64) -> Eff(i64) { return syscall(228, 1, ts, 0,0,0,0); }  // impure build, raw out-slot
+ms_of     :: func(ts: []i64) -> i64 { return ts[0]*1000 + ts[1]/1000000; }          // pure cook over the caller's buffer
+
+// in a system: run, then cook — the run-then-react the proc used to hide
+ts: [2]i64;  clock_get(ts)(_:);  now := ms_of(ts);
+```
+
+`os.argv`, `io.read`, `net.recv`, `os.open` all take this shape: a `func → Eff(raw)` over the primitive
+plus (where any shaping is wanted) a pure `func`, with the calling system doing run-then-cook. Same call
+site cost as today, one or two lines. The wrapped leaf is always the genuine primitive, so the spine
+stays depth-1 and no ban is touched; the convenience that *can* live in the lib (the builder + the pure
+cook func) does, and the part that genuinely belongs in the imperative shell (sequencing the run before
+the cook) sits at the call site where the model already puts it.
+
+(An optional same-shape `|> fin` — fmap a named pure func over a *scalar* raw out-slot, `Eff(int) |>
+neg` — exists and is fine for trivial scalar maps like an `i64(r)` cast. It is **not** required by this
+recipe and deliberately does **not** reshape slots or carry a buffer-cooking finalizer; that work is the
+caller-side pure func above.)
+
+**The one genuine exception is result-dependent convenience.** A wrapper whose *internal* sequencing is
 monadic — `io.fread_line` (read char-by-char until `\n`), a retry loop, a framed "read a length then
 read that many bytes" — cannot be a func/`Eff` (that needs a free monad: continuations, allocation,
-unbounded). Today the honest move is: the lib exposes the *leaf* as a func→`Eff` (`read1 ->
-Eff(char,int)`) and the monadic loop is written in the consuming proc — the cost is the loop isn't
-shared. The principled long-term home is a fourth construct (see §9).
+unbounded). It is the **only** stdlib wrapper that stays a `proc`. Today the honest move is: the lib
+exposes the *leaf* as a func→`Eff` (`read1 -> Eff(char,int)`) and the monadic loop is written in the
+consuming proc/system — the cost is the loop isn't shared. The principled long-term home is a fourth
+construct (see §9).
+
+The per-wrapper conversion recipe — classify a proc, convert it, migrate its call sites — is
+[flat-effect-model-stdlib-migration.md](flat-effect-model-stdlib-migration.md); a whole-program
+before/after on `net`/`io`/`http` is in
+[flat-effect-model-migration-web-server.md](flat-effect-model-migration-web-server.md).
 
 ## 5. The applicative/imperative line (the one subtlety worth memorizing)
 

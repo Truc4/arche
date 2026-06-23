@@ -1,28 +1,30 @@
-listen :: proc(port: int)(s: socket) {
-  net_listen(port)(s);
+listen :: func(port: int) -> Eff(socket) {
+  return net_listen(port);
 }
-accept :: proc(s: socket)(c: socket) {
-  net_accept(s)(c);
-}
-
-connect :: proc(own ip: []char, port: int)(s: socket) {
-  net_connect(move ip, port)(s);
+accept :: func(s: socket) -> Eff(socket) {
+  return net_accept(s);
 }
 
-close :: proc(own s: socket) {
-  net_close(move s);
+connect :: func(own ip: []char, port: int) -> Eff(socket) {
+  return net_connect(move ip, port);
 }
 
-send :: proc(s: socket, data: []char) {
-  net_send(s, _, data.length)(data, _r:);
+// Explicit close → `func → Eff`. The `@drop` is on the `net_close` extern (auto-run at scope exit);
+// closing early consumes `s` (so the auto-drop is suppressed) and the caller runs the Eff:
+// `net.close(move s)()`.
+close :: func(own s: socket) -> Eff() {
+  return net_close(move s);
 }
 
-recv :: proc(s: socket, buf: []char)(out: []char) {
-  net_recv(s, _, buf.length)(buf, r:);
-  if (r < 0) {
-    r = 0;
-  }
-  out = buf[0: r];
+// `send`'s `data` is a read-only IN (the kernel reads the bytes to send): `send(s, data)(_:, n:)`, n =
+// bytes sent. `recv`'s buffer is the caller-allocated OUT (the kernel fills it); `_` is the C-ABI shadow:
+// `recv(s, n)(buf: [N]char, r:); buf[0:r]` — or `(cb, r:)` into an existing/queried buffer.
+send :: func(s: socket, data: []char) -> Eff([]char, int) {
+  return net_send(s, data, data.length);
+}
+
+recv :: func(s: socket, n: int) -> Eff([]char, int) {
+  return net_recv(s, _, n);
 }
 
 #module

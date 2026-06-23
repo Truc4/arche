@@ -167,16 +167,23 @@ static TypeId synth_call(TyCtx *cx, SyntaxView e) {
 	}
 
 	/* BUILD SITE: an extern under-applied in value position (in-args only) BUILDS an Eff value — its
-	 * out-params are the out-slots. Mirrors call_type_id in semantic.c so tycheck agrees on the type. */
-	if (cr->is_extern && cr->kind == DECL_PROC && cr->out_param_count > 0) {
+	 * out-params are the out-slots; a VOID extern (no out-params) builds the empty `Eff()`. Mirrors
+	 * call_type_id in semantic.c so tycheck agrees on the type. */
+	if (cr->is_extern && cr->kind == DECL_PROC) {
 		int oc = cr->out_param_count;
 		TypeId obuf[16];
+		const char *nbuf[16];
 		TypeId *outs = oc > 16 ? malloc((size_t)oc * sizeof(TypeId)) : obuf;
-		for (int i = 0; i < oc; i++)
+		const char **names = oc > 16 ? malloc((size_t)oc * sizeof(const char *)) : nbuf;
+		for (int i = 0; i < oc; i++) {
 			outs[i] = cr->out_params[i].type_id;
-		TypeId r = tyid_of_eff_concrete(cx->arena, name, outs, oc);
+			names[i] = cr->out_params[i].name; /* infer out-slot names from the extern's out-params */
+		}
+		TypeId r = tyid_of_eff_named(cx->arena, name, outs, names, oc);
 		if (outs != obuf)
 			free(outs);
+		if (names != nbuf)
+			free(names);
 		free(name);
 		return r;
 	}
@@ -225,6 +232,25 @@ static TypeId synth(TyCtx *cx, SyntaxView e) {
 	case SN_BINARY_EXPR: {
 		SyntaxView l = sem_node_at_expr(e, 0);
 		SyntaxView r = sem_node_at_expr(e, 1);
+		if (sem_binary_op(e) == OP_FMAP) {
+			/* `eff |> fin` — the result Eff yields the FINALIZER's return types (mirrors binary_type_id in
+			 * semantic.c). The right operand is a func NAME, not a value; resolve it and read its declared
+			 * returns. Without this, tycheck synthesizes the raw left Eff, so a type-changing finalizer
+			 * (`i64 -> i32`) trips a false `return value` mismatch (`Eff(i32)` vs `Eff(i64)`). */
+			TypeId lt = synth(cx, l);
+			if (tyid_kind(cx->arena, lt) != TYK_EFF)
+				return lt;
+			const char *fname = cx->model ? sem_model_ref_name(cx->model, sv_id(r)) : NULL;
+			const DeclSummary *fd = fname ? find_callee(cx->ctx, fname) : NULL;
+			if (fd && fd->return_type_count > 0) {
+				TypeId rbuf[8];
+				int rc = fd->return_type_count > 8 ? 8 : fd->return_type_count;
+				for (int i = 0; i < rc; i++)
+					rbuf[i] = fd->return_type_ids[i];
+				return tyid_of_eff_structural(cx->arena, rbuf, rc);
+			}
+			return lt;
+		}
 		TypeId lt = synth(cx, l);
 		TypeId rt = synth(cx, r);
 		/* A slice/array (an aggregate) is not an arithmetic/comparison operand — `M[i] + 1`, `s == t`.

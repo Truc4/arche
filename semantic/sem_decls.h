@@ -103,6 +103,9 @@ typedef struct {
 	int unit;              /* owning compilation unit: 0 = entry/root program, >0 = a module (UnitInterface.unit_id) */
 	DeclOrigin origin;     /* provenance of the owning unit; DECL_ORIGIN_ENTRY (0) for entry-file decls */
 	int is_drop;
+	int is_syscall; /* `@syscall(N)`: a typed direct syscall — its in/out lists ARE its mutation contract
+	                 * (a plain-in buffer is read-only, the kernel reads it; in-out is written), so it is
+	                 * exempt from the "extern mutates every in-param ⇒ buffers must be `own`" rule. */
 	char *drop_type;
 	char **allow_slugs;
 	int allow_slug_count;

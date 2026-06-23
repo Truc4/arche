@@ -2,6 +2,6 @@
 #import { fmt os }
 main :: proc() {
   buf: [256]char;
-  os.read(0, buf, 256)(n:);
+  os.read(0, 256)(buf, n:);
   fmt.printf("read returned: %d\n", n);
 }

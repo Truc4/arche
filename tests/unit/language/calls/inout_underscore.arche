@@ -14,5 +14,5 @@ fill :: proc(buf: []char, n: int)(buf: []char) {
 main :: proc() {
   b: [4]char;
   fill(_, 4)(b);
-  fmt.print(b);
+  fmt.print(b)(_:);
 }

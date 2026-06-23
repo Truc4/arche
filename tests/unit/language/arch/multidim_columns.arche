@@ -9,5 +9,5 @@ Matrix :: arche { data :: [10][10]float }
 [50]Matrix;
 
 main :: proc() {
-  fmt.print("allocations done\n");
+  fmt.print("allocations done\n")(_:);
 }

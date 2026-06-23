@@ -6,6 +6,6 @@ S :: { "aa", "bb" }
 
 main :: proc() {
   r := S[0];
-  os.write(1, r, r.length);
-  os.write(1, "\n", 1);
+  os.write(1, r, r.length)(_:);
+  os.write(1, "\n", 1)(_:);
 }

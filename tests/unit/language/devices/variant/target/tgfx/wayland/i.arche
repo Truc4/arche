@@ -3,8 +3,8 @@
 // RUN: true
 #import { fmt }
 render :: proc() {
-  fmt.print("tgfx wayland\n")();
+  fmt.print("tgfx wayland\n")(_:);
 }
 wl_only :: proc() {
-  fmt.print("wayland only\n")();
+  fmt.print("wayland only\n")(_:);
 }

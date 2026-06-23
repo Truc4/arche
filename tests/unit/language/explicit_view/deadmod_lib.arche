@@ -8,8 +8,8 @@ make :: proc() {
 }
 #module
 helper :: proc() {
-  fmt.print("reachable private\n");
+  fmt.print("reachable private\n")(_:);
 }
 dead_priv :: proc() {
-  fmt.print("dead private\n");
+  fmt.print("dead private\n")(_:);
 }

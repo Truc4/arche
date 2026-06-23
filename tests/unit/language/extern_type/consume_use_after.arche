@@ -5,7 +5,7 @@
 #import { io }
 main :: proc() {
   io.stdout()(f:);
-  io.fclose(move f);
+  io.fclose(move f)(_:);
   // using f after it was consumed should be an error
-  io.fwrite(f, "x", 1);
+  io.fwrite(f, "x", 1)(_:);
 }

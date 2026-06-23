@@ -1,48 +1,41 @@
 #import { os }
 
-@allow(proc_could_be_func)
-stdin :: proc()(f: fd) {
-  f = fd.stdin;
+stdin :: func() -> fd {
+  return fd.stdin;
 }
-@allow(proc_could_be_func)
-stdout :: proc()(f: fd) {
-  f = fd.stdout;
+stdout :: func() -> fd {
+  return fd.stdout;
 }
-@allow(proc_could_be_func)
-stderr :: proc()(f: fd) {
-  f = fd.stderr;
+stderr :: func() -> fd {
+  return fd.stderr;
 }
 
-fopen_read :: proc(path: []char)(f: fd) {
-  os.syscall(2, path, 0, 0, 0, 0, 0)(r:);
+// `|> clamp_fd` folds the raw i64 open result into an `fd` (errno < 0 clamped to 0). Callers UNCHANGED.
+clamp_fd :: func(r: i64) -> fd {
   if (r < 0) {
-    r = 0;
+    return fd(0);
   }
-  f = fd(r);
+  return fd(r);
 }
-fopen_write :: proc(path: []char)(f: fd) {
-  os.syscall(2, path, 577, 420, 0, 0, 0)(r:);
-  if (r < 0) {
-    r = 0;
-  }
-  f = fd(r);
+fopen_read :: func(path: []char) -> Eff(fd) {
+  return os.sys_open(path, 0, 0) |> clamp_fd; // path is read-only (plain-in); single out-slot → clamp_fd
 }
-fwrite :: proc(f: fd, buf: []char, n: int) {
-  os.syscall(1, f, buf, n, 0, 0, 0)(_w:);
+fopen_write :: func(path: []char) -> Eff(fd) {
+  return os.sys_open(path, 577, 420) |> clamp_fd;
+}
+fwrite :: func(f: fd, buf: []char, n: int) -> Eff(i64) {
+  return os.sys_write(i64(f), buf, n); // buf read-only (the kernel reads it)
 }
 
-fread :: proc(f: fd, buf: []char, n: int)(out: []char) {
-  os.syscall(0, f, buf, n, 0, 0, 0)(rr:);
-  k := i32(rr);
-  if (k < 0) {
-    k = 0;
-  }
-  out = buf[0: k];
+// Buffer-fill reads: the buffer is the caller-allocated OUT (the kernel fills it); `k` is the byte count
+// (negative errno on failure — the caller cooks it). The caller allocates at the out-binding (variable
+// size): `io.fread(f, n)(buf: [256]char, k:); buf[0:k]` — or `(cb, k:)` into an existing/queried buffer.
+fread :: func(f: fd, n: int) -> Eff([]char, i64) {
+  return os.sys_read(i64(f), _, n); // `_` is the C-ABI in-slot; the buffer is the OUT
 }
 
-read :: proc(f: fd, buf: []char)(out: []char) {
-  fread(f, buf, buf.length)(r:);
-  out = r;
+read :: func(f: fd, n: int) -> Eff([]char, i64) {
+  return fread(f, n); // layered over fread — yields (filled buffer, byte count)
 }
 
 fread_line :: proc(f: fd, own buf: []char, n: int)(out: []char) {
@@ -52,7 +45,7 @@ fread_line :: proc(f: fd, own buf: []char, n: int)(out: []char) {
     if (i >= buf.length) {
       break;
     }
-    os.syscall(0, f, ch, 1, 0, 0, 0)(k:);
+    os.sys_read(i64(f), _, 1)(ch, k:); // `_` ABI shadow; the kernel fills the existing `ch` (no `:`)
     if (k <= 0) {
       break;
     }
@@ -70,34 +63,32 @@ fread_line :: proc(f: fd, own buf: []char, n: int)(out: []char) {
   out    = buf[0: i];
 }
 
-fclose :: proc(f: fd) {
-  os.syscall(3, f, 0, 0, 0, 0, 0)(_c:);
+fclose :: func(f: fd) -> Eff(i64) {
+  return os.syscall(3, f, 0, 0, 0, 0, 0);
 }
 
-stdout_write :: proc(buf: []char, n: int) {
-  os.write(1, buf, n);
+stdout_write :: func(buf: []char, n: int) -> Eff(i64) {
+  return os.write(1, buf, n); // layered over os.write (func→Eff) — the fusion recurses to the syscall
 }
-stderr_write :: proc(buf: []char, n: int) {
-  os.write(2, buf, n);
+stderr_write :: func(buf: []char, n: int) -> Eff(i64) {
+  return os.write(2, buf, n);
 }
-stdin_read :: proc(buf: []char, n: int)(out: []char) {
-  os.read(0, buf, n)(r:);
-  out = r;
+stdin_read :: func(n: int) -> Eff([]char, i64) {
+  return os.read(0, n); // layered over os.read — yields (filled buffer, byte count)
 }
 
-open :: proc(own path: []char)(f: fd) {
-  fopen_read(move path)(f);
+open :: func(own path: []char) -> Eff(fd) {
+  return fopen_read(move path); // layered over fopen_read
 }
-close :: proc(f: fd) {
-  fclose(f);
+close :: func(f: fd) -> Eff(i64) {
+  return fclose(f); // layered over fclose (func→Eff)
 }
 skip_header :: proc(f: fd) {
   line: [256]char;
   fread_line(f, move line, 256)(_discard:);
 }
-read_chunk :: proc(f: fd, buf: []char, size: int)(out: []char) {
-  fread(f, buf, size)(r:);
-  out = r;
+read_chunk :: func(f: fd, size: int) -> Eff([]char, i64) {
+  return fread(f, size); // layered over fread — yields (filled buffer, byte count)
 }
 
 file_map :: proc(own path: []char)(data: []char) {
@@ -105,11 +96,11 @@ file_map :: proc(own path: []char)(data: []char) {
   arche_file_size()(n: i64);
   data = raw[0: n];
 }
-file_size :: proc()(n: i64) {
-  arche_file_size()(n);
+file_size :: func() -> Eff(i64) {
+  return arche_file_size();
 }
-file_unmap :: proc(own data: []char, size: i64) {
-  arche_file_unmap(move data, size);
+file_unmap :: func(own data: []char, size: i64) -> Eff() {
+  return arche_file_unmap(move data, size); // void extern → empty Eff()
 }
 
 #module

@@ -12,5 +12,5 @@ wfree :: proc(own w: widget) {
   free_widget(move w)();
 }
 main :: proc() {
-  fmt.print("ok\n");
+  fmt.print("ok\n")(_:);
 }

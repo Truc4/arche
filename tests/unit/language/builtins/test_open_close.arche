@@ -3,7 +3,7 @@
 main :: proc() {
   os.open("/dev/null", 0)(fd:);
   if (fd >= 0) {
-    os.close(move fd);
+    os.close(move fd)(_:);
     fmt.printf("open/close ok\n");
   }
 }

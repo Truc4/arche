@@ -8,7 +8,9 @@ CharBuf :: arche { cb }
 main :: proc() {
   io.open("tests/fixtures/data.csv")(fd:);
   if (fd > 0) {
-    io.read_chunk(fd, CharBuf.cb[0: CharBuf.capacity], 65536)(v:);
+    scratch := CharBuf.cb[0: CharBuf.capacity]; // slice-local OUT (lint-only: column write outside a query)
+    io.read_chunk(fd, 65536)(scratch, rd_v:);
+    v := CharBuf.cb[0: rd_v];
     // RAII: `fd` is auto-dropped (io.close) at scope exit on every path — no explicit close.
     // An explicit close only in this `then` branch would be a 'some paths' consumption error.
     if (v.length > 0) {

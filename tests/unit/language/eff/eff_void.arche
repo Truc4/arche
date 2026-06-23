@@ -1,0 +1,19 @@
+// FEATURE (empty Eff): a VOID extern (no out-slots) builds the empty `Eff()` in value position — the
+// value-less effect — and runs with a bare `()` out-list (no phantom `_` to discard). `eff_flag` (void)
+// flips a flag; reading it back proves the Eff actually RAN, not merely built. r == 1.
+// RUN: %arche build -o %t --link %S/runtime/effshim.c %s && %t | grep -qF "r=1"
+#foreign {
+  eff_flag    :: proc();
+  eff_flagged :: proc()(r: int);
+}
+#import { fmt }
+
+raise :: func() -> Eff() {
+  return eff_flag(); // a void extern under-applies to the empty Eff()
+}
+
+main :: proc() {
+  raise()(); // run the empty Eff with a bare () — no out-slots to bind
+  eff_flagged()(r:);
+  fmt.printf("r=%d\n", r);
+}

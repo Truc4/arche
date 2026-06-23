@@ -12,5 +12,5 @@ main :: proc() {
     }
   }
   fmt.printf("size=%ld commas=%ld\n", size, commas);
-  io.file_unmap(move data, size);
+  io.file_unmap(move data, size)();
 }

@@ -1,0 +1,22 @@
+// The no-`:` form: bind the kernel-written OUT to an EXISTING buffer (a pre-declared `ts`), as opposed to
+// `eff_out_alloc_buffer` which ALLOCATES at the out-binding with `:`. The in-list `_` is the C-ABI shadow.
+// (Own extern name `sys_clk` so it doesn't collide with os's `sys_clock`.)
+// RUN: %arche build -o %t %s && %t | grep -qF "ok ms>0"
+#import { fmt }
+
+#foreign {
+  @syscall(228)
+  sys_clk :: proc(clk: i64, ts: [2]i64)(ts: [2]i64, r: i64);
+}
+
+clock_mono :: func() -> Eff([2]i64, i64) {
+  return sys_clk(1, _); // `_` is the ABI in-slot; the timespec is the OUT
+}
+
+main :: proc() {
+  ts: [2]i64;
+  clock_mono()(ts, _:); // no `:` — bind the kernel-written OUT to the EXISTING `ts`
+  ms := ts[0] * 1000 + ts[1] / 1000000;
+  fmt.assert(ms > 0, "monotonic clock should be positive\n");
+  fmt.printf("ok ms>0\n");
+}

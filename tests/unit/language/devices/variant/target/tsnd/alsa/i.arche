@@ -2,5 +2,5 @@
 // RUN: true
 #import { fmt }
 beep :: proc() {
-  fmt.print("tsnd alsa\n")();
+  fmt.print("tsnd alsa\n")(_:);
 }

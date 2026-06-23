@@ -5,5 +5,5 @@ main :: proc() {
   insert(Counter { value: 0 })(_:, _:);
   x := 10;
   y := 20;
-  fmt.print("counter allocated\n");
+  fmt.print("counter allocated\n")(_:);
 }

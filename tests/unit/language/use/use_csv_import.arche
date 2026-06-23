@@ -8,7 +8,9 @@ CharBuf :: arche { cb }
 main :: proc() {
   io.open("tests/fixtures/data.csv")(fd:);
   if (fd) {
-    io.read_chunk(fd, CharBuf.cb[0: CharBuf.capacity], 65536)(_v:);
+    scratch := CharBuf.cb[0: CharBuf.capacity]; // slice-local OUT (lint-only: column write outside a query)
+    io.read_chunk(fd, 65536)(scratch, rd__v:);
+    _v := CharBuf.cb[0: rd__v];
   }
-  io.close(move fd);
+  io.close(move fd)(_:);
 }

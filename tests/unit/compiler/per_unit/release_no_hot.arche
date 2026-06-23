@@ -6,5 +6,5 @@
 // RUN: ! grep -q arche_hot_resolve %t.ll
 #import { fmt }
 main :: proc() {
-  fmt.print("ok\n")();
+  fmt.print("ok\n")(_:);
 }

@@ -12,11 +12,11 @@
 // RUN: %arche build --target windows -o %t %s && %t | grep "os=windows sep=. null=NUL"
 #import { platform os }
 main :: proc() {
-  os.write(1, "os=", 3);
-  os.write(1, platform.name, platform.name.length);
-  os.write(1, " sep=", 5);
-  os.write(1, platform.sep, platform.sep.length);
-  os.write(1, " null=", 6);
-  os.write(1, platform.null_device, platform.null_device.length);
-  os.write(1, "\n", 1);
+  os.write(1, "os=", 3)(_:);
+  os.write(1, platform.name, platform.name.length)(_:);
+  os.write(1, " sep=", 5)(_:);
+  os.write(1, platform.sep, platform.sep.length)(_:);
+  os.write(1, " null=", 6)(_:);
+  os.write(1, platform.null_device, platform.null_device.length)(_:);
+  os.write(1, "\n", 1)(_:);
 }

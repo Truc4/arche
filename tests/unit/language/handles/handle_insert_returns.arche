@@ -6,5 +6,5 @@ Player :: arche { pos :: float }
 
 main :: proc() {
   insert(Player { pos: 1.0 })(h:, _:);
-  fmt.print("slot 0 handle created");
+  fmt.print("slot 0 handle created")(_:);
 }

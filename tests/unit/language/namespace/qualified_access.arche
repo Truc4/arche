@@ -7,8 +7,8 @@
 main :: proc() {
   io.fopen_read("/dev/null")(fd:);
   buf: [16]char;
-  io.fread(fd, buf, 16)(buf, _n:);
-  io.fclose(move fd);
+  io.fread(fd, 16)(buf, _n:);
+  io.fclose(move fd)(_:);
   os.os_now_sec()(_t:); // extern module, qualified
   fmt.printf("ns ok\n"); // core builtin, bare — unaffected by the namespace rule
 }

@@ -1,0 +1,22 @@
+// The CORRECT model: a kernel-written buffer is the caller-allocated OUT param. `clock_mono` takes no
+// buffer param and passes `_` (the C-ABI in-slot shadow); the caller allocates the timespec at the
+// out-binding with `:` (`ts: [2]i64`). The in-param can't supply the allocation — the out param does.
+// Exercises: func→Eff with a `_` shadow, run-site OUT allocation, and the `[]i64` (non-char) ptrtoint path.
+// RUN: %arche build -o %t %s && %t | grep -qF "ok ms>0"
+#import { fmt }
+
+#foreign {
+  @syscall(228)
+  sys_clock :: proc(clk: i64, ts: [2]i64)(ts: [2]i64, r: i64); // ts in-out, SIZED so `ts:` infers the type
+}
+
+clock_mono :: func(clk: i64) -> Eff([2]i64, i64) {
+  return sys_clock(clk, _); // `_` is the ABI in-slot; the timespec is the caller-allocated OUT
+}
+
+main :: proc() {
+  clock_mono(1)(ts:, _:); // `ts:` ALLOCATES the timespec caller-side (type inferred from the extern)
+  ms := ts[0] * 1000 + ts[1] / 1000000;
+  fmt.assert(ms > 0, "monotonic clock should be positive\n");
+  fmt.printf("ok ms>0\n");
+}

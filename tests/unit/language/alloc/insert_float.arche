@@ -7,5 +7,5 @@ FloatOps :: arche { val :: float }
 main :: proc() {
   insert(FloatOps { val: 1.0 })(_:, _:);
   insert(FloatOps { val: 2.0 })(_:, _:);
-  fmt.print("done\n");
+  fmt.print("done\n")(_:);
 }

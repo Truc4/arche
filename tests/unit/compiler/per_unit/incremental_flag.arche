@@ -5,5 +5,5 @@
 // RUN: %t | grep -qF "flag_ok"
 #import { fmt }
 main :: proc() {
-  fmt.print("flag_ok\n")();
+  fmt.print("flag_ok\n")(_:);
 }

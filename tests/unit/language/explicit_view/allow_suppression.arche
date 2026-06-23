@@ -9,5 +9,5 @@ quiet :: proc() {
 loud :: proc() {
 }
 main :: proc() {
-  fmt.print("hi");
+  fmt.print("hi")(_:);
 }

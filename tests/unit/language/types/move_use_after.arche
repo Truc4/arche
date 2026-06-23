@@ -6,6 +6,6 @@
 #import { io }
 main :: proc() {
   io.stdout()(f:);
-  io.fwrite(move f, "x", 1);
-  io.fwrite(f, "y", 1);
+  io.fwrite(move f, "x", 1)(_:);
+  io.fwrite(f, "y", 1)(_:);
 }

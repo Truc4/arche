@@ -4,8 +4,8 @@
 // RUN: true
 #import { fmt }
 open_window :: proc() {
-  fmt.print("x11 window\n")();
+  fmt.print("x11 window\n")(_:);
 }
 x11_only :: proc() {
-  fmt.print("x11 only\n")();
+  fmt.print("x11 only\n")(_:);
 }

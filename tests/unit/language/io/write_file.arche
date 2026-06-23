@@ -2,6 +2,6 @@
 #import { io }
 main :: proc() {
   io.fopen_write("/tmp/test_output.txt")(fd:);
-  io.fwrite(fd, "hello world\n", 12);
-  io.fclose(move fd);
+  io.fwrite(fd, "hello world\n", 12)(_:);
+  io.fclose(move fd)(_:);
 }

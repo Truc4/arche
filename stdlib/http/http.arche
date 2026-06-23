@@ -106,9 +106,9 @@ respond :: proc(
     ctype,
     body.length,
   )(hdr, n:);
-  net.send(conn, hdr[0: n]);
+  net.send(conn, hdr[0: n])(_:, _:);
   if (send_body) {
-    net.send(conn, body);
+    net.send(conn, body)(_:, _:);
   }
 }
 

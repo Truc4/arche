@@ -1,0 +1,20 @@
+// REGRESSION: a func→Eff that wraps a typed `@syscall(N)` extern with a STRING/BUFFER arg must decay the
+// pointer with `ptrtoint` into the syscall slot — NOT `sext` it (which mis-typed the pointer as i32 and
+// produced invalid IR: "'%v' defined with type 'ptr' but expected 'i32'"). The build-func fusion
+// substitutes the literal buffer arg directly, and the syscall arg coercion only `ptrtoint`-ed NAME-bound
+// buffers; this pins the string-literal case. Buffers must go through a typed `@syscall` extern (the
+// generic scalar `syscall` rejects them — see syscall_buffer_rejected).
+// RUN: %arche build -o %t %s && %t | grep -qF "hi"
+#foreign {
+  @syscall(1)
+  sys_write :: proc(fd: i64, buf: []char, n: i64)(r: i64); // buf plain-in (the kernel reads it)
+}
+
+// under-applies the write syscall (fd 1 = stdout); `buf` is a []char threaded into the syscall slot.
+write_line :: func(buf: []char, n: int) -> Eff(i64) {
+  return sys_write(1, buf, n);
+}
+
+main :: proc() {
+  write_line("hi\n", 3)(_:); // run the Eff: ptrtoint the literal, not sext
+}

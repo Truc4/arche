@@ -9,8 +9,9 @@ Transaction :: arche { price :: float, quantity :: int }
 main :: proc() {
   os.open("../../../../../tests/fixtures/transactions.csv", 0)(fd:);
   buf: [256]char;
-  os.read(fd, buf, 256)(data:);
-  os.close(move fd);
+  os.read(fd, 256)(buf, rd_data:);
+  data := buf[0: rd_data];
+  os.close(move fd)(_:);
   fmt.printf("data.length=%d\n", data.length);
   idx        := 0;
   pos        := 0;

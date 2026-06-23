@@ -11,5 +11,5 @@ Counter :: arche { val }
 }
 
 main :: proc() {
-  fmt.print("ok\n");
+  fmt.print("ok\n")(_:);
 }

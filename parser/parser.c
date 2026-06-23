@@ -1252,6 +1252,29 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser); /* consume ')' */
 			continue;
 		}
+		if (cur_ident_is(parser, "syscall", 7)) {
+			/* `@syscall(N)` decl decorator — marks a `#foreign` proc as a typed direct syscall number N.
+			 * Calls emit the raw syscall asm with the proc's in-params as args (buffers ptrtoint'd); a
+			 * buffer the kernel writes is declared in-out (same name in the out-list), so the write is
+			 * honest rather than scribbling through a read-only borrow. N is read by a token scan in lower. */
+			advance(parser); /* consume 'syscall' */
+			if (!check(parser, TOK_LPAREN)) {
+				error(parser, "Expected '(' after @syscall — give the syscall number, e.g. @syscall(0)");
+				return 0;
+			}
+			advance(parser); /* consume '(' */
+			if (!check(parser, TOK_NUMBER)) {
+				error(parser, "Expected a syscall number inside @syscall(...)");
+				return 0;
+			}
+			advance(parser); /* consume the number */
+			if (!check(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')' to close @syscall(...)");
+				return 0;
+			}
+			advance(parser); /* consume ')' */
+			continue;
+		}
 		if (cur_ident_is(parser, "allow", 5)) {
 			advance(parser);
 			if (!check(parser, TOK_LPAREN)) {

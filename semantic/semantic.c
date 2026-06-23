@@ -2115,18 +2115,24 @@ static TypeId call_type_id(SemanticContext *ctx, SyntaxView v) {
 				} else {
 					/* BUILD SITE: an extern under-applied in VALUE position (its in-args, no out-slots) builds
 					 * an Eff value — the out-slots are the extern's out-params, and the concrete extern identity
-					 * rides in the type for the run-site fusion. Only an extern is inert under-applied (a proc →
-					 * E0221, emitted in analyze_expression). */
+					 * rides in the type for the run-site fusion. A VOID extern (no out-params) builds the empty
+					 * `Eff()`. Only an extern is inert under-applied (a proc → E0221, emitted in analyze_expression). */
 					DeclSummary *ps = find_proc_sig(ctx, func_name);
-					if (ps && ps->is_extern && ps->out_param_count > 0) {
+					if (ps && ps->is_extern) {
 						int oc = ps->out_param_count;
 						TypeId obuf[16];
+						const char *nbuf[16];
 						TypeId *outs = oc > 16 ? malloc((size_t)oc * sizeof(TypeId)) : obuf;
-						for (int i = 0; i < oc; i++)
+						const char **names = oc > 16 ? malloc((size_t)oc * sizeof(const char *)) : nbuf;
+						for (int i = 0; i < oc; i++) {
 							outs[i] = ps->out_params[i].type_id;
-						result = tyid_of_eff_concrete(ctx->ty_arena, func_name, outs, oc);
+							names[i] = ps->out_params[i].name; /* INFER the out-slot names from the extern's out-params */
+						}
+						result = tyid_of_eff_named(ctx->ty_arena, func_name, outs, names, oc);
 						if (outs != obuf)
 							free(outs);
+						if (names != nbuf)
+							free(names);
 					}
 				}
 			}
@@ -2473,16 +2479,14 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 				ParamSummary *params = cs->params;
 				int is_extern = cs->is_extern;
 				int is_proc = cs->kind == DECL_PROC;
-				/* value/action boundary. An action (proc/extern) is not a value — UNLESS it is an extern
-				 * under-applied by its out-slots, which BUILDS an Eff (the one legal action-as-value, §3).
-				 * So: an extern WITH out-slots in value position is a legal Eff build (no diagnostic); a
-				 * (non-extern) proc in value position is E0221 (only an extern is inert under-applied); a
-				 * zero-out extern has nothing to yield, so it stays an action-in-expression (E0050). */
+				/* value/action boundary. An action (proc/extern) is not a value — UNLESS it is an EXTERN, which
+				 * BUILDS an Eff in value position (the one legal action-as-value, §3): an extern with out-slots
+				 * under-applies to `Eff(out…)`, and a VOID extern (no out-slots) builds the empty `Eff()` — a
+				 * value-less effect run with a bare `()`. A (non-extern) proc in value position is E0221 (only an
+				 * extern is inert under-applied; a proc minus its out-slots is a suspended computation). */
 				if ((is_proc || is_extern) && !call_stmt_ok) {
-					if (is_extern && cs->out_param_count > 0)
-						; /* under-applied extern (has out-slots) → builds an Eff value (legal) */
-					else if (is_extern)
-						sem_emit_action_in_expression(ctx, loc, "extern", func_name);
+					if (is_extern)
+						; /* extern in value position → builds an Eff value (Eff(out…), or Eff() if void) */
 					else
 						sem_emit_proc_under_applied(ctx, loc, func_name);
 				}
@@ -3347,6 +3351,7 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		MbTarget *mbt = NULL;
 		int mbt_count = sem_read_mb_targets(ctx, v, &mbt);
 		DeclSummary *mb_callee_proc = NULL;
+		DeclSummary *mb_callee_func = NULL;
 		SyntaxView mb_value = {NULL, v.src};
 		/* the value is the sole call/expr child */
 		for (int i = 0; i < v.node->child_count; i++)
@@ -3372,6 +3377,8 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 			const char *cn = ctx->model ? sem_model_callee_name(ctx->model, sv_id(mb_value)) : NULL;
 			char *cnf = cn ? sem_dupz(cn) : sem_cv_dup(sv_child(mb_value, SN_CALLEE_NAME));
 			mb_callee_proc = find_proc_sig(ctx, cnf);
+			if (!mb_callee_proc)
+				mb_callee_func = find_func_sig(ctx, cnf); /* multi-bind from a func runs its returns into the targets */
 			if (cnf && strcmp(cnf, "insert") == 0)
 				mb_builtin = "insert";
 			else if (cnf && strcmp(cnf, "delete") == 0)
@@ -3434,8 +3441,13 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 			TypeId bind_type = t->type_id;
 			if (bind_type == TYID_UNKNOWN && mb_callee_proc && i < mb_callee_proc->out_param_count)
 				bind_type = mb_callee_proc->out_params[i].type_id;
+			/* Running an Eff binds its OUT-SLOTS — this MUST precede the plain-func-return case below, because a
+			 * func→Eff's declared return IS the `Eff(out…)` type; running it (`listen(p)(s:)`) yields the
+			 * out-slot (`socket`), not the Eff value. (A plain multi-return func has no Eff, so it falls through.) */
 			if (bind_type == TYID_UNKNOWN && mb_eff != TYID_UNKNOWN && i < mb_eff_oc)
-				bind_type = tyid_eff_out_at(ctx->ty_arena, mb_eff, i); /* run an Eff: out-arg = out-slot type */
+				bind_type = tyid_eff_out_at(ctx->ty_arena, mb_eff, i);
+			if (bind_type == TYID_UNKNOWN && mb_callee_func && i < mb_callee_func->return_type_count)
+				bind_type = mb_callee_func->return_type_ids[i]; /* func return slot → target type (keeps nominal id) */
 			/* mandatory-ok builtins: insert → (handle, int), delete → (int). */
 			int is_handle_slot = 0;
 			if (bind_type == TYID_UNKNOWN && mb_builtin) {
@@ -4467,7 +4479,21 @@ static int name_is_proc_typed_param(SemanticContext *ctx, DeclSummary *proc, con
 /* Run the proc-could-be-func and proc-no-effect lints on a non-extern proc. */
 /* A proc "could be a func" iff its body would pass func-purity — the SAME predicate
  * `enforce_func_purity` uses — so the lint and the hard error agree on what "pure" means. */
-static const char *func_purity_body_view(SemanticContext *ctx, SyntaxView declnode);
+static const char *func_purity_body_view(SemanticContext *ctx, SyntaxView declnode, DeclSummary *owner);
+
+/* A name that is the checked decl's own PARAMETER is a local binding, not a global — even when a
+ * program-level mutable global of the same name exists (the param shadows it). The purity walk is
+ * syntactic (name-string based), so without this an `os.write(…, buf, …)` param `buf` is misread as a
+ * read of a program's global `buf`. (Locals introduced in the body are not handled here — params are
+ * the shape that bites the func→Eff stdlib wrappers.) */
+static int name_is_owner_param(DeclSummary *owner, const char *nm) {
+	if (!owner || !nm)
+		return 0;
+	for (int i = 0; i < owner->param_count; i++)
+		if (owner->params[i].name && strcmp(owner->params[i].name, nm) == 0)
+			return 1;
+	return 0;
+}
 
 static void lint_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 	if (!proc || proc->is_extern)
@@ -4491,7 +4517,7 @@ static void lint_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 			return;
 
 	/* A proc whose body has effects is legitimately a proc — nothing to lint. */
-	if (func_purity_body_view(ctx, proc->body_node) != NULL)
+	if (func_purity_body_view(ctx, proc->body_node, proc) != NULL)
 		return;
 
 	/* Pure body. `main` is the entry point: it can't be removed and can't be a func, and an empty/
@@ -4543,13 +4569,40 @@ static const char *func_call_effect_reason(SemanticContext *ctx, const char *nam
  * subtree rooted at `v` (a statement or expression view), or NULL if pure. Mirrors the old AST
  * walker: a `run`, an effectful call, or a read/write of archetype/global state is an effect. A
  * func's only inputs are its params + `::` constants, so any static/global touch makes it impure. */
-static const char *purity_walk(SemanticContext *ctx, SyntaxView v) {
+static const char *purity_walk(SemanticContext *ctx, SyntaxView v, DeclSummary *owner) {
 	if (!sv_present(v))
 		return NULL;
 	const char *r;
 	SyntaxNodeKind k = sv_kind(v);
 	if (k == SN_RUN_STMT)
 		return "runs a map (`run`)";
+	if (k == SN_PROC_CALL_STMT) {
+		/* The out-list form `f(in)(out:)` RUNS f. Running an extern, a proc, or an archetype-mutating
+		 * builtin is an effect — even though the inner call node is typed TYK_EFF (building the effect is
+		 * pure; running it via the out-list is not), so the SN_CALL_EXPR branch's `!= TYK_EFF` guard skips
+		 * it. Flag the run here from the callee. A run of a pure func (multi-bind) stays pure. */
+		SyntaxView inner = {NULL, v.src};
+		for (int i = 0; i < v.node->child_count; i++)
+			if (v.node->children[i].tag == SE_NODE && v.node->children[i].as.node->kind == SN_CALL_EXPR) {
+				inner = (SyntaxView){v.node->children[i].as.node, v.src};
+				break;
+			}
+		if (sv_present(inner)) {
+			/* Running an Eff (the out-list supplies its out-slots) is an effect regardless of how the Eff
+			 * was built — a func that under-applies an extern returns an Eff, and running THAT is impure even
+			 * though the build func is pure. (A multi-bind from a plain-valued func stays pure: not TYK_EFF.) */
+			if (tyid_kind(ctx->ty_arena, call_type_id(ctx, inner)) == TYK_EFF)
+				return "runs an effect (an Eff value)";
+			const char *cn = ctx->model ? sem_model_callee_name(ctx->model, sv_id(inner)) : NULL;
+			char *fb = (!cn && sv_count(inner, SN_FIELD_NAME) == 0) ? sem_cv_dup(sv_child(inner, SN_CALLEE_NAME)) : NULL;
+			const char *name = cn ? cn : fb;
+			if (name && (r = func_call_effect_reason(ctx, name))) {
+				free(fb);
+				return r;
+			}
+			free(fb);
+		}
+	}
 	if (k == SN_CALL_EXPR) {
 		/* An under-applied extern in value position BUILDS an Eff — a pure value, not an effect run. A
 		 * func MAY build effects (it just can't run them), so an Eff-typed call is pure; we still recurse
@@ -4568,17 +4621,19 @@ static const char *purity_walk(SemanticContext *ctx, SyntaxView v) {
 	} else if (k == SN_ASSIGN_STMT) {
 		char *tn = sv_resolved_name(ctx, sem_node_at_expr(v, 0));
 		const char *rr = NULL;
-		if (tn && find_archetype(ctx, tn))
-			rr = "writes static memory (an archetype column)";
-		else if (tn && is_static_name(ctx, tn))
-			rr = "writes a mutable global";
+		if (tn && !name_is_owner_param(owner, tn)) {
+			if (find_archetype(ctx, tn))
+				rr = "writes static memory (an archetype column)";
+			else if (is_static_name(ctx, tn))
+				rr = "writes a mutable global";
+		}
 		free(tn);
 		if (rr)
 			return rr;
 	} else if (k == SN_NAME_EXPR || k == SN_FIELD_EXPR || k == SN_INDEX_EXPR || k == SN_SLICE_EXPR) {
 		char *nm = sv_resolved_name(ctx, v);
 		const char *rr = NULL;
-		if (nm) {
+		if (nm && !name_is_owner_param(owner, nm)) {
 			if (find_archetype(ctx, nm))
 				rr = "reads static memory (an archetype column)";
 			else if (is_static_name(ctx, nm) && !name_is_const_static_array(ctx, nm))
@@ -4590,16 +4645,16 @@ static const char *purity_walk(SemanticContext *ctx, SyntaxView v) {
 	}
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE)
-			if ((r = purity_walk(ctx, (SyntaxView){v.node->children[i].as.node, v.src})))
+			if ((r = purity_walk(ctx, (SyntaxView){v.node->children[i].as.node, v.src}, owner)))
 				return r;
 	return NULL;
 }
 
 /* Pure iff every statement in the decl's body (its `node` view) is pure. */
-static const char *func_purity_body_view(SemanticContext *ctx, SyntaxView declnode) {
+static const char *func_purity_body_view(SemanticContext *ctx, SyntaxView declnode, DeclSummary *owner) {
 	const char *r;
 	for (int i = 0, n = sem_stmt_count(declnode); i < n; i++)
-		if ((r = purity_walk(ctx, sem_stmt_at(declnode, i))))
+		if ((r = purity_walk(ctx, sem_stmt_at(declnode, i), owner)))
 			return r;
 	return NULL;
 }
@@ -4609,7 +4664,7 @@ static const char *func_purity_body_view(SemanticContext *ctx, SyntaxView declno
 static void enforce_func_purity(SemanticContext *ctx, DeclSummary *func) {
 	if (!func || func->is_extern || func->is_policy)
 		return; /* a policy is a macro, not a pure func — it may mutate operands and call `exit()` */
-	const char *reason = func_purity_body_view(ctx, func->body_node);
+	const char *reason = func_purity_body_view(ctx, func->body_node, func);
 	if (reason) {
 		sem_emit_func_not_pure(ctx, func->loc, func->name ? func->name : "<unknown>", reason);
 	}
@@ -6198,7 +6253,8 @@ static void analyze_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 			/* An extern is assumed to mutate every in-param (no body to verify). A mutated borrow
 			 * breaks the read-only contract, so a by-ref array in-param must be `own` — UNLESS an
 			 * out-param shadows it (in-out), in which case the write targets the out place. */
-			if (type_is_byref_aggregate(ctx->ty_arena, p->type_id) && !p->is_own && !proc_param_is_inout(proc, i)) {
+			if (type_is_byref_aggregate(ctx->ty_arena, p->type_id) && !p->is_own && !proc_param_is_inout(proc, i) &&
+			    !proc->is_syscall) {
 				sem_emit_extern_array_param_needs_own(ctx, p->loc, p->name ? p->name : "?", proc->name);
 			}
 			/* `consume` is valid on any param type (consume consumes — not opaque-special). */
@@ -7173,6 +7229,23 @@ static int syntax_has_drop_decorator(SyntaxView d) {
 		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
 			continue;
 		if (e2->as.token.length == 4 && memcmp(d.src + e2->as.token.offset, "drop", 4) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/* `@syscall(N)` present on the decl? (the number itself is codegen's concern; semantic only needs to know
+ * a proc is a typed syscall so its in/out lists govern buffer mutability — see analyze_proc_decl.) */
+static int syntax_has_syscall_decorator(SyntaxView d) {
+	int n = d.node->child_count;
+	for (int i = 0; i + 1 < n; i++) {
+		const SyntaxElem *e1 = &d.node->children[i];
+		if (e1->tag != SE_TOKEN || e1->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *e2 = &d.node->children[i + 1];
+		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
+			continue;
+		if (e2->as.token.length == 7 && memcmp(d.src + e2->as.token.offset, "syscall", 7) == 0)
 			return 1;
 	}
 	return 0;
@@ -9317,6 +9390,7 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 	ds->body_node = sem_decl_body_node(dv);
 	syntax_extract_allow_slugs(dv, &ds->allow_slugs, &ds->allow_slug_count);
 	ds->is_drop = syntax_has_drop_decorator(dv);
+	ds->is_syscall = syntax_has_syscall_decorator(dv);
 	ds->drop_type = syntax_drop_type(dv);
 	ds->is_transparent = syntax_const_alias_marked(dv);
 	int decorated = sem_decl_is_decorated(dv.node);
@@ -9527,6 +9601,7 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 		ds->name = sem_txt_dup(sv_token(dv, TOK_IDENT));
 		syntax_extract_allow_slugs(dv, &ds->allow_slugs, &ds->allow_slug_count);
 		ds->is_drop = syntax_has_drop_decorator(dv);
+		ds->is_syscall = syntax_has_syscall_decorator(dv);
 		ds->drop_type = syntax_drop_type(dv);
 		return ds;
 	}
@@ -9539,6 +9614,7 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 		ds->body_node = sem_decl_body_node(dv);
 		syntax_extract_allow_slugs(dv, &ds->allow_slugs, &ds->allow_slug_count);
 		ds->is_drop = syntax_has_drop_decorator(dv);
+		ds->is_syscall = syntax_has_syscall_decorator(dv);
 		ds->drop_type = syntax_drop_type(dv);
 		if (sv_has_token(dv, TOK_LBRACKET)) {
 			/* pool `Name[C](N){V}` — archetype name = dotted IDENT head before `[`; field values are
@@ -9686,6 +9762,7 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 	ds->name = bn.ptr ? sem_txt_dup(bn) : NULL;
 	syntax_extract_allow_slugs(dv, &ds->allow_slugs, &ds->allow_slug_count);
 	ds->is_drop = syntax_has_drop_decorator(dv);
+	ds->is_syscall = syntax_has_syscall_decorator(dv);
 	ds->drop_type = syntax_drop_type(dv);
 	if (kind == DECL_FUNC_GROUP) {
 		int nmem = 0;

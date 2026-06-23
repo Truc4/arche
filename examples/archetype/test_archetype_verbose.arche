@@ -18,7 +18,7 @@ seed :: system {
 }
 
 verify :: system {
-  fmt.print("simulation completed\n");
+  fmt.print("simulation completed\n")(_:);
 }
 
 #run seq({ seed, integrate, dampen, verify })

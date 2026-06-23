@@ -5,5 +5,5 @@ Tensor :: arche { data :: [5][5]float }
 [5]Tensor;
 
 main :: proc() {
-  fmt.print("allocations done\n");
+  fmt.print("allocations done\n")(_:);
 }

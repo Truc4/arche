@@ -50,6 +50,10 @@ typedef struct {
 			const char *extern_name; /* interned; the under-applied extern's name, or NULL for a structural
 			                          * annotation `Eff(T…)` matched only on out-slots */
 			TypeId *out_slots;       /* [out_slot_count] — the types yielded when run */
+			const char **out_slot_names; /* [out_slot_count] — interned NAME per out-slot (a named parameter,
+			                              * not an anonymous return); NULL entry = unnamed. The names are
+			                              * intrinsic to the Eff (declarable as `Eff(buf: T, …)` or inferred
+			                              * from the constructing extern's out-params). */
 			int out_slot_count;
 		} eff;
 		struct {
@@ -102,6 +106,7 @@ void ty_arena_free(TypeArena *a) {
 			free(n->data.func.returns);
 		} else if (n->kind == TYK_EFF) {
 			free(n->data.eff.out_slots);
+			free(n->data.eff.out_slot_names); /* the name strings are interned (arena-owned); free only the array */
 		}
 	}
 	free(a->nodes);
@@ -360,8 +365,18 @@ TypeId tyid_of_handle(TypeArena *a, const char *archetype_name) {
 /* Hash-cons an Eff node. Keyed on (extern_name, out_slots) so a structural `Eff(int,int)` (extern_name
  * NULL) and a concrete `Eff#fwrite(int,int)` are DISTINCT ids — the run site uses the concrete extern,
  * while a func's declared `-> Eff(int,int)` annotation is the structural one (checked on out-slots only). */
-static TypeId intern_eff(TypeArena *a, const char *extern_name, const TypeId *out_slots, int out_slot_count) {
+static TypeId intern_eff(TypeArena *a, const char *extern_name, const TypeId *out_slots, const char *const *names,
+                         int out_slot_count) {
 	const char *interned = extern_name ? intern_str(a, extern_name) : NULL;
+	/* Intern each name up front so the hash-cons key and storage use pointer identity. */
+	const char *iname[64];
+	int has_name = 0;
+	for (int j = 0; j < out_slot_count; j++) {
+		const char *nm = (names && j < out_slot_count) ? names[j] : NULL;
+		iname[j < 64 ? j : 63] = nm ? intern_str(a, nm) : NULL;
+		if (nm)
+			has_name = 1;
+	}
 	for (int i = 1; i < a->node_count; i++) {
 		TypeNode *n = &a->nodes[i];
 		if (n->kind != TYK_EFF || n->data.eff.extern_name != interned || n->data.eff.out_slot_count != out_slot_count)
@@ -370,6 +385,14 @@ static TypeId intern_eff(TypeArena *a, const char *extern_name, const TypeId *ou
 		for (int j = 0; j < out_slot_count && eq; j++)
 			if (n->data.eff.out_slots[j] != out_slots[j])
 				eq = 0;
+		/* Names are part of the carried identity: two Effs with the same slot TYPES but different slot
+		 * NAMES are distinct nodes (each carries its own names). Assignability ignores names (see
+		 * tyid_assignable), so this does not affect structural compatibility. */
+		for (int j = 0; j < out_slot_count && eq && j < 64; j++) {
+			const char *en = n->data.eff.out_slot_names ? n->data.eff.out_slot_names[j] : NULL;
+			if (en != iname[j])
+				eq = 0;
+		}
 		if (eq)
 			return (TypeId)i;
 	}
@@ -380,14 +403,33 @@ static TypeId intern_eff(TypeArena *a, const char *extern_name, const TypeId *ou
 	node.data.eff.out_slots = malloc((out_slot_count ? out_slot_count : 1) * sizeof(TypeId));
 	if (out_slot_count)
 		memcpy(node.data.eff.out_slots, out_slots, out_slot_count * sizeof(TypeId));
+	node.data.eff.out_slot_names = NULL;
+	if (has_name) {
+		node.data.eff.out_slot_names = malloc((out_slot_count ? out_slot_count : 1) * sizeof(const char *));
+		for (int j = 0; j < out_slot_count; j++)
+			node.data.eff.out_slot_names[j] = (j < 64) ? iname[j] : NULL;
+	}
 	return push_node(a, node);
 }
 
 TypeId tyid_of_eff_structural(TypeArena *a, const TypeId *out_slots, int out_slot_count) {
-	return intern_eff(a, NULL, out_slots, out_slot_count);
+	return intern_eff(a, NULL, out_slots, NULL, out_slot_count);
 }
 TypeId tyid_of_eff_concrete(TypeArena *a, const char *extern_name, const TypeId *out_slots, int out_slot_count) {
-	return intern_eff(a, extern_name, out_slots, out_slot_count);
+	return intern_eff(a, extern_name, out_slots, NULL, out_slot_count);
+}
+/* Like the above but carries an explicit NAME per out-slot (a named parameter). `names[j]` may be NULL for
+ * an unnamed slot. `extern_name` NULL = structural (a declared `Eff(buf: T, …)` annotation). */
+TypeId tyid_of_eff_named(TypeArena *a, const char *extern_name, const TypeId *out_slots, const char *const *names,
+                         int out_slot_count) {
+	return intern_eff(a, extern_name, out_slots, names, out_slot_count);
+}
+const char *tyid_eff_out_name_at(const TypeArena *a, TypeId t, int i) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_EFF)
+		return NULL;
+	if (i < 0 || i >= a->nodes[t].data.eff.out_slot_count || !a->nodes[t].data.eff.out_slot_names)
+		return NULL;
+	return a->nodes[t].data.eff.out_slot_names[i];
 }
 const char *tyid_eff_extern_name(const TypeArena *a, TypeId t) {
 	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_EFF)

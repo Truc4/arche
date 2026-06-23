@@ -2,5 +2,5 @@
 // RUN: true
 #import { fmt }
 backend :: proc() {
-  fmt.print("mgfx wayland\n")();
+  fmt.print("mgfx wayland\n")(_:);
 }

@@ -10,11 +10,12 @@ main :: proc() {
   net.listen(34567)(srv:);
   net.connect("127.0.0.1", 34567)(cli:);
   net.accept(srv)(conn:);
-  net.send(cli, "hi");
+  net.send(cli, "hi")(_:, _:);
   buf: [64]char;
-  net.recv(conn, buf)(out:);
+  net.recv(conn, 64)(buf, r:); // buf is the caller-allocated OUT (existing local, no `:`); r = byte count
+  out := buf[0: r];
   fmt.printf("ok n=%d first=%d\n", out.length, out[0]);
-  net.close(move cli);
-  net.close(move conn);
-  net.close(move srv);
+  net.close(move cli)();
+  net.close(move conn)();
+  net.close(move srv)();
 }

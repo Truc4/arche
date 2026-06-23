@@ -25,25 +25,25 @@ reached_func :: func(a: int) -> int {
   return a + 1;
 }
 reached_proc :: proc() {
-  fmt.print("reached");
+  fmt.print("reached")(_:);
 }
 used_cb :: proc() {
-  fmt.print("cb");
+  fmt.print("cb")(_:);
 }
 
 dead_proc :: proc() {
-  fmt.print("dead");
+  fmt.print("dead")(_:);
 }
 _scratch :: proc() {
-  fmt.print("scratch");
+  fmt.print("scratch")(_:);
 }
 @allow(unused_function)
 quiet :: proc() {
-  fmt.print("quiet");
+  fmt.print("quiet")(_:);
 }
 @allow(dead_code)
 hush :: proc() {
-  fmt.print("hush");
+  fmt.print("hush")(_:);
 }
 
 // mutually-recursive but unreachable from main — both must warn.

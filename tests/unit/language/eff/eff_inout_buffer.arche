@@ -1,0 +1,20 @@
+// FEATURE (in-out out-param through func→Eff): an extern with an IN-OUT buffer — a name in BOTH the
+// in-list and out-list (`eff_fill(s, buf, n)(buf, r)`) — is arche's "read+write the same buffer in place"
+// mechanism. A `func → Eff` wrapping it must, at the run site, bind the in-out out-param to the SAME
+// memory as the in-arg (the extern wrote it in place), NOT a fresh null. So `recv(0, b)(filled:, r:)`
+// gives `filled` == the written `b`. eff_fill writes "XYZ" and returns 3 → r=3 filled=XYZ.
+// RUN: %arche build -o %t --link %S/runtime/effshim.c %s && %t | grep -qF "r=3 filled=XYZ"
+#foreign {
+  eff_fill :: proc(s: i64, buf: []char, n: int)(buf: []char, r: int);
+}
+#import { fmt }
+
+recv :: func(s: i64, buf: []char) -> Eff([]char, int) {
+  return eff_fill(s, buf, buf.length); // builds the in-out effect; run binds (buf, r)
+}
+
+main :: proc() {
+  b: [8]char;
+  recv(0, b)(filled:, r:); // `filled` aliases `b` — the in-place-written buffer
+  fmt.printf("r=%d filled=%c%c%c\n", r, filled[0], filled[1], filled[2]);
+}

@@ -4,67 +4,91 @@
   os_argv     :: proc(i: int)(s: []char);
   os_argv_len :: proc(i: int)(n: i64);
 
+  // Scalar-only raw syscall: number + up to 6 INTEGER args. Buffers may NOT be passed here — a syscall
+  // that touches a buffer must be a typed `@syscall(N)` extern below, which declares the buffer's
+  // mutability (plain-in = read-only the kernel reads; in-out = the kernel writes it). That keeps a
+  // syscall from scribbling through a read-only borrow (the contract is declared, not special-cased).
   @intrinsic
   syscall :: proc(n: i64, a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64)(
     r: i64,
   );
+
+  // Typed direct syscalls. A buffer the kernel WRITES is in-out (same name in the out-list) and surfaces
+  // as a named out-slot at the run-site; a buffer the kernel only READS is plain-in (a read-only borrow).
+  @syscall(0)
+  sys_read  :: proc(fd: i64, buf: []char, n: i64)(buf: []char, r: i64);     // buf IN-OUT (kernel fills it)
+  @syscall(1)
+  sys_write :: proc(fd: i64, buf: []char, n: i64)(r: i64);                  // buf IN  (kernel reads it)
+  @syscall(2)
+  sys_open  :: proc(path: []char, flags: i64, mode: i64)(r: i64);          // path IN
+  @syscall(35)
+  sys_nanosleep :: proc(req: []i64, rem: i64)(r: i64);                      // req IN (the requested duration)
+  @syscall(228)
+  sys_clock :: proc(clk: i64, ts: [2]i64)(ts: [2]i64, r: i64);            // ts IN-OUT, SIZED so `ts:` infers it
 }
 
-@allow(proc_could_be_func)
 argv :: proc(i: int)(out: []char) {
   os_argv(i)(raw:);
   os_argv_len(i)(n:);
   out = raw[0: n];
 }
 
-// Sleep `ms` milliseconds (nanosleep, syscall 35). `ts` = timespec { sec, nsec }.
-@allow(proc_no_effect)
+// Monotonic-clock / nanosleep PRIMITIVES (`func → Eff`). The timespec `ts` is a caller-owned `[2]i64`
+// (`{ sec, nsec }`). `clock_mono` declares it IN-OUT — the kernel fills it, surfaced as the first out-slot;
+// `ms_of` cooks the filled timespec; `nanosleep` declares `req` plain-in (read-only, the kernel reads it):
+//   clock_mono()(ts: [2]i64, _:);  now := ms_of(ts);   // `ts:` allocates the kernel-written timespec
+//   if (slp > 0) { req: [2]i64; req[0] = slp/1000; req[1] = (slp%1000)*1000000; nanosleep(req)(_:); }
+clock_mono :: func() -> Eff([2]i64, i64) {
+  return sys_clock(1, _); // CLOCK_MONOTONIC; the timespec is the caller-allocated OUT, `_` is the ABI shadow
+}
+ms_of :: func(ts: []i64) -> i64 {
+  return ts[0] * 1000 + ts[1] / 1000000;
+}
+nanosleep :: func(req: []i64) -> Eff(i64) {
+  return sys_nanosleep(req, 0);
+}
+
+// Sleep `ms` milliseconds (nanosleep). `req` = timespec { sec, nsec } the kernel reads.
 sleep_ms :: proc(ms: int) {
   if (ms <= 0) {
     return;
   }
-  ts: [2]i64;
-  ts[0] = i64(ms) / 1000;
-  ts[1] = (i64(ms) % 1000) * 1000000;
-  syscall(35, ts, 0, 0, 0, 0, 0)(_r:);
+  req: [2]i64;
+  req[0] = i64(ms) / 1000;
+  req[1] = (i64(ms) % 1000) * 1000000;
+  sys_nanosleep(req, 0)(_:);
 }
 
-// Monotonic milliseconds (clock_gettime CLOCK_MONOTONIC, syscall 228).
-@allow(proc_could_be_func)
+// Monotonic milliseconds (clock_gettime CLOCK_MONOTONIC). `ts:` allocates the kernel-written timespec OUT.
 now_ms :: proc()(t: i64) {
-  ts: [2]i64;
-  syscall(228, 1, ts, 0, 0, 0, 0)(_r:);
-  t = ts[0] * 1000 + ts[1] / 1000000;
+  sys_clock(1, _)(ts:, _:); // `ts:` infers `[2]i64` from sys_clock's out-param — no spelled-out type
+  t = ms_of(ts);
 }
 
-@allow(proc_could_be_func)
-open :: proc(path: []char, flags: int)(fd: int) {
-  syscall(2, path, flags, 0, 0, 0, 0)(r:);
-  fd = i32(r);
+// `|> fd_of` folds the raw i64 syscall result into the `int` fd. The cook is a pure finalizer applied to
+// the run's single out-slot; callers are UNCHANGED (`os.open(path, flags)(fd:)`).
+fd_of :: func(r: i64) -> int {
+  return i32(r);
 }
-@allow(proc_could_be_func)
-read :: proc(fd: int, buf: []char, len: int)(out: []char) {
-  syscall(0, fd, buf, len, 0, 0, 0)(r:);
-  n := i32(r);
-  if (n < 0) {
-    n = 0;
-  }
-  out = buf[0: n];
+open :: func(path: []char, flags: int) -> Eff(int) {
+  return sys_open(path, flags, 0) |> fd_of;
 }
-@allow(proc_no_effect)
-write :: proc(fd: int, buf: []char, len: int) {
-  syscall(1, fd, buf, len, 0, 0, 0)(_r:);
+// The buffer is the caller-allocated OUT (the kernel fills it); `r` is the byte count (negative errno on
+// failure — the caller cooks it). Variable-size, so the caller gives the size at the out-binding:
+// `read(fd, len)(buf: [256]char, n:); data := buf[0:n]`. `_` is the C-ABI in-slot shadow.
+read :: func(fd: int, len: int) -> Eff([]char, i64) {
+  return sys_read(fd, _, len);
 }
-@allow(proc_no_effect)
-close :: proc(fd: int) {
-  syscall(3, fd, 0, 0, 0, 0, 0)(_r:);
+// `buf` is read-only (the kernel reads it); the out-slot is the byte count. `os.write(1, buf, n)(_:)`.
+write :: func(fd: int, buf: []char, len: int) -> Eff(i64) {
+  return sys_write(fd, buf, len);
 }
-@allow(proc_could_be_func)
-lseek :: proc(fd: int, off: i64, whence: int)(pos: i64) {
-  syscall(8, fd, off, whence, 0, 0, 0)(r:);
-  pos = r;
+close :: func(fd: int) -> Eff(i64) {
+  return syscall(3, fd, 0, 0, 0, 0, 0);
 }
-@allow(proc_no_effect)
-exit :: proc(code: int) {
-  syscall(231, code, 0, 0, 0, 0, 0)(_r:);
+lseek :: func(fd: int, off: i64, whence: int) -> Eff(i64) {
+  return syscall(8, fd, off, whence, 0, 0, 0);
+}
+exit :: func(code: int) -> Eff(i64) {
+  return syscall(231, code, 0, 0, 0, 0, 0);
 }

@@ -5,6 +5,6 @@ SCALE  :: 2;
 ANSWER :: 42;
 main   :: proc() {
   x := ANSWER;
-  fmt.print("result: ");
+  fmt.print("result: ")(_:);
   fmt.printf("%d\n", x);
 }

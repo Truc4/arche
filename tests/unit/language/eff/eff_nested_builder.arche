@@ -1,0 +1,21 @@
+// FEATURE (recursive Eff fusion): a func→Eff may build its effect by calling ANOTHER func→Eff, not only a
+// direct under-applied extern. The fusion recurses through the inner builder to the terminal extern —
+// `outer(41)` fuses to `eff_add1(41)`, both build funcs erased — so the spine stays depth-1. This is the
+// applicative composition that lets the stdlib layer (io.read → fread → syscall). r must be 42.
+// RUN: %arche build -o %t --link %S/runtime/effshim.c %s && %t | grep -qF "r=42"
+#foreign {
+  eff_add1 :: proc(x: int)(r: int);
+}
+#import { fmt }
+
+inner :: func(x: int) -> Eff(int) {
+  return eff_add1(x);
+}
+outer :: func(x: int) -> Eff(int) {
+  return inner(x); // wraps a func→Eff, not a direct extern
+}
+
+main :: proc() {
+  outer(41)(r:);
+  fmt.printf("r=%d\n", r);
+}

@@ -2,5 +2,5 @@
 // RUN: true
 #import { fmt }
 send :: proc() {
-  fmt.print("tnet tcp\n")();
+  fmt.print("tnet tcp\n")(_:);
 }

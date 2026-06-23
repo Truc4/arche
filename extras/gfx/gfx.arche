@@ -8,11 +8,8 @@ open :: func(w: int, h: int, own title: []char) -> Eff(window) {
   return gfx_be_open(w, h, move title);
 }
 
-// @drop(window): the compiler runs this when a window value leaves scope, freeing backend state.
-@drop(window)
-close :: proc(own win: window) {
-  gfx_be_close(win);
-}
+// The `@drop(window)` is on the `gfx_be_close` extern itself (each backend) — the runtime calls it when a
+// window leaves scope. No wrapper proc: the destructor is the primitive.
 
 // Fill each window's framebuffer with its `bg` colour (0xRRGGBB).
 clear :: system {

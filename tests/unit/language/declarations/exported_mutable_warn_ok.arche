@@ -7,5 +7,5 @@
 
 main :: proc() {
   bump();
-  fmt.print("ok\n");
+  fmt.print("ok\n")(_:);
 }

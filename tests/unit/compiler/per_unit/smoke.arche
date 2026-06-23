@@ -5,5 +5,5 @@
 // RUN: env ARCHE_PER_UNIT=1 %arche build -o %t %s && %t | grep -qF "pu hello"
 #import { fmt }
 main :: proc() {
-  fmt.print("pu hello\n")();
+  fmt.print("pu hello\n")(_:);
 }

@@ -3,5 +3,5 @@
 main :: proc() {
   x := 42;
   fmt.assert(x == 42, "type syntax failed\n");
-  fmt.print("test passed\n");
+  fmt.print("test passed\n")(_:);
 }

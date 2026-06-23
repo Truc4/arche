@@ -14,5 +14,5 @@
 // RUN: ! ls %t.cache2/*.o
 #import { fmt }
 main :: proc() {
-  fmt.print("run_ok\n")();
+  fmt.print("run_ok\n")(_:);
 }
