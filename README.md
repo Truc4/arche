@@ -30,7 +30,7 @@ binary. (If you skipped `make install`, use `./build/arche` in place of `arche`.
 #import { fmt }
 
 main :: proc() {
-  fmt.print("Hello, World!\n")();
+  fmt.print("Hello, World!\n")(_:);
 }
 ```
 
@@ -112,21 +112,22 @@ Particle :: arche {
   vel :: float,
 }
 
-[100]Particle(100) { vel: 0.1 } // 100 live particles; pos starts at 0, vel at 0.1
+[100]Particle(100) { vel: 0.1 }; // 100 live particles; pos starts at 0, vel at 0.1
 
 integrate :: map (query { pos, vel }) {
   pos = pos + vel; // whole-column update — no explicit loop
 }
 
-main :: proc() {
-  run integrate; // runs over every archetype carrying pos + vel
-  fmt.print("stepped\n")();
+report :: system {
+  fmt.printf("stepped\n");
 }
+
+#run seq({ integrate, report }) // the schedule names the work; the runtime owns the loop
 ```
 
-A `map` automatically matches any archetype carrying the components it names; `run` executes
-it over every matching column. See the [language reference](docs/language.md) for archetypes,
-the `proc`/`func`/`map` split, ownership, and more.
+A `map` automatically matches any archetype carrying the components it names; naming it in a
+`#run` schedule executes it over every matching column. See the [language reference](docs/language.md)
+for archetypes, the `proc`/`func`/`map` split, ownership, and more.
 
 ## Command-line interface
 

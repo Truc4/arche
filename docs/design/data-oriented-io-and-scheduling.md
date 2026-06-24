@@ -61,18 +61,20 @@ A resource is a row, not a value you pass:
 
 ## What this unblocks
 
-`autodrop_in_ir` is reworked under this model (delete the `File` row → close in the IR), not satisfiable as
-written (scope-exit RAII on an `fd` enum). It stays red until io-as-data lands.
+`autodrop_in_ir` is **reworked and green** under this model: open an fd, park it in a pool row, delete the
+row → `@drop(fd)` (registered in stdlib io) emits `os.close` in the IR. The old scope-exit-RAII-on-an-`fd`-enum
+premise is gone.
 
 ## Status / scope
 
 Implementation is phased and separate: (1) data-derived ordering as the default + `depends on`;
-(2) io-as-data (`File`/request/result pools, `@drop`-on-delete); (3) rework `autodrop_in_ir`. The `fd` enum
+(2) io-as-data (close-on-delete, then request/result read/write pools); (3) `autodrop_in_ir`. The `fd` enum
 remains for the three standard streams (stdin/stdout/stderr), which are never opened or closed.
 
-**Landed so far:** the `@drop`-on-delete *primitive* — a `@drop(<Archetype>)` destructor fires when a pool
-row is `delete`d, receiving the dying row's columns by value (e.g. `@drop(File) close :: proc(fd: i64)` →
-`close(row.fd)` emitted inside `@arche_delete_File` at the validated slot). This is the close-on-row-delete
-hook from "io as pool-resident data" above. **Still open in phase (2):** the actual `File`/request/result
-pool surface in stdlib (open=insert, read/write systems, `os.close` in the dtor), and then (3) reworking
-`autodrop_in_ir` onto it — until which it stays red.
+**Landed:** the **column-type-targeted `@drop`-on-delete** hook + the io close path. `@drop(T)` registers a
+destructor keyed by the type `T` (opaque or enum); it fires whenever a value of type `T` dies — an opaque
+local at scope exit (RAII, pre-existing) or a pool **column** of type `T` when its row is `delete`d. On row
+delete, `@arche_delete_<arch>` walks the dying row's columns and calls the dtor of each whose *type* has one
+registered, loading the column value at the validated slot. stdlib io registers `@drop(fd)` → `os.close`, so
+parking an fd in any pool and deleting the row closes it (`tests/unit/language/drop/autodrop_in_ir.arche`).
+**Still open in phase (2):** request/result read/write pools (io operations as systems over queues).

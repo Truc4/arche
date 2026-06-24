@@ -68,11 +68,7 @@ Projectile :: arche { speed };
 initialize  :: map (query { active }) { active = 1; }
 update_loop :: map (query { speed })  { speed = speed + 1; }
 
-main :: proc() {
-  run initialize;
-  run update_loop;
-  // implicit cleanup at end
-}
+#run seq({ initialize, update_loop }) // the schedule names the work; the runtime owns the loop
 ```
 
 **Why no dynamic memory?** Predictable memory usage (known at program start), zero
@@ -254,7 +250,7 @@ pos_x :: float;
 vel_x :: float;
 Particle :: arche { pos_x, vel_x };
 
-[1000]Particle(1000) { pos_x: 0.0, vel_x: 2.0 }
+[1000]Particle(1000) { pos_x: 0.0, vel_x: 2.0 };
 ```
 ```arche
 // updates each position by its velocity, across the whole column
@@ -431,23 +427,21 @@ pos_x :: float;
 vel_x :: float;
 Particle :: arche { pos_x, vel_x };
 
-[1000]Particle(1000) { pos_x: 0.0, vel_x: 1.5 }
+[1000]Particle(1000) { pos_x: 0.0, vel_x: 1.5 };
 
 step :: map (query { pos_x, vel_x }) {
   pos_x = pos_x + vel_x;
 }
 ```
 
-A `proc` drives a map with the `run` statement (the map needs a pool whose shape
-supplies its components):
+A **schedule** drives a map by naming it in `#run` — the runtime owns the loop (there is no
+hand-written driver). The map needs a pool whose shape supplies its components:
 
 ```arche
-update :: proc() {
-  run step;
-}
+#run step
 ```
 
-- executes via the `run system_name` statement
+- executes when its name appears in a `#run` schedule (a bare leaf, or inside `seq`/`par`)
 - automatically matches any archetype in scope containing the required component types
 - binds those components inside the map body
 - operates on whole columns (array-first)
@@ -526,20 +520,19 @@ vel :: float;
 Mover :: arche { pos, vel };
 [256]Mover(256);
 
+@gpu
 integrate :: map (query { pos, vel }) {
   pos = pos + vel;
 }
 
-main :: proc() {
-  run integrate @gpu;
-}
+#run integrate
 ```
 
 - `@gpu` is **additive and transparent**: it never changes the result — it only enables GPU execution.
   A program behaves identically with or without a GPU present.
 - **`arche build --gpu`** produces a normal executable that actually runs each `@gpu` map on the GPU: the
-  map's shader is compiled to SPIR-V and embedded in the binary, and a `run map @gpu` dispatches it via an
-  in-binary Vulkan runtime. If there is no GPU (no device, no driver, or the build had no shader compiler),
+  map's shader is compiled to SPIR-V and embedded in the binary, and scheduling an `@gpu` map dispatches it
+  via an in-binary Vulkan runtime. If there is no GPU (no device, no driver, or the build had no shader compiler),
   the dispatch **falls back to the CPU map automatically** — so a `--gpu` binary is always correct. Because
   arche `float` is **f32 on both the CPU and the GPU**, the two paths are the same numeric machine: the GPU
   result matches the CPU bit-for-bit.
