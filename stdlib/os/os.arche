@@ -48,15 +48,19 @@ nanosleep :: func(req: []i64) -> Eff(i64) {
   return sys_nanosleep(req, 0);
 }
 
-// Sleep `ms` milliseconds (nanosleep). `req` = timespec { sec, nsec } the kernel reads.
-sleep_ms :: proc(ms: int) {
-  if (ms <= 0) {
-    return;
+// Sleep `ms` milliseconds (nanosleep) — a `func → Eff` over `nanosleep`. `req` = timespec { sec, nsec }
+// the kernel reads; built element-by-element (NOT an array literal — that path miscompiles `[N]i64`). A
+// nonpositive `ms` clamps to 0 (a zero timespec is a kernel no-op), preserving the old "don't sleep" guard.
+// Run it like any Eff: `os.sleep_ms(16)(_:)`.
+sleep_ms :: func(ms: int) -> Eff(i64) {
+  m := i64(ms);
+  if (m < 0) {
+    m = 0;
   }
   req: [2]i64;
-  req[0] = i64(ms) / 1000;
-  req[1] = (i64(ms) % 1000) * 1000000;
-  sys_nanosleep(req, 0)(_:);
+  req[0] = m / 1000;
+  req[1] = (m % 1000) * 1000000;
+  return nanosleep(req); // reuse the existing nanosleep func→Eff; req is read-only IN
 }
 
 // Monotonic milliseconds (clock_gettime CLOCK_MONOTONIC). `ts:` allocates the kernel-written timespec OUT.

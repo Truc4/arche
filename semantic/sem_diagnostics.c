@@ -137,6 +137,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_underscore_not_inout]          = { "E0115", "underscore_not_inout",          CLASS_ERROR, 1 },
 	/* E0113 free_non_opaque, E0114 double_free — retired (zero runtime alloc, no free stmt). */
 	[SEM_DIAG_extern_proc_bad_return]        = { "E0115", "extern_proc_bad_return",        CLASS_ERROR, 1 },
+	[SEM_DIAG_extern_multi_out]              = { "E0223", "extern_multi_out",              CLASS_ERROR, 1 },
 	/* E0116 revived: local_shadows_callable (was out_not_written, retired). */
 	[SEM_DIAG_local_shadows_callable]        = { "E0116", "local_shadows_callable",        CLASS_ERROR, 1 },
 	[SEM_DIAG_duplicate_decl]                = { "E0117", "duplicate_decl",                CLASS_ERROR, 1 },
@@ -1007,6 +1008,13 @@ SemDiag *sem_emit_extern_proc_bad_return(SemanticContext *ctx, SourceLoc loc, co
 	return sem_emit_(ctx, SEM_DIAG_extern_proc_bad_return, loc,
 	                 "unknown return type '%s' in extern proc '%s' signature", type, proc_name);
 }
+SemDiag *sem_emit_extern_multi_out(SemanticContext *ctx, SourceLoc loc, const char *proc_name, int n_out_only) {
+	return sem_emit_(ctx, SEM_DIAG_extern_multi_out, loc,
+	                 "extern proc '%s' has %d out-only out-params, but a C extern returns exactly ONE value "
+	                 "(the single out-only out-param); additional kernel-written outputs must be in-out buffer "
+	                 "params (a name in BOTH the in- and out-list). Declare at most one out-only out-param",
+	                 proc_name, n_out_only);
+}
 
 SemDiag *sem_emit_type_mismatch(SemanticContext *ctx, SourceLoc loc, const char *where, const char *expected,
                                 const char *got) {
@@ -1094,6 +1102,16 @@ SemDiag *sem_emit_lint_inout_param_shadow(SemanticContext *ctx, SourceLoc loc, c
 	                 "out-param '%s' shadows the in-param of the same name (in-out): legitimate only for a "
 	                 "`#foreign` proc (C-ABI alignment). Return a fresh out-only result instead",
 	                 name);
+}
+/* The `#foreign`/`@syscall` variant: the shadow is PERMITTED here (the in-slot is only a C-ABI positional
+ * shadow, written `_` at the call site; the kernel writes the out-param), but surface it so it is visible,
+ * not silent — the buffer the caller reads is the OUT param, not the in-arg. */
+SemDiag *sem_emit_lint_inout_param_shadow_cabi(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_LINT_inout_param_shadow, loc,
+	                 "in-param '%s' shadowed by out-param '%s' (permitted for C-ABI alignment): the in-slot "
+	                 "is a positional shadow — write `_` at the call site; the kernel-written buffer is the "
+	                 "out-param",
+	                 name, name);
 }
 /* `module_path` (or NULL): the source file of the decl's owning module, appended so a cross-file
  * dead-code warning names a file the user can open (the bare `loc` line is module-local). The

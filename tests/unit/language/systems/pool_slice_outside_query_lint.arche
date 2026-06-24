@@ -1,0 +1,16 @@
+// W0029 pool_index_outside_query, SLICE form: a pool column accessed by a hand-built SLICE
+// `Pool.col[lo:hi]` (incl. the whole-column `[0:cap]`) outside a query is the same escape hatch as the
+// `[i]` index form — pool values must come from a query/map/system selector. This is how a pool-column
+// READER fills a column as a read OUT buffer today (`scratch := Buf.b[0: Buf.capacity]`); lint-only for
+// now while that form migrates into a query. A query body reads columns by bound NAME, so this only fires
+// on the hand-built view. Opt out with `--pool-index=allow` or `@allow(pool_index_outside_query)`.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qF "[pool_index_outside_query]" %t.out
+#import { fmt }
+b   :: char;
+Buf :: arche { b }
+[256]Buf;
+
+main :: proc() {
+  view := Buf.b[0: Buf.capacity]; // hand-built column slice outside a query → W0029
+  fmt.printf("%d\n", view.length);
+}

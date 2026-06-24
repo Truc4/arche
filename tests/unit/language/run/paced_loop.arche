@@ -30,7 +30,7 @@ frame :: system {
   }
   rem := 16 - Clock.bank[0];
   if (rem > 0) {
-    os.sleep_ms(i32(rem));
+    os.sleep_ms(i32(rem))(_:);
   }
 }
 

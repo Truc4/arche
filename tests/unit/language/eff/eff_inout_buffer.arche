@@ -1,20 +1,20 @@
-// FEATURE (in-out out-param through func→Eff): an extern with an IN-OUT buffer — a name in BOTH the
-// in-list and out-list (`eff_fill(s, buf, n)(buf, r)`) — is arche's "read+write the same buffer in place"
-// mechanism. A `func → Eff` wrapping it must, at the run site, bind the in-out out-param to the SAME
-// memory as the in-arg (the extern wrote it in place), NOT a fresh null. So `recv(0, b)(filled:, r:)`
-// gives `filled` == the written `b`. eff_fill writes "XYZ" and returns 3 → r=3 filled=XYZ.
+// FEATURE (caller-allocated OUT buffer through func→Eff): an extern whose buffer is written by the callee
+// is exposed as a func→Eff whose buffer is the caller-allocated OUT param, NOT an in-arg. The in-list `_`
+// is only the C-ABI positional shadow; the out-binding `filled: [8]char` ALLOCATES the buffer the kernel
+// fills (the `:` means allocate). The run site binds the written buffer to `filled` — `eff_fill` writes
+// "XYZ" into it and returns 3 → r=3 filled=XYZ. (Non-extern shim, so this also proves the mechanism does
+// not depend on @syscall — any callee-written extern buffer works.)
 // RUN: %arche build -o %t --link %S/runtime/effshim.c %s && %t | grep -qF "r=3 filled=XYZ"
 #foreign {
   eff_fill :: proc(s: i64, buf: []char, n: int)(buf: []char, r: int);
 }
 #import { fmt }
 
-recv :: func(s: i64, buf: []char) -> Eff([]char, int) {
-  return eff_fill(s, buf, buf.length); // builds the in-out effect; run binds (buf, r)
+recv :: func(s: i64, n: int) -> Eff([]char, int) {
+  return eff_fill(s, _, n); // `_` is the C-ABI in-slot; the buffer is the OUT
 }
 
 main :: proc() {
-  b: [8]char;
-  recv(0, b)(filled:, r:); // `filled` aliases `b` — the in-place-written buffer
+  recv(0, 8)(filled: [8]char, r:); // `:` allocates the OUT here; the kernel fills it
   fmt.printf("r=%d filled=%c%c%c\n", r, filled[0], filled[1], filled[2]);
 }

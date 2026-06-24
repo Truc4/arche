@@ -109,6 +109,7 @@ typedef enum {
 	SEM_DIAG_extern_func_bad_type,
 	SEM_DIAG_extern_func_bad_return,
 	SEM_DIAG_extern_proc_bad_return,
+	SEM_DIAG_extern_multi_out,
 
 	/* Constants / meta */
 	SEM_DIAG_constant_redefined,
@@ -405,6 +406,7 @@ SemDiag *sem_emit_binop_type_mismatch(SemanticContext *ctx, SourceLoc loc, const
 SemDiag *sem_emit_field_on_non_archetype(SemanticContext *ctx, SourceLoc loc, const char *base_type, const char *field);
 SemDiag *sem_emit_move_outside_arg(SemanticContext *ctx, SourceLoc loc, const char *keyword);
 SemDiag *sem_emit_extern_proc_bad_return(SemanticContext *ctx, SourceLoc loc, const char *type, const char *proc_name);
+SemDiag *sem_emit_extern_multi_out(SemanticContext *ctx, SourceLoc loc, const char *proc_name, int n_out_only);
 
 /* Tycheck (P3 type-check pass). E0200 is the general type_mismatch — every
  * typing-rule failure routes here. The `where` string describes the constraint
@@ -433,6 +435,7 @@ SemDiag *sem_emit_lint_unused_local(SemanticContext *ctx, SourceLoc loc, const c
 SemDiag *sem_emit_lint_unused_use(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_inout_redundant_arg(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_inout_param_shadow(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_lint_inout_param_shadow_cabi(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_unused_function(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path);
 SemDiag *sem_emit_lint_unused_static_const(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
                                            const char *module_path);

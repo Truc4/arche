@@ -4497,7 +4497,8 @@ static int name_is_owner_param(DeclSummary *owner, const char *nm) {
 
 static void lint_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 	if (!proc || proc->is_extern)
-		return; /* #foreign procs are exempt — in-out IS the C-ABI idiom there. */
+		return; /* #foreign procs never reach here (analyze_proc_decl returns early); the C-ABI in-out
+		         * shadow note is emitted there. */
 
 	/* W0012 inout_param_shadow: a non-foreign proc with an in-out param (an out-param shadowing the
 	 * in-param of the same name). The in-out idiom is legitimate ONLY for `#foreign` procs (C-ABI
@@ -5735,6 +5736,17 @@ static const char *bnd_check_expr(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 		bnd_policy_check(ctx, d, e, v, 1, base, kind, n);
 		free(base);
 	}
+	/* W0029 for a pool-column SLICE `Pool.col[lo:hi]` (incl. the whole-column `[0:cap]`) outside a query —
+	 * the sibling of the `[i]` index case above. A well-formed fan body reads a column by its bound NAME, so
+	 * a hand-built column view is the escape hatch: today's pool-column READER fills `CharBuf.cb[0:cap]` as a
+	 * read OUT buffer outside a query. Lint-only for now (the read-into-column form is migrating to a query);
+	 * shares the `--pool-index=allow` / `@allow(pool_index_outside_query)` opt-out with the index case. */
+	if (e->lint_columns && sv_kind(v) == SN_SLICE_EXPR && expr_is_pool_column_view(ctx, v)) {
+		char *root = sv_resolved_name(ctx, v);
+		if (root)
+			sem_emit_lint_pool_index_outside_query(ctx, sem_node_loc(v.node), root);
+		free(root);
+	}
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
 			const char *r = bnd_check_expr(ctx, d, (SyntaxView){v.node->children[i].as.node, v.src}, e);
@@ -6264,12 +6276,35 @@ static void analyze_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 	/* For extern procs, validate the out-param types too (parity with extern func return). An
 	 * out-only out-param maps to the C return value; an in-out one to an in-place pointer write. */
 	if (proc->is_extern) {
+		int out_only = 0;
 		for (int i = 0; i < proc->out_param_count; i++) {
 			const char *tname = tyid_nominal_name(ctx->ty_arena, proc->out_params[i].type_id);
 			if (tname && !is_primitive_type_name(tname) && !find_archetype(ctx, tname) && !is_type_alias(ctx, tname)) {
 				sem_emit_extern_proc_bad_return(ctx, proc->out_params[i].loc, tname, proc->name);
 			}
+			/* An out-only out-param (its name is NOT also an in-param) maps to the C return value; an in-out
+			 * one (name in BOTH lists) is an in-place pointer write. A C function returns exactly one value,
+			 * so AT MOST ONE out-only out-param is representable. More than one was silently miscompiled (the
+			 * 2nd+ were dropped, the C signature declared one return, garbage bound) — reject it instead. */
+			const char *on = proc->out_params[i].name;
+			int is_inout = 0;
+			for (int j = 0; on && j < proc->param_count; j++)
+				if (proc->params[j].name && strcmp(proc->params[j].name, on) == 0) {
+					is_inout = 1;
+					break;
+				}
+			if (!is_inout)
+				out_only++;
 		}
+		if (out_only > 1)
+			sem_emit_extern_multi_out(ctx, proc->loc, proc->name, out_only);
+		/* W0012 (C-ABI variant): an in-out param — a name in BOTH the in-list and out-list — is PERMITTED
+		 * on a `#foreign`/`@syscall` proc (the in-slot is only a positional shadow, written `_` at the call
+		 * site; the kernel writes the OUT param), but surface it so the shadow is visible, not silent. */
+		for (int i = 0; i < proc->param_count; i++)
+			if (proc_param_is_inout(proc, i))
+				sem_emit_lint_inout_param_shadow_cabi(ctx, proc->loc,
+				                                      proc->params[i].name ? proc->params[i].name : "<param>");
 		return;
 	}
 

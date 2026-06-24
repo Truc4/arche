@@ -1,0 +1,14 @@
+// E0223 extern_multi_out: a `#foreign` proc with TWO independent out-only out-params (`twovals(x)(a, b)`)
+// must be REJECTED. A C extern returns exactly one value (the single out-only out-param maps to it); a
+// kernel-written extra output must be an in-out buffer param (a name in BOTH lists). Before this check,
+// arche SILENTLY miscompiled it: it declared `i32 @twovals(i32)`, dropped the 2nd out-param, and bound
+// garbage to both — a soundness hole. (Supporting genuine multi-return externs is separate feature work;
+// this is the correctness fix that turns silent corruption into a clear error.)
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qF "out-only out-params" %t.out
+#foreign {
+  twovals :: proc(x: int)(a: int, b: int);
+}
+
+main :: proc() {
+  twovals(5)(a:, b:);
+}

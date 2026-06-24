@@ -1,0 +1,34 @@
+// FEATURE: an INPUT-buffer wrapper as a `func → Eff`. `sleep_ms` builds the timespec the kernel READS,
+// element-by-element (no array literal — that path miscompiles `[N]i64`), then under-applies the
+// nanosleep extern. After func→Eff fusion the timespec lives in the caller's frame, so passing the local
+// `req` to the run is sound (no dangling builder-frame buffer). A regression in func-local array fill or
+// func→Eff fusion is caught here. This is the proc-free shape the stdlib `os.sleep_ms` uses; here it is
+// self-contained (own `@syscall(35)` extern). The `system` consumer path is covered by arche-rpg's `io`.
+// RUN: %arche build -o %t %s && %t | grep -qF "slept ok"
+#import { fmt }
+
+#foreign {
+  @syscall(35)
+  sys_nanosleep :: proc(req: []i64, rem: i64)(r: i64);
+}
+
+nanosleep :: func(req: []i64) -> Eff(i64) {
+  return sys_nanosleep(req, 0);
+}
+
+sleep_ms :: func(ms: int) -> Eff(i64) {
+  m := i64(ms);
+  if (m < 0) {
+    m = 0;
+  }
+  req: [2]i64;
+  req[0] = m / 1000;
+  req[1] = (m % 1000) * 1000000;
+  return nanosleep(req);
+}
+
+main :: proc() {
+  sleep_ms(1)(_:);  // run the func→Eff from a proc
+  sleep_ms(-5)(_:); // nonpositive clamps to 0 — a no-op, must not crash
+  fmt.printf("slept ok\n");
+}

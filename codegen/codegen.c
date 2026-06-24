@@ -7510,51 +7510,12 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			}
 			for (int i = 0; i < target_count && i < callee_proc->out_param_count; i++) {
 				if (proc_out_param_is_inout(callee_proc, i)) {
-					/* In-out out-param (`net_recv(s, buf, n)(buf, r)`): the buffer was passed as the matching
-					 * in-arg and the extern wrote it IN PLACE. The proc call form links the out-target to the
-					 * in-arg via the `_` placeholder; the func→Eff run form has no `_`, so bind the out-target
-					 * to ALIAS that in-arg buffer — the caller reads the written data through the named out-param
-					 * (`recv(conn, buf)(filled:, r:)` → `filled` IS `buf`, now filled). */
-					HirBindingTarget *tgt = &targets[i];
-					const char *on = callee_proc->out_params[i]->name;
-					int j = -1;
-					for (int k = 0; k < callee_proc->param_count; k++)
-						if (callee_proc->params[k]->name && on && strcmp(callee_proc->params[k]->name, on) == 0) {
-							j = k;
-							break;
-						}
-					HirExpr *ia = (j >= 0 && rhs && rhs->kind == HIR_EXPR_CALL && j < rhs->data.call.arg_count)
-					                  ? rhs->data.call.args[j]
-					                  : NULL;
-					while (ia && ia->kind == HIR_EXPR_UNARY &&
-					       (ia->data.unary.op == UNARY_MOVE || ia->data.unary.op == UNARY_COPY))
-						ia = ia->data.unary.operand;
-					ValueInfo *src = (ia && ia->kind == HIR_EXPR_NAME && ia->data.name.name)
-					                     ? find_value(ctx, ia->data.name.name)
-					                     : NULL;
-					if (src && tgt->is_new && tgt->name && strcmp(tgt->name, "_") != 0 && ctx->scope_count > 0) {
-						ValueInfo *vi = calloc(1, sizeof(ValueInfo));
-						vi->name = malloc(strlen(tgt->name) + 1);
-						strcpy(vi->name, tgt->name);
-						if (src->llvm_name) {
-							vi->llvm_name = malloc(strlen(src->llvm_name) + 1);
-							strcpy(vi->llvm_name, src->llvm_name);
-						}
-						vi->type = src->type;
-						if (src->arch_name) {
-							vi->arch_name = malloc(strlen(src->arch_name) + 1);
-							strcpy(vi->arch_name, src->arch_name);
-						}
-						vi->string_len = src->string_len;
-						vi->field_type = src->field_type;             /* borrowed (not freed by pop_value_scope) */
-						vi->handle_archetype = src->handle_archetype; /* borrowed */
-						vi->bit_width = src->bit_width;
-						vi->is_slice = src->is_slice;
-						vi->len_ssa = src->len_ssa; /* borrowed: pop_value_scope does not free len_ssa */
-						ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
-						sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
-						sc->values[sc->value_count++] = vi;
-					}
+					/* In-out out-param (the kernel-written buffer): the caller owns the storage and it was
+					 * already bound BEFORE the call — either EDIT 2 pre-allocated it (`buf: [N]T`, the `:`
+					 * form) or it is an existing variable/column the `_`-shadow rename passed by reference
+					 * (`(buf, r:)`, no `:`). Either way the extern wrote it IN PLACE through that pointer, so
+					 * there is nothing to bind here. (The legacy form that passed the buffer as a real in-arg
+					 * and aliased the out-target to it is gone — every call site uses the OUT-param form.) */
 					continue;
 				}
 				HirBindingTarget *tgt = &targets[i];
