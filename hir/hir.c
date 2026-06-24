@@ -238,6 +238,7 @@ static void hir_proc_decl_free(HirProcDecl *proc) {
 	if (!proc)
 		return;
 	free(proc->name);
+	free(proc->drop_type);
 	for (int i = 0; i < proc->param_count; i++)
 		hir_param_free(proc->params[i]);
 	free(proc->params);

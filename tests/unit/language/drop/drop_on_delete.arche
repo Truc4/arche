@@ -1,0 +1,21 @@
+// `@drop` fires on pool-row DELETE: an archetype with a `@drop` destructor runs it when a row is deleted,
+// so an external resource a row HOLDS (here an fd, kept as plain `i64` data) is torn down on `delete`. This
+// is the arche-native resource lifecycle — open = insert, close = delete → `@drop` fires `close(fd)` — with
+// the syscall as the only C floor. The dtor prints to prove it fired on the deleted row's data.
+// RUN: %arche build -o %t %s && %t | grep -qF "dropped fd=7"
+#import { fmt }
+
+File :: arche { fd :: i64 }
+[4]File;
+
+// The destructor names the COLUMN(s) of the dying row it needs; `delete` reads them off the row and
+// calls it. Here it needs the fd — a real io dtor would `os.close(fd)(_:)` to release the kernel handle.
+@drop(File)
+close_file :: proc(fd: i64) {
+  fmt.printf("dropped fd=%d\n", fd);
+}
+
+main :: proc() {
+  insert(File { fd: 7 })(h:, _:);
+  delete(h)(_:); // fires close_file on the deleted row → "dropped fd=7"
+}

@@ -9576,6 +9576,62 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 
 /* ========== DECLARATION CODEGEN ========== */
 
+/* The `@drop(<Archetype>)` pool-row destructor for `arch`, or NULL if none. Keyed on the proc's
+ * `drop_type` (the named archetype), set during lowering. */
+static HirProcDecl *find_drop_proc_for_arch(CodegenContext *ctx, const char *arch_name) {
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		HirDecl *d = ctx->ast->decls[i];
+		if (d && d->kind == HIR_DECL_PROC && d->data.proc && d->data.proc->is_drop && d->data.proc->drop_type &&
+		    strcmp(d->data.proc->drop_type, arch_name) == 0)
+			return d->data.proc;
+	}
+	return NULL;
+}
+
+/* Inside `@arche_delete_<arch>`, at the point a row at `%slot` is known live and about to be freed,
+ * fire the archetype's `@drop` destructor (if any). The dtor's params name columns of the dying row;
+ * load each off the row at `%slot` and pass it. This is the open=insert / close=delete lifecycle —
+ * an external resource a row holds (e.g. an fd kept as data) is released as the row leaves the pool. */
+static void cg_emit_rowdrop(CodegenContext *ctx, HirArchetypeDecl *arch, int static_cap) {
+	HirProcDecl *dtor = find_drop_proc_for_arch(ctx, arch->name);
+	if (!dtor)
+		return;
+	char args[1024];
+	args[0] = '\0';
+	for (int pi = 0; pi < dtor->param_count; pi++) {
+		const char *pname = dtor->params[pi] ? dtor->params[pi]->name : NULL;
+		HirField *col = NULL;
+		int fidx = -1;
+		for (int f = 0; f < arch->field_count; f++) {
+			if (arch->fields[f]->kind == FIELD_COLUMN && arch->fields[f]->name && pname &&
+			    strcmp(arch->fields[f]->name, pname) == 0) {
+				col = arch->fields[f];
+				fidx = f;
+				break;
+			}
+		}
+		if (!col)
+			continue; /* semantic already validated the param names a column */
+		const char *base_type = llvm_type_from_arche(field_base_type_name(col->type));
+		if (static_cap > 0) {
+			buffer_append_fmt(
+			    ctx, "  %%drp_p%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %%slot\n", pi,
+			    arch->name, arch->name, fidx);
+		} else {
+			buffer_append_fmt(ctx, "  %%drp_pp%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", pi,
+			                  arch->name, arch->name, fidx);
+			buffer_append_fmt(ctx, "  %%drp_arr%d = load %s*, %s** %%drp_pp%d\n", pi, base_type, base_type, pi);
+			buffer_append_fmt(ctx, "  %%drp_p%d = getelementptr %s, %s* %%drp_arr%d, i64 %%slot\n", pi, base_type,
+			                  base_type, pi);
+		}
+		buffer_append_fmt(ctx, "  %%drp_v%d = load %s, %s* %%drp_p%d\n", pi, base_type, base_type, pi);
+		char one[128];
+		snprintf(one, sizeof one, "%s%s %%drp_v%d", args[0] ? ", " : "", base_type, pi);
+		strncat(args, one, sizeof(args) - strlen(args) - 1);
+	}
+	buffer_append_fmt(ctx, "  call void @%s(%s)\n", dtor->name, args);
+}
+
 static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) {
 	/* One shape = one pool. Aliases (other names for the same component set) share the
 	 * canonical decl's struct + storage + helpers, so emit only for the canonical. */
@@ -9869,6 +9925,9 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	buffer_append(ctx, "  store i32 0, i32* %ok_out\n");
 	buffer_append(ctx, "  ret void\n\n");
 	buffer_append(ctx, "do_free:\n");
+	/* Fire the row's `@drop` destructor (if any) while its data is still intact — the resource it
+	 * holds (e.g. an fd) is released as the row leaves the pool. */
+	cg_emit_rowdrop(ctx, arch, static_cap);
 	/* Increment generation */
 	buffer_append(ctx, "  %new_gen = add i32 %stored_gen, 1\n");
 	buffer_append(ctx, "  store i32 %new_gen, i32* %gc_elem\n");
@@ -11700,16 +11759,25 @@ static void codegen_build_drop_registry(CodegenContext *ctx) {
 		if (!d || d->kind != HIR_DECL_PROC || !d->data.proc || !d->data.proc->is_drop)
 			continue;
 		HirProcDecl *p = d->data.proc;
-		if (p->param_count != 1 || !p->params[0] || !p->params[0]->type)
-			continue;
-		HirType *pt = p->params[0]->type;
-		if (pt->tag != HIR_TYPE_OPAQUE || !pt->name)
-			continue;
+		const char *key = NULL;
+		if (p->drop_type && find_archetype_decl(ctx, p->drop_type)) {
+			/* Pool-row destructor: keyed by the archetype it drops. Its params name the dying row's
+			 * columns; `delete` codegen re-derives those from this proc and passes them. */
+			key = p->drop_type;
+		} else {
+			/* Opaque RAII destructor: one `own` opaque param, keyed by that opaque's nominal name. */
+			if (p->param_count != 1 || !p->params[0] || !p->params[0]->type)
+				continue;
+			HirType *pt = p->params[0]->type;
+			if (pt->tag != HIR_TYPE_OPAQUE || !pt->name)
+				continue;
+			key = pt->name;
+		}
 		if (ctx->drop_reg_count >= ctx->drop_reg_capacity) {
 			ctx->drop_reg_capacity = ctx->drop_reg_capacity ? ctx->drop_reg_capacity * 2 : 8;
 			ctx->drop_reg = realloc(ctx->drop_reg, ctx->drop_reg_capacity * sizeof(*ctx->drop_reg));
 		}
-		ctx->drop_reg[ctx->drop_reg_count].type_name = pt->name;
+		ctx->drop_reg[ctx->drop_reg_count].type_name = key;
 		ctx->drop_reg[ctx->drop_reg_count].dtor = p->name;
 		ctx->drop_reg_count++;
 	}

@@ -1938,6 +1938,34 @@ static int syntax_decl_has_drop_decorator(SyntaxView d) {
 	}
 	return 0;
 }
+/* `@drop(<Type>)`: returns the named type as a fresh string (caller owns), or NULL if absent.
+ * Scans for the `@ drop ( <ident> )` token run (the parser already validated the shape). */
+static char *syntax_decl_drop_type(SyntaxView d) {
+	if (!sv_present(d))
+		return NULL;
+	int n = d.node->child_count;
+	for (int i = 0; i + 3 < n; i++) {
+		const SyntaxElem *at = &d.node->children[i];
+		if (at->tag != SE_TOKEN || at->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *nm = &d.node->children[i + 1];
+		if (nm->tag != SE_TOKEN || nm->as.token.kind != TOK_IDENT)
+			continue;
+		if (!(nm->as.token.length == 4 && memcmp(d.src + nm->as.token.offset, "drop", 4) == 0))
+			continue;
+		const SyntaxElem *lp = &d.node->children[i + 2];
+		const SyntaxElem *ty = &d.node->children[i + 3];
+		if (lp->tag != SE_TOKEN || lp->as.token.kind != TOK_LPAREN)
+			continue;
+		if (ty->tag != SE_TOKEN || ty->as.token.kind != TOK_IDENT)
+			continue;
+		char *out = malloc(ty->as.token.length + 1);
+		memcpy(out, d.src + ty->as.token.offset, ty->as.token.length);
+		out[ty->as.token.length] = '\0';
+		return out;
+	}
+	return NULL;
+}
 static int syntax_decl_has_intrinsic_decorator(SyntaxView d) {
 	if (!sv_present(d))
 		return 0;
@@ -2789,8 +2817,10 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					HirDecl *pd = lower_proc_from(rhs, nm);
 					/* Propagate the `@drop` decorator (a direct `@ drop` token pair on the
 					 * decl node) so the RAII pass can register this proc as a destructor. */
-					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && syntax_decl_has_drop_decorator(d))
+					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && syntax_decl_has_drop_decorator(d)) {
 						pd->data.proc->is_drop = 1;
+						pd->data.proc->drop_type = syntax_decl_drop_type(d);
+					}
 					/* `@intrinsic`: calls to this decl lower to a built-in instruction (codegen
 					 * checks the resolved decl's flag, not the symbol name — see codegen syscall). */
 					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && syntax_decl_has_intrinsic_decorator(d))

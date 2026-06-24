@@ -859,9 +859,54 @@ static void analyze_drop_decl(SemanticContext *ctx, DeclSummary *proc, const cha
 		return;
 	if (proc->out_param_count != 0) {
 		sem_emit_drop_invalid(ctx, proc->loc,
-		                      "a `@drop` destructor must be `proc (own T)()` — it may not have out-parameters");
+		                      "a `@drop` destructor may not have out-parameters — it tears down, it does not return");
 		return;
 	}
+
+	/* `@drop(<type>)` names what is dropped. Two destructor kinds, told apart by that type:
+	 *   - OPAQUE handle  → fires at scope exit (RAII). One `own T` param, T the opaque.
+	 *   - ARCHETYPE      → fires when a pool ROW is `delete`d. Its params name the COLUMNS of the dying
+	 *                      row it needs (by name + type); `delete` reads those columns off the row and
+	 *                      calls it (e.g. `@drop(File) close :: proc(fd: i64)` → close(row.fd) on delete).
+	 * The archetype form is the arche-native resource lifecycle: open = insert, close = delete. */
+	ArchetypeInfo *arch = declared_type ? find_archetype(ctx, declared_type) : NULL;
+	if (arch) {
+		if (proc->param_count < 1) {
+			sem_emit_drop_invalid(ctx, proc->loc,
+			                      "a pool-row `@drop` destructor must take at least one parameter naming a "
+			                      "column of the dying row (e.g. the fd to close)");
+			return;
+		}
+		for (int i = 0; i < proc->param_count; i++) {
+			ParamSummary *p = &proc->params[i];
+			FieldInfo *col = NULL;
+			for (int f = 0; f < arch->field_count; f++) {
+				FieldInfo *fi = arch->fields[f];
+				if (fi->kind == FIELD_COLUMN && p->name && fi->name && strcmp(fi->name, p->name) == 0) {
+					col = fi;
+					break;
+				}
+			}
+			if (!col) {
+				sem_emit_drop_invalid(ctx, p->loc,
+				                      "a pool-row `@drop` destructor's parameter must name a column of the "
+				                      "archetype it drops");
+				return;
+			}
+			const char *pn = sem_tyid_name(ctx, p->type_id);
+			const char *cn = sem_tyid_name(ctx, col->type_id);
+			if (!pn || !cn || strcmp(pn, cn) != 0) {
+				sem_emit_drop_invalid(ctx, p->loc,
+				                      "a pool-row `@drop` destructor's parameter type must match the column it "
+				                      "names");
+				return;
+			}
+		}
+		register_drop(ctx, declared_type, proc->name, proc->loc);
+		return;
+	}
+
+	/* Opaque-handle destructor (scope-exit RAII). */
 	if (proc->param_count != 1) {
 		sem_emit_drop_invalid(ctx, proc->loc,
 		                      "a `@drop` destructor must take exactly one `own` parameter of an opaque type");
@@ -876,7 +921,9 @@ static void analyze_drop_decl(SemanticContext *ctx, DeclSummary *proc, const cha
 	const char *p_resolved = sem_tyid_name(ctx, p_tid);              /* "opaque" */
 	const char *p_nominal = tyid_nominal_name(ctx->ty_arena, p_tid); /* the written opaque name */
 	if (!p_resolved || strcmp(p_resolved, "opaque") != 0) {
-		sem_emit_drop_invalid(ctx, proc->loc, "a `@drop` destructor's parameter must be of an opaque type");
+		sem_emit_drop_invalid(ctx, proc->loc,
+		                      "a `@drop` destructor's parameter must be an opaque type, or `@drop(<archetype>)` "
+		                      "for a pool-row destructor");
 		return;
 	}
 	/* The `@drop(<type>)` name must match the parameter's type — the decorator states what is

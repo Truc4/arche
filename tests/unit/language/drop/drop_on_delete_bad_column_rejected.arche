@@ -1,0 +1,17 @@
+// A pool-row `@drop` destructor's parameters must name COLUMNS of the archetype it drops (the dying
+// row's data it reads). A parameter that names no column is a typo, not a silent no-op — reject it.
+// RUN: not %arche build -o %t %s 2>&1 | grep -qi "must name a column"
+#import { fmt }
+
+File :: arche { fd :: i64 }
+[4]File;
+
+@drop(File)
+close_file :: proc(nope: i64) { // `nope` is not a column of File
+  fmt.printf("%d\n", nope);
+}
+
+main :: proc() {
+  insert(File { fd: 7 })(h:, _:);
+  delete(h)(_:);
+}

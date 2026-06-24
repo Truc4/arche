@@ -61,6 +61,13 @@ written (scope-exit RAII on an `fd` enum). It stays red until io-as-data lands.
 
 ## Status / scope
 
-Design only. Implementation is phased and separate: (1) data-derived ordering as the default + `depends on`;
+Implementation is phased and separate: (1) data-derived ordering as the default + `depends on`;
 (2) io-as-data (`File`/request/result pools, `@drop`-on-delete); (3) rework `autodrop_in_ir`. The `fd` enum
 remains for the three standard streams (stdin/stdout/stderr), which are never opened or closed.
+
+**Landed so far:** the `@drop`-on-delete *primitive* — a `@drop(<Archetype>)` destructor fires when a pool
+row is `delete`d, receiving the dying row's columns by value (e.g. `@drop(File) close :: proc(fd: i64)` →
+`close(row.fd)` emitted inside `@arche_delete_File` at the validated slot). This is the close-on-row-delete
+hook from "io as pool-resident data" above. **Still open in phase (2):** the actual `File`/request/result
+pool surface in stdlib (open=insert, read/write systems, `os.close` in the dtor), and then (3) reworking
+`autodrop_in_ir` onto it — until which it stays red.
