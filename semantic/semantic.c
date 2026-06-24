@@ -2085,6 +2085,29 @@ static TypeId call_type_id(SemanticContext *ctx, SyntaxView v) {
 		} else if (strcmp(func_name, "seq") == 0) {
 			/* `seq(a, b)` yields the LAST Eff's type (its out-slots) — the applicative sequence result. */
 			result = sem_expr_type_id(ctx, sem_node_at_expr(v, 1));
+		} else if (strcmp(func_name, "zip") == 0 && seq_argc >= 2) {
+			/* `zip(e1, …, eN)` — the applicative PRODUCT: an Eff whose out-slots are the CONCATENATION of all
+			 * args' out-slots (each arg is itself an Eff). No combiner; the run-site binds the slots
+			 * positionally, or a `|> fin` over the zip folds them all into the finalizer. */
+			TypeId slots[32];
+			const char *names[32];
+			int total = 0;
+			int ok = 1;
+			for (int ai = 0; ai < seq_argc && ok && total < 32; ai++) {
+				TypeId at = sem_expr_type_id(ctx, sem_node_at_expr(v, ai));
+				if (tyid_kind(ctx->ty_arena, at) != TYK_EFF) {
+					ok = 0;
+					break;
+				}
+				int oc = tyid_eff_out_count(ctx->ty_arena, at);
+				for (int oi = 0; oi < oc && total < 32; oi++) {
+					slots[total] = tyid_eff_out_at(ctx->ty_arena, at, oi);
+					names[total] = tyid_eff_out_name_at(ctx->ty_arena, at, oi);
+					total++;
+				}
+			}
+			if (ok)
+				result = tyid_of_eff_named(ctx->ty_arena, NULL, slots, names, total);
 		} else {
 			GroupInfo *gi = find_group(ctx, func_name);
 			if (gi) {
@@ -2343,6 +2366,18 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 		 * build-func fusion. Gated on EXACTLY two args so it never shadows the Schedule combinator
 		 * `seq([]Schedule)` (a sum constructor taking one array literal — `seq({ a, b })`). */
 		if (func_name && strcmp(func_name, "seq") == 0 && argc == 2) {
+			for (int i = 0; i < argc; i++) {
+				ctx->analyzing_call_arg = 1;
+				analyze_expression(ctx, sem_node_at_expr(v, i));
+			}
+			free(func_name);
+			break;
+		}
+
+		/* `zip(e1, …, eN)` — applicative PRODUCT of N independent Effs (§5): run each, surface ALL their
+		 * out-slots (a `|> fin` then folds them). Recognized here so the name isn't flagged undefined; codegen
+		 * runs the N externs and binds their out-slots via the build-func fusion. Gated on ≥2 args. */
+		if (func_name && strcmp(func_name, "zip") == 0 && argc >= 2) {
 			for (int i = 0; i < argc; i++) {
 				ctx->analyzing_call_arg = 1;
 				analyze_expression(ctx, sem_node_at_expr(v, i));

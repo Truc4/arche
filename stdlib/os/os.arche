@@ -24,7 +24,7 @@
   @syscall(35)
   sys_nanosleep :: proc(req: []i64, rem: i64)(r: i64);                      // req IN (the requested duration)
   @syscall(228)
-  sys_clock :: proc(clk: i64, ts: [2]i64)(ts: [2]i64, r: i64);            // ts IN-OUT, SIZED so `ts:` infers it
+  sys_clock :: proc(clk: i64, ts: [2]i64)(ts: [2]i64);                    // ts IN-OUT (the VALUE); status dropped
 }
 
 argv :: proc(i: int)(out: []char) {
@@ -34,11 +34,12 @@ argv :: proc(i: int)(out: []char) {
 }
 
 // Monotonic-clock / nanosleep PRIMITIVES (`func → Eff`). The timespec `ts` is a caller-owned `[2]i64`
-// (`{ sec, nsec }`). `clock_mono` declares it IN-OUT — the kernel fills it, surfaced as the first out-slot;
-// `ms_of` cooks the filled timespec; `nanosleep` declares `req` plain-in (read-only, the kernel reads it):
-//   clock_mono()(ts: [2]i64, _:);  now := ms_of(ts);   // `ts:` allocates the kernel-written timespec
-//   if (slp > 0) { req: [2]i64; req[0] = slp/1000; req[1] = (slp%1000)*1000000; nanosleep(req)(_:); }
-clock_mono :: func() -> Eff([2]i64, i64) {
+// (`{ sec, nsec }`). `clock_mono` declares it IN-OUT — the kernel fills it, surfaced as the single out-slot;
+// `ms_of` cooks the filled timespec; `nanosleep` declares `req` plain-in (read-only, the kernel reads it).
+// The timespec→ms cook rides INSIDE the Eff via `|> ms_of` (see `now_ms`), so callers just bind the ms:
+//   os.now_ms()(now:);                                 // the common case — one line, no buffer
+//   os.clock_mono()(ts:);  now := ms_of(ts);           // the raw timespec, if you want it
+clock_mono :: func() -> Eff([2]i64) {
   return sys_clock(1, _); // CLOCK_MONOTONIC; the timespec is the caller-allocated OUT, `_` is the ABI shadow
 }
 ms_of :: func(ts: []i64) -> i64 {
@@ -63,10 +64,11 @@ sleep_ms :: func(ms: int) -> Eff(i64) {
   return nanosleep(req); // reuse the existing nanosleep func→Eff; req is read-only IN
 }
 
-// Monotonic milliseconds (clock_gettime CLOCK_MONOTONIC). `ts:` allocates the kernel-written timespec OUT.
-now_ms :: proc()(t: i64) {
-  sys_clock(1, _)(ts:, _:); // `ts:` infers `[2]i64` from sys_clock's out-param — no spelled-out type
-  t = ms_of(ts);
+// Monotonic milliseconds — a pure `func → Eff(i64)`: `|> ms_of` folds the kernel-written timespec OUT-slot
+// to ms INSIDE the Eff (fmap-over-buffer), so the timespec is run-internal scratch the caller never sees.
+// Run it like any Eff: `now := 0; os.now_ms()(now:)`.
+now_ms :: func() -> Eff(i64) {
+  return clock_mono() |> ms_of;
 }
 
 // `|> fd_of` folds the raw i64 syscall result into the `int` fd. The cook is a pure finalizer applied to

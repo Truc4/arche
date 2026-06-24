@@ -11,12 +11,17 @@ open :: func(w: int, h: int, own title: []char) -> Eff(window) {
 // The `@drop(window)` is on the `gfx_be_close` extern itself (each backend) — the runtime calls it when a
 // window leaves scope. No wrapper proc: the destructor is the primitive.
 
+// A window's framebuffer + dimensions, as ONE Eff via the applicative product `zip` of three independent
+// backend reads. A draw system binds all three at once: `gfx.frame(handle)(px:, w:, h:)` — no per-system
+// 3-line capture. (`px` is the writable pixel buffer; `w`/`h` its extent.)
+frame :: func(h: window) -> Eff([]int, int, int) {
+  return zip(gfx_be_frame(h), gfx_be_w(h), gfx_be_h(h));
+}
+
 // Fill each window's framebuffer with its `bg` colour (0xRRGGBB).
 clear :: system {
   each (query { handle, bg }) {
-    gfx_be_frame(handle)(px:);
-    gfx_be_w(handle)(w:);
-    gfx_be_h(handle)(h:);
+    frame(handle)(px:, w:, h:);
     n := w * h;
     i := 0;
     for (; i < n;) {

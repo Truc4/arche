@@ -9,9 +9,7 @@
 // framebuffer, clamped to its bounds.
 circle :: system {
   each (query { handle }) {
-    gfx_be_frame(handle)(px:);
-    gfx_be_w(handle)(w:);
-    gfx_be_h(handle)(h:);
+    frame(handle)(px:, w:, h:);
     each (query { pos, color, r }) {
       r2 := r * r;
       y0 := pos.y - r;
@@ -52,9 +50,7 @@ circle :: system {
 // don't shadow the window's `w`/`h` locals inside the fan.)
 rect :: system {
   each (query { handle }) {
-    gfx_be_frame(handle)(px:);
-    gfx_be_w(handle)(w:);
-    gfx_be_h(handle)(h:);
+    frame(handle)(px:, w:, h:);
     each (query { rx, ry, rw, rh, rcolor }) {
       y0 := ry;
       y1 := ry + rh;

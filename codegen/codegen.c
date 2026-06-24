@@ -1485,11 +1485,14 @@ static HirExpr *eff_subst_call(CodegenContext *ctx, HirFuncDecl *fn, HirExpr **a
  * static-extern builder (the E0222 case). Mirrors fold_sched's combinator inlining but keeps SSA args live. */
 static HirExpr *eff_inline_build(CodegenContext *ctx, HirFuncDecl *fn, HirExpr **actual_args, int actual_argc,
                                  HirProcDecl **out_proc, HirFuncDecl **out_finalizer, HirExpr **out_prefix,
-                                 HirProcDecl **out_prefix_proc) {
+                                 HirProcDecl **out_prefix_proc, HirExpr **out_zip_calls, HirProcDecl **out_zip_procs,
+                                 int *out_zip_count) {
 	*out_proc = NULL;
 	*out_finalizer = NULL;
 	*out_prefix = NULL;
 	*out_prefix_proc = NULL;
+	if (out_zip_count)
+		*out_zip_count = 0;
 	if (!fn)
 		return NULL;
 	/* the builder body is a single `return <expr>` (allow other no-op stmts before it defensively) */
@@ -1521,6 +1524,26 @@ static HirExpr *eff_inline_build(CodegenContext *ctx, HirFuncDecl *fn, HirExpr *
 		*out_prefix =
 		    eff_subst_call(ctx, fn, actual_args, actual_argc, bcall->data.call.args[0], out_prefix_proc, &prefix_fin);
 		bcall = bcall->data.call.args[1];
+	}
+	/* `zip(e1, …, eN)` — the applicative PRODUCT: recover each arg as its own (proc, substituted call). The
+	 * run-site emits all N effects and binds their out-slots positionally, or folds ALL of them through
+	 * *out_finalizer (a `zip(…) |> fin`). Returns a non-NULL sentinel; the run-site keys off *out_zip_count. */
+	if (out_zip_count && bcall && bcall->kind == HIR_EXPR_CALL && bcall->data.call.callee &&
+	    bcall->data.call.callee->kind == HIR_EXPR_NAME && bcall->data.call.callee->data.name.name &&
+	    strcmp(bcall->data.call.callee->data.name.name, "zip") == 0 && bcall->data.call.arg_count >= 2) {
+		int zc = 0;
+		for (int i = 0; i < bcall->data.call.arg_count && zc < 16; i++) {
+			HirProcDecl *zp = NULL;
+			HirFuncDecl *zfin = NULL; /* a per-arg `|> fin` inside a zip arg is not supported (product only) */
+			HirExpr *zcall = eff_subst_call(ctx, fn, actual_args, actual_argc, bcall->data.call.args[i], &zp, &zfin);
+			if (!zcall || !zp)
+				return NULL; /* a zip arg didn't resolve to a static extern → E0222 */
+			out_zip_calls[zc] = zcall;
+			out_zip_procs[zc] = zp;
+			zc++;
+		}
+		*out_zip_count = zc;
+		return bcall;
 	}
 	/* Thread *out_finalizer as the chain accumulator so a nested builder's `|> fin` merges with an outer one. */
 	return eff_subst_call(ctx, fn, actual_args, actual_argc, bcall, out_proc, out_finalizer);
@@ -7438,8 +7461,122 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		if (callee_func && callee_func->return_type_count > 0 && callee_func->return_types[0] &&
 		    callee_func->return_types[0]->tag == HIR_TYPE_EFF && rhs && rhs->kind == HIR_EXPR_CALL) {
 			HirProcDecl *eff_ext = NULL, *eff_prefix_proc = NULL;
+			HirExpr *zip_calls[16];
+			HirProcDecl *zip_procs[16];
+			int zip_count = 0;
 			eff_inlined = eff_inline_build(ctx, callee_func, rhs->data.call.args, rhs->data.call.arg_count, &eff_ext,
-			                               &eff_fin, &eff_prefix, &eff_prefix_proc);
+			                               &eff_fin, &eff_prefix, &eff_prefix_proc, zip_calls, zip_procs, &zip_count);
+			if (eff_inlined && zip_count > 0) {
+				/* `zip(e1, …, eN)` — the applicative PRODUCT: run each effect, COLLECT all their out-slot
+				 * values, then either fold them through a `|> fin` (one bound result) or bind each positionally
+				 * to its target. Each zip arg is a single-C-return extern, so `codegen_expression` yields its
+				 * value directly (a scalar, or the element pointer of an array return). */
+				char zval[16][256];
+				HirType *ztype[16];
+				int zn = 0;
+				for (int zi = 0; zi < zip_count; zi++) {
+					char zres[256];
+					codegen_expression(ctx, zip_calls[zi], zres); /* emit `%zres = call <cret> @ext(args)` */
+					HirProcDecl *zp = zip_procs[zi];
+					for (int oi = 0; oi < zp->out_param_count && zn < 16; oi++) {
+						if (proc_out_param_is_inout(zp, oi))
+							continue; /* in-out buffer arg: deferred general case (gfx/argv don't use it) */
+						snprintf(zval[zn], sizeof(zval[zn]), "%s", zres);
+						ztype[zn] = zp->out_params[oi]->type;
+						zn++;
+					}
+				}
+				if (eff_fin) {
+					/* generalized `|>`: pass ALL out-slots to the finalizer as args, then bind its scalar
+					 * result. SCALAR slots are supported — the applicative combine `zip(a, b) |> f`. Slice/
+					 * buffer slots in a `|> fin`, and slice RETURNS, are the DEFERRED case: a bare-pointer +
+					 * length recombine (os.argv: `raw[0:n]`) fights arche's checked-slice safety — there is no
+					 * sound length to hand the cook's `raw` param — so os.argv stays a proc for now. */
+					char args[2048];
+					int p = 0;
+					int all_scalar = 1;
+					for (int s = 0; s < zn; s++) {
+						HirType *ot = ztype[s];
+						if (ot && (ot->tag == HIR_TYPE_ARRAY || ot->tag == HIR_TYPE_SHAPED_ARRAY))
+							all_scalar = 0;
+						if (s)
+							p += snprintf(args + p, sizeof(args) - p, ", ");
+						p += snprintf(args + p, sizeof(args) - p, "%s %s", return_member_llvm(ot), zval[s]);
+					}
+					HirType *frt = (eff_fin->return_type_count > 0) ? eff_fin->return_types[0] : NULL;
+					int frt_scalar = frt && frt->tag != HIR_TYPE_ARRAY && frt->tag != HIR_TYPE_SHAPED_ARRAY;
+					if (!all_scalar || !frt_scalar) {
+						fprintf(stderr, "Error: `zip(…) |> fin` with a slice/buffer slot or slice return is not "
+						                "supported yet (the bare-pointer + length recombine fights checked-slice "
+						                "safety); keep it a proc\n");
+						ctx->had_error = 1;
+						break;
+					}
+					char fret[256], fsym_buf[512];
+					func_llvm_return_type(eff_fin, fret, sizeof(fret));
+					const char *fsym = cg_fnsym(ctx, eff_fin->name, 0, fsym_buf, sizeof(fsym_buf));
+					char *fres = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = call %s @%s(%s)\n", fres, fret, fsym, args);
+					if (target_count >= 1 && targets[0].name && strcmp(targets[0].name, "_") != 0 &&
+					    ctx->scope_count > 0) {
+						char *slot = gen_value_name(ctx);
+						emit_alloca(ctx, "  %s = alloca %s\n", slot, fret);
+						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", fret, fres, fret, slot);
+						ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+						vi->name = strdup(targets[0].name);
+						vi->llvm_name = strdup(slot);
+						vi->type = 1;
+						vi->string_len = -1;
+						vi->field_type = field_base_type_name(frt);
+						vi->bit_width = (frt && frt->tag == HIR_TYPE_FLOAT) ? 64
+						                : (frt && frt->tag == HIR_TYPE_INT) ? frt->int_width
+						                                                    : 64;
+						ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+						sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+						sc->values[sc->value_count++] = vi;
+					}
+					break;
+				}
+				/* no finalizer: bind each out-slot positionally to its target */
+				for (int s = 0; s < zn && s < target_count; s++) {
+					HirBindingTarget *tgt = &targets[s];
+					HirType *ot = ztype[s];
+					int is_arr = ot && (ot->tag == HIR_TYPE_ARRAY || ot->tag == HIR_TYPE_SHAPED_ARRAY);
+					if (!tgt->name || strcmp(tgt->name, "_") == 0 || ctx->scope_count <= 0)
+						continue;
+					ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+					vi->name = strdup(tgt->name);
+					vi->field_type = field_base_type_name(ot);
+					if (is_arr) {
+						/* array C-return is the element pointer — value IS the ptr (type-6). */
+						vi->llvm_name = strdup(zval[s]);
+						vi->type = 6;
+						vi->string_len = -1;
+						const char *el = llvm_type_from_arche(vi->field_type);
+						vi->bit_width = strcmp(el, "double") == 0 ? 64
+						                : strcmp(el, "i8") == 0     ? 8
+						                : strcmp(el, "i16") == 0    ? 16
+						                : strcmp(el, "i64") == 0    ? 64
+						                                            : 32;
+					} else {
+						const char *elem = return_member_llvm(ot);
+						char *slot = gen_value_name(ctx);
+						emit_alloca(ctx, "  %s = alloca %s\n", slot, elem);
+						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", elem, zval[s], elem, slot);
+						vi->llvm_name = strdup(slot);
+						vi->type = 1;
+						vi->string_len = -1;
+						vi->bit_width = (ot && ot->tag == HIR_TYPE_FLOAT) ? 64
+						                : (ot && ot->tag == HIR_TYPE_INT) ? ot->int_width
+						                                                  : 64;
+						vi->handle_archetype = (ot && ot->tag == HIR_TYPE_HANDLE) ? ot->name : NULL;
+					}
+					ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+					sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+					sc->values[sc->value_count++] = vi;
+				}
+				break;
+			}
 			if (eff_inlined) {
 				/* `seq`: run the prefix effect first (for its side effect; its result is discarded). */
 				if (eff_prefix) {
@@ -7454,6 +7591,79 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				/* the builder is not a single `return <extern>(…)` — its extern is not statically one extern */
 				fprintf(stderr, "Error: cannot run this Eff — its extern is not statically known (E0222)\n");
 				ctx->had_error = 1;
+			}
+		}
+
+		/* fmap-over-buffer (the applicative buffer fold): `clock() |> ms_of` where the extern's out-slot is a
+		 * kernel-written BUFFER and the finalizer consumes THAT buffer (its first param is a slice/array), not
+		 * the scalar return. The buffer is run-internal scratch — the caller binds only the finalizer's RESULT
+		 * (`now_ms()(t:)`, not the timespec). Allocate the scratch, thread the `_` in-slot to it, run the
+		 * extern, then fold `t = fin(scratch.ptr, scratch.len)` and bind that. (A scalar finalizer like
+		 * `sys_open |> fd_of` has a non-array first param and falls through to the normal scalar-fold below.) */
+		if (eff_fin && callee_proc && callee_proc->is_extern && rhs && rhs->kind == HIR_EXPR_CALL &&
+		    target_count == 1 && eff_fin->param_count >= 1 && eff_fin->params[0]->type &&
+		    (eff_fin->params[0]->type->tag == HIR_TYPE_ARRAY ||
+		     eff_fin->params[0]->type->tag == HIR_TYPE_SHAPED_ARRAY)) {
+			int buf_oi = -1;
+			for (int oi = 0; oi < callee_proc->out_param_count; oi++)
+				if (proc_out_param_is_inout(callee_proc, oi) && callee_proc->out_params[oi]->type &&
+				    callee_proc->out_params[oi]->type->tag == HIR_TYPE_SHAPED_ARRAY) {
+					buf_oi = oi;
+					break;
+				}
+			if (buf_oi >= 0) {
+				HirBindingTarget fb = {0};
+				fb.name = (char *)"__eff_finbuf";
+				fb.is_new = 1;
+				ValueInfo *fbvi = cg_alloc_shaped_out_buf(ctx, &fb, callee_proc->out_params[buf_oi]->type);
+				/* thread the `_` in-slot (the in-out shadow of the buffer) to the scratch */
+				const char *bn = callee_proc->out_params[buf_oi]->name;
+				char *saved = NULL;
+				HirExpr *saved_arg = NULL;
+				for (int j = 0; j < callee_proc->param_count && j < rhs->data.call.arg_count; j++) {
+					if (callee_proc->params[j]->name && bn && strcmp(callee_proc->params[j]->name, bn) == 0) {
+						HirExpr *a = rhs->data.call.args[j];
+						if (a && a->kind == HIR_EXPR_NAME && a->data.name.name) {
+							saved = a->data.name.name;
+							saved_arg = a;
+							a->data.name.name = fb.name;
+						}
+						break;
+					}
+				}
+				char res[256];
+				codegen_expression(ctx, rhs, res); /* runs the extern, writing the scratch buffer in place */
+				if (saved_arg)
+					saved_arg->data.name.name = saved; /* restore `_` */
+				if (fbvi && ctx->scope_count > 0) {
+					char fret[256], fsym_buf[512];
+					func_llvm_return_type(eff_fin, fret, sizeof(fret));
+					const char *fsym = cg_fnsym(ctx, eff_fin->name, 0, fsym_buf, sizeof(fsym_buf));
+					const char *elem = llvm_type_from_arche(fbvi->field_type ? fbvi->field_type : "i64");
+					char *fres = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = call %s @%s(%s* %s, i64 %d)\n", fres, fret, fsym, elem,
+					                  fbvi->llvm_name, fbvi->string_len);
+					HirBindingTarget *tgt = &targets[0];
+					if (tgt->is_new && tgt->name && strcmp(tgt->name, "_") != 0) {
+						char *slot = gen_value_name(ctx);
+						emit_alloca(ctx, "  %s = alloca %s\n", slot, fret);
+						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", fret, fres, fret, slot);
+						HirType *frt = (eff_fin->return_type_count > 0) ? eff_fin->return_types[0] : NULL;
+						ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+						vi->name = strdup(tgt->name);
+						vi->llvm_name = strdup(slot);
+						vi->type = 1;
+						vi->string_len = -1;
+						vi->field_type = frt ? field_base_type_name(frt) : "i64";
+						vi->bit_width = (frt && frt->tag == HIR_TYPE_FLOAT) ? 64
+						                : (frt && frt->tag == HIR_TYPE_INT) ? frt->int_width
+						                                                    : 64;
+						ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+						sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+						sc->values[sc->value_count++] = vi;
+					}
+				}
+				break;
 			}
 		}
 

@@ -1,0 +1,29 @@
+// FEATURE (fmap-over-buffer — the applicative buffer fold): a `func → Eff` may fold a kernel-written
+// OUTPUT buffer to a scalar via `|>`, not just a scalar syscall-return. `clock()` yields `Eff([2]i64)` (the
+// timespec is an in-out OUT buffer); `clock() |> ms_of` yields `Eff(i64)` — `ms_of` consumes the filled
+// timespec. At the run site the buffer is RUN-INTERNAL SCRATCH: the caller binds only the folded result
+// (`now()(t:)`), never the timespec. This is what lets `os.now_ms` be a func (no proc) and DRY the clock
+// read. Self-contained (own `@syscall(228)` extern). Monotonic ms is positive.
+// RUN: %arche build -o %t %s && %t | grep -qF "ok ms>0"
+#import { fmt }
+
+#foreign {
+  @syscall(228)
+  clk :: proc(c: i64, ts: [2]i64)(ts: [2]i64); // ts IN-OUT (the value); single out-slot
+}
+
+clock :: func() -> Eff([2]i64) {
+  return clk(1, _); // `_` is the ABI in-slot; the timespec is the OUT
+}
+ms_of :: func(ts: []i64) -> i64 {
+  return ts[0] * 1000 + ts[1] / 1000000;
+}
+now :: func() -> Eff(i64) {
+  return clock() |> ms_of; // fmap folds the timespec buffer to ms INSIDE the Eff
+}
+
+main :: proc() {
+  now()(t:); // bind only the folded result; the timespec is run-internal scratch
+  fmt.assert(t > 0, "monotonic ms should be positive\n");
+  fmt.printf("ok ms>0\n");
+}

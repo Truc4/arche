@@ -1,0 +1,25 @@
+// FEATURE (zip + generalized `|>`): a `|>` finalizer over a `zip` product receives ALL the product's
+// out-slots as arguments (today's single-out `|>` is the N=1 case). `zip(geta, getb)` is an `Eff(int, int)`;
+// `|> combine` folds both slots into one `Eff(int)`. This is the combiner half of the applicative product —
+// the same lever, with a cook. (Scalar slots; a slice/buffer slot or slice-returning cook is the deferred
+// case — it fights checked-slice safety, see `os.argv`.) Self-contained (own externs + shim).
+// RUN: %arche build -o %t --link %S/runtime/zipshim.c %s && %t | grep -qF "r=607"
+#import { fmt }
+
+#foreign {
+  geta :: proc(x: int)(a: int);
+  getb :: proc(x: int)(b: int);
+}
+
+combine :: func(a: int, b: int) -> int {
+  return a * 100 + b; // fold both out-slots
+}
+
+both :: func(x: int) -> Eff(int) {
+  return zip(geta(x), getb(x)) |> combine;
+}
+
+main :: proc() {
+  both(5)(r:); // geta(5)=6, getb(5)=7 -> combine -> 607
+  fmt.printf("r=%d\n", r);
+}

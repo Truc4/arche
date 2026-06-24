@@ -1,0 +1,24 @@
+// FEATURE (zip — the applicative PRODUCT): `zip(e1, …, eN)` combines N INDEPENDENT effects into one Eff
+// whose out-slots are the concatenation of all of theirs. No combiner; the run site emits each effect and
+// binds ALL their out-slots positionally (`(px:, w:, h:)`). This is what lets `gfx.frame` surface a window's
+// framebuffer + dimensions in one call, replacing the per-draw-system 3-line capture. Independence is the
+// applicative rung (§5): no out-slot feeds another effect, so order is free. Here: a buffer pointer + two
+// scalars (the gfx px/w/h shape); the buffer is writable. Self-contained (own externs + shim).
+// RUN: %arche build -o %t --link %S/runtime/zipshim.c %s && %t | grep -qF "px0=11 px1=77 w=640 h=480"
+#import { fmt }
+
+#foreign {
+  zbuf :: proc(h: int)(buf: []int); // returns a framebuffer pointer
+  zw   :: proc(h: int)(w: int);     // returns the width
+  zh   :: proc(h: int)(z: int);     // returns the height
+}
+
+frame :: func(h: int) -> Eff([]int, int, int) {
+  return zip(zbuf(h), zw(h), zh(h)); // product of three independent reads
+}
+
+main :: proc() {
+  frame(0)(px:, w:, h:); // bind all three out-slots at once
+  px[1] = 77;            // the buffer slot is writable
+  fmt.printf("px0=%d px1=%d w=%d h=%d\n", px[0], px[1], w, h);
+}
