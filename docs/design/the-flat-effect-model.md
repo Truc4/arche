@@ -222,59 +222,73 @@ func hat. The fix isn't to keep them procs — it's to rewrite the convenience l
 **funcs→`Eff`** that wrap the *real* primitive, never another proc. Almost every wrapper is exactly
 that shape: a thin builder around one primitive.
 
-> **The settled recipe — the lib builds the raw effect; the caller cooks the raw result.** A wrapper
-> is `func(args…) -> Eff(<the primitive's raw out-slots>)` — nothing more. The pure post-processing the
-> old proc did (clamp `r<0`, `slice buf[0:r]`, `ts[0]*1000 + ts[1]/1e6`) does **not** ride inside the
-> `Eff`; it moves to where the result is consumed — a **pure `func`** the caller applies, or a line in
-> the calling **system**. Running the `Eff` and reacting to what came back is the system's job (§5), so
-> the cook belongs there, not hidden in the builder.
+> **The settled recipe — the lib builds the raw effect as a `func → Eff`; the cook rides inside it.** A
+> wrapper is `func(args…) -> Eff(<the primitive's out-slots>)` — a thin builder around one primitive, never
+> another proc. The pure post-processing the old proc did (`i64→fd` cast, `buf[0:r]`, the ms arithmetic)
+> rides **inside** the `Eff` via `|>` (fmap), so the wrapper stays a func and the call site is one line.
 
-This is lighter than it first looks, and it needs **no** new machinery — no `Result` type, no generics,
-no result-reshaping `fmap`. Two facts make it collapse:
+This needs no `Result` type and no generic sum: **the result/status is just an out-slot.** A read returns
+its byte count (or negative errno) as the `Eff`'s out-slot; the caller branches on it. Fallibility is *data
+in an out-slot*, reacted to in the proc/system — the model's failure-as-data (§7).
 
-- **The result/status is just an out-slot.** A read returns its byte count (or negative errno) as the
-  `Eff`'s out-slot; the caller branches on it. Fallibility is *data in an out-slot*, reacted to in the
-  proc/system — exactly the model's failure-as-data (§7). There is no `Eff(Result(…))` to build and so
-  no generic sum to invent.
-- **The buffer is caller-owned.** Anything the syscall fills through a pointer arg (`read`'s `buf`,
-  `now_ms`'s `[2]i64` timespec) is the **caller's** value, passed in. So the pure cook that reads it
-  back (`buf[0:n]`, the ms arithmetic) is an ordinary `func` over a value the caller holds — never a
-  finalizer that has to reach inside the builder.
+### The buffer model — a kernel-written buffer is the caller-allocated OUT param
 
-Worked shape — `os.now_ms`, which *looks* like it needs post-processing but doesn't need a proc:
+A syscall that *fills* a buffer (`read`'s `buf`, `clock`'s `[2]i64` timespec) does **not** take it as an
+in-arg: an in-param can't supply a writable allocation — that is the **out param's** job. The buffer is the
+caller-allocated **OUT** param.
+
+- In the out-list, **`name: [N]T` ALLOCATES** a fresh buffer caller-side; **`name`** (no `:`) writes an
+  **existing** variable or pool column.
+- The in-list still carries the buffer's positional slot (the C ABI passes the pointer there), written
+  **`_`** at the call site — a C-ABI shadow that supplies no value. The same name in both lists marks the
+  param **in-out** (kernel reads+writes in place); the shadow surfaces as the W0012 lint.
 
 ```arche
-clock_get :: func(ts: []i64) -> Eff(i64) { return syscall(228, 1, ts, 0,0,0,0); }  // impure build, raw out-slot
-ms_of     :: func(ts: []i64) -> i64 { return ts[0]*1000 + ts[1]/1000000; }          // pure cook over the caller's buffer
-
-// in a system: run, then cook — the run-then-react the proc used to hide
-ts: [2]i64;  clock_get(ts)(_:);  now := ms_of(ts);
+read :: func(fd: int, len: int) -> Eff([]char, i64) {
+  return sys_read(fd, _, len);            // `_` is the C-ABI in-slot; the buffer is the OUT
+}
+io.read(fd, 256)(buf: [256]char, n:);  data := buf[0: n];  // fresh local: `:` allocates the OUT
+io.read(fd, n)(cb, k:);                                    // or write an existing/queried buffer (no `:`)
 ```
 
-`os.argv`, `io.read`, `net.recv`, `os.open` all take this shape: a `func → Eff(raw)` over the primitive
-plus (where any shaping is wanted) a pure `func`, with the calling system doing run-then-cook. Same call
-site cost as today, one or two lines. The wrapped leaf is always the genuine primitive, so the spine
-stays depth-1 and no ban is touched; the convenience that *can* live in the lib (the builder + the pure
-cook func) does, and the part that genuinely belongs in the imperative shell (sequencing the run before
-the cook) sits at the call site where the model already puts it.
+The mutability is **declared, not special-cased**: a buffer the kernel writes is an in-out param of a typed
+`@syscall(N)` extern; a buffer it only reads is a plain-in borrow. Buffers may **not** be passed to the
+scalars-only generic `syscall` (it can't declare the mutability) — closing the hole of a syscall scribbling
+through a read-only borrow.
 
-(An optional same-shape `|> fin` — fmap a named pure func over a *scalar* raw out-slot, `Eff(int) |>
-neg` — exists and is fine for trivial scalar maps like an `i64(r)` cast. It is **not** required by this
-recipe and deliberately does **not** reshape slots or carry a buffer-cooking finalizer; that work is the
-caller-side pure func above.)
+### fmap-over-buffer — the cook rides inside the Eff
+
+`|>` applies a pure finalizer that the *run* applies to the effect's result — not only a scalar return but a
+kernel-written **OUT buffer**. When the finalizer folds a buffer, the buffer is **run-internal scratch** the
+caller never sees; the finalizer's result is what's bound.
+
+```arche
+clock_mono :: func() -> Eff([2]i64) { return sys_clock(1, _); }      // single out-slot: the timespec
+ms_of      :: func(ts: []i64) -> i64 { return ts[0]*1000 + ts[1]/1000000; }
+now_ms     :: func() -> Eff(i64) { return clock_mono() |> ms_of; }   // the cook rides INSIDE the Eff
+now := 0;  os.now_ms()(now:);                                        // common case — one line, no buffer
+open :: func(path: []char, flags: int) -> Eff(int) { return sys_open(path, flags, 0) |> fd_of; } // scalar reshape
+```
+
+This is why the convenience the old proc carried can live in the *lib* as a func, not smeared caller-side:
+the builder under-applies the extern, `|>` attaches the pure cook, the run does both. The wrapped leaf is
+always the genuine primitive, so the spine stays depth-1 and no ban is touched.
+
+### Classifying a stdlib proc (the conversion decision tree)
+
+1. **Pure result, no buffer** → `func → Eff(scalar)`, optional `|> fin` scalar reshape (`os.open`, `os.close`).
+2. **Kernel-written buffer** → the buffer is the caller-allocated OUT param (`io.read`, `net.recv`); fold it
+   to a value with `|> fin` (`os.now_ms`), or bind the buffer and cook at the call site.
+3. **Caller-built input buffer** → build it element-by-element in the func, pass it (`os.sleep_ms` builds a
+   timespec, then `nanosleep(req)`). Input builds are free funcs — the buffer is live *before* the run.
+4. **Result-dependent (monadic) sequencing** → STAYS a proc (the one exception, below).
 
 **The one genuine exception is result-dependent convenience.** A wrapper whose *internal* sequencing is
-monadic — `io.fread_line` (read char-by-char until `\n`), a retry loop, a framed "read a length then
-read that many bytes" — cannot be a func/`Eff` (that needs a free monad: continuations, allocation,
-unbounded). It is the **only** stdlib wrapper that stays a `proc`. Today the honest move is: the lib
-exposes the *leaf* as a func→`Eff` (`read1 -> Eff(char,int)`) and the monadic loop is written in the
-consuming proc/system — the cost is the loop isn't shared. The principled long-term home is a fourth
-construct (see §9).
-
-The per-wrapper conversion recipe — classify a proc, convert it, migrate its call sites — is
-[flat-effect-model-stdlib-migration.md](flat-effect-model-stdlib-migration.md); a whole-program
-before/after on `net`/`io`/`http` is in
-[flat-effect-model-migration-web-server.md](flat-effect-model-migration-web-server.md).
+monadic — `io.fread_line` (read char-by-char until `\n`), a retry loop, a framed "read a length then read
+that many bytes" — cannot be a func/`Eff` (that needs a free monad: continuations, allocation, unbounded).
+It is the **only** stdlib wrapper that stays a `proc`: the lib exposes the *leaf* as a func→`Eff`
+(`read1 -> Eff(char,int)`) and the monadic loop lives in the consuming proc/system — the cost is the loop
+isn't shared. The principled long-term home is a fourth construct (the `routine`, see §9).
 
 ## 5. The applicative/imperative line (the one subtlety worth memorizing)
 
@@ -284,6 +298,25 @@ There are two kinds of effect composition, and arche puts them in two different 
 then a newline" — a func can build the whole thing as one `Eff`. No runtime value flows between the
 pieces. This is the **applicative** rung: structure known before execution, which is exactly why it's
 safe to inspect, reorder, batch, and run in parallel.
+
+The two composition primitives a func has are `|>` (fmap — reshape one effect's result) and **`zip` (the
+applicative product — combine N INDEPENDENT effects)**. `zip(e1, …, eN)` runs each effect and yields one
+`Eff` whose out-slots are the concatenation of all of theirs; the run binds them positionally, or a
+`zip(…) |> fin` folds **all** the slots through one finalizer (the single-out `|>` is the N=1 case).
+Independence is the whole point — no out-slot feeds another effect's *shape*, so order is free:
+
+```arche
+// gfx: a window's framebuffer + dims as one Eff — three independent backend reads, no combiner
+frame :: func(h: window) -> Eff([]int, int, int) { return zip(gfx_be_frame(h), gfx_be_w(h), gfx_be_h(h)); }
+gfx.frame(handle)(px:, w:, h:);                                  // bind all three out-slots at once
+
+// argv-shape: combine two independent reads with a cook
+argv :: func(i: int) -> Eff([]char) { return zip(os_argv(i), os_argv_len(i)) |> slice_of; }
+```
+
+(`zip(…) |> fin` is supported for scalar slots/returns today; a *slice* slot/return — a bare-pointer +
+length recombine like `os.argv`'s `raw[0:n]` — fights checked-slice safety and is not yet supported, so
+`os.argv` itself stays a proc for now. See "Deferred" below.)
 
 **Result-dependent sequencing → the proc.** When the *next* effect's shape depends on the *previous*
 one's runtime result — "read a length header, then read *that many* bytes" — you cannot pre-build it.
@@ -321,10 +354,12 @@ applicative/imperative line restated as a rule, and it has three cases:
 
 - **Yes — a static series of effects collapses into one `Eff`.** This is the intended way two procs
   *share* an effectful step: factor the sequence into a func that composes the wrapped externs into one
-  value. When run, it performs them in order and yields the union of their out-slots. Crucially this
-  adds **breadth, not depth** — the run unfolds to `system → proc → {extern, extern, …}`, still
-  depth-1, because the composition happened in the value world (where nesting is free) and flattens to
-  terminal externs with no proc in between.
+  value. The composition primitives are **`zip`** (the applicative product — combine N *independent*
+  effects, yielding the union of their out-slots), **`seq`** (run-then-discard ordering), and **`|>`**
+  (fmap a pure cook over the result). When run, the value performs its effects and yields its out-slots.
+  Crucially this adds **breadth, not depth** — the run unfolds to `system → proc → {extern, extern, …}`,
+  still depth-1, because the composition happened in the value world (where nesting is free) and flattens
+  to terminal externs with no proc in between.
 
 - **No — a result-dependent series cannot be an `Eff`.** The moment a later effect's *input* is an
   earlier effect's *output* (`read` a length, then `read` that many bytes), you'd need a free *monad*
@@ -336,6 +371,28 @@ applicative/imperative line restated as a rule, and it has three cases:
   one `Eff`. What *sequences* procs — threading out-slots, branching on results — is a **`system`**, and
   it produces a schedule step, not a value. There is deliberately no path from "several procs" to "one
   value": that path is precisely what would make procs first-class and collapse the flatness.
+
+### Diagnostics the model enforces
+
+- **E0223 `extern_multi_out`** — a `#foreign` proc may declare at most ONE out-*only* out-param (it maps to
+  the C return value); additional kernel-written outputs must be **in-out buffer** params (a name in both
+  the in- and out-list). More than one out-only out-param used to silently miscompile; it is now rejected.
+- **W0012 `inout_param_shadow`** — surfaces the C-ABI in-out shadow (the in-list buffer entry written `_`),
+  so the "same name in both lists" is visible rather than silent. Permitted for `#foreign`/`@syscall`.
+- **W0029 `pool_index_outside_query`** — a pool column reached by hand (`Pool.col[i]` *or* `Pool.col[a:b]`)
+  outside a query/system fan; pool values must come from a query. (The slice form catches a pool-column
+  buffer filled as a read OUT target outside a query.)
+
+### Deferred — the honest edges
+
+- **`zip(…) |> fin` with a slice slot or slice return** is unsupported: a bare-pointer + length recombine
+  (`os.argv`: `raw[0:n]`) has no sound length to hand the cook's slice param, and fights checked-slice
+  safety (`!undefined` is forbidden). Scalar slots/returns work; `os.argv` therefore stays a **proc**.
+- **Result-dependent (monadic) sequencing** stays in a proc — the applicative/imperative line above; the
+  principled long-term home is the `routine` construct (§9).
+- **Higher-order systems** (a system parameterized by a body) are deliberately absent: that would hoist
+  iteration into a value and reintroduce the depth the model exists to forbid. Repeated `each (query {…})`
+  fan headers across draw systems are structural skeleton, not duplication to abstract away.
 
 ## 6. Why this is *specifically* cool in arche
 
@@ -429,6 +486,11 @@ No free lunches; here are the bills.
 
 ## 9. The schedule: scheduling logic as a value
 
+> This section is the **effect-model framing** of the schedule — *why* the loop is a value (the same move
+> that reified effects). The **operational spec** — the `Schedule` sum, the compile-time fold, the
+> `#run`-collection rule, the pacing recipe, and state-in-pools — lives in
+> [scheduling.md](scheduling.md). Where they overlap, scheduling.md is the current source of truth.
+
 There is no `main`. A program is its declarations plus one **`Schedule`** value, and the **runtime**
 executes that value. The runtime is the loop and the apex of the spine — and it is not a kind you write.
 A `main`-as-driver-proc cannot exist: a proc may not reach a proc, so a top-level proc could never run the
@@ -468,21 +530,11 @@ is the **extern**. Four fixed levels; no `driver`, no super-system. (Orthogonal 
 plane: `func` builds `Eff` and `Schedule` values, `map` is the data-parallel kernel.)
 
 **The core is small — the runtime's ABI.** The runtime natively interprets a fixed set of `Schedule`
-constructors; that set, and only that set, is the contract:
-
-```
-run  (s)         dispatch one system or map      (the leaf — a system enters a Schedule via run)
-seq  (steps)     run a []Schedule in order
-par  (steps)     run a []Schedule concurrently   (only within data dependencies)
-loop (s)         repeat
-when (c, s)      reserved — NOT wired to program state; possible future loop-end hook   (see below)
-halt             stop the program
-```
-
-`seq`/`par` take a **`[]Schedule`** — passed as an array literal (`seq({ run(a), run(b) })`), never
-variadic. The whole `Schedule` is a compile-time-constant tree of these nodes; system and condition
-references are compile-time identities (the callback-by-name machinery), so it is **static and heap-free**
-— the runtime walks a fixed structure and allocates nothing.
+constructors — `seq([]Schedule)`, `par([]Schedule)`, `loop(Schedule)`, `when(func()->bool, Schedule)`,
+`halt` — and a **leaf is a bare system/map/each name** (`#run seq({ boot, render })`). The earlier `run(s)`
+leaf constructor is **retired**: a system/map is scheduled by name, never wrapped. The whole `Schedule` is a
+compile-time-constant, heap-free tree the runtime walks, allocating nothing. (Full constructor semantics,
+the compile-time fold, and the `#run`-collection rule are in [scheduling.md](scheduling.md).)
 
 **Structure combinators are `func`s you write over the core — not a DSL, not a stdlib.** Only `once` and
 `forever` ship (in `core.arche`); any other *structural* combinator is yours to write as a func returning
@@ -499,11 +551,11 @@ The schedule loops dumbly; *timing* is work a system does (read `os.now_ms`, dec
 both ends: structure is ordinary `func`-built values, and pacing is ordinary system work — neither is a
 second language.
 
-**A system enters a `Schedule` explicitly, with `run`.** `run(draw)` is the leaf node holding `draw`'s
-compile-time identity; a bare system is *not* a `Schedule`. (An implicit `system → Schedule` lift is a
-tempting single coercion — `seq({ draw, present })` reading bare names as "run it" — but the value form
-keeps it explicit for now: `seq({ run(draw), run(present) })`.)
-Sub-schedules don't lift — they already are `Schedule`s — which is what lets schedules nest for free.
+**A leaf is a bare system name.** `#run seq({ draw, present })` dispatches `draw` then `present` by their
+compile-time identities — there is **no `run(…)` wrapper** (the earlier explicit-`run` leaf was retired in
+favor of this bare-name lift; `map`/`each` are kinds of systems, scheduled the same way).
+Sub-schedules don't need lifting either — they already are `Schedule`s — which is what lets schedules nest
+for free.
 
 **Scheduling structures; systems do.** A `Schedule` is a pure value: pure structure (`seq`/`par`/`loop`).
 It performs no effect and the runtime owns no state. There is **no `World`** — an earlier draft gave
@@ -540,29 +592,29 @@ gather :: system { /* run input-device leaves → write InputEvent rows */ }
 step   :: system { /* drain InputEvent, mutate Sim, write RenderCmd rows */ }
 paint  :: system { /* drain RenderCmd → run draw-device leaves */ }
 
-#run forever(seq({ run(gather), run(step), run(paint) }))   // ONE tick, sequenced; barrier at each seam
+#run forever(seq({ gather, step, paint }))   // ONE tick, sequenced; barrier at each seam (leaves are bare names)
 ```
 
 **`#run` names the program's one `Schedule` value for the runtime to execute.** There is exactly one per
 program (a module that ships a `#run` is a compile error — two timelines means no timeline). **Systems are
-global the way pools and types are** — a system has one name in the program's vocabulary, and `run` names it
-bare (`run(draw)`, never `run(gfx.draw)`). A device *contributes* systems to that global namespace; it does
+global the way pools and types are** — a system has one name in the program's vocabulary, and the schedule
+names it bare (`draw`, never `gfx.draw`). A device *contributes* systems to that global namespace; it does
 not own a callable surface anyone reaches into.
 
 **The schedule expresses STRUCTURE; timing and conditions are not its job.** Only the core
-(`run`/`seq`/`par`/`loop`/`when`/`halt` + `once`/`forever`) is provided. *Structural* shapes are
-`Schedule` values; *timing* is work a system does:
+(`seq`/`par`/`loop`/`when`/`halt` + `once`/`forever`) is provided. *Structural* shapes are `Schedule`
+values; *timing* is work a system does:
 
 | concern | how |
 |---|---|
-| tick (default) | `forever(run(serve))` — a schedule value (core) |
-| startup-then-loop | `seq({ run(boot), forever(run(serve)) })` — a schedule value (core) |
+| tick (default) | `forever(serve)` — a schedule value (core) |
+| startup-then-loop | `seq({ boot, forever(serve) })` — a schedule value (core) |
 | nested / sub-step / rollback | embed a `Schedule` in a `Schedule` — values nest (core) |
-| time / Hz, fixed-step + catch-up | a **system** does all the timing (read `os.now_ms`, accumulate a bank, `run` the sim map while behind, sleep the remainder when caught up); the schedule just `loop`s and re-runs the system to drain catch-up. No schedule condition — timing is wholly system work |
+| time / Hz, fixed-step + catch-up | a **system** does all the timing (read `os.now_ms`, accumulate a bank, let the sim map run while behind, sleep the remainder when caught up); the schedule just `loop`s and re-runs the system to drain catch-up. No schedule condition — timing is wholly system work |
 | event-gated, state-gated | **not a schedule feature** — gate inside a system's body (`if`), or end the loop with `os.exit`. The schedule reads no program state. (A schedule-level loop-end hook is a deferred TODO.) |
-| CPU / cores | `forever(par({ run(physics), run(ai) }))` — `par`-as-true-concurrency is **open** |
+| CPU / cores | `forever(par({ physics, ai }))` — `par`-as-true-concurrency is **open** |
 
-**Setup** is just a `run(boot)` entry *before* the loop
+**Setup** is just a `boot` entry *before* the loop
 in the `seq` — no separate "startup phase" construct, it simply runs once because a `seq` entry runs once.
 (`once(s)` is the *one-shot program* wrapper — `seq({ s, halt })`, run-then-exit — not a setup prefix; using
 it before a `forever` would `halt` the program before the loop ever starts.) **Nested
@@ -571,7 +623,7 @@ a `Schedule` — no new keyword, because values nest. And a **reusable named seq
 `func` returning a `Schedule` — the "reuse residue" dissolves too.
 
 ```arche
-#run seq({ run(boot), forever(run(serve)) })   // setup once, then loop — one value
+#run seq({ boot, forever(serve) })   // setup once, then loop — one value (leaves are bare names)
 ```
 
 There is no `tick` keyword. Advancing the schedule is the runtime's job, not a statement a program writes —
@@ -598,7 +650,7 @@ The payoff is concrete. arche-rpg today exports `draw_ball` as a **proc** and th
 entities calling it (`for i … { draw_ball(win, pos.x[i], …) }`) — because a system "can't take the window
 handle." Make the window a singleton pool and `draw` becomes a **system** over `(pos, color)` + `Window`:
 the manual loop vanishes, drawing fans over the column like any other kernel, and the schedule just names
-`run(draw)`. The thing that *forced* the proc — threading external context — dissolves once context is a
+`draw`. The thing that *forced* the proc — threading external context — dissolves once context is a
 singleton the system reads. Systems are global the way pools and types are; a device contributes to
 that global vocabulary, and the schedule is where it all gets ordered.
 
@@ -623,7 +675,7 @@ is answered by *not exposing the handle at all*, not by passing it some other wa
 
 Reifying the schedule as a value closed three problems that were open under the old directive form:
 **nested ticks / sub-schedules** are a `Schedule` inside a `Schedule`; a **reusable named sequence** is a
-`func` returning a `Schedule`; **startup** is a `run(boot)` entry before the loop. None needs a new construct or relaxes
+`func` returning a `Schedule`; **startup** is a `boot` entry before the loop. None needs a new construct or relaxes
 the system ban. What remains:
 
 - **A schedule-level loop-end hook (deferred TODO).** `Schedule`-as-a-recursive-value, the fold, `#run`,
