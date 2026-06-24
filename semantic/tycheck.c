@@ -410,6 +410,11 @@ static int target_is_opaque_nominal(TyCtx *cx, TypeId t) {
 		return 0;
 	char name[64];
 	tyid_display(cx->arena, t, name, sizeof(name));
+	/* The raw `opaque` base: a pool-column element type synthesised THROUGH its alias (`Holder.h[0]` where
+	 * `h :: res` and `res :: opaque`) resolves to base `opaque`, not the nominal `res`. Catch it directly so
+	 * the create-once seal covers columns of opaque, not just bare opaque nominals. */
+	if (strcmp(name, "opaque") == 0)
+		return 1;
 	if (!semantic_is_type_alias(cx->ctx, name) || semantic_alias_is_transparent(cx->ctx, name))
 		return 0;
 	const char *b = semantic_resolve_type_alias(cx->ctx, name);

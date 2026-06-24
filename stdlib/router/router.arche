@@ -96,11 +96,14 @@ add :: proc(pattern: []char, handler_id: int) {
   TrieNode.handler_id[cur] = handler_id;
 }
 
-resolve :: proc(path: []char)(handler_id: int) {
+// Resolve `path` to a handler id, and hand back the captured spans (`:param` / `*` catchall) as
+// caller-allocated OUT arrays — `resolve(path)(h:, cs: [8]int, cl: [8]int, nc:)`. No module state: the
+// captures belong to the caller, so there is no stash to read back and nothing to share.
+resolve :: proc(path: []char)(handler_id: int, cap_start: [8]int, cap_len: [8]int, n_caps: int) {
   n   := str.strlen(path);
   cur := 0;
-  cap_count[0] = 0;
-  handler_id   = -1;
+  n_caps     = 0;
+  handler_id = -1;
   s := 0;
   if (n > 0) {
     if (path.length > 0) {
@@ -155,30 +158,15 @@ resolve :: proc(path: []char)(handler_id: int) {
       if (ck == nodeKind.kcatchall) {
         cend = n;
       }
-      cap_start[cap_count[0]] = s;
-      cap_len[cap_count[0]]   = cend - s;
-      cap_count[0]            = cap_count[0] + 1;
-      cur                     = chosen;
-      s                       = cend + 1;
+      cap_start[n_caps] = s;
+      cap_len[n_caps]   = cend - s;
+      n_caps            = n_caps + 1;
+      cur               = chosen;
+      s                 = cend + 1;
     }
   }
   handler_id = TrieNode.handler_id[cur];
 }
-
-param_count :: proc()(n: int) {
-  n = cap_count[0];
-}
-
-param :: proc(i: int)(start: int, len: int) {
-  start = cap_start[i];
-  len   = cap_len[i];
-}
-
-#module
-
-cap_start : [8]int;
-cap_len   : [8]int;
-cap_count : [1]int;
 
 #file
 

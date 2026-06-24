@@ -30,11 +30,11 @@ slice :: func(own buf: []char, path: []char, start: int, len: int) -> []char {
 }
 
 dispatch :: proc(path: []char) {
-  router.resolve(path)(h:);
-  // router.param is hoisted out of the `match`: a cross-module out-param call placed *inside* a
-  // match arm currently loses its out values (zero-init) — see FINDINGS. Reading the span here is
-  // harmless for the no-param arms (which ignore it).
-  router.param(0)(st:, ln:);
+  // `resolve` hands back the captured spans as OUT arrays — no stateful `param` read-back. The first
+  // capture (span 0) is the one this router's routes use (`:id`, `*`).
+  router.resolve(path)(h:, cs: [8]int, cl: [8]int, _:); // count discarded — these routes use only span 0
+  st := cs[0];
+  ln := cl[0];
   if (h < 0) {
     h = handler.not_found; // remap miss to an explicit variant — no `_` in the enum match
   }

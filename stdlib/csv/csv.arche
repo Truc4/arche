@@ -9,6 +9,7 @@ cell_int :: func(c: int, s: []char) -> int {
 cell :: func { cell_float, cell_int }
 
 load :: proc(arch: archetype, own path: []char) {
+  load_cols: [64]int; // field-index → CSV-column-index scratch; a local (used only within this proc)
   io.file_map(move path)(data:);
   io.file_size()(size: i64);
 
@@ -52,12 +53,8 @@ load :: proc(arch: archetype, own path: []char) {
     }
     pos = nl + 1;
   }
-  io.file_unmap(move data, size);
+  io.file_unmap(move data, size)(); // run the Eff() (was a bare build — the unmap never happened)
 }
-
-#module
-
-load_cols: [64]int;
 
 #file
 

@@ -1,17 +1,17 @@
-// Overwriting an opaque imported from ANOTHER module (here io's `file`) with `=` must be rejected (E0122).
-// Currently RED: the create-once seal only recognizes same-file opaque aliases, so a cross-module opaque
-// overwrite is not caught and reaches codegen (LLVM "invalid type for function argument"). This is the
-// exact hole the arche-rpg `win: window; win = w;` hack relied on (`window` is the gfx device's opaque).
+// Overwriting an opaque imported from ANOTHER module (net's `socket`) with `=` must be rejected (E0122).
+// The create-once seal must recognize a CROSS-MODULE opaque, not just same-file aliases — this is the hole
+// the arche-rpg `win: window; win = w;` hack relied on (`window` is the gfx device's opaque). Held in a pool
+// COLUMN, because a mutable opaque global is itself banned (W0022). (Previously used a `#file` mutable
+// `file` global; `file` was retired and W0022 now bans mutable opaque globals outright.)
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "assign over opaque" %t.out
-#import { io }
+#import { net }
 
-@allow(unused_function)
-clobber :: proc(src: file) {
-  slot = src;
+Holder :: arche { h :: socket }
+[1]Holder;
+
+clobber :: proc(src: socket) {
+  Holder.h[0] = src; // overwrite an IMPORTED opaque held in a column — must be rejected
 }
-
-#file
-slot: file;
 
 main :: proc() {
 }
