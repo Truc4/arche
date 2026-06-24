@@ -1,0 +1,16 @@
+// `@drop(T)` must name the destructor's own parameter type — declaring it drops one type while taking
+// another is a typo, not silently ignored. Reject the mismatch.
+// RUN: not %arche build -o %t %s 2>&1 | grep -qi "names a different type"
+#import { fmt }
+
+a :: enum { x }
+b :: enum { y }
+
+@drop(a)
+bad :: proc(own v: b) { // says it drops `a` but takes a `b`
+  fmt.printf("%d\n", i64(v));
+}
+
+main :: proc() {
+  fmt.printf("unused\n");
+}

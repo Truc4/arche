@@ -71,6 +71,7 @@ void hir_field_free(HirField *field) {
 	if (!field)
 		return;
 	free(field->name);
+	free(field->decl_type_name);
 	hir_type_free(field->type);
 	free(field);
 }

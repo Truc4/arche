@@ -36,8 +36,11 @@ reorders silently. General primitive, not io-specific; io mostly gets its edges 
 
 A resource is a row, not a value you pass:
 
-- **`File` is a pool-resident archetype.** `open` inserts a `File` row carrying the kernel fd + state. The
-  row exists or it doesn't; there is no descriptor to "close."
+- **The resource is a column TYPE, not a wrapper archetype.** There is no `File` shape to wrap an fd in. You
+  park an `fd` column in *whatever* archetype you already have (`Conn { fd, addr }`, `LogFile { fd, path }`),
+  and the fd is data in that row. "Open" inserts the row; the row exists or it doesn't; there is no descriptor
+  to "close" as a value. (An earlier sketch proposed a dedicated `File` archetype — dropped: it's a wrapper,
+  and arche queries by type, not by named container.)
 - **Operations apply to rows, via queues.** To read, insert a request row (a `ReadReq` pool referencing the
   `File` by entity handle); a `read` system drains the queue, performs the syscall, and writes results back
   (a `ReadResult` pool/column). Same command-buffer pattern as `insert`/`delete` and event pools — io is
@@ -47,9 +50,11 @@ A resource is a row, not a value you pass:
   the edges automatically — `enqueue` writes `ReadReq`, `drain` reads it → drain-after-enqueue for free;
   `drain` writes `ReadResult`, `consume` reads it → consume-after-drain for free. No async machinery; no
   mmap-vs-stream split (both are just systems the schedule sequences).
-- **close = the row leaving the pool.** Deleting the `File` row fires the kernel close — a `@drop`-on-delete
-  hook, the analogue of RAII but tied to the row's lifecycle, not lexical scope. (`autodrop_in_ir`'s
-  scope-exit premise is *replaced* by this: delete the row → close emitted.)
+- **close = the row leaving the pool.** Deleting a row with an `fd` column fires the kernel close — a
+  `@drop(fd)`-on-delete hook (registered once in stdlib io), the analogue of RAII but tied to the row's
+  lifecycle, not lexical scope. The hook is **column-type-targeted**: on any row delete, each column whose
+  *type* has a registered `@drop` is released. (`autodrop_in_ir`'s scope-exit premise is *replaced* by this:
+  delete the row → close emitted.)
 - **Passing a handle stays allowed** as an escape hatch, but it buys nothing — operating on a row is strictly
   easier than threading a handle — so there is no hard datasheet seal forcing it; the pool is the natural
   model.

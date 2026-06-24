@@ -116,6 +116,10 @@ struct HirField {
 	FieldKind kind;
 	char *name;
 	HirType *type;
+	/* The column's source-declared type name (e.g. "fd", "socket"), preserved even when `type` lowers
+	 * to a primitive (an enum column lowers to its backing int, losing the nominal). Used to match a
+	 * `@drop`-registered resource type on row delete (close-on-delete). NULL when not applicable. */
+	char *decl_type_name;
 	SourceLoc loc;
 };
 

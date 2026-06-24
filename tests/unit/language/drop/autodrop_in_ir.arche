@@ -1,7 +1,15 @@
-// The auto-drop is a real call to the registered destructor, inserted at scope exit: the IR for a
-// function that opens a file and never closes it must contain a call to `io.fclose`.
-// RUN: %arche build --emit llvm-ir -o %t.ll %s ; grep -q "io.fclose" %t.ll
+// io-as-data: an open file is a pool ROW holding its fd as data; close = the row leaving the pool.
+// Parking the fd in a row and deleting it fires io's `@drop(fd)` destructor — the close syscall
+// (number 3) — so the IR for the delete path must contain that close. Queried by the `fd` column
+// type; no wrapper archetype, no scope-exit RAII (the old premise this replaces).
+// RUN: %arche build --emit llvm-ir -o %t.ll %s ; grep -q "i64 3, i64" %t.ll
 #import { io }
+
+Open :: arche { f :: fd }
+[4]Open;
+
 main :: proc() {
-  io.fopen_read("/dev/null")(f:);
+  io.fopen_read("/dev/null")(f:);  // open → fd (the kernel descriptor, as data)
+  insert(Open { f: f })(h:, _:);   // park the fd in a row
+  delete(h)(_:);                   // close = delete the row → @drop(fd) fires os.close (syscall 3)
 }

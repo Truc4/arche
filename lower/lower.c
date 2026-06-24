@@ -2515,6 +2515,9 @@ static HirDecl *lower_archetype_from(SyntaxView f, char *name) {
 		}
 		HirField *af = hir_field_create(FIELD_COLUMN, NULL, NULL);
 		af->name = sv_dup(fn);
+		/* Preserve the source-declared type name for close-on-delete matching — an enum column lowers to
+		 * its backing int below, losing the nominal, so record it here (the base identifier of the type). */
+		af->decl_type_name = sv_present(ty) ? sv_dup_first_token(ty) : sv_dup(fn);
 		if (sv_present(ty)) {
 			af->type = lower_type_cst(ty);
 		} else {

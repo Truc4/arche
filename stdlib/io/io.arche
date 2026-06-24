@@ -67,6 +67,15 @@ fclose :: func(f: fd) -> Eff(i64) {
   return os.syscall(3, f, 0, 0, 0, 0, 0);
 }
 
+// io-as-data: an open file is a ROW; its fd is data in the row; close = the row leaving the pool.
+// Park an `fd` column in any archetype and deleting that row fires this destructor (queried by the
+// `fd` type — no wrapper archetype). Compiler-invoked on `delete`, never called by hand. Streams
+// (stdin/stdout/stderr) are never pooled, so they are never closed.
+@drop(fd)
+fd_autoclose :: proc(own f: fd) {
+  fclose(f)(_:); // run the close Eff (syscall 3), discard the result
+}
+
 stdout_write :: func(buf: []char, n: int) -> Eff(i64) {
   return os.write(1, buf, n); // layered over os.write (func→Eff) — the fusion recurses to the syscall
 }

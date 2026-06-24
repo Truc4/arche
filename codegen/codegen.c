@@ -9576,60 +9576,39 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 
 /* ========== DECLARATION CODEGEN ========== */
 
-/* The `@drop(<Archetype>)` pool-row destructor for `arch`, or NULL if none. Keyed on the proc's
- * `drop_type` (the named archetype), set during lowering. */
-static HirProcDecl *find_drop_proc_for_arch(CodegenContext *ctx, const char *arch_name) {
-	for (int i = 0; i < ctx->ast->decl_count; i++) {
-		HirDecl *d = ctx->ast->decls[i];
-		if (d && d->kind == HIR_DECL_PROC && d->data.proc && d->data.proc->is_drop && d->data.proc->drop_type &&
-		    strcmp(d->data.proc->drop_type, arch_name) == 0)
-			return d->data.proc;
-	}
-	return NULL;
-}
-
 /* Inside `@arche_delete_<arch>`, at the point a row at `%slot` is known live and about to be freed,
- * fire the archetype's `@drop` destructor (if any). The dtor's params name columns of the dying row;
- * load each off the row at `%slot` and pass it. This is the open=insert / close=delete lifecycle —
- * an external resource a row holds (e.g. an fd kept as data) is released as the row leaves the pool. */
+ * fire the destructor of every droppable COLUMN — a column whose TYPE has a registered `@drop`. Load
+ * that column's value off the dying row and call its dtor. This is the open=insert / close=delete
+ * lifecycle: a resource a row holds (e.g. an fd kept as `fd` data) is released as the row leaves the
+ * pool, queried purely by the column's type (no wrapper archetype). Scalar columns only. */
 static void cg_emit_rowdrop(CodegenContext *ctx, HirArchetypeDecl *arch, int static_cap) {
-	HirProcDecl *dtor = find_drop_proc_for_arch(ctx, arch->name);
-	if (!dtor)
-		return;
-	char args[1024];
-	args[0] = '\0';
-	for (int pi = 0; pi < dtor->param_count; pi++) {
-		const char *pname = dtor->params[pi] ? dtor->params[pi]->name : NULL;
-		HirField *col = NULL;
-		int fidx = -1;
-		for (int f = 0; f < arch->field_count; f++) {
-			if (arch->fields[f]->kind == FIELD_COLUMN && arch->fields[f]->name && pname &&
-			    strcmp(arch->fields[f]->name, pname) == 0) {
-				col = arch->fields[f];
-				fidx = f;
-				break;
-			}
-		}
-		if (!col)
-			continue; /* semantic already validated the param names a column */
+	int n = 0; /* one fired column per index — for unique SSA names */
+	for (int f = 0; f < arch->field_count; f++) {
+		HirField *col = arch->fields[f];
+		if (col->kind != FIELD_COLUMN || !col->type)
+			continue;
+		/* Match on the source-declared type name (an enum column lowers to its int, losing the nominal). */
+		const char *dtor = drop_dtor_for_type(ctx, col->decl_type_name);
+		if (!dtor)
+			continue;
 		const char *base_type = llvm_type_from_arche(field_base_type_name(col->type));
 		if (static_cap > 0) {
 			buffer_append_fmt(
-			    ctx, "  %%drp_p%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %%slot\n", pi,
-			    arch->name, arch->name, fidx);
+			    ctx, "  %%drp_p%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %%slot\n", n,
+			    arch->name, arch->name, f);
 		} else {
-			buffer_append_fmt(ctx, "  %%drp_pp%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", pi,
-			                  arch->name, arch->name, fidx);
-			buffer_append_fmt(ctx, "  %%drp_arr%d = load %s*, %s** %%drp_pp%d\n", pi, base_type, base_type, pi);
-			buffer_append_fmt(ctx, "  %%drp_p%d = getelementptr %s, %s* %%drp_arr%d, i64 %%slot\n", pi, base_type,
-			                  base_type, pi);
+			buffer_append_fmt(ctx, "  %%drp_pp%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", n,
+			                  arch->name, arch->name, f);
+			buffer_append_fmt(ctx, "  %%drp_arr%d = load %s*, %s** %%drp_pp%d\n", n, base_type, base_type, n);
+			buffer_append_fmt(ctx, "  %%drp_p%d = getelementptr %s, %s* %%drp_arr%d, i64 %%slot\n", n, base_type,
+			                  base_type, n);
 		}
-		buffer_append_fmt(ctx, "  %%drp_v%d = load %s, %s* %%drp_p%d\n", pi, base_type, base_type, pi);
-		char one[128];
-		snprintf(one, sizeof one, "%s%s %%drp_v%d", args[0] ? ", " : "", base_type, pi);
-		strncat(args, one, sizeof(args) - strlen(args) - 1);
+		buffer_append_fmt(ctx, "  %%drp_v%d = load %s, %s* %%drp_p%d\n", n, base_type, base_type, n);
+		char dtor_sym[512];
+		buffer_append_fmt(ctx, "  call void @%s(%s %%drp_v%d)\n",
+		                  cg_fnsym(ctx, dtor, decl_name_is_extern(ctx, dtor), dtor_sym, sizeof dtor_sym), base_type, n);
+		n++;
 	}
-	buffer_append_fmt(ctx, "  call void @%s(%s)\n", dtor->name, args);
 }
 
 static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) {
@@ -11759,25 +11738,16 @@ static void codegen_build_drop_registry(CodegenContext *ctx) {
 		if (!d || d->kind != HIR_DECL_PROC || !d->data.proc || !d->data.proc->is_drop)
 			continue;
 		HirProcDecl *p = d->data.proc;
-		const char *key = NULL;
-		if (p->drop_type && find_archetype_decl(ctx, p->drop_type)) {
-			/* Pool-row destructor: keyed by the archetype it drops. Its params name the dying row's
-			 * columns; `delete` codegen re-derives those from this proc and passes them. */
-			key = p->drop_type;
-		} else {
-			/* Opaque RAII destructor: one `own` opaque param, keyed by that opaque's nominal name. */
-			if (p->param_count != 1 || !p->params[0] || !p->params[0]->type)
-				continue;
-			HirType *pt = p->params[0]->type;
-			if (pt->tag != HIR_TYPE_OPAQUE || !pt->name)
-				continue;
-			key = pt->name;
-		}
+		/* Keyed uniformly by the `@drop(T)` type name. Semantic guarantees T is a distinct type (opaque
+		 * or enum) and that the `own` param's type is T, so one key serves both storages: scope-exit RAII
+		 * (opaque locals) and row-delete (a pool column whose type is T). */
+		if (!p->drop_type)
+			continue;
 		if (ctx->drop_reg_count >= ctx->drop_reg_capacity) {
 			ctx->drop_reg_capacity = ctx->drop_reg_capacity ? ctx->drop_reg_capacity * 2 : 8;
 			ctx->drop_reg = realloc(ctx->drop_reg, ctx->drop_reg_capacity * sizeof(*ctx->drop_reg));
 		}
-		ctx->drop_reg[ctx->drop_reg_count].type_name = key;
+		ctx->drop_reg[ctx->drop_reg_count].type_name = p->drop_type;
 		ctx->drop_reg[ctx->drop_reg_count].dtor = p->name;
 		ctx->drop_reg_count++;
 	}

@@ -1,0 +1,14 @@
+// A `@drop` destructor's type must be a DISTINCT resource type — an opaque handle or an enum — never
+// a raw primitive: otherwise every `i64` column would be mistaken for a closeable resource (and closed
+// on row delete). Reject `@drop` on a primitive.
+// RUN: not %arche build -o %t %s 2>&1 | grep -qi "not a raw primitive"
+#import { fmt }
+
+@drop(i64)
+bad :: proc(own x: i64) {
+  fmt.printf("%d\n", x);
+}
+
+main :: proc() {
+  fmt.printf("unused\n");
+}
