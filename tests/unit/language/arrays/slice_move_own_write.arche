@@ -1,0 +1,15 @@
+// The ownership escape hatch for the read-only-borrow rule: `move` a buffer into a slice to OWN it, then
+// write THROUGH it. `s := move buf[0:4]` consumes `buf` and makes `s` the sole owner, so `s[i] = x` is
+// allowed (it is no longer a borrow of a live binding). The bind must look THROUGH the `move` wrapper and
+// bind `s` as a slice (ptr+len); the bug was binding it as a scalar (`store i32 <ptr>`), corrupting it.
+// RUN: %arche build -o %t %s && %t | grep -q "^42$"
+#import { fmt }
+
+poke :: system {
+  buf: [8]int;
+  s := move buf[0: 4]; // own the buffer (buf is consumed) — s is the sole accessor
+  s[0] = 42;           // write THROUGH the owned slice — allowed
+  fmt.printf("%d\n", s[0]);
+}
+
+#run seq({ poke })

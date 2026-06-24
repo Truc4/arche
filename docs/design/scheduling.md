@@ -1,5 +1,11 @@
 # Scheduling
 
+> **Proposed revision:** the default ordering is moving from "order is what you wrote (`seq`)" to "order is
+> what the data implies" — independent systems, ordered by the columns they read/write, with an explicit
+> `system X depends on Y` edge for effect-orderings the data can't see. See
+> [data-oriented-io-and-scheduling.md](data-oriented-io-and-scheduling.md). The constructor/fold/pacing
+> material below stays current; only the *default* changes.
+
 A program has no `main` and no hand-written driver loop. It is its declarations plus one `#run <Schedule>`
 value; the runtime owns the loop. `Schedule` is a first-class value built from a small core (`core.arche`):
 

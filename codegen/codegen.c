@@ -7011,13 +7011,19 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				is_multidim_slice = 1;
 		}
 
-		/* `ys := buf[lo:hi]` — bind a read-only slice view: register a type-6 slice (ptr + runtime
-		 * length) so `ys[i]` / `ys.length` work; no copy. */
-		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == HIR_EXPR_SLICE) {
+		/* `ys := buf[lo:hi]` — bind a slice view (type-6 ptr + runtime length) so `ys[i]` / `ys.length` work;
+		 * no copy. `ys := move buf[lo:hi]` is the SAME binding — `move` transfers ownership (the source is
+		 * consumed, tracked in semantic), but the value is still a slice, so look THROUGH the `move` wrapper.
+		 * (The bug: a `move`-wrapped slice fell to the scalar path, storing the ptr as an `i32`.) */
+		HirExpr *slice_val = stmt->data.bind_stmt.value;
+		if (slice_val && slice_val->kind == HIR_EXPR_UNARY && slice_val->data.unary.op == UNARY_MOVE &&
+		    slice_val->data.unary.operand && slice_val->data.unary.operand->kind == HIR_EXPR_SLICE)
+			slice_val = slice_val->data.unary.operand;
+		if (slice_val && slice_val->kind == HIR_EXPR_SLICE) {
 			char sp[256], sl[256];
 			const char *se;
 			int sw;
-			if (codegen_slice(ctx, stmt->data.bind_stmt.value, sp, sl, &se, &sw)) {
+			if (codegen_slice(ctx, slice_val, sp, sl, &se, &sw)) {
 				ValueInfo *vi = calloc(1, sizeof(ValueInfo));
 				vi->name = malloc(strlen(var_name) + 1);
 				strcpy(vi->name, var_name);
