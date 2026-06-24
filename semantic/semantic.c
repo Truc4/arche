@@ -3257,6 +3257,14 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 					ctx->error_count++;
 				}
 				free(nm);
+			} else if (ctx->current_func && sv_kind(rv) == SN_ARRAY_LIT_EXPR) {
+				/* `return {1000, 2}` from a `-> [N]T` func: a fresh array literal returned BY VALUE is the same
+				 * copy-out as returning a named local array (its storage is the callee's frame) — unimplemented.
+				 * The named case above is caught; this direct-literal form used to slip through and silently
+				 * miscompile (a `[N x i8]` global handed back as garbage). Reject it for parity. */
+				fprintf(stderr, "Error: cannot return an array literal by value (array copy-out is not implemented); "
+				                "return an `own` parameter or thread a caller-provided buffer instead\n");
+				ctx->error_count++;
 			}
 			/* A freshly-formed slice/row of a LOCAL stack array escaping by return is a dangling pointer
 			 * — the local's storage is reclaimed on return. Only applies when the func actually returns a

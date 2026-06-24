@@ -6819,6 +6819,56 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			break;
 		}
 
+		/* `b: [N]T = {e0, e1, …}` — a typed sized-array bind with an array-literal init (non-char T):
+		 * allocate `[N x T]`, scatter each element with the DECLARED element type, bind a type-6 element
+		 * pointer. Without this the literal is misclassified as a char string (`is_string` below) and built
+		 * as a `[N x i8]` global — truncating/garbling a non-char `[N]i64`. Char arrays keep the string path.
+		 * Mirrors the no-init shaped-array decl + the local sized-array scatter in HIR_STMT_ASSIGN. */
+		if (stmt->data.bind_stmt.type && stmt->data.bind_stmt.value &&
+		    stmt->data.bind_stmt.value->kind == HIR_EXPR_ARRAY_LITERAL &&
+		    stmt->data.bind_stmt.type->tag == HIR_TYPE_SHAPED_ARRAY &&
+		    strcmp(field_base_type_name(stmt->data.bind_stmt.type), "char") != 0) {
+			HirType *aty = stmt->data.bind_stmt.type;
+			int rank = aty->rank;
+			const char *en = field_base_type_name(aty);
+			const char *lt = llvm_type_from_arche(en);
+			int col_is_float = strcmp(en, "float") == 0 || strcmp(en, "double") == 0;
+			char *alloca_name = gen_value_name(ctx);
+			emit_alloca(ctx, "  %s = alloca [%d x %s]\n", alloca_name, rank, lt);
+			char *elem0 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* %s, i64 0, i64 0\n", elem0, rank, lt,
+			                  rank, lt, alloca_name);
+			HirExpr **elems = stmt->data.bind_stmt.value->data.array_literal.elements;
+			int n = stmt->data.bind_stmt.value->data.array_literal.element_count;
+			if (n > rank)
+				n = rank;
+			for (int i = 0; i < n; i++) {
+				char ebuf[256];
+				codegen_expression(ctx, elems[i], ebuf);
+				char promo[256];
+				const char *ev = col_is_float ? float_promote_operand(ctx, elems[i], ebuf, promo, sizeof(promo)) : ebuf;
+				char *gep = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %d\n", gep, lt, lt, elem0, i);
+				buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", lt, ev, lt, gep);
+			}
+			ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+			vi->name = malloc(strlen(var_name) + 1);
+			strcpy(vi->name, var_name);
+			vi->llvm_name = malloc(strlen(elem0) + 1);
+			strcpy(vi->llvm_name, elem0);
+			vi->type = 6;
+			vi->arch_name = NULL;
+			vi->string_len = rank;
+			vi->field_type = en;
+			vi->bit_width = strcmp(lt, "double") == 0 ? 64 : (strcmp(lt, "i8") == 0 ? 8 : 32);
+			if (ctx->scope_count > 0) {
+				ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+				scope->values[scope->value_count++] = vi;
+			}
+			break;
+		}
+
 		/* Handle type-annotated declaration without initialization */
 		if (stmt->data.bind_stmt.type && !stmt->data.bind_stmt.value) {
 			HirType *type = stmt->data.bind_stmt.type;
@@ -7935,6 +7985,35 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					}
 					break;
 				}
+			}
+		}
+		/* Local sized-array seed: `a: [2]i64; a = {1000, 2}` scatters element i → `a[i]`, storing each with
+		 * the array's DECLARED element type. Without this the array literal falls to the generic expression
+		 * path, which builds a `[N x i8]` constant global and copies it byte-wise into a non-char array —
+		 * truncating/garbling every element (`1000` → an i8). Mirrors the column scatter above; char arrays
+		 * keep the i8-global path (string-style literals). */
+		if (stmt->data.assign_stmt.op == OP_NONE && stmt->data.assign_stmt.value &&
+		    stmt->data.assign_stmt.value->kind == HIR_EXPR_ARRAY_LITERAL &&
+		    stmt->data.assign_stmt.target->kind == HIR_EXPR_NAME) {
+			ValueInfo *tgt = find_value(ctx, stmt->data.assign_stmt.target->data.name.name);
+			if (tgt && tgt->type == 6 && tgt->string_len > 0 && tgt->field_type &&
+			    strcmp(tgt->field_type, "char") != 0) {
+				const char *lt = llvm_type_from_arche(tgt->field_type);
+				int col_is_float = strcmp(tgt->field_type, "float") == 0 || strcmp(tgt->field_type, "double") == 0;
+				HirExpr **elems = stmt->data.assign_stmt.value->data.array_literal.elements;
+				int n = stmt->data.assign_stmt.value->data.array_literal.element_count;
+				if (n > tgt->string_len)
+					n = tgt->string_len;
+				for (int i = 0; i < n; i++) {
+					char ebuf[256];
+					codegen_expression(ctx, elems[i], ebuf);
+					char promo[256];
+					const char *ev = col_is_float ? float_promote_operand(ctx, elems[i], ebuf, promo, sizeof(promo)) : ebuf;
+					char *gep = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %d\n", gep, lt, lt, tgt->llvm_name, i);
+					buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", lt, ev, lt, gep);
+				}
+				break;
 			}
 		}
 		/* Write-back to an out-ONLY unbounded `char[]`/`T[]` out-param (`out = buf[0:r]`): store the

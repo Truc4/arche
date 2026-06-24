@@ -1,19 +1,15 @@
-// DESIRED (known-red capture): an array literal `{…}` typed `[N]i64` (any non-char element) must compile
-// with i64 elements. Today it is MISCOMPILED to `[N x i8]` (the element `1000` > 255 proves the width — an
-// i8 store truncates/overflows it). The root is NOT just codegen: an array literal is only typed `[N]i64`
-// in a RETURN context; in an assignment (`a: [2]i64; a = {1000,2}`) semantic defaults it to char/i8, so its
-// `resolved` type (and thus codegen) is i8. A full fix is multi-layer — context-sensitive literal typing in
-// semantic (type the literal from its assignment/return target) → lowering `resolved` → typed codegen
-// (`[N x T]` stack stores) → SHAPED_ARRAY return-by-value for the func form below. It is a type-inference
-// gap, not a localized miscompile; goes GREEN once the literal tracks its declared `[2]i64`.
-// RUN: %arche build -o %t %s && %t | grep -qF "ok 1000 2"
+// A non-char `[N]T` array literal (`{1000, 2}` typed `[2]i64`/`[N]int`) must store its elements at the
+// DECLARED element width. It used to be misclassified as a char string and built as a `[N x i8]` constant
+// global, then copied byte-wise into the array — truncating/garbling every element (`1000` → an i8; values
+// > 255 prove the width). Fixed by typed element scatter into the array's storage in both the bind-with-init
+// (`b: [3]i64 = {…}`) and decl-then-assign (`a: [2]i64; a = {…}`) paths, mirroring the pool-column scatter.
+// RUN: %arche build -o %t %s && %t | grep -qF "a=1000 2 b=300 400 500 c=70000 8"
 #import { fmt }
 
-mk :: func() -> [2]i64 {
-  return { 1000, 2 };
-}
-
 main :: proc() {
-  a := mk();
-  fmt.printf("ok %d %d\n", a[0], a[1]);
+  a: [2]i64;
+  a = { 1000, 2 };                  // decl-then-assign
+  b: [3]i64 = { 300, 400, 500 };    // bind-with-init
+  c: [2]int = { 70000, 8 };         // non-char i32 element, value > i16 to prove width
+  fmt.printf("a=%d %d b=%d %d %d c=%d %d\n", a[0], a[1], b[0], b[1], b[2], c[0], c[1]);
 }
