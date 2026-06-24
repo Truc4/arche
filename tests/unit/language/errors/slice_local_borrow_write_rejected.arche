@@ -1,0 +1,16 @@
+// A slice is a borrowed VIEW, and a borrow is READ-ONLY — consistently, for a slice PARAM *and* for a LOCAL
+// slice that views a live local's storage (`s := buf[0:4]` aliases `buf`). Writing through such a borrow
+// (`s[i] = x`) would mutate the source through the alias, so it is rejected — the same rule the borrowed-
+// param case enforces (it used to be bypassed for locals). To write the data, write the OWNED array
+// directly (`buf[i] = x`), or `move` the buffer in to take ownership. (Repointing is separately banned.)
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "write through borrowed slice" %t.out
+#import { fmt }
+
+poke :: system {
+  buf: [8]int;
+  s := buf[0: 4]; // a read-only borrow of the live `buf`
+  s[0] = 42;      // writing THROUGH the borrow — rejected (mutate `buf` directly instead)
+  fmt.printf("%d\n", s[0]);
+}
+
+#run seq({ poke })

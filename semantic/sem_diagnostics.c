@@ -138,6 +138,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	/* E0113 free_non_opaque, E0114 double_free — retired (zero runtime alloc, no free stmt). */
 	[SEM_DIAG_extern_proc_bad_return]        = { "E0115", "extern_proc_bad_return",        CLASS_ERROR, 1 },
 	[SEM_DIAG_extern_multi_out]              = { "E0223", "extern_multi_out",              CLASS_ERROR, 1 },
+	[SEM_DIAG_slice_repoint]                 = { "E0224", "slice_repoint",                 CLASS_ERROR, 1 },
 	/* E0116 revived: local_shadows_callable (was out_not_written, retired). */
 	[SEM_DIAG_local_shadows_callable]        = { "E0116", "local_shadows_callable",        CLASS_ERROR, 1 },
 	[SEM_DIAG_duplicate_decl]                = { "E0117", "duplicate_decl",                CLASS_ERROR, 1 },
@@ -587,6 +588,13 @@ SemDiag *sem_emit_cannot_mutate_borrowed(SemanticContext *ctx, SourceLoc loc, co
 	                 "`move` the buffer in, use an in-out out-param, or copy it into a local",
 	                 name, name);
 }
+SemDiag *sem_emit_cannot_mutate_borrowed_local(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_cannot_mutate_borrowed, loc,
+	                 "cannot write through borrowed slice '%s' — it views a live local's storage (a borrow), "
+	                 "which is read-only just like a borrowed param; write the owned array directly, or `move` "
+	                 "the buffer in to take ownership",
+	                 name);
+}
 SemDiag *sem_emit_extern_array_param_needs_own(SemanticContext *ctx, SourceLoc loc, const char *param_name,
                                                const char *proc_name) {
 	return sem_emit_(ctx, SEM_DIAG_extern_array_param_needs_own, loc,
@@ -1007,6 +1015,12 @@ SemDiag *sem_emit_local_shadows_callable(SemanticContext *ctx, SourceLoc loc, co
 SemDiag *sem_emit_extern_proc_bad_return(SemanticContext *ctx, SourceLoc loc, const char *type, const char *proc_name) {
 	return sem_emit_(ctx, SEM_DIAG_extern_proc_bad_return, loc,
 	                 "unknown return type '%s' in extern proc '%s' signature", type, proc_name);
+}
+SemDiag *sem_emit_slice_repoint(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_slice_repoint, loc,
+	                 "cannot repoint slice '%s' — a slice's pointer is fixed at creation; you may write THROUGH "
+	                 "it (`%s[i] = x`, when you own it) but never reassign it to a different slice",
+	                 name, name);
 }
 SemDiag *sem_emit_extern_multi_out(SemanticContext *ctx, SourceLoc loc, const char *proc_name, int n_out_only) {
 	return sem_emit_(ctx, SEM_DIAG_extern_multi_out, loc,

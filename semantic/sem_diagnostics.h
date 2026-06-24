@@ -110,6 +110,7 @@ typedef enum {
 	SEM_DIAG_extern_func_bad_return,
 	SEM_DIAG_extern_proc_bad_return,
 	SEM_DIAG_extern_multi_out,
+	SEM_DIAG_slice_repoint,
 
 	/* Constants / meta */
 	SEM_DIAG_constant_redefined,
@@ -315,6 +316,7 @@ SemDiag *sem_emit_assign_after_move(SemanticContext *ctx, SourceLoc loc, const c
 SemDiag *sem_emit_own_requires_move_or_copy(SemanticContext *ctx, SourceLoc loc, const char *arg_name,
                                             const char *param_name, const char *func_name);
 SemDiag *sem_emit_cannot_mutate_borrowed(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_cannot_mutate_borrowed_local(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_extern_array_param_needs_own(SemanticContext *ctx, SourceLoc loc, const char *param_name,
                                                const char *proc_name);
 SemDiag *sem_emit_proc_return_has_value(SemanticContext *ctx, SourceLoc loc);
@@ -407,6 +409,7 @@ SemDiag *sem_emit_field_on_non_archetype(SemanticContext *ctx, SourceLoc loc, co
 SemDiag *sem_emit_move_outside_arg(SemanticContext *ctx, SourceLoc loc, const char *keyword);
 SemDiag *sem_emit_extern_proc_bad_return(SemanticContext *ctx, SourceLoc loc, const char *type, const char *proc_name);
 SemDiag *sem_emit_extern_multi_out(SemanticContext *ctx, SourceLoc loc, const char *proc_name, int n_out_only);
+SemDiag *sem_emit_slice_repoint(SemanticContext *ctx, SourceLoc loc, const char *name);
 
 /* Tycheck (P3 type-check pass). E0200 is the general type_mismatch — every
  * typing-rule failure routes here. The `where` string describes the constraint

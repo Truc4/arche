@@ -3054,6 +3054,13 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 				sem_emit_assign_to_const(ctx, sem_node_loc(target.node), tn);
 			else if (t && t->is_consumed)
 				sem_emit_assign_after_move(ctx, sem_node_loc(target.node), tn);
+			else if (t && !t->is_out_place && !t->is_param &&
+			         tyid_kind(ctx->ty_arena, t->type_id) == TYK_SLICE)
+				/* A slice's pointer is fixed at creation: a LOCAL slice variable (born at its `:=`) may be
+				 * written THROUGH (`s[i] = x`) but never REASSIGNED to a different slice (`s = other`) — that
+				 * would repoint the view. An out-param writeback (`out = buf[0:r]`, is_out_place) and a param
+				 * are the proc's result/input places, not a local repoint, and are exempt. */
+				sem_emit_slice_repoint(ctx, sem_node_loc(target.node), tn);
 			free(tn);
 		}
 		/* An aggregate value const (`XS :: {…}`) is immutable — reject both `XS = …` and an element
@@ -3065,14 +3072,20 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 				sem_emit_assign_to_const(ctx, sem_node_loc(target.node), tln);
 			free(tln);
 		}
-		/* Purity: a borrowed (non-`move`) array parameter is read-only. Uses the leftmost name. */
+		/* A borrowed (non-`own`) array/slice VIEW is read-only — you may not write through it. This is one
+		 * rule for two shapes, consistent: a borrowed array/slice PARAM, and a LOCAL slice that borrows a
+		 * fresh local's storage (`s := buf[0:4]` — `s` aliases the live `buf`; writing `s[i]` would mutate
+		 * `buf` through the alias). To write either, take ownership (`own` param + `move` in, or `move` the
+		 * buffer into the slice). Uses the leftmost name. */
 		{
 			const char *rn = ctx->model ? sem_model_ref_name(ctx->model, sv_id(target)) : NULL;
 			char *ln = rn ? sem_dupz(rn) : sv_name_expr_dup(target);
 			VariableInfo *pv = ln ? find_variable(ctx, ln) : NULL;
-			if (pv && pv->is_param && !pv->is_own && !pv->is_out_place &&
+			if (pv && !pv->is_own && !pv->is_out_place && pv->is_param &&
 			    type_is_byref_aggregate(ctx->ty_arena, pv->type_id))
 				sem_emit_cannot_mutate_borrowed(ctx, loc, ln);
+			else if (pv && !pv->is_own && !pv->is_out_place && !pv->is_param && pv->borrows_local)
+				sem_emit_cannot_mutate_borrowed_local(ctx, loc, ln);
 			free(ln);
 		}
 		/* A map READS shared singletons but must not WRITE a foreign pool. Writing an archetype that is
