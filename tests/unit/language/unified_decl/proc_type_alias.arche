@@ -10,7 +10,9 @@ not_found :: proc()(code: int) {
 
 h: handler: not_found;
 
-main :: proc() {
+entry :: system {
   h()(c:);
   fmt.printf("code=%d\n", c);
 }
+
+#run entry

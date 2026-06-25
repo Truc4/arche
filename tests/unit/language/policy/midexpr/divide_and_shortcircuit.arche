@@ -3,8 +3,12 @@
 // Same path as the bounds case: the inlined `if (b==0) {…_exit…}` prelude is emitted into the `&&`
 // RHS block, so it runs only when the LHS is true.
 // RUN: %arche build -o %t %s && %t
-main :: proc(argc: int) {
+#import { os }
+entry :: system {
+  os.argc()(argc:);
   d := argc - argc; // 0 at runtime, opaque to the folder
   if (argc < 0 && (10 / d !abort) == 0) {
   } // LHS false -> RHS divide must not run
 }
+
+#run entry

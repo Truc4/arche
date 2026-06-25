@@ -9,8 +9,10 @@ double :: proc(x: int)(out: int) {
   out = x + x;
 }
 
-main :: proc() {
+entry :: system {
   s := add(5, 7);
   double(3)(d:);
   fmt.printf("sum=%d d=%d\n", s, d);
 }
+
+#run entry

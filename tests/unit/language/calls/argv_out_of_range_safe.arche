@@ -6,9 +6,11 @@
 // (The web server hit this when run with no port/root args.)
 // RUN: %arche build -o %t %s && %t | grep -q "survived len=0"
 #import { os net parse fmt }
-main :: proc() {
+entry :: system {
   os.argv(99)(p:); // far out of range — no such argument
   port := parse.atoi(p); // atoi over an empty slice → 0 (must not deref a NULL base)
   net.listen(port)(srv:); // port 0 → OS-assigned; `net` linked is what triggered the old crash
   fmt.printf("survived len=%d\n", p.length);
 }
+
+#run entry

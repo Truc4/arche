@@ -4,5 +4,7 @@
 hp  :: int;
 Foo :: arche { hp, hp }
 
-main :: proc() {
+entry :: system {
 }
+
+#run entry

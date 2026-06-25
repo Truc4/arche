@@ -6,9 +6,11 @@ dist        :: alias float;
 takes_float :: proc(x: float) {
   fmt.printf("r=%g\n", x);
 }
-main :: proc() {
+entry :: system {
   d  : dist  = 3.0;
   f  : float = d; // dist -> float, transparent
   d2 : dist  = f; // float -> dist, transparent (both ways, no conversion)
   takes_float(d2);
 }
+
+#run entry

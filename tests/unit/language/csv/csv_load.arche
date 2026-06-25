@@ -72,8 +72,10 @@ load_csv :: proc(own path: []char) {
 // Copy quantity string (after comma)
 // Convert and assign
 
-main :: proc() {
+entry :: system {
   load_csv("../../../../../tests/fixtures/transactions.csv");
   fmt.assert(Transaction.price[0] == 1.0, "price[0] not 1.0\n");
   fmt.printf("csv ok\n");
 }
+
+#run entry

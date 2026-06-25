@@ -3,7 +3,7 @@
 cb      :: char;
 CharBuf :: arche { cb }
 [4096]CharBuf;
-main :: proc() {
+entry :: system {
   io.fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
   scratch := CharBuf.cb[0: CharBuf.capacity]; // slice-local OUT (lint-only: column write outside a query)
   io.fread(fd, 4096)(scratch, rd_data:);
@@ -12,3 +12,5 @@ main :: proc() {
   fmt.printf("Read %d bytes from CSV file\n", data.length);
   fmt.assert(data.length > 0, "should read CSV file\n");
 }
+
+#run entry

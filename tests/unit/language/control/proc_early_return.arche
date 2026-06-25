@@ -10,8 +10,10 @@ f :: proc(x: int)(y: int) {
   y = x * 2;
 }
 
-main :: proc() {
+entry :: system {
   f(-1)(a:);
   f(5)(b:);
   fmt.printf("a=%d b=%d\n", a, b);
 }
+
+#run entry

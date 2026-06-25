@@ -10,7 +10,7 @@ cb      :: char;
 CharBuf :: arche { cb }
 [50000]CharBuf;
 
-main :: proc() {
+entry :: system {
   io.fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
   price_str : [32]char;
   qty_str   : [32]char;
@@ -69,3 +69,5 @@ main :: proc() {
   }
   fmt.printf("Loaded %d rows\n", idx);
 }
+
+#run entry

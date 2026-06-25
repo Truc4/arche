@@ -4,7 +4,9 @@
 // RUN: %arche build -o %t %s && %t | grep -x "linux 5"
 #import { os fmt }
 name :: "linux";
-main :: proc() {
+entry :: system {
   os.write(1, name, name.length)(_:);
   fmt.printf(" %d\n", name.length);
 }
+
+#run entry

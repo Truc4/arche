@@ -6,8 +6,10 @@ fill_buf :: func(own buf: []char) -> int {
   return 99;
 }
 
-main :: proc() {
+entry :: system {
   buf: [32]char;
   result := fill_buf(move buf);
   fmt.printf("result: %d\n", result);
 }
+
+#run entry

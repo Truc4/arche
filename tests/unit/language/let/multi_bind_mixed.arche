@@ -12,7 +12,7 @@ fill_two :: proc(own buf1: [32]char, own buf2: [32]char)(
   n = 99;
 }
 
-main :: proc() {
+entry :: system {
   x : [32]char;
   y : [32]char;
   fill_two(move x, move y)(x:, y:, n:);
@@ -28,3 +28,5 @@ main :: proc() {
   fill_two(move p, move q)(p:, q:, k:);
   fmt.printf("test3: p=%s q=%s k=%d\n", p, q, k);
 }
+
+#run entry

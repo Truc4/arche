@@ -9,6 +9,8 @@ P :: arche { x :: int }
 poke :: proc(j: int)() {
   P.x[j] = 1; // j unbounded → unproven → implicit !abort → E0125 under --no-abort
 }
-main :: proc() {
+entry :: system {
   poke(2)();
 }
+
+#run entry

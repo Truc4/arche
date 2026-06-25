@@ -5,6 +5,8 @@ Row :: arche { x :: int }
 [4]Row(4) {
   x: 0,
 }
-main :: proc() {
+entry :: system {
   load(Row, "tests/fixtures/data.csv");
 }
+
+#run entry

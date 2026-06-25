@@ -6,7 +6,7 @@ Transaction :: arche { price :: float, quantity :: int }
   price: 0.0, quantity: 0,
 }
 
-main :: proc() {
+entry :: system {
   io.fopen_read("../../../../../tests/fixtures/transactions.csv")(fd:);
   buf       : [256]char;
   price_str : [32]char;
@@ -68,3 +68,5 @@ main :: proc() {
   fmt.assert(Transaction.quantity[0] == 10, "qty[0] not 10\n");
   fmt.printf("csv load ok\n");
 }
+
+#run entry

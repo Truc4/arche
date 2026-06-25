@@ -6,8 +6,10 @@ v :: int;
 B :: arche { v }
 [4]B;
 
-main :: proc() {
+entry :: system {
   e := B { v: 9 };
   x := e.v; // illegal: an entity is not a readable value
   fmt.printf("x=%d\n", x);
 }
+
+#run entry

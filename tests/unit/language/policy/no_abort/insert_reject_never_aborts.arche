@@ -4,9 +4,11 @@
 // RUN: %arche build -o %t %s && %t
 Particle :: arche { pos :: float }
 [2]Particle;
-main :: proc() {
+entry :: system {
   insert(Particle { pos: 1.0 })(h1:, ok1:);
   insert(Particle { pos: 2.0 })(h2:, ok2:);
   insert(Particle { pos: 3.0 })(h3:, ok3:); // pool full -> ok3 == 0, no abort
   delete(h1)(_:);
 }
+
+#run entry

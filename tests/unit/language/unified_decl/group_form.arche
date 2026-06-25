@@ -13,9 +13,11 @@ describe_char :: func(x: char) -> int {
 
 describe :: func { describe_int, describe_float, describe_char }
 
-main :: proc() {
+entry :: system {
   a := describe(10);
   b := describe(2.0);
   c := describe('A');
   fmt.printf("I=%d F=%d C=%d\n", a, b, c);
 }
+
+#run entry

@@ -1,5 +1,7 @@
 // RUN: %arche build -o %t %s && %t | grep "RESULT=5"
 #import { fmt }
-main :: proc() {
+entry :: system {
   fmt.printf("RESULT=%d\n", 10 - 2 - 3);
 }
+
+#run entry

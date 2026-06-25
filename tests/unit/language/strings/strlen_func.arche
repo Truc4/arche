@@ -4,7 +4,9 @@ test_strlen :: func(s: []char) -> int {
   return str.strlen(s);
 }
 
-main :: proc() {
+entry :: system {
   n := test_strlen("hello");
   fmt.printf("strlen returned: %d\n", n);
 }
+
+#run entry

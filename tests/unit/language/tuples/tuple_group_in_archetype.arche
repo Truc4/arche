@@ -9,9 +9,11 @@ Particle    :: arche { pos, vel }
 
 [5]Particle;
 
-main :: proc() {
+entry :: system {
   insert(Particle { pos_x: 1.0, pos_y: 2.0, vel_vx: 0.5, vel_vy: 0.1 })(_:, _:);
   Particle.pos_x = Particle.pos_x + Particle.vel_vx;
   Particle.pos_y = Particle.pos_y + Particle.vel_vy;
   fmt.printf("px=%g py=%g\n", Particle.pos_x[0], Particle.pos_y[0]);
 }
+
+#run entry

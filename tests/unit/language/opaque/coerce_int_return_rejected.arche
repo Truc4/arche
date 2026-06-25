@@ -7,5 +7,7 @@ res :: opaque;
 mk :: func() -> res {
   return 5;
 }
-main :: proc() {
+entry :: system {
 }
+
+#run entry

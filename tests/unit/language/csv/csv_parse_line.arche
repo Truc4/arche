@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { parse fmt }
-main :: proc() {
+entry :: system {
   buf: [256]char;
   buf[0] = '1';
   buf[1] = '0';
@@ -37,3 +37,5 @@ main :: proc() {
   fmt.assert(price == 10.0, "price should be 10.0\n");
   fmt.assert(qty == 10, "qty should be 10\n");
 }
+
+#run entry

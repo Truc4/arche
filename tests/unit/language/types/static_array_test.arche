@@ -2,9 +2,11 @@
 #import { fmt }
 buf: [128]char;
 
-main :: proc() {
+entry :: system {
   buf[0] = 65;
   buf[1] = 66;
   buf[2] = 67;
   fmt.printf("%c%c%c\n", buf[0], buf[1], buf[2]);
 }
+
+#run entry

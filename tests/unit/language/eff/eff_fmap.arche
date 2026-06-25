@@ -17,7 +17,9 @@ bumpneg :: func(x: int) -> Eff(int) {
     |> neg;
 }
 
-main :: proc() {
+entry :: system {
   bumpneg(41)(r:);
   fmt.printf("r=%d\n", r);
 }
+
+#run entry

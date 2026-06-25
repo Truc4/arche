@@ -2,10 +2,12 @@
 // reach rdi and rsi correctly and a 0/success return is read.
 // RUN: %arche build -o %t %s && %t | grep "ok"
 #import { fmt os }
-main :: proc() {
+entry :: system {
   os.syscall(39, 0, 0, 0, 0, 0, 0)(pid:);
   os.syscall(62, pid, 0, 0, 0, 0, 0)(r:);
   if (r == 0) {
     fmt.printf("ok\n");
   }
 }
+
+#run entry

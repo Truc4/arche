@@ -11,7 +11,7 @@ Row :: arche { price :: float, quantity :: int }
   price: 5.0, quantity: 1,
 }
 
-main :: proc() {
+entry :: system {
   // No-op: every row has quantity=1, so the mask is all 1s and price stays at 5.0.
   Row.price = Row.price * (Row.quantity > 0);
 
@@ -23,3 +23,5 @@ main :: proc() {
     fmt.printf("fail: price[0] = %f, expected 5.0\n", p0);
   }
 }
+
+#run entry

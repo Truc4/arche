@@ -6,5 +6,7 @@ helper :: 1;
 #module
 other :: 2;
 
-main :: proc() {
+entry :: system {
 }
+
+#run entry

@@ -8,9 +8,11 @@ sink :: func(own b: [8]char) -> int {
   return 0;
 }
 
-main :: proc() {
+entry :: system {
   buf: [8]char;
   a := sink(buf);
   c := sink(buf);
   fmt.printf("%d %d\n", a, c);
 }
+
+#run entry

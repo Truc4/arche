@@ -11,6 +11,8 @@ bad :: func(x: int) -> Eff(int) {
   return realproc(x); // realproc is a proc, not an extern → E0221
 }
 
-main :: proc() {
+entry :: system {
   bad(1)(n:);
 }
+
+#run entry

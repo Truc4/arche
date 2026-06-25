@@ -4,6 +4,8 @@
 #import { fmt }
 count := 5;
 
-main :: proc() {
+entry :: system {
   fmt.printf("count=%d\n", count);
 }
+
+#run entry

@@ -4,5 +4,7 @@
 bad :: proc(a: archetype, b: archetype) {
   n: int = a.field_count;
 }
-main :: proc() {
+entry :: system {
 }
+
+#run entry

@@ -11,6 +11,8 @@
 // RUN: env ARCHE_SELECT=vgfx=wayland %analyzer --dump %s 2>&1 | grep "has no member 'x11_only'"
 // RUN: ! env ARCHE_SELECT=vgfx=x11 %analyzer --dump %s 2>&1 | grep "has no member"
 #import { vgfx }
-main :: proc() {
+entry :: system {
   vgfx.x11_only();
 }
+
+#run entry

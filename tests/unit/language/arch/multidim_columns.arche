@@ -8,6 +8,8 @@ Matrix :: arche { data :: [10][10]float }
 
 [50]Matrix;
 
-main :: proc() {
+entry :: system {
   fmt.print("allocations done\n")(_:);
 }
+
+#run entry

@@ -11,9 +11,11 @@ step :: func(own a: [8]int, i: int, v: int) -> [8]int {
   return a;
 }
 
-main :: proc() {
+entry :: system {
   a: [8]int;
   a := step(move a, 0, 300);
   a := step(move a, 1, 9);
   fmt.printf("owned %d %d\n", a[0], a[1]);
 }
+
+#run entry

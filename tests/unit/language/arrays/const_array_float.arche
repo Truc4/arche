@@ -18,6 +18,8 @@ F :: { 1.5, 2.5, 3.0 }
 
 M :: { { 1.5, 2.5 }, { 3.0, 4.0 } }
 
-main :: proc() {
+entry :: system {
   fmt.printf("F1=%f sumF=%f sumM=%f\n", F[1], sum(F), sum(M[1]));
 }
+
+#run entry

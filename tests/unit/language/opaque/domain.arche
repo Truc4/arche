@@ -6,6 +6,8 @@
 res       :: opaque;
 OpenFiles :: arche { handle :: res }
 [8]OpenFiles;
-main :: proc() {
+entry :: system {
   fmt.printf("ok opaque_domain\n");
 }
+
+#run entry

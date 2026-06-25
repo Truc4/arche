@@ -7,7 +7,9 @@ foo :: func() -> int {
   return 1.5;
 }
 
-main :: proc() {
+entry :: system {
   x := foo();
   fmt.printf("%d\n", x);
 }
+
+#run entry

@@ -12,7 +12,7 @@ M :: { { 1, 2, 3 }, { 4, 5, 6 } }
 getrow :: func(i: int) -> []int {
   return M[i];
 }
-main :: proc() {
+entry :: system {
   b: [5]int;
   b[0] = 1;
   b[1] = 2;
@@ -23,3 +23,5 @@ main :: proc() {
   r := getrow(1);
   fmt.printf("sub=%d,%d row=%d,%d\n", s.length, s[0], r.length, r[2]);
 }
+
+#run entry

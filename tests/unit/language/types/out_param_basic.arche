@@ -6,9 +6,11 @@ test_fill_buf :: func(buf: [32]char) -> int {
   return 5;
 }
 
-main :: proc() {
+entry :: system {
   buf: [32]char;
   n := test_fill_buf(buf);
   fmt.assert(n > 0, "test_fill_buf returned <= 0\n");
   fmt.printf("out param test ok\n");
 }
+
+#run entry

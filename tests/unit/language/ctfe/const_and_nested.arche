@@ -14,7 +14,9 @@ Grid :: arche { cell :: int }
 [add(area(SZ, 4), 0)]Grid(MAX) {
   cell: 0,
 }
-main :: proc() {
+entry :: system {
   fmt.assert(Grid.cell[11] == 0, "capacity should fold to 12\n");
   fmt.printf("ok MAX=%d\n", MAX);
 }
+
+#run entry

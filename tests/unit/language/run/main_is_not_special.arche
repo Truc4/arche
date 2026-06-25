@@ -1,0 +1,18 @@
+// `main` is an ORDINARY name — it has no special role and is never the entry by itself. A decl named
+// `main` runs ONLY if `#run` schedules it, exactly like any other name; an UNSCHEDULED `main` does not
+// auto-run. Here the entry is `go` (named whatever it likes) and the `main` system is NOT scheduled, so it
+// must never execute. Proves `#run` is the sole entry point and removing the old `main`-as-entry behavior.
+// RUN: %arche build -o %t %s && %t > %t.out 2>&1 && grep -qxF "scheduled" %t.out && ! grep -q "AUTO" %t.out
+#import { fmt }
+
+// Named `main`, but NOT in the schedule → must NOT run. (If `main` were still special, this would print.)
+main :: system {
+  fmt.printf("AUTO main ran\n");
+}
+
+// The real entry — its name is irrelevant; what matters is that `#run` names it.
+go :: system {
+  fmt.printf("scheduled\n");
+}
+
+#run go

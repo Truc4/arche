@@ -7,7 +7,7 @@ Particle  :: arche { pos_x, pos_y }
 
 [5]Particle;
 
-main :: proc() {
+entry :: system {
   insert(Particle { pos_x: 1.0, pos_y: 2.0 })(_:, _:);
   x  := Particle.pos_x[0];
   y  := Particle.pos_y[0];
@@ -16,3 +16,5 @@ main :: proc() {
   fmt.assert(xi == 10, "x != 1.0\n");
   fmt.assert(yi == 20, "y != 2.0\n");
 }
+
+#run entry

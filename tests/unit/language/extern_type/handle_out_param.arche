@@ -13,10 +13,12 @@ resource :: opaque;
   resource_close :: proc(own r: resource);
 }
 
-main :: proc() {
+entry :: system {
   resource_open(42)(r:);
   buf: [8]char;
   resource_fill(r, buf, 8)(buf, v:);
   fmt.printf("v=%d b=%s\n", v, buf);
   resource_close(move r);
 }
+
+#run entry

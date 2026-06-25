@@ -5,6 +5,8 @@
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 array element: expected 'i32', got 'str'"
 #import { fmt }
 XS: [3]int = { 1, "two", 3 }
-main :: proc() {
+entry :: system {
   fmt.printf("%d\n", XS[0]);
 }
+
+#run entry

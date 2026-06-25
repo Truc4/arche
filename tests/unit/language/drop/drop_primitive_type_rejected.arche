@@ -9,6 +9,8 @@ bad :: proc(own x: i64) {
   fmt.printf("%d\n", x);
 }
 
-main :: proc() {
+entry :: system {
   fmt.printf("unused\n");
 }
+
+#run entry

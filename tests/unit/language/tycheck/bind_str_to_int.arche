@@ -3,7 +3,9 @@
 // general STMT_BIND rule catches it.
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 binding: expected 'i32', got 'str'"
 #import { fmt }
-main :: proc() {
+entry :: system {
   x: int = "hello";
   fmt.printf("%d\n", x);
 }
+
+#run entry

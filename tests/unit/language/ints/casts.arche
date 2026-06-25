@@ -1,10 +1,12 @@
 // RUN: %arche build -o %t %s && %t | grep "wide=1 narrow=1"
 // i64(x) widening cast and i32(x) narrowing (truncating) cast.
 #import { fmt }
-main :: proc() {
+entry :: system {
   a := 5;
   b := i64(a);
   big: i64 = 4294967297;
   small := i32(big);
   fmt.printf("wide=%d narrow=%d\n", b > 0, small);
 }
+
+#run entry

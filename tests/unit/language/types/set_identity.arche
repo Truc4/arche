@@ -10,5 +10,7 @@ B  :: arche { mp, hp }
 [4]A;
 [4]B;
 
-main :: proc() {
+entry :: system {
 }
+
+#run entry

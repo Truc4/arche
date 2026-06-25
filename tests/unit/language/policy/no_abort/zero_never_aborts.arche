@@ -3,7 +3,9 @@
 // (a=0, b=1) when the divisor is 0, so the raw op yields 0 and never traps. Inverse of a `!abort`
 // divide (which would crash on d==0). Runtime divisor — a literal 0 divisor would fold away.
 // RUN: %arche build -o %t %s && %t
-main :: proc(argc: int) {
+#import { os }
+entry :: system {
+  os.argc()(argc:);
   d := argc - argc; // 0 at runtime, opaque to the constant folder
   s := 0;
   s = s + 10 / d !zero; // divide by zero -> 0
@@ -11,3 +13,5 @@ main :: proc(argc: int) {
   n := 7;
   s = s + n / d !zero; // -> 0
 }
+
+#run entry

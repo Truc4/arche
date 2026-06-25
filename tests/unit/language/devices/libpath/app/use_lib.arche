@@ -4,7 +4,9 @@
 // RUN: %arche build -o %t %s && %t | grep -qF "lib=42"
 // RUN: env ARCHE_PATH=%S/../vendor %arche build -o %t.e %s && %t.e | grep -qF "lib=42"
 #import { extlib fmt }
-main :: proc() {
+entry :: system {
   r := extlib.dbl(21);
   fmt.printf("lib=%d\n", r);
 }
+
+#run entry

@@ -2,6 +2,8 @@
 // index can take its own failure policy. A comma inside an index bracket is a clear parse error.
 // RUN: ! %arche build -o %t %s 2>&1 | grep -q "chained"
 M :: { {1, 2}, {3, 4} };
-main :: proc() {
+entry :: system {
   _ := M[0, 1];
 }
+
+#run entry

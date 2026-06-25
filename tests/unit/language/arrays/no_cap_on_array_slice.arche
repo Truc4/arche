@@ -4,8 +4,10 @@
 // slice base; one offending access is enough to prove the field is gone.)
 // RUN: ! %arche build -o %t %s 2>&1 | grep -q "has no field 'cap'"
 #import { fmt }
-main :: proc() {
+entry :: system {
   buf: [5]int;
   s := buf[1: 4];
   fmt.printf("%d\n", s.cap);
 }
+
+#run entry

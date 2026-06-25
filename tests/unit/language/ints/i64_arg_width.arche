@@ -15,8 +15,10 @@ narrow32 :: func(v: int) -> int {
   return v;
 }
 
-main :: proc() {
+entry :: system {
   r : int = 5000; // i32 register, widened to the i64 param of times_million
   w : i64 = 42; // i64, narrowed to the i32 param of narrow32
   fmt.printf("lit=%lld reg=%lld small=%d\n", ident64(9000000000), times_million(r), narrow32(w));
 }
+
+#run entry

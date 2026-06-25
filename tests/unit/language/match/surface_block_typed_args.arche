@@ -16,7 +16,7 @@ take :: proc(x: float, r: resource)(v: int) {
   v = rv;
   fmt.printf("x=%g ", x);
 }
-main :: proc() {
+entry :: system {
   ff := 3.5;
   resource_open(42)(h:);
   {
@@ -25,3 +25,5 @@ main :: proc() {
   }
   resource_close(move h);
 }
+
+#run entry

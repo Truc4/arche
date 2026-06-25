@@ -5,8 +5,10 @@ fill :: proc(buf: [4]float, n: int)(buf: [4]float) {
   buf[0] = 1.5;
   buf[1] = 2.5;
 }
-main :: proc() {
+entry :: system {
   b: [4]float;
   fill(b, 4)(b);
   fmt.printf("f=%g,%g\n", b[0], b[1]);
 }
+
+#run entry

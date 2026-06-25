@@ -85,35 +85,17 @@ reason :: func(status: int) -> []char {
   return "OK";
 }
 
-/// Write the status line + headers into the caller's `hdr` buffer, send them, then the body iff
-/// `send_body` is true (false for HEAD). `%d` formats the status + Content-Length; `%s` formats only
-/// the NUL-terminated `reason`/`ctype` literals — never a body slice (the body is sent raw).
-respond :: proc(
-  conn      : socket,
-  hdr       : []char,
-  status    : int,
-  ctype     : []char,
-  body      : []char,
-  send_body : bool,
-) {
-
+// Send each prepared response ROW (io-as-data, like `gfx.circle` over the `Player` pool): build the status
+// line + headers into the row's `hdr` buffer, send them, then the body iff `send_body` (0 for HEAD). The
+// application fills the row's columns after routing — `status`, a NUL-terminated `ctype` buffer, the `body`
+// buffer + its `body_len`, `send_body` — then runs this each over its connection pool. `%s` formats only
+// the NUL-terminated `reason`/`ctype` (never the body slice, which is sent raw via `body[0:body_len]`).
+respond :: each (query { sock, status, ctype, body, body_len, send_body, hdr }) {
   rs := reason(status);
-  fmt.sprintf(
-    _,
-    "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
-    status,
-    rs,
-    ctype,
-    body.length,
-  )(hdr, n:);
-  net.send(conn, hdr[0: n])(_:, _:);
-  if (send_body) {
-    net.send(conn, body)(_:, _:);
+  fmt.sprintf(_, "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+              status, rs, ctype, body_len)(hdr, n:);
+  net.send(sock, hdr[0: n])(_:, _:);
+  if (send_body == 1) {
+    net.send(sock, body[0: body_len])(_:, _:);
   }
-}
-
-/// Plain-text response (error pages). `msg` is the body AND its own Content-Length (a length-carried
-/// slice). Always sends the body.
-respond_text :: proc(conn: socket, hdr: []char, status: int, msg: []char) {
-  respond(conn, hdr, status, "text/plain; charset=utf-8", msg, true);
 }

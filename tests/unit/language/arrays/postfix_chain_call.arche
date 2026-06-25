@@ -8,6 +8,8 @@ M :: { { 1, 2, 3 }, { 4, 5, 6 } }
 row :: func(i: int) -> []int {
   return M[i];
 }
-main :: proc() {
+entry :: system {
   fmt.printf("n=%d v=%d\n", row(1).length, row(1)[2]);
 }
+
+#run entry

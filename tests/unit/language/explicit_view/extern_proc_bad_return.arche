@@ -4,5 +4,7 @@
 #foreign {
   weird :: proc()(r: NoSuchType);
 }
-main :: proc() {
+entry :: system {
 }
+
+#run entry

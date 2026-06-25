@@ -4,6 +4,8 @@
 // RUN: %arche build --target bogus -o %t %s 2>&1 | grep -F "[target.bogus] table"
 // RUN: %t | grep -qF "tsnd alsa"
 #import { tsnd }
-main :: proc() {
+entry :: system {
   tsnd.beep();
 }
+
+#run entry

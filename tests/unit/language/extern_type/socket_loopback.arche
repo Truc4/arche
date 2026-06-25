@@ -6,7 +6,7 @@
 // and a byte survives the round trip ('h' == 104); recv hands back a length-carried view.
 #import { net fmt }
 
-main :: proc() {
+entry :: system {
   net.listen(34567)(srv:);
   net.connect("127.0.0.1", 34567)(cli:);
   net.accept(srv)(conn:);
@@ -19,3 +19,5 @@ main :: proc() {
   net.close(move conn)();
   net.close(move srv)();
 }
+
+#run entry

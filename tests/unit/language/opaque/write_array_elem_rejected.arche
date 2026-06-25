@@ -8,5 +8,7 @@ put :: proc(src: res) {
   arr[0] = src;
 }
 
-main :: proc() {
+entry :: system {
 }
+
+#run entry

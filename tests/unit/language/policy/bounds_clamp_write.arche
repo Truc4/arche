@@ -5,10 +5,12 @@
 // RUN: %arche build -o %t %s && %t | grep -qF "a3=99"
 #import { fmt }
 
-main :: proc() {
+entry :: system {
   a: [4]int;
   a[0] = 1;
   i := 9; // a runtime value: unprovable, so the policy governs the write
   a[i] !clamp = 99; // OOB write -> a[3]
   fmt.printf("a3=%d\n", a[3]);
 }
+
+#run entry

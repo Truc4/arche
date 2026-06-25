@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { io fmt }
-main :: proc() {
+entry :: system {
   buf: [256]char;
   io.stdin()(fd:);
   io.fread(fd, 256)(buf, n:);
@@ -8,3 +8,5 @@ main :: proc() {
   fmt.printf("multi-assignment with read() works\n");
   io.fclose(move fd)(_:);
 }
+
+#run entry

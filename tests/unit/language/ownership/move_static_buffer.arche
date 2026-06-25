@@ -12,7 +12,9 @@ fill2 :: proc(buf: [16]char)(buf: [16]char, n: int) {
   n      = 2;
 }
 
-main :: proc() {
+entry :: system {
   fill2(sbuf)(sbuf, n:);
   fmt.printf("b0=%d b1=%d n=%d\n", sbuf[0], sbuf[1], n);
 }
+
+#run entry

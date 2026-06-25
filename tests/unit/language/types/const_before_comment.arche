@@ -15,6 +15,8 @@ B :: 0;
 }
 C :: 42;
 // comment between a const and a proc
-main :: proc() {
+entry :: system {
   fmt.printf("a=%d b=%d c=%d t=%d f=%d\n", A, B, C, true, false);
 }
+
+#run entry

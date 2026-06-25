@@ -13,7 +13,7 @@
 // RUN: %arche fmt %s | grep -qF "fmt.printf(\"x: %d\\n\", short);"
 #import { fmt }
 
-main :: proc() {
+entry :: system {
   short      := 1;
   muchlonger := 2;
 
@@ -21,3 +21,5 @@ main :: proc() {
   bbbb := 20;
   fmt.printf("x: %d\n", short);
 }
+
+#run entry

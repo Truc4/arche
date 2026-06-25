@@ -9,7 +9,7 @@ read2 :: func(small: []int, big: []int, i: int) -> int {
   return small[i] !clamp + big[i] !clamp;
 }
 
-main :: proc() {
+entry :: system {
   foo : [4]int;
   bar : [4]int;
   baz : [4]int;
@@ -38,3 +38,5 @@ main :: proc() {
 
   fmt.printf("a=%d b=%d c=%d d=%d e=%d\n", baz[3], r, q, u, e);
 }
+
+#run entry

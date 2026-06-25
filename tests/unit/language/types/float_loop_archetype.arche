@@ -6,7 +6,7 @@ Nums :: arche { val :: float }
   val: 0.0,
 }
 
-main :: proc() {
+entry :: system {
   Nums.val[0] = 1.0;
   Nums.val[1] = 2.0;
   Nums.val[2] = 3.0;
@@ -20,3 +20,5 @@ main :: proc() {
   }
   fmt.assert(total == 10.0, "float loop archetype failed\n");
 }
+
+#run entry

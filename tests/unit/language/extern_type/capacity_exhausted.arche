@@ -11,7 +11,7 @@ Resource :: arche { cell }
 }
 [2]Resource;
 
-main :: proc() {
+entry :: system {
   resource_open(1)(r1:);
   insert(Resource { cell: r1 })(_:, _:);
   resource_open(2)(r2:);
@@ -22,3 +22,5 @@ main :: proc() {
     fmt.print("full\n")(_:);
   }
 }
+
+#run entry

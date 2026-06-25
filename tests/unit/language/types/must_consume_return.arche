@@ -15,9 +15,11 @@ make_resource :: proc(v: int)(r: resource) {
   resource_open(v)(r);
 }
 
-main :: proc() {
+entry :: system {
   make_resource(7)(r:);
   resource_get(r)(v:);
   fmt.printf("value=%d\n", v);
   resource_close(move r);
 }
+
+#run entry

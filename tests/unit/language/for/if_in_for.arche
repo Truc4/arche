@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { fmt }
-main :: proc() {
+entry :: system {
   for (i := 0; i < 3; i += 1) {
     fmt.printf("before if\n");
     if (1) {
@@ -9,3 +9,5 @@ main :: proc() {
   }
   fmt.printf("ok\n");
 }
+
+#run entry

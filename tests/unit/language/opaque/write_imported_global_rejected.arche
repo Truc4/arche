@@ -13,5 +13,7 @@ clobber :: proc(src: socket) {
   Holder.h[0] = src; // overwrite an IMPORTED opaque held in a column — must be rejected
 }
 
-main :: proc() {
+entry :: system {
 }
+
+#run entry

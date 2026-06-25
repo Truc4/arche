@@ -13,6 +13,8 @@ M :: { { "1", "2", "3" }, { "4", "5", "6" } }
 
 N :: { { 1, 2, 3 }, { 4, 5, 6 } }
 
-main :: proc() {
+entry :: system {
   fmt.printf("%d%d\n", S[0].length, N[1][2]);
 }
+
+#run entry

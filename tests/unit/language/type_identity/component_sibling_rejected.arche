@@ -5,9 +5,11 @@
 #import { fmt }
 Particle :: arche { mass :: float, charge :: float }
 [4]Particle(4);
-main :: proc() {
+entry :: system {
   Particle.mass[0] = 10.0;
   m := Particle.mass[0]; // m : mass
   bad: charge = m; // mass -> charge sibling : ERROR
   fmt.printf("%g\n", bad);
 }
+
+#run entry

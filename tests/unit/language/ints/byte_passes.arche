@@ -28,7 +28,7 @@ classify_commas :: func(data: []char, own mask: []char, n: i64) -> []char {
   }
   return mask;
 }
-main :: proc() {
+entry :: system {
   src: [8]char;
   src[0] = 'a';
   src[1] = ',';
@@ -59,3 +59,5 @@ main :: proc() {
     fmt.printf("copied=FAIL\n");
   }
 }
+
+#run entry

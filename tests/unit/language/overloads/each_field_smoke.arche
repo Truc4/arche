@@ -24,7 +24,9 @@ dump :: proc(arch: archetype) {
   }
 }
 
-main :: proc() {
+entry :: system {
   bump(Pair);
   dump(Pair);
 }
+
+#run entry

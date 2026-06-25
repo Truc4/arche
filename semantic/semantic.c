@@ -4614,13 +4614,10 @@ static void lint_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 
 	/* Legacy nuanced lints — reached only when W0030 is disabled. A proc with an effectful body is
 	 * legitimately a proc here; a SINGLE-out pure proc could be a func; a zero-out pure proc does nothing
-	 * observable; `main` (the entry point under the legacy model) is exempt. */
+	 * observable. (`main` is no longer special — it is an ordinary proc name, not the entry.) */
 	if (func_purity_body_view(ctx, proc->body_node, proc) != NULL)
 		return;
-	int is_main = proc->name && strcmp(proc->name, "main") == 0;
-	if (is_main) {
-		return;
-	} else if (proc->out_param_count == 1) {
+	if (proc->out_param_count == 1) {
 		sem_emit_lint_proc_could_be_func(ctx, proc->loc, proc->name ? proc->name : "<unknown>");
 	} else if (proc->out_param_count == 0) {
 		sem_emit_lint_proc_no_effect(ctx, proc->loc, proc->name ? proc->name : "<unknown>");

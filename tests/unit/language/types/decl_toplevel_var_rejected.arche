@@ -6,8 +6,10 @@
 #import { fmt }
 count := 0;
 
-main :: proc() {
+entry :: system {
   fmt.printf("count=%d then ", count);
   count = 3;
   fmt.printf("%d\n", count);
 }
+
+#run entry

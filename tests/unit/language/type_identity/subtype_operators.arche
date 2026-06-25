@@ -5,7 +5,7 @@
 #import { fmt }
 meters  :: float;
 seconds :: float;
-main    :: proc() {
+entry :: system {
   m1 : meters  = 10.0;
   m2 : meters  = 20.0;
   s  : seconds = 3.0;
@@ -15,3 +15,5 @@ main    :: proc() {
   c  : meters  = m1 - s + 1.0; // meters - seconds (same backing) + literal -> meters
   fmt.printf("a=%g b=%g c=%g\n", a, b, c);
 }
+
+#run entry

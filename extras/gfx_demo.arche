@@ -10,7 +10,7 @@
 W0 :: 640; // the original window size — also the gradient TILE size, so it repeats once per W0 x H0
 H0 :: 480;
 
-main :: proc() {
+entry :: system {
   gfx.open(W0, H0, "arche gfx — resize me; close or press a key")(win:);
 
   is_open := true;
@@ -34,3 +34,5 @@ main :: proc() {
     os.sleep_ms(16);
   }
 }
+
+#run entry

@@ -1,6 +1,8 @@
 // RUN: %arche build -o %t %s && %t | grep "Value: 42"
 #import { fmt }
-main :: proc() {
+entry :: system {
   fmt.printf("Value: %d\n", 42);
   fmt.printf("Value: %d\n", 42);
 }
+
+#run entry

@@ -6,10 +6,12 @@
 Particle :: arche { pos :: float }
 [2]Particle;
 
-main :: proc() {
+entry :: system {
   insert(Particle { pos: 1.0 })(h:, ok1:);
   insert(Particle { pos: 2.0 })(_:, _:);
   insert(Particle { pos: 3.0 })(_:, ok3:); // pool full -> ok3 == 0
   fmt.printf("ok1=%d ok3=%d\n", ok1, ok3);
   delete(h)(_:);
 }
+
+#run entry

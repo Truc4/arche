@@ -2,7 +2,7 @@
 // `char[N]`. Mutating the copy leaves the source untouched.
 // RUN: %arche build -o %t %s && %t | grep "ok"
 #import { fmt }
-main :: proc() {
+entry :: system {
   xs: [4]int;
   xs[0] = 7;
   xs[1] = 9;
@@ -20,3 +20,5 @@ main :: proc() {
   fmt.assert(b[0] == 9.0, "float copy independent\n");
   fmt.printf("ok\n");
 }
+
+#run entry

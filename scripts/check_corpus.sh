@@ -26,7 +26,7 @@ gate() {
 	mod="$2"
 	shift 2
 	drv="$tmp/drv_${label//\//_}.arche"
-	printf '#import { %s }\nmain :: proc() {}\n' "$mod" >"$drv"
+	printf '#import { %s }\n_corpus_check :: system {}\n#run _corpus_check\n' "$mod" >"$drv"
 	env "$@" "$ARCHE" fill "$drv" >/dev/null 2>&1 # satisfy datasheet storage reqs (no-op if none)
 	if out="$(env "$@" "$ARCHE" check -Werror "$drv" 2>&1)"; then
 		echo "ok   $label"

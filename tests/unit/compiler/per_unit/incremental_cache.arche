@@ -5,6 +5,8 @@
 // RUN: rm -rf %t.cache && env ARCHE_PER_UNIT=1 ARCHE_CACHE_DIR=%t.cache %arche build -o %t %s >/dev/null && env ARCHE_PER_UNIT=1 ARCHE_CACHE_DIR=%t.cache %arche build -o %t %s | grep -qE "[1-9][0-9]* reused from cache"
 // RUN: %t | grep -qF "inc_ok"
 #import { fmt }
-main :: proc() {
+entry :: system {
   fmt.print("inc_ok\n")(_:);
 }
+
+#run entry

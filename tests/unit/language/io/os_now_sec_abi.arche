@@ -4,7 +4,7 @@
 // `double` into an f32 slot; GREEN once it returns `float`.
 // RUN: %arche build -o %t %s && %t | grep -qF "PASS"
 #import { os fmt }
-main :: proc() {
+entry :: system {
   os.os_now_sec()(s0:);
   os.os_now_sec()(s1:);
   diff := s1 - s0;
@@ -13,3 +13,5 @@ main :: proc() {
   fmt.assert(diff < 1.0, "os_now_sec adjacent reads >1s apart (f32/double ABI mismatch)\n");
   fmt.printf("PASS\n");
 }
+
+#run entry

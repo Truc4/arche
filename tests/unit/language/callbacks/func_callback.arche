@@ -17,7 +17,9 @@ apply :: proc(v: int, op: unary)() {
   fmt.printf("%d\n", r);
 }
 
-main :: proc() {
+entry :: system {
   apply(10, dbl)();
   apply(10, inc)();
 }
+
+#run entry

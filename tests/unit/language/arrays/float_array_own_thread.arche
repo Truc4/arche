@@ -10,9 +10,11 @@ step :: func(own a: [4]float, i: int, v: float) -> [4]float {
   return a;
 }
 
-main :: proc() {
+entry :: system {
   a: [4]float;
   a := step(move a, 0, 9.5);
   a := step(move a, 1, 2.25);
   fmt.printf("owned %g %g\n", a[0], a[1]);
 }
+
+#run entry

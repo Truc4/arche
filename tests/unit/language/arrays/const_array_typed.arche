@@ -4,6 +4,8 @@
 #import { fmt }
 XS: [3]int: { 10, 20, 30 }
 
-main :: proc() {
+entry :: system {
   fmt.printf("%d\n", XS[0]);
 }
+
+#run entry

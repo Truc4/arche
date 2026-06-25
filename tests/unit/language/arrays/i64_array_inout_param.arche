@@ -4,8 +4,10 @@
 fill :: proc(buf: [4]i64)(buf: [4]i64) {
   buf[0] = 5000000000;
 }
-main :: proc() {
+entry :: system {
   a: [4]i64;
   fill(a)(a);
   fmt.printf("v=%lld\n", a[0]);
 }
+
+#run entry

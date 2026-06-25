@@ -7,6 +7,8 @@ resource :: opaque;
   resource_close :: proc(own r: resource);
 }
 
-main :: proc() {
+entry :: system {
   resource_open(10)(r:);
 }
+
+#run entry

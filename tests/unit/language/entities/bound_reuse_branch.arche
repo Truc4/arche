@@ -6,7 +6,7 @@ v :: int;
 B :: arche { v }
 [8]B;
 
-main :: proc() {
+entry :: system {
   e := B { v: 7 };
   insert(e)(_:, _:); // reuse the same entity twice
   insert(e)(_:, _:);
@@ -16,3 +16,5 @@ main :: proc() {
   }
   fmt.printf("v0=%d v1=%d\n", B.v[0], B.v[1]);
 }
+
+#run entry

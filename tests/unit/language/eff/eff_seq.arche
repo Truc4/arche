@@ -13,7 +13,9 @@ both :: func(a: int, b: int) -> Eff(int) {
   return seq(eff_acc(a), eff_acc(b));
 }
 
-main :: proc() {
+entry :: system {
   both(10, 20)(t:);
   fmt.printf("t=%d\n", t);
 }
+
+#run entry

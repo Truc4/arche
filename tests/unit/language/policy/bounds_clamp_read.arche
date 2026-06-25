@@ -5,7 +5,7 @@
 // RUN: %arche build -o %t %s && %t | grep -qF "clamped=13"
 #import { fmt }
 
-main :: proc() {
+entry :: system {
   a: [4]int;
   a[0] = 10;
   a[1] = 11;
@@ -15,3 +15,5 @@ main :: proc() {
   x := a[i] !clamp; // OOB -> clamp to index 3
   fmt.printf("clamped=%d\n", x);
 }
+
+#run entry

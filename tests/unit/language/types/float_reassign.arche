@@ -1,8 +1,10 @@
 // RUN: %arche build -o %t %s && %t
 #import { fmt }
-main :: proc() {
+entry :: system {
   x := 1.5;
   y := 0.0;
   y = x;
   fmt.assert(y == 1.5, "float reassign failed\n");
 }
+
+#run entry

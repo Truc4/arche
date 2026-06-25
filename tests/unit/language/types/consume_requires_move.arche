@@ -11,5 +11,7 @@ twice :: proc(own f: res) {
   sink(f);
   sink(f);
 }
-main :: proc() {
+entry :: system {
 }
+
+#run entry

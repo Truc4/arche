@@ -5,7 +5,9 @@ double :: func(x: int) -> int {
   return x * 2;
 }
 
-main :: proc() {
+entry :: system {
   y := double("hello");
   fmt.printf("%d\n", y);
 }
+
+#run entry

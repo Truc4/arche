@@ -7,7 +7,9 @@ meters      :: float;
 takes_float :: proc(x: float) {
   fmt.printf("got %g\n", x);
 }
-main :: proc() {
+entry :: system {
   d: meters = 5.0;
   takes_float(d); // meters -> float : implicit, OK
 }
+
+#run entry

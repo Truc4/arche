@@ -8,7 +8,7 @@ Body :: arche { pos, vel, mass :: float }
 
 [5]Body;
 
-main :: proc() {
+entry :: system {
   insert(Particle { pos: 1.0, vel: 0.1 })(_:, _:);
   insert(Body { pos: 2.0, vel: 0.2, mass: 10.0 })(_:, _:);
   pp  := Particle.pos[0];
@@ -18,3 +18,5 @@ main :: proc() {
   fmt.assert(ppi == 10, "Particle.pos != 1.0\n");
   fmt.assert(bmi == 10, "Body.mass != 10.0\n");
 }
+
+#run entry

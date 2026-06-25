@@ -4,6 +4,8 @@
 #import { fmt }
 answer: int: 42;
 
-main :: proc() {
+entry :: system {
   fmt.printf("%d\n", answer);
 }
+
+#run entry

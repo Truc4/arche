@@ -12,6 +12,8 @@ Grid :: arche { cell :: int }
 [pick(1)]Grid(pick(1)) {
   cell: 0,
 }
-main :: proc() {
+entry :: system {
   fmt.printf("unreached\n");
 }
+
+#run entry

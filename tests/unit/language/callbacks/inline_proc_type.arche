@@ -10,6 +10,8 @@ go :: proc(f: proc()())() {
   f()();
 }
 
-main :: proc() {
+entry :: system {
   go(twice)();
 }
+
+#run entry

@@ -4,8 +4,10 @@
 // consumes the binding) — no FFI stub needed.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
 #import { io }
-main :: proc() {
+entry :: system {
   io.stdout()(f:);
   io.fwrite(move f, "x", 1)(_:);
   io.fwrite(f, "y", 1)(_:);
 }
+
+#run entry

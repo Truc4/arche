@@ -3,7 +3,9 @@
 // emit at the proper site with the standard registry format.
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0030 break_outside_loop 0 \`break\` can only appear inside a loop body"
 #import { fmt }
-main :: proc() {
+entry :: system {
   break;
   fmt.printf("%d\n", 1);
 }
+
+#run entry

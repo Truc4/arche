@@ -6,7 +6,9 @@ sum_diff :: proc(a: int, b: int)(s: int, d: int) {
   d = a - b;
 }
 
-main :: proc() {
+entry :: system {
   sum_diff(10, 3)(s:, d:);
   fmt.printf("s=%d d=%d\n", s, d);
 }
+
+#run entry

@@ -5,7 +5,9 @@ Counter :: arche { val :: int }
 
 [5]Counter;
 
-main :: proc() {
+entry :: system {
   x := Counter.val[0];
   fmt.printf("should not reach\n");
 }
+
+#run entry

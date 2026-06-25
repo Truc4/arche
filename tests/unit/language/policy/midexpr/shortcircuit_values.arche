@@ -3,8 +3,9 @@
 // that branched correctly but stored the wrong slot value (e.g. always 0/1) would pass those and
 // fail here. Covers both ops, both outcomes, and nested chains.
 // RUN: %arche build -o %t %s && %t | grep -qF "and_t=1 and_f=0 or_t=1 or_f=0 nest_t=1 nest_f=0"
-#import { fmt }
-main :: proc(argc: int) {
+#import { os  fmt }
+entry :: system {
+  os.argc()(argc:);
   z      := argc - argc; // 0, opaque to the folder
   one    := z + 1; // 1
   and_t  := (one == 1) && (z == 0); // 1
@@ -23,3 +24,5 @@ main :: proc(argc: int) {
     nest_f,
   );
 }
+
+#run entry

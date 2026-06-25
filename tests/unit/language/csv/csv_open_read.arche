@@ -3,9 +3,11 @@
 
 buf: [65536]char;
 
-main :: proc() {
+entry :: system {
   fmt.printf("about to open file\n");
   io.open("tests/fixtures/data.csv")(fd:);
   fmt.printf("fd=%d\n", fd);
   io.close(move fd)(_:);
 }
+
+#run entry

@@ -9,8 +9,10 @@
 mylen :: func(s: []char) -> int {
   return str.strlen(s);
 }
-main :: proc() {
+entry :: system {
   os.argv(1)(arg:); // the wrapper does `zip(os_argv, os_argv_len) |> mem.bound` — a bounds-checked slice
   fmt.printf("len=%d\n", mylen(arg));
   fmt.printf("n=%d\n", parse.atoi(arg));
 }
+
+#run entry

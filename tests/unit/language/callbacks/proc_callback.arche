@@ -18,7 +18,9 @@ run_task :: proc(work: int, on_done: done_handler)() {
   on_done()();
 }
 
-main :: proc() {
+entry :: system {
   run_task(5, finish)();
   run_task(9, cleanup)();
 }
+
+#run entry

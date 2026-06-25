@@ -11,5 +11,7 @@ put :: proc(src: res) {
   Holder.h[0] = src;
 }
 
-main :: proc() {
+entry :: system {
 }
+
+#run entry

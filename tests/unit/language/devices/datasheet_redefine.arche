@@ -6,5 +6,7 @@
 
 pos :: float;
 
-main :: proc() {
+entry :: system {
 }
+
+#run entry

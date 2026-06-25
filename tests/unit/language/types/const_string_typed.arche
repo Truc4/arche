@@ -3,7 +3,9 @@
 // RUN: %arche build -o %t %s && %t | grep -x "linux"
 #import { os }
 name: []char: "linux";
-main :: proc() {
+entry :: system {
   os.write(1, name, name.length)(_:);
   os.write(1, "\n", 1)(_:);
 }
+
+#run entry

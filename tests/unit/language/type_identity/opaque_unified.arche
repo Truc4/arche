@@ -9,7 +9,9 @@ handle_b :: opaque;
   make_a :: proc()(r: handle_a);
   use_b  :: proc(own h: handle_b);
 }
-main :: proc() {
+entry :: system {
   make_a()(a:);
   use_b(move a); // handle_a where handle_b expected -> ERROR
 }
+
+#run entry

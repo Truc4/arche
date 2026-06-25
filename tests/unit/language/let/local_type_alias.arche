@@ -2,9 +2,11 @@
 // (nominal) type alias here too. It is compile-time only (erased), usable as a type.
 // RUN: %arche build -o %t %s && %t | grep "sum: 10"
 #import { fmt }
-main :: proc() {
+entry :: system {
   meters :: int;
   d : meters = 4;
   e : meters = 6;
   fmt.printf("sum: %d\n", d + e);
 }
+
+#run entry

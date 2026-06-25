@@ -8,7 +8,9 @@ mk :: func() -> []int {
   r := loc[0: 3];
   return r;
 }
-main :: proc() {
+entry :: system {
   x := mk();
   _ := x;
 }
+
+#run entry

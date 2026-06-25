@@ -11,6 +11,8 @@ widget :: opaque;
 wfree :: proc(own w: widget) {
   free_widget(move w)();
 }
-main :: proc() {
+entry :: system {
   fmt.print("ok\n")(_:);
 }
+
+#run entry

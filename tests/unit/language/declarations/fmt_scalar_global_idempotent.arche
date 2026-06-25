@@ -7,6 +7,8 @@
 x: int;
 y: int = 5;
 
-main :: proc() {
+entry :: system {
   fmt.printf("%d %d\n", x, y);
 }
+
+#run entry

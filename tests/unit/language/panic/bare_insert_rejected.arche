@@ -3,7 +3,9 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "out-list" %t.out
 Particle :: arche { pos :: float }
 [4]Particle;
-main :: proc() {
+entry :: system {
   h := insert(Particle { pos: 1.0 });
   insert(Particle { pos: 2.0 });
 }
+
+#run entry

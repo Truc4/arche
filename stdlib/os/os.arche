@@ -38,6 +38,11 @@ argv :: func(i: int) -> Eff([]char) {
     |> mem.bound;
 }
 
+// The program's argument count — `os.argc()(n:)`. A `func → Eff` over the extern.
+argc :: func() -> Eff(int) {
+  return os_argc();
+}
+
 // Monotonic-clock / nanosleep PRIMITIVES (`func → Eff`). The timespec `ts` is a caller-owned `[2]i64`
 // (`{ sec, nsec }`). `clock_mono` declares it IN-OUT — the kernel fills it, surfaced as the single out-slot;
 // `ms_of` cooks the filled timespec; `nanosleep` declares `req` plain-in (read-only, the kernel reads it).

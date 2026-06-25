@@ -13,7 +13,9 @@ measure :: func(own s: []char) -> Eff(int) {
   return eff_strlen(s);
 }
 
-main :: proc() {
+entry :: system {
   measure("hello")(n:);
   fmt.printf("n=%d\n", n);
 }
+
+#run entry

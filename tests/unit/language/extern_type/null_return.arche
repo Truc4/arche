@@ -9,7 +9,7 @@ resource :: opaque;
   resource_close :: proc(own r: resource);
 }
 
-main :: proc() {
+entry :: system {
   resource_open(1)(r1:);
   resource_open(2)(r2:);
   resource_open(3)(r3:);
@@ -32,3 +32,5 @@ main :: proc() {
   resource_close(move r8);
   resource_close(move r9);
 }
+
+#run entry

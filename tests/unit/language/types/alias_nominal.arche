@@ -4,8 +4,10 @@
 // RUN: %arche build -o %t %s && %t | grep "result: 30"
 #import { fmt }
 count :: int;
-main  :: proc() {
+entry :: system {
   a : count = 10;
   b : count = 20;
   fmt.printf("result: %d\n", a + b);
 }
+
+#run entry

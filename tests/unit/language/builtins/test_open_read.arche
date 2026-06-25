@@ -1,9 +1,11 @@
 // RUN: %arche build -o %t %s && %t
 #import { fmt os }
-main :: proc() {
+entry :: system {
   os.open("/dev/null", 0)(fd:);
   if (fd >= 0) {
     fmt.printf("open succeeded: fd=%d\n", fd);
     os.close(move fd)(_:);
   }
 }
+
+#run entry

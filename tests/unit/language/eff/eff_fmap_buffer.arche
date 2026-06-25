@@ -23,8 +23,10 @@ now :: func() -> Eff(i64) {
     |> ms_of; // fmap folds the timespec buffer to ms INSIDE the Eff
 }
 
-main :: proc() {
+entry :: system {
   now()(t:); // bind only the folded result; the timespec is run-internal scratch
   fmt.assert(t > 0, "monotonic ms should be positive\n");
   fmt.printf("ok ms>0\n");
 }
+
+#run entry

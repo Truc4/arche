@@ -11,6 +11,8 @@ bad :: proc(own v: b) { // says it drops `a` but takes a `b`
   fmt.printf("%d\n", i64(v));
 }
 
-main :: proc() {
+entry :: system {
   fmt.printf("unused\n");
 }
+
+#run entry

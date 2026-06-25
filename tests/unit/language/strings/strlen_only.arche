@@ -4,8 +4,10 @@ test_strlen :: func(s: []char) -> int {
   return str.strlen(s);
 }
 
-main :: proc() {
+entry :: system {
   n := test_strlen("hello");
   fmt.assert(n == 5, "strlen failed\n");
   fmt.printf("ok\n");
 }
+
+#run entry

@@ -8,10 +8,12 @@ AliveList :: arche { player_ref :: handle<Player> }
 
 [10]AliveList;
 
-main :: proc() {
+entry :: system {
   insert(Player { pos: 1.0 })(p1:, _:);
   insert(Player { pos: 2.0 })(p2:, _:);
   insert(AliveList { player_ref: p1 })(_:, _:);
   insert(AliveList { player_ref: p2 })(_:, _:);
   fmt.print("alive list created")(_:);
 }
+
+#run entry

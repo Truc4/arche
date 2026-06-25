@@ -15,7 +15,7 @@
 // RUN: %arche fmt %s | grep -qE "^  solo: int = 9;$"
 #import { fmt }
 
-main :: proc() {
+entry :: system {
   foo: int = 1;
   bar := 2;
   baz := 3;
@@ -23,3 +23,5 @@ main :: proc() {
   solo: int = 9;
   fmt.printf("%d\n", foo + bar + baz + solo);
 }
+
+#run entry

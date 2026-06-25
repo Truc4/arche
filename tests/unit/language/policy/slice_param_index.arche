@@ -11,7 +11,7 @@ wr :: proc(own s: []int, i: int, v: int) {
   s[i] !clamp = v;
 } // OOB write -> clamp
 
-main :: proc() {
+entry :: system {
   a: [4]int;
   a[0] = 10;
   a[1] = 11;
@@ -23,3 +23,5 @@ main :: proc() {
   wr(a[0: 4], big, 77); // clamps 99 -> slot 3 = 77
   fmt.printf("read=%d wrote=%d\n", r, a[3]);
 }
+
+#run entry

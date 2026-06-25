@@ -6,10 +6,12 @@
 
 [8]Particle;
 
-main :: proc() {
+entry :: system {
   insert(Particle { pos: 10.0, vel: 1.0 })(_:, _:);
   p0  := Particle.pos[0];
   p0i := p0 * 10.0;
   fmt.assert(p0i == 100, "expected pos[0]==10.0\n");
   fmt.printf("qualified_pool_ok\n");
 }
+
+#run entry

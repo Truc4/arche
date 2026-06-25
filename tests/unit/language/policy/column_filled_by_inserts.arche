@@ -6,8 +6,10 @@
 #import { fmt }
 Foo :: arche { v :: int }
 [2]Foo;
-main :: proc() {
+entry :: system {
   insert(Foo { v: 10 })(h0:, ok0:);
   insert(Foo { v: 20 })(h1:, ok1:);
   fmt.printf("%d\n", Foo.v[0] !clamp);
 }
+
+#run entry

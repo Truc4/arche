@@ -10,6 +10,8 @@ build :: func() -> Tree {
   return pair(leaf(1), pair(leaf(2), empty));
 }
 
-main :: proc() {
+entry :: system {
   _t := build();
 }
+
+#run entry

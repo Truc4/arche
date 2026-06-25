@@ -4,9 +4,11 @@ Particle :: arche { pos :: float, vel :: float }
 
 [5]Particle;
 
-main :: proc() {
+entry :: system {
   insert(Particle { pos: 5.5, vel: 0.1 })(_:, _:);
   p  := Particle.pos[0];
   pi := p * 10.0;
   fmt.assert(pi == 55, "pos != 5.5\n");
 }
+
+#run entry

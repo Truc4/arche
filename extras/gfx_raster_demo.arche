@@ -3,7 +3,7 @@
 // pixels. Run: arche run extras/gfx_raster_demo.arche
 #import { gfx os }
 
-main :: proc() {
+entry :: system {
   gfx.open(640, 480, "arche gfx raster — close or press a key")(win:);
 
   t       := 0;
@@ -19,3 +19,5 @@ main :: proc() {
     os.sleep_ms(16);
   }
 }
+
+#run entry

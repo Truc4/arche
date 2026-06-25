@@ -1,7 +1,9 @@
 // RUN: %arche build -o %t %s && %t | grep done
 #import { fmt }
-main :: proc() {
+entry :: system {
   fmt.printf("test\n");
   fmt.assert(1, "should not see this\n");
   fmt.printf("done\n");
 }
+
+#run entry

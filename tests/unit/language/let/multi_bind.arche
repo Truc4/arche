@@ -13,9 +13,11 @@ fill_two :: proc(buf1: [32]char, buf2: [32]char)(buf1: [32]char, buf2: [32]char,
   n       = 42;
 }
 
-main :: proc() {
+entry :: system {
   x : [32]char;
   y : [32]char;
   fill_two(x, y)(x, y, n:);
   fmt.printf("x=%s y=%s n=%d\n", x, y, n);
 }
+
+#run entry

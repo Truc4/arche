@@ -1,7 +1,9 @@
 // RUN: %arche build -o %t %s && %t
 #import { fmt }
-main :: proc() {
+entry :: system {
   x := 10;
   x += 5;
   fmt.assert(x == 15, "compound assign failed\n");
 }
+
+#run entry

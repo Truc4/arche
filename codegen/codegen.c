@@ -1720,7 +1720,13 @@ static void monomorph_mangle(const char *proc_name, const char *arch_name, char 
  * `internal`-everything workaround. Externs keep their C-ABI name; `main`/`main_user` stay bare (the
  * entry). Inert (returns `name` unchanged) when per_unit is off, so the whole-program path is unaffected. */
 static const char *cg_fnsym(CodegenContext *ctx, const char *name, int is_extern, char *buf, size_t n) {
-	if (!ctx->per_unit || !name || is_extern || strcmp(name, "main") == 0 || strcmp(name, "main_user") == 0)
+	/* A USER decl named `main` (proc/func/system/each/map) is renamed to `main_user` so its symbol never
+	 * collides with the synthesized C entry `@main`. `main` is otherwise an ORDINARY name — never the
+	 * program's entry point (that is `#run` → `@arche_run`). This is a mechanical ABI rename, not a special
+	 * role: a decl named `main` is scheduled/called exactly like any other name. */
+	if (name && !is_extern && strcmp(name, "main") == 0)
+		name = "main_user";
+	if (!ctx->per_unit || !name || is_extern || strcmp(name, "main_user") == 0)
 		return name;
 	snprintf(buf, n, "arche.%s", name);
 	return buf;
@@ -12563,7 +12569,7 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	/* The process entry wrapper is program-global: emit it only in the entry unit (0) — never in a
 	 * per-unit module for an imported unit. (emit_only_unit -1 = whole-program, also emits it.) */
 	if (!(ctx->per_unit && ctx->emit_only_unit >= 1)) {
-		char init_sym[512], mainu_sym[512];
+		char init_sym[512];
 		/* Synthesize @arche_run from the folded #run ScheduleTree (the runtime-owned loop), entry unit
 		 * only, before @main — @main calls it (no driver proc). */
 		ScheduleTree *run_tree = NULL;
@@ -12618,8 +12624,10 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		if (has_init_proc)
 			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, "init", 0, init_sym, sizeof(init_sym)));
 
-		if (has_main_proc)
-			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, "main_user", 0, mainu_sym, sizeof(mainu_sym)));
+		/* `main` is NOT the entry — it is an ordinary name. The program's entry is `#run` → `@arche_run`
+		 * (below). A decl named `main` runs only if `#run` schedules it (or something calls it), like any
+		 * other name. (`has_main_proc` / `main_user` rename is just C-`@main` collision avoidance.) */
+		(void)has_main_proc;
 
 		/* The runtime owns the loop: run the program's #run Schedule (no driver proc). */
 		if (has_run)

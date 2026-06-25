@@ -7,10 +7,12 @@ passthru :: func(buf: []char) -> []char {
   return buf;
 }
 
-main :: proc() {
+entry :: system {
   b: [8]char;
   b[0] = 72;
   b[1] = 105;
   b := passthru(move b);
   fmt.printf("first=%d second=%d\n", b[0], b[1]);
 }
+
+#run entry

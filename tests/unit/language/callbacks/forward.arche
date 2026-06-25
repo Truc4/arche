@@ -17,6 +17,8 @@ outer :: proc(cb: h)() {
   inner(cb)();
 }
 
-main :: proc() {
+entry :: system {
   outer(hello)();
 }
+
+#run entry

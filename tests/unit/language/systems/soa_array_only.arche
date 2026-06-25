@@ -6,7 +6,7 @@ Particle :: arche { pos, vel }
 
 [1000]Particle;
 
-main :: proc() {
+entry :: system {
   insert(Particle { pos: 10.0, vel: 1.0 })(_:, _:);
   insert(Particle { pos: 20.0, vel: 2.0 })(_:, _:);
   insert(Particle { pos: 30.0, vel: 3.0 })(_:, _:);
@@ -23,3 +23,5 @@ main :: proc() {
   fmt.assert(p0i == 110.0, "pos[0] != 11.0\n");
   fmt.assert(p7i == 880.0, "pos[7] != 88.0\n");
 }
+
+#run entry

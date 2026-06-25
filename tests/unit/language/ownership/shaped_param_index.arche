@@ -13,10 +13,12 @@ dump :: proc(buf: [8]char) {
   fmt.printf("sum=%d\n", total);
 }
 
-main :: proc() {
+entry :: system {
   b: [8]char;
   b[0] = 72;
   b[1] = 33;
   fmt.printf("head=%d ", head(b));
   dump(b);
 }
+
+#run entry

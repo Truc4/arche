@@ -4,8 +4,10 @@ FloatOps :: arche { val :: float }
 
 [8]FloatOps;
 
-main :: proc() {
+entry :: system {
   insert(FloatOps { val: 1.0 })(_:, _:);
   insert(FloatOps { val: 2.0 })(_:, _:);
   fmt.print("done\n")(_:);
 }
+
+#run entry

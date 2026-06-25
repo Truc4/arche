@@ -7,8 +7,10 @@ add :: func(a: int, b: int) -> int {
   return a + b;
 }
 
-main :: proc() {
+entry :: system {
   s: str = "hi";
   x := add(s, 1);
   fmt.printf("%d\n", x);
 }
+
+#run entry

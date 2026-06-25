@@ -6,6 +6,8 @@ MAX :: 100;
 
 limit: int = MAX;
 
-main :: proc() {
+entry :: system {
   fmt.printf("limit=%d\n", limit);
 }
+
+#run entry

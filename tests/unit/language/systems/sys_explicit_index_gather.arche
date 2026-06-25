@@ -15,7 +15,7 @@ Ent   :: arche { v, out }
 [3]Ent;
 
 gather :: map (query { v, out }) {
-  out = Table.val[v]; // base suppressed → column ptr; index v auto-indexed per row → Table.val[v_i]
+  out = out(Table.val[v]); // base suppressed → column ptr; index v auto-indexed per row → Table.val[v_i]
 }
 
 seed :: system {

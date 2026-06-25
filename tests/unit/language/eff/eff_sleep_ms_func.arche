@@ -27,8 +27,10 @@ sleep_ms :: func(ms: int) -> Eff(i64) {
   return nanosleep(req);
 }
 
-main :: proc() {
+entry :: system {
   sleep_ms(1)(_:);  // run the func→Eff from a proc
   sleep_ms(-5)(_:); // nonpositive clamps to 0 — a no-op, must not crash
   fmt.printf("slept ok\n");
 }
+
+#run entry

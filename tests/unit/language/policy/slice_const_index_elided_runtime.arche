@@ -4,10 +4,12 @@
 // view[2]==buf[3]==30.
 // RUN: %arche build -o %t %s && %t | grep -x "10 30"
 #import { fmt }
-main :: proc() {
+entry :: system {
   buf: [5]int;
   buf[1] = 10;
   buf[3] = 30;
   view := buf[1: 4];
   fmt.printf("%d %d\n", view[0], view[2]);
 }
+
+#run entry

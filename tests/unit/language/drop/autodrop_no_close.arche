@@ -3,6 +3,8 @@
 // `opaque value 'f' not consumed before scope end`.)
 // RUN: %arche build -o %t %s
 #import { io }
-main :: proc() {
+entry :: system {
   io.fopen_read("/dev/null")(f:);
 }
+
+#run entry

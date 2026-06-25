@@ -1,10 +1,12 @@
 // RUN: %arche build -o %t %s && %t
 // Step 2: Stack-allocated char arrays
 #import { fmt }
-main :: proc() {
+entry :: system {
   buf: [3]char;
   buf[0] = 104;
   buf[1] = 105;
   buf[2] = 0;
   fmt.printf("char array ok\n");
 }
+
+#run entry

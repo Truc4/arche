@@ -11,6 +11,8 @@ report :: proc(arch: archetype) {
   fmt.printf("cap=%d\n", arch.capacity);
 }
 
-main :: proc() {
+entry :: system {
   report(Thing);
 }
+
+#run entry

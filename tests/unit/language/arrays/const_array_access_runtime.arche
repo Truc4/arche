@@ -8,7 +8,7 @@
 #import { fmt }
 XS   :: { 10, 20, 30 }
 M    :: { { 1, 2, 3 }, { 4, 5, 6 } }
-main :: proc() {
+entry :: system {
   row := M[1]; // a [3]i32 row alias
   buf: [5]int;
   buf[1] = 7;
@@ -16,3 +16,5 @@ main :: proc() {
   label := "hi"; // a []char string
   fmt.printf("%d %d %d %d %d\n", XS[0], row[2], view[0], label.length, M[0][1]);
 }
+
+#run entry

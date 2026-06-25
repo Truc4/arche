@@ -6,7 +6,9 @@ ident :: func(buf: [8]char) -> [8]char {
   return buf;
 }
 
-main :: proc() {
+entry :: system {
   b: [8]char;
   b = ident(move b);
 }
+
+#run entry

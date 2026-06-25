@@ -10,8 +10,10 @@ route :: proc(path: []char)() {
   }
 }
 
-main :: proc() {
+entry :: system {
   route("/about")();
   route("/")();
   route("/xyz")();
 }
+
+#run entry

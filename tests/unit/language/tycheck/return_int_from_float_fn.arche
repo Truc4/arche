@@ -8,6 +8,8 @@ bar :: func() -> float {
   return "hello";
 }
 
-main :: proc() {
+entry :: system {
   fmt.printf("%d\n", 0);
 }
+
+#run entry

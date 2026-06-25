@@ -9,6 +9,8 @@
   twovals :: proc(x: int)(a: int, b: int);
 }
 
-main :: proc() {
+entry :: system {
   twovals(5)(a:, b:);
 }
+
+#run entry

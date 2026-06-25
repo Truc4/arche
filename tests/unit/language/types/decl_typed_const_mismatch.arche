@@ -3,6 +3,8 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "declared .i32. but its value is a float literal" %t.out
 #import { fmt }
 bad: int: 3.5;
-main :: proc() {
+entry :: system {
   fmt.printf("unreachable\n");
 }
+
+#run entry

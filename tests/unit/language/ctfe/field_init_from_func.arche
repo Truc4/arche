@@ -8,7 +8,9 @@ Grid :: arche { cell :: int }
 [4]Grid(4) {
   cell: two(),
 }
-main :: proc() {
+entry :: system {
   fmt.assert(Grid.cell[0] == 2, "field init should fold to 2\n");
   fmt.printf("ok\n");
 }
+
+#run entry

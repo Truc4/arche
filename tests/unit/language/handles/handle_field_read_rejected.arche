@@ -7,8 +7,10 @@
 Foo :: arche { hp :: int }
 [10]Foo;
 
-main :: proc() {
+entry :: system {
   insert(Foo { hp: 5 })(h:, _:);
   x := h.hp;
   fmt.printf("x=%d\n", x);
 }
+
+#run entry

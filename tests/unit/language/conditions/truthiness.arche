@@ -2,7 +2,7 @@
 // is true). No `== 1` / `== 0` needed. `i1` stays an LLVM detail; arche conditions are just ints.
 // RUN: %arche build -o %t %s && %t | grep "two zero notz loop1 loop2"
 #import { fmt }
-main :: proc() {
+entry :: system {
   x := 2;
   if (x) {
     fmt.printf("two ");
@@ -24,3 +24,5 @@ main :: proc() {
   }
   fmt.printf("\n");
 }
+
+#run entry

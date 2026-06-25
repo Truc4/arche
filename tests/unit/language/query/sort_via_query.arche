@@ -7,7 +7,7 @@ N :: arche { v }
 
 Vals :: query { v }
 
-main :: proc() {
+entry :: system {
   insert(N { v: 5 })(_:, _:);
   insert(N { v: 9 })(_:, _:);
   insert(N { v: 1 })(_:, _:);
@@ -15,3 +15,5 @@ main :: proc() {
   sort(Vals.v);
   fmt.printf("min=%d max=%d\n", N.v[0], N.v[3]);
 }
+
+#run entry

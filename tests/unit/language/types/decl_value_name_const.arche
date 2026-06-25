@@ -5,6 +5,8 @@
 #import { fmt }
 pi   :: 3;
 tau  :: pi;
-main :: proc() {
+entry :: system {
   fmt.printf("tau: %d\n", tau);
 }
+
+#run entry

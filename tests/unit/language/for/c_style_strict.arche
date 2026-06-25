@@ -1,7 +1,9 @@
 // RUN: %arche build -o %t %s && %t | grep "0" && %t | grep "9"
 #import { fmt }
-main :: proc() {
+entry :: system {
   for (i := 0; i < 10; i = i + 1) {
     fmt.printf("%d\n", i);
   }
 }
+
+#run entry

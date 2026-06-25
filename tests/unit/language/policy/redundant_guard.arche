@@ -27,6 +27,8 @@ keep :: func(s: []char, lim: int) -> int {
   }
   return acc;
 }
-main :: proc() {
+entry :: system {
   fmt.printf("%d\n", dup("ab") + keep("ab", 1));
 }
+
+#run entry

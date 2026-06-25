@@ -5,7 +5,9 @@
 // RUN: %arche check %s
 #import { os term fmt }
 
-main :: proc() {
+entry :: system {
   os.os_argc()(n:);
   fmt.printf("argc=%d\n", n);
 }
+
+#run entry

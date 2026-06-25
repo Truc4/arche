@@ -7,7 +7,7 @@ k   :: u32;
 tag :: int;
 N   :: arche { k, tag }
 [3]N(3);
-main :: proc() {
+entry :: system {
   N.k   = { 1, 4000000000, 2 };
   N.tag = { 10, 20, 30 };
   sort(N.k); // unsigned ascending: 1, 2, 4000000000 → tags 10, 30, 20
@@ -16,3 +16,5 @@ main :: proc() {
   fmt.assert(N.tag[2] == 20, "t2\n");
   fmt.printf("PASS\n");
 }
+
+#run entry

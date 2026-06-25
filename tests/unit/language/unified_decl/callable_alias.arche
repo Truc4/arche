@@ -13,8 +13,10 @@ add :: func(a: int, b: int) -> int {
 handler :: not_found; // proc alias
 plus    :: add; // func alias
 
-main :: proc() {
+entry :: system {
   handler()(c:);
   s := plus(3, 4);
   fmt.printf("code=%d sum=%d\n", c, s);
 }
+
+#run entry

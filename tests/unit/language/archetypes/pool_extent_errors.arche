@@ -8,8 +8,10 @@ v :: int;
 P :: arche { v }
 [8]P(3);
 
-main :: proc() {
+entry :: system {
   fmt.printf("%d\n", P.length); // pool has no .length
   fmt.printf("%d\n", P.v.length); // a column is not a sequence
   fmt.printf("%d\n", P.v.count); // .count is pool-level, not column-level
 }
+
+#run entry

@@ -7,7 +7,7 @@ fill :: func(own b: [8]char, s: []char) -> []char {
   return str.strcopy(move b, s);
 }
 
-main :: proc() {
+entry :: system {
   src: [8]char;
   src[0] = 'h';
   src[1] = 'i';
@@ -21,3 +21,5 @@ main :: proc() {
     out.length,
   );
 }
+
+#run entry

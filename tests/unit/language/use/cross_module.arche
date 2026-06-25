@@ -3,6 +3,8 @@
 // RUN: %arche build -o %t %s && %t | grep "RESULT=110"
 #import { "./xmod_a" "./xmod_b" fmt }
 
-main :: proc() {
+entry :: system {
   fmt.printf("RESULT=%d\n", xmod_b.useit(10));
 }
+
+#run entry

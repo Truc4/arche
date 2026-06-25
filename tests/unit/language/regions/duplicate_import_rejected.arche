@@ -4,5 +4,7 @@
 #import { os }
 #import { term }
 
-main :: proc() {
+entry :: system {
 }
+
+#run entry

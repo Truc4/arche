@@ -13,10 +13,12 @@ zero :: func(own xs: []int) -> int {
   return xs.length;
 }
 
-main :: proc() {
+entry :: system {
   a: [2]int;
   a[0] = 7;
   a[1] = 9;
   n := zero(move a);
   fmt.printf("zeroed n=%d\n", n);
 }
+
+#run entry

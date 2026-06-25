@@ -4,7 +4,7 @@ Matrix :: arche { data :: [10]float }
 
 [5]Matrix;
 
-main :: proc() {
+entry :: system {
   insert(Matrix { data: 1.5 })(_:, _:);
   val := Matrix.data[0][0];
   vi  := val * 10.0;
@@ -15,3 +15,5 @@ main :: proc() {
   virow := vrow * 10.0;
   fmt.assert(virow == 15, "row[0] != 1.5\n");
 }
+
+#run entry

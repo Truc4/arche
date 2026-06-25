@@ -8,7 +8,7 @@ slen :: proc(s: []char)(r: int) {
   r = str.strlen(s);
 }
 
-main :: proc() {
+entry :: system {
   slen("hello")(lit:); // literal passed directly → length 5
 
   x := "hello";
@@ -22,3 +22,5 @@ main :: proc() {
 
   fmt.printf("lit=%d var=%d mid=%d\n", lit, var, mid);
 }
+
+#run entry

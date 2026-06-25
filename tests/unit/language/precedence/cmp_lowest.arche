@@ -1,6 +1,8 @@
 // Comparisons bind looser than arithmetic: 1 + (2*3) == 7  -> true (1).
 // RUN: %arche build -o %t %s && %t | grep "RESULT=1"
 #import { fmt }
-main :: proc() {
+entry :: system {
   fmt.printf("RESULT=%d\n", 1 + 2 * 3 == 7);
 }
+
+#run entry

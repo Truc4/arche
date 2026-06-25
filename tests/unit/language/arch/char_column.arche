@@ -9,7 +9,7 @@ Node :: arche { seg :: [32]char, id :: int }
 
 [8]Node;
 
-main :: proc() {
+entry :: system {
   insert(Node { seg: "users", id: 7 })(_:, _:);
   insert(Node { seg: "posts", id: 9 })(_:, _:);
 
@@ -23,3 +23,5 @@ main :: proc() {
   eq := streq(r0[0: 5], "users");
   fmt.printf("seg0=%s seg1=%s total=%d eq=%d\n", r0, r1, total, eq);
 }
+
+#run entry

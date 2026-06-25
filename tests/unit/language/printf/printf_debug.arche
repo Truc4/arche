@@ -1,6 +1,8 @@
 // RUN: %arche build -o %t %s && %t | grep B
 #import { fmt }
-main :: proc() {
+entry :: system {
   fmt.printf("A\n");
   fmt.printf("B\n");
 }
+
+#run entry

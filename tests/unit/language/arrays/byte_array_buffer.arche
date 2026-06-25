@@ -8,7 +8,7 @@
 // an `int` (sub-int operands promote), not a too-narrow byte — so it prints correctly via `%d`.
 // RUN: %arche build -o %t %s && %t | grep "sum=198 last=65 wrapped=1 direct=131"
 #import { fmt }
-main :: proc() {
+entry :: system {
   b: [4]byte;
   b[0] = 65;
   b[1] = 66;
@@ -35,3 +35,5 @@ main :: proc() {
 
   fmt.printf("sum=%d last=%d wrapped=%d direct=%d\n", sum, last, wrapped, direct);
 }
+
+#run entry

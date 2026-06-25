@@ -4,9 +4,11 @@ check_buf :: func(buf: [32]char) -> int {
   return str.strlen(buf);
 }
 
-main :: proc() {
+entry :: system {
   n1 := str.strlen("hello");
   fmt.printf("direct strlen: %d\n", n1);
   n2 := check_buf("hello");
   fmt.printf("function strlen: %d\n", n2);
 }
+
+#run entry

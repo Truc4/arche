@@ -8,6 +8,8 @@ counter: int = 0;
 
 x: int = counter; // a mutable global is not compile-time-known -> error
 
-main :: proc() {
+entry :: system {
   fmt.printf("%d\n", x);
 }
+
+#run entry

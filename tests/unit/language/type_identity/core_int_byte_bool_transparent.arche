@@ -4,7 +4,7 @@
 // numeric names distinct. (GREEN today; must STAY green.)
 // RUN: %arche build -o %t %s && %t | grep "v=5"
 #import { fmt }
-main :: proc() {
+entry :: system {
   x  : int  = 5;
   y  : i32  = x; // int <-> i32 transparent
   z  : byte = 200;
@@ -12,3 +12,5 @@ main :: proc() {
   ok : bool = true;
   fmt.printf("v=%d wb=%d ok=%d\n", y, w, ok);
 }
+
+#run entry

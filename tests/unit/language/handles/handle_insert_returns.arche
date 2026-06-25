@@ -4,7 +4,9 @@ Player :: arche { pos :: float }
 
 [10]Player;
 
-main :: proc() {
+entry :: system {
   insert(Player { pos: 1.0 })(h:, _:);
   fmt.print("slot 0 handle created")(_:);
 }
+
+#run entry

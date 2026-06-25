@@ -10,7 +10,7 @@ alias_top: type: int;
 short_top :: int;
 Body      :: arche { mass: type: int }
 
-main :: proc() {
+entry :: system {
   loc: type: int;
   p : loc       = 1;
   q : alias_top = 2;
@@ -18,3 +18,5 @@ main :: proc() {
   m : mass      = 4;
   fmt.printf("%d\n", p + q + r + m);
 }
+
+#run entry

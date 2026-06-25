@@ -3,7 +3,9 @@
 // A sibling empty proc still fires the lint, proving the exemption is main-specific, not lint-off.
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "proc 'main'") -eq 0
 // RUN: %build/arche-analyzer --dump %s | grep -qF "warning W0002 proc_no_effect 0 proc 'other'"
-main :: proc() {
+entry :: system {
 }
 other :: proc() {
 }
+
+#run entry

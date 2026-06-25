@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { parse fmt }
-main :: proc() {
+entry :: system {
   buf: [4]char;
   buf[0] = '1';
   buf[1] = '.';
@@ -10,3 +10,5 @@ main :: proc() {
   fmt.printf("atof: %g\n", f);
   fmt.assert(f == 1.5, "atof failed\n");
 }
+
+#run entry

@@ -1,7 +1,9 @@
 // RUN: %arche build -o %t %s && %t
 #import { fmt }
-main :: proc() {
+entry :: system {
   x := 42;
   fmt.assert(x == 42, "type syntax failed\n");
   fmt.print("test passed\n")(_:);
 }
+
+#run entry

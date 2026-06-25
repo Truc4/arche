@@ -5,6 +5,8 @@
 #import { fmt }
 MAX :: 100;
 
-main :: proc() {
+entry :: system {
   fmt.printf("max=%d\n", MAX);
 }
+
+#run entry

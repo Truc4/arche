@@ -12,6 +12,8 @@ fdef :: func() -> int {
   return a[i];
 }
 
-main :: proc() {
+entry :: system {
   fmt.printf("fdef=%d\n", fdef());
 }
+
+#run entry

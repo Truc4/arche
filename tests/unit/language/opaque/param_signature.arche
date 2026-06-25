@@ -8,6 +8,8 @@ res :: opaque;
 describe :: func(f: res) -> int {
   return 0;
 }
-main :: proc() {
+entry :: system {
   fmt.printf("ok opaque_param\n");
 }
+
+#run entry

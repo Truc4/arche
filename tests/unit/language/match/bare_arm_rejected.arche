@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "qualify it" %t.out
 #import { fmt }
 bar :: enum { foo, qux }
-main :: proc() {
+entry :: system {
   baz := bar.foo;
   match baz {
     foo: {
@@ -15,3 +15,5 @@ main :: proc() {
     }
   }
 }
+
+#run entry

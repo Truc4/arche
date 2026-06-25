@@ -3,8 +3,10 @@
 // RUN: %arche build -o %t %s && %t | grep "plugin_ok"
 #import { "./plugin_dev" fmt }
 
-main :: proc() {
+entry :: system {
   r := plugin_dev.pub(20); // pub calls private secret(20)=40, returns 41
   fmt.assert(r == 41, "pub via #module-private helper failed\n");
   fmt.printf("plugin_ok\n");
 }
+
+#run entry

@@ -7,9 +7,11 @@ take :: func(b: [8]char) -> int {
   return 0;
 }
 
-main :: proc() {
+entry :: system {
   buf: [8]char;
   buf[0] = 'A';
   n := take(move buf);
   fmt.printf("%d\n", buf[0]);
 }
+
+#run entry

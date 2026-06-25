@@ -6,6 +6,8 @@
 #import { fmt }
 S :: { "a", "bb", "ccc" }
 
-main :: proc() {
+entry :: system {
   fmt.printf("%c%c%c %c%c%c\n", S[0][0], S[1][0], S[2][0], S[2][0], S[2][1], S[2][2]);
 }
+
+#run entry

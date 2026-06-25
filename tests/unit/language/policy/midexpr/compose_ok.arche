@@ -3,11 +3,12 @@
 // index produced by a policy'd read, and policies in distinct call arguments, all clamp independently.
 // (Contrast the *_shortcircuit tests, where a policy in a `&&`/`||` operand is the open defect.)
 // RUN: %arche build -o %t %s && %t | grep -qF "r=5"
-#import { fmt }
+#import { os  fmt }
 g :: func(x: int, y: int) -> int {
   return x + y;
 }
-main :: proc(argc: int) {
+entry :: system {
+  os.argc()(argc:);
   a: [4]int;
   a[0] = 2;
   a[3] = 3;
@@ -16,3 +17,5 @@ main :: proc(argc: int) {
   r   := g(a[hi] !clamp, a[idx - idx] !abort); // g(a[3]=3, a[0]=2) = 5
   fmt.printf("r=%d\n", r);
 }
+
+#run entry

@@ -4,9 +4,11 @@ get_len :: func(s: []char) -> int {
   return str.strlen(s);
 }
 
-main :: proc() {
+entry :: system {
   len := get_len("hello");
   if (len == 5) {
     fmt.printf("strlen ok\n");
   }
 }
+
+#run entry

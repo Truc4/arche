@@ -5,8 +5,10 @@
 #import { fmt }
 x: int = 5;
 
-main :: proc() {
+entry :: system {
   fmt.printf("x=%d then ", x);
   x = 9; // mutable: reassignable at runtime
   fmt.printf("%d\n", x);
 }
+
+#run entry

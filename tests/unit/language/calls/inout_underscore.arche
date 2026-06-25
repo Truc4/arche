@@ -11,8 +11,10 @@ fill :: proc(buf: []char, n: int)(buf: []char) {
     buf[2] = 0;
   }
 }
-main :: proc() {
+entry :: system {
   b: [4]char;
   fill(_, 4)(b);
   fmt.print(b)(_:);
 }
+
+#run entry

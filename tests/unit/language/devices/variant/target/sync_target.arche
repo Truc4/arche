@@ -12,6 +12,8 @@
 // RUN: env ARCHE_TARGET=windows %analyzer --dump %s 2>&1 | grep "has no member 'wl_only'"
 // RUN: ! env ARCHE_TARGET=linux %analyzer --dump %s 2>&1 | grep "has no member"
 #import { tgfx }
-main :: proc() {
+entry :: system {
   tgfx.wl_only();
 }
+
+#run entry

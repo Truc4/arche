@@ -7,6 +7,8 @@
 // the imported device(s) materialized as loadable .so(s) in the hot dir
 // RUN: ls %t.hot/unit_1.so
 #import { fmt }
-main :: proc() {
+entry :: system {
   fmt.print("hot_ok\n")(_:);
 }
+
+#run entry

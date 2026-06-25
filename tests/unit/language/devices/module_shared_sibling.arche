@@ -4,6 +4,8 @@
 // RUN: %arche build -o %t %s && %t | grep -q "modshared=8"
 #import { sib_modpriv fmt }
 
-main :: proc() {
+entry :: system {
   fmt.printf("modshared=%d\n", sib_modpriv.useit());
 }
+
+#run entry

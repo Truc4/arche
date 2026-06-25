@@ -5,6 +5,8 @@
 // RUN: grep -iE "assign to const|cannot assign|immutable" %t.err
 XS :: { 1, 2, 3 }
 
-main :: proc() {
+entry :: system {
   XS[0] = 9;
 }
+
+#run entry

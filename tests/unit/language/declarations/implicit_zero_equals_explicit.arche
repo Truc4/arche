@@ -7,6 +7,8 @@
 g_implicit: int; // implicit: defaults to = 0
 g_explicit: int = 0; // explicit zero
 
-main :: proc() {
+entry :: system {
   fmt.printf("imp=%d exp=%d\n", g_implicit, g_explicit);
 }
+
+#run entry

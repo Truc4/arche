@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t
 // Step 5: Break statement with infinite for loop
 #import { fmt }
-main :: proc() {
+entry :: system {
   i := 0;
   for {
     if (i == 2) {
@@ -12,3 +12,5 @@ main :: proc() {
   }
   fmt.printf("break ok\n");
 }
+
+#run entry

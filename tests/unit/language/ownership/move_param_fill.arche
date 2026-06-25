@@ -18,8 +18,10 @@ fill :: proc(buf: [32]char, s: []char)(buf: [32]char, n: int) {
   n = i;
 }
 
-main :: proc() {
+entry :: system {
   b: [32]char;
   fill(b, "hello")(b, n:);
   fmt.printf("filled=%s n=%d\n", b, n);
 }
+
+#run entry

@@ -7,9 +7,11 @@
 #import { fmt }
 XS   :: { 10, 20, 30 }
 FS   :: { 1.5, 2.5 }
-main :: proc() {
+entry :: system {
   whole := XS;
   typed: [3]i32 = XS;
   fs := FS;
   fmt.printf("%d %d %g %d\n", whole[0], typed[2], fs[1], whole.length);
 }
+
+#run entry

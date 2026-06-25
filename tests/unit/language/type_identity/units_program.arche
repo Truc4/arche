@@ -9,9 +9,11 @@ mps     :: float;
 speed   :: func(d: meters, t: seconds) -> mps {
   return mps(d / t); // meters/seconds is a float; tag it mps explicitly
 }
-main :: proc() {
+entry :: system {
   d : meters  = 20.0;
   t : seconds = 5.0;
   v : mps     = speed(d, t);
   fmt.printf("speed=%g\n", v);
 }
+
+#run entry

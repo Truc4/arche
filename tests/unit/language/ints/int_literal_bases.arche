@@ -10,7 +10,7 @@ BIG  :: 1_000_000;
 v    :: int;
 N    :: arche { v }
 [4]N(4);
-main :: proc() {
+entry :: system {
   fmt.assert(RED == 16711680, "hex const\n");
   fmt.assert(MASK == 10, "bin const\n");
   fmt.assert(PERM == 493, "oct const\n");
@@ -32,3 +32,5 @@ main :: proc() {
   fmt.assert(N.v[3] == 10, "scatter sep\n");
   fmt.printf("ok\n");
 }
+
+#run entry

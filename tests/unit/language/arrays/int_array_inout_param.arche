@@ -9,8 +9,10 @@ fill :: proc(buf: [8]int, n: int)(buf: [8]int) {
   buf[2] = buf[0] + 3;
 }
 
-main :: proc() {
+entry :: system {
   b: [8]int;
   fill(b, 8)(b);
   fmt.printf("%d %d %d\n", b[0], b[1], b[2]);
 }
+
+#run entry

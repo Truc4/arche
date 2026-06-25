@@ -6,7 +6,7 @@ Entity :: arche { x :: float, y :: float }
 
 [100]Entity;
 
-main :: proc() {
+entry :: system {
   insert(Entity { x: 1.0, y: 2.0 })(_:, _:);
   insert(Entity { x: 3.0, y: 4.0 })(h1:, _:);
   insert(Entity { x: 5.0, y: 6.0 })(_:, _:);
@@ -24,3 +24,5 @@ main :: proc() {
   fmt.assert(y4i == 200, "y[4] != 20.0\n");
   fmt.printf("ok\n");
 }
+
+#run entry

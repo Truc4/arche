@@ -2,7 +2,7 @@
 // io.file_map mmaps a whole file and returns a raw byte view (char[]) scanned with i64 offsets. The
 // public wrapper — io's raw `arche_file_*` C externs are private to the device.
 #import { io fmt }
-main :: proc() {
+entry :: system {
   io.file_map("/tmp/file_map.txt")(data:);
   io.file_size()(size: i64);
   commas: i64 = 0;
@@ -14,3 +14,5 @@ main :: proc() {
   fmt.printf("size=%ld commas=%ld\n", size, commas);
   io.file_unmap(move data, size)();
 }
+
+#run entry

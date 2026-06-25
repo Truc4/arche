@@ -1,9 +1,11 @@
 #import { fmt }
 Counter :: arche { value :: int }
 [1]Counter;
-main :: proc() {
+entry :: system {
   insert(Counter { value: 0 })(_:, _:);
   x := 10;
   y := 20;
   fmt.print("counter allocated\n")(_:);
 }
+
+#run entry

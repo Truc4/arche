@@ -8,6 +8,8 @@
 // `#foreign` extern exactly as for a pure-Arche `#module` decl.
 // RUN: %arche check %s > %t.out 2>&1 ; grep -qi "Undefined symbol 'net_listen'" %t.out
 #import { net }
-main :: proc() {
+entry :: system {
   net_listen(8081)(s:); // raw extern is private to `net` — not visible here
 }
+
+#run entry

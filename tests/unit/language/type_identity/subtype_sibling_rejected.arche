@@ -8,7 +8,9 @@ seconds       :: float;
 takes_seconds :: proc(s: seconds) {
   fmt.printf("%g\n", s);
 }
-main :: proc() {
+entry :: system {
   d: meters = 5.0;
   takes_seconds(d); // meters where seconds expected -> ERROR
 }
+
+#run entry

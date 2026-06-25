@@ -14,7 +14,9 @@ sum :: func(xs: []int) -> int {
 }
 M :: { { 1, 2, 3 }, { 4, 5, 6 } }
 
-main :: proc() {
+entry :: system {
   r := M[1];
   fmt.printf("len=%d a=%d c=%d sum=%d\n", r.length, r[0], r[2], sum(r));
 }
+
+#run entry

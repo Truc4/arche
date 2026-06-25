@@ -4,7 +4,9 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'float', got 'i32'" %t.out
 #import { fmt }
 N    :: 42;
-main :: proc() {
+entry :: system {
   y: float = N;
   fmt.printf("%.1f\n", y);
 }
+
+#run entry

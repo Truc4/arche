@@ -7,8 +7,10 @@ sink :: func(own b: [3]int) -> int {
   return b[0];
 }
 
-main :: proc() {
+entry :: system {
   a: [3]int;
   n := sink(a);
   fmt.printf("%d\n", n);
 }
+
+#run entry

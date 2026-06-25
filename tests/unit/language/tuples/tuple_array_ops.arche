@@ -6,7 +6,7 @@ Particle  :: arche { pos_x, pos_y, vel_x, vel_y }
 
 [5]Particle;
 
-main :: proc() {
+entry :: system {
   insert(Particle { pos_x: 0.0, pos_y: 1.0, vel_x: 0.5, vel_y: 0.1 })(_:, _:);
   insert(Particle { pos_x: 2.0, pos_y: 3.0, vel_x: 0.2, vel_y: 0.3 })(_:, _:);
   insert(Particle { pos_x: 4.0, pos_y: 5.0, vel_x: 0.1, vel_y: 0.2 })(_:, _:);
@@ -25,3 +25,5 @@ main :: proc() {
   fmt.print_float(Particle.pos_y[2])();
   fmt.print("\n")(_:);
 }
+
+#run entry

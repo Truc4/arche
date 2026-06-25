@@ -3,6 +3,8 @@
 // RUN: %arche --help | grep -q check
 // RUN: %arche help build | grep -q emit
 #import { fmt }
-main :: proc() {
+entry :: system {
   fmt.printf("x\n");
 }
+
+#run entry

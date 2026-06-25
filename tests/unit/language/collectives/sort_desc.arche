@@ -6,7 +6,7 @@ k   :: int;
 tag :: int;
 N   :: arche { k, tag }
 [4]N(4);
-main :: proc() {
+entry :: system {
   N.k   = { 3, 1, 4, 2 };
   N.tag = { 10, 20, 30, 40 };
   sort(N.k, desc);
@@ -23,3 +23,5 @@ main :: proc() {
     N.tag[3],
   );
 }
+
+#run entry

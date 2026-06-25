@@ -4,6 +4,8 @@
 #import { fmt }
 A :: 'A';
 B: char: 'B';
-main :: proc() {
+entry :: system {
   fmt.printf("a=%c b=%c\n", A, B);
 }
+
+#run entry

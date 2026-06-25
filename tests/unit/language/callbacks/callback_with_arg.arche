@@ -12,6 +12,8 @@ apply :: proc(cb: logger)() {
   cb(7)();
 }
 
-main :: proc() {
+entry :: system {
   apply(log_it)();
 }
+
+#run entry

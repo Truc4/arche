@@ -5,7 +5,7 @@
 // RUN: %arche build -o %t %s && %t | grep -q "got qux"
 #import { fmt }
 bar  :: enum { foo, qux, zap }
-main :: proc() {
+entry :: system {
   baz := bar.qux;
   match baz {
   bar.foo: {
@@ -19,3 +19,5 @@ main :: proc() {
   }
   }
 }
+
+#run entry

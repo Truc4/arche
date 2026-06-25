@@ -10,7 +10,9 @@ fill :: proc(n: int)(buf: [8]int, count: int) {
   count  = 2;
 }
 
-main :: proc() {
+entry :: system {
   fill(8)(b:, c:);
   fmt.printf("out %d %d c=%d\n", b[0], b[1], c);
 }
+
+#run entry

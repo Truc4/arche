@@ -8,10 +8,12 @@ N :: arche { v }
 
 Vals :: query { v }
 
-main :: proc() {
+entry :: system {
   insert(N { v: 10 })(_:, _:);
   insert(N { v: 20 })(_:, _:);
   insert(N { v: 30 })(_:, _:);
   sum := reduce(+, Vals.v);
   fmt.printf("sum=%d\n", sum);
 }
+
+#run entry

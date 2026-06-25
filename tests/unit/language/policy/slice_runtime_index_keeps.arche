@@ -4,9 +4,11 @@
 // slice_const_index_provable, which elides the constant index.)
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "policy") -eq 1
 #import { fmt }
-main :: proc() {
+entry :: system {
   buf: [5]int;
   view := buf[1: 4];
   i    := 2;
   fmt.printf("%d %d\n", view[0], view[i]);
 }
+
+#run entry

@@ -11,6 +11,8 @@ Enemies :: arche { x, y }
 
 // Only ONE can be allocated
 
-main :: proc() {
+entry :: system {
   fmt.printf("multiple handles ok\n");
 }
+
+#run entry

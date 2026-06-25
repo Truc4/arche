@@ -7,7 +7,7 @@ k   :: i8;
 tag :: int;
 N   :: arche { k, tag }
 [40]N(40);
-main :: proc() {
+entry :: system {
   N.k = {
     40,
     39,
@@ -99,3 +99,5 @@ main :: proc() {
   fmt.assert(N.tag[39] == 1, "t39\n");
   fmt.printf("PASS\n");
 }
+
+#run entry

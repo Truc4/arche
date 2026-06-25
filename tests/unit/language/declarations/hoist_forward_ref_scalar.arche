@@ -8,7 +8,9 @@ read_g :: proc()(v: int) {
 
 g: int = 7;
 
-main :: proc() {
+entry :: system {
   read_g()(v:);
   fmt.printf("g=%d\n", v);
 }
+
+#run entry

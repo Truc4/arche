@@ -2,7 +2,7 @@
 // normalizes to truthiness). Works on any int operand.
 // RUN: %arche build -o %t %s && %t | grep "nz=1 nx=0 dn=1"
 #import { fmt }
-main :: proc() {
+entry :: system {
   x  := 5;
   z  := 0;
   nz := !z; // z is zero  -> 1
@@ -10,3 +10,5 @@ main :: proc() {
   dn := !!x; // truthiness  -> 1
   fmt.printf("nz=%d nx=%d dn=%d\n", nz, nx, dn);
 }
+
+#run entry

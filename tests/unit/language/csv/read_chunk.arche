@@ -5,7 +5,7 @@ cb      :: char;
 CharBuf :: arche { cb }
 [65536]CharBuf;
 
-main :: proc() {
+entry :: system {
   io.open("tests/fixtures/data.csv")(fd:);
   fmt.printf("fd=%d\n", fd);
   if (fd > 0) {
@@ -17,3 +17,5 @@ main :: proc() {
   }
   io.close(move fd)(_:);
 }
+
+#run entry

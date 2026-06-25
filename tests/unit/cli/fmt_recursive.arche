@@ -2,6 +2,8 @@
 // RUN: rm -rf %t.tr && mkdir -p %t.tr/sub && %arche fmt %s > %t.tr/sub/m.arche && %arche fmt --check %t.tr/...
 // RUN: rm -rf %t.tr2 && mkdir -p %t.tr2/sub && %arche fmt %s > %t.tr2/sub/m.arche && %arche fmt --check %t.tr2
 #import { fmt }
-main :: proc() {
+entry :: system {
   fmt.print("recurse\n")(_:);
 }
+
+#run entry

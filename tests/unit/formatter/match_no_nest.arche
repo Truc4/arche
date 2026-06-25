@@ -12,7 +12,7 @@
 #import { fmt }
 method :: enum { get, post, delete }
 
-main :: proc() {
+entry :: system {
   m := method.get;
   match m {
   method.get    : fmt.printf("GET\n");
@@ -22,3 +22,5 @@ main :: proc() {
   }
   }
 }
+
+#run entry

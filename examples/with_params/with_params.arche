@@ -3,6 +3,8 @@ add :: proc(a: int, b: int) {
   result := a + b;
   fmt.print("sum: 15\n")(_:);
 }
-main :: proc() {
+entry :: system {
   add(5, 10);
 }
+
+#run entry

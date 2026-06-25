@@ -8,5 +8,7 @@
   b :: proc()(y: int);
 }
 
-main :: proc() {
+entry :: system {
 }
+
+#run entry

@@ -7,6 +7,8 @@ tag :: int;
 B   :: arche { v, tag }
 [4]B;
 
-main :: proc() {
+entry :: system {
   insert(B { v: 2 })(_:, _:); // missing `tag`
 }
+
+#run entry

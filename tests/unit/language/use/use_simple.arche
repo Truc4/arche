@@ -2,6 +2,8 @@
 // Simple test to see if 'use' statement works
 #import { csv fmt }
 
-main :: proc() {
+entry :: system {
   fmt.printf("ok\n");
 }
+
+#run entry

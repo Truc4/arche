@@ -9,7 +9,7 @@ Resource :: arche { cell }
 }
 [8]Resource;
 
-main :: proc() {
+entry :: system {
   resource_open(10)(r1:);
   insert(Resource { cell: r1 })(h:, _:);
   dup := h;
@@ -18,3 +18,5 @@ main :: proc() {
   insert(Resource { cell: r2 })(h2:, _:);
   delete(dup)(_:);
 }
+
+#run entry

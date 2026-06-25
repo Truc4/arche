@@ -16,8 +16,10 @@ negate :: func(a: int) -> int {
 h : handler : not_found;
 g : unop    : negate;
 
-main :: proc() {
+entry :: system {
   h()(c:);
   r := g(7);
   fmt.printf("code=%d r=%d\n", c, r);
 }
+
+#run entry

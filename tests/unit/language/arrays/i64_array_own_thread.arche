@@ -10,9 +10,11 @@ step :: func(own a: [4]i64, i: int) -> [4]i64 {
   return a;
 }
 
-main :: proc() {
+entry :: system {
   a: [4]i64;
   a := step(move a, 0);
   a := step(move a, 1);
   fmt.printf("owned %lld\n", a[0] + a[1]);
 }
+
+#run entry

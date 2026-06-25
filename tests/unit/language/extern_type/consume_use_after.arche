@@ -3,9 +3,11 @@
 // `file` opaque — no FFI stub needed.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "consumed" %t.out
 #import { io }
-main :: proc() {
+entry :: system {
   io.stdout()(f:);
   io.fclose(move f)(_:);
   // using f after it was consumed should be an error
   io.fwrite(f, "x", 1)(_:);
 }
+
+#run entry

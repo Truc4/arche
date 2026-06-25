@@ -8,8 +8,10 @@
 Open :: arche { f :: fd }
 [4]Open;
 
-main :: proc() {
+entry :: system {
   io.fopen_read("/dev/null")(f:);  // open → fd (the kernel descriptor, as data)
   insert(Open { f: f })(h:, _:);   // park the fd in a row
   delete(h)(_:);                   // close = delete the row → @drop(fd) fires os.close (syscall 3)
 }
+
+#run entry

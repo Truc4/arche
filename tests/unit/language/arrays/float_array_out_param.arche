@@ -4,7 +4,9 @@
 fill :: proc()(buf: [4]float) {
   buf[0] = 3.25;
 }
-main :: proc() {
+entry :: system {
   fill()(f:);
   fmt.printf("fout=%g\n", f[0]);
 }
+
+#run entry

@@ -6,7 +6,9 @@ Counter :: arche { val :: int }
   val: 7,
 }
 
-main :: proc() {
+entry :: system {
   fmt.assert(Counter.val[0] == 7, "val[0] not 7\n");
   fmt.printf("ok\n");
 }
+
+#run entry

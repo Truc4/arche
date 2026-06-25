@@ -10,7 +10,9 @@ b   :: char;
 Buf :: arche { b }
 [256]Buf;
 
-main :: proc() {
+entry :: system {
   view := Buf.b[0: Buf.capacity]; // hand-built column slice outside a query → W0029
   fmt.printf("%d\n", view.length);
 }
+
+#run entry

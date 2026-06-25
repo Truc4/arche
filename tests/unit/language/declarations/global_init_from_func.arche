@@ -9,6 +9,8 @@ five :: func() -> int {
 
 x: int = five(); // folds to 5 at compile time
 
-main :: proc() {
+entry :: system {
   fmt.printf("x=%d\n", x);
 }
+
+#run entry

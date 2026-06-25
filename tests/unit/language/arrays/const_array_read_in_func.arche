@@ -8,6 +8,8 @@ XS :: { 10, 20, 30 }
 nth :: func(i: int) -> int {
   return XS[i];
 }
-main :: proc() {
+entry :: system {
   fmt.printf("%d\n", nth(1));
 }
+
+#run entry

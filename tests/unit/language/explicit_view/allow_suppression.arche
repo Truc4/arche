@@ -8,6 +8,8 @@ quiet :: proc() {
 }
 loud :: proc() {
 }
-main :: proc() {
+entry :: system {
   fmt.print("hi")(_:);
 }
+
+#run entry

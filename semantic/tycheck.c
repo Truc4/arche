@@ -558,8 +558,12 @@ static void visit_stmt(TyCtx *cx, SyntaxView s, const DeclSummary *fn) {
 			visit_expr(cx, value);
 		if (sv_present(target) && sv_present(value)) {
 			TypeId tt = synth(cx, target);
+			/* Column ← array-literal init/scatter (`Slot.slot = { h }`, `Mob.pos.x = {1,2,3}`) MOVES each
+			 * element into a pool row — drop-managed storage, not an overwrite of a local. Exempt it from the
+			 * opaque create-once seal (which is for `local_opaque = …`); the element check runs below. */
+			int col_scatter = (sv_kind(target) == SN_FIELD_EXPR && sv_kind(value) == SN_ARRAY_LIT_EXPR);
 			/* An opaque handle is create-once — you may never overwrite an existing one with `=`. */
-			if (target_is_opaque_nominal(cx, tt)) {
+			if (!col_scatter && target_is_opaque_nominal(cx, tt)) {
 				char on[64];
 				tyid_display(cx->arena, tt, on, sizeof(on));
 				sem_emit_opaque_overwrite(cx->ctx, sem_node_loc(target.node), on);
@@ -672,7 +676,13 @@ void tycheck_run(SemanticContext *ctx) {
 			}
 		}
 
-		if (d->kind == DECL_FUNC || d->kind == DECL_PROC) {
+		/* Type-check the body of every executable decl. Systems/eaches/maps had been SKIPPED — so a type
+		 * error inside a `system`/`each`/`map` body (`x: int = "str"`, a bad call arg, `break` outside a
+		 * loop) silently compiled. With `proc` going away and bodies moving into systems, they must get the
+		 * same statement/expression checks as a `proc`. `fn` (the return-type context) is only a `func`;
+		 * systems/eaches/maps have no return, so they pass NULL like a proc. */
+		if (d->kind == DECL_FUNC || d->kind == DECL_PROC || d->kind == DECL_SYSTEM || d->kind == DECL_EACH ||
+		    d->kind == DECL_MAP) {
 			const DeclSummary *fn = d->kind == DECL_FUNC ? d : NULL;
 			for (int k = 0, sc = sem_stmt_count(d->body_node); k < sc; k++)
 				visit_stmt(&cx, sem_stmt_at(d->body_node, k), fn);

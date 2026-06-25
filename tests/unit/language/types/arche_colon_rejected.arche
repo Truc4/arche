@@ -6,4 +6,6 @@ Foo :: arche {
   hp: int
 }
 
-main :: proc() {}
+entry :: system {}
+
+#run entry

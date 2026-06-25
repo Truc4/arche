@@ -13,6 +13,8 @@
 // RUN: rm -rf %t.cache2 && env ARCHE_CACHE_DIR=%t.cache2 %arche run --whole-program %s | grep -qF "run_ok"
 // RUN: ! ls %t.cache2/*.o
 #import { fmt }
-main :: proc() {
+entry :: system {
   fmt.print("run_ok\n")(_:);
 }
+
+#run entry

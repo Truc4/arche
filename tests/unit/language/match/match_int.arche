@@ -1,7 +1,7 @@
 // match on integer literals → if-chain of direct dispatch; `_` is the required catch-all.
 // RUN: %arche build -o %t %s && %t | grep "two"
 #import { fmt }
-main :: proc() {
+entry :: system {
   x := 2;
   match x {
   1 : fmt.printf("one\n");
@@ -9,3 +9,5 @@ main :: proc() {
   _ : fmt.printf("other\n");
   }
 }
+
+#run entry

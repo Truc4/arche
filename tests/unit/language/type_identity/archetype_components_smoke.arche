@@ -7,7 +7,7 @@ Body :: arche { px :: float, py :: float, mass :: float }
 [4]Body(4) {
   px: 0.0, py: 0.0, mass: 0.0,
 }
-main :: proc() {
+entry :: system {
   i := 0;
   for (; i < 4; i += 1) {
     Body.mass[i] = 25.0;
@@ -19,3 +19,5 @@ main :: proc() {
   }
   fmt.printf("total=%g\n", total);
 }
+
+#run entry

@@ -5,6 +5,8 @@
 #import { fmt }
 PI :: 3.14;
 TAU: float: 6.28;
-main :: proc() {
+entry :: system {
   fmt.printf("pi: %.2f tau: %.2f\n", PI, TAU - PI);
 }
+
+#run entry

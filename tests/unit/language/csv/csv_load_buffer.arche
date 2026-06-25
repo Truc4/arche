@@ -6,7 +6,7 @@ Transaction :: arche { price :: float, quantity :: int }
   price: 0.0, quantity: 0,
 }
 
-main :: proc() {
+entry :: system {
   os.open("../../../../../tests/fixtures/transactions.csv", 0)(fd:);
   buf: [256]char;
   os.read(fd, 256)(buf, rd_data:);
@@ -69,3 +69,5 @@ main :: proc() {
   fmt.assert(idx > 0, "should load at least 1 row\n");
   fmt.assert(Transaction.price[0] == 1.0, "first price should be 1.0\n");
 }
+
+#run entry

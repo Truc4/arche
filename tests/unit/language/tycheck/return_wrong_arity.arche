@@ -6,6 +6,8 @@ two :: func() -> int {
   return 1, 2;
 }
 
-main :: proc() {
+entry :: system {
   fmt.printf("%d\n", 0);
 }
+
+#run entry

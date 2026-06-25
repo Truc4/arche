@@ -7,7 +7,9 @@
 #import { fmt }
 shared := 0;
 
-main :: proc() {
+entry :: system {
   shared = shared + 1;
   fmt.printf("v=%d\n", shared);
 }
+
+#run entry

@@ -10,10 +10,12 @@ resource :: opaque;
   resource_close :: proc(own r: resource);
 }
 
-main :: proc() {
+entry :: system {
   resource_open(10)(r:);
   resource_set(r, 42);
   resource_get(r)(v:);
   fmt.printf("value=%d\n", v);
   resource_close(move r);
 }
+
+#run entry

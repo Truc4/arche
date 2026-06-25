@@ -4,8 +4,10 @@
 #import { fmt }
 base  :: int;
 level :: base;
-main  :: proc() {
+entry :: system {
   x : level = 4;
   y : level = 6;
   fmt.printf("result: %d\n", x + y);
 }
+
+#run entry

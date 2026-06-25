@@ -2,8 +2,10 @@
 // implicit numeric conversion between int and float (Rust/Go model).
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 assignment: expected 'i32', got 'float'"
 #import { fmt }
-main :: proc() {
+entry :: system {
   x: int = 5;
   x = 1.5;
   fmt.printf("%d\n", x);
 }
+
+#run entry

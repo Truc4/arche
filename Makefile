@@ -524,7 +524,7 @@ install: all
 # so the binary must resolve core/stdlib/runtime via the exe-relative layout (no in-tree paths).
 test-install: all
 	@root=$$(mktemp -d); $(MAKE) -s install PREFIX=$$root BASHCOMP_DIR=$$root/bashcomp ZSHCOMP_DIR=$$root/zshcomp FISHCOMP_DIR=$$root/fishcomp >/dev/null; \
-	printf 'proc main() { printf("install-ok\\n"); }\n' > $$root/t.arche; \
+	printf '#import { fmt }\nentry :: system { fmt.printf("install-ok\\n"); }\n#run entry\n' > $$root/t.arche; \
 	out=$$(cd /tmp && $$root/bin/arche run $$root/t.arche); \
 	rm -rf $$root; \
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }

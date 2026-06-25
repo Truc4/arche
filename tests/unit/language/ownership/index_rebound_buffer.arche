@@ -16,10 +16,12 @@ fill :: proc(buf: [32]char, s: []char)(buf: [32]char, n: int) {
   n = i;
 }
 
-main :: proc() {
+entry :: system {
   b: [32]char;
   fill(b, "Hi")(b, n:);
   c0 := b[0];
   c1 := b[1];
   fmt.printf("c0=%d c1=%d n=%d\n", c0, c1, n);
 }
+
+#run entry

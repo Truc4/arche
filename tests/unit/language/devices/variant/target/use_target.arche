@@ -10,8 +10,10 @@
 // per-device --select overrides ONE device; the rest of the target is unchanged
 // RUN: %arche build --target windows --select tgfx=wayland -o %t %s && %t > %t.out && grep "tgfx wayland" %t.out && grep "tnet winsock" %t.out
 #import { tgfx tnet tsnd }
-main :: proc() {
+entry :: system {
   tgfx.render();
   tnet.send();
   tsnd.beep();
 }
+
+#run entry

@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "done 1000"
 #import { fmt }
-main :: proc() {
+entry :: system {
   i := 0;
   for (; i < 1000; i += 1) {
     price_str : [32]char;
@@ -10,3 +10,5 @@ main :: proc() {
   }
   fmt.printf("done %d\n", i);
 }
+
+#run entry

@@ -4,7 +4,7 @@
 // names must build clean.
 // RUN: %arche build -o %t %s && %t | grep "ns ok"
 #import { io os fmt }
-main :: proc() {
+entry :: system {
   io.fopen_read("/dev/null")(fd:);
   buf: [16]char;
   io.fread(fd, 16)(buf, _n:);
@@ -12,3 +12,5 @@ main :: proc() {
   os.os_now_sec()(_t:); // extern module, qualified
   fmt.printf("ns ok\n"); // core builtin, bare — unaffected by the namespace rule
 }
+
+#run entry

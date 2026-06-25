@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { io fmt }
-main :: proc() {
+entry :: system {
   io.fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
   buf: [256]char;
   io.fread(fd, 256)(buf, rd_v:);
@@ -9,3 +9,5 @@ main :: proc() {
   fmt.printf("read 256 returned: %d\n", v.length);
   fmt.assert(v.length == 256, "should read 256 bytes\n");
 }
+
+#run entry

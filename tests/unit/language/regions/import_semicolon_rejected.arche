@@ -5,5 +5,7 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "must be a module name" %t.out
 #import io;
 
-main :: proc() {
+entry :: system {
 }
+
+#run entry

@@ -12,7 +12,7 @@ sum :: func(xs: []int) -> int {
   return total;
 }
 
-main :: proc() {
+entry :: system {
   a: [4]int;
   a[0] = 10;
   a[1] = 20;
@@ -20,3 +20,5 @@ main :: proc() {
   a[3] = 40;
   fmt.printf("len=%d sum=%d\n", a.length, sum(a));
 }
+
+#run entry

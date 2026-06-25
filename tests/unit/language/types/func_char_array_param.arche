@@ -16,7 +16,7 @@ find_byte :: func(data: []char, start: int, end: int, ch: int) -> int {
   return end;
 }
 
-main :: proc() {
+entry :: system {
   buf: [8]char;
   buf[0] = 'a';
   buf[1] = ',';
@@ -26,3 +26,5 @@ main :: proc() {
   first := find_byte(buf, 2, 8, 'b') + 1;
   fmt.printf("comma=%d first=%d\n", comma, first);
 }
+
+#run entry

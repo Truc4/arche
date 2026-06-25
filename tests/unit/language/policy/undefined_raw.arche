@@ -4,7 +4,7 @@
 // RUN: %arche build --allow-undefined -o %t %s && %t | grep -qF "u=12 after=55"
 #import { fmt }
 
-main :: proc() {
+entry :: system {
   a: [4]int;
   a[0] = 10;
   a[2] = 12;
@@ -14,3 +14,5 @@ main :: proc() {
   a[j] !undefined = 55; // raw write (in range)
   fmt.printf("u=%d after=%d\n", u, a[3]);
 }
+
+#run entry

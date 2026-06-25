@@ -12,10 +12,12 @@ fsum :: func(xs: []float) -> float {
   return total;
 }
 
-main :: proc() {
+entry :: system {
   a: [3]float;
   a[0] = 1.5;
   a[1] = 2.25;
   a[2] = 0.25;
   fmt.printf("flen=%d fsum=%g\n", a.length, fsum(a));
 }
+
+#run entry

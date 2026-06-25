@@ -4,7 +4,9 @@
 #import { fmt }
 Body :: arche { mass: type: int }
 
-main :: proc() {
+entry :: system {
   m: mass = 5;
   fmt.printf("m: %d\n", m);
 }
+
+#run entry

@@ -16,7 +16,7 @@ rval  :: proc(r: resource)(v: int) {
   resource_get(r)(x:);
   v = x;
 }
-main :: proc() {
+entry :: system {
   resource_open(42)(h:);
   id := Route.health;
   match id {
@@ -31,3 +31,5 @@ main :: proc() {
   }
   resource_close(move h);
 }
+
+#run entry

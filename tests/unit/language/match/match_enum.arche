@@ -4,7 +4,7 @@
 #import { fmt }
 method :: enum { get, post = 5, delete }
 
-main :: proc() {
+entry :: system {
   m := method.post;
   match m {
   method.get    : fmt.printf("delete=%d GET\n", method.delete);
@@ -12,3 +12,5 @@ main :: proc() {
   method.delete : fmt.printf("delete=%d DEL\n", method.delete);
   }
 }
+
+#run entry

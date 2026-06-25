@@ -6,10 +6,13 @@
 // fmt makes a second unit so the cross-unit declare pass runs; the explicit `!clamp` keeps a policy
 // in play.
 // RUN: env ARCHE_PER_UNIT=1 %arche build -o %t %s && %t | grep -qF "pu_ok"
-#import { fmt }
-main :: proc(argc: int) {
+#import { os  fmt }
+entry :: system {
+  os.argc()(argc:);
   a: [4]int;
   a[0] = 9;
   v := a[argc] !clamp; // runtime index under an explicit policy (won't fold away)
   fmt.printf("pu_ok=%d\n", v);
 }
+
+#run entry

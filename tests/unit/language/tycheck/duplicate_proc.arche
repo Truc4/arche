@@ -11,6 +11,8 @@ foo :: proc() {
   fmt.printf("%d\n", 2);
 }
 
-main :: proc() {
+entry :: system {
   foo();
 }
+
+#run entry

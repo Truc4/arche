@@ -9,5 +9,7 @@ draw :: each (query { pos, color }) {
   pos.x = pos.x + color;
 }
 
-main :: proc() {
+entry :: system {
 }
+
+#run entry

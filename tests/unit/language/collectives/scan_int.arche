@@ -5,8 +5,10 @@
 v :: int;
 N :: arche { v }
 [5]N(5);
-main :: proc() {
+entry :: system {
   N.v = { 1, 2, 3, 4, 5 };
   scan(+, N.v);
   fmt.printf("%d %d %d %d %d\n", N.v[0], N.v[1], N.v[2], N.v[3], N.v[4]);
 }
+
+#run entry

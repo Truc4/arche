@@ -4,6 +4,8 @@
 #import { fmt }
 XS :: { 1, 2, 3 }
 
-main :: proc() {
+entry :: system {
   fmt.printf("%d %d\n", XS[1], XS.length);
 }
+
+#run entry
