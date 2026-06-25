@@ -198,6 +198,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_pointless_move]                = { "W0027", "pointless_move",                CLASS_LINT, 1 },
 	[SEM_LINT_proc_calls_proc]               = { "W0028", "proc_calls_proc",               CLASS_LINT, 1 },
 	[SEM_LINT_pool_index_outside_query]      = { "W0029", "pool_index_outside_query",      CLASS_LINT, 1 },
+	[SEM_LINT_proc_not_primitive]            = { "W0030", "proc_not_primitive",            CLASS_LINT, 0 },
 };
 /* clang-format on */
 
@@ -454,6 +455,9 @@ void semantic_set_lint_exported_mutable_global(int enabled, int werror) {
 }
 void semantic_set_lint_proc_calls_proc(int enabled, int werror) {
 	semantic_set_diag(SEM_LINT_proc_calls_proc, enabled, werror);
+}
+void semantic_set_lint_proc_not_primitive(int enabled, int werror) {
+	semantic_set_diag(SEM_LINT_proc_not_primitive, enabled, werror);
 }
 void semantic_set_lint_pool_index_outside_query(int enabled, int werror) {
 	semantic_set_diag(SEM_LINT_pool_index_outside_query, enabled, werror);
@@ -975,6 +979,15 @@ SemDiag *sem_emit_lint_proc_could_be_func(SemanticContext *ctx, SourceLoc loc, c
 	return sem_emit_(
 	    ctx, SEM_LINT_proc_could_be_func, loc,
 	    "proc '%s' has a pure body and returns a value — it should be a `func` (suppress with @allow_pure_proc)", name);
+}
+
+SemDiag *sem_emit_lint_proc_not_primitive(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_LINT_proc_not_primitive, loc,
+	                 "proc '%s' is not a primitive — `proc` is reserved for `#foreign`/`@syscall`/`@intrinsic`. "
+	                 "Pure logic → a `func`; effects or pool access → a `system`/`each`/`map`; a "
+	                 "result-dependent sequence → decompose across systems (a producer writes a column, a "
+	                 "consumer reads it)",
+	                 name);
 }
 SemDiag *sem_emit_lint_proc_no_effect(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_LINT_proc_no_effect, loc,

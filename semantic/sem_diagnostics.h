@@ -234,6 +234,12 @@ typedef enum {
 	                                      singleton `[0]`) outside a query/map/system fan body — pool values
 	                                      must come from a query, not hand-indexing. Default WARN (tunable to
 	                                      error per build, e.g. for an app + its libs). W0029. */
+	SEM_LINT_proc_not_primitive,       /* a `proc` that is not `#foreign`/`@syscall`/`@intrinsic` (a primitive)
+	                                      nor an `@drop` cleanup hook. `proc` is being removed: pure logic is a
+	                                      `func`, effects/pool-touching work is a `system`/`each`/`map`, and a
+	                                      result-dependent sequence decomposes across systems (producer writes a
+	                                      column, consumer reads it). Default WARN; flip to error once stdlib is
+	                                      converted. W0030. */
 
 	SEM_DIAG_KIND_COUNT
 } SemDiagKind;
@@ -455,6 +461,7 @@ SemDiag *sem_emit_lint_outarg_shadows_outparam(SemanticContext *ctx, SourceLoc l
 SemDiag *sem_emit_lint_large_stack_array(SemanticContext *ctx, SourceLoc loc, const char *name, int size_bytes);
 SemDiag *sem_emit_lint_pointless_move(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_lint_proc_calls_proc(SemanticContext *ctx, SourceLoc loc, const char *callee);
+SemDiag *sem_emit_lint_proc_not_primitive(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_pool_index_outside_query(SemanticContext *ctx, SourceLoc loc, const char *pool);
 
 #endif /* SEM_DIAGNOSTICS_H */

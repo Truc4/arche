@@ -27,6 +27,10 @@ typedef struct {
 	char *out_aggr_ptr; /* out-ONLY unbounded `char[]`/`T[]` out-param: the `{T*,i64}*` caller slot (%outN).
 	                     * When set, assigning a slice/array to this name stores the {ptr,len} back through
 	                     * it so the caller recovers the returned view. NULL for ordinary values. */
+	const char *loop_idx; /* type==4 column bound by a fan: the row-index SSA of the fan that bound it,
+	                       * BORROWED from the bump-leaked SSA-name pool (outlives this ValueInfo — no free).
+	                       * An auto-indexed read uses THIS, not the ambient loop index, so an OUTER fan's
+	                       * column read inside a NESTED fan still indexes by the outer row. NULL = ambient. */
 } ValueInfo;
 
 typedef struct {
@@ -1172,6 +1176,7 @@ static void add_value(CodegenContext *ctx, const char *name, const char *llvm_na
 	val->string_len = -1;
 	val->field_type = NULL;
 	val->bit_width = 32;
+	val->loop_idx = NULL;
 
 	scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
 	scope->values[scope->value_count++] = val;
@@ -3647,12 +3652,45 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		if (val) {
 			/* If inside implicit loop and this is a type-4 column param, auto-index */
 			if (ctx->implicit_loop_index[0] && val->type == 4) {
+				/* Index by the fan that BOUND this column (`loop_idx`), so an outer-fan column read inside
+				 * a nested fan still uses the outer row — not the ambient (inner) index. */
+				const char *idx = (val->loop_idx && val->loop_idx[0]) ? val->loop_idx : ctx->implicit_loop_index;
+				/* An ARRAY column (`[N]T`, e.g. `msg :: [64]char`) reads per-row as a pointer/slice over
+				 * that row's storage (stride N) — NOT a scalar load of one element. The column is stored
+				 * flat (`[count*N x T]`) and `val->llvm_name` is its element-0 pointer, so the row's start
+				 * is `+ row*N`. Yield that pointer so a `[]T` consumer (printf `%s` on a char column, a
+				 * sub-slice, …) gets a real view, mirroring the single-index `Pool.col[i]` shaped read. */
+				HirArchetypeDecl *acol = val->arch_name ? find_archetype_decl(ctx, val->arch_name) : NULL;
+				HirField *colf = NULL;
+				if (acol)
+					for (int fi = 0; fi < acol->field_count; fi++)
+						if (acol->fields[fi]->kind == FIELD_COLUMN && acol->fields[fi]->name &&
+						    strcmp(acol->fields[fi]->name, name) == 0) {
+							colf = acol->fields[fi];
+							break;
+						}
+				int coln = (colf && colf->type) ? field_total_elements(colf->type) : 1;
+				if (coln > 1) {
+					const char *abase = field_base_type_name(colf->type);
+					const char *allt = llvm_type_from_arche(abase);
+					char *roff = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", roff, idx, coln);
+					char *rptr = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", rptr, allt, allt,
+					                  val->llvm_name, roff);
+					strcpy(result_buf, rptr);
+					/* Tag the result as a char[] view so a consumer (printf `%s`, a sub-slice, an extern
+					 * char-buffer arg) passes the bare `i8*` pointer rather than coercing it to a scalar. */
+					if (strcmp(abase, "char") == 0)
+						expr->resolved.tag = HIR_TYPE_CHAR_ARRAY;
+					return;
+				}
 				const char *arche_type = val->field_type ? val->field_type : "float";
 				const char *scalar_type = llvm_type_from_arche(arche_type);
 				const char *load_type = elem_llvm_type(ctx, arche_type);
 				char *idx_gep = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", idx_gep, scalar_type, scalar_type,
-				                  val->llvm_name, ctx->implicit_loop_index);
+				                  val->llvm_name, idx);
 				char *elem = gen_value_name(ctx);
 				int align = ctx->vector_lanes > 0 ? 8 : 4;
 
@@ -4296,6 +4334,23 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		 * (after a write) is `strlen()`. */
 		if (base_val && base_val->type == 7 && is_len_field) {
 			snprintf(result_buf, 256, "%d", base_val->string_len);
+			break;
+		}
+
+		/* Type-4 array column (`[N]T` query column, e.g. a `[64]char` `path`): `.length` is the column
+		 * width N — the declared per-row size, the same bound its indexing is checked against. */
+		if (base_val && base_val->type == 4 && is_len_field && expr->data.field.base->kind == HIR_EXPR_NAME) {
+			HirArchetypeDecl *la = base_val->arch_name ? find_archetype_decl(ctx, base_val->arch_name) : NULL;
+			const char *bn = expr->data.field.base->data.name.name;
+			int wn = 1;
+			if (la)
+				for (int fi = 0; fi < la->field_count; fi++)
+					if (la->fields[fi]->kind == FIELD_COLUMN && la->fields[fi]->name &&
+					    strcmp(la->fields[fi]->name, bn) == 0) {
+						wn = field_total_elements(la->fields[fi]->type);
+						break;
+					}
+			snprintf(result_buf, 256, "%d", wn);
 			break;
 		}
 
@@ -6031,7 +6086,11 @@ static int resolve_index_arch(CodegenContext *ctx, HirExpr *base_expr, HirExpr *
 			if (arch) {
 				static char arch_ptr_buf[256];
 				*out_arch_name = vi->arch_name;
-				snprintf(arch_ptr_buf, 256, "%%arch_%s", vi->arch_name);
+				/* Resolve to the pool's GLOBAL: a static pool's `@<name>` is the same storage a `map`
+				 * gets as its `%arch_<name>` parameter, and an `each`/fan only has the global — so the
+				 * global is correct in both. (The old `%arch_<name>` was an undefined value inside a fan.) */
+				emit_query_pool_ptr(ctx, vi->arch_name, get_arch_static_capacity(ctx, vi->arch_name) > 0,
+				                    arch_ptr_buf, sizeof(arch_ptr_buf));
 				*out_arch_ptr = arch_ptr_buf;
 				*out_count_idx = arch->field_count;
 			}
@@ -11117,6 +11176,10 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 						col_val->arch_name = malloc(strlen(arch_name) + 1);
 						strcpy(col_val->arch_name, arch_name);
 						col_val->field_type = field_base_type_name(arch->fields[f]->type);
+						/* Pin this column to THIS fan's row (borrow the SSA-name string — it outlives the
+						 * binding), so a read inside a nested fan still indexes by the outer row, not the
+						 * ambient inner one. */
+						col_val->loop_idx = row;
 					}
 				} else {
 					char *field_gep = gen_value_name(ctx);

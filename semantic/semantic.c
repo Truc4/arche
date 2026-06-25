@@ -4573,26 +4573,31 @@ static void lint_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 		if (proc_param_is_inout(proc, i))
 			sem_emit_lint_inout_param_shadow(ctx, proc->loc, proc->params[i].name ? proc->params[i].name : "<param>");
 
+	if (proc->is_drop)
+		return; /* `@drop` cleanup hooks stay procs (runtime-invoked); revisit if the dtor form changes. */
 	if (proc->allow_pure_proc)
 		return;
 
-	/* A proc taking a proc-typed callback param is inherently action-shaped: it
-	 * exists to invoke that callback (an effect the purity walk can't see, since
-	 * the callee is a param, not a named proc). Don't nudge it toward `func`. */
+	/* A proc taking a proc-typed callback param is action-shaped (it exists to invoke the callback). The
+	 * callback feature is orthogonal to proc-elimination — leave it for now. */
 	for (int i = 0; i < proc->param_count; i++)
 		if (name_is_proc_typed_param(ctx, proc, proc->params[i].name))
 			return;
 
-	/* A proc whose body has effects is legitimately a proc — nothing to lint. */
-	if (func_purity_body_view(ctx, proc->body_node, proc) != NULL)
+	/* `proc` is being removed. Only `#foreign`/`@syscall`/`@intrinsic` primitives (returned above via
+	 * `is_extern`) and `@drop` hooks stay procs. Everything else — pure or effectful, INCLUDING `main` —
+	 * must become a `func`/`system`/`each`/`map`, or decompose a result-dependent sequence across systems.
+	 * The comprehensive ban (W0030) SUBSUMES the finer proc lints below: when it is ENABLED (default), it
+	 * fires and we stop. When it is DISABLED (`-Wno-proc_not_primitive`, for code not doing
+	 * proc-elimination), we fall through to the legacy `proc_could_be_func` / `proc_no_effect` guidance. */
+	if (sem_emit_lint_proc_not_primitive(ctx, proc->loc, proc->name ? proc->name : "<unknown>"))
 		return;
 
-	/* Pure body. `main` is the entry point: it can't be removed and can't be a func, and an empty/
-	 * effect-free main is a normal mid-edit state — never lint it (neither could-be-func nor no-effect).
-	 * A `func` returns EXACTLY ONE value, so only a SINGLE-out pure proc could be a func; a multi-out
-	 * pure proc is legitimately a (multi-return) proc — no lint. A zero-out pure proc does nothing
-	 * observable — flag for removal. The purity test is the SAME predicate enforce_func_purity uses, so
-	 * "could be a func" means exactly "would compile as a func". */
+	/* Legacy nuanced lints — reached only when W0030 is disabled. A proc with an effectful body is
+	 * legitimately a proc here; a SINGLE-out pure proc could be a func; a zero-out pure proc does nothing
+	 * observable; `main` (the entry point under the legacy model) is exempt. */
+	if (func_purity_body_view(ctx, proc->body_node, proc) != NULL)
+		return;
 	int is_main = proc->name && strcmp(proc->name, "main") == 0;
 	if (is_main) {
 		return;

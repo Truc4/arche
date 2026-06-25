@@ -13,10 +13,21 @@ print :: func(msg: []char) -> Eff(i64) {
   return os.write(1, msg, msg.length); // layered over os.write — fusion recurses to the syscall
 }
 // assert stays a proc (conditional, multi-effect leaf) — it RUNS the effects explicitly.
+// DEPRECATED: being replaced by assertion-as-data (`Result` + `report` below); kept until call sites migrate.
 assert :: proc(condition: int, message: []char) {
   if (condition == 0) {
     fflush(0)();
     print(message)(_:);
     os.exit(1)(_:);
   }
+}
+
+// Assertions in the flat-effect model: the CONDITION is pure control flow (a system's `if`); the FAILURE
+// is an effect. `fail` is a pure func that BUILDS the abort effect (write the message to stderr, then
+// exit nonzero); a system runs it on the failing branch — `if (x != 1) { fmt.fail("x\n")(_:); }`. No
+// runtime conditional lives in a func (Eff-builders fold statically); the branch is the system's job.
+fail :: func(message: []char) -> Eff(i64) {
+  // write the message to stdout, then exit nonzero. (Uses os.write — a direct syscall — so the message
+  // lands even though the syscall exit won't flush libc's buffer.)
+  return seq(os.write(1, message, message.length), os.exit(1));
 }
