@@ -1,0 +1,27 @@
+// RUN: %arche build -o %t %s && %t | grep -qxF "live 10 live 30 done"
+// Regression: an `each` fan iterates 0..count, but `delete` frees a slot WITHOUT shrinking count (the slot
+// becomes a hole in [0,count)). The fan must SKIP deleted rows — a tombstoned slot carries a negative
+// generation (sign bit), a live row gen >= 0. Before the fix the fan re-walked the dead hole and read its
+// stale column data; a delete-then-each (and any drain pass) re-processed removed rows. This deletes the
+// MIDDLE row and asserts the fan visits only the two live ones.
+#import { fmt }
+
+Job :: arche { n :: int }
+[8]Job;
+
+seed :: system {
+  insert(Job { n: 10 })(h0:, _:);
+  insert(Job { n: 20 })(h1:, _:);
+  insert(Job { n: 30 })(h2:, _:);
+  delete(h1)(_:); // remove the middle row → a hole at slot 1
+}
+
+show :: each (query { n }) {
+  fmt.printf("live %d ", n); // must NOT print 20 (the freed hole)
+}
+
+done :: system {
+  fmt.printf("done\n");
+}
+
+#run seq({ seed, show, done })

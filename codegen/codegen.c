@@ -2105,7 +2105,7 @@ static const char *get_shaped_field_info(CodegenContext *ctx, HirExpr *field_exp
 static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_buf);
 static void codegen_statement(CodegenContext *ctx, HirStmt *stmt);
 static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_count, HirStmt **stmts,
-                            int stmt_count);
+                            int stmt_count, const char *row_var);
 static int resolve_index_arch(CodegenContext *ctx, HirExpr *base_expr, HirExpr *idx_expr, const char **out_arch_name,
                               const char **out_arch_ptr, int *out_count_idx, int *out_idx_is_i64);
 /* Failure-policy MACRO inliner: bind a policy's params to the op's operand SSAs as mutable locals,
@@ -9554,7 +9554,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		/* An inline anonymous `each(Q) { … }`: emit the per-element fan IN PLACE (same path as the decl) so
 		 * its body captures the enclosing scope. Nested fans nest as ordinary loops. */
 		HirEachDecl *e = stmt->data.each_stmt;
-		codegen_each_fan(ctx, e->params, e->param_count, e->stmts, e->stmt_count);
+		codegen_each_fan(ctx, e->params, e->param_count, e->stmts, e->stmt_count, e->row_var);
 		break;
 	}
 
@@ -10041,7 +10041,11 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	buffer_append(ctx, "  store i32 %gnext, i32* %gc_elem\n");
 	buffer_append(ctx, "  br label %gen_load\n\n");
 	buffer_append(ctx, "gen_load:\n");
-	buffer_append(ctx, "  %gen_raw = load i32, i32* %gc_elem\n");
+	buffer_append(ctx, "  %gen_dead = load i32, i32* %gc_elem\n");
+	/* Clear the liveness sign bit: a reused slot was tombstoned by `delete` (gen < 0); insert revives it as
+	 * a LIVE (gen >= 0) generation. The `each` fan reads this bit to skip dead rows. The low 31 bits stay
+	 * the monotonic generation that invalidates stale handles. */
+	buffer_append(ctx, "  %gen_raw = and i32 %gen_dead, 2147483647\n");
 	/* Force the issued generation to be >= 1, so a live handle (slot|gen<<32) is never 0 — keeping
 	 * h == 0 an unambiguous overflow/failure sentinel even if a caller ignores `ok`. Store it back so
 	 * `delete`'s generation check matches what was issued. gen == 0 is never a free-slot marker (free
@@ -10094,9 +10098,10 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 
 	buffer_append(ctx, "valid:\n");
 	/* Crash loudly on generation exhaustion instead of wrapping (silent ABA): a
-	 * slot freed 2^32 times can no longer mint a distinct generation, so a stale
-	 * handle could alias a fresh entity. Abort like a stack overflow would. */
-	buffer_append(ctx, "  %gen_maxed = icmp eq i32 %stored_gen, -1\n");
+	 * slot freed 2^31 times can no longer mint a distinct generation, so a stale
+	 * handle could alias a fresh entity. Abort like a stack overflow would. (Bit 31 is the dead/liveness
+	 * flag, so the generation is 31 bits; a live slot's stored_gen is positive, maxing at 0x7FFFFFFF.) */
+	buffer_append(ctx, "  %gen_maxed = icmp eq i32 %stored_gen, 2147483647\n");
 	buffer_append(ctx, "  br i1 %gen_maxed, label %gen_exhausted, label %do_free\n\n");
 	/* Generation exhausted: a resource limit, reported as a value (ok=0) rather than aborting. */
 	buffer_append(ctx, "gen_exhausted:\n");
@@ -10106,8 +10111,10 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	/* Fire the row's `@drop` destructor (if any) while its data is still intact — the resource it
 	 * holds (e.g. an fd) is released as the row leaves the pool. */
 	cg_emit_rowdrop(ctx, arch, static_cap);
-	/* Increment generation */
-	buffer_append(ctx, "  %new_gen = add i32 %stored_gen, 1\n");
+	/* Increment generation (invalidates stale handles) AND set the dead/liveness sign bit so the `each`
+	 * fan skips this slot. Insert revives it by clearing the bit. */
+	buffer_append(ctx, "  %new_gen_inc = add i32 %stored_gen, 1\n");
+	buffer_append(ctx, "  %new_gen = or i32 %new_gen_inc, -2147483648\n");
 	buffer_append(ctx, "  store i32 %new_gen, i32* %gc_elem\n");
 
 	/* Load free_count */
@@ -11244,7 +11251,7 @@ static void codegen_system_decl(CodegenContext *ctx, HirSystemDecl *sys, int dec
  * anonymous `each` statement (emitted into the enclosing function so the body captures enclosing locals;
  * the row index is saved/restored so nested fans don't clobber each other). */
 static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_count, HirStmt **stmts,
-                            int stmt_count) {
+                            int stmt_count, const char *row_var) {
 	/* Split the (possibly joined) columns: a column whose owning pool is a `[1]` singleton broadcasts; the
 	 * rest belong to the DRIVER pool whose row count drives the loop. The driver columns determine which
 	 * archetype(s) we fan over (a query may still match several same-shape archetypes). */
@@ -11288,6 +11295,31 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 		char *cmp = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n  br i1 %s, label %%%s, label %%%s\n%s:\n", cmp, row,
 		                  count, cmp, lbody, lend, lbody);
+		/* Liveness skip: the fan iterates 0..count, but `count` is a high-water mark — `delete` frees a slot
+		 * (sign-bit set in its generation) WITHOUT shrinking count. A tombstoned row has gen < 0; a live row
+		 * has gen >= 0. Skip dead slots so a drained pool re-iterates nothing and a delete-then-each pass
+		 * never re-processes a freed hole. (gc field: static = field_count+3, dynamic ptr = field_count+4.) */
+		char lcont[48], llive[48];
+		snprintf(lcont, sizeof(lcont), "eachrow_cont_%d", id);
+		snprintf(llive, sizeof(llive), "eachrow_live_%d", id);
+		int gc_field = arch->field_count + (is_static ? 3 : 4);
+		char *gcptr = gen_value_name(ctx);
+		if (is_static) {
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 %s\n", gcptr,
+			                  arch_name, arch_name, base_buf, gc_field, row);
+		} else {
+			char *gcbase = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gcbase,
+			                  arch_name, arch_name, base_buf, gc_field);
+			char *gcload = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load i32*, i32** %s\n", gcload, gcbase);
+			buffer_append_fmt(ctx, "  %s = getelementptr i32, i32* %s, i64 %s\n", gcptr, gcload, row);
+		}
+		char *genval = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", genval, gcptr);
+		char *deadval = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = icmp slt i32 %s, 0\n  br i1 %s, label %%%s, label %%%s\n%s:\n", deadval, genval,
+		                  deadval, lcont, llive, llive);
 		push_value_scope(ctx);
 		/* bind each query column: a DRIVER column (in this archetype) as a type-4 column pointer
 		 * (auto-indexed at %row); a SINGLETON column as a broadcast scalar loaded at index 0. */
@@ -11337,6 +11369,36 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 				break;
 			}
 		}
+		/* `each (query {…} as row_var)`: mint the matched row's generation-checked handle (slot | gen<<32 —
+		 * the same encoding `insert` produces, using the already-loaded `genval` and `row` == slot) and bind
+		 * it as a `handle(arch)` local. The body can then `delete(row_var)(ok:)` it (consume) or use it in a
+		 * relationship filter. */
+		if (row_var && row_var[0]) {
+			char *slot32 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", slot32, row);
+			char *slot64 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = zext i32 %s to i64\n", slot64, slot32);
+			char *gen64 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = zext i32 %s to i64\n", gen64, genval);
+			char *genshift = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = shl i64 %s, 32\n", genshift, gen64);
+			char *hval = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = or i64 %s, %s\n", hval, slot64, genshift);
+			char *hslot = gen_value_name(ctx);
+			emit_alloca(ctx, "  %s = alloca i64\n", hslot);
+			buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", hval, hslot);
+			ValueInfo *hvi = calloc(1, sizeof(ValueInfo));
+			hvi->name = strdup(row_var);
+			hvi->llvm_name = strdup(hslot);
+			hvi->type = 1;
+			hvi->string_len = -1;
+			hvi->field_type = "handle";
+			hvi->bit_width = 64;
+			hvi->handle_archetype = arch_name;
+			ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+			sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+			sc->values[sc->value_count++] = hvi;
+		}
 		char saved_idx[64];
 		snprintf(saved_idx, sizeof(saved_idx), "%s", ctx->implicit_loop_index);
 		snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", row); /* col[row]; saved/restored so a NESTED each restores the outer row */
@@ -11345,9 +11407,13 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 			codegen_statement(ctx, stmts[s]);
 		snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", saved_idx);
 		pop_value_scope(ctx);
+		/* end of the live body → fall into the continue block (unless the body already terminated, e.g.
+		 * `os.exit`); the dead-slot skip also lands here. Then increment the row and loop. */
+		if (!ctx->block_terminated)
+			buffer_append_fmt(ctx, "  br label %%%s\n", lcont);
 		char *rnext = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n  store i64 %s, i64* %s\n  br label %%%s\n%s:\n", rnext, row,
-		                  rnext, ralloca, head, lend);
+		buffer_append_fmt(ctx, "%s:\n  %s = add i64 %s, 1\n  store i64 %s, i64* %s\n  br label %%%s\n%s:\n", lcont,
+		                  rnext, row, rnext, ralloca, head, lend);
 		ctx->block_terminated = 0;
 	}
 }
@@ -11371,7 +11437,7 @@ static void codegen_each_decl(CodegenContext *ctx, HirEachDecl *each, int decl_u
 	push_value_scope(ctx);
 	ctx->block_terminated = 0;
 	register_static_arrays_in_scope(ctx);
-	codegen_each_fan(ctx, each->params, each->param_count, each->stmts, each->stmt_count);
+	codegen_each_fan(ctx, each->params, each->param_count, each->stmts, each->stmt_count, each->row_var);
 	pop_value_scope(ctx);
 	buffer_append(ctx, "  ret void\n");
 	end_function_body(ctx, fbs_each);

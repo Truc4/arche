@@ -180,6 +180,9 @@ typedef struct {
 	 * join broadcasts. Always query-bearing (param_count > 0). */
 	HirParam **params;
 	int param_count;
+	/* `each (query {…} as w)`: the matched row's generation-checked handle bound to `w` in the body (a
+	 * `handle(driver)` local) — for `delete(w)(ok:)` / relationship filters. NULL when no `as` clause. */
+	char *row_var;
 	HirStmt **stmts;
 	int stmt_count;
 	SourceLoc loc;

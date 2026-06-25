@@ -1615,6 +1615,18 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			              "`each(query {…})`");
 			return 0;
 		}
+		/* optional `as w` — bind the matched row's generation-checked handle to `w` (a `handle(driver)`
+		 * local), for `delete(w)(ok:)` / relationship filters. `as` is a contextual keyword (no global one). */
+		if (cur_ident_is(parser, "as", 2)) {
+			advance(parser); /* consume 'as' */
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected a name after 'as' — `each (query {…} as w)` binds the matched row as `w`");
+				return 0;
+			}
+			int b_cp = syntax_cp(parser);
+			advance(parser); /* the binder name */
+			syntax_wrap(parser, b_cp, SN_QUERY_BIND);
+		}
 		if (check(parser, TOK_COMMA)) {
 			error(parser, "each runs over ONE query — there are no joins; to combine pools, NEST an `each` "
 			              "inside another (cross-pool work is explicit nesting)");

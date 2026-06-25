@@ -1,0 +1,32 @@
+// RUN: %arche build -o %t %s && %t | grep -qxF "do 1 do 2 do 3 | done"
+// `each (query {…} as w)` binds the matched row's generation-checked handle to `w` (a handle(driver) local).
+// `delete(w)(ok:)` CONSUMES the current row — removes it from the pool. So a producer/consumer drain works:
+// the first pass processes every row and deletes it; a SECOND pass over the now-empty pool processes nothing
+// (the liveness skip means the freed slots are not re-walked). Proves both the `as w` binding and the drain.
+#import { fmt }
+
+Job :: arche { n :: int }
+[8]Job;
+
+seed :: system {
+  insert(Job { n: 1 })(_:, _:);
+  insert(Job { n: 2 })(_:, _:);
+  insert(Job { n: 3 })(_:, _:);
+}
+
+// Consumer: process the row, then `delete(w)` removes it. `w` is the row's own handle (bare, like insert's).
+drain :: each (query { n } as w) {
+  fmt.printf("do %d ", n);
+  delete(w)(_:);
+}
+
+bar :: system {
+  fmt.printf("| ");
+}
+
+// The SECOND drain must print nothing — the pool was emptied by the first.
+done :: system {
+  fmt.printf("done\n");
+}
+
+#run seq({ seed, drain, bar, drain, done })

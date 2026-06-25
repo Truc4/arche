@@ -6536,6 +6536,15 @@ static void analyze_each_decl(SemanticContext *ctx, DeclSummary *each) {
 	 * a query-system; only codegen differs (scalars at the current row vs whole columns). */
 	const char *old_arch = ctx->current_map_archetype;
 	ctx->current_map_archetype = bind_query_archetype(ctx, each);
+	/* `each (query {…} as w)`: bind the matched row's handle to `w` — a `handle(driver)` local for
+	 * `delete(w)(ok:)` / relationship filters. The row handle is NOT a query column (handles are banned as
+	 * columns, E0037); it arrives via the `as` binder, outside the column layer. */
+	SyntaxView rb = sv_child_at(each->body_node, SN_QUERY_BIND, 0);
+	if (sv_present(rb) && ctx->current_map_archetype) {
+		char *rv = sem_own_str(ctx, sem_txt_dup(sv_token(rb, TOK_IDENT)));
+		add_variable_with_archetype(ctx, rv, tyid_of_handle(ctx->ty_arena, ctx->current_map_archetype),
+		                            ctx->current_map_archetype);
+	}
 	ctx->in_body = 1;
 	for (int i = 0, n = sem_stmt_count(each->body_node); i < n; i++)
 		analyze_statement(ctx, sem_stmt_at(each->body_node, i));

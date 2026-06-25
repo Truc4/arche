@@ -85,22 +85,26 @@ parse :: each (query { code }) {
   }
 }
 
-// Two consumers, each over its OWN pool, each doing the actual n+1 step on the row it consumes — `errors`
-// sends the error response, `dispatch` serves the handler. Neither asks "was there an error?": an empty
-// pool runs zero times, so the 400 path simply doesn't fire when every request parsed.
-errors :: each (query { status }) {
-  fmt.printf("respond %d\n", status); // consume the Bad row → write the error response
+// Two consumers, each over its OWN pool. `as r` binds the matched row's handle; after doing the n+1 step,
+// `delete(r)` CONSUMES it — removes it from the pool. Neither asks "was there an error?": an empty pool
+// runs zero times, and because each row is deleted, a later pass drains nothing (no re-processing).
+errors :: each (query { status } as r) {
+  fmt.printf("respond %d\n", status); // the error response …
+  delete(r)(_:);                      // … then consume the Bad row (it's handled — remove it)
 }
-dispatch :: each (query { handler }) {
-  fmt.printf("serve route %d\n", handler); // consume the Routed row → dispatch to its handler
+dispatch :: each (query { handler } as r) {
+  fmt.printf("serve route %d\n", handler); // dispatch …
+  delete(r)(_:);                           // … then consume the Routed row
 }
 
 #run seq({ seed, parse, errors, dispatch })
 ```
 
 **Why:** a consumer `each` over an empty pool is a no-op — that _is_ the conditional. System 1
-produces `n` (writes a row/column); system 2 consumes `n` and does the n+1 step; the schedule orders
-writer-before-reader within the pass. "Branch on a result" becomes "route the row into the pool for
-that case," and an absent row is simply never read — no per-step guards, no intra-row effect→effect
-chaining. This is the shape of arche-rpg's `done :: each (Closed)`: it fires only once a `Closed` row
-exists, so "should we exit?" needs no boolean — the row's presence is the signal.
+produces `n` (inserts a row); system 2 consumes `n` (does the n+1 step, then **`delete`s the row** via its
+`as r` handle); the schedule orders writer-before-reader within the pass. "Branch on a result" becomes
+"route the row into the pool for that case," and an absent row is simply never read — no per-step guards,
+no intra-row effect→effect chaining. **Consuming = deleting**: a handled row leaves the pool, so it is
+never re-processed on a later pass (a drained pool re-runs to nothing). This is the shape of arche-rpg's
+`done :: each (Closed)`: it fires only once a `Closed` row exists, so "should we exit?" needs no boolean —
+the row's presence is the signal.

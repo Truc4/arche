@@ -2445,6 +2445,10 @@ static HirEachDecl *lower_each_payload(SyntaxView f, char *name) {
 	as->stmts = syntax_lower_body(f, &as->stmt_count);
 	/* `each(Q)` carries its query columns (flattened), bound per-element in codegen's row loop. */
 	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
+	/* `each (query {…} as w)`: the matched row's handle binds to `w` in the body. */
+	SyntaxView bind = sv_child_at(f, SN_QUERY_BIND, 0);
+	if (sv_present(bind))
+		as->row_var = txt_dup(sv_token(bind, TOK_IDENT));
 	return as;
 }
 
